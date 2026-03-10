@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -20,6 +21,7 @@ type Interpreter struct {
 	currentCo  *Coroutine         // non-nil when running inside a coroutine
 	modules    map[string]Value   // require() cache
 	stringMeta *Table             // metatable for string values (__index → string lib)
+	scriptDir  string             // directory of the main script (for require path resolution)
 }
 
 // New creates a new Interpreter with built-in globals.
@@ -42,6 +44,11 @@ func (interp *Interpreter) SetGlobal(name string, val Value) {
 func (interp *Interpreter) GetGlobal(name string) Value {
 	v, _ := interp.globals.Get(name)
 	return v
+}
+
+// SetScriptDir sets the directory of the main script, used for require path resolution.
+func (interp *Interpreter) SetScriptDir(dir string) {
+	interp.scriptDir = dir
 }
 
 // Output returns captured print output (for testing).
@@ -416,6 +423,13 @@ func (interp *Interpreter) registerBuiltins() {
 
 			// Convert dots to path separators
 			filename := strings.ReplaceAll(name, ".", "/") + ".gs"
+			// Try resolving relative to script directory first
+			if interp.scriptDir != "" {
+				candidate := filepath.Join(interp.scriptDir, filename)
+				if _, statErr := os.Stat(candidate); statErr == nil {
+					filename = candidate
+				}
+			}
 			src, err := os.ReadFile(filename)
 			if err != nil {
 				return nil, fmt.Errorf("module '%s' not found", name)
