@@ -11,8 +11,9 @@ import (
 
 // Interpreter is the tree-walking evaluator for GScript programs.
 type Interpreter struct {
-	globals *Environment
-	output  []string // captured print output (for testing)
+	globals   *Environment
+	output    []string     // captured print output (for testing)
+	currentCo *Coroutine   // non-nil when running inside a coroutine
 }
 
 // New creates a new Interpreter with built-in globals.
@@ -182,6 +183,176 @@ func (interp *Interpreter) registerBuiltins() {
 			}
 		},
 	}))
+
+	// ----------------------------------------------------------------
+	// Coroutine library
+	// ----------------------------------------------------------------
+	interp.registerCoroutineLib()
+}
+
+// registerCoroutineLib installs the "coroutine" global table with
+// create, resume, yield, status, wrap, and isyieldable.
+func (interp *Interpreter) registerCoroutineLib() {
+	coLib := NewTable()
+
+	coLib.RawSet(StringValue("create"), FunctionValue(&GoFunction{
+		Name: "coroutine.create",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsFunction() {
+				return nil, fmt.Errorf("coroutine.create expects a function")
+			}
+			co := NewCoroutine(args[0])
+			return []Value{CoroutineValue(co)}, nil
+		},
+	}))
+
+	coLib.RawSet(StringValue("resume"), FunctionValue(&GoFunction{
+		Name: "coroutine.resume",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsCoroutine() {
+				return nil, fmt.Errorf("coroutine.resume expects a coroutine")
+			}
+			co := args[0].Coroutine()
+			resumeArgs := args[1:]
+			return interp.resumeCoroutine(co, resumeArgs)
+		},
+	}))
+
+	coLib.RawSet(StringValue("yield"), FunctionValue(&GoFunction{
+		Name: "coroutine.yield",
+		Fn: func(args []Value) ([]Value, error) {
+			return interp.yieldFromCoroutine(args)
+		},
+	}))
+
+	coLib.RawSet(StringValue("status"), FunctionValue(&GoFunction{
+		Name: "coroutine.status",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsCoroutine() {
+				return nil, fmt.Errorf("coroutine.status expects a coroutine")
+			}
+			return []Value{StringValue(args[0].Coroutine().Status())}, nil
+		},
+	}))
+
+	coLib.RawSet(StringValue("wrap"), FunctionValue(&GoFunction{
+		Name: "coroutine.wrap",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsFunction() {
+				return nil, fmt.Errorf("coroutine.wrap expects a function")
+			}
+			co := NewCoroutine(args[0])
+			wrapper := &GoFunction{
+				Name: "wrapped_coroutine",
+				Fn: func(wargs []Value) ([]Value, error) {
+					results, err := interp.resumeCoroutine(co, wargs)
+					if err != nil {
+						return nil, err
+					}
+					// results[0] is bool success flag
+					if len(results) > 0 && !results[0].Bool() {
+						if len(results) > 1 {
+							return nil, fmt.Errorf("%s", results[1].String())
+						}
+						return nil, fmt.Errorf("cannot resume dead coroutine")
+					}
+					// Strip the success flag, return remaining values
+					return results[1:], nil
+				},
+			}
+			return []Value{FunctionValue(wrapper)}, nil
+		},
+	}))
+
+	coLib.RawSet(StringValue("isyieldable"), FunctionValue(&GoFunction{
+		Name: "coroutine.isyieldable",
+		Fn: func(args []Value) ([]Value, error) {
+			return []Value{BoolValue(getCurrentCoroutine() != nil)}, nil
+		},
+	}))
+
+	interp.globals.Define("coroutine", TableValue(coLib))
+}
+
+// resumeCoroutine resumes a suspended coroutine with the given arguments.
+// Returns (true, values...) on success/yield, or (false, error_message) on failure.
+func (interp *Interpreter) resumeCoroutine(co *Coroutine, args []Value) ([]Value, error) {
+	if co.status == CoroutineDead {
+		return []Value{BoolValue(false), StringValue("cannot resume dead coroutine")}, nil
+	}
+	if co.status == CoroutineRunning {
+		return []Value{BoolValue(false), StringValue("cannot resume running coroutine")}, nil
+	}
+
+	// Save and restore the previous coroutine context so that nested
+	// resume calls (coroutine resuming another coroutine) work correctly.
+	prevCo := interp.currentCo
+
+	co.status = CoroutineRunning
+
+	if !co.started {
+		co.started = true
+		// Launch the goroutine. It creates its own Interpreter that shares
+		// globals but has its own currentCo, avoiding data races.
+		go func() {
+			// Register this coroutine in the goroutine-local map so that
+			// coroutine.yield can find it from within GoFunction closures.
+			setCurrentCoroutine(co)
+			defer setCurrentCoroutine(nil)
+
+			coInterp := &Interpreter{
+				globals:   interp.globals,
+				currentCo: co,
+			}
+			// Wait for initial args from the first resume.
+			initArgs := <-co.resumeCh
+			// Call the coroutine body function.
+			results, err := coInterp.callFunction(co.fn, initArgs)
+			if results == nil {
+				results = []Value{}
+			}
+			co.yieldCh <- yieldResult{values: results, err: err, done: true}
+		}()
+	}
+
+	// Send args to the coroutine (initial args on first resume, or
+	// values returned from yield on subsequent resumes).
+	co.resumeCh <- args
+
+	// Wait for the coroutine to yield or finish.
+	result := <-co.yieldCh
+
+	if result.done || result.err != nil {
+		co.status = CoroutineDead
+	} else {
+		co.status = CoroutineSuspended
+	}
+
+	interp.currentCo = prevCo
+
+	if result.err != nil {
+		return []Value{BoolValue(false), StringValue(result.err.Error())}, nil
+	}
+
+	// Prepend true to indicate success.
+	return append([]Value{BoolValue(true)}, result.values...), nil
+}
+
+// yieldFromCoroutine yields values from the currently running coroutine back
+// to the caller of resume. It blocks until the coroutine is resumed again,
+// and returns the values passed to the next resume call.
+// It uses goroutine-local storage to find the correct coroutine, so it works
+// correctly even though the GoFunction closure captures the main interpreter.
+func (interp *Interpreter) yieldFromCoroutine(values []Value) ([]Value, error) {
+	co := getCurrentCoroutine()
+	if co == nil {
+		return nil, fmt.Errorf("cannot yield from outside a coroutine")
+	}
+	// Send yielded values to the resume caller.
+	co.yieldCh <- yieldResult{values: values}
+	// Block until resumed.
+	resumeVals := <-co.resumeCh
+	return resumeVals, nil
 }
 
 // ====================================================================

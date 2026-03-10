@@ -329,5 +329,4 @@ func floatIsInt(f float64) bool {
 	return f == math.Trunc(f) && f >= math.MinInt64 && f <= math.MaxInt64
 }
 
-// Placeholder type for coroutines (will be fully implemented in Phase 6).
-type Coroutine struct{}
+// Coroutine is defined in coroutine.go.
