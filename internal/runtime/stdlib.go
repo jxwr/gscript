@@ -24,4 +24,7 @@ func (interp *Interpreter) registerStdlib() {
 
 	// OS library
 	interp.globals.Define("os", TableValue(buildOSLib()))
+
+	// HTTP library
+	interp.globals.Define("http", TableValue(httpLib(interp)))
 }

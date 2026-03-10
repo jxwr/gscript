@@ -897,3 +897,164 @@ func TestPcall_with_args(t *testing.T) {
 		t.Errorf("expected 'division by zero', got %v", interp.GetGlobal("r2"))
 	}
 }
+
+// ==================================================================
+// HTTP library tests
+// ==================================================================
+
+func TestHTTPLibRegistered(t *testing.T) {
+	interp := runProgram(t, `
+		result := type(http)
+	`)
+	v := interp.GetGlobal("result")
+	if v.Str() != "table" {
+		t.Errorf("expected http to be 'table', got %s", v.Str())
+	}
+}
+
+func TestHTTPLibFunctions(t *testing.T) {
+	interp := runProgram(t, `
+		a := type(http.listen)
+		b := type(http.get)
+		c := type(http.newRouter)
+	`)
+	if interp.GetGlobal("a").Str() != "function" {
+		t.Errorf("expected http.listen to be 'function', got %s", interp.GetGlobal("a").Str())
+	}
+	if interp.GetGlobal("b").Str() != "function" {
+		t.Errorf("expected http.get to be 'function', got %s", interp.GetGlobal("b").Str())
+	}
+	if interp.GetGlobal("c").Str() != "function" {
+		t.Errorf("expected http.newRouter to be 'function', got %s", interp.GetGlobal("c").Str())
+	}
+}
+
+func TestHTTPNewRouter(t *testing.T) {
+	interp := runProgram(t, `
+		router := http.newRouter()
+		result := type(router)
+		has_get := type(router.get)
+		has_post := type(router.post)
+		has_any := type(router.any)
+		has_listen := type(router.listen)
+	`)
+	if interp.GetGlobal("result").Str() != "table" {
+		t.Errorf("expected router to be 'table', got %s", interp.GetGlobal("result").Str())
+	}
+	if interp.GetGlobal("has_get").Str() != "function" {
+		t.Errorf("expected router.get to be 'function', got %s", interp.GetGlobal("has_get").Str())
+	}
+	if interp.GetGlobal("has_post").Str() != "function" {
+		t.Errorf("expected router.post to be 'function', got %s", interp.GetGlobal("has_post").Str())
+	}
+	if interp.GetGlobal("has_any").Str() != "function" {
+		t.Errorf("expected router.any to be 'function', got %s", interp.GetGlobal("has_any").Str())
+	}
+	if interp.GetGlobal("has_listen").Str() != "function" {
+		t.Errorf("expected router.listen to be 'function', got %s", interp.GetGlobal("has_listen").Str())
+	}
+}
+
+func TestHTTPRouterChaining(t *testing.T) {
+	// Verify that router.get/post/any return the router for chaining
+	interp := runProgram(t, `
+		router := http.newRouter()
+		r2 := router.get("/test", func(req, res) {})
+		same := r2 == router
+	`)
+	if !interp.GetGlobal("same").Truthy() {
+		t.Errorf("expected router.get to return the same router for chaining")
+	}
+}
+
+func TestGoToGScript(t *testing.T) {
+	// Test the goToGScript conversion function
+	v := goToGScript(nil)
+	if !v.IsNil() {
+		t.Errorf("expected nil, got %v", v)
+	}
+
+	v = goToGScript(true)
+	if !v.IsBool() || !v.Bool() {
+		t.Errorf("expected true, got %v", v)
+	}
+
+	v = goToGScript(3.14)
+	if !v.IsFloat() || v.Number() != 3.14 {
+		t.Errorf("expected 3.14, got %v", v)
+	}
+
+	v = goToGScript("hello")
+	if !v.IsString() || v.Str() != "hello" {
+		t.Errorf("expected 'hello', got %v", v)
+	}
+
+	v = goToGScript([]interface{}{"a", "b"})
+	if !v.IsTable() {
+		t.Errorf("expected table, got %v", v.TypeName())
+	}
+	tbl := v.Table()
+	if tbl.Length() != 2 {
+		t.Errorf("expected length 2, got %d", tbl.Length())
+	}
+	if tbl.RawGet(IntValue(1)).Str() != "a" {
+		t.Errorf("expected 'a' at index 1, got %v", tbl.RawGet(IntValue(1)))
+	}
+
+	v = goToGScript(map[string]interface{}{"key": "val"})
+	if !v.IsTable() {
+		t.Errorf("expected table, got %v", v.TypeName())
+	}
+	tbl = v.Table()
+	if tbl.RawGet(StringValue("key")).Str() != "val" {
+		t.Errorf("expected 'val' for key 'key', got %v", tbl.RawGet(StringValue("key")))
+	}
+}
+
+func TestGScriptToGo(t *testing.T) {
+	// Test the gscriptToGo conversion function
+	if gscriptToGo(NilValue()) != nil {
+		t.Errorf("expected nil")
+	}
+
+	if gscriptToGo(BoolValue(true)) != true {
+		t.Errorf("expected true")
+	}
+
+	if gscriptToGo(IntValue(42)) != int64(42) {
+		t.Errorf("expected 42")
+	}
+
+	if gscriptToGo(FloatValue(3.14)) != 3.14 {
+		t.Errorf("expected 3.14")
+	}
+
+	if gscriptToGo(StringValue("hello")) != "hello" {
+		t.Errorf("expected 'hello'")
+	}
+
+	// Array-like table
+	tbl := NewTable()
+	tbl.RawSet(IntValue(1), StringValue("a"))
+	tbl.RawSet(IntValue(2), StringValue("b"))
+	result := gscriptToGo(TableValue(tbl))
+	arr, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("expected []interface{}, got %T", result)
+	}
+	if len(arr) != 2 || arr[0] != "a" || arr[1] != "b" {
+		t.Errorf("expected [a, b], got %v", arr)
+	}
+
+	// Hash-like table
+	tbl2 := NewTable()
+	tbl2.RawSet(StringValue("key"), StringValue("val"))
+	result2 := gscriptToGo(TableValue(tbl2))
+	m, ok := result2.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{}, got %T", result2)
+	}
+	if m["key"] != "val" {
+		t.Errorf("expected key=val, got %v", m)
+	}
+}
