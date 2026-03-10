@@ -90,6 +90,81 @@ func (interp *Interpreter) registerBuiltins() {
 		},
 	}))
 
+	interp.globals.Define("setmetatable", FunctionValue(&GoFunction{
+		Name: "setmetatable",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 2 {
+				return nil, fmt.Errorf("bad argument to 'setmetatable' (table expected)")
+			}
+			if !args[0].IsTable() {
+				return nil, fmt.Errorf("bad argument #1 to 'setmetatable' (table expected, got %s)", args[0].TypeName())
+			}
+			tbl := args[0].Table()
+			if args[1].IsNil() {
+				tbl.SetMetatable(nil)
+			} else if args[1].IsTable() {
+				tbl.SetMetatable(args[1].Table())
+			} else {
+				return nil, fmt.Errorf("bad argument #2 to 'setmetatable' (nil or table expected, got %s)", args[1].TypeName())
+			}
+			return []Value{args[0]}, nil
+		},
+	}))
+
+	interp.globals.Define("getmetatable", FunctionValue(&GoFunction{
+		Name: "getmetatable",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) == 0 {
+				return nil, fmt.Errorf("bad argument to 'getmetatable' (value expected)")
+			}
+			if !args[0].IsTable() {
+				return []Value{NilValue()}, nil
+			}
+			mt := args[0].Table().GetMetatable()
+			if mt == nil {
+				return []Value{NilValue()}, nil
+			}
+			return []Value{TableValue(mt)}, nil
+		},
+	}))
+
+	interp.globals.Define("rawget", FunctionValue(&GoFunction{
+		Name: "rawget",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 2 {
+				return nil, fmt.Errorf("bad argument to 'rawget' (table expected)")
+			}
+			if !args[0].IsTable() {
+				return nil, fmt.Errorf("bad argument #1 to 'rawget' (table expected, got %s)", args[0].TypeName())
+			}
+			return []Value{args[0].Table().RawGet(args[1])}, nil
+		},
+	}))
+
+	interp.globals.Define("rawset", FunctionValue(&GoFunction{
+		Name: "rawset",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 3 {
+				return nil, fmt.Errorf("bad argument to 'rawset' (table expected)")
+			}
+			if !args[0].IsTable() {
+				return nil, fmt.Errorf("bad argument #1 to 'rawset' (table expected, got %s)", args[0].TypeName())
+			}
+			args[0].Table().RawSet(args[1], args[2])
+			return []Value{args[0]}, nil
+		},
+	}))
+
+	interp.globals.Define("rawequal", FunctionValue(&GoFunction{
+		Name: "rawequal",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 2 {
+				return nil, fmt.Errorf("bad argument to 'rawequal' (two values expected)")
+			}
+			return []Value{BoolValue(args[0].Equal(args[1]))}, nil
+		},
+	}))
+
 	interp.globals.Define("len", FunctionValue(&GoFunction{
 		Name: "len",
 		Fn: func(args []Value) ([]Value, error) {
@@ -107,6 +182,137 @@ func (interp *Interpreter) registerBuiltins() {
 			}
 		},
 	}))
+}
+
+// ====================================================================
+// Metamethod helpers
+// ====================================================================
+
+const maxMetaDepth = 50
+
+// getMetamethod returns the metamethod for the given event (__add, etc.)
+// Returns the metamethod Value and true if found.
+func (interp *Interpreter) getMetamethod(val Value, event string) (Value, bool) {
+	var mt *Table
+	if val.IsTable() {
+		mt = val.Table().GetMetatable()
+	}
+	if mt == nil {
+		return NilValue(), false
+	}
+	mm := mt.RawGet(StringValue(event))
+	if mm.IsNil() {
+		return NilValue(), false
+	}
+	return mm, true
+}
+
+// tableGet retrieves a value from a table, with __index metamethod support.
+func (interp *Interpreter) tableGet(t Value, key Value) (Value, error) {
+	return interp.tableGetDepth(t, key, 0)
+}
+
+func (interp *Interpreter) tableGetDepth(t Value, key Value, depth int) (Value, error) {
+	if depth > maxMetaDepth {
+		return NilValue(), fmt.Errorf("'__index' chain too long; possible loop")
+	}
+	if !t.IsTable() {
+		return NilValue(), fmt.Errorf("attempt to index a %s value", t.TypeName())
+	}
+
+	tbl := t.Table()
+	val := tbl.RawGet(key)
+
+	if !val.IsNil() {
+		return val, nil
+	}
+
+	// Try __index
+	mt := tbl.GetMetatable()
+	if mt == nil {
+		return NilValue(), nil
+	}
+
+	index := mt.RawGet(StringValue("__index"))
+	if index.IsNil() {
+		return NilValue(), nil
+	}
+
+	if index.IsTable() {
+		return interp.tableGetDepth(TableValue(index.Table()), key, depth+1)
+	}
+
+	if index.IsFunction() {
+		results, err := interp.callFunction(index, []Value{t, key})
+		if err != nil {
+			return NilValue(), err
+		}
+		if len(results) > 0 {
+			return results[0], nil
+		}
+		return NilValue(), nil
+	}
+
+	return NilValue(), nil
+}
+
+// tableSet assigns a value to a table, with __newindex metamethod support.
+func (interp *Interpreter) tableSet(t Value, key, val Value) error {
+	return interp.tableSetDepth(t, key, val, 0)
+}
+
+func (interp *Interpreter) tableSetDepth(t Value, key, val Value, depth int) error {
+	if depth > maxMetaDepth {
+		return fmt.Errorf("'__newindex' chain too long; possible loop")
+	}
+	if !t.IsTable() {
+		return fmt.Errorf("attempt to index a %s value", t.TypeName())
+	}
+
+	tbl := t.Table()
+
+	// Check if key already exists (rawget) - if so, just set it directly
+	existing := tbl.RawGet(key)
+	if !existing.IsNil() {
+		tbl.RawSet(key, val)
+		return nil
+	}
+
+	// Check __newindex
+	mt := tbl.GetMetatable()
+	if mt != nil {
+		newindex := mt.RawGet(StringValue("__newindex"))
+		if newindex.IsFunction() {
+			_, err := interp.callFunction(newindex, []Value{t, key, val})
+			return err
+		}
+		if newindex.IsTable() {
+			return interp.tableSetDepth(TableValue(newindex.Table()), key, val, depth+1)
+		}
+	}
+
+	tbl.RawSet(key, val)
+	return nil
+}
+
+// opToMetamethod maps arithmetic operators to metamethod names.
+func opToMetamethod(op string) string {
+	switch op {
+	case "+":
+		return "__add"
+	case "-":
+		return "__sub"
+	case "*":
+		return "__mul"
+	case "/":
+		return "__div"
+	case "%":
+		return "__mod"
+	case "**":
+		return "__pow"
+	default:
+		return ""
+	}
 }
 
 // ====================================================================
@@ -246,21 +452,13 @@ func (interp *Interpreter) assignTarget(target ast.Expr, val Value, env *Environ
 		if err != nil {
 			return err
 		}
-		if !tbl.IsTable() {
-			return fmt.Errorf("attempt to index a %s value", tbl.TypeName())
-		}
-		tbl.Table().RawSet(key, val)
-		return nil
+		return interp.tableSet(tbl, key, val)
 	case *ast.FieldExpr:
 		tbl, err := interp.evalExprSingle(t.Table, env)
 		if err != nil {
 			return err
 		}
-		if !tbl.IsTable() {
-			return fmt.Errorf("attempt to index a %s value", tbl.TypeName())
-		}
-		tbl.Table().RawSet(StringValue(t.Field), val)
-		return nil
+		return interp.tableSet(tbl, StringValue(t.Field), val)
 	default:
 		return fmt.Errorf("invalid assignment target: %T", target)
 	}
@@ -621,20 +819,22 @@ func (interp *Interpreter) evalExpr(expr ast.Expr, env *Environment) ([]Value, e
 		if err != nil {
 			return nil, err
 		}
-		if !tbl.IsTable() {
-			return nil, fmt.Errorf("attempt to index a %s value", tbl.TypeName())
+		val, err := interp.tableGet(tbl, key)
+		if err != nil {
+			return nil, err
 		}
-		return []Value{tbl.Table().RawGet(key)}, nil
+		return []Value{val}, nil
 
 	case *ast.FieldExpr:
 		tbl, err := interp.evalExprSingle(e.Table, env)
 		if err != nil {
 			return nil, err
 		}
-		if !tbl.IsTable() {
-			return nil, fmt.Errorf("attempt to index a %s value", tbl.TypeName())
+		val, err := interp.tableGet(tbl, StringValue(e.Field))
+		if err != nil {
+			return nil, err
 		}
-		return []Value{tbl.Table().RawGet(StringValue(e.Field))}, nil
+		return []Value{val}, nil
 
 	case *ast.CallExpr:
 		return interp.evalCall(e, env)
@@ -748,44 +948,78 @@ func (interp *Interpreter) evalBinary(e *ast.BinaryExpr, env *Environment) (Valu
 	case "..":
 		return interp.concat(left, right)
 	case "==":
-		return BoolValue(left.Equal(right)), nil
+		eq, err := interp.valEqual(left, right)
+		if err != nil {
+			return NilValue(), err
+		}
+		return BoolValue(eq), nil
 	case "!=":
-		return BoolValue(!left.Equal(right)), nil
+		eq, err := interp.valEqual(left, right)
+		if err != nil {
+			return NilValue(), err
+		}
+		return BoolValue(!eq), nil
 	case "<":
-		ok, valid := left.lessThan(right)
-		if !valid {
-			return NilValue(), fmt.Errorf("attempt to compare %s with %s", left.TypeName(), right.TypeName())
+		res, err := interp.valLessThan(left, right)
+		if err != nil {
+			return NilValue(), err
 		}
-		return BoolValue(ok), nil
+		return BoolValue(res), nil
 	case "<=":
-		less, valid := left.lessThan(right)
-		if !valid {
-			return NilValue(), fmt.Errorf("attempt to compare %s with %s", left.TypeName(), right.TypeName())
+		res, err := interp.valLessEqual(left, right)
+		if err != nil {
+			return NilValue(), err
 		}
-		return BoolValue(less || left.Equal(right)), nil
+		return BoolValue(res), nil
 	case ">":
-		ok, valid := right.lessThan(left)
-		if !valid {
-			return NilValue(), fmt.Errorf("attempt to compare %s with %s", left.TypeName(), right.TypeName())
+		// a > b is equivalent to b < a
+		res, err := interp.valLessThan(right, left)
+		if err != nil {
+			return NilValue(), err
 		}
-		return BoolValue(ok), nil
+		return BoolValue(res), nil
 	case ">=":
-		less, valid := right.lessThan(left)
-		if !valid {
-			return NilValue(), fmt.Errorf("attempt to compare %s with %s", left.TypeName(), right.TypeName())
+		// a >= b is equivalent to b <= a
+		res, err := interp.valLessEqual(right, left)
+		if err != nil {
+			return NilValue(), err
 		}
-		return BoolValue(less || left.Equal(right)), nil
+		return BoolValue(res), nil
 	default:
 		return NilValue(), fmt.Errorf("unknown binary operator: %s", e.Op)
 	}
 }
 
-// arith performs arithmetic on two values.
+// arith performs arithmetic on two values, with metamethod fallback.
 func (interp *Interpreter) arith(op string, left, right Value) (Value, error) {
 	// Try to coerce strings to numbers
 	l, lok := left.ToNumber()
 	r, rok := right.ToNumber()
 	if !lok || !rok {
+		// Try metamethod before giving up
+		mmName := opToMetamethod(op)
+		if mmName != "" {
+			if mm, ok := interp.getMetamethod(left, mmName); ok {
+				results, err := interp.callFunction(mm, []Value{left, right})
+				if err != nil {
+					return NilValue(), err
+				}
+				if len(results) > 0 {
+					return results[0], nil
+				}
+				return NilValue(), nil
+			}
+			if mm, ok := interp.getMetamethod(right, mmName); ok {
+				results, err := interp.callFunction(mm, []Value{left, right})
+				if err != nil {
+					return NilValue(), err
+				}
+				if len(results) > 0 {
+					return results[0], nil
+				}
+				return NilValue(), nil
+			}
+		}
 		return NilValue(), fmt.Errorf("attempt to perform arithmetic on a %s value", map[bool]string{true: right.TypeName(), false: left.TypeName()}[lok])
 	}
 	left, right = l, r
@@ -862,17 +1096,135 @@ func intPow(a, b int64) int64 {
 	return result
 }
 
-// concat performs string concatenation.
+// concat performs string concatenation, with __concat metamethod fallback.
 func (interp *Interpreter) concat(left, right Value) (Value, error) {
 	ls := valueToStr(left)
 	rs := valueToStr(right)
-	if ls == "" && !canConcatType(left) {
+	canL := canConcatType(left)
+	canR := canConcatType(right)
+	if canL && canR {
+		return StringValue(ls + rs), nil
+	}
+	// Try __concat metamethod
+	if mm, ok := interp.getMetamethod(left, "__concat"); ok {
+		results, err := interp.callFunction(mm, []Value{left, right})
+		if err != nil {
+			return NilValue(), err
+		}
+		if len(results) > 0 {
+			return results[0], nil
+		}
+		return NilValue(), nil
+	}
+	if mm, ok := interp.getMetamethod(right, "__concat"); ok {
+		results, err := interp.callFunction(mm, []Value{left, right})
+		if err != nil {
+			return NilValue(), err
+		}
+		if len(results) > 0 {
+			return results[0], nil
+		}
+		return NilValue(), nil
+	}
+	if !canL {
 		return NilValue(), fmt.Errorf("attempt to concatenate a %s value", left.TypeName())
 	}
-	if rs == "" && !canConcatType(right) {
-		return NilValue(), fmt.Errorf("attempt to concatenate a %s value", right.TypeName())
+	return NilValue(), fmt.Errorf("attempt to concatenate a %s value", right.TypeName())
+}
+
+// valEqual compares two values for equality, with __eq metamethod support.
+func (interp *Interpreter) valEqual(a, b Value) (bool, error) {
+	// For primitive types, use raw equality
+	if a.IsTable() && b.IsTable() {
+		if a.Table() == b.Table() {
+			return true, nil
+		}
+		// Try __eq from a's metatable, then b's
+		if mm, ok := interp.getMetamethod(a, "__eq"); ok {
+			results, err := interp.callFunction(mm, []Value{a, b})
+			if err != nil {
+				return false, err
+			}
+			if len(results) > 0 {
+				return results[0].Truthy(), nil
+			}
+			return false, nil
+		}
+		if mm, ok := interp.getMetamethod(b, "__eq"); ok {
+			results, err := interp.callFunction(mm, []Value{a, b})
+			if err != nil {
+				return false, err
+			}
+			if len(results) > 0 {
+				return results[0].Truthy(), nil
+			}
+			return false, nil
+		}
+		return false, nil
 	}
-	return StringValue(ls + rs), nil
+	return a.Equal(b), nil
+}
+
+// valLessThan compares two values with < operator, with __lt metamethod support.
+func (interp *Interpreter) valLessThan(a, b Value) (bool, error) {
+	// Try normal comparison first
+	ok, valid := a.lessThan(b)
+	if valid {
+		return ok, nil
+	}
+	// Try __lt metamethod
+	if mm, found := interp.getMetamethod(a, "__lt"); found {
+		results, err := interp.callFunction(mm, []Value{a, b})
+		if err != nil {
+			return false, err
+		}
+		if len(results) > 0 {
+			return results[0].Truthy(), nil
+		}
+		return false, nil
+	}
+	if mm, found := interp.getMetamethod(b, "__lt"); found {
+		results, err := interp.callFunction(mm, []Value{a, b})
+		if err != nil {
+			return false, err
+		}
+		if len(results) > 0 {
+			return results[0].Truthy(), nil
+		}
+		return false, nil
+	}
+	return false, fmt.Errorf("attempt to compare %s with %s", a.TypeName(), b.TypeName())
+}
+
+// valLessEqual compares two values with <= operator, with __le metamethod support.
+func (interp *Interpreter) valLessEqual(a, b Value) (bool, error) {
+	// Try normal comparison first
+	less, valid := a.lessThan(b)
+	if valid {
+		return less || a.Equal(b), nil
+	}
+	// Try __le metamethod
+	if mm, found := interp.getMetamethod(a, "__le"); found {
+		results, err := interp.callFunction(mm, []Value{a, b})
+		if err != nil {
+			return false, err
+		}
+		if len(results) > 0 {
+			return results[0].Truthy(), nil
+		}
+		return false, nil
+	}
+	if mm, found := interp.getMetamethod(b, "__le"); found {
+		results, err := interp.callFunction(mm, []Value{a, b})
+		if err != nil {
+			return false, err
+		}
+		if len(results) > 0 {
+			return results[0].Truthy(), nil
+		}
+		return false, nil
+	}
+	return false, fmt.Errorf("attempt to compare %s with %s", a.TypeName(), b.TypeName())
 }
 
 func canConcatType(v Value) bool {
@@ -904,6 +1256,17 @@ func (interp *Interpreter) evalUnary(e *ast.UnaryExpr, env *Environment) (Value,
 	case "-":
 		n, ok := operand.ToNumber()
 		if !ok {
+			// Try __unm metamethod
+			if mm, found := interp.getMetamethod(operand, "__unm"); found {
+				results, err := interp.callFunction(mm, []Value{operand})
+				if err != nil {
+					return NilValue(), err
+				}
+				if len(results) > 0 {
+					return results[0], nil
+				}
+				return NilValue(), nil
+			}
 			return NilValue(), fmt.Errorf("attempt to perform arithmetic on a %s value", operand.TypeName())
 		}
 		if n.IsInt() {
@@ -913,6 +1276,19 @@ func (interp *Interpreter) evalUnary(e *ast.UnaryExpr, env *Environment) (Value,
 	case "!":
 		return BoolValue(!operand.Truthy()), nil
 	case "#":
+		// Check __len metamethod first for tables
+		if operand.IsTable() {
+			if mm, ok := interp.getMetamethod(operand, "__len"); ok {
+				results, err := interp.callFunction(mm, []Value{operand})
+				if err != nil {
+					return NilValue(), err
+				}
+				if len(results) > 0 {
+					return results[0], nil
+				}
+				return NilValue(), nil
+			}
+		}
 		switch operand.Type() {
 		case TypeString:
 			return IntValue(int64(len(operand.Str()))), nil
@@ -952,7 +1328,10 @@ func (interp *Interpreter) evalMethodCall(e *ast.MethodCallExpr, env *Environmen
 	if !obj.IsTable() {
 		return nil, fmt.Errorf("attempt to call method on a %s value", obj.TypeName())
 	}
-	method := obj.Table().RawGet(StringValue(e.Method))
+	method, err := interp.tableGet(obj, StringValue(e.Method))
+	if err != nil {
+		return nil, err
+	}
 	if !method.IsFunction() {
 		return nil, fmt.Errorf("attempt to call a %s value", method.TypeName())
 	}
@@ -968,8 +1347,19 @@ func (interp *Interpreter) evalMethodCall(e *ast.MethodCallExpr, env *Environmen
 }
 
 // callFunction invokes a function value with the given arguments.
+// If fn is a table with a __call metamethod, invokes that instead.
 func (interp *Interpreter) callFunction(fn Value, args []Value) ([]Value, error) {
 	if !fn.IsFunction() {
+		// Try __call metamethod for tables
+		if fn.IsTable() {
+			if mm, ok := interp.getMetamethod(fn, "__call"); ok {
+				// Prepend the table itself as first arg (Lua convention)
+				newArgs := make([]Value, 0, len(args)+1)
+				newArgs = append(newArgs, fn)
+				newArgs = append(newArgs, args...)
+				return interp.callFunction(mm, newArgs)
+			}
+		}
 		return nil, fmt.Errorf("attempt to call a %s value", fn.TypeName())
 	}
 
