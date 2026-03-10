@@ -858,3 +858,202 @@ func TestInfiniteLoopBreak(t *testing.T) {
 		t.Errorf("expected int 10, got %v", v)
 	}
 }
+
+// ==================================================================
+// Closure/Upvalue tests
+// ==================================================================
+
+// Test 1: Basic closure captures variable (counter pattern)
+func TestClosureCapture(t *testing.T) {
+	interp := runProgram(t, `
+		func makeCounter() {
+			n := 0
+			return func() {
+				n = n + 1
+				return n
+			}
+		}
+		c := makeCounter()
+		r1 := c()
+		r2 := c()
+		r3 := c()
+	`)
+	r1 := interp.GetGlobal("r1")
+	r2 := interp.GetGlobal("r2")
+	r3 := interp.GetGlobal("r3")
+	if !r1.IsInt() || r1.Int() != 1 {
+		t.Errorf("expected r1=1, got %v", r1)
+	}
+	if !r2.IsInt() || r2.Int() != 2 {
+		t.Errorf("expected r2=2, got %v", r2)
+	}
+	if !r3.IsInt() || r3.Int() != 3 {
+		t.Errorf("expected r3=3, got %v", r3)
+	}
+}
+
+// Test 2: Shared upvalue between two closures
+func TestClosureSharedUpvalue(t *testing.T) {
+	v := getGlobal(t, `
+		func makePair() {
+			x := 0
+			inc := func() { x = x + 1 }
+			get := func() { return x }
+			return inc, get
+		}
+		inc, get := makePair()
+		inc()
+		inc()
+		result := get()
+	`, "result")
+	if !v.IsInt() || v.Int() != 2 {
+		t.Errorf("expected result=2, got %v", v)
+	}
+}
+
+// Test 3: Closure captures loop variable (each iteration creates new scope)
+func TestClosureInLoop(t *testing.T) {
+	interp := runProgram(t, `
+		funcs := {}
+		for i := 1; i <= 3; i++ {
+			ii := i
+			funcs[i] = func() { return ii }
+		}
+		r1 := funcs[1]()
+		r2 := funcs[2]()
+		r3 := funcs[3]()
+	`)
+	r1 := interp.GetGlobal("r1")
+	r2 := interp.GetGlobal("r2")
+	r3 := interp.GetGlobal("r3")
+	if !r1.IsInt() || r1.Int() != 1 {
+		t.Errorf("expected r1=1, got %v", r1)
+	}
+	if !r2.IsInt() || r2.Int() != 2 {
+		t.Errorf("expected r2=2, got %v", r2)
+	}
+	if !r3.IsInt() || r3.Int() != 3 {
+		t.Errorf("expected r3=3, got %v", r3)
+	}
+}
+
+// Test 4: Deeply nested closures
+func TestClosureNestedDeep(t *testing.T) {
+	v := getGlobal(t, `
+		func outer() {
+			x := 10
+			func middle() {
+				y := 20
+				return func() {
+					return x + y
+				}
+			}
+			return middle()
+		}
+		f := outer()
+		result := f()
+	`, "result")
+	if !v.IsInt() || v.Int() != 30 {
+		t.Errorf("expected result=30, got %v", v)
+	}
+}
+
+// Test 5: Two closures from the same scope share upvalue (global scope)
+func TestClosureMutualGlobal(t *testing.T) {
+	v := getGlobal(t, `
+		a := 0
+		inc := func() { a = a + 1 }
+		get := func() { return a }
+		inc()
+		inc()
+		result := get()
+	`, "result")
+	if !v.IsInt() || v.Int() != 2 {
+		t.Errorf("expected result=2, got %v", v)
+	}
+}
+
+// Test 6: Recursive closure via named function
+func TestClosureRecursiveFib(t *testing.T) {
+	v := getGlobal(t, `
+		func fib(n) {
+			if n < 2 {
+				return n
+			}
+			return fib(n-1) + fib(n-2)
+		}
+		result := fib(10)
+	`, "result")
+	if !v.IsInt() || v.Int() != 55 {
+		t.Errorf("expected result=55, got %v", v)
+	}
+}
+
+// Test 7: Closure captures variable that changes after closure creation
+func TestClosureLateBinding(t *testing.T) {
+	v := getGlobal(t, `
+		x := 10
+		f := func() { return x }
+		x = 20
+		result := f()
+	`, "result")
+	// Closure captures reference, not value -- should see updated x
+	if !v.IsInt() || v.Int() != 20 {
+		t.Errorf("expected result=20, got %v", v)
+	}
+}
+
+// Test 8: Adder factory (closure over parameter)
+func TestClosureOverParam(t *testing.T) {
+	v := getGlobal(t, `
+		func makeAdder(n) {
+			return func(x) { return x + n }
+		}
+		add5 := makeAdder(5)
+		result := add5(10)
+	`, "result")
+	if !v.IsInt() || v.Int() != 15 {
+		t.Errorf("expected result=15, got %v", v)
+	}
+}
+
+// Test 9: Multiple independent counters
+func TestClosureIndependentCounters(t *testing.T) {
+	interp := runProgram(t, `
+		func makeCounter() {
+			n := 0
+			return func() {
+				n = n + 1
+				return n
+			}
+		}
+		c1 := makeCounter()
+		c2 := makeCounter()
+		c1()
+		c1()
+		c1()
+		r1 := c1()
+		r2 := c2()
+	`)
+	r1 := interp.GetGlobal("r1")
+	r2 := interp.GetGlobal("r2")
+	if !r1.IsInt() || r1.Int() != 4 {
+		t.Errorf("expected r1=4, got %v", r1)
+	}
+	if !r2.IsInt() || r2.Int() != 1 {
+		t.Errorf("expected r2=1, got %v", r2)
+	}
+}
+
+// Test 10: Closure with varargs
+func TestClosureSimpleArgs(t *testing.T) {
+	v := getGlobal(t, `
+		func sum(a, b, c) {
+			return a + b + c
+		}
+		result := sum(1, 2, 3)
+	`, "result")
+	if !v.IsInt() || v.Int() != 6 {
+		t.Errorf("expected result=6, got %v", v)
+	}
+}

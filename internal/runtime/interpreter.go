@@ -520,17 +520,33 @@ func (interp *Interpreter) execFuncDecl(s *ast.FuncDeclStmt, env *Environment) (
 		Name: s.Name,
 		Body: s.Body,
 	}
+	paramNames := make([]string, 0, len(s.Params))
 	for _, p := range s.Params {
+		paramNames = append(paramNames, p.Name)
 		proto.Params = append(proto.Params, p.Name)
 		if p.IsVarArg {
 			proto.HasVarArg = true
 		}
 	}
-	closure := &Closure{
-		Proto: proto,
-		Env:   env,
+
+	// Define the function name first so it can self-reference (recursion)
+	env.Define(s.Name, NilValue())
+
+	// Capture free variables from the enclosing environment
+	freeVarNames := FreeVars(s.Body, paramNames)
+	upvalues := make(map[string]*Upvalue)
+	for _, fv := range freeVarNames {
+		if uv, ok := env.GetUpvalue(fv); ok {
+			upvalues[fv] = uv
+		}
 	}
-	env.Define(s.Name, FunctionValue(closure))
+
+	closure := &Closure{
+		Proto:    proto,
+		Upvalues: upvalues,
+		Env:      env,
+	}
+	env.Set(s.Name, FunctionValue(closure))
 	return nil, false, false, false, nil
 }
 
@@ -966,12 +982,19 @@ func (interp *Interpreter) callFunction(fn Value, args []Value) ([]Value, error)
 		return nil, fmt.Errorf("attempt to call a nil function")
 	}
 
-	// Create a new environment for the function body, parented to the
-	// closure's defining environment (lexical scoping).
-	callEnv := NewEnvironment(cl.Env)
+	// Create a new environment for the function body.
+	// Parent is the globals so that built-in functions are accessible.
+	// Captured upvalues are injected directly -- they provide lexical scoping.
+	callEnv := NewEnvironment(interp.globals)
+
+	// Inject captured upvalues: these share the same *Upvalue pointer as the
+	// enclosing scope, so mutations are visible to all closures that share them.
+	for name, uv := range cl.Upvalues {
+		callEnv.DefineUpvalue(name, uv)
+	}
 
 	proto := cl.Proto
-	// Bind parameters
+	// Bind parameters (as new local variables -- these shadow any captured upvalues)
 	nParams := len(proto.Params)
 	if proto.HasVarArg {
 		nParams-- // last param is the vararg collector name
@@ -1013,15 +1036,30 @@ func (interp *Interpreter) makeClosure(params []ast.FuncParam, body *ast.BlockSt
 		Name: name,
 		Body: body,
 	}
+	paramNames := make([]string, 0, len(params))
 	for _, p := range params {
+		paramNames = append(paramNames, p.Name)
 		proto.Params = append(proto.Params, p.Name)
 		if p.IsVarArg {
 			proto.HasVarArg = true
 		}
 	}
+
+	// Capture free variables from the enclosing environment
+	freeVarNames := FreeVars(body, paramNames)
+	upvalues := make(map[string]*Upvalue)
+	for _, fv := range freeVarNames {
+		if uv, ok := env.GetUpvalue(fv); ok {
+			upvalues[fv] = uv
+		}
+		// If not found in any scope, it's a global or builtin -- don't capture.
+		// It will be resolved via interp.globals at call time.
+	}
+
 	closure := &Closure{
-		Proto: proto,
-		Env:   env,
+		Proto:    proto,
+		Upvalues: upvalues,
+		Env:      env,
 	}
 	return FunctionValue(closure)
 }

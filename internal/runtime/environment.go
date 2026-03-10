@@ -60,3 +60,9 @@ func (e *Environment) GetUpvalue(name string) (*Upvalue, bool) {
 	}
 	return nil, false
 }
+
+// DefineUpvalue adds an existing *Upvalue to this scope (sharing the same pointer).
+// This allows closures to share mutable references to captured variables.
+func (e *Environment) DefineUpvalue(name string, uv *Upvalue) {
+	e.vars[name] = uv
+}
