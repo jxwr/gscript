@@ -1,27 +1,35 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/gscript/gscript/internal/ast"
+	"github.com/gscript/gscript/internal/lexer"
+	"github.com/gscript/gscript/internal/parser"
 )
 
 // Interpreter is the tree-walking evaluator for GScript programs.
 type Interpreter struct {
-	globals   *Environment
-	output    []string     // captured print output (for testing)
-	currentCo *Coroutine   // non-nil when running inside a coroutine
+	globals    *Environment
+	output     []string           // captured print output (for testing)
+	currentCo  *Coroutine         // non-nil when running inside a coroutine
+	modules    map[string]Value   // require() cache
+	stringMeta *Table             // metatable for string values (__index → string lib)
 }
 
 // New creates a new Interpreter with built-in globals.
 func New() *Interpreter {
 	interp := &Interpreter{
 		globals: NewEnvironment(nil),
+		modules: make(map[string]Value),
 	}
 	interp.registerBuiltins()
+	interp.registerStdlib()
 	return interp
 }
 
@@ -181,6 +189,275 @@ func (interp *Interpreter) registerBuiltins() {
 			default:
 				return nil, fmt.Errorf("bad argument to 'len' (table or string expected, got %s)", a.TypeName())
 			}
+		},
+	}))
+
+	// ----------------------------------------------------------------
+	// Error handling: error, pcall, xpcall, assert
+	// ----------------------------------------------------------------
+
+	interp.globals.Define("error", FunctionValue(&GoFunction{
+		Name: "error",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) == 0 {
+				return nil, &LuaError{Value: NilValue()}
+			}
+			return nil, &LuaError{Value: args[0]}
+		},
+	}))
+
+	interp.globals.Define("pcall", FunctionValue(&GoFunction{
+		Name: "pcall",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) == 0 {
+				return []Value{BoolValue(false), StringValue("pcall requires a function")}, nil
+			}
+			fn := args[0]
+			fnArgs := args[1:]
+
+			results, err := interp.callFunction(fn, fnArgs)
+			if err != nil {
+				var luaErr *LuaError
+				if errors.As(err, &luaErr) {
+					return []Value{BoolValue(false), luaErr.Value}, nil
+				}
+				return []Value{BoolValue(false), StringValue(err.Error())}, nil
+			}
+			return append([]Value{BoolValue(true)}, results...), nil
+		},
+	}))
+
+	interp.globals.Define("xpcall", FunctionValue(&GoFunction{
+		Name: "xpcall",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 2 {
+				return []Value{BoolValue(false), StringValue("xpcall requires a function and a handler")}, nil
+			}
+			fn := args[0]
+			handler := args[1]
+			fnArgs := args[2:]
+
+			results, err := interp.callFunction(fn, fnArgs)
+			if err != nil {
+				var errVal Value
+				var luaErr *LuaError
+				if errors.As(err, &luaErr) {
+					errVal = luaErr.Value
+				} else {
+					errVal = StringValue(err.Error())
+				}
+				handlerResult, _ := interp.callFunction(handler, []Value{errVal})
+				msg := NilValue()
+				if len(handlerResult) > 0 {
+					msg = handlerResult[0]
+				}
+				return []Value{BoolValue(false), msg}, nil
+			}
+			return append([]Value{BoolValue(true)}, results...), nil
+		},
+	}))
+
+	interp.globals.Define("assert", FunctionValue(&GoFunction{
+		Name: "assert",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) == 0 || !args[0].Truthy() {
+				msg := "assertion failed"
+				if len(args) > 1 {
+					msg = args[1].String()
+				}
+				return nil, &LuaError{Value: StringValue(msg)}
+			}
+			return args, nil // return all args on success
+		},
+	}))
+
+	// ----------------------------------------------------------------
+	// Iteration: ipairs, pairs, next, select, unpack
+	// ----------------------------------------------------------------
+
+	interp.globals.Define("ipairs", FunctionValue(&GoFunction{
+		Name: "ipairs",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsTable() {
+				return nil, fmt.Errorf("bad argument #1 to 'ipairs' (table expected)")
+			}
+			tbl := args[0].Table()
+			i := int64(0)
+			iter := &GoFunction{
+				Name: "ipairs_iterator",
+				Fn: func(_ []Value) ([]Value, error) {
+					i++
+					v := tbl.RawGet(IntValue(i))
+					if v.IsNil() {
+						return []Value{NilValue()}, nil
+					}
+					return []Value{IntValue(i), v}, nil
+				},
+			}
+			return []Value{FunctionValue(iter)}, nil
+		},
+	}))
+
+	interp.globals.Define("pairs", FunctionValue(&GoFunction{
+		Name: "pairs",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsTable() {
+				return nil, fmt.Errorf("bad argument #1 to 'pairs' (table expected)")
+			}
+			tbl := args[0].Table()
+			if tbl.keysDirty {
+				tbl.rebuildKeys()
+			}
+			keys := make([]Value, len(tbl.keys))
+			copy(keys, tbl.keys)
+			idx := 0
+			iter := &GoFunction{
+				Name: "pairs_iterator",
+				Fn: func(_ []Value) ([]Value, error) {
+					if idx >= len(keys) {
+						return []Value{NilValue()}, nil
+					}
+					k := keys[idx]
+					idx++
+					v := tbl.RawGet(k)
+					return []Value{k, v}, nil
+				},
+			}
+			return []Value{FunctionValue(iter)}, nil
+		},
+	}))
+
+	interp.globals.Define("next", FunctionValue(&GoFunction{
+		Name: "next",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsTable() {
+				return nil, fmt.Errorf("bad argument #1 to 'next' (table expected)")
+			}
+			tbl := args[0].Table()
+			key := NilValue()
+			if len(args) > 1 {
+				key = args[1]
+			}
+			nk, nv, ok := tbl.Next(key)
+			if !ok {
+				return []Value{NilValue()}, nil
+			}
+			return []Value{nk, nv}, nil
+		},
+	}))
+
+	interp.globals.Define("select", FunctionValue(&GoFunction{
+		Name: "select",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) == 0 {
+				return nil, fmt.Errorf("bad argument #1 to 'select'")
+			}
+			if args[0].IsString() && args[0].Str() == "#" {
+				return []Value{IntValue(int64(len(args) - 1))}, nil
+			}
+			n, ok := args[0].ToNumber()
+			if !ok {
+				return nil, fmt.Errorf("bad argument #1 to 'select' (number or string expected)")
+			}
+			idx := int(n.Number())
+			if idx < 1 {
+				return nil, fmt.Errorf("bad argument #1 to 'select' (index out of range)")
+			}
+			if idx >= len(args) {
+				return nil, nil
+			}
+			return args[idx:], nil
+		},
+	}))
+
+	interp.globals.Define("unpack", FunctionValue(&GoFunction{
+		Name: "unpack",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsTable() {
+				return nil, fmt.Errorf("bad argument #1 to 'unpack' (table expected)")
+			}
+			tbl := args[0].Table()
+			i := int64(1)
+			j := int64(tbl.Length())
+			if len(args) >= 2 {
+				if n, ok := args[1].ToNumber(); ok {
+					i = int64(n.Number())
+				}
+			}
+			if len(args) >= 3 {
+				if n, ok := args[2].ToNumber(); ok {
+					j = int64(n.Number())
+				}
+			}
+			var result []Value
+			for idx := i; idx <= j; idx++ {
+				result = append(result, tbl.RawGet(IntValue(idx)))
+			}
+			return result, nil
+		},
+	}))
+
+	// ----------------------------------------------------------------
+	// Module system: require, dofile, loadstring
+	// ----------------------------------------------------------------
+
+	interp.globals.Define("require", FunctionValue(&GoFunction{
+		Name: "require",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsString() {
+				return nil, fmt.Errorf("bad argument #1 to 'require' (string expected)")
+			}
+			name := args[0].Str()
+
+			// Check loaded cache
+			if loaded, ok := interp.modules[name]; ok {
+				return []Value{loaded}, nil
+			}
+
+			// Convert dots to path separators
+			filename := strings.ReplaceAll(name, ".", "/") + ".gs"
+			src, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, fmt.Errorf("module '%s' not found", name)
+			}
+
+			result, err := interp.ExecString(string(src))
+			if err != nil {
+				return nil, err
+			}
+
+			if len(result) > 0 {
+				interp.modules[name] = result[0]
+			} else {
+				interp.modules[name] = BoolValue(true)
+			}
+			return []Value{interp.modules[name]}, nil
+		},
+	}))
+
+	interp.globals.Define("dofile", FunctionValue(&GoFunction{
+		Name: "dofile",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsString() {
+				return nil, fmt.Errorf("bad argument #1 to 'dofile' (string expected)")
+			}
+			filename := args[0].Str()
+			src, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, fmt.Errorf("cannot open %s: %s", filename, err)
+			}
+			return interp.ExecString(string(src))
+		},
+	}))
+
+	interp.globals.Define("loadstring", FunctionValue(&GoFunction{
+		Name: "loadstring",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsString() {
+				return nil, fmt.Errorf("bad argument #1 to 'loadstring' (string expected)")
+			}
+			src := args[0].Str()
+			return interp.ExecString(src)
 		},
 	}))
 
@@ -502,6 +779,31 @@ func (interp *Interpreter) Exec(prog *ast.Program) error {
 		}
 	}
 	return nil
+}
+
+// ExecString parses and executes a source string, returning any top-level return values.
+func (interp *Interpreter) ExecString(src string) ([]Value, error) {
+	tokens, err := lexer.New(src).Tokenize()
+	if err != nil {
+		return nil, err
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		return nil, err
+	}
+	// Execute and collect return values from the last return statement.
+	var lastRet []Value
+	for _, stmt := range prog.Stmts {
+		retVals, isRet, _, _, err := interp.execStmt(stmt, interp.globals)
+		if err != nil {
+			return nil, err
+		}
+		if isRet {
+			lastRet = retVals
+			break
+		}
+	}
+	return lastRet, nil
 }
 
 // ====================================================================
@@ -1496,15 +1798,25 @@ func (interp *Interpreter) evalMethodCall(e *ast.MethodCallExpr, env *Environmen
 	if err != nil {
 		return nil, err
 	}
-	if !obj.IsTable() {
+
+	var method Value
+	if obj.IsTable() {
+		method, err = interp.tableGet(obj, StringValue(e.Method))
+		if err != nil {
+			return nil, err
+		}
+	} else if obj.IsString() && interp.stringMeta != nil {
+		// String method call: look up in string metatable's __index table
+		idx := interp.stringMeta.RawGet(StringValue("__index"))
+		if idx.IsTable() {
+			method = idx.Table().RawGet(StringValue(e.Method))
+		}
+	} else {
 		return nil, fmt.Errorf("attempt to call method on a %s value", obj.TypeName())
 	}
-	method, err := interp.tableGet(obj, StringValue(e.Method))
-	if err != nil {
-		return nil, err
-	}
+
 	if !method.IsFunction() {
-		return nil, fmt.Errorf("attempt to call a %s value", method.TypeName())
+		return nil, fmt.Errorf("attempt to call a %s value (method '%s' not found)", method.TypeName(), e.Method)
 	}
 
 	args, err := interp.evalExprList(e.Args, env)
