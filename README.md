@@ -558,29 +558,34 @@ if err != nil {
 
 ## Standard Library
 
-GScript ships with 20 standard libraries. Full reference: [docs/stdlib/STDLIB.md](docs/stdlib/STDLIB.md)
+GScript ships with 30+ standard libraries. Full reference: [docs/stdlib/STDLIB.md](docs/stdlib/STDLIB.md)
 
 | Library | Global | Description |
 |---------|--------|-------------|
-| string | `string` | String manipulation, Lua patterns |
-| table | `table` | Table/array operations |
-| math | `math` | Math functions and constants |
+| string | `string` | String manipulation, Lua patterns, trim/split/join/pad |
+| table | `table` | Table/array ops, filter/map/reduce, unique/flatten/zip |
+| math | `math` | Math functions, clamp/lerp/sign/round/hypot |
 | io | `io` | File I/O |
-| os | `os` | OS interface (time, env, exit) |
-| **json** | `json` | JSON encode/decode |
-| **base64** | `base64` | Base64 encoding |
-| **hash** | `hash` | MD5, SHA256, HMAC |
-| **fs** | `fs` | File system (mkdir, readdir, stat, copy…) |
-| **path** | `path` | Path manipulation (join, dir, base, ext…) |
-| **time** | `time` | Time, sleep, format, parse |
-| **net** | `net` | HTTP client (get, post, request) |
+| os | `os` | OS interface (time, env, exit, hostname, args) |
+| **json** | `json` | JSON encode/decode/pretty |
+| **base64** | `base64` | Base64 URL-safe encoding |
+| **hash** | `hash` | MD5, SHA256, CRC32, HMAC |
+| **fs** | `fs` | File system (mkdir, readdir, stat, copy, glob…) |
+| **path** | `path` | Path manipulation (join, dir, base, ext, abs…) |
+| **time** | `time` | Time, sleep, format, parse, add, diff |
+| **net** | `net` | HTTP client (get, post, request, headers, timeout) |
 | **vec** | `vec` | 2D/3D vectors with operator overloading |
 | **color** | `color` | RGBA/HSV colors and named constants |
 | **regexp** | `regexp` | Regular expressions (RE2, compile/match/replace) |
 | **utf8** | `utf8` | Unicode-aware string operations |
 | **bit32** | `bit32` | 32-bit bitwise operations |
+| **process** | `process` | Run commands, shell, env, pid, which |
+| **csv** | `csv` | CSV parse/encode with headers support |
+| **url** | `url` | URL parse/build/encode, query strings |
+| **uuid** | `uuid` | UUID v4 generation and validation |
+| **bytes** | `bytes` | Binary buffer, hex encode/decode, XOR |
+| **rl** | `rl` | Raylib: window, drawing, input, audio, textures |
 | http | `http` | HTTP server (router, handlers) |
-| gl | `gl` | OpenGL 2D drawing + keyboard input |
 | coroutine | `coroutine` | Coroutine control (built-in) |
 
 ### string
@@ -747,6 +752,97 @@ bit32.extract(0xFF00, 8, 4)  // 0xF
 bit32.toHex(255)          // "0x000000FF"
 ```
 
+### process
+
+```go
+result := process.run("ls -la")   // {ok, stdout, stderr, code}
+result := process.shell("echo a && echo b")
+out := process.exec("echo", "hello")     // stdout as string
+pid := process.pid()
+env := process.env()             // table of all env vars
+path := process.which("go")      // full path or nil
+```
+
+### csv
+
+```go
+rows := csv.parse("a,b,c\n1,2,3\n4,5,6")
+// rows[1] = {"a","b","c"}, rows[2] = {"1","2","3"}
+
+records := csv.parseWithHeaders("name,age\nAlice,30")
+// records[1] = {name: "Alice", age: "30"}
+
+csv.encode({{1,2},{3,4}})         // "1,2\n3,4\n"
+csv.encodeWithHeaders(rows, {"name","age"})
+```
+
+### url
+
+```go
+u := url.parse("https://example.com:8080/path?q=1#sec")
+// u = {scheme:"https", host:"example.com", port:"8080",
+//       path:"/path", query:"q=1", fragment:"sec"}
+
+url.build({scheme:"https", host:"example.com", path:"/api"})
+url.encode("hello world")   // "hello%20world"
+url.decode("hello%20world") // "hello world"
+url.queryEncode({q: "go", n: 10})  // "n=10&q=go"
+```
+
+### uuid
+
+```go
+id := uuid.v4()              // "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+uuid.isValid(id)             // true
+uuid.nil()                   // "00000000-0000-0000-0000-000000000000"
+```
+
+### bytes
+
+```go
+buf := bytes.new()
+buf.writeInt32(42)
+buf.writeString("hello")
+hex := buf.toHex()           // "0000002a68656c6c6f"
+raw := buf.bytes()           // byte table
+
+bytes.toHex("AB\x00")       // "414200"
+bytes.fromHex("414200")     // "AB\x00"
+bytes.xor("secret", "key")
+```
+
+### rl (Raylib)
+
+```go
+rl.initWindow(800, 600, "My Game")
+rl.setTargetFPS(60)
+
+while !rl.windowShouldClose() {
+    rl.beginDrawing()
+    rl.clearBackground(rl.RAYWHITE)
+    rl.drawText("Hello, Raylib!", 200, 200, 30, rl.DARKGRAY)
+    rl.drawCircle(400, 300, 50, {r:255, g:0, b:100, a:255})
+    rl.drawRectangle(100, 100, 200, 80, rl.BLUE)
+    rl.endDrawing()
+}
+
+// Input
+if rl.isKeyDown(rl.KEY_LEFT)  { x = x - 5 }
+if rl.isKeyPressed(rl.KEY_SPACE) { jump() }
+mx, my := rl.getMousePosition()
+if rl.isMouseButtonPressed(0) { click(mx, my) }
+
+// Audio
+rl.initAudioDevice()
+snd := rl.loadSound("beep.wav")
+rl.playSound(snd)
+
+// Textures
+tex := rl.loadTexture("sprite.png")
+rl.drawTexture(tex, 100, 100, rl.WHITE)
+rl.closeWindow()
+```
+
 ### Built-in functions
 
 ```go
@@ -821,36 +917,44 @@ router.listen(":9988")
 
 ---
 
-## OpenGL Drawing
+## Raylib Game Library
 
-Built-in `gl` library based on OpenGL 4.1 + GLFW for games and visualization.
+Built-in `rl` library wrapping [raylib](https://www.raylib.com/) via [raylib-go](https://github.com/gen2brain/raylib-go) for 2D/3D games and interactive apps.
 
 ```go
-win := gl.newWindow(800, 600, "My Game")
+rl.initWindow(1200, 800, "Chinese Chess")
+rl.setTargetFPS(60)
 
-for !win.shouldClose() {
-    win.pollEvents()
-    win.clear(0.05, 0.05, 0.1)
+while !rl.windowShouldClose() {
+    // Input
+    if rl.isMouseButtonPressed(0) {
+        mx, my := rl.getMousePosition()
+        handleClick(mx, my)
+    }
+    if rl.isKeyPressed(rl.KEY_R) { restart() }
+    if rl.isKeyPressed(rl.KEY_U) { undo() }
 
-    // Filled rectangle (x, y, w, h, r, g, b, a)
-    gl.drawRect(100, 100, 200, 150, 1, 0, 0, 1)
+    // Rendering
+    rl.beginDrawing()
+    rl.clearBackground(rl.RAYWHITE)
 
-    // Outlined rectangle
-    gl.drawRectOutline(50, 50, 300, 200, 1, 1, 0, 2)
+    rl.drawRectangleRounded({x:20, y:20, width:760, height:840}, 0.05, 8, {r:210,g:140,b:60,a:255})
+    rl.drawText("♟ Chinese Chess", 400, 10, 24, rl.DARKGRAY)
+    rl.drawCircle(100, 100, 30, {r:200, g:30, b:30, a:255})
 
-    // Text (text, x, y, scale, r, g, b)
-    gl.drawText("Score: 1234", 10, 10, 1.5, 1, 1, 1)
+    tex := rl.loadTexture("board.png")
+    rl.drawTexture(tex, 0, 0, rl.WHITE)
 
-    // Keyboard input
-    if gl.isKeyDown(gl.KEY_LEFT)        { x = x - 5 }
-    if gl.isKeyJustPressed(gl.KEY_SPACE) { jump() }
-
-    win.swapBuffers()
+    rl.endDrawing()
 }
-win.close()
+rl.closeWindow()
 ```
 
-**Key constants:** `KEY_LEFT` `KEY_RIGHT` `KEY_UP` `KEY_DOWN` `KEY_SPACE` `KEY_ESCAPE` `KEY_ENTER` `KEY_A`–`KEY_Z` `KEY_0`–`KEY_9`
+**Key constants:** `KEY_A`–`KEY_Z`, `KEY_0`–`KEY_9`, `KEY_LEFT` `KEY_RIGHT` `KEY_UP` `KEY_DOWN`, `KEY_SPACE` `KEY_ESCAPE` `KEY_ENTER` `KEY_BACKSPACE` `KEY_F1`–`KEY_F12`
+
+**Color constants:** `rl.RED` `rl.GREEN` `rl.BLUE` `rl.WHITE` `rl.BLACK` `rl.RAYWHITE` `rl.DARKGRAY` `rl.YELLOW` `rl.ORANGE` `rl.PURPLE` `rl.SKYBLUE` `rl.GOLD` `rl.LIME` `rl.MAROON` and more
+
+**Drawing functions:** `drawText`, `drawRectangle`, `drawRectangleRounded`, `drawCircle`, `drawLine`, `drawTriangle`, `drawTexture`, `drawTextureEx`, `measureText`, `drawFPS`
 
 ---
 
@@ -908,7 +1012,7 @@ gscript.New(
 )
 ```
 
-**Available lib flags:** `LibBase`, `LibString`, `LibTable`, `LibMath`, `LibIO`, `LibOS`, `LibHTTP`, `LibGL`, `LibAll`
+**Available lib flags:** `LibString`, `LibTable`, `LibMath`, `LibIO`, `LibOS`, `LibHTTP`, `LibJSON`, `LibBase64`, `LibHash`, `LibFS`, `LibPath`, `LibTime`, `LibNet`, `LibVec`, `LibColor`, `LibRegexp`, `LibUTF8`, `LibBit32`, `LibProcess`, `LibCSV`, `LibURL`, `LibUUID`, `LibBytes`, `LibRL`, `LibAll`, `LibApp` (no game libs), `LibGame` (rl + vec + color), `LibSafe` (no I/O)`
 
 ---
 
@@ -960,13 +1064,14 @@ go test ./benchmarks/ -bench=. -benchtime=3s
 | `examples/event_system.gs` | EventEmitter, pub/sub |
 | `examples/state_machine.gs` | Traffic light, order processing |
 | `examples/webserver.gs` | HTTP router demo |
-| `examples/tetris.gs` | Full Tetris game (OpenGL) |
+| `examples/tetris.gs` | Full Tetris game (Raylib) |
+| `examples/chess.gs` | **Full Chinese Chess (象棋) game (Raylib)** |
 
 ```bash
 ./gscript examples/game_of_life.gs
 ./gscript examples/algorithms.gs
 ./gscript examples/webserver.gs   # then visit localhost:9988
-./gscript examples/tetris.gs      # requires OpenGL support
+./gscript examples/chess.gs       # requires display (raylib)
 ```
 
 ---
@@ -1001,11 +1106,16 @@ gscript/
 │       ├── stdlib_regexp.go   # regexp.* RE2 engine
 │       ├── stdlib_utf8.go     # utf8.* Unicode ops
 │       ├── stdlib_bit32.go    # bit32.* 32-bit bitwise
+│       ├── stdlib_process.go  # process.* run/shell/exec/env/which
+│       ├── stdlib_csv.go      # csv.* parse/encode with headers
+│       ├── stdlib_url.go      # url.* parse/build/encode/query
+│       ├── stdlib_uuid.go     # uuid.* v4 generation
+│       ├── stdlib_bytes.go    # bytes.* binary buffer + hex/xor
 │       ├── stdlib_http.go     # http.* server
-│       └── stdlib_gl.go       # gl.* OpenGL 4.1 + GLFW
+│       └── stdlib_rl.go       # rl.* Raylib (113 functions, audio, textures)
 ├── benchmarks/           # Performance benchmarks vs gopher-lua, starlark
 ├── tests/                # Integration tests
-├── examples/             # 17+ example programs
+├── examples/             # 18+ example programs
 └── docs/
     ├── stdlib/           # Standard library reference docs (STDLIB.md + per-lib)
     └── decisions/        # Architecture Decision Records (ADR-001 to ADR-006)
@@ -1032,9 +1142,10 @@ This project was created as an **AI capability experiment** to test how well an 
 **Experiment goals:**
 - Can an AI autonomously design a multi-component language runtime (lexer → parser → AST → interpreter → stdlib)?
 - Can it implement complex semantics like closures with upvalue sharing, metatables with metamethod dispatch, and coroutines via goroutine/channel primitives?
-- Can it maintain architectural coherence across 20k+ lines of generated code spanning 40+ files?
+- Can it maintain architectural coherence across 35k+ lines of generated code spanning 60+ files?
 - Can it practice TDD — writing tests first, then making them pass?
 - Can it debug its own failures and iterate to correctness?
+- Can it integrate a C-based game library (raylib via CGO) and write a complete game?
 
 **What was built by AI (Claude):**
 - Complete lexer with 45 token types
@@ -1044,9 +1155,10 @@ This project was created as an **AI capability experiment** to test how well an 
 - Metatable system with all 14 metamethods
 - Lexical closures with upvalue sharing (free variable analysis + `*Upvalue` pointer capture)
 - Coroutines implemented via goroutines + channels
-- 7 standard libraries: string (Lua patterns → Go regex), table, math, io, os, http, gl
+- 30+ standard libraries: string, table, math, io, os, json, base64, hash, fs, path, time, net, vec, color, regexp, utf8, bit32, process, csv, url, uuid, bytes, http, rl (raylib)
+- Raylib bindings (113 functions: window, drawing, input, audio, textures, fonts)
 - Embedding API with reflection-based type bridge and struct binding
-- OpenGL Tetris game
+- Full Tetris game + full Chinese Chess (象棋) game using raylib
 - 300+ unit and integration tests
 - Performance benchmarks vs gopher-lua and starlark-go
 
