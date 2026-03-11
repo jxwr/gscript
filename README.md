@@ -1,20 +1,20 @@
 # GScript
 
-GScript 是一门**Go 语法 + Lua 语义**的脚本语言，用 Go 实现，解释执行。
+GScript is a scripting language with **Go-like syntax and Lua semantics**, implemented in Go and executed via a tree-walking interpreter.
 
-- 语法接近 Go（`:=` 声明、`func`、`for`、`if`）
-- 语义完整覆盖 Lua（table、metatable、closure、coroutine、多返回值）
-- 内置 HTTP 服务器和 OpenGL 2D 绘图支持
+- Syntax close to Go (`:=` declarations, `func`, `for`, `if`)
+- Full Lua semantics (table, metatable, closure, coroutine, multiple return values)
+- Built-in HTTP server and OpenGL 2D drawing support
 
 ```
-            ┌──────────────┐
- .gs 源码 → │ Lexer/Parser │ → AST → Interpreter → 结果
-            └──────────────┘
+              ┌──────────────┐
+ .gs source → │ Lexer/Parser │ → AST → Interpreter → result
+              └──────────────┘
 ```
 
 ---
 
-## 安装
+## Installation
 
 ```bash
 git clone https://github.com/jxwr/gscript
@@ -24,27 +24,27 @@ go build -o gscript ./cmd/gscript/
 
 ---
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 执行文件
+# Run a file
 ./gscript examples/fib.gs
 
-# 执行字符串
+# Evaluate a string
 ./gscript -e 'print("Hello, GScript!")'
 
-# 交互式 REPL
+# Interactive REPL
 ./gscript
 ```
 
 ---
 
-## 语言特性
+## Language Features
 
-### 1. 基本类型
+### 1. Types
 
-| 类型 | 示例 |
-|------|------|
+| Type | Example |
+|------|---------|
 | nil | `nil` |
 | bool | `true`, `false` |
 | int | `42`, `-100` |
@@ -64,33 +64,33 @@ nothing := nil
 
 ---
 
-### 2. 运算符
+### 2. Operators
 
 ```go
-// 算术
+// Arithmetic
 1 + 2       // 3
 10 - 3      // 7
 4 * 5       // 20
 10 / 4      // 2.5
 10 % 3      // 1
-2 ** 8      // 256（幂运算）
+2 ** 8      // 256  (power)
 
-// 字符串拼接
+// String concatenation and length
 "hello" .. " world"   // "hello world"
-#"hello"              // 5（长度）
+#"hello"              // 5
 
-// 比较
+// Comparison
 1 == 1    // true
 1 != 2    // true
 1 < 2     // true
 1 <= 1    // true
 
-// 逻辑（短路求值）
+// Logic (short-circuit)
 true && false   // false
 true || false   // true
 !true           // false
 
-// 复合赋值
+// Compound assignment
 x += 1
 x -= 1
 x *= 2
@@ -101,21 +101,21 @@ x--
 
 ---
 
-### 3. 变量
+### 3. Variables
 
 ```go
-// 声明（:=）
+// Declaration (:=)
 x := 10
 a, b := 1, 2
 
-// 赋值（=）
+// Assignment (=)
 x = 20
-a, b = b, a   // 交换
+a, b = b, a   // swap
 ```
 
 ---
 
-### 4. 控制流
+### 4. Control Flow
 
 #### if / elseif / else
 
@@ -133,7 +133,7 @@ if score >= 90 {
 }
 ```
 
-#### for（while 风格）
+#### for (while-style)
 
 ```go
 n := 1
@@ -143,7 +143,7 @@ for n < 100 {
 print(n)  // 128
 ```
 
-#### for（C 风格）
+#### for (C-style)
 
 ```go
 sum := 0
@@ -153,7 +153,7 @@ for i := 1; i <= 100; i++ {
 print(sum)  // 5050
 ```
 
-#### for range（迭代 table）
+#### for range (iterate table)
 
 ```go
 fruits := {"apple", "banana", "cherry"}
@@ -177,36 +177,36 @@ for i := 1; i <= 10; i++ {
 
 ---
 
-### 5. 函数
+### 5. Functions
 
 ```go
-// 基本函数
+// Basic function
 func add(a, b) {
     return a + b
 }
 print(add(3, 4))  // 7
 
-// 多返回值
+// Multiple return values
 func divmod(a, b) {
     return math.floor(a / b), a % b
 }
 q, r := divmod(17, 5)
 print(q, r)  // 3  2
 
-// 递归
+// Recursion
 func fib(n) {
     if n < 2 { return n }
     return fib(n-1) + fib(n-2)
 }
 print(fib(10))  // 55
 
-// 函数是一等公民
+// Functions are first-class values
 apply := func(f, x) { return f(x) }
 double := func(x) { return x * 2 }
 print(apply(double, 21))  // 42
 ```
 
-#### 可变参数
+#### Variadic functions
 
 ```go
 func sum(...) {
@@ -221,9 +221,9 @@ print(sum(1, 2, 3, 4, 5))  // 15
 
 ---
 
-### 6. 闭包 / Upvalue
+### 6. Closures / Upvalues
 
-GScript 完整支持词法闭包，多个闭包共享同一 upvalue。
+GScript supports full lexical closures. Multiple closures from the same scope share the same upvalue reference.
 
 ```go
 func makeCounter(start) {
@@ -243,7 +243,7 @@ print(c.get())  // 1
 ```
 
 ```go
-// 两个闭包共享同一变量
+// Two closures sharing the same variable
 x := 0
 inc := func() { x = x + 1 }
 get := func() { return x }
@@ -257,43 +257,43 @@ print(get())  // 2
 
 ### 7. Table
 
-Table 是 GScript 的核心数据结构，同时充当数组和哈希表。
+Table is GScript's core data structure, serving as both array and hash map.
 
 ```go
-// 数组风格（1-based）
+// Array-style (1-based index)
 arr := {10, 20, 30, 40, 50}
 print(arr[1])   // 10
 print(#arr)     // 5
 
-// 哈希风格
+// Hash-style
 person := {name: "alice", age: 30}
 print(person.name)       // alice
 print(person["age"])     // 30
 
-// 混合
+// Mixed
 data := {
     title: "GScript",
     tags: {"fast", "dynamic", "fun"},
     version: 1,
 }
 
-// 动态修改
+// Dynamic modification
 arr[6] = 60
 person.email = "alice@example.com"
 
-// 嵌套
+// Nested
 matrix := {{1,2,3},{4,5,6},{7,8,9}}
 print(matrix[2][2])  // 5
 ```
 
 ---
 
-### 8. Metatable（元表）
+### 8. Metatable
 
-支持全部 14 种 Lua 元方法，可实现运算符重载、OOP 继承等。
+All 14 Lua metamethods are supported, enabling operator overloading, OOP inheritance, and more.
 
 ```go
-// __index 实现 OOP 继承
+// __index for OOP inheritance
 Animal := {}
 Animal.new = func(name) {
     self := {name: name}
@@ -320,7 +320,7 @@ print(rex.speak(rex))  // Rex says woof!
 ```
 
 ```go
-// 运算符重载
+// Operator overloading
 Vec2 := {}
 Vec2.__index = Vec2
 Vec2.new = func(x, y) {
@@ -330,7 +330,6 @@ Vec2.new = func(x, y) {
 }
 Vec2.__add = func(a, b) { return Vec2.new(a.x+b.x, a.y+b.y) }
 Vec2.__eq  = func(a, b) { return a.x==b.x && a.y==b.y }
-Vec2.__tostring = func(v) { return "("..v.x..", "..v.y..")" }
 
 v1 := Vec2.new(1, 2)
 v2 := Vec2.new(3, 4)
@@ -338,12 +337,12 @@ v3 := v1 + v2
 print(v3.x, v3.y)  // 4  6
 ```
 
-**支持的元方法：**
+**Supported metamethods:**
 
-| 元方法 | 触发时机 |
-|--------|---------|
-| `__index` | 读取不存在的字段 |
-| `__newindex` | 写入不存在的字段 |
+| Metamethod | Triggered by |
+|------------|-------------|
+| `__index` | Reading a missing field |
+| `__newindex` | Writing a missing field |
 | `__add` | `a + b` |
 | `__sub` | `a - b` |
 | `__mul` | `a * b` |
@@ -360,12 +359,12 @@ print(v3.x, v3.y)  // 4  6
 
 ---
 
-### 9. Coroutine（协程）
+### 9. Coroutines
 
-基于 goroutine + channel 实现，API 与 Lua 完全兼容。
+Implemented with goroutines + channels. API is fully compatible with Lua.
 
 ```go
-// 基础 yield/resume
+// Basic yield/resume
 co := coroutine.create(func() {
     coroutine.yield(1)
     coroutine.yield(2)
@@ -378,7 +377,7 @@ ok, v  = coroutine.resume(co)  // true  3
 ```
 
 ```go
-// 生产者模式
+// Generator pattern
 gen := coroutine.wrap(func() {
     for i := 1; i <= 5; i++ {
         coroutine.yield(i * i)
@@ -393,7 +392,7 @@ for {
 ```
 
 ```go
-// 双向传值
+// Bidirectional value passing
 co := coroutine.create(func(init) {
     x := init
     for {
@@ -401,42 +400,42 @@ co := coroutine.create(func(init) {
     }
 })
 
-_, v := coroutine.resume(co, 1)   // 启动，v=2
-_, v  = coroutine.resume(co, 3)   // 传入3，v=6
-_, v  = coroutine.resume(co, 5)   // 传入5，v=10
+_, v := coroutine.resume(co, 1)   // start with 1, v=2
+_, v  = coroutine.resume(co, 3)   // send 3, v=6
+_, v  = coroutine.resume(co, 5)   // send 5, v=10
 ```
 
-**API：**
+**API:**
 
-| 函数 | 说明 |
-|------|------|
-| `coroutine.create(f)` | 创建协程 |
-| `coroutine.resume(co, ...)` | 恢复执行，返回 `ok, values...` |
-| `coroutine.yield(...)` | 暂停，返回 resume 传入的值 |
-| `coroutine.wrap(f)` | 返回一个函数，每次调用相当于 resume |
+| Function | Description |
+|----------|-------------|
+| `coroutine.create(f)` | Create a coroutine |
+| `coroutine.resume(co, ...)` | Resume execution, returns `ok, values...` |
+| `coroutine.yield(...)` | Suspend, returns values passed to next resume |
+| `coroutine.wrap(f)` | Returns a function that resumes the coroutine each call |
 | `coroutine.status(co)` | `"suspended"` / `"running"` / `"dead"` |
-| `coroutine.isyieldable()` | 是否在协程中 |
+| `coroutine.isyieldable()` | Whether currently inside a coroutine |
 
 ---
 
-### 10. 错误处理
+### 10. Error Handling
 
 ```go
-// pcall 捕获错误
+// pcall catches errors
 ok, err := pcall(func() {
     error("something went wrong")
 })
 print(ok)   // false
 print(err)  // something went wrong
 
-// 错误可以是任意值
+// Errors can be any value
 ok, e := pcall(func() {
     error({code: 404, msg: "not found"})
 })
 print(e.code)  // 404
 print(e.msg)   // not found
 
-// xpcall 带错误处理函数
+// xpcall with a message handler
 ok, msg := xpcall(
     func() { error("oops") },
     func(err) { return "caught: " .. err }
@@ -454,9 +453,9 @@ print(e2)  // failed!
 
 ---
 
-## 标准库
+## Standard Library
 
-### string 库
+### string
 
 ```go
 s := "Hello, World!"
@@ -472,75 +471,74 @@ string.reverse("hello")     // "olleh"
 string.byte("A")            // 65
 string.char(65, 66, 67)     // "ABC"
 
-// 查找（支持 Lua 模式）
-string.find("hello world", "world")     // 7  11
-string.find("hello", "l+")             // 3  4
+// Find (supports Lua patterns)
+string.find("hello world", "world")      // 7  11
+string.find("hello", "l+")              // 3  4
 
-// 模式匹配
+// Pattern matching
 string.match("2024-03-11", "(%d+)-(%d+)-(%d+)")  // "2024" "03" "11"
 
-// 全局替换
-string.gsub("hello world", "o", "0")   // "hell0 w0rld"  2
-string.gsub("aaa", "a", "b", 2)        // "bba"  2
+// Global substitution
+string.gsub("hello world", "o", "0")    // "hell0 w0rld"  2
+string.gsub("aaa", "a", "b", 2)         // "bba"  2
 
-// 迭代匹配
+// Iterating matches
 for word := range string.gmatch("one two three", "%a+") {
     print(word)
 }
 
-// 格式化
-string.format("%d + %d = %d", 1, 2, 3)     // "1 + 2 = 3"
-string.format("%.2f", 3.14159)              // "3.14"
+// Formatting
+string.format("%d + %d = %d", 1, 2, 3)      // "1 + 2 = 3"
+string.format("%.2f", 3.14159)               // "3.14"
 string.format("%s is %d years old", "Alice", 30)
 
-// 字符串方法（通过元表）
+// String methods via metatable
 ("hello"):upper()     // "HELLO"
 ("  hi  "):sub(3, 4)  // "hi"
 ```
 
-**Lua 模式类：**
+**Lua pattern classes:**
 
-| 模式 | 匹配 |
-|------|------|
-| `%d` | 数字 |
-| `%a` | 字母 |
-| `%l` | 小写字母 |
-| `%u` | 大写字母 |
-| `%s` | 空白符 |
-| `%w` | 字母数字 |
-| `%p` | 标点 |
-| `.` | 任意字符 |
+| Pattern | Matches |
+|---------|---------|
+| `%d` | Digits |
+| `%a` | Letters |
+| `%l` | Lowercase letters |
+| `%u` | Uppercase letters |
+| `%s` | Whitespace |
+| `%w` | Alphanumeric |
+| `%p` | Punctuation |
+| `.` | Any character |
 
 ---
 
-### table 库
+### table
 
 ```go
 t := {10, 20, 30}
 
-table.insert(t, 40)        // 末尾插入：{10,20,30,40}
-table.insert(t, 2, 15)     // 指定位置：{10,15,20,30,40}
-table.remove(t)            // 移除末尾：{10,15,20,30}
-table.remove(t, 1)         // 移除首位：{15,20,30}
+table.insert(t, 40)         // append: {10,20,30,40}
+table.insert(t, 2, 15)      // at position: {10,15,20,30,40}
+table.remove(t)             // remove last: {10,15,20,30}
+table.remove(t, 1)          // remove first: {15,20,30}
 
-table.concat(t, ", ")      // "15, 20, 30"
-table.concat(t, "-", 2, 3) // "20-30"
+table.concat(t, ", ")       // "15, 20, 30"
+table.concat(t, "-", 2, 3)  // "20-30"
 
-table.sort(t)              // 升序排序
-table.sort(t, func(a, b) { return a > b })  // 降序
+table.sort(t)                                    // ascending
+table.sort(t, func(a, b) { return a > b })       // descending
 
--- unpack 展开为多值
 a, b, c := table.unpack({10, 20, 30})
 print(a, b, c)  // 10  20  30
 ```
 
 ---
 
-### math 库
+### math
 
 ```go
 math.pi           // 3.141592653589793
-math.huge         // +∞
+math.huge         // +Inf
 math.maxinteger   // 9223372036854775807
 
 math.abs(-5)      // 5
@@ -559,9 +557,9 @@ math.min(1, 5, 3, 2)   // 1
 math.log(math.exp(1))  // 1
 math.log(100, 10)      // 2
 
-math.random()          // [0, 1) 的随机浮点数
-math.random(6)         // 1~6 的随机整数
-math.random(1, 100)    // 1~100 的随机整数
+math.random()           // random float in [0, 1)
+math.random(6)          // random int in [1, 6]
+math.random(1, 100)     // random int in [1, 100]
 math.randomseed(42)
 
 math.type(1)     // "integer"
@@ -571,17 +569,17 @@ math.type("x")   // false
 
 ---
 
-### io 库
+### io
 
 ```go
-io.write("hello ")    // 不换行输出
+io.write("hello ")    // write without newline
 io.write("world\n")
 
-line := io.read()     // 读一行
-num  := io.read("*n") // 读一个数字
-all  := io.read("*a") // 读全部
+line := io.read()     // read a line
+num  := io.read("*n") // read a number
+all  := io.read("*a") // read all input
 
--- 文件操作
+-- File I/O
 f := io.open("data.txt", "r")
 content := f.read("*a")
 f.close()
@@ -593,57 +591,57 @@ f2.close()
 
 ---
 
-### os 库
+### os
 
 ```go
-os.time()           // Unix 时间戳（秒）
-os.clock()          // CPU 时间（秒）
-os.date("%Y-%m-%d") // 格式化日期，如 "2024-03-11"
-os.getenv("HOME")   // 环境变量
-os.exit(0)          // 退出进程
+os.time()           // Unix timestamp (seconds)
+os.clock()          // CPU time (seconds)
+os.date("%Y-%m-%d") // formatted date, e.g. "2024-03-11"
+os.getenv("HOME")   // environment variable
+os.exit(0)          // exit process
 ```
 
 ---
 
-### 内置函数
+### Built-in functions
 
 ```go
-print(...)                 // 打印，tab 分隔，自动换行
-type(v)                    // 返回类型名字符串
-tostring(v)                // 转为字符串
-tonumber(s [, base])       // 转为数字
-#v                         // 字符串/table 长度
+print(...)                 // print tab-separated values with newline
+type(v)                    // return type name string
+tostring(v)                // convert to string
+tonumber(s [, base])       // convert to number
+#v                         // length of string or table
 
-pairs(t)                   // 迭代 table 所有键值对
-ipairs(t)                  // 迭代 table 数组部分（1, 2, 3...）
-next(t [, key])            // 迭代器底层函数
-select(n, ...)             // 返回第 n 个起的参数
-unpack(t [, i [, j]])      // 展开 table 为多值
+pairs(t)                   // iterate all key-value pairs in table
+ipairs(t)                  // iterate array part (keys 1, 2, 3, ...)
+next(t [, key])            // low-level iterator function
+select(n, ...)             // return arguments from index n
+unpack(t [, i [, j]])      // unpack table to multiple values
 
-setmetatable(t, mt)        // 设置元表
-getmetatable(t)            // 获取元表
-rawget(t, k)               // 跳过元表直接读
-rawset(t, k, v)            // 跳过元表直接写
-rawequal(a, b)             // 跳过 __eq 比较
+setmetatable(t, mt)        // set metatable
+getmetatable(t)            // get metatable
+rawget(t, k)               // get without __index
+rawset(t, k, v)            // set without __newindex
+rawequal(a, b)             // compare without __eq
 
-pcall(f, ...)              // 保护调用
-xpcall(f, handler, ...)    // 带处理器的保护调用
-error(msg)                 // 抛出错误
-assert(v [, msg])          // 断言
+pcall(f, ...)              // protected call
+xpcall(f, handler, ...)    // protected call with message handler
+error(msg)                 // raise an error
+assert(v [, msg])          // assert condition
 
-require(name)              // 加载模块
-dofile(path)               // 执行文件
-loadstring(src)            // 编译字符串为函数
+require(name)              // load a module
+dofile(path)               // execute a file
+loadstring(src)            // compile source string to function
 ```
 
 ---
 
-## HTTP 服务器
+## HTTP Server
 
-内置 `http` 库，基于 Go 的 `net/http`。
+Built-in `http` library backed by Go's `net/http`.
 
 ```go
-// 最简单的服务器
+// Minimal server
 http.listen(":8080", func(req, res) {
     res.write("Hello from GScript!\n")
     res.write("Path: " .. req.path .. "\n")
@@ -651,10 +649,9 @@ http.listen(":8080", func(req, res) {
 ```
 
 ```go
-// 使用路由器
+// Router
 router := http.newRouter()
 
-// 计数器
 counter := 0
 
 router.get("/", func(req, res) {
@@ -680,55 +677,54 @@ router.post("/echo", func(req, res) {
 router.listen(":9988")
 ```
 
-**Request 对象：**
+**Request object:**
 
-| 字段/方法 | 说明 |
-|-----------|------|
-| `req.method` | HTTP 方法（GET/POST 等）|
-| `req.path` | 请求路径 |
-| `req.url` | 完整 URL |
-| `req.body` | 请求体字符串 |
-| `req.headers` | 请求头 table |
-| `req.query` | 查询参数 table |
-| `req.param("name")` | 获取查询参数 |
-| `req.json()` | 解析 body 为 table |
+| Field / Method | Description |
+|----------------|-------------|
+| `req.method` | HTTP method (GET, POST, …) |
+| `req.path` | Request path |
+| `req.url` | Full URL |
+| `req.body` | Request body as string |
+| `req.headers` | Request headers table |
+| `req.query` | Query parameters table |
+| `req.param("name")` | Get a query parameter |
+| `req.json()` | Parse body as JSON into a table |
 
-**Response 对象：**
+**Response object:**
 
-| 方法 | 说明 |
-|------|------|
-| `res.write(s)` | 写入响应体 |
-| `res.writeln(s)` | 写入响应体并换行 |
-| `res.json(table)` | 写入 JSON 响应 |
-| `res.status(code)` | 设置状态码 |
-| `res.header(k, v)` | 设置响应头 |
-| `res.redirect(url)` | 重定向 |
+| Method | Description |
+|--------|-------------|
+| `res.write(s)` | Write response body |
+| `res.writeln(s)` | Write response body with newline |
+| `res.json(table)` | Write JSON response |
+| `res.status(code)` | Set HTTP status code |
+| `res.header(k, v)` | Set response header |
+| `res.redirect(url)` | Redirect |
 
 ---
 
-## OpenGL 绘图
+## OpenGL Drawing
 
-内置 `gl` 库，基于 OpenGL 4.1 + GLFW，可用于游戏和可视化。
+Built-in `gl` library based on OpenGL 4.1 + GLFW for games and visualization.
 
 ```go
-// 创建窗口
+// Create window
 win := gl.newWindow(800, 600, "My Game")
 
-// 游戏循环
+// Game loop
 for !win.shouldClose() {
     win.pollEvents()
 
-    // 清屏（深蓝色背景）
-    win.clear(0.05, 0.05, 0.1)
+    win.clear(0.05, 0.05, 0.1)   // clear with dark blue
 
-    // 绘制填充矩形（x, y, w, h, r, g, b, a）
-    gl.drawRect(100, 100, 200, 150, 1, 0, 0, 1)       // 红色矩形
-    gl.drawRect(400, 200, 100, 100, 0, 1, 0, 0.5)     // 半透明绿色
+    // Filled rectangle (x, y, w, h, r, g, b, a)
+    gl.drawRect(100, 100, 200, 150, 1, 0, 0, 1)       // red
+    gl.drawRect(400, 200, 100, 100, 0, 1, 0, 0.5)     // semi-transparent green
 
-    // 绘制边框矩形（x, y, w, h, r, g, b, 线宽）
+    // Outlined rectangle (x, y, w, h, r, g, b, lineWidth)
     gl.drawRectOutline(50, 50, 300, 200, 1, 1, 0, 2)
 
-    // 绘制文字（text, x, y, scale, r, g, b）
+    // Text (text, x, y, scale, r, g, b)
     gl.drawText("Score: 1234", 10, 10, 1.5, 1, 1, 1)
 
     win.swapBuffers()
@@ -736,25 +732,25 @@ for !win.shouldClose() {
 win.close()
 ```
 
-**键盘输入：**
+**Keyboard input:**
 
 ```go
-// 持续按下
+// Held down
 if gl.isKeyDown(gl.KEY_LEFT) {
     x = x - 5
 }
 
-// 刚按下（单次触发）
+// Just pressed (single trigger)
 if gl.isKeyJustPressed(gl.KEY_SPACE) {
     jump()
 }
 ```
 
-**键盘常量：** `KEY_LEFT` `KEY_RIGHT` `KEY_UP` `KEY_DOWN` `KEY_SPACE` `KEY_ESCAPE` `KEY_ENTER` `KEY_A`~`KEY_Z` `KEY_0`~`KEY_9`
+**Key constants:** `KEY_LEFT` `KEY_RIGHT` `KEY_UP` `KEY_DOWN` `KEY_SPACE` `KEY_ESCAPE` `KEY_ENTER` `KEY_A`–`KEY_Z` `KEY_0`–`KEY_9`
 
 ---
 
-## 示例程序
+## Examples
 
 ### Fibonacci
 
@@ -769,7 +765,7 @@ for i := 0; i <= 20; i++ {
 }
 ```
 
-### 闭包计数器
+### Closure Counter
 
 ```go
 func makeCounter(name, start) {
@@ -791,7 +787,7 @@ c.reset()
 print(c.get())   // 0
 ```
 
-### OOP 继承
+### OOP Inheritance
 
 ```go
 func Class(parent) {
@@ -820,15 +816,15 @@ rex := Dog.new("Rex")
 print(rex.speak(rex))  // Rex says woof!
 ```
 
-### 协程生成器
+### Coroutine Generator
 
 ```go
 func range_gen(from, to) {
-    return coroutine.wrap(func()
+    return coroutine.wrap(func() {
         for i := from; i <= to; i++ {
             coroutine.yield(i)
-        end
-    end)
+        }
+    })
 }
 
 sum := 0
@@ -841,55 +837,55 @@ for {
 print(sum)  // 5050
 ```
 
-### 内置 Tetris 游戏
+### Tetris (built-in demo)
 
 ```bash
 ./gscript examples/tetris.gs
 ```
 
-操作：`←→` 移动，`↑/X` 顺转，`Z` 逆转，`↓` 软降，`空格` 硬降，`C` 暂存，`P` 暂停，`R` 重开
+Controls: `←→` move, `↑`/`X` rotate CW, `Z` rotate CCW, `↓` soft drop, `Space` hard drop, `C` hold, `P` pause, `R` restart
 
 ---
 
-## 项目结构
+## Project Structure
 
 ```
 gscript/
-├── cmd/gscript/          # CLI 入口
+├── cmd/gscript/          # CLI entry point
 ├── internal/
-│   ├── lexer/            # 词法分析器
-│   ├── parser/           # 递归下降解析器
-│   ├── ast/              # AST 节点定义
-│   └── runtime/          # 树遍历解释器 + 标准库
+│   ├── lexer/            # Tokenizer
+│   ├── parser/           # Recursive descent parser
+│   ├── ast/              # AST node definitions
+│   └── runtime/          # Tree-walking interpreter + standard library
 │       ├── interpreter.go
-│       ├── value.go       # 类型系统（tagged union）
-│       ├── table.go       # Table 实现
-│       ├── closure.go     # 闭包 / Upvalue
-│       ├── coroutine.go   # 协程
+│       ├── value.go       # Type system (tagged union)
+│       ├── table.go       # Table implementation
+│       ├── closure.go     # Closures / Upvalues
+│       ├── coroutine.go   # Coroutines
 │       ├── stdlib_string.go
 │       ├── stdlib_table.go
 │       ├── stdlib_math.go
 │       ├── stdlib_io.go
 │       ├── stdlib_os.go
 │       ├── stdlib_http.go
-│       └── stdlib_gl.go   # OpenGL 绘图
-├── tests/                # 集成测试
-├── examples/             # 示例程序
+│       └── stdlib_gl.go   # OpenGL drawing
+├── tests/                # Integration tests
+├── examples/             # Example programs
 │   ├── fib.gs
 │   ├── counter.gs
 │   ├── class.gs
 │   ├── webserver.gs
 │   └── tetris.gs
-└── docs/decisions/       # 架构决策记录
+└── docs/decisions/       # Architecture decision records
 ```
 
 ---
 
-## 运行测试
+## Running Tests
 
 ```bash
-go test ./...              # 全部测试
-go test -race ./...        # 含竞态检测
+go test ./...               # all tests
+go test -race ./...         # with race detector
 go test ./internal/runtime/... -v -run TestClosure
 ```
 
