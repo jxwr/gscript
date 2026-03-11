@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 
 	"github.com/gscript/gscript/internal/lexer"
 	"github.com/gscript/gscript/internal/parser"
 	"github.com/gscript/gscript/internal/runtime"
 )
+
+func init() {
+	goruntime.LockOSThread() // Required for GLFW/OpenGL on macOS
+}
 
 func main() {
 	// Flags

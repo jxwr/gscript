@@ -27,4 +27,7 @@ func (interp *Interpreter) registerStdlib() {
 
 	// HTTP library
 	interp.globals.Define("http", TableValue(httpLib(interp)))
+
+	// GL library (OpenGL + GLFW)
+	interp.globals.Define("gl", TableValue(glLib(interp)))
 }
