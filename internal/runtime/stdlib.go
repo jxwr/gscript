@@ -30,4 +30,40 @@ func (interp *Interpreter) registerStdlib() {
 
 	// GL library (OpenGL + GLFW)
 	interp.globals.Define("gl", TableValue(glLib(interp)))
+
+	// JSON library
+	interp.globals.Define("json", TableValue(buildJSONLib()))
+
+	// Base64 library
+	interp.globals.Define("base64", TableValue(buildBase64Lib()))
+
+	// Hash library
+	interp.globals.Define("hash", TableValue(buildHashLib()))
+
+	// File system library
+	interp.globals.Define("fs", TableValue(buildFSLib()))
+
+	// Path library
+	interp.globals.Define("path", TableValue(buildPathLib()))
+
+	// Time library
+	interp.globals.Define("time", TableValue(buildTimeLib()))
+
+	// Net library (HTTP client)
+	interp.globals.Define("net", TableValue(buildNetLib()))
+
+	// Vec library (2D/3D vectors)
+	interp.globals.Define("vec", TableValue(buildVecLib()))
+
+	// Color library
+	interp.globals.Define("color", TableValue(buildColorLib()))
+
+	// Regexp library
+	interp.globals.Define("regexp", TableValue(buildRegexpLib()))
+
+	// UTF-8 library
+	interp.globals.Define("utf8", TableValue(buildUTF8Lib()))
+
+	// Bit32 library
+	interp.globals.Define("bit32", TableValue(buildBit32Lib()))
 }

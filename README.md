@@ -558,177 +558,208 @@ if err != nil {
 
 ## Standard Library
 
+GScript ships with 20 standard libraries. Full reference: [docs/stdlib/STDLIB.md](docs/stdlib/STDLIB.md)
+
+| Library | Global | Description |
+|---------|--------|-------------|
+| string | `string` | String manipulation, Lua patterns |
+| table | `table` | Table/array operations |
+| math | `math` | Math functions and constants |
+| io | `io` | File I/O |
+| os | `os` | OS interface (time, env, exit) |
+| **json** | `json` | JSON encode/decode |
+| **base64** | `base64` | Base64 encoding |
+| **hash** | `hash` | MD5, SHA256, HMAC |
+| **fs** | `fs` | File system (mkdir, readdir, stat, copy…) |
+| **path** | `path` | Path manipulation (join, dir, base, ext…) |
+| **time** | `time` | Time, sleep, format, parse |
+| **net** | `net` | HTTP client (get, post, request) |
+| **vec** | `vec` | 2D/3D vectors with operator overloading |
+| **color** | `color` | RGBA/HSV colors and named constants |
+| **regexp** | `regexp` | Regular expressions (RE2, compile/match/replace) |
+| **utf8** | `utf8` | Unicode-aware string operations |
+| **bit32** | `bit32` | 32-bit bitwise operations |
+| http | `http` | HTTP server (router, handlers) |
+| gl | `gl` | OpenGL 2D drawing + keyboard input |
+| coroutine | `coroutine` | Coroutine control (built-in) |
+
 ### string
 
 ```go
-s := "Hello, World!"
-
-string.len(s)               // 13
-string.upper(s)             // "HELLO, WORLD!"
-string.lower(s)             // "hello, world!"
-string.sub(s, 1, 5)         // "Hello"
-string.sub(s, -6)           // "orld!"
-string.rep("ab", 3)         // "ababab"
-string.rep("ab", 3, "-")    // "ab-ab-ab"
-string.reverse("hello")     // "olleh"
-string.byte("A")            // 65
-string.char(65, 66, 67)     // "ABC"
-
-// Find (supports Lua patterns)
-string.find("hello world", "world")      // 7  11
-string.find("hello", "l+")              // 3  4
-
-// Pattern matching
+string.upper("hello")                    // "HELLO"
+string.sub("hello", 2, 4)               // "ell"
+string.find("hello world", "w%a+")      // 7  11
 string.match("2024-03-11", "(%d+)-(%d+)-(%d+)")  // "2024" "03" "11"
-
-// Global substitution
-string.gsub("hello world", "o", "0")    // "hell0 w0rld"  2
 string.gsub("aaa", "a", "b", 2)         // "bba"  2
-
-// Iterating matches
-for word := range string.gmatch("one two three", "%a+") {
-    print(word)
-}
-
-// Formatting
-string.format("%d + %d = %d", 1, 2, 3)      // "1 + 2 = 3"
-string.format("%.2f", 3.14159)               // "3.14"
-string.format("%s is %d years old", "Alice", 30)
+string.format("%.2f", 3.14159)          // "3.14"
+for w := range string.gmatch("one two", "%a+") { print(w) }
 ```
 
-**Lua pattern classes:**
-
-| Pattern | Matches |
-|---------|---------|
-| `%d` | Digits |
-| `%a` | Letters |
-| `%l` | Lowercase letters |
-| `%u` | Uppercase letters |
-| `%s` | Whitespace |
-| `%w` | Alphanumeric |
-| `%p` | Punctuation |
-| `.` | Any character |
-
----
-
-### table
+### json
 
 ```go
-t := {10, 20, 30}
+s := json.encode({name: "Alice", scores: {10, 20, 30}})
+// '{"name":"Alice","scores":[10,20,30]}'
 
-table.insert(t, 40)         // append: {10,20,30,40}
-table.insert(t, 2, 15)      // at position: {10,15,20,30,40}
-table.remove(t)             // remove last: {10,15,20,30}
-table.remove(t, 1)          // remove first: {15,20,30}
+t := json.decode('{"x": 1, "y": [2, 3]}')
+print(t.x, t.y[1])   // 1  2
 
-table.concat(t, ", ")       // "15, 20, 30"
-table.concat(t, "-", 2, 3)  // "20-30"
-
-table.sort(t)                                    // ascending
-table.sort(t, func(a, b) { return a > b })       // descending
-
-a, b, c := table.unpack({10, 20, 30})
-print(a, b, c)  // 10  20  30
+print(json.pretty({a: 1, b: {c: 2}}))
+// {
+//   "a": 1,
+//   "b": { "c": 2 }
+// }
 ```
 
----
-
-### math
+### base64
 
 ```go
-math.pi           // 3.141592653589793
-math.huge         // +Inf
-math.maxinteger   // 9223372036854775807
-
-math.abs(-5)      // 5
-math.floor(3.7)   // 3
-math.ceil(3.2)    // 4
-math.sqrt(16)     // 4
-math.pow(2, 10)   // 1024
-
-math.sin(math.pi / 2)  // 1
-math.cos(0)            // 1
-math.atan(1, 1)        // π/4
-
-math.max(1, 5, 3, 2)   // 5
-math.min(1, 5, 3, 2)   // 1
-
-math.log(math.exp(1))  // 1
-math.log(100, 10)      // 2
-
-math.random()           // random float in [0, 1)
-math.random(6)          // random int in [1, 6]
-math.random(1, 100)     // random int in [1, 100]
-math.randomseed(42)
-
-math.type(1)     // "integer"
-math.type(1.0)   // "float"
+enc := base64.encode("Hello, World!")   // "SGVsbG8sIFdvcmxkIQ=="
+dec := base64.decode(enc)               // "Hello, World!"
+url := base64.urlEncode("data+/test")   // URL-safe, no padding
 ```
 
----
-
-### io
+### hash
 
 ```go
-io.write("hello ")    // write without newline
-io.write("world\n")
-
-line := io.read()     // read a line
-all  := io.read("*a") // read all input
-
-// File I/O
-f := io.open("data.txt", "r")
-content := f.read("*a")
-f.close()
-
-f2 := io.open("out.txt", "w")
-f2.write("hello\n")
-f2.close()
+hash.md5("hello")     // "5d41402abc4b2a76b9719d911017c592"
+hash.sha256("hello")  // "2cf24dba5fb0a30e26e83b2ac5b9e29e..."
+hash.crc32("hello")   // integer checksum
+hash.hmacSHA256("key", "message")  // hex string
 ```
 
----
-
-### os
+### fs
 
 ```go
-os.time()           // Unix timestamp (seconds)
-os.clock()          // CPU time (seconds)
-os.date("%Y-%m-%d") // formatted date, e.g. "2024-03-11"
-os.getenv("HOME")   // environment variable
-os.exit(0)          // exit process
+ok := fs.exists("/tmp/foo.txt")
+info := fs.stat("/tmp/foo.txt")   // {name, size, mtime, isdir, isfile}
+content, err := fs.readfile("/tmp/foo.txt")
+ok, err := fs.writefile("/tmp/out.txt", "hello\n")
+entries, err := fs.readdir("/tmp")  // {{name, isdir, size}, ...}
+ok, err := fs.mkdir("/tmp/newdir")
+ok, err := fs.copy("/tmp/a.txt", "/tmp/b.txt")
+files, err := fs.glob("/tmp/*.txt")
 ```
 
----
+### path
+
+```go
+path.join("/usr", "local", "bin")  // "/usr/local/bin"
+path.dir("/usr/local/bin/go")      // "/usr/local/bin"
+path.base("/usr/local/bin/go")     // "go"
+path.ext("file.tar.gz")            // ".gz"
+dir, file := path.split("/usr/bin/go")  // "/usr/bin/"  "go"
+abs, err := path.abs("../foo")
+```
+
+### time
+
+```go
+t := time.now()               // {year, month, day, hour, min, sec, unix, weekday}
+time.sleep(0.5)               // sleep 500ms
+elapsed := time.since(t)      // seconds as float
+s := time.format(t, "%Y-%m-%d %H:%M:%S")
+t2 := time.parse("2024-03-11", "%Y-%m-%d")
+tomorrow := time.add(t, time.DAY)
+diff := time.diff(t1, t2)    // seconds
+```
+
+### net
+
+```go
+resp, err := net.get("https://api.example.com/data")
+print(resp.status, resp.ok, resp.body)
+data := resp.json()
+
+resp, err := net.post(url, json.encode(body), {
+    headers: {["Content-Type"]: "application/json"},
+    timeout: 10,
+})
+
+resp, err := net.request({method: "PUT", url: url, body: payload})
+```
+
+### vec
+
+```go
+v1 := vec.vec2(3, 4)
+v2 := vec.vec2(1, 0)
+v3 := v1 + v2              // vec2(4, 4)  — operator overloaded
+v4 := v1 * 2               // vec2(6, 8)
+vec.length2(v1)            // 5.0
+vec.normalize2(v1)         // vec2(0.6, 0.8)
+vec.dot2(v1, v2)           // 3.0
+vec.lerp2(v1, v2, 0.5)    // midpoint
+vec.rotate2(v, math.pi/2)  // 90° rotation
+
+v3d := vec.vec3(1, 2, 3)
+vec.cross3(v3d, vec.vec3(0, 1, 0))  // cross product
+```
+
+### color
+
+```go
+red  := color.new(1, 0, 0, 1)         // r,g,b,a in [0,1]
+blue := color.rgb(0, 0, 255)          // r,g,b in [0,255]
+c    := color.fromHex("#FF8800")       // from hex
+c2   := color.fromHSV(30, 1, 1)       // hue 30° → orange
+mid  := color.lerp(red, blue, 0.5)    // blend
+gray := color.grayscale(c)
+color.RED / color.GREEN / color.BLUE / color.WHITE / color.BLACK
+color.YELLOW / color.CYAN / color.MAGENTA / color.ORANGE
+```
+
+### regexp
+
+```go
+regexp.match(`\d+`, "abc123")         // true
+regexp.find(`\d+`, "abc123")          // "123"
+regexp.replaceAll(`\s+`, "a  b", " ") // "a b"
+regexp.split(`\s+`, "one two three")  // {"one","two","three"}
+
+re, err := regexp.compile(`(\d{4})-(\d{2})-(\d{2})`)
+caps := re.findSubmatch("2024-03-11")
+// caps[1]="2024-03-11", caps[2]="2024", caps[3]="03", caps[4]="11"
+re.replaceAll("2024-03-11", "$2/$3/$1")  // "03/11/2024"
+```
+
+### utf8
+
+```go
+utf8.len("中文")           // 2  (codepoints, not bytes)
+utf8.reverse("abc")        // "cba"
+utf8.sub("中文英", 2, 3)   // "文英"  (codepoint indices)
+utf8.upper("héllo")        // "HÉLLO"
+utf8.valid("hello")        // true
+utf8.char(0x4E2D, 0x6587)  // "中文"
+```
+
+### bit32
+
+```go
+bit32.band(0xFF, 0x0F)   // 0x0F  (AND)
+bit32.bor(0xF0, 0x0F)    // 0xFF  (OR)
+bit32.lshift(1, 8)        // 256   (<<)
+bit32.rshift(256, 8)      // 1     (>>)
+bit32.test(0b1010, 1)     // true  (bit 1 set?)
+bit32.set(0b1010, 0)      // 0b1011
+bit32.extract(0xFF00, 8, 4)  // 0xF
+bit32.toHex(255)          // "0x000000FF"
+```
 
 ### Built-in functions
 
 ```go
 print(...)                 // print tab-separated values with newline
 type(v)                    // "nil" | "boolean" | "number" | "string" | "table" | "function" | "coroutine"
-tostring(v)                // convert to string
-tonumber(s [, base])       // convert to number (returns nil on failure)
+tostring(v) / tonumber(s)
 #v                         // length of string or table
-
-pairs(t)                   // iterate all key-value pairs
-ipairs(t)                  // iterate array part (keys 1, 2, 3, ...)
-next(t [, key])            // low-level iterator
-select(n, ...)             // return arguments from index n
-unpack(t [, i [, j]])      // unpack table to multiple values
-
-setmetatable(t, mt)        // set metatable
-getmetatable(t)            // get metatable
-rawget(t, k)               // get without __index
-rawset(t, k, v)            // set without __newindex
-rawequal(a, b)             // compare without __eq
-
-pcall(f, ...)              // protected call → ok, results...
-xpcall(f, handler, ...)    // protected call with message handler
-error(msg)                 // raise an error
-assert(v [, msg])          // assert condition, raise if falsy
-
-require(name)              // load a module
-dofile(path)               // execute a file
-loadstring(src)            // compile source string to function
+pairs(t) / ipairs(t) / next(t)
+setmetatable(t, mt) / getmetatable(t)
+rawget(t, k) / rawset(t, k, v) / rawequal(a, b)
+pcall(f, ...) / xpcall(f, handler, ...) / error(msg) / assert(v, msg)
+require(name) / dofile(path) / loadstring(src)
+select(n, ...) / unpack(t) / table.pack(...)
 ```
 
 ---
@@ -951,23 +982,33 @@ gscript/
 │   ├── parser/           # Recursive descent parser (9-level precedence)
 │   ├── ast/              # AST node definitions (28 node types)
 │   └── runtime/          # Tree-walking interpreter + standard library
-│       ├── interpreter.go    # Core eval loop, metamethod dispatch
-│       ├── value.go          # Tagged union type system
-│       ├── table.go          # Table (array+hash hybrid)
-│       ├── closure.go        # Closures, upvalues, free variable analysis
-│       ├── coroutine.go      # Coroutines via goroutine+channel
-│       ├── environment.go    # Lexical scope chain
-│       ├── stdlib_string.go  # string.* with Lua pattern support
-│       ├── stdlib_table.go   # table.*
-│       ├── stdlib_math.go    # math.*
-│       ├── stdlib_io.go      # io.*
-│       ├── stdlib_os.go      # os.*
-│       ├── stdlib_http.go    # http.* (net/http backed)
-│       └── stdlib_gl.go      # gl.* (OpenGL 4.1 + GLFW)
+│       ├── interpreter.go
+│       ├── value.go / table.go / closure.go / coroutine.go / environment.go
+│       ├── stdlib_string.go   # string.* with Lua pattern support
+│       ├── stdlib_table.go    # table.*
+│       ├── stdlib_math.go     # math.*
+│       ├── stdlib_io.go       # io.*
+│       ├── stdlib_os.go       # os.*
+│       ├── stdlib_json.go     # json.encode / decode / pretty
+│       ├── stdlib_base64.go   # base64.encode / decode / urlEncode
+│       ├── stdlib_hash.go     # hash.md5 / sha256 / hmacSHA256
+│       ├── stdlib_fs.go       # fs.* (19 functions)
+│       ├── stdlib_path.go     # path.* (10 functions)
+│       ├── stdlib_time.go     # time.* (13 functions + constants)
+│       ├── stdlib_net.go      # net.* HTTP client
+│       ├── stdlib_vec.go      # vec.* 2D/3D vectors
+│       ├── stdlib_color.go    # color.* RGBA/HSV
+│       ├── stdlib_regexp.go   # regexp.* RE2 engine
+│       ├── stdlib_utf8.go     # utf8.* Unicode ops
+│       ├── stdlib_bit32.go    # bit32.* 32-bit bitwise
+│       ├── stdlib_http.go     # http.* server
+│       └── stdlib_gl.go       # gl.* OpenGL 4.1 + GLFW
 ├── benchmarks/           # Performance benchmarks vs gopher-lua, starlark
 ├── tests/                # Integration tests
-├── examples/             # 17 example programs
-└── docs/decisions/       # Architecture Decision Records (ADR-001 to ADR-006)
+├── examples/             # 17+ example programs
+└── docs/
+    ├── stdlib/           # Standard library reference docs (STDLIB.md + per-lib)
+    └── decisions/        # Architecture Decision Records (ADR-001 to ADR-006)
 ```
 
 ---
