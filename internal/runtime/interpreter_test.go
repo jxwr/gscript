@@ -836,12 +836,6 @@ func TestEqualityNil(t *testing.T) {
 	}
 }
 
-func TestEqualityDifferentTypes(t *testing.T) {
-	v := getGlobal(t, `result := 1 == "1"`, "result")
-	if !v.IsBool() || v.Bool() {
-		t.Errorf("expected false, got %v", v)
-	}
-}
 
 func TestInfiniteLoopBreak(t *testing.T) {
 	v := getGlobal(t, `

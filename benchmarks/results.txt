@@ -1,0 +1,44 @@
+=== GScript Performance Benchmark Suite ===
+
+Scenarios tested:
+  1. Fibonacci (recursive, n=20)  - pure computation / recursion depth
+  2. Fibonacci (iterative, n=30)  - loop performance
+  3. Table/dict operations         - 1000-key create + read
+  4. String concatenation           - 100 iterations of string append
+  5. Closure creation               - create 1000 closures
+  6. Function calls                 - call function 10000 times
+  7. VM startup                     - create VM + run trivial script
+
+Runtimes compared: GScript, gopher-lua, starlark-go
+
+Run with:  go test ./benchmarks/ -bench=. -benchtime=3s -count=1
+goos: darwin
+goarch: arm64
+pkg: github.com/gscript/gscript/benchmarks
+cpu: Apple M4 Max
+BenchmarkGScriptFibRecursive-16          	     322	  11160089 ns/op
+BenchmarkGScriptFibRecursive_Warm-16     	     325	  11279667 ns/op
+BenchmarkGopherLuaFibRecursive-16        	    3482	   1044179 ns/op
+BenchmarkStarlarkFibRecursive-16         	  670899	      5424 ns/op
+BenchmarkGScriptFibIterative-16          	   85510	     41348 ns/op
+BenchmarkGScriptFibIterative_Warm-16     	  184182	     19180 ns/op
+BenchmarkGopherLuaFibIterative-16        	   59930	     65138 ns/op
+BenchmarkStarlarkFibIterative-16         	  380430	      9406 ns/op
+BenchmarkGScriptTableOps-16              	    2802	   1293954 ns/op
+BenchmarkGopherLuaTableOps-16            	    8006	    443914 ns/op
+BenchmarkStarlarkTableOps-16             	  668641	      5251 ns/op
+BenchmarkGScriptStringConcat-16          	   60879	     58219 ns/op
+BenchmarkGopherLuaStringConcat-16        	   62601	     60760 ns/op
+BenchmarkStarlarkStringConcat-16         	 1550168	      2321 ns/op
+BenchmarkGScriptClosureCreation-16       	    3993	    914032 ns/op
+BenchmarkGopherLuaClosureCreation-16     	   22027	    158155 ns/op
+BenchmarkStarlarkClosureCreation-16      	  839658	      4276 ns/op
+BenchmarkGScriptFunctionCalls-16         	     494	   7199639 ns/op
+BenchmarkGScriptFunctionCalls_Warm-16    	     526	   6830237 ns/op
+BenchmarkGopherLuaFunctionCalls-16       	    7119	    500696 ns/op
+BenchmarkStarlarkFunctionCalls-16        	  934700	      3819 ns/op
+BenchmarkGScriptVMStartup-16             	  185820	     19310 ns/op
+BenchmarkGopherLuaVMStartup-16           	   57544	     67028 ns/op
+BenchmarkStarlarkVMStartup-16            	 2957395	      1198 ns/op
+PASS
+ok  	github.com/gscript/gscript/benchmarks	100.181s

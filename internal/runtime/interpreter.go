@@ -1915,6 +1915,12 @@ func (interp *Interpreter) callFunction(fn Value, args []Value) ([]Value, error)
 	return nil, nil
 }
 
+// CallFunction calls a GScript function value with the given args.
+// This is a public method for embedding use.
+func (interp *Interpreter) CallFunction(fn Value, args []Value) ([]Value, error) {
+	return interp.callFunction(fn, args)
+}
+
 // ------------------------------------------------------------------
 // Function literal
 // ------------------------------------------------------------------
