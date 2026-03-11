@@ -73,5 +73,5 @@ router.get("/fib", func(req, res) {
 })
 
 print("Starting GScript web server...")
-print("Visit http://localhost:8080")
-router.listen(":8080")
+print("Visit http://localhost:9988")
+router.listen(":9988")
