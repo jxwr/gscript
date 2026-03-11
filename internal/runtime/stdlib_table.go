@@ -220,6 +220,270 @@ func buildTableLib() *Table {
 		return []Value{TableValue(tbl)}, nil
 	})
 
+	// table.keys(t) -- return array table of all keys (any type)
+	set("keys", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.keys' (table expected)")
+		}
+		tbl := args[0].Table()
+		result := NewTable()
+		idx := int64(1)
+		k, _, ok := tbl.Next(NilValue())
+		for ok {
+			result.RawSet(IntValue(idx), k)
+			idx++
+			k, _, ok = tbl.Next(k)
+		}
+		return []Value{TableValue(result)}, nil
+	})
+
+	// table.values(t) -- return array table of all values
+	set("values", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.values' (table expected)")
+		}
+		tbl := args[0].Table()
+		result := NewTable()
+		idx := int64(1)
+		k, v, ok := tbl.Next(NilValue())
+		for ok {
+			result.RawSet(IntValue(idx), v)
+			idx++
+			k, v, ok = tbl.Next(k)
+		}
+		return []Value{TableValue(result)}, nil
+	})
+
+	// table.contains(t, v) -- bool: linear search for value v
+	set("contains", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.contains' (table expected)")
+		}
+		tbl := args[0].Table()
+		target := args[1]
+		k, v, ok := tbl.Next(NilValue())
+		for ok {
+			if v.Equal(target) {
+				return []Value{BoolValue(true)}, nil
+			}
+			k, v, ok = tbl.Next(k)
+		}
+		return []Value{BoolValue(false)}, nil
+	})
+
+	// table.indexOf(t, v) -- int key of first occurrence of v, or nil
+	set("indexOf", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.indexOf' (table expected)")
+		}
+		tbl := args[0].Table()
+		target := args[1]
+		length := tbl.Length()
+		for i := int64(1); i <= int64(length); i++ {
+			if tbl.RawGet(IntValue(i)).Equal(target) {
+				return []Value{IntValue(i)}, nil
+			}
+		}
+		return []Value{NilValue()}, nil
+	})
+
+	// table.copy(t) -- shallow copy (new table with same key-value pairs)
+	set("copy", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.copy' (table expected)")
+		}
+		src := args[0].Table()
+		dst := NewTable()
+		k, v, ok := src.Next(NilValue())
+		for ok {
+			dst.RawSet(k, v)
+			k, v, ok = src.Next(k)
+		}
+		return []Value{TableValue(dst)}, nil
+	})
+
+	// table.merge(t1, t2) -- copy all entries from t2 into t1 (in-place), return t1
+	set("merge", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsTable() || !args[1].IsTable() {
+			return nil, fmt.Errorf("bad argument to 'table.merge' (table expected)")
+		}
+		t1 := args[0].Table()
+		t2 := args[1].Table()
+		k, v, ok := t2.Next(NilValue())
+		for ok {
+			t1.RawSet(k, v)
+			k, v, ok = t2.Next(k)
+		}
+		return []Value{TableValue(t1)}, nil
+	})
+
+	// table.count(t) -- count ALL entries including non-integer keys (unlike #t)
+	set("count", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.count' (table expected)")
+		}
+		tbl := args[0].Table()
+		count := int64(0)
+		k, _, ok := tbl.Next(NilValue())
+		for ok {
+			count++
+			k, _, ok = tbl.Next(k)
+		}
+		return []Value{IntValue(count)}, nil
+	})
+
+	// table.toArray(t) -- convert hash-table to array by taking values in pairs order
+	set("toArray", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.toArray' (table expected)")
+		}
+		src := args[0].Table()
+		result := NewTable()
+		idx := int64(1)
+		k, v, ok := src.Next(NilValue())
+		for ok {
+			result.RawSet(IntValue(idx), v)
+			idx++
+			k, v, ok = src.Next(k)
+		}
+		return []Value{TableValue(result)}, nil
+	})
+
+	// table.fromArray(arr, keyFn) -- convert array to table using keyFn(v) as key
+	// Note: keyFn must be a GoFunction (no interp needed)
+	set("fromArray", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsTable() || !args[1].IsFunction() {
+			return nil, fmt.Errorf("bad argument to 'table.fromArray'")
+		}
+		arr := args[0].Table()
+		keyFn := args[1]
+		gf := keyFn.GoFunction()
+		if gf == nil {
+			return nil, fmt.Errorf("table.fromArray: keyFn must be a Go function (use table library with interp for closures)")
+		}
+		result := NewTable()
+		length := arr.Length()
+		for i := int64(1); i <= int64(length); i++ {
+			v := arr.RawGet(IntValue(i))
+			keys, err := gf.Fn([]Value{v})
+			if err != nil {
+				return nil, err
+			}
+			if len(keys) > 0 {
+				result.RawSet(keys[0], v)
+			}
+		}
+		return []Value{TableValue(result)}, nil
+	})
+
+	// table.unique(t) -- remove duplicate values from array, return new array
+	set("unique", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.unique' (table expected)")
+		}
+		tbl := args[0].Table()
+		result := NewTable()
+		seen := make(map[Value]bool)
+		length := tbl.Length()
+		idx := int64(1)
+		for i := int64(1); i <= int64(length); i++ {
+			v := tbl.RawGet(IntValue(i))
+			if !seen[v] {
+				seen[v] = true
+				result.RawSet(IntValue(idx), v)
+				idx++
+			}
+		}
+		return []Value{TableValue(result)}, nil
+	})
+
+	// table.flatten(t [, depth]) -- flatten nested arrays to depth levels (default: all)
+	set("flatten", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.flatten' (table expected)")
+		}
+		maxDepth := -1 // -1 means unlimited
+		if len(args) >= 2 {
+			maxDepth = int(toInt(args[1]))
+		}
+		result := NewTable()
+		idx := int64(1)
+		var flattenHelper func(tbl *Table, depth int)
+		flattenHelper = func(tbl *Table, depth int) {
+			length := tbl.Length()
+			for i := int64(1); i <= int64(length); i++ {
+				v := tbl.RawGet(IntValue(i))
+				if v.IsTable() && (maxDepth < 0 || depth < maxDepth) {
+					flattenHelper(v.Table(), depth+1)
+				} else {
+					result.RawSet(IntValue(idx), v)
+					idx++
+				}
+			}
+		}
+		flattenHelper(args[0].Table(), 0)
+		return []Value{TableValue(result)}, nil
+	})
+
+	// table.zip(t1, t2) -- zip two arrays: {{t1[1],t2[1]}, {t1[2],t2[2]}, ...}
+	set("zip", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsTable() || !args[1].IsTable() {
+			return nil, fmt.Errorf("bad argument to 'table.zip' (table expected)")
+		}
+		t1 := args[0].Table()
+		t2 := args[1].Table()
+		len1 := t1.Length()
+		len2 := t2.Length()
+		minLen := len1
+		if len2 < minLen {
+			minLen = len2
+		}
+		result := NewTable()
+		for i := int64(1); i <= int64(minLen); i++ {
+			pair := NewTable()
+			pair.RawSet(IntValue(1), t1.RawGet(IntValue(i)))
+			pair.RawSet(IntValue(2), t2.RawGet(IntValue(i)))
+			result.RawSet(IntValue(i), TableValue(pair))
+		}
+		return []Value{TableValue(result)}, nil
+	})
+
+	// table.reverse(t) -- reverse array in place, return t
+	set("reverse", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument #1 to 'table.reverse' (table expected)")
+		}
+		tbl := args[0].Table()
+		length := tbl.Length()
+		for i, j := int64(1), int64(length); i < j; i, j = i+1, j-1 {
+			vi := tbl.RawGet(IntValue(i))
+			vj := tbl.RawGet(IntValue(j))
+			tbl.RawSet(IntValue(i), vj)
+			tbl.RawSet(IntValue(j), vi)
+		}
+		return []Value{TableValue(tbl)}, nil
+	})
+
+	// table.slice(t, from [, to]) -- return new array (1-based, from..to inclusive)
+	set("slice", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsTable() {
+			return nil, fmt.Errorf("bad argument to 'table.slice'")
+		}
+		tbl := args[0].Table()
+		from := toInt(args[1])
+		to := int64(tbl.Length())
+		if len(args) >= 3 {
+			to = toInt(args[2])
+		}
+		result := NewTable()
+		idx := int64(1)
+		for i := from; i <= to; i++ {
+			result.RawSet(IntValue(idx), tbl.RawGet(IntValue(i)))
+			idx++
+		}
+		return []Value{TableValue(result)}, nil
+	})
+
 	return t
 }
 
@@ -276,6 +540,114 @@ func buildTableSortWithInterp(interp *Interpreter, tblLib *Table) {
 				tbl.RawSet(IntValue(int64(i+1)), v)
 			}
 			return nil, nil
+		},
+	}))
+}
+
+// buildTableHigherOrderWithInterp adds filter, map, reduce to the table library.
+// These need the interpreter to call GScript closures.
+func buildTableHigherOrderWithInterp(interp *Interpreter, tblLib *Table) {
+	// table.filter(t, f) -- return new array of values where f(v, k) is truthy
+	tblLib.RawSet(StringValue("filter"), FunctionValue(&GoFunction{
+		Name: "table.filter",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 2 || !args[0].IsTable() || !args[1].IsFunction() {
+				return nil, fmt.Errorf("bad argument to 'table.filter'")
+			}
+			tbl := args[0].Table()
+			fn := args[1]
+			result := NewTable()
+			idx := int64(1)
+			length := tbl.Length()
+			for i := int64(1); i <= int64(length); i++ {
+				v := tbl.RawGet(IntValue(i))
+				results, err := interp.callFunction(fn, []Value{v, IntValue(i)})
+				if err != nil {
+					return nil, err
+				}
+				if len(results) > 0 && results[0].Truthy() {
+					result.RawSet(IntValue(idx), v)
+					idx++
+				}
+			}
+			return []Value{TableValue(result)}, nil
+		},
+	}))
+
+	// table.map(t, f) -- return new array/table with f(v, k) applied to each value
+	tblLib.RawSet(StringValue("map"), FunctionValue(&GoFunction{
+		Name: "table.map",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 2 || !args[0].IsTable() || !args[1].IsFunction() {
+				return nil, fmt.Errorf("bad argument to 'table.map'")
+			}
+			tbl := args[0].Table()
+			fn := args[1]
+			result := NewTable()
+			length := tbl.Length()
+			for i := int64(1); i <= int64(length); i++ {
+				v := tbl.RawGet(IntValue(i))
+				results, err := interp.callFunction(fn, []Value{v, IntValue(i)})
+				if err != nil {
+					return nil, err
+				}
+				if len(results) > 0 {
+					result.RawSet(IntValue(i), results[0])
+				} else {
+					result.RawSet(IntValue(i), NilValue())
+				}
+			}
+			return []Value{TableValue(result)}, nil
+		},
+	}))
+
+	// table.reduce(t, f, init) -- fold: acc = f(acc, v) for each value, return acc
+	tblLib.RawSet(StringValue("reduce"), FunctionValue(&GoFunction{
+		Name: "table.reduce",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 3 || !args[0].IsTable() || !args[1].IsFunction() {
+				return nil, fmt.Errorf("bad argument to 'table.reduce'")
+			}
+			tbl := args[0].Table()
+			fn := args[1]
+			acc := args[2]
+			length := tbl.Length()
+			for i := int64(1); i <= int64(length); i++ {
+				v := tbl.RawGet(IntValue(i))
+				results, err := interp.callFunction(fn, []Value{acc, v})
+				if err != nil {
+					return nil, err
+				}
+				if len(results) > 0 {
+					acc = results[0]
+				}
+			}
+			return []Value{acc}, nil
+		},
+	}))
+
+	// Also add fromArray with interp support for closures
+	tblLib.RawSet(StringValue("fromArray"), FunctionValue(&GoFunction{
+		Name: "table.fromArray",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 2 || !args[0].IsTable() || !args[1].IsFunction() {
+				return nil, fmt.Errorf("bad argument to 'table.fromArray'")
+			}
+			arr := args[0].Table()
+			keyFn := args[1]
+			result := NewTable()
+			length := arr.Length()
+			for i := int64(1); i <= int64(length); i++ {
+				v := arr.RawGet(IntValue(i))
+				keys, err := interp.callFunction(keyFn, []Value{v})
+				if err != nil {
+					return nil, err
+				}
+				if len(keys) > 0 {
+					result.RawSet(keys[0], v)
+				}
+			}
+			return []Value{TableValue(result)}, nil
 		},
 	}))
 }

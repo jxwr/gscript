@@ -1,3 +1,10 @@
+//go:build ignore
+// +build ignore
+
+// stdlib_gl.go: legacy OpenGL+GLFW drawing library (superseded by stdlib_rl.go / raylib).
+// Disabled to avoid GLFW symbol conflicts with raylib-go's bundled GLFW.
+// Use rl.* instead for game development.
+
 package runtime
 
 import (

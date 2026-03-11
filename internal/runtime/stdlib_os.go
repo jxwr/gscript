@@ -105,6 +105,62 @@ func buildOSLib() *Table {
 		return []Value{StringValue(name)}, nil
 	})
 
+	// os.setenv(key, value) -- set environment variable
+	set("setenv", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
+			return nil, fmt.Errorf("bad argument to 'os.setenv' (string expected)")
+		}
+		err := os.Setenv(args[0].Str(), args[1].Str())
+		if err != nil {
+			return []Value{NilValue(), StringValue(err.Error())}, nil
+		}
+		return []Value{BoolValue(true)}, nil
+	})
+
+	// os.unsetenv(key) -- unset environment variable
+	set("unsetenv", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument #1 to 'os.unsetenv' (string expected)")
+		}
+		err := os.Unsetenv(args[0].Str())
+		if err != nil {
+			return []Value{NilValue(), StringValue(err.Error())}, nil
+		}
+		return []Value{BoolValue(true)}, nil
+	})
+
+	// os.args() -- return table of os.Args (command line arguments)
+	set("args", func(args []Value) ([]Value, error) {
+		tbl := NewTable()
+		for i, arg := range os.Args {
+			tbl.RawSet(IntValue(int64(i+1)), StringValue(arg))
+		}
+		return []Value{TableValue(tbl)}, nil
+	})
+
+	// os.hostname() -- get hostname
+	set("hostname", func(args []Value) ([]Value, error) {
+		name, err := os.Hostname()
+		if err != nil {
+			return []Value{NilValue(), StringValue(err.Error())}, nil
+		}
+		return []Value{StringValue(name)}, nil
+	})
+
+	// os.getpid() -- get process ID as int
+	set("getpid", func(args []Value) ([]Value, error) {
+		return []Value{IntValue(int64(os.Getpid()))}, nil
+	})
+
+	// os.expand(s) -- expand $VAR and ${VAR} in string using os.Expand
+	set("expand", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument #1 to 'os.expand' (string expected)")
+		}
+		result := os.ExpandEnv(args[0].Str())
+		return []Value{StringValue(result)}, nil
+	})
+
 	return t
 }
 

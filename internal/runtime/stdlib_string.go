@@ -3,7 +3,9 @@ package runtime
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 // buildStringLib creates the "string" standard library table and returns it.
@@ -471,7 +473,7 @@ func buildStringLib() *Table {
 		return []Value{StringValue(buf.String())}, nil
 	})
 
-	// string.split(s, sep) -> table (non-standard but useful)
+	// string.split(s, sep) -> table. sep="" splits by byte
 	set("split", func(args []Value) ([]Value, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("bad argument to 'string.split'")
@@ -481,12 +483,204 @@ func buildStringLib() *Table {
 		}
 		s := args[0].Str()
 		sep := args[1].Str()
-		parts := strings.Split(s, sep)
 		tbl := NewTable()
-		for i, p := range parts {
-			tbl.RawSet(IntValue(int64(i+1)), StringValue(p))
+		if sep == "" {
+			// Split by byte
+			for i := 0; i < len(s); i++ {
+				tbl.RawSet(IntValue(int64(i+1)), StringValue(string(s[i])))
+			}
+		} else {
+			parts := strings.Split(s, sep)
+			for i, p := range parts {
+				tbl.RawSet(IntValue(int64(i+1)), StringValue(p))
+			}
 		}
 		return []Value{TableValue(tbl)}, nil
+	})
+
+	// string.trim(s [, cutset]) -- trim leading/trailing whitespace (or chars in cutset)
+	set("trim", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument #1 to 'string.trim' (string expected)")
+		}
+		s := args[0].Str()
+		if len(args) >= 2 && args[1].IsString() {
+			return []Value{StringValue(strings.Trim(s, args[1].Str()))}, nil
+		}
+		return []Value{StringValue(strings.TrimSpace(s))}, nil
+	})
+
+	// string.trimLeft(s [, cutset])
+	set("trimLeft", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument #1 to 'string.trimLeft' (string expected)")
+		}
+		s := args[0].Str()
+		if len(args) >= 2 && args[1].IsString() {
+			return []Value{StringValue(strings.TrimLeft(s, args[1].Str()))}, nil
+		}
+		return []Value{StringValue(strings.TrimLeftFunc(s, unicode.IsSpace))}, nil
+	})
+
+	// string.trimRight(s [, cutset])
+	set("trimRight", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument #1 to 'string.trimRight' (string expected)")
+		}
+		s := args[0].Str()
+		if len(args) >= 2 && args[1].IsString() {
+			return []Value{StringValue(strings.TrimRight(s, args[1].Str()))}, nil
+		}
+		return []Value{StringValue(strings.TrimRightFunc(s, unicode.IsSpace))}, nil
+	})
+
+	// string.hasPrefix(s, prefix) -> bool
+	set("hasPrefix", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
+			return nil, fmt.Errorf("bad argument to 'string.hasPrefix' (string expected)")
+		}
+		return []Value{BoolValue(strings.HasPrefix(args[0].Str(), args[1].Str()))}, nil
+	})
+
+	// string.hasSuffix(s, suffix) -> bool
+	set("hasSuffix", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
+			return nil, fmt.Errorf("bad argument to 'string.hasSuffix' (string expected)")
+		}
+		return []Value{BoolValue(strings.HasSuffix(args[0].Str(), args[1].Str()))}, nil
+	})
+
+	// string.contains(s, substr) -> bool
+	set("contains", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
+			return nil, fmt.Errorf("bad argument to 'string.contains' (string expected)")
+		}
+		return []Value{BoolValue(strings.Contains(args[0].Str(), args[1].Str()))}, nil
+	})
+
+	// string.count(s, substr) -> int
+	set("count", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
+			return nil, fmt.Errorf("bad argument to 'string.count' (string expected)")
+		}
+		return []Value{IntValue(int64(strings.Count(args[0].Str(), args[1].Str())))}, nil
+	})
+
+	// string.replaceAll(s, old, new) -- plain string replace all
+	set("replaceAll", func(args []Value) ([]Value, error) {
+		if len(args) < 3 || !args[0].IsString() || !args[1].IsString() || !args[2].IsString() {
+			return nil, fmt.Errorf("bad argument to 'string.replaceAll' (string expected)")
+		}
+		return []Value{StringValue(strings.ReplaceAll(args[0].Str(), args[1].Str(), args[2].Str()))}, nil
+	})
+
+	// string.join(t, sep) -- join table of strings with separator
+	set("join", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsTable() || !args[1].IsString() {
+			return nil, fmt.Errorf("bad argument to 'string.join'")
+		}
+		tbl := args[0].Table()
+		sep := args[1].Str()
+		length := tbl.Length()
+		parts := make([]string, length)
+		for i := 0; i < length; i++ {
+			parts[i] = tbl.RawGet(IntValue(int64(i + 1))).String()
+		}
+		return []Value{StringValue(strings.Join(parts, sep))}, nil
+	})
+
+	// string.title(s) -- capitalize first letter of each word
+	set("title", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument #1 to 'string.title' (string expected)")
+		}
+		s := args[0].Str()
+		// Capitalize first letter of each word
+		prev := ' '
+		result := make([]rune, 0, len(s))
+		for _, r := range s {
+			if unicode.IsSpace(rune(prev)) {
+				result = append(result, unicode.ToUpper(r))
+			} else {
+				result = append(result, r)
+			}
+			prev = r
+		}
+		return []Value{StringValue(string(result))}, nil
+	})
+
+	// string.padLeft(s, n [, char]) -- pad with char (default space) on left to width n
+	set("padLeft", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument to 'string.padLeft'")
+		}
+		s := args[0].Str()
+		n := int(toInt(args[1]))
+		pad := " "
+		if len(args) >= 3 && args[2].IsString() {
+			pad = args[2].Str()
+		}
+		if pad == "" {
+			pad = " "
+		}
+		for len(s) < n {
+			s = pad + s
+		}
+		// Trim to exact width if pad added too much
+		if len(s) > n {
+			s = s[len(s)-n:]
+		}
+		return []Value{StringValue(s)}, nil
+	})
+
+	// string.padRight(s, n [, char]) -- pad on right
+	set("padRight", func(args []Value) ([]Value, error) {
+		if len(args) < 2 || !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument to 'string.padRight'")
+		}
+		s := args[0].Str()
+		n := int(toInt(args[1]))
+		pad := " "
+		if len(args) >= 3 && args[2].IsString() {
+			pad = args[2].Str()
+		}
+		if pad == "" {
+			pad = " "
+		}
+		for len(s) < n {
+			s = s + pad
+		}
+		// Trim to exact width
+		if len(s) > n {
+			s = s[:n]
+		}
+		return []Value{StringValue(s)}, nil
+	})
+
+	// string.repeat(s, n) -- alias for string.rep
+	set("repeat", func(args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("bad argument to 'string.repeat'")
+		}
+		if !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument #1 to 'string.repeat' (string expected)")
+		}
+		s := args[0].Str()
+		n := int(toInt(args[1]))
+		if n <= 0 {
+			return []Value{StringValue("")}, nil
+		}
+		return []Value{StringValue(strings.Repeat(s, n))}, nil
+	})
+
+	// string.isNumeric(s) -> bool
+	set("isNumeric", func(args []Value) ([]Value, error) {
+		if len(args) < 1 || !args[0].IsString() {
+			return nil, fmt.Errorf("bad argument #1 to 'string.isNumeric' (string expected)")
+		}
+		s := strings.TrimSpace(args[0].Str())
+		_, err := strconv.ParseFloat(s, 64)
+		return []Value{BoolValue(err == nil && s != "")}, nil
 	})
 
 	return t

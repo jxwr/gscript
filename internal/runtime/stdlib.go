@@ -11,9 +11,10 @@ func (interp *Interpreter) registerStdlib() {
 	interp.stringMeta = NewTable()
 	interp.stringMeta.RawSet(StringValue("__index"), TableValue(strLib))
 
-	// Table library
+	// Table library (sort + higher-order functions need interp)
 	tblLib := buildTableLib()
 	buildTableSortWithInterp(interp, tblLib)
+	buildTableHigherOrderWithInterp(interp, tblLib)
 	interp.globals.Define("table", TableValue(tblLib))
 
 	// Math library
@@ -25,45 +26,44 @@ func (interp *Interpreter) registerStdlib() {
 	// OS library
 	interp.globals.Define("os", TableValue(buildOSLib()))
 
-	// HTTP library
+	// HTTP server library
 	interp.globals.Define("http", TableValue(httpLib(interp)))
 
-	// GL library (OpenGL + GLFW)
-	interp.globals.Define("gl", TableValue(glLib(interp)))
+	// Raylib game library (window, drawing, input, audio)
+	interp.globals.Define("rl", TableValue(rlLib(interp)))
 
-	// JSON library
+	// --- Encoding / Crypto ---
 	interp.globals.Define("json", TableValue(buildJSONLib()))
-
-	// Base64 library
 	interp.globals.Define("base64", TableValue(buildBase64Lib()))
-
-	// Hash library
 	interp.globals.Define("hash", TableValue(buildHashLib()))
 
-	// File system library
+	// --- File system & paths ---
 	interp.globals.Define("fs", TableValue(buildFSLib()))
-
-	// Path library
 	interp.globals.Define("path", TableValue(buildPathLib()))
 
-	// Time library
+	// --- Time & networking ---
 	interp.globals.Define("time", TableValue(buildTimeLib()))
-
-	// Net library (HTTP client)
 	interp.globals.Define("net", TableValue(buildNetLib()))
 
-	// Vec library (2D/3D vectors)
-	interp.globals.Define("vec", TableValue(buildVecLib()))
+	// --- System ---
+	interp.globals.Define("process", TableValue(buildProcessLib()))
 
-	// Color library
+	// --- Data formats ---
+	interp.globals.Define("csv", TableValue(buildCSVLib()))
+	interp.globals.Define("url", TableValue(buildURLLib()))
+
+	// --- Utilities ---
+	interp.globals.Define("uuid", TableValue(buildUUIDLib()))
+	interp.globals.Define("bytes", TableValue(buildBytesLib()))
+
+	// --- Game math ---
+	interp.globals.Define("vec", TableValue(buildVecLib()))
 	interp.globals.Define("color", TableValue(buildColorLib()))
 
-	// Regexp library
+	// --- Text processing ---
 	interp.globals.Define("regexp", TableValue(buildRegexpLib()))
-
-	// UTF-8 library
 	interp.globals.Define("utf8", TableValue(buildUTF8Lib()))
 
-	// Bit32 library
+	// --- Low-level ---
 	interp.globals.Define("bit32", TableValue(buildBit32Lib()))
 }

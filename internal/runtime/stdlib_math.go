@@ -241,7 +241,7 @@ func buildMathLib() *Table {
 		return []Value{BoolValue(false)}, nil
 	})
 
-	// math.tointeger(x)
+	// math.tointeger(x) -- convert float to int (exact), nil if not exact
 	set("tointeger", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
 			return []Value{NilValue()}, nil
@@ -257,6 +257,103 @@ func buildMathLib() *Table {
 			}
 		}
 		return []Value{NilValue()}, nil
+	})
+
+	// math.clamp(x, min, max) -- clamp x to [min, max] range
+	set("clamp", func(args []Value) ([]Value, error) {
+		if len(args) < 3 {
+			return nil, fmt.Errorf("bad argument to 'math.clamp' (3 arguments expected)")
+		}
+		x := toFloat(args[0])
+		mn := toFloat(args[1])
+		mx := toFloat(args[2])
+		if x < mn {
+			x = mn
+		} else if x > mx {
+			x = mx
+		}
+		// If all args are ints, return int
+		if args[0].IsInt() && args[1].IsInt() && args[2].IsInt() {
+			return []Value{IntValue(int64(x))}, nil
+		}
+		return []Value{FloatValue(x)}, nil
+	})
+
+	// math.lerp(a, b, t) -- linear interpolation: a + (b-a)*t
+	set("lerp", func(args []Value) ([]Value, error) {
+		if len(args) < 3 {
+			return nil, fmt.Errorf("bad argument to 'math.lerp' (3 arguments expected)")
+		}
+		a := toFloat(args[0])
+		b := toFloat(args[1])
+		t := toFloat(args[2])
+		return []Value{FloatValue(a + (b-a)*t)}, nil
+	})
+
+	// math.sign(x) -- -1, 0, or 1
+	set("sign", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("bad argument #1 to 'math.sign'")
+		}
+		x := toFloat(args[0])
+		if x > 0 {
+			return []Value{IntValue(1)}, nil
+		} else if x < 0 {
+			return []Value{IntValue(-1)}, nil
+		}
+		return []Value{IntValue(0)}, nil
+	})
+
+	// math.round(x [, n]) -- round to n decimal places (n=0 rounds to integer)
+	set("round", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("bad argument #1 to 'math.round'")
+		}
+		x := toFloat(args[0])
+		n := int64(0)
+		if len(args) >= 2 {
+			n = toInt(args[1])
+		}
+		if n == 0 {
+			return []Value{IntValue(int64(math.Round(x)))}, nil
+		}
+		factor := math.Pow(10, float64(n))
+		return []Value{FloatValue(math.Round(x*factor) / factor)}, nil
+	})
+
+	// math.trunc(x) -- truncate toward zero
+	set("trunc", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("bad argument #1 to 'math.trunc'")
+		}
+		if args[0].IsInt() {
+			return []Value{args[0]}, nil
+		}
+		return []Value{IntValue(int64(math.Trunc(toFloat(args[0]))))}, nil
+	})
+
+	// math.hypot(x, y) -- sqrt(x*x + y*y)
+	set("hypot", func(args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("bad argument to 'math.hypot'")
+		}
+		return []Value{FloatValue(math.Hypot(toFloat(args[0]), toFloat(args[1])))}, nil
+	})
+
+	// math.isnan(x) -> bool
+	set("isnan", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("bad argument #1 to 'math.isnan'")
+		}
+		return []Value{BoolValue(math.IsNaN(toFloat(args[0])))}, nil
+	})
+
+	// math.isinf(x) -> bool
+	set("isinf", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("bad argument #1 to 'math.isinf'")
+		}
+		return []Value{BoolValue(math.IsInf(toFloat(args[0]), 0))}, nil
 	})
 
 	return t
