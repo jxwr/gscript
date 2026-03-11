@@ -1,9 +1,14 @@
 # GScript
 
+> **AI Experiment**: This project was built entirely by an AI agent (Claude) to test the limits of AI capability in designing and implementing a complete programming language interpreter from scratch — including lexer, parser, AST, runtime, type system, closures, metatables, coroutines, standard library, embedding API, and OpenGL-based game engine. See [About this Project](#about-this-project) for details.
+
+---
+
 GScript is a scripting language with **Go-like syntax and Lua semantics**, implemented in Go and executed via a tree-walking interpreter.
 
 - Syntax close to Go (`:=` declarations, `func`, `for`, `if`)
 - Full Lua semantics (table, metatable, closure, coroutine, multiple return values)
+- Embeddable in Go programs via a clean reflection-based API
 - Built-in HTTP server and OpenGL 2D drawing support
 
 ```
@@ -62,6 +67,8 @@ ok := true
 nothing := nil
 ```
 
+Truthiness follows Lua rules: **only `nil` and `false` are falsy**; `0` and `""` are truthy.
+
 ---
 
 ### 2. Operators
@@ -85,10 +92,11 @@ nothing := nil
 1 < 2     // true
 1 <= 1    // true
 
-// Logic (short-circuit)
+// Logic (short-circuit, return operand not bool)
 true && false   // false
 true || false   // true
 !true           // false
+nil || "default"  // "default"  (idiomatic default value)
 
 // Compound assignment
 x += 1
@@ -111,6 +119,9 @@ a, b := 1, 2
 // Assignment (=)
 x = 20
 a, b = b, a   // swap
+
+// Multiple assignment from function
+q, r := divmod(17, 5)
 ```
 
 ---
@@ -204,14 +215,21 @@ print(fib(10))  // 55
 apply := func(f, x) { return f(x) }
 double := func(x) { return x * 2 }
 print(apply(double, 21))  // 42
+
+// Function as table field
+ops := {
+    add: func(a, b) { return a + b },
+    mul: func(a, b) { return a * b },
+}
+print(ops.add(3, 4))  // 7
 ```
 
 #### Variadic functions
 
 ```go
-func sum(...) {
+func sum(...args) {
     total := 0
-    for _, v := range ... {
+    for _, v := range args {
         total = total + v
     }
     return total
@@ -223,7 +241,7 @@ print(sum(1, 2, 3, 4, 5))  // 15
 
 ### 6. Closures / Upvalues
 
-GScript supports full lexical closures. Multiple closures from the same scope share the same upvalue reference.
+GScript supports full lexical closures. Multiple closures from the same scope share the same upvalue reference — mutations are visible to all.
 
 ```go
 func makeCounter(start) {
@@ -251,6 +269,25 @@ get := func() { return x }
 inc()
 inc()
 print(get())  // 2
+```
+
+```go
+// Memoization
+func memoize(f) {
+    cache := {}
+    return func(n) {
+        if cache[n] != nil { return cache[n] }
+        result := f(n)
+        cache[n] = result
+        return result
+    }
+}
+
+fib := memoize(func(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+})
+print(fib(30))  // 832040 (fast)
 ```
 
 ---
@@ -284,40 +321,19 @@ person.email = "alice@example.com"
 // Nested
 matrix := {{1,2,3},{4,5,6},{7,8,9}}
 print(matrix[2][2])  // 5
+
+// Iteration
+t := {a: 1, b: 2, c: 3}
+for k, v := range t {
+    print(k, v)
+}
 ```
 
 ---
 
 ### 8. Metatable
 
-All 14 Lua metamethods are supported, enabling operator overloading, OOP inheritance, and more.
-
-```go
-// __index for OOP inheritance
-Animal := {}
-Animal.new = func(name) {
-    self := {name: name}
-    setmetatable(self, {__index: Animal})
-    return self
-}
-Animal.speak = func(self) {
-    return self.name .. " makes a sound"
-}
-
-Dog := {}
-setmetatable(Dog, {__index: Animal})
-Dog.speak = func(self) {
-    return self.name .. " says woof!"
-}
-Dog.new = func(name) {
-    self := Animal.new(name)
-    setmetatable(self, {__index: Dog})
-    return self
-}
-
-rex := Dog.new("Rex")
-print(rex.speak(rex))  // Rex says woof!
-```
+All 14 Lua metamethods are supported, enabling operator overloading, OOP inheritance, and reactive patterns.
 
 ```go
 // Operator overloading
@@ -329,6 +345,8 @@ Vec2.new = func(x, y) {
     return v
 }
 Vec2.__add = func(a, b) { return Vec2.new(a.x+b.x, a.y+b.y) }
+Vec2.__sub = func(a, b) { return Vec2.new(a.x-b.x, a.y-b.y) }
+Vec2.__mul = func(a, b) { return a.x*b.x + a.y*b.y }  // dot product
 Vec2.__eq  = func(a, b) { return a.x==b.x && a.y==b.y }
 
 v1 := Vec2.new(1, 2)
@@ -337,12 +355,58 @@ v3 := v1 + v2
 print(v3.x, v3.y)  // 4  6
 ```
 
+```go
+// __index for OOP inheritance
+func Class(parent) {
+    cls := {}
+    cls.__index = cls
+    if parent != nil {
+        setmetatable(cls, {__index: parent})
+    }
+    cls.new = func(...) {
+        inst := {}
+        setmetatable(inst, cls)
+        if cls.init != nil { cls.init(inst, ...) }
+        return inst
+    }
+    return cls
+}
+
+Animal := Class(nil)
+Animal.init  = func(self, name) { self.name = name }
+Animal.speak = func(self) { return self.name .. " makes a sound" }
+
+Dog := Class(Animal)
+Dog.speak = func(self) { return self.name .. " says woof!" }
+
+rex := Dog.new("Rex")
+print(rex.speak(rex))  // Rex says woof!
+```
+
+```go
+// Read-only table via __newindex
+func readonly(t)  {
+    proxy := {}
+    setmetatable(proxy, {
+        __index: t,
+        __newindex: func(_, k, v) {
+            error("attempt to modify read-only table")
+        },
+    })
+    return proxy
+}
+
+config := readonly({host: "localhost", port: 8080})
+print(config.host)  // localhost
+config.host = "x"   // error: attempt to modify read-only table
+```
+
 **Supported metamethods:**
 
 | Metamethod | Triggered by |
 |------------|-------------|
-| `__index` | Reading a missing field |
-| `__newindex` | Writing a missing field |
+| `__index` | Reading a missing field (table or function) |
+| `__newindex` | Writing a missing field (table or function) |
 | `__add` | `a + b` |
 | `__sub` | `a - b` |
 | `__mul` | `a * b` |
@@ -400,9 +464,33 @@ co := coroutine.create(func(init) {
     }
 })
 
-_, v := coroutine.resume(co, 1)   // start with 1, v=2
-_, v  = coroutine.resume(co, 3)   // send 3, v=6
-_, v  = coroutine.resume(co, 5)   // send 5, v=10
+_, v := coroutine.resume(co, 1)   // start with 1 → v=2
+_, v  = coroutine.resume(co, 3)   // send 3 → v=6
+_, v  = coroutine.resume(co, 5)   // send 5 → v=10
+```
+
+```go
+// Producer-consumer pipeline
+func producer() {
+    return coroutine.create(func() {
+        data := {1, 4, 9, 16, 25}
+        for _, v := range data {
+            coroutine.yield(v)
+        }
+    })
+}
+
+func consumer(prod) {
+    total := 0
+    for {
+        ok, v := coroutine.resume(prod)
+        if !ok || v == nil { break }
+        total = total + v
+    }
+    return total
+}
+
+print(consumer(producer()))  // 55
 ```
 
 **API:**
@@ -412,7 +500,7 @@ _, v  = coroutine.resume(co, 5)   // send 5, v=10
 | `coroutine.create(f)` | Create a coroutine |
 | `coroutine.resume(co, ...)` | Resume execution, returns `ok, values...` |
 | `coroutine.yield(...)` | Suspend, returns values passed to next resume |
-| `coroutine.wrap(f)` | Returns a function that resumes the coroutine each call |
+| `coroutine.wrap(f)` | Returns a function that resumes on each call |
 | `coroutine.status(co)` | `"suspended"` / `"running"` / `"dead"` |
 | `coroutine.isyieldable()` | Whether currently inside a coroutine |
 
@@ -449,6 +537,21 @@ ok2, e2 := pcall(func() {
     assert(false, "failed!")
 })
 print(e2)  // failed!
+```
+
+```go
+// Result-type pattern (no exceptions in normal flow)
+func safeDivide(a, b) {
+    if b == 0 { return nil, "division by zero" }
+    return a / b, nil
+}
+
+result, err := safeDivide(10, 0)
+if err != nil {
+    print("Error:", err)
+} else {
+    print("Result:", result)
+}
 ```
 
 ---
@@ -491,10 +594,6 @@ for word := range string.gmatch("one two three", "%a+") {
 string.format("%d + %d = %d", 1, 2, 3)      // "1 + 2 = 3"
 string.format("%.2f", 3.14159)               // "3.14"
 string.format("%s is %d years old", "Alice", 30)
-
-// String methods via metatable
-("hello"):upper()     // "HELLO"
-("  hi  "):sub(3, 4)  // "hi"
 ```
 
 **Lua pattern classes:**
@@ -564,7 +663,6 @@ math.randomseed(42)
 
 math.type(1)     // "integer"
 math.type(1.0)   // "float"
-math.type("x")   // false
 ```
 
 ---
@@ -576,10 +674,9 @@ io.write("hello ")    // write without newline
 io.write("world\n")
 
 line := io.read()     // read a line
-num  := io.read("*n") // read a number
 all  := io.read("*a") // read all input
 
--- File I/O
+// File I/O
 f := io.open("data.txt", "r")
 content := f.read("*a")
 f.close()
@@ -607,14 +704,14 @@ os.exit(0)          // exit process
 
 ```go
 print(...)                 // print tab-separated values with newline
-type(v)                    // return type name string
+type(v)                    // "nil" | "boolean" | "number" | "string" | "table" | "function" | "coroutine"
 tostring(v)                // convert to string
-tonumber(s [, base])       // convert to number
+tonumber(s [, base])       // convert to number (returns nil on failure)
 #v                         // length of string or table
 
-pairs(t)                   // iterate all key-value pairs in table
+pairs(t)                   // iterate all key-value pairs
 ipairs(t)                  // iterate array part (keys 1, 2, 3, ...)
-next(t [, key])            // low-level iterator function
+next(t [, key])            // low-level iterator
 select(n, ...)             // return arguments from index n
 unpack(t [, i [, j]])      // unpack table to multiple values
 
@@ -624,10 +721,10 @@ rawget(t, k)               // get without __index
 rawset(t, k, v)            // set without __newindex
 rawequal(a, b)             // compare without __eq
 
-pcall(f, ...)              // protected call
+pcall(f, ...)              // protected call → ok, results...
 xpcall(f, handler, ...)    // protected call with message handler
 error(msg)                 // raise an error
-assert(v [, msg])          // assert condition
+assert(v [, msg])          // assert condition, raise if falsy
 
 require(name)              // load a module
 dofile(path)               // execute a file
@@ -641,15 +738,7 @@ loadstring(src)            // compile source string to function
 Built-in `http` library backed by Go's `net/http`.
 
 ```go
-// Minimal server
-http.listen(":8080", func(req, res) {
-    res.write("Hello from GScript!\n")
-    res.write("Path: " .. req.path .. "\n")
-})
-```
-
-```go
-// Router
+// Router with multiple routes
 router := http.newRouter()
 
 counter := 0
@@ -686,7 +775,6 @@ router.listen(":9988")
 | `req.url` | Full URL |
 | `req.body` | Request body as string |
 | `req.headers` | Request headers table |
-| `req.query` | Query parameters table |
 | `req.param("name")` | Get a query parameter |
 | `req.json()` | Parse body as JSON into a table |
 
@@ -695,7 +783,6 @@ router.listen(":9988")
 | Method | Description |
 |--------|-------------|
 | `res.write(s)` | Write response body |
-| `res.writeln(s)` | Write response body with newline |
 | `res.json(table)` | Write JSON response |
 | `res.status(code)` | Set HTTP status code |
 | `res.header(k, v)` | Set response header |
@@ -708,142 +795,148 @@ router.listen(":9988")
 Built-in `gl` library based on OpenGL 4.1 + GLFW for games and visualization.
 
 ```go
-// Create window
 win := gl.newWindow(800, 600, "My Game")
 
-// Game loop
 for !win.shouldClose() {
     win.pollEvents()
-
-    win.clear(0.05, 0.05, 0.1)   // clear with dark blue
+    win.clear(0.05, 0.05, 0.1)
 
     // Filled rectangle (x, y, w, h, r, g, b, a)
-    gl.drawRect(100, 100, 200, 150, 1, 0, 0, 1)       // red
-    gl.drawRect(400, 200, 100, 100, 0, 1, 0, 0.5)     // semi-transparent green
+    gl.drawRect(100, 100, 200, 150, 1, 0, 0, 1)
 
-    // Outlined rectangle (x, y, w, h, r, g, b, lineWidth)
+    // Outlined rectangle
     gl.drawRectOutline(50, 50, 300, 200, 1, 1, 0, 2)
 
     // Text (text, x, y, scale, r, g, b)
     gl.drawText("Score: 1234", 10, 10, 1.5, 1, 1, 1)
+
+    // Keyboard input
+    if gl.isKeyDown(gl.KEY_LEFT)        { x = x - 5 }
+    if gl.isKeyJustPressed(gl.KEY_SPACE) { jump() }
 
     win.swapBuffers()
 }
 win.close()
 ```
 
-**Keyboard input:**
+**Key constants:** `KEY_LEFT` `KEY_RIGHT` `KEY_UP` `KEY_DOWN` `KEY_SPACE` `KEY_ESCAPE` `KEY_ENTER` `KEY_A`–`KEY_Z` `KEY_0`–`KEY_9`
+
+---
+
+## Embedding in Go
+
+GScript can be embedded in any Go application as a scripting engine.
 
 ```go
-// Held down
-if gl.isKeyDown(gl.KEY_LEFT) {
-    x = x - 5
-}
+import "github.com/gscript/gscript/gscript"
 
-// Just pressed (single trigger)
-if gl.isKeyJustPressed(gl.KEY_SPACE) {
-    jump()
+vm := gscript.New()
+
+// Execute a script
+vm.Exec(`x := 42`)
+
+// Get and set values
+vm.Set("name", "Alice")
+result, _ := vm.Get("name")
+
+// Call a GScript function from Go
+vm.Exec(`func greet(name) { return "Hello, " .. name .. "!" }`)
+val, _ := vm.Call("greet", "World")
+
+// Register a Go function into GScript
+vm.RegisterFunc("add", func(a, b int) int { return a + b })
+vm.Exec(`print(add(3, 4))`)  // 7
+
+// Bind a Go struct
+type Player struct {
+    Name  string
+    Score int
 }
+vm.BindStruct("Player", Player{})
+vm.Exec(`
+    p := Player.new()
+    p.Name = "Alice"
+    p.Score = 100
+    print(p.Name, p.Score)
+`)
+
+// Pool for concurrent use
+pool := gscript.NewPool(4, gscript.WithLibs(gscript.LibBase|gscript.LibString))
+pool.Do(func(vm *gscript.VM) {
+    vm.Exec(`print("from pool")`)
+})
 ```
 
-**Key constants:** `KEY_LEFT` `KEY_RIGHT` `KEY_UP` `KEY_DOWN` `KEY_SPACE` `KEY_ESCAPE` `KEY_ENTER` `KEY_A`–`KEY_Z` `KEY_0`–`KEY_9`
+**VM options:**
+
+```go
+gscript.New(
+    gscript.WithLibs(gscript.LibAll),          // select stdlib modules
+    gscript.WithRequirePath("./scripts"),       // require() search path
+    gscript.WithPrint(func(s string) { ... }), // redirect print output
+)
+```
+
+**Available lib flags:** `LibBase`, `LibString`, `LibTable`, `LibMath`, `LibIO`, `LibOS`, `LibHTTP`, `LibGL`, `LibAll`
+
+---
+
+## Performance
+
+Benchmarked on Apple M4 Max, comparing GScript (tree-walking interpreter) against [gopher-lua](https://github.com/yuin/gopher-lua) (also tree-walking) and [starlark-go](https://github.com/google/starlark-go) (bytecode compiler).
+
+| Scenario | GScript | gopher-lua | starlark-go |
+|---|---|---|---|
+| VM startup | **19 µs** | 67 µs | 1.2 µs |
+| Fibonacci recursive n=20 | 11.2 ms | 1.0 ms | 5.4 µs |
+| Fibonacci iterative n=30 | 41 µs | 65 µs | 9.4 µs |
+| Table ops (1000 keys) | 1.3 ms | 444 µs | 5.3 µs |
+| String concat (100×) | 58 µs | 61 µs | 2.3 µs |
+| Closure creation (1000) | 914 µs | 158 µs | 4.3 µs |
+| Function calls (10k) | 7.2 ms | 501 µs | 3.8 µs |
+
+**Takeaways:**
+- GScript has **3.5× faster VM startup** than gopher-lua — good for embedding scenarios with many short-lived VMs
+- **Iterative loops** are competitive with gopher-lua (GScript 41µs vs 65µs for n=30)
+- **String concatenation** is on par with gopher-lua
+- **Recursive function dispatch** is ~10× slower than gopher-lua — the main overhead of the tree-walking approach (no bytecode, no call stack optimization)
+- starlark-go is fastest overall because it compiles to bytecode; GScript and gopher-lua are both pure tree-walking interpreters
+
+Run benchmarks yourself:
+```bash
+go test ./benchmarks/ -bench=. -benchtime=3s
+```
 
 ---
 
 ## Examples
 
-### Fibonacci
-
-```go
-func fib(n) {
-    if n < 2 { return n }
-    return fib(n-1) + fib(n-2)
-}
-
-for i := 0; i <= 20; i++ {
-    print(i, fib(i))
-}
-```
-
-### Closure Counter
-
-```go
-func makeCounter(name, start) {
-    n := start
-    return {
-        inc:   func() { n = n + 1; return n },
-        dec:   func() { n = n - 1; return n },
-        get:   func() { return n },
-        reset: func() { n = start },
-        name:  name,
-    }
-}
-
-c := makeCounter("hits", 0)
-print(c.inc())   // 1
-print(c.inc())   // 2
-print(c.get())   // 2
-c.reset()
-print(c.get())   // 0
-```
-
-### OOP Inheritance
-
-```go
-func Class(parent) {
-    cls := {}
-    cls.__index = cls
-    if parent != nil {
-        setmetatable(cls, {__index: parent})
-    }
-    cls.new = func(...) {
-        inst := {}
-        setmetatable(inst, cls)
-        if cls.init != nil { cls.init(inst, ...) }
-        return inst
-    }
-    return cls
-}
-
-Animal := Class(nil)
-Animal.init  = func(self, name) { self.name = name }
-Animal.speak = func(self) { return self.name .. " makes a sound" }
-
-Dog := Class(Animal)
-Dog.speak = func(self) { return self.name .. " says woof!" }
-
-rex := Dog.new("Rex")
-print(rex.speak(rex))  // Rex says woof!
-```
-
-### Coroutine Generator
-
-```go
-func range_gen(from, to) {
-    return coroutine.wrap(func() {
-        for i := from; i <= to; i++ {
-            coroutine.yield(i)
-        }
-    })
-}
-
-sum := 0
-gen := range_gen(1, 100)
-for {
-    v := gen()
-    if v == nil { break }
-    sum = sum + v
-}
-print(sum)  // 5050
-```
-
-### Tetris (built-in demo)
+| File | Description |
+|------|-------------|
+| `examples/fib.gs` | Fibonacci (recursive) |
+| `examples/counter.gs` | Closure counter |
+| `examples/class.gs` | OOP class system |
+| `examples/functional.gs` | map/filter/reduce, compose, curry, memoize |
+| `examples/oop.gs` | 3-level inheritance, mixins, private fields |
+| `examples/coroutines.gs` | Generators, producer-consumer, scheduler |
+| `examples/data_structures.gs` | Stack, queue, linked list, BST, hash set |
+| `examples/algorithms.gs` | Quicksort, BFS/DFS, Dijkstra |
+| `examples/string_processing.gs` | Templates, CSV parser, expression lexer |
+| `examples/iterators.gs` | Range, filter, map, zip, chained iterators |
+| `examples/error_handling.gs` | Result type, custom errors, retry |
+| `examples/metatables.gs` | Vector2D, matrix, observable, proxy |
+| `examples/game_of_life.gs` | Conway's Game of Life |
+| `examples/event_system.gs` | EventEmitter, pub/sub |
+| `examples/state_machine.gs` | Traffic light, order processing |
+| `examples/webserver.gs` | HTTP router demo |
+| `examples/tetris.gs` | Full Tetris game (OpenGL) |
 
 ```bash
-./gscript examples/tetris.gs
+./gscript examples/game_of_life.gs
+./gscript examples/algorithms.gs
+./gscript examples/webserver.gs   # then visit localhost:9988
+./gscript examples/tetris.gs      # requires OpenGL support
 ```
-
-Controls: `←→` move, `↑`/`X` rotate CW, `Z` rotate CCW, `↓` soft drop, `Space` hard drop, `C` hold, `P` pause, `R` restart
 
 ---
 
@@ -851,32 +944,30 @@ Controls: `←→` move, `↑`/`X` rotate CW, `Z` rotate CCW, `↓` soft drop, `
 
 ```
 gscript/
-├── cmd/gscript/          # CLI entry point
+├── cmd/gscript/          # CLI entry point (file exec, -e flag, REPL)
+├── gscript/              # Public embedding API (VM, Pool, reflect bridge)
 ├── internal/
-│   ├── lexer/            # Tokenizer
-│   ├── parser/           # Recursive descent parser
-│   ├── ast/              # AST node definitions
+│   ├── lexer/            # Tokenizer (45 token types)
+│   ├── parser/           # Recursive descent parser (9-level precedence)
+│   ├── ast/              # AST node definitions (28 node types)
 │   └── runtime/          # Tree-walking interpreter + standard library
-│       ├── interpreter.go
-│       ├── value.go       # Type system (tagged union)
-│       ├── table.go       # Table implementation
-│       ├── closure.go     # Closures / Upvalues
-│       ├── coroutine.go   # Coroutines
-│       ├── stdlib_string.go
-│       ├── stdlib_table.go
-│       ├── stdlib_math.go
-│       ├── stdlib_io.go
-│       ├── stdlib_os.go
-│       ├── stdlib_http.go
-│       └── stdlib_gl.go   # OpenGL drawing
+│       ├── interpreter.go    # Core eval loop, metamethod dispatch
+│       ├── value.go          # Tagged union type system
+│       ├── table.go          # Table (array+hash hybrid)
+│       ├── closure.go        # Closures, upvalues, free variable analysis
+│       ├── coroutine.go      # Coroutines via goroutine+channel
+│       ├── environment.go    # Lexical scope chain
+│       ├── stdlib_string.go  # string.* with Lua pattern support
+│       ├── stdlib_table.go   # table.*
+│       ├── stdlib_math.go    # math.*
+│       ├── stdlib_io.go      # io.*
+│       ├── stdlib_os.go      # os.*
+│       ├── stdlib_http.go    # http.* (net/http backed)
+│       └── stdlib_gl.go      # gl.* (OpenGL 4.1 + GLFW)
+├── benchmarks/           # Performance benchmarks vs gopher-lua, starlark
 ├── tests/                # Integration tests
-├── examples/             # Example programs
-│   ├── fib.gs
-│   ├── counter.gs
-│   ├── class.gs
-│   ├── webserver.gs
-│   └── tetris.gs
-└── docs/decisions/       # Architecture decision records
+├── examples/             # 17 example programs
+└── docs/decisions/       # Architecture Decision Records (ADR-001 to ADR-006)
 ```
 
 ---
@@ -884,10 +975,41 @@ gscript/
 ## Running Tests
 
 ```bash
-go test ./...               # all tests
-go test -race ./...         # with race detector
-go test ./internal/runtime/... -v -run TestClosure
+go test ./...                           # all tests
+go test -race ./...                     # with race detector
+go test ./internal/runtime/... -v       # verbose runtime tests
+go test ./internal/runtime/... -run TestClosure
+go test ./benchmarks/ -bench=. -benchtime=3s
 ```
+
+---
+
+## About this Project
+
+This project was created as an **AI capability experiment** to test how well an AI agent can design and implement a complete, production-quality programming language interpreter from scratch — without human-written code.
+
+**Experiment goals:**
+- Can an AI autonomously design a multi-component language runtime (lexer → parser → AST → interpreter → stdlib)?
+- Can it implement complex semantics like closures with upvalue sharing, metatables with metamethod dispatch, and coroutines via goroutine/channel primitives?
+- Can it maintain architectural coherence across 20k+ lines of generated code spanning 40+ files?
+- Can it practice TDD — writing tests first, then making them pass?
+- Can it debug its own failures and iterate to correctness?
+
+**What was built by AI (Claude):**
+- Complete lexer with 45 token types
+- Recursive descent parser with 9-level operator precedence
+- 28 AST node types
+- Tree-walking interpreter with full Lua semantics
+- Metatable system with all 14 metamethods
+- Lexical closures with upvalue sharing (free variable analysis + `*Upvalue` pointer capture)
+- Coroutines implemented via goroutines + channels
+- 7 standard libraries: string (Lua patterns → Go regex), table, math, io, os, http, gl
+- Embedding API with reflection-based type bridge and struct binding
+- OpenGL Tetris game
+- 300+ unit and integration tests
+- Performance benchmarks vs gopher-lua and starlark-go
+
+**Conclusion:** An AI agent can build a working, reasonably complete scripting language interpreter — including advanced features like closures, metatables, and coroutines — largely autonomously. The main limitations are in performance optimization (tree-walking vs bytecode) and handling obscure edge cases in complex semantic interactions.
 
 ---
 
