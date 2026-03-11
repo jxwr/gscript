@@ -4,11 +4,11 @@
 
 // === CONSTANTS ===
 BOARD_X := 50
-BOARD_Y := 60
+BOARD_Y := 85
 CELL_SIZE := 65
 PIECE_RADIUS := 26
 WIN_W := 700
-WIN_H := 720
+WIN_H := 750
 
 // Colors (tables with r, g, b, a keys)
 COLOR_BOARD_BG := {r: 220, g: 180, b: 120, a: 255}
@@ -883,32 +883,80 @@ func drawStatus() {
     }
 
     // Controls hint on the right side of status bar
-    rl.drawText("R:Restart  U:Undo  ESC:Quit", 380, 15, 16, {r: 180, g: 180, b: 180, a: 255})
+    if fontLoaded {
+        rl.drawTextEx(font, "R:重新开始  U:悔棋  ESC:退出", 340, 10, 20, 1, {r: 180, g: 180, b: 180, a: 255})
+    } else {
+        rl.drawText("R:Restart  U:Undo  ESC:Quit", 380, 15, 16, {r: 180, g: 180, b: 180, a: 255})
+    }
+}
+
+// Returns Chinese label for a piece type string (used in captured list)
+func pieceTypeLabel(ptype, side) {
+    if side == "red" {
+        if ptype == "K" { return "帅" }
+        if ptype == "A" { return "仕" }
+        if ptype == "E" { return "相" }
+        if ptype == "H" { return "马" }
+        if ptype == "R" { return "车" }
+        if ptype == "C" { return "炮" }
+        if ptype == "P" { return "兵" }
+    } else {
+        if ptype == "K" { return "将" }
+        if ptype == "A" { return "士" }
+        if ptype == "E" { return "象" }
+        if ptype == "H" { return "马" }
+        if ptype == "R" { return "车" }
+        if ptype == "C" { return "炮" }
+        if ptype == "P" { return "卒" }
+    }
+    return ptype
 }
 
 func drawCapturedPieces() {
     // Draw captured pieces on the right side
-    rightX := BOARD_X + 8 * CELL_SIZE + 40
+    rightX := BOARD_X + 8 * CELL_SIZE + 20
     capY := BOARD_Y + 10
+    capFontSize := 20
+    capSpacing := 24
 
-    // Label
-    rl.drawText("Captured:", rightX, capY, 16, {r: 180, g: 150, b: 100, a: 255})
+    if fontLoaded {
+        rl.drawTextEx(font, "被吃棋子", rightX, capY, capFontSize, 1, {r: 180, g: 150, b: 100, a: 255})
+        capY = capY + 30
 
-    // Captured black pieces (by red)
-    capY = capY + 25
-    rl.drawText("By Red:", rightX, capY, 14, {r: 200, g: 100, b: 100, a: 255})
-    capY = capY + 20
-    for i := 1; i <= #capturedBlack; i++ {
-        label := capturedBlack[i]
-        rl.drawText(label, rightX + ((i - 1) % 4) * 20, capY + math.floor((i - 1) / 4) * 20, 16, {r: 100, g: 100, b: 100, a: 255})
-    }
+        rl.drawTextEx(font, "红方吃:", rightX, capY, capFontSize - 2, 1, {r: 200, g: 100, b: 100, a: 255})
+        capY = capY + 26
+        for i := 1; i <= #capturedBlack; i++ {
+            lbl := pieceTypeLabel(capturedBlack[i], "black")
+            cx := rightX + ((i - 1) % 3) * capSpacing
+            cy := capY + math.floor((i - 1) / 3) * capSpacing
+            rl.drawTextEx(font, lbl, cx, cy, capFontSize, 1, {r: 80, g: 80, b: 80, a: 255})
+        }
+        rows := math.floor((#capturedBlack + 2) / 3)
+        if rows < 1 { rows = 1 }
+        capY = capY + rows * capSpacing + 16
 
-    capY = capY + math.floor((#capturedBlack + 3) / 4) * 20 + 20
-    rl.drawText("By Black:", rightX, capY, 14, {r: 100, g: 100, b: 200, a: 255})
-    capY = capY + 20
-    for i := 1; i <= #capturedRed; i++ {
-        label := capturedRed[i]
-        rl.drawText(label, rightX + ((i - 1) % 4) * 20, capY + math.floor((i - 1) / 4) * 20, 16, {r: 200, g: 80, b: 80, a: 255})
+        rl.drawTextEx(font, "黑方吃:", rightX, capY, capFontSize - 2, 1, {r: 100, g: 100, b: 200, a: 255})
+        capY = capY + 26
+        for i := 1; i <= #capturedRed; i++ {
+            lbl := pieceTypeLabel(capturedRed[i], "red")
+            cx := rightX + ((i - 1) % 3) * capSpacing
+            cy := capY + math.floor((i - 1) / 3) * capSpacing
+            rl.drawTextEx(font, lbl, cx, cy, capFontSize, 1, {r: 200, g: 80, b: 80, a: 255})
+        }
+    } else {
+        rl.drawText("Captured:", rightX, capY, 16, {r: 180, g: 150, b: 100, a: 255})
+        capY = capY + 25
+        rl.drawText("By Red:", rightX, capY, 14, {r: 200, g: 100, b: 100, a: 255})
+        capY = capY + 20
+        for i := 1; i <= #capturedBlack; i++ {
+            rl.drawText(capturedBlack[i], rightX + ((i - 1) % 4) * 20, capY + math.floor((i - 1) / 4) * 20, 16, {r: 100, g: 100, b: 100, a: 255})
+        }
+        capY = capY + math.floor((#capturedBlack + 3) / 4) * 20 + 20
+        rl.drawText("By Black:", rightX, capY, 14, {r: 100, g: 100, b: 200, a: 255})
+        capY = capY + 20
+        for i := 1; i <= #capturedRed; i++ {
+            rl.drawText(capturedRed[i], rightX + ((i - 1) % 4) * 20, capY + math.floor((i - 1) / 4) * 20, 16, {r: 200, g: 80, b: 80, a: 255})
+        }
     }
 }
 
@@ -957,17 +1005,33 @@ func handleClick(mx, my) {
 }
 
 // === MAIN GAME ===
-rl.initWindow(WIN_W, WIN_H, "Chinese Chess")
+rl.initWindow(WIN_W, WIN_H, "中国象棋")
 rl.setTargetFPS(60)
 
-// Try to load a font that supports Chinese characters.
-// Note: rl.loadFont only loads ASCII glyphs by default.
-// Chinese character rendering requires loadFontEx with specific codepoints,
-// which is not yet available. Set fontLoaded = false to use ASCII labels.
-// If a future GScript version adds loadFontEx, enable this:
-// font = rl.loadFont("/Library/Fonts/Arial Unicode.ttf")
-// fontLoaded = true
+// Load Chinese font — try several common macOS/Linux font paths
+chessChars := "帅将仕士相象马车炮兵卒楚河汉界红黑方走军胜和棋！悔棋重新开始退出"
+
+// Prefer plain .ttf files — raylib handles .ttf more reliably than .ttc collections
+fontPaths := {
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+}
+
 fontLoaded = false
+for i := 1; i <= #fontPaths; i++ {
+    if fs.exists(fontPaths[i]) {
+        font = rl.loadFontChars(fontPaths[i], 52, chessChars)
+        if rl.isFontReady(font) {
+            fontLoaded = true
+            break
+        }
+    }
+}
 
 initBoard()
 

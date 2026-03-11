@@ -762,6 +762,28 @@ func rlLib(interp *Interpreter) *Table {
 		return []Value{rlMakeFontValue(f)}, nil
 	})
 
+	// rl.loadFontChars(path, fontSize, chars) -> font table
+	// Loads a font with only the glyphs needed for the given chars string.
+	// Use this to load fonts with Chinese/CJK characters.
+	set("loadFontChars", func(args []Value) ([]Value, error) {
+		if len(args) < 3 {
+			return nil, fmt.Errorf("rl.loadFontChars requires (path, fontSize, chars)")
+		}
+		path := args[0].Str()
+		fontSize := int32(args[1].Int())
+		chars := args[2].Str()
+		seen := map[rune]bool{}
+		var codepoints []int32
+		for _, r := range chars {
+			if !seen[r] {
+				seen[r] = true
+				codepoints = append(codepoints, int32(r))
+			}
+		}
+		f := rl.LoadFontEx(path, fontSize, codepoints, int32(len(codepoints)))
+		return []Value{rlMakeFontValue(f)}, nil
+	})
+
 	// rl.unloadFont(font)
 	set("unloadFont", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -782,6 +804,18 @@ func rlLib(interp *Interpreter) *Table {
 	set("getFontDefault", func(args []Value) ([]Value, error) {
 		f := rl.GetFontDefault()
 		return []Value{rlMakeFontValue(f)}, nil
+	})
+
+	// rl.isFontReady(font) -> bool
+	set("isFontReady", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return []Value{BoolValue(false)}, nil
+		}
+		f, ok := rlGetFont(args[0])
+		if !ok {
+			return []Value{BoolValue(false)}, nil
+		}
+		return []Value{BoolValue(f.BaseSize > 0)}, nil
 	})
 
 	// ===================================================================
