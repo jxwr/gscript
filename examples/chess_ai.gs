@@ -1422,7 +1422,19 @@ for i := 1; i <= #fontPaths; i++ {
 initBoard()
 
 for !rl.windowShouldClose() {
-    // Input handling
+    // === AI TURN (top of loop) ===
+    // aiThinking was set TRUE at the end of the PREVIOUS frame (after player's
+    // move was already rendered). So the AI thinks here, one frame later,
+    // and the player sees their own move before the freeze begins.
+    if aiThinking {
+        move := getAIMove()
+        if move != nil {
+            doMove(move.piece, move.col, move.row)
+        }
+        aiThinking = false
+    }
+
+    // === INPUT ===
     if rl.isMouseButtonPressed(0) {
         mx := rl.getMouseX()
         my := rl.getMouseY()
@@ -1453,16 +1465,9 @@ for !rl.windowShouldClose() {
         break
     }
 
-    // AI turn
-    if aiThinking {
-        move := getAIMove()
-        if move != nil {
-            doMove(move.piece, move.col, move.row)
-        }
-        aiThinking = false
-    }
-
-    // Rendering
+    // === RENDER ===
+    // Player's move is rendered here. If handleClick just set aiThinking=true,
+    // it will be visible this frame. AI thinking starts next iteration.
     rl.beginDrawing()
     rl.clearBackground({r: 245, g: 235, b: 220, a: 255})
 
