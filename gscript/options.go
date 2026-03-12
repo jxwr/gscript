@@ -52,6 +52,7 @@ type vmOptions struct {
 	maxSteps    int64
 	printFunc   func(args ...interface{})
 	useVM       bool // use bytecode VM instead of tree-walker
+	useJIT      bool // enable JIT compilation (implies useVM)
 }
 
 // Option configures a VM instance.
@@ -76,4 +77,13 @@ func WithPrint(fn func(args ...interface{})) Option {
 // WithVM enables the bytecode VM instead of the default tree-walking interpreter.
 func WithVM() Option {
 	return func(o *vmOptions) { o.useVM = true }
+}
+
+// WithJIT enables the ARM64 JIT compiler (implies bytecode VM).
+// Only available on darwin/arm64 (Apple Silicon).
+func WithJIT() Option {
+	return func(o *vmOptions) {
+		o.useVM = true
+		o.useJIT = true
+	}
 }

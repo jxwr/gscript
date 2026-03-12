@@ -22,7 +22,12 @@ func main() {
 	// Flags
 	eval := flag.String("e", "", "execute string")
 	useVM := flag.Bool("vm", false, "use bytecode VM instead of tree-walker")
+	useJIT := flag.Bool("jit", false, "use bytecode VM with JIT compilation (ARM64 only)")
 	flag.Parse()
+
+	if *useJIT {
+		*useVM = true
+	}
 
 	interp := runtime.New()
 
@@ -58,7 +63,7 @@ func main() {
 	interp.SetScriptDir(filepath.Dir(absPath))
 
 	if *useVM {
-		if err := runFileVM(interp, filename); err != nil {
+		if err := runFileVM(interp, filename, *useJIT); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
 			os.Exit(1)
 		}
@@ -92,15 +97,15 @@ func runString(interp *runtime.Interpreter, src string) error {
 	return interp.Exec(prog)
 }
 
-func runFileVM(interp *runtime.Interpreter, filename string) error {
+func runFileVM(interp *runtime.Interpreter, filename string, jit bool) error {
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		return err
 	}
-	return runStringVM(interp, string(src))
+	return runStringVM(interp, string(src), jit)
 }
 
-func runStringVM(interp *runtime.Interpreter, src string) error {
+func runStringVM(interp *runtime.Interpreter, src string, jit bool) error {
 	tokens, err := lexer.New(src).Tokenize()
 	if err != nil {
 		return fmt.Errorf("lexer error: %w", err)
@@ -116,6 +121,9 @@ func runStringVM(interp *runtime.Interpreter, src string) error {
 	globals := interp.ExportGlobals()
 	bvm := bytecodevm.New(globals)
 	bvm.SetStringMeta(interp.StringMeta())
+	if jit {
+		cliEnableJIT(bvm)
+	}
 	_, err = bvm.Execute(proto)
 	return err
 }

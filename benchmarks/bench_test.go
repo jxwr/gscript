@@ -40,6 +40,19 @@ fib(20)
 	}
 }
 
+func BenchmarkGScriptJITFibRecursive(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithJIT())
+		vm.Exec(`
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+fib(20)
+`)
+	}
+}
+
 func BenchmarkGopherLuaFibRecursive(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		L := lua.NewState()
@@ -61,6 +74,19 @@ fib(20)
 func BenchmarkGScriptVMFibRecursive_N25(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		vm := gs.New(gs.WithVM())
+		vm.Exec(`
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+fib(25)
+`)
+	}
+}
+
+func BenchmarkGScriptJITFibRecursive_N25(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithJIT())
 		vm.Exec(`
 func fib(n) {
     if n < 2 { return n }
@@ -127,6 +153,25 @@ fib(30)
 	}
 }
 
+func BenchmarkGScriptJITFibIterative(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithJIT())
+		vm.Exec(`
+func fib(n) {
+    a := 0
+    b := 1
+    for i := 0; i < n; i++ {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+fib(30)
+`)
+	}
+}
+
 func BenchmarkGopherLuaFibIterative(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		L := lua.NewState()
@@ -155,6 +200,74 @@ def fib(n):
     return a
 
 fib(30)
+`, nil)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Heavy loop -- sum 1..100000 (JIT shines here: compilation cost amortized)
+// ---------------------------------------------------------------------------
+
+func BenchmarkGScriptVMHeavyLoop(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithVM())
+		vm.Exec(`
+func sumN(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + i
+    }
+    return s
+}
+sumN(100000)
+`)
+	}
+}
+
+func BenchmarkGScriptJITHeavyLoop(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithJIT())
+		vm.Exec(`
+func sumN(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + i
+    }
+    return s
+}
+sumN(100000)
+`)
+	}
+}
+
+func BenchmarkGopherLuaHeavyLoop(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		L := lua.NewState()
+		L.DoString(`
+local function sumN(n)
+    local s = 0
+    for i = 1, n do
+        s = s + i
+    end
+    return s
+end
+sumN(100000)
+`)
+		L.Close()
+	}
+}
+
+func BenchmarkStarlarkHeavyLoop(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		thread := &starlark.Thread{Name: "bench"}
+		starlark.ExecFile(thread, "sum.star", `
+def sumN(n):
+    s = 0
+    for i in range(1, n+1):
+        s = s + i
+    return s
+
+sumN(100000)
 `, nil)
 	}
 }
@@ -390,6 +503,21 @@ for i := 0; i < 10000; i++ {
 	}
 }
 
+func BenchmarkGScriptJITFunctionCalls(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithJIT())
+		vm.Exec(`
+func add(a, b) {
+    return a + b
+}
+x := 0
+for i := 0; i < 10000; i++ {
+    x = add(x, 1)
+}
+`)
+	}
+}
+
 func BenchmarkGopherLuaFunctionCalls(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		L := lua.NewState()
@@ -473,7 +601,7 @@ func TestPrintBenchmarkInfo(t *testing.T) {
 	fmt.Println("  6. Function calls                 - call function 10000 times")
 	fmt.Println("  7. VM startup                     - create VM + run trivial script")
 	fmt.Println()
-	fmt.Println("Runtimes compared: GScript (tree-walker), GScript (bytecode VM), gopher-lua, starlark-go")
+	fmt.Println("Runtimes compared: GScript (tree-walker), GScript (bytecode VM), GScript (JIT), gopher-lua, starlark-go")
 	fmt.Println()
 	fmt.Println("Note: Starlark forbids recursion and top-level for-loops,")
 	fmt.Println("      so all Starlark benchmarks wrap code in functions.")

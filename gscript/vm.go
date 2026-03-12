@@ -87,6 +87,10 @@ func (vm *VM) exec(src, filename string) error {
 		globals := vm.interp.ExportGlobals()
 		bvm := bytecodevm.New(globals)
 		bvm.SetStringMeta(vm.interp.StringMeta())
+		// Enable JIT if requested
+		if vm.opts.useJIT {
+			enableJIT(bvm)
+		}
 		if _, err := bvm.Execute(proto); err != nil {
 			return &Error{Kind: ErrRuntime, Message: err.Error(), File: filename}
 		}

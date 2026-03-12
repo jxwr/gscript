@@ -14,6 +14,16 @@ const (
 	maxMetaDepth  = 50   // max __index chain depth
 )
 
+// JITEngine is the interface for JIT compilation engines.
+// This allows the VM to call into the JIT without a direct package dependency.
+type JITEngine interface {
+	// TryExecute attempts to JIT-execute a function.
+	// Returns (results, resumePC, ok).
+	// ok=true: function completed, results contains return values.
+	// ok=false: JIT bailed at resumePC, interpreter should continue from there.
+	TryExecute(proto *FuncProto, regs []runtime.Value, base int, callCount int) ([]runtime.Value, int, bool)
+}
+
 // VM is the bytecode virtual machine.
 type VM struct {
 	regs       []runtime.Value // register file (shared across frames via base offset)
@@ -23,6 +33,21 @@ type VM struct {
 	openUpvals []*Upvalue // list of open upvalues (sorted by regIdx descending)
 	top        int        // top of used registers (for variable returns)
 	stringMeta *runtime.Table // string metatable
+	jit        JITEngine      // optional JIT engine
+	callCounts map[*FuncProto]int // per-function call counts for JIT hot detection
+}
+
+// SetJIT sets the JIT engine for this VM.
+func (vm *VM) SetJIT(engine JITEngine) {
+	vm.jit = engine
+	if engine != nil && vm.callCounts == nil {
+		vm.callCounts = make(map[*FuncProto]int)
+	}
+}
+
+// Regs returns the register file. Used by the JIT executor.
+func (vm *VM) Regs() []runtime.Value {
+	return vm.regs
 }
 
 // New creates a new VM with the given globals.
@@ -88,6 +113,23 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	frame.numResults = numResults
 	frame.varargs = varargs
 	vm.frameCount++
+
+	// Try JIT execution if available.
+	if vm.jit != nil && !proto.IsVarArg {
+		vm.callCounts[proto]++
+		results, resumePC, ok := vm.jit.TryExecute(proto, vm.regs, base, vm.callCounts[proto])
+		if ok {
+			// JIT completed the function — close upvalues and return.
+			vm.closeUpvalues(base)
+			vm.frameCount--
+			return results, nil
+		}
+		if resumePC > 0 {
+			// JIT bailed out — resume interpreter from the exit PC.
+			frame.pc = resumePC
+		}
+		// resumePC == 0 means JIT wasn't attempted (not hot enough); fall through.
+	}
 
 	result, err := vm.run()
 	vm.frameCount--
