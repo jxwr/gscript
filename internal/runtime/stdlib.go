@@ -66,4 +66,25 @@ func (interp *Interpreter) registerStdlib() {
 
 	// --- Low-level ---
 	interp.globals.Define("bit32", TableValue(buildBit32Lib()))
+
+	// --- Random number generation ---
+	interp.globals.Define("rand", TableValue(buildRandLib()))
+
+	// --- Sorting utilities ---
+	interp.globals.Define("sort", TableValue(buildSortLib(interp)))
+
+	// --- Encoding utilities ---
+	interp.globals.Define("encoding", TableValue(buildEncodingLib()))
+
+	// --- Compression ---
+	interp.globals.Define("compress", TableValue(buildCompressLib()))
+
+	// --- Cryptography ---
+	interp.globals.Define("crypto", TableValue(buildCryptoLib()))
+
+	// --- Container data structures ---
+	interp.globals.Define("container", TableValue(buildContainerLib(interp)))
+
+	// --- Logging ---
+	interp.globals.Define("log", TableValue(buildLogLib()))
 }
