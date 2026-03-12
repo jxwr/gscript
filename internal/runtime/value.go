@@ -163,6 +163,11 @@ func (v Value) GoFunction() *GoFunction {
 	return gf
 }
 
+// Ptr returns the raw pointer field. Used by the VM package for type assertions.
+func (v Value) Ptr() any {
+	return v.ptr
+}
+
 // Coroutine returns the *Coroutine pointer.
 func (v Value) Coroutine() *Coroutine {
 	if v.ptr == nil {
@@ -309,9 +314,9 @@ func (v Value) hashKey() Value {
 	return v
 }
 
-// lessThan compares two values for ordering (used by < <= > >=).
+// LessThan compares two values for ordering (used by < <= > >=).
 // Returns (result, ok). ok is false if the types are not comparable.
-func (v Value) lessThan(other Value) (bool, bool) {
+func (v Value) LessThan(other Value) (bool, bool) {
 	if v.IsNumber() && other.IsNumber() {
 		return v.Number() < other.Number(), true
 	}

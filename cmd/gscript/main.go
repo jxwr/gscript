@@ -11,6 +11,7 @@ import (
 	"github.com/gscript/gscript/internal/lexer"
 	"github.com/gscript/gscript/internal/parser"
 	"github.com/gscript/gscript/internal/runtime"
+	bytecodevm "github.com/gscript/gscript/internal/vm"
 )
 
 func init() {
@@ -20,6 +21,7 @@ func init() {
 func main() {
 	// Flags
 	eval := flag.String("e", "", "execute string")
+	useVM := flag.Bool("vm", false, "use bytecode VM instead of tree-walker")
 	flag.Parse()
 
 	interp := runtime.New()
@@ -55,9 +57,16 @@ func main() {
 	absPath, _ := filepath.Abs(filename)
 	interp.SetScriptDir(filepath.Dir(absPath))
 
-	if err := runFile(interp, filename); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
-		os.Exit(1)
+	if *useVM {
+		if err := runFileVM(interp, filename); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
+			os.Exit(1)
+		}
+	} else {
+		if err := runFile(interp, filename); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -81,6 +90,34 @@ func runString(interp *runtime.Interpreter, src string) error {
 	}
 
 	return interp.Exec(prog)
+}
+
+func runFileVM(interp *runtime.Interpreter, filename string) error {
+	src, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	return runStringVM(interp, string(src))
+}
+
+func runStringVM(interp *runtime.Interpreter, src string) error {
+	tokens, err := lexer.New(src).Tokenize()
+	if err != nil {
+		return fmt.Errorf("lexer error: %w", err)
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		return fmt.Errorf("parse error: %w", err)
+	}
+	proto, err := bytecodevm.Compile(prog)
+	if err != nil {
+		return fmt.Errorf("compile error: %w", err)
+	}
+	globals := interp.ExportGlobals()
+	bvm := bytecodevm.New(globals)
+	bvm.SetStringMeta(interp.StringMeta())
+	_, err = bvm.Execute(proto)
+	return err
 }
 
 func runREPL(interp *runtime.Interpreter) {

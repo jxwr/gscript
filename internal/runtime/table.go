@@ -103,6 +103,17 @@ func (t *Table) Length() int {
 	return n
 }
 
+// Len returns the length of the array part (alias for Length, used by VM).
+func (t *Table) Len() int {
+	return t.Length()
+}
+
+// Append adds a value to the end of the array part (equivalent to table.insert(t, v)).
+func (t *Table) Append(v Value) {
+	n := t.Length()
+	t.RawSet(IntValue(int64(n+1)), v)
+}
+
 // rebuildKeys rebuilds the ordered key list for iteration.
 func (t *Table) rebuildKeys() {
 	t.keys = t.keys[:0]

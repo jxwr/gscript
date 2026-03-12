@@ -11,6 +11,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // Fibonacci (recursive, n=20) -- pure computation
+// Note: Starlark forbids recursion by design, so it is excluded here.
 // ---------------------------------------------------------------------------
 
 func BenchmarkGScriptFibRecursive(b *testing.B) {
@@ -26,17 +27,16 @@ fib(20)
 	}
 }
 
-func BenchmarkGScriptFibRecursive_Warm(b *testing.B) {
-	vm := gs.New()
-	vm.Exec(`
+func BenchmarkGScriptVMFibRecursive(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithVM())
+		vm.Exec(`
 func fib(n) {
     if n < 2 { return n }
     return fib(n-1) + fib(n-2)
 }
+fib(20)
 `)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		vm.Call("fib", 20)
 	}
 }
 
@@ -54,17 +54,34 @@ fib(20)
 	}
 }
 
-func BenchmarkStarlarkFibRecursive(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		thread := &starlark.Thread{Name: "bench"}
-		starlark.ExecFile(thread, "fib.star", `
-def fib(n):
-    if n < 2:
-        return n
-    return fib(n-1) + fib(n-2)
+// ---------------------------------------------------------------------------
+// Fibonacci (recursive, n=25) -- heavier recursion
+// ---------------------------------------------------------------------------
 
-fib(20)
-`, nil)
+func BenchmarkGScriptVMFibRecursive_N25(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithVM())
+		vm.Exec(`
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+fib(25)
+`)
+	}
+}
+
+func BenchmarkGopherLuaFibRecursive_N25(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		L := lua.NewState()
+		L.DoString(`
+local function fib(n)
+    if n < 2 then return n end
+    return fib(n-1) + fib(n-2)
+end
+fib(25)
+`)
+		L.Close()
 	}
 }
 
@@ -91,9 +108,10 @@ fib(30)
 	}
 }
 
-func BenchmarkGScriptFibIterative_Warm(b *testing.B) {
-	vm := gs.New()
-	vm.Exec(`
+func BenchmarkGScriptVMFibIterative(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithVM())
+		vm.Exec(`
 func fib(n) {
     a := 0
     b := 1
@@ -104,10 +122,8 @@ func fib(n) {
     }
     return a
 }
+fib(30)
 `)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		vm.Call("fib", 30)
 	}
 }
 
@@ -163,6 +179,22 @@ for i := 0; i < 1000; i++ {
 	}
 }
 
+func BenchmarkGScriptVMTableOps(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithVM())
+		vm.Exec(`
+t := {}
+for i := 0; i < 1000; i++ {
+    t[tostring(i)] = i
+}
+sum := 0
+for i := 0; i < 1000; i++ {
+    sum = sum + t[tostring(i)]
+}
+`)
+	}
+}
+
 func BenchmarkGopherLuaTableOps(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		L := lua.NewState()
@@ -184,12 +216,16 @@ func BenchmarkStarlarkTableOps(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		thread := &starlark.Thread{Name: "bench"}
 		starlark.ExecFile(thread, "table.star", `
-t = {}
-for i in range(1000):
-    t[str(i)] = i
-s = 0
-for i in range(1000):
-    s = s + t[str(i)]
+def run():
+    t = {}
+    for i in range(1000):
+        t[str(i)] = i
+    s = 0
+    for i in range(1000):
+        s = s + t[str(i)]
+    return s
+
+run()
 `, nil)
 	}
 }
@@ -201,6 +237,18 @@ for i in range(1000):
 func BenchmarkGScriptStringConcat(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		vm := gs.New()
+		vm.Exec(`
+s := ""
+for i := 0; i < 100; i++ {
+    s = s .. "x"
+}
+`)
+	}
+}
+
+func BenchmarkGScriptVMStringConcat(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithVM())
 		vm.Exec(`
 s := ""
 for i := 0; i < 100; i++ {
@@ -227,9 +275,13 @@ func BenchmarkStarlarkStringConcat(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		thread := &starlark.Thread{Name: "bench"}
 		starlark.ExecFile(thread, "str.star", `
-s = ""
-for i in range(100):
-    s = s + "x"
+def run():
+    s = ""
+    for i in range(100):
+        s = s + "x"
+    return s
+
+run()
 `, nil)
 	}
 }
@@ -241,6 +293,21 @@ for i in range(100):
 func BenchmarkGScriptClosureCreation(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		vm := gs.New()
+		vm.Exec(`
+func make(x) {
+    return func() { return x }
+}
+closures := {}
+for i := 1; i <= 1000; i++ {
+    closures[i] = make(i)
+}
+`)
+	}
+}
+
+func BenchmarkGScriptVMClosureCreation(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithVM())
 		vm.Exec(`
 func make(x) {
     return func() { return x }
@@ -278,9 +345,13 @@ def make(x):
         return x
     return inner
 
-closures = []
-for i in range(1000):
-    closures.append(make(i))
+def run():
+    closures = []
+    for i in range(1000):
+        closures.append(make(i))
+    return closures
+
+run()
 `, nil)
 	}
 }
@@ -304,23 +375,18 @@ for i := 0; i < 10000; i++ {
 	}
 }
 
-func BenchmarkGScriptFunctionCalls_Warm(b *testing.B) {
-	vm := gs.New()
-	vm.Exec(`
+func BenchmarkGScriptVMFunctionCalls(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithVM())
+		vm.Exec(`
 func add(a, b) {
     return a + b
 }
-func run() {
-    x := 0
-    for i := 0; i < 10000; i++ {
-        x = add(x, 1)
-    }
-    return x
+x := 0
+for i := 0; i < 10000; i++ {
+    x = add(x, 1)
 }
 `)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		vm.Call("run")
 	}
 }
 
@@ -347,9 +413,13 @@ func BenchmarkStarlarkFunctionCalls(b *testing.B) {
 def add(a, b):
     return a + b
 
-x = 0
-for i in range(10000):
-    x = add(x, 1)
+def run():
+    x = 0
+    for i in range(10000):
+        x = add(x, 1)
+    return x
+
+run()
 `, nil)
 	}
 }
@@ -358,14 +428,21 @@ for i in range(10000):
 // VM startup -- measure time to create a new VM instance
 // ---------------------------------------------------------------------------
 
-func BenchmarkGScriptVMStartup(b *testing.B) {
+func BenchmarkGScriptStartup(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		vm := gs.New()
 		vm.Exec(`x := 1`)
 	}
 }
 
-func BenchmarkGopherLuaVMStartup(b *testing.B) {
+func BenchmarkGScriptVMStartup(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		vm := gs.New(gs.WithVM())
+		vm.Exec(`x := 1`)
+	}
+}
+
+func BenchmarkGopherLuaStartup(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		L := lua.NewState()
 		L.DoString(`x = 1`)
@@ -373,7 +450,7 @@ func BenchmarkGopherLuaVMStartup(b *testing.B) {
 	}
 }
 
-func BenchmarkStarlarkVMStartup(b *testing.B) {
+func BenchmarkStarlarkStartup(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		thread := &starlark.Thread{Name: "bench"}
 		starlark.ExecFile(thread, "startup.star", `x = 1`, nil)
@@ -388,7 +465,7 @@ func TestPrintBenchmarkInfo(t *testing.T) {
 	fmt.Println("=== GScript Performance Benchmark Suite ===")
 	fmt.Println()
 	fmt.Println("Scenarios tested:")
-	fmt.Println("  1. Fibonacci (recursive, n=20)  - pure computation / recursion depth")
+	fmt.Println("  1. Fibonacci (recursive, n=20)  - pure computation (no Starlark: recursion forbidden)")
 	fmt.Println("  2. Fibonacci (iterative, n=30)  - loop performance")
 	fmt.Println("  3. Table/dict operations         - 1000-key create + read")
 	fmt.Println("  4. String concatenation           - 100 iterations of string append")
@@ -396,7 +473,10 @@ func TestPrintBenchmarkInfo(t *testing.T) {
 	fmt.Println("  6. Function calls                 - call function 10000 times")
 	fmt.Println("  7. VM startup                     - create VM + run trivial script")
 	fmt.Println()
-	fmt.Println("Runtimes compared: GScript, gopher-lua, starlark-go")
+	fmt.Println("Runtimes compared: GScript (tree-walker), GScript (bytecode VM), gopher-lua, starlark-go")
+	fmt.Println()
+	fmt.Println("Note: Starlark forbids recursion and top-level for-loops,")
+	fmt.Println("      so all Starlark benchmarks wrap code in functions.")
 	fmt.Println()
 	fmt.Println("Run with:  go test ./benchmarks/ -bench=. -benchtime=3s -count=1")
 }

@@ -139,7 +139,7 @@ func buildTableLib() *Table {
 			// Default sort: numbers before strings, then by value
 			sort.SliceStable(elems, func(a, b int) bool {
 				va, vb := elems[a], elems[b]
-				less, ok := va.lessThan(vb)
+				less, ok := va.LessThan(vb)
 				if ok {
 					return less
 				}
@@ -524,7 +524,7 @@ func buildTableSortWithInterp(interp *Interpreter, tblLib *Table) {
 			} else {
 				sort.SliceStable(elems, func(a, b int) bool {
 					va, vb := elems[a], elems[b]
-					less, ok := va.lessThan(vb)
+					less, ok := va.LessThan(vb)
 					if ok {
 						return less
 					}

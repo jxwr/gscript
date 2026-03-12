@@ -149,7 +149,7 @@ func buildMathLib() *Table {
 		}
 		best := args[0]
 		for _, v := range args[1:] {
-			lt, ok := best.lessThan(v)
+			lt, ok := best.LessThan(v)
 			if ok && lt {
 				best = v
 			}
@@ -164,7 +164,7 @@ func buildMathLib() *Table {
 		}
 		best := args[0]
 		for _, v := range args[1:] {
-			lt, ok := v.lessThan(best)
+			lt, ok := v.LessThan(best)
 			if ok && lt {
 				best = v
 			}

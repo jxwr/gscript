@@ -35,6 +35,33 @@ func New() *Interpreter {
 	return interp
 }
 
+// Globals returns the global environment.
+func (interp *Interpreter) Globals() *Environment {
+	return interp.globals
+}
+
+// StringMeta returns the string metatable.
+func (interp *Interpreter) StringMeta() *Table {
+	return interp.stringMeta
+}
+
+// ExportGlobals returns a flat map of all global variables.
+// Used by the VM to share stdlib/builtins from the tree-walker.
+func (interp *Interpreter) ExportGlobals() map[string]Value {
+	m := make(map[string]Value)
+	for name, uv := range interp.globals.vars {
+		m[name] = uv.Get()
+	}
+	return m
+}
+
+// NewInterpreterGlobals creates a fresh globals map with all builtins and stdlib registered.
+// This is used by the bytecode VM to get the same standard library as the tree-walker.
+func NewInterpreterGlobals() map[string]Value {
+	interp := New()
+	return interp.ExportGlobals()
+}
+
 // SetGlobal defines or overwrites a global variable.
 func (interp *Interpreter) SetGlobal(name string, val Value) {
 	interp.globals.Define(name, val)
@@ -1655,7 +1682,7 @@ func (interp *Interpreter) valEqual(a, b Value) (bool, error) {
 // valLessThan compares two values with < operator, with __lt metamethod support.
 func (interp *Interpreter) valLessThan(a, b Value) (bool, error) {
 	// Try normal comparison first
-	ok, valid := a.lessThan(b)
+	ok, valid := a.LessThan(b)
 	if valid {
 		return ok, nil
 	}
@@ -1686,7 +1713,7 @@ func (interp *Interpreter) valLessThan(a, b Value) (bool, error) {
 // valLessEqual compares two values with <= operator, with __le metamethod support.
 func (interp *Interpreter) valLessEqual(a, b Value) (bool, error) {
 	// Try normal comparison first
-	less, valid := a.lessThan(b)
+	less, valid := a.LessThan(b)
 	if valid {
 		return less || a.Equal(b), nil
 	}

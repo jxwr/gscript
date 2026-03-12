@@ -8,7 +8,7 @@ BOARD_X := 50
 BOARD_Y := 90
 CELL_SIZE := 65
 PIECE_RADIUS := 26
-WIN_W := 700
+WIN_W := 950
 WIN_H := 760
 
 // Button layout (bottom of window)
@@ -51,6 +51,20 @@ aiThinking := false
 lastAIDepth := 0
 aiCoroutine := nil
 frameCount := 0
+
+// Animation state
+animActive := false
+animFrame := 0
+animDuration := 14        // frames (~0.23s at 60fps)
+animFromX := 0
+animFromY := 0
+animToX := 0
+animToY := 0
+animPieceType := ""
+animPieceSide := ""
+animPieceCol := 0         // destination col (piece is already placed here in board)
+animPieceRow := 0         // destination row
+animPendingAI := false    // trigger AI after animation ends
 
 // === PIECE HELPER ===
 func makePiece(ptype, side, col, row) {
@@ -508,6 +522,9 @@ func doMove(piece, toCol, toRow) {
     fromRow := piece.row
     captured := getPiece(toCol, toRow)
 
+    // Start animation
+    startMoveAnim(fromCol, fromRow, toCol, toRow, piece.type, piece.side)
+
     histEntry := {
         ptype: piece.type,
         pside: piece.side,
@@ -942,11 +959,11 @@ func negamax(depth, alpha, beta, side) {
 
 // === GET AI MOVE (Iterative Deepening) ===
 func getAIMove() {
-    startTime := time.now().unix
+    startTime := time.now()
     bestMove := nil
     lastAIDepth = 0
 
-    for depth := 1; depth <= 5; depth++ {
+    for depth := 1; depth <= 6; depth++ {
         alpha := -999999
         beta := 999999
         localBest := nil
@@ -994,7 +1011,6 @@ func getAIMove() {
                 alpha = score
                 localBest = {piece: p, col: tc, row: tr}
             }
-            coroutine.yield(nil)   // breathe — lets main loop render a frame
         }
 
         if localBest != nil {
@@ -1002,9 +1018,12 @@ func getAIMove() {
         }
         lastAIDepth = depth
 
+        // Yield once per depth level to keep UI alive
+        coroutine.yield(nil)
+
         // Check time limit
-        elapsed := time.now().unix - startTime
-        if elapsed > 2.5 {
+        elapsed := time.since(startTime)
+        if elapsed > 5.0 {
             break
         }
 
@@ -1127,6 +1146,10 @@ func drawLastMoveHighlight() {
 func drawPieces() {
     for c := 1; c <= 9; c++ {
         for r := 1; r <= 10; r++ {
+            // Skip the piece being animated (it's drawn separately)
+            if animActive && c == animPieceCol && r == animPieceRow {
+                continue
+            }
             piece := getPiece(c, r)
             if piece != nil {
                 px := colToPixel(c)
@@ -1168,6 +1191,74 @@ func drawPieces() {
                 }
             }
         }
+    }
+}
+
+// === ANIMATION ===
+func startMoveAnim(fromCol, fromRow, toCol, toRow, ptype, pside) {
+    animFromX = colToPixel(fromCol)
+    animFromY = rowToPixel(fromRow)
+    animToX = colToPixel(toCol)
+    animToY = rowToPixel(toRow)
+    animPieceType = ptype
+    animPieceSide = pside
+    animPieceCol = toCol
+    animPieceRow = toRow
+    animFrame = 0
+    animActive = true
+}
+
+func easeOutCubic(t) {
+    t = t - 1
+    return t * t * t + 1
+}
+
+func drawAnimPiece() {
+    if !animActive { return }
+
+    t := animFrame / animDuration
+    if t > 1 { t = 1 }
+    e := easeOutCubic(t)
+
+    px := animFromX + (animToX - animFromX) * e
+    py := animFromY + (animToY - animFromY) * e
+
+    // Shadow under moving piece
+    rl.drawCircle(px + 4, py + 4, PIECE_RADIUS, {r: 0, g: 0, b: 0, a: 60})
+
+    // Draw the piece
+    if animPieceSide == "red" {
+        rl.drawCircle(px, py, PIECE_RADIUS, COLOR_RED_BG)
+        rl.drawCircleLines(px, py, PIECE_RADIUS, COLOR_RED_BORDER)
+        rl.drawCircleLines(px, py, PIECE_RADIUS - 3, COLOR_RED_BORDER)
+    } else {
+        rl.drawCircle(px, py, PIECE_RADIUS, COLOR_BLACK_BG)
+        rl.drawCircleLines(px, py, PIECE_RADIUS, COLOR_BLACK_BORDER)
+        rl.drawCircleLines(px, py, PIECE_RADIUS - 3, {r: 80, g: 80, b: 80, a: 255})
+    }
+
+    // Label
+    label := animPieceType
+    tmpPiece := {type: animPieceType, side: animPieceSide}
+    label = getPieceLabel(tmpPiece)
+    if fontLoaded {
+        tw, th := rl.measureTextEx(font, label, 26, 1)
+        tx := px - tw / 2
+        ty := py - th / 2
+        textColor := COLOR_PIECE_TEXT_RED
+        if animPieceSide == "black" {
+            textColor = COLOR_PIECE_TEXT_BLACK
+        }
+        rl.drawTextEx(font, label, tx, ty, 26, 1, textColor)
+    } else {
+        tw := rl.measureText(label, 24)
+        tx := px - tw / 2
+        ty := py - 12
+        textColor := COLOR_PIECE_TEXT_RED
+        if animPieceSide == "black" {
+            textColor = COLOR_PIECE_TEXT_BLACK
+        }
+        rl.drawText(label, tx, ty, 24, textColor)
     }
 }
 
@@ -1337,65 +1428,164 @@ func pieceTypeLabel(ptype, side) {
     return ptype
 }
 
-func drawCapturedPieces() {
-    rightX := BOARD_X + 8 * CELL_SIZE + 22
-    capY := BOARD_Y + 5
-    smallR := 14
-    spacing := 33
+func drawSidebar() {
+    // Sidebar panel
+    panelX := BOARD_X + 8 * CELL_SIZE + 30
+    panelY := 60
+    panelW := WIN_W - panelX - 15
+    panelH := WIN_H - panelY - 60
+    smallR := 16
+    spacing := 38
 
-    // Section: pieces captured by Red (black pieces captured)
+    // Panel background
+    rl.drawRectangle(panelX, panelY, panelW, panelH, {r: 45, g: 28, b: 10, a: 200})
+    rl.drawRectangleLines(panelX, panelY, panelW, panelH, {r: 160, g: 120, b: 60, a: 255})
+
+    innerX := panelX + 16
+    curY := panelY + 18
+
+    // --- Section: Red captured (black pieces eaten by red) ---
+    // Section header with decorative line
     if fontLoaded {
-        rl.drawTextEx(font, "红方吃", rightX, capY, 18, 1, {r: 220, g: 120, b: 80, a: 255})
+        rl.drawTextEx(font, "红方战果", innerX, curY, 22, 1, {r: 240, g: 140, b: 80, a: 255})
     } else {
-        rl.drawText("By Red", rightX, capY, 14, {r: 220, g: 120, b: 80, a: 255})
+        rl.drawText("Red Captured", innerX, curY, 16, {r: 240, g: 140, b: 80, a: 255})
     }
-    capY = capY + 26
-    for i := 1; i <= #capturedBlack; i++ {
-        col := (i - 1) % 3
-        row := math.floor((i - 1) / 3)
-        cx := rightX + smallR + col * spacing
-        cy := capY + smallR + row * spacing
-        lbl := pieceTypeLabel(capturedBlack[i], "black")
-        rl.drawCircle(cx, cy, smallR, COLOR_BLACK_BG)
-        rl.drawCircleLines(cx, cy, smallR, {r: 80, g: 80, b: 80, a: 255})
+    curY = curY + 30
+    // Decorative separator line
+    rl.drawRectangle(innerX, curY, panelW - 32, 2, {r: 160, g: 120, b: 60, a: 120})
+    curY = curY + 12
+
+    if #capturedBlack == 0 {
         if fontLoaded {
-            tw, th := rl.measureTextEx(font, lbl, 15, 1)
-            rl.drawTextEx(font, lbl, cx - tw / 2, cy - th / 2, 15, 1, {r: 200, g: 200, b: 200, a: 255})
+            rl.drawTextEx(font, "暂无", innerX + 8, curY, 16, 1, {r: 120, g: 110, b: 90, a: 180})
+        } else {
+            rl.drawText("None", innerX + 8, curY, 14, {r: 120, g: 110, b: 90, a: 180})
         }
-    }
-    rows1 := math.floor((#capturedBlack + 2) / 3)
-    if rows1 < 1 { rows1 = 1 }
-    capY = capY + rows1 * spacing + 16
-
-    // Section: pieces captured by Black (red pieces captured)
-    if fontLoaded {
-        rl.drawTextEx(font, "黑方吃", rightX, capY, 18, 1, {r: 120, g: 150, b: 220, a: 255})
+        curY = curY + spacing
     } else {
-        rl.drawText("By Black", rightX, capY, 14, {r: 120, g: 150, b: 220, a: 255})
+        cols := 5
+        for i := 1; i <= #capturedBlack; i++ {
+            col := (i - 1) % cols
+            row := math.floor((i - 1) / cols)
+            cx := innerX + smallR + 4 + col * spacing
+            cy := curY + smallR + row * spacing
+            lbl := pieceTypeLabel(capturedBlack[i], "black")
+            rl.drawCircle(cx, cy, smallR, COLOR_BLACK_BG)
+            rl.drawCircleLines(cx, cy, smallR, {r: 80, g: 80, b: 80, a: 255})
+            if fontLoaded {
+                tw, th := rl.measureTextEx(font, lbl, 17, 1)
+                rl.drawTextEx(font, lbl, cx - tw / 2, cy - th / 2, 17, 1, {r: 200, g: 200, b: 200, a: 255})
+            }
+        }
+        rows1 := math.floor((#capturedBlack - 1) / cols) + 1
+        curY = curY + rows1 * spacing + 8
     }
-    capY = capY + 26
-    for i := 1; i <= #capturedRed; i++ {
-        col := (i - 1) % 3
-        row := math.floor((i - 1) / 3)
-        cx := rightX + smallR + col * spacing
-        cy := capY + smallR + row * spacing
-        lbl := pieceTypeLabel(capturedRed[i], "red")
-        rl.drawCircle(cx, cy, smallR, COLOR_RED_BG)
-        rl.drawCircleLines(cx, cy, smallR, COLOR_RED_BORDER)
+
+    curY = curY + 16
+
+    // --- Section: Black captured (red pieces eaten by black) ---
+    if fontLoaded {
+        rl.drawTextEx(font, "黑方战果", innerX, curY, 22, 1, {r: 120, g: 160, b: 230, a: 255})
+    } else {
+        rl.drawText("Black Captured", innerX, curY, 16, {r: 120, g: 160, b: 230, a: 255})
+    }
+    curY = curY + 30
+    rl.drawRectangle(innerX, curY, panelW - 32, 2, {r: 160, g: 120, b: 60, a: 120})
+    curY = curY + 12
+
+    if #capturedRed == 0 {
         if fontLoaded {
-            tw, th := rl.measureTextEx(font, lbl, 15, 1)
-            rl.drawTextEx(font, lbl, cx - tw / 2, cy - th / 2, 15, 1, COLOR_PIECE_TEXT_RED)
+            rl.drawTextEx(font, "暂无", innerX + 8, curY, 16, 1, {r: 120, g: 110, b: 90, a: 180})
+        } else {
+            rl.drawText("None", innerX + 8, curY, 14, {r: 120, g: 110, b: 90, a: 180})
+        }
+        curY = curY + spacing
+    } else {
+        cols := 5
+        for i := 1; i <= #capturedRed; i++ {
+            col := (i - 1) % cols
+            row := math.floor((i - 1) / cols)
+            cx := innerX + smallR + 4 + col * spacing
+            cy := curY + smallR + row * spacing
+            lbl := pieceTypeLabel(capturedRed[i], "red")
+            rl.drawCircle(cx, cy, smallR, COLOR_RED_BG)
+            rl.drawCircleLines(cx, cy, smallR, COLOR_RED_BORDER)
+            if fontLoaded {
+                tw, th := rl.measureTextEx(font, lbl, 17, 1)
+                rl.drawTextEx(font, lbl, cx - tw / 2, cy - th / 2, 17, 1, COLOR_PIECE_TEXT_RED)
+            }
+        }
+        rows1 := math.floor((#capturedRed - 1) / cols) + 1
+        curY = curY + rows1 * spacing + 8
+    }
+
+    curY = curY + 20
+
+    // --- Section: Move history (last few moves) ---
+    if fontLoaded {
+        rl.drawTextEx(font, "走棋记录", innerX, curY, 22, 1, {r: 200, g: 190, b: 160, a: 255})
+    } else {
+        rl.drawText("History", innerX, curY, 16, {r: 200, g: 190, b: 160, a: 255})
+    }
+    curY = curY + 30
+    rl.drawRectangle(innerX, curY, panelW - 32, 2, {r: 160, g: 120, b: 60, a: 120})
+    curY = curY + 10
+
+    // Show last N moves that fit
+    maxMoves := 8
+    startIdx := 1
+    if #moveHistory > maxMoves {
+        startIdx = #moveHistory - maxMoves + 1
+    }
+    for i := startIdx; i <= #moveHistory; i++ {
+        h := moveHistory[i]
+        moveNum := tostring(i)
+        lbl := pieceTypeLabel(h.ptype, h.pside)
+        fromStr := tostring(h.fromCol) .. "," .. tostring(h.fromRow)
+        toStr := tostring(h.toCol) .. "," .. tostring(h.toRow)
+        capStr := ""
+        if h.capturedType != nil {
+            capLbl := pieceTypeLabel(h.capturedType, h.capturedSide)
+            if fontLoaded {
+                capStr = " 吃" .. capLbl
+            } else {
+                capStr = " x" .. h.capturedType
+            }
+        }
+
+        textColor := {r: 180, g: 170, b: 140, a: 230}
+        if h.pside == "red" {
+            textColor = {r: 230, g: 140, b: 100, a: 255}
+        } else {
+            textColor = {r: 130, g: 170, b: 220, a: 255}
+        }
+
+        if fontLoaded {
+            line := moveNum .. ". " .. lbl .. " " .. fromStr .. " " .. toStr .. capStr
+            rl.drawTextEx(font, line, innerX + 4, curY, 16, 1, textColor)
+        } else {
+            line := moveNum .. ". " .. h.ptype .. " " .. fromStr .. "->" .. toStr .. capStr
+            rl.drawText(line, innerX + 4, curY, 14, textColor)
+        }
+        curY = curY + 22
+    }
+    if #moveHistory == 0 {
+        if fontLoaded {
+            rl.drawTextEx(font, "暂无", innerX + 8, curY, 16, 1, {r: 120, g: 110, b: 90, a: 180})
+        } else {
+            rl.drawText("None", innerX + 8, curY, 14, {r: 120, g: 110, b: 90, a: 180})
         }
     }
 }
 
 // === INPUT HANDLING ===
 func handleClick(mx, my) {
-    // Don't handle clicks if game is over or AI is thinking
+    // Don't handle clicks if game is over, AI is thinking, or animating
     if gameStatus == "redwin" || gameStatus == "blackwin" || gameStatus == "draw" {
         return
     }
-    if aiThinking {
+    if aiThinking || animActive {
         return
     }
     // Only allow player (red) to click during red's turn
@@ -1424,10 +1614,9 @@ func handleClick(mx, my) {
             selectedPiece = nil
             validMoves = {}
 
-            // After player moves, trigger AI if game is still going
+            // Defer AI trigger until animation finishes
             if gameStatus != "redwin" && gameStatus != "blackwin" && gameStatus != "draw" {
-                aiCoroutine = coroutine.create(func() { return getAIMove() })
-                aiThinking = true
+                animPendingAI = true
             }
             return
         }
@@ -1449,7 +1638,7 @@ rl.initWindow(WIN_W, WIN_H, "中国象棋 AI")
 rl.setTargetFPS(60)
 
 // Load Chinese font
-chessChars := "帅将仕士相象马车炮兵卒楚河汉界红黑方走军胜和棋悔重新开始退出思考中深度电脑执先轮到步！"
+chessChars := "帅将仕士相象马车炮兵卒楚河汉界红黑方走军胜和棋悔重新开始退出思考中深度电脑执先轮到步！战果暂无记录吃0123456789., "
 
 fontPaths := {
     "/Library/Fonts/Arial Unicode.ttf",
@@ -1480,9 +1669,9 @@ for !rl.windowShouldClose() {
     // to render a frame. This gives animated "thinking" at ~60ms intervals
     // instead of a single 2.5s freeze.
     if aiThinking && aiCoroutine != nil {
-        val := coroutine.resume(aiCoroutine)
+        ok, val := coroutine.resume(aiCoroutine)
         if coroutine.status(aiCoroutine) == "dead" {
-            if val != nil {
+            if ok && val != nil {
                 doMove(val.piece, val.col, val.row)
             }
             aiThinking = false
@@ -1492,14 +1681,30 @@ for !rl.windowShouldClose() {
 
     frameCount = frameCount + 1
 
+    // === ANIMATION UPDATE ===
+    if animActive {
+        animFrame = animFrame + 1
+        if animFrame >= animDuration {
+            animActive = false
+            // After animation ends, trigger AI if pending
+            if animPendingAI {
+                animPendingAI = false
+                aiCoroutine = coroutine.create(func() { return getAIMove() })
+                aiThinking = true
+            }
+        }
+    }
+
     // === INPUT ===
     if rl.isMouseButtonPressed(0) {
         mx := rl.getMouseX()
         my := rl.getMouseY()
         if isPointInRect(mx, my, BTN1_X, BTN_Y, BTN1_W, BTN_H) {
+            animActive = false
+            animPendingAI = false
             initBoard()
         } elseif isPointInRect(mx, my, BTN2_X, BTN_Y, BTN2_W, BTN_H) {
-            if !aiThinking && #moveHistory >= 2 {
+            if !aiThinking && !animActive && #moveHistory >= 2 {
                 undoLastMove()
                 undoLastMove()
             }
@@ -1509,11 +1714,13 @@ for !rl.windowShouldClose() {
     }
 
     if rl.isKeyPressed(rl.KEY_R) {
+        animActive = false
+        animPendingAI = false
         initBoard()
     }
 
     if rl.isKeyPressed(rl.KEY_U) {
-        if !aiThinking && #moveHistory >= 2 {
+        if !aiThinking && !animActive && #moveHistory >= 2 {
             undoLastMove()
             undoLastMove()
         }
@@ -1524,18 +1731,17 @@ for !rl.windowShouldClose() {
     }
 
     // === RENDER ===
-    // Player's move is rendered here. If handleClick just set aiThinking=true,
-    // it will be visible this frame. AI thinking starts next iteration.
     rl.beginDrawing()
     rl.clearBackground({r: 232, g: 218, b: 195, a: 255})
 
     drawBoard()
     drawLastMoveHighlight()
     drawPieces()
+    drawAnimPiece()
     drawValidMoveDots()
     drawStatus()
     drawButtons()
-    drawCapturedPieces()
+    drawSidebar()
 
     rl.endDrawing()
 }
