@@ -11,6 +11,14 @@ PIECE_RADIUS := 26
 WIN_W := 700
 WIN_H := 750
 
+// Button layout (bottom of window)
+BTN_Y  := 700
+BTN_H  := 38
+BTN1_X := 140   // 重新开始
+BTN1_W := 180
+BTN2_X := 360   // 悔棋
+BTN2_W := 120
+
 // Colors
 COLOR_BOARD_BG := {r: 220, g: 180, b: 120, a: 255}
 COLOR_GRID := {r: 100, g: 60, b: 20, a: 255}
@@ -1152,6 +1160,54 @@ func drawValidMoveDots() {
     }
 }
 
+func isPointInRect(px, py, rx, ry, rw, rh) {
+    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh
+}
+
+func drawButton(x, y, w, h, label, hovered, disabled) {
+    bgColor := {r: 80, g: 55, b: 30, a: 255}
+    borderColor := {r: 180, g: 135, b: 70, a: 255}
+    textColor := {r: 255, g: 240, b: 200, a: 255}
+    if disabled {
+        bgColor    = {r: 60, g: 58, b: 52, a: 200}
+        borderColor = {r: 100, g: 95, b: 80, a: 200}
+        textColor  = {r: 130, g: 125, b: 110, a: 180}
+    } elseif hovered {
+        bgColor    = {r: 130, g: 95, b: 50, a: 255}
+        borderColor = {r: 220, g: 175, b: 90, a: 255}
+    }
+    // Shadow
+    rl.drawRectangle(x + 3, y + 3, w, h, {r: 0, g: 0, b: 0, a: 70})
+    // Body
+    rl.drawRectangle(x, y, w, h, bgColor)
+    // Border
+    rl.drawRectangleLines(x, y, w, h, borderColor)
+    // Label — pure Chinese, safe with Chinese-only font
+    if fontLoaded {
+        tw, th := rl.measureTextEx(font, label, 22, 1)
+        tx := x + (w - tw) / 2
+        ty := y + (h - th) / 2
+        rl.drawTextEx(font, label, tx, ty, 22, 1, textColor)
+    } else {
+        tw := rl.measureText(label, 18)
+        rl.drawText(label, x + (w - tw) / 2, y + (h - 18) / 2, 18, textColor)
+    }
+}
+
+func drawButtons() {
+    mx := rl.getMouseX()
+    my := rl.getMouseY()
+
+    // 重新开始 (always active)
+    h1 := isPointInRect(mx, my, BTN1_X, BTN_Y, BTN1_W, BTN_H)
+    drawButton(BTN1_X, BTN_Y, BTN1_W, BTN_H, "重新开始", h1, false)
+
+    // 悔棋 (disabled when thinking or nothing to undo)
+    canUndo := !aiThinking && #moveHistory >= 2
+    h2 := canUndo && isPointInRect(mx, my, BTN2_X, BTN_Y, BTN2_W, BTN_H)
+    drawButton(BTN2_X, BTN_Y, BTN2_W, BTN_H, "悔棋", h2, !canUndo)
+}
+
 func drawStatus() {
     rl.drawRectangle(0, 0, WIN_W, 45, COLOR_STATUS_BG)
 
@@ -1207,26 +1263,9 @@ func drawStatus() {
         rl.drawText(statusText, 15, 12, 24, statusColor)
     }
 
-    // Controls hint
-    if fontLoaded {
-        rl.drawTextEx(font, "R:重新开始  U:悔棋  ESC:退出", 340, 10, 20, 1, {r: 180, g: 180, b: 180, a: 255})
-    } else {
-        rl.drawText("R:Restart  U:Undo  ESC:Quit", 380, 15, 16, {r: 180, g: 180, b: 180, a: 255})
-    }
-
-    // AI depth info panel
+    // AI depth info — use default font (contains digits, no mixed-font issue)
     if lastAIDepth > 0 {
-        depthText := ""
-        if fontLoaded {
-            depthText = "AI深度: " .. tostring(lastAIDepth)
-        } else {
-            depthText = "AI Depth: " .. tostring(lastAIDepth)
-        }
-        if fontLoaded {
-            rl.drawTextEx(font, depthText, 15, 55, 18, 1, {r: 150, g: 150, b: 200, a: 255})
-        } else {
-            rl.drawText(depthText, 15, 55, 16, {r: 150, g: 150, b: 200, a: 255})
-        }
+        rl.drawText("Depth:" .. tostring(lastAIDepth), 580, 15, 18, {r: 150, g: 150, b: 200, a: 255})
     }
 }
 
@@ -1261,7 +1300,7 @@ func drawCapturedPieces() {
         rl.drawTextEx(font, "被吃棋子", rightX, capY, capFontSize, 1, {r: 180, g: 150, b: 100, a: 255})
         capY = capY + 30
 
-        rl.drawTextEx(font, "红方吃:", rightX, capY, capFontSize - 2, 1, {r: 200, g: 100, b: 100, a: 255})
+        rl.drawTextEx(font, "红方吃", rightX, capY, capFontSize - 2, 1, {r: 200, g: 100, b: 100, a: 255})
         capY = capY + 26
         for i := 1; i <= #capturedBlack; i++ {
             lbl := pieceTypeLabel(capturedBlack[i], "black")
@@ -1273,7 +1312,7 @@ func drawCapturedPieces() {
         if rows < 1 { rows = 1 }
         capY = capY + rows * capSpacing + 16
 
-        rl.drawTextEx(font, "黑方吃:", rightX, capY, capFontSize - 2, 1, {r: 100, g: 100, b: 200, a: 255})
+        rl.drawTextEx(font, "黑方吃", rightX, capY, capFontSize - 2, 1, {r: 100, g: 100, b: 200, a: 255})
         capY = capY + 26
         for i := 1; i <= #capturedRed; i++ {
             lbl := pieceTypeLabel(capturedRed[i], "red")
@@ -1385,7 +1424,18 @@ initBoard()
 for !rl.windowShouldClose() {
     // Input handling
     if rl.isMouseButtonPressed(0) {
-        handleClick(rl.getMouseX(), rl.getMouseY())
+        mx := rl.getMouseX()
+        my := rl.getMouseY()
+        if isPointInRect(mx, my, BTN1_X, BTN_Y, BTN1_W, BTN_H) {
+            initBoard()
+        } elseif isPointInRect(mx, my, BTN2_X, BTN_Y, BTN2_W, BTN_H) {
+            if !aiThinking && #moveHistory >= 2 {
+                undoLastMove()
+                undoLastMove()
+            }
+        } else {
+            handleClick(mx, my)
+        }
     }
 
     if rl.isKeyPressed(rl.KEY_R) {
@@ -1393,7 +1443,6 @@ for !rl.windowShouldClose() {
     }
 
     if rl.isKeyPressed(rl.KEY_U) {
-        // Undo 2 moves: AI's last move + player's last move
         if !aiThinking && #moveHistory >= 2 {
             undoLastMove()
             undoLastMove()
@@ -1422,6 +1471,7 @@ for !rl.windowShouldClose() {
     drawPieces()
     drawValidMoveDots()
     drawStatus()
+    drawButtons()
     drawCapturedPieces()
 
     rl.endDrawing()
