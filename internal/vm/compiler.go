@@ -1015,13 +1015,10 @@ func (c *compiler) compileIfStmt(s *ast.IfStmt) error {
 	line := s.P.Line
 	var endJumps []int
 
-	condReg := c.allocReg()
-	if err := c.compileExprTo(s.Cond, condReg); err != nil {
+	elseJump, err := c.compileCondJump(s.Cond, line)
+	if err != nil {
 		return err
 	}
-	c.freeReg()
-	c.emitABC(OP_TEST, condReg, 0, 0, line)
-	elseJump := c.emitJump(line)
 
 	c.enterScope()
 	for _, st := range s.Body.Stmts {
@@ -1037,13 +1034,10 @@ func (c *compiler) compileIfStmt(s *ast.IfStmt) error {
 	c.patchJump(elseJump)
 
 	for _, elif := range s.ElseIfs {
-		cr := c.allocReg()
-		if err := c.compileExprTo(elif.Cond, cr); err != nil {
+		nextJump, err := c.compileCondJump(elif.Cond, elif.P.Line)
+		if err != nil {
 			return err
 		}
-		c.freeReg()
-		c.emitABC(OP_TEST, cr, 0, 0, elif.P.Line)
-		nextJump := c.emitJump(elif.P.Line)
 
 		c.enterScope()
 		for _, st := range elif.Body.Stmts {
@@ -1095,13 +1089,10 @@ func (c *compiler) compileForNumStmt(s *ast.ForNumStmt) error {
 	loopTop := c.currentPC()
 
 	if s.Cond != nil {
-		condReg := c.allocReg()
-		if err := c.compileExprTo(s.Cond, condReg); err != nil {
+		breakJump, err := c.compileCondJump(s.Cond, line)
+		if err != nil {
 			return err
 		}
-		c.freeReg()
-		c.emitABC(OP_TEST, condReg, 0, 0, line)
-		breakJump := c.emitJump(line)
 		c.currentLoop().breakJumps = append(c.currentLoop().breakJumps, breakJump)
 	}
 
@@ -1261,13 +1252,10 @@ func (c *compiler) compileForStmt(s *ast.ForStmt) error {
 	loopTop := c.currentPC()
 
 	if s.Cond != nil {
-		condReg := c.allocReg()
-		if err := c.compileExprTo(s.Cond, condReg); err != nil {
+		breakJump, err := c.compileCondJump(s.Cond, line)
+		if err != nil {
 			return err
 		}
-		c.freeReg()
-		c.emitABC(OP_TEST, condReg, 0, 0, line)
-		breakJump := c.emitJump(line)
 		c.currentLoop().breakJumps = append(c.currentLoop().breakJumps, breakJump)
 	}
 
@@ -1659,6 +1647,102 @@ func (c *compiler) compileOr(e *ast.BinaryExpr, dest int) error {
 	}
 	c.patchJump(skipJump)
 	return nil
+}
+
+// compileCondJump compiles an expression as a branch condition.
+// It emits instructions such that execution falls through when the condition is truthy,
+// and takes the returned jump when the condition is falsy.
+// For comparison expressions, this avoids materializing a boolean value.
+func (c *compiler) compileCondJump(expr ast.Expr, line int) (int, error) {
+	if binExpr, ok := expr.(*ast.BinaryExpr); ok {
+		switch binExpr.Op {
+		case "<":
+			return c.compileCondCmp(binExpr, OP_LT, 0, false)
+		case "<=":
+			return c.compileCondCmp(binExpr, OP_LE, 0, false)
+		case ">":
+			return c.compileCondCmp(binExpr, OP_LT, 0, true)
+		case ">=":
+			return c.compileCondCmp(binExpr, OP_LE, 0, true)
+		case "==":
+			return c.compileCondCmp(binExpr, OP_EQ, 0, false)
+		case "!=":
+			return c.compileCondCmp(binExpr, OP_EQ, 1, false)
+		}
+	}
+	if unExpr, ok := expr.(*ast.UnaryExpr); ok && unExpr.Op == "!" {
+		return c.compileCondJumpInv(unExpr.Operand, line)
+	}
+	// Fallback: compile to register, then TEST
+	condReg := c.allocReg()
+	if err := c.compileExprTo(expr, condReg); err != nil {
+		return 0, err
+	}
+	c.freeReg()
+	c.emitABC(OP_TEST, condReg, 0, 0, line)
+	return c.emitJump(line), nil
+}
+
+// compileCondJumpInv is like compileCondJump but with inverted sense:
+// falls through when the condition is falsy, jumps when truthy.
+func (c *compiler) compileCondJumpInv(expr ast.Expr, line int) (int, error) {
+	if binExpr, ok := expr.(*ast.BinaryExpr); ok {
+		switch binExpr.Op {
+		case "<":
+			return c.compileCondCmp(binExpr, OP_LT, 1, false)
+		case "<=":
+			return c.compileCondCmp(binExpr, OP_LE, 1, false)
+		case ">":
+			return c.compileCondCmp(binExpr, OP_LT, 1, true)
+		case ">=":
+			return c.compileCondCmp(binExpr, OP_LE, 1, true)
+		case "==":
+			return c.compileCondCmp(binExpr, OP_EQ, 1, false)
+		case "!=":
+			return c.compileCondCmp(binExpr, OP_EQ, 0, false)
+		}
+	}
+	if unExpr, ok := expr.(*ast.UnaryExpr); ok && unExpr.Op == "!" {
+		return c.compileCondJump(unExpr.Operand, line)
+	}
+	condReg := c.allocReg()
+	if err := c.compileExprTo(expr, condReg); err != nil {
+		return 0, err
+	}
+	c.freeReg()
+	c.emitABC(OP_TEST, condReg, 0, 1, line) // C=1: skip if NOT truthy
+	return c.emitJump(line), nil
+}
+
+// compileCondCmp emits a comparison opcode + JMP for use as a branch condition.
+// Falls through when the comparison matches, jumps when it doesn't.
+func (c *compiler) compileCondCmp(e *ast.BinaryExpr, op Opcode, a int, swap bool) (int, error) {
+	line := e.P.Line
+	var leftExpr, rightExpr ast.Expr
+	if swap {
+		leftExpr = e.Right
+		rightExpr = e.Left
+	} else {
+		leftExpr = e.Left
+		rightExpr = e.Right
+	}
+	leftReg, leftIsTemp, err := c.compileExprReg(leftExpr)
+	if err != nil {
+		return 0, err
+	}
+	rightReg, rightIsTemp, err := c.compileExprReg(rightExpr)
+	if err != nil {
+		return 0, err
+	}
+	c.emitABC(op, a, leftReg, rightReg, line)
+	jmp := c.emitJump(line)
+	if rightIsTemp {
+		c.freeReg()
+	}
+	if leftIsTemp {
+		c.freeReg()
+	}
+	return jmp, nil
 }
 
 func (c *compiler) compileComparison(e *ast.BinaryExpr, dest int, op Opcode, a int, swap bool) error {
