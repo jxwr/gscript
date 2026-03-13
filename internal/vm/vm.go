@@ -35,6 +35,7 @@ type VM struct {
 	stringMeta *runtime.Table // string metatable
 	jit        JITEngine      // optional JIT engine
 	callCounts map[*FuncProto]int // per-function call counts for JIT hot detection
+	argBuf     [16]runtime.Value  // pre-allocated arg buffer for OP_CALL
 }
 
 // SetJIT sets the JIT engine for this VM.
@@ -250,9 +251,16 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			a := DecodeA(inst)
 			b := DecodeB(inst)
 			c := DecodeC(inst)
-			table := vm.regs[base+b]
+			tableVal := vm.regs[base+b]
 			key := rk(c)
-			val, err := vm.tableGet(table, key)
+			// Fast path: plain table (no metatable) → direct RawGet
+			if tableVal.IsTable() {
+				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
+					vm.regs[base+a] = tbl.RawGet(key)
+					break
+				}
+			}
+			val, err := vm.tableGet(tableVal, key)
 			if err != nil {
 				return nil, err
 			}
@@ -262,23 +270,34 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			a := DecodeA(inst)
 			b := DecodeB(inst)
 			c := DecodeC(inst)
-			table := vm.regs[base+a]
+			tableVal := vm.regs[base+a]
 			key := rk(b)
 			val := rk(c)
-			if err := vm.tableSet(table, key, val); err != nil {
+			// Fast path: plain table → direct RawSet
+			if tableVal.IsTable() {
+				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
+					tbl.RawSet(key, val)
+					break
+				}
+			}
+			if err := vm.tableSet(tableVal, key, val); err != nil {
 				return nil, err
 			}
 
 		case OP_GETFIELD:
 			a := DecodeA(inst)
 			b := DecodeB(inst)
-			bx := DecodeBx(inst) // reuse Bx from C position — encoded specially
-			// Actually: GETFIELD A B C where C is a constant index
 			c := DecodeC(inst)
-			table := vm.regs[base+b]
-			_ = bx
+			tableVal := vm.regs[base+b]
 			key := constants[c]
-			val, err := vm.tableGet(table, key)
+			// Fast path: plain table → direct RawGet
+			if tableVal.IsTable() {
+				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
+					vm.regs[base+a] = tbl.RawGet(key)
+					break
+				}
+			}
+			val, err := vm.tableGet(tableVal, key)
 			if err != nil {
 				return nil, err
 			}
@@ -288,10 +307,17 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			a := DecodeA(inst)
 			b := DecodeB(inst) // constant index for field name
 			c := DecodeC(inst)
-			table := vm.regs[base+a]
+			tableVal := vm.regs[base+a]
 			key := constants[b]
 			val := rk(c)
-			if err := vm.tableSet(table, key, val); err != nil {
+			// Fast path: plain table → direct RawSet
+			if tableVal.IsTable() {
+				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
+					tbl.RawSet(key, val)
+					break
+				}
+			}
+			if err := vm.tableSet(tableVal, key, val); err != nil {
 				return nil, err
 			}
 
@@ -322,31 +348,43 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			a := DecodeA(inst)
 			bv := rk(DecodeB(inst))
 			cv := rk(DecodeC(inst))
-			r, err := vm.arith(bv, cv, "__add", func(x, y float64) float64 { return x + y })
-			if err != nil {
-				return nil, wrapErr(err)
+			if bv.IsInt() && cv.IsInt() {
+				vm.regs[base+a] = runtime.IntValue(bv.Int() + cv.Int())
+			} else {
+				r, err := vm.arith(bv, cv, "__add", func(x, y float64) float64 { return x + y })
+				if err != nil {
+					return nil, wrapErr(err)
+				}
+				vm.regs[base+a] = r
 			}
-			vm.regs[base+a] = r
 
 		case OP_SUB:
 			a := DecodeA(inst)
 			bv := rk(DecodeB(inst))
 			cv := rk(DecodeC(inst))
-			r, err := vm.arith(bv, cv, "__sub", func(x, y float64) float64 { return x - y })
-			if err != nil {
-				return nil, wrapErr(err)
+			if bv.IsInt() && cv.IsInt() {
+				vm.regs[base+a] = runtime.IntValue(bv.Int() - cv.Int())
+			} else {
+				r, err := vm.arith(bv, cv, "__sub", func(x, y float64) float64 { return x - y })
+				if err != nil {
+					return nil, wrapErr(err)
+				}
+				vm.regs[base+a] = r
 			}
-			vm.regs[base+a] = r
 
 		case OP_MUL:
 			a := DecodeA(inst)
 			bv := rk(DecodeB(inst))
 			cv := rk(DecodeC(inst))
-			r, err := vm.arith(bv, cv, "__mul", func(x, y float64) float64 { return x * y })
-			if err != nil {
-				return nil, wrapErr(err)
+			if bv.IsInt() && cv.IsInt() {
+				vm.regs[base+a] = runtime.IntValue(bv.Int() * cv.Int())
+			} else {
+				r, err := vm.arith(bv, cv, "__mul", func(x, y float64) float64 { return x * y })
+				if err != nil {
+					return nil, wrapErr(err)
+				}
+				vm.regs[base+a] = r
 			}
-			vm.regs[base+a] = r
 
 		case OP_DIV:
 			a := DecodeA(inst)
@@ -425,26 +463,40 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			a := DecodeA(inst)
 			bv := rk(DecodeB(inst))
 			cv := rk(DecodeC(inst))
-			lt, ok := bv.LessThan(cv)
-			if !ok {
-				return nil, fmt.Errorf("attempt to compare %s with %s", bv.TypeName(), cv.TypeName())
-			}
-			if lt != (a != 0) {
-				frame.pc++
+			if bv.IsInt() && cv.IsInt() {
+				lt := bv.Int() < cv.Int()
+				if lt != (a != 0) {
+					frame.pc++
+				}
+			} else {
+				lt, ok := bv.LessThan(cv)
+				if !ok {
+					return nil, fmt.Errorf("attempt to compare %s with %s", bv.TypeName(), cv.TypeName())
+				}
+				if lt != (a != 0) {
+					frame.pc++
+				}
 			}
 
 		case OP_LE:
 			a := DecodeA(inst)
 			bv := rk(DecodeB(inst))
 			cv := rk(DecodeC(inst))
-			// a <= b  is  !(b < a)
-			lt, ok := cv.LessThan(bv)
-			if !ok {
-				return nil, fmt.Errorf("attempt to compare %s with %s", bv.TypeName(), cv.TypeName())
-			}
-			le := !lt
-			if le != (a != 0) {
-				frame.pc++
+			if bv.IsInt() && cv.IsInt() {
+				le := bv.Int() <= cv.Int()
+				if le != (a != 0) {
+					frame.pc++
+				}
+			} else {
+				// a <= b  is  !(b < a)
+				lt, ok := cv.LessThan(bv)
+				if !ok {
+					return nil, fmt.Errorf("attempt to compare %s with %s", bv.TypeName(), cv.TypeName())
+				}
+				le := !lt
+				if le != (a != 0) {
+					frame.pc++
+				}
 			}
 
 		// ---- Logical ----
@@ -482,7 +534,13 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			if b == 0 {
 				nArgs = vm.top - (base + a + 1)
 			}
-			args := make([]runtime.Value, nArgs)
+			// Use pre-allocated buffer for small arg counts to avoid allocation
+			var args []runtime.Value
+			if nArgs <= len(vm.argBuf) {
+				args = vm.argBuf[:nArgs]
+			} else {
+				args = make([]runtime.Value, nArgs)
+			}
 			for i := 0; i < nArgs; i++ {
 				args[i] = vm.regs[base+a+1+i]
 			}
@@ -564,49 +622,62 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			sbx := DecodesBx(inst)
 			// R(A) = init, R(A+1) = limit, R(A+2) = step
 			// R(A) -= R(A+2) so the first FORLOOP increment brings it to init
-			init := vm.regs[base+a].Number()
-			step := vm.regs[base+a+2].Number()
-			vm.regs[base+a] = runtime.FloatValue(init - step)
+			initV := vm.regs[base+a]
+			stepV := vm.regs[base+a+2]
+			if initV.IsInt() && stepV.IsInt() {
+				vm.regs[base+a] = runtime.IntValue(initV.Int() - stepV.Int())
+			} else {
+				vm.regs[base+a] = runtime.FloatValue(initV.Number() - stepV.Number())
+			}
 			frame.pc += sbx
 
 		case OP_FORLOOP:
 			a := DecodeA(inst)
 			sbx := DecodesBx(inst)
+			idxV := vm.regs[base+a]
+			// Fast path: all-integer for loop (most common case)
+			if idxV.IsInt() {
+				stepV := vm.regs[base+a+2]
+				limitV := vm.regs[base+a+1]
+				if stepV.IsInt() && limitV.IsInt() {
+					step := stepV.Int()
+					idx := idxV.Int() + step
+					limit := limitV.Int()
+					var cont bool
+					if step > 0 {
+						cont = idx <= limit
+					} else {
+						cont = idx >= limit
+					}
+					if cont {
+						vm.regs[base+a] = runtime.IntValue(idx)
+						vm.regs[base+a+3] = runtime.IntValue(idx)
+						frame.pc += sbx
+					}
+					break
+				}
+			}
+			// Slow path: float for loop
 			step := vm.regs[base+a+2].Number()
 			limit := vm.regs[base+a+1].Number()
-			idx := vm.regs[base+a].Number() + step
-
-			// Check if int-safe
-			if floatIsExactInt(idx) && floatIsExactInt(limit) && floatIsExactInt(step) {
-				iIdx := int64(idx)
-				iLimit := int64(limit)
-				cont := false
-				if step > 0 {
-					cont = iIdx <= iLimit
-				} else {
-					cont = iIdx >= iLimit
-				}
-				if cont {
-					vm.regs[base+a] = runtime.IntValue(iIdx)
-					vm.regs[base+a+3] = runtime.IntValue(iIdx)
-					frame.pc += sbx
-				} else {
-					vm.regs[base+a] = runtime.FloatValue(idx)
-				}
+			idx := idxV.Number() + step
+			cont := false
+			if step > 0 {
+				cont = idx <= limit
 			} else {
-				cont := false
-				if step > 0 {
-					cont = idx <= limit
+				cont = idx >= limit
+			}
+			if cont {
+				if floatIsExactInt(idx) {
+					vm.regs[base+a] = runtime.IntValue(int64(idx))
+					vm.regs[base+a+3] = runtime.IntValue(int64(idx))
 				} else {
-					cont = idx >= limit
-				}
-				if cont {
 					vm.regs[base+a] = runtime.FloatValue(idx)
 					vm.regs[base+a+3] = runtime.FloatValue(idx)
-					frame.pc += sbx
-				} else {
-					vm.regs[base+a] = runtime.FloatValue(idx)
 				}
+				frame.pc += sbx
+			} else {
+				vm.regs[base+a] = runtime.FloatValue(idx)
 			}
 
 		case OP_VARARG:

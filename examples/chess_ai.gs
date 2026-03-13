@@ -1,6 +1,8 @@
 // ============================================================================
 // GScript Chinese Chess (Xiangqi) with AI - Negamax + Alpha-Beta + Iterative Deepening
 // Player = Red (bottom), AI = Black (top)
+// OPTIMIZED: piece lists, king tracking, targeted isInCheck, killer moves,
+//   null move pruning, late move reduction, inlined boardKey
 // ============================================================================
 
 // === CONSTANTS ===
@@ -66,9 +68,17 @@ animPieceCol := 0         // destination col (piece is already placed here in bo
 animPieceRow := 0         // destination row
 animPendingAI := false    // trigger AI after animation ends
 
+// === OPTIMIZED: Piece lists and king tracking ===
+nodeCount := 0
+killerMoves := {}
+redPieces := {}
+blackPieces := {}
+redKing := nil
+blackKing := nil
+
 // === PIECE HELPER ===
 func makePiece(ptype, side, col, row) {
-    return {type: ptype, side: side, col: col, row: row}
+    return {type: ptype, side: side, col: col, row: row, alive: true}
 }
 
 func boardKey(col, row) {
@@ -79,7 +89,7 @@ func getPiece(col, row) {
     if col < 1 || col > 9 || row < 1 || row > 10 {
         return nil
     }
-    return board[boardKey(col, row)]
+    return board[col * 100 + row]
 }
 
 func setPiece(col, row, piece) {
@@ -87,11 +97,23 @@ func setPiece(col, row, piece) {
         piece.col = col
         piece.row = row
     }
-    board[boardKey(col, row)] = piece
+    board[col * 100 + row] = piece
 }
 
 func removePiece(col, row) {
-    board[boardKey(col, row)] = nil
+    board[col * 100 + row] = nil
+}
+
+func addPiece(ptype, side, col, row) {
+    p := makePiece(ptype, side, col, row)
+    board[col * 100 + row] = p
+    if side == "red" {
+        table.insert(redPieces, p)
+        if ptype == "K" { redKing = p }
+    } else {
+        table.insert(blackPieces, p)
+        if ptype == "K" { blackKing = p }
+    }
 }
 
 // === BOARD INITIALIZATION ===
@@ -109,42 +131,48 @@ func initBoard() {
     aiCoroutine = nil
     aiThinking = false
     lastAIDepth = 0
+    killerMoves = {}
+    nodeCount = 0
+    redPieces = {}
+    blackPieces = {}
+    redKing = nil
+    blackKing = nil
 
     // Red pieces (bottom, rows 1-5)
-    setPiece(5, 1, makePiece("K", "red", 5, 1))
-    setPiece(4, 1, makePiece("A", "red", 4, 1))
-    setPiece(6, 1, makePiece("A", "red", 6, 1))
-    setPiece(3, 1, makePiece("E", "red", 3, 1))
-    setPiece(7, 1, makePiece("E", "red", 7, 1))
-    setPiece(2, 1, makePiece("H", "red", 2, 1))
-    setPiece(8, 1, makePiece("H", "red", 8, 1))
-    setPiece(1, 1, makePiece("R", "red", 1, 1))
-    setPiece(9, 1, makePiece("R", "red", 9, 1))
-    setPiece(2, 3, makePiece("C", "red", 2, 3))
-    setPiece(8, 3, makePiece("C", "red", 8, 3))
-    setPiece(1, 4, makePiece("P", "red", 1, 4))
-    setPiece(3, 4, makePiece("P", "red", 3, 4))
-    setPiece(5, 4, makePiece("P", "red", 5, 4))
-    setPiece(7, 4, makePiece("P", "red", 7, 4))
-    setPiece(9, 4, makePiece("P", "red", 9, 4))
+    addPiece("K", "red", 5, 1)
+    addPiece("A", "red", 4, 1)
+    addPiece("A", "red", 6, 1)
+    addPiece("E", "red", 3, 1)
+    addPiece("E", "red", 7, 1)
+    addPiece("H", "red", 2, 1)
+    addPiece("H", "red", 8, 1)
+    addPiece("R", "red", 1, 1)
+    addPiece("R", "red", 9, 1)
+    addPiece("C", "red", 2, 3)
+    addPiece("C", "red", 8, 3)
+    addPiece("P", "red", 1, 4)
+    addPiece("P", "red", 3, 4)
+    addPiece("P", "red", 5, 4)
+    addPiece("P", "red", 7, 4)
+    addPiece("P", "red", 9, 4)
 
     // Black pieces (top, rows 6-10)
-    setPiece(5, 10, makePiece("K", "black", 5, 10))
-    setPiece(4, 10, makePiece("A", "black", 4, 10))
-    setPiece(6, 10, makePiece("A", "black", 6, 10))
-    setPiece(3, 10, makePiece("E", "black", 3, 10))
-    setPiece(7, 10, makePiece("E", "black", 7, 10))
-    setPiece(2, 10, makePiece("H", "black", 2, 10))
-    setPiece(8, 10, makePiece("H", "black", 8, 10))
-    setPiece(1, 10, makePiece("R", "black", 1, 10))
-    setPiece(9, 10, makePiece("R", "black", 9, 10))
-    setPiece(2, 8, makePiece("C", "black", 2, 8))
-    setPiece(8, 8, makePiece("C", "black", 8, 8))
-    setPiece(1, 7, makePiece("P", "black", 1, 7))
-    setPiece(3, 7, makePiece("P", "black", 3, 7))
-    setPiece(5, 7, makePiece("P", "black", 5, 7))
-    setPiece(7, 7, makePiece("P", "black", 7, 7))
-    setPiece(9, 7, makePiece("P", "black", 9, 7))
+    addPiece("K", "black", 5, 10)
+    addPiece("A", "black", 4, 10)
+    addPiece("A", "black", 6, 10)
+    addPiece("E", "black", 3, 10)
+    addPiece("E", "black", 7, 10)
+    addPiece("H", "black", 2, 10)
+    addPiece("H", "black", 8, 10)
+    addPiece("R", "black", 1, 10)
+    addPiece("R", "black", 9, 10)
+    addPiece("C", "black", 2, 8)
+    addPiece("C", "black", 8, 8)
+    addPiece("P", "black", 1, 7)
+    addPiece("P", "black", 3, 7)
+    addPiece("P", "black", 5, 7)
+    addPiece("P", "black", 7, 7)
+    addPiece("P", "black", 9, 7)
 }
 
 // === COORDINATE CONVERSION ===
@@ -166,20 +194,194 @@ func pixelToCell(px, py) {
     return col, row
 }
 
-// === FIND GENERAL POSITION ===
+// === FIND GENERAL POSITION (O(1) via king tracking) ===
 func findGeneral(side) {
-    for c := 1; c <= 9; c++ {
-        for r := 1; r <= 10; r++ {
-            p := getPiece(c, r)
-            if p != nil && p.type == "K" && p.side == side {
-                return c, r
-            }
-        }
+    k := redKing
+    if side == "black" { k = blackKing }
+    if k != nil && k.alive {
+        return k.col, k.row
     }
     return nil, nil
 }
 
-// === RAW MOVE GENERATION (without check filtering) ===
+// === TARGETED ATTACK DETECTION ===
+func isSquareAttacked(gc, gr, attackerSide) {
+    // 1. Rook and Cannon along 4 directions
+    // Up
+    nr := gr + 1
+    foundScreen := false
+    for nr <= 10 {
+        p := board[gc * 100 + nr]
+        if p != nil {
+            if !foundScreen {
+                if p.side == attackerSide && p.type == "R" { return true }
+                foundScreen = true
+            } else {
+                if p.side == attackerSide && p.type == "C" { return true }
+                break
+            }
+        }
+        nr = nr + 1
+    }
+    // Down
+    nr = gr - 1
+    foundScreen = false
+    for nr >= 1 {
+        p := board[gc * 100 + nr]
+        if p != nil {
+            if !foundScreen {
+                if p.side == attackerSide && p.type == "R" { return true }
+                foundScreen = true
+            } else {
+                if p.side == attackerSide && p.type == "C" { return true }
+                break
+            }
+        }
+        nr = nr - 1
+    }
+    // Left
+    nc := gc - 1
+    foundScreen = false
+    for nc >= 1 {
+        p := board[nc * 100 + gr]
+        if p != nil {
+            if !foundScreen {
+                if p.side == attackerSide && p.type == "R" { return true }
+                foundScreen = true
+            } else {
+                if p.side == attackerSide && p.type == "C" { return true }
+                break
+            }
+        }
+        nc = nc - 1
+    }
+    // Right
+    nc = gc + 1
+    foundScreen = false
+    for nc <= 9 {
+        p := board[nc * 100 + gr]
+        if p != nil {
+            if !foundScreen {
+                if p.side == attackerSide && p.type == "R" { return true }
+                foundScreen = true
+            } else {
+                if p.side == attackerSide && p.type == "C" { return true }
+                break
+            }
+        }
+        nc = nc + 1
+    }
+
+    // 2. Horse attacks (grouped by 4 blocking positions)
+    bc := gc - 1
+    br := gr - 1
+    if bc >= 1 && br >= 1 && board[bc * 100 + br] == nil {
+        if gr - 2 >= 1 {
+            p := board[(gc - 1) * 100 + (gr - 2)]
+            if p != nil && p.side == attackerSide && p.type == "H" { return true }
+        }
+        if gc - 2 >= 1 {
+            p := board[(gc - 2) * 100 + (gr - 1)]
+            if p != nil && p.side == attackerSide && p.type == "H" { return true }
+        }
+    }
+    bc = gc - 1
+    br = gr + 1
+    if bc >= 1 && br <= 10 && board[bc * 100 + br] == nil {
+        if gr + 2 <= 10 {
+            p := board[(gc - 1) * 100 + (gr + 2)]
+            if p != nil && p.side == attackerSide && p.type == "H" { return true }
+        }
+        if gc - 2 >= 1 {
+            p := board[(gc - 2) * 100 + (gr + 1)]
+            if p != nil && p.side == attackerSide && p.type == "H" { return true }
+        }
+    }
+    bc = gc + 1
+    br = gr - 1
+    if bc <= 9 && br >= 1 && board[bc * 100 + br] == nil {
+        if gr - 2 >= 1 {
+            p := board[(gc + 1) * 100 + (gr - 2)]
+            if p != nil && p.side == attackerSide && p.type == "H" { return true }
+        }
+        if gc + 2 <= 9 {
+            p := board[(gc + 2) * 100 + (gr - 1)]
+            if p != nil && p.side == attackerSide && p.type == "H" { return true }
+        }
+    }
+    bc = gc + 1
+    br = gr + 1
+    if bc <= 9 && br <= 10 && board[bc * 100 + br] == nil {
+        if gr + 2 <= 10 {
+            p := board[(gc + 1) * 100 + (gr + 2)]
+            if p != nil && p.side == attackerSide && p.type == "H" { return true }
+        }
+        if gc + 2 <= 9 {
+            p := board[(gc + 2) * 100 + (gr + 1)]
+            if p != nil && p.side == attackerSide && p.type == "H" { return true }
+        }
+    }
+
+    // 3. Pawn attacks
+    if attackerSide == "black" {
+        if gr + 1 <= 10 {
+            p := board[gc * 100 + (gr + 1)]
+            if p != nil && p.side == "black" && p.type == "P" { return true }
+        }
+        if gc - 1 >= 1 {
+            p := board[(gc - 1) * 100 + gr]
+            if p != nil && p.side == "black" && p.type == "P" { return true }
+        }
+        if gc + 1 <= 9 {
+            p := board[(gc + 1) * 100 + gr]
+            if p != nil && p.side == "black" && p.type == "P" { return true }
+        }
+    } else {
+        if gr - 1 >= 1 {
+            p := board[gc * 100 + (gr - 1)]
+            if p != nil && p.side == "red" && p.type == "P" { return true }
+        }
+        if gc - 1 >= 1 {
+            p := board[(gc - 1) * 100 + gr]
+            if p != nil && p.side == "red" && p.type == "P" { return true }
+        }
+        if gc + 1 <= 9 {
+            p := board[(gc + 1) * 100 + gr]
+            if p != nil && p.side == "red" && p.type == "P" { return true }
+        }
+    }
+
+    // 4. Flying General
+    ek := redKing
+    if attackerSide == "red" {
+        // ek is already redKing
+    } else {
+        ek = blackKing
+    }
+    if ek != nil && ek.alive && ek.col == gc {
+        blocked := false
+        minR := gr
+        maxR := ek.row
+        if minR > maxR { minR = ek.row; maxR = gr }
+        for checkR := minR + 1; checkR < maxR; checkR++ {
+            if board[gc * 100 + checkR] != nil { blocked = true; break }
+        }
+        if !blocked { return true }
+    }
+
+    return false
+}
+
+// === CHECK DETECTION (using targeted attack detection) ===
+func isInCheck(side) {
+    gc, gr := findGeneral(side)
+    if gc == nil { return true }
+    enemySide := "black"
+    if side == "black" { enemySide = "red" }
+    return isSquareAttacked(gc, gr, enemySide)
+}
+
+// === RAW MOVE GENERATION (inlined boardKey, king tracking for flying general) ===
 func getRawMoves(piece) {
     moves := {}
     c := piece.col
@@ -188,225 +390,246 @@ func getRawMoves(piece) {
     ptype := piece.type
 
     if ptype == "K" {
-        dirs := {{0, 1}, {0, -1}, {1, 0}, {-1, 0}}
-        for i := 1; i <= #dirs; i++ {
-            nc := c + dirs[i][1]
-            nr := r + dirs[i][2]
-            inPalace := false
-            if side == "red" && nc >= 4 && nc <= 6 && nr >= 1 && nr <= 3 {
-                inPalace = true
+        nr := r + 1
+        if side == "red" && nr <= 3 && c >= 4 && c <= 6 {
+            p := board[c * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: c, row: nr}) }
+        }
+        if side == "black" && nr <= 10 && nr >= 8 && c >= 4 && c <= 6 {
+            p := board[c * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: c, row: nr}) }
+        }
+        nr = r - 1
+        if side == "red" && nr >= 1 && c >= 4 && c <= 6 {
+            p := board[c * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: c, row: nr}) }
+        }
+        if side == "black" && nr >= 8 && c >= 4 && c <= 6 {
+            p := board[c * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: c, row: nr}) }
+        }
+        nc := c - 1
+        if nc >= 4 {
+            if (side == "red" && r >= 1 && r <= 3) || (side == "black" && r >= 8 && r <= 10) {
+                p := board[nc * 100 + r]
+                if p == nil || p.side != side { table.insert(moves, {col: nc, row: r}) }
             }
-            if side == "black" && nc >= 4 && nc <= 6 && nr >= 8 && nr <= 10 {
-                inPalace = true
-            }
-            if inPalace {
-                target := getPiece(nc, nr)
-                if target == nil || target.side != side {
-                    table.insert(moves, {col: nc, row: nr})
-                }
+        }
+        nc = c + 1
+        if nc <= 6 {
+            if (side == "red" && r >= 1 && r <= 3) || (side == "black" && r >= 8 && r <= 10) {
+                p := board[nc * 100 + r]
+                if p == nil || p.side != side { table.insert(moves, {col: nc, row: r}) }
             }
         }
         // Flying general
-        enemySide := "black"
-        if side == "black" {
-            enemySide = "red"
-        }
-        ec, er := findGeneral(enemySide)
-        if ec != nil && ec == c {
+        ek := blackKing
+        if side == "black" { ek = redKing }
+        if ek != nil && ek.alive && ek.col == c {
             blocked := false
             minR := r
-            maxR := er
-            if minR > maxR {
-                minR = er
-                maxR = r
-            }
+            maxR := ek.row
+            if minR > maxR { minR = ek.row; maxR = r }
             for checkR := minR + 1; checkR < maxR; checkR++ {
-                if getPiece(c, checkR) != nil {
-                    blocked = true
-                    break
-                }
+                if board[c * 100 + checkR] != nil { blocked = true; break }
             }
-            if !blocked {
-                table.insert(moves, {col: ec, row: er})
-            }
+            if !blocked { table.insert(moves, {col: ek.col, row: ek.row}) }
         }
     }
 
     if ptype == "A" {
-        dirs := {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}}
-        for i := 1; i <= #dirs; i++ {
-            nc := c + dirs[i][1]
-            nr := r + dirs[i][2]
-            inPalace := false
-            if side == "red" && nc >= 4 && nc <= 6 && nr >= 1 && nr <= 3 {
-                inPalace = true
-            }
-            if side == "black" && nc >= 4 && nc <= 6 && nr >= 8 && nr <= 10 {
-                inPalace = true
-            }
-            if inPalace {
-                target := getPiece(nc, nr)
-                if target == nil || target.side != side {
-                    table.insert(moves, {col: nc, row: nr})
-                }
-            }
+        nc := c + 1; nr := r + 1
+        if nc <= 6 && ((side == "red" && nr <= 3) || (side == "black" && nr <= 10 && nr >= 8)) {
+            p := board[nc * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c + 1; nr = r - 1
+        if nc <= 6 && ((side == "red" && nr >= 1) || (side == "black" && nr >= 8)) {
+            p := board[nc * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c - 1; nr = r + 1
+        if nc >= 4 && ((side == "red" && nr <= 3) || (side == "black" && nr <= 10 && nr >= 8)) {
+            p := board[nc * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c - 1; nr = r - 1
+        if nc >= 4 && ((side == "red" && nr >= 1) || (side == "black" && nr >= 8)) {
+            p := board[nc * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
     }
 
     if ptype == "E" {
-        dirs := {{2, 2}, {2, -2}, {-2, 2}, {-2, -2}}
-        blocks := {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}}
-        for i := 1; i <= #dirs; i++ {
-            nc := c + dirs[i][1]
-            nr := r + dirs[i][2]
-            bc := c + blocks[i][1]
-            br := r + blocks[i][2]
-            if nc >= 1 && nc <= 9 && nr >= 1 && nr <= 10 {
-                validSide := false
-                if side == "red" && nr >= 1 && nr <= 5 {
-                    validSide = true
-                }
-                if side == "black" && nr >= 6 && nr <= 10 {
-                    validSide = true
-                }
-                if validSide && getPiece(bc, br) == nil {
-                    target := getPiece(nc, nr)
-                    if target == nil || target.side != side {
-                        table.insert(moves, {col: nc, row: nr})
-                    }
-                }
-            }
+        nc := c + 2; nr := r + 2
+        if nc <= 9 && nr <= 10 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && board[(c+1)*100+(r+1)] == nil {
+            p := board[nc * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c + 2; nr = r - 2
+        if nc <= 9 && nr >= 1 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && board[(c+1)*100+(r-1)] == nil {
+            p := board[nc * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c - 2; nr = r + 2
+        if nc >= 1 && nr <= 10 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && board[(c-1)*100+(r+1)] == nil {
+            p := board[nc * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c - 2; nr = r - 2
+        if nc >= 1 && nr >= 1 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && board[(c-1)*100+(r-1)] == nil {
+            p := board[nc * 100 + nr]
+            if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
     }
 
     if ptype == "H" {
-        horseMoves := {
-            {dc: 1, dr: 2, bc: 0, br: 1},
-            {dc: 1, dr: -2, bc: 0, br: -1},
-            {dc: -1, dr: 2, bc: 0, br: 1},
-            {dc: -1, dr: -2, bc: 0, br: -1},
-            {dc: 2, dr: 1, bc: 1, br: 0},
-            {dc: 2, dr: -1, bc: 1, br: 0},
-            {dc: -2, dr: 1, bc: -1, br: 0},
-            {dc: -2, dr: -1, bc: -1, br: 0}
+        nc := c+1; nr := r+2
+        if nc <= 9 && nr <= 10 && board[c*100+(r+1)] == nil {
+            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
-        for i := 1; i <= #horseMoves; i++ {
-            hm := horseMoves[i]
-            nc := c + hm.dc
-            nr := r + hm.dr
-            blockC := c + hm.bc
-            blockR := r + hm.br
-            if nc >= 1 && nc <= 9 && nr >= 1 && nr <= 10 {
-                if getPiece(blockC, blockR) == nil {
-                    target := getPiece(nc, nr)
-                    if target == nil || target.side != side {
-                        table.insert(moves, {col: nc, row: nr})
-                    }
-                }
-            }
+        nc = c+1; nr = r-2
+        if nc <= 9 && nr >= 1 && board[c*100+(r-1)] == nil {
+            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c-1; nr = r+2
+        if nc >= 1 && nr <= 10 && board[c*100+(r+1)] == nil {
+            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c-1; nr = r-2
+        if nc >= 1 && nr >= 1 && board[c*100+(r-1)] == nil {
+            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c+2; nr = r+1
+        if nc <= 9 && nr <= 10 && board[(c+1)*100+r] == nil {
+            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c+2; nr = r-1
+        if nc <= 9 && nr >= 1 && board[(c+1)*100+r] == nil {
+            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c-2; nr = r+1
+        if nc >= 1 && nr <= 10 && board[(c-1)*100+r] == nil {
+            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        }
+        nc = c-2; nr = r-1
+        if nc >= 1 && nr >= 1 && board[(c-1)*100+r] == nil {
+            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
     }
 
     if ptype == "R" {
-        dirs := {{0, 1}, {0, -1}, {1, 0}, {-1, 0}}
-        for i := 1; i <= #dirs; i++ {
-            dc := dirs[i][1]
-            dr := dirs[i][2]
-            nc := c + dc
-            nr := r + dr
-            for nc >= 1 && nc <= 9 && nr >= 1 && nr <= 10 {
-                target := getPiece(nc, nr)
-                if target == nil {
-                    table.insert(moves, {col: nc, row: nr})
-                } else {
-                    if target.side != side {
-                        table.insert(moves, {col: nc, row: nr})
-                    }
-                    break
-                }
-                nc = nc + dc
-                nr = nr + dr
-            }
+        nr := r + 1
+        for nr <= 10 {
+            p := board[c*100+nr]
+            if p == nil { table.insert(moves, {col: c, row: nr}) }
+            else { if p.side != side { table.insert(moves, {col: c, row: nr}) }; break }
+            nr = nr + 1
+        }
+        nr = r - 1
+        for nr >= 1 {
+            p := board[c*100+nr]
+            if p == nil { table.insert(moves, {col: c, row: nr}) }
+            else { if p.side != side { table.insert(moves, {col: c, row: nr}) }; break }
+            nr = nr - 1
+        }
+        nc := c + 1
+        for nc <= 9 {
+            p := board[nc*100+r]
+            if p == nil { table.insert(moves, {col: nc, row: r}) }
+            else { if p.side != side { table.insert(moves, {col: nc, row: r}) }; break }
+            nc = nc + 1
+        }
+        nc = c - 1
+        for nc >= 1 {
+            p := board[nc*100+r]
+            if p == nil { table.insert(moves, {col: nc, row: r}) }
+            else { if p.side != side { table.insert(moves, {col: nc, row: r}) }; break }
+            nc = nc - 1
         }
     }
 
     if ptype == "C" {
-        dirs := {{0, 1}, {0, -1}, {1, 0}, {-1, 0}}
-        for i := 1; i <= #dirs; i++ {
-            dc := dirs[i][1]
-            dr := dirs[i][2]
-            nc := c + dc
-            nr := r + dr
-            for nc >= 1 && nc <= 9 && nr >= 1 && nr <= 10 {
-                target := getPiece(nc, nr)
-                if target == nil {
-                    table.insert(moves, {col: nc, row: nr})
-                } else {
-                    nc = nc + dc
-                    nr = nr + dr
-                    for nc >= 1 && nc <= 9 && nr >= 1 && nr <= 10 {
-                        target2 := getPiece(nc, nr)
-                        if target2 != nil {
-                            if target2.side != side {
-                                table.insert(moves, {col: nc, row: nr})
-                            }
-                            break
-                        }
-                        nc = nc + dc
-                        nr = nr + dr
-                    }
-                    break
+        nr := r + 1
+        for nr <= 10 {
+            p := board[c*100+nr]
+            if p == nil { table.insert(moves, {col: c, row: nr}) }
+            else {
+                nr = nr + 1
+                for nr <= 10 {
+                    p2 := board[c*100+nr]
+                    if p2 != nil { if p2.side != side { table.insert(moves, {col: c, row: nr}) }; break }
+                    nr = nr + 1
                 }
-                nc = nc + dc
-                nr = nr + dr
+                break
             }
+            nr = nr + 1
+        }
+        nr = r - 1
+        for nr >= 1 {
+            p := board[c*100+nr]
+            if p == nil { table.insert(moves, {col: c, row: nr}) }
+            else {
+                nr = nr - 1
+                for nr >= 1 {
+                    p2 := board[c*100+nr]
+                    if p2 != nil { if p2.side != side { table.insert(moves, {col: c, row: nr}) }; break }
+                    nr = nr - 1
+                }
+                break
+            }
+            nr = nr - 1
+        }
+        nc := c + 1
+        for nc <= 9 {
+            p := board[nc*100+r]
+            if p == nil { table.insert(moves, {col: nc, row: r}) }
+            else {
+                nc = nc + 1
+                for nc <= 9 {
+                    p2 := board[nc*100+r]
+                    if p2 != nil { if p2.side != side { table.insert(moves, {col: nc, row: r}) }; break }
+                    nc = nc + 1
+                }
+                break
+            }
+            nc = nc + 1
+        }
+        nc = c - 1
+        for nc >= 1 {
+            p := board[nc*100+r]
+            if p == nil { table.insert(moves, {col: nc, row: r}) }
+            else {
+                nc = nc - 1
+                for nc >= 1 {
+                    p2 := board[nc*100+r]
+                    if p2 != nil { if p2.side != side { table.insert(moves, {col: nc, row: r}) }; break }
+                    nc = nc - 1
+                }
+                break
+            }
+            nc = nc - 1
         }
     }
 
     if ptype == "P" {
         if side == "red" {
-            crossedRiver := r >= 6
             if r + 1 <= 10 {
-                target := getPiece(c, r + 1)
-                if target == nil || target.side != side {
-                    table.insert(moves, {col: c, row: r + 1})
-                }
+                p := board[c*100+(r+1)]
+                if p == nil || p.side != side { table.insert(moves, {col: c, row: r+1}) }
             }
-            if crossedRiver {
-                if c - 1 >= 1 {
-                    target := getPiece(c - 1, r)
-                    if target == nil || target.side != side {
-                        table.insert(moves, {col: c - 1, row: r})
-                    }
-                }
-                if c + 1 <= 9 {
-                    target := getPiece(c + 1, r)
-                    if target == nil || target.side != side {
-                        table.insert(moves, {col: c + 1, row: r})
-                    }
-                }
+            if r >= 6 {
+                if c-1 >= 1 { p := board[(c-1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c-1, row: r}) } }
+                if c+1 <= 9 { p := board[(c+1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c+1, row: r}) } }
             }
         } else {
-            crossedRiver := r <= 5
             if r - 1 >= 1 {
-                target := getPiece(c, r - 1)
-                if target == nil || target.side != side {
-                    table.insert(moves, {col: c, row: r - 1})
-                }
+                p := board[c*100+(r-1)]
+                if p == nil || p.side != side { table.insert(moves, {col: c, row: r-1}) }
             }
-            if crossedRiver {
-                if c - 1 >= 1 {
-                    target := getPiece(c - 1, r)
-                    if target == nil || target.side != side {
-                        table.insert(moves, {col: c - 1, row: r})
-                    }
-                }
-                if c + 1 <= 9 {
-                    target := getPiece(c + 1, r)
-                    if target == nil || target.side != side {
-                        table.insert(moves, {col: c + 1, row: r})
-                    }
-                }
+            if r <= 5 {
+                if c-1 >= 1 { p := board[(c-1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c-1, row: r}) } }
+                if c+1 <= 9 { p := board[(c+1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c+1, row: r}) } }
             }
         }
     }
@@ -414,61 +637,10 @@ func getRawMoves(piece) {
     return moves
 }
 
-// === CHECK DETECTION ===
-func isInCheck(side) {
-    gc, gr := findGeneral(side)
-    if gc == nil {
-        return true
-    }
-
-    enemySide := "black"
-    if side == "black" {
-        enemySide = "red"
-    }
-
-    for ec := 1; ec <= 9; ec++ {
-        for er := 1; er <= 10; er++ {
-            ep := getPiece(ec, er)
-            if ep != nil && ep.side == enemySide {
-                rawMoves := getRawMoves(ep)
-                for i := 1; i <= #rawMoves; i++ {
-                    if rawMoves[i].col == gc && rawMoves[i].row == gr {
-                        return true
-                    }
-                }
-            }
-        }
-    }
-
-    // Flying general check
-    enemyGC, enemyGR := findGeneral(enemySide)
-    if enemyGC != nil && enemyGC == gc {
-        blocked := false
-        minR := gr
-        maxR := enemyGR
-        if minR > maxR {
-            minR = enemyGR
-            maxR = gr
-        }
-        for checkR := minR + 1; checkR < maxR; checkR++ {
-            if getPiece(gc, checkR) != nil {
-                blocked = true
-                break
-            }
-        }
-        if !blocked {
-            return true
-        }
-    }
-
-    return false
-}
-
-// === LEGAL MOVE FILTERING ===
+// === LEGAL MOVE FILTERING (with alive flag handling) ===
 func getValidMovesList(piece) {
     rawMoves := getRawMoves(piece)
     legalMoves := {}
-
     fc := piece.col
     fr := piece.row
     side := piece.side
@@ -476,47 +648,51 @@ func getValidMovesList(piece) {
     for i := 1; i <= #rawMoves; i++ {
         tc := rawMoves[i].col
         tr := rawMoves[i].row
-
-        // Simulate the move
-        captured := getPiece(tc, tr)
-        setPiece(tc, tr, piece)
-        removePiece(fc, fr)
+        captured := board[tc*100+tr]
+        board[tc*100+tr] = piece
+        board[fc*100+fr] = nil
+        origCol := piece.col
+        origRow := piece.row
+        piece.col = tc
+        piece.row = tr
+        if captured != nil { captured.alive = false }
 
         inCheck := isInCheck(side)
 
-        // Undo simulation
-        setPiece(fc, fr, piece)
+        piece.col = origCol
+        piece.row = origRow
+        board[fc*100+fr] = piece
         if captured != nil {
-            setPiece(tc, tr, captured)
+            board[tc*100+tr] = captured
+            captured.alive = true
         } else {
-            removePiece(tc, tr)
+            board[tc*100+tr] = nil
         }
 
         if !inCheck {
             table.insert(legalMoves, {col: tc, row: tr})
         }
     }
-
     return legalMoves
 }
 
-// === CHECK IF ANY LEGAL MOVE EXISTS ===
+// === CHECK IF ANY LEGAL MOVE EXISTS (using piece lists) ===
 func hasAnyLegalMove(side) {
-    for c := 1; c <= 9; c++ {
-        for r := 1; r <= 10; r++ {
-            p := getPiece(c, r)
-            if p != nil && p.side == side {
-                lm := getValidMovesList(p)
-                if #lm > 0 {
-                    return true
-                }
+    pieces := redPieces
+    if side == "black" { pieces = blackPieces }
+    for i := 1; i <= #pieces; i++ {
+        p := pieces[i]
+        if p.alive {
+            lm := getValidMovesList(p)
+            if #lm > 0 {
+                return true
             }
         }
     }
     return false
 }
 
-// === MOVE EXECUTION ===
+// === MOVE EXECUTION (with piece alive flags and king tracking) ===
 func doMove(piece, toCol, toRow) {
     fromCol := piece.col
     fromRow := piece.row
@@ -532,16 +708,19 @@ func doMove(piece, toCol, toRow) {
         fromRow: fromRow,
         toCol: toCol,
         toRow: toRow,
+        capturedPiece: nil,
         capturedType: nil,
         capturedSide: nil
     }
     if captured != nil {
+        histEntry.capturedPiece = captured
         histEntry.capturedType = captured.type
         histEntry.capturedSide = captured.side
     }
     table.insert(moveHistory, histEntry)
 
     if captured != nil {
+        captured.alive = false
         if captured.side == "red" {
             table.insert(capturedRed, captured.type)
         } else {
@@ -595,7 +774,7 @@ func checkGameStatus() {
     }
 }
 
-// === UNDO MOVE ===
+// === UNDO MOVE (with piece alive flags and king tracking) ===
 func undoLastMove() {
     if #moveHistory == 0 {
         return
@@ -611,15 +790,37 @@ func undoLastMove() {
     removePiece(hist.toCol, hist.toRow)
     setPiece(hist.fromCol, hist.fromRow, piece)
 
-    if hist.capturedType != nil {
-        restored := makePiece(hist.capturedType, hist.capturedSide, hist.toCol, hist.toRow)
-        setPiece(hist.toCol, hist.toRow, restored)
+    if hist.capturedPiece != nil {
+        // Restore the original captured piece object (preserving piece list references)
+        restored := hist.capturedPiece
+        restored.alive = true
+        restored.col = hist.toCol
+        restored.row = hist.toRow
+        board[hist.toCol * 100 + hist.toRow] = restored
 
         if hist.capturedSide == "red" {
             if #capturedRed > 0 {
                 table.remove(capturedRed, #capturedRed)
             }
         } else {
+            if #capturedBlack > 0 {
+                table.remove(capturedBlack, #capturedBlack)
+            }
+        }
+    } elseif hist.capturedType != nil {
+        // Fallback for old-style history entries without capturedPiece
+        restored := makePiece(hist.capturedType, hist.capturedSide, hist.toCol, hist.toRow)
+        setPiece(hist.toCol, hist.toRow, restored)
+        // Re-add to piece lists
+        if hist.capturedSide == "red" {
+            table.insert(redPieces, restored)
+            if hist.capturedType == "K" { redKing = restored }
+            if #capturedRed > 0 {
+                table.remove(capturedRed, #capturedRed)
+            }
+        } else {
+            table.insert(blackPieces, restored)
+            if hist.capturedType == "K" { blackKing = restored }
             if #capturedBlack > 0 {
                 table.remove(capturedBlack, #capturedBlack)
             }
@@ -653,7 +854,7 @@ func undoLastMove() {
 }
 
 // ============================================================================
-// === AI ENGINE ===
+// === AI ENGINE (OPTIMIZED) ===
 // ============================================================================
 
 // === PIECE VALUES ===
@@ -668,248 +869,180 @@ func pieceValue(ptype) {
     return 0
 }
 
-// === POSITION SQUARE TABLE (PST) ===
-// Returns a positional bonus for a piece at a given position.
-// col: 1-9, row: 1-10
-// For red, row 1 is bottom (home). For black, we mirror: effective row = 11 - row.
-func getPST(ptype, side, col, row) {
-    // Normalize row to "own perspective" (row 1 = home side)
-    r := row
-    if side == "black" {
-        r = 11 - row
-    }
-
-    if ptype == "R" {
-        // Chariot: center file bonus
-        bonus := 0
-        if col == 5 {
-            bonus = bonus + 4
-        }
-        if col == 4 || col == 6 {
-            bonus = bonus + 2
-        }
-        // Slight bonus for being in enemy half
-        if r >= 6 {
-            bonus = bonus + 2
-        }
-        return bonus
-    }
-
-    if ptype == "H" {
-        // Horse: center is best, corners/edges penalized
-        bonus := 0
-        // Corner penalty
-        if (col == 1 || col == 9) && (r == 1 || r == 10) {
-            return -10
-        }
-        // Edge penalty
-        if col == 1 || col == 9 || r == 1 || r == 10 {
-            return -4
-        }
-        // Central 3x3 (cols 4-6, rows 4-7 in own perspective)
-        if col >= 4 && col <= 6 && r >= 4 && r <= 7 {
-            return 16
-        }
-        // Wider center region (cols 3-7, rows 3-8)
-        if col >= 3 && col <= 7 && r >= 3 && r <= 8 {
-            return 8
-        }
-        return bonus
-    }
-
-    if ptype == "C" {
-        // Cannon
-        bonus := 0
-        // Back rank starting positions
-        if r == 1 && (col == 2 || col == 8) {
-            bonus = bonus + 4
-        }
-        // Center file
-        if col == 5 {
-            bonus = bonus + 6
-        }
-        // Enemy half
-        if r >= 6 {
-            bonus = bonus + 8
-        }
-        return bonus
-    }
-
-    if ptype == "P" {
-        // Pawn: no bonus before river, big bonus after
-        if r <= 5 {
-            return 0
-        }
-        // After river
-        bonus := 50
-        // Additional bonus per row advanced past river (row 6 = just crossed)
-        bonus = bonus + (r - 5) * 10
-        // Center columns bonus
-        if col >= 4 && col <= 6 {
-            bonus = bonus + 10
-        }
-        return bonus
-    }
-
-    if ptype == "A" {
-        // Advisor: slight bonus for palace center
-        if col == 5 && r == 2 {
-            return 4
-        }
-        return 0
-    }
-
-    if ptype == "E" {
-        // Elephant: slight bonus for good defensive spots
-        // Standard good positions: (3,1), (7,1), (5,3), (1,3), (9,3), (3,5), (7,5)
-        if r == 3 && (col == 1 || col == 5 || col == 9) {
-            return 4
-        }
-        if r == 5 && (col == 3 || col == 7) {
-            return 2
-        }
-        return 0
-    }
-
-    if ptype == "K" {
-        // King: center of palace is slightly better
-        if col == 5 && r == 2 {
-            return 4
-        }
-        return 0
-    }
-
-    return 0
-}
-
-// === EVALUATION FUNCTION ===
-// Returns score from Red's perspective (positive = Red winning)
+// === EVALUATION (using piece lists instead of board scan, inline PST) ===
 func evaluateBoard() {
-    // Check if generals exist
-    redGC, redGR := findGeneral("red")
-    blackGC, blackGR := findGeneral("black")
-
-    if redGC == nil {
-        return -99999
-    }
-    if blackGC == nil {
-        return 99999
-    }
+    if !redKing.alive { return -99999 }
+    if !blackKing.alive { return 99999 }
 
     score := 0
 
-    for c := 1; c <= 9; c++ {
-        for r := 1; r <= 10; r++ {
-            p := getPiece(c, r)
-            if p != nil {
-                pv := pieceValue(p.type)
-                pst := getPST(p.type, p.side, c, r)
+    for i := 1; i <= #redPieces; i++ {
+        p := redPieces[i]
+        if p.alive {
+            pv := pieceValue(p.type)
+            c := p.col
+            r := p.row
+            pr := r
+            pst := 0
+            ptype := p.type
 
-                // Pawn value adjustment: after river = 200 instead of 100
-                if p.type == "P" {
-                    if p.side == "red" && r >= 6 {
-                        pv = 200
-                    }
-                    if p.side == "black" && r <= 5 {
-                        pv = 200
-                    }
-                }
-
-                if p.side == "red" {
-                    score = score + pv + pst
-                } else {
-                    score = score - pv - pst
-                }
+            if ptype == "R" {
+                if c == 5 { pst = 4 } elseif c == 4 || c == 6 { pst = 2 }
+                if pr >= 6 { pst = pst + 2 }
+            } elseif ptype == "H" {
+                if (c == 1 || c == 9) && (pr == 1 || pr == 10) { pst = -10 }
+                elseif c == 1 || c == 9 || pr == 1 || pr == 10 { pst = -4 }
+                elseif c >= 4 && c <= 6 && pr >= 4 && pr <= 7 { pst = 16 }
+                elseif c >= 3 && c <= 7 && pr >= 3 && pr <= 8 { pst = 8 }
+            } elseif ptype == "C" {
+                if pr == 1 && (c == 2 || c == 8) { pst = 4 }
+                if c == 5 { pst = pst + 6 }
+                if pr >= 6 { pst = pst + 8 }
+            } elseif ptype == "P" {
+                if r >= 6 { pv = 200 }
+                if pr > 5 { pst = 50 + (pr-5)*10; if c >= 4 && c <= 6 { pst = pst + 10 } }
+            } elseif ptype == "A" {
+                if c == 5 && pr == 2 { pst = 4 }
+            } elseif ptype == "E" {
+                if pr == 3 && (c == 1 || c == 5 || c == 9) { pst = 4 }
+                elseif pr == 5 && (c == 3 || c == 7) { pst = 2 }
+            } elseif ptype == "K" {
+                if c == 5 && pr == 2 { pst = 4 }
             }
+            score = score + pv + pst
+        }
+    }
+
+    for i := 1; i <= #blackPieces; i++ {
+        p := blackPieces[i]
+        if p.alive {
+            pv := pieceValue(p.type)
+            c := p.col
+            r := p.row
+            pr := 11 - r
+            pst := 0
+            ptype := p.type
+
+            if ptype == "R" {
+                if c == 5 { pst = 4 } elseif c == 4 || c == 6 { pst = 2 }
+                if pr >= 6 { pst = pst + 2 }
+            } elseif ptype == "H" {
+                if (c == 1 || c == 9) && (pr == 1 || pr == 10) { pst = -10 }
+                elseif c == 1 || c == 9 || pr == 1 || pr == 10 { pst = -4 }
+                elseif c >= 4 && c <= 6 && pr >= 4 && pr <= 7 { pst = 16 }
+                elseif c >= 3 && c <= 7 && pr >= 3 && pr <= 8 { pst = 8 }
+            } elseif ptype == "C" {
+                if pr == 1 && (c == 2 || c == 8) { pst = 4 }
+                if c == 5 { pst = pst + 6 }
+                if pr >= 6 { pst = pst + 8 }
+            } elseif ptype == "P" {
+                if r <= 5 { pv = 200 }
+                if pr > 5 { pst = 50 + (pr-5)*10; if c >= 4 && c <= 6 { pst = pst + 10 } }
+            } elseif ptype == "A" {
+                if c == 5 && pr == 2 { pst = 4 }
+            } elseif ptype == "E" {
+                if pr == 3 && (c == 1 || c == 5 || c == 9) { pst = 4 }
+                elseif pr == 5 && (c == 3 || c == 7) { pst = 2 }
+            } elseif ptype == "K" {
+                if c == 5 && pr == 2 { pst = 4 }
+            }
+            score = score - pv - pst
         }
     }
 
     return score
 }
 
-// === GET ALL MOVES FOR A SIDE ===
-// Returns list of {piece, col, row}
+// === GET ALL MOVES FOR A SIDE (using piece lists) ===
 func getAllMovesForSide(side) {
+    pieces := redPieces
+    if side == "black" { pieces = blackPieces }
     allMoves := {}
-    for c := 1; c <= 9; c++ {
-        for r := 1; r <= 10; r++ {
-            p := getPiece(c, r)
-            if p != nil && p.side == side {
-                legalMoves := getValidMovesList(p)
-                for j := 1; j <= #legalMoves; j++ {
-                    table.insert(allMoves, {piece: p, col: legalMoves[j].col, row: legalMoves[j].row})
-                }
+    for i := 1; i <= #pieces; i++ {
+        p := pieces[i]
+        if p.alive {
+            legalMoves := getValidMovesList(p)
+            for j := 1; j <= #legalMoves; j++ {
+                table.insert(allMoves, {piece: p, col: legalMoves[j].col, row: legalMoves[j].row})
             }
         }
     }
     return allMoves
 }
 
-// === MOVE ORDERING ===
-// Sort moves: captures first (by captured piece value descending), then non-captures
-func orderMoves(moveList) {
+// === MOVE ORDERING (captures > killers > non-captures) ===
+func encodeMove(fc, fr, tc, tr) {
+    return fc * 1000000 + fr * 10000 + tc * 100 + tr
+}
+
+func orderMoves(moveList, depth) {
     captures := {}
+    killers := {}
     nonCaptures := {}
+    km := killerMoves[depth]
+    km1 := 0
+    km2 := 0
+    if km != nil { km1 = km[1]; km2 = km[2] }
 
     for i := 1; i <= #moveList; i++ {
         m := moveList[i]
-        target := getPiece(m.col, m.row)
+        target := board[m.col*100+m.row]
         if target != nil && target.side != m.piece.side {
-            // Capture move — store with value for sorting
             table.insert(captures, {piece: m.piece, col: m.col, row: m.row, captVal: pieceValue(target.type)})
         } else {
-            table.insert(nonCaptures, {piece: m.piece, col: m.col, row: m.row, captVal: 0})
+            enc := encodeMove(m.piece.col, m.piece.row, m.col, m.row)
+            if enc == km1 || enc == km2 {
+                table.insert(killers, {piece: m.piece, col: m.col, row: m.row, captVal: 0})
+            } else {
+                table.insert(nonCaptures, {piece: m.piece, col: m.col, row: m.row, captVal: 0})
+            }
         }
     }
-
-    // Simple insertion sort on captures by captVal descending
     for i := 2; i <= #captures; i++ {
         j := i
-        for j > 1 && captures[j].captVal > captures[j - 1].captVal {
-            tmp := captures[j]
-            captures[j] = captures[j - 1]
-            captures[j - 1] = tmp
-            j = j - 1
+        for j > 1 && captures[j].captVal > captures[j-1].captVal {
+            tmp := captures[j]; captures[j] = captures[j-1]; captures[j-1] = tmp; j = j - 1
         }
     }
-
-    // Build ordered list: captures first, then non-captures
     ordered := {}
-    for i := 1; i <= #captures; i++ {
-        table.insert(ordered, captures[i])
-    }
-    for i := 1; i <= #nonCaptures; i++ {
-        table.insert(ordered, nonCaptures[i])
-    }
-
+    for i := 1; i <= #captures; i++ { table.insert(ordered, captures[i]) }
+    for i := 1; i <= #killers; i++ { table.insert(ordered, killers[i]) }
+    for i := 1; i <= #nonCaptures; i++ { table.insert(ordered, nonCaptures[i]) }
     return ordered
 }
 
-// === NEGAMAX WITH ALPHA-BETA ===
-func negamax(depth, alpha, beta, side) {
-    if depth == 0 {
+func storeKiller(depth, fc, fr, tc, tr) {
+    enc := encodeMove(fc, fr, tc, tr)
+    km := killerMoves[depth]
+    if km == nil { killerMoves[depth] = {enc, 0} }
+    else { if km[1] != enc { km[2] = km[1]; km[1] = enc } }
+}
+
+// === NEGAMAX + ALPHA-BETA + NULL MOVE + KILLER + LMR ===
+func negamax(depth, alpha, beta, side, allowNull) {
+    nodeCount = nodeCount + 1
+
+    if depth <= 0 {
         score := evaluateBoard()
-        if side == "red" {
-            return score
-        } else {
-            return -score
-        }
+        if side == "red" { return score } else { return -score }
+    }
+
+    inCheck := isInCheck(side)
+
+    // Null move pruning
+    if allowNull && !inCheck && depth >= 3 {
+        enemySide := "black"
+        if side == "black" { enemySide = "red" }
+        score := -negamax(depth - 3, -beta, -beta + 1, enemySide, false)
+        if score >= beta { return beta }
     }
 
     allMoves := getAllMovesForSide(side)
-
-    if #allMoves == 0 {
-        // No legal moves = loss (checkmate or stalemate treated as loss)
-        return -99000
-    }
-
-    // Order moves for better pruning
-    allMoves = orderMoves(allMoves)
+    if #allMoves == 0 { return -99000 }
+    allMoves = orderMoves(allMoves, depth)
 
     enemySide := "black"
-    if side == "black" {
-        enemySide = "red"
-    }
+    if side == "black" { enemySide = "red" }
 
     for i := 1; i <= #allMoves; i++ {
         m := allMoves[i]
@@ -919,49 +1052,55 @@ func negamax(depth, alpha, beta, side) {
         fc := p.col
         fr := p.row
 
-        // Simulate move
-        captured := getPiece(tc, tr)
+        captured := board[tc*100+tr]
         origCol := p.col
         origRow := p.row
-
-        // Remove piece from source, place at destination
-        removePiece(fc, fr)
-        // We must NOT call setPiece here because it updates p.col/p.row and we
-        // need to manage that ourselves for proper undo
-        board[boardKey(tc, tr)] = p
+        board[fc*100+fr] = nil
+        board[tc*100+tr] = p
         p.col = tc
         p.row = tr
+        if captured != nil { captured.alive = false }
 
-        // Recurse
-        score := -negamax(depth - 1, -beta, -alpha, enemySide)
+        // Late Move Reduction: for quiet moves late in the list, search at reduced depth
+        score := 0
+        if i >= 5 && depth >= 3 && captured == nil && !inCheck {
+            score = -negamax(depth - 2, -alpha - 1, -alpha, enemySide, true)
+            if score > alpha {
+                score = -negamax(depth - 1, -beta, -alpha, enemySide, true)
+            }
+        } else {
+            score = -negamax(depth - 1, -beta, -alpha, enemySide, true)
+        }
 
-        // Undo move
-        board[boardKey(tc, tr)] = nil
+        // Undo
+        board[tc*100+tr] = nil
         p.col = origCol
         p.row = origRow
-        board[boardKey(fc, fr)] = p
+        board[fc*100+fr] = p
         if captured != nil {
-            board[boardKey(tc, tr)] = captured
+            board[tc*100+tr] = captured
             captured.col = tc
             captured.row = tr
+            captured.alive = true
         }
 
         if score >= beta {
+            if captured == nil { storeKiller(depth, fc, fr, tc, tr) }
             return beta
         }
-        if score > alpha {
-            alpha = score
-        }
+        if score > alpha { alpha = score }
     }
 
     return alpha
 }
 
-// === GET AI MOVE (Iterative Deepening) ===
+// === GET AI MOVE (Iterative Deepening with killer moves preserved) ===
 func getAIMove() {
     startTime := time.now()
     bestMove := nil
     lastAIDepth = 0
+    killerMoves = {}
+    nodeCount = 0
 
     for depth := 1; depth <= 6; depth++ {
         alpha := -999999
@@ -969,7 +1108,7 @@ func getAIMove() {
         localBest := nil
 
         allMoves := getAllMovesForSide("black")
-        allMoves = orderMoves(allMoves)
+        allMoves = orderMoves(allMoves, depth + 1)
 
         if #allMoves == 0 {
             break
@@ -984,27 +1123,29 @@ func getAIMove() {
             fr := p.row
 
             // Simulate move
-            captured := getPiece(tc, tr)
+            captured := board[tc*100+tr]
             origCol := p.col
             origRow := p.row
 
-            removePiece(fc, fr)
-            board[boardKey(tc, tr)] = p
+            board[fc*100+fr] = nil
+            board[tc*100+tr] = p
             p.col = tc
             p.row = tr
+            if captured != nil { captured.alive = false }
 
             // Search from red's perspective (enemy of black)
-            score := -negamax(depth - 1, -beta, -alpha, "red")
+            score := -negamax(depth - 1, -beta, -alpha, "red", true)
 
             // Undo move
-            board[boardKey(tc, tr)] = nil
+            board[tc*100+tr] = nil
             p.col = origCol
             p.row = origRow
-            board[boardKey(fc, fr)] = p
+            board[fc*100+fr] = p
             if captured != nil {
-                board[boardKey(tc, tr)] = captured
+                board[tc*100+tr] = captured
                 captured.col = tc
                 captured.row = tr
+                captured.alive = true
             }
 
             if score > alpha {
