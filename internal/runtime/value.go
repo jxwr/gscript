@@ -55,6 +55,76 @@ func IntValue(i int64) Value {
 	return Value{typ: TypeInt, ival: i}
 }
 
+// SetInt updates a Value to an integer in place, modifying only typ and ival.
+// Faster than full struct copy for registers known to be reused as ints.
+// NOTE: The resulting Value may have stale fval/sval/ptr fields. This is safe
+// because Table operations normalize keys before hash map access.
+func (v *Value) SetInt(i int64) {
+	v.typ = TypeInt
+	v.ival = i
+}
+
+// ---------------------------------------------------------------------------
+// Pointer-receiver fast paths (avoid 56-byte Value copies in VM hot loop)
+// ---------------------------------------------------------------------------
+
+// RawType returns the type tag via pointer receiver (no copy).
+func (v *Value) RawType() ValueType { return v.typ }
+
+// RawInt returns the integer payload via pointer receiver (no copy).
+// Caller must ensure v is TypeInt.
+func (v *Value) RawInt() int64 { return v.ival }
+
+// RawFloat returns the float payload via pointer receiver (no copy).
+func (v *Value) RawFloat() float64 { return v.fval }
+
+// AddInts tries to add *a + *b as integers, storing result in *dst.
+// Returns true on success (both operands are TypeInt).
+func AddInts(dst, a, b *Value) bool {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeInt
+		dst.ival = a.ival + b.ival
+		return true
+	}
+	return false
+}
+
+// SubInts tries to subtract *a - *b as integers, storing result in *dst.
+func SubInts(dst, a, b *Value) bool {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeInt
+		dst.ival = a.ival - b.ival
+		return true
+	}
+	return false
+}
+
+// MulInts tries to multiply *a * *b as integers, storing result in *dst.
+func MulInts(dst, a, b *Value) bool {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeInt
+		dst.ival = a.ival * b.ival
+		return true
+	}
+	return false
+}
+
+// LTInts compares *a < *b as integers. Returns (result, ok).
+func LTInts(a, b *Value) (bool, bool) {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		return a.ival < b.ival, true
+	}
+	return false, false
+}
+
+// LEInts compares *a <= *b as integers. Returns (result, ok).
+func LEInts(a, b *Value) (bool, bool) {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		return a.ival <= b.ival, true
+	}
+	return false, false
+}
+
 // FloatValue returns a floating-point value.
 func FloatValue(f float64) Value {
 	return Value{typ: TypeFloat, fval: f}

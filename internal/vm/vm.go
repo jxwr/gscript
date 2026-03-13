@@ -38,6 +38,7 @@ type VM struct {
 	jit        JITEngine      // optional JIT engine
 	callCounts map[*FuncProto]int // per-function call counts for JIT hot detection
 	argBuf     [16]runtime.Value  // pre-allocated arg buffer for OP_CALL
+	retBuf     [8]runtime.Value   // pre-allocated return buffer for OP_RETURN
 }
 
 // SetJIT sets the JIT engine for this VM.
@@ -116,6 +117,11 @@ func (vm *VM) Execute(proto *FuncProto) ([]runtime.Value, error) {
 	return vm.call(cl, nil, 0, 0)
 }
 
+// CallValue calls a function value with the given arguments (exported for gscript wrapper).
+func (vm *VM) CallValue(fn runtime.Value, args []runtime.Value) ([]runtime.Value, error) {
+	return vm.callValue(fn, args)
+}
+
 // call pushes a new call frame and executes.
 // args are placed in registers starting at base.
 // Returns the function's return values.
@@ -180,44 +186,33 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	return result, err
 }
 
-// run is the main execution loop for the current call frame.
+// wrapLineErr wraps an error with source location info from the current frame.
+func wrapLineErr(frame *CallFrame, err error) error {
+	if err == nil {
+		return nil
+	}
+	pc := frame.pc - 1
+	line := 0
+	if pc >= 0 && pc < len(frame.closure.Proto.LineInfo) {
+		line = frame.closure.Proto.LineInfo[pc]
+	}
+	name := frame.closure.Proto.Source
+	if name == "" {
+		name = frame.closure.Proto.Name
+	}
+	if line > 0 {
+		return fmt.Errorf("%s:%d: %w", name, line, err)
+	}
+	return err
+}
+
+// run is the main execution loop. It handles frame switches internally
+// to avoid Go function call overhead for recursive bytecode calls.
 func (vm *VM) run() ([]runtime.Value, error) {
 	frame := &vm.frames[vm.frameCount-1]
 	code := frame.closure.Proto.Code
 	constants := frame.closure.Proto.Constants
 	base := frame.base
-
-	// Helper: resolve RK(idx) — register or constant
-	rk := func(idx int) runtime.Value {
-		if idx >= RKBit {
-			return constants[idx-RKBit]
-		}
-		return vm.regs[base+idx]
-	}
-
-	// Helper: get source line for current instruction
-	currentLine := func() int {
-		pc := frame.pc - 1 // pc already advanced past current instruction
-		if pc >= 0 && pc < len(frame.closure.Proto.LineInfo) {
-			return frame.closure.Proto.LineInfo[pc]
-		}
-		return 0
-	}
-	// Helper: wrap error with line info
-	wrapErr := func(err error) error {
-		if err == nil {
-			return nil
-		}
-		line := currentLine()
-		name := frame.closure.Proto.Source
-		if name == "" {
-			name = frame.closure.Proto.Name
-		}
-		if line > 0 {
-			return fmt.Errorf("%s:%d: %w", name, line, err)
-		}
-		return err
-	}
 
 	for {
 		if frame.pc >= len(code) {
@@ -298,9 +293,14 @@ func (vm *VM) run() ([]runtime.Value, error) {
 		case OP_GETTABLE:
 			a := DecodeA(inst)
 			b := DecodeB(inst)
-			c := DecodeC(inst)
+			cidx := DecodeC(inst)
 			tableVal := vm.regs[base+b]
-			key := rk(c)
+			var key runtime.Value
+			if cidx >= RKBit {
+				key = constants[cidx-RKBit]
+			} else {
+				key = vm.regs[base+cidx]
+			}
 			// Fast path: plain table (no metatable) → direct RawGet
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
@@ -316,11 +316,20 @@ func (vm *VM) run() ([]runtime.Value, error) {
 
 		case OP_SETTABLE:
 			a := DecodeA(inst)
-			b := DecodeB(inst)
-			c := DecodeC(inst)
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
 			tableVal := vm.regs[base+a]
-			key := rk(b)
-			val := rk(c)
+			var key, val runtime.Value
+			if bidx >= RKBit {
+				key = constants[bidx-RKBit]
+			} else {
+				key = vm.regs[base+bidx]
+			}
+			if cidx >= RKBit {
+				val = constants[cidx-RKBit]
+			} else {
+				val = vm.regs[base+cidx]
+			}
 			// Fast path: plain table → direct RawSet
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
@@ -354,10 +363,15 @@ func (vm *VM) run() ([]runtime.Value, error) {
 		case OP_SETFIELD:
 			a := DecodeA(inst)
 			b := DecodeB(inst) // constant index for field name
-			c := DecodeC(inst)
+			cidx := DecodeC(inst)
 			tableVal := vm.regs[base+a]
 			key := constants[b]
-			val := rk(c)
+			var val runtime.Value
+			if cidx >= RKBit {
+				val = constants[cidx-RKBit]
+			} else {
+				val = vm.regs[base+cidx]
+			}
 			// Fast path: plain table → direct RawSet
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
@@ -394,73 +408,112 @@ func (vm *VM) run() ([]runtime.Value, error) {
 		// ---- Arithmetic ----
 		case OP_ADD:
 			a := DecodeA(inst)
-			bv := rk(DecodeB(inst))
-			cv := rk(DecodeC(inst))
-			if bv.IsInt() && cv.IsInt() {
-				vm.regs[base+a] = runtime.IntValue(bv.Int() + cv.Int())
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
+			var bp, cp *runtime.Value
+			if bidx >= RKBit {
+				bp = &constants[bidx-RKBit]
 			} else {
-				r, err := vm.arith(bv, cv, "__add", func(x, y float64) float64 { return x + y })
+				bp = &vm.regs[base+bidx]
+			}
+			if cidx >= RKBit {
+				cp = &constants[cidx-RKBit]
+			} else {
+				cp = &vm.regs[base+cidx]
+			}
+			dst := &vm.regs[base+a]
+			if !runtime.AddInts(dst, bp, cp) {
+				r, err := vm.arith(*bp, *cp, "__add", func(x, y float64) float64 { return x + y })
 				if err != nil {
-					return nil, wrapErr(err)
+					return nil, wrapLineErr(frame, err)
 				}
-				vm.regs[base+a] = r
+				*dst = r
 			}
 
 		case OP_SUB:
 			a := DecodeA(inst)
-			bv := rk(DecodeB(inst))
-			cv := rk(DecodeC(inst))
-			if bv.IsInt() && cv.IsInt() {
-				vm.regs[base+a] = runtime.IntValue(bv.Int() - cv.Int())
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
+			var bp, cp *runtime.Value
+			if bidx >= RKBit {
+				bp = &constants[bidx-RKBit]
 			} else {
-				r, err := vm.arith(bv, cv, "__sub", func(x, y float64) float64 { return x - y })
+				bp = &vm.regs[base+bidx]
+			}
+			if cidx >= RKBit {
+				cp = &constants[cidx-RKBit]
+			} else {
+				cp = &vm.regs[base+cidx]
+			}
+			dst := &vm.regs[base+a]
+			if !runtime.SubInts(dst, bp, cp) {
+				r, err := vm.arith(*bp, *cp, "__sub", func(x, y float64) float64 { return x - y })
 				if err != nil {
-					return nil, wrapErr(err)
+					return nil, wrapLineErr(frame, err)
 				}
-				vm.regs[base+a] = r
+				*dst = r
 			}
 
 		case OP_MUL:
 			a := DecodeA(inst)
-			bv := rk(DecodeB(inst))
-			cv := rk(DecodeC(inst))
-			if bv.IsInt() && cv.IsInt() {
-				vm.regs[base+a] = runtime.IntValue(bv.Int() * cv.Int())
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
+			var bp, cp *runtime.Value
+			if bidx >= RKBit {
+				bp = &constants[bidx-RKBit]
 			} else {
-				r, err := vm.arith(bv, cv, "__mul", func(x, y float64) float64 { return x * y })
+				bp = &vm.regs[base+bidx]
+			}
+			if cidx >= RKBit {
+				cp = &constants[cidx-RKBit]
+			} else {
+				cp = &vm.regs[base+cidx]
+			}
+			dst := &vm.regs[base+a]
+			if !runtime.MulInts(dst, bp, cp) {
+				r, err := vm.arith(*bp, *cp, "__mul", func(x, y float64) float64 { return x * y })
 				if err != nil {
-					return nil, wrapErr(err)
+					return nil, wrapLineErr(frame, err)
 				}
-				vm.regs[base+a] = r
+				*dst = r
 			}
 
 		case OP_DIV:
 			a := DecodeA(inst)
-			bv := rk(DecodeB(inst))
-			cv := rk(DecodeC(inst))
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
+			var bv, cv runtime.Value
+			if bidx >= RKBit { bv = constants[bidx-RKBit] } else { bv = vm.regs[base+bidx] }
+			if cidx >= RKBit { cv = constants[cidx-RKBit] } else { cv = vm.regs[base+cidx] }
 			r, err := vm.arith(bv, cv, "__div", func(x, y float64) float64 { return x / y })
 			if err != nil {
-				return nil, wrapErr(err)
+				return nil, wrapLineErr(frame, err)
 			}
 			vm.regs[base+a] = r
 
 		case OP_MOD:
 			a := DecodeA(inst)
-			bv := rk(DecodeB(inst))
-			cv := rk(DecodeC(inst))
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
+			var bv, cv runtime.Value
+			if bidx >= RKBit { bv = constants[bidx-RKBit] } else { bv = vm.regs[base+bidx] }
+			if cidx >= RKBit { cv = constants[cidx-RKBit] } else { cv = vm.regs[base+cidx] }
 			r, err := vm.arithMod(bv, cv)
 			if err != nil {
-				return nil, wrapErr(err)
+				return nil, wrapLineErr(frame, err)
 			}
 			vm.regs[base+a] = r
 
 		case OP_POW:
 			a := DecodeA(inst)
-			bv := rk(DecodeB(inst))
-			cv := rk(DecodeC(inst))
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
+			var bv, cv runtime.Value
+			if bidx >= RKBit { bv = constants[bidx-RKBit] } else { bv = vm.regs[base+bidx] }
+			if cidx >= RKBit { cv = constants[cidx-RKBit] } else { cv = vm.regs[base+cidx] }
 			r, err := vm.arith(bv, cv, "__pow", func(x, y float64) float64 { return math.Pow(x, y) })
 			if err != nil {
-				return nil, wrapErr(err)
+				return nil, wrapLineErr(frame, err)
 			}
 			vm.regs[base+a] = r
 
@@ -469,7 +522,7 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			bv := vm.regs[base+DecodeB(inst)]
 			r, err := vm.unaryMinus(bv)
 			if err != nil {
-				return nil, wrapErr(err)
+				return nil, wrapLineErr(frame, err)
 			}
 			vm.regs[base+a] = r
 
@@ -500,26 +553,52 @@ func (vm *VM) run() ([]runtime.Value, error) {
 		// ---- Comparison ----
 		case OP_EQ:
 			a := DecodeA(inst)
-			bv := rk(DecodeB(inst))
-			cv := rk(DecodeC(inst))
-			result := bv.Equal(cv)
-			if result != (a != 0) {
-				frame.pc++ // skip next instruction (typically JMP)
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
+			var bp, cp *runtime.Value
+			if bidx >= RKBit {
+				bp = &constants[bidx-RKBit]
+			} else {
+				bp = &vm.regs[base+bidx]
+			}
+			if cidx >= RKBit {
+				cp = &constants[cidx-RKBit]
+			} else {
+				cp = &vm.regs[base+cidx]
+			}
+			if bp.RawType() == runtime.TypeInt && cp.RawType() == runtime.TypeInt {
+				if (bp.RawInt() == cp.RawInt()) != (a != 0) {
+					frame.pc++
+				}
+			} else {
+				if (*bp).Equal(*cp) != (a != 0) {
+					frame.pc++
+				}
 			}
 
 		case OP_LT:
 			a := DecodeA(inst)
-			bv := rk(DecodeB(inst))
-			cv := rk(DecodeC(inst))
-			if bv.IsInt() && cv.IsInt() {
-				lt := bv.Int() < cv.Int()
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
+			var bp, cp *runtime.Value
+			if bidx >= RKBit {
+				bp = &constants[bidx-RKBit]
+			} else {
+				bp = &vm.regs[base+bidx]
+			}
+			if cidx >= RKBit {
+				cp = &constants[cidx-RKBit]
+			} else {
+				cp = &vm.regs[base+cidx]
+			}
+			if lt, ok := runtime.LTInts(bp, cp); ok {
 				if lt != (a != 0) {
 					frame.pc++
 				}
 			} else {
-				lt, ok := bv.LessThan(cv)
+				lt, ok := (*bp).LessThan(*cp)
 				if !ok {
-					return nil, fmt.Errorf("attempt to compare %s with %s", bv.TypeName(), cv.TypeName())
+					return nil, fmt.Errorf("attempt to compare %s with %s", bp.TypeName(), cp.TypeName())
 				}
 				if lt != (a != 0) {
 					frame.pc++
@@ -528,21 +607,30 @@ func (vm *VM) run() ([]runtime.Value, error) {
 
 		case OP_LE:
 			a := DecodeA(inst)
-			bv := rk(DecodeB(inst))
-			cv := rk(DecodeC(inst))
-			if bv.IsInt() && cv.IsInt() {
-				le := bv.Int() <= cv.Int()
+			bidx := DecodeB(inst)
+			cidx := DecodeC(inst)
+			var bp, cp *runtime.Value
+			if bidx >= RKBit {
+				bp = &constants[bidx-RKBit]
+			} else {
+				bp = &vm.regs[base+bidx]
+			}
+			if cidx >= RKBit {
+				cp = &constants[cidx-RKBit]
+			} else {
+				cp = &vm.regs[base+cidx]
+			}
+			if le, ok := runtime.LEInts(bp, cp); ok {
 				if le != (a != 0) {
 					frame.pc++
 				}
 			} else {
 				// a <= b  is  !(b < a)
-				lt, ok := cv.LessThan(bv)
+				lt, ok := (*cp).LessThan(*bp)
 				if !ok {
-					return nil, fmt.Errorf("attempt to compare %s with %s", bv.TypeName(), cv.TypeName())
+					return nil, fmt.Errorf("attempt to compare %s with %s", bp.TypeName(), cp.TypeName())
 				}
-				le := !lt
-				if le != (a != 0) {
+				if !lt != (a != 0) {
 					frame.pc++
 				}
 			}
@@ -625,7 +713,12 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			if b == 0 {
 				// Return R(A) to top
 				nret := vm.top - (base + a)
-				ret := make([]runtime.Value, nret)
+				var ret []runtime.Value
+				if nret <= len(vm.retBuf) {
+					ret = vm.retBuf[:nret]
+				} else {
+					ret = make([]runtime.Value, nret)
+				}
 				for i := 0; i < nret; i++ {
 					ret[i] = vm.regs[base+a+i]
 				}
@@ -635,7 +728,12 @@ func (vm *VM) run() ([]runtime.Value, error) {
 				return nil, nil
 			}
 			nret := b - 1
-			ret := make([]runtime.Value, nret)
+			var ret []runtime.Value
+			if nret <= len(vm.retBuf) {
+				ret = vm.retBuf[:nret]
+			} else {
+				ret = make([]runtime.Value, nret)
+			}
 			for i := 0; i < nret; i++ {
 				ret[i] = vm.regs[base+a+i]
 			}
@@ -682,15 +780,15 @@ func (vm *VM) run() ([]runtime.Value, error) {
 		case OP_FORLOOP:
 			a := DecodeA(inst)
 			sbx := DecodesBx(inst)
-			idxV := vm.regs[base+a]
+			idxP := &vm.regs[base+a]
 			// Fast path: all-integer for loop (most common case)
-			if idxV.IsInt() {
-				stepV := vm.regs[base+a+2]
-				limitV := vm.regs[base+a+1]
-				if stepV.IsInt() && limitV.IsInt() {
-					step := stepV.Int()
-					idx := idxV.Int() + step
-					limit := limitV.Int()
+			if idxP.RawType() == runtime.TypeInt {
+				stepP := &vm.regs[base+a+2]
+				limitP := &vm.regs[base+a+1]
+				if stepP.RawType() == runtime.TypeInt && limitP.RawType() == runtime.TypeInt {
+					step := stepP.RawInt()
+					idx := idxP.RawInt() + step
+					limit := limitP.RawInt()
 					var cont bool
 					if step > 0 {
 						cont = idx <= limit
@@ -698,8 +796,8 @@ func (vm *VM) run() ([]runtime.Value, error) {
 						cont = idx >= limit
 					}
 					if cont {
-						vm.regs[base+a] = runtime.IntValue(idx)
-						vm.regs[base+a+3] = runtime.IntValue(idx)
+						idxP.SetInt(idx)
+						vm.regs[base+a+3].SetInt(idx)
 						frame.pc += sbx
 					}
 					break
@@ -708,7 +806,7 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			// Slow path: float for loop
 			step := vm.regs[base+a+2].Number()
 			limit := vm.regs[base+a+1].Number()
-			idx := idxV.Number() + step
+			idx := vm.regs[base+a].Number() + step
 			cont := false
 			if step > 0 {
 				cont = idx <= limit
@@ -752,10 +850,15 @@ func (vm *VM) run() ([]runtime.Value, error) {
 		case OP_SELF:
 			a := DecodeA(inst)
 			b := DecodeB(inst)
-			c := DecodeC(inst)
+			cidx := DecodeC(inst)
 			obj := vm.regs[base+b]
 			vm.regs[base+a+1] = obj
-			key := rk(c)
+			var key runtime.Value
+			if cidx >= RKBit {
+				key = constants[cidx-RKBit]
+			} else {
+				key = vm.regs[base+cidx]
+			}
 			val, err := vm.tableGet(obj, key)
 			if err != nil {
 				return nil, err
@@ -885,8 +988,12 @@ func (vm *VM) callValue(fnVal runtime.Value, args []runtime.Value) ([]runtime.Va
 	if fnVal.IsFunction() {
 		if cl, ok := fnVal.Ptr().(*Closure); ok {
 			newBase := vm.top
-			if newBase < vm.frames[vm.frameCount-1].base+vm.frames[vm.frameCount-1].closure.Proto.MaxStack {
-				newBase = vm.frames[vm.frameCount-1].base + vm.frames[vm.frameCount-1].closure.Proto.MaxStack
+			if vm.frameCount > 0 {
+				curFrame := &vm.frames[vm.frameCount-1]
+				minBase := curFrame.base + curFrame.closure.Proto.MaxStack
+				if newBase < minBase {
+					newBase = minBase
+				}
 			}
 			return vm.call(cl, args, newBase, -1)
 		}

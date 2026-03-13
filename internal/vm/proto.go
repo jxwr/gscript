@@ -2,6 +2,12 @@ package vm
 
 import "github.com/gscript/gscript/internal/runtime"
 
+// globalCacheEntry caches a global variable lookup result.
+type globalCacheEntry struct {
+	value   runtime.Value
+	version uint64
+}
+
 // FuncProto is the bytecode function prototype.
 // It contains the compiled instructions, constants, and metadata for a function.
 type FuncProto struct {
@@ -16,6 +22,7 @@ type FuncProto struct {
 	Upvalues    []UpvalDesc // upvalue descriptors
 	Protos      []*FuncProto // nested function prototypes
 	LineInfo    []int       // source line for each instruction (debug)
+	GlobalCache []globalCacheEntry // lazily-initialized cache indexed by constant pool index
 }
 
 // UpvalDesc describes how an upvalue should be captured when creating a closure.
