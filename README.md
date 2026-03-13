@@ -1097,15 +1097,31 @@ See [benchmarks/README.md](benchmarks/README.md) for full analysis.
 | `examples/webserver.gs` | HTTP router demo |
 | `examples/tetris.gs` | Full Tetris game (Raylib) |
 | `examples/chess.gs` | **Full Chinese Chess (象棋) game (Raylib)** |
-| `examples/chess_ai.gs` | **Chinese Chess with AI opponent** (alpha-beta, piece lists, targeted attack detection) |
-| `examples/chess_bench.gs` | Chess AI benchmark (depth 1-6 search, no GUI) |
+| `examples/chess_ai.gs` | **Chinese Chess with AI opponent** (Zobrist TT, quiescence search, alpha-beta, piece lists) |
+| `examples/chess_bench.gs` | Chess AI benchmark (depth 1-8 search, no GUI) |
 
 ```bash
 ./gscript examples/game_of_life.gs
 ./gscript examples/algorithms.gs
 ./gscript examples/webserver.gs   # then visit localhost:9988
-./gscript examples/chess.gs       # requires display (raylib)
+./gscript --vm examples/chess_ai.gs   # Chinese Chess with AI (requires display)
 ```
+
+### Chinese Chess AI
+
+The chess AI (`examples/chess_ai.gs`) is a complete Chinese Chess (Xiangqi) game with an AI opponent, written entirely in GScript and rendered with Raylib. The AI engine features:
+
+- **Negamax + Alpha-Beta pruning** with iterative deepening (up to depth 8)
+- **Zobrist hashing + transposition table** for avoiding redundant search
+- **Quiescence search** with delta pruning to eliminate tactical blind spots
+- **Piece lists + O(1) king tracking** for fast move generation
+- **Targeted attack detection** (checks specific piece attack patterns instead of generating all moves)
+- **Null move pruning**, **killer move heuristic**, and **late move reduction (LMR)**
+- Searches to depth 5-6 within a 5-second time limit
+
+<p align="center">
+  <img src="docs/chess_ai.png" alt="Chinese Chess AI" width="600">
+</p>
 
 ---
 
@@ -1204,7 +1220,7 @@ This project was created as an **AI capability experiment** to test how well an 
 - 30+ standard libraries: string, table, math, io, os, json, base64, hash, fs, path, time, net, vec, color, regexp, utf8, bit32, process, csv, url, uuid, bytes, http, rl (raylib)
 - Raylib bindings (113 functions: window, drawing, input, audio, textures, fonts)
 - Embedding API with reflection-based type bridge and struct binding
-- Full Tetris game + full Chinese Chess game with AI (alpha-beta, piece lists, targeted attack detection) using raylib
+- Full Tetris game + full Chinese Chess game with AI (Zobrist TT, quiescence search, alpha-beta, piece lists, null move pruning, LMR) using raylib
 - 370+ unit and integration tests (including 55 VM tests and 15 JIT tests)
 - Performance benchmarks vs gopher-lua, starlark-go, native Lua 5.5, and LuaJIT
 

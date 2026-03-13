@@ -76,6 +76,79 @@ blackPieces := {}
 redKing := nil
 blackKing := nil
 
+// === ZOBRIST HASHING ===
+// Random numbers for each (pieceType, side, col, row) combination
+// pieceType: K=1,A=2,E=3,H=4,R=5,C=6,P=7  side: red=0,black=1
+zobristTable := {}
+zobristBlackToMove := 0
+currentHash := 0
+
+func pieceIndex(ptype) {
+    if ptype == "K" { return 1 }
+    if ptype == "A" { return 2 }
+    if ptype == "E" { return 3 }
+    if ptype == "H" { return 4 }
+    if ptype == "R" { return 5 }
+    if ptype == "C" { return 6 }
+    if ptype == "P" { return 7 }
+    return 0
+}
+
+func initZobrist() {
+    // Generate pseudo-random numbers using a simple LCG
+    seed := 123456789
+    for pidx := 1; pidx <= 7; pidx++ {
+        zobristTable[pidx] = {}
+        for side := 0; side <= 1; side++ {
+            zobristTable[pidx][side] = {}
+            for col := 1; col <= 9; col++ {
+                zobristTable[pidx][side][col] = {}
+                for row := 1; row <= 10; row++ {
+                    seed = (seed * 1103515245 + 12345) % 2147483648
+                    zobristTable[pidx][side][col][row] = seed
+                }
+            }
+        }
+    }
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    zobristBlackToMove = seed
+}
+
+func zobristPiece(ptype, side, col, row) {
+    pidx := pieceIndex(ptype)
+    sidx := 0
+    if side == "black" { sidx = 1 }
+    return zobristTable[pidx][sidx][col][row]
+}
+
+func computeFullHash() {
+    h := 0
+    for i := 1; i <= #redPieces; i++ {
+        p := redPieces[i]
+        if p.alive {
+            h = bit32.bxor(h, zobristPiece(p.type, "red", p.col, p.row))
+        }
+    }
+    for i := 1; i <= #blackPieces; i++ {
+        p := blackPieces[i]
+        if p.alive {
+            h = bit32.bxor(h, zobristPiece(p.type, "black", p.col, p.row))
+        }
+    }
+    if turn == "black" {
+        h = bit32.bxor(h, zobristBlackToMove)
+    }
+    return h
+}
+
+// === TRANSPOSITION TABLE ===
+// Flag: 0=exact, 1=lowerbound (beta cutoff), 2=upperbound (alpha not improved)
+TT_EXACT := 0
+TT_LOWER := 1
+TT_UPPER := 2
+ttable := {}
+ttHits := 0
+
 // === PIECE HELPER ===
 func makePiece(ptype, side, col, row) {
     return {type: ptype, side: side, col: col, row: row, alive: true}
@@ -138,6 +211,9 @@ func initBoard() {
     redKing = nil
     blackKing = nil
 
+    // Initialize Zobrist hashing (only once)
+    if #zobristTable == 0 { initZobrist() }
+
     // Red pieces (bottom, rows 1-5)
     addPiece("K", "red", 5, 1)
     addPiece("A", "red", 4, 1)
@@ -173,6 +249,11 @@ func initBoard() {
     addPiece("P", "black", 5, 7)
     addPiece("P", "black", 7, 7)
     addPiece("P", "black", 9, 7)
+
+    // Compute initial Zobrist hash
+    currentHash = computeFullHash()
+    ttable = {}
+    ttHits = 0
 }
 
 // === COORDINATE CONVERSION ===
@@ -1018,13 +1099,104 @@ func storeKiller(depth, fc, fr, tc, tr) {
     else { if km[1] != enc { km[2] = km[1]; km[1] = enc } }
 }
 
-// === NEGAMAX + ALPHA-BETA + NULL MOVE + KILLER + LMR ===
+// === QUIESCENCE SEARCH (search captures until position is quiet) ===
+// Delta pruning: skip captures where standPat + captured_value + margin < alpha
+QUIESCE_MARGIN := 200
+
+func quiesce(alpha, beta, side, qdepth) {
+    nodeCount = nodeCount + 1
+
+    standPat := evaluateBoard()
+    if side == "black" { standPat = -standPat }
+
+    if standPat >= beta { return beta }
+    if standPat > alpha { alpha = standPat }
+
+    // Limit quiescence depth to avoid explosion
+    if qdepth <= 0 { return alpha }
+
+    // Generate and search only capture moves
+    pieces := redPieces
+    if side == "black" { pieces = blackPieces }
+    enemySide := "black"
+    if side == "black" { enemySide = "red" }
+
+    for i := 1; i <= #pieces; i++ {
+        p := pieces[i]
+        if !p.alive { continue }
+
+        rawMoves := getRawMoves(p)
+        for j := 1; j <= #rawMoves; j++ {
+            tc := rawMoves[j].col
+            tr := rawMoves[j].row
+            captured := board[tc*100+tr]
+            if captured == nil || captured.side == side { continue }
+
+            // Delta pruning: skip if capturing this piece can't possibly improve alpha
+            captVal := pieceValue(captured.type)
+            if standPat + captVal + QUIESCE_MARGIN < alpha { continue }
+
+            fc := p.col
+            fr := p.row
+            origCol := p.col
+            origRow := p.row
+
+            h := currentHash
+            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, fc, fr))
+            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, tc, tr))
+            currentHash = bit32.bxor(currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+            currentHash = bit32.bxor(currentHash, zobristBlackToMove)
+
+            board[fc*100+fr] = nil
+            board[tc*100+tr] = p
+            p.col = tc
+            p.row = tr
+            captured.alive = false
+
+            // Check legality
+            legal := !isInCheck(side)
+            score := 0
+            if legal {
+                score = -quiesce(-beta, -alpha, enemySide, qdepth - 1)
+            }
+
+            // Undo
+            board[tc*100+tr] = nil
+            p.col = origCol
+            p.row = origRow
+            board[fc*100+fr] = p
+            board[tc*100+tr] = captured
+            captured.col = tc
+            captured.row = tr
+            captured.alive = true
+            currentHash = h
+
+            if !legal { continue }
+            if score >= beta { return beta }
+            if score > alpha { alpha = score }
+        }
+    }
+
+    return alpha
+}
+
+// === NEGAMAX + ALPHA-BETA + TT + NULL MOVE + KILLER + LMR + QUIESCENCE ===
 func negamax(depth, alpha, beta, side, allowNull) {
     nodeCount = nodeCount + 1
 
+    // === Transposition table lookup ===
+    ttKey := currentHash
+    if side == "black" { ttKey = bit32.bxor(ttKey, 1) }
+    entry := ttable[ttKey]
+    if entry != nil && entry.depth >= depth {
+        ttHits = ttHits + 1
+        if entry.flag == TT_EXACT { return entry.score }
+        if entry.flag == TT_LOWER && entry.score >= beta { return entry.score }
+        if entry.flag == TT_UPPER && entry.score <= alpha { return entry.score }
+    }
+
     if depth <= 0 {
-        score := evaluateBoard()
-        if side == "red" { return score } else { return -score }
+        return quiesce(alpha, beta, side, 4)
     }
 
     inCheck := isInCheck(side)
@@ -1033,7 +1205,11 @@ func negamax(depth, alpha, beta, side, allowNull) {
     if allowNull && !inCheck && depth >= 3 {
         enemySide := "black"
         if side == "black" { enemySide = "red" }
+
+        currentHash = bit32.bxor(currentHash, zobristBlackToMove)
         score := -negamax(depth - 3, -beta, -beta + 1, enemySide, false)
+        currentHash = bit32.bxor(currentHash, zobristBlackToMove)
+
         if score >= beta { return beta }
     }
 
@@ -1043,6 +1219,9 @@ func negamax(depth, alpha, beta, side, allowNull) {
 
     enemySide := "black"
     if side == "black" { enemySide = "red" }
+
+    origAlpha := alpha
+    bestScore := -999999
 
     for i := 1; i <= #allMoves; i++ {
         m := allMoves[i]
@@ -1055,6 +1234,16 @@ func negamax(depth, alpha, beta, side, allowNull) {
         captured := board[tc*100+tr]
         origCol := p.col
         origRow := p.row
+
+        // Update hash incrementally
+        h := currentHash
+        currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, fc, fr))
+        currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, tc, tr))
+        if captured != nil {
+            currentHash = bit32.bxor(currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+        }
+        currentHash = bit32.bxor(currentHash, zobristBlackToMove)
+
         board[fc*100+fr] = nil
         board[tc*100+tr] = p
         p.col = tc
@@ -1083,13 +1272,23 @@ func negamax(depth, alpha, beta, side, allowNull) {
             captured.row = tr
             captured.alive = true
         }
+        currentHash = h
+
+        if score > bestScore { bestScore = score }
 
         if score >= beta {
             if captured == nil { storeKiller(depth, fc, fr, tc, tr) }
+            // Store TT entry (lower bound)
+            ttable[ttKey] = {depth: depth, score: beta, flag: TT_LOWER}
             return beta
         }
         if score > alpha { alpha = score }
     }
+
+    // Store TT entry
+    flag := TT_EXACT
+    if alpha <= origAlpha { flag = TT_UPPER }
+    ttable[ttKey] = {depth: depth, score: alpha, flag: flag}
 
     return alpha
 }
@@ -1101,8 +1300,12 @@ func getAIMove() {
     lastAIDepth = 0
     killerMoves = {}
     nodeCount = 0
+    ttHits = 0
 
-    for depth := 1; depth <= 6; depth++ {
+    // Recompute hash from current position (in case doMove didn't track it)
+    currentHash = computeFullHash()
+
+    for depth := 1; depth <= 8; depth++ {
         alpha := -999999
         beta := 999999
         localBest := nil
@@ -1122,10 +1325,18 @@ func getAIMove() {
             fc := p.col
             fr := p.row
 
-            // Simulate move
+            // Simulate move with incremental hash update
             captured := board[tc*100+tr]
             origCol := p.col
             origRow := p.row
+
+            h := currentHash
+            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, "black", fc, fr))
+            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, "black", tc, tr))
+            if captured != nil {
+                currentHash = bit32.bxor(currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+            }
+            currentHash = bit32.bxor(currentHash, zobristBlackToMove)
 
             board[fc*100+fr] = nil
             board[tc*100+tr] = p
@@ -1147,6 +1358,7 @@ func getAIMove() {
                 captured.row = tr
                 captured.alive = true
             }
+            currentHash = h
 
             if score > alpha {
                 alpha = score
@@ -1158,9 +1370,6 @@ func getAIMove() {
             bestMove = localBest
         }
         lastAIDepth = depth
-
-        // Yield once per depth level to keep UI alive
-        coroutine.yield(nil)
 
         // Check time limit
         elapsed := time.since(startTime)
@@ -1805,19 +2014,13 @@ for i := 1; i <= #fontPaths; i++ {
 initBoard()
 
 for !rl.windowShouldClose() {
-    // === AI TURN (top of loop) ===
-    // Resume the AI coroutine for ONE root-move's worth of work, then return
-    // to render a frame. This gives animated "thinking" at ~60ms intervals
-    // instead of a single 2.5s freeze.
-    if aiThinking && aiCoroutine != nil {
-        ok, val := coroutine.resume(aiCoroutine)
-        if coroutine.status(aiCoroutine) == "dead" {
-            if ok && val != nil {
-                doMove(val.piece, val.col, val.row)
-            }
-            aiThinking = false
-            aiCoroutine = nil
+    // === AI TURN (synchronous — optimized AI runs in <1s) ===
+    if aiThinking {
+        move := getAIMove()
+        if move != nil {
+            doMove(move.piece, move.col, move.row)
         }
+        aiThinking = false
     }
 
     frameCount = frameCount + 1
@@ -1830,7 +2033,6 @@ for !rl.windowShouldClose() {
             // After animation ends, trigger AI if pending
             if animPendingAI {
                 animPendingAI = false
-                aiCoroutine = coroutine.create(func() { return getAIMove() })
                 aiThinking = true
             }
         }
