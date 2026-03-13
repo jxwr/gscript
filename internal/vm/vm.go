@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 
 	"github.com/gscript/gscript/internal/runtime"
 )
@@ -30,6 +31,7 @@ type VM struct {
 	frames     []CallFrame     // call stack
 	frameCount int             // current number of active frames
 	globals    map[string]runtime.Value
+	globalsMu  *sync.RWMutex   // protects globals for goroutine safety (shared across VMs)
 	openUpvals []*Upvalue // list of open upvalues (sorted by regIdx descending)
 	top        int        // top of used registers (for variable returns)
 	stringMeta *runtime.Table // string metatable
@@ -53,10 +55,51 @@ func (vm *VM) Regs() []runtime.Value {
 
 // New creates a new VM with the given globals.
 func New(globals map[string]runtime.Value) *VM {
-	return &VM{
-		regs:    make([]runtime.Value, 1024),
-		frames:  make([]CallFrame, maxCallDepth),
-		globals: globals,
+	v := &VM{
+		regs:      make([]runtime.Value, 1024),
+		frames:    make([]CallFrame, maxCallDepth),
+		globals:   globals,
+		globalsMu: &sync.RWMutex{},
+	}
+	v.RegisterCoroutineLib()
+	v.registerChannelBuiltins()
+	return v
+}
+
+// newChildVM creates a child VM that shares globals, mutex, and string metatable
+// with the parent. Used by OP_GO for goroutines.
+func newChildVM(parent *VM) *VM {
+	child := &VM{
+		regs:       make([]runtime.Value, 1024),
+		frames:     make([]CallFrame, maxCallDepth),
+		globals:    parent.globals,
+		globalsMu:  parent.globalsMu,
+		stringMeta: parent.stringMeta,
+	}
+	child.RegisterCoroutineLib()
+	return child
+}
+
+// registerChannelBuiltins adds channel-related builtins (close) to globals.
+func (vm *VM) registerChannelBuiltins() {
+	if vm.globalsMu != nil {
+		vm.globalsMu.Lock()
+	}
+	vm.globals["close"] = runtime.FunctionValue(&runtime.GoFunction{
+		Name: "close",
+		Fn: func(args []runtime.Value) ([]runtime.Value, error) {
+			if len(args) < 1 || !args[0].IsChannel() {
+				return nil, fmt.Errorf("close expects a channel")
+			}
+			ch := args[0].Channel()
+			if err := ch.Close(); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	})
+	if vm.globalsMu != nil {
+		vm.globalsMu.Unlock()
 	}
 }
 
@@ -221,7 +264,10 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			a := DecodeA(inst)
 			bx := DecodeBx(inst)
 			name := constants[bx].Str()
-			if v, ok := vm.globals[name]; ok {
+			vm.globalsMu.RLock()
+			v, ok := vm.globals[name]
+			vm.globalsMu.RUnlock()
+			if ok {
 				vm.regs[base+a] = v
 			} else {
 				vm.regs[base+a] = runtime.NilValue()
@@ -231,7 +277,9 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			a := DecodeA(inst)
 			bx := DecodeBx(inst)
 			name := constants[bx].Str()
+			vm.globalsMu.Lock()
 			vm.globals[name] = vm.regs[base+a]
+			vm.globalsMu.Unlock()
 
 		case OP_GETUPVAL:
 			a := DecodeA(inst)
@@ -719,16 +767,34 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			c := DecodeC(inst) // number of results
 			// R(A) = iterator, R(A+1) = state, R(A+2) = control
 			fnVal := vm.regs[base+a]
-			args := []runtime.Value{vm.regs[base+a+1], vm.regs[base+a+2]}
-			results, err := vm.callValue(fnVal, args)
-			if err != nil {
-				return nil, err
-			}
-			for i := 0; i < c; i++ {
-				if i < len(results) {
-					vm.regs[base+a+3+i] = results[i]
+
+			// Channel range: for v := range ch
+			if fnVal.IsChannel() {
+				ch := fnVal.Channel()
+				val, ok := ch.Recv()
+				if ok {
+					vm.regs[base+a+3] = val
+					for i := 1; i < c; i++ {
+						vm.regs[base+a+3+i] = runtime.NilValue()
+					}
 				} else {
-					vm.regs[base+a+3+i] = runtime.NilValue()
+					// Channel closed — set first result to nil to end loop
+					for i := 0; i < c; i++ {
+						vm.regs[base+a+3+i] = runtime.NilValue()
+					}
+				}
+			} else {
+				args := []runtime.Value{vm.regs[base+a+1], vm.regs[base+a+2]}
+				results, err := vm.callValue(fnVal, args)
+				if err != nil {
+					return nil, err
+				}
+				for i := 0; i < c; i++ {
+					if i < len(results) {
+						vm.regs[base+a+3+i] = results[i]
+					} else {
+						vm.regs[base+a+3+i] = runtime.NilValue()
+					}
 				}
 			}
 
@@ -738,6 +804,74 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			if !vm.regs[base+a+1].IsNil() {
 				vm.regs[base+a] = vm.regs[base+a+1]
 				frame.pc += sbx
+			}
+
+		case OP_GO:
+			a := DecodeA(inst)
+			b := DecodeB(inst)
+			fnVal := vm.regs[base+a]
+			nArgs := b - 1
+			if b == 0 {
+				nArgs = vm.top - (base + a + 1)
+			}
+			// Copy args (must snapshot before goroutine starts)
+			args := make([]runtime.Value, nArgs)
+			for i := 0; i < nArgs; i++ {
+				args[i] = vm.regs[base+a+1+i]
+			}
+			// Launch goroutine with a new VM sharing globals and mutex
+			go func(fn runtime.Value, goArgs []runtime.Value) {
+				goVM := newChildVM(vm)
+				if cl, ok := fn.Ptr().(*Closure); ok {
+					goVM.call(cl, goArgs, 0, 0)
+				} else if gf := fn.GoFunction(); gf != nil {
+					gf.Fn(goArgs)
+				}
+			}(fnVal, args)
+
+		case OP_MAKECHAN:
+			a := DecodeA(inst)
+			b := DecodeB(inst)
+			cc := DecodeC(inst)
+			capacity := 0
+			if cc == 1 {
+				// Size is in R(B)
+				sizeVal := vm.regs[base+b]
+				if sizeVal.IsInt() {
+					capacity = int(sizeVal.Int())
+				} else if sizeVal.IsFloat() {
+					capacity = int(sizeVal.Float())
+				}
+			}
+			ch := runtime.NewChannel(capacity)
+			vm.regs[base+a] = runtime.ChannelValue(ch)
+
+		case OP_SEND:
+			a := DecodeA(inst)
+			b := DecodeB(inst)
+			chVal := vm.regs[base+a]
+			if !chVal.IsChannel() {
+				return nil, fmt.Errorf("send on non-channel value (got %s)", chVal.TypeName())
+			}
+			ch := chVal.Channel()
+			val := vm.regs[base+b]
+			if err := ch.Send(val); err != nil {
+				return nil, err
+			}
+
+		case OP_RECV:
+			a := DecodeA(inst)
+			b := DecodeB(inst)
+			chVal := vm.regs[base+b]
+			if !chVal.IsChannel() {
+				return nil, fmt.Errorf("receive from non-channel value (got %s)", chVal.TypeName())
+			}
+			ch := chVal.Channel()
+			val, ok := ch.Recv()
+			if ok {
+				vm.regs[base+a] = val
+			} else {
+				vm.regs[base+a] = runtime.NilValue()
 			}
 
 		default:

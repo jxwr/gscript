@@ -19,6 +19,7 @@ const (
 	TypeTable               // tables (associative arrays)
 	TypeFunction            // functions (closures and Go functions)
 	TypeCoroutine           // coroutines (Phase 6)
+	TypeChannel             // channels
 )
 
 // Value is the tagged-union representation of all GScript values.
@@ -79,6 +80,17 @@ func CoroutineValue(c *Coroutine) Value {
 	return Value{typ: TypeCoroutine, ptr: c}
 }
 
+// AnyCoroutineValue returns a coroutine value wrapping any coroutine-like object.
+// Used by the VM package to store VMCoroutine pointers without import cycles.
+func AnyCoroutineValue(c any) Value {
+	return Value{typ: TypeCoroutine, ptr: c}
+}
+
+// ChannelValue returns a channel value.
+func ChannelValue(ch *Channel) Value {
+	return Value{typ: TypeChannel, ptr: ch}
+}
+
 // ---------------------------------------------------------------------------
 // Type checks
 // ---------------------------------------------------------------------------
@@ -112,6 +124,9 @@ func (v Value) IsFunction() bool { return v.typ == TypeFunction }
 
 // IsCoroutine returns true if the value is a coroutine.
 func (v Value) IsCoroutine() bool { return v.typ == TypeCoroutine }
+
+// IsChannel returns true if the value is a channel.
+func (v Value) IsChannel() bool { return v.typ == TypeChannel }
 
 // ---------------------------------------------------------------------------
 // Value accessors
@@ -176,6 +191,14 @@ func (v Value) Coroutine() *Coroutine {
 	return v.ptr.(*Coroutine)
 }
 
+// Channel returns the *Channel pointer.
+func (v Value) Channel() *Channel {
+	if v.ptr == nil {
+		return nil
+	}
+	return v.ptr.(*Channel)
+}
+
 // ---------------------------------------------------------------------------
 // TypeName, Truthiness, Equality
 // ---------------------------------------------------------------------------
@@ -197,6 +220,8 @@ func (v Value) TypeName() string {
 		return "function"
 	case TypeCoroutine:
 		return "coroutine"
+	case TypeChannel:
+		return "channel"
 	default:
 		return "unknown"
 	}
@@ -235,7 +260,7 @@ func (v Value) Equal(other Value) bool {
 		return v.fval == other.fval
 	case TypeString:
 		return v.sval == other.sval
-	case TypeTable, TypeFunction, TypeCoroutine:
+	case TypeTable, TypeFunction, TypeCoroutine, TypeChannel:
 		return v.ptr == other.ptr // reference equality
 	default:
 		return false
@@ -302,6 +327,8 @@ func (v Value) String() string {
 		return "function: <unknown>"
 	case TypeCoroutine:
 		return fmt.Sprintf("coroutine: %p", v.ptr)
+	case TypeChannel:
+		return fmt.Sprintf("channel: %p", v.ptr)
 	default:
 		return "unknown"
 	}

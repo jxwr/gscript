@@ -358,6 +358,10 @@ func (c *compiler) compileStmt(stmt ast.Stmt) error {
 		return c.compileFuncDeclStmt(s)
 	case *ast.BlockStmt:
 		return c.compileBlockStmt(s)
+	case *ast.GoStmt:
+		return c.compileGoStmt(s)
+	case *ast.SendStmt:
+		return c.compileSendStmt(s)
 	default:
 		return fmt.Errorf("line %d: unsupported statement type %T", stmt.GetPos().Line, stmt)
 	}
@@ -863,6 +867,148 @@ func (c *compiler) compileCallExprDiscard(call *ast.CallExpr, line int) error {
 	return nil
 }
 
+// ---- GoStmt ----
+
+func (c *compiler) compileGoStmt(s *ast.GoStmt) error {
+	line := s.P.Line
+	switch call := s.Call.(type) {
+	case *ast.CallExpr:
+		return c.compileGoCallExpr(call, line)
+	case *ast.MethodCallExpr:
+		return c.compileGoMethodCallExpr(call, line)
+	default:
+		return fmt.Errorf("line %d: go statement requires a function call", line)
+	}
+}
+
+func (c *compiler) compileGoCallExpr(call *ast.CallExpr, line int) error {
+	base := c.nextReg
+	funcReg := c.allocReg()
+	if err := c.compileExprTo(call.Func, funcReg); err != nil {
+		return err
+	}
+	nArgs := len(call.Args)
+	lastArgIsMulti := false
+	for i, arg := range call.Args {
+		argReg := c.allocReg()
+		if i == nArgs-1 {
+			switch a := arg.(type) {
+			case *ast.CallExpr:
+				lastArgIsMulti = true
+				if err := c.compileCallExprMulti(a, argReg, -1); err != nil {
+					return err
+				}
+				continue
+			case *ast.MethodCallExpr:
+				lastArgIsMulti = true
+				if err := c.compileMethodCallExprMulti(a, argReg, -1); err != nil {
+					return err
+				}
+				continue
+			case *ast.VarArgExpr:
+				lastArgIsMulti = true
+				c.emitABC(OP_VARARG, argReg, 0, 0, line)
+				continue
+			}
+		}
+		if err := c.compileExprTo(arg, argReg); err != nil {
+			return err
+		}
+	}
+	b := nArgs + 1
+	if lastArgIsMulti {
+		b = 0
+	}
+	c.emitABC(OP_GO, funcReg, b, 0, line)
+	c.nextReg = base
+	return nil
+}
+
+func (c *compiler) compileGoMethodCallExpr(call *ast.MethodCallExpr, line int) error {
+	base := c.nextReg
+	// OP_SELF: R(A+1) = R(B); R(A) = R(B)[method]
+	selfReg := c.allocReg()
+	c.allocReg() // reserve selfReg+1 for receiver
+
+	objReg := c.allocReg()
+	if err := c.compileExprTo(call.Object, objReg); err != nil {
+		return err
+	}
+	methodK := c.stringConst(call.Method)
+	c.emitABC(OP_SELF, selfReg, objReg, methodK|RKBit, line)
+
+	nArgs := len(call.Args)
+	for _, arg := range call.Args {
+		argReg := c.allocReg()
+		if err := c.compileExprTo(arg, argReg); err != nil {
+			return err
+		}
+	}
+	b := nArgs + 2 // +1 for self, +1 for encoding
+	c.emitABC(OP_GO, selfReg, b, 0, line)
+	c.nextReg = base
+	return nil
+}
+
+// ---- Channel operations ----
+
+func (c *compiler) compileSendStmt(s *ast.SendStmt) error {
+	line := s.P.Line
+	base := c.nextReg
+
+	// Special case: standalone <-ch (recv as statement, discard result)
+	if recvExpr, ok := s.Channel.(*ast.RecvExpr); ok && s.Value == nil {
+		chReg := c.allocReg()
+		if err := c.compileExprTo(recvExpr.Channel, chReg); err != nil {
+			return err
+		}
+		// Recv into a temp register (discarded)
+		c.emitABC(OP_RECV, chReg, chReg, 0, line)
+		c.nextReg = base
+		return nil
+	}
+
+	chReg := c.allocReg()
+	if err := c.compileExprTo(s.Channel, chReg); err != nil {
+		return err
+	}
+	valReg := c.allocReg()
+	if err := c.compileExprTo(s.Value, valReg); err != nil {
+		return err
+	}
+	c.emitABC(OP_SEND, chReg, valReg, 0, line)
+	c.nextReg = base
+	return nil
+}
+
+func (c *compiler) compileRecvExpr(e *ast.RecvExpr, dest int) error {
+	line := e.P.Line
+	base := c.nextReg
+	chReg := c.allocReg()
+	if err := c.compileExprTo(e.Channel, chReg); err != nil {
+		return err
+	}
+	c.emitABC(OP_RECV, dest, chReg, 0, line)
+	c.nextReg = base
+	return nil
+}
+
+func (c *compiler) compileMakeChanExpr(e *ast.MakeChanExpr, dest int) error {
+	line := e.P.Line
+	if e.Size != nil {
+		base := c.nextReg
+		sizeReg := c.allocReg()
+		if err := c.compileExprTo(e.Size, sizeReg); err != nil {
+			return err
+		}
+		c.emitABC(OP_MAKECHAN, dest, sizeReg, 1, line) // C=1 means size is in R(B)
+		c.nextReg = base
+	} else {
+		c.emitABC(OP_MAKECHAN, dest, 0, 0, line) // C=0 means unbuffered
+	}
+	return nil
+}
+
 // ---- IfStmt ----
 
 func (c *compiler) compileIfStmt(s *ast.IfStmt) error {
@@ -1184,7 +1330,7 @@ func (c *compiler) compileForRangeStmt(s *ast.ForRangeStmt) error {
 
 	loopTop := c.currentPC()
 	c.emitABC(OP_TFORCALL, iterBase, 0, nVars, line)
-	tforloopPos := c.emitAsBx(OP_TFORLOOP, iterBase, 0, line)
+	tforloopPos := c.emitAsBx(OP_TFORLOOP, iterBase+2, 0, line)
 	exitJump := c.emitJump(line)
 	bodyStart := c.currentPC()
 
@@ -1201,7 +1347,7 @@ func (c *compiler) compileForRangeStmt(s *ast.ForRangeStmt) error {
 	c.patchJumpTo(loopBack, loopTop)
 
 	tforloopOffset := bodyStart - tforloopPos - 1
-	c.proto.Code[tforloopPos] = EncodeAsBx(OP_TFORLOOP, iterBase, tforloopOffset)
+	c.proto.Code[tforloopPos] = EncodeAsBx(OP_TFORLOOP, iterBase+2, tforloopOffset)
 
 	c.patchJump(exitJump)
 
@@ -1373,6 +1519,10 @@ func (c *compiler) compileExprTo(expr ast.Expr, dest int) error {
 	case *ast.VarArgExpr:
 		c.emitABC(OP_VARARG, dest, 2, 0, e.P.Line)
 		return nil
+	case *ast.RecvExpr:
+		return c.compileRecvExpr(e, dest)
+	case *ast.MakeChanExpr:
+		return c.compileMakeChanExpr(e, dest)
 	default:
 		return fmt.Errorf("line %d: unsupported expression type %T", expr.GetPos().Line, expr)
 	}
@@ -2097,6 +2247,14 @@ func Disassemble(proto *FuncProto) string {
 			desc = fmt.Sprintf("VARARG     R%d B=%d", a, b)
 		case OP_SELF:
 			desc = fmt.Sprintf("SELF       R%d R%d K%d", a, b, cc)
+		case OP_GO:
+			desc = fmt.Sprintf("GO         R%d B=%d", a, b)
+		case OP_MAKECHAN:
+			desc = fmt.Sprintf("MAKECHAN   R%d B=%d C=%d", a, b, cc)
+		case OP_SEND:
+			desc = fmt.Sprintf("SEND       R%d <- R%d", a, b)
+		case OP_RECV:
+			desc = fmt.Sprintf("RECV       R%d = <-R%d", a, b)
 		default:
 			desc = fmt.Sprintf("%-10s %d %d %d", OpName(op), a, b, cc)
 		}

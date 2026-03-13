@@ -100,6 +100,27 @@ func (s *CallStmt) nodeType() string { return "CallStmt" }
 func (s *CallStmt) GetPos() Pos      { return s.P }
 func (s *CallStmt) stmtNode()        {}
 
+// GoStmt represents a go statement: go func(){}() or go f(args)
+type GoStmt struct {
+	P    Pos
+	Call Expr // must be *CallExpr or *MethodCallExpr
+}
+
+func (s *GoStmt) nodeType() string { return "GoStmt" }
+func (s *GoStmt) GetPos() Pos      { return s.P }
+func (s *GoStmt) stmtNode()        {}
+
+// SendStmt represents a channel send: ch <- value
+type SendStmt struct {
+	P       Pos
+	Channel Expr
+	Value   Expr
+}
+
+func (s *SendStmt) nodeType() string { return "SendStmt" }
+func (s *SendStmt) GetPos() Pos      { return s.P }
+func (s *SendStmt) stmtNode()        {}
+
 // IfStmt represents if/elseif/else chains.
 type IfStmt struct {
 	P          Pos
@@ -369,3 +390,23 @@ type TableField struct {
 	Key   Expr // nil means array-style (positional value only)
 	Value Expr
 }
+
+// RecvExpr represents a channel receive expression: <-ch
+type RecvExpr struct {
+	P       Pos
+	Channel Expr
+}
+
+func (e *RecvExpr) nodeType() string { return "RecvExpr" }
+func (e *RecvExpr) GetPos() Pos      { return e.P }
+func (e *RecvExpr) exprNode()        {}
+
+// MakeChanExpr represents a channel creation: make(chan) or make(chan, size)
+type MakeChanExpr struct {
+	P    Pos
+	Size Expr // nil for unbuffered, or an expression for buffer size
+}
+
+func (e *MakeChanExpr) nodeType() string { return "MakeChanExpr" }
+func (e *MakeChanExpr) GetPos() Pos      { return e.P }
+func (e *MakeChanExpr) exprNode()        {}

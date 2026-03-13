@@ -72,6 +72,14 @@ const (
 	// Method call
 	OP_SELF // A B C : R(A+1) = R(B); R(A) = R(B)[RK(C)]
 
+	// Goroutine
+	OP_GO // A B : go R(A)(R(A+1)..R(A+B-1)); B=0 use top
+
+	// Channel
+	OP_MAKECHAN // A B : R(A) = make(chan, B) — B=0 unbuffered
+	OP_SEND     // A B : R(A) <- R(B)
+	OP_RECV     // A B : R(A) = <-R(B)
+
 	OP_MAX // sentinel
 )
 
@@ -197,6 +205,10 @@ var opNames = [...]string{
 	OP_TFORLOOP: "TFORLOOP",
 	OP_VARARG:   "VARARG",
 	OP_SELF:     "SELF",
+	OP_GO:       "GO",
+	OP_MAKECHAN: "MAKECHAN",
+	OP_SEND:     "SEND",
+	OP_RECV:     "RECV",
 }
 
 // OpName returns the name of an opcode.

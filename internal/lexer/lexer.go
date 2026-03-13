@@ -312,6 +312,10 @@ func (l *Lexer) readOperator(startLine, startCol int) (Token, error) {
 			l.advance()
 			return makeToken(TOKEN_LE, "<="), nil
 		}
+		if l.peek() == '-' {
+			l.advance()
+			return makeToken(TOKEN_ARROW, "<-"), nil
+		}
 		return makeToken(TOKEN_LT, "<"), nil
 
 	case '>':

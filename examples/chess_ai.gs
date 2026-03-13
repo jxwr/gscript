@@ -51,7 +51,9 @@ fontLoaded := false
 font := nil
 aiThinking := false
 lastAIDepth := 0
-aiCoroutine := nil
+aiResult := nil
+aiDone := false
+boardSnapshot := {}
 frameCount := 0
 
 // Animation state
@@ -154,6 +156,15 @@ func makePiece(ptype, side, col, row) {
     return {type: ptype, side: side, col: col, row: row, alive: true}
 }
 
+func snapshotBoard() {
+    boardSnapshot = {}
+    for c := 1; c <= 9; c++ {
+        for r := 1; r <= 10; r++ {
+            boardSnapshot[c * 100 + r] = board[c * 100 + r]
+        }
+    }
+}
+
 func boardKey(col, row) {
     return col * 100 + row
 }
@@ -161,6 +172,10 @@ func boardKey(col, row) {
 func getPiece(col, row) {
     if col < 1 || col > 9 || row < 1 || row > 10 {
         return nil
+    }
+    // During AI thinking, render from snapshot to avoid seeing search state
+    if aiThinking {
+        return boardSnapshot[col * 100 + row]
     }
     return board[col * 100 + row]
 }
@@ -201,7 +216,8 @@ func initBoard() {
     gameStatus = ""
     lastMoveFrom = nil
     lastMoveTo = nil
-    aiCoroutine = nil
+    aiResult = nil
+    aiDone = false
     aiThinking = false
     lastAIDepth = 0
     killerMoves = {}
@@ -1306,6 +1322,9 @@ func getAIMove() {
     currentHash = computeFullHash()
 
     for depth := 1; depth <= 8; depth++ {
+        // Abort if game was reset while AI goroutine is running
+        if !aiThinking { return nil }
+
         alpha := -999999
         beta := 999999
         localBest := nil
@@ -1381,6 +1400,7 @@ func getAIMove() {
         if alpha >= 99000 {
             break
         }
+
     }
 
     return bestMove
@@ -2014,13 +2034,15 @@ for i := 1; i <= #fontPaths; i++ {
 initBoard()
 
 for !rl.windowShouldClose() {
-    // === AI TURN (synchronous — optimized AI runs in <1s) ===
-    if aiThinking {
-        move := getAIMove()
-        if move != nil {
-            doMove(move.piece, move.col, move.row)
-        }
+    // === AI TURN (goroutine-based for non-blocking UI) ===
+    if aiThinking && aiDone {
+        result := aiResult
         aiThinking = false
+        aiDone = false
+        aiResult = nil
+        if result != nil {
+            doMove(result.piece, result.col, result.row)
+        }
     }
 
     frameCount = frameCount + 1
@@ -2033,7 +2055,13 @@ for !rl.windowShouldClose() {
             // After animation ends, trigger AI if pending
             if animPendingAI {
                 animPendingAI = false
+                snapshotBoard()
                 aiThinking = true
+                go func() {
+                    move := getAIMove()
+                    aiResult = move
+                    aiDone = true
+                }()
             }
         }
     }

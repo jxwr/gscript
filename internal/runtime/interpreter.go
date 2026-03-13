@@ -506,6 +506,23 @@ func (interp *Interpreter) registerBuiltins() {
 	// Coroutine library
 	// ----------------------------------------------------------------
 	interp.registerCoroutineLib()
+
+	// ----------------------------------------------------------------
+	// Channel builtins
+	// ----------------------------------------------------------------
+	interp.globals.Define("close", FunctionValue(&GoFunction{
+		Name: "close",
+		Fn: func(args []Value) ([]Value, error) {
+			if len(args) < 1 || !args[0].IsChannel() {
+				return nil, fmt.Errorf("close expects a channel")
+			}
+			ch := args[0].Channel()
+			if err := ch.Close(); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	}))
 }
 
 // registerCoroutineLib installs the "coroutine" global table with

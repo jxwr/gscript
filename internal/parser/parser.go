@@ -130,6 +130,8 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
 		return p.parseBreakStmt()
 	case lexer.TOKEN_CONTINUE:
 		return p.parseContinueStmt()
+	case lexer.TOKEN_GO:
+		return p.parseGoStmt()
 	default:
 		return p.parseExpressionStmt()
 	}
@@ -516,6 +518,36 @@ func (p *Parser) parseContinueStmt() (ast.Stmt, error) {
 	return &ast.ContinueStmt{P: p.tokenPos(tok)}, nil
 }
 
+func (p *Parser) parseGoStmt() (ast.Stmt, error) {
+	tok := p.advance() // consume 'go'
+	pos := p.tokenPos(tok)
+
+	// Parse the call expression that follows 'go'
+	expr, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+
+	// Must be a call expression
+	switch expr.(type) {
+	case *ast.CallExpr, *ast.MethodCallExpr:
+		// ok
+	default:
+		return nil, p.errorf("go statement requires a function call")
+	}
+
+	return &ast.GoStmt{P: pos, Call: expr}, nil
+}
+
+func (p *Parser) parseSendStmt(pos ast.Pos, chExpr ast.Expr) (ast.Stmt, error) {
+	p.advance() // consume '<-'
+	val, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.SendStmt{P: pos, Channel: chExpr, Value: val}, nil
+}
+
 // parseExpressionStmt parses an expression statement and determines what kind
 // of statement it represents based on what follows the initial expression list.
 func (p *Parser) parseExpressionStmt() (ast.Stmt, error) {
@@ -546,6 +578,9 @@ func (p *Parser) parseExpressionStmt() (ast.Stmt, error) {
 	case lexer.TOKEN_COMMA:
 		// Could be multi-assignment: a, b = ... or a, b := ...
 		return p.parseMultiTargetStmt(pos, expr)
+	case lexer.TOKEN_ARROW:
+		// ch <- value (channel send)
+		return p.parseSendStmt(pos, expr)
 	default:
 		// Standalone call expression
 		if callExpr, ok := expr.(*ast.CallExpr); ok {
@@ -560,6 +595,10 @@ func (p *Parser) parseExpressionStmt() (ast.Stmt, error) {
 				Args: mc.Args,
 			}
 			return &ast.CallStmt{P: pos, Call: callExpr}, nil
+		}
+		// Standalone channel receive: <-ch (discard result, used for synchronization)
+		if _, ok := expr.(*ast.RecvExpr); ok {
+			return &ast.SendStmt{P: pos, Channel: expr, Value: nil}, nil
 		}
 		// If it's just an expression that isn't a call, that's an error
 		return nil, fmt.Errorf("parse error at %d:%d: expression is not a statement",
@@ -889,6 +928,16 @@ func (p *Parser) parseUnary() (ast.Expr, error) {
 			Operand: operand,
 		}, nil
 	}
+	// Channel receive: <-ch
+	if p.check(lexer.TOKEN_ARROW) {
+		tok := p.advance() // consume '<-'
+		pos := p.tokenPos(tok)
+		operand, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.RecvExpr{P: pos, Channel: operand}, nil
+	}
 	return p.parsePostfix()
 }
 
@@ -928,6 +977,15 @@ func (p *Parser) parsePostfix() (ast.Expr, error) {
 			}
 
 		case lexer.TOKEN_LPAREN:
+			// Special case: make(chan) or make(chan, size)
+			if ident, ok := expr.(*ast.IdentExpr); ok && ident.Name == "make" && p.peekAt(1).Type == lexer.TOKEN_CHAN {
+				chanExpr, err := p.parseMakeChan(ident)
+				if err != nil {
+					return nil, err
+				}
+				expr = chanExpr
+				continue
+			}
 			expr, err = p.parseCallExpr(expr)
 			if err != nil {
 				return nil, err
@@ -961,6 +1019,25 @@ func (p *Parser) parsePostfix() (ast.Expr, error) {
 			return expr, nil
 		}
 	}
+}
+
+func (p *Parser) parseMakeChan(makeIdent *ast.IdentExpr) (ast.Expr, error) {
+	p.advance() // consume '('
+	p.advance() // consume 'chan'
+	pos := makeIdent.P
+	var sizeExpr ast.Expr
+	if p.check(lexer.TOKEN_COMMA) {
+		p.advance() // consume ','
+		var err error
+		sizeExpr, err = p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if _, err := p.expect(lexer.TOKEN_RPAREN); err != nil {
+		return nil, err
+	}
+	return &ast.MakeChanExpr{P: pos, Size: sizeExpr}, nil
 }
 
 func (p *Parser) parseCallExpr(fn ast.Expr) (*ast.CallExpr, error) {

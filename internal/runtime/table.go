@@ -1,9 +1,12 @@
 package runtime
 
+import "sync"
+
 // Table is GScript's associative array / object type.
 // It has an optimized array part for sequential integer keys 1..n,
 // and a hash part for everything else.
 type Table struct {
+	mu        sync.RWMutex
 	hash      map[Value]Value
 	array     []Value // 1-indexed: array[0] is unused padding, real data at [1]..[len-1]
 	metatable *Table
@@ -25,15 +28,19 @@ func (t *Table) RawGet(key Value) Value {
 	if key.IsNil() {
 		return NilValue()
 	}
+	t.mu.RLock()
 	// Try array part for integer keys
 	if key.IsInt() {
 		idx := key.Int()
 		if idx >= 1 && idx < int64(len(t.array)) {
-			return t.array[idx]
+			v := t.array[idx]
+			t.mu.RUnlock()
+			return v
 		}
 	}
 	// Fall through to hash part
 	val, ok := t.hash[key]
+	t.mu.RUnlock()
 	if !ok {
 		return NilValue()
 	}
@@ -51,6 +58,7 @@ func (t *Table) RawSet(key, val Value) {
 		key = IntValue(int64(key.Float()))
 	}
 
+	t.mu.Lock()
 	t.keysDirty = true
 
 	// Try array part for integer keys
@@ -63,9 +71,11 @@ func (t *Table) RawSet(key, val Value) {
 				t.array = append(t.array, val)
 				// Absorb any hash keys that now fit contiguously
 				t.absorbHashKeys()
+				t.mu.Unlock()
 				return
 			}
 			t.array[idx] = val
+			t.mu.Unlock()
 			return
 		}
 	}
@@ -75,6 +85,7 @@ func (t *Table) RawSet(key, val Value) {
 	} else {
 		t.hash[key] = val
 	}
+	t.mu.Unlock()
 }
 
 // absorbHashKeys moves consecutive integer keys from hash into array.

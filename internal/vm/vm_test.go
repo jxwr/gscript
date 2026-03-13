@@ -846,6 +846,596 @@ func TestStringNumberCoercion(t *testing.T) {
 	expectGlobalInt(t, g, "neg", -42)
 }
 
+// compileAndRunExpectError compiles and runs, expecting a runtime error.
+func compileAndRunExpectError(t *testing.T, src string) error {
+	t.Helper()
+	tokens, err := lexer.New(src).Tokenize()
+	if err != nil {
+		t.Fatalf("lexer error: %v", err)
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	proto, err := Compile(prog)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	globals := runtime.NewInterpreterGlobals()
+	vm := New(globals)
+	_, err = vm.Execute(proto)
+	return err
+}
+
+// ============================================================================
+// VM Coroutine Tests
+// ============================================================================
+
+// Test 1: Basic yield/resume cycle
+func TestVMCoroutineBasic(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {
+	coroutine.yield(1)
+	coroutine.yield(2)
+	coroutine.yield(3)
+})
+ok1, v1 := coroutine.resume(co)
+ok2, v2 := coroutine.resume(co)
+ok3, v3 := coroutine.resume(co)
+ok4 := coroutine.resume(co)
+`)
+	expectGlobalBool(t, g, "ok1", true)
+	expectGlobalInt(t, g, "v1", 1)
+	expectGlobalBool(t, g, "ok2", true)
+	expectGlobalInt(t, g, "v2", 2)
+	expectGlobalBool(t, g, "ok3", true)
+	expectGlobalInt(t, g, "v3", 3)
+	expectGlobalBool(t, g, "ok4", true)
+}
+
+// Test 2: Values passed to yield and from resume
+func TestVMCoroutinePassValues(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func(a) {
+	b := coroutine.yield(a * 2)
+	return b + 1
+})
+ok1, v1 := coroutine.resume(co, 5)
+ok2, v2 := coroutine.resume(co, 20)
+`)
+	expectGlobalBool(t, g, "ok1", true)
+	expectGlobalInt(t, g, "v1", 10)
+	expectGlobalBool(t, g, "ok2", true)
+	expectGlobalInt(t, g, "v2", 21)
+}
+
+// Test 3: coroutine.wrap creates an iterator function
+func TestVMCoroutineWrap(t *testing.T) {
+	g := compileAndRun(t, `
+gen := coroutine.wrap(func() {
+	coroutine.yield(1)
+	coroutine.yield(2)
+	coroutine.yield(3)
+})
+r1 := gen()
+r2 := gen()
+r3 := gen()
+`)
+	expectGlobalInt(t, g, "r1", 1)
+	expectGlobalInt(t, g, "r2", 2)
+	expectGlobalInt(t, g, "r3", 3)
+}
+
+// Test 4: coroutine.status returns correct status strings
+func TestVMCoroutineStatus(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {
+	coroutine.yield()
+})
+s1 := coroutine.status(co)
+coroutine.resume(co)
+s2 := coroutine.status(co)
+coroutine.resume(co)
+s3 := coroutine.status(co)
+`)
+	expectGlobalString(t, g, "s1", "suspended")
+	expectGlobalString(t, g, "s2", "suspended")
+	expectGlobalString(t, g, "s3", "dead")
+}
+
+// Test 5: Producer pattern with coroutine
+func TestVMCoroutineProducer(t *testing.T) {
+	g := compileAndRun(t, `
+func producer() {
+	coroutine.yield(10)
+	coroutine.yield(20)
+	coroutine.yield(30)
+	coroutine.yield(40)
+	coroutine.yield(50)
+}
+
+co := coroutine.create(producer)
+total := 0
+for {
+	ok, v := coroutine.resume(co)
+	if !ok || v == nil {
+		break
+	}
+	total = total + v
+}
+`)
+	expectGlobalInt(t, g, "total", 150)
+}
+
+// Test 6: Generator pattern with wrap
+func TestVMCoroutineGenerator(t *testing.T) {
+	g := compileAndRun(t, `
+func range_gen(n) {
+	return coroutine.wrap(func() {
+		for i := 1; i <= n; i++ {
+			coroutine.yield(i)
+		}
+	})
+}
+
+sum := 0
+gen := range_gen(5)
+for {
+	v := gen()
+	if v == nil {
+		break
+	}
+	sum = sum + v
+}
+`)
+	expectGlobalInt(t, g, "sum", 15)
+}
+
+// Test 7: Dead coroutine returns false with error message
+func TestVMCoroutineDeadError(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() { return 42 })
+coroutine.resume(co)
+ok, msg := coroutine.resume(co)
+`)
+	expectGlobalBool(t, g, "ok", false)
+	v := g["msg"]
+	if !strings.Contains(v.String(), "dead") {
+		t.Errorf("expected msg to contain 'dead', got %v", v)
+	}
+}
+
+// Test 8: Nested coroutines (outer resumes inner)
+func TestVMCoroutineNested(t *testing.T) {
+	g := compileAndRun(t, `
+inner := coroutine.create(func() {
+	coroutine.yield(1)
+	coroutine.yield(2)
+})
+
+outer := coroutine.create(func() {
+	ok, v := coroutine.resume(inner)
+	coroutine.yield(v * 10)
+	ok, v = coroutine.resume(inner)
+	coroutine.yield(v * 10)
+})
+
+_, r1 := coroutine.resume(outer)
+_, r2 := coroutine.resume(outer)
+`)
+	expectGlobalInt(t, g, "r1", 10)
+	expectGlobalInt(t, g, "r2", 20)
+}
+
+// Test 9: coroutine.isyieldable
+func TestVMCoroutineIsYieldable(t *testing.T) {
+	g := compileAndRun(t, `
+outside := coroutine.isyieldable()
+inside := false
+co := coroutine.create(func() {
+	inside = coroutine.isyieldable()
+	coroutine.yield()
+})
+coroutine.resume(co)
+`)
+	expectGlobalBool(t, g, "outside", false)
+	expectGlobalBool(t, g, "inside", true)
+}
+
+// Test 10: Coroutine with multiple yield values
+func TestVMCoroutineMultipleYieldValues(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {
+	coroutine.yield(1, 2, 3)
+})
+ok, a, b, c := coroutine.resume(co)
+`)
+	expectGlobalBool(t, g, "ok", true)
+	expectGlobalInt(t, g, "a", 1)
+	expectGlobalInt(t, g, "b", 2)
+	expectGlobalInt(t, g, "c", 3)
+}
+
+// Test 11: Coroutine with return value
+func TestVMCoroutineReturnValue(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {
+	coroutine.yield(1)
+	return 99
+})
+ok1, v1 := coroutine.resume(co)
+ok2, v2 := coroutine.resume(co)
+s := coroutine.status(co)
+`)
+	expectGlobalBool(t, g, "ok1", true)
+	expectGlobalInt(t, g, "v1", 1)
+	expectGlobalBool(t, g, "ok2", true)
+	expectGlobalInt(t, g, "v2", 99)
+	expectGlobalString(t, g, "s", "dead")
+}
+
+// Test 12: wrap with error propagation on dead coroutine
+func TestVMCoroutineWrapDead(t *testing.T) {
+	err := compileAndRunExpectError(t, `
+gen := coroutine.wrap(func() {
+	coroutine.yield(1)
+})
+gen()
+gen()
+gen()
+`)
+	if err == nil {
+		t.Fatal("expected an error when calling wrapped dead coroutine")
+	}
+	if !strings.Contains(err.Error(), "dead") {
+		t.Errorf("expected error to contain 'dead', got %v", err)
+	}
+}
+
+// Test 13: Fibonacci generator using coroutines
+func TestVMCoroutineFibonacci(t *testing.T) {
+	g := compileAndRun(t, `
+func fib_gen() {
+	a, b := 0, 1
+	for {
+		coroutine.yield(a)
+		a, b = b, a + b
+	}
+}
+
+co := coroutine.create(fib_gen)
+results := {}
+for i := 0; i < 10; i++ {
+	_, v := coroutine.resume(co)
+	results[i + 1] = v
+}
+`)
+	expected := []int64{0, 1, 1, 2, 3, 5, 8, 13, 21, 34}
+	results := g["results"].Table()
+	for i, exp := range expected {
+		v := results.RawGet(runtime.IntValue(int64(i + 1)))
+		if !v.IsInt() || v.Int() != exp {
+			t.Errorf("fib[%d]: expected %d, got %v", i, exp, v)
+		}
+	}
+}
+
+// Test 14: Resume passes values back into yield
+func TestVMCoroutineResumePassesValues(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {
+	x := coroutine.yield("first")
+	y := coroutine.yield("second")
+	return x .. " " .. y
+})
+ok1, v1 := coroutine.resume(co)
+ok2, v2 := coroutine.resume(co, "hello")
+ok3, v3 := coroutine.resume(co, "world")
+`)
+	expectGlobalString(t, g, "v1", "first")
+	expectGlobalString(t, g, "v2", "second")
+	expectGlobalString(t, g, "v3", "hello world")
+}
+
+// Test 15: Type function reports "coroutine"
+func TestVMCoroutineType(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {})
+tp := type(co)
+`)
+	expectGlobalString(t, g, "tp", "coroutine")
+}
+
+// Test 16: wrap with for-range using iterator function
+func TestVMCoroutineWrapForRange(t *testing.T) {
+	g := compileAndRun(t, `
+func counter(n) {
+	return coroutine.wrap(func() {
+		for i := 1; i <= n; i++ {
+			coroutine.yield(i)
+		}
+	})
+}
+
+sum := 0
+for v := range counter(4) {
+	sum = sum + v
+}
+`)
+	expectGlobalInt(t, g, "sum", 10)
+}
+
+// ============================================================================
+// Goroutine Tests
+// ============================================================================
+
+// Test basic go statement with shared globals
+func TestGoStmtBasic(t *testing.T) {
+	g := compileAndRun(t, `
+result := 0
+done := false
+go func() {
+	result = 42
+	done = true
+}()
+for !done {}
+`)
+	expectGlobalInt(t, g, "result", 42)
+	expectGlobalBool(t, g, "done", true)
+}
+
+// Test go with named function
+func TestGoStmtNamedFunc(t *testing.T) {
+	g := compileAndRun(t, `
+result := 0
+done := false
+func compute() {
+	result = 100
+	done = true
+}
+go compute()
+for !done {}
+`)
+	expectGlobalInt(t, g, "result", 100)
+}
+
+// Test go with arguments
+func TestGoStmtWithArgs(t *testing.T) {
+	g := compileAndRun(t, `
+result := 0
+done := false
+func add(a, b) {
+	result = a + b
+	done = true
+}
+go add(10, 20)
+for !done {}
+`)
+	expectGlobalInt(t, g, "result", 30)
+}
+
+// Test go with computation
+func TestGoStmtComputation(t *testing.T) {
+	g := compileAndRun(t, `
+result := 0
+done := false
+go func() {
+	sum := 0
+	for i := 1; i <= 100; i++ {
+		sum = sum + i
+	}
+	result = sum
+	done = true
+}()
+for !done {}
+`)
+	expectGlobalInt(t, g, "result", 5050)
+}
+
+// Test multiple goroutines
+func TestGoStmtMultiple(t *testing.T) {
+	g := compileAndRun(t, `
+r1 := 0
+r2 := 0
+d1 := false
+d2 := false
+go func() { r1 = 10; d1 = true }()
+go func() { r2 = 20; d2 = true }()
+for !d1 || !d2 {}
+total := r1 + r2
+`)
+	expectGlobalInt(t, g, "total", 30)
+}
+
+// Test go writes to shared table
+func TestGoStmtSharedTable(t *testing.T) {
+	g := compileAndRun(t, `
+state := {done: false, value: 0}
+go func() {
+	state.value = 99
+	state.done = true
+}()
+for !state.done {}
+result := state.value
+`)
+	expectGlobalInt(t, g, "result", 99)
+}
+
+// ===== CHANNEL TESTS =====
+
+func TestChannelMakeAndType(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan)
+result := type(ch)
+`)
+	expectGlobalString(t, g, "result", "channel")
+}
+
+func TestChannelMakeBuffered(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan, 3)
+result := type(ch)
+`)
+	expectGlobalString(t, g, "result", "channel")
+}
+
+func TestChannelSendRecvBuffered(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan, 1)
+ch <- 42
+result := <-ch
+`)
+	expectGlobalInt(t, g, "result", 42)
+}
+
+func TestChannelSendRecvString(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan, 1)
+ch <- "hello"
+result := <-ch
+`)
+	expectGlobalString(t, g, "result", "hello")
+}
+
+func TestChannelMultipleValues(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan, 3)
+ch <- 10
+ch <- 20
+ch <- 30
+a := <-ch
+b := <-ch
+c := <-ch
+result := a + b + c
+`)
+	expectGlobalInt(t, g, "result", 60)
+}
+
+func TestChannelWithGoroutine(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan)
+go func() {
+    ch <- 42
+}()
+result := <-ch
+`)
+	expectGlobalInt(t, g, "result", 42)
+}
+
+func TestChannelGoroutineSync(t *testing.T) {
+	g := compileAndRun(t, `
+done := make(chan)
+result := 0
+go func() {
+    result = 100
+    done <- true
+}()
+<-done
+`)
+	expectGlobalInt(t, g, "result", 100)
+}
+
+func TestChannelProducerConsumer(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan, 10)
+go func() {
+    for i := 1; i <= 10; i++ {
+        ch <- i
+    }
+    close(ch)
+}()
+sum := 0
+for v := range ch {
+    sum = sum + v
+}
+result := sum
+`)
+	expectGlobalInt(t, g, "result", 55)
+}
+
+func TestChannelClose(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan, 2)
+ch <- 1
+ch <- 2
+close(ch)
+a := <-ch
+b := <-ch
+c := <-ch
+result := a + b
+closed := c == nil
+`)
+	expectGlobalInt(t, g, "result", 3)
+	expectGlobalBool(t, g, "closed", true)
+}
+
+func TestChannelDirectionGoroutines(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan)
+
+go func() {
+    ch <- 1
+    ch <- 2
+    ch <- 3
+    close(ch)
+}()
+
+sum := 0
+for v := range ch {
+    sum = sum + v
+}
+result := sum
+`)
+	expectGlobalInt(t, g, "result", 6)
+}
+
+func TestChannelPingPong(t *testing.T) {
+	g := compileAndRun(t, `
+ping := make(chan)
+pong := make(chan)
+
+go func() {
+    for i := 1; i <= 5; i++ {
+        v := <-ping
+        pong <- v + 1
+    }
+}()
+
+result := 0
+for i := 1; i <= 5; i++ {
+    ping <- i
+    result = <-pong
+}
+`)
+	expectGlobalInt(t, g, "result", 6)
+}
+
+func TestChannelRecvAsExpression(t *testing.T) {
+	g := compileAndRun(t, `
+ch := make(chan, 1)
+ch <- 10
+result := (<-ch) + 5
+`)
+	expectGlobalInt(t, g, "result", 15)
+}
+
+func TestChannelPassBetweenGoroutines(t *testing.T) {
+	g := compileAndRun(t, `
+ch1 := make(chan)
+ch2 := make(chan)
+
+go func() {
+    v := <-ch1
+    ch2 <- v * 2
+}()
+
+ch1 <- 21
+result := <-ch2
+`)
+	expectGlobalInt(t, g, "result", 42)
+}
+
 // Ensure the test file is valid even if some helpers aren't wired up yet.
 // This provides a graceful message.
 func init() {
