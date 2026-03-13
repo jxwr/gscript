@@ -196,21 +196,22 @@ func (cg *Codegen) loadRegTyp(dst Reg, reg int) {
 	if off <= 4095 {
 		cg.asm.LDRB(dst, regRegs, off)
 	} else {
-		cg.asm.LoadImm64(dst, int64(off))
-		cg.asm.ADDreg(dst, regRegs, dst)
-		cg.asm.LDRB(dst, dst, 0)
+		cg.asm.LoadImm64(X10, int64(off))
+		cg.asm.ADDreg(X10, regRegs, X10)
+		cg.asm.LDRB(dst, X10, 0)
 	}
 }
 
 // storeRegTyp stores a type byte into R(reg).typ.
+// Uses X10 as scratch for large offsets (not X9, which callers may pass as src).
 func (cg *Codegen) storeRegTyp(src Reg, reg int) {
 	off := regTypOffset(reg)
 	if off <= 4095 {
 		cg.asm.STRB(src, regRegs, off)
 	} else {
-		cg.asm.LoadImm64(X9, int64(off))
-		cg.asm.ADDreg(X9, regRegs, X9)
-		cg.asm.STRB(src, X9, 0)
+		cg.asm.LoadImm64(X10, int64(off))
+		cg.asm.ADDreg(X10, regRegs, X10)
+		cg.asm.STRB(src, X10, 0)
 	}
 }
 
@@ -270,9 +271,9 @@ func (cg *Codegen) loadRKTyp(dst Reg, idx int) {
 		if off <= 4095 {
 			cg.asm.LDRB(dst, regConsts, off)
 		} else {
-			cg.asm.LoadImm64(dst, int64(off))
-			cg.asm.ADDreg(dst, regConsts, dst)
-			cg.asm.LDRB(dst, dst, 0)
+			cg.asm.LoadImm64(X10, int64(off))
+			cg.asm.ADDreg(X10, regConsts, X10)
+			cg.asm.LDRB(dst, X10, 0)
 		}
 	} else {
 		cg.loadRegTyp(dst, idx)
@@ -305,30 +306,19 @@ func (cg *Codegen) loadRKFval(dst FReg, idx int) {
 // Copy a full Value (56 bytes) between registers.
 // ──────────────────────────────────────────────────────────────────────────────
 
-// copyValue copies the full Value from src to dst using LDP/STP pairs.
-// Uses X0-X7 as scratch.
+// copyValue copies the full Value (56 bytes = 7 words) from src to dst.
+// Uses LDR/STR (12-bit unsigned scaled offset, range 0-32760) to avoid
+// the LDP/STP signed 7-bit immediate range limit (max +504 bytes) which
+// silently wraps for register indices >= 9.
 func (cg *Codegen) copyValue(dstReg, srcReg int) {
 	srcBase := srcReg * ValueSize
 	dstBase := dstReg * ValueSize
-
-	// 56 bytes = 7 x 8-byte words. Copy as 3 LDP/STP pairs (48 bytes) + 1 LDR/STR (8 bytes).
 	a := cg.asm
 
-	// Words 0-1 (bytes 0-15)
-	a.LDP(X0, X1, regRegs, srcBase)
-	a.STP(X0, X1, regRegs, dstBase)
-
-	// Words 2-3 (bytes 16-31)
-	a.LDP(X0, X1, regRegs, srcBase+16)
-	a.STP(X0, X1, regRegs, dstBase+16)
-
-	// Words 4-5 (bytes 32-47)
-	a.LDP(X0, X1, regRegs, srcBase+32)
-	a.STP(X0, X1, regRegs, dstBase+32)
-
-	// Word 6 (bytes 48-55)
-	a.LDR(X0, regRegs, srcBase+48)
-	a.STR(X0, regRegs, dstBase+48)
+	for i := 0; i < 7; i++ {
+		a.LDR(X0, regRegs, srcBase+i*8)
+		a.STR(X0, regRegs, dstBase+i*8)
+	}
 }
 
 // copyRKValue copies a full Value from RK(idx) to R(dst).
@@ -339,14 +329,10 @@ func (cg *Codegen) copyRKValue(dstReg, rkIdx int) {
 		dstBase := dstReg * ValueSize
 		a := cg.asm
 
-		a.LDP(X0, X1, regConsts, srcBase)
-		a.STP(X0, X1, regRegs, dstBase)
-		a.LDP(X0, X1, regConsts, srcBase+16)
-		a.STP(X0, X1, regRegs, dstBase+16)
-		a.LDP(X0, X1, regConsts, srcBase+32)
-		a.STP(X0, X1, regRegs, dstBase+32)
-		a.LDR(X0, regConsts, srcBase+48)
-		a.STR(X0, regRegs, dstBase+48)
+		for i := 0; i < 7; i++ {
+			a.LDR(X0, regConsts, srcBase+i*8)
+			a.STR(X0, regRegs, dstBase+i*8)
+		}
 	} else {
 		cg.copyValue(dstReg, rkIdx)
 	}
