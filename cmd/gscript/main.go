@@ -21,8 +21,8 @@ func init() {
 func main() {
 	// Flags
 	eval := flag.String("e", "", "execute string")
-	useVM := flag.Bool("vm", false, "use bytecode VM instead of tree-walker")
-	useJIT := flag.Bool("jit", false, "use bytecode VM with JIT compilation (ARM64 only)")
+	useVM := flag.Bool("vm", false, "use bytecode VM without JIT")
+	useJIT := flag.Bool("jit", true, "use bytecode VM with JIT compilation (default)")
 	flag.Parse()
 
 	if *useJIT {
