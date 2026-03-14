@@ -51,6 +51,8 @@ fontLoaded := false
 font := nil
 aiThinking := false
 lastAIDepth := 0
+lastAITime := 0.0
+aiStartTime := nil
 aiResult := nil
 aiDone := false
 boardSnapshot := {}
@@ -291,6 +293,8 @@ func initBoard() {
     aiDone = false
     aiThinking = false
     lastAIDepth = 0
+    lastAITime = 0.0
+    aiStartTime = nil
     killerMoves = {}
     nodeCount = 0
     redPieces = {}
@@ -1237,6 +1241,11 @@ func storeKiller(depth, fc, fr, tc, tr, ctx) {
 QUIESCE_MARGIN := 200
 
 func quiesce(alpha, beta, side, qdepth, ctx) {
+    // Check stop flag for early termination
+    if ctx != nil && ctx.searchStop != nil && ctx.searchStop.stopped {
+        return 0
+    }
+
     if ctx != nil {
         ctx.nodeCount = ctx.nodeCount + 1
     } else {
@@ -1358,6 +1367,11 @@ func quiesce(alpha, beta, side, qdepth, ctx) {
 
 // === NEGAMAX + ALPHA-BETA + TT + NULL MOVE + KILLER + LMR + QUIESCENCE ===
 func negamax(depth, alpha, beta, side, allowNull, ctx) {
+    // Check stop flag for early termination
+    if ctx != nil && ctx.searchStop != nil && ctx.searchStop.stopped {
+        return 0
+    }
+
     if ctx != nil {
         ctx.nodeCount = ctx.nodeCount + 1
     } else {
@@ -1547,29 +1561,31 @@ func getAIMove() {
 
     // Launch parallel workers
     resultCh := make(chan, NUM_WORKERS)
-    searchStop := {stopped: false}
+    searchStop := {stopped: false, maxDepth: 0}
 
     for w := 0; w < NUM_WORKERS; w++ {
         ctx := newSearchCtx()
+        ctx.searchStop = searchStop
         startDepth := 1 + (w % 2)
         go func() {
             bestMove := nil
             bestDepth := 0
+            bestScore := -999999
 
-            for depth := startDepth; depth <= 8; depth++ {
+            for depth := startDepth; depth <= 12; depth++ {
                 if searchStop.stopped { break }
-                if !aiThinking { break }
 
                 alpha := -999999
                 beta := 999999
                 localBest := nil
+                depthComplete := true
 
                 allMoves := getAllMovesForSide("black", ctx)
                 allMoves = orderMoves(allMoves, depth + 1, ctx)
                 if #allMoves == 0 { break }
 
                 for i := 1; i <= #allMoves; i++ {
-                    if searchStop.stopped { break }
+                    if searchStop.stopped { depthComplete = false; break }
 
                     m := allMoves[i]
                     p := m.piece
@@ -1616,34 +1632,55 @@ func getAIMove() {
                     }
                 }
 
-                if localBest != nil {
+                // Only use results from fully completed depth iterations
+                if depthComplete && localBest != nil {
                     bestMove = localBest
                     bestDepth = depth
+                    bestScore = alpha
+                    // Report progress to parent
+                    if depth > searchStop.maxDepth {
+                        searchStop.maxDepth = depth
+                    }
                 }
 
                 if alpha >= 99000 { break }
             }
 
-            resultCh <- {move: bestMove, depth: bestDepth}
+            resultCh <- {move: bestMove, depth: bestDepth, score: bestScore}
         }()
     }
 
-    // Wait for 3 seconds
-    time.sleep(3.0)
+    // Dynamic stop: wait until (time >= 3s AND depth >= 5) OR time >= 15s
+    for {
+        time.sleep(0.1)
+        elapsed := time.since(startTime)
+        if elapsed >= 3.0 && searchStop.maxDepth >= 5 {
+            break
+        }
+        if elapsed >= 15.0 {
+            break
+        }
+    }
     searchStop.stopped = true
 
-    // Collect results from all workers
+    // Collect results from all workers — prefer deepest complete search
     bestMove := nil
     bestDepth := 0
+    bestScore := -999999
     for w := 0; w < NUM_WORKERS; w++ {
         result := <-resultCh
-        if result.move != nil && result.depth > bestDepth {
-            bestDepth = result.depth
-            bestMove = result.move
+        if result.move != nil {
+            // Prefer deeper search; at same depth prefer higher score
+            if result.depth > bestDepth || (result.depth == bestDepth && result.score > bestScore) {
+                bestDepth = result.depth
+                bestMove = result.move
+                bestScore = result.score
+            }
         }
     }
 
     lastAIDepth = bestDepth
+    lastAITime = time.since(startTime)
 
     // Convert coordinate-based result back to piece reference on the real board
     if bestMove != nil {
@@ -2005,9 +2042,14 @@ func drawStatus() {
         rl.drawText(statusText, 15, 12, 24, statusColor)
     }
 
-    // AI depth info — use default font (contains digits, no mixed-font issue)
-    if lastAIDepth > 0 {
-        rl.drawText("Depth:" .. tostring(lastAIDepth), 580, 15, 18, {r: 150, g: 150, b: 200, a: 255})
+    // AI info — show live timer while thinking, final result after
+    if aiThinking && aiStartTime != nil {
+        elapsed := time.since(aiStartTime)
+        secStr := tostring(math.floor(elapsed))
+        rl.drawText(secStr .. "s", 580, 15, 18, {r: 255, g: 200, b: 60, a: 255})
+    } elseif lastAIDepth > 0 {
+        timeStr := tostring(math.floor(lastAITime * 10) / 10)
+        rl.drawText("D" .. tostring(lastAIDepth) .. " " .. timeStr .. "s", 570, 15, 18, {r: 150, g: 150, b: 200, a: 255})
     }
 
     // Animated thinking dots (drawn as circles — no font issues)
@@ -2252,6 +2294,82 @@ func handleClick(mx, my) {
     }
 }
 
+// === TEST MODE ===
+if arg != nil && #arg >= 1 && arg[1] == "test" {
+    print("=== Chess AI Test Mode ===")
+    initBoard()
+    print("Board initialized, pieces:", #redPieces, "red,", #blackPieces, "black")
+
+    // Test 0: Basic board sanity check
+    print("")
+    print("--- Test 0: Board sanity ---")
+    allBlack := getAllMovesForSide("black")
+    print("Black moves available:", #allBlack)
+    if #allBlack > 0 {
+        m := allBlack[1]
+        print("  First move:", m.piece.type, m.piece.side, "from", m.piece.col, m.piece.row, "to", m.col, m.row)
+    }
+
+    // Test 1: Direct call to getAIMove (blocking, no goroutine)
+    print("")
+    print("--- Test 1: Direct getAIMove call ---")
+    t1 := time.now()
+    result := getAIMove()
+    elapsed1 := time.since(t1)
+    if result != nil {
+        print("PASS: getAIMove returned move:", result.piece.type, result.piece.side,
+              "to col:", result.col, "row:", result.row,
+              "depth:", lastAIDepth, "time:", elapsed1)
+    } else {
+        print("FAIL: getAIMove returned nil")
+    }
+    if elapsed1 >= 3.0 {
+        print("PASS: took", elapsed1, "seconds (depth", lastAIDepth, ")")
+    } else {
+        print("WARNING: unexpected time:", elapsed1)
+    }
+
+    // Test 2: Goroutine pattern (same as game)
+    print("")
+    print("--- Test 2: Goroutine pattern (game flow) ---")
+    initBoard()
+    aiThinking = true
+    aiDone = false
+    aiResult = nil
+
+    go func() {
+        move := getAIMove()
+        aiResult = move
+        aiDone = true
+    }()
+
+    t2 := time.now()
+    detected := false
+    for tick := 0; tick < 1000; tick++ {
+        if aiThinking && aiDone {
+            elapsed2 := time.since(t2)
+            print("PASS: detected aiDone at tick", tick, "time:", elapsed2)
+            if aiResult != nil {
+                print("  Move:", aiResult.piece.type, aiResult.piece.side,
+                      "to col:", aiResult.col, "row:", aiResult.row)
+            } else {
+                print("  WARNING: aiResult is nil")
+            }
+            detected = true
+            break
+        }
+        time.sleep(0.02)
+    }
+    if !detected {
+        print("FAIL: goroutine never set aiDone!")
+        print("  aiDone =", aiDone, "aiResult =", aiResult)
+    }
+
+    print("")
+    print("=== All tests complete ===")
+    return
+}
+
 // === MAIN GAME ===
 rl.initWindow(WIN_W, WIN_H, "中国象棋 AI")
 rl.setTargetFPS(60)
@@ -2306,6 +2424,7 @@ for !rl.windowShouldClose() {
                 animPendingAI = false
                 snapshotBoard()
                 aiThinking = true
+                aiStartTime = time.now()
                 go func() {
                     move := getAIMove()
                     aiResult = move

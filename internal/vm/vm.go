@@ -35,7 +35,8 @@ type VM struct {
 	openUpvals []*Upvalue // list of open upvalues (sorted by regIdx descending)
 	top        int        // top of used registers (for variable returns)
 	stringMeta *runtime.Table // string metatable
-	jit        JITEngine      // optional JIT engine
+	jit        JITEngine         // optional JIT engine
+	jitFactory func() JITEngine  // factory for creating JIT engines in child VMs
 	callCounts map[*FuncProto]int // per-function call counts for JIT hot detection
 	argBuf     [16]runtime.Value  // pre-allocated arg buffer for OP_CALL
 	retBuf     [8]runtime.Value   // pre-allocated return buffer for OP_RETURN
@@ -82,8 +83,20 @@ func newChildVM(parent *VM) *VM {
 		globalsMu:  parent.globalsMu,
 		stringMeta: parent.stringMeta,
 	}
+	// If parent has JIT, create a new JIT engine for the child goroutine.
+	// Each goroutine needs its own engine since JIT maps are not thread-safe.
+	if parent.jitFactory != nil {
+		engine := parent.jitFactory()
+		child.SetJIT(engine)
+	}
 	child.RegisterCoroutineLib()
 	return child
+}
+
+// SetJITFactory sets a factory function that creates new JIT engines.
+// Used to enable JIT in goroutine child VMs.
+func (vm *VM) SetJITFactory(factory func() JITEngine) {
+	vm.jitFactory = factory
 }
 
 // registerChannelBuiltins adds channel-related builtins (close) to globals.
