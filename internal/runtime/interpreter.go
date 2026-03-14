@@ -921,9 +921,76 @@ func (interp *Interpreter) execStmt(stmt ast.Stmt, env *Environment) ([]Value, b
 		return interp.execFuncDecl(s, env)
 	case *ast.BlockStmt:
 		return interp.execBlock(s, env)
+	case *ast.GoStmt:
+		return interp.execGo(s, env)
+	case *ast.SendStmt:
+		return interp.execSend(s, env)
 	default:
 		return nil, false, false, false, fmt.Errorf("unknown statement type: %T", stmt)
 	}
+}
+
+func (interp *Interpreter) execGo(s *ast.GoStmt, env *Environment) ([]Value, bool, bool, bool, error) {
+	// Evaluate the function and arguments before launching the goroutine.
+	switch call := s.Call.(type) {
+	case *ast.CallExpr:
+		fn, err := interp.evalExprSingle(call.Func, env)
+		if err != nil {
+			return nil, false, false, false, err
+		}
+		args, err := interp.evalExprList(call.Args, env)
+		if err != nil {
+			return nil, false, false, false, err
+		}
+		go func() {
+			childInterp := &Interpreter{
+				globals:   interp.globals,
+				stringMeta: interp.stringMeta,
+			}
+			childInterp.callFunction(fn, args)
+		}()
+	case *ast.MethodCallExpr:
+		obj, err := interp.evalExprSingle(call.Object, env)
+		if err != nil {
+			return nil, false, false, false, err
+		}
+		method, err := interp.tableGet(obj, StringValue(call.Method))
+		if err != nil {
+			return nil, false, false, false, err
+		}
+		args, err := interp.evalExprList(call.Args, env)
+		if err != nil {
+			return nil, false, false, false, err
+		}
+		go func() {
+			childInterp := &Interpreter{
+				globals:   interp.globals,
+				stringMeta: interp.stringMeta,
+			}
+			childInterp.callFunction(method, args)
+		}()
+	default:
+		return nil, false, false, false, fmt.Errorf("go statement requires a function call")
+	}
+	return nil, false, false, false, nil
+}
+
+func (interp *Interpreter) execSend(s *ast.SendStmt, env *Environment) ([]Value, bool, bool, bool, error) {
+	chVal, err := interp.evalExprSingle(s.Channel, env)
+	if err != nil {
+		return nil, false, false, false, err
+	}
+	if !chVal.IsChannel() {
+		return nil, false, false, false, fmt.Errorf("send on non-channel value")
+	}
+	val, err := interp.evalExprSingle(s.Value, env)
+	if err != nil {
+		return nil, false, false, false, err
+	}
+	if err := chVal.Channel().Send(val); err != nil {
+		return nil, false, false, false, err
+	}
+	return nil, false, false, false, nil
 }
 
 // ------------------------------------------------------------------
@@ -1227,6 +1294,29 @@ func (interp *Interpreter) execForRange(s *ast.ForRangeStmt, env *Environment) (
 		return nil, false, false, false, nil
 	}
 
+	if iterVal.IsChannel() {
+		ch := iterVal.Channel()
+		for {
+			val, ok := ch.Recv()
+			if !ok {
+				break
+			}
+			iterEnv := NewEnvironment(env)
+			iterEnv.Define(s.Key, val)
+			retVals, isRet, isBrk, _, err := interp.execBlockInEnv(s.Body, iterEnv)
+			if err != nil {
+				return nil, false, false, false, err
+			}
+			if isRet {
+				return retVals, true, false, false, nil
+			}
+			if isBrk {
+				break
+			}
+		}
+		return nil, false, false, false, nil
+	}
+
 	return nil, false, false, false, fmt.Errorf("cannot range over %s", iterVal.TypeName())
 }
 
@@ -1383,6 +1473,29 @@ func (interp *Interpreter) evalExpr(expr ast.Expr, env *Environment) ([]Value, e
 			return nil, err
 		}
 		return []Value{v}, nil
+
+	case *ast.MakeChanExpr:
+		cap := 0
+		if e.Size != nil {
+			sizeVal, err := interp.evalExprSingle(e.Size, env)
+			if err != nil {
+				return nil, err
+			}
+			cap = int(sizeVal.Int())
+		}
+		ch := NewChannel(cap)
+		return []Value{ChannelValue(ch)}, nil
+
+	case *ast.RecvExpr:
+		chVal, err := interp.evalExprSingle(e.Channel, env)
+		if err != nil {
+			return nil, err
+		}
+		if !chVal.IsChannel() {
+			return nil, fmt.Errorf("receive from non-channel value")
+		}
+		val, _ := chVal.Channel().Recv()
+		return []Value{val}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown expression type: %T", expr)
