@@ -143,6 +143,77 @@ func computeFullHash() {
     return h
 }
 
+// === LAZY SMP CONFIGURATION ===
+NUM_WORKERS := 6
+
+func newSearchCtx() {
+    ctx := {}
+    ctx.board = {}
+    ctx.redPieces = {}
+    ctx.blackPieces = {}
+    ctx.redKing = nil
+    ctx.blackKing = nil
+
+    for i := 1; i <= #redPieces; i++ {
+        p := redPieces[i]
+        np := {type: p.type, side: p.side, col: p.col, row: p.row, alive: p.alive}
+        ctx.redPieces[i] = np
+        if p.alive {
+            ctx.board[np.col * 100 + np.row] = np
+        }
+        if np.type == "K" { ctx.redKing = np }
+    }
+    for i := 1; i <= #blackPieces; i++ {
+        p := blackPieces[i]
+        np := {type: p.type, side: p.side, col: p.col, row: p.row, alive: p.alive}
+        ctx.blackPieces[i] = np
+        if p.alive {
+            ctx.board[np.col * 100 + np.row] = np
+        }
+        if np.type == "K" { ctx.blackKing = np }
+    }
+
+    ctx.currentHash = currentHash
+    ctx.killerMoves = {}
+    ctx.nodeCount = 0
+    ctx.ttHits = 0
+    return ctx
+}
+
+func cloneSearchCtx(src) {
+    ctx := {}
+    ctx.board = {}
+    ctx.redPieces = {}
+    ctx.blackPieces = {}
+    ctx.redKing = nil
+    ctx.blackKing = nil
+
+    for i := 1; i <= #src.redPieces; i++ {
+        p := src.redPieces[i]
+        np := {type: p.type, side: p.side, col: p.col, row: p.row, alive: p.alive}
+        ctx.redPieces[i] = np
+        if p.alive {
+            ctx.board[np.col * 100 + np.row] = np
+        }
+        if np.type == "K" { ctx.redKing = np }
+    }
+    for i := 1; i <= #src.blackPieces; i++ {
+        p := src.blackPieces[i]
+        np := {type: p.type, side: p.side, col: p.col, row: p.row, alive: p.alive}
+        ctx.blackPieces[i] = np
+        if p.alive {
+            ctx.board[np.col * 100 + np.row] = np
+        }
+        if np.type == "K" { ctx.blackKing = np }
+    }
+
+    ctx.currentHash = src.currentHash
+    ctx.killerMoves = {}
+    ctx.nodeCount = 0
+    ctx.ttHits = 0
+    return ctx
+}
+
 // === TRANSPOSITION TABLE ===
 // Flag: 0=exact, 1=lowerbound (beta cutoff), 2=upperbound (alpha not improved)
 TT_EXACT := 0
@@ -292,7 +363,15 @@ func pixelToCell(px, py) {
 }
 
 // === FIND GENERAL POSITION (O(1) via king tracking) ===
-func findGeneral(side) {
+func findGeneral(side, ctx) {
+    if ctx != nil {
+        k := ctx.redKing
+        if side == "black" { k = ctx.blackKing }
+        if k != nil && k.alive {
+            return k.col, k.row
+        }
+        return nil, nil
+    }
     k := redKing
     if side == "black" { k = blackKing }
     if k != nil && k.alive {
@@ -302,13 +381,16 @@ func findGeneral(side) {
 }
 
 // === TARGETED ATTACK DETECTION ===
-func isSquareAttacked(gc, gr, attackerSide) {
+func isSquareAttacked(gc, gr, attackerSide, ctx) {
+    b := board
+    if ctx != nil { b = ctx.board }
+
     // 1. Rook and Cannon along 4 directions
     // Up
     nr := gr + 1
     foundScreen := false
     for nr <= 10 {
-        p := board[gc * 100 + nr]
+        p := b[gc * 100 + nr]
         if p != nil {
             if !foundScreen {
                 if p.side == attackerSide && p.type == "R" { return true }
@@ -324,7 +406,7 @@ func isSquareAttacked(gc, gr, attackerSide) {
     nr = gr - 1
     foundScreen = false
     for nr >= 1 {
-        p := board[gc * 100 + nr]
+        p := b[gc * 100 + nr]
         if p != nil {
             if !foundScreen {
                 if p.side == attackerSide && p.type == "R" { return true }
@@ -340,7 +422,7 @@ func isSquareAttacked(gc, gr, attackerSide) {
     nc := gc - 1
     foundScreen = false
     for nc >= 1 {
-        p := board[nc * 100 + gr]
+        p := b[nc * 100 + gr]
         if p != nil {
             if !foundScreen {
                 if p.side == attackerSide && p.type == "R" { return true }
@@ -356,7 +438,7 @@ func isSquareAttacked(gc, gr, attackerSide) {
     nc = gc + 1
     foundScreen = false
     for nc <= 9 {
-        p := board[nc * 100 + gr]
+        p := b[nc * 100 + gr]
         if p != nil {
             if !foundScreen {
                 if p.side == attackerSide && p.type == "R" { return true }
@@ -372,49 +454,49 @@ func isSquareAttacked(gc, gr, attackerSide) {
     // 2. Horse attacks (grouped by 4 blocking positions)
     bc := gc - 1
     br := gr - 1
-    if bc >= 1 && br >= 1 && board[bc * 100 + br] == nil {
+    if bc >= 1 && br >= 1 && b[bc * 100 + br] == nil {
         if gr - 2 >= 1 {
-            p := board[(gc - 1) * 100 + (gr - 2)]
+            p := b[(gc - 1) * 100 + (gr - 2)]
             if p != nil && p.side == attackerSide && p.type == "H" { return true }
         }
         if gc - 2 >= 1 {
-            p := board[(gc - 2) * 100 + (gr - 1)]
+            p := b[(gc - 2) * 100 + (gr - 1)]
             if p != nil && p.side == attackerSide && p.type == "H" { return true }
         }
     }
     bc = gc - 1
     br = gr + 1
-    if bc >= 1 && br <= 10 && board[bc * 100 + br] == nil {
+    if bc >= 1 && br <= 10 && b[bc * 100 + br] == nil {
         if gr + 2 <= 10 {
-            p := board[(gc - 1) * 100 + (gr + 2)]
+            p := b[(gc - 1) * 100 + (gr + 2)]
             if p != nil && p.side == attackerSide && p.type == "H" { return true }
         }
         if gc - 2 >= 1 {
-            p := board[(gc - 2) * 100 + (gr + 1)]
+            p := b[(gc - 2) * 100 + (gr + 1)]
             if p != nil && p.side == attackerSide && p.type == "H" { return true }
         }
     }
     bc = gc + 1
     br = gr - 1
-    if bc <= 9 && br >= 1 && board[bc * 100 + br] == nil {
+    if bc <= 9 && br >= 1 && b[bc * 100 + br] == nil {
         if gr - 2 >= 1 {
-            p := board[(gc + 1) * 100 + (gr - 2)]
+            p := b[(gc + 1) * 100 + (gr - 2)]
             if p != nil && p.side == attackerSide && p.type == "H" { return true }
         }
         if gc + 2 <= 9 {
-            p := board[(gc + 2) * 100 + (gr - 1)]
+            p := b[(gc + 2) * 100 + (gr - 1)]
             if p != nil && p.side == attackerSide && p.type == "H" { return true }
         }
     }
     bc = gc + 1
     br = gr + 1
-    if bc <= 9 && br <= 10 && board[bc * 100 + br] == nil {
+    if bc <= 9 && br <= 10 && b[bc * 100 + br] == nil {
         if gr + 2 <= 10 {
-            p := board[(gc + 1) * 100 + (gr + 2)]
+            p := b[(gc + 1) * 100 + (gr + 2)]
             if p != nil && p.side == attackerSide && p.type == "H" { return true }
         }
         if gc + 2 <= 9 {
-            p := board[(gc + 2) * 100 + (gr + 1)]
+            p := b[(gc + 2) * 100 + (gr + 1)]
             if p != nil && p.side == attackerSide && p.type == "H" { return true }
         }
     }
@@ -422,38 +504,40 @@ func isSquareAttacked(gc, gr, attackerSide) {
     // 3. Pawn attacks
     if attackerSide == "black" {
         if gr + 1 <= 10 {
-            p := board[gc * 100 + (gr + 1)]
+            p := b[gc * 100 + (gr + 1)]
             if p != nil && p.side == "black" && p.type == "P" { return true }
         }
         if gc - 1 >= 1 {
-            p := board[(gc - 1) * 100 + gr]
+            p := b[(gc - 1) * 100 + gr]
             if p != nil && p.side == "black" && p.type == "P" { return true }
         }
         if gc + 1 <= 9 {
-            p := board[(gc + 1) * 100 + gr]
+            p := b[(gc + 1) * 100 + gr]
             if p != nil && p.side == "black" && p.type == "P" { return true }
         }
     } else {
         if gr - 1 >= 1 {
-            p := board[gc * 100 + (gr - 1)]
+            p := b[gc * 100 + (gr - 1)]
             if p != nil && p.side == "red" && p.type == "P" { return true }
         }
         if gc - 1 >= 1 {
-            p := board[(gc - 1) * 100 + gr]
+            p := b[(gc - 1) * 100 + gr]
             if p != nil && p.side == "red" && p.type == "P" { return true }
         }
         if gc + 1 <= 9 {
-            p := board[(gc + 1) * 100 + gr]
+            p := b[(gc + 1) * 100 + gr]
             if p != nil && p.side == "red" && p.type == "P" { return true }
         }
     }
 
     // 4. Flying General
     ek := redKing
+    if ctx != nil { ek = ctx.redKing }
     if attackerSide == "red" {
         // ek is already redKing
     } else {
         ek = blackKing
+        if ctx != nil { ek = ctx.blackKing }
     }
     if ek != nil && ek.alive && ek.col == gc {
         blocked := false
@@ -461,7 +545,7 @@ func isSquareAttacked(gc, gr, attackerSide) {
         maxR := ek.row
         if minR > maxR { minR = ek.row; maxR = gr }
         for checkR := minR + 1; checkR < maxR; checkR++ {
-            if board[gc * 100 + checkR] != nil { blocked = true; break }
+            if b[gc * 100 + checkR] != nil { blocked = true; break }
         }
         if !blocked { return true }
     }
@@ -470,16 +554,19 @@ func isSquareAttacked(gc, gr, attackerSide) {
 }
 
 // === CHECK DETECTION (using targeted attack detection) ===
-func isInCheck(side) {
-    gc, gr := findGeneral(side)
+func isInCheck(side, ctx) {
+    gc, gr := findGeneral(side, ctx)
     if gc == nil { return true }
     enemySide := "black"
     if side == "black" { enemySide = "red" }
-    return isSquareAttacked(gc, gr, enemySide)
+    return isSquareAttacked(gc, gr, enemySide, ctx)
 }
 
 // === RAW MOVE GENERATION (inlined boardKey, king tracking for flying general) ===
-func getRawMoves(piece) {
+func getRawMoves(piece, ctx) {
+    b := board
+    if ctx != nil { b = ctx.board }
+
     moves := {}
     c := piece.col
     r := piece.row
@@ -489,46 +576,50 @@ func getRawMoves(piece) {
     if ptype == "K" {
         nr := r + 1
         if side == "red" && nr <= 3 && c >= 4 && c <= 6 {
-            p := board[c * 100 + nr]
+            p := b[c * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: c, row: nr}) }
         }
         if side == "black" && nr <= 10 && nr >= 8 && c >= 4 && c <= 6 {
-            p := board[c * 100 + nr]
+            p := b[c * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: c, row: nr}) }
         }
         nr = r - 1
         if side == "red" && nr >= 1 && c >= 4 && c <= 6 {
-            p := board[c * 100 + nr]
+            p := b[c * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: c, row: nr}) }
         }
         if side == "black" && nr >= 8 && c >= 4 && c <= 6 {
-            p := board[c * 100 + nr]
+            p := b[c * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: c, row: nr}) }
         }
         nc := c - 1
         if nc >= 4 {
             if (side == "red" && r >= 1 && r <= 3) || (side == "black" && r >= 8 && r <= 10) {
-                p := board[nc * 100 + r]
+                p := b[nc * 100 + r]
                 if p == nil || p.side != side { table.insert(moves, {col: nc, row: r}) }
             }
         }
         nc = c + 1
         if nc <= 6 {
             if (side == "red" && r >= 1 && r <= 3) || (side == "black" && r >= 8 && r <= 10) {
-                p := board[nc * 100 + r]
+                p := b[nc * 100 + r]
                 if p == nil || p.side != side { table.insert(moves, {col: nc, row: r}) }
             }
         }
         // Flying general
         ek := blackKing
-        if side == "black" { ek = redKing }
+        if ctx != nil { ek = ctx.blackKing }
+        if side == "black" {
+            ek = redKing
+            if ctx != nil { ek = ctx.redKing }
+        }
         if ek != nil && ek.alive && ek.col == c {
             blocked := false
             minR := r
             maxR := ek.row
             if minR > maxR { minR = ek.row; maxR = r }
             for checkR := minR + 1; checkR < maxR; checkR++ {
-                if board[c * 100 + checkR] != nil { blocked = true; break }
+                if b[c * 100 + checkR] != nil { blocked = true; break }
             }
             if !blocked { table.insert(moves, {col: ek.col, row: ek.row}) }
         }
@@ -537,109 +628,109 @@ func getRawMoves(piece) {
     if ptype == "A" {
         nc := c + 1; nr := r + 1
         if nc <= 6 && ((side == "red" && nr <= 3) || (side == "black" && nr <= 10 && nr >= 8)) {
-            p := board[nc * 100 + nr]
+            p := b[nc * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c + 1; nr = r - 1
         if nc <= 6 && ((side == "red" && nr >= 1) || (side == "black" && nr >= 8)) {
-            p := board[nc * 100 + nr]
+            p := b[nc * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c - 1; nr = r + 1
         if nc >= 4 && ((side == "red" && nr <= 3) || (side == "black" && nr <= 10 && nr >= 8)) {
-            p := board[nc * 100 + nr]
+            p := b[nc * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c - 1; nr = r - 1
         if nc >= 4 && ((side == "red" && nr >= 1) || (side == "black" && nr >= 8)) {
-            p := board[nc * 100 + nr]
+            p := b[nc * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
     }
 
     if ptype == "E" {
         nc := c + 2; nr := r + 2
-        if nc <= 9 && nr <= 10 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && board[(c+1)*100+(r+1)] == nil {
-            p := board[nc * 100 + nr]
+        if nc <= 9 && nr <= 10 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && b[(c+1)*100+(r+1)] == nil {
+            p := b[nc * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c + 2; nr = r - 2
-        if nc <= 9 && nr >= 1 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && board[(c+1)*100+(r-1)] == nil {
-            p := board[nc * 100 + nr]
+        if nc <= 9 && nr >= 1 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && b[(c+1)*100+(r-1)] == nil {
+            p := b[nc * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c - 2; nr = r + 2
-        if nc >= 1 && nr <= 10 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && board[(c-1)*100+(r+1)] == nil {
-            p := board[nc * 100 + nr]
+        if nc >= 1 && nr <= 10 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && b[(c-1)*100+(r+1)] == nil {
+            p := b[nc * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c - 2; nr = r - 2
-        if nc >= 1 && nr >= 1 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && board[(c-1)*100+(r-1)] == nil {
-            p := board[nc * 100 + nr]
+        if nc >= 1 && nr >= 1 && ((side == "red" && nr <= 5) || (side == "black" && nr >= 6)) && b[(c-1)*100+(r-1)] == nil {
+            p := b[nc * 100 + nr]
             if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
     }
 
     if ptype == "H" {
         nc := c+1; nr := r+2
-        if nc <= 9 && nr <= 10 && board[c*100+(r+1)] == nil {
-            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        if nc <= 9 && nr <= 10 && b[c*100+(r+1)] == nil {
+            p := b[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c+1; nr = r-2
-        if nc <= 9 && nr >= 1 && board[c*100+(r-1)] == nil {
-            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        if nc <= 9 && nr >= 1 && b[c*100+(r-1)] == nil {
+            p := b[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c-1; nr = r+2
-        if nc >= 1 && nr <= 10 && board[c*100+(r+1)] == nil {
-            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        if nc >= 1 && nr <= 10 && b[c*100+(r+1)] == nil {
+            p := b[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c-1; nr = r-2
-        if nc >= 1 && nr >= 1 && board[c*100+(r-1)] == nil {
-            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        if nc >= 1 && nr >= 1 && b[c*100+(r-1)] == nil {
+            p := b[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c+2; nr = r+1
-        if nc <= 9 && nr <= 10 && board[(c+1)*100+r] == nil {
-            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        if nc <= 9 && nr <= 10 && b[(c+1)*100+r] == nil {
+            p := b[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c+2; nr = r-1
-        if nc <= 9 && nr >= 1 && board[(c+1)*100+r] == nil {
-            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        if nc <= 9 && nr >= 1 && b[(c+1)*100+r] == nil {
+            p := b[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c-2; nr = r+1
-        if nc >= 1 && nr <= 10 && board[(c-1)*100+r] == nil {
-            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        if nc >= 1 && nr <= 10 && b[(c-1)*100+r] == nil {
+            p := b[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
         nc = c-2; nr = r-1
-        if nc >= 1 && nr >= 1 && board[(c-1)*100+r] == nil {
-            p := board[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
+        if nc >= 1 && nr >= 1 && b[(c-1)*100+r] == nil {
+            p := b[nc*100+nr]; if p == nil || p.side != side { table.insert(moves, {col: nc, row: nr}) }
         }
     }
 
     if ptype == "R" {
         nr := r + 1
         for nr <= 10 {
-            p := board[c*100+nr]
+            p := b[c*100+nr]
             if p == nil { table.insert(moves, {col: c, row: nr}) }
             else { if p.side != side { table.insert(moves, {col: c, row: nr}) }; break }
             nr = nr + 1
         }
         nr = r - 1
         for nr >= 1 {
-            p := board[c*100+nr]
+            p := b[c*100+nr]
             if p == nil { table.insert(moves, {col: c, row: nr}) }
             else { if p.side != side { table.insert(moves, {col: c, row: nr}) }; break }
             nr = nr - 1
         }
         nc := c + 1
         for nc <= 9 {
-            p := board[nc*100+r]
+            p := b[nc*100+r]
             if p == nil { table.insert(moves, {col: nc, row: r}) }
             else { if p.side != side { table.insert(moves, {col: nc, row: r}) }; break }
             nc = nc + 1
         }
         nc = c - 1
         for nc >= 1 {
-            p := board[nc*100+r]
+            p := b[nc*100+r]
             if p == nil { table.insert(moves, {col: nc, row: r}) }
             else { if p.side != side { table.insert(moves, {col: nc, row: r}) }; break }
             nc = nc - 1
@@ -649,12 +740,12 @@ func getRawMoves(piece) {
     if ptype == "C" {
         nr := r + 1
         for nr <= 10 {
-            p := board[c*100+nr]
+            p := b[c*100+nr]
             if p == nil { table.insert(moves, {col: c, row: nr}) }
             else {
                 nr = nr + 1
                 for nr <= 10 {
-                    p2 := board[c*100+nr]
+                    p2 := b[c*100+nr]
                     if p2 != nil { if p2.side != side { table.insert(moves, {col: c, row: nr}) }; break }
                     nr = nr + 1
                 }
@@ -664,12 +755,12 @@ func getRawMoves(piece) {
         }
         nr = r - 1
         for nr >= 1 {
-            p := board[c*100+nr]
+            p := b[c*100+nr]
             if p == nil { table.insert(moves, {col: c, row: nr}) }
             else {
                 nr = nr - 1
                 for nr >= 1 {
-                    p2 := board[c*100+nr]
+                    p2 := b[c*100+nr]
                     if p2 != nil { if p2.side != side { table.insert(moves, {col: c, row: nr}) }; break }
                     nr = nr - 1
                 }
@@ -679,12 +770,12 @@ func getRawMoves(piece) {
         }
         nc := c + 1
         for nc <= 9 {
-            p := board[nc*100+r]
+            p := b[nc*100+r]
             if p == nil { table.insert(moves, {col: nc, row: r}) }
             else {
                 nc = nc + 1
                 for nc <= 9 {
-                    p2 := board[nc*100+r]
+                    p2 := b[nc*100+r]
                     if p2 != nil { if p2.side != side { table.insert(moves, {col: nc, row: r}) }; break }
                     nc = nc + 1
                 }
@@ -694,12 +785,12 @@ func getRawMoves(piece) {
         }
         nc = c - 1
         for nc >= 1 {
-            p := board[nc*100+r]
+            p := b[nc*100+r]
             if p == nil { table.insert(moves, {col: nc, row: r}) }
             else {
                 nc = nc - 1
                 for nc >= 1 {
-                    p2 := board[nc*100+r]
+                    p2 := b[nc*100+r]
                     if p2 != nil { if p2.side != side { table.insert(moves, {col: nc, row: r}) }; break }
                     nc = nc - 1
                 }
@@ -712,21 +803,21 @@ func getRawMoves(piece) {
     if ptype == "P" {
         if side == "red" {
             if r + 1 <= 10 {
-                p := board[c*100+(r+1)]
+                p := b[c*100+(r+1)]
                 if p == nil || p.side != side { table.insert(moves, {col: c, row: r+1}) }
             }
             if r >= 6 {
-                if c-1 >= 1 { p := board[(c-1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c-1, row: r}) } }
-                if c+1 <= 9 { p := board[(c+1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c+1, row: r}) } }
+                if c-1 >= 1 { p := b[(c-1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c-1, row: r}) } }
+                if c+1 <= 9 { p := b[(c+1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c+1, row: r}) } }
             }
         } else {
             if r - 1 >= 1 {
-                p := board[c*100+(r-1)]
+                p := b[c*100+(r-1)]
                 if p == nil || p.side != side { table.insert(moves, {col: c, row: r-1}) }
             }
             if r <= 5 {
-                if c-1 >= 1 { p := board[(c-1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c-1, row: r}) } }
-                if c+1 <= 9 { p := board[(c+1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c+1, row: r}) } }
+                if c-1 >= 1 { p := b[(c-1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c-1, row: r}) } }
+                if c+1 <= 9 { p := b[(c+1)*100+r]; if p == nil || p.side != side { table.insert(moves, {col: c+1, row: r}) } }
             }
         }
     }
@@ -735,8 +826,11 @@ func getRawMoves(piece) {
 }
 
 // === LEGAL MOVE FILTERING (with alive flag handling) ===
-func getValidMovesList(piece) {
-    rawMoves := getRawMoves(piece)
+func getValidMovesList(piece, ctx) {
+    b := board
+    if ctx != nil { b = ctx.board }
+
+    rawMoves := getRawMoves(piece, ctx)
     legalMoves := {}
     fc := piece.col
     fr := piece.row
@@ -745,25 +839,25 @@ func getValidMovesList(piece) {
     for i := 1; i <= #rawMoves; i++ {
         tc := rawMoves[i].col
         tr := rawMoves[i].row
-        captured := board[tc*100+tr]
-        board[tc*100+tr] = piece
-        board[fc*100+fr] = nil
+        captured := b[tc*100+tr]
+        b[tc*100+tr] = piece
+        b[fc*100+fr] = nil
         origCol := piece.col
         origRow := piece.row
         piece.col = tc
         piece.row = tr
         if captured != nil { captured.alive = false }
 
-        inCheck := isInCheck(side)
+        inCheck := isInCheck(side, ctx)
 
         piece.col = origCol
         piece.row = origRow
-        board[fc*100+fr] = piece
+        b[fc*100+fr] = piece
         if captured != nil {
-            board[tc*100+tr] = captured
+            b[tc*100+tr] = captured
             captured.alive = true
         } else {
-            board[tc*100+tr] = nil
+            b[tc*100+tr] = nil
         }
 
         if !inCheck {
@@ -967,14 +1061,24 @@ func pieceValue(ptype) {
 }
 
 // === EVALUATION (using piece lists instead of board scan, inline PST) ===
-func evaluateBoard() {
-    if !redKing.alive { return -99999 }
-    if !blackKing.alive { return 99999 }
+func evaluateBoard(ctx) {
+    rk := redKing
+    bk := blackKing
+    rp := redPieces
+    bp := blackPieces
+    if ctx != nil {
+        rk = ctx.redKing
+        bk = ctx.blackKing
+        rp = ctx.redPieces
+        bp = ctx.blackPieces
+    }
+    if !rk.alive { return -99999 }
+    if !bk.alive { return 99999 }
 
     score := 0
 
-    for i := 1; i <= #redPieces; i++ {
-        p := redPieces[i]
+    for i := 1; i <= #rp; i++ {
+        p := rp[i]
         if p.alive {
             pv := pieceValue(p.type)
             c := p.col
@@ -1010,8 +1114,8 @@ func evaluateBoard() {
         }
     }
 
-    for i := 1; i <= #blackPieces; i++ {
-        p := blackPieces[i]
+    for i := 1; i <= #bp; i++ {
+        p := bp[i]
         if p.alive {
             pv := pieceValue(p.type)
             c := p.col
@@ -1051,14 +1155,18 @@ func evaluateBoard() {
 }
 
 // === GET ALL MOVES FOR A SIDE (using piece lists) ===
-func getAllMovesForSide(side) {
+func getAllMovesForSide(side, ctx) {
     pieces := redPieces
     if side == "black" { pieces = blackPieces }
+    if ctx != nil {
+        pieces = ctx.redPieces
+        if side == "black" { pieces = ctx.blackPieces }
+    }
     allMoves := {}
     for i := 1; i <= #pieces; i++ {
         p := pieces[i]
         if p.alive {
-            legalMoves := getValidMovesList(p)
+            legalMoves := getValidMovesList(p, ctx)
             for j := 1; j <= #legalMoves; j++ {
                 table.insert(allMoves, {piece: p, col: legalMoves[j].col, row: legalMoves[j].row})
             }
@@ -1072,18 +1180,25 @@ func encodeMove(fc, fr, tc, tr) {
     return fc * 1000000 + fr * 10000 + tc * 100 + tr
 }
 
-func orderMoves(moveList, depth) {
+func orderMoves(moveList, depth, ctx) {
+    b := board
+    km_table := killerMoves
+    if ctx != nil {
+        b = ctx.board
+        km_table = ctx.killerMoves
+    }
+
     captures := {}
     killers := {}
     nonCaptures := {}
-    km := killerMoves[depth]
+    km := km_table[depth]
     km1 := 0
     km2 := 0
     if km != nil { km1 = km[1]; km2 = km[2] }
 
     for i := 1; i <= #moveList; i++ {
         m := moveList[i]
-        target := board[m.col*100+m.row]
+        target := b[m.col*100+m.row]
         if target != nil && target.side != m.piece.side {
             table.insert(captures, {piece: m.piece, col: m.col, row: m.row, captVal: pieceValue(target.type)})
         } else {
@@ -1108,10 +1223,12 @@ func orderMoves(moveList, depth) {
     return ordered
 }
 
-func storeKiller(depth, fc, fr, tc, tr) {
+func storeKiller(depth, fc, fr, tc, tr, ctx) {
+    km_table := killerMoves
+    if ctx != nil { km_table = ctx.killerMoves }
     enc := encodeMove(fc, fr, tc, tr)
-    km := killerMoves[depth]
-    if km == nil { killerMoves[depth] = {enc, 0} }
+    km := km_table[depth]
+    if km == nil { km_table[depth] = {enc, 0} }
     else { if km[1] != enc { km[2] = km[1]; km[1] = enc } }
 }
 
@@ -1119,10 +1236,14 @@ func storeKiller(depth, fc, fr, tc, tr) {
 // Delta pruning: skip captures where standPat + captured_value + margin < alpha
 QUIESCE_MARGIN := 200
 
-func quiesce(alpha, beta, side, qdepth) {
-    nodeCount = nodeCount + 1
+func quiesce(alpha, beta, side, qdepth, ctx) {
+    if ctx != nil {
+        ctx.nodeCount = ctx.nodeCount + 1
+    } else {
+        nodeCount = nodeCount + 1
+    }
 
-    standPat := evaluateBoard()
+    standPat := evaluateBoard(ctx)
     if side == "black" { standPat = -standPat }
 
     if standPat >= beta { return beta }
@@ -1131,9 +1252,16 @@ func quiesce(alpha, beta, side, qdepth) {
     // Limit quiescence depth to avoid explosion
     if qdepth <= 0 { return alpha }
 
+    b := board
+    if ctx != nil { b = ctx.board }
+
     // Generate and search only capture moves
     pieces := redPieces
     if side == "black" { pieces = blackPieces }
+    if ctx != nil {
+        pieces = ctx.redPieces
+        if side == "black" { pieces = ctx.blackPieces }
+    }
     enemySide := "black"
     if side == "black" { enemySide = "red" }
 
@@ -1141,11 +1269,11 @@ func quiesce(alpha, beta, side, qdepth) {
         p := pieces[i]
         if !p.alive { continue }
 
-        rawMoves := getRawMoves(p)
+        rawMoves := getRawMoves(p, ctx)
         for j := 1; j <= #rawMoves; j++ {
             tc := rawMoves[j].col
             tr := rawMoves[j].row
-            captured := board[tc*100+tr]
+            captured := b[tc*100+tr]
             if captured == nil || captured.side == side { continue }
 
             // Delta pruning: skip if capturing this piece can't possibly improve alpha
@@ -1157,39 +1285,71 @@ func quiesce(alpha, beta, side, qdepth) {
             origCol := p.col
             origRow := p.row
 
-            h := currentHash
-            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, fc, fr))
-            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, tc, tr))
-            currentHash = bit32.bxor(currentHash, zobristPiece(captured.type, captured.side, tc, tr))
-            currentHash = bit32.bxor(currentHash, zobristBlackToMove)
+            if ctx != nil {
+                h := ctx.currentHash
+                ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, side, fc, fr))
+                ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, side, tc, tr))
+                ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+                ctx.currentHash = bit32.bxor(ctx.currentHash, zobristBlackToMove)
 
-            board[fc*100+fr] = nil
-            board[tc*100+tr] = p
-            p.col = tc
-            p.row = tr
-            captured.alive = false
+                b[fc*100+fr] = nil
+                b[tc*100+tr] = p
+                p.col = tc
+                p.row = tr
+                captured.alive = false
 
-            // Check legality
-            legal := !isInCheck(side)
-            score := 0
-            if legal {
-                score = -quiesce(-beta, -alpha, enemySide, qdepth - 1)
+                legal := !isInCheck(side, ctx)
+                score := 0
+                if legal {
+                    score = -quiesce(-beta, -alpha, enemySide, qdepth - 1, ctx)
+                }
+
+                b[tc*100+tr] = nil
+                p.col = origCol
+                p.row = origRow
+                b[fc*100+fr] = p
+                b[tc*100+tr] = captured
+                captured.col = tc
+                captured.row = tr
+                captured.alive = true
+                ctx.currentHash = h
+
+                if !legal { continue }
+                if score >= beta { return beta }
+                if score > alpha { alpha = score }
+            } else {
+                h := currentHash
+                currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, fc, fr))
+                currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, tc, tr))
+                currentHash = bit32.bxor(currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+                currentHash = bit32.bxor(currentHash, zobristBlackToMove)
+
+                b[fc*100+fr] = nil
+                b[tc*100+tr] = p
+                p.col = tc
+                p.row = tr
+                captured.alive = false
+
+                legal := !isInCheck(side)
+                score := 0
+                if legal {
+                    score = -quiesce(-beta, -alpha, enemySide, qdepth - 1)
+                }
+
+                b[tc*100+tr] = nil
+                p.col = origCol
+                p.row = origRow
+                b[fc*100+fr] = p
+                b[tc*100+tr] = captured
+                captured.col = tc
+                captured.row = tr
+                captured.alive = true
+                currentHash = h
+
+                if !legal { continue }
+                if score >= beta { return beta }
+                if score > alpha { alpha = score }
             }
-
-            // Undo
-            board[tc*100+tr] = nil
-            p.col = origCol
-            p.row = origRow
-            board[fc*100+fr] = p
-            board[tc*100+tr] = captured
-            captured.col = tc
-            captured.row = tr
-            captured.alive = true
-            currentHash = h
-
-            if !legal { continue }
-            if score >= beta { return beta }
-            if score > alpha { alpha = score }
         }
     }
 
@@ -1197,41 +1357,60 @@ func quiesce(alpha, beta, side, qdepth) {
 }
 
 // === NEGAMAX + ALPHA-BETA + TT + NULL MOVE + KILLER + LMR + QUIESCENCE ===
-func negamax(depth, alpha, beta, side, allowNull) {
-    nodeCount = nodeCount + 1
+func negamax(depth, alpha, beta, side, allowNull, ctx) {
+    if ctx != nil {
+        ctx.nodeCount = ctx.nodeCount + 1
+    } else {
+        nodeCount = nodeCount + 1
+    }
 
     // === Transposition table lookup ===
-    ttKey := currentHash
+    ch := currentHash
+    if ctx != nil { ch = ctx.currentHash }
+    ttKey := ch
     if side == "black" { ttKey = bit32.bxor(ttKey, 1) }
     entry := ttable[ttKey]
     if entry != nil && entry.depth >= depth {
-        ttHits = ttHits + 1
+        if ctx != nil {
+            ctx.ttHits = ctx.ttHits + 1
+        } else {
+            ttHits = ttHits + 1
+        }
         if entry.flag == TT_EXACT { return entry.score }
         if entry.flag == TT_LOWER && entry.score >= beta { return entry.score }
         if entry.flag == TT_UPPER && entry.score <= alpha { return entry.score }
     }
 
     if depth <= 0 {
-        return quiesce(alpha, beta, side, 4)
+        return quiesce(alpha, beta, side, 4, ctx)
     }
 
-    inCheck := isInCheck(side)
+    inCheck := isInCheck(side, ctx)
+
+    b := board
+    if ctx != nil { b = ctx.board }
 
     // Null move pruning
     if allowNull && !inCheck && depth >= 3 {
         enemySide := "black"
         if side == "black" { enemySide = "red" }
 
-        currentHash = bit32.bxor(currentHash, zobristBlackToMove)
-        score := -negamax(depth - 3, -beta, -beta + 1, enemySide, false)
-        currentHash = bit32.bxor(currentHash, zobristBlackToMove)
-
-        if score >= beta { return beta }
+        if ctx != nil {
+            ctx.currentHash = bit32.bxor(ctx.currentHash, zobristBlackToMove)
+            score := -negamax(depth - 3, -beta, -beta + 1, enemySide, false, ctx)
+            ctx.currentHash = bit32.bxor(ctx.currentHash, zobristBlackToMove)
+            if score >= beta { return beta }
+        } else {
+            currentHash = bit32.bxor(currentHash, zobristBlackToMove)
+            score := -negamax(depth - 3, -beta, -beta + 1, enemySide, false)
+            currentHash = bit32.bxor(currentHash, zobristBlackToMove)
+            if score >= beta { return beta }
+        }
     }
 
-    allMoves := getAllMovesForSide(side)
+    allMoves := getAllMovesForSide(side, ctx)
     if #allMoves == 0 { return -99000 }
-    allMoves = orderMoves(allMoves, depth)
+    allMoves = orderMoves(allMoves, depth, ctx)
 
     enemySide := "black"
     if side == "black" { enemySide = "red" }
@@ -1247,58 +1426,105 @@ func negamax(depth, alpha, beta, side, allowNull) {
         fc := p.col
         fr := p.row
 
-        captured := board[tc*100+tr]
+        captured := b[tc*100+tr]
         origCol := p.col
         origRow := p.row
 
-        // Update hash incrementally
-        h := currentHash
-        currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, fc, fr))
-        currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, tc, tr))
-        if captured != nil {
-            currentHash = bit32.bxor(currentHash, zobristPiece(captured.type, captured.side, tc, tr))
-        }
-        currentHash = bit32.bxor(currentHash, zobristBlackToMove)
+        if ctx != nil {
+            // Update hash incrementally
+            h := ctx.currentHash
+            ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, side, fc, fr))
+            ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, side, tc, tr))
+            if captured != nil {
+                ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+            }
+            ctx.currentHash = bit32.bxor(ctx.currentHash, zobristBlackToMove)
 
-        board[fc*100+fr] = nil
-        board[tc*100+tr] = p
-        p.col = tc
-        p.row = tr
-        if captured != nil { captured.alive = false }
+            b[fc*100+fr] = nil
+            b[tc*100+tr] = p
+            p.col = tc
+            p.row = tr
+            if captured != nil { captured.alive = false }
 
-        // Late Move Reduction: for quiet moves late in the list, search at reduced depth
-        score := 0
-        if i >= 5 && depth >= 3 && captured == nil && !inCheck {
-            score = -negamax(depth - 2, -alpha - 1, -alpha, enemySide, true)
-            if score > alpha {
+            // Late Move Reduction
+            score := 0
+            if i >= 5 && depth >= 3 && captured == nil && !inCheck {
+                score = -negamax(depth - 2, -alpha - 1, -alpha, enemySide, true, ctx)
+                if score > alpha {
+                    score = -negamax(depth - 1, -beta, -alpha, enemySide, true, ctx)
+                }
+            } else {
+                score = -negamax(depth - 1, -beta, -alpha, enemySide, true, ctx)
+            }
+
+            // Undo
+            b[tc*100+tr] = nil
+            p.col = origCol
+            p.row = origRow
+            b[fc*100+fr] = p
+            if captured != nil {
+                b[tc*100+tr] = captured
+                captured.col = tc
+                captured.row = tr
+                captured.alive = true
+            }
+            ctx.currentHash = h
+
+            if score > bestScore { bestScore = score }
+            if score >= beta {
+                if captured == nil { storeKiller(depth, fc, fr, tc, tr, ctx) }
+                ttable[ttKey] = {depth: depth, score: beta, flag: TT_LOWER}
+                return beta
+            }
+            if score > alpha { alpha = score }
+        } else {
+            // Update hash incrementally
+            h := currentHash
+            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, fc, fr))
+            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, side, tc, tr))
+            if captured != nil {
+                currentHash = bit32.bxor(currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+            }
+            currentHash = bit32.bxor(currentHash, zobristBlackToMove)
+
+            b[fc*100+fr] = nil
+            b[tc*100+tr] = p
+            p.col = tc
+            p.row = tr
+            if captured != nil { captured.alive = false }
+
+            // Late Move Reduction
+            score := 0
+            if i >= 5 && depth >= 3 && captured == nil && !inCheck {
+                score = -negamax(depth - 2, -alpha - 1, -alpha, enemySide, true)
+                if score > alpha {
+                    score = -negamax(depth - 1, -beta, -alpha, enemySide, true)
+                }
+            } else {
                 score = -negamax(depth - 1, -beta, -alpha, enemySide, true)
             }
-        } else {
-            score = -negamax(depth - 1, -beta, -alpha, enemySide, true)
-        }
 
-        // Undo
-        board[tc*100+tr] = nil
-        p.col = origCol
-        p.row = origRow
-        board[fc*100+fr] = p
-        if captured != nil {
-            board[tc*100+tr] = captured
-            captured.col = tc
-            captured.row = tr
-            captured.alive = true
-        }
-        currentHash = h
+            // Undo
+            b[tc*100+tr] = nil
+            p.col = origCol
+            p.row = origRow
+            b[fc*100+fr] = p
+            if captured != nil {
+                b[tc*100+tr] = captured
+                captured.col = tc
+                captured.row = tr
+                captured.alive = true
+            }
+            currentHash = h
 
-        if score > bestScore { bestScore = score }
-
-        if score >= beta {
-            if captured == nil { storeKiller(depth, fc, fr, tc, tr) }
-            // Store TT entry (lower bound)
-            ttable[ttKey] = {depth: depth, score: beta, flag: TT_LOWER}
-            return beta
+            if score > bestScore { bestScore = score }
+            if score >= beta {
+                if captured == nil { storeKiller(depth, fc, fr, tc, tr) }
+                ttable[ttKey] = {depth: depth, score: beta, flag: TT_LOWER}
+                return beta
+            }
+            if score > alpha { alpha = score }
         }
-        if score > alpha { alpha = score }
     }
 
     // Store TT entry
@@ -1309,11 +1535,9 @@ func negamax(depth, alpha, beta, side, allowNull) {
     return alpha
 }
 
-// === GET AI MOVE (Iterative Deepening with killer moves preserved) ===
+// === GET AI MOVE (Lazy SMP Parallel Search) ===
 func getAIMove() {
     startTime := time.now()
-    bestMove := nil
-    lastAIDepth = 0
     killerMoves = {}
     nodeCount = 0
     ttHits = 0
@@ -1321,89 +1545,114 @@ func getAIMove() {
     // Recompute hash from current position (in case doMove didn't track it)
     currentHash = computeFullHash()
 
-    for depth := 1; depth <= 8; depth++ {
-        // Abort if game was reset while AI goroutine is running
-        if !aiThinking { return nil }
+    // Launch parallel workers
+    resultCh := make(chan, NUM_WORKERS)
+    searchStop := {stopped: false}
 
-        alpha := -999999
-        beta := 999999
-        localBest := nil
+    for w := 0; w < NUM_WORKERS; w++ {
+        ctx := newSearchCtx()
+        startDepth := 1 + (w % 2)
+        go func() {
+            bestMove := nil
+            bestDepth := 0
 
-        allMoves := getAllMovesForSide("black")
-        allMoves = orderMoves(allMoves, depth + 1)
+            for depth := startDepth; depth <= 8; depth++ {
+                if searchStop.stopped { break }
+                if !aiThinking { break }
 
-        if #allMoves == 0 {
-            break
-        }
+                alpha := -999999
+                beta := 999999
+                localBest := nil
 
-        for i := 1; i <= #allMoves; i++ {
-            m := allMoves[i]
-            p := m.piece
-            tc := m.col
-            tr := m.row
-            fc := p.col
-            fr := p.row
+                allMoves := getAllMovesForSide("black", ctx)
+                allMoves = orderMoves(allMoves, depth + 1, ctx)
+                if #allMoves == 0 { break }
 
-            // Simulate move with incremental hash update
-            captured := board[tc*100+tr]
-            origCol := p.col
-            origRow := p.row
+                for i := 1; i <= #allMoves; i++ {
+                    if searchStop.stopped { break }
 
-            h := currentHash
-            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, "black", fc, fr))
-            currentHash = bit32.bxor(currentHash, zobristPiece(p.type, "black", tc, tr))
-            if captured != nil {
-                currentHash = bit32.bxor(currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+                    m := allMoves[i]
+                    p := m.piece
+                    tc := m.col
+                    tr := m.row
+                    fc := p.col
+                    fr := p.row
+
+                    captured := ctx.board[tc*100+tr]
+                    origCol := p.col
+                    origRow := p.row
+
+                    h := ctx.currentHash
+                    ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, "black", fc, fr))
+                    ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, "black", tc, tr))
+                    if captured != nil {
+                        ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+                    }
+                    ctx.currentHash = bit32.bxor(ctx.currentHash, zobristBlackToMove)
+
+                    ctx.board[fc*100+fr] = nil
+                    ctx.board[tc*100+tr] = p
+                    p.col = tc
+                    p.row = tr
+                    if captured != nil { captured.alive = false }
+
+                    score := -negamax(depth - 1, -beta, -alpha, "red", true, ctx)
+
+                    ctx.board[tc*100+tr] = nil
+                    p.col = origCol
+                    p.row = origRow
+                    ctx.board[fc*100+fr] = p
+                    if captured != nil {
+                        ctx.board[tc*100+tr] = captured
+                        captured.col = tc
+                        captured.row = tr
+                        captured.alive = true
+                    }
+                    ctx.currentHash = h
+
+                    if score > alpha {
+                        alpha = score
+                        localBest = {fromCol: fc, fromRow: fr, col: tc, row: tr, ptype: p.type, pside: p.side}
+                    }
+                }
+
+                if localBest != nil {
+                    bestMove = localBest
+                    bestDepth = depth
+                }
+
+                if alpha >= 99000 { break }
             }
-            currentHash = bit32.bxor(currentHash, zobristBlackToMove)
 
-            board[fc*100+fr] = nil
-            board[tc*100+tr] = p
-            p.col = tc
-            p.row = tr
-            if captured != nil { captured.alive = false }
-
-            // Search from red's perspective (enemy of black)
-            score := -negamax(depth - 1, -beta, -alpha, "red", true)
-
-            // Undo move
-            board[tc*100+tr] = nil
-            p.col = origCol
-            p.row = origRow
-            board[fc*100+fr] = p
-            if captured != nil {
-                board[tc*100+tr] = captured
-                captured.col = tc
-                captured.row = tr
-                captured.alive = true
-            }
-            currentHash = h
-
-            if score > alpha {
-                alpha = score
-                localBest = {piece: p, col: tc, row: tr}
-            }
-        }
-
-        if localBest != nil {
-            bestMove = localBest
-        }
-        lastAIDepth = depth
-
-        // Check time limit
-        elapsed := time.since(startTime)
-        if elapsed > 5.0 {
-            break
-        }
-
-        // Found checkmate, no need to search deeper
-        if alpha >= 99000 {
-            break
-        }
-
+            resultCh <- {move: bestMove, depth: bestDepth}
+        }()
     }
 
-    return bestMove
+    // Wait for 3 seconds
+    time.sleep(3.0)
+    searchStop.stopped = true
+
+    // Collect results from all workers
+    bestMove := nil
+    bestDepth := 0
+    for w := 0; w < NUM_WORKERS; w++ {
+        result := <-resultCh
+        if result.move != nil && result.depth > bestDepth {
+            bestDepth = result.depth
+            bestMove = result.move
+        }
+    }
+
+    lastAIDepth = bestDepth
+
+    // Convert coordinate-based result back to piece reference on the real board
+    if bestMove != nil {
+        p := board[bestMove.fromCol * 100 + bestMove.fromRow]
+        if p != nil {
+            return {piece: p, col: bestMove.col, row: bestMove.row}
+        }
+    }
+    return nil
 }
 
 // === PIECE DISPLAY NAMES ===
