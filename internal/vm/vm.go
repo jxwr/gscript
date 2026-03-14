@@ -54,6 +54,11 @@ func (vm *VM) Regs() []runtime.Value {
 	return vm.regs
 }
 
+// Globals returns the globals map. Used by the JIT for function inlining.
+func (vm *VM) Globals() map[string]runtime.Value {
+	return vm.globals
+}
+
 // New creates a new VM with the given globals.
 func New(globals map[string]runtime.Value) *VM {
 	v := &VM{

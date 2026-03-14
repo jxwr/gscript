@@ -17,6 +17,7 @@ import (
 type VM struct {
 	interp *runtime.Interpreter
 	opts   vmOptions
+	bvm    *bytecodevm.VM // persisted bytecode VM for Call routing (nil if tree-walker mode)
 }
 
 // New creates a new GScript VM with the given options.
@@ -85,15 +86,20 @@ func (vm *VM) exec(src, filename string) error {
 			return &Error{Kind: ErrRuntime, Message: err.Error(), File: filename}
 		}
 		globals := vm.interp.ExportGlobals()
-		bvm := bytecodevm.New(globals)
-		bvm.SetStringMeta(vm.interp.StringMeta())
-		// Enable JIT if requested
-		if vm.opts.useJIT {
-			enableJIT(bvm)
+		// Reuse existing bytecode VM if available (preserves JIT state)
+		bvm := vm.bvm
+		if bvm == nil {
+			bvm = bytecodevm.New(globals)
+			bvm.SetStringMeta(vm.interp.StringMeta())
+			if vm.opts.useJIT {
+				enableJIT(bvm)
+			}
 		}
 		if _, err := bvm.Execute(proto); err != nil {
 			return &Error{Kind: ErrRuntime, Message: err.Error(), File: filename}
 		}
+		// Persist the bytecode VM for future Call routing
+		vm.bvm = bvm
 		// Sync globals back to interpreter
 		for name, val := range globals {
 			vm.interp.SetGlobal(name, val)
@@ -141,7 +147,15 @@ func (vm *VM) callValue(fn runtime.Value, args ...interface{}) ([]interface{}, e
 		}
 		gsArgs[i] = v
 	}
-	results, err := vm.interp.CallFunction(fn, gsArgs)
+
+	var results []runtime.Value
+	var err error
+	// Route through bytecode VM if available (handles bytecode closures correctly)
+	if vm.bvm != nil {
+		results, err = vm.bvm.CallValue(fn, gsArgs)
+	} else {
+		results, err = vm.interp.CallFunction(fn, gsArgs)
+	}
 	if err != nil {
 		return nil, &Error{Kind: ErrRuntime, Message: err.Error()}
 	}

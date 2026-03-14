@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"unsafe"
 
+	rt "github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -65,20 +66,78 @@ type CompiledFunc struct {
 	Proto *vm.FuncProto
 }
 
-// Codegen translates a FuncProto's bytecode to ARM64 machine code.
-type Codegen struct {
-	asm   *Assembler
-	proto *vm.FuncProto
+// forLoopDesc describes a detected numeric for-loop.
+type forLoopDesc struct {
+	prepPC           int
+	forloopPC        int
+	bodyStart        int
+	aReg             int
+	stepValue        int64
+	stepKnown        bool
+	canPin           bool  // false for non-innermost loops
+	aliasLoopVar     bool  // true if R(A+3) can be aliased to R(A) (not written in body)
+	bodyAccumulators []int // non-loop registers used as arithmetic accumulators in body
 }
 
+// regSet is a bitmask for VM register sets (supports registers 0-63).
+type regSet = uint64
+
+func regBit(r int) regSet {
+	if r < 0 || r >= 64 {
+		return 0
+	}
+	return 1 << uint(r)
+}
+
+func regSetHas(s regSet, r int) bool {
+	return r >= 0 && r < 64 && s&regBit(r) != 0
+}
+
+// inlineCandidate describes a GETGLOBAL + CALL pattern that can be inlined.
+type inlineCandidate struct {
+	getglobalPC int           // PC of GETGLOBAL instruction
+	callPC      int           // PC of CALL instruction
+	callee      *vm.FuncProto // the function to inline
+	fnReg       int           // register holding the function (A field of GETGLOBAL/CALL)
+	nArgs       int           // number of arguments
+	nResults    int           // number of expected results
+	isSelfCall  bool          // true if this is a self-recursive call
+}
+
+// Codegen translates a FuncProto's bytecode to ARM64 machine code.
+type Codegen struct {
+	asm              *Assembler
+	proto            *vm.FuncProto
+	globals          map[string]rt.Value     // VM globals for function resolution
+	knownInt         []regSet                // per-PC: bitmask of registers known to be TypeInt
+	reachable        []bool                  // per-PC: has been reached by data-flow analysis
+	forLoops         map[int]*forLoopDesc    // keyed by forloopPC
+	pinnedRegs       map[int]Reg             // VM register → ARM register (active during loop body)
+	pinnedVars       []int                   // ordered list of pinned VM registers (for spilling)
+	inlineCandidates map[int]*inlineCandidate // keyed by CALL PC
+	inlineSkipPCs    map[int]bool            // GETGLOBAL PCs to skip (part of inline pattern)
+	hasSelfCalls     bool                    // true if function has self-recursive calls
+}
+
+// Reserved register for self-recursion depth tracking.
+const regSelfDepth = X25 // 0 = outermost call, >0 = self-recursive call
+
 // Compile compiles a FuncProto to native ARM64 code.
-// Returns the compiled code block, or an error if compilation fails.
 func Compile(proto *vm.FuncProto) (*CompiledFunc, error) {
+	return CompileWithGlobals(proto, nil)
+}
+
+// CompileWithGlobals compiles a FuncProto with access to globals for function inlining.
+func CompileWithGlobals(proto *vm.FuncProto, globals map[string]rt.Value) (*CompiledFunc, error) {
 	cg := &Codegen{
-		asm:   NewAssembler(),
-		proto: proto,
+		asm:     NewAssembler(),
+		proto:   proto,
+		globals: globals,
 	}
 
+	cg.analyzeInlineCandidates() // must run first: identifies inline/self-call PCs for data flow
+	cg.analyzeKnownIntRegs()
+	cg.analyzeForLoops()
 	cg.emitPrologue()
 	if err := cg.emitBody(); err != nil {
 		return nil, err
@@ -122,6 +181,11 @@ func (cg *Codegen) emitPrologue() {
 	a.MOVreg(regCtx, X0)             // x28 = JITContext*
 	a.LDR(regRegs, regCtx, ctxOffRegs)       // x26 = regs base
 	a.LDR(regConsts, regCtx, ctxOffConstants) // x27 = constants base
+
+	if cg.hasSelfCalls {
+		a.MOVimm16(regSelfDepth, 0) // depth = 0 at outermost call
+		a.Label("self_call_entry")  // self-recursive calls BL here
+	}
 }
 
 // emitEpilogue restores registers and returns.
@@ -216,13 +280,27 @@ func (cg *Codegen) storeRegTyp(src Reg, reg int) {
 }
 
 // loadRegIval loads R(reg).ival into the ARM64 register dst (64-bit).
+// If the register is pinned, uses a register-to-register MOV instead of memory load.
 func (cg *Codegen) loadRegIval(dst Reg, reg int) {
+	if armReg, ok := cg.pinnedRegs[reg]; ok {
+		if dst != armReg {
+			cg.asm.MOVreg(dst, armReg)
+		}
+		return
+	}
 	off := regIvalOffset(reg)
 	cg.asm.LDR(dst, regRegs, off)
 }
 
 // storeRegIval stores a 64-bit value into R(reg).ival.
+// If the register is pinned, uses a register-to-register MOV instead of memory store.
 func (cg *Codegen) storeRegIval(src Reg, reg int) {
+	if armReg, ok := cg.pinnedRegs[reg]; ok {
+		if src != armReg {
+			cg.asm.MOVreg(armReg, src)
+		}
+		return
+	}
 	off := regIvalOffset(reg)
 	cg.asm.STR(src, regRegs, off)
 }
@@ -240,9 +318,12 @@ func (cg *Codegen) storeRegFval(src FReg, reg int) {
 }
 
 // storeIntValue stores a complete IntValue: sets typ=TypeInt and ival=value.
+// For pinned registers, skips the type store (typ is maintained on spill).
 func (cg *Codegen) storeIntValue(reg int, valReg Reg) {
-	cg.asm.MOVimm16W(X9, TypeInt)
-	cg.storeRegTyp(X9, reg)
+	if _, pinned := cg.pinnedRegs[reg]; !pinned {
+		cg.asm.MOVimm16W(X9, TypeInt)
+		cg.storeRegTyp(X9, reg)
+	}
 	cg.storeRegIval(valReg, reg)
 }
 
@@ -339,6 +420,649 @@ func (cg *Codegen) copyRKValue(dstReg, rkIdx int) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Type guard hoisting — forward data-flow analysis for known-int registers
+// ──────────────────────────────────────────────────────────────────────────────
+
+// analyzeKnownIntRegs computes, for each bytecode PC, which VM registers are
+// guaranteed to hold TypeInt values. Uses bitmask-based set operations for speed.
+func (cg *Codegen) analyzeKnownIntRegs() {
+	code := cg.proto.Code
+	n := len(code)
+	if n == 0 {
+		return
+	}
+
+	cg.knownInt = make([]regSet, n)
+	cg.reachable = make([]bool, n)
+	cg.reachable[0] = true // entry point
+
+	changed := true
+	for changed {
+		changed = false
+		for pc := 0; pc < n; pc++ {
+			if !cg.reachable[pc] {
+				continue
+			}
+			out := cg.intTransfer(pc)
+			for _, succ := range cg.pcSuccessors(pc) {
+				if succ < 0 || succ >= n {
+					continue
+				}
+				if !cg.reachable[succ] {
+					cg.reachable[succ] = true
+					cg.knownInt[succ] = out
+					changed = true
+				} else {
+					// Intersect: only keep bits present in both.
+					merged := cg.knownInt[succ] & out
+					if merged != cg.knownInt[succ] {
+						cg.knownInt[succ] = merged
+						changed = true
+					}
+				}
+			}
+		}
+	}
+}
+
+// intTransfer computes the output known-int set after executing instruction at pc.
+func (cg *Codegen) intTransfer(pc int) regSet {
+	inst := cg.proto.Code[pc]
+	op := vm.DecodeOp(inst)
+	out := cg.knownInt[pc]
+
+	switch op {
+	case vm.OP_LOADINT:
+		out |= regBit(vm.DecodeA(inst))
+	case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_UNM:
+		out |= regBit(vm.DecodeA(inst))
+	case vm.OP_FORPREP:
+		a := vm.DecodeA(inst)
+		out |= regBit(a) | regBit(a+1) | regBit(a+2)
+	case vm.OP_FORLOOP:
+		a := vm.DecodeA(inst)
+		out |= regBit(a) | regBit(a+3)
+	case vm.OP_MOVE:
+		a := vm.DecodeA(inst)
+		if regSetHas(cg.knownInt[pc], vm.DecodeB(inst)) {
+			out |= regBit(a)
+		} else {
+			out &^= regBit(a)
+		}
+	case vm.OP_LOADK:
+		a := vm.DecodeA(inst)
+		bx := vm.DecodeBx(inst)
+		if bx < len(cg.proto.Constants) && cg.proto.Constants[bx].IsInt() {
+			out |= regBit(a)
+		} else {
+			out &^= regBit(a)
+		}
+	case vm.OP_LOADNIL:
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		for i := a; i <= a+b; i++ {
+			out &^= regBit(i)
+		}
+	case vm.OP_LOADBOOL, vm.OP_NOT:
+		out &^= regBit(vm.DecodeA(inst))
+	case vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_JMP:
+		// No register writes.
+	case vm.OP_CALL:
+		// For inline/self-call candidates, the result is placed in fnReg as TypeInt.
+		if cg.inlineCandidates != nil {
+			if candidate, ok := cg.inlineCandidates[pc]; ok {
+				out |= regBit(candidate.fnReg)
+				break
+			}
+		}
+		out &^= regBit(vm.DecodeA(inst))
+	case vm.OP_GETGLOBAL:
+		// Skipped GETGLOBALs don't modify registers.
+		if cg.inlineSkipPCs != nil && cg.inlineSkipPCs[pc] {
+			break
+		}
+		out &^= regBit(vm.DecodeA(inst))
+	default:
+		out &^= regBit(vm.DecodeA(inst))
+	}
+	return out
+}
+
+// pcSuccessors returns the successor PCs for an instruction.
+func (cg *Codegen) pcSuccessors(pc int) []int {
+	inst := cg.proto.Code[pc]
+	op := vm.DecodeOp(inst)
+
+	if !cg.isSupported(op) {
+		// Check if this is an inline/self-call CALL that we handle natively.
+		if op == vm.OP_CALL && cg.inlineCandidates != nil {
+			if _, ok := cg.inlineCandidates[pc]; ok {
+				return []int{pc + 1}
+			}
+		}
+		return nil // side-exit, no JIT successors
+	}
+
+	switch op {
+	case vm.OP_RETURN, vm.OP_SETGLOBAL:
+		return nil
+	case vm.OP_GETGLOBAL:
+		// Skipped GETGLOBALs (part of inline/self-call pattern) fall through.
+		if cg.inlineSkipPCs != nil && cg.inlineSkipPCs[pc] {
+			return []int{pc + 1}
+		}
+		return nil
+	case vm.OP_JMP:
+		return []int{pc + 1 + vm.DecodesBx(inst)}
+	case vm.OP_FORPREP:
+		return []int{pc + 1 + vm.DecodesBx(inst)}
+	case vm.OP_FORLOOP:
+		return []int{pc + 1, pc + 1 + vm.DecodesBx(inst)}
+	case vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST:
+		return []int{pc + 1, pc + 2}
+	case vm.OP_LOADBOOL:
+		if vm.DecodeC(inst) != 0 {
+			return []int{pc + 2}
+		}
+		return []int{pc + 1}
+	default:
+		return []int{pc + 1}
+	}
+}
+
+// isRKKnownInt returns true if RK(idx) is guaranteed TypeInt at the given PC.
+func (cg *Codegen) isRKKnownInt(pc, rkIdx int) bool {
+	if vm.IsRK(rkIdx) {
+		constIdx := vm.RKToConstIdx(rkIdx)
+		if constIdx < len(cg.proto.Constants) {
+			return cg.proto.Constants[constIdx].IsInt()
+		}
+		return false
+	}
+	if cg.knownInt != nil && pc < len(cg.knownInt) {
+		return regSetHas(cg.knownInt[pc], rkIdx)
+	}
+	return false
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// For-loop analysis and register pinning
+// ──────────────────────────────────────────────────────────────────────────────
+
+// analyzeForLoops detects numeric for-loop structures and determines
+// step values for optimization.
+func (cg *Codegen) analyzeForLoops() {
+	code := cg.proto.Code
+	cg.forLoops = make(map[int]*forLoopDesc)
+	cg.pinnedRegs = make(map[int]Reg)
+
+	for pc := 0; pc < len(code); pc++ {
+		inst := code[pc]
+		if vm.DecodeOp(inst) != vm.OP_FORPREP {
+			continue
+		}
+		aReg := vm.DecodeA(inst)
+		sbx := vm.DecodesBx(inst)
+		flPC := pc + 1 + sbx
+		if flPC < 0 || flPC >= len(code) || vm.DecodeOp(code[flPC]) != vm.OP_FORLOOP {
+			continue
+		}
+		flSbx := vm.DecodesBx(code[flPC])
+		bodyStart := flPC + 1 + flSbx
+
+		desc := &forLoopDesc{
+			prepPC:    pc,
+			forloopPC: flPC,
+			bodyStart: bodyStart,
+			aReg:      aReg,
+			canPin:    true,
+		}
+
+		// Detect step value by scanning backward from FORPREP for LOADINT R(A+2).
+		stepReg := aReg + 2
+		for scanPC := pc - 1; scanPC >= 0; scanPC-- {
+			si := code[scanPC]
+			sa := vm.DecodeA(si)
+			if sa == stepReg {
+				if vm.DecodeOp(si) == vm.OP_LOADINT {
+					desc.stepValue = int64(vm.DecodesBx(si))
+					desc.stepKnown = true
+				}
+				break
+			}
+		}
+
+		// Check if R(A+3) is written in the body — if not, alias it to R(A).
+		loopVarReg := aReg + 3
+		loopVarWritten := false
+		for scanPC := bodyStart; scanPC < flPC; scanPC++ {
+			si := code[scanPC]
+			if vm.DecodeA(si) == loopVarReg {
+				sop := vm.DecodeOp(si)
+				// Skip comparison/test ops that don't write to R(A).
+				if sop != vm.OP_EQ && sop != vm.OP_LT && sop != vm.OP_LE &&
+					sop != vm.OP_TEST && sop != vm.OP_JMP {
+					loopVarWritten = true
+					break
+				}
+			}
+		}
+		desc.aliasLoopVar = !loopVarWritten
+
+		// Determine body accumulator registers (read+write same reg in ADD/SUB/MUL).
+		desc.bodyAccumulators = cg.findAccumulators(bodyStart, flPC, aReg)
+
+		cg.forLoops[flPC] = desc
+		cg.forLoops[pc] = desc // also index by prepPC
+	}
+
+	// Disable pinning for non-innermost loops (loops whose body contains another FORPREP).
+	// Use a set to deduplicate (forLoops is indexed by both prepPC and forloopPC).
+	seen := make(map[*forLoopDesc]bool)
+	for _, desc := range cg.forLoops {
+		if seen[desc] {
+			continue
+		}
+		seen[desc] = true
+		for innerPC := desc.bodyStart; innerPC < desc.forloopPC; innerPC++ {
+			if vm.DecodeOp(code[innerPC]) == vm.OP_FORPREP {
+				desc.canPin = false
+				break
+			}
+		}
+	}
+}
+
+// findAccumulators finds registers in the loop body that are both source and
+// destination of arithmetic operations (e.g., s = s + i → R(s) is an accumulator).
+// Also detects indirect accumulators: ADD Rtemp, Raccum, Rx; MOVE Raccum, Rtemp
+// (where the compiler uses a temporary for s = s + i).
+// Excludes for-loop control registers (aReg..aReg+3).
+func (cg *Codegen) findAccumulators(bodyStart, bodyEnd, aReg int) []int {
+	counts := make(map[int]int)
+	code := cg.proto.Code
+	for pc := bodyStart; pc < bodyEnd; pc++ {
+		inst := code[pc]
+		op := vm.DecodeOp(inst)
+		switch op {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL:
+			a := vm.DecodeA(inst)
+			b := vm.DecodeB(inst)
+			c := vm.DecodeC(inst)
+			// Skip loop control registers
+			if a >= aReg && a <= aReg+3 {
+				continue
+			}
+			// Direct accumulator: s = s + i (R(A) is both source and dest)
+			if (!vm.IsRK(b) && b == a) || (!vm.IsRK(c) && c == a) {
+				counts[a]++
+				continue
+			}
+			// Indirect accumulator: ADD Rtemp, Raccum, Rx; MOVE Raccum, Rtemp
+			if pc+1 < bodyEnd && vm.DecodeOp(code[pc+1]) == vm.OP_MOVE {
+				moveA := vm.DecodeA(code[pc+1])
+				moveB := vm.DecodeB(code[pc+1])
+				if moveB == a { // MOVE copies the ADD result
+					// Check if the accumulator (moveA) is one of the ADD sources
+					isAccum := (!vm.IsRK(b) && b == moveA) || (!vm.IsRK(c) && c == moveA)
+					if isAccum && !(moveA >= aReg && moveA <= aReg+3) {
+						counts[moveA]++ // pin the accumulator
+						counts[a]++     // pin the temporary too
+					}
+				}
+			}
+		}
+	}
+	// Return accumulators sorted by frequency (up to 3).
+	var result []int
+	for reg := range counts {
+		result = append(result, reg)
+	}
+	// Simple sort by count (descending)
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			if counts[result[j]] > counts[result[i]] {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+	if len(result) > 3 {
+		result = result[:3]
+	}
+	return result
+}
+
+// Callee-saved registers available for pinning.
+var pinPool = []Reg{X19, X20, X21, X22, X23, X24, X25}
+
+// setupLoopPinning configures register pinning for a for-loop and emits
+// code to load VM registers into ARM registers. Returns true if pinning was set up.
+func (cg *Codegen) setupLoopPinning(desc *forLoopDesc) bool {
+	// Check we have enough pinning registers.
+	needed := 4 + len(desc.bodyAccumulators) // loop control (4) + body accumulators
+	if needed > len(pinPool) {
+		needed = len(pinPool)
+	}
+
+	a := desc.aReg
+	poolIdx := 0
+
+	// Pin loop control registers: R(A)=idx, R(A+1)=limit, R(A+2)=step, R(A+3)=loopvar
+	for i := 0; i < 4 && poolIdx < len(pinPool); i++ {
+		vmReg := a + i
+		if i == 3 && desc.aliasLoopVar {
+			// Alias R(A+3) to R(A) — no separate ARM register needed.
+			cg.pinnedRegs[vmReg] = cg.pinnedRegs[a]
+			// Don't add to pinnedVars (spill only through R(A)).
+			continue
+		}
+		armReg := pinPool[poolIdx]
+		poolIdx++
+		cg.pinnedRegs[vmReg] = armReg
+		cg.pinnedVars = append(cg.pinnedVars, vmReg)
+	}
+
+	// Pin body accumulators.
+	for _, vmReg := range desc.bodyAccumulators {
+		if poolIdx >= len(pinPool) {
+			break
+		}
+		armReg := pinPool[poolIdx]
+		poolIdx++
+		cg.pinnedRegs[vmReg] = armReg
+		cg.pinnedVars = append(cg.pinnedVars, vmReg)
+	}
+
+	// Load pinned registers from memory.
+	for _, vmReg := range cg.pinnedVars {
+		armReg := cg.pinnedRegs[vmReg]
+		cg.asm.LDR(armReg, regRegs, regIvalOffset(vmReg))
+	}
+
+	return true
+}
+
+// spillPinnedRegs stores all pinned ARM registers back to VM register memory.
+// Iterates over all pinned registers including aliased ones (e.g., R(A+3) aliased to R(A)).
+func (cg *Codegen) spillPinnedRegs() {
+	for vmReg, armReg := range cg.pinnedRegs {
+		cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+		cg.asm.MOVimm16W(X9, TypeInt)
+		cg.storeRegTyp(X9, vmReg)
+	}
+}
+
+// clearPinning removes all register pinning.
+func (cg *Codegen) clearPinning() {
+	cg.pinnedRegs = make(map[int]Reg)
+	cg.pinnedVars = nil
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Function inlining analysis
+// ──────────────────────────────────────────────────────────────────────────────
+
+// analyzeInlineCandidates detects GETGLOBAL + CALL patterns where the global
+// resolves to a simple bytecode function that can be inlined, or where the
+// global is a self-recursive call to the current function.
+func (cg *Codegen) analyzeInlineCandidates() {
+	cg.inlineCandidates = make(map[int]*inlineCandidate)
+	cg.inlineSkipPCs = make(map[int]bool)
+
+	code := cg.proto.Code
+	for pc := 0; pc < len(code); pc++ {
+		inst := code[pc]
+		if vm.DecodeOp(inst) != vm.OP_GETGLOBAL {
+			continue
+		}
+		globalA := vm.DecodeA(inst)
+		globalBx := vm.DecodeBx(inst)
+		if globalBx >= len(cg.proto.Constants) {
+			continue
+		}
+		name := cg.proto.Constants[globalBx].Str()
+
+		// Find the CALL that uses R(globalA) within the next few instructions
+		for pc2 := pc + 1; pc2 < len(code) && pc2 <= pc+10; pc2++ {
+			inst2 := code[pc2]
+			op2 := vm.DecodeOp(inst2)
+			if op2 == vm.OP_CALL && vm.DecodeA(inst2) == globalA {
+				b := vm.DecodeB(inst2)
+				c := vm.DecodeC(inst2)
+
+				// Check for self-recursive call first.
+				if name == cg.proto.Name && cg.proto.Name != "" {
+					candidate := &inlineCandidate{
+						getglobalPC: pc,
+						callPC:      pc2,
+						fnReg:       globalA,
+						nArgs:       b - 1,
+						nResults:    c - 1,
+						isSelfCall:  true,
+					}
+					cg.inlineCandidates[pc2] = candidate
+					cg.inlineSkipPCs[pc] = true
+					cg.hasSelfCalls = true
+					break
+				}
+
+				// Check for inlineable global function.
+				if cg.globals != nil {
+					fnVal, ok := cg.globals[name]
+					if !ok || !fnVal.IsFunction() {
+						break
+					}
+					vcl, _ := fnVal.Ptr().(*vm.Closure)
+					if vcl == nil {
+						break
+					}
+					if !cg.isInlineable(vcl.Proto) {
+						break
+					}
+					candidate := &inlineCandidate{
+						getglobalPC: pc,
+						callPC:      pc2,
+						callee:      vcl.Proto,
+						fnReg:       globalA,
+						nArgs:       b - 1,
+						nResults:    c - 1,
+					}
+					cg.inlineCandidates[pc2] = candidate
+					cg.inlineSkipPCs[pc] = true
+				}
+				break
+			}
+			// If the register is overwritten by another instruction, stop
+			if vm.DecodeA(inst2) == globalA {
+				break
+			}
+		}
+	}
+}
+
+// isInlineable returns true if a function body is simple enough to inline.
+func (cg *Codegen) isInlineable(proto *vm.FuncProto) bool {
+	if len(proto.Upvalues) > 0 || proto.IsVarArg || len(proto.Protos) > 0 {
+		return false
+	}
+	if len(proto.Code) > 20 {
+		return false
+	}
+	for _, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_DIV, vm.OP_MOD,
+			vm.OP_MOVE, vm.OP_LOADINT, vm.OP_LOADK, vm.OP_LOADNIL, vm.OP_LOADBOOL,
+			vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_JMP,
+			vm.OP_RETURN, vm.OP_UNM, vm.OP_NOT:
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// emitInlineCall emits inline native code for a function call, replacing
+// GETGLOBAL + CALL with the callee's body using register remapping.
+func (cg *Codegen) emitInlineCall(pc int, candidate *inlineCandidate) error {
+	callee := candidate.callee
+	fnReg := candidate.fnReg
+
+	// Build register mapping: callee register → caller register
+	// Callee params map to the caller's argument registers
+	// Callee locals map to scratch space after the args
+	regMap := make(map[int]int)
+	for i := 0; i < callee.NumParams; i++ {
+		regMap[i] = fnReg + 1 + i
+	}
+	scratchBase := fnReg + 1 + candidate.nArgs
+	for i := callee.NumParams; i < callee.MaxStack; i++ {
+		regMap[i] = scratchBase + (i - callee.NumParams)
+	}
+
+	// Find the return register and map it to the result register
+	for _, calleeInst := range callee.Code {
+		if vm.DecodeOp(calleeInst) == vm.OP_RETURN {
+			retA := vm.DecodeA(calleeInst)
+			if candidate.nResults > 0 {
+				regMap[retA] = fnReg // first result → R(fnReg)
+			}
+			break
+		}
+	}
+
+	exitLabel := fmt.Sprintf("inline_exit_%d", pc)
+	afterLabel := fmt.Sprintf("inline_done_%d", pc)
+
+	// Emit callee instructions with register remapping
+	for _, calleeInst := range callee.Code {
+		calleeOp := vm.DecodeOp(calleeInst)
+		if calleeOp == vm.OP_RETURN {
+			// Handle result placement
+			retA := vm.DecodeA(calleeInst)
+			retB := vm.DecodeB(calleeInst)
+			mappedRetA := regMap[retA]
+			if retB == 1 {
+				// Return nothing — set result to nil
+				if candidate.nResults > 0 {
+					cg.storeNilValue(fnReg)
+				}
+			} else if mappedRetA != fnReg && candidate.nResults > 0 {
+				// Copy result to fnReg
+				cg.copyValue(fnReg, mappedRetA)
+			}
+			break
+		}
+
+		switch calleeOp {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL:
+			a := vm.DecodeA(calleeInst)
+			b := vm.DecodeB(calleeInst)
+			c := vm.DecodeC(calleeInst)
+			mappedA := regMap[a]
+
+			// Remap B and C (register references only, not RK constants)
+			mappedB := b
+			if !vm.IsRK(b) {
+				mappedB = regMap[b]
+			}
+			mappedC := c
+			if !vm.IsRK(c) {
+				mappedC = regMap[c]
+			}
+
+			// Handle RK constants from callee's constant pool
+			// For callee constants, we need to load them directly since
+			// regConsts points to the caller's constants
+			bIsCalleeConst := vm.IsRK(b)
+			cIsCalleeConst := vm.IsRK(c)
+
+			// Type guards for non-known-int operands
+			if !bIsCalleeConst {
+				cg.loadRegTyp(X0, mappedB)
+				cg.asm.CMPimmW(X0, TypeInt)
+				cg.asm.BCond(CondNE, exitLabel)
+			}
+			if !cIsCalleeConst {
+				cg.loadRegTyp(X0, mappedC)
+				cg.asm.CMPimmW(X0, TypeInt)
+				cg.asm.BCond(CondNE, exitLabel)
+			}
+
+			// Load operands
+			if bIsCalleeConst {
+				constIdx := vm.RKToConstIdx(b)
+				if constIdx < len(callee.Constants) {
+					cg.asm.LoadImm64(X0, callee.Constants[constIdx].Int())
+				}
+			} else {
+				cg.loadRegIval(X0, mappedB)
+			}
+
+			if cIsCalleeConst {
+				constIdx := vm.RKToConstIdx(c)
+				if constIdx < len(callee.Constants) {
+					cg.asm.LoadImm64(X1, callee.Constants[constIdx].Int())
+				}
+			} else {
+				cg.loadRegIval(X1, mappedC)
+			}
+
+			// Arithmetic
+			switch calleeOp {
+			case vm.OP_ADD:
+				cg.asm.ADDreg(X0, X0, X1)
+			case vm.OP_SUB:
+				cg.asm.SUBreg(X0, X0, X1)
+			case vm.OP_MUL:
+				cg.asm.MUL(X0, X0, X1)
+			}
+			cg.storeIntValue(mappedA, X0)
+
+		case vm.OP_MOVE:
+			a := regMap[vm.DecodeA(calleeInst)]
+			b := regMap[vm.DecodeB(calleeInst)]
+			cg.copyValue(a, b)
+
+		case vm.OP_LOADINT:
+			a := regMap[vm.DecodeA(calleeInst)]
+			sbx := vm.DecodesBx(calleeInst)
+			cg.asm.LoadImm64(X0, int64(sbx))
+			cg.storeIntValue(a, X0)
+
+		case vm.OP_LOADNIL:
+			a := vm.DecodeA(calleeInst)
+			b := vm.DecodeB(calleeInst)
+			for i := a; i <= a+b; i++ {
+				cg.storeNilValue(regMap[i])
+			}
+
+		default:
+			// Unsupported opcode in inline — fall back to side exit
+			cg.spillPinnedRegs()
+			cg.asm.LoadImm64(X1, int64(candidate.getglobalPC))
+			cg.asm.STR(X1, regCtx, ctxOffExitPC)
+			cg.asm.LoadImm64(X0, 1)
+			cg.asm.B("epilogue")
+			return nil
+		}
+	}
+
+	cg.asm.B(afterLabel)
+
+	// Side exit for type guard failures
+	cg.asm.Label(exitLabel)
+	cg.spillPinnedRegs()
+	cg.asm.LoadImm64(X1, int64(candidate.getglobalPC))
+	cg.asm.STR(X1, regCtx, ctxOffExitPC)
+	cg.asm.LoadImm64(X0, 1)
+	cg.asm.B("epilogue")
+
+	cg.asm.Label(afterLabel)
+	return nil
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Body compilation
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -361,8 +1085,28 @@ func (cg *Codegen) emitBody() error {
 		inst := code[pc]
 		op := vm.DecodeOp(inst)
 
+		// Skip GETGLOBAL instructions that are part of an inline candidate
+		if cg.inlineSkipPCs[pc] {
+			continue
+		}
+
+		// Handle inlined CALL and self-recursive CALL instructions
+		if candidate, ok := cg.inlineCandidates[pc]; ok {
+			if candidate.isSelfCall {
+				if err := cg.emitSelfCall(pc, candidate); err != nil {
+					return fmt.Errorf("pc %d (self-call): %w", pc, err)
+				}
+			} else {
+				if err := cg.emitInlineCall(pc, candidate); err != nil {
+					return fmt.Errorf("pc %d (inline): %w", pc, err)
+				}
+			}
+			continue
+		}
+
 		if !cg.isSupported(op) {
-			// Emit a direct side exit.
+			// Emit a direct side exit (spill pinned registers first).
+			cg.spillPinnedRegs()
 			cg.asm.LoadImm64(X1, int64(pc))
 			cg.asm.STR(X1, regCtx, ctxOffExitPC)
 			cg.asm.LoadImm64(X0, 1)
@@ -435,9 +1179,10 @@ func (cg *Codegen) emitInstruction(pc int, inst uint32) error {
 	case vm.OP_FORLOOP:
 		return cg.emitForLoop(pc, inst)
 	case vm.OP_RETURN:
-		return cg.emitReturnOp(inst)
+		return cg.emitReturnOp(pc, inst)
 	case vm.OP_GETGLOBAL, vm.OP_SETGLOBAL:
 		// Side exit — these need Go runtime interaction.
+		cg.spillPinnedRegs()
 		cg.asm.LoadImm64(X1, int64(pc))
 		cg.asm.STR(X1, regCtx, ctxOffExitPC)
 		cg.asm.LoadImm64(X0, 1)
@@ -497,58 +1242,115 @@ func (cg *Codegen) emitLoadK(inst uint32) error {
 func (cg *Codegen) emitMove(inst uint32) error {
 	aReg := vm.DecodeA(inst)
 	bReg := vm.DecodeB(inst)
-	cg.copyValue(aReg, bReg)
+
+	srcArm, srcPinned := cg.pinnedRegs[bReg]
+	dstArm, dstPinned := cg.pinnedRegs[aReg]
+
+	if srcPinned && dstPinned {
+		// Both pinned: register-to-register move.
+		if srcArm != dstArm {
+			cg.asm.MOVreg(dstArm, srcArm)
+		}
+	} else if srcPinned {
+		// Source pinned, dest in memory: write int value.
+		cg.asm.MOVimm16W(X9, TypeInt)
+		cg.storeRegTyp(X9, aReg)
+		cg.asm.STR(srcArm, regRegs, regIvalOffset(aReg))
+	} else if dstPinned {
+		// Dest pinned, source in memory: load ival into ARM reg.
+		cg.asm.LDR(dstArm, regRegs, regIvalOffset(bReg))
+	} else {
+		cg.copyValue(aReg, bReg)
+	}
 	return nil
 }
 
 // emitArithInt emits integer arithmetic with type guards.
-// On type guard failure, side-exits to interpreter.
+// Type guards are skipped for operands known to be TypeInt (type guard hoisting).
 func (cg *Codegen) emitArithInt(pc int, inst uint32, arithOp string) error {
 	aReg := vm.DecodeA(inst)
 	bIdx := vm.DecodeB(inst)
 	cIdx := vm.DecodeC(inst)
 
-	exitLabel := fmt.Sprintf("arith_exit_%d", pc)
+	bKnown := cg.isRKKnownInt(pc, bIdx)
+	cKnown := cg.isRKKnownInt(pc, cIdx)
+	needGuardB := !bKnown
+	needGuardC := !cKnown
 
-	// Type guard: check RK(B).typ == TypeInt
-	cg.loadRKTyp(X0, bIdx)
-	cg.asm.CMPimmW(X0, TypeInt)
-	cg.asm.BCond(CondNE, exitLabel)
+	if needGuardB || needGuardC {
+		exitLabel := fmt.Sprintf("arith_exit_%d", pc)
+		if needGuardB {
+			cg.loadRKTyp(X0, bIdx)
+			cg.asm.CMPimmW(X0, TypeInt)
+			cg.asm.BCond(CondNE, exitLabel)
+		}
+		if needGuardC {
+			cg.loadRKTyp(X0, cIdx)
+			cg.asm.CMPimmW(X0, TypeInt)
+			cg.asm.BCond(CondNE, exitLabel)
+		}
 
-	// Type guard: check RK(C).typ == TypeInt
-	cg.loadRKTyp(X0, cIdx)
-	cg.asm.CMPimmW(X0, TypeInt)
-	cg.asm.BCond(CondNE, exitLabel)
+		cg.loadRKIval(X0, bIdx)
+		cg.loadRKIval(X1, cIdx)
+		switch arithOp {
+		case "ADD":
+			cg.asm.ADDreg(X0, X0, X1)
+		case "SUB":
+			cg.asm.SUBreg(X0, X0, X1)
+		case "MUL":
+			cg.asm.MUL(X0, X0, X1)
+		}
+		cg.storeIntValue(aReg, X0)
 
-	// Load operands
-	cg.loadRKIval(X0, bIdx)
-	cg.loadRKIval(X1, cIdx)
+		after := fmt.Sprintf("arith_done_%d", pc)
+		cg.asm.B(after)
 
-	// Perform operation
-	switch arithOp {
-	case "ADD":
-		cg.asm.ADDreg(X0, X0, X1)
-	case "SUB":
-		cg.asm.SUBreg(X0, X0, X1)
-	case "MUL":
-		cg.asm.MUL(X0, X0, X1)
+		cg.asm.Label(exitLabel)
+		cg.spillPinnedRegs()
+		cg.asm.LoadImm64(X1, int64(pc))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 1)
+		cg.asm.B("epilogue")
+
+		cg.asm.Label(after)
+	} else {
+		// Both operands known TypeInt — no type guards needed.
+		// Try direct register-register operation if all operands are pinned.
+		aArm, aPinned := cg.pinnedRegs[aReg]
+		var bArm, cArm Reg
+		var bPinned, cPinned bool
+		if !vm.IsRK(bIdx) {
+			bArm, bPinned = cg.pinnedRegs[bIdx]
+		}
+		if !vm.IsRK(cIdx) {
+			cArm, cPinned = cg.pinnedRegs[cIdx]
+		}
+
+		if aPinned && bPinned && cPinned {
+			// All three in ARM registers — emit single instruction.
+			switch arithOp {
+			case "ADD":
+				cg.asm.ADDreg(aArm, bArm, cArm)
+			case "SUB":
+				cg.asm.SUBreg(aArm, bArm, cArm)
+			case "MUL":
+				cg.asm.MUL(aArm, bArm, cArm)
+			}
+		} else {
+			// Fallback: load through X0/X1.
+			cg.loadRKIval(X0, bIdx)
+			cg.loadRKIval(X1, cIdx)
+			switch arithOp {
+			case "ADD":
+				cg.asm.ADDreg(X0, X0, X1)
+			case "SUB":
+				cg.asm.SUBreg(X0, X0, X1)
+			case "MUL":
+				cg.asm.MUL(X0, X0, X1)
+			}
+			cg.storeIntValue(aReg, X0)
+		}
 	}
-
-	// Store result as IntValue
-	cg.storeIntValue(aReg, X0)
-
-	// Jump past side exit
-	after := fmt.Sprintf("arith_done_%d", pc)
-	cg.asm.B(after)
-
-	// Side exit for non-integer operands
-	cg.asm.Label(exitLabel)
-	cg.asm.LoadImm64(X1, int64(pc))
-	cg.asm.STR(X1, regCtx, ctxOffExitPC)
-	cg.asm.LoadImm64(X0, 1)
-	cg.asm.B("epilogue")
-
-	cg.asm.Label(after)
 	return nil
 }
 
@@ -556,28 +1358,34 @@ func (cg *Codegen) emitUNM(pc int, inst uint32) error {
 	aReg := vm.DecodeA(inst)
 	bReg := vm.DecodeB(inst)
 
-	exitLabel := fmt.Sprintf("unm_exit_%d", pc)
+	bKnown := cg.isRKKnownInt(pc, bReg)
 
-	// Type guard
-	cg.loadRegTyp(X0, bReg)
-	cg.asm.CMPimmW(X0, TypeInt)
-	cg.asm.BCond(CondNE, exitLabel)
+	if !bKnown {
+		exitLabel := fmt.Sprintf("unm_exit_%d", pc)
+		cg.loadRegTyp(X0, bReg)
+		cg.asm.CMPimmW(X0, TypeInt)
+		cg.asm.BCond(CondNE, exitLabel)
 
-	// Negate
-	cg.loadRegIval(X0, bReg)
-	cg.asm.NEG(X0, X0)
-	cg.storeIntValue(aReg, X0)
+		cg.loadRegIval(X0, bReg)
+		cg.asm.NEG(X0, X0)
+		cg.storeIntValue(aReg, X0)
 
-	after := fmt.Sprintf("unm_done_%d", pc)
-	cg.asm.B(after)
+		after := fmt.Sprintf("unm_done_%d", pc)
+		cg.asm.B(after)
 
-	cg.asm.Label(exitLabel)
-	cg.asm.LoadImm64(X1, int64(pc))
-	cg.asm.STR(X1, regCtx, ctxOffExitPC)
-	cg.asm.LoadImm64(X0, 1)
-	cg.asm.B("epilogue")
+		cg.asm.Label(exitLabel)
+		cg.spillPinnedRegs()
+		cg.asm.LoadImm64(X1, int64(pc))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 1)
+		cg.asm.B("epilogue")
 
-	cg.asm.Label(after)
+		cg.asm.Label(after)
+	} else {
+		cg.loadRegIval(X0, bReg)
+		cg.asm.NEG(X0, X0)
+		cg.storeIntValue(aReg, X0)
+	}
 	return nil
 }
 
@@ -623,31 +1431,41 @@ func (cg *Codegen) emitEQ(pc int, inst uint32) error {
 	bIdx := vm.DecodeB(inst)
 	cIdx := vm.DecodeC(inst)
 
-	exitLabel := fmt.Sprintf("eq_exit_%d", pc)
-	skipLabel := pcLabel(pc + 2) // skip next instruction
+	skipLabel := pcLabel(pc + 2)
 
-	// Type guard: both must be int for JIT path
-	cg.loadRKTyp(X0, bIdx)
-	cg.asm.CMPimmW(X0, TypeInt)
-	cg.asm.BCond(CondNE, exitLabel)
-	cg.loadRKTyp(X0, cIdx)
-	cg.asm.CMPimmW(X0, TypeInt)
-	cg.asm.BCond(CondNE, exitLabel)
+	bKnown := cg.isRKKnownInt(pc, bIdx)
+	cKnown := cg.isRKKnownInt(pc, cIdx)
+	needExit := !bKnown || !cKnown
 
-	// Compare ival
+	var exitLabel string
+	if needExit {
+		exitLabel = fmt.Sprintf("eq_exit_%d", pc)
+		if !bKnown {
+			cg.loadRKTyp(X0, bIdx)
+			cg.asm.CMPimmW(X0, TypeInt)
+			cg.asm.BCond(CondNE, exitLabel)
+		}
+		if !cKnown {
+			cg.loadRKTyp(X0, cIdx)
+			cg.asm.CMPimmW(X0, TypeInt)
+			cg.asm.BCond(CondNE, exitLabel)
+		}
+	}
+
 	cg.loadRKIval(X0, bIdx)
 	cg.loadRKIval(X1, cIdx)
 	cg.asm.CMPreg(X0, X1)
 
-	// if (B == C) != bool(A) then skip
 	if aFlag != 0 {
-		// A=1: skip if NOT equal
 		cg.asm.BCond(CondNE, skipLabel)
 	} else {
-		// A=0: skip if equal
 		cg.asm.BCond(CondEQ, skipLabel)
 	}
-	return cg.emitComparisonSideExit(pc, exitLabel)
+
+	if needExit {
+		return cg.emitComparisonSideExit(pc, exitLabel)
+	}
+	return nil
 }
 
 // emitLT: if (RK(B) < RK(C)) != bool(A) then PC++
@@ -656,30 +1474,41 @@ func (cg *Codegen) emitLT(pc int, inst uint32) error {
 	bIdx := vm.DecodeB(inst)
 	cIdx := vm.DecodeC(inst)
 
-	exitLabel := fmt.Sprintf("lt_exit_%d", pc)
 	skipLabel := pcLabel(pc + 2)
 
-	// Type guard
-	cg.loadRKTyp(X0, bIdx)
-	cg.asm.CMPimmW(X0, TypeInt)
-	cg.asm.BCond(CondNE, exitLabel)
-	cg.loadRKTyp(X0, cIdx)
-	cg.asm.CMPimmW(X0, TypeInt)
-	cg.asm.BCond(CondNE, exitLabel)
+	bKnown := cg.isRKKnownInt(pc, bIdx)
+	cKnown := cg.isRKKnownInt(pc, cIdx)
+	needExit := !bKnown || !cKnown
+
+	var exitLabel string
+	if needExit {
+		exitLabel = fmt.Sprintf("lt_exit_%d", pc)
+		if !bKnown {
+			cg.loadRKTyp(X0, bIdx)
+			cg.asm.CMPimmW(X0, TypeInt)
+			cg.asm.BCond(CondNE, exitLabel)
+		}
+		if !cKnown {
+			cg.loadRKTyp(X0, cIdx)
+			cg.asm.CMPimmW(X0, TypeInt)
+			cg.asm.BCond(CondNE, exitLabel)
+		}
+	}
 
 	cg.loadRKIval(X0, bIdx)
 	cg.loadRKIval(X1, cIdx)
 	cg.asm.CMPreg(X0, X1)
 
-	// if (B < C) != bool(A) then skip
 	if aFlag != 0 {
-		// A=1: skip if NOT less (i.e., >=)
 		cg.asm.BCond(CondGE, skipLabel)
 	} else {
-		// A=0: skip if less
 		cg.asm.BCond(CondLT, skipLabel)
 	}
-	return cg.emitComparisonSideExit(pc, exitLabel)
+
+	if needExit {
+		return cg.emitComparisonSideExit(pc, exitLabel)
+	}
+	return nil
 }
 
 // emitLE: if (RK(B) <= RK(C)) != bool(A) then PC++
@@ -689,30 +1518,41 @@ func (cg *Codegen) emitLE(pc int, inst uint32) error {
 	bIdx := vm.DecodeB(inst)
 	cIdx := vm.DecodeC(inst)
 
-	exitLabel := fmt.Sprintf("le_exit_%d", pc)
 	skipLabel := pcLabel(pc + 2)
 
-	// Type guard
-	cg.loadRKTyp(X0, bIdx)
-	cg.asm.CMPimmW(X0, TypeInt)
-	cg.asm.BCond(CondNE, exitLabel)
-	cg.loadRKTyp(X0, cIdx)
-	cg.asm.CMPimmW(X0, TypeInt)
-	cg.asm.BCond(CondNE, exitLabel)
+	bKnown := cg.isRKKnownInt(pc, bIdx)
+	cKnown := cg.isRKKnownInt(pc, cIdx)
+	needExit := !bKnown || !cKnown
+
+	var exitLabel string
+	if needExit {
+		exitLabel = fmt.Sprintf("le_exit_%d", pc)
+		if !bKnown {
+			cg.loadRKTyp(X0, bIdx)
+			cg.asm.CMPimmW(X0, TypeInt)
+			cg.asm.BCond(CondNE, exitLabel)
+		}
+		if !cKnown {
+			cg.loadRKTyp(X0, cIdx)
+			cg.asm.CMPimmW(X0, TypeInt)
+			cg.asm.BCond(CondNE, exitLabel)
+		}
+	}
 
 	cg.loadRKIval(X0, bIdx)
 	cg.loadRKIval(X1, cIdx)
 	cg.asm.CMPreg(X0, X1)
 
-	// if (B <= C) != bool(A) then skip
 	if aFlag != 0 {
-		// A=1: skip if NOT less-or-equal (i.e., >)
 		cg.asm.BCond(CondGT, skipLabel)
 	} else {
-		// A=0: skip if <=
 		cg.asm.BCond(CondLE, skipLabel)
 	}
-	return cg.emitComparisonSideExit(pc, exitLabel)
+
+	if needExit {
+		return cg.emitComparisonSideExit(pc, exitLabel)
+	}
+	return nil
 }
 
 func (cg *Codegen) emitComparisonSideExit(pc int, exitLabel string) error {
@@ -720,6 +1560,7 @@ func (cg *Codegen) emitComparisonSideExit(pc int, exitLabel string) error {
 	cg.asm.B(after)
 
 	cg.asm.Label(exitLabel)
+	cg.spillPinnedRegs()
 	cg.asm.LoadImm64(X1, int64(pc))
 	cg.asm.STR(X1, regCtx, ctxOffExitPC)
 	cg.asm.LoadImm64(X0, 1)
@@ -806,19 +1647,10 @@ func (cg *Codegen) emitForPrep(pc int, inst uint32) error {
 	cg.asm.CMPimmW(X0, TypeInt)
 	cg.asm.BCond(CondNE, exitLabel)
 
-	// R(A) -= R(A+2)
-	cg.loadRegIval(X0, aReg)
-	cg.loadRegIval(X1, aReg+2)
-	cg.asm.SUBreg(X0, X0, X1)
-	cg.storeRegIval(X0, aReg) // type stays TypeInt
-
-	// Jump to FORLOOP (pc + 1 + sbx)
-	target := pc + 1 + sbx
-	cg.asm.B(pcLabel(target))
-
-	// Side exit
-	after := fmt.Sprintf("forprep_done_%d", pc)
-	cg.asm.B(after) // dead code, but keeps labels happy
+	// Emit side-exit BEFORE setting up pinning (at runtime, the exit path
+	// skips the pinning loads, so we must not emit spill code here).
+	guardsOK := fmt.Sprintf("forprep_ok_%d", pc)
+	cg.asm.B(guardsOK)
 
 	cg.asm.Label(exitLabel)
 	cg.asm.LoadImm64(X1, int64(pc))
@@ -826,55 +1658,154 @@ func (cg *Codegen) emitForPrep(pc int, inst uint32) error {
 	cg.asm.LoadImm64(X0, 1)
 	cg.asm.B("epilogue")
 
-	cg.asm.Label(after)
+	cg.asm.Label(guardsOK)
+
+	// Set up register pinning if this loop was analyzed and is innermost.
+	desc := cg.forLoops[pc]
+	if desc != nil && desc.canPin {
+		cg.setupLoopPinning(desc)
+
+		// Pre-set R(A+3).typ = TypeInt in memory (once, before loop).
+		cg.asm.MOVimm16W(X9, TypeInt)
+		cg.storeRegTyp(X9, aReg+3)
+
+		// Also set typ for body accumulators (they're pinned, typ won't be written in body).
+		for _, vmReg := range desc.bodyAccumulators {
+			cg.asm.MOVimm16W(X9, TypeInt)
+			cg.storeRegTyp(X9, vmReg)
+		}
+
+		// R(A) -= R(A+2) using pinned registers.
+		idxReg := cg.pinnedRegs[aReg]
+		stepReg := cg.pinnedRegs[aReg+2]
+		cg.asm.SUBreg(idxReg, idxReg, stepReg)
+	} else {
+		// Fallback: no pinning.
+		cg.loadRegIval(X0, aReg)
+		cg.loadRegIval(X1, aReg+2)
+		cg.asm.SUBreg(X0, X0, X1)
+		cg.storeRegIval(X0, aReg)
+	}
+
+	// Jump to FORLOOP (pc + 1 + sbx)
+	target := pc + 1 + sbx
+	cg.asm.B(pcLabel(target))
 	return nil
 }
 
 // emitForLoop: R(A) += R(A+2); if in range: R(A+3) = R(A), PC += sBx.
-// Integer specialization.
+// Optimized with register pinning and step-sign specialization.
 func (cg *Codegen) emitForLoop(pc int, inst uint32) error {
 	aReg := vm.DecodeA(inst)
 	sbx := vm.DecodesBx(inst)
 
-	// idx += step
-	cg.loadRegIval(X0, aReg)     // idx
-	cg.loadRegIval(X1, aReg+2)   // step
-	cg.asm.ADDreg(X0, X0, X1)    // new idx
-	cg.storeRegIval(X0, aReg)    // R(A).ival = new idx
-
-	// Load limit
-	cg.loadRegIval(X2, aReg+1)
-
-	// Check step sign
-	cg.asm.CMPimm(X1, 0)
-	negStep := fmt.Sprintf("forloop_neg_%d", pc)
-	cg.asm.BCond(CondLT, negStep)
-
-	// Positive step: continue if idx <= limit
-	cg.asm.CMPreg(X0, X2)
+	desc := cg.forLoops[pc]
 	loopBody := pcLabel(pc + 1 + sbx)
 	exitFor := fmt.Sprintf("forloop_exit_%d", pc)
-	cg.asm.BCond(CondGT, exitFor)
-	cg.asm.B(fmt.Sprintf("forloop_cont_%d", pc))
 
-	// Negative step: continue if idx >= limit
-	cg.asm.Label(negStep)
-	cg.asm.CMPreg(X0, X2)
-	cg.asm.BCond(CondLT, exitFor)
+	if desc != nil && len(cg.pinnedRegs) > 0 {
+		idxReg := cg.pinnedRegs[aReg]
+		limitReg := cg.pinnedRegs[aReg+1]
+		stepReg := cg.pinnedRegs[aReg+2]
+		loopVarReg := cg.pinnedRegs[aReg+3]
 
-	// Continue: R(A+3) = R(A) (as IntValue)
-	cg.asm.Label(fmt.Sprintf("forloop_cont_%d", pc))
-	cg.storeIntValue(aReg+3, X0) // R(A+3) = IntValue(idx)
-	cg.asm.B(loopBody)
+		if desc.stepKnown && desc.stepValue > 0 {
+			// Optimized: known positive step — bottom-tested loop.
+			if desc.stepValue == 1 {
+				cg.asm.ADDimm(idxReg, idxReg, 1)
+			} else {
+				cg.asm.ADDreg(idxReg, idxReg, stepReg)
+			}
+			cg.asm.CMPreg(idxReg, limitReg)
 
-	// Loop done
-	cg.asm.Label(exitFor)
+			if loopVarReg != idxReg {
+				cg.asm.MOVreg(loopVarReg, idxReg)
+			}
+			// Conditional back-edge: continue if idx <= limit.
+			cg.asm.BCond(CondLE, loopBody)
+		} else if desc.stepKnown && desc.stepValue < 0 {
+			// Optimized: known negative step — bottom-tested loop.
+			if desc.stepValue == -1 {
+				cg.asm.SUBimm(idxReg, idxReg, 1)
+			} else {
+				cg.asm.ADDreg(idxReg, idxReg, stepReg)
+			}
+			cg.asm.CMPreg(idxReg, limitReg)
+
+			if loopVarReg != idxReg {
+				cg.asm.MOVreg(loopVarReg, idxReg)
+			}
+			// Conditional back-edge: continue if idx >= limit.
+			cg.asm.BCond(CondGE, loopBody)
+		} else {
+			// Unknown step sign: general path with pinned registers.
+			cg.asm.ADDreg(idxReg, idxReg, stepReg)
+
+			cg.asm.CMPimm(stepReg, 0)
+			negStep := fmt.Sprintf("forloop_neg_%d", pc)
+			cg.asm.BCond(CondLT, negStep)
+
+			cg.asm.CMPreg(idxReg, limitReg)
+			cg.asm.BCond(CondGT, exitFor)
+			cg.asm.B(fmt.Sprintf("forloop_cont_%d", pc))
+
+			cg.asm.Label(negStep)
+			cg.asm.CMPreg(idxReg, limitReg)
+			cg.asm.BCond(CondLT, exitFor)
+
+			cg.asm.Label(fmt.Sprintf("forloop_cont_%d", pc))
+			if loopVarReg != idxReg {
+				cg.asm.MOVreg(loopVarReg, idxReg)
+			}
+			cg.asm.B(loopBody)
+		}
+
+		// Loop exit: spill pinned registers back to memory and clear pinning.
+		cg.asm.Label(exitFor)
+		cg.spillPinnedRegs()
+		cg.clearPinning()
+	} else {
+		// Fallback: no pinning (original code).
+		cg.loadRegIval(X0, aReg)
+		cg.loadRegIval(X1, aReg+2)
+		cg.asm.ADDreg(X0, X0, X1)
+		cg.storeRegIval(X0, aReg)
+
+		cg.loadRegIval(X2, aReg+1)
+
+		cg.asm.CMPimm(X1, 0)
+		negStep := fmt.Sprintf("forloop_neg_%d", pc)
+		cg.asm.BCond(CondLT, negStep)
+
+		cg.asm.CMPreg(X0, X2)
+		cg.asm.BCond(CondGT, exitFor)
+		cg.asm.B(fmt.Sprintf("forloop_cont_%d", pc))
+
+		cg.asm.Label(negStep)
+		cg.asm.CMPreg(X0, X2)
+		cg.asm.BCond(CondLT, exitFor)
+
+		cg.asm.Label(fmt.Sprintf("forloop_cont_%d", pc))
+		cg.storeIntValue(aReg+3, X0)
+		cg.asm.B(loopBody)
+
+		cg.asm.Label(exitFor)
+	}
 	return nil
 }
 
-func (cg *Codegen) emitReturnOp(inst uint32) error {
+func (cg *Codegen) emitReturnOp(pc int, inst uint32) error {
 	aReg := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
+
+	// Spill pinned registers before returning (return values must be in memory).
+	if len(cg.pinnedRegs) > 0 {
+		cg.spillPinnedRegs()
+	}
+
+	if cg.hasSelfCalls {
+		return cg.emitSelfCallReturn(pc, aReg, b)
+	}
 
 	if b == 0 {
 		// Return R(A) to top — side exit since we don't track 'top'.
@@ -902,5 +1833,113 @@ func (cg *Codegen) emitReturnOp(inst uint32) error {
 	cg.asm.STR(X1, regCtx, ctxOffRetCount)
 	cg.asm.LoadImm64(X0, 0)
 	cg.asm.B("epilogue")
+	return nil
+}
+
+// emitSelfCallReturn handles RETURN for functions with self-recursive calls.
+// If X25 > 0 (we're inside a self-call), return via RET with result in X0.
+// If X25 == 0 (outermost call), write to JITContext and go to epilogue.
+func (cg *Codegen) emitSelfCallReturn(pc, aReg, b int) error {
+	a := cg.asm
+
+	if b == 0 {
+		// Variable return count — side exit.
+		a.LoadImm64(X1, int64(-1))
+		a.STR(X1, regCtx, ctxOffRetBase)
+		a.LoadImm64(X0, 1)
+		a.B("epilogue")
+		return nil
+	}
+
+	nret := 0
+	if b > 1 {
+		nret = b - 1
+		// Load first return value into X0.
+		cg.loadRegIval(X0, aReg)
+	} else {
+		// Return nothing — X0 = 0.
+		a.LoadImm64(X0, 0)
+	}
+
+	// Check depth: if > 0, this is a nested self-call return.
+	outerLabel := fmt.Sprintf("outermost_ret_%d", pc)
+	a.CBZ(regSelfDepth, outerLabel)
+	// Self-call return: X0 = result, just RET back to BL caller.
+	a.RET()
+
+	// Outermost return: write to JITContext.
+	a.Label(outerLabel)
+	a.LoadImm64(X1, int64(aReg))
+	a.STR(X1, regCtx, ctxOffRetBase)
+	a.LoadImm64(X1, int64(nret))
+	a.STR(X1, regCtx, ctxOffRetCount)
+	a.LoadImm64(X0, 0)
+	a.B("epilogue")
+	return nil
+}
+
+// Maximum self-recursion depth before falling back to interpreter.
+const maxSelfRecursionDepth = 200
+
+// emitSelfCall emits native ARM64 code for a self-recursive function call.
+// Saves state on the ARM64 stack, advances regRegs to a new register window,
+// and BL to self_call_entry.
+func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
+	a := cg.asm
+	fnReg := candidate.fnReg
+
+	overflowLabel := fmt.Sprintf("self_overflow_%d", pc)
+	doneLabel := fmt.Sprintf("self_done_%d", pc)
+
+	// Save state: X29, X30 (frame + link), X25 (depth), regRegs (register base).
+	a.STPpre(X29, X30, SP, -32)    // [SP] = X29, X30; SP -= 32
+	a.STP(regSelfDepth, regRegs, SP, 16) // [SP+16] = X25, X26
+
+	// Increment depth counter.
+	a.ADDimm(regSelfDepth, regSelfDepth, 1)
+
+	// Check depth limit — side exit if too deep.
+	a.CMPimm(regSelfDepth, maxSelfRecursionDepth)
+	a.BCond(CondGE, overflowLabel)
+
+	// Advance regRegs to callee's register window.
+	// Callee's R(0) = Caller's R(fnReg+1).
+	offset := (fnReg + 1) * ValueSize
+	if offset <= 4095 {
+		a.ADDimm(regRegs, regRegs, uint16(offset))
+	} else {
+		a.LoadImm64(X0, int64(offset))
+		a.ADDreg(regRegs, regRegs, X0)
+	}
+
+	// Argument is already at callee's R(0) because:
+	// caller's R(fnReg+1) = callee's R(0) after advancing regRegs.
+
+	// BL to self_call_entry (re-enters the function body).
+	a.BL("self_call_entry")
+
+	// After return: X0 = result (ival).
+	// Restore state.
+	a.LDP(regSelfDepth, regRegs, SP, 16) // restore X25, X26
+	a.LDPpost(X29, X30, SP, 32)          // restore X29, X30; SP += 32
+
+	// Store result to R(fnReg) in caller's register window.
+	a.STR(X0, regRegs, regIvalOffset(fnReg))
+	a.MOVimm16W(X9, TypeInt)
+	cg.storeRegTyp(X9, fnReg)
+
+	a.B(doneLabel)
+
+	// Overflow handler: side exit to interpreter.
+	a.Label(overflowLabel)
+	a.LDP(regSelfDepth, regRegs, SP, 16)
+	a.LDPpost(X29, X30, SP, 32)
+	cg.spillPinnedRegs()
+	a.LoadImm64(X1, int64(candidate.getglobalPC))
+	a.STR(X1, regCtx, ctxOffExitPC)
+	a.LoadImm64(X0, 1) // side exit
+	a.B("epilogue")
+
+	a.Label(doneLabel)
 	return nil
 }

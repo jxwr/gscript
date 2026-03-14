@@ -14,6 +14,24 @@ type Table struct {
 	keysDirty bool
 }
 
+// cleanHashKey normalizes a Value for use as a Go map key.
+// This ensures that two logically equal values (e.g., two IntValues with ival=0)
+// map to the same key even if they have stale leftover fields from
+// partial-update optimizations like SetInt.
+func cleanHashKey(key Value) Value {
+	switch key.typ {
+	case TypeInt:
+		return Value{typ: TypeInt, ival: key.ival}
+	case TypeFloat:
+		return Value{typ: TypeFloat, fval: key.fval}
+	case TypeString:
+		return Value{typ: TypeString, sval: key.sval}
+	default:
+		// nil, bool, table, function, coroutine, channel — use as-is
+		return key
+	}
+}
+
 // NewTable creates a new empty table.
 func NewTable() *Table {
 	return &Table{
@@ -39,7 +57,7 @@ func (t *Table) RawGet(key Value) Value {
 		}
 	}
 	// Fall through to hash part
-	val, ok := t.hash[key]
+	val, ok := t.hash[cleanHashKey(key)]
 	t.mu.RUnlock()
 	if !ok {
 		return NilValue()
@@ -80,10 +98,11 @@ func (t *Table) RawSet(key, val Value) {
 		}
 	}
 	// Hash part
+	ck := cleanHashKey(key)
 	if val.IsNil() {
-		delete(t.hash, key)
+		delete(t.hash, ck)
 	} else {
-		t.hash[key] = val
+		t.hash[ck] = val
 	}
 	t.mu.Unlock()
 }

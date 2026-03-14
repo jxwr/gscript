@@ -1745,6 +1745,20 @@ func (c *compiler) compileCondCmp(e *ast.BinaryExpr, op Opcode, a int, swap bool
 	return jmp, nil
 }
 
+// smallIntLit returns (value, true) if expr is an integer literal in [0, 255].
+// Currently unused but retained for future immediate-operand opcodes.
+func smallIntLit(expr ast.Expr) (int, bool) {
+	num, ok := expr.(*ast.NumberLit)
+	if !ok {
+		return 0, false
+	}
+	i, err := strconv.ParseInt(num.Value, 0, 64)
+	if err != nil || i < 0 || i > 255 {
+		return 0, false
+	}
+	return int(i), true
+}
+
 func (c *compiler) compileComparison(e *ast.BinaryExpr, dest int, op Opcode, a int, swap bool) error {
 	line := e.P.Line
 	var leftExpr, rightExpr ast.Expr
