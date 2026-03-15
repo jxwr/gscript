@@ -145,8 +145,8 @@ func New(globals map[string]runtime.Value) *VM {
 	return v
 }
 
-// newChildVM creates a child VM that shares globals, mutex, and string metatable
-// with the parent. Used by OP_GO for goroutines and by coroutines.
+// newChildVM creates a child VM that shares globals with the parent.
+// Used by coroutines which need to see the caller's global state.
 func newChildVM(parent *VM) *VM {
 	child := &VM{
 		regs:         make([]runtime.Value, 1024),
@@ -157,6 +157,43 @@ func newChildVM(parent *VM) *VM {
 		globalVer:    parent.globalVer,
 		globalsMu:    parent.globalsMu,
 		noGlobalLock: false, // shared globals, must lock
+		stringMeta:   parent.stringMeta,
+	}
+	if parent.jitFactory != nil {
+		engine := parent.jitFactory(child)
+		child.SetJIT(engine)
+	}
+	child.RegisterCoroutineLib()
+	return child
+}
+
+// newIsolatedChildVM creates a child VM with a snapshot of the parent's globals.
+// Used by OP_GO goroutines for lock-free reads. Shared heap objects (tables,
+// channels) remain shared via pointers; globals array and index are copied.
+func newIsolatedChildVM(parent *VM) *VM {
+	// Copy both globalArray and globalIndex for full isolation
+	ga := make([]runtime.Value, len(parent.globalArray))
+	copy(ga, parent.globalArray)
+
+	gi := make(map[string]int, len(parent.globalIndex))
+	for k, v := range parent.globalIndex {
+		gi[k] = v
+	}
+
+	childGlobals := make(map[string]runtime.Value, len(gi))
+	for name, idx := range gi {
+		childGlobals[name] = ga[idx]
+	}
+
+	child := &VM{
+		regs:         make([]runtime.Value, 1024),
+		frames:       make([]CallFrame, maxCallDepth),
+		globals:      childGlobals,
+		globalArray:  ga,
+		globalIndex:  gi,
+		globalVer:    parent.globalVer,
+		globalsMu:    &sync.RWMutex{},
+		noGlobalLock: true, // own copy, fully lock-free
 		stringMeta:   parent.stringMeta,
 	}
 	if parent.jitFactory != nil {
@@ -1220,11 +1257,11 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			}
 
 		case OP_GO:
-			// Mark VM as multi-goroutine (need locking from now on)
+			// Mark shared table objects as concurrent and switch parent
+			// to locked mode (prevents concurrent writes to globalIndex).
 			if vm.noGlobalLock {
-				vm.noGlobalLock = false
-				// Mark global tables as concurrent to prevent map races
 				vm.markGlobalTablesConcurrent()
+				vm.noGlobalLock = false
 			}
 
 			a := DecodeA(inst)
@@ -1239,7 +1276,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				args[i] = vm.regs[base+a+1+i]
 			}
 			go func(fn runtime.Value, goArgs []runtime.Value) {
-				goVM := newChildVM(vm)
+				goVM := newIsolatedChildVM(vm)
 				if cl, ok := fn.Ptr().(*Closure); ok {
 					goVM.call(cl, goArgs, 0, 0)
 				} else if gf := fn.GoFunction(); gf != nil {

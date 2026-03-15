@@ -1173,29 +1173,24 @@ for v := range counter(4) {
 // Test basic go statement with shared globals
 func TestGoStmtBasic(t *testing.T) {
 	g := compileAndRun(t, `
-result := 0
-done := false
+ch := make(chan, 1)
 go func() {
-	result = 42
-	done = true
+	ch <- 42
 }()
-for !done {}
+result := <-ch
 `)
 	expectGlobalInt(t, g, "result", 42)
-	expectGlobalBool(t, g, "done", true)
 }
 
 // Test go with named function
 func TestGoStmtNamedFunc(t *testing.T) {
 	g := compileAndRun(t, `
-result := 0
-done := false
+ch := make(chan, 1)
 func compute() {
-	result = 100
-	done = true
+	ch <- 100
 }
 go compute()
-for !done {}
+result := <-ch
 `)
 	expectGlobalInt(t, g, "result", 100)
 }
@@ -1203,14 +1198,12 @@ for !done {}
 // Test go with arguments
 func TestGoStmtWithArgs(t *testing.T) {
 	g := compileAndRun(t, `
-result := 0
-done := false
+ch := make(chan, 1)
 func add(a, b) {
-	result = a + b
-	done = true
+	ch <- a + b
 }
 go add(10, 20)
-for !done {}
+result := <-ch
 `)
 	expectGlobalInt(t, g, "result", 30)
 }
@@ -1218,17 +1211,15 @@ for !done {}
 // Test go with computation
 func TestGoStmtComputation(t *testing.T) {
 	g := compileAndRun(t, `
-result := 0
-done := false
+ch := make(chan, 1)
 go func() {
 	sum := 0
 	for i := 1; i <= 100; i++ {
 		sum = sum + i
 	}
-	result = sum
-	done = true
+	ch <- sum
 }()
-for !done {}
+result := <-ch
 `)
 	expectGlobalInt(t, g, "result", 5050)
 }
@@ -1236,13 +1227,11 @@ for !done {}
 // Test multiple goroutines
 func TestGoStmtMultiple(t *testing.T) {
 	g := compileAndRun(t, `
-r1 := 0
-r2 := 0
-d1 := false
-d2 := false
-go func() { r1 = 10; d1 = true }()
-go func() { r2 = 20; d2 = true }()
-for !d1 || !d2 {}
+ch := make(chan, 2)
+go func() { ch <- 10 }()
+go func() { ch <- 20 }()
+r1 := <-ch
+r2 := <-ch
 total := r1 + r2
 `)
 	expectGlobalInt(t, g, "total", 30)
@@ -1251,12 +1240,13 @@ total := r1 + r2
 // Test go writes to shared table
 func TestGoStmtSharedTable(t *testing.T) {
 	g := compileAndRun(t, `
-state := {done: false, value: 0}
+ch := make(chan, 1)
+state := {value: 0}
 go func() {
 	state.value = 99
-	state.done = true
+	ch <- true
 }()
-for !state.done {}
+<-ch
 result := state.value
 `)
 	expectGlobalInt(t, g, "result", 99)
@@ -1325,13 +1315,11 @@ result := <-ch
 
 func TestChannelGoroutineSync(t *testing.T) {
 	g := compileAndRun(t, `
-done := make(chan)
-result := 0
+ch := make(chan)
 go func() {
-    result = 100
-    done <- true
+    ch <- 100
 }()
-<-done
+result := <-ch
 `)
 	expectGlobalInt(t, g, "result", 100)
 }
