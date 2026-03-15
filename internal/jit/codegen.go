@@ -11,14 +11,15 @@ import (
 )
 
 // JITContext is the bridge between Go and JIT-compiled code.
-// The JIT function reads Regs/Constants pointers and writes exit information.
+// The JIT function reads Regs/Constants/ResumePC and writes exit information.
 type JITContext struct {
-	Regs      uintptr // pointer to vm.regs[base] (first Value in register window)
-	Constants uintptr // pointer to constants[0]
-	ExitPC    int64   // output: bytecode PC to resume at (on side exit)
-	ExitCode  int64   // output: 0 = normal return, 1 = side exit
+	Regs      uintptr // input:  pointer to vm.regs[base] (first Value in register window)
+	Constants uintptr // input:  pointer to constants[0]
+	ExitPC    int64   // output: bytecode PC where JIT exited
+	ExitCode  int64   // output: 0 = normal return, 1 = side exit, 2 = call exit (resumable)
 	RetBase   int64   // output: return base register index
 	RetCount  int64   // output: return value count
+	ResumePC  int64   // input:  non-zero → JIT resumes execution at this PC instead of starting from the beginning
 }
 
 // JITContext field offsets (verified at init).
@@ -29,6 +30,7 @@ const (
 	ctxOffExitCode  = 24
 	ctxOffRetBase   = 32
 	ctxOffRetCount  = 40
+	ctxOffResumePC  = 48
 )
 
 func init() {
@@ -50,6 +52,9 @@ func init() {
 	}
 	if unsafe.Offsetof(ctx.RetCount) != ctxOffRetCount {
 		panic("jit: JITContext.RetCount offset mismatch")
+	}
+	if unsafe.Offsetof(ctx.ResumePC) != ctxOffResumePC {
+		panic("jit: JITContext.ResumePC offset mismatch")
 	}
 }
 
@@ -117,6 +122,17 @@ type Codegen struct {
 	inlineCandidates map[int]*inlineCandidate // keyed by CALL PC
 	inlineSkipPCs    map[int]bool            // GETGLOBAL PCs to skip (part of inline pattern)
 	hasSelfCalls     bool                    // true if function has self-recursive calls
+	callExitPCs      []int                   // PCs that use call-exit (ExitCode=2) for resume dispatch
+	cmpCallExitPCs   []int                   // PCs of comparison ops with non-int type guards (call-exit on guard fail)
+	cmpResumeStubs   []cmpResumeStub         // resume stubs for comparison call-exits (deferred)
+}
+
+// cmpResumeStub describes a comparison call-exit resume stub with captured pinning state.
+type cmpResumeStub struct {
+	label      string         // label for this stub
+	targetPC   string         // pcLabel to jump to after reload
+	pinnedVars []int          // snapshot of pinnedVars at creation time
+	pinnedRegs map[int]Reg    // snapshot of pinnedRegs at creation time
 }
 
 // Reserved register for self-recursion depth tracking.
@@ -138,16 +154,31 @@ func CompileWithGlobals(proto *vm.FuncProto, globals map[string]rt.Value) (*Comp
 	cg.analyzeInlineCandidates() // must run first: identifies inline/self-call PCs for data flow
 	cg.analyzeKnownIntRegs()
 	cg.analyzeForLoops()
+	cg.analyzeCallExitPCs()
 	cg.emitPrologue()
 	if err := cg.emitBody(); err != nil {
 		return nil, err
 	}
+	// Emit deferred comparison resume stubs with captured pinning state.
+	for _, stub := range cg.cmpResumeStubs {
+		cg.asm.Label(stub.label)
+		cg.asm.LDR(regRegs, regCtx, ctxOffRegs)
+		// Reload pinned registers using the captured state from when the comparison was emitted.
+		for _, vmReg := range stub.pinnedVars {
+			if armReg, ok := stub.pinnedRegs[vmReg]; ok {
+				cg.asm.LDR(armReg, regRegs, regIvalOffset(vmReg))
+			}
+		}
+		cg.asm.B(stub.targetPC)
+	}
+
 	cg.emitEpilogue()
 
 	code, err := cg.asm.Finalize()
 	if err != nil {
 		return nil, fmt.Errorf("jit: finalize: %w", err)
 	}
+
 
 	block, err := AllocExec(len(code))
 	if err != nil {
@@ -163,6 +194,7 @@ func CompileWithGlobals(proto *vm.FuncProto, globals map[string]rt.Value) (*Comp
 }
 
 // emitPrologue saves callee-saved registers and sets up base pointers.
+// If there are call-exit PCs, it also emits a dispatch table for re-entry.
 func (cg *Codegen) emitPrologue() {
 	a := cg.asm
 
@@ -181,6 +213,51 @@ func (cg *Codegen) emitPrologue() {
 	a.MOVreg(regCtx, X0)             // x28 = JITContext*
 	a.LDR(regRegs, regCtx, ctxOffRegs)       // x26 = regs base
 	a.LDR(regConsts, regCtx, ctxOffConstants) // x27 = constants base
+
+	// Dispatch table for call-exit resume.
+	// When ResumePC != 0, jump to the resume point after the call-exit instruction.
+	hasDispatch := len(cg.callExitPCs) > 0 || len(cg.cmpCallExitPCs) > 0
+	if hasDispatch {
+		a.LDR(X0, regCtx, ctxOffResumePC) // x0 = ctx.ResumePC
+		a.CBZ(X0, "normal_start")         // if 0, start from beginning
+
+		// Clear ResumePC so nested re-entries don't loop.
+		a.STR(XZR, regCtx, ctxOffResumePC)
+
+		// Initialize self-recursion depth to 0 on dispatch re-entry.
+		// Without this, X25 holds whatever Go left in it, causing
+		// emitSelfCallReturn to take the nested-call RET path (bare RET
+		// without epilogue), which leaves the 96-byte stack frame unpopped.
+		if cg.hasSelfCalls {
+			a.MOVimm16(regSelfDepth, 0)
+		}
+
+		// Regular call-exit dispatch: CMP + B.EQ for each call-exit PC.
+		// Resume value is nextPC (always ExitPC+1).
+		for _, pc := range cg.callExitPCs {
+			a.CMPimm(X0, uint16(pc+1))
+			a.BCond(CondEQ, resumeLabel(pc))
+		}
+
+		// Comparison call-exit dispatch: resume value has high bit set
+		// (nextPC | 0x8000) to avoid collisions with regular call-exits.
+		for _, pc := range cg.cmpCallExitPCs {
+			cmpStub := fmt.Sprintf("cmp_resume_%d", pc)
+			a.LoadImm64(X1, int64((pc+1)|0x8000))
+			a.CMPreg(X0, X1)
+			a.BCond(CondEQ, cmpStub+"_1")
+			a.LoadImm64(X1, int64((pc+2)|0x8000))
+			a.CMPreg(X0, X1)
+			a.BCond(CondEQ, cmpStub+"_2")
+		}
+
+		// Unknown resume PC — fall back to side-exit.
+		a.STR(X0, regCtx, ctxOffExitPC)
+		a.LoadImm64(X0, 1) // ExitCode = 1
+		a.B("epilogue")
+
+		a.Label("normal_start")
+	}
 
 	if cg.hasSelfCalls {
 		a.MOVimm16(regSelfDepth, 0) // depth = 0 at outermost call
@@ -249,9 +326,9 @@ func regIvalOffset(i int) int {
 	return i*ValueSize + OffsetIval
 }
 
-// regFvalOffset returns the byte offset of R(i).fval from regRegs.
+// regFvalOffset returns the byte offset of R(i).data from regRegs (float stored as bits in data).
 func regFvalOffset(i int) int {
-	return i*ValueSize + OffsetFval
+	return i*ValueSize + OffsetData
 }
 
 // loadRegTyp loads the type byte of R(reg) into the ARM64 register dst (as W-form).
@@ -376,7 +453,7 @@ func (cg *Codegen) loadRKIval(dst Reg, idx int) {
 func (cg *Codegen) loadRKFval(dst FReg, idx int) {
 	if vm.IsRK(idx) {
 		constIdx := vm.RKToConstIdx(idx)
-		off := constIdx*ValueSize + OffsetFval
+		off := constIdx*ValueSize + OffsetData
 		cg.asm.FLDRd(dst, regConsts, off)
 	} else {
 		cg.loadRegFval(dst, idx)
@@ -384,19 +461,16 @@ func (cg *Codegen) loadRKFval(dst FReg, idx int) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Copy a full Value (56 bytes) between registers.
+// Copy a full Value (32 bytes) between registers.
 // ──────────────────────────────────────────────────────────────────────────────
 
-// copyValue copies the full Value (56 bytes = 7 words) from src to dst.
-// Uses LDR/STR (12-bit unsigned scaled offset, range 0-32760) to avoid
-// the LDP/STP signed 7-bit immediate range limit (max +504 bytes) which
-// silently wraps for register indices >= 9.
+// copyValue copies the full Value (32 bytes = 4 words) from src to dst.
 func (cg *Codegen) copyValue(dstReg, srcReg int) {
 	srcBase := srcReg * ValueSize
 	dstBase := dstReg * ValueSize
 	a := cg.asm
 
-	for i := 0; i < 7; i++ {
+	for i := 0; i < 4; i++ {
 		a.LDR(X0, regRegs, srcBase+i*8)
 		a.STR(X0, regRegs, dstBase+i*8)
 	}
@@ -410,7 +484,7 @@ func (cg *Codegen) copyRKValue(dstReg, rkIdx int) {
 		dstBase := dstReg * ValueSize
 		a := cg.asm
 
-		for i := 0; i < 7; i++ {
+		for i := 0; i < 4; i++ {
 			a.LDR(X0, regConsts, srcBase+i*8)
 			a.STR(X0, regRegs, dstBase+i*8)
 		}
@@ -540,17 +614,15 @@ func (cg *Codegen) pcSuccessors(pc int) []int {
 				return []int{pc + 1}
 			}
 		}
-		return nil // side-exit, no JIT successors
+		// Call-exit opcodes resume at pc+1 (executor handles the instruction).
+		if isCallExitOp(op) {
+			return []int{pc + 1}
+		}
+		return nil // permanent side-exit, no JIT successors
 	}
 
 	switch op {
-	case vm.OP_RETURN, vm.OP_SETGLOBAL:
-		return nil
-	case vm.OP_GETGLOBAL:
-		// Skipped GETGLOBALs (part of inline/self-call pattern) fall through.
-		if cg.inlineSkipPCs != nil && cg.inlineSkipPCs[pc] {
-			return []int{pc + 1}
-		}
+	case vm.OP_RETURN:
 		return nil
 	case vm.OP_JMP:
 		return []int{pc + 1 + vm.DecodesBx(inst)}
@@ -678,6 +750,9 @@ func (cg *Codegen) analyzeForLoops() {
 // Also detects indirect accumulators: ADD Rtemp, Raccum, Rx; MOVE Raccum, Rtemp
 // (where the compiler uses a temporary for s = s + i).
 // Excludes for-loop control registers (aReg..aReg+3).
+// Safety: excludes registers that are also written by non-integer-producing
+// instructions (MOVE, LOADK with non-int constant, call-exit ops like GETTABLE,
+// GETFIELD, etc.), because pinning such registers would corrupt non-integer values.
 func (cg *Codegen) findAccumulators(bodyStart, bodyEnd, aReg int) []int {
 	counts := make(map[int]int)
 	code := cg.proto.Code
@@ -713,9 +788,49 @@ func (cg *Codegen) findAccumulators(bodyStart, bodyEnd, aReg int) []int {
 			}
 		}
 	}
-	// Return accumulators sorted by frequency (up to 3).
+
+	// Safety check: exclude registers that are written by non-integer-producing
+	// instructions anywhere in the loop body. Pinning such registers would corrupt
+	// non-integer values (tables, strings) during spill/reload cycles.
+	unsafe := make(map[int]bool)
+	for pc := bodyStart; pc < bodyEnd; pc++ {
+		inst := code[pc]
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		switch op {
+		case vm.OP_MOVE:
+			// MOVE R(A) = R(B) — source could be any type
+			unsafe[a] = true
+		case vm.OP_LOADK:
+			// LOADK with non-int constant writes a non-integer value
+			bx := vm.DecodeBx(inst)
+			if bx < len(cg.proto.Constants) && !cg.proto.Constants[bx].IsInt() {
+				unsafe[a] = true
+			}
+		case vm.OP_LOADNIL, vm.OP_LOADBOOL:
+			unsafe[a] = true
+		case vm.OP_GETTABLE, vm.OP_GETFIELD, vm.OP_GETGLOBAL, vm.OP_GETUPVAL:
+			unsafe[a] = true
+		case vm.OP_CALL:
+			unsafe[a] = true
+		case vm.OP_NEWTABLE:
+			unsafe[a] = true
+		case vm.OP_LEN, vm.OP_CONCAT:
+			unsafe[a] = true
+		case vm.OP_SELF:
+			unsafe[a] = true
+			unsafe[a+1] = true
+		case vm.OP_TESTSET:
+			unsafe[a] = true
+		}
+	}
+
+	// Return accumulators sorted by frequency (up to 3), excluding unsafe ones.
 	var result []int
 	for reg := range counts {
+		if unsafe[reg] {
+			continue
+		}
 		result = append(result, reg)
 	}
 	// Simple sort by count (descending)
@@ -792,10 +907,33 @@ func (cg *Codegen) spillPinnedRegs() {
 	}
 }
 
+// reloadPinnedRegs loads all pinned ARM registers from VM register memory.
+// Used at resume points after a call-exit to restore pinned state.
+func (cg *Codegen) reloadPinnedRegs() {
+	for _, vmReg := range cg.pinnedVars {
+		armReg := cg.pinnedRegs[vmReg]
+		cg.asm.LDR(armReg, regRegs, regIvalOffset(vmReg))
+	}
+}
+
 // clearPinning removes all register pinning.
 func (cg *Codegen) clearPinning() {
 	cg.pinnedRegs = make(map[int]Reg)
 	cg.pinnedVars = nil
+}
+
+// isCallExitOp returns true if the opcode should use call-exit (ExitCode=2)
+// instead of a permanent side-exit (ExitCode=1).
+// Call-exit allows the executor to handle the instruction and re-enter JIT.
+func isCallExitOp(op vm.Opcode) bool {
+	switch op {
+	case vm.OP_CALL, vm.OP_GETGLOBAL, vm.OP_SETGLOBAL,
+		vm.OP_GETTABLE, vm.OP_SETTABLE,
+		vm.OP_GETFIELD, vm.OP_SETFIELD,
+		vm.OP_NEWTABLE, vm.OP_LEN:
+		return true
+	}
+	return false
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1063,23 +1201,99 @@ func (cg *Codegen) emitInlineCall(pc int, candidate *inlineCandidate) error {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Call-exit analysis and resume dispatch
+// ──────────────────────────────────────────────────────────────────────────────
+
+// analyzeCallExitPCs collects bytecode PCs that will use call-exit (ExitCode=2).
+// These are unsupported opcodes (GETGLOBAL, SETGLOBAL, CALL) that the executor
+// can handle and then re-enter JIT at the next instruction.
+//
+// Optimization: A call-exit is only worthwhile if the successor instruction
+// (pc+1) can do useful JIT work — i.e., it is supported, an inline candidate,
+// or itself a call-exit. If the successor would immediately cause a permanent
+// side-exit, we demote the current instruction to permanent side-exit too,
+// avoiding a wasted exit/re-enter cycle.
+// Processing in reverse order handles cascading: if pc+2 is unsupported, pc+1
+// gets demoted, and then pc gets demoted as well.
+func (cg *Codegen) analyzeCallExitPCs() {
+	code := cg.proto.Code
+	cg.callExitPCs = nil
+
+	for pc := 0; pc < len(code); pc++ {
+		op := vm.DecodeOp(code[pc])
+		if cg.inlineSkipPCs[pc] {
+			continue
+		}
+		if _, ok := cg.inlineCandidates[pc]; ok {
+			continue
+		}
+		if !cg.isSupported(op) && isCallExitOp(op) {
+			cg.callExitPCs = append(cg.callExitPCs, pc)
+		}
+	}
+
+	// Detect comparison call-exit PCs.
+	// EQ/LT/LE with non-integer operands will call-exit on type guard failure.
+	// The executor may resume at pc+1 (condition false) or pc+2 (condition true/skip).
+	cg.cmpCallExitPCs = nil
+	for pc := 0; pc < len(code); pc++ {
+		op := vm.DecodeOp(code[pc])
+		if op == vm.OP_EQ || op == vm.OP_LT || op == vm.OP_LE {
+			bIdx := vm.DecodeB(code[pc])
+			cIdx := vm.DecodeC(code[pc])
+			bKnown := cg.isRKKnownInt(pc, bIdx)
+			cKnown := cg.isRKKnownInt(pc, cIdx)
+			if !bKnown || !cKnown {
+				cg.cmpCallExitPCs = append(cg.cmpCallExitPCs, pc)
+			}
+		}
+	}
+}
+
+// isJITProductive returns true if the instruction at pc will do useful work
+// in JIT (not immediately side-exit). This includes:
+// - natively supported instructions
+// - inline candidates or inline-skip PCs
+// - surviving call-exit candidates
+func (cg *Codegen) isJITProductive(pc int, survivedCallExits map[int]bool) bool {
+	if pc >= len(cg.proto.Code) {
+		return false
+	}
+	if cg.inlineSkipPCs[pc] {
+		return true
+	}
+	if _, ok := cg.inlineCandidates[pc]; ok {
+		return true
+	}
+	op := vm.DecodeOp(cg.proto.Code[pc])
+	if cg.isSupported(op) {
+		return true
+	}
+	if survivedCallExits[pc] {
+		return true
+	}
+	return false
+}
+
+// resumeLabel returns the label name for the resume point after a call-exit at pc.
+func resumeLabel(pc int) string {
+	return fmt.Sprintf("resume_after_%d", pc)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Body compilation
 // ──────────────────────────────────────────────────────────────────────────────
 
 func (cg *Codegen) emitBody() error {
 	code := cg.proto.Code
-	sideExits := make(map[int]bool) // PCs that need side exit labels
 
-	// First pass: identify which PCs need side exit labels.
-	for pc := 0; pc < len(code); pc++ {
-		inst := code[pc]
-		op := vm.DecodeOp(inst)
-		if !cg.isSupported(op) {
-			sideExits[pc] = true
-		}
+	// Build set of call-exit PCs for fast lookup.
+	callExitSet := make(map[int]bool, len(cg.callExitPCs))
+	for _, pc := range cg.callExitPCs {
+		callExitSet[pc] = true
 	}
 
-	// Second pass: emit code for each instruction.
+	// Emit code for each instruction.
 	for pc := 0; pc < len(code); pc++ {
 		cg.asm.Label(pcLabel(pc))
 		inst := code[pc]
@@ -1105,7 +1319,22 @@ func (cg *Codegen) emitBody() error {
 		}
 
 		if !cg.isSupported(op) {
-			// Emit a direct side exit (spill pinned registers first).
+			if callExitSet[pc] {
+				// Call-exit: spill state, exit with code 2, emit resume label.
+				cg.spillPinnedRegs()
+				cg.asm.LoadImm64(X1, int64(pc))
+				cg.asm.STR(X1, regCtx, ctxOffExitPC)
+				cg.asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit, resumable)
+				cg.asm.B("epilogue")
+
+				// Resume label: re-entry point after executor handles the instruction.
+				cg.asm.Label(resumeLabel(pc))
+				cg.asm.LDR(regRegs, regCtx, ctxOffRegs) // reload in case regs were reallocated
+				cg.reloadPinnedRegs()
+				continue // next pc label is emitted by the loop
+			}
+
+			// Permanent side exit for unsupported ops that can't be call-exited.
 			cg.spillPinnedRegs()
 			cg.asm.LoadImm64(X1, int64(pc))
 			cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -1122,7 +1351,9 @@ func (cg *Codegen) emitBody() error {
 	return nil
 }
 
-// isSupported returns true if the opcode can be compiled to native code.
+// isSupported returns true if the opcode can be compiled directly to native code.
+// Note: GETGLOBAL, SETGLOBAL, and CALL are handled via call-exit (ExitCode=2)
+// and are NOT listed here — they go through the call-exit path in emitBody.
 func (cg *Codegen) isSupported(op vm.Opcode) bool {
 	switch op {
 	case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_LOADINT, vm.OP_LOADK,
@@ -1133,8 +1364,7 @@ func (cg *Codegen) isSupported(op vm.Opcode) bool {
 		vm.OP_JMP,
 		vm.OP_FORPREP, vm.OP_FORLOOP,
 		vm.OP_RETURN,
-		vm.OP_TEST,
-		vm.OP_GETGLOBAL, vm.OP_SETGLOBAL:
+		vm.OP_TEST:
 		return true
 	}
 	return false
@@ -1163,7 +1393,7 @@ func (cg *Codegen) emitInstruction(pc int, inst uint32) error {
 	case vm.OP_UNM:
 		return cg.emitUNM(pc, inst)
 	case vm.OP_NOT:
-		return cg.emitNOT(inst)
+		return cg.emitNOT(pc, inst)
 	case vm.OP_EQ:
 		return cg.emitEQ(pc, inst)
 	case vm.OP_LT:
@@ -1180,14 +1410,6 @@ func (cg *Codegen) emitInstruction(pc int, inst uint32) error {
 		return cg.emitForLoop(pc, inst)
 	case vm.OP_RETURN:
 		return cg.emitReturnOp(pc, inst)
-	case vm.OP_GETGLOBAL, vm.OP_SETGLOBAL:
-		// Side exit — these need Go runtime interaction.
-		cg.spillPinnedRegs()
-		cg.asm.LoadImm64(X1, int64(pc))
-		cg.asm.STR(X1, regCtx, ctxOffExitPC)
-		cg.asm.LoadImm64(X0, 1)
-		cg.asm.B("epilogue")
-		return nil
 	}
 	return fmt.Errorf("unhandled opcode %s", vm.OpName(op))
 }
@@ -1389,7 +1611,7 @@ func (cg *Codegen) emitUNM(pc int, inst uint32) error {
 	return nil
 }
 
-func (cg *Codegen) emitNOT(inst uint32) error {
+func (cg *Codegen) emitNOT(pc int, inst uint32) error {
 	aReg := vm.DecodeA(inst)
 	bReg := vm.DecodeB(inst)
 
@@ -1401,27 +1623,27 @@ func (cg *Codegen) emitNOT(inst uint32) error {
 
 	// Check if nil (typ == 0)
 	cg.asm.CMPimmW(X0, TypeNil)
-	cg.asm.BCond(CondEQ, fmt.Sprintf("not_true_%d", bReg))
+	cg.asm.BCond(CondEQ, fmt.Sprintf("not_true_%d", pc))
 
 	// Check if false bool (typ == 1 && ival == 0)
 	cg.asm.CMPimmW(X0, TypeBool)
-	cg.asm.BCond(CondNE, fmt.Sprintf("not_false_%d", bReg))
+	cg.asm.BCond(CondNE, fmt.Sprintf("not_false_%d", pc))
 	cg.loadRegIval(X0, bReg)
 	cg.asm.CMPimm(X0, 0)
-	cg.asm.BCond(CondEQ, fmt.Sprintf("not_true_%d", bReg))
+	cg.asm.BCond(CondEQ, fmt.Sprintf("not_true_%d", pc))
 
 	// Truthy → NOT = false
-	cg.asm.Label(fmt.Sprintf("not_false_%d", bReg))
+	cg.asm.Label(fmt.Sprintf("not_false_%d", pc))
 	cg.asm.LoadImm64(X0, 0)
 	cg.storeBoolValue(aReg, X0)
-	cg.asm.B(fmt.Sprintf("not_done_%d", bReg))
+	cg.asm.B(fmt.Sprintf("not_done_%d", pc))
 
 	// Falsy → NOT = true
-	cg.asm.Label(fmt.Sprintf("not_true_%d", bReg))
+	cg.asm.Label(fmt.Sprintf("not_true_%d", pc))
 	cg.asm.LoadImm64(X0, 1)
 	cg.storeBoolValue(aReg, X0)
 
-	cg.asm.Label(fmt.Sprintf("not_done_%d", bReg))
+	cg.asm.Label(fmt.Sprintf("not_done_%d", pc))
 	return nil
 }
 
@@ -1563,8 +1785,23 @@ func (cg *Codegen) emitComparisonSideExit(pc int, exitLabel string) error {
 	cg.spillPinnedRegs()
 	cg.asm.LoadImm64(X1, int64(pc))
 	cg.asm.STR(X1, regCtx, ctxOffExitPC)
-	cg.asm.LoadImm64(X0, 1)
+	cg.asm.LoadImm64(X0, 2) // call-exit: executor handles non-integer comparison and resumes
 	cg.asm.B("epilogue")
+
+	// Defer resume stubs with captured pinning state.
+	// These will be emitted after the main instruction loop.
+	cmpStub := fmt.Sprintf("cmp_resume_%d", pc)
+	// Capture current pinning state.
+	capturedVars := make([]int, len(cg.pinnedVars))
+	copy(capturedVars, cg.pinnedVars)
+	capturedRegs := make(map[int]Reg, len(cg.pinnedRegs))
+	for k, v := range cg.pinnedRegs {
+		capturedRegs[k] = v
+	}
+	cg.cmpResumeStubs = append(cg.cmpResumeStubs,
+		cmpResumeStub{cmpStub + "_1", pcLabel(pc + 1), capturedVars, capturedRegs},
+		cmpResumeStub{cmpStub + "_2", pcLabel(pc + 2), capturedVars, capturedRegs},
+	)
 
 	cg.asm.Label(after)
 	return nil
@@ -1843,10 +2080,23 @@ func (cg *Codegen) emitSelfCallReturn(pc, aReg, b int) error {
 	a := cg.asm
 
 	if b == 0 {
-		// Variable return count — side exit.
-		a.LoadImm64(X1, int64(-1))
+		// Variable return count (RETURN A B=0).
+		// In self-call functions, treat as a single-value return at all depths.
+		// The JIT doesn't maintain vm.top, so we can't side-exit to the interpreter
+		// for variable returns — it would compute a wrong return count.
+		// Self-call functions only return single values through the JIT path anyway.
+		cg.loadRegIval(X0, aReg)
+		outerVarLabel := fmt.Sprintf("outermost_varret_%d", pc)
+		a.CBZ(regSelfDepth, outerVarLabel)
+		a.RET() // nested self-call: return single value in X0
+
+		// Outermost: return single value via JITContext.
+		a.Label(outerVarLabel)
+		a.LoadImm64(X1, int64(aReg))
 		a.STR(X1, regCtx, ctxOffRetBase)
-		a.LoadImm64(X0, 1)
+		a.LoadImm64(X1, 1) // 1 return value
+		a.STR(X1, regCtx, ctxOffRetCount)
+		a.LoadImm64(X0, 0) // ExitCode = 0 (normal return)
 		a.B("epilogue")
 		return nil
 	}
@@ -1931,10 +2181,13 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 	a.B(doneLabel)
 
 	// Overflow handler: side exit to interpreter.
+	// Unwind ALL self-call frames by restoring SP from frame pointer (X29),
+	// which was set to SP in the prologue and never modified by self-call pushes.
 	a.Label(overflowLabel)
 	a.LDP(regSelfDepth, regRegs, SP, 16)
 	a.LDPpost(X29, X30, SP, 32)
-	cg.spillPinnedRegs()
+	// If depth > 0, keep unwinding self-call frames.
+	a.CBNZ(regSelfDepth, overflowLabel)
 	a.LoadImm64(X1, int64(candidate.getglobalPC))
 	a.STR(X1, regCtx, ctxOffExitPC)
 	a.LoadImm64(X0, 1) // side exit

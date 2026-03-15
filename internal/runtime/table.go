@@ -1,44 +1,78 @@
 package runtime
 
-import "sync"
+import (
+	"math"
+	"sync"
+)
+
+// smallFieldCap is the threshold for using flat slices vs maps for string keys.
+const smallFieldCap = 12
 
 // Table is GScript's associative array / object type.
-// It has an optimized array part for sequential integer keys 1..n,
-// and a hash part for everything else.
+// Tables have an optimized array part for sequential integer keys 1..n,
+// flat slices for small string-keyed tables (most GScript objects),
+// and maps for larger tables.
+//
+// Tables start WITHOUT a mutex (fast single-threaded path). When shared
+// across goroutines, call SetConcurrent(true) to enable locking.
 type Table struct {
-	mu        sync.RWMutex
-	hash      map[Value]Value
-	array     []Value // 1-indexed: array[0] is unused padding, real data at [1]..[len-1]
+	mu        *sync.RWMutex    // nil for single-threaded tables (fast default)
+	array     []Value          // 1-indexed: array[0] is unused padding
+	imap      map[int64]Value  // integer keys not in array range
+	// String keys: small tables use flat slices, large tables use map
+	skeys     []string         // parallel with svals for small tables
+	svals     []Value          // parallel with skeys for small tables
+	smap      map[string]Value // only for tables with >smallFieldCap string keys
+	hash      map[Value]Value  // everything else (bool, float, table, function keys)
 	metatable *Table
 	keys      []Value // ordered keys for Next() iteration
 	keysDirty bool
 }
 
+// SetConcurrent enables or disables mutex protection for concurrent access.
+func (t *Table) SetConcurrent(on bool) {
+	if on && t.mu == nil {
+		t.mu = &sync.RWMutex{}
+	}
+}
+
 // cleanHashKey normalizes a Value for use as a Go map key.
-// This ensures that two logically equal values (e.g., two IntValues with ival=0)
-// map to the same key even if they have stale leftover fields from
-// partial-update optimizations like SetInt.
+// Clears stale fields left by SetInt and similar partial-update methods.
 func cleanHashKey(key Value) Value {
 	switch key.typ {
 	case TypeInt:
-		return Value{typ: TypeInt, ival: key.ival}
+		return Value{typ: TypeInt, data: key.data} // clear stale ptr
 	case TypeFloat:
-		return Value{typ: TypeFloat, fval: key.fval}
+		return Value{typ: TypeFloat, data: key.data} // clear stale ptr
 	case TypeString:
-		return Value{typ: TypeString, sval: key.sval}
+		return Value{typ: TypeString, ptr: key.ptr} // clear stale data
 	default:
-		// nil, bool, table, function, coroutine, channel — use as-is
 		return key
 	}
 }
 
-// NewTable creates a new empty table.
+// NewTable creates a new empty table (non-concurrent by default).
 func NewTable() *Table {
 	return &Table{
-		hash:      make(map[Value]Value),
-		array:     []Value{NilValue()}, // index 0 is unused
+		array:     []Value{NilValue()},
 		keysDirty: true,
 	}
+}
+
+// NewTableSized creates a table with pre-allocated capacity hints.
+func NewTableSized(arrayHint, hashHint int) *Table {
+	t := &Table{keysDirty: true}
+	if arrayHint > 0 {
+		t.array = make([]Value, 1, arrayHint+1)
+		t.array[0] = NilValue()
+	} else {
+		t.array = []Value{NilValue()}
+	}
+	if hashHint > 0 && hashHint <= smallFieldCap {
+		t.skeys = make([]string, 0, hashHint)
+		t.svals = make([]Value, 0, hashHint)
+	}
+	return t
 }
 
 // RawGet retrieves a value by key, bypassing metamethods.
@@ -46,87 +80,201 @@ func (t *Table) RawGet(key Value) Value {
 	if key.IsNil() {
 		return NilValue()
 	}
-	t.mu.RLock()
-	// Try array part for integer keys
-	if key.IsInt() {
-		idx := key.Int()
-		if idx >= 1 && idx < int64(len(t.array)) {
-			v := t.array[idx]
-			t.mu.RUnlock()
+	if key.typ == TypeInt {
+		return t.RawGetInt(int64(key.data))
+	}
+	if key.typ == TypeString {
+		return t.RawGetString(key.ptr.(string))
+	}
+	// General hash for other types
+	if t.mu != nil {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+	}
+	if t.hash != nil {
+		if val, ok := t.hash[cleanHashKey(key)]; ok {
+			return val
+		}
+	}
+	return NilValue()
+}
+
+// RawGetInt retrieves a value by integer key (fast path, no Value boxing).
+func (t *Table) RawGetInt(key int64) Value {
+	if t.mu != nil {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+	}
+	if key >= 1 && key < int64(len(t.array)) {
+		return t.array[key]
+	}
+	if t.imap != nil {
+		if v, ok := t.imap[key]; ok {
 			return v
 		}
 	}
-	// Fall through to hash part
-	val, ok := t.hash[cleanHashKey(key)]
-	t.mu.RUnlock()
-	if !ok {
-		return NilValue()
+	return NilValue()
+}
+
+// RawGetString retrieves a value by string key (fast path, no Value boxing).
+func (t *Table) RawGetString(key string) Value {
+	if t.mu != nil {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
 	}
-	return val
+	for i, k := range t.skeys {
+		if k == key {
+			return t.svals[i]
+		}
+	}
+	if t.smap != nil {
+		if v, ok := t.smap[key]; ok {
+			return v
+		}
+	}
+	return NilValue()
 }
 
 // RawSet assigns a value by key, bypassing metamethods.
-// Setting to nil removes the entry.
 func (t *Table) RawSet(key, val Value) {
 	if key.IsNil() {
-		return // ignore nil keys (Lua semantics)
+		return
 	}
-	// Float key that is an exact integer should be treated as integer key
-	if key.IsFloat() && floatIsInt(key.Float()) {
-		key = IntValue(int64(key.Float()))
+	if key.typ == TypeFloat && floatIsInt(math.Float64frombits(key.data)) {
+		key = IntValue(int64(math.Float64frombits(key.data)))
 	}
-
-	t.mu.Lock()
+	if key.typ == TypeInt {
+		t.RawSetInt(int64(key.data), val)
+		return
+	}
+	if key.typ == TypeString {
+		t.RawSetString(key.ptr.(string), val)
+		return
+	}
+	// General hash
+	if t.mu != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
 	t.keysDirty = true
-
-	// Try array part for integer keys
-	if key.IsInt() {
-		idx := key.Int()
-		if idx >= 1 && idx <= int64(len(t.array)) {
-			// idx within existing array or one past the end
-			if idx == int64(len(t.array)) {
-				// Extend the array
-				t.array = append(t.array, val)
-				// Absorb any hash keys that now fit contiguously
-				t.absorbHashKeys()
-				t.mu.Unlock()
-				return
-			}
-			t.array[idx] = val
-			t.mu.Unlock()
+	if t.hash == nil {
+		if val.IsNil() {
 			return
 		}
+		t.hash = make(map[Value]Value)
 	}
-	// Hash part
 	ck := cleanHashKey(key)
 	if val.IsNil() {
 		delete(t.hash, ck)
 	} else {
 		t.hash[ck] = val
 	}
-	t.mu.Unlock()
 }
 
-// absorbHashKeys moves consecutive integer keys from hash into array.
-func (t *Table) absorbHashKeys() {
+// RawSetInt assigns a value by integer key (fast path).
+func (t *Table) RawSetInt(key int64, val Value) {
+	if t.mu != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
+	t.keysDirty = true
+	if key >= 1 && key <= int64(len(t.array)) {
+		if key == int64(len(t.array)) {
+			t.array = append(t.array, val)
+			t.absorbKeys()
+			return
+		}
+		t.array[key] = val
+		return
+	}
+	if val.IsNil() {
+		if t.imap != nil {
+			delete(t.imap, key)
+		}
+	} else {
+		if t.imap == nil {
+			t.imap = make(map[int64]Value)
+		}
+		t.imap[key] = val
+	}
+}
+
+// RawSetString assigns a value by string key (fast path).
+func (t *Table) RawSetString(key string, val Value) {
+	if t.mu != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
+	t.keysDirty = true
+
+	for i, k := range t.skeys {
+		if k == key {
+			if val.IsNil() {
+				last := len(t.skeys) - 1
+				t.skeys[i] = t.skeys[last]
+				t.svals[i] = t.svals[last]
+				t.skeys = t.skeys[:last]
+				t.svals = t.svals[:last]
+			} else {
+				t.svals[i] = val
+			}
+			return
+		}
+	}
+
+	if t.smap != nil {
+		if val.IsNil() {
+			delete(t.smap, key)
+		} else {
+			t.smap[key] = val
+		}
+		return
+	}
+
+	if !val.IsNil() {
+		if len(t.skeys) < smallFieldCap {
+			t.skeys = append(t.skeys, key)
+			t.svals = append(t.svals, val)
+		} else {
+			t.smap = make(map[string]Value, len(t.skeys)+1)
+			for i, k := range t.skeys {
+				t.smap[k] = t.svals[i]
+			}
+			t.smap[key] = val
+			t.skeys = nil
+			t.svals = nil
+		}
+	}
+}
+
+// absorbKeys moves consecutive integer keys from imap/hash into the array part.
+// Must be called with lock held (if mu != nil).
+func (t *Table) absorbKeys() {
 	for {
 		nextIdx := int64(len(t.array))
-		key := IntValue(nextIdx)
-		val, ok := t.hash[key]
-		if !ok || val.IsNil() {
-			break
+		if t.imap != nil {
+			if val, ok := t.imap[nextIdx]; ok && !val.IsNil() {
+				t.array = append(t.array, val)
+				delete(t.imap, nextIdx)
+				continue
+			}
 		}
-		t.array = append(t.array, val)
-		delete(t.hash, key)
+		if t.hash != nil {
+			key := IntValue(nextIdx)
+			val, ok := t.hash[key]
+			if ok && !val.IsNil() {
+				t.array = append(t.array, val)
+				delete(t.hash, key)
+				continue
+			}
+		}
+		break
 	}
 }
 
 // Length returns the length of the array part (the # operator).
-// This is the number of consecutive non-nil entries starting at index 1.
 func (t *Table) Length() int {
-	// The array part goes from index 1 to len(t.array)-1
-	n := len(t.array) - 1 // subtract the unused index 0
-	// Walk backward to find the border (first non-nil from the end)
+	n := len(t.array) - 1
 	for n > 0 && t.array[n].IsNil() {
 		n--
 	}
@@ -138,7 +286,7 @@ func (t *Table) Len() int {
 	return t.Length()
 }
 
-// Append adds a value to the end of the array part (equivalent to table.insert(t, v)).
+// Append adds a value to the end of the array part.
 func (t *Table) Append(v Value) {
 	n := t.Length()
 	t.RawSet(IntValue(int64(n+1)), v)
@@ -147,13 +295,28 @@ func (t *Table) Append(v Value) {
 // rebuildKeys rebuilds the ordered key list for iteration.
 func (t *Table) rebuildKeys() {
 	t.keys = t.keys[:0]
-	// Array part first (1..n)
 	for i := 1; i < len(t.array); i++ {
 		if !t.array[i].IsNil() {
 			t.keys = append(t.keys, IntValue(int64(i)))
 		}
 	}
-	// Hash part
+	for k, v := range t.imap {
+		if !v.IsNil() {
+			t.keys = append(t.keys, IntValue(k))
+		}
+	}
+	// Flat string slices
+	for i, k := range t.skeys {
+		if !t.svals[i].IsNil() {
+			t.keys = append(t.keys, StringValue(k))
+		}
+	}
+	// Large string map
+	for k, v := range t.smap {
+		if !v.IsNil() {
+			t.keys = append(t.keys, StringValue(k))
+		}
+	}
 	for k, v := range t.hash {
 		if !v.IsNil() {
 			t.keys = append(t.keys, k)
@@ -163,9 +326,11 @@ func (t *Table) rebuildKeys() {
 }
 
 // Next returns the next key/value pair after the given key.
-// If key is nil, returns the first entry.
-// Returns (key, value, true) or (nil, nil, false) when iteration is done.
 func (t *Table) Next(key Value) (Value, Value, bool) {
+	if t.mu != nil {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+	}
 	if t.keysDirty {
 		t.rebuildKeys()
 	}
@@ -173,11 +338,9 @@ func (t *Table) Next(key Value) (Value, Value, bool) {
 		return NilValue(), NilValue(), false
 	}
 	if key.IsNil() {
-		// Start of iteration
 		k := t.keys[0]
 		return k, t.RawGet(k), true
 	}
-	// Find the current key and return the next one
 	for i, k := range t.keys {
 		if k.Equal(key) {
 			if i+1 < len(t.keys) {

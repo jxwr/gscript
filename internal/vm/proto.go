@@ -2,10 +2,10 @@ package vm
 
 import "github.com/gscript/gscript/internal/runtime"
 
-// globalCacheEntry caches a global variable lookup result.
+// globalCacheEntry caches a global variable index for fast array lookup.
 type globalCacheEntry struct {
-	value   runtime.Value
-	version uint64
+	index   int32  // index into VM.globalArray (-1 = not resolved)
+	version uint32 // matches VM.globalVersion when valid
 }
 
 // FuncProto is the bytecode function prototype.
@@ -76,9 +76,11 @@ func (u *Upvalue) Close() {
 
 // CallFrame represents a single activation record on the VM call stack.
 type CallFrame struct {
-	closure    *Closure
-	pc         int    // program counter within closure.Proto.Code
-	base       int    // base register index in the VM register file
-	numResults int    // expected number of results (-1 = variable)
-	varargs    []runtime.Value // extra arguments beyond fixed params
+	closure     *Closure
+	pc          int    // program counter within closure.Proto.Code
+	base        int    // base register index in the VM register file
+	numResults  int    // expected number of results (-1 = variable)
+	varargs     []runtime.Value // extra arguments beyond fixed params
+	resultBase  int    // register in parent frame where results should be placed (for inline return)
+	resultCount int    // C parameter from caller's OP_CALL (0 = return all; for inline return)
 }

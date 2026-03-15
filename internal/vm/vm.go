@@ -10,36 +10,35 @@ import (
 )
 
 const (
-	maxStack      = 256  // max registers per call frame
-	maxCallDepth  = 200  // max call stack depth
-	maxMetaDepth  = 50   // max __index chain depth
+	maxStack     = 256 // max registers per call frame
+	maxCallDepth = 200 // max call stack depth
+	maxMetaDepth = 50  // max __index chain depth
 )
 
 // JITEngine is the interface for JIT compilation engines.
-// This allows the VM to call into the JIT without a direct package dependency.
 type JITEngine interface {
-	// TryExecute attempts to JIT-execute a function.
-	// Returns (results, resumePC, ok).
-	// ok=true: function completed, results contains return values.
-	// ok=false: JIT bailed at resumePC, interpreter should continue from there.
 	TryExecute(proto *FuncProto, regs []runtime.Value, base int, callCount int) ([]runtime.Value, int, bool)
 }
 
 // VM is the bytecode virtual machine.
 type VM struct {
-	regs       []runtime.Value // register file (shared across frames via base offset)
-	frames     []CallFrame     // call stack
-	frameCount int             // current number of active frames
-	globals    map[string]runtime.Value
-	globalsMu  *sync.RWMutex   // protects globals for goroutine safety (shared across VMs)
-	openUpvals []*Upvalue // list of open upvalues (sorted by regIdx descending)
-	top        int        // top of used registers (for variable returns)
-	stringMeta *runtime.Table // string metatable
-	jit        JITEngine         // optional JIT engine
-	jitFactory func() JITEngine  // factory for creating JIT engines in child VMs
-	callCounts map[*FuncProto]int // per-function call counts for JIT hot detection
-	argBuf     [16]runtime.Value  // pre-allocated arg buffer for OP_CALL
-	retBuf     [8]runtime.Value   // pre-allocated return buffer for OP_RETURN
+	regs         []runtime.Value // register file (shared across frames via base offset)
+	frames       []CallFrame     // call stack
+	frameCount   int             // current number of active frames
+	globals      map[string]runtime.Value // legacy map (kept for interop)
+	globalArray  []runtime.Value          // indexed globals (fast path)
+	globalIndex  map[string]int           // name → index in globalArray
+	globalVer    uint32                   // bumped on structural changes (new globals added)
+	globalsMu    *sync.RWMutex  // protects globals for goroutine safety (shared across VMs)
+	noGlobalLock bool           // skip globals mutex (single-threaded mode)
+	openUpvals   []*Upvalue     // list of open upvalues (sorted by regIdx descending)
+	top          int            // top of used registers (for variable returns)
+	stringMeta   *runtime.Table // string metatable
+	jit          JITEngine
+	jitFactory   func(*VM) JITEngine
+	callCounts   map[*FuncProto]int
+	argBuf       [16]runtime.Value // pre-allocated arg buffer for OP_CALL
+	retBuf       [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
 }
 
 // SetJIT sets the JIT engine for this VM.
@@ -55,18 +54,91 @@ func (vm *VM) Regs() []runtime.Value {
 	return vm.regs
 }
 
-// Globals returns the globals map. Used by the JIT for function inlining.
+// Globals returns the globals map.
 func (vm *VM) Globals() map[string]runtime.Value {
 	return vm.globals
 }
 
+// GetGlobal reads a global variable with proper locking.
+func (vm *VM) GetGlobal(name string) runtime.Value {
+	if vm.noGlobalLock {
+		if idx, ok := vm.globalIndex[name]; ok {
+			return vm.globalArray[idx]
+		}
+		return runtime.NilValue()
+	}
+	vm.globalsMu.RLock()
+	if idx, ok := vm.globalIndex[name]; ok {
+		v := vm.globalArray[idx]
+		vm.globalsMu.RUnlock()
+		return v
+	}
+	vm.globalsMu.RUnlock()
+	return runtime.NilValue()
+}
+
+// SetGlobal writes a global variable with proper locking.
+func (vm *VM) SetGlobal(name string, val runtime.Value) {
+	if vm.noGlobalLock {
+		if idx, ok := vm.globalIndex[name]; ok {
+			vm.globalArray[idx] = val
+			vm.globals[name] = val
+		} else {
+			idx = len(vm.globalArray)
+			vm.globalArray = append(vm.globalArray, val)
+			vm.globalIndex[name] = idx
+			vm.globals[name] = val
+			vm.globalVer++
+		}
+		return
+	}
+	vm.globalsMu.Lock()
+	if idx, ok := vm.globalIndex[name]; ok {
+		vm.globalArray[idx] = val
+		vm.globals[name] = val
+	} else {
+		idx = len(vm.globalArray)
+		vm.globalArray = append(vm.globalArray, val)
+		vm.globalIndex[name] = idx
+		vm.globals[name] = val
+		vm.globalVer++
+	}
+	vm.globalsMu.Unlock()
+}
+
+// resolveGlobalIndex returns the globalArray index for a global name,
+// creating a new entry if it doesn't exist.
+func (vm *VM) resolveGlobalIndex(name string) int {
+	if idx, ok := vm.globalIndex[name]; ok {
+		return idx
+	}
+	// New global — add to array
+	idx := len(vm.globalArray)
+	val := vm.globals[name] // may be nil
+	vm.globalArray = append(vm.globalArray, val)
+	vm.globalIndex[name] = idx
+	vm.globalVer++
+	return idx
+}
+
 // New creates a new VM with the given globals.
 func New(globals map[string]runtime.Value) *VM {
+	// Build indexed global array from the initial map
+	ga := make([]runtime.Value, 0, len(globals))
+	gi := make(map[string]int, len(globals))
+	for name, val := range globals {
+		gi[name] = len(ga)
+		ga = append(ga, val)
+	}
+
 	v := &VM{
-		regs:      make([]runtime.Value, 1024),
-		frames:    make([]CallFrame, maxCallDepth),
-		globals:   globals,
-		globalsMu: &sync.RWMutex{},
+		regs:         make([]runtime.Value, 1024),
+		frames:       make([]CallFrame, maxCallDepth),
+		globals:      globals,
+		globalArray:  ga,
+		globalIndex:  gi,
+		globalsMu:    &sync.RWMutex{},
+		noGlobalLock: true, // single-threaded by default
 	}
 	v.RegisterCoroutineLib()
 	v.registerChannelBuiltins()
@@ -74,19 +146,21 @@ func New(globals map[string]runtime.Value) *VM {
 }
 
 // newChildVM creates a child VM that shares globals, mutex, and string metatable
-// with the parent. Used by OP_GO for goroutines.
+// with the parent. Used by OP_GO for goroutines and by coroutines.
 func newChildVM(parent *VM) *VM {
 	child := &VM{
-		regs:       make([]runtime.Value, 1024),
-		frames:     make([]CallFrame, maxCallDepth),
-		globals:    parent.globals,
-		globalsMu:  parent.globalsMu,
-		stringMeta: parent.stringMeta,
+		regs:         make([]runtime.Value, 1024),
+		frames:       make([]CallFrame, maxCallDepth),
+		globals:      parent.globals,
+		globalArray:  parent.globalArray,
+		globalIndex:  parent.globalIndex,
+		globalVer:    parent.globalVer,
+		globalsMu:    parent.globalsMu,
+		noGlobalLock: false, // shared globals, must lock
+		stringMeta:   parent.stringMeta,
 	}
-	// If parent has JIT, create a new JIT engine for the child goroutine.
-	// Each goroutine needs its own engine since JIT maps are not thread-safe.
 	if parent.jitFactory != nil {
-		engine := parent.jitFactory()
+		engine := parent.jitFactory(child)
 		child.SetJIT(engine)
 	}
 	child.RegisterCoroutineLib()
@@ -94,17 +168,13 @@ func newChildVM(parent *VM) *VM {
 }
 
 // SetJITFactory sets a factory function that creates new JIT engines.
-// Used to enable JIT in goroutine child VMs.
-func (vm *VM) SetJITFactory(factory func() JITEngine) {
+func (vm *VM) SetJITFactory(factory func(*VM) JITEngine) {
 	vm.jitFactory = factory
 }
 
-// registerChannelBuiltins adds channel-related builtins (close) to globals.
+// registerChannelBuiltins adds channel-related builtins to globals.
 func (vm *VM) registerChannelBuiltins() {
-	if vm.globalsMu != nil {
-		vm.globalsMu.Lock()
-	}
-	vm.globals["close"] = runtime.FunctionValue(&runtime.GoFunction{
+	vm.SetGlobal("close", runtime.FunctionValue(&runtime.GoFunction{
 		Name: "close",
 		Fn: func(args []runtime.Value) ([]runtime.Value, error) {
 			if len(args) < 1 || !args[0].IsChannel() {
@@ -116,13 +186,10 @@ func (vm *VM) registerChannelBuiltins() {
 			}
 			return nil, nil
 		},
-	})
-	if vm.globalsMu != nil {
-		vm.globalsMu.Unlock()
-	}
+	}))
 }
 
-// SetStringMeta sets the string metatable (for string method calls).
+// SetStringMeta sets the string metatable.
 func (vm *VM) SetStringMeta(meta *runtime.Table) {
 	vm.stringMeta = meta
 }
@@ -141,8 +208,6 @@ func (vm *VM) CallValue(fn runtime.Value, args []runtime.Value) ([]runtime.Value
 }
 
 // call pushes a new call frame and executes.
-// args are placed in registers starting at base.
-// Returns the function's return values.
 func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) ([]runtime.Value, error) {
 	proto := cl.Proto
 
@@ -160,11 +225,9 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	for i := 0; i < nParams && i < len(args); i++ {
 		vm.regs[base+i] = args[i]
 	}
-	// Nil-fill missing params
 	for i := len(args); i < nParams; i++ {
 		vm.regs[base+i] = runtime.NilValue()
 	}
-	// Collect varargs
 	if proto.IsVarArg && len(args) > nParams {
 		varargs = make([]runtime.Value, len(args)-nParams)
 		copy(varargs, args[nParams:])
@@ -187,16 +250,13 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 		vm.callCounts[proto]++
 		results, resumePC, ok := vm.jit.TryExecute(proto, vm.regs, base, vm.callCounts[proto])
 		if ok {
-			// JIT completed the function — close upvalues and return.
 			vm.closeUpvalues(base)
 			vm.frameCount--
 			return results, nil
 		}
 		if resumePC > 0 {
-			// JIT bailed out — resume interpreter from the exit PC.
 			frame.pc = resumePC
 		}
-		// resumePC == 0 means JIT wasn't attempted (not hot enough); fall through.
 	}
 
 	result, err := vm.run()
@@ -224,9 +284,18 @@ func wrapLineErr(frame *CallFrame, err error) error {
 	return err
 }
 
-// run is the main execution loop. It handles frame switches internally
-// to avoid Go function call overhead for recursive bytecode calls.
-func (vm *VM) run() ([]runtime.Value, error) {
+// run is the main execution loop. Handles inline call/return to avoid
+// Go stack growth for GScript function calls.
+func (vm *VM) run() (retVals []runtime.Value, retErr error) {
+	initialFC := vm.frameCount
+
+	// On error, reset frame count to clean up any inline sub-frames.
+	defer func() {
+		if retErr != nil {
+			vm.frameCount = initialFC
+		}
+	}()
+
 	frame := &vm.frames[vm.frameCount-1]
 	code := frame.closure.Proto.Code
 	constants := frame.closure.Proto.Constants
@@ -234,7 +303,28 @@ func (vm *VM) run() ([]runtime.Value, error) {
 
 	for {
 		if frame.pc >= len(code) {
-			return nil, nil
+			// End of function - implicit return nil
+			vm.closeUpvalues(base)
+			if vm.frameCount <= initialFC {
+				return nil, nil
+			}
+			// Inline return with no values
+			vm.frameCount--
+			rc := frame.resultCount
+			rb := frame.resultBase
+			if rc != 0 {
+				nr := rc - 1
+				for i := 0; i < nr; i++ {
+					vm.regs[rb+i] = runtime.NilValue()
+				}
+			} else {
+				vm.top = rb
+			}
+			frame = &vm.frames[vm.frameCount-1]
+			code = frame.closure.Proto.Code
+			constants = frame.closure.Proto.Constants
+			base = frame.base
+			continue
 		}
 		inst := code[frame.pc]
 		frame.pc++
@@ -276,23 +366,65 @@ func (vm *VM) run() ([]runtime.Value, error) {
 		case OP_GETGLOBAL:
 			a := DecodeA(inst)
 			bx := DecodeBx(inst)
-			name := constants[bx].Str()
-			vm.globalsMu.RLock()
-			v, ok := vm.globals[name]
-			vm.globalsMu.RUnlock()
-			if ok {
-				vm.regs[base+a] = v
+			if vm.noGlobalLock {
+				// Single-threaded fast path: indexed array with cache
+				proto := frame.closure.Proto
+				if proto.GlobalCache == nil {
+					proto.GlobalCache = make([]globalCacheEntry, len(proto.Constants))
+					for i := range proto.GlobalCache {
+						proto.GlobalCache[i].index = -1
+					}
+				}
+				cache := &proto.GlobalCache[bx]
+				if cache.index >= 0 && cache.version == vm.globalVer {
+					vm.regs[base+a] = vm.globalArray[cache.index]
+				} else {
+					name := constants[bx].Str()
+					idx := vm.resolveGlobalIndex(name)
+					cache.index = int32(idx)
+					cache.version = vm.globalVer
+					vm.regs[base+a] = vm.globalArray[idx]
+				}
 			} else {
-				vm.regs[base+a] = runtime.NilValue()
+				// Multi-threaded: locked map access
+				name := constants[bx].Str()
+				vm.globalsMu.RLock()
+				v := vm.globals[name]
+				vm.globalsMu.RUnlock()
+				vm.regs[base+a] = v
 			}
 
 		case OP_SETGLOBAL:
 			a := DecodeA(inst)
 			bx := DecodeBx(inst)
-			name := constants[bx].Str()
-			vm.globalsMu.Lock()
-			vm.globals[name] = vm.regs[base+a]
-			vm.globalsMu.Unlock()
+			val := vm.regs[base+a]
+			if vm.noGlobalLock {
+				// Single-threaded fast path
+				proto := frame.closure.Proto
+				if proto.GlobalCache == nil {
+					proto.GlobalCache = make([]globalCacheEntry, len(proto.Constants))
+					for i := range proto.GlobalCache {
+						proto.GlobalCache[i].index = -1
+					}
+				}
+				cache := &proto.GlobalCache[bx]
+				name := constants[bx].Str()
+				if cache.index >= 0 && cache.version == vm.globalVer {
+					vm.globalArray[cache.index] = val
+				} else {
+					idx := vm.resolveGlobalIndex(name)
+					cache.index = int32(idx)
+					cache.version = vm.globalVer
+					vm.globalArray[idx] = val
+				}
+				vm.globals[name] = val
+			} else {
+				// Multi-threaded: locked map access
+				name := constants[bx].Str()
+				vm.globalsMu.Lock()
+				vm.globals[name] = val
+				vm.globalsMu.Unlock()
+			}
 
 		case OP_GETUPVAL:
 			a := DecodeA(inst)
@@ -306,7 +438,9 @@ func (vm *VM) run() ([]runtime.Value, error) {
 
 		case OP_NEWTABLE:
 			a := DecodeA(inst)
-			vm.regs[base+a] = runtime.TableValue(runtime.NewTable())
+			b := DecodeB(inst) // array hint
+			c := DecodeC(inst) // hash hint
+			vm.regs[base+a] = runtime.TableValue(runtime.NewTableSized(b, c))
 
 		case OP_GETTABLE:
 			a := DecodeA(inst)
@@ -319,7 +453,7 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			} else {
 				key = vm.regs[base+cidx]
 			}
-			// Fast path: plain table (no metatable) → direct RawGet
+			// Fast path: plain table (no metatable)
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
 					vm.regs[base+a] = tbl.RawGet(key)
@@ -348,7 +482,7 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			} else {
 				val = vm.regs[base+cidx]
 			}
-			// Fast path: plain table → direct RawSet
+			// Fast path: plain table
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
 					tbl.RawSet(key, val)
@@ -364,14 +498,14 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			b := DecodeB(inst)
 			c := DecodeC(inst)
 			tableVal := vm.regs[base+b]
-			key := constants[c]
-			// Fast path: plain table → direct RawGet
+			// Fast path: plain table → direct string map lookup
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
-					vm.regs[base+a] = tbl.RawGet(key)
+					vm.regs[base+a] = tbl.RawGetString(constants[c].Str())
 					break
 				}
 			}
+			key := constants[c]
 			val, err := vm.tableGet(tableVal, key)
 			if err != nil {
 				return nil, err
@@ -380,38 +514,38 @@ func (vm *VM) run() ([]runtime.Value, error) {
 
 		case OP_SETFIELD:
 			a := DecodeA(inst)
-			b := DecodeB(inst) // constant index for field name
+			b := DecodeB(inst)
 			cidx := DecodeC(inst)
 			tableVal := vm.regs[base+a]
-			key := constants[b]
 			var val runtime.Value
 			if cidx >= RKBit {
 				val = constants[cidx-RKBit]
 			} else {
 				val = vm.regs[base+cidx]
 			}
-			// Fast path: plain table → direct RawSet
+			// Fast path: plain table → direct string map set
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
-					tbl.RawSet(key, val)
+					tbl.RawSetString(constants[b].Str(), val)
 					break
 				}
 			}
+			key := constants[b]
 			if err := vm.tableSet(tableVal, key, val); err != nil {
 				return nil, err
 			}
 
 		case OP_SETLIST:
 			a := DecodeA(inst)
-			b := DecodeB(inst) // count
-			c := DecodeC(inst) // starting offset (1-based batch)
+			b := DecodeB(inst)
+			c := DecodeC(inst)
 			t := vm.regs[base+a].Table()
 			if t == nil {
 				return nil, fmt.Errorf("SETLIST on non-table")
 			}
 			offset := (c - 1) * 50
 			for i := 1; i <= b; i++ {
-				t.RawSet(runtime.IntValue(int64(offset+i)), vm.regs[base+a+i])
+				t.RawSetInt(int64(offset+i), vm.regs[base+a+i])
 			}
 
 		case OP_APPEND:
@@ -643,7 +777,6 @@ func (vm *VM) run() ([]runtime.Value, error) {
 					frame.pc++
 				}
 			} else {
-				// a <= b  is  !(b < a)
 				lt, ok := (*cp).LessThan(*bp)
 				if !ok {
 					return nil, fmt.Errorf("attempt to compare %s with %s", bp.TypeName(), cp.TypeName())
@@ -677,18 +810,140 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			sbx := DecodesBx(inst)
 			frame.pc += sbx
 
-		// ---- Call / Return ----
+		// ---- Call / Return (INLINE) ----
 		case OP_CALL:
 			a := DecodeA(inst)
-			b := DecodeB(inst) // arg count + 1; 0 = use top
-			c := DecodeC(inst) // result count + 1; 0 = return all
+			b := DecodeB(inst)
+			c := DecodeC(inst)
 
 			fnVal := vm.regs[base+a]
 			nArgs := b - 1
 			if b == 0 {
 				nArgs = vm.top - (base + a + 1)
 			}
-			// Use pre-allocated buffer for small arg counts to avoid allocation
+
+			// ---- Fast path: VM Closure (inline call) ----
+			if cl, ok := fnVal.Ptr().(*Closure); ok {
+				proto := cl.Proto
+
+				// Compute new base: after current frame's registers
+				newBase := base + frame.closure.Proto.MaxStack
+				if vm.top > newBase {
+					newBase = vm.top
+				}
+
+				// Ensure register space
+				needed := newBase + proto.MaxStack + 1
+				if needed > len(vm.regs) {
+					newRegs := make([]runtime.Value, needed*2)
+					copy(newRegs, vm.regs)
+					vm.regs = newRegs
+				}
+
+				// Copy args directly to new frame's registers
+				nParams := proto.NumParams
+				srcStart := base + a + 1
+				for i := 0; i < nParams && i < nArgs; i++ {
+					vm.regs[newBase+i] = vm.regs[srcStart+i]
+				}
+				for i := nArgs; i < nParams; i++ {
+					vm.regs[newBase+i] = runtime.NilValue()
+				}
+				var varargs []runtime.Value
+				if proto.IsVarArg && nArgs > nParams {
+					varargs = make([]runtime.Value, nArgs-nParams)
+					for i := range varargs {
+						varargs[i] = vm.regs[srcStart+nParams+i]
+					}
+				}
+
+				// Push new frame
+				if vm.frameCount >= maxCallDepth {
+					return nil, fmt.Errorf("stack overflow (max call depth %d)", maxCallDepth)
+				}
+				newFrame := &vm.frames[vm.frameCount]
+				newFrame.closure = cl
+				newFrame.pc = 0
+				newFrame.base = newBase
+				newFrame.varargs = varargs
+				newFrame.resultBase = base + a
+				newFrame.resultCount = c
+				vm.frameCount++
+
+				// Try JIT
+				if vm.jit != nil && !proto.IsVarArg {
+					vm.callCounts[proto]++
+					results, resumePC, jitOK := vm.jit.TryExecute(proto, vm.regs, newBase, vm.callCounts[proto])
+					if jitOK {
+						vm.closeUpvalues(newBase)
+						vm.frameCount--
+						// Place results (cached locals still point to caller)
+						if c == 0 {
+							for i, r := range results {
+								vm.regs[base+a+i] = r
+							}
+							vm.top = base + a + len(results)
+						} else {
+							nr := c - 1
+							for i := 0; i < nr; i++ {
+								if i < len(results) {
+									vm.regs[base+a+i] = results[i]
+								} else {
+									vm.regs[base+a+i] = runtime.NilValue()
+								}
+							}
+						}
+						break
+					}
+					if resumePC > 0 {
+						newFrame.pc = resumePC
+					}
+				}
+
+				// Switch to new frame (inline)
+				frame = newFrame
+				code = proto.Code
+				constants = proto.Constants
+				base = newBase
+				continue
+			}
+
+			// ---- Fast path: GoFunction (direct call, skip callValue) ----
+			if fnVal.IsFunction() {
+				if gf := fnVal.GoFunction(); gf != nil {
+					var args []runtime.Value
+					if nArgs <= len(vm.argBuf) {
+						args = vm.argBuf[:nArgs]
+					} else {
+						args = make([]runtime.Value, nArgs)
+					}
+					for i := 0; i < nArgs; i++ {
+						args[i] = vm.regs[base+a+1+i]
+					}
+					results, err := gf.Fn(args)
+					if err != nil {
+						return nil, wrapLineErr(frame, err)
+					}
+					if c == 0 {
+						for i, r := range results {
+							vm.regs[base+a+i] = r
+						}
+						vm.top = base + a + len(results)
+					} else {
+						nr := c - 1
+						for i := 0; i < nr; i++ {
+							if i < len(results) {
+								vm.regs[base+a+i] = results[i]
+							} else {
+								vm.regs[base+a+i] = runtime.NilValue()
+							}
+						}
+					}
+					break
+				}
+			}
+
+			// ---- Slow path: __call metamethod, tree-walker closures, etc. ----
 			var args []runtime.Value
 			if nArgs <= len(vm.argBuf) {
 				args = vm.argBuf[:nArgs]
@@ -698,21 +953,18 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			for i := 0; i < nArgs; i++ {
 				args[i] = vm.regs[base+a+1+i]
 			}
-
 			results, err := vm.callValue(fnVal, args)
 			if err != nil {
-				return nil, err
+				return nil, wrapLineErr(frame, err)
 			}
-
-			nResults := c - 1
 			if c == 0 {
-				// Return all results; store count in top
 				for i, r := range results {
 					vm.regs[base+a+i] = r
 				}
 				vm.top = base + a + len(results)
 			} else {
-				for i := 0; i < nResults; i++ {
+				nr := c - 1
+				for i := 0; i < nr; i++ {
 					if i < len(results) {
 						vm.regs[base+a+i] = results[i]
 					} else {
@@ -725,12 +977,27 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			a := DecodeA(inst)
 			b := DecodeB(inst)
 
-			// Close upvalues
 			vm.closeUpvalues(base)
 
-			if b == 0 {
-				// Return R(A) to top
-				nret := vm.top - (base + a)
+			// Initial frame return → back to Go caller (call() will pop)
+			if vm.frameCount <= initialFC {
+				if b == 0 {
+					nret := vm.top - (base + a)
+					var ret []runtime.Value
+					if nret <= len(vm.retBuf) {
+						ret = vm.retBuf[:nret]
+					} else {
+						ret = make([]runtime.Value, nret)
+					}
+					for i := 0; i < nret; i++ {
+						ret[i] = vm.regs[base+a+i]
+					}
+					return ret, nil
+				}
+				if b == 1 {
+					return nil, nil
+				}
+				nret := b - 1
 				var ret []runtime.Value
 				if nret <= len(vm.retBuf) {
 					ret = vm.retBuf[:nret]
@@ -742,20 +1009,45 @@ func (vm *VM) run() ([]runtime.Value, error) {
 				}
 				return ret, nil
 			}
-			if b == 1 {
-				return nil, nil
-			}
-			nret := b - 1
-			var ret []runtime.Value
-			if nret <= len(vm.retBuf) {
-				ret = vm.retBuf[:nret]
+
+			// Inline sub-frame return
+			vm.frameCount--
+
+			resultBase := frame.resultBase
+			resultCount := frame.resultCount
+
+			var nret int
+			if b == 0 {
+				nret = vm.top - (base + a)
+			} else if b == 1 {
+				nret = 0
 			} else {
-				ret = make([]runtime.Value, nret)
+				nret = b - 1
 			}
-			for i := 0; i < nret; i++ {
-				ret[i] = vm.regs[base+a+i]
+
+			if resultCount == 0 {
+				// Return all results
+				for i := 0; i < nret; i++ {
+					vm.regs[resultBase+i] = vm.regs[base+a+i]
+				}
+				vm.top = resultBase + nret
+			} else {
+				nr := resultCount - 1
+				for i := 0; i < nr; i++ {
+					if i < nret {
+						vm.regs[resultBase+i] = vm.regs[base+a+i]
+					} else {
+						vm.regs[resultBase+i] = runtime.NilValue()
+					}
+				}
 			}
-			return ret, nil
+
+			// Restore parent frame
+			frame = &vm.frames[vm.frameCount-1]
+			code = frame.closure.Proto.Code
+			constants = frame.closure.Proto.Constants
+			base = frame.base
+			continue
 
 		case OP_CLOSURE:
 			a := DecodeA(inst)
@@ -767,10 +1059,8 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			}
 			for i, desc := range subProto.Upvalues {
 				if desc.InStack {
-					// Capture from current frame's register
 					cl.Upvalues[i] = vm.findOrCreateUpvalue(base + desc.Index)
 				} else {
-					// Copy from enclosing closure's upvalue
 					cl.Upvalues[i] = frame.closure.Upvalues[desc.Index]
 				}
 			}
@@ -784,8 +1074,6 @@ func (vm *VM) run() ([]runtime.Value, error) {
 		case OP_FORPREP:
 			a := DecodeA(inst)
 			sbx := DecodesBx(inst)
-			// R(A) = init, R(A+1) = limit, R(A+2) = step
-			// R(A) -= R(A+2) so the first FORLOOP increment brings it to init
 			initV := vm.regs[base+a]
 			stepV := vm.regs[base+a+2]
 			if initV.IsInt() && stepV.IsInt() {
@@ -799,7 +1087,6 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			a := DecodeA(inst)
 			sbx := DecodesBx(inst)
 			idxP := &vm.regs[base+a]
-			// Fast path: all-integer for loop (most common case)
 			if idxP.RawType() == runtime.TypeInt {
 				stepP := &vm.regs[base+a+2]
 				limitP := &vm.regs[base+a+1]
@@ -821,7 +1108,6 @@ func (vm *VM) run() ([]runtime.Value, error) {
 					break
 				}
 			}
-			// Slow path: float for loop
 			step := vm.regs[base+a+2].Number()
 			limit := vm.regs[base+a+1].Number()
 			idx := vm.regs[base+a].Number() + step
@@ -849,7 +1135,6 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			b := DecodeB(inst)
 			va := frame.varargs
 			if b == 0 {
-				// Copy all varargs
 				for i, v := range va {
 					vm.regs[base+a+i] = v
 				}
@@ -885,11 +1170,9 @@ func (vm *VM) run() ([]runtime.Value, error) {
 
 		case OP_TFORCALL:
 			a := DecodeA(inst)
-			c := DecodeC(inst) // number of results
-			// R(A) = iterator, R(A+1) = state, R(A+2) = control
+			c := DecodeC(inst)
 			fnVal := vm.regs[base+a]
 
-			// Channel range: for v := range ch
 			if fnVal.IsChannel() {
 				ch := fnVal.Channel()
 				val, ok := ch.Recv()
@@ -899,7 +1182,6 @@ func (vm *VM) run() ([]runtime.Value, error) {
 						vm.regs[base+a+3+i] = runtime.NilValue()
 					}
 				} else {
-					// Channel closed — set first result to nil to end loop
 					for i := 0; i < c; i++ {
 						vm.regs[base+a+3+i] = runtime.NilValue()
 					}
@@ -928,6 +1210,13 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			}
 
 		case OP_GO:
+			// Mark VM as multi-goroutine (need locking from now on)
+			if vm.noGlobalLock {
+				vm.noGlobalLock = false
+				// Mark global tables as concurrent to prevent map races
+				vm.markGlobalTablesConcurrent()
+			}
+
 			a := DecodeA(inst)
 			b := DecodeB(inst)
 			fnVal := vm.regs[base+a]
@@ -935,12 +1224,10 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			if b == 0 {
 				nArgs = vm.top - (base + a + 1)
 			}
-			// Copy args (must snapshot before goroutine starts)
 			args := make([]runtime.Value, nArgs)
 			for i := 0; i < nArgs; i++ {
 				args[i] = vm.regs[base+a+1+i]
 			}
-			// Launch goroutine with a new VM sharing globals and mutex
 			go func(fn runtime.Value, goArgs []runtime.Value) {
 				goVM := newChildVM(vm)
 				if cl, ok := fn.Ptr().(*Closure); ok {
@@ -956,7 +1243,6 @@ func (vm *VM) run() ([]runtime.Value, error) {
 			cc := DecodeC(inst)
 			capacity := 0
 			if cc == 1 {
-				// Size is in R(B)
 				sizeVal := vm.regs[base+b]
 				if sizeVal.IsInt() {
 					capacity = int(sizeVal.Int())
@@ -1018,15 +1304,11 @@ func (vm *VM) callValue(fnVal runtime.Value, args []runtime.Value) ([]runtime.Va
 		if gf := fnVal.GoFunction(); gf != nil {
 			return gf.Fn(args)
 		}
-		// Check for tree-walker Closure (from stdlib)
 		if c := fnVal.Closure(); c != nil {
-			// This is a tree-walker closure; we need an interpreter to run it.
-			// For now, return an error. The integration layer handles this.
 			return nil, fmt.Errorf("cannot call tree-walker closure from VM")
 		}
 	}
 	if fnVal.IsTable() {
-		// __call metamethod
 		mt := fnVal.Table().GetMetatable()
 		if mt != nil {
 			callMM := mt.RawGet(runtime.StringValue("__call"))
@@ -1051,7 +1333,6 @@ func (vm *VM) tableGetDepth(t runtime.Value, key runtime.Value, depth int) (runt
 		return runtime.NilValue(), fmt.Errorf("__index chain too deep")
 	}
 
-	// String metatable
 	if t.IsString() {
 		if vm.stringMeta != nil {
 			v := vm.stringMeta.RawGet(key)
@@ -1063,6 +1344,11 @@ func (vm *VM) tableGetDepth(t runtime.Value, key runtime.Value, depth int) (runt
 	}
 
 	if !t.IsTable() {
+		if t.IsNil() && vm.frameCount > 0 {
+			frame := &vm.frames[vm.frameCount-1]
+			fmt.Printf("[DEBUG] attempt to index nil in %s pc=%d key=%v\n",
+				frame.closure.Proto.Name, frame.pc, key)
+		}
 		return runtime.NilValue(), fmt.Errorf("attempt to index a %s value", t.TypeName())
 	}
 
@@ -1072,7 +1358,6 @@ func (vm *VM) tableGetDepth(t runtime.Value, key runtime.Value, depth int) (runt
 		return v, nil
 	}
 
-	// Check __index
 	mt := tbl.GetMetatable()
 	if mt == nil {
 		return runtime.NilValue(), nil
@@ -1104,7 +1389,6 @@ func (vm *VM) tableSet(t runtime.Value, key runtime.Value, val runtime.Value) er
 	}
 	tbl := t.Table()
 
-	// Check __newindex if key doesn't exist
 	existing := tbl.RawGet(key)
 	if existing.IsNil() {
 		mt := tbl.GetMetatable()
@@ -1129,7 +1413,6 @@ func (vm *VM) tableSet(t runtime.Value, key runtime.Value, val runtime.Value) er
 // ---- Arithmetic helpers ----
 
 func (vm *VM) arith(a, b runtime.Value, metamethod string, op func(float64, float64) float64) (runtime.Value, error) {
-	// Fast path: both numbers
 	if a.IsInt() && b.IsInt() {
 		switch metamethod {
 		case "__add":
@@ -1139,13 +1422,11 @@ func (vm *VM) arith(a, b runtime.Value, metamethod string, op func(float64, floa
 		case "__mul":
 			return runtime.IntValue(a.Int() * b.Int()), nil
 		case "__pow":
-			// Power always returns float
 			return runtime.FloatValue(math.Pow(float64(a.Int()), float64(b.Int()))), nil
 		}
 	}
 	if a.IsNumber() && b.IsNumber() {
 		result := op(a.Number(), b.Number())
-		// Try to keep as int if both were int (except div/pow)
 		if a.IsInt() && b.IsInt() && metamethod != "__div" && metamethod != "__pow" {
 			if floatIsExactInt(result) {
 				return runtime.IntValue(int64(result)), nil
@@ -1153,13 +1434,11 @@ func (vm *VM) arith(a, b runtime.Value, metamethod string, op func(float64, floa
 		}
 		return runtime.FloatValue(result), nil
 	}
-	// Try to coerce strings to numbers (Lua semantics)
 	ac, aok := a.ToNumber()
 	bc, bok := b.ToNumber()
 	if aok && bok {
 		return vm.arith(ac, bc, metamethod, op)
 	}
-	// Try metamethod
 	mm, err := vm.getMetamethod(a, b, metamethod)
 	if err == nil && !mm.IsNil() {
 		results, err := vm.callValue(mm, []runtime.Value{a, b})
@@ -1181,7 +1460,6 @@ func (vm *VM) arithMod(a, b runtime.Value) (runtime.Value, error) {
 			return runtime.NilValue(), fmt.Errorf("attempt to perform 'n%%0'")
 		}
 		r := a.Int() % bi
-		// Lua-style: result has same sign as divisor
 		if r != 0 && (r^bi) < 0 {
 			r += bi
 		}
@@ -1208,7 +1486,6 @@ func (vm *VM) unaryMinus(v runtime.Value) (runtime.Value, error) {
 	if v.IsFloat() {
 		return runtime.FloatValue(-v.Float()), nil
 	}
-	// Coerce string to number
 	if nv, ok := v.ToNumber(); ok {
 		return vm.unaryMinus(nv)
 	}
@@ -1230,7 +1507,6 @@ func (vm *VM) length(v runtime.Value) (runtime.Value, error) {
 		return runtime.IntValue(int64(len(v.Str()))), nil
 	}
 	if v.IsTable() {
-		// Check __len metamethod
 		mt := v.Table().GetMetatable()
 		if mt != nil {
 			mm := mt.RawGet(runtime.StringValue("__len"))
@@ -1273,10 +1549,21 @@ func (vm *VM) getMetamethod(a, b runtime.Value, name string) (runtime.Value, err
 	return runtime.NilValue(), fmt.Errorf("no metamethod %s", name)
 }
 
+// markGlobalTablesConcurrent enables mutex on all top-level global tables.
+// Called once when the first OP_GO goroutine is spawned.
+func (vm *VM) markGlobalTablesConcurrent() {
+	vm.globalsMu.Lock()
+	for _, v := range vm.globals {
+		if v.IsTable() {
+			v.Table().SetConcurrent(true)
+		}
+	}
+	vm.globalsMu.Unlock()
+}
+
 // ---- Upvalue management ----
 
 func (vm *VM) findOrCreateUpvalue(regIdx int) *Upvalue {
-	// Check if an open upvalue for this register already exists
 	for _, uv := range vm.openUpvals {
 		if uv.regIdx == regIdx {
 			return uv
@@ -1308,7 +1595,5 @@ func floatIsExactInt(f float64) bool {
 	return f == math.Trunc(f) && f >= math.MinInt64 && f <= math.MaxInt64
 }
 
-// Ptr returns the ptr field of a Value (needed for Closure type assertion).
 func init() {
-	// Register a method to access Value.ptr from outside the runtime package
 }

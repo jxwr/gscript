@@ -18,211 +18,175 @@ const (
 	TypeString              // strings
 	TypeTable               // tables (associative arrays)
 	TypeFunction            // functions (closures and Go functions)
-	TypeCoroutine           // coroutines (Phase 6)
+	TypeCoroutine           // coroutines
 	TypeChannel             // channels
 )
 
-// Value is the tagged-union representation of all GScript values.
-// It is designed to be passed by value (no pointer indirection for scalars).
+// Value is a compact tagged-union representation of all GScript values.
+// 32 bytes: {typ(8) + data(8) + ptr(16)}.
+//
+// Storage layout:
+//   Nil:       {TypeNil,   0,              nil}
+//   Bool:      {TypeBool,  0 or 1,         nil}
+//   Int:       {TypeInt,   uint64(i),      nil}
+//   Float:     {TypeFloat, Float64bits(f), nil}
+//   String:    {TypeString,0,              string(s)}
+//   Table:     {TypeTable, 0,              *Table}
+//   Function:  {TypeFunction,0,            *Closure/*GoFunction}
+//   Coroutine: {TypeCoroutine,0,           any}
+//   Channel:   {TypeChannel,0,             *Channel}
 type Value struct {
 	typ  ValueType
-	ival int64   // Bool (0/1) or Int
-	fval float64 // Float
-	sval string  // String
-	ptr  any     // *Table | *Closure | *GoFunction | *Coroutine
+	data uint64 // Int/Bool payload, or Float64bits for float
+	ptr  any    // *Table | *Closure | *GoFunction | *Coroutine | *Channel | string
 }
 
 // ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------
 
-// NilValue returns the nil value.
 func NilValue() Value {
 	return Value{typ: TypeNil}
 }
 
-// BoolValue returns a boolean value.
 func BoolValue(b bool) Value {
-	var iv int64
+	var d uint64
 	if b {
-		iv = 1
+		d = 1
 	}
-	return Value{typ: TypeBool, ival: iv}
+	return Value{typ: TypeBool, data: d}
 }
 
-// IntValue returns an integer value.
 func IntValue(i int64) Value {
-	return Value{typ: TypeInt, ival: i}
+	return Value{typ: TypeInt, data: uint64(i)}
 }
 
-// SetInt updates a Value to an integer in place, modifying only typ and ival.
-// Faster than full struct copy for registers known to be reused as ints.
-// NOTE: The resulting Value may have stale fval/sval/ptr fields. This is safe
-// because Table operations normalize keys before hash map access.
-func (v *Value) SetInt(i int64) {
-	v.typ = TypeInt
-	v.ival = i
-}
-
-// ---------------------------------------------------------------------------
-// Pointer-receiver fast paths (avoid 56-byte Value copies in VM hot loop)
-// ---------------------------------------------------------------------------
-
-// RawType returns the type tag via pointer receiver (no copy).
-func (v *Value) RawType() ValueType { return v.typ }
-
-// RawInt returns the integer payload via pointer receiver (no copy).
-// Caller must ensure v is TypeInt.
-func (v *Value) RawInt() int64 { return v.ival }
-
-// RawFloat returns the float payload via pointer receiver (no copy).
-func (v *Value) RawFloat() float64 { return v.fval }
-
-// AddInts tries to add *a + *b as integers, storing result in *dst.
-// Returns true on success (both operands are TypeInt).
-func AddInts(dst, a, b *Value) bool {
-	if a.typ == TypeInt && b.typ == TypeInt {
-		dst.typ = TypeInt
-		dst.ival = a.ival + b.ival
-		return true
-	}
-	return false
-}
-
-// SubInts tries to subtract *a - *b as integers, storing result in *dst.
-func SubInts(dst, a, b *Value) bool {
-	if a.typ == TypeInt && b.typ == TypeInt {
-		dst.typ = TypeInt
-		dst.ival = a.ival - b.ival
-		return true
-	}
-	return false
-}
-
-// MulInts tries to multiply *a * *b as integers, storing result in *dst.
-func MulInts(dst, a, b *Value) bool {
-	if a.typ == TypeInt && b.typ == TypeInt {
-		dst.typ = TypeInt
-		dst.ival = a.ival * b.ival
-		return true
-	}
-	return false
-}
-
-// LTInts compares *a < *b as integers. Returns (result, ok).
-func LTInts(a, b *Value) (bool, bool) {
-	if a.typ == TypeInt && b.typ == TypeInt {
-		return a.ival < b.ival, true
-	}
-	return false, false
-}
-
-// LEInts compares *a <= *b as integers. Returns (result, ok).
-func LEInts(a, b *Value) (bool, bool) {
-	if a.typ == TypeInt && b.typ == TypeInt {
-		return a.ival <= b.ival, true
-	}
-	return false, false
-}
-
-// FloatValue returns a floating-point value.
 func FloatValue(f float64) Value {
-	return Value{typ: TypeFloat, fval: f}
+	return Value{typ: TypeFloat, data: math.Float64bits(f)}
 }
 
-// StringValue returns a string value.
 func StringValue(s string) Value {
-	return Value{typ: TypeString, sval: s}
+	return Value{typ: TypeString, ptr: s}
 }
 
-// TableValue returns a table value.
 func TableValue(t *Table) Value {
 	return Value{typ: TypeTable, ptr: t}
 }
 
-// FunctionValue returns a function value wrapping either a *Closure or *GoFunction.
 func FunctionValue(f interface{}) Value {
 	return Value{typ: TypeFunction, ptr: f}
 }
 
-// CoroutineValue returns a coroutine value.
 func CoroutineValue(c *Coroutine) Value {
 	return Value{typ: TypeCoroutine, ptr: c}
 }
 
-// AnyCoroutineValue returns a coroutine value wrapping any coroutine-like object.
-// Used by the VM package to store VMCoroutine pointers without import cycles.
 func AnyCoroutineValue(c any) Value {
 	return Value{typ: TypeCoroutine, ptr: c}
 }
 
-// ChannelValue returns a channel value.
 func ChannelValue(ch *Channel) Value {
 	return Value{typ: TypeChannel, ptr: ch}
+}
+
+// ---------------------------------------------------------------------------
+// In-place mutation (hot-loop optimization)
+// ---------------------------------------------------------------------------
+
+// SetInt updates a Value to an integer in place.
+// NOTE: ptr field may be stale. Table operations use cleanHashKey to normalize.
+func (v *Value) SetInt(i int64) {
+	v.typ = TypeInt
+	v.data = uint64(i)
+}
+
+// ---------------------------------------------------------------------------
+// Pointer-receiver fast paths (avoid 32-byte Value copies in VM hot loop)
+// ---------------------------------------------------------------------------
+
+func (v *Value) RawType() ValueType { return v.typ }
+func (v *Value) RawInt() int64      { return int64(v.data) }
+func (v *Value) RawFloat() float64  { return math.Float64frombits(v.data) }
+
+func AddInts(dst, a, b *Value) bool {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeInt
+		dst.data = uint64(int64(a.data) + int64(b.data))
+		return true
+	}
+	return false
+}
+
+func SubInts(dst, a, b *Value) bool {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeInt
+		dst.data = uint64(int64(a.data) - int64(b.data))
+		return true
+	}
+	return false
+}
+
+func MulInts(dst, a, b *Value) bool {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeInt
+		dst.data = uint64(int64(a.data) * int64(b.data))
+		return true
+	}
+	return false
+}
+
+func LTInts(a, b *Value) (bool, bool) {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		return int64(a.data) < int64(b.data), true
+	}
+	return false, false
+}
+
+func LEInts(a, b *Value) (bool, bool) {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		return int64(a.data) <= int64(b.data), true
+	}
+	return false, false
 }
 
 // ---------------------------------------------------------------------------
 // Type checks
 // ---------------------------------------------------------------------------
 
-// Type returns the ValueType tag.
-func (v Value) Type() ValueType { return v.typ }
-
-// IsNil returns true if the value is nil.
-func (v Value) IsNil() bool { return v.typ == TypeNil }
-
-// IsBool returns true if the value is a boolean.
-func (v Value) IsBool() bool { return v.typ == TypeBool }
-
-// IsNumber returns true if the value is an integer or float.
-func (v Value) IsNumber() bool { return v.typ == TypeInt || v.typ == TypeFloat }
-
-// IsInt returns true if the value is an integer.
-func (v Value) IsInt() bool { return v.typ == TypeInt }
-
-// IsFloat returns true if the value is a float.
-func (v Value) IsFloat() bool { return v.typ == TypeFloat }
-
-// IsString returns true if the value is a string.
-func (v Value) IsString() bool { return v.typ == TypeString }
-
-// IsTable returns true if the value is a table.
-func (v Value) IsTable() bool { return v.typ == TypeTable }
-
-// IsFunction returns true if the value is a function (closure or Go function).
-func (v Value) IsFunction() bool { return v.typ == TypeFunction }
-
-// IsCoroutine returns true if the value is a coroutine.
-func (v Value) IsCoroutine() bool { return v.typ == TypeCoroutine }
-
-// IsChannel returns true if the value is a channel.
-func (v Value) IsChannel() bool { return v.typ == TypeChannel }
+func (v Value) Type() ValueType    { return v.typ }
+func (v Value) IsNil() bool        { return v.typ == TypeNil }
+func (v Value) IsBool() bool       { return v.typ == TypeBool }
+func (v Value) IsNumber() bool     { return v.typ == TypeInt || v.typ == TypeFloat }
+func (v Value) IsInt() bool        { return v.typ == TypeInt }
+func (v Value) IsFloat() bool      { return v.typ == TypeFloat }
+func (v Value) IsString() bool     { return v.typ == TypeString }
+func (v Value) IsTable() bool      { return v.typ == TypeTable }
+func (v Value) IsFunction() bool   { return v.typ == TypeFunction }
+func (v Value) IsCoroutine() bool  { return v.typ == TypeCoroutine }
+func (v Value) IsChannel() bool    { return v.typ == TypeChannel }
 
 // ---------------------------------------------------------------------------
 // Value accessors
 // ---------------------------------------------------------------------------
 
-// Bool returns the boolean payload. Panics if not TypeBool.
-func (v Value) Bool() bool { return v.ival != 0 }
+func (v Value) Bool() bool      { return v.data != 0 }
+func (v Value) Int() int64      { return int64(v.data) }
+func (v Value) Float() float64  { return math.Float64frombits(v.data) }
 
-// Int returns the integer payload. Panics if not TypeInt.
-func (v Value) Int() int64 { return v.ival }
-
-// Float returns the float payload. Panics if not TypeFloat.
-func (v Value) Float() float64 { return v.fval }
-
-// Number converts an int or float to float64.
 func (v Value) Number() float64 {
 	if v.typ == TypeInt {
-		return float64(v.ival)
+		return float64(int64(v.data))
 	}
-	return v.fval
+	return math.Float64frombits(v.data)
 }
 
-// Str returns the raw string payload (named to avoid conflict with String()/Stringer).
-func (v Value) Str() string { return v.sval }
+func (v Value) Str() string {
+	if v.ptr == nil {
+		return ""
+	}
+	return v.ptr.(string)
+}
 
-// Table returns the *Table pointer.
 func (v Value) Table() *Table {
 	if v.ptr == nil {
 		return nil
@@ -230,7 +194,6 @@ func (v Value) Table() *Table {
 	return v.ptr.(*Table)
 }
 
-// Closure returns the *Closure pointer, or nil if not a closure.
 func (v Value) Closure() *Closure {
 	if v.ptr == nil {
 		return nil
@@ -239,7 +202,6 @@ func (v Value) Closure() *Closure {
 	return c
 }
 
-// GoFunction returns the *GoFunction pointer, or nil if not a Go function.
 func (v Value) GoFunction() *GoFunction {
 	if v.ptr == nil {
 		return nil
@@ -248,12 +210,10 @@ func (v Value) GoFunction() *GoFunction {
 	return gf
 }
 
-// Ptr returns the raw pointer field. Used by the VM package for type assertions.
 func (v Value) Ptr() any {
 	return v.ptr
 }
 
-// Coroutine returns the *Coroutine pointer.
 func (v Value) Coroutine() *Coroutine {
 	if v.ptr == nil {
 		return nil
@@ -261,7 +221,6 @@ func (v Value) Coroutine() *Coroutine {
 	return v.ptr.(*Coroutine)
 }
 
-// Channel returns the *Channel pointer.
 func (v Value) Channel() *Channel {
 	if v.ptr == nil {
 		return nil
@@ -273,7 +232,6 @@ func (v Value) Channel() *Channel {
 // TypeName, Truthiness, Equality
 // ---------------------------------------------------------------------------
 
-// TypeName returns a Lua-style type name string.
 func (v Value) TypeName() string {
 	switch v.typ {
 	case TypeNil:
@@ -297,23 +255,19 @@ func (v Value) TypeName() string {
 	}
 }
 
-// Truthy returns the truthiness of a value.
-// false and nil are falsy; everything else is truthy.
 func (v Value) Truthy() bool {
 	switch v.typ {
 	case TypeNil:
 		return false
 	case TypeBool:
-		return v.ival != 0
+		return v.data != 0
 	default:
 		return true
 	}
 }
 
-// Equal tests structural equality between two values.
 func (v Value) Equal(other Value) bool {
 	if v.typ != other.typ {
-		// int == float comparison
 		if v.IsNumber() && other.IsNumber() {
 			return v.Number() == other.Number()
 		}
@@ -322,16 +276,14 @@ func (v Value) Equal(other Value) bool {
 	switch v.typ {
 	case TypeNil:
 		return true
-	case TypeBool:
-		return v.ival == other.ival
-	case TypeInt:
-		return v.ival == other.ival
+	case TypeBool, TypeInt:
+		return v.data == other.data
 	case TypeFloat:
-		return v.fval == other.fval
+		return math.Float64frombits(v.data) == math.Float64frombits(other.data)
 	case TypeString:
-		return v.sval == other.sval
+		return v.ptr.(string) == other.ptr.(string)
 	case TypeTable, TypeFunction, TypeCoroutine, TypeChannel:
-		return v.ptr == other.ptr // reference equality
+		return v.ptr == other.ptr
 	default:
 		return false
 	}
@@ -341,8 +293,6 @@ func (v Value) Equal(other Value) bool {
 // Arithmetic / conversion helpers
 // ---------------------------------------------------------------------------
 
-// ToNumber attempts to convert a string value to a number.
-// Returns (converted value, true) on success, or (NilValue(), false) on failure.
 func (v Value) ToNumber() (Value, bool) {
 	if v.IsInt() || v.IsFloat() {
 		return v, true
@@ -350,7 +300,7 @@ func (v Value) ToNumber() (Value, bool) {
 	if v.typ != TypeString {
 		return NilValue(), false
 	}
-	s := strings.TrimSpace(v.sval)
+	s := strings.TrimSpace(v.ptr.(string))
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return IntValue(i), true
 	}
@@ -361,30 +311,29 @@ func (v Value) ToNumber() (Value, bool) {
 }
 
 // ---------------------------------------------------------------------------
-// fmt.Stringer (human-readable representation for debugging)
+// fmt.Stringer
 // ---------------------------------------------------------------------------
 
-// String implements fmt.Stringer. Returns a human-readable representation.
 func (v Value) String() string {
 	switch v.typ {
 	case TypeNil:
 		return "nil"
 	case TypeBool:
-		if v.ival != 0 {
+		if v.data != 0 {
 			return "true"
 		}
 		return "false"
 	case TypeInt:
-		return strconv.FormatInt(v.ival, 10)
+		return strconv.FormatInt(int64(v.data), 10)
 	case TypeFloat:
-		s := strconv.FormatFloat(v.fval, 'g', -1, 64)
-		// Ensure there's always a decimal point so it looks like a float.
+		f := math.Float64frombits(v.data)
+		s := strconv.FormatFloat(f, 'g', -1, 64)
 		if !strings.Contains(s, ".") && !strings.Contains(s, "e") && !strings.Contains(s, "E") && !strings.Contains(s, "Inf") && !strings.Contains(s, "NaN") {
 			s += ".0"
 		}
 		return s
 	case TypeString:
-		return v.sval
+		return v.ptr.(string)
 	case TypeTable:
 		return fmt.Sprintf("table: %p", v.ptr)
 	case TypeFunction:
@@ -404,31 +353,23 @@ func (v Value) String() string {
 	}
 }
 
-// Hashable returns a representation usable as a map key. Value is already
-// comparable for basic types. For table/function/coroutine it uses pointer identity.
-// This is used internally by Table.
 func (v Value) hashKey() Value {
 	return v
 }
 
-// LessThan compares two values for ordering (used by < <= > >=).
-// Returns (result, ok). ok is false if the types are not comparable.
 func (v Value) LessThan(other Value) (bool, bool) {
 	if v.IsNumber() && other.IsNumber() {
 		return v.Number() < other.Number(), true
 	}
 	if v.typ == TypeString && other.typ == TypeString {
-		return v.sval < other.sval, true
+		return v.ptr.(string) < other.ptr.(string), true
 	}
 	return false, false
 }
 
-// floatIsInt returns true if a float64 is an exact integer and within int64 range.
 func floatIsInt(f float64) bool {
 	if math.IsInf(f, 0) || math.IsNaN(f) {
 		return false
 	}
 	return f == math.Trunc(f) && f >= math.MinInt64 && f <= math.MaxInt64
 }
-
-// Coroutine is defined in coroutine.go.

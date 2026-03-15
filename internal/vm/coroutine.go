@@ -219,13 +219,7 @@ func (vm *VM) RegisterCoroutineLib() {
 		},
 	}))
 
-	if vm.globalsMu != nil {
-		vm.globalsMu.Lock()
-	}
-	vm.globals["coroutine"] = rt.TableValue(coLib)
-	if vm.globalsMu != nil {
-		vm.globalsMu.Unlock()
-	}
+	vm.SetGlobal("coroutine", rt.TableValue(coLib))
 }
 
 // resumeCoroutine resumes a suspended VM coroutine.
