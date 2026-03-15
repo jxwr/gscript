@@ -59,10 +59,15 @@ type TraceRecorder struct {
 	depth     int  // inline call depth
 	maxDepth  int  // max inline depth
 	maxLen    int  // max trace length
+	compile   bool // if true, compile traces after recording
 
 	// Loop hotness tracking
 	loopCounts map[loopKey]int
 	threshold  int // recording starts after this many iterations
+
+	// Compiled trace cache: keyed by (proto, loopPC)
+	compiled     map[loopKey]*CompiledTrace
+	pendingTrace *CompiledTrace
 }
 
 type loopKey struct {
@@ -83,7 +88,18 @@ func NewTraceRecorder() *TraceRecorder {
 		maxLen:     DefaultMaxTraceLen,
 		threshold:  DefaultTraceThreshold,
 		loopCounts: make(map[loopKey]int),
+		compiled:   make(map[loopKey]*CompiledTrace),
 	}
+}
+
+// SetCompile enables trace compilation and execution.
+func (r *TraceRecorder) SetCompile(on bool) {
+	r.compile = on
+}
+
+// GetCompiled returns a compiled trace for the given loop, or nil.
+func (r *TraceRecorder) GetCompiled(pc int, proto *vm.FuncProto) *CompiledTrace {
+	return r.compiled[loopKey{proto: proto, pc: pc}]
 }
 
 // Traces returns all recorded traces.
@@ -97,22 +113,41 @@ func (r *TraceRecorder) IsRecording() bool {
 }
 
 // OnLoopBackEdge is called when the interpreter detects a loop back-edge.
+// Returns true if a compiled trace was executed (caller should re-read registers).
 func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 	if r.recording {
 		// We've completed one loop iteration — stop recording
 		r.finishTrace()
+		// If we just compiled a trace, don't execute it yet (let the
+		// interpreter handle the current iteration normally)
 		return false
 	}
 
-	// Track loop hotness
+	// Check for existing compiled trace
 	key := loopKey{proto: proto, pc: pc}
+	if ct, ok := r.compiled[key]; ok {
+		// Mark for execution — the VM will call ExecuteTrace
+		r.pendingTrace = ct
+		return true
+	}
+
+	// Track loop hotness
 	r.loopCounts[key]++
 	if r.loopCounts[key] >= r.threshold {
-		// Hot loop detected — start recording on next iteration
 		r.startTrace(pc, proto)
-		return false
 	}
 	return false
+}
+
+// PendingTrace returns the compiled trace to execute (set by OnLoopBackEdge).
+// Implements vm.TracePendingHook.
+func (r *TraceRecorder) PendingTrace() vm.TraceExecutor {
+	ct := r.pendingTrace
+	r.pendingTrace = nil
+	if ct == nil {
+		return nil
+	}
+	return ct
 }
 
 // OnInstruction is called for every instruction during execution.
@@ -241,6 +276,15 @@ func (r *TraceRecorder) startTrace(pc int, proto *vm.FuncProto) {
 func (r *TraceRecorder) finishTrace() {
 	if r.current != nil && len(r.current.IR) > 0 {
 		r.traces = append(r.traces, r.current)
+
+		// Compile the trace if enabled
+		if r.compile {
+			ct, err := compileTrace(r.current)
+			if err == nil {
+				key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
+				r.compiled[key] = ct
+			}
+		}
 	}
 	r.current = nil
 	r.recording = false

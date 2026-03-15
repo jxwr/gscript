@@ -42,11 +42,25 @@ type VM struct {
 	traceRec     TraceRecorderHook // optional trace recorder (nil = disabled)
 }
 
+// TraceExecutor executes a compiled trace.
+type TraceExecutor interface {
+	Execute(regs []runtime.Value, base int, proto *FuncProto) (exitPC int, sideExit bool)
+}
+
 // TraceRecorderHook is the interface for the trace recorder.
 type TraceRecorderHook interface {
 	OnInstruction(pc int, inst uint32, proto *FuncProto, regs []runtime.Value, base int) bool
 	OnLoopBackEdge(pc int, proto *FuncProto) bool
 	IsRecording() bool
+	PendingTrace() TraceExecutor
+}
+
+// executeCompiledTrace runs a compiled trace if available.
+func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) {
+	ct := vm.traceRec.PendingTrace()
+	if ct != nil {
+		_, _ = ct.Execute(vm.regs, base, proto)
+	}
 }
 
 // SetTraceRecorder enables trace recording on this VM.
@@ -1172,7 +1186,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						frame.pc += sbx
 						// Trace recorder: loop back-edge
 						if vm.traceRec != nil && sbx < 0 {
-							vm.traceRec.OnLoopBackEdge(pc, frame.closure.Proto)
+							if vm.traceRec.OnLoopBackEdge(pc, frame.closure.Proto) {
+								// A compiled trace is ready — execute it
+								vm.executeCompiledTrace(frame.closure.Proto, base)
+							}
 						}
 					}
 					break
