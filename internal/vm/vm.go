@@ -1192,22 +1192,18 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					if cont {
 						idxP.SetInt(idx)
 						vm.regs[base+a+3].SetInt(idx)
+						forloopPC := frame.pc - 1 // PC of FORLOOP (frame.pc was already incremented)
 						frame.pc += sbx
 						// Trace recorder: loop back-edge (only when tracing enabled)
 						if vm.traceRec != nil && sbx < 0 {
-							pc := frame.pc - 1
-							if vm.traceRec.OnLoopBackEdge(pc, frame.closure.Proto) {
+							if vm.traceRec.OnLoopBackEdge(forloopPC, frame.closure.Proto) {
 								tr := vm.executeCompiledTrace(frame.closure.Proto, base)
 								if tr.executed {
 									if tr.sideExit {
-										// Side-exit: resume interpreter at the exit PC.
 										frame.pc = tr.exitPC
 									} else {
-										// Loop done: skip past the FORLOOP instruction.
-										// Currently frame.pc = FORLOOP_PC + 1 + sbx (loop body start).
-										// We want frame.pc = FORLOOP_PC + 1 (after FORLOOP).
-										// Since sbx < 0: frame.pc -= sbx adds |sbx|.
-										frame.pc -= sbx
+										// Loop done: skip past FORLOOP.
+										frame.pc = forloopPC + 1
 									}
 								}
 							}

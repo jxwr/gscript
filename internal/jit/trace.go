@@ -258,6 +258,8 @@ func (r *TraceRecorder) shouldAbort(op vm.Opcode) bool {
 		return true // concurrency ops
 	case vm.OP_TFORCALL, vm.OP_TFORLOOP:
 		return true // generic for (complex iterator)
+	case vm.OP_FORPREP:
+		return true // nested loop — abort (trace only handles one loop level)
 	}
 	return false
 }

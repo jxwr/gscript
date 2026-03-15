@@ -51,7 +51,6 @@ func TestTraceCompile_ForLoop(t *testing.T) {
 }
 
 func TestTraceCompile_Nested(t *testing.T) {
-	t.Skip("TODO: nested loops need trace linking (Phase D)")
 	g := runWithTracingJIT(t, `
 		sum := 0
 		for i := 1; i <= 50; i++ {
