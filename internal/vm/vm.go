@@ -39,6 +39,19 @@ type VM struct {
 	callCounts   map[*FuncProto]int
 	argBuf       [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf       [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
+	traceRec     TraceRecorderHook // optional trace recorder (nil = disabled)
+}
+
+// TraceRecorderHook is the interface for the trace recorder.
+type TraceRecorderHook interface {
+	OnInstruction(pc int, inst uint32, proto *FuncProto, regs []runtime.Value, base int) bool
+	OnLoopBackEdge(pc int, proto *FuncProto) bool
+	IsRecording() bool
+}
+
+// SetTraceRecorder enables trace recording on this VM.
+func (vm *VM) SetTraceRecorder(r TraceRecorderHook) {
+	vm.traceRec = r
 }
 
 // SetJIT sets the JIT engine for this VM.
@@ -364,7 +377,13 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			continue
 		}
 		inst := code[frame.pc]
+		pc := frame.pc
 		frame.pc++
+
+		// Trace recorder hook
+		if vm.traceRec != nil {
+			vm.traceRec.OnInstruction(pc, inst, frame.closure.Proto, vm.regs, base)
+		}
 
 		op := DecodeOp(inst)
 
@@ -1151,6 +1170,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						idxP.SetInt(idx)
 						vm.regs[base+a+3].SetInt(idx)
 						frame.pc += sbx
+						// Trace recorder: loop back-edge
+						if vm.traceRec != nil && sbx < 0 {
+							vm.traceRec.OnLoopBackEdge(pc, frame.closure.Proto)
+						}
 					}
 					break
 				}
