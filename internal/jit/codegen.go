@@ -1230,9 +1230,9 @@ func (cg *Codegen) analyzeCallExitPCs() {
 		if !cg.isSupported(op) && isCallExitOp(op) {
 			cg.callExitPCs = append(cg.callExitPCs, pc)
 		}
-		// GETFIELD is "supported" (native fast path) but still needs a
-		// call-exit resume entry for the fallback slow path.
-		if op == vm.OP_GETFIELD {
+		// GETFIELD/GETTABLE are "supported" (native fast path) but still need
+		// call-exit resume entries for the fallback slow path.
+		if op == vm.OP_GETFIELD || op == vm.OP_GETTABLE {
 			cg.callExitPCs = append(cg.callExitPCs, pc)
 		}
 	}
@@ -1352,12 +1352,16 @@ func (cg *Codegen) emitBody() error {
 			return fmt.Errorf("pc %d: %w", pc, err)
 		}
 
-		// For ops with native fast path + call-exit fallback (GETFIELD),
-		// emit the resume label after the native code.
-		if op == vm.OP_GETFIELD && callExitSet[pc] {
-			cg.asm.Label(resumeLabel(pc))
+		// For ops with native fast path + call-exit fallback,
+		// emit the resume label after the native code. The fast path
+		// must skip the resume reload (which would corrupt pinned regs).
+		if (op == vm.OP_GETFIELD || op == vm.OP_GETTABLE) && callExitSet[pc] {
+			skipLabel := fmt.Sprintf("skip_resume_%d", pc)
+			cg.asm.B(skipLabel)           // fast path: skip resume reload
+			cg.asm.Label(resumeLabel(pc)) // call-exit resume entry
 			cg.asm.LDR(regRegs, regCtx, ctxOffRegs)
 			cg.reloadPinnedRegs()
+			cg.asm.Label(skipLabel)
 		}
 	}
 
@@ -1378,7 +1382,8 @@ func (cg *Codegen) isSupported(op vm.Opcode) bool {
 		vm.OP_FORPREP, vm.OP_FORLOOP,
 		vm.OP_RETURN,
 		vm.OP_TEST,
-		vm.OP_GETFIELD:
+		vm.OP_GETFIELD,
+		vm.OP_GETTABLE:
 		return true
 	}
 	return false
@@ -1424,6 +1429,8 @@ func (cg *Codegen) emitInstruction(pc int, inst uint32) error {
 		return cg.emitForLoop(pc, inst)
 	case vm.OP_GETFIELD:
 		return cg.emitGetField(pc, inst)
+	case vm.OP_GETTABLE:
+		return cg.emitGetTable(pc, inst)
 	case vm.OP_RETURN:
 		return cg.emitReturnOp(pc, inst)
 	}
@@ -2172,6 +2179,121 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 	asm.LoadImm64(X1, int64(pc))
 	asm.STR(X1, regCtx, ctxOffExitPC)
 	asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit)
+	asm.B("epilogue")
+
+	asm.Label(doneLabel)
+	return nil
+}
+
+// emitGetTable compiles OP_GETTABLE R(A) = R(B)[RK(C)] natively.
+// Fast path: R(B) is TypeTable, no metatable, RK(C) is TypeInt, key in array range.
+// Slow path: call-exit for non-table, metatable, non-int keys, or imap.
+func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
+	a := vm.DecodeA(inst)
+	b := vm.DecodeB(inst)
+	cidx := vm.DecodeC(inst)
+	asm := cg.asm
+
+	fallbackLabel := fmt.Sprintf("gettable_fallback_%d", pc)
+	doneLabel := fmt.Sprintf("gettable_done_%d", pc)
+
+	// --- Step 1: Type check R(B).typ == TypeTable ---
+	bTypOff := regTypOffset(b)
+	if bTypOff <= 4095 {
+		asm.LDRB(X0, regRegs, bTypOff)
+	} else {
+		asm.LoadImm64(X0, int64(bTypOff))
+		asm.LDRBreg(X0, regRegs, X0)
+	}
+	asm.CMPimmW(X0, TypeTable)
+	asm.BCond(CondNE, fallbackLabel)
+
+	// --- Step 2: Load *Table from R(B).ptr.data ---
+	bPtrDataOff := b*ValueSize + OffsetPtrData
+	if bPtrDataOff <= 32760 {
+		asm.LDR(X0, regRegs, bPtrDataOff)
+	} else {
+		asm.LoadImm64(X1, int64(bPtrDataOff))
+		asm.ADDreg(X1, regRegs, X1)
+		asm.LDR(X0, X1, 0)
+	}
+	asm.CBZ(X0, fallbackLabel)
+
+	// --- Step 3: Check metatable == nil ---
+	asm.LDR(X1, X0, TableOffMetatable)
+	asm.CBNZ(X1, fallbackLabel)
+
+	// --- Step 4: Load key from RK(C) ---
+	// Check key type == TypeInt
+	var keyTypOff, keyDataOff int
+	if cidx >= vm.RKBit {
+		constIdx := vm.RKToConstIdx(cidx)
+		keyTypOff = constIdx*ValueSize + OffsetTyp
+		keyDataOff = constIdx*ValueSize + OffsetData
+		// Load from constants
+		if keyTypOff <= 4095 {
+			asm.LDRB(X2, regConsts, keyTypOff)
+		} else {
+			asm.LoadImm64(X2, int64(keyTypOff))
+			asm.LDRBreg(X2, regConsts, X2)
+		}
+		asm.CMPimmW(X2, TypeInt)
+		asm.BCond(CondNE, fallbackLabel)
+		if keyDataOff <= 32760 {
+			asm.LDR(X2, regConsts, keyDataOff) // X2 = key int value
+		} else {
+			asm.LoadImm64(X3, int64(keyDataOff))
+			asm.ADDreg(X3, regConsts, X3)
+			asm.LDR(X2, X3, 0)
+		}
+	} else {
+		keyTypOff = regTypOffset(cidx)
+		keyDataOff = cidx*ValueSize + OffsetData
+		if keyTypOff <= 4095 {
+			asm.LDRB(X3, regRegs, keyTypOff)
+		} else {
+			asm.LoadImm64(X3, int64(keyTypOff))
+			asm.LDRBreg(X3, regRegs, X3)
+		}
+		asm.CMPimmW(X3, TypeInt)
+		asm.BCond(CondNE, fallbackLabel)
+		if keyDataOff <= 32760 {
+			asm.LDR(X2, regRegs, keyDataOff) // X2 = key int value
+		} else {
+			asm.LoadImm64(X3, int64(keyDataOff))
+			asm.ADDreg(X3, regRegs, X3)
+			asm.LDR(X2, X3, 0)
+		}
+	}
+
+	// --- Step 5: Array bounds check ---
+	// array is at Table + TableOffArray: {ptr(8), len(8), cap(8)}
+	// Check: key >= 1 && key < array.len
+	asm.CMPimm(X2, 1) // key >= 1?
+	asm.BCond(CondLT, fallbackLabel)
+
+	asm.LDR(X3, X0, TableOffArray+8) // X3 = array.len
+	asm.CMPreg(X2, X3)               // key < array.len?
+	asm.BCond(CondGE, fallbackLabel)
+
+	// --- Step 6: Load array[key] (Value at array.ptr + key * ValueSize) ---
+	asm.LDR(X3, X0, TableOffArray) // X3 = array.ptr
+	asm.LSLimm(X4, X2, 5)          // X4 = key * 32 (ValueSize)
+	asm.ADDreg(X3, X3, X4)         // X3 = &array[key]
+
+	aOff := a * ValueSize
+	for w := 0; w < 4; w++ {
+		asm.LDR(X0, X3, w*8)
+		asm.STR(X0, regRegs, aOff+w*8)
+	}
+	asm.B(doneLabel)
+
+	// --- Fallback: call-exit ---
+	asm.Label(fallbackLabel)
+	cg.spillPinnedRegs()
+	asm.LoadImm64(X1, int64(pc))
+	asm.STR(X1, regCtx, ctxOffExitPC)
+	asm.LoadImm64(X0, 2)
 	asm.B("epilogue")
 
 	asm.Label(doneLabel)
