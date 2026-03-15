@@ -366,27 +366,34 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		case OP_GETGLOBAL:
 			a := DecodeA(inst)
 			bx := DecodeBx(inst)
-			if vm.noGlobalLock {
-				// Single-threaded fast path: indexed array with cache
-				proto := frame.closure.Proto
-				if proto.GlobalCache == nil {
-					proto.GlobalCache = make([]globalCacheEntry, len(proto.Constants))
-					for i := range proto.GlobalCache {
-						proto.GlobalCache[i].index = -1
-					}
+			// Lazy-init GlobalCache
+			proto := frame.closure.Proto
+			if proto.GlobalCache == nil {
+				proto.GlobalCache = make([]globalCacheEntry, len(proto.Constants))
+				for i := range proto.GlobalCache {
+					proto.GlobalCache[i].index = -1
 				}
-				cache := &proto.GlobalCache[bx]
-				if cache.index >= 0 && cache.version == vm.globalVer {
+			}
+			cache := &proto.GlobalCache[bx]
+			if cache.index >= 0 && cache.version == vm.globalVer {
+				if vm.noGlobalLock {
+					// Single-threaded: no lock needed
 					vm.regs[base+a] = vm.globalArray[cache.index]
 				} else {
-					name := constants[bx].Str()
-					idx := vm.resolveGlobalIndex(name)
-					cache.index = int32(idx)
-					cache.version = vm.globalVer
-					vm.regs[base+a] = vm.globalArray[idx]
+					// Multi-threaded: use indexed array but lock for memory barrier
+					vm.globalsMu.RLock()
+					vm.regs[base+a] = vm.globalArray[cache.index]
+					vm.globalsMu.RUnlock()
 				}
+			} else if vm.noGlobalLock {
+				// Single-threaded cache miss: resolve + cache without lock
+				name := constants[bx].Str()
+				idx := vm.resolveGlobalIndex(name)
+				cache.index = int32(idx)
+				cache.version = vm.globalVer
+				vm.regs[base+a] = vm.globalArray[idx]
 			} else {
-				// Multi-threaded: locked map access
+				// Multi-threaded cache miss: locked map fallback
 				name := constants[bx].Str()
 				vm.globalsMu.RLock()
 				v := vm.globals[name]
@@ -419,10 +426,13 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				}
 				vm.globals[name] = val
 			} else {
-				// Multi-threaded: locked map access
+				// Multi-threaded: locked access, update both map and array
 				name := constants[bx].Str()
 				vm.globalsMu.Lock()
 				vm.globals[name] = val
+				if idx, ok := vm.globalIndex[name]; ok {
+					vm.globalArray[idx] = val
+				}
 				vm.globalsMu.Unlock()
 			}
 
