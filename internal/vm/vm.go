@@ -391,12 +391,11 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			continue
 		}
 		inst := code[frame.pc]
-		pc := frame.pc
 		frame.pc++
 
-		// Trace recorder hook
-		if vm.traceRec != nil {
-			vm.traceRec.OnInstruction(pc, inst, frame.closure.Proto, vm.regs, base)
+		// Trace recorder: only hook when actively recording (not on every instruction)
+		if vm.traceRec != nil && vm.traceRec.IsRecording() {
+			vm.traceRec.OnInstruction(frame.pc-1, inst, frame.closure.Proto, vm.regs, base)
 		}
 
 		op := DecodeOp(inst)
@@ -1184,10 +1183,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						idxP.SetInt(idx)
 						vm.regs[base+a+3].SetInt(idx)
 						frame.pc += sbx
-						// Trace recorder: loop back-edge
+						// Trace recorder: loop back-edge (only when tracing enabled)
 						if vm.traceRec != nil && sbx < 0 {
+							pc := frame.pc - 1
 							if vm.traceRec.OnLoopBackEdge(pc, frame.closure.Proto) {
-								// A compiled trace is ready — execute it
 								vm.executeCompiledTrace(frame.closure.Proto, base)
 							}
 						}
