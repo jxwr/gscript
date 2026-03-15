@@ -1230,6 +1230,11 @@ func (cg *Codegen) analyzeCallExitPCs() {
 		if !cg.isSupported(op) && isCallExitOp(op) {
 			cg.callExitPCs = append(cg.callExitPCs, pc)
 		}
+		// GETFIELD is "supported" (native fast path) but still needs a
+		// call-exit resume entry for the fallback slow path.
+		if op == vm.OP_GETFIELD {
+			cg.callExitPCs = append(cg.callExitPCs, pc)
+		}
 	}
 
 	// Detect comparison call-exit PCs.
@@ -1346,6 +1351,14 @@ func (cg *Codegen) emitBody() error {
 		if err := cg.emitInstruction(pc, inst); err != nil {
 			return fmt.Errorf("pc %d: %w", pc, err)
 		}
+
+		// For ops with native fast path + call-exit fallback (GETFIELD),
+		// emit the resume label after the native code.
+		if op == vm.OP_GETFIELD && callExitSet[pc] {
+			cg.asm.Label(resumeLabel(pc))
+			cg.asm.LDR(regRegs, regCtx, ctxOffRegs)
+			cg.reloadPinnedRegs()
+		}
 	}
 
 	return nil
@@ -1364,7 +1377,8 @@ func (cg *Codegen) isSupported(op vm.Opcode) bool {
 		vm.OP_JMP,
 		vm.OP_FORPREP, vm.OP_FORLOOP,
 		vm.OP_RETURN,
-		vm.OP_TEST:
+		vm.OP_TEST,
+		vm.OP_GETFIELD:
 		return true
 	}
 	return false
@@ -1408,6 +1422,8 @@ func (cg *Codegen) emitInstruction(pc int, inst uint32) error {
 		return cg.emitForPrep(pc, inst)
 	case vm.OP_FORLOOP:
 		return cg.emitForLoop(pc, inst)
+	case vm.OP_GETFIELD:
+		return cg.emitGetField(pc, inst)
 	case vm.OP_RETURN:
 		return cg.emitReturnOp(pc, inst)
 	}
@@ -2028,6 +2044,137 @@ func (cg *Codegen) emitForLoop(pc int, inst uint32) error {
 
 		cg.asm.Label(exitFor)
 	}
+	return nil
+}
+
+// emitGetField compiles OP_GETFIELD R(A) = R(B).Constants[C] natively.
+// Fast path: R(B) is TypeTable, no metatable, key found in flat skeys.
+// Slow path: falls through to call-exit for non-table, metatable, or smap cases.
+func (cg *Codegen) emitGetField(pc int, inst uint32) error {
+	a := vm.DecodeA(inst)
+	b := vm.DecodeB(inst)
+	c := vm.DecodeC(inst)
+	asm := cg.asm
+
+	// Label for call-exit fallback
+	fallbackLabel := fmt.Sprintf("getfield_fallback_%d", pc)
+	doneLabel := fmt.Sprintf("getfield_done_%d", pc)
+
+	// --- Step 1: Type check R(B).typ == TypeTable ---
+	bTypOff := regTypOffset(b)
+	if bTypOff <= 4095 {
+		asm.LDRB(X0, regRegs, bTypOff)
+	} else {
+		asm.LoadImm64(X0, int64(bTypOff))
+		asm.LDRBreg(X0, regRegs, X0)
+	}
+	asm.CMPimmW(X0, TypeTable)
+	asm.BCond(CondNE, fallbackLabel)
+
+	// --- Step 2: Load *Table from R(B).ptr.data ---
+	bPtrDataOff := b*ValueSize + OffsetPtrData
+	if bPtrDataOff <= 32760 {
+		asm.LDR(X0, regRegs, bPtrDataOff) // X0 = *Table
+	} else {
+		asm.LoadImm64(X1, int64(bPtrDataOff))
+		asm.ADDreg(X1, regRegs, X1)
+		asm.LDR(X0, X1, 0)
+	}
+	asm.CBZ(X0, fallbackLabel) // nil table check
+
+	// --- Step 3: Check metatable == nil ---
+	asm.LDR(X1, X0, TableOffMetatable) // X1 = table.metatable
+	asm.CBNZ(X1, fallbackLabel)        // has metatable → fallback
+
+	// --- Step 4: Load skeys slice (ptr, len) ---
+	asm.LDR(X1, X0, TableOffSkeys)    // X1 = skeys base pointer
+	asm.LDR(X2, X0, TableOffSkeysLen) // X2 = skeys.len
+	asm.CBZ(X2, fallbackLabel)         // no skeys → fallback (might be in smap)
+
+	// Save table pointer for later svals access
+	asm.MOVreg(X9, X0) // X9 = *Table (preserved)
+
+	// --- Step 5: Load constant key string ---
+	// Constants[C].ptr is a string stored in an `any` interface.
+	// Interface data pointer (the boxed string header) is at offset OffsetPtrData.
+	cPtrDataOff := c*ValueSize + OffsetPtrData
+	if cPtrDataOff <= 32760 {
+		asm.LDR(X3, regConsts, cPtrDataOff) // X3 = pointer to string header
+	} else {
+		asm.LoadImm64(X4, int64(cPtrDataOff))
+		asm.ADDreg(X4, regConsts, X4)
+		asm.LDR(X3, X4, 0)
+	}
+	asm.LDR(X4, X3, 0) // X4 = key string data ptr
+	asm.LDR(X5, X3, 8) // X5 = key string len
+
+	// --- Step 6: Linear scan of skeys ---
+	loopLabel := fmt.Sprintf("getfield_scan_%d", pc)
+	nextLabel := fmt.Sprintf("getfield_next_%d", pc)
+	foundLabel := fmt.Sprintf("getfield_found_%d", pc)
+	cmpLoopLabel := fmt.Sprintf("getfield_cmp_%d", pc)
+
+	asm.LoadImm64(X6, 0) // X6 = i = 0
+
+	asm.Label(loopLabel)
+	asm.CMPreg(X6, X2) // i >= skeys.len?
+	asm.BCond(CondGE, fallbackLabel)
+
+	// Load skeys[i]: string at X1 + i*16
+	asm.LSLimm(X7, X6, 4)   // X7 = i * 16
+	asm.ADDreg(X7, X1, X7)  // X7 = &skeys[i]
+	asm.LDR(X10, X7, 0)     // X10 = skeys[i].ptr
+	asm.LDR(X11, X7, 8)     // X11 = skeys[i].len
+
+	// Compare lengths first (fast reject)
+	asm.CMPreg(X11, X5) // skeys[i].len == key.len?
+	asm.BCond(CondNE, nextLabel)
+
+	// Compare data pointers (fast accept for interned strings)
+	asm.CMPreg(X10, X4) // same pointer?
+	asm.BCond(CondEQ, foundLabel)
+
+	// Byte-by-byte comparison for non-interned strings
+	asm.LoadImm64(X12, 0) // j = 0
+	asm.Label(cmpLoopLabel)
+	asm.CMPreg(X12, X5) // j >= len?
+	asm.BCond(CondGE, foundLabel)
+	asm.LDRBreg(X13, X10, X12) // skeys[i].ptr[j]
+	asm.LDRBreg(X14, X4, X12)  // key.ptr[j]
+	asm.CMPreg(X13, X14)
+	asm.BCond(CondNE, nextLabel)
+	asm.ADDimm(X12, X12, 1)
+	asm.B(cmpLoopLabel)
+
+	asm.Label(nextLabel)
+	asm.ADDimm(X6, X6, 1) // i++
+	asm.B(loopLabel)
+
+	// --- Step 7: Found - load svals[i] into R(A) ---
+	asm.Label(foundLabel)
+	// svals base is at Table + TableOffSvals
+	asm.LDR(X7, X9, TableOffSvals) // X7 = svals base pointer
+	// svals[i] is at X7 + i * ValueSize (32)
+	asm.LSLimm(X8, X6, 5)   // X8 = i * 32
+	asm.ADDreg(X7, X7, X8)  // X7 = &svals[i]
+
+	// Copy Value (32 bytes = 4 words) from svals[i] to R(A)
+	aOff := a * ValueSize
+	for w := 0; w < 4; w++ {
+		asm.LDR(X0, X7, w*8)
+		asm.STR(X0, regRegs, aOff+w*8)
+	}
+	asm.B(doneLabel)
+
+	// --- Fallback: call-exit ---
+	asm.Label(fallbackLabel)
+	cg.spillPinnedRegs()
+	asm.LoadImm64(X1, int64(pc))
+	asm.STR(X1, regCtx, ctxOffExitPC)
+	asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit)
+	asm.B("epilogue")
+
+	asm.Label(doneLabel)
 	return nil
 }
 

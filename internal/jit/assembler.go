@@ -123,8 +123,17 @@ func (a *Assembler) Offset() int {
 	return len(a.buf)
 }
 
+// LabelOffset returns the offset of a label, if it exists.
+func (a *Assembler) LabelOffset(name string) (int, bool) {
+	off, ok := a.labels[name]
+	return off, ok
+}
+
 // Label defines a label at the current offset.
 func (a *Assembler) Label(name string) {
+	if _, exists := a.labels[name]; exists {
+		panic(fmt.Sprintf("jit: duplicate label %q", name))
+	}
 	a.labels[name] = len(a.buf)
 }
 
@@ -387,6 +396,26 @@ func (a *Assembler) STR(rt, rn Reg, offset int) {
 	// STR Xt, [Xn, #pimm]: 1|1|11|1|00|00|0|imm12|Rn|Rt
 	pimm := offset >> 3
 	a.emit(0xF9000000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
+}
+
+// LDRreg: Xt = [Xn + Xm] (register offset load, 64-bit)
+func (a *Assembler) LDRreg(rt, rn, rm Reg) {
+	// LDR Xt, [Xn, Xm]: 11|11|1|00|01|1|Rm|011|0|10|Rn|Rt  (LSL #3)
+	a.emit(0xF8606800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
+}
+
+// LDRBreg: Wt = [Xn + Xm] (register offset byte load)
+func (a *Assembler) LDRBreg(rt, rn, rm Reg) {
+	// LDRB Wt, [Xn, Xm]: 00|11|1|00|01|1|Rm|011|0|10|Rn|Rt
+	a.emit(0x38606800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
+}
+
+// LSLimm: Rd = Rn << shift (alias of UBFM)
+func (a *Assembler) LSLimm(rd, rn Reg, shift uint8) {
+	// LSL Xd, Xn, #shift = UBFM Xd, Xn, #(64-shift), #(63-shift)
+	immr := uint32(64-shift) & 63
+	imms := uint32(63-shift) & 63
+	a.emit(0xD3400000 | immr<<16 | imms<<10 | uint32(rn)<<5 | uint32(rd))
 }
 
 // LDRB: Wt = [Xn + #offset] (byte load, zero extend)

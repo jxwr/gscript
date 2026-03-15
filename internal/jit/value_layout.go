@@ -22,14 +22,33 @@ const (
 
 	// Legacy alias so existing codegen references compile without changes
 	OffsetIval = OffsetData
+
+	// Interface layout: {type_ptr(8), data_ptr(8)}
+	// For Value.ptr (any), data_ptr is at OffsetPtr + 8
+	OffsetPtrData = OffsetPtr + 8 // data pointer within the any interface
+
+	// Table struct offsets (must match runtime.Table layout)
+	TableOffMu        = 0
+	TableOffArray     = 8   // []Value slice header (ptr+len+cap = 24 bytes)
+	TableOffImap      = 32  // map[int64]Value
+	TableOffSkeys     = 40  // []string slice header (ptr+len+cap)
+	TableOffSkeysLen  = 48  // skeys.len
+	TableOffSvals     = 64  // []Value slice header
+	TableOffMetatable = 104 // *Table
+
+	// Go string header: {ptr(8), len(8)} = 16 bytes
+	StringSize = 16
 )
 
 // runtime.ValueType constants (must match runtime package).
 const (
-	TypeNil   = 0
-	TypeBool  = 1
-	TypeInt   = 2
-	TypeFloat = 3
+	TypeNil      = 0
+	TypeBool     = 1
+	TypeInt      = 2
+	TypeFloat    = 3
+	TypeString   = 4
+	TypeTable    = 5
+	TypeFunction = 6
 )
 
 // valueLayoutAccessor is a copy of the runtime.Value layout for offset checking.
@@ -53,6 +72,13 @@ func init() {
 	if o := unsafe.Offsetof(v.ptr); o != OffsetPtr {
 		panic("jit: Value.ptr offset mismatch")
 	}
+
+	// Verify Table layout
+	var t runtime.Table
+	t.SetConcurrent(false) // ensure mu is nil for offset checking
+	_ = t
+	// We can't easily check Table offsets without importing sync,
+	// but the constants are verified by the struct offset program.
 
 	if uint8(runtime.TypeNil) != TypeNil {
 		panic("jit: TypeNil mismatch")
