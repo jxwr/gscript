@@ -55,12 +55,22 @@ type TraceRecorderHook interface {
 	PendingTrace() TraceExecutor
 }
 
+// traceResult holds the result of executing a compiled trace.
+type traceResult struct {
+	executed bool // true if a trace was actually executed
+	exitPC   int  // bytecode PC where trace exited
+	sideExit bool // true = side exit (resume at exitPC), false = loop done
+}
+
 // executeCompiledTrace runs a compiled trace if available.
-func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) {
+// Returns the result so the caller can adjust frame.pc appropriately.
+func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) traceResult {
 	ct := vm.traceRec.PendingTrace()
-	if ct != nil {
-		_, _ = ct.Execute(vm.regs, base, proto)
+	if ct == nil {
+		return traceResult{}
 	}
+	exitPC, sideExit := ct.Execute(vm.regs, base, proto)
+	return traceResult{executed: true, exitPC: exitPC, sideExit: sideExit}
 }
 
 // SetTraceRecorder enables trace recording on this VM.
@@ -1187,7 +1197,19 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						if vm.traceRec != nil && sbx < 0 {
 							pc := frame.pc - 1
 							if vm.traceRec.OnLoopBackEdge(pc, frame.closure.Proto) {
-								vm.executeCompiledTrace(frame.closure.Proto, base)
+								tr := vm.executeCompiledTrace(frame.closure.Proto, base)
+								if tr.executed {
+									if tr.sideExit {
+										// Side-exit: resume interpreter at the exit PC.
+										frame.pc = tr.exitPC
+									} else {
+										// Loop done: skip past the FORLOOP instruction.
+										// Currently frame.pc = FORLOOP_PC + 1 + sbx (loop body start).
+										// We want frame.pc = FORLOOP_PC + 1 (after FORLOOP).
+										// Since sbx < 0: frame.pc -= sbx adds |sbx|.
+										frame.pc -= sbx
+									}
+								}
 							}
 						}
 					}
