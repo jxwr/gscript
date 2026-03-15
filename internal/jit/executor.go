@@ -222,29 +222,52 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 			exitCount++
 			newRegs, nextPC, err := e.handleCallExit(proto, regs, base, &ctx)
 			if err != nil {
-				// Error during call — fall back to interpreter at this PC.
 				return nil, int(ctx.ExitPC), false
 			}
 			if newRegs != nil {
 				regs = newRegs
 			}
 
-			// Set ResumePC so JIT dispatch table jumps to the right place.
-			// Comparison call-exits (EQ/LT/LE) use high-bit flagging (nextPC | 0x8000)
-			// to avoid dispatch collisions with regular call-exits that may share
-			// the same nextPC value.
-			exitOp := vm.DecodeOp(proto.Code[int(ctx.ExitPC)])
-			if exitOp == vm.OP_EQ || exitOp == vm.OP_LT || exitOp == vm.OP_LE {
+			// Batch consecutive call-exit opcodes to avoid repeated JIT exit/re-entry.
+			// Common patterns: GETFIELD→GETTABLE→GETFIELD in chess AI hot paths.
+			lastExitOp := vm.DecodeOp(proto.Code[int(ctx.ExitPC)])
+			for nextPC < len(proto.Code) {
+				nextOp := vm.DecodeOp(proto.Code[nextPC])
+				if !isCallExitOp(nextOp) {
+					break
+				}
+				// Don't batch comparison ops (they have special resume dispatch)
+				if nextOp == vm.OP_EQ || nextOp == vm.OP_LT || nextOp == vm.OP_LE {
+					break
+				}
+				// Don't batch OP_CALL (may change register file pointer)
+				if nextOp == vm.OP_CALL {
+					break
+				}
+				ctx.ExitPC = int64(nextPC)
+				newRegs2, nextPC2, err2 := e.handleCallExit(proto, regs, base, &ctx)
+				if err2 != nil {
+					break
+				}
+				if newRegs2 != nil {
+					regs = newRegs2
+				}
+				exitCount++
+				lastExitOp = nextOp
+				nextPC = nextPC2
+			}
+
+			// Set ResumePC for JIT dispatch table.
+			if lastExitOp == vm.OP_EQ || lastExitOp == vm.OP_LT || lastExitOp == vm.OP_LE {
 				ctx.ResumePC = int64(nextPC | 0x8000)
 			} else {
 				ctx.ResumePC = int64(nextPC)
 			}
 			ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
-			// Recompute ctxPtr to ensure Go compiler hasn't moved ctx.
 			ctxPtr = uintptr(unsafe.Pointer(&ctx))
 			if debugCallExit {
 				fmt.Printf("[JIT] %s: re-enter at ResumePC=%d (ctx.ResumePC=%d)\n",
-					proto.Name, resumePC, ctx.ResumePC)
+					proto.Name, nextPC, ctx.ResumePC)
 			}
 			continue
 
