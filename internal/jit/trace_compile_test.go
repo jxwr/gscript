@@ -326,6 +326,54 @@ func TestTraceCompile_InlinedCallWithGetField(t *testing.T) {
 	}
 }
 
+func TestTraceCompile_SetField(t *testing.T) {
+	// Tests native SETFIELD in traces.
+	g := runWithTracingJIT(t, `
+		t := {x: 0}
+		for i := 1; i <= 100; i++ {
+			t.x = t.x + 1
+		}
+		result := t.x
+	`)
+	if v := g["result"]; v.Int() != 100 {
+		t.Errorf("result = %d, want 100", v.Int())
+	}
+}
+
+func TestTraceCompile_SetTable(t *testing.T) {
+	// Tests native SETTABLE in traces.
+	g := runWithTracingJIT(t, `
+		arr := {0, 0, 0, 0, 0}
+		for i := 1; i <= 100; i++ {
+			arr[3] = arr[3] + 1
+		}
+		result := arr[3]
+	`)
+	if v := g["result"]; v.Int() != 100 {
+		t.Errorf("result = %d, want 100", v.Int())
+	}
+}
+
+func TestTraceCompile_ChessMovePattern(t *testing.T) {
+	// Chess-like make/unmake move pattern: SETTABLE + GETFIELD + SETFIELD
+	g := runWithTracingJIT(t, `
+		board := {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+		piece := {col: 3, row: 5, alive: true}
+		count := 0
+		for i := 1; i <= 50; i++ {
+			// "make move": set board position
+			board[piece.col] = 1
+			// "unmake move": clear board position
+			board[piece.col] = 0
+			count = count + 1
+		}
+		result := count
+	`)
+	if v := g["result"]; v.Int() != 50 {
+		t.Errorf("result = %d, want 50", v.Int())
+	}
+}
+
 func TestTraceCompile_MatchesInterpreter(t *testing.T) {
 	src := `
 		a := 0

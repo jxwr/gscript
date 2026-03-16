@@ -82,6 +82,10 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 			emitTrGetField(asm, &ir, i)
 		case vm.OP_GETTABLE:
 			emitTrGetTable(asm, &ir, i)
+		case vm.OP_SETFIELD:
+			emitTrSetField(asm, &ir, i)
+		case vm.OP_SETTABLE:
+			emitTrSetTable(asm, &ir, i)
 		case vm.OP_MOD:
 			emitTrSideExit(asm, &ir)
 		default:
@@ -664,6 +668,151 @@ func emitTrGetTable(asm *Assembler, ir *TraceIR, idx int) {
 	asm.Label(fallbackLabel)
 	asm.B("side_exit")
 
+	asm.Label(doneLabel)
+}
+
+// emitTrSetField compiles OP_SETFIELD R(A)[Constants[B]] = RK(C) in a trace.
+// Fast path: R(A) is TypeTable, no metatable, key found in skeys.
+func emitTrSetField(asm *Assembler, ir *TraceIR, idx int) {
+	a := ir.A
+	b := ir.B // constant index for field name
+	cidx := ir.C
+
+	asm.LoadImm64(X9, int64(ir.PC))
+
+	fallbackLabel := fmt.Sprintf("setfield_exit_%d", idx)
+	foundLabel := fmt.Sprintf("setfield_found_%d", idx)
+	scanLabel := fmt.Sprintf("setfield_scan_%d", idx)
+	nextLabel := fmt.Sprintf("setfield_next_%d", idx)
+	cmpLabel := fmt.Sprintf("setfield_cmp_%d", idx)
+	doneLabel := fmt.Sprintf("setfield_done_%d", idx)
+
+	// Type check R(A).typ == TypeTable
+	asm.LDRB(X0, regRegs, a*ValueSize)
+	asm.CMPimmW(X0, TypeTable)
+	asm.BCond(CondNE, fallbackLabel)
+
+	// Load *Table
+	asm.LDR(X0, regRegs, a*ValueSize+OffsetPtrData)
+	asm.CBZ(X0, fallbackLabel)
+
+	// Check metatable == nil
+	asm.LDR(X1, X0, TableOffMetatable)
+	asm.CBNZ(X1, fallbackLabel)
+
+	// Load skeys
+	asm.LDR(X1, X0, TableOffSkeys)
+	asm.LDR(X2, X0, TableOffSkeysLen)
+	asm.CBZ(X2, fallbackLabel)
+
+	asm.MOVreg(X8, X0) // save *Table
+
+	// Load constant key string
+	asm.LDR(X3, regConsts, b*ValueSize+OffsetPtrData)
+	asm.LDR(X4, X3, 0) // key.ptr
+	asm.LDR(X5, X3, 8) // key.len
+
+	// Scan skeys
+	asm.LoadImm64(X6, 0)
+	asm.Label(scanLabel)
+	asm.CMPreg(X6, X2)
+	asm.BCond(CondGE, fallbackLabel)
+
+	asm.LSLimm(X7, X6, 4)
+	asm.ADDreg(X7, X1, X7)
+	asm.LDR(X10, X7, 0)
+	asm.LDR(X11, X7, 8)
+
+	asm.CMPreg(X11, X5)
+	asm.BCond(CondNE, nextLabel)
+	asm.CMPreg(X10, X4)
+	asm.BCond(CondEQ, foundLabel)
+
+	asm.LoadImm64(X12, 0)
+	asm.Label(cmpLabel)
+	asm.CMPreg(X12, X5)
+	asm.BCond(CondGE, foundLabel)
+	asm.LDRBreg(X13, X10, X12)
+	asm.LDRBreg(X14, X4, X12)
+	asm.CMPreg(X13, X14)
+	asm.BCond(CondNE, nextLabel)
+	asm.ADDimm(X12, X12, 1)
+	asm.B(cmpLabel)
+
+	asm.Label(nextLabel)
+	asm.ADDimm(X6, X6, 1)
+	asm.B(scanLabel)
+
+	// Found: write RK(C) value to svals[i]
+	asm.Label(foundLabel)
+	asm.LDR(X7, X8, TableOffSvals)
+	asm.LSLimm(X0, X6, 5) // i * 32
+	asm.ADDreg(X7, X7, X0) // &svals[i]
+
+	// Load value from RK(C)
+	valOff, valBase := trRKBase(cidx)
+	for w := 0; w < ValueSize/8; w++ {
+		asm.LDR(X0, valBase, valOff+w*8)
+		asm.STR(X0, X7, w*8)
+	}
+	asm.B(doneLabel)
+
+	asm.Label(fallbackLabel)
+	asm.B("side_exit")
+	asm.Label(doneLabel)
+}
+
+// emitTrSetTable compiles OP_SETTABLE R(A)[RK(B)] = RK(C) in a trace.
+// Fast path: R(A) is TypeTable, no metatable, RK(B) is TypeInt, key in array range.
+func emitTrSetTable(asm *Assembler, ir *TraceIR, idx int) {
+	a := ir.A
+	bidx := ir.B
+	cidx := ir.C
+
+	asm.LoadImm64(X9, int64(ir.PC))
+
+	fallbackLabel := fmt.Sprintf("settable_exit_%d", idx)
+	doneLabel := fmt.Sprintf("settable_done_%d", idx)
+
+	// Type check R(A)
+	asm.LDRB(X0, regRegs, a*ValueSize)
+	asm.CMPimmW(X0, TypeTable)
+	asm.BCond(CondNE, fallbackLabel)
+
+	asm.LDR(X0, regRegs, a*ValueSize+OffsetPtrData)
+	asm.CBZ(X0, fallbackLabel)
+
+	asm.LDR(X1, X0, TableOffMetatable)
+	asm.CBNZ(X1, fallbackLabel)
+
+	// Load key, check TypeInt
+	kOff, kBase := trRKBase(bidx)
+	asm.LDRB(X2, kBase, kOff)
+	asm.CMPimmW(X2, TypeInt)
+	asm.BCond(CondNE, fallbackLabel)
+	asm.LDR(X2, kBase, kOff+OffsetData)
+
+	// Array bounds: key >= 1 && key < array.len
+	asm.CMPimm(X2, 1)
+	asm.BCond(CondLT, fallbackLabel)
+	asm.LDR(X3, X0, TableOffArray+8) // array.len
+	asm.CMPreg(X2, X3)
+	asm.BCond(CondGE, fallbackLabel)
+
+	// Write RK(C) to array[key]
+	asm.LDR(X3, X0, TableOffArray) // array.ptr
+	asm.LSLimm(X4, X2, 5)          // key * 32
+	asm.ADDreg(X3, X3, X4)
+
+	valOff, valBase := trRKBase(cidx)
+	for w := 0; w < ValueSize/8; w++ {
+		asm.LDR(X0, valBase, valOff+w*8)
+		asm.STR(X0, X3, w*8)
+	}
+	asm.B(doneLabel)
+
+	asm.Label(fallbackLabel)
+	asm.B("side_exit")
 	asm.Label(doneLabel)
 }
 
