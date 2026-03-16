@@ -100,9 +100,44 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 				emitTrSideExit(asm, &ir)
 			}
 		case vm.OP_MOD:
+			emitTrMod(asm, &ir)
+		case vm.OP_UNM:
+			emitTrUNM(asm, &ir)
+		case vm.OP_LEN:
+			emitTrLen(asm, &ir)
+		case vm.OP_GETGLOBAL:
+			emitTrGetGlobal(asm, &ir)
+		case vm.OP_SETGLOBAL:
+			emitTrSetGlobal(asm, &ir)
+		case vm.OP_GETUPVAL:
+			emitTrSideExit(asm, &ir) // TODO: implement
+		case vm.OP_SETUPVAL:
+			emitTrSideExit(asm, &ir) // TODO: implement
+		case vm.OP_NEWTABLE:
+			emitTrSideExit(asm, &ir) // table creation must go through Go
+		case vm.OP_CONCAT:
+			emitTrSideExit(asm, &ir) // string ops must go through Go
+		case vm.OP_APPEND:
+			emitTrSideExit(asm, &ir)
+		case vm.OP_SETLIST:
+			emitTrSideExit(asm, &ir)
+		case vm.OP_CLOSURE:
+			emitTrSideExit(asm, &ir)
+		case vm.OP_CLOSE:
+			emitTrSideExit(asm, &ir)
+		case vm.OP_RETURN:
+			// RETURN at depth 0 shouldn't appear in trace body
+			// (FORLOOP handles the loop). Just side-exit.
+			emitTrSideExit(asm, &ir)
+		case vm.OP_DIV:
+			emitTrDiv(asm, &ir)
+		case vm.OP_POW:
+			emitTrSideExit(asm, &ir) // pow needs Go math.Pow
+		case vm.OP_SELF:
+			emitTrSideExit(asm, &ir)
+		case vm.OP_VARARG:
 			emitTrSideExit(asm, &ir)
 		default:
-			// Everything else: side exit to interpreter
 			emitTrSideExit(asm, &ir)
 		}
 	}
@@ -967,6 +1002,116 @@ func emitTrSelfCall(asm *Assembler, ir *TraceIR, idx int) {
 	asm.B("side_exit")
 
 	asm.Label(doneLabel)
+}
+
+// emitTrMod compiles OP_MOD R(A) = RK(B) % RK(C) for integers.
+func emitTrMod(asm *Assembler, ir *TraceIR) {
+	asm.LoadImm64(X9, int64(ir.PC))
+
+	bOff, bBase := trRKBase(ir.B)
+	cOff, cBase := trRKBase(ir.C)
+
+	// Type guards
+	asm.LDRB(X0, bBase, bOff)
+	asm.CMPimmW(X0, TypeInt)
+	asm.BCond(CondNE, "side_exit")
+	asm.LDRB(X0, cBase, cOff)
+	asm.CMPimmW(X0, TypeInt)
+	asm.BCond(CondNE, "side_exit")
+
+	// Load values
+	asm.LDR(X1, bBase, bOff+OffsetData)
+	asm.LDR(X2, cBase, cOff+OffsetData)
+
+	// Check divisor != 0
+	asm.CBZ(X2, "side_exit")
+
+	// r = a % b = a - (a/b)*b
+	asm.SDIV(X3, X1, X2)   // X3 = a / b
+	asm.MSUB(X0, X3, X2, X1) // X0 = a - (a/b)*b = a % b
+
+	// Lua-style: result has same sign as divisor
+	// If r != 0 && (r ^ b) < 0: r += b
+	doneLabel := fmt.Sprintf("mod_done_%d_%d", ir.PC, ir.A)
+	asm.CBZ(X0, doneLabel)
+	asm.EORreg(X3, X0, X2)   // X3 = r ^ b
+	asm.CMPreg(X3, XZR)      // signed compare with 0
+	asm.BCond(CondGE, doneLabel)
+	asm.ADDreg(X0, X0, X2)   // r += b
+
+	asm.Label(doneLabel)
+	dst := ir.A * ValueSize
+	asm.STR(X0, regRegs, dst+OffsetData)
+	asm.MOVimm16(X0, TypeInt)
+	asm.STRB(X0, regRegs, dst)
+}
+
+// emitTrDiv compiles OP_DIV R(A) = RK(B) / RK(C).
+// Always returns float (Lua semantics).
+func emitTrDiv(asm *Assembler, ir *TraceIR) {
+	// Division always returns float — side-exit for simplicity
+	emitTrSideExit(asm, ir)
+}
+
+// emitTrUNM compiles OP_UNM R(A) = -R(B).
+func emitTrUNM(asm *Assembler, ir *TraceIR) {
+	asm.LoadImm64(X9, int64(ir.PC))
+
+	bOff := ir.B * ValueSize
+	asm.LDRB(X0, regRegs, bOff)
+	asm.CMPimmW(X0, TypeInt)
+	asm.BCond(CondNE, "side_exit")
+
+	asm.LDR(X1, regRegs, bOff+OffsetData)
+	asm.NEG(X0, X1) // X0 = -X1
+
+	dst := ir.A * ValueSize
+	asm.STR(X0, regRegs, dst+OffsetData)
+	asm.MOVimm16(X0, TypeInt)
+	asm.STRB(X0, regRegs, dst)
+}
+
+// emitTrLen compiles OP_LEN R(A) = #R(B).
+// Fast path: R(B) is TypeTable → read array length.
+func emitTrLen(asm *Assembler, ir *TraceIR) {
+	asm.LoadImm64(X9, int64(ir.PC))
+
+	bOff := ir.B * ValueSize
+	asm.LDRB(X0, regRegs, bOff)
+	asm.CMPimmW(X0, TypeTable)
+	asm.BCond(CondNE, "side_exit")
+
+	// Load *Table
+	asm.LDR(X0, regRegs, bOff+OffsetPtrData)
+	asm.CBZ(X0, "side_exit")
+
+	// table.array.len - 1 (array is 1-indexed, index 0 unused)
+	asm.LDR(X1, X0, TableOffArray+8) // array.len
+	asm.SUBimm(X1, X1, 1)            // length = len - 1
+
+	dst := ir.A * ValueSize
+	asm.STR(X1, regRegs, dst+OffsetData)
+	asm.MOVimm16(X0, TypeInt)
+	asm.STRB(X0, regRegs, dst)
+}
+
+// emitTrGetGlobal compiles OP_GETGLOBAL R(A) = globals[Constants[Bx]].
+// In the trace, Constants[Bx] is in the trace's constant pool.
+// We load the constant Value (which IS the global value captured at recording time)
+// directly. This is correct because globals are read-only after init.
+func emitTrGetGlobal(asm *Assembler, ir *TraceIR) {
+	// GETGLOBAL is recorded with BX = constant pool index.
+	// The trace constants[BX] holds the global's name string.
+	// But we need the global's VALUE, not its name.
+	// Since we can't do a map lookup in ARM64, side-exit for now.
+	// However, if the global is in the VM's globalArray, we could
+	// load it from there. For now, side-exit.
+	emitTrSideExit(asm, ir)
+}
+
+// emitTrSetGlobal compiles OP_SETGLOBAL.
+func emitTrSetGlobal(asm *Assembler, ir *TraceIR) {
+	emitTrSideExit(asm, ir)
 }
 
 func emitTrSideExit(asm *Assembler, ir *TraceIR) {

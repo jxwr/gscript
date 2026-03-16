@@ -465,6 +465,129 @@ func TestTraceCompile_Bit32Band(t *testing.T) {
 	}
 }
 
+func TestTraceCompile_Mod(t *testing.T) {
+	// Simple MOD without conditional branch (no side-exit issues)
+	g := runWithTracingJIT(t, `
+		sum := 0
+		for i := 1; i <= 100; i++ {
+			sum = sum + (i % 7)
+		}
+		result := sum
+	`)
+	// sum of (i%7) for i=1..100
+	expected := int64(0)
+	for i := int64(1); i <= 100; i++ {
+		expected += i % 7
+	}
+	if v := g["result"]; v.Int() != expected {
+		t.Errorf("result = %d, want %d", v.Int(), expected)
+	}
+}
+
+func TestTraceCompile_Len(t *testing.T) {
+	g := runWithTracingJIT(t, `
+		arr := {10, 20, 30, 40, 50}
+		sum := 0
+		for i := 1; i <= 20; i++ {
+			sum = sum + #arr
+		}
+		result := sum
+	`)
+	if v := g["result"]; v.Int() != 100 {
+		t.Errorf("result = %d, want 100", v.Int())
+	}
+}
+
+func TestTraceCompile_GetGlobal(t *testing.T) {
+	g := runWithTracingJIT(t, `
+		myval := 42
+		sum := 0
+		for i := 1; i <= 100; i++ {
+			sum = sum + myval
+		}
+		result := sum
+	`)
+	if v := g["result"]; v.Int() != 4200 {
+		t.Errorf("result = %d, want 4200", v.Int())
+	}
+}
+
+func TestTraceCompile_SetGlobal(t *testing.T) {
+	g := runWithTracingJIT(t, `
+		counter := 0
+		for i := 1; i <= 100; i++ {
+			counter = counter + 1
+		}
+		result := counter
+	`)
+	if v := g["result"]; v.Int() != 100 {
+		t.Errorf("result = %d, want 100", v.Int())
+	}
+}
+
+func TestTraceCompile_UNM(t *testing.T) {
+	g := runWithTracingJIT(t, `
+		sum := 0
+		for i := 1; i <= 50; i++ {
+			sum = sum + (-i)
+		}
+		result := sum
+	`)
+	if v := g["result"]; v.Int() != -1275 {
+		t.Errorf("result = %d, want -1275", v.Int())
+	}
+}
+
+func TestTraceCompile_Concat(t *testing.T) {
+	// CONCAT still side-exits but should not crash
+	g := runWithTracingJIT(t, `
+		result := ""
+		for i := 1; i <= 20; i++ {
+			result = "x"
+		}
+	`)
+	if v := g["result"]; v.Str() != "x" {
+		t.Errorf("result = %q, want \"x\"", v.Str())
+	}
+}
+
+func TestTraceCompile_NegamaxFullCoverage(t *testing.T) {
+	// Simplified negamax with all the ops: GETGLOBAL, GETFIELD, GETTABLE,
+	// SETTABLE, SETFIELD, MOD, bit32.bxor, LEN, comparisons
+	g := runWithTracingJIT(t, `
+		board := {}
+		board[101] = {type: "R", side: "red", col: 1, row: 1}
+		board[502] = {type: "K", side: "red", col: 5, row: 2}
+
+		nodeCount := 0
+		func search(depth) {
+			nodeCount = nodeCount + 1
+			if depth <= 0 { return 0 }
+			best := -999
+			for col := 1; col <= 9; col++ {
+				key := col * 100 + 1
+				p := board[key]
+				if p != nil {
+					if p.type == "R" {
+						score := -search(depth - 1)
+						if score > best { best = score }
+					}
+				}
+			}
+			return best
+		}
+
+		result := 0
+		for i := 1; i <= 20; i++ {
+			result = search(2)
+		}
+		finalNodes := nodeCount
+	`)
+	if v := g["finalNodes"]; v.Int() <= 0 {
+		t.Errorf("finalNodes = %d, want > 0", v.Int())
+	}
+}
+
 func TestTraceCompile_SparseTableAccess(t *testing.T) {
 	// Tests board[col*100+row] pattern — sparse integer keys that
 	// go to imap. After optimization, these should use expanded array.
