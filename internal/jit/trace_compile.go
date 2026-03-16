@@ -27,6 +27,9 @@ type CompiledTrace struct {
 func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	asm := NewAssembler()
 
+	// Optimize trace IR before compilation
+	trace = OptimizeTrace(trace)
+
 	// Register allocation
 	ra := NewRegAlloc(trace)
 
