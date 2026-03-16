@@ -27,6 +27,9 @@ type CompiledTrace struct {
 func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	asm := NewAssembler()
 
+	// Register allocation
+	ra := NewRegAlloc(trace)
+
 	// === Prologue: save callee-saved registers ===
 	asm.STPpre(X29, X30, SP, -96)
 	asm.STP(X19, X20, SP, 16)
@@ -46,6 +49,14 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		asm.MOVreg(X25, XZR) // X25 = 0 (outermost call)
 	}
 
+	// Load allocated VM registers into ARM64 registers
+	for vmReg, armReg := range ra.Mapping {
+		off := vmReg*ValueSize + OffsetData
+		if off <= 32760 {
+			asm.LDR(armReg, regRegs, off)
+		}
+	}
+
 	// === Trace loop / self-call entry ===
 	asm.Label("trace_loop")
 
@@ -55,18 +66,31 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 			emitTrMove(asm, &ir)
 		case vm.OP_LOADINT:
 			emitTrLoadInt(asm, &ir)
+			// If dst is allocated, update the ARM64 register too
+			if armReg, ok := ra.Get(ir.A); ok {
+				asm.LDR(armReg, regRegs, ir.A*ValueSize+OffsetData)
+			}
 		case vm.OP_LOADK:
 			emitTrLoadK(asm, &ir)
+			if armReg, ok := ra.Get(ir.A); ok {
+				asm.LDR(armReg, regRegs, ir.A*ValueSize+OffsetData)
+			}
 		case vm.OP_LOADNIL:
 			emitTrLoadNil(asm, &ir)
+			if armReg, ok := ra.Get(ir.A); ok {
+				asm.MOVreg(armReg, XZR)
+			}
 		case vm.OP_LOADBOOL:
 			emitTrLoadBool(asm, &ir)
+			if armReg, ok := ra.Get(ir.A); ok {
+				asm.LDR(armReg, regRegs, ir.A*ValueSize+OffsetData)
+			}
 		case vm.OP_ADD:
-			emitTrArithInt(asm, &ir, "ADD")
+			emitTrArithIntRA(asm, &ir, "ADD", ra)
 		case vm.OP_SUB:
-			emitTrArithInt(asm, &ir, "SUB")
+			emitTrArithIntRA(asm, &ir, "SUB", ra)
 		case vm.OP_MUL:
-			emitTrArithInt(asm, &ir, "MUL")
+			emitTrArithIntRA(asm, &ir, "MUL", ra)
 		case vm.OP_FORPREP:
 			emitTrForPrep(asm, &ir)
 		case vm.OP_FORLOOP:
@@ -145,9 +169,17 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	// End of trace body → loop back
 	asm.B("trace_loop")
 
+	// Helper: spill all allocated registers back to memory
+	spillRegs := func() {
+		for vmReg, armReg := range ra.Mapping {
+			off := vmReg*ValueSize + OffsetData
+			if off <= 32760 {
+				asm.STR(armReg, regRegs, off)
+			}
+		}
+	}
+
 	// === Side exit handler ===
-	// X9 holds the ExitPC (set by guard before branching here)
-	// X19 = trace context pointer
 	asm.Label("side_exit")
 	if trace.HasSelfCalls {
 		// If inside a self-call, unwind frames first
@@ -158,6 +190,7 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		asm.CBNZ(X25, "side_exit") // keep unwinding if still nested
 		asm.Label("side_exit_store")
 	}
+	spillRegs() // spill allocated registers before exiting
 	asm.STR(X9, X19, 16)            // ctx.ExitPC = X9
 	asm.LoadImm64(X0, 1)            // ExitCode = 1 (side exit)
 	asm.B("epilogue")
@@ -165,10 +198,9 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	// === Loop done (FORLOOP condition false) ===
 	asm.Label("loop_done")
 	if trace.HasSelfCalls {
-		// If inside a self-call (depth > 0), return to caller via RET.
-		// X0 = result value (last computed ival, or 0)
 		asm.CBNZ(X25, "self_return")
 	}
+	spillRegs() // spill allocated registers before exiting
 	asm.LoadImm64(X0, 0)            // ExitCode = 0
 
 	// === Self-call return (depth > 0): return to BL caller ===
@@ -256,8 +288,86 @@ func emitTrLoadBool(asm *Assembler, ir *TraceIR) {
 	asm.STR(X0, regRegs, dst+OffsetData)
 }
 
-// emitTrArithInt emits integer ADD/SUB/MUL with type guard.
-// Guard failure → side exit at ir.PC.
+// emitTrArithIntRA emits integer arithmetic using allocated registers when available.
+func emitTrArithIntRA(asm *Assembler, ir *TraceIR, op string, ra *RegAlloc) {
+	// Check if all three operands (A, B, C) are in registers
+	aReg, aAlloc := ra.Get(ir.A)
+	bReg, bAlloc := ra.Get(ir.B)
+	cReg, cAlloc := ra.Get(ir.C)
+
+	// If both sources are allocated, use register-to-register arithmetic
+	if bAlloc && cAlloc && ir.B < 256 && ir.C < 256 {
+		dstReg := X0
+		if aAlloc {
+			dstReg = aReg
+		}
+		switch op {
+		case "ADD":
+			asm.ADDreg(dstReg, bReg, cReg)
+		case "SUB":
+			asm.SUBreg(dstReg, bReg, cReg)
+		case "MUL":
+			asm.MUL(dstReg, bReg, cReg)
+		}
+		// Always write back to memory (other instructions may read it)
+		dst := ir.A * ValueSize
+		asm.STR(dstReg, regRegs, dst+OffsetData)
+		if !aAlloc {
+			asm.MOVimm16(X0, TypeInt)
+			asm.STRB(X0, regRegs, dst)
+		}
+		return
+	}
+
+	// Partial register allocation: load non-allocated operands from memory
+	asm.LoadImm64(X9, int64(ir.PC))
+
+	var srcB, srcC Reg
+	if bAlloc && ir.B < 256 {
+		srcB = bReg
+	} else {
+		bOff, bBase := trRKBase(ir.B)
+		asm.LDRB(X0, bBase, bOff)
+		asm.CMPimmW(X0, TypeInt)
+		asm.BCond(CondNE, "side_exit")
+		asm.LDR(X1, bBase, bOff+OffsetData)
+		srcB = X1
+	}
+	if cAlloc && ir.C < 256 {
+		srcC = cReg
+	} else {
+		cOff, cBase := trRKBase(ir.C)
+		asm.LDRB(X0, cBase, cOff)
+		asm.CMPimmW(X0, TypeInt)
+		asm.BCond(CondNE, "side_exit")
+		asm.LDR(X2, cBase, cOff+OffsetData)
+		srcC = X2
+	}
+
+	dstReg := X0
+	if aAlloc {
+		dstReg = aReg
+	}
+
+	switch op {
+	case "ADD":
+		asm.ADDreg(dstReg, srcB, srcC)
+	case "SUB":
+		asm.SUBreg(dstReg, srcB, srcC)
+	case "MUL":
+		asm.MUL(dstReg, srcB, srcC)
+	}
+
+	if !aAlloc {
+		// Store to memory
+		dst := ir.A * ValueSize
+		asm.STR(X0, regRegs, dst+OffsetData)
+		asm.MOVimm16(X0, TypeInt)
+		asm.STRB(X0, regRegs, dst)
+	}
+}
+
+// emitTrArithInt emits integer ADD/SUB/MUL with type guard (non-allocated fallback).
 func emitTrArithInt(asm *Assembler, ir *TraceIR, op string) {
 	// Prepare side-exit PC in X9 (used by side_exit handler)
 	asm.LoadImm64(X9, int64(ir.PC))
