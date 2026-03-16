@@ -374,6 +374,64 @@ func TestTraceCompile_ChessMovePattern(t *testing.T) {
 	}
 }
 
+func TestTraceCompile_SelfRecursion(t *testing.T) {
+	// Simple self-recursive function: factorial-like accumulation
+	g := runWithTracingJIT(t, `
+		func sumTo(n) {
+			if n <= 0 { return 0 }
+			return n + sumTo(n - 1)
+		}
+		result := 0
+		for i := 1; i <= 20; i++ {
+			result = result + sumTo(10)
+		}
+	`)
+	// sumTo(10) = 55, repeated 20 times = 1100
+	if v := g["result"]; v.Int() != 1100 {
+		t.Errorf("result = %d, want 1100", v.Int())
+	}
+}
+
+func TestTraceCompile_SelfRecursionDeep(t *testing.T) {
+	// Tests that deep recursion correctly side-exits when exceeding trace depth limit
+	g := runWithTracingJIT(t, `
+		func fib(n) {
+			if n <= 1 { return n }
+			return fib(n-1) + fib(n-2)
+		}
+		result := 0
+		for i := 1; i <= 15; i++ {
+			result = fib(10)
+		}
+	`)
+	if v := g["result"]; v.Int() != 55 {
+		t.Errorf("result = %d, want 55", v.Int())
+	}
+}
+
+func TestTraceCompile_NegamaxPattern(t *testing.T) {
+	// Simplified negamax-like pattern with table access + self-recursion
+	g := runWithTracingJIT(t, `
+		func minimax(depth) {
+			if depth <= 0 { return 1 }
+			best := 0
+			for i := 1; i <= 3; i++ {
+				score := minimax(depth - 1)
+				if score > best { best = score }
+			}
+			return best
+		}
+		result := 0
+		for i := 1; i <= 20; i++ {
+			result = result + minimax(3)
+		}
+	`)
+	// minimax(3) = 1 (always returns 1 at depth 0, propagates up)
+	if v := g["result"]; v.Int() != 20 {
+		t.Errorf("result = %d, want 20", v.Int())
+	}
+}
+
 func TestTraceCompile_MatchesInterpreter(t *testing.T) {
 	src := `
 		a := 0

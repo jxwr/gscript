@@ -41,7 +41,12 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	asm.LDR(regRegs, trCtx, 0)           // X26 = ctx.Regs (points to regs[startBase])
 	asm.LDR(regConsts, trCtx, 8)         // X27 = ctx.Constants (trace constant pool)
 
-	// === Trace loop ===
+	// Initialize self-call depth counter
+	if trace.HasSelfCalls {
+		asm.MOVreg(X25, XZR) // X25 = 0 (outermost call)
+	}
+
+	// === Trace loop / self-call entry ===
 	asm.Label("trace_loop")
 
 	for i, ir := range trace.IR {
@@ -86,6 +91,12 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 			emitTrSetField(asm, &ir, i)
 		case vm.OP_SETTABLE:
 			emitTrSetTable(asm, &ir, i)
+		case vm.OP_CALL:
+			if ir.IsSelfCall && trace.HasSelfCalls {
+				emitTrSelfCall(asm, &ir, i)
+			} else {
+				emitTrSideExit(asm, &ir)
+			}
 		case vm.OP_MOD:
 			emitTrSideExit(asm, &ir)
 		default:
@@ -101,13 +112,35 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	// X9 holds the ExitPC (set by guard before branching here)
 	// X19 = trace context pointer
 	asm.Label("side_exit")
+	if trace.HasSelfCalls {
+		// If inside a self-call, unwind frames first
+		asm.CBZ(X25, "side_exit_store") // depth==0: just exit
+		// Unwind self-call frame
+		asm.LDP(X25, regRegs, SP, 16)
+		asm.LDPpost(X29, X30, SP, 32)
+		asm.CBNZ(X25, "side_exit") // keep unwinding if still nested
+		asm.Label("side_exit_store")
+	}
 	asm.STR(X9, X19, 16)            // ctx.ExitPC = X9
 	asm.LoadImm64(X0, 1)            // ExitCode = 1 (side exit)
 	asm.B("epilogue")
 
 	// === Loop done (FORLOOP condition false) ===
 	asm.Label("loop_done")
+	if trace.HasSelfCalls {
+		// If inside a self-call (depth > 0), return to caller via RET.
+		// X0 = result value (last computed ival, or 0)
+		asm.CBNZ(X25, "self_return")
+	}
 	asm.LoadImm64(X0, 0)            // ExitCode = 0
+
+	// === Self-call return (depth > 0): return to BL caller ===
+	if trace.HasSelfCalls {
+		asm.Label("self_return")
+		// X0 should contain the return value (ival)
+		// The BL caller will read X0 after the call returns
+		asm.RET()
+	}
 
 	// === Epilogue ===
 	asm.Label("epilogue")
@@ -813,6 +846,81 @@ func emitTrSetTable(asm *Assembler, ir *TraceIR, idx int) {
 
 	asm.Label(fallbackLabel)
 	asm.B("side_exit")
+	asm.Label(doneLabel)
+}
+
+// emitTrSelfCall compiles a self-recursive CALL in a trace.
+// Uses X25 as depth counter, BL to trace_loop for re-entry.
+// Result returned in X0 (ival of return value).
+func emitTrSelfCall(asm *Assembler, ir *TraceIR, idx int) {
+	fnReg := ir.A // function register (trace-relative)
+	nArgs := ir.B - 1
+	nResults := ir.C
+
+	overflowLabel := fmt.Sprintf("self_overflow_%d", idx)
+	doneLabel := fmt.Sprintf("self_done_%d", idx)
+
+	// Save state: frame pointer, link register, depth counter, regRegs
+	asm.STPpre(X29, X30, SP, -32)
+	asm.STP(X25, regRegs, SP, 16)
+
+	// Increment depth
+	asm.ADDimm(X25, X25, 1)
+
+	// Depth limit check (max 50 recursive calls)
+	asm.CMPimm(X25, 50)
+	asm.BCond(CondGE, overflowLabel)
+
+	// Advance regRegs to callee's register window.
+	// Caller's R(fnReg+1) becomes callee's R(0).
+	offset := (fnReg + 1) * ValueSize
+	if offset <= 4095 {
+		asm.ADDimm(regRegs, regRegs, uint16(offset))
+	} else {
+		asm.LoadImm64(X0, int64(offset))
+		asm.ADDreg(regRegs, regRegs, X0)
+	}
+
+	// Copy arguments: already at R(fnReg+1)..R(fnReg+nArgs)
+	// After advancing regRegs, these are at the callee's R(0)..R(nArgs-1)
+	_ = nArgs // args are already in place due to register layout
+
+	// BL to trace_loop (re-enter the trace body as the callee)
+	asm.BL("trace_loop")
+
+	// After return: X0 = result ival (set by RETURN or loop_done)
+	// Restore state
+	asm.LDP(X25, regRegs, SP, 16)
+	asm.LDPpost(X29, X30, SP, 32)
+
+	// Store result to R(fnReg) in caller's register window
+	// Result type is TypeInt (most common for recursive numeric functions)
+	asm.STR(X0, regRegs, fnReg*ValueSize+OffsetData)
+	asm.MOVimm16(X0, TypeInt)
+	asm.STRB(X0, regRegs, fnReg*ValueSize)
+
+	// If multiple results expected, fill remaining with nil
+	if nResults > 2 {
+		for i := 1; i < nResults-1; i++ {
+			off := (fnReg + i) * ValueSize
+			for w := 0; w < ValueSize/8; w++ {
+				asm.STR(XZR, regRegs, off+w*8)
+			}
+		}
+	}
+
+	asm.B(doneLabel)
+
+	// Overflow: unwind all self-call frames and side-exit
+	asm.Label(overflowLabel)
+	asm.LDP(X25, regRegs, SP, 16)
+	asm.LDPpost(X29, X30, SP, 32)
+	// Keep unwinding if depth > 0
+	asm.CBNZ(X25, overflowLabel)
+	// At depth 0: side-exit to interpreter
+	asm.LoadImm64(X9, int64(ir.PC))
+	asm.B("side_exit")
+
 	asm.Label(doneLabel)
 }
 

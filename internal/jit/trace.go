@@ -24,7 +24,9 @@ type TraceIR struct {
 	// Inline depth (0 = root function, >0 = inlined callee)
 	Depth int
 	// Base register offset for this inline level
-	Base  int
+	Base int
+	// Self-call flag (true if this OP_CALL is self-recursive)
+	IsSelfCall bool
 }
 
 // Trace is a recorded execution trace (one loop iteration).
@@ -34,8 +36,9 @@ type Trace struct {
 	LoopProto *vm.FuncProto    // function containing the loop
 	IR        []TraceIR        // recorded instruction stream
 	EntryPC   int              // bytecode PC where the trace starts
-	StartBase int              // base register index of the traced function
-	Constants []runtime.Value  // trace-level constant pool (includes inlined function constants)
+	StartBase    int              // base register index of the traced function
+	Constants    []runtime.Value  // trace-level constant pool (includes inlined function constants)
+	HasSelfCalls bool             // true if trace contains self-recursive CALL
 }
 
 // RecorderHook is the interface that vm.VM uses to communicate with the trace recorder.
@@ -291,19 +294,19 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 // handleCall attempts to inline a function call into the trace.
 func (r *TraceRecorder) handleCall(ir TraceIR, regs []runtime.Value, base int) bool {
 	if r.depth >= r.maxDepth {
-		// Too deep — record as a CALL (will be call-exit in compilation)
+		// Too deep — record as a CALL (will be side-exit in compilation)
 		r.current.IR = append(r.current.IR, ir)
 		return false
 	}
 
 	// Check if the callee is a VM closure we can inline
-	fnVal := regs[base+ir.A]
+	// ir.A is trace-relative; add startBase to get absolute register index
+	fnVal := regs[r.startBase+ir.A]
 	if !fnVal.IsFunction() {
 		r.current.IR = append(r.current.IR, ir)
 		return false
 	}
 
-	// Try to get the VM closure
 	cl, ok := fnVal.Ptr().(*vm.Closure)
 	if !ok || cl == nil {
 		// GoFunction or tree-walker closure — can't inline
@@ -311,10 +314,26 @@ func (r *TraceRecorder) handleCall(ir TraceIR, regs []runtime.Value, base int) b
 		return false
 	}
 
-	// Inline: increment depth, the interpreter will execute the callee's
-	// instructions which will be captured by OnInstruction at depth+1
+	// Check for self-recursion: callee is the same function as the trace's loop function
+	if cl.Proto == r.current.LoopProto {
+		// Self-recursive call — record as CALL (trace compiler handles natively)
+		ir.IsSelfCall = true
+		r.current.HasSelfCalls = true
+		r.current.IR = append(r.current.IR, ir)
+		return false
+	}
+
+	// Check if callee has a for-loop (FORPREP) — can't inline those
+	for _, inst := range cl.Proto.Code {
+		if vm.DecodeOp(inst) == vm.OP_FORPREP {
+			// Callee has nested loop — record as CALL (side-exit)
+			r.current.IR = append(r.current.IR, ir)
+			return false
+		}
+	}
+
+	// Simple callee without loops: inline it
 	r.depth++
-	// Don't record the CALL instruction itself — callee's body is inlined
 	return false
 }
 
