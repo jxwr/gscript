@@ -432,6 +432,45 @@ func TestTraceCompile_NegamaxPattern(t *testing.T) {
 	}
 }
 
+func TestTraceCompile_SparseTableAccess(t *testing.T) {
+	// Tests board[col*100+row] pattern — sparse integer keys that
+	// go to imap. After optimization, these should use expanded array.
+	g := runWithTracingJIT(t, `
+		board := {}
+		// Set some board positions (sparse keys like 101, 502, 910)
+		board[101] = 1
+		board[502] = 2
+		board[910] = 3
+		sum := 0
+		for i := 1; i <= 100; i++ {
+			sum = sum + board[502]
+		}
+		result := sum
+	`)
+	if v := g["result"]; v.Int() != 200 {
+		t.Errorf("result = %d, want 200", v.Int())
+	}
+}
+
+func TestTraceCompile_BoardWriteRead(t *testing.T) {
+	// Chess-like make/unmake on sparse board keys
+	g := runWithTracingJIT(t, `
+		board := {}
+		board[501] = 99
+		sum := 0
+		for i := 1; i <= 50; i++ {
+			board[301] = i
+			sum = sum + board[301]
+			board[301] = nil
+		}
+		result := sum
+	`)
+	// sum = 1+2+...+50 = 1275
+	if v := g["result"]; v.Int() != 1275 {
+		t.Errorf("result = %d, want 1275", v.Int())
+	}
+}
+
 func TestTraceCompile_MatchesInterpreter(t *testing.T) {
 	src := `
 		a := 0

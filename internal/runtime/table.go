@@ -171,6 +171,10 @@ func (t *Table) RawSet(key, val Value) {
 	}
 }
 
+// sparseArrayMax is the maximum array size for auto-expansion of sparse keys.
+// Keys like board[col*100+row] (range 101-910) will use array instead of imap.
+const sparseArrayMax = 1024
+
 // RawSetInt assigns a value by integer key (fast path).
 func (t *Table) RawSetInt(key int64, val Value) {
 	if t.mu != nil {
@@ -187,7 +191,30 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		t.array[key] = val
 		return
 	}
+	// Auto-expand array for sparse positive keys within threshold.
+	// This allows board[col*100+row] patterns to use the fast array path
+	// instead of imap, enabling JIT native compilation.
+	if key > int64(len(t.array)) && key < sparseArrayMax && !val.IsNil() {
+		// Extend array with nil padding up to key
+		needed := int(key) + 1
+		if needed > cap(t.array) {
+			newArr := make([]Value, needed)
+			copy(newArr, t.array)
+			t.array = newArr
+		} else {
+			t.array = t.array[:needed]
+		}
+		t.array[key] = val
+		// Move any imap entries that now fit in the array
+		t.absorbKeys()
+		return
+	}
 	if val.IsNil() {
+		// For nil values on expanded array slots, just set directly
+		if key >= 1 && key < int64(len(t.array)) {
+			t.array[key] = val
+			return
+		}
 		if t.imap != nil {
 			delete(t.imap, key)
 		}
