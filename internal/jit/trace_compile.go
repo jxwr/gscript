@@ -18,8 +18,9 @@ type TraceContext struct {
 
 // CompiledTrace holds native code for a trace.
 type CompiledTrace struct {
-	code  *CodeBlock
-	proto *vm.FuncProto
+	code      *CodeBlock
+	proto     *vm.FuncProto
+	constants []runtime.Value // trace-level constant pool
 }
 
 // compileTrace compiles a Trace to native ARM64 code.
@@ -37,8 +38,8 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	// Load context pointers (use X19 for ctx to avoid X28 conflict with Go runtime)
 	trCtx := X19
 	asm.MOVreg(trCtx, X0)                // X19 = ctx
-	asm.LDR(regRegs, trCtx, 0)           // X26 = ctx.Regs
-	asm.LDR(regConsts, trCtx, 8)         // X27 = ctx.Constants
+	asm.LDR(regRegs, trCtx, 0)           // X26 = ctx.Regs (points to regs[startBase])
+	asm.LDR(regConsts, trCtx, 8)         // X27 = ctx.Constants (trace constant pool)
 
 	// === Trace loop ===
 	asm.Label("trace_loop")
@@ -129,7 +130,7 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		return nil, fmt.Errorf("trace write: %w", err)
 	}
 
-	return &CompiledTrace{code: block, proto: trace.LoopProto}, nil
+	return &CompiledTrace{code: block, proto: trace.LoopProto, constants: trace.Constants}, nil
 }
 
 // --- Instruction emitters ---
@@ -688,8 +689,9 @@ func (ct *CompiledTrace) Execute(regs []runtime.Value, base int, proto *vm.FuncP
 func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.FuncProto) (exitPC int, sideExit bool) {
 	var ctx TraceContext
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
-	if len(proto.Constants) > 0 {
-		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
+	// Use the trace's constant pool (includes inlined function constants)
+	if len(ct.constants) > 0 {
+		ctx.Constants = uintptr(unsafe.Pointer(&ct.constants[0]))
 	}
 
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))

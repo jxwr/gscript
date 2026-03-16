@@ -295,6 +295,37 @@ func TestTraceCompile_MultipleComparisons(t *testing.T) {
 	}
 }
 
+func TestTraceCompile_InlinedCall(t *testing.T) {
+	// Tests that a function call is inlined into the trace.
+	// double(x) body should be compiled inline, not as a side-exit CALL.
+	g := runWithTracingJIT(t, `
+		func double(x) { return x * 2 }
+		sum := 0
+		for i := 1; i <= 100; i++ {
+			sum = sum + double(i)
+		}
+	`)
+	// 2*(1+2+...+100) = 2*5050 = 10100
+	if v := g["sum"]; v.Int() != 10100 {
+		t.Errorf("sum = %d, want 10100", v.Int())
+	}
+}
+
+func TestTraceCompile_InlinedCallWithGetField(t *testing.T) {
+	// Chess-like pattern: function reads table fields.
+	g := runWithTracingJIT(t, `
+		func score(piece) { return piece.value * 2 }
+		p := {value: 5}
+		sum := 0
+		for i := 1; i <= 100; i++ {
+			sum = sum + score(p)
+		}
+	`)
+	if v := g["sum"]; v.Int() != 1000 {
+		t.Errorf("sum = %d, want 1000", v.Int())
+	}
+}
+
 func TestTraceCompile_MatchesInterpreter(t *testing.T) {
 	src := `
 		a := 0

@@ -34,6 +34,8 @@ type Trace struct {
 	LoopProto *vm.FuncProto    // function containing the loop
 	IR        []TraceIR        // recorded instruction stream
 	EntryPC   int              // bytecode PC where the trace starts
+	StartBase int              // base register index of the traced function
+	Constants []runtime.Value  // trace-level constant pool (includes inlined function constants)
 }
 
 // RecorderHook is the interface that vm.VM uses to communicate with the trace recorder.
@@ -60,6 +62,7 @@ type TraceRecorder struct {
 	maxDepth  int  // max inline depth
 	maxLen    int  // max trace length
 	compile   bool // if true, compile traces after recording
+	startBase int  // base register of the traced function (set on first instruction)
 
 	// Loop hotness tracking
 	loopCounts map[loopKey]int
@@ -156,6 +159,15 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		return false
 	}
 
+	// Set startBase on first instruction
+	if len(r.current.IR) == 0 && r.current.StartBase == 0 {
+		r.startBase = base
+		r.current.StartBase = base
+		// Copy the root function's constants as the initial trace constants
+		r.current.Constants = make([]runtime.Value, len(proto.Constants))
+		copy(r.current.Constants, proto.Constants)
+	}
+
 	// Check trace length limit
 	if len(r.current.IR) >= r.maxLen {
 		r.abortTrace()
@@ -167,9 +179,12 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 	b := vm.DecodeB(inst)
 	c := vm.DecodeC(inst)
 
+	// Register offset: remap from absolute base to trace-relative
+	baseOff := base - r.startBase
+
 	ir := TraceIR{
 		Op:    op,
-		A:     a,
+		A:     baseOff + a, // remap to trace-relative
 		B:     b,
 		C:     c,
 		PC:    pc,
@@ -186,17 +201,70 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		ir.SBX = vm.DecodesBx(inst)
 	}
 
-	// Capture type info for operands
-	ir.AType = safeRegType(regs, base+a)
+	// Remap B and C register operands to trace-relative
+	// (RK operands >= RKBit are constants, handled separately)
 	if b < vm.RKBit {
-		ir.BType = safeRegType(regs, base+b)
-	} else {
-		ir.BType = proto.Constants[b-vm.RKBit].Type()
+		ir.B = baseOff + b
 	}
 	if c < vm.RKBit {
-		ir.CType = safeRegType(regs, base+c)
+		ir.C = baseOff + c
+	}
+
+	// For inlined functions (depth > 0), remap constant references
+	// by copying constants into the trace's constant pool
+	if r.depth > 0 {
+		if b >= vm.RKBit {
+			constIdx := b - vm.RKBit
+			if constIdx < len(proto.Constants) {
+				traceConstIdx := len(r.current.Constants)
+				r.current.Constants = append(r.current.Constants, proto.Constants[constIdx])
+				ir.B = traceConstIdx + vm.RKBit
+			}
+		}
+		if c >= vm.RKBit {
+			constIdx := c - vm.RKBit
+			if constIdx < len(proto.Constants) {
+				traceConstIdx := len(r.current.Constants)
+				r.current.Constants = append(r.current.Constants, proto.Constants[constIdx])
+				ir.C = traceConstIdx + vm.RKBit
+			}
+		}
+		// Remap BX for LOADK, GETGLOBAL, GETFIELD (constant index)
+		switch op {
+		case vm.OP_LOADK:
+			if ir.BX < len(proto.Constants) {
+				traceConstIdx := len(r.current.Constants)
+				r.current.Constants = append(r.current.Constants, proto.Constants[ir.BX])
+				ir.BX = traceConstIdx
+			}
+		case vm.OP_GETFIELD:
+			// C is the constant index for the field name
+			origC := vm.DecodeC(inst)
+			if origC < len(proto.Constants) {
+				traceConstIdx := len(r.current.Constants)
+				r.current.Constants = append(r.current.Constants, proto.Constants[origC])
+				ir.C = traceConstIdx // not RK, just constant index
+			}
+		}
+	}
+
+	// Capture type info
+	ir.AType = safeRegType(regs, base+a)
+	if vm.DecodeB(inst) < vm.RKBit {
+		ir.BType = safeRegType(regs, base+vm.DecodeB(inst))
 	} else {
-		ir.CType = proto.Constants[c-vm.RKBit].Type()
+		constIdx := vm.DecodeB(inst) - vm.RKBit
+		if constIdx < len(proto.Constants) {
+			ir.BType = proto.Constants[constIdx].Type()
+		}
+	}
+	if vm.DecodeC(inst) < vm.RKBit {
+		ir.CType = safeRegType(regs, base+vm.DecodeC(inst))
+	} else {
+		constIdx := vm.DecodeC(inst) - vm.RKBit
+		if constIdx < len(proto.Constants) {
+			ir.CType = proto.Constants[constIdx].Type()
+		}
 	}
 
 	// Handle CALL: try to inline
@@ -207,7 +275,6 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 	// Handle RETURN from inlined function
 	if op == vm.OP_RETURN && r.depth > 0 {
 		r.depth--
-		// Don't record the RETURN itself — caller continues
 		return false
 	}
 
@@ -267,6 +334,7 @@ func (r *TraceRecorder) shouldAbort(op vm.Opcode) bool {
 func (r *TraceRecorder) startTrace(pc int, proto *vm.FuncProto) {
 	r.recording = true
 	r.depth = 0
+	r.startBase = 0 // will be set on first OnInstruction call
 	r.current = &Trace{
 		ID:        len(r.traces),
 		LoopPC:    pc,
