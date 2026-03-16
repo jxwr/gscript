@@ -92,7 +92,9 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		case vm.OP_SETTABLE:
 			emitTrSetTable(asm, &ir, i)
 		case vm.OP_CALL:
-			if ir.IsSelfCall && trace.HasSelfCalls {
+			if ir.Intrinsic != IntrinsicNone {
+				emitTrIntrinsic(asm, &ir)
+			} else if ir.IsSelfCall && trace.HasSelfCalls {
 				emitTrSelfCall(asm, &ir, i)
 			} else {
 				emitTrSideExit(asm, &ir)
@@ -847,6 +849,49 @@ func emitTrSetTable(asm *Assembler, ir *TraceIR, idx int) {
 	asm.Label(fallbackLabel)
 	asm.B("side_exit")
 	asm.Label(doneLabel)
+}
+
+// emitTrIntrinsic compiles a recognized GoFunction as inline ARM64.
+// OP_CALL A B C: R(A)..R(A+C-2) = R(A)(R(A+1)..R(A+B-1))
+// For intrinsics: R(A) = result, R(A+1) = arg1, R(A+2) = arg2
+func emitTrIntrinsic(asm *Assembler, ir *TraceIR) {
+	a := ir.A         // result register (also function register)
+	arg1 := a + 1     // first argument
+	arg2 := a + 2     // second argument (for binary ops)
+	dstOff := a * ValueSize
+
+	switch ir.Intrinsic {
+	case IntrinsicBxor:
+		// bit32.bxor(a, b) → R(A) = R(A+1) XOR R(A+2)
+		asm.LDR(X0, regRegs, arg1*ValueSize+OffsetData)
+		asm.LDR(X1, regRegs, arg2*ValueSize+OffsetData)
+		asm.EORreg(X0, X0, X1)
+		asm.STR(X0, regRegs, dstOff+OffsetData)
+		asm.MOVimm16(X0, TypeInt)
+		asm.STRB(X0, regRegs, dstOff)
+
+	case IntrinsicBand:
+		// bit32.band(a, b) → R(A) = R(A+1) AND R(A+2)
+		asm.LDR(X0, regRegs, arg1*ValueSize+OffsetData)
+		asm.LDR(X1, regRegs, arg2*ValueSize+OffsetData)
+		asm.ANDreg(X0, X0, X1)
+		asm.STR(X0, regRegs, dstOff+OffsetData)
+		asm.MOVimm16(X0, TypeInt)
+		asm.STRB(X0, regRegs, dstOff)
+
+	case IntrinsicBor:
+		// bit32.bor(a, b) → R(A) = R(A+1) OR R(A+2)
+		asm.LDR(X0, regRegs, arg1*ValueSize+OffsetData)
+		asm.LDR(X1, regRegs, arg2*ValueSize+OffsetData)
+		asm.ORRreg(X0, X0, X1)
+		asm.STR(X0, regRegs, dstOff+OffsetData)
+		asm.MOVimm16(X0, TypeInt)
+		asm.STRB(X0, regRegs, dstOff)
+
+	default:
+		// Unknown intrinsic — side exit
+		emitTrSideExit(asm, ir)
+	}
 }
 
 // emitTrSelfCall compiles a self-recursive CALL in a trace.

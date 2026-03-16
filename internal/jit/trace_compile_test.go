@@ -432,6 +432,39 @@ func TestTraceCompile_NegamaxPattern(t *testing.T) {
 	}
 }
 
+func TestTraceCompile_Bit32Bxor(t *testing.T) {
+	// bit32.bxor is called heavily in negamax for Zobrist hashing.
+	// Should be inlined as ARM64 EOR instruction.
+	g := runWithTracingJIT(t, `
+		hash := 12345
+		for i := 1; i <= 100; i++ {
+			hash = bit32.bxor(hash, i)
+		}
+		result := hash
+	`)
+	// Compute expected: 12345 ^ 1 ^ 2 ^ ... ^ 100
+	expected := int64(12345)
+	for i := int64(1); i <= 100; i++ {
+		expected ^= i
+	}
+	if v := g["result"]; v.Int() != expected {
+		t.Errorf("result = %d, want %d", v.Int(), expected)
+	}
+}
+
+func TestTraceCompile_Bit32Band(t *testing.T) {
+	g := runWithTracingJIT(t, `
+		result := 0
+		for i := 1; i <= 100; i++ {
+			result = result + bit32.band(i, 1)
+		}
+	`)
+	// band(i,1) = 1 for odd i, 0 for even. 50 odd numbers in 1..100
+	if v := g["result"]; v.Int() != 50 {
+		t.Errorf("result = %d, want 50", v.Int())
+	}
+}
+
 func TestTraceCompile_SparseTableAccess(t *testing.T) {
 	// Tests board[col*100+row] pattern — sparse integer keys that
 	// go to imap. After optimization, these should use expanded array.

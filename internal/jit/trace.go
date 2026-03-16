@@ -27,7 +27,21 @@ type TraceIR struct {
 	Base int
 	// Self-call flag (true if this OP_CALL is self-recursive)
 	IsSelfCall bool
+	// Intrinsic: recognized GoFunction replaced with inline ARM64
+	// 0 = not intrinsic, >0 = intrinsic ID
+	Intrinsic int
 }
+
+// Intrinsic IDs for recognized GoFunctions
+const (
+	IntrinsicNone     = 0
+	IntrinsicBxor     = 1 // bit32.bxor(a, b) → EOR
+	IntrinsicBand     = 2 // bit32.band(a, b) → AND
+	IntrinsicBor      = 3 // bit32.bor(a, b) → ORR
+	IntrinsicBnot     = 4 // bit32.bnot(a) → MVN
+	IntrinsicLshift   = 5 // bit32.lshift(a, n) → LSL
+	IntrinsicRshift   = 6 // bit32.rshift(a, n) → LSR
+)
 
 // Trace is a recorded execution trace (one loop iteration).
 type Trace struct {
@@ -309,7 +323,15 @@ func (r *TraceRecorder) handleCall(ir TraceIR, regs []runtime.Value, base int) b
 
 	cl, ok := fnVal.Ptr().(*vm.Closure)
 	if !ok || cl == nil {
-		// GoFunction or tree-walker closure — can't inline
+		// Check for intrinsic GoFunctions (bit32.bxor, etc.)
+		if gf := fnVal.GoFunction(); gf != nil {
+			if intrinsic := recognizeIntrinsic(gf.Name); intrinsic != IntrinsicNone {
+				ir.Intrinsic = intrinsic
+				r.current.IR = append(r.current.IR, ir)
+				return false
+			}
+		}
+		// Unknown GoFunction — side-exit
 		r.current.IR = append(r.current.IR, ir)
 		return false
 	}
@@ -384,6 +406,25 @@ func (r *TraceRecorder) abortTrace() {
 	r.current = nil
 	r.recording = false
 	r.depth = 0
+}
+
+// recognizeIntrinsic returns the intrinsic ID for a known GoFunction, or 0.
+func recognizeIntrinsic(name string) int {
+	switch name {
+	case "bit32.bxor":
+		return IntrinsicBxor
+	case "bit32.band":
+		return IntrinsicBand
+	case "bit32.bor":
+		return IntrinsicBor
+	case "bit32.bnot":
+		return IntrinsicBnot
+	case "bit32.lshift":
+		return IntrinsicLshift
+	case "bit32.rshift":
+		return IntrinsicRshift
+	}
+	return IntrinsicNone
 }
 
 // safeRegType returns the type of a register, handling out-of-range gracefully.
