@@ -439,6 +439,85 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, sa *
 		asm.CMPreg(arg1Reg, arg2Reg)
 		asm.BCond(CondGT, "side_exit")
 
+	// --- Float operations (using SIMD registers D0-D3) ---
+
+	case SSA_UNBOX_FLOAT:
+		loadInst := &f.Insts[inst.Arg1]
+		slot := int(loadInst.Slot)
+		// Load float64 bits from data field into a SIMD register
+		// For now, keep in memory — float slot-alloc is separate
+		_ = slot // float values stay in memory for now
+
+	case SSA_ADD_FLOAT:
+		slot := sm.getSlotForRef(ref)
+		arg1Slot := sm.getSlotForRef(inst.Arg1)
+		arg2Slot := sm.getSlotForRef(inst.Arg2)
+		// Load float operands from memory into SIMD regs
+		if arg1Slot >= 0 {
+			asm.FLDRd(D0, regRegs, arg1Slot*ValueSize+OffsetData)
+		}
+		if arg2Slot >= 0 {
+			asm.FLDRd(D1, regRegs, arg2Slot*ValueSize+OffsetData)
+		}
+		asm.FADDd(D0, D0, D1)
+		if slot >= 0 {
+			asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
+			// Write type byte = TypeFloat
+			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+			asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+		}
+
+	case SSA_SUB_FLOAT:
+		slot := sm.getSlotForRef(ref)
+		arg1Slot := sm.getSlotForRef(inst.Arg1)
+		arg2Slot := sm.getSlotForRef(inst.Arg2)
+		if arg1Slot >= 0 {
+			asm.FLDRd(D0, regRegs, arg1Slot*ValueSize+OffsetData)
+		}
+		if arg2Slot >= 0 {
+			asm.FLDRd(D1, regRegs, arg2Slot*ValueSize+OffsetData)
+		}
+		asm.FSUBd(D0, D0, D1)
+		if slot >= 0 {
+			asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
+			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+			asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+		}
+
+	case SSA_MUL_FLOAT:
+		slot := sm.getSlotForRef(ref)
+		arg1Slot := sm.getSlotForRef(inst.Arg1)
+		arg2Slot := sm.getSlotForRef(inst.Arg2)
+		if arg1Slot >= 0 {
+			asm.FLDRd(D0, regRegs, arg1Slot*ValueSize+OffsetData)
+		}
+		if arg2Slot >= 0 {
+			asm.FLDRd(D1, regRegs, arg2Slot*ValueSize+OffsetData)
+		}
+		asm.FMULd(D0, D0, D1)
+		if slot >= 0 {
+			asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
+			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+			asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+		}
+
+	case SSA_DIV_FLOAT:
+		slot := sm.getSlotForRef(ref)
+		arg1Slot := sm.getSlotForRef(inst.Arg1)
+		arg2Slot := sm.getSlotForRef(inst.Arg2)
+		if arg1Slot >= 0 {
+			asm.FLDRd(D0, regRegs, arg1Slot*ValueSize+OffsetData)
+		}
+		if arg2Slot >= 0 {
+			asm.FLDRd(D1, regRegs, arg2Slot*ValueSize+OffsetData)
+		}
+		asm.FDIVd(D0, D0, D1)
+		if slot >= 0 {
+			asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
+			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+			asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+		}
+
 	case SSA_SIDE_EXIT:
 		asm.LoadImm64(X9, int64(inst.PC))
 		asm.B("side_exit")
@@ -553,15 +632,18 @@ func emitSlotStoreBack(asm *Assembler, sa *slotAlloc, sm *ssaSlotMapper) {
 	}
 }
 
-// ssaIsIntegerOnly returns true if the SSA function contains only integer-friendly ops.
-func ssaIsIntegerOnly(f *SSAFunc) bool {
+// ssaIsNumericOnly returns true if the SSA function contains only numeric (int + float) ops.
+func ssaIsNumericOnly(f *SSAFunc) bool {
 	for _, inst := range f.Insts {
 		switch inst.Op {
 		case SSA_GUARD_TYPE, SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
 			SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 			SSA_EQ_INT, SSA_LT_INT, SSA_LE_INT,
-			SSA_LOAD_SLOT, SSA_STORE_SLOT, SSA_UNBOX_INT, SSA_BOX_INT,
-			SSA_CONST_INT, SSA_CONST_NIL, SSA_CONST_BOOL,
+			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
+			SSA_LOAD_SLOT, SSA_STORE_SLOT,
+			SSA_UNBOX_INT, SSA_BOX_INT, SSA_UNBOX_FLOAT, SSA_BOX_FLOAT,
+			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_NIL, SSA_CONST_BOOL,
 			SSA_LOOP, SSA_PHI, SSA_SNAPSHOT,
 			SSA_MOVE, SSA_NOP:
 			continue
@@ -573,3 +655,6 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 	}
 	return true
 }
+
+// Keep old name as alias
+func ssaIsIntegerOnly(f *SSAFunc) bool { return ssaIsNumericOnly(f) }

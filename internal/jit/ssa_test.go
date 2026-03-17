@@ -107,6 +107,34 @@ func TestSSA_GuardHoisting(t *testing.T) {
 	}
 }
 
+func TestSSA_FloatArith(t *testing.T) {
+	// Float operations should produce SSA_ADD_FLOAT etc.
+	trace := &Trace{
+		LoopProto: &vm.FuncProto{Constants: []runtime.Value{}},
+		IR: []TraceIR{
+			{Op: vm.OP_ADD, A: 0, B: 0, C: 1, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
+			{Op: vm.OP_FORLOOP, A: 2, SBX: -2},
+		},
+	}
+	ssa := BuildSSA(trace)
+	if ssa == nil {
+		t.Fatal("BuildSSA returned nil")
+	}
+
+	hasFloatAdd := false
+	for _, inst := range ssa.Insts {
+		if inst.Op == SSA_ADD_FLOAT {
+			hasFloatAdd = true
+			if inst.Type != SSATypeFloat {
+				t.Errorf("ADD_FLOAT type = %d, want SSATypeFloat", inst.Type)
+			}
+		}
+	}
+	if !hasFloatAdd {
+		t.Error("SSA missing ADD_FLOAT for float operands")
+	}
+}
+
 func TestSSA_EndToEnd(t *testing.T) {
 	// Full pipeline: trace → SSA → optimize → compile → execute
 	// Verify the result matches the interpreter

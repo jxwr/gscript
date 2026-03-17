@@ -21,16 +21,28 @@ const (
 	SSA_MOD_INT // ref % ref → int
 	SSA_NEG_INT // -ref → int
 
+	// Float arithmetic (unboxed float64, SIMD registers)
+	SSA_ADD_FLOAT // ref + ref → float
+	SSA_SUB_FLOAT // ref - ref → float
+	SSA_MUL_FLOAT // ref * ref → float
+	SSA_DIV_FLOAT // ref / ref → float
+	SSA_NEG_FLOAT // -ref → float
+
 	// Comparisons (produce bool, used by guards)
 	SSA_EQ_INT  // ref == ref
 	SSA_LT_INT  // ref < ref
 	SSA_LE_INT  // ref <= ref
+	SSA_LT_FLOAT // ref < ref (float)
+	SSA_LE_FLOAT // ref <= ref (float)
+	SSA_GT_FLOAT // ref > ref (float)
 
 	// Memory
 	SSA_LOAD_SLOT  // load VM register → boxed value
 	SSA_STORE_SLOT // store to VM register
-	SSA_UNBOX_INT  // extract int64 from boxed Value
-	SSA_BOX_INT    // create boxed Value from int64
+	SSA_UNBOX_INT   // extract int64 from boxed Value
+	SSA_BOX_INT     // create boxed Value from int64
+	SSA_UNBOX_FLOAT // extract float64 bits from boxed Value
+	SSA_BOX_FLOAT   // create boxed Value from float64 bits
 
 	// Table operations
 	SSA_LOAD_FIELD  // table.field → value
@@ -206,11 +218,19 @@ func (b *ssaBuilder) emitGuard(slot int, typ runtime.ValueType, pc int) {
 	// After guard, the slot has known type
 	b.slotType[slot] = ssaType
 
-	// If int, emit unbox
+	// Emit unbox for known types
 	if ssaType == SSATypeInt {
 		unboxRef := b.emit(SSAInst{
 			Op:   SSA_UNBOX_INT,
 			Type: SSATypeInt,
+			Arg1: loadRef,
+			Slot: int16(slot),
+		})
+		b.slotDefs[slot] = unboxRef
+	} else if ssaType == SSATypeFloat {
+		unboxRef := b.emit(SSAInst{
+			Op:   SSA_UNBOX_FLOAT,
+			Type: SSATypeFloat,
 			Arg1: loadRef,
 			Slot: int16(slot),
 		})
@@ -221,11 +241,13 @@ func (b *ssaBuilder) emitGuard(slot int, typ runtime.ValueType, pc int) {
 func (b *ssaBuilder) convertIR(ir *TraceIR) {
 	switch ir.Op {
 	case vm.OP_ADD:
-		b.convertArith(ir, SSA_ADD_INT)
+		b.convertArithTyped(ir, SSA_ADD_INT, SSA_ADD_FLOAT)
 	case vm.OP_SUB:
-		b.convertArith(ir, SSA_SUB_INT)
+		b.convertArithTyped(ir, SSA_SUB_INT, SSA_SUB_FLOAT)
 	case vm.OP_MUL:
-		b.convertArith(ir, SSA_MUL_INT)
+		b.convertArithTyped(ir, SSA_MUL_INT, SSA_MUL_FLOAT)
+	case vm.OP_DIV:
+		b.convertArith(ir, SSA_DIV_FLOAT) // division always float
 	case vm.OP_MOD:
 		b.convertArith(ir, SSA_MOD_INT)
 	case vm.OP_UNM:
@@ -264,9 +286,42 @@ func (b *ssaBuilder) convertIR(ir *TraceIR) {
 func (b *ssaBuilder) convertArith(ir *TraceIR, op SSAOp) {
 	arg1 := b.getSlotOrRK(ir.B)
 	arg2 := b.getSlotOrRK(ir.C)
-	ref := b.emit(SSAInst{Op: op, Type: SSATypeInt, Arg1: arg1, Arg2: arg2, Slot: int16(ir.A), PC: ir.PC})
+	typ := SSATypeInt
+	if isFloatOp(op) {
+		typ = SSATypeFloat
+	}
+	ref := b.emit(SSAInst{Op: op, Type: typ, Arg1: arg1, Arg2: arg2, Slot: int16(ir.A), PC: ir.PC})
 	b.slotDefs[ir.A] = ref
-	b.slotType[ir.A] = SSATypeInt
+	b.slotType[ir.A] = typ
+}
+
+// convertArithTyped picks the int or float SSA op based on operand types.
+func (b *ssaBuilder) convertArithTyped(ir *TraceIR, intOp, floatOp SSAOp) {
+	// Determine operand types
+	bType := b.slotType[ir.B]
+	cType := b.slotType[ir.C]
+	if ir.B >= vm.RKBit {
+		bType = ssaTypFromRuntime(ir.BType)
+	}
+	if ir.C >= vm.RKBit {
+		cType = ssaTypFromRuntime(ir.CType)
+	}
+
+	// If either operand is float, use float op
+	if bType == SSATypeFloat || cType == SSATypeFloat {
+		b.convertArith(ir, floatOp)
+	} else {
+		b.convertArith(ir, intOp)
+	}
+}
+
+func isFloatOp(op SSAOp) bool {
+	switch op {
+	case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+		SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT:
+		return true
+	}
+	return false
 }
 
 func (b *ssaBuilder) convertForLoop(ir *TraceIR) {
@@ -361,7 +416,8 @@ func eliminateDeadCode(f *SSAFunc) *SSAFunc {
 			inst := &f.Insts[i]
 			switch inst.Op {
 			case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
-				SSA_CONST_INT:
+				SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+				SSA_CONST_INT, SSA_CONST_FLOAT:
 				if inst.Slot >= 0 {
 					refCount[i]++ // keep alive: writes to a VM slot
 				}

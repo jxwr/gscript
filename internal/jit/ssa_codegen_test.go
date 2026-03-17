@@ -370,6 +370,30 @@ func TestSSACodegen_Integration_MatchesInterpreter(t *testing.T) {
 	}
 }
 
+func TestSSACodegen_Integration_FloatAdd(t *testing.T) {
+	g := runWithSSAJIT(t, `
+		sum := 0.0
+		for i := 1; i <= 100; i++ {
+			sum = sum + 1.5
+		}
+	`)
+	if v := g["sum"]; v.Float() != 150.0 {
+		t.Errorf("sum = %v, want 150.0", v.Float())
+	}
+}
+
+func TestSSACodegen_Integration_FloatMul(t *testing.T) {
+	g := runWithSSAJIT(t, `
+		product := 1.0
+		for i := 1; i <= 10; i++ {
+			product = product * 2.0
+		}
+	`)
+	if v := g["product"]; v.Float() != 1024.0 {
+		t.Errorf("product = %v, want 1024.0", v.Float())
+	}
+}
+
 // TestSSACodegen_Integration_SideExitFallback tests that non-integer-only traces
 // fall back to the regular trace compiler.
 func TestSSACodegen_Integration_SideExitFallback(t *testing.T) {
