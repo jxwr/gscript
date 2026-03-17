@@ -79,6 +79,7 @@ type TraceRecorder struct {
 	maxDepth  int  // max inline depth
 	maxLen    int  // max trace length
 	compile   bool // if true, compile traces after recording
+	useSSA    bool // if true, try SSA codegen for integer-only traces
 	startBase int  // base register of the traced function (set on first instruction)
 
 	// Loop hotness tracking
@@ -115,6 +116,11 @@ func NewTraceRecorder() *TraceRecorder {
 // SetCompile enables trace compilation and execution.
 func (r *TraceRecorder) SetCompile(on bool) {
 	r.compile = on
+}
+
+// SetUseSSA enables SSA-based codegen for integer-only traces.
+func (r *TraceRecorder) SetUseSSA(on bool) {
+	r.useSSA = on
 }
 
 // GetCompiled returns a compiled trace for the given loop, or nil.
@@ -390,10 +396,28 @@ func (r *TraceRecorder) finishTrace() {
 
 		// Compile the trace if enabled
 		if r.compile {
-			ct, err := compileTrace(r.current)
-			if err == nil {
-				key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
-				r.compiled[key] = ct
+			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
+			compiled := false
+
+			// Try SSA codegen first for integer-only traces
+			if r.useSSA {
+				ssaFunc := BuildSSA(r.current)
+				ssaFunc = OptimizeSSA(ssaFunc)
+				if ssaIsIntegerOnly(ssaFunc) {
+					ct, err := CompileSSA(ssaFunc)
+					if err == nil {
+						r.compiled[key] = ct
+						compiled = true
+					}
+				}
+			}
+
+			// Fall back to regular trace compiler
+			if !compiled {
+				ct, err := compileTrace(r.current)
+				if err == nil {
+					r.compiled[key] = ct
+				}
 			}
 		}
 	}

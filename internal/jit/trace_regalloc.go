@@ -63,10 +63,7 @@ func NewRegAlloc(trace *Trace) *RegAlloc {
 				maxIdx = j
 			}
 		}
-		sorted[i], sorted[maxIdx] = sorted[maxIdx], sorted[maxIdx]
-		if i != maxIdx {
-			sorted[i], sorted[maxIdx] = sorted[maxIdx], sorted[i]
-		}
+		sorted[i], sorted[maxIdx] = sorted[maxIdx], sorted[i]
 	}
 
 	// Assign physical registers to the top VM registers

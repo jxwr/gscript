@@ -145,6 +145,11 @@ func (b *ssaBuilder) build() *SSAFunc {
 				b.emitGuard(ir.C, ir.CType, ir.PC)
 				guardedSlots[ir.C] = true
 			}
+		case vm.OP_UNM:
+			if ir.B < 256 && !guardedSlots[ir.B] {
+				b.emitGuard(ir.B, ir.BType, ir.PC)
+				guardedSlots[ir.B] = true
+			}
 		case vm.OP_FORLOOP:
 			// Guard loop control registers
 			for _, slot := range []int{ir.A, ir.A + 1, ir.A + 2} {
@@ -225,7 +230,7 @@ func (b *ssaBuilder) convertIR(ir *TraceIR) {
 		b.convertArith(ir, SSA_MOD_INT)
 	case vm.OP_UNM:
 		src := b.getSlotRef(ir.B)
-		ref := b.emit(SSAInst{Op: SSA_NEG_INT, Type: SSATypeInt, Arg1: src, PC: ir.PC})
+		ref := b.emit(SSAInst{Op: SSA_NEG_INT, Type: SSATypeInt, Arg1: src, Slot: int16(ir.A), PC: ir.PC})
 		b.slotDefs[ir.A] = ref
 		b.slotType[ir.A] = SSATypeInt
 
@@ -236,7 +241,7 @@ func (b *ssaBuilder) convertIR(ir *TraceIR) {
 		// FORPREP: R(A) -= R(A+2)
 		init := b.getSlotRef(ir.A)
 		step := b.getSlotRef(ir.A + 2)
-		ref := b.emit(SSAInst{Op: SSA_SUB_INT, Type: SSATypeInt, Arg1: init, Arg2: step, PC: ir.PC})
+		ref := b.emit(SSAInst{Op: SSA_SUB_INT, Type: SSATypeInt, Arg1: init, Arg2: step, Slot: int16(ir.A), PC: ir.PC})
 		b.slotDefs[ir.A] = ref
 		b.slotType[ir.A] = SSATypeInt
 
@@ -246,7 +251,7 @@ func (b *ssaBuilder) convertIR(ir *TraceIR) {
 		b.slotType[ir.A] = b.slotType[ir.B]
 
 	case vm.OP_LOADINT:
-		ref := b.emit(SSAInst{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: int64(ir.SBX), PC: ir.PC})
+		ref := b.emit(SSAInst{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: int64(ir.SBX), Slot: int16(ir.A), PC: ir.PC})
 		b.slotDefs[ir.A] = ref
 		b.slotType[ir.A] = SSATypeInt
 
@@ -259,7 +264,7 @@ func (b *ssaBuilder) convertIR(ir *TraceIR) {
 func (b *ssaBuilder) convertArith(ir *TraceIR, op SSAOp) {
 	arg1 := b.getSlotOrRK(ir.B)
 	arg2 := b.getSlotOrRK(ir.C)
-	ref := b.emit(SSAInst{Op: op, Type: SSATypeInt, Arg1: arg1, Arg2: arg2, PC: ir.PC})
+	ref := b.emit(SSAInst{Op: op, Type: SSATypeInt, Arg1: arg1, Arg2: arg2, Slot: int16(ir.A), PC: ir.PC})
 	b.slotDefs[ir.A] = ref
 	b.slotType[ir.A] = SSATypeInt
 }
@@ -268,7 +273,7 @@ func (b *ssaBuilder) convertForLoop(ir *TraceIR) {
 	// idx += step
 	idx := b.getSlotRef(ir.A)
 	step := b.getSlotRef(ir.A + 2)
-	newIdx := b.emit(SSAInst{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: idx, Arg2: step, PC: ir.PC})
+	newIdx := b.emit(SSAInst{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: idx, Arg2: step, Slot: int16(ir.A), PC: ir.PC})
 	b.slotDefs[ir.A] = newIdx
 
 	// R(A+3) = idx (loop variable)
@@ -292,12 +297,12 @@ func (b *ssaBuilder) getSlotRef(slot int) SSARef {
 
 func (b *ssaBuilder) getSlotOrRK(idx int) SSARef {
 	if idx >= vm.RKBit {
-		// Constant from pool
+		// Constant from pool — not bound to any VM slot
 		constIdx := idx - vm.RKBit
 		if constIdx < len(b.trace.Constants) {
 			c := b.trace.Constants[constIdx]
 			if c.IsInt() {
-				return b.emit(SSAInst{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: c.Int()})
+				return b.emit(SSAInst{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: c.Int(), Slot: -1})
 			}
 		}
 		return b.emit(SSAInst{Op: SSA_LOAD_SLOT, Type: SSATypeUnknown, Slot: int16(idx)})
@@ -338,6 +343,29 @@ func eliminateDeadCode(f *SSAFunc) *SSAFunc {
 			SSA_LE_INT, SSA_LT_INT, SSA_EQ_INT,
 			SSA_CALL, SSA_CALL_SELF:
 			refCount[i]++ // keep alive
+		}
+	}
+
+	// Mark loop-carried values as live: any value-producing instruction after LOOP
+	// that writes to a VM slot (Slot >= 0) is potentially a loop-carried definition
+	// and must not be eliminated.
+	loopIdx := -1
+	for i, inst := range f.Insts {
+		if inst.Op == SSA_LOOP {
+			loopIdx = i
+			break
+		}
+	}
+	if loopIdx >= 0 {
+		for i := loopIdx + 1; i < len(f.Insts); i++ {
+			inst := &f.Insts[i]
+			switch inst.Op {
+			case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
+				SSA_CONST_INT:
+				if inst.Slot >= 0 {
+					refCount[i]++ // keep alive: writes to a VM slot
+				}
+			}
 		}
 	}
 
