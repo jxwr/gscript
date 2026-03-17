@@ -117,6 +117,22 @@ func AddInts(dst, a, b *Value) bool {
 	return false
 }
 
+// AddNums tries to add *a + *b as numbers (int or float), storing result in *dst.
+// Returns true on success. Handles int+int, float+float, and int+float promotions.
+func AddNums(dst, a, b *Value) bool {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeInt
+		dst.data = uint64(int64(a.data) + int64(b.data))
+		return true
+	}
+	if a.typ <= TypeFloat && b.typ <= TypeFloat && a.typ >= TypeInt && b.typ >= TypeInt {
+		dst.typ = TypeFloat
+		dst.data = math.Float64bits(a.Number() + b.Number())
+		return true
+	}
+	return false
+}
+
 func SubInts(dst, a, b *Value) bool {
 	if a.typ == TypeInt && b.typ == TypeInt {
 		dst.typ = TypeInt
@@ -126,10 +142,38 @@ func SubInts(dst, a, b *Value) bool {
 	return false
 }
 
+func SubNums(dst, a, b *Value) bool {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeInt
+		dst.data = uint64(int64(a.data) - int64(b.data))
+		return true
+	}
+	if a.typ <= TypeFloat && b.typ <= TypeFloat && a.typ >= TypeInt && b.typ >= TypeInt {
+		dst.typ = TypeFloat
+		dst.data = math.Float64bits(a.Number() - b.Number())
+		return true
+	}
+	return false
+}
+
 func MulInts(dst, a, b *Value) bool {
 	if a.typ == TypeInt && b.typ == TypeInt {
 		dst.typ = TypeInt
 		dst.data = uint64(int64(a.data) * int64(b.data))
+		return true
+	}
+	return false
+}
+
+func MulNums(dst, a, b *Value) bool {
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeInt
+		dst.data = uint64(int64(a.data) * int64(b.data))
+		return true
+	}
+	if a.typ <= TypeFloat && b.typ <= TypeFloat && a.typ >= TypeInt && b.typ >= TypeInt {
+		dst.typ = TypeFloat
+		dst.data = math.Float64bits(a.Number() * b.Number())
 		return true
 	}
 	return false

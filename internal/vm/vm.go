@@ -663,7 +663,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				cp = &vm.regs[base+cidx]
 			}
 			dst := &vm.regs[base+a]
-			if !runtime.AddInts(dst, bp, cp) {
+			if !runtime.AddNums(dst, bp, cp) {
 				r, err := vm.arith(*bp, *cp, "__add", func(x, y float64) float64 { return x + y })
 				if err != nil {
 					return nil, wrapLineErr(frame, err)
@@ -687,7 +687,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				cp = &vm.regs[base+cidx]
 			}
 			dst := &vm.regs[base+a]
-			if !runtime.SubInts(dst, bp, cp) {
+			if !runtime.SubNums(dst, bp, cp) {
 				r, err := vm.arith(*bp, *cp, "__sub", func(x, y float64) float64 { return x - y })
 				if err != nil {
 					return nil, wrapLineErr(frame, err)
@@ -711,7 +711,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				cp = &vm.regs[base+cidx]
 			}
 			dst := &vm.regs[base+a]
-			if !runtime.MulInts(dst, bp, cp) {
+			if !runtime.MulNums(dst, bp, cp) {
 				r, err := vm.arith(*bp, *cp, "__mul", func(x, y float64) float64 { return x * y })
 				if err != nil {
 					return nil, wrapLineErr(frame, err)
