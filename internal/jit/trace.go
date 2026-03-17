@@ -333,7 +333,12 @@ func (r *TraceRecorder) handleCall(ir TraceIR, regs []runtime.Value, base int) b
 
 	// Check if the callee is a VM closure we can inline
 	// ir.A is trace-relative; add startBase to get absolute register index
-	fnVal := regs[r.startBase+ir.A]
+	absIdx := r.startBase + ir.A
+	if absIdx < 0 || absIdx >= len(regs) {
+		r.current.IR = append(r.current.IR, ir)
+		return false
+	}
+	fnVal := regs[absIdx]
 	if !fnVal.IsFunction() {
 		r.current.IR = append(r.current.IR, ir)
 		return false

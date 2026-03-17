@@ -172,9 +172,28 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	// End of trace body → loop back
 	asm.B("trace_loop")
 
-	// Helper: spill all allocated registers back to memory
+	// Track which slots are written by arithmetic in the trace body.
+	// Only these should be spilled — spilling an unmodified table slot
+	// would corrupt the table pointer with stale integer data.
+	writtenSlots := make(map[int]bool)
+	for _, ir := range trace.IR {
+		switch ir.Op {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_UNM,
+			vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL, vm.OP_MOVE,
+			vm.OP_FORLOOP:
+			writtenSlots[ir.A] = true
+			if ir.Op == vm.OP_FORLOOP {
+				writtenSlots[ir.A+3] = true // loop variable
+			}
+		}
+	}
+
+	// Helper: spill only WRITTEN allocated registers back to memory
 	spillRegs := func() {
 		for vmReg, armReg := range ra.Mapping {
+			if !writtenSlots[vmReg] {
+				continue // slot wasn't modified by the trace — don't corrupt it
+			}
 			off := vmReg*ValueSize + OffsetData
 			if off <= 32760 {
 				asm.STR(armReg, regRegs, off)
@@ -315,10 +334,9 @@ func emitTrArithIntRA(asm *Assembler, ir *TraceIR, op string, ra *RegAlloc) {
 		// Always write back to memory (other instructions may read it)
 		dst := ir.A * ValueSize
 		asm.STR(dstReg, regRegs, dst+OffsetData)
-		if !aAlloc {
-			asm.MOVimm16(X0, TypeInt)
-			asm.STRB(X0, regRegs, dst)
-		}
+		// Always write type byte — a slot may have previously held a table
+		asm.MOVimm16(X0, TypeInt)
+		asm.STRB(X0, regRegs, dst)
 		return
 	}
 

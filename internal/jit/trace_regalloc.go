@@ -1,5 +1,7 @@
 package jit
 
+import "github.com/gscript/gscript/internal/vm"
+
 // Trace register allocator: maps hot VM registers to ARM64 physical registers.
 //
 // Available ARM64 registers for allocation: X20, X21, X22, X23, X24 (5 total).
@@ -33,17 +35,23 @@ func NewRegAlloc(trace *Trace) *RegAlloc {
 		Freq:    make(map[int]int),
 	}
 
-	// Count register usage frequency
+	// Count register usage frequency — ONLY for integer arithmetic ops.
+	// Registers used in table operations must NOT be allocated (they hold
+	// non-integer Values like tables, strings, etc.)
 	for _, ir := range trace.IR {
-		// Count reads (B, C operands when they're register references)
-		if ir.B < 256 { // not an RK constant
-			ra.Freq[ir.B]++
+		switch ir.Op {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_UNM,
+			vm.OP_FORLOOP, vm.OP_FORPREP,
+			vm.OP_LOADINT, vm.OP_MOVE,
+			vm.OP_EQ, vm.OP_LT, vm.OP_LE:
+			if ir.B < 256 {
+				ra.Freq[ir.B]++
+			}
+			if ir.C < 256 {
+				ra.Freq[ir.C]++
+			}
+			ra.Freq[ir.A]++
 		}
-		if ir.C < 256 {
-			ra.Freq[ir.C]++
-		}
-		// Count writes (A operand)
-		ra.Freq[ir.A]++
 	}
 
 	// Find the top N most-used VM registers
