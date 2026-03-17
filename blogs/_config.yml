@@ -1,0 +1,4 @@
+title: "Beyond LuaJIT"
+description: "Building a high-performance JIT compiler for GScript"
+theme: jekyll-theme-minimal
+markdown: kramdown
