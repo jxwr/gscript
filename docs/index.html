@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beyond LuaJIT</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-secondary: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --code-bg: #1c2128;
+    --tag-bg: #1f2937;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+  }
+  .container { max-width: 800px; margin: 0 auto; padding: 0 24px; }
+
+  /* Header */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 48px 0 32px;
+    text-align: center;
+  }
+  header h1 {
+    font-size: 2.5em;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 12px;
+  }
+  header p {
+    color: var(--text-secondary);
+    font-size: 1.15em;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  /* Stats bar */
+  .stats {
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    margin-top: 24px;
+    flex-wrap: wrap;
+  }
+  .stat {
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 1.8em;
+    font-weight: 700;
+    color: var(--accent2);
+  }
+  .stat-label {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Post list */
+  .posts { padding: 48px 0; }
+  .post-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 20px;
+    transition: border-color 0.2s;
+  }
+  .post-card:hover { border-color: var(--accent); }
+  .post-card a {
+    text-decoration: none;
+    color: inherit;
+  }
+  .post-card h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+  .post-card p {
+    color: var(--text-secondary);
+    font-size: 0.95em;
+    margin-bottom: 12px;
+  }
+  .post-meta {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  .post-date {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+  }
+  .tag {
+    display: inline-block;
+    background: var(--tag-bg);
+    color: var(--accent);
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.8em;
+    font-weight: 500;
+  }
+
+  /* Benchmark table */
+  .bench-section {
+    padding: 0 0 48px;
+  }
+  .bench-section h2 {
+    font-size: 1.5em;
+    font-weight: 700;
+    margin-bottom: 16px;
+    color: var(--text);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  th, td { padding: 12px 16px; text-align: left; }
+  th {
+    background: var(--code-bg);
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.85em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  td { border-top: 1px solid var(--border); font-size: 0.95em; }
+  td:last-child { font-weight: 600; }
+  .speedup-high { color: var(--accent2); }
+  .speedup-mid { color: var(--accent); }
+
+  /* Footer */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 32px 0;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.9em;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <h1>Beyond LuaJIT</h1>
+    <p>Building a high-performance JIT compiler for GScript &mdash; a scripting language with Go syntax and Lua semantics</p>
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value">13.7x</div>
+        <div class="stat-label">Peak Speedup</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">SSA IR</div>
+        <div class="stat-label">Architecture</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">ARM64</div>
+        <div class="stat-label">Native Code</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">25+</div>
+        <div class="stat-label">Commits</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="container">
+
+  <section class="posts">
+    <div class="post-card">
+      <a href="02-introducing-ssa-ir.html">
+        <h2>02. Introducing SSA IR: The Architecture That Makes JITs Fast</h2>
+        <p>Why every successful JIT uses SSA, how we designed our IR with compile-time type tracking, and the integer unboxing optimization that eliminates 80% of instructions in hot loops.</p>
+        <div class="post-meta">
+          <span class="post-date">March 2026</span>
+          <span class="tag">SSA</span>
+          <span class="tag">ARM64</span>
+          <span class="tag">Type Specialization</span>
+        </div>
+      </a>
+    </div>
+
+    <div class="post-card">
+      <a href="01-from-interpreter-to-tracing-jit.html">
+        <h2>01. From Interpreter to Tracing JIT: What We Learned the Hard Way</h2>
+        <p>18 optimizations across 4 execution tiers. What worked (inline call/return, global indexing), what didn't (NaN-boxing, table pool), and why the trace couldn't cover the hot path.</p>
+        <div class="post-meta">
+          <span class="post-date">March 2026</span>
+          <span class="tag">Tracing JIT</span>
+          <span class="tag">Interpreter</span>
+          <span class="tag">Benchmarks</span>
+        </div>
+      </a>
+    </div>
+  </section>
+
+  <section class="bench-section">
+    <h2>Benchmark Results</h2>
+    <table>
+      <tr><th>Benchmark</th><th>Baseline</th><th>Optimized</th><th>Speedup</th></tr>
+      <tr><td>sieve (1M&times;3)</td><td>2.502s</td><td>0.182s</td><td class="speedup-high">&times;13.7</td></tr>
+      <tr><td>nbody (500K steps)</td><td>9.572s</td><td>3.054s</td><td class="speedup-high">&times;3.13</td></tr>
+      <tr><td>mandelbrot (1000)</td><td>4.782s</td><td>2.106s</td><td class="speedup-mid">&times;2.27</td></tr>
+      <tr><td>spectral_norm (500)</td><td>2.057s</td><td>0.905s</td><td class="speedup-mid">&times;2.27</td></tr>
+      <tr><td>matmul (300)</td><td>2.945s</td><td>1.341s</td><td class="speedup-mid">&times;2.20</td></tr>
+      <tr><td>chess AI (d=5)</td><td>6.826s</td><td>3.772s</td><td class="speedup-mid">&times;1.81</td></tr>
+      <tr><td>chess parallel (6w)</td><td>886K nodes</td><td>2.01M nodes</td><td class="speedup-mid">&times;2.27</td></tr>
+      <tr><td>fibonacci (35)</td><td>0.078s</td><td>0.082s</td><td>&sim;1x</td></tr>
+    </table>
+  </section>
+
+</div>
+
+<footer>
+  <div class="container">
+    <p>GScript &mdash; <a href="https://github.com/jxwr/gscript">github.com/jxwr/gscript</a></p>
+  </div>
+</footer>
+
+</body>
+</html>
