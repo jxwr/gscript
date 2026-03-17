@@ -307,6 +307,18 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		return false
 	}
 
+	// Detect JMP that exits the loop (break statement).
+	// If JMP target is past the loop's FORLOOP PC, abort — the trace
+	// can't capture the break path.
+	if op == vm.OP_JMP && r.depth == 0 {
+		jmpTarget := pc + vm.DecodesBx(inst) + 1
+		if jmpTarget > r.current.LoopPC {
+			// This JMP exits the loop (break) — abort recording
+			r.abortTrace()
+			return false
+		}
+	}
+
 	r.current.IR = append(r.current.IR, ir)
 	return false
 }
