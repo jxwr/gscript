@@ -154,6 +154,9 @@ func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 
 	// Fast path: check compiled trace cache first
 	if ct, ok := r.compiled[key]; ok {
+		if ct.blacklisted {
+			return false
+		}
 		r.pendingTrace = ct
 		return true
 	}
@@ -176,6 +179,37 @@ func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 // IsBlacklisted returns true if the loop at (proto, pc) was blacklisted.
 func (r *TraceRecorder) IsBlacklisted(pc int, proto *vm.FuncProto) bool {
 	return r.blacklist[loopKey{proto: proto, pc: pc}]
+}
+
+// RecordSideExit records that a compiled trace side-exited without completing
+// a full loop iteration. If the trace has too many side-exits and no full runs,
+// it gets blacklisted.
+func (r *TraceRecorder) RecordSideExit(ct *CompiledTrace) {
+	ct.sideExitCount++
+	if ct.fullRunCount == 0 && ct.sideExitCount >= SideExitBlacklistThreshold {
+		ct.blacklisted = true
+	}
+}
+
+// RecordFullRun records that a compiled trace completed a full loop (exited
+// via loop_done, not side-exit). Traces with full runs are never blacklisted.
+func (r *TraceRecorder) RecordFullRun(ct *CompiledTrace) {
+	ct.fullRunCount++
+}
+
+// ReportTraceResult is called by the VM after executing a compiled trace.
+// It records whether the trace side-exited or completed, and blacklists
+// traces that consistently side-exit without doing useful work.
+func (r *TraceRecorder) ReportTraceResult(trace vm.TraceExecutor, sideExit bool) {
+	ct, ok := trace.(*CompiledTrace)
+	if !ok {
+		return
+	}
+	if sideExit {
+		r.RecordSideExit(ct)
+	} else {
+		r.RecordFullRun(ct)
+	}
 }
 
 // PendingTrace returns the compiled trace to execute (set by OnLoopBackEdge).

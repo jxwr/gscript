@@ -58,6 +58,11 @@ type TraceRecorderHook interface {
 	OnLoopBackEdge(pc int, proto *FuncProto) bool
 	IsRecording() bool
 	PendingTrace() TraceExecutor
+	// ReportTraceResult is called after executing a compiled trace.
+	// sideExit=true means the trace side-exited before completing.
+	// The recorder uses this to track trace effectiveness and blacklist
+	// traces that consistently side-exit.
+	ReportTraceResult(trace TraceExecutor, sideExit bool)
 }
 
 // traceResult holds the result of executing a compiled trace.
@@ -78,6 +83,8 @@ func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) traceResult {
 	if guardFail {
 		return traceResult{} // not executed — interpreter handles the body
 	}
+	// Report the result so the recorder can track side-exits for blacklisting
+	vm.traceRec.ReportTraceResult(ct, sideExit)
 	return traceResult{executed: true, exitPC: exitPC, sideExit: sideExit}
 }
 

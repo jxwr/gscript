@@ -16,11 +16,21 @@ type TraceContext struct {
 	ExitCode  int64   // output: 0=loop done, 1=side exit
 }
 
+// SideExitBlacklistThreshold is the number of consecutive side-exits (with zero
+// full runs) before a compiled trace is blacklisted. Once blacklisted, the
+// interpreter runs the loop directly, avoiding enter/exit overhead.
+const SideExitBlacklistThreshold = 10
+
 // CompiledTrace holds native code for a trace.
 type CompiledTrace struct {
 	code      *CodeBlock
 	proto     *vm.FuncProto
 	constants []runtime.Value // trace-level constant pool
+
+	// Blacklisting: tracks whether this trace is doing useful work.
+	sideExitCount int  // number of times this trace side-exited
+	fullRunCount  int  // number of times this trace completed a full loop
+	blacklisted   bool // if true, interpreter should run instead
 }
 
 // compileTrace compiles a Trace to native ARM64 code.
