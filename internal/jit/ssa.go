@@ -388,13 +388,27 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		// Emit SSA_LOAD_ARRAY: reads from table (slot B) at integer key (RK(C))
 		tableRef := b.getSlotRef(ir.B)
 		keyRef := b.getSlotOrRK(ir.C)
+
+		// Use recorded result type for specialization
+		ssaType := SSATypeUnknown
+		switch ir.AType {
+		case runtime.TypeInt:
+			ssaType = SSATypeInt
+		case runtime.TypeFloat:
+			ssaType = SSATypeFloat
+		case runtime.TypeBool:
+			ssaType = SSATypeInt // booleans stored as int (0/1) in data field
+		}
+
 		ref := b.emit(SSAInst{
-			Op: SSA_LOAD_ARRAY, Type: SSATypeUnknown,
+			Op: SSA_LOAD_ARRAY, Type: ssaType,
 			Arg1: tableRef, Arg2: keyRef,
 			Slot: int16(ir.A), PC: ir.PC,
 		})
 		b.slotDefs[ir.A] = ref
-		// Result type is unknown (could be any value from the table)
+		if ssaType != SSATypeUnknown {
+			b.slotType[ir.A] = ssaType
+		}
 
 	case vm.OP_SETTABLE:
 		// SETTABLE A B C: R(A)[RK(B)] = RK(C)

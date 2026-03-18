@@ -560,11 +560,52 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		asm.LDR(X3, X0, TableOffArray+8) // array.len
 		asm.CMPreg(keyReg, X3)
 		asm.BCond(CondGE, "side_exit")
-		// Load array[key] (4 words = 32 bytes)
+		// Compute element address: X3 = &array[key]
 		asm.LDR(X3, X0, TableOffArray) // array.ptr
 		asm.LSLimm(X4, keyReg, 5)      // key * 32
 		asm.ADDreg(X3, X3, X4)
-		if dstSlot >= 0 {
+
+		if inst.Type == SSATypeInt && dstSlot >= 0 {
+			// Type-specialized int load: guard type byte, load only data field (8 bytes)
+			asm.LDRB(X0, X3, OffsetTyp)    // load type byte from element
+			asm.CMPimmW(X0, TypeInt)
+			typeGuardLabel := fmt.Sprintf("load_array_int_bool_%d", ref)
+			asm.BCond(CondEQ, typeGuardLabel)
+			// Also accept TypeBool (booleans stored as 0/1 in data field)
+			asm.CMPimmW(X0, TypeBool)
+			asm.BCond(CondNE, "side_exit") // not int and not bool → side exit
+			asm.Label(typeGuardLabel)
+
+			// Load only the data field (8 bytes instead of 32)
+			asm.LDR(X0, X3, OffsetData)
+
+			// Store to allocated register if available, else to memory
+			if r, ok := regMap.IntReg(dstSlot); ok {
+				asm.MOVreg(r, X0)
+			} else {
+				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, TypeInt)
+				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+			}
+		} else if inst.Type == SSATypeFloat && dstSlot >= 0 {
+			// Type-specialized float load: guard type byte, load only data field
+			asm.LDRB(X0, X3, OffsetTyp)
+			asm.CMPimmW(X0, TypeFloat)
+			asm.BCond(CondNE, "side_exit")
+
+			// Load data field (float64 bits)
+			asm.LDR(X0, X3, OffsetData)
+
+			// Store to float register if available, else to memory
+			if fr, ok := regMap.FloatReg(dstSlot); ok {
+				asm.FMOVtoFP(fr, X0)
+			} else {
+				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, TypeFloat)
+				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+			}
+		} else if dstSlot >= 0 {
+			// Unspecialized fallback: copy full 32 bytes
 			for w := 0; w < 4; w++ {
 				asm.LDR(X0, X3, w*8)
 				asm.STR(X0, regRegs, dstSlot*ValueSize+w*8)

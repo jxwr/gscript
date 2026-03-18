@@ -533,3 +533,88 @@ func TestSSACodegen_Integration_GetFieldMatchesInterpreter(t *testing.T) {
 		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
 	}
 }
+
+// ─── Type-specialized LOAD_ARRAY tests ───
+
+func TestSSACodegen_Integration_SievePattern(t *testing.T) {
+	// Sieve-like pattern: read table[i], check boolean, write table[j]
+	src := `
+		t := {}
+		for i := 1; i <= 100; i++ { t[i] = true }
+		count := 0
+		for i := 1; i <= 100; i++ {
+			if t[i] { count = count + 1 }
+		}
+		result := count
+	`
+	// Run without tracing
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	if g2["result"].Int() != 100 {
+		t.Errorf("result = %d, want 100", g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_ArrayIntAccess(t *testing.T) {
+	// Integer array access pattern
+	src := `
+		arr := {}
+		for i := 1; i <= 50; i++ { arr[i] = i * 2 }
+		sum := 0
+		for i := 1; i <= 50; i++ {
+			sum = sum + arr[i]
+		}
+		result := sum
+	`
+	// expected: 2+4+6+...+100 = 2550
+	// Run without tracing
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	if g2["result"].Int() != 2550 {
+		t.Errorf("result = %d, want 2550", g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_ArrayAccessMatchesInterpreter(t *testing.T) {
+	// Verify trace output matches interpreter for array access with more data
+	src := `
+		arr := {}
+		for i := 1; i <= 100; i++ { arr[i] = i }
+		sum := 0
+		for i := 1; i <= 100; i++ {
+			sum = sum + arr[i]
+		}
+		result := sum
+	`
+	// expected: 1+2+...+100 = 5050
+	// Run without tracing
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	if g2["result"].Int() != 5050 {
+		t.Errorf("result = %d, want 5050", g2["result"].Int())
+	}
+}

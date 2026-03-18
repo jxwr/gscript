@@ -538,6 +538,8 @@ func (r *TraceRecorder) finishTrace() {
 			if !compiled && r.useSSA {
 				ssaFunc := BuildSSA(r.current)
 				ssaFunc = OptimizeSSA(ssaFunc)
+				ssaFunc = ConstHoist(ssaFunc)
+				ssaFunc = CSE(ssaFunc)
 				if ssaIsIntegerOnly(ssaFunc) && SSAIsUseful(ssaFunc) {
 					ct, err := CompileSSA(ssaFunc)
 					if err == nil {
