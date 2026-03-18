@@ -57,14 +57,18 @@ const (
 type FReg uint8
 
 const (
-	D0 FReg = 0
-	D1 FReg = 1
-	D2 FReg = 2
-	D3 FReg = 3
-	D4 FReg = 4
-	D5 FReg = 5
-	D6 FReg = 6
-	D7 FReg = 7
+	D0  FReg = 0
+	D1  FReg = 1
+	D2  FReg = 2
+	D3  FReg = 3
+	D4  FReg = 4
+	D5  FReg = 5
+	D6  FReg = 6
+	D7  FReg = 7
+	D8  FReg = 8  // callee-saved
+	D9  FReg = 9  // callee-saved
+	D10 FReg = 10 // callee-saved
+	D11 FReg = 11 // callee-saved
 )
 
 // Condition codes for B.cond.
@@ -465,6 +469,18 @@ func (a *Assembler) STPpre(rt1, rt2, rn Reg, offset int) {
 	a.emit(0xA9800000 | uint32(simm7&0x7F)<<15 | uint32(rt2)<<10 | uint32(rn)<<5 | uint32(rt1))
 }
 
+// SIMD pair store: STP Dt1, Dt2, [Xn, #imm] (for saving callee-saved D8-D15)
+func (a *Assembler) FSTP(rt1, rt2 FReg, rn Reg, offset int) {
+	simm7 := offset >> 3
+	a.emit(0x6D000000 | uint32(simm7&0x7F)<<15 | uint32(rt2)<<10 | uint32(rn)<<5 | uint32(rt1))
+}
+
+// SIMD pair load: LDP Dt1, Dt2, [Xn, #imm] (for restoring callee-saved D8-D15)
+func (a *Assembler) FLDP(rt1, rt2 FReg, rn Reg, offset int) {
+	simm7 := offset >> 3
+	a.emit(0x6D400000 | uint32(simm7&0x7F)<<15 | uint32(rt2)<<10 | uint32(rn)<<5 | uint32(rt1))
+}
+
 // LDP post-index: LDP Xt1, Xt2, [Xn], #simm7 (post-indexed load pair)
 func (a *Assembler) LDPpost(rt1, rt2, rn Reg, offset int) {
 	// 1|0|10|1|0|00|1|simm7|Rt2|Rn|Rt1 (post-index = opc bit pattern 100... wait)
@@ -589,6 +605,12 @@ func (a *Assembler) SCVTF(rd FReg, rn Reg) {
 func (a *Assembler) FCVTZS(rd Reg, rn FReg) {
 	// 1|00|11110|01|1|11000|000000|Rn|Rd
 	a.emit(0x9E780000 | uint32(rn)<<5 | uint32(rd))
+}
+
+// FMOVd: Dd = Dn (register to register copy, double precision)
+func (a *Assembler) FMOVd(rd, rn FReg) {
+	// FMOV Dd, Dn: 0|00|11110|01|1|00000|010000|Rn|Rd
+	a.emit(0x1E604000 | uint32(rn)<<5 | uint32(rd))
 }
 
 // FMOVtoFP: Dd = Xn (move bits, no conversion)

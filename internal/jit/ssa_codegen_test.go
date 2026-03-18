@@ -32,7 +32,8 @@ func executeSSATrace(ct *CompiledTrace, regs []runtime.Value) (exitPC int, sideE
 		ctx.Constants = uintptr(unsafe.Pointer(&ct.constants[0]))
 	}
 	callJIT(uintptr(ct.code.Ptr()), uintptr(unsafe.Pointer(&ctx)))
-	return int(ctx.ExitPC), ctx.ExitCode == 1
+	// ExitCode: 0=loop done, 1=side exit, 2=guard fail (pre-loop type mismatch)
+	return int(ctx.ExitPC), ctx.ExitCode >= 1
 }
 
 // TestSSACodegen_SimpleAdd tests a simple for-loop with addition.

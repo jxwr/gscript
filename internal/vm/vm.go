@@ -39,12 +39,17 @@ type VM struct {
 	callCounts   map[*FuncProto]int
 	argBuf       [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf       [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
-	traceRec     TraceRecorderHook // optional trace recorder (nil = disabled)
+	traceRec       TraceRecorderHook // optional trace recorder (nil = disabled)
+	traceRecording bool              // cached: traceRec.IsRecording() (avoids interface dispatch)
 }
 
 // TraceExecutor executes a compiled trace.
 type TraceExecutor interface {
-	Execute(regs []runtime.Value, base int, proto *FuncProto) (exitPC int, sideExit bool)
+	// Execute runs the compiled trace. Returns:
+	//   guardFail=true: pre-loop guard failed, trace didn't run, interpreter should handle
+	//   sideExit=true: trace ran but side-exited at exitPC
+	//   both false: trace completed (loop done)
+	Execute(regs []runtime.Value, base int, proto *FuncProto) (exitPC int, sideExit bool, guardFail bool)
 }
 
 // TraceRecorderHook is the interface for the trace recorder.
@@ -69,7 +74,10 @@ func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) traceResult {
 	if ct == nil {
 		return traceResult{}
 	}
-	exitPC, sideExit := ct.Execute(vm.regs, base, proto)
+	exitPC, sideExit, guardFail := ct.Execute(vm.regs, base, proto)
+	if guardFail {
+		return traceResult{} // not executed — interpreter handles the body
+	}
 	return traceResult{executed: true, exitPC: exitPC, sideExit: sideExit}
 }
 
@@ -403,8 +411,8 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		inst := code[frame.pc]
 		frame.pc++
 
-		// Trace recorder: only hook when actively recording (not on every instruction)
-		if vm.traceRec != nil && vm.traceRec.IsRecording() {
+		// Trace recorder: only hook when actively recording (fast bool check)
+		if vm.traceRecording {
 			vm.traceRec.OnInstruction(frame.pc-1, inst, frame.closure.Proto, vm.regs, base)
 		}
 
@@ -1192,25 +1200,22 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					if cont {
 						idxP.SetInt(idx)
 						vm.regs[base+a+3].SetInt(idx)
-						forloopPC := frame.pc - 1 // PC of FORLOOP (frame.pc was already incremented)
+						forloopPC := frame.pc - 1
 						frame.pc += sbx
-						// Trace recorder: loop back-edge (only when tracing enabled)
+						// Trace: check for compiled trace
 						if vm.traceRec != nil && sbx < 0 {
 							if vm.traceRec.OnLoopBackEdge(forloopPC, frame.closure.Proto) {
 								tr := vm.executeCompiledTrace(frame.closure.Proto, base)
-								if tr.executed && !tr.sideExit {
-									// Loop done: trace ran the entire remaining loop.
-									frame.pc = forloopPC + 1
+								if tr.executed {
+									if tr.sideExit {
+										frame.pc = tr.exitPC
+									} else {
+										frame.pc = forloopPC + 1
+									}
 								}
-								// Side-exit: don't adjust frame.pc.
-								// The interpreter continues from body start
-								// (frame.pc was set by += sbx above).
-								// This works because the FORLOOP already incremented
-								// idx for this iteration. The interpreter runs the body
-								// and hits FORLOOP which increments for the NEXT iteration.
-								// NOTE: this means the trace's side-exit iteration is
-								// handled by the interpreter (correct but slower).
 							}
+							// Update cached recording state (OnLoopBackEdge may start/stop recording)
+							vm.traceRecording = vm.traceRec.IsRecording()
 						}
 					}
 					break

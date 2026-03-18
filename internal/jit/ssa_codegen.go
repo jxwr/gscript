@@ -37,6 +37,68 @@ type slotAlloc struct {
 	regToSlot map[Reg]int
 }
 
+// floatSlotAlloc maps hot VM float slots to ARM64 SIMD D registers.
+// D4-D7 are used (caller-saved on ARM64 ABI, no save/restore needed).
+type floatSlotAlloc struct {
+	slotToReg map[int]FReg
+	regToSlot map[FReg]int
+}
+
+// D4-D7: caller-saved (no save needed). D8-D11: callee-saved (saved in prologue).
+var allocableFloatRegs = []FReg{D4, D5, D6, D7, D8, D9, D10, D11}
+
+const maxAllocFloatRegs = 8
+
+func newFloatSlotAlloc(f *SSAFunc) *floatSlotAlloc {
+	fa := &floatSlotAlloc{
+		slotToReg: make(map[int]FReg),
+		regToSlot: make(map[FReg]int),
+	}
+	freq := make(map[int]int)
+	if f.Trace != nil {
+		for _, ir := range f.Trace.IR {
+			if ir.AType == runtime.TypeFloat {
+				freq[ir.A]++
+			}
+			if ir.BType == runtime.TypeFloat && ir.B < 256 {
+				freq[ir.B]++
+			}
+			if ir.CType == runtime.TypeFloat && ir.C < 256 {
+				freq[ir.C]++
+			}
+		}
+	}
+	type sf struct{ slot, count int }
+	var candidates []sf
+	for slot, count := range freq {
+		candidates = append(candidates, sf{slot, count})
+	}
+	for i := 0; i < len(candidates) && i < maxAllocFloatRegs; i++ {
+		maxIdx := i
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].count > candidates[maxIdx].count {
+				maxIdx = j
+			}
+		}
+		if i != maxIdx {
+			candidates[i], candidates[maxIdx] = candidates[maxIdx], candidates[i]
+		}
+	}
+	for i := 0; i < len(candidates) && i < maxAllocFloatRegs; i++ {
+		if candidates[i].count < 2 {
+			break
+		}
+		fa.slotToReg[candidates[i].slot] = allocableFloatRegs[i]
+		fa.regToSlot[allocableFloatRegs[i]] = candidates[i].slot
+	}
+	return fa
+}
+
+func (fa *floatSlotAlloc) getReg(slot int) (FReg, bool) {
+	r, ok := fa.slotToReg[slot]
+	return r, ok
+}
+
 // newSlotAlloc performs frequency-based slot allocation on the SSA function.
 // It identifies the hottest VM slots and assigns them to X20-X24.
 func newSlotAlloc(f *SSAFunc) *slotAlloc {
@@ -45,8 +107,23 @@ func newSlotAlloc(f *SSAFunc) *slotAlloc {
 		regToSlot: make(map[Reg]int),
 	}
 
-	// Build slot usage frequency from the trace IR — ONLY for integer arithmetic ops.
-	// Table/string slots must NOT be allocated (they hold non-integer Values).
+	// Build slot usage frequency from the trace IR — ONLY for integer ops.
+	// Float slots use SIMD D registers (not X registers) and must NOT be allocated.
+	// Table/string slots must NOT be allocated either.
+	floatSlots := make(map[int]bool)
+	if f.Trace != nil {
+		for _, ir := range f.Trace.IR {
+			if ir.AType == runtime.TypeFloat {
+				floatSlots[ir.A] = true
+			}
+			if ir.BType == runtime.TypeFloat && ir.B < 256 {
+				floatSlots[ir.B] = true
+			}
+			if ir.CType == runtime.TypeFloat && ir.C < 256 {
+				floatSlots[ir.C] = true
+			}
+		}
+	}
 	freq := make(map[int]int)
 	if f.Trace != nil {
 		for _, ir := range f.Trace.IR {
@@ -54,13 +131,15 @@ func newSlotAlloc(f *SSAFunc) *slotAlloc {
 			case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_UNM,
 				vm.OP_LOADINT, vm.OP_MOVE,
 				vm.OP_EQ, vm.OP_LT, vm.OP_LE:
-				if ir.B < 256 {
+				if ir.B < 256 && !floatSlots[ir.B] {
 					freq[ir.B]++
 				}
-				if ir.C < 256 {
+				if ir.C < 256 && !floatSlots[ir.C] {
 					freq[ir.C]++
 				}
-				freq[ir.A]++
+				if !floatSlots[ir.A] {
+					freq[ir.A]++
+				}
 			case vm.OP_FORLOOP:
 				freq[ir.A] += 3   // idx
 				freq[ir.A+1] += 3 // limit
@@ -73,9 +152,12 @@ func newSlotAlloc(f *SSAFunc) *slotAlloc {
 	}
 
 	// Also count from SSA instructions (for traces without IR)
+	// Skip float slots — they use SIMD registers, not X registers.
 	slotRefs := buildSSASlotRefs(f)
 	for slot := range slotRefs {
-		freq[slot]++
+		if !floatSlots[slot] {
+			freq[slot]++
+		}
 	}
 
 	// Find top N most-used slots
@@ -164,12 +246,13 @@ func newSSASlotMapper(f *SSAFunc) *ssaSlotMapper {
 	for i, inst := range f.Insts {
 		ref := SSARef(i)
 		switch inst.Op {
-		case SSA_LOAD_SLOT, SSA_UNBOX_INT, SSA_STORE_SLOT, SSA_BOX_INT:
+		case SSA_LOAD_SLOT, SSA_UNBOX_INT, SSA_UNBOX_FLOAT, SSA_STORE_SLOT, SSA_BOX_INT, SSA_BOX_FLOAT:
 			slot := int(inst.Slot)
 			m.refToSlot[ref] = slot
 			m.slotToLatestRef[slot] = ref
 		case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
-			SSA_CONST_INT:
+			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_MOVE:
 			slot := int(inst.Slot)
 			if slot >= 0 {
 				m.refToSlot[ref] = slot
@@ -216,15 +299,19 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 
 	asm := NewAssembler()
 	sa := newSlotAlloc(f)
+	fa := newFloatSlotAlloc(f)
 	sm := newSSASlotMapper(f)
 
 	// === Prologue ===
-	asm.STPpre(X29, X30, SP, -96)
+	asm.STPpre(X29, X30, SP, -128)
 	asm.STP(X19, X20, SP, 16)
 	asm.STP(X21, X22, SP, 32)
 	asm.STP(X23, X24, SP, 48)
 	asm.STP(X25, X26, SP, 64)
 	asm.STP(X27, X28, SP, 80)
+	// Save callee-saved SIMD registers D8-D11
+	asm.FSTP(D8, D9, SP, 96)
+	asm.FSTP(D10, D11, SP, 112)
 
 	trCtx := X19
 	asm.MOVreg(trCtx, X0)
@@ -232,13 +319,24 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	asm.LDR(regConsts, trCtx, 8)
 
 	// === Pre-LOOP: guards + initial loads ===
+	// Pre-loop guards branch to "guard_fail" (ExitCode=2) instead of "side_exit".
+	// This tells the VM "trace not executed" so the interpreter runs the body normally.
 	loopIdx := -1
 	for i, inst := range f.Insts {
 		if inst.Op == SSA_LOOP {
 			loopIdx = i
 			break
 		}
-		emitSSAInstSlot(asm, f, SSARef(i), &inst, sa, sm)
+		if inst.Op == SSA_GUARD_TYPE {
+			// Emit guard that branches to guard_fail on type mismatch
+			loadInst := &f.Insts[inst.Arg1]
+			slot := int(loadInst.Slot)
+			asm.LDRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+			asm.CMPimmW(X0, uint16(inst.AuxInt))
+			asm.BCond(CondNE, "guard_fail")
+		} else {
+			emitSSAInstSlot(asm, f, SSARef(i), &inst, sa, fa, sm)
+		}
 	}
 
 	if loopIdx < 0 {
@@ -267,74 +365,109 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 		}
 	}
 
+	// Load allocated float slots into D registers
+	for slot, dreg := range fa.slotToReg {
+		asm.FLDRd(dreg, regRegs, slot*ValueSize+OffsetData)
+	}
+
 	// === LOOP header ===
 	asm.Label("trace_loop")
+
+	// === Float expression forwarding analysis ===
+	// For non-allocated float temps that are produced and immediately consumed
+	// by the next instruction, we skip the memory write and keep the value
+	// in a scratch D register. This eliminates ~20 memory ops per mandelbrot iteration.
+	fwd := newFloatForwarder(f, fa, sm, loopIdx)
 
 	// === Loop body ===
 	for i := loopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
 		ref := SSARef(i)
 
-		if inst.Op == SSA_LE_INT {
-			// Loop exit condition: CMP newIdx, limit; B.GT loop_done
+		switch inst.Op {
+		case SSA_LE_INT:
 			arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, sa, sm, X0)
 			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, sa, sm, X1)
 			asm.CMPreg(arg1Reg, arg2Reg)
 			asm.BCond(CondGT, "loop_done")
 			continue
+		case SSA_LT_INT:
+			arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, sa, sm, X0)
+			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, sa, sm, X1)
+			asm.CMPreg(arg1Reg, arg2Reg)
+			asm.BCond(CondGE, "loop_done")
+			continue
 		}
 
-		emitSSAInstSlot(asm, f, ref, inst, sa, sm)
+		emitSSAInstSlotFwd(asm, f, ref, inst, sa, fa, sm, fwd)
 	}
 
 	// Loop back-edge
 	asm.B("trace_loop")
 
-	// Build set of slots actually written by the loop body
+	// Build set of slots actually written by REACHABLE loop body code.
+	// Stop at the first unconditional SIDE_EXIT — everything after is dead code
+	// and must NOT be included, otherwise store-back will write stale values
+	// from registers that were never updated.
 	ssaWrittenSlots := make(map[int]bool)
 	for i := loopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
+		if inst.Op == SSA_SIDE_EXIT {
+			break // all subsequent instructions are unreachable
+		}
 		switch inst.Op {
 		case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT,
-			SSA_CONST_INT, SSA_CONST_FLOAT:
+			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_BOOL, SSA_MOVE:
 			slot := int(inst.Slot)
 			if slot >= 0 {
 				ssaWrittenSlots[slot] = true
 			}
-		}
-	}
-	// FORLOOP writes to A (idx) and A+3 (loop variable)
-	if f.Trace != nil {
-		for _, ir := range f.Trace.IR {
-			if ir.Op == vm.OP_FORLOOP {
-				ssaWrittenSlots[ir.A] = true
-				ssaWrittenSlots[ir.A+3] = true
+		case SSA_LE_INT, SSA_LT_INT:
+			// Loop exit check — the preceding ADD_INT for FORLOOP
+			// writes to A (idx) and A+3 (loop variable)
+			if f.Trace != nil {
+				for _, ir := range f.Trace.IR {
+					if ir.Op == vm.OP_FORLOOP {
+						ssaWrittenSlots[ir.A] = true
+						ssaWrittenSlots[ir.A+3] = true
+					}
+				}
 			}
 		}
 	}
 
+	// === Guard fail (pre-loop type mismatch) ===
+	// ExitCode=2: "not executed" — interpreter should run the body normally.
+	// No store-back needed since we haven't modified any registers.
+	asm.Label("guard_fail")
+	asm.LoadImm64(X0, 2)  // ExitCode = 2 (guard fail, not executed)
+	asm.B("epilogue")
+
 	// === Side exit ===
 	asm.Label("side_exit")
-	emitSlotStoreBack(asm, sa, sm, ssaWrittenSlots)
+	emitSlotStoreBack(asm, sa, fa, sm, ssaWrittenSlots)
 	asm.STR(X9, X19, 16)  // ctx.ExitPC = X9
 	asm.LoadImm64(X0, 1)  // ExitCode = 1
 	asm.B("epilogue")
 
 	// === Loop done ===
 	asm.Label("loop_done")
-	emitSlotStoreBack(asm, sa, sm, ssaWrittenSlots)
+	emitSlotStoreBack(asm, sa, fa, sm, ssaWrittenSlots)
 	asm.LoadImm64(X0, 0)  // ExitCode = 0
 
 	// === Epilogue ===
 	asm.Label("epilogue")
 	asm.STR(X0, X19, 24)  // ctx.ExitCode
 
+	// Restore callee-saved SIMD registers
+	asm.FLDP(D8, D9, SP, 96)
+	asm.FLDP(D10, D11, SP, 112)
 	asm.LDP(X25, X26, SP, 64)
 	asm.LDP(X23, X24, SP, 48)
 	asm.LDP(X21, X22, SP, 32)
 	asm.LDP(X19, X20, SP, 16)
-	asm.LDPpost(X29, X30, SP, 96)
+	asm.LDPpost(X29, X30, SP, 128)
 	asm.RET()
 
 	// Finalize
@@ -364,7 +497,7 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 }
 
 // emitSSAInstSlot emits ARM64 code for one SSA instruction using slot-based allocation.
-func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, sa *slotAlloc, sm *ssaSlotMapper) {
+func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, sa *slotAlloc, fa *floatSlotAlloc, sm *ssaSlotMapper) {
 	switch inst.Op {
 	case SSA_NOP:
 		// skip
@@ -379,6 +512,97 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, sa *
 		asm.LDRB(X0, regRegs, slot*ValueSize+OffsetTyp)
 		asm.CMPimmW(X0, uint16(inst.AuxInt))
 		asm.BCond(CondNE, "side_exit")
+
+	case SSA_GUARD_TRUTHY:
+		// Guard truthiness of a value. AuxInt: 0=expect truthy, 1=expect falsy.
+		// Truthy: anything except nil and false.
+		slot := int(inst.Slot)
+		asm.LoadImm64(X9, int64(inst.PC))
+		asm.LDRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+		if inst.AuxInt == 0 {
+			// Expect truthy: exit if nil or bool(false)
+			asm.CMPimmW(X0, TypeNil)
+			asm.BCond(CondEQ, "side_exit") // nil → falsy → exit
+			asm.CMPimmW(X0, TypeBool)
+			doneLabel := fmt.Sprintf("guard_truthy_%d", ref)
+			asm.BCond(CondNE, doneLabel) // not nil, not bool → truthy → OK
+			asm.LDR(X1, regRegs, slot*ValueSize+OffsetData)
+			asm.CBZ(X1, "side_exit") // bool(false) → falsy → exit
+			asm.Label(doneLabel)
+		} else {
+			// Expect falsy: exit if truthy (not nil and not bool(false))
+			asm.CMPimmW(X0, TypeNil)
+			doneLabel := fmt.Sprintf("guard_falsy_%d", ref)
+			asm.BCond(CondEQ, doneLabel) // nil → falsy → OK
+			asm.CMPimmW(X0, TypeBool)
+			asm.BCond(CondNE, "side_exit") // not nil, not bool → truthy → exit
+			asm.LDR(X1, regRegs, slot*ValueSize+OffsetData)
+			asm.CBNZ(X1, "side_exit") // bool(true) → truthy → exit
+			asm.Label(doneLabel)
+		}
+
+	case SSA_LOAD_ARRAY:
+		// GETTABLE: R(A) = table[key]. table=Arg1's slot, key=Arg2's value.
+		// Fast path: table type check, no metatable, key is int, in array bounds.
+		tableSlot := sm.getSlotForRef(inst.Arg1)
+		asm.LoadImm64(X9, int64(inst.PC))
+		dstSlot := int(inst.Slot)
+		// Load key
+		keyReg := resolveSSARefSlot(asm, f, inst.Arg2, sa, sm, X2)
+		// Load *Table
+		if tableSlot >= 0 {
+			asm.LDR(X0, regRegs, tableSlot*ValueSize+OffsetPtrData)
+		}
+		asm.CBZ(X0, "side_exit")
+		// Check metatable == nil
+		asm.LDR(X1, X0, TableOffMetatable)
+		asm.CBNZ(X1, "side_exit")
+		// Array bounds: key >= 1 && key < array.len
+		asm.CMPimm(keyReg, 1)
+		asm.BCond(CondLT, "side_exit")
+		asm.LDR(X3, X0, TableOffArray+8) // array.len
+		asm.CMPreg(keyReg, X3)
+		asm.BCond(CondGE, "side_exit")
+		// Load array[key] (4 words = 32 bytes)
+		asm.LDR(X3, X0, TableOffArray) // array.ptr
+		asm.LSLimm(X4, keyReg, 5)      // key * 32
+		asm.ADDreg(X3, X3, X4)
+		if dstSlot >= 0 {
+			for w := 0; w < 4; w++ {
+				asm.LDR(X0, X3, w*8)
+				asm.STR(X0, regRegs, dstSlot*ValueSize+w*8)
+			}
+		}
+
+	case SSA_STORE_ARRAY:
+		// SETTABLE: table[key] = value
+		tableSlot := sm.getSlotForRef(inst.Arg1)
+		asm.LoadImm64(X9, int64(inst.PC))
+		keyReg := resolveSSARefSlot(asm, f, inst.Arg2, sa, sm, X2)
+		valRef := SSARef(inst.AuxInt)
+		valSlot := sm.getSlotForRef(valRef)
+		// Load *Table
+		if tableSlot >= 0 {
+			asm.LDR(X0, regRegs, tableSlot*ValueSize+OffsetPtrData)
+		}
+		asm.CBZ(X0, "side_exit")
+		asm.LDR(X1, X0, TableOffMetatable)
+		asm.CBNZ(X1, "side_exit")
+		asm.CMPimm(keyReg, 1)
+		asm.BCond(CondLT, "side_exit")
+		asm.LDR(X3, X0, TableOffArray+8)
+		asm.CMPreg(keyReg, X3)
+		asm.BCond(CondGE, "side_exit")
+		asm.LDR(X3, X0, TableOffArray)
+		asm.LSLimm(X4, keyReg, 5)
+		asm.ADDreg(X3, X3, X4)
+		// Write value (4 words)
+		if valSlot >= 0 {
+			for w := 0; w < 4; w++ {
+				asm.LDR(X0, regRegs, valSlot*ValueSize+w*8)
+				asm.STR(X0, X3, w*8)
+			}
+		}
 
 	case SSA_UNBOX_INT:
 		loadInst := &f.Insts[inst.Arg1]
@@ -469,83 +693,124 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, sa *
 		asm.CMPreg(arg1Reg, arg2Reg)
 		asm.BCond(CondGT, "side_exit")
 
-	// --- Float operations (using SIMD registers D0-D3) ---
+	// --- Float operations (using SIMD registers D0-D7) ---
 
 	case SSA_UNBOX_FLOAT:
-		loadInst := &f.Insts[inst.Arg1]
-		slot := int(loadInst.Slot)
-		// Load float64 bits from data field into a SIMD register
-		// For now, keep in memory — float slot-alloc is separate
-		_ = slot // float values stay in memory for now
+		// Float values loaded at loop entry or on demand
 
 	case SSA_ADD_FLOAT:
 		slot := sm.getSlotForRef(ref)
-		arg1Slot := sm.getSlotForRef(inst.Arg1)
-		arg2Slot := sm.getSlotForRef(inst.Arg2)
-		// Load float operands from memory into SIMD regs
-		if arg1Slot >= 0 {
-			asm.FLDRd(D0, regRegs, arg1Slot*ValueSize+OffsetData)
-		}
-		if arg2Slot >= 0 {
-			asm.FLDRd(D1, regRegs, arg2Slot*ValueSize+OffsetData)
-		}
-		asm.FADDd(D0, D0, D1)
-		if slot >= 0 {
-			asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
-			// Write type byte = TypeFloat
-			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-			asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
-		}
+		arg1D := resolveFloatRef(asm, f, inst.Arg1, fa, sm, D1)
+		arg2D := resolveFloatRef(asm, f, inst.Arg2, fa, sm, D2)
+		dstD := getFloatSlotReg(fa, slot, D0)
+		asm.FADDd(dstD, arg1D, arg2D)
+		storeFloatResult(asm, fa, slot, dstD)
 
 	case SSA_SUB_FLOAT:
 		slot := sm.getSlotForRef(ref)
-		arg1Slot := sm.getSlotForRef(inst.Arg1)
-		arg2Slot := sm.getSlotForRef(inst.Arg2)
-		if arg1Slot >= 0 {
-			asm.FLDRd(D0, regRegs, arg1Slot*ValueSize+OffsetData)
-		}
-		if arg2Slot >= 0 {
-			asm.FLDRd(D1, regRegs, arg2Slot*ValueSize+OffsetData)
-		}
-		asm.FSUBd(D0, D0, D1)
-		if slot >= 0 {
-			asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
-			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-			asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
-		}
+		arg1D := resolveFloatRef(asm, f, inst.Arg1, fa, sm, D1)
+		arg2D := resolveFloatRef(asm, f, inst.Arg2, fa, sm, D2)
+		dstD := getFloatSlotReg(fa, slot, D0)
+		asm.FSUBd(dstD, arg1D, arg2D)
+		storeFloatResult(asm, fa, slot, dstD)
 
 	case SSA_MUL_FLOAT:
 		slot := sm.getSlotForRef(ref)
-		arg1Slot := sm.getSlotForRef(inst.Arg1)
-		arg2Slot := sm.getSlotForRef(inst.Arg2)
-		if arg1Slot >= 0 {
-			asm.FLDRd(D0, regRegs, arg1Slot*ValueSize+OffsetData)
-		}
-		if arg2Slot >= 0 {
-			asm.FLDRd(D1, regRegs, arg2Slot*ValueSize+OffsetData)
-		}
-		asm.FMULd(D0, D0, D1)
-		if slot >= 0 {
-			asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
-			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-			asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
-		}
+		arg1D := resolveFloatRef(asm, f, inst.Arg1, fa, sm, D1)
+		arg2D := resolveFloatRef(asm, f, inst.Arg2, fa, sm, D2)
+		dstD := getFloatSlotReg(fa, slot, D0)
+		asm.FMULd(dstD, arg1D, arg2D)
+		storeFloatResult(asm, fa, slot, dstD)
 
 	case SSA_DIV_FLOAT:
 		slot := sm.getSlotForRef(ref)
-		arg1Slot := sm.getSlotForRef(inst.Arg1)
-		arg2Slot := sm.getSlotForRef(inst.Arg2)
-		if arg1Slot >= 0 {
-			asm.FLDRd(D0, regRegs, arg1Slot*ValueSize+OffsetData)
-		}
-		if arg2Slot >= 0 {
-			asm.FLDRd(D1, regRegs, arg2Slot*ValueSize+OffsetData)
-		}
-		asm.FDIVd(D0, D0, D1)
+		arg1D := resolveFloatRef(asm, f, inst.Arg1, fa, sm, D1)
+		arg2D := resolveFloatRef(asm, f, inst.Arg2, fa, sm, D2)
+		dstD := getFloatSlotReg(fa, slot, D0)
+		asm.FDIVd(dstD, arg1D, arg2D)
+		storeFloatResult(asm, fa, slot, dstD)
+
+	case SSA_CONST_FLOAT:
+		slot := sm.getSlotForRef(ref)
 		if slot >= 0 {
-			asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
-			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+			if dreg, ok := fa.getReg(slot); ok {
+				// Slot is allocated — load directly into D register, skip memory
+				asm.LoadImm64(X0, inst.AuxInt)
+				asm.FMOVtoFP(dreg, X0)
+			} else {
+				// Not allocated — write to memory
+				asm.LoadImm64(X0, inst.AuxInt)
+				asm.FMOVtoFP(D0, X0)
+				asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+			}
+		}
+
+	case SSA_CONST_BOOL:
+		slot := sm.getSlotForRef(ref)
+		if slot >= 0 {
+			asm.LoadImm64(X0, inst.AuxInt)
+			asm.STR(X0, regRegs, slot*ValueSize+OffsetData)
+			asm.MOVimm16(X0, uint16(runtime.TypeBool))
 			asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+		}
+
+	case SSA_LT_FLOAT:
+		asm.LoadImm64(X9, int64(inst.PC))
+		arg1D := resolveFloatRef(asm, f, inst.Arg1, fa, sm, D0)
+		arg2D := resolveFloatRef(asm, f, inst.Arg2, fa, sm, D1)
+		asm.FCMPd(arg1D, arg2D)
+		if inst.AuxInt == 0 {
+			asm.BCond(CondGE, "side_exit")
+		} else {
+			asm.BCond(CondLT, "side_exit")
+		}
+
+	case SSA_LE_FLOAT:
+		asm.LoadImm64(X9, int64(inst.PC))
+		arg1D := resolveFloatRef(asm, f, inst.Arg1, fa, sm, D0)
+		arg2D := resolveFloatRef(asm, f, inst.Arg2, fa, sm, D1)
+		asm.FCMPd(arg1D, arg2D)
+		if inst.AuxInt == 0 {
+			asm.BCond(CondGT, "side_exit")
+		} else {
+			asm.BCond(CondLE, "side_exit")
+		}
+
+	case SSA_GT_FLOAT:
+		asm.LoadImm64(X9, int64(inst.PC))
+		arg1D := resolveFloatRef(asm, f, inst.Arg1, fa, sm, D0)
+		arg2D := resolveFloatRef(asm, f, inst.Arg2, fa, sm, D1)
+		asm.FCMPd(arg1D, arg2D)
+		if inst.AuxInt == 0 {
+			asm.BCond(CondLE, "side_exit")
+		} else {
+			asm.BCond(CondGT, "side_exit")
+		}
+
+	case SSA_MOVE:
+		slot := sm.getSlotForRef(ref)
+		if inst.Type == SSATypeFloat {
+			// Float move: use D register allocation
+			srcD := resolveFloatRef(asm, f, inst.Arg1, fa, sm, D0)
+			dstD := getFloatSlotReg(fa, slot, D1)
+			if dstD != srcD {
+				asm.FMOVd(dstD, srcD)
+			}
+			// If destination is not allocated, write to memory
+			if _, ok := fa.getReg(slot); !ok && slot >= 0 {
+				asm.FSTRd(srcD, regRegs, slot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+			}
+		} else {
+			srcReg := resolveSSARefSlot(asm, f, inst.Arg1, sa, sm, X0)
+			dstReg := getSlotReg(sa, sm, ref, slot, X0)
+			if dstReg != srcReg {
+				asm.MOVreg(dstReg, srcReg)
+			}
+			spillIfNotAllocated(asm, sa, slot, dstReg)
 		}
 
 	case SSA_SIDE_EXIT:
@@ -641,10 +906,11 @@ func resolveSSARefSlot(asm *Assembler, f *SSAFunc, ref SSARef, sa *slotAlloc, sm
 // emitSlotStoreBack writes modified allocated slot values back to memory.
 // Only slots that were actually written by the loop body are stored back.
 // Writing unmodified slots (e.g., table references) would corrupt their type.
-func emitSlotStoreBack(asm *Assembler, sa *slotAlloc, sm *ssaSlotMapper, writtenSlots map[int]bool) {
+func emitSlotStoreBack(asm *Assembler, sa *slotAlloc, fa *floatSlotAlloc, sm *ssaSlotMapper, writtenSlots map[int]bool) {
+	// Integer register writeback
 	for slot, armReg := range sa.slotToReg {
 		if !writtenSlots[slot] {
-			continue // slot not modified by loop body — don't corrupt it
+			continue
 		}
 		off := slot * ValueSize
 		if off <= 32760 {
@@ -662,19 +928,49 @@ func emitSlotStoreBack(asm *Assembler, sa *slotAlloc, sm *ssaSlotMapper, written
 			}
 		}
 	}
+	// Float D-register writeback
+	for slot, dreg := range fa.slotToReg {
+		if !writtenSlots[slot] {
+			continue
+		}
+		off := slot * ValueSize
+		if off <= 32760 {
+			asm.FSTRd(dreg, regRegs, off+OffsetData)
+			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+			asm.STRB(X0, regRegs, off+OffsetTyp)
+		}
+	}
 }
 
-// ssaIsNumericOnly returns true if the SSA function contains only numeric (int + float) ops.
-func ssaIsNumericOnly(f *SSAFunc) bool {
+// isForLoopIncrement checks if an SSA instruction is the FORLOOP's idx += step.
+// It's the ADD_INT that writes to the FORLOOP control register (matches the
+// LE_INT's first operand).
+func isForLoopIncrement(f *SSAFunc, ref SSARef) bool {
+	inst := &f.Insts[ref]
+	if inst.Op != SSA_ADD_INT {
+		return false
+	}
+	// Check if this ADD's result is used by an LE_INT (FORLOOP check)
+	for i := int(ref) + 1; i < len(f.Insts); i++ {
+		if f.Insts[i].Op == SSA_LE_INT && f.Insts[i].Arg1 == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// ssaIsCompilable returns true if all SSA ops in the function are supported by the codegen.
+func ssaIsCompilable(f *SSAFunc) bool {
 	for _, inst := range f.Insts {
 		switch inst.Op {
-		case SSA_GUARD_TYPE, SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
+		case SSA_GUARD_TYPE, SSA_GUARD_NNIL, SSA_GUARD_NOMETA, SSA_GUARD_TRUTHY,
 			SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 			SSA_EQ_INT, SSA_LT_INT, SSA_LE_INT,
 			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
 			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
 			SSA_LOAD_SLOT, SSA_STORE_SLOT,
 			SSA_UNBOX_INT, SSA_BOX_INT, SSA_UNBOX_FLOAT, SSA_BOX_FLOAT,
+			SSA_LOAD_ARRAY, SSA_STORE_ARRAY, SSA_LOAD_FIELD, SSA_STORE_FIELD, SSA_TABLE_LEN,
 			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_NIL, SSA_CONST_BOOL,
 			SSA_LOOP, SSA_PHI, SSA_SNAPSHOT,
 			SSA_MOVE, SSA_NOP:
@@ -688,5 +984,253 @@ func ssaIsNumericOnly(f *SSAFunc) bool {
 	return true
 }
 
+// ssaIsNumericOnly kept for backward compat
+func ssaIsNumericOnly(f *SSAFunc) bool { return ssaIsCompilable(f) }
+
 // Keep old name as alias
 func ssaIsIntegerOnly(f *SSAFunc) bool { return ssaIsNumericOnly(f) }
+
+// resolveFloatRef returns the FReg holding a float SSA ref's value.
+// If the ref's slot is allocated to a D register, returns that register (no load).
+// Otherwise loads from memory or rematerializes the constant into scratch.
+func resolveFloatRef(asm *Assembler, f *SSAFunc, ref SSARef, fa *floatSlotAlloc, sm *ssaSlotMapper, scratch FReg) FReg {
+	if int(ref) >= len(f.Insts) {
+		return scratch
+	}
+	inst := &f.Insts[ref]
+
+	// Constant rematerialization
+	if inst.Op == SSA_CONST_FLOAT {
+		asm.LoadImm64(X0, inst.AuxInt)
+		asm.FMOVtoFP(scratch, X0)
+		return scratch
+	}
+
+	// Check slot allocation
+	slot := sm.getSlotForRef(ref)
+	if slot >= 0 {
+		if dreg, ok := fa.getReg(slot); ok {
+			return dreg // already in D register
+		}
+		asm.FLDRd(scratch, regRegs, slot*ValueSize+OffsetData)
+		return scratch
+	}
+
+	// Fallback: UNBOX_FLOAT / LOAD_SLOT
+	switch inst.Op {
+	case SSA_UNBOX_FLOAT:
+		if int(inst.Arg1) < len(f.Insts) {
+			li := &f.Insts[inst.Arg1]
+			if li.Op == SSA_LOAD_SLOT {
+				s := int(li.Slot)
+				if dreg, ok := fa.getReg(s); ok {
+					return dreg
+				}
+				asm.FLDRd(scratch, regRegs, s*ValueSize+OffsetData)
+				return scratch
+			}
+		}
+	case SSA_LOAD_SLOT:
+		s := int(inst.Slot)
+		if s >= 0 {
+			if dreg, ok := fa.getReg(s); ok {
+				return dreg
+			}
+			asm.FLDRd(scratch, regRegs, s*ValueSize+OffsetData)
+			return scratch
+		}
+	}
+	return scratch
+}
+
+// getFloatSlotReg returns the allocated D register for a slot, or scratch.
+func getFloatSlotReg(fa *floatSlotAlloc, slot int, scratch FReg) FReg {
+	if slot >= 0 {
+		if dreg, ok := fa.getReg(slot); ok {
+			return dreg
+		}
+	}
+	return scratch
+}
+
+// storeFloatResult stores a float result. If the slot is allocated to a D register,
+// moves the value there (deferred writeback at loop exit). Otherwise writes to memory.
+func storeFloatResult(asm *Assembler, fa *floatSlotAlloc, slot int, src FReg) {
+	if slot < 0 {
+		return
+	}
+	if dreg, ok := fa.getReg(slot); ok {
+		if dreg != src {
+			asm.FMOVd(dreg, src)
+		}
+		return // stays in register, written back at exit
+	}
+	// Not allocated — write to memory
+	asm.FSTRd(src, regRegs, slot*ValueSize+OffsetData)
+	asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+	asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+}
+
+// loadFloatArg is a compatibility wrapper for resolveFloatRef that always loads into dst.
+func loadFloatArg(asm *Assembler, f *SSAFunc, ref SSARef, fa *floatSlotAlloc, sm *ssaSlotMapper, dst FReg) {
+	src := resolveFloatRef(asm, f, ref, fa, sm, dst)
+	if src != dst {
+		asm.FMOVd(dst, src)
+	}
+}
+
+// === Float expression forwarding ===
+// Eliminates memory roundtrips for temp float values that are immediately consumed.
+
+// floatForwarder tracks which SSA refs can be kept in scratch D registers
+// instead of spilling to memory. Uses D0 and D3 as forwarding registers
+// (D1/D2 are reserved for arg loading in resolveFloatRefFwd).
+type floatForwarder struct {
+	eligible map[SSARef]bool
+	live     map[SSARef]FReg
+	nextReg  int // cycles between 0 (D0) and 1 (D3)
+}
+
+var fwdRegs = [2]FReg{D0, D3}
+
+func newFloatForwarder(f *SSAFunc, fa *floatSlotAlloc, sm *ssaSlotMapper, loopIdx int) *floatForwarder {
+	fwd := &floatForwarder{
+		eligible: make(map[SSARef]bool),
+		live:     make(map[SSARef]FReg),
+	}
+
+	// Count uses of each ref within the loop body
+	useCount := make(map[SSARef]int)
+	firstUse := make(map[SSARef]int) // index of first use
+	for i := loopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		if inst.Arg1 >= 0 {
+			useCount[inst.Arg1]++
+			if _, ok := firstUse[inst.Arg1]; !ok {
+				firstUse[inst.Arg1] = i
+			}
+		}
+		if inst.Arg2 >= 0 {
+			useCount[inst.Arg2]++
+			if _, ok := firstUse[inst.Arg2]; !ok {
+				firstUse[inst.Arg2] = i
+			}
+		}
+	}
+
+	// Mark eligible: single-use float results to non-allocated temp slots
+	// where the use is within 3 instructions (allows MUL→MUL→SUB pattern)
+	for i := loopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		ref := SSARef(i)
+		switch inst.Op {
+		case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT:
+			slot := sm.getSlotForRef(ref)
+			if slot < 0 {
+				continue
+			}
+			if _, ok := fa.getReg(slot); ok {
+				continue
+			}
+			if useCount[ref] == 1 {
+				if use, ok := firstUse[ref]; ok && use-i <= 3 {
+					fwd.eligible[ref] = true
+				}
+			}
+		}
+	}
+
+	return fwd
+}
+
+func resolveFloatRefFwd(asm *Assembler, f *SSAFunc, ref SSARef, fa *floatSlotAlloc, sm *ssaSlotMapper, fwd *floatForwarder, scratch FReg) FReg {
+	if dreg, ok := fwd.live[ref]; ok {
+		delete(fwd.live, ref)
+		return dreg
+	}
+	return resolveFloatRef(asm, f, ref, fa, sm, scratch)
+}
+
+// emitSSAInstSlotFwd is the forwarding-aware version of emitSSAInstSlot.
+func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, sa *slotAlloc, fa *floatSlotAlloc, sm *ssaSlotMapper, fwd *floatForwarder) {
+	switch inst.Op {
+	case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT:
+		slot := sm.getSlotForRef(ref)
+		arg1D := resolveFloatRefFwd(asm, f, inst.Arg1, fa, sm, fwd, D1)
+		arg2D := resolveFloatRefFwd(asm, f, inst.Arg2, fa, sm, fwd, D2)
+
+		// Choose destination register: allocated D reg, or cycling scratch for forwarding
+		var dstD FReg
+		if _, ok := fa.getReg(slot); ok {
+			dstD = getFloatSlotReg(fa, slot, D0)
+		} else if fwd.eligible[ref] {
+			dstD = fwdRegs[fwd.nextReg%2]
+			fwd.nextReg++
+		} else {
+			dstD = D0
+		}
+
+		switch inst.Op {
+		case SSA_ADD_FLOAT:
+			asm.FADDd(dstD, arg1D, arg2D)
+		case SSA_SUB_FLOAT:
+			asm.FSUBd(dstD, arg1D, arg2D)
+		case SSA_MUL_FLOAT:
+			asm.FMULd(dstD, arg1D, arg2D)
+		case SSA_DIV_FLOAT:
+			asm.FDIVd(dstD, arg1D, arg2D)
+		}
+
+		if fwd.eligible[ref] {
+			fwd.live[ref] = dstD
+			return // skip memory write — value forwarded in scratch register
+		}
+		storeFloatResult(asm, fa, slot, dstD)
+
+	case SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT:
+		asm.LoadImm64(X9, int64(inst.PC))
+		arg1D := resolveFloatRefFwd(asm, f, inst.Arg1, fa, sm, fwd, D0)
+		arg2D := resolveFloatRefFwd(asm, f, inst.Arg2, fa, sm, fwd, D1)
+		asm.FCMPd(arg1D, arg2D)
+		switch inst.Op {
+		case SSA_LT_FLOAT:
+			if inst.AuxInt == 0 {
+				asm.BCond(CondGE, "side_exit")
+			} else {
+				asm.BCond(CondLT, "side_exit")
+			}
+		case SSA_LE_FLOAT:
+			if inst.AuxInt == 0 {
+				asm.BCond(CondGT, "side_exit")
+			} else {
+				asm.BCond(CondLE, "side_exit")
+			}
+		case SSA_GT_FLOAT:
+			if inst.AuxInt == 0 {
+				asm.BCond(CondLE, "side_exit")
+			} else {
+				asm.BCond(CondGT, "side_exit")
+			}
+		}
+
+	case SSA_MOVE:
+		if inst.Type == SSATypeFloat {
+			slot := sm.getSlotForRef(ref)
+			srcD := resolveFloatRefFwd(asm, f, inst.Arg1, fa, sm, fwd, D0)
+			dstD := getFloatSlotReg(fa, slot, D1)
+			if dstD != srcD {
+				asm.FMOVd(dstD, srcD)
+			}
+			if _, ok := fa.getReg(slot); !ok && slot >= 0 {
+				asm.FSTRd(srcD, regRegs, slot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+			}
+		} else {
+			emitSSAInstSlot(asm, f, ref, inst, sa, fa, sm)
+		}
+
+	default:
+		emitSSAInstSlot(asm, f, ref, inst, sa, fa, sm)
+	}
+}

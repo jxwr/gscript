@@ -89,6 +89,9 @@ type TraceRecorder struct {
 	// Compiled trace cache: keyed by (proto, loopPC)
 	compiled     map[loopKey]*CompiledTrace
 	pendingTrace *CompiledTrace
+
+	// Blacklist: loops where compilation failed (don't retry)
+	blacklist map[loopKey]bool
 }
 
 type loopKey struct {
@@ -110,6 +113,7 @@ func NewTraceRecorder() *TraceRecorder {
 		threshold:  DefaultTraceThreshold,
 		loopCounts: make(map[loopKey]int),
 		compiled:   make(map[loopKey]*CompiledTrace),
+		blacklist:  make(map[loopKey]bool),
 	}
 }
 
@@ -142,27 +146,36 @@ func (r *TraceRecorder) IsRecording() bool {
 // Returns true if a compiled trace was executed (caller should re-read registers).
 func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 	if r.recording {
-		// We've completed one loop iteration — stop recording
 		r.finishTrace()
-		// If we just compiled a trace, don't execute it yet (let the
-		// interpreter handle the current iteration normally)
 		return false
 	}
 
-	// Check for existing compiled trace
 	key := loopKey{proto: proto, pc: pc}
+
+	// Fast path: check compiled trace cache first
 	if ct, ok := r.compiled[key]; ok {
-		// Mark for execution — the VM will call ExecuteTrace
 		r.pendingTrace = ct
 		return true
 	}
 
-	// Track loop hotness
+	// Fast reject: blacklisted loops
+	if r.blacklist[key] {
+		return false
+	}
+
+	// Slow path: track hotness and start recording
 	r.loopCounts[key]++
 	if r.loopCounts[key] >= r.threshold {
 		r.startTrace(pc, proto)
+		// After first recording attempt, if not compiled, blacklist to avoid
+		// repeated hash lookups on every iteration
 	}
 	return false
+}
+
+// IsBlacklisted returns true if the loop at (proto, pc) was blacklisted.
+func (r *TraceRecorder) IsBlacklisted(pc int, proto *vm.FuncProto) bool {
+	return r.blacklist[loopKey{proto: proto, pc: pc}]
 }
 
 // PendingTrace returns the compiled trace to execute (set by OnLoopBackEdge).
@@ -424,7 +437,6 @@ func (r *TraceRecorder) finishTrace() {
 		r.traces = append(r.traces, r.current)
 
 		// Compile the trace if enabled
-		//fmt.Printf("[TRACE] Recorded %d instructions for loop at PC=%d\n", len(r.current.IR), r.current.LoopPC)
 		if r.compile {
 			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
 			compiled := false
@@ -447,7 +459,13 @@ func (r *TraceRecorder) finishTrace() {
 				ct, err := compileTrace(r.current)
 				if err == nil {
 					r.compiled[key] = ct
+					compiled = true
 				}
+			}
+
+			// If compilation failed, blacklist this loop to avoid re-recording
+			if !compiled {
+				r.blacklist[key] = true
 			}
 		}
 	}

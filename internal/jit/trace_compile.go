@@ -25,6 +25,18 @@ type CompiledTrace struct {
 
 // compileTrace compiles a Trace to native ARM64 code.
 func compileTrace(trace *Trace) (*CompiledTrace, error) {
+	// Skip compilation if the trace has float arithmetic: the regular trace
+	// compiler only handles TypeInt guards. Float traces would always side-exit
+	// on the first instruction, adding overhead and risking stale register writes.
+	for _, ir := range trace.IR {
+		switch ir.Op {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD:
+			if ir.BType == runtime.TypeFloat || ir.CType == runtime.TypeFloat {
+				return nil, fmt.Errorf("trace compile: float arithmetic not supported")
+			}
+		}
+	}
+
 	asm := NewAssembler()
 
 	// Optimize trace IR before compilation
@@ -644,6 +656,15 @@ func emitTrLE(asm *Assembler, ir *TraceIR) {
 }
 
 func emitTrTest(asm *Assembler, ir *TraceIR, idx int) {
+	// OP_TEST A C: if (Truthy(R(A)) ~= bool(C)) then PC++
+	//
+	// During recording, the TEST caused a skip (PC++).
+	//   C=0: skip when Truthy ~= false → Truthy is true → recorded path had TRUTHY value
+	//   C=1: skip when Truthy ~= true  → Truthy is false → recorded path had FALSY value
+	//
+	// Guard ensures the same skip:
+	//   C=0: value must be TRUTHY → side-exit if falsy
+	//   C=1: value must be FALSY  → side-exit if truthy
 	asm.LoadImm64(X9, int64(ir.PC))
 
 	aOff := ir.A * ValueSize
@@ -653,22 +674,30 @@ func emitTrTest(asm *Assembler, ir *TraceIR, idx int) {
 
 	// TypeNil (0) is falsy
 	asm.CMPimmW(X0, 0)
-	if ir.C != 0 {
-		// C=1: skip next if truthy. Guard: value must be truthy.
-		asm.BCond(CondEQ, "side_exit") // nil → not truthy → exit
+	if ir.C == 0 {
+		// C=0: recorded path had truthy → exit if nil (falsy)
+		asm.BCond(CondEQ, "side_exit")
 	} else {
-		// C=0: skip next if falsy. Guard: value must be falsy.
-		asm.BCond(CondEQ, doneLabel) // nil → falsy → OK
+		// C=1: recorded path had falsy → nil is falsy → OK
+		asm.BCond(CondEQ, doneLabel)
 	}
 
-	// TypeBool with data=0 is falsy
+	// TypeBool with data=0 is falsy; all other types are truthy
 	asm.CMPimmW(X0, uint16(runtime.TypeBool))
-	asm.BCond(CondNE, doneLabel) // not nil, not bool → truthy → proceed based on C
-	asm.LDR(X1, regRegs, aOff+OffsetData)
-	if ir.C != 0 {
-		asm.CBZ(X1, "side_exit") // C=1: bool(false) → not truthy → exit
+	if ir.C == 0 {
+		// C=0: non-nil, non-bool → truthy → OK
+		asm.BCond(CondNE, doneLabel)
 	} else {
-		asm.CBNZ(X1, "side_exit") // C=0: bool(true) → not falsy → exit
+		// C=1: non-nil, non-bool → truthy → exit
+		asm.BCond(CondNE, "side_exit")
+	}
+	asm.LDR(X1, regRegs, aOff+OffsetData)
+	if ir.C == 0 {
+		// C=0: bool(false) → falsy → exit; bool(true) → truthy → OK
+		asm.CBZ(X1, "side_exit")
+	} else {
+		// C=1: bool(true) → truthy → exit; bool(false) → falsy → OK
+		asm.CBNZ(X1, "side_exit")
 	}
 
 	asm.Label(doneLabel)
@@ -1260,12 +1289,12 @@ func trRKBase(idx int) (int, Reg) {
 }
 
 // Execute implements vm.TraceExecutor.
-func (ct *CompiledTrace) Execute(regs []runtime.Value, base int, proto *vm.FuncProto) (exitPC int, sideExit bool) {
+func (ct *CompiledTrace) Execute(regs []runtime.Value, base int, proto *vm.FuncProto) (exitPC int, sideExit bool, guardFail bool) {
 	return executeTrace(ct, regs, base, proto)
 }
 
 // executeTrace runs compiled trace code.
-func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.FuncProto) (exitPC int, sideExit bool) {
+func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.FuncProto) (exitPC int, sideExit bool, guardFail bool) {
 	var ctx TraceContext
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
 	// Use the trace's constant pool (includes inlined function constants)
@@ -1276,5 +1305,12 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
 	callJIT(uintptr(ct.code.Ptr()), ctxPtr)
 
-	return int(ctx.ExitPC), ctx.ExitCode == 1
+	switch ctx.ExitCode {
+	case 2:
+		return 0, false, true // guard fail — not executed
+	case 1:
+		return int(ctx.ExitPC), true, false // side exit
+	default:
+		return int(ctx.ExitPC), false, false // loop done
+	}
 }

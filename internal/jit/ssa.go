@@ -1,6 +1,8 @@
 package jit
 
 import (
+	"math"
+
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -10,9 +12,10 @@ type SSAOp uint8
 
 const (
 	// Guards (side-exit on failure)
-	SSA_GUARD_TYPE SSAOp = iota // guard ref has expected type
-	SSA_GUARD_NNIL              // guard ref is not nil
-	SSA_GUARD_NOMETA            // guard table has no metatable
+	SSA_GUARD_TYPE   SSAOp = iota // guard ref has expected type
+	SSA_GUARD_NNIL                // guard ref is not nil
+	SSA_GUARD_NOMETA              // guard table has no metatable
+	SSA_GUARD_TRUTHY              // guard ref is truthy (AuxInt=0) or falsy (AuxInt=1)
 
 	// Integer arithmetic (unboxed int64)
 	SSA_ADD_INT // ref + ref → int
@@ -138,9 +141,13 @@ func (b *ssaBuilder) build() *SSAFunc {
 	for _, ir := range b.trace.IR {
 		if ir.BType == runtime.TypeInt {
 			b.slotType[ir.B] = SSATypeInt
+		} else if ir.BType == runtime.TypeFloat {
+			b.slotType[ir.B] = SSATypeFloat
 		}
 		if ir.CType == runtime.TypeInt {
 			b.slotType[ir.C] = SSATypeInt
+		} else if ir.CType == runtime.TypeFloat {
+			b.slotType[ir.C] = SSATypeFloat
 		}
 	}
 
@@ -148,7 +155,8 @@ func (b *ssaBuilder) build() *SSAFunc {
 	guardedSlots := make(map[int]bool)
 	for _, ir := range b.trace.IR {
 		switch ir.Op {
-		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD:
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV,
+			vm.OP_LT, vm.OP_LE:
 			if ir.B < 256 && !guardedSlots[ir.B] {
 				b.emitGuard(ir.B, ir.BType, ir.PC)
 				guardedSlots[ir.B] = true
@@ -161,6 +169,25 @@ func (b *ssaBuilder) build() *SSAFunc {
 			if ir.B < 256 && !guardedSlots[ir.B] {
 				b.emitGuard(ir.B, ir.BType, ir.PC)
 				guardedSlots[ir.B] = true
+			}
+		case vm.OP_GETTABLE, vm.OP_SETTABLE:
+			// Guard table slot (B for GETTABLE, A for SETTABLE)
+			tableSlot := ir.B
+			if ir.Op == vm.OP_SETTABLE {
+				tableSlot = ir.A
+			}
+			if tableSlot < 256 && !guardedSlots[tableSlot] {
+				b.emitGuard(tableSlot, runtime.TypeTable, ir.PC)
+				guardedSlots[tableSlot] = true
+			}
+			// Guard key slot
+			keySlot := ir.C
+			if ir.Op == vm.OP_SETTABLE {
+				keySlot = ir.B
+			}
+			if keySlot < 256 && !guardedSlots[keySlot] {
+				b.emitGuard(keySlot, ir.CType, ir.PC)
+				guardedSlots[keySlot] = true
 			}
 		case vm.OP_FORLOOP:
 			// Guard loop control registers
@@ -177,8 +204,8 @@ func (b *ssaBuilder) build() *SSAFunc {
 	b.emit(SSAInst{Op: SSA_LOOP})
 
 	// Phase 4: Convert each trace instruction to SSA
-	for _, ir := range b.trace.IR {
-		b.convertIR(&ir)
+	for i := range b.trace.IR {
+		b.convertIR(i, &b.trace.IR[i])
 	}
 
 	return &SSAFunc{Insts: b.insts, Trace: b.trace}
@@ -238,7 +265,7 @@ func (b *ssaBuilder) emitGuard(slot int, typ runtime.ValueType, pc int) {
 	}
 }
 
-func (b *ssaBuilder) convertIR(ir *TraceIR) {
+func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 	switch ir.Op {
 	case vm.OP_ADD:
 		b.convertArithTyped(ir, SSA_ADD_INT, SSA_ADD_FLOAT)
@@ -269,13 +296,96 @@ func (b *ssaBuilder) convertIR(ir *TraceIR) {
 
 	case vm.OP_MOVE:
 		src := b.getSlotRef(ir.B)
-		b.slotDefs[ir.A] = src
+		// Emit an actual SSA_MOVE to copy the value from slot B to slot A.
+		// A simple alias (slotDefs[A] = src) breaks loop-carried values because
+		// the source slot's register is never copied to the destination slot's register,
+		// causing stale reads on the next loop iteration.
+		ref := b.emit(SSAInst{Op: SSA_MOVE, Type: b.slotType[ir.B], Arg1: src, Slot: int16(ir.A), PC: ir.PC})
+		b.slotDefs[ir.A] = ref
 		b.slotType[ir.A] = b.slotType[ir.B]
 
 	case vm.OP_LOADINT:
 		ref := b.emit(SSAInst{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: int64(ir.SBX), Slot: int16(ir.A), PC: ir.PC})
 		b.slotDefs[ir.A] = ref
 		b.slotType[ir.A] = SSATypeInt
+
+	case vm.OP_LOADK:
+		if ir.BX < len(b.trace.Constants) {
+			c := b.trace.Constants[ir.BX]
+			if c.IsInt() {
+				ref := b.emit(SSAInst{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: c.Int(), Slot: int16(ir.A), PC: ir.PC})
+				b.slotDefs[ir.A] = ref
+				b.slotType[ir.A] = SSATypeInt
+			} else if c.IsFloat() {
+				ref := b.emit(SSAInst{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: int64(math.Float64bits(c.Float())), Slot: int16(ir.A), PC: ir.PC})
+				b.slotDefs[ir.A] = ref
+				b.slotType[ir.A] = SSATypeFloat
+			} else {
+				b.emit(SSAInst{Op: SSA_SIDE_EXIT, PC: ir.PC})
+			}
+		} else {
+			b.emit(SSAInst{Op: SSA_SIDE_EXIT, PC: ir.PC})
+		}
+
+	case vm.OP_LOADBOOL:
+		ref := b.emit(SSAInst{Op: SSA_CONST_BOOL, Type: SSATypeBool, AuxInt: int64(ir.B), Slot: int16(ir.A), PC: ir.PC})
+		b.slotDefs[ir.A] = ref
+		b.slotType[ir.A] = SSATypeBool
+
+	case vm.OP_LT:
+		b.convertComparison(idx, ir, SSA_LT_INT, SSA_LT_FLOAT)
+
+	case vm.OP_LE:
+		b.convertComparison(idx, ir, SSA_LE_INT, SSA_LE_FLOAT)
+
+	case vm.OP_EQ:
+		// EQ guard: if (RK(B) == RK(C)) != bool(A) then skip
+		arg1 := b.getSlotOrRK(ir.B)
+		arg2 := b.getSlotOrRK(ir.C)
+		b.emit(SSAInst{Op: SSA_EQ_INT, Type: SSATypeBool, Arg1: arg1, Arg2: arg2, AuxInt: int64(ir.A), PC: ir.PC})
+
+	case vm.OP_TEST:
+		// TEST A C: if (Truthy(R(A)) ~= bool(C)) then skip
+		// Detect skip/no-skip by checking if next instruction is JMP.
+		didSkip := true
+		if idx+1 < len(b.trace.IR) && b.trace.IR[idx+1].Op == vm.OP_JMP {
+			didSkip = false
+		}
+		// AuxInt: 0=expect truthy, 1=expect falsy
+		auxInt := int64(ir.C)
+		if !didSkip {
+			auxInt = 1 - auxInt
+		}
+		src := b.getSlotRef(ir.A)
+		b.emit(SSAInst{Op: SSA_GUARD_TRUTHY, Type: SSATypeBool, Arg1: src, Slot: int16(ir.A), AuxInt: auxInt, PC: ir.PC})
+
+	case vm.OP_GETTABLE:
+		// GETTABLE A B C: R(A) = R(B)[RK(C)]
+		// Emit SSA_LOAD_ARRAY: reads from table (slot B) at integer key (RK(C))
+		tableRef := b.getSlotRef(ir.B)
+		keyRef := b.getSlotOrRK(ir.C)
+		ref := b.emit(SSAInst{
+			Op: SSA_LOAD_ARRAY, Type: SSATypeUnknown,
+			Arg1: tableRef, Arg2: keyRef,
+			Slot: int16(ir.A), PC: ir.PC,
+		})
+		b.slotDefs[ir.A] = ref
+		// Result type is unknown (could be any value from the table)
+
+	case vm.OP_SETTABLE:
+		// SETTABLE A B C: R(A)[RK(B)] = RK(C)
+		tableRef := b.getSlotRef(ir.A)
+		keyRef := b.getSlotOrRK(ir.B)
+		valRef := b.getSlotOrRK(ir.C)
+		b.emit(SSAInst{
+			Op: SSA_STORE_ARRAY, Type: SSATypeUnknown,
+			Arg1: tableRef, Arg2: keyRef,
+			Slot: int16(ir.A), PC: ir.PC,
+			AuxInt: int64(valRef), // store value ref in AuxInt
+		})
+
+	case vm.OP_JMP:
+		// JMP in trace body: no-op (trace is linear; guards handle branching)
 
 	default:
 		// Unsupported op → side-exit marker
@@ -359,16 +469,78 @@ func (b *ssaBuilder) getSlotOrRK(idx int) SSARef {
 			if c.IsInt() {
 				return b.emit(SSAInst{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: c.Int(), Slot: -1})
 			}
+			if c.IsFloat() {
+				return b.emit(SSAInst{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: int64(math.Float64bits(c.Float())), Slot: -1})
+			}
 		}
 		return b.emit(SSAInst{Op: SSA_LOAD_SLOT, Type: SSATypeUnknown, Slot: int16(idx)})
 	}
 	return b.getSlotRef(idx)
 }
 
-// SSAIsUseful returns true if the SSA function has enough native ops to be worth compiling.
-// A trace that immediately side-exits is not useful.
+// convertComparison handles OP_LT / OP_LE with typed int/float dispatch.
+//
+// OP_LT A B C: if (RK(B) < RK(C)) != bool(A) then PC++ (skip next JMP)
+//
+// The guard must reproduce the SAME skip/no-skip behavior as the recording.
+// We detect which path was taken by checking the next instruction in the trace:
+//   - Next is JMP → recording saw NO skip (comparison didn't trigger)
+//   - Next is NOT JMP → recording saw SKIP (comparison triggered, JMP was skipped)
+//
+// AuxInt encoding: 0 = guard expects comparison TRUE, 1 = guard expects FALSE.
+// For skip path: (B<C) != bool(A) was TRUE, so (B<C) == !bool(A)
+// For no-skip path: (B<C) != bool(A) was FALSE, so (B<C) == bool(A)
+func (b *ssaBuilder) convertComparison(idx int, ir *TraceIR, intOp, floatOp SSAOp) {
+	arg1 := b.getSlotOrRK(ir.B)
+	arg2 := b.getSlotOrRK(ir.C)
+
+	// Determine types
+	bType := b.slotType[ir.B]
+	cType := b.slotType[ir.C]
+	if ir.B >= vm.RKBit {
+		bType = ssaTypFromRuntime(ir.BType)
+	}
+	if ir.C >= vm.RKBit {
+		cType = ssaTypFromRuntime(ir.CType)
+	}
+
+	op := intOp
+	if bType == SSATypeFloat || cType == SSATypeFloat {
+		op = floatOp
+	}
+
+	// Detect skip vs no-skip by looking at the next trace instruction
+	didSkip := true
+	if idx+1 < len(b.trace.IR) && b.trace.IR[idx+1].Op == vm.OP_JMP {
+		didSkip = false // JMP follows → comparison didn't skip it
+	}
+
+	// Encode guard polarity in AuxInt:
+	// For LT: the comparison is (B < C)
+	//   didSkip + A=0: skip when B<C → guard: expect B<C → AuxInt=0 (exit on GE)
+	//   didSkip + A=1: skip when B>=C → guard: expect B>=C → AuxInt=1 (exit on LT)
+	//   !didSkip + A=0: no-skip when B>=C → guard: expect B>=C → AuxInt=1 (exit on LT)
+	//   !didSkip + A=1: no-skip when B<C → guard: expect B<C → AuxInt=0 (exit on GE)
+	auxInt := int64(ir.A)
+	if !didSkip {
+		// Invert: no-skip means the comparison result MATCHED bool(A),
+		// so the guard expects the opposite condition from the skip case
+		auxInt = 1 - auxInt
+	}
+
+	b.emit(SSAInst{Op: op, Type: SSATypeBool, Arg1: arg1, Arg2: arg2, AuxInt: auxInt, PC: ir.PC})
+}
+
+// SSAIsUseful returns true if the SSA function can actually loop natively.
+// A trace is only useful if the loop exit check (LE_INT) is reachable — meaning
+// the trace can execute multiple iterations without side-exiting. If a SIDE_EXIT
+// appears before the LE_INT, the trace always exits after partial computation
+// (never loops), which adds overhead and can corrupt register state.
+// Float comparisons (LT_FLOAT, LE_FLOAT, GT_FLOAT) are conditional guards
+// (like the escape check in mandelbrot), not loop terminators — they're fine.
 func SSAIsUseful(f *SSAFunc) bool {
 	loopSeen := false
+	hasUsefulOp := false
 	for _, inst := range f.Insts {
 		if inst.Op == SSA_LOOP {
 			loopSeen = true
@@ -378,10 +550,20 @@ func SSAIsUseful(f *SSAFunc) bool {
 			switch inst.Op {
 			case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 				SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT,
-				SSA_LE_INT, SSA_LT_INT, SSA_EQ_INT:
-				return true // has at least one useful computation
+				SSA_EQ_INT:
+				hasUsefulOp = true
+			case SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
+				SSA_GUARD_TRUTHY:
+				// Conditional guards — don't block the loop
+				hasUsefulOp = true
+			case SSA_LOAD_ARRAY, SSA_STORE_ARRAY, SSA_LOAD_FIELD, SSA_STORE_FIELD:
+				hasUsefulOp = true
+			case SSA_LE_INT, SSA_LT_INT:
+				// Loop exit check is reachable — trace can actually loop
+				return hasUsefulOp
 			case SSA_SIDE_EXIT:
-				return false // immediately side-exits
+				// Unconditional side-exit before loop check — trace never loops
+				return false
 			}
 		}
 	}
@@ -415,10 +597,12 @@ func eliminateDeadCode(f *SSAFunc) *SSAFunc {
 	// Mark side-effecting instructions as live
 	for i, inst := range f.Insts {
 		switch inst.Op {
-		case SSA_GUARD_TYPE, SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
+		case SSA_GUARD_TYPE, SSA_GUARD_NNIL, SSA_GUARD_NOMETA, SSA_GUARD_TRUTHY,
 			SSA_STORE_SLOT, SSA_STORE_FIELD, SSA_STORE_ARRAY,
+			SSA_LOAD_ARRAY, // table loads have side-exits, keep alive
 			SSA_LOOP, SSA_SNAPSHOT, SSA_SIDE_EXIT,
 			SSA_LE_INT, SSA_LT_INT, SSA_EQ_INT,
+			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
 			SSA_CALL, SSA_CALL_SELF:
 			refCount[i]++ // keep alive
 		}
@@ -440,7 +624,7 @@ func eliminateDeadCode(f *SSAFunc) *SSAFunc {
 			switch inst.Op {
 			case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 				SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
-				SSA_CONST_INT, SSA_CONST_FLOAT:
+				SSA_CONST_INT, SSA_CONST_FLOAT, SSA_MOVE:
 				if inst.Slot >= 0 {
 					refCount[i]++ // keep alive: writes to a VM slot
 				}

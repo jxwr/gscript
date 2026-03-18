@@ -9,6 +9,6 @@ import (
 func enableTracing(bvm *bytecodevm.VM) {
 	recorder := jit.NewTraceRecorder()
 	recorder.SetCompile(true)
-	recorder.SetUseSSA(true)
+	recorder.SetUseSSA(false) // use regular trace compiler only
 	bvm.SetTraceRecorder(recorder)
 }
