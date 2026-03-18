@@ -365,6 +365,29 @@ func (b *ssaBuilder) getSlotOrRK(idx int) SSARef {
 	return b.getSlotRef(idx)
 }
 
+// SSAIsUseful returns true if the SSA function has enough native ops to be worth compiling.
+// A trace that immediately side-exits is not useful.
+func SSAIsUseful(f *SSAFunc) bool {
+	loopSeen := false
+	for _, inst := range f.Insts {
+		if inst.Op == SSA_LOOP {
+			loopSeen = true
+			continue
+		}
+		if loopSeen {
+			switch inst.Op {
+			case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
+				SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT,
+				SSA_LE_INT, SSA_LT_INT, SSA_EQ_INT:
+				return true // has at least one useful computation
+			case SSA_SIDE_EXIT:
+				return false // immediately side-exits
+			}
+		}
+	}
+	return false
+}
+
 // OptimizeSSA runs optimization passes on the SSA IR.
 func OptimizeSSA(f *SSAFunc) *SSAFunc {
 	// Pass 1: Guard hoisting — guards are already at the top (before LOOP)

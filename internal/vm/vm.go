@@ -1198,14 +1198,18 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						if vm.traceRec != nil && sbx < 0 {
 							if vm.traceRec.OnLoopBackEdge(forloopPC, frame.closure.Proto) {
 								tr := vm.executeCompiledTrace(frame.closure.Proto, base)
-								if tr.executed {
-									if tr.sideExit {
-										frame.pc = tr.exitPC
-									} else {
-										// Loop done: skip past FORLOOP.
-										frame.pc = forloopPC + 1
-									}
+								if tr.executed && !tr.sideExit {
+									// Loop done: trace ran the entire remaining loop.
+									frame.pc = forloopPC + 1
 								}
+								// Side-exit: don't adjust frame.pc.
+								// The interpreter continues from body start
+								// (frame.pc was set by += sbx above).
+								// This works because the FORLOOP already incremented
+								// idx for this iteration. The interpreter runs the body
+								// and hits FORLOOP which increments for the NEXT iteration.
+								// NOTE: this means the trace's side-exit iteration is
+								// handled by the interpreter (correct but slower).
 							}
 						}
 					}

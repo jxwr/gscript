@@ -307,15 +307,27 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		return false
 	}
 
-	// Detect JMP that exits the loop (break statement).
-	// If JMP target is past the loop's FORLOOP PC, abort — the trace
-	// can't capture the break path.
+	// Detect unconditional JMP that exits the loop (break statement).
+	// Only abort for JMPs NOT preceded by a comparison (those are if-else skips).
+	// Break JMPs go past the FORLOOP PC.
 	if op == vm.OP_JMP && r.depth == 0 {
 		jmpTarget := pc + vm.DecodesBx(inst) + 1
 		if jmpTarget > r.current.LoopPC {
-			// This JMP exits the loop (break) — abort recording
-			r.abortTrace()
-			return false
+			// Check if the previous recorded instruction was a comparison/test.
+			// If so, this JMP is a conditional skip (if-else), not a break.
+			isConditionalSkip := false
+			if len(r.current.IR) > 0 {
+				prevOp := r.current.IR[len(r.current.IR)-1].Op
+				switch prevOp {
+				case vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_TESTSET:
+					isConditionalSkip = true
+				}
+			}
+			if !isConditionalSkip {
+				// Unconditional JMP past loop = break
+				r.abortTrace()
+				return false
+			}
 		}
 	}
 
@@ -412,6 +424,7 @@ func (r *TraceRecorder) finishTrace() {
 		r.traces = append(r.traces, r.current)
 
 		// Compile the trace if enabled
+		//fmt.Printf("[TRACE] Recorded %d instructions for loop at PC=%d\n", len(r.current.IR), r.current.LoopPC)
 		if r.compile {
 			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
 			compiled := false
@@ -420,7 +433,7 @@ func (r *TraceRecorder) finishTrace() {
 			if r.useSSA {
 				ssaFunc := BuildSSA(r.current)
 				ssaFunc = OptimizeSSA(ssaFunc)
-				if ssaIsIntegerOnly(ssaFunc) {
+				if ssaIsIntegerOnly(ssaFunc) && SSAIsUseful(ssaFunc) {
 					ct, err := CompileSSA(ssaFunc)
 					if err == nil {
 						r.compiled[key] = ct
