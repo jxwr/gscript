@@ -53,6 +53,7 @@ const (
 	SSA_LOAD_ARRAY  // table[int] → value
 	SSA_STORE_ARRAY // table[int] = value
 	SSA_TABLE_LEN   // #table → int
+	SSA_LOAD_GLOBAL // load global value from constant pool → register
 
 	// Constants
 	SSA_CONST_INT   // immediate int64
@@ -189,6 +190,18 @@ func (b *ssaBuilder) build() *SSAFunc {
 				b.emitGuard(keySlot, ir.CType, ir.PC)
 				guardedSlots[keySlot] = true
 			}
+		case vm.OP_GETFIELD:
+			// Guard table slot (B)
+			if ir.B < 256 && !guardedSlots[ir.B] {
+				b.emitGuard(ir.B, runtime.TypeTable, ir.PC)
+				guardedSlots[ir.B] = true
+			}
+		case vm.OP_SETFIELD:
+			// Guard table slot (A)
+			if ir.A < 256 && !guardedSlots[ir.A] {
+				b.emitGuard(ir.A, runtime.TypeTable, ir.PC)
+				guardedSlots[ir.A] = true
+			}
 		case vm.OP_FORLOOP:
 			// Guard loop control registers
 			for _, slot := range []int{ir.A, ir.A + 1, ir.A + 2} {
@@ -294,6 +307,17 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		b.slotDefs[ir.A] = ref
 		b.slotType[ir.A] = SSATypeInt
 
+	case vm.OP_GETGLOBAL:
+		// GETGLOBAL: load global value captured at recording time.
+		// The value is stored in trace.Constants[ir.BX] by the recorder.
+		// Emit SSA_LOAD_GLOBAL: copies 32-byte Value from constant pool to R(A).
+		ref := b.emit(SSAInst{
+			Op: SSA_LOAD_GLOBAL, Type: SSATypeUnknown,
+			Slot: int16(ir.A), PC: ir.PC,
+			AuxInt: int64(ir.BX), // constant pool index
+		})
+		b.slotDefs[ir.A] = ref
+
 	case vm.OP_MOVE:
 		src := b.getSlotRef(ir.B)
 		// Emit an actual SSA_MOVE to copy the value from slot B to slot A.
@@ -383,6 +407,54 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 			Slot: int16(ir.A), PC: ir.PC,
 			AuxInt: int64(valRef), // store value ref in AuxInt
 		})
+
+	case vm.OP_GETFIELD:
+		// GETFIELD A B C: R(A) = R(B).Constants[C]
+		// Emit SSA_LOAD_FIELD with AuxInt = field index in skeys (captured at recording time)
+		tableRef := b.getSlotRef(ir.B)
+		ref := b.emit(SSAInst{
+			Op: SSA_LOAD_FIELD, Type: SSATypeUnknown,
+			Arg1: tableRef,
+			Slot: int16(ir.A), PC: ir.PC,
+			AuxInt: int64(ir.FieldIndex), // skeys index (-1 if unknown)
+		})
+		b.slotDefs[ir.A] = ref
+
+	case vm.OP_SETFIELD:
+		// SETFIELD A B C: R(A).Constants[B] = RK(C)
+		tableRef := b.getSlotRef(ir.A)
+		valRef := b.getSlotOrRK(ir.C)
+		b.emit(SSAInst{
+			Op: SSA_STORE_FIELD, Type: SSATypeUnknown,
+			Arg1: tableRef, Arg2: valRef,
+			Slot: int16(ir.A), PC: ir.PC,
+			AuxInt: int64(ir.FieldIndex),
+		})
+
+	case vm.OP_CALL:
+		if ir.Intrinsic != IntrinsicNone {
+			// Recognized intrinsic GoFunction → SSA_INTRINSIC
+			// CALL A B C: R(A) = fn(R(A+1), ..., R(A+B-1))
+			arg1Ref := b.getSlotRef(ir.A + 1)
+			var arg2Ref SSARef = SSARefNone
+			if ir.B > 2 { // binary op has 2 args
+				arg2Ref = b.getSlotRef(ir.A + 2)
+			}
+			ref := b.emit(SSAInst{
+				Op:     SSA_INTRINSIC,
+				Type:   SSATypeFloat, // most intrinsics return float (sqrt, etc.)
+				Arg1:   arg1Ref,
+				Arg2:   arg2Ref,
+				Slot:   int16(ir.A),
+				PC:     ir.PC,
+				AuxInt: int64(ir.Intrinsic),
+			})
+			b.slotDefs[ir.A] = ref
+			b.slotType[ir.A] = SSATypeFloat
+		} else {
+			// Non-intrinsic CALL → side-exit
+			b.emit(SSAInst{Op: SSA_SIDE_EXIT, PC: ir.PC})
+		}
 
 	case vm.OP_JMP:
 		// JMP in trace body: no-op (trace is linear; guards handle branching)
@@ -559,6 +631,8 @@ func SSAIsUseful(f *SSAFunc) bool {
 				// Conditional guards — don't block the loop
 				hasUsefulOp = true
 			case SSA_LOAD_ARRAY, SSA_STORE_ARRAY, SSA_LOAD_FIELD, SSA_STORE_FIELD:
+				hasUsefulOp = true
+			case SSA_INTRINSIC, SSA_LOAD_GLOBAL:
 				hasUsefulOp = true
 			case SSA_LE_INT, SSA_LT_INT:
 				// Loop exit check is reachable — trace can actually loop

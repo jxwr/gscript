@@ -97,6 +97,8 @@ func isValueProducingOp(op SSAOp) bool {
 	// Intrinsics (inlined Go functions)
 	case SSA_INTRINSIC:
 		return true
+	case SSA_LOAD_GLOBAL:
+		return true
 	}
 	return false
 }

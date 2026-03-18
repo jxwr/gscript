@@ -487,6 +487,21 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 	case SSA_LOAD_SLOT:
 		// No code emitted; UNBOX_INT will load the value.
 
+	case SSA_LOAD_GLOBAL:
+		// Load a full 32-byte Value from the constant pool into the VM register.
+		// AuxInt = constant pool index, Slot = destination register.
+		constIdx := int(inst.AuxInt)
+		dstSlot := int(inst.Slot)
+		if dstSlot >= 0 && constIdx >= 0 {
+			constOff := constIdx * ValueSize
+			dstOff := dstSlot * ValueSize
+			// Copy 32 bytes (4 words) from constants to registers
+			for w := 0; w < 4; w++ {
+				asm.LDR(X0, regConsts, constOff+w*8)
+				asm.STR(X0, regRegs, dstOff+w*8)
+			}
+		}
+
 	case SSA_GUARD_TYPE:
 		loadInst := &f.Insts[inst.Arg1]
 		slot := int(loadInst.Slot)
@@ -583,6 +598,80 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			for w := 0; w < 4; w++ {
 				asm.LDR(X0, regRegs, valSlot*ValueSize+w*8)
 				asm.STR(X0, X3, w*8)
+			}
+		}
+
+	case SSA_LOAD_FIELD:
+		// GETFIELD: R(A) = table.field at known skeys index.
+		// AuxInt = field index in skeys (captured at recording time).
+		// Side-exit if: nil table, has metatable, skeys shrunk, or index unknown.
+		fieldIdx := int(inst.AuxInt)
+		tableSlot := sm.getSlotForRef(inst.Arg1)
+		dstSlot := int(inst.Slot)
+		asm.LoadImm64(X9, int64(inst.PC)) // side-exit PC
+
+		if fieldIdx < 0 || tableSlot < 0 {
+			// Unknown field index → side-exit (can't compile)
+			asm.B("side_exit")
+			break
+		}
+
+		// Load *Table from register
+		asm.LDR(X0, regRegs, tableSlot*ValueSize+OffsetPtrData)
+		asm.CBZ(X0, "side_exit") // nil table
+
+		// Guard: no metatable
+		asm.LDR(X1, X0, TableOffMetatable)
+		asm.CBNZ(X1, "side_exit")
+
+		// Guard: skeys length > fieldIdx (shape hasn't shrunk)
+		asm.LDR(X1, X0, TableOffSkeysLen)
+		asm.CMPimm(X1, uint16(fieldIdx+1))
+		asm.BCond(CondLT, "side_exit")
+
+		// Load svals[fieldIdx]: svals base + fieldIdx * ValueSize
+		asm.LDR(X1, X0, TableOffSvals) // X1 = svals base pointer
+		svalsOff := fieldIdx * ValueSize
+		// Copy entire Value (32 bytes = 4 words) from svals[fieldIdx] to R(A)
+		if dstSlot >= 0 {
+			for w := 0; w < 4; w++ {
+				asm.LDR(X2, X1, svalsOff+w*8)
+				asm.STR(X2, regRegs, dstSlot*ValueSize+w*8)
+			}
+		}
+
+	case SSA_STORE_FIELD:
+		// SETFIELD: table.field = value at known skeys index.
+		fieldIdx := int(inst.AuxInt)
+		tableSlot := sm.getSlotForRef(inst.Arg1)
+		valSlot := sm.getSlotForRef(inst.Arg2)
+		asm.LoadImm64(X9, int64(inst.PC))
+
+		if fieldIdx < 0 || tableSlot < 0 {
+			asm.B("side_exit")
+			break
+		}
+
+		// Load *Table
+		asm.LDR(X0, regRegs, tableSlot*ValueSize+OffsetPtrData)
+		asm.CBZ(X0, "side_exit")
+
+		// Guard: no metatable
+		asm.LDR(X1, X0, TableOffMetatable)
+		asm.CBNZ(X1, "side_exit")
+
+		// Guard: skeys length > fieldIdx
+		asm.LDR(X1, X0, TableOffSkeysLen)
+		asm.CMPimm(X1, uint16(fieldIdx+1))
+		asm.BCond(CondLT, "side_exit")
+
+		// Store value to svals[fieldIdx]
+		asm.LDR(X1, X0, TableOffSvals)
+		svalsOff := fieldIdx * ValueSize
+		if valSlot >= 0 {
+			for w := 0; w < 4; w++ {
+				asm.LDR(X2, regRegs, valSlot*ValueSize+w*8)
+				asm.STR(X2, X1, svalsOff+w*8)
 			}
 		}
 
@@ -795,6 +884,49 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			spillIfNotAllocated(asm, regMap, slot, dstReg)
 		}
 
+	case SSA_INTRINSIC:
+		// Inline GoFunction calls
+		dstSlot := int(inst.Slot)
+		switch int(inst.AuxInt) {
+		case IntrinsicSqrt:
+			// math.sqrt(x): load float arg, FSQRT, store result
+			// Arg1 is the input value ref (R(A+1) in original CALL)
+			srcD := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D0)
+			asm.FSQRTd(D1, srcD)
+			// Store result to destination slot
+			if dstSlot >= 0 {
+				if dstDreg, ok := regMap.FloatReg(dstSlot); ok {
+					asm.FMOVd(dstDreg, D1)
+				} else {
+					asm.FSTRd(D1, regRegs, dstSlot*ValueSize+OffsetData)
+					asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+					asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+				}
+			}
+		case IntrinsicBxor:
+			arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
+			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
+			asm.EORreg(X2, arg1Reg, arg2Reg)
+			if dstSlot >= 0 {
+				asm.STR(X2, regRegs, dstSlot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, TypeInt)
+				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+			}
+		case IntrinsicBand:
+			arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
+			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
+			asm.ANDreg(X2, arg1Reg, arg2Reg)
+			if dstSlot >= 0 {
+				asm.STR(X2, regRegs, dstSlot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, TypeInt)
+				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+			}
+		default:
+			// Unknown intrinsic → side-exit
+			asm.LoadImm64(X9, int64(inst.PC))
+			asm.B("side_exit")
+		}
+
 	case SSA_SIDE_EXIT:
 		asm.LoadImm64(X9, int64(inst.PC))
 		asm.B("side_exit")
@@ -952,10 +1084,11 @@ func ssaIsCompilable(f *SSAFunc) bool {
 			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
 			SSA_LOAD_SLOT, SSA_STORE_SLOT,
 			SSA_UNBOX_INT, SSA_BOX_INT, SSA_UNBOX_FLOAT, SSA_BOX_FLOAT,
-			SSA_LOAD_ARRAY, SSA_STORE_ARRAY, SSA_LOAD_FIELD, SSA_STORE_FIELD, SSA_TABLE_LEN,
+			SSA_LOAD_ARRAY, SSA_STORE_ARRAY, SSA_LOAD_FIELD, SSA_STORE_FIELD, SSA_TABLE_LEN, SSA_LOAD_GLOBAL,
 			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_NIL, SSA_CONST_BOOL,
 			SSA_LOOP, SSA_PHI, SSA_SNAPSHOT,
-			SSA_MOVE, SSA_NOP:
+			SSA_MOVE, SSA_NOP,
+			SSA_INTRINSIC:
 			continue
 		case SSA_SIDE_EXIT:
 			continue

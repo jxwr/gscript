@@ -589,6 +589,12 @@ func (a *Assembler) FCMPd(rn, rm FReg) {
 	a.emit(0x1E602000 | uint32(rm)<<16 | uint32(rn)<<5)
 }
 
+// FSQRTd: Dd = sqrt(Dn) (double)
+func (a *Assembler) FSQRTd(rd, rn FReg) {
+	// 0|00|11110|01|1|00001|11000|Rn|Rd
+	a.emit(0x1E61C000 | uint32(rn)<<5 | uint32(rd))
+}
+
 // FNEGd: Dd = -Dn (double)
 func (a *Assembler) FNEGd(rd, rn FReg) {
 	// 0|00|11110|01|1|000001|10000|Rn|Rd

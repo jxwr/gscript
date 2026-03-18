@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"runtime/pprof"
 
 	"github.com/gscript/gscript/internal/lexer"
 	"github.com/gscript/gscript/internal/parser"
@@ -24,7 +25,32 @@ func main() {
 	useVM := flag.Bool("vm", false, "use bytecode VM without JIT")
 	useJIT := flag.Bool("jit", true, "use bytecode VM with JIT compilation (default)")
 	useTrace := flag.Bool("trace", false, "enable tracing JIT (implies -vm)")
+	cpuprofile := flag.String("cpuprofile", "", "write CPU profile to file")
+	memprofile := flag.String("memprofile", "", "write memory profile to file")
 	flag.Parse()
+
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "could not create CPU profile: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
+	if *memprofile != "" {
+		defer func() {
+			f, err := os.Create(*memprofile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "could not create memory profile: %v\n", err)
+				return
+			}
+			defer f.Close()
+			goruntime.GC()
+			pprof.WriteHeapProfile(f)
+		}()
+	}
 
 	if *useJIT {
 		*useVM = true

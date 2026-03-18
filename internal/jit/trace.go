@@ -1,6 +1,8 @@
 package jit
 
 import (
+	"fmt"
+
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -30,6 +32,10 @@ type TraceIR struct {
 	// Intrinsic: recognized GoFunction replaced with inline ARM64
 	// 0 = not intrinsic, >0 = intrinsic ID
 	Intrinsic int
+
+	// FieldIndex: for GETFIELD/SETFIELD, the index into table.skeys captured at recording time.
+	// -1 means unknown (field not in skeys, or table not accessible).
+	FieldIndex int
 }
 
 // Intrinsic IDs for recognized GoFunctions
@@ -41,6 +47,7 @@ const (
 	IntrinsicBnot     = 4 // bit32.bnot(a) → MVN
 	IntrinsicLshift   = 5 // bit32.lshift(a, n) → LSL
 	IntrinsicRshift   = 6 // bit32.rshift(a, n) → LSR
+	IntrinsicSqrt     = 7 // math.sqrt(x) → FSQRT
 )
 
 // Trace is a recorded execution trace (one loop iteration).
@@ -80,6 +87,7 @@ type TraceRecorder struct {
 	maxLen    int  // max trace length
 	compile   bool // if true, compile traces after recording
 	useSSA    bool // if true, try SSA codegen for integer-only traces
+	debug     bool // if true, print trace compilation diagnostics
 	startBase int  // base register of the traced function (set on first instruction)
 
 	// Loop hotness tracking
@@ -126,6 +134,11 @@ func (r *TraceRecorder) SetCompile(on bool) {
 // SetUseSSA enables SSA-based codegen for integer-only traces.
 func (r *TraceRecorder) SetUseSSA(on bool) {
 	r.useSSA = on
+}
+
+// SetDebug enables trace compilation diagnostics.
+func (r *TraceRecorder) SetDebug(on bool) {
+	r.debug = on
 }
 
 // GetCompiled returns a compiled trace for the given loop, or nil.
@@ -199,12 +212,16 @@ func (r *TraceRecorder) RecordFullRun(ct *CompiledTrace) {
 	ct.fullRunCount++
 }
 
-// RecordTraceExit is called by the VM when a compiled trace side-exits.
-// Uses lastExecuted (saved by PendingTrace). Called ONLY on the side-exit
-// path to avoid hot-path performance impact on mandelbrot-like workloads.
-func (r *TraceRecorder) RecordTraceExit() {
-	if r.lastExecuted != nil {
+// RecordResult updates side-exit/full-run counters on the last executed trace.
+// Called by the VM after every trace execution with the outcome.
+func (r *TraceRecorder) RecordResult(sideExit bool) {
+	if r.lastExecuted == nil {
+		return
+	}
+	if sideExit {
 		r.RecordSideExit(r.lastExecuted)
+	} else {
+		r.RecordFullRun(r.lastExecuted)
 	}
 }
 
@@ -334,6 +351,39 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		}
 	}
 
+	// Capture global VALUE for GETGLOBAL (snapshot at recording time).
+	// The interpreter already executed GETGLOBAL, so regs[base+a] has the value.
+	// We store it as a trace constant so the compiled trace can reload it each iteration.
+	if op == vm.OP_GETGLOBAL {
+		absSlot := base + a
+		if absSlot < len(regs) {
+			constIdx := len(r.current.Constants)
+			r.current.Constants = append(r.current.Constants, regs[absSlot])
+			ir.BX = constIdx // repurpose BX to point to the value constant
+		}
+	}
+
+	// Capture field index for GETFIELD/SETFIELD (skeys position at recording time)
+	ir.FieldIndex = -1
+	if op == vm.OP_GETFIELD || op == vm.OP_SETFIELD {
+		origB := vm.DecodeB(inst)
+		tableSlot := base + origB
+		if op == vm.OP_SETFIELD {
+			tableSlot = base + a
+		}
+		if tableSlot < len(regs) && regs[tableSlot].IsTable() {
+			tbl := regs[tableSlot].Table()
+			if tbl != nil {
+				// Get field name from proto constants (use original C, not remapped)
+				origC := vm.DecodeC(inst)
+				if origC < len(proto.Constants) {
+					fieldName := proto.Constants[origC].Str()
+					ir.FieldIndex = tbl.FieldIndex(fieldName)
+				}
+			}
+		}
+	}
+
 	// Handle CALL: try to inline
 	if op == vm.OP_CALL {
 		return r.handleCall(ir, regs, base)
@@ -345,9 +395,11 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		return false
 	}
 
-	// Check for unsupported ops that abort recording
+	// Check for unsupported ops that abort recording.
+	// These are structural limitations (nested loops, concurrency) that won't
+	// change between attempts, so blacklist permanently.
 	if r.shouldAbort(op) {
-		r.abortTrace()
+		r.abortAndBlacklist()
 		return false
 	}
 
@@ -472,8 +524,18 @@ func (r *TraceRecorder) finishTrace() {
 			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
 			compiled := false
 
-			// Try SSA codegen first for integer-only traces
-			if r.useSSA {
+			// Try regular trace compiler first (more mature, better for pure arithmetic)
+			ct, err := compileTrace(r.current)
+			if err == nil {
+				r.compiled[key] = ct
+				compiled = true
+				if r.debug {
+					fmt.Printf("[TRACE] Regular compiled: PC=%d\n", r.current.LoopPC)
+				}
+			}
+
+			// Fall back to SSA codegen (handles table ops, intrinsics, globals)
+			if !compiled && r.useSSA {
 				ssaFunc := BuildSSA(r.current)
 				ssaFunc = OptimizeSSA(ssaFunc)
 				if ssaIsIntegerOnly(ssaFunc) && SSAIsUseful(ssaFunc) {
@@ -481,22 +543,23 @@ func (r *TraceRecorder) finishTrace() {
 					if err == nil {
 						r.compiled[key] = ct
 						compiled = true
+						if r.debug {
+							fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions\n", r.current.LoopPC, len(r.current.IR))
+						}
+					} else if r.debug {
+						fmt.Printf("[TRACE] SSA compile error: PC=%d, err=%v\n", r.current.LoopPC, err)
 					}
-				}
-			}
-
-			// Fall back to regular trace compiler
-			if !compiled {
-				ct, err := compileTrace(r.current)
-				if err == nil {
-					r.compiled[key] = ct
-					compiled = true
+				} else if r.debug {
+					fmt.Printf("[TRACE] SSA rejected: PC=%d, %d IRs\n", r.current.LoopPC, len(r.current.IR))
 				}
 			}
 
 			// If compilation failed, blacklist this loop to avoid re-recording
 			if !compiled {
 				r.blacklist[key] = true
+				if r.debug {
+					fmt.Printf("[TRACE] Blacklisted: PC=%d\n", r.current.LoopPC)
+				}
 			}
 		}
 	}
@@ -505,10 +568,23 @@ func (r *TraceRecorder) finishTrace() {
 	r.depth = 0
 }
 
+// abortTrace stops recording and discards the current trace.
+// If permanent is true, also blacklists the loop to prevent retries
+// (used for structural limitations like nested FORPREP that won't change).
 func (r *TraceRecorder) abortTrace() {
 	r.current = nil
 	r.recording = false
 	r.depth = 0
+}
+
+// abortAndBlacklist aborts and permanently blacklists the loop.
+// Used for structural limitations (nested loops) that won't change between attempts.
+func (r *TraceRecorder) abortAndBlacklist() {
+	if r.current != nil {
+		key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
+		r.blacklist[key] = true
+	}
+	r.abortTrace()
 }
 
 // recognizeIntrinsic returns the intrinsic ID for a known GoFunction, or 0.
@@ -526,6 +602,8 @@ func recognizeIntrinsic(name string) int {
 		return IntrinsicLshift
 	case "bit32.rshift":
 		return IntrinsicRshift
+	case "math.sqrt":
+		return IntrinsicSqrt
 	}
 	return IntrinsicNone
 }

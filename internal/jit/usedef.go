@@ -62,7 +62,8 @@ func definesSlot(op SSAOp) bool {
 		SSA_LOAD_FIELD, SSA_LOAD_ARRAY,
 		SSA_TABLE_LEN,
 		SSA_PHI,
-		SSA_INTRINSIC:
+		SSA_INTRINSIC,
+		SSA_LOAD_GLOBAL:
 		return true
 	}
 	return false

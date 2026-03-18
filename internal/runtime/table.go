@@ -116,6 +116,27 @@ func (t *Table) RawGetInt(key int64) Value {
 	return NilValue()
 }
 
+// FieldIndex returns the index of a string key in the skeys slice, or -1 if not found.
+// Used by the trace JIT to capture field positions at recording time.
+func (t *Table) FieldIndex(key string) int {
+	for i, k := range t.skeys {
+		if k == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// SkeysLen returns the length of the skeys slice.
+func (t *Table) SkeysLen() int {
+	return len(t.skeys)
+}
+
+// HasMetatable returns true if the table has a metatable.
+func (t *Table) HasMetatable() bool {
+	return t.metatable != nil
+}
+
 // RawGetString retrieves a value by string key (fast path, no Value boxing).
 func (t *Table) RawGetString(key string) Value {
 	if t.mu != nil {

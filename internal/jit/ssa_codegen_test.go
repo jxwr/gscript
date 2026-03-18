@@ -397,9 +397,8 @@ func TestSSACodegen_Integration_FloatMul(t *testing.T) {
 
 // TestSSACodegen_Integration_SideExitFallback tests that non-integer-only traces
 // fall back to the regular trace compiler.
-func TestSSACodegen_Integration_SideExitFallback(t *testing.T) {
-	// This trace has GETFIELD which is not supported by SSA codegen.
-	// It should fall back to the regular trace compiler.
+func TestSSACodegen_Integration_GetField(t *testing.T) {
+	// GETFIELD: read table field in a loop (native compilation)
 	g := runWithSSAJIT(t, `
 		t := {x: 10}
 		sum := 0
@@ -409,5 +408,128 @@ func TestSSACodegen_Integration_SideExitFallback(t *testing.T) {
 	`)
 	if v := g["sum"]; v.Int() != 1000 {
 		t.Errorf("sum = %d, want 1000", v.Int())
+	}
+}
+
+func TestSSACodegen_Integration_GetFieldMultiple(t *testing.T) {
+	// Multiple field reads from same table
+	g := runWithSSAJIT(t, `
+		obj := {x: 3, y: 7}
+		sum := 0
+		for i := 1; i <= 50; i++ {
+			sum = sum + obj.x + obj.y
+		}
+	`)
+	if v := g["sum"]; v.Int() != 500 {
+		t.Errorf("sum = %d, want 500", v.Int())
+	}
+}
+
+func TestSSACodegen_Integration_SetField(t *testing.T) {
+	// SETFIELD: write table field in a loop
+	g := runWithSSAJIT(t, `
+		obj := {count: 0}
+		for i := 1; i <= 100; i++ {
+			obj.count = obj.count + 1
+		}
+		result := obj.count
+	`)
+	if v := g["result"]; v.Int() != 100 {
+		t.Errorf("result = %d, want 100", v.Int())
+	}
+}
+
+func TestSSACodegen_Integration_GetFieldFloat(t *testing.T) {
+	// GETFIELD with float values (nbody pattern)
+	src := `
+		body := {x: 1.0, y: 2.0, z: 3.0}
+		sum := 0.0
+		for i := 1; i <= 100; i++ {
+			sum = sum + body.x + body.y + body.z
+		}
+		result := sum
+	`
+	// Run without tracing
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Float() != g2["result"].Float() {
+		t.Errorf("mismatch: interpreter=%v, ssa=%v", g1["result"].Float(), g2["result"].Float())
+	}
+}
+
+func TestSSACodegen_Integration_SqrtIntrinsic(t *testing.T) {
+	// math.sqrt intrinsic in a loop
+	src := `
+		sum := 0.0
+		for i := 1; i <= 100; i++ {
+			sum = sum + math.sqrt(4.0)
+		}
+		result := sum
+	`
+	g1 := runtime.NewInterpreterGlobals()
+	proto := compileProto(t, src)
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Float() != g2["result"].Float() {
+		t.Errorf("mismatch: interpreter=%v, ssa=%v", g1["result"].Float(), g2["result"].Float())
+	}
+}
+
+func TestSSACodegen_Integration_NbodyPattern(t *testing.T) {
+	// nbody-like pattern: field access + float arithmetic + sqrt
+	src := `
+		bi := {x: 1.0, y: 2.0, z: 3.0}
+		bj := {x: 4.0, y: 5.0, z: 6.0}
+		total := 0.0
+		for i := 1; i <= 50; i++ {
+			dx := bi.x - bj.x
+			dy := bi.y - bj.y
+			dz := bi.z - bj.z
+			dsq := dx*dx + dy*dy + dz*dz
+			dist := math.sqrt(dsq)
+			total = total + dist
+		}
+		result := total
+	`
+	g1 := runtime.NewInterpreterGlobals()
+	proto := compileProto(t, src)
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	r1 := g1["result"].Float()
+	r2 := g2["result"].Float()
+	if r1 != r2 {
+		t.Errorf("mismatch: interpreter=%v, ssa=%v", r1, r2)
+	}
+}
+
+func TestSSACodegen_Integration_GetFieldMatchesInterpreter(t *testing.T) {
+	// Verify trace output matches interpreter for field access
+	src := `
+		obj := {a: 5, b: 3}
+		sum := 0
+		for i := 1; i <= 200; i++ {
+			sum = sum + obj.a - obj.b
+		}
+		result := sum
+	`
+	// Run without tracing
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
 	}
 }
