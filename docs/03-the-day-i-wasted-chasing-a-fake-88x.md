@@ -1,5 +1,7 @@
 ---
+layout: page
 title: "The Day I Wasted Chasing a Fake 88x"
+permalink: /03-the-day-i-wasted-chasing-a-fake-88x
 ---
 
 # The Day I Wasted Chasing a Fake 88x
@@ -185,4 +187,4 @@ Today was humbling. But the bugs are fixed, the architecture is understood, and 
 
 ---
 
-*[Beyond LuaJIT](./)  — a series about building a JIT compiler from scratch.*
+*[Beyond LuaJIT](./) — a series about building a JIT compiler from scratch.*

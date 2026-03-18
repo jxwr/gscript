@@ -1,5 +1,7 @@
 ---
+layout: page
 title: "Introducing SSA IR: The Architecture That Makes JITs Fast"
+permalink: /02-introducing-ssa-ir
 ---
 
 # Introducing SSA IR: The Architecture That Makes JITs Fast

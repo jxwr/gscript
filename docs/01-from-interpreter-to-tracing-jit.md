@@ -1,5 +1,7 @@
 ---
+layout: page
 title: "From Interpreter to Tracing JIT: What We Learned the Hard Way"
+permalink: /01-from-interpreter-to-tracing-jit
 ---
 
 # From Interpreter to Tracing JIT: What We Learned the Hard Way
