@@ -1,4 +1,5 @@
 title: "Beyond LuaJIT"
 description: "Building a JIT compiler for GScript"
+baseurl: "/gscript"
 theme: jekyll-theme-minimal
 markdown: kramdown
