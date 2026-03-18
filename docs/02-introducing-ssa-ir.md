@@ -1,5 +1,5 @@
 ---
-layout: page
+layout: default
 title: "Introducing SSA IR: The Architecture That Makes JITs Fast"
 permalink: /02-introducing-ssa-ir
 ---

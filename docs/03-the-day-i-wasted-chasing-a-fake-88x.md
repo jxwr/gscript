@@ -1,5 +1,5 @@
 ---
-layout: page
+layout: default
 title: "The Day I Wasted Chasing a Fake 88x"
 permalink: /03-the-day-i-wasted-chasing-a-fake-88x
 ---
