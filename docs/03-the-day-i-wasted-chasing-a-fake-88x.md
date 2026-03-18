@@ -1,3 +1,7 @@
+---
+title: "The Day I Wasted Chasing a Fake 88x"
+---
+
 # The Day I Wasted Chasing a Fake 88x
 
 *March 2026 — Beyond LuaJIT, Post #3*
@@ -181,4 +185,4 @@ Today was humbling. But the bugs are fixed, the architecture is understood, and 
 
 ---
 
-*[Beyond LuaJIT](index) — a series about building a JIT compiler from scratch.*
+*[Beyond LuaJIT](./)  — a series about building a JIT compiler from scratch.*

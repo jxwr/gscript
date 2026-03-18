@@ -1,3 +1,7 @@
+---
+title: "From Interpreter to Tracing JIT: What We Learned the Hard Way"
+---
+
 # From Interpreter to Tracing JIT: What We Learned the Hard Way
 
 *March 2026 — Beyond LuaJIT, Post #1*

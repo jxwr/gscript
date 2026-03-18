@@ -1,3 +1,7 @@
+---
+title: "Introducing SSA IR: The Architecture That Makes JITs Fast"
+---
+
 # Introducing SSA IR: The Architecture That Makes JITs Fast
 
 *March 2026 — Beyond LuaJIT, Post #2*
