@@ -192,7 +192,7 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	spillRegs := func() {
 		for vmReg, armReg := range ra.Mapping {
 			if !writtenSlots[vmReg] {
-				continue // slot wasn't modified by the trace — don't corrupt it
+				continue
 			}
 			off := vmReg*ValueSize + OffsetData
 			if off <= 32760 {
@@ -200,6 +200,7 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 			}
 		}
 	}
+
 
 	// === Side exit handler ===
 	asm.Label("side_exit")

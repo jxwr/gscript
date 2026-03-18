@@ -45,23 +45,29 @@ func newSlotAlloc(f *SSAFunc) *slotAlloc {
 		regToSlot: make(map[Reg]int),
 	}
 
-	// Build slot usage frequency from the trace IR
+	// Build slot usage frequency from the trace IR — ONLY for integer arithmetic ops.
+	// Table/string slots must NOT be allocated (they hold non-integer Values).
 	freq := make(map[int]int)
 	if f.Trace != nil {
 		for _, ir := range f.Trace.IR {
-			if ir.B < 256 {
-				freq[ir.B]++
-			}
-			if ir.C < 256 {
-				freq[ir.C]++
-			}
-			freq[ir.A]++
-			// FORLOOP control registers are extra hot
-			if ir.Op == vm.OP_FORLOOP {
+			switch ir.Op {
+			case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_UNM,
+				vm.OP_LOADINT, vm.OP_MOVE,
+				vm.OP_EQ, vm.OP_LT, vm.OP_LE:
+				if ir.B < 256 {
+					freq[ir.B]++
+				}
+				if ir.C < 256 {
+					freq[ir.C]++
+				}
+				freq[ir.A]++
+			case vm.OP_FORLOOP:
 				freq[ir.A] += 3   // idx
 				freq[ir.A+1] += 3 // limit
 				freq[ir.A+2] += 3 // step
 				freq[ir.A+3] += 3 // loop var
+			case vm.OP_FORPREP:
+				freq[ir.A]++
 			}
 		}
 	}
@@ -284,16 +290,40 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	// Loop back-edge
 	asm.B("trace_loop")
 
+	// Build set of slots actually written by the loop body
+	ssaWrittenSlots := make(map[int]bool)
+	for i := loopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		switch inst.Op {
+		case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
+			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT,
+			SSA_CONST_INT, SSA_CONST_FLOAT:
+			slot := int(inst.Slot)
+			if slot >= 0 {
+				ssaWrittenSlots[slot] = true
+			}
+		}
+	}
+	// FORLOOP writes to A (idx) and A+3 (loop variable)
+	if f.Trace != nil {
+		for _, ir := range f.Trace.IR {
+			if ir.Op == vm.OP_FORLOOP {
+				ssaWrittenSlots[ir.A] = true
+				ssaWrittenSlots[ir.A+3] = true
+			}
+		}
+	}
+
 	// === Side exit ===
 	asm.Label("side_exit")
-	emitSlotStoreBack(asm, sa, sm)
+	emitSlotStoreBack(asm, sa, sm, ssaWrittenSlots)
 	asm.STR(X9, X19, 16)  // ctx.ExitPC = X9
 	asm.LoadImm64(X0, 1)  // ExitCode = 1
 	asm.B("epilogue")
 
 	// === Loop done ===
 	asm.Label("loop_done")
-	emitSlotStoreBack(asm, sa, sm)
+	emitSlotStoreBack(asm, sa, sm, ssaWrittenSlots)
 	asm.LoadImm64(X0, 0)  // ExitCode = 0
 
 	// === Epilogue ===
@@ -608,11 +638,14 @@ func resolveSSARefSlot(asm *Assembler, f *SSAFunc, ref SSARef, sa *slotAlloc, sm
 	return scratch
 }
 
-// emitSlotStoreBack writes all allocated slot values back to memory.
-// Called at loop-done and side-exit.
-func emitSlotStoreBack(asm *Assembler, sa *slotAlloc, sm *ssaSlotMapper) {
-	// Store all allocated slots
+// emitSlotStoreBack writes modified allocated slot values back to memory.
+// Only slots that were actually written by the loop body are stored back.
+// Writing unmodified slots (e.g., table references) would corrupt their type.
+func emitSlotStoreBack(asm *Assembler, sa *slotAlloc, sm *ssaSlotMapper, writtenSlots map[int]bool) {
 	for slot, armReg := range sa.slotToReg {
+		if !writtenSlots[slot] {
+			continue // slot not modified by loop body — don't corrupt it
+		}
 		off := slot * ValueSize
 		if off <= 32760 {
 			asm.STR(armReg, regRegs, off+OffsetData)
@@ -620,7 +653,6 @@ func emitSlotStoreBack(asm *Assembler, sa *slotAlloc, sm *ssaSlotMapper) {
 			asm.STRB(X0, regRegs, off+OffsetTyp)
 		}
 
-		// If this is a FORLOOP idx slot, also store to A+3 (loop variable)
 		if a3, ok := sm.forloopA3[slot]; ok {
 			off3 := a3 * ValueSize
 			if off3 <= 32760 {
