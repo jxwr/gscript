@@ -5,3 +5,10 @@ baseurl: "/gscript"
 theme: jekyll-theme-cayman
 markdown: kramdown
 permalink: pretty
+exclude:
+  - stdlib
+  - decisions
+  - architecture_audit.md
+  - optimization-summary.md
+  - technical-plan.md
+  - tracing-jit-design.md
