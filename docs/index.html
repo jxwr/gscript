@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
+  <a href="https://github.com/jxwr/gscript/blob/main/blogs/03-the-day-i-wasted-chasing-a-fake-88x.md">The Day I Wasted Chasing a Fake 88x</a>
+  <p>The &times;88 was wrong. Eight bugs, one humbling day, and the real path to 10x.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
   <a href="https://github.com/jxwr/gscript/blob/main/blogs/02-introducing-ssa-ir.md">Introducing SSA IR</a>
   <p>Why every successful JIT uses SSA. Our IR design, type specialization, and integer unboxing.</p>
 </div>
@@ -105,16 +112,15 @@
   <p>18 optimizations, 2.4x result. What worked, what didn't, and why we need SSA.</p>
 </div>
 
-<h2>Benchmarks</h2>
+<h2>Benchmarks (verified correct)</h2>
 
 <table>
-  <tr><th>Program</th><th>Before</th><th>After</th><th>Speedup</th></tr>
-  <tr><td>sieve</td><td>2.502s</td><td>0.182s</td><td>&times;13.7</td></tr>
-  <tr><td>nbody</td><td>9.572s</td><td>3.054s</td><td>&times;3.1</td></tr>
-  <tr><td>mandelbrot</td><td>4.782s</td><td><b>0.054s</b></td><td><b>&times;88.6</b></td></tr>
-  <tr><td>spectral-norm</td><td>2.057s</td><td>0.905s</td><td>&times;2.3</td></tr>
-  <tr><td>matmul</td><td>2.945s</td><td>1.341s</td><td>&times;2.2</td></tr>
-  <tr><td>chess AI</td><td>6.826s</td><td>3.772s</td><td>&times;1.8</td></tr>
+  <tr><th>Program</th><th>Interpreter</th><th>Trace JIT</th><th>Speedup</th></tr>
+  <tr><td>mandelbrot</td><td>1.569s</td><td><b>1.142s</b></td><td><b>&times;1.37</b></td></tr>
+  <tr><td>fib</td><td>0.843s</td><td>0.827s</td><td>&times;1.02</td></tr>
+  <tr><td>sieve</td><td>0.283s</td><td>0.350s</td><td>&times;0.81</td></tr>
+  <tr><td>spectral-norm</td><td>0.836s</td><td>0.973s</td><td>&times;0.86</td></tr>
+  <tr><td>ackermann</td><td>0.148s</td><td>0.205s</td><td>&times;0.72</td></tr>
 </table>
 
 <footer>

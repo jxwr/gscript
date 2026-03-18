@@ -20,6 +20,24 @@ Every major optimization milestone follows this cycle:
 
 This loop runs **forever** until we surpass LuaJIT on all benchmarks.
 
+## Hard-Won Rules (from 2026-03-18 disaster)
+
+### Rule 1: Never optimize wrong results
+If the benchmark result doesn't match the interpreter, **the speedup is zero**. Run correctness checks BEFORE celebrating. The ×88 mandelbrot was fake — the trace was skipping 99.99% of the computation.
+
+### Rule 2: Observation beats reasoning
+Don't read code and guess. **Dump register state before/after trace execution.** Five hours of guessing vs five minutes of observation. Always:
+1. Add `before/after` register dumps
+2. Run the smallest possible test case (`mandelbrot(3)`, not `mandelbrot(1000)`)
+3. Compare trace output vs interpreter-only output
+4. Only remove dumps after correctness is confirmed
+
+### Rule 3: Never stack optimizations on unverified correctness
+Before adding a new optimization, ALL existing tests must pass with the trace JIT enabled. Run the full benchmark suite with correctness checks (compare trace vs interpreter results), not just timing.
+
+### Rule 4: Architecture over patches
+If you're fixing the third bug in the same subsystem, stop and redesign. The `writtenSlots` mechanism caused 3 separate bugs because it's ad-hoc manual tracking. The correct fix is liveness analysis on the SSA IR, not more special cases.
+
 ## Blog Standards ("Beyond LuaJIT")
 
 Each blog post should be **interesting to read**, not just a dry technical report. Include:
@@ -53,6 +71,7 @@ Before each major architectural change:
 - **Revert failed optimizations**: If benchmarks don't improve, revert immediately
 - **Commit often**: Each working step gets a commit with detailed message
 - **One concern per file**: Split large files (>500 lines) into focused modules
+- **Pass pipeline architecture**: SSA builder, optimization passes, register allocator, and code emitter should be separate passes with clean interfaces. Do not mix analysis and code generation.
 
 ## Benchmark Suite
 
@@ -61,20 +80,39 @@ Standard benchmarks (in `benchmarks/suite/`):
 - Plus: chess_bench_parallel.gs (the ultimate mixed workload)
 
 Run the full suite before AND after every optimization. Record numbers in the blog.
+**Always verify correctness**: trace output must match interpreter output.
 
 ## Architecture Principles
 
 - **SSA IR is the core**: All optimizations happen on SSA, not on bytecode or ARM64
 - **Type specialization is king**: Unboxed integers and floats in registers = the #1 speedup
 - **Tracing JIT for hot loops**: Records actual execution, compiles the hot path
-- **Method JIT as baseline**: Quick compilation for cold code
-- **Shared codegen layer**: One set of ARM64 emitters, used by both JIT tiers
-- **Snapshots for side-exits**: LuaJIT-style precise state reconstruction
+- **Pass pipeline**: BuildSSA → Optimize → RegAlloc → Emit (no mixing)
+- **Snapshots for side-exits**: LuaJIT-style precise state reconstruction (TODO: replace writtenSlots)
+- **Decouple SSA refs from VM slots**: The SSA IR should use its own numbering, not bytecode slot numbers
 
-## Current Status
+## Architecture Audit
 
-- Sieve: **×13.7** (best result)
-- N-body: **×3.13**
-- Mandelbrot: **×2.27**
-- Chess AI: **×1.81** single, **×2.27** parallel
-- Target: **×10+** across all benchmarks (LuaJIT territory)
+Full audit document: `docs/architecture_audit.md`
+Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
+
+## Current Status (2026-03-18, verified correct)
+
+| Benchmark | Interpreter | Trace JIT | Speedup |
+|-----------|-------------|-----------|---------|
+| mandelbrot | 1.569s | 1.142s | **×1.37** |
+| fib | 0.843s | 0.827s | ×1.02 |
+| sieve | 0.283s | 0.350s | ×0.81 |
+| spectral_norm | 0.836s | 0.973s | ×0.86 |
+| ackermann | 0.148s | 0.205s | ×0.72 |
+
+Target: **×10+** across all benchmarks (LuaJIT territory).
+
+## Roadmap to ×10
+
+1. Pass pipeline refactor (prerequisite)
+2. Constant hoisting (×1.2)
+3. Full float register allocation (×1.3)
+4. CSE (×1.1)
+5. Nested loop tracing (×2.5 — the big jump)
+6. Snapshot-based side exits (×1.15 + correctness)
