@@ -53,6 +53,41 @@ Each blog post should be **interesting to read**, not just a dry technical repor
 
 Published at: https://jxwr.github.io/gscript/
 
+## Team Workflow
+
+Each milestone uses parallel agents to maximize throughput. Two phases:
+
+### Phase 1: Research (parallel)
+
+Spawn 4 agents simultaneously, all research-only (no code changes):
+
+| Role | Task | Output |
+|------|------|--------|
+| **Profiler** | Run benchmarks + pprof, identify #1 bottleneck | Benchmark data, CPU profile top functions, bottleneck analysis |
+| **Researcher** | Web search LuaJIT/V8/SpiderMonkey/papers for the target technique | Research report with sources, recommended approach, priority ranking |
+| **Architect** | Read all relevant code, audit architecture, design refactoring plan | Code audit, data flow map, concrete refactoring steps |
+| **Blogger** | Read existing blog posts, prepare outline for next post | Blog outline with story angle, section structure, diagram plan |
+
+Main agent waits for all 4 reports, then synthesizes into an implementation plan.
+
+### Phase 2: Implement (parallel where possible)
+
+After plan alignment with user, spawn coding agents in parallel for independent modules:
+
+```
+Main agent ──→ Plan + align with user
+           ──→ Blogger writes research/design sections of blog
+           ──→ Coding agents (parallel by module): tests first, then implementation
+           ──→ Main agent integrates, runs full benchmark suite
+           ──→ Blogger updates blog with results
+```
+
+Key rules:
+- **Research agents never write code. Coding agents don't do open-ended research.**
+- **Main agent is the integrator** — synthesizes reports, makes architectural decisions, resolves conflicts.
+- **Always use Opus model** for coding agents (user preference).
+- **Each coding agent gets a clear, bounded scope** — one pass, one module, one test file.
+
 ## Research Protocol
 
 Before each major architectural change:
