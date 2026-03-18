@@ -1,0 +1,3 @@
+title: "Beyond LuaJIT"
+description: "Building a JIT compiler for GScript"
+markdown: kramdown
