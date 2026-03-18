@@ -45,10 +45,6 @@ type VM struct {
 
 // TraceExecutor executes a compiled trace.
 type TraceExecutor interface {
-	// Execute runs the compiled trace. Returns:
-	//   guardFail=true: pre-loop guard failed, trace didn't run, interpreter should handle
-	//   sideExit=true: trace ran but side-exited at exitPC
-	//   both false: trace completed (loop done)
 	Execute(regs []runtime.Value, base int, proto *FuncProto) (exitPC int, sideExit bool, guardFail bool)
 }
 
@@ -58,11 +54,6 @@ type TraceRecorderHook interface {
 	OnLoopBackEdge(pc int, proto *FuncProto) bool
 	IsRecording() bool
 	PendingTrace() TraceExecutor
-	// ReportTraceResult is called after executing a compiled trace.
-	// sideExit=true means the trace side-exited before completing.
-	// The recorder uses this to track trace effectiveness and blacklist
-	// traces that consistently side-exit.
-	ReportTraceResult(trace TraceExecutor, sideExit bool)
 }
 
 // traceResult holds the result of executing a compiled trace.
@@ -73,7 +64,6 @@ type traceResult struct {
 }
 
 // executeCompiledTrace runs a compiled trace if available.
-// Returns the result so the caller can adjust frame.pc appropriately.
 func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) traceResult {
 	ct := vm.traceRec.PendingTrace()
 	if ct == nil {
@@ -81,10 +71,8 @@ func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) traceResult {
 	}
 	exitPC, sideExit, guardFail := ct.Execute(vm.regs, base, proto)
 	if guardFail {
-		return traceResult{} // not executed — interpreter handles the body
+		return traceResult{}
 	}
-	// Report the result so the recorder can track side-exits for blacklisting
-	vm.traceRec.ReportTraceResult(ct, sideExit)
 	return traceResult{executed: true, exitPC: exitPC, sideExit: sideExit}
 }
 

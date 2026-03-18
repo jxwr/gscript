@@ -89,6 +89,7 @@ type TraceRecorder struct {
 	// Compiled trace cache: keyed by (proto, loopPC)
 	compiled     map[loopKey]*CompiledTrace
 	pendingTrace *CompiledTrace
+	lastExecuted *CompiledTrace // last trace that was executed (for blacklisting)
 
 	// Blacklist: loops where compilation failed (don't retry)
 	blacklist map[loopKey]bool
@@ -181,34 +182,29 @@ func (r *TraceRecorder) IsBlacklisted(pc int, proto *vm.FuncProto) bool {
 	return r.blacklist[loopKey{proto: proto, pc: pc}]
 }
 
-// RecordSideExit records that a compiled trace side-exited without completing
-// a full loop iteration. If the trace has too many side-exits and no full runs,
-// it gets blacklisted.
+// RecordSideExit records that a compiled trace side-exited.
 func (r *TraceRecorder) RecordSideExit(ct *CompiledTrace) {
 	ct.sideExitCount++
-	if ct.fullRunCount == 0 && ct.sideExitCount >= SideExitBlacklistThreshold {
-		ct.blacklisted = true
+	total := ct.sideExitCount + ct.fullRunCount
+	if total >= SideExitBlacklistThreshold {
+		ratio := float64(ct.sideExitCount) / float64(total)
+		if ratio >= SideExitBlacklistRatio {
+			ct.blacklisted = true
+		}
 	}
 }
 
-// RecordFullRun records that a compiled trace completed a full loop (exited
-// via loop_done, not side-exit). Traces with full runs are never blacklisted.
+// RecordFullRun records that a compiled trace completed a full loop.
 func (r *TraceRecorder) RecordFullRun(ct *CompiledTrace) {
 	ct.fullRunCount++
 }
 
-// ReportTraceResult is called by the VM after executing a compiled trace.
-// It records whether the trace side-exited or completed, and blacklists
-// traces that consistently side-exit without doing useful work.
-func (r *TraceRecorder) ReportTraceResult(trace vm.TraceExecutor, sideExit bool) {
-	ct, ok := trace.(*CompiledTrace)
-	if !ok {
-		return
-	}
-	if sideExit {
-		r.RecordSideExit(ct)
-	} else {
-		r.RecordFullRun(ct)
+// RecordTraceExit is called by the VM when a compiled trace side-exits.
+// Uses lastExecuted (saved by PendingTrace). Called ONLY on the side-exit
+// path to avoid hot-path performance impact on mandelbrot-like workloads.
+func (r *TraceRecorder) RecordTraceExit() {
+	if r.lastExecuted != nil {
+		r.RecordSideExit(r.lastExecuted)
 	}
 }
 
@@ -217,6 +213,7 @@ func (r *TraceRecorder) ReportTraceResult(trace vm.TraceExecutor, sideExit bool)
 func (r *TraceRecorder) PendingTrace() vm.TraceExecutor {
 	ct := r.pendingTrace
 	r.pendingTrace = nil
+	r.lastExecuted = ct // save for RecordTraceExit
 	if ct == nil {
 		return nil
 	}

@@ -441,8 +441,10 @@ func (b *ssaBuilder) convertForLoop(ir *TraceIR) {
 	newIdx := b.emit(SSAInst{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: idx, Arg2: step, Slot: int16(ir.A), PC: ir.PC})
 	b.slotDefs[ir.A] = newIdx
 
-	// R(A+3) = idx (loop variable)
-	b.slotDefs[ir.A+3] = newIdx
+	// R(A+3) = idx (loop variable) — emit explicit MOVE so liveness analysis
+	// sees that slot A+3 is written and needs store-back.
+	moveRef := b.emit(SSAInst{Op: SSA_MOVE, Type: SSATypeInt, Arg1: newIdx, Slot: int16(ir.A + 3), PC: ir.PC})
+	b.slotDefs[ir.A+3] = moveRef
 	b.slotType[ir.A+3] = SSATypeInt
 
 	// Compare: idx <= limit

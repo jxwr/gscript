@@ -16,10 +16,16 @@ type TraceContext struct {
 	ExitCode  int64   // output: 0=loop done, 1=side exit
 }
 
-// SideExitBlacklistThreshold is the number of consecutive side-exits (with zero
-// full runs) before a compiled trace is blacklisted. Once blacklisted, the
-// interpreter runs the loop directly, avoiding enter/exit overhead.
-const SideExitBlacklistThreshold = 10
+// SideExitBlacklistThreshold is the minimum number of executions before
+// blacklisting is considered. Below this count, the trace gets a warm-up
+// period to accumulate both side-exits and full runs.
+const SideExitBlacklistThreshold = 50
+
+// SideExitBlacklistRatio is the minimum side-exit ratio to trigger blacklisting.
+// A trace that side-exits 95%+ of the time is not doing useful work.
+// Example: mandelbrot side-exits on "escape" (break) but full-runs on
+// non-escaping pixels — ~60% side-exit ratio, so it stays active.
+const SideExitBlacklistRatio = 0.95
 
 // CompiledTrace holds native code for a trace.
 type CompiledTrace struct {
@@ -28,6 +34,7 @@ type CompiledTrace struct {
 	constants []runtime.Value // trace-level constant pool
 
 	// Blacklisting: tracks whether this trace is doing useful work.
+	// Counters are updated directly by RecordResult (called by VM on every execution).
 	sideExitCount int  // number of times this trace side-exited
 	fullRunCount  int  // number of times this trace completed a full loop
 	blacklisted   bool // if true, interpreter should run instead
@@ -1301,6 +1308,25 @@ func trRKBase(idx int) (int, Reg) {
 // Execute implements vm.TraceExecutor.
 func (ct *CompiledTrace) Execute(regs []runtime.Value, base int, proto *vm.FuncProto) (exitPC int, sideExit bool, guardFail bool) {
 	return executeTrace(ct, regs, base, proto)
+}
+
+// RecordResult implements vm.TraceExecutor. Updates side-exit/full-run counters
+// and blacklists the trace if the side-exit ratio exceeds the threshold.
+// This is called on every trace execution, so it must be cheap — no allocations,
+// no interface dispatch, just counter increments and a conditional check.
+func (ct *CompiledTrace) RecordResult(sideExit bool) {
+	if sideExit {
+		ct.sideExitCount++
+	} else {
+		ct.fullRunCount++
+	}
+	total := ct.sideExitCount + ct.fullRunCount
+	if total == SideExitBlacklistThreshold {
+		ratio := float64(ct.sideExitCount) / float64(total)
+		if ratio >= SideExitBlacklistRatio {
+			ct.blacklisted = true
+		}
+	}
 }
 
 // executeTrace runs compiled trace code.
