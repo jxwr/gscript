@@ -116,6 +116,7 @@ Before each major architectural change:
 - **One concern per file**: Split large files (>500 lines) into focused modules
 - **Pass pipeline architecture**: SSA builder, optimization passes, register allocator, and code emitter should be separate passes with clean interfaces. Do not mix analysis and code generation.
 - **No time estimates**: Never estimate work in days/weeks/hours. For AI agents, wall-clock time is meaningless — focus on what needs to be done, not how long it might take.
+- **Profile after every optimization**: Run `pprof` after each optimization lands. Verify the optimization actually reduced time in the expected function. Don't blindly optimize — the profile tells you what to do next. If the profile doesn't change, the optimization was wrong.
 
 ## Benchmark Suite
 
