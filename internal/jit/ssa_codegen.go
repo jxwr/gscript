@@ -497,22 +497,35 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 	// Loop back-edge
 	asm.B("trace_loop")
 
-	// === Guard fail (pre-loop type mismatch) ===
-	// ExitCode=2: "not executed" — interpreter should run the body normally.
-	// No store-back needed since we haven't modified any registers.
-	asm.Label("guard_fail")
-	asm.LoadImm64(X0, 2)  // ExitCode = 2 (guard fail, not executed)
-	asm.B("epilogue")
+	// === BOLT-style hot/cold code splitting ===
+	// The hot loop (trace_loop → B trace_loop) should occupy as few cache lines
+	// as possible. Cold code (side exits, guard failures, loop-done store-back,
+	// epilogue) is grouped together AFTER the hot loop with minimal trampolines.
+	// On Apple M4, L1 icache line = 64 bytes. A 26-instruction inner loop ≈ 104
+	// bytes ≈ 2 cache lines. Keeping cold code out avoids polluting those lines.
 
-	// === Side exit ===
+	// loop_done trampoline: single branch keeps the hot-adjacent area tiny.
+	asm.Label("loop_done")
+	asm.B("loop_done_handler")
+
+	// === Cold section: all infrequently-executed code grouped together ===
+
+	// --- Side exit (guard failure during loop body) ---
 	asm.Label("side_exit")
 	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, liveInfo)
 	asm.STR(X9, X19, 16)  // ctx.ExitPC = X9
 	asm.LoadImm64(X0, 1)  // ExitCode = 1
 	asm.B("epilogue")
 
-	// === Loop done ===
-	asm.Label("loop_done")
+	// --- Guard fail (pre-loop type mismatch) ---
+	// ExitCode=2: "not executed" — interpreter should run the body normally.
+	// No store-back needed since we haven't modified any registers.
+	asm.Label("guard_fail")
+	asm.LoadImm64(X0, 2)  // ExitCode = 2 (guard fail, not executed)
+	asm.B("epilogue")
+
+	// --- Loop done handler (normal loop completion) ---
+	asm.Label("loop_done_handler")
 	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, liveInfo)
 	asm.LoadImm64(X0, 0)  // ExitCode = 0
 
