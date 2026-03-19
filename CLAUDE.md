@@ -51,6 +51,14 @@ Each blog post should be **interesting to read**, not just a dry technical repor
 - **Honest assessment**: What worked, what didn't, what we'd do differently.
 - **Next steps**: What's the next bottleneck? What does the research suggest?
 
+### When to Write Blog Posts
+
+Don't wait for fixed milestones. Two best times to write:
+
+1. **After a breakthrough** — huge progress with data and story, write while it's hot. Examples: mandelbrot jumping from 1.53x to 5.92x, discovering the FORPREP abort-blacklisting trick.
+
+2. **After getting stuck** — research done, lessons learned, planning the next approach. Examples: realizing the trace JIT hurts 5/7 benchmarks, the nested loop tracing architecture problem. These posts have depth and reflection.
+
 Published at: https://jxwr.github.io/gscript/
 
 ## Team Workflow
@@ -131,15 +139,16 @@ Run the full suite before AND after every optimization. Record numbers in the bl
 Full audit document: `docs/architecture_audit.md`
 Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
-## Current Status (2026-03-18, verified correct)
+## Current Status (2026-03-19, verified correct)
 
 | Benchmark | Interpreter | Trace JIT | Speedup |
 |-----------|-------------|-----------|---------|
-| mandelbrot | 1.569s | 1.142s | **×1.37** |
-| fib | 0.843s | 0.827s | ×1.02 |
-| sieve | 0.283s | 0.350s | ×0.81 |
-| spectral_norm | 0.836s | 0.973s | ×0.86 |
-| ackermann | 0.148s | 0.205s | ×0.72 |
+| mandelbrot | 1.503s | 0.246s | **×6.09** |
+| fib | 0.072s | 0.072s | ×10 (method JIT) |
+| sieve | 0.174s | 0.172s | ×1.01 |
+| nbody | 2.728s | 2.884s | ×0.95 |
+| spectral_norm | 0.784s | 0.955s | ×0.82 |
+| ackermann | 0.017s | 0.017s | ×10 (method JIT) |
 
 Target: **×10+** across all benchmarks (LuaJIT territory).
 
