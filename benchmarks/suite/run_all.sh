@@ -11,7 +11,7 @@ echo "  Mode: $MODE"
 echo "============================================"
 echo ""
 
-for bench in fib sieve mandelbrot ackermann matmul spectral_norm nbody binary_trees; do
+for bench in fib sieve mandelbrot ackermann matmul spectral_norm nbody fannkuch sort sum_primes mutual_recursion method_dispatch closure_bench string_bench binary_trees; do
     echo "--- $bench ---"
     go run "$GSCRIPT" "$MODE" "$bench.gs" 2>&1
     echo ""
