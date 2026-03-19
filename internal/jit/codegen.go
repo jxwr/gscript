@@ -158,6 +158,14 @@ type Codegen struct {
 	callExitPCs      []int                   // PCs that use call-exit (ExitCode=2) for resume dispatch
 	cmpCallExitPCs   []int                   // PCs of comparison ops with non-int type guards (call-exit on guard fail)
 	cmpResumeStubs   []cmpResumeStub         // resume stubs for comparison call-exits (deferred)
+	coldStubs        []coldStub              // deferred cold code stubs (emitted after hot path)
+}
+
+// coldStub records a deferred code emission for the cold section.
+// The label is emitted first, then the emit function generates the code.
+type coldStub struct {
+	label string
+	emit  func()
 }
 
 // cmpResumeStub describes a comparison call-exit resume stub with captured pinning state.
@@ -166,6 +174,20 @@ type cmpResumeStub struct {
 	targetPC   string         // pcLabel to jump to after reload
 	pinnedVars []int          // snapshot of pinnedVars at creation time
 	pinnedRegs map[int]Reg    // snapshot of pinnedRegs at creation time
+}
+
+// deferCold records a cold code stub to be emitted after the hot path.
+// In the hot path, a B <label> instruction jumps to this cold code.
+func (cg *Codegen) deferCold(label string, emit func()) {
+	cg.coldStubs = append(cg.coldStubs, coldStub{label: label, emit: emit})
+}
+
+// emitColdStubs emits all deferred cold code stubs.
+func (cg *Codegen) emitColdStubs() {
+	for _, stub := range cg.coldStubs {
+		cg.asm.Label(stub.label)
+		stub.emit()
+	}
 }
 
 // Reserved register for self-recursion depth tracking.
@@ -271,6 +293,12 @@ func (cg *Codegen) compile() (*CompiledFunc, error) {
 		}
 		cg.asm.B(stub.targetPC)
 	}
+
+	// === Cold section: all infrequently-executed code grouped after hot path ===
+	// Guard failures, side-exit stubs, call-exit fallbacks, overflow handlers,
+	// and loop-exit spill code are placed here to reduce I-cache pollution
+	// in the hot loop. (BOLT-style hot/cold code splitting)
+	cg.emitColdStubs()
 
 	cg.emitEpilogue()
 
@@ -388,14 +416,13 @@ func (cg *Codegen) emitPrologue() {
 				a.CMPimmW(X0, TypeInt)
 				a.BCond(CondNE, "self_param_guard_fail")
 			}
-			a.B("self_param_guard_ok")
-			a.Label("self_param_guard_fail")
-			// Side exit: parameter is not int, fall back to interpreter.
-			a.LoadImm64(X1, 0)
-			a.STR(X1, regCtx, ctxOffExitPC)
-			a.LoadImm64(X0, 1) // ExitCode = 1 (side exit)
-			a.B("epilogue")
-			a.Label("self_param_guard_ok")
+			// Guard failure deferred to cold section.
+			cg.deferCold("self_param_guard_fail", func() {
+				cg.asm.LoadImm64(X1, 0)
+				cg.asm.STR(X1, regCtx, ctxOffExitPC)
+				cg.asm.LoadImm64(X0, 1) // ExitCode = 1 (side exit)
+				cg.asm.B("epilogue")
+			})
 		}
 
 		// Outermost entry: load pinned parameters from the Value array
@@ -1547,7 +1574,6 @@ func (cg *Codegen) emitInlineCall(pc int, candidate *inlineCandidate) error {
 	}
 
 	exitLabel := fmt.Sprintf("inline_exit_%d", pc)
-	afterLabel := fmt.Sprintf("inline_done_%d", pc)
 
 	// Emit callee instructions with register remapping
 	for _, calleeInst := range callee.Code {
@@ -1788,17 +1814,16 @@ func (cg *Codegen) emitInlineCall(pc int, candidate *inlineCandidate) error {
 		}
 	}
 
-	cg.asm.B(afterLabel)
+	// afterLabel: hot path falls through here (no need for a skip branch).
+	// The exit label is deferred to the cold section.
+	cg.deferCold(exitLabel, func() {
+		cg.spillPinnedRegs()
+		cg.asm.LoadImm64(X1, int64(candidate.getglobalPC))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 1)
+		cg.asm.B("epilogue")
+	})
 
-	// Side exit for type guard failures
-	cg.asm.Label(exitLabel)
-	cg.spillPinnedRegs()
-	cg.asm.LoadImm64(X1, int64(candidate.getglobalPC))
-	cg.asm.STR(X1, regCtx, ctxOffExitPC)
-	cg.asm.LoadImm64(X0, 1)
-	cg.asm.B("epilogue")
-
-	cg.asm.Label(afterLabel)
 	return nil
 }
 
@@ -1948,12 +1973,24 @@ func (cg *Codegen) emitBody() error {
 
 		if !cg.isSupported(op) {
 			if callExitSet[pc] {
-				// Call-exit: spill state, exit with code 2, emit resume label.
-				cg.spillPinnedRegs()
-				cg.asm.LoadImm64(X1, int64(pc))
-				cg.asm.STR(X1, regCtx, ctxOffExitPC)
-				cg.asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit, resumable)
-				cg.asm.B("epilogue")
+				// Call-exit: jump to cold stub for spill+exit, then resume inline.
+				coldLabel := fmt.Sprintf("cold_callexit_%d", pc)
+				capturedPinned := make(map[int]Reg, len(cg.pinnedRegs))
+				for k, v := range cg.pinnedRegs {
+					capturedPinned[k] = v
+				}
+				cg.asm.B(coldLabel)
+				cg.deferCold(coldLabel, func() {
+					for vmReg, armReg := range capturedPinned {
+						cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+						cg.asm.MOVimm16W(X9, TypeInt)
+						cg.storeRegTyp(X9, vmReg)
+					}
+					cg.asm.LoadImm64(X1, int64(pc))
+					cg.asm.STR(X1, regCtx, ctxOffExitPC)
+					cg.asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit, resumable)
+					cg.asm.B("epilogue")
+				})
 
 				// Resume label: re-entry point after executor handles the instruction.
 				cg.asm.Label(resumeLabel(pc))
@@ -1962,12 +1999,24 @@ func (cg *Codegen) emitBody() error {
 				continue // next pc label is emitted by the loop
 			}
 
-			// Permanent side exit for unsupported ops that can't be call-exited.
-			cg.spillPinnedRegs()
-			cg.asm.LoadImm64(X1, int64(pc))
-			cg.asm.STR(X1, regCtx, ctxOffExitPC)
-			cg.asm.LoadImm64(X0, 1)
-			cg.asm.B("epilogue")
+			// Permanent side exit: jump to cold stub.
+			coldLabel := fmt.Sprintf("cold_sideexit_%d", pc)
+			capturedPinned := make(map[int]Reg, len(cg.pinnedRegs))
+			for k, v := range cg.pinnedRegs {
+				capturedPinned[k] = v
+			}
+			cg.asm.B(coldLabel)
+			cg.deferCold(coldLabel, func() {
+				for vmReg, armReg := range capturedPinned {
+					cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+					cg.asm.MOVimm16W(X9, TypeInt)
+					cg.storeRegTyp(X9, vmReg)
+				}
+				cg.asm.LoadImm64(X1, int64(pc))
+				cg.asm.STR(X1, regCtx, ctxOffExitPC)
+				cg.asm.LoadImm64(X0, 1)
+				cg.asm.B("epilogue")
+			})
 			continue
 		}
 
@@ -2260,17 +2309,22 @@ func (cg *Codegen) emitArithInt(pc int, inst uint32, arithOp string) error {
 		}
 		cg.storeIntValue(aReg, X0)
 
-		after := fmt.Sprintf("arith_done_%d", pc)
-		cg.asm.B(after)
-
-		cg.asm.Label(exitLabel)
-		cg.spillPinnedRegs()
-		cg.asm.LoadImm64(X1, int64(pc))
-		cg.asm.STR(X1, regCtx, ctxOffExitPC)
-		cg.asm.LoadImm64(X0, 1)
-		cg.asm.B("epilogue")
-
-		cg.asm.Label(after)
+		// Guard failure deferred to cold section.
+		capturedPinned := make(map[int]Reg, len(cg.pinnedRegs))
+		for k, v := range cg.pinnedRegs {
+			capturedPinned[k] = v
+		}
+		cg.deferCold(exitLabel, func() {
+			for vmReg, armReg := range capturedPinned {
+				cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+				cg.asm.MOVimm16W(X9, TypeInt)
+				cg.storeRegTyp(X9, vmReg)
+			}
+			cg.asm.LoadImm64(X1, int64(pc))
+			cg.asm.STR(X1, regCtx, ctxOffExitPC)
+			cg.asm.LoadImm64(X0, 1)
+			cg.asm.B("epilogue")
+		})
 	} else {
 		// Both operands known TypeInt — no type guards needed.
 		// Try direct register-register operation if all operands are pinned.
@@ -2355,17 +2409,22 @@ func (cg *Codegen) emitUNM(pc int, inst uint32) error {
 		cg.asm.NEG(X0, X0)
 		cg.storeIntValue(aReg, X0)
 
-		after := fmt.Sprintf("unm_done_%d", pc)
-		cg.asm.B(after)
-
-		cg.asm.Label(exitLabel)
-		cg.spillPinnedRegs()
-		cg.asm.LoadImm64(X1, int64(pc))
-		cg.asm.STR(X1, regCtx, ctxOffExitPC)
-		cg.asm.LoadImm64(X0, 1)
-		cg.asm.B("epilogue")
-
-		cg.asm.Label(after)
+		// Guard failure deferred to cold section.
+		capturedPinned := make(map[int]Reg, len(cg.pinnedRegs))
+		for k, v := range cg.pinnedRegs {
+			capturedPinned[k] = v
+		}
+		cg.deferCold(exitLabel, func() {
+			for vmReg, armReg := range capturedPinned {
+				cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+				cg.asm.MOVimm16W(X9, TypeInt)
+				cg.storeRegTyp(X9, vmReg)
+			}
+			cg.asm.LoadImm64(X1, int64(pc))
+			cg.asm.STR(X1, regCtx, ctxOffExitPC)
+			cg.asm.LoadImm64(X0, 1)
+			cg.asm.B("epilogue")
+		})
 	} else {
 		cg.loadRegIval(X0, bReg)
 		cg.asm.NEG(X0, X0)
@@ -2617,32 +2676,35 @@ func (cg *Codegen) emitLE(pc int, inst uint32) error {
 }
 
 func (cg *Codegen) emitComparisonSideExit(pc int, exitLabel string) error {
-	after := fmt.Sprintf("cmp_done_%d", pc)
-	cg.asm.B(after)
-
-	cg.asm.Label(exitLabel)
-	cg.spillPinnedRegs()
-	cg.asm.LoadImm64(X1, int64(pc))
-	cg.asm.STR(X1, regCtx, ctxOffExitPC)
-	cg.asm.LoadImm64(X0, 2) // call-exit: executor handles non-integer comparison and resumes
-	cg.asm.B("epilogue")
-
-	// Defer resume stubs with captured pinning state.
-	// These will be emitted after the main instruction loop.
-	cmpStub := fmt.Sprintf("cmp_resume_%d", pc)
-	// Capture current pinning state.
+	// Capture current pinning state for the cold stub and resume stubs.
 	capturedVars := make([]int, len(cg.pinnedVars))
 	copy(capturedVars, cg.pinnedVars)
 	capturedRegs := make(map[int]Reg, len(cg.pinnedRegs))
 	for k, v := range cg.pinnedRegs {
 		capturedRegs[k] = v
 	}
+
+	// Guard failure deferred to cold section.
+	cg.deferCold(exitLabel, func() {
+		for vmReg, armReg := range capturedRegs {
+			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+			cg.asm.MOVimm16W(X9, TypeInt)
+			cg.storeRegTyp(X9, vmReg)
+		}
+		cg.asm.LoadImm64(X1, int64(pc))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 2) // call-exit: executor handles non-integer comparison and resumes
+		cg.asm.B("epilogue")
+	})
+
+	// Defer resume stubs with captured pinning state.
+	// These will be emitted after the main instruction loop.
+	cmpStub := fmt.Sprintf("cmp_resume_%d", pc)
 	cg.cmpResumeStubs = append(cg.cmpResumeStubs,
 		cmpResumeStub{cmpStub + "_1", pcLabel(pc + 1), capturedVars, capturedRegs},
 		cmpResumeStub{cmpStub + "_2", pcLabel(pc + 2), capturedVars, capturedRegs},
 	)
 
-	cg.asm.Label(after)
 	return nil
 }
 
@@ -2723,18 +2785,13 @@ func (cg *Codegen) emitForPrep(pc int, inst uint32) error {
 	cg.asm.CMPimmW(X0, TypeInt)
 	cg.asm.BCond(CondNE, exitLabel)
 
-	// Emit side-exit BEFORE setting up pinning (at runtime, the exit path
-	// skips the pinning loads, so we must not emit spill code here).
-	guardsOK := fmt.Sprintf("forprep_ok_%d", pc)
-	cg.asm.B(guardsOK)
-
-	cg.asm.Label(exitLabel)
-	cg.asm.LoadImm64(X1, int64(pc))
-	cg.asm.STR(X1, regCtx, ctxOffExitPC)
-	cg.asm.LoadImm64(X0, 1)
-	cg.asm.B("epilogue")
-
-	cg.asm.Label(guardsOK)
+	// Guard failure deferred to cold section (no pinning active at FORPREP).
+	cg.deferCold(exitLabel, func() {
+		cg.asm.LoadImm64(X1, int64(pc))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 1)
+		cg.asm.B("epilogue")
+	})
 
 	// Set up register pinning if this loop was analyzed and is innermost.
 	desc := cg.forLoops[pc]
@@ -2799,6 +2856,8 @@ func (cg *Codegen) emitForLoop(pc int, inst uint32) error {
 			}
 			// Conditional back-edge: continue if idx <= limit.
 			cg.asm.BCond(CondLE, loopBody)
+			// Fall-through: loop done → jump to cold exit stub.
+			cg.asm.B(exitFor)
 		} else if desc.stepKnown && desc.stepValue < 0 {
 			// Optimized: known negative step — bottom-tested loop.
 			if desc.stepValue == -1 {
@@ -2813,6 +2872,8 @@ func (cg *Codegen) emitForLoop(pc int, inst uint32) error {
 			}
 			// Conditional back-edge: continue if idx >= limit.
 			cg.asm.BCond(CondGE, loopBody)
+			// Fall-through: loop done → jump to cold exit stub.
+			cg.asm.B(exitFor)
 		} else {
 			// Unknown step sign: general path with pinned registers.
 			cg.asm.ADDreg(idxReg, idxReg, stepReg)
@@ -2836,9 +2897,21 @@ func (cg *Codegen) emitForLoop(pc int, inst uint32) error {
 			cg.asm.B(loopBody)
 		}
 
-		// Loop exit: spill pinned registers back to memory and clear pinning.
-		cg.asm.Label(exitFor)
-		cg.spillPinnedRegs()
+		// Loop exit: spill code deferred to cold section.
+		// Capture pinning state before clearing (spillPinnedRegs uses pinnedRegs).
+		capturedPinnedRegs := make(map[int]Reg, len(cg.pinnedRegs))
+		for k, v := range cg.pinnedRegs {
+			capturedPinnedRegs[k] = v
+		}
+		nextPC := pcLabel(pc + 1)
+		cg.deferCold(exitFor, func() {
+			for vmReg, armReg := range capturedPinnedRegs {
+				cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+				cg.asm.MOVimm16W(X9, TypeInt)
+				cg.storeRegTyp(X9, vmReg)
+			}
+			cg.asm.B(nextPC) // jump back to hot path after loop
+		})
 		cg.clearPinning()
 	} else {
 		// Fallback: no pinning (original code).
@@ -2881,7 +2954,7 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 
 	// Label for call-exit fallback
 	fallbackLabel := fmt.Sprintf("getfield_fallback_%d", pc)
-	doneLabel := fmt.Sprintf("getfield_done_%d", pc)
+
 
 	// --- Step 1: Type check R(B).typ == TypeTable ---
 	bTypOff := regTypOffset(b)
@@ -2987,17 +3060,23 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 		asm.LDR(X0, X7, w*8)
 		asm.STR(X0, regRegs, aOff+w*8)
 	}
-	asm.B(doneLabel)
+	// Fallback deferred to cold section.
+	capturedPinnedGF := make(map[int]Reg, len(cg.pinnedRegs))
+	for k, v := range cg.pinnedRegs {
+		capturedPinnedGF[k] = v
+	}
+	cg.deferCold(fallbackLabel, func() {
+		for vmReg, armReg := range capturedPinnedGF {
+			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+			cg.asm.MOVimm16W(X9, TypeInt)
+			cg.storeRegTyp(X9, vmReg)
+		}
+		cg.asm.LoadImm64(X1, int64(pc))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit)
+		cg.asm.B("epilogue")
+	})
 
-	// --- Fallback: call-exit ---
-	asm.Label(fallbackLabel)
-	cg.spillPinnedRegs()
-	asm.LoadImm64(X1, int64(pc))
-	asm.STR(X1, regCtx, ctxOffExitPC)
-	asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit)
-	asm.B("epilogue")
-
-	asm.Label(doneLabel)
 	return nil
 }
 
@@ -3012,7 +3091,7 @@ func (cg *Codegen) emitSetField(pc int, inst uint32) error {
 
 	// Label for call-exit fallback
 	fallbackLabel := fmt.Sprintf("setfield_fallback_%d", pc)
-	doneLabel := fmt.Sprintf("setfield_done_%d", pc)
+
 
 	// --- Step 1: Type check R(A).typ == TypeTable ---
 	aTypOff := regTypOffset(a)
@@ -3139,17 +3218,23 @@ func (cg *Codegen) emitSetField(pc int, inst uint32) error {
 			asm.STR(X0, X7, w*8)
 		}
 	}
-	asm.B(doneLabel)
+	// Fallback deferred to cold section.
+	capturedPinnedSF := make(map[int]Reg, len(cg.pinnedRegs))
+	for k, v := range cg.pinnedRegs {
+		capturedPinnedSF[k] = v
+	}
+	cg.deferCold(fallbackLabel, func() {
+		for vmReg, armReg := range capturedPinnedSF {
+			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+			cg.asm.MOVimm16W(X9, TypeInt)
+			cg.storeRegTyp(X9, vmReg)
+		}
+		cg.asm.LoadImm64(X1, int64(pc))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit)
+		cg.asm.B("epilogue")
+	})
 
-	// --- Fallback: call-exit ---
-	asm.Label(fallbackLabel)
-	cg.spillPinnedRegs()
-	asm.LoadImm64(X1, int64(pc))
-	asm.STR(X1, regCtx, ctxOffExitPC)
-	asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit)
-	asm.B("epilogue")
-
-	asm.Label(doneLabel)
 	return nil
 }
 
@@ -3163,7 +3248,7 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	asm := cg.asm
 
 	fallbackLabel := fmt.Sprintf("gettable_fallback_%d", pc)
-	doneLabel := fmt.Sprintf("gettable_done_%d", pc)
+
 
 	// --- Step 1: Type check R(B).typ == TypeTable ---
 	bTypOff := regTypOffset(b)
@@ -3254,17 +3339,23 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 		asm.LDR(X0, X3, w*8)
 		asm.STR(X0, regRegs, aOff+w*8)
 	}
-	asm.B(doneLabel)
+	// Fallback deferred to cold section.
+	capturedPinnedGT := make(map[int]Reg, len(cg.pinnedRegs))
+	for k, v := range cg.pinnedRegs {
+		capturedPinnedGT[k] = v
+	}
+	cg.deferCold(fallbackLabel, func() {
+		for vmReg, armReg := range capturedPinnedGT {
+			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+			cg.asm.MOVimm16W(X9, TypeInt)
+			cg.storeRegTyp(X9, vmReg)
+		}
+		cg.asm.LoadImm64(X1, int64(pc))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 2)
+		cg.asm.B("epilogue")
+	})
 
-	// --- Fallback: call-exit ---
-	asm.Label(fallbackLabel)
-	cg.spillPinnedRegs()
-	asm.LoadImm64(X1, int64(pc))
-	asm.STR(X1, regCtx, ctxOffExitPC)
-	asm.LoadImm64(X0, 2)
-	asm.B("epilogue")
-
-	asm.Label(doneLabel)
 	return nil
 }
 
@@ -3278,7 +3369,7 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 	asm := cg.asm
 
 	fallbackLabel := fmt.Sprintf("settable_fallback_%d", pc)
-	doneLabel := fmt.Sprintf("settable_done_%d", pc)
+
 
 	// --- Step 1: Type check R(A).typ == TypeTable ---
 	aTypOff := regTypOffset(a)
@@ -3390,17 +3481,23 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 			asm.STR(X0, X3, w*8)
 		}
 	}
-	asm.B(doneLabel)
+	// Fallback deferred to cold section.
+	capturedPinnedST := make(map[int]Reg, len(cg.pinnedRegs))
+	for k, v := range cg.pinnedRegs {
+		capturedPinnedST[k] = v
+	}
+	cg.deferCold(fallbackLabel, func() {
+		for vmReg, armReg := range capturedPinnedST {
+			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+			cg.asm.MOVimm16W(X9, TypeInt)
+			cg.storeRegTyp(X9, vmReg)
+		}
+		cg.asm.LoadImm64(X1, int64(pc))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 2)
+		cg.asm.B("epilogue")
+	})
 
-	// --- Fallback: call-exit ---
-	asm.Label(fallbackLabel)
-	cg.spillPinnedRegs()
-	asm.LoadImm64(X1, int64(pc))
-	asm.STR(X1, regCtx, ctxOffExitPC)
-	asm.LoadImm64(X0, 2)
-	asm.B("epilogue")
-
-	asm.Label(doneLabel)
 	return nil
 }
 
@@ -3528,7 +3625,7 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 	hasArg2 := cg.proto.NumParams > 1
 
 	overflowLabel := fmt.Sprintf("self_overflow_%d", pc)
-	doneLabel := fmt.Sprintf("self_done_%d", pc)
+
 
 	// Increment depth counter (before stack push, so overflow unwind is simpler).
 	a.ADDimm(regSelfDepth, regSelfDepth, 1)
@@ -3600,21 +3697,18 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 		a.STR(X1, regCtx, ctxOffTop)
 	}
 
-	a.B(doneLabel)
+	// Overflow handler deferred to cold section.
+	getglobalPC := candidate.getglobalPC
+	cg.deferCold(overflowLabel, func() {
+		cg.asm.MOVreg(SP, X29)                       // unwind all self-call stack frames
+		cg.asm.LDR(regRegs, regCtx, ctxOffRegs)      // restore original regRegs from context
+		cg.asm.MOVimm16(regSelfDepth, 0)             // reset depth
+		cg.asm.LoadImm64(X1, int64(getglobalPC))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 1) // side exit
+		cg.asm.B("epilogue")
+	})
 
-	// Overflow handler: unwind all self-call frames at once.
-	// X29 was set to SP in the prologue and is never modified by self-call pushes,
-	// so restoring SP from X29 unwinds all self-call stack frames.
-	a.Label(overflowLabel)
-	a.MOVreg(SP, X29)                       // unwind all self-call stack frames
-	a.LDR(regRegs, regCtx, ctxOffRegs)      // restore original regRegs from context
-	a.MOVimm16(regSelfDepth, 0)             // reset depth
-	a.LoadImm64(X1, int64(candidate.getglobalPC))
-	a.STR(X1, regCtx, ctxOffExitPC)
-	a.LoadImm64(X0, 1) // side exit
-	a.B("epilogue")
-
-	a.Label(doneLabel)
 	return nil
 }
 
@@ -3636,7 +3730,7 @@ func (cg *Codegen) emitCrossCall(pc int, info *crossCallInfo) error {
 	slotAddr := uintptr(unsafe.Pointer(info.slot))
 
 	fallbackLabel := fmt.Sprintf("xcall_fallback_%d", pc)
-	doneLabel := fmt.Sprintf("xcall_done_%d", pc)
+
 	depthLabel := fmt.Sprintf("xcall_depth_%d", pc)
 	calleeExitLabel := fmt.Sprintf("xcall_exit_%d", pc)
 
@@ -3727,39 +3821,49 @@ func (cg *Codegen) emitCrossCall(pc int, info *crossCallInfo) error {
 	a.ADDreg(X7, X7, X5) // X7 = fnReg + RetCount
 	a.STR(X7, regCtx, ctxOffTop)
 
-	a.B(doneLabel)
+	// All three cold paths deferred to cold section.
+	getglobalPC := info.getglobalPC
 
 	// Callee returned non-zero exit code.
-	// Unwind all cross-call and self-call frames, side exit.
-	a.Label(calleeExitLabel)
-	a.MOVreg(SP, X29)
-	a.LDR(regRegs, regCtx, ctxOffRegs)
-	a.LDR(regConsts, regCtx, ctxOffConstants)
-	a.MOVimm16(regSelfDepth, 0)
-	a.LoadImm64(X1, int64(info.getglobalPC))
-	a.STR(X1, regCtx, ctxOffExitPC)
-	a.LoadImm64(X0, 1) // side exit
-	a.B("epilogue")
+	cg.deferCold(calleeExitLabel, func() {
+		cg.asm.MOVreg(SP, X29)
+		cg.asm.LDR(regRegs, regCtx, ctxOffRegs)
+		cg.asm.LDR(regConsts, regCtx, ctxOffConstants)
+		cg.asm.MOVimm16(regSelfDepth, 0)
+		cg.asm.LoadImm64(X1, int64(getglobalPC))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 1) // side exit
+		cg.asm.B("epilogue")
+	})
 
 	// Fallback: callee not compiled, use call-exit for the GETGLOBAL.
-	a.Label(fallbackLabel)
-	cg.spillPinnedRegs()
-	a.LoadImm64(X1, int64(info.getglobalPC))
-	a.STR(X1, regCtx, ctxOffExitPC)
-	a.LoadImm64(X0, 2) // call-exit
-	a.B("epilogue")
+	capturedPinned := make(map[int]Reg, len(cg.pinnedRegs))
+	for k, v := range cg.pinnedRegs {
+		capturedPinned[k] = v
+	}
+	cg.deferCold(fallbackLabel, func() {
+		for vmReg, armReg := range capturedPinned {
+			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
+			cg.asm.MOVimm16W(X9, TypeInt)
+			cg.storeRegTyp(X9, vmReg)
+		}
+		cg.asm.LoadImm64(X1, int64(getglobalPC))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 2) // call-exit
+		cg.asm.B("epilogue")
+	})
 
 	// Depth exceeded: side exit.
-	a.Label(depthLabel)
-	a.SUBimm(regSelfDepth, regSelfDepth, 1)
-	a.MOVreg(SP, X29)
-	a.LDR(regRegs, regCtx, ctxOffRegs)
-	a.MOVimm16(regSelfDepth, 0)
-	a.LoadImm64(X1, int64(info.getglobalPC))
-	a.STR(X1, regCtx, ctxOffExitPC)
-	a.LoadImm64(X0, 1)
-	a.B("epilogue")
+	cg.deferCold(depthLabel, func() {
+		cg.asm.SUBimm(regSelfDepth, regSelfDepth, 1)
+		cg.asm.MOVreg(SP, X29)
+		cg.asm.LDR(regRegs, regCtx, ctxOffRegs)
+		cg.asm.MOVimm16(regSelfDepth, 0)
+		cg.asm.LoadImm64(X1, int64(getglobalPC))
+		cg.asm.STR(X1, regCtx, ctxOffExitPC)
+		cg.asm.LoadImm64(X0, 1)
+		cg.asm.B("epilogue")
+	})
 
-	a.Label(doneLabel)
 	return nil
 }
