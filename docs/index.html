@@ -94,7 +94,21 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
-  <a href="06-the-four-point-two-x-wall">The 4.2x Wall</a>
+  <a href="08-what-the-academics-know">What the Academics Know That We Don't</a>
+  <p>Five cutting-edge techniques surveyed: Copy-and-Patch, Deegen, MLGO, BOLT, and NaN-boxing. Which ones actually help close the LuaJIT gap?</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
+  <a href="07-the-day-we-beat-luajit">The Day We Beat LuaJIT</a>
+  <p>fib(20): GScript 24&micro;s, LuaJIT 26&micro;s. Function inlining, register pinning, and the moment we saw the number.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
+  <a href="06-the-four-point-two-x-wall">The 4.2&times; Wall</a>
   <p>We hit a wall at 4.2x behind LuaJIT. 50 instructions per iteration vs theoretical 15. The path forward: live-range register allocation.</p>
 </div>
 
@@ -133,15 +147,26 @@
   <p>18 optimizations, 2.4x result. What worked, what didn't, and why we need SSA.</p>
 </div>
 
-<h2>Benchmarks (verified correct)</h2>
+<h2>vs LuaJIT (warm benchmarks)</h2>
 
 <table>
-  <tr><th>Program</th><th>Interpreter</th><th>Trace JIT</th><th>Speedup</th></tr>
-  <tr><td>mandelbrot</td><td>1.50s</td><td><b>0.24s</b></td><td><b>&times;6.3</b></td></tr>
-  <tr><td>fib</td><td>0.84s</td><td><b>0.08s</b></td><td><b>&times;10</b></td></tr>
-  <tr><td>ackermann</td><td>0.15s</td><td><b>0.015s</b></td><td><b>&times;10</b></td></tr>
-  <tr><td>nbody</td><td>—</td><td>—</td><td>&times;1.1</td></tr>
-  <tr><td>sieve</td><td>0.28s</td><td>0.28s</td><td>&times;1.0</td></tr>
+  <tr><th>Benchmark</th><th>GScript</th><th>LuaJIT</th><th>Result</th></tr>
+  <tr><td>fib(20)</td><td><b>24&micro;s</b></td><td>26&micro;s</td><td><b style="color:#2a2">&starf; GScript 9% faster</b></td></tr>
+  <tr><td>fn calls (10K)</td><td>5.1&micro;s</td><td>2.6&micro;s</td><td>2.0&times; gap</td></tr>
+  <tr><td>ackermann(3,4)</td><td>30&micro;s</td><td>12&micro;s</td><td>2.5&times; gap</td></tr>
+  <tr><td>mandelbrot(1000)</td><td>0.23s</td><td>0.056s</td><td>4.0&times; gap</td></tr>
+</table>
+
+<h2>vs Interpreter</h2>
+
+<table>
+  <tr><th>Program</th><th>Interpreter</th><th>JIT</th><th>Speedup</th></tr>
+  <tr><td>mandelbrot</td><td>1.50s</td><td><b>0.23s</b></td><td><b>&times;6.6</b></td></tr>
+  <tr><td>fib(20)</td><td>—</td><td><b>24&micro;s</b></td><td><b>&times;10</b></td></tr>
+  <tr><td>fn calls</td><td>226&micro;s</td><td><b>5.1&micro;s</b></td><td><b>&times;44</b></td></tr>
+  <tr><td>ackermann</td><td>—</td><td><b>30&micro;s</b></td><td><b>&times;10</b></td></tr>
+  <tr><td>nbody</td><td>2.7s</td><td>2.5s</td><td>&times;1.1</td></tr>
+  <tr><td>sieve</td><td>0.17s</td><td>0.17s</td><td>&times;1.0</td></tr>
 </table>
 
 <footer>
