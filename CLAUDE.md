@@ -143,14 +143,30 @@ Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
 ## Current Status (2026-03-19, verified correct)
 
-| Benchmark | Interpreter | Trace JIT | Speedup | vs LuaJIT |
-|-----------|-------------|-----------|---------|-----------|
-| mandelbrot | 1.5s | 0.227s | **×6.6** | 4.0x slower |
-| fib(20) warm | — | 24us | ×10 (method JIT) | **1.09x FASTER** 🏆 |
-| fn calls warm | — | 5.1us | ×44 (method JIT) | **1.7x slower** |
-| sieve | 0.17s | 0.17s | ×1.0 | — |
-| nbody | 2.73s | ~2.5s | ×1.1 | — |
-| ackermann | 0.017s | 0.017s | ×10 (method JIT) | ~1x |
+### vs LuaJIT (warm benchmarks)
+| Benchmark | GScript | LuaJIT | Result |
+|-----------|---------|--------|--------|
+| **fib(20)** | **24us** | 26us | **🏆 9% FASTER** |
+| fn calls (10K) | 5.1us | 2.6us | 2.0x gap |
+| ackermann(3,4) | 30us | 12us | 2.5x gap |
+| mandelbrot(1000) | 0.23s | 0.056s | 4.0x gap |
+
+### Full benchmark suite (15 benchmarks)
+| Benchmark | VM | Trace/JIT | Speedup |
+|-----------|-----|-----------|---------|
+| mandelbrot | 1.5s | 0.23s | **×6.6** |
+| fib(20) warm | — | 24us | **×10** |
+| fn calls warm | 226us | 5.1us | **×44** |
+| ackermann warm | 303us | 30us | **×10** |
+| sieve | 0.17s | 0.17s | ×1.0 |
+| nbody | 2.7s | 2.5s | ×1.1 |
+| spectral_norm | 0.82s | 1.0s | ×0.82 |
+| matmul | 1.26s | 1.63s | ×0.77 |
+| fannkuch(9) | 0.52s | — | — |
+| sort(50K) | 0.16s | — | — |
+| sum_primes(100K) | 0.024s | 0.037s | ×0.65 |
+| mutual_recursion | 0.28s | 0.32s | ×0.88 |
+| method_dispatch | 0.13s | 0.13s | ×1.0 |
 
 Target: **surpass LuaJIT** on compute-heavy benchmarks first, then table-heavy.
 
