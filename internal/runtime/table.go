@@ -3,6 +3,7 @@ package runtime
 import (
 	"math"
 	"sync"
+	"unsafe"
 )
 
 // smallFieldCap is the threshold for using flat slices vs maps for string keys.
@@ -27,7 +28,6 @@ type Table struct {
 	metatable *Table
 	keys      []Value // ordered keys for Next() iteration
 	keysDirty bool
-	sfieldIdx map[string]int // lazy-built: field name → skeys index (nil = not built)
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.
@@ -138,10 +138,21 @@ func (t *Table) HasMetatable() bool {
 	return t.metatable != nil
 }
 
-// sfieldIdxThreshold is the minimum number of skeys before we build sfieldIdx.
-// Below this count, linear scan is fast enough (pointer comparison is ~1ns/key,
-// while Go map lookup is ~30-50ns). Only useful for tables with many fields.
-const sfieldIdxThreshold = 20
+// skeysDataPtr returns the data pointer of a string slice's backing array.
+// Used for cheap identity comparison of skeys slices (inline cache).
+func skeysDataPtr(s []string) uintptr {
+	return (*[3]uintptr)(unsafe.Pointer(&s))[0]
+}
+
+// FieldCacheEntry is an inline cache entry for field access.
+// It caches the index of a field name in a table's skeys slice,
+// keyed by the table's skeys slice identity (pointer + length).
+// This avoids O(n) linear scan on repeated field access.
+type FieldCacheEntry struct {
+	skeysPtr uintptr // pointer to the skeys backing array
+	skeysLen int     // length of skeys at cache time
+	FieldIdx int     // cached index into skeys/svals
+}
 
 // RawGetString retrieves a value by string key (fast path, no Value boxing).
 func (t *Table) RawGetString(key string) Value {
@@ -149,28 +160,46 @@ func (t *Table) RawGetString(key string) Value {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
 	}
-	// Fast path: use precomputed field index map if available
-	if t.sfieldIdx != nil {
-		if idx, ok := t.sfieldIdx[key]; ok {
-			return t.svals[idx]
+	for i, k := range t.skeys {
+		if k == key {
+			return t.svals[i]
 		}
-		// Not in sfieldIdx → not in skeys. Fall through to smap.
-	} else if n := len(t.skeys); n > 0 {
-		if n >= sfieldIdxThreshold {
-			// Build sfieldIdx for O(1) future lookups
-			t.sfieldIdx = make(map[string]int, n)
-			for i, k := range t.skeys {
-				t.sfieldIdx[k] = i
-			}
-			if idx, ok := t.sfieldIdx[key]; ok {
+	}
+	if t.smap != nil {
+		if v, ok := t.smap[key]; ok {
+			return v
+		}
+	}
+	return NilValue()
+}
+
+// RawGetStringCached retrieves a value by string key using an inline cache.
+// The cache entry stores the field index from a previous lookup on a table
+// with the same skeys shape. On cache hit, avoids the O(n) linear scan.
+// Returns the value and updates the cache entry for future calls.
+func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
+	if t.mu != nil {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+	}
+	// Inline cache hit: check if skeys shape matches
+	if len(t.skeys) > 0 {
+		skPtr := skeysDataPtr(t.skeys)
+		skLen := len(t.skeys)
+		if cache.skeysPtr == skPtr && cache.skeysLen == skLen {
+			// Shape matches — use cached index directly
+			idx := cache.FieldIdx
+			if idx < skLen {
 				return t.svals[idx]
 			}
-		} else {
-			// Small table: linear scan is faster than map
-			for i, k := range t.skeys {
-				if k == key {
-					return t.svals[i]
-				}
+		}
+		// Cache miss — linear scan and update cache
+		for i, k := range t.skeys {
+			if k == key {
+				cache.skeysPtr = skPtr
+				cache.skeysLen = skLen
+				cache.FieldIdx = i
+				return t.svals[i]
 			}
 		}
 	}
@@ -180,6 +209,81 @@ func (t *Table) RawGetString(key string) Value {
 		}
 	}
 	return NilValue()
+}
+
+// RawSetStringCached assigns a value by string key using an inline cache.
+// Similar to RawGetStringCached, uses the cache to find existing keys faster.
+func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry) {
+	if t.mu != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
+	t.keysDirty = true
+
+	// Inline cache hit for existing key
+	if len(t.skeys) > 0 {
+		skPtr := skeysDataPtr(t.skeys)
+		skLen := len(t.skeys)
+		if cache.skeysPtr == skPtr && cache.skeysLen == skLen {
+			idx := cache.FieldIdx
+			if idx < skLen && t.skeys[idx] == key {
+				if val.IsNil() {
+					last := skLen - 1
+					if idx != last {
+						t.skeys[idx] = t.skeys[last]
+						t.svals[idx] = t.svals[last]
+					}
+					t.skeys = t.skeys[:last]
+					t.svals = t.svals[:last]
+					cache.skeysPtr = 0 // invalidate cache
+					cache.skeysLen = 0
+				} else {
+					t.svals[idx] = val
+				}
+				return
+			}
+		}
+	}
+
+	// Fall back to normal path
+	for i, k := range t.skeys {
+		if k == key {
+			if val.IsNil() {
+				last := len(t.skeys) - 1
+				t.skeys[i] = t.skeys[last]
+				t.svals[i] = t.svals[last]
+				t.skeys = t.skeys[:last]
+				t.svals = t.svals[:last]
+			} else {
+				t.svals[i] = val
+			}
+			return
+		}
+	}
+
+	if t.smap != nil {
+		if val.IsNil() {
+			delete(t.smap, key)
+		} else {
+			t.smap[key] = val
+		}
+		return
+	}
+
+	if !val.IsNil() {
+		if len(t.skeys) < smallFieldCap {
+			t.skeys = append(t.skeys, key)
+			t.svals = append(t.svals, val)
+		} else {
+			t.smap = make(map[string]Value, len(t.skeys)+1)
+			for i, k := range t.skeys {
+				t.smap[k] = t.svals[i]
+			}
+			t.smap[key] = val
+			t.skeys = nil
+			t.svals = nil
+		}
+	}
 }
 
 // RawSet assigns a value by key, bypassing metamethods.
@@ -281,40 +385,18 @@ func (t *Table) RawSetString(key string, val Value) {
 	}
 	t.keysDirty = true
 
-	// Fast path: use sfieldIdx for O(1) lookup of existing key
-	if t.sfieldIdx != nil {
-		if idx, ok := t.sfieldIdx[key]; ok {
+	for i, k := range t.skeys {
+		if k == key {
 			if val.IsNil() {
-				// Delete: swap with last and truncate
 				last := len(t.skeys) - 1
-				if idx != last {
-					t.skeys[idx] = t.skeys[last]
-					t.svals[idx] = t.svals[last]
-				}
+				t.skeys[i] = t.skeys[last]
+				t.svals[i] = t.svals[last]
 				t.skeys = t.skeys[:last]
 				t.svals = t.svals[:last]
-				t.sfieldIdx = nil // invalidate — positions changed
 			} else {
-				// Overwrite: only value changes, sfieldIdx stays valid
-				t.svals[idx] = val
+				t.svals[i] = val
 			}
 			return
-		}
-		// Key not in skeys — fall through to smap check or add
-	} else {
-		for i, k := range t.skeys {
-			if k == key {
-				if val.IsNil() {
-					last := len(t.skeys) - 1
-					t.skeys[i] = t.skeys[last]
-					t.svals[i] = t.svals[last]
-					t.skeys = t.skeys[:last]
-					t.svals = t.svals[:last]
-				} else {
-					t.svals[i] = val
-				}
-				return
-			}
 		}
 	}
 
@@ -331,7 +413,6 @@ func (t *Table) RawSetString(key string, val Value) {
 		if len(t.skeys) < smallFieldCap {
 			t.skeys = append(t.skeys, key)
 			t.svals = append(t.svals, val)
-			t.sfieldIdx = nil // invalidate — new key added
 		} else {
 			t.smap = make(map[string]Value, len(t.skeys)+1)
 			for i, k := range t.skeys {
@@ -340,7 +421,6 @@ func (t *Table) RawSetString(key string, val Value) {
 			t.smap[key] = val
 			t.skeys = nil
 			t.svals = nil
-			t.sfieldIdx = nil // skeys no longer used
 		}
 	}
 }
