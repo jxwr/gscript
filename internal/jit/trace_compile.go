@@ -861,12 +861,12 @@ func emitTrGetField(asm *Assembler, ir *TraceIR, idx int) {
 	// Step 7: Found - load svals[i] into R(A)
 	asm.Label(foundLabel)
 	asm.LDR(X7, X8, TableOffSvals) // X7 = svals base pointer
-	asm.LSLimm(X0, X6, 5)          // X0 = i * 32 (ValueSize)
-	asm.ADDreg(X7, X7, X0)         // X7 = &svals[i]
+	EmitMulValueSize(asm, X0, X6, X5) // X0 = i * ValueSize
+	asm.ADDreg(X7, X7, X0)            // X7 = &svals[i]
 
-	// Copy Value (32 bytes = 4 words) from svals[i] to R(A)
+	// Copy Value from svals[i] to R(A)
 	aOff := a * ValueSize
-	for w := 0; w < 4; w++ {
+	for w := 0; w < ValueSize/8; w++ {
 		asm.LDR(X0, X7, w*8)
 		asm.STR(X0, regRegs, aOff+w*8)
 	}
@@ -924,11 +924,11 @@ func emitTrGetTable(asm *Assembler, ir *TraceIR, idx int) {
 
 	// Step 6: Load array[key]
 	asm.LDR(X3, X0, TableOffArray) // X3 = array.ptr
-	asm.LSLimm(X4, X2, 5)         // X4 = key * 32 (ValueSize)
-	asm.ADDreg(X3, X3, X4)        // X3 = &array[key]
+	EmitMulValueSize(asm, X4, X2, X5) // X4 = key * ValueSize
+	asm.ADDreg(X3, X3, X4)            // X3 = &array[key]
 
 	aOff := a * ValueSize
-	for w := 0; w < 4; w++ {
+	for w := 0; w < ValueSize/8; w++ {
 		asm.LDR(X0, X3, w*8)
 		asm.STR(X0, regRegs, aOff+w*8)
 	}
@@ -1016,8 +1016,8 @@ func emitTrSetField(asm *Assembler, ir *TraceIR, idx int) {
 	// Found: write RK(C) value to svals[i]
 	asm.Label(foundLabel)
 	asm.LDR(X7, X8, TableOffSvals)
-	asm.LSLimm(X0, X6, 5) // i * 32
-	asm.ADDreg(X7, X7, X0) // &svals[i]
+	EmitMulValueSize(asm, X0, X6, X5) // i * ValueSize
+	asm.ADDreg(X7, X7, X0)            // &svals[i]
 
 	// Load value from RK(C)
 	valOff, valBase := trRKBase(cidx)
@@ -1070,8 +1070,8 @@ func emitTrSetTable(asm *Assembler, ir *TraceIR, idx int) {
 	asm.BCond(CondGE, fallbackLabel)
 
 	// Write RK(C) to array[key]
-	asm.LDR(X3, X0, TableOffArray) // array.ptr
-	asm.LSLimm(X4, X2, 5)          // key * 32
+	asm.LDR(X3, X0, TableOffArray)     // array.ptr
+	EmitMulValueSize(asm, X4, X2, X5) // key * ValueSize
 	asm.ADDreg(X3, X3, X4)
 
 	valOff, valBase := trRKBase(cidx)

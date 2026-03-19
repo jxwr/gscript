@@ -2773,13 +2773,13 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 	asm.Label(foundLabel)
 	// svals base is at Table + TableOffSvals
 	asm.LDR(X7, X9, TableOffSvals) // X7 = svals base pointer
-	// svals[i] is at X7 + i * ValueSize (32)
-	asm.LSLimm(X8, X6, 5)   // X8 = i * 32
-	asm.ADDreg(X7, X7, X8)  // X7 = &svals[i]
+	// svals[i] is at X7 + i * ValueSize
+	EmitMulValueSize(asm, X8, X6, X5) // X8 = i * ValueSize
+	asm.ADDreg(X7, X7, X8)            // X7 = &svals[i]
 
-	// Copy Value (32 bytes = 4 words) from svals[i] to R(A)
+	// Copy Value (ValueSize bytes) from svals[i] to R(A)
 	aOff := a * ValueSize
-	for w := 0; w < 4; w++ {
+	for w := 0; w < ValueSize/8; w++ {
 		asm.LDR(X0, X7, w*8)
 		asm.STR(X0, regRegs, aOff+w*8)
 	}
@@ -2890,11 +2890,11 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 
 	// --- Step 6: Load array[key] (Value at array.ptr + key * ValueSize) ---
 	asm.LDR(X3, X0, TableOffArray) // X3 = array.ptr
-	asm.LSLimm(X4, X2, 5)          // X4 = key * 32 (ValueSize)
-	asm.ADDreg(X3, X3, X4)         // X3 = &array[key]
+	EmitMulValueSize(asm, X4, X2, X5) // X4 = key * ValueSize
+	asm.ADDreg(X3, X3, X4)            // X3 = &array[key]
 
 	aOff := a * ValueSize
-	for w := 0; w < 4; w++ {
+	for w := 0; w < ValueSize/8; w++ {
 		asm.LDR(X0, X3, w*8)
 		asm.STR(X0, regRegs, aOff+w*8)
 	}

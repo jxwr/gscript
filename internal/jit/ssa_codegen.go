@@ -566,15 +566,15 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		// No code emitted; UNBOX_INT will load the value.
 
 	case SSA_LOAD_GLOBAL:
-		// Load a full 32-byte Value from the constant pool into the VM register.
+		// Load a full Value from the constant pool into the VM register.
 		// AuxInt = constant pool index, Slot = destination register.
 		constIdx := int(inst.AuxInt)
 		dstSlot := int(inst.Slot)
 		if dstSlot >= 0 && constIdx >= 0 {
 			constOff := constIdx * ValueSize
 			dstOff := dstSlot * ValueSize
-			// Copy 32 bytes (4 words) from constants to registers
-			for w := 0; w < 4; w++ {
+			// Copy ValueSize bytes (ValueSize/8 words) from constants to registers
+			for w := 0; w < ValueSize/8; w++ {
 				asm.LDR(X0, regConsts, constOff+w*8)
 				asm.STR(X0, regRegs, dstOff+w*8)
 			}
@@ -640,7 +640,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		asm.BCond(CondGE, "side_exit")
 		// Compute element address: X3 = &array[key]
 		asm.LDR(X3, X0, TableOffArray) // array.ptr
-		asm.LSLimm(X4, keyReg, 5)      // key * 32
+		EmitMulValueSize(asm, X4, keyReg, X5) // key * ValueSize
 		asm.ADDreg(X3, X3, X4)
 
 		if inst.Type == SSATypeInt && dstSlot >= 0 {
@@ -683,8 +683,8 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
 			}
 		} else if dstSlot >= 0 {
-			// Unspecialized fallback: copy full 32 bytes
-			for w := 0; w < 4; w++ {
+			// Unspecialized fallback: copy full Value
+			for w := 0; w < ValueSize/8; w++ {
 				asm.LDR(X0, X3, w*8)
 				asm.STR(X0, regRegs, dstSlot*ValueSize+w*8)
 			}
@@ -710,11 +710,11 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		asm.CMPreg(keyReg, X3)
 		asm.BCond(CondGE, "side_exit")
 		asm.LDR(X3, X0, TableOffArray)
-		asm.LSLimm(X4, keyReg, 5)
+		EmitMulValueSize(asm, X4, keyReg, X5) // key * ValueSize
 		asm.ADDreg(X3, X3, X4)
-		// Write value (4 words)
+		// Write value (ValueSize/8 words)
 		if valSlot >= 0 {
-			for w := 0; w < 4; w++ {
+			for w := 0; w < ValueSize/8; w++ {
 				asm.LDR(X0, regRegs, valSlot*ValueSize+w*8)
 				asm.STR(X0, X3, w*8)
 			}
@@ -751,9 +751,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		// Load svals[fieldIdx]: svals base + fieldIdx * ValueSize
 		asm.LDR(X1, X0, TableOffSvals) // X1 = svals base pointer
 		svalsOff := fieldIdx * ValueSize
-		// Copy entire Value (32 bytes = 4 words) from svals[fieldIdx] to R(A)
+		// Copy entire Value from svals[fieldIdx] to R(A)
 		if dstSlot >= 0 {
-			for w := 0; w < 4; w++ {
+			for w := 0; w < ValueSize/8; w++ {
 				asm.LDR(X2, X1, svalsOff+w*8)
 				asm.STR(X2, regRegs, dstSlot*ValueSize+w*8)
 			}
@@ -788,7 +788,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		asm.LDR(X1, X0, TableOffSvals)
 		svalsOff := fieldIdx * ValueSize
 		if valSlot >= 0 {
-			for w := 0; w < 4; w++ {
+			for w := 0; w < ValueSize/8; w++ {
 				asm.LDR(X2, regRegs, valSlot*ValueSize+w*8)
 				asm.STR(X2, X1, svalsOff+w*8)
 			}

@@ -10,22 +10,26 @@ import (
 // These must match the runtime.Value struct layout exactly.
 // Verified at init() time via unsafe.Offsetof.
 //
-// Compact 32-byte layout:
-//   typ  ValueType  (offset 0, 1 byte + 7 padding)
-//   data uint64     (offset 8, 8 bytes: int/float bits/bool)
-//   ptr  any        (offset 16, 16 bytes: interface{} = type_ptr + data_ptr)
+// Compact 24-byte layout (down from 32):
+//   typ  ValueType       (offset 0, 1 byte + 7 padding)
+//   data uint64          (offset 8, 8 bytes: int/float bits/bool, or iface type ptr for Function)
+//   ptr  unsafe.Pointer  (offset 16, 8 bytes: actual pointer for ref types, nil for scalars)
+//
+// Key change from 32-byte layout: ptr is now unsafe.Pointer (8 bytes)
+// instead of any/interface{} (16 bytes). This eliminates the interface
+// indirection — ptr IS the data pointer, not an interface wrapping it.
 const (
-	ValueSize   = 32 // sizeof(runtime.Value)
-	OffsetTyp   = 0  // offset of .typ field (ValueType = uint8)
-	OffsetData  = 8  // offset of .data field (uint64)
-	OffsetPtr   = 16 // offset of .ptr field (any/interface: type_ptr + data_ptr = 16 bytes)
+	ValueSize  = 24 // sizeof(runtime.Value)
+	OffsetTyp  = 0  // offset of .typ field (ValueType = uint8)
+	OffsetData = 8  // offset of .data field (uint64: int/float/bool payload)
+	OffsetPtr  = 16 // offset of .ptr field (unsafe.Pointer: direct pointer, NOT interface)
 
 	// Legacy alias so existing codegen references compile without changes
 	OffsetIval = OffsetData
 
-	// Interface layout: {type_ptr(8), data_ptr(8)}
-	// For Value.ptr (any), data_ptr is at OffsetPtr + 8
-	OffsetPtrData = OffsetPtr + 8 // data pointer within the any interface
+	// With unsafe.Pointer, the pointer IS at OffsetPtr directly.
+	// No interface indirection — OffsetPtrData == OffsetPtr.
+	OffsetPtrData = OffsetPtr
 
 	// Table struct offsets (must match runtime.Table layout)
 	TableOffMu        = 0
@@ -55,13 +59,13 @@ const (
 type valueLayoutAccessor struct {
 	typ  uint8
 	data uint64
-	ptr  any
+	ptr  unsafe.Pointer
 }
 
 func init() {
 	var v valueLayoutAccessor
 	if s := unsafe.Sizeof(v); s != ValueSize {
-		panic("jit: Value size mismatch: expected 32, got " + itoa(int(s)))
+		panic("jit: Value size mismatch: expected 24, got " + itoa(int(s)))
 	}
 	if o := unsafe.Offsetof(v.typ); o != OffsetTyp {
 		panic("jit: Value.typ offset mismatch")
@@ -77,8 +81,6 @@ func init() {
 	var t runtime.Table
 	t.SetConcurrent(false) // ensure mu is nil for offset checking
 	_ = t
-	// We can't easily check Table offsets without importing sync,
-	// but the constants are verified by the struct offset program.
 
 	if uint8(runtime.TypeNil) != TypeNil {
 		panic("jit: TypeNil mismatch")
@@ -122,4 +124,28 @@ func ValueOffset(reg int) int {
 
 func FieldOffset(reg, fieldOff int) int {
 	return reg*ValueSize + fieldOff
+}
+
+// EmitMulValueSize emits ARM64 instructions to compute rd = rn * ValueSize.
+// Uses scratch register (must not alias rn) for the multiplication constant.
+// For power-of-2 ValueSize, uses a single LSL. For ValueSize=24, uses
+// ADD+LSL (rd = rn*3 << 3). For other sizes, uses MOVZ+MUL.
+func EmitMulValueSize(asm *Assembler, rd, rn, scratch Reg) {
+	switch ValueSize {
+	case 8:
+		asm.LSLimm(rd, rn, 3)
+	case 16:
+		asm.LSLimm(rd, rn, 4)
+	case 24:
+		// 24 = 3 * 8. Compute rn * 3, then shift left by 3.
+		// ADD rd, rn, rn LSL #1   (rd = rn + rn*2 = rn*3)
+		// LSL rd, rd, #3          (rd = rn*3 * 8 = rn*24)
+		asm.ADDregLSL(rd, rn, rn, 1) // rd = rn * 3
+		asm.LSLimm(rd, rd, 3)         // rd = rn * 24
+	case 32:
+		asm.LSLimm(rd, rn, 5)
+	default:
+		asm.LoadImm64(scratch, int64(ValueSize))
+		asm.MUL(rd, rn, scratch)
+	}
 }

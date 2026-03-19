@@ -205,6 +205,12 @@ func (a *Assembler) ADDreg(rd, rn, rm Reg) {
 	a.emit(0x8B000000 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
 }
 
+// ADDregLSL: Xd = Xn + (Xm << shift) (64-bit, LSL shift 0-63)
+func (a *Assembler) ADDregLSL(rd, rn, rm Reg, shift uint8) {
+	// 1|00|01011|00|0|Rm|imm6|Rn|Rd  (shift_type=00=LSL)
+	a.emit(0x8B000000 | uint32(rm)<<16 | uint32(shift&0x3F)<<10 | uint32(rn)<<5 | uint32(rd))
+}
+
 // ADDimm: Xd = Xn + #imm12 (64-bit, no shift)
 func (a *Assembler) ADDimm(rd, rn Reg, imm12 uint16) {
 	// 1|00|100010|0|imm12|Rn|Rd

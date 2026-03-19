@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"math"
 	"sync"
 )
 
@@ -37,15 +36,16 @@ func (t *Table) SetConcurrent(on bool) {
 }
 
 // cleanHashKey normalizes a Value for use as a Go map key.
-// Clears stale fields left by SetInt and similar partial-update methods.
+// With the 16-byte layout, SetInt always writes both fields, so stale fields
+// are less of an issue. We still normalize for safety.
 func cleanHashKey(key Value) Value {
-	switch key.typ {
+	switch key.Type() {
 	case TypeInt:
-		return Value{typ: TypeInt, data: key.data} // clear stale ptr
+		return IntValue(key.Int())
 	case TypeFloat:
-		return Value{typ: TypeFloat, data: key.data} // clear stale ptr
+		return FloatValue(key.Float())
 	case TypeString:
-		return Value{typ: TypeString, ptr: key.ptr} // clear stale data
+		return StringValue(key.Str())
 	default:
 		return key
 	}
@@ -80,11 +80,11 @@ func (t *Table) RawGet(key Value) Value {
 	if key.IsNil() {
 		return NilValue()
 	}
-	if key.typ == TypeInt {
-		return t.RawGetInt(int64(key.data))
+	if key.Type() == TypeInt {
+		return t.RawGetInt(key.Int())
 	}
-	if key.typ == TypeString {
-		return t.RawGetString(key.ptr.(string))
+	if key.Type() == TypeString {
+		return t.RawGetString(key.Str())
 	}
 	// General hash for other types
 	if t.mu != nil {
@@ -267,15 +267,17 @@ func (t *Table) RawSet(key, val Value) {
 	if key.IsNil() {
 		return
 	}
-	if key.typ == TypeFloat && floatIsInt(math.Float64frombits(key.data)) {
-		key = IntValue(int64(math.Float64frombits(key.data)))
+	kt := key.Type()
+	if kt == TypeFloat && floatIsInt(key.Float()) {
+		key = IntValue(int64(key.Float()))
+		kt = TypeInt
 	}
-	if key.typ == TypeInt {
-		t.RawSetInt(int64(key.data), val)
+	if kt == TypeInt {
+		t.RawSetInt(key.Int(), val)
 		return
 	}
-	if key.typ == TypeString {
-		t.RawSetString(key.ptr.(string), val)
+	if kt == TypeString {
+		t.RawSetString(key.Str(), val)
 		return
 	}
 	// General hash

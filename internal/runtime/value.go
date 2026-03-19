@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unsafe"
 )
 
 // ValueType represents the type of a GScript value.
@@ -22,23 +23,33 @@ const (
 	TypeChannel             // channels
 )
 
+// iface is the memory layout of a Go interface{}/any value.
+// Used to pack/unpack interface values into the compact Value representation.
+type iface struct {
+	typ  unsafe.Pointer
+	data unsafe.Pointer
+}
+
 // Value is a compact tagged-union representation of all GScript values.
-// 32 bytes: {typ(8) + data(8) + ptr(16)}.
+// 24 bytes: {typ(1+7pad) + data(8) + ptr(8)}.
 //
 // Storage layout:
 //   Nil:       {TypeNil,   0,              nil}
 //   Bool:      {TypeBool,  0 or 1,         nil}
 //   Int:       {TypeInt,   uint64(i),      nil}
 //   Float:     {TypeFloat, Float64bits(f), nil}
-//   String:    {TypeString,0,              string(s)}
+//   String:    {TypeString,0,              *string}
 //   Table:     {TypeTable, 0,              *Table}
-//   Function:  {TypeFunction,0,            *Closure/*GoFunction}
-//   Coroutine: {TypeCoroutine,0,           any}
+//   Function:  {TypeFunction,ifaceTyp,     ifaceData} — stores iface type ptr in data for Ptr() reconstruction
+//   Coroutine: {TypeCoroutine,ifaceTyp,    ifaceData} — same as Function for AnyCoroutineValue
 //   Channel:   {TypeChannel,0,             *Channel}
+//
+// The ptr field is unsafe.Pointer (8 bytes) instead of any (16 bytes),
+// saving 8 bytes per Value compared to the old interface-based layout.
 type Value struct {
-	typ  ValueType
-	data uint64 // Int/Bool payload, or Float64bits for float
-	ptr  any    // *Table | *Closure | *GoFunction | *Coroutine | *Channel | string
+	typ  ValueType       // offset 0: type tag (1 byte + 7 padding)
+	data uint64          // offset 8: int/float/bool payload, or iface type ptr for Function/Coroutine
+	ptr  unsafe.Pointer  // offset 16: GC-visible pointer (nil for scalars)
 }
 
 // ---------------------------------------------------------------------------
@@ -66,27 +77,45 @@ func FloatValue(f float64) Value {
 }
 
 func StringValue(s string) Value {
-	return Value{typ: TypeString, ptr: s}
+	sp := new(string)
+	*sp = s
+	return Value{typ: TypeString, ptr: unsafe.Pointer(sp)}
 }
 
 func TableValue(t *Table) Value {
-	return Value{typ: TypeTable, ptr: t}
+	return Value{typ: TypeTable, ptr: unsafe.Pointer(t)}
 }
 
+// FunctionValue stores a function value (either *Closure or *GoFunction or any
+// other pointer type). The interface type pointer is stored in data so
+// that Ptr() can reconstruct the original interface for type assertions.
 func FunctionValue(f interface{}) Value {
-	return Value{typ: TypeFunction, ptr: f}
+	i := (*iface)(unsafe.Pointer(&f))
+	return Value{
+		typ:  TypeFunction,
+		data: uint64(uintptr(i.typ)),
+		ptr:  i.data,
+	}
 }
 
 func CoroutineValue(c *Coroutine) Value {
-	return Value{typ: TypeCoroutine, ptr: c}
+	return Value{typ: TypeCoroutine, ptr: unsafe.Pointer(c)}
 }
 
+// AnyCoroutineValue stores a coroutine value from an arbitrary pointer type
+// (e.g. *VMCoroutine from the vm package). Like FunctionValue, it preserves
+// the interface type pointer for Ptr() reconstruction.
 func AnyCoroutineValue(c any) Value {
-	return Value{typ: TypeCoroutine, ptr: c}
+	i := (*iface)(unsafe.Pointer(&c))
+	return Value{
+		typ:  TypeCoroutine,
+		data: uint64(uintptr(i.typ)),
+		ptr:  i.data,
+	}
 }
 
 func ChannelValue(ch *Channel) Value {
-	return Value{typ: TypeChannel, ptr: ch}
+	return Value{typ: TypeChannel, ptr: unsafe.Pointer(ch)}
 }
 
 // ---------------------------------------------------------------------------
@@ -94,14 +123,13 @@ func ChannelValue(ch *Channel) Value {
 // ---------------------------------------------------------------------------
 
 // SetInt updates a Value to an integer in place.
-// NOTE: ptr field may be stale. Table operations use cleanHashKey to normalize.
 func (v *Value) SetInt(i int64) {
 	v.typ = TypeInt
 	v.data = uint64(i)
 }
 
 // ---------------------------------------------------------------------------
-// Pointer-receiver fast paths (avoid 32-byte Value copies in VM hot loop)
+// Pointer-receiver fast paths (avoid 24-byte Value copies in VM hot loop)
 // ---------------------------------------------------------------------------
 
 func (v *Value) RawType() ValueType { return v.typ }
@@ -228,48 +256,91 @@ func (v Value) Str() string {
 	if v.ptr == nil {
 		return ""
 	}
-	return v.ptr.(string)
+	return *(*string)(v.ptr)
 }
 
 func (v Value) Table() *Table {
 	if v.ptr == nil {
 		return nil
 	}
-	return v.ptr.(*Table)
+	return (*Table)(v.ptr)
 }
 
+// Closure returns the value as *runtime.Closure, or nil if the underlying
+// pointer is not a *runtime.Closure. Uses Ptr() to reconstruct the interface
+// for a safe type assertion.
 func (v Value) Closure() *Closure {
 	if v.ptr == nil {
 		return nil
 	}
-	c, _ := v.ptr.(*Closure)
+	c, _ := v.Ptr().(*Closure)
 	return c
 }
 
+// GoFunction returns the value as *GoFunction, or nil.
 func (v Value) GoFunction() *GoFunction {
 	if v.ptr == nil {
 		return nil
 	}
-	gf, _ := v.ptr.(*GoFunction)
+	gf, _ := v.Ptr().(*GoFunction)
 	return gf
 }
 
+// Ptr reconstructs the original interface{} value from the stored type pointer
+// and data pointer. For Function and Coroutine types that were created via
+// FunctionValue()/AnyCoroutineValue(), the interface type pointer is stored in
+// the data field. For other pointer types, it returns a typed pointer.
 func (v Value) Ptr() any {
-	return v.ptr
+	switch v.typ {
+	case TypeFunction:
+		// Reconstruct the original interface from stored type+data pointers
+		typPtr := unsafe.Pointer(uintptr(v.data))
+		if typPtr == nil {
+			return nil
+		}
+		i := iface{typ: typPtr, data: v.ptr}
+		return *(*any)(unsafe.Pointer(&i))
+	case TypeCoroutine:
+		if v.data != 0 {
+			// Created via AnyCoroutineValue — reconstruct interface
+			typPtr := unsafe.Pointer(uintptr(v.data))
+			i := iface{typ: typPtr, data: v.ptr}
+			return *(*any)(unsafe.Pointer(&i))
+		}
+		// Created via CoroutineValue(*Coroutine) — return typed pointer
+		return (*Coroutine)(v.ptr)
+	case TypeTable:
+		return (*Table)(v.ptr)
+	case TypeString:
+		if v.ptr == nil {
+			return ""
+		}
+		return *(*string)(v.ptr)
+	case TypeChannel:
+		return (*Channel)(v.ptr)
+	default:
+		return nil
+	}
 }
 
 func (v Value) Coroutine() *Coroutine {
 	if v.ptr == nil {
 		return nil
 	}
-	return v.ptr.(*Coroutine)
+	// If created via CoroutineValue(*Coroutine), data is 0 (no iface type ptr).
+	if v.data == 0 {
+		return (*Coroutine)(v.ptr)
+	}
+	// If created via AnyCoroutineValue, reconstruct and type-assert.
+	c, _ := v.Ptr().(*Coroutine)
+	return c
 }
 
 func (v Value) Channel() *Channel {
 	if v.ptr == nil {
 		return nil
 	}
-	return v.ptr.(*Channel)
+	return (*Channel)(v.ptr)
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +396,7 @@ func (v Value) Equal(other Value) bool {
 	case TypeFloat:
 		return math.Float64frombits(v.data) == math.Float64frombits(other.data)
 	case TypeString:
-		return v.ptr.(string) == other.ptr.(string)
+		return *(*string)(v.ptr) == *(*string)(other.ptr)
 	case TypeTable, TypeFunction, TypeCoroutine, TypeChannel:
 		return v.ptr == other.ptr
 	default:
@@ -344,7 +415,7 @@ func (v Value) ToNumber() (Value, bool) {
 	if v.typ != TypeString {
 		return NilValue(), false
 	}
-	s := strings.TrimSpace(v.ptr.(string))
+	s := strings.TrimSpace(*(*string)(v.ptr))
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return IntValue(i), true
 	}
@@ -377,7 +448,7 @@ func (v Value) String() string {
 		}
 		return s
 	case TypeString:
-		return v.ptr.(string)
+		return *(*string)(v.ptr)
 	case TypeTable:
 		return fmt.Sprintf("table: %p", v.ptr)
 	case TypeFunction:
@@ -406,7 +477,7 @@ func (v Value) LessThan(other Value) (bool, bool) {
 		return v.Number() < other.Number(), true
 	}
 	if v.typ == TypeString && other.typ == TypeString {
-		return v.ptr.(string) < other.ptr.(string), true
+		return *(*string)(v.ptr) < *(*string)(other.ptr), true
 	}
 	return false, false
 }
