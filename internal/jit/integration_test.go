@@ -145,6 +145,39 @@ func TestJITIntegrationAckermann(t *testing.T) {
 	expectGlobal(t, globals, "r34", 125) // ack(3,4) = 125
 }
 
+func TestJITIntegrationMutualRecursion(t *testing.T) {
+	// Hofstadter Female/Male sequences: F(n) = n - M(F(n-1)), M(n) = n - F(M(n-1))
+	// Tests cross-function JIT calls (mutual recursion, not self-recursion).
+	globals, _ := compileAndRunJIT(t, `
+		func F(n) {
+			if n == 0 { return 1 }
+			return n - M(F(n - 1))
+		}
+		func M(n) {
+			if n == 0 { return 0 }
+			return n - F(M(n - 1))
+		}
+		f0 = F(0)
+		f1 = F(1)
+		f5 = F(5)
+		f10 = F(10)
+		f25 = F(25)
+		m0 = M(0)
+		m1 = M(1)
+		m5 = M(5)
+		m10 = M(10)
+	`)
+	expectGlobal(t, globals, "f0", 1)
+	expectGlobal(t, globals, "f1", 1)
+	expectGlobal(t, globals, "f5", 3)
+	expectGlobal(t, globals, "f10", 6)
+	expectGlobal(t, globals, "f25", 16)
+	expectGlobal(t, globals, "m0", 0)
+	expectGlobal(t, globals, "m1", 0)
+	expectGlobal(t, globals, "m5", 3)
+	expectGlobal(t, globals, "m10", 6)
+}
+
 func TestJITIntegrationNestedLoops(t *testing.T) {
 	globals, _ := compileAndRunJIT(t, `
 		func matrix() {

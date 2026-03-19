@@ -18,6 +18,7 @@ const DefaultHotThreshold = 10
 
 // debugCallExit enables verbose logging of call-exit handling in the JIT.
 const debugCallExit = false
+// debugCrossCall enables verbose logging of cross-function call handling.
 const debugCrossCall = false
 
 // compiledEntry holds a compiled function.
@@ -41,6 +42,14 @@ type GlobalsAccessor interface {
 	Regs() []rt.Value // returns the current register slice (may change after calls)
 }
 
+// crossCallSlot holds a callee's code pointer and constants pointer for direct ARM64 BLR calls.
+// Slots are allocated by the compiler and updated when the callee is compiled.
+// The JIT code loads from these slots to make direct calls without exiting to Go.
+type crossCallSlot struct {
+	codePtr      uintptr // callee's compiled code entry point (0 if not compiled)
+	constantsPtr uintptr // callee's constants[0] pointer
+}
+
 // Engine manages JIT compilation and execution.
 type Engine struct {
 	entries     map[*vm.FuncProto]*compiledEntry
@@ -50,17 +59,48 @@ type Engine struct {
 	callHandler CallHandler         // executes external function calls
 	globalsAcc  GlobalsAccessor     // safe globals/regs access
 
-	// Debug/stats counters (for cross-call optimization analysis)
-	crossCallFast int64 // calls handled by executeCompiledCallee
-	crossCallSlow int64 // calls that fell through to callHandler
+	// Cross-call infrastructure: slots hold callee code pointers for direct BLR.
+	// Updated when functions are compiled. JIT code loads from these slots.
+	crossCallSlots    []*crossCallSlot             // all allocated slots
+	crossCallByName   map[string][]*crossCallSlot  // name → slots to update when compiled
 }
 
 // NewEngine creates a new JIT engine.
 func NewEngine() *Engine {
 	return &Engine{
-		entries:   make(map[*vm.FuncProto]*compiledEntry),
-		blacklist: make(map[*vm.FuncProto]bool),
-		threshold: DefaultHotThreshold,
+		entries:         make(map[*vm.FuncProto]*compiledEntry),
+		blacklist:       make(map[*vm.FuncProto]bool),
+		threshold:       DefaultHotThreshold,
+		crossCallByName: make(map[string][]*crossCallSlot),
+	}
+}
+
+// allocCrossCallSlot creates a new cross-call slot for the given callee name.
+// If the callee is already compiled, the slot is pre-filled with its code pointer.
+func (e *Engine) allocCrossCallSlot(calleeName string, calleeProto *vm.FuncProto) *crossCallSlot {
+	slot := &crossCallSlot{}
+	// Check if the callee is already compiled.
+	if calleeProto != nil {
+		if entry, ok := e.entries[calleeProto]; ok {
+			slot.codePtr = entry.ptr
+			if len(calleeProto.Constants) > 0 {
+				slot.constantsPtr = uintptr(unsafe.Pointer(&calleeProto.Constants[0]))
+			}
+		}
+	}
+	e.crossCallSlots = append(e.crossCallSlots, slot)
+	e.crossCallByName[calleeName] = append(e.crossCallByName[calleeName], slot)
+	return slot
+}
+
+// updateCrossCallSlots fills in code pointers for all slots waiting for the given name.
+func (e *Engine) updateCrossCallSlots(name string, entry *compiledEntry, proto *vm.FuncProto) {
+	slots := e.crossCallByName[name]
+	for _, slot := range slots {
+		slot.codePtr = entry.ptr
+		if len(proto.Constants) > 0 {
+			slot.constantsPtr = uintptr(unsafe.Pointer(&proto.Constants[0]))
+		}
 	}
 }
 
@@ -160,13 +200,17 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 			return nil, 0, false
 		}
 		// Compile the function.
-		cf, err := CompileWithGlobals(proto, e.globals)
+		cf, err := CompileWithEngine(proto, e)
 		if err != nil {
 			e.blacklist[proto] = true
 			return nil, 0, false
 		}
 		entry = &compiledEntry{cf: cf, ptr: uintptr(cf.Code.Ptr())}
 		e.entries[proto] = entry
+		// Update cross-call slots that were waiting for this function.
+		if proto.Name != "" {
+			e.updateCrossCallSlots(proto.Name, entry, proto)
+		}
 	}
 
 	// Check if this function has been demoted due to excessive call-exits.
@@ -367,8 +411,9 @@ func (e *Engine) handleCallExit(proto *vm.FuncProto, regs []rt.Value, base int, 
 					_, err := e.executeCompiledCallee(vcl.Proto, calleeEntry, regs, base, a, nArgs, calleeNResults)
 					if err == nil {
 						// Update Top for subsequent B=0 calls.
+						// Top = a + retCount: result[0] at R(a), so first unused = R(a+retCount).
 						if variableResults {
-							ctx.Top = int64(a + 1 + calleeNResults)
+							ctx.Top = int64(a + calleeNResults)
 						}
 						// Check if regs were reallocated during nested call.
 						var newRegs []rt.Value
@@ -813,7 +858,7 @@ func (e *Engine) executeCompiledCalleeDepth(
 							if err == nil {
 								handled = true
 								if nestedVariableResults {
-									ctx.Top = int64(ca + 1 + effectiveNResults)
+									ctx.Top = int64(ca + effectiveNResults)
 								}
 								// Check for reg reallocation.
 								if e.globalsAcc != nil {
