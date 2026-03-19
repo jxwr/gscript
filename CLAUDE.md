@@ -177,42 +177,42 @@ Run the full suite before AND after every optimization. Record numbers in the bl
 Full audit document: `docs/architecture_audit.md`
 Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
-## Current Status (2026-03-20, re-measured evening)
+## Current Status (2026-03-20, final benchmark 3s benchtime)
 
 ### vs LuaJIT (warm benchmarks)
 | Benchmark | GScript JIT | LuaJIT | Result |
 |-----------|-------------|--------|--------|
-| **fib(20)** | **26.1us** | 31.5us | **17% faster** |
-| **fn calls (10K)** | **2.8us** | 2.5us | **1.1x gap** |
-| ackermann(3,4) | 32.8us | 15.1us | 2.2x gap |
-| mandelbrot(1000) | 0.259s | 0.063s | 4.1x gap |
+| **fib(20)** | **23.5us** | 27.2us | **14% faster** |
+| **fn calls (10K)** | **2.6us** | 2.6us | **parity** |
+| ackermann(3,4) | 23.6us | 12.4us | 1.9x gap |
+| mandelbrot(1000) | 0.213s | 0.057s | 3.7x gap |
 
 ### Full benchmark suite (14 benchmarks + warm)
 | Benchmark | VM | Trace | Speedup | LuaJIT | vs LuaJIT |
 |-----------|-----|-------|---------|--------|-----------|
-| mandelbrot(1000) | 1.540s | **0.259s** | **x5.9** | 0.063s | 4.1x gap |
-| fib(35) | 0.037s | 0.033s | x1.1 | 0.031s | 1.1x gap |
-| sieve(1M x3) | 0.140s | 0.140s | x1.0 | 0.013s | 10.8x gap |
-| ackermann(3,4 x500) | 0.016s | 0.017s | x0.94 | 0.008s | 2.1x gap |
-| matmul(300) | 1.330s | 1.704s | x0.78 | 0.031s | 42.9x gap |
-| spectral_norm(500) | 0.872s | 0.956s | x0.91 | 0.010s | 95.6x gap |
-| nbody(500K) | 2.666s | 3.340s | x0.80 | 0.047s | 71.1x gap |
-| fannkuch(9) | 0.562s | timeout | — | 0.025s | 22.5x gap |
-| sort(50K x3) | 0.159s | 0.327s | x0.49 | 0.012s | 13.3x gap |
-| sum_primes(100K) | 0.025s | 0.062s | x0.40 | 0.002s | 12.5x gap |
-| mutual_recursion(25 x1000) | 0.280s | 0.662s | x0.42 | 0.005s | 56.0x gap |
-| method_dispatch(100K) | 0.130s | 0.273s | x0.48 | <0.001s | >100x gap |
-| closure_bench | 0.074s | 0.156s | x0.47 | 0.011s | 6.7x gap |
-| string_bench | 0.045s | 0.096s | x0.47 | 0.010s | 4.5x gap |
+| mandelbrot(1000) | 1.354s | **0.213s** | **x6.4** | 0.057s | 3.7x gap |
+| fib(35) | 0.032s | 0.032s | x1.0 | 0.027s | 1.2x gap |
+| sieve(1M x3) | 0.119s | 0.117s | x1.0 | 0.011s | 10.6x gap |
+| ackermann(3,4 x500) | 0.012s | 0.012s | x1.0 | 0.006s | 2.0x gap |
+| matmul(300) | 1.211s | 1.421s | x0.85 | 0.025s | 48.4x gap |
+| spectral_norm(500) | 0.688s | 0.704s | x0.98 | 0.008s | 86.0x gap |
+| nbody(500K) | 2.403s | 2.342s | x1.0 | 0.034s | 68.9x gap |
+| fannkuch(9) | 0.530s | timeout | — | 0.020s | 26.5x gap |
+| sort(50K x3) | 0.146s | 0.146s | x1.0 | 0.010s | 14.6x gap |
+| sum_primes(100K) | 0.022s | 0.027s | x0.81 | 0.002s | 11.0x gap |
+| mutual_recursion(25 x1000) | 0.226s | 0.241s | x0.94 | 0.004s | 56.5x gap |
+| method_dispatch(100K) | 0.113s | 0.112s | x1.0 | <0.001s | >100x gap |
+| closure_bench | 0.054s | 0.056s | x0.96 | 0.009s | 6.0x gap |
+| string_bench | 0.044s | 0.044s | x1.0 | 0.009s | 4.9x gap |
 
 ### Warm micro-benchmarks (Go test, JIT vs VM)
 | Benchmark | JIT | VM | Speedup |
 |-----------|-----|-----|---------|
-| HeavyLoop | 27.7us | 868.8us | **x31.4** |
-| FibIterative(30) | 237ns | 605ns | **x2.6** |
-| FunctionCalls(10K) | **2.8us** | 308.1us | **x108.9** |
-| FibRecursive(20) | 26.1us | 747.1us | **x28.7** |
-| Ackermann(3,4) | 32.8us | 365.3us | **x11.1** |
+| HeavyLoop | 25.3us | 721.8us | **x28.5** |
+| FibIterative(30) | 198ns | 494ns | **x2.5** |
+| FunctionCalls(10K) | **2.6us** | 254.3us | **x97.7** |
+| FibRecursive(20) | 23.5us | 632.2us | **x26.9** |
+| Ackermann(3,4) | 23.6us | 296.4us | **x12.6** |
 
 Target: **surpass LuaJIT** on compute-heavy benchmarks first, then table-heavy.
 
@@ -224,10 +224,11 @@ Target: **surpass LuaJIT** on compute-heavy benchmarks first, then table-heavy.
 ### LuaJIT Gap Analysis
 | Gap | Root Cause | Fix | Difficulty |
 |-----|-----------|-----|-----------|
-| mandelbrot 4.1x | Sub-trace call overhead + 26 vs 15 inst/iter | Code inlining (Approach C) | High |
-| **fib SURPASSED** | 26.1us vs 31.5us = 17% faster | Pin R(0) to X19 + const propagation | Done |
-| **fn calls ~parity** | 2.8us vs 2.5us = 1.1x gap (was 2.0x) | Method JIT inline optimization | Nearly done |
-| table ops (matmul 43x, spectral 96x) | 32B Value vs 8B TValue | NaN-boxing | Extremely High |
+| mandelbrot 3.7x | Sub-trace call overhead + 26 vs 15 inst/iter | Code inlining (Approach C) | High |
+| **fib SURPASSED** | 23.5us vs 27.2us = 14% faster | Pin R(0) to X19 + const propagation | Done |
+| **fn calls PARITY** | 2.6us vs 2.6us = exact match | Method JIT inline optimization | Done |
+| ackermann 1.9x | Recursive call overhead | Method JIT deeper inlining | Medium |
+| table ops (matmul 48x, spectral 86x) | 32B Value vs 8B TValue | NaN-boxing | Extremely High |
 
 ## Completed Phases
 
