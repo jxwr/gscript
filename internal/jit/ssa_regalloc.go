@@ -23,10 +23,11 @@ type RegMap struct {
 
 // AllocateRegisters performs register allocation for the given SSAFunc.
 // This is a standalone pass: SSAFunc in, RegMap out. No codegen.
+// Uses live-range-based allocation for floats (better for mandelbrot-style loops).
 func AllocateRegisters(f *SSAFunc) *RegMap {
 	return &RegMap{
 		Int:   newSlotAlloc(f),
-		Float: newFloatSlotAlloc(f),
+		Float: floatRegAllocLR(f),
 	}
 }
 
