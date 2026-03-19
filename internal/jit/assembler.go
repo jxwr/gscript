@@ -69,6 +69,10 @@ const (
 	D9  FReg = 9  // callee-saved
 	D10 FReg = 10 // callee-saved
 	D11 FReg = 11 // callee-saved
+	D12 FReg = 12 // callee-saved
+	D13 FReg = 13 // callee-saved
+	D14 FReg = 14 // callee-saved
+	D15 FReg = 15 // callee-saved
 )
 
 // Condition codes for B.cond.

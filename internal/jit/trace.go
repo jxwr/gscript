@@ -620,7 +620,7 @@ func (r *TraceRecorder) finishTrace() {
 						r.compiled[key] = ct
 						compiled = true
 						if r.debug {
-							fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions", r.current.LoopPC, len(r.current.IR))
+							fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions, %d bytes code", r.current.LoopPC, len(r.current.IR), ct.code.Size())
 							if ct.innerTrace != nil {
 								fmt.Printf(" (calls inner trace at FORLOOP PC=%d)", innerForloopPC)
 							}

@@ -428,14 +428,14 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 
 	// === Side exit ===
 	asm.Label("side_exit")
-	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots)
+	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, liveInfo)
 	asm.STR(X9, X19, 16)  // ctx.ExitPC = X9
 	asm.LoadImm64(X0, 1)  // ExitCode = 1
 	asm.B("epilogue")
 
 	// === Loop done ===
 	asm.Label("loop_done")
-	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots)
+	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, liveInfo)
 	asm.LoadImm64(X0, 0)  // ExitCode = 0
 
 	// === Epilogue ===
@@ -1136,7 +1136,7 @@ func resolveSSARefSlot(asm *Assembler, f *SSAFunc, ref SSARef, regMap *RegMap, s
 // emitSlotStoreBack writes modified allocated slot values back to memory.
 // Only slots that were actually written by the loop body are stored back.
 // Writing unmodified slots (e.g., table references) would corrupt their type.
-func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writtenSlots map[int]bool) {
+func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writtenSlots map[int]bool, liveInfo ...*LiveInfo) {
 	// Integer register writeback
 	for slot, armReg := range regMap.Int.slotToReg {
 		if !writtenSlots[slot] {
@@ -1168,6 +1168,28 @@ func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writte
 			asm.FSTRd(dreg, regRegs, off+OffsetData)
 			asm.MOVimm16(X0, uint16(runtime.TypeFloat))
 			asm.STRB(X0, regRegs, off+OffsetTyp)
+		}
+	}
+	// Write type tags for unallocated float slots.
+	// During the loop body, we skip type tag writes for unallocated float temps
+	// (they only write the data field). Write the type tag here at exit.
+	if len(liveInfo) > 0 && liveInfo[0] != nil {
+		li := liveInfo[0]
+		for slot := range writtenSlots {
+			if _, ok := regMap.Float.slotToReg[slot]; ok {
+				continue // already handled above
+			}
+			if _, ok := regMap.Int.slotToReg[slot]; ok {
+				continue // integer slot
+			}
+			// Check if this slot has a float type
+			if slotType, ok := li.SlotTypes[slot]; ok && slotType == SSATypeFloat {
+				off := slot * ValueSize
+				if off <= 32760 {
+					asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+					asm.STRB(X0, regRegs, off+OffsetTyp)
+				}
+			}
 		}
 	}
 }
@@ -1297,10 +1319,10 @@ func storeFloatResult(asm *Assembler, regMap *RegMap, slot int, src FReg) {
 		}
 		return // stays in register, written back at exit
 	}
-	// Not allocated — write to memory
+	// Not allocated — write data to memory.
+	// Skip type tag write here (deferred to store-back at loop exit).
+	// The type tag is written once during store-back, not every iteration.
 	asm.FSTRd(src, regRegs, slot*ValueSize+OffsetData)
-	asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-	asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
 }
 
 // loadFloatArg is a compatibility wrapper for resolveFloatRef that always loads into dst.
@@ -1454,9 +1476,8 @@ func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, r
 				asm.FMOVd(dstD, srcD)
 			}
 			if _, ok := regMap.FloatReg(slot); !ok && slot >= 0 {
+				// Write data only, type tag deferred to store-back
 				asm.FSTRd(srcD, regRegs, slot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
 			}
 		} else {
 			emitSSAInstSlot(asm, f, ref, inst, regMap, sm)
