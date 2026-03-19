@@ -524,18 +524,8 @@ func (r *TraceRecorder) finishTrace() {
 			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
 			compiled := false
 
-			// Try regular trace compiler first (more mature, better for pure arithmetic)
-			ct, err := compileTrace(r.current)
-			if err == nil {
-				r.compiled[key] = ct
-				compiled = true
-				if r.debug {
-					fmt.Printf("[TRACE] Regular compiled: PC=%d\n", r.current.LoopPC)
-				}
-			}
-
-			// Fall back to SSA codegen (handles table ops, intrinsics, globals)
-			if !compiled && r.useSSA {
+			// Try SSA codegen first (handles int, float, tables, intrinsics, globals)
+			if r.useSSA {
 				ssaFunc := BuildSSA(r.current)
 				ssaFunc = OptimizeSSA(ssaFunc)
 				ssaFunc = ConstHoist(ssaFunc)
@@ -553,6 +543,18 @@ func (r *TraceRecorder) finishTrace() {
 					}
 				} else if r.debug {
 					fmt.Printf("[TRACE] SSA rejected: PC=%d, %d IRs\n", r.current.LoopPC, len(r.current.IR))
+				}
+			}
+
+			// Fall back to regular trace compiler
+			if !compiled {
+				ct, err := compileTrace(r.current)
+				if err == nil {
+					r.compiled[key] = ct
+					compiled = true
+					if r.debug {
+						fmt.Printf("[TRACE] Regular compiled: PC=%d\n", r.current.LoopPC)
+					}
 				}
 			}
 
