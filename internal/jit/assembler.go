@@ -607,6 +607,19 @@ func (a *Assembler) FCMPd(rn, rm FReg) {
 	a.emit(0x1E602000 | uint32(rm)<<16 | uint32(rn)<<5)
 }
 
+// FMADDd: Dd = Da + Dn * Dm (fused multiply-add, double)
+// Single instruction, higher precision than separate MUL+ADD.
+func (a *Assembler) FMADDd(rd, rn, rm, ra FReg) {
+	// 0|00|11111|01|0|Rm|0|Ra|Rn|Rd
+	a.emit(0x1F400000 | uint32(rm)<<16 | uint32(ra)<<10 | uint32(rn)<<5 | uint32(rd))
+}
+
+// FMSUBd: Dd = Da - Dn * Dm (fused multiply-subtract, double)
+func (a *Assembler) FMSUBd(rd, rn, rm, ra FReg) {
+	// 0|00|11111|01|0|Rm|1|Ra|Rn|Rd
+	a.emit(0x1F408000 | uint32(rm)<<16 | uint32(ra)<<10 | uint32(rn)<<5 | uint32(rd))
+}
+
 // FSQRTd: Dd = sqrt(Dn) (double)
 func (a *Assembler) FSQRTd(rd, rn FReg) {
 	// 0|00|11110|01|1|00001|11000|Rn|Rd
