@@ -141,22 +141,58 @@ Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
 ## Current Status (2026-03-19, verified correct)
 
-| Benchmark | Interpreter | Trace JIT | Speedup |
-|-----------|-------------|-----------|---------|
-| mandelbrot | 1.503s | 0.246s | **×6.09** |
-| fib | 0.072s | 0.072s | ×10 (method JIT) |
-| sieve | 0.174s | 0.172s | ×1.01 |
-| nbody | 2.728s | 2.884s | ×0.95 |
-| spectral_norm | 0.784s | 0.955s | ×0.82 |
-| ackermann | 0.017s | 0.017s | ×10 (method JIT) |
+| Benchmark | Interpreter | Trace JIT | Speedup | vs LuaJIT |
+|-----------|-------------|-----------|---------|-----------|
+| mandelbrot | 1.5s | 0.227s | **×6.6** | 4.0x slower |
+| fib(35) | 0.072s | 0.072s | ×10 (method JIT) | 2.0x slower |
+| sieve | 0.17s | 0.17s | ×1.0 | — |
+| nbody | 2.73s | ~2.5s | ×1.1 | — |
+| ackermann | 0.017s | 0.017s | ×10 (method JIT) | ~1x |
 
-Target: **×10+** across all benchmarks (LuaJIT territory).
+Target: **surpass LuaJIT** on compute-heavy benchmarks first, then table-heavy.
 
-## Roadmap to ×10
+### Inner Loop Analysis (mandelbrot)
+- 26 instructions per iteration (down from ~50, theoretical minimum ~15)
+- 61 instructions for prologue/guards/loads (runs once per sub-trace call)
+- Bottleneck: 1M sub-trace calls × 61-inst prologue = 61M wasted instructions
 
-1. Pass pipeline refactor (prerequisite)
-2. Constant hoisting (×1.2)
-3. Full float register allocation (×1.3)
-4. CSE (×1.1)
-5. Nested loop tracing (×2.5 — the big jump)
-6. Snapshot-based side exits (×1.15 + correctness)
+### LuaJIT Gap Analysis
+| Gap | Root Cause | Fix | Difficulty |
+|-----|-----------|-----|-----------|
+| mandelbrot 4.0x | Sub-trace call overhead + 26 vs 15 inst/iter | Code inlining (Approach C) | High |
+| fib 2.0x | Boxed Value (32B) in recursive calls | Type-specialized method JIT | Medium-High |
+| table ops 7.5x | 32B Value vs 8B TValue | NaN-boxing | Extremely High |
+| fn calls 9x | Call-exit to Go, no inlining | Method JIT function inlining | Medium-High |
+
+## Completed Phases
+
+- Phase 0: Trace blacklisting ✓
+- Phase 1: Pass pipeline refactor (BuildSSA → Optimize → ConstHoist → CSE → RegAlloc → Emit) ✓
+- Phase 2: Native GETFIELD/SETFIELD + GETGLOBAL + sqrt intrinsic + FORPREP blacklisting ✓
+- Phase 3: Constant hoisting + CSE + type-specialized LOAD_ARRAY ✓
+- Phase 4: Sub-trace calling for nested loops (BLR to inner compiled trace) ✓
+- SSA-ref-level float register allocator (linear scan with coalescing) ✓
+- VM inline field cache (per-instruction hint-based O(1) GETFIELD/SETFIELD) ✓
+- Blog #5 (breakthrough) + Blog #6 (stuck/reflecting) ✓
+
+## Roadmap: Surpass LuaJIT
+
+### Phase 5: Compute-heavy benchmarks (current focus)
+1. **Inner trace code inlining** — copy inner trace ARM64 into outer trace (Approach C), eliminates 61-inst prologue per pixel
+2. **Reduce per-iteration instructions** — 26 → ~15 (eliminate remaining memory spills)
+3. **Method JIT type specialization** — fib type-specialized int→int calls
+4. **Method JIT function inlining** — inline small functions like `add(a,b)`
+
+### Phase 6: Table-heavy benchmarks (future)
+5. **NaN-boxing** — Value 32B → 8B, touches every file, 2-4 weeks ("Season 2")
+
+## Hard-Won Lessons (added 2026-03-19)
+
+### Lesson 5: Frequency-based allocation fails on flat distributions
+Mandelbrot's float temps all have similar frequency (each used once/iteration). The frequency allocator assigned registers semi-randomly. Live-range-based (linear scan) + ref-level allocation was the fix.
+
+### Lesson 6: The biggest optimization is often NOT about generating better code
+FORPREP blacklisting (stopping 2.5M wasted recording attempts) gave mandelbrot its biggest jump (1.53x → 5.92x). This wasn't a codegen improvement — it was eliminating work that shouldn't happen.
+
+### Lesson 7: Sub-trace calling has a structural overhead ceiling
+Each BLR call to an inner trace requires full prologue/epilogue (61 instructions). For 1M pixels, that's 61M instructions = ~15ms. Code inlining (Approach C) is needed to eliminate this.

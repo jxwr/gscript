@@ -315,7 +315,6 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, error) {
 	asm := NewAssembler()
 	sm := newSSASlotMapper(f)
-
 	// === Prologue ===
 	asm.STPpre(X29, X30, SP, -128)
 	asm.STP(X19, X20, SP, 16)
