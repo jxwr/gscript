@@ -3,7 +3,6 @@ package runtime
 import (
 	"math"
 	"sync"
-	"unsafe"
 )
 
 // smallFieldCap is the threshold for using flat slices vs maps for string keys.
@@ -138,20 +137,13 @@ func (t *Table) HasMetatable() bool {
 	return t.metatable != nil
 }
 
-// skeysDataPtr returns the data pointer of a string slice's backing array.
-// Used for cheap identity comparison of skeys slices (inline cache).
-func skeysDataPtr(s []string) uintptr {
-	return (*[3]uintptr)(unsafe.Pointer(&s))[0]
-}
-
-// FieldCacheEntry is an inline cache entry for field access.
-// It caches the index of a field name in a table's skeys slice,
-// keyed by the table's skeys slice identity (pointer + length).
-// This avoids O(n) linear scan on repeated field access.
+// FieldCacheEntry is a hint-based inline cache entry for field access.
+// It caches the index of a field name in a table's skeys slice.
+// On lookup, it checks if skeys[FieldIdx] matches the expected key —
+// if yes, it's an O(1) hit. Works across different tables with the
+// same field layout (e.g., all nbody body tables).
 type FieldCacheEntry struct {
-	skeysPtr uintptr // pointer to the skeys backing array
-	skeysLen int     // length of skeys at cache time
-	FieldIdx int     // cached index into skeys/svals
+	FieldIdx int // cached index into skeys/svals (-1 = not cached)
 }
 
 // RawGetString retrieves a value by string key (fast path, no Value boxing).
@@ -173,34 +165,25 @@ func (t *Table) RawGetString(key string) Value {
 	return NilValue()
 }
 
-// RawGetStringCached retrieves a value by string key using an inline cache.
-// The cache entry stores the field index from a previous lookup on a table
-// with the same skeys shape. On cache hit, avoids the O(n) linear scan.
-// Returns the value and updates the cache entry for future calls.
+// RawGetStringCached retrieves a value by string key using an inline cache hint.
+// The cache stores the field index from a previous lookup. On cache hit
+// (skeys[idx] == key), avoids the O(n) linear scan entirely.
+// Works across different tables sharing the same field layout.
 func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
 	if t.mu != nil {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
 	}
-	// Inline cache hit: check if skeys shape matches
-	if len(t.skeys) > 0 {
-		skPtr := skeysDataPtr(t.skeys)
-		skLen := len(t.skeys)
-		if cache.skeysPtr == skPtr && cache.skeysLen == skLen {
-			// Shape matches — use cached index directly
-			idx := cache.FieldIdx
-			if idx < skLen {
-				return t.svals[idx]
-			}
-		}
-		// Cache miss — linear scan and update cache
-		for i, k := range t.skeys {
-			if k == key {
-				cache.skeysPtr = skPtr
-				cache.skeysLen = skLen
-				cache.FieldIdx = i
-				return t.svals[i]
-			}
+	// Hint-based cache: check if cached index is valid
+	idx := cache.FieldIdx
+	if idx < len(t.skeys) && t.skeys[idx] == key {
+		return t.svals[idx]
+	}
+	// Cache miss — linear scan and update cache
+	for i, k := range t.skeys {
+		if k == key {
+			cache.FieldIdx = i
+			return t.svals[i]
 		}
 	}
 	if t.smap != nil {
@@ -211,8 +194,8 @@ func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
 	return NilValue()
 }
 
-// RawSetStringCached assigns a value by string key using an inline cache.
-// Similar to RawGetStringCached, uses the cache to find existing keys faster.
+// RawSetStringCached assigns a value by string key using an inline cache hint.
+// Uses the cache to find existing keys faster on cache hit.
 func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry) {
 	if t.mu != nil {
 		t.mu.Lock()
@@ -220,29 +203,22 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	}
 	t.keysDirty = true
 
-	// Inline cache hit for existing key
-	if len(t.skeys) > 0 {
-		skPtr := skeysDataPtr(t.skeys)
-		skLen := len(t.skeys)
-		if cache.skeysPtr == skPtr && cache.skeysLen == skLen {
-			idx := cache.FieldIdx
-			if idx < skLen && t.skeys[idx] == key {
-				if val.IsNil() {
-					last := skLen - 1
-					if idx != last {
-						t.skeys[idx] = t.skeys[last]
-						t.svals[idx] = t.svals[last]
-					}
-					t.skeys = t.skeys[:last]
-					t.svals = t.svals[:last]
-					cache.skeysPtr = 0 // invalidate cache
-					cache.skeysLen = 0
-				} else {
-					t.svals[idx] = val
-				}
-				return
+	// Hint-based cache: check if cached index is valid for this key
+	idx := cache.FieldIdx
+	if idx < len(t.skeys) && t.skeys[idx] == key {
+		if val.IsNil() {
+			last := len(t.skeys) - 1
+			if idx != last {
+				t.skeys[idx] = t.skeys[last]
+				t.svals[idx] = t.svals[last]
 			}
+			t.skeys = t.skeys[:last]
+			t.svals = t.svals[:last]
+			cache.FieldIdx = 0 // reset cache
+		} else {
+			t.svals[idx] = val
 		}
+		return
 	}
 
 	// Fall back to normal path

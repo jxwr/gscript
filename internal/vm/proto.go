@@ -22,7 +22,8 @@ type FuncProto struct {
 	Upvalues    []UpvalDesc // upvalue descriptors
 	Protos      []*FuncProto // nested function prototypes
 	LineInfo    []int       // source line for each instruction (debug)
-	GlobalCache []globalCacheEntry // lazily-initialized cache indexed by constant pool index
+	GlobalCache []globalCacheEntry        // lazily-initialized cache indexed by constant pool index
+	FieldCache  []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
 }
 
 // UpvalDesc describes how an upvalue should be captured when creating a closure.

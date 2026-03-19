@@ -590,10 +590,14 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			b := DecodeB(inst)
 			c := DecodeC(inst)
 			tableVal := vm.regs[base+b]
-			// Fast path: plain table → direct string map lookup
+			// Fast path: plain table → direct string field lookup with inline cache
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
-					vm.regs[base+a] = tbl.RawGetString(constants[c].Str())
+					proto := frame.closure.Proto
+					if proto.FieldCache == nil {
+						proto.FieldCache = make([]runtime.FieldCacheEntry, len(proto.Code))
+					}
+					vm.regs[base+a] = tbl.RawGetStringCached(constants[c].Str(), &proto.FieldCache[frame.pc-1])
 					break
 				}
 			}
@@ -615,10 +619,14 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			} else {
 				val = vm.regs[base+cidx]
 			}
-			// Fast path: plain table → direct string map set
+			// Fast path: plain table → direct string field set with inline cache
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
-					tbl.RawSetString(constants[b].Str(), val)
+					proto := frame.closure.Proto
+					if proto.FieldCache == nil {
+						proto.FieldCache = make([]runtime.FieldCacheEntry, len(proto.Code))
+					}
+					tbl.RawSetStringCached(constants[b].Str(), val, &proto.FieldCache[frame.pc-1])
 					break
 				}
 			}
