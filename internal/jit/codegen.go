@@ -114,16 +114,19 @@ type inlineArgTrace struct {
 
 // inlineCandidate describes a GETGLOBAL + CALL pattern that can be inlined.
 type inlineCandidate struct {
-	getglobalPC int              // PC of GETGLOBAL instruction
-	callPC      int              // PC of CALL instruction
-	callee      *vm.FuncProto    // the function to inline
-	fnReg       int              // register holding the function (A field of GETGLOBAL/CALL)
-	nArgs       int              // number of arguments
-	nResults    int              // number of expected results
-	isSelfCall  bool             // true if this is a self-recursive call
-	argTraces   []inlineArgTrace // traced argument sources (populated during analysis)
-	resultDest  int              // final destination register for result (-1 if no tracing)
-	resultMovePC int             // PC of the MOVE that copies result to resultDest (-1 if none)
+	getglobalPC   int              // PC of GETGLOBAL instruction
+	callPC        int              // PC of CALL instruction
+	callee        *vm.FuncProto    // the function to inline
+	fnReg         int              // register holding the function (A field of GETGLOBAL/CALL)
+	nArgs         int              // number of arguments
+	nResults      int              // number of expected results
+	isSelfCall    bool             // true if this is a self-recursive call
+	isTailCall    bool             // true if CALL is immediately followed by RETURN of same register
+	skipArgSave   bool             // true if X19/X22 don't need saving (next op is self-call or RETURN)
+	skipTopUpdate bool             // true if ctx.Top write can be skipped (result consumed by tail call)
+	argTraces     []inlineArgTrace // traced argument sources (populated during analysis)
+	resultDest    int              // final destination register for result (-1 if no tracing)
+	resultMovePC  int              // PC of the MOVE that copies result to resultDest (-1 if none)
 }
 
 // crossCallInfo describes a detected cross-call pattern for direct BLR optimization.
@@ -1286,6 +1289,16 @@ func (cg *Codegen) analyzeInlineCandidates() {
 
 				// Check for self-recursive call first.
 				if name == cg.proto.Name && cg.proto.Name != "" {
+					// Detect tail call: CALL immediately followed by RETURN of same register.
+					isTail := false
+					if pc2+1 < len(code) {
+						nextInst := code[pc2+1]
+						nextOp := vm.DecodeOp(nextInst)
+						nextA := vm.DecodeA(nextInst)
+						if nextOp == vm.OP_RETURN && nextA == globalA {
+							isTail = true
+						}
+					}
 					candidate := &inlineCandidate{
 						getglobalPC: pc,
 						callPC:      pc2,
@@ -1293,7 +1306,47 @@ func (cg *Codegen) analyzeInlineCandidates() {
 						nArgs:       b - 1,
 						nResults:    c - 1,
 						isSelfCall:  true,
+						isTailCall:  isTail,
 					}
+
+					// Trace self-call argument sources to detect when pinned
+					// registers already hold the correct arg values.
+					numParams := cg.proto.NumParams
+					nArgs := b - 1
+					if nArgs < 0 {
+						nArgs = numParams // B=0: variable args, assume NumParams
+					}
+					candidate.argTraces = make([]inlineArgTrace, numParams)
+					for i := 0; i < numParams && i < nArgs; i++ {
+						argReg := globalA + 1 + i
+						// Scan backward from CALL to find MOVE/LOADINT/SUB that set argReg.
+						for scanPC := pc2 - 1; scanPC > pc && scanPC >= pc2-10; scanPC-- {
+							si := code[scanPC]
+							sop := vm.DecodeOp(si)
+							sa := vm.DecodeA(si)
+							if sa != argReg {
+								continue
+							}
+							if sop == vm.OP_MOVE {
+								srcReg := vm.DecodeB(si)
+								candidate.argTraces[i] = inlineArgTrace{
+									fromReg: srcReg, traced: true, setupPC: scanPC,
+								}
+							} else if sop == vm.OP_LOADINT {
+								sbxVal := vm.DecodesBx(si)
+								candidate.argTraces[i] = inlineArgTrace{
+									fromConst: int64(sbxVal), isConst: true, traced: true, setupPC: scanPC,
+								}
+							}
+							break
+						}
+					}
+
+					// Note: arg traces for self-calls are used by emitSelfCallFull
+					// to skip redundant LDR when a pinned register already has the
+					// correct value. The MOVE setup is NOT marked as dead here to
+					// avoid code alignment issues that cause performance regressions.
+
 					cg.inlineCandidates[pc2] = candidate
 					cg.inlineSkipPCs[pc] = true
 					cg.hasSelfCalls = true
@@ -1381,6 +1434,126 @@ func (cg *Codegen) analyzeInlineCandidates() {
 			}
 		}
 	}
+
+	// Second pass: detect skipArgSave for non-tail self-calls.
+	// For each non-tail self-call, scan forward to see if any instruction between
+	// it and the next self-call (or RETURN) reads from pinned registers R(0)/R(1).
+	// If no pinned register is read, we can skip saving X19/X22.
+	for _, cand := range cg.inlineCandidates {
+		if !cand.isSelfCall || cand.isTailCall {
+			continue
+		}
+		canSkip := true
+		for scanPC := cand.callPC + 1; scanPC < len(code); scanPC++ {
+			// If we reach another self-call, it will overwrite X19/X22. Safe.
+			if nextCand, ok := cg.inlineCandidates[scanPC]; ok && nextCand.isSelfCall {
+				break
+			}
+			inst := code[scanPC]
+			op := vm.DecodeOp(inst)
+			// If we reach RETURN, pinned regs aren't needed. Safe.
+			if op == vm.OP_RETURN {
+				break
+			}
+			// Skip GETGLOBAL instructions that are part of inline patterns.
+			if cg.inlineSkipPCs[scanPC] {
+				continue
+			}
+			// Skip arg setup instructions.
+			if cg.inlineArgSkipPCs[scanPC] {
+				continue
+			}
+			// Check if this instruction reads R(0) or R(1) as source operands.
+			if cg.instructionReadsPinned(inst, op) {
+				canSkip = false
+				break
+			}
+		}
+		cand.skipArgSave = canSkip
+	}
+
+	// Third pass: detect skipTopUpdate for C=0 non-tail self-calls.
+	// If the next self-call after this one is a tail call (which loads args by
+	// position, not from ctx.Top), the ctx.Top write is dead and can be skipped.
+	for _, cand := range cg.inlineCandidates {
+		if !cand.isSelfCall || cand.isTailCall || cand.nResults >= 0 {
+			continue // only applies to C=0 non-tail self-calls
+		}
+		for scanPC := cand.callPC + 1; scanPC < len(code); scanPC++ {
+			if nextCand, ok := cg.inlineCandidates[scanPC]; ok && nextCand.isSelfCall {
+				// The next self-call (tail or non-tail) will set its own args.
+				// Tail calls load from fixed positions, non-tail calls advance
+				// X26 and load from the new window. Neither reads ctx.Top.
+				cand.skipTopUpdate = true
+				break
+			}
+			inst := code[scanPC]
+			op := vm.DecodeOp(inst)
+			if op == vm.OP_RETURN {
+				// RETURN doesn't read ctx.Top.
+				cand.skipTopUpdate = true
+				break
+			}
+			// Any other non-skipped instruction might depend on ctx.Top.
+			if !cg.inlineSkipPCs[scanPC] && !cg.inlineArgSkipPCs[scanPC] {
+				break
+			}
+		}
+	}
+}
+
+// instructionReadsPinned returns true if the instruction reads from a pinned
+// register (R(0) or R(1)) as a source operand. Used to determine if X19/X22
+// must be saved across self-recursive calls.
+func (cg *Codegen) instructionReadsPinned(inst uint32, op vm.Opcode) bool {
+	numParams := cg.proto.NumParams
+	switch op {
+	case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_DIV, vm.OP_MOD, vm.OP_POW:
+		// Reads B and C (which may be RK references)
+		b := vm.DecodeB(inst)
+		c := vm.DecodeC(inst)
+		if !vm.IsRK(b) && b < numParams {
+			return true
+		}
+		if !vm.IsRK(c) && c < numParams {
+			return true
+		}
+	case vm.OP_MOVE:
+		// Reads B
+		b := vm.DecodeB(inst)
+		if b < numParams {
+			return true
+		}
+	case vm.OP_EQ, vm.OP_LT, vm.OP_LE:
+		// Reads B and C
+		b := vm.DecodeB(inst)
+		c := vm.DecodeC(inst)
+		if !vm.IsRK(b) && b < numParams {
+			return true
+		}
+		if !vm.IsRK(c) && c < numParams {
+			return true
+		}
+	case vm.OP_UNM, vm.OP_NOT, vm.OP_LEN:
+		// Reads B
+		b := vm.DecodeB(inst)
+		if b < numParams {
+			return true
+		}
+	case vm.OP_TEST:
+		// Reads A
+		a := vm.DecodeA(inst)
+		if a < numParams {
+			return true
+		}
+	case vm.OP_LOADINT, vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_LOADK, vm.OP_JMP:
+		// These don't read from registers
+		return false
+	default:
+		// Conservative: assume it reads pinned registers
+		return true
+	}
+	return false
 }
 
 // hasCrossCallExits checks if the function has non-self, non-inline CALL instructions
@@ -2193,11 +2366,11 @@ func (cg *Codegen) isLoadIntDeadStore(pc, reg int) bool {
 		// If the register is read as a source operand, check if the consumer
 		// will use the immediate form (regLoadIntConst). If not, we need the store.
 		switch scanOp {
-		case vm.OP_LT, vm.OP_LE:
+		case vm.OP_EQ, vm.OP_LT, vm.OP_LE:
 			b := vm.DecodeB(scanInst)
 			c := vm.DecodeC(scanInst)
 			if b == reg || c == reg {
-				// The LT/LE emitter will detect this via regLoadIntConst and use CMPimm.
+				// The EQ/LT/LE emitter will detect this via regLoadIntConst and use CMPimm.
 				// Safe to skip the LOADINT store.
 				return true
 			}
@@ -2361,19 +2534,29 @@ func (cg *Codegen) emitArithInt(pc int, inst uint32, arithOp string) error {
 			}
 		} else if (arithOp == "ADD" || arithOp == "SUB") && cImmVal >= 0 {
 			// ADD/SUB with small integer constant: use immediate form.
-			// SUB R(A), R(B), imm → SUBimm X0, X0, #imm
-			cg.loadRKIval(X0, bIdx)
+			// If B is a pinned register, use it directly as the source to avoid a MOV.
+			bSrc := X0
+			if bPinned {
+				bSrc = bArm
+			} else {
+				cg.loadRKIval(X0, bIdx)
+			}
 			switch arithOp {
 			case "ADD":
-				cg.asm.ADDimm(X0, X0, uint16(cImmVal))
+				cg.asm.ADDimm(X0, bSrc, uint16(cImmVal))
 			case "SUB":
-				cg.asm.SUBimm(X0, X0, uint16(cImmVal))
+				cg.asm.SUBimm(X0, bSrc, uint16(cImmVal))
 			}
 			cg.storeIntValue(aReg, X0)
 		} else if (arithOp == "ADD" || arithOp == "SUB") && arithOp == "ADD" && bImmVal >= 0 {
-			// ADD R(A), imm, R(C) → ADDimm X0, X0, #imm (commutative)
-			cg.loadRKIval(X0, cIdx)
-			cg.asm.ADDimm(X0, X0, uint16(bImmVal))
+			// ADD R(A), imm, R(C) → ADDimm X0, Csrc, #imm (commutative)
+			cSrc := X0
+			if cPinned {
+				cSrc = cArm
+			} else {
+				cg.loadRKIval(X0, cIdx)
+			}
+			cg.asm.ADDimm(X0, cSrc, uint16(bImmVal))
 			cg.storeIntValue(aReg, X0)
 		} else {
 			// Fallback: load through X0/X1.
@@ -2498,12 +2681,41 @@ func (cg *Codegen) emitEQ(pc int, inst uint32) error {
 
 	// Use CMP immediate when one operand is a small non-negative integer constant.
 	// EQ is symmetric so no condition reversal needed.
-	if cImm := cg.rkSmallIntConst(cIdx); cImm >= 0 {
-		cg.loadRKIval(X0, bIdx)
-		cg.asm.CMPimm(X0, uint16(cImm))
-	} else if bImm := cg.rkSmallIntConst(bIdx); bImm >= 0 {
-		cg.loadRKIval(X0, cIdx)
-		cg.asm.CMPimm(X0, uint16(bImm))
+	// Check both RK constants and registers set by a recent LOADINT.
+	cImm := cg.rkSmallIntConst(cIdx)
+	if cImm < 0 && !vm.IsRK(cIdx) {
+		cImm = cg.regLoadIntConst(cIdx, pc)
+	}
+	bImm := cg.rkSmallIntConst(bIdx)
+	if bImm < 0 && !vm.IsRK(bIdx) {
+		bImm = cg.regLoadIntConst(bIdx, pc)
+	}
+
+	if cImm >= 0 {
+		// Use pinned register directly as source if available.
+		bSrc := X0
+		if !vm.IsRK(bIdx) {
+			if armReg, ok := cg.pinnedRegs[bIdx]; ok {
+				bSrc = armReg
+			} else {
+				cg.loadRKIval(X0, bIdx)
+			}
+		} else {
+			cg.loadRKIval(X0, bIdx)
+		}
+		cg.asm.CMPimm(bSrc, uint16(cImm))
+	} else if bImm >= 0 {
+		cSrc := X0
+		if !vm.IsRK(cIdx) {
+			if armReg, ok := cg.pinnedRegs[cIdx]; ok {
+				cSrc = armReg
+			} else {
+				cg.loadRKIval(X0, cIdx)
+			}
+		} else {
+			cg.loadRKIval(X0, cIdx)
+		}
+		cg.asm.CMPimm(cSrc, uint16(bImm))
 	} else {
 		cg.loadRKIval(X0, bIdx)
 		cg.loadRKIval(X1, cIdx)
@@ -2561,13 +2773,32 @@ func (cg *Codegen) emitLT(pc int, inst uint32) error {
 	}
 
 	if cImm >= 0 {
-		cg.loadRKIval(X0, bIdx)
-		cg.asm.CMPimm(X0, uint16(cImm))
+		// Use pinned register directly as source if available.
+		bSrc := X0
+		if !vm.IsRK(bIdx) {
+			if armReg, ok := cg.pinnedRegs[bIdx]; ok {
+				bSrc = armReg
+			} else {
+				cg.loadRKIval(X0, bIdx)
+			}
+		} else {
+			cg.loadRKIval(X0, bIdx)
+		}
+		cg.asm.CMPimm(bSrc, uint16(cImm))
 	} else if bImm >= 0 {
 		// B < C with B constant: load C, compare reversed.
 		// B < C ⟺ C > B, so flip the condition.
-		cg.loadRKIval(X0, cIdx)
-		cg.asm.CMPimm(X0, uint16(bImm))
+		cSrc := X0
+		if !vm.IsRK(cIdx) {
+			if armReg, ok := cg.pinnedRegs[cIdx]; ok {
+				cSrc = armReg
+			} else {
+				cg.loadRKIval(X0, cIdx)
+			}
+		} else {
+			cg.loadRKIval(X0, cIdx)
+		}
+		cg.asm.CMPimm(cSrc, uint16(bImm))
 		// Reverse the condition: instead of checking B < C, we check C > B.
 		if aFlag != 0 {
 			// Original: skip if NOT (B < C), i.e., B >= C → with reversal: skip if C <= B
@@ -2639,13 +2870,31 @@ func (cg *Codegen) emitLE(pc int, inst uint32) error {
 
 	if cImmLE >= 0 {
 		// B <= C with C as immediate: CMP B, #C then check LE.
-		cg.loadRKIval(X0, bIdx)
-		cg.asm.CMPimm(X0, uint16(cImmLE))
+		bSrc := X0
+		if !vm.IsRK(bIdx) {
+			if armReg, ok := cg.pinnedRegs[bIdx]; ok {
+				bSrc = armReg
+			} else {
+				cg.loadRKIval(X0, bIdx)
+			}
+		} else {
+			cg.loadRKIval(X0, bIdx)
+		}
+		cg.asm.CMPimm(bSrc, uint16(cImmLE))
 	} else if bImmLE >= 0 {
 		// B <= C with B constant: CMP C, #B, then reverse condition.
 		// B <= C ⟺ C >= B
-		cg.loadRKIval(X0, cIdx)
-		cg.asm.CMPimm(X0, uint16(bImmLE))
+		cSrc := X0
+		if !vm.IsRK(cIdx) {
+			if armReg, ok := cg.pinnedRegs[cIdx]; ok {
+				cSrc = armReg
+			} else {
+				cg.loadRKIval(X0, cIdx)
+			}
+		} else {
+			cg.loadRKIval(X0, cIdx)
+		}
+		cg.asm.CMPimm(cSrc, uint16(bImmLE))
 		if aFlag != 0 {
 			// Original: skip if NOT (B <= C), i.e., B > C → with reversal: skip if C < B
 			cg.asm.BCond(CondLT, skipLabel)
@@ -3619,10 +3868,49 @@ const maxSelfRecursionDepth = 200
 // For 2+-parameter functions: saves LR (X30) + X19 + X22 in a 32-byte frame.
 // regRegs (X26) is restored by subtraction after the call.
 // The depth counter (X25) is managed via increment/decrement.
+//
+// Tail call optimization: if isTailCall is true, the CALL is immediately
+// followed by RETURN. Instead of BL + save/restore + result handling, we
+// load the new arguments into the pinned registers and B (jump) directly
+// to self_call_entry. This reuses the caller's stack frame and depth level.
 func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
+	if candidate.isTailCall {
+		return cg.emitSelfTailCall(pc, candidate)
+	}
+	return cg.emitSelfCallFull(pc, candidate)
+}
+
+// emitSelfTailCall emits a tail-call-optimized self-recursive call.
+// Instead of the full BL/save/restore sequence (~15 instructions), this emits
+// just 3 instructions: load new args + unconditional branch to self_call_entry.
+// The caller's stack frame, depth counter, and register window are reused.
+func (cg *Codegen) emitSelfTailCall(pc int, candidate *inlineCandidate) error {
 	a := cg.asm
 	fnReg := candidate.fnReg
 	hasArg2 := cg.proto.NumParams > 1
+
+	// Load new arguments from where the caller stored them.
+	// Caller's R(fnReg+1) = arg0, R(fnReg+2) = arg1.
+	// These are in the current register window (no X26 advance needed).
+	arg0Off := regIvalOffset(fnReg + 1)
+	a.LDR(regSelfArg, regRegs, arg0Off)
+	if hasArg2 {
+		arg1Off := regIvalOffset(fnReg + 2)
+		a.LDR(regSelfArg2, regRegs, arg1Off)
+	}
+
+	// Jump to self_call_entry (unconditional, NOT BL — reuses caller's frame).
+	a.B("self_call_entry")
+
+	return nil
+}
+
+// emitSelfCallFull emits the full non-tail self-recursive call sequence.
+func (cg *Codegen) emitSelfCallFull(pc int, candidate *inlineCandidate) error {
+	a := cg.asm
+	fnReg := candidate.fnReg
+	hasArg2 := cg.proto.NumParams > 1
+	skipSave := candidate.skipArgSave
 
 	overflowLabel := fmt.Sprintf("self_overflow_%d", pc)
 
@@ -3636,7 +3924,11 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 
 	// Save callee-saved registers on the ARM64 stack.
 	// SP must remain 16-byte aligned.
-	if hasArg2 {
+	if skipSave {
+		// Lightweight frame: only save LR (X30). X19/X22 are not needed after
+		// this call returns (next instruction is a tail self-call or RETURN).
+		a.STRpre(X30, SP, -16) // SP -= 16; [SP] = X30
+	} else if hasArg2 {
 		// 32-byte frame: [SP] = {X30, X19}, [SP+16] = {X22, padding}
 		a.STPpre(X30, regSelfArg, SP, -32) // SP -= 32; [SP] = {X30, X19}
 		a.STR(regSelfArg2, SP, 16)         // [SP+16] = X22
@@ -3667,7 +3959,10 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 
 	// After return: X0 = result (ival).
 	// Restore callee-saved registers from stack.
-	if hasArg2 {
+	if skipSave {
+		// Lightweight frame: only restore LR.
+		a.LDRpost(X30, SP, 16)                // X30 = [SP]; SP += 16
+	} else if hasArg2 {
 		a.LDR(regSelfArg2, SP, 16)            // X22 = [SP+16]
 		a.LDPpost(X30, regSelfArg, SP, 32)    // {X30, X19} = [SP]; SP += 32
 	} else {
@@ -3692,7 +3987,8 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 
 	// For variable-return self-calls (C=0), update ctx.Top so subsequent
 	// B=0 CALL instructions know the arg range. Top = fnReg + 1.
-	if candidate.nResults < 0 {
+	// Skip if the next consumer is a tail self-call (loads by position, not ctx.Top).
+	if candidate.nResults < 0 && !candidate.skipTopUpdate {
 		a.LoadImm64(X1, int64(fnReg+1))
 		a.STR(X1, regCtx, ctxOffTop)
 	}
