@@ -11,21 +11,42 @@ Comparative benchmarks across five runtimes:
 | **Lua 5.5** | Official Lua VM | C |
 | **LuaJIT 2.1** | Tracing JIT compiler | C/ASM |
 
-## Scenarios
+## Benchmark Suite (15 benchmarks)
 
-| # | Benchmark | What it measures |
-|---|-----------|-----------------|
-| 1 | **Fibonacci (recursive, n=20)** | Pure computation, deep recursion, call-stack pressure |
-| 2 | **Fibonacci (recursive, n=25)** | Same, heavier workload to reduce startup noise |
-| 3 | **Fibonacci (iterative, n=30)** | Tight loop with arithmetic |
-| 4 | **Table / dict operations** | Create a 1000-key table and read every key back |
-| 5 | **String concatenation** | Append a character 100 times in a loop |
-| 6 | **Closure creation** | Create 1000 closures that capture a variable |
-| 7 | **Function calls** | Call a trivial `add(a,b)` function 10,000 times |
-| 8 | **VM startup** | Create a new VM and execute `x := 1` |
+### Compute-heavy
+| Benchmark | What it measures |
+|-----------|-----------------|
+| **mandelbrot(1000)** | Float-heavy nested loops, conditional break |
+| **sum_primes(100K)** | Integer arithmetic, while-loops, trial division |
+| **fannkuch(9)** | Array permutation, integer-heavy, branchy |
 
-> **Note:** Starlark forbids recursion and top-level for-loops by design.
-> Recursive benchmarks exclude Starlark; all other Starlark benchmarks wrap code in functions.
+### Recursion
+| Benchmark | What it measures |
+|-----------|-----------------|
+| **fib(20/25/35)** | Self-recursive, single parameter |
+| **ackermann(3,4)** | Nested self-recursive, two parameters |
+| **mutual_recursion** | Hofstadter F/M sequences, non-self-recursive |
+
+### Table/Array
+| Benchmark | What it measures |
+|-----------|-----------------|
+| **sieve(1M)** | Integer array read/write, conditional |
+| **nbody(500K)** | Table field access + float math |
+| **matmul(300)** | 2D array access, nested loops |
+| **spectral_norm(500)** | Float + function calls + table access |
+
+### Function Calls
+| Benchmark | What it measures |
+|-----------|-----------------|
+| **fn calls (10K)** | Simple function inlining overhead |
+| **method_dispatch(100K)** | Table-as-object, field access for methods |
+| **closure_bench** | Closure creation, upvalue capture, higher-order map |
+
+### Other
+| Benchmark | What it measures |
+|-----------|-----------------|
+| **quicksort(50K)** | Array operations, recursion, partition |
+| **string_bench** | Concatenation, format, string comparison sort |
 
 ## How to run
 
@@ -44,11 +65,38 @@ go test ./benchmarks/ -bench=FibRecursive -benchtime=3s
 go test ./benchmarks/ -bench=. -benchtime=3s -count=1 | tee benchmarks/results.txt
 ```
 
-## Latest results
+## Latest Results
 
 Platform: Apple M4 Max, darwin/arm64, Go 1.25.7, Lua 5.5.0, LuaJIT 2.1
 
-### Summary table (us/op, lower is better)
+### GScript JIT vs LuaJIT (warm benchmarks)
+
+| Benchmark | GScript JIT | LuaJIT | Result |
+|-----------|------------|--------|--------|
+| **fib(20)** | **24us** | 26us | **🏆 GScript 9% faster** |
+| fn calls (10K) | 5.1us | 2.6us | 2.0x gap |
+| ackermann(3,4) | 30us | 12us | 2.5x gap |
+| mandelbrot(1000) | 0.23s | 0.056s | 4.0x gap |
+
+### Full Suite: VM vs JIT
+
+| Benchmark | VM | Trace/Method JIT | Speedup |
+|-----------|-----|------------------|---------|
+| mandelbrot | 1.50s | **0.23s** | **×6.6** |
+| fib(20) warm | — | **24us** | **×10** |
+| fn calls warm | 226us | **5.1us** | **×44** |
+| ackermann warm | 303us | **30us** | **×10** |
+| nbody | 2.7s | 2.5s | ×1.1 |
+| sieve | 0.17s | 0.17s | ×1.0 |
+| spectral_norm | 0.82s | 1.0s | ×0.82 |
+| matmul | 1.26s | 1.63s | ×0.77 |
+| fannkuch(9) | 0.52s | — | — |
+| quicksort(50K) | 0.16s | — | — |
+| sum_primes | 0.024s | 0.037s | ×0.65 |
+| mutual_recursion | 0.28s | 0.32s | ×0.88 |
+| method_dispatch | 0.13s | 0.13s | ×1.0 |
+
+### Cross-runtime comparison (us/op, lower is better)
 
 | Benchmark | GScript Tree | GScript VM | VM Speedup | gopher-lua | starlark-go | Lua 5.5 (C) | LuaJIT |
 |---|---:|---:|---:|---:|---:|---:|---:|
