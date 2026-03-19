@@ -112,6 +112,10 @@ type TraceRecorder struct {
 
 	// Blacklist: loops where compilation failed (don't retry)
 	blacklist map[loopKey]bool
+
+	// Abort tracking: count how many times recording was aborted per loop key.
+	// After too many aborts, the loop is blacklisted to avoid repeated start→abort cycles.
+	abortCounts map[loopKey]int
 }
 
 type loopKey struct {
@@ -123,17 +127,23 @@ const (
 	DefaultTraceThreshold = 10
 	DefaultMaxTraceLen    = 500
 	DefaultMaxInlineDepth = 3
+	// MaxAbortBeforeBlacklist is the maximum number of aborted recording attempts
+	// before a loop is permanently blacklisted. This prevents repeated start→abort
+	// cycles for loops where recording is interrupted (e.g., function returns during
+	// recording, different back-edge hit during recording).
+	MaxAbortBeforeBlacklist = 3
 )
 
 // NewTraceRecorder creates a new trace recorder.
 func NewTraceRecorder() *TraceRecorder {
 	return &TraceRecorder{
-		maxDepth:   DefaultMaxInlineDepth,
-		maxLen:     DefaultMaxTraceLen,
-		threshold:  DefaultTraceThreshold,
-		loopCounts: make(map[loopKey]int),
-		compiled:   make(map[loopKey]*CompiledTrace),
-		blacklist:  make(map[loopKey]bool),
+		maxDepth:    DefaultMaxInlineDepth,
+		maxLen:      DefaultMaxTraceLen,
+		threshold:   DefaultTraceThreshold,
+		loopCounts:  make(map[loopKey]int),
+		compiled:    make(map[loopKey]*CompiledTrace),
+		blacklist:   make(map[loopKey]bool),
+		abortCounts: make(map[loopKey]int),
 	}
 }
 
@@ -776,9 +786,22 @@ func (r *TraceRecorder) finishTrace() {
 }
 
 // abortTrace stops recording and discards the current trace.
-// If permanent is true, also blacklists the loop to prevent retries
-// (used for structural limitations like nested FORPREP that won't change).
+// Tracks abort count per loop key; after MaxAbortBeforeBlacklist aborts,
+// the loop is permanently blacklisted to prevent repeated start->abort cycles
+// (e.g., short-lived functions that return before the trace completes).
 func (r *TraceRecorder) abortTrace() {
+	if r.current != nil {
+		key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
+		r.abortCounts[key]++
+		if r.abortCounts[key] >= MaxAbortBeforeBlacklist {
+			r.blacklist[key] = true
+			r.current.LoopProto.BlacklistTracePC(r.current.LoopPC)
+			if r.debug {
+				fmt.Printf("[TRACE] Abort-blacklisted: PC=%d (aborted %d times)\n",
+					r.current.LoopPC, r.abortCounts[key])
+			}
+		}
+	}
 	r.current = nil
 	r.recording = false
 	r.depth = 0
