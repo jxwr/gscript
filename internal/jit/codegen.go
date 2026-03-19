@@ -261,6 +261,33 @@ func (cg *Codegen) emitPrologue() {
 
 	if cg.hasSelfCalls {
 		a.MOVimm16(regSelfDepth, 0) // depth = 0 at outermost call
+
+		// Type-guard parameters at outermost entry: side-exit if any param is not TypeInt.
+		// Recursive self-calls enter at self_call_entry (below), skipping this guard.
+		// This is safe because self-calls always pass results of int arithmetic (SUB/ADD).
+		if cg.proto.NumParams > 0 {
+			for i := 0; i < cg.proto.NumParams; i++ {
+				off := regTypOffset(i)
+				if off <= 4095 {
+					a.LDRB(X0, regRegs, off)
+				} else {
+					a.LoadImm64(X10, int64(off))
+					a.ADDreg(X10, regRegs, X10)
+					a.LDRB(X0, X10, 0)
+				}
+				a.CMPimmW(X0, TypeInt)
+				a.BCond(CondNE, "self_param_guard_fail")
+			}
+			a.B("self_param_guard_ok")
+			a.Label("self_param_guard_fail")
+			// Side exit: parameter is not int, fall back to interpreter.
+			a.LoadImm64(X1, 0)
+			a.STR(X1, regCtx, ctxOffExitPC)
+			a.LoadImm64(X0, 1) // ExitCode = 1 (side exit)
+			a.B("epilogue")
+			a.Label("self_param_guard_ok")
+		}
+
 		a.Label("self_call_entry")  // self-recursive calls BL here
 	}
 }
@@ -396,8 +423,10 @@ func (cg *Codegen) storeRegFval(src FReg, reg int) {
 
 // storeIntValue stores a complete IntValue: sets typ=TypeInt and ival=value.
 // For pinned registers, skips the type store (typ is maintained on spill).
+// For self-call functions, skips the type store because all values are guaranteed
+// TypeInt (parameter guard at entry + int-only arithmetic).
 func (cg *Codegen) storeIntValue(reg int, valReg Reg) {
-	if _, pinned := cg.pinnedRegs[reg]; !pinned {
+	if _, pinned := cg.pinnedRegs[reg]; !pinned && !cg.hasSelfCalls {
 		cg.asm.MOVimm16W(X9, TypeInt)
 		cg.storeRegTyp(X9, reg)
 	}
@@ -439,9 +468,16 @@ func (cg *Codegen) loadRKTyp(dst Reg, idx int) {
 }
 
 // loadRKIval loads RK(idx).ival into dst.
+// For small integer constants, emits a MOV immediate instead of a memory load.
 func (cg *Codegen) loadRKIval(dst Reg, idx int) {
 	if vm.IsRK(idx) {
 		constIdx := vm.RKToConstIdx(idx)
+		// Optimize: if the constant is a small integer, use MOV immediate.
+		if constIdx < len(cg.proto.Constants) && cg.proto.Constants[constIdx].IsInt() {
+			v := cg.proto.Constants[constIdx].Int()
+			cg.asm.LoadImm64(dst, v)
+			return
+		}
 		off := constIdx*ValueSize + OffsetIval
 		cg.asm.LDR(dst, regConsts, off)
 	} else {
@@ -458,6 +494,27 @@ func (cg *Codegen) loadRKFval(dst FReg, idx int) {
 	} else {
 		cg.loadRegFval(dst, idx)
 	}
+}
+
+// rkSmallIntConst returns the integer value if idx refers to an RK constant that
+// is a non-negative integer fitting in 12 bits (0..4095). Returns -1 otherwise.
+func (cg *Codegen) rkSmallIntConst(idx int) int64 {
+	if !vm.IsRK(idx) {
+		return -1
+	}
+	constIdx := vm.RKToConstIdx(idx)
+	if constIdx >= len(cg.proto.Constants) {
+		return -1
+	}
+	c := cg.proto.Constants[constIdx]
+	if !c.IsInt() {
+		return -1
+	}
+	v := c.Int()
+	if v >= 0 && v <= 4095 {
+		return v
+	}
+	return -1
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -509,6 +566,16 @@ func (cg *Codegen) analyzeKnownIntRegs() {
 	cg.knownInt = make([]regSet, n)
 	cg.reachable = make([]bool, n)
 	cg.reachable[0] = true // entry point
+
+	// For self-call functions, parameters are guaranteed TypeInt at function entry.
+	// The outermost call validates parameter types before self_call_entry;
+	// all recursive self-calls pass int results from SUB/ADD which are always int.
+	// This eliminates redundant type guards on parameters throughout the function body.
+	if cg.hasSelfCalls && cg.proto.NumParams > 0 {
+		for i := 0; i < cg.proto.NumParams && i < 64; i++ {
+			cg.knownInt[0] |= regBit(i)
+		}
+	}
 
 	changed := true
 	for changed {
@@ -1581,6 +1648,24 @@ func (cg *Codegen) emitArithInt(pc int, inst uint32, arithOp string) error {
 			case "MUL":
 				cg.asm.MUL(aArm, bArm, cArm)
 			}
+		} else if (arithOp == "ADD" || arithOp == "SUB") && cg.rkSmallIntConst(cIdx) >= 0 {
+			// ADD/SUB with small integer constant: use immediate form.
+			// SUB R(A), R(B), K(imm) → SUBimm X0, X0, #imm
+			imm := cg.rkSmallIntConst(cIdx)
+			cg.loadRKIval(X0, bIdx)
+			switch arithOp {
+			case "ADD":
+				cg.asm.ADDimm(X0, X0, uint16(imm))
+			case "SUB":
+				cg.asm.SUBimm(X0, X0, uint16(imm))
+			}
+			cg.storeIntValue(aReg, X0)
+		} else if (arithOp == "ADD" || arithOp == "SUB") && arithOp == "ADD" && cg.rkSmallIntConst(bIdx) >= 0 {
+			// ADD R(A), K(imm), R(C) → ADDimm X0, X0, #imm (commutative)
+			imm := cg.rkSmallIntConst(bIdx)
+			cg.loadRKIval(X0, cIdx)
+			cg.asm.ADDimm(X0, X0, uint16(imm))
+			cg.storeIntValue(aReg, X0)
 		} else {
 			// Fallback: load through X0/X1.
 			cg.loadRKIval(X0, bIdx)
@@ -1697,9 +1782,19 @@ func (cg *Codegen) emitEQ(pc int, inst uint32) error {
 		}
 	}
 
-	cg.loadRKIval(X0, bIdx)
-	cg.loadRKIval(X1, cIdx)
-	cg.asm.CMPreg(X0, X1)
+	// Use CMP immediate when one operand is a small non-negative integer constant.
+	// EQ is symmetric so no condition reversal needed.
+	if cImm := cg.rkSmallIntConst(cIdx); cImm >= 0 {
+		cg.loadRKIval(X0, bIdx)
+		cg.asm.CMPimm(X0, uint16(cImm))
+	} else if bImm := cg.rkSmallIntConst(bIdx); bImm >= 0 {
+		cg.loadRKIval(X0, cIdx)
+		cg.asm.CMPimm(X0, uint16(bImm))
+	} else {
+		cg.loadRKIval(X0, bIdx)
+		cg.loadRKIval(X1, cIdx)
+		cg.asm.CMPreg(X0, X1)
+	}
 
 	if aFlag != 0 {
 		cg.asm.BCond(CondNE, skipLabel)
@@ -1740,9 +1835,32 @@ func (cg *Codegen) emitLT(pc int, inst uint32) error {
 		}
 	}
 
-	cg.loadRKIval(X0, bIdx)
-	cg.loadRKIval(X1, cIdx)
-	cg.asm.CMPreg(X0, X1)
+	// Use CMP immediate when one operand is a small non-negative integer constant.
+	if cImm := cg.rkSmallIntConst(cIdx); cImm >= 0 {
+		cg.loadRKIval(X0, bIdx)
+		cg.asm.CMPimm(X0, uint16(cImm))
+	} else if bImm := cg.rkSmallIntConst(bIdx); bImm >= 0 {
+		// B < C with B constant: load C, compare reversed.
+		// B < C ⟺ C > B, so flip the condition.
+		cg.loadRKIval(X0, cIdx)
+		cg.asm.CMPimm(X0, uint16(bImm))
+		// Reverse the condition: instead of checking B < C, we check C > B.
+		if aFlag != 0 {
+			// Original: skip if NOT (B < C), i.e., B >= C → with reversal: skip if C <= B
+			cg.asm.BCond(CondLE, skipLabel)
+		} else {
+			// Original: skip if (B < C) → with reversal: skip if C > B
+			cg.asm.BCond(CondGT, skipLabel)
+		}
+		if needExit {
+			return cg.emitComparisonSideExit(pc, exitLabel)
+		}
+		return nil
+	} else {
+		cg.loadRKIval(X0, bIdx)
+		cg.loadRKIval(X1, cIdx)
+		cg.asm.CMPreg(X0, X1)
+	}
 
 	if aFlag != 0 {
 		cg.asm.BCond(CondGE, skipLabel)
@@ -1784,9 +1902,32 @@ func (cg *Codegen) emitLE(pc int, inst uint32) error {
 		}
 	}
 
-	cg.loadRKIval(X0, bIdx)
-	cg.loadRKIval(X1, cIdx)
-	cg.asm.CMPreg(X0, X1)
+	// Use CMP immediate when one operand is a small non-negative integer constant.
+	if cImm := cg.rkSmallIntConst(cIdx); cImm >= 0 {
+		// B <= C with C as immediate: CMP B, #C then check LE.
+		cg.loadRKIval(X0, bIdx)
+		cg.asm.CMPimm(X0, uint16(cImm))
+	} else if bImm := cg.rkSmallIntConst(bIdx); bImm >= 0 {
+		// B <= C with B constant: CMP C, #B, then reverse condition.
+		// B <= C ⟺ C >= B
+		cg.loadRKIval(X0, cIdx)
+		cg.asm.CMPimm(X0, uint16(bImm))
+		if aFlag != 0 {
+			// Original: skip if NOT (B <= C), i.e., B > C → with reversal: skip if C < B
+			cg.asm.BCond(CondLT, skipLabel)
+		} else {
+			// Original: skip if (B <= C) → with reversal: skip if C >= B
+			cg.asm.BCond(CondGE, skipLabel)
+		}
+		if needExit {
+			return cg.emitComparisonSideExit(pc, exitLabel)
+		}
+		return nil
+	} else {
+		cg.loadRKIval(X0, bIdx)
+		cg.loadRKIval(X1, cIdx)
+		cg.asm.CMPreg(X0, X1)
+	}
 
 	if aFlag != 0 {
 		cg.asm.BCond(CondGT, skipLabel)
@@ -2360,7 +2501,10 @@ func (cg *Codegen) emitSelfCallReturn(pc, aReg, b int) error {
 		a.RET() // nested self-call: return single value in X0
 
 		// Outermost: return single value via JITContext.
+		// Write type tag for the return register so the executor reads a valid Value.
 		a.Label(outerVarLabel)
+		a.MOVimm16W(X9, TypeInt)
+		cg.storeRegTyp(X9, aReg)
 		a.LoadImm64(X1, int64(aReg))
 		a.STR(X1, regCtx, ctxOffRetBase)
 		a.LoadImm64(X1, 1) // 1 return value
@@ -2386,8 +2530,13 @@ func (cg *Codegen) emitSelfCallReturn(pc, aReg, b int) error {
 	// Self-call return: X0 = result, just RET back to BL caller.
 	a.RET()
 
-	// Outermost return: write to JITContext.
+	// Outermost return: write type tag for the return register so the executor
+	// reads a valid Value from the register array.
 	a.Label(outerLabel)
+	if nret > 0 {
+		a.MOVimm16W(X9, TypeInt)
+		cg.storeRegTyp(X9, aReg)
+	}
 	a.LoadImm64(X1, int64(aReg))
 	a.STR(X1, regCtx, ctxOffRetBase)
 	a.LoadImm64(X1, int64(nret))
@@ -2401,8 +2550,9 @@ func (cg *Codegen) emitSelfCallReturn(pc, aReg, b int) error {
 const maxSelfRecursionDepth = 200
 
 // emitSelfCall emits native ARM64 code for a self-recursive function call.
-// Saves state on the ARM64 stack, advances regRegs to a new register window,
-// and BL to self_call_entry.
+// Saves only LR (x30) on the ARM64 stack (16 bytes for alignment). regRegs (x26)
+// is restored by subtraction after the call. The depth counter (x25) is managed
+// via increment/decrement without save/restore.
 func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 	a := cg.asm
 	fnReg := candidate.fnReg
@@ -2410,16 +2560,15 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 	overflowLabel := fmt.Sprintf("self_overflow_%d", pc)
 	doneLabel := fmt.Sprintf("self_done_%d", pc)
 
-	// Save state: X29, X30 (frame + link), X25 (depth), regRegs (register base).
-	a.STPpre(X29, X30, SP, -32)    // [SP] = X29, X30; SP -= 32
-	a.STP(regSelfDepth, regRegs, SP, 16) // [SP+16] = X25, X26
-
-	// Increment depth counter.
+	// Increment depth counter (before stack push, so overflow unwind is simpler).
 	a.ADDimm(regSelfDepth, regSelfDepth, 1)
 
 	// Check depth limit — side exit if too deep.
 	a.CMPimm(regSelfDepth, maxSelfRecursionDepth)
 	a.BCond(CondGE, overflowLabel)
+
+	// Save only LR (x30). SP must remain 16-byte aligned, so we push 16 bytes.
+	a.STRpre(X30, SP, -16) // [SP] = X30; SP -= 16
 
 	// Advance regRegs to callee's register window.
 	// Callee's R(0) = Caller's R(fnReg+1).
@@ -2438,25 +2587,34 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 	a.BL("self_call_entry")
 
 	// After return: X0 = result (ival).
-	// Restore state.
-	a.LDP(regSelfDepth, regRegs, SP, 16) // restore X25, X26
-	a.LDPpost(X29, X30, SP, 32)          // restore X29, X30; SP += 32
+	// Restore LR from stack.
+	a.LDRpost(X30, SP, 16) // restore X30; SP += 16
+
+	// Restore regRegs by subtracting the offset (avoids saving/restoring x26).
+	if offset <= 4095 {
+		a.SUBimm(regRegs, regRegs, uint16(offset))
+	} else {
+		// Use X1 as scratch since X0 holds the result.
+		a.LoadImm64(X1, int64(offset))
+		a.SUBreg(regRegs, regRegs, X1)
+	}
+
+	a.SUBimm(regSelfDepth, regSelfDepth, 1) // depth--
 
 	// Store result to R(fnReg) in caller's register window.
+	// Type tag write is skipped: self-call functions guarantee all values are TypeInt
+	// (parameter guard at outermost entry + int-only arithmetic).
 	a.STR(X0, regRegs, regIvalOffset(fnReg))
-	a.MOVimm16W(X9, TypeInt)
-	cg.storeRegTyp(X9, fnReg)
 
 	a.B(doneLabel)
 
-	// Overflow handler: side exit to interpreter.
-	// Unwind ALL self-call frames by restoring SP from frame pointer (X29),
-	// which was set to SP in the prologue and never modified by self-call pushes.
+	// Overflow handler: unwind all self-call frames at once.
+	// X29 was set to SP in the prologue and is never modified by self-call pushes,
+	// so restoring SP from X29 unwinds all 16-byte self-call frames.
 	a.Label(overflowLabel)
-	a.LDP(regSelfDepth, regRegs, SP, 16)
-	a.LDPpost(X29, X30, SP, 32)
-	// If depth > 0, keep unwinding self-call frames.
-	a.CBNZ(regSelfDepth, overflowLabel)
+	a.MOVreg(SP, X29)                       // unwind all self-call stack frames
+	a.LDR(regRegs, regCtx, ctxOffRegs)      // restore original regRegs from context
+	a.MOVimm16(regSelfDepth, 0)             // reset depth
 	a.LoadImm64(X1, int64(candidate.getglobalPC))
 	a.STR(X1, regCtx, ctxOffExitPC)
 	a.LoadImm64(X0, 1) // side exit

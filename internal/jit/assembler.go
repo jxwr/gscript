@@ -406,6 +406,20 @@ func (a *Assembler) STR(rt, rn Reg, offset int) {
 	a.emit(0xF9000000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
 }
 
+// STRpre: [Xn + #simm9]! = Xt (pre-index store, updates Xn)
+func (a *Assembler) STRpre(rt, rn Reg, simm9 int) {
+	// STR Xt, [Xn, #simm9]!: 1|1|11|1|00|00|0|imm9|11|Rn|Rt
+	imm9 := uint32(simm9) & 0x1FF
+	a.emit(0xF8000C00 | imm9<<12 | uint32(rn)<<5 | uint32(rt))
+}
+
+// LDRpost: Xt = [Xn], #simm9 (post-index load, updates Xn)
+func (a *Assembler) LDRpost(rt, rn Reg, simm9 int) {
+	// LDR Xt, [Xn], #simm9: 1|1|11|1|00|01|0|imm9|01|Rn|Rt
+	imm9 := uint32(simm9) & 0x1FF
+	a.emit(0xF8400400 | imm9<<12 | uint32(rn)<<5 | uint32(rt))
+}
+
 // LDRreg: Xt = [Xn + Xm] (register offset load, 64-bit)
 func (a *Assembler) LDRreg(rt, rn, rm Reg) {
 	// LDR Xt, [Xn, Xm]: 11|11|1|00|01|1|Rm|011|0|10|Rn|Rt  (LSL #3)
