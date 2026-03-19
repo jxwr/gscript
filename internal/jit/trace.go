@@ -326,9 +326,17 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 	// Register offset: remap from absolute base to trace-relative
 	baseOff := base - r.startBase
 
+	// For comparison opcodes (EQ, LT, LE), the A field is a boolean flag
+	// (0 or 1), NOT a register index. Do not remap it with baseOff.
+	remappedA := baseOff + a
+	switch op {
+	case vm.OP_EQ, vm.OP_LT, vm.OP_LE:
+		remappedA = a // A is a flag, not a register
+	}
+
 	ir := TraceIR{
 		Op:    op,
-		A:     baseOff + a, // remap to trace-relative
+		A:     remappedA,
 		B:     b,
 		C:     c,
 		PC:    pc,
@@ -684,6 +692,7 @@ func (r *TraceRecorder) finishTrace() {
 			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
 			compiled := false
 
+
 			// Try SSA codegen first (handles int, float, tables, intrinsics, globals)
 			if r.useSSA {
 				ssaFunc := BuildSSA(r.current)
@@ -721,7 +730,17 @@ func (r *TraceRecorder) finishTrace() {
 			// Fall back to regular trace compiler.
 			// Skip fallback for full-nesting traces: the regular compiler
 			// doesn't understand inner loop structure and produces wrong results.
-			if !compiled && !hasFullNesting {
+			// Also skip for traces with inlined functions (depth > 0): the regular
+			// compiler's side-exit PCs use the callee's bytecode PCs, but the VM
+			// would resume at those PCs in the outer function, causing wrong behavior.
+			hasInlinedCode := false
+			for _, ir := range r.current.IR {
+				if ir.Depth > 0 {
+					hasInlinedCode = true
+					break
+				}
+			}
+			if !compiled && !hasFullNesting && !hasInlinedCode {
 				ct, err := compileTrace(r.current)
 				if err == nil {
 					r.compiled[key] = ct

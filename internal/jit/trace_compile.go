@@ -58,9 +58,10 @@ type CompiledTrace struct {
 
 	// Blacklisting: tracks whether this trace is doing useful work.
 	// Counters are updated directly by RecordResult (called by VM on every execution).
-	sideExitCount int  // number of times this trace side-exited
-	fullRunCount  int  // number of times this trace completed a full loop
-	blacklisted   bool // if true, interpreter should run instead
+	sideExitCount  int  // number of times this trace side-exited
+	fullRunCount   int  // number of times this trace completed a full loop
+	guardFailCount int  // number of consecutive guard failures (pre-loop type mismatch)
+	blacklisted    bool // if true, interpreter should run instead
 }
 
 // compileTrace compiles a Trace to native ARM64 code.
@@ -119,6 +120,13 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		switch ir.Op {
 		case vm.OP_MOVE:
 			emitTrMove(asm, &ir)
+			// If dst is allocated, update the ARM64 register from memory.
+			// emitTrMove copies the full Value via memory but does NOT update
+			// the allocated register, causing stale reads on the next iteration.
+			// (e.g., quicksort's "i = i+1" via MOVE R4 R10 needs R4's register updated)
+			if armReg, ok := ra.Get(ir.A); ok {
+				asm.LDR(armReg, regRegs, ir.A*ValueSize+OffsetData)
+			}
 		case vm.OP_LOADINT:
 			emitTrLoadInt(asm, &ir)
 			// If dst is allocated, update the ARM64 register too
@@ -151,11 +159,11 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		case vm.OP_FORLOOP:
 			emitTrForLoop(asm, &ir)
 		case vm.OP_EQ:
-			emitTrEQ(asm, &ir, i)
+			emitTrEQ(asm, &ir, i, trace)
 		case vm.OP_LT:
-			emitTrLT(asm, &ir)
+			emitTrLT(asm, &ir, i, trace)
 		case vm.OP_LE:
-			emitTrLE(asm, &ir)
+			emitTrLE(asm, &ir, i, trace)
 		case vm.OP_TEST:
 			emitTrTest(asm, &ir, i)
 		case vm.OP_JMP:
@@ -179,7 +187,7 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 				emitTrSideExit(asm, &ir)
 			}
 		case vm.OP_MOD:
-			emitTrMod(asm, &ir)
+			emitTrMod(asm, &ir, i)
 		case vm.OP_UNM:
 			emitTrUNM(asm, &ir)
 		case vm.OP_LEN:
@@ -508,17 +516,32 @@ func emitTrForLoop(asm *Assembler, ir *TraceIR) {
 	asm.BCond(CondGT, "loop_done")
 }
 
-func emitTrEQ(asm *Assembler, ir *TraceIR, idx int) {
+// trComparisonGuardFlag computes the effective guard flag for a comparison instruction.
+// During trace recording, if the comparison caused a skip (PC++), the next instruction
+// in the trace is NOT a JMP. If the comparison did NOT cause a skip, the next instruction
+// IS a JMP (which was executed instead of being skipped).
+// The effective flag accounts for this: when the comparison didn't skip, the guard polarity
+// is inverted (1 - A) compared to when it did skip.
+func trComparisonGuardFlag(ir *TraceIR, idx int, trace *Trace) int {
+	flag := ir.A
+	// Check if comparison did NOT skip by looking at next trace IR
+	didSkip := true
+	if idx+1 < len(trace.IR) && trace.IR[idx+1].Op == vm.OP_JMP {
+		didSkip = false
+	}
+	if !didSkip {
+		flag = 1 - flag
+	}
+	return flag
+}
+
+func emitTrEQ(asm *Assembler, ir *TraceIR, idx int, trace *Trace) {
 	// OP_EQ A B C: if (RK(B) == RK(C)) != bool(A) then PC++
 	//
-	// During trace recording, the comparison caused a skip (PC++).
-	// The skip happens when the result != bool(A):
-	//   A=0: skip when equal (result != false → equal)
-	//   A=1: skip when not-equal (result != true → not-equal)
-	//
-	// The guard ensures the same skip happens again:
-	//   A=0: recorded path had "equal" → exit when NOT equal
-	//   A=1: recorded path had "not-equal" → exit when equal
+	// Guard polarity depends on whether the comparison skipped during recording:
+	//   Effective flag=0: recorded path had "equal" → exit when NOT equal
+	//   Effective flag=1: recorded path had "not-equal" → exit when equal
+	flag := trComparisonGuardFlag(ir, idx, trace)
 	asm.LoadImm64(X9, int64(ir.PC))
 
 	bOff, bBase := trRKBase(ir.B)
@@ -546,11 +569,11 @@ func emitTrEQ(asm *Assembler, ir *TraceIR, idx int) {
 	asm.LDR(X1, bBase, bOff+OffsetData)
 	asm.LDR(X2, cBase, cOff+OffsetData)
 	asm.CMPreg(X1, X2)
-	if ir.A == 0 {
-		// A=0: recorded path had "equal" → exit when not equal
+	if flag == 0 {
+		// flag=0: recorded path had "equal" → exit when not equal
 		asm.BCond(CondNE, "side_exit")
 	} else {
-		// A=1: recorded path had "not-equal" → exit when equal
+		// flag=1: recorded path had "not-equal" → exit when equal
 		asm.BCond(CondEQ, "side_exit")
 	}
 	asm.B(doneLabel)
@@ -608,37 +631,34 @@ func emitTrEQ(asm *Assembler, ir *TraceIR, idx int) {
 
 	// Strings are equal
 	asm.Label(equalLabel)
-	if ir.A == 0 {
-		// A=0: recorded path had "equal" → continue
+	if flag == 0 {
+		// flag=0: recorded path had "equal" → continue
 		asm.B(doneLabel)
 	} else {
-		// A=1: recorded path had "not-equal" → side exit (got equal)
+		// flag=1: recorded path had "not-equal" → side exit (got equal)
 		asm.B("side_exit")
 	}
 
 	// Strings are not equal
 	asm.Label(notEqualLabel)
-	if ir.A == 0 {
-		// A=0: recorded path had "equal" → side exit (got not-equal)
+	if flag == 0 {
+		// flag=0: recorded path had "equal" → side exit (got not-equal)
 		asm.B("side_exit")
 	} else {
-		// A=1: recorded path had "not-equal" → continue
+		// flag=1: recorded path had "not-equal" → continue
 		asm.B(doneLabel)
 	}
 
 	asm.Label(doneLabel)
 }
 
-func emitTrLT(asm *Assembler, ir *TraceIR) {
+func emitTrLT(asm *Assembler, ir *TraceIR, idx int, trace *Trace) {
 	// OP_LT A B C: if (RK(B) < RK(C)) != bool(A) then PC++
 	//
-	// During trace recording, the comparison caused a skip (PC++).
-	//   A=0: skip when B < C (result != false → LT is true)
-	//   A=1: skip when B >= C (result != true → LT is false)
-	//
-	// Guard ensures the same skip:
-	//   A=0: recorded path had LT true → exit when NOT (B < C), i.e., B >= C
-	//   A=1: recorded path had LT false → exit when (B < C)
+	// Guard polarity depends on whether the comparison skipped during recording:
+	//   Effective flag=0: recorded path had LT true → exit on GE
+	//   Effective flag=1: recorded path had LT false → exit on LT
+	flag := trComparisonGuardFlag(ir, idx, trace)
 	asm.LoadImm64(X9, int64(ir.PC))
 
 	bOff, bBase := trRKBase(ir.B)
@@ -655,23 +675,20 @@ func emitTrLT(asm *Assembler, ir *TraceIR) {
 	asm.LDR(X2, cBase, cOff+OffsetData)
 	asm.CMPreg(X1, X2)
 
-	if ir.A == 0 {
-		asm.BCond(CondGE, "side_exit") // A=0: recorded LT true → exit on GE
+	if flag == 0 {
+		asm.BCond(CondGE, "side_exit") // flag=0: recorded LT true → exit on GE
 	} else {
-		asm.BCond(CondLT, "side_exit") // A=1: recorded LT false → exit on LT
+		asm.BCond(CondLT, "side_exit") // flag=1: recorded LT false → exit on LT
 	}
 }
 
-func emitTrLE(asm *Assembler, ir *TraceIR) {
+func emitTrLE(asm *Assembler, ir *TraceIR, idx int, trace *Trace) {
 	// OP_LE A B C: if (RK(B) <= RK(C)) != bool(A) then PC++
 	//
-	// During trace recording, the comparison caused a skip (PC++).
-	//   A=0: skip when B <= C (result != false → LE is true)
-	//   A=1: skip when B > C (result != true → LE is false)
-	//
-	// Guard ensures the same skip:
-	//   A=0: recorded path had LE true → exit when NOT (B <= C), i.e., B > C
-	//   A=1: recorded path had LE false → exit when (B <= C)
+	// Guard polarity depends on whether the comparison skipped during recording:
+	//   Effective flag=0: recorded path had LE true → exit on GT
+	//   Effective flag=1: recorded path had LE false → exit on LE
+	flag := trComparisonGuardFlag(ir, idx, trace)
 	asm.LoadImm64(X9, int64(ir.PC))
 
 	bOff, bBase := trRKBase(ir.B)
@@ -688,10 +705,10 @@ func emitTrLE(asm *Assembler, ir *TraceIR) {
 	asm.LDR(X2, cBase, cOff+OffsetData)
 	asm.CMPreg(X1, X2)
 
-	if ir.A == 0 {
-		asm.BCond(CondGT, "side_exit") // A=0: recorded LE true → exit on GT
+	if flag == 0 {
+		asm.BCond(CondGT, "side_exit") // flag=0: recorded LE true → exit on GT
 	} else {
-		asm.BCond(CondLE, "side_exit") // A=1: recorded LE false → exit on LE
+		asm.BCond(CondLE, "side_exit") // flag=1: recorded LE false → exit on LE
 	}
 }
 
@@ -1206,7 +1223,7 @@ func emitTrSelfCall(asm *Assembler, ir *TraceIR, idx int) {
 }
 
 // emitTrMod compiles OP_MOD R(A) = RK(B) % RK(C) for integers.
-func emitTrMod(asm *Assembler, ir *TraceIR) {
+func emitTrMod(asm *Assembler, ir *TraceIR, idx int) {
 	asm.LoadImm64(X9, int64(ir.PC))
 
 	bOff, bBase := trRKBase(ir.B)
@@ -1233,7 +1250,7 @@ func emitTrMod(asm *Assembler, ir *TraceIR) {
 
 	// Lua-style: result has same sign as divisor
 	// If r != 0 && (r ^ b) < 0: r += b
-	doneLabel := fmt.Sprintf("mod_done_%d_%d", ir.PC, ir.A)
+	doneLabel := fmt.Sprintf("mod_done_%d", idx)
 	asm.CBZ(X0, doneLabel)
 	asm.EORreg(X3, X0, X2)   // X3 = r ^ b
 	asm.CMPreg(X3, XZR)      // signed compare with 0
@@ -1352,6 +1369,11 @@ func (ct *CompiledTrace) RecordResult(sideExit bool) {
 	}
 }
 
+// guardFailBlacklistThreshold is the number of consecutive guard failures
+// before a trace is blacklisted. Guard failures mean the pre-loop type checks
+// never match, so the trace always exits without doing work.
+const guardFailBlacklistThreshold = 5
+
 // executeTrace runs compiled trace code.
 func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.FuncProto) (exitPC int, sideExit bool, guardFail bool) {
 	var ctx TraceContext
@@ -1373,10 +1395,23 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 
 	switch ctx.ExitCode {
 	case 2:
+		// Guard fail: the trace's pre-loop type checks didn't match.
+		// Track consecutive guard failures and blacklist if the trace ALWAYS
+		// fails. This avoids repeated JIT calls that waste time and can cause
+		// subtle register corruption from the prologue/epilogue overhead.
+		ct.guardFailCount++
+		if ct.guardFailCount >= guardFailBlacklistThreshold {
+			ct.blacklisted = true
+			if ct.proto != nil {
+				ct.proto.BlacklistTracePC(ct.loopPC)
+			}
+		}
 		return 0, false, true // guard fail — not executed
 	case 1:
+		ct.guardFailCount = 0 // reset on successful execution
 		return int(ctx.ExitPC), true, false // side exit
 	default:
+		ct.guardFailCount = 0 // reset on successful execution
 		return int(ctx.ExitPC), false, false // loop done
 	}
 }

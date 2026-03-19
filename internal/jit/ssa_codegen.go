@@ -328,12 +328,14 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 
 	trCtx := X19
 	asm.MOVreg(trCtx, X0)
+
 	asm.LDR(regRegs, trCtx, 0)
 	asm.LDR(regConsts, trCtx, 8)
 
 	// === Pre-LOOP: guards + initial loads ===
 	// Pre-loop guards branch to "guard_fail" (ExitCode=2) instead of "side_exit".
 	// This tells the VM "trace not executed" so the interpreter runs the body normally.
+
 	loopIdx := -1
 	for i, inst := range f.Insts {
 		if inst.Op == SSA_LOOP {
@@ -712,6 +714,19 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		keyReg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X2)
 		valRef := SSARef(inst.AuxInt)
 		valSlot := sm.getSlotForRef(valRef)
+		// If value slot is allocated to an ARM64 register, spill it to memory
+		// FIRST so the full-Value memory read below gets the up-to-date data.
+		// Without this, the memory may hold a stale value from before the
+		// register was last written (e.g., MOD result only in register).
+		if valSlot >= 0 {
+			if r, ok := regMap.IntReg(valSlot); ok {
+				asm.STR(r, regRegs, valSlot*ValueSize+OffsetData)
+				asm.MOVimm16(X5, TypeInt)
+				asm.STRB(X5, regRegs, valSlot*ValueSize+OffsetTyp)
+				// Clear PtrData to avoid stale pointer in the array element
+				asm.STR(XZR, regRegs, valSlot*ValueSize+OffsetPtrData)
+			}
+		}
 		// Load *Table
 		if tableSlot >= 0 {
 			asm.LDR(X0, regRegs, tableSlot*ValueSize+OffsetPtrData)

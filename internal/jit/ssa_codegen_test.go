@@ -1270,3 +1270,142 @@ func TestSSACodegen_Integration_WhileLoopTraced(t *testing.T) {
 		t.Error("expected at least one trace for while-loop (JMP back-edge detection enabled)")
 	}
 }
+
+// TestSSACodegen_Integration_QuicksortPartition tests the quicksort partition
+// pattern: GETTABLE + SETTABLE (swap) + ADD inside a for-loop, called
+// recursively on sub-arrays. This is the pattern that causes "attempt to index
+// a number value" in the sort benchmark.
+func TestSSACodegen_Integration_QuicksortPartition(t *testing.T) {
+	src := `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            t := arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+            i = i + 1
+        }
+    }
+    t := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = t
+
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+
+func make_random_array(n, seed) {
+    arr := {}
+    x := seed
+    for i := 1; i <= n; i++ {
+        x = (x * 1103515245 + 12345) % 2147483648
+        arr[i] = x
+    }
+    return arr
+}
+
+func is_sorted(arr, n) {
+    for i := 1; i < n; i++ {
+        if arr[i] > arr[i + 1] { return false }
+    }
+    return true
+}
+
+N := 500
+arr := make_random_array(N, 42)
+quicksort(arr, 1, N)
+sorted := is_sorted(arr, N)
+`
+	// Run without tracing (pure VM)
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	v1 := vm.New(g1)
+	_, err1 := v1.Execute(proto)
+	if err1 != nil {
+		t.Fatalf("VM runtime error: %v", err1)
+	}
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	vmSorted := g1["sorted"]
+	jitSorted := g2["sorted"]
+	t.Logf("VM sorted=%v, SSA sorted=%v", vmSorted, jitSorted)
+
+	if !vmSorted.Truthy() {
+		t.Fatalf("VM: sorted should be true, got %v", vmSorted)
+	}
+	if !jitSorted.Truthy() {
+		t.Errorf("JIT: sorted should be true, got %v (trace JIT corrupted sort)", jitSorted)
+	}
+}
+
+// TestSSACodegen_SumPrimes_Correctness verifies that the trace JIT produces
+// correct results for sum_primes, which uses an inlined is_prime function with
+// a while-loop (JMP back-edge) inside a for-loop (FORLOOP back-edge).
+//
+// This is a regression test for two bugs:
+//   1. Comparison opcodes (EQ, LT, LE) had their A field (boolean flag) incorrectly
+//      remapped with baseOff when inlined at depth > 0 in the trace recorder.
+//   2. The regular trace compiler assumed comparisons always "caused a skip" during
+//      recording, but inlined code can have non-skipping comparisons followed by JMP.
+//   3. The regular trace compiler's side-exit PCs from inlined functions referenced
+//      the callee's bytecode, not the caller's, causing wrong resume after side-exit.
+func TestSSACodegen_SumPrimes_Correctness(t *testing.T) {
+	src := `
+func is_prime(n) {
+    if n < 2 { return false }
+    if n < 4 { return true }
+    if n % 2 == 0 { return false }
+    if n % 3 == 0 { return false }
+    i := 5
+    for i * i <= n {
+        if n % i == 0 { return false }
+        if n % (i + 2) == 0 { return false }
+        i = i + 6
+    }
+    return true
+}
+
+count := 0
+for i := 2; i <= 200; i++ {
+    if is_prime(i) {
+        count = count + 1
+    }
+}
+`
+	// Run without tracing (pure VM) as reference
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	v1 := vm.New(g1)
+	_, err1 := v1.Execute(proto)
+	if err1 != nil {
+		t.Fatalf("VM runtime error: %v", err1)
+	}
+	vmCount := g1["count"].Int()
+
+	// Run with SSA JIT tracing
+	proto2 := compileProto(t, src)
+	g2 := runtime.NewInterpreterGlobals()
+	v2 := vm.New(g2)
+	recorder := NewTraceRecorder()
+	recorder.SetCompile(true)
+	recorder.SetUseSSA(true)
+	v2.SetTraceRecorder(recorder)
+	_, err2 := v2.Execute(proto2)
+	if err2 != nil {
+		t.Fatalf("Trace runtime error: %v", err2)
+	}
+	traceCount := g2["count"].Int()
+
+	if vmCount != traceCount {
+		t.Errorf("sum_primes(200): VM count=%d, Trace count=%d (expected match)", vmCount, traceCount)
+	}
+	// Expected: 46 primes up to 200
+	if vmCount != 46 {
+		t.Errorf("sum_primes(200): expected 46 primes, got %d", vmCount)
+	}
+}
