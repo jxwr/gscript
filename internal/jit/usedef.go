@@ -31,8 +31,8 @@ func BuildUseDef(f *SSAFunc) *UseDef {
 			ud.Users[inst.Arg2] = append(ud.Users[inst.Arg2], ref)
 		}
 
-		// SSA_STORE_ARRAY stores a value ref in AuxInt
-		if inst.Op == SSA_STORE_ARRAY {
+		// SSA_STORE_ARRAY, SSA_FMADD, SSA_FMSUB store a ref in AuxInt
+		if inst.Op == SSA_STORE_ARRAY || inst.Op == SSA_FMADD || inst.Op == SSA_FMSUB {
 			valRef := SSARef(inst.AuxInt)
 			if valRef != SSARefNone && valRef >= 0 && int(valRef) < n {
 				ud.Users[valRef] = append(ud.Users[valRef], ref)

@@ -105,11 +105,14 @@ func regSetHas(s regSet, r int) bool {
 
 // inlineArgTrace records traced argument sources for inline optimization.
 type inlineArgTrace struct {
-	fromReg   int   // source register (if traced through MOVE)
-	fromConst int64 // constant value (if traced through LOADINT)
-	isConst   bool  // true if fromConst is valid
-	traced    bool  // true if successfully traced
-	setupPC   int   // PC of the MOVE/LOADINT that set up this arg (for skipping)
+	fromReg    int    // source register (if traced through MOVE)
+	fromConst  int64  // constant value (if traced through LOADINT)
+	isConst    bool   // true if fromConst is valid
+	traced     bool   // true if successfully traced
+	setupPC    int    // PC of the MOVE/LOADINT/SUB that set up this arg (for skipping)
+	arithOp    string // "SUB" or "ADD" if traced through arithmetic with const
+	arithSrc   int    // source register for arithmetic (B operand of SUB/ADD)
+	auxSetupPC int    // PC of the LOADINT that feeds the SUB/ADD C operand (-1 if none)
 }
 
 // inlineCandidate describes a GETGLOBAL + CALL pattern that can be inlined.
@@ -1337,12 +1340,74 @@ func (cg *Codegen) analyzeInlineCandidates() {
 								candidate.argTraces[i] = inlineArgTrace{
 									fromConst: int64(sbxVal), isConst: true, traced: true, setupPC: scanPC,
 								}
+							} else if sop == vm.OP_SUB || sop == vm.OP_ADD {
+								// Trace SUB/ADD with constant operand (e.g., m-1).
+								sb := vm.DecodeB(si)
+								sc := vm.DecodeC(si)
+								opName := "SUB"
+								if sop == vm.OP_ADD {
+									opName = "ADD"
+								}
+								constVal := int64(-1)
+								auxPC := -1
+								if vm.IsRK(sc) {
+									constIdx := vm.RKToConstIdx(sc)
+									if constIdx < len(cg.proto.Constants) {
+										cv := cg.proto.Constants[constIdx]
+										if cv.IsInt() && cv.Int() >= 0 && cv.Int() <= 4095 {
+											constVal = cv.Int()
+										}
+									}
+								} else {
+									// C is a register — check if set by a recent LOADINT.
+									for scanPC2 := scanPC - 1; scanPC2 >= 0 && scanPC2 >= scanPC-5; scanPC2-- {
+										si2 := code[scanPC2]
+										if vm.DecodeOp(si2) == vm.OP_LOADINT && vm.DecodeA(si2) == sc {
+											v := int64(vm.DecodesBx(si2))
+											if v >= 0 && v <= 4095 {
+												constVal = v
+												auxPC = scanPC2
+											}
+											break
+										}
+									}
+								}
+								if constVal >= 0 {
+									candidate.argTraces[i] = inlineArgTrace{
+										arithSrc: sb, arithOp: opName,
+										fromConst: constVal,
+										traced: true, setupPC: scanPC,
+										auxSetupPC: auxPC,
+									}
+								}
 							}
 							break
 						}
 					}
 
-					// Note: arg traces for self-calls are used by emitSelfCallFull
+					// For tail self-calls with all args traced, mark arg setup PCs
+					// as skippable. The emitSelfTailCall will emit direct register writes.
+					if isTail {
+						allArgTraced := true
+						for i := 0; i < numParams; i++ {
+							if !candidate.argTraces[i].traced {
+								allArgTraced = false
+								break
+							}
+						}
+						if allArgTraced {
+							for _, trace := range candidate.argTraces {
+								if trace.traced {
+									cg.inlineArgSkipPCs[trace.setupPC] = true
+									if trace.auxSetupPC >= 0 {
+										cg.inlineArgSkipPCs[trace.auxSetupPC] = true
+									}
+								}
+							}
+						}
+					}
+
+					// Note: arg traces for non-tail self-calls are used by emitSelfCallFull
 					// to skip redundant LDR when a pinned register already has the
 					// correct value. The MOVE setup is NOT marked as dead here to
 					// avoid code alignment issues that cause performance regressions.
@@ -2433,8 +2498,16 @@ func (cg *Codegen) emitMove(inst uint32) error {
 		}
 	} else if srcPinned {
 		// Source pinned, dest in memory: write int value.
-		cg.asm.MOVimm16W(X9, TypeInt)
-		cg.storeRegTyp(X9, aReg)
+		// In hasSelfCalls mode, type tags are known TypeInt and don't need updating.
+		// We keep the alignment-equivalent code (NOPs) to avoid branch target shifts
+		// that cause performance regression on Apple Silicon.
+		if cg.hasSelfCalls {
+			cg.asm.NOP()
+			cg.asm.NOP()
+		} else {
+			cg.asm.MOVimm16W(X9, TypeInt)
+			cg.storeRegTyp(X9, aReg)
+		}
 		cg.asm.STR(srcArm, regRegs, regIvalOffset(aReg))
 	} else if dstPinned {
 		// Dest pinned, source in memory: load ival into ARM reg.
@@ -3882,26 +3955,100 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 
 // emitSelfTailCall emits a tail-call-optimized self-recursive call.
 // Instead of the full BL/save/restore sequence (~15 instructions), this emits
-// just 3 instructions: load new args + unconditional branch to self_call_entry.
-// The caller's stack frame, depth counter, and register window are reused.
+// direct register writes + unconditional branch to self_call_entry.
+// When arg traces are available, arguments are written directly to pinned
+// registers without intermediate memory stores/loads.
 func (cg *Codegen) emitSelfTailCall(pc int, candidate *inlineCandidate) error {
 	a := cg.asm
 	fnReg := candidate.fnReg
-	hasArg2 := cg.proto.NumParams > 1
+	numParams := cg.proto.NumParams
 
-	// Load new arguments from where the caller stored them.
-	// Caller's R(fnReg+1) = arg0, R(fnReg+2) = arg1.
-	// These are in the current register window (no X26 advance needed).
-	arg0Off := regIvalOffset(fnReg + 1)
-	a.LDR(regSelfArg, regRegs, arg0Off)
-	if hasArg2 {
-		arg1Off := regIvalOffset(fnReg + 2)
-		a.LDR(regSelfArg2, regRegs, arg1Off)
+	// Check if all args are traced (needed for direct register passing).
+	allTraced := len(candidate.argTraces) >= numParams
+	if allTraced {
+		for i := 0; i < numParams; i++ {
+			if !candidate.argTraces[i].traced {
+				allTraced = false
+				break
+			}
+		}
 	}
 
-	// Jump to self_call_entry (unconditional, NOT BL — reuses caller's frame).
-	a.B("self_call_entry")
+	if !allTraced {
+		// Fallback: load from memory (original path).
+		arg0Off := regIvalOffset(fnReg + 1)
+		a.LDR(regSelfArg, regRegs, arg0Off)
+		if numParams > 1 {
+			arg1Off := regIvalOffset(fnReg + 2)
+			a.LDR(regSelfArg2, regRegs, arg1Off)
+		}
+		a.B("self_call_entry")
+		return nil
+	}
 
+	// Direct register passing: write args directly to X19/X22 and jump.
+	// The arg setup instructions (SUB/LOADINT/MOVE) were skipped, so we
+	// emit the equivalent operations targeting pinned registers directly.
+	pinnedDst := [2]Reg{regSelfArg, regSelfArg2}
+
+	// Check for dependency: does writing arg0 clobber a register that arg1 reads?
+	emitOrder := [2]int{0, 1}
+	if numParams == 2 {
+		t0 := candidate.argTraces[0]
+		t1 := candidate.argTraces[1]
+		// arg0 writes to X19. Check if arg1 reads from X19.
+		if t0.arithOp != "" || !t0.isConst {
+			readsSrc := -1
+			if t1.arithOp != "" {
+				readsSrc = t1.arithSrc
+			} else if !t1.isConst {
+				readsSrc = t1.fromReg
+			}
+			if readsSrc >= 0 {
+				if srcArm, ok := cg.pinnedRegs[readsSrc]; ok && srcArm == pinnedDst[0] {
+					emitOrder = [2]int{1, 0} // emit arg1 first
+				}
+			}
+		}
+	}
+
+	for idx := 0; idx < numParams; idx++ {
+		i := emitOrder[idx]
+		t := candidate.argTraces[i]
+		dst := pinnedDst[i]
+
+		if t.isConst && t.arithOp == "" {
+			// Constant: MOVimm directly to pinned register.
+			a.LoadImm64(dst, t.fromConst)
+		} else if t.arithOp != "" {
+			// SUB/ADD with const: emit directly to pinned register.
+			srcArm, srcPinned := cg.pinnedRegs[t.arithSrc]
+			src := X0
+			if srcPinned {
+				src = srcArm
+			} else {
+				a.LDR(X0, regRegs, regIvalOffset(t.arithSrc))
+			}
+			switch t.arithOp {
+			case "SUB":
+				a.SUBimm(dst, src, uint16(t.fromConst))
+			case "ADD":
+				a.ADDimm(dst, src, uint16(t.fromConst))
+			}
+		} else {
+			// MOVE: copy from source register.
+			srcArm, srcPinned := cg.pinnedRegs[t.fromReg]
+			if srcPinned {
+				if srcArm != dst {
+					a.MOVreg(dst, srcArm)
+				}
+			} else {
+				a.LDR(dst, regRegs, regIvalOffset(t.fromReg))
+			}
+		}
+	}
+
+	a.B("self_call_entry")
 	return nil
 }
 

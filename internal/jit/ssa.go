@@ -30,6 +30,8 @@ const (
 	SSA_MUL_FLOAT // ref * ref → float
 	SSA_DIV_FLOAT // ref / ref → float
 	SSA_NEG_FLOAT // -ref → float
+	SSA_FMADD     // Arg1*Arg2 + AuxInt(ref) → float (fused multiply-add)
+	SSA_FMSUB     // AuxInt(ref) - Arg1*Arg2 → float (fused multiply-sub)
 
 	// Comparisons (produce bool, used by guards)
 	SSA_EQ_INT  // ref == ref
@@ -579,6 +581,7 @@ func (b *ssaBuilder) convertArithTyped(ir *TraceIR, intOp, floatOp SSAOp) {
 func isFloatOp(op SSAOp) bool {
 	switch op {
 	case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+		SSA_FMADD, SSA_FMSUB,
 		SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT:
 		return true
 	}
@@ -723,6 +726,7 @@ func SSAIsUseful(f *SSAFunc) bool {
 			switch inst.Op {
 			case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 				SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT,
+				SSA_FMADD, SSA_FMSUB,
 				SSA_EQ_INT:
 				hasUsefulOp = true
 			case SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
@@ -805,6 +809,7 @@ func eliminateDeadCode(f *SSAFunc) *SSAFunc {
 			switch inst.Op {
 			case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 				SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+				SSA_FMADD, SSA_FMSUB,
 				SSA_CONST_INT, SSA_CONST_FLOAT, SSA_MOVE:
 				if inst.Slot >= 0 {
 					refCount[i]++ // keep alive: writes to a VM slot
