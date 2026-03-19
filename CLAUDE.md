@@ -144,7 +144,7 @@ Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 | Benchmark | Interpreter | Trace JIT | Speedup | vs LuaJIT |
 |-----------|-------------|-----------|---------|-----------|
 | mandelbrot | 1.5s | 0.227s | **×6.6** | 4.0x slower |
-| fib(35) | 0.072s | 0.072s | ×10 (method JIT) | 2.0x slower |
+| fib(20) warm | — | 35us | ×10 (method JIT) | **1.34x slower** |
 | sieve | 0.17s | 0.17s | ×1.0 | — |
 | nbody | 2.73s | ~2.5s | ×1.1 | — |
 | ackermann | 0.017s | 0.017s | ×10 (method JIT) | ~1x |
@@ -160,7 +160,7 @@ Target: **surpass LuaJIT** on compute-heavy benchmarks first, then table-heavy.
 | Gap | Root Cause | Fix | Difficulty |
 |-----|-----------|-----|-----------|
 | mandelbrot 4.0x | Sub-trace call overhead + 26 vs 15 inst/iter | Code inlining (Approach C) | High |
-| fib 2.0x | Boxed Value (32B) in recursive calls | Type-specialized method JIT | Medium-High |
+| fib 1.34x | Remaining boxing overhead in register array | Unboxed register passing | Medium |
 | table ops 7.5x | 32B Value vs 8B TValue | NaN-boxing | Extremely High |
 | fn calls 9x | Call-exit to Go, no inlining | Method JIT function inlining | Medium-High |
 
