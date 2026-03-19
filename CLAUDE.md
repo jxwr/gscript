@@ -115,6 +115,7 @@ Before each major architectural change:
 - **Commit often**: Each working step gets a commit with detailed message
 - **One concern per file**: Split large files (>500 lines) into focused modules
 - **Pass pipeline architecture**: SSA builder, optimization passes, register allocator, and code emitter should be separate passes with clean interfaces. Do not mix analysis and code generation.
+- **No time estimates**: Never estimate work in days/weeks/hours. For AI agents, wall-clock time is meaningless — focus on what needs to be done, not how long it might take.
 
 ## Benchmark Suite
 
