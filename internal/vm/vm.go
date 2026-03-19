@@ -36,7 +36,6 @@ type VM struct {
 	stringMeta   *runtime.Table // string metatable
 	jit          JITEngine
 	jitFactory   func(*VM) JITEngine
-	callCounts   map[*FuncProto]int
 	argBuf       [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf       [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
 	traceRec       TraceRecorderHook // optional trace recorder (nil = disabled)
@@ -84,9 +83,7 @@ func (vm *VM) SetTraceRecorder(r TraceRecorderHook) {
 // SetJIT sets the JIT engine for this VM.
 func (vm *VM) SetJIT(engine JITEngine) {
 	vm.jit = engine
-	if engine != nil && vm.callCounts == nil {
-		vm.callCounts = make(map[*FuncProto]int)
-	}
+	// CallCount is tracked on FuncProto directly, no map needed.
 }
 
 // Regs returns the register file. Used by the JIT executor.
@@ -324,8 +321,8 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 
 	// Try JIT execution if available.
 	if vm.jit != nil && !proto.IsVarArg {
-		vm.callCounts[proto]++
-		results, resumePC, ok := vm.jit.TryExecute(proto, vm.regs, base, vm.callCounts[proto])
+		proto.CallCount++
+		results, resumePC, ok := vm.jit.TryExecute(proto, vm.regs, base, proto.CallCount)
 		if ok {
 			vm.closeUpvalues(base)
 			vm.frameCount--
@@ -989,8 +986,8 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 
 				// Try JIT
 				if vm.jit != nil && !proto.IsVarArg {
-					vm.callCounts[proto]++
-					results, resumePC, jitOK := vm.jit.TryExecute(proto, vm.regs, newBase, vm.callCounts[proto])
+					proto.CallCount++
+					results, resumePC, jitOK := vm.jit.TryExecute(proto, vm.regs, newBase, proto.CallCount)
 					if jitOK {
 						vm.closeUpvalues(newBase)
 						vm.frameCount--

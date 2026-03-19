@@ -1,6 +1,10 @@
 package vm
 
-import "github.com/gscript/gscript/internal/runtime"
+import (
+	"unsafe"
+
+	"github.com/gscript/gscript/internal/runtime"
+)
 
 // globalCacheEntry caches a global variable index for fast array lookup.
 type globalCacheEntry struct {
@@ -25,6 +29,8 @@ type FuncProto struct {
 	GlobalCache    []globalCacheEntry        // lazily-initialized cache indexed by constant pool index
 	FieldCache     []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
 	TraceBlacklist []bool                    // lazily-initialized per-PC trace blacklist; true = skip OnLoopBackEdge
+	JITEntry       unsafe.Pointer           // cached *compiledEntry from JIT engine (avoids map lookup on hot path)
+	CallCount      int                       // JIT call count (avoids map lookup in VM hot path)
 }
 
 // BlacklistTracePC marks a FORLOOP PC as trace-blacklisted.

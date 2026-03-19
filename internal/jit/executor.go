@@ -31,6 +31,11 @@ type compiledEntry struct {
 	demoted      bool                 // true if function has been demoted (too many exits)
 }
 
+// blacklistedEntry is a sentinel compiledEntry stored in FuncProto.JITEntry
+// to indicate the function is blacklisted (not worth JIT compiling).
+// We use a package-level variable so its address is stable and unique.
+var blacklistedEntry = compiledEntry{demoted: true}
+
 // CallHandler executes an external function call on behalf of JIT code.
 // Provided by the VM so the JIT executor can handle OP_CALL without direct VM access.
 type CallHandler func(fnVal rt.Value, args []rt.Value) ([]rt.Value, error)
@@ -182,46 +187,55 @@ func isSelfCall(proto *vm.FuncProto, callPC int) bool {
 // If ok is true, the function completed (results contains return values).
 // If ok is false, the JIT bailed out at resumePC and the interpreter should take over.
 func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, callCount int) (results []rt.Value, resumePC int, ok bool) {
-	// Check blacklist first.
-	if e.blacklist[proto] {
-		return nil, 0, false
-	}
-
-	// Check if already compiled (per-proto fast path).
-	entry, compiled := e.entries[proto]
-	if !compiled {
-		// Check if hot enough to compile.
+	// Fast path: check cached JIT entry on the FuncProto (avoids map lookups).
+	var entry *compiledEntry
+	if proto.JITEntry != nil {
+		entry = (*compiledEntry)(proto.JITEntry)
+		// blacklistedEntry sentinel or demoted: bail out immediately.
+		if entry.demoted {
+			return nil, 0, false
+		}
+	} else {
+		// Cold path: not yet looked up. Check if hot enough to compile.
 		if callCount < e.threshold {
 			return nil, 0, false
 		}
-		// Check if worth compiling.
-		if !shouldCompile(proto) {
-			e.blacklist[proto] = true
-			return nil, 0, false
-		}
-		// Compile the function.
-		cf, err := CompileWithEngine(proto, e)
-		if err != nil {
-			e.blacklist[proto] = true
-			return nil, 0, false
-		}
-		entry = &compiledEntry{cf: cf, ptr: uintptr(cf.Code.Ptr())}
-		e.entries[proto] = entry
-		// Update cross-call slots that were waiting for this function.
-		if proto.Name != "" {
-			e.updateCrossCallSlots(proto.Name, entry, proto)
+		// Check the entries map (needed for first compilation).
+		var compiled bool
+		entry, compiled = e.entries[proto]
+		if !compiled {
+			// Check if worth compiling.
+			if !shouldCompile(proto) {
+				e.blacklistProto(proto)
+				return nil, 0, false
+			}
+			// Compile the function.
+			cf, err := CompileWithEngine(proto, e)
+			if err != nil {
+				e.blacklistProto(proto)
+				return nil, 0, false
+			}
+			entry = &compiledEntry{cf: cf, ptr: uintptr(cf.Code.Ptr())}
+			e.entries[proto] = entry
+			// Cache in FuncProto for future fast-path lookups.
+			proto.JITEntry = unsafe.Pointer(entry)
+			// Update cross-call slots that were waiting for this function.
+			if proto.Name != "" {
+				e.updateCrossCallSlots(proto.Name, entry, proto)
+			}
+		} else {
+			// Already compiled but JITEntry wasn't cached yet (shouldn't normally happen,
+			// but handle gracefully).
+			proto.JITEntry = unsafe.Pointer(entry)
+			if entry.demoted {
+				return nil, 0, false
+			}
 		}
 	}
 
-	// Check if this function has been demoted due to excessive call-exits.
-	if entry.demoted {
-		return nil, 0, false
-	}
-
-	// Prepare JIT context.
-	ctx := JITContext{
-		Regs: uintptr(unsafe.Pointer(&regs[base])),
-	}
+	// Prepare JIT context (reuse stack-local, only set needed fields).
+	var ctx JITContext
+	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
 	if len(proto.Constants) > 0 {
 		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
 	}
@@ -328,6 +342,13 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 	}
 }
 
+// blacklistProto marks a function as not worth JIT compiling.
+// Sets the sentinel on both the map and the FuncProto cache.
+func (e *Engine) blacklistProto(proto *vm.FuncProto) {
+	e.blacklist[proto] = true
+	proto.JITEntry = unsafe.Pointer(&blacklistedEntry)
+}
+
 // handleCallExit handles a call-exit (ExitCode=2) by executing the instruction
 // at ctx.ExitPC in Go and placing results back in the register array.
 // Returns (updatedRegs, nextPC, error). updatedRegs is non-nil only if regs were
@@ -402,7 +423,8 @@ func (e *Engine) handleCallExit(proto *vm.FuncProto, regs []rt.Value, base int, 
 		// This eliminates frame push/pop, args allocation, and VM dispatch overhead.
 		if fnVal.IsFunction() {
 			if vcl, _ := fnVal.Ptr().(*vm.Closure); vcl != nil {
-				if calleeEntry, ok := e.entries[vcl.Proto]; ok && !calleeEntry.demoted {
+				calleeEntry := e.lookupCompiledEntry(vcl.Proto)
+				if calleeEntry != nil && !calleeEntry.demoted {
 					// For variable results (C=0), request 1 result (most common for mutual recursion).
 					calleeNResults := nResults
 					if variableResults {
@@ -431,8 +453,7 @@ func (e *Engine) handleCallExit(proto *vm.FuncProto, regs []rt.Value, base int, 
 					}
 					// Fast path failed — fall through to slow path.
 				} else if debugCrossCall {
-					found := e.entries[vcl.Proto] != nil
-					fmt.Printf("[cross-call] no compiled entry for %s (found=%v)\n", vcl.Proto.Name, found)
+					fmt.Printf("[cross-call] no compiled entry for %s\n", vcl.Proto.Name)
 				}
 			}
 		}
@@ -848,7 +869,8 @@ func (e *Engine) executeCompiledCalleeDepth(
 				handled := false
 				if nestedFnVal.IsFunction() {
 					if vcl, _ := nestedFnVal.Ptr().(*vm.Closure); vcl != nil {
-						if nestedEntry, ok := e.entries[vcl.Proto]; ok && !nestedEntry.demoted {
+						nestedEntry := e.lookupCompiledEntry(vcl.Proto)
+						if nestedEntry != nil && !nestedEntry.demoted {
 							effectiveNResults := cnResults
 							if nestedVariableResults {
 								effectiveNResults = 1
@@ -966,12 +988,32 @@ func (e *Engine) executeCompiledCalleeDepth(
 	}
 }
 
+// lookupCompiledEntry returns the compiled entry for a proto, using the cached
+// JITEntry field first and falling back to the entries map.
+// Returns nil if not compiled. Does NOT check demoted status (caller must check).
+func (e *Engine) lookupCompiledEntry(proto *vm.FuncProto) *compiledEntry {
+	if proto.JITEntry != nil {
+		return (*compiledEntry)(proto.JITEntry)
+	}
+	entry, ok := e.entries[proto]
+	if ok {
+		proto.JITEntry = unsafe.Pointer(entry)
+	}
+	return entry
+}
+
 // Free releases compiled code owned by this engine.
+// Clears JITEntry pointers on FuncProtos to avoid dangling references.
 func (e *Engine) Free() {
-	for _, entry := range e.entries {
+	for proto, entry := range e.entries {
+		proto.JITEntry = nil
 		if entry != nil && entry.cf != nil {
 			entry.cf.Code.Free()
 		}
+	}
+	// Also clear blacklisted entries' JITEntry pointers.
+	for proto := range e.blacklist {
+		proto.JITEntry = nil
 	}
 	e.entries = nil
 }
