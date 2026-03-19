@@ -10,11 +10,23 @@ import (
 
 // TraceContext bridges compiled trace code and Go.
 type TraceContext struct {
-	Regs      uintptr // input: pointer to vm.regs[base]
-	Constants uintptr // input: pointer to proto.Constants[0]
-	ExitPC    int64   // output: bytecode PC where trace exited
-	ExitCode  int64   // output: 0=loop done, 1=side exit
+	Regs           uintptr // input: pointer to vm.regs[base]
+	Constants      uintptr // input: pointer to proto.Constants[0]
+	ExitPC         int64   // output: bytecode PC where trace exited
+	ExitCode       int64   // output: 0=loop done, 1=side exit
+	InnerCode      uintptr // input: code pointer for inner trace (sub-trace calling)
+	InnerConstants uintptr // input: constants pointer for inner trace
 }
+
+// TraceContext field offsets for ARM64 codegen.
+const (
+	TraceCtxOffRegs           = 0
+	TraceCtxOffConstants      = 8
+	TraceCtxOffExitPC         = 16
+	TraceCtxOffExitCode       = 24
+	TraceCtxOffInnerCode      = 32
+	TraceCtxOffInnerConstants = 40
+)
 
 // SideExitBlacklistThreshold is the minimum number of executions before
 // blacklisting is considered. Below this count, the trace gets a warm-up
@@ -32,6 +44,16 @@ type CompiledTrace struct {
 	code      *CodeBlock
 	proto     *vm.FuncProto
 	constants []runtime.Value // trace-level constant pool
+
+	// Sub-trace calling: if this trace contains a CALL_INNER_TRACE,
+	// innerTrace points to the compiled inner loop trace.
+	innerTrace *CompiledTrace
+
+	// ssaCompiled indicates this trace was compiled via SSA codegen
+	// (as opposed to the regular trace compiler). Used by sub-trace calling:
+	// only SSA-compiled inner traces are suitable for sub-trace calling
+	// because they don't side-exit on GETGLOBAL/SETGLOBAL etc.
+	ssaCompiled bool
 
 	// Blacklisting: tracks whether this trace is doing useful work.
 	// Counters are updated directly by RecordResult (called by VM on every execution).
@@ -1336,6 +1358,13 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 	// Use the trace's constant pool (includes inlined function constants)
 	if len(ct.constants) > 0 {
 		ctx.Constants = uintptr(unsafe.Pointer(&ct.constants[0]))
+	}
+	// Set inner trace code and constants pointers if this trace calls an inner trace
+	if ct.innerTrace != nil {
+		ctx.InnerCode = uintptr(ct.innerTrace.code.Ptr())
+		if len(ct.innerTrace.constants) > 0 {
+			ctx.InnerConstants = uintptr(unsafe.Pointer(&ct.innerTrace.constants[0]))
+		}
 	}
 
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))

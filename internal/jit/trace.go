@@ -90,6 +90,10 @@ type TraceRecorder struct {
 	debug     bool // if true, print trace compilation diagnostics
 	startBase int  // base register of the traced function (set on first instruction)
 
+	// Inner loop skip range (for sub-trace calling)
+	innerLoopSkipStart int // start PC of inner loop body (FORPREP PC + 1)
+	innerLoopSkipEnd   int // end PC of inner loop body (FORLOOP PC, inclusive)
+
 	// Loop hotness tracking
 	loopCounts map[loopKey]int
 	threshold  int // recording starts after this many iterations
@@ -160,7 +164,19 @@ func (r *TraceRecorder) IsRecording() bool {
 // Returns true if a compiled trace was executed (caller should re-read registers).
 func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 	if r.recording {
-		r.finishTrace()
+		if r.innerLoopSkipEnd > 0 {
+			// Inner loop back-edge during skip — ignore
+			return false
+		}
+		// Only finish the trace on the SAME loop's back-edge.
+		// If a different loop's back-edge is hit, it means we exited the
+		// recorded loop and entered a different loop — abort the trace.
+		if r.current != nil && pc == r.current.LoopPC {
+			r.finishTrace()
+		} else {
+			// Different loop's back-edge — abort recording
+			r.abortTrace()
+		}
 		return false
 	}
 
@@ -241,6 +257,20 @@ func (r *TraceRecorder) PendingTrace() vm.TraceExecutor {
 func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, regs []runtime.Value, base int) bool {
 	if !r.recording {
 		return false
+	}
+
+	// Inner loop skip: when recording the outer loop and the inner loop body
+	// is being executed, skip all instructions until we pass the FORLOOP PC.
+	if r.innerLoopSkipEnd > 0 {
+		if pc > r.innerLoopSkipEnd {
+			// Past inner loop — resume recording
+			r.innerLoopSkipEnd = 0
+			r.innerLoopSkipStart = 0
+			// Fall through to record this instruction
+		} else {
+			// Still inside inner loop body — skip
+			return false
+		}
 	}
 
 	// Set startBase on first instruction
@@ -403,6 +433,38 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		return false
 	}
 
+	// Handle FORPREP for nested loop sub-trace calling (SSA only).
+	// When we encounter FORPREP during recording, check if a compiled inner
+	// trace exists (must be SSA-compiled). If so, skip the inner loop body
+	// and record a marker.
+	if op == vm.OP_FORPREP && r.useSSA && r.depth == 0 {
+		// FORPREP A sBx: jumps to FORLOOP at pc + sBx + 1
+		forloopPC := pc + ir.SBX + 1
+		innerKey := loopKey{proto: proto, pc: forloopPC}
+		if innerCT, ok := r.compiled[innerKey]; ok && innerCT != nil && innerCT.ssaCompiled {
+			// SSA-compiled inner trace exists. Set skip range and record FORPREP with marker.
+			r.innerLoopSkipStart = pc + 1
+			r.innerLoopSkipEnd = forloopPC // inclusive: skip up to and including FORLOOP
+			// Use FieldIndex as marker: store the inner FORLOOP PC
+			ir.FieldIndex = forloopPC
+			r.current.IR = append(r.current.IR, ir)
+			return false
+		}
+		// No SSA-compiled inner trace — abort and blacklist
+		r.abortAndBlacklist()
+		return false
+	}
+
+	// If we're recording and encounter a FORLOOP that is NOT our recorded loop,
+	// the inner loop has exited and we're seeing the outer loop's FORLOOP.
+	// Don't record it — the trace is complete without it.
+	if op == vm.OP_FORLOOP && r.depth == 0 && pc != r.current.LoopPC {
+		// This is an outer FORLOOP — the recorded loop body is complete.
+		// Don't record this instruction; finishTrace will be called when
+		// OnLoopBackEdge sees this back-edge (and aborts since PC != LoopPC).
+		return false
+	}
+
 	// Detect unconditional JMP that exits the loop (break statement).
 	// Only abort for JMPs NOT preceded by a comparison (those are if-else skips).
 	// Break JMPs go past the FORLOOP PC.
@@ -498,7 +560,10 @@ func (r *TraceRecorder) shouldAbort(op vm.Opcode) bool {
 	case vm.OP_TFORCALL, vm.OP_TFORLOOP:
 		return true // generic for (complex iterator)
 	case vm.OP_FORPREP:
-		return true // nested loop — abort (trace only handles one loop level)
+		if r.useSSA {
+			return false // SSA codegen handles nested loops via sub-trace calling
+		}
+		return true // old compiler can't handle nested loops
 	}
 	return false
 }
@@ -507,6 +572,8 @@ func (r *TraceRecorder) startTrace(pc int, proto *vm.FuncProto) {
 	r.recording = true
 	r.depth = 0
 	r.startBase = 0 // will be set on first OnInstruction call
+	r.innerLoopSkipStart = 0
+	r.innerLoopSkipEnd = 0
 	r.current = &Trace{
 		ID:        len(r.traces),
 		LoopPC:    pc,
@@ -518,6 +585,15 @@ func (r *TraceRecorder) startTrace(pc int, proto *vm.FuncProto) {
 func (r *TraceRecorder) finishTrace() {
 	if r.current != nil && len(r.current.IR) > 0 {
 		r.traces = append(r.traces, r.current)
+
+		// Check if this trace has an inner FORPREP marker (sub-trace calling)
+		var innerForloopPC int
+		for _, ir := range r.current.IR {
+			if ir.Op == vm.OP_FORPREP && ir.FieldIndex > 0 {
+				innerForloopPC = ir.FieldIndex
+				break
+			}
+		}
 
 		// Compile the trace if enabled
 		if r.compile {
@@ -533,10 +609,22 @@ func (r *TraceRecorder) finishTrace() {
 				if ssaIsIntegerOnly(ssaFunc) && SSAIsUseful(ssaFunc) {
 					ct, err := CompileSSA(ssaFunc)
 					if err == nil {
+						ct.ssaCompiled = true
+						// Attach inner trace if this is an outer loop with sub-trace calling
+						if innerForloopPC > 0 {
+							innerKey := loopKey{proto: r.current.LoopProto, pc: innerForloopPC}
+							if innerCT, ok := r.compiled[innerKey]; ok {
+								ct.innerTrace = innerCT
+							}
+						}
 						r.compiled[key] = ct
 						compiled = true
 						if r.debug {
-							fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions\n", r.current.LoopPC, len(r.current.IR))
+							fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions", r.current.LoopPC, len(r.current.IR))
+							if ct.innerTrace != nil {
+								fmt.Printf(" (calls inner trace at FORLOOP PC=%d)", innerForloopPC)
+							}
+							fmt.Println()
 						}
 					} else if r.debug {
 						fmt.Printf("[TRACE] SSA compile error: PC=%d, err=%v\n", r.current.LoopPC, err)
@@ -570,6 +658,8 @@ func (r *TraceRecorder) finishTrace() {
 	r.current = nil
 	r.recording = false
 	r.depth = 0
+	r.innerLoopSkipStart = 0
+	r.innerLoopSkipEnd = 0
 }
 
 // abortTrace stops recording and discards the current trace.
@@ -579,6 +669,8 @@ func (r *TraceRecorder) abortTrace() {
 	r.current = nil
 	r.recording = false
 	r.depth = 0
+	r.innerLoopSkipStart = 0
+	r.innerLoopSkipEnd = 0
 }
 
 // abortAndBlacklist aborts and permanently blacklists the loop.

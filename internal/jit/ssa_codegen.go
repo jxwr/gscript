@@ -968,6 +968,81 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.B("side_exit")
 		}
 
+	case SSA_CALL_INNER_TRACE:
+		// Sub-trace calling: spill all allocated registers, call the inner trace's
+		// compiled code, check exit code, reload registers.
+		//
+		// The inner trace uses the same TraceContext (X19) and the same register
+		// array (regRegs/X26). It has its own prologue/epilogue that saves and
+		// restores callee-saved registers.
+
+		// Step 1: Store all allocated int/float registers back to memory.
+		// The inner trace reads/writes directly to the VM register array.
+		for slot, armReg := range regMap.Int.slotToReg {
+			off := slot*ValueSize + OffsetData
+			if off <= 32760 {
+				asm.STR(armReg, regRegs, off)
+				asm.MOVimm16(X0, TypeInt)
+				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+			}
+		}
+		for slot, dreg := range regMap.Float.slotToReg {
+			off := slot*ValueSize + OffsetData
+			if off <= 32760 {
+				asm.FSTRd(dreg, regRegs, off)
+				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+			}
+		}
+
+		// Step 2: Swap Constants pointer in TraceContext to inner trace's constants.
+		// The inner trace's prologue reads ctx.Constants, so we must set it
+		// to the inner trace's constant pool before calling.
+		// Save outer constants and set inner constants:
+		asm.LDR(X0, X19, TraceCtxOffInnerConstants) // X0 = inner constants ptr
+		asm.LDR(X1, X19, TraceCtxOffConstants)       // X1 = outer constants ptr (save)
+		asm.STR(X0, X19, TraceCtxOffConstants)        // ctx.Constants = inner constants
+
+		// Step 3: Load inner trace code pointer and call.
+		asm.LDR(X8, X19, TraceCtxOffInnerCode)  // X8 = inner code pointer
+		// Save outer constants on stack (X1 is caller-saved, won't survive BLR)
+		asm.STPpre(X29, X1, SP, -16)
+		asm.MOVreg(X0, X19)                     // X0 = TraceContext pointer (argument)
+		asm.BLR(X8)                              // call inner trace
+
+		// Step 4: Restore outer constants pointer.
+		asm.LDPpost(X29, X1, SP, 16)
+		asm.STR(X1, X19, TraceCtxOffConstants) // ctx.Constants = outer constants
+
+		// Step 5: Check exit code.
+		// ExitCode=2 (guard fail) means inner trace guard failed → outer side-exit.
+		// ExitCode=0 (loop done) or 1 (side exit from inner) → inner loop finished,
+		// continue outer loop.
+		asm.LDR(X0, X19, TraceCtxOffExitCode)
+		asm.LoadImm64(X9, int64(inst.PC))
+		asm.CMPimm(X0, 2)
+		asm.BCond(CondEQ, "side_exit")
+
+		// Step 6: Reload regConsts and regRegs from TraceContext.
+		// The inner trace's epilogue restored callee-saved regs (X19, X26, X27),
+		// but our regConsts needs to point to the outer trace's constants.
+		asm.LDR(regConsts, X19, TraceCtxOffConstants)
+
+		// Step 7: Reload all allocated registers from memory.
+		// The inner trace may have modified any VM slot.
+		for slot, armReg := range regMap.Int.slotToReg {
+			off := slot*ValueSize + OffsetData
+			if off <= 32760 {
+				asm.LDR(armReg, regRegs, off)
+			}
+		}
+		for slot, dreg := range regMap.Float.slotToReg {
+			off := slot*ValueSize + OffsetData
+			if off <= 32760 {
+				asm.FLDRd(dreg, regRegs, off)
+			}
+		}
+
 	case SSA_SIDE_EXIT:
 		asm.LoadImm64(X9, int64(inst.PC))
 		asm.B("side_exit")
@@ -1129,7 +1204,8 @@ func ssaIsCompilable(f *SSAFunc) bool {
 			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_NIL, SSA_CONST_BOOL,
 			SSA_LOOP, SSA_PHI, SSA_SNAPSHOT,
 			SSA_MOVE, SSA_NOP,
-			SSA_INTRINSIC:
+			SSA_INTRINSIC,
+			SSA_CALL_INNER_TRACE:
 			continue
 		case SSA_SIDE_EXIT:
 			continue

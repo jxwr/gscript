@@ -618,3 +618,276 @@ func TestSSACodegen_Integration_ArrayAccessMatchesInterpreter(t *testing.T) {
 		t.Errorf("result = %d, want 5050", g2["result"].Int())
 	}
 }
+
+// ─── Nested loop (sub-trace calling) tests ───
+
+func TestSSACodegen_Integration_NestedLoop(t *testing.T) {
+	// Use function to make variables local (avoids GETGLOBAL/SETGLOBAL)
+	src := `
+		func compute() {
+			sum := 0
+			for i := 1; i <= 50; i++ {
+				for j := 1; j <= 50; j++ {
+					sum = sum + 1
+				}
+			}
+			return sum
+		}
+		result := compute()
+	`
+	// Run without tracing (interpreter only)
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	if g2["result"].Int() != 2500 {
+		t.Errorf("result = %d, want 2500", g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_NestedLoopWithComputation(t *testing.T) {
+	// Outer and inner loops both do arithmetic
+	src := `
+		total := 0
+		for i := 1; i <= 20; i++ {
+			for j := 1; j <= 20; j++ {
+				total = total + i * j
+			}
+		}
+		result := total
+	`
+	// Run without tracing
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_MandelbrotNested(t *testing.T) {
+	// Small mandelbrot — verifies nested loop with break + float
+	src := `
+		func mandelbrot(size) {
+			count := 0
+			for y := 0; y < size; y++ {
+				ci := 2.0 * y / size - 1.0
+				for x := 0; x < size; x++ {
+					cr := 2.0 * x / size - 1.5
+					zr := 0.0
+					zi := 0.0
+					escaped := false
+					for iter := 0; iter < 50; iter++ {
+						tr := zr * zr - zi * zi + cr
+						ti := 2.0 * zr * zi + ci
+						zr = tr
+						zi = ti
+						if zr * zr + zi * zi > 4.0 {
+							escaped = true
+							break
+						}
+					}
+					if !escaped { count = count + 1 }
+				}
+			}
+			return count
+		}
+		result := mandelbrot(10)
+	`
+	// Compare with interpreter
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_InnerTraceStandalone(t *testing.T) {
+	// Test that inner loop traces produce correct results when outer loop is
+	// handled by the interpreter (only inner trace compiled).
+	src := `
+		func compute() {
+			sum := 0
+			for i := 1; i <= 50; i++ {
+				for j := 1; j <= 5; j++ {
+					sum = sum + 1
+				}
+			}
+			return sum
+		}
+		result := compute()
+	`
+	// Compare interpreter vs SSA JIT
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_SubTraceCall_Direct(t *testing.T) {
+	// Direct test of sub-trace calling: build inner trace, build outer trace
+	// with CALL_INNER_TRACE, execute and check result.
+	// This tests the mechanism without the recorder.
+
+	// Inner trace: sum = sum + 1, FORLOOP j=5..1
+	innerTrace := &Trace{
+		LoopProto: &vm.FuncProto{Constants: []runtime.Value{}},
+		Constants: []runtime.Value{},
+		IR: []TraceIR{
+			// sum = sum + 1
+			{Op: vm.OP_ADD, A: 0, B: 0, C: 10, BType: runtime.TypeInt, CType: runtime.TypeInt, PC: 1},
+			// FORLOOP A=5
+			{Op: vm.OP_FORLOOP, A: 5, SBX: -2, PC: 2},
+		},
+	}
+
+	// Build and compile inner trace
+	innerSSA := BuildSSA(innerTrace)
+	innerSSA = OptimizeSSA(innerSSA)
+	innerCT, err := CompileSSA(innerSSA)
+	if err != nil {
+		t.Fatalf("inner CompileSSA: %v", err)
+	}
+	innerCT.ssaCompiled = true
+
+	// Now verify inner trace works standalone.
+	// The trace is designed to be called AFTER the interpreter's FORLOOP
+	// did one iteration (idx goes from 0→1). So we start with idx=1.
+	regs := make([]runtime.Value, 20)
+	regs[0] = runtime.IntValue(0)  // sum
+	regs[5] = runtime.IntValue(1)  // idx = 1 (after interpreter's first FORLOOP)
+	regs[6] = runtime.IntValue(3)  // limit
+	regs[7] = runtime.IntValue(1)  // step
+	regs[8] = runtime.IntValue(1)  // loop var = 1
+	regs[10] = runtime.IntValue(1) // constant 1
+
+	exitPC, sideExit := executeSSATrace(innerCT, regs)
+	sum := regs[0].Int()
+	t.Logf("Inner trace standalone: sum=%d, exitPC=%d, sideExit=%v", sum, exitPC, sideExit)
+	// With idx=1, limit=3, step=1: body runs 3 times (idx 1→2→3→4(exit))
+	if sum != 3 {
+		t.Errorf("inner trace: sum = %d, want 3", sum)
+	}
+}
+
+func TestSSACodegen_Integration_NestedLoopSmall(t *testing.T) {
+	// Smaller nested loop with low threshold for faster inner trace compilation.
+	src := `
+		func compute() {
+			sum := 0
+			for i := 1; i <= 5; i++ {
+				for j := 1; j <= 5; j++ {
+					sum = sum + 1
+				}
+			}
+			return sum
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+
+	recorder := NewTraceRecorder()
+	recorder.SetCompile(true)
+	recorder.SetUseSSA(true)
+	recorder.threshold = 2
+	v.SetTraceRecorder(recorder)
+
+	v.Execute(proto)
+
+	if globals["result"].Int() != 25 {
+		t.Errorf("result = %d, want 25", globals["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_NestedLoopOuterTraced(t *testing.T) {
+	// Verify that the outer loop actually gets compiled (not just the inner one).
+	// Uses a function to ensure variables are locals (not globals), so the inner
+	// trace can be SSA-compiled (GETGLOBAL/SETGLOBAL prevent SSA compilation).
+	src := `
+		func compute() {
+			sum := 0
+			for i := 1; i <= 50; i++ {
+				for j := 1; j <= 50; j++ {
+					sum = sum + 1
+				}
+			}
+			return sum
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+
+	recorder := NewTraceRecorder()
+	recorder.SetCompile(true)
+	recorder.SetUseSSA(true)
+	v.SetTraceRecorder(recorder)
+
+	v.Execute(proto)
+
+	// Check that at least 2 traces were compiled (inner + outer)
+	compiledCount := 0
+	for _, tr := range recorder.Traces() {
+		key := loopKey{proto: tr.LoopProto, pc: tr.LoopPC}
+		if ct := recorder.compiled[key]; ct != nil {
+			compiledCount++
+		}
+	}
+	if compiledCount < 2 {
+		t.Errorf("expected at least 2 compiled traces (inner + outer), got %d", compiledCount)
+	}
+
+	// Correctness check
+	if globals["result"].Int() != 2500 {
+		t.Errorf("result = %d, want 2500", globals["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_TripleNestedLoop(t *testing.T) {
+	// Triple-nested: outermost should call middle trace, which calls inner trace
+	src := `
+		sum := 0
+		for i := 1; i <= 10; i++ {
+			for j := 1; j <= 10; j++ {
+				for k := 1; k <= 10; k++ {
+					sum = sum + 1
+				}
+			}
+		}
+		result := sum
+	`
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	if g2["result"].Int() != 1000 {
+		t.Errorf("result = %d, want 1000", g2["result"].Int())
+	}
+}

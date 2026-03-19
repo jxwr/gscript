@@ -22,11 +22,39 @@ func ConstHoist(f *SSAFunc) *SSAFunc {
 		return f
 	}
 
+	// Collect slots that are written by non-constant ops in the loop body.
+	// Constants for these slots must NOT be hoisted because the slot is
+	// modified during the loop and the constant re-initializes it.
+	writtenByNonConst := make(map[int]bool)
+	for i := loopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		slot := int(inst.Slot)
+		if slot < 0 {
+			continue
+		}
+		switch inst.Op {
+		case SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_NIL, SSA_CONST_BOOL, SSA_NOP:
+			// These are the constants themselves, don't count
+		default:
+			if isValueProducingOp(inst.Op) || inst.Op == SSA_CALL_INNER_TRACE {
+				writtenByNonConst[slot] = true
+			}
+		}
+	}
+
 	// Collect indices of constants that are after the LOOP marker
+	// and whose slots are safe to hoist (not written by non-constant ops)
 	var constIndices []int
 	for i := loopIdx + 1; i < len(f.Insts); i++ {
 		op := f.Insts[i].Op
 		if op == SSA_CONST_INT || op == SSA_CONST_FLOAT {
+			slot := int(f.Insts[i].Slot)
+			if slot >= 0 && writtenByNonConst[slot] {
+				// This constant's slot is also written by a non-constant op.
+				// Don't hoist — the constant needs to re-initialize the slot
+				// on every iteration (e.g., inner loop control registers).
+				continue
+			}
 			constIndices = append(constIndices, i)
 		}
 	}

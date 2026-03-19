@@ -71,6 +71,9 @@ const (
 	SSA_CALL_SELF   // self-recursive call
 	SSA_INTRINSIC   // inlined GoFunction (XOR, AND, etc.)
 
+	// Sub-trace calling
+	SSA_CALL_INNER_TRACE // call pre-compiled inner loop trace
+
 	// Misc
 	SSA_MOVE     // copy ref
 	SSA_NOP      // no operation (placeholder for deleted instructions)
@@ -306,6 +309,29 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		ref := b.emit(SSAInst{Op: SSA_SUB_INT, Type: SSATypeInt, Arg1: init, Arg2: step, Slot: int16(ir.A), PC: ir.PC})
 		b.slotDefs[ir.A] = ref
 		b.slotType[ir.A] = SSATypeInt
+
+		// If this FORPREP has an inner compiled trace marker, emit the first
+		// FORLOOP iteration (idx += step) before calling the inner trace.
+		// The inner trace expects idx to be already incremented by the first
+		// FORLOOP (which the interpreter normally does before calling the trace).
+		if ir.FieldIndex > 0 {
+			// Simulate first FORLOOP: R(A) += R(A+2) → idx = init
+			incRef := b.emit(SSAInst{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: ref, Arg2: step, Slot: int16(ir.A), PC: ir.PC})
+			b.slotDefs[ir.A] = incRef
+
+			// Set loop variable: R(A+3) = idx
+			moveRef := b.emit(SSAInst{Op: SSA_MOVE, Type: SSATypeInt, Arg1: incRef, Slot: int16(ir.A + 3), PC: ir.PC})
+			b.slotDefs[ir.A+3] = moveRef
+			b.slotType[ir.A+3] = SSATypeInt
+
+			b.emit(SSAInst{
+				Op:     SSA_CALL_INNER_TRACE,
+				Type:   SSATypeUnknown,
+				Slot:   int16(ir.A),
+				PC:     ir.PC,
+				AuxInt: int64(ir.FieldIndex), // inner FORLOOP PC (used for lookup)
+			})
+		}
 
 	case vm.OP_GETGLOBAL:
 		// GETGLOBAL: load global value captured at recording time.
@@ -646,7 +672,7 @@ func SSAIsUseful(f *SSAFunc) bool {
 				hasUsefulOp = true
 			case SSA_LOAD_ARRAY, SSA_STORE_ARRAY, SSA_LOAD_FIELD, SSA_STORE_FIELD:
 				hasUsefulOp = true
-			case SSA_INTRINSIC, SSA_LOAD_GLOBAL:
+			case SSA_INTRINSIC, SSA_LOAD_GLOBAL, SSA_CALL_INNER_TRACE:
 				hasUsefulOp = true
 			case SSA_LE_INT, SSA_LT_INT:
 				// Loop exit check is reachable — trace can actually loop
@@ -693,7 +719,8 @@ func eliminateDeadCode(f *SSAFunc) *SSAFunc {
 			SSA_LOOP, SSA_SNAPSHOT, SSA_SIDE_EXIT,
 			SSA_LE_INT, SSA_LT_INT, SSA_EQ_INT,
 			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
-			SSA_CALL, SSA_CALL_SELF:
+			SSA_CALL, SSA_CALL_SELF,
+			SSA_CALL_INNER_TRACE:
 			refCount[i]++ // keep alive
 		}
 	}
