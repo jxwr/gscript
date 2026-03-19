@@ -156,6 +156,10 @@ const regSelfDepth = X25 // 0 = outermost call, >0 = self-recursive call
 // saved/restored via STP/LDP in emitSelfCall.
 const regSelfArg = X19
 
+// Reserved register for pinning R(1) in self-call functions with 2+ parameters.
+// X22 is callee-saved. Saved/restored in the self-call frame alongside X19/X30.
+const regSelfArg2 = X22
+
 // Compile compiles a FuncProto to native ARM64 code.
 func Compile(proto *vm.FuncProto) (*CompiledFunc, error) {
 	return CompileWithGlobals(proto, nil)
@@ -185,6 +189,12 @@ func CompileWithGlobals(proto *vm.FuncProto, globals map[string]rt.Value) (*Comp
 		// so R(0) will still be spilled when needed. But we don't want
 		// reloadPinnedRegs (used at call-exit resume) to reload R(0)
 		// since it's managed by the self-call mechanism, not for-loop pinning.
+
+		// Pin R(1) to X22 for two-parameter self-call functions (e.g., ackermann).
+		// Same approach: callee-saved register, saved/restored in self-call frame.
+		if cg.proto.NumParams > 1 {
+			cg.pinnedRegs[1] = regSelfArg2
+		}
 	}
 
 	cg.emitPrologue()
@@ -320,11 +330,14 @@ func (cg *Codegen) emitPrologue() {
 			a.Label("self_param_guard_ok")
 		}
 
-		// Outermost entry: load R(0) from the Value array (set by interpreter)
-		// into the pinned register X19, then fall through to the body.
+		// Outermost entry: load pinned parameters from the Value array
+		// (set by interpreter) into callee-saved registers, then fall through to the body.
 		a.LDR(regSelfArg, regRegs, regIvalOffset(0))
+		if cg.proto.NumParams > 1 {
+			a.LDR(regSelfArg2, regRegs, regIvalOffset(1))
+		}
 
-		a.Label("self_call_entry")  // self-recursive calls BL here; X19 already loaded by caller
+		a.Label("self_call_entry")  // self-recursive calls BL here; pinned args already loaded by caller
 	}
 }
 
@@ -2903,11 +2916,11 @@ func (cg *Codegen) emitReturnOp(pc int, inst uint32) error {
 	aReg := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
 
-	// For self-call functions, the only pinned register is R(0) → X19.
-	// Nested returns don't need R(0) in the Value array (the caller restores
-	// X19 from the ARM64 stack). The outermost return in emitSelfCallReturn
+	// For self-call functions, pinned registers (R(0)→X19, optionally R(1)→X22)
+	// don't need to be in the Value array for nested returns (the caller restores
+	// them from the ARM64 stack). The outermost return in emitSelfCallReturn
 	// handles writing type tags for the return register explicitly.
-	// Skip spillPinnedRegs to eliminate 3 wasted instructions per nested return.
+	// Skip spillPinnedRegs to eliminate wasted instructions per nested return.
 	if cg.hasSelfCalls {
 		return cg.emitSelfCallReturn(pc, aReg, b)
 	}
@@ -3013,12 +3026,14 @@ func (cg *Codegen) emitSelfCallReturn(pc, aReg, b int) error {
 const maxSelfRecursionDepth = 200
 
 // emitSelfCall emits native ARM64 code for a self-recursive function call.
-// Saves LR (x30) and the pinned R(0) register (x19) on the ARM64 stack as a
-// 16-byte pair using STP/LDP. regRegs (x26) is restored by subtraction after
-// the call. The depth counter (x25) is managed via increment/decrement.
+// For 1-parameter functions: saves LR (X30) + X19 in a 16-byte frame.
+// For 2+-parameter functions: saves LR (X30) + X19 + X22 in a 32-byte frame.
+// regRegs (X26) is restored by subtraction after the call.
+// The depth counter (X25) is managed via increment/decrement.
 func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 	a := cg.asm
 	fnReg := candidate.fnReg
+	hasArg2 := cg.proto.NumParams > 1
 
 	overflowLabel := fmt.Sprintf("self_overflow_%d", pc)
 	doneLabel := fmt.Sprintf("self_done_%d", pc)
@@ -3030,10 +3045,16 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 	a.CMPimm(regSelfDepth, maxSelfRecursionDepth)
 	a.BCond(CondGE, overflowLabel)
 
-	// Save LR (x30) and the pinned R(0) register (x19) as a pair.
-	// SP must remain 16-byte aligned. STP stores two 8-byte registers = 16 bytes.
-	// This preserves the caller's X19 (its R(0) value) across the nested call.
-	a.STPpre(X30, regSelfArg, SP, -16) // [SP] = {X30, X19}; SP -= 16
+	// Save callee-saved registers on the ARM64 stack.
+	// SP must remain 16-byte aligned.
+	if hasArg2 {
+		// 32-byte frame: [SP] = {X30, X19}, [SP+16] = {X22, padding}
+		a.STPpre(X30, regSelfArg, SP, -32) // SP -= 32; [SP] = {X30, X19}
+		a.STR(regSelfArg2, SP, 16)         // [SP+16] = X22
+	} else {
+		// 16-byte frame: [SP] = {X30, X19}
+		a.STPpre(X30, regSelfArg, SP, -16) // SP -= 16; [SP] = {X30, X19}
+	}
 
 	// Advance regRegs to callee's register window.
 	// Callee's R(0) = Caller's R(fnReg+1).
@@ -3045,17 +3066,24 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 		a.ADDreg(regRegs, regRegs, X0)
 	}
 
-	// Load callee's R(0) into X19 (the pinned arg register).
-	// After advancing regRegs, callee's R(0).ival = [regRegs + OffsetIval].
-	// The callee at self_call_entry skips the LDR since X19 is already loaded.
+	// Load callee's pinned parameters from the new register window.
+	// The callee at self_call_entry skips these loads since args are already loaded.
 	a.LDR(regSelfArg, regRegs, regIvalOffset(0))
+	if hasArg2 {
+		a.LDR(regSelfArg2, regRegs, regIvalOffset(1))
+	}
 
 	// BL to self_call_entry (re-enters the function body).
 	a.BL("self_call_entry")
 
 	// After return: X0 = result (ival).
-	// Restore LR and pinned R(0) register from stack.
-	a.LDPpost(X30, regSelfArg, SP, 16) // restore {X30, X19}; SP += 16
+	// Restore callee-saved registers from stack.
+	if hasArg2 {
+		a.LDR(regSelfArg2, SP, 16)            // X22 = [SP+16]
+		a.LDPpost(X30, regSelfArg, SP, 32)    // {X30, X19} = [SP]; SP += 32
+	} else {
+		a.LDPpost(X30, regSelfArg, SP, 16)    // {X30, X19} = [SP]; SP += 16
+	}
 
 	// Restore regRegs by subtracting the offset (avoids saving/restoring x26).
 	if offset <= 4095 {
@@ -3077,7 +3105,7 @@ func (cg *Codegen) emitSelfCall(pc int, candidate *inlineCandidate) error {
 
 	// Overflow handler: unwind all self-call frames at once.
 	// X29 was set to SP in the prologue and is never modified by self-call pushes,
-	// so restoring SP from X29 unwinds all 16-byte self-call frames.
+	// so restoring SP from X29 unwinds all self-call stack frames.
 	a.Label(overflowLabel)
 	a.MOVreg(SP, X29)                       // unwind all self-call stack frames
 	a.LDR(regRegs, regCtx, ctxOffRegs)      // restore original regRegs from context

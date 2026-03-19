@@ -155,3 +155,34 @@ func fib(n) {
 		vm.Call("fib", 20)
 	}
 }
+
+func BenchmarkGScriptJITAckermannWarm(b *testing.B) {
+	vm := gs.New(gs.WithJIT())
+	vm.Exec(`
+func ack(m, n) {
+    if m == 0 { return n + 1 }
+    if n == 0 { return ack(m - 1, 1) }
+    return ack(m - 1, ack(m, n - 1))
+}
+for i := 1; i <= 15; i++ { ack(2, 2) }
+`)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vm.Call("ack", 3, 4)
+	}
+}
+
+func BenchmarkGScriptVMAckermannWarm(b *testing.B) {
+	vm := gs.New(gs.WithVM())
+	vm.Exec(`
+func ack(m, n) {
+    if m == 0 { return n + 1 }
+    if n == 0 { return ack(m - 1, 1) }
+    return ack(m - 1, ack(m, n - 1))
+}
+`)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vm.Call("ack", 3, 4)
+	}
+}

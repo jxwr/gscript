@@ -123,6 +123,28 @@ func TestJITIntegrationFibRecursive(t *testing.T) {
 	expectGlobal(t, globals, "result", 6765)
 }
 
+func TestJITIntegrationAckermann(t *testing.T) {
+	// Ackermann function: two-parameter self-recursion with nested calls.
+	// ack(m-1, ack(m, n-1)) — the inner result becomes the outer's second arg.
+	globals, _ := compileAndRunJIT(t, `
+		func ack(m, n) {
+			if m == 0 { return n + 1 }
+			if n == 0 { return ack(m - 1, 1) }
+			return ack(m - 1, ack(m, n - 1))
+		}
+		r00 = ack(0, 0)
+		r10 = ack(1, 0)
+		r20 = ack(2, 0)
+		r30 = ack(3, 0)
+		r34 = ack(3, 4)
+	`)
+	expectGlobal(t, globals, "r00", 1)   // ack(0,0) = 1
+	expectGlobal(t, globals, "r10", 2)   // ack(1,0) = 2
+	expectGlobal(t, globals, "r20", 3)   // ack(2,0) = 3
+	expectGlobal(t, globals, "r30", 5)   // ack(3,0) = 5
+	expectGlobal(t, globals, "r34", 125) // ack(3,4) = 125
+}
+
 func TestJITIntegrationNestedLoops(t *testing.T) {
 	globals, _ := compileAndRunJIT(t, `
 		func matrix() {
