@@ -146,7 +146,7 @@ Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 | Benchmark | Interpreter | Trace JIT | Speedup | vs LuaJIT |
 |-----------|-------------|-----------|---------|-----------|
 | mandelbrot | 1.5s | 0.227s | **×6.6** | 4.0x slower |
-| fib(20) warm | — | 35us | ×10 (method JIT) | **1.34x slower** |
+| fib(20) warm | — | 28us | ×10 (method JIT) | **1.07x slower** ≈ PARITY |
 | fn calls warm | — | 5.1us | ×44 (method JIT) | **1.7x slower** |
 | sieve | 0.17s | 0.17s | ×1.0 | — |
 | nbody | 2.73s | ~2.5s | ×1.1 | — |
