@@ -908,26 +908,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		// ---- Jump ----
 		case OP_JMP:
 			sbx := DecodesBx(inst)
-			// Detect while-loop back-edges (backward JMP) for tracing.
-			// Only active when trace recorder is present (no overhead otherwise).
-			// jmpPC must be computed BEFORE frame.pc is modified by the jump.
-			if vm.traceRec != nil && sbx < 0 {
-				jmpPC := frame.pc - 1 // PC of this JMP instruction
-				frame.pc += sbx
-				if vm.traceRec.OnLoopBackEdge(jmpPC, frame.closure.Proto) {
-					tr := vm.executeCompiledTrace(frame.closure.Proto, base)
-					if tr.executed {
-						if tr.sideExit {
-							frame.pc = tr.exitPC
-						} else {
-							frame.pc = jmpPC + 1
-						}
-					}
-				}
-				vm.traceRecording = vm.traceRec.IsRecording()
-			} else {
-				frame.pc += sbx
-			}
+			// While-loop back-edge detection removed: adds ~30-50ns overhead per
+			// backward JMP inside method-JIT-compiled functions without benefit.
+			// The sieve's while-loops are inside functions compiled by the method
+			// JIT which bypasses the trace recorder. Re-enable when the trace JIT
+			// can handle function-internal loops efficiently.
+			frame.pc += sbx
 
 		// ---- Call / Return (INLINE) ----
 		case OP_CALL:
@@ -1224,8 +1210,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						vm.regs[base+a+3].SetInt(idx)
 						forloopPC := frame.pc - 1
 						frame.pc += sbx
-						// Trace: check for compiled trace
-						if vm.traceRec != nil && sbx < 0 {
+						// Trace: check for compiled trace.
+						// Fast-path: skip OnLoopBackEdge if this FORLOOP PC is trace-blacklisted
+						// (avoids ~30-50ns interface dispatch + map lookup per iteration).
+						if vm.traceRec != nil && sbx < 0 && !frame.closure.Proto.IsTraceBlacklisted(forloopPC) {
 							if vm.traceRec.OnLoopBackEdge(forloopPC, frame.closure.Proto) {
 								tr := vm.executeCompiledTrace(frame.closure.Proto, base)
 								if tr.executed {

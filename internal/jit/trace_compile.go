@@ -43,6 +43,7 @@ const SideExitBlacklistRatio = 0.95
 type CompiledTrace struct {
 	code      *CodeBlock
 	proto     *vm.FuncProto
+	loopPC    int              // PC of the FORLOOP instruction this trace was compiled for
 	constants []runtime.Value // trace-level constant pool
 
 	// Sub-trace calling: if this trace contains a CALL_INNER_TRACE,
@@ -310,7 +311,7 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		return nil, fmt.Errorf("trace write: %w", err)
 	}
 
-	return &CompiledTrace{code: block, proto: trace.LoopProto, constants: trace.Constants}, nil
+	return &CompiledTrace{code: block, proto: trace.LoopProto, loopPC: trace.LoopPC, constants: trace.Constants}, nil
 }
 
 // --- Instruction emitters ---

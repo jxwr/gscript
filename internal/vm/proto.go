@@ -22,8 +22,30 @@ type FuncProto struct {
 	Upvalues    []UpvalDesc // upvalue descriptors
 	Protos      []*FuncProto // nested function prototypes
 	LineInfo    []int       // source line for each instruction (debug)
-	GlobalCache []globalCacheEntry        // lazily-initialized cache indexed by constant pool index
-	FieldCache  []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
+	GlobalCache    []globalCacheEntry        // lazily-initialized cache indexed by constant pool index
+	FieldCache     []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
+	TraceBlacklist []bool                    // lazily-initialized per-PC trace blacklist; true = skip OnLoopBackEdge
+}
+
+// BlacklistTracePC marks a FORLOOP PC as trace-blacklisted.
+// Subsequent iterations of this loop skip the OnLoopBackEdge call entirely,
+// avoiding the ~30-50ns interface dispatch + map lookup overhead per iteration.
+func (p *FuncProto) BlacklistTracePC(pc int) {
+	if pc < 0 || pc >= len(p.Code) {
+		return
+	}
+	if p.TraceBlacklist == nil {
+		p.TraceBlacklist = make([]bool, len(p.Code))
+	}
+	p.TraceBlacklist[pc] = true
+}
+
+// IsTraceBlacklisted returns true if the given PC has been trace-blacklisted.
+func (p *FuncProto) IsTraceBlacklisted(pc int) bool {
+	if p.TraceBlacklist == nil {
+		return false
+	}
+	return p.TraceBlacklist[pc]
 }
 
 // UpvalDesc describes how an upvalue should be captured when creating a closure.

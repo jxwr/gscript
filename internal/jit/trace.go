@@ -197,6 +197,9 @@ func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 	// Fast path: check compiled trace cache first
 	if ct, ok := r.compiled[key]; ok {
 		if ct.blacklisted {
+			// Propagate to proto-level blacklist so the VM skips
+			// the interface dispatch on subsequent iterations.
+			proto.BlacklistTracePC(pc)
 			return false
 		}
 		r.pendingTrace = ct
@@ -205,6 +208,9 @@ func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 
 	// Fast reject: blacklisted loops
 	if r.blacklist[key] {
+		// Propagate to proto-level blacklist so the VM skips
+		// the interface dispatch on subsequent iterations.
+		proto.BlacklistTracePC(pc)
 		return false
 	}
 
@@ -231,6 +237,11 @@ func (r *TraceRecorder) RecordSideExit(ct *CompiledTrace) {
 		ratio := float64(ct.sideExitCount) / float64(total)
 		if ratio >= SideExitBlacklistRatio {
 			ct.blacklisted = true
+			// Propagate to proto-level blacklist so the VM skips
+			// the interface dispatch on subsequent iterations.
+			if ct.proto != nil {
+				ct.proto.BlacklistTracePC(ct.loopPC)
+			}
 		}
 	}
 }
@@ -724,6 +735,9 @@ func (r *TraceRecorder) finishTrace() {
 			// If compilation failed, blacklist this loop to avoid re-recording
 			if !compiled {
 				r.blacklist[key] = true
+				// Propagate to proto-level blacklist so the VM skips
+				// the interface dispatch on subsequent iterations.
+				r.current.LoopProto.BlacklistTracePC(r.current.LoopPC)
 				if r.debug {
 					fmt.Printf("[TRACE] Blacklisted: PC=%d\n", r.current.LoopPC)
 				}
@@ -762,6 +776,9 @@ func (r *TraceRecorder) abortAndBlacklist() {
 	if r.current != nil {
 		key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
 		r.blacklist[key] = true
+		// Propagate to proto-level blacklist so the VM skips
+		// the interface dispatch on subsequent iterations.
+		r.current.LoopProto.BlacklistTracePC(r.current.LoopPC)
 	}
 	r.abortTrace()
 }

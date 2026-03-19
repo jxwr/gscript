@@ -562,11 +562,13 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 		constants = f.Trace.Constants
 	}
 	var proto *vm.FuncProto
+	var loopPC int
 	if f.Trace != nil {
 		proto = f.Trace.LoopProto
+		loopPC = f.Trace.LoopPC
 	}
 
-	return &CompiledTrace{code: block, proto: proto, constants: constants}, nil
+	return &CompiledTrace{code: block, proto: proto, loopPC: loopPC, constants: constants}, nil
 }
 
 // emitSSAInstSlot emits ARM64 code for one SSA instruction using slot-based allocation.

@@ -16,6 +16,10 @@ import (
 // JIT compilation threshold: compile after this many calls.
 const DefaultHotThreshold = 10
 
+// debugCallExit enables verbose logging of call-exit handling in the JIT.
+const debugCallExit = false
+const debugCrossCall = false
+
 // compiledEntry holds a compiled function.
 type compiledEntry struct {
 	cf           *CompiledFunc
@@ -45,6 +49,10 @@ type Engine struct {
 	globals     map[string]rt.Value // reference to VM globals for function inlining
 	callHandler CallHandler         // executes external function calls
 	globalsAcc  GlobalsAccessor     // safe globals/regs access
+
+	// Debug/stats counters (for cross-call optimization analysis)
+	crossCallFast int64 // calls handled by executeCompiledCallee
+	crossCallSlow int64 // calls that fell through to callHandler
 }
 
 // NewEngine creates a new JIT engine.
@@ -178,7 +186,6 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 	// or call-exit (2). On call-exit, the executor handles the instruction and
 	// re-enters JIT at the next PC.
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
-	const debugCallExit = false
 	exitCount := 0
 	for {
 		exitCode := callJIT(entry.ptr, ctxPtr)
@@ -322,13 +329,69 @@ func (e *Engine) handleCallExit(proto *vm.FuncProto, regs []rt.Value, base int, 
 		b := vm.DecodeB(inst)
 		c := vm.DecodeC(inst)
 
-		// Variable args (b==0) or variable returns (c==0) — fall back.
-		if b == 0 || c == 0 {
-			return nil, 0, fmt.Errorf("jit: variable args/returns not supported in call-exit")
+		// Resolve nArgs: B=0 means variable args (from previous call's return).
+		// Use ctx.Top to compute the actual count.
+		nArgs := b - 1
+		if b == 0 {
+			top := int(ctx.Top)
+			if top > 0 {
+				nArgs = top - (a + 1)
+				if nArgs < 0 {
+					nArgs = 0
+				}
+			} else {
+				// Top not set — fall back to slow path.
+				return nil, 0, fmt.Errorf("jit: variable args (B=0) without Top")
+			}
 		}
 
+		// Resolve nResults: C=0 means variable returns.
+		// For C=0, we call the function and let it return however many values it wants.
+		// We then set ctx.Top so subsequent B=0 calls know the arg count.
+		nResults := c - 1
+		variableResults := c == 0
+
 		fnVal := regs[base+a]
-		nArgs := b - 1
+
+		// Fast path: if the callee is a compiled VM closure, run it directly
+		// via JIT instead of going through the full VM call handler.
+		// This eliminates frame push/pop, args allocation, and VM dispatch overhead.
+		if fnVal.IsFunction() {
+			if vcl, _ := fnVal.Ptr().(*vm.Closure); vcl != nil {
+				if calleeEntry, ok := e.entries[vcl.Proto]; ok && !calleeEntry.demoted {
+					// For variable results (C=0), request 1 result (most common for mutual recursion).
+					calleeNResults := nResults
+					if variableResults {
+						calleeNResults = 1
+					}
+					_, err := e.executeCompiledCallee(vcl.Proto, calleeEntry, regs, base, a, nArgs, calleeNResults)
+					if err == nil {
+						// Update Top for subsequent B=0 calls.
+						if variableResults {
+							ctx.Top = int64(a + 1 + calleeNResults)
+						}
+						// Check if regs were reallocated during nested call.
+						var newRegs []rt.Value
+						if e.globalsAcc != nil {
+							latestRegs := e.globalsAcc.Regs()
+							if &latestRegs[0] != &regs[0] {
+								newRegs = latestRegs
+							}
+						}
+						return newRegs, nextPC, nil
+					}
+					if debugCrossCall {
+						fmt.Printf("[cross-call] fast path FAILED for %s (a=%d nArgs=%d nResults=%d): %v\n",
+							vcl.Proto.Name, a, nArgs, calleeNResults, err)
+					}
+					// Fast path failed — fall through to slow path.
+				} else if debugCrossCall {
+					found := e.entries[vcl.Proto] != nil
+					fmt.Printf("[cross-call] no compiled entry for %s (found=%v)\n", vcl.Proto.Name, found)
+				}
+			}
+		}
+
 		args := make([]rt.Value, nArgs)
 		for i := 0; i < nArgs; i++ {
 			args[i] = regs[base+a+1+i]
@@ -350,12 +413,19 @@ func (e *Engine) handleCallExit(proto *vm.FuncProto, regs []rt.Value, base int, 
 		}
 
 		// Place results in registers.
-		nResults := c - 1
-		for i := 0; i < nResults; i++ {
-			if i < len(callResults) {
-				regs[base+a+i] = callResults[i]
-			} else {
-				regs[base+a+i] = rt.NilValue()
+		if variableResults {
+			// C=0: store all results starting at R(A).
+			for i, v := range callResults {
+				regs[base+a+i] = v
+			}
+			ctx.Top = int64(a + len(callResults))
+		} else {
+			for i := 0; i < nResults; i++ {
+				if i < len(callResults) {
+					regs[base+a+i] = callResults[i]
+				} else {
+					regs[base+a+i] = rt.NilValue()
+				}
 			}
 		}
 
@@ -590,6 +660,265 @@ func resolveRK(idx int, regs []rt.Value, base int, constants []rt.Value) rt.Valu
 		return constants[idx-vm.RKBit]
 	}
 	return regs[base+idx]
+}
+
+// maxCrossCallDepth limits recursion depth for cross-function JIT calls.
+// Beyond this depth, we fall back to the VM call handler to avoid stack overflow.
+const maxCrossCallDepth = 500
+
+// executeCompiledCallee runs a compiled callee function directly via JIT,
+// bypassing the VM call handler. This eliminates frame push/pop, args allocation,
+// and VM dispatch overhead for mutual recursion and other cross-function patterns.
+//
+// The callee's register window starts at regs[base+callReg+1], where callReg is
+// the CALL instruction's A field. Arguments are already in place from the caller.
+// Returns error if the fast path cannot handle this call (fall through to slow path).
+func (e *Engine) executeCompiledCallee(
+	calleeProto *vm.FuncProto,
+	calleeEntry *compiledEntry,
+	regs []rt.Value,
+	base int,
+	callReg int,
+	nArgs int,
+	nResults int,
+) ([]rt.Value, error) {
+	return e.executeCompiledCalleeDepth(calleeProto, calleeEntry, regs, base, callReg, nArgs, nResults, 0)
+}
+
+func (e *Engine) executeCompiledCalleeDepth(
+	calleeProto *vm.FuncProto,
+	calleeEntry *compiledEntry,
+	regs []rt.Value,
+	base int,
+	callReg int,
+	nArgs int,
+	nResults int,
+	depth int,
+) ([]rt.Value, error) {
+	if depth >= maxCrossCallDepth {
+		return nil, fmt.Errorf("jit: cross-call depth exceeded")
+	}
+
+	// Callee's register window: R(0) = regs[calleeBase]
+	calleeBase := base + callReg + 1
+
+	// Ensure register space for the callee.
+	needed := calleeBase + calleeProto.MaxStack + 1
+	if needed > len(regs) {
+		// Regs need to grow — fall back to slow path (VM handles reallocation).
+		return nil, fmt.Errorf("jit: callee needs register growth")
+	}
+
+	// Nil-fill parameters beyond actual args (matches VM behavior).
+	for i := nArgs; i < calleeProto.NumParams; i++ {
+		regs[calleeBase+i] = rt.NilValue()
+	}
+
+	// Set up JIT context for the callee.
+	ctx := JITContext{
+		Regs: uintptr(unsafe.Pointer(&regs[calleeBase])),
+	}
+	if len(calleeProto.Constants) > 0 {
+		ctx.Constants = uintptr(unsafe.Pointer(&calleeProto.Constants[0]))
+	}
+
+	ctxPtr := uintptr(unsafe.Pointer(&ctx))
+
+	for {
+		exitCode := callJIT(calleeEntry.ptr, ctxPtr)
+		runtime.KeepAlive(ctx)
+
+		switch exitCode {
+		case 0:
+			// Normal return. Place results in caller's register window.
+			retBase := int(ctx.RetBase)
+			retCount := int(ctx.RetCount)
+			for i := 0; i < nResults; i++ {
+				if i < retCount {
+					regs[base+callReg+i] = regs[calleeBase+retBase+i]
+				} else {
+					regs[base+callReg+i] = rt.NilValue()
+				}
+			}
+			return nil, nil
+
+		case 1:
+			// Side exit — can't handle in fast path.
+			return nil, fmt.Errorf("jit: callee side-exited")
+
+		case 2:
+			// Call-exit in the callee. Handle it, then re-enter.
+			calleePC := int(ctx.ExitPC)
+			if calleePC < 0 || calleePC >= len(calleeProto.Code) {
+				return nil, fmt.Errorf("jit: callee call-exit PC out of range")
+			}
+			calleeInst := calleeProto.Code[calleePC]
+			calleeOp := vm.DecodeOp(calleeInst)
+			nextCalleePC := calleePC + 1
+
+			switch calleeOp {
+			case vm.OP_GETGLOBAL:
+				if e.globalsAcc == nil {
+					return nil, fmt.Errorf("jit: no globals accessor")
+				}
+				ca := vm.DecodeA(calleeInst)
+				cbx := vm.DecodeBx(calleeInst)
+				name := calleeProto.Constants[cbx].Str()
+				val := e.globalsAcc.GetGlobal(name)
+				regs[calleeBase+ca] = val
+
+			case vm.OP_SETGLOBAL:
+				if e.globalsAcc == nil {
+					return nil, fmt.Errorf("jit: no globals accessor")
+				}
+				ca := vm.DecodeA(calleeInst)
+				cbx := vm.DecodeBx(calleeInst)
+				name := calleeProto.Constants[cbx].Str()
+				e.globalsAcc.SetGlobal(name, regs[calleeBase+ca])
+
+			case vm.OP_CALL:
+				ca := vm.DecodeA(calleeInst)
+				cb := vm.DecodeB(calleeInst)
+				cc := vm.DecodeC(calleeInst)
+
+				// Resolve nArgs for B=0 (variable args from previous call's return).
+				cnArgs := cb - 1
+				if cb == 0 {
+					top := int(ctx.Top)
+					if top > 0 {
+						cnArgs = top - (ca + 1)
+						if cnArgs < 0 {
+							cnArgs = 0
+						}
+					} else {
+						return nil, fmt.Errorf("jit: nested B=0 without Top")
+					}
+				}
+
+				cnResults := cc - 1
+				nestedVariableResults := cc == 0
+				nestedFnVal := regs[calleeBase+ca]
+
+				// Try fast path for nested compiled callee.
+				handled := false
+				if nestedFnVal.IsFunction() {
+					if vcl, _ := nestedFnVal.Ptr().(*vm.Closure); vcl != nil {
+						if nestedEntry, ok := e.entries[vcl.Proto]; ok && !nestedEntry.demoted {
+							effectiveNResults := cnResults
+							if nestedVariableResults {
+								effectiveNResults = 1
+							}
+							_, err := e.executeCompiledCalleeDepth(
+								vcl.Proto, nestedEntry, regs, calleeBase, ca, cnArgs, effectiveNResults, depth+1)
+							if err == nil {
+								handled = true
+								if nestedVariableResults {
+									ctx.Top = int64(ca + 1 + effectiveNResults)
+								}
+								// Check for reg reallocation.
+								if e.globalsAcc != nil {
+									latestRegs := e.globalsAcc.Regs()
+									if &latestRegs[0] != &regs[0] {
+										regs = latestRegs
+									}
+								}
+							}
+						}
+					}
+				}
+				if !handled {
+					// Slow path: go through callHandler.
+					args := make([]rt.Value, cnArgs)
+					for i := 0; i < cnArgs; i++ {
+						args[i] = regs[calleeBase+ca+1+i]
+					}
+					callResults, err := e.callHandler(nestedFnVal, args)
+					if err != nil {
+						return nil, err
+					}
+					if e.globalsAcc != nil {
+						latestRegs := e.globalsAcc.Regs()
+						if &latestRegs[0] != &regs[0] {
+							regs = latestRegs
+						}
+					}
+					if nestedVariableResults {
+						for i, v := range callResults {
+							regs[calleeBase+ca+i] = v
+						}
+						ctx.Top = int64(ca + len(callResults))
+					} else {
+						for i := 0; i < cnResults; i++ {
+							if i < len(callResults) {
+								regs[calleeBase+ca+i] = callResults[i]
+							} else {
+								regs[calleeBase+ca+i] = rt.NilValue()
+							}
+						}
+					}
+				}
+
+			default:
+				// Unsupported call-exit opcode in callee — fall back.
+				return nil, fmt.Errorf("jit: unsupported callee call-exit %s", vm.OpName(calleeOp))
+			}
+
+			// Batch consecutive call-exit opcodes (same logic as TryExecute).
+			lastExitOp := calleeOp
+			for nextCalleePC < len(calleeProto.Code) {
+				nextOp := vm.DecodeOp(calleeProto.Code[nextCalleePC])
+				if !isCallExitOp(nextOp) {
+					break
+				}
+				if nextOp == vm.OP_EQ || nextOp == vm.OP_LT || nextOp == vm.OP_LE {
+					break
+				}
+				if nextOp == vm.OP_CALL {
+					break
+				}
+				ctx.ExitPC = int64(nextCalleePC)
+				batchInst := calleeProto.Code[nextCalleePC]
+				batchOp := vm.DecodeOp(batchInst)
+				batchHandled := false
+				switch batchOp {
+				case vm.OP_GETGLOBAL:
+					if e.globalsAcc != nil {
+						ba := vm.DecodeA(batchInst)
+						bbx := vm.DecodeBx(batchInst)
+						name := calleeProto.Constants[bbx].Str()
+						regs[calleeBase+ba] = e.globalsAcc.GetGlobal(name)
+						batchHandled = true
+					}
+				case vm.OP_SETGLOBAL:
+					if e.globalsAcc != nil {
+						ba := vm.DecodeA(batchInst)
+						bbx := vm.DecodeBx(batchInst)
+						name := calleeProto.Constants[bbx].Str()
+						e.globalsAcc.SetGlobal(name, regs[calleeBase+ba])
+						batchHandled = true
+					}
+				}
+				if !batchHandled {
+					break
+				}
+				lastExitOp = batchOp
+				nextCalleePC++
+			}
+
+			// Set resume PC.
+			if lastExitOp == vm.OP_EQ || lastExitOp == vm.OP_LT || lastExitOp == vm.OP_LE {
+				ctx.ResumePC = int64(nextCalleePC | 0x8000)
+			} else {
+				ctx.ResumePC = int64(nextCalleePC)
+			}
+			ctx.Regs = uintptr(unsafe.Pointer(&regs[calleeBase]))
+			ctxPtr = uintptr(unsafe.Pointer(&ctx))
+			continue
+
+		default:
+			return nil, fmt.Errorf("jit: callee unknown exit code %d", exitCode)
+		}
+	}
 }
 
 // Free releases compiled code owned by this engine.

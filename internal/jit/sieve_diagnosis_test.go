@@ -7,14 +7,16 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
-// TestSieveDiagnosis_WhileLoopTraced verifies that while-loops (OP_JMP backward
-// branch) are now detected and traced by the JIT. Previously, only FORLOOP-based
-// loops were traced, leaving the sieve's hot inner marking loop unoptimized.
-func TestSieveDiagnosis_WhileLoopTraced(t *testing.T) {
+// TestSieveDiagnosis_WhileLoopNotTraced verifies that while-loops (OP_JMP backward
+// branch) are NOT traced by the JIT. While-loop back-edge detection was removed
+// because it adds ~30-50ns overhead per backward JMP inside method-JIT-compiled
+// functions without benefit. Only FORLOOP-based loops are traced.
+func TestSieveDiagnosis_WhileLoopNotTraced(t *testing.T) {
 	// This is the sieve's hot inner loop pattern:
 	//   j := start
 	//   for j <= n { arr[j] = false; j = j + step }
 	// It compiles to a while-loop (OP_JMP), NOT FORLOOP.
+	// With JMP back-edge detection removed, only the FORLOOP init loop is traced.
 	src := `
 		arr := {}
 		for i := 1; i <= 100; i++ { arr[i] = true }
@@ -27,9 +29,9 @@ func TestSieveDiagnosis_WhileLoopTraced(t *testing.T) {
 
 	traces, _ := runWithTracing(t, src)
 
-	// Check what was actually traced
-	whileLoopTraced := false
+	// Only the FORLOOP init loop should be traced; the while-loop should NOT be.
 	forLoopTraced := false
+	whileLoopTraced := false
 	for _, tr := range traces {
 		hasSettable := false
 		hasForloop := false
@@ -46,7 +48,6 @@ func TestSieveDiagnosis_WhileLoopTraced(t *testing.T) {
 			}
 		}
 		if hasSettable && !hasForloop && hasJmpBack {
-			// While-loop trace: SETTABLE + backward JMP without FORLOOP
 			whileLoopTraced = true
 		}
 		if hasForloop {
@@ -54,15 +55,15 @@ func TestSieveDiagnosis_WhileLoopTraced(t *testing.T) {
 		}
 	}
 
-	if !whileLoopTraced {
-		t.Error("Expected while-loop with SETTABLE to be traced (backward JMP detection)")
+	if whileLoopTraced {
+		t.Error("While-loop should NOT be traced (JMP back-edge detection removed)")
 	}
 
 	if !forLoopTraced {
 		t.Error("Expected the FORLOOP init loop to be traced")
 	}
 
-	t.Logf("While-loop tracing verified: %d traces recorded", len(traces))
+	t.Logf("While-loop tracing correctly disabled: %d traces recorded (FORLOOP only)", len(traces))
 	for i, tr := range traces {
 		ops := make([]string, 0, len(tr.IR))
 		for _, ir := range tr.IR {
