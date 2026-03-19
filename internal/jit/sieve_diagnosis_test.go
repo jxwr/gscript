@@ -7,16 +7,16 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
-// TestSieveDiagnosis_WhileLoopNotTraced verifies that while-loops (OP_JMP backward
-// branch) are NOT traced by the JIT. While-loop back-edge detection was removed
-// because it adds ~30-50ns overhead per backward JMP inside method-JIT-compiled
-// functions without benefit. Only FORLOOP-based loops are traced.
-func TestSieveDiagnosis_WhileLoopNotTraced(t *testing.T) {
+// TestSieveDiagnosis_WhileLoopTraced verifies that while-loops (OP_JMP backward
+// branch) ARE traced by the JIT. Back-edge detection for backward OP_JMP is
+// re-enabled so that while-loop style loops (like sieve's inner marking loop)
+// can be compiled by the trace JIT.
+func TestSieveDiagnosis_WhileLoopTraced(t *testing.T) {
 	// This is the sieve's hot inner loop pattern:
 	//   j := start
 	//   for j <= n { arr[j] = false; j = j + step }
 	// It compiles to a while-loop (OP_JMP), NOT FORLOOP.
-	// With JMP back-edge detection removed, only the FORLOOP init loop is traced.
+	// With JMP back-edge detection re-enabled, both loops should be traced.
 	src := `
 		arr := {}
 		for i := 1; i <= 100; i++ { arr[i] = true }
@@ -29,7 +29,7 @@ func TestSieveDiagnosis_WhileLoopNotTraced(t *testing.T) {
 
 	traces, _ := runWithTracing(t, src)
 
-	// Only the FORLOOP init loop should be traced; the while-loop should NOT be.
+	// Both the FORLOOP init loop and the while-loop should be traced.
 	forLoopTraced := false
 	whileLoopTraced := false
 	for _, tr := range traces {
@@ -55,15 +55,15 @@ func TestSieveDiagnosis_WhileLoopNotTraced(t *testing.T) {
 		}
 	}
 
-	if whileLoopTraced {
-		t.Error("While-loop should NOT be traced (JMP back-edge detection removed)")
+	if !whileLoopTraced {
+		t.Error("While-loop SHOULD be traced (JMP back-edge detection re-enabled)")
 	}
 
 	if !forLoopTraced {
 		t.Error("Expected the FORLOOP init loop to be traced")
 	}
 
-	t.Logf("While-loop tracing correctly disabled: %d traces recorded (FORLOOP only)", len(traces))
+	t.Logf("While-loop tracing enabled: %d traces recorded", len(traces))
 	for i, tr := range traces {
 		ops := make([]string, 0, len(tr.IR))
 		for _, ir := range tr.IR {

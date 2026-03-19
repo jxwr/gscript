@@ -203,3 +203,84 @@ func TestTraceRecorder_Correctness(t *testing.T) {
 
 // Ensure unused import doesn't cause build failure
 var _ ast.Node
+
+func TestTraceRecorder_WhileLoopBackEdge(t *testing.T) {
+	// While-loops compile to a backward OP_JMP (not FORLOOP).
+	// With back-edge detection re-enabled, these should be traced.
+	traces, globals := runWithTracing(t, `
+		sum := 0
+		i := 1
+		for i <= 100 {
+			sum = sum + i
+			i = i + 1
+		}
+	`)
+
+	// Verify correctness: sum(1..100) = 5050
+	if v, ok := globals["sum"]; !ok || v.Int() != 5050 {
+		t.Errorf("sum = %v, want 5050", globals["sum"])
+	}
+
+	// Should have recorded at least one trace for the while-loop
+	if len(traces) == 0 {
+		t.Fatal("expected at least one trace for while-loop, got none")
+	}
+
+	// The trace should contain ADD and a backward JMP (not FORLOOP)
+	hasAdd := false
+	hasJmpBack := false
+	hasForloop := false
+	for _, tr := range traces {
+		for _, ir := range tr.IR {
+			if ir.Op == vm.OP_ADD {
+				hasAdd = true
+			}
+			if ir.Op == vm.OP_JMP && ir.SBX < 0 {
+				hasJmpBack = true
+			}
+			if ir.Op == vm.OP_FORLOOP {
+				hasForloop = true
+			}
+		}
+	}
+	if !hasAdd {
+		t.Error("while-loop trace missing OP_ADD")
+	}
+	if !hasJmpBack {
+		t.Error("while-loop trace missing backward OP_JMP")
+	}
+	if hasForloop {
+		t.Error("while-loop trace should not contain OP_FORLOOP")
+	}
+}
+
+func TestTraceRecorder_WhileLoopInFunction(t *testing.T) {
+	// While-loop inside a function — ensures tracing works with function calls.
+	// Uses enough iterations (10000) to exceed trace threshold and verify correctness.
+	src := `
+		func sumWhile(n) {
+			s := 0
+			i := 1
+			for i <= n {
+				s = s + i
+				i = i + 1
+			}
+			return s
+		}
+		result := sumWhile(10000)
+	`
+
+	traces, globals := runWithTracing(t, src)
+
+	// Verify correctness: sum(1..10000) = 50005000
+	if globals["result"].Int() != 50005000 {
+		t.Errorf("result = %d, want 50005000", globals["result"].Int())
+	}
+
+	// Should have at least one trace (the while-loop inside sumWhile)
+	if len(traces) == 0 {
+		t.Fatal("expected at least one trace for while-loop in function, got none")
+	}
+
+	t.Logf("Recorded %d trace(s) for while-loop in function", len(traces))
+}

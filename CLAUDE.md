@@ -93,8 +93,10 @@ Main agent ──→ Plan + align with user
 Key rules:
 - **Research agents never write code. Coding agents don't do open-ended research.**
 - **Main agent is the integrator** — synthesizes reports, makes architectural decisions, resolves conflicts.
+- **Main agent NEVER runs benchmarks directly** — always spawn a benchmark sub-agent.
 - **Always use Opus model** for coding agents (user preference).
 - **Each coding agent gets a clear, bounded scope** — one pass, one module, one test file.
+- **Benchmark agent updates all docs** — after running benchmarks, update CLAUDE.md, benchmarks/README.md, docs/index.html with fresh numbers.
 
 ## Research Protocol
 
@@ -105,6 +107,40 @@ Before each major architectural change:
 3. **Academic papers**: Check PLDI, CGO, CC proceedings for relevant optimization techniques
 4. **Synthesize**: Write findings into the blog post BEFORE implementing
 5. **Design**: Document the architecture in the blog, get the design right on paper first
+
+## Benchmark Protocol
+
+**CRITICAL: Never run benchmarks in the main agent.** Always spawn a sub-agent for benchmarking.
+
+### Running Benchmarks
+
+```bash
+# Quick mode (~15s): Go warm benchmarks only
+bash benchmarks/run_bench.sh --quick
+
+# Full mode (~2min): VM + Trace + LuaJIT + Go warm
+bash benchmarks/run_bench.sh
+```
+
+### After Every Benchmark Run
+
+The benchmark agent MUST update these files with fresh numbers:
+1. **`CLAUDE.md`** — "Current Status" tables (vs LuaJIT + full suite)
+2. **`benchmarks/README.md`** — JIT vs LuaJIT table + JIT vs Interpreter table
+3. **`docs/index.html`** — Blog homepage benchmark tables
+
+### Known Issues
+- **`binary_trees.gs`** — stack overflow crash (deep recursion exceeds Go goroutine stack). Excluded from suite.
+- **Trace mode** may timeout on some benchmarks (30s limit per benchmark in runner).
+
+### Benchmark Test Suite (fixed set)
+
+Go warm benchmarks (`go test ./benchmarks/ -bench=Warm`):
+- FibRecursiveWarm, FibIterativeWarm, HeavyLoopWarm, FunctionCallsWarm, AckermannWarm (JIT + VM pairs)
+
+Suite benchmarks (14 .gs files, `binary_trees` excluded):
+- fib, sieve, mandelbrot, ackermann, matmul, spectral_norm, nbody, fannkuch
+- sort, sum_primes, mutual_recursion, method_dispatch, closure_bench, string_bench
 
 ## Code Standards
 
@@ -141,32 +177,32 @@ Run the full suite before AND after every optimization. Record numbers in the bl
 Full audit document: `docs/architecture_audit.md`
 Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
-## Current Status (2026-03-19, verified correct)
+## Current Status (2026-03-20, verified correct)
 
 ### vs LuaJIT (warm benchmarks)
 | Benchmark | GScript | LuaJIT | Result |
 |-----------|---------|--------|--------|
-| **fib(20)** | **24us** | 26us | **🏆 9% FASTER** |
-| fn calls (10K) | 5.1us | 2.6us | 2.0x gap |
-| ackermann(3,4) | 30us | 12us | 2.5x gap |
-| mandelbrot(1000) | 0.23s | 0.056s | 4.0x gap |
+| **fib(20)** | **24us** | 25us | **🏆 2% FASTER** |
+| fn calls (10K) | 5.1us | 2.7us | 1.9x gap |
+| ackermann(3,4) | 30us | 13us | 2.4x gap |
+| mandelbrot(1000) | 0.23s | 0.060s | 3.8x gap |
 
 ### Full benchmark suite (15 benchmarks)
 | Benchmark | VM | Trace/JIT | Speedup |
 |-----------|-----|-----------|---------|
-| mandelbrot | 1.5s | 0.23s | **×6.6** |
-| fib(20) warm | — | 24us | **×10** |
-| fn calls warm | 226us | 5.1us | **×44** |
-| ackermann warm | 303us | 30us | **×10** |
-| sieve | 0.17s | 0.17s | ×1.0 |
-| nbody | 2.7s | 2.5s | ×1.1 |
-| spectral_norm | 0.82s | 1.0s | ×0.82 |
-| matmul | 1.26s | 1.63s | ×0.77 |
-| fannkuch(9) | 0.52s | — | — |
-| sort(50K) | 0.16s | — | — |
-| sum_primes(100K) | 0.024s | 0.037s | ×0.65 |
-| mutual_recursion | 0.28s | 0.32s | ×0.88 |
-| method_dispatch | 0.13s | 0.13s | ×1.0 |
+| mandelbrot | 1.36s | 0.23s | **×5.9** |
+| fib(20) warm | — | 24us | **×26** |
+| fn calls warm | 248us | 5.1us | **×49** |
+| ackermann warm | 302us | 30us | **×10** |
+| sieve | 0.11s | 0.12s | ×0.95 |
+| nbody | 2.4s | 2.6s | ×0.93 |
+| spectral_norm | 0.79s | 0.94s | ×0.84 |
+| matmul | 1.19s | 1.56s | ×0.76 |
+| fannkuch(9) | 0.53s | — | — |
+| sort(50K) | 0.15s | — | — |
+| sum_primes(100K) | 0.023s | — | — |
+| mutual_recursion | 0.27s | 0.31s | ×0.87 |
+| method_dispatch | 0.12s | 0.13s | ×0.95 |
 
 Target: **surpass LuaJIT** on compute-heavy benchmarks first, then table-heavy.
 
@@ -178,10 +214,10 @@ Target: **surpass LuaJIT** on compute-heavy benchmarks first, then table-heavy.
 ### LuaJIT Gap Analysis
 | Gap | Root Cause | Fix | Difficulty |
 |-----|-----------|-----|-----------|
-| mandelbrot 4.0x | Sub-trace call overhead + 26 vs 15 inst/iter | Code inlining (Approach C) | High |
-| **fib SURPASSED** | 24us vs 26us = 1.09x faster | Pin R(0) to X19 + const propagation | ✅ Done |
+| mandelbrot 3.8x | Sub-trace call overhead + 26 vs 15 inst/iter | Code inlining (Approach C) | High |
+| **fib SURPASSED** | 24us vs 25us = 1.02x faster | Pin R(0) to X19 + const propagation | ✅ Done |
 | table ops 7.5x | 32B Value vs 8B TValue | NaN-boxing | Extremely High |
-| fn calls 1.7x | Remaining overhead from non-pinnable patterns | Further inline optimization | Medium |
+| fn calls 1.9x | Remaining overhead from non-pinnable patterns | Further inline optimization | Medium |
 
 ## Completed Phases
 

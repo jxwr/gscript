@@ -500,6 +500,101 @@ func TestJITNot(t *testing.T) {
 	}
 }
 
+func TestJITSetfieldNativeFastPath(t *testing.T) {
+	// Test that SETFIELD takes the native fast path for plain tables.
+	// Bytecode: R(0) = table, R(1) = value; SETFIELD R(0) K(0) R(1); RETURN R(0)
+	// Table has field "x" in skeys[0], and we overwrite it via SETFIELD.
+
+	tbl := runtime.NewTable()
+	tbl.RawSetString("x", runtime.IntValue(10))
+
+	proto := &vm.FuncProto{
+		MaxStack:  4,
+		Constants: []runtime.Value{runtime.StringValue("x")},
+		Code: []uint32{
+			// SETFIELD R(0)[Constants[0]] = R(1)   → table.x = R(1)
+			vm.EncodeABC(vm.OP_SETFIELD, 0, 0, 1),
+			vm.EncodeABC(vm.OP_RETURN, 0, 1, 0), // return (no return values)
+		},
+	}
+
+	regs := make([]runtime.Value, 256)
+	regs[0] = runtime.TableValue(tbl) // R(0) = table {x: 10}
+	regs[1] = runtime.IntValue(99)    // R(1) = 99
+
+	ctx, _ := runJIT(t, proto, regs)
+
+	// The native fast path should have written 99 to table.x
+	val := tbl.RawGetString("x")
+	if !val.IsInt() || val.Int() != 99 {
+		t.Fatalf("expected table.x = 99, got %v (exit code=%d, exitPC=%d)", val, ctx.ExitCode, ctx.ExitPC)
+	}
+}
+
+func TestJITSetfieldNativeFastPathFloat(t *testing.T) {
+	// Test SETFIELD with float values (the nbody pattern).
+	tbl := runtime.NewTable()
+	tbl.RawSetString("x", runtime.FloatValue(1.0))
+	tbl.RawSetString("y", runtime.FloatValue(2.0))
+
+	proto := &vm.FuncProto{
+		MaxStack:  4,
+		Constants: []runtime.Value{runtime.StringValue("x"), runtime.StringValue("y")},
+		Code: []uint32{
+			// SETFIELD R(0)[Constants[0]] = R(1)   → table.x = R(1)
+			vm.EncodeABC(vm.OP_SETFIELD, 0, 0, 1),
+			// SETFIELD R(0)[Constants[1]] = R(2)   → table.y = R(2)
+			vm.EncodeABC(vm.OP_SETFIELD, 0, 1, 2),
+			vm.EncodeABC(vm.OP_RETURN, 0, 1, 0),
+		},
+	}
+
+	regs := make([]runtime.Value, 256)
+	regs[0] = runtime.TableValue(tbl)
+	regs[1] = runtime.FloatValue(3.14)
+	regs[2] = runtime.FloatValue(2.71)
+
+	ctx, _ := runJIT(t, proto, regs)
+
+	valX := tbl.RawGetString("x")
+	valY := tbl.RawGetString("y")
+	if !valX.IsFloat() || valX.Float() != 3.14 {
+		t.Fatalf("expected table.x = 3.14, got %v (exit=%d)", valX, ctx.ExitCode)
+	}
+	if !valY.IsFloat() || valY.Float() != 2.71 {
+		t.Fatalf("expected table.y = 2.71, got %v (exit=%d)", valY, ctx.ExitCode)
+	}
+}
+
+func TestJITSetfieldFallbackMetatable(t *testing.T) {
+	// Test SETFIELD fallback when table has a metatable.
+	// The native fast path should fall back to call-exit.
+	tbl := runtime.NewTable()
+	tbl.RawSetString("x", runtime.IntValue(10))
+	mt := runtime.NewTable()
+	tbl.SetMetatable(mt)
+
+	proto := &vm.FuncProto{
+		MaxStack:  4,
+		Constants: []runtime.Value{runtime.StringValue("x")},
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_SETFIELD, 0, 0, 1),
+			vm.EncodeABC(vm.OP_RETURN, 0, 1, 0),
+		},
+	}
+
+	regs := make([]runtime.Value, 256)
+	regs[0] = runtime.TableValue(tbl)
+	regs[1] = runtime.IntValue(99)
+
+	ctx, _ := runJIT(t, proto, regs)
+
+	// Should fall back to call-exit (ExitCode=2)
+	if ctx.ExitCode != 2 {
+		t.Fatalf("expected call-exit (ExitCode=2), got %d", ctx.ExitCode)
+	}
+}
+
 func TestJITUNM(t *testing.T) {
 	proto := &vm.FuncProto{
 		MaxStack: 4,

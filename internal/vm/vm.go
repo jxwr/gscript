@@ -908,12 +908,24 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		// ---- Jump ----
 		case OP_JMP:
 			sbx := DecodesBx(inst)
-			// While-loop back-edge detection removed: adds ~30-50ns overhead per
-			// backward JMP inside method-JIT-compiled functions without benefit.
-			// The sieve's while-loops are inside functions compiled by the method
-			// JIT which bypasses the trace recorder. Re-enable when the trace JIT
-			// can handle function-internal loops efficiently.
+			jmpPC := frame.pc - 1 // PC of this JMP instruction
 			frame.pc += sbx
+			// While-loop back-edge detection: notify trace recorder on backward jumps.
+			// Only checks when sbx < 0 (backward) and traceRec is non-nil (zero overhead otherwise).
+			if sbx < 0 && vm.traceRec != nil && !frame.closure.Proto.IsTraceBlacklisted(jmpPC) {
+				if vm.traceRec.OnLoopBackEdge(jmpPC, frame.closure.Proto) {
+					tr := vm.executeCompiledTrace(frame.closure.Proto, base)
+					if tr.executed {
+						if tr.sideExit {
+							frame.pc = tr.exitPC
+						} else {
+							frame.pc = jmpPC + 1
+						}
+					}
+				}
+				// Update cached recording state (OnLoopBackEdge may start/stop recording)
+				vm.traceRecording = vm.traceRec.IsRecording()
+			}
 
 		// ---- Call / Return (INLINE) ----
 		case OP_CALL:

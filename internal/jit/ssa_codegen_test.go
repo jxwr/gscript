@@ -1234,10 +1234,9 @@ func TestSSACodegen_Integration_WhileLoopMatchesInterpreter(t *testing.T) {
 	}
 }
 
-func TestSSACodegen_Integration_WhileLoopNotTraced(t *testing.T) {
-	// With JMP back-edge detection removed, while-loops inside functions
-	// are NOT traced. The interpreter still produces correct results.
-	// This test verifies correctness AND that no while-loop traces are created.
+func TestSSACodegen_Integration_WhileLoopTraced(t *testing.T) {
+	// With JMP back-edge detection re-enabled, while-loops inside functions
+	// ARE traced. This test verifies correctness and that traces are created.
 	src := `
 		func compute() {
 			sum := 0
@@ -1261,20 +1260,13 @@ func TestSSACodegen_Integration_WhileLoopNotTraced(t *testing.T) {
 
 	v.Execute(proto)
 
-	// Correctness check: interpreter handles while-loop correctly
+	// Correctness check
 	if globals["result"].Int() != 5050 {
 		t.Errorf("result = %d, want 5050", globals["result"].Int())
 	}
 
-	// No traces should be compiled for while-loops (JMP back-edge detection removed)
-	compiledCount := 0
-	for _, tr := range recorder.Traces() {
-		key := loopKey{proto: tr.LoopProto, pc: tr.LoopPC}
-		if ct := recorder.compiled[key]; ct != nil {
-			compiledCount++
-		}
-	}
-	if compiledCount != 0 {
-		t.Errorf("expected 0 compiled traces for while-loop (JMP detection removed), got %d", compiledCount)
+	// While-loop traces should now be recorded (JMP back-edge detection re-enabled)
+	if len(recorder.Traces()) == 0 {
+		t.Error("expected at least one trace for while-loop (JMP back-edge detection enabled)")
 	}
 }

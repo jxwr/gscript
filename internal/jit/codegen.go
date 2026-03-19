@@ -1838,9 +1838,9 @@ func (cg *Codegen) analyzeCallExitPCs() {
 		if !cg.isSupported(op) && isCallExitOp(op) {
 			cg.callExitPCs = append(cg.callExitPCs, pc)
 		}
-		// GETFIELD/GETTABLE are "supported" (native fast path) but still need
+		// GETFIELD/SETFIELD/GETTABLE/SETTABLE are "supported" (native fast path) but still need
 		// call-exit resume entries for the fallback slow path.
-		if op == vm.OP_GETFIELD || op == vm.OP_GETTABLE {
+		if op == vm.OP_GETFIELD || op == vm.OP_SETFIELD || op == vm.OP_GETTABLE || op == vm.OP_SETTABLE {
 			cg.callExitPCs = append(cg.callExitPCs, pc)
 		}
 	}
@@ -1978,7 +1978,7 @@ func (cg *Codegen) emitBody() error {
 		// For ops with native fast path + call-exit fallback,
 		// emit the resume label after the native code. The fast path
 		// must skip the resume reload (which would corrupt pinned regs).
-		if (op == vm.OP_GETFIELD || op == vm.OP_GETTABLE) && callExitSet[pc] {
+		if (op == vm.OP_GETFIELD || op == vm.OP_SETFIELD || op == vm.OP_GETTABLE || op == vm.OP_SETTABLE) && callExitSet[pc] {
 			skipLabel := fmt.Sprintf("skip_resume_%d", pc)
 			cg.asm.B(skipLabel)           // fast path: skip resume reload
 			cg.asm.Label(resumeLabel(pc)) // call-exit resume entry
@@ -2005,8 +2005,9 @@ func (cg *Codegen) isSupported(op vm.Opcode) bool {
 		vm.OP_FORPREP, vm.OP_FORLOOP,
 		vm.OP_RETURN,
 		vm.OP_TEST,
-		vm.OP_GETFIELD,
-		vm.OP_GETTABLE:
+		vm.OP_GETFIELD, vm.OP_SETFIELD,
+		vm.OP_GETTABLE,
+		vm.OP_SETTABLE:
 		return true
 	}
 	return false
@@ -2052,8 +2053,12 @@ func (cg *Codegen) emitInstruction(pc int, inst uint32) error {
 		return cg.emitForLoop(pc, inst)
 	case vm.OP_GETFIELD:
 		return cg.emitGetField(pc, inst)
+	case vm.OP_SETFIELD:
+		return cg.emitSetField(pc, inst)
 	case vm.OP_GETTABLE:
 		return cg.emitGetTable(pc, inst)
+	case vm.OP_SETTABLE:
+		return cg.emitSetTable(pc, inst)
 	case vm.OP_RETURN:
 		return cg.emitReturnOp(pc, inst)
 	}
@@ -2996,6 +3001,158 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 	return nil
 }
 
+// emitSetField compiles OP_SETFIELD R(A)[Constants[B]] = RK(C) natively.
+// Fast path: R(A) is TypeTable, no metatable, key found in flat skeys.
+// Slow path: falls through to call-exit for non-table, metatable, or smap cases.
+func (cg *Codegen) emitSetField(pc int, inst uint32) error {
+	a := vm.DecodeA(inst)
+	b := vm.DecodeB(inst) // constant index for field name
+	cidx := vm.DecodeC(inst) // RK(C) = value to write
+	asm := cg.asm
+
+	// Label for call-exit fallback
+	fallbackLabel := fmt.Sprintf("setfield_fallback_%d", pc)
+	doneLabel := fmt.Sprintf("setfield_done_%d", pc)
+
+	// --- Step 1: Type check R(A).typ == TypeTable ---
+	aTypOff := regTypOffset(a)
+	if aTypOff <= 4095 {
+		asm.LDRB(X0, regRegs, aTypOff)
+	} else {
+		asm.LoadImm64(X0, int64(aTypOff))
+		asm.LDRBreg(X0, regRegs, X0)
+	}
+	asm.CMPimmW(X0, TypeTable)
+	asm.BCond(CondNE, fallbackLabel)
+
+	// --- Step 2: Load *Table from R(A).ptr.data ---
+	aPtrDataOff := a*ValueSize + OffsetPtrData
+	if aPtrDataOff <= 32760 {
+		asm.LDR(X0, regRegs, aPtrDataOff) // X0 = *Table
+	} else {
+		asm.LoadImm64(X1, int64(aPtrDataOff))
+		asm.ADDreg(X1, regRegs, X1)
+		asm.LDR(X0, X1, 0)
+	}
+	asm.CBZ(X0, fallbackLabel) // nil table check
+
+	// --- Step 3: Check metatable == nil (has __newindex → fallback) ---
+	asm.LDR(X1, X0, TableOffMetatable) // X1 = table.metatable
+	asm.CBNZ(X1, fallbackLabel)        // has metatable → fallback
+
+	// --- Step 4: Load skeys slice (ptr, len) ---
+	asm.LDR(X1, X0, TableOffSkeys)    // X1 = skeys base pointer
+	asm.LDR(X2, X0, TableOffSkeysLen) // X2 = skeys.len
+	asm.CBZ(X2, fallbackLabel)         // no skeys → fallback (might be in smap)
+
+	// Save table pointer for later svals access
+	asm.MOVreg(X9, X0) // X9 = *Table (preserved)
+
+	// --- Step 5: Load constant key string (field name from Constants[B]) ---
+	bPtrDataOff := b*ValueSize + OffsetPtrData
+	if bPtrDataOff <= 32760 {
+		asm.LDR(X3, regConsts, bPtrDataOff) // X3 = pointer to string header
+	} else {
+		asm.LoadImm64(X4, int64(bPtrDataOff))
+		asm.ADDreg(X4, regConsts, X4)
+		asm.LDR(X3, X4, 0)
+	}
+	asm.LDR(X4, X3, 0) // X4 = key string data ptr
+	asm.LDR(X5, X3, 8) // X5 = key string len
+
+	// --- Step 6: Linear scan of skeys to find matching field ---
+	loopLabel := fmt.Sprintf("setfield_scan_%d", pc)
+	nextLabel := fmt.Sprintf("setfield_next_%d", pc)
+	foundLabel := fmt.Sprintf("setfield_found_%d", pc)
+	cmpLoopLabel := fmt.Sprintf("setfield_cmp_%d", pc)
+
+	asm.LoadImm64(X6, 0) // X6 = i = 0
+
+	asm.Label(loopLabel)
+	asm.CMPreg(X6, X2) // i >= skeys.len?
+	asm.BCond(CondGE, fallbackLabel)
+
+	// Load skeys[i]: string at X1 + i*16
+	asm.LSLimm(X7, X6, 4)   // X7 = i * 16
+	asm.ADDreg(X7, X1, X7)  // X7 = &skeys[i]
+	asm.LDR(X10, X7, 0)     // X10 = skeys[i].ptr
+	asm.LDR(X11, X7, 8)     // X11 = skeys[i].len
+
+	// Compare lengths first (fast reject)
+	asm.CMPreg(X11, X5) // skeys[i].len == key.len?
+	asm.BCond(CondNE, nextLabel)
+
+	// Compare data pointers (fast accept for interned strings)
+	asm.CMPreg(X10, X4) // same pointer?
+	asm.BCond(CondEQ, foundLabel)
+
+	// Byte-by-byte comparison for non-interned strings
+	asm.LoadImm64(X12, 0) // j = 0
+	asm.Label(cmpLoopLabel)
+	asm.CMPreg(X12, X5) // j >= len?
+	asm.BCond(CondGE, foundLabel)
+	asm.LDRBreg(X13, X10, X12) // skeys[i].ptr[j]
+	asm.LDRBreg(X14, X4, X12)  // key.ptr[j]
+	asm.CMPreg(X13, X14)
+	asm.BCond(CondNE, nextLabel)
+	asm.ADDimm(X12, X12, 1)
+	asm.B(cmpLoopLabel)
+
+	asm.Label(nextLabel)
+	asm.ADDimm(X6, X6, 1) // i++
+	asm.B(loopLabel)
+
+	// --- Step 7: Found - write RK(C) value to svals[i] ---
+	asm.Label(foundLabel)
+	// svals base is at Table + TableOffSvals
+	asm.LDR(X7, X9, TableOffSvals) // X7 = svals base pointer
+	// svals[i] is at X7 + i * ValueSize
+	EmitMulValueSize(asm, X8, X6, X5) // X8 = i * ValueSize
+	asm.ADDreg(X7, X7, X8)            // X7 = &svals[i]
+
+	// Copy Value (ValueSize bytes) from RK(C) to svals[i]
+	if cidx >= vm.RKBit {
+		// Value comes from constants
+		constIdx := vm.RKToConstIdx(cidx)
+		valOff := constIdx * ValueSize
+		for w := 0; w < ValueSize/8; w++ {
+			if valOff+w*8 <= 32760 {
+				asm.LDR(X0, regConsts, valOff+w*8)
+			} else {
+				asm.LoadImm64(X1, int64(valOff+w*8))
+				asm.ADDreg(X1, regConsts, X1)
+				asm.LDR(X0, X1, 0)
+			}
+			asm.STR(X0, X7, w*8)
+		}
+	} else {
+		// Value comes from register
+		valOff := cidx * ValueSize
+		for w := 0; w < ValueSize/8; w++ {
+			if valOff+w*8 <= 32760 {
+				asm.LDR(X0, regRegs, valOff+w*8)
+			} else {
+				asm.LoadImm64(X1, int64(valOff+w*8))
+				asm.ADDreg(X1, regRegs, X1)
+				asm.LDR(X0, X1, 0)
+			}
+			asm.STR(X0, X7, w*8)
+		}
+	}
+	asm.B(doneLabel)
+
+	// --- Fallback: call-exit ---
+	asm.Label(fallbackLabel)
+	cg.spillPinnedRegs()
+	asm.LoadImm64(X1, int64(pc))
+	asm.STR(X1, regCtx, ctxOffExitPC)
+	asm.LoadImm64(X0, 2) // ExitCode = 2 (call-exit)
+	asm.B("epilogue")
+
+	asm.Label(doneLabel)
+	return nil
+}
+
 // emitGetTable compiles OP_GETTABLE R(A) = R(B)[RK(C)] natively.
 // Fast path: R(B) is TypeTable, no metatable, RK(C) is TypeInt, key in array range.
 // Slow path: call-exit for non-table, metatable, non-int keys, or imap.
@@ -3096,6 +3253,142 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	for w := 0; w < ValueSize/8; w++ {
 		asm.LDR(X0, X3, w*8)
 		asm.STR(X0, regRegs, aOff+w*8)
+	}
+	asm.B(doneLabel)
+
+	// --- Fallback: call-exit ---
+	asm.Label(fallbackLabel)
+	cg.spillPinnedRegs()
+	asm.LoadImm64(X1, int64(pc))
+	asm.STR(X1, regCtx, ctxOffExitPC)
+	asm.LoadImm64(X0, 2)
+	asm.B("epilogue")
+
+	asm.Label(doneLabel)
+	return nil
+}
+
+// emitSetTable compiles OP_SETTABLE R(A)[RK(B)] = RK(C) natively.
+// Fast path: R(A) is TypeTable, no metatable, RK(B) is TypeInt, key in array range.
+// Slow path: call-exit for non-table, metatable, non-int keys, or out-of-bounds.
+func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
+	a := vm.DecodeA(inst)
+	bidx := vm.DecodeB(inst)
+	cidx := vm.DecodeC(inst)
+	asm := cg.asm
+
+	fallbackLabel := fmt.Sprintf("settable_fallback_%d", pc)
+	doneLabel := fmt.Sprintf("settable_done_%d", pc)
+
+	// --- Step 1: Type check R(A).typ == TypeTable ---
+	aTypOff := regTypOffset(a)
+	if aTypOff <= 4095 {
+		asm.LDRB(X0, regRegs, aTypOff)
+	} else {
+		asm.LoadImm64(X0, int64(aTypOff))
+		asm.LDRBreg(X0, regRegs, X0)
+	}
+	asm.CMPimmW(X0, TypeTable)
+	asm.BCond(CondNE, fallbackLabel)
+
+	// --- Step 2: Load *Table from R(A).ptr ---
+	aPtrDataOff := a*ValueSize + OffsetPtrData
+	if aPtrDataOff <= 32760 {
+		asm.LDR(X0, regRegs, aPtrDataOff)
+	} else {
+		asm.LoadImm64(X1, int64(aPtrDataOff))
+		asm.ADDreg(X1, regRegs, X1)
+		asm.LDR(X0, X1, 0)
+	}
+	asm.CBZ(X0, fallbackLabel)
+
+	// --- Step 3: Check metatable == nil ---
+	asm.LDR(X1, X0, TableOffMetatable)
+	asm.CBNZ(X1, fallbackLabel)
+
+	// --- Step 4: Load key from RK(B) ---
+	// Check key type == TypeInt
+	var keyTypOff, keyDataOff int
+	if bidx >= vm.RKBit {
+		constIdx := vm.RKToConstIdx(bidx)
+		keyTypOff = constIdx*ValueSize + OffsetTyp
+		keyDataOff = constIdx*ValueSize + OffsetData
+		// Load from constants
+		if keyTypOff <= 4095 {
+			asm.LDRB(X2, regConsts, keyTypOff)
+		} else {
+			asm.LoadImm64(X2, int64(keyTypOff))
+			asm.LDRBreg(X2, regConsts, X2)
+		}
+		asm.CMPimmW(X2, TypeInt)
+		asm.BCond(CondNE, fallbackLabel)
+		if keyDataOff <= 32760 {
+			asm.LDR(X2, regConsts, keyDataOff) // X2 = key int value
+		} else {
+			asm.LoadImm64(X3, int64(keyDataOff))
+			asm.ADDreg(X3, regConsts, X3)
+			asm.LDR(X2, X3, 0)
+		}
+	} else {
+		keyTypOff = regTypOffset(bidx)
+		keyDataOff = bidx*ValueSize + OffsetData
+		if keyTypOff <= 4095 {
+			asm.LDRB(X3, regRegs, keyTypOff)
+		} else {
+			asm.LoadImm64(X3, int64(keyTypOff))
+			asm.LDRBreg(X3, regRegs, X3)
+		}
+		asm.CMPimmW(X3, TypeInt)
+		asm.BCond(CondNE, fallbackLabel)
+		if keyDataOff <= 32760 {
+			asm.LDR(X2, regRegs, keyDataOff) // X2 = key int value
+		} else {
+			asm.LoadImm64(X3, int64(keyDataOff))
+			asm.ADDreg(X3, regRegs, X3)
+			asm.LDR(X2, X3, 0)
+		}
+	}
+
+	// --- Step 5: Array bounds check ---
+	// Check: key >= 1 && key < array.len
+	asm.CMPimm(X2, 1) // key >= 1?
+	asm.BCond(CondLT, fallbackLabel)
+
+	asm.LDR(X3, X0, TableOffArray+8) // X3 = array.len
+	asm.CMPreg(X2, X3)               // key < array.len?
+	asm.BCond(CondGE, fallbackLabel)
+
+	// --- Step 6: Compute &array[key] and copy value ---
+	asm.LDR(X3, X0, TableOffArray)     // X3 = array.ptr
+	EmitMulValueSize(asm, X4, X2, X5)  // X4 = key * ValueSize
+	asm.ADDreg(X3, X3, X4)             // X3 = &array[key]
+
+	// Load value from RK(C) and store to array[key] (24-byte copy: 3 words)
+	if cidx >= vm.RKBit {
+		constIdx := vm.RKToConstIdx(cidx)
+		valOff := constIdx * ValueSize
+		for w := 0; w < ValueSize/8; w++ {
+			if valOff+w*8 <= 32760 {
+				asm.LDR(X0, regConsts, valOff+w*8)
+			} else {
+				asm.LoadImm64(X1, int64(valOff+w*8))
+				asm.ADDreg(X1, regConsts, X1)
+				asm.LDR(X0, X1, 0)
+			}
+			asm.STR(X0, X3, w*8)
+		}
+	} else {
+		valOff := cidx * ValueSize
+		for w := 0; w < ValueSize/8; w++ {
+			if valOff+w*8 <= 32760 {
+				asm.LDR(X0, regRegs, valOff+w*8)
+			} else {
+				asm.LoadImm64(X1, int64(valOff+w*8))
+				asm.ADDreg(X1, regRegs, X1)
+				asm.LDR(X0, X1, 0)
+			}
+			asm.STR(X0, X3, w*8)
+		}
 	}
 	asm.B(doneLabel)
 

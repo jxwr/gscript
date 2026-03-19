@@ -15,33 +15,42 @@ go test ./benchmarks/ -bench=Warm -benchtime=3s
 luajit benchmarks/lua/run_all.lua
 ```
 
-## vs LuaJIT
+## GScript JIT vs LuaJIT
 
-| Benchmark | GScript JIT | LuaJIT | Result |
-|-----------|------------|--------|--------|
-| **fib(20)** | **24us** | 26us | **🏆 9% faster** |
-| fn calls (10K) | 5.1us | 2.6us | 2.0x gap |
-| ackermann(3,4) | 30us | 12us | 2.5x gap |
-| mandelbrot(1000) | 0.23s | 0.056s | 4.0x gap |
+| Benchmark | GScript JIT | LuaJIT | Gap |
+|-----------|------------|--------|-----|
+| **fib(20) warm** | **24us** | 25us | **🏆 2% faster** |
+| fn calls warm | 5.1us | 2.7us | 1.9x |
+| ackermann(3,4) | 0.016s | 0.006s | 2.7x |
+| mandelbrot(1000) | 0.229s | 0.060s | 3.8x |
+| sort(50K) | 0.147s | 0.011s | 13x |
+| sieve(1M×3) | 0.117s | 0.013s | 9.0x |
+| sum_primes(100K) | 0.023s | 0.002s | 12x |
+| nbody(500K) | 2.60s | 0.036s | 72x |
+| spectral_norm(500) | 0.94s | 0.008s | 118x |
+| matmul(300) | 1.56s | 0.023s | 68x |
+| mutual_recursion | 0.305s | 0.005s | 61x |
 
-## Full Suite
+## GScript JIT vs Interpreter
 
-| Benchmark | Category | VM | JIT | Speedup |
-|-----------|----------|-----|-----|---------|
-| mandelbrot(1000) | float loops | 1.50s | **0.23s** | **×6.6** |
-| fib(20) warm | recursion | — | **24us** | **×10** |
-| fn calls warm | inlining | 226us | **5.1us** | **×44** |
-| ackermann warm | nested recursion | 303us | **30us** | **×10** |
-| nbody(500K) | table fields + float | 2.7s | 2.5s | ×1.1 |
-| sieve(1M) | table array | 0.17s | 0.17s | ×1.0 |
-| spectral_norm(500) | float + calls | 0.82s | 1.0s | ×0.82 |
-| matmul(300) | 2D array | 1.26s | 1.63s | ×0.77 |
-| fannkuch(9) | permutation | 0.52s | — | — |
-| quicksort(50K) | array + recursion | 0.16s | — | — |
-| sum_primes(100K) | integer + while-loop | 0.024s | 0.037s | ×0.65 |
-| mutual_recursion | cross-function recursion | 0.28s | 0.32s | ×0.88 |
-| method_dispatch(100K) | table-as-object | 0.13s | 0.13s | ×1.0 |
-| closure_bench | closures + upvalues | — | — | — |
-| string_bench | concat + format + sort | — | — | — |
+| Benchmark | VM | Best JIT | Speedup |
+|-----------|-----|----------|---------|
+| mandelbrot(1000) | 1.36s | **0.229s** | **×5.9** |
+| fib(20) warm | — | **24us** | **×26** |
+| fn calls warm | 248us | **5.1us** | **×49** |
+| ackermann warm | 302us | **30us** | **×10** |
+| nbody(500K) | 2.42s | 2.60s | ×0.93 |
+| sieve(1M×3) | 0.111s | 0.117s | ×0.95 |
+| sum_primes(100K) | 0.023s | — | — |
+| sort(50K) | 0.147s | — | — |
+| mutual_recursion | 0.267s | 0.305s | ×0.87 |
+| method_dispatch(100K) | 0.122s | 0.128s | ×0.95 |
+| spectral_norm(500) | 0.787s | 0.943s | ×0.84 |
+| matmul(300) | 1.192s | 1.561s | ×0.76 |
+
+### Key Takeaways
+- **Compute + recursion**: JIT excels (6-49x speedup)
+- **Table-heavy**: JIT at parity or slight regression (32B Value overhead)
+- **Gap to LuaJIT**: 1x on fib, 2-4x on compute, 13-118x on table-heavy (needs NaN-boxing)
 
 Platform: Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1

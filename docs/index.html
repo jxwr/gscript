@@ -151,29 +151,29 @@
 
 <table>
   <tr><th>Benchmark</th><th>GScript</th><th>LuaJIT</th><th>Result</th></tr>
-  <tr><td>fib(20)</td><td><b>24&micro;s</b></td><td>26&micro;s</td><td><b style="color:#2a2">&starf; GScript 9% faster</b></td></tr>
-  <tr><td>fn calls (10K)</td><td>5.1&micro;s</td><td>2.6&micro;s</td><td>2.0&times; gap</td></tr>
-  <tr><td>ackermann(3,4)</td><td>30&micro;s</td><td>12&micro;s</td><td>2.5&times; gap</td></tr>
-  <tr><td>mandelbrot(1000)</td><td>0.23s</td><td>0.056s</td><td>4.0&times; gap</td></tr>
+  <tr><td>fib(20)</td><td><b>24&micro;s</b></td><td>25&micro;s</td><td><b style="color:#2a2">&starf; GScript 2% faster</b></td></tr>
+  <tr><td>fn calls (10K)</td><td>5.1&micro;s</td><td>2.7&micro;s</td><td>1.9&times; gap</td></tr>
+  <tr><td>ackermann(3,4)</td><td>30&micro;s</td><td>13&micro;s</td><td>2.4&times; gap</td></tr>
+  <tr><td>mandelbrot(1000)</td><td>0.23s</td><td>0.060s</td><td>3.8&times; gap</td></tr>
 </table>
 
 <h2>Full Suite (15 benchmarks)</h2>
 
 <table>
   <tr><th>Program</th><th>VM</th><th>JIT</th><th>Speedup</th></tr>
-  <tr><td>mandelbrot</td><td>1.50s</td><td><b>0.23s</b></td><td><b>&times;6.6</b></td></tr>
-  <tr><td>fib(20) warm</td><td>—</td><td><b>24&micro;s</b></td><td><b>&times;10</b></td></tr>
-  <tr><td>fn calls warm</td><td>226&micro;s</td><td><b>5.1&micro;s</b></td><td><b>&times;44</b></td></tr>
-  <tr><td>ackermann warm</td><td>303&micro;s</td><td><b>30&micro;s</b></td><td><b>&times;10</b></td></tr>
-  <tr><td>nbody</td><td>2.7s</td><td>2.5s</td><td>&times;1.1</td></tr>
-  <tr><td>sieve</td><td>0.17s</td><td>0.17s</td><td>&times;1.0</td></tr>
-  <tr><td>spectral_norm</td><td>0.82s</td><td>1.0s</td><td>&times;0.82</td></tr>
-  <tr><td>matmul</td><td>1.26s</td><td>1.63s</td><td>&times;0.77</td></tr>
-  <tr><td>fannkuch(9)</td><td>0.52s</td><td>—</td><td>—</td></tr>
-  <tr><td>quicksort(50K)</td><td>0.16s</td><td>—</td><td>—</td></tr>
-  <tr><td>sum_primes</td><td>0.024s</td><td>0.037s</td><td>&times;0.65</td></tr>
-  <tr><td>mutual_recursion</td><td>0.28s</td><td>0.32s</td><td>&times;0.88</td></tr>
-  <tr><td>method_dispatch</td><td>0.13s</td><td>0.13s</td><td>&times;1.0</td></tr>
+  <tr><td>mandelbrot</td><td>1.36s</td><td><b>0.23s</b></td><td><b>&times;5.9</b></td></tr>
+  <tr><td>fib(20) warm</td><td>—</td><td><b>24&micro;s</b></td><td><b>&times;26</b></td></tr>
+  <tr><td>fn calls warm</td><td>248&micro;s</td><td><b>5.1&micro;s</b></td><td><b>&times;49</b></td></tr>
+  <tr><td>ackermann warm</td><td>302&micro;s</td><td><b>30&micro;s</b></td><td><b>&times;10</b></td></tr>
+  <tr><td>nbody</td><td>2.4s</td><td>2.6s</td><td>&times;0.93</td></tr>
+  <tr><td>sieve</td><td>0.11s</td><td>0.12s</td><td>&times;0.95</td></tr>
+  <tr><td>spectral_norm</td><td>0.79s</td><td>0.94s</td><td>&times;0.84</td></tr>
+  <tr><td>matmul</td><td>1.19s</td><td>1.56s</td><td>&times;0.76</td></tr>
+  <tr><td>fannkuch(9)</td><td>0.53s</td><td>—</td><td>—</td></tr>
+  <tr><td>quicksort(50K)</td><td>0.15s</td><td>—</td><td>—</td></tr>
+  <tr><td>sum_primes</td><td>0.023s</td><td>—</td><td>—</td></tr>
+  <tr><td>mutual_recursion</td><td>0.27s</td><td>0.31s</td><td>&times;0.87</td></tr>
+  <tr><td>method_dispatch</td><td>0.12s</td><td>0.13s</td><td>&times;0.95</td></tr>
 </table>
 
 <footer>
