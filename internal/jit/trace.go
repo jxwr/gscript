@@ -94,6 +94,13 @@ type TraceRecorder struct {
 	innerLoopSkipStart int // start PC of inner loop body (FORPREP PC + 1)
 	innerLoopSkipEnd   int // end PC of inner loop body (FORLOOP PC, inclusive)
 
+	// Full nested loop recording: record one iteration of inner loop body
+	// inline into the outer trace (no sub-trace calling needed).
+	innerLoopDepth     int  // >0 when recording inside an inner loop body
+	innerLoopForPC     int  // FORLOOP PC of the inner loop (for back-edge detection)
+	innerLoopFirstSeen bool // true after the initial FORLOOP (right after FORPREP) is seen
+	innerLoopRecorded  bool // true after the body+FORLOOP have been recorded
+
 	// Loop hotness tracking
 	loopCounts map[loopKey]int
 	threshold  int // recording starts after this many iterations
@@ -166,6 +173,11 @@ func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 	if r.recording {
 		if r.innerLoopSkipEnd > 0 {
 			// Inner loop back-edge during skip — ignore
+			return false
+		}
+		// Full nested recording: inner loop back-edge during body recording
+		if r.innerLoopDepth > 0 && pc == r.innerLoopForPC {
+			// Inner loop's back-edge — ignore (we're recording the inner body)
 			return false
 		}
 		// Only finish the trace on the SAME loop's back-edge.
@@ -266,6 +278,13 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 			// Past inner loop — resume recording
 			r.innerLoopSkipEnd = 0
 			r.innerLoopSkipStart = 0
+			// Reset full-nesting state if this was a full nested recording
+			if r.innerLoopDepth > 0 {
+				r.innerLoopDepth = 0
+				r.innerLoopForPC = 0
+				r.innerLoopFirstSeen = false
+	r.innerLoopRecorded = false
+			}
 			// Fall through to record this instruction
 		} else {
 			// Still inside inner loop body — skip
@@ -433,25 +452,70 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		return false
 	}
 
-	// Handle FORPREP for nested loop sub-trace calling (SSA only).
-	// When we encounter FORPREP during recording, check if a compiled inner
-	// trace exists (must be SSA-compiled). If so, skip the inner loop body
-	// and record a marker.
+	// Handle FORPREP for nested loop (SSA only).
+	// Two strategies:
+	//   1. Sub-trace calling: skip inner body, call pre-compiled inner trace.
+	//   2. Full nesting: record one inner iteration inline (no sub-trace call).
+	// Priority: sub-trace calling if a compiled SSA inner trace exists.
+	// Fall back to full nesting when no compiled inner trace is available.
 	if op == vm.OP_FORPREP && r.useSSA && r.depth == 0 {
-		// FORPREP A sBx: jumps to FORLOOP at pc + sBx + 1
 		forloopPC := pc + ir.SBX + 1
 		innerKey := loopKey{proto: proto, pc: forloopPC}
+
+		// Strategy 1: Sub-trace calling (if compiled inner SSA trace exists).
 		if innerCT, ok := r.compiled[innerKey]; ok && innerCT != nil && innerCT.ssaCompiled {
-			// SSA-compiled inner trace exists. Set skip range and record FORPREP with marker.
 			r.innerLoopSkipStart = pc + 1
-			r.innerLoopSkipEnd = forloopPC // inclusive: skip up to and including FORLOOP
-			// Use FieldIndex as marker: store the inner FORLOOP PC
+			r.innerLoopSkipEnd = forloopPC
 			ir.FieldIndex = forloopPC
 			r.current.IR = append(r.current.IR, ir)
 			return false
 		}
-		// No SSA-compiled inner trace — abort and blacklist
+
+		// Strategy 2: Full nested recording.
+		// Record the FORPREP normally, then record exactly ONE iteration
+		// of the inner body. The inner FORLOOP will be recorded too.
+		// Remaining inner iterations are skipped via innerLoopSkipEnd.
+		if r.innerLoopDepth == 0 {
+			r.innerLoopDepth = 1
+			r.innerLoopForPC = forloopPC
+			r.innerLoopFirstSeen = false
+			r.innerLoopRecorded = false
+			ir.FieldIndex = 0
+			r.current.IR = append(r.current.IR, ir)
+			return false
+		}
+
+		// Deeper nesting (inner-inner-inner loops): abort
 		r.abortAndBlacklist()
+		return false
+	}
+
+	// Handle inner FORLOOP during full nested recording.
+	// The FORPREP jumps directly to the FORLOOP. So the sequence is:
+	//   1. FORPREP recorded → interpreter jumps to FORLOOP
+	//   2. First FORLOOP encounter (setup): DON'T record. Let interpreter
+	//      execute it to check condition and jump to body start.
+	//   3. Body instructions: recorded normally.
+	//   4. Second FORLOOP encounter (after body): record it, then skip remaining.
+	if op == vm.OP_FORLOOP && r.innerLoopDepth > 0 && pc == r.innerLoopForPC {
+		if !r.innerLoopFirstSeen {
+			// First encounter (right after FORPREP): skip this FORLOOP.
+			// The interpreter will execute it, increment idx, check limit,
+			// and if the loop continues, jump to the body start.
+			r.innerLoopFirstSeen = true
+			return false
+		}
+		if !r.innerLoopRecorded {
+			// Second encounter (after one body iteration): record the FORLOOP
+			// and set up skip for remaining inner iterations.
+			r.innerLoopRecorded = true
+			r.current.IR = append(r.current.IR, ir)
+			// Skip remaining inner iterations.
+			r.innerLoopSkipStart = pc + ir.SBX + 1 // inner body start
+			r.innerLoopSkipEnd = pc                  // inner FORLOOP PC (inclusive)
+			return false
+		}
+		// Subsequent encounters should not happen (skip is active)
 		return false
 	}
 
@@ -574,6 +638,10 @@ func (r *TraceRecorder) startTrace(pc int, proto *vm.FuncProto) {
 	r.startBase = 0 // will be set on first OnInstruction call
 	r.innerLoopSkipStart = 0
 	r.innerLoopSkipEnd = 0
+	r.innerLoopDepth = 0
+	r.innerLoopForPC = 0
+	r.innerLoopFirstSeen = false
+	r.innerLoopRecorded = false
 	r.current = &Trace{
 		ID:        len(r.traces),
 		LoopPC:    pc,
@@ -586,12 +654,17 @@ func (r *TraceRecorder) finishTrace() {
 	if r.current != nil && len(r.current.IR) > 0 {
 		r.traces = append(r.traces, r.current)
 
-		// Check if this trace has an inner FORPREP marker (sub-trace calling)
-		var innerForloopPC int
+		// Check if this trace has nested loop structures.
+		var innerForloopPC int  // sub-trace calling marker (FieldIndex > 0)
+		hasFullNesting := false // full nested loop (FORPREP with FieldIndex == 0 inside loop body)
 		for _, ir := range r.current.IR {
-			if ir.Op == vm.OP_FORPREP && ir.FieldIndex > 0 {
-				innerForloopPC = ir.FieldIndex
-				break
+			if ir.Op == vm.OP_FORPREP {
+				if ir.FieldIndex > 0 {
+					innerForloopPC = ir.FieldIndex
+					break
+				}
+				// FieldIndex == 0 means full nesting (inner FORPREP recorded inline)
+				hasFullNesting = true
 			}
 		}
 
@@ -634,8 +707,10 @@ func (r *TraceRecorder) finishTrace() {
 				}
 			}
 
-			// Fall back to regular trace compiler
-			if !compiled {
+			// Fall back to regular trace compiler.
+			// Skip fallback for full-nesting traces: the regular compiler
+			// doesn't understand inner loop structure and produces wrong results.
+			if !compiled && !hasFullNesting {
 				ct, err := compileTrace(r.current)
 				if err == nil {
 					r.compiled[key] = ct
@@ -660,6 +735,10 @@ func (r *TraceRecorder) finishTrace() {
 	r.depth = 0
 	r.innerLoopSkipStart = 0
 	r.innerLoopSkipEnd = 0
+	r.innerLoopDepth = 0
+	r.innerLoopForPC = 0
+	r.innerLoopFirstSeen = false
+	r.innerLoopRecorded = false
 }
 
 // abortTrace stops recording and discards the current trace.
@@ -671,6 +750,10 @@ func (r *TraceRecorder) abortTrace() {
 	r.depth = 0
 	r.innerLoopSkipStart = 0
 	r.innerLoopSkipEnd = 0
+	r.innerLoopDepth = 0
+	r.innerLoopForPC = 0
+	r.innerLoopFirstSeen = false
+	r.innerLoopRecorded = false
 }
 
 // abortAndBlacklist aborts and permanently blacklists the loop.

@@ -74,6 +74,9 @@ const (
 	// Sub-trace calling
 	SSA_CALL_INNER_TRACE // call pre-compiled inner loop trace
 
+	// Full nested loop
+	SSA_INNER_LOOP // inner loop header marker (label for inner loop back-edge)
+
 	// Misc
 	SSA_MOVE     // copy ref
 	SSA_NOP      // no operation (placeholder for deleted instructions)
@@ -132,6 +135,10 @@ type ssaBuilder struct {
 	insts    []SSAInst
 	slotDefs map[int]SSARef  // VM register → current SSA definition
 	slotType map[int]SSAType // VM register → known type
+
+	// Full nested loop tracking
+	loopEmitted bool // true after SSA_LOOP is emitted (outer loop header)
+	innerLoop   bool // true when processing inner loop body
 }
 
 func (b *ssaBuilder) emit(inst SSAInst) SSARef {
@@ -218,6 +225,7 @@ func (b *ssaBuilder) build() *SSAFunc {
 
 	// Phase 3: Emit LOOP marker
 	b.emit(SSAInst{Op: SSA_LOOP})
+	b.loopEmitted = true
 
 	// Phase 4: Convert each trace instruction to SSA
 	for i := range b.trace.IR {
@@ -304,17 +312,48 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 
 	case vm.OP_FORPREP:
 		// FORPREP: R(A) -= R(A+2)
+		//
+		// For inner FORPREPs (full nested loop), the LOADINT instructions
+		// before the FORPREP already set the correct init/limit/step values
+		// in slotDefs. We use those directly — no need to force a memory reload.
+		// The LOADINT constants are re-executed on each outer iteration in the
+		// compiled code, overwriting any stale values from the inner FORLOOP.
 		init := b.getSlotRef(ir.A)
 		step := b.getSlotRef(ir.A + 2)
 		ref := b.emit(SSAInst{Op: SSA_SUB_INT, Type: SSATypeInt, Arg1: init, Arg2: step, Slot: int16(ir.A), PC: ir.PC})
 		b.slotDefs[ir.A] = ref
 		b.slotType[ir.A] = SSATypeInt
 
-		// If this FORPREP has an inner compiled trace marker, emit the first
-		// FORLOOP iteration (idx += step) before calling the inner trace.
-		// The inner trace expects idx to be already incremented by the first
-		// FORLOOP (which the interpreter normally does before calling the trace).
-		if ir.FieldIndex > 0 {
+		if b.loopEmitted && ir.FieldIndex == 0 {
+			// Full nested loop: simulate the first FORLOOP iteration.
+			// In the VM, FORPREP jumps to FORLOOP which increments idx before
+			// the body runs. In the compiled trace, the body is recorded BEFORE
+			// the FORLOOP instruction. So we must do the first increment here
+			// to match the VM's semantics.
+
+			// Simulate first FORLOOP: R(A) += R(A+2) → idx = init
+			incRef := b.emit(SSAInst{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: ref, Arg2: step, Slot: int16(ir.A), PC: ir.PC})
+			b.slotDefs[ir.A] = incRef
+
+			// Set loop variable: R(A+3) = idx
+			moveRef := b.emit(SSAInst{Op: SSA_MOVE, Type: SSATypeInt, Arg1: incRef, Slot: int16(ir.A + 3), PC: ir.PC})
+			b.slotDefs[ir.A+3] = moveRef
+			b.slotType[ir.A+3] = SSATypeInt
+
+			// Check if the inner loop should execute at all: idx <= limit
+			limit := b.getSlotRef(ir.A + 1)
+			b.emit(SSAInst{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: incRef, Arg2: limit, AuxInt: 2, PC: ir.PC})
+			// AuxInt=2 means "inner loop entry check" — skip inner loop if GT
+
+			// Emit inner loop label AFTER the first increment
+			b.emit(SSAInst{Op: SSA_INNER_LOOP})
+			b.innerLoop = true
+		} else if ir.FieldIndex > 0 {
+			// Sub-trace calling: emit the first FORLOOP iteration
+			// (idx += step) before calling the inner trace.
+			// The inner trace expects idx to be already incremented by the first
+			// FORLOOP (which the interpreter normally does before calling the trace).
+
 			// Simulate first FORLOOP: R(A) += R(A+2) → idx = init
 			incRef := b.emit(SSAInst{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: ref, Arg2: step, Slot: int16(ir.A), PC: ir.PC})
 			b.slotDefs[ir.A] = incRef
@@ -561,7 +600,24 @@ func (b *ssaBuilder) convertForLoop(ir *TraceIR) {
 
 	// Compare: idx <= limit
 	limit := b.getSlotRef(ir.A + 1)
-	b.emit(SSAInst{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: newIdx, Arg2: limit, PC: ir.PC})
+
+	if b.innerLoop {
+		// Inner FORLOOP: use AuxInt=1 to mark this as an inner loop exit check.
+		// The codegen will emit a branch back to the inner loop header (not the
+		// outer loop header) on success, and fall through on exit.
+		b.emit(SSAInst{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: newIdx, Arg2: limit, AuxInt: 1, PC: ir.PC})
+		b.innerLoop = false
+
+		// After the inner FORLOOP, delete slotDefs for inner control slots
+		// so the outer body reads fresh values from memory.
+		delete(b.slotDefs, ir.A)
+		delete(b.slotDefs, ir.A+1)
+		delete(b.slotDefs, ir.A+2)
+		delete(b.slotDefs, ir.A+3)
+	} else {
+		// Outer FORLOOP: standard loop exit check
+		b.emit(SSAInst{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: newIdx, Arg2: limit, PC: ir.PC})
+	}
 }
 
 func (b *ssaBuilder) getSlotRef(slot int) SSARef {
@@ -646,15 +702,18 @@ func (b *ssaBuilder) convertComparison(idx int, ir *TraceIR, intOp, floatOp SSAO
 }
 
 // SSAIsUseful returns true if the SSA function can actually loop natively.
-// A trace is only useful if the loop exit check (LE_INT) is reachable — meaning
-// the trace can execute multiple iterations without side-exiting. If a SIDE_EXIT
-// appears before the LE_INT, the trace always exits after partial computation
-// (never loops), which adds overhead and can corrupt register state.
-// Float comparisons (LT_FLOAT, LE_FLOAT, GT_FLOAT) are conditional guards
-// (like the escape check in mandelbrot), not loop terminators — they're fine.
+// A trace is useful if it has:
+//   1. A loop exit check (LE_INT or LT_INT with AuxInt != 1)
+//   2. Useful operations (arithmetic, table ops, etc.)
+//   3. No unconditional SIDE_EXIT (which would prevent looping)
+//
+// For numeric for-loops, the exit check (LE_INT) appears at the END of the body.
+// For while-loops, it appears at the BEGINNING (condition check comes first).
+// Both patterns are valid — we scan the entire loop body.
 func SSAIsUseful(f *SSAFunc) bool {
 	loopSeen := false
 	hasUsefulOp := false
+	hasExitCheck := false
 	for _, inst := range f.Insts {
 		if inst.Op == SSA_LOOP {
 			loopSeen = true
@@ -672,18 +731,23 @@ func SSAIsUseful(f *SSAFunc) bool {
 				hasUsefulOp = true
 			case SSA_LOAD_ARRAY, SSA_STORE_ARRAY, SSA_LOAD_FIELD, SSA_STORE_FIELD:
 				hasUsefulOp = true
-			case SSA_INTRINSIC, SSA_LOAD_GLOBAL, SSA_CALL_INNER_TRACE:
+			case SSA_INTRINSIC, SSA_LOAD_GLOBAL, SSA_CALL_INNER_TRACE, SSA_INNER_LOOP:
 				hasUsefulOp = true
 			case SSA_LE_INT, SSA_LT_INT:
-				// Loop exit check is reachable — trace can actually loop
-				return hasUsefulOp
+				// Check if this is an inner loop check (AuxInt=1 or 2) — don't terminate scan
+				if inst.AuxInt == 1 || inst.AuxInt == 2 {
+					hasUsefulOp = true
+					continue
+				}
+				// Outer loop exit check found
+				hasExitCheck = true
 			case SSA_SIDE_EXIT:
-				// Unconditional side-exit before loop check — trace never loops
+				// Unconditional side-exit — trace always exits, never loops
 				return false
 			}
 		}
 	}
-	return false
+	return hasExitCheck && hasUsefulOp
 }
 
 // OptimizeSSA runs optimization passes on the SSA IR.
@@ -716,7 +780,7 @@ func eliminateDeadCode(f *SSAFunc) *SSAFunc {
 		case SSA_GUARD_TYPE, SSA_GUARD_NNIL, SSA_GUARD_NOMETA, SSA_GUARD_TRUTHY,
 			SSA_STORE_SLOT, SSA_STORE_FIELD, SSA_STORE_ARRAY,
 			SSA_LOAD_ARRAY, // table loads have side-exits, keep alive
-			SSA_LOOP, SSA_SNAPSHOT, SSA_SIDE_EXIT,
+			SSA_LOOP, SSA_INNER_LOOP, SSA_SNAPSHOT, SSA_SIDE_EXIT,
 			SSA_LE_INT, SSA_LT_INT, SSA_EQ_INT,
 			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
 			SSA_CALL, SSA_CALL_SELF,

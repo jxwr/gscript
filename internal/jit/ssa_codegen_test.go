@@ -891,3 +891,388 @@ func TestSSACodegen_Integration_TripleNestedLoop(t *testing.T) {
 		t.Errorf("result = %d, want 1000", g2["result"].Int())
 	}
 }
+
+// ─── Full nested loop (single trace, no sub-trace calling) tests ───
+
+func TestSSACodegen_Integration_FullNestedLoop(t *testing.T) {
+	// Full nested loop: outer+inner compiled as a single trace with
+	// inner loop structure. Verifies the FORPREP slot reload fix.
+	// Wrapped in a function so variables are local (enables SSA compilation).
+	src := `
+		func compute() {
+			sum := 0
+			for i := 1; i <= 50; i++ {
+				for j := 1; j <= 50; j++ {
+					sum = sum + 1
+				}
+			}
+			return sum
+		}
+		result := compute()
+	`
+	// Run without tracing (interpreter only)
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	if g2["result"].Int() != 2500 {
+		t.Errorf("result = %d, want 2500", g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_FullNestedMandelbrot(t *testing.T) {
+	// mandelbrot(10) — compare interpreter vs SSA JIT with full nesting
+	src := `
+		func mandelbrot(size) {
+			count := 0
+			for y := 0; y < size; y++ {
+				ci := 2.0 * y / size - 1.0
+				for x := 0; x < size; x++ {
+					cr := 2.0 * x / size - 1.5
+					zr := 0.0
+					zi := 0.0
+					escaped := false
+					for iter := 0; iter < 50; iter++ {
+						tr := zr * zr - zi * zi + cr
+						ti := 2.0 * zr * zi + ci
+						zr = tr
+						zi = ti
+						if zr * zr + zi * zi > 4.0 {
+							escaped = true
+							break
+						}
+					}
+					if !escaped { count = count + 1 }
+				}
+			}
+			return count
+		}
+		result := mandelbrot(10)
+	`
+	// Compare with interpreter
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_FullNestedWithComputation(t *testing.T) {
+	// Nested loop where both loops do arithmetic, verifying correct variable
+	// scoping through the full nesting approach.
+	src := `
+		func compute() {
+			total := 0
+			for i := 1; i <= 20; i++ {
+				for j := 1; j <= 20; j++ {
+					total = total + i * j
+				}
+			}
+			return total
+		}
+		result := compute()
+	`
+	// Run without tracing
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_FullNestedSmall(t *testing.T) {
+	// Small nested loop with low threshold — tests full nesting path when
+	// inner loop hasn't been compiled as a sub-trace yet.
+	src := `
+		func compute() {
+			sum := 0
+			for i := 1; i <= 5; i++ {
+				for j := 1; j <= 5; j++ {
+					sum = sum + 1
+				}
+			}
+			return sum
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+
+	recorder := NewTraceRecorder()
+	recorder.SetCompile(true)
+	recorder.SetUseSSA(true)
+	recorder.threshold = 2
+	v.SetTraceRecorder(recorder)
+
+	v.Execute(proto)
+
+	if globals["result"].Int() != 25 {
+		t.Errorf("result = %d, want 25", globals["result"].Int())
+	}
+}
+
+// ─── While-loop (JMP-based) tracing tests ───
+
+func TestSSACodegen_Integration_WhileLoop(t *testing.T) {
+	// Simple while-loop: sum 1..100 using while-loop syntax.
+	// Wrapped in a function so variables are local (not globals),
+	// which allows the trace to be SSA-compiled.
+	src := `
+		func compute() {
+			sum := 0
+			i := 1
+			for i <= 100 {
+				sum = sum + i
+				i = i + 1
+			}
+			return sum
+		}
+		result := compute()
+	`
+	// Run without tracing (interpreter only)
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	if g2["result"].Int() != 5050 {
+		t.Errorf("result = %d, want 5050", g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_WhileLoopLT(t *testing.T) {
+	// While-loop using less-than condition
+	src := `
+		func compute() {
+			sum := 0
+			i := 0
+			for i < 50 {
+				sum = sum + i
+				i = i + 1
+			}
+			return sum
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	// sum of 0..49 = 1225
+	if g2["result"].Int() != 1225 {
+		t.Errorf("result = %d, want 1225", g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_WhileLoopMultiply(t *testing.T) {
+	// While-loop with multiplication (factorial)
+	src := `
+		func compute() {
+			product := 1
+			i := 1
+			for i <= 10 {
+				product = product * i
+				i = i + 1
+			}
+			return product
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	// 10! = 3628800
+	if g2["result"].Int() != 3628800 {
+		t.Errorf("result = %d, want 3628800", g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_SieveWhileLoop(t *testing.T) {
+	// Sieve of Eratosthenes with while-loop inner marking.
+	// This is the sieve benchmark's hot while-loop pattern.
+	// Note: the counting loop (FORLOOP at PC=46) has a pre-existing guard bug
+	// with TEST/GETTABLE traces. We blacklist it here to isolate while-loop
+	// tracing correctness.
+	src := `
+		func sieve(n) {
+			is_prime := {}
+			for i := 2; i <= n; i++ { is_prime[i] = true }
+			i := 2
+			for i * i <= n {
+				if is_prime[i] {
+					j := i * i
+					for j <= n {
+						is_prime[j] = false
+						j = j + i
+					}
+				}
+				i = i + 1
+			}
+			count := 0
+			for i := 2; i <= n; i++ {
+				if is_prime[i] { count = count + 1 }
+			}
+			return count
+		}
+		result := sieve(100)
+	`
+	// Run without tracing (interpreter only)
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT, blacklisting the buggy counting loop trace
+	proto2 := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	recorder := NewTraceRecorder()
+	recorder.SetCompile(true)
+	recorder.SetUseSSA(true)
+	v.SetTraceRecorder(recorder)
+	// Blacklist the counting loop (FORLOOP at PC=46) which has a pre-existing
+	// guard bug with GETTABLE+TEST patterns.
+	fnProto := proto2.Protos[0]
+	recorder.blacklist[loopKey{proto: fnProto, pc: 46}] = true
+	v.Execute(proto2)
+
+	if g1["result"].Int() != globals["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), globals["result"].Int())
+	}
+	// 25 primes up to 100
+	if globals["result"].Int() != 25 {
+		t.Errorf("result = %d, want 25", globals["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_WhileLoopWithArray(t *testing.T) {
+	// While-loop that writes to an array (sieve marking pattern)
+	src := `
+		func compute() {
+			arr := {}
+			for i := 1; i <= 50; i++ { arr[i] = true }
+			j := 2
+			for j <= 50 {
+				arr[j] = false
+				j = j + 2
+			}
+			count := 0
+			for i := 1; i <= 50; i++ {
+				if arr[i] { count = count + 1 }
+			}
+			return count
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_WhileLoopMatchesInterpreter(t *testing.T) {
+	// General correctness: while-loop fibonacci must match interpreter exactly
+	src := `
+		func compute() {
+			a := 0
+			b := 1
+			i := 0
+			for i < 30 {
+				temp := a + b
+				a = b
+				b = temp
+				i = i + 1
+			}
+			return a
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_WhileLoopTraceCompiled(t *testing.T) {
+	// Verify that a while-loop trace is actually compiled (not just interpreted).
+	src := `
+		func compute() {
+			sum := 0
+			i := 1
+			for i <= 100 {
+				sum = sum + i
+				i = i + 1
+			}
+			return sum
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+
+	recorder := NewTraceRecorder()
+	recorder.SetCompile(true)
+	recorder.SetUseSSA(true)
+	v.SetTraceRecorder(recorder)
+
+	v.Execute(proto)
+
+	// Correctness check
+	if globals["result"].Int() != 5050 {
+		t.Errorf("result = %d, want 5050", globals["result"].Int())
+	}
+
+	// Verify at least one trace was compiled for a while-loop (JMP-based back-edge)
+	compiledCount := 0
+	for _, tr := range recorder.Traces() {
+		key := loopKey{proto: tr.LoopProto, pc: tr.LoopPC}
+		if ct := recorder.compiled[key]; ct != nil {
+			compiledCount++
+		}
+	}
+	if compiledCount == 0 {
+		t.Error("expected at least 1 compiled trace for while-loop, got 0")
+	}
+}

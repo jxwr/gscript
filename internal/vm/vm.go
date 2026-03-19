@@ -908,7 +908,26 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		// ---- Jump ----
 		case OP_JMP:
 			sbx := DecodesBx(inst)
-			frame.pc += sbx
+			// Detect while-loop back-edges (backward JMP) for tracing.
+			// Only active when trace recorder is present (no overhead otherwise).
+			// jmpPC must be computed BEFORE frame.pc is modified by the jump.
+			if vm.traceRec != nil && sbx < 0 {
+				jmpPC := frame.pc - 1 // PC of this JMP instruction
+				frame.pc += sbx
+				if vm.traceRec.OnLoopBackEdge(jmpPC, frame.closure.Proto) {
+					tr := vm.executeCompiledTrace(frame.closure.Proto, base)
+					if tr.executed {
+						if tr.sideExit {
+							frame.pc = tr.exitPC
+						} else {
+							frame.pc = jmpPC + 1
+						}
+					}
+				}
+				vm.traceRecording = vm.traceRec.IsRecording()
+			} else {
+				frame.pc += sbx
+			}
 
 		// ---- Call / Return (INLINE) ----
 		case OP_CALL:

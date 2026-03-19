@@ -440,6 +440,41 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 
 		switch inst.Op {
 		case SSA_LE_INT:
+			if inst.AuxInt == 1 {
+				// Inner loop exit check: branch back to inner_loop on LE,
+				// fall through to inner_loop_done on GT.
+				arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
+				arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
+				asm.CMPreg(arg1Reg, arg2Reg)
+				asm.BCond(CondLE, "inner_loop")
+				asm.Label("inner_loop_done")
+
+				// After inner loop exits, spill inner loop control registers
+				// back to memory so the outer body can read them correctly.
+				innerSlot := sm.getSlotForRef(inst.Arg1)
+				if innerSlot >= 0 {
+					for s := innerSlot; s <= innerSlot+3 && s < 256; s++ {
+						if r, ok := regMap.IntReg(s); ok {
+							off := s * ValueSize
+							if off <= 32760 {
+								asm.STR(r, regRegs, off+OffsetData)
+								asm.MOVimm16(X5, TypeInt)
+								asm.STRB(X5, regRegs, off+OffsetTyp)
+							}
+						}
+					}
+				}
+				continue
+			}
+			if inst.AuxInt == 2 {
+				// Inner loop entry check: if idx > limit, skip inner loop entirely.
+				arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
+				arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
+				asm.CMPreg(arg1Reg, arg2Reg)
+				asm.BCond(CondGT, "inner_loop_done")
+				continue
+			}
+			// Outer loop exit check (AuxInt=0)
 			arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
 			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
 			asm.CMPreg(arg1Reg, arg2Reg)
@@ -450,6 +485,9 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
 			asm.CMPreg(arg1Reg, arg2Reg)
 			asm.BCond(CondGE, "loop_done")
+			continue
+		case SSA_INNER_LOOP:
+			asm.Label("inner_loop")
 			continue
 		}
 
@@ -1113,6 +1151,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 	case SSA_LOOP:
 		// Handled in CompileSSA
+
+	case SSA_INNER_LOOP:
+		// Handled in CompileSSA loop body emission (emits label)
 	}
 }
 
@@ -1291,7 +1332,8 @@ func ssaIsCompilable(f *SSAFunc) bool {
 			SSA_LOOP, SSA_PHI, SSA_SNAPSHOT,
 			SSA_MOVE, SSA_NOP,
 			SSA_INTRINSIC,
-			SSA_CALL_INNER_TRACE:
+			SSA_CALL_INNER_TRACE,
+			SSA_INNER_LOOP:
 			continue
 		case SSA_SIDE_EXIT:
 			continue
