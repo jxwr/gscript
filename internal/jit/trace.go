@@ -473,24 +473,16 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 
 	// Handle FORPREP for nested loop (SSA only).
 	// Two strategies:
-	//   1. Sub-trace calling: skip inner body, call pre-compiled inner trace.
-	//   2. Full nesting: record one inner iteration inline (no sub-trace call).
-	// Priority: sub-trace calling if a compiled SSA inner trace exists.
-	// Fall back to full nesting when no compiled inner trace is available.
+	//   1. Full nesting: record one inner iteration inline (no sub-trace call).
+	//      Eliminates ~61 instruction prologue/epilogue per inner call.
+	//   2. Sub-trace calling: skip inner body, call pre-compiled inner trace.
+	//      Fallback when full nesting is already in use (deeper nesting).
+	// Priority: full nesting first (better codegen, unified register allocation).
 	if op == vm.OP_FORPREP && r.useSSA && r.depth == 0 {
 		forloopPC := pc + ir.SBX + 1
-		innerKey := loopKey{proto: proto, pc: forloopPC}
+		// innerKey used by deeper nesting fallback below
 
-		// Strategy 1: Sub-trace calling (if compiled inner SSA trace exists).
-		if innerCT, ok := r.compiled[innerKey]; ok && innerCT != nil && innerCT.ssaCompiled {
-			r.innerLoopSkipStart = pc + 1
-			r.innerLoopSkipEnd = forloopPC
-			ir.FieldIndex = forloopPC
-			r.current.IR = append(r.current.IR, ir)
-			return false
-		}
-
-		// Strategy 2: Full nested recording.
+		// Strategy 1 (preferred): Full nested recording.
 		// Record the FORPREP normally, then record exactly ONE iteration
 		// of the inner body. The inner FORLOOP will be recorded too.
 		// Remaining inner iterations are skipped via innerLoopSkipEnd.
@@ -504,7 +496,16 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 			return false
 		}
 
-		// Deeper nesting (inner-inner-inner loops): abort
+		// Deeper nesting: try sub-trace calling for compiled inner traces.
+		innerKey := loopKey{proto: proto, pc: forloopPC}
+		if innerCT, ok := r.compiled[innerKey]; ok && innerCT != nil && innerCT.ssaCompiled {
+			r.innerLoopSkipStart = pc + 1
+			r.innerLoopSkipEnd = forloopPC
+			ir.FieldIndex = forloopPC
+			r.current.IR = append(r.current.IR, ir)
+			return false
+		}
+		// No compiled inner trace for third level: abort
 		r.abortAndBlacklist()
 		return false
 	}
