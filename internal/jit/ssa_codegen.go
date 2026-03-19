@@ -379,9 +379,45 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 		}
 	}
 
-	// Load allocated float slots into D registers
+	// Load allocated float slots into D registers.
+	// With ref-level allocation, pre-loop refs (UNBOX_FLOAT) may have different
+	// D registers than loop-body refs for the same slot. Load each pre-loop ref
+	// into its specific register.
+	preLoopFloatLoaded := make(map[int]bool)
+	for i := 0; i <= loopIdx; i++ {
+		ref := SSARef(i)
+		if dreg, ok := regMap.FloatRefReg(ref); ok {
+			inst := &f.Insts[i]
+			slot := int(inst.Slot)
+			if slot >= 0 && !preLoopFloatLoaded[slot] {
+				asm.FLDRd(dreg, regRegs, slot*ValueSize+OffsetData)
+				preLoopFloatLoaded[slot] = true
+			}
+		}
+	}
+	// Slot-level fallback: load any allocated slot not yet loaded
 	for slot, dreg := range regMap.Float.slotToReg {
-		asm.FLDRd(dreg, regRegs, slot*ValueSize+OffsetData)
+		if !preLoopFloatLoaded[slot] {
+			asm.FLDRd(dreg, regRegs, slot*ValueSize+OffsetData)
+			preLoopFloatLoaded[slot] = true
+		}
+	}
+
+	// Hoist loop-body constants that have ref-level D registers.
+	// Their live ranges were extended to the entire loop body by the allocator,
+	// so the register won't be reused. Loading once before the loop eliminates
+	// per-iteration LoadImm64+FMOVtoFP sequences.
+	hoistedConsts := make(map[SSARef]bool)
+	for i := loopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		if inst.Op == SSA_CONST_FLOAT {
+			ref := SSARef(i)
+			if dreg, ok := regMap.FloatRefReg(ref); ok {
+				asm.LoadImm64(X0, inst.AuxInt)
+				asm.FMOVtoFP(dreg, X0)
+				hoistedConsts[ref] = true
+			}
+		}
 	}
 
 	// === LOOP header ===
@@ -397,6 +433,11 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 	for i := loopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
 		ref := SSARef(i)
+
+		// Skip hoisted constants — already loaded before the loop
+		if hoistedConsts[ref] {
+			continue
+		}
 
 		switch inst.Op {
 		case SSA_LE_INT:
@@ -986,7 +1027,31 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
 			}
 		}
+		// Spill float D registers: use ref-level map for precise spilling,
+		// then slot-level as fallback.
+		spilledFloatSlots := make(map[int]bool)
+		if regMap.FloatRef != nil {
+			for fref, dreg := range regMap.FloatRef.refToReg {
+				if int(fref) >= len(f.Insts) {
+					continue
+				}
+				finst := &f.Insts[fref]
+				slot := int(finst.Slot)
+				if slot >= 0 && !spilledFloatSlots[slot] {
+					off := slot*ValueSize + OffsetData
+					if off <= 32760 {
+						asm.FSTRd(dreg, regRegs, off)
+						asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+						asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+						spilledFloatSlots[slot] = true
+					}
+				}
+			}
+		}
 		for slot, dreg := range regMap.Float.slotToReg {
+			if spilledFloatSlots[slot] {
+				continue
+			}
 			off := slot*ValueSize + OffsetData
 			if off <= 32760 {
 				asm.FSTRd(dreg, regRegs, off)
@@ -1379,6 +1444,10 @@ func newFloatForwarder(f *SSAFunc, regMap *RegMap, sm *ssaSlotMapper, loopIdx in
 		ref := SSARef(i)
 		switch inst.Op {
 		case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT:
+			// Skip refs that already have ref-level D register allocation
+			if _, ok := regMap.FloatRefReg(ref); ok {
+				continue
+			}
 			slot := sm.getSlotForRef(ref)
 			if slot < 0 {
 				continue
@@ -1402,7 +1471,52 @@ func resolveFloatRefFwd(asm *Assembler, f *SSAFunc, ref SSARef, regMap *RegMap, 
 		delete(fwd.live, ref)
 		return dreg
 	}
+	// Check ref-level allocation first (more precise than slot-level)
+	if dreg, ok := regMap.FloatRefReg(ref); ok {
+		return dreg
+	}
 	return resolveFloatRef(asm, f, ref, regMap, sm, scratch)
+}
+
+// getFloatRefReg returns the D register for an SSA ref (ref-level allocation),
+// falling back to the slot-level allocation, or scratch.
+func getFloatRefReg(regMap *RegMap, ref SSARef, slot int, scratch FReg) FReg {
+	// Ref-level first
+	if dreg, ok := regMap.FloatRefReg(ref); ok {
+		return dreg
+	}
+	// Slot-level fallback
+	if slot >= 0 {
+		if dreg, ok := regMap.FloatReg(slot); ok {
+			return dreg
+		}
+	}
+	return scratch
+}
+
+// storeFloatResultRef stores a float result using ref-level allocation.
+// If the ref has a D register, moves the value there. If the slot has a D register
+// (slot-level fallback), moves there. Otherwise writes to memory.
+func storeFloatResultRef(asm *Assembler, regMap *RegMap, ref SSARef, slot int, src FReg) {
+	if slot < 0 {
+		return
+	}
+	// Check ref-level allocation
+	if dreg, ok := regMap.FloatRefReg(ref); ok {
+		if dreg != src {
+			asm.FMOVd(dreg, src)
+		}
+		return // stays in register, written back at exit
+	}
+	// Slot-level fallback
+	if dreg, ok := regMap.FloatReg(slot); ok {
+		if dreg != src {
+			asm.FMOVd(dreg, src)
+		}
+		return
+	}
+	// Not allocated — write data to memory
+	asm.FSTRd(src, regRegs, slot*ValueSize+OffsetData)
 }
 
 // emitSSAInstSlotFwd is the forwarding-aware version of emitSSAInstSlot.
@@ -1413,9 +1527,12 @@ func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, r
 		arg1D := resolveFloatRefFwd(asm, f, inst.Arg1, regMap, sm, fwd, D1)
 		arg2D := resolveFloatRefFwd(asm, f, inst.Arg2, regMap, sm, fwd, D2)
 
-		// Choose destination register: allocated D reg, or cycling scratch for forwarding
+		// Choose destination register: ref-level D reg, slot-level D reg,
+		// cycling scratch for forwarding, or plain scratch
 		var dstD FReg
-		if _, ok := regMap.FloatReg(slot); ok {
+		if dreg, ok := regMap.FloatRefReg(ref); ok {
+			dstD = dreg
+		} else if _, ok := regMap.FloatReg(slot); ok {
 			dstD = getFloatSlotReg(regMap, slot, D0)
 		} else if fwd.eligible[ref] {
 			dstD = fwdRegs[fwd.nextReg%2]
@@ -1439,7 +1556,7 @@ func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, r
 			fwd.live[ref] = dstD
 			return // skip memory write — value forwarded in scratch register
 		}
-		storeFloatResult(asm, regMap, slot, dstD)
+		storeFloatResultRef(asm, regMap, ref, slot, dstD)
 
 	case SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT:
 		asm.LoadImm64(X9, int64(inst.PC))
@@ -1471,16 +1588,37 @@ func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, r
 		if inst.Type == SSATypeFloat {
 			slot := sm.getSlotForRef(ref)
 			srcD := resolveFloatRefFwd(asm, f, inst.Arg1, regMap, sm, fwd, D0)
-			dstD := getFloatSlotReg(regMap, slot, D1)
+			dstD := getFloatRefReg(regMap, ref, slot, D1)
 			if dstD != srcD {
 				asm.FMOVd(dstD, srcD)
 			}
-			if _, ok := regMap.FloatReg(slot); !ok && slot >= 0 {
-				// Write data only, type tag deferred to store-back
-				asm.FSTRd(srcD, regRegs, slot*ValueSize+OffsetData)
+			// If neither ref-level nor slot-level allocated, write to memory
+			if _, refOk := regMap.FloatRefReg(ref); !refOk {
+				if _, slotOk := regMap.FloatReg(slot); !slotOk && slot >= 0 {
+					asm.FSTRd(srcD, regRegs, slot*ValueSize+OffsetData)
+				}
 			}
 		} else {
 			emitSSAInstSlot(asm, f, ref, inst, regMap, sm)
+		}
+
+	case SSA_CONST_FLOAT:
+		slot := sm.getSlotForRef(ref)
+		if slot >= 0 {
+			// Check ref-level allocation first
+			if dreg, ok := regMap.FloatRefReg(ref); ok {
+				asm.LoadImm64(X0, inst.AuxInt)
+				asm.FMOVtoFP(dreg, X0)
+			} else if dreg, ok := regMap.FloatReg(slot); ok {
+				asm.LoadImm64(X0, inst.AuxInt)
+				asm.FMOVtoFP(dreg, X0)
+			} else {
+				asm.LoadImm64(X0, inst.AuxInt)
+				asm.FMOVtoFP(D0, X0)
+				asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
+				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+			}
 		}
 
 	default:

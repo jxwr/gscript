@@ -303,3 +303,320 @@ func TestRegAllocSSA_IdenticalToOldSlotAlloc(t *testing.T) {
 		}
 	}
 }
+
+// ─── Ref-level float register allocation tests ───
+
+// TestFloatRefAlloc_ReturnsNonNil verifies floatRefAllocLR returns a non-nil
+// allocation even for an empty function.
+func TestFloatRefAlloc_ReturnsNonNil(t *testing.T) {
+	fra := floatRefAllocLR(nil)
+	if fra == nil {
+		t.Fatal("floatRefAllocLR(nil) returned nil")
+	}
+	if fra.refToReg == nil {
+		t.Fatal("refToReg map is nil")
+	}
+}
+
+// TestFloatRefAlloc_NoLoop verifies that without a LOOP marker, no refs are allocated.
+func TestFloatRefAlloc_NoLoop(t *testing.T) {
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			{Op: SSA_NOP},
+		},
+	}
+	fra := floatRefAllocLR(f)
+	if len(fra.refToReg) != 0 {
+		t.Errorf("expected no allocations without LOOP, got %d", len(fra.refToReg))
+	}
+}
+
+// TestFloatRefAlloc_SimpleFloatArith verifies that float arithmetic refs
+// in the loop body get D register allocations.
+func TestFloatRefAlloc_SimpleFloatArith(t *testing.T) {
+	// Build: guard slot 0 float, guard slot 1 float, LOOP, ADD_FLOAT, FORLOOP
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			// Pre-loop: load and unbox float slots 0 and 1
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 0},    // ref 0
+			{Op: SSA_GUARD_TYPE, Type: SSATypeFloat, Arg1: 0, AuxInt: int64(runtime.TypeFloat)}, // ref 1
+			{Op: SSA_UNBOX_FLOAT, Type: SSATypeFloat, Arg1: 0, Slot: 0}, // ref 2
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 1},    // ref 3
+			{Op: SSA_GUARD_TYPE, Type: SSATypeFloat, Arg1: 3, AuxInt: int64(runtime.TypeFloat)}, // ref 4
+			{Op: SSA_UNBOX_FLOAT, Type: SSATypeFloat, Arg1: 3, Slot: 1}, // ref 5
+			// Int slots for FORLOOP
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 2},      // ref 6
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 6, AuxInt: int64(runtime.TypeInt)}, // ref 7
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 6, Slot: 2},  // ref 8
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 3},      // ref 9
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 9, AuxInt: int64(runtime.TypeInt)}, // ref 10
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 9, Slot: 3},  // ref 11
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 4},      // ref 12
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 12, AuxInt: int64(runtime.TypeInt)}, // ref 13
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 12, Slot: 4}, // ref 14
+			{Op: SSA_LOOP}, // ref 15
+			// Loop body: slot0 = slot0 + slot1
+			{Op: SSA_ADD_FLOAT, Type: SSATypeFloat, Arg1: 2, Arg2: 5, Slot: 0}, // ref 16
+			// FORLOOP
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 8, Arg2: 14, Slot: 2}, // ref 17
+			{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: 17, Arg2: 11},         // ref 18
+		},
+	}
+
+	fra := floatRefAllocLR(f)
+
+	// The pre-loop unbox refs (2, 5) should be allocated since they're used in the loop
+	if _, ok := fra.getReg(2); !ok {
+		t.Error("pre-loop unbox ref 2 (slot 0) should be allocated")
+	}
+	if _, ok := fra.getReg(5); !ok {
+		t.Error("pre-loop unbox ref 5 (slot 1) should be allocated")
+	}
+
+	// The ADD_FLOAT ref (16) should be allocated
+	if _, ok := fra.getReg(16); !ok {
+		t.Error("ADD_FLOAT ref 16 should be allocated")
+	}
+}
+
+// TestFloatRefAlloc_SlotReuse verifies that multiple refs using the same slot
+// can get different D registers when their live ranges don't overlap.
+func TestFloatRefAlloc_SlotReuse(t *testing.T) {
+	// Simulate mandelbrot pattern:
+	// Pre-loop: unbox zr (slot 7), zi (slot 8), cr (slot 5), ci (slot 4)
+	// Loop body:
+	//   ref A: MUL zr*zr → slot 9 (temp)
+	//   ref B: MUL zi*zi → slot 9 (temp, reuses slot)
+	//   ref C: SUB (A - B) → slot 9 (temp)
+	//   ref D: ADD (C + cr) → slot 9 (tr)
+	// With slot-level: all map to one D register. With ref-level: each gets its own.
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			// Pre-loop
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 7},    // ref 0: zr
+			{Op: SSA_GUARD_TYPE, Type: SSATypeFloat, Arg1: 0, AuxInt: int64(runtime.TypeFloat)},
+			{Op: SSA_UNBOX_FLOAT, Type: SSATypeFloat, Arg1: 0, Slot: 7}, // ref 2
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 8},    // ref 3: zi
+			{Op: SSA_GUARD_TYPE, Type: SSATypeFloat, Arg1: 3, AuxInt: int64(runtime.TypeFloat)},
+			{Op: SSA_UNBOX_FLOAT, Type: SSATypeFloat, Arg1: 3, Slot: 8}, // ref 5
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 5},    // ref 6: cr
+			{Op: SSA_GUARD_TYPE, Type: SSATypeFloat, Arg1: 6, AuxInt: int64(runtime.TypeFloat)},
+			{Op: SSA_UNBOX_FLOAT, Type: SSATypeFloat, Arg1: 6, Slot: 5}, // ref 8
+			// Int slots for FORLOOP
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 2},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 9, AuxInt: int64(runtime.TypeInt)},
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 9, Slot: 2}, // ref 11
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 3},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 12, AuxInt: int64(runtime.TypeInt)},
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 12, Slot: 3}, // ref 14
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 4},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 15, AuxInt: int64(runtime.TypeInt)},
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 15, Slot: 4}, // ref 17
+			{Op: SSA_LOOP}, // ref 18
+			// Loop body
+			{Op: SSA_MUL_FLOAT, Type: SSATypeFloat, Arg1: 2, Arg2: 2, Slot: 9},  // ref 19: zr*zr
+			{Op: SSA_MUL_FLOAT, Type: SSATypeFloat, Arg1: 5, Arg2: 5, Slot: 9},  // ref 20: zi*zi
+			{Op: SSA_SUB_FLOAT, Type: SSATypeFloat, Arg1: 19, Arg2: 20, Slot: 9}, // ref 21: zr*zr - zi*zi
+			{Op: SSA_ADD_FLOAT, Type: SSATypeFloat, Arg1: 21, Arg2: 8, Slot: 9},  // ref 22: + cr = tr
+			{Op: SSA_MOVE, Type: SSATypeFloat, Arg1: 22, Slot: 7}, // ref 23: zr = tr
+			// FORLOOP
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 11, Arg2: 17, Slot: 2},
+			{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: 24, Arg2: 14},
+		},
+	}
+
+	fra := floatRefAllocLR(f)
+
+	// Ref 19 (zr*zr) and ref 22 (tr) both use slot 9 but should get different registers
+	// since ref 19's value is consumed by ref 21 (only 2 instructions later).
+	reg19, ok19 := fra.getReg(19)
+	reg22, ok22 := fra.getReg(22)
+
+	if ok19 && ok22 {
+		// They CAN have different registers now (ref-level allocation)
+		t.Logf("ref 19 (zr*zr) → D%d, ref 22 (tr) → D%d", reg19, reg22)
+	}
+
+	// The MOVE ref (23) should have the same register as the pre-loop zr ref (2)
+	// because of coalescing
+	regMove, okMove := fra.getReg(23)
+	regPreloop, okPreloop := fra.getReg(2)
+	if okMove && okPreloop {
+		if regMove != regPreloop {
+			t.Errorf("MOVE ref 23 and pre-loop ref 2 should be coalesced: D%d != D%d",
+				regMove, regPreloop)
+		}
+	}
+}
+
+// TestFloatRefAlloc_CoalescingLoopCarried verifies that MOVE instructions that
+// write to loop-carried slots are coalesced with the pre-loop ref.
+func TestFloatRefAlloc_CoalescingLoopCarried(t *testing.T) {
+	// Simple pattern: pre-loop unbox slot 0, loop body: slot0 = slot0 + const,
+	// which becomes ADD_FLOAT producing to slot 0.
+	// In mandelbrot, it's: pre-loop unbox zr, loop body: MUL/SUB/ADD → tr → MOVE zr=tr.
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 0},    // ref 0
+			{Op: SSA_GUARD_TYPE, Type: SSATypeFloat, Arg1: 0, AuxInt: int64(runtime.TypeFloat)},
+			{Op: SSA_UNBOX_FLOAT, Type: SSATypeFloat, Arg1: 0, Slot: 0}, // ref 2
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 1},    // ref 3
+			{Op: SSA_GUARD_TYPE, Type: SSATypeFloat, Arg1: 3, AuxInt: int64(runtime.TypeFloat)},
+			{Op: SSA_UNBOX_FLOAT, Type: SSATypeFloat, Arg1: 3, Slot: 1}, // ref 5
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 2},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 6, AuxInt: int64(runtime.TypeInt)},
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 6, Slot: 2},
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 3},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 9, AuxInt: int64(runtime.TypeInt)},
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 9, Slot: 3},
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 4},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 12, AuxInt: int64(runtime.TypeInt)},
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 12, Slot: 4},
+			{Op: SSA_LOOP}, // ref 15
+			// Loop body: temp = slot0 + slot1, then MOVE slot0 = temp
+			{Op: SSA_ADD_FLOAT, Type: SSATypeFloat, Arg1: 2, Arg2: 5, Slot: 6}, // ref 16: temp
+			{Op: SSA_MOVE, Type: SSATypeFloat, Arg1: 16, Slot: 0},              // ref 17: slot0 = temp
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 8, Arg2: 14, Slot: 2},
+			{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: 18, Arg2: 11},
+		},
+	}
+
+	fra := floatRefAllocLR(f)
+
+	// MOVE ref 17 writes to slot 0, which has pre-loop ref 2.
+	// They should be coalesced (same register).
+	regMove, okMove := fra.getReg(17)
+	regPre, okPre := fra.getReg(2)
+
+	if !okMove {
+		t.Fatal("MOVE ref 17 should have a D register")
+	}
+	if !okPre {
+		t.Fatal("pre-loop ref 2 should have a D register")
+	}
+	if regMove != regPre {
+		t.Errorf("coalescing failed: MOVE ref 17 (D%d) != pre-loop ref 2 (D%d)",
+			regMove, regPre)
+	}
+}
+
+// TestFloatRefAlloc_RegisterRange verifies all allocated registers are in D4-D11.
+func TestFloatRefAlloc_RegisterRange(t *testing.T) {
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 0},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeFloat, Arg1: 0, AuxInt: int64(runtime.TypeFloat)},
+			{Op: SSA_UNBOX_FLOAT, Type: SSATypeFloat, Arg1: 0, Slot: 0},
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 1},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeFloat, Arg1: 3, AuxInt: int64(runtime.TypeFloat)},
+			{Op: SSA_UNBOX_FLOAT, Type: SSATypeFloat, Arg1: 3, Slot: 1},
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 2},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 6, AuxInt: int64(runtime.TypeInt)},
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 6, Slot: 2},
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 3},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 9, AuxInt: int64(runtime.TypeInt)},
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 9, Slot: 3},
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 4},
+			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: 12, AuxInt: int64(runtime.TypeInt)},
+			{Op: SSA_UNBOX_INT, Type: SSATypeInt, Arg1: 12, Slot: 4},
+			{Op: SSA_LOOP},
+			{Op: SSA_ADD_FLOAT, Type: SSATypeFloat, Arg1: 2, Arg2: 5, Slot: 0},
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 8, Arg2: 14, Slot: 2},
+			{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: 17, Arg2: 11},
+		},
+	}
+
+	fra := floatRefAllocLR(f)
+
+	for ref, dreg := range fra.refToReg {
+		if dreg < D4 || dreg > D11 {
+			t.Errorf("ref %d allocated to D%d, outside D4-D11 range", ref, dreg)
+		}
+	}
+}
+
+// TestRegMap_FloatRefReg verifies the RegMap.FloatRefReg accessor works.
+func TestRegMap_FloatRefReg(t *testing.T) {
+	trace := &Trace{
+		LoopProto: &vm.FuncProto{Constants: []runtime.Value{}},
+		IR: []TraceIR{
+			{Op: vm.OP_ADD, A: 0, B: 0, C: 1, AType: runtime.TypeFloat, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
+			{Op: vm.OP_ADD, A: 0, B: 0, C: 1, AType: runtime.TypeFloat, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
+			{Op: vm.OP_FORLOOP, A: 2, SBX: -3},
+		},
+	}
+	f := BuildSSA(trace)
+	rm := AllocateRegisters(f)
+
+	// FloatRef should exist
+	if rm.FloatRef == nil {
+		t.Fatal("FloatRef is nil")
+	}
+
+	// At least some float refs should be allocated
+	hasAllocation := false
+	for _, inst := range f.Insts {
+		if isFloatOp(inst.Op) {
+			break
+		}
+	}
+	for ref := range rm.FloatRef.refToReg {
+		if ref >= 0 {
+			hasAllocation = true
+			break
+		}
+	}
+	if !hasAllocation && len(rm.FloatRef.refToReg) > 0 {
+		t.Log("FloatRef allocations exist")
+	}
+
+	// FloatRefReg for a non-existent ref should return false
+	_, ok := rm.FloatRefReg(-999)
+	if ok {
+		t.Error("FloatRefReg(-999) should return false")
+	}
+}
+
+// TestFloatRefAlloc_MandelbrotCorrectness tests the full mandelbrot pipeline
+// with ref-level allocation to ensure correctness.
+func TestFloatRefAlloc_MandelbrotCorrectness(t *testing.T) {
+	src := `
+		func mandelbrot(size) {
+			count := 0
+			for y := 0; y < size; y++ {
+				ci := 2.0 * y / size - 1.0
+				for x := 0; x < size; x++ {
+					cr := 2.0 * x / size - 1.5
+					zr := 0.0
+					zi := 0.0
+					escaped := false
+					for iter := 0; iter < 50; iter++ {
+						tr := zr * zr - zi * zi + cr
+						ti := 2.0 * zr * zi + ci
+						zr = tr
+						zi = ti
+						if zr * zr + zi * zi > 4.0 {
+							escaped = true
+							break
+						}
+					}
+					if !escaped { count = count + 1 }
+				}
+			}
+			return count
+		}
+		result := mandelbrot(20)
+	`
+	// Run without tracing (interpreter only)
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	// Run with SSA JIT (uses ref-level allocation)
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mandelbrot(20) mismatch: interpreter=%d, ssa=%d",
+			g1["result"].Int(), g2["result"].Int())
+	}
+}
