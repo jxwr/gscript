@@ -94,6 +94,20 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
+  <a href="06-the-four-point-two-x-wall">The 4.2x Wall</a>
+  <p>We hit a wall at 4.2x behind LuaJIT. 50 instructions per iteration vs theoretical 15. The path forward: live-range register allocation.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
+  <a href="05-the-blacklist-that-changed-everything">The Blacklist That Changed Everything</a>
+  <p>One simple blacklist turned mandelbrot from 1.53x to 6.09x. How a million wasted recording attempts were killing performance.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
   <a href="04-from-monolith-to-pipeline">The Profiler Told Us We Were Wrong</a>
   <p>Our trace JIT makes most programs slower. Four research agents, one bombshell, and a new plan.</p>
 </div>
@@ -123,11 +137,11 @@
 
 <table>
   <tr><th>Program</th><th>Interpreter</th><th>Trace JIT</th><th>Speedup</th></tr>
-  <tr><td>mandelbrot</td><td>1.569s</td><td><b>1.142s</b></td><td><b>&times;1.37</b></td></tr>
-  <tr><td>fib</td><td>0.843s</td><td>0.827s</td><td>&times;1.02</td></tr>
-  <tr><td>sieve</td><td>0.283s</td><td>0.350s</td><td>&times;0.81</td></tr>
-  <tr><td>spectral-norm</td><td>0.836s</td><td>0.973s</td><td>&times;0.86</td></tr>
-  <tr><td>ackermann</td><td>0.148s</td><td>0.205s</td><td>&times;0.72</td></tr>
+  <tr><td>mandelbrot</td><td>1.50s</td><td><b>0.24s</b></td><td><b>&times;6.3</b></td></tr>
+  <tr><td>fib</td><td>0.84s</td><td><b>0.08s</b></td><td><b>&times;10</b></td></tr>
+  <tr><td>ackermann</td><td>0.15s</td><td><b>0.015s</b></td><td><b>&times;10</b></td></tr>
+  <tr><td>nbody</td><td>—</td><td>—</td><td>&times;1.1</td></tr>
+  <tr><td>sieve</td><td>0.28s</td><td>0.28s</td><td>&times;1.0</td></tr>
 </table>
 
 <footer>
