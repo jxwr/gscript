@@ -2,6 +2,16 @@ package runtime
 
 import (
 	"sync"
+	"unsafe"
+)
+
+// ArrayKind indicates the type specialization of a table's array part.
+type ArrayKind uint8
+
+const (
+	ArrayMixed ArrayKind = 0 // []Value (current, default)
+	ArrayInt   ArrayKind = 1 // []int64 (int and bool values)
+	ArrayFloat ArrayKind = 2 // []float64
 )
 
 // smallFieldCap is the threshold for using flat slices vs maps for string keys.
@@ -26,6 +36,10 @@ type Table struct {
 	metatable *Table
 	keys      []Value // ordered keys for Next() iteration
 	keysDirty bool
+	// Type-specialized array fields (placed at end to preserve existing offsets)
+	arrayKind  ArrayKind
+	intArray   []int64
+	floatArray []float64
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.
@@ -105,8 +119,19 @@ func (t *Table) RawGetInt(key int64) Value {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
 	}
-	if key >= 1 && key < int64(len(t.array)) {
-		return t.array[key]
+	switch t.arrayKind {
+	case ArrayInt:
+		if key >= 1 && key < int64(len(t.intArray)) {
+			return IntValue(t.intArray[key])
+		}
+	case ArrayFloat:
+		if key >= 1 && key < int64(len(t.floatArray)) {
+			return FloatValue(t.floatArray[key])
+		}
+	default:
+		if key >= 1 && key < int64(len(t.array)) {
+			return t.array[key]
+		}
 	}
 	if t.imap != nil {
 		if v, ok := t.imap[key]; ok {
@@ -304,6 +329,64 @@ func (t *Table) RawSet(key, val Value) {
 // Keys like board[col*100+row] (range 101-910) will use array instead of imap.
 const sparseArrayMax = 1024
 
+// classifyValueForArray returns the ArrayKind that a value would require.
+// TypeInt maps to ArrayInt; TypeFloat maps to ArrayFloat;
+// everything else (including nil, bool) maps to ArrayMixed.
+// Note: Bool is NOT stored in ArrayInt because BoolValue(false).Truthy() == false
+// but IntValue(0).Truthy() == true in Lua/GScript semantics. Storing bools
+// as ints would break truthiness checks (e.g., sieve pattern).
+func classifyValueForArray(val Value) ArrayKind {
+	switch val.Type() {
+	case TypeInt:
+		return ArrayInt
+	case TypeFloat:
+		return ArrayFloat
+	default:
+		return ArrayMixed
+	}
+}
+
+// demoteToMixed converts a typed array (intArray or floatArray) back to the
+// generic []Value array. Must be called with lock held (if mu != nil).
+func (t *Table) demoteToMixed() {
+	switch t.arrayKind {
+	case ArrayInt:
+		n := len(t.intArray)
+		t.array = make([]Value, n)
+		t.array[0] = NilValue()
+		for i := 1; i < n; i++ {
+			t.array[i] = IntValue(t.intArray[i])
+		}
+		t.intArray = nil
+	case ArrayFloat:
+		n := len(t.floatArray)
+		t.array = make([]Value, n)
+		t.array[0] = NilValue()
+		for i := 1; i < n; i++ {
+			t.array[i] = FloatValue(t.floatArray[i])
+		}
+		t.floatArray = nil
+	}
+	t.arrayKind = ArrayMixed
+}
+
+// typedArrayLen returns the length of whichever backing array is active.
+func (t *Table) typedArrayLen() int {
+	switch t.arrayKind {
+	case ArrayInt:
+		return len(t.intArray)
+	case ArrayFloat:
+		return len(t.floatArray)
+	default:
+		return len(t.array)
+	}
+}
+
+// valueToInt64 converts a Value to int64 for storage in intArray.
+func valueToInt64(val Value) int64 {
+	return val.Int()
+}
+
 // RawSetInt assigns a value by integer key (fast path).
 func (t *Table) RawSetInt(key int64, val Value) {
 	if t.mu != nil {
@@ -311,21 +394,146 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		defer t.mu.Unlock()
 	}
 	t.keysDirty = true
-	if key >= 1 && key <= int64(len(t.array)) {
-		if key == int64(len(t.array)) {
+
+	arrLen := int64(t.typedArrayLen())
+
+	// --- Fast path: key within existing array bounds (not append) ---
+	if key >= 1 && key < arrLen {
+		switch t.arrayKind {
+		case ArrayInt:
+			vk := classifyValueForArray(val)
+			if vk == ArrayInt {
+				t.intArray[key] = valueToInt64(val)
+				return
+			}
+			// Type mismatch or nil → demote
+			t.demoteToMixed()
+			t.array[key] = val
+			return
+		case ArrayFloat:
+			if val.Type() == TypeFloat {
+				t.floatArray[key] = val.Float()
+				return
+			}
+			t.demoteToMixed()
+			t.array[key] = val
+			return
+		default:
+			t.array[key] = val
+			return
+		}
+	}
+
+	// --- Append path: key == arrLen (next sequential slot) ---
+	if key >= 1 && key == arrLen {
+		switch t.arrayKind {
+		case ArrayInt:
+			vk := classifyValueForArray(val)
+			if vk == ArrayInt {
+				t.intArray = append(t.intArray, valueToInt64(val))
+				t.absorbKeys()
+				return
+			}
+			t.demoteToMixed()
+			t.array = append(t.array, val)
+			t.absorbKeys()
+			return
+		case ArrayFloat:
+			if val.Type() == TypeFloat {
+				t.floatArray = append(t.floatArray, val.Float())
+				t.absorbKeys()
+				return
+			}
+			t.demoteToMixed()
+			t.array = append(t.array, val)
+			t.absorbKeys()
+			return
+		default:
+			// ArrayMixed: first non-nil write to an empty array → try to specialize
+			if len(t.array) == 1 {
+				// array only has the padding [0] slot → first real write
+				vk := classifyValueForArray(val)
+				switch vk {
+				case ArrayInt:
+					t.arrayKind = ArrayInt
+					t.intArray = make([]int64, 1, 8) // [0] padding
+					t.intArray = append(t.intArray, valueToInt64(val))
+					t.array = nil
+					t.absorbKeys()
+					return
+				case ArrayFloat:
+					t.arrayKind = ArrayFloat
+					t.floatArray = make([]float64, 1, 8) // [0] padding
+					t.floatArray = append(t.floatArray, val.Float())
+					t.array = nil
+					t.absorbKeys()
+					return
+				}
+			}
 			t.array = append(t.array, val)
 			t.absorbKeys()
 			return
 		}
-		t.array[key] = val
-		return
 	}
-	// Auto-expand array for sparse positive keys within threshold.
-	// This allows board[col*100+row] patterns to use the fast array path
-	// instead of imap, enabling JIT native compilation.
-	if key > int64(len(t.array)) && key < sparseArrayMax && !val.IsNil() {
-		// Extend array with nil padding up to key
+
+	// --- Sparse expansion path ---
+	if key > arrLen && key < sparseArrayMax && !val.IsNil() {
 		needed := int(key) + 1
+		switch t.arrayKind {
+		case ArrayInt:
+			vk := classifyValueForArray(val)
+			if vk == ArrayInt {
+				if needed > cap(t.intArray) {
+					newArr := make([]int64, needed)
+					copy(newArr, t.intArray)
+					t.intArray = newArr
+				} else {
+					t.intArray = t.intArray[:needed]
+				}
+				t.intArray[key] = valueToInt64(val)
+				t.absorbKeys()
+				return
+			}
+			t.demoteToMixed()
+			// Fall through to mixed sparse expansion
+		case ArrayFloat:
+			if val.Type() == TypeFloat {
+				if needed > cap(t.floatArray) {
+					newArr := make([]float64, needed)
+					copy(newArr, t.floatArray)
+					t.floatArray = newArr
+				} else {
+					t.floatArray = t.floatArray[:needed]
+				}
+				t.floatArray[key] = val.Float()
+				t.absorbKeys()
+				return
+			}
+			t.demoteToMixed()
+			// Fall through to mixed sparse expansion
+		case ArrayMixed:
+			// First write with sparse key on empty array → try to specialize
+			if len(t.array) <= 1 {
+				vk := classifyValueForArray(val)
+				switch vk {
+				case ArrayInt:
+					t.arrayKind = ArrayInt
+					t.intArray = make([]int64, needed)
+					t.intArray[key] = valueToInt64(val)
+					t.array = nil
+					t.absorbKeys()
+					return
+				case ArrayFloat:
+					t.arrayKind = ArrayFloat
+					t.floatArray = make([]float64, needed)
+					t.floatArray[key] = val.Float()
+					t.array = nil
+					t.absorbKeys()
+					return
+				}
+			}
+		}
+		// Mixed sparse expansion
 		if needed > cap(t.array) {
 			newArr := make([]Value, needed)
 			copy(newArr, t.array)
@@ -334,13 +542,17 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			t.array = t.array[:needed]
 		}
 		t.array[key] = val
-		// Move any imap entries that now fit in the array
 		t.absorbKeys()
 		return
 	}
+
+	// --- imap path (key out of array range or negative) ---
 	if val.IsNil() {
-		// For nil values on expanded array slots, just set directly
-		if key >= 1 && key < int64(len(t.array)) {
+		// For nil values on expanded typed array slots, demote and set
+		if key >= 1 && key < arrLen {
+			if t.arrayKind != ArrayMixed {
+				t.demoteToMixed()
+			}
 			t.array[key] = val
 			return
 		}
@@ -407,34 +619,69 @@ func (t *Table) RawSetString(key string, val Value) {
 // Must be called with lock held (if mu != nil).
 func (t *Table) absorbKeys() {
 	for {
-		nextIdx := int64(len(t.array))
+		nextIdx := int64(t.typedArrayLen())
+		absorbed := false
 		if t.imap != nil {
 			if val, ok := t.imap[nextIdx]; ok && !val.IsNil() {
-				t.array = append(t.array, val)
+				t.appendToTypedArray(val)
 				delete(t.imap, nextIdx)
-				continue
+				absorbed = true
 			}
 		}
-		if t.hash != nil {
+		if !absorbed && t.hash != nil {
 			key := IntValue(nextIdx)
 			val, ok := t.hash[key]
 			if ok && !val.IsNil() {
-				t.array = append(t.array, val)
+				t.appendToTypedArray(val)
 				delete(t.hash, key)
-				continue
+				absorbed = true
 			}
 		}
-		break
+		if !absorbed {
+			break
+		}
+	}
+}
+
+// appendToTypedArray appends a value to the active typed array, demoting if needed.
+func (t *Table) appendToTypedArray(val Value) {
+	switch t.arrayKind {
+	case ArrayInt:
+		vk := classifyValueForArray(val)
+		if vk == ArrayInt {
+			t.intArray = append(t.intArray, valueToInt64(val))
+		} else {
+			t.demoteToMixed()
+			t.array = append(t.array, val)
+		}
+	case ArrayFloat:
+		if val.Type() == TypeFloat {
+			t.floatArray = append(t.floatArray, val.Float())
+		} else {
+			t.demoteToMixed()
+			t.array = append(t.array, val)
+		}
+	default:
+		t.array = append(t.array, val)
 	}
 }
 
 // Length returns the length of the array part (the # operator).
 func (t *Table) Length() int {
-	n := len(t.array) - 1
-	for n > 0 && t.array[n].IsNil() {
-		n--
+	switch t.arrayKind {
+	case ArrayInt:
+		// All slots are valid (no nil concept for int64), length is always full.
+		return len(t.intArray) - 1
+	case ArrayFloat:
+		// All slots are valid for float64 as well.
+		return len(t.floatArray) - 1
+	default:
+		n := len(t.array) - 1
+		for n > 0 && t.array[n].IsNil() {
+			n--
+		}
+		return n
 	}
-	return n
 }
 
 // Len returns the length of the array part (alias for Length, used by VM).
@@ -451,9 +698,20 @@ func (t *Table) Append(v Value) {
 // rebuildKeys rebuilds the ordered key list for iteration.
 func (t *Table) rebuildKeys() {
 	t.keys = t.keys[:0]
-	for i := 1; i < len(t.array); i++ {
-		if !t.array[i].IsNil() {
+	switch t.arrayKind {
+	case ArrayInt:
+		for i := 1; i < len(t.intArray); i++ {
 			t.keys = append(t.keys, IntValue(int64(i)))
+		}
+	case ArrayFloat:
+		for i := 1; i < len(t.floatArray); i++ {
+			t.keys = append(t.keys, IntValue(int64(i)))
+		}
+	default:
+		for i := 1; i < len(t.array); i++ {
+			if !t.array[i].IsNil() {
+				t.keys = append(t.keys, IntValue(int64(i)))
+			}
 		}
 	}
 	for k, v := range t.imap {
@@ -517,4 +775,16 @@ func (t *Table) GetMetatable() *Table {
 // SetMetatable sets the table's metatable.
 func (t *Table) SetMetatable(mt *Table) {
 	t.metatable = mt
+}
+
+// TableFieldOffsets returns the byte offsets of key Table fields for JIT verification.
+// This allows the JIT to verify its hardcoded offsets match the actual struct layout.
+func TableFieldOffsets() (arrayKind, intArray, floatArray uintptr) {
+	var t Table
+	return unsafe.Offsetof(t.arrayKind), unsafe.Offsetof(t.intArray), unsafe.Offsetof(t.floatArray)
+}
+
+// GetArrayKind returns the array kind for testing/JIT inspection.
+func (t *Table) GetArrayKind() ArrayKind {
+	return t.arrayKind
 }

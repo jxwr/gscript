@@ -742,6 +742,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 	case SSA_LOAD_ARRAY:
 		// GETTABLE: R(A) = table[key]. table=Arg1's slot, key=Arg2's value.
 		// Fast path: table type check, no metatable, key is int, in array bounds.
+		// Type-specialized fast path: if arrayKind == ArrayInt or ArrayFloat,
+		// load directly from intArray/floatArray (8 bytes) instead of the
+		// generic []Value array (24 bytes per element + type check).
 		tableSlot := sm.getSlotForRef(inst.Arg1)
 		asm.LoadImm64(X9, int64(inst.PC))
 		dstSlot := int(inst.Slot)
@@ -755,32 +758,28 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		// Check metatable == nil
 		asm.LDR(X1, X0, TableOffMetatable)
 		asm.CBNZ(X1, "side_exit")
-		// Array bounds: key >= 1 && key < array.len
-		asm.CMPimm(keyReg, 1)
-		asm.BCond(CondLT, "side_exit")
-		asm.LDR(X3, X0, TableOffArray+8) // array.len
-		asm.CMPreg(keyReg, X3)
-		asm.BCond(CondGE, "side_exit")
-		// Compute element address: X3 = &array[key]
-		asm.LDR(X3, X0, TableOffArray) // array.ptr
-		EmitMulValueSize(asm, X4, keyReg, X5) // key * ValueSize
-		asm.ADDreg(X3, X3, X4)
 
+		// --- Type-specialized int array fast path ---
 		if inst.Type == SSATypeInt && dstSlot >= 0 {
-			// Type-specialized int load: guard type byte, load only data field (8 bytes)
-			asm.LDRB(X0, X3, OffsetTyp)    // load type byte from element
-			asm.CMPimmW(X0, TypeInt)
-			typeGuardLabel := fmt.Sprintf("load_array_int_bool_%d", ref)
-			asm.BCond(CondEQ, typeGuardLabel)
-			// Also accept TypeBool (booleans stored as 0/1 in data field)
-			asm.CMPimmW(X0, TypeBool)
-			asm.BCond(CondNE, "side_exit") // not int and not bool → side exit
-			asm.Label(typeGuardLabel)
+			doneLabel := fmt.Sprintf("load_array_done_%d", ref)
+			mixedLabel := fmt.Sprintf("load_array_mixed_%d", ref)
 
-			// Load only the data field (8 bytes instead of 32)
-			asm.LDR(X0, X3, OffsetData)
+			// Check arrayKind == ArrayInt
+			asm.LDRB(X1, X0, TableOffArrayKind)
+			asm.CMPimmW(X1, AKInt)
+			asm.BCond(CondNE, mixedLabel)
 
-			// Store to allocated register if available, else to memory
+			// Int array fast path: bounds check against intArray.len
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffIntArray+8) // intArray.len
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			// Load intArray[key]: ptr[key] with LSL #3 (8 bytes per element)
+			asm.LDR(X3, X0, TableOffIntArray) // intArray.ptr
+			asm.LDRreg(X0, X3, keyReg)        // X0 = *(X3 + keyReg*8)
+
+			// Store result
 			if r, ok := regMap.IntReg(dstSlot); ok {
 				asm.MOVreg(r, X0)
 			} else {
@@ -788,16 +787,59 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				asm.MOVimm16(X0, TypeInt)
 				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
 			}
-		} else if inst.Type == SSATypeFloat && dstSlot >= 0 {
-			// Type-specialized float load: guard type byte, load only data field
+			asm.B(doneLabel)
+
+			// Mixed fallback path
+			asm.Label(mixedLabel)
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffArray+8) // array.len
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			asm.LDR(X3, X0, TableOffArray) // array.ptr
+			EmitMulValueSize(asm, X4, keyReg, X5)
+			asm.ADDreg(X3, X3, X4)
+
+			// Type guard: must be int or bool
 			asm.LDRB(X0, X3, OffsetTyp)
-			asm.CMPimmW(X0, TypeFloat)
+			asm.CMPimmW(X0, TypeInt)
+			typeGuardLabel := fmt.Sprintf("load_array_int_bool_%d", ref)
+			asm.BCond(CondEQ, typeGuardLabel)
+			asm.CMPimmW(X0, TypeBool)
 			asm.BCond(CondNE, "side_exit")
+			asm.Label(typeGuardLabel)
 
-			// Load data field (float64 bits)
 			asm.LDR(X0, X3, OffsetData)
+			if r, ok := regMap.IntReg(dstSlot); ok {
+				asm.MOVreg(r, X0)
+			} else {
+				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, TypeInt)
+				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+			}
+			asm.Label(doneLabel)
 
-			// Store to float register if available, else to memory
+		} else if inst.Type == SSATypeFloat && dstSlot >= 0 {
+			// --- Type-specialized float array fast path ---
+			doneLabel := fmt.Sprintf("load_array_done_%d", ref)
+			mixedLabel := fmt.Sprintf("load_array_mixed_%d", ref)
+
+			// Check arrayKind == ArrayFloat
+			asm.LDRB(X1, X0, TableOffArrayKind)
+			asm.CMPimmW(X1, AKFloat)
+			asm.BCond(CondNE, mixedLabel)
+
+			// Float array fast path: bounds check against floatArray.len
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffFloatArray+8) // floatArray.len
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			// Load floatArray[key]: ptr[key] with LSL #3 (8 bytes per element)
+			asm.LDR(X3, X0, TableOffFloatArray) // floatArray.ptr
+			asm.LDRreg(X0, X3, keyReg)          // X0 = *(X3 + keyReg*8) = float64 bits
+
+			// Store result
 			if fr, ok := regMap.FloatReg(dstSlot); ok {
 				asm.FMOVtoFP(fr, X0)
 			} else {
@@ -805,8 +847,43 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				asm.MOVimm16(X0, TypeFloat)
 				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
 			}
+			asm.B(doneLabel)
+
+			// Mixed fallback path
+			asm.Label(mixedLabel)
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffArray+8) // array.len
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			asm.LDR(X3, X0, TableOffArray) // array.ptr
+			EmitMulValueSize(asm, X4, keyReg, X5)
+			asm.ADDreg(X3, X3, X4)
+
+			asm.LDRB(X0, X3, OffsetTyp)
+			asm.CMPimmW(X0, TypeFloat)
+			asm.BCond(CondNE, "side_exit")
+
+			asm.LDR(X0, X3, OffsetData)
+			if fr, ok := regMap.FloatReg(dstSlot); ok {
+				asm.FMOVtoFP(fr, X0)
+			} else {
+				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, TypeFloat)
+				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+			}
+			asm.Label(doneLabel)
+
 		} else if dstSlot >= 0 {
-			// Unspecialized fallback: copy full Value
+			// Unspecialized fallback: use []Value array, copy full Value
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffArray+8)
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			asm.LDR(X3, X0, TableOffArray)
+			EmitMulValueSize(asm, X4, keyReg, X5)
+			asm.ADDreg(X3, X3, X4)
 			for w := 0; w < ValueSize/8; w++ {
 				asm.LDR(X0, X3, w*8)
 				asm.STR(X0, regRegs, dstSlot*ValueSize+w*8)
@@ -815,21 +892,41 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 	case SSA_STORE_ARRAY:
 		// SETTABLE: table[key] = value
+		// Type-specialized fast path: if arrayKind matches the value type,
+		// store directly to intArray/floatArray (single 8-byte STR) instead
+		// of the generic []Value array (3x 8-byte STR for 24-byte Value).
 		tableSlot := sm.getSlotForRef(inst.Arg1)
 		asm.LoadImm64(X9, int64(inst.PC))
 		keyReg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X2)
 		valRef := SSARef(inst.AuxInt)
 		valSlot := sm.getSlotForRef(valRef)
-		// If value slot is allocated to an ARM64 register, spill it to memory
-		// FIRST so the full-Value memory read below gets the up-to-date data.
-		// Without this, the memory may hold a stale value from before the
-		// register was last written (e.g., MOD result only in register).
+
+		// Determine value type from register allocation
+		valIsInt := false
+		valIsFloat := false
+		if valSlot >= 0 {
+			if _, ok := regMap.IntReg(valSlot); ok {
+				valIsInt = true
+			} else if _, ok := regMap.FloatReg(valSlot); ok {
+				valIsFloat = true
+			}
+		}
+		// Also check SSA type of the value ref
+		if !valIsInt && !valIsFloat && int(valRef) < len(f.Insts) {
+			valInst := f.Insts[valRef]
+			if valInst.Type == SSATypeInt {
+				valIsInt = true
+			} else if valInst.Type == SSATypeFloat {
+				valIsFloat = true
+			}
+		}
+
+		// For the mixed fallback, we need the value spilled to memory
 		if valSlot >= 0 {
 			if r, ok := regMap.IntReg(valSlot); ok {
 				asm.STR(r, regRegs, valSlot*ValueSize+OffsetData)
 				asm.MOVimm16(X5, TypeInt)
 				asm.STRB(X5, regRegs, valSlot*ValueSize+OffsetTyp)
-				// Clear PtrData to avoid stale pointer in the array element
 				asm.STR(XZR, regRegs, valSlot*ValueSize+OffsetPtrData)
 			}
 		}
@@ -840,19 +937,110 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		asm.CBZ(X0, "side_exit")
 		asm.LDR(X1, X0, TableOffMetatable)
 		asm.CBNZ(X1, "side_exit")
-		asm.CMPimm(keyReg, 1)
-		asm.BCond(CondLT, "side_exit")
-		asm.LDR(X3, X0, TableOffArray+8)
-		asm.CMPreg(keyReg, X3)
-		asm.BCond(CondGE, "side_exit")
-		asm.LDR(X3, X0, TableOffArray)
-		EmitMulValueSize(asm, X4, keyReg, X5) // key * ValueSize
-		asm.ADDreg(X3, X3, X4)
-		// Write value (ValueSize/8 words)
-		if valSlot >= 0 {
+
+		if valIsInt && valSlot >= 0 {
+			// --- Int array fast path for STORE ---
+			doneLabel := fmt.Sprintf("store_array_done_%d", ref)
+			mixedLabel := fmt.Sprintf("store_array_mixed_%d", ref)
+
+			asm.LDRB(X1, X0, TableOffArrayKind)
+			asm.CMPimmW(X1, AKInt)
+			asm.BCond(CondNE, mixedLabel)
+
+			// Bounds check against intArray.len
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffIntArray+8) // intArray.len
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+
+			// Store intArray[key] = value
+			asm.LDR(X3, X0, TableOffIntArray) // intArray.ptr
+			if r, ok := regMap.IntReg(valSlot); ok {
+				asm.STRreg(r, X3, keyReg) // *(X3 + keyReg*8) = r
+			} else {
+				asm.LDR(X4, regRegs, valSlot*ValueSize+OffsetData)
+				asm.STRreg(X4, X3, keyReg)
+			}
+			asm.B(doneLabel)
+
+			// Mixed fallback
+			asm.Label(mixedLabel)
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffArray+8)
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			asm.LDR(X3, X0, TableOffArray)
+			EmitMulValueSize(asm, X4, keyReg, X5)
+			asm.ADDreg(X3, X3, X4)
 			for w := 0; w < ValueSize/8; w++ {
-				asm.LDR(X0, regRegs, valSlot*ValueSize+w*8)
-				asm.STR(X0, X3, w*8)
+				asm.LDR(X4, regRegs, valSlot*ValueSize+w*8)
+				asm.STR(X4, X3, w*8)
+			}
+			asm.Label(doneLabel)
+
+		} else if valIsFloat && valSlot >= 0 {
+			// --- Float array fast path for STORE ---
+			doneLabel := fmt.Sprintf("store_array_done_%d", ref)
+			mixedLabel := fmt.Sprintf("store_array_mixed_%d", ref)
+
+			asm.LDRB(X1, X0, TableOffArrayKind)
+			asm.CMPimmW(X1, AKFloat)
+			asm.BCond(CondNE, mixedLabel)
+
+			// Bounds check against floatArray.len
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffFloatArray+8) // floatArray.len
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+
+			// Store floatArray[key] = value (float64 bits)
+			asm.LDR(X3, X0, TableOffFloatArray) // floatArray.ptr
+			if fr, ok := regMap.FloatReg(valSlot); ok {
+				// Float reg → need to FMOV to GP reg first, then STRreg
+				asm.FMOVtoGP(X4, fr)
+				asm.STRreg(X4, X3, keyReg)
+			} else {
+				asm.LDR(X4, regRegs, valSlot*ValueSize+OffsetData)
+				asm.STRreg(X4, X3, keyReg)
+			}
+			asm.B(doneLabel)
+
+			// Mixed fallback
+			asm.Label(mixedLabel)
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffArray+8)
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			asm.LDR(X3, X0, TableOffArray)
+			EmitMulValueSize(asm, X4, keyReg, X5)
+			asm.ADDreg(X3, X3, X4)
+			if valSlot >= 0 {
+				for w := 0; w < ValueSize/8; w++ {
+					asm.LDR(X4, regRegs, valSlot*ValueSize+w*8)
+					asm.STR(X4, X3, w*8)
+				}
+			}
+			asm.Label(doneLabel)
+
+		} else {
+			// Untyped fallback: use existing []Value array path
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffArray+8)
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			asm.LDR(X3, X0, TableOffArray)
+			EmitMulValueSize(asm, X4, keyReg, X5)
+			asm.ADDreg(X3, X3, X4)
+			if valSlot >= 0 {
+				for w := 0; w < ValueSize/8; w++ {
+					asm.LDR(X0, regRegs, valSlot*ValueSize+w*8)
+					asm.STR(X0, X3, w*8)
+				}
 			}
 		}
 

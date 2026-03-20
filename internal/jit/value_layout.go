@@ -40,8 +40,20 @@ const (
 	TableOffSvals     = 64  // []Value slice header
 	TableOffMetatable = 104 // *Table
 
+	// Type-specialized array fields (added at end of Table struct)
+	TableOffArrayKind  = 137 // ArrayKind (uint8)
+	TableOffIntArray   = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
+	TableOffFloatArray = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
+
 	// Go string header: {ptr(8), len(8)} = 16 bytes
 	StringSize = 16
+)
+
+// ArrayKind constants (must match runtime.ArrayKind values)
+const (
+	AKMixed = 0 // ArrayMixed
+	AKInt   = 1 // ArrayInt
+	AKFloat = 2 // ArrayFloat
 )
 
 // runtime.ValueType constants (must match runtime package).
@@ -93,6 +105,29 @@ func init() {
 	}
 	if uint8(runtime.TypeFloat) != TypeFloat {
 		panic("jit: TypeFloat mismatch")
+	}
+
+	// Verify typed array field offsets
+	akOff, iaOff, faOff := runtime.TableFieldOffsets()
+	if akOff != TableOffArrayKind {
+		panic("jit: Table.arrayKind offset mismatch: expected " + itoa(TableOffArrayKind) + ", got " + itoa(int(akOff)))
+	}
+	if iaOff != TableOffIntArray {
+		panic("jit: Table.intArray offset mismatch: expected " + itoa(TableOffIntArray) + ", got " + itoa(int(iaOff)))
+	}
+	if faOff != TableOffFloatArray {
+		panic("jit: Table.floatArray offset mismatch: expected " + itoa(TableOffFloatArray) + ", got " + itoa(int(faOff)))
+	}
+
+	// Verify ArrayKind constants
+	if uint8(runtime.ArrayMixed) != AKMixed {
+		panic("jit: ArrayMixed mismatch")
+	}
+	if uint8(runtime.ArrayInt) != AKInt {
+		panic("jit: ArrayInt mismatch")
+	}
+	if uint8(runtime.ArrayFloat) != AKFloat {
+		panic("jit: ArrayFloat mismatch")
 	}
 }
 

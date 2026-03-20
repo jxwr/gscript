@@ -144,6 +144,7 @@ Suite benchmarks (14 .gs files, `binary_trees` excluded):
 
 ## Code Standards
 
+- **High-leverage first**: Always prioritize optimizations with the biggest impact across the most benchmarks. Don't spend time on micro-optimizations (saving 2-3ms) when there are architectural changes (type-specialized arrays, guard fixes) that can improve entire categories of benchmarks by 2-5x. Ask: "does this change affect 1 benchmark or 10?"
 - **TDD**: Write tests first, then implement. Red → Green → Refactor.
 - **No code duplication**: Shared emitter layer between JIT tiers
 - **Profile before optimizing**: `pprof` to identify actual bottlenecks, never guess
