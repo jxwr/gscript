@@ -349,16 +349,18 @@ func (b *ssaBuilder) isWrittenBeforeFirstReadImpl(slot int) bool {
 			return false // slot read before any write — guard needed
 		}
 
-		// Check writes (numeric-safe ops only)
+		// Check writes: only constant-loading ops are safe.
+		// Arithmetic ops (ADD, SUB, MUL, DIV) and MOVE are NOT safe writes
+		// because (a) arithmetic output types depend on operand types, which
+		// may not be correctly determined when the guard is skipped (slot
+		// reused as float then int produces incorrect SSA), and (b) MOVE
+		// may copy non-numeric values (tables) but spillIfNotAllocated
+		// writes TypeInt, corrupting the type tag on side-exit.
+		// The codegen's findWBRFloatSlots handles float-slot WBR separately
+		// with its own isSlotWBR that does recognize MOVE/arithmetic writes.
 		isWrite := false
 		switch ir.Op {
 		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
-			isWrite = (ir.A == slot)
-		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV:
-			isWrite = (ir.A == slot)
-		case vm.OP_UNM:
-			isWrite = (ir.A == slot)
-		case vm.OP_MOVE:
 			isWrite = (ir.A == slot)
 		}
 		if isWrite {

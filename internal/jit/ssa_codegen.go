@@ -1130,13 +1130,27 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
 				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
 			}
-		} else {
+		} else if inst.Type == SSATypeInt || inst.Type == SSATypeBool {
+			// Integer/Bool move: copy data field, write TypeInt tag
 			srcReg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
 			dstReg := getSlotReg(regMap, sm, ref, slot, X0)
 			if dstReg != srcReg {
 				asm.MOVreg(dstReg, srcReg)
 			}
 			spillIfNotAllocated(asm, regMap, slot, dstReg)
+		} else {
+			// Unknown type (table, function, string, etc.): full 24-byte copy.
+			// Must copy typ + data + ptr to preserve the type tag and pointer.
+			// Copying only the data field and writing TypeInt (as spillIfNotAllocated
+			// does) would corrupt table references, causing "attempt to index a
+			// number value" errors when the interpreter resumes after side-exit.
+			srcSlot := sm.getSlotForRef(inst.Arg1)
+			if srcSlot >= 0 && slot >= 0 {
+				for w := 0; w < ValueSize/8; w++ {
+					asm.LDR(X0, regRegs, srcSlot*ValueSize+w*8)
+					asm.STR(X0, regRegs, slot*ValueSize+w*8)
+				}
+			}
 		}
 
 	case SSA_INTRINSIC:
@@ -1489,6 +1503,21 @@ func findWBRFloatSlots(f *SSAFunc) map[int]bool {
 	result := make(map[int]bool)
 	if f == nil || f.Trace == nil {
 		return result
+	}
+
+	// Safety check: if the trace has any non-numeric operations (table/field
+	// access, globals, calls), don't relax any float guards. The WBR analysis
+	// works correctly for pure numeric loops (e.g., mandelbrot) but can cause
+	// wrong results in traces with mixed numeric/table operations (e.g.,
+	// spectral_norm) because the relaxed guard + skipped pre-loop D register
+	// load can leave float registers with garbage values that corrupt
+	// unrelated computations via register reuse.
+	for _, ir := range f.Trace.IR {
+		switch ir.Op {
+		case vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD,
+			vm.OP_GETGLOBAL, vm.OP_CALL:
+			return result // bail: non-numeric trace
+		}
 	}
 
 	// Build set of float slots from trace type info
