@@ -710,6 +710,10 @@ func (r *TraceRecorder) finishTrace() {
 				ssaFunc = OptimizeSSA(ssaFunc)
 				ssaFunc = ConstHoist(ssaFunc)
 				ssaFunc = CSE(ssaFunc)
+				// NOTE: FuseMultiplyAdd not integrated yet — causes regression
+				// on mandelbrot (trace compilation failure → fallback to interpreter).
+				// The FMA pass works on unit tests but breaks real traces.
+				// Needs investigation before enabling.
 				if ssaIsIntegerOnly(ssaFunc) && SSAIsUseful(ssaFunc) {
 					ct, err := CompileSSA(ssaFunc)
 					if err == nil {
