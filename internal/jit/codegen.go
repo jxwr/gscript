@@ -3777,16 +3777,44 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 		}
 	}
 
-	// --- Step 5: Array bounds check ---
-	// Check: key >= 1 && key < array.len
+	// --- Step 5: Array bounds check (with append fast path) ---
+	// Check: key >= 1
 	asm.CMPimm(X2, 1) // key >= 1?
 	asm.BCond(CondLT, fallbackLabel)
 
-	asm.LDR(X3, X0, TableOffArray+8) // X3 = array.len
-	asm.CMPreg(X2, X3)               // key < array.len?
-	asm.BCond(CondGE, fallbackLabel)
+	inBoundsLabel := fmt.Sprintf("settable_inbounds_%d", pc)
+	doneLabel := fmt.Sprintf("settable_done_%d", pc)
 
-	// --- Step 6: Compute &array[key] and copy value ---
+	// Typed arrays (ArrayInt, ArrayFloat) set array=nil and use intArray/floatArray.
+	// Since emitGetTable reads from array (not intArray), we must only use the
+	// mixed array path here. Fall back to call-exit for typed arrays.
+	asm.LDRB(X6, X0, TableOffArrayKind)
+	asm.CBNZ(X6, fallbackLabel) // arrayKind != 0 (not ArrayMixed) → fallback
+
+	// --- Mixed array path (arrayKind == 0 / ArrayMixed) ---
+	asm.LDR(X3, X0, TableOffArray+8) // X3 = array.len
+	asm.CMPreg(X2, X3)               // key vs array.len
+	asm.BCond(CondLT, inBoundsLabel)  // key < len: normal in-bounds write
+	asm.BCond(CondNE, fallbackLabel)  // key > len: sparse write, fallback
+
+	// key == len: append fast path (mixed array)
+	// Only when there is spare capacity (cap > len); otherwise Go must realloc.
+	asm.LDR(X4, X0, TableOffArray+16) // X4 = array.cap
+	asm.CMPreg(X2, X4)                // key < cap? (room to append)
+	asm.BCond(CondGE, fallbackLabel)   // no capacity → fallback (Go reallocs)
+
+	// Update array.len = key + 1
+	asm.ADDimm(X5, X2, 1)
+	asm.STR(X5, X0, TableOffArray+8)
+
+	// Set keysDirty = true (new key added)
+	asm.MOVimm16(X5, 1)
+	asm.STRB(X5, X0, TableOffKeysDirty)
+
+	// Fall through to in-bounds write (array[key] now within new len)
+	asm.Label(inBoundsLabel)
+
+	// --- Step 6: Compute &array[key] and copy value (mixed array) ---
 	asm.LDR(X3, X0, TableOffArray)     // X3 = array.ptr
 	EmitMulValueSize(asm, X4, X2, X5)  // X4 = key * ValueSize
 	asm.ADDreg(X3, X3, X4)             // X3 = &array[key]
@@ -3818,6 +3846,7 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 			asm.STR(X0, X3, w*8)
 		}
 	}
+	asm.Label(doneLabel)
 	// Fallback deferred to cold section.
 	capturedPinnedST := make(map[int]Reg, len(cg.pinnedRegs))
 	for k, v := range cg.pinnedRegs {

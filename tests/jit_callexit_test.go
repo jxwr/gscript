@@ -327,6 +327,84 @@ result := setConst(100)
 	}
 }
 
+// TestMethodJIT_SettableAppend tests the SETTABLE append fast path.
+// When a table is filled sequentially from an empty state, the append
+// fast path should handle most writes natively (when cap > len).
+func TestMethodJIT_SettableAppend(t *testing.T) {
+	src := `
+func appendTest(n) {
+    t := {}
+    // Fill table sequentially with bool values (stays ArrayMixed).
+    for i := 1; i <= n; i++ {
+        t[i] = true
+    }
+    // Read back and count
+    count := 0
+    for i := 1; i <= n; i++ {
+        if t[i] { count = count + 1 }
+    }
+    return count
+}
+result := appendTest(1000)
+`
+	vmResult := runAndGet(t, src, "result", gs.WithVM())
+	jitResult := runAndGet(t, src, "result", gs.WithJIT())
+
+	expected := int64(1000)
+	if vmResult != expected {
+		t.Errorf("VM appendTest(1000): got %v (%T), want %d", vmResult, vmResult, expected)
+	}
+	if jitResult != expected {
+		t.Errorf("JIT appendTest(1000): got %v (%T), want %d", jitResult, jitResult, expected)
+	}
+	if vmResult != jitResult {
+		t.Errorf("VM and JIT results differ: VM=%v, JIT=%v", vmResult, jitResult)
+	}
+}
+
+// TestMethodJIT_SettableAppendSieve tests the append fast path in a
+// sieve-like pattern (the main motivation for this optimization).
+func TestMethodJIT_SettableAppendSieve(t *testing.T) {
+	src := `
+func sieve(n) {
+    is_prime := {}
+    for i := 2; i <= n; i++ {
+        is_prime[i] = true
+    }
+    i := 2
+    for i * i <= n {
+        if is_prime[i] {
+            j := i * i
+            for j <= n {
+                is_prime[j] = false
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    count := 0
+    for i := 2; i <= n; i++ {
+        if is_prime[i] { count = count + 1 }
+    }
+    return count
+}
+result := sieve(10000)
+`
+	vmResult := runAndGet(t, src, "result", gs.WithVM())
+	jitResult := runAndGet(t, src, "result", gs.WithJIT())
+
+	expected := int64(1229) // number of primes up to 10000
+	if vmResult != expected {
+		t.Errorf("VM sieve(10000): got %v (%T), want %d", vmResult, vmResult, expected)
+	}
+	if jitResult != expected {
+		t.Errorf("JIT sieve(10000): got %v (%T), want %d", jitResult, jitResult, expected)
+	}
+	if vmResult != jitResult {
+		t.Errorf("VM and JIT results differ: VM=%v, JIT=%v", vmResult, jitResult)
+	}
+}
+
 // TestCallExit_SelfCallWithExternalCall tests a function that has both
 // self-recursive calls and external calls.
 func TestCallExit_SelfCallWithExternalCall(t *testing.T) {

@@ -784,6 +784,12 @@ func TableFieldOffsets() (arrayKind, intArray, floatArray uintptr) {
 	return unsafe.Offsetof(t.arrayKind), unsafe.Offsetof(t.intArray), unsafe.Offsetof(t.floatArray)
 }
 
+// TableKeysDirtyOffset returns the byte offset of the keysDirty field for JIT verification.
+func TableKeysDirtyOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.keysDirty)
+}
+
 // GetArrayKind returns the array kind for testing/JIT inspection.
 func (t *Table) GetArrayKind() ArrayKind {
 	return t.arrayKind

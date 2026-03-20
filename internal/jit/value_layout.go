@@ -38,7 +38,8 @@ const (
 	TableOffSkeys     = 40  // []string slice header (ptr+len+cap)
 	TableOffSkeysLen  = 48  // skeys.len
 	TableOffSvals     = 64  // []Value slice header
-	TableOffMetatable = 104 // *Table
+	TableOffMetatable  = 104 // *Table
+	TableOffKeysDirty  = 136 // bool (1 byte) — must set true on append
 
 	// Type-specialized array fields (added at end of Table struct)
 	TableOffArrayKind  = 137 // ArrayKind (uint8)
@@ -117,6 +118,12 @@ func init() {
 	}
 	if faOff != TableOffFloatArray {
 		panic("jit: Table.floatArray offset mismatch: expected " + itoa(TableOffFloatArray) + ", got " + itoa(int(faOff)))
+	}
+
+	// Verify keysDirty offset
+	kdOff := runtime.TableKeysDirtyOffset()
+	if kdOff != TableOffKeysDirty {
+		panic("jit: Table.keysDirty offset mismatch: expected " + itoa(TableOffKeysDirty) + ", got " + itoa(int(kdOff)))
 	}
 
 	// Verify ArrayKind constants

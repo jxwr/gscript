@@ -1080,15 +1080,36 @@ func emitTrSetTable(asm *Assembler, ir *TraceIR, idx int) {
 	asm.BCond(CondNE, fallbackLabel)
 	asm.LDR(X2, kBase, kOff+OffsetData)
 
-	// Array bounds: key >= 1 && key < array.len
+	// Array bounds check with append fast path.
+	inBoundsLabel := fmt.Sprintf("settable_inbounds_%d", idx)
+
 	asm.CMPimm(X2, 1)
 	asm.BCond(CondLT, fallbackLabel)
+
+	// Typed arrays set array=nil; only handle ArrayMixed here.
+	asm.LDRB(X6, X0, TableOffArrayKind)
+	asm.CBNZ(X6, fallbackLabel)
+
 	asm.LDR(X3, X0, TableOffArray+8) // array.len
 	asm.CMPreg(X2, X3)
-	asm.BCond(CondGE, fallbackLabel)
+	asm.BCond(CondLT, inBoundsLabel) // key < len: normal write
+	asm.BCond(CondNE, fallbackLabel) // key > len: sparse, side-exit
+
+	// key == len: append fast path (check capacity)
+	asm.LDR(X4, X0, TableOffArray+16) // array.cap
+	asm.CMPreg(X2, X4)
+	asm.BCond(CondGE, fallbackLabel) // no room → side-exit (Go reallocs)
+
+	// Append in-place: update len, set keysDirty
+	asm.ADDimm(X5, X2, 1)
+	asm.STR(X5, X0, TableOffArray+8)
+	asm.MOVimm16(X5, 1)
+	asm.STRB(X5, X0, TableOffKeysDirty)
+
+	asm.Label(inBoundsLabel)
 
 	// Write RK(C) to array[key]
-	asm.LDR(X3, X0, TableOffArray)     // array.ptr
+	asm.LDR(X3, X0, TableOffArray)    // array.ptr
 	EmitMulValueSize(asm, X4, X2, X5) // key * ValueSize
 	asm.ADDreg(X3, X3, X4)
 
