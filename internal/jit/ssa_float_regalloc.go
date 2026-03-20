@@ -59,6 +59,11 @@ func floatRefAllocLR(f *SSAFunc) *floatRefAlloc {
 	// Step 1: Find which refs produce float values
 	isFloatRef := make(map[SSARef]bool)
 	for i := loopIdx + 1; i < len(f.Insts); i++ {
+		// Skip absorbed MULs — they are not emitted by codegen,
+		// so their D register would never be written.
+		if f.AbsorbedMuls[SSARef(i)] {
+			continue
+		}
 		inst := &f.Insts[i]
 		if isFloatOp(inst.Op) || (inst.Type == SSATypeFloat && isValueProducingOp(inst.Op)) {
 			isFloatRef[SSARef(i)] = true
@@ -86,6 +91,16 @@ func floatRefAllocLR(f *SSAFunc) *floatRefAlloc {
 				refUseCount[argRef]++
 				if i > refLastUse[argRef] {
 					refLastUse[argRef] = i
+				}
+			}
+		}
+		// FMADD/FMSUB store a third operand ref in AuxInt — track it as a use
+		if inst.Op == SSA_FMADD || inst.Op == SSA_FMSUB {
+			auxRef := SSARef(inst.AuxInt)
+			if auxRef >= 0 && int(auxRef) < len(f.Insts) && isFloatRef[auxRef] {
+				refUseCount[auxRef]++
+				if i > refLastUse[auxRef] {
+					refLastUse[auxRef] = i
 				}
 			}
 		}
@@ -316,7 +331,12 @@ func floatRegAllocLR(f *SSAFunc) *floatSlotAlloc {
 		}
 
 		// Check operand slots (uses)
-		for _, argRef := range []SSARef{inst.Arg1, inst.Arg2} {
+		operands := []SSARef{inst.Arg1, inst.Arg2}
+		// FMADD/FMSUB store a third operand ref in AuxInt
+		if inst.Op == SSA_FMADD || inst.Op == SSA_FMSUB {
+			operands = append(operands, SSARef(inst.AuxInt))
+		}
+		for _, argRef := range operands {
 			if argRef < 0 || int(argRef) >= len(f.Insts) {
 				continue
 			}

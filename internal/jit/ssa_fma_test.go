@@ -28,9 +28,12 @@ func TestFMA_BasicFMADD(t *testing.T) {
 
 	result := FuseMultiplyAdd(f)
 
-	// MUL should be NOP'd
-	if result.Insts[4].Op != SSA_NOP {
-		t.Errorf("expected MUL to be NOP'd, got %d", result.Insts[4].Op)
+	// MUL should be preserved (not NOP'd) but marked as absorbed
+	if result.Insts[4].Op != SSA_MUL_FLOAT {
+		t.Errorf("expected MUL to stay MUL_FLOAT, got %d", result.Insts[4].Op)
+	}
+	if !result.AbsorbedMuls[4] {
+		t.Error("MUL ref 4 should be in AbsorbedMuls")
 	}
 	// ADD should become FMADD
 	fmadd := result.Insts[5]
@@ -62,8 +65,11 @@ func TestFMA_BasicFMADD_Commutative(t *testing.T) {
 
 	result := FuseMultiplyAdd(f)
 
-	if result.Insts[4].Op != SSA_NOP {
-		t.Errorf("expected MUL to be NOP'd, got %d", result.Insts[4].Op)
+	if result.Insts[4].Op != SSA_MUL_FLOAT {
+		t.Errorf("expected MUL to stay MUL_FLOAT, got %d", result.Insts[4].Op)
+	}
+	if !result.AbsorbedMuls[4] {
+		t.Error("MUL ref 4 should be in AbsorbedMuls")
 	}
 	fmadd := result.Insts[5]
 	if fmadd.Op != SSA_FMADD {
@@ -93,8 +99,11 @@ func TestFMA_BasicFMSUB(t *testing.T) {
 
 	result := FuseMultiplyAdd(f)
 
-	if result.Insts[4].Op != SSA_NOP {
-		t.Errorf("expected MUL to be NOP'd, got %d", result.Insts[4].Op)
+	if result.Insts[4].Op != SSA_MUL_FLOAT {
+		t.Errorf("expected MUL to stay MUL_FLOAT, got %d", result.Insts[4].Op)
+	}
+	if !result.AbsorbedMuls[4] {
+		t.Error("MUL ref 4 should be in AbsorbedMuls")
 	}
 	fmsub := result.Insts[5]
 	if fmsub.Op != SSA_FMSUB {
@@ -125,9 +134,12 @@ func TestFMA_NoFuseMULUsedTwice(t *testing.T) {
 
 	result := FuseMultiplyAdd(f)
 
-	// MUL should NOT be NOP'd (used twice)
-	if result.Insts[4].Op == SSA_NOP {
-		t.Error("MUL should not be NOP'd when it has multiple uses")
+	// MUL should NOT be absorbed (used twice)
+	if result.Insts[4].Op != SSA_MUL_FLOAT {
+		t.Errorf("MUL should stay MUL_FLOAT, got %d", result.Insts[4].Op)
+	}
+	if result.AbsorbedMuls != nil && result.AbsorbedMuls[4] {
+		t.Error("MUL should not be absorbed when it has multiple uses")
 	}
 	// ADD should remain ADD
 	if result.Insts[5].Op != SSA_ADD_FLOAT {
@@ -199,14 +211,20 @@ func TestFMA_DoubleFusion(t *testing.T) {
 
 	result := FuseMultiplyAdd(f)
 
-	if result.Insts[5].Op != SSA_NOP {
-		t.Error("first MUL should be NOP'd")
+	if result.Insts[5].Op != SSA_MUL_FLOAT {
+		t.Errorf("first MUL should stay MUL_FLOAT, got %d", result.Insts[5].Op)
+	}
+	if !result.AbsorbedMuls[5] {
+		t.Error("first MUL ref 5 should be in AbsorbedMuls")
 	}
 	if result.Insts[6].Op != SSA_FMADD {
 		t.Errorf("first ADD should become FMADD, got %d", result.Insts[6].Op)
 	}
-	if result.Insts[7].Op != SSA_NOP {
-		t.Error("second MUL should be NOP'd")
+	if result.Insts[7].Op != SSA_MUL_FLOAT {
+		t.Errorf("second MUL should stay MUL_FLOAT, got %d", result.Insts[7].Op)
+	}
+	if !result.AbsorbedMuls[7] {
+		t.Error("second MUL ref 7 should be in AbsorbedMuls")
 	}
 	if result.Insts[8].Op != SSA_FMSUB {
 		t.Errorf("SUB should become FMSUB, got %d", result.Insts[8].Op)

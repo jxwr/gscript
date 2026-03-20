@@ -252,6 +252,7 @@ func newSSASlotMapper(f *SSAFunc) *ssaSlotMapper {
 			m.slotToLatestRef[slot] = ref
 		case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+			SSA_FMADD, SSA_FMSUB,
 			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_MOVE:
 			slot := int(inst.Slot)
 			if slot >= 0 {
@@ -470,6 +471,11 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 
 		// Skip hoisted constants — already loaded before the loop
 		if hoistedConsts[ref] {
+			continue
+		}
+
+		// Skip absorbed MULs — their computation is folded into FMADD/FMSUB
+		if f.AbsorbedMuls[ref] {
 			continue
 		}
 
@@ -1244,6 +1250,24 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		asm.FDIVd(dstD, arg1D, arg2D)
 		storeFloatResult(asm, regMap, slot, dstD)
 
+	case SSA_FMADD:
+		slot := sm.getSlotForRef(ref)
+		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D1)
+		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D2)
+		addendD := resolveFloatRef(asm, f, SSARef(inst.AuxInt), regMap, sm, D3)
+		dstD := getFloatSlotReg(regMap, slot, D0)
+		asm.FMADDd(dstD, arg1D, arg2D, addendD)
+		storeFloatResult(asm, regMap, slot, dstD)
+
+	case SSA_FMSUB:
+		slot := sm.getSlotForRef(ref)
+		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D1)
+		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D2)
+		addendD := resolveFloatRef(asm, f, SSARef(inst.AuxInt), regMap, sm, D3)
+		dstD := getFloatSlotReg(regMap, slot, D0)
+		asm.FMSUBd(dstD, arg1D, arg2D, addendD)
+		storeFloatResult(asm, regMap, slot, dstD)
+
 	case SSA_CONST_FLOAT:
 		slot := sm.getSlotForRef(ref)
 		if slot >= 0 {
@@ -1662,6 +1686,7 @@ func ssaIsCompilable(f *SSAFunc) bool {
 			SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 			SSA_EQ_INT, SSA_LT_INT, SSA_LE_INT,
 			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+			SSA_FMADD, SSA_FMSUB,
 			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
 			SSA_LOAD_SLOT, SSA_STORE_SLOT,
 			SSA_UNBOX_INT, SSA_BOX_INT, SSA_UNBOX_FLOAT, SSA_BOX_FLOAT,
@@ -1949,6 +1974,16 @@ func newFloatForwarder(f *SSAFunc, regMap *RegMap, sm *ssaSlotMapper, loopIdx in
 				firstUse[inst.Arg2] = i
 			}
 		}
+		// FMADD/FMSUB store a third operand ref in AuxInt
+		if inst.Op == SSA_FMADD || inst.Op == SSA_FMSUB {
+			auxRef := SSARef(inst.AuxInt)
+			if auxRef >= 0 {
+				useCount[auxRef]++
+				if _, ok := firstUse[auxRef]; !ok {
+					firstUse[auxRef] = i
+				}
+			}
+		}
 	}
 
 	// Mark eligible: single-use float results to non-allocated temp slots
@@ -2070,6 +2105,33 @@ func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, r
 			fwd.live[ref] = dstD
 			return // skip memory write — value forwarded in scratch register
 		}
+		storeFloatResultRef(asm, regMap, ref, slot, dstD)
+
+	case SSA_FMADD, SSA_FMSUB:
+		// FMADD: Dd = Da + Dn * Dm (Arg1=Dn, Arg2=Dm, AuxInt=Da ref)
+		// FMSUB: Dd = Da - Dn * Dm (Arg1=Dn, Arg2=Dm, AuxInt=Da ref)
+		slot := sm.getSlotForRef(ref)
+		arg1D := resolveFloatRefFwd(asm, f, inst.Arg1, regMap, sm, fwd, D1) // Dn
+		arg2D := resolveFloatRefFwd(asm, f, inst.Arg2, regMap, sm, fwd, D2) // Dm
+		addendRef := SSARef(inst.AuxInt)
+		addendD := resolveFloatRefFwd(asm, f, addendRef, regMap, sm, fwd, D3) // Da
+
+		var dstD FReg
+		if dreg, ok := regMap.FloatRefReg(ref); ok {
+			dstD = dreg
+		} else if _, ok := regMap.FloatReg(slot); ok {
+			dstD = getFloatSlotReg(regMap, slot, D0)
+		} else {
+			dstD = D0
+		}
+
+		switch inst.Op {
+		case SSA_FMADD:
+			asm.FMADDd(dstD, arg1D, arg2D, addendD)
+		case SSA_FMSUB:
+			asm.FMSUBd(dstD, arg1D, arg2D, addendD)
+		}
+
 		storeFloatResultRef(asm, regMap, ref, slot, dstD)
 
 	case SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT:

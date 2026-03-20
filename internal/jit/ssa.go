@@ -118,8 +118,9 @@ type SSAInst struct {
 
 // SSAFunc holds the SSA IR for a compiled trace.
 type SSAFunc struct {
-	Insts []SSAInst
-	Trace *Trace // original trace (for side-exit snapshots)
+	Insts        []SSAInst
+	Trace        *Trace          // original trace (for side-exit snapshots)
+	AbsorbedMuls map[SSARef]bool // MUL refs absorbed into FMADD/FMSUB (skip in codegen)
 }
 
 // BuildSSA converts a Trace into SSA IR with type inference.

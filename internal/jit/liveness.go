@@ -50,8 +50,11 @@ func AnalyzeLiveness(f *SSAFunc) *LiveInfo {
 			break
 		}
 
-		// Step 5: Skip NOPs (dead code).
+		// Step 5: Skip NOPs (dead code) and absorbed MULs.
 		if inst.Op == SSA_NOP {
+			continue
+		}
+		if f.AbsorbedMuls[SSARef(i)] {
 			continue
 		}
 
@@ -83,7 +86,8 @@ func isValueProducingOp(op SSAOp) bool {
 	case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT:
 		return true
 	// Float arithmetic
-	case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT:
+	case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+		SSA_FMADD, SSA_FMSUB:
 		return true
 	// Data movement / boxing
 	case SSA_MOVE, SSA_UNBOX_INT, SSA_UNBOX_FLOAT, SSA_BOX_INT, SSA_BOX_FLOAT:

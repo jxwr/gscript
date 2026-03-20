@@ -48,6 +48,11 @@ func FuseMultiplyAdd(f *SSAFunc) *SSAFunc {
 		return f
 	}
 
+	// Initialize AbsorbedMuls map
+	if f.AbsorbedMuls == nil {
+		f.AbsorbedMuls = make(map[SSARef]bool)
+	}
+
 	// Build use counts for refs in the loop body.
 	// We only fuse if the MUL has exactly 1 use.
 	useCount := make(map[SSARef]int)
@@ -106,10 +111,9 @@ func tryFuseAdd(f *SSAFunc, addIdx int, mulRef, addendRef SSARef, useCount map[S
 	addInst.Arg2 = mulInst.Arg2 // Dm (mul operand 2)
 	addInst.AuxInt = int64(addendRef) // Da (addend, as SSA ref)
 
-	// NOP out the MUL (it's been consumed)
-	mulInst.Op = SSA_NOP
-	mulInst.Arg1 = SSARefNone
-	mulInst.Arg2 = SSARefNone
+	// Mark the MUL as absorbed — it stays as MUL_FLOAT (preserving regalloc
+	// live ranges and slot mapping) but codegen will skip emitting it.
+	f.AbsorbedMuls[mulRef] = true
 
 	return true
 }
@@ -137,10 +141,9 @@ func tryFuseSub(f *SSAFunc, subIdx int, useCount map[SSARef]int) bool {
 	subInst.Arg2 = mulInst.Arg2 // Dm (mul operand 2)
 	subInst.AuxInt = int64(addendRef) // Da (minuend, as SSA ref)
 
-	// NOP out the MUL
-	mulInst.Op = SSA_NOP
-	mulInst.Arg1 = SSARefNone
-	mulInst.Arg2 = SSARefNone
+	// Mark the MUL as absorbed — it stays as MUL_FLOAT (preserving regalloc
+	// live ranges and slot mapping) but codegen will skip emitting it.
+	f.AbsorbedMuls[mulRef] = true
 
 	return true
 }
