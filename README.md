@@ -4,17 +4,7 @@ A scripting language with **Go syntax** and **Lua semantics**, featuring a tree-
 
 ## Blog: "Beyond LuaJIT"
 
-**[jxwr.github.io/gscript](https://jxwr.github.io/gscript/)** -- the full story of building a tracing JIT compiler from scratch, told through deep technical blog posts:
-
-1. The first trace compilation and ARM64 code generation
-2. SSA IR, register allocation, and constant hoisting
-3. Sub-trace calling for nested loops
-4. Inline field cache and float register allocation
-5. The blacklist that changed everything (mandelbrot 1.53x → 6.09x)
-6. The 4.2x wall -- why we got stuck and the path forward
-7. The day we beat LuaJIT on fib(20)
-8. What the academics know that we don't
-9. The cold code revolution (fn_calls reaches LuaJIT parity)
+**[jxwr.github.io/gscript](https://jxwr.github.io/gscript/)** -- the full story of building a tracing JIT compiler from scratch, from first trace compilation to beating LuaJIT on fib(20).
 
 ## Quick Start
 
