@@ -1,24 +1,22 @@
 # GScript
 
-A scripting language with **Go syntax** and **Lua semantics**, featuring a tree-walking interpreter, register-based bytecode VM, and ARM64 JIT compiler.
+A scripting language with **Go syntax** and **Lua semantics**, featuring a tree-walking interpreter, register-based bytecode VM, and ARM64 JIT compiler. This is an AI-agent-driven experiment to build a JIT compiler that surpasses LuaJIT -- the entire compiler was designed, implemented, optimized, and documented by Claude.
 
-```go
-func makeCounter(start) {
-    n := start
-    return {
-        inc: func() { n = n + 1; return n },
-        get: func() { return n },
-    }
-}
+## Blog: "Beyond LuaJIT"
 
-c := makeCounter(0)
-print(c.inc())  // 1
-print(c.inc())  // 2
-```
+**[jxwr.github.io/gscript](https://jxwr.github.io/gscript/)** -- the full story of building a tracing JIT compiler from scratch, told through deep technical blog posts:
 
-Tables, metatables, closures, coroutines, goroutines, channels -- all with Go-flavored syntax.
+1. The first trace compilation and ARM64 code generation
+2. SSA IR, register allocation, and constant hoisting
+3. Sub-trace calling for nested loops
+4. Inline field cache and float register allocation
+5. The blacklist that changed everything (mandelbrot 1.53x → 6.09x)
+6. The 4.2x wall -- why we got stuck and the path forward
+7. The day we beat LuaJIT on fib(20)
+8. What the academics know that we don't
+9. The cold code revolution (fn_calls reaches LuaJIT parity)
 
-## Getting Started
+## Quick Start
 
 ```bash
 git clone https://github.com/jxwr/gscript
@@ -83,10 +81,9 @@ go build -o gscript ./cmd/gscript/
 
 Platform: Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1 (2026-03-20)
 
-## Documentation
+## More
 
-- **Blog -- "Beyond LuaJIT"**: [jxwr.github.io/gscript](https://jxwr.github.io/gscript/) -- deep dives on the JIT compiler, SSA IR, optimization strategy, and benchmark analysis.
-- **Standard library reference**: [docs/stdlib/STDLIB.md](docs/stdlib/STDLIB.md) -- 30+ libraries (string, table, math, json, fs, net, regexp, http, raylib, and more).
+- **Standard library**: [docs/stdlib/STDLIB.md](docs/stdlib/STDLIB.md) -- 30+ libraries (string, table, math, json, fs, net, regexp, http, raylib, and more).
 - **Architecture decisions**: [docs/decisions/](docs/decisions/) -- ADRs covering bytecode design, JIT strategy, and coroutine implementation.
 - **Examples**: [examples/](examples/) -- from fibonacci to a full Chinese Chess AI with Raylib GUI.
 
