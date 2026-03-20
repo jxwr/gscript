@@ -731,14 +731,25 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			a := DecodeA(inst)
 			bidx := DecodeB(inst)
 			cidx := DecodeC(inst)
-			var bv, cv runtime.Value
-			if bidx >= RKBit { bv = constants[bidx-RKBit] } else { bv = vm.regs[base+bidx] }
-			if cidx >= RKBit { cv = constants[cidx-RKBit] } else { cv = vm.regs[base+cidx] }
-			r, err := vm.arith(bv, cv, "__div", func(x, y float64) float64 { return x / y })
-			if err != nil {
-				return nil, wrapLineErr(frame, err)
+			var bp, cp *runtime.Value
+			if bidx >= RKBit {
+				bp = &constants[bidx-RKBit]
+			} else {
+				bp = &vm.regs[base+bidx]
 			}
-			vm.regs[base+a] = r
+			if cidx >= RKBit {
+				cp = &constants[cidx-RKBit]
+			} else {
+				cp = &vm.regs[base+cidx]
+			}
+			dst := &vm.regs[base+a]
+			if !runtime.DivNums(dst, bp, cp) {
+				r, err := vm.arith(*bp, *cp, "__div", func(x, y float64) float64 { return x / y })
+				if err != nil {
+					return nil, wrapLineErr(frame, err)
+				}
+				*dst = r
+			}
 
 		case OP_MOD:
 			a := DecodeA(inst)

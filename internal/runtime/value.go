@@ -207,6 +207,22 @@ func MulNums(dst, a, b *Value) bool {
 	return false
 }
 
+func DivNums(dst, a, b *Value) bool {
+	// DIV always returns float in Lua/GScript semantics (5/2 = 2.5).
+	// Division by zero produces +Inf or -Inf (standard IEEE 754 behavior).
+	if a.typ == TypeInt && b.typ == TypeInt {
+		dst.typ = TypeFloat
+		dst.data = math.Float64bits(float64(int64(a.data)) / float64(int64(b.data)))
+		return true
+	}
+	if a.typ <= TypeFloat && b.typ <= TypeFloat && a.typ >= TypeInt && b.typ >= TypeInt {
+		dst.typ = TypeFloat
+		dst.data = math.Float64bits(a.Number() / b.Number())
+		return true
+	}
+	return false
+}
+
 func LTInts(a, b *Value) (bool, bool) {
 	if a.typ == TypeInt && b.typ == TypeInt {
 		return int64(a.data) < int64(b.data), true
