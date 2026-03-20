@@ -3657,16 +3657,26 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	}
 
 	// --- Step 5: Array bounds check ---
-	// array is at Table + TableOffArray: {ptr(8), len(8), cap(8)}
-	// Check: key >= 1 && key < array.len
+	// Check: key >= 1
 	asm.CMPimm(X2, 1) // key >= 1?
 	asm.BCond(CondLT, fallbackLabel)
 
+	// Check arrayKind for type-specialized paths
+	boolArrayLabel := fmt.Sprintf("gettable_bool_%d", pc)
+	doneGetLabel := fmt.Sprintf("gettable_done_%d", pc)
+	asm.LDRB(X6, X0, TableOffArrayKind)
+	asm.CMPimmW(X6, AKBool)
+	asm.BCond(CondEQ, boolArrayLabel)
+
+	// For non-bool typed arrays (ArrayInt, ArrayFloat), fall back
+	asm.CBNZ(X6, fallbackLabel)
+
+	// --- ArrayMixed path: check key < array.len ---
 	asm.LDR(X3, X0, TableOffArray+8) // X3 = array.len
 	asm.CMPreg(X2, X3)               // key < array.len?
 	asm.BCond(CondGE, fallbackLabel)
 
-	// --- Step 6: Load array[key] (Value at array.ptr + key * ValueSize) ---
+	// Load array[key] (Value at array.ptr + key * ValueSize)
 	asm.LDR(X3, X0, TableOffArray) // X3 = array.ptr
 	EmitMulValueSize(asm, X4, X2, X5) // X4 = key * ValueSize
 	asm.ADDreg(X3, X3, X4)            // X3 = &array[key]
@@ -3676,6 +3686,25 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 		asm.LDR(X0, X3, w*8)
 		asm.STR(X0, regRegs, aOff+w*8)
 	}
+	asm.B(doneGetLabel)
+
+	// --- ArrayBool path: LDRB from boolArray, sentinel decode ---
+	asm.Label(boolArrayLabel)
+	asm.LDR(X3, X0, TableOffBoolArray+8) // X3 = boolArray.len
+	asm.CMPreg(X2, X3)                   // key < boolArray.len?
+	asm.BCond(CondGE, fallbackLabel)
+	asm.LDR(X3, X0, TableOffBoolArray)   // X3 = boolArray.ptr
+	asm.LDRBreg(X4, X3, X2)             // X4 = boolArray[key] (byte)
+	// Sentinel: 0=nil, 1=false, 2=true → data = b-1 gives 0/1 for false/true
+	// Store as BoolValue: typ=TypeBool, data=0|1, ptr=nil
+	asm.CMPimm(X4, 0)
+	asm.BCond(CondEQ, fallbackLabel) // nil sentinel → fallback (might need metamethods)
+	asm.SUBimm(X4, X4, 1)           // 1→0 (false), 2→1 (true)
+	asm.STR(X4, regRegs, a*ValueSize+OffsetData)
+	asm.MOVimm16(X4, TypeBool)
+	asm.STRB(X4, regRegs, a*ValueSize+OffsetTyp)
+	asm.STR(XZR, regRegs, a*ValueSize+OffsetPtrData)
+	asm.Label(doneGetLabel)
 	// Fallback deferred to cold section.
 	capturedPinnedGT := make(map[int]Reg, len(cg.pinnedRegs))
 	for k, v := range cg.pinnedRegs {
@@ -3784,11 +3813,16 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 
 	inBoundsLabel := fmt.Sprintf("settable_inbounds_%d", pc)
 	doneLabel := fmt.Sprintf("settable_done_%d", pc)
+	boolSetLabel := fmt.Sprintf("settable_bool_%d", pc)
+	boolInBoundsLabel := fmt.Sprintf("settable_bool_inbounds_%d", pc)
+
+	// Check arrayKind for type-specialized paths
+	asm.LDRB(X6, X0, TableOffArrayKind)
+	asm.CMPimmW(X6, AKBool)
+	asm.BCond(CondEQ, boolSetLabel)
 
 	// Typed arrays (ArrayInt, ArrayFloat) set array=nil and use intArray/floatArray.
-	// Since emitGetTable reads from array (not intArray), we must only use the
-	// mixed array path here. Fall back to call-exit for typed arrays.
-	asm.LDRB(X6, X0, TableOffArrayKind)
+	// Fall back to call-exit for non-Mixed, non-Bool typed arrays.
 	asm.CBNZ(X6, fallbackLabel) // arrayKind != 0 (not ArrayMixed) → fallback
 
 	// --- Mixed array path (arrayKind == 0 / ArrayMixed) ---
@@ -3846,6 +3880,56 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 			asm.STR(X0, X3, w*8)
 		}
 	}
+	asm.B(doneLabel)
+
+	// --- ArrayBool path: STRB to boolArray with sentinel encoding ---
+	// Value RK(C) must be a bool. Load its data field (0=false, 1=true),
+	// convert to sentinel (data+1: 1=false, 2=true), STRB to boolArray[key].
+	asm.Label(boolSetLabel)
+	asm.LDR(X3, X0, TableOffBoolArray+8) // X3 = boolArray.len
+	asm.CMPreg(X2, X3)                   // key vs boolArray.len
+	asm.BCond(CondLT, boolInBoundsLabel) // key < len: in-bounds
+	asm.BCond(CondNE, fallbackLabel)     // key > len: sparse, fallback
+
+	// key == len: append fast path for boolArray
+	asm.LDR(X4, X0, TableOffBoolArray+16) // X4 = boolArray.cap
+	asm.CMPreg(X2, X4)
+	asm.BCond(CondGE, fallbackLabel) // no capacity → fallback
+
+	// Update boolArray.len = key + 1
+	asm.ADDimm(X5, X2, 1)
+	asm.STR(X5, X0, TableOffBoolArray+8)
+
+	// Set keysDirty = true
+	asm.MOVimm16(X5, 1)
+	asm.STRB(X5, X0, TableOffKeysDirty)
+
+	asm.Label(boolInBoundsLabel)
+
+	// Load value data from RK(C), convert to sentinel, store byte
+	asm.LDR(X3, X0, TableOffBoolArray) // X3 = boolArray.ptr
+	if cidx >= vm.RKBit {
+		constIdx := vm.RKToConstIdx(cidx)
+		valDataOff := constIdx*ValueSize + OffsetData
+		if valDataOff <= 32760 {
+			asm.LDR(X4, regConsts, valDataOff)
+		} else {
+			asm.LoadImm64(X4, int64(valDataOff))
+			asm.ADDreg(X4, regConsts, X4)
+			asm.LDR(X4, X4, 0)
+		}
+	} else {
+		valDataOff := cidx*ValueSize + OffsetData
+		if valDataOff <= 32760 {
+			asm.LDR(X4, regRegs, valDataOff)
+		} else {
+			asm.LoadImm64(X4, int64(valDataOff))
+			asm.ADDreg(X4, regRegs, X4)
+			asm.LDR(X4, X4, 0)
+		}
+	}
+	asm.ADDimm(X4, X4, 1) // data+1: 0→1 (false), 1→2 (true)
+	asm.STRBreg(X4, X3, X2)
 	asm.Label(doneLabel)
 	// Fallback deferred to cold section.
 	capturedPinnedST := make(map[int]Reg, len(cg.pinnedRegs))

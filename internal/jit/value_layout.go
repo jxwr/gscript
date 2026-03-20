@@ -45,6 +45,7 @@ const (
 	TableOffArrayKind  = 137 // ArrayKind (uint8)
 	TableOffIntArray   = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
 	TableOffFloatArray = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
+	TableOffBoolArray  = 192 // []byte slice header (ptr+len+cap = 24 bytes)
 
 	// Go string header: {ptr(8), len(8)} = 16 bytes
 	StringSize = 16
@@ -55,6 +56,7 @@ const (
 	AKMixed = 0 // ArrayMixed
 	AKInt   = 1 // ArrayInt
 	AKFloat = 2 // ArrayFloat
+	AKBool  = 3 // ArrayBool
 )
 
 // runtime.ValueType constants (must match runtime package).
@@ -109,7 +111,7 @@ func init() {
 	}
 
 	// Verify typed array field offsets
-	akOff, iaOff, faOff := runtime.TableFieldOffsets()
+	akOff, iaOff, faOff, baOff := runtime.TableFieldOffsets()
 	if akOff != TableOffArrayKind {
 		panic("jit: Table.arrayKind offset mismatch: expected " + itoa(TableOffArrayKind) + ", got " + itoa(int(akOff)))
 	}
@@ -118,6 +120,9 @@ func init() {
 	}
 	if faOff != TableOffFloatArray {
 		panic("jit: Table.floatArray offset mismatch: expected " + itoa(TableOffFloatArray) + ", got " + itoa(int(faOff)))
+	}
+	if baOff != TableOffBoolArray {
+		panic("jit: Table.boolArray offset mismatch: expected " + itoa(TableOffBoolArray) + ", got " + itoa(int(baOff)))
 	}
 
 	// Verify keysDirty offset
@@ -135,6 +140,9 @@ func init() {
 	}
 	if uint8(runtime.ArrayFloat) != AKFloat {
 		panic("jit: ArrayFloat mismatch")
+	}
+	if uint8(runtime.ArrayBool) != AKBool {
+		panic("jit: ArrayBool mismatch")
 	}
 }
 

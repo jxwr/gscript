@@ -452,6 +452,14 @@ func (a *Assembler) LSLimm(rd, rn Reg, shift uint8) {
 	a.emit(0xD3400000 | immr<<16 | imms<<10 | uint32(rn)<<5 | uint32(rd))
 }
 
+// LSRimm: Rd = Rn >> shift (logical shift right, alias of UBFM)
+func (a *Assembler) LSRimm(rd, rn Reg, shift uint8) {
+	// LSR Xd, Xn, #shift = UBFM Xd, Xn, #shift, #63
+	immr := uint32(shift) & 63
+	imms := uint32(63)
+	a.emit(0xD3400000 | immr<<16 | imms<<10 | uint32(rn)<<5 | uint32(rd))
+}
+
 // LDRB: Wt = [Xn + #offset] (byte load, zero extend)
 func (a *Assembler) LDRB(rt, rn Reg, offset int) {
 	// LDRB Wt, [Xn, #pimm]: 00|11|1|00|01|0|imm12|Rn|Rt
@@ -462,6 +470,12 @@ func (a *Assembler) LDRB(rt, rn Reg, offset int) {
 func (a *Assembler) STRB(rt, rn Reg, offset int) {
 	// STRB Wt, [Xn, #pimm]: 00|11|1|00|00|0|imm12|Rn|Rt
 	a.emit(0x39000000 | uint32(offset&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
+}
+
+// STRBreg: [Xn + Xm] = Wt (register offset byte store)
+func (a *Assembler) STRBreg(rt, rn, rm Reg) {
+	// STRB Wt, [Xn, Xm]: 00|11|1|00|00|1|Rm|011|0|10|Rn|Rt
+	a.emit(0x38206800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
 }
 
 // LDRW: Wt = [Xn + #offset] (32-bit load, unsigned offset, 4-byte aligned)

@@ -12,6 +12,7 @@ const (
 	ArrayMixed ArrayKind = 0 // []Value (current, default)
 	ArrayInt   ArrayKind = 1 // []int64 (int and bool values)
 	ArrayFloat ArrayKind = 2 // []float64
+	ArrayBool  ArrayKind = 3 // []byte (1 byte per bool, no GC pointers)
 )
 
 // smallFieldCap is the threshold for using flat slices vs maps for string keys.
@@ -40,6 +41,8 @@ type Table struct {
 	arrayKind  ArrayKind
 	intArray   []int64
 	floatArray []float64
+	boolArray  []byte // 1 byte per bool, no GC pointers → zero GC scan
+	                  // Encoding: 0 = nil/unset, 1 = false, 2 = true
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.
@@ -127,6 +130,14 @@ func (t *Table) RawGetInt(key int64) Value {
 	case ArrayFloat:
 		if key >= 1 && key < int64(len(t.floatArray)) {
 			return FloatValue(t.floatArray[key])
+		}
+	case ArrayBool:
+		if key >= 1 && key < int64(len(t.boolArray)) {
+			b := t.boolArray[key]
+			if b == 0 { // nil/unset
+				return NilValue()
+			}
+			return BoolValue(b == 2) // 1=false, 2=true
 		}
 	default:
 		if key >= 1 && key < int64(len(t.array)) {
@@ -331,22 +342,22 @@ const sparseArrayMax = 1024
 
 // classifyValueForArray returns the ArrayKind that a value would require.
 // TypeInt maps to ArrayInt; TypeFloat maps to ArrayFloat;
-// everything else (including nil, bool) maps to ArrayMixed.
-// Note: Bool is NOT stored in ArrayInt because BoolValue(false).Truthy() == false
-// but IntValue(0).Truthy() == true in Lua/GScript semantics. Storing bools
-// as ints would break truthiness checks (e.g., sieve pattern).
+// TypeBool maps to ArrayBool ([]byte, 1B/element, no GC pointers);
+// everything else maps to ArrayMixed.
 func classifyValueForArray(val Value) ArrayKind {
 	switch val.Type() {
 	case TypeInt:
 		return ArrayInt
 	case TypeFloat:
 		return ArrayFloat
+	case TypeBool:
+		return ArrayBool
 	default:
 		return ArrayMixed
 	}
 }
 
-// demoteToMixed converts a typed array (intArray or floatArray) back to the
+// demoteToMixed converts a typed array (intArray, floatArray, or boolArray) back to the
 // generic []Value array. Must be called with lock held (if mu != nil).
 func (t *Table) demoteToMixed() {
 	switch t.arrayKind {
@@ -366,6 +377,21 @@ func (t *Table) demoteToMixed() {
 			t.array[i] = FloatValue(t.floatArray[i])
 		}
 		t.floatArray = nil
+	case ArrayBool:
+		n := len(t.boolArray)
+		t.array = make([]Value, n)
+		t.array[0] = NilValue()
+		for i := 1; i < n; i++ {
+			switch t.boolArray[i] {
+			case 0: // nil/unset
+				t.array[i] = NilValue()
+			case 1: // false
+				t.array[i] = BoolValue(false)
+			default: // 2 = true
+				t.array[i] = BoolValue(true)
+			}
+		}
+		t.boolArray = nil
 	}
 	t.arrayKind = ArrayMixed
 }
@@ -377,6 +403,8 @@ func (t *Table) typedArrayLen() int {
 		return len(t.intArray)
 	case ArrayFloat:
 		return len(t.floatArray)
+	case ArrayBool:
+		return len(t.boolArray)
 	default:
 		return len(t.array)
 	}
@@ -418,6 +446,23 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			t.demoteToMixed()
 			t.array[key] = val
 			return
+		case ArrayBool:
+			if val.Type() == TypeBool {
+				if val.Bool() {
+					t.boolArray[key] = 2 // true
+				} else {
+					t.boolArray[key] = 1 // false
+				}
+				return
+			}
+			if val.IsNil() {
+				t.boolArray[key] = 0 // nil/unset
+				return
+			}
+			// Type mismatch → demote
+			t.demoteToMixed()
+			t.array[key] = val
+			return
 		default:
 			t.array[key] = val
 			return
@@ -448,6 +493,20 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			t.array = append(t.array, val)
 			t.absorbKeys()
 			return
+		case ArrayBool:
+			if val.Type() == TypeBool {
+				var b byte = 1 // false
+				if val.Bool() {
+					b = 2 // true
+				}
+				t.boolArray = append(t.boolArray, b)
+				t.absorbKeys()
+				return
+			}
+			t.demoteToMixed()
+			t.array = append(t.array, val)
+			t.absorbKeys()
+			return
 		default:
 			// ArrayMixed: first non-nil write to an empty array → try to specialize
 			if len(t.array) == 1 {
@@ -465,6 +524,17 @@ func (t *Table) RawSetInt(key int64, val Value) {
 					t.arrayKind = ArrayFloat
 					t.floatArray = make([]float64, 1, 8) // [0] padding
 					t.floatArray = append(t.floatArray, val.Float())
+					t.array = nil
+					t.absorbKeys()
+					return
+				case ArrayBool:
+					t.arrayKind = ArrayBool
+					t.boolArray = make([]byte, 1, 8) // [0] padding (0 = nil sentinel)
+					var b byte = 1                    // false
+					if val.Bool() {
+						b = 2 // true
+					}
+					t.boolArray = append(t.boolArray, b)
 					t.array = nil
 					t.absorbKeys()
 					return
@@ -511,6 +581,25 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			}
 			t.demoteToMixed()
 			// Fall through to mixed sparse expansion
+		case ArrayBool:
+			if val.Type() == TypeBool {
+				if needed > cap(t.boolArray) {
+					newArr := make([]byte, needed)
+					copy(newArr, t.boolArray)
+					t.boolArray = newArr
+				} else {
+					t.boolArray = t.boolArray[:needed]
+				}
+				if val.Bool() {
+					t.boolArray[key] = 2 // true
+				} else {
+					t.boolArray[key] = 1 // false
+				}
+				t.absorbKeys()
+				return
+			}
+			t.demoteToMixed()
+			// Fall through to mixed sparse expansion
 		case ArrayMixed:
 			// First write with sparse key on empty array → try to specialize
 			if len(t.array) <= 1 {
@@ -527,6 +616,17 @@ func (t *Table) RawSetInt(key int64, val Value) {
 					t.arrayKind = ArrayFloat
 					t.floatArray = make([]float64, needed)
 					t.floatArray[key] = val.Float()
+					t.array = nil
+					t.absorbKeys()
+					return
+				case ArrayBool:
+					t.arrayKind = ArrayBool
+					t.boolArray = make([]byte, needed) // zeros = nil sentinel
+					if val.Bool() {
+						t.boolArray[key] = 2 // true
+					} else {
+						t.boolArray[key] = 1 // false
+					}
 					t.array = nil
 					t.absorbKeys()
 					return
@@ -661,6 +761,17 @@ func (t *Table) appendToTypedArray(val Value) {
 			t.demoteToMixed()
 			t.array = append(t.array, val)
 		}
+	case ArrayBool:
+		if val.Type() == TypeBool {
+			var b byte = 1 // false
+			if val.Bool() {
+				b = 2 // true
+			}
+			t.boolArray = append(t.boolArray, b)
+		} else {
+			t.demoteToMixed()
+			t.array = append(t.array, val)
+		}
 	default:
 		t.array = append(t.array, val)
 	}
@@ -675,6 +786,13 @@ func (t *Table) Length() int {
 	case ArrayFloat:
 		// All slots are valid for float64 as well.
 		return len(t.floatArray) - 1
+	case ArrayBool:
+		// Scan backwards past nil sentinels (0 = unset)
+		n := len(t.boolArray) - 1
+		for n > 0 && t.boolArray[n] == 0 {
+			n--
+		}
+		return n
 	default:
 		n := len(t.array) - 1
 		for n > 0 && t.array[n].IsNil() {
@@ -706,6 +824,12 @@ func (t *Table) rebuildKeys() {
 	case ArrayFloat:
 		for i := 1; i < len(t.floatArray); i++ {
 			t.keys = append(t.keys, IntValue(int64(i)))
+		}
+	case ArrayBool:
+		for i := 1; i < len(t.boolArray); i++ {
+			if t.boolArray[i] != 0 { // skip nil/unset slots
+				t.keys = append(t.keys, IntValue(int64(i)))
+			}
 		}
 	default:
 		for i := 1; i < len(t.array); i++ {
@@ -779,9 +903,9 @@ func (t *Table) SetMetatable(mt *Table) {
 
 // TableFieldOffsets returns the byte offsets of key Table fields for JIT verification.
 // This allows the JIT to verify its hardcoded offsets match the actual struct layout.
-func TableFieldOffsets() (arrayKind, intArray, floatArray uintptr) {
+func TableFieldOffsets() (arrayKind, intArray, floatArray, boolArray uintptr) {
 	var t Table
-	return unsafe.Offsetof(t.arrayKind), unsafe.Offsetof(t.intArray), unsafe.Offsetof(t.floatArray)
+	return unsafe.Offsetof(t.arrayKind), unsafe.Offsetof(t.intArray), unsafe.Offsetof(t.floatArray), unsafe.Offsetof(t.boolArray)
 }
 
 // TableKeysDirtyOffset returns the byte offset of the keysDirty field for JIT verification.

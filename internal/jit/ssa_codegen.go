@@ -768,12 +768,13 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		// --- Type-specialized int array fast path ---
 		if inst.Type == SSATypeInt && dstSlot >= 0 {
 			doneLabel := fmt.Sprintf("load_array_done_%d", ref)
+			boolLabel := fmt.Sprintf("load_array_bool_%d", ref)
 			mixedLabel := fmt.Sprintf("load_array_mixed_%d", ref)
 
 			// Check arrayKind == ArrayInt
 			asm.LDRB(X1, X0, TableOffArrayKind)
 			asm.CMPimmW(X1, AKInt)
-			asm.BCond(CondNE, mixedLabel)
+			asm.BCond(CondNE, boolLabel)
 
 			// Int array fast path: bounds check against intArray.len
 			asm.CMPimm(keyReg, 1)
@@ -786,6 +787,32 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.LDRreg(X0, X3, keyReg)        // X0 = *(X3 + keyReg*8)
 
 			// Store result
+			if r, ok := regMap.IntReg(dstSlot); ok {
+				asm.MOVreg(r, X0)
+			} else {
+				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
+				asm.MOVimm16(X0, TypeInt)
+				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+			}
+			asm.B(doneLabel)
+
+			// --- Bool array fast path ---
+			// Sentinel encoding: 0=nil, 1=false, 2=true
+			// Result: data = b >> 1 (0 for false, 1 for true); nil → side-exit
+			asm.Label(boolLabel)
+			asm.CMPimmW(X1, AKBool)
+			asm.BCond(CondNE, mixedLabel)
+
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffBoolArray+8) // boolArray.len
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			asm.LDR(X3, X0, TableOffBoolArray) // boolArray.ptr
+			asm.LDRBreg(X0, X3, keyReg)        // X0 = boolArray[key] (byte)
+			asm.CBZ(X0, "side_exit")            // 0 = nil → side-exit
+			asm.LSRimm(X0, X0, 1)              // 1→0 (false), 2→1 (true)
+
 			if r, ok := regMap.IntReg(dstSlot); ok {
 				asm.MOVreg(r, X0)
 			} else {
@@ -910,6 +937,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		// Determine value type from register allocation
 		valIsInt := false
 		valIsFloat := false
+		valIsBool := false
 		if valSlot >= 0 {
 			if _, ok := regMap.IntReg(valSlot); ok {
 				valIsInt = true
@@ -924,6 +952,8 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				valIsInt = true
 			} else if valInst.Type == SSATypeFloat {
 				valIsFloat = true
+			} else if valInst.Type == SSATypeBool {
+				valIsBool = true
 			}
 		}
 
@@ -947,11 +977,12 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		if valIsInt && valSlot >= 0 {
 			// --- Int array fast path for STORE ---
 			doneLabel := fmt.Sprintf("store_array_done_%d", ref)
+			boolLabel := fmt.Sprintf("store_array_bool_%d", ref)
 			mixedLabel := fmt.Sprintf("store_array_mixed_%d", ref)
 
 			asm.LDRB(X1, X0, TableOffArrayKind)
 			asm.CMPimmW(X1, AKInt)
-			asm.BCond(CondNE, mixedLabel)
+			asm.BCond(CondNE, boolLabel)
 
 			// Bounds check against intArray.len
 			asm.CMPimm(keyReg, 1)
@@ -968,6 +999,31 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				asm.LDR(X4, regRegs, valSlot*ValueSize+OffsetData)
 				asm.STRreg(X4, X3, keyReg)
 			}
+			asm.B(doneLabel)
+
+			// --- Bool array fallback for int store ---
+			// When TypeBool is mapped to SSATypeInt, the data is 0/1.
+			// Sentinel encoding: data + 1 (0→1=false, 1→2=true)
+			asm.Label(boolLabel)
+			asm.CMPimmW(X1, AKBool)
+			asm.BCond(CondNE, mixedLabel)
+
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffBoolArray+8) // boolArray.len
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+
+			asm.LDR(X3, X0, TableOffBoolArray) // boolArray.ptr
+			if r, ok := regMap.IntReg(valSlot); ok {
+				asm.ADDimm(X4, r, 1) // sentinel = data + 1
+			} else {
+				asm.LDR(X4, regRegs, valSlot*ValueSize+OffsetData)
+				asm.ADDimm(X4, X4, 1)
+			}
+			asm.STRBreg(X4, X3, keyReg)
+			asm.MOVimm16(X4, 1)
+			asm.STRB(X4, X0, TableOffKeysDirty)
 			asm.B(doneLabel)
 
 			// Mixed fallback
@@ -1028,6 +1084,57 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				for w := 0; w < ValueSize/8; w++ {
 					asm.LDR(X4, regRegs, valSlot*ValueSize+w*8)
 					asm.STR(X4, X3, w*8)
+				}
+			}
+			asm.Label(doneLabel)
+
+		} else if valIsBool {
+			// --- Bool array fast path for STORE ---
+			// Value is SSA_CONST_BOOL: data=0 (false) or data=1 (true)
+			// Sentinel encoding: 0=nil, 1=false, 2=true → store data+1
+			doneLabel := fmt.Sprintf("store_array_done_%d", ref)
+			mixedLabel := fmt.Sprintf("store_array_mixed_%d", ref)
+
+			asm.LDRB(X1, X0, TableOffArrayKind)
+			asm.CMPimmW(X1, AKBool)
+			asm.BCond(CondNE, mixedLabel)
+
+			// Bounds check against boolArray.len
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffBoolArray+8) // boolArray.len
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+
+			// Store boolArray[key] = data + 1 (sentinel encoding)
+			asm.LDR(X3, X0, TableOffBoolArray) // boolArray.ptr
+			if valSlot >= 0 {
+				asm.LDR(X4, regRegs, valSlot*ValueSize+OffsetData)
+				asm.ADDimm(X4, X4, 1) // 0→1 (false), 1→2 (true)
+			} else {
+				asm.MOVimm16(X4, 1) // default: false sentinel
+			}
+			asm.STRBreg(X4, X3, keyReg)
+
+			// Set keysDirty = true
+			asm.MOVimm16(X4, 1)
+			asm.STRB(X4, X0, TableOffKeysDirty)
+			asm.B(doneLabel)
+
+			// Mixed fallback
+			asm.Label(mixedLabel)
+			asm.CMPimm(keyReg, 1)
+			asm.BCond(CondLT, "side_exit")
+			asm.LDR(X3, X0, TableOffArray+8)
+			asm.CMPreg(keyReg, X3)
+			asm.BCond(CondGE, "side_exit")
+			asm.LDR(X3, X0, TableOffArray)
+			EmitMulValueSize(asm, X4, keyReg, X5)
+			asm.ADDreg(X3, X3, X4)
+			if valSlot >= 0 {
+				for w := 0; w < ValueSize/8; w++ {
+					asm.LDR(X0, regRegs, valSlot*ValueSize+w*8)
+					asm.STR(X0, X3, w*8)
 				}
 			}
 			asm.Label(doneLabel)
