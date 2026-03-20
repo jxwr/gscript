@@ -490,9 +490,23 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 	// Priority: full nesting first (better codegen, unified register allocation).
 	if op == vm.OP_FORPREP && r.useSSA && r.depth == 0 {
 		forloopPC := pc + ir.SBX + 1
-		// innerKey used by deeper nesting fallback below
 
-		// Strategy 1 (preferred): Full nested recording.
+		// Strategy 0: When already in full-nesting mode (innerLoopDepth > 0) and
+		// a compiled inner trace exists, use sub-trace calling to avoid triple nesting.
+		// Example: y-loop (full nesting x-loop) encounters iter-loop FORPREP —
+		// use compiled iter-loop trace instead of going 3 levels deep.
+		if r.innerLoopDepth > 0 {
+			innerKey := loopKey{proto: proto, pc: forloopPC}
+			if innerCT, ok := r.compiled[innerKey]; ok && innerCT != nil && innerCT.ssaCompiled {
+				r.innerLoopSkipStart = pc + 1
+				r.innerLoopSkipEnd = forloopPC
+				ir.FieldIndex = forloopPC
+				r.current.IR = append(r.current.IR, ir)
+				return false
+			}
+		}
+
+		// Strategy 1: Full nested recording (preferred for first level of nesting).
 		// Record the FORPREP normally, then record exactly ONE iteration
 		// of the inner body. The inner FORLOOP will be recorded too.
 		// Remaining inner iterations are skipped via innerLoopSkipEnd.
@@ -506,16 +520,8 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 			return false
 		}
 
-		// Deeper nesting: try sub-trace calling for compiled inner traces.
-		innerKey := loopKey{proto: proto, pc: forloopPC}
-		if innerCT, ok := r.compiled[innerKey]; ok && innerCT != nil && innerCT.ssaCompiled {
-			r.innerLoopSkipStart = pc + 1
-			r.innerLoopSkipEnd = forloopPC
-			ir.FieldIndex = forloopPC
-			r.current.IR = append(r.current.IR, ir)
-			return false
-		}
-		// No compiled inner trace for third level: abort
+		// Deeper nesting: Strategy 0 already handles compiled inner traces above.
+		// If we reach here, there's no compiled trace for this inner loop — abort.
 		r.abortAndBlacklist()
 		return false
 	}
