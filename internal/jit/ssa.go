@@ -165,50 +165,30 @@ func (b *ssaBuilder) build() *SSAFunc {
 	}
 
 	// Phase 2: Emit guards for loop entry (type checks for used slots)
+	// Skip guards for integer slots that are written before their first read in
+	// the trace body — their initial value is irrelevant since the trace
+	// overwrites it before use. Float slots always get guards because skipping
+	// them disrupts the float register allocator's ref-level live ranges.
 	guardedSlots := make(map[int]bool)
 	for _, ir := range b.trace.IR {
 		switch ir.Op {
 		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV,
 			vm.OP_LT, vm.OP_LE:
 			if ir.B < 256 && !guardedSlots[ir.B] {
-				if b.isWrittenBeforeFirstRead(ir.B) {
-					// Slot is overwritten (LOADK/LOADINT/etc.) before first arithmetic read.
-					// Skip guard emission — the entry type may differ from the usage type
-					// (e.g., slot holds bool at re-entry but LOADK writes float before MUL).
-					// Set slotType so convertArithTyped picks the correct int/float op.
-					// Mark guardedSlots to prevent other handlers (SETTABLE etc.) from
-					// emitting a guard for this slot — it's refreshed each iteration.
-					if ir.BType == runtime.TypeInt {
-						b.slotType[ir.B] = SSATypeInt
-					} else if ir.BType == runtime.TypeFloat {
-						b.slotType[ir.B] = SSATypeFloat
-					}
-				} else {
+				if !b.isWrittenBeforeFirstRead(ir.B) {
 					b.emitGuard(ir.B, ir.BType, ir.PC)
 				}
 				guardedSlots[ir.B] = true
 			}
 			if ir.C < 256 && !guardedSlots[ir.C] {
-				if b.isWrittenBeforeFirstRead(ir.C) {
-					if ir.CType == runtime.TypeInt {
-						b.slotType[ir.C] = SSATypeInt
-					} else if ir.CType == runtime.TypeFloat {
-						b.slotType[ir.C] = SSATypeFloat
-					}
-				} else {
+				if !b.isWrittenBeforeFirstRead(ir.C) {
 					b.emitGuard(ir.C, ir.CType, ir.PC)
 				}
 				guardedSlots[ir.C] = true
 			}
 		case vm.OP_UNM:
 			if ir.B < 256 && !guardedSlots[ir.B] {
-				if b.isWrittenBeforeFirstRead(ir.B) {
-					if ir.BType == runtime.TypeInt {
-						b.slotType[ir.B] = SSATypeInt
-					} else if ir.BType == runtime.TypeFloat {
-						b.slotType[ir.B] = SSATypeFloat
-					}
-				} else {
+				if !b.isWrittenBeforeFirstRead(ir.B) {
 					b.emitGuard(ir.B, ir.BType, ir.PC)
 				}
 				guardedSlots[ir.B] = true
@@ -267,84 +247,126 @@ func (b *ssaBuilder) build() *SSAFunc {
 	return &SSAFunc{Insts: b.insts, Trace: b.trace}
 }
 
-// isWrittenBeforeFirstRead checks if a slot is written (by LOADK/LOADINT/LOADBOOL/LOADNIL)
-// before it is first read as an arithmetic/comparison operand in the trace,
-// AND the slot is not also used for non-arithmetic purposes (table ops, globals, moves).
+// isWrittenBeforeFirstRead returns true if the given slot is written by a
+// numeric-safe instruction before any instruction reads it in the trace body.
+// When true, the slot's initial type at loop entry doesn't matter — the trace
+// will overwrite it before use, so a type guard is unnecessary.
 //
-// When true, we skip guard emission for that slot because:
-//   - The slot will be overwritten before use, so guarding entry type is wrong
-//     (e.g., slot holds bool at loop re-entry but LOADK writes float before MUL reads it)
-//   - The LOADK/LOADINT in Phase 4 will set slotDefs before any getSlotRef
-//
-// We must also verify the slot is not reused for table/global ops in the same trace,
-// because the integer register allocator would conflict with the memory-based table ops
-// (the store-back on side-exit would overwrite the table value with an integer).
+// Restrictions:
+//   - Float slots always return false. Skipping guards for float slots disrupts
+//     the float register allocator's ref-level live ranges and pre-loop loading,
+//     causing wrong register assignments and corrupt computations.
+//   - Non-numeric ops (GETTABLE, SETTABLE, GETFIELD, SETFIELD, GETGLOBAL, CALL)
+//     cause a bail-out because they may reuse the slot for a different type.
+//   - For instructions that both read and write the same slot (e.g. ADD R4 R4 R3),
+//     the read is checked FIRST since operands are read before the result is written.
 func (b *ssaBuilder) isWrittenBeforeFirstRead(slot int) bool {
-	// First pass: check if the slot is used for non-arithmetic purposes.
-	// If so, we can't safely skip the guard.
+	// Float slots: always emit guards. Skipping them breaks the float register
+	// allocator's pre-loop loading (loads garbage into D registers, corrupts
+	// other computations via shared register pool).
+	if b.slotType[slot] == SSATypeFloat {
+		return false
+	}
+	return b.isWrittenBeforeFirstReadImpl(slot)
+}
+
+func (b *ssaBuilder) isWrittenBeforeFirstReadImpl(slot int) bool {
+	// First pass: bail out if the slot is used by non-numeric operations anywhere
+	// in the trace. Non-numeric ops (GETTABLE, SETTABLE, GETFIELD, SETFIELD,
+	// GETGLOBAL, CALL) may reuse the same slot for a different type (e.g., slot
+	// holds int from LOADINT, then table from GETGLOBAL). If we skip the guard,
+	// guardedSlots is set, preventing the later table guard from being emitted.
 	for _, ir := range b.trace.IR {
 		switch ir.Op {
 		case vm.OP_GETTABLE:
-			// B = table slot, A = destination
-			if ir.B == slot || ir.A == slot {
+			// A=destination (writes table element), B=table (read), C=key (read)
+			if ir.A == slot || ir.B == slot || (ir.C < 256 && ir.C == slot) {
 				return false
 			}
 		case vm.OP_SETTABLE:
-			// A = table slot
-			if ir.A == slot {
+			// A=table (read), B=key (read/RK), C=value (read/RK)
+			if ir.A == slot || (ir.B < 256 && ir.B == slot) || (ir.C < 256 && ir.C == slot) {
 				return false
 			}
 		case vm.OP_GETFIELD:
-			// B = table slot, A = destination
-			if ir.B == slot || ir.A == slot {
+			// A=destination, B=table (read)
+			if ir.A == slot || ir.B == slot {
 				return false
 			}
 		case vm.OP_SETFIELD:
-			// A = table slot
-			if ir.A == slot {
+			// A=table (read), C=value (read/RK)
+			if ir.A == slot || (ir.C < 256 && ir.C == slot) {
 				return false
 			}
 		case vm.OP_GETGLOBAL:
-			// A = destination (writes full Value including type)
+			// A=destination (writes full Value)
 			if ir.A == slot {
 				return false
 			}
-		case vm.OP_MOVE:
-			// A = destination, B = source
-			if ir.A == slot {
-				return false // slot is overwritten by MOVE (not a constant load)
-			}
 		case vm.OP_CALL:
-			// CALL can write to A (return value)
+			// CALL reads R(A) (function) and R(A+1)..R(A+B-1) (args), writes R(A) (result)
+			if slot >= ir.A && slot < ir.A+ir.B {
+				return false
+			}
 			if ir.A == slot {
 				return false
 			}
 		}
 	}
 
-	// Second pass: check write-before-read for arithmetic operands.
+	// Second pass: scan for write-before-read among numeric operations.
 	for _, ir := range b.trace.IR {
-		// Write to slot A by a constant-loading instruction?
-		switch ir.Op {
-		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
-			if ir.A == slot {
-				return true // written before any arithmetic read
-			}
-		}
-		// Read of slot as B or C operand of arithmetic/comparison?
+		// Check reads first (within same instruction, reads happen before write)
+		isRead := false
 		switch ir.Op {
 		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV,
 			vm.OP_LT, vm.OP_LE, vm.OP_EQ:
 			if (ir.B < 256 && ir.B == slot) || (ir.C < 256 && ir.C == slot) {
-				return false // read before any write
+				isRead = true
 			}
 		case vm.OP_UNM:
-			if ir.B < 256 && ir.B == slot {
-				return false
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_MOVE:
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_FORLOOP:
+			if slot == ir.A || slot == ir.A+1 || slot == ir.A+2 {
+				isRead = true
+			}
+		case vm.OP_FORPREP:
+			if slot == ir.A || slot == ir.A+2 {
+				isRead = true
+			}
+		case vm.OP_TEST:
+			if ir.A == slot {
+				isRead = true
 			}
 		}
+		if isRead {
+			return false // slot read before any write — guard needed
+		}
+
+		// Check writes (numeric-safe ops only)
+		isWrite := false
+		switch ir.Op {
+		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
+			isWrite = (ir.A == slot)
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV:
+			isWrite = (ir.A == slot)
+		case vm.OP_UNM:
+			isWrite = (ir.A == slot)
+		case vm.OP_MOVE:
+			isWrite = (ir.A == slot)
+		}
+		if isWrite {
+			return true // slot written before any read — guard not needed
+		}
 	}
-	return false // no arithmetic read found, doesn't matter
+	// Slot never read or written in trace — conservative: guard needed
+	return false
 }
 
 func (b *ssaBuilder) emitGuard(slot int, typ runtime.ValueType, pc int) {
