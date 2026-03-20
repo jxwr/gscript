@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
+  <a href="10-the-last-thirty-percent">The Last Thirty Percent</a>
+  <p>Slot reuse guard fix, type-specialized arrays, FMADD/FMSUB fusion. Mandelbrot drops 33%. binary_trees runs for the first time. And the Value 24B wall becomes undeniable.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
   <a href="09-the-cold-code-revolution">The Cold Code Revolution</a>
   <p>BOLT-style cold code splitting turns fn_calls from 70% behind LuaJIT to 5% behind. Seven optimizations, six bug fixes, one failed experiment, and the day we nearly caught LuaJIT on function calls.</p>
 </div>
@@ -158,41 +165,42 @@
 
 <table>
   <tr><th>Benchmark</th><th>GScript</th><th>LuaJIT</th><th>Result</th></tr>
-  <tr><td>fib(20)</td><td><b>19.1&micro;s</b></td><td>26.2&micro;s</td><td><b style="color:#2a2">&starf; GScript 27% faster</b></td></tr>
-  <tr><td>fn calls (10K)</td><td><b>2.6&micro;s</b></td><td>2.6&micro;s</td><td><b style="color:#2a2">&starf; parity</b></td></tr>
-  <tr><td>ackermann(3,4)</td><td>18.6&micro;s</td><td>12.5&micro;s</td><td>1.5&times; gap</td></tr>
-  <tr><td>mandelbrot(1000)</td><td>0.142s</td><td>0.057s</td><td>2.5&times; gap</td></tr>
+  <tr><td>fib(20)</td><td><b>19.4&micro;s</b></td><td>24.7&micro;s</td><td><b style="color:#2a2">&starf; GScript 21% faster</b></td></tr>
+  <tr><td>fn calls (10K)</td><td><b>2.66&micro;s</b></td><td>2.6&micro;s</td><td><b style="color:#2a2">&starf; parity</b></td></tr>
+  <tr><td>ackermann(3,4)</td><td>18.9&micro;s</td><td>12.0&micro;s</td><td>1.6&times; gap</td></tr>
+  <tr><td>mandelbrot(1000)</td><td>0.155s</td><td>0.058s</td><td>2.7&times; gap</td></tr>
 </table>
 
-<h2>Full Suite (14 benchmarks + warm)</h2>
+<h2>Full Suite (15 benchmarks + warm)</h2>
 
 <table>
-  <tr><th>Program</th><th>VM</th><th>Trace</th><th>Speedup</th><th>LuaJIT</th></tr>
-  <tr><td>mandelbrot</td><td>1.357s</td><td><b>0.142s</b></td><td><b>&times;9.6</b></td><td>0.057s</td></tr>
-  <tr><td>fib(35)</td><td>0.026s</td><td>0.026s</td><td>&times;1.0</td><td>0.026s</td></tr>
-  <tr><td>sieve(1M)</td><td>0.114s</td><td>0.113s</td><td>&times;1.0</td><td>0.012s</td></tr>
-  <tr><td>ackermann</td><td>0.009s</td><td>0.009s</td><td>&times;1.0</td><td>0.006s</td></tr>
-  <tr><td>nbody</td><td>2.419s</td><td>2.363s</td><td>&times;1.0</td><td>0.036s</td></tr>
-  <tr><td>spectral_norm</td><td>0.654s</td><td>error</td><td>&mdash;</td><td>0.007s</td></tr>
-  <tr><td>matmul</td><td>1.186s</td><td>1.432s</td><td>&times;0.83</td><td>0.021s</td></tr>
-  <tr><td>fannkuch(9)</td><td>0.524s</td><td>timeout</td><td>&mdash;</td><td>0.016s</td></tr>
-  <tr><td>sort(50K)</td><td>0.146s</td><td>0.147s</td><td>&times;0.99</td><td>0.012s</td></tr>
-  <tr><td>sum_primes</td><td>0.021s</td><td>0.027s</td><td>&times;0.78</td><td>0.002s</td></tr>
-  <tr><td>mutual_recursion</td><td>0.229s</td><td>0.244s</td><td>&times;0.94</td><td>0.004s</td></tr>
-  <tr><td>method_dispatch</td><td>0.113s</td><td>0.114s</td><td>&times;0.99</td><td>&lt;0.001s</td></tr>
-  <tr><td>closure_bench</td><td>0.053s</td><td>0.055s</td><td>&times;0.96</td><td>0.009s</td></tr>
-  <tr><td>string_bench</td><td>0.043s</td><td>0.046s</td><td>&times;0.93</td><td>0.009s</td></tr>
+  <tr><th>Program</th><th>VM</th><th>JIT</th><th>Trace</th><th>Best</th><th>LuaJIT</th></tr>
+  <tr><td>fib(35)</td><td>0.882s</td><td><b>0.026s</b></td><td>0.028s</td><td>0.026s</td><td>0.025s</td></tr>
+  <tr><td>sieve(1M)</td><td>0.308s</td><td><b>0.080s</b></td><td>0.100s</td><td>0.080s</td><td>0.011s</td></tr>
+  <tr><td>mandelbrot</td><td>1.397s</td><td>1.355s</td><td><b>0.155s</b></td><td>0.155s</td><td>0.058s</td></tr>
+  <tr><td>ackermann</td><td>0.153s</td><td><b>0.009s</b></td><td>0.010s</td><td>0.009s</td><td>0.006s</td></tr>
+  <tr><td>matmul</td><td>1.163s</td><td><b>1.120s</b></td><td>1.444s</td><td>1.120s</td><td>0.022s</td></tr>
+  <tr><td>spectral_norm</td><td>0.753s</td><td><b>0.660s</b></td><td>0.678s</td><td>0.660s</td><td>0.008s</td></tr>
+  <tr><td>nbody</td><td>2.405s</td><td><b>2.376s</b></td><td>2.422s</td><td>2.376s</td><td>0.037s</td></tr>
+  <tr><td>fannkuch(9)</td><td>0.597s</td><td><b>0.588s</b></td><td>timeout</td><td>0.588s</td><td>0.019s</td></tr>
+  <tr><td>sort(50K)</td><td><b>0.158s</b></td><td>0.172s</td><td>0.174s</td><td>0.158s</td><td>0.012s</td></tr>
+  <tr><td>sum_primes</td><td>0.023s</td><td><b>0.022s</b></td><td>0.027s</td><td>0.022s</td><td>0.002s</td></tr>
+  <tr><td>mutual_recursion</td><td><b>0.103s</b></td><td>0.228s</td><td>0.250s</td><td>0.103s</td><td>0.005s</td></tr>
+  <tr><td>method_dispatch</td><td><b>0.080s</b></td><td>0.115s</td><td>0.112s</td><td>0.080s</td><td>0.001s</td></tr>
+  <tr><td>closure_bench</td><td><b>0.046s</b></td><td>0.055s</td><td>0.056s</td><td>0.046s</td><td>0.009s</td></tr>
+  <tr><td>string_bench</td><td>0.048s</td><td><b>0.046s</b></td><td>0.047s</td><td>0.046s</td><td>0.010s</td></tr>
+  <tr><td>binary_trees</td><td><b>1.255s</b></td><td>1.871s</td><td>1.871s</td><td>1.255s</td><td>0.17s</td></tr>
 </table>
 
 <h2>Warm Micro-benchmarks (JIT vs VM)</h2>
 
 <table>
   <tr><th>Benchmark</th><th>JIT</th><th>VM</th><th>Speedup</th></tr>
-  <tr><td>FunctionCalls(10K)</td><td><b>2.6&micro;s</b></td><td>241.3&micro;s</td><td><b>&times;93.0</b></td></tr>
-  <tr><td>FibRecursive(20)</td><td><b>19.1&micro;s</b></td><td>621.4&micro;s</td><td><b>&times;32.5</b></td></tr>
-  <tr><td>HeavyLoop</td><td><b>25.2&micro;s</b></td><td>725.9&micro;s</td><td><b>&times;28.8</b></td></tr>
-  <tr><td>Ackermann(3,4)</td><td><b>18.6&micro;s</b></td><td>297.1&micro;s</td><td><b>&times;15.9</b></td></tr>
-  <tr><td>FibIterative(30)</td><td><b>197.7ns</b></td><td>499.7ns</td><td><b>&times;2.5</b></td></tr>
+  <tr><td>FunctionCalls(10K)</td><td><b>2.66&micro;s</b></td><td>245.6&micro;s</td><td><b>&times;92.3</b></td></tr>
+  <tr><td>FibRecursive(20)</td><td><b>19.4&micro;s</b></td><td>642.8&micro;s</td><td><b>&times;33.1</b></td></tr>
+  <tr><td>HeavyLoop</td><td><b>25.8&micro;s</b></td><td>735.5&micro;s</td><td><b>&times;28.5</b></td></tr>
+  <tr><td>Ackermann(3,4)</td><td><b>18.9&micro;s</b></td><td>302.0&micro;s</td><td><b>&times;16.0</b></td></tr>
+  <tr><td>FibIterative(30)</td><td><b>207.9ns</b></td><td>505.5ns</td><td><b>&times;2.4</b></td></tr>
 </table>
 
 <footer>
