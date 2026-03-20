@@ -336,6 +336,11 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 	// Pre-loop guards branch to "guard_fail" (ExitCode=2) instead of "side_exit".
 	// This tells the VM "trace not executed" so the interpreter runs the body normally.
 
+	// Identify write-before-read float slots for relaxed guard emission.
+	// These slots may hold non-float types at trace entry (e.g., LOADBOOL on
+	// mandelbrot escape path), but the value is overwritten before first read.
+	wbrFloatSlots := findWBRFloatSlots(f)
+
 	loopIdx := -1
 	for i, inst := range f.Insts {
 		if inst.Op == SSA_LOOP {
@@ -347,8 +352,18 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 			loadInst := &f.Insts[inst.Arg1]
 			slot := int(loadInst.Slot)
 			asm.LDRB(X0, regRegs, slot*ValueSize+OffsetTyp)
-			asm.CMPimmW(X0, uint16(inst.AuxInt))
-			asm.BCond(CondNE, "guard_fail")
+			if inst.AuxInt == int64(runtime.TypeFloat) && wbrFloatSlots[slot] {
+				// Relaxed guard for write-before-read float slots:
+				// Accept any non-pointer type (type < TypeString).
+				// The slot may hold bool/int from a previous iteration's
+				// side-exit path (e.g., LOADBOOL on mandelbrot escape).
+				// The garbage value will be overwritten before first read.
+				asm.CMPimmW(X0, uint16(runtime.TypeString))
+				asm.BCond(CondGE, "guard_fail")
+			} else {
+				asm.CMPimmW(X0, uint16(inst.AuxInt))
+				asm.BCond(CondNE, "guard_fail")
+			}
 		} else {
 			emitSSAInstSlot(asm, f, SSARef(i), &inst, regMap, sm)
 		}
@@ -396,9 +411,11 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 			}
 		}
 	}
-	// Slot-level fallback: load any allocated slot not yet loaded
+	// Slot-level fallback: load any allocated slot not yet loaded.
+	// Skip write-before-read float slots — their values may be garbage
+	// (bool/int from a previous iteration's side-exit path).
 	for slot, dreg := range regMap.Float.slotToReg {
-		if !preLoopFloatLoaded[slot] {
+		if !preLoopFloatLoaded[slot] && !wbrFloatSlots[slot] {
 			asm.FLDRd(dreg, regRegs, slot*ValueSize+OffsetData)
 			preLoopFloatLoaded[slot] = true
 		}
@@ -1461,6 +1478,126 @@ func ssaIsCompilable(f *SSAFunc) bool {
 		}
 	}
 	return true
+}
+
+// findWBRFloatSlots identifies float slots that are written before their first
+// read in the trace body. These slots may hold non-float types at trace entry
+// (e.g., LOADBOOL on mandelbrot escape path), but the value is overwritten
+// before first use. For these slots, the pre-loop GUARD_TYPE can be relaxed to
+// accept any non-pointer type instead of requiring exact TypeFloat.
+func findWBRFloatSlots(f *SSAFunc) map[int]bool {
+	result := make(map[int]bool)
+	if f == nil || f.Trace == nil {
+		return result
+	}
+
+	// Build set of float slots from trace type info
+	floatSlots := make(map[int]bool)
+	for _, ir := range f.Trace.IR {
+		if ir.BType == runtime.TypeFloat && ir.B < 256 {
+			floatSlots[ir.B] = true
+		}
+		if ir.CType == runtime.TypeFloat && ir.C < 256 {
+			floatSlots[ir.C] = true
+		}
+	}
+
+	// For each float slot, check if it's write-before-read using the same
+	// logic as ssaBuilder.isWrittenBeforeFirstReadImpl
+	for slot := range floatSlots {
+		if isSlotWBR(f.Trace, slot) {
+			result[slot] = true
+		}
+	}
+	return result
+}
+
+// isSlotWBR checks if a slot is written before its first read in the trace.
+// This mirrors ssaBuilder.isWrittenBeforeFirstReadImpl.
+func isSlotWBR(trace *Trace, slot int) bool {
+	// First pass: bail out if used by non-numeric ops
+	for _, ir := range trace.IR {
+		switch ir.Op {
+		case vm.OP_GETTABLE:
+			if ir.A == slot || ir.B == slot || (ir.C < 256 && ir.C == slot) {
+				return false
+			}
+		case vm.OP_SETTABLE:
+			if ir.A == slot || (ir.B < 256 && ir.B == slot) || (ir.C < 256 && ir.C == slot) {
+				return false
+			}
+		case vm.OP_GETFIELD:
+			if ir.A == slot || ir.B == slot {
+				return false
+			}
+		case vm.OP_SETFIELD:
+			if ir.A == slot || (ir.C < 256 && ir.C == slot) {
+				return false
+			}
+		case vm.OP_GETGLOBAL:
+			if ir.A == slot {
+				return false
+			}
+		case vm.OP_CALL:
+			if slot >= ir.A && slot < ir.A+ir.B {
+				return false
+			}
+			if ir.A == slot {
+				return false
+			}
+		}
+	}
+
+	// Second pass: check write-before-read for numeric ops
+	for _, ir := range trace.IR {
+		isRead := false
+		switch ir.Op {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV,
+			vm.OP_LT, vm.OP_LE, vm.OP_EQ:
+			if (ir.B < 256 && ir.B == slot) || (ir.C < 256 && ir.C == slot) {
+				isRead = true
+			}
+		case vm.OP_UNM:
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_MOVE:
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_FORLOOP:
+			if slot == ir.A || slot == ir.A+1 || slot == ir.A+2 {
+				isRead = true
+			}
+		case vm.OP_FORPREP:
+			if slot == ir.A || slot == ir.A+2 {
+				isRead = true
+			}
+		case vm.OP_TEST:
+			if ir.A == slot {
+				isRead = true
+			}
+		}
+		if isRead {
+			return false
+		}
+
+		isWrite := false
+		switch ir.Op {
+		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
+			isWrite = (ir.A == slot)
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV:
+			isWrite = (ir.A == slot)
+		case vm.OP_UNM:
+			isWrite = (ir.A == slot)
+		case vm.OP_MOVE:
+			isWrite = (ir.A == slot)
+		}
+		if isWrite {
+			return true
+		}
+	}
+	return false
 }
 
 // ssaIsNumericOnly kept for backward compat

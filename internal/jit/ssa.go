@@ -165,10 +165,10 @@ func (b *ssaBuilder) build() *SSAFunc {
 	}
 
 	// Phase 2: Emit guards for loop entry (type checks for used slots)
-	// Skip guards for integer slots that are written before their first read in
-	// the trace body — their initial value is irrelevant since the trace
-	// overwrites it before use. Float slots always get guards because skipping
-	// them disrupts the float register allocator's ref-level live ranges.
+	// Skip guards for integer slots that are written before their first read
+	// in the trace body — their initial value is irrelevant since the trace
+	// overwrites it before use. Float slots always get full guards here
+	// (the codegen relaxes the check for write-before-read float slots).
 	guardedSlots := make(map[int]bool)
 	for _, ir := range b.trace.IR {
 		switch ir.Op {
@@ -252,18 +252,18 @@ func (b *ssaBuilder) build() *SSAFunc {
 // When true, the slot's initial type at loop entry doesn't matter — the trace
 // will overwrite it before use, so a type guard is unnecessary.
 //
+// Float slots always return false here. Skipping their SSA guards would
+// disrupt the float register allocator's ref-level live ranges and pre-loop
+// loading. Instead, the codegen handles write-before-read float slots by
+// emitting a relaxed pre-loop guard (type < TypeString) and skipping the
+// slot-level pre-loop D register load. See findWBRFloatSlots in ssa_codegen.go.
+//
 // Restrictions:
-//   - Float slots always return false. Skipping guards for float slots disrupts
-//     the float register allocator's ref-level live ranges and pre-loop loading,
-//     causing wrong register assignments and corrupt computations.
 //   - Non-numeric ops (GETTABLE, SETTABLE, GETFIELD, SETFIELD, GETGLOBAL, CALL)
 //     cause a bail-out because they may reuse the slot for a different type.
 //   - For instructions that both read and write the same slot (e.g. ADD R4 R4 R3),
 //     the read is checked FIRST since operands are read before the result is written.
 func (b *ssaBuilder) isWrittenBeforeFirstRead(slot int) bool {
-	// Float slots: always emit guards. Skipping them breaks the float register
-	// allocator's pre-loop loading (loads garbage into D registers, corrupts
-	// other computations via shared register pool).
 	if b.slotType[slot] == SSATypeFloat {
 		return false
 	}
