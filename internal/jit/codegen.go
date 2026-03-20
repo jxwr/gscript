@@ -127,6 +127,7 @@ type inlineCandidate struct {
 	isTailCall    bool             // true if CALL is immediately followed by RETURN of same register
 	skipArgSave   bool             // true if X19/X22 don't need saving (next op is self-call or RETURN)
 	skipTopUpdate bool             // true if ctx.Top write can be skipped (result consumed by tail call)
+	directArgs    bool             // true if non-tail call args are computed directly into X19/X22 (skip memory roundtrip)
 	argTraces     []inlineArgTrace // traced argument sources (populated during analysis)
 	resultDest    int              // final destination register for result (-1 if no tracing)
 	resultMovePC  int              // PC of the MOVE that copies result to resultDest (-1 if none)
@@ -1407,10 +1408,24 @@ func (cg *Codegen) analyzeInlineCandidates() {
 						}
 					}
 
-					// Note: arg traces for non-tail self-calls are used by emitSelfCallFull
-					// to skip redundant LDR when a pinned register already has the
-					// correct value. The MOVE setup is NOT marked as dead here to
-					// avoid code alignment issues that cause performance regressions.
+					// For non-tail self-calls with all args traced, enable directArgs mode:
+					// emitSelfCallFull will compute args directly into X19/X22 instead of
+					// loading from the register window after window advance.
+					// The MOVE/SUB arg setup instructions are NOT marked as dead to
+					// preserve code alignment (Apple Silicon is sensitive to alignment).
+					// The stores they emit are redundant but harmless (store buffer absorbs them).
+					if !isTail {
+						allArgTraced := true
+						for i := 0; i < numParams; i++ {
+							if !candidate.argTraces[i].traced {
+								allArgTraced = false
+								break
+							}
+						}
+						if allArgTraced {
+							candidate.directArgs = true
+						}
+					}
 
 					cg.inlineCandidates[pc2] = candidate
 					cg.inlineSkipPCs[pc] = true
@@ -3989,6 +4004,17 @@ func (cg *Codegen) emitSelfTailCall(pc int, candidate *inlineCandidate) error {
 	// Direct register passing: write args directly to X19/X22 and jump.
 	// The arg setup instructions (SUB/LOADINT/MOVE) were skipped, so we
 	// emit the equivalent operations targeting pinned registers directly.
+	cg.emitDirectArgs(candidate, numParams)
+
+	a.B("self_call_entry")
+	return nil
+}
+
+// emitDirectArgs computes call arguments directly into pinned registers (X19/X22)
+// using traced argument sources, avoiding the store→window advance→load roundtrip.
+// Used by both emitSelfTailCall and emitSelfCallFull (directArgs mode).
+func (cg *Codegen) emitDirectArgs(candidate *inlineCandidate, numParams int) {
+	a := cg.asm
 	pinnedDst := [2]Reg{regSelfArg, regSelfArg2}
 
 	// Check for dependency: does writing arg0 clobber a register that arg1 reads?
@@ -4047,9 +4073,46 @@ func (cg *Codegen) emitSelfTailCall(pc int, candidate *inlineCandidate) error {
 			}
 		}
 	}
+}
 
-	a.B("self_call_entry")
-	return nil
+// emitDirectArgLoad replaces a single LDR (load arg from register window) with
+// a single equivalent instruction computed from the traced arg source.
+// Emits exactly 1 instruction to maintain code alignment.
+func (cg *Codegen) emitDirectArgLoad(t inlineArgTrace, dst Reg) {
+	a := cg.asm
+	if t.arithOp != "" {
+		// SUB/ADD with const: compute directly into pinned register.
+		srcArm, srcPinned := cg.pinnedRegs[t.arithSrc]
+		src := X0
+		if srcPinned {
+			src = srcArm
+		} else {
+			// Source not pinned — must load from memory. Can't do it in 1 instruction
+			// with the arithmetic, so fall back to LDR.
+			a.LDR(dst, regRegs, regIvalOffset(t.arithSrc))
+			return
+		}
+		switch t.arithOp {
+		case "SUB":
+			a.SUBimm(dst, src, uint16(t.fromConst))
+		case "ADD":
+			a.ADDimm(dst, src, uint16(t.fromConst))
+		}
+	} else if t.isConst {
+		// Constant: load immediate. May be >1 instruction for large values.
+		a.LoadImm64(dst, t.fromConst)
+	} else {
+		// MOVE: copy from source register.
+		srcArm, srcPinned := cg.pinnedRegs[t.fromReg]
+		if srcPinned && srcArm == dst {
+			// Same register — emit NOP to maintain instruction count.
+			a.NOP()
+		} else if srcPinned {
+			a.MOVreg(dst, srcArm)
+		} else {
+			a.LDR(dst, regRegs, regIvalOffset(t.fromReg))
+		}
+	}
 }
 
 // emitSelfCallFull emits the full non-tail self-recursive call sequence.
@@ -4071,6 +4134,7 @@ func (cg *Codegen) emitSelfCallFull(pc int, candidate *inlineCandidate) error {
 
 	// Save callee-saved registers on the ARM64 stack.
 	// SP must remain 16-byte aligned.
+	// Must save BEFORE directArgs computation to preserve original X19/X22.
 	if skipSave {
 		// Lightweight frame: only save LR (X30). X19/X22 are not needed after
 		// this call returns (next instruction is a tail self-call or RETURN).
@@ -4094,11 +4158,22 @@ func (cg *Codegen) emitSelfCallFull(pc int, candidate *inlineCandidate) error {
 		a.ADDreg(regRegs, regRegs, X0)
 	}
 
-	// Load callee's pinned parameters from the new register window.
-	// The callee at self_call_entry skips these loads since args are already loaded.
-	a.LDR(regSelfArg, regRegs, regIvalOffset(0))
-	if hasArg2 {
-		a.LDR(regSelfArg2, regRegs, regIvalOffset(1))
+	if candidate.directArgs {
+		// directArgs mode: compute args directly into pinned registers from traced
+		// sources instead of loading from the register window. Each LDR is replaced
+		// by the equivalent computation (SUBimm/ADDimm/MOVreg/NOP) to maintain
+		// the same instruction count for code alignment.
+		cg.emitDirectArgLoad(candidate.argTraces[0], regSelfArg)
+		if hasArg2 {
+			cg.emitDirectArgLoad(candidate.argTraces[1], regSelfArg2)
+		}
+	} else {
+		// Load callee's pinned parameters from the new register window.
+		// The callee at self_call_entry skips these loads since args are already loaded.
+		a.LDR(regSelfArg, regRegs, regIvalOffset(0))
+		if hasArg2 {
+			a.LDR(regSelfArg2, regRegs, regIvalOffset(1))
+		}
 	}
 
 	// BL to self_call_entry (re-enters the function body).
