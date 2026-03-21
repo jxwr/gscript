@@ -80,6 +80,7 @@ const (
 	ptrSubChannel     uint64 = 5 << ptrSubShift
 	ptrSubAnyFunction uint64 = 6 << ptrSubShift  // interface-based function (needs ifaceRoots)
 	ptrSubAnyCoro     uint64 = 7 << ptrSubShift  // interface-based coroutine (needs ifaceRoots)
+	ptrSubVMClosure   uint64 = 8 << ptrSubShift  // *vm.Closure (direct pointer, fast OP_CALL path)
 )
 
 // Value is a NaN-boxed 8-byte representation of all GScript values.
@@ -257,6 +258,12 @@ func (v *Value) SetInt(i int64) {
 	}
 }
 
+// SetIntUnchecked updates a Value to an integer without range checking.
+// Only safe when the caller guarantees |i| < 2^47 (e.g., FORLOOP counters).
+func (v *Value) SetIntUnchecked(i int64) {
+	*v = Value(tagInt | (uint64(i) & payloadMask))
+}
+
 // ---------------------------------------------------------------------------
 // Pointer-receiver fast paths (avoid copies in VM hot loop)
 // ---------------------------------------------------------------------------
@@ -264,21 +271,16 @@ func (v *Value) SetInt(i int64) {
 func (v *Value) RawType() ValueType { return v.Type() }
 
 func (v *Value) RawInt() int64 {
-	// Sign-extend 48-bit integer to 64-bit.
-	raw := uint64(*v) & payloadMask
-	if raw&(1<<47) != 0 {
-		return int64(raw | 0xFFFF000000000000)
-	}
-	return int64(raw)
+	// Branchless sign-extend 48-bit integer to 64-bit.
+	// Arithmetic shift: (raw << 16) >> 16 sign-extends bit 47.
+	return int64(uint64(*v)<<16) >> 16
 }
 
 func (v *Value) RawFloat() float64 { return math.Float64frombits(uint64(*v)) }
 
 func AddInts(dst, a, b *Value) bool {
 	if a.IsInt() && b.IsInt() {
-		ai := a.Int()
-		bi := b.Int()
-		*dst = IntValue(ai + bi)
+		dst.SetInt(a.RawInt() + b.RawInt())
 		return true
 	}
 	return false
@@ -287,7 +289,7 @@ func AddInts(dst, a, b *Value) bool {
 // AddNums tries to add *a + *b as numbers (int or float), storing result in *dst.
 func AddNums(dst, a, b *Value) bool {
 	if a.IsInt() && b.IsInt() {
-		*dst = IntValue(a.Int() + b.Int())
+		dst.SetInt(a.RawInt() + b.RawInt())
 		return true
 	}
 	if a.IsNumber() && b.IsNumber() {
@@ -299,7 +301,7 @@ func AddNums(dst, a, b *Value) bool {
 
 func SubInts(dst, a, b *Value) bool {
 	if a.IsInt() && b.IsInt() {
-		*dst = IntValue(a.Int() - b.Int())
+		dst.SetInt(a.RawInt() - b.RawInt())
 		return true
 	}
 	return false
@@ -307,7 +309,7 @@ func SubInts(dst, a, b *Value) bool {
 
 func SubNums(dst, a, b *Value) bool {
 	if a.IsInt() && b.IsInt() {
-		*dst = IntValue(a.Int() - b.Int())
+		dst.SetInt(a.RawInt() - b.RawInt())
 		return true
 	}
 	if a.IsNumber() && b.IsNumber() {
@@ -319,7 +321,7 @@ func SubNums(dst, a, b *Value) bool {
 
 func MulInts(dst, a, b *Value) bool {
 	if a.IsInt() && b.IsInt() {
-		*dst = IntValue(a.Int() * b.Int())
+		dst.SetInt(a.RawInt() * b.RawInt())
 		return true
 	}
 	return false
@@ -327,7 +329,7 @@ func MulInts(dst, a, b *Value) bool {
 
 func MulNums(dst, a, b *Value) bool {
 	if a.IsInt() && b.IsInt() {
-		*dst = IntValue(a.Int() * b.Int())
+		dst.SetInt(a.RawInt() * b.RawInt())
 		return true
 	}
 	if a.IsNumber() && b.IsNumber() {
@@ -450,12 +452,8 @@ func (v Value) Bool() bool {
 }
 
 func (v Value) Int() int64 {
-	// Sign-extend 48-bit integer to 64-bit.
-	raw := uint64(v) & payloadMask
-	if raw&(1<<47) != 0 {
-		return int64(raw | 0xFFFF000000000000)
-	}
-	return int64(raw)
+	// Branchless sign-extend 48-bit integer to 64-bit.
+	return int64(uint64(v)<<16) >> 16
 }
 
 func (v Value) Float() float64 {
@@ -787,3 +785,25 @@ const (
 	ValFalse    = valFalse
 	ValTrue     = valTrue
 )
+
+// MakeNilSlice creates a []Value of length n with all elements set to NilValue().
+// With NaN-boxing, Go's zero value (0) is float64(0.0), NOT nil.
+// Use this instead of make([]Value, n) whenever uninitialized slots must read as nil.
+func MakeNilSlice(n int) []Value {
+	s := make([]Value, n)
+	nv := NilValue()
+	for i := range s {
+		s[i] = nv
+	}
+	return s
+}
+
+// MakeNilSliceCap creates a []Value of length n and capacity cap with all elements set to NilValue().
+func MakeNilSliceCap(n, cap int) []Value {
+	s := make([]Value, n, cap)
+	nv := NilValue()
+	for i := range s {
+		s[i] = nv
+	}
+	return s
+}

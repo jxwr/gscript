@@ -169,7 +169,7 @@ func New(globals map[string]runtime.Value) *VM {
 	}
 
 	v := &VM{
-		regs:         make([]runtime.Value, 1024),
+		regs:         runtime.MakeNilSlice(1024),
 		frames:       make([]CallFrame, maxCallDepth),
 		globals:      globals,
 		globalArray:  ga,
@@ -186,7 +186,7 @@ func New(globals map[string]runtime.Value) *VM {
 // Used by coroutines which need to see the caller's global state.
 func newChildVM(parent *VM) *VM {
 	child := &VM{
-		regs:         make([]runtime.Value, 1024),
+		regs:         runtime.MakeNilSlice(1024),
 		frames:       make([]CallFrame, maxCallDepth),
 		globals:      parent.globals,
 		globalArray:  parent.globalArray,
@@ -223,7 +223,7 @@ func newIsolatedChildVM(parent *VM) *VM {
 	}
 
 	child := &VM{
-		regs:         make([]runtime.Value, 1024),
+		regs:         runtime.MakeNilSlice(1024),
 		frames:       make([]CallFrame, maxCallDepth),
 		globals:      childGlobals,
 		globalArray:  ga,
@@ -288,7 +288,7 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	// Ensure register space
 	needed := base + proto.MaxStack + 1
 	if needed > len(vm.regs) {
-		newRegs := make([]runtime.Value, needed*2)
+		newRegs := runtime.MakeNilSlice(needed * 2)
 		copy(newRegs, vm.regs)
 		vm.regs = newRegs
 	}
@@ -960,7 +960,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				// Ensure register space
 				needed := newBase + proto.MaxStack + 1
 				if needed > len(vm.regs) {
-					newRegs := make([]runtime.Value, needed*2)
+					newRegs := runtime.MakeNilSlice(needed * 2)
 					copy(newRegs, vm.regs)
 					vm.regs = newRegs
 				}
@@ -1226,8 +1226,8 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						cont = idx >= limit
 					}
 					if cont {
-						idxP.SetInt(idx)
-						vm.regs[base+a+3].SetInt(idx)
+						idxP.SetIntUnchecked(idx)
+						vm.regs[base+a+3].SetIntUnchecked(idx)
 						forloopPC := frame.pc - 1
 						frame.pc += sbx
 						// Trace: check for compiled trace.

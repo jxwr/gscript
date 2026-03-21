@@ -33,7 +33,7 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
 	// --- Step 2: Extract *Table pointer from NaN-boxed value ---
-	EmitExtractPtr(asm, X0, X0, X1) // X0 = *Table (44-bit address)
+	EmitExtractPtr(asm, X0, X0) // X0 = *Table (44-bit address)
 	asm.CBZ(X0, fallbackLabel) // nil table check
 
 	// --- Step 3: Check metatable == nil ---
@@ -58,7 +58,7 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 		asm.ADDreg(X4, regConsts, X4)
 		asm.LDR(X3, X4, 0)
 	}
-	EmitExtractPtr(asm, X3, X3, X4) // X3 = pointer to string header (*string)
+	EmitExtractPtr(asm, X3, X3) // X3 = pointer to string header (*string)
 	asm.LDR(X4, X3, 0) // X4 = key string data ptr
 	asm.LDR(X5, X3, 8) // X5 = key string len
 
@@ -161,7 +161,7 @@ func (cg *Codegen) emitSetField(pc int, inst uint32) error {
 	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
 	// --- Step 2: Extract *Table pointer from NaN-boxed value ---
-	EmitExtractPtr(asm, X0, X0, X1)
+	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, fallbackLabel) // nil table check
 
 	// --- Step 3: Check metatable == nil (has __newindex → fallback) ---
@@ -185,7 +185,7 @@ func (cg *Codegen) emitSetField(pc int, inst uint32) error {
 		asm.ADDreg(X4, regConsts, X4)
 		asm.LDR(X3, X4, 0)
 	}
-	EmitExtractPtr(asm, X3, X3, X4) // X3 = pointer to *string
+	EmitExtractPtr(asm, X3, X3) // X3 = pointer to *string
 	asm.LDR(X4, X3, 0) // X4 = key string data ptr
 	asm.LDR(X5, X3, 8) // X5 = key string len
 
@@ -310,7 +310,7 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
 	// --- Step 2: Extract *Table pointer from NaN-boxed value ---
-	EmitExtractPtr(asm, X0, X0, X1)
+	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, fallbackLabel)
 
 	// --- Step 3: Check metatable == nil ---
@@ -387,7 +387,7 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	asm.LDR(X3, X0, TableOffIntArray)   // X3 = intArray.ptr
 	asm.LSLimm(X4, X2, 3)               // X4 = key * 8 (byte offset)
 	asm.LDRreg(X4, X3, X4)              // X4 = *(ptr + key*8) = intArray[key]
-	EmitBoxInt(asm, X5, X4, X6)          // X5 = NaN-boxed int
+	EmitBoxIntFast(asm, X5, X4, regTagInt)   // X5 = NaN-boxed int
 	asm.STR(X5, regRegs, a*ValueSize)
 	asm.B(doneGetLabel)
 
@@ -459,7 +459,7 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
 	// --- Step 2: Extract *Table pointer from NaN-boxed value ---
-	EmitExtractPtr(asm, X0, X0, X1)
+	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, fallbackLabel)
 
 	// --- Step 3: Check metatable == nil ---

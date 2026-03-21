@@ -23,7 +23,8 @@ import (
 //
 // Register layout:
 //   X19 = trace context pointer
-//   X20-X24 = allocated VM slots (up to 5 hot slots)
+//   X20-X23 = allocated VM slots (up to 4 hot slots)
+//   X24 = regTagInt (pinned NaN-boxing int tag 0xFFFE000000000000)
 //   X25 = (unused in SSA codegen)
 //   X26 = regRegs (pointer to vm.regs[base])
 //   X27 = regConsts (pointer to trace constants)
@@ -100,7 +101,7 @@ func (fa *floatSlotAlloc) getReg(slot int) (FReg, bool) {
 }
 
 // newSlotAlloc performs frequency-based slot allocation on the SSA function.
-// It identifies the hottest VM slots and assigns them to X20-X24.
+// It identifies the hottest VM slots and assigns them to X20-X23 (X24 reserved for regTagInt).
 func newSlotAlloc(f *SSAFunc) *slotAlloc {
 	sa := &slotAlloc{
 		slotToReg: make(map[int]Reg),
@@ -404,6 +405,9 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 	asm.LDR(regRegs, trCtx, 0)
 	asm.LDR(regConsts, trCtx, 8)
 
+	// Pin regTagInt (X24) with the NaN-boxing int tag constant.
+	asm.LoadImm64(regTagInt, nb_i64(NB_TagInt))
+
 	// === Pre-LOOP: guards + initial loads ===
 	// Pre-loop guards branch to "guard_fail" (ExitCode=2) instead of "side_exit".
 	// This tells the VM "trace not executed" so the interpreter runs the body normally.
@@ -682,7 +686,7 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 				asm.LDR(X0, regRegs, countOff)
 				EmitUnboxInt(asm, X0, X0)
 				asm.ADDimm(X0, X0, 1)
-				EmitBoxInt(asm, X5, X0, X6)
+				EmitBoxIntFast(asm, X5, X0, regTagInt)
 				asm.STR(X5, regRegs, countOff)
 			}
 			asm.B("skip_count")

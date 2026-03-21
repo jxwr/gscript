@@ -1142,7 +1142,7 @@ func (cg *Codegen) emitSelfCallFull(pc int, candidate *inlineCandidate) error {
 
 	// Store result to R(fnReg) in caller's register window as NaN-boxed IntValue.
 	// X0 holds the raw int result from the callee.
-	EmitBoxInt(a, X10, X0, X11)
+	EmitBoxIntFast(a, X10, X0, regTagInt)
 	a.STR(X10, regRegs, regValOffset(fnReg))
 
 	// For variable-return self-calls (C=0), update ctx.Top so subsequent
@@ -1263,13 +1263,9 @@ func (cg *Codegen) emitCrossCall(pc int, info *crossCallInfo) error {
 	a.LoadImm64(X6, int64(dstOff))
 	a.ADDreg(X6, regRegs, X6)      // X6 = destination address
 
-	// Copy 24 bytes (one Value) from source to destination.
+	// Copy 8 bytes (one NaN-boxed Value) from source to destination.
 	a.LDR(X7, X4, 0)
 	a.STR(X7, X6, 0)
-	a.LDR(X7, X4, 8)
-	a.STR(X7, X6, 8)
-	a.LDR(X7, X4, 16)
-	a.STR(X7, X6, 16)
 
 	// Update ctx.Top for subsequent B=0 calls.
 	// Top = fnReg + RetCount

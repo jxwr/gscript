@@ -323,7 +323,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
 			asm.EORreg(X2, arg1Reg, arg2Reg)
 			if dstSlot >= 0 {
-				EmitBoxInt(asm, X5, X2, X6)
+				EmitBoxIntFast(asm, X5, X2, regTagInt)
 				asm.STR(X5, regRegs, dstSlot*ValueSize)
 			}
 		case IntrinsicBand:
@@ -331,7 +331,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
 			asm.ANDreg(X2, arg1Reg, arg2Reg)
 			if dstSlot >= 0 {
-				EmitBoxInt(asm, X5, X2, X6)
+				EmitBoxIntFast(asm, X5, X2, regTagInt)
 				asm.STR(X5, regRegs, dstSlot*ValueSize)
 			}
 		default:

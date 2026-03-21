@@ -103,6 +103,10 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	asm.LDR(regRegs, trCtx, 0)           // X26 = ctx.Regs (points to regs[startBase])
 	asm.LDR(regConsts, trCtx, 8)         // X27 = ctx.Constants (trace constant pool)
 
+	// Pin regTagInt (X24) with the NaN-boxing int tag constant.
+	// Saves 1 instruction per EmitBoxInt call (3 → 2 insns).
+	asm.LoadImm64(regTagInt, nb_i64(NB_TagInt))
+
 	// Initialize self-call depth counter
 	if trace.HasSelfCalls {
 		asm.MOVreg(X25, XZR) // X25 = 0 (outermost call)
@@ -123,24 +127,23 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	for i, ir := range trace.IR {
 		switch ir.Op {
 		case vm.OP_MOVE:
-			emitTrMove(asm, &ir)
-			// If dst is allocated, update the ARM64 register from memory.
-			// emitTrMove copies the full Value via memory but does NOT update
-			// the allocated register, causing stale reads on the next iteration.
-			// (e.g., quicksort's "i = i+1" via MOVE R4 R10 needs R4's register updated)
-			if armReg, ok := ra.Get(ir.A); ok {
-				asm.LDR(armReg, regRegs, ir.A*ValueSize)
-				EmitUnboxInt(asm, armReg, armReg)
+			emitTrMove(asm, &ir) // Always write to memory (other ops read from it)
+			if dstReg, ok := ra.Get(ir.A); ok {
+				if srcReg, srcOk := ra.Get(ir.B); srcOk {
+					asm.MOVreg(dstReg, srcReg)
+				} else {
+					// Already loaded to memory by emitTrMove; read from register
+					asm.LDR(dstReg, regRegs, ir.A*ValueSize)
+					EmitUnboxInt(asm, dstReg, dstReg)
+				}
 			}
 		case vm.OP_LOADINT:
-			emitTrLoadInt(asm, &ir)
-			// If dst is allocated, update the ARM64 register too
+			emitTrLoadInt(asm, &ir) // Always write to memory
 			if armReg, ok := ra.Get(ir.A); ok {
-				asm.LDR(armReg, regRegs, ir.A*ValueSize)
-				EmitUnboxInt(asm, armReg, armReg)
+				asm.LoadImm64(armReg, int64(ir.SBX))
 			}
 		case vm.OP_LOADK:
-			emitTrLoadK(asm, &ir)
+			emitTrLoadK(asm, &ir) // Always write to memory
 			if armReg, ok := ra.Get(ir.A); ok {
 				asm.LDR(armReg, regRegs, ir.A*ValueSize)
 				EmitUnboxInt(asm, armReg, armReg)
@@ -163,9 +166,9 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		case vm.OP_MUL:
 			emitTrArithIntRA(asm, &ir, "MUL", ra)
 		case vm.OP_FORPREP:
-			emitTrForPrep(asm, &ir)
+			emitTrForPrep(asm, &ir, ra)
 		case vm.OP_FORLOOP:
-			emitTrForLoop(asm, &ir)
+			emitTrForLoop(asm, &ir, ra)
 		case vm.OP_EQ:
 			emitTrEQ(asm, &ir, i, trace)
 		case vm.OP_LT:
@@ -286,7 +289,7 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 			}
 			off := vmReg * ValueSize
 			if off <= 32760 {
-				EmitBoxInt(asm, X0, armReg, X1)
+				EmitBoxIntFast(asm, X0, armReg, regTagInt)
 				asm.STR(X0, regRegs, off)
 			}
 		}
@@ -367,7 +370,7 @@ func emitTrMove(asm *Assembler, ir *TraceIR) {
 func emitTrLoadInt(asm *Assembler, ir *TraceIR) {
 	dst := ir.A * ValueSize
 	asm.LoadImm64(X0, int64(ir.SBX))
-	EmitBoxInt(asm, X1, X0, X2)
+	EmitBoxIntFast(asm, X1, X0, regTagInt)
 	asm.STR(X1, regRegs, dst)
 }
 
@@ -420,9 +423,10 @@ func emitTrArithIntRA(asm *Assembler, ir *TraceIR, op string, ra *RegAlloc) {
 		case "MUL":
 			asm.MUL(dstReg, bReg, cReg)
 		}
-		// Always write back to memory as NaN-boxed IntValue
+		// Always write back to memory: other ops (EQ, LT, GETTABLE) read from
+		// memory, so the NaN-boxed value must be up-to-date.
 		dst := ir.A * ValueSize
-		EmitBoxInt(asm, X0, dstReg, X1)
+		EmitBoxIntFast(asm, X0, dstReg, regTagInt)
 		asm.STR(X0, regRegs, dst)
 		return
 	}
@@ -474,7 +478,7 @@ func emitTrArithIntRA(asm *Assembler, ir *TraceIR, op string, ra *RegAlloc) {
 	if !aAlloc {
 		// Box and store to memory
 		dst := ir.A * ValueSize
-		EmitBoxInt(asm, X1, X0, X2)
+		EmitBoxIntFast(asm, X1, X0, regTagInt)
 		asm.STR(X1, regRegs, dst)
 	}
 }
@@ -516,45 +520,92 @@ func emitTrArithInt(asm *Assembler, ir *TraceIR, op string) {
 
 	// Store result as NaN-boxed IntValue
 	dst := ir.A * ValueSize
-	EmitBoxInt(asm, X1, X0, X2)
+	EmitBoxIntFast(asm, X1, X0, regTagInt)
 	asm.STR(X1, regRegs, dst)
 }
 
-func emitTrForPrep(asm *Assembler, ir *TraceIR) {
-	aOff := ir.A * ValueSize
-	stepOff := (ir.A + 2) * ValueSize
-	// Load and unbox idx and step
-	asm.LDR(X0, regRegs, aOff)
-	EmitUnboxInt(asm, X0, X0)
-	asm.LDR(X1, regRegs, stepOff)
-	EmitUnboxInt(asm, X1, X1)
-	asm.SUBreg(X0, X0, X1)
-	// Box and store back
-	EmitBoxInt(asm, X2, X0, X3)
-	asm.STR(X2, regRegs, aOff)
+func emitTrForPrep(asm *Assembler, ir *TraceIR, ra *RegAlloc) {
+	idxReg, idxAlloc := ra.Get(ir.A)
+	stepReg, stepAlloc := ra.Get(ir.A + 2)
+
+	if idxAlloc && stepAlloc {
+		// Both pinned: SUB directly in registers
+		asm.SUBreg(idxReg, idxReg, stepReg)
+	} else {
+		// Fallback: load from memory
+		aOff := ir.A * ValueSize
+		stepOff := (ir.A + 2) * ValueSize
+		var idx, step Reg
+		if idxAlloc {
+			idx = idxReg
+		} else {
+			idx = X0
+			asm.LDR(X0, regRegs, aOff)
+			EmitUnboxInt(asm, X0, X0)
+		}
+		if stepAlloc {
+			step = stepReg
+		} else {
+			step = X1
+			asm.LDR(X1, regRegs, stepOff)
+			EmitUnboxInt(asm, X1, X1)
+		}
+		asm.SUBreg(idx, idx, step)
+		if !idxAlloc {
+			EmitBoxIntFast(asm, X2, X0, regTagInt)
+			asm.STR(X2, regRegs, aOff)
+		}
+	}
 }
 
-func emitTrForLoop(asm *Assembler, ir *TraceIR) {
+func emitTrForLoop(asm *Assembler, ir *TraceIR, ra *RegAlloc) {
+	idxReg, idxAlloc := ra.Get(ir.A)
+	limitReg, limitAlloc := ra.Get(ir.A + 1)
+	stepReg, stepAlloc := ra.Get(ir.A + 2)
+	loopVarReg, loopVarAlloc := ra.Get(ir.A + 3)
+
 	aOff := ir.A * ValueSize
+	var idx, step, limit Reg
 
-	// idx += step (load NaN-boxed, unbox, compute, box, store)
-	asm.LDR(X0, regRegs, aOff)
-	EmitUnboxInt(asm, X0, X0)
-	asm.LDR(X1, regRegs, (ir.A+2)*ValueSize)
-	EmitUnboxInt(asm, X1, X1)
-	asm.ADDreg(X0, X0, X1) // idx + step
+	// Load idx
+	if idxAlloc {
+		idx = idxReg
+	} else {
+		idx = X0
+		asm.LDR(X0, regRegs, aOff)
+		EmitUnboxInt(asm, X0, X0)
+	}
+	// Load step
+	if stepAlloc {
+		step = stepReg
+	} else {
+		step = X1
+		asm.LDR(X1, regRegs, (ir.A+2)*ValueSize)
+		EmitUnboxInt(asm, X1, X1)
+	}
 
-	// Box and store idx
-	EmitBoxInt(asm, X2, X0, X3)
-	asm.STR(X2, regRegs, aOff)
+	// idx += step (in register)
+	asm.ADDreg(idx, idx, step)
 
-	// R(A+3) = idx (expose as loop variable, also NaN-boxed)
-	asm.STR(X2, regRegs, (ir.A+3)*ValueSize)
+	// Update loop var register if allocated
+	if loopVarAlloc {
+		asm.MOVreg(loopVarReg, idx)
+	}
 
-	// Compare: idx <= limit (for step > 0)
-	asm.LDR(X1, regRegs, (ir.A+1)*ValueSize)
-	EmitUnboxInt(asm, X1, X1)
-	asm.CMPreg(X0, X1)
+	// Always write idx and loop var to memory (other ops read from it)
+	EmitBoxIntFast(asm, X0, idx, regTagInt)
+	asm.STR(X0, regRegs, aOff)
+	asm.STR(X0, regRegs, (ir.A+3)*ValueSize)
+
+	// Load limit
+	if limitAlloc {
+		limit = limitReg
+	} else {
+		limit = X1
+		asm.LDR(X1, regRegs, (ir.A+1)*ValueSize)
+		EmitUnboxInt(asm, X1, X1)
+	}
+	asm.CMPreg(idx, limit)
 	asm.BCond(CondGT, "loop_done")
 }
 
@@ -636,8 +687,8 @@ func emitTrEQ(asm *Assembler, ir *TraceIR, idx int, trace *Trace) {
 	EmitCheckIsString(asm, X2, X8, X7, "side_exit")
 
 	// Extract string pointers
-	EmitExtractPtr(asm, X1, X1, X8) // X1 = pointer to B's string header
-	EmitExtractPtr(asm, X2, X2, X8) // X2 = pointer to C's string header
+	EmitExtractPtr(asm, X1, X1) // X1 = pointer to B's string header
+	EmitExtractPtr(asm, X2, X2) // X2 = pointer to C's string header
 
 	// Load B's string: ptr and len
 	asm.LDR(X4, X1, 0)  // X4 = B.str.ptr
@@ -894,7 +945,7 @@ func emitTrGetField(asm *Assembler, ir *TraceIR, idx int) {
 	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
 	// Step 2: Extract *Table pointer from NaN-boxed value
-	EmitExtractPtr(asm, X0, X0, X1) // X0 = *Table
+	EmitExtractPtr(asm, X0, X0) // X0 = *Table
 	asm.CBZ(X0, fallbackLabel)       // nil table check
 
 	// Step 3: Check metatable == nil
@@ -912,7 +963,7 @@ func emitTrGetField(asm *Assembler, ir *TraceIR, idx int) {
 	// Step 5: Load constant key string (NaN-boxed string pointer)
 	cOff := c * ValueSize
 	asm.LDR(X3, regConsts, cOff) // X3 = NaN-boxed string value
-	EmitExtractPtr(asm, X3, X3, X4) // X3 = pointer to string header
+	EmitExtractPtr(asm, X3, X3) // X3 = pointer to string header
 	asm.LDR(X4, X3, 0)              // X4 = key string data ptr
 	asm.LDR(X5, X3, 8)              // X5 = key string len
 
@@ -993,7 +1044,7 @@ func emitTrGetTable(asm *Assembler, ir *TraceIR, idx int) {
 	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
 	// Step 2: Extract *Table pointer from NaN-boxed value
-	EmitExtractPtr(asm, X0, X0, X1) // X0 = *Table
+	EmitExtractPtr(asm, X0, X0) // X0 = *Table
 	asm.CBZ(X0, fallbackLabel)
 
 	// Step 3: Check metatable == nil
@@ -1057,7 +1108,7 @@ func emitTrSetField(asm *Assembler, ir *TraceIR, idx int) {
 	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
 	// Extract *Table pointer
-	EmitExtractPtr(asm, X0, X0, X1)
+	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, fallbackLabel)
 
 	// Check metatable == nil
@@ -1073,7 +1124,7 @@ func emitTrSetField(asm *Assembler, ir *TraceIR, idx int) {
 
 	// Load constant key string (NaN-boxed string pointer)
 	asm.LDR(X3, regConsts, b*ValueSize) // X3 = NaN-boxed string value
-	EmitExtractPtr(asm, X3, X3, X4)     // X3 = pointer to string header
+	EmitExtractPtr(asm, X3, X3)     // X3 = pointer to string header
 	asm.LDR(X4, X3, 0) // key.ptr
 	asm.LDR(X5, X3, 8) // key.len
 
@@ -1144,7 +1195,7 @@ func emitTrSetTable(asm *Assembler, ir *TraceIR, idx int) {
 	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
 	// Extract *Table pointer
-	EmitExtractPtr(asm, X0, X0, X1)
+	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, fallbackLabel)
 
 	asm.LDR(X1, X0, TableOffMetatable)
@@ -1221,7 +1272,7 @@ func emitTrIntrinsic(asm *Assembler, ir *TraceIR) {
 		asm.LDR(X1, regRegs, arg2*ValueSize)
 		EmitUnboxInt(asm, X1, X1)
 		asm.EORreg(X0, X0, X1)
-		EmitBoxInt(asm, X1, X0, X2)
+		EmitBoxIntFast(asm, X1, X0, regTagInt)
 		asm.STR(X1, regRegs, dstOff)
 
 	case IntrinsicBand:
@@ -1231,7 +1282,7 @@ func emitTrIntrinsic(asm *Assembler, ir *TraceIR) {
 		asm.LDR(X1, regRegs, arg2*ValueSize)
 		EmitUnboxInt(asm, X1, X1)
 		asm.ANDreg(X0, X0, X1)
-		EmitBoxInt(asm, X1, X0, X2)
+		EmitBoxIntFast(asm, X1, X0, regTagInt)
 		asm.STR(X1, regRegs, dstOff)
 
 	case IntrinsicBor:
@@ -1241,7 +1292,7 @@ func emitTrIntrinsic(asm *Assembler, ir *TraceIR) {
 		asm.LDR(X1, regRegs, arg2*ValueSize)
 		EmitUnboxInt(asm, X1, X1)
 		asm.ORRreg(X0, X0, X1)
-		EmitBoxInt(asm, X1, X0, X2)
+		EmitBoxIntFast(asm, X1, X0, regTagInt)
 		asm.STR(X1, regRegs, dstOff)
 
 	default:
@@ -1296,7 +1347,7 @@ func emitTrSelfCall(asm *Assembler, ir *TraceIR, idx int) {
 
 	// Store result to R(fnReg) in caller's register window
 	// Result type is TypeInt (most common for recursive numeric functions)
-	EmitBoxInt(asm, X1, X0, X2)
+	EmitBoxIntFast(asm, X1, X0, regTagInt)
 	asm.STR(X1, regRegs, fnReg*ValueSize)
 
 	// If multiple results expected, fill remaining with nil
@@ -1366,7 +1417,7 @@ func emitTrMod(asm *Assembler, ir *TraceIR, idx int) {
 
 	asm.Label(doneLabel)
 	dst := ir.A * ValueSize
-	EmitBoxInt(asm, X1, X0, X2)
+	EmitBoxIntFast(asm, X1, X0, regTagInt)
 	asm.STR(X1, regRegs, dst)
 }
 
@@ -1393,7 +1444,7 @@ func emitTrUNM(asm *Assembler, ir *TraceIR) {
 	asm.NEG(X0, X1) // X0 = -X1
 
 	dst := ir.A * ValueSize
-	EmitBoxInt(asm, X1, X0, X2)
+	EmitBoxIntFast(asm, X1, X0, regTagInt)
 	asm.STR(X1, regRegs, dst)
 }
 
@@ -1408,7 +1459,7 @@ func emitTrLen(asm *Assembler, ir *TraceIR) {
 	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit")
 
 	// Extract *Table pointer
-	EmitExtractPtr(asm, X0, X0, X1)
+	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, "side_exit")
 
 	// table.array.len - 1 (array is 1-indexed, index 0 unused)
@@ -1416,7 +1467,7 @@ func emitTrLen(asm *Assembler, ir *TraceIR) {
 	asm.SUBimm(X1, X1, 1)            // length = len - 1
 
 	dst := ir.A * ValueSize
-	EmitBoxInt(asm, X2, X1, X3)
+	EmitBoxIntFast(asm, X2, X1, regTagInt)
 	asm.STR(X2, regRegs, dst)
 }
 

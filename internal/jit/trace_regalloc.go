@@ -13,9 +13,10 @@ import "github.com/gscript/gscript/internal/vm"
 // 3. Generate spill/reload code at trace entry/exit
 
 // allocableRegs are the ARM64 registers available for trace register allocation.
-var allocableRegs = []Reg{X20, X21, X22, X23, X24}
+// NOTE: X24 is excluded — it holds the pinned NaN-boxing int tag constant (regTagInt).
+var allocableRegs = []Reg{X20, X21, X22, X23}
 
-const maxAllocRegs = 5
+const maxAllocRegs = 4
 
 // RegAlloc holds the register allocation for a trace.
 type RegAlloc struct {

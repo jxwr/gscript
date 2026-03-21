@@ -403,7 +403,7 @@ func (cg *Codegen) emitMove(inst uint32) error {
 			cg.asm.NOP()
 		}
 		// Box the raw int and store as NaN-boxed Value
-		EmitBoxInt(cg.asm, X10, srcArm, X11)
+		EmitBoxIntFast(cg.asm, X10, srcArm, regTagInt)
 		cg.asm.STR(X10, regRegs, regValOffset(aReg))
 	} else if dstPinned {
 		// Dest pinned, source in memory: load NaN-boxed value and unbox int.

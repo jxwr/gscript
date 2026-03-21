@@ -36,7 +36,7 @@ func emitSSALoadArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, reg
 	// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)
 	if tableSlot >= 0 {
 		asm.LDR(X0, regRegs, tableSlot*ValueSize)
-		EmitExtractPtr(asm, X0, X0, X1)
+		EmitExtractPtr(asm, X0, X0)
 	}
 	asm.CBZ(X0, "side_exit")
 	// Check metatable == nil
@@ -68,7 +68,7 @@ func emitSSALoadArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, reg
 		if r, ok := regMap.IntReg(dstSlot); ok {
 			asm.MOVreg(r, X0)
 		} else {
-			EmitBoxInt(asm, X5, X0, X6)
+			EmitBoxIntFast(asm, X5, X0, regTagInt)
 			asm.STR(X5, regRegs, dstSlot*ValueSize)
 		}
 		asm.B(doneLabel)
@@ -94,7 +94,7 @@ func emitSSALoadArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, reg
 			asm.MOVreg(r, X0)
 		} else {
 			// Store as NaN-boxed int (bool treated as int in SSA)
-			EmitBoxInt(asm, X5, X0, X6)
+			EmitBoxIntFast(asm, X5, X0, regTagInt)
 			asm.STR(X5, regRegs, dstSlot*ValueSize)
 		}
 		asm.B(doneLabel)
@@ -127,7 +127,7 @@ func emitSSALoadArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, reg
 		if r, ok := regMap.IntReg(dstSlot); ok {
 			asm.MOVreg(r, X0)
 		} else {
-			EmitBoxInt(asm, X5, X0, X6)
+			EmitBoxIntFast(asm, X5, X0, regTagInt)
 			asm.STR(X5, regRegs, dstSlot*ValueSize)
 		}
 		asm.Label(doneLabel)
@@ -253,7 +253,7 @@ func emitSSAStoreArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, re
 	// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)
 	if tableSlot >= 0 {
 		asm.LDR(X0, regRegs, tableSlot*ValueSize)
-		EmitExtractPtr(asm, X0, X0, X1)
+		EmitExtractPtr(asm, X0, X0)
 	}
 	asm.CBZ(X0, "side_exit")
 	asm.LDR(X1, X0, TableOffMetatable)
@@ -465,7 +465,7 @@ func emitSSALoadField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlot
 
 	// Load *Table from register (NaN-boxing: extract pointer)
 	asm.LDR(X0, regRegs, tableSlot*ValueSize)
-	EmitExtractPtr(asm, X0, X0, X1)
+	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, "side_exit") // nil table
 
 	// Guard: no metatable
@@ -503,7 +503,7 @@ func emitSSAStoreField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlo
 
 	// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)
 	asm.LDR(X0, regRegs, tableSlot*ValueSize)
-	EmitExtractPtr(asm, X0, X0, X1)
+	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, "side_exit")
 
 	// Guard: no metatable

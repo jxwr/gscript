@@ -279,29 +279,32 @@ func EmitUnboxInt(asm *Assembler, dst, src Reg) {
 func nb_i64(v uint64) int64 { return int64(v) }
 
 // EmitBoxInt creates a NaN-boxed int value from a raw int in src, stores in dst.
-// Uses scratch for the tag constant.
-// Pattern: AND dst, src, #payloadMask; ORR dst, dst, #tagInt
+// Uses scratch for the tag constant. Used by SSA/trace codegen which don't have
+// a pinned tag register.
+// Pattern: UBFX dst, src, #0, #48; LoadImm64 scratch, tagInt; ORR dst, dst, scratch
 func EmitBoxInt(asm *Assembler, dst, src, scratch Reg) {
 	asm.LoadImm64(scratch, nb_i64(NB_TagInt))
-	// Mask to 48 bits and set tag. Since tagInt has top 16 bits set and bottom 48 clear,
-	// we need: dst = (src & payloadMask) | tagInt
-	// But we can use: LSL+LSR to mask, then ORR
-	asm.LSLimm(dst, src, 16)  // clear top 16 bits
-	asm.LSRimm(dst, dst, 16)  // shift back (zero-extend to 48 bits)
+	asm.UBFX(dst, src, 0, 48) // clear top 16 bits in 1 instruction
 	asm.ORRreg(dst, dst, scratch)
+}
+
+// EmitBoxIntFast creates a NaN-boxed int value using the pinned tag register (regTagInt/X24).
+// Only 2 instructions: UBFX + ORR. Used by method JIT codegen where regTagInt is available.
+func EmitBoxIntFast(asm *Assembler, dst, src, tagReg Reg) {
+	asm.UBFX(dst, src, 0, 48) // clear top 16 bits in 1 instruction
+	asm.ORRreg(dst, dst, tagReg)
 }
 
 // EmitBoxIntInPlace adds int tag to a value already masked to 48 bits.
-// Requires scratch to hold tagInt.
-func EmitBoxIntInPlace(asm *Assembler, dst, scratch Reg) {
-	asm.ORRreg(dst, dst, scratch)
+// Requires tagReg to hold tagInt (either scratch loaded or regTagInt pinned).
+func EmitBoxIntInPlace(asm *Assembler, dst, tagReg Reg) {
+	asm.ORRreg(dst, dst, tagReg)
 }
 
 // EmitExtractPtr extracts the 44-bit pointer address from a NaN-boxed pointer value.
-// Pattern: LoadImm64 scratch, ptrAddrMask; AND dst, src, scratch
-func EmitExtractPtr(asm *Assembler, dst, src, scratch Reg) {
-	asm.LoadImm64(scratch, nb_i64(NB_PtrAddrMask))
-	asm.ANDreg(dst, src, scratch)
+// Uses UBFX to extract bits 0-43 in a single instruction (was 4 insns with LoadImm64+AND).
+func EmitExtractPtr(asm *Assembler, dst, src Reg) {
+	asm.UBFX(dst, src, 0, 44)
 }
 
 // EmitBoxNil stores NaN-boxed nil (0xFFFC000000000000) into dst.

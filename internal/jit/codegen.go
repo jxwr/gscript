@@ -192,6 +192,11 @@ const regSelfArg = X19
 // X22 is callee-saved. Saved/restored in the self-call frame alongside X19/X30.
 const regSelfArg2 = X22
 
+// Reserved register for the NaN-boxing int tag constant (0xFFFE000000000000).
+// Pinned once in the prologue, used by EmitBoxIntFast to avoid reloading the tag
+// on every box operation (saves 2+ instructions per EmitBoxInt call).
+const regTagInt = X24
+
 // Compile compiles a FuncProto to native ARM64 code.
 func Compile(proto *vm.FuncProto) (*CompiledFunc, error) {
 	return CompileWithGlobals(proto, nil)
@@ -342,6 +347,7 @@ func (cg *Codegen) emitPrologue() {
 	a.MOVreg(regCtx, X0)             // x28 = JITContext*
 	a.LDR(regRegs, regCtx, ctxOffRegs)       // x26 = regs base
 	a.LDR(regConsts, regCtx, ctxOffConstants) // x27 = constants base
+	a.LoadImm64(regTagInt, nb_i64(NB_TagInt)) // x24 = 0xFFFE000000000000 (int tag)
 
 	// Dispatch table for call-exit resume.
 	// When ResumePC != 0, jump to the resume point after the call-exit instruction.
@@ -546,7 +552,7 @@ func (cg *Codegen) storeRegIval(src Reg, reg int) {
 		return
 	}
 	// Box the int and store the full NaN-boxed value
-	EmitBoxInt(cg.asm, X10, src, X11)
+	EmitBoxIntFast(cg.asm, X10, src, regTagInt)
 	off := regValOffset(reg)
 	cg.asm.STR(X10, regRegs, off)
 }
@@ -579,7 +585,7 @@ func (cg *Codegen) storeIntValue(reg int, valReg Reg) {
 		return
 	}
 	// Box and store
-	EmitBoxInt(cg.asm, X10, valReg, X11)
+	EmitBoxIntFast(cg.asm, X10, valReg, regTagInt)
 	off := regValOffset(reg)
 	cg.asm.STR(X10, regRegs, off)
 }
@@ -602,7 +608,7 @@ func (cg *Codegen) storeBoolValue(reg int, valReg Reg) {
 // spillPinnedRegNB spills a pinned register as a NaN-boxed IntValue to memory.
 // Used before side-exits and returns where the interpreter needs valid Values.
 func (cg *Codegen) spillPinnedRegNB(vmReg int, armReg Reg) {
-	EmitBoxInt(cg.asm, X10, armReg, X11)
+	EmitBoxIntFast(cg.asm, X10, armReg, regTagInt)
 	off := regValOffset(vmReg)
 	cg.asm.STR(X10, regRegs, off)
 }
@@ -988,7 +994,8 @@ func (cg *Codegen) analyzeForLoops() {
 
 
 // Callee-saved registers available for pinning.
-var pinPool = []Reg{X19, X20, X21, X22, X23, X24, X25}
+// NOTE: X24 (regTagInt) is excluded — it holds the NaN-boxing int tag constant.
+var pinPool = []Reg{X19, X20, X21, X22, X23, X25}
 
 // setupLoopPinning configures register pinning for a for-loop and emits
 // code to load VM registers into ARM registers. Returns true if pinning was set up.

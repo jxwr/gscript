@@ -81,8 +81,7 @@ func NewTable() *Table {
 func NewTableSized(arrayHint, hashHint int) *Table {
 	t := &Table{keysDirty: true}
 	if arrayHint > 0 {
-		t.array = make([]Value, 1, arrayHint+1)
-		t.array[0] = NilValue()
+		t.array = MakeNilSliceCap(1, arrayHint+1)
 	} else {
 		t.array = []Value{NilValue()}
 	}
@@ -699,11 +698,17 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		}
 		// Mixed sparse expansion
 		if needed > cap(t.array) {
-			newArr := make([]Value, needed)
+			newArr := MakeNilSlice(needed)
 			copy(newArr, t.array)
 			t.array = newArr
 		} else {
+			oldLen := len(t.array)
 			t.array = t.array[:needed]
+			// Fill newly exposed slots with nil (Go zero = float64(0.0), not nil)
+			nv := NilValue()
+			for i := oldLen; i < needed; i++ {
+				t.array[i] = nv
+			}
 		}
 		t.array[key] = val
 		t.absorbKeys()
