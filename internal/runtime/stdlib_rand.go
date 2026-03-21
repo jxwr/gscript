@@ -35,12 +35,13 @@ func buildRandLib() *Table {
 	})
 
 	// rand.int([min, max]) - random integer
-	// No args: random int64
+	// No args: random int48 (fits in NaN-boxed integer)
 	// One arg: [0, max)
 	// Two args: [min, max]
 	set("int", func(args []Value) ([]Value, error) {
 		if len(args) == 0 {
-			return []Value{IntValue(rng.Int63())}, nil
+			// Mask to 47 bits to guarantee NaN-boxed int (not float promotion).
+			return []Value{IntValue(rng.Int63() & 0x7FFFFFFFFFFF)}, nil
 		}
 		if len(args) == 1 {
 			max := toInt(args[0])
@@ -254,7 +255,8 @@ func buildRandLib() *Table {
 	set("timeSeed", func(args []Value) ([]Value, error) {
 		seed := time.Now().UnixNano()
 		rng.Seed(seed)
-		return []Value{IntValue(seed)}, nil
+		// Mask seed to 47 bits to guarantee NaN-boxed int (not float promotion).
+		return []Value{IntValue(seed & 0x7FFFFFFFFFFF)}, nil
 	})
 
 	return t

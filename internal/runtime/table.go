@@ -53,8 +53,9 @@ func (t *Table) SetConcurrent(on bool) {
 }
 
 // cleanHashKey normalizes a Value for use as a Go map key.
-// With the 16-byte layout, SetInt always writes both fields, so stale fields
-// are less of an issue. We still normalize for safety.
+// With NaN-boxing, Value is uint64 so map keys compare by bits.
+// We still normalize float/int/string to ensure consistent hashing
+// (e.g., -0.0 vs 0.0, or equivalent int/float representations).
 func cleanHashKey(key Value) Value {
 	switch key.Type() {
 	case TypeInt:
