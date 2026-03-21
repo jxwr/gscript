@@ -461,6 +461,33 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			t.array[key] = val
 			return
 		default:
+			// ArrayMixed: check if this is the first real write to a fresh table
+			// (array has only the sentinel at [0]). If so, try to promote to typed array.
+			// This handles 0-indexed code like `row[0] = 3.14` on a new table.
+			if arrLen == 1 && key == 0 && !val.IsNil() {
+				vk := classifyValueForArray(val)
+				switch vk {
+				case ArrayInt:
+					t.arrayKind = ArrayInt
+					t.intArray = []int64{valueToInt64(val)}
+					t.array = nil
+					return
+				case ArrayFloat:
+					t.arrayKind = ArrayFloat
+					t.floatArray = []float64{val.Float()}
+					t.array = nil
+					return
+				case ArrayBool:
+					t.arrayKind = ArrayBool
+					if val.Bool() {
+						t.boolArray = []byte{2}
+					} else {
+						t.boolArray = []byte{1}
+					}
+					t.array = nil
+					return
+				}
+			}
 			t.array[key] = val
 			return
 		}
