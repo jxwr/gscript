@@ -460,6 +460,15 @@ func (a *Assembler) LSRimm(rd, rn Reg, shift uint8) {
 	a.emit(0xD3400000 | immr<<16 | imms<<10 | uint32(rn)<<5 | uint32(rd))
 }
 
+// SBFX: Signed Bitfield Extract. Xd = SignExtend(Xn[lsb+width-1:lsb])
+// Alias of SBFM Xd, Xn, #lsb, #(lsb+width-1)
+func (a *Assembler) SBFX(rd, rn Reg, lsb, width uint8) {
+	// SBFM: 1|00|100110|1|immr|imms|Rn|Rd
+	immr := uint32(lsb) & 63
+	imms := uint32(lsb+width-1) & 63
+	a.emit(0x93400000 | immr<<16 | imms<<10 | uint32(rn)<<5 | uint32(rd))
+}
+
 // LDRB: Wt = [Xn + #offset] (byte load, zero extend)
 func (a *Assembler) LDRB(rt, rn Reg, offset int) {
 	// LDRB Wt, [Xn, #pimm]: 00|11|1|00|01|0|imm12|Rn|Rt

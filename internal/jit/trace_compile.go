@@ -105,11 +105,12 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		asm.MOVreg(X25, XZR) // X25 = 0 (outermost call)
 	}
 
-	// Load allocated VM registers into ARM64 registers
+	// Load allocated VM registers into ARM64 registers (NaN-boxed → unbox int)
 	for vmReg, armReg := range ra.Mapping {
-		off := vmReg*ValueSize + OffsetData
+		off := vmReg * ValueSize
 		if off <= 32760 {
 			asm.LDR(armReg, regRegs, off)
+			EmitUnboxInt(asm, armReg, armReg)
 		}
 	}
 
@@ -125,18 +126,21 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 			// the allocated register, causing stale reads on the next iteration.
 			// (e.g., quicksort's "i = i+1" via MOVE R4 R10 needs R4's register updated)
 			if armReg, ok := ra.Get(ir.A); ok {
-				asm.LDR(armReg, regRegs, ir.A*ValueSize+OffsetData)
+				asm.LDR(armReg, regRegs, ir.A*ValueSize)
+				EmitUnboxInt(asm, armReg, armReg)
 			}
 		case vm.OP_LOADINT:
 			emitTrLoadInt(asm, &ir)
 			// If dst is allocated, update the ARM64 register too
 			if armReg, ok := ra.Get(ir.A); ok {
-				asm.LDR(armReg, regRegs, ir.A*ValueSize+OffsetData)
+				asm.LDR(armReg, regRegs, ir.A*ValueSize)
+				EmitUnboxInt(asm, armReg, armReg)
 			}
 		case vm.OP_LOADK:
 			emitTrLoadK(asm, &ir)
 			if armReg, ok := ra.Get(ir.A); ok {
-				asm.LDR(armReg, regRegs, ir.A*ValueSize+OffsetData)
+				asm.LDR(armReg, regRegs, ir.A*ValueSize)
+				EmitUnboxInt(asm, armReg, armReg)
 			}
 		case vm.OP_LOADNIL:
 			emitTrLoadNil(asm, &ir)
@@ -146,7 +150,8 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		case vm.OP_LOADBOOL:
 			emitTrLoadBool(asm, &ir)
 			if armReg, ok := ra.Get(ir.A); ok {
-				asm.LDR(armReg, regRegs, ir.A*ValueSize+OffsetData)
+				asm.LDR(armReg, regRegs, ir.A*ValueSize)
+				EmitUnboxInt(asm, armReg, armReg)
 			}
 		case vm.OP_ADD:
 			emitTrArithIntRA(asm, &ir, "ADD", ra)
@@ -248,15 +253,16 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 		}
 	}
 
-	// Helper: spill only WRITTEN allocated registers back to memory
+	// Helper: spill only WRITTEN allocated registers back to memory (NaN-boxed)
 	spillRegs := func() {
 		for vmReg, armReg := range ra.Mapping {
 			if !writtenSlots[vmReg] {
 				continue
 			}
-			off := vmReg*ValueSize + OffsetData
+			off := vmReg * ValueSize
 			if off <= 32760 {
-				asm.STR(armReg, regRegs, off)
+				EmitBoxInt(asm, X0, armReg, X1)
+				asm.STR(X0, regRegs, off)
 			}
 		}
 	}
@@ -335,10 +341,9 @@ func emitTrMove(asm *Assembler, ir *TraceIR) {
 
 func emitTrLoadInt(asm *Assembler, ir *TraceIR) {
 	dst := ir.A * ValueSize
-	asm.MOVimm16(X0, uint16(runtime.TypeInt))
-	asm.STRB(X0, regRegs, dst)
 	asm.LoadImm64(X0, int64(ir.SBX))
-	asm.STR(X0, regRegs, dst+OffsetData)
+	EmitBoxInt(asm, X1, X0, X2)
+	asm.STR(X1, regRegs, dst)
 }
 
 func emitTrLoadK(asm *Assembler, ir *TraceIR) {
@@ -351,24 +356,22 @@ func emitTrLoadK(asm *Assembler, ir *TraceIR) {
 }
 
 func emitTrLoadNil(asm *Assembler, ir *TraceIR) {
+	// Store NaN-boxed nil to each register
+	EmitBoxNil(asm, X0)
 	for i := ir.A; i <= ir.A+ir.B; i++ {
 		off := i * ValueSize
-		for w := 0; w < ValueSize/8; w++ {
-			asm.STR(XZR, regRegs, off+w*8)
-		}
+		asm.STR(X0, regRegs, off)
 	}
 }
 
 func emitTrLoadBool(asm *Assembler, ir *TraceIR) {
 	dst := ir.A * ValueSize
-	asm.MOVimm16(X0, uint16(runtime.TypeBool))
-	asm.STRB(X0, regRegs, dst)
 	if ir.B != 0 {
-		asm.LoadImm64(X0, 1)
+		asm.LoadImm64(X0, nb_i64(NB_ValTrue))
 	} else {
-		asm.MOVreg(X0, XZR)
+		asm.LoadImm64(X0, nb_i64(NB_ValFalse))
 	}
-	asm.STR(X0, regRegs, dst+OffsetData)
+	asm.STR(X0, regRegs, dst)
 }
 
 // emitTrArithIntRA emits integer arithmetic using allocated registers when available.
@@ -392,12 +395,10 @@ func emitTrArithIntRA(asm *Assembler, ir *TraceIR, op string, ra *RegAlloc) {
 		case "MUL":
 			asm.MUL(dstReg, bReg, cReg)
 		}
-		// Always write back to memory (other instructions may read it)
+		// Always write back to memory as NaN-boxed IntValue
 		dst := ir.A * ValueSize
-		asm.STR(dstReg, regRegs, dst+OffsetData)
-		// Always write type byte — a slot may have previously held a table
-		asm.MOVimm16(X0, TypeInt)
-		asm.STRB(X0, regRegs, dst)
+		EmitBoxInt(asm, X0, dstReg, X1)
+		asm.STR(X0, regRegs, dst)
 		return
 	}
 
@@ -409,20 +410,25 @@ func emitTrArithIntRA(asm *Assembler, ir *TraceIR, op string, ra *RegAlloc) {
 		srcB = bReg
 	} else {
 		bOff, bBase := trRKBase(ir.B)
-		asm.LDRB(X0, bBase, bOff)
-		asm.CMPimmW(X0, TypeInt)
+		// NaN-box type check: load value, LSR #48, compare with int tag
+		asm.LDR(X1, bBase, bOff)
+		asm.LSRimm(X0, X1, 48)
+		asm.MOVimm16(X3, NB_TagIntShr48)
+		asm.CMPreg(X0, X3)
 		asm.BCond(CondNE, "side_exit")
-		asm.LDR(X1, bBase, bOff+OffsetData)
+		EmitUnboxInt(asm, X1, X1)
 		srcB = X1
 	}
 	if cAlloc && ir.C < 256 {
 		srcC = cReg
 	} else {
 		cOff, cBase := trRKBase(ir.C)
-		asm.LDRB(X0, cBase, cOff)
-		asm.CMPimmW(X0, TypeInt)
+		asm.LDR(X2, cBase, cOff)
+		asm.LSRimm(X0, X2, 48)
+		asm.MOVimm16(X3, NB_TagIntShr48)
+		asm.CMPreg(X0, X3)
 		asm.BCond(CondNE, "side_exit")
-		asm.LDR(X2, cBase, cOff+OffsetData)
+		EmitUnboxInt(asm, X2, X2)
 		srcC = X2
 	}
 
@@ -441,11 +447,10 @@ func emitTrArithIntRA(asm *Assembler, ir *TraceIR, op string, ra *RegAlloc) {
 	}
 
 	if !aAlloc {
-		// Store to memory
+		// Box and store to memory
 		dst := ir.A * ValueSize
-		asm.STR(X0, regRegs, dst+OffsetData)
-		asm.MOVimm16(X0, TypeInt)
-		asm.STRB(X0, regRegs, dst)
+		EmitBoxInt(asm, X1, X0, X2)
+		asm.STR(X1, regRegs, dst)
 	}
 }
 
@@ -490,28 +495,37 @@ func emitTrArithInt(asm *Assembler, ir *TraceIR, op string) {
 func emitTrForPrep(asm *Assembler, ir *TraceIR) {
 	aOff := ir.A * ValueSize
 	stepOff := (ir.A + 2) * ValueSize
-	asm.LDR(X0, regRegs, aOff+OffsetData)
-	asm.LDR(X1, regRegs, stepOff+OffsetData)
+	// Load and unbox idx and step
+	asm.LDR(X0, regRegs, aOff)
+	EmitUnboxInt(asm, X0, X0)
+	asm.LDR(X1, regRegs, stepOff)
+	EmitUnboxInt(asm, X1, X1)
 	asm.SUBreg(X0, X0, X1)
-	asm.STR(X0, regRegs, aOff+OffsetData)
+	// Box and store back
+	EmitBoxInt(asm, X2, X0, X3)
+	asm.STR(X2, regRegs, aOff)
 }
 
 func emitTrForLoop(asm *Assembler, ir *TraceIR) {
 	aOff := ir.A * ValueSize
 
-	// idx += step
-	asm.LDR(X0, regRegs, aOff+OffsetData)
-	asm.LDR(X1, regRegs, (ir.A+2)*ValueSize+OffsetData)
+	// idx += step (load NaN-boxed, unbox, compute, box, store)
+	asm.LDR(X0, regRegs, aOff)
+	EmitUnboxInt(asm, X0, X0)
+	asm.LDR(X1, regRegs, (ir.A+2)*ValueSize)
+	EmitUnboxInt(asm, X1, X1)
 	asm.ADDreg(X0, X0, X1) // idx + step
-	asm.STR(X0, regRegs, aOff+OffsetData)
 
-	// R(A+3) = idx (expose as loop variable)
-	asm.STR(X0, regRegs, (ir.A+3)*ValueSize+OffsetData)
-	asm.MOVimm16(X2, TypeInt)
-	asm.STRB(X2, regRegs, (ir.A+3)*ValueSize)
+	// Box and store idx
+	EmitBoxInt(asm, X2, X0, X3)
+	asm.STR(X2, regRegs, aOff)
+
+	// R(A+3) = idx (expose as loop variable, also NaN-boxed)
+	asm.STR(X2, regRegs, (ir.A+3)*ValueSize)
 
 	// Compare: idx <= limit (for step > 0)
-	asm.LDR(X1, regRegs, (ir.A+1)*ValueSize+OffsetData)
+	asm.LDR(X1, regRegs, (ir.A+1)*ValueSize)
+	EmitUnboxInt(asm, X1, X1)
 	asm.CMPreg(X0, X1)
 	asm.BCond(CondGT, "loop_done")
 }

@@ -292,10 +292,11 @@ func (cg *Codegen) compile() (*CompiledFunc, error) {
 	for _, stub := range cg.cmpResumeStubs {
 		cg.asm.Label(stub.label)
 		cg.asm.LDR(regRegs, regCtx, ctxOffRegs)
-		// Reload pinned registers using the captured state from when the comparison was emitted.
+		// Reload pinned registers: load NaN-boxed value and unbox int.
 		for _, vmReg := range stub.pinnedVars {
 			if armReg, ok := stub.pinnedRegs[vmReg]; ok {
-				cg.asm.LDR(armReg, regRegs, regIvalOffset(vmReg))
+				cg.asm.LDR(armReg, regRegs, regValOffset(vmReg))
+				EmitUnboxInt(cg.asm, armReg, armReg)
 			}
 		}
 		cg.asm.B(stub.targetPC)
@@ -412,16 +413,7 @@ func (cg *Codegen) emitPrologue() {
 		// This is safe because self-calls always pass results of int arithmetic (SUB/ADD).
 		if cg.proto.NumParams > 0 {
 			for i := 0; i < cg.proto.NumParams; i++ {
-				off := regTypOffset(i)
-				if off <= 4095 {
-					a.LDRB(X0, regRegs, off)
-				} else {
-					a.LoadImm64(X10, int64(off))
-					a.ADDreg(X10, regRegs, X10)
-					a.LDRB(X0, X10, 0)
-				}
-				a.CMPimmW(X0, TypeInt)
-				a.BCond(CondNE, "self_param_guard_fail")
+				EmitGuardType(a, regRegs, i, TypeInt, "self_param_guard_fail")
 			}
 			// Guard failure deferred to cold section.
 			cg.deferCold("self_param_guard_fail", func() {
@@ -434,9 +426,11 @@ func (cg *Codegen) emitPrologue() {
 
 		// Outermost entry: load pinned parameters from the Value array
 		// (set by interpreter) into callee-saved registers, then fall through to the body.
-		a.LDR(regSelfArg, regRegs, regIvalOffset(0))
+		a.LDR(regSelfArg, regRegs, regValOffset(0))
+		EmitUnboxInt(a, regSelfArg, regSelfArg)
 		if cg.proto.NumParams > 1 {
-			a.LDR(regSelfArg2, regRegs, regIvalOffset(1))
+			a.LDR(regSelfArg2, regRegs, regValOffset(1))
+			EmitUnboxInt(a, regSelfArg2, regSelfArg2)
 		}
 
 		a.Label("self_call_entry")  // self-recursive calls BL here; pinned args already loaded by caller
@@ -491,51 +485,62 @@ func sideExitLabel(pc int) string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Value access helpers
+// Value access helpers (NaN-boxing: 8-byte values)
 // ──────────────────────────────────────────────────────────────────────────────
 
-// regTypOffset returns the byte offset of R(i).typ from regRegs.
-func regTypOffset(i int) int {
-	return i*ValueSize + OffsetTyp
+// regValOffset returns the byte offset of R(i) from regRegs (each Value = 8 bytes).
+func regValOffset(i int) int {
+	return i * ValueSize
 }
 
-// regIvalOffset returns the byte offset of R(i).ival from regRegs.
+// regIvalOffset returns the byte offset of R(i) from regRegs.
+// With NaN-boxing, the int data is embedded in the Value itself.
+// This returns the same offset as regValOffset for backward compatibility.
+// NOTE: Code using this must be aware that loading from this offset returns
+// a NaN-boxed value, NOT a raw int. Use EmitUnboxInt after loading.
 func regIvalOffset(i int) int {
-	return i*ValueSize + OffsetIval
+	return i * ValueSize
 }
 
-// regFvalOffset returns the byte offset of R(i).data from regRegs (float stored as bits in data).
+// regTypOffset returns the byte offset of R(i) from regRegs.
+// With NaN-boxing there is no separate type field. This returns the same
+// offset as regValOffset. Code using this must extract the tag via LSR #48.
+func regTypOffset(i int) int {
+	return i * ValueSize
+}
+
+// regFvalOffset returns the byte offset of R(i) from regRegs.
+// With NaN-boxing, a float IS the raw bits of the Value.
 func regFvalOffset(i int) int {
-	return i*ValueSize + OffsetData
+	return i * ValueSize
 }
 
-// loadRegTyp loads the type byte of R(reg) into the ARM64 register dst (as W-form).
+// loadRegTyp loads the NaN-boxed Value of R(reg) into dst, then extracts the
+// tag into dst via LSR #48. After return, dst holds the top 16 bits of the value.
+// Callers compare with NB_TagXxxShr48 constants.
+// NOTE: the full value is lost; if you need both tag and value, load separately.
 func (cg *Codegen) loadRegTyp(dst Reg, reg int) {
-	off := regTypOffset(reg)
-	if off <= 4095 {
-		cg.asm.LDRB(dst, regRegs, off)
+	off := regValOffset(reg)
+	if off <= 32760 {
+		cg.asm.LDR(dst, regRegs, off)
 	} else {
 		cg.asm.LoadImm64(X10, int64(off))
 		cg.asm.ADDreg(X10, regRegs, X10)
-		cg.asm.LDRB(dst, X10, 0)
+		cg.asm.LDR(dst, X10, 0)
 	}
+	cg.asm.LSRimm(dst, dst, 48)
 }
 
-// storeRegTyp stores a type byte into R(reg).typ.
-// Uses X10 as scratch for large offsets (not X9, which callers may pass as src).
+// storeRegTyp is a no-op placeholder for NaN-boxing.
+// With NaN-boxing, the type is encoded in the value itself -- there is no
+// separate type byte to store. Callers that used this must box values instead.
 func (cg *Codegen) storeRegTyp(src Reg, reg int) {
-	off := regTypOffset(reg)
-	if off <= 4095 {
-		cg.asm.STRB(src, regRegs, off)
-	} else {
-		cg.asm.LoadImm64(X10, int64(off))
-		cg.asm.ADDreg(X10, regRegs, X10)
-		cg.asm.STRB(src, X10, 0)
-	}
+	// No-op: NaN-boxing encodes the type in the value itself.
 }
 
-// loadRegIval loads R(reg).ival into the ARM64 register dst (64-bit).
-// If the register is pinned, uses a register-to-register MOV instead of memory load.
+// loadRegIval loads the unboxed int from R(reg) into dst.
+// For pinned registers, uses register-to-register MOV.
+// For memory, loads the NaN-boxed value and sign-extends the 48-bit payload.
 func (cg *Codegen) loadRegIval(dst Reg, reg int) {
 	if armReg, ok := cg.pinnedRegs[reg]; ok {
 		if dst != armReg {
@@ -543,12 +548,13 @@ func (cg *Codegen) loadRegIval(dst Reg, reg int) {
 		}
 		return
 	}
-	off := regIvalOffset(reg)
+	off := regValOffset(reg)
 	cg.asm.LDR(dst, regRegs, off)
+	EmitUnboxInt(cg.asm, dst, dst)
 }
 
-// storeRegIval stores a 64-bit value into R(reg).ival.
-// If the register is pinned, uses a register-to-register MOV instead of memory store.
+// storeRegIval stores a raw int64 as a NaN-boxed IntValue into R(reg).
+// For pinned registers, uses register-to-register MOV (pinned regs hold raw ints).
 func (cg *Codegen) storeRegIval(src Reg, reg int) {
 	if armReg, ok := cg.pinnedRegs[reg]; ok {
 		if src != armReg {
@@ -556,69 +562,99 @@ func (cg *Codegen) storeRegIval(src Reg, reg int) {
 		}
 		return
 	}
-	off := regIvalOffset(reg)
-	cg.asm.STR(src, regRegs, off)
+	// Box the int and store the full NaN-boxed value
+	EmitBoxInt(cg.asm, X10, src, X11)
+	off := regValOffset(reg)
+	cg.asm.STR(X10, regRegs, off)
 }
 
-// loadRegFval loads R(reg).fval into the ARM64 FP register dst.
+// loadRegFval loads R(reg) as a float64 into the ARM64 FP register dst.
+// With NaN-boxing, the float IS the raw value bits, so just FLDRd.
 func (cg *Codegen) loadRegFval(dst FReg, reg int) {
-	off := regFvalOffset(reg)
+	off := regValOffset(reg)
 	cg.asm.FLDRd(dst, regRegs, off)
 }
 
-// storeRegFval stores a float64 into R(reg).fval.
+// storeRegFval stores a float64 into R(reg).
+// With NaN-boxing, float bits ARE the value -- single FSTRd.
 func (cg *Codegen) storeRegFval(src FReg, reg int) {
-	off := regFvalOffset(reg)
+	off := regValOffset(reg)
 	cg.asm.FSTRd(src, regRegs, off)
 }
 
-// storeIntValue stores a complete IntValue: sets typ=TypeInt and ival=value.
-// For pinned registers, skips the type store (typ is maintained on spill).
-// For self-call functions, skips the type store because all values are guaranteed
-// TypeInt (parameter guard at entry + int-only arithmetic).
+// storeIntValue stores a complete NaN-boxed IntValue to R(reg).
+// valReg holds the raw int64 value. This boxes it and writes.
+// For pinned registers, only updates the ARM register (no memory write).
 func (cg *Codegen) storeIntValue(reg int, valReg Reg) {
-	if _, pinned := cg.pinnedRegs[reg]; !pinned && !cg.hasSelfCalls {
-		cg.asm.MOVimm16W(X9, TypeInt)
-		cg.storeRegTyp(X9, reg)
+	if armReg, pinned := cg.pinnedRegs[reg]; pinned {
+		if !cg.hasSelfCalls {
+			// Pinned regs hold raw ints, no boxing needed
+		}
+		if valReg != armReg {
+			cg.asm.MOVreg(armReg, valReg)
+		}
+		return
 	}
-	cg.storeRegIval(valReg, reg)
+	// Box and store
+	EmitBoxInt(cg.asm, X10, valReg, X11)
+	off := regValOffset(reg)
+	cg.asm.STR(X10, regRegs, off)
 }
 
-// storeNilValue stores NilValue (typ=0) in R(reg).
+// storeNilValue stores NaN-boxed nil in R(reg).
 func (cg *Codegen) storeNilValue(reg int) {
-	cg.asm.MOVimm16W(X9, TypeNil)
-	cg.storeRegTyp(X9, reg)
+	EmitBoxNil(cg.asm, X10)
+	off := regValOffset(reg)
+	cg.asm.STR(X10, regRegs, off)
 }
 
-// storeBoolValue stores a BoolValue (typ=TypeBool, ival=0 or 1).
+// storeBoolValue stores a NaN-boxed BoolValue to R(reg).
+// valReg should contain 0 (false) or 1 (true).
 func (cg *Codegen) storeBoolValue(reg int, valReg Reg) {
-	cg.asm.MOVimm16W(X9, TypeBool)
-	cg.storeRegTyp(X9, reg)
-	cg.storeRegIval(valReg, reg)
+	EmitBoxBool(cg.asm, X10, valReg, X11)
+	off := regValOffset(reg)
+	cg.asm.STR(X10, regRegs, off)
+}
+
+// spillPinnedRegNB spills a pinned register as a NaN-boxed IntValue to memory.
+// Used before side-exits and returns where the interpreter needs valid Values.
+func (cg *Codegen) spillPinnedRegNB(vmReg int, armReg Reg) {
+	EmitBoxInt(cg.asm, X10, armReg, X11)
+	off := regValOffset(vmReg)
+	cg.asm.STR(X10, regRegs, off)
+}
+
+// emitCmpTag compares the tag value in dst (after LSR #48) with a NaN-boxing tag.
+// Uses X10 as scratch for the tag constant.
+func (cg *Codegen) emitCmpTag(dst Reg, tagShr48 uint16) {
+	cg.asm.MOVimm16(X10, tagShr48)
+	cg.asm.CMPreg(dst, X10)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// RK value loading (register or constant)
+// RK value loading (register or constant) -- NaN-boxing
 // ──────────────────────────────────────────────────────────────────────────────
 
-// loadRKTyp loads the type of RK(idx) into dst.
+// loadRKTyp loads the tag of RK(idx) into dst (via LSR #48).
+// After return, dst holds the top 16 bits for comparison with NB_TagXxxShr48.
 func (cg *Codegen) loadRKTyp(dst Reg, idx int) {
 	if vm.IsRK(idx) {
 		constIdx := vm.RKToConstIdx(idx)
-		off := constIdx*ValueSize + OffsetTyp
-		if off <= 4095 {
-			cg.asm.LDRB(dst, regConsts, off)
+		off := constIdx * ValueSize
+		if off <= 32760 {
+			cg.asm.LDR(dst, regConsts, off)
 		} else {
 			cg.asm.LoadImm64(X10, int64(off))
 			cg.asm.ADDreg(X10, regConsts, X10)
-			cg.asm.LDRB(dst, X10, 0)
+			cg.asm.LDR(dst, X10, 0)
 		}
+		cg.asm.LSRimm(dst, dst, 48)
 	} else {
 		cg.loadRegTyp(dst, idx)
 	}
 }
 
-// loadRKIval loads RK(idx).ival into dst.
+// loadRKIval loads the unboxed int from RK(idx) into dst.
 // For small integer constants, emits a MOV immediate instead of a memory load.
 func (cg *Codegen) loadRKIval(dst Reg, idx int) {
 	if vm.IsRK(idx) {
@@ -629,18 +665,21 @@ func (cg *Codegen) loadRKIval(dst Reg, idx int) {
 			cg.asm.LoadImm64(dst, v)
 			return
 		}
-		off := constIdx*ValueSize + OffsetIval
+		// Load NaN-boxed value and unbox
+		off := constIdx * ValueSize
 		cg.asm.LDR(dst, regConsts, off)
+		EmitUnboxInt(cg.asm, dst, dst)
 	} else {
 		cg.loadRegIval(dst, idx)
 	}
 }
 
-// loadRKFval loads RK(idx).fval into dst.
+// loadRKFval loads RK(idx) as float64 into dst.
+// With NaN-boxing, the float IS the value bits -- just FLDRd from the slot.
 func (cg *Codegen) loadRKFval(dst FReg, idx int) {
 	if vm.IsRK(idx) {
 		constIdx := vm.RKToConstIdx(idx)
-		off := constIdx*ValueSize + OffsetData
+		off := constIdx * ValueSize
 		cg.asm.FLDRd(dst, regConsts, off)
 	} else {
 		cg.loadRegFval(dst, idx)
@@ -710,33 +749,27 @@ func (cg *Codegen) regLoadIntConst(reg, currentPC int) int64 {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Copy a full Value (32 bytes) between registers.
+// Copy a full Value (8 bytes NaN-boxed) between registers.
 // ──────────────────────────────────────────────────────────────────────────────
 
-// copyValue copies the full Value (32 bytes = 4 words) from src to dst.
+// copyValue copies the full NaN-boxed Value (8 bytes) from src to dst.
 func (cg *Codegen) copyValue(dstReg, srcReg int) {
-	srcBase := srcReg * ValueSize
-	dstBase := dstReg * ValueSize
+	srcOff := srcReg * ValueSize
+	dstOff := dstReg * ValueSize
 	a := cg.asm
-
-	for i := 0; i < 4; i++ {
-		a.LDR(X0, regRegs, srcBase+i*8)
-		a.STR(X0, regRegs, dstBase+i*8)
-	}
+	a.LDR(X0, regRegs, srcOff)
+	a.STR(X0, regRegs, dstOff)
 }
 
-// copyRKValue copies a full Value from RK(idx) to R(dst).
+// copyRKValue copies a full NaN-boxed Value from RK(idx) to R(dst).
 func (cg *Codegen) copyRKValue(dstReg, rkIdx int) {
+	dstOff := dstReg * ValueSize
+	a := cg.asm
 	if vm.IsRK(rkIdx) {
 		constIdx := vm.RKToConstIdx(rkIdx)
-		srcBase := constIdx * ValueSize
-		dstBase := dstReg * ValueSize
-		a := cg.asm
-
-		for i := 0; i < 4; i++ {
-			a.LDR(X0, regConsts, srcBase+i*8)
-			a.STR(X0, regRegs, dstBase+i*8)
-		}
+		srcOff := constIdx * ValueSize
+		a.LDR(X0, regConsts, srcOff)
+		a.STR(X0, regRegs, dstOff)
 	} else {
 		cg.copyValue(dstReg, rkIdx)
 	}
@@ -1210,31 +1243,32 @@ func (cg *Codegen) setupLoopPinning(desc *forLoopDesc) bool {
 		cg.pinnedVars = append(cg.pinnedVars, vmReg)
 	}
 
-	// Load pinned registers from memory.
+	// Load pinned registers from memory (NaN-boxed → unbox int).
 	for _, vmReg := range cg.pinnedVars {
 		armReg := cg.pinnedRegs[vmReg]
-		cg.asm.LDR(armReg, regRegs, regIvalOffset(vmReg))
+		cg.asm.LDR(armReg, regRegs, regValOffset(vmReg))
+		EmitUnboxInt(cg.asm, armReg, armReg)
 	}
 
 	return true
 }
 
 // spillPinnedRegs stores all pinned ARM registers back to VM register memory.
-// Iterates over all pinned registers including aliased ones (e.g., R(A+3) aliased to R(A)).
+// With NaN-boxing, boxes the raw int and writes a single 8-byte NaN-boxed Value.
 func (cg *Codegen) spillPinnedRegs() {
 	for vmReg, armReg := range cg.pinnedRegs {
-		cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-		cg.asm.MOVimm16W(X9, TypeInt)
-		cg.storeRegTyp(X9, vmReg)
+		cg.spillPinnedRegNB(vmReg, armReg)
 	}
 }
 
 // reloadPinnedRegs loads all pinned ARM registers from VM register memory.
-// Used at resume points after a call-exit to restore pinned state.
+// With NaN-boxing, loads the NaN-boxed value and unboxes the 48-bit int.
 func (cg *Codegen) reloadPinnedRegs() {
 	for _, vmReg := range cg.pinnedVars {
 		armReg := cg.pinnedRegs[vmReg]
-		cg.asm.LDR(armReg, regRegs, regIvalOffset(vmReg))
+		off := regValOffset(vmReg)
+		cg.asm.LDR(armReg, regRegs, off)
+		EmitUnboxInt(cg.asm, armReg, armReg)
 	}
 }
 
@@ -1852,7 +1886,8 @@ func (cg *Codegen) emitInlineCall(pc int, candidate *inlineCandidate) error {
 				} else if srcPinned {
 					cg.storeIntValue(resultReg, srcArm)
 				} else if dstPinned {
-					cg.asm.LDR(dstArm, regRegs, regIvalOffset(mappedRetA))
+					cg.asm.LDR(dstArm, regRegs, regValOffset(mappedRetA))
+					EmitUnboxInt(cg.asm, dstArm, dstArm)
 				} else {
 					cg.copyValue(resultReg, mappedRetA)
 				}
@@ -1920,12 +1955,12 @@ func (cg *Codegen) emitInlineCall(pc int, candidate *inlineCandidate) error {
 			// Type guards only for non-known-int, non-pinned, non-constant operands
 			if !bKnownInt {
 				cg.loadRegTyp(X0, mappedB)
-				cg.asm.CMPimmW(X0, TypeInt)
+				cg.emitCmpTag(X0, NB_TagIntShr48)
 				cg.asm.BCond(CondNE, exitLabel)
 			}
 			if !cKnownInt {
 				cg.loadRegTyp(X0, mappedC)
-				cg.asm.CMPimmW(X0, TypeInt)
+				cg.emitCmpTag(X0, NB_TagIntShr48)
 				cg.asm.BCond(CondNE, exitLabel)
 			}
 
@@ -2034,7 +2069,8 @@ func (cg *Codegen) emitInlineCall(pc int, candidate *inlineCandidate) error {
 			} else if srcPinned {
 				cg.storeIntValue(a, srcArm)
 			} else if dstPinned {
-				cg.asm.LDR(dstArm, regRegs, regIvalOffset(b))
+				cg.asm.LDR(dstArm, regRegs, regValOffset(b))
+				EmitUnboxInt(cg.asm, dstArm, dstArm)
 			} else {
 				cg.copyValue(a, b)
 			}
@@ -2235,9 +2271,7 @@ func (cg *Codegen) emitBody() error {
 				cg.asm.B(coldLabel)
 				cg.deferCold(coldLabel, func() {
 					for vmReg, armReg := range capturedPinned {
-						cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-						cg.asm.MOVimm16W(X9, TypeInt)
-						cg.storeRegTyp(X9, vmReg)
+						cg.spillPinnedRegNB(vmReg, armReg)
 					}
 					cg.asm.LoadImm64(X1, int64(pc))
 					cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -2261,9 +2295,7 @@ func (cg *Codegen) emitBody() error {
 			cg.asm.B(coldLabel)
 			cg.deferCold(coldLabel, func() {
 				for vmReg, armReg := range capturedPinned {
-					cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-					cg.asm.MOVimm16W(X9, TypeInt)
-					cg.storeRegTyp(X9, vmReg)
+					cg.spillPinnedRegNB(vmReg, armReg)
 				}
 				cg.asm.LoadImm64(X1, int64(pc))
 				cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -2519,14 +2551,14 @@ func (cg *Codegen) emitMove(inst uint32) error {
 		if cg.hasSelfCalls {
 			cg.asm.NOP()
 			cg.asm.NOP()
-		} else {
-			cg.asm.MOVimm16W(X9, TypeInt)
-			cg.storeRegTyp(X9, aReg)
 		}
-		cg.asm.STR(srcArm, regRegs, regIvalOffset(aReg))
+		// Box the raw int and store as NaN-boxed Value
+		EmitBoxInt(cg.asm, X10, srcArm, X11)
+		cg.asm.STR(X10, regRegs, regValOffset(aReg))
 	} else if dstPinned {
-		// Dest pinned, source in memory: load ival into ARM reg.
-		cg.asm.LDR(dstArm, regRegs, regIvalOffset(bReg))
+		// Dest pinned, source in memory: load NaN-boxed value and unbox int.
+		cg.asm.LDR(dstArm, regRegs, regValOffset(bReg))
+		EmitUnboxInt(cg.asm, dstArm, dstArm)
 	} else {
 		cg.copyValue(aReg, bReg)
 	}
@@ -2549,12 +2581,12 @@ func (cg *Codegen) emitArithInt(pc int, inst uint32, arithOp string) error {
 		exitLabel := fmt.Sprintf("arith_exit_%d", pc)
 		if needGuardB {
 			cg.loadRKTyp(X0, bIdx)
-			cg.asm.CMPimmW(X0, TypeInt)
+			cg.emitCmpTag(X0, NB_TagIntShr48)
 			cg.asm.BCond(CondNE, exitLabel)
 		}
 		if needGuardC {
 			cg.loadRKTyp(X0, cIdx)
-			cg.asm.CMPimmW(X0, TypeInt)
+			cg.emitCmpTag(X0, NB_TagIntShr48)
 			cg.asm.BCond(CondNE, exitLabel)
 		}
 
@@ -2577,9 +2609,7 @@ func (cg *Codegen) emitArithInt(pc int, inst uint32, arithOp string) error {
 		}
 		cg.deferCold(exitLabel, func() {
 			for vmReg, armReg := range capturedPinned {
-				cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-				cg.asm.MOVimm16W(X9, TypeInt)
-				cg.storeRegTyp(X9, vmReg)
+				cg.spillPinnedRegNB(vmReg, armReg)
 			}
 			cg.asm.LoadImm64(X1, int64(pc))
 			cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -2673,7 +2703,7 @@ func (cg *Codegen) emitUNM(pc int, inst uint32) error {
 	if !bKnown {
 		exitLabel := fmt.Sprintf("unm_exit_%d", pc)
 		cg.loadRegTyp(X0, bReg)
-		cg.asm.CMPimmW(X0, TypeInt)
+		cg.emitCmpTag(X0, NB_TagIntShr48)
 		cg.asm.BCond(CondNE, exitLabel)
 
 		cg.loadRegIval(X0, bReg)
@@ -2687,9 +2717,7 @@ func (cg *Codegen) emitUNM(pc int, inst uint32) error {
 		}
 		cg.deferCold(exitLabel, func() {
 			for vmReg, armReg := range capturedPinned {
-				cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-				cg.asm.MOVimm16W(X9, TypeInt)
-				cg.storeRegTyp(X9, vmReg)
+				cg.spillPinnedRegNB(vmReg, armReg)
 			}
 			cg.asm.LoadImm64(X1, int64(pc))
 			cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -2757,12 +2785,12 @@ func (cg *Codegen) emitEQ(pc int, inst uint32) error {
 		exitLabel = fmt.Sprintf("eq_exit_%d", pc)
 		if !bKnown {
 			cg.loadRKTyp(X0, bIdx)
-			cg.asm.CMPimmW(X0, TypeInt)
+			cg.emitCmpTag(X0, NB_TagIntShr48)
 			cg.asm.BCond(CondNE, exitLabel)
 		}
 		if !cKnown {
 			cg.loadRKTyp(X0, cIdx)
-			cg.asm.CMPimmW(X0, TypeInt)
+			cg.emitCmpTag(X0, NB_TagIntShr48)
 			cg.asm.BCond(CondNE, exitLabel)
 		}
 	}
@@ -2839,12 +2867,12 @@ func (cg *Codegen) emitLT(pc int, inst uint32) error {
 		exitLabel = fmt.Sprintf("lt_exit_%d", pc)
 		if !bKnown {
 			cg.loadRKTyp(X0, bIdx)
-			cg.asm.CMPimmW(X0, TypeInt)
+			cg.emitCmpTag(X0, NB_TagIntShr48)
 			cg.asm.BCond(CondNE, exitLabel)
 		}
 		if !cKnown {
 			cg.loadRKTyp(X0, cIdx)
-			cg.asm.CMPimmW(X0, TypeInt)
+			cg.emitCmpTag(X0, NB_TagIntShr48)
 			cg.asm.BCond(CondNE, exitLabel)
 		}
 	}
@@ -2935,12 +2963,12 @@ func (cg *Codegen) emitLE(pc int, inst uint32) error {
 		exitLabel = fmt.Sprintf("le_exit_%d", pc)
 		if !bKnown {
 			cg.loadRKTyp(X0, bIdx)
-			cg.asm.CMPimmW(X0, TypeInt)
+			cg.emitCmpTag(X0, NB_TagIntShr48)
 			cg.asm.BCond(CondNE, exitLabel)
 		}
 		if !cKnown {
 			cg.loadRKTyp(X0, cIdx)
-			cg.asm.CMPimmW(X0, TypeInt)
+			cg.emitCmpTag(X0, NB_TagIntShr48)
 			cg.asm.BCond(CondNE, exitLabel)
 		}
 	}
@@ -3024,9 +3052,7 @@ func (cg *Codegen) emitComparisonSideExit(pc int, exitLabel string) error {
 	// Guard failure deferred to cold section.
 	cg.deferCold(exitLabel, func() {
 		for vmReg, armReg := range capturedRegs {
-			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-			cg.asm.MOVimm16W(X9, TypeInt)
-			cg.storeRegTyp(X9, vmReg)
+			cg.spillPinnedRegNB(vmReg, armReg)
 		}
 		cg.asm.LoadImm64(X1, int64(pc))
 		cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -3111,15 +3137,15 @@ func (cg *Codegen) emitForPrep(pc int, inst uint32) error {
 
 	// Type guard: R(A), R(A+1), R(A+2) must all be TypeInt
 	cg.loadRegTyp(X0, aReg)
-	cg.asm.CMPimmW(X0, TypeInt)
+	cg.emitCmpTag(X0, NB_TagIntShr48)
 	cg.asm.BCond(CondNE, exitLabel)
 
 	cg.loadRegTyp(X0, aReg+1)
-	cg.asm.CMPimmW(X0, TypeInt)
+	cg.emitCmpTag(X0, NB_TagIntShr48)
 	cg.asm.BCond(CondNE, exitLabel)
 
 	cg.loadRegTyp(X0, aReg+2)
-	cg.asm.CMPimmW(X0, TypeInt)
+	cg.emitCmpTag(X0, NB_TagIntShr48)
 	cg.asm.BCond(CondNE, exitLabel)
 
 	// Guard failure deferred to cold section (no pinning active at FORPREP).
@@ -3243,9 +3269,7 @@ func (cg *Codegen) emitForLoop(pc int, inst uint32) error {
 		nextPC := pcLabel(pc + 1)
 		cg.deferCold(exitFor, func() {
 			for vmReg, armReg := range capturedPinnedRegs {
-				cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-				cg.asm.MOVimm16W(X9, TypeInt)
-				cg.storeRegTyp(X9, vmReg)
+				cg.spillPinnedRegNB(vmReg, armReg)
 			}
 			cg.asm.B(nextPC) // jump back to hot path after loop
 		})
@@ -3293,26 +3317,19 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 	fallbackLabel := fmt.Sprintf("getfield_fallback_%d", pc)
 
 
-	// --- Step 1: Type check R(B).typ == TypeTable ---
-	bTypOff := regTypOffset(b)
-	if bTypOff <= 4095 {
-		asm.LDRB(X0, regRegs, bTypOff)
+	// --- Step 1: Type check R(B) is a Table (NaN-boxed pointer with ptrSubTable) ---
+	bOff := b * ValueSize
+	if bOff <= 32760 {
+		asm.LDR(X0, regRegs, bOff) // X0 = NaN-boxed Value
 	} else {
-		asm.LoadImm64(X0, int64(bTypOff))
-		asm.LDRBreg(X0, regRegs, X0)
-	}
-	asm.CMPimmW(X0, TypeTable)
-	asm.BCond(CondNE, fallbackLabel)
-
-	// --- Step 2: Load *Table from R(B).ptr.data ---
-	bPtrDataOff := b*ValueSize + OffsetPtrData
-	if bPtrDataOff <= 32760 {
-		asm.LDR(X0, regRegs, bPtrDataOff) // X0 = *Table
-	} else {
-		asm.LoadImm64(X1, int64(bPtrDataOff))
+		asm.LoadImm64(X1, int64(bOff))
 		asm.ADDreg(X1, regRegs, X1)
 		asm.LDR(X0, X1, 0)
 	}
+	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
+
+	// --- Step 2: Extract *Table pointer from NaN-boxed value ---
+	EmitExtractPtr(asm, X0, X0, X1) // X0 = *Table (44-bit address)
 	asm.CBZ(X0, fallbackLabel) // nil table check
 
 	// --- Step 3: Check metatable == nil ---
@@ -3327,17 +3344,17 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 	// Save table pointer for later svals access
 	asm.MOVreg(X9, X0) // X9 = *Table (preserved)
 
-	// --- Step 5: Load constant key string ---
-	// Constants[C].ptr is a string stored in an `any` interface.
-	// Interface data pointer (the boxed string header) is at offset OffsetPtrData.
-	cPtrDataOff := c*ValueSize + OffsetPtrData
-	if cPtrDataOff <= 32760 {
-		asm.LDR(X3, regConsts, cPtrDataOff) // X3 = pointer to string header
+	// --- Step 5: Load constant key string (NaN-boxed string pointer) ---
+	// Constants[C] is a NaN-boxed StringValue. Extract the pointer, then read the string header.
+	cOff := c * ValueSize
+	if cOff <= 32760 {
+		asm.LDR(X3, regConsts, cOff) // X3 = NaN-boxed string value
 	} else {
-		asm.LoadImm64(X4, int64(cPtrDataOff))
+		asm.LoadImm64(X4, int64(cOff))
 		asm.ADDreg(X4, regConsts, X4)
 		asm.LDR(X3, X4, 0)
 	}
+	EmitExtractPtr(asm, X3, X3, X4) // X3 = pointer to string header (*string)
 	asm.LDR(X4, X3, 0) // X4 = key string data ptr
 	asm.LDR(X5, X3, 8) // X5 = key string len
 
@@ -3404,9 +3421,7 @@ func (cg *Codegen) emitGetField(pc int, inst uint32) error {
 	}
 	cg.deferCold(fallbackLabel, func() {
 		for vmReg, armReg := range capturedPinnedGF {
-			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-			cg.asm.MOVimm16W(X9, TypeInt)
-			cg.storeRegTyp(X9, vmReg)
+			cg.spillPinnedRegNB(vmReg, armReg)
 		}
 		cg.asm.LoadImm64(X1, int64(pc))
 		cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -3430,26 +3445,19 @@ func (cg *Codegen) emitSetField(pc int, inst uint32) error {
 	fallbackLabel := fmt.Sprintf("setfield_fallback_%d", pc)
 
 
-	// --- Step 1: Type check R(A).typ == TypeTable ---
-	aTypOff := regTypOffset(a)
-	if aTypOff <= 4095 {
-		asm.LDRB(X0, regRegs, aTypOff)
+	// --- Step 1: Type check R(A) is a Table (NaN-boxed) ---
+	aOff := a * ValueSize
+	if aOff <= 32760 {
+		asm.LDR(X0, regRegs, aOff)
 	} else {
-		asm.LoadImm64(X0, int64(aTypOff))
-		asm.LDRBreg(X0, regRegs, X0)
-	}
-	asm.CMPimmW(X0, TypeTable)
-	asm.BCond(CondNE, fallbackLabel)
-
-	// --- Step 2: Load *Table from R(A).ptr.data ---
-	aPtrDataOff := a*ValueSize + OffsetPtrData
-	if aPtrDataOff <= 32760 {
-		asm.LDR(X0, regRegs, aPtrDataOff) // X0 = *Table
-	} else {
-		asm.LoadImm64(X1, int64(aPtrDataOff))
+		asm.LoadImm64(X1, int64(aOff))
 		asm.ADDreg(X1, regRegs, X1)
 		asm.LDR(X0, X1, 0)
 	}
+	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
+
+	// --- Step 2: Extract *Table pointer from NaN-boxed value ---
+	EmitExtractPtr(asm, X0, X0, X1)
 	asm.CBZ(X0, fallbackLabel) // nil table check
 
 	// --- Step 3: Check metatable == nil (has __newindex → fallback) ---
@@ -3464,15 +3472,16 @@ func (cg *Codegen) emitSetField(pc int, inst uint32) error {
 	// Save table pointer for later svals access
 	asm.MOVreg(X9, X0) // X9 = *Table (preserved)
 
-	// --- Step 5: Load constant key string (field name from Constants[B]) ---
-	bPtrDataOff := b*ValueSize + OffsetPtrData
-	if bPtrDataOff <= 32760 {
-		asm.LDR(X3, regConsts, bPtrDataOff) // X3 = pointer to string header
+	// --- Step 5: Load constant key string (NaN-boxed string pointer) ---
+	bOff := b * ValueSize
+	if bOff <= 32760 {
+		asm.LDR(X3, regConsts, bOff) // X3 = NaN-boxed string value
 	} else {
-		asm.LoadImm64(X4, int64(bPtrDataOff))
+		asm.LoadImm64(X4, int64(bOff))
 		asm.ADDreg(X4, regConsts, X4)
 		asm.LDR(X3, X4, 0)
 	}
+	EmitExtractPtr(asm, X3, X3, X4) // X3 = pointer to *string
 	asm.LDR(X4, X3, 0) // X4 = key string data ptr
 	asm.LDR(X5, X3, 8) // X5 = key string len
 
@@ -3562,9 +3571,7 @@ func (cg *Codegen) emitSetField(pc int, inst uint32) error {
 	}
 	cg.deferCold(fallbackLabel, func() {
 		for vmReg, armReg := range capturedPinnedSF {
-			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-			cg.asm.MOVimm16W(X9, TypeInt)
-			cg.storeRegTyp(X9, vmReg)
+			cg.spillPinnedRegNB(vmReg, armReg)
 		}
 		cg.asm.LoadImm64(X1, int64(pc))
 		cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -3595,7 +3602,7 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 		asm.LoadImm64(X0, int64(bTypOff))
 		asm.LDRBreg(X0, regRegs, X0)
 	}
-	asm.CMPimmW(X0, TypeTable)
+	cg.emitCmpTag(X0, NB_TagPtrShr48) // TypeTable check (ptr tag); sub-type checked after ptr load
 	asm.BCond(CondNE, fallbackLabel)
 
 	// --- Step 2: Load *Table from R(B).ptr.data ---
@@ -3746,9 +3753,7 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	}
 	cg.deferCold(fallbackLabel, func() {
 		for vmReg, armReg := range capturedPinnedGT {
-			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-			cg.asm.MOVimm16W(X9, TypeInt)
-			cg.storeRegTyp(X9, vmReg)
+			cg.spillPinnedRegNB(vmReg, armReg)
 		}
 		cg.asm.LoadImm64(X1, int64(pc))
 		cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -3779,7 +3784,7 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 		asm.LoadImm64(X0, int64(aTypOff))
 		asm.LDRBreg(X0, regRegs, X0)
 	}
-	asm.CMPimmW(X0, TypeTable)
+	cg.emitCmpTag(X0, NB_TagPtrShr48) // TypeTable check (ptr tag); sub-type checked after ptr load
 	asm.BCond(CondNE, fallbackLabel)
 
 	// --- Step 2: Load *Table from R(A).ptr ---
@@ -4073,9 +4078,7 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 	}
 	cg.deferCold(fallbackLabel, func() {
 		for vmReg, armReg := range capturedPinnedST {
-			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-			cg.asm.MOVimm16W(X9, TypeInt)
-			cg.storeRegTyp(X9, vmReg)
+			cg.spillPinnedRegNB(vmReg, armReg)
 		}
 		cg.asm.LoadImm64(X1, int64(pc))
 		cg.asm.STR(X1, regCtx, ctxOffExitPC)
@@ -4238,12 +4241,12 @@ func (cg *Codegen) emitSelfTailCall(pc int, candidate *inlineCandidate) error {
 	}
 
 	if !allTraced {
-		// Fallback: load from memory (original path).
-		arg0Off := regIvalOffset(fnReg + 1)
-		a.LDR(regSelfArg, regRegs, arg0Off)
+		// Fallback: load from memory (NaN-boxed → unbox int).
+		a.LDR(regSelfArg, regRegs, regValOffset(fnReg+1))
+		EmitUnboxInt(a, regSelfArg, regSelfArg)
 		if numParams > 1 {
-			arg1Off := regIvalOffset(fnReg + 2)
-			a.LDR(regSelfArg2, regRegs, arg1Off)
+			a.LDR(regSelfArg2, regRegs, regValOffset(fnReg+2))
+			EmitUnboxInt(a, regSelfArg2, regSelfArg2)
 		}
 		a.B("self_call_entry")
 		return nil
@@ -4301,7 +4304,8 @@ func (cg *Codegen) emitDirectArgs(candidate *inlineCandidate, numParams int) {
 			if srcPinned {
 				src = srcArm
 			} else {
-				a.LDR(X0, regRegs, regIvalOffset(t.arithSrc))
+				a.LDR(X0, regRegs, regValOffset(t.arithSrc))
+				EmitUnboxInt(a, X0, X0)
 			}
 			switch t.arithOp {
 			case "SUB":
@@ -4317,7 +4321,8 @@ func (cg *Codegen) emitDirectArgs(candidate *inlineCandidate, numParams int) {
 					a.MOVreg(dst, srcArm)
 				}
 			} else {
-				a.LDR(dst, regRegs, regIvalOffset(t.fromReg))
+				a.LDR(dst, regRegs, regValOffset(t.fromReg))
+				EmitUnboxInt(a, dst, dst)
 			}
 		}
 	}
@@ -4335,9 +4340,9 @@ func (cg *Codegen) emitDirectArgLoad(t inlineArgTrace, dst Reg) {
 		if srcPinned {
 			src = srcArm
 		} else {
-			// Source not pinned — must load from memory. Can't do it in 1 instruction
-			// with the arithmetic, so fall back to LDR.
-			a.LDR(dst, regRegs, regIvalOffset(t.arithSrc))
+			// Source not pinned — must load from memory. Load NaN-boxed + unbox.
+			a.LDR(dst, regRegs, regValOffset(t.arithSrc))
+			EmitUnboxInt(a, dst, dst)
 			return
 		}
 		switch t.arithOp {
@@ -4358,7 +4363,8 @@ func (cg *Codegen) emitDirectArgLoad(t inlineArgTrace, dst Reg) {
 		} else if srcPinned {
 			a.MOVreg(dst, srcArm)
 		} else {
-			a.LDR(dst, regRegs, regIvalOffset(t.fromReg))
+			a.LDR(dst, regRegs, regValOffset(t.fromReg))
+			EmitUnboxInt(a, dst, dst)
 		}
 	}
 }
@@ -4418,9 +4424,11 @@ func (cg *Codegen) emitSelfCallFull(pc int, candidate *inlineCandidate) error {
 	} else {
 		// Load callee's pinned parameters from the new register window.
 		// The callee at self_call_entry skips these loads since args are already loaded.
-		a.LDR(regSelfArg, regRegs, regIvalOffset(0))
+		a.LDR(regSelfArg, regRegs, regValOffset(0))
+		EmitUnboxInt(a, regSelfArg, regSelfArg)
 		if hasArg2 {
-			a.LDR(regSelfArg2, regRegs, regIvalOffset(1))
+			a.LDR(regSelfArg2, regRegs, regValOffset(1))
+			EmitUnboxInt(a, regSelfArg2, regSelfArg2)
 		}
 	}
 
@@ -4450,10 +4458,10 @@ func (cg *Codegen) emitSelfCallFull(pc int, candidate *inlineCandidate) error {
 
 	a.SUBimm(regSelfDepth, regSelfDepth, 1) // depth--
 
-	// Store result to R(fnReg) in caller's register window.
-	// Type tag write is skipped: self-call functions guarantee all values are TypeInt
-	// (parameter guard at outermost entry + int-only arithmetic).
-	a.STR(X0, regRegs, regIvalOffset(fnReg))
+	// Store result to R(fnReg) in caller's register window as NaN-boxed IntValue.
+	// X0 holds the raw int result from the callee.
+	EmitBoxInt(a, X10, X0, X11)
+	a.STR(X10, regRegs, regValOffset(fnReg))
 
 	// For variable-return self-calls (C=0), update ctx.Top so subsequent
 	// B=0 CALL instructions know the arg range. Top = fnReg + 1.
@@ -4609,9 +4617,7 @@ func (cg *Codegen) emitCrossCall(pc int, info *crossCallInfo) error {
 	}
 	cg.deferCold(fallbackLabel, func() {
 		for vmReg, armReg := range capturedPinned {
-			cg.asm.STR(armReg, regRegs, regIvalOffset(vmReg))
-			cg.asm.MOVimm16W(X9, TypeInt)
-			cg.storeRegTyp(X9, vmReg)
+			cg.spillPinnedRegNB(vmReg, armReg)
 		}
 		cg.asm.LoadImm64(X1, int64(getglobalPC))
 		cg.asm.STR(X1, regCtx, ctxOffExitPC)
