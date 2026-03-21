@@ -307,6 +307,30 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	regMap := AllocateRegisters(f)
 	liveInfo := AnalyzeLiveness(f)
 
+	// DEBUG: dump allocation info
+	if debugSSAStoreBack {
+		fmt.Printf("[SSA-COMPILE] loopPC=%d\n", f.Trace.LoopPC)
+		fmt.Printf("[SSA-COMPILE] Int slots: ")
+		for slot, reg := range regMap.Int.slotToReg {
+			fmt.Printf("R%d→%v ", slot, reg)
+		}
+		fmt.Printf("\n")
+		fmt.Printf("[SSA-COMPILE] Float slots: ")
+		for slot, reg := range regMap.Float.slotToReg {
+			fmt.Printf("R%d→%v ", slot, reg)
+		}
+		fmt.Printf("\n")
+		fmt.Printf("[SSA-COMPILE] WrittenSlots: ")
+		for slot := range liveInfo.WrittenSlots {
+			fmt.Printf("R%d(type=%v) ", slot, liveInfo.SlotTypes[slot])
+		}
+		fmt.Printf("\n")
+		for i, inst := range f.Insts {
+			fmt.Printf("[SSA-COMPILE]   [%3d] Op=%d Type=%d Slot=%d Arg1=%d Arg2=%d AuxInt=%d\n",
+				i, inst.Op, inst.Type, inst.Slot, inst.Arg1, inst.Arg2, inst.AuxInt)
+		}
+	}
+
 	// Phase 2: Emit ARM64
 	_ = ud // reserved for future optimization passes
 	return emitSSA(f, regMap, liveInfo)
@@ -996,11 +1020,18 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			}
 		}
 
-		// For the mixed fallback, we need the value spilled to memory as NaN-boxed
+		// For the mixed fallback, we need the value spilled to memory as NaN-boxed.
+		// Int registers: box and store. Float D registers: FSTRd (raw bits ARE
+		// the NaN-boxed form). Without this spill, the mixed fallback reads stale
+		// memory when the live value is only in a D register.
 		if valSlot >= 0 {
 			if r, ok := regMap.IntReg(valSlot); ok {
 				EmitBoxInt(asm, X5, r, X6)
 				asm.STR(X5, regRegs, valSlot*ValueSize)
+			} else if fr, ok := regMap.FloatReg(valSlot); ok {
+				asm.FSTRd(fr, regRegs, valSlot*ValueSize)
+			} else if fr, ok := regMap.FloatRefReg(valRef); ok {
+				asm.FSTRd(fr, regRegs, valSlot*ValueSize)
 			}
 		}
 		// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)

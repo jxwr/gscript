@@ -9,7 +9,7 @@ import (
 )
 
 // debugSSAStoreBack enables debug logging around trace execution.
-const debugSSAStoreBack = true
+const debugSSAStoreBack = false
 
 // TraceContext bridges compiled trace code and Go.
 type TraceContext struct {

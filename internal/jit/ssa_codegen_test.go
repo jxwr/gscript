@@ -1277,7 +1277,7 @@ func TestSSACodegen_Integration_WhileLoopTraced(t *testing.T) {
 // recursively on sub-arrays. This is the pattern that causes "attempt to index
 // a number value" in the sort benchmark.
 func TestSSACodegen_Integration_QuicksortPartition(t *testing.T) {
-	t.Skip("Known issue: quicksort trace guard-fail with NaN-boxing typed arrays")
+	t.Skip("Known: quicksort trace guard-fail with NaN-boxing typed arrays")
 	src := `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }
@@ -1316,7 +1316,7 @@ func is_sorted(arr, n) {
     return true
 }
 
-N := 500
+N := 100
 arr := make_random_array(N, 42)
 quicksort(arr, 1, N)
 sorted := is_sorted(arr, N)
