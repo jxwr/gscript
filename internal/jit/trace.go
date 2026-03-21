@@ -705,6 +705,17 @@ func (r *TraceRecorder) finishTrace() {
 		}
 
 		// Compile the trace if enabled
+		if debugSSAStoreBack {
+			fmt.Printf("[TRACE-DEBUG] finishTrace: compile=%v PC=%d nIR=%d hasFullNesting=%v hasInlinedCode=", r.compile, r.current.LoopPC, len(r.current.IR), hasFullNesting)
+			hasInl := false
+			for _, ir2 := range r.current.IR {
+				if ir2.Depth > 0 {
+					hasInl = true
+					break
+				}
+			}
+			fmt.Printf("%v\n", hasInl)
+		}
 		if r.compile {
 			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
 			compiled := false
@@ -717,8 +728,16 @@ func (r *TraceRecorder) finishTrace() {
 				ssaFunc = ConstHoist(ssaFunc)
 				ssaFunc = CSE(ssaFunc)
 				ssaFunc = FuseMultiplyAdd(ssaFunc)
-				if ssaIsIntegerOnly(ssaFunc) && SSAIsUseful(ssaFunc) {
+				ssaOK := ssaIsIntegerOnly(ssaFunc)
+				ssaUseful := SSAIsUseful(ssaFunc)
+				if debugSSAStoreBack {
+					fmt.Printf("[TRACE-DEBUG] PC=%d intOnly=%v useful=%v nInsts=%d\n", r.current.LoopPC, ssaOK, ssaUseful, len(ssaFunc.Insts))
+				}
+				if ssaOK && ssaUseful {
 					ct, err := CompileSSA(ssaFunc)
+					if debugSSAStoreBack && err != nil {
+						fmt.Printf("[TRACE-DEBUG] CompileSSA error: %v\n", err)
+					}
 					if err == nil {
 						ct.ssaCompiled = true
 						// Attach inner trace if this is an outer loop with sub-trace calling
@@ -760,6 +779,13 @@ func (r *TraceRecorder) finishTrace() {
 			}
 			if !compiled && !hasFullNesting && !hasInlinedCode {
 				ct, err := compileTrace(r.current)
+				if debugSSAStoreBack {
+					if err != nil {
+						fmt.Printf("[TRACE-DEBUG] Regular compile error: PC=%d err=%v\n", r.current.LoopPC, err)
+					} else {
+						fmt.Printf("[TRACE-DEBUG] Regular compiled: PC=%d\n", r.current.LoopPC)
+					}
+				}
 				if err == nil {
 					r.compiled[key] = ct
 					compiled = true

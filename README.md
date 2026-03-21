@@ -24,54 +24,49 @@ go build -o gscript ./cmd/gscript/
 
 ## Performance
 
+> **Status (2026-03-21):** NaN-boxing landed (Value 24B -> 8B), but JIT codegen is not yet adapted. Most benchmarks regressed. sieve improved thanks to better cache utilization from 8B array stride. This is the expected "break everything, then fix" phase.
+
 ### GScript JIT vs LuaJIT
 
 | Benchmark | GScript (best) | LuaJIT | Gap |
 |-----------|---------------|--------|-----|
-| **fib(20) warm** | **19.4us** | 24.7us | **21% faster** |
-| **fn calls warm** | **2.66us** | 2.6us | **parity** |
-| ackermann(3,4) warm | 18.9us | 12.0us | 1.6x |
-| fib(35) | 0.026s | 0.025s | ~parity |
-| mandelbrot(1000) | 0.155s | 0.058s | 2.7x |
-| sieve(1M x3) | 0.080s | 0.011s | 7.3x |
-| ackermann(3,4 x500) | 0.009s | 0.006s | 1.5x |
-| sort(50K x3) | 0.158s | 0.012s | 13.2x |
-| sum_primes(100K) | 0.022s | 0.002s | 11.0x |
-| nbody(500K) | 2.376s | 0.037s | 64.2x |
-| spectral_norm(500) | 0.660s | 0.008s | 82.5x |
-| matmul(300) | 1.120s | 0.022s | 50.9x |
-| fannkuch(9) | 0.588s | 0.019s | 30.9x |
-| mutual_recursion | 0.103s | 0.005s | 20.6x |
-| method_dispatch(100K) | 0.080s | 0.001s | 80.0x |
-| closure_bench | 0.046s | 0.009s | 5.1x |
-| string_bench | 0.046s | 0.010s | 4.6x |
-| binary_trees | 1.255s | 0.17s | 7.4x |
+| fib(35) | 0.036s | 0.032s | 1.1x |
+| sieve(1M x3) | **0.025s** | 0.014s | 1.8x |
+| ackermann(3,4 x500) | 0.011s | 0.008s | 1.4x |
+| fib(20) warm | 47.9us | 32.0us | 1.5x |
+| fn calls warm | 4.14us | 3.1us | 1.3x |
+| ackermann(3,4) warm | 40.2us | 15.2us | 2.6x |
+| mandelbrot(1000) | 1.500s | 0.072s | 20.8x |
+| sort(50K x3) | 0.207s | 0.016s | 12.9x |
+| sum_primes(100K) | 0.027s | 0.002s | 13.5x |
+| nbody(500K) | 2.469s | 0.043s | 57.4x |
+| spectral_norm(500) | 0.762s | 0.009s | 84.7x |
+| matmul(300) | 1.161s | 0.029s | 40.0x |
+| fannkuch(9) | 0.662s | 0.025s | 26.5x |
+| mutual_recursion | 0.150s | 0.005s | 30.0x |
+| method_dispatch(100K) | 0.093s | 0.000s | ~230x |
+| closure_bench | 0.071s | 0.012s | 5.9x |
+| string_bench | 0.051s | 0.010s | 5.1x |
+| binary_trees | 2.385s | 0.17s | 14.0x |
 
-### GScript Trace JIT vs Interpreter
+### GScript JIT vs Interpreter (warm)
 
-| Benchmark | VM | Trace | Speedup |
-|-----------|-----|-------|---------|
-| fib(35) | 0.882s | **0.028s** | **x31.5** |
-| ackermann(3,4 x500) | 0.153s | **0.010s** | **x15.3** |
-| mandelbrot(1000) | 1.397s | **0.155s** | **x9.0** |
-| sieve(1M x3) | 0.308s | **0.100s** | **x3.1** |
-| HeavyLoop warm | 735.5us | **25.8us** | **x28.5** |
-| FibRecursive(20) warm | 642.8us | **19.4us** | **x33.1** |
-| FunctionCalls(10K) warm | 245.6us | **2.66us** | **x92.3** |
-| Ackermann(3,4) warm | 302.0us | **18.9us** | **x16.0** |
-| FibIterative(30) warm | 505.5ns | **207.9ns** | **x2.4** |
-| nbody(500K) | 2.405s | 2.422s | x1.0 |
-| sort(50K x3) | 0.158s | 0.174s | x0.9 |
-| matmul(300) | 1.163s | 1.444s | x0.8 |
-| binary_trees | 1.255s | 1.871s | x0.7 |
+| Benchmark | JIT | VM | Speedup |
+|-----------|-----|-----|---------|
+| FunctionCalls(10K) | **4.14us** | 586.3us | **x141.6** |
+| HeavyLoop | **38.1us** | 2201.0us | **x57.8** |
+| FibRecursive(20) | **47.9us** | 1669.2us | **x34.8** |
+| Ackermann(3,4) | **40.2us** | 734.7us | **x18.3** |
+| FibIterative(30) | **283.5ns** | 1110ns | **x3.9** |
 
 ### Key Takeaways
 
-- **fib(20) 21% faster than LuaJIT**, fn calls at parity, fib(35) at parity
-- **Warm JIT**: 2.4x-92x speedup over interpreter on tight loops and recursion
-- **Trace JIT**: fib(35) x31.5, ackermann x15.3, mandelbrot x9.0 vs interpreter
-- **15 benchmarks complete** including binary_trees (was crashing, now fixed)
-- **Table-heavy benchmarks**: 5-80x behind LuaJIT due to 24B Value vs 8B NaN-boxed TValue
+- **NaN-boxing (Value 8B) landed** -- fundamental refactor complete, optimization phase ahead
+- **JIT vs VM speedup increased**: FunctionCalls x141.6 (was x92.3), HeavyLoop x57.8 (was x28.5)
+- **sieve improved** 0.080s -> 0.025s: 8B array stride = better L1 cache utilization
+- **Regressions expected**: JIT codegen emits old-layout code, NaN-box tag/untag overhead in VM loop
+- **Trace JIT broken** on mandelbrot, fannkuch, sort, binary_trees (timeouts/debug spam)
+- **Next step**: adapt JIT codegen for NaN-box layout to recover pre-NaN-box performance
 
 Platform: Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1 (2026-03-21)
 

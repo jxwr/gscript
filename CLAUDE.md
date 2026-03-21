@@ -179,55 +179,69 @@ Run the full suite before AND after every optimization. Record numbers in the bl
 Full audit document: `docs/architecture_audit.md`
 Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
-## Current Status (2026-03-21, benchmark run #4, 3s benchtime)
+## Current Status (2026-03-21, benchmark run #5, post-NaN-boxing, 3s benchtime)
+
+**WARNING**: NaN-boxing (Value 24B -> 8B) landed but caused widespread regressions. The JIT codegen has not been updated for NaN-box bit layout. Trace JIT has debug spam and multiple timeouts. This is the expected "break everything, then fix" phase of a major refactor.
 
 ### vs LuaJIT (warm benchmarks)
-| Benchmark | GScript JIT | LuaJIT | Result |
-|-----------|-------------|--------|--------|
-| **fib(20)** | **19.4us** | 24.7us | **21% faster** |
-| **fn calls (10K)** | **2.66us** | 2.6us | **parity** |
-| ackermann(3,4) | 18.9us | 12.0us | 1.6x gap |
-| mandelbrot(1000) | 0.155s | 0.058s | 2.7x gap |
+| Benchmark | GScript JIT | LuaJIT | Result | vs pre-NaN-box |
+|-----------|-------------|--------|--------|----------------|
+| fib(20) | 47.9us | 32.0us | 1.5x gap | REGRESSED (was 19.4us) |
+| fn calls (10K) | 4.14us | 3.1us | 1.3x gap | REGRESSED (was 2.66us) |
+| ackermann(3,4) | 40.2us | 15.2us | 2.6x gap | REGRESSED (was 18.9us) |
 
 ### Full benchmark suite (15 benchmarks + warm)
 | Benchmark | VM | JIT | Trace | Best | LuaJIT | vs LuaJIT |
 |-----------|-----|-----|-------|------|--------|-----------|
-| fib(35) | 0.882s | **0.026s** | 0.028s | 0.026s | 0.025s | ~parity |
-| sieve(1M x3) | 0.308s | **0.080s** | 0.100s | 0.080s | 0.011s | 7.3x gap |
-| mandelbrot(1000) | 1.397s | 1.355s | **0.155s** | 0.155s | 0.058s | 2.7x gap |
-| ackermann(3,4 x500) | 0.153s | **0.009s** | 0.010s | 0.009s | 0.006s | 1.5x gap |
-| matmul(300) | 1.163s | **1.120s** | 1.444s | 1.120s | 0.022s | 50.9x gap |
-| spectral_norm(500) | 0.753s | **0.660s** | 0.678s | 0.660s | 0.008s | 82.5x gap |
-| nbody(500K) | 2.405s | **2.376s** | 2.422s | 2.376s | 0.037s | 64.2x gap |
-| fannkuch(9) | 0.597s | **0.588s** | timeout | 0.588s | 0.019s | 30.9x gap |
-| sort(50K x3) | **0.158s** | 0.172s | 0.174s | 0.158s | 0.012s | 13.2x gap |
-| sum_primes(100K) | 0.023s | **0.022s** | 0.027s | 0.022s | 0.002s | 11.0x gap |
-| mutual_recursion(25 x1000) | **0.103s** | 0.228s | 0.250s | 0.103s | 0.005s | 20.6x gap |
-| method_dispatch(100K) | **0.080s** | 0.115s | 0.112s | 0.080s | 0.001s | 80.0x gap |
-| closure_bench | **0.046s** | 0.055s | 0.056s | 0.046s | 0.009s | 5.1x gap |
-| string_bench | 0.048s | **0.046s** | 0.047s | 0.046s | 0.010s | 4.6x gap |
-| binary_trees | **1.255s** | 1.871s | 1.871s | 1.255s | 0.17s | 7.4x gap |
+| fib(35) | 1.187s | **0.036s** | 0.037s | 0.036s | 0.032s | 1.1x gap |
+| sieve(1M x3) | 0.284s | **0.025s** | 0.026s | 0.025s | 0.014s | 1.8x gap |
+| mandelbrot(1000) | 1.509s | **1.500s** | timeout | 1.500s | 0.072s | 20.8x gap |
+| ackermann(3,4 x500) | 0.201s | **0.011s** | 0.011s | 0.011s | 0.008s | 1.4x gap |
+| matmul(300) | **1.163s** | 1.161s | 1.400s | 1.161s | 0.029s | 40.0x gap |
+| spectral_norm(500) | 0.871s | **0.762s** | 0.775s | 0.762s | 0.009s | 84.7x gap |
+| nbody(500K) | **2.473s** | 2.565s | 2.469s | 2.469s | 0.043s | 57.4x gap |
+| fannkuch(9) | **0.662s** | 0.665s | timeout | 0.662s | 0.025s | 26.5x gap |
+| sort(50K x3) | **0.207s** | 0.207s | timeout | 0.207s | 0.016s | 12.9x gap |
+| sum_primes(100K) | 0.029s | **0.027s** | 0.910s | 0.027s | 0.002s | 13.5x gap |
+| mutual_recursion(25 x1000) | **0.150s** | 0.245s | 0.259s | 0.150s | 0.005s | 30.0x gap |
+| method_dispatch(100K) | **0.093s** | 0.123s | 0.127s | 0.093s | 0.000s | ~230x gap |
+| closure_bench | **0.071s** | 0.073s | 0.075s | 0.071s | 0.012s | 5.9x gap |
+| string_bench | **0.051s** | 0.052s | 0.187s | 0.051s | 0.010s | 5.1x gap |
+| binary_trees | **2.385s** | crash | timeout | 2.385s | 0.17s | 14.0x gap |
 
 ### Warm micro-benchmarks (Go test, JIT vs VM)
 | Benchmark | JIT | VM | Speedup |
 |-----------|-----|-----|---------|
-| HeavyLoop | 25.8us | 735.5us | **x28.5** |
-| FibIterative(30) | 207.9ns | 505.5ns | **x2.4** |
-| FunctionCalls(10K) | 2.66us | 245.6us | **x92.3** |
-| FibRecursive(20) | **19.4us** | 642.8us | **x33.1** |
-| Ackermann(3,4) | **18.9us** | 302.0us | **x16.0** |
+| HeavyLoop | 38.1us | 2201.0us | **x57.8** |
+| FibIterative(30) | 283.5ns | 1110ns | **x3.9** |
+| FunctionCalls(10K) | 4.14us | 586.3us | **x141.6** |
+| FibRecursive(20) | 47.9us | 1669.2us | **x34.8** |
+| Ackermann(3,4) | 40.2us | 734.7us | **x18.3** |
 
-Target: **surpass LuaJIT** on compute-heavy benchmarks first, then table-heavy.
+Target: **fix NaN-boxing regressions** -- JIT codegen must emit NaN-box-aware loads/stores, then table-heavy benchmarks should improve.
+
+### NaN-boxing Impact (Before 24B vs After 8B)
+| Benchmark | Before (24B) | After (8B) | Change |
+|-----------|-------------|------------|--------|
+| JIT FibRecursive(20) | 19.4us | 47.9us | **-147% regressed** |
+| JIT FunctionCalls(10K) | 2.66us | 4.14us | **-56% regressed** |
+| JIT HeavyLoop | 25.8us | 38.1us | **-48% regressed** |
+| VM HeavyLoop | 735.5us | 2201.0us | **-199% regressed** |
+| VM FibRecursive(20) | 642.8us | 1669.2us | **-160% regressed** |
+| sieve(1M x3) best | 0.080s | 0.025s | **+69% improved** |
+| mandelbrot best | 0.155s | 1.500s | **trace broken** |
+| binary_trees best | 1.255s | 2.385s | **-90% regressed** |
+
+Root causes: (1) NaN-box tag/untag overhead in VM dispatch loop, (2) JIT codegen not updated for 8B layout, (3) trace JIT has debug logging + timeouts on complex benchmarks.
 
 ### LuaJIT Gap Analysis
 | Gap | Root Cause | Fix | Difficulty |
 |-----|-----------|-----|-----------|
-| mandelbrot 2.7x | Sub-trace call overhead + inner loop inst count | Code inlining (Approach C) | High |
-| **fib SURPASSED** | 19.4us vs 24.7us = 21% faster | Pin R(0) to X19 + const propagation | Done |
-| **fn calls PARITY** | 2.66us vs 2.6us | Cold code revolution optimizations | Done |
-| ackermann 1.6x | Recursive call overhead, improving | Method JIT deeper inlining | Medium |
-| table ops (matmul 51x, spectral 83x) | 24B Value vs 8B TValue | NaN-boxing | Extremely High |
-| binary_trees 7.4x | Deep recursion + table allocation | NaN-boxing + custom allocator | Extremely High |
+| ALL benchmarks regressed | NaN-box tag/untag overhead, JIT not adapted | Update JIT codegen for 8B Value | Critical |
+| mandelbrot 20.8x | Trace broken (timeout + debug spam) | Fix trace recorder for NaN-box | High |
+| binary_trees 14.0x | JIT crashes, VM 90% slower | Fix JIT stack, optimize NaN-box alloc | High |
+| table ops (matmul 40x, spectral 85x) | Array stride still not leveraging 8B | Type-specialized 8B array ops | High |
+| sieve IMPROVED | 8B array stride = better cache | Already benefiting from NaN-box | Done |
 
 ## Completed Phases
 
@@ -242,14 +256,18 @@ Target: **surpass LuaJIT** on compute-heavy benchmarks first, then table-heavy.
 
 ## Roadmap: Surpass LuaJIT
 
-### Phase 5: Compute-heavy benchmarks (current focus)
-1. **Inner trace code inlining** — copy inner trace ARM64 into outer trace (Approach C), eliminates 61-inst prologue per pixel
-2. **Reduce per-iteration instructions** — 26 → ~15 (eliminate remaining memory spills)
-3. **Method JIT type specialization** — fib type-specialized int→int calls
-4. **Method JIT function inlining** — inline small functions like `add(a,b)`
+### Phase 5: NaN-boxing recovery (current focus)
+NaN-boxing landed (Value 24B -> 8B) but caused universal regressions. Priority:
+1. **Fix VM dispatch loop** — NaN-box tag/untag overhead is 2-3x slower than old struct layout
+2. **Update JIT codegen** — emit NaN-box-aware loads/stores, avoid double tag/untag
+3. **Fix trace recorder** — remove debug logging, fix timeouts (mandelbrot, fannkuch, sort, binary_trees)
+4. **Fix JIT binary_trees crash** — stack overflow in JIT mode
+5. **Leverage 8B for table ops** — array stride 8B vs 24B should improve cache performance
 
-### Phase 6: Table-heavy benchmarks (future)
-5. **NaN-boxing** — Value 32B → 8B, touches every file, 2-4 weeks ("Season 2")
+### Phase 6: Compute-heavy benchmarks (after recovery)
+6. **Inner trace code inlining** — copy inner trace ARM64 into outer trace (Approach C)
+7. **Reduce per-iteration instructions** — eliminate remaining memory spills
+8. **Method JIT type specialization + inlining**
 
 ## Hard-Won Lessons (added 2026-03-19)
 
