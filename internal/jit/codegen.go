@@ -3663,12 +3663,18 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 
 	// Check arrayKind for type-specialized paths
 	boolArrayLabel := fmt.Sprintf("gettable_bool_%d", pc)
+	intArrayLabel := fmt.Sprintf("gettable_int_%d", pc)
+	floatArrayLabel := fmt.Sprintf("gettable_float_%d", pc)
 	doneGetLabel := fmt.Sprintf("gettable_done_%d", pc)
 	asm.LDRB(X6, X0, TableOffArrayKind)
 	asm.CMPimmW(X6, AKBool)
 	asm.BCond(CondEQ, boolArrayLabel)
+	asm.CMPimmW(X6, AKInt)
+	asm.BCond(CondEQ, intArrayLabel)
+	asm.CMPimmW(X6, AKFloat)
+	asm.BCond(CondEQ, floatArrayLabel)
 
-	// For non-bool typed arrays (ArrayInt, ArrayFloat), fall back
+	// For unknown typed arrays, fall back
 	asm.CBNZ(X6, fallbackLabel)
 
 	// --- ArrayMixed path: check key < array.len ---
@@ -3686,6 +3692,34 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 		asm.LDR(X0, X3, w*8)
 		asm.STR(X0, regRegs, aOff+w*8)
 	}
+	asm.B(doneGetLabel)
+
+	// --- ArrayInt path: LDR from intArray, store as IntValue ---
+	asm.Label(intArrayLabel)
+	asm.LDR(X3, X0, TableOffIntArray+8) // X3 = intArray.len
+	asm.CMPreg(X2, X3)                  // key < intArray.len?
+	asm.BCond(CondGE, fallbackLabel)
+	asm.LDR(X3, X0, TableOffIntArray)   // X3 = intArray.ptr
+	asm.LSLimm(X4, X2, 3)               // X4 = key * 8 (byte offset)
+	asm.LDRreg(X4, X3, X4)              // X4 = *(ptr + key*8) = intArray[key]
+	asm.STR(X4, regRegs, a*ValueSize+OffsetData)
+	asm.MOVimm16(X4, TypeInt)
+	asm.STRB(X4, regRegs, a*ValueSize+OffsetTyp)
+	asm.STR(XZR, regRegs, a*ValueSize+OffsetPtrData)
+	asm.B(doneGetLabel)
+
+	// --- ArrayFloat path: LDR from floatArray, store as FloatValue ---
+	asm.Label(floatArrayLabel)
+	asm.LDR(X3, X0, TableOffFloatArray+8) // X3 = floatArray.len
+	asm.CMPreg(X2, X3)                    // key < floatArray.len?
+	asm.BCond(CondGE, fallbackLabel)
+	asm.LDR(X3, X0, TableOffFloatArray)   // X3 = floatArray.ptr
+	asm.LSLimm(X4, X2, 3)                 // X4 = key * 8 (byte offset)
+	asm.LDRreg(X4, X3, X4)                // X4 = *(ptr + key*8) = floatArray[key]
+	asm.STR(X4, regRegs, a*ValueSize+OffsetData)
+	asm.MOVimm16(X4, TypeFloat)
+	asm.STRB(X4, regRegs, a*ValueSize+OffsetTyp)
+	asm.STR(XZR, regRegs, a*ValueSize+OffsetPtrData)
 	asm.B(doneGetLabel)
 
 	// --- ArrayBool path: LDRB from boolArray, sentinel decode ---
@@ -3815,14 +3849,21 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 	doneLabel := fmt.Sprintf("settable_done_%d", pc)
 	boolSetLabel := fmt.Sprintf("settable_bool_%d", pc)
 	boolInBoundsLabel := fmt.Sprintf("settable_bool_inbounds_%d", pc)
+	intSetLabel := fmt.Sprintf("settable_int_%d", pc)
+	intInBoundsLabel := fmt.Sprintf("settable_int_inbounds_%d", pc)
+	floatSetLabel := fmt.Sprintf("settable_float_%d", pc)
+	floatInBoundsLabel := fmt.Sprintf("settable_float_inbounds_%d", pc)
 
 	// Check arrayKind for type-specialized paths
 	asm.LDRB(X6, X0, TableOffArrayKind)
 	asm.CMPimmW(X6, AKBool)
 	asm.BCond(CondEQ, boolSetLabel)
+	asm.CMPimmW(X6, AKInt)
+	asm.BCond(CondEQ, intSetLabel)
+	asm.CMPimmW(X6, AKFloat)
+	asm.BCond(CondEQ, floatSetLabel)
 
-	// Typed arrays (ArrayInt, ArrayFloat) set array=nil and use intArray/floatArray.
-	// Fall back to call-exit for non-Mixed, non-Bool typed arrays.
+	// For unknown typed arrays, fall back
 	asm.CBNZ(X6, fallbackLabel) // arrayKind != 0 (not ArrayMixed) → fallback
 
 	// --- Mixed array path (arrayKind == 0 / ArrayMixed) ---
@@ -3880,6 +3921,100 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 			asm.STR(X0, X3, w*8)
 		}
 	}
+	asm.B(doneLabel)
+
+	// --- ArrayInt path: STR to intArray (8-byte store) ---
+	asm.Label(intSetLabel)
+	asm.LDR(X3, X0, TableOffIntArray+8)  // X3 = intArray.len
+	asm.CMPreg(X2, X3)                   // key vs intArray.len
+	asm.BCond(CondLT, intInBoundsLabel)  // key < len: in-bounds
+	asm.BCond(CondNE, fallbackLabel)     // key > len: sparse, fallback
+
+	// key == len: append fast path for intArray
+	asm.LDR(X4, X0, TableOffIntArray+16) // X4 = intArray.cap
+	asm.CMPreg(X2, X4)
+	asm.BCond(CondGE, fallbackLabel)     // no capacity → fallback
+
+	// Update intArray.len = key + 1
+	asm.ADDimm(X5, X2, 1)
+	asm.STR(X5, X0, TableOffIntArray+8)
+
+	// Set keysDirty = true
+	asm.MOVimm16(X5, 1)
+	asm.STRB(X5, X0, TableOffKeysDirty)
+
+	asm.Label(intInBoundsLabel)
+	// Load value data from RK(C), store 8 bytes to intArray[key]
+	asm.LDR(X3, X0, TableOffIntArray) // X3 = intArray.ptr
+	asm.LSLimm(X5, X2, 3)            // X5 = key * 8 (byte offset)
+	if cidx >= vm.RKBit {
+		constIdx := vm.RKToConstIdx(cidx)
+		valDataOff := constIdx*ValueSize + OffsetData
+		if valDataOff <= 32760 {
+			asm.LDR(X4, regConsts, valDataOff)
+		} else {
+			asm.LoadImm64(X4, int64(valDataOff))
+			asm.ADDreg(X4, regConsts, X4)
+			asm.LDR(X4, X4, 0)
+		}
+	} else {
+		valDataOff := cidx*ValueSize + OffsetData
+		if valDataOff <= 32760 {
+			asm.LDR(X4, regRegs, valDataOff)
+		} else {
+			asm.LoadImm64(X4, int64(valDataOff))
+			asm.ADDreg(X4, regRegs, X4)
+			asm.LDR(X4, X4, 0)
+		}
+	}
+	asm.STRreg(X4, X3, X5) // intArray[key] = data (ptr + key*8)
+	asm.B(doneLabel)
+
+	// --- ArrayFloat path: STR to floatArray (8-byte store) ---
+	asm.Label(floatSetLabel)
+	asm.LDR(X3, X0, TableOffFloatArray+8)  // X3 = floatArray.len
+	asm.CMPreg(X2, X3)                     // key vs floatArray.len
+	asm.BCond(CondLT, floatInBoundsLabel)  // key < len: in-bounds
+	asm.BCond(CondNE, fallbackLabel)       // key > len: sparse, fallback
+
+	// key == len: append fast path for floatArray
+	asm.LDR(X4, X0, TableOffFloatArray+16) // X4 = floatArray.cap
+	asm.CMPreg(X2, X4)
+	asm.BCond(CondGE, fallbackLabel)       // no capacity → fallback
+
+	// Update floatArray.len = key + 1
+	asm.ADDimm(X5, X2, 1)
+	asm.STR(X5, X0, TableOffFloatArray+8)
+
+	// Set keysDirty = true
+	asm.MOVimm16(X5, 1)
+	asm.STRB(X5, X0, TableOffKeysDirty)
+
+	asm.Label(floatInBoundsLabel)
+	// Load value data from RK(C), store 8 bytes to floatArray[key]
+	asm.LDR(X3, X0, TableOffFloatArray) // X3 = floatArray.ptr
+	asm.LSLimm(X5, X2, 3)              // X5 = key * 8 (byte offset)
+	if cidx >= vm.RKBit {
+		constIdx := vm.RKToConstIdx(cidx)
+		valDataOff := constIdx*ValueSize + OffsetData
+		if valDataOff <= 32760 {
+			asm.LDR(X4, regConsts, valDataOff)
+		} else {
+			asm.LoadImm64(X4, int64(valDataOff))
+			asm.ADDreg(X4, regConsts, X4)
+			asm.LDR(X4, X4, 0)
+		}
+	} else {
+		valDataOff := cidx*ValueSize + OffsetData
+		if valDataOff <= 32760 {
+			asm.LDR(X4, regRegs, valDataOff)
+		} else {
+			asm.LoadImm64(X4, int64(valDataOff))
+			asm.ADDreg(X4, regRegs, X4)
+			asm.LDR(X4, X4, 0)
+		}
+	}
+	asm.STRreg(X4, X3, X5) // floatArray[key] = data (ptr + key*8)
 	asm.B(doneLabel)
 
 	// --- ArrayBool path: STRB to boolArray with sentinel encoding ---
