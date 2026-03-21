@@ -932,8 +932,8 @@ func emitTrGetTable(asm *Assembler, ir *TraceIR, idx int) {
 	asm.BCond(CondNE, fallbackLabel)
 	asm.LDR(X2, cBase, cOff+OffsetData) // X2 = key int value
 
-	// Step 5: Array bounds check: key >= 1 && key < array.len
-	asm.CMPimm(X2, 1) // key >= 1?
+	// Step 5: Array bounds check: key >= 0 && key < array.len (0-indexed)
+	asm.CMPimm(X2, 0) // key >= 0?
 	asm.BCond(CondLT, fallbackLabel)
 
 	asm.LDR(X3, X0, TableOffArray+8) // X3 = array.len
@@ -1083,7 +1083,7 @@ func emitTrSetTable(asm *Assembler, ir *TraceIR, idx int) {
 	// Array bounds check with append fast path.
 	inBoundsLabel := fmt.Sprintf("settable_inbounds_%d", idx)
 
-	asm.CMPimm(X2, 1)
+	asm.CMPimm(X2, 0) // key >= 0? (0-indexed array)
 	asm.BCond(CondLT, fallbackLabel)
 
 	// Typed arrays set array=nil; only handle ArrayMixed here.

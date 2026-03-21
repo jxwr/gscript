@@ -3657,8 +3657,8 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	}
 
 	// --- Step 5: Array bounds check ---
-	// Check: key >= 1
-	asm.CMPimm(X2, 1) // key >= 1?
+	// Check: key >= 0 (0-indexed array)
+	asm.CMPimm(X2, 0) // key >= 0?
 	asm.BCond(CondLT, fallbackLabel)
 
 	// Check arrayKind for type-specialized paths
@@ -3841,8 +3841,8 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 	}
 
 	// --- Step 5: Array bounds check (with append fast path) ---
-	// Check: key >= 1
-	asm.CMPimm(X2, 1) // key >= 1?
+	// Check: key >= 0 (0-indexed array)
+	asm.CMPimm(X2, 0) // key >= 0?
 	asm.BCond(CondLT, fallbackLabel)
 
 	inBoundsLabel := fmt.Sprintf("settable_inbounds_%d", pc)

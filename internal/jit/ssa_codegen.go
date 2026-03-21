@@ -777,7 +777,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.BCond(CondNE, boolLabel)
 
 			// Int array fast path: bounds check against intArray.len
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffIntArray+8) // intArray.len
 			asm.CMPreg(keyReg, X3)
@@ -803,7 +803,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.CMPimmW(X1, AKBool)
 			asm.BCond(CondNE, mixedLabel)
 
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffBoolArray+8) // boolArray.len
 			asm.CMPreg(keyReg, X3)
@@ -824,7 +824,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 			// Mixed fallback path
 			asm.Label(mixedLabel)
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffArray+8) // array.len
 			asm.CMPreg(keyReg, X3)
@@ -863,7 +863,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.BCond(CondNE, mixedLabel)
 
 			// Float array fast path: bounds check against floatArray.len
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffFloatArray+8) // floatArray.len
 			asm.CMPreg(keyReg, X3)
@@ -884,7 +884,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 			// Mixed fallback path
 			asm.Label(mixedLabel)
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffArray+8) // array.len
 			asm.CMPreg(keyReg, X3)
@@ -909,7 +909,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 		} else if dstSlot >= 0 {
 			// Unspecialized fallback: use []Value array, copy full Value
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffArray+8)
 			asm.CMPreg(keyReg, X3)
@@ -985,7 +985,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.BCond(CondNE, boolLabel)
 
 			// Bounds check against intArray.len
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffIntArray+8) // intArray.len
 			asm.CMPreg(keyReg, X3)
@@ -1008,7 +1008,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.CMPimmW(X1, AKBool)
 			asm.BCond(CondNE, mixedLabel)
 
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffBoolArray+8) // boolArray.len
 			asm.CMPreg(keyReg, X3)
@@ -1028,7 +1028,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 			// Mixed fallback
 			asm.Label(mixedLabel)
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffArray+8)
 			asm.CMPreg(keyReg, X3)
@@ -1052,7 +1052,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.BCond(CondNE, mixedLabel)
 
 			// Bounds check against floatArray.len
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffFloatArray+8) // floatArray.len
 			asm.CMPreg(keyReg, X3)
@@ -1072,7 +1072,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 			// Mixed fallback
 			asm.Label(mixedLabel)
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffArray+8)
 			asm.CMPreg(keyReg, X3)
@@ -1100,7 +1100,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.BCond(CondNE, mixedLabel)
 
 			// Bounds check against boolArray.len
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffBoolArray+8) // boolArray.len
 			asm.CMPreg(keyReg, X3)
@@ -1123,7 +1123,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 			// Mixed fallback
 			asm.Label(mixedLabel)
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffArray+8)
 			asm.CMPreg(keyReg, X3)
@@ -1141,7 +1141,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 		} else {
 			// Untyped fallback: use existing []Value array path
-			asm.CMPimm(keyReg, 1)
+			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
 			asm.LDR(X3, X0, TableOffArray+8)
 			asm.CMPreg(keyReg, X3)

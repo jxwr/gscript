@@ -27,7 +27,7 @@ const smallFieldCap = 12
 // across goroutines, call SetConcurrent(true) to enable locking.
 type Table struct {
 	mu        *sync.RWMutex    // nil for single-threaded tables (fast default)
-	array     []Value          // 1-indexed: array[0] is unused padding
+	array     []Value          // 0-indexed: array[0] is usable by user code
 	imap      map[int64]Value  // integer keys not in array range
 	// String keys: small tables use flat slices, large tables use map
 	skeys     []string         // parallel with svals for small tables
@@ -124,15 +124,15 @@ func (t *Table) RawGetInt(key int64) Value {
 	}
 	switch t.arrayKind {
 	case ArrayInt:
-		if key >= 1 && key < int64(len(t.intArray)) {
+		if key >= 0 && key < int64(len(t.intArray)) {
 			return IntValue(t.intArray[key])
 		}
 	case ArrayFloat:
-		if key >= 1 && key < int64(len(t.floatArray)) {
+		if key >= 0 && key < int64(len(t.floatArray)) {
 			return FloatValue(t.floatArray[key])
 		}
 	case ArrayBool:
-		if key >= 1 && key < int64(len(t.boolArray)) {
+		if key >= 0 && key < int64(len(t.boolArray)) {
 			b := t.boolArray[key]
 			if b == 0 { // nil/unset
 				return NilValue()
@@ -140,7 +140,7 @@ func (t *Table) RawGetInt(key int64) Value {
 			return BoolValue(b == 2) // 1=false, 2=true
 		}
 	default:
-		if key >= 1 && key < int64(len(t.array)) {
+		if key >= 0 && key < int64(len(t.array)) {
 			return t.array[key]
 		}
 	}
@@ -364,24 +364,21 @@ func (t *Table) demoteToMixed() {
 	case ArrayInt:
 		n := len(t.intArray)
 		t.array = make([]Value, n)
-		t.array[0] = NilValue()
-		for i := 1; i < n; i++ {
+		for i := 0; i < n; i++ {
 			t.array[i] = IntValue(t.intArray[i])
 		}
 		t.intArray = nil
 	case ArrayFloat:
 		n := len(t.floatArray)
 		t.array = make([]Value, n)
-		t.array[0] = NilValue()
-		for i := 1; i < n; i++ {
+		for i := 0; i < n; i++ {
 			t.array[i] = FloatValue(t.floatArray[i])
 		}
 		t.floatArray = nil
 	case ArrayBool:
 		n := len(t.boolArray)
 		t.array = make([]Value, n)
-		t.array[0] = NilValue()
-		for i := 1; i < n; i++ {
+		for i := 0; i < n; i++ {
 			switch t.boolArray[i] {
 			case 0: // nil/unset
 				t.array[i] = NilValue()
@@ -426,7 +423,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 	arrLen := int64(t.typedArrayLen())
 
 	// --- Fast path: key within existing array bounds (not append) ---
-	if key >= 1 && key < arrLen {
+	if key >= 0 && key < arrLen {
 		switch t.arrayKind {
 		case ArrayInt:
 			vk := classifyValueForArray(val)
@@ -470,7 +467,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 	}
 
 	// --- Append path: key == arrLen (next sequential slot) ---
-	if key >= 1 && key == arrLen {
+	if key >= 0 && key == arrLen {
 		switch t.arrayKind {
 		case ArrayInt:
 			vk := classifyValueForArray(val)
@@ -510,34 +507,52 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		default:
 			// ArrayMixed: first non-nil write to an empty array → try to specialize
 			if len(t.array) == 1 {
-				// array only has the padding [0] slot → first real write
+				// array has only the [0] slot → first append (key=1)
+				// array[0] may have been written by 0-indexed code; preserve it.
 				vk := classifyValueForArray(val)
-				switch vk {
-				case ArrayInt:
-					t.arrayKind = ArrayInt
-					t.intArray = make([]int64, 1, 8) // [0] padding
-					t.intArray = append(t.intArray, valueToInt64(val))
-					t.array = nil
-					t.absorbKeys()
-					return
-				case ArrayFloat:
-					t.arrayKind = ArrayFloat
-					t.floatArray = make([]float64, 1, 8) // [0] padding
-					t.floatArray = append(t.floatArray, val.Float())
-					t.array = nil
-					t.absorbKeys()
-					return
-				case ArrayBool:
-					t.arrayKind = ArrayBool
-					t.boolArray = make([]byte, 1, 8) // [0] padding (0 = nil sentinel)
-					var b byte = 1                    // false
-					if val.Bool() {
-						b = 2 // true
+				a0 := t.array[0]
+				a0Compatible := a0.IsNil() || classifyValueForArray(a0) == vk
+				if a0Compatible {
+					switch vk {
+					case ArrayInt:
+						t.arrayKind = ArrayInt
+						t.intArray = make([]int64, 1, 8)
+						if !a0.IsNil() {
+							t.intArray[0] = valueToInt64(a0)
+						}
+						t.intArray = append(t.intArray, valueToInt64(val))
+						t.array = nil
+						t.absorbKeys()
+						return
+					case ArrayFloat:
+						t.arrayKind = ArrayFloat
+						t.floatArray = make([]float64, 1, 8)
+						if !a0.IsNil() {
+							t.floatArray[0] = a0.Float()
+						}
+						t.floatArray = append(t.floatArray, val.Float())
+						t.array = nil
+						t.absorbKeys()
+						return
+					case ArrayBool:
+						t.arrayKind = ArrayBool
+						t.boolArray = make([]byte, 1, 8) // 0 = nil sentinel
+						if !a0.IsNil() {
+							if a0.Bool() {
+								t.boolArray[0] = 2
+							} else {
+								t.boolArray[0] = 1
+							}
+						}
+						var b byte = 1 // false
+						if val.Bool() {
+							b = 2 // true
+						}
+						t.boolArray = append(t.boolArray, b)
+						t.array = nil
+						t.absorbKeys()
+						return
 					}
-					t.boolArray = append(t.boolArray, b)
-					t.array = nil
-					t.absorbKeys()
-					return
 				}
 			}
 			t.array = append(t.array, val)
@@ -601,35 +616,56 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			t.demoteToMixed()
 			// Fall through to mixed sparse expansion
 		case ArrayMixed:
-			// First write with sparse key on empty array → try to specialize
+			// First write with sparse key on empty/sentinel array → try to specialize
 			if len(t.array) <= 1 {
 				vk := classifyValueForArray(val)
-				switch vk {
-				case ArrayInt:
-					t.arrayKind = ArrayInt
-					t.intArray = make([]int64, needed)
-					t.intArray[key] = valueToInt64(val)
-					t.array = nil
-					t.absorbKeys()
-					return
-				case ArrayFloat:
-					t.arrayKind = ArrayFloat
-					t.floatArray = make([]float64, needed)
-					t.floatArray[key] = val.Float()
-					t.array = nil
-					t.absorbKeys()
-					return
-				case ArrayBool:
-					t.arrayKind = ArrayBool
-					t.boolArray = make([]byte, needed) // zeros = nil sentinel
-					if val.Bool() {
-						t.boolArray[key] = 2 // true
-					} else {
-						t.boolArray[key] = 1 // false
+				// Check if array[0] is compatible with the target type
+				var a0 Value
+				if len(t.array) == 1 {
+					a0 = t.array[0]
+				}
+				a0Compatible := a0.IsNil() || classifyValueForArray(a0) == vk
+				if a0Compatible {
+					switch vk {
+					case ArrayInt:
+						t.arrayKind = ArrayInt
+						t.intArray = make([]int64, needed)
+						if !a0.IsNil() {
+							t.intArray[0] = valueToInt64(a0)
+						}
+						t.intArray[key] = valueToInt64(val)
+						t.array = nil
+						t.absorbKeys()
+						return
+					case ArrayFloat:
+						t.arrayKind = ArrayFloat
+						t.floatArray = make([]float64, needed)
+						if !a0.IsNil() {
+							t.floatArray[0] = a0.Float()
+						}
+						t.floatArray[key] = val.Float()
+						t.array = nil
+						t.absorbKeys()
+						return
+					case ArrayBool:
+						t.arrayKind = ArrayBool
+						t.boolArray = make([]byte, needed) // zeros = nil sentinel
+						if !a0.IsNil() {
+							if a0.Bool() {
+								t.boolArray[0] = 2
+							} else {
+								t.boolArray[0] = 1
+							}
+						}
+						if val.Bool() {
+							t.boolArray[key] = 2 // true
+						} else {
+							t.boolArray[key] = 1 // false
+						}
+						t.array = nil
+						t.absorbKeys()
+						return
 					}
-					t.array = nil
-					t.absorbKeys()
-					return
 				}
 			}
 		}
@@ -649,7 +685,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 	// --- imap path (key out of array range or negative) ---
 	if val.IsNil() {
 		// For nil values on expanded typed array slots, demote and set
-		if key >= 1 && key < arrLen {
+		if key >= 0 && key < arrLen {
 			if t.arrayKind != ArrayMixed {
 				t.demoteToMixed()
 			}
@@ -816,6 +852,9 @@ func (t *Table) Append(v Value) {
 // rebuildKeys rebuilds the ordered key list for iteration.
 func (t *Table) rebuildKeys() {
 	t.keys = t.keys[:0]
+	// Note: typed int/float arrays start from index 1 because we can't
+	// distinguish a user-written 0 from the default zero value at index 0.
+	// Mixed/bool arrays start from index 0 since we can check for nil.
 	switch t.arrayKind {
 	case ArrayInt:
 		for i := 1; i < len(t.intArray); i++ {
@@ -826,13 +865,13 @@ func (t *Table) rebuildKeys() {
 			t.keys = append(t.keys, IntValue(int64(i)))
 		}
 	case ArrayBool:
-		for i := 1; i < len(t.boolArray); i++ {
+		for i := 0; i < len(t.boolArray); i++ {
 			if t.boolArray[i] != 0 { // skip nil/unset slots
 				t.keys = append(t.keys, IntValue(int64(i)))
 			}
 		}
 	default:
-		for i := 1; i < len(t.array); i++ {
+		for i := 0; i < len(t.array); i++ {
 			if !t.array[i].IsNil() {
 				t.keys = append(t.keys, IntValue(int64(i)))
 			}
