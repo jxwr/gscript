@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -91,32 +92,68 @@ type Value uint64
 // GC roots: keeps Go-heap pointers alive while hidden inside uint64 Values
 // ---------------------------------------------------------------------------
 //
-// NaN-boxed pointers are invisible to Go's GC. This global map keeps them
-// alive. It is intentionally never cleaned (values accumulate) -- acceptable
-// for benchmark durations (<2s). Season 2.2 (custom heap) replaces this.
+// NaN-boxed pointers are invisible to Go's GC. The root log keeps them alive.
+// It is intentionally never cleaned (values accumulate) -- acceptable for
+// benchmark durations. Season 2.3 (custom GC) replaces this.
 //
-// For interface-typed values (AnyFunction / AnyCoroutine), the map stores
-// the full interface{} so we can reconstruct it for type assertions.
+// The root log is an append-only slice with an atomic cursor. keepAlive is
+// lock-free for the common case (no mutex, just an atomic increment).
+// lookupIface uses a separate locked map for the rare interface-based
+// function/coroutine values that need type recovery.
+
+// gcRootLog is a lock-free append-only log for keeping Go-heap pointers alive.
+type gcRootLog struct {
+	entries []any
+	cursor  int64 // next free index (accessed atomically)
+}
 
 var (
-	gcRootsMu sync.Mutex
-	gcRoots   = make(map[uintptr]any, 256)
+	gcLog     gcRootLog
+	// Separate locked map for interface-based values that need lookupIface.
+	// Only used by AnyFunction/AnyCoroutine (cold path).
+	ifaceMu   sync.Mutex
+	ifaceRoots = make(map[uintptr]any, 64)
 )
 
-// keepAlive registers a Go-heap pointer in the global root set so the GC
-// does not collect the object while it is hidden inside a NaN-boxed Value.
-func keepAlive(p unsafe.Pointer, obj any) {
-	gcRootsMu.Lock()
-	gcRoots[uintptr(p)] = obj
-	gcRootsMu.Unlock()
+func init() {
+	gcLog.entries = make([]any, 1<<20) // 1M entries (~8MB), grows if needed
+}
+
+// keepAlive registers a Go-heap pointer in the root log so the GC does not
+// collect the object while it is hidden inside a NaN-boxed Value.
+// Lock-free: uses atomic increment on the cursor.
+func keepAlive(_ unsafe.Pointer, obj any) {
+	idx := atomic.AddInt64(&gcLog.cursor, 1) - 1
+	if idx < int64(len(gcLog.entries)) {
+		gcLog.entries[idx] = obj
+		return
+	}
+	// Slow path: grow the log (rare, only when > 1M allocations)
+	gcLogGrow(obj)
+}
+
+func gcLogGrow(obj any) {
+	// Fall back to a simple locked append. This is extremely rare.
+	ifaceMu.Lock()
+	gcLog.entries = append(gcLog.entries, obj)
+	ifaceMu.Unlock()
+}
+
+// keepAliveIface registers a Go-heap pointer AND stores the full interface
+// for later type recovery via lookupIface. Used only for AnyFunction/AnyCoroutine.
+func keepAliveIface(p unsafe.Pointer, obj any) {
+	keepAlive(p, obj)
+	ifaceMu.Lock()
+	ifaceRoots[uintptr(p)] = obj
+	ifaceMu.Unlock()
 }
 
 // lookupIface retrieves the original interface{} stored for a given pointer.
 // Used by Ptr()/Closure()/GoFunction() for interface-based function/coroutine values.
 func lookupIface(p unsafe.Pointer) any {
-	gcRootsMu.Lock()
-	v := gcRoots[uintptr(p)]
-	gcRootsMu.Unlock()
+	ifaceMu.Lock()
+	v := ifaceRoots[uintptr(p)]
+	ifaceMu.Unlock()
 	return v
 }
 
@@ -196,7 +233,7 @@ func FunctionValue(f interface{}) Value {
 		// Unknown function type (e.g. *vm.Closure) -- store via interface
 		i := (*iface)(unsafe.Pointer(&f))
 		p := i.data
-		keepAlive(p, f) // store the full interface for later reconstruction
+		keepAliveIface(p, f) // store the full interface for later reconstruction
 		return Value(tagPtr | ptrSubAnyFunction | (uint64(uintptr(p)) & ptrAddrMask))
 	}
 }
@@ -218,7 +255,7 @@ func AnyCoroutineValue(c any) Value {
 	}
 	i := (*iface)(unsafe.Pointer(&c))
 	p := i.data
-	keepAlive(p, c) // store full interface
+	keepAliveIface(p, c) // store full interface for lookupIface
 	return Value(tagPtr | ptrSubAnyCoro | (uint64(uintptr(p)) & ptrAddrMask))
 }
 

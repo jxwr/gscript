@@ -71,8 +71,9 @@ func cleanHashKey(key Value) Value {
 
 // NewTable creates a new empty table (non-concurrent by default).
 func NewTable() *Table {
+	arr := DefaultHeap.AllocValues(1, 1)
 	return &Table{
-		array:     []Value{NilValue()},
+		array:     arr,
 		keysDirty: true,
 	}
 }
@@ -81,9 +82,9 @@ func NewTable() *Table {
 func NewTableSized(arrayHint, hashHint int) *Table {
 	t := &Table{keysDirty: true}
 	if arrayHint > 0 {
-		t.array = MakeNilSliceCap(1, arrayHint+1)
+		t.array = DefaultHeap.AllocValues(1, arrayHint+1)
 	} else {
-		t.array = []Value{NilValue()}
+		t.array = DefaultHeap.AllocValues(1, 1)
 	}
 	if hashHint > 0 && hashHint <= smallFieldCap {
 		t.skeys = make([]string, 0, hashHint)
@@ -363,21 +364,21 @@ func (t *Table) demoteToMixed() {
 	switch t.arrayKind {
 	case ArrayInt:
 		n := len(t.intArray)
-		t.array = make([]Value, n)
+		t.array = DefaultHeap.AllocValues(n, n)
 		for i := 0; i < n; i++ {
 			t.array[i] = IntValue(t.intArray[i])
 		}
 		t.intArray = nil
 	case ArrayFloat:
 		n := len(t.floatArray)
-		t.array = make([]Value, n)
+		t.array = DefaultHeap.AllocValues(n, n)
 		for i := 0; i < n; i++ {
 			t.array[i] = FloatValue(t.floatArray[i])
 		}
 		t.floatArray = nil
 	case ArrayBool:
 		n := len(t.boolArray)
-		t.array = make([]Value, n)
+		t.array = DefaultHeap.AllocValues(n, n)
 		for i := 0; i < n; i++ {
 			switch t.boolArray[i] {
 			case 0: // nil/unset
@@ -698,7 +699,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		}
 		// Mixed sparse expansion
 		if needed > cap(t.array) {
-			newArr := MakeNilSlice(needed)
+			newArr := DefaultHeap.AllocValues(needed, needed)
 			copy(newArr, t.array)
 			t.array = newArr
 		} else {
