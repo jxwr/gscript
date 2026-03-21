@@ -26,18 +26,26 @@ go build -o gscript ./cmd/gscript/
 
 ### GScript JIT vs LuaJIT
 
-| Benchmark | GScript JIT | LuaJIT | Gap |
-|-----------|------------|--------|-----|
-| **sieve(1M x3)** | **0.025s** | 0.011s | **2.3x** |
+| Benchmark | GScript (best) | LuaJIT | Gap |
+|-----------|---------------|--------|-----|
 | **fn calls warm** | **2.6us** | 2.6us | **parity** |
+| FibRecursive(20) warm | 27.0us | 25us | 1.1x |
 | fib(35) | 0.037s | 0.032s | 1.2x |
 | ackermann(3,4 x500) | 0.011s | 0.008s | 1.4x |
-| FibRecursive(20) warm | 27.0us | 25us | 1.1x |
 | Ackermann(3,4) warm | 21.5us | 12us | 1.8x |
-| mandelbrot(1000) trace | 0.157s | 0.057s | 2.8x |
+| **sieve(1M x3)** | **0.025s** | 0.011s | **2.3x** |
+| mandelbrot(1000) | 0.157s | 0.057s | 2.8x |
+| closure_bench | 0.071s | 0.012s | 5.9x |
+| string_bench | 0.051s | 0.010s | 5.1x |
+| binary_trees | 2.385s | 0.17s | 14x |
+| sort(50K x3) | 0.207s | 0.016s | 13x |
+| sum_primes(100K) | 0.027s | 0.002s | 14x |
+| fannkuch(9) | 0.662s | 0.025s | 26x |
+| mutual_recursion | 0.150s | 0.005s | 30x |
 | matmul(300) | 1.16s | 0.029s | 40x |
-| spectral_norm(500) | 0.76s | 0.009s | 85x |
 | nbody(500K) | 2.47s | 0.043s | 57x |
+| spectral_norm(500) | 0.76s | 0.009s | 85x |
+| method_dispatch(100K) | 0.093s | ~0.001s | ~93x |
 
 ### GScript JIT vs Interpreter (warm)
 
