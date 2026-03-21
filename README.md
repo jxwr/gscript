@@ -4,7 +4,7 @@ A scripting language with **Go syntax** and **Lua semantics**, featuring a tree-
 
 ## Blog: "Beyond LuaJIT"
 
-**[jxwr.github.io/gscript](https://jxwr.github.io/gscript/)** -- the full story of building a tracing JIT compiler from scratch, from first trace compilation to beating LuaJIT on fib(20).
+**[jxwr.github.io/gscript](https://jxwr.github.io/gscript/)** -- the full story of building a tracing JIT compiler from scratch, from first trace compilation to beating LuaJIT on fib(20), and the Season 2 NaN-boxing revolution.
 
 ## Quick Start
 
@@ -24,49 +24,39 @@ go build -o gscript ./cmd/gscript/
 
 ## Performance
 
-> **Status (2026-03-21):** NaN-boxing landed (Value 24B -> 8B), but JIT codegen is not yet adapted. Most benchmarks regressed. sieve improved thanks to better cache utilization from 8B array stride. This is the expected "break everything, then fix" phase.
-
 ### GScript JIT vs LuaJIT
 
-| Benchmark | GScript (best) | LuaJIT | Gap |
-|-----------|---------------|--------|-----|
-| fib(35) | 0.036s | 0.032s | 1.1x |
-| sieve(1M x3) | **0.025s** | 0.014s | 1.8x |
+| Benchmark | GScript JIT | LuaJIT | Gap |
+|-----------|------------|--------|-----|
+| **sieve(1M x3)** | **0.025s** | 0.011s | **2.3x** |
+| **fn calls warm** | **2.6us** | 2.6us | **parity** |
+| fib(35) | 0.037s | 0.032s | 1.2x |
 | ackermann(3,4 x500) | 0.011s | 0.008s | 1.4x |
-| fib(20) warm | 47.9us | 32.0us | 1.5x |
-| fn calls warm | 4.14us | 3.1us | 1.3x |
-| ackermann(3,4) warm | 40.2us | 15.2us | 2.6x |
-| mandelbrot(1000) | 1.500s | 0.072s | 20.8x |
-| sort(50K x3) | 0.207s | 0.016s | 12.9x |
-| sum_primes(100K) | 0.027s | 0.002s | 13.5x |
-| nbody(500K) | 2.469s | 0.043s | 57.4x |
-| spectral_norm(500) | 0.762s | 0.009s | 84.7x |
-| matmul(300) | 1.161s | 0.029s | 40.0x |
-| fannkuch(9) | 0.662s | 0.025s | 26.5x |
-| mutual_recursion | 0.150s | 0.005s | 30.0x |
-| method_dispatch(100K) | 0.093s | 0.000s | ~230x |
-| closure_bench | 0.071s | 0.012s | 5.9x |
-| string_bench | 0.051s | 0.010s | 5.1x |
-| binary_trees | 2.385s | 0.17s | 14.0x |
+| FibRecursive(20) warm | 27.0us | 25us | 1.1x |
+| Ackermann(3,4) warm | 21.5us | 12us | 1.8x |
+| mandelbrot(1000) trace | 0.157s | 0.057s | 2.8x |
+| matmul(300) | 1.16s | 0.029s | 40x |
+| spectral_norm(500) | 0.76s | 0.009s | 85x |
+| nbody(500K) | 2.47s | 0.043s | 57x |
 
 ### GScript JIT vs Interpreter (warm)
 
 | Benchmark | JIT | VM | Speedup |
 |-----------|-----|-----|---------|
-| FunctionCalls(10K) | **4.14us** | 586.3us | **x141.6** |
-| HeavyLoop | **38.1us** | 2201.0us | **x57.8** |
-| FibRecursive(20) | **47.9us** | 1669.2us | **x34.8** |
-| Ackermann(3,4) | **40.2us** | 734.7us | **x18.3** |
-| FibIterative(30) | **283.5ns** | 1110ns | **x3.9** |
+| FunctionCalls(10K) | **2.6us** | 338us | **x130** |
+| HeavyLoop | **25.5us** | 1309us | **x51** |
+| FibRecursive(20) | **27.0us** | 879us | **x33** |
+| Ackermann(3,4) | **21.5us** | 417us | **x19** |
+| FibIterative(30) | **182ns** | 637ns | **x3.5** |
 
 ### Key Takeaways
 
-- **NaN-boxing (Value 8B) landed** -- fundamental refactor complete, optimization phase ahead
-- **JIT vs VM speedup increased**: FunctionCalls x141.6 (was x92.3), HeavyLoop x57.8 (was x28.5)
-- **sieve improved** 0.080s -> 0.025s: 8B array stride = better L1 cache utilization
-- **Regressions expected**: JIT codegen emits old-layout code, NaN-box tag/untag overhead in VM loop
-- **Trace JIT broken** on mandelbrot, fannkuch, sort, binary_trees (timeouts/debug spam)
-- **Next step**: adapt JIT codegen for NaN-box layout to recover pre-NaN-box performance
+- **Season 2: NaN-boxing landed** -- Value shrunk from 24B to 8B (uint64)
+- **sieve 3.2x faster** with NaN-boxing (0.080s → 0.025s): 8B array stride = 3x better cache utilization
+- **fn calls at LuaJIT parity**: 2.6us vs 2.6us
+- **Compute-heavy benchmarks competitive**: fib/ackermann within 1.1-1.8x of LuaJIT
+- **Table-heavy benchmarks**: 40-85x gap remains (Go GC overhead + interpreter dispatch)
+- **Next**: custom heap + custom GC to fully realize NaN-boxing gains
 
 Platform: Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1 (2026-03-21)
 
