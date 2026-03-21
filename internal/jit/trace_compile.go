@@ -240,8 +240,30 @@ func compileTrace(trace *Trace) (*CompiledTrace, error) {
 	// Track which slots are written by arithmetic in the trace body.
 	// Only these should be spilled — spilling an unmodified table slot
 	// would corrupt the table pointer with stale integer data.
+	// IMPORTANT: Stop at the first unconditional side-exit (e.g., GETUPVAL,
+	// GETGLOBAL, SETGLOBAL, non-self CALL). Instructions after an
+	// unconditional exit are dead code — their destination registers are
+	// never actually written, so including them in writtenSlots would cause
+	// spillRegs to overwrite live table/string values with stale integers.
 	writtenSlots := make(map[int]bool)
 	for _, ir := range trace.IR {
+		// Check if this op is an unconditional side-exit (always branches away)
+		isUnconditionalExit := false
+		switch ir.Op {
+		case vm.OP_GETUPVAL, vm.OP_SETUPVAL, vm.OP_GETGLOBAL, vm.OP_SETGLOBAL,
+			vm.OP_NEWTABLE, vm.OP_CONCAT, vm.OP_APPEND, vm.OP_SETLIST,
+			vm.OP_CLOSURE, vm.OP_CLOSE, vm.OP_RETURN, vm.OP_DIV, vm.OP_POW,
+			vm.OP_SELF, vm.OP_VARARG:
+			isUnconditionalExit = true
+		case vm.OP_CALL:
+			if ir.Intrinsic == IntrinsicNone && !(ir.IsSelfCall && trace.HasSelfCalls) {
+				isUnconditionalExit = true
+			}
+		}
+		if isUnconditionalExit {
+			break // stop: all subsequent instructions are dead code
+		}
+
 		switch ir.Op {
 		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_UNM,
 			vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL, vm.OP_MOVE,
@@ -459,21 +481,25 @@ func emitTrArithInt(asm *Assembler, ir *TraceIR, op string) {
 	// Prepare side-exit PC in X9 (used by side_exit handler)
 	asm.LoadImm64(X9, int64(ir.PC))
 
-	// Type guard B operand
+	// Type guard B operand (NaN-boxing: load full value, check int tag)
 	bOff, bBase := trRKBase(ir.B)
-	asm.LDRB(X0, bBase, bOff)
-	asm.CMPimmW(X0, TypeInt)
+	asm.LDR(X1, bBase, bOff)
+	asm.LSRimm(X0, X1, 48)
+	asm.MOVimm16(X3, NB_TagIntShr48)
+	asm.CMPreg(X0, X3)
 	asm.BCond(CondNE, "side_exit")
 
-	// Type guard C operand
+	// Type guard C operand (NaN-boxing: load full value, check int tag)
 	cOff, cBase := trRKBase(ir.C)
-	asm.LDRB(X0, cBase, cOff)
-	asm.CMPimmW(X0, TypeInt)
+	asm.LDR(X2, cBase, cOff)
+	asm.LSRimm(X0, X2, 48)
+	asm.MOVimm16(X3, NB_TagIntShr48)
+	asm.CMPreg(X0, X3)
 	asm.BCond(CondNE, "side_exit")
 
-	// Load values
-	asm.LDR(X1, bBase, bOff+OffsetData)
-	asm.LDR(X2, cBase, cOff+OffsetData)
+	// Unbox int values
+	EmitUnboxInt(asm, X1, X1)
+	EmitUnboxInt(asm, X2, X2)
 
 	// Compute
 	switch op {
@@ -560,27 +586,35 @@ func emitTrEQ(asm *Assembler, ir *TraceIR, idx int, trace *Trace) {
 	bOff, bBase := trRKBase(ir.B)
 	cOff, cBase := trRKBase(ir.C)
 
-	// Check if both operands are int (common case) or both string
-	asm.LDRB(X0, bBase, bOff)
-	asm.LDRB(X3, cBase, cOff)
+	// Load full NaN-boxed values and extract tags
+	asm.LDR(X1, bBase, bOff) // X1 = full NaN-boxed B value
+	asm.LSRimm(X0, X1, 48)   // X0 = B tag
+
+	asm.LDR(X2, cBase, cOff) // X2 = full NaN-boxed C value
+	asm.LSRimm(X3, X2, 48)   // X3 = C tag
 
 	// Try int comparison first
 	intLabel := fmt.Sprintf("eq_int_%d", idx)
 	strLabel := fmt.Sprintf("eq_str_%d", idx)
 	doneLabel := fmt.Sprintf("eq_done_%d", idx)
 
-	asm.CMPimmW(X0, TypeInt)
+	asm.MOVimm16(X8, NB_TagIntShr48)
+	asm.CMPreg(X0, X8)
 	asm.BCond(CondEQ, intLabel)
-	asm.CMPimmW(X0, TypeString)
-	asm.BCond(CondEQ, strLabel)
+	asm.MOVimm16(X8, NB_TagPtrShr48)
+	asm.CMPreg(X0, X8)
+	asm.BCond(CondEQ, strLabel) // might be string pointer
 	asm.B("side_exit") // unsupported type for EQ
 
 	// --- Integer path ---
 	asm.Label(intLabel)
-	asm.CMPimmW(X3, TypeInt)
+	asm.CMPreg(X3, X8) // reuse X8 = NB_TagIntShr48 from above? No, X8 was overwritten. Re-check.
+	asm.MOVimm16(X8, NB_TagIntShr48)
+	asm.CMPreg(X3, X8)
 	asm.BCond(CondNE, "side_exit")
-	asm.LDR(X1, bBase, bOff+OffsetData)
-	asm.LDR(X2, cBase, cOff+OffsetData)
+	// Unbox and compare int values
+	EmitUnboxInt(asm, X1, X1)
+	EmitUnboxInt(asm, X2, X2)
 	asm.CMPreg(X1, X2)
 	if flag == 0 {
 		// flag=0: recorded path had "equal" → exit when not equal
@@ -591,24 +625,16 @@ func emitTrEQ(asm *Assembler, ir *TraceIR, idx int, trace *Trace) {
 	}
 	asm.B(doneLabel)
 
-	// --- String path ---
+	// --- String path (pointer tag, need to verify sub-type is string) ---
 	asm.Label(strLabel)
-	asm.CMPimmW(X3, TypeString)
-	asm.BCond(CondNE, "side_exit")
+	// Verify B is a string pointer (sub-type check bits 44-47 == 1)
+	EmitCheckIsString(asm, X1, X8, X7, "side_exit")
+	// Check C is also a string pointer
+	EmitCheckIsString(asm, X2, X8, X7, "side_exit")
 
-	// Load string headers from Value.ptr (any interface → data pointer → Go string header)
-	bPtrDataOff := bOff + OffsetPtrData
-	cPtrDataOff := cOff + OffsetPtrData
-	if bBase == regConsts {
-		asm.LDR(X1, regConsts, bPtrDataOff)
-	} else {
-		asm.LDR(X1, regRegs, bPtrDataOff)
-	}
-	if cBase == regConsts {
-		asm.LDR(X2, regConsts, cPtrDataOff)
-	} else {
-		asm.LDR(X2, regRegs, cPtrDataOff)
-	}
+	// Extract string pointers
+	EmitExtractPtr(asm, X1, X1, X8) // X1 = pointer to B's string header
+	EmitExtractPtr(asm, X2, X2, X8) // X2 = pointer to C's string header
 
 	// Load B's string: ptr and len
 	asm.LDR(X4, X1, 0)  // X4 = B.str.ptr
@@ -677,15 +703,22 @@ func emitTrLT(asm *Assembler, ir *TraceIR, idx int, trace *Trace) {
 	bOff, bBase := trRKBase(ir.B)
 	cOff, cBase := trRKBase(ir.C)
 
-	asm.LDRB(X0, bBase, bOff)
-	asm.CMPimmW(X0, TypeInt)
-	asm.BCond(CondNE, "side_exit")
-	asm.LDRB(X0, cBase, cOff)
-	asm.CMPimmW(X0, TypeInt)
+	// NaN-boxing: load full values and check int tags
+	asm.LDR(X1, bBase, bOff)
+	asm.LSRimm(X0, X1, 48)
+	asm.MOVimm16(X3, NB_TagIntShr48)
+	asm.CMPreg(X0, X3)
 	asm.BCond(CondNE, "side_exit")
 
-	asm.LDR(X1, bBase, bOff+OffsetData)
-	asm.LDR(X2, cBase, cOff+OffsetData)
+	asm.LDR(X2, cBase, cOff)
+	asm.LSRimm(X0, X2, 48)
+	asm.MOVimm16(X3, NB_TagIntShr48)
+	asm.CMPreg(X0, X3)
+	asm.BCond(CondNE, "side_exit")
+
+	// Unbox and compare
+	EmitUnboxInt(asm, X1, X1)
+	EmitUnboxInt(asm, X2, X2)
 	asm.CMPreg(X1, X2)
 
 	if flag == 0 {
@@ -707,15 +740,22 @@ func emitTrLE(asm *Assembler, ir *TraceIR, idx int, trace *Trace) {
 	bOff, bBase := trRKBase(ir.B)
 	cOff, cBase := trRKBase(ir.C)
 
-	asm.LDRB(X0, bBase, bOff)
-	asm.CMPimmW(X0, TypeInt)
-	asm.BCond(CondNE, "side_exit")
-	asm.LDRB(X0, cBase, cOff)
-	asm.CMPimmW(X0, TypeInt)
+	// NaN-boxing: load full values and check int tags
+	asm.LDR(X1, bBase, bOff)
+	asm.LSRimm(X0, X1, 48)
+	asm.MOVimm16(X3, NB_TagIntShr48)
+	asm.CMPreg(X0, X3)
 	asm.BCond(CondNE, "side_exit")
 
-	asm.LDR(X1, bBase, bOff+OffsetData)
-	asm.LDR(X2, cBase, cOff+OffsetData)
+	asm.LDR(X2, cBase, cOff)
+	asm.LSRimm(X0, X2, 48)
+	asm.MOVimm16(X3, NB_TagIntShr48)
+	asm.CMPreg(X0, X3)
+	asm.BCond(CondNE, "side_exit")
+
+	// Unbox and compare
+	EmitUnboxInt(asm, X1, X1)
+	EmitUnboxInt(asm, X2, X2)
 	asm.CMPreg(X1, X2)
 
 	if flag == 0 {
@@ -738,12 +778,14 @@ func emitTrTest(asm *Assembler, ir *TraceIR, idx int) {
 	asm.LoadImm64(X9, int64(ir.PC))
 
 	aOff := ir.A * ValueSize
-	asm.LDRB(X0, regRegs, aOff) // load typ
+	asm.LDR(X0, regRegs, aOff) // load full NaN-boxed value
 
 	doneLabel := fmt.Sprintf("test_done_%d", idx)
+	boolCheckLabel := fmt.Sprintf("test_bool_%d", idx)
 
-	// TypeNil (0) is falsy
-	asm.CMPimmW(X0, 0)
+	// Check for nil: exact match with NB_ValNil
+	asm.LoadImm64(X1, nb_i64(NB_ValNil))
+	asm.CMPreg(X0, X1)
 	if ir.C == 0 {
 		// C=0: recorded path had truthy → exit if nil (falsy)
 		asm.BCond(CondEQ, "side_exit")
@@ -752,16 +794,25 @@ func emitTrTest(asm *Assembler, ir *TraceIR, idx int) {
 		asm.BCond(CondEQ, doneLabel)
 	}
 
-	// TypeBool with data=0 is falsy; all other types are truthy
-	asm.CMPimmW(X0, uint16(runtime.TypeBool))
+	// Check if it's a bool (tag == NB_TagBoolShr48)
+	asm.LSRimm(X1, X0, 48)
+	asm.MOVimm16(X2, NB_TagBoolShr48)
+	asm.CMPreg(X1, X2)
+	asm.BCond(CondEQ, boolCheckLabel)
+
+	// Not nil, not bool → truthy (int, float, string, table, etc.)
 	if ir.C == 0 {
-		// C=0: non-nil, non-bool → truthy → OK
-		asm.BCond(CondNE, doneLabel)
+		// C=0: truthy → OK
+		asm.B(doneLabel)
 	} else {
-		// C=1: non-nil, non-bool → truthy → exit
-		asm.BCond(CondNE, "side_exit")
+		// C=1: truthy → exit
+		asm.B("side_exit")
 	}
-	asm.LDR(X1, regRegs, aOff+OffsetData)
+
+	// Bool check: extract payload (bit 0) to determine true/false
+	asm.Label(boolCheckLabel)
+	asm.LoadImm64(X1, nb_i64(NB_PayloadMask))
+	asm.ANDreg(X1, X0, X1) // X1 = payload (0 for false, 1 for true)
 	if ir.C == 0 {
 		// C=0: bool(false) → falsy → exit; bool(true) → truthy → OK
 		asm.CBZ(X1, "side_exit")
@@ -779,15 +830,30 @@ func emitTrNot(asm *Assembler, ir *TraceIR, idx int) {
 
 	trueLabel := fmt.Sprintf("not_true_%d", idx)
 	falseLabel := fmt.Sprintf("not_false_%d", idx)
+	boolCheckLabel := fmt.Sprintf("not_boolchk_%d", idx)
 	endLabel := fmt.Sprintf("not_end_%d", idx)
 
-	asm.LDRB(X0, regRegs, bOff) // typ
+	asm.LDR(X0, regRegs, bOff) // load full NaN-boxed value
+
 	// result = !(truthy): nil or false → true, else → false
-	asm.CMPimmW(X0, 0) // TypeNil
+	// Check for nil
+	asm.LoadImm64(X1, nb_i64(NB_ValNil))
+	asm.CMPreg(X0, X1)
 	asm.BCond(CondEQ, trueLabel)
-	asm.CMPimmW(X0, uint16(runtime.TypeBool))
-	asm.BCond(CondNE, falseLabel) // not nil, not bool → truthy → !truthy = false
-	asm.LDR(X1, regRegs, bOff+OffsetData)
+
+	// Check if bool
+	asm.LSRimm(X1, X0, 48)
+	asm.MOVimm16(X2, NB_TagBoolShr48)
+	asm.CMPreg(X1, X2)
+	asm.BCond(CondEQ, boolCheckLabel)
+
+	// Not nil, not bool → truthy → !truthy = false
+	asm.B(falseLabel)
+
+	// Bool: check payload
+	asm.Label(boolCheckLabel)
+	asm.LoadImm64(X1, nb_i64(NB_PayloadMask))
+	asm.ANDreg(X1, X0, X1) // payload: 0=false, 1=true
 	asm.CBNZ(X1, falseLabel) // bool(true) → truthy → false
 
 	asm.Label(trueLabel)
@@ -819,16 +885,14 @@ func emitTrGetField(asm *Assembler, ir *TraceIR, idx int) {
 	cmpLabel := fmt.Sprintf("getfield_cmp_%d", idx)
 	doneLabel := fmt.Sprintf("getfield_done_%d", idx)
 
-	// Step 1: Type check R(B).typ == TypeTable
-	bTypOff := b * ValueSize
-	asm.LDRB(X0, regRegs, bTypOff)
-	asm.CMPimmW(X0, TypeTable)
-	asm.BCond(CondNE, fallbackLabel)
+	// Step 1: Type check R(B) is a Table (NaN-boxing)
+	bOff := b * ValueSize
+	asm.LDR(X0, regRegs, bOff) // X0 = full NaN-boxed value
+	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
-	// Step 2: Load *Table from R(B).ptr.data
-	bPtrDataOff := b*ValueSize + OffsetPtrData
-	asm.LDR(X0, regRegs, bPtrDataOff) // X0 = *Table
-	asm.CBZ(X0, fallbackLabel)         // nil table check
+	// Step 2: Extract *Table pointer from NaN-boxed value
+	EmitExtractPtr(asm, X0, X0, X1) // X0 = *Table
+	asm.CBZ(X0, fallbackLabel)       // nil table check
 
 	// Step 3: Check metatable == nil
 	asm.LDR(X1, X0, TableOffMetatable) // X1 = table.metatable
@@ -842,12 +906,12 @@ func emitTrGetField(asm *Assembler, ir *TraceIR, idx int) {
 	// Save table pointer for svals access
 	asm.MOVreg(X8, X0) // X8 = *Table (preserved)
 
-	// Step 5: Load constant key string
-	// Constants[C].ptr.data → pointer to Go string header {ptr(8), len(8)}
-	cPtrDataOff := c * ValueSize + OffsetPtrData
-	asm.LDR(X3, regConsts, cPtrDataOff) // X3 = pointer to string header
-	asm.LDR(X4, X3, 0)                  // X4 = key string data ptr
-	asm.LDR(X5, X3, 8)                  // X5 = key string len
+	// Step 5: Load constant key string (NaN-boxed string pointer)
+	cOff := c * ValueSize
+	asm.LDR(X3, regConsts, cOff) // X3 = NaN-boxed string value
+	EmitExtractPtr(asm, X3, X3, X4) // X3 = pointer to string header
+	asm.LDR(X4, X3, 0)              // X4 = key string data ptr
+	asm.LDR(X5, X3, 8)              // X5 = key string len
 
 	// Step 6: Linear scan of skeys
 	asm.LoadImm64(X6, 0) // X6 = i = 0
@@ -920,27 +984,27 @@ func emitTrGetTable(asm *Assembler, ir *TraceIR, idx int) {
 	fallbackLabel := fmt.Sprintf("gettable_exit_%d", idx)
 	doneLabel := fmt.Sprintf("gettable_done_%d", idx)
 
-	// Step 1: Type check R(B).typ == TypeTable
-	bTypOff := b * ValueSize
-	asm.LDRB(X0, regRegs, bTypOff)
-	asm.CMPimmW(X0, TypeTable)
-	asm.BCond(CondNE, fallbackLabel)
+	// Step 1: Type check R(B) is a Table (NaN-boxing)
+	bOff := b * ValueSize
+	asm.LDR(X0, regRegs, bOff) // X0 = full NaN-boxed value
+	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
-	// Step 2: Load *Table from R(B).ptr.data
-	bPtrDataOff := b*ValueSize + OffsetPtrData
-	asm.LDR(X0, regRegs, bPtrDataOff) // X0 = *Table
+	// Step 2: Extract *Table pointer from NaN-boxed value
+	EmitExtractPtr(asm, X0, X0, X1) // X0 = *Table
 	asm.CBZ(X0, fallbackLabel)
 
 	// Step 3: Check metatable == nil
 	asm.LDR(X1, X0, TableOffMetatable)
 	asm.CBNZ(X1, fallbackLabel)
 
-	// Step 4: Load key from RK(C), check TypeInt
+	// Step 4: Load key from RK(C), check TypeInt (NaN-boxing)
 	cOff, cBase := trRKBase(cidx)
-	asm.LDRB(X2, cBase, cOff)
-	asm.CMPimmW(X2, TypeInt)
+	asm.LDR(X2, cBase, cOff) // X2 = full NaN-boxed key
+	asm.LSRimm(X3, X2, 48)
+	asm.MOVimm16(X4, NB_TagIntShr48)
+	asm.CMPreg(X3, X4)
 	asm.BCond(CondNE, fallbackLabel)
-	asm.LDR(X2, cBase, cOff+OffsetData) // X2 = key int value
+	EmitUnboxInt(asm, X2, X2) // X2 = key int value
 
 	// Step 5: Array bounds check: key >= 0 && key < array.len (0-indexed)
 	asm.CMPimm(X2, 0) // key >= 0?
@@ -985,13 +1049,12 @@ func emitTrSetField(asm *Assembler, ir *TraceIR, idx int) {
 	cmpLabel := fmt.Sprintf("setfield_cmp_%d", idx)
 	doneLabel := fmt.Sprintf("setfield_done_%d", idx)
 
-	// Type check R(A).typ == TypeTable
-	asm.LDRB(X0, regRegs, a*ValueSize)
-	asm.CMPimmW(X0, TypeTable)
-	asm.BCond(CondNE, fallbackLabel)
+	// Type check R(A) is a Table (NaN-boxing)
+	asm.LDR(X0, regRegs, a*ValueSize) // X0 = full NaN-boxed value
+	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
-	// Load *Table
-	asm.LDR(X0, regRegs, a*ValueSize+OffsetPtrData)
+	// Extract *Table pointer
+	EmitExtractPtr(asm, X0, X0, X1)
 	asm.CBZ(X0, fallbackLabel)
 
 	// Check metatable == nil
@@ -1005,8 +1068,9 @@ func emitTrSetField(asm *Assembler, ir *TraceIR, idx int) {
 
 	asm.MOVreg(X8, X0) // save *Table
 
-	// Load constant key string
-	asm.LDR(X3, regConsts, b*ValueSize+OffsetPtrData)
+	// Load constant key string (NaN-boxed string pointer)
+	asm.LDR(X3, regConsts, b*ValueSize) // X3 = NaN-boxed string value
+	EmitExtractPtr(asm, X3, X3, X4)     // X3 = pointer to string header
 	asm.LDR(X4, X3, 0) // key.ptr
 	asm.LDR(X5, X3, 8) // key.len
 
@@ -1072,23 +1136,25 @@ func emitTrSetTable(asm *Assembler, ir *TraceIR, idx int) {
 	fallbackLabel := fmt.Sprintf("settable_exit_%d", idx)
 	doneLabel := fmt.Sprintf("settable_done_%d", idx)
 
-	// Type check R(A)
-	asm.LDRB(X0, regRegs, a*ValueSize)
-	asm.CMPimmW(X0, TypeTable)
-	asm.BCond(CondNE, fallbackLabel)
+	// Type check R(A) is a Table (NaN-boxing)
+	asm.LDR(X0, regRegs, a*ValueSize) // X0 = full NaN-boxed value
+	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
 
-	asm.LDR(X0, regRegs, a*ValueSize+OffsetPtrData)
+	// Extract *Table pointer
+	EmitExtractPtr(asm, X0, X0, X1)
 	asm.CBZ(X0, fallbackLabel)
 
 	asm.LDR(X1, X0, TableOffMetatable)
 	asm.CBNZ(X1, fallbackLabel)
 
-	// Load key, check TypeInt
+	// Load key, check TypeInt (NaN-boxing)
 	kOff, kBase := trRKBase(bidx)
-	asm.LDRB(X2, kBase, kOff)
-	asm.CMPimmW(X2, TypeInt)
+	asm.LDR(X2, kBase, kOff) // X2 = full NaN-boxed key
+	asm.LSRimm(X3, X2, 48)
+	asm.MOVimm16(X4, NB_TagIntShr48)
+	asm.CMPreg(X3, X4)
 	asm.BCond(CondNE, fallbackLabel)
-	asm.LDR(X2, kBase, kOff+OffsetData)
+	EmitUnboxInt(asm, X2, X2) // X2 = key int value
 
 	// Array bounds check with append fast path.
 	inBoundsLabel := fmt.Sprintf("settable_inbounds_%d", idx)
@@ -1262,17 +1328,22 @@ func emitTrMod(asm *Assembler, ir *TraceIR, idx int) {
 	bOff, bBase := trRKBase(ir.B)
 	cOff, cBase := trRKBase(ir.C)
 
-	// Type guards
-	asm.LDRB(X0, bBase, bOff)
-	asm.CMPimmW(X0, TypeInt)
-	asm.BCond(CondNE, "side_exit")
-	asm.LDRB(X0, cBase, cOff)
-	asm.CMPimmW(X0, TypeInt)
+	// Type guards (NaN-boxing: load full value, check int tag)
+	asm.LDR(X1, bBase, bOff)
+	asm.LSRimm(X0, X1, 48)
+	asm.MOVimm16(X3, NB_TagIntShr48)
+	asm.CMPreg(X0, X3)
 	asm.BCond(CondNE, "side_exit")
 
-	// Load values
-	asm.LDR(X1, bBase, bOff+OffsetData)
-	asm.LDR(X2, cBase, cOff+OffsetData)
+	asm.LDR(X2, cBase, cOff)
+	asm.LSRimm(X0, X2, 48)
+	asm.MOVimm16(X3, NB_TagIntShr48)
+	asm.CMPreg(X0, X3)
+	asm.BCond(CondNE, "side_exit")
+
+	// Unbox int values
+	EmitUnboxInt(asm, X1, X1)
+	EmitUnboxInt(asm, X2, X2)
 
 	// Check divisor != 0
 	asm.CBZ(X2, "side_exit")
@@ -1308,11 +1379,13 @@ func emitTrUNM(asm *Assembler, ir *TraceIR) {
 	asm.LoadImm64(X9, int64(ir.PC))
 
 	bOff := ir.B * ValueSize
-	asm.LDRB(X0, regRegs, bOff)
-	asm.CMPimmW(X0, TypeInt)
+	// NaN-boxing: load full value, check int tag
+	asm.LDR(X1, regRegs, bOff)
+	asm.LSRimm(X0, X1, 48)
+	asm.MOVimm16(X2, NB_TagIntShr48)
+	asm.CMPreg(X0, X2)
 	asm.BCond(CondNE, "side_exit")
 
-	asm.LDR(X1, regRegs, bOff)
 	EmitUnboxInt(asm, X1, X1)
 	asm.NEG(X0, X1) // X0 = -X1
 
@@ -1327,12 +1400,12 @@ func emitTrLen(asm *Assembler, ir *TraceIR) {
 	asm.LoadImm64(X9, int64(ir.PC))
 
 	bOff := ir.B * ValueSize
-	asm.LDRB(X0, regRegs, bOff)
-	asm.CMPimmW(X0, TypeTable)
-	asm.BCond(CondNE, "side_exit")
+	// NaN-boxing: load full value, check is table
+	asm.LDR(X0, regRegs, bOff)
+	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit")
 
-	// Load *Table
-	asm.LDR(X0, regRegs, bOff+OffsetPtrData)
+	// Extract *Table pointer
+	EmitExtractPtr(asm, X0, X0, X1)
 	asm.CBZ(X0, "side_exit")
 
 	// table.array.len - 1 (array is 1-indexed, index 0 unused)

@@ -2738,18 +2738,18 @@ func (cg *Codegen) emitNOT(pc int, inst uint32) error {
 
 	// NOT: R(A) = !truthy(R(B))
 	// Truthy: nil and false are falsy, everything else truthy.
-	// TypeNil (0) = falsy. TypeBool (1) with ival==0 = falsy. Otherwise truthy.
+	// NaN-box tag: nil=0xFFFC, bool=0xFFFD. Check against NB_TagXxxShr48.
 
-	cg.loadRegTyp(X0, bReg)
+	cg.loadRegTyp(X0, bReg) // X0 = tag >> 48
 
-	// Check if nil (typ == 0)
-	cg.asm.CMPimmW(X0, TypeNil)
+	// Check if nil
+	cg.emitCmpTag(X0, NB_TagNilShr48)
 	cg.asm.BCond(CondEQ, fmt.Sprintf("not_true_%d", pc))
 
-	// Check if false bool (typ == 1 && ival == 0)
-	cg.asm.CMPimmW(X0, TypeBool)
+	// Check if false bool
+	cg.emitCmpTag(X0, NB_TagBoolShr48)
 	cg.asm.BCond(CondNE, fmt.Sprintf("not_false_%d", pc))
-	cg.loadRegIval(X0, bReg)
+	cg.loadRegIval(X0, bReg) // loads NaN-boxed value, unbox (SBFX #0, #48)
 	cg.asm.CMPimm(X0, 0)
 	cg.asm.BCond(CondEQ, fmt.Sprintf("not_true_%d", pc))
 
@@ -3084,11 +3084,11 @@ func (cg *Codegen) emitTest(pc int, inst uint32) error {
 
 	skipLabel := pcLabel(pc + 2) // skip next if test fails
 
-	// Load type
-	cg.loadRegTyp(X0, aReg)
+	// Load NaN-box tag (top 16 bits)
+	cg.loadRegTyp(X0, aReg) // X0 = tag >> 48
 
-	// Check nil → falsy
-	cg.asm.CMPimmW(X0, TypeNil)
+	// Check nil → falsy (NaN-box tag for nil = 0xFFFC)
+	cg.emitCmpTag(X0, NB_TagNilShr48)
 	if c != 0 {
 		// C=1: skip if NOT truthy (i.e., falsy) → skip if nil
 		cg.asm.BCond(CondEQ, skipLabel)
@@ -3101,19 +3101,19 @@ func (cg *Codegen) emitTest(pc int, inst uint32) error {
 		cg.asm.Label(notNil)
 	}
 
-	// Check bool
-	cg.asm.CMPimmW(X0, TypeBool)
+	// Check bool (NaN-box tag for bool = 0xFFFD)
+	cg.emitCmpTag(X0, NB_TagBoolShr48)
 	notBool := fmt.Sprintf("test_truthy_%d", pc)
 	cg.asm.BCond(CondNE, notBool)
 
-	// It's a bool — check ival
-	cg.loadRegIval(X0, aReg)
+	// It's a bool — check payload (bit 0)
+	cg.loadRegIval(X0, aReg) // loads NaN-boxed value, unbox int (SBFX #0, #48)
 	cg.asm.CMPimm(X0, 0)
 	if c != 0 {
-		// C=1: skip if NOT truthy → skip if bool(false) (ival==0)
+		// C=1: skip if NOT truthy → skip if bool(false) (payload==0)
 		cg.asm.BCond(CondEQ, skipLabel)
 	} else {
-		// C=0: skip if truthy → skip if bool(true) (ival!=0)
+		// C=0: skip if truthy → skip if bool(true) (payload!=0)
 		cg.asm.BCond(CondNE, skipLabel)
 	}
 	cg.asm.B(pcLabel(pc + 1)) // not skipping
@@ -3594,74 +3594,48 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	fallbackLabel := fmt.Sprintf("gettable_fallback_%d", pc)
 
 
-	// --- Step 1: Type check R(B).typ == TypeTable ---
-	bTypOff := regTypOffset(b)
-	if bTypOff <= 4095 {
-		asm.LDRB(X0, regRegs, bTypOff)
+	// --- Step 1: Type check R(B) is a Table (NaN-boxing) ---
+	bOff := b * ValueSize
+	if bOff <= 32760 {
+		asm.LDR(X0, regRegs, bOff)
 	} else {
-		asm.LoadImm64(X0, int64(bTypOff))
-		asm.LDRBreg(X0, regRegs, X0)
-	}
-	cg.emitCmpTag(X0, NB_TagPtrShr48) // TypeTable check (ptr tag); sub-type checked after ptr load
-	asm.BCond(CondNE, fallbackLabel)
-
-	// --- Step 2: Load *Table from R(B).ptr.data ---
-	bPtrDataOff := b*ValueSize + OffsetPtrData
-	if bPtrDataOff <= 32760 {
-		asm.LDR(X0, regRegs, bPtrDataOff)
-	} else {
-		asm.LoadImm64(X1, int64(bPtrDataOff))
+		asm.LoadImm64(X1, int64(bOff))
 		asm.ADDreg(X1, regRegs, X1)
 		asm.LDR(X0, X1, 0)
 	}
+	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
+
+	// --- Step 2: Extract *Table pointer from NaN-boxed value ---
+	EmitExtractPtr(asm, X0, X0, X1)
 	asm.CBZ(X0, fallbackLabel)
 
 	// --- Step 3: Check metatable == nil ---
 	asm.LDR(X1, X0, TableOffMetatable)
 	asm.CBNZ(X1, fallbackLabel)
 
-	// --- Step 4: Load key from RK(C) ---
-	// Check key type == TypeInt
-	var keyTypOff, keyDataOff int
+	// --- Step 4: Load key from RK(C), check TypeInt (NaN-boxing) ---
+	var keyOff int
+	var keyBase Reg
 	if cidx >= vm.RKBit {
 		constIdx := vm.RKToConstIdx(cidx)
-		keyTypOff = constIdx*ValueSize + OffsetTyp
-		keyDataOff = constIdx*ValueSize + OffsetData
-		// Load from constants
-		if keyTypOff <= 4095 {
-			asm.LDRB(X2, regConsts, keyTypOff)
-		} else {
-			asm.LoadImm64(X2, int64(keyTypOff))
-			asm.LDRBreg(X2, regConsts, X2)
-		}
-		asm.CMPimmW(X2, TypeInt)
-		asm.BCond(CondNE, fallbackLabel)
-		if keyDataOff <= 32760 {
-			asm.LDR(X2, regConsts, keyDataOff) // X2 = key int value
-		} else {
-			asm.LoadImm64(X3, int64(keyDataOff))
-			asm.ADDreg(X3, regConsts, X3)
-			asm.LDR(X2, X3, 0)
-		}
+		keyOff = constIdx * ValueSize
+		keyBase = regConsts
 	} else {
-		keyTypOff = regTypOffset(cidx)
-		keyDataOff = cidx*ValueSize + OffsetData
-		if keyTypOff <= 4095 {
-			asm.LDRB(X3, regRegs, keyTypOff)
-		} else {
-			asm.LoadImm64(X3, int64(keyTypOff))
-			asm.LDRBreg(X3, regRegs, X3)
-		}
-		asm.CMPimmW(X3, TypeInt)
-		asm.BCond(CondNE, fallbackLabel)
-		if keyDataOff <= 32760 {
-			asm.LDR(X2, regRegs, keyDataOff) // X2 = key int value
-		} else {
-			asm.LoadImm64(X3, int64(keyDataOff))
-			asm.ADDreg(X3, regRegs, X3)
-			asm.LDR(X2, X3, 0)
-		}
+		keyOff = cidx * ValueSize
+		keyBase = regRegs
 	}
+	if keyOff <= 32760 {
+		asm.LDR(X2, keyBase, keyOff) // X2 = full NaN-boxed key
+	} else {
+		asm.LoadImm64(X3, int64(keyOff))
+		asm.ADDreg(X3, keyBase, X3)
+		asm.LDR(X2, X3, 0)
+	}
+	asm.LSRimm(X3, X2, 48)
+	asm.MOVimm16(X4, NB_TagIntShr48)
+	asm.CMPreg(X3, X4)
+	asm.BCond(CondNE, fallbackLabel)
+	EmitUnboxInt(asm, X2, X2) // X2 = key int value
 
 	// --- Step 5: Array bounds check ---
 	// Check: key >= 0 (0-indexed array)
@@ -3701,7 +3675,7 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	}
 	asm.B(doneGetLabel)
 
-	// --- ArrayInt path: LDR from intArray, store as IntValue ---
+	// --- ArrayInt path: LDR from intArray, store as NaN-boxed IntValue ---
 	asm.Label(intArrayLabel)
 	asm.LDR(X3, X0, TableOffIntArray+8) // X3 = intArray.len
 	asm.CMPreg(X2, X3)                  // key < intArray.len?
@@ -3709,24 +3683,19 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	asm.LDR(X3, X0, TableOffIntArray)   // X3 = intArray.ptr
 	asm.LSLimm(X4, X2, 3)               // X4 = key * 8 (byte offset)
 	asm.LDRreg(X4, X3, X4)              // X4 = *(ptr + key*8) = intArray[key]
-	asm.STR(X4, regRegs, a*ValueSize+OffsetData)
-	asm.MOVimm16(X4, TypeInt)
-	asm.STRB(X4, regRegs, a*ValueSize+OffsetTyp)
-	asm.STR(XZR, regRegs, a*ValueSize+OffsetPtrData)
+	EmitBoxInt(asm, X5, X4, X6)          // X5 = NaN-boxed int
+	asm.STR(X5, regRegs, a*ValueSize)
 	asm.B(doneGetLabel)
 
-	// --- ArrayFloat path: LDR from floatArray, store as FloatValue ---
+	// --- ArrayFloat path: LDR from floatArray, store as NaN-boxed FloatValue ---
 	asm.Label(floatArrayLabel)
 	asm.LDR(X3, X0, TableOffFloatArray+8) // X3 = floatArray.len
 	asm.CMPreg(X2, X3)                    // key < floatArray.len?
 	asm.BCond(CondGE, fallbackLabel)
 	asm.LDR(X3, X0, TableOffFloatArray)   // X3 = floatArray.ptr
 	asm.LSLimm(X4, X2, 3)                 // X4 = key * 8 (byte offset)
-	asm.LDRreg(X4, X3, X4)                // X4 = *(ptr + key*8) = floatArray[key]
-	asm.STR(X4, regRegs, a*ValueSize+OffsetData)
-	asm.MOVimm16(X4, TypeFloat)
-	asm.STRB(X4, regRegs, a*ValueSize+OffsetTyp)
-	asm.STR(XZR, regRegs, a*ValueSize+OffsetPtrData)
+	asm.LDRreg(X4, X3, X4)                // X4 = raw float64 bits = NaN-boxed float
+	asm.STR(X4, regRegs, a*ValueSize)      // floats ARE their NaN-boxed form
 	asm.B(doneGetLabel)
 
 	// --- ArrayBool path: LDRB from boolArray, sentinel decode ---
@@ -3736,15 +3705,13 @@ func (cg *Codegen) emitGetTable(pc int, inst uint32) error {
 	asm.BCond(CondGE, fallbackLabel)
 	asm.LDR(X3, X0, TableOffBoolArray)   // X3 = boolArray.ptr
 	asm.LDRBreg(X4, X3, X2)             // X4 = boolArray[key] (byte)
-	// Sentinel: 0=nil, 1=false, 2=true → data = b-1 gives 0/1 for false/true
-	// Store as BoolValue: typ=TypeBool, data=0|1, ptr=nil
+	// Sentinel: 0=nil, 1=false, 2=true
 	asm.CMPimm(X4, 0)
 	asm.BCond(CondEQ, fallbackLabel) // nil sentinel → fallback (might need metamethods)
 	asm.SUBimm(X4, X4, 1)           // 1→0 (false), 2→1 (true)
-	asm.STR(X4, regRegs, a*ValueSize+OffsetData)
-	asm.MOVimm16(X4, TypeBool)
-	asm.STRB(X4, regRegs, a*ValueSize+OffsetTyp)
-	asm.STR(XZR, regRegs, a*ValueSize+OffsetPtrData)
+	// Store as NaN-boxed BoolValue
+	EmitBoxBool(asm, X5, X4, X6)
+	asm.STR(X5, regRegs, a*ValueSize)
 	asm.Label(doneGetLabel)
 	// Fallback deferred to cold section.
 	capturedPinnedGT := make(map[int]Reg, len(cg.pinnedRegs))
@@ -3776,74 +3743,48 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 	fallbackLabel := fmt.Sprintf("settable_fallback_%d", pc)
 
 
-	// --- Step 1: Type check R(A).typ == TypeTable ---
-	aTypOff := regTypOffset(a)
-	if aTypOff <= 4095 {
-		asm.LDRB(X0, regRegs, aTypOff)
+	// --- Step 1: Type check R(A) is a Table (NaN-boxing) ---
+	aOff := a * ValueSize
+	if aOff <= 32760 {
+		asm.LDR(X0, regRegs, aOff)
 	} else {
-		asm.LoadImm64(X0, int64(aTypOff))
-		asm.LDRBreg(X0, regRegs, X0)
-	}
-	cg.emitCmpTag(X0, NB_TagPtrShr48) // TypeTable check (ptr tag); sub-type checked after ptr load
-	asm.BCond(CondNE, fallbackLabel)
-
-	// --- Step 2: Load *Table from R(A).ptr ---
-	aPtrDataOff := a*ValueSize + OffsetPtrData
-	if aPtrDataOff <= 32760 {
-		asm.LDR(X0, regRegs, aPtrDataOff)
-	} else {
-		asm.LoadImm64(X1, int64(aPtrDataOff))
+		asm.LoadImm64(X1, int64(aOff))
 		asm.ADDreg(X1, regRegs, X1)
 		asm.LDR(X0, X1, 0)
 	}
+	EmitCheckIsTableFull(asm, X0, X1, X2, fallbackLabel)
+
+	// --- Step 2: Extract *Table pointer from NaN-boxed value ---
+	EmitExtractPtr(asm, X0, X0, X1)
 	asm.CBZ(X0, fallbackLabel)
 
 	// --- Step 3: Check metatable == nil ---
 	asm.LDR(X1, X0, TableOffMetatable)
 	asm.CBNZ(X1, fallbackLabel)
 
-	// --- Step 4: Load key from RK(B) ---
-	// Check key type == TypeInt
-	var keyTypOff, keyDataOff int
+	// --- Step 4: Load key from RK(B), check TypeInt (NaN-boxing) ---
+	var keyOff int
+	var keyBase Reg
 	if bidx >= vm.RKBit {
 		constIdx := vm.RKToConstIdx(bidx)
-		keyTypOff = constIdx*ValueSize + OffsetTyp
-		keyDataOff = constIdx*ValueSize + OffsetData
-		// Load from constants
-		if keyTypOff <= 4095 {
-			asm.LDRB(X2, regConsts, keyTypOff)
-		} else {
-			asm.LoadImm64(X2, int64(keyTypOff))
-			asm.LDRBreg(X2, regConsts, X2)
-		}
-		asm.CMPimmW(X2, TypeInt)
-		asm.BCond(CondNE, fallbackLabel)
-		if keyDataOff <= 32760 {
-			asm.LDR(X2, regConsts, keyDataOff) // X2 = key int value
-		} else {
-			asm.LoadImm64(X3, int64(keyDataOff))
-			asm.ADDreg(X3, regConsts, X3)
-			asm.LDR(X2, X3, 0)
-		}
+		keyOff = constIdx * ValueSize
+		keyBase = regConsts
 	} else {
-		keyTypOff = regTypOffset(bidx)
-		keyDataOff = bidx*ValueSize + OffsetData
-		if keyTypOff <= 4095 {
-			asm.LDRB(X3, regRegs, keyTypOff)
-		} else {
-			asm.LoadImm64(X3, int64(keyTypOff))
-			asm.LDRBreg(X3, regRegs, X3)
-		}
-		asm.CMPimmW(X3, TypeInt)
-		asm.BCond(CondNE, fallbackLabel)
-		if keyDataOff <= 32760 {
-			asm.LDR(X2, regRegs, keyDataOff) // X2 = key int value
-		} else {
-			asm.LoadImm64(X3, int64(keyDataOff))
-			asm.ADDreg(X3, regRegs, X3)
-			asm.LDR(X2, X3, 0)
-		}
+		keyOff = bidx * ValueSize
+		keyBase = regRegs
 	}
+	if keyOff <= 32760 {
+		asm.LDR(X2, keyBase, keyOff) // X2 = full NaN-boxed key
+	} else {
+		asm.LoadImm64(X3, int64(keyOff))
+		asm.ADDreg(X3, keyBase, X3)
+		asm.LDR(X2, X3, 0)
+	}
+	asm.LSRimm(X3, X2, 48)
+	asm.MOVimm16(X4, NB_TagIntShr48)
+	asm.CMPreg(X3, X4)
+	asm.BCond(CondNE, fallbackLabel)
+	EmitUnboxInt(asm, X2, X2) // X2 = key int value
 
 	// --- Step 5: Array bounds check (with append fast path) ---
 	// Check: key >= 0 (0-indexed array)
@@ -3949,30 +3890,31 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 	asm.STRB(X5, X0, TableOffKeysDirty)
 
 	asm.Label(intInBoundsLabel)
-	// Load value data from RK(C), store 8 bytes to intArray[key]
+	// Load NaN-boxed value from RK(C), unbox int, store to intArray[key]
 	asm.LDR(X3, X0, TableOffIntArray) // X3 = intArray.ptr
 	asm.LSLimm(X5, X2, 3)            // X5 = key * 8 (byte offset)
 	if cidx >= vm.RKBit {
 		constIdx := vm.RKToConstIdx(cidx)
-		valDataOff := constIdx*ValueSize + OffsetData
-		if valDataOff <= 32760 {
-			asm.LDR(X4, regConsts, valDataOff)
+		valOff := constIdx * ValueSize
+		if valOff <= 32760 {
+			asm.LDR(X4, regConsts, valOff)
 		} else {
-			asm.LoadImm64(X4, int64(valDataOff))
+			asm.LoadImm64(X4, int64(valOff))
 			asm.ADDreg(X4, regConsts, X4)
 			asm.LDR(X4, X4, 0)
 		}
 	} else {
-		valDataOff := cidx*ValueSize + OffsetData
-		if valDataOff <= 32760 {
-			asm.LDR(X4, regRegs, valDataOff)
+		valOff := cidx * ValueSize
+		if valOff <= 32760 {
+			asm.LDR(X4, regRegs, valOff)
 		} else {
-			asm.LoadImm64(X4, int64(valDataOff))
+			asm.LoadImm64(X4, int64(valOff))
 			asm.ADDreg(X4, regRegs, X4)
 			asm.LDR(X4, X4, 0)
 		}
 	}
-	asm.STRreg(X4, X3, X5) // intArray[key] = data (ptr + key*8)
+	EmitUnboxInt(asm, X4, X4) // extract raw int from NaN-boxed value
+	asm.STRreg(X4, X3, X5) // intArray[key] = raw int (ptr + key*8)
 	asm.B(doneLabel)
 
 	// --- ArrayFloat path: STR to floatArray (8-byte store) ---
@@ -4046,29 +3988,32 @@ func (cg *Codegen) emitSetTable(pc int, inst uint32) error {
 
 	asm.Label(boolInBoundsLabel)
 
-	// Load value data from RK(C), convert to sentinel, store byte
+	// Load NaN-boxed value from RK(C), extract bool payload, convert to sentinel, store byte
 	asm.LDR(X3, X0, TableOffBoolArray) // X3 = boolArray.ptr
 	if cidx >= vm.RKBit {
 		constIdx := vm.RKToConstIdx(cidx)
-		valDataOff := constIdx*ValueSize + OffsetData
-		if valDataOff <= 32760 {
-			asm.LDR(X4, regConsts, valDataOff)
+		valOff := constIdx * ValueSize
+		if valOff <= 32760 {
+			asm.LDR(X4, regConsts, valOff)
 		} else {
-			asm.LoadImm64(X4, int64(valDataOff))
+			asm.LoadImm64(X4, int64(valOff))
 			asm.ADDreg(X4, regConsts, X4)
 			asm.LDR(X4, X4, 0)
 		}
 	} else {
-		valDataOff := cidx*ValueSize + OffsetData
-		if valDataOff <= 32760 {
-			asm.LDR(X4, regRegs, valDataOff)
+		valOff := cidx * ValueSize
+		if valOff <= 32760 {
+			asm.LDR(X4, regRegs, valOff)
 		} else {
-			asm.LoadImm64(X4, int64(valDataOff))
+			asm.LoadImm64(X4, int64(valOff))
 			asm.ADDreg(X4, regRegs, X4)
 			asm.LDR(X4, X4, 0)
 		}
 	}
-	asm.ADDimm(X4, X4, 1) // data+1: 0→1 (false), 1→2 (true)
+	// Extract bool payload from NaN-boxed value (bit 0)
+	asm.LoadImm64(X6, nb_i64(NB_PayloadMask))
+	asm.ANDreg(X4, X4, X6) // X4 = payload (0 for false, 1 for true)
+	asm.ADDimm(X4, X4, 1) // sentinel: 0→1 (false), 1→2 (true)
 	asm.STRBreg(X4, X3, X2)
 	asm.Label(doneLabel)
 	// Fallback deferred to cold section.

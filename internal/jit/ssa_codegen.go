@@ -745,9 +745,10 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		dstSlot := int(inst.Slot)
 		// Load key
 		keyReg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X2)
-		// Load *Table
+		// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)
 		if tableSlot >= 0 {
-			asm.LDR(X0, regRegs, tableSlot*ValueSize+OffsetPtrData)
+			asm.LDR(X0, regRegs, tableSlot*ValueSize)
+			EmitExtractPtr(asm, X0, X0, X1)
 		}
 		asm.CBZ(X0, "side_exit")
 		// Check metatable == nil
@@ -775,13 +776,12 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.LDR(X3, X0, TableOffIntArray) // intArray.ptr
 			asm.LDRreg(X0, X3, keyReg)        // X0 = *(X3 + keyReg*8)
 
-			// Store result
+			// Store result (raw int from intArray → NaN-box it)
 			if r, ok := regMap.IntReg(dstSlot); ok {
 				asm.MOVreg(r, X0)
 			} else {
-				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, TypeInt)
-				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+				EmitBoxInt(asm, X5, X0, X6)
+				asm.STR(X5, regRegs, dstSlot*ValueSize)
 			}
 			asm.B(doneLabel)
 
@@ -805,9 +805,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			if r, ok := regMap.IntReg(dstSlot); ok {
 				asm.MOVreg(r, X0)
 			} else {
-				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, TypeInt)
-				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+				// Store as NaN-boxed int (bool treated as int in SSA)
+				EmitBoxInt(asm, X5, X0, X6)
+				asm.STR(X5, regRegs, dstSlot*ValueSize)
 			}
 			asm.B(doneLabel)
 
@@ -822,22 +822,25 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			EmitMulValueSize(asm, X4, keyReg, X5)
 			asm.ADDreg(X3, X3, X4)
 
-			// Type guard: must be int or bool
-			asm.LDRB(X0, X3, OffsetTyp)
-			asm.CMPimmW(X0, TypeInt)
+			// NaN-boxing: load full value, check int tag
+			asm.LDR(X0, X3, 0) // load NaN-boxed value from array
+			asm.LSRimm(X4, X0, 48)
+			asm.MOVimm16(X5, NB_TagIntShr48)
+			asm.CMPreg(X4, X5)
 			typeGuardLabel := fmt.Sprintf("load_array_int_bool_%d", ref)
 			asm.BCond(CondEQ, typeGuardLabel)
-			asm.CMPimmW(X0, TypeBool)
+			asm.MOVimm16(X5, NB_TagBoolShr48)
+			asm.CMPreg(X4, X5)
 			asm.BCond(CondNE, "side_exit")
 			asm.Label(typeGuardLabel)
 
-			asm.LDR(X0, X3, OffsetData)
+			// Unbox int (works for both int and bool payloads)
+			EmitUnboxInt(asm, X0, X0)
 			if r, ok := regMap.IntReg(dstSlot); ok {
 				asm.MOVreg(r, X0)
 			} else {
-				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, TypeInt)
-				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+				EmitBoxInt(asm, X5, X0, X6)
+				asm.STR(X5, regRegs, dstSlot*ValueSize)
 			}
 			asm.Label(doneLabel)
 
@@ -861,13 +864,12 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.LDR(X3, X0, TableOffFloatArray) // floatArray.ptr
 			asm.LDRreg(X0, X3, keyReg)          // X0 = *(X3 + keyReg*8) = float64 bits
 
-			// Store result
+			// Store result (raw float64 bits from floatArray)
+			// With NaN-boxing, raw float64 bits ARE the NaN-boxed value
 			if fr, ok := regMap.FloatReg(dstSlot); ok {
 				asm.FMOVtoFP(fr, X0)
 			} else {
-				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, TypeFloat)
-				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+				asm.STR(X0, regRegs, dstSlot*ValueSize)
 			}
 			asm.B(doneLabel)
 
@@ -882,17 +884,16 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			EmitMulValueSize(asm, X4, keyReg, X5)
 			asm.ADDreg(X3, X3, X4)
 
-			asm.LDRB(X0, X3, OffsetTyp)
-			asm.CMPimmW(X0, TypeFloat)
-			asm.BCond(CondNE, "side_exit")
+			// NaN-boxing: load full value, check it's a float (not tagged)
+			asm.LDR(X0, X3, 0) // load NaN-boxed value
+			// Float check: bits 50-62 NOT all set
+			EmitIsTagged(asm, X0, X4)
+			asm.BCond(CondEQ, "side_exit") // tagged (not float) → side-exit
 
-			asm.LDR(X0, X3, OffsetData)
 			if fr, ok := regMap.FloatReg(dstSlot); ok {
-				asm.FMOVtoFP(fr, X0)
+				asm.FMOVtoFP(fr, X0) // raw bits → FP reg
 			} else {
-				asm.STR(X0, regRegs, dstSlot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, TypeFloat)
-				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+				asm.STR(X0, regRegs, dstSlot*ValueSize) // float IS the NaN-boxed form
 			}
 			asm.Label(doneLabel)
 
@@ -946,18 +947,17 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			}
 		}
 
-		// For the mixed fallback, we need the value spilled to memory
+		// For the mixed fallback, we need the value spilled to memory as NaN-boxed
 		if valSlot >= 0 {
 			if r, ok := regMap.IntReg(valSlot); ok {
-				asm.STR(r, regRegs, valSlot*ValueSize+OffsetData)
-				asm.MOVimm16(X5, TypeInt)
-				asm.STRB(X5, regRegs, valSlot*ValueSize+OffsetTyp)
-				asm.STR(XZR, regRegs, valSlot*ValueSize+OffsetPtrData)
+				EmitBoxInt(asm, X5, r, X6)
+				asm.STR(X5, regRegs, valSlot*ValueSize)
 			}
 		}
-		// Load *Table
+		// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)
 		if tableSlot >= 0 {
-			asm.LDR(X0, regRegs, tableSlot*ValueSize+OffsetPtrData)
+			asm.LDR(X0, regRegs, tableSlot*ValueSize)
+			EmitExtractPtr(asm, X0, X0, X1)
 		}
 		asm.CBZ(X0, "side_exit")
 		asm.LDR(X1, X0, TableOffMetatable)
@@ -1161,8 +1161,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			break
 		}
 
-		// Load *Table from register
-		asm.LDR(X0, regRegs, tableSlot*ValueSize+OffsetPtrData)
+		// Load *Table from register (NaN-boxing: extract pointer)
+		asm.LDR(X0, regRegs, tableSlot*ValueSize)
+		EmitExtractPtr(asm, X0, X0, X1)
 		asm.CBZ(X0, "side_exit") // nil table
 
 		// Guard: no metatable
@@ -1197,8 +1198,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			break
 		}
 
-		// Load *Table
-		asm.LDR(X0, regRegs, tableSlot*ValueSize+OffsetPtrData)
+		// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)
+		asm.LDR(X0, regRegs, tableSlot*ValueSize)
+		EmitExtractPtr(asm, X0, X0, X1)
 		asm.CBZ(X0, "side_exit")
 
 		// Guard: no metatable
