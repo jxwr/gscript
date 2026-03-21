@@ -26,30 +26,30 @@ go build -o gscript ./cmd/gscript/
 
 ## Performance
 
-Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated 2026-03-21 19:00 CST.
+Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03-21 19:42 CST**.
 
 ### GScript JIT vs LuaJIT
 
 | Benchmark | What it tests | GScript (best) | LuaJIT | Gap | Notes |
 |-----------|--------------|---------------|--------|-----|-------|
-| fn calls (10K) warm | function call + inlining overhead | **2.6us** | 2.6us | **parity** | |
-| fib(20) warm | recursive function calls | 27.0us | 25us | 1.1x | |
-| fib(35) | deep recursion, cold start | 0.037s | 0.032s | 1.2x | |
-| ackermann(3,4 x500) | deep mutual recursion | 0.011s | 0.008s | 1.4x | |
-| ackermann(3,4) warm | recursive calls, warm JIT | 21.5us | 12us | 1.8x | |
-| sieve(1M x3) | integer array read/write | **0.025s** | 0.011s | **2.3x** | NaN-boxing 3.2x speedup |
-| mandelbrot(1000) | float-heavy nested loops | 0.157s | 0.057s | 2.8x | trace JIT |
-| string_bench | string concat/format/compare | 0.051s | 0.010s | 5.1x | |
-| closure_bench | closure creation + calls | 0.071s | 0.012s | 5.9x | |
-| sort(50K x3) | quicksort, array swap | 0.207s | 0.016s | 13x | |
-| sum_primes(100K) | loop + modulo + branch | 0.027s | 0.002s | 14x | |
-| binary_trees | deep tree alloc + GC | 2.385s | 0.17s | 14x | |
-| fannkuch(9) | permutation + array reversal | 0.662s | 0.025s | 26x | trace timeout |
-| mutual_recursion | mutually recursive functions | 0.150s | 0.005s | 30x | |
-| matmul(300) | triple-nested loop, 2D float array | 1.16s | 0.029s | 40x | |
-| nbody(500K) | N-body simulation, field access | 2.47s | 0.043s | 57x | |
-| spectral_norm(500) | matrix math, function call in inner loop | 0.76s | 0.009s | 85x | |
-| method_dispatch(100K) | dynamic dispatch, field access | 0.093s | ~0.001s | ~93x | |
+| **fn calls (10K) warm** | function call + inlining overhead | **2.6us** | 2.6us | **parity** | |
+| fib(20) warm | recursive function calls | 27.0us | 27.4us | ~1.0x | |
+| fib(35) | deep recursion, cold start | 0.037s | 0.027s | 1.4x | |
+| ackermann(3,4) warm | recursive calls, warm JIT | 21.5us | 12.4us | 1.7x | |
+| ackermann(3,4 x500) | deep mutual recursion | 0.011s | 0.006s | 1.8x | |
+| **sieve(1M x3)** | integer array read/write | **0.025s** | 0.011s | **2.3x** | NaN-boxing 3.2x speedup |
+| mandelbrot(1000) | float-heavy nested loops | 0.155s | 0.058s | 2.7x | trace JIT |
+| string_bench | string concat/format/compare | 0.052s | 0.009s | 5.8x | |
+| closure_bench | closure creation + calls | 0.076s | 0.009s | 8.4x | |
+| sum_primes(100K) | loop + modulo + branch | 0.028s | 0.002s | 14x | |
+| binary_trees | deep tree alloc + GC | 2.475s | 0.17s | 15x | JIT crashes, VM only |
+| sort(50K x3) | quicksort, array swap | 0.207s | 0.010s | 21x | |
+| fannkuch(9) | permutation + array reversal | 0.658s | 0.019s | 35x | |
+| matmul(300) | triple-nested loop, 2D float array | 1.147s | 0.023s | 50x | |
+| mutual_recursion | mutually recursive functions | 0.244s | 0.004s | 61x | |
+| nbody(500K) | N-body simulation, field access | 2.518s | 0.037s | 68x | |
+| spectral_norm(500) | matrix math, function call in inner loop | 0.759s | 0.007s | 108x | |
+| method_dispatch(100K) | dynamic dispatch, field access | 0.126s | <0.001s | >100x | |
 
 ### GScript JIT vs Interpreter (warm)
 
@@ -66,13 +66,13 @@ Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated 2026-03-2
 **Method JIT (function-level compilation)**
 - Register pinning: hot variables mapped to ARM64 registers (X19-X24)
 - Function inlining: small callees inlined into caller's loop body
-- Tail call optimization: recursive tail calls → direct jump (no stack frame)
+- Tail call optimization: recursive tail calls -> direct jump (no stack frame)
 - BOLT-style cold code splitting: guard failures moved out of hot path
 - Native table operations: GETTABLE/SETTABLE/GETFIELD/SETFIELD compiled to ARM64
 - Native append: sequential table fill without Go function call overhead
 
 **Tracing JIT (loop-level compilation)**
-- SSA IR: BuildSSA → Optimize → ConstHoist → CSE → FuseMultiplyAdd → RegAlloc → Emit
+- SSA IR: BuildSSA -> Optimize -> ConstHoist -> CSE -> FuseMultiplyAdd -> RegAlloc -> Emit
 - Full nested loop recording: inner loops inlined into outer trace
 - Sub-trace calling: pre-compiled inner traces called via BLR
 - Float register allocation: linear-scan ref-level allocator for D4-D11
