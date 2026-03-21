@@ -8,6 +8,9 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
+// debugSSAStoreBack enables debug logging around trace execution.
+const debugSSAStoreBack = true
+
 // TraceContext bridges compiled trace code and Go.
 type TraceContext struct {
 	Regs           uintptr // input: pointer to vm.regs[base]
@@ -1495,7 +1498,18 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 	}
 
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
+
+	// DEBUG: dump R21 before trace
+	if debugSSAStoreBack {
+		fmt.Printf("[TRACE-EXEC] before: R21=0x%x\n", uint64(regs[base+21]))
+	}
+
 	callJIT(uintptr(ct.code.Ptr()), ctxPtr)
+
+	// DEBUG: dump R21 after trace
+	if debugSSAStoreBack {
+		fmt.Printf("[TRACE-EXEC] after:  R21=0x%x exitCode=%d exitPC=%d loopPC=%d\n", uint64(regs[base+21]), ctx.ExitCode, ctx.ExitPC, ct.loopPC)
+	}
 
 	switch ctx.ExitCode {
 	case 2:

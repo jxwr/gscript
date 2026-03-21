@@ -312,10 +312,57 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	return emitSSA(f, regMap, liveInfo)
 }
 
+// buildFloatRefSpill computes a map of written float slots NOT in Float.slotToReg
+// but with ref-level D register allocations. Maps each such slot to the D register
+// of the LAST ref-level writer in the loop body. This is needed for store-back:
+// ref-level allocated floats skip memory writes during the loop body, but the
+// store-back only iterates Float.slotToReg.
+func buildFloatRefSpill(f *SSAFunc, regMap *RegMap) map[int]FReg {
+	result := make(map[int]FReg)
+	if f == nil || regMap.FloatRef == nil {
+		return result
+	}
+	loopIdx := -1
+	for i, inst := range f.Insts {
+		if inst.Op == SSA_LOOP {
+			loopIdx = i
+			break
+		}
+	}
+	if loopIdx < 0 {
+		return result
+	}
+	// Find the last ref-level float writer for each slot in the loop body
+	for i := loopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		ref := SSARef(i)
+		dreg, hasRefReg := regMap.FloatRefReg(ref)
+		if !hasRefReg {
+			continue
+		}
+		slot := int(inst.Slot)
+		if slot < 0 {
+			continue
+		}
+		// Skip if already in slot-level map (handled by normal store-back)
+		if _, ok := regMap.FloatReg(slot); ok {
+			continue
+		}
+		// Skip if in int register map
+		if _, ok := regMap.IntReg(slot); ok {
+			continue
+		}
+		// Record (last writer wins)
+		result[slot] = dreg
+	}
+	return result
+}
+
 // emitSSA emits ARM64 machine code for an SSAFunc using pre-computed analysis results.
 func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, error) {
 	asm := NewAssembler()
 	sm := newSSASlotMapper(f)
+	floatRefSpill := buildFloatRefSpill(f, regMap)
 	// === Prologue ===
 	asm.STPpre(X29, X30, SP, -128)
 	asm.STP(X19, X20, SP, 16)
@@ -585,9 +632,8 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 			if r, ok := regMap.IntReg(s); ok {
 				off := s * ValueSize
 				if off <= 32760 {
-					asm.STR(r, regRegs, off+OffsetData)
-					asm.MOVimm16(X5, TypeInt)
-					asm.STRB(X5, regRegs, off+OffsetTyp)
+					EmitBoxInt(asm, X5, r, X6)
+					asm.STR(X5, regRegs, off)
 				}
 			}
 		}
@@ -604,13 +650,16 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 			if r, ok := regMap.IntReg(sideExitInfo.countSlot); ok {
 				// Count is in a register — add 1 directly
 				asm.ADDimm(r, r, 1)
-				// Store back to memory for consistency
-				asm.STR(r, regRegs, countOff+OffsetData)
+				// Store back to memory as NaN-boxed int
+				EmitBoxInt(asm, X5, r, X6)
+				asm.STR(X5, regRegs, countOff)
 			} else {
-				// Count is in memory — load, increment, store
-				asm.LDR(X0, regRegs, countOff+OffsetData)
+				// Count is in memory (NaN-boxed) — load, unbox, increment, rebox, store
+				asm.LDR(X0, regRegs, countOff)
+				EmitUnboxInt(asm, X0, X0)
 				asm.ADDimm(X0, X0, 1)
-				asm.STR(X0, regRegs, countOff+OffsetData)
+				EmitBoxInt(asm, X5, X0, X6)
+				asm.STR(X5, regRegs, countOff)
 			}
 			asm.B("skip_count")
 		}
@@ -618,7 +667,7 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 
 	// --- Side exit (guard failure during loop body) ---
 	asm.Label("side_exit")
-	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, liveInfo)
+	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, floatRefSpill)
 	asm.STR(X9, X19, 16)  // ctx.ExitPC = X9
 	asm.LoadImm64(X0, 1)  // ExitCode = 1
 	asm.B("epilogue")
@@ -633,7 +682,7 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 
 	// --- Loop done handler (normal loop completion) ---
 	asm.Label("loop_done_handler")
-	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, liveInfo)
+	emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, floatRefSpill)
 	asm.LoadImm64(X0, 0)  // ExitCode = 0
 
 	// === Epilogue ===
@@ -985,7 +1034,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			if r, ok := regMap.IntReg(valSlot); ok {
 				asm.STRreg(r, X3, keyReg) // *(X3 + keyReg*8) = r
 			} else {
-				asm.LDR(X4, regRegs, valSlot*ValueSize+OffsetData)
+				// NaN-boxed in memory: load and unbox to raw int
+				asm.LDR(X4, regRegs, valSlot*ValueSize)
+				EmitUnboxInt(asm, X4, X4)
 				asm.STRreg(X4, X3, keyReg)
 			}
 			asm.B(doneLabel)
@@ -1007,7 +1058,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			if r, ok := regMap.IntReg(valSlot); ok {
 				asm.ADDimm(X4, r, 1) // sentinel = data + 1
 			} else {
-				asm.LDR(X4, regRegs, valSlot*ValueSize+OffsetData)
+				// NaN-boxed in memory: load and unbox to raw int
+				asm.LDR(X4, regRegs, valSlot*ValueSize)
+				EmitUnboxInt(asm, X4, X4)
 				asm.ADDimm(X4, X4, 1)
 			}
 			asm.STRBreg(X4, X3, keyReg)
@@ -1015,7 +1068,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.STRB(X4, X0, TableOffKeysDirty)
 			asm.B(doneLabel)
 
-			// Mixed fallback
+			// Mixed fallback: copy full NaN-boxed value from VM regs to array
 			asm.Label(mixedLabel)
 			asm.CMPimm(keyReg, 0)
 			asm.BCond(CondLT, "side_exit")
@@ -1098,8 +1151,11 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			// Store boolArray[key] = data + 1 (sentinel encoding)
 			asm.LDR(X3, X0, TableOffBoolArray) // boolArray.ptr
 			if valSlot >= 0 {
-				asm.LDR(X4, regRegs, valSlot*ValueSize+OffsetData)
-				asm.ADDimm(X4, X4, 1) // 0→1 (false), 1→2 (true)
+				// NaN-boxed bool: extract payload (bottom bit) then sentinel-encode
+				asm.LDR(X4, regRegs, valSlot*ValueSize)
+				asm.LoadImm64(X5, 1)
+				asm.ANDreg(X4, X4, X5) // extract bool payload (0 or 1)
+				asm.ADDimm(X4, X4, 1)  // 0→1 (false), 1→2 (true)
 			} else {
 				asm.MOVimm16(X4, 1) // default: false sentinel
 			}
@@ -1375,22 +1431,21 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				asm.LoadImm64(X0, inst.AuxInt)
 				asm.FMOVtoFP(dreg, X0)
 			} else {
-				// Not allocated — write to memory
+				// Not allocated — write float bits to memory.
+				// With NaN-boxing, raw float64 bits ARE the NaN-boxed value.
 				asm.LoadImm64(X0, inst.AuxInt)
 				asm.FMOVtoFP(D0, X0)
-				asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+				asm.FSTRd(D0, regRegs, slot*ValueSize)
 			}
 		}
 
 	case SSA_CONST_BOOL:
 		slot := sm.getSlotForRef(ref)
 		if slot >= 0 {
+			// NaN-boxing: box the bool value (0=false, 1=true)
 			asm.LoadImm64(X0, inst.AuxInt)
-			asm.STR(X0, regRegs, slot*ValueSize+OffsetData)
-			asm.MOVimm16(X0, uint16(runtime.TypeBool))
-			asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+			EmitBoxBool(asm, X5, X0, X6)
+			asm.STR(X5, regRegs, slot*ValueSize)
 		}
 
 	case SSA_LT_FLOAT:
@@ -1435,11 +1490,10 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			if dstD != srcD {
 				asm.FMOVd(dstD, srcD)
 			}
-			// If destination is not allocated, write to memory
+			// If destination is not allocated, write to memory.
+			// With NaN-boxing, raw float64 bits ARE the NaN-boxed value.
 			if _, ok := regMap.FloatReg(slot); !ok && slot >= 0 {
-				asm.FSTRd(srcD, regRegs, slot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+				asm.FSTRd(srcD, regRegs, slot*ValueSize)
 			}
 		} else if inst.Type == SSATypeInt || inst.Type == SSATypeBool {
 			// Integer/Bool move: copy data field, write TypeInt tag
@@ -1478,9 +1532,8 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				if dstDreg, ok := regMap.FloatReg(dstSlot); ok {
 					asm.FMOVd(dstDreg, D1)
 				} else {
-					asm.FSTRd(D1, regRegs, dstSlot*ValueSize+OffsetData)
-					asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-					asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+					// With NaN-boxing, raw float64 bits ARE the NaN-boxed value.
+					asm.FSTRd(D1, regRegs, dstSlot*ValueSize)
 				}
 			}
 		case IntrinsicBxor:
@@ -1488,18 +1541,16 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
 			asm.EORreg(X2, arg1Reg, arg2Reg)
 			if dstSlot >= 0 {
-				asm.STR(X2, regRegs, dstSlot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, TypeInt)
-				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+				EmitBoxInt(asm, X5, X2, X6)
+				asm.STR(X5, regRegs, dstSlot*ValueSize)
 			}
 		case IntrinsicBand:
 			arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
 			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
 			asm.ANDreg(X2, arg1Reg, arg2Reg)
 			if dstSlot >= 0 {
-				asm.STR(X2, regRegs, dstSlot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, TypeInt)
-				asm.STRB(X0, regRegs, dstSlot*ValueSize+OffsetTyp)
+				EmitBoxInt(asm, X5, X2, X6)
+				asm.STR(X5, regRegs, dstSlot*ValueSize)
 			}
 		default:
 			// Unknown intrinsic → side-exit
@@ -1518,15 +1569,15 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		// Step 1: Store all allocated int/float registers back to memory.
 		// The inner trace reads/writes directly to the VM register array.
 		for slot, armReg := range regMap.Int.slotToReg {
-			off := slot*ValueSize + OffsetData
+			off := slot * ValueSize
 			if off <= 32760 {
-				asm.STR(armReg, regRegs, off)
-				asm.MOVimm16(X0, TypeInt)
-				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+				EmitBoxInt(asm, X5, armReg, X6)
+				asm.STR(X5, regRegs, off)
 			}
 		}
 		// Spill float D registers: use ref-level map for precise spilling,
 		// then slot-level as fallback.
+		// With NaN-boxing, raw float64 bits ARE the NaN-boxed value.
 		spilledFloatSlots := make(map[int]bool)
 		if regMap.FloatRef != nil {
 			for fref, dreg := range regMap.FloatRef.refToReg {
@@ -1536,11 +1587,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 				finst := &f.Insts[fref]
 				slot := int(finst.Slot)
 				if slot >= 0 && !spilledFloatSlots[slot] {
-					off := slot*ValueSize + OffsetData
+					off := slot * ValueSize
 					if off <= 32760 {
 						asm.FSTRd(dreg, regRegs, off)
-						asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-						asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
 						spilledFloatSlots[slot] = true
 					}
 				}
@@ -1550,11 +1599,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			if spilledFloatSlots[slot] {
 				continue
 			}
-			off := slot*ValueSize + OffsetData
+			off := slot * ValueSize
 			if off <= 32760 {
 				asm.FSTRd(dreg, regRegs, off)
-				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
 			}
 		}
 
@@ -1593,14 +1640,16 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 		// Step 7: Reload all allocated registers from memory.
 		// The inner trace may have modified any VM slot.
+		// Reload NaN-boxed values and unbox.
 		for slot, armReg := range regMap.Int.slotToReg {
-			off := slot*ValueSize + OffsetData
+			off := slot * ValueSize
 			if off <= 32760 {
 				asm.LDR(armReg, regRegs, off)
+				EmitUnboxInt(asm, armReg, armReg)
 			}
 		}
 		for slot, dreg := range regMap.Float.slotToReg {
-			off := slot*ValueSize + OffsetData
+			off := slot * ValueSize
 			if off <= 32760 {
 				asm.FLDRd(dreg, regRegs, off)
 			}
@@ -1704,7 +1753,7 @@ func resolveSSARefSlot(asm *Assembler, f *SSAFunc, ref SSARef, regMap *RegMap, s
 // emitSlotStoreBack writes modified allocated slot values back to memory.
 // Only slots that were actually written by the loop body are stored back.
 // Writing unmodified slots (e.g., table references) would corrupt their type.
-func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writtenSlots map[int]bool, liveInfo ...*LiveInfo) {
+func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writtenSlots map[int]bool, floatRefSpill map[int]FReg) {
 	// Integer register writeback: box raw int → NaN-boxed IntValue
 	for slot, armReg := range regMap.Int.slotToReg {
 		if !writtenSlots[slot] {
@@ -1735,9 +1784,19 @@ func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writte
 			asm.FSTRd(dreg, regRegs, off)
 		}
 	}
-	// Unallocated float slots: with NaN-boxing, float values stored via
-	// FSTRd are already correct NaN-boxed values. No separate type tag needed.
-	// (The old code wrote a type tag byte; with NaN-boxing, this is unnecessary.)
+	// Ref-level float spill: written float slots NOT in Float.slotToReg
+	// but allocated to ref-level D registers. These slots need explicit
+	// store-back because the loop body may skip memory writes when a
+	// ref-level D register is available.
+	for slot, dreg := range floatRefSpill {
+		if !writtenSlots[slot] {
+			continue
+		}
+		off := slot * ValueSize
+		if off <= 32760 {
+			asm.FSTRd(dreg, regRegs, off)
+		}
+	}
 }
 
 // isForLoopIncrement checks if an SSA instruction is the FORLOOP's idx += step.
@@ -2134,7 +2193,7 @@ func storeFloatResultRef(asm *Assembler, regMap *RegMap, ref SSARef, slot int, s
 		if dreg != src {
 			asm.FMOVd(dreg, src)
 		}
-		return // stays in register, written back at exit
+		return // stays in register, written back by floatRefSpill at exit
 	}
 	// Slot-level fallback
 	if dreg, ok := regMap.FloatReg(slot); ok {
@@ -2144,7 +2203,7 @@ func storeFloatResultRef(asm *Assembler, regMap *RegMap, ref SSARef, slot int, s
 		return
 	}
 	// Not allocated — write data to memory
-	asm.FSTRd(src, regRegs, slot*ValueSize+OffsetData)
+	asm.FSTRd(src, regRegs, slot*ValueSize)
 }
 
 // emitSSAInstSlotFwd is the forwarding-aware version of emitSSAInstSlot.
@@ -2247,10 +2306,11 @@ func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, r
 			if dstD != srcD {
 				asm.FMOVd(dstD, srcD)
 			}
-			// If neither ref-level nor slot-level allocated, write to memory
+			// If neither ref-level nor slot-level allocated, write to memory.
+			// Slots with ref-level allocation are handled by floatRefSpill store-back.
 			if _, refOk := regMap.FloatRefReg(ref); !refOk {
 				if _, slotOk := regMap.FloatReg(slot); !slotOk && slot >= 0 {
-					asm.FSTRd(srcD, regRegs, slot*ValueSize+OffsetData)
+					asm.FSTRd(srcD, regRegs, slot*ValueSize)
 				}
 			}
 		} else {
@@ -2268,11 +2328,10 @@ func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, r
 				asm.LoadImm64(X0, inst.AuxInt)
 				asm.FMOVtoFP(dreg, X0)
 			} else {
+				// With NaN-boxing, raw float64 bits ARE the NaN-boxed value.
 				asm.LoadImm64(X0, inst.AuxInt)
 				asm.FMOVtoFP(D0, X0)
-				asm.FSTRd(D0, regRegs, slot*ValueSize+OffsetData)
-				asm.MOVimm16(X0, uint16(runtime.TypeFloat))
-				asm.STRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+				asm.FSTRd(D0, regRegs, slot*ValueSize)
 			}
 		}
 
@@ -2457,26 +2516,25 @@ func isFloatGuard(op SSAOp) bool {
 func emitGuardTruthyWithContinuation(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper, target string) {
 	slot := int(inst.Slot)
 	asm.LoadImm64(X9, int64(inst.PC))
-	asm.LDRB(X0, regRegs, slot*ValueSize+OffsetTyp)
+	// NaN-boxing: load full 8-byte value and compare against NaN-boxed constants
+	asm.LDR(X0, regRegs, slot*ValueSize)
 	if inst.AuxInt == 0 {
-		// Expect truthy: exit if nil or bool(false)
-		asm.CMPimmW(X0, TypeNil)
+		// Expect truthy: branch to target if nil or false
+		asm.LoadImm64(X1, nb_i64(NB_ValNil))
+		asm.CMPreg(X0, X1)
 		asm.BCond(CondEQ, target) // nil → falsy → continuation
-		asm.CMPimmW(X0, TypeBool)
-		doneLabel := fmt.Sprintf("guard_truthy_cont_%d", ref)
-		asm.BCond(CondNE, doneLabel) // not nil, not bool → truthy → OK
-		asm.LDR(X1, regRegs, slot*ValueSize+OffsetData)
-		asm.CBZ(X1, target) // bool(false) → falsy → continuation
-		asm.Label(doneLabel)
+		asm.LoadImm64(X1, nb_i64(NB_ValFalse))
+		asm.CMPreg(X0, X1)
+		asm.BCond(CondEQ, target) // false → falsy → continuation
 	} else {
-		// Expect falsy: exit if truthy (not nil and not bool(false))
-		asm.CMPimmW(X0, TypeNil)
+		// Expect falsy: branch to target if truthy (not nil and not false)
 		doneLabel := fmt.Sprintf("guard_falsy_cont_%d", ref)
+		asm.LoadImm64(X1, nb_i64(NB_ValNil))
+		asm.CMPreg(X0, X1)
 		asm.BCond(CondEQ, doneLabel) // nil → falsy → OK
-		asm.CMPimmW(X0, TypeBool)
-		asm.BCond(CondNE, target) // not nil, not bool → truthy → continuation
-		asm.LDR(X1, regRegs, slot*ValueSize+OffsetData)
-		asm.CBNZ(X1, target) // bool(true) → truthy → continuation
+		asm.LoadImm64(X1, nb_i64(NB_ValFalse))
+		asm.CMPreg(X0, X1)
+		asm.BCond(CondNE, target) // not nil, not false → truthy → continuation
 		asm.Label(doneLabel)
 	}
 }

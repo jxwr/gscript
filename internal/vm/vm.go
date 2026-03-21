@@ -858,7 +858,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			} else {
 				lt, ok := (*bp).LessThan(*cp)
 				if !ok {
-					return nil, fmt.Errorf("attempt to compare %s with %s", bp.TypeName(), cp.TypeName())
+					return nil, fmt.Errorf("attempt to compare %s with %s at pc=%d B=%d C=%d bp=0x%x cp=0x%x", bp.TypeName(), cp.TypeName(), frame.pc-1, bidx, cidx, uint64(*bp), uint64(*cp))
 				}
 				if lt != (a != 0) {
 					frame.pc++
