@@ -485,11 +485,10 @@ func emitTrArithInt(asm *Assembler, ir *TraceIR, op string) {
 		asm.MUL(X0, X1, X2)
 	}
 
-	// Store result: typ=TypeInt, data=result
+	// Store result as NaN-boxed IntValue
 	dst := ir.A * ValueSize
-	asm.STR(X0, regRegs, dst+OffsetData)
-	asm.MOVimm16(X0, TypeInt)
-	asm.STRB(X0, regRegs, dst)
+	EmitBoxInt(asm, X1, X0, X2)
+	asm.STR(X1, regRegs, dst)
 }
 
 func emitTrForPrep(asm *Assembler, ir *TraceIR) {
@@ -792,16 +791,13 @@ func emitTrNot(asm *Assembler, ir *TraceIR, idx int) {
 	asm.CBNZ(X1, falseLabel) // bool(true) → truthy → false
 
 	asm.Label(trueLabel)
-	asm.MOVimm16(X0, uint16(runtime.TypeBool))
-	asm.STRB(X0, regRegs, dstOff)
-	asm.LoadImm64(X0, 1)
-	asm.STR(X0, regRegs, dstOff+OffsetData)
+	asm.LoadImm64(X0, nb_i64(NB_ValTrue))
+	asm.STR(X0, regRegs, dstOff)
 	asm.B(endLabel)
 
 	asm.Label(falseLabel)
-	asm.MOVimm16(X0, uint16(runtime.TypeBool))
-	asm.STRB(X0, regRegs, dstOff)
-	asm.STR(XZR, regRegs, dstOff+OffsetData)
+	asm.LoadImm64(X0, nb_i64(NB_ValFalse))
+	asm.STR(X0, regRegs, dstOff)
 
 	asm.Label(endLabel)
 }
@@ -1151,30 +1147,33 @@ func emitTrIntrinsic(asm *Assembler, ir *TraceIR) {
 	switch ir.Intrinsic {
 	case IntrinsicBxor:
 		// bit32.bxor(a, b) → R(A) = R(A+1) XOR R(A+2)
-		asm.LDR(X0, regRegs, arg1*ValueSize+OffsetData)
-		asm.LDR(X1, regRegs, arg2*ValueSize+OffsetData)
+		asm.LDR(X0, regRegs, arg1*ValueSize)
+		EmitUnboxInt(asm, X0, X0)
+		asm.LDR(X1, regRegs, arg2*ValueSize)
+		EmitUnboxInt(asm, X1, X1)
 		asm.EORreg(X0, X0, X1)
-		asm.STR(X0, regRegs, dstOff+OffsetData)
-		asm.MOVimm16(X0, TypeInt)
-		asm.STRB(X0, regRegs, dstOff)
+		EmitBoxInt(asm, X1, X0, X2)
+		asm.STR(X1, regRegs, dstOff)
 
 	case IntrinsicBand:
 		// bit32.band(a, b) → R(A) = R(A+1) AND R(A+2)
-		asm.LDR(X0, regRegs, arg1*ValueSize+OffsetData)
-		asm.LDR(X1, regRegs, arg2*ValueSize+OffsetData)
+		asm.LDR(X0, regRegs, arg1*ValueSize)
+		EmitUnboxInt(asm, X0, X0)
+		asm.LDR(X1, regRegs, arg2*ValueSize)
+		EmitUnboxInt(asm, X1, X1)
 		asm.ANDreg(X0, X0, X1)
-		asm.STR(X0, regRegs, dstOff+OffsetData)
-		asm.MOVimm16(X0, TypeInt)
-		asm.STRB(X0, regRegs, dstOff)
+		EmitBoxInt(asm, X1, X0, X2)
+		asm.STR(X1, regRegs, dstOff)
 
 	case IntrinsicBor:
 		// bit32.bor(a, b) → R(A) = R(A+1) OR R(A+2)
-		asm.LDR(X0, regRegs, arg1*ValueSize+OffsetData)
-		asm.LDR(X1, regRegs, arg2*ValueSize+OffsetData)
+		asm.LDR(X0, regRegs, arg1*ValueSize)
+		EmitUnboxInt(asm, X0, X0)
+		asm.LDR(X1, regRegs, arg2*ValueSize)
+		EmitUnboxInt(asm, X1, X1)
 		asm.ORRreg(X0, X0, X1)
-		asm.STR(X0, regRegs, dstOff+OffsetData)
-		asm.MOVimm16(X0, TypeInt)
-		asm.STRB(X0, regRegs, dstOff)
+		EmitBoxInt(asm, X1, X0, X2)
+		asm.STR(X1, regRegs, dstOff)
 
 	default:
 		// Unknown intrinsic — side exit
@@ -1228,9 +1227,8 @@ func emitTrSelfCall(asm *Assembler, ir *TraceIR, idx int) {
 
 	// Store result to R(fnReg) in caller's register window
 	// Result type is TypeInt (most common for recursive numeric functions)
-	asm.STR(X0, regRegs, fnReg*ValueSize+OffsetData)
-	asm.MOVimm16(X0, TypeInt)
-	asm.STRB(X0, regRegs, fnReg*ValueSize)
+	EmitBoxInt(asm, X1, X0, X2)
+	asm.STR(X1, regRegs, fnReg*ValueSize)
 
 	// If multiple results expected, fill remaining with nil
 	if nResults > 2 {
@@ -1294,9 +1292,8 @@ func emitTrMod(asm *Assembler, ir *TraceIR, idx int) {
 
 	asm.Label(doneLabel)
 	dst := ir.A * ValueSize
-	asm.STR(X0, regRegs, dst+OffsetData)
-	asm.MOVimm16(X0, TypeInt)
-	asm.STRB(X0, regRegs, dst)
+	EmitBoxInt(asm, X1, X0, X2)
+	asm.STR(X1, regRegs, dst)
 }
 
 // emitTrDiv compiles OP_DIV R(A) = RK(B) / RK(C).
@@ -1315,13 +1312,13 @@ func emitTrUNM(asm *Assembler, ir *TraceIR) {
 	asm.CMPimmW(X0, TypeInt)
 	asm.BCond(CondNE, "side_exit")
 
-	asm.LDR(X1, regRegs, bOff+OffsetData)
+	asm.LDR(X1, regRegs, bOff)
+	EmitUnboxInt(asm, X1, X1)
 	asm.NEG(X0, X1) // X0 = -X1
 
 	dst := ir.A * ValueSize
-	asm.STR(X0, regRegs, dst+OffsetData)
-	asm.MOVimm16(X0, TypeInt)
-	asm.STRB(X0, regRegs, dst)
+	EmitBoxInt(asm, X1, X0, X2)
+	asm.STR(X1, regRegs, dst)
 }
 
 // emitTrLen compiles OP_LEN R(A) = #R(B).
@@ -1343,9 +1340,8 @@ func emitTrLen(asm *Assembler, ir *TraceIR) {
 	asm.SUBimm(X1, X1, 1)            // length = len - 1
 
 	dst := ir.A * ValueSize
-	asm.STR(X1, regRegs, dst+OffsetData)
-	asm.MOVimm16(X0, TypeInt)
-	asm.STRB(X0, regRegs, dst)
+	EmitBoxInt(asm, X2, X1, X3)
+	asm.STR(X2, regRegs, dst)
 }
 
 // emitTrGetGlobal compiles OP_GETGLOBAL R(A) = globals[Constants[Bx]].
