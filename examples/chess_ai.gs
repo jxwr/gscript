@@ -146,7 +146,7 @@ func computeFullHash() {
 }
 
 // === LAZY SMP CONFIGURATION ===
-NUM_WORKERS := 6
+NUM_WORKERS := 1
 
 func newSearchCtx() {
     ctx := {}
@@ -1549,7 +1549,7 @@ func negamax(depth, alpha, beta, side, allowNull, ctx) {
     return alpha
 }
 
-// === GET AI MOVE (Lazy SMP Parallel Search) ===
+// === GET AI MOVE (Single-threaded Iterative Deepening) ===
 func getAIMove() {
     startTime := time.now()
     killerMoves = {}
@@ -1559,124 +1559,83 @@ func getAIMove() {
     // Recompute hash from current position (in case doMove didn't track it)
     currentHash = computeFullHash()
 
-    // Launch parallel workers
-    resultCh := make(chan, NUM_WORKERS)
+    ctx := newSearchCtx()
     searchStop := {stopped: false, maxDepth: 0}
+    ctx.searchStop = searchStop
 
-    for w := 0; w < NUM_WORKERS; w++ {
-        ctx := newSearchCtx()
-        ctx.searchStop = searchStop
-        startDepth := 1 + (w % 2)
-        go func() {
-            bestMove := nil
-            bestDepth := 0
-            bestScore := -999999
-
-            for depth := startDepth; depth <= 12; depth++ {
-                if searchStop.stopped { break }
-
-                alpha := -999999
-                beta := 999999
-                localBest := nil
-                depthComplete := true
-
-                allMoves := getAllMovesForSide("black", ctx)
-                allMoves = orderMoves(allMoves, depth + 1, ctx)
-                if #allMoves == 0 { break }
-
-                for i := 1; i <= #allMoves; i++ {
-                    if searchStop.stopped { depthComplete = false; break }
-
-                    m := allMoves[i]
-                    p := m.piece
-                    tc := m.col
-                    tr := m.row
-                    fc := p.col
-                    fr := p.row
-
-                    captured := ctx.board[tc*100+tr]
-                    origCol := p.col
-                    origRow := p.row
-
-                    h := ctx.currentHash
-                    ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, "black", fc, fr))
-                    ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, "black", tc, tr))
-                    if captured != nil {
-                        ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(captured.type, captured.side, tc, tr))
-                    }
-                    ctx.currentHash = bit32.bxor(ctx.currentHash, zobristBlackToMove)
-
-                    ctx.board[fc*100+fr] = nil
-                    ctx.board[tc*100+tr] = p
-                    p.col = tc
-                    p.row = tr
-                    if captured != nil { captured.alive = false }
-
-                    score := -negamax(depth - 1, -beta, -alpha, "red", true, ctx)
-
-                    ctx.board[tc*100+tr] = nil
-                    p.col = origCol
-                    p.row = origRow
-                    ctx.board[fc*100+fr] = p
-                    if captured != nil {
-                        ctx.board[tc*100+tr] = captured
-                        captured.col = tc
-                        captured.row = tr
-                        captured.alive = true
-                    }
-                    ctx.currentHash = h
-
-                    if score > alpha {
-                        alpha = score
-                        localBest = {fromCol: fc, fromRow: fr, col: tc, row: tr, ptype: p.type, pside: p.side}
-                    }
-                }
-
-                // Only use results from fully completed depth iterations
-                if depthComplete && localBest != nil {
-                    bestMove = localBest
-                    bestDepth = depth
-                    bestScore = alpha
-                    // Report progress to parent
-                    if depth > searchStop.maxDepth {
-                        searchStop.maxDepth = depth
-                    }
-                }
-
-                if alpha >= 99000 { break }
-            }
-
-            resultCh <- {move: bestMove, depth: bestDepth, score: bestScore}
-        }()
-    }
-
-    // Dynamic stop: wait until (time >= 3s AND depth >= 5) OR time >= 15s
-    for {
-        time.sleep(0.1)
-        elapsed := time.since(startTime)
-        if elapsed >= 3.0 && searchStop.maxDepth >= 5 {
-            break
-        }
-        if elapsed >= 15.0 {
-            break
-        }
-    }
-    searchStop.stopped = true
-
-    // Collect results from all workers — prefer deepest complete search
     bestMove := nil
     bestDepth := 0
     bestScore := -999999
-    for w := 0; w < NUM_WORKERS; w++ {
-        result := <-resultCh
-        if result.move != nil {
-            // Prefer deeper search; at same depth prefer higher score
-            if result.depth > bestDepth || (result.depth == bestDepth && result.score > bestScore) {
-                bestDepth = result.depth
-                bestMove = result.move
-                bestScore = result.score
+
+    for depth := 1; depth <= 12; depth++ {
+        alpha := -999999
+        beta := 999999
+        localBest := nil
+
+        allMoves := getAllMovesForSide("black", ctx)
+        allMoves = orderMoves(allMoves, depth + 1, ctx)
+        if #allMoves == 0 { break }
+
+        for i := 1; i <= #allMoves; i++ {
+            m := allMoves[i]
+            p := m.piece
+            tc := m.col
+            tr := m.row
+            fc := p.col
+            fr := p.row
+
+            captured := ctx.board[tc*100+tr]
+            origCol := p.col
+            origRow := p.row
+
+            h := ctx.currentHash
+            ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, "black", fc, fr))
+            ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(p.type, "black", tc, tr))
+            if captured != nil {
+                ctx.currentHash = bit32.bxor(ctx.currentHash, zobristPiece(captured.type, captured.side, tc, tr))
+            }
+            ctx.currentHash = bit32.bxor(ctx.currentHash, zobristBlackToMove)
+
+            ctx.board[fc*100+fr] = nil
+            ctx.board[tc*100+tr] = p
+            p.col = tc
+            p.row = tr
+            if captured != nil { captured.alive = false }
+
+            score := -negamax(depth - 1, -beta, -alpha, "red", true, ctx)
+
+            ctx.board[tc*100+tr] = nil
+            p.col = origCol
+            p.row = origRow
+            ctx.board[fc*100+fr] = p
+            if captured != nil {
+                ctx.board[tc*100+tr] = captured
+                captured.col = tc
+                captured.row = tr
+                captured.alive = true
+            }
+            ctx.currentHash = h
+
+            if score > alpha {
+                alpha = score
+                localBest = {fromCol: fc, fromRow: fr, col: tc, row: tr, ptype: p.type, pside: p.side}
             }
         }
+
+        // Save results from completed depth iteration
+        if localBest != nil {
+            bestMove = localBest
+            bestDepth = depth
+            bestScore = alpha
+            searchStop.maxDepth = depth
+        }
+
+        if alpha >= 99000 { break }
+
+        // Time check after each depth: stop if >= 3s and depth >= 5, or >= 15s
+        elapsed := time.since(startTime)
+        if elapsed >= 3.0 && depth >= 5 { break }
+        if elapsed >= 15.0 { break }
     }
 
     lastAIDepth = bestDepth
@@ -2401,17 +2360,6 @@ for i := 1; i <= #fontPaths; i++ {
 initBoard()
 
 for !rl.windowShouldClose() {
-    // === AI TURN (goroutine-based for non-blocking UI) ===
-    if aiThinking && aiDone {
-        result := aiResult
-        aiThinking = false
-        aiDone = false
-        aiResult = nil
-        if result != nil {
-            doMove(result.piece, result.col, result.row)
-        }
-    }
-
     frameCount = frameCount + 1
 
     // === ANIMATION UPDATE ===
@@ -2422,14 +2370,14 @@ for !rl.windowShouldClose() {
             // After animation ends, trigger AI if pending
             if animPendingAI {
                 animPendingAI = false
-                snapshotBoard()
                 aiThinking = true
                 aiStartTime = time.now()
-                go func() {
-                    move := getAIMove()
-                    aiResult = move
-                    aiDone = true
-                }()
+                // Synchronous AI search (UI freezes briefly)
+                result := getAIMove()
+                aiThinking = false
+                if result != nil {
+                    doMove(result.piece, result.col, result.row)
+                }
             }
         }
     }
