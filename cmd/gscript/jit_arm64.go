@@ -11,9 +11,6 @@ func cliEnableJIT(bvm *bytecodevm.VM) {
 	// Method JIT: function-level compilation
 	engine := jit.NewEngine()
 	engine.SetThreshold(1)
-	engine.SetGlobals(bvm.Globals())
-	engine.SetCallHandler(bvm.CallValue)
-	engine.SetGlobalsAccessor(bvm)
 	bvm.SetJIT(engine)
 	// Set JIT factory so goroutine child VMs also get JIT
 	bvm.SetJITFactory(func(child *bytecodevm.VM) bytecodevm.JITEngine {
