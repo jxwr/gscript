@@ -179,9 +179,9 @@ Run the full suite before AND after every optimization. Record numbers in the bl
 Full audit document: `docs/architecture_audit.md`
 Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
-## Current Status (2026-03-22, benchmark run #6, post-S2.1+S2.2)
+## Current Status (2026-03-22, benchmark run #7, post-S2.1+S2.2+SSA_CALL)
 
-S2.1 (box/unbox optimization) and S2.2 (custom heap) complete. NaN-boxing regressions fully recovered. FibRecursive and FunctionCalls now match or beat LuaJIT.
+S2.1 (box/unbox), S2.2 (custom heap), and SSA_CALL (trace call-exit) complete. mandelbrot jumps from 25x to 3.0x gap. FibRecursive beats LuaJIT.
 
 ### vs LuaJIT (warm benchmarks)
 | Benchmark | GScript JIT | LuaJIT | Result |
@@ -191,14 +191,14 @@ S2.1 (box/unbox optimization) and S2.2 (custom heap) complete. NaN-boxing regres
 | ackermann(3,4) | 22.0us | 12.0us | 1.8x gap |
 
 ### Full benchmark suite (15 benchmarks + warm)
-| Benchmark | VM | JIT | Best | LuaJIT | vs LuaJIT |
-|-----------|-----|-----|------|--------|-----------|
-| fib(35) | 1.081s | **0.037s** | 0.037s | 0.032s | 1.2x gap |
-| sieve(1M x3) | 0.265s | **0.023s** | 0.023s | 0.010s | 2.3x gap |
-| mandelbrot(1000) | 1.328s | **1.361s** | 1.328s | 0.052s | 25.5x gap |
-| ackermann(3,4 x500) | 0.184s | **0.011s** | 0.011s | 0.006s | 1.8x gap |
-| matmul(300) | **1.070s** | 1.036s | 1.036s | 0.022s | 47.1x gap |
-| spectral_norm(500) | **0.808s** | 0.744s | 0.744s | 0.007s | 106x gap |
+| Benchmark | VM | JIT | Trace | Best | LuaJIT | vs LuaJIT |
+|-----------|-----|-----|-------|------|--------|-----------|
+| fib(35) | 1.081s | **0.037s** | 0.036s | 0.036s | 0.032s | 1.1x gap |
+| sieve(1M x3) | 0.265s | **0.023s** | 0.024s | 0.023s | 0.010s | 2.3x gap |
+| mandelbrot(1000) | 1.328s | 1.361s | **0.154s** | 0.154s | 0.052s | **3.0x gap** |
+| ackermann(3,4 x500) | 0.184s | **0.011s** | 0.012s | 0.011s | 0.006s | 1.8x gap |
+| matmul(300) | **1.070s** | 1.036s | 1.369s | 1.036s | 0.022s | 47.1x gap |
+| spectral_norm(500) | 0.877s | **0.742s** | 0.767s | 0.742s | 0.007s | 106x gap |
 | nbody(500K) | **2.607s** | 2.394s | 2.394s | 0.033s | 72.5x gap |
 | fannkuch(9) | **0.619s** | 0.649s | 0.619s | 0.019s | 32.6x gap |
 | sort(50K x3) | **0.194s** | 0.197s | 0.194s | 0.010s | 19.4x gap |
