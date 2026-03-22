@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
+  <a href="13-three-bugs-one-evening">Three Bugs, One Evening</a>
+  <p>A GC safe-point race, a JIT stack corruption, and a goroutine that couldn't talk back. Three bugs that blocked the Chinese Chess demo and the binary_trees benchmark, fixed in one session.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
   <a href="12-the-box-unbox-toll">The Box/Unbox Toll</a>
   <p>NaN-boxing regressed compute benchmarks by 16-48%. Seven optimizations across three JIT tiers and the VM eliminate the overhead: pinned tag register, UBFX pointer extraction, trace FORLOOP register pinning, branchless sign extension. FibRecursive recovers from 47.9us to 23.9us.</p>
 </div>
@@ -204,7 +211,7 @@
   <tr><td>method_dispatch</td><td><b>0.093s</b></td><td>0.123s</td><td>0.127s</td><td>0.093s</td><td>0.000s</td></tr>
   <tr><td>closure_bench</td><td><b>0.071s</b></td><td>0.073s</td><td>0.075s</td><td>0.071s</td><td>0.012s</td></tr>
   <tr><td>string_bench</td><td><b>0.051s</b></td><td>0.052s</td><td>0.187s</td><td>0.051s</td><td>0.010s</td></tr>
-  <tr><td>binary_trees</td><td><b>2.385s</b></td><td>crash</td><td>timeout</td><td>2.385s</td><td>0.17s</td></tr>
+  <tr><td>binary_trees</td><td>1.423s</td><td><b>2.088s</b></td><td>timeout</td><td>1.423s</td><td>0.17s</td></tr>
 </table>
 
 <h2>Warm Micro-benchmarks (JIT vs VM)</h2>
