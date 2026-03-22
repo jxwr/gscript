@@ -1018,18 +1018,13 @@ func findWBRFloatSlots(f *SSAFunc) map[int]bool {
 		return result
 	}
 
-	// Safety check: if the trace has any non-numeric operations (table/field
-	// access, globals, calls), don't relax any float guards. The WBR analysis
-	// works correctly for pure numeric loops (e.g., mandelbrot) but can cause
-	// wrong results in traces with mixed numeric/table operations (e.g.,
-	// spectral_norm) because the relaxed guard + skipped pre-loop D register
-	// load can leave float registers with garbage values that corrupt
-	// unrelated computations via register reuse.
+	// Check if the trace has non-numeric operations
+	hasNonNumeric := false
 	for _, ir := range f.Trace.IR {
 		switch ir.Op {
 		case vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD,
 			vm.OP_GETGLOBAL, vm.OP_CALL:
-			return result // bail: non-numeric trace
+			hasNonNumeric = true
 		}
 	}
 
@@ -1044,11 +1039,21 @@ func findWBRFloatSlots(f *SSAFunc) map[int]bool {
 		}
 	}
 
-	// For each float slot, check if it's write-before-read using the same
-	// logic as ssaBuilder.isWrittenBeforeFirstReadImpl
 	for slot := range floatSlots {
-		if isSlotWBR(f.Trace, slot) {
-			result[slot] = true
+		if hasNonNumeric {
+			// For traces with field/table/call ops, use extended WBR check
+			// that recognizes GETFIELD/GETTABLE/CALL as valid writes.
+			// This allows relaxing guards for intermediate float results
+			// like dx/dy/dz in nbody's "dx = bi.x - bj.x" pattern.
+			b := &ssaBuilder{trace: f.Trace, slotType: make(map[int]SSAType)}
+			if b.isWrittenBeforeFirstReadExt(slot) {
+				result[slot] = true
+			}
+		} else {
+			// Pure numeric trace: use original isSlotWBR
+			if isSlotWBR(f.Trace, slot) {
+				result[slot] = true
+			}
 		}
 	}
 	return result

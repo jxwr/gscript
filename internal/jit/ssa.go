@@ -266,9 +266,97 @@ func (b *ssaBuilder) build() *SSAFunc {
 //     the read is checked FIRST since operands are read before the result is written.
 func (b *ssaBuilder) isWrittenBeforeFirstRead(slot int) bool {
 	if b.slotType[slot] == SSATypeFloat {
+		// Float slots always emit guards (the float register allocator needs
+		// the pre-loop SSA_LOAD_SLOT for D register initialization).
+		// Guard relaxation for WBR float slots is handled in the codegen
+		// via findWBRFloatSlots / isWrittenBeforeFirstReadExt.
 		return false
 	}
 	return b.isWrittenBeforeFirstReadImpl(slot)
+}
+
+// isWrittenBeforeFirstReadExt checks if a float slot is written by a
+// GETFIELD, GETTABLE, or CALL before any instruction reads it.
+// This allows skipping pre-loop guards for intermediate float results
+// (e.g., dx from "dx = bi.x - bj.x" where dx only exists inside the loop body).
+// More conservative than isWrittenBeforeFirstReadImpl: only GETFIELD/GETTABLE/CALL
+// writes count, not arithmetic (which could produce wrong types without guards).
+func (b *ssaBuilder) isWrittenBeforeFirstReadExt(slot int) bool {
+	for _, ir := range b.trace.IR {
+		// Check reads first (all ops that read this slot)
+		isRead := false
+		switch ir.Op {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV,
+			vm.OP_LT, vm.OP_LE, vm.OP_EQ:
+			if (ir.B < 256 && ir.B == slot) || (ir.C < 256 && ir.C == slot) {
+				isRead = true
+			}
+		case vm.OP_UNM:
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_MOVE:
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_FORLOOP:
+			if slot == ir.A || slot == ir.A+1 || slot == ir.A+2 {
+				isRead = true
+			}
+		case vm.OP_FORPREP:
+			if slot == ir.A || slot == ir.A+2 {
+				isRead = true
+			}
+		case vm.OP_TEST:
+			if ir.A == slot {
+				isRead = true
+			}
+		case vm.OP_GETTABLE:
+			if ir.B == slot || (ir.C < 256 && ir.C == slot) {
+				isRead = true
+			}
+		case vm.OP_SETTABLE:
+			if ir.A == slot || (ir.B < 256 && ir.B == slot) || (ir.C < 256 && ir.C == slot) {
+				isRead = true
+			}
+		case vm.OP_GETFIELD:
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_SETFIELD:
+			if ir.A == slot || (ir.C < 256 && ir.C == slot) {
+				isRead = true
+			}
+		case vm.OP_CALL:
+			if slot >= ir.A && slot < ir.A+ir.B {
+				isRead = true
+			}
+		}
+		if isRead {
+			return false
+		}
+
+		// Only recognize writes from ops that definitively produce a typed value:
+		// GETFIELD/GETTABLE produce the value from the table (known type at recording).
+		// CALL produces a result. LOADK/LOADINT produce constants.
+		// We do NOT count arithmetic writes here — their output type depends on
+		// operand types, which may be wrong if we skip the guard.
+		isWrite := false
+		switch ir.Op {
+		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
+			isWrite = (ir.A == slot)
+		case vm.OP_GETFIELD:
+			isWrite = (ir.A == slot)
+		case vm.OP_GETTABLE:
+			isWrite = (ir.A == slot)
+		case vm.OP_CALL:
+			isWrite = (ir.A == slot)
+		}
+		if isWrite {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *ssaBuilder) isWrittenBeforeFirstReadImpl(slot int) bool {
