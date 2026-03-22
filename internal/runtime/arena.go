@@ -198,6 +198,137 @@ func (h *Heap) Free() {
 }
 
 // ---------------------------------------------------------------------------
+// Typed slice allocation helpers
+// ---------------------------------------------------------------------------
+
+// AllocInt64s allocates a []int64 slice backed by arena memory.
+// The returned slice has the given length and capacity, zero-filled.
+func (h *Heap) AllocInt64s(length, capacity int) []int64 {
+	if capacity < length {
+		capacity = length
+	}
+	if capacity == 0 {
+		return nil
+	}
+	bytes := capacity * 8 // sizeof(int64) == 8
+	p := h.AllocBytes(bytes)
+	return unsafe.Slice((*int64)(p), capacity)[:length]
+}
+
+// GrowInt64s allocates a new arena-backed int64 slice with newCap capacity,
+// copies old data into it, and returns the new slice.
+func (h *Heap) GrowInt64s(old []int64, newCap int) []int64 {
+	if newCap < len(old) {
+		newCap = len(old)
+	}
+	s := h.AllocInt64s(len(old), newCap)
+	copy(s, old)
+	return s
+}
+
+// AllocFloat64s allocates a []float64 slice backed by arena memory.
+// The returned slice has the given length and capacity, zero-filled.
+func (h *Heap) AllocFloat64s(length, capacity int) []float64 {
+	if capacity < length {
+		capacity = length
+	}
+	if capacity == 0 {
+		return nil
+	}
+	bytes := capacity * 8 // sizeof(float64) == 8
+	p := h.AllocBytes(bytes)
+	return unsafe.Slice((*float64)(p), capacity)[:length]
+}
+
+// GrowFloat64s allocates a new arena-backed float64 slice with newCap capacity,
+// copies old data into it, and returns the new slice.
+func (h *Heap) GrowFloat64s(old []float64, newCap int) []float64 {
+	if newCap < len(old) {
+		newCap = len(old)
+	}
+	s := h.AllocFloat64s(len(old), newCap)
+	copy(s, old)
+	return s
+}
+
+// AllocByteSlice allocates a []byte slice backed by arena memory.
+// The returned slice has the given length and capacity, zero-filled.
+// This is distinct from AllocBytes(size int) unsafe.Pointer which is used internally.
+func (h *Heap) AllocByteSlice(length, capacity int) []byte {
+	if capacity < length {
+		capacity = length
+	}
+	if capacity == 0 {
+		return nil
+	}
+	p := h.AllocBytes(capacity)
+	return unsafe.Slice((*byte)(p), capacity)[:length]
+}
+
+// GrowByteSlice allocates a new arena-backed byte slice with newCap capacity,
+// copies old data into it, and returns the new slice.
+func (h *Heap) GrowByteSlice(old []byte, newCap int) []byte {
+	if newCap < len(old) {
+		newCap = len(old)
+	}
+	s := h.AllocByteSlice(len(old), newCap)
+	copy(s, old)
+	return s
+}
+
+// ---------------------------------------------------------------------------
+// Arena-aware append helpers for typed slices
+// ---------------------------------------------------------------------------
+
+// arenaAppendInt64 appends a value to an arena-backed int64 slice,
+// growing via the heap if needed. Updates the slice pointer in place.
+func arenaAppendInt64(h *Heap, s *[]int64, val int64) {
+	old := *s
+	if len(old) == cap(old) {
+		*s = h.GrowInt64s(old, cap(old)*2+1)
+		old = *s
+	}
+	*s = old[:len(old)+1]
+	(*s)[len(*s)-1] = val
+}
+
+// arenaAppendFloat64 appends a value to an arena-backed float64 slice,
+// growing via the heap if needed. Updates the slice pointer in place.
+func arenaAppendFloat64(h *Heap, s *[]float64, val float64) {
+	old := *s
+	if len(old) == cap(old) {
+		*s = h.GrowFloat64s(old, cap(old)*2+1)
+		old = *s
+	}
+	*s = old[:len(old)+1]
+	(*s)[len(*s)-1] = val
+}
+
+// arenaAppendByte appends a value to an arena-backed byte slice,
+// growing via the heap if needed. Updates the slice pointer in place.
+func arenaAppendByte(h *Heap, s *[]byte, val byte) {
+	old := *s
+	if len(old) == cap(old) {
+		*s = h.GrowByteSlice(old, cap(old)*2+1)
+		old = *s
+	}
+	*s = old[:len(old)+1]
+	(*s)[len(*s)-1] = val
+}
+
+// arenaAppendValue appends a Value to an arena-backed Value slice,
+// growing via the heap if needed. Updates the slice pointer in place.
+func arenaAppendValue(h *Heap, s *[]Value, val Value) {
+	old := *s
+	if len(old) == cap(old) {
+		*s = h.GrowValues(old, cap(old)*2+1)
+		old = *s
+	}
+	*s = old[:len(old)+1]
+	(*s)[len(*s)-1] = val
+}
+
+// ---------------------------------------------------------------------------
 // Global default heap
 // ---------------------------------------------------------------------------
 

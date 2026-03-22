@@ -358,3 +358,365 @@ func BenchmarkHeapAllocBytes128(b *testing.B) {
 		h.AllocBytes(128)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Typed slice allocation tests
+// ---------------------------------------------------------------------------
+
+func TestAllocInt64sLengthAndCapacity(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocInt64s(5, 10)
+	if len(s) != 5 {
+		t.Fatalf("len = %d, want 5", len(s))
+	}
+	if cap(s) != 10 {
+		t.Fatalf("cap = %d, want 10", cap(s))
+	}
+	// Zero-filled
+	for i, v := range s {
+		if v != 0 {
+			t.Fatalf("s[%d] = %d, want 0", i, v)
+		}
+	}
+}
+
+func TestAllocInt64sCapClamp(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	// capacity < length should be clamped
+	s := h.AllocInt64s(10, 3)
+	if len(s) != 10 {
+		t.Fatalf("len = %d, want 10", len(s))
+	}
+	if cap(s) < 10 {
+		t.Fatalf("cap = %d, want >= 10", cap(s))
+	}
+}
+
+func TestAllocInt64sZeroLength(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocInt64s(0, 0)
+	if s != nil {
+		t.Fatalf("expected nil for zero allocation, got len=%d", len(s))
+	}
+}
+
+func TestGrowInt64sPreservesData(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	orig := h.AllocInt64s(5, 5)
+	for i := range orig {
+		orig[i] = int64(i * 42)
+	}
+
+	grown := h.GrowInt64s(orig, 20)
+	if len(grown) != 5 {
+		t.Fatalf("len = %d, want 5", len(grown))
+	}
+	if cap(grown) != 20 {
+		t.Fatalf("cap = %d, want 20", cap(grown))
+	}
+	for i := range orig {
+		if grown[i] != orig[i] {
+			t.Fatalf("grown[%d] = %d, want %d", i, grown[i], orig[i])
+		}
+	}
+}
+
+func TestGrowInt64sClampNewCap(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	orig := h.AllocInt64s(10, 10)
+	grown := h.GrowInt64s(orig, 3)
+	if cap(grown) < 10 {
+		t.Fatalf("cap = %d, want >= 10", cap(grown))
+	}
+}
+
+func TestAllocFloat64sLengthAndCapacity(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocFloat64s(7, 14)
+	if len(s) != 7 {
+		t.Fatalf("len = %d, want 7", len(s))
+	}
+	if cap(s) != 14 {
+		t.Fatalf("cap = %d, want 14", cap(s))
+	}
+	for i, v := range s {
+		if v != 0.0 {
+			t.Fatalf("s[%d] = %f, want 0.0", i, v)
+		}
+	}
+}
+
+func TestAllocFloat64sCapClamp(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocFloat64s(8, 2)
+	if len(s) != 8 {
+		t.Fatalf("len = %d, want 8", len(s))
+	}
+	if cap(s) < 8 {
+		t.Fatalf("cap = %d, want >= 8", cap(s))
+	}
+}
+
+func TestGrowFloat64sPreservesData(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	orig := h.AllocFloat64s(4, 4)
+	for i := range orig {
+		orig[i] = float64(i) * 3.14
+	}
+
+	grown := h.GrowFloat64s(orig, 16)
+	if len(grown) != 4 {
+		t.Fatalf("len = %d, want 4", len(grown))
+	}
+	if cap(grown) != 16 {
+		t.Fatalf("cap = %d, want 16", cap(grown))
+	}
+	for i := range orig {
+		if grown[i] != orig[i] {
+			t.Fatalf("grown[%d] = %f, want %f", i, grown[i], orig[i])
+		}
+	}
+}
+
+func TestAllocByteSliceLengthAndCapacity(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocByteSlice(3, 8)
+	if len(s) != 3 {
+		t.Fatalf("len = %d, want 3", len(s))
+	}
+	if cap(s) != 8 {
+		t.Fatalf("cap = %d, want 8", cap(s))
+	}
+	for i, v := range s {
+		if v != 0 {
+			t.Fatalf("s[%d] = %d, want 0", i, v)
+		}
+	}
+}
+
+func TestAllocByteSliceCapClamp(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocByteSlice(6, 2)
+	if len(s) != 6 {
+		t.Fatalf("len = %d, want 6", len(s))
+	}
+	if cap(s) < 6 {
+		t.Fatalf("cap = %d, want >= 6", cap(s))
+	}
+}
+
+func TestGrowByteSlicePreservesData(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	orig := h.AllocByteSlice(5, 5)
+	for i := range orig {
+		orig[i] = byte(i + 10)
+	}
+
+	grown := h.GrowByteSlice(orig, 20)
+	if len(grown) != 5 {
+		t.Fatalf("len = %d, want 5", len(grown))
+	}
+	if cap(grown) != 20 {
+		t.Fatalf("cap = %d, want 20", cap(grown))
+	}
+	for i := range orig {
+		if grown[i] != orig[i] {
+			t.Fatalf("grown[%d] = %d, want %d", i, grown[i], orig[i])
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Arena append helper tests
+// ---------------------------------------------------------------------------
+
+func TestArenaAppendInt64(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocInt64s(0, 2)
+	arenaAppendInt64(h, &s, 100)
+	arenaAppendInt64(h, &s, 200)
+	// Trigger growth
+	arenaAppendInt64(h, &s, 300)
+
+	if len(s) != 3 {
+		t.Fatalf("len = %d, want 3", len(s))
+	}
+	if s[0] != 100 || s[1] != 200 || s[2] != 300 {
+		t.Fatalf("got %v, want [100 200 300]", s)
+	}
+}
+
+func TestArenaAppendFloat64(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocFloat64s(0, 2)
+	arenaAppendFloat64(h, &s, 1.1)
+	arenaAppendFloat64(h, &s, 2.2)
+	arenaAppendFloat64(h, &s, 3.3)
+
+	if len(s) != 3 {
+		t.Fatalf("len = %d, want 3", len(s))
+	}
+	if s[0] != 1.1 || s[1] != 2.2 || s[2] != 3.3 {
+		t.Fatalf("got %v, want [1.1 2.2 3.3]", s)
+	}
+}
+
+func TestArenaAppendByte(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocByteSlice(0, 2)
+	arenaAppendByte(h, &s, 1)
+	arenaAppendByte(h, &s, 2)
+	arenaAppendByte(h, &s, 3)
+
+	if len(s) != 3 {
+		t.Fatalf("len = %d, want 3", len(s))
+	}
+	if s[0] != 1 || s[1] != 2 || s[2] != 3 {
+		t.Fatalf("got %v, want [1 2 3]", s)
+	}
+}
+
+func TestArenaAppendValue(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	s := h.AllocValues(0, 2)
+	arenaAppendValue(h, &s, IntValue(10))
+	arenaAppendValue(h, &s, IntValue(20))
+	arenaAppendValue(h, &s, IntValue(30))
+
+	if len(s) != 3 {
+		t.Fatalf("len = %d, want 3", len(s))
+	}
+	for i, want := range []int64{10, 20, 30} {
+		if s[i] != IntValue(want) {
+			t.Fatalf("s[%d] = %#x, want IntValue(%d)", i, uint64(s[i]), want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GC safety for typed arena slices
+// ---------------------------------------------------------------------------
+
+func TestGCSafetyTypedArenaSlices(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	ints := h.AllocInt64s(100, 100)
+	floats := h.AllocFloat64s(100, 100)
+	bytes := h.AllocByteSlice(100, 100)
+
+	for i := 0; i < 100; i++ {
+		ints[i] = int64(i * 7)
+		floats[i] = float64(i) * 2.5
+		bytes[i] = byte(i % 256)
+	}
+
+	for i := 0; i < 5; i++ {
+		runtime.GC()
+	}
+
+	for i := 0; i < 100; i++ {
+		if ints[i] != int64(i*7) {
+			t.Fatalf("int64 corruption at [%d]: got %d, want %d", i, ints[i], i*7)
+		}
+		if floats[i] != float64(i)*2.5 {
+			t.Fatalf("float64 corruption at [%d]: got %f, want %f", i, floats[i], float64(i)*2.5)
+		}
+		if bytes[i] != byte(i%256) {
+			t.Fatalf("byte corruption at [%d]: got %d, want %d", i, bytes[i], i%256)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pointer fitness for NaN-boxing
+// ---------------------------------------------------------------------------
+
+func TestTypedSlicePointersFitIn44Bits(t *testing.T) {
+	h := NewHeap()
+	defer h.Free()
+
+	const mask44 = (uint64(1) << 44) - 1
+
+	ints := h.AllocInt64s(10, 10)
+	addr := uint64(uintptr(unsafe.Pointer(&ints[0])))
+	if addr != addr&mask44 {
+		t.Fatalf("AllocInt64s pointer %#x exceeds 44 bits", addr)
+	}
+
+	floats := h.AllocFloat64s(10, 10)
+	addr = uint64(uintptr(unsafe.Pointer(&floats[0])))
+	if addr != addr&mask44 {
+		t.Fatalf("AllocFloat64s pointer %#x exceeds 44 bits", addr)
+	}
+
+	bs := h.AllocByteSlice(10, 10)
+	addr = uint64(uintptr(unsafe.Pointer(&bs[0])))
+	if addr != addr&mask44 {
+		t.Fatalf("AllocByteSlice pointer %#x exceeds 44 bits", addr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Typed slice benchmarks
+// ---------------------------------------------------------------------------
+
+func BenchmarkAllocInt64s10(b *testing.B) {
+	h := NewHeap()
+	defer h.Free()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.AllocInt64s(10, 10)
+	}
+}
+
+func BenchmarkAllocFloat64s10(b *testing.B) {
+	h := NewHeap()
+	defer h.Free()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		h.AllocFloat64s(10, 10)
+	}
+}
+
+func BenchmarkArenaAppendInt64x100(b *testing.B) {
+	h := NewHeap()
+	defer h.Free()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s := h.AllocInt64s(0, 4)
+		for j := 0; j < 100; j++ {
+			arenaAppendInt64(h, &s, int64(j))
+		}
+	}
+}

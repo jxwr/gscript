@@ -88,7 +88,7 @@ func NewTableSized(arrayHint, hashHint int) *Table {
 	}
 	if hashHint > 0 && hashHint <= smallFieldCap {
 		t.skeys = make([]string, 0, hashHint)
-		t.svals = make([]Value, 0, hashHint)
+		t.svals = DefaultHeap.AllocValues(0, hashHint)
 	}
 	return t
 }
@@ -286,7 +286,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	if !val.IsNil() {
 		if len(t.skeys) < smallFieldCap {
 			t.skeys = append(t.skeys, key)
-			t.svals = append(t.svals, val)
+			arenaAppendValue(DefaultHeap, &t.svals, val)
 		} else {
 			t.smap = make(map[string]Value, len(t.skeys)+1)
 			for i, k := range t.skeys {
@@ -470,20 +470,23 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				switch vk {
 				case ArrayInt:
 					t.arrayKind = ArrayInt
-					t.intArray = []int64{valueToInt64(val)}
+					t.intArray = make([]int64, 1, 1)
+					t.intArray[0] = valueToInt64(val)
 					t.array = nil
 					return
 				case ArrayFloat:
 					t.arrayKind = ArrayFloat
-					t.floatArray = []float64{val.Float()}
+					t.floatArray = make([]float64, 1, 1)
+					t.floatArray[0] = val.Float()
 					t.array = nil
 					return
 				case ArrayBool:
 					t.arrayKind = ArrayBool
+					t.boolArray = make([]byte, 1, 1)
 					if val.Bool() {
-						t.boolArray = []byte{2}
+						t.boolArray[0] = 2
 					} else {
-						t.boolArray = []byte{1}
+						t.boolArray[0] = 1
 					}
 					t.array = nil
 					return
@@ -505,7 +508,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				return
 			}
 			t.demoteToMixed()
-			t.array = append(t.array, val)
+			arenaAppendValue(DefaultHeap, &t.array, val)
 			t.absorbKeys()
 			return
 		case ArrayFloat:
@@ -515,7 +518,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				return
 			}
 			t.demoteToMixed()
-			t.array = append(t.array, val)
+			arenaAppendValue(DefaultHeap, &t.array, val)
 			t.absorbKeys()
 			return
 		case ArrayBool:
@@ -529,7 +532,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				return
 			}
 			t.demoteToMixed()
-			t.array = append(t.array, val)
+			arenaAppendValue(DefaultHeap, &t.array, val)
 			t.absorbKeys()
 			return
 		default:
@@ -583,7 +586,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 					}
 				}
 			}
-			t.array = append(t.array, val)
+			arenaAppendValue(DefaultHeap, &t.array, val)
 			t.absorbKeys()
 			return
 		}
@@ -597,12 +600,11 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			vk := classifyValueForArray(val)
 			if vk == ArrayInt {
 				if needed > cap(t.intArray) {
-					newArr := make([]int64, needed)
-					copy(newArr, t.intArray)
-					t.intArray = newArr
-				} else {
-					t.intArray = t.intArray[:needed]
+					newSlice := make([]int64, len(t.intArray), needed)
+					copy(newSlice, t.intArray)
+					t.intArray = newSlice
 				}
+				t.intArray = t.intArray[:needed]
 				t.intArray[key] = valueToInt64(val)
 				t.absorbKeys()
 				return
@@ -612,12 +614,11 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		case ArrayFloat:
 			if val.Type() == TypeFloat {
 				if needed > cap(t.floatArray) {
-					newArr := make([]float64, needed)
-					copy(newArr, t.floatArray)
-					t.floatArray = newArr
-				} else {
-					t.floatArray = t.floatArray[:needed]
+					newSlice := make([]float64, len(t.floatArray), needed)
+					copy(newSlice, t.floatArray)
+					t.floatArray = newSlice
 				}
+				t.floatArray = t.floatArray[:needed]
 				t.floatArray[key] = val.Float()
 				t.absorbKeys()
 				return
@@ -627,12 +628,11 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		case ArrayBool:
 			if val.Type() == TypeBool {
 				if needed > cap(t.boolArray) {
-					newArr := make([]byte, needed)
-					copy(newArr, t.boolArray)
-					t.boolArray = newArr
-				} else {
-					t.boolArray = t.boolArray[:needed]
+					newSlice := make([]byte, len(t.boolArray), needed)
+					copy(newSlice, t.boolArray)
+					t.boolArray = newSlice
 				}
+				t.boolArray = t.boolArray[:needed]
 				if val.Bool() {
 					t.boolArray[key] = 2 // true
 				} else {
@@ -772,7 +772,7 @@ func (t *Table) RawSetString(key string, val Value) {
 	if !val.IsNil() {
 		if len(t.skeys) < smallFieldCap {
 			t.skeys = append(t.skeys, key)
-			t.svals = append(t.svals, val)
+			arenaAppendValue(DefaultHeap, &t.svals, val)
 		} else {
 			t.smap = make(map[string]Value, len(t.skeys)+1)
 			for i, k := range t.skeys {
@@ -822,14 +822,14 @@ func (t *Table) appendToTypedArray(val Value) {
 			t.intArray = append(t.intArray, valueToInt64(val))
 		} else {
 			t.demoteToMixed()
-			t.array = append(t.array, val)
+			arenaAppendValue(DefaultHeap, &t.array, val)
 		}
 	case ArrayFloat:
 		if val.Type() == TypeFloat {
 			t.floatArray = append(t.floatArray, val.Float())
 		} else {
 			t.demoteToMixed()
-			t.array = append(t.array, val)
+			arenaAppendValue(DefaultHeap, &t.array, val)
 		}
 	case ArrayBool:
 		if val.Type() == TypeBool {
@@ -840,10 +840,10 @@ func (t *Table) appendToTypedArray(val Value) {
 			t.boolArray = append(t.boolArray, b)
 		} else {
 			t.demoteToMixed()
-			t.array = append(t.array, val)
+			arenaAppendValue(DefaultHeap, &t.array, val)
 		}
 	default:
-		t.array = append(t.array, val)
+		arenaAppendValue(DefaultHeap, &t.array, val)
 	}
 }
 
