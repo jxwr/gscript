@@ -195,13 +195,16 @@ func (b *ssaBuilder) build() *SSAFunc {
 				guardedSlots[ir.B] = true
 			}
 		case vm.OP_GETTABLE, vm.OP_SETTABLE:
-			// Guard table slot — always strict (dereferencing non-table = crash)
+			// Guard table slot — WBR-relaxable because in-loop codegen
+			// (emitSSALoadArray/emitSSAStoreArray) has its own type guards.
 			tableSlot := ir.B
 			if ir.Op == vm.OP_SETTABLE {
 				tableSlot = ir.A
 			}
 			if tableSlot < 256 && !guardedSlots[tableSlot] {
-				b.emitGuard(tableSlot, runtime.TypeTable, ir.PC)
+				if !b.isWrittenBeforeFirstReadExt(tableSlot) {
+					b.emitGuard(tableSlot, runtime.TypeTable, ir.PC)
+				}
 				guardedSlots[tableSlot] = true
 			}
 			// Guard key slot — WBR-relaxable
@@ -216,15 +219,19 @@ func (b *ssaBuilder) build() *SSAFunc {
 				guardedSlots[keySlot] = true
 			}
 		case vm.OP_GETFIELD:
-			// Guard table slot — always strict
+			// Guard table slot — WBR-relaxable (in-loop guard in emitSSALoadField)
 			if ir.B < 256 && !guardedSlots[ir.B] {
-				b.emitGuard(ir.B, runtime.TypeTable, ir.PC)
+				if !b.isWrittenBeforeFirstReadExt(ir.B) {
+					b.emitGuard(ir.B, runtime.TypeTable, ir.PC)
+				}
 				guardedSlots[ir.B] = true
 			}
 		case vm.OP_SETFIELD:
-			// Guard table slot — always strict
+			// Guard table slot — WBR-relaxable (in-loop guard in emitSSAStoreField)
 			if ir.A < 256 && !guardedSlots[ir.A] {
-				b.emitGuard(ir.A, runtime.TypeTable, ir.PC)
+				if !b.isWrittenBeforeFirstReadExt(ir.A) {
+					b.emitGuard(ir.A, runtime.TypeTable, ir.PC)
+				}
 				guardedSlots[ir.A] = true
 			}
 		case vm.OP_FORLOOP:

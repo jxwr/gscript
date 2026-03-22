@@ -33,9 +33,10 @@ func emitSSALoadArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, reg
 	dstSlot := int(inst.Slot)
 	// Load key
 	keyReg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X2)
-	// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)
+	// In-loop table type guard + extract pointer
 	if tableSlot >= 0 {
 		asm.LDR(X0, regRegs, tableSlot*ValueSize)
+		EmitCheckIsTableFull(asm, X0, X1, X3, "side_exit")
 		EmitExtractPtr(asm, X0, X0)
 	}
 	asm.CBZ(X0, "side_exit")
@@ -250,9 +251,10 @@ func emitSSAStoreArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, re
 			asm.FSTRd(fr, regRegs, valSlot*ValueSize)
 		}
 	}
-	// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)
+	// In-loop table type guard + extract pointer
 	if tableSlot >= 0 {
 		asm.LDR(X0, regRegs, tableSlot*ValueSize)
+		EmitCheckIsTableFull(asm, X0, X1, X3, "side_exit")
 		EmitExtractPtr(asm, X0, X0)
 	}
 	asm.CBZ(X0, "side_exit")
@@ -463,8 +465,12 @@ func emitSSALoadField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlot
 		return
 	}
 
-	// Load *Table from register (NaN-boxing: extract pointer)
+	// In-loop table type guard: slot may have been reused by arithmetic
+	// in a previous iteration (slot reuse across iterations).
 	asm.LDR(X0, regRegs, tableSlot*ValueSize)
+	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit")
+
+	// Extract *Table pointer
 	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, "side_exit") // nil table
 
@@ -501,8 +507,11 @@ func emitSSAStoreField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlo
 		return
 	}
 
-	// Load *Table (NaN-boxing: extract pointer from NaN-boxed value)
+	// In-loop table type guard
 	asm.LDR(X0, regRegs, tableSlot*ValueSize)
+	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit")
+
+	// Extract *Table pointer
 	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, "side_exit")
 
