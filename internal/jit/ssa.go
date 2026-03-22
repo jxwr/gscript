@@ -234,21 +234,15 @@ func computeLiveIn(trace *Trace) (liveIn map[int]bool, slotRuntimeType map[int]r
 	}
 
 	if hasNonNumeric {
-		// Fall back to old-style per-opcode guard collection.
-		// This preserves the old behavior exactly for traces with table ops.
+		// For traces with table/field/global/call ops, use legacy per-opcode
+		// guard collection. The liveness-based approach needs in-loop guards
+		// for all table ops, which currently crashes on some patterns.
 		computeLiveInLegacy(trace, liveIn, slotRuntimeType, slotPC)
 		return
 	}
 
-	// Purely numeric trace: forward scan. Only constant loads and FORLOOP/FORPREP
-	// kill liveness. Arithmetic and MOVE outputs depend on operand types, which
-	// might be wrong if the guard is skipped.
-	//
-	// Float slots always remain live-in: the float register allocator needs
-	// pre-loop LOAD_SLOT + UNBOX_FLOAT for D register initialization. The codegen
-	// handles WBR float slots via findWBRFloatSlots with relaxed guards.
-	//
-	// Collect float slots first.
+	// Purely numeric traces: forward liveness scan.
+	// Float slots always remain live-in: D register allocator needs pre-loop load.
 	floatSlots := make(map[int]bool)
 	for _, ir := range trace.IR {
 		if ir.BType == runtime.TypeFloat && ir.B < 256 {
@@ -262,7 +256,7 @@ func computeLiveIn(trace *Trace) (liveIn map[int]bool, slotRuntimeType map[int]r
 	written := make(map[int]bool)
 
 	for _, ir := range trace.IR {
-		// Check reads first (within same instruction, reads happen before writes)
+		// Check reads first
 		readSlots := getReadSlots(&ir)
 		for _, rs := range readSlots {
 			if !written[rs.slot] && !liveIn[rs.slot] {
@@ -272,7 +266,10 @@ func computeLiveIn(trace *Trace) (liveIn map[int]bool, slotRuntimeType map[int]r
 			}
 		}
 		// Only constant loads and FORLOOP/FORPREP kill liveness.
-		// Float slots are never killed (always live-in for D register init).
+		// These produce values of a known, fixed type (int for FORLOOP,
+		// constant type for LOADK/LOADINT). Other writes (GETGLOBAL,
+		// GETFIELD, arithmetic) may produce values of types that conflict
+		// with what a later instruction expects.
 		switch ir.Op {
 		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
 			if !floatSlots[ir.A] {
@@ -484,6 +481,29 @@ func getReadSlots(ir *TraceIR) []slotRead {
 		}
 	}
 	return reads
+}
+
+// getWriteSlots returns the VM register slots written by a trace instruction.
+func getWriteSlots(ir *TraceIR) []int {
+	switch ir.Op {
+	case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV, vm.OP_UNM:
+		return []int{ir.A}
+	case vm.OP_MOVE:
+		return []int{ir.A}
+	case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
+		return []int{ir.A}
+	case vm.OP_GETFIELD, vm.OP_GETTABLE, vm.OP_GETGLOBAL:
+		return []int{ir.A}
+	case vm.OP_LEN:
+		return []int{ir.A}
+	case vm.OP_FORLOOP:
+		return []int{ir.A, ir.A + 3}
+	case vm.OP_FORPREP:
+		return []int{ir.A}
+	case vm.OP_CALL:
+		return []int{ir.A}
+	}
+	return nil
 }
 
 // isWrittenBeforeFirstRead returns true if the given slot is written by a
