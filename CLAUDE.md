@@ -96,7 +96,7 @@ Key rules:
 - **Main agent NEVER runs benchmarks directly** — always spawn a benchmark sub-agent.
 - **Always use Opus model** for coding agents (user preference).
 - **Each coding agent gets a clear, bounded scope** — one pass, one module, one test file.
-- **Benchmark agent updates all docs** — after running benchmarks, update CLAUDE.md, benchmarks/README.md, docs/index.html with fresh numbers.
+- **Benchmark agent updates all docs** — after running benchmarks, update README.md Performance section and docs/index.html with fresh numbers.
 
 ## Research Protocol
 
@@ -110,38 +110,9 @@ Before each major architectural change:
 
 ## Benchmark Protocol
 
-**CRITICAL: Never run benchmarks in the main agent.** Always spawn a sub-agent for benchmarking.
-
-### Running Benchmarks
-
-```bash
-# Quick mode (~15s): Go warm benchmarks only
-bash benchmarks/run_bench.sh --quick
-
-# Full mode (~2min): VM + Trace + LuaJIT + Go warm
-bash benchmarks/run_bench.sh
-```
-
-### After Every Benchmark Run
-
-The benchmark agent MUST update these files with fresh numbers:
-1. **`CLAUDE.md`** — "Current Status" tables (vs LuaJIT + full suite)
-2. **`benchmarks/README.md`** — JIT vs LuaJIT table + JIT vs Interpreter table
-3. **`docs/index.html`** — Blog homepage benchmark tables
-
-### Known Issues
-- **`binary_trees.gs`** — now runs correctly in all modes (VM 1.255s, JIT 1.871s, Trace 1.871s). Previously crashed with stack overflow; fixed with growable call stack.
-- **`fannkuch.gs`** — trace mode times out (>30s). VM/JIT modes work (0.597s/0.588s).
-- **Trace mode** may timeout on some benchmarks (30s limit per benchmark in runner).
-
-### Benchmark Test Suite (fixed set)
-
-Go warm benchmarks (`go test ./benchmarks/ -bench=Warm`):
-- FibRecursiveWarm, FibIterativeWarm, HeavyLoopWarm, FunctionCallsWarm, AckermannWarm (JIT + VM pairs)
-
-Suite benchmarks (15 .gs files):
-- fib, sieve, mandelbrot, ackermann, matmul, spectral_norm, nbody, fannkuch
-- sort, sum_primes, mutual_recursion, method_dispatch, closure_bench, string_bench, binary_trees
+After every major milestone, run the full benchmark suite using `bash benchmarks/run_all.sh`.
+Update results in the top-level README.md Performance section and docs/index.html blog homepage.
+Never skip benchmarks — if one fails, note it in the output. Run sequentially (not parallel).
 
 ## Code Standards
 
@@ -179,47 +150,9 @@ Run the full suite before AND after every optimization. Record numbers in the bl
 Full audit document: `docs/architecture_audit.md`
 Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
-## Current Status (2026-03-22, benchmark run #10, post-S2.1-S2.3+compiler-opt)
+## Current Status
 
-Full Season 2 complete: NaN-boxing, custom heap, shape system, GC compaction, compiler register optimization. mandelbrot 2.7x gap. fib/fn_calls match LuaJIT.
-
-### Warm micro-benchmarks (Go test, JIT vs VM, benchtime=3s)
-| Benchmark | JIT | VM | JIT/VM Speedup | LuaJIT | JIT vs LuaJIT |
-|-----------|-----|-----|----------------|--------|---------------|
-| HeavyLoop | 23.1us | 955us | **x41.3** | — | — |
-| FibIterative(30) | 149ns | 510ns | **x3.4** | — | — |
-| FunctionCalls(10K) | 2.37us | 309us | **x130.4** | 2.3us | **parity** |
-| FibRecursive(20) | 23.6us | 808us | **x34.2** | 25.0us | **GScript WINS** |
-| Ackermann(3,4) | 20.6us | 379us | **x18.4** | 12.0us | 1.7x gap |
-
-### Full benchmark suite (15 benchmarks × 3 modes)
-| Benchmark | VM | JIT | Trace | Best | LuaJIT | vs LuaJIT |
-|-----------|-----|-----|-------|------|--------|-----------|
-| fib(35) | 1.069s | **0.034s** | 0.033s | 0.033s | 0.032s | **1.0x (parity)** |
-| sieve(1M x3) | 0.236s | **0.023s** | 0.021s | 0.021s | 0.010s | 2.1x gap |
-| mandelbrot(1000) | 1.332s | 1.409s | **0.141s** | 0.141s | 0.052s | **2.7x gap** |
-| ackermann(3,4 x500) | 0.187s | **0.011s** | 0.010s | 0.010s | 0.006s | 1.7x gap |
-| matmul(300) | **0.962s** | 1.015s | 1.148s | 0.962s | 0.022s | 43.7x gap |
-| spectral_norm(500) | 0.776s | 0.709s | **0.702s** | 0.702s | 0.007s | 100x gap |
-| nbody(500K) | **1.785s** | 1.871s | 1.826s | 1.785s | 0.033s | 54x gap |
-| fannkuch(9) | **0.542s** | 0.548s | timeout | 0.542s | 0.019s | 28.5x gap |
-| sort(50K x3) | **0.172s** | 0.176s | error | 0.172s | 0.010s | 17.2x gap |
-| sum_primes(100K) | 0.025s | 0.025s | **0.030s** | 0.025s | 0.002s | 12.5x gap |
-| mutual_recursion(25 x1000) | **0.134s** | 0.232s | 0.246s | 0.134s | 0.005s | 26.8x gap |
-| method_dispatch(100K) | **0.073s** | 0.104s | 0.105s | 0.073s | 0.000s | ~180x gap |
-| closure_bench | **0.058s** | 0.069s | error | 0.058s | 0.009s | 6.4x gap |
-| string_bench | **0.040s** | 0.042s | 0.043s | 0.040s | 0.008s | 5.0x gap |
-| binary_trees | **1.324s** | crash | crash | 1.324s | 0.17s | 7.8x gap |
-
-### LuaJIT Gap Analysis
-| Gap | Root Cause | Fix | Difficulty |
-|-----|-----------|-----|-----------|
-| mandelbrot 25x | JIT doesn't optimize float array access | JIT native float array ops | High |
-| spectral_norm 106x | VM float array per-element overhead | JIT native float array ops | High |
-| matmul 47x | Same as spectral_norm | JIT native float array ops | High |
-| nbody 73x | Float computation in VM, not JIT-optimized | JIT float specialization | High |
-| fannkuch 33x | Array permutation in VM | JIT array access | Medium |
-| binary_trees 8.5x | Table create/destroy GC overhead | Custom GC (S2.3) | High |
+All phases complete through S2.3 + compiler optimizations. Season 2 delivered NaN-boxing, custom heap, shape system, GC compaction, and compiler register optimization. See README.md Performance section for latest benchmark numbers.
 
 ## Completed Phases
 

@@ -26,40 +26,37 @@ go build -o gscript ./cmd/gscript/
 
 ## Performance
 
-Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03-21 19:42 CST**.
+Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03-22**.
 
-### GScript JIT vs LuaJIT
+### Warm micro-benchmarks (JIT vs VM)
 
-| Benchmark | What it tests | GScript (best) | LuaJIT | Gap | Notes |
-|-----------|--------------|---------------|--------|-----|-------|
-| **fn calls (10K) warm** | function call + inlining overhead | **2.6us** | 2.6us | **parity** | |
-| fib(20) warm | recursive function calls | 27.0us | 27.4us | ~1.0x | |
-| fib(35) | deep recursion, cold start | 0.037s | 0.027s | 1.4x | |
-| ackermann(3,4) warm | recursive calls, warm JIT | 21.5us | 12.4us | 1.7x | |
-| ackermann(3,4 x500) | deep mutual recursion | 0.011s | 0.006s | 1.8x | |
-| **sieve(1M x3)** | integer array read/write | **0.025s** | 0.011s | **2.3x** | NaN-boxing 3.2x speedup |
-| mandelbrot(1000) | float-heavy nested loops | 0.155s | 0.058s | 2.7x | trace JIT |
-| string_bench | string concat/format/compare | 0.052s | 0.009s | 5.8x | |
-| closure_bench | closure creation + calls | 0.076s | 0.009s | 8.4x | |
-| sum_primes(100K) | loop + modulo + branch | 0.028s | 0.002s | 14x | |
-| binary_trees | deep tree alloc + GC | 2.475s | 0.17s | 15x | JIT crashes, VM only |
-| sort(50K x3) | quicksort, array swap | 0.207s | 0.010s | 21x | |
-| fannkuch(9) | permutation + array reversal | 0.658s | 0.019s | 35x | |
-| matmul(300) | triple-nested loop, 2D float array | 1.147s | 0.023s | 50x | |
-| mutual_recursion | mutually recursive functions | 0.244s | 0.004s | 61x | |
-| nbody(500K) | N-body simulation, field access | 2.518s | 0.037s | 68x | |
-| spectral_norm(500) | matrix math, function call in inner loop | 0.759s | 0.007s | 108x | |
-| method_dispatch(100K) | dynamic dispatch, field access | 0.126s | <0.001s | >100x | |
+| Benchmark | JIT | VM | Speedup | LuaJIT | JIT vs LuaJIT |
+|-----------|-----|-----|---------|--------|---------------|
+| HeavyLoop | 23.1us | 955us | x41.3 | — | — |
+| FibIterative(30) | 149ns | 510ns | x3.4 | — | — |
+| FunctionCalls(10K) | 2.37us | 309us | x130.4 | 2.3us | parity |
+| FibRecursive(20) | 23.6us | 808us | x34.2 | 25.0us | GScript WINS |
+| Ackermann(3,4) | 20.6us | 379us | x18.4 | 12.0us | 1.7x gap |
 
-### GScript JIT vs Interpreter (warm)
+### Full suite (15 benchmarks x 3 modes)
 
-| Benchmark | What it tests | JIT | VM | Speedup |
-|-----------|--------------|-----|-----|---------|
-| FunctionCalls(10K) | inlined function call loop | **2.6us** | 338us | **x130** |
-| HeavyLoop | integer sum loop (100K) | **25.5us** | 1309us | **x51** |
-| FibRecursive(20) | recursive fibonacci | **27.0us** | 879us | **x33** |
-| Ackermann(3,4) | deep recursion | **21.5us** | 417us | **x19** |
-| FibIterative(30) | iterative fibonacci loop | **182ns** | 637ns | **x3.5** |
+| Benchmark | VM | JIT | Trace | Best | LuaJIT | vs LuaJIT |
+|-----------|-----|-----|-------|------|--------|-----------|
+| fib(35) | 1.069s | 0.034s | 0.033s | 0.033s | 0.032s | 1.0x (parity) |
+| sieve(1M x3) | 0.236s | 0.023s | 0.021s | 0.021s | 0.010s | 2.1x |
+| mandelbrot(1000) | 1.332s | 1.409s | 0.141s | 0.141s | 0.052s | 2.7x |
+| ackermann(3,4 x500) | 0.187s | 0.011s | 0.010s | 0.010s | 0.006s | 1.7x |
+| matmul(300) | 0.962s | 1.015s | 1.148s | 0.962s | 0.022s | 43.7x |
+| spectral_norm(500) | 0.776s | 0.709s | 0.702s | 0.702s | 0.007s | 100x |
+| nbody(500K) | 1.785s | 1.871s | 1.826s | 1.785s | 0.033s | 54x |
+| fannkuch(9) | 0.542s | 0.548s | timeout | 0.542s | 0.019s | 28.5x |
+| sort(50K x3) | 0.172s | 0.176s | error | 0.172s | 0.010s | 17.2x |
+| sum_primes(100K) | 0.025s | 0.025s | 0.030s | 0.025s | 0.002s | 12.5x |
+| mutual_recursion(25x1K) | 0.134s | 0.232s | 0.246s | 0.134s | 0.005s | 26.8x |
+| method_dispatch(100K) | 0.073s | 0.104s | 0.105s | 0.073s | 0.000s | ~180x |
+| closure_bench | 0.058s | 0.069s | error | 0.058s | 0.009s | 6.4x |
+| string_bench | 0.040s | 0.042s | 0.043s | 0.040s | 0.008s | 5.0x |
+| binary_trees | 1.324s | crash | crash | 1.324s | 0.17s | 7.8x |
 
 ### Compiler Optimization Techniques
 

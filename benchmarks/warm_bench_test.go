@@ -186,3 +186,130 @@ func ack(m, n) {
 		vm.Call("ack", 3, 4)
 	}
 }
+
+// --- Math Intensive (Leibniz Pi) ---
+
+func BenchmarkGScriptJITMathLeibnizWarm(b *testing.B) {
+	vm := gs.New(gs.WithJIT())
+	vm.Exec(`
+func leibniz(n) {
+    sum := 0.0
+    sign := 1.0
+    for i := 0; i < n; i++ {
+        sum = sum + sign / (2.0 * i + 1.0)
+        sign = -sign
+    }
+    return sum * 4.0
+}
+for i := 1; i <= 15; i++ { leibniz(100) }
+`)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vm.Call("leibniz", 100000)
+	}
+}
+
+func BenchmarkGScriptVMMathLeibnizWarm(b *testing.B) {
+	vm := gs.New(gs.WithVM())
+	vm.Exec(`
+func leibniz(n) {
+    sum := 0.0
+    sign := 1.0
+    for i := 0; i < n; i++ {
+        sum = sum + sign / (2.0 * i + 1.0)
+        sign = -sign
+    }
+    return sum * 4.0
+}
+`)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vm.Call("leibniz", 100000)
+	}
+}
+
+// --- Table Field Access (particle update) ---
+
+func BenchmarkGScriptJITTableFieldWarm(b *testing.B) {
+	vm := gs.New(gs.WithJIT())
+	vm.Exec(`
+particles := {}
+for i := 1; i <= 100; i++ {
+    particles[i] = {x: 1.0 * i, y: 2.0 * i, z: 3.0 * i, vx: 0.01, vy: 0.02, vz: 0.03}
+}
+func step(ps, n) {
+    for i := 1; i <= n; i++ {
+        p := ps[i]
+        p.x = p.x + p.vx
+        p.y = p.y + p.vy
+        p.z = p.z + p.vz
+    }
+}
+for i := 1; i <= 15; i++ { step(particles, 100) }
+`)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vm.Call("step", nil, 100)
+	}
+}
+
+func BenchmarkGScriptVMTableFieldWarm(b *testing.B) {
+	vm := gs.New(gs.WithVM())
+	vm.Exec(`
+particles := {}
+for i := 1; i <= 100; i++ {
+    particles[i] = {x: 1.0 * i, y: 2.0 * i, z: 3.0 * i, vx: 0.01, vy: 0.02, vz: 0.03}
+}
+func step(ps, n) {
+    for i := 1; i <= n; i++ {
+        p := ps[i]
+        p.x = p.x + p.vx
+        p.y = p.y + p.vy
+        p.z = p.z + p.vz
+    }
+}
+`)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vm.Call("step", nil, 100)
+	}
+}
+
+// --- Object Creation ---
+
+func BenchmarkGScriptJITObjectCreateWarm(b *testing.B) {
+	vm := gs.New(gs.WithJIT())
+	vm.Exec(`
+func create_objects(n) {
+    total := 0.0
+    for i := 1; i <= n; i++ {
+        obj := {x: 1.0 * i, y: 2.0 * i, z: 3.0 * i}
+        total = total + obj.x + obj.y + obj.z
+    }
+    return total
+}
+for i := 1; i <= 15; i++ { create_objects(100) }
+`)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vm.Call("create_objects", 1000)
+	}
+}
+
+func BenchmarkGScriptVMObjectCreateWarm(b *testing.B) {
+	vm := gs.New(gs.WithVM())
+	vm.Exec(`
+func create_objects(n) {
+    total := 0.0
+    for i := 1; i <= n; i++ {
+        obj := {x: 1.0 * i, y: 2.0 * i, z: 3.0 * i}
+        total = total + obj.x + obj.y + obj.z
+    }
+    return total
+}
+`)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vm.Call("create_objects", 1000)
+	}
+}
