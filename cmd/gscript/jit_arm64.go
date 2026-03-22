@@ -8,6 +8,7 @@ import (
 )
 
 func cliEnableJIT(bvm *bytecodevm.VM) {
+	// Method JIT: function-level compilation
 	engine := jit.NewEngine()
 	engine.SetThreshold(1)
 	bvm.SetJIT(engine)
@@ -20,4 +21,7 @@ func cliEnableJIT(bvm *bytecodevm.VM) {
 		e.SetGlobalsAccessor(child)
 		return e
 	})
+
+	// Trace JIT: loop-level SSA compilation
+	cliEnableTracing(bvm)
 }

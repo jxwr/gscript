@@ -138,7 +138,7 @@ func TestSSA_FloatArith(t *testing.T) {
 func TestSSA_EndToEnd(t *testing.T) {
 	// Full pipeline: trace → SSA → optimize → compile → execute
 	// Verify the result matches the interpreter
-	g := runWithTracingJIT(t, `
+	g := runWithSSAJIT(t, `
 		sum := 0
 		for i := 1; i <= 1000; i++ {
 			sum = sum + i

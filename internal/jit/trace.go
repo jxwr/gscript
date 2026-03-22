@@ -89,7 +89,6 @@ type TraceRecorder struct {
 	maxDepth  int  // max inline depth
 	maxLen    int  // max trace length
 	compile   bool // if true, compile traces after recording
-	useSSA    bool // if true, try SSA codegen for integer-only traces
 	debug     bool // if true, print trace compilation diagnostics
 	startBase int  // base register of the traced function (set on first instruction)
 
@@ -157,11 +156,6 @@ func NewTraceRecorder() *TraceRecorder {
 // SetCompile enables trace compilation and execution.
 func (r *TraceRecorder) SetCompile(on bool) {
 	r.compile = on
-}
-
-// SetUseSSA enables SSA-based codegen for integer-only traces.
-func (r *TraceRecorder) SetUseSSA(on bool) {
-	r.useSSA = on
 }
 
 // SetDebug enables trace compilation diagnostics.
@@ -501,7 +495,7 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 	//   2. Sub-trace calling: skip inner body, call pre-compiled inner trace.
 	//      Fallback when full nesting is already in use (deeper nesting).
 	// Priority: full nesting first (better codegen, unified register allocation).
-	if op == vm.OP_FORPREP && r.useSSA && r.depth == 0 {
+	if op == vm.OP_FORPREP && r.depth == 0 {
 		forloopPC := pc + ir.SBX + 1
 
 		// Strategy 0: When already in full-nesting mode (innerLoopDepth > 0) and
@@ -510,7 +504,7 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		// use compiled iter-loop trace instead of going 3 levels deep.
 		if r.innerLoopDepth > 0 {
 			innerKey := loopKey{proto: proto, pc: forloopPC}
-			if innerCT, ok := r.compiled[innerKey]; ok && innerCT != nil && innerCT.ssaCompiled {
+			if innerCT, ok := r.compiled[innerKey]; ok && innerCT != nil {
 				r.innerLoopSkipStart = pc + 1
 				r.innerLoopSkipEnd = forloopPC
 				ir.FieldIndex = forloopPC
@@ -673,10 +667,7 @@ func (r *TraceRecorder) shouldAbort(op vm.Opcode) bool {
 	case vm.OP_TFORCALL, vm.OP_TFORLOOP:
 		return true // generic for (complex iterator)
 	case vm.OP_FORPREP:
-		if r.useSSA {
-			return false // SSA codegen handles nested loops via sub-trace calling
-		}
-		return true // old compiler can't handle nested loops
+		return false // SSA codegen handles nested loops
 	}
 	return false
 }
@@ -733,86 +724,51 @@ func (r *TraceRecorder) finishTrace() {
 			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
 			compiled := false
 
-
-			// Try SSA codegen first (handles int, float, tables, intrinsics, globals)
-			if r.useSSA {
-				ssaFunc := BuildSSA(r.current)
-				ssaFunc = OptimizeSSA(ssaFunc)
-				ssaFunc = ConstHoist(ssaFunc)
-				ssaFunc = CSE(ssaFunc)
-				ssaFunc = FuseMultiplyAdd(ssaFunc)
-				ssaOK := ssaIsIntegerOnly(ssaFunc)
-				ssaUseful := SSAIsUseful(ssaFunc)
-				if debugSSAStoreBack {
-					fmt.Printf("[TRACE-DEBUG] PC=%d intOnly=%v useful=%v nInsts=%d\n", r.current.LoopPC, ssaOK, ssaUseful, len(ssaFunc.Insts))
-				}
-				if ssaOK && ssaUseful {
-					ct, err := CompileSSA(ssaFunc)
-					if debugSSAStoreBack && err != nil {
-						fmt.Printf("[TRACE-DEBUG] CompileSSA error: %v\n", err)
-					}
-					if err == nil {
-						ct.ssaCompiled = true
-						// Wire call handler for traces with call-exit support
-						if ct.hasCallExit && r.callHandler != nil {
-							ct.callHandler = r.callHandler
-						}
-						// Attach inner trace if this is an outer loop with sub-trace calling
-						if innerForloopPC > 0 {
-							innerKey := loopKey{proto: r.current.LoopProto, pc: innerForloopPC}
-							if innerCT, ok := r.compiled[innerKey]; ok {
-								ct.innerTrace = innerCT
-							}
-						}
-						r.compiled[key] = ct
-						compiled = true
-						if r.debug {
-							fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions, %d bytes code", r.current.LoopPC, len(r.current.IR), ct.code.Size())
-							if ct.hasCallExit {
-								fmt.Printf(" (has call-exit)")
-							}
-							if ct.innerTrace != nil {
-								fmt.Printf(" (calls inner trace at FORLOOP PC=%d)", innerForloopPC)
-							}
-							fmt.Println()
-						}
-					} else if r.debug {
-						fmt.Printf("[TRACE] SSA compile error: PC=%d, err=%v\n", r.current.LoopPC, err)
-					}
-				} else if r.debug {
-					fmt.Printf("[TRACE] SSA rejected: PC=%d, %d IRs\n", r.current.LoopPC, len(r.current.IR))
-				}
+			// SSA codegen pipeline
+			ssaFunc := BuildSSA(r.current)
+			ssaFunc = OptimizeSSA(ssaFunc)
+			ssaFunc = ConstHoist(ssaFunc)
+			ssaFunc = CSE(ssaFunc)
+			ssaFunc = FuseMultiplyAdd(ssaFunc)
+			ssaOK := ssaIsIntegerOnly(ssaFunc)
+			ssaUseful := SSAIsUseful(ssaFunc)
+			if debugSSAStoreBack {
+				fmt.Printf("[TRACE-DEBUG] PC=%d intOnly=%v useful=%v nInsts=%d\n", r.current.LoopPC, ssaOK, ssaUseful, len(ssaFunc.Insts))
 			}
-
-			// Fall back to regular trace compiler.
-			// Skip fallback for full-nesting traces: the regular compiler
-			// doesn't understand inner loop structure and produces wrong results.
-			// Also skip for traces with inlined functions (depth > 0): the regular
-			// compiler's side-exit PCs use the callee's bytecode PCs, but the VM
-			// would resume at those PCs in the outer function, causing wrong behavior.
-			hasInlinedCode := false
-			for _, ir := range r.current.IR {
-				if ir.Depth > 0 {
-					hasInlinedCode = true
-					break
-				}
-			}
-			if !compiled && !hasFullNesting && !hasInlinedCode {
-				ct, err := compileTrace(r.current)
-				if debugSSAStoreBack {
-					if err != nil {
-						fmt.Printf("[TRACE-DEBUG] Regular compile error: PC=%d err=%v\n", r.current.LoopPC, err)
-					} else {
-						fmt.Printf("[TRACE-DEBUG] Regular compiled: PC=%d\n", r.current.LoopPC)
-					}
+			if ssaOK && ssaUseful {
+				ct, err := CompileSSA(ssaFunc)
+				if debugSSAStoreBack && err != nil {
+					fmt.Printf("[TRACE-DEBUG] CompileSSA error: %v\n", err)
 				}
 				if err == nil {
+					// Wire call handler for traces with call-exit support
+					if ct.hasCallExit && r.callHandler != nil {
+						ct.callHandler = r.callHandler
+					}
+					// Attach inner trace if this is an outer loop with sub-trace calling
+					if innerForloopPC > 0 {
+						innerKey := loopKey{proto: r.current.LoopProto, pc: innerForloopPC}
+						if innerCT, ok := r.compiled[innerKey]; ok {
+							ct.innerTrace = innerCT
+						}
+					}
 					r.compiled[key] = ct
 					compiled = true
 					if r.debug {
-						fmt.Printf("[TRACE] Regular compiled: PC=%d\n", r.current.LoopPC)
+						fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions, %d bytes code", r.current.LoopPC, len(r.current.IR), ct.code.Size())
+						if ct.hasCallExit {
+							fmt.Printf(" (has call-exit)")
+						}
+						if ct.innerTrace != nil {
+							fmt.Printf(" (calls inner trace at FORLOOP PC=%d)", innerForloopPC)
+						}
+						fmt.Println()
 					}
+				} else if r.debug {
+					fmt.Printf("[TRACE] SSA compile error: PC=%d, err=%v\n", r.current.LoopPC, err)
 				}
+			} else if r.debug {
+				fmt.Printf("[TRACE] SSA rejected: PC=%d, %d IRs\n", r.current.LoopPC, len(r.current.IR))
 			}
 
 			// If compilation failed, blacklist this loop to avoid re-recording

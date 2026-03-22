@@ -14,6 +14,12 @@ package jit
 // The underlying allocation logic is identical to newSlotAlloc/newFloatSlotAlloc
 // in ssa_codegen.go. This file wraps them in a clean pass interface.
 
+// allocableRegs are the ARM64 registers available for trace integer register allocation.
+// X24 is reserved for the NaN-boxing int tag constant.
+var allocableRegs = []Reg{X20, X21, X22, X23}
+
+const maxAllocRegs = 4
+
 // RegMap holds the complete register allocation for an SSA function.
 // It maps VM slots to both integer and float ARM64 registers.
 // FloatRef provides ref-level allocation for individual SSA values.

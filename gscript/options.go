@@ -53,7 +53,6 @@ type vmOptions struct {
 	printFunc   func(args ...interface{})
 	useVM       bool // use bytecode VM instead of tree-walker
 	useJIT      bool // enable JIT compilation (implies useVM)
-	useTracing  bool // enable tracing JIT (implies useVM)
 }
 
 // Option configures a VM instance.
@@ -89,10 +88,8 @@ func WithJIT() Option {
 	}
 }
 
-// WithTracing enables the tracing JIT compiler (implies bytecode VM).
+// WithTracing is an alias for WithJIT (kept for backward compatibility).
+// The JIT compiler now includes both method-level and trace-level compilation.
 func WithTracing() Option {
-	return func(o *vmOptions) {
-		o.useVM = true
-		o.useTracing = true
-	}
+	return WithJIT()
 }

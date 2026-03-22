@@ -24,7 +24,6 @@ func main() {
 	eval := flag.String("e", "", "execute string")
 	useVM := flag.Bool("vm", false, "use bytecode VM without JIT")
 	useJIT := flag.Bool("jit", true, "use bytecode VM with JIT compilation (default)")
-	useTrace := flag.Bool("trace", false, "enable tracing JIT (implies -vm)")
 	cpuprofile := flag.String("cpuprofile", "", "write CPU profile to file")
 	memprofile := flag.String("memprofile", "", "write memory profile to file")
 	flag.Parse()
@@ -71,9 +70,6 @@ func main() {
 	if *useJIT {
 		*useVM = true
 	}
-	if *useTrace {
-		*useVM = true
-	}
 
 	interp := runtime.New()
 
@@ -109,7 +105,7 @@ func main() {
 	interp.SetScriptDir(filepath.Dir(absPath))
 
 	if *useVM {
-		if err := runFileVM(interp, filename, *useJIT, *useTrace); err != nil {
+		if err := runFileVM(interp, filename, *useJIT); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
 			os.Exit(1)
 		}
@@ -143,15 +139,15 @@ func runString(interp *runtime.Interpreter, src string) error {
 	return interp.Exec(prog)
 }
 
-func runFileVM(interp *runtime.Interpreter, filename string, jit bool, trace bool) error {
+func runFileVM(interp *runtime.Interpreter, filename string, jit bool) error {
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		return err
 	}
-	return runStringVM(interp, string(src), jit, trace)
+	return runStringVM(interp, string(src), jit)
 }
 
-func runStringVM(interp *runtime.Interpreter, src string, jit bool, trace bool) error {
+func runStringVM(interp *runtime.Interpreter, src string, jit bool) error {
 	tokens, err := lexer.New(src).Tokenize()
 	if err != nil {
 		return fmt.Errorf("lexer error: %w", err)
@@ -169,9 +165,6 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, trace bool) 
 	bvm.SetStringMeta(interp.StringMeta())
 	if jit {
 		cliEnableJIT(bvm)
-	}
-	if trace {
-		cliEnableTracing(bvm)
 	}
 	_, err = bvm.Execute(proto)
 	return err

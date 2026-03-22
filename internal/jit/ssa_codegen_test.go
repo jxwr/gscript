@@ -256,7 +256,6 @@ func runWithSSAJIT(t *testing.T, src string) map[string]runtime.Value {
 
 	recorder := NewTraceRecorder()
 	recorder.SetCompile(true)
-	recorder.SetUseSSA(true) // enable SSA codegen
 	v.SetTraceRecorder(recorder)
 
 	_, err := v.Execute(proto)
@@ -768,7 +767,6 @@ func TestSSACodegen_SubTraceCall_Direct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inner CompileSSA: %v", err)
 	}
-	innerCT.ssaCompiled = true
 
 	// Now verify inner trace works standalone.
 	// The trace is designed to be called AFTER the interpreter's FORLOOP
@@ -810,7 +808,6 @@ func TestSSACodegen_Integration_NestedLoopSmall(t *testing.T) {
 
 	recorder := NewTraceRecorder()
 	recorder.SetCompile(true)
-	recorder.SetUseSSA(true)
 	recorder.threshold = 2
 	v.SetTraceRecorder(recorder)
 
@@ -843,7 +840,6 @@ func TestSSACodegen_Integration_NestedLoopOuterTraced(t *testing.T) {
 
 	recorder := NewTraceRecorder()
 	recorder.SetCompile(true)
-	recorder.SetUseSSA(true)
 	v.SetTraceRecorder(recorder)
 
 	v.Execute(proto)
@@ -1017,7 +1013,6 @@ func TestSSACodegen_Integration_FullNestedSmall(t *testing.T) {
 
 	recorder := NewTraceRecorder()
 	recorder.SetCompile(true)
-	recorder.SetUseSSA(true)
 	recorder.threshold = 2
 	v.SetTraceRecorder(recorder)
 
@@ -1160,7 +1155,6 @@ func TestSSACodegen_Integration_SieveWhileLoop(t *testing.T) {
 	v := vm.New(globals)
 	recorder := NewTraceRecorder()
 	recorder.SetCompile(true)
-	recorder.SetUseSSA(true)
 	v.SetTraceRecorder(recorder)
 	// Blacklist the counting loop (last FORLOOP in the function) which has a
 	// pre-existing guard bug with GETTABLE+TEST patterns.
@@ -1263,7 +1257,6 @@ func TestSSACodegen_Integration_WhileLoopTraced(t *testing.T) {
 
 	recorder := NewTraceRecorder()
 	recorder.SetCompile(true)
-	recorder.SetUseSSA(true)
 	v.SetTraceRecorder(recorder)
 
 	v.Execute(proto)
@@ -1402,7 +1395,6 @@ for i := 2; i <= 200; i++ {
 	v2 := vm.New(g2)
 	recorder := NewTraceRecorder()
 	recorder.SetCompile(true)
-	recorder.SetUseSSA(true)
 	v2.SetTraceRecorder(recorder)
 	_, err2 := v2.Execute(proto2)
 	if err2 != nil {

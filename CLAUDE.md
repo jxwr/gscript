@@ -182,13 +182,3 @@ All phases complete through S2.3 + compiler optimizations. Season 2 delivered Na
 7. **Reduce per-iteration instructions** — eliminate remaining memory spills
 8. **Method JIT type specialization + inlining**
 
-## Hard-Won Lessons (added 2026-03-19)
-
-### Lesson 5: Frequency-based allocation fails on flat distributions
-Mandelbrot's float temps all have similar frequency (each used once/iteration). The frequency allocator assigned registers semi-randomly. Live-range-based (linear scan) + ref-level allocation was the fix.
-
-### Lesson 6: The biggest optimization is often NOT about generating better code
-FORPREP blacklisting (stopping 2.5M wasted recording attempts) gave mandelbrot its biggest jump (1.53x → 5.92x). This wasn't a codegen improvement — it was eliminating work that shouldn't happen.
-
-### Lesson 7: Sub-trace calling has a structural overhead ceiling
-Each BLR call to an inner trace requires full prologue/epilogue (61 instructions). For 1M pixels, that's 61M instructions = ~15ms. Code inlining (Approach C) is needed to eliminate this.

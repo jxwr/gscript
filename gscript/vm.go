@@ -94,9 +94,6 @@ func (vm *VM) exec(src, filename string) error {
 			if vm.opts.useJIT {
 				enableJIT(bvm)
 			}
-			if vm.opts.useTracing {
-				enableTracing(bvm)
-			}
 		}
 		if _, err := bvm.Execute(proto); err != nil {
 			return &Error{Kind: ErrRuntime, Message: err.Error(), File: filename}
