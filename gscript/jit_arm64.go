@@ -23,6 +23,9 @@ func enableJIT(bvm *bytecodevm.VM) {
 		return e
 	})
 
-	// Trace JIT: loop-level SSA compilation
-	enableTracing(bvm)
+	// Note: Trace JIT is NOT enabled here because it can conflict with
+	// Method JIT's call-exit register state. The CLI enables both via
+	// cliEnableJIT which calls cliEnableTracing separately.
+	// TODO: fix the interaction between Method JIT call-exit and Trace JIT
+	// register writes, then enable tracing here too.
 }
