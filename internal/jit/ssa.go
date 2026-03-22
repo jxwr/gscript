@@ -603,10 +603,6 @@ func (b *ssaBuilder) isWrittenBeforeFirstReadExt(slot int) bool {
 		switch ir.Op {
 		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
 			isWrite = (ir.A == slot)
-		case vm.OP_GETFIELD:
-			isWrite = (ir.A == slot)
-		case vm.OP_GETTABLE:
-			isWrite = (ir.A == slot)
 		case vm.OP_GETGLOBAL:
 			isWrite = (ir.A == slot)
 		case vm.OP_CALL:
