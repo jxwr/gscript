@@ -93,8 +93,7 @@ type Value uint64
 // ---------------------------------------------------------------------------
 //
 // NaN-boxed pointers are invisible to Go's GC. The root log keeps them alive.
-// It is intentionally never cleaned (values accumulate) -- acceptable for
-// benchmark durations. Season 2.3 (custom GC) replaces this.
+// Periodic compaction removes dead entries to prevent unbounded growth.
 //
 // The root log is an append-only slice with an atomic cursor. keepAlive is
 // lock-free for the common case (no mutex, just an atomic increment).
@@ -109,13 +108,56 @@ type gcRootLog struct {
 	cursor  int64 // next free index (accessed atomically)
 }
 
+// GCRootScanner is implemented by VMs to enumerate all live GC root pointers.
+// Used by gcCompact to determine which gcRootLog entries are still needed.
+type GCRootScanner interface {
+	ScanGCRoots(visitor func(unsafe.Pointer))
+}
+
+const (
+	// gcCompactInterval triggers compaction every N new allocations.
+	// 1M balances keeping the log small vs amortizing compaction cost.
+	gcCompactInterval int64 = 1 << 20 // 1M
+)
+
 var (
 	gcLog     gcRootLog
 	// Separate locked map for interface-based values that need lookupIface.
 	// Only used by AnyFunction/AnyCoroutine (cold path).
 	ifaceMu   sync.Mutex
 	ifaceRoots = make(map[uintptr]any, 64)
+
+	// activeVMs tracks all live VMs for GC root scanning.
+	activeVMsMu sync.Mutex
+	activeVMs   []GCRootScanner
+	activeVMCount int32 // atomic count for fast check in keepAlive
+
+	// gcCompacting prevents re-entrant compaction.
+	gcCompacting int32
 )
+
+// RegisterVM adds a VM to the active set for GC root scanning.
+func RegisterVM(scanner GCRootScanner) {
+	activeVMsMu.Lock()
+	activeVMs = append(activeVMs, scanner)
+	atomic.StoreInt32(&activeVMCount, int32(len(activeVMs)))
+	activeVMsMu.Unlock()
+}
+
+// UnregisterVM removes a VM from the active set.
+func UnregisterVM(scanner GCRootScanner) {
+	activeVMsMu.Lock()
+	for i, s := range activeVMs {
+		if s == scanner {
+			activeVMs[i] = activeVMs[len(activeVMs)-1]
+			activeVMs[len(activeVMs)-1] = nil
+			activeVMs = activeVMs[:len(activeVMs)-1]
+			break
+		}
+	}
+	atomic.StoreInt32(&activeVMCount, int32(len(activeVMs)))
+	activeVMsMu.Unlock()
+}
 
 func init() {
 	gcLog.entries = make([]unsafe.Pointer, 1<<22) // 4M entries (~32MB), grows if needed
@@ -128,16 +170,179 @@ func keepAlive(p unsafe.Pointer, _ any) {
 	idx := atomic.AddInt64(&gcLog.cursor, 1) - 1
 	if idx < int64(len(gcLog.entries)) {
 		gcLog.entries[idx] = p
-		return
+	} else {
+		// Slow path: grow the log (rare, only when > 4M allocations)
+		gcLogGrow(p)
 	}
-	// Slow path: grow the log (rare, only when > 4M allocations)
-	gcLogGrow(p)
+	// Trigger GC compaction periodically (only when VMs are registered)
+	if idx > 0 && idx%gcCompactInterval == 0 && atomic.LoadInt32(&activeVMCount) > 0 {
+		gcCompact()
+	}
 }
 
 func gcLogGrow(p unsafe.Pointer) {
 	ifaceMu.Lock()
 	gcLog.entries = append(gcLog.entries, p)
 	ifaceMu.Unlock()
+}
+
+// gcCompact rebuilds the gcRootLog with only pointers reachable from active VMs.
+// Conservative: retains any pointer that appears in a VM's register file, globals,
+// open upvalues, or recursively inside any reachable table.
+func gcCompact() {
+	// Prevent re-entrant compaction.
+	if !atomic.CompareAndSwapInt32(&gcCompacting, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&gcCompacting, 0)
+
+	// Snapshot current cursor.
+	oldCursor := atomic.LoadInt64(&gcLog.cursor)
+	if oldCursor <= gcCompactInterval/2 {
+		return // not worth compacting
+	}
+
+	// Grab a snapshot of registered VMs.
+	activeVMsMu.Lock()
+	vms := make([]GCRootScanner, len(activeVMs))
+	copy(vms, activeVMs)
+	activeVMsMu.Unlock()
+
+	if len(vms) == 0 {
+		return // no VMs to scan; keep everything (conservative)
+	}
+
+	// Build the live set: all pointers reachable from any VM.
+	liveSet := make(map[uintptr]struct{}, oldCursor/4)
+	visitor := func(p unsafe.Pointer) {
+		liveSet[uintptr(p)] = struct{}{}
+	}
+	for _, vm := range vms {
+		vm.ScanGCRoots(visitor)
+	}
+
+	// Compact: copy only live entries into a fresh log.
+	// We allocate a new entries slice and atomically swap.
+	n := int64(len(gcLog.entries))
+	if n < gcCompactInterval {
+		n = gcCompactInterval
+	}
+	newEntries := make([]unsafe.Pointer, n)
+	var newCursor int64
+	for i := int64(0); i < oldCursor && i < int64(len(gcLog.entries)); i++ {
+		p := gcLog.entries[i]
+		if p == nil {
+			continue
+		}
+		if _, live := liveSet[uintptr(p)]; live {
+			if newCursor < n {
+				newEntries[newCursor] = p
+				newCursor++
+			}
+		}
+	}
+
+	// Swap the log. During the swap, concurrent keepAlive calls may have
+	// added entries beyond oldCursor. Copy those too (conservative).
+	currentCursor := atomic.LoadInt64(&gcLog.cursor)
+	for i := oldCursor; i < currentCursor && i < int64(len(gcLog.entries)); i++ {
+		p := gcLog.entries[i]
+		if p != nil && newCursor < n {
+			newEntries[newCursor] = p
+			newCursor++
+		}
+	}
+
+	// Atomic swap.
+	gcLog.entries = newEntries
+	atomic.StoreInt64(&gcLog.cursor, newCursor)
+}
+
+// ScanValueRoots scans a single Value for GC root pointers.
+// If the value is a pointer type, calls visitor with its raw pointer.
+// If it's a table, recursively scans the table's contents.
+// The `seen` map prevents infinite loops on circular table references.
+func ScanValueRoots(v Value, visitor func(unsafe.Pointer), seen map[uintptr]struct{}) {
+	bits := uint64(v)
+	if bits&nanBits != nanBits {
+		return // float, no pointer
+	}
+	if bits&tagMask != tagPtr {
+		return // nil, bool, or int — no pointer
+	}
+	p := v.ptrPayload()
+	if p == nil {
+		return
+	}
+	addr := uintptr(p)
+
+	// Register this pointer
+	visitor(p)
+
+	// If table, recurse into contents (avoid revisiting)
+	sub := bits & ptrSubMask
+	if sub == ptrSubTable {
+		if _, already := seen[addr]; already {
+			return
+		}
+		seen[addr] = struct{}{}
+		t := (*Table)(p)
+		scanTableRoots(t, visitor, seen)
+	}
+}
+
+// scanTableRoots scans all Values inside a table for GC root pointers.
+func scanTableRoots(t *Table, visitor func(unsafe.Pointer), seen map[uintptr]struct{}) {
+	if t == nil {
+		return
+	}
+
+	// Array part (only ArrayMixed can contain pointers)
+	if t.arrayKind == ArrayMixed && t.array != nil {
+		for _, v := range t.array {
+			ScanValueRoots(v, visitor, seen)
+		}
+	}
+	// String-keyed values (svals)
+	if t.svals != nil {
+		for _, v := range t.svals {
+			ScanValueRoots(v, visitor, seen)
+		}
+	}
+	// String map values
+	for _, v := range t.smap {
+		ScanValueRoots(v, visitor, seen)
+	}
+	// Integer map values
+	for _, v := range t.imap {
+		ScanValueRoots(v, visitor, seen)
+	}
+	// General hash values (both keys and values can be pointers)
+	for k, v := range t.hash {
+		ScanValueRoots(k, visitor, seen)
+		ScanValueRoots(v, visitor, seen)
+	}
+	// Metatable
+	if t.metatable != nil {
+		mp := unsafe.Pointer(t.metatable)
+		addr := uintptr(mp)
+		if _, already := seen[addr]; !already {
+			seen[addr] = struct{}{}
+			visitor(mp)
+			scanTableRoots(t.metatable, visitor, seen)
+		}
+	}
+}
+
+// ScanTableRootsExported is the exported version of scanTableRoots.
+// Used by the vm package to scan string metatables and other table roots.
+func ScanTableRootsExported(t *Table, visitor func(unsafe.Pointer), seen map[uintptr]struct{}) {
+	scanTableRoots(t, visitor, seen)
+}
+
+// GCRootLogSize returns the current number of entries in the root log (for diagnostics).
+func GCRootLogSize() int64 {
+	return atomic.LoadInt64(&gcLog.cursor)
 }
 
 // keepAliveIface registers a Go-heap pointer AND stores the full interface

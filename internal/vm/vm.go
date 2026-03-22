@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 )
@@ -179,7 +180,104 @@ func New(globals map[string]runtime.Value) *VM {
 	}
 	v.RegisterCoroutineLib()
 	v.registerChannelBuiltins()
+	runtime.RegisterVM(v)
 	return v
+}
+
+// Close unregisters this VM from the GC root scanner.
+// Should be called when the VM is no longer needed.
+func (vm *VM) Close() {
+	runtime.UnregisterVM(vm)
+}
+
+// ScanGCRoots implements runtime.GCRootScanner. It visits all live GC root
+// pointers reachable from this VM: registers, globals, open upvalues, call
+// frame closures, proto constants, and recursively all table contents.
+func (vm *VM) ScanGCRoots(visitor func(unsafe.Pointer)) {
+	seen := make(map[uintptr]struct{}, 256)
+	seenProtos := make(map[*FuncProto]struct{}, 32)
+
+	// Scan register file (only up to the used portion).
+	regLimit := len(vm.regs)
+	if vm.frameCount > 0 {
+		// The top frame's base + maxStack is the upper bound of used registers.
+		top := vm.frames[vm.frameCount-1].base + maxStack
+		if top < regLimit {
+			regLimit = top
+		}
+	}
+	for i := 0; i < regLimit; i++ {
+		runtime.ScanValueRoots(vm.regs[i], visitor, seen)
+	}
+
+	// Scan globals array.
+	for _, v := range vm.globalArray {
+		runtime.ScanValueRoots(v, visitor, seen)
+	}
+
+	// Scan open upvalues (closed upvalues point into registers already scanned).
+	for _, uv := range vm.openUpvals {
+		if uv != nil {
+			runtime.ScanValueRoots(uv.Get(), visitor, seen)
+		}
+	}
+
+	// Scan call frame closures, their upvalues, and their proto constants.
+	for i := 0; i < vm.frameCount; i++ {
+		f := &vm.frames[i]
+		if f.closure != nil {
+			for _, uv := range f.closure.Upvalues {
+				if uv != nil && !uv.open {
+					runtime.ScanValueRoots(uv.Get(), visitor, seen)
+				}
+			}
+			// Scan the proto's constants and nested protos recursively.
+			scanProtoRoots(f.closure.Proto, visitor, seen, seenProtos)
+		}
+		// Scan varargs.
+		for _, v := range f.varargs {
+			runtime.ScanValueRoots(v, visitor, seen)
+		}
+	}
+
+	// Scan argBuf and retBuf (may contain live values from recent calls).
+	for _, v := range vm.argBuf {
+		runtime.ScanValueRoots(v, visitor, seen)
+	}
+	for _, v := range vm.retBuf {
+		runtime.ScanValueRoots(v, visitor, seen)
+	}
+
+	// Scan string metatable.
+	if vm.stringMeta != nil {
+		mp := unsafe.Pointer(vm.stringMeta)
+		if _, already := seen[uintptr(mp)]; !already {
+			seen[uintptr(mp)] = struct{}{}
+			visitor(mp)
+			runtime.ScanTableRootsExported(vm.stringMeta, visitor, seen)
+		}
+	}
+}
+
+// scanProtoRoots scans a FuncProto's constants and recursively its children.
+func scanProtoRoots(proto *FuncProto, visitor func(unsafe.Pointer), seen map[uintptr]struct{}, seenProtos map[*FuncProto]struct{}) {
+	if proto == nil {
+		return
+	}
+	if _, already := seenProtos[proto]; already {
+		return
+	}
+	seenProtos[proto] = struct{}{}
+
+	// Scan constants (contains string literals, function values, etc.)
+	for _, v := range proto.Constants {
+		runtime.ScanValueRoots(v, visitor, seen)
+	}
+
+	// Recursively scan nested function prototypes.
+	for _, child := range proto.Protos {
+		scanProtoRoots(child, visitor, seen, seenProtos)
+	}
 }
 
 // newChildVM creates a child VM that shares globals with the parent.
@@ -201,6 +299,7 @@ func newChildVM(parent *VM) *VM {
 		child.SetJIT(engine)
 	}
 	child.RegisterCoroutineLib()
+	runtime.RegisterVM(child)
 	return child
 }
 
@@ -238,6 +337,7 @@ func newIsolatedChildVM(parent *VM) *VM {
 		child.SetJIT(engine)
 	}
 	child.RegisterCoroutineLib()
+	runtime.RegisterVM(child)
 	return child
 }
 
