@@ -359,15 +359,25 @@ func (cg *Codegen) hasCrossCallExits() bool {
 	code := cg.proto.Code
 	for pc := 0; pc < len(code); pc++ {
 		op := vm.DecodeOp(code[pc])
-		if op != vm.OP_CALL {
-			continue
+		if op == vm.OP_CALL {
+			// Skip self-call and inline candidates (they don't go through call-exit).
+			if _, ok := cg.inlineCandidates[pc]; ok {
+				continue
+			}
+			return true
 		}
-		// Skip self-call and inline candidates (they don't go through call-exit).
-		if _, ok := cg.inlineCandidates[pc]; ok {
-			continue
+		// Non-CALL call-exit ops (NEWTABLE, LEN, GETGLOBAL, SETGLOBAL, etc.)
+		// that are NOT natively supported will become call-exits. These corrupt
+		// the ARM64 stack when executed within self-call frames, because the
+		// call-exit epilogue doesn't unwind self-call stack frames.
+		if isCallExitOp(op) && !cg.isSupported(op) {
+			// Skip GETGLOBAL/SETGLOBAL that are part of self-call patterns
+			// (consumed by inline analysis, never emitted as instructions).
+			if cg.inlineSkipPCs[pc] {
+				continue
+			}
+			return true
 		}
-		// This CALL instruction will become a call-exit.
-		return true
 	}
 	return false
 }
@@ -379,16 +389,22 @@ func (cg *Codegen) hasCrossCallExitsExcluding() bool {
 	code := cg.proto.Code
 	for pc := 0; pc < len(code); pc++ {
 		op := vm.DecodeOp(code[pc])
-		if op != vm.OP_CALL {
-			continue
+		if op == vm.OP_CALL {
+			if _, ok := cg.inlineCandidates[pc]; ok {
+				continue
+			}
+			if _, ok := cg.crossCalls[pc]; ok {
+				continue
+			}
+			return true
 		}
-		if _, ok := cg.inlineCandidates[pc]; ok {
-			continue
+		// Non-CALL unsupported call-exit ops can't be handled by cross-call BLR.
+		if isCallExitOp(op) && !cg.isSupported(op) {
+			if cg.inlineSkipPCs[pc] {
+				continue
+			}
+			return true
 		}
-		if _, ok := cg.crossCalls[pc]; ok {
-			continue
-		}
-		return true
 	}
 	return false
 }
