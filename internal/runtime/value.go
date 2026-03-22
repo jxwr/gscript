@@ -116,7 +116,7 @@ var (
 )
 
 func init() {
-	gcLog.entries = make([]any, 1<<20) // 1M entries (~8MB), grows if needed
+	gcLog.entries = make([]any, 1<<22) // 1M entries (~8MB), grows if needed
 }
 
 // keepAlive registers a Go-heap pointer in the root log so the GC does not
