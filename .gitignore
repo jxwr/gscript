@@ -1,0 +1,22 @@
+# Compiled binaries
+*.test
+gscript/gscript
+game_engine
+/tmp/
+
+# Profiling
+*.prof
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+
+# Claude Code agent worktrees
+.claude/worktrees/
+.claude/projects/
