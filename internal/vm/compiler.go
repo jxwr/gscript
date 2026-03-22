@@ -591,8 +591,8 @@ func (c *compiler) compileAssignTarget(target ast.Expr, valueReg int, line int) 
 		return nil
 
 	case *ast.IndexExpr:
-		tableReg := c.allocReg()
-		if err := c.compileExprTo(t.Table, tableReg); err != nil {
+		tableReg, tableIsTemp, err := c.compileExprReg(t.Table)
+		if err != nil {
 			return err
 		}
 		keyReg := c.allocReg()
@@ -600,19 +600,22 @@ func (c *compiler) compileAssignTarget(target ast.Expr, valueReg int, line int) 
 			return err
 		}
 		c.emitABC(OP_SETTABLE, tableReg, keyReg, valueReg, line)
-		c.freeRegs(2)
+		c.freeReg() // keyReg
+		if tableIsTemp {
+			c.freeReg()
+		}
 		return nil
 
 	case *ast.FieldExpr:
-		tableReg := c.allocReg()
-		if err := c.compileExprTo(t.Table, tableReg); err != nil {
+		tableReg, tableIsTemp, err := c.compileExprReg(t.Table)
+		if err != nil {
 			return err
 		}
-		// SETFIELD A B C: R(A)[Constants[B]] = RK(C)
-		// B = constant index for field name, C = register for value
 		fieldK := c.stringConst(t.Field)
 		c.emitABC(OP_SETFIELD, tableReg, fieldK, valueReg, line)
-		c.freeReg() // tableReg
+		if tableIsTemp {
+			c.freeReg()
+		}
 		return nil
 
 	default:
@@ -676,8 +679,8 @@ func (c *compiler) compileCompoundAssignStmt(s *ast.CompoundAssignStmt) error {
 		return nil
 
 	case *ast.IndexExpr:
-		tableReg := c.allocReg()
-		if err := c.compileExprTo(t.Table, tableReg); err != nil {
+		tableReg, tableIsTemp, err := c.compileExprReg(t.Table)
+		if err != nil {
 			return err
 		}
 		keyReg := c.allocReg()
@@ -686,30 +689,34 @@ func (c *compiler) compileCompoundAssignStmt(s *ast.CompoundAssignStmt) error {
 		}
 		oldReg := c.allocReg()
 		c.emitABC(OP_GETTABLE, oldReg, tableReg, keyReg, line)
-		err := c.emitCompoundOp(opcode, oldReg, s.Value, line, func(int) {})
+		err = c.emitCompoundOp(opcode, oldReg, s.Value, line, func(int) {})
 		if err != nil {
 			return err
 		}
 		c.emitABC(OP_SETTABLE, tableReg, keyReg, oldReg, line)
-		c.freeRegs(3)
+		c.freeRegs(2) // oldReg, keyReg
+		if tableIsTemp {
+			c.freeReg()
+		}
 		return nil
 
 	case *ast.FieldExpr:
-		tableReg := c.allocReg()
-		if err := c.compileExprTo(t.Table, tableReg); err != nil {
+		tableReg, tableIsTemp, err := c.compileExprReg(t.Table)
+		if err != nil {
 			return err
 		}
 		fieldK := c.stringConst(t.Field)
 		oldReg := c.allocReg()
-		// GETFIELD A B C: R(A) = R(B)[Constants[C]]
 		c.emitABC(OP_GETFIELD, oldReg, tableReg, fieldK, line)
-		err := c.emitCompoundOp(opcode, oldReg, s.Value, line, func(int) {})
+		err = c.emitCompoundOp(opcode, oldReg, s.Value, line, func(int) {})
 		if err != nil {
 			return err
 		}
-		// SETFIELD A B C: R(A)[Constants[B]] = R(C)
 		c.emitABC(OP_SETFIELD, tableReg, fieldK, oldReg, line)
-		c.freeRegs(2) // oldReg, tableReg
+		c.freeReg() // oldReg
+		if tableIsTemp {
+			c.freeReg()
+		}
 		return nil
 
 	default:
@@ -1992,8 +1999,11 @@ func (c *compiler) compileMethodCallExprMulti(call *ast.MethodCallExpr, dest int
 
 func (c *compiler) compileIndexExpr(e *ast.IndexExpr, dest int) error {
 	line := e.P.Line
-	tableReg := c.allocReg()
-	if err := c.compileExprTo(e.Table, tableReg); err != nil {
+	// Use compileExprReg to avoid allocating a temp for table if it's a local.
+	// This prevents table-type temps from being reused by float/int computations,
+	// which causes trace JIT guard failures from type-conflicting slot reuse.
+	tableReg, tableIsTemp, err := c.compileExprReg(e.Table)
+	if err != nil {
 		return err
 	}
 	keyReg := c.allocReg()
@@ -2001,20 +2011,28 @@ func (c *compiler) compileIndexExpr(e *ast.IndexExpr, dest int) error {
 		return err
 	}
 	c.emitABC(OP_GETTABLE, dest, tableReg, keyReg, line)
-	c.freeRegs(2)
+	c.freeReg() // keyReg
+	if tableIsTemp {
+		c.freeReg() // tableReg (only if we allocated it)
+	}
 	return nil
 }
 
 func (c *compiler) compileFieldExpr(e *ast.FieldExpr, dest int) error {
 	line := e.P.Line
-	tableReg := c.allocReg()
-	if err := c.compileExprTo(e.Table, tableReg); err != nil {
+	// Use compileExprReg: if table is a local variable, use its register directly
+	// instead of allocating a temp. This avoids type-conflicting slot reuse in
+	// the trace JIT (table temp later reused for float/int computation).
+	tableReg, tableIsTemp, err := c.compileExprReg(e.Table)
+	if err != nil {
 		return err
 	}
 	// GETFIELD A B C: R(A) = R(B)[Constants[C]]
 	fieldK := c.stringConst(e.Field)
 	c.emitABC(OP_GETFIELD, dest, tableReg, fieldK, line)
-	c.freeReg() // tableReg
+	if tableIsTemp {
+		c.freeReg() // tableReg
+	}
 	return nil
 }
 
