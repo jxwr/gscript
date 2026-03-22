@@ -12,6 +12,8 @@ func enableJIT(bvm *bytecodevm.VM) {
 	engine := jit.NewEngine()
 	engine.SetThreshold(1) // compile on first call for maximum benefit
 	engine.SetGlobals(bvm.Globals())
+	engine.SetCallHandler(bvm.CallValue)
+	engine.SetGlobalsAccessor(bvm)
 	bvm.SetJIT(engine)
 	// Set JIT factory so goroutine child VMs also get JIT
 	bvm.SetJITFactory(func(child *bytecodevm.VM) bytecodevm.JITEngine {
@@ -23,9 +25,6 @@ func enableJIT(bvm *bytecodevm.VM) {
 		return e
 	})
 
-	// Note: Trace JIT is NOT enabled here because it can conflict with
-	// Method JIT's call-exit register state. The CLI enables both via
-	// cliEnableJIT which calls cliEnableTracing separately.
-	// TODO: fix the interaction between Method JIT call-exit and Trace JIT
-	// register writes, then enable tracing here too.
+	// Trace JIT: loop-level SSA compilation
+	enableTracing(bvm)
 }

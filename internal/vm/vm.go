@@ -1023,7 +1023,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			frame.pc += sbx
 			// While-loop back-edge detection: notify trace recorder on backward jumps.
 			// Only checks when sbx < 0 (backward) and traceRec is non-nil (zero overhead otherwise).
-			if sbx < 0 && vm.traceRec != nil && !frame.closure.Proto.IsTraceBlacklisted(jmpPC) {
+			if sbx < 0 && vm.traceRec != nil && frame.closure.Proto.JITEntry == nil && !frame.closure.Proto.IsTraceBlacklisted(jmpPC) {
 				if vm.traceRec.OnLoopBackEdge(jmpPC, frame.closure.Proto) {
 					tr := vm.executeCompiledTrace(frame.closure.Proto, base)
 					if tr.executed {
@@ -1339,7 +1339,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						// Trace: check for compiled trace.
 						// Fast-path: skip OnLoopBackEdge if this FORLOOP PC is trace-blacklisted
 						// (avoids ~30-50ns interface dispatch + map lookup per iteration).
-						if vm.traceRec != nil && sbx < 0 && !frame.closure.Proto.IsTraceBlacklisted(forloopPC) {
+						// Trace JIT: only activate for loops in functions NOT compiled by Method JIT.
+						// If Method JIT compiled this function but side-exited to the interpreter,
+						// the trace JIT would often produce incorrect results (closures, complex control flow).
+						if vm.traceRec != nil && sbx < 0 && frame.closure.Proto.JITEntry == nil && !frame.closure.Proto.IsTraceBlacklisted(forloopPC) {
 							if vm.traceRec.OnLoopBackEdge(forloopPC, frame.closure.Proto) {
 								tr := vm.executeCompiledTrace(frame.closure.Proto, base)
 								if tr.executed {
@@ -1350,7 +1353,6 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 									}
 								}
 							}
-							// Update cached recording state (OnLoopBackEdge may start/stop recording)
 							vm.traceRecording = vm.traceRec.IsRecording()
 						}
 					}

@@ -11,6 +11,9 @@ func cliEnableJIT(bvm *bytecodevm.VM) {
 	// Method JIT: function-level compilation
 	engine := jit.NewEngine()
 	engine.SetThreshold(1)
+	engine.SetGlobals(bvm.Globals())
+	engine.SetCallHandler(bvm.CallValue)
+	engine.SetGlobalsAccessor(bvm)
 	bvm.SetJIT(engine)
 	// Set JIT factory so goroutine child VMs also get JIT
 	bvm.SetJITFactory(func(child *bytecodevm.VM) bytecodevm.JITEngine {
@@ -22,9 +25,6 @@ func cliEnableJIT(bvm *bytecodevm.VM) {
 		return e
 	})
 
-	// TODO: enable Trace JIT here once the interaction between Method JIT
-	// call-exit register state and Trace JIT register writes is fixed.
-	// Currently, enabling both causes wrong results in nested call scenarios
-	// (e.g., closure_bench, TestCallExit_NestedJIT).
-	// cliEnableTracing(bvm)
+	// Trace JIT: loop-level SSA compilation
+	cliEnableTracing(bvm)
 }
