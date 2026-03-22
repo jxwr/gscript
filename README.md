@@ -49,11 +49,11 @@ Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03
 | matmul(300) | 1.022s | 0.022s | 46.5x |
 | spectral_norm(500) | 0.923s | 0.007s | 132x |
 | nbody(500K) | 1.937s | 0.033s | 58.7x |
-| binary_trees(15) | 2.088s | 0.17s | 12.3x |
+| binary_trees(15) | 2.222s | 0.17s | 13.1x |
 | fannkuch(9) | 0.572s | 0.019s | 30.1x |
 | sort(50K x3) | 0.185s | 0.010s | 18.5x |
 | sum_primes(100K) | 0.027s | 0.002s | 13.5x |
-| mutual_recursion(25x1K) | 0.313s | 0.005s | 62.6x |
+| mutual_recursion(25x1K) | 0.331s | 0.005s | 66.2x |
 | method_dispatch(100K) | 0.115s | 0.000s | ~230x |
 | closure_bench | 0.021s | 0.009s | 2.3x |
 | string_bench | 0.007s | 0.008s | 0.9x (GScript WINS) |
