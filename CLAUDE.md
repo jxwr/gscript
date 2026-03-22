@@ -179,44 +179,37 @@ Run the full suite before AND after every optimization. Record numbers in the bl
 Full audit document: `docs/architecture_audit.md`
 Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
-## Current Status (2026-03-22, benchmark run #9, post-S2.1-S2.3+compiler-opt)
+## Current Status (2026-03-22, benchmark run #10, post-S2.1-S2.3+compiler-opt)
 
-Full Season 2 complete: NaN-boxing, custom heap, shape system, GC compaction, compiler register optimization. mandelbrot 2.6x gap. fib/fn_calls match LuaJIT.
+Full Season 2 complete: NaN-boxing, custom heap, shape system, GC compaction, compiler register optimization. mandelbrot 2.7x gap. fib/fn_calls match LuaJIT.
 
-### vs LuaJIT (warm benchmarks)
-| Benchmark | GScript JIT | LuaJIT | Result |
-|-----------|-------------|--------|--------|
-| fib(20) | 23.0us | 25.0us | **GScript WINS** |
-| fn calls (10K) | 2.30us | 2.3us | **parity** |
-| ackermann(3,4) | 20.7us | 12.0us | 1.7x gap |
+### Warm micro-benchmarks (Go test, JIT vs VM, benchtime=3s)
+| Benchmark | JIT | VM | JIT/VM Speedup | LuaJIT | JIT vs LuaJIT |
+|-----------|-----|-----|----------------|--------|---------------|
+| HeavyLoop | 23.1us | 955us | **x41.3** | — | — |
+| FibIterative(30) | 149ns | 510ns | **x3.4** | — | — |
+| FunctionCalls(10K) | 2.37us | 309us | **x130.4** | 2.3us | **parity** |
+| FibRecursive(20) | 23.6us | 808us | **x34.2** | 25.0us | **GScript WINS** |
+| Ackermann(3,4) | 20.6us | 379us | **x18.4** | 12.0us | 1.7x gap |
 
-### Full benchmark suite (15 benchmarks)
-| Benchmark | Best | LuaJIT | vs LuaJIT |
-|-----------|------|--------|-----------|
-| fib(35) | **0.032s** | 0.032s | **1.0x (parity)** |
-| sieve(1M x3) | **0.021s** | 0.010s | 2.1x gap |
-| mandelbrot(1000) | **0.136s** | 0.052s | **2.6x gap** |
-| ackermann(3,4 x500) | **0.011s** | 0.006s | 1.8x gap |
-| matmul(300) | **0.940s** | 0.022s | 43x gap |
-| spectral_norm(500) | **0.744s** | 0.007s | 106x gap |
-| nbody(500K) | **1.728s** | 0.033s | 52x gap |
-| fannkuch(9) | **0.619s** | 0.019s | 33x gap |
-| sort(50K x3) | **0.185s** | 0.010s | 18.5x gap |
-| sum_primes(100K) | **0.026s** | 0.002s | 13x gap |
-| mutual_recursion(25 x1000) | **0.137s** | 0.005s | 27x gap |
-| method_dispatch(100K) | **0.072s** | 0.000s | ~180x gap |
-| closure_bench | **0.056s** | 0.009s | 6.2x gap |
-| string_bench | **0.043s** | 0.008s | 5.4x gap |
-| binary_trees | **1.249s** | 0.17s | 7.3x gap |
-
-### Warm micro-benchmarks (Go test, JIT vs VM)
-| Benchmark | JIT | VM | Speedup |
-|-----------|-----|-----|---------|
-| HeavyLoop | 25.1us | 980us | **x39.0** |
-| FibIterative(30) | 169ns | 536ns | **x3.2** |
-| FunctionCalls(10K) | 2.57us | 331us | **x128.8** |
-| FibRecursive(20) | 24.2us | 856us | **x35.4** |
-| Ackermann(3,4) | 22.0us | 392us | **x17.8** |
+### Full benchmark suite (15 benchmarks × 3 modes)
+| Benchmark | VM | JIT | Trace | Best | LuaJIT | vs LuaJIT |
+|-----------|-----|-----|-------|------|--------|-----------|
+| fib(35) | 1.069s | **0.034s** | 0.033s | 0.033s | 0.032s | **1.0x (parity)** |
+| sieve(1M x3) | 0.236s | **0.023s** | 0.021s | 0.021s | 0.010s | 2.1x gap |
+| mandelbrot(1000) | 1.332s | 1.409s | **0.141s** | 0.141s | 0.052s | **2.7x gap** |
+| ackermann(3,4 x500) | 0.187s | **0.011s** | 0.010s | 0.010s | 0.006s | 1.7x gap |
+| matmul(300) | **0.962s** | 1.015s | 1.148s | 0.962s | 0.022s | 43.7x gap |
+| spectral_norm(500) | 0.776s | 0.709s | **0.702s** | 0.702s | 0.007s | 100x gap |
+| nbody(500K) | **1.785s** | 1.871s | 1.826s | 1.785s | 0.033s | 54x gap |
+| fannkuch(9) | **0.542s** | 0.548s | timeout | 0.542s | 0.019s | 28.5x gap |
+| sort(50K x3) | **0.172s** | 0.176s | error | 0.172s | 0.010s | 17.2x gap |
+| sum_primes(100K) | 0.025s | 0.025s | **0.030s** | 0.025s | 0.002s | 12.5x gap |
+| mutual_recursion(25 x1000) | **0.134s** | 0.232s | 0.246s | 0.134s | 0.005s | 26.8x gap |
+| method_dispatch(100K) | **0.073s** | 0.104s | 0.105s | 0.073s | 0.000s | ~180x gap |
+| closure_bench | **0.058s** | 0.069s | error | 0.058s | 0.009s | 6.4x gap |
+| string_bench | **0.040s** | 0.042s | 0.043s | 0.040s | 0.008s | 5.0x gap |
+| binary_trees | **1.324s** | crash | crash | 1.324s | 0.17s | 7.8x gap |
 
 ### LuaJIT Gap Analysis
 | Gap | Root Cause | Fix | Difficulty |
