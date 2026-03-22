@@ -165,84 +165,24 @@ func (b *ssaBuilder) build() *SSAFunc {
 		}
 	}
 
-	// Phase 2: Emit guards for loop entry (type checks for used slots)
-	// Skip guards for integer slots that are written before their first read
-	// in the trace body — their initial value is irrelevant since the trace
-	// overwrites it before use. Float slots always get full guards here
-	// (the codegen relaxes the check for write-before-read float slots).
+	// Phase 2: Emit guards for loop entry using liveness analysis.
+	// Only emit guards for slots that are LIVE at the loop header — i.e., their
+	// value from the previous iteration is actually read in the current iteration
+	// before being overwritten. Dead slots (overwritten before first read) get
+	// no guards, eliminating false guard-fails from stale types.
+	liveIn, slotRuntimeType, slotPC := computeLiveIn(b.trace)
 	guardedSlots := make(map[int]bool)
-	for _, ir := range b.trace.IR {
-		switch ir.Op {
-		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV,
-			vm.OP_LT, vm.OP_LE:
-			if ir.B < 256 && !guardedSlots[ir.B] {
-				if !b.isWrittenBeforeFirstRead(ir.B) {
-					b.emitGuard(ir.B, ir.BType, ir.PC)
-				}
-				guardedSlots[ir.B] = true
-			}
-			if ir.C < 256 && !guardedSlots[ir.C] {
-				if !b.isWrittenBeforeFirstRead(ir.C) {
-					b.emitGuard(ir.C, ir.CType, ir.PC)
-				}
-				guardedSlots[ir.C] = true
-			}
-		case vm.OP_UNM:
-			if ir.B < 256 && !guardedSlots[ir.B] {
-				if !b.isWrittenBeforeFirstRead(ir.B) {
-					b.emitGuard(ir.B, ir.BType, ir.PC)
-				}
-				guardedSlots[ir.B] = true
-			}
-		case vm.OP_GETTABLE, vm.OP_SETTABLE:
-			// Guard table slot — WBR-relaxable because in-loop codegen
-			// (emitSSALoadArray/emitSSAStoreArray) has its own type guards.
-			tableSlot := ir.B
-			if ir.Op == vm.OP_SETTABLE {
-				tableSlot = ir.A
-			}
-			if tableSlot < 256 && !guardedSlots[tableSlot] {
-				if !b.isWrittenBeforeFirstReadExt(tableSlot) {
-					b.emitGuard(tableSlot, runtime.TypeTable, ir.PC)
-				}
-				guardedSlots[tableSlot] = true
-			}
-			// Guard key slot — WBR-relaxable
-			keySlot := ir.C
-			if ir.Op == vm.OP_SETTABLE {
-				keySlot = ir.B
-			}
-			if keySlot < 256 && !guardedSlots[keySlot] {
-				if !b.isWrittenBeforeFirstReadExt(keySlot) {
-					b.emitGuard(keySlot, ir.CType, ir.PC)
-				}
-				guardedSlots[keySlot] = true
-			}
-		case vm.OP_GETFIELD:
-			// Guard table slot — WBR-relaxable (in-loop guard in emitSSALoadField)
-			if ir.B < 256 && !guardedSlots[ir.B] {
-				if !b.isWrittenBeforeFirstReadExt(ir.B) {
-					b.emitGuard(ir.B, runtime.TypeTable, ir.PC)
-				}
-				guardedSlots[ir.B] = true
-			}
-		case vm.OP_SETFIELD:
-			// Guard table slot — WBR-relaxable (in-loop guard in emitSSAStoreField)
-			if ir.A < 256 && !guardedSlots[ir.A] {
-				if !b.isWrittenBeforeFirstReadExt(ir.A) {
-					b.emitGuard(ir.A, runtime.TypeTable, ir.PC)
-				}
-				guardedSlots[ir.A] = true
-			}
-		case vm.OP_FORLOOP:
-			// Guard loop control registers
-			for _, slot := range []int{ir.A, ir.A + 1, ir.A + 2} {
-				if !guardedSlots[slot] {
-					b.emitGuard(slot, runtime.TypeInt, ir.PC)
-					guardedSlots[slot] = true
-				}
-			}
+	for slot := range liveIn {
+		if guardedSlots[slot] {
+			continue
 		}
+		typ, ok := slotRuntimeType[slot]
+		if !ok {
+			continue
+		}
+		pc := slotPC[slot]
+		b.emitGuard(slot, typ, pc)
+		guardedSlots[slot] = true
 	}
 
 	// Phase 3: Emit LOOP marker
@@ -255,6 +195,295 @@ func (b *ssaBuilder) build() *SSAFunc {
 	}
 
 	return &SSAFunc{Insts: b.insts, Trace: b.trace}
+}
+
+// computeLiveIn determines which VM slots are "live-in" at the loop header:
+// their value from the previous iteration is read before being overwritten.
+// Only these slots need pre-loop type guards.
+//
+// For traces containing non-numeric ops (GETTABLE, SETTABLE, GETFIELD,
+// SETFIELD, GETGLOBAL, CALL), this function falls back to the old per-slot
+// WBR analysis (isWrittenBeforeFirstRead / isWrittenBeforeFirstReadExt)
+// to avoid exposing codegen bugs with type-conflicting slot reuse.
+//
+// For purely numeric traces, it uses a clean forward scan where ANY write
+// (arithmetic, MOVE, loads, FORLOOP) kills liveness. This handles the
+// nbody case where dead float slots held stale values from the previous
+// iteration, causing false guard failures.
+//
+// Returns three maps:
+//   - liveIn: set of slot numbers that are live at the loop header
+//   - slotRuntimeType: the expected runtime.ValueType for each live-in slot
+//   - slotPC: the bytecode PC to associate with each guard (first read site)
+func computeLiveIn(trace *Trace) (liveIn map[int]bool, slotRuntimeType map[int]runtime.ValueType, slotPC map[int]int) {
+	liveIn = make(map[int]bool)
+	slotRuntimeType = make(map[int]runtime.ValueType)
+	slotPC = make(map[int]int)
+
+	// Check if the trace has non-numeric ops.
+	hasNonNumeric := false
+	for _, ir := range trace.IR {
+		switch ir.Op {
+		case vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD,
+			vm.OP_GETGLOBAL, vm.OP_CALL:
+			hasNonNumeric = true
+		}
+		if hasNonNumeric {
+			break
+		}
+	}
+
+	if hasNonNumeric {
+		// Fall back to old-style per-opcode guard collection.
+		// This preserves the old behavior exactly for traces with table ops.
+		computeLiveInLegacy(trace, liveIn, slotRuntimeType, slotPC)
+		return
+	}
+
+	// Purely numeric trace: forward scan. Only constant loads and FORLOOP/FORPREP
+	// kill liveness. Arithmetic and MOVE outputs depend on operand types, which
+	// might be wrong if the guard is skipped.
+	//
+	// Float slots always remain live-in: the float register allocator needs
+	// pre-loop LOAD_SLOT + UNBOX_FLOAT for D register initialization. The codegen
+	// handles WBR float slots via findWBRFloatSlots with relaxed guards.
+	//
+	// Collect float slots first.
+	floatSlots := make(map[int]bool)
+	for _, ir := range trace.IR {
+		if ir.BType == runtime.TypeFloat && ir.B < 256 {
+			floatSlots[ir.B] = true
+		}
+		if ir.CType == runtime.TypeFloat && ir.C < 256 {
+			floatSlots[ir.C] = true
+		}
+	}
+
+	written := make(map[int]bool)
+
+	for _, ir := range trace.IR {
+		// Check reads first (within same instruction, reads happen before writes)
+		readSlots := getReadSlots(&ir)
+		for _, rs := range readSlots {
+			if !written[rs.slot] && !liveIn[rs.slot] {
+				liveIn[rs.slot] = true
+				slotRuntimeType[rs.slot] = rs.typ
+				slotPC[rs.slot] = ir.PC
+			}
+		}
+		// Only constant loads and FORLOOP/FORPREP kill liveness.
+		// Float slots are never killed (always live-in for D register init).
+		switch ir.Op {
+		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
+			if !floatSlots[ir.A] {
+				written[ir.A] = true
+			}
+		case vm.OP_FORLOOP:
+			if !floatSlots[ir.A] {
+				written[ir.A] = true
+			}
+			if !floatSlots[ir.A+3] {
+				written[ir.A+3] = true
+			}
+		case vm.OP_FORPREP:
+			if !floatSlots[ir.A] {
+				written[ir.A] = true
+			}
+		}
+	}
+
+	return
+}
+
+// computeLiveInLegacy collects live-in slots using the old per-opcode logic.
+// This matches the old Phase 2 behavior exactly, including the WBR checks.
+func computeLiveInLegacy(trace *Trace, liveIn map[int]bool, slotRuntimeType map[int]runtime.ValueType, slotPC map[int]int) {
+	// Build a temporary ssaBuilder just for the WBR checks
+	tmpBuilder := &ssaBuilder{
+		trace:    trace,
+		slotDefs: make(map[int]SSARef),
+		slotType: make(map[int]SSAType),
+	}
+	// Phase 1 from old code: set slot types
+	for _, ir := range trace.IR {
+		if ir.BType == runtime.TypeInt {
+			tmpBuilder.slotType[ir.B] = SSATypeInt
+		} else if ir.BType == runtime.TypeFloat {
+			tmpBuilder.slotType[ir.B] = SSATypeFloat
+		}
+		if ir.CType == runtime.TypeInt {
+			tmpBuilder.slotType[ir.C] = SSATypeInt
+		} else if ir.CType == runtime.TypeFloat {
+			tmpBuilder.slotType[ir.C] = SSATypeFloat
+		}
+	}
+
+	seen := make(map[int]bool) // tracks which slots have been considered (like guardedSlots)
+	for _, ir := range trace.IR {
+		switch ir.Op {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV,
+			vm.OP_LT, vm.OP_LE:
+			if ir.B < 256 && !seen[ir.B] {
+				if !tmpBuilder.isWrittenBeforeFirstRead(ir.B) {
+					liveIn[ir.B] = true
+					slotRuntimeType[ir.B] = ir.BType
+					slotPC[ir.B] = ir.PC
+				}
+				seen[ir.B] = true
+			}
+			if ir.C < 256 && !seen[ir.C] {
+				if !tmpBuilder.isWrittenBeforeFirstRead(ir.C) {
+					liveIn[ir.C] = true
+					slotRuntimeType[ir.C] = ir.CType
+					slotPC[ir.C] = ir.PC
+				}
+				seen[ir.C] = true
+			}
+		case vm.OP_UNM:
+			if ir.B < 256 && !seen[ir.B] {
+				if !tmpBuilder.isWrittenBeforeFirstRead(ir.B) {
+					liveIn[ir.B] = true
+					slotRuntimeType[ir.B] = ir.BType
+					slotPC[ir.B] = ir.PC
+				}
+				seen[ir.B] = true
+			}
+		case vm.OP_GETTABLE, vm.OP_SETTABLE:
+			tableSlot := ir.B
+			if ir.Op == vm.OP_SETTABLE {
+				tableSlot = ir.A
+			}
+			if tableSlot < 256 && !seen[tableSlot] {
+				if !tmpBuilder.isWrittenBeforeFirstReadExt(tableSlot) {
+					liveIn[tableSlot] = true
+					slotRuntimeType[tableSlot] = runtime.TypeTable
+					slotPC[tableSlot] = ir.PC
+				}
+				seen[tableSlot] = true
+			}
+			keySlot := ir.C
+			if ir.Op == vm.OP_SETTABLE {
+				keySlot = ir.B
+			}
+			if keySlot < 256 && !seen[keySlot] {
+				if !tmpBuilder.isWrittenBeforeFirstReadExt(keySlot) {
+					liveIn[keySlot] = true
+					slotRuntimeType[keySlot] = ir.CType
+					slotPC[keySlot] = ir.PC
+				}
+				seen[keySlot] = true
+			}
+		case vm.OP_GETFIELD:
+			if ir.B < 256 && !seen[ir.B] {
+				if !tmpBuilder.isWrittenBeforeFirstReadExt(ir.B) {
+					liveIn[ir.B] = true
+					slotRuntimeType[ir.B] = runtime.TypeTable
+					slotPC[ir.B] = ir.PC
+				}
+				seen[ir.B] = true
+			}
+		case vm.OP_SETFIELD:
+			if ir.A < 256 && !seen[ir.A] {
+				if !tmpBuilder.isWrittenBeforeFirstReadExt(ir.A) {
+					liveIn[ir.A] = true
+					slotRuntimeType[ir.A] = runtime.TypeTable
+					slotPC[ir.A] = ir.PC
+				}
+				seen[ir.A] = true
+			}
+		case vm.OP_FORLOOP:
+			for _, slot := range []int{ir.A, ir.A + 1, ir.A + 2} {
+				if !seen[slot] {
+					if !tmpBuilder.isWrittenBeforeFirstReadExt(slot) {
+						liveIn[slot] = true
+						slotRuntimeType[slot] = runtime.TypeInt
+						slotPC[slot] = ir.PC
+					}
+					seen[slot] = true
+				}
+			}
+		}
+	}
+}
+
+// slotRead pairs a slot number with the expected runtime type for that read.
+type slotRead struct {
+	slot int
+	typ  runtime.ValueType
+}
+
+// getReadSlots returns the VM register slots read by a trace instruction.
+// RK operands with idx >= 256 are constants, not registers — excluded.
+func getReadSlots(ir *TraceIR) []slotRead {
+	var reads []slotRead
+	switch ir.Op {
+	case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV:
+		if ir.B < 256 {
+			reads = append(reads, slotRead{ir.B, ir.BType})
+		}
+		if ir.C < 256 {
+			reads = append(reads, slotRead{ir.C, ir.CType})
+		}
+	case vm.OP_LT, vm.OP_LE, vm.OP_EQ:
+		if ir.B < 256 {
+			reads = append(reads, slotRead{ir.B, ir.BType})
+		}
+		if ir.C < 256 {
+			reads = append(reads, slotRead{ir.C, ir.CType})
+		}
+	case vm.OP_UNM:
+		reads = append(reads, slotRead{ir.B, ir.BType})
+	case vm.OP_MOVE:
+		reads = append(reads, slotRead{ir.B, ir.BType})
+	case vm.OP_TEST:
+		reads = append(reads, slotRead{ir.A, ir.AType})
+	case vm.OP_LEN:
+		reads = append(reads, slotRead{ir.B, ir.BType})
+	case vm.OP_GETFIELD:
+		// B is the table
+		reads = append(reads, slotRead{ir.B, runtime.TypeTable})
+	case vm.OP_SETFIELD:
+		// A is the table, C is the value (if register)
+		reads = append(reads, slotRead{ir.A, runtime.TypeTable})
+		if ir.C < 256 {
+			reads = append(reads, slotRead{ir.C, ir.CType})
+		}
+	case vm.OP_GETTABLE:
+		// B is the table, C is the key (if register)
+		reads = append(reads, slotRead{ir.B, runtime.TypeTable})
+		if ir.C < 256 {
+			reads = append(reads, slotRead{ir.C, ir.CType})
+		}
+	case vm.OP_SETTABLE:
+		// A is the table, B is the key (if register), C is the value (if register)
+		reads = append(reads, slotRead{ir.A, runtime.TypeTable})
+		if ir.B < 256 {
+			reads = append(reads, slotRead{ir.B, ir.BType})
+		}
+		if ir.C < 256 {
+			reads = append(reads, slotRead{ir.C, ir.CType})
+		}
+	case vm.OP_FORLOOP:
+		// Reads idx (A), limit (A+1), step (A+2)
+		reads = append(reads,
+			slotRead{ir.A, runtime.TypeInt},
+			slotRead{ir.A + 1, runtime.TypeInt},
+			slotRead{ir.A + 2, runtime.TypeInt},
+		)
+	case vm.OP_FORPREP:
+		// Reads init (A) and step (A+2)
+		reads = append(reads,
+			slotRead{ir.A, runtime.TypeInt},
+			slotRead{ir.A + 2, runtime.TypeInt},
+		)
+	case vm.OP_CALL:
+		// Reads fn (A), args (A+1..A+B-1)
+		reads = append(reads, slotRead{ir.A, ir.AType})
+		for s := ir.A + 1; s < ir.A+ir.B; s++ {
+			reads = append(reads, slotRead{s, runtime.TypeInt}) // approximate
+		}
+	}
+	return reads
 }
 
 // isWrittenBeforeFirstRead returns true if the given slot is written by a
@@ -361,6 +590,12 @@ func (b *ssaBuilder) isWrittenBeforeFirstReadExt(slot int) bool {
 		case vm.OP_GETGLOBAL:
 			isWrite = (ir.A == slot)
 		case vm.OP_CALL:
+			isWrite = (ir.A == slot)
+		case vm.OP_FORLOOP:
+			// FORLOOP writes idx (A) and loop var (A+3)
+			isWrite = (slot == ir.A || slot == ir.A+3)
+		case vm.OP_FORPREP:
+			// FORPREP writes idx (A)
 			isWrite = (ir.A == slot)
 		}
 		if isWrite {

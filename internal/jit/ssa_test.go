@@ -149,3 +149,84 @@ func TestSSA_EndToEnd(t *testing.T) {
 		t.Errorf("result = %d, want 500500", v.Int())
 	}
 }
+
+func TestComputeLiveIn_PureNumeric_DeadIntSlot(t *testing.T) {
+	// Purely numeric trace where LOADINT kills a slot before it's read.
+	// The slot should NOT be live-in and should NOT get a guard.
+	// Trace: LOADINT A=5; ADD A=4 B=5 C=3; FORLOOP A=0
+	trace := &Trace{
+		LoopProto: &vm.FuncProto{Constants: []runtime.Value{}},
+		IR: []TraceIR{
+			{Op: vm.OP_LOADINT, A: 5, SBX: 42, BType: runtime.TypeInt, CType: runtime.TypeInt},
+			{Op: vm.OP_ADD, A: 4, B: 5, C: 3, BType: runtime.TypeInt, CType: runtime.TypeInt},
+			{Op: vm.OP_FORLOOP, A: 0, SBX: -3},
+		},
+	}
+
+	liveIn, _, _ := computeLiveIn(trace)
+
+	// Slot 5 is written by LOADINT before ADD reads it → NOT live-in
+	if liveIn[5] {
+		t.Error("slot 5 should NOT be live-in (LOADINT writes before ADD reads)")
+	}
+
+	// Slot 3 is read by ADD and never written → live-in
+	if !liveIn[3] {
+		t.Error("slot 3 should be live-in (read by ADD, never written)")
+	}
+
+	// FORLOOP control slots 0,1,2 → live-in
+	if !liveIn[0] || !liveIn[1] || !liveIn[2] {
+		t.Error("FORLOOP slots 0,1,2 should be live-in")
+	}
+}
+
+func TestComputeLiveIn_PureNumeric_FloatSlotAlwaysLive(t *testing.T) {
+	// Float slots are always live-in for D register initialization.
+	// Even if LOADK writes a float before it's read, it should be live-in.
+	trace := &Trace{
+		LoopProto: &vm.FuncProto{Constants: []runtime.Value{}},
+		IR: []TraceIR{
+			{Op: vm.OP_ADD, A: 0, B: 0, C: 1, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
+			{Op: vm.OP_FORLOOP, A: 2, SBX: -2},
+		},
+	}
+
+	liveIn, slotType, _ := computeLiveIn(trace)
+
+	// Slot 0 is a float operand, should be live-in
+	if !liveIn[0] {
+		t.Error("float slot 0 should be live-in (float slots always live for D register init)")
+	}
+	if slotType[0] != runtime.TypeFloat {
+		t.Errorf("slot 0 type = %d, want TypeFloat(%d)", slotType[0], runtime.TypeFloat)
+	}
+}
+
+func TestComputeLiveIn_NonNumeric_UsesLegacy(t *testing.T) {
+	// Trace with GETFIELD falls back to legacy path.
+	// This should match the old code's behavior exactly.
+	trace := &Trace{
+		LoopProto: &vm.FuncProto{Constants: []runtime.Value{}},
+		IR: []TraceIR{
+			{Op: vm.OP_GETFIELD, A: 4, B: 5, BType: runtime.TypeTable, FieldIndex: 0, ShapeID: 1},
+			{Op: vm.OP_ADD, A: 3, B: 4, C: 3, BType: runtime.TypeInt, CType: runtime.TypeInt},
+			{Op: vm.OP_FORLOOP, A: 0, SBX: -3},
+		},
+	}
+
+	liveIn, slotType, _ := computeLiveIn(trace)
+
+	// Slot 5 is the table read by GETFIELD → should be live-in as TypeTable
+	if !liveIn[5] {
+		t.Error("slot 5 (table) should be live-in")
+	}
+	if slotType[5] != runtime.TypeTable {
+		t.Errorf("slot 5 type = %d, want TypeTable(%d)", slotType[5], runtime.TypeTable)
+	}
+
+	// Slot 3 is read by ADD before any write → live-in
+	if !liveIn[3] {
+		t.Error("slot 3 should be live-in (read by ADD)")
+	}
+}
