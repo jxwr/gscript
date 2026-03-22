@@ -725,13 +725,14 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 
 	case vm.OP_GETFIELD:
 		// GETFIELD A B C: R(A) = R(B).Constants[C]
-		// Emit SSA_LOAD_FIELD with AuxInt = field index in skeys (captured at recording time)
+		// AuxInt packs fieldIndex (low 32) + shapeID (high 32)
 		tableRef := b.getSlotRef(ir.B)
+		auxInt := int64(uint32(ir.FieldIndex)) | (int64(ir.ShapeID) << 32)
 		ref := b.emit(SSAInst{
 			Op: SSA_LOAD_FIELD, Type: SSATypeUnknown,
 			Arg1: tableRef,
 			Slot: int16(ir.A), PC: ir.PC,
-			AuxInt: int64(ir.FieldIndex), // skeys index (-1 if unknown)
+			AuxInt: auxInt,
 		})
 		b.slotDefs[ir.A] = ref
 
@@ -739,11 +740,12 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		// SETFIELD A B C: R(A).Constants[B] = RK(C)
 		tableRef := b.getSlotRef(ir.A)
 		valRef := b.getSlotOrRK(ir.C)
+		auxInt := int64(uint32(ir.FieldIndex)) | (int64(ir.ShapeID) << 32)
 		b.emit(SSAInst{
 			Op: SSA_STORE_FIELD, Type: SSATypeUnknown,
 			Arg1: tableRef, Arg2: valRef,
 			Slot: int16(ir.A), PC: ir.PC,
-			AuxInt: int64(ir.FieldIndex),
+			AuxInt: auxInt,
 		})
 
 	case vm.OP_CALL:

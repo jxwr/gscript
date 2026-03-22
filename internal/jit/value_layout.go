@@ -57,6 +57,7 @@ const (
 
 	// Type-specialized array fields (added at end of Table struct)
 	TableOffArrayKind  = 137 // ArrayKind (uint8)
+	TableOffShapeID    = 140 // uint32 — shape identifier for field cache validation
 	TableOffIntArray   = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
 	TableOffFloatArray = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
 	TableOffBoolArray  = 192 // []byte slice header (ptr+len+cap = 24 bytes)
@@ -141,6 +142,12 @@ func init() {
 	kdOff := runtime.TableKeysDirtyOffset()
 	if kdOff != TableOffKeysDirty {
 		panic("jit: Table.keysDirty offset mismatch: expected " + itoa(TableOffKeysDirty) + ", got " + itoa(int(kdOff)))
+	}
+
+	// Verify shapeID offset
+	shOff := runtime.TableShapeIDOffset()
+	if shOff != TableOffShapeID {
+		panic("jit: Table.shapeID offset mismatch: expected " + itoa(TableOffShapeID) + ", got " + itoa(int(shOff)))
 	}
 
 	// Verify ArrayKind constants

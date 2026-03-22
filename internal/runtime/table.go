@@ -39,6 +39,7 @@ type Table struct {
 	keysDirty bool
 	// Type-specialized array fields (placed at end to preserve existing offsets)
 	arrayKind  ArrayKind
+	shapeID    uint32 // shape identifier for field cache validation
 	intArray   []int64
 	floatArray []float64
 	boolArray  []byte // 1 byte per bool, no GC pointers → zero GC scan
@@ -175,12 +176,14 @@ func (t *Table) HasMetatable() bool {
 }
 
 // FieldCacheEntry is a hint-based inline cache entry for field access.
-// It caches the index of a field name in a table's skeys slice.
-// On lookup, it checks if skeys[FieldIdx] matches the expected key —
-// if yes, it's an O(1) hit. Works across different tables with the
+// It caches the index of a field name in a table's skeys slice and the
+// table's shapeID when the cache was populated. On lookup, if the table's
+// shapeID matches the cached shapeID, the field index is valid without
+// needing string comparison. Works across different tables with the
 // same field layout (e.g., all nbody body tables).
 type FieldCacheEntry struct {
-	FieldIdx int // cached index into skeys/svals (-1 = not cached)
+	FieldIdx int    // cached index into skeys/svals (-1 = not cached)
+	ShapeID  uint32 // shapeID when cache was populated
 }
 
 // RawGetString retrieves a value by string key (fast path, no Value boxing).
@@ -203,23 +206,24 @@ func (t *Table) RawGetString(key string) Value {
 }
 
 // RawGetStringCached retrieves a value by string key using an inline cache hint.
-// The cache stores the field index from a previous lookup. On cache hit
-// (skeys[idx] == key), avoids the O(n) linear scan entirely.
+// The cache stores the field index and the table's shapeID from a previous lookup.
+// On cache hit (shapeID match), avoids both string comparison and O(n) scan.
 // Works across different tables sharing the same field layout.
 func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
 	if t.mu != nil {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
 	}
-	// Hint-based cache: check if cached index is valid
+	// ShapeID-based cache: if shape matches, the field index is valid
 	idx := cache.FieldIdx
-	if idx < len(t.skeys) && t.skeys[idx] == key {
+	if t.shapeID != 0 && cache.ShapeID == t.shapeID && idx >= 0 && idx < len(t.svals) {
 		return t.svals[idx]
 	}
 	// Cache miss — linear scan and update cache
 	for i, k := range t.skeys {
 		if k == key {
 			cache.FieldIdx = i
+			cache.ShapeID = t.shapeID
 			return t.svals[i]
 		}
 	}
@@ -232,7 +236,7 @@ func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
 }
 
 // RawSetStringCached assigns a value by string key using an inline cache hint.
-// Uses the cache to find existing keys faster on cache hit.
+// Uses shapeID-based cache to find existing keys faster on cache hit.
 func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry) {
 	if t.mu != nil {
 		t.mu.Lock()
@@ -240,9 +244,9 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	}
 	t.keysDirty = true
 
-	// Hint-based cache: check if cached index is valid for this key
+	// ShapeID-based cache: if shape matches, the field index is valid
 	idx := cache.FieldIdx
-	if idx < len(t.skeys) && t.skeys[idx] == key {
+	if t.shapeID != 0 && cache.ShapeID == t.shapeID && idx >= 0 && idx < len(t.svals) {
 		if val.IsNil() {
 			last := len(t.skeys) - 1
 			if idx != last {
@@ -251,7 +255,9 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			}
 			t.skeys = t.skeys[:last]
 			t.svals = t.svals[:last]
+			t.shapeID = GetShapeID(t.skeys)
 			cache.FieldIdx = 0 // reset cache
+			cache.ShapeID = 0
 		} else {
 			t.svals[idx] = val
 		}
@@ -267,8 +273,11 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 				t.svals[i] = t.svals[last]
 				t.skeys = t.skeys[:last]
 				t.svals = t.svals[:last]
+				t.shapeID = GetShapeID(t.skeys)
 			} else {
 				t.svals[i] = val
+				cache.FieldIdx = i
+				cache.ShapeID = t.shapeID
 			}
 			return
 		}
@@ -287,6 +296,9 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 		if len(t.skeys) < smallFieldCap {
 			t.skeys = append(t.skeys, key)
 			arenaAppendValue(DefaultHeap, &t.svals, val)
+			t.shapeID = GetShapeID(t.skeys)
+			cache.FieldIdx = len(t.skeys) - 1
+			cache.ShapeID = t.shapeID
 		} else {
 			t.smap = make(map[string]Value, len(t.skeys)+1)
 			for i, k := range t.skeys {
@@ -295,6 +307,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			t.smap[key] = val
 			t.skeys = nil
 			t.svals = nil
+			t.shapeID = 0
 		}
 	}
 }
@@ -753,6 +766,7 @@ func (t *Table) RawSetString(key string, val Value) {
 				t.svals[i] = t.svals[last]
 				t.skeys = t.skeys[:last]
 				t.svals = t.svals[:last]
+				t.shapeID = GetShapeID(t.skeys)
 			} else {
 				t.svals[i] = val
 			}
@@ -773,6 +787,7 @@ func (t *Table) RawSetString(key string, val Value) {
 		if len(t.skeys) < smallFieldCap {
 			t.skeys = append(t.skeys, key)
 			arenaAppendValue(DefaultHeap, &t.svals, val)
+			t.shapeID = GetShapeID(t.skeys)
 		} else {
 			t.smap = make(map[string]Value, len(t.skeys)+1)
 			for i, k := range t.skeys {
@@ -781,6 +796,7 @@ func (t *Table) RawSetString(key string, val Value) {
 			t.smap[key] = val
 			t.skeys = nil
 			t.svals = nil
+			t.shapeID = 0
 		}
 	}
 }
@@ -985,6 +1001,15 @@ func TableFieldOffsets() (arrayKind, intArray, floatArray, boolArray uintptr) {
 func TableKeysDirtyOffset() uintptr {
 	var t Table
 	return unsafe.Offsetof(t.keysDirty)
+}
+
+// ShapeID returns the table's shape identifier.
+func (t *Table) ShapeID() uint32 { return t.shapeID }
+
+// TableShapeIDOffset returns the offset of shapeID for JIT verification.
+func TableShapeIDOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.shapeID)
 }
 
 // GetArrayKind returns the array kind for testing/JIT inspection.

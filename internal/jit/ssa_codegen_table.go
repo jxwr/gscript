@@ -454,9 +454,11 @@ func emitSSAStoreArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, re
 
 // emitSSALoadField emits code for SSA_LOAD_FIELD: R(A) = table.field at known skeys index.
 func emitSSALoadField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper) {
-	fieldIdx := int(inst.AuxInt)
+	fieldIdx := int(int32(inst.AuxInt)) // low 32 bits, sign-extended
 	tableSlot := sm.getSlotForRef(inst.Arg1)
 	dstSlot := int(inst.Slot)
+	// Unpack AuxInt: low 32 bits = fieldIdx, high 32 bits = shapeID
+	shapeID := uint32(inst.AuxInt >> 32)
 	asm.LoadImm64(X9, int64(inst.PC)) // side-exit PC
 
 	if fieldIdx < 0 || tableSlot < 0 {
@@ -478,10 +480,18 @@ func emitSSALoadField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlot
 	asm.LDR(X1, X0, TableOffMetatable)
 	asm.CBNZ(X1, "side_exit")
 
-	// Guard: skeys length > fieldIdx (shape hasn't shrunk)
-	asm.LDR(X1, X0, TableOffSkeysLen)
-	asm.CMPimm(X1, uint16(fieldIdx+1))
-	asm.BCond(CondLT, "side_exit")
+	// Guard: shapeID matches (replaces skeys length check — stronger and faster)
+	if shapeID != 0 {
+		asm.LDRW(X1, X0, TableOffShapeID) // load uint32 shapeID
+		asm.LoadImm64(X2, int64(shapeID))
+		asm.CMPreg(X1, X2)
+		asm.BCond(CondNE, "side_exit")
+	} else {
+		// Fallback: skeys length check (no shape info from recording)
+		asm.LDR(X1, X0, TableOffSkeysLen)
+		asm.CMPimm(X1, uint16(fieldIdx+1))
+		asm.BCond(CondLT, "side_exit")
+	}
 
 	// Load svals[fieldIdx]: svals base + fieldIdx * ValueSize
 	asm.LDR(X1, X0, TableOffSvals) // X1 = svals base pointer
@@ -497,7 +507,8 @@ func emitSSALoadField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlot
 
 // emitSSAStoreField emits code for SSA_STORE_FIELD: table.field = value at known skeys index.
 func emitSSAStoreField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper) {
-	fieldIdx := int(inst.AuxInt)
+	fieldIdx := int(int32(inst.AuxInt)) // low 32 bits, sign-extended
+	shapeID := uint32(inst.AuxInt >> 32) // high 32 bits
 	tableSlot := sm.getSlotForRef(inst.Arg1)
 	valSlot := sm.getSlotForRef(inst.Arg2)
 	asm.LoadImm64(X9, int64(inst.PC))
@@ -519,10 +530,17 @@ func emitSSAStoreField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlo
 	asm.LDR(X1, X0, TableOffMetatable)
 	asm.CBNZ(X1, "side_exit")
 
-	// Guard: skeys length > fieldIdx
-	asm.LDR(X1, X0, TableOffSkeysLen)
-	asm.CMPimm(X1, uint16(fieldIdx+1))
-	asm.BCond(CondLT, "side_exit")
+	// Guard: shapeID matches
+	if shapeID != 0 {
+		asm.LDRW(X1, X0, TableOffShapeID)
+		asm.LoadImm64(X2, int64(shapeID))
+		asm.CMPreg(X1, X2)
+		asm.BCond(CondNE, "side_exit")
+	} else {
+		asm.LDR(X1, X0, TableOffSkeysLen)
+		asm.CMPimm(X1, uint16(fieldIdx+1))
+		asm.BCond(CondLT, "side_exit")
+	}
 
 	// Store value to svals[fieldIdx]
 	asm.LDR(X1, X0, TableOffSvals)

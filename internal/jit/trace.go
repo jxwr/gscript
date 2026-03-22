@@ -36,6 +36,9 @@ type TraceIR struct {
 	// FieldIndex: for GETFIELD/SETFIELD, the index into table.skeys captured at recording time.
 	// -1 means unknown (field not in skeys, or table not accessible).
 	FieldIndex int
+	// ShapeID: for GETFIELD/SETFIELD, the table's shapeID at recording time.
+	// 0 means unknown or hash-mode table.
+	ShapeID uint32
 }
 
 // Intrinsic IDs for recognized GoFunctions
@@ -466,6 +469,7 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 				if origC < len(proto.Constants) {
 					fieldName := proto.Constants[origC].Str()
 					ir.FieldIndex = tbl.FieldIndex(fieldName)
+					ir.ShapeID = tbl.ShapeID()
 				}
 			}
 		}
