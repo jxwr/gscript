@@ -195,7 +195,7 @@ func (b *ssaBuilder) build() *SSAFunc {
 				guardedSlots[ir.B] = true
 			}
 		case vm.OP_GETTABLE, vm.OP_SETTABLE:
-			// Guard table slot (B for GETTABLE, A for SETTABLE)
+			// Guard table slot — always strict (dereferencing non-table = crash)
 			tableSlot := ir.B
 			if ir.Op == vm.OP_SETTABLE {
 				tableSlot = ir.A
@@ -204,23 +204,25 @@ func (b *ssaBuilder) build() *SSAFunc {
 				b.emitGuard(tableSlot, runtime.TypeTable, ir.PC)
 				guardedSlots[tableSlot] = true
 			}
-			// Guard key slot
+			// Guard key slot — WBR-relaxable
 			keySlot := ir.C
 			if ir.Op == vm.OP_SETTABLE {
 				keySlot = ir.B
 			}
 			if keySlot < 256 && !guardedSlots[keySlot] {
-				b.emitGuard(keySlot, ir.CType, ir.PC)
+				if !b.isWrittenBeforeFirstReadExt(keySlot) {
+					b.emitGuard(keySlot, ir.CType, ir.PC)
+				}
 				guardedSlots[keySlot] = true
 			}
 		case vm.OP_GETFIELD:
-			// Guard table slot (B)
+			// Guard table slot — always strict
 			if ir.B < 256 && !guardedSlots[ir.B] {
 				b.emitGuard(ir.B, runtime.TypeTable, ir.PC)
 				guardedSlots[ir.B] = true
 			}
 		case vm.OP_SETFIELD:
-			// Guard table slot (A)
+			// Guard table slot — always strict
 			if ir.A < 256 && !guardedSlots[ir.A] {
 				b.emitGuard(ir.A, runtime.TypeTable, ir.PC)
 				guardedSlots[ir.A] = true
