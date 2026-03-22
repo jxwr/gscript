@@ -134,6 +134,10 @@ var (
 
 	// gcCompacting prevents re-entrant compaction.
 	gcCompacting int32
+
+	// gcNeedsCompact is set by keepAlive when compaction threshold is reached.
+	// Actual compaction is deferred to a VM safe point via CheckGC().
+	gcNeedsCompact int32
 )
 
 // RegisterVM adds a VM to the active set for GC root scanning.
@@ -174,9 +178,10 @@ func keepAlive(p unsafe.Pointer, _ any) {
 		// Slow path: grow the log (rare, only when > 4M allocations)
 		gcLogGrow(p)
 	}
-	// Trigger GC compaction periodically (only when VMs are registered)
+	// Signal that GC compaction is needed; actual compaction is deferred
+	// to a VM safe point (CheckGC) where all values are in registers.
 	if idx > 0 && idx%gcCompactInterval == 0 && atomic.LoadInt32(&activeVMCount) > 0 {
-		gcCompact()
+		atomic.StoreInt32(&gcNeedsCompact, 1)
 	}
 }
 
@@ -184,6 +189,14 @@ func gcLogGrow(p unsafe.Pointer) {
 	ifaceMu.Lock()
 	gcLog.entries = append(gcLog.entries, p)
 	ifaceMu.Unlock()
+}
+
+// CheckGC runs deferred GC compaction if needed. Must be called at a VM safe
+// point where all recent allocations have been stored into registers/globals.
+func CheckGC() {
+	if atomic.CompareAndSwapInt32(&gcNeedsCompact, 1, 0) {
+		gcCompact()
+	}
 }
 
 // gcCompact rebuilds the gcRootLog with only pointers reachable from active VMs.

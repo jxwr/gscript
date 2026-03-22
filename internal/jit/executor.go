@@ -246,6 +246,9 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
 	exitCount := 0
 	for {
+		// GC safe point: all register writes from previous iteration are complete.
+		rt.CheckGC()
+
 		exitCode := callJIT(entry.ptr, ctxPtr)
 		runtime.KeepAlive(ctx)
 

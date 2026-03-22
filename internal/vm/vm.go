@@ -383,6 +383,9 @@ func (vm *VM) CallValue(fn runtime.Value, args []runtime.Value) ([]runtime.Value
 
 // call pushes a new call frame and executes.
 func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) ([]runtime.Value, error) {
+	// GC safe point at function entry: all caller's register writes are complete.
+	runtime.CheckGC()
+
 	proto := cl.Proto
 
 	// Ensure register space
@@ -1037,6 +1040,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 
 		// ---- Call / Return (INLINE) ----
 		case OP_CALL:
+			// GC safe point at function call boundary.
+			runtime.CheckGC()
+
 			a := DecodeA(inst)
 			b := DecodeB(inst)
 			c := DecodeC(inst)
