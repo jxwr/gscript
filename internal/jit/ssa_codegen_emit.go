@@ -347,6 +347,9 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		asm.LoadImm64(X9, int64(inst.PC))
 		asm.B("side_exit")
 
+	case SSA_CALL:
+		// Handled in CompileSSA loop body emission (call-exit)
+
 	case SSA_LOOP:
 		// Handled in CompileSSA
 

@@ -116,6 +116,10 @@ type TraceRecorder struct {
 	// Abort tracking: count how many times recording was aborted per loop key.
 	// After too many aborts, the loop is blacklisted to avoid repeated start→abort cycles.
 	abortCounts map[loopKey]int
+
+	// callHandler executes external function calls for traces with SSA_CALL.
+	// Set via SetCallHandler, propagated to compiled traces that need it.
+	callHandler TraceCallHandler
 }
 
 type loopKey struct {
@@ -160,6 +164,11 @@ func (r *TraceRecorder) SetUseSSA(on bool) {
 // SetDebug enables trace compilation diagnostics.
 func (r *TraceRecorder) SetDebug(on bool) {
 	r.debug = on
+}
+
+// SetCallHandler sets the function that executes external calls for trace call-exit support.
+func (r *TraceRecorder) SetCallHandler(handler TraceCallHandler) {
+	r.callHandler = handler
 }
 
 // GetCompiled returns a compiled trace for the given loop, or nil.
@@ -740,6 +749,10 @@ func (r *TraceRecorder) finishTrace() {
 					}
 					if err == nil {
 						ct.ssaCompiled = true
+						// Wire call handler for traces with call-exit support
+						if ct.hasCallExit && r.callHandler != nil {
+							ct.callHandler = r.callHandler
+						}
 						// Attach inner trace if this is an outer loop with sub-trace calling
 						if innerForloopPC > 0 {
 							innerKey := loopKey{proto: r.current.LoopProto, pc: innerForloopPC}
@@ -751,6 +764,9 @@ func (r *TraceRecorder) finishTrace() {
 						compiled = true
 						if r.debug {
 							fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions, %d bytes code", r.current.LoopPC, len(r.current.IR), ct.code.Size())
+							if ct.hasCallExit {
+								fmt.Printf(" (has call-exit)")
+							}
 							if ct.innerTrace != nil {
 								fmt.Printf(" (calls inner trace at FORLOOP PC=%d)", innerForloopPC)
 							}

@@ -10,5 +10,6 @@ func cliEnableTracing(bvm *bytecodevm.VM) {
 	recorder.SetCompile(true)
 	recorder.SetUseSSA(true)
 	// recorder.SetDebug(true)
+	recorder.SetCallHandler(bvm.CallValue)
 	bvm.SetTraceRecorder(recorder)
 }

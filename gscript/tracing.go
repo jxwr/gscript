@@ -10,5 +10,6 @@ func enableTracing(bvm *bytecodevm.VM) {
 	recorder := jit.NewTraceRecorder()
 	recorder.SetCompile(true)
 	recorder.SetUseSSA(true) // SSA codegen handles int, float, table ops, intrinsics
+	recorder.SetCallHandler(bvm.CallValue)
 	bvm.SetTraceRecorder(recorder)
 }

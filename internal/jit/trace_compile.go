@@ -16,9 +16,10 @@ type TraceContext struct {
 	Regs           uintptr // input: pointer to vm.regs[base]
 	Constants      uintptr // input: pointer to proto.Constants[0]
 	ExitPC         int64   // output: bytecode PC where trace exited
-	ExitCode       int64   // output: 0=loop done, 1=side exit
+	ExitCode       int64   // output: 0=loop done, 1=side exit, 2=guard fail, 3=call-exit
 	InnerCode      uintptr // input: code pointer for inner trace (sub-trace calling)
 	InnerConstants uintptr // input: constants pointer for inner trace
+	ResumePC       int64   // input: bytecode PC to resume at after call-exit (0=normal entry)
 }
 
 // TraceContext field offsets for ARM64 codegen.
@@ -29,6 +30,7 @@ const (
 	TraceCtxOffExitCode       = 24
 	TraceCtxOffInnerCode      = 32
 	TraceCtxOffInnerConstants = 40
+	TraceCtxOffResumePC       = 48
 )
 
 // SideExitBlacklistThreshold is the minimum number of executions before
@@ -41,6 +43,10 @@ const SideExitBlacklistThreshold = 50
 // Example: mandelbrot side-exits on "escape" (break) but full-runs on
 // non-escaping pixels — ~60% side-exit ratio, so it stays active.
 const SideExitBlacklistRatio = 0.95
+
+// TraceCallHandler executes an external function call on behalf of trace JIT code.
+// Provided by the VM so the trace can handle OP_CALL without direct VM access.
+type TraceCallHandler func(fnVal runtime.Value, args []runtime.Value) ([]runtime.Value, error)
 
 // CompiledTrace holds native code for a trace.
 type CompiledTrace struct {
@@ -58,6 +64,14 @@ type CompiledTrace struct {
 	// only SSA-compiled inner traces are suitable for sub-trace calling
 	// because they don't side-exit on GETGLOBAL/SETGLOBAL etc.
 	ssaCompiled bool
+
+	// hasCallExit indicates this trace contains SSA_CALL instructions
+	// that require call-exit re-entry (ExitCode=3).
+	hasCallExit bool
+
+	// callHandler executes external function calls for call-exit support.
+	// Set by the TraceRecorder when the compiled trace has SSA_CALL ops.
+	callHandler TraceCallHandler
 
 	// Blacklisting: tracks whether this trace is doing useful work.
 	// Counters are updated directly by RecordResult (called by VM on every execution).
@@ -1555,32 +1569,97 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 		fmt.Printf("[TRACE-EXEC] before: R21=0x%x\n", uint64(regs[base+21]))
 	}
 
-	callJIT(uintptr(ct.code.Ptr()), ctxPtr)
+	for {
+		callJIT(uintptr(ct.code.Ptr()), ctxPtr)
 
-	// DEBUG: dump R21 after trace
-	if debugSSAStoreBack {
-		fmt.Printf("[TRACE-EXEC] after:  R21=0x%x exitCode=%d exitPC=%d loopPC=%d\n", uint64(regs[base+21]), ctx.ExitCode, ctx.ExitPC, ct.loopPC)
-	}
-
-	switch ctx.ExitCode {
-	case 2:
-		// Guard fail: the trace's pre-loop type checks didn't match.
-		// Track consecutive guard failures and blacklist if the trace ALWAYS
-		// fails. This avoids repeated JIT calls that waste time and can cause
-		// subtle register corruption from the prologue/epilogue overhead.
-		ct.guardFailCount++
-		if ct.guardFailCount >= guardFailBlacklistThreshold {
-			ct.blacklisted = true
-			if ct.proto != nil {
-				ct.proto.BlacklistTracePC(ct.loopPC)
-			}
+		// DEBUG: dump R21 after trace
+		if debugSSAStoreBack {
+			fmt.Printf("[TRACE-EXEC] after:  R21=0x%x exitCode=%d exitPC=%d loopPC=%d\n", uint64(regs[base+21]), ctx.ExitCode, ctx.ExitPC, ct.loopPC)
 		}
-		return 0, false, true // guard fail — not executed
-	case 1:
-		ct.guardFailCount = 0 // reset on successful execution
-		return int(ctx.ExitPC), true, false // side exit
-	default:
-		ct.guardFailCount = 0 // reset on successful execution
-		return int(ctx.ExitPC), false, false // loop done
+
+		switch ctx.ExitCode {
+		case 3:
+			// Call-exit: the trace hit an OP_CALL and needs the VM to execute it.
+			// Execute the call in Go, then re-enter the trace at the next PC.
+			if ct.callHandler == nil {
+				// No call handler — fall back to side exit
+				ct.guardFailCount = 0
+				return int(ctx.ExitPC), true, false
+			}
+			nextPC := handleTraceCallExit(ct, regs, base, &ctx)
+			ctx.ResumePC = int64(nextPC)
+			// Regs pointer may have changed if the call caused reallocation
+			ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
+			continue // re-enter JIT at resume point
+
+		case 2:
+			// Guard fail: the trace's pre-loop type checks didn't match.
+			ct.guardFailCount++
+			if ct.guardFailCount >= guardFailBlacklistThreshold {
+				ct.blacklisted = true
+				if ct.proto != nil {
+					ct.proto.BlacklistTracePC(ct.loopPC)
+				}
+			}
+			return 0, false, true // guard fail — not executed
+		case 1:
+			ct.guardFailCount = 0 // reset on successful execution
+			return int(ctx.ExitPC), true, false // side exit
+		default:
+			ct.guardFailCount = 0 // reset on successful execution
+			return int(ctx.ExitPC), false, false // loop done
+		}
 	}
+}
+
+// handleTraceCallExit executes an OP_CALL instruction on behalf of the trace JIT.
+// Returns the next bytecode PC to resume at.
+func handleTraceCallExit(ct *CompiledTrace, regs []runtime.Value, base int, ctx *TraceContext) int {
+	pc := int(ctx.ExitPC)
+	proto := ct.proto
+	if pc < 0 || pc >= len(proto.Code) {
+		return pc + 1
+	}
+
+	inst := proto.Code[pc]
+	a := vm.DecodeA(inst)
+	b := vm.DecodeB(inst)
+	c := vm.DecodeC(inst)
+
+	nArgs := b - 1
+	if b == 0 {
+		nArgs = 0
+	}
+	nResults := c - 1
+	if c == 0 {
+		nResults = 1 // default to 1 result for variable returns
+	}
+
+	fnVal := regs[base+a]
+
+	// Build args
+	args := make([]runtime.Value, nArgs)
+	for i := 0; i < nArgs; i++ {
+		args[i] = regs[base+a+1+i]
+	}
+
+	// Execute the call via the call handler
+	results, err := ct.callHandler(fnVal, args)
+	if err != nil {
+		if debugSSAStoreBack {
+			fmt.Printf("[TRACE-CALL-EXIT] call error: %v\n", err)
+		}
+		return pc + 1
+	}
+
+	// Place results in registers
+	for i := 0; i < nResults; i++ {
+		if i < len(results) {
+			regs[base+a+i] = results[i]
+		} else {
+			regs[base+a+i] = runtime.NilValue()
+		}
+	}
+
+	return pc + 1
 }

@@ -668,8 +668,14 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 			b.slotDefs[ir.A] = ref
 			b.slotType[ir.A] = SSATypeFloat
 		} else {
-			// Non-intrinsic CALL → side-exit
-			b.emit(SSAInst{Op: SSA_SIDE_EXIT, PC: ir.PC})
+			// Non-intrinsic CALL → call-exit (VM executes the call, then trace resumes)
+			b.emit(SSAInst{Op: SSA_CALL, PC: ir.PC, Slot: int16(ir.A), AuxInt: int64(ir.B)<<16 | int64(ir.C)})
+			// Result is now in R(A) in memory after the VM call — reload it.
+			// Use SSATypeUnknown since we don't know the return type at trace build time.
+			ref := b.emit(SSAInst{Op: SSA_LOAD_SLOT, Slot: int16(ir.A), Type: SSATypeUnknown})
+			b.slotDefs[ir.A] = ref
+			// Invalidate type info for the result slot (return type unknown)
+			delete(b.slotType, ir.A)
 		}
 
 	case vm.OP_JMP:

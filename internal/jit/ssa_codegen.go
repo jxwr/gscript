@@ -408,6 +408,45 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 	// Pin regTagInt (X24) with the NaN-boxing int tag constant.
 	asm.LoadImm64(regTagInt, nb_i64(NB_TagInt))
 
+	// === Call-exit resume dispatch ===
+	// Check if this is a resume after a call-exit (ResumePC != 0).
+	// If so, skip pre-loop guards/loads and jump directly to the resume point.
+	// Collect call-exit PCs for the dispatch table.
+	type callExitInfo struct {
+		ssaIdx int   // SSA instruction index
+		pc     int   // bytecode PC of the CALL
+	}
+	var callExits []callExitInfo
+	for i, inst := range f.Insts {
+		if inst.Op == SSA_CALL {
+			callExits = append(callExits, callExitInfo{ssaIdx: i, pc: inst.PC})
+		}
+	}
+
+	if len(callExits) > 0 {
+		asm.LDR(X0, trCtx, TraceCtxOffResumePC)
+		asm.CBZ(X0, "normal_entry")
+		// Clear ResumePC for next iteration
+		asm.STR(XZR, trCtx, TraceCtxOffResumePC)
+		// Dispatch to the correct resume point based on ResumePC value
+		for _, ce := range callExits {
+			resumePC := ce.pc + 1 // resume at the instruction after the CALL
+			if resumePC < 4096 {
+				asm.CMPimm(X0, uint16(resumePC))
+			} else {
+				asm.LoadImm64(X1, int64(resumePC))
+				asm.CMPreg(X0, X1)
+			}
+			asm.BCond(CondEQ, fmt.Sprintf("resume_call_%d", ce.ssaIdx))
+		}
+		// Unknown resume PC → side exit
+		asm.LoadImm64(X9, 0)
+		asm.STR(X9, trCtx, TraceCtxOffExitPC)
+		asm.LoadImm64(X0, 1)
+		asm.B("epilogue")
+		asm.Label("normal_entry")
+	}
+
 	// === Pre-LOOP: guards + initial loads ===
 	// Pre-loop guards branch to "guard_fail" (ExitCode=2) instead of "side_exit".
 	// This tells the VM "trace not executed" so the interpreter runs the body normally.
@@ -629,6 +668,39 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 			continue
 		}
 
+		// SSA_CALL: call-exit — store all modified slots, set ExitPC, exit with ExitCode=3.
+		// The Go executor handles the call, then re-enters the trace at the resume label.
+		if inst.Op == SSA_CALL {
+			// 1. Store back all modified slots so the VM sees current values
+			emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, floatRefSpill)
+			// 2. Set ExitPC = bytecode PC of the CALL instruction
+			asm.LoadImm64(X9, int64(inst.PC))
+			asm.STR(X9, trCtx, TraceCtxOffExitPC)
+			// 3. Set ExitCode = 3 (call-exit)
+			asm.LoadImm64(X0, 3)
+			asm.B("epilogue")
+			// 4. Resume label — Go executor sets ResumePC and re-enters JIT here
+			asm.Label(fmt.Sprintf("resume_call_%d", i))
+			// 5. Reload regRegs (regs may have been reallocated by VM during call)
+			asm.LDR(regRegs, trCtx, TraceCtxOffRegs)
+			// 6. Reload all allocated int registers from memory
+			for slot, armReg := range regMap.Int.slotToReg {
+				off := slot * ValueSize
+				if off <= 32760 {
+					asm.LDR(armReg, regRegs, off)
+					EmitUnboxInt(asm, armReg, armReg)
+				}
+			}
+			// 7. Reload all allocated float registers from memory
+			for slot, freg := range regMap.Float.slotToReg {
+				off := slot * ValueSize
+				if off <= 32760 {
+					asm.FLDRd(freg, regRegs, off+OffsetData)
+				}
+			}
+			continue
+		}
+
 		emitSSAInstSlotFwd(asm, f, ref, inst, regMap, sm, fwd)
 	}
 
@@ -752,7 +824,9 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 		loopPC = f.Trace.LoopPC
 	}
 
-	return &CompiledTrace{code: block, proto: proto, loopPC: loopPC, constants: constants}, nil
+	ct := &CompiledTrace{code: block, proto: proto, loopPC: loopPC, constants: constants}
+	ct.hasCallExit = len(callExits) > 0
+	return ct, nil
 }
 // getSlotReg returns the ARM64 register for an SSA ref based on its VM slot.
 // If the slot is allocated, returns the allocated register.
@@ -921,7 +995,8 @@ func ssaIsCompilable(f *SSAFunc) bool {
 			SSA_MOVE, SSA_NOP,
 			SSA_INTRINSIC,
 			SSA_CALL_INNER_TRACE,
-			SSA_INNER_LOOP:
+			SSA_INNER_LOOP,
+			SSA_CALL:
 			continue
 		case SSA_SIDE_EXIT:
 			continue
