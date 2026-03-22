@@ -160,7 +160,7 @@ func UnregisterVM(scanner GCRootScanner) {
 }
 
 func init() {
-	gcLog.entries = make([]unsafe.Pointer, 1<<22) // 4M entries (~32MB), grows if needed
+	gcLog.entries = make([]unsafe.Pointer, 1<<20) // 1M entries (~8MB), grows if needed
 }
 
 // keepAlive registers a Go-heap pointer in the root log so the GC does not
