@@ -102,8 +102,10 @@ type Value uint64
 // function/coroutine values that need type recovery.
 
 // gcRootLog is a lock-free append-only log for keeping Go-heap pointers alive.
+// Uses []unsafe.Pointer instead of []any for 2x less GC scan overhead
+// (1 word per entry vs 2 words for interface).
 type gcRootLog struct {
-	entries []any
+	entries []unsafe.Pointer
 	cursor  int64 // next free index (accessed atomically)
 }
 
@@ -116,26 +118,25 @@ var (
 )
 
 func init() {
-	gcLog.entries = make([]any, 1<<22) // 1M entries (~8MB), grows if needed
+	gcLog.entries = make([]unsafe.Pointer, 1<<22) // 4M entries (~32MB), grows if needed
 }
 
 // keepAlive registers a Go-heap pointer in the root log so the GC does not
 // collect the object while it is hidden inside a NaN-boxed Value.
 // Lock-free: uses atomic increment on the cursor.
-func keepAlive(_ unsafe.Pointer, obj any) {
+func keepAlive(p unsafe.Pointer, _ any) {
 	idx := atomic.AddInt64(&gcLog.cursor, 1) - 1
 	if idx < int64(len(gcLog.entries)) {
-		gcLog.entries[idx] = obj
+		gcLog.entries[idx] = p
 		return
 	}
-	// Slow path: grow the log (rare, only when > 1M allocations)
-	gcLogGrow(obj)
+	// Slow path: grow the log (rare, only when > 4M allocations)
+	gcLogGrow(p)
 }
 
-func gcLogGrow(obj any) {
-	// Fall back to a simple locked append. This is extremely rare.
+func gcLogGrow(p unsafe.Pointer) {
 	ifaceMu.Lock()
-	gcLog.entries = append(gcLog.entries, obj)
+	gcLog.entries = append(gcLog.entries, p)
 	ifaceMu.Unlock()
 }
 
