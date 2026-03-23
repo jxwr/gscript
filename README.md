@@ -38,30 +38,31 @@ Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03
 | FibRecursive(20) | 23.8us | 1194us | x50.2 | 25.0us | GScript WINS |
 | Ackermann(3,4) | 20.6us | 379us | x18.4 | 12.0us | 1.7x gap |
 
-### Full suite (21 benchmarks, JIT mode)
+### Full suite (21 benchmarks)
 
-| Benchmark | JIT | LuaJIT | vs LuaJIT |
-|-----------|-----|--------|-----------|
-| fib(35) | 0.034s | 0.025s | 1.4x |
-| sieve(1M x3) | 0.023s | 0.011s | 2.1x |
-| mandelbrot(1000) | 0.158s | 0.058s | 2.7x |
-| ackermann(3,4 x500) | 0.012s | 0.006s | 2.0x |
-| matmul(300) | 1.222s | 0.022s | 55.5x |
-| spectral_norm(500) | — | 0.007s | — |
-| nbody(500K) | 1.938s | 0.035s | 55.4x |
-| binary_trees(15) | 1.698s | 0.172s | 9.9x |
-| fannkuch(9) | 0.581s | 0.020s | 29.1x |
-| sort(50K x3) | 0.191s | 0.011s | 17.4x |
-| sum_primes(100K) | 0.028s | 0.002s | 14.0x |
-| mutual_recursion(25x1K) | 0.219s | 0.004s | 54.8x |
-| method_dispatch(100K) | 0.110s | 0.000s | ~220x |
-| closure_bench | 0.022s | 0.005s | 4.4x |
-| string_bench | 0.007s | 0.004s | 1.8x |
-| fibonacci_iterative(70x1M) | 0.295s | — | — |
-| object_creation | 1.270s | — | — |
-| table_array_access | 0.150s | — | — |
-| table_field_access | 0.791s | — | — |
-| coroutine_bench | 3.174s | — | — |
+| Benchmark | VM | JIT | LuaJIT | JIT vs LuaJIT |
+|-----------|-----|-----|--------|---------------|
+| fib(35) | 1.687s | 0.034s | 0.025s | 1.4x |
+| sieve(1M x3) | 0.254s | 0.023s | 0.011s | 2.1x |
+| mandelbrot(1000) | 1.433s | 0.158s | 0.058s | 2.7x |
+| ackermann(3,4 x500) | 0.300s | 0.012s | 0.006s | 2.0x |
+| matmul(300) | 1.063s | 1.222s | 0.022s | 55.5x |
+| spectral_norm(500) | 1.018s | ERROR | 0.007s | — |
+| nbody(500K) | 1.932s | 1.938s | 0.035s | 55.4x |
+| binary_trees(15) | 1.720s | 1.698s | 0.172s | 9.9x |
+| fannkuch(9) | 0.590s | 0.581s | 0.020s | 29.1x |
+| sort(50K x3) | 0.187s | 0.191s | 0.011s | 17.4x |
+| sum_primes(100K) | 0.028s | 0.028s | 0.002s | 14.0x |
+| mutual_recursion(25x1K) | 0.214s | 0.219s | 0.004s | 54.8x |
+| method_dispatch(100K) | 0.091s | 0.110s | 0.000s | ~220x |
+| closure_bench | 0.008s | 0.022s | 0.005s | 4.4x |
+| string_bench | 0.026s | 0.007s | 0.004s | 1.8x |
+| fibonacci_iterative(70x1M) | 1.101s | 0.295s | — | — |
+| math_intensive | 0.977s | HANG | — | — |
+| object_creation | 0.688s | 1.270s | — | — |
+| table_array_access | 0.450s | 0.150s | — | — |
+| table_field_access | 0.747s | 0.791s | — | — |
+| coroutine_bench | 5.313s | 3.174s | — | — |
 
 ### Compiler Optimization Techniques
 

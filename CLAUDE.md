@@ -114,6 +114,11 @@ After every major milestone, run the full benchmark suite using `bash benchmarks
 Update results in the top-level README.md Performance section and docs/index.html blog homepage.
 Never skip benchmarks — if one fails, note it in the output. Run sequentially (not parallel).
 
+### Hard Rules
+1. **NEVER delete benchmarks from the test suite.** All 21 benchmarks must always be listed in the README. If a benchmark errors or hangs in JIT mode, show it as "ERROR" or "HANG" — do not remove the row.
+2. **Always compare three modes: VM, JIT, and LuaJIT.** Every benchmark run must produce results for all three. The README Performance table must include VM, JIT, and LuaJIT columns so regressions are visible.
+3. **Run the full suite, not a subset.** Never skip benchmarks because they're slow or broken. Broken benchmarks are signal — they expose JIT bugs that need fixing.
+
 ## Code Standards
 
 - **High-leverage first**: Always prioritize optimizations with the biggest impact across the most benchmarks. Don't spend time on micro-optimizations (saving 2-3ms) when there are architectural changes (type-specialized arrays, guard fixes) that can improve entire categories of benchmarks by 2-5x. Ask: "does this change affect 1 benchmark or 10?"
