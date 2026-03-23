@@ -26,43 +26,42 @@ go build -o gscript ./cmd/gscript/
 
 ## Performance
 
-Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03-23**.
+Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03-24**.
 
 ### Warm micro-benchmarks (JIT vs VM)
 
 | Benchmark | JIT | VM | Speedup | LuaJIT | JIT vs LuaJIT |
 |-----------|-----|-----|---------|--------|---------------|
-| HeavyLoop | 23.1us | 955us | x41.3 | — | — |
-| FibIterative(30) | 149ns | 510ns | x3.4 | — | — |
-| FunctionCalls(10K) | 2.37us | 309us | x130.4 | 2.3us | parity |
-| FibRecursive(20) | 23.6us | 808us | x34.2 | 25.0us | GScript WINS |
+| HeavyLoop | 23.0us | 984us | x42.8 | — | — |
+| FibIterative(30) | 170ns | 518ns | x3.0 | — | — |
+| FunctionCalls(10K) | 2.59us | 500us | x193.1 | 2.3us | parity |
+| FibRecursive(20) | 23.8us | 1194us | x50.2 | 25.0us | GScript WINS |
 | Ackermann(3,4) | 20.6us | 379us | x18.4 | 12.0us | 1.7x gap |
 
 ### Full suite (21 benchmarks, JIT mode)
 
 | Benchmark | JIT | LuaJIT | vs LuaJIT |
 |-----------|-----|--------|-----------|
-| fib(35) | 0.034s | 0.032s | 1.0x (parity) |
-| sieve(1M x3) | 0.022s | 0.010s | 2.2x |
-| mandelbrot(1000) | 0.148s | 0.052s | 2.8x |
-| ackermann(3,4 x500) | 0.011s | 0.006s | 1.8x |
-| matmul(300) | 1.022s | 0.022s | 46.5x |
-| spectral_norm(500) | 0.923s | 0.007s | 132x |
-| nbody(500K) | 1.937s | 0.033s | 58.7x |
-| binary_trees(15) | 2.222s | 0.17s | 13.1x |
-| fannkuch(9) | 0.572s | 0.019s | 30.1x |
-| sort(50K x3) | 0.185s | 0.010s | 18.5x |
-| sum_primes(100K) | 0.027s | 0.002s | 13.5x |
-| mutual_recursion(25x1K) | 0.331s | 0.005s | 66.2x |
-| method_dispatch(100K) | 0.115s | 0.000s | ~230x |
-| closure_bench | 0.021s | 0.009s | 2.3x |
-| string_bench | 0.007s | 0.008s | 0.9x (GScript WINS) |
-| fibonacci_iterative(70x1M) | 0.277s | — | — |
-| math_intensive | 0.927s | — | — |
-| object_creation | 1.168s | — | — |
-| table_array_access | 0.141s | — | — |
-| table_field_access | 0.725s | — | — |
-| coroutine_bench | 4.771s | — | — |
+| fib(35) | 0.034s | 0.025s | 1.4x |
+| sieve(1M x3) | 0.023s | 0.011s | 2.1x |
+| mandelbrot(1000) | 0.158s | 0.058s | 2.7x |
+| ackermann(3,4 x500) | 0.012s | 0.006s | 2.0x |
+| matmul(300) | 1.222s | 0.022s | 55.5x |
+| spectral_norm(500) | — | 0.007s | — |
+| nbody(500K) | 1.938s | 0.035s | 55.4x |
+| binary_trees(15) | 1.698s | 0.172s | 9.9x |
+| fannkuch(9) | 0.581s | 0.020s | 29.1x |
+| sort(50K x3) | 0.191s | 0.011s | 17.4x |
+| sum_primes(100K) | 0.028s | 0.002s | 14.0x |
+| mutual_recursion(25x1K) | 0.219s | 0.004s | 54.8x |
+| method_dispatch(100K) | 0.110s | 0.000s | ~220x |
+| closure_bench | 0.022s | 0.005s | 4.4x |
+| string_bench | 0.007s | 0.004s | 1.8x |
+| fibonacci_iterative(70x1M) | 0.295s | — | — |
+| object_creation | 1.270s | — | — |
+| table_array_access | 0.150s | — | — |
+| table_field_access | 0.791s | — | — |
+| coroutine_bench | 3.174s | — | — |
 
 ### Compiler Optimization Techniques
 
