@@ -259,7 +259,6 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 		exitCode := callJIT(entry.ptr, ctxPtr)
 		runtime.KeepAlive(ctx)
 
-
 		if debugCallExit {
 			op := vm.OpName(vm.DecodeOp(proto.Code[ctx.ExitPC]))
 			fmt.Printf("[JIT] %s: exit=%d pc=%d(%s) resume=%d ptr=0x%x ctx=0x%x\n",

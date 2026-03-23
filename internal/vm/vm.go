@@ -427,6 +427,7 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	frame.base = base
 	frame.numResults = numResults
 	frame.varargs = varargs
+	frame.traceEnabled = false // clear stale state from reused frame slot
 	vm.frameCount++
 
 	// Try JIT execution if available.
@@ -443,7 +444,7 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 		}
 		// JITSideExited is set by executor on permanent side-exit (ExitCode=1).
 		// Enable trace for this frame's loops so SSA Trace JIT can optimize them.
-		if proto.JITSideExited && !proto.HasSelfCalls && proto.ForLoopCount() <= 3 {
+		if proto.ShouldEnableTrace() {
 			frame.traceEnabled = true
 		}
 	}
@@ -1141,7 +1142,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					if resumePC > 0 {
 						newFrame.pc = resumePC
 					}
-					if proto.JITSideExited && !proto.HasSelfCalls && proto.ForLoopCount() <= 3 {
+					if proto.ShouldEnableTrace() {
 						newFrame.traceEnabled = true
 					}
 				}

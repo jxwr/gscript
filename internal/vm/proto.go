@@ -29,10 +29,11 @@ type FuncProto struct {
 	GlobalCache    []globalCacheEntry        // lazily-initialized cache indexed by constant pool index
 	FieldCache     []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
 	TraceBlacklist []bool                    // lazily-initialized per-PC trace blacklist; true = skip OnLoopBackEdge
-	JITEntry       unsafe.Pointer           // cached *compiledEntry from JIT engine (avoids map lookup on hot path)
-	HasSelfCalls   bool                      // true if function has recursive calls to itself (set during JIT compilation)
-	JITSideExited  bool                      // true if Method JIT compiled but permanently side-exited (enables Trace JIT)
-	CallCount      int                       // JIT call count (avoids map lookup in VM hot path)
+	JITEntry        unsafe.Pointer           // cached *compiledEntry from JIT engine (avoids map lookup on hot path)
+	HasSelfCalls    bool                      // true if function has recursive calls to itself (set during JIT compilation)
+	JITSideExited   bool                      // true if Method JIT compiled but permanently side-exited (enables Trace JIT)
+	CallCount       int                       // JIT call count (avoids map lookup in VM hot path)
+	forLoopCount    int                       // cached ForLoopCount+1 (0 = not computed)
 }
 
 // BlacklistTracePC marks a FORLOOP PC as trace-blacklisted.
@@ -68,14 +69,26 @@ func (p *FuncProto) HasCallInLoop() bool {
 }
 
 // ForLoopCount returns the number of for-loops (FORLOOP instructions) in the function.
+// Cached on first call since bytecode is immutable.
 func (p *FuncProto) ForLoopCount() int {
+	if p.forLoopCount > 0 {
+		return p.forLoopCount - 1
+	}
 	n := 0
 	for _, inst := range p.Code {
 		if DecodeOp(inst) == OP_FORLOOP {
 			n++
 		}
 	}
+	p.forLoopCount = n + 1 // cache (0 = not computed, so store n+1)
 	return n
+}
+
+// ShouldEnableTrace returns true if this function's loops should be trace-recorded
+// after a Method JIT side-exit. Excludes self-recursive functions and functions
+// with too many loops (complex control flow that trace JIT handles poorly).
+func (p *FuncProto) ShouldEnableTrace() bool {
+	return p.JITSideExited && !p.HasSelfCalls && p.ForLoopCount() <= 3
 }
 
 // IsTraceBlacklisted returns true if the given PC has been trace-blacklisted.
