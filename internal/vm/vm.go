@@ -1110,6 +1110,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				newFrame.varargs = varargs
 				newFrame.resultBase = base + a
 				newFrame.resultCount = c
+				newFrame.traceEnabled = false // clear stale state from reused frame slot
 				vm.frameCount++
 
 				// Try JIT

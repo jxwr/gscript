@@ -87,6 +87,7 @@ type TraceRecorder struct {
 	recording bool
 	depth     int  // inline call depth
 	maxDepth  int  // max inline depth
+	skipDepth int  // >0: skip instructions from non-inlined callee (decremented on RETURN)
 	maxLen    int  // max trace length
 	compile   bool // if true, compile traces after recording
 	debug     bool // if true, print trace compilation diagnostics
@@ -295,6 +296,19 @@ func (r *TraceRecorder) PendingTrace() vm.TraceExecutor {
 // OnInstruction is called for every instruction during execution.
 func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, regs []runtime.Value, base int) bool {
 	if !r.recording {
+		return false
+	}
+
+	// Skip instructions from non-inlined callee functions.
+	// When a CALL is recorded but not inlined (callee has loops), the interpreter
+	// executes the callee inline. We skip all its instructions until it returns.
+	if r.skipDepth > 0 {
+		op := vm.DecodeOp(inst)
+		if op == vm.OP_CALL {
+			r.skipDepth++ // nested call within the skipped function
+		} else if op == vm.OP_RETURN {
+			r.skipDepth--
+		}
 		return false
 	}
 
@@ -605,6 +619,7 @@ func (r *TraceRecorder) handleCall(ir TraceIR, regs []runtime.Value, base int) b
 	if r.depth >= r.maxDepth {
 		// Too deep — record as a CALL (will be side-exit in compilation)
 		r.current.IR = append(r.current.IR, ir)
+		r.skipDepth = 1
 		return false
 	}
 
@@ -642,14 +657,17 @@ func (r *TraceRecorder) handleCall(ir TraceIR, regs []runtime.Value, base int) b
 		ir.IsSelfCall = true
 		r.current.HasSelfCalls = true
 		r.current.IR = append(r.current.IR, ir)
+		r.skipDepth = 1
 		return false
 	}
 
 	// Check if callee has a for-loop (FORPREP) — can't inline those
 	for _, inst := range cl.Proto.Code {
 		if vm.DecodeOp(inst) == vm.OP_FORPREP {
-			// Callee has nested loop — record as CALL (side-exit)
+			// Callee has nested loop — record as CALL (side-exit).
+			// Skip the callee's instructions until it returns.
 			r.current.IR = append(r.current.IR, ir)
+			r.skipDepth = 1
 			return false
 		}
 	}
@@ -675,6 +693,7 @@ func (r *TraceRecorder) shouldAbort(op vm.Opcode) bool {
 func (r *TraceRecorder) startTrace(pc int, proto *vm.FuncProto) {
 	r.recording = true
 	r.depth = 0
+	r.skipDepth = 0
 	r.startBase = 0 // will be set on first OnInstruction call
 	r.innerLoopSkipStart = 0
 	r.innerLoopSkipEnd = 0
