@@ -44,7 +44,7 @@ Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03
 |-----------|-----|--------|-----------|
 | fib(35) | 0.034s | 0.032s | 1.0x (parity) |
 | sieve(1M x3) | 0.022s | 0.010s | 2.2x |
-| mandelbrot(1000) | 1.386s | 0.052s | 26.7x |
+| mandelbrot(1000) | 0.156s | 0.052s | 3.0x |
 | ackermann(3,4 x500) | 0.011s | 0.006s | 1.8x |
 | matmul(300) | 1.022s | 0.022s | 46.5x |
 | spectral_norm(500) | 0.923s | 0.007s | 132x |
