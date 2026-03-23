@@ -31,6 +31,7 @@ type FuncProto struct {
 	TraceBlacklist []bool                    // lazily-initialized per-PC trace blacklist; true = skip OnLoopBackEdge
 	JITEntry       unsafe.Pointer           // cached *compiledEntry from JIT engine (avoids map lookup on hot path)
 	HasSelfCalls   bool                      // true if function has recursive calls to itself (set during JIT compilation)
+	JITSideExited  bool                      // true if Method JIT compiled but permanently side-exited (enables Trace JIT)
 	CallCount      int                       // JIT call count (avoids map lookup in VM hot path)
 }
 

@@ -291,6 +291,7 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 
 		case 1:
 			// Permanent side exit — interpreter takes over.
+			proto.JITSideExited = true
 			return nil, int(ctx.ExitPC), false
 
 		case 2:
