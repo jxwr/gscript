@@ -93,6 +93,20 @@ type TraceRecorder struct {
 	debug     bool // if true, print trace compilation diagnostics
 	startBase int  // base register of the traced function (set on first instruction)
 
+	// inlineCallProto is the proto of the function being inlined (depth > 0).
+	// Set by handleCall when inlining starts. Used to detect Method JIT
+	// partial execution: if the first instruction from the callee doesn't
+	// start at PC=0, the Method JIT ran part of it, and we fall back to
+	// treating the CALL as non-inlined.
+	inlineCallProto *vm.FuncProto
+	inlineCallIR    *TraceIR // the CALL instruction IR, saved in case we need to emit it
+	inlineCallDepth int       // depth before inlining started
+
+	// skipNextJIT is set to true when handleCall decides to inline a function.
+	// The VM checks this flag before attempting Method JIT execution for the callee.
+	// This ensures the trace recorder sees all instructions from the callee.
+	skipNextJIT bool
+
 	// Inner loop skip range (for sub-trace calling)
 	innerLoopSkipStart int // start PC of inner loop body (FORPREP PC + 1)
 	innerLoopSkipEnd   int // end PC of inner loop body (FORLOOP PC, inclusive)
@@ -162,6 +176,17 @@ func (r *TraceRecorder) SetCompile(on bool) {
 // SetDebug enables trace compilation diagnostics.
 func (r *TraceRecorder) SetDebug(on bool) {
 	r.debug = on
+}
+
+// ShouldSkipJIT returns true if the trace recorder needs the next callee to
+// run in interpreter mode (so all instructions are visible to the recorder).
+// Automatically clears the flag after reading.
+func (r *TraceRecorder) ShouldSkipJIT() bool {
+	if r.skipNextJIT {
+		r.skipNextJIT = false
+		return true
+	}
+	return false
 }
 
 // SetCallHandler sets the function that executes external calls for trace call-exit support.
@@ -310,6 +335,28 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 			r.skipDepth--
 		}
 		return false
+	}
+
+	// Detect Method JIT partial execution of inlined callee.
+	// When handleCall decided to inline a function (depth++), the VM may have
+	// executed part of the callee via Method JIT before side-exiting. In that
+	// case, the first instruction we see from the callee won't be at PC=0.
+	// Fall back to treating the CALL as non-inlined (skipDepth) so the trace
+	// doesn't get a partial view of the callee's computation.
+	if r.inlineCallProto != nil && r.depth > r.inlineCallDepth {
+		if proto == r.inlineCallProto && pc != 0 {
+			// Method JIT partially executed the callee. Undo the inline:
+			// record the CALL as a non-inlined call and skip the rest.
+			r.depth = r.inlineCallDepth
+			r.current.IR = append(r.current.IR, *r.inlineCallIR)
+			r.skipDepth = 1
+			r.inlineCallProto = nil
+			r.inlineCallIR = nil
+			return false
+		}
+		// First instruction at PC=0: full recording, clear the check.
+		r.inlineCallProto = nil
+		r.inlineCallIR = nil
 	}
 
 	// Inner loop skip: when recording the outer loop and the inner loop body
@@ -672,7 +719,14 @@ func (r *TraceRecorder) handleCall(ir TraceIR, regs []runtime.Value, base int) b
 		}
 	}
 
-	// Simple callee without loops: inline it
+	// Simple callee without loops: inline it.
+	// Save the call info for partial-execution detection and set skipNextJIT
+	// so the VM skips Method JIT for this callee (allowing full trace recording).
+	irCopy := ir
+	r.inlineCallProto = cl.Proto
+	r.inlineCallIR = &irCopy
+	r.inlineCallDepth = r.depth
+	r.skipNextJIT = true
 	r.depth++
 	return false
 }
@@ -701,6 +755,8 @@ func (r *TraceRecorder) startTrace(pc int, proto *vm.FuncProto) {
 	r.innerLoopForPC = 0
 	r.innerLoopFirstSeen = false
 	r.innerLoopRecorded = false
+	r.inlineCallProto = nil
+	r.inlineCallIR = nil
 	r.current = &Trace{
 		ID:        len(r.traces),
 		LoopPC:    pc,
@@ -738,6 +794,10 @@ func (r *TraceRecorder) finishTrace() {
 				}
 			}
 			fmt.Printf("%v\n", hasInl)
+			for i, ir2 := range r.current.IR {
+				fmt.Printf("[TRACE-IR] %d: op=%s A=%d B=%d C=%d BX=%d PC=%d depth=%d AType=%d BType=%d CType=%d proto=%s\n",
+					i, vm.OpName(ir2.Op), ir2.A, ir2.B, ir2.C, ir2.BX, ir2.PC, ir2.Depth, ir2.AType, ir2.BType, ir2.CType, ir2.Proto.Name)
+			}
 		}
 		if r.compile {
 			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
@@ -811,6 +871,9 @@ func (r *TraceRecorder) finishTrace() {
 	r.innerLoopForPC = 0
 	r.innerLoopFirstSeen = false
 	r.innerLoopRecorded = false
+	r.inlineCallProto = nil
+	r.inlineCallIR = nil
+	r.skipNextJIT = false
 }
 
 // abortTrace stops recording and discards the current trace.
@@ -839,6 +902,9 @@ func (r *TraceRecorder) abortTrace() {
 	r.innerLoopForPC = 0
 	r.innerLoopFirstSeen = false
 	r.innerLoopRecorded = false
+	r.inlineCallProto = nil
+	r.inlineCallIR = nil
+	r.skipNextJIT = false
 }
 
 // abortAndBlacklist aborts and permanently blacklists the loop.

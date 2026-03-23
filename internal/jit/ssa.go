@@ -295,6 +295,9 @@ func computeLiveIn(trace *Trace) (liveIn map[int]bool, slotRuntimeType map[int]r
 // computeLiveInLegacy collects live-in slots using the old per-opcode logic.
 // This matches the old Phase 2 behavior exactly, including the WBR checks.
 func computeLiveInLegacy(trace *Trace, liveIn map[int]bool, slotRuntimeType map[int]runtime.ValueType, slotPC map[int]int) {
+	// Identify slots that are ONLY used at depth > 0 (inlined function internals).
+	// These slots are dead at the loop header because the inlined function is
+	// re-executed fresh every iteration. No pre-loop guards are needed for them.
 	// Build a temporary ssaBuilder just for the WBR checks
 	tmpBuilder := &ssaBuilder{
 		trace:    trace,
@@ -401,6 +404,7 @@ func computeLiveInLegacy(trace *Trace, liveIn map[int]bool, slotRuntimeType map[
 			}
 		}
 	}
+
 }
 
 // slotRead pairs a slot number with the expected runtime type for that read.
@@ -481,6 +485,16 @@ func getReadSlots(ir *TraceIR) []slotRead {
 		}
 	}
 	return reads
+}
+
+// getWriteSlotContains returns true if the instruction writes to the given slot.
+func getWriteSlotContains(ir *TraceIR, slot int) bool {
+	for _, ws := range getWriteSlots(ir) {
+		if ws == slot {
+			return true
+		}
+	}
+	return false
 }
 
 // getWriteSlots returns the VM register slots written by a trace instruction.
@@ -941,15 +955,59 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		tableRef := b.getSlotRef(ir.B)
 		keyRef := b.getSlotOrRK(ir.C)
 
-		// Use recorded result type for specialization
+		// Use result type for specialization.
+		// AType is the stale pre-execution type of R(A), so it's unreliable.
+		// Instead, scan forward to see how the result slot is consumed: if the
+		// next reader expects float, the GETTABLE result is float.
 		ssaType := SSATypeUnknown
-		switch ir.AType {
-		case runtime.TypeInt:
-			ssaType = SSATypeInt
-		case runtime.TypeFloat:
-			ssaType = SSATypeFloat
-		case runtime.TypeBool:
-			ssaType = SSATypeInt // booleans stored as int (0/1) in data field
+		resultSlot := ir.A
+		for _, futureIR := range b.trace.IR[idx+1:] {
+			switch futureIR.Op {
+			case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV:
+				if futureIR.B < 256 && futureIR.B == resultSlot {
+					switch futureIR.BType {
+					case runtime.TypeFloat:
+						ssaType = SSATypeFloat
+					case runtime.TypeInt:
+						ssaType = SSATypeInt
+					}
+				}
+				if futureIR.C < 256 && futureIR.C == resultSlot {
+					switch futureIR.CType {
+					case runtime.TypeFloat:
+						ssaType = SSATypeFloat
+					case runtime.TypeInt:
+						ssaType = SSATypeInt
+					}
+				}
+			case vm.OP_MOVE:
+				if futureIR.B == resultSlot {
+					switch futureIR.BType {
+					case runtime.TypeFloat:
+						ssaType = SSATypeFloat
+					case runtime.TypeInt:
+						ssaType = SSATypeInt
+					}
+				}
+			}
+			if ssaType != SSATypeUnknown {
+				break
+			}
+			// If the slot is overwritten before being read, use AType
+			if getWriteSlotContains(&futureIR, resultSlot) {
+				break
+			}
+		}
+		// Fallback to AType if forward scan didn't find a consumer
+		if ssaType == SSATypeUnknown {
+			switch ir.AType {
+			case runtime.TypeInt:
+				ssaType = SSATypeInt
+			case runtime.TypeFloat:
+				ssaType = SSATypeFloat
+			case runtime.TypeBool:
+				ssaType = SSATypeInt
+			}
 		}
 
 		ref := b.emit(SSAInst{
@@ -1023,11 +1081,36 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 			// Non-intrinsic CALL → call-exit (VM executes the call, then trace resumes)
 			b.emit(SSAInst{Op: SSA_CALL, PC: ir.PC, Slot: int16(ir.A), AuxInt: int64(ir.B)<<16 | int64(ir.C)})
 			// Result is now in R(A) in memory after the VM call — reload it.
-			// Use SSATypeUnknown since we don't know the return type at trace build time.
-			ref := b.emit(SSAInst{Op: SSA_LOAD_SLOT, Slot: int16(ir.A), Type: SSATypeUnknown})
+			// Scan forward to find how the result is used, to get the correct type.
+			resultType := SSATypeUnknown
+			for _, futureIR := range b.trace.IR[idx+1:] {
+				switch futureIR.Op {
+				case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV:
+					if futureIR.B < 256 && futureIR.B == ir.A {
+						resultType = ssaTypFromRuntime(futureIR.BType)
+					}
+					if futureIR.C < 256 && futureIR.C == ir.A {
+						resultType = ssaTypFromRuntime(futureIR.CType)
+					}
+				case vm.OP_MOVE:
+					if futureIR.B == ir.A {
+						resultType = ssaTypFromRuntime(futureIR.BType)
+					}
+				}
+				if resultType != SSATypeUnknown {
+					break
+				}
+				if getWriteSlotContains(&futureIR, ir.A) {
+					break
+				}
+			}
+			ref := b.emit(SSAInst{Op: SSA_LOAD_SLOT, Slot: int16(ir.A), Type: resultType})
 			b.slotDefs[ir.A] = ref
-			// Invalidate type info for the result slot (return type unknown)
-			delete(b.slotType, ir.A)
+			if resultType != SSATypeUnknown {
+				b.slotType[ir.A] = resultType
+			} else {
+				delete(b.slotType, ir.A)
+			}
 		}
 
 	case vm.OP_JMP:
@@ -1053,13 +1136,19 @@ func (b *ssaBuilder) convertArith(ir *TraceIR, op SSAOp) {
 
 // convertArithTyped picks the int or float SSA op based on operand types.
 func (b *ssaBuilder) convertArithTyped(ir *TraceIR, intOp, floatOp SSAOp) {
-	// Determine operand types
+	// Determine operand types. Prefer SSA-level type info (slotType), but
+	// fall back to recorded runtime types if the SSA type is unknown
+	// (e.g., after a CALL whose return type is not known at SSA build time).
 	bType := b.slotType[ir.B]
 	cType := b.slotType[ir.C]
 	if ir.B >= vm.RKBit {
 		bType = ssaTypFromRuntime(ir.BType)
+	} else if bType == SSATypeUnknown {
+		bType = ssaTypFromRuntime(ir.BType)
 	}
 	if ir.C >= vm.RKBit {
+		cType = ssaTypFromRuntime(ir.CType)
+	} else if cType == SSATypeUnknown {
 		cType = ssaTypFromRuntime(ir.CType)
 	}
 

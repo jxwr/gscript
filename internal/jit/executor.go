@@ -300,6 +300,10 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 			exitCount++
 			newRegs, nextPC, err := e.handleCallExit(proto, regs, base, &ctx)
 			if err != nil {
+				// Call-exit failed — demote this function so the trace JIT
+				// can optimize its loops instead of retrying Method JIT forever.
+				entry.demoted = true
+				proto.JITSideExited = true
 				return nil, int(ctx.ExitPC), false
 			}
 			if newRegs != nil {

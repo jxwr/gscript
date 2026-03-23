@@ -55,6 +55,7 @@ type TraceRecorderHook interface {
 	OnLoopBackEdge(pc int, proto *FuncProto) bool
 	IsRecording() bool
 	PendingTrace() TraceExecutor
+	ShouldSkipJIT() bool
 }
 
 // traceResult holds the result of executing a compiled trace.
@@ -1115,8 +1116,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				newFrame.traceEnabled = false // clear stale state from reused frame slot
 				vm.frameCount++
 
-				// Try JIT
-				if vm.jit != nil && !proto.IsVarArg {
+				// Try JIT (skip if trace recorder is inlining this callee)
+				skipJIT := vm.traceRecording && vm.traceRec.ShouldSkipJIT()
+				if vm.jit != nil && !proto.IsVarArg && !skipJIT {
 					proto.CallCount++
 					results, resumePC, jitOK := vm.jit.TryExecute(proto, vm.regs, newBase, proto.CallCount)
 					if jitOK {

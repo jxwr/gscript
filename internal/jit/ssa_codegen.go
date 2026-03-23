@@ -681,6 +681,13 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 		// SSA_CALL: call-exit — store all modified slots, set ExitPC, exit with ExitCode=3.
 		// The Go executor handles the call, then re-enters the trace at the resume label.
 		if inst.Op == SSA_CALL {
+			// Determine the CALL result slot and its type (from the SSA_LOAD_SLOT that follows)
+			callResultSlot := int(inst.Slot)
+			callResultIsFloat := false
+			if i+1 < len(f.Insts) && f.Insts[i+1].Op == SSA_LOAD_SLOT && int(f.Insts[i+1].Slot) == callResultSlot {
+				callResultIsFloat = (f.Insts[i+1].Type == SSATypeFloat)
+			}
+
 			// 1. Store back all modified slots so the VM sees current values
 			emitSlotStoreBack(asm, regMap, sm, liveInfo.WrittenSlots, floatRefSpill)
 			// 2. Set ExitPC = bytecode PC of the CALL instruction
@@ -693,8 +700,13 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 			asm.Label(fmt.Sprintf("resume_call_%d", i))
 			// 5. Reload regRegs (regs may have been reallocated by VM during call)
 			asm.LDR(regRegs, trCtx, TraceCtxOffRegs)
-			// 6. Reload all allocated int registers from memory
+			// 6. Reload all allocated int registers from memory.
+			// Skip the CALL result slot if it holds a float — EmitUnboxInt would
+			// destroy the float value stored by the Go call handler.
 			for slot, armReg := range regMap.Int.slotToReg {
+				if callResultIsFloat && slot == callResultSlot {
+					continue // float result; don't unbox as int
+				}
 				off := slot * ValueSize
 				if off <= 32760 {
 					asm.LDR(armReg, regRegs, off)
@@ -706,6 +718,18 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 				off := slot * ValueSize
 				if off <= 32760 {
 					asm.FLDRd(freg, regRegs, off+OffsetData)
+				}
+			}
+			// 8. If the CALL result is float and was allocated to a float reg,
+			// reload it from the NaN-boxed memory value (not offset by OffsetData,
+			// since raw float64 bits ARE the NaN-boxed value).
+			if callResultIsFloat {
+				if fr, ok := regMap.Float.slotToReg[callResultSlot]; ok {
+					off := callResultSlot * ValueSize
+					if off <= 32760 {
+						// Float value in NaN-boxing: the raw float64 bits are the value itself
+						asm.FLDRd(fr, regRegs, off+OffsetData)
+					}
 				}
 			}
 			continue
