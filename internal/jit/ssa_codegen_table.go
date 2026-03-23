@@ -8,6 +8,60 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
+// findLoopInvariantTableSlots identifies table slots used in SSA_LOAD_ARRAY
+// or SSA_STORE_ARRAY within the loop body that are NOT modified by any
+// SSA_STORE_SLOT targeting the same slot. For these slots, the table type
+// guard, metatable check, and array kind check can be hoisted to pre-loop.
+func findLoopInvariantTableSlots(f *SSAFunc, loopIdx int, sm *ssaSlotMapper) map[int]int {
+	// Map from table slot → SSAType (int/float) for hoistable guards
+	result := make(map[int]int)
+	// Set of slots modified in the loop body
+	modifiedSlots := make(map[int]bool)
+
+	for i := loopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		if inst.Op == SSA_STORE_SLOT {
+			modifiedSlots[int(inst.Slot)] = true
+		}
+	}
+
+	for i := loopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		if inst.Op == SSA_LOAD_ARRAY || inst.Op == SSA_STORE_ARRAY {
+			tableSlot := sm.getSlotForRef(inst.Arg1)
+			if tableSlot >= 0 && !modifiedSlots[tableSlot] {
+				result[tableSlot] = int(inst.Type) // SSATypeInt or SSATypeFloat
+			}
+		}
+	}
+	return result
+}
+
+// emitTableSlotGuards emits pre-loop guards for loop-invariant table slots.
+// These verify: is-table, no-metatable, and cache the extracted table pointer
+// and array base pointer for use in the loop body.
+func emitTableSlotGuards(asm *Assembler, hoisted map[int]int) {
+	for slot, ssaType := range hoisted {
+		asm.LDR(X0, regRegs, slot*ValueSize)
+		EmitCheckIsTableFull(asm, X0, X1, X3, "guard_fail")
+		EmitExtractPtr(asm, X0, X0)
+		asm.CBZ(X0, "guard_fail")
+		// Check metatable == nil
+		asm.LDR(X1, X0, TableOffMetatable)
+		asm.CBNZ(X1, "guard_fail")
+		// Check array kind matches expected type
+		asm.LDRB(X1, X0, TableOffArrayKind)
+		switch ssaType {
+		case int(SSATypeInt):
+			// Accept int or bool or mixed
+		case int(SSATypeFloat):
+			asm.CMPimmW(X1, AKFloat)
+			asm.BCond(CondNE, "guard_fail")
+		}
+		_ = slot
+	}
+}
+
 // emitSSALoadGlobal emits code for SSA_LOAD_GLOBAL: loads a full Value from the constant pool.
 func emitSSALoadGlobal(asm *Assembler, inst *SSAInst) {
 	constIdx := int(inst.AuxInt)
@@ -27,22 +81,31 @@ func emitSSALoadGlobal(asm *Assembler, inst *SSAInst) {
 // Type-specialized fast path: if arrayKind == ArrayInt or ArrayFloat,
 // load directly from intArray/floatArray (8 bytes) instead of the
 // generic []Value array (24 bytes per element + type check).
-func emitSSALoadArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper) {
+func emitSSALoadArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper, hoistedTables map[int]int) {
 	tableSlot := sm.getSlotForRef(inst.Arg1)
 	asm.LoadImm64(X9, int64(inst.PC))
 	dstSlot := int(inst.Slot)
 	// Load key
 	keyReg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X2)
-	// In-loop table type guard + extract pointer
-	if tableSlot >= 0 {
+
+	_, tableHoisted := hoistedTables[tableSlot]
+	if tableHoisted && tableSlot >= 0 {
+		// Table was verified in pre-loop guards (is-table, no-meta, array-kind).
+		// Just load and extract the pointer — skip type/meta checks.
 		asm.LDR(X0, regRegs, tableSlot*ValueSize)
-		EmitCheckIsTableFull(asm, X0, X1, X3, "side_exit")
 		EmitExtractPtr(asm, X0, X0)
+	} else {
+		// Full in-loop table type guard + extract pointer
+		if tableSlot >= 0 {
+			asm.LDR(X0, regRegs, tableSlot*ValueSize)
+			EmitCheckIsTableFull(asm, X0, X1, X3, "side_exit")
+			EmitExtractPtr(asm, X0, X0)
+		}
+		asm.CBZ(X0, "side_exit")
+		// Check metatable == nil
+		asm.LDR(X1, X0, TableOffMetatable)
+		asm.CBNZ(X1, "side_exit")
 	}
-	asm.CBZ(X0, "side_exit")
-	// Check metatable == nil
-	asm.LDR(X1, X0, TableOffMetatable)
-	asm.CBNZ(X1, "side_exit")
 
 	// --- Type-specialized int array fast path ---
 	if inst.Type == SSATypeInt && dstSlot >= 0 {
@@ -207,7 +270,7 @@ func emitSSALoadArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, reg
 // Type-specialized fast path: if arrayKind matches the value type,
 // store directly to intArray/floatArray (single 8-byte STR) instead
 // of the generic []Value array (3x 8-byte STR for 24-byte Value).
-func emitSSAStoreArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper) {
+func emitSSAStoreArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper, hoistedTables map[int]int) {
 	tableSlot := sm.getSlotForRef(inst.Arg1)
 	asm.LoadImm64(X9, int64(inst.PC))
 	keyReg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X2)
@@ -252,14 +315,20 @@ func emitSSAStoreArray(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, re
 		}
 	}
 	// In-loop table type guard + extract pointer
-	if tableSlot >= 0 {
+	_, tableHoisted := hoistedTables[tableSlot]
+	if tableHoisted && tableSlot >= 0 {
 		asm.LDR(X0, regRegs, tableSlot*ValueSize)
-		EmitCheckIsTableFull(asm, X0, X1, X3, "side_exit")
 		EmitExtractPtr(asm, X0, X0)
+	} else {
+		if tableSlot >= 0 {
+			asm.LDR(X0, regRegs, tableSlot*ValueSize)
+			EmitCheckIsTableFull(asm, X0, X1, X3, "side_exit")
+			EmitExtractPtr(asm, X0, X0)
+		}
+		asm.CBZ(X0, "side_exit")
+		asm.LDR(X1, X0, TableOffMetatable)
+		asm.CBNZ(X1, "side_exit")
 	}
-	asm.CBZ(X0, "side_exit")
-	asm.LDR(X1, X0, TableOffMetatable)
-	asm.CBNZ(X1, "side_exit")
 
 	if valIsInt && valSlot >= 0 {
 		// --- Int array fast path for STORE ---

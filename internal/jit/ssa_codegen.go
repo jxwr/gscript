@@ -547,6 +547,16 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 		}
 	}
 
+	// === Hoist loop-invariant table guards to pre-loop ===
+	// For tables accessed in LOAD_ARRAY/STORE_ARRAY that are not modified in
+	// the loop body, verify is-table + no-metatable + array-kind once before
+	// the loop. The in-loop codegen then skips these checks (~5 instructions
+	// saved per array access per iteration).
+	hoistedTables := findLoopInvariantTableSlots(f, loopIdx, sm)
+	if len(hoistedTables) > 0 {
+		emitTableSlotGuards(asm, hoistedTables)
+	}
+
 	// === Side-exit continuation analysis ===
 	// Detect inner loop structure for side-exit optimization.
 	// When a float guard (escape check) fails inside the inner loop, instead of
@@ -701,7 +711,7 @@ func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, er
 			continue
 		}
 
-		emitSSAInstSlotFwd(asm, f, ref, inst, regMap, sm, fwd)
+		emitSSAInstSlotFwd(asm, f, ref, inst, regMap, sm, fwd, hoistedTables)
 	}
 
 	// Loop back-edge

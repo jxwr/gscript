@@ -49,10 +49,10 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		}
 
 	case SSA_LOAD_ARRAY:
-		emitSSALoadArray(asm, f, ref, inst, regMap, sm)
+		emitSSALoadArray(asm, f, ref, inst, regMap, sm, nil)
 
 	case SSA_STORE_ARRAY:
-		emitSSAStoreArray(asm, f, ref, inst, regMap, sm)
+		emitSSAStoreArray(asm, f, ref, inst, regMap, sm, nil)
 
 	case SSA_LOAD_FIELD:
 		emitSSALoadField(asm, inst, regMap, sm)
@@ -547,7 +547,7 @@ func resolveFloatRefFwd(asm *Assembler, f *SSAFunc, ref SSARef, regMap *RegMap, 
 }
 
 // emitSSAInstSlotFwd is the forwarding-aware version of emitSSAInstSlot.
-func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper, fwd *floatForwarder) {
+func emitSSAInstSlotFwd(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper, fwd *floatForwarder, hoistedTables map[int]int) {
 	switch inst.Op {
 	case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT:
 		slot := sm.getSlotForRef(ref)

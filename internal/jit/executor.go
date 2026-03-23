@@ -275,6 +275,8 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 			// exit/re-enter overhead than executing native code.
 			if entry.totalCalls >= 8 && entry.totalExits > entry.totalCalls*20 {
 				entry.demoted = true
+				// Demoted → Trace JIT should optimize this function's loops
+				proto.JITSideExited = true
 			}
 
 			retBase := int(ctx.RetBase)
