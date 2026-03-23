@@ -39,8 +39,9 @@ type VM struct {
 	jitFactory   func(*VM) JITEngine
 	argBuf       [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf       [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
-	traceRec       TraceRecorderHook // optional trace recorder (nil = disabled)
-	traceRecording bool              // cached: traceRec.IsRecording() (avoids interface dispatch)
+	traceRec            TraceRecorderHook // optional trace recorder (nil = disabled)
+	traceRecording      bool              // cached: traceRec.IsRecording() (avoids interface dispatch)
+	traceExecuting      bool              // true when executing a compiled trace (prevents nested trace activation)
 }
 
 // TraceExecutor executes a compiled trace.
@@ -69,7 +70,13 @@ func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) traceResult {
 	if ct == nil {
 		return traceResult{}
 	}
+	// Prevent nested trace execution (e.g., trace call-exit → callee side-exits → trace fires again)
+	if vm.traceExecuting {
+		return traceResult{}
+	}
+	vm.traceExecuting = true
 	exitPC, sideExit, guardFail := ct.Execute(vm.regs, base, proto)
+	vm.traceExecuting = false
 	if guardFail {
 		return traceResult{}
 	}
@@ -433,6 +440,10 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 		}
 		if resumePC > 0 {
 			frame.pc = resumePC
+		}
+		// Method JIT was compiled but side-exited → enable trace for THIS frame only.
+		if proto.JITEntry != nil && !proto.HasSelfCalls && proto.ForLoopCount() <= 3 && !proto.HasCallInLoop() {
+			frame.traceEnabled = true
 		}
 	}
 
@@ -1023,7 +1034,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			frame.pc += sbx
 			// While-loop back-edge detection: notify trace recorder on backward jumps.
 			// Only checks when sbx < 0 (backward) and traceRec is non-nil (zero overhead otherwise).
-			if sbx < 0 && vm.traceRec != nil && frame.closure.Proto.JITEntry == nil && !frame.closure.Proto.IsTraceBlacklisted(jmpPC) {
+			if sbx < 0 && vm.traceRec != nil && !vm.traceExecuting && (frame.closure.Proto.JITEntry == nil || frame.traceEnabled) && !frame.closure.Proto.IsTraceBlacklisted(jmpPC) {
 				if vm.traceRec.OnLoopBackEdge(jmpPC, frame.closure.Proto) {
 					tr := vm.executeCompiledTrace(frame.closure.Proto, base)
 					if tr.executed {
@@ -1128,10 +1139,14 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					}
 					if resumePC > 0 {
 						newFrame.pc = resumePC
+						// Method JIT side-exited: enable trace for THIS frame only.
+						if !proto.HasSelfCalls && proto.ForLoopCount() <= 3 && !proto.HasCallInLoop() {
+							newFrame.traceEnabled = true
+						}
 					}
 				}
 
-				// Switch to new frame (inline)
+				// Switch to new frame (inline).
 				frame = newFrame
 				code = proto.Code
 				constants = proto.Constants
@@ -1342,7 +1357,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						// Trace JIT: only activate for loops in functions NOT compiled by Method JIT.
 						// If Method JIT compiled this function but side-exited to the interpreter,
 						// the trace JIT would often produce incorrect results (closures, complex control flow).
-						if vm.traceRec != nil && sbx < 0 && frame.closure.Proto.JITEntry == nil && !frame.closure.Proto.IsTraceBlacklisted(forloopPC) {
+						if vm.traceRec != nil && sbx < 0 && !vm.traceExecuting && (frame.closure.Proto.JITEntry == nil || frame.traceEnabled) && !frame.closure.Proto.IsTraceBlacklisted(forloopPC) {
 							if vm.traceRec.OnLoopBackEdge(forloopPC, frame.closure.Proto) {
 								tr := vm.executeCompiledTrace(frame.closure.Proto, base)
 								if tr.executed {

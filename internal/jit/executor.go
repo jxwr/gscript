@@ -219,6 +219,13 @@ func (e *Engine) TryExecute(proto *vm.FuncProto, regs []rt.Value, base int, call
 			e.entries[proto] = entry
 			// Cache in FuncProto for future fast-path lookups.
 			proto.JITEntry = unsafe.Pointer(entry)
+			// Detect self-recursive calls for trace activation guard.
+			for callPC := 0; callPC < len(proto.Code); callPC++ {
+				if vm.DecodeOp(proto.Code[callPC]) == vm.OP_CALL && isSelfCall(proto, callPC) {
+					proto.HasSelfCalls = true
+					break
+				}
+			}
 			// Update cross-call slots that were waiting for this function.
 			if proto.Name != "" {
 				e.updateCrossCallSlots(proto.Name, entry, proto)

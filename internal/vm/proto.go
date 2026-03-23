@@ -30,6 +30,7 @@ type FuncProto struct {
 	FieldCache     []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
 	TraceBlacklist []bool                    // lazily-initialized per-PC trace blacklist; true = skip OnLoopBackEdge
 	JITEntry       unsafe.Pointer           // cached *compiledEntry from JIT engine (avoids map lookup on hot path)
+	HasSelfCalls   bool                      // true if function has recursive calls to itself (set during JIT compilation)
 	CallCount      int                       // JIT call count (avoids map lookup in VM hot path)
 }
 
@@ -44,6 +45,36 @@ func (p *FuncProto) BlacklistTracePC(pc int) {
 		p.TraceBlacklist = make([]bool, len(p.Code))
 	}
 	p.TraceBlacklist[pc] = true
+}
+
+// HasCallInLoop returns true if any for-loop body contains a CALL instruction.
+// Traces with CALLs use call-exit which can produce incorrect results.
+func (p *FuncProto) HasCallInLoop() bool {
+	inLoop := false
+	for _, inst := range p.Code {
+		op := DecodeOp(inst)
+		if op == OP_FORPREP {
+			inLoop = true
+		}
+		if op == OP_FORLOOP {
+			inLoop = false
+		}
+		if inLoop && op == OP_CALL {
+			return true
+		}
+	}
+	return false
+}
+
+// ForLoopCount returns the number of for-loops (FORLOOP instructions) in the function.
+func (p *FuncProto) ForLoopCount() int {
+	n := 0
+	for _, inst := range p.Code {
+		if DecodeOp(inst) == OP_FORLOOP {
+			n++
+		}
+	}
+	return n
 }
 
 // IsTraceBlacklisted returns true if the given PC has been trace-blacklisted.
@@ -110,6 +141,7 @@ type CallFrame struct {
 	base        int    // base register index in the VM register file
 	numResults  int    // expected number of results (-1 = variable)
 	varargs     []runtime.Value // extra arguments beyond fixed params
-	resultBase  int    // register in parent frame where results should be placed (for inline return)
-	resultCount int    // C parameter from caller's OP_CALL (0 = return all; for inline return)
+	resultBase   int    // register in parent frame where results should be placed (for inline return)
+	resultCount  int    // C parameter from caller's OP_CALL (0 = return all; for inline return)
+	traceEnabled bool   // true if this frame's loops should be trace-recorded (set on Method JIT side-exit)
 }
