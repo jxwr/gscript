@@ -432,6 +432,7 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	// Try JIT execution if available.
 	if vm.jit != nil && !proto.IsVarArg {
 		proto.CallCount++
+		jitEntryBefore := proto.JITEntry
 		results, resumePC, ok := vm.jit.TryExecute(proto, vm.regs, base, proto.CallCount)
 		if ok {
 			vm.closeUpvalues(base)
@@ -441,8 +442,14 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 		if resumePC > 0 {
 			frame.pc = resumePC
 		}
-		// Method JIT was compiled but side-exited → enable trace for THIS frame only.
-		if proto.JITEntry != nil && !proto.HasSelfCalls && proto.ForLoopCount() <= 3 && !proto.HasCallInLoop() {
+		// Method JIT side-exited → enable trace for THIS frame's loops.
+		// Detect real side-exit: JITEntry was set DURING this TryExecute call
+		// (first compilation) or was already set before. Either way, if JIT
+		// ran and returned ok=false, native code executed and side-exited.
+		// Exclude: blacklisted (never compiled), demoted (returns immediately),
+		// threshold not reached (JITEntry unchanged at nil).
+		jitRan := proto.JITEntry != nil && (jitEntryBefore != nil || proto.JITEntry != jitEntryBefore)
+		if jitRan && !proto.HasSelfCalls && proto.ForLoopCount() <= 3 {
 			frame.traceEnabled = true
 		}
 	}
@@ -1115,12 +1122,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 
 				// Try JIT
 				if vm.jit != nil && !proto.IsVarArg {
+					jitEntryBefore := proto.JITEntry
 					proto.CallCount++
 					results, resumePC, jitOK := vm.jit.TryExecute(proto, vm.regs, newBase, proto.CallCount)
 					if jitOK {
 						vm.closeUpvalues(newBase)
 						vm.frameCount--
-						// Place results (cached locals still point to caller)
 						if c == 0 {
 							for i, r := range results {
 								vm.regs[base+a+i] = r
@@ -1140,10 +1147,11 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					}
 					if resumePC > 0 {
 						newFrame.pc = resumePC
-						// Method JIT side-exited: enable trace for THIS frame only.
-						if !proto.HasSelfCalls && proto.ForLoopCount() <= 3 && !proto.HasCallInLoop() {
-							newFrame.traceEnabled = true
-						}
+					}
+					// Method JIT side-exited: enable trace for THIS frame only.
+					jitRan := proto.JITEntry != nil && (jitEntryBefore != nil || proto.JITEntry != jitEntryBefore)
+					if jitRan && !proto.HasSelfCalls && proto.ForLoopCount() <= 3 {
+						newFrame.traceEnabled = true
 					}
 				}
 
