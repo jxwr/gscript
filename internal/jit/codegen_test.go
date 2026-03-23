@@ -16,9 +16,13 @@ import (
 func runJIT(t *testing.T, proto *vm.FuncProto, regs []runtime.Value) (JITContext, []runtime.Value) {
 	t.Helper()
 
-	cf, err := Compile(proto)
+	cg := &Codegen{
+		asm:   NewAssembler(),
+		proto: proto,
+	}
+	cf, err := cg.compile()
 	if err != nil {
-		t.Fatalf("Compile: %v", err)
+		t.Fatalf("compile: %v", err)
 	}
 	defer cf.Code.Free()
 

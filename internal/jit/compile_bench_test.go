@@ -28,7 +28,11 @@ func BenchmarkJITCompileOnly(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cf, err := Compile(proto)
+		cg := &Codegen{
+			asm:   NewAssembler(),
+			proto: proto,
+		}
+		cf, err := cg.compile()
 		if err != nil {
 			b.Fatal(err)
 		}

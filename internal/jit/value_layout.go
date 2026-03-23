@@ -19,9 +19,7 @@ const (
 	ValueSize = 8 // sizeof(runtime.Value) = sizeof(uint64)
 
 	// NaN-boxing tags (top 16 bits of the 64-bit value)
-	NB_TagMask     uint64 = 0xFFFF000000000000
 	NB_PayloadMask uint64 = 0x0000FFFFFFFFFFFF
-	NB_NanBits     uint64 = 0x7FFC000000000000 // bits 50-62
 
 	NB_TagNil  uint64 = 0xFFFC000000000000
 	NB_TagBool uint64 = 0xFFFD000000000000
@@ -29,8 +27,7 @@ const (
 	NB_TagPtr  uint64 = 0xFFFF000000000000
 
 	NB_ValNil   uint64 = NB_TagNil
-	NB_ValFalse uint64 = NB_TagBool     // payload = 0
-	NB_ValTrue  uint64 = NB_TagBool | 1 // payload = 1
+	NB_ValFalse uint64 = NB_TagBool // payload = 0
 
 	// Tag values right-shifted by 48 (for LSR-based type checks)
 	NB_TagNilShr48  = 0xFFFC
@@ -39,16 +36,10 @@ const (
 	NB_TagPtrShr48  = 0xFFFF
 
 	// Pointer sub-type bits (bits 44-47 of payload)
-	NB_PtrSubShift   = 44
-	NB_PtrSubMask    = uint64(0xF) << NB_PtrSubShift
-	NB_PtrAddrMask   = (uint64(1) << NB_PtrSubShift) - 1
-	NB_PtrSubTable   = uint64(0) << NB_PtrSubShift
-	NB_PtrSubString  = uint64(1) << NB_PtrSubShift
+	NB_PtrSubShift = 44
 
 	// Table struct offsets (must match runtime.Table layout)
-	TableOffMu         = 0
-	TableOffArray      = 8   // []Value slice header (ptr+len+cap = 24 bytes)
-	TableOffImap       = 32  // map[int64]Value
+	TableOffArray = 8 // []Value slice header (ptr+len+cap = 24 bytes)
 	TableOffSkeys      = 40  // []string slice header (ptr+len+cap)
 	TableOffSkeysLen   = 48  // skeys.len
 	TableOffSvals      = 64  // []Value slice header
@@ -61,21 +52,12 @@ const (
 	TableOffIntArray   = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
 	TableOffFloatArray = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
 	TableOffBoolArray  = 192 // []byte slice header (ptr+len+cap = 24 bytes)
-
-	// Go string header: {ptr(8), len(8)} = 16 bytes
-	StringSize = 16
 )
 
-// Legacy compatibility aliases for codegen transition.
-// With NaN-boxing, there are no sub-field offsets. These all equal 0
-// so that `reg*ValueSize + OffsetXxx` reduces to `reg*ValueSize`.
-const (
-	OffsetTyp     = 0
-	OffsetData    = 0
-	OffsetIval    = 0
-	OffsetPtr     = 0
-	OffsetPtrData = 0
-)
+// Legacy compatibility alias for codegen transition.
+// With NaN-boxing, there are no sub-field offsets. This equals 0
+// so that `reg*ValueSize + OffsetData` reduces to `reg*ValueSize`.
+const OffsetData = 0
 
 // ArrayKind constants (must match runtime.ArrayKind values)
 const (
@@ -204,10 +186,6 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-func ValueOffset(reg int) int {
-	return reg * ValueSize
-}
-
 // EmitMulValueSize emits ARM64 instructions to compute rd = rn * ValueSize.
 // Uses scratch register (must not alias rn) for the multiplication constant.
 // For power-of-2 ValueSize, uses a single LSL. For ValueSize=24, uses
@@ -239,42 +217,6 @@ func EmitMulValueSize(asm *Assembler, rd, rn, scratch Reg) {
 // They use scratch registers X0-X9 and must not clobber registers the
 // caller is still using.
 
-// EmitLoadNBValue loads the full 8-byte NaN-boxed Value of VM register 'reg'
-// from regRegs into ARM64 register dst.
-func EmitLoadNBValue(asm *Assembler, dst Reg, base Reg, reg int) {
-	off := reg * ValueSize
-	if off <= 32760 {
-		asm.LDR(dst, base, off)
-	} else {
-		asm.LoadImm64(dst, int64(off))
-		asm.ADDreg(dst, base, dst)
-		asm.LDR(dst, dst, 0)
-	}
-}
-
-// EmitStoreNBValue stores a full 8-byte NaN-boxed Value from ARM64 register src
-// into VM register 'reg' at base.
-func EmitStoreNBValue(asm *Assembler, src Reg, base Reg, reg int) {
-	off := reg * ValueSize
-	if off <= 32760 {
-		asm.STR(src, base, off)
-	} else {
-		asm.LoadImm64(X10, int64(off))
-		asm.ADDreg(X10, base, X10)
-		asm.STR(src, X10, 0)
-	}
-}
-
-// EmitCheckTagShr48 checks if the NaN-boxed value in 'valReg' has tag == expected.
-// Uses scratch1 for the shifted value, scratch2 for the constant.
-// After this, condition flags are set for B.NE.
-// Pattern: LSR scratch1, valReg, #48; LoadImm64 scratch2, tag>>48; CMP scratch1, scratch2
-func EmitCheckTagShr48(asm *Assembler, valReg, scratch1, scratch2 Reg, tagShr48 uint16) {
-	asm.LSRimm(scratch1, valReg, 48)
-	asm.MOVimm16(scratch2, tagShr48) // 16-bit immediate fits in MOVZ
-	asm.CMPreg(scratch1, scratch2)
-}
-
 // EmitUnboxInt extracts a 48-bit signed integer from a NaN-boxed value.
 // Result is sign-extended to 64 bits in dst.
 // Pattern: SBFX dst, src, #0, #48
@@ -299,12 +241,6 @@ func EmitBoxInt(asm *Assembler, dst, src, scratch Reg) {
 // Only 2 instructions: UBFX + ORR. Used by method JIT codegen where regTagInt is available.
 func EmitBoxIntFast(asm *Assembler, dst, src, tagReg Reg) {
 	asm.UBFX(dst, src, 0, 48) // clear top 16 bits in 1 instruction
-	asm.ORRreg(dst, dst, tagReg)
-}
-
-// EmitBoxIntInPlace adds int tag to a value already masked to 48 bits.
-// Requires tagReg to hold tagInt (either scratch loaded or regTagInt pinned).
-func EmitBoxIntInPlace(asm *Assembler, dst, tagReg Reg) {
 	asm.ORRreg(dst, dst, tagReg)
 }
 
@@ -384,27 +320,6 @@ func EmitGuardTypeRelaxedFloat(asm *Assembler, base Reg, slot int, failLabel str
 func EmitIsTagged(asm *Assembler, valReg, scratch Reg) {
 	asm.LSRimm(scratch, valReg, 50)
 	asm.CMPimm(scratch, 0x3FFF) // 14 bits all set = 0x3FFF
-}
-
-// EmitCheckIsTable checks if a NaN-boxed value is a table pointer.
-// Uses scratch for intermediate. After this, CondEQ = is table, CondNE = not table.
-// Pattern: LSR #48 → must be 0xFFFF (ptr tag), then check bits 44-47 = 0 (ptrSubTable)
-func EmitCheckIsTable(asm *Assembler, valReg, scratch Reg) {
-	// First check it's a pointer tag
-	asm.LSRimm(scratch, valReg, 48)
-	asm.CMPimm(scratch, NB_TagPtrShr48)
-	// If not pointer, the NE flag is already set, caller checks with CondNE
-	// But for table we also need to check sub-type = 0
-	// We'll use a different approach: check the full top 20 bits
-	// Table: top 16 bits = 0xFFFF, bits 44-47 = 0
-	// So bits 44-63 = 0xFFFF0 shifted left. Let's check:
-	// LSR #44 gives us bits 63:44 in the low 20 bits
-	// For table pointer: that's 0xFFFF0 >> 0 = top16=FFFF, sub=0 → 0xFFFFF * ...
-	// Actually simpler: check top 20 bits. Table = tagPtr | ptrSubTable = 0xFFFF000000000000
-	// LSR #44 → 0xFFFFF (the F from ptr tag and 0 from sub-type gives 0xFFFF0)
-	// Hmm, let me think again. 0xFFFF000000000000 >> 44 = 0xFFFF0.
-	// That's > 12 bits, can't use CMPimm. So use a 2-step approach.
-	// We already have LSR #48 in scratch. If that == 0xFFFF, check sub-type separately.
 }
 
 // EmitCheckIsTableFull is a full table check: tag=ptr AND sub=table.

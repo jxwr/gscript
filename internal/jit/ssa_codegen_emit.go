@@ -23,30 +23,7 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		EmitGuardType(asm, regRegs, slot, int(inst.AuxInt), "side_exit")
 
 	case SSA_GUARD_TRUTHY:
-		// Guard truthiness of a NaN-boxed value. AuxInt: 0=expect truthy, 1=expect falsy.
-		// Truthy: anything except nil (0xFFFC...) and false (0xFFFD...|0).
-		slot := int(inst.Slot)
-		asm.LoadImm64(X9, int64(inst.PC))
-		asm.LDR(X0, regRegs, slot*ValueSize) // load NaN-boxed value
-		if inst.AuxInt == 0 {
-			// Expect truthy: exit if nil or bool(false)
-			asm.LoadImm64(X1, nb_i64(NB_ValNil))
-			asm.CMPreg(X0, X1)
-			asm.BCond(CondEQ, "side_exit") // nil → falsy → exit
-			asm.LoadImm64(X1, nb_i64(NB_ValFalse))
-			asm.CMPreg(X0, X1)
-			asm.BCond(CondEQ, "side_exit") // false → falsy → exit
-		} else {
-			// Expect falsy: exit if truthy (not nil and not false)
-			doneLabel := fmt.Sprintf("guard_falsy_%d", ref)
-			asm.LoadImm64(X1, nb_i64(NB_ValNil))
-			asm.CMPreg(X0, X1)
-			asm.BCond(CondEQ, doneLabel) // nil → falsy → OK
-			asm.LoadImm64(X1, nb_i64(NB_ValFalse))
-			asm.CMPreg(X0, X1)
-			asm.BCond(CondNE, "side_exit") // not nil, not false → truthy → exit
-			asm.Label(doneLabel)
-		}
+		emitSSAGuardTruthy(asm, ref, inst)
 
 	case SSA_LOAD_ARRAY:
 		emitSSALoadArray(asm, f, ref, inst, regMap, sm, nil)
@@ -73,137 +50,19 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 		asm.LoadImm64(dstReg, inst.AuxInt)
 		spillIfNotAllocated(asm, regMap, slot, dstReg)
 
-	case SSA_ADD_INT:
-		arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-		arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
-		slot := sm.getSlotForRef(ref)
-		dstReg := getSlotReg(regMap, sm, ref, slot, X0)
-		asm.ADDreg(dstReg, arg1Reg, arg2Reg)
-		spillIfNotAllocated(asm, regMap, slot, dstReg)
-		// If this slot has a FORLOOP A+3 alias, copy to that register too
-		if a3Slot, ok := sm.forloopA3[slot]; ok {
-			if a3Reg, ok := regMap.IntReg(a3Slot); ok && a3Reg != dstReg {
-				asm.MOVreg(a3Reg, dstReg)
-			}
-		}
+	case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT:
+		emitSSAIntArith(asm, f, ref, inst, regMap, sm)
 
-	case SSA_SUB_INT:
-		arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-		arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
-		slot := sm.getSlotForRef(ref)
-		dstReg := getSlotReg(regMap, sm, ref, slot, X0)
-		asm.SUBreg(dstReg, arg1Reg, arg2Reg)
-		spillIfNotAllocated(asm, regMap, slot, dstReg)
-
-	case SSA_MUL_INT:
-		arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-		arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
-		slot := sm.getSlotForRef(ref)
-		dstReg := getSlotReg(regMap, sm, ref, slot, X0)
-		asm.MUL(dstReg, arg1Reg, arg2Reg)
-		spillIfNotAllocated(asm, regMap, slot, dstReg)
-
-	case SSA_MOD_INT:
-		arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X1)
-		arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X2)
-		slot := sm.getSlotForRef(ref)
-		dstReg := getSlotReg(regMap, sm, ref, slot, X0)
-		asm.LoadImm64(X9, int64(inst.PC))
-		asm.CBZ(arg2Reg, "side_exit")
-		asm.SDIV(X3, arg1Reg, arg2Reg)
-		asm.MSUB(dstReg, X3, arg2Reg, arg1Reg)
-		// Lua-style modulo: result has same sign as divisor
-		doneLabel := fmt.Sprintf("mod_done_%d", ref)
-		asm.CBZ(dstReg, doneLabel)
-		asm.EORreg(X3, dstReg, arg2Reg)
-		asm.CMPreg(X3, XZR)
-		asm.BCond(CondGE, doneLabel)
-		asm.ADDreg(dstReg, dstReg, arg2Reg)
-		asm.Label(doneLabel)
-		spillIfNotAllocated(asm, regMap, slot, dstReg)
-
-	case SSA_NEG_INT:
-		arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-		slot := sm.getSlotForRef(ref)
-		dstReg := getSlotReg(regMap, sm, ref, slot, X0)
-		asm.NEG(dstReg, arg1Reg)
-		spillIfNotAllocated(asm, regMap, slot, dstReg)
-
-	case SSA_EQ_INT:
-		arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-		arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
-		asm.LoadImm64(X9, int64(inst.PC))
-		asm.CMPreg(arg1Reg, arg2Reg)
-		asm.BCond(CondNE, "side_exit")
-
-	case SSA_LT_INT:
-		arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-		arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
-		asm.LoadImm64(X9, int64(inst.PC))
-		asm.CMPreg(arg1Reg, arg2Reg)
-		asm.BCond(CondGE, "side_exit")
-
-	case SSA_LE_INT:
-		arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-		arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
-		asm.LoadImm64(X9, int64(inst.PC))
-		asm.CMPreg(arg1Reg, arg2Reg)
-		asm.BCond(CondGT, "side_exit")
+	case SSA_EQ_INT, SSA_LT_INT, SSA_LE_INT:
+		emitSSAIntCompare(asm, f, inst, regMap, sm)
 
 	// --- Float operations (using SIMD registers D0-D7) ---
 
 	case SSA_UNBOX_FLOAT:
 		// Float values loaded at loop entry or on demand
 
-	case SSA_ADD_FLOAT:
-		slot := sm.getSlotForRef(ref)
-		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D1)
-		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D2)
-		dstD := getFloatSlotReg(regMap, slot, D0)
-		asm.FADDd(dstD, arg1D, arg2D)
-		storeFloatResult(asm, regMap, slot, dstD)
-
-	case SSA_SUB_FLOAT:
-		slot := sm.getSlotForRef(ref)
-		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D1)
-		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D2)
-		dstD := getFloatSlotReg(regMap, slot, D0)
-		asm.FSUBd(dstD, arg1D, arg2D)
-		storeFloatResult(asm, regMap, slot, dstD)
-
-	case SSA_MUL_FLOAT:
-		slot := sm.getSlotForRef(ref)
-		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D1)
-		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D2)
-		dstD := getFloatSlotReg(regMap, slot, D0)
-		asm.FMULd(dstD, arg1D, arg2D)
-		storeFloatResult(asm, regMap, slot, dstD)
-
-	case SSA_DIV_FLOAT:
-		slot := sm.getSlotForRef(ref)
-		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D1)
-		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D2)
-		dstD := getFloatSlotReg(regMap, slot, D0)
-		asm.FDIVd(dstD, arg1D, arg2D)
-		storeFloatResult(asm, regMap, slot, dstD)
-
-	case SSA_FMADD:
-		slot := sm.getSlotForRef(ref)
-		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D1)
-		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D2)
-		addendD := resolveFloatRef(asm, f, SSARef(inst.AuxInt), regMap, sm, D3)
-		dstD := getFloatSlotReg(regMap, slot, D0)
-		asm.FMADDd(dstD, arg1D, arg2D, addendD)
-		storeFloatResult(asm, regMap, slot, dstD)
-
-	case SSA_FMSUB:
-		slot := sm.getSlotForRef(ref)
-		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D1)
-		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D2)
-		addendD := resolveFloatRef(asm, f, SSARef(inst.AuxInt), regMap, sm, D3)
-		dstD := getFloatSlotReg(regMap, slot, D0)
-		asm.FMSUBd(dstD, arg1D, arg2D, addendD)
-		storeFloatResult(asm, regMap, slot, dstD)
+	case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_FMADD, SSA_FMSUB:
+		emitSSAFloatArith(asm, f, ref, inst, regMap, sm)
 
 	case SSA_CONST_FLOAT:
 		slot := sm.getSlotForRef(ref)
@@ -230,115 +89,14 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 			asm.STR(X5, regRegs, slot*ValueSize)
 		}
 
-	case SSA_LT_FLOAT:
-		asm.LoadImm64(X9, int64(inst.PC))
-		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D0)
-		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D1)
-		asm.FCMPd(arg1D, arg2D)
-		if inst.AuxInt == 0 {
-			asm.BCond(CondGE, "side_exit")
-		} else {
-			asm.BCond(CondLT, "side_exit")
-		}
-
-	case SSA_LE_FLOAT:
-		asm.LoadImm64(X9, int64(inst.PC))
-		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D0)
-		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D1)
-		asm.FCMPd(arg1D, arg2D)
-		if inst.AuxInt == 0 {
-			asm.BCond(CondGT, "side_exit")
-		} else {
-			asm.BCond(CondLE, "side_exit")
-		}
-
-	case SSA_GT_FLOAT:
-		asm.LoadImm64(X9, int64(inst.PC))
-		arg1D := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D0)
-		arg2D := resolveFloatRef(asm, f, inst.Arg2, regMap, sm, D1)
-		asm.FCMPd(arg1D, arg2D)
-		if inst.AuxInt == 0 {
-			asm.BCond(CondLE, "side_exit")
-		} else {
-			asm.BCond(CondGT, "side_exit")
-		}
+	case SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT:
+		emitSSAFloatCompare(asm, f, inst, regMap, sm)
 
 	case SSA_MOVE:
-		slot := sm.getSlotForRef(ref)
-		if inst.Type == SSATypeFloat {
-			// Float move: use D register allocation
-			srcD := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D0)
-			dstD := getFloatSlotReg(regMap, slot, D1)
-			if dstD != srcD {
-				asm.FMOVd(dstD, srcD)
-			}
-			// If destination is not allocated, write to memory.
-			// With NaN-boxing, raw float64 bits ARE the NaN-boxed value.
-			if _, ok := regMap.FloatReg(slot); !ok && slot >= 0 {
-				asm.FSTRd(srcD, regRegs, slot*ValueSize)
-			}
-		} else if inst.Type == SSATypeInt || inst.Type == SSATypeBool {
-			// Integer/Bool move: copy data field, write TypeInt tag
-			srcReg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-			dstReg := getSlotReg(regMap, sm, ref, slot, X0)
-			if dstReg != srcReg {
-				asm.MOVreg(dstReg, srcReg)
-			}
-			spillIfNotAllocated(asm, regMap, slot, dstReg)
-		} else {
-			// Unknown type (table, function, string, etc.): full 24-byte copy.
-			// Must copy typ + data + ptr to preserve the type tag and pointer.
-			// Copying only the data field and writing TypeInt (as spillIfNotAllocated
-			// does) would corrupt table references, causing "attempt to index a
-			// number value" errors when the interpreter resumes after side-exit.
-			srcSlot := sm.getSlotForRef(inst.Arg1)
-			if srcSlot >= 0 && slot >= 0 {
-				for w := 0; w < ValueSize/8; w++ {
-					asm.LDR(X0, regRegs, srcSlot*ValueSize+w*8)
-					asm.STR(X0, regRegs, slot*ValueSize+w*8)
-				}
-			}
-		}
+		emitSSAMove(asm, f, ref, inst, regMap, sm)
 
 	case SSA_INTRINSIC:
-		// Inline GoFunction calls
-		dstSlot := int(inst.Slot)
-		switch int(inst.AuxInt) {
-		case IntrinsicSqrt:
-			// math.sqrt(x): load float arg, FSQRT, store result
-			// Arg1 is the input value ref (R(A+1) in original CALL)
-			srcD := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D0)
-			asm.FSQRTd(D1, srcD)
-			// Store result to destination slot
-			if dstSlot >= 0 {
-				if dstDreg, ok := regMap.FloatReg(dstSlot); ok {
-					asm.FMOVd(dstDreg, D1)
-				} else {
-					// With NaN-boxing, raw float64 bits ARE the NaN-boxed value.
-					asm.FSTRd(D1, regRegs, dstSlot*ValueSize)
-				}
-			}
-		case IntrinsicBxor:
-			arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
-			asm.EORreg(X2, arg1Reg, arg2Reg)
-			if dstSlot >= 0 {
-				EmitBoxIntFast(asm, X5, X2, regTagInt)
-				asm.STR(X5, regRegs, dstSlot*ValueSize)
-			}
-		case IntrinsicBand:
-			arg1Reg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
-			arg2Reg := resolveSSARefSlot(asm, f, inst.Arg2, regMap, sm, X1)
-			asm.ANDreg(X2, arg1Reg, arg2Reg)
-			if dstSlot >= 0 {
-				EmitBoxIntFast(asm, X5, X2, regTagInt)
-				asm.STR(X5, regRegs, dstSlot*ValueSize)
-			}
-		default:
-			// Unknown intrinsic → side-exit
-			asm.LoadImm64(X9, int64(inst.PC))
-			asm.B("side_exit")
-		}
+		emitSSAIntrinsic(asm, f, inst, regMap, sm)
 
 	case SSA_CALL_INNER_TRACE:
 		emitSSACallInnerTrace(asm, f, inst, regMap)
@@ -355,6 +113,72 @@ func emitSSAInstSlot(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regM
 
 	case SSA_INNER_LOOP:
 		// Handled in CompileSSA loop body emission (emits label)
+	}
+}
+
+// emitSSAGuardTruthy emits a truthiness guard (SSA_GUARD_TRUTHY).
+// AuxInt: 0=expect truthy (exit on nil/false), 1=expect falsy (exit on truthy).
+func emitSSAGuardTruthy(asm *Assembler, ref SSARef, inst *SSAInst) {
+	slot := int(inst.Slot)
+	asm.LoadImm64(X9, int64(inst.PC))
+	asm.LDR(X0, regRegs, slot*ValueSize) // load NaN-boxed value
+	if inst.AuxInt == 0 {
+		// Expect truthy: exit if nil or bool(false)
+		asm.LoadImm64(X1, nb_i64(NB_ValNil))
+		asm.CMPreg(X0, X1)
+		asm.BCond(CondEQ, "side_exit") // nil → falsy → exit
+		asm.LoadImm64(X1, nb_i64(NB_ValFalse))
+		asm.CMPreg(X0, X1)
+		asm.BCond(CondEQ, "side_exit") // false → falsy → exit
+	} else {
+		// Expect falsy: exit if truthy (not nil and not false)
+		doneLabel := fmt.Sprintf("guard_falsy_%d", ref)
+		asm.LoadImm64(X1, nb_i64(NB_ValNil))
+		asm.CMPreg(X0, X1)
+		asm.BCond(CondEQ, doneLabel) // nil → falsy → OK
+		asm.LoadImm64(X1, nb_i64(NB_ValFalse))
+		asm.CMPreg(X0, X1)
+		asm.BCond(CondNE, "side_exit") // not nil, not false → truthy → exit
+		asm.Label(doneLabel)
+	}
+}
+
+// emitSSAMove emits SSA_MOVE for all types (float, int/bool, table/unknown).
+func emitSSAMove(asm *Assembler, f *SSAFunc, ref SSARef, inst *SSAInst, regMap *RegMap, sm *ssaSlotMapper) {
+	slot := sm.getSlotForRef(ref)
+	if inst.Type == SSATypeFloat {
+		// Float move: use D register allocation
+		srcD := resolveFloatRef(asm, f, inst.Arg1, regMap, sm, D0)
+		dstD := getFloatSlotReg(regMap, slot, D1)
+		if dstD != srcD {
+			asm.FMOVd(dstD, srcD)
+		}
+		// If destination is not allocated, write to memory.
+		// With NaN-boxing, raw float64 bits ARE the NaN-boxed value.
+		if _, ok := regMap.FloatReg(slot); !ok && slot >= 0 {
+			asm.FSTRd(srcD, regRegs, slot*ValueSize)
+		}
+	} else if inst.Type == SSATypeInt || inst.Type == SSATypeBool {
+		// Integer/Bool move: copy data field, write TypeInt tag
+		srcReg := resolveSSARefSlot(asm, f, inst.Arg1, regMap, sm, X0)
+		dstReg := getSlotReg(regMap, sm, ref, slot, X0)
+		if dstReg != srcReg {
+			asm.MOVreg(dstReg, srcReg)
+		}
+		spillIfNotAllocated(asm, regMap, slot, dstReg)
+	} else {
+		// Unknown type (table, function, string, etc.): full 24-byte copy.
+		// Must copy typ + data + ptr to preserve the type tag and pointer.
+		// Copying only the data field and writing TypeInt (as spillIfNotAllocated
+		// does) would corrupt table references, causing "attempt to index a
+		// number value" errors when the interpreter resumes after side-exit.
+		srcSlot := sm.getSlotForRef(inst.Arg1)
+		if srcSlot >= 0 && slot >= 0 {
+			for w := 0; w < ValueSize/8; w++ {
+				asm.LDR(X0, regRegs, srcSlot*ValueSize+w*8)
+				asm.STR(X0, regRegs, slot*ValueSize+w*8)
+			}
+		}
 	}
 }
 

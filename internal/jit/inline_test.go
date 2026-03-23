@@ -15,9 +15,14 @@ import (
 func runJITWithGlobals(t *testing.T, proto *vm.FuncProto, regs []runtime.Value, globals map[string]runtime.Value) (JITContext, []runtime.Value) {
 	t.Helper()
 
-	cf, err := CompileWithGlobals(proto, globals)
+	cg := &Codegen{
+		asm:     NewAssembler(),
+		proto:   proto,
+		globals: globals,
+	}
+	cf, err := cg.compile()
 	if err != nil {
-		t.Fatalf("CompileWithGlobals: %v", err)
+		t.Fatalf("compile: %v", err)
 	}
 	defer cf.Code.Free()
 
