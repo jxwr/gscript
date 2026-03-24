@@ -204,14 +204,12 @@ func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 			// Inner loop's back-edge — ignore (we're recording the inner body)
 			return false
 		}
-		// Only finish the trace on the SAME loop's back-edge.
-		// If a different loop's back-edge is hit, it means we exited the
-		// recorded loop and entered a different loop — abort the trace.
-		if r.current != nil && pc == r.current.LoopPC {
+		// Finish the trace when we see ANY loop's back-edge while recording.
+		// If it's the same loop, the trace captured one full iteration.
+		// If it's a different loop, the recorded loop has exited and control
+		// moved to a sibling or outer loop — the trace is complete.
+		if r.current != nil {
 			r.finishTrace()
-		} else {
-			// Different loop's back-edge — abort recording
-			r.abortTrace()
 		}
 		return false
 	}

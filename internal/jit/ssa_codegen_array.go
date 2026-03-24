@@ -4,6 +4,8 @@ package jit
 
 import (
 	"fmt"
+
+	"github.com/gscript/gscript/internal/runtime"
 )
 
 // findLoopInvariantTableSlots identifies table slots used in SSA_LOAD_ARRAY
@@ -23,11 +25,28 @@ func findLoopInvariantTableSlots(f *SSAFunc, loopIdx int, sm *ssaSlotMapper) map
 		}
 	}
 
+	// Identify slots that have a pre-loop GUARD_TYPE for table type.
+	// Only these slots are guaranteed to hold tables at loop entry.
+	// Slots that are WBR (written before read) don't have pre-loop guards
+	// and their pre-loop values may be stale (e.g., int/float from the
+	// previous outer iteration). Hoisting table guards for such slots
+	// causes false guard failures and trace blacklisting.
+	guardedTableSlots := make(map[int]bool)
+	for i := 0; i < loopIdx; i++ {
+		inst := &f.Insts[i]
+		if inst.Op == SSA_GUARD_TYPE && inst.AuxInt == int64(runtime.TypeTable) {
+			loadRef := inst.Arg1
+			if int(loadRef) < len(f.Insts) && f.Insts[loadRef].Op == SSA_LOAD_SLOT {
+				guardedTableSlots[int(f.Insts[loadRef].Slot)] = true
+			}
+		}
+	}
+
 	for i := loopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
 		if inst.Op == SSA_LOAD_ARRAY || inst.Op == SSA_STORE_ARRAY {
 			tableSlot := sm.getSlotForRef(inst.Arg1)
-			if tableSlot >= 0 && !modifiedSlots[tableSlot] {
+			if tableSlot >= 0 && !modifiedSlots[tableSlot] && guardedTableSlots[tableSlot] {
 				result[tableSlot] = int(inst.Type) // SSATypeInt or SSATypeFloat
 			}
 		}

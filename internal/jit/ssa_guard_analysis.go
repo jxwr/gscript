@@ -140,7 +140,19 @@ func computeLiveInLegacy(trace *Trace, liveIn map[int]bool, slotRuntimeType map[
 		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV,
 			vm.OP_LT, vm.OP_LE:
 			if ir.B < 256 && !seen[ir.B] && !calleeOnlySlots[ir.B] {
-				if !tmpBuilder.isWrittenBeforeFirstRead(ir.B) {
+				// For float slots, use isFloatSlotWBR which recognizes
+				// arithmetic/MOVE/GETFIELD as writes. This eliminates
+				// unnecessary guards on intermediate float temporaries
+				// (dx, dy, dz, dsq, mag in nbody) that are written before
+				// any read. Non-float slots use the conservative
+				// isWrittenBeforeFirstRead which is safe for multi-type slots.
+				wbr := false
+				if tmpBuilder.slotType[ir.B] == SSATypeFloat {
+					wbr = tmpBuilder.isFloatSlotWBR(ir.B)
+				} else {
+					wbr = tmpBuilder.isWrittenBeforeFirstRead(ir.B)
+				}
+				if !wbr {
 					liveIn[ir.B] = true
 					slotRuntimeType[ir.B] = ir.BType
 					slotPC[ir.B] = ir.PC
@@ -148,7 +160,13 @@ func computeLiveInLegacy(trace *Trace, liveIn map[int]bool, slotRuntimeType map[
 				seen[ir.B] = true
 			}
 			if ir.C < 256 && !seen[ir.C] && !calleeOnlySlots[ir.C] {
-				if !tmpBuilder.isWrittenBeforeFirstRead(ir.C) {
+				wbr := false
+				if tmpBuilder.slotType[ir.C] == SSATypeFloat {
+					wbr = tmpBuilder.isFloatSlotWBR(ir.C)
+				} else {
+					wbr = tmpBuilder.isWrittenBeforeFirstRead(ir.C)
+				}
+				if !wbr {
 					liveIn[ir.C] = true
 					slotRuntimeType[ir.C] = ir.CType
 					slotPC[ir.C] = ir.PC
@@ -157,7 +175,13 @@ func computeLiveInLegacy(trace *Trace, liveIn map[int]bool, slotRuntimeType map[
 			}
 		case vm.OP_UNM:
 			if ir.B < 256 && !seen[ir.B] && !calleeOnlySlots[ir.B] {
-				if !tmpBuilder.isWrittenBeforeFirstRead(ir.B) {
+				wbr := false
+				if tmpBuilder.slotType[ir.B] == SSATypeFloat {
+					wbr = tmpBuilder.isFloatSlotWBR(ir.B)
+				} else {
+					wbr = tmpBuilder.isWrittenBeforeFirstRead(ir.B)
+				}
+				if !wbr {
 					liveIn[ir.B] = true
 					slotRuntimeType[ir.B] = ir.BType
 					slotPC[ir.B] = ir.PC
@@ -490,6 +514,104 @@ func (b *ssaBuilder) isWrittenBeforeFirstReadExt(slot int) bool {
 			isWrite = (slot == ir.A || slot == ir.A+3)
 		case vm.OP_FORPREP:
 			// FORPREP writes idx (A)
+			isWrite = (ir.A == slot)
+		}
+		if isWrite {
+			return true
+		}
+	}
+	return false
+}
+
+// isFloatSlotWBR checks if a float-typed slot is written before its first read
+// in the trace body. Unlike isWrittenBeforeFirstReadExt, this also recognizes
+// arithmetic ops (ADD, SUB, MUL, DIV, UNM) and MOVE as valid writes. This is
+// safe for float slots because:
+//   - Arithmetic always produces a numeric result (int or float)
+//   - Float slots only appear as operands to other arithmetic ops
+//   - The concern about "context-dependent types" (matmul table slot reuse)
+//     doesn't apply to slots that are ONLY used as float operands
+//
+// This eliminates unnecessary pre-loop guards for intermediate float temporaries
+// in traces like nbody's advance() inner loop, where slots for dx, dy, dz, dsq,
+// mag etc. are written by arithmetic (MUL, SUB, ADD) before being read.
+func (b *ssaBuilder) isFloatSlotWBR(slot int) bool {
+	for _, ir := range b.trace.IR {
+		// Check reads first (all ops that read this slot)
+		isRead := false
+		switch ir.Op {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV,
+			vm.OP_LT, vm.OP_LE, vm.OP_EQ:
+			if (ir.B < 256 && ir.B == slot) || (ir.C < 256 && ir.C == slot) {
+				isRead = true
+			}
+		case vm.OP_UNM:
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_MOVE:
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_FORLOOP:
+			if slot == ir.A || slot == ir.A+1 || slot == ir.A+2 {
+				isRead = true
+			}
+		case vm.OP_FORPREP:
+			if slot == ir.A || slot == ir.A+2 {
+				isRead = true
+			}
+		case vm.OP_TEST:
+			if ir.A == slot {
+				isRead = true
+			}
+		case vm.OP_GETTABLE:
+			if ir.B == slot || (ir.C < 256 && ir.C == slot) {
+				isRead = true
+			}
+		case vm.OP_SETTABLE:
+			if ir.A == slot || (ir.B < 256 && ir.B == slot) || (ir.C < 256 && ir.C == slot) {
+				isRead = true
+			}
+		case vm.OP_GETFIELD:
+			if ir.B == slot {
+				isRead = true
+			}
+		case vm.OP_SETFIELD:
+			if ir.A == slot || (ir.C < 256 && ir.C == slot) {
+				isRead = true
+			}
+		case vm.OP_CALL:
+			if slot >= ir.A && slot < ir.A+ir.B {
+				isRead = true
+			}
+		}
+		if isRead {
+			return false
+		}
+
+		// Recognize writes: all ops that write to register A.
+		// For float slots, arithmetic and MOVE are safe writes because the
+		// result is always numeric (matching the float slot's expected type).
+		isWrite := false
+		switch ir.Op {
+		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
+			isWrite = (ir.A == slot)
+		case vm.OP_GETGLOBAL:
+			isWrite = (ir.A == slot)
+		case vm.OP_GETFIELD:
+			isWrite = (ir.A == slot)
+		case vm.OP_CALL:
+			isWrite = (ir.A == slot)
+		case vm.OP_FORLOOP:
+			isWrite = (slot == ir.A || slot == ir.A+3)
+		case vm.OP_FORPREP:
+			isWrite = (ir.A == slot)
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_DIV:
+			isWrite = (ir.A == slot)
+		case vm.OP_UNM:
+			isWrite = (ir.A == slot)
+		case vm.OP_MOVE:
 			isWrite = (ir.A == slot)
 		}
 		if isWrite {
