@@ -74,8 +74,7 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	}
 
 	// Phase 2: Emit ARM64
-	_ = ud // reserved for future optimization passes
-	return emitSSA(f, regMap, liveInfo)
+	return emitSSA(f, regMap, liveInfo, ud)
 }
 
 // buildFloatRefSpill computes a map of written float slots NOT in Float.slotToReg
@@ -137,26 +136,29 @@ type ssaCodegen struct {
 	f             *SSAFunc
 	regMap        *RegMap
 	liveInfo      *LiveInfo
+	ud            *UseDef
 	sm            *ssaSlotMapper
 	floatRefSpill map[int]FReg
 	trCtx         Reg
 
 	// Phase outputs (populated by earlier phases, consumed by later ones)
-	callExits     []callExitInfo
-	loopIdx       int
-	wbrFloatSlots map[int]bool
-	hoistedConsts map[SSARef]bool
-	hoistedTables map[int]int
-	sideExitInfo  *sideExitContinuation
+	callExits      []callExitInfo
+	loopIdx        int
+	wbrFloatSlots  map[int]bool
+	deadGuardSlots map[int]bool // slots whose pre-loop guards were eliminated
+	hoistedConsts  map[SSARef]bool
+	hoistedTables  map[int]int
+	sideExitInfo   *sideExitContinuation
 }
 
 // emitSSA emits ARM64 machine code for an SSAFunc using pre-computed analysis results.
-func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo) (*CompiledTrace, error) {
+func emitSSA(f *SSAFunc, regMap *RegMap, liveInfo *LiveInfo, ud *UseDef) (*CompiledTrace, error) {
 	g := &ssaCodegen{
 		asm:           NewAssembler(),
 		f:             f,
 		regMap:        regMap,
 		liveInfo:      liveInfo,
+		ud:            ud,
 		sm:            newSSASlotMapper(f),
 		floatRefSpill: buildFloatRefSpill(f, regMap),
 		trCtx:         X19,

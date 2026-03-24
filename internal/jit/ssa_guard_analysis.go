@@ -403,12 +403,18 @@ func (b *ssaBuilder) isWrittenBeforeFirstRead(slot int) bool {
 	return b.isWrittenBeforeFirstReadImpl(slot)
 }
 
-// isWrittenBeforeFirstReadExt checks if a float slot is written by a
-// GETFIELD, GETTABLE, or CALL before any instruction reads it.
-// This allows skipping pre-loop guards for intermediate float results
-// (e.g., dx from "dx = bi.x - bj.x" where dx only exists inside the loop body).
-// More conservative than isWrittenBeforeFirstReadImpl: only GETFIELD/GETTABLE/CALL
-// writes count, not arithmetic (which could produce wrong types without guards).
+// isWrittenBeforeFirstReadExt checks if a slot is written before any
+// instruction reads it in the trace body. This allows skipping or relaxing
+// pre-loop guards for intermediate results that only exist inside the loop body
+// (e.g., dx from "dx = bi.x - bj.x" in nbody, where GETFIELD writes to
+// the slot before any arithmetic reads it).
+//
+// Recognizes GETFIELD, GETGLOBAL, CALL, loads, and FORLOOP as writes.
+// GETTABLE, MOVE, and arithmetic are intentionally NOT included as writes
+// because their result types are context-dependent. Including them causes
+// incorrect guard removal for slots that later hold tables (e.g., matmul's
+// b[k] used as table B in b[k][j]) or slots with int registers whose
+// store-back would corrupt non-int values.
 func (b *ssaBuilder) isWrittenBeforeFirstReadExt(slot int) bool {
 	for _, ir := range b.trace.IR {
 		// Check reads first (all ops that read this slot)
@@ -464,16 +470,18 @@ func (b *ssaBuilder) isWrittenBeforeFirstReadExt(slot int) bool {
 			return false
 		}
 
-		// Only recognize writes from ops that definitively produce a typed value:
-		// GETFIELD/GETTABLE produce the value from the table (known type at recording).
-		// CALL produces a result. LOADK/LOADINT produce constants.
-		// We do NOT count arithmetic writes here — their output type depends on
-		// operand types, which may be wrong if we skip the guard.
+		// Recognize writes from ops that definitively produce a typed value
+		// to register A. GETFIELD is the key addition over the old code:
+		// it writes a field value (known type at recording time) to A.
+		// This is critical for nbody where intermediate float slots
+		// (dx, dy, dz) are written by GETFIELD before arithmetic reads them.
 		isWrite := false
 		switch ir.Op {
 		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
 			isWrite = (ir.A == slot)
 		case vm.OP_GETGLOBAL:
+			isWrite = (ir.A == slot)
+		case vm.OP_GETFIELD:
 			isWrite = (ir.A == slot)
 		case vm.OP_CALL:
 			isWrite = (ir.A == slot)

@@ -273,9 +273,12 @@ func TestUseDef_WithBuildSSA(t *testing.T) {
 	f := BuildSSA(trace)
 	ud := BuildUseDef(f)
 
-	// Basic sanity: every Arg1/Arg2 >= 0 should appear in Users
+	// Basic sanity: for ops that actually read Arg1/Arg2 as SSA refs,
+	// the referenced instruction should list this instruction as a user.
+	// Ops like CONST_INT, LOAD_SLOT, etc. have Arg1/Arg2=0 by default
+	// (Go zero value), but don't actually use them as SSA references.
 	for i, inst := range f.Insts {
-		if inst.Arg1 >= 0 && inst.Arg1 != SSARefNone {
+		if opUsesArg1(inst.Op) && inst.Arg1 >= 0 && inst.Arg1 != SSARefNone {
 			found := false
 			for _, u := range ud.Users[inst.Arg1] {
 				if u == SSARef(i) {
@@ -284,10 +287,10 @@ func TestUseDef_WithBuildSSA(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Errorf("inst %d uses Arg1=%d but not in Users[%d]", i, inst.Arg1, inst.Arg1)
+				t.Errorf("inst %d (Op=%d) uses Arg1=%d but not in Users[%d]", i, inst.Op, inst.Arg1, inst.Arg1)
 			}
 		}
-		if inst.Arg2 >= 0 && inst.Arg2 != SSARefNone {
+		if opUsesArg2(inst.Op) && inst.Arg2 >= 0 && inst.Arg2 != SSARefNone {
 			found := false
 			for _, u := range ud.Users[inst.Arg2] {
 				if u == SSARef(i) {
@@ -296,7 +299,7 @@ func TestUseDef_WithBuildSSA(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Errorf("inst %d uses Arg2=%d but not in Users[%d]", i, inst.Arg2, inst.Arg2)
+				t.Errorf("inst %d (Op=%d) uses Arg2=%d but not in Users[%d]", i, inst.Op, inst.Arg2, inst.Arg2)
 			}
 		}
 	}

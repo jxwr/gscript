@@ -1,5 +1,8 @@
 package jit
 
+// debugSSAGuardElim enables debug logging for SSA-level guard elimination.
+var debugSSAGuardElim = false
+
 // BuildSSA converts a Trace into SSA IR with type inference.
 func BuildSSA(trace *Trace) *SSAFunc {
 	b := &ssaBuilder{
@@ -65,7 +68,11 @@ func OptimizeSSA(f *SSAFunc) *SSAFunc {
 	// Pass 1: Guard hoisting — guards are already at the top (before LOOP)
 	// This is ensured by BuildSSA's structure.
 
-	// Pass 2: Dead code elimination
+	// Pass 2: SSA-level guard elimination is done during code generation,
+	// not here. See emitSSAPreLoopGuards which uses use-def chains to skip
+	// guards whose LOAD_SLOT refs have no loop-body users.
+
+	// Pass 3: Dead code elimination
 	f = eliminateDeadCode(f)
 
 	return f

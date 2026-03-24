@@ -21,13 +21,16 @@ func BuildUseDef(f *SSAFunc) *UseDef {
 	for i, inst := range f.Insts {
 		ref := SSARef(i)
 
-		// Track uses via Arg1
-		if inst.Arg1 != SSARefNone && inst.Arg1 >= 0 && int(inst.Arg1) < n {
+		// Track uses via Arg1 — only if the op actually uses Arg1 as an SSA ref.
+		// Ops like CONST_INT, CONST_FLOAT, LOAD_SLOT, etc. don't use Arg1;
+		// their Arg1 field is zero (Go default), which would falsely register
+		// instruction 0 as having users everywhere.
+		if opUsesArg1(inst.Op) && inst.Arg1 != SSARefNone && inst.Arg1 >= 0 && int(inst.Arg1) < n {
 			ud.Users[inst.Arg1] = append(ud.Users[inst.Arg1], ref)
 		}
 
-		// Track uses via Arg2
-		if inst.Arg2 != SSARefNone && inst.Arg2 >= 0 && int(inst.Arg2) < n {
+		// Track uses via Arg2 — same filtering for ops that use Arg2.
+		if opUsesArg2(inst.Op) && inst.Arg2 != SSARefNone && inst.Arg2 >= 0 && int(inst.Arg2) < n {
 			ud.Users[inst.Arg2] = append(ud.Users[inst.Arg2], ref)
 		}
 
@@ -47,6 +50,37 @@ func BuildUseDef(f *SSAFunc) *UseDef {
 	}
 
 	return ud
+}
+
+// opUsesArg1 returns true if the given SSA op reads Arg1 as an SSA reference.
+// Ops that don't use Arg1 (constants, LOAD_SLOT, markers) have Arg1=0 by default,
+// which would falsely create a use-def edge to instruction 0.
+func opUsesArg1(op SSAOp) bool {
+	switch op {
+	case SSA_LOAD_SLOT, SSA_LOAD_GLOBAL,
+		SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_NIL, SSA_CONST_BOOL,
+		SSA_LOOP, SSA_INNER_LOOP, SSA_SNAPSHOT, SSA_NOP, SSA_SIDE_EXIT:
+		return false
+	}
+	return true
+}
+
+// opUsesArg2 returns true if the given SSA op reads Arg2 as an SSA reference.
+// Many ops only use Arg1 (unary ops, guards, moves, field loads).
+func opUsesArg2(op SSAOp) bool {
+	switch op {
+	// Binary ops that use both Arg1 and Arg2
+	case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT,
+		SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT,
+		SSA_FMADD, SSA_FMSUB,
+		SSA_EQ_INT, SSA_LT_INT, SSA_LE_INT,
+		SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
+		SSA_LOAD_ARRAY,  // Arg1=table, Arg2=key
+		SSA_STORE_ARRAY, // Arg1=table, Arg2=key (value in AuxInt)
+		SSA_STORE_FIELD: // Arg1=table, Arg2=value
+		return true
+	}
+	return false
 }
 
 // definesSlot returns true if the given op produces a value that defines a VM slot.

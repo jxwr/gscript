@@ -98,10 +98,12 @@ func resolveSSARefSlot(asm *Assembler, f *SSAFunc, ref SSARef, regMap *RegMap, s
 // emitSlotStoreBack writes modified allocated slot values back to memory.
 // Only slots that were actually written by the loop body are stored back.
 // Writing unmodified slots (e.g., table references) would corrupt their type.
-func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writtenSlots map[int]bool, floatRefSpill map[int]FReg) {
+// Dead-guard slots (WBR slots whose pre-loop guards were eliminated) are skipped:
+// their registers hold stale values that would corrupt multi-type slots in memory.
+func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writtenSlots map[int]bool, floatRefSpill map[int]FReg, deadGuardSlots map[int]bool) {
 	// Integer register writeback: box raw int → NaN-boxed IntValue
 	for slot, armReg := range regMap.Int.slotToReg {
-		if !writtenSlots[slot] {
+		if !writtenSlots[slot] || deadGuardSlots[slot] {
 			continue
 		}
 		off := slot * ValueSize
@@ -121,7 +123,7 @@ func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writte
 	// Float D-register writeback: float bits ARE the NaN-boxed value.
 	// Just FSTRd directly — no tag needed.
 	for slot, dreg := range regMap.Float.slotToReg {
-		if !writtenSlots[slot] {
+		if !writtenSlots[slot] || deadGuardSlots[slot] {
 			continue
 		}
 		off := slot * ValueSize
@@ -134,7 +136,7 @@ func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writte
 	// store-back because the loop body may skip memory writes when a
 	// ref-level D register is available.
 	for slot, dreg := range floatRefSpill {
-		if !writtenSlots[slot] {
+		if !writtenSlots[slot] || deadGuardSlots[slot] {
 			continue
 		}
 		off := slot * ValueSize

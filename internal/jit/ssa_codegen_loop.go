@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
 )
 
 // emitSSAResumeDispatch emits the call-exit resume dispatch table.
@@ -47,13 +48,23 @@ func (g *ssaCodegen) emitSSAResumeDispatch() {
 
 // emitSSAPreLoopGuards emits pre-loop type guards and non-guard instructions up to
 // the SSA_LOOP marker. Sets g.loopIdx and g.wbrFloatSlots.
+//
+// Uses SSA use-def chains to eliminate unnecessary guards: a pre-loop GUARD_TYPE
+// for a LOAD_SLOT ref is eliminated if that LOAD_SLOT (and its UNBOX) have zero
+// users in the loop body. When a guard is eliminated, the slot is also removed
+// from register allocation to prevent store-back corruption.
 func (g *ssaCodegen) emitSSAPreLoopGuards() error {
 	asm := g.asm
 
 	// Identify write-before-read float slots for relaxed guard emission.
-	// These slots may hold non-float types at trace entry (e.g., LOADBOOL on
-	// mandelbrot escape path), but the value is overwritten before first read.
 	g.wbrFloatSlots = findWBRFloatSlots(g.f)
+
+	// SSA-level guard elimination using use-def chains.
+	// Eliminates pre-loop guards for FORLOOP control slots (A, A+1, A+2) whose
+	// pre-loop LOAD_SLOT values have zero loop-body users. These slots are always
+	// int at trace entry (guaranteed by FORLOOP), and the loop body writes them
+	// before reading (WBR). The guard, pre-loop load, and store-back are all skipped.
+	g.deadGuardSlots = g.computeDeadGuardSlots()
 
 	g.loopIdx = -1
 	for i, inst := range g.f.Insts {
@@ -62,15 +73,21 @@ func (g *ssaCodegen) emitSSAPreLoopGuards() error {
 			break
 		}
 		if inst.Op == SSA_GUARD_TYPE {
-			// Emit NaN-boxing type guard
 			loadInst := &g.f.Insts[inst.Arg1]
 			slot := int(loadInst.Slot)
+			if g.deadGuardSlots[slot] {
+				// Guard eliminated — skip guard AND associated LOAD_SLOT/UNBOX.
+				continue
+			}
+			// Emit NaN-boxing type guard
 			if inst.AuxInt == int64(runtime.TypeFloat) && g.wbrFloatSlots[slot] {
-				// Relaxed guard for write-before-read float slots
 				EmitGuardTypeRelaxedFloat(asm, regRegs, slot, "guard_fail")
 			} else {
 				EmitGuardType(asm, regRegs, slot, int(inst.AuxInt), "guard_fail")
 			}
+		} else if g.isDeadGuardDerived(&inst) {
+			// Skip LOAD_SLOT and UNBOX for eliminated guards
+			continue
 		} else {
 			emitSSAInstSlot(asm, g.f, SSARef(i), &inst, g.regMap, g.sm)
 		}
@@ -82,6 +99,150 @@ func (g *ssaCodegen) emitSSAPreLoopGuards() error {
 	return nil
 }
 
+// isDeadGuardDerived returns true if the instruction is a LOAD_SLOT or UNBOX
+// for a dead-guard slot and should be skipped during code emission.
+func (g *ssaCodegen) isDeadGuardDerived(inst *SSAInst) bool {
+	if inst.Op == SSA_LOAD_SLOT {
+		return g.deadGuardSlots[int(inst.Slot)]
+	}
+	if inst.Op == SSA_UNBOX_INT || inst.Op == SSA_UNBOX_FLOAT {
+		if int(inst.Arg1) < len(g.f.Insts) {
+			loadSlot := int(g.f.Insts[inst.Arg1].Slot)
+			return g.deadGuardSlots[loadSlot]
+		}
+	}
+	return false
+}
+
+// computeDeadGuardSlots uses the SSA use-def chain to find pre-loop guards
+// whose guarded LOAD_SLOT values have no users in the loop body. These guards
+// are unnecessary because the slot is overwritten before any read.
+//
+// Returns a set of slot numbers whose guards should be eliminated.
+// Also removes these slots from the register map to prevent store-back corruption.
+func (g *ssaCodegen) computeDeadGuardSlots() map[int]bool {
+	result := make(map[int]bool)
+	if g.ud == nil {
+		return result
+	}
+
+	// Find loop marker
+	loopIdx := -1
+	for i, inst := range g.f.Insts {
+		if inst.Op == SSA_LOOP {
+			loopIdx = i
+			break
+		}
+	}
+	if loopIdx < 0 {
+		return result
+	}
+
+	// Scan loop body for slots accessed via memory (not SSA refs).
+	// These slots are read by table operations (LOAD_FIELD, STORE_FIELD,
+	// LOAD_ARRAY, STORE_ARRAY) through regs[slot*ValueSize], which the SSA
+	// use-def chain does NOT track. Guards for these slots must be preserved.
+	memAccessedSlots := make(map[int]bool)
+	for i := loopIdx + 1; i < len(g.f.Insts); i++ {
+		inst := &g.f.Insts[i]
+		switch inst.Op {
+		case SSA_LOAD_FIELD, SSA_STORE_FIELD, SSA_LOAD_ARRAY, SSA_STORE_ARRAY:
+			// These ops read/write a table via the slot referenced by their
+			// Arg1 SSA ref. If Arg1 points to a pre-loop LOAD_SLOT, the slot
+			// is memory-accessed. Check what slot the table ref maps to.
+			if int(inst.Arg1) < len(g.f.Insts) {
+				tableInst := &g.f.Insts[inst.Arg1]
+				if tableInst.Op == SSA_LOAD_SLOT {
+					memAccessedSlots[int(tableInst.Slot)] = true
+				}
+			}
+		}
+	}
+
+	for guardIdx := 0; guardIdx < loopIdx; guardIdx++ {
+		inst := &g.f.Insts[guardIdx]
+		if inst.Op != SSA_GUARD_TYPE {
+			continue
+		}
+
+		loadRef := inst.Arg1
+		if loadRef < 0 || int(loadRef) >= len(g.f.Insts) {
+			continue
+		}
+		if g.f.Insts[loadRef].Op != SSA_LOAD_SLOT {
+			continue
+		}
+		slot := int(g.f.Insts[loadRef].Slot)
+
+		// Collect all pre-loop refs derived from loadRef
+		derivedRefs := []SSARef{loadRef}
+		for i := 0; i < loopIdx; i++ {
+			ref := SSARef(i)
+			if ref == loadRef || ref == SSARef(guardIdx) {
+				continue
+			}
+			preInst := &g.f.Insts[i]
+			if (preInst.Op == SSA_UNBOX_INT || preInst.Op == SSA_UNBOX_FLOAT) && preInst.Arg1 == loadRef {
+				derivedRefs = append(derivedRefs, ref)
+			}
+		}
+
+		// Check if any derived ref has users in the loop body
+		hasLoopUser := false
+		for _, dRef := range derivedRefs {
+			for _, userRef := range g.ud.Users[dRef] {
+				if int(userRef) > loopIdx {
+					hasLoopUser = true
+					break
+				}
+			}
+			if hasLoopUser {
+				break
+			}
+		}
+
+		if !hasLoopUser {
+			// This LOAD_SLOT has no loop-body users → the slot is written
+			// before read (WBR) at the SSA level.
+			//
+			// Currently restricted to FORLOOP control slots (A, A+1, A+2)
+			// which are guaranteed to hold int at trace entry. General
+			// elimination for arbitrary slots requires tracking memory
+			// accesses (LOAD_FIELD table bases) that the SSA use-def chain
+			// doesn't capture. See: slot-reuse architecture issue.
+			if !g.isForloopControlSlot(slot, loopIdx) {
+				continue
+			}
+			if debugSSAGuardElim {
+				fmt.Printf("[GUARD-ELIM] eliminate guard at %d for slot=%d (type=%d)\n",
+					guardIdx, slot, inst.AuxInt)
+			}
+			result[slot] = true
+		}
+	}
+
+	return result
+}
+
+// isForloopControlSlot returns true if the given slot is a FORLOOP control variable
+// (A, A+1, or A+2) for ANY for-loop in the trace. These slots are guaranteed to hold
+// int values at trace entry because the FORLOOP instruction writes them before the
+// trace fires. Slot A+3 (external loop variable) is NOT included because the loop
+// body may overwrite it with a different type.
+func (g *ssaCodegen) isForloopControlSlot(slot int, loopIdx int) bool {
+	if g.f.Trace == nil {
+		return false
+	}
+	for _, ir := range g.f.Trace.IR {
+		if ir.Op == vm.OP_FORLOOP {
+			if slot == ir.A || slot == ir.A+1 || slot == ir.A+2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // emitSSAPreLoopLoads loads allocated slots into registers, loads float slots into
 // D registers, and hoists loop-body float constants. Sets g.hoistedConsts.
 func (g *ssaCodegen) emitSSAPreLoopLoads() {
@@ -91,6 +252,8 @@ func (g *ssaCodegen) emitSSAPreLoopLoads() {
 	// Some slots may not have been guarded/unboxed by the SSA builder
 	// (e.g., OP_UNM operands in older SSA builds, or OP_MOVE targets).
 	// Load any allocated slot that wasn't already populated.
+	// For dead-guard slots, initialize the register to 0 instead of loading
+	// from memory (which may contain a non-int value like a table pointer).
 	loadedSlots := make(map[int]bool)
 	for i := 0; i < g.loopIdx; i++ {
 		inst := &g.f.Insts[i]
@@ -104,7 +267,7 @@ func (g *ssaCodegen) emitSSAPreLoopLoads() {
 		}
 	}
 	for slot, armReg := range g.regMap.Int.slotToReg {
-		if !loadedSlots[slot] {
+		if !loadedSlots[slot] && !g.deadGuardSlots[slot] {
 			asm.LDR(armReg, regRegs, slot*ValueSize)
 			EmitUnboxInt(asm, armReg, armReg)
 		}
@@ -120,7 +283,7 @@ func (g *ssaCodegen) emitSSAPreLoopLoads() {
 		if dreg, ok := g.regMap.FloatRefReg(ref); ok {
 			inst := &g.f.Insts[i]
 			slot := int(inst.Slot)
-			if slot >= 0 && !preLoopFloatLoaded[slot] {
+			if slot >= 0 && !preLoopFloatLoaded[slot] && !g.deadGuardSlots[slot] {
 				asm.FLDRd(dreg, regRegs, slot*ValueSize+OffsetData)
 				preLoopFloatLoaded[slot] = true
 			}
@@ -321,7 +484,7 @@ func (g *ssaCodegen) emitSSACallExit(i int, inst *SSAInst) {
 	}
 
 	// 1. Store back all modified slots so the VM sees current values
-	emitSlotStoreBack(asm, g.regMap, g.sm, g.liveInfo.WrittenSlots, g.floatRefSpill)
+	emitSlotStoreBack(asm, g.regMap, g.sm, g.liveInfo.WrittenSlots, g.floatRefSpill, g.deadGuardSlots)
 	// 2. Set ExitPC = bytecode PC of the CALL instruction
 	asm.LoadImm64(X9, int64(inst.PC))
 	asm.STR(X9, g.trCtx, TraceCtxOffExitPC)
@@ -431,7 +594,7 @@ func (g *ssaCodegen) emitSSAColdPaths() {
 
 	// --- Side exit (guard failure during loop body) ---
 	asm.Label("side_exit")
-	emitSlotStoreBack(asm, g.regMap, g.sm, g.liveInfo.WrittenSlots, g.floatRefSpill)
+	emitSlotStoreBack(asm, g.regMap, g.sm, g.liveInfo.WrittenSlots, g.floatRefSpill, g.deadGuardSlots)
 	asm.STR(X9, X19, 16) // ctx.ExitPC = X9
 	asm.LoadImm64(X0, 1) // ExitCode = 1
 	asm.B("epilogue")
@@ -446,6 +609,6 @@ func (g *ssaCodegen) emitSSAColdPaths() {
 
 	// --- Loop done handler (normal loop completion) ---
 	asm.Label("loop_done_handler")
-	emitSlotStoreBack(asm, g.regMap, g.sm, g.liveInfo.WrittenSlots, g.floatRefSpill)
+	emitSlotStoreBack(asm, g.regMap, g.sm, g.liveInfo.WrittenSlots, g.floatRefSpill, g.deadGuardSlots)
 	asm.LoadImm64(X0, 0) // ExitCode = 0
 }
