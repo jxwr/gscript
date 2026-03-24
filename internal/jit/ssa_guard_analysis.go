@@ -41,16 +41,159 @@ func computeLiveIn(trace *Trace) (liveIn map[int]bool, slotRuntimeType map[int]r
 		}
 	}
 
-	if hasNonNumeric {
-		// For traces with table/field/global/call ops, use legacy per-opcode
-		// guard collection. The liveness-based approach needs in-loop guards
-		// for all table ops, which currently crashes on some patterns.
-		computeLiveInLegacy(trace, liveIn, slotRuntimeType, slotPC)
+	if !hasNonNumeric {
+		// Purely numeric traces: use the proven forward liveness scan.
+		computeLiveInNumeric(trace, liveIn, slotRuntimeType, slotPC)
 		return
 	}
 
-	// Purely numeric traces: forward liveness scan.
-	// Float slots always remain live-in: D register allocator needs pre-loop load.
+	// Non-numeric traces: use legacy per-opcode collection for now.
+	// The unified classifySlots approach needs P1 (memory-indirect tracking)
+	// to handle table-base slots correctly. Until then, keep legacy path.
+	computeLiveInLegacy(trace, liveIn, slotRuntimeType, slotPC)
+	return
+
+	// --- Non-numeric traces: unified classifySlots approach (DISABLED) ---
+
+	// Table-base slots: read from MEMORY by ARM64 codegen (not SSA refs).
+	// These ALWAYS need guards regardless of WBR status because register-only
+	// writes (MOVE, arithmetic) don't update memory.
+	tableBaseSlots := make(map[int]bool)
+	for _, ir := range trace.IR {
+		switch ir.Op {
+		case vm.OP_GETFIELD, vm.OP_GETTABLE:
+			if ir.B < 256 {
+				tableBaseSlots[ir.B] = true
+			}
+		case vm.OP_SETFIELD, vm.OP_SETTABLE:
+			if ir.A < 256 {
+				tableBaseSlots[ir.A] = true
+			}
+		}
+	}
+
+	// Float slots: ALWAYS live-in because D register allocator needs pre-loop load.
+	// Only use BType/CType (operand types at recording time) — AType is unreliable
+	// because the destination may not have been written yet when types were captured.
+	floatSlots := make(map[int]bool)
+	for _, ir := range trace.IR {
+		if ir.BType == runtime.TypeFloat && ir.B < 256 {
+			floatSlots[ir.B] = true
+		}
+		if ir.CType == runtime.TypeFloat && ir.C < 256 {
+			floatSlots[ir.C] = true
+		}
+	}
+
+	// Callee-only slots (only referenced at Depth > 0): always dead.
+	calleeOnlySlots := computeCalleeOnlySlots(trace)
+
+	// --- Step 2: Single forward scan ---
+	// Uses ALL writes from getWriteSlots (MOVE, arithmetic, GETTABLE, etc.)
+	// and ALL reads from getReadSlots (including memory-indirect table base reads).
+
+	written := make(map[int]bool)
+
+	for _, ir := range trace.IR {
+		// Reads first (within same instruction, reads happen before writes)
+		for _, rs := range getReadSlots(&ir) {
+			if rs.slot >= 256 || calleeOnlySlots[rs.slot] {
+				continue
+			}
+			if !written[rs.slot] && !liveIn[rs.slot] {
+				liveIn[rs.slot] = true
+				slotRuntimeType[rs.slot] = rs.typ
+				slotPC[rs.slot] = ir.PC
+			}
+		}
+		// Writes: only count MEMORY writes as WBR (ops that update regs[slot]).
+		// Register-only writes (MOVE, arithmetic) don't update memory, so
+		// they can't satisfy memory reads (LOAD_FIELD table base, etc.).
+		// Memory-writing ops: LOADx, FORLOOP/FORPREP, GETFIELD A, GETTABLE A,
+		// GETGLOBAL A, CALL A.
+		switch ir.Op {
+		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
+			slot := ir.A
+			if slot < 256 && !calleeOnlySlots[slot] && !written[slot] && !liveIn[slot] {
+				written[slot] = true
+			}
+		case vm.OP_GETFIELD, vm.OP_GETTABLE, vm.OP_GETGLOBAL:
+			slot := ir.A
+			if slot < 256 && !calleeOnlySlots[slot] && !written[slot] && !liveIn[slot] {
+				written[slot] = true
+			}
+		case vm.OP_CALL:
+			slot := ir.A
+			if slot < 256 && !calleeOnlySlots[slot] && !written[slot] && !liveIn[slot] {
+				written[slot] = true
+			}
+		case vm.OP_FORLOOP:
+			for _, slot := range []int{ir.A, ir.A + 3} {
+				if slot < 256 && !calleeOnlySlots[slot] && !written[slot] && !liveIn[slot] {
+					written[slot] = true
+				}
+			}
+		case vm.OP_FORPREP:
+			slot := ir.A
+			if slot < 256 && !calleeOnlySlots[slot] && !written[slot] && !liveIn[slot] {
+				written[slot] = true
+			}
+		}
+	}
+
+	// --- Step 3: Override table-base slots to always live-in ---
+	for slot := range tableBaseSlots {
+		if calleeOnlySlots[slot] {
+			continue
+		}
+		if !liveIn[slot] {
+			liveIn[slot] = true
+			slotRuntimeType[slot] = runtime.TypeTable
+			// Find first PC
+			for _, ir := range trace.IR {
+				switch ir.Op {
+				case vm.OP_GETFIELD, vm.OP_GETTABLE:
+					if ir.B == slot {
+						slotPC[slot] = ir.PC
+						goto foundPC
+					}
+				case vm.OP_SETFIELD, vm.OP_SETTABLE:
+					if ir.A == slot {
+						slotPC[slot] = ir.PC
+						goto foundPC
+					}
+				}
+			}
+		foundPC:
+		}
+	}
+
+	// --- Step 4: Override float slots to always live-in ---
+	for slot := range floatSlots {
+		if calleeOnlySlots[slot] || tableBaseSlots[slot] {
+			continue
+		}
+		if !liveIn[slot] {
+			liveIn[slot] = true
+			slotRuntimeType[slot] = runtime.TypeFloat
+			for _, ir := range trace.IR {
+				for _, rs := range getReadSlots(&ir) {
+					if rs.slot == slot && rs.typ == runtime.TypeFloat {
+						slotPC[slot] = ir.PC
+						goto foundFloatPC
+					}
+				}
+			}
+		foundFloatPC:
+		}
+	}
+
+	return
+}
+
+// computeLiveInNumeric is the proven forward liveness scan for purely numeric traces
+// (no GETTABLE/GETFIELD/GETGLOBAL/CALL). Float slots always remain live-in.
+func computeLiveInNumeric(trace *Trace, liveIn map[int]bool, slotRuntimeType map[int]runtime.ValueType, slotPC map[int]int) {
 	floatSlots := make(map[int]bool)
 	for _, ir := range trace.IR {
 		if ir.BType == runtime.TypeFloat && ir.B < 256 {
@@ -62,9 +205,7 @@ func computeLiveIn(trace *Trace) (liveIn map[int]bool, slotRuntimeType map[int]r
 	}
 
 	written := make(map[int]bool)
-
 	for _, ir := range trace.IR {
-		// Check reads first
 		readSlots := getReadSlots(&ir)
 		for _, rs := range readSlots {
 			if !written[rs.slot] && !liveIn[rs.slot] {
@@ -73,11 +214,6 @@ func computeLiveIn(trace *Trace) (liveIn map[int]bool, slotRuntimeType map[int]r
 				slotPC[rs.slot] = ir.PC
 			}
 		}
-		// Only constant loads and FORLOOP/FORPREP kill liveness.
-		// These produce values of a known, fixed type (int for FORLOOP,
-		// constant type for LOADK/LOADINT). Other writes (GETGLOBAL,
-		// GETFIELD, arithmetic) may produce values of types that conflict
-		// with what a later instruction expects.
 		switch ir.Op {
 		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
 			if !floatSlots[ir.A] {
@@ -96,8 +232,6 @@ func computeLiveIn(trace *Trace) (liveIn map[int]bool, slotRuntimeType map[int]r
 			}
 		}
 	}
-
-	return
 }
 
 // computeLiveInLegacy collects live-in slots using the old per-opcode logic.
