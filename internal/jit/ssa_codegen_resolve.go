@@ -14,17 +14,14 @@ func getSlotReg(regMap *RegMap, sm *ssaSlotMapper, ref SSARef, slot int, scratch
 	return scratch
 }
 
-// spillIfNotAllocated stores a computed value to memory if its slot is not allocated
-// to a physical register. This ensures the value survives across instructions that
-// clobber scratch registers.
+// spillIfNotAllocated writes a computed value to memory (write-through policy).
+// With write-through, every SSA instruction writes its result to BOTH register
+// AND memory, eliminating the need for store-back on side-exit.
 func spillIfNotAllocated(asm *Assembler, regMap *RegMap, slot int, valReg Reg) {
 	if slot < 0 {
 		return
 	}
-	if _, ok := regMap.IntReg(slot); ok {
-		return // already in a register, no spill needed
-	}
-	// Box the raw int and store as NaN-boxed value
+	// Write-through: always write to memory
 	off := slot * ValueSize
 	if off <= 32760 {
 		EmitBoxInt(asm, X9, valReg, X8)
@@ -104,16 +101,6 @@ func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writte
 	// Integer register writeback: box raw int → NaN-boxed IntValue
 	for slot, armReg := range regMap.Int.slotToReg {
 		if !writtenSlots[slot] || deadGuardSlots[slot] {
-			continue
-		}
-		// P2: Skip int store-back for slots that are also in the float register map.
-		// These are multi-type slots (used for both int and float/table across the
-		// loop body). Writing the stale int register value would corrupt the
-		// current float/table value in memory.
-		if _, hasFloat := regMap.Float.slotToReg[slot]; hasFloat {
-			continue
-		}
-		if _, hasFloatRef := floatRefSpill[slot]; hasFloatRef {
 			continue
 		}
 		off := slot * ValueSize
@@ -231,8 +218,9 @@ func getFloatSlotReg(regMap *RegMap, slot int, scratch FReg) FReg {
 	return scratch
 }
 
-// storeFloatResult stores a float result. If the slot is allocated to a D register,
-// moves the value there (deferred writeback at loop exit). Otherwise writes to memory.
+// storeFloatResult stores a float result to register AND memory (write-through).
+// If the slot is allocated to a D register, moves the value there too.
+// Always writes to memory to eliminate store-back on side-exit.
 func storeFloatResult(asm *Assembler, regMap *RegMap, slot int, src FReg) {
 	if slot < 0 {
 		return
@@ -241,11 +229,13 @@ func storeFloatResult(asm *Assembler, regMap *RegMap, slot int, src FReg) {
 		if dreg != src {
 			asm.FMOVd(dreg, src)
 		}
-		return // stays in register, written back at exit
 	}
-	// Not allocated — write float to memory.
+	// Write-through: always write float to memory.
 	// NaN-boxing: float bits ARE the NaN-boxed value, so FSTRd is correct.
-	asm.FSTRd(src, regRegs, slot*ValueSize)
+	off := slot * ValueSize
+	if off <= 32760 {
+		asm.FSTRd(src, regRegs, off)
+	}
 }
 // getFloatRefReg returns the D register for an SSA ref (ref-level allocation),
 // falling back to the slot-level allocation, or scratch.
@@ -263,9 +253,9 @@ func getFloatRefReg(regMap *RegMap, ref SSARef, slot int, scratch FReg) FReg {
 	return scratch
 }
 
-// storeFloatResultRef stores a float result using ref-level allocation.
+// storeFloatResultRef stores a float result to register AND memory (write-through).
 // If the ref has a D register, moves the value there. If the slot has a D register
-// (slot-level fallback), moves there. Otherwise writes to memory.
+// (slot-level fallback), moves there. Always writes to memory for write-through.
 func storeFloatResultRef(asm *Assembler, regMap *RegMap, ref SSARef, slot int, src FReg) {
 	if slot < 0 {
 		return
@@ -275,15 +265,14 @@ func storeFloatResultRef(asm *Assembler, regMap *RegMap, ref SSARef, slot int, s
 		if dreg != src {
 			asm.FMOVd(dreg, src)
 		}
-		return // stays in register, written back by floatRefSpill at exit
-	}
-	// Slot-level fallback
-	if dreg, ok := regMap.FloatReg(slot); ok {
+	} else if dreg, ok := regMap.FloatReg(slot); ok {
 		if dreg != src {
 			asm.FMOVd(dreg, src)
 		}
-		return
 	}
-	// Not allocated — write data to memory
-	asm.FSTRd(src, regRegs, slot*ValueSize)
+	// Write-through: always write float to memory
+	off := slot * ValueSize
+	if off <= 32760 {
+		asm.FSTRd(src, regRegs, off)
+	}
 }

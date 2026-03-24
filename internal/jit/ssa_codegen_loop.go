@@ -483,8 +483,7 @@ func (g *ssaCodegen) emitSSACallExit(i int, inst *SSAInst) {
 		callResultIsFloat = (g.f.Insts[i+1].Type == SSATypeFloat)
 	}
 
-	// 1. Store back all modified slots so the VM sees current values
-	emitSlotStoreBack(asm, g.regMap, g.sm, g.liveInfo.WrittenSlots, g.floatRefSpill, g.deadGuardSlots)
+	// 1. Write-through: no store-back needed — memory is always up-to-date.
 	// 2. Set ExitPC = bytecode PC of the CALL instruction
 	asm.LoadImm64(X9, int64(inst.PC))
 	asm.STR(X9, g.trCtx, TraceCtxOffExitPC)
@@ -593,8 +592,8 @@ func (g *ssaCodegen) emitSSAColdPaths() {
 	}
 
 	// --- Side exit (guard failure during loop body) ---
+	// Write-through: no store-back needed — memory is always up-to-date.
 	asm.Label("side_exit")
-	emitSlotStoreBack(asm, g.regMap, g.sm, g.liveInfo.WrittenSlots, g.floatRefSpill, g.deadGuardSlots)
 	asm.STR(X9, X19, 16) // ctx.ExitPC = X9
 	asm.LoadImm64(X0, 1) // ExitCode = 1
 	asm.B("epilogue")
@@ -608,7 +607,7 @@ func (g *ssaCodegen) emitSSAColdPaths() {
 	asm.B("epilogue")
 
 	// --- Loop done handler (normal loop completion) ---
+	// Write-through: no store-back needed — memory is always up-to-date.
 	asm.Label("loop_done_handler")
-	emitSlotStoreBack(asm, g.regMap, g.sm, g.liveInfo.WrittenSlots, g.floatRefSpill, g.deadGuardSlots)
 	asm.LoadImm64(X0, 0) // ExitCode = 0
 }

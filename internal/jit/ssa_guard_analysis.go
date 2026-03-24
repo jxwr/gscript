@@ -628,14 +628,12 @@ func (b *ssaBuilder) isWrittenBeforeFirstReadExt(slot int) bool {
 			return false
 		}
 
-		// Recognize writes: all ops that write a value to register A.
-		// SSA_MOVE writes memory via spillIfNotAllocated (ssa_codegen_emit.go:168).
-		// All other listed ops also write to memory (via codegen or call-exit).
+		// Recognize writes from ops that definitively produce a typed value
+		// to register A. GETFIELD and GETTABLE are key: they write a value
+		// to A, making the slot's initial type irrelevant for WBR analysis.
 		isWrite := false
 		switch ir.Op {
 		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
-			isWrite = (ir.A == slot)
-		case vm.OP_MOVE:
 			isWrite = (ir.A == slot)
 		case vm.OP_GETGLOBAL:
 			isWrite = (ir.A == slot)
