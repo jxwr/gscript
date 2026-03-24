@@ -248,6 +248,25 @@ func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 	return false
 }
 
+// TryExecuteCompiled checks if a compiled trace exists for this loop.
+// Unlike OnLoopBackEdge, this does NOT increment hotness counts or start recording.
+// Safe to call during nested trace execution (call-exit handlers).
+func (r *TraceRecorder) TryExecuteCompiled(pc int, proto *vm.FuncProto) bool {
+	if r.recording {
+		return false
+	}
+	key := loopKey{proto: proto, pc: pc}
+	if ct, ok := r.compiled[key]; ok {
+		if ct.blacklisted {
+			proto.BlacklistTracePC(pc)
+			return false
+		}
+		r.pendingTrace = ct
+		return true
+	}
+	return false
+}
+
 // RecordSideExit records that a compiled trace side-exited.
 func (r *TraceRecorder) RecordSideExit(ct *CompiledTrace) {
 	ct.sideExitCount++

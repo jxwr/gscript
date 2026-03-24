@@ -94,9 +94,31 @@ func emitSSALoadField(asm *Assembler, inst *SSAInst, regMap *RegMap, sm *ssaSlot
 	svalsOff := fieldIdx * ValueSize
 	// Copy entire Value from svals[fieldIdx] to R(A)
 	if dstSlot >= 0 {
-		for w := 0; w < ValueSize/8; w++ {
-			asm.LDR(X2, X1, svalsOff+w*8)
-			asm.STR(X2, regRegs, dstSlot*ValueSize+w*8)
+		if inst.Type == SSATypeFloat {
+			// Float result: NaN-boxed float bits = raw float64 bits.
+			// Load into X register, then move to D register if allocated.
+			asm.LDR(X2, X1, svalsOff)
+			if fr, ok := regMap.FloatReg(dstSlot); ok {
+				asm.FMOVtoFP(fr, X2)
+			} else {
+				asm.STR(X2, regRegs, dstSlot*ValueSize)
+			}
+		} else if inst.Type == SSATypeInt {
+			// Int result: load NaN-boxed value, unbox, store to int register or memory.
+			asm.LDR(X2, X1, svalsOff)
+			EmitUnboxInt(asm, X2, X2)
+			if r, ok := regMap.IntReg(dstSlot); ok {
+				asm.MOVreg(r, X2)
+			} else {
+				EmitBoxIntFast(asm, X5, X2, regTagInt)
+				asm.STR(X5, regRegs, dstSlot*ValueSize)
+			}
+		} else {
+			// Unknown type: raw copy
+			for w := 0; w < ValueSize/8; w++ {
+				asm.LDR(X2, X1, svalsOff+w*8)
+				asm.STR(X2, regRegs, dstSlot*ValueSize+w*8)
+			}
 		}
 	}
 }

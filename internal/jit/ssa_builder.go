@@ -368,13 +368,32 @@ func (b *ssaBuilder) convertTableOp(idx int, ir *TraceIR) {
 		// AuxInt packs fieldIndex (low 32) + shapeID (high 32)
 		tableRef := b.getSlotRef(ir.B)
 		auxInt := int64(uint32(ir.FieldIndex)) | (int64(ir.ShapeID) << 32)
+
+		// Infer result type. AType is the stale pre-execution type of R(A),
+		// so prefer forward scan to see how the result slot is consumed.
+		ssaType := b.inferResultType(idx, ir.A)
+		if ssaType == SSATypeUnknown {
+			// Fallback to AType (may be stale, but better than unknown)
+			switch ir.AType {
+			case runtime.TypeInt:
+				ssaType = SSATypeInt
+			case runtime.TypeFloat:
+				ssaType = SSATypeFloat
+			case runtime.TypeBool:
+				ssaType = SSATypeInt
+			}
+		}
+
 		ref := b.emit(SSAInst{
-			Op: SSA_LOAD_FIELD, Type: SSATypeUnknown,
+			Op: SSA_LOAD_FIELD, Type: ssaType,
 			Arg1: tableRef,
 			Slot: int16(ir.A), PC: ir.PC,
 			AuxInt: auxInt,
 		})
 		b.slotDefs[ir.A] = ref
+		if ssaType != SSATypeUnknown {
+			b.slotType[ir.A] = ssaType
+		}
 
 	case vm.OP_SETFIELD:
 		// SETFIELD A B C: R(A).Constants[B] = RK(C)

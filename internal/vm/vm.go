@@ -41,7 +41,7 @@ type VM struct {
 	retBuf       [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
 	traceRec            TraceRecorderHook // optional trace recorder (nil = disabled)
 	traceRecording      bool              // cached: traceRec.IsRecording() (avoids interface dispatch)
-	traceExecuting      bool              // true when executing a compiled trace (prevents nested trace activation)
+	traceExecDepth      int               // nesting depth of compiled trace execution (prevents infinite nesting)
 }
 
 // TraceExecutor executes a compiled trace.
@@ -53,6 +53,7 @@ type TraceExecutor interface {
 type TraceRecorderHook interface {
 	OnInstruction(pc int, inst uint32, proto *FuncProto, regs []runtime.Value, base int) bool
 	OnLoopBackEdge(pc int, proto *FuncProto) bool
+	TryExecuteCompiled(pc int, proto *FuncProto) bool
 	IsRecording() bool
 	PendingTrace() TraceExecutor
 	ShouldSkipJIT() bool
@@ -71,13 +72,13 @@ func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) traceResult {
 	if ct == nil {
 		return traceResult{}
 	}
-	// Prevent nested trace execution (e.g., trace call-exit → callee side-exits → trace fires again)
-	if vm.traceExecuting {
+	// Prevent deeply nested trace execution (e.g., trace call-exit → callee side-exits → trace fires again)
+	if vm.traceExecDepth >= 8 {
 		return traceResult{}
 	}
-	vm.traceExecuting = true
+	vm.traceExecDepth++
 	exitPC, sideExit, guardFail := ct.Execute(vm.regs, base, proto)
-	vm.traceExecuting = false
+	vm.traceExecDepth--
 	if guardFail {
 		return traceResult{}
 	}
@@ -1037,7 +1038,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			frame.pc += sbx
 			// While-loop back-edge detection: notify trace recorder on backward jumps.
 			// Only checks when sbx < 0 (backward) and traceRec is non-nil (zero overhead otherwise).
-			if sbx < 0 && vm.traceRec != nil && !vm.traceExecuting && (frame.closure.Proto.JITEntry == nil || frame.traceEnabled) && !frame.closure.Proto.IsTraceBlacklisted(jmpPC) {
+			if sbx < 0 && vm.traceRec != nil && vm.traceExecDepth < 8 && (frame.closure.Proto.JITEntry == nil || frame.traceEnabled) && !frame.closure.Proto.IsTraceBlacklisted(jmpPC) {
 				if vm.traceRec.OnLoopBackEdge(jmpPC, frame.closure.Proto) {
 					tr := vm.executeCompiledTrace(frame.closure.Proto, base)
 					if tr.executed {
@@ -1049,7 +1050,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					}
 				}
 				// Update cached recording state (OnLoopBackEdge may start/stop recording)
-				vm.traceRecording = vm.traceRec.IsRecording()
+				// Only update when not inside a nested trace execution
+				if vm.traceExecDepth == 0 {
+					vm.traceRecording = vm.traceRec.IsRecording()
+				}
 			}
 
 		// ---- Call / Return (INLINE) ----
@@ -1360,7 +1364,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						// Trace JIT: only activate for loops in functions NOT compiled by Method JIT.
 						// If Method JIT compiled this function but side-exited to the interpreter,
 						// the trace JIT would often produce incorrect results (closures, complex control flow).
-						if vm.traceRec != nil && sbx < 0 && !vm.traceExecuting && (frame.closure.Proto.JITEntry == nil || frame.traceEnabled) && !frame.closure.Proto.IsTraceBlacklisted(forloopPC) {
+						if vm.traceRec != nil && sbx < 0 && vm.traceExecDepth < 8 && (frame.closure.Proto.JITEntry == nil || frame.traceEnabled) && !frame.closure.Proto.IsTraceBlacklisted(forloopPC) {
 							if vm.traceRec.OnLoopBackEdge(forloopPC, frame.closure.Proto) {
 								tr := vm.executeCompiledTrace(frame.closure.Proto, base)
 								if tr.executed {
@@ -1371,7 +1375,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 									}
 								}
 							}
-							vm.traceRecording = vm.traceRec.IsRecording()
+							// Only update cached recording state when not inside nested trace execution
+							if vm.traceExecDepth == 0 {
+								vm.traceRecording = vm.traceRec.IsRecording()
+							}
 						}
 					}
 					break

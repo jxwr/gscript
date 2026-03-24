@@ -189,6 +189,11 @@ func buildSSASlotRefs(f *SSAFunc) map[int][]SSARef {
 		switch inst.Op {
 		case SSA_LOAD_SLOT:
 			result[int(inst.Slot)] = append(result[int(inst.Slot)], ref)
+		case SSA_LOAD_FIELD, SSA_LOAD_ARRAY, SSA_LOAD_GLOBAL:
+			slot := int(inst.Slot)
+			if slot >= 0 {
+				result[slot] = append(result[slot], ref)
+			}
 		case SSA_UNBOX_INT:
 			if int(inst.Arg1) < len(f.Insts) {
 				loadInst := &f.Insts[inst.Arg1]
@@ -231,7 +236,8 @@ func newSSASlotMapper(f *SSAFunc) *ssaSlotMapper {
 		case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
 			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
 			SSA_FMADD, SSA_FMSUB,
-			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_MOVE:
+			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_MOVE,
+			SSA_LOAD_FIELD, SSA_LOAD_ARRAY, SSA_LOAD_GLOBAL, SSA_INTRINSIC:
 			slot := int(inst.Slot)
 			if slot >= 0 {
 				m.refToSlot[ref] = slot

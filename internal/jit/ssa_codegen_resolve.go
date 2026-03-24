@@ -79,6 +79,16 @@ func resolveSSARefSlot(asm *Assembler, f *SSAFunc, ref SSARef, regMap *RegMap, s
 		asm.LDR(scratch, regRegs, s*ValueSize)
 		EmitUnboxInt(asm, scratch, scratch)
 		return scratch
+	case SSA_LOAD_FIELD, SSA_LOAD_ARRAY, SSA_LOAD_GLOBAL:
+		s := int(inst.Slot)
+		if s >= 0 {
+			if r, ok := regMap.IntReg(s); ok {
+				return r
+			}
+			asm.LDR(scratch, regRegs, s*ValueSize)
+			EmitUnboxInt(asm, scratch, scratch)
+			return scratch
+		}
 	}
 
 	asm.MOVreg(scratch, XZR)
@@ -161,7 +171,7 @@ func resolveFloatRef(asm *Assembler, f *SSAFunc, ref SSARef, regMap *RegMap, sm 
 		return scratch
 	}
 
-	// Fallback: UNBOX_FLOAT / LOAD_SLOT
+	// Fallback: UNBOX_FLOAT / LOAD_SLOT / table load ops
 	switch inst.Op {
 	case SSA_UNBOX_FLOAT:
 		if int(inst.Arg1) < len(f.Insts) {
@@ -176,6 +186,17 @@ func resolveFloatRef(asm *Assembler, f *SSAFunc, ref SSARef, regMap *RegMap, sm 
 			}
 		}
 	case SSA_LOAD_SLOT:
+		s := int(inst.Slot)
+		if s >= 0 {
+			if dreg, ok := regMap.FloatReg(s); ok {
+				return dreg
+			}
+			asm.FLDRd(scratch, regRegs, s*ValueSize)
+			return scratch
+		}
+	case SSA_LOAD_FIELD, SSA_LOAD_ARRAY, SSA_LOAD_GLOBAL:
+		// Table/field/global loads write their result to memory at regs[slot*ValueSize].
+		// The float value is already there (NaN-boxed float bits = raw float bits).
 		s := int(inst.Slot)
 		if s >= 0 {
 			if dreg, ok := regMap.FloatReg(s); ok {
