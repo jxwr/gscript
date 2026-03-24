@@ -495,10 +495,8 @@ func (b *ssaBuilder) isWrittenBeforeFirstReadExt(slot int) bool {
 		}
 
 		// Recognize writes from ops that definitively produce a typed value
-		// to register A. GETFIELD is the key addition over the old code:
-		// it writes a field value (known type at recording time) to A.
-		// This is critical for nbody where intermediate float slots
-		// (dx, dy, dz) are written by GETFIELD before arithmetic reads them.
+		// to register A. GETFIELD and GETTABLE are key: they write a value
+		// to A, making the slot's initial type irrelevant for WBR analysis.
 		isWrite := false
 		switch ir.Op {
 		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_LOADNIL:
@@ -506,6 +504,8 @@ func (b *ssaBuilder) isWrittenBeforeFirstReadExt(slot int) bool {
 		case vm.OP_GETGLOBAL:
 			isWrite = (ir.A == slot)
 		case vm.OP_GETFIELD:
+			isWrite = (ir.A == slot)
+		case vm.OP_GETTABLE:
 			isWrite = (ir.A == slot)
 		case vm.OP_CALL:
 			isWrite = (ir.A == slot)
