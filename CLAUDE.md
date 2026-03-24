@@ -143,6 +143,8 @@ Run the full suite before AND after every optimization. Record numbers in the bl
 
 ## Architecture Principles
 
+Full architecture document: docs/jit-architecture.md
+
 - **SSA IR is the core**: All optimizations happen on SSA, not on bytecode or ARM64
 - **Type specialization is king**: Unboxed integers and floats in registers = the #1 speedup
 - **Tracing JIT for hot loops**: Records actual execution, compiles the hot path

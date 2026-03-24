@@ -139,7 +139,8 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 }
 
 // handleTraceCallExit executes a call-exit opcode on behalf of the trace JIT.
-// Uses the shared ExecuteCallExitOp helper, giving the trace JIT all 16 opcodes for free.
+// For OP_CALL, uses the original trace-safe logic (C=0 → 1 result, B=0 → 0 args).
+// For other opcodes, delegates to the shared ExecuteCallExitOp helper.
 func handleTraceCallExit(ct *CompiledTrace, regs []runtime.Value, base int, ctx *TraceContext) int {
 	pc := int(ctx.ExitPC)
 	proto := ct.proto
@@ -147,32 +148,65 @@ func handleTraceCallExit(ct *CompiledTrace, regs []runtime.Value, base int, ctx 
 		return pc + 1
 	}
 
-	// For OP_CALL with B=0, the trace JIT defaults to 0 args (top = a+1).
-	// Compute an effective top for the shared helper.
-	top := 0
 	inst := proto.Code[pc]
 	op := vm.DecodeOp(inst)
+
+	// OP_CALL: use trace-safe result placement.
+	// The trace JIT expects exactly nResults values at R(A)..R(A+nResults-1).
+	// C=0 (variable results) defaults to 1 result to avoid overwriting registers
+	// that the trace expects to be preserved.
 	if op == vm.OP_CALL {
-		b := vm.DecodeB(inst)
-		if b == 0 {
-			a := vm.DecodeA(inst)
-			top = a + 1 // yields nArgs = top - (a+1) = 0, matching original trace behavior
+		if ct.callHandler == nil {
+			return pc + 1
 		}
-	}
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		c := vm.DecodeC(inst)
 
-	// Wrap the trace's callHandler as a CallHandler for the shared helper.
-	var callFn CallHandler
-	if ct.callHandler != nil {
-		callFn = CallHandler(ct.callHandler)
-	}
+		nArgs := b - 1
+		if b == 0 {
+			nArgs = 0
+		}
+		nResults := c - 1
+		if c == 0 {
+			nResults = 1
+		}
 
-	res, err := ExecuteCallExitOp(proto.Code, proto.Constants, regs, base, pc, top, callFn, nil)
-	if err != nil {
-		if debugSSAStoreBack {
-			fmt.Printf("[TRACE-CALL-EXIT] error: %v\n", err)
+		fnVal := regs[base+a]
+		args := make([]runtime.Value, nArgs)
+		for i := 0; i < nArgs; i++ {
+			args[i] = regs[base+a+1+i]
+		}
+
+		results, err := ct.callHandler(fnVal, args)
+		if err != nil {
+			if debugSSAStoreBack {
+				fmt.Printf("[TRACE-CALL-EXIT] call error: %v\n", err)
+			}
+			return pc + 1
+		}
+
+		for i := 0; i < nResults; i++ {
+			if i < len(results) {
+				regs[base+a+i] = results[i]
+			} else {
+				regs[base+a+i] = runtime.NilValue()
+			}
 		}
 		return pc + 1
 	}
 
+	// Non-CALL opcodes: delegate to shared helper.
+	var callFn CallHandler
+	if ct.callHandler != nil {
+		callFn = CallHandler(ct.callHandler)
+	}
+	res, err := ExecuteCallExitOp(proto.Code, proto.Constants, regs, base, pc, 0, callFn, nil)
+	if err != nil {
+		if debugSSAStoreBack {
+			fmt.Printf("[TRACE-CALL-EXIT] error at pc=%d op=%d: %v\n", pc, op, err)
+		}
+		return pc + 1
+	}
 	return res.NextPC
 }
