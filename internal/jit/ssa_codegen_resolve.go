@@ -106,6 +106,16 @@ func emitSlotStoreBack(asm *Assembler, regMap *RegMap, sm *ssaSlotMapper, writte
 		if !writtenSlots[slot] || deadGuardSlots[slot] {
 			continue
 		}
+		// P2: Skip int store-back for slots that are also in the float register map.
+		// These are multi-type slots (used for both int and float/table across the
+		// loop body). Writing the stale int register value would corrupt the
+		// current float/table value in memory.
+		if _, hasFloat := regMap.Float.slotToReg[slot]; hasFloat {
+			continue
+		}
+		if _, hasFloatRef := floatRefSpill[slot]; hasFloatRef {
+			continue
+		}
 		off := slot * ValueSize
 		if off <= 32760 {
 			EmitBoxInt(asm, X0, armReg, X1)
