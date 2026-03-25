@@ -438,7 +438,7 @@ type TraceContext struct {
 	Regs           uintptr // input: pointer to vm.regs[base]
 	Constants      uintptr // input: pointer to trace constants[0]
 	ExitPC         int64   // output: bytecode PC where trace exited
-	ExitCode       int64   // output: 0=loop done, 1=side exit, 2=guard fail, 3=call-exit
+	ExitCode       int64   // output: 0=loop done, 1=side exit, 2=guard fail, 3=call-exit, 4=break exit
 	InnerCode      uintptr // input: code pointer for inner trace (sub-trace calling)
 	InnerConstants uintptr // input: constants pointer for inner trace
 	ResumePC       int64   // input: bytecode PC to resume at after call-exit

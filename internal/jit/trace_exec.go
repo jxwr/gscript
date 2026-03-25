@@ -62,6 +62,13 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 			}
 			return 0, false, true
 
+		case 4:
+			// Break exit: the trace hit a break condition (e.g., mandelbrot escape).
+			// This is expected behavior, NOT a sign of a bad trace.
+			// Don't count toward blacklisting.
+			ct.guardFailCount = 0
+			return int(ctx.ExitPC), true, false
+
 		case 1:
 			// Side exit
 			ct.guardFailCount = 0

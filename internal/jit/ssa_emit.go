@@ -2041,8 +2041,10 @@ func (ec *emitCtx) emitBreakExit() {
 	asm.FSTP(D8, D9, regCtx, TraceCtxOffExitFPR+32)
 	asm.FSTP(D10, D11, regCtx, TraceCtxOffExitFPR+48)
 
-	// Set ExitCode = 1 (side exit) so VM resumes at ExitPC
-	asm.LoadImm64(X0, 1)
+	// Set ExitCode = 4 (break exit) so VM resumes at ExitPC.
+	// Break exits are expected behavior (e.g., mandelbrot escape check)
+	// and should NOT count toward side-exit blacklisting.
+	asm.LoadImm64(X0, 4)
 	asm.B("epilogue")
 }
 
