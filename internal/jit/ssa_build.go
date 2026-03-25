@@ -473,21 +473,18 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		b.slotType[ir.A] = ssaTypeFromRuntime(ir.AType)
 
 	case vm.OP_SETTABLE:
-		// Call-exit: take snapshot before
+		// Native table array store: table[key] = value
 		b.takeSnapshot(ir.PC)
-		tableRef := b.getSlotRef(ir.A)
 		keyRef := b.getRKRef(ir.B, ir.BType, ir)
 		valRef := b.getRKRef(ir.C, ir.CType, ir)
 		b.emit(SSAInst{
-			Op:     SSA_STORE_ARRAY,
-			Type:   SSATypeUnknown,
-			Arg1:   tableRef,
-			Arg2:   valRef,
-			AuxInt: int64(ir.B),
-			Slot:   int16(ir.A),
-			PC:     ir.PC,
+			Op:   SSA_STORE_ARRAY,
+			Type: SSATypeUnknown,
+			Arg1: keyRef,
+			Arg2: valRef,
+			Slot: int16(ir.A),
+			PC:   ir.PC,
 		})
-		_ = keyRef // used via AuxInt encoding
 
 	case vm.OP_GETGLOBAL:
 		// Call-exit: take snapshot before

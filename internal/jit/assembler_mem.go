@@ -28,8 +28,9 @@ func (a *Assembler) STRpre(rt, rn Reg, simm9 int) {
 
 // STRreg: [Xn + Xm, LSL #3] = Xt (register offset 64-bit store, shifted by 3)
 func (a *Assembler) STRreg(rt, rn, rm Reg) {
-	// STR Xt, [Xn, Xm, LSL #3]: 11|11|1|00|00|1|Rm|011|0|10|Rn|Rt
-	a.emit(0xF8206800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
+	// STR Xt, [Xn, Xm, LSL #3]: 11|11|1|00|00|1|Rm|011|1|10|Rn|Rt
+	// Bit 12 (S) = 1 enables LSL #3 scaling for 64-bit access.
+	a.emit(0xF8207800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
 }
 
 // LDRpost: Xt = [Xn], #simm9 (post-index load, updates Xn)
@@ -39,10 +40,11 @@ func (a *Assembler) LDRpost(rt, rn Reg, simm9 int) {
 	a.emit(0xF8400400 | imm9<<12 | uint32(rn)<<5 | uint32(rt))
 }
 
-// LDRreg: Xt = [Xn + Xm] (register offset load, 64-bit)
+// LDRreg: Xt = [Xn + Xm, LSL #3] (register offset load, 64-bit, scaled)
 func (a *Assembler) LDRreg(rt, rn, rm Reg) {
-	// LDR Xt, [Xn, Xm]: 11|11|1|00|01|1|Rm|011|0|10|Rn|Rt  (LSL #3)
-	a.emit(0xF8606800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
+	// LDR Xt, [Xn, Xm, LSL #3]: 11|11|1|00|01|1|Rm|011|1|10|Rn|Rt
+	// Bit 12 (S) = 1 enables LSL #3 scaling for 64-bit access.
+	a.emit(0xF8607800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
 }
 
 // LDRBreg: Wt = [Xn + Xm] (register offset byte load)

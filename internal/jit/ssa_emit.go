@@ -26,7 +26,6 @@ func FuseMultiplyAdd(f *SSAFunc) *SSAFunc { return f }
 // ssaIsIntegerOnly returns true if all SSA ops in the function are compilable.
 func ssaIsIntegerOnly(f *SSAFunc) bool {
 	hasCallExit := false
-	hasStoreArrayExit := false
 	hasForloopExit := false
 	for _, inst := range f.Insts {
 		switch inst.Op {
@@ -49,11 +48,6 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
 				hasCallExit = true
 			}
-			// SSA_STORE_ARRAY still uses call-exit and causes tight exit-reenter loops
-			// in inner loops. Reject until P1 implements native STORE_ARRAY.
-			if inst.Op == SSA_STORE_ARRAY {
-				hasStoreArrayExit = true
-			}
 			// LOAD_ARRAY with non-scalar result (e.g., table) falls back to call-exit
 			if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
 				hasCallExit = true
@@ -70,17 +64,11 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 	// Call-exit traces require a FORLOOP exit to be safe.
 	// While-loop traces with call-exits would compile but loop forever
 	// (the while-loop exit mechanism is not yet implemented for compiled traces).
-	if (hasCallExit || hasStoreArrayExit) && !hasForloopExit {
+	if hasCallExit && !hasForloopExit {
 		return false
 	}
 	// Only compile traces that have a proper FORLOOP exit.
 	if !hasForloopExit {
-		return false
-	}
-	// SSA_STORE_ARRAY is still emitted as call-exit (not yet native).
-	// Reject traces with STORE_ARRAY to avoid tight exit-reenter overhead.
-	// P1 will implement native STORE_ARRAY, making these traces fast.
-	if hasStoreArrayExit {
 		return false
 	}
 	// Call-exit ops (SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN) are now emitted
@@ -215,9 +203,11 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	// Pre-scan: track which slots are written by call-exit instructions.
 	// These slots must NOT be overwritten by storeBack (the interpreter's value is authoritative).
 	// LOAD_ARRAY with scalar result is native. Others use call-exit (side-exit).
+	// Also track table slots used by native LOAD_ARRAY/STORE_ARRAY: these hold table
+	// pointers that must not be overwritten by int store-back.
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
-		isCallExit := inst.Op == SSA_CALL || inst.Op == SSA_STORE_ARRAY ||
+		isCallExit := inst.Op == SSA_CALL ||
 			inst.Op == SSA_TABLE_LEN || inst.Op == SSA_LOAD_GLOBAL
 		// LOAD_ARRAY with non-scalar result falls back to call-exit
 		if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
@@ -227,6 +217,38 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 			// Track output slots (slots written by the interpreter after side-exit)
 			if inst.Slot >= 0 {
 				ec.callExitWriteSlots[int(inst.Slot)] = true
+			}
+		}
+		// Protect table slots used by native LOAD_ARRAY and STORE_ARRAY.
+		// The table slot holds a NaN-boxed table pointer; if an int register is
+		// allocated for the same slot number, store-back must NOT overwrite it.
+		if inst.Op == SSA_STORE_ARRAY {
+			// STORE_ARRAY: inst.Slot IS the table slot
+			if inst.Slot >= 0 {
+				ec.callExitWriteSlots[int(inst.Slot)] = true
+			}
+		}
+		if inst.Op == SSA_LOAD_ARRAY {
+			// LOAD_ARRAY: the table is referenced via Arg1
+			if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(f.Insts) {
+				tblSlot := int(f.Insts[inst.Arg1].Slot)
+				if tblSlot >= 0 {
+					ec.callExitWriteSlots[tblSlot] = true
+				}
+			}
+		}
+		// Similarly protect table slots for LOAD_FIELD and STORE_FIELD
+		if inst.Op == SSA_STORE_FIELD {
+			if inst.Slot >= 0 {
+				ec.callExitWriteSlots[int(inst.Slot)] = true
+			}
+		}
+		if inst.Op == SSA_LOAD_FIELD {
+			if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(f.Insts) {
+				tblSlot := int(f.Insts[inst.Arg1].Slot)
+				if tblSlot >= 0 {
+					ec.callExitWriteSlots[tblSlot] = true
+				}
 			}
 		}
 	}
@@ -688,7 +710,7 @@ func (ec *emitCtx) emitLoopBody() {
 			ec.emitLoadArray(ref, inst)
 
 		case SSA_STORE_ARRAY:
-			ec.emitCallExitInst(inst)
+			ec.emitStoreArray(inst)
 
 		case SSA_TABLE_LEN:
 			ec.emitTableLen(ref, inst)

@@ -619,6 +619,103 @@ func TestSSACodegen_Integration_ArrayAccessMatchesInterpreter(t *testing.T) {
 	}
 }
 
+// ─── Native STORE_ARRAY (SETTABLE) tests ───
+
+func TestSSACodegen_Integration_StoreArrayInt(t *testing.T) {
+	// SETTABLE with integer values: fill array then sum
+	src := `
+		func compute() {
+			arr := {}
+			for i := 1; i <= 50; i++ { arr[i] = i * 2 }
+			sum := 0
+			for i := 1; i <= 50; i++ { sum = sum + arr[i] }
+			return sum
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	// 2+4+6+...+100 = 2550
+	if g2["result"].Int() != 2550 {
+		t.Errorf("result = %d, want 2550", g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_StoreArrayBoolSieve(t *testing.T) {
+	// SETTABLE with boolean values: sieve of Eratosthenes pattern
+	src := `
+		func sieve(n) {
+			is_prime := {}
+			for i := 2; i <= n; i++ { is_prime[i] = true }
+			p := 2
+			for p * p <= n {
+				if is_prime[p] {
+					j := p * p
+					for j <= n {
+						is_prime[j] = false
+						j = j + p
+					}
+				}
+				p = p + 1
+			}
+			count := 0
+			for i := 2; i <= n; i++ {
+				if is_prime[i] { count = count + 1 }
+			}
+			return count
+		}
+		result := sieve(100)
+	`
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	// 25 primes below 100
+	if g2["result"].Int() != 25 {
+		t.Errorf("result = %d, want 25", g2["result"].Int())
+	}
+}
+
+func TestSSACodegen_Integration_StoreArrayOverwrite(t *testing.T) {
+	// SETTABLE overwriting existing values in a loop
+	src := `
+		func compute() {
+			arr := {}
+			for i := 1; i <= 20; i++ { arr[i] = 0 }
+			for i := 1; i <= 20; i++ { arr[i] = i * i }
+			sum := 0
+			for i := 1; i <= 20; i++ { sum = sum + arr[i] }
+			return sum
+		}
+		result := compute()
+	`
+	proto := compileProto(t, src)
+	g1 := runtime.NewInterpreterGlobals()
+	vm.New(g1).Execute(proto)
+
+	g2 := runWithSSAJIT(t, src)
+
+	if g1["result"].Int() != g2["result"].Int() {
+		t.Errorf("mismatch: interpreter=%d, ssa=%d", g1["result"].Int(), g2["result"].Int())
+	}
+	// 1+4+9+...+400 = 2870
+	if g2["result"].Int() != 2870 {
+		t.Errorf("result = %d, want 2870", g2["result"].Int())
+	}
+}
+
 // ─── Nested loop (sub-trace calling) tests ───
 
 func TestSSACodegen_Integration_NestedLoop(t *testing.T) {
