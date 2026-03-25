@@ -7,6 +7,7 @@ package jit
 // marker. After moving instructions, it rebuilds a remapping table
 // (oldIdx -> newIdx) and rewrites all SSARef references: Arg1, Arg2,
 // AuxInt (for ops that use it as a ref), and Snapshot entries.
+
 func constHoistImpl(f *SSAFunc) *SSAFunc {
 	// Find the LOOP marker.
 	loopIdx := -1
@@ -21,11 +22,19 @@ func constHoistImpl(f *SSAFunc) *SSAFunc {
 	}
 
 	// Collect indices of CONST_* instructions in the loop body (after LOOP).
+	// Only hoist constants with Slot < 0 (pool constants not bound to a VM slot).
+	// Constants with a valid slot (>= 0) write to that slot during loop-body
+	// emission (emitConstInt/emitConstFloat), which is needed for correct
+	// interpreter state when side-exiting. Hoisting them would remove that
+	// write, causing the interpreter to see a stale slot value after side-exit.
 	var toHoist []int
 	for i := loopIdx + 1; i < len(f.Insts); i++ {
-		switch f.Insts[i].Op {
+		inst := &f.Insts[i]
+		switch inst.Op {
 		case SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_BOOL, SSA_CONST_NIL:
-			toHoist = append(toHoist, i)
+			if inst.Slot < 0 {
+				toHoist = append(toHoist, i)
+			}
 		}
 	}
 	if len(toHoist) == 0 {

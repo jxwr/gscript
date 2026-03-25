@@ -237,6 +237,13 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	}
 
 	regMap := AllocateRegisters(f)
+	if debugTrace && regMap.Int != nil {
+		fmt.Printf("[REGALLOC-INT] ")
+		for slot, reg := range regMap.Int.slotToReg {
+			fmt.Printf("slot%d->%v ", slot, reg)
+		}
+		fmt.Println()
+	}
 	asm := NewAssembler()
 
 	ec := &emitCtx{
@@ -305,17 +312,10 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 				}
 			}
 		}
-		// Protect LOAD_GLOBAL destination slot from int/float store-back.
-		// LOAD_GLOBAL writes a NaN-boxed value from the trace constant pool to
-		// the destination slot. If the global is a table (the common case), the
-		// NaN-boxed pointer must not be overwritten by a stale int GPR or float FPR.
-		// We protect ALL LOAD_GLOBAL slots regardless of type, because:
-		// 1. emitLoadGlobal already handles loading into registers for int/float.
-		// 2. The slot might be reused by a different-type instruction later in the
-		//    same iteration, which could allocate a GPR/FPR that overwrites the value.
-		if inst.Op == SSA_LOAD_GLOBAL && inst.Slot >= 0 {
-			ec.callExitWriteSlots[int(inst.Slot)] = true
-		}
+		// NOTE: LOAD_GLOBAL destination slots are intentionally NOT protected
+		// from store-back. The store-back writes the correct int/float register
+		// values, and the next iteration's LOAD_GLOBAL overwrites the memory
+		// slot with the table pointer before any table operation reads it.
 	}
 
 	// 1. Prologue: save callee-saved registers, set up pinned registers
@@ -1362,8 +1362,16 @@ func (ec *emitCtx) emitLoadField(ref SSARef, inst *SSAInst) {
 		return
 	}
 
-	// Load table NaN-boxed value from the table's slot
-	ec.asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	// Load table NaN-boxed value. If the table source is a LOAD_GLOBAL,
+	// load directly from the trace constant pool (regConsts) to avoid
+	// slot conflicts with int/float register allocations.
+	tblSrcInst := &ec.f.Insts[inst.Arg1]
+	if tblSrcInst.Op == SSA_LOAD_GLOBAL {
+		constIdx := int(tblSrcInst.AuxInt)
+		ec.asm.LDR(X0, regConsts, constIdx*ValueSize)
+	} else {
+		ec.asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	}
 	// Check it's a table
 	EmitCheckIsTableFull(ec.asm, X0, X1, X2, "side_exit_setup")
 	// Extract pointer
@@ -1432,8 +1440,16 @@ func (ec *emitCtx) emitStoreField(inst *SSAInst) {
 		}
 	}
 
-	// Load table pointer (X3 holds the value, X0 is free for table)
-	ec.asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	// Load table pointer (X3 holds the value, X0 is free for table).
+	// If the table source is a LOAD_GLOBAL, load from the trace constant pool
+	// to avoid slot conflicts with int/float register allocations.
+	tblSrcInst := &ec.f.Insts[inst.Arg1]
+	if tblSrcInst.Op == SSA_LOAD_GLOBAL {
+		constIdx := int(tblSrcInst.AuxInt)
+		ec.asm.LDR(X0, regConsts, constIdx*ValueSize)
+	} else {
+		ec.asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	}
 	EmitCheckIsTableFull(ec.asm, X0, X1, X2, "side_exit_setup")
 	EmitExtractPtr(ec.asm, X0, X0)
 	ec.asm.CBZ(X0, "side_exit_setup")
@@ -1853,14 +1869,23 @@ func (ec *emitCtx) emitLoadGlobal(ref SSARef, inst *SSAInst) {
 
 	asm := ec.asm
 
-	// Load the NaN-boxed value from the trace constant pool.
-	// regConsts (X27) points to ct.constants[0].
-	asm.LDR(X0, regConsts, constIdx*ValueSize)
+	// For table-type globals, we do NOT write to the VM register slot.
+	// LOAD_FIELD and STORE_FIELD load the table pointer directly from regConsts
+	// when the source is a LOAD_GLOBAL. This avoids conflicts where the same
+	// slot is used for both a table pointer (LOAD_GLOBAL) and an int/float value
+	// (other instructions) in the same loop iteration.
+	if inst.Type == SSATypeTable {
+		// No memory write needed — LOAD_FIELD/STORE_FIELD read from regConsts.
+		// But we still need to write to memory for LOAD_ARRAY (which reads from
+		// the VM register slot, not from the SSA ref).
+		asm.LDR(X0, regConsts, constIdx*ValueSize)
+		asm.STR(X0, regRegs, dstSlot*ValueSize)
+		return
+	}
 
-	// Store the NaN-boxed value to the destination slot in memory.
-	// For table-type globals, this is a pointer that LOAD_ARRAY/LOAD_FIELD will
-	// read from memory. For int/float globals, we also load into a register
-	// if one is allocated.
+	// For non-table globals (int, float), load from constant pool and store to
+	// the VM register slot + optional register.
+	asm.LDR(X0, regConsts, constIdx*ValueSize)
 	asm.STR(X0, regRegs, dstSlot*ValueSize)
 
 	if inst.Type == SSATypeFloat {

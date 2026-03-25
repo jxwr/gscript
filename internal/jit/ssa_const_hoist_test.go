@@ -18,11 +18,12 @@ func findLoopIndex(f *SSAFunc) int {
 
 func TestConstHoist_MovesConstsBeforeLoop(t *testing.T) {
 	// Setup: GUARD, LOOP, CONST_INT(42), ADD_INT using that const
+	// Slot=-1 means pool constant (not bound to VM slot) — safe to hoist.
 	f := &SSAFunc{
 		Insts: []SSAInst{
 			{Op: SSA_GUARD_TYPE, Type: SSATypeInt, Arg1: SSARefNone, Arg2: SSARefNone},
 			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 42, Arg1: SSARefNone, Arg2: SSARefNone},
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 42, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1},
 			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1}, // uses GUARD(0) and CONST(2)
 		},
 	}
@@ -54,10 +55,10 @@ func TestConstHoist_UpdatesRefsAfterReindex(t *testing.T) {
 	// Setup: LOAD_SLOT(0), LOOP(1), CONST_INT(2), ADD_INT(3) refs LOAD(0)+CONST(2)
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},  // idx 0
-			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                    // idx 1
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 10, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 2
-			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                        // idx 3: uses LOAD(0)+CONST(2)
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},       // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                        // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 10, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1}, // idx 2
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                            // idx 3: uses LOAD(0)+CONST(2)
 		},
 	}
 
@@ -89,11 +90,11 @@ func TestConstHoist_NonConstStaysInLoop(t *testing.T) {
 	// Verify that non-constant instructions remain in the loop body
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},    // idx 0
-			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                     // idx 1
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 5, Arg1: SSARefNone, Arg2: SSARefNone},   // idx 2 (should hoist)
-			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                         // idx 3 (should stay)
-			{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: 3, Arg2: 0},                                  // idx 4 (should stay)
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},           // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                            // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 5, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1}, // idx 2 (should hoist)
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                                // idx 3 (should stay)
+			{Op: SSA_LE_INT, Type: SSATypeBool, Arg1: 3, Arg2: 0},                                         // idx 4 (should stay)
 		},
 	}
 
@@ -123,7 +124,7 @@ func TestConstHoist_NoConstants_NoOp(t *testing.T) {
 
 	// Everything should stay the same
 	if len(result.Insts) != len(f.Insts) {
-		t.Fatalf("instruction count changed: %d → %d", len(f.Insts), len(result.Insts))
+		t.Fatalf("instruction count changed: %d -> %d", len(f.Insts), len(result.Insts))
 	}
 	for i, inst := range result.Insts {
 		if inst.Op != f.Insts[i].Op {
@@ -136,7 +137,7 @@ func TestConstHoist_NoLoop_NoOp(t *testing.T) {
 	// If there's no LOOP marker, return unchanged
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 1, Arg1: SSARefNone, Arg2: SSARefNone},
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 1, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1},
 			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 0, Slot: 1},
 		},
 	}
@@ -149,15 +150,15 @@ func TestConstHoist_NoLoop_NoOp(t *testing.T) {
 }
 
 func TestConstHoist_MixedIntAndFloat(t *testing.T) {
-	// Both int and float constants should be hoisted
+	// Both int and float constants should be hoisted (when Slot=-1)
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 0
-			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                    // idx 1
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 2, Arg1: SSARefNone, Arg2: SSARefNone},  // idx 2 (hoist)
-			{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: 100, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 3 (hoist)
-			{Op: SSA_ADD_FLOAT, Type: SSATypeFloat, Arg1: 0, Arg2: 3, Slot: 1},                    // idx 4: uses LOAD(0)+CONST_FLOAT(3)
-			{Op: SSA_MUL_FLOAT, Type: SSATypeFloat, Arg1: 4, Arg2: 3, Slot: 2},                    // idx 5: uses ADD(4)+CONST_FLOAT(3)
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},              // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                                 // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 2, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1},    // idx 2 (hoist)
+			{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: 100, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1}, // idx 3 (hoist)
+			{Op: SSA_ADD_FLOAT, Type: SSATypeFloat, Arg1: 0, Arg2: 3, Slot: 1},                                 // idx 4: uses LOAD(0)+CONST_FLOAT(3)
+			{Op: SSA_MUL_FLOAT, Type: SSATypeFloat, Arg1: 4, Arg2: 3, Slot: 2},                                 // idx 5: uses ADD(4)+CONST_FLOAT(3)
 		},
 	}
 
@@ -219,11 +220,11 @@ func TestConstHoist_StoreArrayAuxIntRef(t *testing.T) {
 	// SSA_STORE_ARRAY stores a value ref in AuxInt — must be updated on reindex
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_LOAD_SLOT, Type: SSATypeTable, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 0: table
-			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                    // idx 1
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 1, Arg1: SSARefNone, Arg2: SSARefNone},  // idx 2: key (hoist)
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 99, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 3: value (hoist)
-			{Op: SSA_STORE_ARRAY, Type: SSATypeUnknown, Arg1: 0, Arg2: 2, AuxInt: 3, Slot: 0},     // idx 4: table[key]=value, AuxInt=valRef
+			{Op: SSA_LOAD_SLOT, Type: SSATypeTable, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},         // idx 0: table
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                            // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 1, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1},  // idx 2: key (hoist)
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 99, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1}, // idx 3: value (hoist)
+			{Op: SSA_STORE_ARRAY, Type: SSATypeUnknown, Arg1: 0, Arg2: 2, AuxInt: 3, Slot: 0},             // idx 4: table[key]=value, AuxInt=valRef
 		},
 	}
 
@@ -231,8 +232,8 @@ func TestConstHoist_StoreArrayAuxIntRef(t *testing.T) {
 
 	// After hoist: LOAD(0), CONST(1), CONST(2), LOOP(3), STORE_ARRAY(4)
 	// STORE_ARRAY.Arg1 should be 0 (LOAD unchanged)
-	// STORE_ARRAY.Arg2 should be 1 (key const moved from 2→1)
-	// STORE_ARRAY.AuxInt should be 2 (value const moved from 3→2)
+	// STORE_ARRAY.Arg2 should be 1 (key const moved from 2->1)
+	// STORE_ARRAY.AuxInt should be 2 (value const moved from 3->2)
 	storeIdx := -1
 	for i, inst := range result.Insts {
 		if inst.Op == SSA_STORE_ARRAY {
@@ -259,10 +260,10 @@ func TestConstHoist_ConstAlreadyBeforeLoop(t *testing.T) {
 	// Constants already before LOOP should not be moved or duplicated
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 7, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 0: already pre-loop
-			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                    // idx 1
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 42, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 2: in loop (should hoist)
-			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                        // idx 3
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 7, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1}, // idx 0: already pre-loop
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                              // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 42, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1}, // idx 2: in loop (should hoist)
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                                  // idx 3
 		},
 	}
 
@@ -294,7 +295,7 @@ func TestConstHoist_PreservesSSARefNone(t *testing.T) {
 	f := &SSAFunc{
 		Insts: []SSAInst{
 			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 1, Arg1: SSARefNone, Arg2: SSARefNone},
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 1, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1},
 			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: SSARefNone, Arg2: 1, Slot: 0},
 		},
 	}
@@ -312,16 +313,16 @@ func TestConstHoist_UpdatesSnapshotRefs(t *testing.T) {
 	// Snapshots contain SSARef entries that must be remapped after hoisting
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 0
-			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                   // idx 1
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 10, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 2 (hoist)
-			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                        // idx 3
-			{Op: SSA_SNAPSHOT, AuxInt: 0},                                                           // idx 4: snapshot index 0
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},              // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                               // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 10, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1}, // idx 2 (hoist)
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                                   // idx 3
+			{Op: SSA_SNAPSHOT, AuxInt: 0},                                                                      // idx 4: snapshot index 0
 		},
 		Snapshots: []Snapshot{
 			{PC: 10, Entries: []SnapEntry{
-				{Slot: 0, Ref: 0, Type: SSATypeInt},  // points to LOAD_SLOT(0)
-				{Slot: 1, Ref: 3, Type: SSATypeInt},  // points to ADD_INT(3)
+				{Slot: 0, Ref: 0, Type: SSATypeInt}, // points to LOAD_SLOT(0)
+				{Slot: 1, Ref: 3, Type: SSATypeInt}, // points to ADD_INT(3)
 			}},
 		},
 	}
@@ -347,10 +348,10 @@ func TestConstHoist_UpdatesSnapshotRefsToConst(t *testing.T) {
 	// Snapshot that references a constant being hoisted
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},    // idx 0
-			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                      // idx 1
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 42, Arg1: SSARefNone, Arg2: SSARefNone},  // idx 2 (hoist)
-			{Op: SSA_SNAPSHOT, AuxInt: 0},                                                             // idx 3: snapshot index 0
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},               // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                                // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 42, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1},  // idx 2 (hoist)
+			{Op: SSA_SNAPSHOT, AuxInt: 0},                                                                       // idx 3: snapshot index 0
 		},
 		Snapshots: []Snapshot{
 			{PC: 10, Entries: []SnapEntry{
@@ -373,18 +374,18 @@ func TestConstHoist_UpdatesFMADDAuxIntRef(t *testing.T) {
 	// FMADD/FMSUB use AuxInt as a third operand ref — must be remapped
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 0
-			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 1, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 1
-			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                    // idx 2
-			{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: 100, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 3 (hoist)
-			{Op: SSA_FMADD, Type: SSATypeFloat, Arg1: 0, Arg2: 1, AuxInt: 3, Slot: 2},             // idx 4: a*b+c where c=CONST(3)
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},                  // idx 0
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 1, Arg1: SSARefNone, Arg2: SSARefNone},                  // idx 1
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                                     // idx 2
+			{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: 100, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1}, // idx 3 (hoist)
+			{Op: SSA_FMADD, Type: SSATypeFloat, Arg1: 0, Arg2: 1, AuxInt: 3, Slot: 2},                             // idx 4: a*b+c where c=CONST(3)
 		},
 	}
 
 	result := ConstHoist(f)
 
 	// After hoist: LOAD(0), LOAD(1), CONST(2), LOOP(3), FMADD(4)
-	// FMADD.AuxInt should be 2 (CONST moved from 3→2)
+	// FMADD.AuxInt should be 2 (CONST moved from 3->2)
 	fmaddIdx := -1
 	for i, inst := range result.Insts {
 		if inst.Op == SSA_FMADD {
@@ -405,11 +406,11 @@ func TestConstHoist_UpdatesLoopIdx(t *testing.T) {
 	// LoopIdx on the SSAFunc struct should be updated after hoisting
 	f := &SSAFunc{
 		Insts: []SSAInst{
-			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 0
-			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                   // idx 1
-			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 5, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 2 (hoist)
-			{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: 7, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 3 (hoist)
-			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                        // idx 4
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},                  // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                                   // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 5, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1},      // idx 2 (hoist)
+			{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: 7, Arg1: SSARefNone, Arg2: SSARefNone, Slot: -1}, // idx 3 (hoist)
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                                       // idx 4
 		},
 		LoopIdx: 1,
 	}
@@ -420,5 +421,33 @@ func TestConstHoist_UpdatesLoopIdx(t *testing.T) {
 	// LoopIdx should be 3
 	if result.LoopIdx != 3 {
 		t.Errorf("LoopIdx = %d, want 3", result.LoopIdx)
+	}
+}
+
+func TestConstHoist_SlotBoundConstNotHoisted(t *testing.T) {
+	// Constants with Slot >= 0 (bound to a VM slot) must NOT be hoisted.
+	// They need to stay in the loop body so emitConstInt writes to the slot,
+	// which is required for correct interpreter state after side-exit.
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},              // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                               // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 20, Arg1: SSARefNone, Arg2: SSARefNone, Slot: 5},  // idx 2: bound to slot 5, NOT hoisted
+			{Op: SSA_EQ_INT, Type: SSATypeBool, Arg1: 0, Arg2: 2, AuxInt: 0},                                 // idx 3
+		},
+	}
+
+	result := ConstHoist(f)
+
+	// Nothing should be hoisted (only slot-bound constants in loop body)
+	if len(result.Insts) != len(f.Insts) {
+		t.Fatalf("instruction count changed: %d -> %d", len(f.Insts), len(result.Insts))
+	}
+	loopIdx := findLoopIndex(result)
+	// CONST_INT should still be after LOOP
+	for i, inst := range result.Insts {
+		if inst.Op == SSA_CONST_INT && i <= loopIdx {
+			t.Errorf("slot-bound CONST_INT was incorrectly hoisted to index %d (LOOP at %d)", i, loopIdx)
+		}
 	}
 }

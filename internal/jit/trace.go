@@ -324,6 +324,10 @@ func (r *TraceRecorder) finishTrace() {
 				fmt.Printf("[TRACE-DEBUG] PC=%d intOnly=%v useful=%v nInsts=%d nIR=%d proto=%s\n",
 					r.current.LoopPC, ssaOK, ssaUseful, len(ssaFunc.Insts), len(r.current.IR),
 					r.current.LoopProto.Name)
+				for i, inst := range ssaFunc.Insts {
+					fmt.Printf("[SSA] %d: op=%d type=%d slot=%d arg1=%d arg2=%d auxInt=%d pc=%d\n",
+						i, inst.Op, inst.Type, inst.Slot, inst.Arg1, inst.Arg2, inst.AuxInt, inst.PC)
+				}
 			}
 
 			if ssaOK && ssaUseful {

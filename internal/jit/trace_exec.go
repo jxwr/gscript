@@ -33,7 +33,10 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
 
 	if debugTrace {
-		fmt.Printf("[TRACE-EXEC] before: base=%d loopPC=%d\n", base, ct.loopPC)
+		fmt.Printf("[TRACE-EXEC] before: base=%d loopPC=%d nConsts=%d\n", base, ct.loopPC, len(ct.constants))
+		for i := 0; i < 8 && base+i < len(regs); i++ {
+			fmt.Printf("[TRACE-EXEC] reg[%d]=0x%016x type=%d\n", i, uint64(regs[base+i]), regs[base+i].Type())
+		}
 	}
 
 	maxExecAttempts := 1000000
@@ -43,6 +46,9 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 		if debugTrace {
 			fmt.Printf("[TRACE-EXEC] after: exitCode=%d exitPC=%d snapIdx=%d resumePC=%d\n",
 				ctx.ExitCode, ctx.ExitPC, ctx.ExitSnapIdx, ctx.ResumePC)
+			for i := 0; i < 8 && base+i < len(regs); i++ {
+				fmt.Printf("[TRACE-EXEC] reg[%d]=0x%016x type=%d\n", i, uint64(regs[base+i]), regs[base+i].Type())
+			}
 		}
 
 		switch ctx.ExitCode {

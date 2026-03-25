@@ -328,6 +328,27 @@ func (r *TraceRecorder) captureTypeInfo(ir *TraceIR, inst uint32, proto *vm.Func
 			}
 		}
 	}
+
+	// For GETFIELD, AType is also the PRE-execution type of the destination register.
+	// Fix by sampling the actual field value from the table.
+	// GETFIELD: A B C → R(A) = R(B).Constants[C]
+	if op == vm.OP_GETFIELD {
+		origB := vm.DecodeB(inst)
+		tableSlot := base + origB
+		if tableSlot >= 0 && tableSlot < len(regs) && regs[tableSlot].IsTable() {
+			tbl := regs[tableSlot].Table()
+			if tbl != nil {
+				fieldConstIdx := vm.DecodeC(inst)
+				if fieldConstIdx < len(proto.Constants) {
+					fieldName := proto.Constants[fieldConstIdx].Str()
+					sampled := tbl.RawGetString(fieldName)
+					if !sampled.IsNil() {
+						ir.AType = sampled.Type()
+					}
+				}
+			}
+		}
+	}
 }
 
 // captureFieldIndex fills in FieldIndex and ShapeID for GETFIELD/SETFIELD.
