@@ -36,7 +36,8 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 		fmt.Printf("[TRACE-EXEC] before: base=%d loopPC=%d\n", base, ct.loopPC)
 	}
 
-	for {
+	maxExecAttempts := 1000000
+	for attempt := 0; attempt < maxExecAttempts; attempt++ {
 		callJIT(uintptr(ct.code.Ptr()), ctxPtr)
 
 		if debugTrace {
@@ -64,14 +65,31 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 		case 1:
 			// Side exit
 			ct.guardFailCount = 0
+			ct.sideExitCount++
+			// If side-exiting too often without any loop-done completions,
+			// the trace is not useful (every iteration exits). Blacklist it.
+			if ct.sideExitCount > 10 && ct.fullRunCount == 0 {
+				ct.blacklisted = true
+				if ct.proto != nil {
+					ct.proto.BlacklistTracePC(ct.loopPC)
+				}
+			}
 			return int(ctx.ExitPC), true, false
 
 		default:
 			// Loop done (exit code 0)
 			ct.guardFailCount = 0
+			ct.fullRunCount++
+			ct.sideExitCount = 0
 			return int(ctx.ExitPC), false, false
 		}
 	}
+	// Safety: execution limit reached, treat as side-exit
+	ct.blacklisted = true
+	if ct.proto != nil {
+		ct.proto.BlacklistTracePC(ct.loopPC)
+	}
+	return int(ctx.ExitPC), true, false
 }
 
 // handleTraceCallExit executes a call-exit opcode on behalf of the trace JIT.
