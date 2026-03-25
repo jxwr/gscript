@@ -46,22 +46,9 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 
 		switch ctx.ExitCode {
 		case 3:
-			// Call-exit: trace hit an OP_CALL/GETGLOBAL/etc, needs Go to execute it.
-			if ct.callHandler == nil {
-				ct.guardFailCount = 0
-				return int(ctx.ExitPC), true, false
-			}
-			nextPC := handleTraceCallExit(ct, regs, base, &ctx)
-			if nextPC < 0 {
-				// Handler failed — side-exit to VM at the call-exit PC
-				ct.guardFailCount = 0
-				return int(ctx.ExitPC), true, false
-			}
-			// Set ResumePC for re-entry into the trace
-			ctx.ResumePC = int64(nextPC)
-			// Update Regs pointer (may have been reallocated by handler)
-			ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
-			continue // re-enter JIT at resume label
+			// Legacy call-exit code (no longer emitted). Treat as side-exit.
+			ct.guardFailCount = 0
+			return int(ctx.ExitPC), true, false
 
 		case 2:
 			// Guard fail: pre-loop type checks didn't match.

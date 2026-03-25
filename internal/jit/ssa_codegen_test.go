@@ -1411,29 +1411,27 @@ for i := 2; i <= 200; i++ {
 	}
 }
 
-// TestSSACodegen_CallExit tests that SSA_CALL compiles and executes correctly
-// with the call-exit/resume mechanism.
+// TestSSACodegen_CallExit tests that SSA_CALL compiles as a side-exit.
 //
-// Models: for i = 1, 5 do sum = sum + double(i) end
-// where double(x) = x * 2 (executed by the call handler)
-// Expected: sum = 2+4+6+8+10 = 30
+// Models: for i = 1, 5 do sum = sum + i; f(i) end
+// The trace has computation (ADD) before the CALL, so it's useful.
+// The CALL triggers a side-exit, returning control to the interpreter.
+//
+// Layout:
+//   R(0)=idx, R(1)=limit, R(2)=step, R(3)=i (loop var)
+//   R(4)=sum (accumulator)
+//   R(5)=fn (function value), R(6)=arg (i copy)
+//
+// Trace body:
+//   ADD  R(4), R(4), R(3) -- sum += i                PC=0
+//   MOVE R(6), R(3)       -- copy i to arg position  PC=1
+//   CALL R(5) B=2 C=2     -- f(i)                    PC=2
+//   FORLOOP R(0)           -- loop control            PC=3
 func TestSSACodegen_CallExit(t *testing.T) {
-	// Layout:
-	//   R(0)=idx, R(1)=limit, R(2)=step, R(3)=i (loop var)
-	//   R(4)=sum (accumulator)
-	//   R(5)=fn (function value), R(6)=arg (i copy)
-	//
-	// Trace body (one iteration):
-	//   MOVE R(6), R(3)     -- copy i to arg position   PC=0
-	//   CALL R(5) B=2 C=2   -- R(5) = fn(R(6))         PC=1
-	//   ADD  R(4), R(4), R(5) -- sum += result           PC=2
-	//   FORLOOP R(0)         -- loop control             PC=3
-	//
-	// The bytecode Proto must have an OP_CALL at PC=1.
 	code := []uint32{
-		vm.EncodeABC(vm.OP_MOVE, 6, 3, 0),    // PC=0: MOVE R(6), R(3)
-		vm.EncodeABC(vm.OP_CALL, 5, 2, 2),    // PC=1: CALL R(5) B=2 C=2
-		vm.EncodeABC(vm.OP_ADD, 4, 4, 5),     // PC=2: ADD R(4), R(4), R(5)
+		vm.EncodeABC(vm.OP_ADD, 4, 4, 3),     // PC=0: ADD R(4), R(4), R(3)
+		vm.EncodeABC(vm.OP_MOVE, 6, 3, 0),    // PC=1: MOVE R(6), R(3)
+		vm.EncodeABC(vm.OP_CALL, 5, 2, 2),    // PC=2: CALL R(5) B=2 C=2
 		vm.EncodeAsBx(vm.OP_FORLOOP, 0, -4),  // PC=3: FORLOOP R(0) sBx=-4
 	}
 	proto := &vm.FuncProto{
@@ -1446,9 +1444,9 @@ func TestSSACodegen_CallExit(t *testing.T) {
 		LoopProto: proto,
 		LoopPC:    3, // FORLOOP at PC=3
 		IR: []TraceIR{
-			{Op: vm.OP_MOVE, A: 6, B: 3, PC: 0, BType: runtime.TypeInt},
-			{Op: vm.OP_CALL, A: 5, B: 2, C: 2, PC: 1, Intrinsic: IntrinsicNone},
-			{Op: vm.OP_ADD, A: 4, B: 4, C: 5, PC: 2, BType: runtime.TypeInt, CType: runtime.TypeInt},
+			{Op: vm.OP_ADD, A: 4, B: 4, C: 3, PC: 0, BType: runtime.TypeInt, CType: runtime.TypeInt},
+			{Op: vm.OP_MOVE, A: 6, B: 3, PC: 1, BType: runtime.TypeInt},
+			{Op: vm.OP_CALL, A: 5, B: 2, C: 2, PC: 2, Intrinsic: IntrinsicNone},
 			{Op: vm.OP_FORLOOP, A: 0, SBX: -4, PC: 3},
 		},
 	}
@@ -1481,41 +1479,39 @@ func TestSSACodegen_CallExit(t *testing.T) {
 		t.Fatal("compiled trace should have hasCallExit=true")
 	}
 
-	// Set up call handler: double(x) = x * 2
-	ct.callHandler = func(fnVal runtime.Value, args []runtime.Value) ([]runtime.Value, error) {
-		if len(args) == 0 {
-			return []runtime.Value{runtime.IntValue(0)}, nil
-		}
-		x := args[0].Int()
-		return []runtime.Value{runtime.IntValue(x * 2)}, nil
-	}
-
-	// Set up registers
+	// Set up registers: for i = 1, 5 do sum = sum + i end
 	regs := make([]runtime.Value, 10)
-	regs[0] = runtime.IntValue(0)          // idx (will be set by FORLOOP)
+	regs[0] = runtime.IntValue(1)          // idx = 1 (first iteration)
 	regs[1] = runtime.IntValue(5)          // limit
 	regs[2] = runtime.IntValue(1)          // step
-	regs[3] = runtime.IntValue(0)          // i (loop var)
+	regs[3] = runtime.IntValue(1)          // i (loop var = idx for first iter)
 	regs[4] = runtime.IntValue(0)          // sum
 	regs[5] = runtime.IntValue(0)          // fn (placeholder)
 
-	// Execute the compiled trace
+	// Execute the compiled trace: it should side-exit at the CALL PC.
+	// The trace runs: guards → ADD → MOVE → side-exit at CALL (PC=2).
 	exitPC, sideExit, guardFail := ct.Execute(regs, 0, proto)
 
 	if guardFail {
 		t.Fatalf("unexpected guard fail")
 	}
+	if !sideExit {
+		t.Fatalf("expected side-exit, got loop-done")
+	}
+	if exitPC != 2 {
+		t.Errorf("exitPC = %d, want 2 (CALL at PC=2)", exitPC)
+	}
 
+	// After the first iteration, sum should be 0+1=1 (one ADD executed)
 	sum := regs[4].Int()
 	t.Logf("sum=%d, exitPC=%d, sideExit=%v", sum, exitPC, sideExit)
-
-	if sum != 30 {
-		t.Errorf("sum = %d, want 30 (2+4+6+8+10)", sum)
+	if sum != 1 {
+		t.Errorf("sum = %d, want 1 (0 + 1 from first iteration)", sum)
 	}
 }
 
 // TestSSACodegen_CallExit_SSABuild tests that SSA builder correctly emits
-// SSA_CALL + SSA_LOAD_SLOT for non-intrinsic calls.
+// SSA_CALL for non-intrinsic calls.
 func TestSSACodegen_CallExit_SSABuild(t *testing.T) {
 	trace := &Trace{
 		LoopProto: &vm.FuncProto{
@@ -1533,11 +1529,9 @@ func TestSSACodegen_CallExit_SSABuild(t *testing.T) {
 	ssaFunc := BuildSSA(trace)
 
 	// Verify SSA_CALL is emitted
-	var callIdx, loadIdx int
-	foundCall, foundLoad := false, false
-	for i, inst := range ssaFunc.Insts {
+	foundCall := false
+	for _, inst := range ssaFunc.Insts {
 		if inst.Op == SSA_CALL {
-			callIdx = i
 			foundCall = true
 			if inst.Slot != 5 {
 				t.Errorf("SSA_CALL slot = %d, want 5", inst.Slot)
@@ -1546,28 +1540,21 @@ func TestSSACodegen_CallExit_SSABuild(t *testing.T) {
 				t.Errorf("SSA_CALL PC = %d, want 1", inst.PC)
 			}
 		}
-		if inst.Op == SSA_LOAD_SLOT && foundCall && !foundLoad {
-			loadIdx = i
-			foundLoad = true
-			if inst.Slot != 5 {
-				t.Errorf("SSA_LOAD_SLOT after SSA_CALL slot = %d, want 5", inst.Slot)
-			}
-		}
 	}
 
 	if !foundCall {
 		t.Fatal("SSA builder did not emit SSA_CALL")
 	}
-	if !foundLoad {
-		t.Fatal("SSA builder did not emit SSA_LOAD_SLOT after SSA_CALL")
-	}
-	if loadIdx != callIdx+1 {
-		t.Errorf("SSA_LOAD_SLOT should immediately follow SSA_CALL: call=%d load=%d", callIdx, loadIdx)
+
+	// Verify it passes ssaIsIntegerOnly (all ops are recognized)
+	ssaFunc = OptimizeSSA(ssaFunc)
+	if !ssaIsIntegerOnly(ssaFunc) {
+		t.Fatal("SSA with SSA_CALL should pass ssaIsIntegerOnly")
 	}
 
-	// Verify it's compilable
-	ssaFunc = OptimizeSSA(ssaFunc)
-	if !ssaIsCompilable(ssaFunc) {
-		t.Fatal("SSA with SSA_CALL should be compilable")
+	// SSAIsUseful should reject it because SSA_CALL is the first real
+	// instruction after SSA_LOOP (trace would exit immediately, doing no work).
+	if SSAIsUseful(ssaFunc) {
+		t.Fatal("Trace with SSA_CALL as first instruction after loop should be rejected by SSAIsUseful")
 	}
 }

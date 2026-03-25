@@ -331,38 +331,29 @@ func (r *TraceRecorder) finishTrace() {
 					fmt.Printf("[TRACE-DEBUG] CompileSSA error: %v\n", err)
 				}
 				if err == nil {
-					// If trace has call-exits but no handler, skip compilation
-					// (the trace would immediately side-exit on every call, wasting cycles)
-					if ct.hasCallExit && r.callHandler == nil {
-						if r.debug {
-							fmt.Printf("[TRACE] Skipped: PC=%d, has call-exit but no handler\n", r.current.LoopPC)
+					// Call-exit ops are now emitted as side-exits (ExitCode=1).
+					// The interpreter handles the instruction; no callHandler needed.
+					if ct.hasCallExit && r.globalsAccessor != nil {
+						ct.globalsAccessor = r.globalsAccessor
+					}
+					if innerForloopPC > 0 {
+						innerKey := loopKey{proto: r.current.LoopProto, pc: innerForloopPC}
+						if innerCT, ok := r.compiled[innerKey]; ok {
+							ct.innerTrace = innerCT
 						}
-					} else {
-						if ct.hasCallExit && r.callHandler != nil {
-							ct.callHandler = r.callHandler
+					}
+					r.compiled[key] = ct
+					compiled = true
+					if r.debug {
+						fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions, %d bytes code",
+							r.current.LoopPC, len(r.current.IR), ct.code.Size())
+						if ct.hasCallExit {
+							fmt.Printf(" (has call-exit → side-exit)")
 						}
-						if ct.hasCallExit && r.globalsAccessor != nil {
-							ct.globalsAccessor = r.globalsAccessor
+						if ct.innerTrace != nil {
+							fmt.Printf(" (calls inner trace at FORLOOP PC=%d)", innerForloopPC)
 						}
-						if innerForloopPC > 0 {
-							innerKey := loopKey{proto: r.current.LoopProto, pc: innerForloopPC}
-							if innerCT, ok := r.compiled[innerKey]; ok {
-								ct.innerTrace = innerCT
-							}
-						}
-						r.compiled[key] = ct
-						compiled = true
-						if r.debug {
-							fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions, %d bytes code",
-								r.current.LoopPC, len(r.current.IR), ct.code.Size())
-							if ct.hasCallExit {
-								fmt.Printf(" (has call-exit)")
-							}
-							if ct.innerTrace != nil {
-								fmt.Printf(" (calls inner trace at FORLOOP PC=%d)", innerForloopPC)
-							}
-							fmt.Println()
-						}
+						fmt.Println()
 					}
 				} else if r.debug {
 					fmt.Printf("[TRACE] SSA compile error: PC=%d, err=%v\n", r.current.LoopPC, err)

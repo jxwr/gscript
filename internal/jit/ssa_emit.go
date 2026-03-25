@@ -26,6 +26,7 @@ func FuseMultiplyAdd(f *SSAFunc) *SSAFunc { return f }
 // ssaIsIntegerOnly returns true if all SSA ops in the function are compilable.
 func ssaIsIntegerOnly(f *SSAFunc) bool {
 	hasCallExit := false
+	hasStoreArrayExit := false
 	hasForloopExit := false
 	for _, inst := range f.Insts {
 		switch inst.Op {
@@ -43,11 +44,15 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP, SSA_INTRINSIC,
 			SSA_CALL,
 			SSA_MOVE, SSA_PHI, SSA_BOX_INT, SSA_BOX_FLOAT, SSA_STORE_SLOT:
-			// Track call-exit ops (LOAD_ARRAY with scalar result is native;
-			// LOAD_ARRAY with non-scalar result and STORE_ARRAY use call-exit)
-			if inst.Op == SSA_CALL || inst.Op == SSA_STORE_ARRAY ||
-				inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
+			// Track call-exit ops: SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN
+			// are now emitted as side-exits (ExitCode=1).
+			if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
 				hasCallExit = true
+			}
+			// SSA_STORE_ARRAY still uses call-exit and causes tight exit-reenter loops
+			// in inner loops. Reject until P1 implements native STORE_ARRAY.
+			if inst.Op == SSA_STORE_ARRAY {
+				hasStoreArrayExit = true
 			}
 			// LOAD_ARRAY with non-scalar result (e.g., table) falls back to call-exit
 			if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
@@ -65,26 +70,31 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 	// Call-exit traces require a FORLOOP exit to be safe.
 	// While-loop traces with call-exits would compile but loop forever
 	// (the while-loop exit mechanism is not yet implemented for compiled traces).
-	if hasCallExit && !hasForloopExit {
+	if (hasCallExit || hasStoreArrayExit) && !hasForloopExit {
 		return false
 	}
 	// Only compile traces that have a proper FORLOOP exit.
 	if !hasForloopExit {
 		return false
 	}
-	// Call-exit re-entry: only allow if there are no SSA_CALL ops.
-	// LOAD_ARRAY and STORE_ARRAY are now native (not call-exits), so traces
-	// with only table ops are safe. But SSA_CALL/LOAD_GLOBAL/TABLE_LEN still
-	// use call-exit and the re-entry has a known hang bug.
-	// TODO: fix call-exit re-entry for SSA_CALL ops.
-	if hasCallExit {
+	// SSA_STORE_ARRAY is still emitted as call-exit (not yet native).
+	// Reject traces with STORE_ARRAY to avoid tight exit-reenter overhead.
+	// P1 will implement native STORE_ARRAY, making these traces fast.
+	if hasStoreArrayExit {
 		return false
 	}
+	// Call-exit ops (SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN) are now emitted
+	// as side-exits (ExitCode=1). The interpreter resumes at ExitPC, executes
+	// the instruction, and FORLOOP back-edge re-enters the trace. No resume
+	// dispatch needed.
 	return true
 }
 
 // SSAIsUseful returns true if the SSA function contains meaningful computation.
+// A trace that immediately exits (e.g., SSA_CALL as first op after SSA_LOOP) is
+// not useful — it would just exit on every entry, wasting the trace overhead.
 func SSAIsUseful(f *SSAFunc) bool {
+	hasComputation := false
 	for _, inst := range f.Insts {
 		switch inst.Op {
 		case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT,
@@ -92,10 +102,40 @@ func SSAIsUseful(f *SSAFunc) bool {
 			SSA_FMADD, SSA_FMSUB,
 			SSA_LOAD_FIELD, SSA_STORE_FIELD, SSA_LOAD_ARRAY, SSA_STORE_ARRAY,
 			SSA_INTRINSIC:
-			return true
+			hasComputation = true
 		}
 	}
-	return false
+	if !hasComputation {
+		return false
+	}
+	// Reject traces where the first meaningful instruction after SSA_LOOP is a
+	// call-exit op (SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN, non-scalar LOAD_ARRAY).
+	// Such traces would exit immediately on every entry — the trace does no useful
+	// work before hitting the side-exit. This prevents infinite re-enter → exit loops.
+	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
+		op := f.Insts[i].Op
+		// Skip NOPs, snapshots, loads, unboxes, constants, guards — these are setup, not computation
+		if op == SSA_NOP || op == SSA_SNAPSHOT || op == SSA_LOAD_SLOT ||
+			op == SSA_UNBOX_INT || op == SSA_UNBOX_FLOAT ||
+			op == SSA_CONST_INT || op == SSA_CONST_FLOAT || op == SSA_CONST_NIL || op == SSA_CONST_BOOL ||
+			op == SSA_GUARD_TYPE || op == SSA_GUARD_TRUTHY || op == SSA_GUARD_NNIL || op == SSA_GUARD_NOMETA ||
+			op == SSA_PHI || op == SSA_MOVE || op == SSA_BOX_INT || op == SSA_BOX_FLOAT || op == SSA_STORE_SLOT {
+			continue
+		}
+		// If the first real op is a call-exit, the trace is useless
+		if op == SSA_CALL || op == SSA_LOAD_GLOBAL || op == SSA_TABLE_LEN {
+			return false
+		}
+		// Non-scalar LOAD_ARRAY is also a call-exit
+		if op == SSA_LOAD_ARRAY {
+			inst := &f.Insts[i]
+			if inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
+				return false
+			}
+		}
+		break // first real op is not a call-exit, trace is useful
+	}
+	return true
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -129,7 +169,6 @@ type emitCtx struct {
 	f            *SSAFunc
 	regMap       *RegMap
 	snapIdx      int  // current snapshot index for side-exit
-	callExits    int  // number of call-exits emitted
 	hasCallExit  bool
 	loopExitIdx  int  // SSA instruction index of the OUTER loop-exit comparison (FORLOOP's LE_INT/LE_FLOAT)
 	// Inner loop support (for full nesting):
@@ -141,14 +180,10 @@ type emitCtx struct {
 	// breakGuardPC is the bytecode PC of the break guard (LT_FLOAT inside inner loop).
 	// Used by break_exit to set ExitPC so the VM re-executes the comparison.
 	breakGuardPC int
-	// callExitPCs records the bytecode PCs of call-exit instructions (for resume dispatch).
-	// Each call-exit gets a unique index; the resume dispatch uses this to jump to the
-	// correct resume label after the Go handler executes the instruction.
-	callExitPCs []int
 	// reloadSeq is a monotonically increasing counter for unique reload labels.
 	reloadSeq int
-	// callExitWriteSlots tracks slots that are written by call-exit handlers.
-	// These slots should NOT be overwritten by storeBack (the handler's value is authoritative).
+	// callExitWriteSlots tracks slots that are written by call-exit (side-exit) instructions.
+	// These slots should NOT be overwritten by storeBack (the interpreter's value is authoritative).
 	callExitWriteSlots map[int]bool
 	// arraySeq is a monotonically increasing counter for unique array access labels.
 	arraySeq int
@@ -177,9 +212,9 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 		callExitWriteSlots: make(map[int]bool),
 	}
 
-	// Pre-scan: collect call-exit PCs for resume dispatch.
-	// Also track which slots are written by call-exit instructions.
-	// LOAD_ARRAY with scalar result is native. Others use call-exit.
+	// Pre-scan: track which slots are written by call-exit instructions.
+	// These slots must NOT be overwritten by storeBack (the interpreter's value is authoritative).
+	// LOAD_ARRAY with scalar result is native. Others use call-exit (side-exit).
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
 		isCallExit := inst.Op == SSA_CALL || inst.Op == SSA_STORE_ARRAY ||
@@ -189,8 +224,7 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 			isCallExit = true
 		}
 		if isCallExit {
-			ec.callExitPCs = append(ec.callExitPCs, inst.PC)
-			// Track output slots (slots written by the handler)
+			// Track output slots (slots written by the interpreter after side-exit)
 			if inst.Slot >= 0 {
 				ec.callExitWriteSlots[int(inst.Slot)] = true
 			}
@@ -199,9 +233,6 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 
 	// 1. Prologue: save callee-saved registers, set up pinned registers
 	ec.emitPrologue()
-
-	// 2. Resume dispatch: if ResumePC != 0, jump to the correct resume label
-	ec.emitResumeDispatch()
 
 	// 3. Pre-loop guards: type check all live-in slots
 	ec.emitPreLoopGuards()
@@ -321,39 +352,6 @@ func (ec *emitCtx) emitPrologue() {
 
 	// Load NaN-boxing int tag constant into X24
 	asm.LoadImm64(regTagInt, nb_i64(NB_TagInt)) // X24 = 0xFFFE000000000000
-}
-
-// emitResumeDispatch emits the resume dispatch code at trace entry.
-// If ResumePC != 0, this means we're re-entering after a call-exit.
-// The dispatch jumps to the correct resume_call_N label.
-// If ResumePC == 0, falls through to normal entry (pre-loop guards + loads).
-func (ec *emitCtx) emitResumeDispatch() {
-	if len(ec.callExitPCs) == 0 {
-		return // no call-exits, no dispatch needed
-	}
-
-	asm := ec.asm
-
-	// Load ResumePC from TraceContext
-	asm.LDR(X0, regCtx, TraceCtxOffResumePC)
-	asm.CBZ(X0, "normal_entry") // ResumePC=0 → normal entry
-
-	// Dispatch to the correct resume label based on ResumePC value
-	for i, pc := range ec.callExitPCs {
-		label := "resume_call_" + itoa(i)
-		// ResumePC is set to pc+1 by the Go handler (next instruction after the call-exit)
-		asm.LoadImm64(X1, int64(pc+1))
-		asm.CMPreg(X0, X1)
-		asm.BCond(CondEQ, label)
-	}
-
-	// Unknown ResumePC → side-exit (prevent infinite re-entry loop)
-	asm.LoadImm64(X0, 1) // ExitCode = side-exit
-	asm.B("epilogue")
-
-	asm.Label("normal_entry")
-	// Reset ResumePC to 0 for future iterations
-	asm.STR(XZR, regCtx, TraceCtxOffResumePC)
 }
 
 func (ec *emitCtx) emitEpilogue() {
@@ -1691,37 +1689,20 @@ func (ec *emitCtx) emitCallExitInst(inst *SSAInst) {
 	asm := ec.asm
 	ec.hasCallExit = true
 
-	idx := ec.callExits
-	ec.callExits++
+	// Store back ALL modified registers to memory (type-safe) before exiting.
+	// The interpreter needs to see current register values to execute the instruction.
+	ec.emitStoreBackTypeSafe()
 
-	// Store back ALL registers to memory before exiting.
-	// This must be unconditional so the handler sees current register values.
-	ec.emitStoreBack()
-
-	// Set ExitPC to the call instruction's PC
+	// Set ExitPC to the call instruction's bytecode PC
 	asm.LoadImm64(X9, int64(inst.PC))
 	asm.STR(X9, regCtx, TraceCtxOffExitPC)
 
-	// Exit with code 3 (call-exit)
-	// The executor handles the instruction and re-enters via resume label.
-	asm.LoadImm64(X0, 3)
+	// Exit with code 1 (side-exit). The interpreter resumes at ExitPC,
+	// executes the CALL/LOAD_GLOBAL/TABLE_LEN instruction (including any
+	// nested loops/recursion), then FORLOOP back-edge re-enters the trace.
+	// No resume dispatch needed.
+	asm.LoadImm64(X0, 1)
 	asm.B("epilogue")
-
-	// Resume label: the executor sets ResumePC and re-enters the trace.
-	// We reload regRegs (may have been reallocated) and all allocated
-	// registers from memory (the handler may have modified them).
-	resumeLabel := "resume_call_" + itoa(idx)
-	asm.Label(resumeLabel)
-
-	// Reload regRegs pointer (the handler updated ctx.Regs)
-	asm.LDR(regRegs, regCtx, TraceCtxOffRegs)
-
-	// Clear ResumePC so the next loop iteration enters normally
-	asm.LoadImm64(X0, 0)
-	asm.STR(X0, regCtx, TraceCtxOffResumePC)
-
-	// Reload ALL allocated registers from memory
-	ec.emitReloadAll()
 }
 
 // ────────────────────────────────────────────────────────────────────────────
