@@ -610,7 +610,7 @@ func (ec *emitCtx) emitLoopBody() {
 			ec.emitBoxIntAsFloat(ref, inst)
 
 		case SSA_EQ_INT:
-			ec.emitCmpInt(inst, CondNE) // branch to side_exit if NOT equal (when A=1) or if equal (when A=0)
+			ec.emitCmpInt(inst, CondNE)
 
 		case SSA_LT_INT:
 			ec.emitCmpInt(inst, CondGE) // branch if NOT less-than
@@ -680,13 +680,18 @@ func (ec *emitCtx) emitLoopBody() {
 	}
 
 	// Store-back: write all allocated register values back to memory before loop back-edge.
-	// Use type-safe store-back if the trace has call-exits, to avoid overwriting
-	// call-exit handler results (tables, booleans) with stale register values.
 	if ec.hasCallExit {
 		ec.emitStoreBackTypeSafe()
 	} else {
 		ec.emitStoreBack()
 	}
+
+	// Reload ALL allocated registers from memory after store-back.
+	// This picks up changes made by the interpreter during side-exits
+	// (e.g., `count = count + 1` executed by interpreter after guard failure).
+	// Without this reload, loop-carried values like counters would be stale
+	// after a side-exit-and-resume cycle.
+	ec.emitReloadAll()
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -702,7 +707,7 @@ func (ec *emitCtx) resolveIntRef(ref SSARef, scratch Reg) Reg {
 	inst := &ec.f.Insts[ref]
 	slot := int(inst.Slot)
 
-	// Check if the value is in a GPR via slot allocation
+	// Slot-level allocation
 	if slot >= 0 {
 		if reg, ok := ec.regMap.IntReg(slot); ok {
 			return reg
@@ -978,8 +983,12 @@ func (ec *emitCtx) emitCmpFloatLE(idx int, inst *SSAInst) {
 }
 
 // emitGuardBranch emits a conditional branch to the side-exit path.
-// Sets up ExitPC before branching.
+// Sets X9 = ExitPC before the conditional branch so side_exit_setup
+// knows where the interpreter should resume.
 func (ec *emitCtx) emitGuardBranch(failCond Cond, pc int) {
+	// Set ExitPC BEFORE the branch (X9 must be ready when side_exit_setup runs).
+	// This is safe because X9 is a scratch register not used by the trace.
+	ec.asm.LoadImm64(X9, int64(pc))
 	ec.asm.BCond(failCond, "side_exit_setup")
 }
 
@@ -992,6 +1001,9 @@ func (ec *emitCtx) emitGuardTruthy(inst *SSAInst) {
 	if slot < 0 {
 		return
 	}
+
+	// Set ExitPC for guard failure
+	ec.asm.LoadImm64(X9, int64(inst.PC))
 
 	// Load the NaN-boxed value from memory
 	ec.asm.LDR(X0, regRegs, slot*ValueSize)
@@ -1142,6 +1154,9 @@ func (ec *emitCtx) emitLoadField(ref SSARef, inst *SSAInst) {
 	tableSlot := int(inst.Slot)
 	fieldIdx := int(int32(inst.AuxInt))
 
+	// Set ExitPC for any guard failure in this instruction
+	ec.asm.LoadImm64(X9, int64(inst.PC))
+
 	// Load table NaN-boxed value from memory
 	ec.asm.LDR(X0, regRegs, tableSlot*ValueSize)
 	// Check it's a table
@@ -1227,6 +1242,9 @@ func (ec *emitCtx) emitStoreField(inst *SSAInst) {
 	// inst.Arg1 = table ref, inst.Arg2 = value ref
 	fieldIdx := int(int32(inst.AuxInt))
 	tblSlot := int(inst.Slot)
+
+	// Set ExitPC for any guard failure
+	ec.asm.LoadImm64(X9, int64(inst.PC))
 
 	// Load table pointer
 	ec.asm.LDR(X0, regRegs, tblSlot*ValueSize)
@@ -1518,19 +1536,15 @@ func (ec *emitCtx) emitSideExit() {
 
 	asm.Label("side_exit_setup")
 	// Store back all register values to memory before exiting.
-	// Use type-safe store-back when call-exits are present.
 	if ec.hasCallExit {
 		ec.emitStoreBackTypeSafe()
 	} else {
 		ec.emitStoreBack()
 	}
 
-	// Set ExitPC to the loop PC (VM resumes at the loop instruction)
-	loopPC := 0
-	if ec.f.Trace != nil {
-		loopPC = ec.f.Trace.LoopPC
-	}
-	asm.LoadImm64(X9, int64(loopPC))
+	// X9 was set by the guard instruction that branched here.
+	// It holds the correct ExitPC (the bytecode PC of the failing guard).
+	// DO NOT overwrite X9 — just store it.
 	asm.STR(X9, regCtx, TraceCtxOffExitPC)
 
 	// Save ExitState: GPR registers
