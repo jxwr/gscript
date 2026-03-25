@@ -1776,11 +1776,15 @@ func (ec *emitCtx) emitStoreBackImpl(typeSafe bool) {
 	}
 
 	// For ref-level float allocations, only store the LATEST ref per slot.
+	// When a slot has both slot-level and ref-level allocations with DIFFERENT
+	// registers (e.g., slot-level D4 vs ref-level D8), the slot-level store-back
+	// above skips (because floatSlotReg differs). In that case, the ref-level
+	// store-back MUST write the latest register's value to memory.
 	if ec.regMap.FloatRef != nil {
 		for slot, freg := range ec.floatSlotReg {
 			if ec.regMap.Float != nil {
-				if _, ok := ec.regMap.Float.slotToReg[slot]; ok {
-					continue
+				if slotFReg, ok := ec.regMap.Float.slotToReg[slot]; ok && slotFReg == freg {
+					continue // slot-level already stored this register
 				}
 			}
 			if ec.callExitWriteSlots[slot] {
