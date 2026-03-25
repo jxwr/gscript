@@ -333,14 +333,13 @@ func (r *TraceRecorder) recordNestedForPrep(ir TraceIR, proto *vm.FuncProto) boo
 		}
 	}
 
-	// Strategy 1: Full nested recording (preferred for first level of nesting)
+	// Strategy 1: Full nested recording.
+	// Currently disabled due to register allocation conflicts between slot-level
+	// and ref-level float allocators in the outer trace. The inner loop trace
+	// with break_exit handles the correctness correctly.
+	// TODO: Fix full nesting register allocation and re-enable.
 	if r.innerLoopDepth == 0 {
-		r.innerLoopDepth = 1
-		r.innerLoopForPC = forloopPC
-		r.innerLoopFirstSeen = false
-		r.innerLoopRecorded = false
-		ir.FieldIndex = 0
-		r.current.IR = append(r.current.IR, ir)
+		r.abortAndBlacklist()
 		return false
 	}
 

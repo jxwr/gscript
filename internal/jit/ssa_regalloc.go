@@ -346,6 +346,129 @@ func floatRefAllocLR(f *SSAFunc) *floatRefAlloc {
 	return result
 }
 
+// floatRefAllocLRExclude is like floatRefAllocLR but excludes registers already
+// allocated by the slot-level float allocator. This prevents conflicts where both
+// allocators assign the same FPR to different entities.
+func floatRefAllocLRExclude(f *SSAFunc, slotAlloc *floatSlotAlloc) *floatRefAlloc {
+	result := &floatRefAlloc{refToReg: make(map[SSARef]FReg)}
+	if f == nil || len(f.Insts) == 0 {
+		return result
+	}
+
+	loopIdx := -1
+	for i, inst := range f.Insts {
+		if inst.Op == SSA_LOOP {
+			loopIdx = i
+			break
+		}
+	}
+	if loopIdx < 0 {
+		return result
+	}
+
+	ranges := computeFloatLiveRanges(f, loopIdx)
+	if len(ranges) == 0 {
+		return result
+	}
+
+	// Build set of registers used by slot-level allocator
+	usedBySlot := make(map[FReg]bool)
+	if slotAlloc != nil {
+		for _, freg := range slotAlloc.slotToReg {
+			usedBySlot[freg] = true
+		}
+	}
+
+	// Available registers: only those NOT used by slot-level allocator
+	var freeFPRBase []FReg
+	for _, freg := range allocableFPR {
+		if !usedBySlot[freg] {
+			freeFPRBase = append(freeFPRBase, freg)
+		}
+	}
+
+	if len(freeFPRBase) == 0 {
+		return result // no registers available
+	}
+
+	// Build pre-loop slot→ref map for coalescing.
+	preLoopSlotRef := map[int]SSARef{}
+	for i := 0; i < loopIdx; i++ {
+		inst := &f.Insts[i]
+		if inst.Op == SSA_UNBOX_FLOAT && inst.Slot >= 0 {
+			preLoopSlotRef[int(inst.Slot)] = SSARef(i)
+		}
+	}
+
+	sort.Slice(ranges, func(i, j int) bool {
+		if ranges[i].start != ranges[j].start {
+			return ranges[i].start < ranges[j].start
+		}
+		return ranges[i].ref < ranges[j].ref
+	})
+
+	coalesced := map[SSARef]SSARef{}
+	for _, lr := range ranges {
+		idx := int(lr.ref)
+		if idx < len(f.Insts) {
+			inst := &f.Insts[idx]
+			if inst.Op == SSA_MOVE && inst.Type == SSATypeFloat && inst.Slot >= 0 {
+				if preRef, ok := preLoopSlotRef[int(inst.Slot)]; ok {
+					coalesced[lr.ref] = preRef
+				}
+			}
+		}
+	}
+
+	freeFPR := make([]FReg, len(freeFPRBase))
+	copy(freeFPR, freeFPRBase)
+
+	type activeRange struct {
+		liveRange
+		reg FReg
+	}
+	var active []activeRange
+
+	expireOld := func(pos int) {
+		newActive := active[:0]
+		for _, ar := range active {
+			if ar.end <= pos {
+				freeFPR = append(freeFPR, ar.reg)
+			} else {
+				newActive = append(newActive, ar)
+			}
+		}
+		active = newActive
+	}
+
+	for _, lr := range ranges {
+		expireOld(lr.start)
+
+		if preRef, ok := coalesced[lr.ref]; ok {
+			if reg, allocated := result.refToReg[preRef]; allocated {
+				result.refToReg[lr.ref] = reg
+				active = append(active, activeRange{lr, reg})
+				continue
+			}
+		}
+
+		if len(freeFPR) > 0 {
+			reg := freeFPR[0]
+			freeFPR = freeFPR[1:]
+			result.refToReg[lr.ref] = reg
+			active = append(active, activeRange{lr, reg})
+
+			for moveRef, preRef := range coalesced {
+				if preRef == lr.ref {
+					result.refToReg[moveRef] = reg
+				}
+			}
+		}
+	}
+
+	return result
+}
+
 // computeFloatLiveRanges computes live ranges for all float-typed SSA refs.
 func computeFloatLiveRanges(f *SSAFunc, loopIdx int) []liveRange {
 	var ranges []liveRange
@@ -455,9 +578,12 @@ func (m *RegMap) IsAllocated(slot int) bool {
 // It allocates both slot-based (GPR for ints, FPR for floats) and
 // ref-based (FPR for float SSA values) registers.
 func AllocateRegisters(f *SSAFunc) *RegMap {
+	floatSlot := newFloatSlotAlloc(f)
+	// Pass slot-level allocation to ref-level allocator so it avoids conflicting registers
+	floatRef := floatRefAllocLRExclude(f, floatSlot)
 	return &RegMap{
 		Int:      newSlotAlloc(f),
-		Float:    newFloatSlotAlloc(f),
-		FloatRef: floatRefAllocLR(f),
+		Float:    floatSlot,
+		FloatRef: floatRef,
 	}
 }

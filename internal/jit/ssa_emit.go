@@ -95,7 +95,16 @@ type emitCtx struct {
 	snapIdx      int  // current snapshot index for side-exit
 	callExits    int  // number of call-exits emitted
 	hasCallExit  bool
-	loopExitIdx  int  // SSA instruction index of the loop-exit comparison (FORLOOP's LE_INT/LE_FLOAT)
+	loopExitIdx  int  // SSA instruction index of the OUTER loop-exit comparison (FORLOOP's LE_INT/LE_FLOAT)
+	// Inner loop support (for full nesting):
+	innerLoopBodyStart int // SSA index where the inner loop body starts (label emitted here)
+	innerLoopExitIdx   int // SSA index of the inner loop's FORLOOP LE check (-1 if none)
+	// Float slot tracking: maps slot → FReg that holds the slot's value at end of loop body.
+	// Updated during emit as we process each SSA instruction.
+	floatSlotReg map[int]FReg
+	// breakGuardPC is the bytecode PC of the break guard (LT_FLOAT inside inner loop).
+	// Used by break_exit to set ExitPC so the VM re-executes the comparison.
+	breakGuardPC int
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -112,9 +121,10 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	asm := NewAssembler()
 
 	ec := &emitCtx{
-		asm:    asm,
-		f:      f,
-		regMap: regMap,
+		asm:          asm,
+		f:            f,
+		regMap:       regMap,
+		floatSlotReg: make(map[int]FReg),
 	}
 
 	// 1. Prologue: save callee-saved registers, set up pinned registers
@@ -133,8 +143,9 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	// 5. Loop back-edge
 	asm.B("loop_top")
 
-	// 6. Cold paths: side-exit, loop-done, guard-fail, call-exits
+	// 6. Cold paths: side-exit, break-exit, loop-done, guard-fail, call-exits
 	ec.emitSideExit()
+	ec.emitBreakExit()
 	ec.emitLoopDone()
 	ec.emitGuardFail()
 
@@ -387,22 +398,62 @@ func (ec *emitCtx) emitPreLoopLoads() {
 func (ec *emitCtx) emitLoopBody() {
 	f := ec.f
 
-	// Find the FORLOOP exit comparison by its sentinel tag (AuxInt == -1).
-	// FORLOOP generates: ADD + LE(AuxInt=-1) + MOVE. The LE is the loop-exit
-	// check and branches to loop_done. All other LE comparisons (e.g.,
-	// mandelbrot escape check) branch to side_exit.
+	// Find ALL FORLOOP exit comparisons by their sentinel tag (AuxInt == -1).
+	// FORLOOP generates: ADD + LE(AuxInt=-1) + MOVE.
+	//
+	// With full nesting, there may be multiple LE(AuxInt=-1): one for each
+	// inner FORLOOP and one for the outer FORLOOP. The LAST one is always
+	// the outer (traced) loop's exit → branches to loop_done.
+	// Inner FORLOOP exits → branch back to inner loop body start.
 	ec.loopExitIdx = -1
+	ec.innerLoopExitIdx = -1
+	ec.innerLoopBodyStart = -1
+	var allForloopExits []int
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
 		if (inst.Op == SSA_LE_INT || inst.Op == SSA_LE_FLOAT) && inst.AuxInt == -1 {
-			ec.loopExitIdx = i
-			break
+			allForloopExits = append(allForloopExits, i)
+		}
+	}
+	if len(allForloopExits) > 0 {
+		ec.loopExitIdx = allForloopExits[len(allForloopExits)-1]
+	}
+	// If there are inner FORLOOP exits, identify the inner loop body start.
+	// The inner FORLOOP's LE check is preceded by an ADD (index += step).
+	// The inner loop body starts after the FORPREP's SUB instruction that
+	// shares the same slot as the ADD.
+	if len(allForloopExits) > 1 {
+		ec.innerLoopExitIdx = allForloopExits[0]
+		// Find the ADD_INT that precedes the inner loop exit (FORLOOP: ADD then LE)
+		innerExitIdx := ec.innerLoopExitIdx
+		innerAddIdx := innerExitIdx - 1
+		if innerAddIdx > f.LoopIdx && f.Insts[innerAddIdx].Op == SSA_ADD_INT {
+			counterSlot := f.Insts[innerAddIdx].Slot
+			// Scan backward to find the SUB_INT with the same slot (FORPREP)
+			for j := innerAddIdx - 1; j > f.LoopIdx; j-- {
+				if f.Insts[j].Op == SSA_SUB_INT && f.Insts[j].Slot == counterSlot {
+					ec.innerLoopBodyStart = j + 1
+					break
+				}
+			}
+		}
+		if debugTrace {
+			fmt.Printf("[EMIT] Inner loop: bodyStart=%d exitIdx=%d outerExitIdx=%d\n",
+				ec.innerLoopBodyStart, ec.innerLoopExitIdx, ec.loopExitIdx)
 		}
 	}
 
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
 		ref := SSARef(i)
+
+		// Emit label at inner loop body start for backward branching.
+		// After the label, reload all float registers from memory so that
+		// inner loop iterations use updated values (not stale SSA refs).
+		if i == ec.innerLoopBodyStart {
+			ec.asm.Label("inner_loop_body")
+			ec.emitInnerLoopReload()
+		}
 
 		switch inst.Op {
 		case SSA_NOP, SSA_SNAPSHOT, SSA_LOOP:
@@ -492,7 +543,20 @@ func (ec *emitCtx) emitLoopBody() {
 			ec.emitCmpIntLE(i, inst)
 
 		case SSA_LT_FLOAT:
-			ec.emitCmpFloat(inst, CondGE) // branch if NOT less-than
+			// Determine if this is a break guard (should exit past the loop):
+			// 1. In a fully nested trace: inside inner loop body
+			// 2. In a standalone inner trace: any float comparison is a break guard
+			isBreakGuard := false
+			if ec.innerLoopExitIdx >= 0 && i >= ec.innerLoopBodyStart && i < ec.innerLoopExitIdx {
+				isBreakGuard = true // fully nested: inside inner loop
+			} else if ec.innerLoopExitIdx < 0 {
+				isBreakGuard = true // standalone inner trace: all float guards are breaks
+			}
+			if isBreakGuard {
+				ec.emitCmpFloatBreak(inst, CondGE)
+			} else {
+				ec.emitCmpFloat(inst, CondGE)
+			}
 
 		case SSA_LE_FLOAT:
 			ec.emitCmpFloatLE(i, inst)
@@ -723,11 +787,14 @@ func (ec *emitCtx) emitBoxIntAsFloat(ref SSARef, inst *SSAInst) {
 }
 
 // spillFloat: if the dst FPR is scratch, store back to memory.
+// Also tracks the slot→register mapping for the store-back.
 func (ec *emitCtx) spillFloat(ref SSARef, inst *SSAInst, dst FReg) {
 	slot := int(inst.Slot)
 	if slot < 0 {
 		return
 	}
+	// Track which register holds this slot's current value
+	ec.floatSlotReg[slot] = dst
 	if freg, ok := ec.regMap.FloatRefReg(ref); ok && freg == dst {
 		return // already in allocated register
 	}
@@ -765,8 +832,16 @@ func (ec *emitCtx) emitCmpIntLE(idx int, inst *SSAInst) {
 	ec.asm.CMPreg(a1, a2)
 	// LE_INT: guard passes if a1 <= a2; exit if a1 > a2
 	if idx == ec.loopExitIdx {
-		// This is the FORLOOP exit check: branch to loop_done, not side_exit
+		// This is the OUTER FORLOOP exit check: branch to loop_done
 		ec.asm.BCond(CondGT, "loop_done")
+	} else if idx == ec.innerLoopExitIdx {
+		// Inner FORLOOP exit: branch BACK to inner loop body if index <= limit,
+		// fall through (continue outer body) if index > limit.
+		// Store back inner loop registers to memory before branching back,
+		// so the next iteration sees updated values.
+		ec.emitInnerLoopStoreBack()
+		ec.asm.BCond(CondLE, "inner_loop_body")
+		// Fall through: inner loop done, continue outer body
 	} else {
 		ec.emitGuardBranch(CondGT, inst.PC)
 	}
@@ -783,6 +858,23 @@ func (ec *emitCtx) emitCmpFloat(inst *SSAInst, failCond Cond) {
 	ec.emitGuardBranch(failCond, inst.PC)
 }
 
+// emitCmpFloatBreak is like emitCmpFloat but branches to break_exit instead.
+// Used for float comparison guards inside the inner loop body that represent
+// break conditions (e.g., `if zr2+zi2 > 4.0 { break }`).
+// The break_exit exits to the guard's PC so the VM re-executes the comparison
+// and takes the break path (including any escaped=true assignments).
+func (ec *emitCtx) emitCmpFloatBreak(inst *SSAInst, failCond Cond) {
+	a1 := ec.resolveFloatRef(inst.Arg1, D0)
+	a2 := ec.resolveFloatRef(inst.Arg2, D1)
+	ec.asm.FCMPd(a1, a2)
+	if inst.AuxInt == 0 {
+		failCond = failCond ^ 1
+	}
+	// Store the guard's PC for break_exit to use
+	ec.breakGuardPC = inst.PC
+	ec.asm.BCond(failCond, "break_exit")
+}
+
 // emitCmpFloatLE handles SSA_LE_FLOAT.
 func (ec *emitCtx) emitCmpFloatLE(idx int, inst *SSAInst) {
 	a1 := ec.resolveFloatRef(inst.Arg1, D0)
@@ -791,6 +883,9 @@ func (ec *emitCtx) emitCmpFloatLE(idx int, inst *SSAInst) {
 	// LE: guard passes if a1 <= a2; exit if GT
 	if idx == ec.loopExitIdx {
 		ec.asm.BCond(CondGT, "loop_done")
+	} else if idx == ec.innerLoopExitIdx {
+		ec.emitInnerLoopStoreBack()
+		ec.asm.BCond(CondLE, "inner_loop_body")
 	} else {
 		ec.emitGuardBranch(CondGT, inst.PC)
 	}
@@ -940,13 +1035,16 @@ func (ec *emitCtx) emitConstFloat(ref SSARef, inst *SSAInst) {
 	if freg, ok := ec.regMap.FloatRefReg(ref); ok {
 		ec.asm.LoadImm64(X0, inst.AuxInt)
 		ec.asm.FMOVtoFP(freg, X0)
+		ec.floatSlotReg[slot] = freg
 	} else if freg, ok := ec.regMap.FloatReg(slot); ok {
 		ec.asm.LoadImm64(X0, inst.AuxInt)
 		ec.asm.FMOVtoFP(freg, X0)
+		ec.floatSlotReg[slot] = freg
 	} else {
 		// Store directly to memory (raw float bits = NaN-boxed float)
 		ec.asm.LoadImm64(X0, inst.AuxInt)
 		ec.asm.STR(X0, regRegs, slot*ValueSize)
+		delete(ec.floatSlotReg, slot) // value is in memory, not a register
 	}
 }
 
@@ -1181,27 +1279,33 @@ func (ec *emitCtx) emitStoreBack() {
 		}
 	}
 
-	// Store all allocated float registers back to memory
-	// We need to store the float register for each slot that has one.
-	// Float ref-level allocation: need to find which slots correspond to which refs.
+	// Store slot-level float registers back to memory.
+	// ONLY store if the slot-level register is the LATEST writer to that slot.
+	// If spillFloat wrote to memory via a scratch register, the slot-level
+	// register is stale (still holds the pre-loop value) and should NOT be
+	// stored back — the memory already has the correct value from spillFloat.
 	if ec.regMap.Float != nil {
 		for slot, freg := range ec.regMap.Float.slotToReg {
+			if lastReg, ok := ec.floatSlotReg[slot]; ok && lastReg != freg {
+				// The loop body wrote to this slot via a different register
+				// (usually a scratch). The slot-level register is stale.
+				// Skip — memory already has the correct value from spillFloat.
+				continue
+			}
 			asm.FSTRd(freg, regRegs, slot*ValueSize)
 		}
 	}
 
-	// For ref-level float allocations that have a slot, store them too.
-	// But we need to avoid double-storing slots already handled above.
+	// For ref-level float allocations, only store the LATEST ref per slot.
+	// Multiple refs can map to the same slot (e.g., pre-loop UNBOX and loop-body MOVE
+	// both target slot 10). The register allocator may reuse the same register for
+	// non-overlapping refs, so an earlier ref's register may hold a completely different
+	// value by the end of the loop. Only the LAST ref's register has the correct value.
 	if ec.regMap.FloatRef != nil {
-		for ref, freg := range ec.regMap.FloatRef.refToReg {
-			if int(ref) >= len(ec.f.Insts) {
-				continue
-			}
-			inst := &ec.f.Insts[ref]
-			slot := int(inst.Slot)
-			if slot < 0 {
-				continue
-			}
+		// Use floatSlotReg which was tracked during emission.
+		// This maps each float slot to the FPR that holds its value
+		// at the end of the loop body (after the last write to that slot).
+		for slot, freg := range ec.floatSlotReg {
 			// Skip if slot already handled by slot-level float alloc
 			if ec.regMap.Float != nil {
 				if _, ok := ec.regMap.Float.slotToReg[slot]; ok {
@@ -1235,9 +1339,15 @@ func (ec *emitCtx) emitReloadAll() {
 		}
 	}
 
-	// Reload float registers (ref-level)
+	// Reload ALL ref-level float registers from their slot's memory.
+	// Each ref-level register reads its corresponding slot value.
+	// This is correct because the memory has been updated by emitStoreBack.
 	if ec.regMap.FloatRef != nil {
+		reloaded := make(map[FReg]bool) // avoid reloading same register twice
 		for ref, freg := range ec.regMap.FloatRef.refToReg {
+			if reloaded[freg] {
+				continue
+			}
 			if int(ref) >= len(ec.f.Insts) {
 				continue
 			}
@@ -1252,8 +1362,28 @@ func (ec *emitCtx) emitReloadAll() {
 				}
 			}
 			asm.FLDRd(freg, regRegs, slot*ValueSize)
+			reloaded[freg] = true
 		}
 	}
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Inner loop store-back and reload
+// ────────────────────────────────────────────────────────────────────────────
+
+// emitInnerLoopStoreBack stores the latest float register values back to memory.
+// Called before the inner loop backward branch so that the next iteration
+// reads updated values from memory.
+func (ec *emitCtx) emitInnerLoopStoreBack() {
+	// Reuse the same store-back logic (latest ref per slot)
+	ec.emitStoreBack()
+}
+
+// emitInnerLoopReload reloads all float registers from memory.
+// Called at the inner_loop_body label start so that stale ref-based register
+// values are overwritten with the correct values from the previous iteration.
+func (ec *emitCtx) emitInnerLoopReload() {
+	ec.emitReloadAll()
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1293,6 +1423,42 @@ func (ec *emitCtx) emitSideExit() {
 	asm.FSTP(D10, D11, regCtx, TraceCtxOffExitFPR+48)
 
 	// Set ExitCode = 1 (side exit)
+	asm.LoadImm64(X0, 1)
+	asm.B("epilogue")
+}
+
+// emitBreakExit emits the break-exit path for inner loop break guards.
+// Like side_exit_setup but exits AFTER the FORLOOP (loopPC + 1) so the VM
+// skips past the inner loop, simulating a break statement.
+func (ec *emitCtx) emitBreakExit() {
+	asm := ec.asm
+	asm.Label("break_exit")
+
+	// Store back all register values to memory
+	ec.emitStoreBack()
+
+	// Set ExitPC to the break guard's PC so the VM re-executes the comparison.
+	// The VM will evaluate the LT/LE, take the "escape" branch, execute
+	// any break body (e.g., escaped=true), and then break out of the loop.
+	asm.LoadImm64(X9, int64(ec.breakGuardPC))
+	asm.STR(X9, regCtx, TraceCtxOffExitPC)
+
+	// Save ExitState
+	if ec.regMap.Int != nil {
+		off := TraceCtxOffExitGPR
+		for i, gpr := range allocableGPR {
+			if i >= 4 {
+				break
+			}
+			asm.STR(gpr, regCtx, off+i*8)
+		}
+	}
+	asm.FSTP(D4, D5, regCtx, TraceCtxOffExitFPR)
+	asm.FSTP(D6, D7, regCtx, TraceCtxOffExitFPR+16)
+	asm.FSTP(D8, D9, regCtx, TraceCtxOffExitFPR+32)
+	asm.FSTP(D10, D11, regCtx, TraceCtxOffExitFPR+48)
+
+	// Set ExitCode = 1 (side exit) so VM resumes at ExitPC
 	asm.LoadImm64(X0, 1)
 	asm.B("epilogue")
 }
