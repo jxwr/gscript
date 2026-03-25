@@ -26,61 +26,46 @@ go build -o gscript ./cmd/gscript/
 
 ## Performance
 
-Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03-24**.
+Measured on Apple M4 Max, darwin/arm64, Go 1.25.7. Updated **2026-03-26**.
 
-### Warm micro-benchmarks (JIT vs VM)
+### Benchmark suite (21 benchmarks, JIT rewrite branch)
 
-| Benchmark | JIT | VM | Speedup | LuaJIT | JIT vs LuaJIT |
-|-----------|-----|-----|---------|--------|---------------|
-| HeavyLoop | 23.0us | 984us | x42.8 | — | — |
-| FibIterative(30) | 170ns | 518ns | x3.0 | — | — |
-| FunctionCalls(10K) | 2.59us | 500us | x193.1 | 2.3us | parity |
-| FibRecursive(20) | 23.8us | 1194us | x50.2 | 25.0us | GScript WINS |
-| Ackermann(3,4) | 20.6us | 379us | x18.4 | 12.0us | 1.7x gap |
-
-### Full suite (21 benchmarks)
-
-| Benchmark | VM | JIT | LuaJIT | JIT vs LuaJIT |
-|-----------|-----|-----|--------|---------------|
-| fib(35) | 1.687s | 0.034s | 0.025s | 1.4x |
-| sieve(1M x3) | 0.254s | 0.023s | 0.011s | 2.1x |
-| mandelbrot(1000) | 1.433s | 0.158s | 0.058s | 2.7x |
-| ackermann(3,4 x500) | 0.300s | 0.012s | 0.006s | 2.0x |
-| matmul(300) | 1.063s | 1.222s | 0.022s | 55.5x |
-| spectral_norm(500) | 1.018s | ERROR | 0.007s | — |
-| nbody(500K) | 1.932s | 1.938s | 0.035s | 55.4x |
-| binary_trees(15) | 1.720s | 1.698s | 0.172s | 9.9x |
-| fannkuch(9) | 0.590s | 0.581s | 0.020s | 29.1x |
-| sort(50K x3) | 0.187s | 0.191s | 0.011s | 17.4x |
-| sum_primes(100K) | 0.028s | 0.028s | 0.002s | 14.0x |
-| mutual_recursion(25x1K) | 0.214s | 0.219s | 0.004s | 54.8x |
-| method_dispatch(100K) | 0.091s | 0.110s | 0.000s | ~220x |
-| closure_bench | 0.008s | 0.022s | 0.005s | 4.4x |
-| string_bench | 0.026s | 0.007s | 0.004s | 1.8x |
-| fibonacci_iterative(70x1M) | 1.101s | 0.295s | — | — |
-| math_intensive | 0.977s | HANG | — | — |
-| object_creation | 0.688s | 1.270s | — | — |
-| table_array_access | 0.450s | 0.150s | — | — |
-| table_field_access | 0.747s | 0.791s | — | — |
-| coroutine_bench | 5.313s | 3.174s | — | — |
+| Benchmark | VM | JIT | Speedup |
+|-----------|-----|-----|---------|
+| table_field_access | 0.77s | 0.07s | 11.3x |
+| mandelbrot(1000) | 1.43s | 0.26s | 5.5x |
+| fibonacci_iterative(70x1M) | 1.12s | 0.35s | 3.2x |
+| table_array_access | 0.42s | 0.14s | 3.0x |
+| sieve(1M x3) | 0.26s | 0.14s | 1.9x |
+| fannkuch(9) | 0.60s | 0.50s | 1.2x |
+| fib(35) | 1.74s | 1.77s | 1.0x |
+| ackermann | 0.30s | 0.37s | 0.8x |
+| nbody(500K) | 1.95s | 1.98s | 1.0x |
+| sort(50K x3) | 0.19s | 0.19s | 1.0x |
+| sum_primes(100K) | 0.03s | 0.03s | 1.0x |
+| binary_trees(15) | 1.73s | 1.75s | 1.0x |
+| matmul(300) | 1.07s | 1.54s | 0.7x |
+| spectral_norm(500) | 1.03s | 1.12s | 0.9x |
+| mutual_recursion | 0.22s | 0.26s | 0.9x |
+| method_dispatch | 0.09s | 0.11s | 0.9x |
+| closure_bench | 0.008s | 0.009s | 0.9x |
+| string_bench | 0.026s | 0.033s | 0.8x |
+| object_creation | 0.68s | 0.73s | 0.9x |
+| math_intensive | 0.97s | 0.98s | 1.0x |
+| coroutine_bench | 5.74s | 5.68s | 1.0x |
 
 ### Compiler Optimization Techniques
 
-**Method JIT (function-level compilation)**
-- Register pinning: hot variables mapped to ARM64 registers (X19-X24)
-- Function inlining: small callees inlined into caller's loop body
-- Tail call optimization: recursive tail calls -> direct jump (no stack frame)
-- BOLT-style cold code splitting: guard failures moved out of hot path
-- Native table operations: GETTABLE/SETTABLE/GETFIELD/SETFIELD compiled to ARM64
-- Native append: sequential table fill without Go function call overhead
-
-**Tracing JIT (loop-level compilation)**
-- SSA IR: BuildSSA -> Optimize -> ConstHoist -> CSE -> FuseMultiplyAdd -> RegAlloc -> Emit
-- Full nested loop recording: inner loops inlined into outer trace
-- Sub-trace calling: pre-compiled inner traces called via BLR
+**Trace JIT (loop-level compilation)**
+- Trace recording: hot loop detection via FORLOOP/JMP back-edge counting
+- SSA IR: value-based (not slot-based), with snapshots for precise deoptimization
+- Native table operations: GETTABLE/SETTABLE compiled to ARM64 with bounds checks
+- Native field operations: GETFIELD/SETFIELD with shape-based indexing
+- While-loop compilation: JMP back-edge loops with AuxInt=-2 exit sentinel
+- Break-exit distinction: ExitCode=4 for conditional breaks (no blacklisting)
+- Side-exit for calls: function calls exit to interpreter, FORLOOP re-enters trace
 - Float register allocation: linear-scan ref-level allocator for D4-D11
-- Side-exit continuation: escape paths handled in native code, not interpreter
-- Write-before-read guard relaxation: skip redundant type guards for overwritten slots
+- Intrinsics: math.sqrt compiled to FSQRT
 
 **Runtime optimizations**
 - NaN-boxing: Value from 24B struct to 8B uint64 (Season 2)

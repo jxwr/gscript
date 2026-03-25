@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
+  <a href="18-eleven-x">Eleven X</a>
+  <p>Deleted 13K lines, wrote 7K. The new trace-only JIT hits 11.3x on field access, 5.5x on mandelbrot. Four-layer test framework with 136 tests from first principles. Seven one-line bugs that took a full rewrite to find.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
   <a href="17-the-rewrite">The Rewrite</a>
   <p>Deleted 13,000 lines, wrote 4,500. The new trace-only JIT has value-based SSA, snapshots, and correct call-exit handling. mandelbrot 5.4x speedup, all benchmarks correct. Why doing less is more correct.</p>
 </div>
@@ -230,14 +237,16 @@
   <tr><td>string_bench</td><td>0.007s</td><td>0.004s</td><td>1.8&times;</td></tr>
 </table>
 
-<h2>Warm Micro-benchmarks (JIT vs VM)</h2>
+<h2>Warm Micro-benchmarks (JIT vs Interpreter) &mdash; jit-rewrite</h2>
 
 <table>
-  <tr><th>Benchmark</th><th>JIT</th><th>VM</th><th>Speedup</th></tr>
-  <tr><td>FunctionCalls(10K)</td><td><b>2.59&micro;s</b></td><td>500&micro;s</td><td><b>&times;193</b></td></tr>
-  <tr><td>HeavyLoop</td><td><b>23.0&micro;s</b></td><td>984&micro;s</td><td><b>&times;42.8</b></td></tr>
-  <tr><td>FibRecursive(20)</td><td><b>23.8&micro;s</b></td><td>1194&micro;s</td><td><b>&times;50.2</b></td></tr>
-  <tr><td>FibIterative(30)</td><td><b>170ns</b></td><td>518ns</td><td><b>&times;3.0</b></td></tr>
+  <tr><th>Benchmark</th><th>Interpreter</th><th>JIT</th><th>Speedup</th></tr>
+  <tr><td>table_field_access</td><td>0.77s</td><td><b>0.07s</b></td><td><b>&times;11.3</b></td></tr>
+  <tr><td>mandelbrot</td><td>1.43s</td><td><b>0.26s</b></td><td><b>&times;5.5</b></td></tr>
+  <tr><td>fibonacci_iterative</td><td>1.12s</td><td><b>0.35s</b></td><td><b>&times;3.2</b></td></tr>
+  <tr><td>table_array_access</td><td>0.42s</td><td><b>0.14s</b></td><td><b>&times;3.0</b></td></tr>
+  <tr><td>sieve</td><td>0.26s</td><td><b>0.14s</b></td><td><b>&times;1.9</b></td></tr>
+  <tr><td>fannkuch</td><td>0.60s</td><td><b>0.50s</b></td><td><b>&times;1.2</b></td></tr>
 </table>
 
 <footer>
