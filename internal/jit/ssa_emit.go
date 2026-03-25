@@ -387,12 +387,14 @@ func (ec *emitCtx) emitPreLoopLoads() {
 func (ec *emitCtx) emitLoopBody() {
 	f := ec.f
 
-	// Find the loop-exit comparison: the last LE_INT or LE_FLOAT in the loop body.
-	// This is the FORLOOP's exit check and should branch to loop_done, not side_exit.
+	// Find the FORLOOP exit comparison by its sentinel tag (AuxInt == -1).
+	// FORLOOP generates: ADD + LE(AuxInt=-1) + MOVE. The LE is the loop-exit
+	// check and branches to loop_done. All other LE comparisons (e.g.,
+	// mandelbrot escape check) branch to side_exit.
 	ec.loopExitIdx = -1
-	for i := len(f.Insts) - 1; i > f.LoopIdx; i-- {
-		op := f.Insts[i].Op
-		if op == SSA_LE_INT || op == SSA_LE_FLOAT {
+	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		if (inst.Op == SSA_LE_INT || inst.Op == SSA_LE_FLOAT) && inst.AuxInt == -1 {
 			ec.loopExitIdx = i
 			break
 		}

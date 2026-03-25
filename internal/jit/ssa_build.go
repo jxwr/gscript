@@ -606,13 +606,14 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		b.slotValues[ir.A] = newIndex
 		b.slotType[ir.A] = indexType
 
-		// if index <= limit
+		// if index <= limit (tagged as FORLOOP exit with AuxInt=-1)
 		b.emit(SSAInst{
-			Op:   cmpOp,
-			Type: SSATypeBool,
-			Arg1: newIndex,
-			Arg2: limitRef,
-			PC:   ir.PC,
+			Op:     cmpOp,
+			Type:   SSATypeBool,
+			Arg1:   newIndex,
+			Arg2:   limitRef,
+			AuxInt: -1, // sentinel: this is the FORLOOP exit comparison
+			PC:     ir.PC,
 		})
 
 		// A+3 = index (exposed loop variable)
