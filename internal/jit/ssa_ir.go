@@ -152,18 +152,22 @@ type TraceIR struct {
 	AType      runtime.ValueType
 	BType      runtime.ValueType
 	CType      runtime.ValueType
-	FieldIndex int    // for GETFIELD/SETFIELD: skeys index
+	FieldIndex int    // for GETFIELD/SETFIELD: skeys index; for FORPREP: inner FORLOOP PC (sub-trace)
 	ShapeID    uint32 // for GETFIELD/SETFIELD: table shape ID
+	IsSelfCall bool   // true if this OP_CALL is self-recursive
+	Intrinsic  int    // recognized GoFunction intrinsic ID (0=none)
 }
 
 // Trace holds recorded trace data.
 type Trace struct {
-	IR        []TraceIR
-	ID        int
-	LoopPC    int
-	LoopProto *vm.FuncProto
-	EntryPC   int
-	Constants []runtime.Value
+	IR           []TraceIR
+	ID           int
+	LoopPC       int
+	LoopProto    *vm.FuncProto
+	EntryPC      int
+	StartBase    int              // base register index of the traced function
+	Constants    []runtime.Value  // trace-level constant pool (includes inlined function constants)
+	HasSelfCalls bool             // true if trace contains self-recursive CALL
 }
 
 // Intrinsic IDs for recognized GoFunction calls.
