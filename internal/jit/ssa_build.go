@@ -479,16 +479,15 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		keyRef := b.getRKRef(ir.B, ir.BType, ir)
 		valRef := b.getRKRef(ir.C, ir.CType, ir)
 		b.emit(SSAInst{
-			Op:   SSA_STORE_ARRAY,
-			Type: SSATypeUnknown,
-			Arg1: tableRef,
-			Arg2: valRef,
-			// Store key in AuxInt if it's a small constant
+			Op:     SSA_STORE_ARRAY,
+			Type:   SSATypeUnknown,
+			Arg1:   tableRef,
+			Arg2:   valRef,
 			AuxInt: int64(ir.B),
 			Slot:   int16(ir.A),
 			PC:     ir.PC,
 		})
-		_ = keyRef // used via AuxInt encoding or Arg2
+		_ = keyRef // used via AuxInt encoding
 
 	case vm.OP_GETGLOBAL:
 		// Call-exit: take snapshot before

@@ -43,9 +43,14 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP, SSA_INTRINSIC,
 			SSA_CALL,
 			SSA_MOVE, SSA_PHI, SSA_BOX_INT, SSA_BOX_FLOAT, SSA_STORE_SLOT:
-			// Track call-exit ops
-			if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_ARRAY || inst.Op == SSA_STORE_ARRAY ||
+			// Track call-exit ops (LOAD_ARRAY with scalar result is native;
+			// LOAD_ARRAY with non-scalar result and STORE_ARRAY use call-exit)
+			if inst.Op == SSA_CALL || inst.Op == SSA_STORE_ARRAY ||
 				inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
+				hasCallExit = true
+			}
+			// LOAD_ARRAY with non-scalar result (e.g., table) falls back to call-exit
+			if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
 				hasCallExit = true
 			}
 			// Track FORLOOP exit (LE with AuxInt=-1 sentinel)
@@ -67,10 +72,11 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 	if !hasForloopExit {
 		return false
 	}
-	// Temporarily reject traces with call-exits to prevent hangs.
-	// Call-exit re-entry has a bug where resume dispatch loops on
-	// certain patterns (nested loops with conditional breaks).
-	// TODO: fix call-exit re-entry and re-enable.
+	// Call-exit re-entry: only allow if there are no SSA_CALL ops.
+	// LOAD_ARRAY and STORE_ARRAY are now native (not call-exits), so traces
+	// with only table ops are safe. But SSA_CALL/LOAD_GLOBAL/TABLE_LEN still
+	// use call-exit and the re-entry has a known hang bug.
+	// TODO: fix call-exit re-entry for SSA_CALL ops.
 	if hasCallExit {
 		return false
 	}
@@ -144,6 +150,8 @@ type emitCtx struct {
 	// callExitWriteSlots tracks slots that are written by call-exit handlers.
 	// These slots should NOT be overwritten by storeBack (the handler's value is authoritative).
 	callExitWriteSlots map[int]bool
+	// arraySeq is a monotonically increasing counter for unique array access labels.
+	arraySeq int
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -169,10 +177,16 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 
 	// Pre-scan: collect call-exit PCs for resume dispatch.
 	// Also track which slots are written by call-exit instructions.
+	// LOAD_ARRAY with scalar result is native. Others use call-exit.
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
-		if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_ARRAY || inst.Op == SSA_STORE_ARRAY ||
-			inst.Op == SSA_TABLE_LEN || inst.Op == SSA_LOAD_GLOBAL {
+		isCallExit := inst.Op == SSA_CALL || inst.Op == SSA_STORE_ARRAY ||
+			inst.Op == SSA_TABLE_LEN || inst.Op == SSA_LOAD_GLOBAL
+		// LOAD_ARRAY with non-scalar result falls back to call-exit
+		if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
+			isCallExit = true
+		}
+		if isCallExit {
 			ec.callExitPCs = append(ec.callExitPCs, inst.PC)
 			// Track output slots (slots written by the handler)
 			if inst.Slot >= 0 {
@@ -566,8 +580,12 @@ func (ec *emitCtx) emitLoopBody() {
 			ec.emitConstFloat(ref, inst)
 
 		case SSA_CONST_NIL, SSA_CONST_BOOL:
-			// These don't go into registers in the loop body
-			// They are stored back to memory during store-back
+			// These don't go into registers in the loop body.
+			// The actual values are resolved at use sites (e.g., STORE_ARRAY
+			// reads CONST_BOOL's AuxInt directly, not from memory).
+			// NOTE: We intentionally do NOT write to memory here because
+			// the slot may be shared with a table reference in other traces,
+			// and overwriting it would corrupt the table pointer.
 
 		case SSA_ADD_INT:
 			ec.emitIntArith(ref, inst, func(asm *Assembler, dst, a1, a2 Reg) {
@@ -670,7 +688,7 @@ func (ec *emitCtx) emitLoopBody() {
 			ec.emitLoadArray(ref, inst)
 
 		case SSA_STORE_ARRAY:
-			ec.emitStoreArray(inst)
+			ec.emitCallExitInst(inst)
 
 		case SSA_TABLE_LEN:
 			ec.emitTableLen(ref, inst)
@@ -1295,14 +1313,324 @@ func (ec *emitCtx) emitStoreField(inst *SSAInst) {
 // LOAD_ARRAY / STORE_ARRAY
 // ────────────────────────────────────────────────────────────────────────────
 
+// emitLoadArray: R(A) = table[key] (integer index, native codegen)
+//
+// SSA encoding: Arg1=tableRef, Arg2=keyRef, Slot=destination slot
+// The table's register slot is found via ec.f.Insts[inst.Arg1].Slot.
+//
+// Handles all arrayKind variants (Mixed, Int, Float, Bool) with
+// runtime dispatch. Side-exits on bounds check failure or nil table.
+// Falls back to call-exit for non-scalar result types (table, string, etc.)
+// to avoid nested table access issues.
 func (ec *emitCtx) emitLoadArray(ref SSARef, inst *SSAInst) {
-	// For now, emit as a call-exit (table array access is complex)
-	ec.emitCallExit(inst)
+	// Fall back to call-exit for non-scalar result types.
+	// Nested table access (e.g., b[k][j]) returns a table, which requires
+	// careful handling that's not yet implemented in the native path.
+	if inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
+		ec.emitCallExit(inst)
+		return
+	}
+
+	asm := ec.asm
+	seq := ec.arraySeq
+	ec.arraySeq++
+
+	// Unique labels for this instance
+	lMixed := "la_mixed_" + itoa(seq)
+	lInt := "la_int_" + itoa(seq)
+	lFloat := "la_float_" + itoa(seq)
+	lBool := "la_bool_" + itoa(seq)
+	lDone := "la_done_" + itoa(seq)
+
+	// Set ExitPC for any guard failure
+	asm.LoadImm64(X9, int64(inst.PC))
+
+	// 1. Resolve table slot from Arg1
+	tblSlot := -1
+	if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(ec.f.Insts) {
+		tblSlot = int(ec.f.Insts[inst.Arg1].Slot)
+	}
+	if tblSlot < 0 {
+		// Can't resolve table → side-exit
+		asm.B("side_exit_setup")
+		return
+	}
+
+	// 2. Load table NaN-boxed value, verify it's a table, extract pointer
+	asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit_setup")
+	EmitExtractPtr(asm, X0, X0)
+	asm.CBZ(X0, "side_exit_setup")
+
+	// 3. Check no metatable
+	asm.LDR(X1, X0, TableOffMetatable)
+	asm.CBNZ(X1, "side_exit_setup")
+
+	// 4. Resolve key (integer index) into X3
+	keyReg := ec.resolveIntRef(inst.Arg2, X3)
+	if keyReg != X3 {
+		asm.MOVreg(X3, keyReg)
+	}
+	// X3 = integer key (0-indexed)
+
+	// 5. Load arrayKind and dispatch
+	asm.LDRB(X4, X0, TableOffArrayKind)
+
+	asm.CMPimm(X4, AKMixed)
+	asm.BCond(CondEQ, lMixed)
+	asm.CMPimm(X4, AKInt)
+	asm.BCond(CondEQ, lInt)
+	asm.CMPimm(X4, AKFloat)
+	asm.BCond(CondEQ, lFloat)
+	asm.CMPimm(X4, AKBool)
+	asm.BCond(CondEQ, lBool)
+	// Unknown arrayKind → side-exit
+	asm.B("side_exit_setup")
+
+	// --- ArrayMixed: array []Value at TableOffArray ---
+	asm.Label(lMixed)
+	asm.LDR(X5, X0, TableOffArray)   // X5 = array data ptr
+	asm.LDR(X6, X0, TableOffArray+8) // X6 = array len
+	asm.CMPreg(X3, X6)               // key < len? (unsigned)
+	asm.BCond(CondGE, "side_exit_setup")
+	asm.LDRreg(X7, X5, X3) // X7 = array[key] (8-byte NaN-boxed Value, LSL #3)
+	asm.B(lDone)
+
+	// --- ArrayInt: intArray []int64 at TableOffIntArray ---
+	asm.Label(lInt)
+	asm.LDR(X5, X0, TableOffIntArray)   // X5 = intArray data ptr
+	asm.LDR(X6, X0, TableOffIntArray+8) // X6 = intArray len
+	asm.CMPreg(X3, X6)
+	asm.BCond(CondGE, "side_exit_setup")
+	asm.LDRreg(X7, X5, X3) // X7 = intArray[key] (raw int64)
+	// Box as NaN-boxed int
+	EmitBoxIntFast(asm, X7, X7, regTagInt)
+	asm.B(lDone)
+
+	// --- ArrayFloat: floatArray []float64 at TableOffFloatArray ---
+	asm.Label(lFloat)
+	asm.LDR(X5, X0, TableOffFloatArray)   // X5 = floatArray data ptr
+	asm.LDR(X6, X0, TableOffFloatArray+8) // X6 = floatArray len
+	asm.CMPreg(X3, X6)
+	asm.BCond(CondGE, "side_exit_setup")
+	asm.LDRreg(X7, X5, X3) // X7 = floatArray[key] (raw float64 bits = NaN-boxed float)
+	// Float64 bits are already NaN-boxed (identity encoding for non-tagged values)
+	asm.B(lDone)
+
+	// --- ArrayBool: boolArray []byte at TableOffBoolArray ---
+	asm.Label(lBool)
+	asm.LDR(X5, X0, TableOffBoolArray)   // X5 = boolArray data ptr
+	asm.LDR(X6, X0, TableOffBoolArray+8) // X6 = boolArray len
+	asm.CMPreg(X3, X6)
+	asm.BCond(CondGE, "side_exit_setup")
+	// Byte load: LDRB with register offset (X5 + X3)
+	asm.LDRBreg(X7, X5, X3) // X7 = boolArray[key] (0=nil, 1=false, 2=true)
+	// Convert byte encoding to NaN-boxed value:
+	//   0 → nil (NB_ValNil)
+	//   1 → false (NB_ValFalse = NB_TagBool | 0)
+	//   2 → true (NB_TagBool | 1)
+	// CMP X7, #2
+	asm.CMPimm(X7, 2)
+	asm.BCond(CondEQ, "la_bool_true_"+itoa(seq))
+	asm.CMPimm(X7, 1)
+	asm.BCond(CondEQ, "la_bool_false_"+itoa(seq))
+	// 0 = nil
+	EmitBoxNil(asm, X7)
+	asm.B(lDone)
+	asm.Label("la_bool_true_" + itoa(seq))
+	asm.LoadImm64(X7, nb_i64(NB_TagBool|1)) // NB_TagBool | 1 = true
+	asm.B(lDone)
+	asm.Label("la_bool_false_" + itoa(seq))
+	asm.LoadImm64(X7, nb_i64(NB_TagBool)) // NB_TagBool | 0 = false
+	// Fall through to done
+
+	// --- Done: X7 = NaN-boxed result value ---
+	asm.Label(lDone)
+
+	// Store to destination register based on result type
+	dstSlot := int(inst.Slot)
+	if inst.Type == SSATypeFloat {
+		if freg, ok := ec.regMap.FloatRefReg(ref); ok {
+			asm.FMOVtoFP(freg, X7)
+		} else if freg, ok := ec.regMap.FloatReg(dstSlot); ok {
+			asm.FMOVtoFP(freg, X7)
+		} else {
+			asm.STR(X7, regRegs, dstSlot*ValueSize)
+		}
+	} else if inst.Type == SSATypeInt {
+		EmitUnboxInt(asm, X7, X7)
+		if reg, ok := ec.regMap.IntReg(dstSlot); ok {
+			asm.MOVreg(reg, X7)
+		} else {
+			EmitBoxIntFast(asm, X7, X7, regTagInt)
+			asm.STR(X7, regRegs, dstSlot*ValueSize)
+		}
+	} else if inst.Type == SSATypeBool {
+		// Bool result: store NaN-boxed value to memory
+		// The trace loop will use GUARD_TRUTHY to test it.
+		asm.STR(X7, regRegs, dstSlot*ValueSize)
+	} else {
+		// Unknown type — store raw NaN-boxed value to memory
+		asm.STR(X7, regRegs, dstSlot*ValueSize)
+	}
 }
 
+// emitStoreArray: table[key] = value (integer index, native codegen)
+//
+// SSA encoding (after builder fix): Arg1=keyRef, Arg2=valRef, Slot=table slot
+// The table is loaded directly from Slot (the table's register slot).
+//
+// Handles all arrayKind variants with runtime dispatch.
 func (ec *emitCtx) emitStoreArray(inst *SSAInst) {
-	// For now, emit as a call-exit
-	ec.emitCallExitInst(inst)
+	asm := ec.asm
+	seq := ec.arraySeq
+	ec.arraySeq++
+
+	// Unique labels for this instance
+	lMixed := "sa_mixed_" + itoa(seq)
+	lInt := "sa_int_" + itoa(seq)
+	lFloat := "sa_float_" + itoa(seq)
+	lBool := "sa_bool_" + itoa(seq)
+	lDone := "sa_done_" + itoa(seq)
+
+	tblSlot := int(inst.Slot)
+
+	// Set ExitPC for any guard failure
+	asm.LoadImm64(X9, int64(inst.PC))
+
+	// 1. Load table NaN-boxed value, verify it's a table, extract pointer
+	asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit_setup")
+	EmitExtractPtr(asm, X0, X0)
+	asm.CBZ(X0, "side_exit_setup")
+
+	// 2. Check no metatable
+	asm.LDR(X1, X0, TableOffMetatable)
+	asm.CBNZ(X1, "side_exit_setup")
+
+	// 3. Resolve key (integer index) into X3
+	keyReg := ec.resolveIntRef(inst.Arg1, X3)
+	if keyReg != X3 {
+		asm.MOVreg(X3, keyReg)
+	}
+	// X3 = integer key (0-indexed)
+
+	// 4. Resolve value to store into X8
+	// The value is in Arg2. We need the NaN-boxed form for ArrayMixed,
+	// or the raw form for typed arrays.
+	valInst := &ec.f.Insts[inst.Arg2]
+	// Prepare NaN-boxed value in X8 for ArrayMixed path
+	if valInst.Type == SSATypeFloat {
+		freg := ec.resolveFloatRef(inst.Arg2, D0)
+		asm.FMOVtoGP(X8, freg)
+	} else if valInst.Type == SSATypeInt {
+		reg := ec.resolveIntRef(inst.Arg2, X8)
+		EmitBoxIntFast(asm, X8, reg, regTagInt)
+	} else if valInst.Type == SSATypeBool {
+		// For bool constants, always use the compile-time constant.
+		// Never read from memory because the slot may have been overwritten
+		// by a different trace's store-back (e.g., an int count variable
+		// reusing the same slot on a subsequent function call).
+		if valInst.Op == SSA_CONST_BOOL {
+			if valInst.AuxInt != 0 {
+				asm.LoadImm64(X8, nb_i64(NB_TagBool|1)) // true
+			} else {
+				asm.LoadImm64(X8, nb_i64(NB_TagBool)) // false
+			}
+		} else {
+			// Non-constant bool: load from memory
+			valSlot := int(valInst.Slot)
+			if valSlot >= 0 {
+				asm.LDR(X8, regRegs, valSlot*ValueSize)
+			} else {
+				asm.LoadImm64(X8, nb_i64(NB_ValNil))
+			}
+		}
+	} else if valInst.Op == SSA_CONST_NIL {
+		// Constant nil
+		asm.LoadImm64(X8, nb_i64(NB_ValNil))
+	} else {
+		// Unknown type — load from memory
+		valSlot := int(valInst.Slot)
+		if valSlot >= 0 {
+			asm.LDR(X8, regRegs, valSlot*ValueSize)
+		} else {
+			asm.LoadImm64(X8, nb_i64(NB_ValNil))
+		}
+	}
+	// X8 = NaN-boxed value to store
+
+	// 5. Load arrayKind and dispatch
+	// Need to reload X0 (table ptr) since resolveIntRef/resolveFloatRef may have clobbered it
+	asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	EmitExtractPtr(asm, X0, X0)
+	asm.LDRB(X4, X0, TableOffArrayKind)
+
+	asm.CMPimm(X4, AKMixed)
+	asm.BCond(CondEQ, lMixed)
+	asm.CMPimm(X4, AKInt)
+	asm.BCond(CondEQ, lInt)
+	asm.CMPimm(X4, AKFloat)
+	asm.BCond(CondEQ, lFloat)
+	asm.CMPimm(X4, AKBool)
+	asm.BCond(CondEQ, lBool)
+	asm.B("side_exit_setup")
+
+	// --- ArrayMixed: array []Value at TableOffArray ---
+	asm.Label(lMixed)
+	asm.LDR(X5, X0, TableOffArray)   // X5 = array data ptr
+	asm.LDR(X6, X0, TableOffArray+8) // X6 = array len
+	asm.CMPreg(X3, X6)
+	asm.BCond(CondGE, "side_exit_setup")
+	asm.STRreg(X8, X5, X3) // array[key] = value (8-byte NaN-boxed, LSL #3)
+	asm.B(lDone)
+
+	// --- ArrayInt: intArray []int64 at TableOffIntArray ---
+	asm.Label(lInt)
+	asm.LDR(X5, X0, TableOffIntArray)
+	asm.LDR(X6, X0, TableOffIntArray+8)
+	asm.CMPreg(X3, X6)
+	asm.BCond(CondGE, "side_exit_setup")
+	// Need raw int64 from NaN-boxed value in X8
+	EmitUnboxInt(asm, X7, X8)
+	asm.STRreg(X7, X5, X3)
+	asm.B(lDone)
+
+	// --- ArrayFloat: floatArray []float64 at TableOffFloatArray ---
+	asm.Label(lFloat)
+	asm.LDR(X5, X0, TableOffFloatArray)
+	asm.LDR(X6, X0, TableOffFloatArray+8)
+	asm.CMPreg(X3, X6)
+	asm.BCond(CondGE, "side_exit_setup")
+	// X8 holds NaN-boxed float64 bits = raw IEEE 754 = correct for float64
+	asm.STRreg(X8, X5, X3)
+	asm.B(lDone)
+
+	// --- ArrayBool: boolArray []byte at TableOffBoolArray ---
+	asm.Label(lBool)
+	asm.LDR(X5, X0, TableOffBoolArray)
+	asm.LDR(X6, X0, TableOffBoolArray+8)
+	asm.CMPreg(X3, X6)
+	asm.BCond(CondGE, "side_exit_setup")
+	// Convert NaN-boxed bool to byte encoding:
+	//   NB_ValNil → 0, NB_TagBool|0 (false) → 1, NB_TagBool|1 (true) → 2
+	// Check if it's a bool by checking tag
+	asm.LSRimm(X7, X8, 48)
+	asm.MOVimm16(X6, NB_TagBoolShr48)
+	asm.CMPreg(X7, X6)
+	asm.BCond(CondNE, "sa_bool_nil_"+itoa(seq))
+	// It's a bool. Check payload bit 0: 0=false, 1=true
+	asm.LoadImm64(X6, 1)
+	asm.ANDreg(X7, X8, X6) // X7 = 0 (false) or 1 (true)
+	asm.ADDimm(X7, X7, 1)   // X7 = 1 (false) or 2 (true)
+	asm.B("sa_bool_store_" + itoa(seq))
+	asm.Label("sa_bool_nil_" + itoa(seq))
+	asm.MOVimm16(X7, 0) // nil → 0
+	asm.Label("sa_bool_store_" + itoa(seq))
+	asm.STRBreg(X7, X5, X3) // boolArray[key] = byte
+	// Fall through to done
+
+	asm.Label(lDone)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
