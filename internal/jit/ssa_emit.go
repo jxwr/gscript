@@ -11,13 +11,14 @@ import (
 // ────────────────────────────────────────────────────────────────────────────
 
 // ConstHoist hoists loop-invariant constants out of the loop body.
-func ConstHoist(f *SSAFunc) *SSAFunc { return f }
+// The real implementation is in ssa_const_hoist.go.
+func ConstHoist(f *SSAFunc) *SSAFunc { return constHoistImpl(f) }
 
 // CSE performs common subexpression elimination.
-func CSE(f *SSAFunc) *SSAFunc { return f }
+// The real implementation is in ssa_opt.go.
+func CSE(f *SSAFunc) *SSAFunc { return cseImpl(f) }
 
-// FuseMultiplyAdd fuses MUL+ADD/SUB into FMADD/FMSUB.
-func FuseMultiplyAdd(f *SSAFunc) *SSAFunc { return f }
+// FuseMultiplyAdd is defined in ssa_fma.go.
 
 // ────────────────────────────────────────────────────────────────────────────
 // SSA analysis helpers
@@ -43,9 +44,10 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP, SSA_INTRINSIC,
 			SSA_CALL,
 			SSA_MOVE, SSA_PHI, SSA_BOX_INT, SSA_BOX_FLOAT, SSA_STORE_SLOT:
-			// Track call-exit ops: SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN
+			// Track call-exit ops: SSA_CALL, SSA_TABLE_LEN
 			// are now emitted as side-exits (ExitCode=1).
-			if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
+			// SSA_LOAD_GLOBAL is now native (loads from trace constant pool).
+			if inst.Op == SSA_CALL || inst.Op == SSA_TABLE_LEN {
 				hasCallExit = true
 			}
 			// LOAD_ARRAY with non-scalar, non-table result falls back to call-exit.
@@ -72,10 +74,10 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 	if !hasForloopExit {
 		return false
 	}
-	// Call-exit ops (SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN) are now emitted
-	// as side-exits (ExitCode=1). The interpreter resumes at ExitPC, executes
-	// the instruction, and FORLOOP back-edge re-enters the trace. No resume
-	// dispatch needed.
+	// Call-exit ops (SSA_CALL, SSA_TABLE_LEN) are now emitted as side-exits
+	// (ExitCode=1). SSA_LOAD_GLOBAL is native (loads from trace constant pool).
+	// The interpreter resumes at ExitPC, executes the instruction, and FORLOOP
+	// back-edge re-enters the trace. No resume dispatch needed.
 	return true
 }
 
@@ -99,13 +101,15 @@ func SSAIsUseful(f *SSAFunc) bool {
 	}
 
 	// Reject traces where the first meaningful instruction after SSA_LOOP is a
-	// call-exit op (SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN, non-scalar LOAD_ARRAY).
+	// call-exit op (SSA_CALL, SSA_TABLE_LEN, non-scalar LOAD_ARRAY).
+	// SSA_LOAD_GLOBAL is now native (loads from trace constant pool) and is NOT a call-exit.
 	// Such traces would exit immediately on every entry — the trace does no useful
 	// work before hitting the side-exit. This prevents infinite re-enter → exit loops.
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		op := f.Insts[i].Op
-		// Skip NOPs, snapshots, loads, unboxes, constants, guards — these are setup, not computation
-		if op == SSA_NOP || op == SSA_SNAPSHOT || op == SSA_LOAD_SLOT ||
+		// Skip NOPs, snapshots, loads, unboxes, constants, guards — these are setup, not computation.
+		// SSA_LOAD_GLOBAL is native and counts as setup (loads a value from constant pool).
+		if op == SSA_NOP || op == SSA_SNAPSHOT || op == SSA_LOAD_SLOT || op == SSA_LOAD_GLOBAL ||
 			op == SSA_UNBOX_INT || op == SSA_UNBOX_FLOAT ||
 			op == SSA_CONST_INT || op == SSA_CONST_FLOAT || op == SSA_CONST_NIL || op == SSA_CONST_BOOL ||
 			op == SSA_GUARD_TYPE || op == SSA_GUARD_TRUTHY || op == SSA_GUARD_NNIL || op == SSA_GUARD_NOMETA ||
@@ -113,7 +117,7 @@ func SSAIsUseful(f *SSAFunc) bool {
 			continue
 		}
 		// If the first real op is a call-exit, the trace is useless
-		if op == SSA_CALL || op == SSA_LOAD_GLOBAL || op == SSA_TABLE_LEN {
+		if op == SSA_CALL || op == SSA_TABLE_LEN {
 			return false
 		}
 		// Non-scalar, non-table LOAD_ARRAY is also a call-exit.
@@ -131,10 +135,11 @@ func SSAIsUseful(f *SSAFunc) bool {
 	// These instructions always side-exit (the interpreter handles them), so the
 	// trace enter→work→side-exit→resume cycle fires on EVERY iteration, which is
 	// slower than pure interpretation due to trace entry/exit overhead.
+	// SSA_LOAD_GLOBAL is now native (loads from trace constant pool) and never side-exits.
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
-		// SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN always side-exit.
-		if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
+		// SSA_CALL, SSA_TABLE_LEN always side-exit.
+		if inst.Op == SSA_CALL || inst.Op == SSA_TABLE_LEN {
 			return false
 		}
 		// Non-scalar, non-table LOAD_ARRAY always side-exits.
@@ -251,7 +256,7 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
 		isCallExit := inst.Op == SSA_CALL ||
-			inst.Op == SSA_TABLE_LEN || inst.Op == SSA_LOAD_GLOBAL
+			inst.Op == SSA_TABLE_LEN
 		// LOAD_ARRAY with non-scalar, non-table result falls back to call-exit.
 		// Table-type LOAD_ARRAY is native (emitLoadArrayTable).
 		if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool && inst.Type != SSATypeTable {
@@ -299,6 +304,17 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 					ec.callExitWriteSlots[tblSlot] = true
 				}
 			}
+		}
+		// Protect LOAD_GLOBAL destination slot from int/float store-back.
+		// LOAD_GLOBAL writes a NaN-boxed value from the trace constant pool to
+		// the destination slot. If the global is a table (the common case), the
+		// NaN-boxed pointer must not be overwritten by a stale int GPR or float FPR.
+		// We protect ALL LOAD_GLOBAL slots regardless of type, because:
+		// 1. emitLoadGlobal already handles loading into registers for int/float.
+		// 2. The slot might be reused by a different-type instruction later in the
+		//    same iteration, which could allocate a GPR/FPR that overwrites the value.
+		if inst.Op == SSA_LOAD_GLOBAL && inst.Slot >= 0 {
+			ec.callExitWriteSlots[int(inst.Slot)] = true
 		}
 	}
 
@@ -630,6 +646,13 @@ func (ec *emitCtx) emitLoopBody() {
 		inst := &f.Insts[i]
 		ref := SSARef(i)
 
+		// Skip MUL instructions absorbed by FMADD/FMSUB fusion.
+		// The MUL stays in the IR for register allocation live ranges
+		// but must not emit ARM64 code.
+		if f.AbsorbedMuls[ref] {
+			continue
+		}
+
 		// Emit label at inner loop body start for backward branching.
 		// After the label, reload all float registers from memory so that
 		// inner loop iterations use updated values (not stale SSA refs).
@@ -787,8 +810,8 @@ func (ec *emitCtx) emitLoopBody() {
 			ec.emitIntrinsic(ref, inst)
 
 		case SSA_LOAD_GLOBAL:
-			// GETGLOBAL: emit as call-exit (handler reads from globals)
-			ec.emitCallExit(inst)
+			// GETGLOBAL: native load from trace constant pool
+			ec.emitLoadGlobal(ref, inst)
 
 		case SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP,
@@ -982,15 +1005,25 @@ func (ec *emitCtx) emitNegFloat(ref SSARef, inst *SSAInst) {
 }
 
 func (ec *emitCtx) emitFMADD(ref SSARef, inst *SSAInst) {
-	// FMADD: dst = arg1 * arg2 + AuxRef (accumulator)
-	// In our SSA, FMADD has Arg1=mul_a, Arg2=mul_b, and accumulator is encoded in AuxInt
-	// For now, FMADD isn't generated (FuseMultiplyAdd is a no-op), so this is a placeholder
-	_ = ref
+	// FMADD: dst = Arg1 * Arg2 + AuxInt(ref)
+	// ARM64 FMADDd(rd, rn, rm, ra) = ra + rn * rm
+	a := ec.resolveFloatRef(inst.Arg1, D0)
+	b := ec.resolveFloatRef(inst.Arg2, D1)
+	c := ec.resolveFloatRef(SSARef(inst.AuxInt), D3) // addend
+	dst := ec.getFloatDst(ref, inst, D2)
+	ec.asm.FMADDd(dst, a, b, c)
+	ec.spillFloat(ref, inst, dst)
 }
 
 func (ec *emitCtx) emitFMSUB(ref SSARef, inst *SSAInst) {
-	// Similar placeholder
-	_ = ref
+	// FMSUB: dst = AuxInt(ref) - Arg1 * Arg2
+	// ARM64 FMSUBd(rd, rn, rm, ra) = ra - rn * rm
+	a := ec.resolveFloatRef(inst.Arg1, D0)
+	b := ec.resolveFloatRef(inst.Arg2, D1)
+	c := ec.resolveFloatRef(SSARef(inst.AuxInt), D3) // minuend
+	dst := ec.getFloatDst(ref, inst, D2)
+	ec.asm.FMSUBd(dst, a, b, c)
+	ec.spillFloat(ref, inst, dst)
 }
 
 // emitBoxIntAsFloat: SSA_BOX_INT used as int→float conversion
@@ -1791,6 +1824,61 @@ func (ec *emitCtx) emitStoreArray(inst *SSAInst) {
 	// Fall through to done
 
 	asm.Label(lDone)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// LOAD_GLOBAL: native load from trace constant pool
+// ────────────────────────────────────────────────────────────────────────────
+
+// emitLoadGlobal loads a global variable's value from the trace constant pool.
+// At recording time, the GETGLOBAL result was captured into trace.Constants[AuxInt].
+// At runtime, we load the NaN-boxed value from regConsts (X27) and store it to
+// the destination slot. For table-type globals (the common case for nbody/sieve),
+// this replaces the expensive call-exit round-trip with a single load+store.
+func (ec *emitCtx) emitLoadGlobal(ref SSARef, inst *SSAInst) {
+	constIdx := int(inst.AuxInt) // index into trace constant pool
+	dstSlot := int(inst.Slot)
+
+	if dstSlot < 0 {
+		return
+	}
+
+	// Bounds check: ensure constIdx is valid for the trace constant pool.
+	nConsts := len(ec.f.Trace.Constants)
+	if constIdx < 0 || constIdx >= nConsts {
+		// Out of bounds: fall back to call-exit
+		ec.emitCallExitInst(inst)
+		return
+	}
+
+	asm := ec.asm
+
+	// Load the NaN-boxed value from the trace constant pool.
+	// regConsts (X27) points to ct.constants[0].
+	asm.LDR(X0, regConsts, constIdx*ValueSize)
+
+	// Store the NaN-boxed value to the destination slot in memory.
+	// For table-type globals, this is a pointer that LOAD_ARRAY/LOAD_FIELD will
+	// read from memory. For int/float globals, we also load into a register
+	// if one is allocated.
+	asm.STR(X0, regRegs, dstSlot*ValueSize)
+
+	if inst.Type == SSATypeFloat {
+		// Float globals: load into FPR if allocated
+		if freg, ok := ec.regMap.FloatRefReg(ref); ok {
+			asm.FMOVtoFP(freg, X0)
+			ec.floatSlotReg[dstSlot] = freg
+		} else if freg, ok := ec.regMap.FloatReg(dstSlot); ok {
+			asm.FMOVtoFP(freg, X0)
+			ec.floatSlotReg[dstSlot] = freg
+		}
+	} else if inst.Type == SSATypeInt {
+		// Int globals: unbox and load into GPR if allocated
+		if reg, ok := ec.regMap.IntReg(dstSlot); ok {
+			EmitUnboxInt(asm, reg, X0)
+		}
+	}
+	// Table and other types: value is in memory, no register allocation needed.
 }
 
 // ────────────────────────────────────────────────────────────────────────────

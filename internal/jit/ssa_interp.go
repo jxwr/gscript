@@ -123,11 +123,11 @@ func InterpretSSA(f *SSAFunc, regs []runtime.Value, base int) SSAInterpResult {
 			vals[ref] = math.Float64bits(a*b + c)
 			valTypes[ref] = SSATypeFloat
 		case SSA_FMSUB:
-			// FMSUB: Arg1*Arg2 - AuxInt(ref)
+			// FMSUB: AuxInt(ref) - Arg1*Arg2  (matches ARM64 FMSUB: Ra - Rn*Rm)
 			a := math.Float64frombits(vals[inst.Arg1])
 			b := math.Float64frombits(vals[inst.Arg2])
 			c := math.Float64frombits(vals[SSARef(inst.AuxInt)])
-			vals[ref] = math.Float64bits(a*b - c)
+			vals[ref] = math.Float64bits(c - a*b)
 			valTypes[ref] = SSATypeFloat
 
 		case SSA_CONST_INT:

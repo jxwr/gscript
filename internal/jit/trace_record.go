@@ -25,6 +25,10 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 			constIdx := len(r.current.Constants)
 			r.current.Constants = append(r.current.Constants, regs[reg])
 			r.current.IR[idx].BX = constIdx
+			// Also fix AType: at recording time, AType captured the PRE-execution
+			// type of the destination register (which is stale). Now we have the
+			// actual value, so update AType to match the real result type.
+			r.current.IR[idx].AType = regs[reg].Type()
 		}
 	}
 

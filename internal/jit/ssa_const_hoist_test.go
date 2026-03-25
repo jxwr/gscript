@@ -307,3 +307,118 @@ func TestConstHoist_PreservesSSARefNone(t *testing.T) {
 		t.Errorf("SSARefNone was incorrectly reindexed to %d", addInst.Arg1)
 	}
 }
+
+func TestConstHoist_UpdatesSnapshotRefs(t *testing.T) {
+	// Snapshots contain SSARef entries that must be remapped after hoisting
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                   // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 10, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 2 (hoist)
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                        // idx 3
+			{Op: SSA_SNAPSHOT, AuxInt: 0},                                                           // idx 4: snapshot index 0
+		},
+		Snapshots: []Snapshot{
+			{PC: 10, Entries: []SnapEntry{
+				{Slot: 0, Ref: 0, Type: SSATypeInt},  // points to LOAD_SLOT(0)
+				{Slot: 1, Ref: 3, Type: SSATypeInt},  // points to ADD_INT(3)
+			}},
+		},
+	}
+
+	result := ConstHoist(f)
+
+	// After hoist: LOAD(0), CONST(1), LOOP(2), ADD(3), SNAPSHOT(4)
+	// Snapshot entry for slot 0: ref should still be 0 (LOAD_SLOT unchanged)
+	// Snapshot entry for slot 1: ref should be 3 (ADD_INT moved from idx 3 to idx 3, no change in this case)
+	if len(result.Snapshots) != 1 {
+		t.Fatalf("expected 1 snapshot, got %d", len(result.Snapshots))
+	}
+	snap := result.Snapshots[0]
+	if snap.Entries[0].Ref != 0 {
+		t.Errorf("snapshot entry 0 ref = %d, want 0 (LOAD_SLOT)", snap.Entries[0].Ref)
+	}
+	if snap.Entries[1].Ref != 3 {
+		t.Errorf("snapshot entry 1 ref = %d, want 3 (ADD_INT)", snap.Entries[1].Ref)
+	}
+}
+
+func TestConstHoist_UpdatesSnapshotRefsToConst(t *testing.T) {
+	// Snapshot that references a constant being hoisted
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone},    // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                      // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 42, Arg1: SSARefNone, Arg2: SSARefNone},  // idx 2 (hoist)
+			{Op: SSA_SNAPSHOT, AuxInt: 0},                                                             // idx 3: snapshot index 0
+		},
+		Snapshots: []Snapshot{
+			{PC: 10, Entries: []SnapEntry{
+				{Slot: 0, Ref: 2, Type: SSATypeInt}, // points to CONST_INT(2)
+			}},
+		},
+	}
+
+	result := ConstHoist(f)
+
+	// After hoist: LOAD(0), CONST(1), LOOP(2), SNAPSHOT(3)
+	// Snapshot entry for slot 0: ref was 2 (CONST), now at index 1
+	snap := result.Snapshots[0]
+	if snap.Entries[0].Ref != 1 {
+		t.Errorf("snapshot entry 0 ref = %d, want 1 (CONST_INT after hoist)", snap.Entries[0].Ref)
+	}
+}
+
+func TestConstHoist_UpdatesFMADDAuxIntRef(t *testing.T) {
+	// FMADD/FMSUB use AuxInt as a third operand ref — must be remapped
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 0
+			{Op: SSA_LOAD_SLOT, Type: SSATypeFloat, Slot: 1, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 1
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                    // idx 2
+			{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: 100, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 3 (hoist)
+			{Op: SSA_FMADD, Type: SSATypeFloat, Arg1: 0, Arg2: 1, AuxInt: 3, Slot: 2},             // idx 4: a*b+c where c=CONST(3)
+		},
+	}
+
+	result := ConstHoist(f)
+
+	// After hoist: LOAD(0), LOAD(1), CONST(2), LOOP(3), FMADD(4)
+	// FMADD.AuxInt should be 2 (CONST moved from 3→2)
+	fmaddIdx := -1
+	for i, inst := range result.Insts {
+		if inst.Op == SSA_FMADD {
+			fmaddIdx = i
+			break
+		}
+	}
+	if fmaddIdx < 0 {
+		t.Fatal("FMADD missing")
+	}
+	fmadd := result.Insts[fmaddIdx]
+	if SSARef(fmadd.AuxInt) != 2 {
+		t.Errorf("FMADD.AuxInt = %d, want 2 (CONST_FLOAT after hoist)", fmadd.AuxInt)
+	}
+}
+
+func TestConstHoist_UpdatesLoopIdx(t *testing.T) {
+	// LoopIdx on the SSAFunc struct should be updated after hoisting
+	f := &SSAFunc{
+		Insts: []SSAInst{
+			{Op: SSA_LOAD_SLOT, Type: SSATypeInt, Slot: 0, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 0
+			{Op: SSA_LOOP, Arg1: SSARefNone, Arg2: SSARefNone},                                   // idx 1
+			{Op: SSA_CONST_INT, Type: SSATypeInt, AuxInt: 5, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 2 (hoist)
+			{Op: SSA_CONST_FLOAT, Type: SSATypeFloat, AuxInt: 7, Arg1: SSARefNone, Arg2: SSARefNone}, // idx 3 (hoist)
+			{Op: SSA_ADD_INT, Type: SSATypeInt, Arg1: 0, Arg2: 2, Slot: 1},                        // idx 4
+		},
+		LoopIdx: 1,
+	}
+
+	result := ConstHoist(f)
+
+	// After hoist: LOAD(0), CONST_INT(1), CONST_FLOAT(2), LOOP(3), ADD_INT(4)
+	// LoopIdx should be 3
+	if result.LoopIdx != 3 {
+		t.Errorf("LoopIdx = %d, want 3", result.LoopIdx)
+	}
+}

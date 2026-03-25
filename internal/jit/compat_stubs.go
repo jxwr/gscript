@@ -187,6 +187,14 @@ func BuildUseDef(f *SSAFunc) *UseDef {
 				ud.Users[valRef] = append(ud.Users[valRef], ref)
 			}
 		}
+
+		// Special: FMADD/FMSUB use AuxInt as a value ref (the addend/minuend)
+		if (inst.Op == SSA_FMADD || inst.Op == SSA_FMSUB) && inst.AuxInt >= 0 {
+			valRef := SSARef(inst.AuxInt)
+			if valRef != SSARefNone && int(valRef) < len(f.Insts) {
+				ud.Users[valRef] = append(ud.Users[valRef], ref)
+			}
+		}
 	}
 
 	return ud

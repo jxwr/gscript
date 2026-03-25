@@ -502,6 +502,15 @@ func computeFloatLiveRanges(f *SSAFunc, loopIdx int) []liveRange {
 				}
 			}
 		}
+		// FMADD/FMSUB use AuxInt as a third operand ref (addend/minuend).
+		if (inst.Op == SSA_FMADD || inst.Op == SSA_FMSUB) && inst.AuxInt >= 0 {
+			auxRef := SSARef(inst.AuxInt)
+			if _, ok := defAt[auxRef]; ok {
+				if i > lastUse[auxRef] {
+					lastUse[auxRef] = i
+				}
+			}
+		}
 	}
 
 	// For pre-loop refs used in the loop body, extend their live range
