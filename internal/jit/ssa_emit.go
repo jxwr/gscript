@@ -48,8 +48,9 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
 				hasCallExit = true
 			}
-			// LOAD_ARRAY with non-scalar result (e.g., table) falls back to call-exit
-			if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
+			// LOAD_ARRAY with non-scalar, non-table result falls back to call-exit.
+			// Table-type LOAD_ARRAY is now native (emitLoadArrayTable).
+			if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool && inst.Type != SSATypeTable {
 				hasCallExit = true
 			}
 			// Track loop exit: FORLOOP (AuxInt=-1) or while-loop (AuxInt=-2)
@@ -115,10 +116,11 @@ func SSAIsUseful(f *SSAFunc) bool {
 		if op == SSA_CALL || op == SSA_LOAD_GLOBAL || op == SSA_TABLE_LEN {
 			return false
 		}
-		// Non-scalar LOAD_ARRAY is also a call-exit
+		// Non-scalar, non-table LOAD_ARRAY is also a call-exit.
+		// Table-type LOAD_ARRAY is native (emitLoadArrayTable).
 		if op == SSA_LOAD_ARRAY {
 			inst := &f.Insts[i]
-			if inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
+			if inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool && inst.Type != SSATypeTable {
 				return false
 			}
 		}
@@ -129,53 +131,23 @@ func SSAIsUseful(f *SSAFunc) bool {
 	// These instructions always side-exit (the interpreter handles them), so the
 	// trace enter→work→side-exit→resume cycle fires on EVERY iteration, which is
 	// slower than pure interpretation due to trace entry/exit overhead.
-	//
-	// Also reject traces with mixed int/float writes to the same slot. The store-back
-	// mechanism uses a single path for all exits, so if a slot alternates between
-	// int and float (e.g., quicksort swap: slot 10 = j (int), then arr[j] (float),
-	// then i+1 (int)), the store-back for one type would overwrite the other's value.
-	slotTypes := make(map[int]byte) // 0=unset, 1=int, 2=float, 3=mixed
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
 		// SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN always side-exit.
 		if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
 			return false
 		}
-		// Non-scalar LOAD_ARRAY (e.g., table result from b[k] in matmul) always side-exits.
+		// Non-scalar, non-table LOAD_ARRAY always side-exits.
+		// Table-type LOAD_ARRAY is native (emitLoadArrayTable).
 		if inst.Op == SSA_LOAD_ARRAY {
-			if inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
+			if inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool && inst.Type != SSATypeTable {
 				return false
 			}
 		}
-		// Track slot type writes for mixed int/float detection.
-		// Only int↔float mixtures cause store-back corruption (the int GPR store-back
-		// overwrites a float FPR value or vice versa). Bool slots are stored to memory
-		// directly and don't conflict with int GPRs.
-		slot := int(inst.Slot)
-		if slot >= 0 {
-			var writeType byte
-			if inst.Type == SSATypeFloat || isFloatOp(inst.Op) {
-				writeType = 2 // float
-			} else if inst.Type == SSATypeInt {
-				writeType = 1 // int
-			}
-			// Only track int and float writes; skip bool/table/unknown
-			if writeType != 0 {
-				prev := slotTypes[slot]
-				if prev == 0 {
-					slotTypes[slot] = writeType
-				} else if prev != writeType {
-					slotTypes[slot] = 3 // mixed int/float
-				}
-			}
-		}
 	}
-	// Reject if any slot has mixed int/float writes.
-	for _, t := range slotTypes {
-		if t == 3 {
-			return false
-		}
-	}
+	// Note: Mixed int/float writes to the same slot are safe because the
+	// floatWrittenSlots mechanism in store-back skips int GPR writes for slots
+	// whose last write was float.
 
 	return true
 }
@@ -280,8 +252,9 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 		inst := &f.Insts[i]
 		isCallExit := inst.Op == SSA_CALL ||
 			inst.Op == SSA_TABLE_LEN || inst.Op == SSA_LOAD_GLOBAL
-		// LOAD_ARRAY with non-scalar result falls back to call-exit
-		if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
+		// LOAD_ARRAY with non-scalar, non-table result falls back to call-exit.
+		// Table-type LOAD_ARRAY is native (emitLoadArrayTable).
+		if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool && inst.Type != SSATypeTable {
 			isCallExit = true
 		}
 		if isCallExit {
@@ -300,12 +273,17 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 			}
 		}
 		if inst.Op == SSA_LOAD_ARRAY {
-			// LOAD_ARRAY: the table is referenced via Arg1
+			// LOAD_ARRAY: the source table is referenced via Arg1
 			if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(f.Insts) {
 				tblSlot := int(f.Insts[inst.Arg1].Slot)
 				if tblSlot >= 0 {
 					ec.callExitWriteSlots[tblSlot] = true
 				}
+			}
+			// Table-type LOAD_ARRAY: the destination slot holds a NaN-boxed table pointer.
+			// Protect it from int/float store-back which would corrupt the pointer.
+			if inst.Type == SSATypeTable && inst.Slot >= 0 {
+				ec.callExitWriteSlots[int(inst.Slot)] = true
 			}
 		}
 		// Similarly protect table slots for LOAD_FIELD and STORE_FIELD
@@ -1335,14 +1313,24 @@ func (ec *emitCtx) emitConstFloat(ref SSARef, inst *SSAInst) {
 // ────────────────────────────────────────────────────────────────────────────
 
 func (ec *emitCtx) emitLoadField(ref SSARef, inst *SSAInst) {
-	tableSlot := int(inst.Slot)
 	fieldIdx := int(int32(inst.AuxInt))
 
 	// Set ExitPC for any guard failure in this instruction
 	ec.asm.LoadImm64(X9, int64(inst.PC))
 
-	// Load table NaN-boxed value from memory
-	ec.asm.LDR(X0, regRegs, tableSlot*ValueSize)
+	// Resolve the TABLE slot from Arg1 (the SSA ref for the table).
+	// inst.Slot is the DESTINATION slot (ir.A), NOT the table slot.
+	tblSlot := -1
+	if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(ec.f.Insts) {
+		tblSlot = int(ec.f.Insts[inst.Arg1].Slot)
+	}
+	if tblSlot < 0 {
+		ec.asm.B("side_exit_setup")
+		return
+	}
+
+	// Load table NaN-boxed value from the table's slot
+	ec.asm.LDR(X0, regRegs, tblSlot*ValueSize)
 	// Check it's a table
 	EmitCheckIsTableFull(ec.asm, X0, X1, X2, "side_exit_setup")
 	// Extract pointer
@@ -1356,43 +1344,6 @@ func (ec *emitCtx) emitLoadField(ref SSARef, inst *SSAInst) {
 	// Load field value: svals[fieldIdx]
 	ec.asm.LDR(X1, X0, TableOffSvals) // X1 = svals slice data pointer
 	ec.asm.LDR(X2, X1, fieldIdx*ValueSize) // X2 = svals[fieldIdx] (NaN-boxed)
-
-	// Store to destination register based on type
-	dstSlot := int(inst.Slot)
-	// For LOAD_FIELD, the SSA Slot field is the table's slot (source).
-	// The destination is determined by who uses this ref.
-	// However, in our SSA, LOAD_FIELD's Slot IS the destination slot (ir.A from OP_GETFIELD).
-	// Looking at the builder: Slot: int16(ir.A). So inst.Slot = ir.A = destination.
-	// But tableSlot is ir.B, which is inst.Arg1's slot. Let me re-check.
-	// Actually in ssa_build.go:
-	//   ref := b.emit(SSAInst{
-	//       Op:     SSA_LOAD_FIELD,
-	//       Type:   ssaTypeFromRuntime(ir.AType),
-	//       Arg1:   tableRef,
-	//       AuxInt: int64(ir.FieldIndex),
-	//       Slot:   int16(ir.A),    // destination slot
-	//       PC:     ir.PC,
-	//   })
-	// So inst.Slot is the DESTINATION slot, and the table is found via Arg1.
-	// The table ref's slot is the table slot.
-
-	// We need the TABLE slot, not the destination slot.
-	// The table slot is the slot of the SSA ref that Arg1 points to.
-	var tblSlot int = -1
-	if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(ec.f.Insts) {
-		tblSlot = int(ec.f.Insts[inst.Arg1].Slot)
-	}
-
-	// Re-load from table. We already have X2 = field value.
-	// Need to reload: table from tblSlot.
-	if tblSlot >= 0 {
-		ec.asm.LDR(X0, regRegs, tblSlot*ValueSize)
-		EmitExtractPtr(ec.asm, X0, X0)
-		ec.asm.LDR(X1, X0, TableOffSvals)
-		ec.asm.LDR(X2, X1, fieldIdx*ValueSize)
-	}
-
-	_ = dstSlot // will use inst.Slot as destination
 	if inst.Type == SSATypeFloat {
 		if freg, ok := ec.regMap.FloatRefReg(ref); ok {
 			ec.asm.FMOVtoFP(freg, X2)
@@ -1430,17 +1381,9 @@ func (ec *emitCtx) emitStoreField(inst *SSAInst) {
 	// Set ExitPC for any guard failure
 	ec.asm.LoadImm64(X9, int64(inst.PC))
 
-	// Load table pointer
-	ec.asm.LDR(X0, regRegs, tblSlot*ValueSize)
-	EmitCheckIsTableFull(ec.asm, X0, X1, X2, "side_exit_setup")
-	EmitExtractPtr(ec.asm, X0, X0)
-	ec.asm.CBZ(X0, "side_exit_setup")
-
-	// Check no metatable
-	ec.asm.LDR(X1, X0, TableOffMetatable)
-	ec.asm.CBNZ(X1, "side_exit_setup")
-
-	// Get value to store
+	// Resolve the value to store FIRST (before loading table pointer).
+	// resolveFloatRef may clobber X0 (for constant loads), so we must
+	// do this before we put the table pointer in X0.
 	valInst := &ec.f.Insts[inst.Arg2]
 	if valInst.Type == SSATypeFloat {
 		freg := ec.resolveFloatRef(inst.Arg2, D0)
@@ -1455,6 +1398,16 @@ func (ec *emitCtx) emitStoreField(inst *SSAInst) {
 			ec.asm.LDR(X3, regRegs, valSlot*ValueSize)
 		}
 	}
+
+	// Load table pointer (X3 holds the value, X0 is free for table)
+	ec.asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	EmitCheckIsTableFull(ec.asm, X0, X1, X2, "side_exit_setup")
+	EmitExtractPtr(ec.asm, X0, X0)
+	ec.asm.CBZ(X0, "side_exit_setup")
+
+	// Check no metatable
+	ec.asm.LDR(X1, X0, TableOffMetatable)
+	ec.asm.CBNZ(X1, "side_exit_setup")
 
 	// Store to svals[fieldIdx]
 	ec.asm.LDR(X1, X0, TableOffSvals)
@@ -1475,9 +1428,13 @@ func (ec *emitCtx) emitStoreField(inst *SSAInst) {
 // Falls back to call-exit for non-scalar result types (table, string, etc.)
 // to avoid nested table access issues.
 func (ec *emitCtx) emitLoadArray(ref SSARef, inst *SSAInst) {
-	// Fall back to call-exit for non-scalar result types.
-	// Nested table access (e.g., b[k][j]) returns a table, which requires
-	// careful handling that's not yet implemented in the native path.
+	// Table-type results: load NaN-boxed value from Mixed array, store to memory slot.
+	// LOAD_FIELD/STORE_FIELD will read the table from memory.
+	if inst.Type == SSATypeTable {
+		ec.emitLoadArrayTable(inst)
+		return
+	}
+	// Fall back to call-exit for other non-scalar result types (string, nil, unknown).
 	if inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
 		ec.emitCallExit(inst)
 		return
@@ -1625,6 +1582,57 @@ func (ec *emitCtx) emitLoadArray(ref SSARef, inst *SSAInst) {
 		// Unknown type — store raw NaN-boxed value to memory
 		asm.STR(X7, regRegs, dstSlot*ValueSize)
 	}
+}
+
+// emitLoadArrayTable handles LOAD_ARRAY when the result type is SSATypeTable.
+// The source table always uses ArrayMixed for table-valued elements.
+// Loads the NaN-boxed table pointer from the Mixed array and stores it to the
+// destination slot in memory (tables are never kept in registers).
+func (ec *emitCtx) emitLoadArrayTable(inst *SSAInst) {
+	asm := ec.asm
+
+	// Set ExitPC for any guard failure
+	asm.LoadImm64(X9, int64(inst.PC))
+
+	// 1. Resolve table slot from Arg1
+	tblSlot := -1
+	if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(ec.f.Insts) {
+		tblSlot = int(ec.f.Insts[inst.Arg1].Slot)
+	}
+	if tblSlot < 0 {
+		asm.B("side_exit_setup")
+		return
+	}
+
+	// 2. Load source table NaN-boxed value, verify it's a table, extract pointer
+	asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit_setup")
+	EmitExtractPtr(asm, X0, X0)
+	asm.CBZ(X0, "side_exit_setup")
+
+	// 3. Check no metatable
+	asm.LDR(X1, X0, TableOffMetatable)
+	asm.CBNZ(X1, "side_exit_setup")
+
+	// 4. Resolve key (integer index) into X3
+	keyReg := ec.resolveIntRef(inst.Arg2, X3)
+	if keyReg != X3 {
+		asm.MOVreg(X3, keyReg)
+	}
+
+	// 5. Load from Mixed array (tables-of-tables are always ArrayMixed)
+	asm.LDR(X5, X0, TableOffArray)   // X5 = array data ptr
+	asm.LDR(X6, X0, TableOffArray+8) // X6 = array len
+	asm.CMPreg(X3, X6)               // key < len? (unsigned)
+	asm.BCond(CondGE, "side_exit_setup")
+	asm.LDRreg(X7, X5, X3)           // X7 = array[key] (NaN-boxed Value, LSL #3)
+
+	// 6. Verify the loaded value is a table
+	EmitCheckIsTableFull(asm, X7, X1, X2, "side_exit_setup")
+
+	// 7. Store the NaN-boxed table value to the destination slot in memory
+	dstSlot := int(inst.Slot)
+	asm.STR(X7, regRegs, dstSlot*ValueSize)
 }
 
 // emitStoreArray: table[key] = value (integer index, native codegen)

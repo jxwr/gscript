@@ -3,6 +3,8 @@
 package jit
 
 import (
+	"fmt"
+
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -84,6 +86,65 @@ const (
 	SSA_MOVE // copy value (register-to-register)
 	SSA_PHI  // loop-carried value
 )
+
+// ssaOpString returns a human-readable name for an SSAOp.
+func ssaOpString(op SSAOp) string {
+	names := [...]string{
+		SSA_GUARD_TYPE:       "GUARD_TYPE",
+		SSA_LOAD_SLOT:        "LOAD_SLOT",
+		SSA_STORE_SLOT:       "STORE_SLOT",
+		SSA_ADD_INT:          "ADD_INT",
+		SSA_SUB_INT:          "SUB_INT",
+		SSA_MUL_INT:          "MUL_INT",
+		SSA_MOD_INT:          "MOD_INT",
+		SSA_NEG_INT:          "NEG_INT",
+		SSA_DIV_INT:          "DIV_INT",
+		SSA_ADD_FLOAT:        "ADD_FLOAT",
+		SSA_SUB_FLOAT:        "SUB_FLOAT",
+		SSA_MUL_FLOAT:        "MUL_FLOAT",
+		SSA_DIV_FLOAT:        "DIV_FLOAT",
+		SSA_NEG_FLOAT:        "NEG_FLOAT",
+		SSA_FMADD:            "FMADD",
+		SSA_FMSUB:            "FMSUB",
+		SSA_UNBOX_INT:        "UNBOX_INT",
+		SSA_UNBOX_FLOAT:      "UNBOX_FLOAT",
+		SSA_BOX_INT:          "BOX_INT",
+		SSA_BOX_FLOAT:        "BOX_FLOAT",
+		SSA_EQ_INT:           "EQ_INT",
+		SSA_LT_INT:           "LT_INT",
+		SSA_LE_INT:           "LE_INT",
+		SSA_LT_FLOAT:         "LT_FLOAT",
+		SSA_LE_FLOAT:         "LE_FLOAT",
+		SSA_GT_FLOAT:         "GT_FLOAT",
+		SSA_CONST_INT:        "CONST_INT",
+		SSA_CONST_FLOAT:      "CONST_FLOAT",
+		SSA_CONST_NIL:        "CONST_NIL",
+		SSA_CONST_BOOL:       "CONST_BOOL",
+		SSA_LOAD_FIELD:       "LOAD_FIELD",
+		SSA_STORE_FIELD:      "STORE_FIELD",
+		SSA_LOAD_ARRAY:       "LOAD_ARRAY",
+		SSA_STORE_ARRAY:      "STORE_ARRAY",
+		SSA_LOAD_GLOBAL:      "LOAD_GLOBAL",
+		SSA_TABLE_LEN:        "TABLE_LEN",
+		SSA_GUARD_TRUTHY:     "GUARD_TRUTHY",
+		SSA_GUARD_NNIL:       "GUARD_NNIL",
+		SSA_GUARD_NOMETA:     "GUARD_NOMETA",
+		SSA_LOOP:             "LOOP",
+		SSA_SIDE_EXIT:        "SIDE_EXIT",
+		SSA_NOP:              "NOP",
+		SSA_SNAPSHOT:         "SNAPSHOT",
+		SSA_CALL:             "CALL",
+		SSA_CALL_INNER_TRACE: "CALL_INNER_TRACE",
+		SSA_INNER_LOOP:       "INNER_LOOP",
+		SSA_INTRINSIC:        "INTRINSIC",
+		SSA_MOVE:             "MOVE",
+		SSA_PHI:              "PHI",
+	}
+	if int(op) < len(names) && names[op] != "" {
+		return names[op]
+	}
+	return fmt.Sprintf("SSAOp(%d)", op)
+}
 
 // SSAType describes the type of an SSA value.
 type SSAType int

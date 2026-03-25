@@ -339,9 +339,16 @@ func (r *TraceRecorder) captureFieldIndex(ir *TraceIR, inst uint32, proto *vm.Fu
 		if tableSlot < len(regs) && regs[tableSlot].IsTable() {
 			tbl := regs[tableSlot].Table()
 			if tbl != nil {
-				origC := vm.DecodeC(inst)
-				if origC < len(proto.Constants) {
-					fieldName := proto.Constants[origC].Str()
+				// GETFIELD: A B C → field name is Constants[C]
+				// SETFIELD: A B C → field name is Constants[B]
+				var fieldConstIdx int
+				if op == vm.OP_SETFIELD {
+					fieldConstIdx = origB
+				} else {
+					fieldConstIdx = vm.DecodeC(inst)
+				}
+				if fieldConstIdx < len(proto.Constants) {
+					fieldName := proto.Constants[fieldConstIdx].Str()
 					ir.FieldIndex = tbl.FieldIndex(fieldName)
 					ir.ShapeID = tbl.ShapeID()
 				}
