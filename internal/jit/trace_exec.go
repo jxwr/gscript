@@ -73,12 +73,16 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 			// Side exit
 			ct.guardFailCount = 0
 			ct.sideExitCount++
-			// If side-exiting too often without any loop-done completions,
-			// the trace is not useful (every iteration exits). Blacklist it.
-			if ct.sideExitCount > 10 && ct.fullRunCount == 0 {
-				ct.blacklisted = true
-				if ct.proto != nil {
-					ct.proto.BlacklistTracePC(ct.loopPC)
+			// Blacklist if side-exiting too often relative to full runs.
+			// Check after enough total executions for a reliable ratio.
+			total := ct.sideExitCount + ct.fullRunCount
+			if total >= 50 {
+				ratio := float64(ct.sideExitCount) / float64(total)
+				if ratio >= 0.90 {
+					ct.blacklisted = true
+					if ct.proto != nil {
+						ct.proto.BlacklistTracePC(ct.loopPC)
+					}
 				}
 			}
 			return int(ctx.ExitPC), true, false
@@ -87,7 +91,6 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 			// Loop done (exit code 0)
 			ct.guardFailCount = 0
 			ct.fullRunCount++
-			ct.sideExitCount = 0
 			return int(ctx.ExitPC), false, false
 		}
 	}

@@ -321,8 +321,9 @@ func (r *TraceRecorder) finishTrace() {
 			ssaUseful := SSAIsUseful(ssaFunc)
 
 			if debugTrace {
-				fmt.Printf("[TRACE-DEBUG] PC=%d intOnly=%v useful=%v nInsts=%d\n",
-					r.current.LoopPC, ssaOK, ssaUseful, len(ssaFunc.Insts))
+				fmt.Printf("[TRACE-DEBUG] PC=%d intOnly=%v useful=%v nInsts=%d nIR=%d proto=%s\n",
+					r.current.LoopPC, ssaOK, ssaUseful, len(ssaFunc.Insts), len(r.current.IR),
+					r.current.LoopProto.Name)
 			}
 
 			if ssaOK && ssaUseful {

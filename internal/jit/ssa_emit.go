@@ -52,8 +52,8 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
 				hasCallExit = true
 			}
-			// Track FORLOOP exit (LE with AuxInt=-1 sentinel)
-			if (inst.Op == SSA_LE_INT || inst.Op == SSA_LE_FLOAT) && inst.AuxInt == -1 {
+			// Track loop exit: FORLOOP (AuxInt=-1) or while-loop (AuxInt=-2)
+			if isLoopExitCmp(inst.Op, inst.AuxInt) {
 				hasForloopExit = true
 			}
 			continue
@@ -178,6 +178,19 @@ func SSAIsUseful(f *SSAFunc) bool {
 	}
 
 	return true
+}
+
+// isLoopExitCmp returns true if the SSA comparison is a loop exit:
+// FORLOOP exit (AuxInt=-1) or while-loop exit (AuxInt=-2).
+func isLoopExitCmp(op SSAOp, auxInt int64) bool {
+	if auxInt != -1 && auxInt != -2 {
+		return false
+	}
+	switch op {
+	case SSA_LE_INT, SSA_LE_FLOAT, SSA_LT_INT, SSA_LT_FLOAT:
+		return true
+	}
+	return false
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -593,14 +606,22 @@ func (ec *emitCtx) emitLoopBody() {
 	ec.innerLoopExitIdx = -1
 	ec.innerLoopBodyStart = -1
 	var allForloopExits []int
+	whileLoopExitIdx := -1
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
 		if (inst.Op == SSA_LE_INT || inst.Op == SSA_LE_FLOAT) && inst.AuxInt == -1 {
 			allForloopExits = append(allForloopExits, i)
 		}
+		// While-loop exit (AuxInt=-2): first comparison after LOOP
+		if isLoopExitCmp(inst.Op, inst.AuxInt) && inst.AuxInt == -2 {
+			whileLoopExitIdx = i
+		}
 	}
 	if len(allForloopExits) > 0 {
 		ec.loopExitIdx = allForloopExits[len(allForloopExits)-1]
+	} else if whileLoopExitIdx >= 0 {
+		// While-loop: use the while-loop exit as the loop exit
+		ec.loopExitIdx = whileLoopExitIdx
 	}
 	// If there are inner FORLOOP exits, identify the inner loop body start.
 	// The inner FORLOOP's LE check is preceded by an ADD (index += step).
@@ -725,7 +746,15 @@ func (ec *emitCtx) emitLoopBody() {
 			ec.emitCmpInt(inst, CondNE)
 
 		case SSA_LT_INT:
-			ec.emitCmpInt(inst, CondGE) // branch if NOT less-than
+			if i == ec.loopExitIdx && inst.AuxInt == -2 {
+				// While-loop exit: branch to loop_done when NOT less-than (GE)
+				a1 := ec.resolveIntRef(inst.Arg1, X0)
+				a2 := ec.resolveIntRef(inst.Arg2, X1)
+				ec.asm.CMPreg(a1, a2)
+				ec.asm.BCond(CondGE, "loop_done")
+			} else {
+				ec.emitCmpInt(inst, CondGE) // branch if NOT less-than
+			}
 
 		case SSA_LE_INT:
 			ec.emitCmpIntLE(i, inst)

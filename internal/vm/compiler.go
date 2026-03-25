@@ -1170,6 +1170,23 @@ func (c *compiler) detectSimpleNumericFor(s *ast.ForNumStmt) (simpleForInfo, boo
 		if !ok || ident2.Name != varName {
 			return simpleForInfo{}, false
 		}
+	case *ast.AssignStmt:
+		// Handle `i = i + step` pattern as equivalent to `i += step`
+		if len(post.Targets) != 1 || len(post.Values) != 1 {
+			return simpleForInfo{}, false
+		}
+		ident2, ok := post.Targets[0].(*ast.IdentExpr)
+		if !ok || ident2.Name != varName {
+			return simpleForInfo{}, false
+		}
+		binExpr, ok := post.Values[0].(*ast.BinaryExpr)
+		if !ok || binExpr.Op != "+" {
+			return simpleForInfo{}, false
+		}
+		leftIdent, ok := binExpr.Left.(*ast.IdentExpr)
+		if !ok || leftIdent.Name != varName {
+			return simpleForInfo{}, false
+		}
 	default:
 		return simpleForInfo{}, false
 	}
@@ -1214,6 +1231,12 @@ func (c *compiler) compileOptimizedForNum(s *ast.ForNumStmt, info simpleForInfo,
 		c.emitAsBx(OP_LOADINT, baseReg+2, 1, line)
 	case *ast.CompoundAssignStmt:
 		if err := c.compileExprTo(post.Value, baseReg+2); err != nil {
+			return err
+		}
+	case *ast.AssignStmt:
+		// i = i + step → extract step from BinaryExpr.Right
+		binExpr := post.Values[0].(*ast.BinaryExpr)
+		if err := c.compileExprTo(binExpr.Right, baseReg+2); err != nil {
 			return err
 		}
 	}

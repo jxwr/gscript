@@ -139,6 +139,17 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 
 	r.current.IR = append(r.current.IR, ir)
 
+	// Immediately finish trace after recording the FORLOOP at LoopPC.
+	// This prevents the trace from "overshooting" when the VM's FORLOOP
+	// exits (falls through) instead of looping back. Without this, the
+	// recorder would continue recording instructions past the loop exit
+	// (outer loop body), producing a trace that mixes inner loop body
+	// with outer loop body code -- causing infinite loops in JIT.
+	if op == vm.OP_FORLOOP && r.depth == 0 && pc == r.current.LoopPC {
+		r.finishTrace()
+		return false
+	}
+
 	// Set up deferred GETGLOBAL capture for the NEXT instruction call.
 	if op == vm.OP_GETGLOBAL {
 		r.pendingGlobalCapture = true
@@ -421,6 +432,13 @@ func (r *TraceRecorder) recordJmp(ir TraceIR, pc int, inst uint32) bool {
 			case vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_TESTSET:
 				isConditionalSkip = true
 			}
+		}
+		// For while-loop exit detection: if a conditional JMP jumps past LoopPC
+		// and it's at the very beginning of the trace (loop condition), the trace
+		// recorded the exit iteration. Abort to avoid including post-loop code.
+		if isConditionalSkip && len(r.current.IR) <= 1 {
+			r.abortTrace()
+			return true
 		}
 		if !isConditionalSkip {
 			r.abortTrace()

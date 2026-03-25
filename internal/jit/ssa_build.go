@@ -893,9 +893,40 @@ func BuildSSA(trace *Trace) *SSAFunc {
 }
 
 // OptimizeSSA runs optimization passes on the SSA function.
-// Currently a pass-through; optimization passes (CSE, ConstHoist, etc.) are
-// applied separately by the caller or the pipeline.
+// Currently applies while-loop exit detection; other optimization passes
+// (CSE, ConstHoist, etc.) are applied separately by the caller.
 func OptimizeSSA(f *SSAFunc) *SSAFunc {
+	// Detect while-loop exit patterns: if there's no FORLOOP exit (AuxInt=-1)
+	// but there IS a comparison right after SSA_LOOP, mark it as the while-loop
+	// exit (AuxInt=-2). This allows while-loop traces to compile.
+	hasForloopExit := false
+	for _, inst := range f.Insts {
+		if (inst.Op == SSA_LE_INT || inst.Op == SSA_LE_FLOAT) && inst.AuxInt == -1 {
+			hasForloopExit = true
+			break
+		}
+	}
+	if !hasForloopExit && f.LoopIdx > 0 {
+		// Scan for first comparison after SSA_LOOP
+		for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
+			inst := &f.Insts[i]
+			// Skip NOPs, moves, constants, snapshots
+			if inst.Op == SSA_NOP || inst.Op == SSA_MOVE || inst.Op == SSA_SNAPSHOT ||
+				inst.Op == SSA_CONST_INT || inst.Op == SSA_CONST_FLOAT ||
+				inst.Op == SSA_CONST_NIL || inst.Op == SSA_CONST_BOOL {
+				continue
+			}
+			// If the first meaningful instruction after LOOP is a LE or LT comparison,
+			// this is the while-loop exit condition.
+			if inst.Op == SSA_LE_INT || inst.Op == SSA_LT_INT ||
+				inst.Op == SSA_LE_FLOAT || inst.Op == SSA_LT_FLOAT {
+				inst.AuxInt = -2 // while-loop exit sentinel
+				break
+			}
+			// If something else comes first, it's not a simple while-loop pattern
+			break
+		}
+	}
 	return f
 }
 
