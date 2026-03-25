@@ -152,6 +152,8 @@ type emitCtx struct {
 	callExitWriteSlots map[int]bool
 	// arraySeq is a monotonically increasing counter for unique array access labels.
 	arraySeq int
+	// guardTruthyCount is a monotonically increasing counter for unique guard_truthy labels.
+	guardTruthyCount int
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1034,6 +1036,34 @@ func (ec *emitCtx) emitGuardTruthy(inst *SSAInst) {
 		return
 	}
 
+	// If Arg1 refers to a compile-time constant (CONST_BOOL or CONST_NIL),
+	// resolve the guard statically. These constants don't write to memory,
+	// so reading from memory would give stale values.
+	if int(inst.Arg1) < len(ec.f.Insts) {
+		srcInst := &ec.f.Insts[inst.Arg1]
+		if srcInst.Op == SSA_CONST_BOOL || srcInst.Op == SSA_CONST_NIL {
+			isTruthy := srcInst.Op == SSA_CONST_BOOL && srcInst.AuxInt != 0
+			if inst.AuxInt != 0 {
+				// Guard passes if truthy
+				if !isTruthy {
+					// Constant is falsy → guard fails → unconditional side-exit
+					ec.asm.LoadImm64(X9, int64(inst.PC))
+					ec.asm.B("side_exit_setup")
+				}
+				// else: guard passes, emit nothing
+			} else {
+				// Guard passes if falsy
+				if isTruthy {
+					// Constant is truthy → guard fails → unconditional side-exit
+					ec.asm.LoadImm64(X9, int64(inst.PC))
+					ec.asm.B("side_exit_setup")
+				}
+				// else: guard passes, emit nothing
+			}
+			return
+		}
+	}
+
 	// Set ExitPC for guard failure
 	ec.asm.LoadImm64(X9, int64(inst.PC))
 
@@ -1054,13 +1084,15 @@ func (ec *emitCtx) emitGuardTruthy(inst *SSAInst) {
 	} else {
 		// AuxInt=0 (C=0): guard passes if falsy → fail if NOT nil AND NOT false
 		// i.e., fail if truthy
-		ec.asm.BCond(CondEQ, "guard_truthy_ok_"+itoa(int(inst.Slot)))
+		label := "guard_truthy_ok_" + itoa(ec.guardTruthyCount)
+		ec.guardTruthyCount++
+		ec.asm.BCond(CondEQ, label)
 		ec.asm.LoadImm64(X1, nb_i64(NB_ValFalse))
 		ec.asm.CMPreg(X0, X1)
-		ec.asm.BCond(CondEQ, "guard_truthy_ok_"+itoa(int(inst.Slot)))
+		ec.asm.BCond(CondEQ, label)
 		// Not nil, not false → truthy → fail
 		ec.asm.B("side_exit_setup")
-		ec.asm.Label("guard_truthy_ok_" + itoa(int(inst.Slot)))
+		ec.asm.Label(label)
 	}
 }
 
@@ -1159,14 +1191,19 @@ func (ec *emitCtx) emitConstInt(ref SSARef, inst *SSAInst) {
 
 func (ec *emitCtx) emitConstFloat(ref SSARef, inst *SSAInst) {
 	slot := int(inst.Slot)
-	if slot < 0 {
-		return
-	}
+	// Always load into ref-level register if one is allocated (even for slot=-1 constants).
 	if freg, ok := ec.regMap.FloatRefReg(ref); ok {
 		ec.asm.LoadImm64(X0, inst.AuxInt)
 		ec.asm.FMOVtoFP(freg, X0)
-		ec.floatSlotReg[slot] = freg
-	} else if freg, ok := ec.regMap.FloatReg(slot); ok {
+		if slot >= 0 {
+			ec.floatSlotReg[slot] = freg
+		}
+		return
+	}
+	if slot < 0 {
+		return
+	}
+	if freg, ok := ec.regMap.FloatReg(slot); ok {
 		ec.asm.LoadImm64(X0, inst.AuxInt)
 		ec.asm.FMOVtoFP(freg, X0)
 		ec.floatSlotReg[slot] = freg
@@ -1762,32 +1799,17 @@ func (ec *emitCtx) emitStoreBackImpl(typeSafe bool) {
 		}
 	}
 
-	// Store slot-level float registers back to memory.
-	if ec.regMap.Float != nil {
-		for slot, freg := range ec.regMap.Float.slotToReg {
-			if lastReg, ok := ec.floatSlotReg[slot]; ok && lastReg != freg {
-				continue
-			}
-			if ec.callExitWriteSlots[slot] {
-				continue
-			}
-			asm.FSTRd(freg, regRegs, slot*ValueSize)
+	// Store float registers back to memory.
+	// Only store slots that were written in the loop body (tracked by floatSlotReg).
+	// The floatSlotReg map records which FPR holds each slot's most-recent value,
+	// updated by spillFloat during loop body emission.
+	// Read-only float slots (e.g., constants loaded in pre-loop) must NOT be stored
+	// because their slot-level FPR was never loaded with the correct value.
+	for slot, freg := range ec.floatSlotReg {
+		if ec.callExitWriteSlots[slot] {
+			continue
 		}
-	}
-
-	// For ref-level float allocations, only store the LATEST ref per slot.
-	if ec.regMap.FloatRef != nil {
-		for slot, freg := range ec.floatSlotReg {
-			if ec.regMap.Float != nil {
-				if _, ok := ec.regMap.Float.slotToReg[slot]; ok {
-					continue
-				}
-			}
-			if ec.callExitWriteSlots[slot] {
-				continue
-			}
-			asm.FSTRd(freg, regRegs, slot*ValueSize)
-		}
+		asm.FSTRd(freg, regRegs, slot*ValueSize)
 	}
 }
 

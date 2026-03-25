@@ -505,12 +505,20 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 	case vm.OP_EQ:
 		bRef := b.getRKRef(ir.B, ir.BType, ir)
 		cRef := b.getRKRef(ir.C, ir.CType, ir)
+		// Determine whether the trace followed "skip" or "not skip" path.
+		// EQ A B C: skip if (B==C) != bool(A).
+		// If next IR is JMP → trace did NOT skip → AuxInt = A
+		// If next IR is NOT JMP → trace DID skip → AuxInt = A ^ 1
+		auxA := int64(ir.A)
+		if !(idx+1 < len(b.trace.IR) && b.trace.IR[idx+1].Op == vm.OP_JMP) {
+			auxA ^= 1
+		}
 		b.emit(SSAInst{
 			Op:     SSA_EQ_INT,
 			Type:   SSATypeBool,
 			Arg1:   bRef,
 			Arg2:   cRef,
-			AuxInt: int64(ir.A), // A encodes the expected comparison result
+			AuxInt: auxA,
 			PC:     ir.PC,
 		})
 
@@ -525,12 +533,17 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		} else {
 			op = SSA_LT_INT
 		}
+		// Same skip/not-skip detection as EQ.
+		auxA := int64(ir.A)
+		if !(idx+1 < len(b.trace.IR) && b.trace.IR[idx+1].Op == vm.OP_JMP) {
+			auxA ^= 1
+		}
 		b.emit(SSAInst{
 			Op:     op,
 			Type:   SSATypeBool,
 			Arg1:   bRef,
 			Arg2:   cRef,
-			AuxInt: int64(ir.A),
+			AuxInt: auxA,
 			PC:     ir.PC,
 		})
 
@@ -545,25 +558,40 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		} else {
 			op = SSA_LE_INT
 		}
+		// Same skip/not-skip detection as EQ.
+		auxA := int64(ir.A)
+		if !(idx+1 < len(b.trace.IR) && b.trace.IR[idx+1].Op == vm.OP_JMP) {
+			auxA ^= 1
+		}
 		b.emit(SSAInst{
 			Op:     op,
 			Type:   SSATypeBool,
 			Arg1:   bRef,
 			Arg2:   cRef,
-			AuxInt: int64(ir.A),
+			AuxInt: auxA,
 			PC:     ir.PC,
 		})
 
 	case vm.OP_TEST:
 		aRef := b.getSlotRef(ir.A)
 		// OP_TEST A C: skip next instruction if bool(R(A)) != bool(C).
-		// The trace follows the "skip" path (the recorded path). The guard
-		// must protect this path: fail (side-exit) if the condition would NOT skip.
-		// "Skip" happens when bool(R(A)) != bool(C), i.e., the value's truthiness
-		// differs from C. Guard passes when:
-		//   C=0 → truthy (value != false) → AuxInt=1 (guard passes if truthy)
-		//   C=1 → falsy  (value != true)  → AuxInt=0 (guard passes if falsy)
-		guardC := int64(ir.C) ^ 1
+		// Determine whether the trace followed the "skip" or "not skip" path.
+		// If the next trace IR is a JMP, the trace did NOT skip (fell through to JMP).
+		// If the next trace IR is NOT a JMP, the trace DID skip (skipped over JMP).
+		traceSkipped := true
+		if idx+1 < len(b.trace.IR) && b.trace.IR[idx+1].Op == vm.OP_JMP {
+			traceSkipped = false
+		}
+		var guardC int64
+		if traceSkipped {
+			// Guard passes when skip condition holds: truthy(R(A)) != bool(C)
+			//   C=0 → truthy → AuxInt=1; C=1 → falsy → AuxInt=0
+			guardC = int64(ir.C) ^ 1
+		} else {
+			// Guard passes when NOT-skip condition holds: truthy(R(A)) == bool(C)
+			//   C=0 → falsy → AuxInt=0; C=1 → truthy → AuxInt=1
+			guardC = int64(ir.C)
+		}
 		b.emit(SSAInst{
 			Op:     SSA_GUARD_TRUTHY,
 			Type:   SSATypeBool,
@@ -744,8 +772,18 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 
 	case vm.OP_TESTSET:
 		bRef := b.getSlotRef(ir.B)
-		// Same inversion as OP_TEST: the trace follows the "skip" path.
-		guardC := int64(ir.C) ^ 1
+		// Determine whether the trace followed the "skip" or "not skip" path.
+		// Same logic as OP_TEST: if next IR is JMP, trace did NOT skip.
+		traceSkipped := true
+		if idx+1 < len(b.trace.IR) && b.trace.IR[idx+1].Op == vm.OP_JMP {
+			traceSkipped = false
+		}
+		var guardC int64
+		if traceSkipped {
+			guardC = int64(ir.C) ^ 1
+		} else {
+			guardC = int64(ir.C)
+		}
 		ref := b.emit(SSAInst{
 			Op:     SSA_GUARD_TRUTHY,
 			Type:   SSATypeBool,

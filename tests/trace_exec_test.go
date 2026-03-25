@@ -299,11 +299,8 @@ result := mixedOps(100)
 	if vmResult != expected {
 		t.Fatalf("VM mixedOps(100): got %v, want %d", vmResult, expected)
 	}
-	// Known issue: JIT may produce wrong result for conditional-in-loop patterns.
-	// Log the mismatch but don't fail — this test documents the boundary behavior.
 	if jitResult != expected {
-		t.Logf("Known JIT issue: mixedOps(100) JIT=%v, want %d (VM=%v)", jitResult, expected, vmResult)
-		t.Skip("Skipping: known JIT conditional-in-loop side-exit issue")
+		t.Errorf("JIT mixedOps(100): got %v, want %d (VM=%v)", jitResult, expected, vmResult)
 	}
 }
 
@@ -461,8 +458,7 @@ result := floatSum(100)
 		t.Fatalf("VM floatSum(100): got %v (%T), want %f", vmResult, vmResult, expected)
 	}
 	if jitResult != expected {
-		t.Logf("Known JIT issue: floatSum(100) JIT=%v, want %v (VM=%v)", jitResult, expected, vmResult)
-		t.Skip("Skipping: known JIT float accumulator issue")
+		t.Errorf("JIT floatSum(100): got %v, want %v (VM=%v)", jitResult, expected, vmResult)
 	}
 }
 
@@ -484,8 +480,7 @@ result := floatProd(100)
 
 	// 1.01^100 ~= 2.704813829...
 	if vmResult != jitResult {
-		t.Logf("Known JIT issue: floatProd(100) JIT=%v, VM=%v", jitResult, vmResult)
-		t.Skip("Skipping: known JIT float accumulator issue")
+		t.Errorf("JIT floatProd(100): JIT=%v, VM=%v", jitResult, vmResult)
 	}
 }
 
@@ -508,8 +503,7 @@ result := mixedAccum(100)
 
 	// sum = 0.1 * sum(1..100) = 0.1 * 5050 = 505.0
 	if vmResult != jitResult {
-		t.Logf("Known JIT issue: mixedAccum(100) JIT=%v, VM=%v", jitResult, vmResult)
-		t.Skip("Skipping: known JIT float accumulator issue")
+		t.Errorf("JIT mixedAccum(100): JIT=%v, VM=%v", jitResult, vmResult)
 	}
 }
 
@@ -536,8 +530,7 @@ result := countdown(200)
 		t.Fatalf("VM countdown(200): got %v, want %f", vmResult, expected)
 	}
 	if jitResult != expected {
-		t.Logf("Known JIT issue: countdown(200) JIT=%v, want %v (VM=%v)", jitResult, expected, vmResult)
-		t.Skip("Skipping: known JIT float accumulator issue")
+		t.Errorf("JIT countdown(200): got %v, want %v (VM=%v)", jitResult, expected, vmResult)
 	}
 }
 
@@ -803,8 +796,7 @@ result := fillAndSum(100)
 		t.Fatalf("VM fillAndSum(100): got %v, want %d", vmResult, expected)
 	}
 	if jitResult != expected {
-		t.Logf("Known JIT issue: fillAndSum(100) JIT=%v, want %d (VM=%v)", jitResult, expected, vmResult)
-		t.Skip("Skipping: known JIT table-in-function issue")
+		t.Errorf("JIT fillAndSum(100): got %v, want %d (VM=%v)", jitResult, expected, vmResult)
 	}
 }
 
@@ -854,8 +846,7 @@ result := countEven(1000)
 		t.Fatalf("VM countEven(1000): got %v, want %d", vmResult, expected)
 	}
 	if jitResult != expected {
-		t.Logf("Known JIT issue: countEven(1000) JIT=%v, want %d (VM=%v)", jitResult, expected, vmResult)
-		t.Skip("Skipping: known JIT conditional-in-loop side-exit issue")
+		t.Errorf("JIT countEven(1000): got %v, want %d (VM=%v)", jitResult, expected, vmResult)
 	}
 }
 

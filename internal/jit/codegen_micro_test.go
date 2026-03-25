@@ -469,7 +469,7 @@ func TestMicro_MulFloat(t *testing.T) {
 	// product = 1.0 * 2^6 = 64.0 (6 iterations: idx=0,1,2,3,4,5 then 6>5)
 	product := regs[4].Float()
 	if product != 64.0 {
-		t.Skipf("known store-back bug: product = %f, want 64.0", product)
+		t.Errorf("store-back bug: product = %f, want 64.0", product)
 	}
 }
 
@@ -501,7 +501,7 @@ func TestMicro_AddFloat(t *testing.T) {
 	// sum = 0.5 * 10 = 5.0
 	sum := regs[4].Float()
 	if sum != 5.0 {
-		t.Skipf("known store-back bug: sum = %f, want 5.0", sum)
+		t.Errorf("store-back bug: sum = %f, want 5.0", sum)
 	}
 }
 
@@ -530,7 +530,7 @@ func TestMicro_SubFloat(t *testing.T) {
 	// 100.0 - 10.0*5 = 50.0
 	val := regs[4].Float()
 	if val != 50.0 {
-		t.Skipf("known store-back bug: val = %f, want 50.0", val)
+		t.Errorf("store-back bug: val = %f, want 50.0", val)
 	}
 }
 
@@ -559,7 +559,7 @@ func TestMicro_DivFloat(t *testing.T) {
 	// 1000 / 10 / 10 / 10 = 1.0
 	val := regs[4].Float()
 	if val != 1.0 {
-		t.Skipf("known store-back bug: val = %f, want 1.0", val)
+		t.Errorf("store-back bug: val = %f, want 1.0", val)
 	}
 }
 
@@ -592,7 +592,7 @@ func TestMicro_NegFloat(t *testing.T) {
 	// sum = 0 + (-5.0) + (-5.0) + (-5.0) = -15.0
 	sum := regs[5].Float()
 	if sum != -15.0 {
-		t.Skipf("known store-back bug: sum = %f, want -15.0", sum)
+		t.Errorf("store-back bug: sum = %f, want -15.0", sum)
 	}
 }
 
@@ -973,7 +973,7 @@ func TestMicro_MixedIntFloat(t *testing.T) {
 	// sum_float = 0.5 * 10 = 5.0
 	sumFloat := regs[5].Float()
 	if sumFloat != 5.0 {
-		t.Skipf("known store-back bug: sum_float = %f, want 5.0 (sum_int=%d is correct)", sumFloat, sumInt)
+		t.Errorf("store-back bug: sum_float = %f, want 5.0 (sum_int=%d is correct)", sumFloat, sumInt)
 	}
 }
 
