@@ -44,10 +44,9 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP, SSA_INTRINSIC,
 			SSA_CALL,
 			SSA_MOVE, SSA_PHI, SSA_BOX_INT, SSA_BOX_FLOAT, SSA_STORE_SLOT:
-			// Track call-exit ops: SSA_CALL, SSA_TABLE_LEN
-			// are now emitted as side-exits (ExitCode=1).
-			// SSA_LOAD_GLOBAL is now native (loads from trace constant pool).
-			if inst.Op == SSA_CALL || inst.Op == SSA_TABLE_LEN {
+			// Track call-exit ops: SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN
+			// are emitted as side-exits (ExitCode=1).
+			if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
 				hasCallExit = true
 			}
 			// LOAD_ARRAY with non-scalar, non-table result falls back to call-exit.
@@ -810,8 +809,8 @@ func (ec *emitCtx) emitLoopBody() {
 			ec.emitIntrinsic(ref, inst)
 
 		case SSA_LOAD_GLOBAL:
-			// GETGLOBAL: native load from trace constant pool
-			ec.emitLoadGlobal(ref, inst)
+			// GETGLOBAL: side-exit to interpreter (native GETGLOBAL disabled — causes nbody hang)
+			ec.emitCallExitInst(inst)
 
 		case SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP,
