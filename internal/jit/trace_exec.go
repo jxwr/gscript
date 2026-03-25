@@ -45,15 +45,16 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 
 		switch ctx.ExitCode {
 		case 3:
-			// Call-exit: trace hit an OP_CALL, needs VM to execute it.
+			// Call-exit: trace hit an OP_CALL/GETGLOBAL/etc, needs VM to execute it.
 			if ct.callHandler == nil {
 				ct.guardFailCount = 0
 				return int(ctx.ExitPC), true, false
 			}
 			nextPC := handleTraceCallExit(ct, regs, base, &ctx)
-			ctx.ResumePC = int64(nextPC)
-			ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
-			continue
+			// Call-exit re-entry is not yet supported in SSA-compiled traces.
+			// Return as side-exit so the VM continues from nextPC.
+			ct.guardFailCount = 0
+			return nextPC, true, false
 
 		case 2:
 			// Guard fail: pre-loop type checks didn't match.
@@ -132,10 +133,11 @@ func handleTraceCallExit(ct *CompiledTrace, regs []runtime.Value, base int, ctx 
 		return pc + 1
 	}
 
-	// Non-CALL opcodes: for now, just return pc+1.
-	// When callexit_ops.go is available, this will delegate to ExecuteCallExitOp.
+	// Non-CALL opcodes: return pc (NOT pc+1) so the VM re-executes
+	// this instruction in the interpreter. The trace has already stored
+	// register values back to memory, so the interpreter has correct state.
 	if debugTrace {
-		fmt.Printf("[TRACE-CALL-EXIT] unhandled op=%d at pc=%d\n", op, pc)
+		fmt.Printf("[TRACE-CALL-EXIT] unhandled op=%d at pc=%d, returning to interpreter\n", op, pc)
 	}
-	return pc + 1
+	return pc
 }

@@ -10,8 +10,9 @@ import (
 // Available registers for trace values
 // ────────────────────────────────────────────────────────────────────────────
 
-// Callee-saved GPR for trace values (4+1 available: X20-X24).
-var allocableGPR = []Reg{X20, X21, X22, X23, X24}
+// Callee-saved GPR for trace values (4 available: X20-X23).
+// X24 is reserved for the NaN-boxing int tag constant (regTagInt).
+var allocableGPR = []Reg{X20, X21, X22, X23}
 
 // Callee-saved FPR for trace values (8 available: D4-D11).
 var allocableFPR = []FReg{D4, D5, D6, D7, D8, D9, D10, D11}

@@ -317,27 +317,35 @@ func (r *TraceRecorder) finishTrace() {
 					fmt.Printf("[TRACE-DEBUG] CompileSSA error: %v\n", err)
 				}
 				if err == nil {
-					if ct.hasCallExit && r.callHandler != nil {
-						ct.callHandler = r.callHandler
-					}
-					if innerForloopPC > 0 {
-						innerKey := loopKey{proto: r.current.LoopProto, pc: innerForloopPC}
-						if innerCT, ok := r.compiled[innerKey]; ok {
-							ct.innerTrace = innerCT
+					// If trace has call-exits but no handler, skip compilation
+					// (the trace would immediately side-exit on every call, wasting cycles)
+					if ct.hasCallExit && r.callHandler == nil {
+						if r.debug {
+							fmt.Printf("[TRACE] Skipped: PC=%d, has call-exit but no handler\n", r.current.LoopPC)
 						}
-					}
-					r.compiled[key] = ct
-					compiled = true
-					if r.debug {
-						fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions, %d bytes code",
-							r.current.LoopPC, len(r.current.IR), ct.code.Size())
-						if ct.hasCallExit {
-							fmt.Printf(" (has call-exit)")
+					} else {
+						if ct.hasCallExit && r.callHandler != nil {
+							ct.callHandler = r.callHandler
 						}
-						if ct.innerTrace != nil {
-							fmt.Printf(" (calls inner trace at FORLOOP PC=%d)", innerForloopPC)
+						if innerForloopPC > 0 {
+							innerKey := loopKey{proto: r.current.LoopProto, pc: innerForloopPC}
+							if innerCT, ok := r.compiled[innerKey]; ok {
+								ct.innerTrace = innerCT
+							}
 						}
-						fmt.Println()
+						r.compiled[key] = ct
+						compiled = true
+						if r.debug {
+							fmt.Printf("[TRACE] SSA compiled: PC=%d, %d IR instructions, %d bytes code",
+								r.current.LoopPC, len(r.current.IR), ct.code.Size())
+							if ct.hasCallExit {
+								fmt.Printf(" (has call-exit)")
+							}
+							if ct.innerTrace != nil {
+								fmt.Printf(" (calls inner trace at FORLOOP PC=%d)", innerForloopPC)
+							}
+							fmt.Println()
+						}
 					}
 				} else if r.debug {
 					fmt.Printf("[TRACE] SSA compile error: PC=%d, err=%v\n", r.current.LoopPC, err)
@@ -523,24 +531,5 @@ const guardFailBlacklistThreshold = 5
 
 // --- SSA pipeline forward declarations ---
 // BuildSSA and OptimizeSSA are defined in ssa_build.go.
-// Other SSA pipeline stubs remain here until their pipeline files are created.
-
-// ConstHoist hoists loop-invariant constants out of the loop body.
-func ConstHoist(f *SSAFunc) *SSAFunc { return f }
-
-// CSE performs common subexpression elimination.
-func CSE(f *SSAFunc) *SSAFunc { return f }
-
-// FuseMultiplyAdd fuses MUL+ADD/SUB into FMADD/FMSUB.
-func FuseMultiplyAdd(f *SSAFunc) *SSAFunc { return f }
-
-// ssaIsIntegerOnly returns true if all SSA instructions use integer types only.
-func ssaIsIntegerOnly(f *SSAFunc) bool { return false }
-
-// SSAIsUseful returns true if the SSA function contains meaningful computation.
-func SSAIsUseful(f *SSAFunc) bool { return false }
-
-// CompileSSA compiles an SSAFunc to native ARM64 code.
-func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
-	return nil, fmt.Errorf("SSA compilation not yet implemented")
-}
+// ConstHoist, CSE, FuseMultiplyAdd, ssaIsIntegerOnly, SSAIsUseful, CompileSSA
+// are defined in ssa_emit.go.

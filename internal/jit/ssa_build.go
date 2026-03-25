@@ -184,6 +184,7 @@ func (b *ssaBuilder) emitConstFromPool(idx int, ir *TraceIR) SSARef {
 			Op:     SSA_CONST_INT,
 			Type:   SSATypeInt,
 			AuxInt: val.Int(),
+			Slot:   -1, // pool constant, not bound to a VM slot
 		})
 		return ref
 	case runtime.TypeFloat:
@@ -191,6 +192,7 @@ func (b *ssaBuilder) emitConstFromPool(idx int, ir *TraceIR) SSARef {
 			Op:     SSA_CONST_FLOAT,
 			Type:   SSATypeFloat,
 			AuxInt: int64(math.Float64bits(val.Float())),
+			Slot:   -1,
 		})
 		return ref
 	case runtime.TypeBool:
@@ -202,10 +204,11 @@ func (b *ssaBuilder) emitConstFromPool(idx int, ir *TraceIR) SSARef {
 			Op:     SSA_CONST_BOOL,
 			Type:   SSATypeBool,
 			AuxInt: bv,
+			Slot:   -1,
 		})
 		return ref
 	default:
-		return b.emit(SSAInst{Op: SSA_CONST_NIL, Type: SSATypeNil})
+		return b.emit(SSAInst{Op: SSA_CONST_NIL, Type: SSATypeNil, Slot: -1})
 	}
 }
 
