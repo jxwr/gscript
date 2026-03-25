@@ -1,81 +1,20 @@
+//go:build darwin && arm64
+
 package jit
 
 import (
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
-// debugSSAStoreBack enables debug logging around trace execution.
-const debugSSAStoreBack = false
-
-// TraceContext bridges compiled trace code and Go.
-type TraceContext struct {
-	Regs           uintptr // input: pointer to vm.regs[base]
-	Constants      uintptr // input: pointer to proto.Constants[0]
-	ExitPC         int64   // output: bytecode PC where trace exited
-	ExitCode       int64   // output: 0=loop done, 1=side exit, 2=guard fail, 3=call-exit
-	InnerCode      uintptr // input: code pointer for inner trace (sub-trace calling)
-	InnerConstants uintptr // input: constants pointer for inner trace
-	ResumePC       int64   // input: bytecode PC to resume at after call-exit (0=normal entry)
-}
-
-// TraceContext field offsets for ARM64 codegen.
-const (
-	TraceCtxOffRegs           = 0
-	TraceCtxOffConstants      = 8
-	TraceCtxOffExitPC         = 16
-	TraceCtxOffExitCode       = 24
-	TraceCtxOffInnerCode      = 32
-	TraceCtxOffInnerConstants = 40
-	TraceCtxOffResumePC       = 48
-)
-
-// SideExitBlacklistThreshold is the minimum number of executions before
-// blacklisting is considered.
-const SideExitBlacklistThreshold = 50
-
-// SideExitBlacklistRatio is the minimum side-exit ratio to trigger blacklisting.
-const SideExitBlacklistRatio = 0.95
-
-// TraceCallHandler executes an external function call on behalf of trace JIT code.
-type TraceCallHandler func(fnVal runtime.Value, args []runtime.Value) ([]runtime.Value, error)
-
-// CompiledTrace holds native code for a trace.
-type CompiledTrace struct {
-	code      *CodeBlock
-	proto     *vm.FuncProto
-	loopPC    int              // PC of the FORLOOP instruction this trace was compiled for
-	constants []runtime.Value  // trace-level constant pool
-
-	// Sub-trace calling: if this trace contains a CALL_INNER_TRACE,
-	// innerTrace points to the compiled inner loop trace.
-	innerTrace *CompiledTrace
-
-	// hasCallExit indicates this trace contains SSA_CALL instructions
-	// that require call-exit re-entry (ExitCode=3).
-	hasCallExit bool
-
-	// callHandler executes external function calls for call-exit support.
-	callHandler TraceCallHandler
-
-	// Blacklisting: tracks whether this trace is doing useful work.
-	sideExitCount  int
-	fullRunCount   int
-	guardFailCount int
-	blacklisted    bool
-}
-
 // Execute implements vm.TraceExecutor.
 func (ct *CompiledTrace) Execute(regs []runtime.Value, base int, proto *vm.FuncProto) (exitPC int, sideExit bool, guardFail bool) {
 	return executeTrace(ct, regs, base, proto)
 }
-
-// guardFailBlacklistThreshold is the number of consecutive guard failures
-// before a trace is blacklisted.
-const guardFailBlacklistThreshold = 5
 
 // executeTrace runs compiled trace code.
 func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.FuncProto) (exitPC int, sideExit bool, guardFail bool) {
@@ -93,28 +32,24 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
 
-	if debugSSAStoreBack {
-		fmt.Printf("[TRACE-EXEC] before: R21=0x%x\n", uint64(regs[base+21]))
+	if debugTrace {
+		fmt.Printf("[TRACE-EXEC] before: base=%d loopPC=%d\n", base, ct.loopPC)
 	}
 
-	for {
+	maxExecAttempts := 1000000
+	for attempt := 0; attempt < maxExecAttempts; attempt++ {
 		callJIT(uintptr(ct.code.Ptr()), ctxPtr)
 
-		if debugSSAStoreBack {
-			fmt.Printf("[TRACE-EXEC] after:  R21=0x%x exitCode=%d exitPC=%d loopPC=%d\n", uint64(regs[base+21]), ctx.ExitCode, ctx.ExitPC, ct.loopPC)
+		if debugTrace {
+			fmt.Printf("[TRACE-EXEC] after: exitCode=%d exitPC=%d snapIdx=%d resumePC=%d\n",
+				ctx.ExitCode, ctx.ExitPC, ctx.ExitSnapIdx, ctx.ResumePC)
 		}
 
 		switch ctx.ExitCode {
 		case 3:
-			// Call-exit: trace hit an OP_CALL, needs VM to execute it.
-			if ct.callHandler == nil {
-				ct.guardFailCount = 0
-				return int(ctx.ExitPC), true, false
-			}
-			nextPC := handleTraceCallExit(ct, regs, base, &ctx)
-			ctx.ResumePC = int64(nextPC)
-			ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
-			continue
+			// Legacy call-exit code (no longer emitted). Treat as side-exit.
+			ct.guardFailCount = 0
+			return int(ctx.ExitPC), true, false
 
 		case 2:
 			// Guard fail: pre-loop type checks didn't match.
@@ -127,37 +62,67 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 			}
 			return 0, false, true
 
-		case 1:
+		case 4:
+			// Break exit: the trace hit a break condition (e.g., mandelbrot escape).
+			// This is expected behavior, NOT a sign of a bad trace.
+			// Don't count toward blacklisting.
 			ct.guardFailCount = 0
-			return int(ctx.ExitPC), true, false // side exit
+			return int(ctx.ExitPC), true, false
+
+		case 1:
+			// Side exit
+			ct.guardFailCount = 0
+			ct.sideExitCount++
+			// Blacklist if side-exiting too often relative to full runs.
+			// Check after enough total executions for a reliable ratio.
+			total := ct.sideExitCount + ct.fullRunCount
+			if total >= 50 {
+				ratio := float64(ct.sideExitCount) / float64(total)
+				if ratio >= 0.90 {
+					ct.blacklisted = true
+					if ct.proto != nil {
+						ct.proto.BlacklistTracePC(ct.loopPC)
+					}
+				}
+			}
+			return int(ctx.ExitPC), true, false
 
 		default:
+			// Loop done (exit code 0)
 			ct.guardFailCount = 0
-			return int(ctx.ExitPC), false, false // loop done
+			ct.fullRunCount++
+			return int(ctx.ExitPC), false, false
 		}
 	}
+	// Safety: execution limit reached, treat as side-exit
+	ct.blacklisted = true
+	if ct.proto != nil {
+		ct.proto.BlacklistTracePC(ct.loopPC)
+	}
+	return int(ctx.ExitPC), true, false
 }
 
 // handleTraceCallExit executes a call-exit opcode on behalf of the trace JIT.
-// For OP_CALL, uses the original trace-safe logic (C=0 → 1 result, B=0 → 0 args).
-// For other opcodes, delegates to the shared ExecuteCallExitOp helper.
+// Returns the next PC (pc+1) on success, or -1 on failure.
 func handleTraceCallExit(ct *CompiledTrace, regs []runtime.Value, base int, ctx *TraceContext) int {
 	pc := int(ctx.ExitPC)
 	proto := ct.proto
 	if pc < 0 || pc >= len(proto.Code) {
-		return pc + 1
+		return -1
 	}
 
 	inst := proto.Code[pc]
 	op := vm.DecodeOp(inst)
+	constants := proto.Constants
 
-	// OP_CALL: use trace-safe result placement.
-	// The trace JIT expects exactly nResults values at R(A)..R(A+nResults-1).
-	// C=0 (variable results) defaults to 1 result to avoid overwriting registers
-	// that the trace expects to be preserved.
-	if op == vm.OP_CALL {
+	if debugTrace {
+		fmt.Printf("[TRACE-CALL-EXIT] op=%s pc=%d base=%d\n", vm.OpName(op), pc, base)
+	}
+
+	switch op {
+	case vm.OP_CALL:
 		if ct.callHandler == nil {
-			return pc + 1
+			return -1
 		}
 		a := vm.DecodeA(inst)
 		b := vm.DecodeB(inst)
@@ -180,10 +145,10 @@ func handleTraceCallExit(ct *CompiledTrace, regs []runtime.Value, base int, ctx 
 
 		results, err := ct.callHandler(fnVal, args)
 		if err != nil {
-			if debugSSAStoreBack {
+			if debugTrace {
 				fmt.Printf("[TRACE-CALL-EXIT] call error: %v\n", err)
 			}
-			return pc + 1
+			return -1
 		}
 
 		for i := 0; i < nResults; i++ {
@@ -194,19 +159,144 @@ func handleTraceCallExit(ct *CompiledTrace, regs []runtime.Value, base int, ctx 
 			}
 		}
 		return pc + 1
-	}
 
-	// Non-CALL opcodes: delegate to shared helper.
-	var callFn CallHandler
-	if ct.callHandler != nil {
-		callFn = CallHandler(ct.callHandler)
-	}
-	res, err := ExecuteCallExitOp(proto.Code, proto.Constants, regs, base, pc, 0, callFn, nil)
-	if err != nil {
-		if debugSSAStoreBack {
-			fmt.Printf("[TRACE-CALL-EXIT] error at pc=%d op=%d: %v\n", pc, op, err)
+	case vm.OP_GETTABLE:
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		cidx := vm.DecodeC(inst)
+		tableVal := regs[base+b]
+		var key runtime.Value
+		if cidx >= vm.RKBit {
+			key = constants[cidx-vm.RKBit]
+		} else {
+			key = regs[base+cidx]
+		}
+		if tableVal.IsTable() {
+			tbl := tableVal.Table()
+			regs[base+a] = tbl.RawGet(key)
+		} else {
+			regs[base+a] = runtime.NilValue()
 		}
 		return pc + 1
+
+	case vm.OP_SETTABLE:
+		a := vm.DecodeA(inst)
+		bidx := vm.DecodeB(inst)
+		cidx := vm.DecodeC(inst)
+		tableVal := regs[base+a]
+		var key, val runtime.Value
+		if bidx >= vm.RKBit {
+			key = constants[bidx-vm.RKBit]
+		} else {
+			key = regs[base+bidx]
+		}
+		if cidx >= vm.RKBit {
+			val = constants[cidx-vm.RKBit]
+		} else {
+			val = regs[base+cidx]
+		}
+		if tableVal.IsTable() {
+			tbl := tableVal.Table()
+			tbl.RawSet(key, val)
+		}
+		return pc + 1
+
+	case vm.OP_GETFIELD:
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		c := vm.DecodeC(inst)
+		tableVal := regs[base+b]
+		if tableVal.IsTable() {
+			tbl := tableVal.Table()
+			if proto.FieldCache == nil {
+				proto.FieldCache = make([]runtime.FieldCacheEntry, len(proto.Code))
+			}
+			regs[base+a] = tbl.RawGetStringCached(constants[c].Str(), &proto.FieldCache[pc])
+		} else {
+			regs[base+a] = runtime.NilValue()
+		}
+		return pc + 1
+
+	case vm.OP_SETFIELD:
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		cidx := vm.DecodeC(inst)
+		tableVal := regs[base+a]
+		var val runtime.Value
+		if cidx >= vm.RKBit {
+			val = constants[cidx-vm.RKBit]
+		} else {
+			val = regs[base+cidx]
+		}
+		if tableVal.IsTable() {
+			tbl := tableVal.Table()
+			if proto.FieldCache == nil {
+				proto.FieldCache = make([]runtime.FieldCacheEntry, len(proto.Code))
+			}
+			tbl.RawSetStringCached(constants[b].Str(), val, &proto.FieldCache[pc])
+		}
+		return pc + 1
+
+	case vm.OP_GETGLOBAL:
+		a := vm.DecodeA(inst)
+		bx := vm.DecodeBx(inst)
+		name := constants[bx].Str()
+		if ct.globalsAccessor != nil {
+			regs[base+a] = ct.globalsAccessor.GetGlobal(name)
+		} else {
+			regs[base+a] = runtime.NilValue()
+		}
+		return pc + 1
+
+	case vm.OP_SETGLOBAL:
+		a := vm.DecodeA(inst)
+		bx := vm.DecodeBx(inst)
+		name := constants[bx].Str()
+		if ct.globalsAccessor != nil {
+			ct.globalsAccessor.SetGlobal(name, regs[base+a])
+		}
+		return pc + 1
+
+	case vm.OP_LEN:
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		bv := regs[base+b]
+		if bv.IsTable() {
+			regs[base+a] = runtime.IntValue(int64(bv.Table().Len()))
+		} else if bv.IsString() {
+			regs[base+a] = runtime.IntValue(int64(len(bv.Str())))
+		} else {
+			regs[base+a] = runtime.IntValue(0)
+		}
+		return pc + 1
+
+	case vm.OP_CONCAT:
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		c := vm.DecodeC(inst)
+		var sb strings.Builder
+		for i := b; i <= c; i++ {
+			sb.WriteString(regs[base+i].String())
+		}
+		regs[base+a] = runtime.StringValue(sb.String())
+		return pc + 1
+
+	case vm.OP_NEWTABLE:
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		c := vm.DecodeC(inst)
+		regs[base+a] = runtime.TableValue(runtime.NewTableSized(b, c))
+		return pc + 1
+
+	case vm.OP_CLOSE:
+		// CLOSE doesn't modify registers in a meaningful way for the trace.
+		// Just advance past it.
+		return pc + 1
+
+	default:
+		if debugTrace {
+			fmt.Printf("[TRACE-CALL-EXIT] unhandled op=%s at pc=%d\n", vm.OpName(op), pc)
+		}
+		return -1
 	}
-	return res.NextPC
 }

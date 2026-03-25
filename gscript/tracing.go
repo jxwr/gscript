@@ -10,5 +10,6 @@ func enableTracing(bvm *bytecodevm.VM) {
 	recorder := jit.NewTraceRecorder()
 	recorder.SetCompile(true)
 	recorder.SetCallHandler(bvm.CallValue)
+	recorder.SetGlobalsAccessor(bvm)
 	bvm.SetTraceRecorder(recorder)
 }

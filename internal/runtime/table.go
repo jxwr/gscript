@@ -170,6 +170,24 @@ func (t *Table) SkeysLen() int {
 	return len(t.skeys)
 }
 
+// SvalsGet returns the value at index i in the svals slice.
+// Used by the SSA interpreter (golden model) to access fields by index.
+func (t *Table) SvalsGet(i int) Value {
+	if i >= 0 && i < len(t.svals) {
+		return t.svals[i]
+	}
+	return NilValue()
+}
+
+// SvalsSet sets the value at index i in the svals slice.
+// Used by the SSA interpreter (golden model) to write fields by index.
+func (t *Table) SvalsSet(i int, v Value) {
+	if i >= 0 && i < len(t.svals) {
+		t.svals[i] = v
+		t.keysDirty = true
+	}
+}
+
 // HasMetatable returns true if the table has a metatable.
 func (t *Table) HasMetatable() bool {
 	return t.metatable != nil
