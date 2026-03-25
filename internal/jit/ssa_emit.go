@@ -63,6 +63,17 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 	if hasCallExit && !hasForloopExit {
 		return false
 	}
+	// Only compile traces that have a proper FORLOOP exit.
+	if !hasForloopExit {
+		return false
+	}
+	// Temporarily reject traces with call-exits to prevent hangs.
+	// Call-exit re-entry has a bug where resume dispatch loops on
+	// certain patterns (nested loops with conditional breaks).
+	// TODO: fix call-exit re-entry and re-enable.
+	if hasCallExit {
+		return false
+	}
 	return true
 }
 
@@ -320,10 +331,13 @@ func (ec *emitCtx) emitResumeDispatch() {
 		asm.BCond(CondEQ, label)
 	}
 
-	// Unknown ResumePC → treat as normal entry
-	asm.B("normal_entry")
+	// Unknown ResumePC → side-exit (prevent infinite re-entry loop)
+	asm.LoadImm64(X0, 1) // ExitCode = side-exit
+	asm.B("epilogue")
 
 	asm.Label("normal_entry")
+	// Reset ResumePC to 0 for future iterations
+	asm.STR(XZR, regCtx, TraceCtxOffResumePC)
 }
 
 func (ec *emitCtx) emitEpilogue() {
