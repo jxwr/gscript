@@ -305,7 +305,23 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		b.convertArith(ir, SSA_DIV_INT, SSA_DIV_FLOAT)
 
 	case vm.OP_MOD:
-		b.convertArith(ir, SSA_MOD_INT, SSA_MOD_INT) // MOD is int-only
+		// MOD with float operands is not natively supported (no SSA_MOD_FLOAT).
+		// If either operand is float, emit as a call-exit so the interpreter handles it.
+		resType := b.inferArithType(ir.B, ir.C, ir)
+		if resType == SSATypeFloat {
+			b.takeSnapshot(ir.PC)
+			ref := b.emit(SSAInst{
+				Op:     SSA_CALL,
+				Type:   SSATypeUnknown,
+				AuxInt: int64(ir.PC),
+				Slot:   int16(ir.A),
+				PC:     ir.PC,
+			})
+			b.slotValues[ir.A] = ref
+			b.slotType[ir.A] = SSATypeUnknown
+		} else {
+			b.convertArith(ir, SSA_MOD_INT, SSA_MOD_INT)
+		}
 
 	case vm.OP_UNM:
 		bRef := b.getSlotRef(ir.B)

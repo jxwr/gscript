@@ -266,6 +266,53 @@ func (r *TraceRecorder) captureTypeInfo(ir *TraceIR, inst uint32, proto *vm.Func
 			ir.CType = proto.Constants[constIdx].Type()
 		}
 	}
+
+	// For GETTABLE, AType is the PRE-execution type of the destination register,
+	// not the result type. Fix by inspecting the table's array kind to determine
+	// the actual element type. This is critical for correctness: if a table contains
+	// floats but the destination register previously held an int, AType would
+	// incorrectly be TypeInt, causing the JIT to compile LOAD_ARRAY as int-typed.
+	op := vm.DecodeOp(inst)
+	if op == vm.OP_GETTABLE {
+		origB := vm.DecodeB(inst)
+		origC := vm.DecodeC(inst)
+		tableSlot := base + origB
+		if tableSlot >= 0 && tableSlot < len(regs) && regs[tableSlot].IsTable() {
+			tbl := regs[tableSlot].Table()
+			if tbl != nil {
+				ak := tbl.GetArrayKind()
+				switch ak {
+				case runtime.ArrayFloat:
+					ir.AType = runtime.TypeFloat
+				case runtime.ArrayInt:
+					ir.AType = runtime.TypeInt
+				case runtime.ArrayBool:
+					ir.AType = runtime.TypeBool
+				default:
+					// ArrayMixed: sample the actual value using the key to determine type.
+					// The key is in register C (or constant pool if RK).
+					var key runtime.Value
+					if origC >= vm.RKBit {
+						constIdx := origC - vm.RKBit
+						if constIdx < len(proto.Constants) {
+							key = proto.Constants[constIdx]
+						}
+					} else {
+						keySlot := base + origC
+						if keySlot >= 0 && keySlot < len(regs) {
+							key = regs[keySlot]
+						}
+					}
+					if !key.IsNil() {
+						sampled := tbl.RawGet(key)
+						if !sampled.IsNil() {
+							ir.AType = sampled.Type()
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 // captureFieldIndex fills in FieldIndex and ShapeID for GETFIELD/SETFIELD.

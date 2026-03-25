@@ -96,6 +96,7 @@ func SSAIsUseful(f *SSAFunc) bool {
 	if !hasComputation {
 		return false
 	}
+
 	// Reject traces where the first meaningful instruction after SSA_LOOP is a
 	// call-exit op (SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN, non-scalar LOAD_ARRAY).
 	// Such traces would exit immediately on every entry — the trace does no useful
@@ -123,6 +124,59 @@ func SSAIsUseful(f *SSAFunc) bool {
 		}
 		break // first real op is not a call-exit, trace is useful
 	}
+
+	// Reject traces that have guaranteed-every-iteration side-exits in the loop body.
+	// These instructions always side-exit (the interpreter handles them), so the
+	// trace enter→work→side-exit→resume cycle fires on EVERY iteration, which is
+	// slower than pure interpretation due to trace entry/exit overhead.
+	//
+	// Also reject traces with mixed int/float writes to the same slot. The store-back
+	// mechanism uses a single path for all exits, so if a slot alternates between
+	// int and float (e.g., quicksort swap: slot 10 = j (int), then arr[j] (float),
+	// then i+1 (int)), the store-back for one type would overwrite the other's value.
+	slotTypes := make(map[int]byte) // 0=unset, 1=int, 2=float, 3=mixed
+	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		// SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN always side-exit.
+		if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
+			return false
+		}
+		// Non-scalar LOAD_ARRAY (e.g., table result from b[k] in matmul) always side-exits.
+		if inst.Op == SSA_LOAD_ARRAY {
+			if inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool {
+				return false
+			}
+		}
+		// Track slot type writes for mixed int/float detection.
+		// Only int↔float mixtures cause store-back corruption (the int GPR store-back
+		// overwrites a float FPR value or vice versa). Bool slots are stored to memory
+		// directly and don't conflict with int GPRs.
+		slot := int(inst.Slot)
+		if slot >= 0 {
+			var writeType byte
+			if inst.Type == SSATypeFloat || isFloatOp(inst.Op) {
+				writeType = 2 // float
+			} else if inst.Type == SSATypeInt {
+				writeType = 1 // int
+			}
+			// Only track int and float writes; skip bool/table/unknown
+			if writeType != 0 {
+				prev := slotTypes[slot]
+				if prev == 0 {
+					slotTypes[slot] = writeType
+				} else if prev != writeType {
+					slotTypes[slot] = 3 // mixed int/float
+				}
+			}
+		}
+	}
+	// Reject if any slot has mixed int/float writes.
+	for _, t := range slotTypes {
+		if t == 3 {
+			return false
+		}
+	}
+
 	return true
 }
 
@@ -173,6 +227,9 @@ type emitCtx struct {
 	// callExitWriteSlots tracks slots that are written by call-exit (side-exit) instructions.
 	// These slots should NOT be overwritten by storeBack (the interpreter's value is authoritative).
 	callExitWriteSlots map[int]bool
+	// floatWrittenSlots tracks slots whose last write was a float value.
+	// Int store-back must skip these to avoid overwriting a float with a stale int GPR.
+	floatWrittenSlots map[int]bool
 	// arraySeq is a monotonically increasing counter for unique array access labels.
 	arraySeq int
 	// guardTruthyCount is a monotonically increasing counter for unique guard_truthy labels.
@@ -198,6 +255,7 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 		regMap:             regMap,
 		floatSlotReg:       make(map[int]FReg),
 		callExitWriteSlots: make(map[int]bool),
+		floatWrittenSlots:  make(map[int]bool),
 	}
 
 	// Pre-scan: track which slots are written by call-exit instructions.
@@ -881,6 +939,12 @@ func (ec *emitCtx) spillInt(ref SSARef, inst *SSAInst, dst Reg) {
 	if slot < 0 {
 		return
 	}
+	// When an int value is written to a slot, remove any stale float tracking.
+	// This prevents the float store-back from overwriting the slot with an old
+	// float value after an int operation has updated it (e.g., quicksort swap
+	// where slot 10 alternates between arr[j] (float) and i+1 (int)).
+	delete(ec.floatSlotReg, slot)
+	delete(ec.floatWrittenSlots, slot)
 	if reg, ok := ec.regMap.IntReg(slot); ok && reg == dst {
 		return // already in allocated register, no spill needed
 	}
@@ -940,6 +1004,8 @@ func (ec *emitCtx) spillFloat(ref SSARef, inst *SSAInst, dst FReg) {
 	}
 	// Track which register holds this slot's current value
 	ec.floatSlotReg[slot] = dst
+	// Mark this slot as last-written by float, so int store-back skips it.
+	ec.floatWrittenSlots[slot] = true
 	if freg, ok := ec.regMap.FloatRefReg(ref); ok && freg == dst {
 		return // already in allocated register
 	}
@@ -1789,12 +1855,16 @@ func (ec *emitCtx) emitStoreBackImpl(typeSafe bool) {
 	_ = typeSafe // used for call-exit slot skipping
 
 	// Store all allocated integer registers back to memory (NaN-boxed).
-	// ALWAYS skip call-exit output slots: these slots may contain values of
-	// a different type (table, bool) written by the call-exit handler. The int
-	// register for such slots is stale and must not overwrite the handler's value.
+	// Skip call-exit output slots (interpreter's value is authoritative).
+	// Skip float-written slots: a float operation was the last writer, so the
+	// int GPR holds a stale value. The correct float value is either in an FPR
+	// (handled by float store-back below) or already in memory.
 	if ec.regMap.Int != nil {
 		for slot, reg := range ec.regMap.Int.slotToReg {
 			if ec.callExitWriteSlots[slot] {
+				continue
+			}
+			if ec.floatWrittenSlots[slot] {
 				continue
 			}
 			EmitBoxIntFast(asm, X0, reg, regTagInt)
