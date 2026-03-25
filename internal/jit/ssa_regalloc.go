@@ -60,7 +60,7 @@ func newSlotAlloc(f *SSAFunc) *slotAlloc {
 			continue
 		}
 
-		if inst.Type == SSATypeInt || inst.Type == SSATypeBool {
+		if inst.Type == SSATypeInt {
 			freq[slot]++
 		}
 	}

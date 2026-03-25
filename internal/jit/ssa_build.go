@@ -557,11 +557,19 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 
 	case vm.OP_TEST:
 		aRef := b.getSlotRef(ir.A)
+		// OP_TEST A C: skip next instruction if bool(R(A)) != bool(C).
+		// The trace follows the "skip" path (the recorded path). The guard
+		// must protect this path: fail (side-exit) if the condition would NOT skip.
+		// "Skip" happens when bool(R(A)) != bool(C), i.e., the value's truthiness
+		// differs from C. Guard passes when:
+		//   C=0 → truthy (value != false) → AuxInt=1 (guard passes if truthy)
+		//   C=1 → falsy  (value != true)  → AuxInt=0 (guard passes if falsy)
+		guardC := int64(ir.C) ^ 1
 		b.emit(SSAInst{
 			Op:     SSA_GUARD_TRUTHY,
 			Type:   SSATypeBool,
 			Arg1:   aRef,
-			AuxInt: int64(ir.C), // C encodes the expected truthiness
+			AuxInt: guardC,
 			Slot:   int16(ir.A),
 			PC:     ir.PC,
 		})
@@ -737,11 +745,13 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 
 	case vm.OP_TESTSET:
 		bRef := b.getSlotRef(ir.B)
+		// Same inversion as OP_TEST: the trace follows the "skip" path.
+		guardC := int64(ir.C) ^ 1
 		ref := b.emit(SSAInst{
 			Op:     SSA_GUARD_TRUTHY,
 			Type:   SSATypeBool,
 			Arg1:   bRef,
-			AuxInt: int64(ir.C),
+			AuxInt: guardC,
 			Slot:   int16(ir.A),
 			PC:     ir.PC,
 		})

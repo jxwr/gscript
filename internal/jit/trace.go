@@ -13,6 +13,12 @@ import (
 // TraceCallHandler executes an external function call on behalf of trace JIT code.
 type TraceCallHandler func(runtime.Value, []runtime.Value) ([]runtime.Value, error)
 
+// GlobalsAccessor provides access to global variables for call-exit handling.
+type GlobalsAccessor interface {
+	GetGlobal(name string) runtime.Value
+	SetGlobal(name string, val runtime.Value)
+}
+
 // TraceRecorder captures instructions during recording mode.
 type TraceRecorder struct {
 	traces    []*Trace
@@ -68,6 +74,9 @@ type TraceRecorder struct {
 
 	// callHandler executes external function calls for traces with SSA_CALL.
 	callHandler TraceCallHandler
+
+	// globalsAccessor provides access to global variables for GETGLOBAL/SETGLOBAL call-exits.
+	globalsAccessor GlobalsAccessor
 
 	// inlineCallStack tracks the trace-relative call-destination slot for each
 	// inline depth level. When handleCall inlines a function, the call register
@@ -136,6 +145,11 @@ func (r *TraceRecorder) ShouldSkipJIT() bool {
 // SetCallHandler sets the function that executes external calls for trace call-exit support.
 func (r *TraceRecorder) SetCallHandler(handler TraceCallHandler) {
 	r.callHandler = handler
+}
+
+// SetGlobalsAccessor sets the globals accessor for GETGLOBAL/SETGLOBAL call-exit support.
+func (r *TraceRecorder) SetGlobalsAccessor(accessor GlobalsAccessor) {
+	r.globalsAccessor = accessor
 }
 
 // Traces returns all recorded traces.
@@ -327,6 +341,9 @@ func (r *TraceRecorder) finishTrace() {
 						if ct.hasCallExit && r.callHandler != nil {
 							ct.callHandler = r.callHandler
 						}
+						if ct.hasCallExit && r.globalsAccessor != nil {
+							ct.globalsAccessor = r.globalsAccessor
+						}
 						if innerForloopPC > 0 {
 							innerKey := loopKey{proto: r.current.LoopProto, pc: innerForloopPC}
 							if innerCT, ok := r.compiled[innerKey]; ok {
@@ -513,6 +530,9 @@ type CompiledTrace struct {
 
 	// callHandler executes external function calls for call-exit support.
 	callHandler TraceCallHandler
+
+	// globalsAccessor provides access to global variables for GETGLOBAL/SETGLOBAL call-exits.
+	globalsAccessor GlobalsAccessor
 
 	// Snapshot-based state restore
 	snapshots []Snapshot       // snapshots from SSA compilation

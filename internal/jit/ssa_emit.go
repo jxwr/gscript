@@ -25,6 +25,8 @@ func FuseMultiplyAdd(f *SSAFunc) *SSAFunc { return f }
 
 // ssaIsIntegerOnly returns true if all SSA ops in the function are compilable.
 func ssaIsIntegerOnly(f *SSAFunc) bool {
+	hasCallExit := false
+	hasForloopExit := false
 	for _, inst := range f.Insts {
 		switch inst.Op {
 		case SSA_GUARD_TYPE, SSA_LOAD_SLOT, SSA_UNBOX_INT, SSA_UNBOX_FLOAT,
@@ -35,14 +37,31 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
 			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_NIL, SSA_CONST_BOOL,
 			SSA_LOAD_FIELD, SSA_STORE_FIELD,
+			SSA_LOAD_ARRAY, SSA_STORE_ARRAY, SSA_LOAD_GLOBAL, SSA_TABLE_LEN,
 			SSA_GUARD_TRUTHY, SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
 			SSA_LOOP, SSA_SIDE_EXIT, SSA_NOP, SSA_SNAPSHOT,
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP, SSA_INTRINSIC,
+			SSA_CALL,
 			SSA_MOVE, SSA_PHI, SSA_BOX_INT, SSA_BOX_FLOAT, SSA_STORE_SLOT:
+			// Track call-exit ops
+			if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_ARRAY || inst.Op == SSA_STORE_ARRAY ||
+				inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
+				hasCallExit = true
+			}
+			// Track FORLOOP exit (LE with AuxInt=-1 sentinel)
+			if (inst.Op == SSA_LE_INT || inst.Op == SSA_LE_FLOAT) && inst.AuxInt == -1 {
+				hasForloopExit = true
+			}
 			continue
 		default:
 			return false
 		}
+	}
+	// Call-exit traces require a FORLOOP exit to be safe.
+	// While-loop traces with call-exits would compile but loop forever
+	// (the while-loop exit mechanism is not yet implemented for compiled traces).
+	if hasCallExit && !hasForloopExit {
+		return false
 	}
 	return true
 }
@@ -105,6 +124,15 @@ type emitCtx struct {
 	// breakGuardPC is the bytecode PC of the break guard (LT_FLOAT inside inner loop).
 	// Used by break_exit to set ExitPC so the VM re-executes the comparison.
 	breakGuardPC int
+	// callExitPCs records the bytecode PCs of call-exit instructions (for resume dispatch).
+	// Each call-exit gets a unique index; the resume dispatch uses this to jump to the
+	// correct resume label after the Go handler executes the instruction.
+	callExitPCs []int
+	// reloadSeq is a monotonically increasing counter for unique reload labels.
+	reloadSeq int
+	// callExitWriteSlots tracks slots that are written by call-exit handlers.
+	// These slots should NOT be overwritten by storeBack (the handler's value is authoritative).
+	callExitWriteSlots map[int]bool
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -121,38 +149,56 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	asm := NewAssembler()
 
 	ec := &emitCtx{
-		asm:          asm,
-		f:            f,
-		regMap:       regMap,
-		floatSlotReg: make(map[int]FReg),
+		asm:                asm,
+		f:                  f,
+		regMap:             regMap,
+		floatSlotReg:       make(map[int]FReg),
+		callExitWriteSlots: make(map[int]bool),
+	}
+
+	// Pre-scan: collect call-exit PCs for resume dispatch.
+	// Also track which slots are written by call-exit instructions.
+	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_ARRAY || inst.Op == SSA_STORE_ARRAY ||
+			inst.Op == SSA_TABLE_LEN || inst.Op == SSA_LOAD_GLOBAL {
+			ec.callExitPCs = append(ec.callExitPCs, inst.PC)
+			// Track output slots (slots written by the handler)
+			if inst.Slot >= 0 {
+				ec.callExitWriteSlots[int(inst.Slot)] = true
+			}
+		}
 	}
 
 	// 1. Prologue: save callee-saved registers, set up pinned registers
 	ec.emitPrologue()
 
-	// 2. Pre-loop guards: type check all live-in slots
+	// 2. Resume dispatch: if ResumePC != 0, jump to the correct resume label
+	ec.emitResumeDispatch()
+
+	// 3. Pre-loop guards: type check all live-in slots
 	ec.emitPreLoopGuards()
 
-	// 3. Pre-loop loads: load live-in values into allocated registers
+	// 4. Pre-loop loads: load live-in values into allocated registers
 	ec.emitPreLoopLoads()
 
-	// 4. Loop body
+	// 5. Loop body
 	asm.Label("loop_top")
 	ec.emitLoopBody()
 
-	// 5. Loop back-edge
+	// 6. Loop back-edge
 	asm.B("loop_top")
 
-	// 6. Cold paths: side-exit, break-exit, loop-done, guard-fail, call-exits
+	// 7. Cold paths: side-exit, break-exit, loop-done, guard-fail
 	ec.emitSideExit()
 	ec.emitBreakExit()
 	ec.emitLoopDone()
 	ec.emitGuardFail()
 
-	// 7. Epilogue
+	// 8. Epilogue
 	ec.emitEpilogue()
 
-	// 8. Finalize and allocate executable memory
+	// 9. Finalize and allocate executable memory
 	code, err := asm.Finalize()
 	if err != nil {
 		return nil, fmt.Errorf("assembler finalize: %w", err)
@@ -248,6 +294,36 @@ func (ec *emitCtx) emitPrologue() {
 
 	// Load NaN-boxing int tag constant into X24
 	asm.LoadImm64(regTagInt, nb_i64(NB_TagInt)) // X24 = 0xFFFE000000000000
+}
+
+// emitResumeDispatch emits the resume dispatch code at trace entry.
+// If ResumePC != 0, this means we're re-entering after a call-exit.
+// The dispatch jumps to the correct resume_call_N label.
+// If ResumePC == 0, falls through to normal entry (pre-loop guards + loads).
+func (ec *emitCtx) emitResumeDispatch() {
+	if len(ec.callExitPCs) == 0 {
+		return // no call-exits, no dispatch needed
+	}
+
+	asm := ec.asm
+
+	// Load ResumePC from TraceContext
+	asm.LDR(X0, regCtx, TraceCtxOffResumePC)
+	asm.CBZ(X0, "normal_entry") // ResumePC=0 → normal entry
+
+	// Dispatch to the correct resume label based on ResumePC value
+	for i, pc := range ec.callExitPCs {
+		label := "resume_call_" + itoa(i)
+		// ResumePC is set to pc+1 by the Go handler (next instruction after the call-exit)
+		asm.LoadImm64(X1, int64(pc+1))
+		asm.CMPreg(X0, X1)
+		asm.BCond(CondEQ, label)
+	}
+
+	// Unknown ResumePC → treat as normal entry
+	asm.B("normal_entry")
+
+	asm.Label("normal_entry")
 }
 
 func (ec *emitCtx) emitEpilogue() {
@@ -591,16 +667,26 @@ func (ec *emitCtx) emitLoopBody() {
 		case SSA_INTRINSIC:
 			ec.emitIntrinsic(ref, inst)
 
-		case SSA_LOAD_GLOBAL, SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
+		case SSA_LOAD_GLOBAL:
+			// GETGLOBAL: emit as call-exit (handler reads from globals)
+			ec.emitCallExit(inst)
+
+		case SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP,
 			SSA_PHI, SSA_STORE_SLOT, SSA_BOX_FLOAT,
 			SSA_SIDE_EXIT, SSA_DIV_INT:
-			// Not yet implemented — emit as call-exit or skip
+			// Not yet implemented — skip
 		}
 	}
 
-	// Store-back: write all allocated register values back to memory before loop back-edge
-	ec.emitStoreBack()
+	// Store-back: write all allocated register values back to memory before loop back-edge.
+	// Use type-safe store-back if the trace has call-exits, to avoid overwriting
+	// call-exit handler results (tables, booleans) with stale register values.
+	if ec.hasCallExit {
+		ec.emitStoreBackTypeSafe()
+	} else {
+		ec.emitStoreBack()
+	}
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1208,7 +1294,11 @@ func (ec *emitCtx) emitCallExitInst(inst *SSAInst) {
 	asm := ec.asm
 	ec.hasCallExit = true
 
-	// Store back all registers to memory before exiting
+	idx := ec.callExits
+	ec.callExits++
+
+	// Store back ALL registers to memory before exiting.
+	// This must be unconditional so the handler sees current register values.
 	ec.emitStoreBack()
 
 	// Set ExitPC to the call instruction's PC
@@ -1216,11 +1306,25 @@ func (ec *emitCtx) emitCallExitInst(inst *SSAInst) {
 	asm.STR(X9, regCtx, TraceCtxOffExitPC)
 
 	// Exit with code 3 (call-exit)
-	// The executor will handle the call and may re-enter the trace.
-	// For now, call-exit re-entry is not supported, so the executor
-	// will treat this as a side-exit.
+	// The executor handles the instruction and re-enters via resume label.
 	asm.LoadImm64(X0, 3)
 	asm.B("epilogue")
+
+	// Resume label: the executor sets ResumePC and re-enters the trace.
+	// We reload regRegs (may have been reallocated) and all allocated
+	// registers from memory (the handler may have modified them).
+	resumeLabel := "resume_call_" + itoa(idx)
+	asm.Label(resumeLabel)
+
+	// Reload regRegs pointer (the handler updated ctx.Regs)
+	asm.LDR(regRegs, regCtx, TraceCtxOffRegs)
+
+	// Clear ResumePC so the next loop iteration enters normally
+	asm.LoadImm64(X0, 0)
+	asm.STR(X0, regCtx, TraceCtxOffResumePC)
+
+	// Reload ALL allocated registers from memory
+	ec.emitReloadAll()
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1268,28 +1372,43 @@ func (ec *emitCtx) emitIntrinsic(ref SSARef, inst *SSAInst) {
 // Store-back: write all register values to memory before loop back-edge
 // ────────────────────────────────────────────────────────────────────────────
 
+// emitStoreBack writes all allocated register values back to memory.
+// If typeSafe is true, only writes to slots whose memory value has a matching type.
+// This prevents call-exit results (e.g., tables, booleans) from being overwritten
+// by stale register values of a different type.
 func (ec *emitCtx) emitStoreBack() {
-	asm := ec.asm
+	ec.emitStoreBackImpl(false)
+}
 
-	// Store all allocated integer registers back to memory (NaN-boxed)
+func (ec *emitCtx) emitStoreBackTypeSafe() {
+	ec.emitStoreBackImpl(true)
+}
+
+func (ec *emitCtx) emitStoreBackImpl(typeSafe bool) {
+	asm := ec.asm
+	_ = typeSafe // used for call-exit slot skipping
+
+	// Store all allocated integer registers back to memory (NaN-boxed).
+	// ALWAYS skip call-exit output slots: these slots may contain values of
+	// a different type (table, bool) written by the call-exit handler. The int
+	// register for such slots is stale and must not overwrite the handler's value.
 	if ec.regMap.Int != nil {
 		for slot, reg := range ec.regMap.Int.slotToReg {
+			if ec.callExitWriteSlots[slot] {
+				continue
+			}
 			EmitBoxIntFast(asm, X0, reg, regTagInt)
 			asm.STR(X0, regRegs, slot*ValueSize)
 		}
 	}
 
 	// Store slot-level float registers back to memory.
-	// ONLY store if the slot-level register is the LATEST writer to that slot.
-	// If spillFloat wrote to memory via a scratch register, the slot-level
-	// register is stale (still holds the pre-loop value) and should NOT be
-	// stored back — the memory already has the correct value from spillFloat.
 	if ec.regMap.Float != nil {
 		for slot, freg := range ec.regMap.Float.slotToReg {
 			if lastReg, ok := ec.floatSlotReg[slot]; ok && lastReg != freg {
-				// The loop body wrote to this slot via a different register
-				// (usually a scratch). The slot-level register is stale.
-				// Skip — memory already has the correct value from spillFloat.
+				continue
+			}
+			if ec.callExitWriteSlots[slot] {
 				continue
 			}
 			asm.FSTRd(freg, regRegs, slot*ValueSize)
@@ -1297,20 +1416,15 @@ func (ec *emitCtx) emitStoreBack() {
 	}
 
 	// For ref-level float allocations, only store the LATEST ref per slot.
-	// Multiple refs can map to the same slot (e.g., pre-loop UNBOX and loop-body MOVE
-	// both target slot 10). The register allocator may reuse the same register for
-	// non-overlapping refs, so an earlier ref's register may hold a completely different
-	// value by the end of the loop. Only the LAST ref's register has the correct value.
 	if ec.regMap.FloatRef != nil {
-		// Use floatSlotReg which was tracked during emission.
-		// This maps each float slot to the FPR that holds its value
-		// at the end of the loop body (after the last write to that slot).
 		for slot, freg := range ec.floatSlotReg {
-			// Skip if slot already handled by slot-level float alloc
 			if ec.regMap.Float != nil {
 				if _, ok := ec.regMap.Float.slotToReg[slot]; ok {
 					continue
 				}
+			}
+			if ec.callExitWriteSlots[slot] {
+				continue
 			}
 			asm.FSTRd(freg, regRegs, slot*ValueSize)
 		}
@@ -1323,29 +1437,43 @@ func (ec *emitCtx) emitStoreBack() {
 
 func (ec *emitCtx) emitReloadAll() {
 	asm := ec.asm
+	seq := ec.reloadSeq
+	ec.reloadSeq++
 
-	// Reload integer registers
+	// Reload integer registers with type-safe unboxing.
+	// After a call-exit, slots may contain values of unexpected types (e.g., a bool
+	// in a slot that the register allocator assigned an int GPR). We must verify the
+	// NaN-box tag is actually int (0xFFFE) before unboxing; otherwise, skip the reload
+	// and leave the register as-is (the code path will read from memory if needed).
 	if ec.regMap.Int != nil {
 		for slot, reg := range ec.regMap.Int.slotToReg {
+			skipLabel := "reload_skip_int_" + itoa(seq) + "_" + itoa(slot)
 			asm.LDR(reg, regRegs, slot*ValueSize)
+			// Check if this is actually an integer (top 16 bits == 0xFFFE)
+			asm.LSRimm(X0, reg, 48)
+			asm.MOVimm16(X1, NB_TagIntShr48)
+			asm.CMPreg(X0, X1)
+			asm.BCond(CondNE, skipLabel) // not int → skip unbox, register holds raw NaN-boxed value
 			EmitUnboxInt(asm, reg, reg)
+			asm.Label(skipLabel)
 		}
 	}
 
-	// Reload float registers (slot-level)
+	// Reload ALL float registers from their slot's memory.
+	// We must reload every FPR that the loop body might read, including both
+	// slot-level and ref-level allocations. A given slot may have both a
+	// slot-level FPR and one or more ref-level FPRs (possibly different registers).
+	// All must be loaded from the same memory slot.
+	reloadedFPR := make(map[FReg]bool)
 	if ec.regMap.Float != nil {
 		for slot, freg := range ec.regMap.Float.slotToReg {
 			asm.FLDRd(freg, regRegs, slot*ValueSize)
+			reloadedFPR[freg] = true
 		}
 	}
-
-	// Reload ALL ref-level float registers from their slot's memory.
-	// Each ref-level register reads its corresponding slot value.
-	// This is correct because the memory has been updated by emitStoreBack.
 	if ec.regMap.FloatRef != nil {
-		reloaded := make(map[FReg]bool) // avoid reloading same register twice
 		for ref, freg := range ec.regMap.FloatRef.refToReg {
-			if reloaded[freg] {
+			if reloadedFPR[freg] {
 				continue
 			}
 			if int(ref) >= len(ec.f.Insts) {
@@ -1356,13 +1484,8 @@ func (ec *emitCtx) emitReloadAll() {
 			if slot < 0 {
 				continue
 			}
-			if ec.regMap.Float != nil {
-				if _, ok := ec.regMap.Float.slotToReg[slot]; ok {
-					continue
-				}
-			}
 			asm.FLDRd(freg, regRegs, slot*ValueSize)
-			reloaded[freg] = true
+			reloadedFPR[freg] = true
 		}
 	}
 }
@@ -1394,8 +1517,13 @@ func (ec *emitCtx) emitSideExit() {
 	asm := ec.asm
 
 	asm.Label("side_exit_setup")
-	// Store back all register values to memory before exiting
-	ec.emitStoreBack()
+	// Store back all register values to memory before exiting.
+	// Use type-safe store-back when call-exits are present.
+	if ec.hasCallExit {
+		ec.emitStoreBackTypeSafe()
+	} else {
+		ec.emitStoreBack()
+	}
 
 	// Set ExitPC to the loop PC (VM resumes at the loop instruction)
 	loopPC := 0
@@ -1435,7 +1563,11 @@ func (ec *emitCtx) emitBreakExit() {
 	asm.Label("break_exit")
 
 	// Store back all register values to memory
-	ec.emitStoreBack()
+	if ec.hasCallExit {
+		ec.emitStoreBackTypeSafe()
+	} else {
+		ec.emitStoreBack()
+	}
 
 	// Set ExitPC to the break guard's PC so the VM re-executes the comparison.
 	// The VM will evaluate the LT/LE, take the "escape" branch, execute
@@ -1468,7 +1600,11 @@ func (ec *emitCtx) emitLoopDone() {
 	asm.Label("loop_done")
 
 	// Store back all register values to memory
-	ec.emitStoreBack()
+	if ec.hasCallExit {
+		ec.emitStoreBackTypeSafe()
+	} else {
+		ec.emitStoreBack()
+	}
 
 	// Set ExitPC to the FORLOOP PC + 1 (instruction after the loop)
 	loopPC := 0
