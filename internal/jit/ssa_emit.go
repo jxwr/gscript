@@ -4,6 +4,8 @@ package jit
 
 import (
 	"fmt"
+
+	"github.com/gscript/gscript/internal/runtime"
 )
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -26,7 +28,6 @@ func CSE(f *SSAFunc) *SSAFunc { return cseImpl(f) }
 
 // ssaIsIntegerOnly returns true if all SSA ops in the function are compilable.
 func ssaIsIntegerOnly(f *SSAFunc) bool {
-	hasCallExit := false
 	hasForloopExit := false
 	for _, inst := range f.Insts {
 		switch inst.Op {
@@ -42,18 +43,10 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			SSA_GUARD_TRUTHY, SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
 			SSA_LOOP, SSA_SIDE_EXIT, SSA_NOP, SSA_SNAPSHOT,
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP, SSA_INTRINSIC,
-			SSA_CALL,
+			SSA_CALL, SSA_SELF_CALL,
 			SSA_MOVE, SSA_PHI, SSA_BOX_INT, SSA_BOX_FLOAT, SSA_STORE_SLOT:
-			// Track call-exit ops: SSA_CALL, SSA_LOAD_GLOBAL, SSA_TABLE_LEN
-			// are emitted as side-exits (ExitCode=1).
-			if inst.Op == SSA_CALL || inst.Op == SSA_LOAD_GLOBAL || inst.Op == SSA_TABLE_LEN {
-				hasCallExit = true
-			}
-			// LOAD_ARRAY with non-scalar, non-table result falls back to call-exit.
-			// Table-type LOAD_ARRAY is now native (emitLoadArrayTable).
-			if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool && inst.Type != SSATypeTable {
-				hasCallExit = true
-			}
+			// LOAD_FIELD/STORE_FIELD with invalid field index are silently
+			// skipped (no code emitted), NOT treated as call-exit.
 			// Track loop exit: FORLOOP (AuxInt=-1) or while-loop (AuxInt=-2)
 			if isLoopExitCmp(inst.Op, inst.AuxInt) {
 				hasForloopExit = true
@@ -63,18 +56,13 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 			return false
 		}
 	}
-	// Call-exit traces require a FORLOOP exit to be safe.
-	// While-loop traces with call-exits would compile but loop forever
-	// (the while-loop exit mechanism is not yet implemented for compiled traces).
-	if hasCallExit && !hasForloopExit {
-		return false
-	}
-	// Only compile traces that have a proper FORLOOP exit.
+	// Only compile traces that have a proper loop exit (FORLOOP or while-loop).
+	// hasForloopExit is true for both FORLOOP (AuxInt=-1) and while-loop (AuxInt=-2) exits.
 	if !hasForloopExit {
 		return false
 	}
-	// Call-exit ops (SSA_CALL, SSA_TABLE_LEN) are now emitted as side-exits
-	// (ExitCode=1). SSA_LOAD_GLOBAL is native (loads from trace constant pool).
+	// Call-exit ops (SSA_CALL, SSA_LOAD_GLOBAL) are emitted as side-exits (ExitCode=1).
+	// SSA_TABLE_LEN is now native.
 	// The interpreter resumes at ExitPC, executes the instruction, and FORLOOP
 	// back-edge re-enters the trace. No resume dispatch needed.
 	return true
@@ -91,7 +79,7 @@ func SSAIsUseful(f *SSAFunc) bool {
 			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT,
 			SSA_FMADD, SSA_FMSUB,
 			SSA_LOAD_FIELD, SSA_STORE_FIELD, SSA_LOAD_ARRAY, SSA_STORE_ARRAY,
-			SSA_INTRINSIC:
+			SSA_TABLE_LEN, SSA_INTRINSIC:
 			hasComputation = true
 		}
 	}
@@ -100,15 +88,16 @@ func SSAIsUseful(f *SSAFunc) bool {
 	}
 
 	// Reject traces where the first meaningful instruction after SSA_LOOP is a
-	// call-exit op (SSA_CALL, SSA_TABLE_LEN, non-scalar LOAD_ARRAY).
-	// SSA_LOAD_GLOBAL is now native (loads from trace constant pool) and is NOT a call-exit.
+	// call-exit op (SSA_CALL, SSA_LOAD_GLOBAL, non-scalar LOAD_ARRAY).
+	// SSA_TABLE_LEN is now native and is NOT a call-exit.
 	// Such traces would exit immediately on every entry — the trace does no useful
 	// work before hitting the side-exit. This prevents infinite re-enter → exit loops.
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		op := f.Insts[i].Op
 		// Skip NOPs, snapshots, loads, unboxes, constants, guards — these are setup, not computation.
-		// SSA_LOAD_GLOBAL is native and counts as setup (loads a value from constant pool).
-		if op == SSA_NOP || op == SSA_SNAPSHOT || op == SSA_LOAD_SLOT || op == SSA_LOAD_GLOBAL ||
+		// SSA_TABLE_LEN is native and counts as setup.
+		if op == SSA_NOP || op == SSA_SNAPSHOT || op == SSA_LOAD_SLOT ||
+			op == SSA_TABLE_LEN ||
 			op == SSA_UNBOX_INT || op == SSA_UNBOX_FLOAT ||
 			op == SSA_CONST_INT || op == SSA_CONST_FLOAT || op == SSA_CONST_NIL || op == SSA_CONST_BOOL ||
 			op == SSA_GUARD_TYPE || op == SSA_GUARD_TRUTHY || op == SSA_GUARD_NNIL || op == SSA_GUARD_NOMETA ||
@@ -116,8 +105,15 @@ func SSAIsUseful(f *SSAFunc) bool {
 			continue
 		}
 		// If the first real op is a call-exit, the trace is useless
-		if op == SSA_CALL || op == SSA_TABLE_LEN {
+		if op == SSA_CALL {
 			return false
+		}
+		// Non-table LOAD_GLOBAL is a call-exit; table-type is native
+		if op == SSA_LOAD_GLOBAL {
+			inst := &f.Insts[i]
+			if inst.Type != SSATypeTable {
+				return false
+			}
 		}
 		// Non-scalar, non-table LOAD_ARRAY is also a call-exit.
 		// Table-type LOAD_ARRAY is native (emitLoadArrayTable).
@@ -134,11 +130,15 @@ func SSAIsUseful(f *SSAFunc) bool {
 	// These instructions always side-exit (the interpreter handles them), so the
 	// trace enter→work→side-exit→resume cycle fires on EVERY iteration, which is
 	// slower than pure interpretation due to trace entry/exit overhead.
-	// SSA_LOAD_GLOBAL is now native (loads from trace constant pool) and never side-exits.
+	// SSA_TABLE_LEN is now native and never side-exits.
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
-		// SSA_CALL, SSA_TABLE_LEN always side-exit.
-		if inst.Op == SSA_CALL || inst.Op == SSA_TABLE_LEN {
+		// SSA_CALL always side-exits.
+		if inst.Op == SSA_CALL {
+			return false
+		}
+		// Non-table LOAD_GLOBAL always side-exits; table-type is native.
+		if inst.Op == SSA_LOAD_GLOBAL && inst.Type != SSATypeTable {
 			return false
 		}
 		// Non-scalar, non-table LOAD_ARRAY always side-exits.
@@ -154,6 +154,206 @@ func SSAIsUseful(f *SSAFunc) bool {
 	// whose last write was float.
 
 	return true
+}
+
+// ssaIsCompilableFunc returns true if a function trace SSA is compilable.
+// Unlike loop traces, function traces don't need a FORLOOP exit — they
+// execute linearly from entry to RETURN.
+func ssaIsCompilableFunc(f *SSAFunc) bool {
+	for _, inst := range f.Insts {
+		switch inst.Op {
+		case SSA_GUARD_TYPE, SSA_LOAD_SLOT, SSA_UNBOX_INT, SSA_UNBOX_FLOAT,
+			SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
+			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
+			SSA_FMADD, SSA_FMSUB,
+			SSA_EQ_INT, SSA_LT_INT, SSA_LE_INT,
+			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
+			SSA_CONST_INT, SSA_CONST_FLOAT, SSA_CONST_NIL, SSA_CONST_BOOL,
+			SSA_LOAD_FIELD, SSA_STORE_FIELD,
+			SSA_LOAD_ARRAY, SSA_STORE_ARRAY, SSA_LOAD_GLOBAL, SSA_TABLE_LEN,
+			SSA_GUARD_TRUTHY, SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
+			SSA_LOOP, SSA_SIDE_EXIT, SSA_NOP, SSA_SNAPSHOT,
+			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP, SSA_INTRINSIC,
+			SSA_CALL, SSA_SELF_CALL,
+			SSA_MOVE, SSA_PHI, SSA_BOX_INT, SSA_BOX_FLOAT, SSA_STORE_SLOT:
+			// LOAD_ARRAY with non-scalar, non-table result falls back to call-exit.
+			if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool && inst.Type != SSATypeTable {
+				// Still OK for func traces — will side-exit
+			}
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ssaIsFuncUseful returns true if a function trace SSA has meaningful computation.
+func ssaIsFuncUseful(f *SSAFunc) bool {
+	hasComputation := false
+	for _, inst := range f.Insts {
+		switch inst.Op {
+		case SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT,
+			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT,
+			SSA_FMADD, SSA_FMSUB,
+			SSA_EQ_INT, SSA_LT_INT, SSA_LE_INT,
+			SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT,
+			SSA_LOAD_FIELD, SSA_STORE_FIELD, SSA_LOAD_ARRAY, SSA_STORE_ARRAY,
+			SSA_TABLE_LEN, SSA_INTRINSIC, SSA_SELF_CALL:
+			hasComputation = true
+		}
+	}
+	return hasComputation
+}
+
+// CompileSSAFunc compiles a function-entry trace SSA to native ARM64 code.
+// Unlike CompileSSA (for loop traces), this emits a linear code path with
+// no loop back-edge — the trace runs once from entry to exit.
+func CompileSSAFunc(f *SSAFunc) (*CompiledTrace, error) {
+	if f == nil || len(f.Insts) == 0 {
+		return nil, fmt.Errorf("empty SSA function")
+	}
+
+	regMap := AllocateRegisters(f)
+	if debugTrace && regMap.Int != nil {
+		fmt.Printf("[REGALLOC-INT-FUNC] ")
+		for slot, reg := range regMap.Int.slotToReg {
+			fmt.Printf("slot%d->%v ", slot, reg)
+		}
+		fmt.Println()
+	}
+	asm := NewAssembler()
+
+	ec := &emitCtx{
+		asm:                asm,
+		f:                  f,
+		regMap:             regMap,
+		floatSlotReg:       make(map[int]FReg),
+		callExitWriteSlots: make(map[int]bool),
+		floatWrittenSlots:  make(map[int]bool),
+		rawIntSlots:        make(map[int]bool),
+		selfCallExtraRef:   SSARefNone,
+	}
+
+	// Pre-scan: track call-exit slots (same as loop traces)
+	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		isCallExit := inst.Op == SSA_CALL
+		if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool && inst.Type != SSATypeTable {
+			isCallExit = true
+		}
+		if isCallExit && inst.Slot >= 0 {
+			ec.callExitWriteSlots[int(inst.Slot)] = true
+		}
+		if inst.Op == SSA_STORE_ARRAY && inst.Slot >= 0 {
+			ec.callExitWriteSlots[int(inst.Slot)] = true
+		}
+		if inst.Op == SSA_LOAD_ARRAY {
+			if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(f.Insts) {
+				tblSlot := int(f.Insts[inst.Arg1].Slot)
+				if tblSlot >= 0 {
+					ec.callExitWriteSlots[tblSlot] = true
+				}
+			}
+			if inst.Type == SSATypeTable && inst.Slot >= 0 {
+				ec.callExitWriteSlots[int(inst.Slot)] = true
+			}
+		}
+		if inst.Op == SSA_STORE_FIELD && inst.Slot >= 0 {
+			ec.callExitWriteSlots[int(inst.Slot)] = true
+		}
+		if inst.Op == SSA_LOAD_FIELD {
+			if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(f.Insts) {
+				tblSlot := int(f.Insts[inst.Arg1].Slot)
+				if tblSlot >= 0 {
+					ec.callExitWriteSlots[tblSlot] = true
+				}
+			}
+		}
+		if inst.Op == SSA_LOAD_GLOBAL && inst.Slot >= 0 {
+			ec.callExitWriteSlots[int(inst.Slot)] = true
+		}
+	}
+
+	// Pre-scan: detect self-calls
+	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
+		if f.Insts[i].Op == SSA_SELF_CALL {
+			ec.hasSelfCalls = true
+			break
+		}
+	}
+
+	// 1. Prologue
+	ec.emitPrologue()
+
+	if ec.hasSelfCalls {
+		// Initialize self-call depth counter (X25 = 0)
+		asm.MOVimm16(X25, 0)
+		// Label for self-call re-entry (after prologue, before guards)
+		asm.Label("self_call_entry")
+	}
+
+	// 2. Pre-loop guards (type checks)
+	ec.emitPreLoopGuards()
+
+	// 3. Pre-loop loads
+	ec.emitPreLoopLoads()
+
+	// 4. Function body (no loop_top label, no back-edge)
+	ec.emitFuncBody()
+
+	// 5. Function done: store back and exit with ExitCode=0
+	ec.emitFuncDone()
+
+	// 6. Cold paths: side-exit, guard-fail
+	ec.emitSideExit()
+	if ec.hasSelfCalls {
+		ec.emitSelfCallGuardFail()
+	} else {
+		ec.emitGuardFail()
+	}
+
+	// 7. Epilogue
+	ec.emitEpilogue()
+
+	// 8. Finalize
+	code, err := asm.Finalize()
+	if err != nil {
+		return nil, fmt.Errorf("assembler finalize: %w", err)
+	}
+
+	block, err := AllocExec(len(code))
+	if err != nil {
+		return nil, fmt.Errorf("alloc exec: %w", err)
+	}
+
+	if err := block.WriteCode(code); err != nil {
+		return nil, fmt.Errorf("write code: %w", err)
+	}
+
+	// Compute return value count from the trace's FuncReturnCount.
+	// Bytecode B field: B-1 = number of return values (0 means variable).
+	nRet := 0
+	if f.Trace.FuncReturnCount >= 2 {
+		nRet = f.Trace.FuncReturnCount - 1
+	} else if f.Trace.FuncReturnCount == 0 {
+		nRet = 1 // variable returns: assume 1 for now
+	}
+
+	ct := &CompiledTrace{
+		code:            block,
+		proto:           f.Trace.LoopProto,
+		loopPC:          0,
+		constants:       f.Trace.Constants,
+		hasCallExit:     ec.hasCallExit,
+		snapshots:       f.Snapshots,
+		isFuncTrace:     true,
+		hasSelfCalls:    ec.hasSelfCalls,
+		funcReturnSlot:  f.Trace.FuncReturnSlot,
+		funcReturnCount: nRet,
+	}
+
+	return ct, nil
 }
 
 // isLoopExitCmp returns true if the SSA comparison is a loop exit:
@@ -219,10 +419,17 @@ type emitCtx struct {
 	// floatWrittenSlots tracks slots whose last write was a float value.
 	// Int store-back must skip these to avoid overwriting a float with a stale int GPR.
 	floatWrittenSlots map[int]bool
+	// rawIntSlots tracks slots that contain raw int values (not NaN-boxed).
+	// Store-back must box these before writing to the VM's memory.
+	rawIntSlots map[int]bool
 	// arraySeq is a monotonically increasing counter for unique array access labels.
 	arraySeq int
 	// guardTruthyCount is a monotonically increasing counter for unique guard_truthy labels.
 	guardTruthyCount int
+	// Self-call support for function traces with native recursion.
+	hasSelfCalls    bool            // true if function trace has SSA_SELF_CALL instructions
+	selfCallSeq     int             // monotonically increasing counter for unique self-call labels
+	selfCallExtraRef SSARef         // SSARef whose result is in regSelfExtra (X28), -1 if none
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -252,6 +459,7 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 		floatSlotReg:       make(map[int]FReg),
 		callExitWriteSlots: make(map[int]bool),
 		floatWrittenSlots:  make(map[int]bool),
+		rawIntSlots:        make(map[int]bool),
 	}
 
 	// Pre-scan: track which slots are written by call-exit instructions.
@@ -261,8 +469,7 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 	// pointers that must not be overwritten by int store-back.
 	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 		inst := &f.Insts[i]
-		isCallExit := inst.Op == SSA_CALL ||
-			inst.Op == SSA_TABLE_LEN
+		isCallExit := inst.Op == SSA_CALL
 		// LOAD_ARRAY with non-scalar, non-table result falls back to call-exit.
 		// Table-type LOAD_ARRAY is native (emitLoadArrayTable).
 		if inst.Op == SSA_LOAD_ARRAY && inst.Type != SSATypeInt && inst.Type != SSATypeFloat && inst.Type != SSATypeBool && inst.Type != SSATypeTable {
@@ -311,10 +518,15 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 				}
 			}
 		}
-		// NOTE: LOAD_GLOBAL destination slots are intentionally NOT protected
-		// from store-back. The store-back writes the correct int/float register
-		// values, and the next iteration's LOAD_GLOBAL overwrites the memory
-		// slot with the table pointer before any table operation reads it.
+		// Protect LOAD_GLOBAL destination slots from store-back.
+		// The slot may be reused for a float/int value later in the iteration;
+		// without protection, store-back would write the wrong type to the slot,
+		// and LOAD_ARRAY/LOAD_FIELD that use the slot as a table source would
+		// read corrupted data. Native LOAD_GLOBAL reads from regConsts, but
+		// other ops may read from regRegs when the source is not LOAD_GLOBAL.
+		if inst.Op == SSA_LOAD_GLOBAL && inst.Slot >= 0 {
+			ec.callExitWriteSlots[int(inst.Slot)] = true
+		}
 	}
 
 	// 1. Prologue: save callee-saved registers, set up pinned registers
@@ -328,16 +540,42 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 
 	// 5. Loop body
 	asm.Label("loop_top")
+
+	// Iteration tracing for debugging:
+	// Increment ctx.IterationCount and check against ctx.MaxIterations.
+	// If MaxIterations > 0 && IterationCount >= MaxIterations, exit with code 5.
+	// Uses X9, X15 as scratch registers.
+	asm.LDR(X9, regCtx, TraceCtxOffIterCount)  // X9 = ctx.IterationCount
+	asm.ADDimm(X9, X9, 1)                       // X9++
+	asm.STR(X9, regCtx, TraceCtxOffIterCount)  // ctx.IterationCount = X9
+	asm.LDR(X15, regCtx, TraceCtxOffMaxIter)   // X15 = ctx.MaxIterations
+	asm.CBZ(X15, "skip_max_iter")               // if MaxIterations == 0, skip
+	asm.CMPreg(X9, X15)                         // compare IterationCount vs MaxIterations
+	asm.BCond(CondGE, "max_iter_exit")          // if IterCount >= MaxIter, exit
+	asm.Label("skip_max_iter")
+
+	// Reload all float registers from memory at loop top.
+	// This ensures that ref-level FPRs (which may hold stale values from
+	// previous iterations) are overwritten with the correct values from
+	// the store-back that happened just before the backward branch.
+	ec.emitReloadAll()
 	ec.emitLoopBody()
 
 	// 6. Loop back-edge
+	// Store back all register values to memory before branching back.
+	// This is critical for float values: the ref-level FPR holds the result
+	// of the last operation, but the next iteration's resolveFloatRef may
+	// look up a different SSA ref that maps to the same slot. Without
+	// store-back + reload, the ref-level FPR has stale data.
+	ec.emitStoreBack()
 	asm.B("loop_top")
 
-	// 7. Cold paths: side-exit, break-exit, loop-done, guard-fail
+	// 7. Cold paths: side-exit, break-exit, loop-done, guard-fail, max-iter
 	ec.emitSideExit()
 	ec.emitBreakExit()
 	ec.emitLoopDone()
 	ec.emitGuardFail()
+	ec.emitMaxIterExit()
 
 	// 8. Epilogue
 	ec.emitEpilogue()
@@ -364,6 +602,7 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 		constants:   f.Trace.Constants,
 		hasCallExit: ec.hasCallExit,
 		snapshots:   f.Snapshots,
+		regMap:      regMap, // for debugging
 	}
 
 	return ct, nil
@@ -418,8 +657,9 @@ func (ec *emitCtx) emitPrologue() {
 	asm.SUBimm(SP, SP, uint16(frameSize))
 	// Save FP, LR
 	asm.STP(X29, X30, SP, 0)
-	// Set FP = SP
-	asm.MOVreg(X29, SP)
+	// Set FP = SP (must use ADD, not MOV — MOVreg encodes ORR with XZR,
+	// but register 31 in ORR context is XZR not SP)
+	asm.ADDimm(X29, SP, 0)
 	// Save callee-saved GPRs
 	asm.STP(X19, X20, SP, 16)
 	asm.STP(X21, X22, SP, 32)
@@ -481,20 +721,71 @@ func (ec *emitCtx) emitPreLoopGuards() {
 			continue
 		}
 		slot := int(inst.Slot)
-		expectedType := int(inst.AuxInt)
+		bailoutID := int(inst.AuxInt)
+
+		// Get guard info from deoptimization metadata
+		var expectedType int
+		gotDeopt := false
+		if f.DeoptMetadata != nil {
+			guard := f.DeoptMetadata.Guards[bailoutID]
+			if guard != nil && guard.Expected != nil {
+				// Expected is runtime.ValueType
+				if vt, ok := guard.Expected.(runtime.ValueType); ok {
+					expectedType = int(vt)
+					gotDeopt = true
+				}
+			}
+		}
+
+		// Fallbacks only when DeoptMetadata is not available.
+		// IMPORTANT: bailoutID is a guard index, NOT a type value.
+		// Only use it as a type when there's no DeoptMetadata.
+		if !gotDeopt {
+			// Fallback 1: AuxInt as raw type (legacy manually-constructed SSA)
+			if bailoutID >= TypeInt && bailoutID <= TypeTable {
+				expectedType = bailoutID
+			}
+			// Fallback 2: use the SSA instruction's Type field
+			if expectedType == TypeNil {
+				expectedType = ssaTypeToGuardType(inst.Type)
+			}
+		}
+
 		// Skip TypeNil guards — a nil-typed slot can't have useful
-		// computation. TypeNil(0) is also the zero value from trace IR
+		// computation. TypeNil(0) is also to zero value from trace IR
 		// entries that don't set AType (e.g., manually constructed tests).
 		if expectedType == TypeNil {
 			continue
 		}
+
+		// Emit guard with common fail label for now
+		// TODO: In Phase 3, use per-guard fail labels with bailout IDs
 		EmitGuardType(asm, regRegs, slot, expectedType, "guard_fail")
 	}
 }
-
-// ────────────────────────────────────────────────────────────────────────────
 // Pre-loop loads: load live-in values into allocated registers
 // ────────────────────────────────────────────────────────────────────────────
+
+// ssaTypeToGuardType converts an SSAType to a JIT guard type constant.
+// SSAType and JIT TypeXxx use different iota orderings for Table/String/Nil.
+func ssaTypeToGuardType(t SSAType) int {
+	switch t {
+	case SSATypeBool:
+		return TypeBool
+	case SSATypeInt:
+		return TypeInt
+	case SSATypeFloat:
+		return TypeFloat
+	case SSATypeString:
+		return TypeString
+	case SSATypeTable:
+		return TypeTable
+	case SSATypeNil:
+		return TypeNil
+	default:
+		return TypeNil // Unknown → skip (caller checks TypeNil)
+	}
+}
 
 func (ec *emitCtx) emitPreLoopLoads() {
 	asm := ec.asm
@@ -790,6 +1081,12 @@ func (ec *emitCtx) emitLoopBody() {
 		case SSA_LOAD_FIELD:
 			ec.emitLoadField(ref, inst)
 
+		case SSA_LOAD_TABLE_SHAPE:
+			ec.emitLoadTableShape(ref, inst)
+
+		case SSA_CHECK_SHAPE_ID:
+			ec.emitCheckShapeId(inst)
+
 		case SSA_STORE_FIELD:
 			ec.emitStoreField(inst)
 
@@ -809,8 +1106,13 @@ func (ec *emitCtx) emitLoopBody() {
 			ec.emitIntrinsic(ref, inst)
 
 		case SSA_LOAD_GLOBAL:
-			// GETGLOBAL: side-exit to interpreter (native GETGLOBAL disabled — causes nbody hang)
-			ec.emitCallExitInst(inst)
+			// Table-type GETGLOBAL: native load from constant pool.
+			// Non-table (function/int/float): call-exit to avoid slot reuse bugs.
+			if inst.Type == SSATypeTable {
+				ec.emitLoadGlobal(ref, inst)
+			} else {
+				ec.emitCallExitInst(inst)
+			}
 
 		case SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP,
@@ -836,6 +1138,207 @@ func (ec *emitCtx) emitLoopBody() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Function body emission (for function-entry traces)
+// ────────────────────────────────────────────────────────────────────────────
+
+func (ec *emitCtx) emitFuncBody() {
+	f := ec.f
+
+	// Function traces have no loop exit — all comparisons are guards.
+	ec.loopExitIdx = -1
+	ec.innerLoopExitIdx = -1
+	ec.innerLoopBodyStart = -1
+
+	for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
+		inst := &f.Insts[i]
+		ref := SSARef(i)
+
+		if f.AbsorbedMuls[ref] {
+			continue
+		}
+
+		switch inst.Op {
+		case SSA_NOP, SSA_SNAPSHOT, SSA_LOOP:
+			// No code emitted
+
+		case SSA_LOAD_SLOT:
+			ec.emitLoadSlot(ref, inst)
+
+		case SSA_UNBOX_INT:
+			ec.emitUnboxInt(ref, inst)
+
+		case SSA_UNBOX_FLOAT:
+			ec.emitUnboxFloat(ref, inst)
+
+		case SSA_CONST_NIL, SSA_CONST_BOOL:
+			// Resolved at use sites, not emitted
+
+		case SSA_ADD_INT:
+			ec.emitIntArith(ref, inst, func(asm *Assembler, dst, a1, a2 Reg) {
+				asm.ADDreg(dst, a1, a2)
+			})
+
+		case SSA_SUB_INT:
+			ec.emitIntArith(ref, inst, func(asm *Assembler, dst, a1, a2 Reg) {
+				asm.SUBreg(dst, a1, a2)
+			})
+
+		case SSA_MUL_INT:
+			ec.emitIntArith(ref, inst, func(asm *Assembler, dst, a1, a2 Reg) {
+				asm.MUL(dst, a1, a2)
+			})
+
+		case SSA_MOD_INT:
+			ec.emitModInt(ref, inst)
+
+		case SSA_NEG_INT:
+			ec.emitNegInt(ref, inst)
+
+		case SSA_ADD_FLOAT:
+			ec.emitFloatArith(ref, inst, func(asm *Assembler, dst, a1, a2 FReg) {
+				asm.FADDd(dst, a1, a2)
+			})
+
+		case SSA_SUB_FLOAT:
+			ec.emitFloatArith(ref, inst, func(asm *Assembler, dst, a1, a2 FReg) {
+				asm.FSUBd(dst, a1, a2)
+			})
+
+		case SSA_MUL_FLOAT:
+			ec.emitFloatArith(ref, inst, func(asm *Assembler, dst, a1, a2 FReg) {
+				asm.FMULd(dst, a1, a2)
+			})
+
+		case SSA_DIV_FLOAT:
+			ec.emitFloatArith(ref, inst, func(asm *Assembler, dst, a1, a2 FReg) {
+				asm.FDIVd(dst, a1, a2)
+			})
+
+		case SSA_NEG_FLOAT:
+			ec.emitNegFloat(ref, inst)
+
+		case SSA_FMADD:
+			ec.emitFMADD(ref, inst)
+
+		case SSA_FMSUB:
+			ec.emitFMSUB(ref, inst)
+
+		case SSA_BOX_INT:
+			ec.emitBoxIntAsFloat(ref, inst)
+
+		case SSA_EQ_INT:
+			ec.emitCmpInt(inst, CondNE)
+
+		case SSA_LT_INT:
+			ec.emitCmpInt(inst, CondGE)
+
+		case SSA_LE_INT:
+			ec.emitCmpIntLE(i, inst)
+
+		case SSA_LT_FLOAT:
+			ec.emitCmpFloat(inst, CondGE)
+
+		case SSA_LE_FLOAT:
+			ec.emitCmpFloatLE(i, inst)
+
+		case SSA_GT_FLOAT:
+			ec.emitCmpFloat(inst, CondLE)
+
+		case SSA_GUARD_TRUTHY:
+			ec.emitGuardTruthy(inst)
+
+		case SSA_MOVE:
+			ec.emitMove(ref, inst)
+
+		case SSA_LOAD_FIELD:
+			ec.emitLoadField(ref, inst)
+
+		case SSA_LOAD_TABLE_SHAPE:
+			ec.emitLoadTableShape(ref, inst)
+
+		case SSA_CHECK_SHAPE_ID:
+			ec.emitCheckShapeId(inst)
+
+		case SSA_STORE_FIELD:
+			ec.emitStoreField(inst)
+
+		case SSA_LOAD_ARRAY:
+			ec.emitLoadArray(ref, inst)
+
+		case SSA_STORE_ARRAY:
+			ec.emitStoreArray(inst)
+
+		case SSA_TABLE_LEN:
+			ec.emitTableLen(ref, inst)
+
+		case SSA_CALL:
+			ec.emitCallExit(inst)
+
+		case SSA_SELF_CALL:
+			ec.emitSelfCall(ref, inst)
+
+		case SSA_INTRINSIC:
+			ec.emitIntrinsic(ref, inst)
+
+		case SSA_LOAD_GLOBAL:
+			// Table-type GETGLOBAL: native load from constant pool.
+			// Non-table (function/int/float): call-exit to avoid slot reuse bugs.
+			if inst.Type == SSATypeTable {
+				ec.emitLoadGlobal(ref, inst)
+			} else {
+				ec.emitCallExitInst(inst)
+			}
+
+		case SSA_CONST_INT:
+			ec.emitConstInt(ref, inst)
+
+		case SSA_CONST_FLOAT:
+			ec.emitConstFloat(ref, inst)
+
+		case SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
+			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP,
+			SSA_PHI, SSA_STORE_SLOT, SSA_BOX_FLOAT,
+			SSA_SIDE_EXIT, SSA_DIV_INT:
+			// Not yet implemented — skip
+		}
+	}
+}
+
+// emitFuncDone emits the function-done exit path.
+// Stores back all registers to memory and exits with ExitCode=0.
+// For self-call traces: if depth > 0, just RET to BL caller.
+// If depth == 0, exit to VM with ExitCode=0.
+func (ec *emitCtx) emitFuncDone() {
+	asm := ec.asm
+
+	// Store back all register values to memory
+	if ec.hasCallExit {
+		ec.emitStoreBackTypeSafe()
+	} else {
+		ec.emitStoreBack()
+	}
+
+	if ec.hasSelfCalls {
+		// Check depth: if > 0, this is a nested self-call return
+		asm.CBZ(X25, "func_done_outer")
+		// Nested return: just RET to BL caller
+		// The result is already stored back to memory (in the return slot)
+		asm.RET()
+
+		asm.Label("func_done_outer")
+	}
+
+	// Outermost return: exit to VM
+	// Set ExitPC to 0 (function traces don't have a meaningful exit PC)
+	asm.LoadImm64(X9, 0)
+	asm.STR(X9, regCtx, TraceCtxOffExitPC)
+
+	// Set ExitCode = 0 (function done / return)
+	asm.LoadImm64(X0, 0)
+	asm.B("epilogue")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // resolveIntRef: get the GPR holding an SSA ref's int value.
 // If the ref is in a register, returns that register.
 // Otherwise loads from memory into scratch.
@@ -848,17 +1351,26 @@ func (ec *emitCtx) resolveIntRef(ref SSARef, scratch Reg) Reg {
 	inst := &ec.f.Insts[ref]
 	slot := int(inst.Slot)
 
+	// Check for constant values BEFORE slot-level allocation.
+	// A CONST_INT shares a slot with other instructions. The slot-level GPR
+	// may have been overwritten by a later instruction targeting the same slot.
+	// Always reload from the immediate to guarantee correctness.
+	if inst.Op == SSA_CONST_INT {
+		ec.asm.LoadImm64(scratch, inst.AuxInt)
+		return scratch
+	}
+
+	// Check if this ref's value is in regSelfExtra (X28) from a self-call result
+	// that had no GPR allocation. X28 is saved/restored across self-calls.
+	if ec.selfCallExtraRef == ref {
+		return regSelfExtra
+	}
+
 	// Slot-level allocation
 	if slot >= 0 {
 		if reg, ok := ec.regMap.IntReg(slot); ok {
 			return reg
 		}
-	}
-
-	// Check for constant values
-	if inst.Op == SSA_CONST_INT {
-		ec.asm.LoadImm64(scratch, inst.AuxInt)
-		return scratch
 	}
 
 	// Load from memory
@@ -883,19 +1395,23 @@ func (ec *emitCtx) resolveFloatRef(ref SSARef, scratch FReg) FReg {
 		return freg
 	}
 
+	// Check for float constant BEFORE slot-level allocation.
+	// A CONST_FLOAT shares a slot with other instructions (e.g., MUL_FLOAT).
+	// The slot-level FPR may have been overwritten by a later instruction
+	// targeting the same slot, destroying the constant value. Always reload
+	// from the immediate to guarantee correctness.
+	if inst.Op == SSA_CONST_FLOAT {
+		ec.asm.LoadImm64(X0, inst.AuxInt)
+		ec.asm.FMOVtoFP(scratch, X0)
+		return scratch
+	}
+
 	slot := int(inst.Slot)
 	// Check slot-level float allocation
 	if slot >= 0 {
 		if freg, ok := ec.regMap.FloatReg(slot); ok {
 			return freg
 		}
-	}
-
-	// Check for float constant
-	if inst.Op == SSA_CONST_FLOAT {
-		ec.asm.LoadImm64(X0, inst.AuxInt)
-		ec.asm.FMOVtoFP(scratch, X0)
-		return scratch
 	}
 
 	// Load from memory
@@ -1144,11 +1660,21 @@ func (ec *emitCtx) emitCmpFloatLE(idx int, inst *SSAInst) {
 // emitGuardBranch emits a conditional branch to the side-exit path.
 // Sets X9 = ExitPC before the conditional branch so side_exit_setup
 // knows where the interpreter should resume.
+//
+// For function traces with self-calls, body guards branch to
+// "self_call_body_guard" instead of "side_exit_setup". This allows
+// the base case (e.g., n < 2 for fib) to be handled natively when
+// inside a nested self-call (depth > 0), rather than side-exiting
+// through the epilogue which would corrupt the ARM64 stack.
 func (ec *emitCtx) emitGuardBranch(failCond Cond, pc int) {
 	// Set ExitPC BEFORE the branch (X9 must be ready when side_exit_setup runs).
 	// This is safe because X9 is a scratch register not used by the trace.
 	ec.asm.LoadImm64(X9, int64(pc))
-	ec.asm.BCond(failCond, "side_exit_setup")
+	if ec.hasSelfCalls {
+		ec.asm.BCond(failCond, "self_call_body_guard")
+	} else {
+		ec.asm.BCond(failCond, "side_exit_setup")
+	}
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1347,6 +1873,15 @@ func (ec *emitCtx) emitConstFloat(ref SSARef, inst *SSAInst) {
 func (ec *emitCtx) emitLoadField(ref SSARef, inst *SSAInst) {
 	fieldIdx := int(int32(inst.AuxInt))
 
+	// Invalid field index (not captured during recording) → skip.
+	// This happens when GETFIELD targets a library table (e.g., math.sqrt)
+	// whose field index wasn't resolved. The result is typically dead code
+	// (the CALL was replaced by SSA_INTRINSIC). Emitting nothing is safe
+	// because nothing references this instruction's slot.
+	if fieldIdx < 0 {
+		return
+	}
+
 	// Set ExitPC for any guard failure in this instruction
 	ec.asm.LoadImm64(X9, int64(inst.PC))
 
@@ -1409,6 +1944,92 @@ func (ec *emitCtx) emitLoadField(ref SSARef, inst *SSAInst) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// LOAD_TABLE_SHAPE: load table shape pointer for guard
+// ────────────────────────────────────────────────────────────────────────────
+
+func (ec *emitCtx) emitLoadTableShape(ref SSARef, inst *SSAInst) {
+	// Set ExitPC for any guard failure
+	ec.asm.LoadImm64(X9, int64(inst.PC))
+
+	// Resolve the table value (Arg1 is the SSA ref for the table)
+	tableSlot := -1
+	if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(ec.f.Insts) {
+		tableSlot = int(ec.f.Insts[inst.Arg1].Slot)
+	}
+	if tableSlot < 0 {
+		// Invalid table slot - should not happen in valid traces
+		ec.asm.B("side_exit_setup")
+		return
+	}
+
+	// Load table NaN-boxed value from slot
+	tblSrcInst := &ec.f.Insts[inst.Arg1]
+	if tblSrcInst.Op == SSA_LOAD_GLOBAL {
+		constIdx := int(tblSrcInst.AuxInt)
+		ec.asm.LDR(X0, regConsts, constIdx*ValueSize)
+	} else {
+		ec.asm.LDR(X0, regRegs, tableSlot*ValueSize)
+	}
+
+	// Check it's a table
+	EmitCheckIsTableFull(ec.asm, X0, X1, X2, "side_exit_setup")
+
+	// Extract table pointer
+	EmitExtractPtr(ec.asm, X0, X0)
+	ec.asm.CBZ(X0, "side_exit_setup")
+
+	// Load shape pointer from table (at offset TableOffShape)
+	// Result is in X0: the shape pointer (or nil if no shape)
+	ec.asm.LDR(X0, X0, TableOffShape)
+
+	// Store shape pointer in a scratch register for use by CHECK_SHAPE_ID
+	// We use X2 for the shape pointer (X2 is a scratch register)
+	ec.asm.MOVreg(X2, X0)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// CHECK_SHAPE_ID: guard that table.shape.ID matches expected
+// ────────────────────────────────────────────────────────────────────────────
+
+func (ec *emitCtx) emitCheckShapeId(inst *SSAInst) {
+	// Set ExitPC (X9) before any potential guard failure
+	// BailoutID is stored in AuxInt
+	bailoutID := int(inst.AuxInt)
+	ec.asm.LoadImm64(X9, int64(bailoutID))
+
+	// X2 contains the shape pointer from LOAD_TABLE_SHAPE
+	// CBZ X2, side_exit_setup - if shape is nil, fail guard
+	ec.asm.CBZ(X2, "side_exit_setup")
+
+	// Load shape.ID (first field of Shape struct at offset 0)
+	// Shape struct: ID uint32, FieldKeys []string, etc.
+	// We only need to check the ID at offset 0
+	ec.asm.LDRW(X0, X2, 0) // Load 32-bit shape ID
+
+	// Expected shape ID is in inst.AuxInt (from LOAD_TABLE_SHAPE)
+	// But for CHECK_SHAPE_ID, AuxInt contains bailout ID
+	// We need to get the expected shape ID from the LOAD_TABLE_SHAPE instruction
+	// that produced the shape reference (inst.Arg1)
+	expectedShapeID := uint32(0)
+	if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(ec.f.Insts) {
+		shapeLoadInst := ec.f.Insts[inst.Arg1]
+		if shapeLoadInst.Op == SSA_LOAD_TABLE_SHAPE {
+			expectedShapeID = uint32(shapeLoadInst.AuxInt)
+		}
+	}
+
+	// Compare loaded shape ID with expected
+	ec.asm.LoadImm64(X1, int64(expectedShapeID))
+	ec.asm.CMPreg(X0, X1)
+
+	// Branch to side-exit if shape IDs don't match
+	ec.asm.BCond(CondNE, "side_exit_setup")
+
+	// Guard passed - shape is valid, direct svals[idx] access in LOAD_FIELD is safe
+	// No additional code needed here
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // STORE_FIELD: table field write
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1417,6 +2038,12 @@ func (ec *emitCtx) emitStoreField(inst *SSAInst) {
 	// inst.Arg1 = table ref, inst.Arg2 = value ref
 	fieldIdx := int(int32(inst.AuxInt))
 	tblSlot := int(inst.Slot)
+
+	// Invalid field index → side-exit
+	if fieldIdx < 0 {
+		ec.emitCallExitInst(inst)
+		return
+	}
 
 	// Set ExitPC for any guard failure
 	ec.asm.LoadImm64(X9, int64(inst.PC))
@@ -1513,8 +2140,16 @@ func (ec *emitCtx) emitLoadArray(ref SSARef, inst *SSAInst) {
 		return
 	}
 
-	// 2. Load table NaN-boxed value, verify it's a table, extract pointer
-	asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	// 2. Load table NaN-boxed value. If the table source is a LOAD_GLOBAL,
+	// load from the trace constant pool (regConsts) to avoid slot conflicts
+	// with int/float register allocations.
+	tblSrcInst := &ec.f.Insts[inst.Arg1]
+	if tblSrcInst.Op == SSA_LOAD_GLOBAL {
+		constIdx := int(tblSrcInst.AuxInt)
+		asm.LDR(X0, regConsts, constIdx*ValueSize)
+	} else {
+		asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	}
 	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit_setup")
 	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, "side_exit_setup")
@@ -1652,8 +2287,16 @@ func (ec *emitCtx) emitLoadArrayTable(inst *SSAInst) {
 		return
 	}
 
-	// 2. Load source table NaN-boxed value, verify it's a table, extract pointer
-	asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	// 2. Load source table NaN-boxed value. If the table source is a
+	// LOAD_GLOBAL, load from the trace constant pool (regConsts) to avoid
+	// slot conflicts with int/float register allocations.
+	tblSrcInst := &ec.f.Insts[inst.Arg1]
+	if tblSrcInst.Op == SSA_LOAD_GLOBAL {
+		constIdx := int(tblSrcInst.AuxInt)
+		asm.LDR(X0, regConsts, constIdx*ValueSize)
+	} else {
+		asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	}
 	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit_setup")
 	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, "side_exit_setup")
@@ -1681,6 +2324,11 @@ func (ec *emitCtx) emitLoadArrayTable(inst *SSAInst) {
 	// 7. Store the NaN-boxed table value to the destination slot in memory
 	dstSlot := int(inst.Slot)
 	asm.STR(X7, regRegs, dstSlot*ValueSize)
+	// Clear stale float tracking: this slot now holds a table pointer.
+	// Without this, store-back would write a stale FPR value to this slot,
+	// corrupting the table pointer.
+	delete(ec.floatSlotReg, dstSlot)
+	delete(ec.floatWrittenSlots, dstSlot)
 }
 
 // emitStoreArray: table[key] = value (integer index, native codegen)
@@ -1706,8 +2354,20 @@ func (ec *emitCtx) emitStoreArray(inst *SSAInst) {
 	// Set ExitPC for any guard failure
 	asm.LoadImm64(X9, int64(inst.PC))
 
-	// 1. Load table NaN-boxed value, verify it's a table, extract pointer
-	asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	// 1. Load table NaN-boxed value. Check if the table slot was produced
+	// by a LOAD_GLOBAL — if so, load from the trace constant pool.
+	loadedFromConsts := false
+	for j := 0; j < len(ec.f.Insts); j++ {
+		si := &ec.f.Insts[j]
+		if si.Op == SSA_LOAD_GLOBAL && int(si.Slot) == tblSlot {
+			asm.LDR(X0, regConsts, int(si.AuxInt)*ValueSize)
+			loadedFromConsts = true
+			break
+		}
+	}
+	if !loadedFromConsts {
+		asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	}
 	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit_setup")
 	EmitExtractPtr(asm, X0, X0)
 	asm.CBZ(X0, "side_exit_setup")
@@ -1874,11 +2534,14 @@ func (ec *emitCtx) emitLoadGlobal(ref SSARef, inst *SSAInst) {
 	// slot is used for both a table pointer (LOAD_GLOBAL) and an int/float value
 	// (other instructions) in the same loop iteration.
 	if inst.Type == SSATypeTable {
-		// No memory write needed — LOAD_FIELD/STORE_FIELD read from regConsts.
-		// But we still need to write to memory for LOAD_ARRAY (which reads from
-		// the VM register slot, not from the SSA ref).
+		// Write table pointer to memory. LOAD_FIELD/STORE_FIELD read from
+		// regConsts when source is LOAD_GLOBAL, but LOAD_ARRAY reads from
+		// the VM register slot.
 		asm.LDR(X0, regConsts, constIdx*ValueSize)
 		asm.STR(X0, regRegs, dstSlot*ValueSize)
+		// Clear stale float tracking: this slot now holds a table pointer.
+		delete(ec.floatSlotReg, dstSlot)
+		delete(ec.floatWrittenSlots, dstSlot)
 		return
 	}
 
@@ -1897,7 +2560,12 @@ func (ec *emitCtx) emitLoadGlobal(ref SSARef, inst *SSAInst) {
 			ec.floatSlotReg[dstSlot] = freg
 		}
 	} else if inst.Type == SSATypeInt {
-		// Int globals: unbox and load into GPR if allocated
+		// Int globals: unbox and load into GPR if allocated.
+		// Clear stale float tracking: this slot now holds an int, not a float.
+		// Without this, store-back would write a stale float FPR value to this
+		// slot, overwriting the correct int loaded from the constant pool.
+		delete(ec.floatSlotReg, dstSlot)
+		delete(ec.floatWrittenSlots, dstSlot)
 		if reg, ok := ec.regMap.IntReg(dstSlot); ok {
 			EmitUnboxInt(asm, reg, X0)
 		}
@@ -1910,8 +2578,57 @@ func (ec *emitCtx) emitLoadGlobal(ref SSARef, inst *SSAInst) {
 // ────────────────────────────────────────────────────────────────────────────
 
 func (ec *emitCtx) emitTableLen(ref SSARef, inst *SSAInst) {
-	// For now, side-exit on TABLE_LEN (complex operation)
-	ec.emitCallExit(inst)
+	dstSlot := int(inst.Slot)
+	if dstSlot < 0 {
+		ec.emitCallExit(inst)
+		return
+	}
+
+	asm := ec.asm
+
+	// Set ExitPC for guard failures
+	asm.LoadImm64(X9, int64(inst.PC))
+
+	// Resolve the table source. Arg1 is the SSA ref for the table.
+	tblSlot := -1
+	if inst.Arg1 != SSARefNone && int(inst.Arg1) < len(ec.f.Insts) {
+		tblSlot = int(ec.f.Insts[inst.Arg1].Slot)
+	}
+	if tblSlot < 0 {
+		asm.B("side_exit_setup")
+		return
+	}
+
+	// Load table NaN-boxed value. If the table source is a LOAD_GLOBAL,
+	// load from regConsts to avoid slot conflicts.
+	tblSrcInst := &ec.f.Insts[inst.Arg1]
+	if tblSrcInst.Op == SSA_LOAD_GLOBAL {
+		constIdx := int(tblSrcInst.AuxInt)
+		asm.LDR(X0, regConsts, constIdx*ValueSize)
+	} else {
+		asm.LDR(X0, regRegs, tblSlot*ValueSize)
+	}
+
+	// Check it's a table
+	EmitCheckIsTableFull(asm, X0, X1, X2, "side_exit_setup")
+	// Extract pointer
+	EmitExtractPtr(asm, X0, X0)
+	asm.CBZ(X0, "side_exit_setup")
+
+	// Guard: no metatable (metatable could have __len metamethod)
+	asm.LDR(X1, X0, TableOffMetatable)
+	asm.CBNZ(X1, "side_exit_setup")
+
+	// Load array.len: the []Value slice header is at TableOffArray.
+	// Slice layout: (ptr, len, cap) = (8, 8, 8). So len is at TableOffArray + 8.
+	asm.LDR(X1, X0, TableOffArray+8) // X1 = array length (int64)
+
+	// Store result to destination slot as NaN-boxed int.
+	dst := ec.getIntDst(ref, inst, X1)
+	if dst != X1 {
+		asm.MOVreg(dst, X1)
+	}
+	ec.spillInt(ref, inst, dst)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1935,9 +2652,8 @@ func (ec *emitCtx) emitCallExitInst(inst *SSAInst) {
 	asm.STR(X9, regCtx, TraceCtxOffExitPC)
 
 	// Exit with code 1 (side-exit). The interpreter resumes at ExitPC,
-	// executes the CALL/LOAD_GLOBAL/TABLE_LEN instruction (including any
-	// nested loops/recursion), then FORLOOP back-edge re-enters the trace.
-	// No resume dispatch needed.
+	// executes the CALL instruction (including any nested loops/recursion),
+	// then FORLOOP back-edge re-enters the trace. No resume dispatch needed.
 	asm.LoadImm64(X0, 1)
 	asm.B("epilogue")
 }
@@ -1947,40 +2663,154 @@ func (ec *emitCtx) emitCallExitInst(inst *SSAInst) {
 // ────────────────────────────────────────────────────────────────────────────
 
 func (ec *emitCtx) emitIntrinsic(ref SSARef, inst *SSAInst) {
-	// Only sqrt is implemented as a true intrinsic for now
 	switch int(inst.AuxInt) {
+	// --- Float unary intrinsics: sqrt, abs, floor, ceil ---
 	case IntrinsicSqrt:
-		// The argument is typically in the slot before the call result.
-		// For sqrt intrinsic: R(A) = sqrt(R(A+1))
-		// The arg is at slot A+1, result goes to slot A.
-		argSlot := int(inst.Slot) + 1
-		dstSlot := int(inst.Slot)
+		ec.emitFloatUnaryIntrinsic(ref, inst, func(asm *Assembler, dst, src FReg) {
+			asm.FSQRTd(dst, src)
+		})
+	case IntrinsicAbs:
+		ec.emitFloatUnaryIntrinsic(ref, inst, func(asm *Assembler, dst, src FReg) {
+			asm.FABSd(dst, src)
+		})
+	case IntrinsicFloor:
+		ec.emitFloatUnaryIntrinsic(ref, inst, func(asm *Assembler, dst, src FReg) {
+			asm.FRINTMd(dst, src)
+		})
+	case IntrinsicCeil:
+		ec.emitFloatUnaryIntrinsic(ref, inst, func(asm *Assembler, dst, src FReg) {
+			asm.FRINTPd(dst, src)
+		})
 
-		// Load argument
-		var argFReg FReg = D0
-		if freg, ok := ec.regMap.FloatReg(argSlot); ok {
-			argFReg = freg
-		} else {
-			ec.asm.FLDRd(D0, regRegs, argSlot*ValueSize)
-			argFReg = D0
-		}
+	// --- Float binary intrinsics: max, min ---
+	case IntrinsicMax:
+		ec.emitFloatBinaryIntrinsic(ref, inst, func(asm *Assembler, dst, a, b FReg) {
+			asm.FMAXNMd(dst, a, b)
+		})
+	case IntrinsicMin:
+		ec.emitFloatBinaryIntrinsic(ref, inst, func(asm *Assembler, dst, a, b FReg) {
+			asm.FMINNMd(dst, a, b)
+		})
 
-		dstFReg := ec.getFloatDst(ref, inst, D1)
-		ec.asm.FSQRTd(dstFReg, argFReg)
+	// --- Integer binary intrinsics: bit32 ---
+	case IntrinsicBand:
+		ec.emitIntBinaryIntrinsic(ref, inst, func(asm *Assembler, dst, a, b Reg) {
+			asm.ANDreg(dst, a, b)
+		})
+	case IntrinsicBor:
+		ec.emitIntBinaryIntrinsic(ref, inst, func(asm *Assembler, dst, a, b Reg) {
+			asm.ORRreg(dst, a, b)
+		})
+	case IntrinsicBxor:
+		ec.emitIntBinaryIntrinsic(ref, inst, func(asm *Assembler, dst, a, b Reg) {
+			asm.EORreg(dst, a, b)
+		})
+	case IntrinsicLshift:
+		ec.emitIntBinaryIntrinsic(ref, inst, func(asm *Assembler, dst, a, b Reg) {
+			asm.LSLreg(dst, a, b)
+		})
+	case IntrinsicRshift:
+		ec.emitIntBinaryIntrinsic(ref, inst, func(asm *Assembler, dst, a, b Reg) {
+			asm.LSRreg(dst, a, b)
+		})
 
-		// Store result
-		if freg, ok := ec.regMap.FloatRefReg(ref); ok && freg == dstFReg {
-			// In register, will be stored back at end of loop iteration
-		} else if freg, ok := ec.regMap.FloatReg(dstSlot); ok && freg == dstFReg {
-			// In register
-		} else {
-			ec.asm.FSTRd(dstFReg, regRegs, dstSlot*ValueSize)
-		}
+	// --- Integer unary intrinsic: bnot ---
+	case IntrinsicBnot:
+		ec.emitIntUnaryIntrinsic(ref, inst, func(asm *Assembler, dst, src Reg) {
+			// MVN Xd, Xm = ORN Xd, XZR, Xm
+			asm.ORNreg(dst, XZR, src)
+		})
 
 	default:
 		// Unknown intrinsic — fall back to call-exit
 		ec.emitCallExitInst(inst)
 	}
+}
+
+// emitFloatUnaryIntrinsic: R(A) = op(R(A+1))
+func (ec *emitCtx) emitFloatUnaryIntrinsic(ref SSARef, inst *SSAInst, op func(*Assembler, FReg, FReg)) {
+	argSlot := int(inst.Slot) + 1
+
+	var argFReg FReg = D0
+	if freg, ok := ec.regMap.FloatReg(argSlot); ok {
+		argFReg = freg
+	} else {
+		ec.asm.FLDRd(D0, regRegs, argSlot*ValueSize)
+		argFReg = D0
+	}
+
+	dstFReg := ec.getFloatDst(ref, inst, D1)
+	op(ec.asm, dstFReg, argFReg)
+	ec.spillFloat(ref, inst, dstFReg)
+}
+
+// emitFloatBinaryIntrinsic: R(A) = op(R(A+1), R(A+2))
+func (ec *emitCtx) emitFloatBinaryIntrinsic(ref SSARef, inst *SSAInst, op func(*Assembler, FReg, FReg, FReg)) {
+	argSlot1 := int(inst.Slot) + 1
+	argSlot2 := int(inst.Slot) + 2
+
+	var a1 FReg = D0
+	if freg, ok := ec.regMap.FloatReg(argSlot1); ok {
+		a1 = freg
+	} else {
+		ec.asm.FLDRd(D0, regRegs, argSlot1*ValueSize)
+	}
+
+	var a2 FReg = D1
+	if freg, ok := ec.regMap.FloatReg(argSlot2); ok {
+		a2 = freg
+	} else {
+		ec.asm.FLDRd(D1, regRegs, argSlot2*ValueSize)
+	}
+
+	dstFReg := ec.getFloatDst(ref, inst, D2)
+	op(ec.asm, dstFReg, a1, a2)
+	ec.spillFloat(ref, inst, dstFReg)
+}
+
+// emitIntBinaryIntrinsic: R(A) = op(R(A+1), R(A+2))
+func (ec *emitCtx) emitIntBinaryIntrinsic(ref SSARef, inst *SSAInst, op func(*Assembler, Reg, Reg, Reg)) {
+	argSlot1 := int(inst.Slot) + 1
+	argSlot2 := int(inst.Slot) + 2
+
+	// Load arg1
+	var a1 Reg = X0
+	if reg, ok := ec.regMap.IntReg(argSlot1); ok {
+		a1 = reg
+	} else {
+		ec.asm.LDR(X0, regRegs, argSlot1*ValueSize)
+		EmitUnboxInt(ec.asm, X0, X0)
+	}
+
+	// Load arg2
+	var a2 Reg = X1
+	if reg, ok := ec.regMap.IntReg(argSlot2); ok {
+		a2 = reg
+	} else {
+		ec.asm.LDR(X1, regRegs, argSlot2*ValueSize)
+		EmitUnboxInt(ec.asm, X1, X1)
+	}
+
+	dst := ec.getIntDst(ref, inst, X2)
+	op(ec.asm, dst, a1, a2)
+	ec.spillInt(ref, inst, dst)
+}
+
+// emitIntUnaryIntrinsic: R(A) = op(R(A+1))
+func (ec *emitCtx) emitIntUnaryIntrinsic(ref SSARef, inst *SSAInst, op func(*Assembler, Reg, Reg)) {
+	argSlot := int(inst.Slot) + 1
+
+	var a1 Reg = X0
+	if reg, ok := ec.regMap.IntReg(argSlot); ok {
+		a1 = reg
+	} else {
+		ec.asm.LDR(X0, regRegs, argSlot*ValueSize)
+		EmitUnboxInt(ec.asm, X0, X0)
+	}
+
+	dst := ec.getIntDst(ref, inst, X1)
+	op(ec.asm, dst, a1)
+	ec.spillInt(ref, inst, dst)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2022,16 +2852,22 @@ func (ec *emitCtx) emitStoreBackImpl(typeSafe bool) {
 	}
 
 	// Store float registers back to memory.
-	// Only store slots that were written in the loop body (tracked by floatSlotReg).
-	// The floatSlotReg map records which FPR holds each slot's most-recent value,
-	// updated by spillFloat during loop body emission.
-	// Read-only float slots (e.g., constants loaded in pre-loop) must NOT be stored
-	// because their slot-level FPR was never loaded with the correct value.
-	for slot, freg := range ec.floatSlotReg {
+	// We must store all float values that were written in the loop body.
+	// Use floatSlotReg to get the FPR that has the current value for each slot.
+	// Then ensure the value is also in the slot-level FPR (if allocated) for consistency with reload.
+	for slot, currentFPR := range ec.floatSlotReg {
 		if ec.callExitWriteSlots[slot] {
 			continue
 		}
-		asm.FSTRd(freg, regRegs, slot*ValueSize)
+		// If there's a slot-level FPR allocation and it differs from currentFPR,
+		// move the value to the slot-level FPR first
+		if ec.regMap.Float != nil {
+			if slotFPR, ok := ec.regMap.Float.getReg(slot); ok && slotFPR != currentFPR {
+				asm.FMOVd(slotFPR, currentFPR)
+				currentFPR = slotFPR // now store from slot-level FPR
+			}
+		}
+		asm.FSTRd(currentFPR, regRegs, slot*ValueSize)
 	}
 }
 
@@ -2230,3 +3066,34 @@ func (ec *emitCtx) emitGuardFail() {
 	asm.B("epilogue")
 }
 
+func (ec *emitCtx) emitGuardFailCommon(bailoutID int) {
+	asm := ec.asm
+	// Common guard fail handler - store bailout ID in ExitPC for deopt handler
+	asm.Label("guard_fail_common")
+
+	// Set ExitCode = 2 (guard fail — pre-loop type mismatch)
+	asm.LoadImm64(X0, 2)
+
+	// Store bailout ID in ExitPC (reused field for bailout info)
+	// The deopt handler can look up bailout details from DeoptMetadata
+	asm.LoadImm64(X9, int64(bailoutID))
+	asm.STR(X9, regCtx, TraceCtxOffExitPC)
+
+	asm.B("epilogue")
+}
+
+func (ec *emitCtx) emitMaxIterExit() {
+	asm := ec.asm
+	asm.Label("max_iter_exit")
+
+	// Store back all register values to memory
+	if ec.hasCallExit {
+		ec.emitStoreBackTypeSafe()
+	} else {
+		ec.emitStoreBack()
+	}
+
+	// Set ExitCode = 5 (max iterations reached for debugging)
+	asm.LoadImm64(X0, 5)
+	asm.B("epilogue")
+}
