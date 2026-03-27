@@ -44,12 +44,15 @@ This loop runs **forever** until we surpass LuaJIT on all benchmarks.
 ### Rule 1: Never optimize wrong results
 If the benchmark result doesn't match the interpreter, **the speedup is zero**. Run correctness checks BEFORE celebrating. The ×88 mandelbrot was fake — the trace was skipping 99.99% of the computation.
 
-### Rule 2: Observation beats reasoning
-Don't read code and guess. **Dump register state before/after trace execution.** Five hours of guessing vs five minutes of observation. Always:
-1. Add `before/after` register dumps
-2. Run the smallest possible test case (`mandelbrot(3)`, not `mandelbrot(1000)`)
-3. Compare trace output vs interpreter-only output
-4. Only remove dumps after correctness is confirmed
+### Rule 2: Observation beats reasoning — USE THE DIAGNOSTIC TOOLS
+Don't read code and guess. The JIT has a 7-stage pipeline; reading the emitter to guess why a guard fails is a trap — **LLMs have lost entire sessions doing this.** Instead, use the built-in diagnostic tools (see `docs/jit-debug.md`):
+
+1. **First call: `DiagnoseTrace()`** — one function gives you pipeline status, SSA IR, register hex dump, exit code/PC/iterations. This alone solves 80% of bugs.
+2. **If the pipeline is suspect: `CompileWithDump()` + `dump.Diff()`** — binary search which pass introduced the error, don't read pass implementations.
+3. **If values are wrong: compare register hex dumps** — NaN-boxing tag in upper 16 bits tells you the type instantly (`0xFFFE`=int, `0xFFFC`=nil, `0xFFFF`=pointer).
+4. **If all else fails: `ShowASM: true`** — read the generated ARM64, but only AFTER you've narrowed to a specific instruction.
+
+The principle: **build diagnostic output, read diagnostic output, fix based on evidence.** Never skip step 1 and jump straight into reading `ssa_emit.go`.
 
 ### Rule 3: Never stack optimizations on unverified correctness
 Before adding a new optimization, ALL existing tests must pass with the trace JIT enabled. Run the full benchmark suite with correctness checks (compare trace vs interpreter results), not just timing.
