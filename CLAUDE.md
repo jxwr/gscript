@@ -4,6 +4,25 @@
 
 **Surpass LuaJIT.** This is an open-ended, iterative optimization project. The work continues until GScript's JIT compiler matches or exceeds LuaJIT's performance on standard benchmarks. There is no "done" — only the next milestone.
 
+## Three Commandments
+
+### 1. Coverage First — Native Code Coverage is the #1 Priority
+Always prioritize **making more traces compile to native code** over polishing already-compiled traces. A trace that can't compile at all gets 0x speedup; a trace that compiles but isn't optimally scheduled still gets 2-5x. Systematically enumerate every reason a trace fails to compile (unsupported opcodes, call-exits, missing type specialization) and eliminate them one by one. Never spend time on micro-optimizations (ConstHoist, CSE, FMA) when there are entire benchmark categories blocked from compilation.
+
+### 2. Pluggable Compiler Framework — Every Optimization is an Independent Pass
+Design the compilation pipeline so that each optimization technique is a **self-contained, independently addable, testable, iterable, and fixable** pass. Each pass:
+- Has its own file (`ssa_opt_<name>.go`)
+- Has its own unit tests (`ssa_opt_<name>_test.go`)
+- Can be enabled/disabled independently (pass registry)
+- Takes `*SSAFunc` as input and returns `*SSAFunc` as output
+- Never depends on internal state of other passes
+- Can be reverted in isolation if it causes regressions
+
+The pass pipeline should be a simple list: `BuildSSA → [Pass1, Pass2, ..., PassN] → RegAlloc → Emit`. Adding a new optimization means adding one file + one test file + one line in the pass registry.
+
+### 3. Continuous Research — Expand the Optimization Frontier
+Continuously research **all mainstream compiler optimization techniques** from LuaJIT, V8, SpiderMonkey, LLVM, GCC, academic papers (PLDI, CGO, CC). Maintain a living catalog of known techniques and their applicability to GScript's trace JIT. When the current architecture cannot support a promising technique, **evolve the architecture** — the framework serves the optimizations, not the other way around. The goal is an ever-expanding arsenal of optimizations, not a frozen pipeline.
+
 ## The Loop
 
 Every major optimization milestone follows this cycle:
@@ -144,6 +163,7 @@ Run the full suite before AND after every optimization. Record numbers in the bl
 ## Architecture Principles
 
 Full architecture document: docs/jit-architecture.md
+JIT debugging guide: docs/jit-debug.md
 
 - **SSA IR is the core**: All optimizations happen on SSA, not on bytecode or ARM64
 - **Type specialization is king**: Unboxed integers and floats in registers = the #1 speedup
