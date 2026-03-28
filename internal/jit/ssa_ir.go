@@ -90,6 +90,12 @@ const (
 	SSA_SELF_CALL // native self-recursive call (BL to same trace)
 )
 
+// Shape-based field access ops (placeholders, not yet in iota chain).
+const (
+	SSA_LOAD_TABLE_SHAPE SSAOp = 200 // placeholder: load table shape
+	SSA_CHECK_SHAPE_ID   SSAOp = 201 // placeholder: guard shape ID
+)
+
 // ssaOpString returns a human-readable name for an SSAOp.
 func ssaOpString(op SSAOp) string {
 	names := [...]string{
@@ -192,6 +198,21 @@ type Snapshot struct {
 	Entries []SnapEntry // slot → SSA value mappings (only modified slots)
 }
 
+// DeoptMetadata holds guard-level type expectations for deoptimization.
+type DeoptMetadata struct {
+	Guards []*DeoptGuard
+}
+
+// NewDeoptMetadata creates an empty DeoptMetadata.
+func NewDeoptMetadata() *DeoptMetadata {
+	return &DeoptMetadata{}
+}
+
+// DeoptGuard holds the expected type for a single guard.
+type DeoptGuard struct {
+	Expected interface{} // typically runtime.ValueType
+}
+
 // SSAFunc is the SSA representation of a compiled trace.
 type SSAFunc struct {
 	Insts     []SSAInst
@@ -259,4 +280,9 @@ const (
 	IntrinsicLshift = 5
 	IntrinsicRshift = 6
 	IntrinsicSqrt   = 7
+	IntrinsicAbs    = 20
+	IntrinsicFloor  = 21
+	IntrinsicCeil   = 22
+	IntrinsicMax    = 23
+	IntrinsicMin    = 24
 )

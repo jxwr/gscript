@@ -268,3 +268,55 @@ func (d *PipelineDump) Diff(stage1, stage2 string) string {
 
 	return sb.String()
 }
+
+// SSAInst.String returns a human-readable representation.
+func (inst SSAInst) String() string {
+	name := ssaOpString(inst.Op)
+	return fmt.Sprintf("%s slot=%d type=%d", name, inst.Slot, inst.Type)
+}
+
+// DumpSSA prints SSA IR to stdout.
+func DumpSSA(f *SSAFunc) {
+	for i, inst := range f.Insts {
+		fmt.Printf("  %3d: %s\n", i, inst.String())
+	}
+}
+
+// DumpRegAlloc prints register allocation to stdout.
+func DumpRegAlloc(rm *RegMap) {
+	if rm == nil {
+		fmt.Println("  (no regmap)")
+		return
+	}
+	fmt.Printf("  IntRegs: %v\n", rm.Int)
+}
+
+// DumpRegisters prints register values to stdout.
+func DumpRegisters(regs []runtime.Value, slots []int) {
+	for _, s := range slots {
+		if s < len(regs) {
+			fmt.Printf("  [%d]=0x%016x %s\n", s, regs[s].Raw(), formatValueByVal(regs[s]))
+		}
+	}
+}
+
+// formatValue formats a runtime.Value for diagnostic output.
+func formatValue(v *runtime.Value) string {
+	return formatValueByVal(*v)
+}
+
+// formatValueByVal formats a runtime.Value by value.
+func formatValueByVal(v runtime.Value) string {
+	switch v.Type() {
+	case runtime.TypeInt:
+		return fmt.Sprintf("int(%d)", v.Int())
+	case runtime.TypeFloat:
+		return fmt.Sprintf("float(%.6f)", v.Float())
+	case runtime.TypeBool:
+		return fmt.Sprintf("bool(%v)", v.Bool())
+	case runtime.TypeNil:
+		return "nil"
+	default:
+		return fmt.Sprintf("<%d>", v.Type())
+	}
+}

@@ -22,7 +22,7 @@ func TestSSA_BuildSimpleLoop(t *testing.T) {
 		LoopProto: &vm.FuncProto{Constants: []runtime.Value{}},
 		IR: []TraceIR{
 			{Op: vm.OP_ADD, A: 4, B: 4, C: 3, BType: runtime.TypeInt, CType: runtime.TypeInt},
-			{Op: vm.OP_FORLOOP, A: 0, SBX: -2},
+			{Op: vm.OP_FORLOOP, A: 0, SBX: -2, AType: runtime.TypeInt},
 		},
 	}
 
@@ -56,7 +56,7 @@ func TestSSA_TypePropagation(t *testing.T) {
 		IR: []TraceIR{
 			{Op: vm.OP_ADD, A: 0, B: 0, C: 1, BType: runtime.TypeInt, CType: runtime.TypeInt},
 			{Op: vm.OP_ADD, A: 2, B: 0, C: 1, BType: runtime.TypeInt, CType: runtime.TypeInt},
-			{Op: vm.OP_FORLOOP, A: 3, SBX: -3},
+			{Op: vm.OP_FORLOOP, A: 3, SBX: -3, AType: runtime.TypeInt},
 		},
 	}
 

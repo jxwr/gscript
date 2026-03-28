@@ -490,6 +490,14 @@ const (
 	TraceCtxSize              = 160 // total size
 )
 
+// TraceContext iteration fields (appended after ExitFPR).
+// These must be at the END of TraceContext to avoid breaking existing offsets.
+// The ARM64 codegen uses these offsets for iteration counting.
+var (
+	TraceCtxOffIterCount = int(unsafe.Offsetof(TraceContext{}.IterationCount))
+	TraceCtxOffMaxIter   = int(unsafe.Offsetof(TraceContext{}.MaxIterations))
+)
+
 func init() {
 	var ctx TraceContext
 	if unsafe.Offsetof(ctx.Regs) != TraceCtxOffRegs {
@@ -521,6 +529,10 @@ func init() {
 	}
 	if unsafe.Offsetof(ctx.ExitFPR) != TraceCtxOffExitFPR {
 		panic("jit: TraceContext.ExitFPR offset mismatch")
+	}
+	// Sanity check that the iteration fields don't collide with existing offsets
+	if TraceCtxOffIterCount <= TraceCtxOffExitFPR {
+		panic("jit: TraceContext.IterationCount offset overlaps with ExitFPR")
 	}
 }
 
