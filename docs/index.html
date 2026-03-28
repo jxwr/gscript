@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
+  <a href="19-thirty-three-x">Thirty-Three X</a>
+  <p>Fixed the build, split the 3K-line emitter into 8 modules, and taught the compiler to recurse natively. fib(35) went from 1.55s to 46ms &mdash; 33.6x speedup, 2x behind LuaJIT. Three bugs found (DIV always returns float, BOX_INT slot-zero corruption, shared memory in nested self-calls), all fixed by observation.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
   <a href="18-eleven-x">Eleven X</a>
   <p>Deleted 13K lines, wrote 7K. The new trace-only JIT hits 11.3x on field access, 5.5x on mandelbrot. Four-layer test framework with 136 tests from first principles. Seven one-line bugs that took a full rewrite to find.</p>
 </div>
@@ -217,36 +224,40 @@
   <p>18 optimizations, 2.4x result. What worked, what didn't, and why we need SSA.</p>
 </div>
 
-<h2>vs LuaJIT (full suite) &mdash; 2026-03-24</h2>
+<h2>vs LuaJIT (full suite) &mdash; 2026-03-28</h2>
 
 <table>
   <tr><th>Benchmark</th><th>GScript JIT</th><th>LuaJIT</th><th>Gap</th></tr>
-  <tr><td>fib(35)</td><td>0.034s</td><td>0.025s</td><td>1.4&times;</td></tr>
-  <tr><td>sieve(1M &times;3)</td><td>0.023s</td><td>0.011s</td><td>2.1&times;</td></tr>
-  <tr><td>mandelbrot(1000)</td><td>0.158s</td><td>0.058s</td><td>2.7&times;</td></tr>
-  <tr><td>ackermann(&times;500)</td><td>0.012s</td><td>0.006s</td><td>2.0&times;</td></tr>
-  <tr><td>matmul(300)</td><td>1.222s</td><td>0.022s</td><td>55.5&times;</td></tr>
-  <tr><td>nbody(500K)</td><td>1.938s</td><td>0.035s</td><td>55.4&times;</td></tr>
-  <tr><td>binary_trees(15)</td><td>1.698s</td><td>0.172s</td><td>9.9&times;</td></tr>
-  <tr><td>fannkuch(9)</td><td>0.581s</td><td>0.020s</td><td>29.1&times;</td></tr>
-  <tr><td>sort(50K &times;3)</td><td>0.191s</td><td>0.011s</td><td>17.4&times;</td></tr>
-  <tr><td>sum_primes(100K)</td><td>0.028s</td><td>0.002s</td><td>14.0&times;</td></tr>
-  <tr><td>mutual_recursion</td><td>0.219s</td><td>0.004s</td><td>54.8&times;</td></tr>
-  <tr><td>method_dispatch</td><td>0.110s</td><td>0.000s</td><td>~220&times;</td></tr>
-  <tr><td>closure_bench</td><td>0.022s</td><td>0.005s</td><td>4.4&times;</td></tr>
-  <tr><td>string_bench</td><td>0.007s</td><td>0.004s</td><td>1.8&times;</td></tr>
+  <tr><td>fib(35)</td><td>46ms</td><td>23ms</td><td>2.0&times;</td></tr>
+  <tr><td>sieve(1M &times;3)</td><td>130ms</td><td>10ms</td><td>13.0&times;</td></tr>
+  <tr><td>mandelbrot(1000)</td><td>276ms</td><td>51ms</td><td>5.4&times;</td></tr>
+  <tr><td>matmul(300)</td><td>215ms</td><td>21ms</td><td>10.2&times;</td></tr>
+  <tr><td>nbody(500K)</td><td>313ms</td><td>32ms</td><td>9.8&times;</td></tr>
+  <tr><td>binary_trees(15)</td><td>ERROR</td><td>161ms</td><td>&mdash;</td></tr>
+  <tr><td>fannkuch(9)</td><td>461ms</td><td>18ms</td><td>25.6&times;</td></tr>
+  <tr><td>sort(50K &times;3)</td><td>174ms</td><td>10ms</td><td>17.4&times;</td></tr>
+  <tr><td>sum_primes(100K)</td><td>30ms</td><td>2ms</td><td>15.0&times;</td></tr>
+  <tr><td>spectral_norm(500)</td><td>823ms</td><td>7ms</td><td>117.6&times;</td></tr>
+  <tr><td>mutual_recursion</td><td>251ms</td><td>4ms</td><td>62.8&times;</td></tr>
+  <tr><td>method_dispatch</td><td>239ms</td><td>&lt;1ms</td><td>&mdash;</td></tr>
+  <tr><td>closure_bench</td><td>&mdash;</td><td>8ms</td><td>&mdash;</td></tr>
+  <tr><td>string_bench</td><td>41ms</td><td>9ms</td><td>4.6&times;</td></tr>
 </table>
 
-<h2>Warm Micro-benchmarks (JIT vs Interpreter) &mdash; jit-rewrite</h2>
+<h2>JIT vs Interpreter &mdash; 2026-03-28</h2>
 
 <table>
   <tr><th>Benchmark</th><th>Interpreter</th><th>JIT</th><th>Speedup</th></tr>
-  <tr><td>table_field_access</td><td>0.77s</td><td><b>0.07s</b></td><td><b>&times;11.3</b></td></tr>
-  <tr><td>mandelbrot</td><td>1.43s</td><td><b>0.26s</b></td><td><b>&times;5.5</b></td></tr>
-  <tr><td>fibonacci_iterative</td><td>1.12s</td><td><b>0.35s</b></td><td><b>&times;3.2</b></td></tr>
-  <tr><td>table_array_access</td><td>0.42s</td><td><b>0.14s</b></td><td><b>&times;3.0</b></td></tr>
-  <tr><td>sieve</td><td>0.26s</td><td><b>0.14s</b></td><td><b>&times;1.9</b></td></tr>
-  <tr><td>fannkuch</td><td>0.60s</td><td><b>0.50s</b></td><td><b>&times;1.2</b></td></tr>
+  <tr><td>fib(35)</td><td>1.555s</td><td><b>46ms</b></td><td><b>&times;33.6</b></td></tr>
+  <tr><td>table_field_access</td><td>718ms</td><td><b>65ms</b></td><td><b>&times;11.0</b></td></tr>
+  <tr><td>nbody</td><td>1.805s</td><td><b>313ms</b></td><td><b>&times;5.8</b></td></tr>
+  <tr><td>mandelbrot</td><td>1.357s</td><td><b>276ms</b></td><td><b>&times;4.9</b></td></tr>
+  <tr><td>matmul</td><td>974ms</td><td><b>215ms</b></td><td><b>&times;4.5</b></td></tr>
+  <tr><td>table_array_access</td><td>383ms</td><td><b>138ms</b></td><td><b>&times;2.8</b></td></tr>
+  <tr><td>fibonacci_iterative</td><td>1.014s</td><td><b>423ms</b></td><td><b>&times;2.4</b></td></tr>
+  <tr><td>sieve</td><td>239ms</td><td><b>130ms</b></td><td><b>&times;1.8</b></td></tr>
+  <tr><td>math_intensive</td><td>896ms</td><td><b>676ms</b></td><td><b>&times;1.3</b></td></tr>
+  <tr><td>fannkuch</td><td>556ms</td><td><b>461ms</b></td><td><b>&times;1.2</b></td></tr>
 </table>
 
 <footer>

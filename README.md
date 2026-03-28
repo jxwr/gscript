@@ -30,29 +30,29 @@ Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03
 
 ### Full suite (21 benchmarks)
 
-| Benchmark | VM | JIT | JIT/VM | LuaJIT | JIT/LuaJIT |
-|-----------|-----|-----|--------|--------|------------|
-| **table_field_access** | 0.71s | **0.07s** | **10.4x** | -- | -- |
-| **nbody(500K)** | 1.77s | **0.29s** | **6.0x** | 0.032s | 9.1x |
-| **mandelbrot(1000)** | 1.33s | **0.28s** | **4.7x** | 0.051s | 5.5x |
-| **matmul(300)** | 0.97s | **0.21s** | **4.5x** | 0.021s | 10.0x |
-| **table_array_access** | 0.39s | **0.13s** | **2.9x** | -- | -- |
-| **fibonacci_iterative(70x1M)** | 1.04s | **0.40s** | **2.6x** | -- | -- |
-| **closure_bench** | 0.08s | **0.03s** | **2.4x** | 0.008s | 4.1x |
-| **sieve(1M x3)** | 0.23s | **0.13s** | **1.7x** | 0.010s | 13.2x |
-| **fannkuch(9)** | 0.55s | **0.47s** | **1.2x** | 0.018s | 25.9x |
-| math_intensive | 0.89s | 0.83s | 1.1x | -- | -- |
-| coroutine_bench | 5.04s | 4.87s | 1.0x | -- | -- |
-| fib(35) | 1.57s | 1.61s | 1.0x | 0.023s | 70.2x |
-| binary_trees(15) | 1.54s | 1.60s | 1.0x | 0.179s | 9.0x |
-| sort(50K x3) | 0.17s | 0.17s | 1.0x | 0.009s | 19.3x |
-| sum_primes(100K) | 0.03s | 0.03s | 0.9x | 0.002s | 14.5x |
-| object_creation | 0.62s | 0.66s | 0.9x | -- | -- |
-| spectral_norm(500) | 0.94s | 1.07s | 0.9x | 0.007s | 153.3x |
-| method_dispatch(100K) | 0.08s | 0.09s | 0.9x | <0.001s | -- |
-| mutual_recursion | 0.20s | 0.23s | 0.9x | 0.005s | 45.8x |
-| string_bench | 0.04s | 0.05s | 0.9x | 0.008s | 6.0x |
-| ackermann(3,4 x500) | 0.27s | 0.34s | 0.8x | 0.007s | 48.7x |
+| Benchmark | VM | JIT | JIT/VM | LuaJIT | vs LuaJIT |
+|-----------|-----|-----|--------|--------|-----------|
+| **fib(35)** | 1.555s | **46ms** | **33.6x** | 23ms | 2.0x |
+| **table_field_access** | 718ms | **65ms** | **11.0x** | -- | -- |
+| **nbody(500K)** | 1.805s | **313ms** | **5.8x** | 32ms | 9.8x |
+| **mandelbrot(1000)** | 1.357s | **276ms** | **4.9x** | 51ms | 5.4x |
+| **matmul(300)** | 974ms | **215ms** | **4.5x** | 21ms | 10.2x |
+| **table_array_access** | 383ms | **138ms** | **2.8x** | -- | -- |
+| **fibonacci_iterative** | 1.014s | **423ms** | **2.4x** | -- | -- |
+| **sieve(1M x3)** | 239ms | **130ms** | **1.8x** | 10ms | 13.0x |
+| **math_intensive** | 896ms | **676ms** | **1.3x** | -- | -- |
+| **fannkuch(9)** | 556ms | **461ms** | **1.2x** | 18ms | 25.6x |
+| coroutine_bench | 4.97s | 4.93s | 1.0x | -- | -- |
+| sort(50K x3) | 169ms | 174ms | 1.0x | 10ms | 17.4x |
+| string_bench | 41ms | 41ms | 1.0x | 9ms | 4.6x |
+| sum_primes(100K) | 27ms | 30ms | 0.9x | 2ms | 15.0x |
+| spectral_norm(500) | 951ms | 823ms | 0.9x | 7ms | 117.6x |
+| binary_trees(15) | 1.55s | ERROR | -- | 161ms | -- |
+| mutual_recursion | 194ms | 251ms | 0.8x | 4ms | 62.8x |
+| ackermann(3,4 x500) | 270ms | ⚠️ | -- | 6ms | -- |
+| closure_bench | 82ms | ⚠️ | -- | 8ms | -- |
+| object_creation | 614ms | 1.81s | 0.3x | -- | -- |
+| method_dispatch | 84ms | 239ms | 0.4x | <1ms | -- |
 
 ### Architecture
 
@@ -66,6 +66,7 @@ Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03
 - **Side-exit for calls**: unsupported ops exit to interpreter; FORLOOP re-enters trace
 - **Register allocation**: frequency-based slot allocation (X20-X23) + linear-scan float ref allocation (D4-D11)
 - **Intrinsics**: math.sqrt → FSQRT
+- **Function-entry tracing**: hot recursive functions compile with native ARM64 `BL` self-calls (fib: 33.6x speedup)
 
 **Runtime**:
 

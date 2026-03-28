@@ -182,7 +182,7 @@ Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
 ## Current Status
 
-All phases complete through S2.3 + compiler optimizations. Season 2 delivered NaN-boxing, custom heap, shape system, GC compaction, and compiler register optimization. See README.md Performance section for latest benchmark numbers.
+All phases complete through S2.3 + compiler optimizations + architecture refactor + function-entry tracing. Peak speedup: **33.6x** (fib). 10 of 21 benchmarks accelerated. fib(35) at 46ms, 2x behind LuaJIT. See README.md Performance section for latest benchmark numbers (updated 2026-03-28).
 
 ## Completed Phases
 
