@@ -21,6 +21,13 @@ type JITEngine interface {
 	TryExecute(proto *FuncProto, regs []runtime.Value, base int, callCount int) ([]runtime.Value, int, bool)
 }
 
+// MethodJITEngine is the interface for the Method JIT compiler.
+// It compiles hot functions to native code and executes them.
+type MethodJITEngine interface {
+	TryCompile(proto *FuncProto) interface{} // returns *CompiledFunction or nil
+	Execute(compiled interface{}, regs []runtime.Value, base int, proto *FuncProto) ([]runtime.Value, error)
+}
+
 // VM is the bytecode virtual machine.
 type VM struct {
 	regs         []runtime.Value // register file (shared across frames via base offset)
@@ -37,6 +44,7 @@ type VM struct {
 	stringMeta   *runtime.Table // string metatable
 	jit          JITEngine
 	jitFactory   func(*VM) JITEngine
+	methodJIT    MethodJITEngine
 	argBuf       [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf       [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
 	traceRec            TraceRecorderHook // optional trace recorder (nil = disabled)
@@ -94,6 +102,12 @@ func (vm *VM) SetTraceRecorder(r TraceRecorderHook) {
 func (vm *VM) SetJIT(engine JITEngine) {
 	vm.jit = engine
 	// CallCount is tracked on FuncProto directly, no map needed.
+}
+
+// SetMethodJIT sets the Method JIT engine for this VM.
+// When set, hot functions are automatically compiled and executed natively.
+func (vm *VM) SetMethodJIT(engine MethodJITEngine) {
+	vm.methodJIT = engine
 }
 
 // Regs returns the register file. Used by the JIT executor.
@@ -431,6 +445,20 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	frame.varargs = varargs
 	frame.traceEnabled = false // clear stale state from reused frame slot
 	vm.frameCount++
+
+	// Method JIT: check for compiled function.
+	if vm.methodJIT != nil && !proto.IsVarArg {
+		proto.CallCount++
+		if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
+			results, err := vm.methodJIT.Execute(compiled, vm.regs, base, proto)
+			if err == nil {
+				vm.closeUpvalues(base)
+				vm.frameCount--
+				return results, nil
+			}
+			// Method JIT execution failed; fall through to interpreter.
+		}
+	}
 
 	// Try JIT execution if available.
 	if vm.jit != nil && !proto.IsVarArg {
@@ -1212,6 +1240,35 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				newFrame.resultCount = c
 				newFrame.traceEnabled = false // clear stale state from reused frame slot
 				vm.frameCount++
+
+				// Method JIT: check for compiled function
+				if vm.methodJIT != nil && !proto.IsVarArg {
+					proto.CallCount++
+					if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
+						results, err := vm.methodJIT.Execute(compiled, vm.regs, newBase, proto)
+						if err == nil {
+							vm.closeUpvalues(newBase)
+							vm.frameCount--
+							if c == 0 {
+								for i, r := range results {
+									vm.regs[base+a+i] = r
+								}
+								vm.top = base + a + len(results)
+							} else {
+								nr := c - 1
+								for i := 0; i < nr; i++ {
+									if i < len(results) {
+										vm.regs[base+a+i] = results[i]
+									} else {
+										vm.regs[base+a+i] = runtime.NilValue()
+									}
+								}
+							}
+							break
+						}
+						// Compilation or execution failed; fall through to interpreter.
+					}
+				}
 
 				// Try JIT (skip if trace recorder is inlining this callee)
 				skipJIT := vm.traceRecording && vm.traceRec.ShouldSkipJIT()
