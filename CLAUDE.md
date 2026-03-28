@@ -2,233 +2,197 @@
 
 ## The Mission
 
-**Surpass LuaJIT.** This is an open-ended, iterative optimization project. The work continues until GScript's JIT compiler matches or exceeds LuaJIT's performance on standard benchmarks. There is no "done" — only the next milestone.
+**Surpass LuaJIT.** Build a multi-tier optimizing JIT compiler for GScript using V8's Method JIT approach. The work continues until GScript matches or exceeds LuaJIT on all standard benchmarks.
 
-## Three Commandments
+## Core Principles
 
-### 1. Coverage First — Native Code Coverage is the #1 Priority
-Always prioritize **making more traces compile to native code** over polishing already-compiled traces. A trace that can't compile at all gets 0x speedup; a trace that compiles but isn't optimally scheduled still gets 2-5x. Systematically enumerate every reason a trace fails to compile (unsupported opcodes, call-exits, missing type specialization) and eliminate them one by one. Never spend time on micro-optimizations (ConstHoist, CSE, FMA) when there are entire benchmark categories blocked from compilation.
+### 1. Multi-Tier JIT with Seamless Tiering
 
-### 2. Pluggable Compiler Framework — Every Optimization is an Independent Pass
-Design the compilation pipeline so that each optimization technique is a **self-contained, independently addable, testable, iterable, and fixable** pass. Each pass:
-- Has its own file (`ssa_opt_<name>.go`)
-- Has its own unit tests (`ssa_opt_<name>_test.go`)
-- Can be enabled/disabled independently (pass registry)
-- Takes `*SSAFunc` as input and returns `*SSAFunc` as output
-- Never depends on internal state of other passes
-- Can be reverted in isolation if it causes regressions
-
-The pass pipeline should be a simple list: `BuildSSA → [Pass1, Pass2, ..., PassN] → RegAlloc → Emit`. Adding a new optimization means adding one file + one test file + one line in the pass registry.
-
-### 3. Continuous Research — Expand the Optimization Frontier
-Continuously research **all mainstream compiler optimization techniques** from LuaJIT, V8, SpiderMonkey, LLVM, GCC, academic papers (PLDI, CGO, CC). Maintain a living catalog of known techniques and their applicability to GScript's trace JIT. When the current architecture cannot support a promising technique, **evolve the architecture** — the framework serves the optimizations, not the other way around. The goal is an ever-expanding arsenal of optimizations, not a frozen pipeline.
-
-## The Loop
-
-Every major optimization milestone follows this cycle:
+The compiler has multiple optimization levels that activate **automatically** based on runtime profiling — never via compiler flags or user configuration:
 
 ```
-1. MEASURE  →  Run benchmark suite, profile with pprof, identify the #1 bottleneck
-2. RESEARCH →  Study how LuaJIT/V8/SpiderMonkey/LLVM/academia solved this problem
-3. BLOG     →  Write a rich, detailed blog post (English) documenting findings + plan
-4. IMPLEMENT → TDD: tests first, then code. Commit after each working step.
-5. BENCHMARK → Run full suite, compare before/after. Record exact numbers.
-6. PUBLISH  →  Update blog with results, push to GitHub Pages, commit milestone.
-7. GOTO 1   →  The next bottleneck is now exposed. Repeat.
+Tier 0: Interpreter (vm.go)
+  → Executes bytecode, collects type feedback (FeedbackVector)
+  → After N calls with stable feedback → Tier 1
+
+Tier 1: Method JIT — Baseline (internal/methodjit/)
+  → Compiles entire function: bytecode → CFG SSA IR → ARM64
+  → Type-generic operations, basic optimizations
+  → After M executions with hot loops → Tier 2
+
+Tier 2: Method JIT — Optimized (future)
+  → Aggressive optimization: inlining, type specialization, loop opts
+  → Deoptimizes back to Tier 0 on guard failure
 ```
 
-This loop runs **forever** until we surpass LuaJIT on all benchmarks.
+Tiering is transparent. The same GScript code runs at every tier and produces identical results. The runtime decides when to promote based on call counts and type stability.
 
-## Hard-Won Rules (from 2026-03-18 disaster)
+### 2. Pluggable Pass Pipeline
+
+Every optimization technique is an **independent, self-contained pass**:
+
+```go
+// Each pass: Function → Function (immutable input, new output)
+type Pass func(*Function) *Function
+
+// Pipeline is an ordered list of passes, each can be enabled/disabled
+pipeline := NewPipeline()
+pipeline.Add("TypeSpecialize", TypeSpecializePass)
+pipeline.Add("CSE", CSEPass)
+pipeline.Add("ConstProp", ConstPropPass)
+pipeline.Add("DeadBranch", DeadBranchPass)
+pipeline.Add("LoopInvariant", LICMPass)
+pipeline.Add("Inline", InlinePass)
+```
+
+Rules:
+- Each pass has its own file (`pass_<name>.go`) and test file (`pass_<name>_test.go`)
+- Passes can be enabled/disabled independently via the pipeline registry
+- Adding a new optimization = one Go file + one test file + one line in the pipeline
+- No pass depends on internal state of another pass
+- Any pass can be reverted in isolation if it causes regressions
+
+### 3. File Size and Structure
+
+**No Go file exceeds 1000 lines.** Large files destroy LLM effectiveness — the model loses track of context, makes wrong assumptions, and wastes entire sessions debugging phantom issues.
+
+Rules:
+- **Every Go file starts with a doc comment** explaining its purpose, inputs, outputs, and relationship to other files
+- **Design the file structure upfront** — decide the split BEFORE writing code, not after hitting 2000 lines
+- **One concern per file**: IR types in one file, graph builder in another, printer in another
+- **Test files mirror source files**: `graph_builder.go` → `graph_builder_test.go`, `pass_cse.go` → `pass_cse_test.go`
+- When a file approaches 800 lines, proactively split it
+
+### 4. Test-Driven Development (TDD)
+
+Every feature is built test-first:
+
+```
+1. Write a failing test that specifies the desired behavior
+2. Write the minimum code to make it pass
+3. Refactor without changing behavior
+4. Repeat
+```
+
+Rules:
+- **Tests before code.** No exception. If you can't write a test, you don't understand the requirement.
+- **Test files correspond to source files.** `pass_cse.go` → `pass_cse_test.go`. Never dump all tests into one file.
+- **IR interpreter for correctness**: `Interpret(BuildGraph(proto), args)` must match `VM.Execute(proto, args)` for every benchmark. This is the ground truth.
+- **Structural invariants**: Every graph builder test checks: all blocks terminated, succ/pred consistency, unique value IDs, no orphan blocks.
+
+### 5. AI-Friendly Debug Infrastructure
+
+LLMs cannot trace multi-stage compiler pipelines mentally. Build diagnostic tools that **convert reasoning problems into data-reading problems**:
+
+Required infrastructure (build BEFORE needing it):
+- **IR Printer**: human-readable dump of every basic block, every instruction, every phi node
+- **Pipeline Dump**: snapshot IR after each pass. `pipeline.Dump("after_CSE")` → printable IR. `pipeline.Diff("before_CSE", "after_CSE")` → what changed.
+- **IR Interpreter**: execute the IR in Go and compare with VM. Catches graph builder bugs without needing ARM64 codegen.
+- **IR Validator**: check structural invariants (terminated blocks, consistent succ/pred, SSA dominance, type consistency). Run after every pass.
+- **Deopt Trace**: when deoptimization fires, log: which guard failed, what type was expected vs actual, which function, which bytecode PC.
+
+The principle: **when something goes wrong, the diagnostic tool should tell you WHERE and WHY in one call, without reading compiler source code.**
+
+### 6. Architecture Review Every Round
+
+At the start and end of every optimization round:
+1. **Review file sizes** — any file approaching 1000 lines? Split it.
+2. **Review module boundaries** — any circular dependencies? Any file doing two unrelated things?
+3. **Review pass pipeline** — any pass doing too much? Any optimization that should be split into two passes?
+4. **Review test coverage** — any source file without a corresponding test file?
+5. **Review diagnostic tools** — did we debug something by reading source code? Add a diagnostic tool for that.
+
+**Don't wait until things are broken to refactor.** Proactive architecture maintenance prevents the "3000-line ssa_emit.go" disasters.
+
+### 7. Correctness First, Always
+
+- **Never optimize wrong results.** If the benchmark produces different output in JIT vs interpreter, the speedup is zero.
+- **IR interpreter is the oracle.** `Interpret(graph, args) == VM.Execute(proto, args)` for every function, every input.
+- **All tests pass before benchmarking.** No exceptions.
+- **Revert immediately** if an optimization breaks correctness. Analyze before retrying.
+
+## Hard-Won Rules
 
 ### Rule 1: Never optimize wrong results
-If the benchmark result doesn't match the interpreter, **the speedup is zero**. Run correctness checks BEFORE celebrating. The ×88 mandelbrot was fake — the trace was skipping 99.99% of the computation.
+The ×88 mandelbrot speedup was fake — the trace skipped 99.99% of computation. The function-entry tracing hack got fib to 46ms but broke 8 benchmarks. Speed means nothing without correctness.
 
-### Rule 2: Observation beats reasoning — USE THE DIAGNOSTIC TOOLS
-Don't read code and guess. The JIT has a 7-stage pipeline; reading the emitter to guess why a guard fails is a trap — **LLMs have lost entire sessions doing this.** Instead, use the built-in diagnostic tools (see `docs/jit-debug.md`):
+### Rule 2: Observation beats reasoning — USE DIAGNOSTIC TOOLS
+LLMs have lost entire sessions reading ssa_emit.go trying to guess why a guard fails. Instead:
+1. Run the IR interpreter — does it match the VM?
+2. Run the pipeline dump — which pass introduced the error?
+3. Read the hex dump — what type is actually in that register?
+4. **Only then** read the source code, and only the specific file identified by diagnostics.
 
-1. **First call: `DiagnoseTrace()`** — one function gives you pipeline status, SSA IR, register hex dump, exit code/PC/iterations. This alone solves 80% of bugs.
-2. **If the pipeline is suspect: `CompileWithDump()` + `dump.Diff()`** — binary search which pass introduced the error, don't read pass implementations.
-3. **If values are wrong: compare register hex dumps** — NaN-boxing tag in upper 16 bits tells you the type instantly (`0xFFFE`=int, `0xFFFC`=nil, `0xFFFF`=pointer).
-4. **If all else fails: `ShowASM: true`** — read the generated ARM64, but only AFTER you've narrowed to a specific instruction.
+### Rule 3: Architecture over patches
+If you're fixing the third bug in the same subsystem, stop and redesign. The trace JIT's `writtenSlots` caused 3 bugs; `function-entry tracing` caused 8 breakages. The correct response is architectural change, not more special cases.
 
-The principle: **build diagnostic output, read diagnostic output, fix based on evidence.** Never skip step 1 and jump straight into reading `ssa_emit.go`.
+### Rule 4: Never stack on unverified code
+Before adding Pass N+1, ALL tests must pass with passes 1..N enabled. Run correctness checks (IR interpreter vs VM) before timing.
 
-### Rule 3: Never stack optimizations on unverified correctness
-Before adding a new optimization, ALL existing tests must pass with the trace JIT enabled. Run the full benchmark suite with correctness checks (compare trace vs interpreter results), not just timing.
-
-### Rule 4: Architecture over patches
-If you're fixing the third bug in the same subsystem, stop and redesign. The `writtenSlots` mechanism caused 3 separate bugs because it's ad-hoc manual tracking. The correct fix is liveness analysis on the SSA IR, not more special cases.
-
-## Blog Standards ("Beyond LuaJIT")
-
-Each blog post should be **interesting to read**, not just a dry technical report. Include:
-
-- **Story**: What were we trying to do? What surprised us? What failed?
-- **Data**: Before/after benchmarks with exact numbers. CPU profiles. Charts if useful.
-- **Previous results recap**: Start each post with a summary of where we are (last post's results + analysis)
-- **Research deep-dive**: What do the experts say? Quote Mike Pall, V8 engineers, academic papers.
-- **Architecture diagrams**: Show the pipeline, data flow, register allocation strategy.
-- **Code examples**: Real GScript code + generated ARM64 assembly side by side.
-- **Honest assessment**: What worked, what didn't, what we'd do differently.
-- **Next steps**: What's the next bottleneck? What does the research suggest?
-
-### When to Write Blog Posts
-
-Don't wait for fixed milestones. Two best times to write:
-
-1. **After a breakthrough** — huge progress with data and story, write while it's hot. Examples: mandelbrot jumping from 1.53x to 5.92x, discovering the FORPREP abort-blacklisting trick.
-
-2. **After getting stuck** — research done, lessons learned, planning the next approach. Examples: realizing the trace JIT hurts 5/7 benchmarks, the nested loop tracing architecture problem. These posts have depth and reflection.
-
-Published at: https://jxwr.github.io/gscript/
-
-## Team Workflow
-
-Each milestone uses parallel agents to maximize throughput. Two phases:
-
-### Phase 1: Research (parallel)
-
-Spawn 4 agents simultaneously, all research-only (no code changes):
-
-| Role | Task | Output |
-|------|------|--------|
-| **Profiler** | Run benchmarks + pprof, identify #1 bottleneck | Benchmark data, CPU profile top functions, bottleneck analysis |
-| **Researcher** | Web search LuaJIT/V8/SpiderMonkey/papers for the target technique | Research report with sources, recommended approach, priority ranking |
-| **Architect** | Read all relevant code, audit architecture, design refactoring plan | Code audit, data flow map, concrete refactoring steps |
-| **Blogger** | Read existing blog posts, prepare outline for next post | Blog outline with story angle, section structure, diagram plan |
-
-Main agent waits for all 4 reports, then synthesizes into an implementation plan.
-
-### Phase 2: Implement (parallel where possible)
-
-After plan alignment with user, spawn coding agents in parallel for independent modules:
+## Method JIT Architecture
 
 ```
-Main agent ──→ Plan + align with user
-           ──→ Blogger writes research/design sections of blog
-           ──→ Coding agents (parallel by module): tests first, then implementation
-           ──→ Main agent integrates, runs full benchmark suite
-           ──→ Blogger updates blog with results
+internal/methodjit/
+  ir.go              — IR types: Function, Block, Instr, Value, Type
+  ir_ops.go          — Op enum covering all 45 bytecodes
+  graph_builder.go   — Bytecode → CFG SSA (Braun et al. 2013)
+  printer.go         — Human-readable IR dump
+  interp.go          — IR interpreter (correctness oracle)
+  validator.go       — Structural invariant checker
+  pipeline.go        — Pass pipeline registry
+  pass_*.go          — Individual optimization passes
+  regalloc.go        — Register allocation (forward-walk)
+  emit.go            — ARM64 code generation
+  deopt.go           — Deoptimization framework
 ```
 
-Key rules:
-- **Research agents never write code. Coding agents don't do open-ended research.**
-- **Main agent is the integrator** — synthesizes reports, makes architectural decisions, resolves conflicts.
-- **Main agent NEVER runs benchmarks directly** — always spawn a benchmark sub-agent.
-- **Always use Opus model** for coding agents (user preference).
-- **Each coding agent gets a clear, bounded scope** — one pass, one module, one test file.
-- **Benchmark agent updates all docs** — after running benchmarks, update README.md Performance section and docs/index.html with fresh numbers.
+Pipeline: `BuildGraph → [Validate → Pass1 → Validate → Pass2 → ... → Validate] → RegAlloc → Emit`
 
-## Research Protocol
-
-Before each major architectural change:
-
-1. **Web search**: Latest blog posts, conference talks, papers on the specific technique
-2. **Study implementations**: Read LuaJIT source (SSA IR, codegen), V8 Maglev, SpiderMonkey Warp
-3. **Academic papers**: Check PLDI, CGO, CC proceedings for relevant optimization techniques
-4. **Synthesize**: Write findings into the blog post BEFORE implementing
-5. **Design**: Document the architecture in the blog, get the design right on paper first
-
-## Benchmark Protocol
-
-After every major milestone, run the full benchmark suite using `bash benchmarks/run_all.sh`.
-Update results in the top-level README.md Performance section and docs/index.html blog homepage.
-Never skip benchmarks — if one fails, note it in the output. Run sequentially (not parallel).
-
-### Hard Rules
-1. **NEVER delete benchmarks from the test suite.** All 21 benchmarks must always be listed in the README. If a benchmark errors or hangs in JIT mode, show it as "ERROR" or "HANG" — do not remove the row.
-2. **Always compare three modes: VM, JIT, and LuaJIT.** Every benchmark run must produce results for all three. The README Performance table must include VM, JIT, and LuaJIT columns so regressions are visible.
-3. **Run the full suite, not a subset.** Never skip benchmarks because they're slow or broken. Broken benchmarks are signal — they expose JIT bugs that need fixing.
-
-## Code Standards
-
-- **High-leverage first**: Always prioritize optimizations with the biggest impact across the most benchmarks. Don't spend time on micro-optimizations (saving 2-3ms) when there are architectural changes (type-specialized arrays, guard fixes) that can improve entire categories of benchmarks by 2-5x. Ask: "does this change affect 1 benchmark or 10?"
-- **TDD**: Write tests first, then implement. Red → Green → Refactor.
-- **No code duplication**: Shared emitter layer between JIT tiers
-- **Profile before optimizing**: `pprof` to identify actual bottlenecks, never guess
-- **Revert failed optimizations**: If benchmarks don't improve, revert immediately
-- **Commit often**: Each working step gets a commit with detailed message
-- **One concern per file**: Split large files (>500 lines) into focused modules
-- **Pass pipeline architecture**: SSA builder, optimization passes, register allocator, and code emitter should be separate passes with clean interfaces. Do not mix analysis and code generation.
-- **No time estimates**: Never estimate work in days/weeks/hours. For AI agents, wall-clock time is meaningless — focus on what needs to be done, not how long it might take.
-- **Profile at milestones**: Run `pprof` after each milestone (not every small optimization — too slow). Verify the optimization actually shifted time away from the expected bottleneck. Don't blindly optimize — the profile tells you what to do next.
-
-## Benchmark Suite
-
-Standard benchmarks (in `benchmarks/suite/`):
-- fib, sieve, mandelbrot, spectral_norm, matmul, nbody, ackermann, binary_trees
-- Plus: chess_bench_parallel.gs (the ultimate mixed workload)
-
-Run the full suite before AND after every optimization. Record numbers in the blog.
-**Always verify correctness**: trace output must match interpreter output.
-
-## Architecture Principles
-
-Full architecture document: docs/jit-architecture.md
-JIT debugging guide: docs/jit-debug.md
-
-- **SSA IR is the core**: All optimizations happen on SSA, not on bytecode or ARM64
-- **Type specialization is king**: Unboxed integers and floats in registers = the #1 speedup
-- **Tracing JIT for hot loops**: Records actual execution, compiles the hot path
-- **Pass pipeline**: BuildSSA → Optimize → RegAlloc → Emit (no mixing)
-- **Snapshots for side-exits**: LuaJIT-style precise state reconstruction (TODO: replace writtenSlots)
-- **Decouple SSA refs from VM slots**: The SSA IR should use its own numbering, not bytecode slot numbers
-
-## Architecture Audit
-
-Full audit document: `docs/architecture_audit.md`
-Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
+Validation runs after EVERY pass to catch bugs immediately.
 
 ## Current Status
 
-**Trace JIT**: stable for loops (table_field 11x, mandelbrot 4.9x, nbody 5.8x, matmul 4.5x). Clean value-based SSA, snapshots, optimization passes all working. Function-entry tracing was attempted (got fib to 46ms) but removed because it broke 8 benchmarks. Trace JIT remains loop-only.
+- **M1 DONE**: CFG SSA IR + graph builder. Bytecode → IR conversion with Braun SSA construction. 9 tests, all pass. fib/if-else/for-loop/tables all generate correct IR.
+- **Trace JIT**: stable for loops (mandelbrot 4.9x, table_field 11x, nbody 5.8x). Function-entry tracing removed. Gradually deprecated as Method JIT matures.
+- **Next**: IR interpreter (correctness validation), then optimization passes, then ARM64 codegen.
 
-**Pivoting to Method JIT** (V8 Maglev-style): the trace JIT cannot handle functions, recursion, or inlining. Rather than continuing to hack trace-through-calls, we are building a proper Method JIT that compiles whole functions using type feedback and speculative optimization. Research report: `docs/research/method-jit-research.md`. Blog: `docs/20-the-pivot.md`.
+## Roadmap
 
-The trace JIT stays for hot loops. The Method JIT handles functions. Together they form a two-tier optimizing pipeline.
+### M2: IR Interpreter + Validator + Pipeline Framework
+- IR interpreter: execute CFG SSA in Go, compare with VM
+- Validator: check invariants after every pass
+- Pipeline: ordered pass list with enable/disable
 
-## Completed Phases
+### M3: Type Feedback + Type Specialization Pass
+- FeedbackVector in interpreter (per-instruction type lattice)
+- Type specialization pass: Add → AddInt/AddFloat based on feedback
+- GuardType insertion for speculative optimization
 
-- Phase 0: Trace blacklisting ✓
-- Phase 1: Pass pipeline refactor (BuildSSA → Optimize → ConstHoist → CSE → RegAlloc → Emit) ✓
-- Phase 2: Native GETFIELD/SETFIELD + GETGLOBAL + sqrt intrinsic + FORPREP blacklisting ✓
-- Phase 3: Constant hoisting + CSE + type-specialized LOAD_ARRAY ✓
-- Phase 4: Sub-trace calling for nested loops (BLR to inner compiled trace) ✓
-- SSA-ref-level float register allocator (linear scan with coalescing) ✓
-- VM inline field cache (per-instruction hint-based O(1) GETFIELD/SETFIELD) ✓
-- Blog #5 (breakthrough) + Blog #6 (stuck/reflecting) ✓
-- **S2.0: NaN-boxing core package ✓**
-- **S2.1: NaN-boxing migration + box/unbox optimization ✓** (Blog #11, #12)
-- **S2.2: Custom heap (mmap arena + lock-free gcRoots) ✓**
-
-## Roadmap: Method JIT (V8 Maglev-style)
-
-### M1: Type Feedback Collection
-- Add `FeedbackVector` to `FuncProto` (per-instruction type lattice)
-- Collect arithmetic, comparison, table access, and call feedback in the interpreter
-- Monotonic lattice: Int -> Float -> Any (never narrows)
-
-### M2: CFG-based SSA IR + Graph Builder
-- Basic blocks, branch targets, phi nodes at merge points
-- Graph builder: abstract interpretation over bytecode using type feedback
-- Specialize arithmetic nodes (Int32Add, Float64Add) based on feedback
-
-### M3: Code Generation + Register Allocation + Deopt
+### M4: Register Allocation + ARM64 Code Generation
 - Forward-walk register allocator (Maglev-style)
-- Deoptimization stubs: reconstruct interpreter state from JIT state
-- ARM64 code emission reusing existing assembler
+- ARM64 emission reusing existing assembler layer
+- Deopt stubs: guard failure → restore interpreter state
 
-### M4: Interpreter to Method JIT Tiering
-- Invocation counter per function
-- OSR (on-stack replacement) or call-replacement tiering
-- Keep trace JIT for hot loops inside Method JIT-compiled functions
+### M5: Tiering + Integration
+- Call count in interpreter → compile at threshold
+- Install compiled code in FuncProto.JITEntry
+- Deopt: JIT guard fail → interpreter with feedback reset
 
-### M5: Optimization Passes + Function Inlining
-- Reuse existing passes (CSE, constant hoisting, FMA) with basic-block awareness
-- Monomorphic call-site inlining with deopt-on-callee-change guards
-- Speculative optimization with deopt fallback
+### M6: Optimization Passes + Inlining
+- CSE, constant propagation, dead branch elimination, LICM
+- Function inlining at monomorphic call sites
+- Self-recursive optimization (BL to same code)
 
 ### Goal
-Surpass LuaJIT via Method JIT + speculative optimization. The trace JIT handles hot inner loops; the Method JIT handles everything else (functions, recursion, branches, inlining).
+Surpass LuaJIT on all benchmarks via Method JIT with speculative optimization.
 
+## Blog
+
+Published at: https://jxwr.github.io/gscript/
+
+Each post: story + data + research + honest assessment + next steps. Write after breakthroughs or when stuck. All content in English.
+
+## Benchmark Protocol
+
+Run full suite (`bash benchmarks/run_all.sh`) before AND after every optimization.
+Always compare VM, JIT, and LuaJIT. Never delete benchmarks. Target: JIT 100x faster than VM.
