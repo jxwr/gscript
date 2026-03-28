@@ -32,7 +32,7 @@ func ssaIsIntegerOnly(f *SSAFunc) bool {
 	for _, inst := range f.Insts {
 		switch inst.Op {
 		case SSA_GUARD_TYPE, SSA_LOAD_SLOT, SSA_UNBOX_INT, SSA_UNBOX_FLOAT,
-			SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
+			SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT, SSA_DIV_INT,
 			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
 			SSA_FMADD, SSA_FMSUB,
 			SSA_EQ_INT, SSA_LT_INT, SSA_LE_INT,
@@ -163,7 +163,7 @@ func ssaIsCompilableFunc(f *SSAFunc) bool {
 	for _, inst := range f.Insts {
 		switch inst.Op {
 		case SSA_GUARD_TYPE, SSA_LOAD_SLOT, SSA_UNBOX_INT, SSA_UNBOX_FLOAT,
-			SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT,
+			SSA_ADD_INT, SSA_SUB_INT, SSA_MUL_INT, SSA_MOD_INT, SSA_NEG_INT, SSA_DIV_INT,
 			SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT, SSA_NEG_FLOAT,
 			SSA_FMADD, SSA_FMSUB,
 			SSA_EQ_INT, SSA_LT_INT, SSA_LE_INT,
@@ -430,6 +430,9 @@ type emitCtx struct {
 	hasSelfCalls    bool            // true if function trace has SSA_SELF_CALL instructions
 	selfCallSeq     int             // monotonically increasing counter for unique self-call labels
 	selfCallExtraRef SSARef         // SSARef whose result is in regSelfExtra (X28), -1 if none
+	// maxDepth0Slot: highest slot used at depth=0. Store-back skips slots above this
+	// to avoid overwriting caller registers with inlined callee temporaries.
+	maxDepth0Slot int
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -460,6 +463,7 @@ func CompileSSA(f *SSAFunc) (*CompiledTrace, error) {
 		callExitWriteSlots: make(map[int]bool),
 		floatWrittenSlots:  make(map[int]bool),
 		rawIntSlots:        make(map[int]bool),
+		maxDepth0Slot:      f.MaxDepth0Slot,
 	}
 
 	// Pre-scan: track which slots are written by call-exit instructions.
@@ -994,6 +998,11 @@ func (ec *emitCtx) emitLoopBody() {
 				asm.MUL(dst, a1, a2)
 			})
 
+		case SSA_DIV_INT:
+			ec.emitIntArith(ref, inst, func(asm *Assembler, dst, a1, a2 Reg) {
+				asm.SDIV(dst, a1, a2)
+			})
+
 		case SSA_MOD_INT:
 			ec.emitModInt(ref, inst)
 
@@ -1117,7 +1126,7 @@ func (ec *emitCtx) emitLoopBody() {
 		case SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP,
 			SSA_PHI, SSA_STORE_SLOT, SSA_BOX_FLOAT,
-			SSA_SIDE_EXIT, SSA_DIV_INT:
+			SSA_SIDE_EXIT:
 			// Not yet implemented — skip
 		}
 	}
@@ -1186,6 +1195,11 @@ func (ec *emitCtx) emitFuncBody() {
 		case SSA_MUL_INT:
 			ec.emitIntArith(ref, inst, func(asm *Assembler, dst, a1, a2 Reg) {
 				asm.MUL(dst, a1, a2)
+			})
+
+		case SSA_DIV_INT:
+			ec.emitIntArith(ref, inst, func(asm *Assembler, dst, a1, a2 Reg) {
+				asm.SDIV(dst, a1, a2)
 			})
 
 		case SSA_MOD_INT:
@@ -1298,7 +1312,7 @@ func (ec *emitCtx) emitFuncBody() {
 		case SSA_GUARD_NNIL, SSA_GUARD_NOMETA,
 			SSA_CALL_INNER_TRACE, SSA_INNER_LOOP,
 			SSA_PHI, SSA_STORE_SLOT, SSA_BOX_FLOAT,
-			SSA_SIDE_EXIT, SSA_DIV_INT:
+			SSA_SIDE_EXIT:
 			// Not yet implemented — skip
 		}
 	}
@@ -2838,6 +2852,8 @@ func (ec *emitCtx) emitStoreBackImpl(typeSafe bool) {
 	// Skip float-written slots: a float operation was the last writer, so the
 	// int GPR holds a stale value. The correct float value is either in an FPR
 	// (handled by float store-back below) or already in memory.
+	// Skip callee temporaries: slots above maxDepth0Slot belong to inlined
+	// function bodies and must not be stored back (they'd corrupt the caller's state).
 	if ec.regMap.Int != nil {
 		for slot, reg := range ec.regMap.Int.slotToReg {
 			if ec.callExitWriteSlots[slot] {
@@ -2845,6 +2861,9 @@ func (ec *emitCtx) emitStoreBackImpl(typeSafe bool) {
 			}
 			if ec.floatWrittenSlots[slot] {
 				continue
+			}
+			if ec.maxDepth0Slot > 0 && slot > ec.maxDepth0Slot {
+				continue // callee temporary — don't store back
 			}
 			EmitBoxIntFast(asm, X0, reg, regTagInt)
 			asm.STR(X0, regRegs, slot*ValueSize)
@@ -2858,6 +2877,9 @@ func (ec *emitCtx) emitStoreBackImpl(typeSafe bool) {
 	for slot, currentFPR := range ec.floatSlotReg {
 		if ec.callExitWriteSlots[slot] {
 			continue
+		}
+		if ec.maxDepth0Slot > 0 && slot > ec.maxDepth0Slot {
+			continue // callee temporary — don't store back
 		}
 		// If there's a slot-level FPR allocation and it differs from currentFPR,
 		// move the value to the slot-level FPR first

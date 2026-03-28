@@ -242,12 +242,13 @@ func (b *ssaBuilder) inferArithType(bSlot, cSlot int, ir *TraceIR) SSAType {
 // emitIntToFloat converts an int SSA ref to float if needed.
 func (b *ssaBuilder) emitIntToFloat(ref SSARef, refType SSAType) SSARef {
 	if refType == SSATypeInt {
-		// Box int, then unbox as float (conceptual conversion)
-		// In practice the codegen handles SCVTF
+		// SCVTF conversion: int → float. Slot=-1 marks this as a pure temporary
+		// that must NOT be spilled to any VM slot (avoids overwriting slot 0).
 		return b.emit(SSAInst{
 			Op:   SSA_BOX_INT,
 			Type: SSATypeFloat,
 			Arg1: ref,
+			Slot: -1,
 		})
 	}
 	return ref
@@ -302,7 +303,30 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		b.convertArith(ir, SSA_MUL_INT, SSA_MUL_FLOAT)
 
 	case vm.OP_DIV:
-		b.convertArith(ir, SSA_DIV_INT, SSA_DIV_FLOAT)
+		// In GScript/Lua, / always returns float even for integer operands.
+		// Force float division: convert both operands to float, use SSA_DIV_FLOAT.
+		bRef := b.getRKRef(ir.B, ir.BType, ir)
+		cRef := b.getRKRef(ir.C, ir.CType, ir)
+		bt := b.getRKType(ir.B, ir.BType)
+		ct := b.getRKType(ir.C, ir.CType)
+		if bt == SSATypeUnknown {
+			bt = ssaTypeFromRuntime(ir.BType)
+		}
+		if ct == SSATypeUnknown {
+			ct = ssaTypeFromRuntime(ir.CType)
+		}
+		bRef = b.emitIntToFloat(bRef, bt)
+		cRef = b.emitIntToFloat(cRef, ct)
+		ref := b.emit(SSAInst{
+			Op:   SSA_DIV_FLOAT,
+			Type: SSATypeFloat,
+			Arg1: bRef,
+			Arg2: cRef,
+			Slot: int16(ir.A),
+			PC:   ir.PC,
+		})
+		b.slotValues[ir.A] = ref
+		b.slotType[ir.A] = SSATypeFloat
 
 	case vm.OP_MOD:
 		// MOD with float operands is not natively supported (no SSA_MOD_FLOAT).
@@ -881,14 +905,18 @@ func BuildSSA(trace *Trace) *SSAFunc {
 
 	// Phase 3: Convert loop body
 	for i := range trace.IR {
+		if trace.IR[i].Dead {
+			continue // skip killed IR entries (e.g., GETGLOBAL for inlined functions)
+		}
 		b.convertIR(i, &trace.IR[i])
 	}
 
 	return &SSAFunc{
-		Insts:     b.insts,
-		Snapshots: b.snapshots,
-		Trace:     trace,
-		LoopIdx:   b.findLoopIdx(),
+		Insts:          b.insts,
+		Snapshots:      b.snapshots,
+		Trace:          trace,
+		LoopIdx:        b.findLoopIdx(),
+		MaxDepth0Slot:  trace.MaxDepth0Slot,
 	}
 }
 

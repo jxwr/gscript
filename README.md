@@ -26,33 +26,33 @@ go build -o gscript ./cmd/gscript/
 
 ## Performance
 
-Measured on Apple M4 Max, darwin/arm64, Go 1.25.7. Updated **2026-03-26**.
+Measured on Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1. Updated **2026-03-28**.
 
 ### Full suite (21 benchmarks)
 
-| Benchmark | VM (interpreter) | JIT (trace-compiled) | Speedup |
-|-----------|-----------------|---------------------|---------|
-| **table_field_access** | 0.77s | **0.07s** | **11.3x** |
-| **mandelbrot(1000)** | 1.43s | **0.26s** | **5.5x** |
-| **fibonacci_iterative(70×1M)** | 1.12s | **0.35s** | **3.2x** |
-| **table_array_access** | 0.42s | **0.14s** | **3.0x** |
-| **sieve(1M ×3)** | 0.26s | **0.14s** | **1.9x** |
-| **fannkuch(9)** | 0.60s | **0.50s** | **1.2x** |
-| fib(35) | 1.74s | 1.77s | 1.0x |
-| ackermann(3,4 ×500) | 0.30s | 0.37s | 0.8x |
-| nbody(500K) | 1.95s | 1.98s | 1.0x |
-| sort(50K ×3) | 0.19s | 0.19s | 1.0x |
-| sum_primes(100K) | 0.03s | 0.03s | 1.0x |
-| binary_trees(15) | 1.73s | 1.75s | 1.0x |
-| matmul(300) | 1.07s | 1.54s | 0.7x |
-| spectral_norm(500) | 1.03s | 1.12s | 0.9x |
-| mutual_recursion | 0.22s | 0.26s | 0.9x |
-| method_dispatch(100K) | 0.09s | 0.11s | 0.9x |
-| closure_bench | 0.008s | 0.009s | 0.9x |
-| string_bench | 0.026s | 0.033s | 0.8x |
-| object_creation | 0.68s | 0.73s | 0.9x |
-| math_intensive | 0.97s | 0.98s | 1.0x |
-| coroutine_bench | 5.74s | 5.68s | 1.0x |
+| Benchmark | VM | JIT | JIT/VM | LuaJIT | JIT/LuaJIT |
+|-----------|-----|-----|--------|--------|------------|
+| **table_field_access** | 0.71s | **0.07s** | **10.4x** | -- | -- |
+| **nbody(500K)** | 1.77s | **0.29s** | **6.0x** | 0.032s | 9.1x |
+| **mandelbrot(1000)** | 1.33s | **0.28s** | **4.7x** | 0.051s | 5.5x |
+| **matmul(300)** | 0.97s | **0.21s** | **4.5x** | 0.021s | 10.0x |
+| **table_array_access** | 0.39s | **0.13s** | **2.9x** | -- | -- |
+| **fibonacci_iterative(70x1M)** | 1.04s | **0.40s** | **2.6x** | -- | -- |
+| **closure_bench** | 0.08s | **0.03s** | **2.4x** | 0.008s | 4.1x |
+| **sieve(1M x3)** | 0.23s | **0.13s** | **1.7x** | 0.010s | 13.2x |
+| **fannkuch(9)** | 0.55s | **0.47s** | **1.2x** | 0.018s | 25.9x |
+| math_intensive | 0.89s | 0.83s | 1.1x | -- | -- |
+| coroutine_bench | 5.04s | 4.87s | 1.0x | -- | -- |
+| fib(35) | 1.57s | 1.61s | 1.0x | 0.023s | 70.2x |
+| binary_trees(15) | 1.54s | 1.60s | 1.0x | 0.179s | 9.0x |
+| sort(50K x3) | 0.17s | 0.17s | 1.0x | 0.009s | 19.3x |
+| sum_primes(100K) | 0.03s | 0.03s | 0.9x | 0.002s | 14.5x |
+| object_creation | 0.62s | 0.66s | 0.9x | -- | -- |
+| spectral_norm(500) | 0.94s | 1.07s | 0.9x | 0.007s | 153.3x |
+| method_dispatch(100K) | 0.08s | 0.09s | 0.9x | <0.001s | -- |
+| mutual_recursion | 0.20s | 0.23s | 0.9x | 0.005s | 45.8x |
+| string_bench | 0.04s | 0.05s | 0.9x | 0.008s | 6.0x |
+| ackermann(3,4 x500) | 0.27s | 0.34s | 0.8x | 0.007s | 48.7x |
 
 ### Architecture
 

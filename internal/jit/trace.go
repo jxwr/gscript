@@ -285,6 +285,25 @@ func (r *TraceRecorder) finishTrace() {
 	if r.current != nil && len(r.current.IR) > 0 {
 		r.traces = append(r.traces, r.current)
 
+		// Compute MaxDepth0Slot: highest register slot used at depth=0.
+		// Inlined callee temporaries (depth>0) must NOT be stored back
+		// to VM memory, as they'd overwrite the caller's register space.
+		maxSlot := 0
+		for _, ir := range r.current.IR {
+			if ir.Depth == 0 {
+				if ir.A > maxSlot {
+					maxSlot = ir.A
+				}
+				if ir.B > maxSlot {
+					maxSlot = ir.B
+				}
+				if ir.C > maxSlot {
+					maxSlot = ir.C
+				}
+			}
+		}
+		r.current.MaxDepth0Slot = maxSlot
+
 		// Check for nested loop structures.
 		var innerForloopPC int
 		hasFullNesting := false
@@ -451,6 +470,9 @@ type TraceContext struct {
 	// ExitState: saved trace registers for snapshot restore
 	ExitGPR [4]int64   // X20, X21, X22, X23
 	ExitFPR [8]float64 // D4-D11
+	// Iteration counting (appended at end to preserve existing offsets)
+	IterationCount int64 // incremented each loop iteration by JIT code
+	MaxIterations  int64 // if > 0, exit with code 5 when reached
 }
 
 // TraceContext field offsets for ARM64 codegen.
@@ -533,6 +555,15 @@ type CompiledTrace struct {
 	// Snapshot-based state restore
 	snapshots []Snapshot       // snapshots from SSA compilation
 	regAlloc  map[SSARef]int   // SSARef -> register index for restore
+
+	// Function trace fields
+	isFuncTrace     bool // true if this is a function-entry trace
+	hasSelfCalls    bool // true if trace contains SSA_SELF_CALL instructions
+	funcReturnSlot  int  // VM slot for return value
+	funcReturnCount int  // number of return values
+
+	// Register allocation map
+	regMap *RegMap
 
 	// Blacklisting: tracks whether this trace is doing useful work.
 	sideExitCount  int

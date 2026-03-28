@@ -533,12 +533,20 @@ func (r *TraceRecorder) handleCall(ir TraceIR, regs []runtime.Value, base int) b
 	}
 
 	// Simple callee without loops: inline it.
+	// DEBUG: uncomment to trace inlining decisions
+	// fmt.Printf("[TRACE] Inlining call at slot %d, proto has %d instructions\n", ir.A, len(cl.Proto.Code))
 	irCopy := ir
 	r.inlineCallProto = cl.Proto
 	r.inlineCallIR = &irCopy
 	r.inlineCallDepth = r.depth
 	r.skipNextJIT = true
 	r.inlineCallStack = append(r.inlineCallStack, ir.A)
+
+	// TODO: Kill the dead GETGLOBAL for the function reference.
+	// Currently disabled because the store-back corrupts callee temporaries.
+	// Needs register allocator changes to support depth>0 slots properly.
+	// See plan: zazzy-dancing-thimble.md
+
 	r.depth++
 	return false
 }
