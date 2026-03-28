@@ -94,8 +94,8 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
-  <a href="19-thirty-three-x">Thirty-Three X</a>
-  <p>Fixed the build, split the 3K-line emitter into 8 modules, and taught the compiler to recurse natively. fib(35) went from 1.55s to 46ms &mdash; 33.6x speedup, 2x behind LuaJIT. Three bugs found (DIV always returns float, BOX_INT slot-zero corruption, shared memory in nested self-calls), all fixed by observation.</p>
+  <a href="19-thirty-three-x">The Long Road Back</a>
+  <p>The rewrite cost us fib, sieve, ackermann, mandelbrot. This round we tried to get them back: function inlining failed (register corruption), the build was broken, three bugs hid in NaN-boxing. We got fib to 46ms via native BL recursion, but sieve is still 5.7x slower than the old JIT. An honest look at what the rewrite gained, what it lost, and where AI agent debugging hits its limits.</p>
 </div>
 
 <div class="post">

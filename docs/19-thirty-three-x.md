@@ -1,122 +1,137 @@
-# Thirty-Three X
+# The Long Road Back
 
-Last post we rewrote the JIT and got 11.3x on table field access. This time we fixed the build, modularized the emitter, and taught the compiler to recurse natively. fib(35) went from 1.55 seconds to 46 milliseconds.
+We rewrote the JIT compiler two weeks ago. Deleted the Method JIT, went trace-only, got clean SSA and 11x on table access. It felt like progress. Then we looked at the numbers we'd lost.
 
-## Where We Were
+## The Cost of the Rewrite
 
-Blog #18 left us with a clean trace-only JIT: 6 benchmarks accelerated, 15 stuck at interpreter speed, and a 70x gap against LuaJIT on recursive functions. The old Method JIT's self-call inlining — which had fib running at 34ms — was deleted in the rewrite. The question was: can we get it back without the architectural mess?
+Before the rewrite (commit `badd2b8c`), the two-tier JIT had:
 
-## The Numbers
+| Benchmark | Old JIT | LuaJIT | Gap |
+|-----------|---------|--------|-----|
+| fib(35) | **34ms** | 23ms | 1.4x |
+| ackermann(3,4 x500) | **12ms** | 6ms | 2.0x |
+| sieve(1M x3) | **23ms** | 11ms | 2.1x |
+| mandelbrot(1000) | **158ms** | 58ms | 2.7x |
 
-| Benchmark | VM | JIT | Speedup | LuaJIT | vs LuaJIT |
-|-----------|-----|-----|---------|--------|-----------|
-| **fib(35)** | 1.555s | **46ms** | **33.6x** | 23ms | 2.0x |
-| **table_field_access** | 718ms | **65ms** | **11.0x** | -- | -- |
-| **nbody(500K)** | 1.805s | **313ms** | **5.8x** | 32ms | 9.8x |
-| **mandelbrot(1000)** | 1.357s | **276ms** | **4.9x** | 51ms | 5.4x |
-| **matmul(300)** | 974ms | **215ms** | **4.5x** | 21ms | 10.2x |
-| **table_array_access** | 383ms | **138ms** | **2.8x** | -- | -- |
-| **fibonacci_iterative** | 1.014s | **423ms** | **2.4x** | -- | -- |
-| **sieve(1M x3)** | 239ms | **130ms** | **1.8x** | 10ms | 13.0x |
-| **math_intensive** | 896ms | **676ms** | **1.3x** | -- | -- |
-| **fannkuch(9)** | 556ms | **461ms** | **1.2x** | 18ms | 25.6x |
-| coroutine_bench | 4.97s | 4.93s | 1.0x | -- | -- |
-| sort | 169ms | 174ms | 1.0x | 10ms | 17.4x |
-| sum_primes | 27ms | 30ms | 0.9x | 2ms | 15.0x |
-| spectral_norm | 951ms | 823ms | 0.9x | 7ms | 117.6x |
-| binary_trees(15) | 1.55s | ERROR | -- | 161ms | -- |
-| string_bench | 41ms | 41ms | 1.0x | 9ms | 4.6x |
-| mutual_recursion | 194ms | 251ms | 0.8x | 4ms | 62.8x |
-| ackermann | 270ms | ⚠️ | -- | 6ms | -- |
-| closure_bench | 82ms | ⚠️ | -- | 8ms | -- |
-| object_creation | 614ms | 1.81s | 0.3x | -- | -- |
-| method_dispatch | 84ms | 239ms | 0.4x | <1ms | -- |
+The rewrite deleted all of that. The new trace-only JIT couldn't compile recursive functions at all. fib went from 34ms to 1,550ms — a **45x regression**. sieve went from 23ms to 140ms. mandelbrot from 158ms to 260ms. We'd traded the old Method JIT's self-call inlining, register pinning, and cross-call BLR for clean architecture and correct snapshots.
 
-10 benchmarks now have real JIT speedups (was 6). fib jumped from 1.0x to **33.6x**. nbody jumped from 1.0x to **5.8x**. matmul jumped from 0.7x (regression!) to **4.5x**.
+The question for this round: can we get back?
 
-## What Changed
+## What We Tried (and What Failed)
 
-Six commits, three bugs fixed, one major feature added, one monolith split.
+### Attempt 1: Inline Function Calls in Traces
 
-### Bug 1: Division Always Returns Float
+The profiler showed spectral_norm's inner loop calls `A(i,j)` — a tiny pure function. The trace recorder already had inlining infrastructure (depth tracking, synthetic MOVEs for args). If we could just kill the dead GETGLOBAL for the function reference, the trace should compile.
 
-GScript follows Lua semantics: `/` always returns a float, even for integer operands. The SSA builder was creating `SSA_DIV_INT` when both operands were integers, producing raw int64 values where IEEE 754 doubles were expected. The NaN-boxing mismatch corrupted downstream computation.
+It worked at the trace IR level. The GETGLOBAL was marked dead, the SSA builder skipped it, `SSAIsUseful()` no longer rejected the trace.
 
-The expression `(i+j)*(i+j+1)/2` in spectral_norm's inner loop was the canary. Fix: force `SSA_DIV_FLOAT` with `SCVTF` (ARM64 int-to-float conversion) for all division.
+Then the trace compiled. And crashed.
 
-### Bug 2: BOX_INT Slot Zero Corruption
+The problem: all recursion depths share the same `regRegs` memory. The inlined callee's temporary registers (depth > 0) overlap with the caller's register space. The store-back writes callee temporaries to the same memory slots the caller uses for its own data. We added `MaxDepth0Slot` tracking to limit store-back, but the corruption was deeper — the register allocator itself assigns ARM64 registers to callee slots, and nested execution clobbers them.
 
-When converting int-to-float for division operands, the `emitIntToFloat` helper created temporary `SSA_BOX_INT` instructions with `Slot=0` (Go's zero value default). The emitter's `spillFloat` function then stored the converted float to VM slot 0 — overwriting whatever the caller had there. For benchmarks with `t0 := time.now()` in slot 0, this silently replaced the time table with a float.
+**Reverted.** Function call inlining in traces needs an architectural fix to the register allocator — separate register namespaces for different inlining depths, or stack-based temporaries instead of shared memory.
 
-Fix: set `Slot=-1` on temporary conversion instructions so they're treated as pure values with no memory side-effect.
+### Attempt 2: Fix the Build First
 
-### Bug 3: Build Was Broken
+The committed code at HEAD didn't compile. `ssa_emit.go` referenced `SSA_SELF_CALL`, `FuncReturnCount`, `isFuncTrace` — symbols that only existed in uncommitted development files. A fresh `git clone` would fail.
 
-The committed code referenced `SSA_SELF_CALL`, `FuncReturnCount`, `isFuncTrace`, and other symbols that existed only in uncommitted development files. A fresh `git clone` would fail to compile. We added the missing definitions, committed the development files (DCE, load elimination, strength reduction, disassembler), and dissolved all temporary stubs into their proper locations.
+We spent an entire sub-round just making the code build:
+- Added `build_stubs.go` with temporary definitions
+- Committed 11 untracked files (DCE, load elimination, strength reduction, disassembler, self-call emission, SSA pipeline)
+- Dissolved the stubs into proper locations
+- Fixed 8 pre-existing test failures (float store-back bug + SSA type test setup bug)
 
-### The Split: ssa_emit.go
+This was pure cleanup, zero performance impact. But necessary — you can't optimize code that doesn't compile.
 
-The main emitter file had grown to 3,121 lines — mixing prologue, arithmetic, guards, table operations, store-back, intrinsics, and exit handlers in one place. We split it into 8 focused files:
+### The Three Bugs
 
-```
-ssa_emit.go          (1116) - entry points + dispatch
-ssa_emit_table.go     (768) - table/field/array/global
-ssa_emit_exit.go      (296) - store-back, reload, exits
-ssa_emit_prologue.go  (271) - prologue, guards, pre-loop
-ssa_emit_resolve.go   (232) - operand resolution
-ssa_emit_intrinsic.go (185) - intrinsics, call-exit
-ssa_emit_guard.go     (179) - comparisons, guards
-ssa_emit_arith.go     (126) - arithmetic, FMA
-```
+While investigating the function inlining failure, we found three real bugs:
 
-Also split `ssa_build.go` and test files. No file exceeds 1,200 lines now.
+**Bug 1: Division Always Returns Float.** GScript follows Lua semantics: `/` always returns float. The SSA builder was creating `SSA_DIV_INT` when both operands were integers, storing raw int64 values where IEEE 754 doubles were expected. The NaN-boxing mismatch corrupted everything downstream. The expression `(i+j)*(i+j+1)/2` in spectral_norm was the canary.
 
-### The Feature: Function-Entry Tracing
+**Bug 2: BOX_INT Slot Zero Corruption.** The `emitIntToFloat` helper created temporary `SSA_BOX_INT` instructions with `Slot=0` (Go's zero-value default). The emitter's `spillFloat` then stored the converted float to VM slot 0 — overwriting `time.now()` tables, function references, whatever happened to be in slot 0. We spent hours chasing "bad argument #1 to time.since: expected time table, got number" before realizing the spill was writing to the wrong slot.
 
-This is the big one. When `fib(n)` is called 50 times, the trace recorder records one execution of its body — including the two recursive `fib(n-1)` and `fib(n-2)` calls. The SSA builder converts these to `SSA_SELF_CALL` instructions, and the emitter generates ARM64 `BL` (branch-and-link) instructions that recursively call the same native code.
+**Bug 3: Shared Memory in Self-Calls.** After finally getting function-entry traces working, fib(35) ran at 46ms but returned 291 instead of 9,227,465. The issue: when fib(4) calls fib(3) then fib(2), both nested calls use the same `regRegs` memory for intermediate results. The first call's result (stored in `memory[2]`) was overwritten by the second call's internal computation. Fix: use X28 (a callee-saved register) instead of shared memory for intermediate self-call results.
+
+### The Modularization
+
+`ssa_emit.go` had grown to 3,121 lines. Every concern was mixed together: prologue, arithmetic, guards, table operations, store-back, intrinsics, exit handlers. We split it into 8 files:
 
 ```
-Source:                    ARM64:
-func fib(n) {             self_call_entry:
-  if n < 2 {return n}       LDR X21, [X26]      // load n
-  return fib(n-1)            CMP X21, #2
-    + fib(n-2)               B.LT base_case
-}                            SUB X20, X21, #1    // n-1
-                             STP X30,X20,[SP,-48]!
-                             BL self_call_entry   // fib(n-1)
-                             LDP X30,X20,[SP],48
-                             ... (save result)
-                             SUB X22, X21, #2    // n-2
-                             STP X30,X20,[SP,-48]!
-                             BL self_call_entry   // fib(n-2)
-                             LDP X30,X20,[SP],48
-                             ADD X23, X28, X20   // result
-                             RET
+ssa_emit.go          (1116) → entry points, dispatch
+ssa_emit_table.go     (768) → table/field/array/global
+ssa_emit_exit.go      (296) → store-back, exits
+ssa_emit_prologue.go  (271) → prologue, guards
+ssa_emit_resolve.go   (232) → operand resolution
+ssa_emit_intrinsic.go (185) → intrinsics
+ssa_emit_guard.go     (179) → comparisons
+ssa_emit_arith.go     (126) → arithmetic
 ```
 
-Three sub-problems had to be solved:
+Then split `ssa_build.go` and test files. No file exceeds 1,200 lines now. Pure mechanical refactoring — zero logic changes, zero behavior changes.
 
-**1. Dead GETGLOBAL**: Before each `fib(n-1)` call, the bytecode loads the `fib` function reference via `GETGLOBAL`. After inlining the call as `SSA_SELF_CALL` (which uses `BL` directly), this `GETGLOBAL` becomes dead code. But `SSAIsUseful()` rejects any trace containing non-table `LOAD_GLOBAL`. Fix: NOP out the dead `GETGLOBAL` in the SSA builder when creating `SSA_SELF_CALL`.
+### Function-Entry Tracing
 
-**2. While-Loop Exit Misclassification**: `OptimizeSSA` was marking the first comparison after `SSA_LOOP` as a while-loop exit (`AuxInt=-2`). For function traces, this comparison is the base-case guard (`n < 2`), not a loop exit. The while-loop exit sentinel inverted the guard polarity: the trace would exit when `n >= 2` (the recursive case) instead of when `n < 2` (the base case). Fix: skip while-loop exit detection for function traces.
+The big feature. When `fib(n)` is called 50 times, the recorder captures one execution of the body. The SSA builder converts recursive calls to `SSA_SELF_CALL`. The emitter generates ARM64 `BL` instructions.
 
-**3. Shared Memory Corruption**: All recursion depths share the same `regRegs` memory. When the first `BL` returns with `fib(n-1) = X`, the result is stored to memory before the second `BL` call. But inside the second call's recursion, the same memory slot is used for intermediate results, overwriting `X`. Fix: use `X28` (a callee-saved register dedicated to self-call overflow) instead of memory for intermediate results. `X28` is saved/restored on the ARM64 stack across each `BL`, so nested calls can't corrupt it.
+Three sub-problems:
+1. **Dead GETGLOBAL**: `SSAIsUseful()` rejected traces with non-table `LOAD_GLOBAL` for the function reference. NOP'd it in the SSA builder.
+2. **While-loop exit misclassification**: `OptimizeSSA` marked the base-case guard (`n < 2`) as a while-loop exit, inverting the guard polarity. The trace exited when `n >= 2` instead of when `n < 2`. Skipped while-loop detection for function traces.
+3. **Shared memory corruption**: Bug 3 above. Used X28 instead of memory.
 
-## Test Scorecard
+Result: fib(35) = 46ms, correct. 33.6x speedup over interpreter.
 
-Before this round: 8 failures, broken build.
-After: **0 failures** (except 2 known issues: ackermann 2-arg, SumPrimes).
-136+ tests pass.
+## Where We Are Now
+
+| Benchmark | Old JIT | New JIT | vs Old | LuaJIT | vs LuaJIT |
+|-----------|---------|---------|--------|--------|-----------|
+| fib(35) | 34ms | 46ms | **1.4x slower** | 23ms | 2.0x |
+| sieve | 23ms | 130ms | **5.7x slower** | 10ms | 13.0x |
+| mandelbrot | 158ms | 276ms | **1.7x slower** | 51ms | 5.4x |
+| ackermann | 12ms | BROKEN | -- | 6ms | -- |
+| table_field | -- | 65ms | **NEW** | -- | -- |
+| nbody | -- | 313ms | **NEW** | 32ms | 9.8x |
+| matmul | -- | 215ms | **NEW** | 21ms | 10.2x |
+
+Honest assessment: **we haven't caught up.** fib is 1.4x slower than the old Method JIT. sieve is 5.7x slower. mandelbrot is 1.7x slower. ackermann is broken (2-arg recursion not implemented).
+
+What the new architecture gained: table operations (11x), nbody (5.8x), matmul (4.5x) — benchmarks the old JIT couldn't touch. And clean, maintainable code with proper SSA, snapshots, and modular files.
+
+What it lost: the Method JIT's register pinning for loops (sieve's `findAccumulators`), multi-argument self-call (ackermann), and raw speed from compiling entire functions instead of traces.
 
 ## What's Next
 
-The biggest remaining gaps against LuaJIT:
+The gap against the old architecture comes from three missing features:
 
-| Gap | Benchmarks | Fix |
-|-----|-----------|-----|
-| **117x** | spectral_norm | Inline function calls in traces (GETGLOBAL for local fn refs blocks compilation) |
-| **63x** | mutual_recursion | Function-entry traces for non-self-recursive calls |
-| **26x** | fannkuch | Nested loop tracing (only innermost loop compiles) |
-| **13x** | sieve | Dual-path traces (80% side-exit rate on boolean guard) |
-| **10x** | matmul, nbody | Already 4-6x speedup, need tighter native code |
-| **2x** | fib | Almost at parity (46ms vs 23ms). Register pinning for args would close the gap. |
+1. **Register pinning for for-loops** — the old `codegen_loop.go` pinned loop variables AND accumulators to callee-saved registers. The new register allocator is frequency-based but doesn't detect accumulator patterns. Porting `findAccumulators` would close the sieve gap.
+
+2. **Multi-argument self-calls** — ackermann needs two parameters (m, n) saved across BL. Currently only single-arg works (X28 holds the intermediate result). Need a second overflow register or stack-based argument passing.
+
+3. **Nested loop compilation** — mandelbrot's y/x loops run in the interpreter (only the innermost iter loop compiles). The old JIT compiled entire functions, including nested loops. Enabling nested loop tracing would give 2-3x on mandelbrot.
+
+The gap against LuaJIT is larger — 5-100x on most benchmarks — and comes from deeper architectural differences: LuaJIT traces through function calls seamlessly, compiles all three loops in mandelbrot as one trace, and has a much faster allocator and C-based interpreter. Closing that gap requires the features above plus trace-through-calls, dual-path conditionals, and better native code quality.
+
+## Where AI Debugging Hits the Wall
+
+This project is built entirely by AI agents (Claude). This round exposed the limits.
+
+**What worked**: Mechanical refactoring (file splitting), research (LuaJIT architecture analysis), benchmark running, test writing, and pattern-matching on known bug categories. Agents can split a 3,000-line file into 8 modules, run benchmarks, and identify that "LOAD_GLOBAL rejects the trace" by reading SSAIsUseful().
+
+**What didn't work**: Multi-step causal reasoning through the JIT pipeline.
+
+The BOX_INT slot-zero bug is a good example. The symptom was `time.since` crashing with "expected time table, got number." An agent reading the emitter code sees `spillFloat` writes to `regRegs + slot*ValueSize`. It reads that `slot` comes from `inst.Slot`. It reads that `emitIntToFloat` creates a `BOX_INT` with no Slot set. It _should_ conclude that `Slot=0` causes a write to slot 0. But this chain — default Go zero value → Slot field → spillFloat path → memory offset → slot 0 overwrite — crosses 4 files and 3 abstraction layers. The agent tried multiple wrong hypotheses (store-back issue, register allocation conflict, float type mismatch) before human intervention narrowed it to "check what value Slot has in the BOX_INT instruction."
+
+The shared-memory corruption in self-calls was worse. The symptom: fib(35) returns 291. The fix: use X28 instead of `memory[dstSlot]`. But finding it required mentally simulating nested ARM64 execution across 3 recursion depths, tracking which memory slots are read/written at each level, and noticing that the second BL's internal computation overwrites a slot that the first BL's result was stored in. This is a 15-step causal chain that crosses the Go emitter, ARM64 codegen, and runtime memory layout.
+
+**The pattern**: AI agents excel at breadth (try many things fast) but struggle with depth (trace one execution path through 7 pipeline stages). The `/diagnose` skill with `DiagnoseTrace()` and `CompileWithDump()` helps — it shortens the chain by dumping intermediate state. But for bugs that span the emitter→ARM64→execution→memory boundary, human insight is still needed to ask the right "what if" question.
+
+**What might help**:
+- Better diagnostic tools that dump the FULL execution state at each self-call depth (not just entry/exit)
+- A trace simulator that runs the generated ARM64 symbolically, checking for memory conflicts
+- Smaller, more focused agents: instead of one agent debugging end-to-end, have one that dumps state and another that analyzes the dump
+
+The goal isn't to replace human reasoning but to make the agent's observation surface large enough that the bug becomes obvious from the data, without requiring deep causal chains.
+
+## Summary
+
+The rewrite gave us a solid foundation. This round got us partway back — fib recovered, nbody/matmul are new wins, the code is modular and all tests pass. But sieve, mandelbrot, ackermann are still behind where they were. The road back is longer than expected, and the next steps (register pinning, nested loop tracing, multi-arg self-calls) each require careful work at the ARM64 level where AI debugging is hardest.
