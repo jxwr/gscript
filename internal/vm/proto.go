@@ -33,7 +33,17 @@ type FuncProto struct {
 	HasSelfCalls    bool                      // true if function has recursive calls to itself (set during JIT compilation)
 	JITSideExited   bool                      // true if Method JIT compiled but permanently side-exited (enables Trace JIT)
 	CallCount       int                       // JIT call count (avoids map lookup in VM hot path)
+	Feedback        FeedbackVector            // lazily-initialized per-PC type feedback for Method JIT
 	forLoopCount    int                       // cached ForLoopCount+1 (0 = not computed)
+}
+
+// EnsureFeedback lazily initializes the type feedback vector for this function.
+// Called by the JIT when a function becomes hot. Returns the feedback vector.
+func (p *FuncProto) EnsureFeedback() FeedbackVector {
+	if p.Feedback == nil {
+		p.Feedback = NewFeedbackVector(len(p.Code))
+	}
+	return p.Feedback
 }
 
 // BlacklistTracePC marks a FORLOOP PC as trace-blacklisted.

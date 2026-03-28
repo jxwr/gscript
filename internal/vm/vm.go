@@ -668,6 +668,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
 					vm.regs[base+a] = tbl.RawGet(key)
+					if frame.closure.Proto.Feedback != nil {
+						fb := &frame.closure.Proto.Feedback[frame.pc-1]
+						fb.Left.Observe(tableVal.Type())
+						fb.Right.Observe(key.Type())
+						fb.Result.Observe(vm.regs[base+a].Type())
+					}
 					break
 				}
 			}
@@ -676,6 +682,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				return nil, err
 			}
 			vm.regs[base+a] = val
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(tableVal.Type())
+				fb.Right.Observe(key.Type())
+				fb.Result.Observe(val.Type())
+			}
 
 		case OP_SETTABLE:
 			a := DecodeA(inst)
@@ -697,11 +709,23 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
 					tbl.RawSet(key, val)
+					if frame.closure.Proto.Feedback != nil {
+						fb := &frame.closure.Proto.Feedback[frame.pc-1]
+						fb.Left.Observe(tableVal.Type())
+						fb.Right.Observe(key.Type())
+						fb.Result.Observe(val.Type())
+					}
 					break
 				}
 			}
 			if err := vm.tableSet(tableVal, key, val); err != nil {
 				return nil, err
+			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(tableVal.Type())
+				fb.Right.Observe(key.Type())
+				fb.Result.Observe(val.Type())
 			}
 
 		case OP_GETFIELD:
@@ -717,6 +741,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						proto.FieldCache = make([]runtime.FieldCacheEntry, len(proto.Code))
 					}
 					vm.regs[base+a] = tbl.RawGetStringCached(constants[c].Str(), &proto.FieldCache[frame.pc-1])
+					if proto.Feedback != nil {
+						fb := &proto.Feedback[frame.pc-1]
+						fb.Result.Observe(vm.regs[base+a].Type())
+					}
 					break
 				}
 			}
@@ -726,6 +754,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				return nil, err
 			}
 			vm.regs[base+a] = val
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Result.Observe(val.Type())
+			}
 
 		case OP_SETFIELD:
 			a := DecodeA(inst)
@@ -746,12 +778,20 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						proto.FieldCache = make([]runtime.FieldCacheEntry, len(proto.Code))
 					}
 					tbl.RawSetStringCached(constants[b].Str(), val, &proto.FieldCache[frame.pc-1])
+					if proto.Feedback != nil {
+						fb := &proto.Feedback[frame.pc-1]
+						fb.Result.Observe(val.Type())
+					}
 					break
 				}
 			}
 			key := constants[b]
 			if err := vm.tableSet(tableVal, key, val); err != nil {
 				return nil, err
+			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Result.Observe(val.Type())
 			}
 
 		case OP_SETLIST:
@@ -800,6 +840,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				}
 				*dst = r
 			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(bp.Type())
+				fb.Right.Observe(cp.Type())
+				fb.Result.Observe(dst.Type())
+			}
 
 		case OP_SUB:
 			a := DecodeA(inst)
@@ -823,6 +869,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					return nil, wrapLineErr(frame, err)
 				}
 				*dst = r
+			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(bp.Type())
+				fb.Right.Observe(cp.Type())
+				fb.Result.Observe(dst.Type())
 			}
 
 		case OP_MUL:
@@ -848,6 +900,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				}
 				*dst = r
 			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(bp.Type())
+				fb.Right.Observe(cp.Type())
+				fb.Result.Observe(dst.Type())
+			}
 
 		case OP_DIV:
 			a := DecodeA(inst)
@@ -872,6 +930,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				}
 				*dst = r
 			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(bp.Type())
+				fb.Right.Observe(cp.Type())
+				fb.Result.Observe(dst.Type())
+			}
 
 		case OP_MOD:
 			a := DecodeA(inst)
@@ -885,6 +949,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				return nil, wrapLineErr(frame, err)
 			}
 			vm.regs[base+a] = r
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(bv.Type())
+				fb.Right.Observe(cv.Type())
+				fb.Result.Observe(r.Type())
+			}
 
 		case OP_POW:
 			a := DecodeA(inst)
@@ -948,6 +1018,11 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			} else {
 				cp = &vm.regs[base+cidx]
 			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(bp.Type())
+				fb.Right.Observe(cp.Type())
+			}
 			if bp.RawType() == runtime.TypeInt && cp.RawType() == runtime.TypeInt {
 				if (bp.RawInt() == cp.RawInt()) != (a != 0) {
 					frame.pc++
@@ -972,6 +1047,11 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				cp = &constants[cidx-RKBit]
 			} else {
 				cp = &vm.regs[base+cidx]
+			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(bp.Type())
+				fb.Right.Observe(cp.Type())
 			}
 			if lt, ok := runtime.LTInts(bp, cp); ok {
 				if lt != (a != 0) {
@@ -1001,6 +1081,11 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				cp = &constants[cidx-RKBit]
 			} else {
 				cp = &vm.regs[base+cidx]
+			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(bp.Type())
+				fb.Right.Observe(cp.Type())
 			}
 			if le, ok := runtime.LEInts(bp, cp); ok {
 				if le != (a != 0) {
@@ -1073,6 +1158,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			nArgs := b - 1
 			if b == 0 {
 				nArgs = vm.top - (base + a + 1)
+			}
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Left.Observe(fnVal.Type())
 			}
 
 			// ---- Fast path: VM Closure (inline call) ----
