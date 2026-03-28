@@ -8,7 +8,27 @@ permalink: pretty
 exclude:
   - stdlib
   - decisions
+  - design
+  - research
   - architecture_audit.md
   - optimization-summary.md
   - technical-plan.md
   - tracing-jit-design.md
+  - advanced-optimization-research.md
+  - classifySlots-spec.md
+  - guard-refactor-plan.md
+  - jit-architecture.md
+  - jit-debug.md
+  - jit-rewrite-design.md
+  - known_bugs.md
+  - known_issues.md
+  - master-plan.md
+  - optimization-roadmap.md
+  - p0-execution-plan.md
+  - research_table_jit_compilation.md
+  - season2-design.md
+  - season2-jit-changes.md
+  - snapshot-plan.md
+  - step0-diagnosis.md
+  - step0-final-diagnosis.md
+  - 10x-optimization-plan.md

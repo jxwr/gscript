@@ -1,3 +1,8 @@
+---
+layout: default
+title: "The Long Road Back"
+permalink: /19-the-long-road-back
+---
 # The Long Road Back
 
 We rewrote the JIT compiler two weeks ago. Deleted the Method JIT, went trace-only, got clean SSA and 11x on table access. It felt like progress. Then we looked at the numbers we'd lost.
