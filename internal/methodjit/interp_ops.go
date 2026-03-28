@@ -1,0 +1,74 @@
+// interp_ops.go contains call handling and global lookup for the IR interpreter.
+// Split from interp.go to keep file sizes manageable.
+
+package methodjit
+
+import (
+	"fmt"
+
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
+)
+
+// execCall handles function call instructions.
+func (s *interpState) execCall(instr *Instr) (runtime.Value, error) {
+	if len(instr.Args) == 0 {
+		return runtime.NilValue(), fmt.Errorf("IR interpreter: OpCall with no args")
+	}
+
+	fnVal := s.val(instr.Args[0])
+	callArgs := make([]runtime.Value, len(instr.Args)-1)
+	for i := 1; i < len(instr.Args); i++ {
+		callArgs[i-1] = s.val(instr.Args[i])
+	}
+
+	// Check if this is a self-recursive call.
+	if fnVal.IsFunction() {
+		if ptr := fnVal.Ptr(); ptr != nil {
+			if cl, ok := ptr.(*vm.Closure); ok && cl.Proto == s.fn.Proto {
+				// Self-recursive call: interpret recursively with the same IR.
+				results, err := interpretImpl(s.fn, callArgs, s.depth+1)
+				if err != nil {
+					return runtime.NilValue(), err
+				}
+				if len(results) > 0 {
+					return results[0], nil
+				}
+				return runtime.NilValue(), nil
+			}
+		}
+	}
+
+	// For non-self calls, use the VM to execute.
+	return s.callViaVM(fnVal, callArgs)
+}
+
+// callViaVM executes a function call using the VM interpreter.
+func (s *interpState) callViaVM(fnVal runtime.Value, args []runtime.Value) (runtime.Value, error) {
+	// Create a minimal VM to execute the call.
+	globals := make(map[string]runtime.Value)
+	v := vm.New(globals)
+	defer v.Close()
+
+	results, err := v.CallValue(fnVal, args)
+	if err != nil {
+		return runtime.NilValue(), err
+	}
+	if len(results) > 0 {
+		return results[0], nil
+	}
+	return runtime.NilValue(), nil
+}
+
+// getGlobal looks up a global variable by name.
+// In the IR interpreter, globals are not available unless we have a VM context.
+// For self-recursive functions, the function itself is the only global needed.
+func (s *interpState) getGlobal(name string) runtime.Value {
+	// If the name matches the function being interpreted, return a closure
+	// wrapping the current proto so self-recursive calls work.
+	if name == s.fn.Proto.Name {
+		cl := &vm.Closure{Proto: s.fn.Proto}
+		return runtime.FunctionValue(cl)
+	}
+	return runtime.NilValue()
+}
