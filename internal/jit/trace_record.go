@@ -111,6 +111,14 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		return false
 	}
 
+	// Handle RETURN at depth=0 for function-entry traces: finish recording.
+	if op == vm.OP_RETURN && r.depth == 0 && r.recordingFunction {
+		r.current.FuncReturnSlot = ir.A
+		r.current.FuncReturnCount = origB
+		r.finishFuncTrace()
+		return false
+	}
+
 	// Check for unsupported ops that abort recording.
 	if r.shouldAbort(op) {
 		r.abortAndBlacklist()

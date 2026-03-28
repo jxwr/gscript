@@ -109,12 +109,13 @@ func (ec *emitCtx) emitSelfCall(ref SSARef, inst *SSAInst) {
 		asm.LDR(dstReg, regRegs, resultSlot*ValueSize)
 		EmitUnboxInt(asm, dstReg, dstReg)
 	} else {
-		// No GPR for this slot. Load the NaN-boxed result and spill to dstSlot.
-		// This ensures the value survives across subsequent self-calls that may
-		// overwrite the returnSlot. Use X0 as scratch (safe after BL return).
-		asm.LDR(X0, regRegs, resultSlot*ValueSize)
-		// Spill NaN-boxed value directly to dstSlot memory.
-		asm.STR(X0, regRegs, dstSlot*ValueSize)
+		// No GPR for this slot. Load into X28 (regSelfExtra) which is
+		// callee-saved across subsequent BL calls (saved/restored on stack).
+		// Using memory would be incorrect: nested self-calls at deeper depths
+		// share the same regRegs base and would overwrite the same slot.
+		asm.LDR(regSelfExtra, regRegs, resultSlot*ValueSize)
+		EmitUnboxInt(asm, regSelfExtra, regSelfExtra)
+		ec.selfCallExtraRef = ref
 	}
 
 	// Overflow handler: depth exceeded, unwind everything and side-exit.
