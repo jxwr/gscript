@@ -5,7 +5,8 @@
 //
 // ARM64 register convention:
 //   X0-X15:  scratch / temporaries (caller-saved)
-//   X19-X23: allocatable GPRs (callee-saved, 5 registers)
+//   X19:     ExecContext pointer (reserved for emit.go)
+//   X20-X23: allocatable GPRs (callee-saved, 4 registers)
 //   X24:     NaN-boxing int tag constant (reserved)
 //   X25:     reserved
 //   X26:     VM register base pointer (reserved)
@@ -15,8 +16,9 @@
 
 package methodjit
 
-// Allocatable GPR pool: X19, X20, X21, X22, X23.
-var allocatableGPRs = [5]int{19, 20, 21, 22, 23}
+// Allocatable GPR pool: X20, X21, X22, X23.
+// X19 is reserved for the ExecContext pointer (emit.go pinned register).
+var allocatableGPRs = [4]int{20, 21, 22, 23}
 
 // Allocatable FPR pool: D4, D5, D6, D7, D8, D9, D10, D11.
 var allocatableFPRs = [8]int{4, 5, 6, 7, 8, 9, 10, 11}

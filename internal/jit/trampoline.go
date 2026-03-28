@@ -7,3 +7,8 @@ package jit
 //
 //go:noescape
 func callJIT(fn uintptr, ctx uintptr) int64
+
+// CallJIT is the exported version of callJIT for use by the method JIT.
+func CallJIT(fn uintptr, ctx uintptr) int64 {
+	return callJIT(fn, ctx)
+}
