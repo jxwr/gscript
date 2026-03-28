@@ -98,6 +98,7 @@ type TraceRecorder struct {
 	funcCallCounts    map[*vm.FuncProto]int          // call count per function
 	funcCompiled      map[*vm.FuncProto]*CompiledTrace // compiled function traces
 	funcBlacklist     map[*vm.FuncProto]bool         // blacklisted functions
+	funcRetryCount    map[*vm.FuncProto]int          // retry count for base-case-only recordings
 
 	// Debug counters for function traces (used by tests)
 	funcTraceHits      int // number of times a compiled function trace was returned
@@ -134,6 +135,7 @@ func NewTraceRecorder() *TraceRecorder {
 		funcCallCounts: make(map[*vm.FuncProto]int),
 		funcCompiled:   make(map[*vm.FuncProto]*CompiledTrace),
 		funcBlacklist:  make(map[*vm.FuncProto]bool),
+		funcRetryCount: make(map[*vm.FuncProto]int),
 	}
 }
 
@@ -601,13 +603,22 @@ func (r *TraceRecorder) finishFuncTrace() {
 	}
 	r.current.MaxDepth0Slot = maxSlot
 
-	// If the trace has no self-calls and is short, it likely captured only a
-	// base case (e.g., fib(0) or fib(1)). Discard and retry later to capture
-	// the recursive path with self-calls.
-	if !r.current.HasSelfCalls && len(r.current.IR) < 10 {
-		if r.debug {
-			fmt.Printf("[TRACE] Function trace too short (base case?): proto=%s, nIR=%d, retrying\n",
-				r.current.LoopProto.Name, len(r.current.IR))
+	// Only compile function traces that contain self-recursive calls.
+	// Non-recursive function traces cause three problems:
+	// 1. CONST_BOOL/CONST_NIL not written to memory → wrong return values
+	// 2. storeBack corrupts callee state on side-exit → wrong results
+	// 3. Infinite re-recording loop for short functions → massive overhead
+	if !r.current.HasSelfCalls {
+		if len(r.current.IR) < 10 {
+			// Short trace (likely base case of a recursive function).
+			// Track retries; blacklist after 5 attempts to avoid infinite loop.
+			r.funcRetryCount[r.current.LoopProto]++
+			if r.funcRetryCount[r.current.LoopProto] >= 5 {
+				r.funcBlacklist[r.current.LoopProto] = true
+			}
+		} else {
+			// Long non-recursive trace. Blacklist immediately.
+			r.funcBlacklist[r.current.LoopProto] = true
 		}
 		r.current = nil
 		r.recording = false
