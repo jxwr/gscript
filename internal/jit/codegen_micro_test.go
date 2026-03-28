@@ -448,7 +448,7 @@ func TestMicro_MulFloat(t *testing.T) {
 		Constants: []runtime.Value{runtime.FloatValue(2.0)},
 		IR: []TraceIR{
 			{Op: vm.OP_MUL, A: 4, B: 4, C: 0 + vm.RKBit, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
-			{Op: vm.OP_FORLOOP, A: 0, SBX: -2},
+			{Op: vm.OP_FORLOOP, A: 0, SBX: -2, AType: runtime.TypeInt},
 		},
 	}
 
@@ -480,7 +480,7 @@ func TestMicro_AddFloat(t *testing.T) {
 		Constants: []runtime.Value{runtime.FloatValue(0.5)},
 		IR: []TraceIR{
 			{Op: vm.OP_ADD, A: 4, B: 4, C: 0 + vm.RKBit, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
-			{Op: vm.OP_FORLOOP, A: 0, SBX: -2},
+			{Op: vm.OP_FORLOOP, A: 0, SBX: -2, AType: runtime.TypeInt},
 		},
 	}
 
@@ -512,7 +512,7 @@ func TestMicro_SubFloat(t *testing.T) {
 		Constants: []runtime.Value{runtime.FloatValue(10.0)},
 		IR: []TraceIR{
 			{Op: vm.OP_SUB, A: 4, B: 4, C: 0 + vm.RKBit, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
-			{Op: vm.OP_FORLOOP, A: 0, SBX: -2},
+			{Op: vm.OP_FORLOOP, A: 0, SBX: -2, AType: runtime.TypeInt},
 		},
 	}
 
@@ -541,7 +541,7 @@ func TestMicro_DivFloat(t *testing.T) {
 		Constants: []runtime.Value{runtime.FloatValue(10.0)},
 		IR: []TraceIR{
 			{Op: vm.OP_DIV, A: 4, B: 4, C: 0 + vm.RKBit, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
-			{Op: vm.OP_FORLOOP, A: 0, SBX: -2},
+			{Op: vm.OP_FORLOOP, A: 0, SBX: -2, AType: runtime.TypeInt},
 		},
 	}
 
@@ -572,7 +572,7 @@ func TestMicro_NegFloat(t *testing.T) {
 			// Actually let's use UNM on a float in slot 4, accumulate into slot 5
 			{Op: vm.OP_UNM, A: 6, B: 4, BType: runtime.TypeFloat},
 			{Op: vm.OP_ADD, A: 5, B: 5, C: 6, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
-			{Op: vm.OP_FORLOOP, A: 0, SBX: -3},
+			{Op: vm.OP_FORLOOP, A: 0, SBX: -3, AType: runtime.TypeInt},
 		},
 	}
 
@@ -948,7 +948,7 @@ func TestMicro_MixedIntFloat(t *testing.T) {
 			{Op: vm.OP_ADD, A: 4, B: 4, C: 3, BType: runtime.TypeInt, CType: runtime.TypeInt},
 			// sum_float = sum_float + 0.5
 			{Op: vm.OP_ADD, A: 5, B: 5, C: 0 + vm.RKBit, BType: runtime.TypeFloat, CType: runtime.TypeFloat},
-			{Op: vm.OP_FORLOOP, A: 0, SBX: -3},
+			{Op: vm.OP_FORLOOP, A: 0, SBX: -3, AType: runtime.TypeInt},
 		},
 	}
 

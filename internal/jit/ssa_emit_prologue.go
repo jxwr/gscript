@@ -231,17 +231,20 @@ func (ec *emitCtx) emitPreLoopLoads() {
 			}
 
 		case SSA_CONST_FLOAT:
-			if slot < 0 {
-				continue
-			}
+			// For slot-less constants (slot=-1), we must still load the value
+			// into the ref-level FPR so the loop body can use it.
 			if freg, ok := ec.regMap.FloatRefReg(ref); ok {
 				asm.LoadImm64(X0, inst.AuxInt)
 				asm.FMOVtoFP(freg, X0)
-				loadedFloatSlots[slot] = true
-			} else if freg, ok := ec.regMap.FloatReg(slot); ok {
-				asm.LoadImm64(X0, inst.AuxInt)
-				asm.FMOVtoFP(freg, X0)
-				loadedFloatSlots[slot] = true
+				if slot >= 0 {
+					loadedFloatSlots[slot] = true
+				}
+			} else if slot >= 0 {
+				if freg, ok := ec.regMap.FloatReg(slot); ok {
+					asm.LoadImm64(X0, inst.AuxInt)
+					asm.FMOVtoFP(freg, X0)
+					loadedFloatSlots[slot] = true
+				}
 			}
 		}
 	}
