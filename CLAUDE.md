@@ -182,7 +182,11 @@ Key findings: slot-reuse problem, writtenSlots fragility, pass pipeline need.
 
 ## Current Status
 
-All phases complete through S2.3 + compiler optimizations + architecture refactor + function-entry tracing. Peak speedup: **33.6x** (fib). 10 of 21 benchmarks accelerated. fib(35) at 46ms, 2x behind LuaJIT. See README.md Performance section for latest benchmark numbers (updated 2026-03-28).
+**Trace JIT**: stable for loops (table_field 11x, mandelbrot 4.9x, nbody 5.8x, matmul 4.5x). Clean value-based SSA, snapshots, optimization passes all working. Function-entry tracing was attempted (got fib to 46ms) but removed because it broke 8 benchmarks. Trace JIT remains loop-only.
+
+**Pivoting to Method JIT** (V8 Maglev-style): the trace JIT cannot handle functions, recursion, or inlining. Rather than continuing to hack trace-through-calls, we are building a proper Method JIT that compiles whole functions using type feedback and speculative optimization. Research report: `docs/research/method-jit-research.md`. Blog: `docs/20-the-pivot.md`.
+
+The trace JIT stays for hot loops. The Method JIT handles functions. Together they form a two-tier optimizing pipeline.
 
 ## Completed Phases
 
@@ -198,17 +202,33 @@ All phases complete through S2.3 + compiler optimizations + architecture refacto
 - **S2.1: NaN-boxing migration + box/unbox optimization ✓** (Blog #11, #12)
 - **S2.2: Custom heap (mmap arena + lock-free gcRoots) ✓**
 
-## Roadmap: Surpass LuaJIT
+## Roadmap: Method JIT (V8 Maglev-style)
 
-### S2.3: Custom GC (mark-sweep) — next
-1. GCHeader for all arena-allocated objects
-2. Mark phase: trace from VM registers + stack + globals
-3. Sweep phase: reclaim unmarked arena objects via free list
-4. binary_trees should improve significantly (currently 8.5x gap)
+### M1: Type Feedback Collection
+- Add `FeedbackVector` to `FuncProto` (per-instruction type lattice)
+- Collect arithmetic, comparison, table access, and call feedback in the interpreter
+- Monotonic lattice: Int -> Float -> Any (never narrows)
 
-### Phase 6: Compute-heavy benchmarks
-5. **JIT native float array access** — the #1 bottleneck across 5+ benchmarks
-6. **Inner trace code inlining** — copy inner trace ARM64 into outer trace (Approach C)
-7. **Reduce per-iteration instructions** — eliminate remaining memory spills
-8. **Method JIT type specialization + inlining**
+### M2: CFG-based SSA IR + Graph Builder
+- Basic blocks, branch targets, phi nodes at merge points
+- Graph builder: abstract interpretation over bytecode using type feedback
+- Specialize arithmetic nodes (Int32Add, Float64Add) based on feedback
+
+### M3: Code Generation + Register Allocation + Deopt
+- Forward-walk register allocator (Maglev-style)
+- Deoptimization stubs: reconstruct interpreter state from JIT state
+- ARM64 code emission reusing existing assembler
+
+### M4: Interpreter to Method JIT Tiering
+- Invocation counter per function
+- OSR (on-stack replacement) or call-replacement tiering
+- Keep trace JIT for hot loops inside Method JIT-compiled functions
+
+### M5: Optimization Passes + Function Inlining
+- Reuse existing passes (CSE, constant hoisting, FMA) with basic-block awareness
+- Monomorphic call-site inlining with deopt-on-callee-change guards
+- Speculative optimization with deopt fallback
+
+### Goal
+Surpass LuaJIT via Method JIT + speculative optimization. The trace JIT handles hot inner loops; the Method JIT handles everything else (functions, recursion, branches, inlining).
 

@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
+  <a href="20-the-pivot">The Pivot</a>
+  <p>Three attempts to handle functions in a trace JIT. All failed. Now we're pivoting to V8's Maglev-style Method JIT &mdash; compiling whole functions with type feedback, CFG-based SSA, and speculative optimization. The trace JIT stays for loops. The Method JIT handles everything else.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
   <a href="19-the-long-road-back">The Long Road Back</a>
   <p>The rewrite cost us fib, sieve, ackermann, mandelbrot. This round we tried to get them back: function inlining failed (register corruption), the build was broken, three bugs hid in NaN-boxing. We got fib to 46ms via native BL recursion, but sieve is still 5.7x slower than the old JIT. An honest look at what the rewrite gained, what it lost, and where AI agent debugging hits its limits.</p>
 </div>
@@ -228,7 +235,7 @@
 
 <table>
   <tr><th>Benchmark</th><th>GScript JIT</th><th>LuaJIT</th><th>Gap</th></tr>
-  <tr><td>fib(35)</td><td>46ms</td><td>23ms</td><td>2.0&times;</td></tr>
+  <tr><td>fib(35)</td><td>1.555s</td><td>23ms</td><td>67.6&times;</td></tr>
   <tr><td>sieve(1M &times;3)</td><td>130ms</td><td>10ms</td><td>13.0&times;</td></tr>
   <tr><td>mandelbrot(1000)</td><td>276ms</td><td>51ms</td><td>5.4&times;</td></tr>
   <tr><td>matmul(300)</td><td>215ms</td><td>21ms</td><td>10.2&times;</td></tr>
@@ -248,7 +255,7 @@
 
 <table>
   <tr><th>Benchmark</th><th>Interpreter</th><th>JIT</th><th>Speedup</th></tr>
-  <tr><td>fib(35)</td><td>1.555s</td><td><b>46ms</b></td><td><b>&times;33.6</b></td></tr>
+  <tr><td>fib(35)</td><td>1.555s</td><td>1.555s</td><td>&times;1.0</td></tr>
   <tr><td>table_field_access</td><td>718ms</td><td><b>65ms</b></td><td><b>&times;11.0</b></td></tr>
   <tr><td>nbody</td><td>1.805s</td><td><b>313ms</b></td><td><b>&times;5.8</b></td></tr>
   <tr><td>mandelbrot</td><td>1.357s</td><td><b>276ms</b></td><td><b>&times;4.9</b></td></tr>
