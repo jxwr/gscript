@@ -60,7 +60,7 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 		case 2:
 			// Guard fail: pre-loop type checks didn't match.
 			ct.guardFailCount++
-			if !ct.isFuncTrace && ct.guardFailCount >= guardFailBlacklistThreshold {
+			if ct.guardFailCount >= guardFailBlacklistThreshold {
 				ct.blacklisted = true
 				if ct.proto != nil {
 					ct.proto.BlacklistTracePC(ct.loopPC)
@@ -80,18 +80,13 @@ func executeTrace(ct *CompiledTrace, regs []runtime.Value, base int, proto *vm.F
 			ct.guardFailCount = 0
 			ct.sideExitCount++
 			// Blacklist if side-exiting too often relative to full runs.
-			// Skip blacklisting for function traces: base case side-exits are
-			// expected (e.g., fib(0), fib(1)) and the recursive path still
-			// provides massive speedup via native BL self-calls.
-			if !ct.isFuncTrace {
-				total := ct.sideExitCount + ct.fullRunCount
-				if total >= 50 {
-					ratio := float64(ct.sideExitCount) / float64(total)
-					if ratio >= 0.90 {
-						ct.blacklisted = true
-						if ct.proto != nil {
-							ct.proto.BlacklistTracePC(ct.loopPC)
-						}
+			total := ct.sideExitCount + ct.fullRunCount
+			if total >= 50 {
+				ratio := float64(ct.sideExitCount) / float64(total)
+				if ratio >= 0.90 {
+					ct.blacklisted = true
+					if ct.proto != nil {
+						ct.proto.BlacklistTracePC(ct.loopPC)
 					}
 				}
 			}

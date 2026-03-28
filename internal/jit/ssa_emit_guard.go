@@ -92,20 +92,11 @@ func (ec *emitCtx) emitCmpFloatLE(idx int, inst *SSAInst) {
 // Sets X9 = ExitPC before the conditional branch so side_exit_setup
 // knows where the interpreter should resume.
 //
-// For function traces with self-calls, body guards branch to
-// "self_call_body_guard" instead of "side_exit_setup". This allows
-// the base case (e.g., n < 2 for fib) to be handled natively when
-// inside a nested self-call (depth > 0), rather than side-exiting
-// through the epilogue which would corrupt the ARM64 stack.
 func (ec *emitCtx) emitGuardBranch(failCond Cond, pc int) {
 	// Set ExitPC BEFORE the branch (X9 must be ready when side_exit_setup runs).
 	// This is safe because X9 is a scratch register not used by the trace.
 	ec.asm.LoadImm64(X9, int64(pc))
-	if ec.hasSelfCalls {
-		ec.asm.BCond(failCond, "self_call_body_guard")
-	} else {
-		ec.asm.BCond(failCond, "side_exit_setup")
-	}
+	ec.asm.BCond(failCond, "side_exit_setup")
 }
 
 // ────────────────────────────────────────────────────────────────────────────

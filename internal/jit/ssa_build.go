@@ -599,53 +599,6 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		if ir.Intrinsic != IntrinsicNone {
 			// Inlined intrinsic
 			b.convertIntrinsic(ir)
-		} else if ir.IsSelfCall && b.trace.IsFuncTrace {
-			// NOP out the GETGLOBAL that loaded the function reference.
-			// Self-calls use BL directly, so the closure is unnecessary.
-			// Keeping it would cause a side-exit (non-table LOAD_GLOBAL).
-			fnRef := b.slotValues[ir.A]
-			if fnRef != SSARefNone && int(fnRef) < len(b.insts) && b.insts[fnRef].Op == SSA_LOAD_GLOBAL {
-				b.insts[fnRef].Op = SSA_NOP
-			}
-
-			// Native self-recursive call: emit SSA_SELF_CALL with argument refs.
-			// The call slot layout is: R(A) = fn, R(A+1) = arg1, R(A+2) = arg2, ...
-			// Arg1 is the first parameter (slot A+1), Arg2 is the second (slot A+2) if present.
-			arg1 := SSARefNone
-			arg2 := SSARefNone
-			nArgs := ir.B - 1 // B field: B-1 = number of args (B=0 means varargs)
-			if ir.B == 0 {
-				nArgs = 1 // default to 1 for now
-			}
-			if nArgs >= 1 {
-				arg1 = b.getSlotRef(ir.A + 1)
-			}
-			if nArgs >= 2 {
-				arg2 = b.getSlotRef(ir.A + 2)
-			}
-			// Record the function slot and constant index for overflow handler.
-			// The function reference lives at slot ir.A (trace-relative).
-			b.trace.SelfCallFnSlot = ir.A
-			// Find the constant pool entry for the function reference.
-			// Look backwards in IR for a GETGLOBAL or LOADK that loaded to slot ir.A.
-			for i := len(b.trace.IR) - 1; i >= 0; i-- {
-				prev := b.trace.IR[i]
-				if prev.A == ir.A && (prev.Op == vm.OP_GETGLOBAL || prev.Op == vm.OP_LOADK || prev.Op == vm.OP_CLOSURE) {
-					b.trace.SelfCallFnConstIdx = prev.BX
-					break
-				}
-			}
-			ref := b.emit(SSAInst{
-				Op:     SSA_SELF_CALL,
-				Type:   SSATypeInt, // self-call result is int (fib, ackermann)
-				Arg1:   arg1,
-				Arg2:   arg2,
-				AuxInt: int64(ir.PC),
-				Slot:   int16(ir.A),
-				PC:     ir.PC,
-			})
-			b.slotValues[ir.A] = ref
-			b.slotType[ir.A] = SSATypeInt
 		} else {
 			// Call-exit: take snapshot before
 			b.takeSnapshot(ir.PC)
@@ -824,7 +777,7 @@ func OptimizeSSA(f *SSAFunc) *SSAFunc {
 			break
 		}
 	}
-	if !hasForloopExit && f.LoopIdx > 0 && (f.Trace == nil || !f.Trace.IsFuncTrace) {
+	if !hasForloopExit && f.LoopIdx > 0 {
 		// Scan for first comparison after SSA_LOOP
 		for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 			inst := &f.Insts[i]

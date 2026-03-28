@@ -40,18 +40,8 @@ func DCE(f *SSAFunc) *SSAFunc {
 		}
 	}
 
-	// For function traces, the return value slot is implicitly "used" —
-	// it's the function's return value. Find instructions that write to the
-	// return slot and mark them as used so DCE won't remove them.
-	if f.Trace != nil && f.Trace.IsFuncTrace {
-		retSlot := int16(f.Trace.FuncReturnSlot)
-		for i := range f.Insts {
-			inst := &f.Insts[i]
-			if inst.Slot == retSlot && inst.Op != SSA_NOP && inst.Op != SSA_SNAPSHOT && inst.Op != SSA_LOOP {
-				uses[i]++ // keep alive
-			}
-		}
-	}
+	// NOTE: Function trace return-slot liveness was removed along with
+	// function-entry tracing. Will be re-added for trace-through-calls.
 
 	// Step 2: Mark dead instructions (zero uses, no side effects).
 	// Only eliminate instructions in the LOOP BODY (after SSA_LOOP).

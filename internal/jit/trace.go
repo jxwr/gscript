@@ -93,16 +93,6 @@ type TraceRecorder struct {
 	pendingGlobalCaptureIdx int // index into current.IR of the GETGLOBAL TraceIR
 	pendingGlobalCaptureReg int // absolute register index (base+a)
 
-	// Function trace fields
-	recordingFunction bool                          // true when recording a function body (not a loop)
-	funcCallCounts    map[*vm.FuncProto]int          // call count per function
-	funcCompiled      map[*vm.FuncProto]*CompiledTrace // compiled function traces
-	funcBlacklist     map[*vm.FuncProto]bool         // blacklisted functions
-	funcRetryCount    map[*vm.FuncProto]int          // retry count for base-case-only recordings
-
-	// Debug counters for function traces (used by tests)
-	funcTraceHits      int // number of times a compiled function trace was returned
-	funcTraceMisses    int // number of times a blacklisted function trace was found
 }
 
 type loopKey struct {
@@ -119,23 +109,16 @@ const (
 	MaxAbortBeforeBlacklist = 3
 )
 
-// DefaultFuncTraceThreshold is the number of calls before a function trace is recorded.
-const DefaultFuncTraceThreshold = 50
-
 // NewTraceRecorder creates a new trace recorder.
 func NewTraceRecorder() *TraceRecorder {
 	return &TraceRecorder{
-		maxDepth:       DefaultMaxInlineDepth,
-		maxLen:         DefaultMaxTraceLen,
-		threshold:      DefaultTraceThreshold,
-		loopCounts:     make(map[loopKey]int),
-		compiled:       make(map[loopKey]*CompiledTrace),
-		blacklist:      make(map[loopKey]bool),
-		abortCounts:    make(map[loopKey]int),
-		funcCallCounts: make(map[*vm.FuncProto]int),
-		funcCompiled:   make(map[*vm.FuncProto]*CompiledTrace),
-		funcBlacklist:  make(map[*vm.FuncProto]bool),
-		funcRetryCount: make(map[*vm.FuncProto]int),
+		maxDepth:    DefaultMaxInlineDepth,
+		maxLen:      DefaultMaxTraceLen,
+		threshold:   DefaultTraceThreshold,
+		loopCounts:  make(map[loopKey]int),
+		compiled:    make(map[loopKey]*CompiledTrace),
+		blacklist:   make(map[loopKey]bool),
+		abortCounts: make(map[loopKey]int),
 	}
 }
 
@@ -194,13 +177,7 @@ func (r *TraceRecorder) OnLoopBackEdge(pc int, proto *vm.FuncProto) bool {
 		}
 		// Finish the trace when we see ANY loop's back-edge while recording.
 		if r.current != nil {
-			if r.recordingFunction {
-				// Function trace encountered a loop back-edge: abort.
-				// Function traces record linear code, not loops.
-				r.abortTrace()
-			} else {
-				r.finishTrace()
-			}
+			r.finishTrace()
 		}
 		return false
 	}
@@ -421,7 +398,6 @@ func (r *TraceRecorder) finishTrace() {
 	}
 	r.current = nil
 	r.recording = false
-	r.recordingFunction = false
 	r.depth = 0
 	r.innerLoopSkipStart = 0
 	r.innerLoopSkipEnd = 0
@@ -440,28 +416,19 @@ func (r *TraceRecorder) finishTrace() {
 // the loop is permanently blacklisted.
 func (r *TraceRecorder) abortTrace() {
 	if r.current != nil {
-		if r.recordingFunction {
-			// Function trace abort: blacklist the function directly
-			r.funcBlacklist[r.current.LoopProto] = true
+		key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
+		r.abortCounts[key]++
+		if r.abortCounts[key] >= MaxAbortBeforeBlacklist {
+			r.blacklist[key] = true
+			r.current.LoopProto.BlacklistTracePC(r.current.LoopPC)
 			if r.debug {
-				fmt.Printf("[TRACE] Function abort-blacklisted: proto=%s\n", r.current.LoopProto.Name)
-			}
-		} else {
-			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
-			r.abortCounts[key]++
-			if r.abortCounts[key] >= MaxAbortBeforeBlacklist {
-				r.blacklist[key] = true
-				r.current.LoopProto.BlacklistTracePC(r.current.LoopPC)
-				if r.debug {
-					fmt.Printf("[TRACE] Abort-blacklisted: PC=%d (aborted %d times)\n",
-						r.current.LoopPC, r.abortCounts[key])
-				}
+				fmt.Printf("[TRACE] Abort-blacklisted: PC=%d (aborted %d times)\n",
+					r.current.LoopPC, r.abortCounts[key])
 			}
 		}
 	}
 	r.current = nil
 	r.recording = false
-	r.recordingFunction = false
 	r.depth = 0
 	r.innerLoopSkipStart = 0
 	r.innerLoopSkipEnd = 0
@@ -479,233 +446,11 @@ func (r *TraceRecorder) abortTrace() {
 // Used for structural limitations that won't change between attempts.
 func (r *TraceRecorder) abortAndBlacklist() {
 	if r.current != nil {
-		if r.recordingFunction {
-			r.funcBlacklist[r.current.LoopProto] = true
-		} else {
-			key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
-			r.blacklist[key] = true
-			r.current.LoopProto.BlacklistTracePC(r.current.LoopPC)
-		}
+		key := loopKey{proto: r.current.LoopProto, pc: r.current.LoopPC}
+		r.blacklist[key] = true
+		r.current.LoopProto.BlacklistTracePC(r.current.LoopPC)
 	}
 	r.abortTrace()
-}
-
-// FuncTraceStats returns debug counters for function trace execution.
-func (r *TraceRecorder) FuncTraceStats() (hits, misses int) {
-	return r.funcTraceHits, r.funcTraceMisses
-}
-
-// FuncTraceReturnSlot returns the VM slot where the function trace stores its return value.
-func (r *TraceRecorder) FuncTraceReturnSlot() int {
-	if r.pendingTrace != nil && r.pendingTrace.isFuncTrace {
-		return r.pendingTrace.funcReturnSlot
-	}
-	if r.lastExecuted != nil && r.lastExecuted.isFuncTrace {
-		return r.lastExecuted.funcReturnSlot
-	}
-	return 0
-}
-
-// FuncTraceReturnCount returns the number of return values from the function trace.
-func (r *TraceRecorder) FuncTraceReturnCount() int {
-	if r.pendingTrace != nil && r.pendingTrace.isFuncTrace {
-		return r.pendingTrace.funcReturnCount
-	}
-	if r.lastExecuted != nil && r.lastExecuted.isFuncTrace {
-		return r.lastExecuted.funcReturnCount
-	}
-	return 1
-}
-
-// OnFunctionEntry is called when the VM is about to enter a function call.
-// If a compiled function trace exists, sets pendingTrace and returns true.
-// If the function is hot enough, starts recording a function trace.
-func (r *TraceRecorder) OnFunctionEntry(proto *vm.FuncProto, regs []runtime.Value, base int) bool {
-	if r.recording {
-		return false
-	}
-
-	// Check compiled cache
-	if ct, ok := r.funcCompiled[proto]; ok {
-		if ct.blacklisted {
-			r.funcTraceMisses++
-			return false
-		}
-		r.pendingTrace = ct
-		r.funcTraceHits++
-		return true
-	}
-
-	// Check blacklist
-	if r.funcBlacklist[proto] {
-		return false
-	}
-
-	// Count calls
-	r.funcCallCounts[proto]++
-	if r.funcCallCounts[proto] >= DefaultFuncTraceThreshold {
-		r.startFuncTrace(proto, regs, base)
-	}
-	return false
-}
-
-// startFuncTrace begins recording a function-entry trace.
-func (r *TraceRecorder) startFuncTrace(proto *vm.FuncProto, regs []runtime.Value, base int) {
-	r.recording = true
-	r.recordingFunction = true
-	r.depth = 0
-	r.skipDepth = 0
-	r.startBase = base
-	r.innerLoopSkipStart = 0
-	r.innerLoopSkipEnd = 0
-	r.innerLoopDepth = 0
-	r.innerLoopForPC = 0
-	r.innerLoopFirstSeen = false
-	r.innerLoopRecorded = false
-	r.inlineCallProto = nil
-	r.inlineCallIR = nil
-	r.inlineCallStack = r.inlineCallStack[:0]
-	r.pendingGlobalCapture = false
-	r.current = &Trace{
-		ID:          len(r.traces),
-		LoopPC:      0,
-		LoopProto:   proto,
-		EntryPC:     0,
-		StartBase:   base,
-		IsFuncTrace: true,
-		Constants:   make([]runtime.Value, len(proto.Constants)),
-	}
-	copy(r.current.Constants, proto.Constants)
-}
-
-// finishFuncTrace completes recording of a function-entry trace and compiles it.
-func (r *TraceRecorder) finishFuncTrace() {
-	if r.current == nil || len(r.current.IR) == 0 {
-		r.recording = false
-		r.recordingFunction = false
-		return
-	}
-
-	// Compute MaxDepth0Slot (same as finishTrace)
-	maxSlot := 0
-	for _, ir := range r.current.IR {
-		if ir.Depth == 0 {
-			if ir.A > maxSlot {
-				maxSlot = ir.A
-			}
-			if ir.B > maxSlot {
-				maxSlot = ir.B
-			}
-			if ir.C > maxSlot {
-				maxSlot = ir.C
-			}
-		}
-	}
-	r.current.MaxDepth0Slot = maxSlot
-
-	// Only compile function traces that contain self-recursive calls.
-	// Non-recursive function traces cause three problems:
-	// 1. CONST_BOOL/CONST_NIL not written to memory → wrong return values
-	// 2. storeBack corrupts callee state on side-exit → wrong results
-	// 3. Infinite re-recording loop for short functions → massive overhead
-	if !r.current.HasSelfCalls {
-		if len(r.current.IR) < 10 {
-			// Short trace (likely base case of a recursive function).
-			// Track retries; blacklist after 5 attempts to avoid infinite loop.
-			r.funcRetryCount[r.current.LoopProto]++
-			if r.funcRetryCount[r.current.LoopProto] >= 5 {
-				r.funcBlacklist[r.current.LoopProto] = true
-			}
-		} else {
-			// Long non-recursive trace. Blacklist immediately.
-			r.funcBlacklist[r.current.LoopProto] = true
-		}
-		r.current = nil
-		r.recording = false
-		r.recordingFunction = false
-		r.depth = 0
-		r.skipDepth = 0
-		r.inlineCallProto = nil
-		r.inlineCallIR = nil
-		r.skipNextJIT = false
-		r.pendingGlobalCapture = false
-		return
-	}
-
-	r.traces = append(r.traces, r.current)
-
-	if debugTrace {
-		fmt.Printf("[TRACE-DEBUG] finishFuncTrace: compile=%v proto=%s nIR=%d\n",
-			r.compile, r.current.LoopProto.Name, len(r.current.IR))
-		for i, ir := range r.current.IR {
-			fmt.Printf("[TRACE-IR] %d: op=%s A=%d B=%d C=%d BX=%d PC=%d depth=%d selfCall=%v\n",
-				i, vm.OpName(ir.Op), ir.A, ir.B, ir.C, ir.BX, ir.PC, ir.Depth, ir.IsSelfCall)
-		}
-	}
-
-	if r.compile {
-		compiled := false
-
-		// SSA codegen pipeline
-		ssaFunc := BuildSSA(r.current)
-		ssaFunc = OptimizeSSA(ssaFunc)
-		ssaFunc = ConstHoist(ssaFunc)
-		ssaFunc = CSE(ssaFunc)
-		ssaFunc = FuseMultiplyAdd(ssaFunc)
-
-		ok := ssaIsCompilableFunc(ssaFunc)
-		useful := ssaIsFuncUseful(ssaFunc)
-
-		if debugTrace {
-			fmt.Printf("[TRACE-DEBUG] funcTrace: compilable=%v useful=%v nInsts=%d proto=%s\n",
-				ok, useful, len(ssaFunc.Insts), r.current.LoopProto.Name)
-			for i, inst := range ssaFunc.Insts {
-				fmt.Printf("[SSA] %d: op=%s type=%d slot=%d arg1=%d arg2=%d auxInt=%d pc=%d\n",
-					i, ssaOpString(inst.Op), inst.Type, inst.Slot, inst.Arg1, inst.Arg2, inst.AuxInt, inst.PC)
-			}
-		}
-
-		if ok && useful {
-			ct, err := CompileSSAFunc(ssaFunc)
-			if debugTrace && err != nil {
-				fmt.Printf("[TRACE-DEBUG] CompileSSAFunc error: %v\n", err)
-			}
-			if err == nil {
-				if ct.hasCallExit && r.globalsAccessor != nil {
-					ct.globalsAccessor = r.globalsAccessor
-				}
-				r.funcCompiled[r.current.LoopProto] = ct
-				compiled = true
-				if r.debug {
-					fmt.Printf("[TRACE] Function trace compiled: proto=%s, %d IR, %d bytes code, selfCalls=%v\n",
-						r.current.LoopProto.Name, len(r.current.IR), ct.code.Size(), ct.hasSelfCalls)
-				}
-			} else if r.debug {
-				fmt.Printf("[TRACE] Function trace compile error: proto=%s, err=%v\n",
-					r.current.LoopProto.Name, err)
-			}
-		} else if r.debug {
-			fmt.Printf("[TRACE] Function trace rejected: proto=%s, compilable=%v useful=%v\n",
-				r.current.LoopProto.Name, ok, useful)
-		}
-
-		if !compiled {
-			r.funcBlacklist[r.current.LoopProto] = true
-			if r.debug {
-				fmt.Printf("[TRACE] Function blacklisted: proto=%s\n", r.current.LoopProto.Name)
-			}
-		}
-	}
-
-	r.current = nil
-	r.recording = false
-	r.recordingFunction = false
-	r.depth = 0
-	r.skipDepth = 0
-	r.inlineCallProto = nil
-	r.inlineCallIR = nil
-	r.skipNextJIT = false
-	r.pendingGlobalCapture = false
 }
 
 // debugTrace enables verbose trace recording/compilation logging.
