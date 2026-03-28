@@ -1,3 +1,7 @@
+// printer.go provides human-readable IR output for debugging.
+// Print(fn) returns a string showing all basic blocks, instructions,
+// phi nodes, and control flow edges in the function's CFG SSA IR.
+
 package methodjit
 
 import (

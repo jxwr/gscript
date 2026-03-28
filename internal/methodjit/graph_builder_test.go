@@ -1,3 +1,8 @@
+// graph_builder_test.go tests the bytecode → CFG SSA graph builder.
+// Tests compile GScript source to bytecode, run BuildGraph, and verify
+// the resulting IR structure (block count, instruction types, phi nodes,
+// terminator correctness, succ/pred consistency).
+
 package methodjit
 
 import (
