@@ -111,6 +111,52 @@ The gap against the old architecture comes from three missing features:
 
 The gap against LuaJIT is larger — 5-100x on most benchmarks — and comes from deeper architectural differences: LuaJIT traces through function calls seamlessly, compiles all three loops in mandelbrot as one trace, and has a much faster allocator and C-based interpreter. Closing that gap requires the features above plus trace-through-calls, dual-path conditionals, and better native code quality.
 
+## The Diagnostic Tools We Built
+
+The debugging pain led to something useful: a diagnostic toolkit designed around the principle "make bugs visible from data, not from reasoning."
+
+### DiagnoseTrace — one call, full picture
+
+```go
+diag := DiagnoseTrace(trace, regs, proto, DiagConfig{
+    WatchSlots: []int{0, 1, 2, 3, 4},
+    ShowASM:    true,
+    MaxIter:    10,
+})
+t.Log(diag)
+```
+
+One function call gives you: pipeline stage status (ok/error for each of the 7 passes), final SSA IR, register allocation map, registers BEFORE and AFTER execution with raw NaN-boxing hex (`[0]=0xfffe000000000001 int(1)`), exit code, exit PC, iteration count, and optionally ARM64 disassembly.
+
+The hex dump is critical. When we saw `[0]=0x425d1a968a48c000 type=3` after a trace exit, the `0x425d...` prefix (no `0xFFFE` tag) immediately told us slot 0 was overwritten with a raw float — not a type-tagged int or table pointer. That's how we found the BOX_INT slot-zero bug: the hex made the corruption visible without tracing the causal chain.
+
+### CompileWithDump — binary search the pipeline
+
+```go
+ct, dump := CompileWithDump(trace)
+t.Log(dump.Diff("BuildSSA", "ConstHoist"))
+```
+
+Records SSA state at every pipeline stage (BuildSSA → OptimizeSSA → ConstHoist → CSE → FMA → RegAlloc → Emit). The `Diff` function shows exactly what changed between two stages. If ConstHoist moved a constant but broke the ref numbering, the diff shows it.
+
+This is LLVM's `-print-after-all` adapted for a trace JIT. The key insight: when the output is wrong, you don't need to understand the whole pipeline — you need to find which stage introduced the error. Binary search: dump before and after each stage, find the first diff that looks wrong.
+
+### Why these tools matter for AI agents
+
+A human debugging the self-call memory corruption would:
+1. Hypothesize "maybe the memory is shared"
+2. Mentally simulate 3 recursion depths
+3. Notice the write-read conflict on slot 2
+4. Fix it
+
+An AI agent can't reliably do step 2-3. But it CAN:
+1. Call `DiagnoseTrace` with `MaxIter: 1`
+2. Read the hex dump
+3. Notice that slot 2 changed between iteration 1 and iteration 2 when it shouldn't have
+4. Report the anomaly
+
+The tools convert "deep causal reasoning" into "pattern matching on dump output" — something AI is much better at. We haven't fully realized this potential yet (the self-call bug was still found by human reasoning), but the tools make it possible in principle.
+
 ## Where AI Debugging Hits the Wall
 
 This project is built entirely by AI agents (Claude). This round exposed the limits.
