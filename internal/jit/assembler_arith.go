@@ -217,3 +217,12 @@ func (a *Assembler) CSET(rd Reg, cond Cond) {
 	inv := cond ^ 1
 	a.CSINC(rd, XZR, XZR, inv)
 }
+
+// LSLreg: Xd = Xn << Xm (register shift left, 64-bit)
+func (a *Assembler) LSLreg(dst, src, amount Reg) { a.emit(0x9ac02000 | uint32(amount)<<16 | uint32(src)<<5 | uint32(dst)) }
+
+// LSRreg: Xd = Xn >> Xm (register logical shift right, 64-bit)
+func (a *Assembler) LSRreg(dst, src, amount Reg) { a.emit(0x9ac02400 | uint32(amount)<<16 | uint32(src)<<5 | uint32(dst)) }
+
+// ORNreg: Xd = Xn | ~Xm (bitwise OR NOT, 64-bit)
+func (a *Assembler) ORNreg(dst, src1, src2 Reg)  { a.emit(0xaa200000 | uint32(src2)<<16 | uint32(src1)<<5 | uint32(dst)) }

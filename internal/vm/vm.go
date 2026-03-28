@@ -57,6 +57,9 @@ type TraceRecorderHook interface {
 	IsRecording() bool
 	PendingTrace() TraceExecutor
 	ShouldSkipJIT() bool
+	OnFunctionEntry(proto *FuncProto, regs []runtime.Value, base int) bool
+	FuncTraceReturnSlot() int  // return slot for the last OnFunctionEntry match
+	FuncTraceReturnCount() int // number of return values for the last OnFunctionEntry match
 }
 
 // traceResult holds the result of executing a compiled trace.
@@ -524,6 +527,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		// Trace recorder: only hook when actively recording (fast bool check)
 		if vm.traceRecording {
 			vm.traceRec.OnInstruction(frame.pc-1, inst, frame.closure.Proto, vm.regs, base)
+			// Update cached recording state (recording may have finished via finishFuncTrace)
+			if vm.traceExecDepth == 0 {
+				vm.traceRecording = vm.traceRec.IsRecording()
+			}
 		}
 
 		op := DecodeOp(inst)
@@ -1119,6 +1126,44 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				newFrame.resultCount = c
 				newFrame.traceEnabled = false // clear stale state from reused frame slot
 				vm.frameCount++
+
+				// Try function-entry trace (compiled function trace for recursive functions).
+				// Only attempt when not actively recording a trace (avoid interfering with recording).
+				if vm.traceRec != nil && !vm.traceRecording && vm.traceExecDepth < 8 {
+					if vm.traceRec.OnFunctionEntry(proto, vm.regs, newBase) {
+						retSlot := vm.traceRec.FuncTraceReturnSlot()
+						// Execute compiled function trace
+						tr := vm.executeCompiledTrace(proto, newBase)
+						if tr.executed && !tr.sideExit {
+							// Function trace completed successfully (ExitCode=0).
+							// The native code stored the return value to retSlot in memory.
+							// Pop the callee frame and copy results.
+							vm.closeUpvalues(newBase)
+							vm.frameCount--
+							retVal := vm.regs[newBase+retSlot]
+							if c == 0 {
+								// Variable results: copy 1 result to base+a
+								vm.regs[base+a] = retVal
+								vm.top = base + a + 1
+							} else {
+								nr := c - 1
+								for i := 0; i < nr; i++ {
+									if i == 0 {
+										vm.regs[base+a] = retVal
+									} else {
+										vm.regs[base+a+i] = runtime.NilValue()
+									}
+								}
+							}
+							break
+						}
+						// Side-exit or guard fail: fall through to interpreter execution
+					}
+					// Update cached recording state
+					if vm.traceExecDepth == 0 {
+						vm.traceRecording = vm.traceRec.IsRecording()
+					}
+				}
 
 				// Try JIT (skip if trace recorder is inlining this callee)
 				skipJIT := vm.traceRecording && vm.traceRec.ShouldSkipJIT()

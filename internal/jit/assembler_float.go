@@ -96,3 +96,18 @@ func (a *Assembler) FSTRd(rt FReg, rn Reg, offset int) {
 	pimm := offset >> 3
 	a.emit(0xFD000000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
 }
+
+// FABSd: Dd = |Dn| (absolute value, double)
+func (a *Assembler) FABSd(dst, src FReg)    { a.emit(0x1e60c000 | uint32(src)<<5 | uint32(dst)) }
+
+// FRINTMd: Dd = floor(Dn) (round toward -inf, double)
+func (a *Assembler) FRINTMd(dst, src FReg)  { a.emit(0x1e654000 | uint32(src)<<5 | uint32(dst)) }
+
+// FRINTPd: Dd = ceil(Dn) (round toward +inf, double)
+func (a *Assembler) FRINTPd(dst, src FReg)  { a.emit(0x1e64c000 | uint32(src)<<5 | uint32(dst)) }
+
+// FMAXNMd: Dd = maxnum(Dn, Dm) (IEEE 754 maxNum, double)
+func (a *Assembler) FMAXNMd(dst, src1, src2 FReg) { a.emit(0x1e626800 | uint32(src2)<<16 | uint32(src1)<<5 | uint32(dst)) }
+
+// FMINNMd: Dd = minnum(Dn, Dm) (IEEE 754 minNum, double)
+func (a *Assembler) FMINNMd(dst, src1, src2 FReg) { a.emit(0x1e627800 | uint32(src2)<<16 | uint32(src1)<<5 | uint32(dst)) }

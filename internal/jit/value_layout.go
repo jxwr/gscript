@@ -49,6 +49,7 @@ const (
 	// Type-specialized array fields (added at end of Table struct)
 	TableOffArrayKind  = 137 // ArrayKind (uint8)
 	TableOffShapeID    = 140 // uint32 — shape identifier for field cache validation
+	TableOffShape      = 144 // *Shape (pointer, 8 bytes) — TODO: verify with unsafe.Offsetof
 	TableOffIntArray   = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
 	TableOffFloatArray = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
 	TableOffBoolArray  = 192 // []byte slice header (ptr+len+cap = 24 bytes)

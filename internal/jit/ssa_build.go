@@ -146,149 +146,6 @@ func (b *ssaBuilder) takeSnapshot(pc int) {
 	b.snapshots = append(b.snapshots, snap)
 }
 
-// getRKRef returns the SSA ref for an RK operand. If the operand is a constant
-// (>= RKBit), it emits a constant instruction. Otherwise it returns the slot ref.
-func (b *ssaBuilder) getRKRef(rk int, rkType runtime.ValueType, ir *TraceIR) SSARef {
-	if vm.IsRK(rk) {
-		return b.emitConstFromPool(vm.RKToConstIdx(rk), ir)
-	}
-	return b.getSlotRef(rk)
-}
-
-// getRKType returns the SSAType for an RK operand.
-func (b *ssaBuilder) getRKType(rk int, rkType runtime.ValueType) SSAType {
-	if vm.IsRK(rk) {
-		return ssaTypeFromRuntime(rkType)
-	}
-	return b.getSlotType(rk)
-}
-
-// emitConstFromPool emits a constant from the trace constant pool or the proto's constants.
-func (b *ssaBuilder) emitConstFromPool(idx int, ir *TraceIR) SSARef {
-	// Try trace-level constants first, then proto constants.
-	var val runtime.Value
-	if idx < len(b.trace.Constants) {
-		val = b.trace.Constants[idx]
-	} else if ir.Proto != nil && idx < len(ir.Proto.Constants) {
-		val = ir.Proto.Constants[idx]
-	} else if b.trace.LoopProto != nil && idx < len(b.trace.LoopProto.Constants) {
-		val = b.trace.LoopProto.Constants[idx]
-	} else {
-		// Fallback: emit nil constant
-		return b.emit(SSAInst{Op: SSA_CONST_NIL, Type: SSATypeNil})
-	}
-
-	switch val.Type() {
-	case runtime.TypeInt:
-		ref := b.emit(SSAInst{
-			Op:     SSA_CONST_INT,
-			Type:   SSATypeInt,
-			AuxInt: val.Int(),
-			Slot:   -1, // pool constant, not bound to a VM slot
-		})
-		return ref
-	case runtime.TypeFloat:
-		ref := b.emit(SSAInst{
-			Op:     SSA_CONST_FLOAT,
-			Type:   SSATypeFloat,
-			AuxInt: int64(math.Float64bits(val.Float())),
-			Slot:   -1,
-		})
-		return ref
-	case runtime.TypeBool:
-		bv := int64(0)
-		if val.Truthy() {
-			bv = 1
-		}
-		ref := b.emit(SSAInst{
-			Op:     SSA_CONST_BOOL,
-			Type:   SSATypeBool,
-			AuxInt: bv,
-			Slot:   -1,
-		})
-		return ref
-	default:
-		return b.emit(SSAInst{Op: SSA_CONST_NIL, Type: SSATypeNil, Slot: -1})
-	}
-}
-
-// inferArithType determines the result type for arithmetic on two operands.
-func (b *ssaBuilder) inferArithType(bSlot, cSlot int, ir *TraceIR) SSAType {
-	bt := b.getRKType(bSlot, ir.BType)
-	ct := b.getRKType(cSlot, ir.CType)
-
-	// If we have slot types, use them; otherwise fall back to recording-time types
-	if bt == SSATypeUnknown {
-		bt = ssaTypeFromRuntime(ir.BType)
-	}
-	if ct == SSATypeUnknown {
-		ct = ssaTypeFromRuntime(ir.CType)
-	}
-
-	// Both int → int; either float → float
-	if bt == SSATypeFloat || ct == SSATypeFloat {
-		return SSATypeFloat
-	}
-	if bt == SSATypeInt && ct == SSATypeInt {
-		return SSATypeInt
-	}
-	// Fallback to recording-time types
-	if ir.BType == runtime.TypeFloat || ir.CType == runtime.TypeFloat {
-		return SSATypeFloat
-	}
-	return SSATypeInt
-}
-
-// emitIntToFloat converts an int SSA ref to float if needed.
-func (b *ssaBuilder) emitIntToFloat(ref SSARef, refType SSAType) SSARef {
-	if refType == SSATypeInt {
-		// Box int, then unbox as float (conceptual conversion)
-		// In practice the codegen handles SCVTF
-		return b.emit(SSAInst{
-			Op:   SSA_BOX_INT,
-			Type: SSATypeFloat,
-			Arg1: ref,
-		})
-	}
-	return ref
-}
-
-// convertArith handles OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD.
-func (b *ssaBuilder) convertArith(ir *TraceIR, intOp, floatOp SSAOp) {
-	bRef := b.getRKRef(ir.B, ir.BType, ir)
-	cRef := b.getRKRef(ir.C, ir.CType, ir)
-	resType := b.inferArithType(ir.B, ir.C, ir)
-
-	var op SSAOp
-	if resType == SSATypeFloat {
-		op = floatOp
-		// Convert int operands to float if needed
-		bt := b.getRKType(ir.B, ir.BType)
-		ct := b.getRKType(ir.C, ir.CType)
-		if bt == SSATypeUnknown {
-			bt = ssaTypeFromRuntime(ir.BType)
-		}
-		if ct == SSATypeUnknown {
-			ct = ssaTypeFromRuntime(ir.CType)
-		}
-		bRef = b.emitIntToFloat(bRef, bt)
-		cRef = b.emitIntToFloat(cRef, ct)
-	} else {
-		op = intOp
-	}
-
-	ref := b.emit(SSAInst{
-		Op:   op,
-		Type: resType,
-		Arg1: bRef,
-		Arg2: cRef,
-		Slot: int16(ir.A),
-		PC:   ir.PC,
-	})
-	b.slotValues[ir.A] = ref
-	b.slotType[ir.A] = resType
-}
-
 // convertIR converts one trace IR instruction to SSA.
 func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 	switch ir.Op {
@@ -302,7 +159,30 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		b.convertArith(ir, SSA_MUL_INT, SSA_MUL_FLOAT)
 
 	case vm.OP_DIV:
-		b.convertArith(ir, SSA_DIV_INT, SSA_DIV_FLOAT)
+		// In GScript/Lua, / always returns float even for integer operands.
+		// Force float division: convert both operands to float, use SSA_DIV_FLOAT.
+		bRef := b.getRKRef(ir.B, ir.BType, ir)
+		cRef := b.getRKRef(ir.C, ir.CType, ir)
+		bt := b.getRKType(ir.B, ir.BType)
+		ct := b.getRKType(ir.C, ir.CType)
+		if bt == SSATypeUnknown {
+			bt = ssaTypeFromRuntime(ir.BType)
+		}
+		if ct == SSATypeUnknown {
+			ct = ssaTypeFromRuntime(ir.CType)
+		}
+		bRef = b.emitIntToFloat(bRef, bt)
+		cRef = b.emitIntToFloat(cRef, ct)
+		ref := b.emit(SSAInst{
+			Op:   SSA_DIV_FLOAT,
+			Type: SSATypeFloat,
+			Arg1: bRef,
+			Arg2: cRef,
+			Slot: int16(ir.A),
+			PC:   ir.PC,
+		})
+		b.slotValues[ir.A] = ref
+		b.slotType[ir.A] = SSATypeFloat
 
 	case vm.OP_MOD:
 		// MOD with float operands is not natively supported (no SSA_MOD_FLOAT).
@@ -719,6 +599,53 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 		if ir.Intrinsic != IntrinsicNone {
 			// Inlined intrinsic
 			b.convertIntrinsic(ir)
+		} else if ir.IsSelfCall && b.trace.IsFuncTrace {
+			// NOP out the GETGLOBAL that loaded the function reference.
+			// Self-calls use BL directly, so the closure is unnecessary.
+			// Keeping it would cause a side-exit (non-table LOAD_GLOBAL).
+			fnRef := b.slotValues[ir.A]
+			if fnRef != SSARefNone && int(fnRef) < len(b.insts) && b.insts[fnRef].Op == SSA_LOAD_GLOBAL {
+				b.insts[fnRef].Op = SSA_NOP
+			}
+
+			// Native self-recursive call: emit SSA_SELF_CALL with argument refs.
+			// The call slot layout is: R(A) = fn, R(A+1) = arg1, R(A+2) = arg2, ...
+			// Arg1 is the first parameter (slot A+1), Arg2 is the second (slot A+2) if present.
+			arg1 := SSARefNone
+			arg2 := SSARefNone
+			nArgs := ir.B - 1 // B field: B-1 = number of args (B=0 means varargs)
+			if ir.B == 0 {
+				nArgs = 1 // default to 1 for now
+			}
+			if nArgs >= 1 {
+				arg1 = b.getSlotRef(ir.A + 1)
+			}
+			if nArgs >= 2 {
+				arg2 = b.getSlotRef(ir.A + 2)
+			}
+			// Record the function slot and constant index for overflow handler.
+			// The function reference lives at slot ir.A (trace-relative).
+			b.trace.SelfCallFnSlot = ir.A
+			// Find the constant pool entry for the function reference.
+			// Look backwards in IR for a GETGLOBAL or LOADK that loaded to slot ir.A.
+			for i := len(b.trace.IR) - 1; i >= 0; i-- {
+				prev := b.trace.IR[i]
+				if prev.A == ir.A && (prev.Op == vm.OP_GETGLOBAL || prev.Op == vm.OP_LOADK || prev.Op == vm.OP_CLOSURE) {
+					b.trace.SelfCallFnConstIdx = prev.BX
+					break
+				}
+			}
+			ref := b.emit(SSAInst{
+				Op:     SSA_SELF_CALL,
+				Type:   SSATypeInt, // self-call result is int (fib, ackermann)
+				Arg1:   arg1,
+				Arg2:   arg2,
+				AuxInt: int64(ir.PC),
+				Slot:   int16(ir.A),
+				PC:     ir.PC,
+			})
+			b.slotValues[ir.A] = ref
+			b.slotType[ir.A] = SSATypeInt
 		} else {
 			// Call-exit: take snapshot before
 			b.takeSnapshot(ir.PC)
@@ -817,19 +744,6 @@ func (b *ssaBuilder) convertIR(idx int, ir *TraceIR) {
 	}
 }
 
-// convertIntrinsic handles recognized intrinsic calls.
-func (b *ssaBuilder) convertIntrinsic(ir *TraceIR) {
-	ref := b.emit(SSAInst{
-		Op:     SSA_INTRINSIC,
-		Type:   SSATypeFloat, // most intrinsics return float
-		AuxInt: int64(ir.Intrinsic),
-		Slot:   int16(ir.A),
-		PC:     ir.PC,
-	})
-	b.slotValues[ir.A] = ref
-	b.slotType[ir.A] = SSATypeFloat
-}
-
 // computeLiveIn performs liveness analysis on the trace to determine which
 // slots need pre-loop guards. Returns:
 //   - liveIn: map of slot → true if the slot is live-in (read before written)
@@ -881,14 +795,18 @@ func BuildSSA(trace *Trace) *SSAFunc {
 
 	// Phase 3: Convert loop body
 	for i := range trace.IR {
+		if trace.IR[i].Dead {
+			continue // skip killed IR entries (e.g., GETGLOBAL for inlined functions)
+		}
 		b.convertIR(i, &trace.IR[i])
 	}
 
 	return &SSAFunc{
-		Insts:     b.insts,
-		Snapshots: b.snapshots,
-		Trace:     trace,
-		LoopIdx:   b.findLoopIdx(),
+		Insts:          b.insts,
+		Snapshots:      b.snapshots,
+		Trace:          trace,
+		LoopIdx:        b.findLoopIdx(),
+		MaxDepth0Slot:  trace.MaxDepth0Slot,
 	}
 }
 
@@ -906,7 +824,7 @@ func OptimizeSSA(f *SSAFunc) *SSAFunc {
 			break
 		}
 	}
-	if !hasForloopExit && f.LoopIdx > 0 {
+	if !hasForloopExit && f.LoopIdx > 0 && (f.Trace == nil || !f.Trace.IsFuncTrace) {
 		// Scan for first comparison after SSA_LOOP
 		for i := f.LoopIdx + 1; i < len(f.Insts); i++ {
 			inst := &f.Insts[i]
@@ -928,17 +846,4 @@ func OptimizeSSA(f *SSAFunc) *SSAFunc {
 		}
 	}
 	return f
-}
-
-// isFloatOp returns true if the SSA opcode operates on float values.
-func isFloatOp(op SSAOp) bool {
-	switch op {
-	case SSA_ADD_FLOAT, SSA_SUB_FLOAT, SSA_MUL_FLOAT, SSA_DIV_FLOAT,
-		SSA_NEG_FLOAT, SSA_FMADD, SSA_FMSUB,
-		SSA_UNBOX_FLOAT, SSA_BOX_FLOAT,
-		SSA_CONST_FLOAT,
-		SSA_LT_FLOAT, SSA_LE_FLOAT, SSA_GT_FLOAT:
-		return true
-	}
-	return false
 }

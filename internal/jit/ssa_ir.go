@@ -85,6 +85,15 @@ const (
 	// Data movement
 	SSA_MOVE // copy value (register-to-register)
 	SSA_PHI  // loop-carried value
+
+	// Extended ops (added after original iota chain to preserve values)
+	SSA_SELF_CALL // native self-recursive call (BL to same trace)
+)
+
+// Shape-based field access ops (placeholders, not yet in iota chain).
+const (
+	SSA_LOAD_TABLE_SHAPE SSAOp = 200 // placeholder: load table shape
+	SSA_CHECK_SHAPE_ID   SSAOp = 201 // placeholder: guard shape ID
 )
 
 // ssaOpString returns a human-readable name for an SSAOp.
@@ -189,6 +198,21 @@ type Snapshot struct {
 	Entries []SnapEntry // slot → SSA value mappings (only modified slots)
 }
 
+// DeoptMetadata holds guard-level type expectations for deoptimization.
+type DeoptMetadata struct {
+	Guards []*DeoptGuard
+}
+
+// NewDeoptMetadata creates an empty DeoptMetadata.
+func NewDeoptMetadata() *DeoptMetadata {
+	return &DeoptMetadata{}
+}
+
+// DeoptGuard holds the expected type for a single guard.
+type DeoptGuard struct {
+	Expected interface{} // typically runtime.ValueType
+}
+
 // SSAFunc is the SSA representation of a compiled trace.
 type SSAFunc struct {
 	Insts     []SSAInst
@@ -198,6 +222,14 @@ type SSAFunc struct {
 
 	// AbsorbedMuls tracks MUL instructions absorbed by FMADD/FMSUB.
 	AbsorbedMuls map[SSARef]bool
+
+	// DeoptMetadata holds guard-level type expectations for deoptimization.
+	DeoptMetadata *DeoptMetadata
+
+	// MaxDepth0Slot is the highest VM slot used at depth=0 in the trace.
+	// Slots above this belong to inlined callee temporaries and must NOT
+	// be stored back to VM memory during store-back.
+	MaxDepth0Slot int
 }
 
 // TraceIR records one bytecode instruction during trace recording.
@@ -217,6 +249,7 @@ type TraceIR struct {
 	ShapeID    uint32 // for GETFIELD/SETFIELD: table shape ID
 	IsSelfCall bool   // true if this OP_CALL is self-recursive
 	Intrinsic  int    // recognized GoFunction intrinsic ID (0=none)
+	Dead       bool   // true if this IR entry was killed (e.g., GETGLOBAL for inlined fn)
 }
 
 // Trace holds recorded trace data.
@@ -229,6 +262,12 @@ type Trace struct {
 	StartBase    int              // base register index of the traced function
 	Constants    []runtime.Value  // trace-level constant pool (includes inlined function constants)
 	HasSelfCalls bool             // true if trace contains self-recursive CALL
+	IsFuncTrace  bool             // true if this is a function-entry trace
+	FuncReturnSlot  int           // VM slot for return value (function traces)
+	FuncReturnCount int           // bytecode B field of RETURN (function traces)
+	SelfCallFnSlot  int           // VM slot that holds the function reference (self-calls)
+	SelfCallFnConstIdx int        // constant pool index for function reference (self-calls)
+	MaxDepth0Slot   int           // highest slot used at depth=0 (for inline store-back limit)
 }
 
 // Intrinsic IDs for recognized GoFunction calls.
@@ -241,4 +280,9 @@ const (
 	IntrinsicLshift = 5
 	IntrinsicRshift = 6
 	IntrinsicSqrt   = 7
+	IntrinsicAbs    = 20
+	IntrinsicFloor  = 21
+	IntrinsicCeil   = 22
+	IntrinsicMax    = 23
+	IntrinsicMin    = 24
 )

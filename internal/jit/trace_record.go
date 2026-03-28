@@ -111,6 +111,14 @@ func (r *TraceRecorder) OnInstruction(pc int, inst uint32, proto *vm.FuncProto, 
 		return false
 	}
 
+	// Handle RETURN at depth=0 for function-entry traces: finish recording.
+	if op == vm.OP_RETURN && r.depth == 0 && r.recordingFunction {
+		r.current.FuncReturnSlot = ir.A
+		r.current.FuncReturnCount = origB
+		r.finishFuncTrace()
+		return false
+	}
+
 	// Check for unsupported ops that abort recording.
 	if r.shouldAbort(op) {
 		r.abortAndBlacklist()
@@ -533,12 +541,20 @@ func (r *TraceRecorder) handleCall(ir TraceIR, regs []runtime.Value, base int) b
 	}
 
 	// Simple callee without loops: inline it.
+	// DEBUG: uncomment to trace inlining decisions
+	// fmt.Printf("[TRACE] Inlining call at slot %d, proto has %d instructions\n", ir.A, len(cl.Proto.Code))
 	irCopy := ir
 	r.inlineCallProto = cl.Proto
 	r.inlineCallIR = &irCopy
 	r.inlineCallDepth = r.depth
 	r.skipNextJIT = true
 	r.inlineCallStack = append(r.inlineCallStack, ir.A)
+
+	// TODO: Kill the dead GETGLOBAL for the function reference.
+	// Currently disabled because the store-back corrupts callee temporaries.
+	// Needs register allocator changes to support depth>0 slots properly.
+	// See plan: zazzy-dancing-thimble.md
+
 	r.depth++
 	return false
 }
