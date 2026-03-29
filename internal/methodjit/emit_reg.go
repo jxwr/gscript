@@ -16,10 +16,11 @@
 // memory latency on every operation.
 //
 // Register convention:
-//   X20-X23: allocatable GPRs (callee-saved, hold NaN-boxed values)
+//   X20-X23, X28: allocatable GPRs (callee-saved, hold NaN-boxed values)
 //   X0-X3:   scratch registers for values without allocation
 //   X19:     ExecContext pointer (pinned)
 //   X24:     NaN-boxing int tag (pinned)
+//   X25:     NaN-boxing bool tag (pinned)
 //   X26:     VM register base (pinned)
 //   X27:     constants pointer (pinned)
 

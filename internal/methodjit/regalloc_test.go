@@ -27,8 +27,9 @@ func TestRegAlloc_SimpleAdd(t *testing.T) {
 
 // TestRegAlloc_ManyValues: 10+ values force spilling.
 func TestRegAlloc_ManyValues(t *testing.T) {
-	// This function creates enough live values to exceed the 5 GPR budget.
-	// Each variable a..f is live until the final sum, so at least 6 GPRs needed.
+	// This function creates enough live values to exceed the GPR budget.
+	// Each variable a..f is live until the final sum, so at least 6 GPRs needed
+	// (exceeds 5 allocatable GPRs: X20-X23, X28).
 	proto := compileFunction(t, `
 func f(n) {
 	a := n + 1
@@ -183,18 +184,19 @@ func assertAllValuesAssigned(t *testing.T, fn *Function, alloc *RegAllocation) {
 	}
 }
 
-// assertValidRegisters checks that all GPR assignments are in X19-X23 and
-// all FPR assignments are in D4-D11.
+// assertValidRegisters checks that all GPR assignments are in the allocatable
+// set {X20-X23, X28} and all FPR assignments are in D4-D11.
 func assertValidRegisters(t *testing.T, alloc *RegAllocation) {
 	t.Helper()
+	validGPRs := map[int]bool{20: true, 21: true, 22: true, 23: true, 28: true}
 	for id, reg := range alloc.ValueRegs {
 		if reg.IsFloat {
 			if reg.Reg < 4 || reg.Reg > 11 {
 				t.Errorf("value v%d: FPR D%d out of range D4-D11", id, reg.Reg)
 			}
 		} else {
-			if reg.Reg < 19 || reg.Reg > 23 {
-				t.Errorf("value v%d: GPR X%d out of range X19-X23", id, reg.Reg)
+			if !validGPRs[reg.Reg] {
+				t.Errorf("value v%d: GPR X%d not in allocatable set {X20-X23, X28}", id, reg.Reg)
 			}
 		}
 	}

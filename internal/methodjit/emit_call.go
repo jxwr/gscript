@@ -149,25 +149,24 @@ func (ec *emitContext) emitNot(instr *Instr) {
 		ec.asm.MOVreg(jit.X0, notSrc)
 	}
 
-	// Check for nil: val == NB_ValNil
+	// Check for nil: val == NB_ValNil (1 instruction: MOVZ with top chunk)
 	asm.LoadImm64(jit.X1, nb64(jit.NB_ValNil))
 	asm.CMPreg(jit.X0, jit.X1)
 	isFalsy := ec.uniqueLabel("not_falsy")
 	asm.BCond(jit.CondEQ, isFalsy)
 
-	// Check for false: val == NB_TagBool|0
-	asm.LoadImm64(jit.X1, nb64(jit.NB_TagBool))
-	asm.CMPreg(jit.X0, jit.X1)
+	// Check for false: val == NB_TagBool|0. Use pinned X25 directly.
+	asm.CMPreg(jit.X0, mRegTagBool)
 	asm.BCond(jit.CondEQ, isFalsy)
 
-	// Truthy value: return false.
-	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool)) // false = NB_TagBool|0
+	// Truthy value: return false (NB_TagBool|0). Use pinned X25.
+	asm.MOVreg(jit.X0, mRegTagBool)
 	done := ec.uniqueLabel("not_done")
 	asm.B(done)
 
-	// Nil or false: return true.
+	// Nil or false: return true (NB_TagBool|1). Compute from pinned X25.
 	asm.Label(isFalsy)
-	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1)) // true = NB_TagBool|1
+	asm.ADDimm(jit.X0, mRegTagBool, 1)
 
 	asm.Label(done)
 	// Store NaN-boxed bool result.

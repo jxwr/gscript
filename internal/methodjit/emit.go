@@ -26,7 +26,7 @@
 //   X25: NaN-boxing bool tag constant (0xFFFD000000000000)
 //   X26: VM register base pointer
 //   X27: constants pointer
-//   X20-X23: allocated GPRs (NaN-boxed values cached from VM register file)
+//   X20-X23, X28: allocated GPRs (NaN-boxed values cached from VM register file)
 //   X0-X3: scratch (caller-saved, used for computation)
 
 package methodjit
@@ -140,6 +140,15 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 
 // Compile takes a Function with register allocation and produces executable ARM64 code.
 func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
+	// Check if any FPR allocations exist (to skip FPR save/restore).
+	hasFPR := false
+	for _, pr := range alloc.ValueRegs {
+		if pr.IsFloat {
+			hasFPR = true
+			break
+		}
+	}
+
 	ec := &emitContext{
 		fn:             fn,
 		alloc:          alloc,
@@ -149,6 +158,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		activeRegs:     make(map[int]bool),
 		rawIntRegs:     make(map[int]bool),
 		crossBlockLive: computeCrossBlockLive(fn),
+		useFPR:         hasFPR,
 	}
 
 	// Assign home slots for all SSA values.
@@ -212,6 +222,10 @@ type emitContext struct {
 	// in their allocated register. Set by emitRawIntBinOp, read by resolveRawInt.
 	// Reset at block boundaries (raw state doesn't carry across blocks).
 	rawIntRegs map[int]bool
+
+	// useFPR is true if any values are allocated to FPR registers.
+	// When false, FPR save/restore in prologue/epilogue is skipped.
+	useFPR bool
 }
 
 // assignSlots assigns a home slot for every SSA value.
@@ -278,9 +292,11 @@ func (ec *emitContext) emitPrologue() {
 	asm.STP(jit.X23, jit.X24, jit.SP, 48)
 	asm.STP(jit.X25, jit.X26, jit.SP, 64)
 	asm.STP(jit.X27, jit.X28, jit.SP, 80)
-	// Save callee-saved FPRs.
-	asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-	asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+	// Save callee-saved FPRs only if float values are register-allocated.
+	if ec.useFPR {
+		asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+	}
 
 	// Set up pinned registers.
 	// X0 holds ExecContext pointer (from callJIT trampoline).
@@ -303,9 +319,11 @@ func (ec *emitContext) emitEpilogue() {
 	// Shared register restore and return (used by both normal and deopt paths).
 	asm.Label("deopt_epilogue")
 
-	// Restore callee-saved FPRs.
-	asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-	asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+	// Restore callee-saved FPRs only if they were saved.
+	if ec.useFPR {
+		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+	}
 	// Restore callee-saved GPRs.
 	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
 	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
@@ -330,12 +348,13 @@ func (ec *emitContext) emitBlock(block *Block) {
 	ec.rawIntRegs = make(map[int]bool)
 
 	// Phi values are active at block entry (their registers were loaded
-	// by emitPhiMoves from the predecessor).
+	// by emitPhiMoves from the predecessor). Check alloc directly, not
+	// hasReg (which requires activeRegs to already be set -- chicken/egg).
 	for _, instr := range block.Instrs {
 		if instr.Op != OpPhi {
 			break
 		}
-		if ec.hasReg(instr.ID) {
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
 			ec.activeRegs[instr.ID] = true
 		}
 	}
@@ -399,8 +418,10 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitDiv(instr)
 
 	// --- Unary ---
-	case OpUnm, OpNegInt:
+	case OpUnm:
 		ec.emitUnm(instr)
+	case OpNegInt:
+		ec.emitNegInt(instr)
 	case OpNegFloat:
 		ec.emitNegFloat(instr)
 	case OpNot:
@@ -473,9 +494,11 @@ func (ec *emitContext) emitConstNil(instr *Instr) {
 
 func (ec *emitContext) emitConstBool(instr *Instr) {
 	if instr.Aux != 0 {
-		ec.asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1))
+		// true = NB_TagBool|1. Compute from pinned X25 (1 ADD instruction).
+		ec.asm.ADDimm(jit.X0, mRegTagBool, 1)
 	} else {
-		ec.asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
+		// false = NB_TagBool|0. Use pinned X25 directly (1 MOV instruction).
+		ec.asm.MOVreg(jit.X0, mRegTagBool)
 	}
 	ec.storeResultNB(jit.X0, instr.ID)
 }
@@ -583,6 +606,27 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 	ec.storeRawInt(dst, instr.ID)
 }
 
+// --- Raw int unary negate (type-specialized, no unbox/box) ---
+// When TypeSpec has proven the operand is int, we keep raw int64 values
+// in registers. This saves ~12 instructions of the generic Unm path.
+func (ec *emitContext) emitNegInt(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	src := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+
+	// Compute directly with raw int — destination can be the allocated register.
+	dst := jit.X0
+	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
+		dst = jit.Reg(pr.Reg)
+	}
+
+	ec.asm.NEG(dst, src)
+
+	// Mark as raw int in register (no box needed until block boundary/return).
+	ec.storeRawInt(dst, instr.ID)
+}
+
 // --- Integer comparison (NaN-boxed) ---
 
 func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
@@ -668,16 +712,19 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 			}
 		}
 
-		// Always write-through to memory for cross-block reads.
-		dstSlot, hasDst := ec.slotMap[instr.ID]
-		if hasDst {
-			if dstHasGPR {
-				ec.asm.STR(jit.Reg(dstPR.Reg), mRegRegs, slotOffset(dstSlot))
-			} else if srcVal != jit.X0 {
-				ec.asm.MOVreg(jit.X0, srcVal)
-				ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
-			} else {
-				ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+		// Write-through to memory only if the phi value is used in another block.
+		// Block-local phis skip the store entirely.
+		if ec.crossBlockLive[instr.ID] || !dstHasGPR {
+			dstSlot, hasDst := ec.slotMap[instr.ID]
+			if hasDst {
+				if dstHasGPR {
+					ec.asm.STR(jit.Reg(dstPR.Reg), mRegRegs, slotOffset(dstSlot))
+				} else if srcVal != jit.X0 {
+					ec.asm.MOVreg(jit.X0, srcVal)
+					ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+				} else {
+					ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+				}
 			}
 		}
 	}

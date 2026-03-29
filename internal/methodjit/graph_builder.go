@@ -625,7 +625,10 @@ func (b *graphBuilder) emitBlocks() {
 				// R(A) -= R(A+2) (subtract step before loop)
 				idx := b.readVariable(a, block)
 				step := b.readVariable(a+2, block)
-				prepped := b.emit(block, OpSub, TypeAny, []*Value{idx, step}, 0, 0)
+				// Annotate with TypeInt when for-loop vars are known-int.
+				// This gives TypeSpec a head start on phi resolution.
+				forType := b.inferForLoopType(a, block)
+				prepped := b.emit(block, OpSub, forType, []*Value{idx, step}, 0, 0)
 				b.writeVariable(a, block, prepped.Value())
 
 				// Jump to FORLOOP test block.
@@ -642,7 +645,9 @@ func (b *graphBuilder) emitBlocks() {
 				// R(A) += R(A+2)
 				idx := b.readVariable(a, block)
 				step := b.readVariable(a+2, block)
-				incremented := b.emit(block, OpAdd, TypeAny, []*Value{idx, step}, 0, 0)
+				// Annotate with TypeInt when for-loop vars are known-int.
+				forType := b.inferForLoopType(a, block)
+				incremented := b.emit(block, OpAdd, forType, []*Value{idx, step}, 0, 0)
 				b.writeVariable(a, block, incremented.Value())
 
 				// if R(A) <= R(A+1) { R(A+3) = R(A); jump back }
@@ -784,5 +789,28 @@ func (b *graphBuilder) emitBlocks() {
 	for _, blk := range b.fn.Blocks {
 		b.sealBlock(blk)
 	}
+}
+
+// inferForLoopType checks if the for-loop's index (R(A)), limit (R(A+1)),
+// and step (R(A+2)) are all known-int from their SSA definitions.
+// Returns TypeInt if all three are int, TypeAny otherwise.
+// This annotates FORPREP/FORLOOP arithmetic directly, giving the TypeSpec
+// pass a head start on phi type resolution.
+func (b *graphBuilder) inferForLoopType(a int, block *Block) Type {
+	vars := [3]*Value{
+		b.readVariable(a, block),   // index
+		b.readVariable(a+1, block), // limit
+		b.readVariable(a+2, block), // step
+	}
+	for _, v := range vars {
+		if v == nil || v.Def == nil {
+			return TypeAny
+		}
+		t := v.Def.Type
+		if t != TypeInt {
+			return TypeAny
+		}
+	}
+	return TypeInt
 }
 
