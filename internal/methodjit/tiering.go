@@ -31,6 +31,7 @@ const CompileThreshold = 100
 type MethodJITEngine struct {
 	compiled map[*vm.FuncProto]*CompiledFunction
 	failed   map[*vm.FuncProto]bool // functions that failed compilation
+	callVM   *vm.VM                 // VM for call-exit and global-exit
 }
 
 // NewMethodJITEngine creates a new Method JIT engine with empty caches.
@@ -39,6 +40,13 @@ func NewMethodJITEngine() *MethodJITEngine {
 		compiled: make(map[*vm.FuncProto]*CompiledFunction),
 		failed:   make(map[*vm.FuncProto]bool),
 	}
+}
+
+// SetCallVM sets the VM used for call-exit and global-exit during JIT execution.
+// This should be called after the engine is created, typically by the VM
+// when SetMethodJIT is called.
+func (e *MethodJITEngine) SetCallVM(v *vm.VM) {
+	e.callVM = v
 }
 
 // IsCompiled returns true if the function has been compiled.
@@ -118,6 +126,15 @@ func (e *MethodJITEngine) Execute(compiled interface{}, regs []runtime.Value, ba
 		return nil, fmt.Errorf("methodjit: register file too small: need %d, have %d", needed, len(regs))
 	}
 
+	// Ensure register file is large enough for the JIT's temp slots.
+	// The JIT may use slots beyond proto.MaxStack for SSA temp values.
+	if needed < base+cf.numRegs+proto.MaxStack {
+		needed = base + cf.numRegs + proto.MaxStack
+	}
+	if needed > len(regs) {
+		return nil, fmt.Errorf("methodjit: register file too small: need %d, have %d", needed, len(regs))
+	}
+
 	// Initialize unused registers to nil to avoid stale data.
 	for i := base + proto.NumParams; i < base+cf.numRegs; i++ {
 		if i < len(regs) {
@@ -132,19 +149,36 @@ func (e *MethodJITEngine) Execute(compiled interface{}, regs []runtime.Value, ba
 		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
 	}
 
-	// Call the native code.
+	// Call the native code. Handle call-exit and global-exit by re-entering
+	// the JIT at resume points. For call-exit, use the VM's callValue mechanism.
+	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
-	jit.CallJIT(uintptr(cf.Code.Ptr()), ctxPtr)
 
-	// Check exit code.
-	if ctx.ExitCode == ExitDeopt {
-		// JIT bailed out: return error so the VM falls through to interpreter.
-		return nil, fmt.Errorf("methodjit: deopt")
+	for {
+		jit.CallJIT(codePtr, ctxPtr)
+
+		switch ctx.ExitCode {
+		case ExitNormal:
+			// Normal return: read result from slot 0 (relative to base).
+			result := regs[base]
+			return []runtime.Value{result}, nil
+
+		case ExitDeopt:
+			// JIT bailed out: return error so the VM falls through to interpreter.
+			return nil, fmt.Errorf("methodjit: deopt")
+
+		case ExitCallExit, ExitGlobalExit:
+			// Call-exit and global-exit in tiering mode: fall back to
+			// interpreter for now. The standalone CompiledFunction.Execute
+			// handles these with its own VM. For the tiering path, the
+			// reentrancy issues with the shared VM register file make this
+			// complex; deopt is safe and correct.
+			return nil, fmt.Errorf("methodjit: deopt")
+
+		default:
+			return nil, fmt.Errorf("methodjit: unknown exit code %d", ctx.ExitCode)
+		}
 	}
-
-	// Read return value from slot 0 (relative to base).
-	result := regs[base]
-	return []runtime.Value{result}, nil
 }
 
 // CompiledCount returns the number of successfully compiled functions.

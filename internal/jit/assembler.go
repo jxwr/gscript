@@ -192,6 +192,16 @@ func (a *Assembler) Code() []byte {
 	return a.buf
 }
 
+// LabelOffset returns the byte offset of a label, or -1 if not found.
+// Call after Label() has been invoked for the given name.
+func (a *Assembler) LabelOffset(name string) int {
+	off, ok := a.labels[name]
+	if !ok {
+		return -1
+	}
+	return off
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // ADR: form PC-relative address
 // ──────────────────────────────────────────────────────────────────────────────

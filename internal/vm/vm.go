@@ -26,6 +26,7 @@ type JITEngine interface {
 type MethodJITEngine interface {
 	TryCompile(proto *FuncProto) interface{} // returns *CompiledFunction or nil
 	Execute(compiled interface{}, regs []runtime.Value, base int, proto *FuncProto) ([]runtime.Value, error)
+	SetCallVM(v *VM)                         // sets the VM for call-exit/global-exit
 }
 
 // VM is the bytecode virtual machine.
@@ -106,13 +107,23 @@ func (vm *VM) SetJIT(engine JITEngine) {
 
 // SetMethodJIT sets the Method JIT engine for this VM.
 // When set, hot functions are automatically compiled and executed natively.
+// Also sets the VM reference on the engine for call-exit support.
 func (vm *VM) SetMethodJIT(engine MethodJITEngine) {
 	vm.methodJIT = engine
+	if engine != nil {
+		engine.SetCallVM(vm)
+	}
 }
 
 // Regs returns the register file. Used by the JIT executor.
 func (vm *VM) Regs() []runtime.Value {
 	return vm.regs
+}
+
+// SetTop sets the top-of-stack pointer. Used by the Method JIT to reserve
+// register space for temp slots before executing calls via call-exit.
+func (vm *VM) SetTop(top int) {
+	vm.top = top
 }
 
 // Globals returns the globals map.

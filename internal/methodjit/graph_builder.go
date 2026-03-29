@@ -500,7 +500,7 @@ func (b *graphBuilder) emitBlocks() {
 						args = append(args, b.readVariable(i, block))
 					}
 				}
-				instr := b.emit(block, OpCall, TypeAny, args, 0, 0)
+				instr := b.emit(block, OpCall, TypeAny, args, int64(a), int64(c))
 				b.writeVariable(a, block, instr.Value())
 				// If C > 2, there are multiple return values.
 				if c >= 3 {

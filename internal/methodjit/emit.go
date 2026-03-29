@@ -55,24 +55,40 @@ func nb64(v uint64) int64 { return int64(v) }
 // ExecContext is the calling convention struct between Go and JIT code.
 // Passed via X0 from callJIT trampoline, saved into X19.
 type ExecContext struct {
-	Regs      uintptr // pointer to vm.regs[base]
-	Constants uintptr // pointer to proto.Constants[0] (or 0 if none)
-	ExitCode  int64   // 0 = normal return, 2 = deopt (bail to interpreter)
-	ReturnPC  int64   // unused for now
+	Regs         uintptr // pointer to vm.regs[base]
+	Constants    uintptr // pointer to proto.Constants[0] (or 0 if none)
+	ExitCode     int64   // 0 = normal, 2 = deopt, 3 = call-exit, 4 = global-exit
+	ReturnPC     int64   // unused for now
+	CallSlot     int64   // VM register slot of the function value (call-exit)
+	CallNArgs    int64   // number of arguments for call-exit
+	CallNRets    int64   // number of expected results for call-exit
+	CallID       int64   // instruction ID for resolving resume address
+	GlobalSlot   int64   // VM register slot for global-exit result
+	GlobalConst  int64   // constant pool index for global name (global-exit)
+	GlobalExitID int64   // instruction ID for resolving global-exit resume address
 }
 
 // ExitCode constants.
 const (
-	ExitNormal = 0 // normal return
-	ExitDeopt  = 2 // deopt: bail to interpreter for the entire function
+	ExitNormal     = 0 // normal return
+	ExitDeopt      = 2 // deopt: bail to interpreter for the entire function
+	ExitCallExit   = 3 // call-exit: pause JIT, execute call via VM, resume JIT
+	ExitGlobalExit = 4 // global-exit: pause JIT, load global via VM, resume JIT
 )
 
-// ExecContext field offsets.
-const (
-	execCtxOffRegs      = 0
-	execCtxOffConstants = 8
-	execCtxOffExitCode  = 16
-	execCtxOffReturnPC  = 24
+// ExecContext field offsets (must match struct layout above).
+var (
+	execCtxOffRegs         = int(unsafe.Offsetof(ExecContext{}.Regs))
+	execCtxOffConstants    = int(unsafe.Offsetof(ExecContext{}.Constants))
+	execCtxOffExitCode     = int(unsafe.Offsetof(ExecContext{}.ExitCode))
+	execCtxOffReturnPC     = int(unsafe.Offsetof(ExecContext{}.ReturnPC))
+	execCtxOffCallSlot     = int(unsafe.Offsetof(ExecContext{}.CallSlot))
+	execCtxOffCallNArgs    = int(unsafe.Offsetof(ExecContext{}.CallNArgs))
+	execCtxOffCallNRets    = int(unsafe.Offsetof(ExecContext{}.CallNRets))
+	execCtxOffCallID       = int(unsafe.Offsetof(ExecContext{}.CallID))
+	execCtxOffGlobalSlot   = int(unsafe.Offsetof(ExecContext{}.GlobalSlot))
+	execCtxOffGlobalConst  = int(unsafe.Offsetof(ExecContext{}.GlobalConst))
+	execCtxOffGlobalExitID = int(unsafe.Offsetof(ExecContext{}.GlobalExitID))
 )
 
 // CompiledFunction holds the generated native code for a function.
@@ -82,16 +98,26 @@ type CompiledFunction struct {
 	NumSpills int            // stack space needed for spill slots
 	numRegs   int            // total number of VM register slots (including temp slots)
 
+	// ResumeAddrs maps call instruction ID to the native code offset (bytes)
+	// of the resume label. Used to re-enter JIT code after a call-exit.
+	ResumeAddrs map[int]int
+
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
 	// It runs the function via the VM interpreter. Set by the caller
 	// (e.g., test harness or tiering engine) to provide VM fallback.
 	// If nil, Execute returns an error on deopt.
 	DeoptFunc func(args []runtime.Value) ([]runtime.Value, error)
+
+	// CallVM is used for call-exit: executing calls via the VM interpreter.
+	// Set by the caller. If nil, calls fall back to DeoptFunc.
+	CallVM *vm.VM
 }
 
 // Execute runs the compiled function with the given arguments.
 // Arguments are loaded into VM register slots before calling the native code.
 // If the JIT bails out (ExitCode=ExitDeopt), falls back via DeoptFunc.
+// If the JIT hits a call-exit (ExitCode=ExitCallExit), executes the call
+// via the VM and re-enters the JIT at the resume point.
 // Returns the function's return values.
 func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, error) {
 	// Allocate VM registers (NaN-boxed values).
@@ -120,22 +146,149 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 		ctx.Constants = uintptr(unsafe.Pointer(&cf.Proto.Constants[0]))
 	}
 
-	// Call the JIT code.
+	// Entry point: start at the beginning of the function.
+	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
-	jit.CallJIT(uintptr(cf.Code.Ptr()), ctxPtr)
 
-	// Check exit code.
-	if ctx.ExitCode == ExitDeopt {
-		// JIT bailed out: fall back to VM interpreter for the entire function.
-		if cf.DeoptFunc != nil {
-			return cf.DeoptFunc(args)
+	for {
+		jit.CallJIT(codePtr, ctxPtr)
+
+		switch ctx.ExitCode {
+		case ExitNormal:
+			// Normal return: read result from slot 0.
+			return []runtime.Value{regs[0]}, nil
+
+		case ExitDeopt:
+			// JIT bailed out: fall back to VM interpreter.
+			if cf.DeoptFunc != nil {
+				return cf.DeoptFunc(args)
+			}
+			return nil, fmt.Errorf("methodjit: deopt with no DeoptFunc set")
+
+		case ExitCallExit:
+			// Call-exit: execute the call via VM, then resume JIT.
+			err := cf.executeCallExit(&ctx, regs)
+			if err != nil {
+				return nil, fmt.Errorf("methodjit: call-exit error: %w", err)
+			}
+
+			// Resume at the resume point for this call instruction.
+			callID := int(ctx.CallID)
+			resumeOff, ok := cf.ResumeAddrs[callID]
+			if !ok {
+				return nil, fmt.Errorf("methodjit: no resume address for call ID %d", callID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			continue
+
+		case ExitGlobalExit:
+			// Global-exit: load a global variable via the VM, then resume JIT.
+			err := cf.executeGlobalExit(&ctx, regs)
+			if err != nil {
+				return nil, fmt.Errorf("methodjit: global-exit error: %w", err)
+			}
+
+			// Resume at the resume point for this global instruction.
+			globalID := int(ctx.GlobalExitID)
+			resumeOff, ok := cf.ResumeAddrs[globalID]
+			if !ok {
+				return nil, fmt.Errorf("methodjit: no resume address for global ID %d", globalID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			continue
+
+		default:
+			return nil, fmt.Errorf("methodjit: unknown exit code %d", ctx.ExitCode)
 		}
-		return nil, fmt.Errorf("methodjit: deopt with no DeoptFunc set")
+	}
+}
+
+// executeCallExit handles a call-exit by executing the call via the VM.
+// The JIT has stored all register-resident values to memory before exiting,
+// so the VM register file (regs) is fully up-to-date.
+func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Value) error {
+	callSlot := int(ctx.CallSlot)
+	nArgs := int(ctx.CallNArgs)
+	nRets := int(ctx.CallNRets)
+
+	// Get the function value from the register file.
+	if callSlot >= len(regs) {
+		return fmt.Errorf("call slot %d out of range (regs len %d)", callSlot, len(regs))
+	}
+	fnVal := regs[callSlot]
+
+	// Collect arguments from regs[callSlot+1 .. callSlot+nArgs].
+	callArgs := make([]runtime.Value, nArgs)
+	for i := 0; i < nArgs; i++ {
+		idx := callSlot + 1 + i
+		if idx < len(regs) {
+			callArgs[i] = regs[idx]
+		}
 	}
 
-	// Read return value from slot 0.
-	result := regs[0]
-	return []runtime.Value{result}, nil
+	// Execute the call.
+	var results []runtime.Value
+	var err error
+
+	if cf.CallVM != nil {
+		results, err = cf.CallVM.CallValue(fnVal, callArgs)
+	} else if cf.DeoptFunc != nil {
+		// Fallback: no CallVM, try to use the function value directly.
+		return fmt.Errorf("no CallVM set for call-exit")
+	} else {
+		return fmt.Errorf("no CallVM or DeoptFunc set for call-exit")
+	}
+	if err != nil {
+		return err
+	}
+
+	// Place results back into the register file at regs[callSlot..callSlot+nRets-1].
+	// This follows Lua calling convention: results overwrite the function slot.
+	nr := nRets
+	if nr <= 0 {
+		nr = 1 // at minimum, 1 result
+	}
+	for i := 0; i < nr; i++ {
+		idx := callSlot + i
+		if idx < len(regs) {
+			if i < len(results) {
+				regs[idx] = results[i]
+			} else {
+				regs[idx] = runtime.NilValue()
+			}
+		}
+	}
+
+	return nil
+}
+
+// executeGlobalExit handles a global-exit by loading a global variable via the VM.
+// The global name is looked up from the constants pool and resolved via the VM.
+func (cf *CompiledFunction) executeGlobalExit(ctx *ExecContext, regs []runtime.Value) error {
+	globalSlot := int(ctx.GlobalSlot)
+	constIdx := int(ctx.GlobalConst)
+
+	if cf.CallVM == nil {
+		return fmt.Errorf("no CallVM set for global-exit")
+	}
+
+	// Look up the global name from the constants pool.
+	if cf.Proto == nil || constIdx >= len(cf.Proto.Constants) {
+		return fmt.Errorf("global constant index %d out of range", constIdx)
+	}
+	globalName := cf.Proto.Constants[constIdx].Str()
+
+	// Resolve the global value.
+	val := cf.CallVM.GetGlobal(globalName)
+
+	// Store the global value to the register file.
+	if globalSlot < len(regs) {
+		regs[globalSlot] = val
+	}
+
+	return nil
 }
 
 // Compile takes a Function with register allocation and produces executable ARM64 code.
@@ -175,6 +328,10 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// Emit epilogue.
 	ec.emitEpilogue()
 
+	// Emit deferred resume entry points (after epilogue so they're separate
+	// function entry points with their own prologue).
+	ec.emitDeferredResumes()
+
 	// Finalize: resolve labels.
 	code, err := ec.asm.Finalize()
 	if err != nil {
@@ -191,11 +348,22 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		return nil, fmt.Errorf("methodjit: write code error: %w", err)
 	}
 
+	// Resolve resume addresses for call-exit points.
+	resumeAddrs := make(map[int]int)
+	for _, callID := range ec.callExitIDs {
+		label := callExitResumeLabel(callID)
+		off := ec.asm.LabelOffset(label)
+		if off >= 0 {
+			resumeAddrs[callID] = off
+		}
+	}
+
 	return &CompiledFunction{
-		Code:      cb,
-		Proto:     fn.Proto,
-		NumSpills: alloc.NumSpillSlots,
-		numRegs:   ec.nextSlot,
+		Code:        cb,
+		Proto:       fn.Proto,
+		NumSpills:   alloc.NumSpillSlots,
+		numRegs:     ec.nextSlot,
+		ResumeAddrs: resumeAddrs,
 	}, nil
 }
 
@@ -226,6 +394,13 @@ type emitContext struct {
 	// useFPR is true if any values are allocated to FPR registers.
 	// When false, FPR save/restore in prologue/epilogue is skipped.
 	useFPR bool
+
+	// callExitIDs tracks the instruction IDs of call-exit points.
+	// After finalization, these are used to resolve resume label addresses.
+	callExitIDs []int
+
+	// deferredResumes tracks resume entry points to emit after the epilogue.
+	deferredResumes []deferredResume
 }
 
 // assignSlots assigns a home slot for every SSA value.
@@ -456,9 +631,17 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpNop:
 		// nothing
 
+	// --- Call-exit: execute calls via VM and resume JIT ---
+	case OpCall:
+		ec.emitCallExit(instr)
+
+	// --- Global-exit: load globals via VM and resume JIT ---
+	case OpGetGlobal:
+		ec.emitGlobalExit(instr)
+
 	// --- Deopt: all complex ops bail to interpreter ---
-	case OpCall, OpSelf,
-		OpGetGlobal, OpSetGlobal,
+	case OpSelf,
+		OpSetGlobal,
 		OpGetUpval, OpSetUpval,
 		OpNewTable, OpGetTable, OpSetTable, OpGetField, OpSetField, OpSetList, OpAppend,
 		OpConcat,

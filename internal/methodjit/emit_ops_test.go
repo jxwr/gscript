@@ -81,6 +81,21 @@ func makeDeoptFunc(t *testing.T, src string, fnName string) func(args []runtime.
 	}
 }
 
+// makeCallExitVMForTest creates a VM with all globals from the source set up.
+// Used by call-exit tests to execute calls and resolve globals.
+func makeCallExitVMForTest(t *testing.T, src string) *vm.VM {
+	t.Helper()
+	globals := make(map[string]runtime.Value)
+	v := vm.New(globals)
+	proto := compileTop(t, src)
+	_, err := v.Execute(proto)
+	if err != nil {
+		v.Close()
+		t.Fatalf("VM execute top-level error: %v", err)
+	}
+	return v
+}
+
 // TestEmit_Div: division always returns float (GScript/Lua semantics).
 // func f(a, b) { return a / b } — f(10, 3) ≈ 3.333...
 func TestEmit_Div(t *testing.T) {
@@ -277,7 +292,7 @@ func TestEmit_FloatMul(t *testing.T) {
 }
 
 // TestEmit_Call: func add(a,b) { return a+b }; func f(x) { return add(x, 1) }
-// f(5) = 6. Uses deopt: the JIT bails to interpreter for the call.
+// f(5) = 6. Uses call-exit for GetGlobal and OpCall.
 func TestEmit_Call(t *testing.T) {
 	src := `func add(a, b) { return a + b }; func f(x) { return add(x, 1) }`
 	proto := compileByName(t, src, "f")
@@ -290,7 +305,10 @@ func TestEmit_Call(t *testing.T) {
 	}
 	defer cf.Code.Free()
 
-	// Set up deopt function to fall back to VM for the call.
+	// Set up CallVM for call-exit and global-exit.
+	callVM := makeCallExitVMForTest(t, src)
+	defer callVM.Close()
+	cf.CallVM = callVM
 	cf.DeoptFunc = makeDeoptFunc(t, src, "f")
 
 	args := []runtime.Value{runtime.IntValue(5)}
@@ -307,7 +325,7 @@ func TestEmit_Call(t *testing.T) {
 }
 
 // TestEmit_Fib: func fib(n) { if n < 2 { return n }; return fib(n-1) + fib(n-2) }
-// fib(10) = 55. Uses deopt for recursive calls.
+// fib(10) = 55. Uses call-exit for GetGlobal and recursive calls.
 func TestEmit_Fib(t *testing.T) {
 	src := `func fib(n) { if n < 2 { return n }; return fib(n-1) + fib(n-2) }`
 	proto := compileFunction(t, src)
@@ -320,7 +338,10 @@ func TestEmit_Fib(t *testing.T) {
 	}
 	defer cf.Code.Free()
 
-	// Set up deopt function to fall back to VM for recursive calls.
+	// Set up CallVM for call-exit and global-exit.
+	callVM := makeCallExitVMForTest(t, src)
+	defer callVM.Close()
+	cf.CallVM = callVM
 	cf.DeoptFunc = makeDeoptFunc(t, src, "fib")
 
 	args := []runtime.Value{runtime.IntValue(10)}
