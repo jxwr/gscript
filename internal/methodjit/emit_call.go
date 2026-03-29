@@ -45,9 +45,15 @@ func (ec *emitContext) emitDiv(instr *Instr) {
 	}
 	asm := ec.asm
 
-	// Load both operands from their home slots (NaN-boxed).
-	ec.loadValue(jit.X0, instr.Args[0].ID) // X0 = NaN-boxed lhs
-	ec.loadValue(jit.X1, instr.Args[1].ID) // X1 = NaN-boxed rhs
+	// Load both operands as NaN-boxed values.
+	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if lhsReg != jit.X0 {
+		ec.asm.MOVreg(jit.X0, lhsReg)
+	}
+	rhsReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if rhsReg != jit.X1 {
+		ec.asm.MOVreg(jit.X1, rhsReg)
+	}
 
 	// Check if lhs is int.
 	emitCheckIsInt(asm, jit.X0, jit.X2)
@@ -88,8 +94,8 @@ func (ec *emitContext) emitDiv(instr *Instr) {
 	// Move result bits back to GP register (float stored as raw IEEE bits).
 	asm.FMOVtoGP(jit.X0, jit.D0)
 
-	// Store NaN-boxed float to home slot.
-	ec.storeValue(jit.X0, instr.ID)
+	// Store NaN-boxed float result.
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 // emitUnm emits ARM64 code for OpUnm (-a).
@@ -100,7 +106,11 @@ func (ec *emitContext) emitUnm(instr *Instr) {
 	}
 	asm := ec.asm
 
-	ec.loadValue(jit.X0, instr.Args[0].ID)
+	// Load operand as NaN-boxed for type dispatch.
+	unmSrc := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if unmSrc != jit.X0 {
+		ec.asm.MOVreg(jit.X0, unmSrc)
+	}
 
 	// Check if int.
 	emitCheckIsInt(asm, jit.X0, jit.X2)
@@ -121,7 +131,8 @@ func (ec *emitContext) emitUnm(instr *Instr) {
 	asm.FMOVtoGP(jit.X0, jit.D0)
 
 	asm.Label(done)
-	ec.storeValue(jit.X0, instr.ID)
+	// Store NaN-boxed result (int or float).
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 // emitNot emits ARM64 code for OpNot (!a).
@@ -132,7 +143,11 @@ func (ec *emitContext) emitNot(instr *Instr) {
 	}
 	asm := ec.asm
 
-	ec.loadValue(jit.X0, instr.Args[0].ID)
+	// Load operand as NaN-boxed for truthiness check.
+	notSrc := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if notSrc != jit.X0 {
+		ec.asm.MOVreg(jit.X0, notSrc)
+	}
 
 	// Check for nil: val == NB_ValNil
 	asm.LoadImm64(jit.X1, nb64(jit.NB_ValNil))
@@ -155,7 +170,8 @@ func (ec *emitContext) emitNot(instr *Instr) {
 	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1)) // true = NB_TagBool|1
 
 	asm.Label(done)
-	ec.storeValue(jit.X0, instr.ID)
+	// Store NaN-boxed bool result.
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 // emitFloatBinOp emits ARM64 code for type-generic binary arithmetic
@@ -167,9 +183,15 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	}
 	asm := ec.asm
 
-	// Load both operands.
-	ec.loadValue(jit.X0, instr.Args[0].ID)
-	ec.loadValue(jit.X1, instr.Args[1].ID)
+	// Load both operands as NaN-boxed for type dispatch.
+	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if lhsReg != jit.X0 {
+		ec.asm.MOVreg(jit.X0, lhsReg)
+	}
+	rhsReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if rhsReg != jit.X1 {
+		ec.asm.MOVreg(jit.X1, rhsReg)
+	}
 
 	done := ec.uniqueLabel("arith_done")
 
@@ -245,7 +267,8 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	asm.FMOVtoGP(jit.X0, jit.D0)
 
 	asm.Label(done)
-	ec.storeValue(jit.X0, instr.ID)
+	// Store NaN-boxed result (int or float).
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 // uniqueLabel generates a unique label for the emitter to avoid collisions.

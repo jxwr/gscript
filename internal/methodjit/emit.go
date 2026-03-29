@@ -6,20 +6,26 @@
 //
 // Uses the existing ARM64 assembler from internal/jit/assembler*.go.
 //
-// MVP Strategy ("memory-to-memory"):
-// Every SSA value has a "home slot" in the VM register file (NaN-boxed).
-// - LoadSlot values: home = their original VM slot
-// - Other values: home = temp slot (starting at fn.NumRegs)
-// Before each instruction, operands are loaded from their home slots into
-// scratch registers (X0-X3). After computation, the result is stored back
-// to its home slot. This is correct across block boundaries because all
-// state lives in memory, not in physical registers.
+// Strategy: "register-resident" for values with physical register allocation,
+// "memory-to-memory" fallback for spilled/unallocated values.
+//
+// Register-resident values (X20-X23) hold NaN-boxed values in ARM64 callee-saved
+// registers. Within a basic block, reads from these registers avoid memory LDR.
+// Block-local values also skip memory STR entirely. Cross-block live values use
+// write-through (register + memory) so other blocks can read them.
+//
+// Memory-to-memory fallback: values without a register allocation use the
+// original strategy of loading from VM register slots into scratch registers
+// (X0-X3) for each instruction.
+//
+// See emit_reg.go for register resolution helpers and cross-block analysis.
 //
 // Pinned registers:
 //   X19: ExecContext pointer
 //   X24: NaN-boxing int tag constant (0xFFFE000000000000)
 //   X26: VM register base pointer
 //   X27: constants pointer
+//   X20-X23: allocated GPRs (NaN-boxed values cached from VM register file)
 //   X0-X3: scratch (caller-saved, used for computation)
 
 package methodjit
@@ -133,11 +139,13 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 // Compile takes a Function with register allocation and produces executable ARM64 code.
 func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	ec := &emitContext{
-		fn:       fn,
-		alloc:    alloc,
-		asm:      jit.NewAssembler(),
-		slotMap:  make(map[int]int),
-		nextSlot: fn.NumRegs,
+		fn:             fn,
+		alloc:          alloc,
+		asm:            jit.NewAssembler(),
+		slotMap:        make(map[int]int),
+		nextSlot:       fn.NumRegs,
+		activeRegs:     make(map[int]bool),
+		crossBlockLive: computeCrossBlockLive(fn),
 	}
 
 	// Assign home slots for all SSA values.
@@ -186,6 +194,16 @@ type emitContext struct {
 	slotMap      map[int]int // SSA value ID -> home slot index in VM register file
 	nextSlot     int         // next available temp slot
 	labelCounter int         // counter for generating unique labels
+
+	// activeRegs tracks which value IDs have their register allocation active
+	// in the current block. Values from other blocks must be loaded from memory.
+	// Reset at the start of each block.
+	activeRegs map[int]bool
+
+	// crossBlockLive is the set of value IDs that are used in blocks other than
+	// where they're defined. These values need write-through to memory.
+	// Values only used within their defining block skip the memory write.
+	crossBlockLive map[int]bool
 }
 
 // assignSlots assigns a home slot for every SSA value.
@@ -297,6 +315,21 @@ func (ec *emitContext) emitEpilogue() {
 func (ec *emitContext) emitBlock(block *Block) {
 	ec.asm.Label(blockLabel(block))
 
+	// Reset active register set for this block. Only values defined
+	// in this block (or phis resolved at entry) have valid register contents.
+	ec.activeRegs = make(map[int]bool)
+
+	// Phi values are active at block entry (their registers were loaded
+	// by emitPhiMoves from the predecessor).
+	for _, instr := range block.Instrs {
+		if instr.Op != OpPhi {
+			break
+		}
+		if ec.hasReg(instr.ID) {
+			ec.activeRegs[instr.ID] = true
+		}
+	}
+
 	for _, instr := range block.Instrs {
 		ec.emitInstr(instr, block)
 	}
@@ -319,7 +352,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 
 	// --- Slot access ---
 	case OpLoadSlot:
-		// LoadSlot's home IS the VM slot; no code needed (already there).
+		ec.emitLoadSlot(instr)
 	case OpStoreSlot:
 		ec.emitStoreSlot(instr)
 
@@ -401,15 +434,15 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 // Each stores the NaN-boxed constant to the value's home slot via X0 scratch.
 
 func (ec *emitContext) emitConstInt(instr *Instr) {
-	// Load raw int value into X0, NaN-box it, store to home slot.
+	// Load raw int value, NaN-box it, store to register (activating it) or memory.
 	ec.asm.LoadImm64(jit.X0, instr.Aux)
 	jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
-	ec.storeValue(jit.X0, instr.ID)
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 func (ec *emitContext) emitConstNil(instr *Instr) {
 	jit.EmitBoxNil(ec.asm, jit.X0)
-	ec.storeValue(jit.X0, instr.ID)
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 func (ec *emitContext) emitConstBool(instr *Instr) {
@@ -418,24 +451,37 @@ func (ec *emitContext) emitConstBool(instr *Instr) {
 	} else {
 		ec.asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
 	}
-	ec.storeValue(jit.X0, instr.ID)
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 func (ec *emitContext) emitConstFloat(instr *Instr) {
 	ec.asm.LoadImm64(jit.X0, instr.Aux)
-	ec.storeValue(jit.X0, instr.ID)
+	// Float constants stored as raw IEEE 754 bits (NaN-boxed representation).
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 // --- Slot access ---
+
+func (ec *emitContext) emitLoadSlot(instr *Instr) {
+	// Check if this value has a register allocation (don't use hasReg which
+	// checks activeRegs -- this is where we ACTIVATE the register).
+	pr, ok := ec.alloc.ValueRegs[instr.ID]
+	if ok && !pr.IsFloat {
+		// Register-resident: load from VM slot into allocated register.
+		ec.emitLoadSlotToReg(instr)
+		return
+	}
+	// Memory-to-memory: LoadSlot's home IS the VM slot; no code needed.
+}
 
 func (ec *emitContext) emitStoreSlot(instr *Instr) {
 	if len(instr.Args) == 0 {
 		return
 	}
-	// Load source value from its home slot, store to target VM slot.
-	ec.loadValue(jit.X0, instr.Args[0].ID)
+	// Get the NaN-boxed value from register or memory, store to target VM slot.
+	reg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	slot := int(instr.Aux)
-	ec.asm.STR(jit.X0, mRegRegs, slotOffset(slot))
+	ec.asm.STR(reg, mRegRegs, slotOffset(slot))
 }
 
 // --- Integer binary operations (NaN-boxed) ---
@@ -454,13 +500,12 @@ func (ec *emitContext) emitIntBinOp(instr *Instr, op intBinOp) {
 		return
 	}
 
-	// Load both operands from their home slots.
-	ec.loadValue(jit.X0, instr.Args[0].ID) // X0 = NaN-boxed lhs
-	ec.loadValue(jit.X1, instr.Args[1].ID) // X1 = NaN-boxed rhs
+	// Resolve both operands: NaN-boxed from register or memory, then unbox.
+	lhsSrc := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	jit.EmitUnboxInt(ec.asm, jit.X0, lhsSrc) // X0 = raw int lhs
 
-	// Unbox both to raw int.
-	jit.EmitUnboxInt(ec.asm, jit.X0, jit.X0)
-	jit.EmitUnboxInt(ec.asm, jit.X1, jit.X1)
+	rhsSrc := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	jit.EmitUnboxInt(ec.asm, jit.X1, rhsSrc) // X1 = raw int rhs
 
 	// Perform the operation into X0.
 	switch op {
@@ -475,9 +520,9 @@ func (ec *emitContext) emitIntBinOp(instr *Instr, op intBinOp) {
 		ec.asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
 	}
 
-	// Rebox result and store to home slot.
+	// Rebox result and store to register or memory.
 	jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
-	ec.storeValue(jit.X0, instr.ID)
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 // --- Integer comparison (NaN-boxed) ---
@@ -487,13 +532,12 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 		return
 	}
 
-	// Load both operands.
-	ec.loadValue(jit.X0, instr.Args[0].ID)
-	ec.loadValue(jit.X1, instr.Args[1].ID)
+	// Resolve both operands: NaN-boxed from register or memory, then unbox.
+	lhsSrc := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	jit.EmitUnboxInt(ec.asm, jit.X0, lhsSrc) // X0 = raw int lhs
 
-	// Unbox both.
-	jit.EmitUnboxInt(ec.asm, jit.X0, jit.X0)
-	jit.EmitUnboxInt(ec.asm, jit.X1, jit.X1)
+	rhsSrc := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	jit.EmitUnboxInt(ec.asm, jit.X1, rhsSrc) // X1 = raw int rhs
 
 	// Compare.
 	ec.asm.CMPreg(jit.X0, jit.X1)
@@ -505,15 +549,19 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 	ec.asm.LoadImm64(jit.X1, nb64(jit.NB_TagBool))
 	ec.asm.ORRreg(jit.X0, jit.X0, jit.X1)
 
-	// Store result to home slot.
-	ec.storeValue(jit.X0, instr.ID)
+	// Store NaN-boxed bool result to register or memory.
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 // --- Phi ---
 
-// emitPhiMoves emits memory-to-memory copies for phi nodes when
-// transitioning from 'from' to 'to'. For each phi in 'to', copies
-// the source value's home slot to the phi's home slot.
+// emitPhiMoves emits copies for phi nodes when transitioning from 'from' to 'to'.
+// For register-resident values, this is a register-to-register MOV (NaN-boxed).
+// For memory-resident values, this is a memory-to-memory copy via scratch.
+// Mixed: register-to-memory or memory-to-register via scratch X0.
+//
+// NOTE: For phi destinations, we use the register allocation directly (not
+// activeRegs) because the phi belongs to the TARGET block, not the current one.
 func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 	predIdx := -1
 	for i, p := range to.Preds {
@@ -535,15 +583,42 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 		}
 
 		srcArg := instr.Args[predIdx]
-		srcSlot, hasSrc := ec.slotMap[srcArg.ID]
-		dstSlot, hasDst := ec.slotMap[instr.ID]
-		if !hasSrc || !hasDst || srcSlot == dstSlot {
-			continue
+
+		// Source: use activeRegs (current block context).
+		srcHasReg := ec.hasReg(srcArg.ID)
+		// Destination: use allocation directly (target block context).
+		dstPR, dstHasReg := ec.alloc.ValueRegs[instr.ID]
+		dstHasGPR := dstHasReg && !dstPR.IsFloat
+
+		// Get NaN-boxed source value.
+		var srcVal jit.Reg
+		if srcHasReg {
+			srcVal = ec.physReg(srcArg.ID)
+		} else {
+			ec.loadValue(jit.X0, srcArg.ID)
+			srcVal = jit.X0
 		}
 
-		// Copy: load from source slot, store to phi's slot.
-		ec.asm.LDR(jit.X0, mRegRegs, slotOffset(srcSlot))
-		ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+		// Store to destination register (if allocated).
+		if dstHasGPR {
+			dstReg := jit.Reg(dstPR.Reg)
+			if srcVal != dstReg {
+				ec.asm.MOVreg(dstReg, srcVal)
+			}
+		}
+
+		// Always write-through to memory for cross-block reads.
+		dstSlot, hasDst := ec.slotMap[instr.ID]
+		if hasDst {
+			if dstHasGPR {
+				ec.asm.STR(jit.Reg(dstPR.Reg), mRegRegs, slotOffset(dstSlot))
+			} else if srcVal != jit.X0 {
+				ec.asm.MOVreg(jit.X0, srcVal)
+				ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+			} else {
+				ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+			}
+		}
 	}
 }
 
@@ -566,13 +641,13 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 	trueBlock := block.Succs[0]
 	falseBlock := block.Succs[1]
 
-	// Load condition value from its home slot.
-	ec.loadValue(jit.X0, instr.Args[0].ID)
+	// Load condition value (NaN-boxed bool) from register or memory.
+	condReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 
 	// The condition value is a NaN-boxed bool.
 	// Extract the payload bit 0. If 1 -> true branch, 0 -> false branch.
 	ec.asm.LoadImm64(jit.X1, 1)
-	ec.asm.ANDreg(jit.X0, jit.X0, jit.X1)
+	ec.asm.ANDreg(jit.X0, condReg, jit.X1)
 
 	trueTrampolineLabel := fmt.Sprintf("B%d_true_from_B%d", trueBlock.ID, block.ID)
 
@@ -590,9 +665,9 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 
 func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 	if len(instr.Args) > 0 {
-		// Load return value from its home slot, store to slot 0 of VM register file.
-		ec.loadValue(jit.X0, instr.Args[0].ID)
-		ec.asm.STR(jit.X0, mRegRegs, 0) // regs[0] = return value
+		// Get NaN-boxed return value from register or memory, store to slot 0.
+		retReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		ec.asm.STR(retReg, mRegRegs, 0) // regs[0] = return value
 	}
 	// Jump to epilogue.
 	ec.asm.B("epilogue")

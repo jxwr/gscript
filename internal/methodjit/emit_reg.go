@@ -1,0 +1,156 @@
+//go:build darwin && arm64
+
+// emit_reg.go implements register-resident value resolution for the Method JIT.
+// This is the #1 performance optimization: values allocated to physical registers
+// (X20-X23 via regalloc.go) stay in those registers, avoiding memory load/store
+// on every instruction.
+//
+// Key principle: values in allocated GPRs are NaN-boxed (same representation as
+// in the VM register file). This keeps type dispatch working for generic ops
+// (OpAdd, OpDiv) while eliminating memory traffic.
+//
+// For type-specialized int ops (OpAddInt, OpSubInt, etc.), the emit path unboxes
+// from the register (1 SBFX instruction) instead of loading from memory (1 LDR),
+// then reboxes the result back into the destination register (2 instructions:
+// UBFX + ORR) instead of storing to memory (1 STR). The net win is eliminating
+// memory latency on every operation.
+//
+// Register convention:
+//   X20-X23: allocatable GPRs (callee-saved, hold NaN-boxed values)
+//   X0-X3:   scratch registers for values without allocation
+//   X19:     ExecContext pointer (pinned)
+//   X24:     NaN-boxing int tag (pinned)
+//   X26:     VM register base (pinned)
+//   X27:     constants pointer (pinned)
+
+package methodjit
+
+import (
+	"github.com/gscript/gscript/internal/jit"
+)
+
+// computeCrossBlockLive returns a set of value IDs that are used in a different
+// block from where they're defined. These values need write-through to memory
+// so they can be loaded by other blocks. Values used only within their defining
+// block don't need memory writes.
+func computeCrossBlockLive(fn *Function) map[int]bool {
+	// First, find which block each value is defined in.
+	defBlock := make(map[int]int) // valueID -> blockID
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !instr.Op.IsTerminator() {
+				defBlock[instr.ID] = block.ID
+			}
+		}
+	}
+
+	// Find values used in a different block than their definition.
+	crossBlock := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			for _, arg := range instr.Args {
+				db, ok := defBlock[arg.ID]
+				if ok && db != block.ID {
+					crossBlock[arg.ID] = true
+				}
+			}
+		}
+	}
+
+	// Also mark phi sources as cross-block (they're read from predecessor blocks).
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpPhi {
+				break
+			}
+			for _, arg := range instr.Args {
+				crossBlock[arg.ID] = true
+			}
+		}
+	}
+
+	return crossBlock
+}
+
+// hasReg returns true if the given value ID has a physical GPR register allocation
+// AND the register is currently active (the value was defined in the current block
+// or loaded via phi resolution). Values from predecessor blocks that weren't
+// carried forward via phi moves must be loaded from memory.
+func (ec *emitContext) hasReg(valueID int) bool {
+	pr, ok := ec.alloc.ValueRegs[valueID]
+	if !ok || pr.IsFloat {
+		return false
+	}
+	// Check if this value's register is active in the current block.
+	return ec.activeRegs[valueID]
+}
+
+// physReg returns the jit.Reg for a value's physical register allocation.
+// Only call if hasReg returns true.
+func (ec *emitContext) physReg(valueID int) jit.Reg {
+	pr := ec.alloc.ValueRegs[valueID]
+	return jit.Reg(pr.Reg)
+}
+
+// resolveValueNB ensures the NaN-boxed value identified by valueID is available
+// in a GPR. If the value has an allocated register, returns that register directly
+// (the register holds the NaN-boxed value). Otherwise, loads from memory into
+// scratchReg and returns scratchReg.
+//
+// The returned register holds a NaN-BOXED value.
+func (ec *emitContext) resolveValueNB(valueID int, scratchReg jit.Reg) jit.Reg {
+	if ec.hasReg(valueID) {
+		return ec.physReg(valueID)
+	}
+	// Fallback: load NaN-boxed from memory slot
+	ec.loadValue(scratchReg, valueID)
+	return scratchReg
+}
+
+// resolveValueUnboxedInt ensures the value identified by valueID is available
+// as a raw (unboxed) int64 in a GPR. If the value has an allocated register,
+// unboxes into scratchReg. Otherwise, loads from memory and unboxes into scratchReg.
+//
+// The returned register holds a RAW int64 (not NaN-boxed).
+// Always returns scratchReg (caller can use it freely).
+func (ec *emitContext) resolveValueUnboxedInt(valueID int, scratchReg jit.Reg) jit.Reg {
+	src := ec.resolveValueNB(valueID, scratchReg)
+	jit.EmitUnboxInt(ec.asm, scratchReg, src)
+	return scratchReg
+}
+
+// storeResultNB stores a NaN-boxed result. If the value has a register allocation,
+// stores to the register. If the value is also used in other blocks (cross-block
+// live), writes through to memory too. For block-local values, the memory write
+// is skipped entirely -- this is the key optimization for inner loops.
+func (ec *emitContext) storeResultNB(srcReg jit.Reg, valueID int) {
+	pr, ok := ec.alloc.ValueRegs[valueID]
+	if ok && !pr.IsFloat {
+		// Store to allocated register and activate it.
+		ec.activeRegs[valueID] = true
+		dstReg := jit.Reg(pr.Reg)
+		if srcReg != dstReg {
+			ec.asm.MOVreg(dstReg, srcReg)
+		}
+		// Only write-through to memory if the value is used cross-block.
+		if ec.crossBlockLive[valueID] {
+			ec.storeValue(dstReg, valueID)
+		}
+		return
+	}
+	// No register allocation: store to memory only.
+	ec.storeValue(srcReg, valueID)
+}
+
+// emitLoadSlotToReg emits code to load a VM register slot's NaN-boxed value
+// into the value's allocated physical register. Marks the value as active.
+func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
+	pr, ok := ec.alloc.ValueRegs[instr.ID]
+	if !ok || pr.IsFloat {
+		return
+	}
+	reg := jit.Reg(pr.Reg)
+	slot := int(instr.Aux)
+	ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
+	ec.activeRegs[instr.ID] = true
+}
