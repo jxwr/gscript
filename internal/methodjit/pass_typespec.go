@@ -33,9 +33,14 @@ func TypeSpecializePass(fn *Function) (*Function, error) {
 	}
 
 	// Phase 2: Replace generic ops with specialized variants.
+	// Also update phi/instr Type fields from inferred types.
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			ts.specialize(instr)
+			// Update Type field for all instructions with inferred types.
+			if t, ok := ts.types[instr.ID]; ok && t != TypeUnknown {
+				instr.Type = t
+			}
 		}
 	}
 
@@ -124,19 +129,30 @@ func (ts *typeSpecializer) inferBinaryNumericType(instr *Instr) Type {
 	return TypeUnknown
 }
 
-// inferPhiType returns a type if all phi inputs agree, TypeUnknown otherwise.
+// inferPhiType returns a type if all KNOWN phi inputs agree.
+// Unknown args (not yet resolved in fixed-point iteration) are skipped.
+// This allows loop-carried phis to resolve: on first pass, one arg is
+// known (the initial value); on subsequent passes, the loop body's
+// result type becomes known and confirms the phi's type.
 func (ts *typeSpecializer) inferPhiType(instr *Instr) Type {
 	if len(instr.Args) == 0 {
 		return TypeUnknown
 	}
-	result := ts.argType(instr.Args[0])
-	if result == TypeUnknown {
-		return TypeUnknown
-	}
-	for _, arg := range instr.Args[1:] {
+	result := TypeUnknown
+	for _, arg := range instr.Args {
 		at := ts.argType(arg)
-		if at != result {
-			return TypeUnknown
+		if at == TypeUnknown {
+			continue // skip unresolved args (will resolve on next iteration)
+		}
+		if result == TypeUnknown {
+			result = at // first known type
+		} else if at != result {
+			// Conflicting types — widen to float if both numeric, else unknown
+			if (result == TypeInt && at == TypeFloat) || (result == TypeFloat && at == TypeInt) {
+				result = TypeFloat
+			} else {
+				return TypeUnknown
+			}
 		}
 	}
 	return result

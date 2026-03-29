@@ -145,6 +145,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		slotMap:        make(map[int]int),
 		nextSlot:       fn.NumRegs,
 		activeRegs:     make(map[int]bool),
+		rawIntRegs:     make(map[int]bool),
 		crossBlockLive: computeCrossBlockLive(fn),
 	}
 
@@ -204,6 +205,11 @@ type emitContext struct {
 	// where they're defined. These values need write-through to memory.
 	// Values only used within their defining block skip the memory write.
 	crossBlockLive map[int]bool
+
+	// rawIntRegs tracks which value IDs have RAW int64 (not NaN-boxed) content
+	// in their allocated register. Set by emitRawIntBinOp, read by resolveRawInt.
+	// Reset at block boundaries (raw state doesn't carry across blocks).
+	rawIntRegs map[int]bool
 }
 
 // assignSlots assigns a home slot for every SSA value.
@@ -318,6 +324,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 	// Reset active register set for this block. Only values defined
 	// in this block (or phis resolved at entry) have valid register contents.
 	ec.activeRegs = make(map[int]bool)
+	ec.rawIntRegs = make(map[int]bool)
 
 	// Phi values are active at block entry (their registers were loaded
 	// by emitPhiMoves from the predecessor).
@@ -366,15 +373,15 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpMod:
 		ec.emitFloatBinOp(instr, intBinMod)
 
-	// --- Type-specialized int arithmetic (fast path, no float check) ---
+	// --- Type-specialized int arithmetic (raw int registers, no unbox/box) ---
 	case OpAddInt:
-		ec.emitIntBinOp(instr, intBinAdd)
+		ec.emitRawIntBinOp(instr, intBinAdd)
 	case OpSubInt:
-		ec.emitIntBinOp(instr, intBinSub)
+		ec.emitRawIntBinOp(instr, intBinSub)
 	case OpMulInt:
-		ec.emitIntBinOp(instr, intBinMul)
+		ec.emitRawIntBinOp(instr, intBinMul)
 	case OpModInt:
-		ec.emitIntBinOp(instr, intBinMod)
+		ec.emitRawIntBinOp(instr, intBinMod)
 
 	// --- Division (always returns float) ---
 	case OpDiv, OpDivFloat:
@@ -525,6 +532,38 @@ func (ec *emitContext) emitIntBinOp(instr *Instr, op intBinOp) {
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 
+// --- Raw int binary operation (type-specialized, no unbox/box) ---
+// When TypeSpec has proven both operands are int, we keep raw int64 values
+// in registers. This saves 4 instructions per operation (2 unbox + 1 box + 1 MOV).
+func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
+	if len(instr.Args) < 2 {
+		return
+	}
+	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+
+	// Compute directly with raw ints — destination can be the allocated register.
+	dst := jit.X0
+	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
+		dst = jit.Reg(pr.Reg)
+	}
+
+	switch op {
+	case intBinAdd:
+		ec.asm.ADDreg(dst, lhs, rhs)
+	case intBinSub:
+		ec.asm.SUBreg(dst, lhs, rhs)
+	case intBinMul:
+		ec.asm.MUL(dst, lhs, rhs)
+	case intBinMod:
+		ec.asm.SDIV(jit.X2, lhs, rhs)
+		ec.asm.MSUB(dst, jit.X2, rhs, lhs)
+	}
+
+	// Mark as raw int in register (no box needed until block boundary/return).
+	ec.storeRawInt(dst, instr.ID)
+}
+
 // --- Integer comparison (NaN-boxed) ---
 
 func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
@@ -532,15 +571,12 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 		return
 	}
 
-	// Resolve both operands: NaN-boxed from register or memory, then unbox.
-	lhsSrc := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-	jit.EmitUnboxInt(ec.asm, jit.X0, lhsSrc) // X0 = raw int lhs
-
-	rhsSrc := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
-	jit.EmitUnboxInt(ec.asm, jit.X1, rhsSrc) // X1 = raw int rhs
+	// Use raw int path if available (from type-specialized ops).
+	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
 
 	// Compare.
-	ec.asm.CMPreg(jit.X0, jit.X1)
+	ec.asm.CMPreg(lhs, rhs)
 
 	// Set result: 1 if condition true, 0 if false.
 	ec.asm.CSET(jit.X0, cond)
@@ -665,9 +701,17 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 
 func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 	if len(instr.Args) > 0 {
-		// Get NaN-boxed return value from register or memory, store to slot 0.
-		retReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-		ec.asm.STR(retReg, mRegRegs, 0) // regs[0] = return value
+		valID := instr.Args[0].ID
+		// If the return value is a raw int in register, box it first.
+		if ec.hasReg(valID) && ec.rawIntRegs[valID] {
+			reg := ec.physReg(valID)
+			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
+			ec.asm.STR(jit.X0, mRegRegs, 0)
+		} else {
+			// NaN-boxed: resolve and store directly.
+			retReg := ec.resolveValueNB(valID, jit.X0)
+			ec.asm.STR(retReg, mRegRegs, 0)
+		}
 	}
 	// Jump to epilogue.
 	ec.asm.B("epilogue")

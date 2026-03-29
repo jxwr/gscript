@@ -142,6 +142,44 @@ func (ec *emitContext) storeResultNB(srcReg jit.Reg, valueID int) {
 	ec.storeValue(srcReg, valueID)
 }
 
+// resolveRawInt returns a GPR holding the raw (unboxed) int64 for a value.
+// If the value has a register with raw int content (from a prior emitRawIntBinOp),
+// returns that register directly — zero instructions emitted.
+// Otherwise unboxes from NaN-boxed register or loads from memory.
+func (ec *emitContext) resolveRawInt(valueID int, scratch jit.Reg) jit.Reg {
+	// If the value is in a register AND was produced by a raw-int operation,
+	// the register already holds a raw int — return it directly.
+	if ec.hasReg(valueID) && ec.rawIntRegs[valueID] {
+		return ec.physReg(valueID)
+	}
+	// Otherwise unbox from NaN-boxed source.
+	return ec.resolveValueUnboxedInt(valueID, scratch)
+}
+
+// storeRawInt stores a raw int64 result to the allocated register (if any)
+// and marks it as containing a raw int (not NaN-boxed).
+// For cross-block values, writes NaN-boxed to memory.
+func (ec *emitContext) storeRawInt(srcReg jit.Reg, valueID int) {
+	pr, ok := ec.alloc.ValueRegs[valueID]
+	if ok && !pr.IsFloat {
+		ec.activeRegs[valueID] = true
+		ec.rawIntRegs[valueID] = true
+		dstReg := jit.Reg(pr.Reg)
+		if srcReg != dstReg {
+			ec.asm.MOVreg(dstReg, srcReg)
+		}
+		// Cross-block: write NaN-boxed to memory (box then store)
+		if ec.crossBlockLive[valueID] {
+			jit.EmitBoxIntFast(ec.asm, jit.X0, dstReg, mRegTagInt)
+			ec.storeValue(jit.X0, valueID)
+		}
+		return
+	}
+	// No register: box and store to memory
+	jit.EmitBoxIntFast(ec.asm, jit.X0, srcReg, mRegTagInt)
+	ec.storeValue(jit.X0, valueID)
+}
+
 // emitLoadSlotToReg emits code to load a VM register slot's NaN-boxed value
 // into the value's allocated physical register. Marks the value as active.
 func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {

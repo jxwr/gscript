@@ -19,6 +19,10 @@ func compileJIT(b *testing.B, src string) *CompiledFunction {
 	b.Helper()
 	proto := compileFunctionB(b, src)
 	fn := BuildGraph(proto)
+	// Run optimization pipeline: TypeSpec → ConstProp → DCE
+	fn, _ = TypeSpecializePass(fn)
+	fn, _ = ConstPropPass(fn)
+	fn, _ = DCEPass(fn)
 	alloc := AllocateRegisters(fn)
 	cf, err := Compile(fn, alloc)
 	if err != nil {
