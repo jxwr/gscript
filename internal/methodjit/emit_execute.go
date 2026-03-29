@@ -120,6 +120,23 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 			ctx.ExitCode = 0
 			continue
 
+		case ExitOpExit:
+			// Op-exit: execute unsupported operation via Go, then resume JIT.
+			err := cf.executeOpExit(&ctx, regs)
+			if err != nil {
+				return nil, fmt.Errorf("methodjit: op-exit error: %w", err)
+			}
+
+			// Resume at the resume point for this op instruction.
+			opID := int(ctx.OpExitID)
+			resumeOff, ok := cf.ResumeAddrs[opID]
+			if !ok {
+				return nil, fmt.Errorf("methodjit: no resume address for op ID %d", opID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			continue
+
 		default:
 			return nil, fmt.Errorf("methodjit: unknown exit code %d", ctx.ExitCode)
 		}
@@ -211,5 +228,77 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 	default:
 		return fmt.Errorf("unknown table op %d", ctx.TableOp)
 	}
+	return nil
+}
+
+// executeOpExit handles a generic op-exit for the standalone Execute path.
+// Slot indices are absolute (base=0 in standalone mode).
+func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value) error {
+	op := Op(ctx.OpExitOp)
+	slot := int(ctx.OpExitSlot)
+	arg1 := int(ctx.OpExitArg1)
+	arg2 := int(ctx.OpExitArg2)
+	aux := int(ctx.OpExitAux)
+
+	switch op {
+	case OpConstString:
+		if cf.Proto != nil && aux >= 0 && aux < len(cf.Proto.Constants) {
+			if slot < len(regs) {
+				regs[slot] = cf.Proto.Constants[aux]
+			}
+		}
+
+	case OpConcat:
+		if arg1 < len(regs) && arg2 < len(regs) && slot < len(regs) {
+			s1 := regs[arg1].String()
+			s2 := regs[arg2].String()
+			regs[slot] = runtime.StringValue(s1 + s2)
+		}
+
+	case OpLen:
+		if arg1 < len(regs) && slot < len(regs) {
+			v := regs[arg1]
+			if v.IsTable() {
+				regs[slot] = runtime.IntValue(int64(v.Table().Len()))
+			} else if v.IsString() {
+				regs[slot] = runtime.IntValue(int64(len(v.Str())))
+			} else {
+				regs[slot] = runtime.IntValue(0)
+			}
+		}
+
+	case OpSetGlobal:
+		if cf.CallVM != nil && cf.Proto != nil && aux >= 0 && aux < len(cf.Proto.Constants) {
+			name := cf.Proto.Constants[aux].Str()
+			if arg1 < len(regs) {
+				cf.CallVM.SetGlobal(name, regs[arg1])
+			}
+		}
+
+	case OpSelf:
+		if arg1 < len(regs) && slot < len(regs) && slot+1 < len(regs) {
+			tblVal := regs[arg1]
+			regs[slot+1] = tblVal
+			if tblVal.IsTable() && cf.Proto != nil && aux >= 0 && aux < len(cf.Proto.Constants) {
+				methodName := cf.Proto.Constants[aux].Str()
+				regs[slot] = tblVal.Table().RawGetString(methodName)
+			} else {
+				regs[slot] = runtime.NilValue()
+			}
+		}
+
+	case OpAppend:
+		if arg1 < len(regs) && arg2 < len(regs) {
+			tblVal := regs[arg1]
+			val := regs[arg2]
+			if tblVal.IsTable() {
+				tblVal.Table().Append(val)
+			}
+		}
+
+	default:
+		return fmt.Errorf("unsupported op-exit in standalone mode: %s (%d)", op, int(op))
+	}
+
 	return nil
 }

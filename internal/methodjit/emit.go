@@ -74,6 +74,13 @@ type ExecContext struct {
 	TableAux      int64  // Aux data: NewTable=arrayHint, GetField/SetField=constIdx
 	TableAux2     int64  // Aux2 data: NewTable=hashHint
 	TableExitID   int64  // instruction ID for resolving resume address
+	// Op-exit fields (ExitCode=6): generic exit for unsupported ops
+	OpExitOp   int64 // which Op to execute (cast to Op)
+	OpExitSlot int64 // destination slot for result
+	OpExitArg1 int64 // operand 1 slot (or constant index)
+	OpExitArg2 int64 // operand 2 slot (or constant index)
+	OpExitAux  int64 // auxiliary data (e.g., constant pool index for strings)
+	OpExitID   int64 // resume point ID (instruction ID)
 }
 
 // ExitCode constants.
@@ -83,6 +90,7 @@ const (
 	ExitCallExit   = 3 // call-exit: pause JIT, execute call via VM, resume JIT
 	ExitGlobalExit = 4 // global-exit: pause JIT, load global via VM, resume JIT
 	ExitTableExit  = 5 // table-exit: pause JIT, do table op via Go, resume JIT
+	ExitOpExit     = 6 // op-exit: pause JIT, Go handles the operation, resume JIT
 )
 
 // TableOp constants (stored in ExecContext.TableOp).
@@ -114,6 +122,12 @@ var (
 	execCtxOffTableAux     = int(unsafe.Offsetof(ExecContext{}.TableAux))
 	execCtxOffTableAux2    = int(unsafe.Offsetof(ExecContext{}.TableAux2))
 	execCtxOffTableExitID  = int(unsafe.Offsetof(ExecContext{}.TableExitID))
+	execCtxOffOpExitOp     = int(unsafe.Offsetof(ExecContext{}.OpExitOp))
+	execCtxOffOpExitSlot   = int(unsafe.Offsetof(ExecContext{}.OpExitSlot))
+	execCtxOffOpExitArg1   = int(unsafe.Offsetof(ExecContext{}.OpExitArg1))
+	execCtxOffOpExitArg2   = int(unsafe.Offsetof(ExecContext{}.OpExitArg2))
+	execCtxOffOpExitAux    = int(unsafe.Offsetof(ExecContext{}.OpExitAux))
+	execCtxOffOpExitID     = int(unsafe.Offsetof(ExecContext{}.OpExitID))
 )
 
 // CompiledFunction holds the generated native code for a function.
@@ -587,7 +601,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpConstFloat:
 		ec.emitConstFloat(instr)
 	case OpConstString:
-		ec.emitDeopt(instr) // strings in constants need pointer handling
+		ec.emitOpExit(instr)
 
 	// --- Slot access ---
 	case OpLoadSlot:
@@ -686,7 +700,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpSetField:
 		ec.emitSetField(instr)
 
-	// --- Deopt: all complex ops bail to interpreter ---
+	// --- Op-exit: unsupported ops exit to Go, execute there, resume JIT ---
 	case OpSelf,
 		OpSetGlobal,
 		OpGetUpval, OpSetUpval,
@@ -700,7 +714,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		OpVararg, OpTestSet,
 		OpGo, OpMakeChan, OpSend, OpRecv,
 		OpGuardType, OpGuardNonNil, OpGuardTruthy:
-		ec.emitDeopt(instr)
+		ec.emitOpExit(instr)
 
 	default:
 		ec.asm.NOP() // truly unknown op placeholder

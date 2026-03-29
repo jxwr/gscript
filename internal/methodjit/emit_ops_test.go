@@ -405,17 +405,25 @@ func TestEmit_Concat(t *testing.T) {
 	}
 }
 
-// TestEmit_DeoptExitCode: verify that hitting an unsupported op sets ExitCode=2.
-func TestEmit_DeoptExitCode(t *testing.T) {
-	// This tests the deopt mechanism directly. A function with OpCall should
-	// compile (not be rejected by canCompile), and when executed, the ExitCode
-	// should be 2 (deopt), causing Execute to fall back to the VM.
+// TestEmit_UniversalCompilation: verify that all functions compile (no rejection).
+func TestEmit_UniversalCompilation(t *testing.T) {
+	// With universal compilation, every function compiles. OpCall uses
+	// call-exit, and all other unsupported ops use op-exit.
 	src := `func add(a, b) { return a + b }; func f(x) { return add(x, 1) }`
 	proto := compileFunction(t, src)
 	fn := BuildGraph(proto)
+	errs := Validate(fn)
+	if len(errs) > 0 {
+		t.Fatalf("validation errors: %v", errs)
+	}
 
-	// Verify that canCompile accepts it (no longer rejected).
-	if !canCompile(fn) {
-		t.Fatal("canCompile should accept function with OpCall (deopt support)")
+	// The function should compile successfully (no canCompile rejection).
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("compilation should succeed: %v", err)
+	}
+	if cf == nil {
+		t.Fatal("compilation returned nil")
 	}
 }
