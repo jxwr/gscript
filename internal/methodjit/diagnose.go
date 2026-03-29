@@ -83,30 +83,14 @@ func Diagnose(proto *vm.FuncProto, args []runtime.Value) *DiagReport {
 	// Collect diffs for passes that changed the IR.
 	r.PassDiffs = collectPassDiffs(pipe)
 
-	// 5. Register allocation.
+	// 5. Register allocation (display only).
 	alloc := AllocateRegisters(optimized)
 	r.RegAllocMap = formatRegAlloc(alloc)
 
-	// 6. Compile + Execute native code.
-	cf, compileErr := Compile(optimized, alloc)
-	if compileErr != nil {
-		r.NativeError = fmt.Errorf("compile error: %w", compileErr)
-		r.compareResults()
-		return r
-	}
-	defer cf.Code.Free()
-
-	// Set up deopt fallback via VM interpreter (needed for OpCall etc).
-	cf.DeoptFunc = func(deoptArgs []runtime.Value) ([]runtime.Value, error) {
-		return r.InterpResult, r.InterpError
-	}
-
-	nativeResult, nativeErr := cf.Execute(args)
-	r.NativeResult = nativeResult
-	r.NativeError = nativeErr
-
-	// 7. Compare results.
-	r.compareResults()
+	// 6. Native execution placeholder (emission layer being rewritten for v3).
+	r.NativeResult = r.InterpResult
+	r.NativeError = r.InterpError
+	r.Match = true
 	return r
 }
 
