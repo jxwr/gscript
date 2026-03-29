@@ -127,6 +127,8 @@ func (ec *emitContext) resolveValueUnboxedInt(valueID int, scratchReg jit.Reg) j
 func (ec *emitContext) storeResultNB(srcReg jit.Reg, valueID int) {
 	pr, ok := ec.alloc.ValueRegs[valueID]
 	if ok && !pr.IsFloat {
+		// Invalidate any other value that was previously in this register.
+		ec.invalidateReg(pr.Reg, valueID)
 		// Store to allocated register and activate it.
 		ec.activeRegs[valueID] = true
 		dstReg := jit.Reg(pr.Reg)
@@ -160,17 +162,23 @@ func (ec *emitContext) resolveRawInt(valueID int, scratch jit.Reg) jit.Reg {
 // storeRawInt stores a raw int64 result to the allocated register (if any)
 // and marks it as containing a raw int (not NaN-boxed).
 // For cross-block values, writes NaN-boxed to memory.
+// For values that are ONLY used as phi args to loop headers, the write-through
+// is skipped since emitPhiMoveRawInt reads from the register directly.
 func (ec *emitContext) storeRawInt(srcReg jit.Reg, valueID int) {
 	pr, ok := ec.alloc.ValueRegs[valueID]
 	if ok && !pr.IsFloat {
+		// Invalidate any other value that was previously in this register.
+		ec.invalidateReg(pr.Reg, valueID)
 		ec.activeRegs[valueID] = true
 		ec.rawIntRegs[valueID] = true
 		dstReg := jit.Reg(pr.Reg)
 		if srcReg != dstReg {
 			ec.asm.MOVreg(dstReg, srcReg)
 		}
-		// Cross-block: write NaN-boxed to memory (box then store)
-		if ec.crossBlockLive[valueID] {
+		// Cross-block: write NaN-boxed to memory (box then store).
+		// Skip if the value is only used as a phi arg to a loop header
+		// (the phi move reads from the register via emitPhiMoveRawInt).
+		if ec.crossBlockLive[valueID] && !ec.loopPhiOnlyArgs[valueID] {
 			jit.EmitBoxIntFast(ec.asm, jit.X0, dstReg, mRegTagInt)
 			ec.storeValue(jit.X0, valueID)
 		}
@@ -179,6 +187,42 @@ func (ec *emitContext) storeRawInt(srcReg jit.Reg, valueID int) {
 	// No register: box and store to memory
 	jit.EmitBoxIntFast(ec.asm, jit.X0, srcReg, mRegTagInt)
 	ec.storeValue(jit.X0, valueID)
+}
+
+// inLoopBlock returns true if the current block being emitted is inside a loop.
+func (ec *emitContext) inLoopBlock() bool {
+	return ec.loop != nil && ec.loop.loopBlocks[ec.currentBlockID]
+}
+
+// invalidateReg removes any other value that was previously active in the
+// given register (reg is the register number, not jit.Reg). This is needed
+// when a register is reused for a new value, as the old value's register
+// content is now stale. Without this, loop-carried values that share a register
+// with a later-defined value would have stale activeRegs/rawIntRegs entries.
+func (ec *emitContext) invalidateReg(reg int, newValueID int) {
+	for valID := range ec.activeRegs {
+		if valID == newValueID {
+			continue
+		}
+		if pr, ok := ec.alloc.ValueRegs[valID]; ok && pr.Reg == reg && !pr.IsFloat {
+			delete(ec.activeRegs, valID)
+			delete(ec.rawIntRegs, valID)
+		}
+	}
+}
+
+// constIntImm12 checks if a value ID refers to a ConstInt whose value fits
+// in a 12-bit unsigned immediate (0-4095). Returns the value and true if so.
+// Used to emit ADDimm/SUBimm instead of register-based forms.
+func (ec *emitContext) constIntImm12(valueID int) (uint16, bool) {
+	v, ok := ec.constInts[valueID]
+	if !ok {
+		return 0, false
+	}
+	if v >= 0 && v <= 4095 {
+		return uint16(v), true
+	}
+	return 0, false
 }
 
 // emitLoadSlotToReg emits code to load a VM register slot's NaN-boxed value

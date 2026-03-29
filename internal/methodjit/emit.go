@@ -246,6 +246,45 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		}
 	}
 
+	li := computeLoopInfo(fn)
+	crossBlockLive := computeCrossBlockLive(fn)
+	var headerRegs map[int]loopRegEntry
+	var phiOnlyArgs loopPhiArgSet
+	exitBoxPhis := make(map[int]bool)
+	if li.hasLoops() {
+		headerRegs = li.computeHeaderExitRegs(fn, alloc)
+		phiOnlyArgs = computeLoopPhiArgs(fn, li)
+
+		// Identify loop header phis that need exit-time boxing:
+		// cross-block live (used outside loop) AND register survives to end of header.
+		for _, phiIDs := range li.loopPhis {
+			for _, phiID := range phiIDs {
+				if !crossBlockLive[phiID] {
+					continue
+				}
+				pr, ok := alloc.ValueRegs[phiID]
+				if !ok || pr.IsFloat {
+					continue
+				}
+				// Check if this phi's register still holds this phi at end of header.
+				entry, inRegs := headerRegs[pr.Reg]
+				if inRegs && entry.ValueID == phiID && entry.IsRawInt {
+					exitBoxPhis[phiID] = true
+				}
+			}
+		}
+	}
+
+	// Build constant int map for immediate optimization.
+	constInts := make(map[int]int64)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpConstInt {
+				constInts[instr.ID] = instr.Aux
+			}
+		}
+	}
+
 	ec := &emitContext{
 		fn:             fn,
 		alloc:          alloc,
@@ -254,8 +293,13 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		nextSlot:       fn.NumRegs,
 		activeRegs:     make(map[int]bool),
 		rawIntRegs:     make(map[int]bool),
-		crossBlockLive: computeCrossBlockLive(fn),
+		crossBlockLive: crossBlockLive,
 		useFPR:         hasFPR,
+		loop:           li,
+		loopHeaderRegs:  headerRegs,
+		loopPhiOnlyArgs: phiOnlyArgs,
+		loopExitBoxPhis: exitBoxPhis,
+		constInts:       constInts,
 	}
 
 	// Assign home slots for all SSA values.
@@ -345,6 +389,33 @@ type emitContext struct {
 
 	// deferredResumes tracks resume entry points to emit after the epilogue.
 	deferredResumes []deferredResume
+
+	// loop tracks loop structure for raw-int loop optimization.
+	// When non-nil and a block is inside a loop, emitPhiMoves to loop
+	// headers transfers raw ints, and loop header phis are marked rawInt.
+	loop *loopInfo
+
+	// loopHeaderRegs is the register state at the end of the loop header.
+	// Non-header loop blocks use this to activate registers that survive
+	// from the header. Computed once during Compile.
+	loopHeaderRegs map[int]loopRegEntry
+
+	// loopPhiOnlyArgs is the set of value IDs that are ONLY used as phi args
+	// to loop header phis. storeRawInt skips write-through for these values
+	// since emitPhiMoveRawInt reads from the register directly.
+	loopPhiOnlyArgs loopPhiArgSet
+
+	// loopExitBoxPhis is the set of phi value IDs that need boxing at loop
+	// exit. These are loop header phis that are cross-block live (used
+	// outside the loop) but whose write-through is deferred to exit time.
+	loopExitBoxPhis map[int]bool
+
+	// currentBlockID is the ID of the block currently being emitted.
+	currentBlockID int
+
+	// constInts maps value ID -> int64 for ConstInt instructions.
+	// Used by emitRawIntBinOp to emit ADDimm/SUBimm for small constants.
+	constInts map[int]int64
 }
 
 // assignSlots assigns a home slot for every SSA value.
@@ -460,21 +531,41 @@ func (ec *emitContext) emitEpilogue() {
 // emitBlock emits ARM64 code for one basic block.
 func (ec *emitContext) emitBlock(block *Block) {
 	ec.asm.Label(blockLabel(block))
+	ec.currentBlockID = block.ID
 
-	// Reset active register set for this block. Only values defined
-	// in this block (or phis resolved at entry) have valid register contents.
+	isLoopBlock := ec.loop != nil && ec.loop.loopBlocks[block.ID]
+	isHeader := ec.loop != nil && ec.loop.loopHeaders[block.ID]
+
+	// Reset active register set for this block.
 	ec.activeRegs = make(map[int]bool)
 	ec.rawIntRegs = make(map[int]bool)
 
+	if isLoopBlock && !isHeader && ec.loopHeaderRegs != nil {
+		// Non-header loop block: activate registers that survive from the
+		// loop header. This allows the loop body to directly use values
+		// computed in the header without loading from memory.
+		for _, entry := range ec.loopHeaderRegs {
+			ec.activeRegs[entry.ValueID] = true
+			if entry.IsRawInt {
+				ec.rawIntRegs[entry.ValueID] = true
+			}
+		}
+	}
+
 	// Phi values are active at block entry (their registers were loaded
-	// by emitPhiMoves from the predecessor). Check alloc directly, not
-	// hasReg (which requires activeRegs to already be set -- chicken/egg).
+	// by emitPhiMoves from the predecessor).
 	for _, instr := range block.Instrs {
 		if instr.Op != OpPhi {
 			break
 		}
 		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
 			ec.activeRegs[instr.ID] = true
+			// Loop header phis: mark int-typed phis as raw int.
+			// emitPhiMoves delivers raw ints to loop header phis from
+			// both the initial entry (unboxing) and back-edge (raw transfer).
+			if isHeader && instr.Type == TypeInt {
+				ec.rawIntRegs[instr.ID] = true
+			}
 		}
 	}
 
@@ -616,179 +707,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	}
 }
 
-// --- Constant emission ---
-// Each stores the NaN-boxed constant to the value's home slot via X0 scratch.
 
-func (ec *emitContext) emitConstInt(instr *Instr) {
-	// Load raw int value, NaN-box it, store to register (activating it) or memory.
-	ec.asm.LoadImm64(jit.X0, instr.Aux)
-	jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
-	ec.storeResultNB(jit.X0, instr.ID)
-}
-
-func (ec *emitContext) emitConstNil(instr *Instr) {
-	jit.EmitBoxNil(ec.asm, jit.X0)
-	ec.storeResultNB(jit.X0, instr.ID)
-}
-
-func (ec *emitContext) emitConstBool(instr *Instr) {
-	if instr.Aux != 0 {
-		// true = NB_TagBool|1. Compute from pinned X25 (1 ADD instruction).
-		ec.asm.ADDimm(jit.X0, mRegTagBool, 1)
-	} else {
-		// false = NB_TagBool|0. Use pinned X25 directly (1 MOV instruction).
-		ec.asm.MOVreg(jit.X0, mRegTagBool)
-	}
-	ec.storeResultNB(jit.X0, instr.ID)
-}
-
-func (ec *emitContext) emitConstFloat(instr *Instr) {
-	ec.asm.LoadImm64(jit.X0, instr.Aux)
-	// Float constants stored as raw IEEE 754 bits (NaN-boxed representation).
-	ec.storeResultNB(jit.X0, instr.ID)
-}
-
-// --- Slot access ---
-
-func (ec *emitContext) emitLoadSlot(instr *Instr) {
-	// Check if this value has a register allocation (don't use hasReg which
-	// checks activeRegs -- this is where we ACTIVATE the register).
-	pr, ok := ec.alloc.ValueRegs[instr.ID]
-	if ok && !pr.IsFloat {
-		// Register-resident: load from VM slot into allocated register.
-		ec.emitLoadSlotToReg(instr)
-		return
-	}
-	// Memory-to-memory: LoadSlot's home IS the VM slot; no code needed.
-}
-
-func (ec *emitContext) emitStoreSlot(instr *Instr) {
-	if len(instr.Args) == 0 {
-		return
-	}
-	// Get the NaN-boxed value from register or memory, store to target VM slot.
-	reg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-	slot := int(instr.Aux)
-	ec.asm.STR(reg, mRegRegs, slotOffset(slot))
-}
-
-// --- Integer binary operations (NaN-boxed) ---
-
-type intBinOp int
-
-const (
-	intBinAdd intBinOp = iota
-	intBinSub
-	intBinMul
-	intBinMod
-)
-
-func (ec *emitContext) emitIntBinOp(instr *Instr, op intBinOp) {
-	if len(instr.Args) < 2 {
-		return
-	}
-
-	// Resolve both operands: NaN-boxed from register or memory, then unbox.
-	lhsSrc := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-	jit.EmitUnboxInt(ec.asm, jit.X0, lhsSrc) // X0 = raw int lhs
-
-	rhsSrc := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
-	jit.EmitUnboxInt(ec.asm, jit.X1, rhsSrc) // X1 = raw int rhs
-
-	// Perform the operation into X0.
-	switch op {
-	case intBinAdd:
-		ec.asm.ADDreg(jit.X0, jit.X0, jit.X1)
-	case intBinSub:
-		ec.asm.SUBreg(jit.X0, jit.X0, jit.X1)
-	case intBinMul:
-		ec.asm.MUL(jit.X0, jit.X0, jit.X1)
-	case intBinMod:
-		ec.asm.SDIV(jit.X2, jit.X0, jit.X1)
-		ec.asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
-	}
-
-	// Rebox result and store to register or memory.
-	jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
-	ec.storeResultNB(jit.X0, instr.ID)
-}
-
-// --- Raw int binary operation (type-specialized, no unbox/box) ---
-// When TypeSpec has proven both operands are int, we keep raw int64 values
-// in registers. This saves 4 instructions per operation (2 unbox + 1 box + 1 MOV).
-func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
-	if len(instr.Args) < 2 {
-		return
-	}
-	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
-	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
-
-	// Compute directly with raw ints — destination can be the allocated register.
-	dst := jit.X0
-	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
-		dst = jit.Reg(pr.Reg)
-	}
-
-	switch op {
-	case intBinAdd:
-		ec.asm.ADDreg(dst, lhs, rhs)
-	case intBinSub:
-		ec.asm.SUBreg(dst, lhs, rhs)
-	case intBinMul:
-		ec.asm.MUL(dst, lhs, rhs)
-	case intBinMod:
-		ec.asm.SDIV(jit.X2, lhs, rhs)
-		ec.asm.MSUB(dst, jit.X2, rhs, lhs)
-	}
-
-	// Mark as raw int in register (no box needed until block boundary/return).
-	ec.storeRawInt(dst, instr.ID)
-}
-
-// --- Raw int unary negate (type-specialized, no unbox/box) ---
-// When TypeSpec has proven the operand is int, we keep raw int64 values
-// in registers. This saves ~12 instructions of the generic Unm path.
-func (ec *emitContext) emitNegInt(instr *Instr) {
-	if len(instr.Args) < 1 {
-		return
-	}
-	src := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
-
-	// Compute directly with raw int — destination can be the allocated register.
-	dst := jit.X0
-	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
-		dst = jit.Reg(pr.Reg)
-	}
-
-	ec.asm.NEG(dst, src)
-
-	// Mark as raw int in register (no box needed until block boundary/return).
-	ec.storeRawInt(dst, instr.ID)
-}
-
-// --- Integer comparison (NaN-boxed) ---
-
-func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
-	if len(instr.Args) < 2 {
-		return
-	}
-
-	// Use raw int path if available (from type-specialized ops).
-	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
-	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
-
-	// Compare.
-	ec.asm.CMPreg(lhs, rhs)
-
-	// Set result: 1 if condition true, 0 if false.
-	ec.asm.CSET(jit.X0, cond)
-
-	// Box as bool: NB_TagBool | (0 or 1). X25 = pinned NB_TagBool.
-	ec.asm.ORRreg(jit.X0, jit.X0, mRegTagBool)
-
-	// Store NaN-boxed bool result to register or memory.
-	ec.storeResultNB(jit.X0, instr.ID)
-}
+// Constant, slot, arithmetic, comparison emission in emit_arith.go
 
 // --- Phi ---
 
@@ -796,6 +716,9 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 // For register-resident values, this is a register-to-register MOV (NaN-boxed).
 // For memory-resident values, this is a memory-to-memory copy via scratch.
 // Mixed: register-to-memory or memory-to-register via scratch X0.
+//
+// When the destination is a loop header, phi moves transfer raw int values
+// directly (no boxing/unboxing), because the loop body operates in raw-int mode.
 //
 // NOTE: For phi destinations, we use the register allocation directly (not
 // activeRegs) because the phi belongs to the TARGET block, not the current one.
@@ -811,6 +734,9 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 		return
 	}
 
+	// Check if the destination is a loop header — use raw-int phi transfer.
+	toIsLoopHeader := ec.loop != nil && ec.loop.loopHeaders[to.ID]
+
 	for _, instr := range to.Instrs {
 		if instr.Op != OpPhi {
 			break
@@ -821,11 +747,21 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 
 		srcArg := instr.Args[predIdx]
 
-		// Source: use activeRegs (current block context).
-		srcHasReg := ec.hasReg(srcArg.ID)
 		// Destination: use allocation directly (target block context).
 		dstPR, dstHasReg := ec.alloc.ValueRegs[instr.ID]
 		dstHasGPR := dstHasReg && !dstPR.IsFloat
+
+		// --- Raw-int loop path ---
+		// When targeting a loop header with int-typed phi, transfer raw int
+		// directly. This avoids box/unbox overhead on every iteration.
+		if toIsLoopHeader && dstHasGPR && instr.Type == TypeInt {
+			ec.emitPhiMoveRawInt(srcArg, instr, dstPR)
+			continue
+		}
+
+		// --- Standard NaN-boxed path ---
+		// Source: use activeRegs (current block context).
+		srcHasReg := ec.hasReg(srcArg.ID)
 
 		// Get NaN-boxed source value.
 		// If the source is a raw int in register (from type-specialized ops),
@@ -869,6 +805,44 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 	}
 }
 
+// emitPhiMoveRawInt transfers a raw int value for a loop header phi.
+// The source may be raw int (from loop back-edge), NaN-boxed in register
+// (from initial entry), or NaN-boxed in memory. In all cases, the
+// destination phi register receives a raw int64.
+//
+// Memory write-through is still performed (boxing the raw int first) so that
+// other loop blocks can load the value from memory if needed.
+func (ec *emitContext) emitPhiMoveRawInt(srcArg *Value, phiInstr *Instr, dstPR PhysReg) {
+	dstReg := jit.Reg(dstPR.Reg)
+	srcHasReg := ec.hasReg(srcArg.ID)
+
+	if srcHasReg && ec.rawIntRegs[srcArg.ID] {
+		// Source is raw int in register: transfer directly.
+		srcReg := ec.physReg(srcArg.ID)
+		if srcReg != dstReg {
+			ec.asm.MOVreg(dstReg, srcReg)
+		}
+	} else if srcHasReg {
+		// Source is NaN-boxed in register: unbox into destination.
+		srcReg := ec.physReg(srcArg.ID)
+		jit.EmitUnboxInt(ec.asm, dstReg, srcReg)
+	} else {
+		// Source is in memory (NaN-boxed): load and unbox.
+		ec.loadValue(jit.X0, srcArg.ID)
+		jit.EmitUnboxInt(ec.asm, dstReg, jit.X0)
+	}
+
+	// Write-through to memory (boxed) if the phi is used in other blocks.
+	// Skip if this phi will be boxed at loop exit (deferred write-through).
+	if ec.crossBlockLive[phiInstr.ID] && !ec.loopExitBoxPhis[phiInstr.ID] {
+		dstSlot, ok := ec.slotMap[phiInstr.ID]
+		if ok {
+			jit.EmitBoxIntFast(ec.asm, jit.X0, dstReg, mRegTagInt)
+			ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+		}
+	}
+}
+
 // --- Control flow ---
 
 func (ec *emitContext) emitJump(instr *Instr, block *Block) {
@@ -876,6 +850,9 @@ func (ec *emitContext) emitJump(instr *Instr, block *Block) {
 		return
 	}
 	target := block.Succs[0]
+	if ec.isLoopExit(block, target) {
+		ec.emitLoopExitBoxing()
+	}
 	ec.emitPhiMoves(block, target)
 	ec.asm.B(blockLabel(target))
 }
@@ -899,14 +876,45 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 	ec.asm.TBNZ(condReg, 0, trueTrampolineLabel)
 
 	// False path (fall-through).
+	if ec.isLoopExit(block, falseBlock) {
+		ec.emitLoopExitBoxing()
+	}
 	ec.emitPhiMoves(block, falseBlock)
 	ec.asm.B(blockLabel(falseBlock))
 
 	// True path (trampoline).
 	ec.asm.Label(trueTrampolineLabel)
+	if ec.isLoopExit(block, trueBlock) {
+		ec.emitLoopExitBoxing()
+	}
 	ec.emitPhiMoves(block, trueBlock)
 	ec.asm.B(blockLabel(trueBlock))
 }
+
+// isLoopExit returns true if the edge from 'from' to 'to' exits a loop
+// (from is in a loop, to is not).
+func (ec *emitContext) isLoopExit(from *Block, to *Block) bool {
+	if ec.loop == nil {
+		return false
+	}
+	return ec.loop.loopBlocks[from.ID] && !ec.loop.loopBlocks[to.ID]
+}
+
+// emitLoopExitBoxing boxes loop header phi values that need exit-time
+// boxing (in loopExitBoxPhis). These are phis whose write-through was
+// deferred to exit time. Uses the loopHeaderRegs to find the register.
+func (ec *emitContext) emitLoopExitBoxing() {
+	for valID := range ec.loopExitBoxPhis {
+		pr, ok := ec.alloc.ValueRegs[valID]
+		if !ok || pr.IsFloat {
+			continue
+		}
+		reg := jit.Reg(pr.Reg)
+		jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
+		ec.storeValue(jit.X0, valID)
+	}
+}
+
 
 func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 	if len(instr.Args) > 0 {
