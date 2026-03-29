@@ -103,6 +103,7 @@ const (
 	fixupB     fixupKind = iota // B (26-bit signed offset)
 	fixupBCond                  // B.cond (19-bit signed offset)
 	fixupCBZ                    // CBZ/CBNZ (19-bit signed offset)
+	fixupTBZ                    // TBZ/TBNZ (14-bit signed offset)
 )
 
 type fixup struct {
@@ -172,6 +173,13 @@ func (a *Assembler) Finalize() ([]byte, error) {
 				return nil, fmt.Errorf("jit: branch offset %d out of range for CBZ/CBNZ", offset)
 			}
 			inst = (inst & 0xFF00001F) | ((uint32(offset) & 0x7FFFF) << 5)
+
+		case fixupTBZ:
+			// TBZ/TBNZ: imm14 at bits [18:5]
+			if offset < -(1<<13) || offset >= (1<<13) {
+				return nil, fmt.Errorf("jit: branch offset %d out of range for TBZ/TBNZ", offset)
+			}
+			inst = (inst & 0xFFF8001F) | ((uint32(offset) & 0x3FFF) << 5)
 		}
 
 		binary.LittleEndian.PutUint32(a.buf[f.offset:], inst)

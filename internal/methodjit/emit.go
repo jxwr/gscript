@@ -23,6 +23,7 @@
 // Pinned registers:
 //   X19: ExecContext pointer
 //   X24: NaN-boxing int tag constant (0xFFFE000000000000)
+//   X25: NaN-boxing bool tag constant (0xFFFD000000000000)
 //   X26: VM register base pointer
 //   X27: constants pointer
 //   X20-X23: allocated GPRs (NaN-boxed values cached from VM register file)
@@ -41,10 +42,11 @@ import (
 
 // Pinned register aliases (must match trace JIT convention).
 const (
-	mRegCtx    = jit.X19 // ExecContext pointer
-	mRegTagInt = jit.X24 // NaN-boxing int tag 0xFFFE000000000000
-	mRegRegs   = jit.X26 // VM register base pointer
-	mRegConsts = jit.X27 // constants pointer
+	mRegCtx     = jit.X19 // ExecContext pointer
+	mRegTagInt  = jit.X24 // NaN-boxing int tag 0xFFFE000000000000
+	mRegTagBool = jit.X25 // NaN-boxing bool tag 0xFFFD000000000000
+	mRegRegs    = jit.X26 // VM register base pointer
+	mRegConsts  = jit.X27 // constants pointer
 )
 
 // nb64 converts a uint64 NaN-boxing constant to int64 for LoadImm64.
@@ -285,7 +287,8 @@ func (ec *emitContext) emitPrologue() {
 	asm.MOVreg(mRegCtx, jit.X0)                      // X19 = ctx
 	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)       // X26 = ctx.Regs
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
-	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24 = 0xFFFE000000000000
+	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))     // X24 = 0xFFFE000000000000
+	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25 = 0xFFFD000000000000
 }
 
 func (ec *emitContext) emitEpilogue() {
@@ -383,6 +386,14 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpModInt:
 		ec.emitRawIntBinOp(instr, intBinMod)
 
+	// --- Type-specialized float arithmetic ---
+	case OpAddFloat:
+		ec.emitTypedFloatBinOp(instr, intBinAdd)
+	case OpSubFloat:
+		ec.emitTypedFloatBinOp(instr, intBinSub)
+	case OpMulFloat:
+		ec.emitTypedFloatBinOp(instr, intBinMul)
+
 	// --- Division (always returns float) ---
 	case OpDiv, OpDivFloat:
 		ec.emitDiv(instr)
@@ -390,6 +401,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	// --- Unary ---
 	case OpUnm, OpNegInt:
 		ec.emitUnm(instr)
+	case OpNegFloat:
+		ec.emitNegFloat(instr)
 	case OpNot:
 		ec.emitNot(instr)
 
@@ -400,6 +413,12 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitIntCmp(instr, jit.CondLE)
 	case OpEq, OpEqInt:
 		ec.emitIntCmp(instr, jit.CondEQ)
+
+	// --- Float comparison ---
+	case OpLtFloat:
+		ec.emitFloatCmp(instr, jit.CondLT)
+	case OpLeFloat:
+		ec.emitFloatCmp(instr, jit.CondLE)
 
 	// --- Phi ---
 	case OpPhi:
@@ -581,9 +600,8 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 	// Set result: 1 if condition true, 0 if false.
 	ec.asm.CSET(jit.X0, cond)
 
-	// Box as bool: NB_TagBool | (0 or 1).
-	ec.asm.LoadImm64(jit.X1, nb64(jit.NB_TagBool))
-	ec.asm.ORRreg(jit.X0, jit.X0, jit.X1)
+	// Box as bool: NB_TagBool | (0 or 1). X25 = pinned NB_TagBool.
+	ec.asm.ORRreg(jit.X0, jit.X0, mRegTagBool)
 
 	// Store NaN-boxed bool result to register or memory.
 	ec.storeResultNB(jit.X0, instr.ID)
@@ -627,8 +645,15 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 		dstHasGPR := dstHasReg && !dstPR.IsFloat
 
 		// Get NaN-boxed source value.
+		// If the source is a raw int in register (from type-specialized ops),
+		// we must box it first since phi moves expect NaN-boxed values.
 		var srcVal jit.Reg
-		if srcHasReg {
+		if srcHasReg && ec.rawIntRegs[srcArg.ID] {
+			// Raw int in register: box into X0 before the phi move.
+			reg := ec.physReg(srcArg.ID)
+			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
+			srcVal = jit.X0
+		} else if srcHasReg {
 			srcVal = ec.physReg(srcArg.ID)
 		} else {
 			ec.loadValue(jit.X0, srcArg.ID)
@@ -681,13 +706,11 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 	condReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 
 	// The condition value is a NaN-boxed bool.
-	// Extract the payload bit 0. If 1 -> true branch, 0 -> false branch.
-	ec.asm.LoadImm64(jit.X1, 1)
-	ec.asm.ANDreg(jit.X0, condReg, jit.X1)
-
+	// Test bit 0 directly: if 1 -> true branch, 0 -> false branch.
+	// TBNZ is a single instruction replacing LoadImm64+AND+CBNZ (3 instructions).
 	trueTrampolineLabel := fmt.Sprintf("B%d_true_from_B%d", trueBlock.ID, block.ID)
 
-	ec.asm.CBNZ(jit.X0, trueTrampolineLabel)
+	ec.asm.TBNZ(condReg, 0, trueTrampolineLabel)
 
 	// False path (fall-through).
 	ec.emitPhiMoves(block, falseBlock)

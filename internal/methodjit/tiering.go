@@ -81,6 +81,11 @@ func (e *MethodJITEngine) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 
+	// Run optimization passes: type specialization, constant propagation, DCE.
+	fn, _ = TypeSpecializePass(fn)
+	fn, _ = ConstPropPass(fn)
+	fn, _ = DCEPass(fn)
+
 	// Check that all IR ops are supported by the code generator.
 	// Functions with unsupported ops (calls, globals, tables, etc.) stay interpreted.
 	if !canCompile(fn) {

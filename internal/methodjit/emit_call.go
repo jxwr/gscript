@@ -271,6 +271,79 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 
+// emitTypedFloatBinOp emits ARM64 code for type-specialized float binary ops
+// (OpAddFloat, OpSubFloat, OpMulFloat). Both operands are known to be float,
+// so we skip the type check and go straight to FP arithmetic.
+func (ec *emitContext) emitTypedFloatBinOp(instr *Instr, op intBinOp) {
+	if len(instr.Args) < 2 {
+		return
+	}
+	asm := ec.asm
+
+	// Load both operands as NaN-boxed and reinterpret as FP.
+	lhs := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	asm.FMOVtoFP(jit.D0, lhs)
+	rhs := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	asm.FMOVtoFP(jit.D1, rhs)
+
+	switch op {
+	case intBinAdd:
+		asm.FADDd(jit.D0, jit.D0, jit.D1)
+	case intBinSub:
+		asm.FSUBd(jit.D0, jit.D0, jit.D1)
+	case intBinMul:
+		asm.FMULd(jit.D0, jit.D0, jit.D1)
+	}
+
+	// Move float result back to GP (raw IEEE 754 bits = NaN-boxed float).
+	asm.FMOVtoGP(jit.X0, jit.D0)
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+// emitFloatCmp emits ARM64 code for float comparison (OpLtFloat, OpLeFloat).
+// Uses FCMP on FP registers instead of integer CMP, since NaN-boxed floats
+// are raw IEEE 754 bits and integer comparison doesn't handle sign/exponent
+// ordering correctly for floats.
+func (ec *emitContext) emitFloatCmp(instr *Instr, cond jit.Cond) {
+	if len(instr.Args) < 2 {
+		return
+	}
+	asm := ec.asm
+
+	// Load both operands as NaN-boxed and reinterpret as FP.
+	lhs := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	asm.FMOVtoFP(jit.D0, lhs)
+	rhs := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	asm.FMOVtoFP(jit.D1, rhs)
+
+	// Float compare sets NZCV flags.
+	asm.FCMPd(jit.D0, jit.D1)
+
+	// Set result: 1 if condition true, 0 if false.
+	asm.CSET(jit.X0, cond)
+
+	// Box as bool: NB_TagBool | (0 or 1).
+	asm.ORRreg(jit.X0, jit.X0, mRegTagBool)
+
+	// Store NaN-boxed bool result.
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+// emitNegFloat emits ARM64 code for OpNegFloat (-float).
+// The operand is known to be float, so we skip the type check.
+func (ec *emitContext) emitNegFloat(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	asm := ec.asm
+
+	src := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	asm.FMOVtoFP(jit.D0, src)
+	asm.FNEGd(jit.D0, jit.D0)
+	asm.FMOVtoGP(jit.X0, jit.D0)
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
 // uniqueLabel generates a unique label for the emitter to avoid collisions.
 func (ec *emitContext) uniqueLabel(prefix string) string {
 	ec.labelCounter++

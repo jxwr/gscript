@@ -28,6 +28,28 @@ func (a *Assembler) CBNZ(rt Reg, label string) {
 	a.emit(0xB5000000 | uint32(rt)) // placeholder
 }
 
+// TBNZ: Test bit and branch if nonzero.
+// Tests bit 'bit' of register rt and branches to label if the bit is 1.
+// For 64-bit registers, bit can be 0-63.
+func (a *Assembler) TBNZ(rt Reg, bit int, label string) {
+	a.fixups = append(a.fixups, fixup{offset: len(a.buf), label: label, kind: fixupTBZ})
+	// TBNZ encoding: b5|0110111|b40|imm14|Rt
+	// b5 = bit[5] (placed at bit 31), b40 = bit[4:0] (placed at bits [23:19])
+	b5 := uint32((bit >> 5) & 1)
+	b40 := uint32(bit & 0x1F)
+	a.emit(b5<<31 | 0x37000000 | b40<<19 | uint32(rt))
+}
+
+// TBZ: Test bit and branch if zero.
+// Tests bit 'bit' of register rt and branches to label if the bit is 0.
+func (a *Assembler) TBZ(rt Reg, bit int, label string) {
+	a.fixups = append(a.fixups, fixup{offset: len(a.buf), label: label, kind: fixupTBZ})
+	// TBZ encoding: b5|0110110|b40|imm14|Rt
+	b5 := uint32((bit >> 5) & 1)
+	b40 := uint32(bit & 0x1F)
+	a.emit(b5<<31 | 0x36000000 | b40<<19 | uint32(rt))
+}
+
 // BL: Branch with link to label (function call).
 func (a *Assembler) BL(label string) {
 	a.fixups = append(a.fixups, fixup{offset: len(a.buf), label: label, kind: fixupB})
