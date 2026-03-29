@@ -16,11 +16,6 @@ const (
 	maxMetaDepth = 50  // max __index chain depth
 )
 
-// JITEngine is the interface for JIT compilation engines.
-type JITEngine interface {
-	TryExecute(proto *FuncProto, regs []runtime.Value, base int, callCount int) ([]runtime.Value, int, bool)
-}
-
 // MethodJITEngine is the interface for the Method JIT compiler.
 // It compiles hot functions to native code and executes them.
 type MethodJITEngine interface {
@@ -43,66 +38,9 @@ type VM struct {
 	openUpvals   []*Upvalue     // list of open upvalues (sorted by regIdx descending)
 	top          int            // top of used registers (for variable returns)
 	stringMeta   *runtime.Table // string metatable
-	jit          JITEngine
-	jitFactory   func(*VM) JITEngine
 	methodJIT    MethodJITEngine
 	argBuf       [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf       [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
-	traceRec            TraceRecorderHook // optional trace recorder (nil = disabled)
-	traceRecording      bool              // cached: traceRec.IsRecording() (avoids interface dispatch)
-	traceExecDepth      int               // nesting depth of compiled trace execution (prevents infinite nesting)
-}
-
-// TraceExecutor executes a compiled trace.
-type TraceExecutor interface {
-	Execute(regs []runtime.Value, base int, proto *FuncProto) (exitPC int, sideExit bool, guardFail bool)
-}
-
-// TraceRecorderHook is the interface for the trace recorder.
-type TraceRecorderHook interface {
-	OnInstruction(pc int, inst uint32, proto *FuncProto, regs []runtime.Value, base int) bool
-	OnLoopBackEdge(pc int, proto *FuncProto) bool
-	TryExecuteCompiled(pc int, proto *FuncProto) bool
-	IsRecording() bool
-	PendingTrace() TraceExecutor
-	ShouldSkipJIT() bool
-}
-
-// traceResult holds the result of executing a compiled trace.
-type traceResult struct {
-	executed bool // true if a trace was actually executed
-	exitPC   int  // bytecode PC where trace exited
-	sideExit bool // true = side exit (resume at exitPC), false = loop done
-}
-
-// executeCompiledTrace runs a compiled trace if available.
-func (vm *VM) executeCompiledTrace(proto *FuncProto, base int) traceResult {
-	ct := vm.traceRec.PendingTrace()
-	if ct == nil {
-		return traceResult{}
-	}
-	// Prevent deeply nested trace execution (e.g., trace call-exit → callee side-exits → trace fires again)
-	if vm.traceExecDepth >= 8 {
-		return traceResult{}
-	}
-	vm.traceExecDepth++
-	exitPC, sideExit, guardFail := ct.Execute(vm.regs, base, proto)
-	vm.traceExecDepth--
-	if guardFail {
-		return traceResult{}
-	}
-	return traceResult{executed: true, exitPC: exitPC, sideExit: sideExit}
-}
-
-// SetTraceRecorder enables trace recording on this VM.
-func (vm *VM) SetTraceRecorder(r TraceRecorderHook) {
-	vm.traceRec = r
-}
-
-// SetJIT sets the JIT engine for this VM.
-func (vm *VM) SetJIT(engine JITEngine) {
-	vm.jit = engine
-	// CallCount is tracked on FuncProto directly, no map needed.
 }
 
 // SetMethodJIT sets the Method JIT engine for this VM.
@@ -328,10 +266,6 @@ func newChildVM(parent *VM) *VM {
 		noGlobalLock: false, // shared globals, must lock
 		stringMeta:   parent.stringMeta,
 	}
-	if parent.jitFactory != nil {
-		engine := parent.jitFactory(child)
-		child.SetJIT(engine)
-	}
 	child.RegisterCoroutineLib()
 	runtime.RegisterVM(child)
 	return child
@@ -366,18 +300,9 @@ func newIsolatedChildVM(parent *VM) *VM {
 		noGlobalLock: true, // own copy, fully lock-free
 		stringMeta:   parent.stringMeta,
 	}
-	if parent.jitFactory != nil {
-		engine := parent.jitFactory(child)
-		child.SetJIT(engine)
-	}
 	child.RegisterCoroutineLib()
 	runtime.RegisterVM(child)
 	return child
-}
-
-// SetJITFactory sets a factory function that creates new JIT engines.
-func (vm *VM) SetJITFactory(factory func(*VM) JITEngine) {
-	vm.jitFactory = factory
 }
 
 // registerChannelBuiltins adds channel-related builtins to globals.
@@ -454,7 +379,6 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	frame.base = base
 	frame.numResults = numResults
 	frame.varargs = varargs
-	frame.traceEnabled = false // clear stale state from reused frame slot
 	vm.frameCount++
 
 	// Method JIT: check for compiled function.
@@ -468,25 +392,6 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 				return results, nil
 			}
 			// Method JIT execution failed; fall through to interpreter.
-		}
-	}
-
-	// Try JIT execution if available.
-	if vm.jit != nil && !proto.IsVarArg {
-		proto.CallCount++
-		results, resumePC, ok := vm.jit.TryExecute(proto, vm.regs, base, proto.CallCount)
-		if ok {
-			vm.closeUpvalues(base)
-			vm.frameCount--
-			return results, nil
-		}
-		if resumePC > 0 {
-			frame.pc = resumePC
-		}
-		// JITSideExited is set by executor on permanent side-exit (ExitCode=1).
-		// Enable trace for this frame's loops so SSA Trace JIT can optimize them.
-		if proto.ShouldEnableTrace() {
-			frame.traceEnabled = true
 		}
 	}
 
@@ -559,15 +464,6 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		}
 		inst := code[frame.pc]
 		frame.pc++
-
-		// Trace recorder: only hook when actively recording (fast bool check)
-		if vm.traceRecording {
-			vm.traceRec.OnInstruction(frame.pc-1, inst, frame.closure.Proto, vm.regs, base)
-			// Update cached recording state (recording may have finished via finishTrace)
-			if vm.traceExecDepth == 0 {
-				vm.traceRecording = vm.traceRec.IsRecording()
-			}
-		}
 
 		op := DecodeOp(inst)
 
@@ -1162,27 +1058,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		// ---- Jump ----
 		case OP_JMP:
 			sbx := DecodesBx(inst)
-			jmpPC := frame.pc - 1 // PC of this JMP instruction
 			frame.pc += sbx
-			// While-loop back-edge detection: notify trace recorder on backward jumps.
-			// Only checks when sbx < 0 (backward) and traceRec is non-nil (zero overhead otherwise).
-			if sbx < 0 && vm.traceRec != nil && vm.traceExecDepth < 8 && (frame.closure.Proto.JITEntry == nil || frame.traceEnabled) && !frame.closure.Proto.IsTraceBlacklisted(jmpPC) {
-				if vm.traceRec.OnLoopBackEdge(jmpPC, frame.closure.Proto) {
-					tr := vm.executeCompiledTrace(frame.closure.Proto, base)
-					if tr.executed {
-						if tr.sideExit {
-							frame.pc = tr.exitPC
-						} else {
-							frame.pc = jmpPC + 1
-						}
-					}
-				}
-				// Update cached recording state (OnLoopBackEdge may start/stop recording)
-				// Only update when not inside a nested trace execution
-				if vm.traceExecDepth == 0 {
-					vm.traceRecording = vm.traceRec.IsRecording()
-				}
-			}
 
 		// ---- Call / Return (INLINE) ----
 		case OP_CALL:
@@ -1249,7 +1125,6 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				newFrame.varargs = varargs
 				newFrame.resultBase = base + a
 				newFrame.resultCount = c
-				newFrame.traceEnabled = false // clear stale state from reused frame slot
 				vm.frameCount++
 
 				// Method JIT: check for compiled function
@@ -1278,39 +1153,6 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 							break
 						}
 						// Compilation or execution failed; fall through to interpreter.
-					}
-				}
-
-				// Try JIT (skip if trace recorder is inlining this callee)
-				skipJIT := vm.traceRecording && vm.traceRec.ShouldSkipJIT()
-				if vm.jit != nil && !proto.IsVarArg && !skipJIT {
-					proto.CallCount++
-					results, resumePC, jitOK := vm.jit.TryExecute(proto, vm.regs, newBase, proto.CallCount)
-					if jitOK {
-						vm.closeUpvalues(newBase)
-						vm.frameCount--
-						if c == 0 {
-							for i, r := range results {
-								vm.regs[base+a+i] = r
-							}
-							vm.top = base + a + len(results)
-						} else {
-							nr := c - 1
-							for i := 0; i < nr; i++ {
-								if i < len(results) {
-									vm.regs[base+a+i] = results[i]
-								} else {
-									vm.regs[base+a+i] = runtime.NilValue()
-								}
-							}
-						}
-						break
-					}
-					if resumePC > 0 {
-						newFrame.pc = resumePC
-					}
-					if proto.ShouldEnableTrace() {
-						newFrame.traceEnabled = true
 					}
 				}
 
@@ -1517,30 +1359,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					if cont {
 						idxP.SetIntUnchecked(idx)
 						vm.regs[base+a+3].SetIntUnchecked(idx)
-						forloopPC := frame.pc - 1
 						frame.pc += sbx
-						// Trace: check for compiled trace.
-						// Fast-path: skip OnLoopBackEdge if this FORLOOP PC is trace-blacklisted
-						// (avoids ~30-50ns interface dispatch + map lookup per iteration).
-						// Trace JIT: only activate for loops in functions NOT compiled by Method JIT.
-						// If Method JIT compiled this function but side-exited to the interpreter,
-						// the trace JIT would often produce incorrect results (closures, complex control flow).
-						if vm.traceRec != nil && sbx < 0 && vm.traceExecDepth < 8 && (frame.closure.Proto.JITEntry == nil || frame.traceEnabled) && !frame.closure.Proto.IsTraceBlacklisted(forloopPC) {
-							if vm.traceRec.OnLoopBackEdge(forloopPC, frame.closure.Proto) {
-								tr := vm.executeCompiledTrace(frame.closure.Proto, base)
-								if tr.executed {
-									if tr.sideExit {
-										frame.pc = tr.exitPC
-									} else {
-										frame.pc = forloopPC + 1
-									}
-								}
-							}
-							// Only update cached recording state when not inside nested trace execution
-							if vm.traceExecDepth == 0 {
-								vm.traceRecording = vm.traceRec.IsRecording()
-							}
-						}
 					}
 					break
 				}

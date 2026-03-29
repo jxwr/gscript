@@ -3,26 +3,13 @@
 package gscript
 
 import (
-	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/methodjit"
 	bytecodevm "github.com/gscript/gscript/internal/vm"
 )
 
 func enableJIT(bvm *bytecodevm.VM) {
-	// Method JIT: function-level compilation
-	engine := jit.NewEngine()
-	engine.SetThreshold(1) // compile on first call for maximum benefit
-	engine.SetGlobals(bvm.Globals())
-	bvm.SetJIT(engine)
-	// Set JIT factory so goroutine child VMs also get JIT
-	bvm.SetJITFactory(func(child *bytecodevm.VM) bytecodevm.JITEngine {
-		e := jit.NewEngine()
-		e.SetThreshold(1)
-		e.SetGlobals(child.Globals())
-		e.SetCallHandler(child.CallValue)
-		e.SetGlobalsAccessor(child)
-		return e
-	})
-
-	// Trace JIT: loop-level SSA compilation
-	enableTracing(bvm)
+	// Method JIT: V8-style whole-function compilation.
+	// Functions called 100+ times are compiled to native ARM64 code.
+	mjit := methodjit.NewMethodJITEngine()
+	bvm.SetMethodJIT(mjit)
 }

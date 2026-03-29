@@ -1,8 +1,6 @@
 package vm
 
 import (
-	"unsafe"
-
 	"github.com/gscript/gscript/internal/runtime"
 )
 
@@ -28,13 +26,9 @@ type FuncProto struct {
 	LineInfo    []int       // source line for each instruction (debug)
 	GlobalCache    []globalCacheEntry        // lazily-initialized cache indexed by constant pool index
 	FieldCache     []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
-	TraceBlacklist []bool                    // lazily-initialized per-PC trace blacklist; true = skip OnLoopBackEdge
-	JITEntry        unsafe.Pointer           // cached *compiledEntry from JIT engine (avoids map lookup on hot path)
 	HasSelfCalls    bool                      // true if function has recursive calls to itself (set during JIT compilation)
-	JITSideExited   bool                      // true if Method JIT compiled but permanently side-exited (enables Trace JIT)
 	CallCount       int                       // JIT call count (avoids map lookup in VM hot path)
 	Feedback        FeedbackVector            // lazily-initialized per-PC type feedback for Method JIT
-	forLoopCount    int                       // cached ForLoopCount+1 (0 = not computed)
 }
 
 // EnsureFeedback lazily initializes the type feedback vector for this function.
@@ -44,69 +38,6 @@ func (p *FuncProto) EnsureFeedback() FeedbackVector {
 		p.Feedback = NewFeedbackVector(len(p.Code))
 	}
 	return p.Feedback
-}
-
-// BlacklistTracePC marks a FORLOOP PC as trace-blacklisted.
-// Subsequent iterations of this loop skip the OnLoopBackEdge call entirely,
-// avoiding the ~30-50ns interface dispatch + map lookup overhead per iteration.
-func (p *FuncProto) BlacklistTracePC(pc int) {
-	if pc < 0 || pc >= len(p.Code) {
-		return
-	}
-	if p.TraceBlacklist == nil {
-		p.TraceBlacklist = make([]bool, len(p.Code))
-	}
-	p.TraceBlacklist[pc] = true
-}
-
-// HasCallInLoop returns true if any for-loop body contains a CALL instruction.
-// Traces with CALLs use call-exit which can produce incorrect results.
-func (p *FuncProto) HasCallInLoop() bool {
-	inLoop := false
-	for _, inst := range p.Code {
-		op := DecodeOp(inst)
-		if op == OP_FORPREP {
-			inLoop = true
-		}
-		if op == OP_FORLOOP {
-			inLoop = false
-		}
-		if inLoop && op == OP_CALL {
-			return true
-		}
-	}
-	return false
-}
-
-// ForLoopCount returns the number of for-loops (FORLOOP instructions) in the function.
-// Cached on first call since bytecode is immutable.
-func (p *FuncProto) ForLoopCount() int {
-	if p.forLoopCount > 0 {
-		return p.forLoopCount - 1
-	}
-	n := 0
-	for _, inst := range p.Code {
-		if DecodeOp(inst) == OP_FORLOOP {
-			n++
-		}
-	}
-	p.forLoopCount = n + 1 // cache (0 = not computed, so store n+1)
-	return n
-}
-
-// ShouldEnableTrace returns true if this function's loops should be trace-recorded
-// after a Method JIT side-exit. Excludes self-recursive functions and functions
-// with too many loops (complex control flow that trace JIT handles poorly).
-func (p *FuncProto) ShouldEnableTrace() bool {
-	return p.JITSideExited && !p.HasSelfCalls && p.ForLoopCount() <= 3
-}
-
-// IsTraceBlacklisted returns true if the given PC has been trace-blacklisted.
-func (p *FuncProto) IsTraceBlacklisted(pc int) bool {
-	if p.TraceBlacklist == nil {
-		return false
-	}
-	return p.TraceBlacklist[pc]
 }
 
 // UpvalDesc describes how an upvalue should be captured when creating a closure.
@@ -167,5 +98,4 @@ type CallFrame struct {
 	varargs     []runtime.Value // extra arguments beyond fixed params
 	resultBase   int    // register in parent frame where results should be placed (for inline return)
 	resultCount  int    // C parameter from caller's OP_CALL (0 = return all; for inline return)
-	traceEnabled bool   // true if this frame's loops should be trace-recorded (set on Method JIT side-exit)
 }
