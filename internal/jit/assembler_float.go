@@ -97,6 +97,10 @@ func (a *Assembler) FSTRd(rt FReg, rn Reg, offset int) {
 	a.emit(0xFD000000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
 }
 
+// FNEGd: Dd = -Dn (negate, double)
+// ARM64 encoding: 0|00|11110|01|1|00001|10000|Rn|Rd
+func (a *Assembler) FNEGd(dst, src FReg) { a.emit(0x1E614000 | uint32(src)<<5 | uint32(dst)) }
+
 // FABSd: Dd = |Dn| (absolute value, double)
 func (a *Assembler) FABSd(dst, src FReg)    { a.emit(0x1e60c000 | uint32(src)<<5 | uint32(dst)) }
 

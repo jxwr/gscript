@@ -103,6 +103,8 @@ func (e *MethodJITEngine) TryCompile(proto *vm.FuncProto) interface{} {
 // The compiled parameter must be a *CompiledFunction returned by TryCompile.
 // The arguments must already be placed at regs[base..base+numParams-1] by the VM.
 // Returns the result values read from regs[base] after execution.
+// If the JIT bails out (ExitCode=ExitDeopt), returns an error so the VM
+// falls through to the interpreter.
 func (e *MethodJITEngine) Execute(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
 	cf := compiled.(*CompiledFunction)
 	// Ensure we have enough register space for the compiled function's temp slots.
@@ -129,6 +131,12 @@ func (e *MethodJITEngine) Execute(compiled interface{}, regs []runtime.Value, ba
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
 	jit.CallJIT(uintptr(cf.Code.Ptr()), ctxPtr)
 
+	// Check exit code.
+	if ctx.ExitCode == ExitDeopt {
+		// JIT bailed out: return error so the VM falls through to interpreter.
+		return nil, fmt.Errorf("methodjit: deopt")
+	}
+
 	// Read return value from slot 0 (relative to base).
 	result := regs[base]
 	return []runtime.Value{result}, nil
@@ -144,45 +152,9 @@ func (e *MethodJITEngine) FailedCount() int {
 	return len(e.failed)
 }
 
-// supportedOps is the set of IR ops that the ARM64 code generator can handle.
-// Any function containing ops not in this set will stay interpreted.
-var supportedOps = map[Op]bool{
-	OpConstInt:   true,
-	OpConstFloat: true,
-	OpConstBool:  true,
-	OpConstNil:   true,
-	OpLoadSlot:   true,
-	OpStoreSlot:  true,
-	OpAdd:        true,
-	OpSub:        true,
-	OpMul:        true,
-	OpMod:        true,
-	OpAddInt:     true,
-	OpSubInt:     true,
-	OpMulInt:     true,
-	OpModInt:     true,
-	OpLt:         true,
-	OpLe:         true,
-	OpEq:         true,
-	OpLtInt:      true,
-	OpLeInt:      true,
-	OpEqInt:      true,
-	OpPhi:        true,
-	OpJump:       true,
-	OpBranch:     true,
-	OpReturn:     true,
-	OpNop:        true,
-}
-
-// canCompile checks whether all IR instructions in fn use ops that the
-// ARM64 code generator supports. Returns false if any unsupported op is found.
+// canCompile checks whether a function can be compiled by the Method JIT.
+// With deopt support, ALL functions can be compiled: unsupported ops will
+// bail to the interpreter at runtime. Returns true always.
 func canCompile(fn *Function) bool {
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			if !supportedOps[instr.Op] {
-				return false
-			}
-		}
-	}
 	return true
 }

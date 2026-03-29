@@ -113,13 +113,15 @@ for i := 1; i <= 300; i++ {
 	}
 }
 
-// TestTiering_FailedCompilation verifies that if compilation fails for a function,
-// the VM continues interpreting without crashing.
+// TestTiering_DeoptCompilation verifies that functions with unsupported ops
+// (calls, globals, etc.) are compiled with deopt stubs. When executed, they
+// bail to the interpreter (ExitCode=ExitDeopt), causing the VM to fall through.
 func TestTiering_FailedCompilation(t *testing.T) {
 	engine := NewMethodJITEngine()
 
-	// Compile a function that uses unsupported ops (OpCall, OpGetGlobal).
-	// The Method JIT should refuse to compile it.
+	// Compile a function that uses "unsupported" ops (OpCall, OpGetGlobal).
+	// With deopt support, the function WILL compile; unsupported ops emit
+	// deopt stubs that bail to the interpreter at runtime.
 	src := `
 func caller(x) {
     return print(x)
@@ -134,17 +136,18 @@ func caller(x) {
 	fnProto.EnsureFeedback()
 
 	cf := engine.TryCompile(fnProto)
-	if cf != nil {
-		t.Error("expected nil CompiledFunction for function with unsupported ops")
+	// With deopt, the function now compiles successfully.
+	if cf == nil {
+		t.Error("expected non-nil CompiledFunction (deopt stubs for unsupported ops)")
 	}
-	if engine.FailedCount() == 0 {
-		t.Error("expected failed compilation to be recorded")
+	if engine.CompiledCount() == 0 {
+		t.Error("expected compiled count > 0")
 	}
 
-	// Calling TryCompile again should return nil quickly (cached failure).
-	cf = engine.TryCompile(fnProto)
-	if cf != nil {
-		t.Error("expected nil on retry of failed proto")
+	// Calling TryCompile again returns the cached compiled function.
+	cf2 := engine.TryCompile(fnProto)
+	if cf2 == nil {
+		t.Error("expected cached compiled function on second call")
 	}
 }
 
@@ -181,8 +184,8 @@ for i := 1; i <= 200; i++ {
 }
 
 // TestTiering_EndToEnd_Fib runs fib(20) through the VM with Method JIT enabled.
-// fib uses recursive calls (unsupported ops), so it won't be compiled.
-// The test verifies correctness is maintained when Method JIT is active.
+// fib uses recursive calls which trigger deopt stubs, causing the JIT to bail
+// back to the interpreter. The test verifies correctness is maintained.
 func TestTiering_EndToEnd_Fib(t *testing.T) {
 	src := `
 func fib(n) {
@@ -200,10 +203,10 @@ result := fib(20)
 		t.Errorf("fib(20) = %d, want 6765", result.Int())
 	}
 
-	// fib uses OpCall/OpGetGlobal which are unsupported; should NOT be compiled.
-	// The engine should have recorded it as failed.
+	// fib uses OpCall/OpGetGlobal which now compile with deopt stubs.
+	// The function is compiled but deopts at runtime for calls.
 	if engine.CompiledCount() > 0 {
-		t.Log("note: fib was compiled (unexpected; unsupported ops should prevent it)")
+		t.Log("note: fib was compiled with deopt stubs (expected)")
 	}
 }
 

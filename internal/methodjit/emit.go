@@ -49,9 +49,15 @@ func nb64(v uint64) int64 { return int64(v) }
 type ExecContext struct {
 	Regs      uintptr // pointer to vm.regs[base]
 	Constants uintptr // pointer to proto.Constants[0] (or 0 if none)
-	ExitCode  int64   // 0 = normal return
+	ExitCode  int64   // 0 = normal return, 2 = deopt (bail to interpreter)
 	ReturnPC  int64   // unused for now
 }
+
+// ExitCode constants.
+const (
+	ExitNormal = 0 // normal return
+	ExitDeopt  = 2 // deopt: bail to interpreter for the entire function
+)
 
 // ExecContext field offsets.
 const (
@@ -67,10 +73,17 @@ type CompiledFunction struct {
 	Proto     *vm.FuncProto  // source function
 	NumSpills int            // stack space needed for spill slots
 	numRegs   int            // total number of VM register slots (including temp slots)
+
+	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
+	// It runs the function via the VM interpreter. Set by the caller
+	// (e.g., test harness or tiering engine) to provide VM fallback.
+	// If nil, Execute returns an error on deopt.
+	DeoptFunc func(args []runtime.Value) ([]runtime.Value, error)
 }
 
 // Execute runs the compiled function with the given arguments.
 // Arguments are loaded into VM register slots before calling the native code.
+// If the JIT bails out (ExitCode=ExitDeopt), falls back via DeoptFunc.
 // Returns the function's return values.
 func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, error) {
 	// Allocate VM registers (NaN-boxed values).
@@ -102,6 +115,15 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 	// Call the JIT code.
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
 	jit.CallJIT(uintptr(cf.Code.Ptr()), ctxPtr)
+
+	// Check exit code.
+	if ctx.ExitCode == ExitDeopt {
+		// JIT bailed out: fall back to VM interpreter for the entire function.
+		if cf.DeoptFunc != nil {
+			return cf.DeoptFunc(args)
+		}
+		return nil, fmt.Errorf("methodjit: deopt with no DeoptFunc set")
+	}
 
 	// Read return value from slot 0.
 	result := regs[0]
@@ -158,11 +180,12 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 
 // emitContext holds transient state during code generation.
 type emitContext struct {
-	fn       *Function
-	alloc    *RegAllocation
-	asm      *jit.Assembler
-	slotMap  map[int]int // SSA value ID -> home slot index in VM register file
-	nextSlot int         // next available temp slot
+	fn           *Function
+	alloc        *RegAllocation
+	asm          *jit.Assembler
+	slotMap      map[int]int // SSA value ID -> home slot index in VM register file
+	nextSlot     int         // next available temp slot
+	labelCounter int         // counter for generating unique labels
 }
 
 // assignSlots assigns a home slot for every SSA value.
@@ -250,6 +273,9 @@ func (ec *emitContext) emitEpilogue() {
 	asm.MOVimm16(jit.X0, 0)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
 
+	// Shared register restore and return (used by both normal and deopt paths).
+	asm.Label("deopt_epilogue")
+
 	// Restore callee-saved FPRs.
 	asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
 	asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
@@ -288,6 +314,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitConstBool(instr)
 	case OpConstFloat:
 		ec.emitConstFloat(instr)
+	case OpConstString:
+		ec.emitDeopt(instr) // strings in constants need pointer handling
 
 	// --- Slot access ---
 	case OpLoadSlot:
@@ -295,15 +323,35 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpStoreSlot:
 		ec.emitStoreSlot(instr)
 
-	// --- Type-generic arithmetic ---
-	case OpAdd, OpAddInt:
+	// --- Type-generic arithmetic (float-aware) ---
+	case OpAdd:
+		ec.emitFloatBinOp(instr, intBinAdd)
+	case OpSub:
+		ec.emitFloatBinOp(instr, intBinSub)
+	case OpMul:
+		ec.emitFloatBinOp(instr, intBinMul)
+	case OpMod:
+		ec.emitFloatBinOp(instr, intBinMod)
+
+	// --- Type-specialized int arithmetic (fast path, no float check) ---
+	case OpAddInt:
 		ec.emitIntBinOp(instr, intBinAdd)
-	case OpSub, OpSubInt:
+	case OpSubInt:
 		ec.emitIntBinOp(instr, intBinSub)
-	case OpMul, OpMulInt:
+	case OpMulInt:
 		ec.emitIntBinOp(instr, intBinMul)
-	case OpMod, OpModInt:
+	case OpModInt:
 		ec.emitIntBinOp(instr, intBinMod)
+
+	// --- Division (always returns float) ---
+	case OpDiv, OpDivFloat:
+		ec.emitDiv(instr)
+
+	// --- Unary ---
+	case OpUnm, OpNegInt:
+		ec.emitUnm(instr)
+	case OpNot:
+		ec.emitNot(instr)
 
 	// --- Comparison ---
 	case OpLt, OpLtInt:
@@ -328,8 +376,24 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpNop:
 		// nothing
 
+	// --- Deopt: all complex ops bail to interpreter ---
+	case OpCall, OpSelf,
+		OpGetGlobal, OpSetGlobal,
+		OpGetUpval, OpSetUpval,
+		OpNewTable, OpGetTable, OpSetTable, OpGetField, OpSetField, OpSetList, OpAppend,
+		OpConcat,
+		OpLen,
+		OpPow,
+		OpClosure, OpClose,
+		OpForPrep, OpForLoop,
+		OpTForCall, OpTForLoop,
+		OpVararg, OpTestSet,
+		OpGo, OpMakeChan, OpSend, OpRecv,
+		OpGuardType, OpGuardNonNil, OpGuardTruthy:
+		ec.emitDeopt(instr)
+
 	default:
-		ec.asm.NOP() // unhandled op placeholder
+		ec.asm.NOP() // truly unknown op placeholder
 	}
 }
 
