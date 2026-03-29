@@ -4,15 +4,19 @@ package main
 
 import (
 	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/methodjit"
 	bytecodevm "github.com/gscript/gscript/internal/vm"
 )
 
 func cliEnableJIT(bvm *bytecodevm.VM) {
-	// Method JIT: function-level compilation
+	// Method JIT: V8-style whole-function compilation (new)
+	mjit := methodjit.NewMethodJITEngine()
+	bvm.SetMethodJIT(mjit)
+
+	// Legacy Method JIT: function-level compilation (old, for goroutine support)
 	engine := jit.NewEngine()
 	engine.SetThreshold(1)
 	bvm.SetJIT(engine)
-	// Set JIT factory so goroutine child VMs also get JIT
 	bvm.SetJITFactory(func(child *bytecodevm.VM) bytecodevm.JITEngine {
 		e := jit.NewEngine()
 		e.SetThreshold(1)

@@ -191,9 +191,28 @@ func (e *MethodJITEngine) FailedCount() int {
 	return len(e.failed)
 }
 
-// canCompile checks whether a function can be compiled by the Method JIT.
-// With deopt support, ALL functions can be compiled: unsupported ops will
-// bail to the interpreter at runtime. Returns true always.
+// canCompile checks whether a function can be compiled by the Method JIT
+// WITHOUT hitting deopt on the hot path. Functions with OpCall, OpGetGlobal,
+// OpSetGlobal, or table ops in their main body will deopt immediately in the
+// tiering path, making them SLOWER than pure interpretation. Only compile
+// functions where all ops can execute natively.
 func canCompile(fn *Function) bool {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpCall, OpSelf,
+				OpGetGlobal, OpSetGlobal,
+				OpNewTable, OpGetTable, OpSetTable, OpGetField, OpSetField,
+				OpSetList, OpAppend,
+				OpGetUpval, OpSetUpval,
+				OpConcat, OpLen,
+				OpClosure, OpClose,
+				OpVararg, OpTestSet,
+				OpGo, OpMakeChan, OpSend, OpRecv,
+				OpConstString:
+				return false
+			}
+		}
+	}
 	return true
 }
