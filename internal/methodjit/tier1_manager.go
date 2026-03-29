@@ -28,8 +28,8 @@ import (
 )
 
 // BaselineCompileThreshold is the number of calls before baseline compilation.
-// Set low (2) for fast startup. Tier 2 takes over at 100+ calls.
-const BaselineCompileThreshold = 2
+// Compile on first call — every function gets Tier 1 immediately.
+const BaselineCompileThreshold = 1
 
 // BaselineJITEngine implements vm.MethodJITEngine for the Tier 1 baseline compiler.
 type BaselineJITEngine struct {
@@ -98,6 +98,28 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
 	}
 
+	// Set up FieldCache pointer for native GETFIELD/SETFIELD.
+	syncFieldCache := func() {
+		if proto.FieldCache != nil && len(proto.FieldCache) > 0 {
+			ctx.BaselineFieldCache = uintptr(unsafe.Pointer(&proto.FieldCache[0]))
+		} else {
+			ctx.BaselineFieldCache = 0
+		}
+	}
+	syncFieldCache()
+
+	// Set up Closure pointer for native GETUPVAL/SETUPVAL.
+	// The closure is available from the VM's current call frame.
+	syncClosure := func() {
+		if e.callVM != nil {
+			cl := e.callVM.CurrentClosure()
+			if cl != nil {
+				ctx.BaselineClosurePtr = uintptr(unsafe.Pointer(cl))
+			}
+		}
+	}
+	syncClosure()
+
 	codePtr := uintptr(bf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
 
@@ -107,6 +129,8 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 			regs = e.callVM.Regs()
 			ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
 		}
+		// Refresh FieldCache pointer (may have been allocated by Go handler).
+		syncFieldCache()
 	}
 
 	for {
@@ -543,8 +567,11 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 		Proto:    subProto,
 		Upvalues: make([]*vm.Upvalue, len(subProto.Upvalues)),
 	}
-	// Capture upvalues. For baseline JIT, upvalues InStack reference
-	// the current frame's registers at regs[base+index].
+	// Capture upvalues.
+	var parentCl *vm.Closure
+	if e.callVM != nil {
+		parentCl = e.callVM.CurrentClosure()
+	}
 	for i, desc := range subProto.Upvalues {
 		if desc.InStack {
 			absIdx := base + desc.Index
@@ -552,10 +579,12 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 				cl.Upvalues[i] = vm.NewOpenUpvalue(&regs[absIdx], absIdx)
 			}
 		} else {
-			// Parent upvalue: we don't have access to the parent closure's
-			// upvalues in the baseline JIT. Store nil for now.
-			// This works for simple closures where all upvalues are InStack.
-			cl.Upvalues[i] = vm.NewOpenUpvalue(new(runtime.Value), 0)
+			// Parent upvalue: copy from the parent closure's upvalue list.
+			if parentCl != nil && desc.Index < len(parentCl.Upvalues) && parentCl.Upvalues[desc.Index] != nil {
+				cl.Upvalues[i] = parentCl.Upvalues[desc.Index]
+			} else {
+				cl.Upvalues[i] = vm.NewOpenUpvalue(new(runtime.Value), 0)
+			}
 		}
 	}
 	absA := base + a
@@ -572,14 +601,46 @@ func (e *BaselineJITEngine) handleClose(ctx *ExecContext, regs []runtime.Value, 
 	return nil
 }
 
-// handleGetUpval handles OP_GETUPVAL exit.
+// handleGetUpval handles OP_GETUPVAL exit: R(A) = Upvalues[B].Get()
 func (e *BaselineJITEngine) handleGetUpval(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
-	return fmt.Errorf("GETUPVAL not supported in baseline JIT (needs closure)")
+	if e.callVM == nil {
+		return fmt.Errorf("no callVM for GETUPVAL")
+	}
+	cl := e.callVM.CurrentClosure()
+	if cl == nil {
+		return fmt.Errorf("GETUPVAL: no current closure")
+	}
+	a := int(ctx.BaselineA)
+	b := int(ctx.BaselineB)
+	if b >= len(cl.Upvalues) || cl.Upvalues[b] == nil {
+		return fmt.Errorf("GETUPVAL: upvalue %d out of range", b)
+	}
+	absA := base + a
+	if absA < len(regs) {
+		regs[absA] = cl.Upvalues[b].Get()
+	}
+	return nil
 }
 
-// handleSetUpval handles OP_SETUPVAL exit.
+// handleSetUpval handles OP_SETUPVAL exit: Upvalues[B].Set(R(A))
 func (e *BaselineJITEngine) handleSetUpval(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
-	return fmt.Errorf("SETUPVAL not supported in baseline JIT (needs closure)")
+	if e.callVM == nil {
+		return fmt.Errorf("no callVM for SETUPVAL")
+	}
+	cl := e.callVM.CurrentClosure()
+	if cl == nil {
+		return fmt.Errorf("SETUPVAL: no current closure")
+	}
+	a := int(ctx.BaselineA)
+	b := int(ctx.BaselineB)
+	if b >= len(cl.Upvalues) || cl.Upvalues[b] == nil {
+		return fmt.Errorf("SETUPVAL: upvalue %d out of range", b)
+	}
+	absA := base + a
+	if absA < len(regs) {
+		cl.Upvalues[b].Set(regs[absA])
+	}
+	return nil
 }
 
 // handleSelf handles OP_SELF exit: R(A+1) = R(B); R(A) = R(B)[RK(C)]

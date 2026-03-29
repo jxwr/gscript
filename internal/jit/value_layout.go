@@ -39,12 +39,19 @@ const (
 	NB_PtrSubShift = 44
 
 	// Table struct offsets (must match runtime.Table layout)
-	TableOffArray = 8 // []Value slice header (ptr+len+cap = 24 bytes)
+	TableOffArray    = 8  // []Value slice header (ptr+len+cap = 24 bytes)
+	TableOffArrayLen = 16 // array slice len field (8 bytes after data ptr)
 	TableOffSkeys      = 40  // []string slice header (ptr+len+cap)
 	TableOffSkeysLen   = 48  // skeys.len
 	TableOffSvals      = 64  // []Value slice header
+	TableOffSvalsLen   = 72  // svals slice len field
 	TableOffMetatable  = 104 // *Table
 	TableOffKeysDirty  = 136 // bool (1 byte) — must set true on append
+
+	// FieldCacheEntry layout (for GETFIELD/SETFIELD inline caching)
+	FieldCacheEntrySize       = 16 // sizeof(runtime.FieldCacheEntry)
+	FieldCacheEntryOffFieldIdx = 0  // int (8 bytes)
+	FieldCacheEntryOffShapeID  = 8  // uint32 (padded to 8 in struct)
 
 	// Type-specialized array fields (added at end of Table struct)
 	TableOffArrayKind  = 137 // ArrayKind (uint8)
@@ -86,6 +93,18 @@ func init() {
 	var v runtime.Value
 	if s := unsafe.Sizeof(v); s != ValueSize {
 		panic("jit: Value size mismatch: expected 8, got " + itoa(int(s)))
+	}
+
+	// Verify FieldCacheEntry layout
+	var fce runtime.FieldCacheEntry
+	if sz := unsafe.Sizeof(fce); sz != FieldCacheEntrySize {
+		panic("jit: FieldCacheEntry size mismatch: expected " + itoa(FieldCacheEntrySize) + ", got " + itoa(int(sz)))
+	}
+	if off := unsafe.Offsetof(fce.FieldIdx); off != FieldCacheEntryOffFieldIdx {
+		panic("jit: FieldCacheEntry.FieldIdx offset mismatch")
+	}
+	if off := unsafe.Offsetof(fce.ShapeID); off != FieldCacheEntryOffShapeID {
+		panic("jit: FieldCacheEntry.ShapeID offset mismatch: expected " + itoa(FieldCacheEntryOffShapeID) + ", got " + itoa(int(off)))
 	}
 
 	// Verify Table layout

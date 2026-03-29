@@ -70,6 +70,15 @@ func (vm *VM) Top() int {
 	return vm.top
 }
 
+// CurrentClosure returns the closure for the current (topmost) call frame.
+// Used by the baseline JIT to access upvalues. Returns nil if no frame is active.
+func (vm *VM) CurrentClosure() *Closure {
+	if vm.frameCount > 0 {
+		return vm.frames[vm.frameCount-1].closure
+	}
+	return nil
+}
+
 // Globals returns the globals map.
 func (vm *VM) Globals() map[string]runtime.Value {
 	return vm.globals

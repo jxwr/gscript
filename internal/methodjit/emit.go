@@ -87,6 +87,9 @@ type ExecContext struct {
 	BaselineA  int64 // decoded A field from the instruction
 	BaselineB  int64 // decoded B field (or Bx for ABx format)
 	BaselineC  int64 // decoded C field
+	// Baseline JIT native table access support
+	BaselineFieldCache uintptr // pointer to proto.FieldCache[0] (nil if not yet allocated)
+	BaselineClosurePtr uintptr // pointer to *vm.Closure (for GETUPVAL/SETUPVAL)
 }
 
 // ExitCode constants.
@@ -136,11 +139,13 @@ var (
 	execCtxOffOpExitAux    = int(unsafe.Offsetof(ExecContext{}.OpExitAux))
 	execCtxOffOpExitID     = int(unsafe.Offsetof(ExecContext{}.OpExitID))
 	// Baseline JIT fields
-	execCtxOffBaselineOp = int(unsafe.Offsetof(ExecContext{}.BaselineOp))
-	execCtxOffBaselinePC = int(unsafe.Offsetof(ExecContext{}.BaselinePC))
-	execCtxOffBaselineA  = int(unsafe.Offsetof(ExecContext{}.BaselineA))
-	execCtxOffBaselineB  = int(unsafe.Offsetof(ExecContext{}.BaselineB))
-	execCtxOffBaselineC  = int(unsafe.Offsetof(ExecContext{}.BaselineC))
+	execCtxOffBaselineOp         = int(unsafe.Offsetof(ExecContext{}.BaselineOp))
+	execCtxOffBaselinePC         = int(unsafe.Offsetof(ExecContext{}.BaselinePC))
+	execCtxOffBaselineA          = int(unsafe.Offsetof(ExecContext{}.BaselineA))
+	execCtxOffBaselineB          = int(unsafe.Offsetof(ExecContext{}.BaselineB))
+	execCtxOffBaselineC          = int(unsafe.Offsetof(ExecContext{}.BaselineC))
+	execCtxOffBaselineFieldCache = int(unsafe.Offsetof(ExecContext{}.BaselineFieldCache))
+	execCtxOffBaselineClosurePtr = int(unsafe.Offsetof(ExecContext{}.BaselineClosurePtr))
 )
 
 // CompiledFunction holds the generated native code for a function.

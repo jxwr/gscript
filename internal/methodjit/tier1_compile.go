@@ -138,16 +138,16 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineOpExit(asm, inst, pc, vm.OP_NEWTABLE)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETTABLE:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_GETTABLE)
-			resumePCs = append(resumePCs, pc+1)
+			emitBaselineGetTable(asm, inst, pc)
+			resumePCs = append(resumePCs, pc+1) // slow path may exit
 		case vm.OP_SETTABLE:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_SETTABLE)
+			emitBaselineSetTable(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETFIELD:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_GETFIELD)
+			emitBaselineGetField(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_SETFIELD:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_SETFIELD)
+			emitBaselineSetField(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_SETLIST:
 			emitBaselineOpExit(asm, inst, pc, vm.OP_SETLIST)
@@ -159,7 +159,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineOpExit(asm, inst, pc, vm.OP_CONCAT)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_LEN:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_LEN)
+			emitBaselineLen(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_POW:
 			emitBaselineOpExit(asm, inst, pc, vm.OP_POW)
@@ -171,13 +171,13 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineOpExit(asm, inst, pc, vm.OP_CLOSE)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETUPVAL:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_GETUPVAL)
+			emitBaselineGetUpval(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_SETUPVAL:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_SETUPVAL)
+			emitBaselineSetUpval(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_SELF:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_SELF)
+			emitBaselineSelf(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_VARARG:
 			emitBaselineOpExit(asm, inst, pc, vm.OP_VARARG)
