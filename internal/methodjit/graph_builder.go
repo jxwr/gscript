@@ -566,7 +566,15 @@ func (b *graphBuilder) emitBlocks() {
 				bOp := vm.DecodeB(inst)
 				c := vm.DecodeC(inst)
 				tbl := b.readVariable(bOp, block)
-				instr := b.emit(block, OpGetField, TypeAny, []*Value{tbl}, int64(c), 0)
+				// Capture field cache info: Aux2 = shapeID<<32 | fieldIndex
+				var aux2 int64
+				if b.proto.FieldCache != nil && pc < len(b.proto.FieldCache) {
+					entry := b.proto.FieldCache[pc]
+					if entry.ShapeID != 0 && entry.FieldIdx >= 0 {
+						aux2 = int64(entry.ShapeID)<<32 | int64(uint32(entry.FieldIdx))
+					}
+				}
+				instr := b.emit(block, OpGetField, TypeAny, []*Value{tbl}, int64(c), aux2)
 				b.writeVariable(a, block, instr.Value())
 
 			case vm.OP_SETFIELD:
@@ -576,7 +584,15 @@ func (b *graphBuilder) emitBlocks() {
 				c := vm.DecodeC(inst)
 				tbl := b.readVariable(a, block)
 				val := b.resolveRK(c, block)
-				b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val}, int64(bOp), 0)
+				// Capture field cache info: Aux2 = shapeID<<32 | fieldIndex
+				var aux2 int64
+				if b.proto.FieldCache != nil && pc < len(b.proto.FieldCache) {
+					entry := b.proto.FieldCache[pc]
+					if entry.ShapeID != 0 && entry.FieldIdx >= 0 {
+						aux2 = int64(entry.ShapeID)<<32 | int64(uint32(entry.FieldIdx))
+					}
+				}
+				b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val}, int64(bOp), aux2)
 
 			case vm.OP_SETLIST:
 				a := vm.DecodeA(inst)

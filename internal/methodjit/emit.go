@@ -57,7 +57,7 @@ func nb64(v uint64) int64 { return int64(v) }
 type ExecContext struct {
 	Regs         uintptr // pointer to vm.regs[base]
 	Constants    uintptr // pointer to proto.Constants[0] (or 0 if none)
-	ExitCode     int64   // 0 = normal, 2 = deopt, 3 = call-exit, 4 = global-exit
+	ExitCode     int64   // 0 = normal, 2 = deopt, 3 = call-exit, 4 = global-exit, 5 = table-exit
 	ReturnPC     int64   // unused for now
 	CallSlot     int64   // VM register slot of the function value (call-exit)
 	CallNArgs    int64   // number of arguments for call-exit
@@ -66,6 +66,14 @@ type ExecContext struct {
 	GlobalSlot   int64   // VM register slot for global-exit result
 	GlobalConst  int64   // constant pool index for global name (global-exit)
 	GlobalExitID int64   // instruction ID for resolving global-exit resume address
+	// Table-exit fields (ExitCode=5): for OpNewTable, OpGetTable, OpSetTable
+	TableOp       int64  // 0=NewTable, 1=GetTable, 2=SetTable, 3=GetField(deopt), 4=SetField(deopt)
+	TableSlot     int64  // VM register slot for the table (or result slot for NewTable)
+	TableKeySlot  int64  // VM register slot for the key (GetTable/SetTable)
+	TableValSlot  int64  // VM register slot for the value (SetTable)
+	TableAux      int64  // Aux data: NewTable=arrayHint, GetField/SetField=constIdx
+	TableAux2     int64  // Aux2 data: NewTable=hashHint
+	TableExitID   int64  // instruction ID for resolving resume address
 }
 
 // ExitCode constants.
@@ -74,6 +82,16 @@ const (
 	ExitDeopt      = 2 // deopt: bail to interpreter for the entire function
 	ExitCallExit   = 3 // call-exit: pause JIT, execute call via VM, resume JIT
 	ExitGlobalExit = 4 // global-exit: pause JIT, load global via VM, resume JIT
+	ExitTableExit  = 5 // table-exit: pause JIT, do table op via Go, resume JIT
+)
+
+// TableOp constants (stored in ExecContext.TableOp).
+const (
+	TableOpNewTable  = 0
+	TableOpGetTable  = 1
+	TableOpSetTable  = 2
+	TableOpGetField  = 3 // deopt fallback for GetField (no field cache)
+	TableOpSetField  = 4 // deopt fallback for SetField (no field cache)
 )
 
 // ExecContext field offsets (must match struct layout above).
@@ -89,6 +107,13 @@ var (
 	execCtxOffGlobalSlot   = int(unsafe.Offsetof(ExecContext{}.GlobalSlot))
 	execCtxOffGlobalConst  = int(unsafe.Offsetof(ExecContext{}.GlobalConst))
 	execCtxOffGlobalExitID = int(unsafe.Offsetof(ExecContext{}.GlobalExitID))
+	execCtxOffTableOp      = int(unsafe.Offsetof(ExecContext{}.TableOp))
+	execCtxOffTableSlot    = int(unsafe.Offsetof(ExecContext{}.TableSlot))
+	execCtxOffTableKeySlot = int(unsafe.Offsetof(ExecContext{}.TableKeySlot))
+	execCtxOffTableValSlot = int(unsafe.Offsetof(ExecContext{}.TableValSlot))
+	execCtxOffTableAux     = int(unsafe.Offsetof(ExecContext{}.TableAux))
+	execCtxOffTableAux2    = int(unsafe.Offsetof(ExecContext{}.TableAux2))
+	execCtxOffTableExitID  = int(unsafe.Offsetof(ExecContext{}.TableExitID))
 )
 
 // CompiledFunction holds the generated native code for a function.
@@ -119,91 +144,10 @@ type CompiledFunction struct {
 // If the JIT hits a call-exit (ExitCode=ExitCallExit), executes the call
 // via the VM and re-enters the JIT at the resume point.
 // Returns the function's return values.
-func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, error) {
-	// Allocate VM registers (NaN-boxed values).
-	nregs := cf.numRegs
-	if nregs < len(args)+1 {
-		nregs = len(args) + 1
-	}
-	if nregs < 16 {
-		nregs = 16 // minimum to avoid out-of-bounds
-	}
-	regs := make([]runtime.Value, nregs)
 
-	// Load arguments into slots 0, 1, 2, ...
-	for i, arg := range args {
-		regs[i] = arg
-	}
-	// Fill remaining with nil.
-	for i := len(args); i < nregs; i++ {
-		regs[i] = runtime.NilValue()
-	}
+// Execute, executeCallExit, executeGlobalExit, executeTableExit
+// are in emit_execute.go.
 
-	// Set up ExecContext.
-	var ctx ExecContext
-	ctx.Regs = uintptr(unsafe.Pointer(&regs[0]))
-	if cf.Proto != nil && len(cf.Proto.Constants) > 0 {
-		ctx.Constants = uintptr(unsafe.Pointer(&cf.Proto.Constants[0]))
-	}
-
-	// Entry point: start at the beginning of the function.
-	codePtr := uintptr(cf.Code.Ptr())
-	ctxPtr := uintptr(unsafe.Pointer(&ctx))
-
-	for {
-		jit.CallJIT(codePtr, ctxPtr)
-
-		switch ctx.ExitCode {
-		case ExitNormal:
-			// Normal return: read result from slot 0.
-			return []runtime.Value{regs[0]}, nil
-
-		case ExitDeopt:
-			// JIT bailed out: fall back to VM interpreter.
-			if cf.DeoptFunc != nil {
-				return cf.DeoptFunc(args)
-			}
-			return nil, fmt.Errorf("methodjit: deopt with no DeoptFunc set")
-
-		case ExitCallExit:
-			// Call-exit: execute the call via VM, then resume JIT.
-			err := cf.executeCallExit(&ctx, regs)
-			if err != nil {
-				return nil, fmt.Errorf("methodjit: call-exit error: %w", err)
-			}
-
-			// Resume at the resume point for this call instruction.
-			callID := int(ctx.CallID)
-			resumeOff, ok := cf.ResumeAddrs[callID]
-			if !ok {
-				return nil, fmt.Errorf("methodjit: no resume address for call ID %d", callID)
-			}
-			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-			ctx.ExitCode = 0
-			continue
-
-		case ExitGlobalExit:
-			// Global-exit: load a global variable via the VM, then resume JIT.
-			err := cf.executeGlobalExit(&ctx, regs)
-			if err != nil {
-				return nil, fmt.Errorf("methodjit: global-exit error: %w", err)
-			}
-
-			// Resume at the resume point for this global instruction.
-			globalID := int(ctx.GlobalExitID)
-			resumeOff, ok := cf.ResumeAddrs[globalID]
-			if !ok {
-				return nil, fmt.Errorf("methodjit: no resume address for global ID %d", globalID)
-			}
-			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-			ctx.ExitCode = 0
-			continue
-
-		default:
-			return nil, fmt.Errorf("methodjit: unknown exit code %d", ctx.ExitCode)
-		}
-	}
-}
 
 // executeCallExit handles a call-exit by executing the call via the VM.
 // The JIT has stored all register-resident values to memory before exiting,
@@ -639,11 +583,23 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpGetGlobal:
 		ec.emitGlobalExit(instr)
 
+	// --- Table operations ---
+	case OpNewTable:
+		ec.emitNewTableExit(instr)
+	case OpGetTable:
+		ec.emitGetTableExit(instr)
+	case OpSetTable:
+		ec.emitSetTableExit(instr)
+	case OpGetField:
+		ec.emitGetField(instr)
+	case OpSetField:
+		ec.emitSetField(instr)
+
 	// --- Deopt: all complex ops bail to interpreter ---
 	case OpSelf,
 		OpSetGlobal,
 		OpGetUpval, OpSetUpval,
-		OpNewTable, OpGetTable, OpSetTable, OpGetField, OpSetField, OpSetList, OpAppend,
+		OpSetList, OpAppend,
 		OpConcat,
 		OpLen,
 		OpPow,

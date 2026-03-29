@@ -1,0 +1,215 @@
+//go:build darwin && arm64
+
+// emit_execute.go implements the Execute loop for CompiledFunction.
+// Handles normal return, deoptimization, call-exit (function calls via VM),
+// global-exit (global variable lookup), and table-exit (field access).
+// Each exit type stores state in ExecContext, returns to Go, executes
+// the operation, then re-enters the JIT at a resume point.
+
+package methodjit
+
+import (
+	"fmt"
+	"unsafe"
+
+	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
+)
+
+var _ = fmt.Sprintf
+var _ unsafe.Pointer
+var _ jit.Reg
+var _ runtime.Value
+var _ *vm.FuncProto
+
+func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, error) {
+	// Allocate VM registers (NaN-boxed values).
+	nregs := cf.numRegs
+	if nregs < len(args)+1 {
+		nregs = len(args) + 1
+	}
+	if nregs < 16 {
+		nregs = 16 // minimum to avoid out-of-bounds
+	}
+	regs := make([]runtime.Value, nregs)
+
+	// Load arguments into slots 0, 1, 2, ...
+	for i, arg := range args {
+		regs[i] = arg
+	}
+	// Fill remaining with nil.
+	for i := len(args); i < nregs; i++ {
+		regs[i] = runtime.NilValue()
+	}
+
+	// Set up ExecContext.
+	var ctx ExecContext
+	ctx.Regs = uintptr(unsafe.Pointer(&regs[0]))
+	if cf.Proto != nil && len(cf.Proto.Constants) > 0 {
+		ctx.Constants = uintptr(unsafe.Pointer(&cf.Proto.Constants[0]))
+	}
+
+	// Entry point: start at the beginning of the function.
+	codePtr := uintptr(cf.Code.Ptr())
+	ctxPtr := uintptr(unsafe.Pointer(&ctx))
+
+	for {
+		jit.CallJIT(codePtr, ctxPtr)
+
+		switch ctx.ExitCode {
+		case ExitNormal:
+			// Normal return: read result from slot 0.
+			return []runtime.Value{regs[0]}, nil
+
+		case ExitDeopt:
+			// JIT bailed out: fall back to VM interpreter.
+			if cf.DeoptFunc != nil {
+				return cf.DeoptFunc(args)
+			}
+			return nil, fmt.Errorf("methodjit: deopt with no DeoptFunc set")
+
+		case ExitCallExit:
+			// Call-exit: execute the call via VM, then resume JIT.
+			err := cf.executeCallExit(&ctx, regs)
+			if err != nil {
+				return nil, fmt.Errorf("methodjit: call-exit error: %w", err)
+			}
+
+			// Resume at the resume point for this call instruction.
+			callID := int(ctx.CallID)
+			resumeOff, ok := cf.ResumeAddrs[callID]
+			if !ok {
+				return nil, fmt.Errorf("methodjit: no resume address for call ID %d", callID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			continue
+
+		case ExitGlobalExit:
+			// Global-exit: load a global variable via the VM, then resume JIT.
+			err := cf.executeGlobalExit(&ctx, regs)
+			if err != nil {
+				return nil, fmt.Errorf("methodjit: global-exit error: %w", err)
+			}
+
+			// Resume at the resume point for this global instruction.
+			globalID := int(ctx.GlobalExitID)
+			resumeOff, ok := cf.ResumeAddrs[globalID]
+			if !ok {
+				return nil, fmt.Errorf("methodjit: no resume address for global ID %d", globalID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			continue
+
+		case ExitTableExit:
+			// Table-exit: perform table operation via Go, then resume JIT.
+			err := cf.executeTableExit(&ctx, regs)
+			if err != nil {
+				return nil, fmt.Errorf("methodjit: table-exit error: %w", err)
+			}
+
+			// Resume at the resume point for this table instruction.
+			tableID := int(ctx.TableExitID)
+			resumeOff, ok := cf.ResumeAddrs[tableID]
+			if !ok {
+				return nil, fmt.Errorf("methodjit: no resume address for table ID %d", tableID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			continue
+
+		default:
+			return nil, fmt.Errorf("methodjit: unknown exit code %d", ctx.ExitCode)
+		}
+	}
+}
+
+// executeTableExit handles table operations (NewTable, GetTable, SetTable,
+// GetField/SetField fallback) by executing them in Go, then resuming the JIT.
+func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Value) error {
+	switch ctx.TableOp {
+	case TableOpNewTable:
+		// Create a new table with the given array/hash hints.
+		arrayHint := int(ctx.TableAux)
+		hashHint := int(ctx.TableAux2)
+		tbl := runtime.NewTableSized(arrayHint, hashHint)
+		resultSlot := int(ctx.TableSlot)
+		if resultSlot < len(regs) {
+			regs[resultSlot] = runtime.TableValue(tbl)
+		}
+
+	case TableOpGetTable:
+		// R(result) = R(table)[R(key)]
+		tableSlot := int(ctx.TableSlot)
+		keySlot := int(ctx.TableKeySlot)
+		resultSlot := int(ctx.TableAux) // result slot stored in Aux
+		if tableSlot < len(regs) && keySlot < len(regs) {
+			tblVal := regs[tableSlot]
+			keyVal := regs[keySlot]
+			if tblVal.IsTable() {
+				tbl := tblVal.Table()
+				result := tbl.RawGet(keyVal)
+				if resultSlot < len(regs) {
+					regs[resultSlot] = result
+				}
+			} else if resultSlot < len(regs) {
+				regs[resultSlot] = runtime.NilValue()
+			}
+		}
+
+	case TableOpSetTable:
+		// R(table)[R(key)] = R(val)
+		tableSlot := int(ctx.TableSlot)
+		keySlot := int(ctx.TableKeySlot)
+		valSlot := int(ctx.TableValSlot)
+		if tableSlot < len(regs) && keySlot < len(regs) && valSlot < len(regs) {
+			tblVal := regs[tableSlot]
+			keyVal := regs[keySlot]
+			valVal := regs[valSlot]
+			if tblVal.IsTable() {
+				tbl := tblVal.Table()
+				tbl.RawSet(keyVal, valVal)
+			}
+		}
+
+	case TableOpGetField:
+		// R(result) = R(table).Constants[constIdx]
+		tableSlot := int(ctx.TableSlot)
+		constIdx := int(ctx.TableAux)
+		resultSlot := int(ctx.TableAux2)
+		if tableSlot < len(regs) && cf.Proto != nil && constIdx < len(cf.Proto.Constants) {
+			tblVal := regs[tableSlot]
+			fieldName := cf.Proto.Constants[constIdx].Str()
+			if tblVal.IsTable() {
+				tbl := tblVal.Table()
+				result := tbl.RawGetString(fieldName)
+				if resultSlot < len(regs) {
+					regs[resultSlot] = result
+				}
+			} else if resultSlot < len(regs) {
+				regs[resultSlot] = runtime.NilValue()
+			}
+		}
+
+	case TableOpSetField:
+		// R(table).Constants[constIdx] = R(val)
+		tableSlot := int(ctx.TableSlot)
+		constIdx := int(ctx.TableAux)
+		valSlot := int(ctx.TableValSlot)
+		if tableSlot < len(regs) && cf.Proto != nil && constIdx < len(cf.Proto.Constants) && valSlot < len(regs) {
+			tblVal := regs[tableSlot]
+			fieldName := cf.Proto.Constants[constIdx].Str()
+			valVal := regs[valSlot]
+			if tblVal.IsTable() {
+				tbl := tblVal.Table()
+				tbl.RawSetString(fieldName, valVal)
+			}
+		}
+
+	default:
+		return fmt.Errorf("unknown table op %d", ctx.TableOp)
+	}
+	return nil
+}
