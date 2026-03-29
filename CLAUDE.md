@@ -2,30 +2,62 @@
 
 ## The Mission
 
-**Surpass LuaJIT.** Build a multi-tier optimizing JIT compiler for GScript using V8's Method JIT approach. The work continues until GScript matches or exceeds LuaJIT on all standard benchmarks.
+**Surpass LuaJIT on all benchmarks.** This is an AI-driven compiler engineering experiment: build a production-quality JIT compiler using V8's Method JIT architecture, entirely by AI agents.
+
+### Why This Project Exists
+
+1. **Prove AI can build compilers.** Not toy compilers — a real JIT that generates ARM64 machine code, does speculative optimization with deopt, and competes with hand-tuned C code (LuaJIT).
+2. **Explore AI-friendly compiler architecture.** Traditional compilers are built for human engineers. We design for AI: modular files (<1000 lines), diagnostic tools that dump state instead of requiring reasoning, TDD with correctness oracles.
+3. **Beat LuaJIT.** Not by copying it (trace JIT), but by using V8's approach (Method JIT) on Lua-like semantics. A fundamentally different strategy to reach the same goal.
+
+### Non-Goals
+
+- Trace JIT. We tried it. It hit a ceiling on function calls, recursion, and branchy code. **Trace JIT is deprecated and disconnected from the CLI.** `internal/jit/` is scheduled for deletion.
+- Hacks and workarounds. Function-entry tracing was a hack that broke 8 benchmarks. We don't bolt partial solutions onto the wrong architecture.
+- 100x over interpreter. The theoretical maximum for a JIT over a Go interpreter is ~33x (10ns/op vs 0.3ns/op). Our real target is beating LuaJIT's absolute times, not a ratio.
+
+### The Architecture
+
+```
+Tier 0: Interpreter (internal/vm/)
+  → Executes all bytecodes, collects type feedback (FeedbackVector)
+  → After 100 calls with stable feedback → Tier 1
+
+Tier 1: Method JIT (internal/methodjit/)
+  → Compiles entire functions: bytecode → CFG SSA IR → ARM64
+  → Handles ALL operations (native or via op-exit resume)
+  → No function is ever rejected — everything compiles
+  → Optimization passes: TypeSpec, ConstProp, DCE, Inline
+  → For ops that can't be native: exit to Go, perform op, resume JIT
+```
+
+No trace JIT. Three tiers: interpreter → baseline → optimizing. Like V8.
 
 ## Core Principles
 
-### 1. Multi-Tier JIT with Seamless Tiering
+### 1. Single Method JIT, Universal Compilation
 
-The compiler has multiple optimization levels that activate **automatically** based on runtime profiling — never via compiler flags or user configuration:
+Every function compiles. No `canCompile` rejection. Operations the JIT can't emit natively use **op-exit resume**: the JIT exits to Go, Go performs the operation, the JIT resumes at the next instruction. This is slower than native (~55ns per exit) but faster than rejecting the entire function.
 
 ```
-Tier 0: Interpreter (vm.go)
-  → Executes bytecode, collects type feedback (FeedbackVector)
-  → After N calls with stable feedback → Tier 1
+Native ops (fast):     int/float arithmetic, comparisons, branches, loops, constants
+Exit-resume ops (slow): function calls, globals, tables, strings, closures, channels
+Future native ops:     inline field access (shape guards), native BL calls, inlined callees
 
-Tier 1: Method JIT — Baseline (internal/methodjit/)
-  → Compiles entire function: bytecode → CFG SSA IR → ARM64
-  → Type-generic operations, basic optimizations
-  → After M executions with hot loops → Tier 2
+Tier 1: Baseline JIT (planned)
+  → Fast compilation, minimal optimization
+  → Compiles ALL ops natively (no op-exit) using simple templates
+  → Quick to compile, modest speedup (~3-5x), low latency
+  → Every function gets Tier 1 quickly
 
-Tier 2: Method JIT — Optimized (future)
-  → Aggressive optimization: inlining, type specialization, loop opts
-  → Deoptimizes back to Tier 0 on guard failure
+Tier 2: Optimizing JIT (current methodjit/)
+  → Slower compilation, aggressive optimization
+  → CFG SSA IR → TypeSpec → ConstProp → DCE → Inline → RegAlloc → Emit
+  → Raw-int loop mode, shape-guarded field access, function inlining
+  → Big speedup (~10-30x) for hot functions
 ```
 
-Tiering is transparent. The same GScript code runs at every tier and produces identical results. The runtime decides when to promote based on call counts and type stability.
+**Seamless tier-up**: Tier 0 → Tier 1 at 50 calls. Tier 1 → Tier 2 at 500 calls with stable feedback. Same function, same result, different speed. The runtime decides, never the user.
 
 ### 2. Pluggable Pass Pipeline
 
@@ -152,24 +184,60 @@ Validation runs after EVERY pass to catch bugs immediately.
 
 ## Current Status
 
-- **M1 DONE**: CFG SSA IR + graph builder. Bytecode → IR conversion with Braun SSA construction. 9 tests, all pass. fib/if-else/for-loop/tables all generate correct IR.
-- **Trace JIT**: stable for loops (mandelbrot 4.9x, table_field 11x, nbody 5.8x). Function-entry tracing removed. Gradually deprecated as Method JIT matures.
-- **Next**: IR interpreter (correctness validation), then optimization passes, then ARM64 codegen.
+**Optimizing JIT (Tier 2)**: Complete pipeline operational. 40+ files, 12K+ lines, 200+ tests.
+- CFG SSA IR + Braun graph builder
+- 4 optimization passes: TypeSpec, ConstProp, DCE, Inline
+- Forward-walk register allocator (5 GPRs + 8 FPRs)
+- ARM64 emitter with raw-int loop optimization (21.4x on tight loops)
+- Call-exit + global-exit + table-exit resume
+- Shape-guarded inline field access
+- Type feedback collection in interpreter
+- Tiering: interpreter → Method JIT at 100 calls
+- Diagnose tool: one-call diagnostic dump
+
+**Trace JIT**: DEPRECATED. Disconnected from CLI. Scheduled for deletion.
+
+**Performance**: Sum10000 21.4x over VM. Geometric mean vs LuaJIT: 16.7x behind.
 
 ## Roadmap
 
-### M2: IR Interpreter + Validator + Pipeline Framework
-- IR interpreter: execute CFG SSA in Go, compare with VM
-- Validator: check invariants after every pass
-- Pipeline: ordered pass list with enable/disable
+### Phase A: Universal Compilation (IN PROGRESS)
+- Remove canCompile rejection — all functions compile
+- Generic op-exit for unsupported ops (concat, len, closures, etc.)
+- Every benchmark runs through Method JIT
 
-### M3: Type Feedback + Type Specialization Pass
-- FeedbackVector in interpreter (per-instruction type lattice)
-- Type specialization pass: Add → AddInt/AddFloat based on feedback
-- GuardType insertion for speculative optimization
+### Phase B: Baseline JIT (Tier 1)
+- Fast compile, no optimization, all ops native
+- Bytecode → ARM64 template translation (like V8 Sparkplug)
+- Quick startup, modest speedup (~3-5x)
+- Seamless tier-up to Tier 2 at 500 calls
 
-### M4: Register Allocation + ARM64 Code Generation
-- Forward-walk register allocator (Maglev-style)
+### Phase C: Interpreter-Resume Deopt
+- Guard failures resume interpreter at exact bytecode PC (not restart)
+- Enables aggressive speculative optimization
+- BytecodePC field on every IR instruction
+
+### Phase D: Native Function Calls
+- JIT-to-JIT calls via ARM64 BL (no Go round-trip)
+- Self-recursive native BL for fib/ackermann
+- Callee inlining at IR level (InlinePass already exists)
+
+### Phase E: Advanced Optimization
+- Loop-invariant code motion (LICM)
+- Escape analysis
+- Range check elimination
+- Aggressive inlining with deopt
+
+### Goal
+Surpass LuaJIT on all benchmarks via Method JIT with speculative optimization.
+
+## Old Roadmap (Completed)
+
+### M1-M6: DONE
+- M1: CFG SSA IR + graph builder ✓
+- M2: IR interpreter + validator + pipeline ✓
+- M3: Type feedback in VM ✓
+- M4: Register allocator + ARM64 emitter ✓ (forward-walk regalloc, NaN-boxed + raw-int emission)
 - ARM64 emission reusing existing assembler layer
 - Deopt stubs: guard failure → restore interpreter state
 
