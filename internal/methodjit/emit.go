@@ -81,6 +81,12 @@ type ExecContext struct {
 	OpExitArg2 int64 // operand 2 slot (or constant index)
 	OpExitAux  int64 // auxiliary data (e.g., constant pool index for strings)
 	OpExitID   int64 // resume point ID (instruction ID)
+	// Baseline JIT fields (ExitCode=7): bytecode-level op-exit
+	BaselineOp int64 // vm.Opcode of the bytecode being executed
+	BaselinePC int64 // bytecodePC of the NEXT instruction (resume point)
+	BaselineA  int64 // decoded A field from the instruction
+	BaselineB  int64 // decoded B field (or Bx for ABx format)
+	BaselineC  int64 // decoded C field
 }
 
 // ExitCode constants.
@@ -90,7 +96,8 @@ const (
 	ExitCallExit   = 3 // call-exit: pause JIT, execute call via VM, resume JIT
 	ExitGlobalExit = 4 // global-exit: pause JIT, load global via VM, resume JIT
 	ExitTableExit  = 5 // table-exit: pause JIT, do table op via Go, resume JIT
-	ExitOpExit     = 6 // op-exit: pause JIT, Go handles the operation, resume JIT
+	ExitOpExit         = 6 // op-exit: pause JIT, Go handles the operation, resume JIT
+	ExitBaselineOpExit = 7 // baseline op-exit: bytecode-level exit for Tier 1
 )
 
 // TableOp constants (stored in ExecContext.TableOp).
@@ -128,6 +135,12 @@ var (
 	execCtxOffOpExitArg2   = int(unsafe.Offsetof(ExecContext{}.OpExitArg2))
 	execCtxOffOpExitAux    = int(unsafe.Offsetof(ExecContext{}.OpExitAux))
 	execCtxOffOpExitID     = int(unsafe.Offsetof(ExecContext{}.OpExitID))
+	// Baseline JIT fields
+	execCtxOffBaselineOp = int(unsafe.Offsetof(ExecContext{}.BaselineOp))
+	execCtxOffBaselinePC = int(unsafe.Offsetof(ExecContext{}.BaselinePC))
+	execCtxOffBaselineA  = int(unsafe.Offsetof(ExecContext{}.BaselineA))
+	execCtxOffBaselineB  = int(unsafe.Offsetof(ExecContext{}.BaselineB))
+	execCtxOffBaselineC  = int(unsafe.Offsetof(ExecContext{}.BaselineC))
 )
 
 // CompiledFunction holds the generated native code for a function.

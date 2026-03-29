@@ -64,6 +64,12 @@ func (vm *VM) SetTop(top int) {
 	vm.top = top
 }
 
+// Top returns the current top-of-stack pointer. Used by the baseline JIT
+// to implement B=0 (variable args) in OP_CALL.
+func (vm *VM) Top() int {
+	return vm.top
+}
+
 // Globals returns the globals map.
 func (vm *VM) Globals() map[string]runtime.Value {
 	return vm.globals
