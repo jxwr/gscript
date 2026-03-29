@@ -20,3 +20,4 @@ game_engine
 # Claude Code agent worktrees
 .claude/worktrees/
 .claude/projects/
+.claude/logs/

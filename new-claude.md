@@ -112,14 +112,4 @@ Before adding Pass N+1, ALL tests must pass with passes 1..N. Run correctness ch
 
 ### 4. Proactive architecture review
 Every optimization round: review file sizes, module boundaries, pass pipeline, test coverage, diagnostic tools. Don't wait for things to break.
-
-## Reference Documents
-
-- Architecture: @docs-internal/architecture/overview.md
-- Architecture audit: @docs-internal/architecture/audit.md
-- ADRs (past decisions): @docs-internal/decisions/
-- Debug JIT correctness: @docs-internal/diagnostics/debug-jit-correctness.md
-- Debug deopt failures: @docs-internal/diagnostics/debug-deopt.md
-- Debug IR pipeline: @docs-internal/diagnostics/debug-ir-pipeline.md
-- Known issues: @docs-internal/known-issues.md
 
