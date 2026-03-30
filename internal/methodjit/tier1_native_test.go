@@ -152,10 +152,6 @@ for i := 1; i <= 200; i++ { result = o:get_value() }
 // ---------------------------------------------------------------------------
 
 func TestTier1_NativeGetUpval(t *testing.T) {
-	// Known issue: closure upvalue access in baseline JIT is broken.
-	// The upvalue pointer doesn't survive across the JIT boundary correctly.
-	// See TestTier1_Closure for the same pre-existing bug.
-	t.Skip("known closure upvalue bug in baseline JIT")
 	compareVMvsJIT(t, `
 func make_adder(x) {
     func adder(y) { return x + y }
@@ -167,7 +163,6 @@ result := add10(5)
 }
 
 func TestTier1_NativeSetUpval(t *testing.T) {
-	t.Skip("known closure upvalue bug in baseline JIT")
 	compareVMvsJIT(t, `
 func make_counter() {
     count := 0
@@ -227,5 +222,152 @@ func scale_field() {
 }
 result := 0
 for i := 1; i <= 200; i++ { result = scale_field() }
+`, "result")
+}
+
+// ---------------------------------------------------------------------------
+// Field cache warming tests
+// These verify that GETFIELD/SETFIELD produce correct results after the
+// Go-side slow path populates the FieldCache, allowing the native inline
+// cache to hit on subsequent calls.
+// ---------------------------------------------------------------------------
+
+func TestTier1_FieldCacheWarmColdThenHot(t *testing.T) {
+	// First access warms the cache (cold), repeated access uses the cache (hot).
+	compareVMvsJIT(t, `
+func f() {
+    t := {x: 42}
+    return t.x
+}
+result := 0
+for i := 1; i <= 10; i++ { result = f() }
+`, "result")
+}
+
+func TestTier1_FieldCacheMultipleFields(t *testing.T) {
+	// Multiple fields at different PCs each get their own cache entry.
+	compareVMvsJIT(t, `
+func f() {
+    t := {a: 1, b: 2, c: 3, d: 4, e: 5}
+    return t.a + t.b + t.c + t.d + t.e
+}
+result := 0
+for i := 1; i <= 200; i++ { result = f() }
+`, "result")
+}
+
+func TestTier1_FieldCacheDifferentTableShapes(t *testing.T) {
+	// Tables with different shapes should still produce correct results.
+	// The cache is per-PC, so two different calls to f() create tables
+	// with the same shape, and the cache hits correctly.
+	compareVMvsJIT(t, `
+func sum_fields(t) {
+    return t.x + t.y
+}
+result := 0
+for i := 1; i <= 200; i++ {
+    t := {x: i, y: i * 2}
+    result = sum_fields(t)
+}
+`, "result")
+}
+
+func TestTier1_FieldCacheSetThenGet(t *testing.T) {
+	// SETFIELD populates the cache, then GETFIELD uses it.
+	compareVMvsJIT(t, `
+func f(v) {
+    t := {}
+    t.val = v
+    t.doubled = v * 2
+    return t.val + t.doubled
+}
+result := 0
+for i := 1; i <= 200; i++ { result = f(i) }
+`, "result")
+}
+
+func TestTier1_FieldCacheLoopAccess(t *testing.T) {
+	// Repeated field access within a loop (the primary use case).
+	compareVMvsJIT(t, `
+func f() {
+    t := {x: 0, y: 0}
+    for i := 1; i <= 50; i++ {
+        t.x = t.x + i
+        t.y = t.y + i * 2
+    }
+    return t.x + t.y
+}
+result := 0
+for i := 1; i <= 200; i++ { result = f() }
+`, "result")
+}
+
+// ---------------------------------------------------------------------------
+// GETGLOBAL (native per-PC value cache with generation invalidation)
+// ---------------------------------------------------------------------------
+
+func TestTier1_NativeGetGlobal_SelfRecursive(t *testing.T) {
+	// Recursive function that loads itself via GETGLOBAL.
+	// The cache should hit after the first miss.
+	compareVMvsJIT(t, `
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+result := 0
+for i := 1; i <= 200; i++ { result = fib(10) }
+`, "result")
+}
+
+func TestTier1_NativeGetGlobal_MutualRecursion(t *testing.T) {
+	// Mutual recursion: is_even calls is_odd and vice versa.
+	compareVMvsJIT(t, `
+func is_even(n) {
+    if n == 0 { return true }
+    return is_odd(n - 1)
+}
+func is_odd(n) {
+    if n == 0 { return false }
+    return is_even(n - 1)
+}
+result := false
+for i := 1; i <= 200; i++ { result = is_even(10) }
+`, "result")
+}
+
+func TestTier1_NativeGetGlobal_SetGlobalInvalidates(t *testing.T) {
+	// SETGLOBAL must invalidate the cache. Counter is read and written.
+	compareVMvsJIT(t, `
+counter := 0
+func inc() {
+    counter = counter + 1
+}
+for i := 1; i <= 200; i++ { inc() }
+result := counter
+`, "result")
+}
+
+func TestTier1_NativeGetGlobal_CrossFunctionInvalidation(t *testing.T) {
+	// Function A sets a global, function B reads it.
+	// The cache in B must be invalidated when A sets the global.
+	compareVMvsJIT(t, `
+value := 0
+func setter(x) { value = x }
+func getter() { return value }
+result := 0
+for i := 1; i <= 200; i++ {
+    setter(i)
+    result = getter()
+}
+`, "result")
+}
+
+func TestTier1_NativeGetGlobal_FunctionValue(t *testing.T) {
+	// Loading a function value global (the primary optimization target).
+	compareVMvsJIT(t, `
+func double(x) { return x * 2 }
+func apply(x) { return double(x) }
+result := 0
+for i := 1; i <= 200; i++ { result = apply(i) }
 `, "result")
 }

@@ -12,7 +12,7 @@ import (
 
 const (
 	maxStack     = 256 // max registers per call frame
-	maxCallDepth = 200 // max call stack depth
+	maxCallDepth = 1000 // max call stack depth
 	maxMetaDepth = 50  // max __index chain depth
 )
 
@@ -70,6 +70,12 @@ func (vm *VM) Top() int {
 	return vm.top
 }
 
+// TopPtr returns a pointer to vm.top. Used by the JIT to read/write Top
+// from native code for variable-arg (B=0) and variable-return (C=0) calls.
+func (vm *VM) TopPtr() *int {
+	return &vm.top
+}
+
 // CurrentClosure returns the closure for the current (topmost) call frame.
 // Used by the baseline JIT to access upvalues. Returns nil if no frame is active.
 func (vm *VM) CurrentClosure() *Closure {
@@ -77,6 +83,48 @@ func (vm *VM) CurrentClosure() *Closure {
 		return vm.frames[vm.frameCount-1].closure
 	}
 	return nil
+}
+
+// PushFrame pushes a minimal call frame for the given closure and base.
+// Used by the baseline JIT's fast call path so that CurrentClosure() and
+// CloseUpvalues() work correctly for the callee.
+// Returns false if the call stack would overflow.
+func (vm *VM) PushFrame(cl *Closure, base int) bool {
+	if vm.frameCount >= maxCallDepth {
+		return false
+	}
+	frame := &vm.frames[vm.frameCount]
+	frame.closure = cl
+	frame.pc = 0
+	frame.base = base
+	frame.numResults = -1
+	frame.varargs = nil
+	vm.frameCount++
+	return true
+}
+
+// PopFrame removes the topmost call frame.
+// Used by the baseline JIT's fast call path after callee execution.
+func (vm *VM) PopFrame() {
+	if vm.frameCount > 0 {
+		vm.frameCount--
+	}
+}
+
+// FrameCount returns the current call stack depth.
+func (vm *VM) FrameCount() int {
+	return vm.frameCount
+}
+
+// EnsureRegs ensures the register file has at least `needed` slots.
+// If the register file is grown, returns the new slice.
+func (vm *VM) EnsureRegs(needed int) []runtime.Value {
+	if needed > len(vm.regs) {
+		newRegs := runtime.MakeNilSlice(needed * 2)
+		copy(newRegs, vm.regs)
+		vm.regs = newRegs
+	}
+	return vm.regs
 }
 
 // Globals returns the globals map.
@@ -1335,7 +1383,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					cl.Upvalues[i] = frame.closure.Upvalues[desc.Index]
 				}
 			}
-			vm.regs[base+a] = runtime.FunctionValue(cl)
+			vm.regs[base+a] = runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
 
 		case OP_CLOSE:
 			a := DecodeA(inst)
@@ -1833,6 +1881,25 @@ func (vm *VM) markGlobalTablesConcurrent() {
 }
 
 // ---- Upvalue management ----
+
+// RegisterOpenUpvalue adds an existing open upvalue to the tracked list so that
+// closeUpvalues will close it when the enclosing function returns.
+// Used by the baseline JIT's CLOSURE handler.
+func (vm *VM) RegisterOpenUpvalue(uv *Upvalue) {
+	// Don't add duplicates.
+	for _, existing := range vm.openUpvals {
+		if existing == uv {
+			return
+		}
+	}
+	vm.openUpvals = append(vm.openUpvals, uv)
+}
+
+// CloseUpvalues closes all open upvalues at or above fromReg.
+// Used by the baseline JIT for OP_CLOSE handling.
+func (vm *VM) CloseUpvalues(fromReg int) {
+	vm.closeUpvalues(fromReg)
+}
 
 func (vm *VM) findOrCreateUpvalue(regIdx int) *Upvalue {
 	for _, uv := range vm.openUpvals {

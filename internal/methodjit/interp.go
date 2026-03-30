@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -503,7 +504,7 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		if protoIdx >= 0 && protoIdx < len(s.fn.Proto.Protos) {
 			childProto := s.fn.Proto.Protos[protoIdx]
 			cl := &vm.Closure{Proto: childProto}
-			s.values[instr.ID] = runtime.FunctionValue(cl)
+			s.values[instr.ID] = runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
 		} else {
 			s.values[instr.ID] = runtime.NilValue()
 		}

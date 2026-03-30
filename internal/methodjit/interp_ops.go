@@ -5,6 +5,7 @@ package methodjit
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -68,7 +69,7 @@ func (s *interpState) getGlobal(name string) runtime.Value {
 	// wrapping the current proto so self-recursive calls work.
 	if name == s.fn.Proto.Name {
 		cl := &vm.Closure{Proto: s.fn.Proto}
-		return runtime.FunctionValue(cl)
+		return runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
 	}
 	return runtime.NilValue()
 }

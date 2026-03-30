@@ -29,6 +29,8 @@ type FuncProto struct {
 	HasSelfCalls    bool                      // true if function has recursive calls to itself (set during JIT compilation)
 	CallCount       int                       // JIT call count (avoids map lookup in VM hot path)
 	Feedback        FeedbackVector            // lazily-initialized per-PC type feedback for Method JIT
+	CompiledCodePtr  uintptr                   // pointer to baseline JIT compiled code (set after CompileBaseline)
+	DirectEntryPtr   uintptr                   // pointer to direct entry point for native BLR calls
 }
 
 // EnsureFeedback lazily initializes the type feedback vector for this function.

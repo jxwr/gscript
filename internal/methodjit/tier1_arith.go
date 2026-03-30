@@ -386,17 +386,60 @@ func emitBaselineEQ(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	loadRK(asm, jit.X0, bidx)
 	loadRK(asm, jit.X1, cidx)
 
-	// Fast path: raw bit equality (works for int, nil, bool, same-pointer)
 	skipLabel := pcLabel(pc + 2) // skip next instruction
+	doneLabel := nextLabel("eq_done")
+	notEqualLabel := nextLabel("eq_ne")
+	floatCmpLabel := nextLabel("eq_fcmp")
 
+	// Fast path: raw bit equality (works for int==int, nil==nil, bool==bool, ptr==ptr)
 	asm.CMPreg(jit.X0, jit.X1)
 	if a != 0 {
-		// if (B == C) != true → if B != C then skip
-		asm.BCond(jit.CondNE, skipLabel)
+		asm.BCond(jit.CondEQ, doneLabel) // equal → don't skip
 	} else {
-		// if (B == C) != false → if B == C then skip
-		asm.BCond(jit.CondEQ, skipLabel)
+		asm.BCond(jit.CondEQ, skipLabel) // equal → skip
 	}
+
+	// Slow path: raw bits differ. Check if both are numbers (int/float mismatch).
+	// A value is a number if: tag < 0xFFFC (float) OR tag == 0xFFFE (int).
+	// Check X0
+	asm.LSRimm(jit.X2, jit.X0, 48)
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagNilShr48)) // 0xFFFC
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondLT, floatCmpLabel) // tag < 0xFFFC → float → is number
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))  // 0xFFFE
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, notEqualLabel) // tag != 0xFFFE → not int, not float → not number
+
+	// X0 is a number. Check X1.
+	asm.Label(floatCmpLabel)
+	asm.LSRimm(jit.X2, jit.X1, 48)
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagNilShr48))
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondLT, nextLabel("eq_both_num")) // float → is number
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, notEqualLabel) // not int → not number
+
+	// Both are numbers: convert to float and compare
+	asm.Label(nextLabel("eq_both_num"))
+	emitToFloat(asm, jit.D0, jit.X0, jit.X4, jit.X5)
+	emitToFloat(asm, jit.D1, jit.X1, jit.X4, jit.X5)
+	asm.FCMPd(jit.D0, jit.D1)
+	if a != 0 {
+		asm.BCond(jit.CondNE, skipLabel) // not equal → skip
+	} else {
+		asm.BCond(jit.CondEQ, skipLabel) // equal → skip
+	}
+	asm.B(doneLabel)
+
+	// Not equal (different types, not both numbers)
+	asm.Label(notEqualLabel)
+	if a != 0 {
+		asm.B(skipLabel) // not equal → skip
+	}
+	// else: fall through to doneLabel (not equal, don't skip)
+
+	asm.Label(doneLabel)
 }
 
 // emitBaselineLT: if (RK(B) < RK(C)) != bool(A) then PC++

@@ -172,30 +172,34 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 // ---------------------------------------------------------------------------
 
 // emitBaselineReturn: return R(A)..R(A+B-2); B=0 variable, B=1 nothing
+// Checks CallMode to decide between normal exit (baseline_epilogue) and
+// direct exit (direct_epilogue) for native BLR calls.
 func emitBaselineReturn(asm *jit.Assembler, inst uint32) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
 
 	if b == 1 {
-		// Return nothing: store nil in slot 0.
+		// Return nothing: store nil in ctx.BaselineReturnValue.
 		asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
-		asm.STR(jit.X0, mRegRegs, slotOff(0))
+		asm.STR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
 	} else if b >= 2 {
 		// Return b-1 values starting from R(A).
-		// For baseline, we put the first return value in slot 0.
+		// Store the first return value in ctx.BaselineReturnValue.
 		if a != 0 {
 			asm.LDR(jit.X0, mRegRegs, slotOff(a))
-			asm.STR(jit.X0, mRegRegs, slotOff(0))
+		} else {
+			asm.LDR(jit.X0, mRegRegs, slotOff(0))
 		}
+		asm.STR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
 	} else {
-		// b == 0: variable return. Copy R(A) to slot 0.
-		if a != 0 {
-			asm.LDR(jit.X0, mRegRegs, slotOff(a))
-			asm.STR(jit.X0, mRegRegs, slotOff(0))
-		}
+		// b == 0: variable return. Store R(A) in ctx.BaselineReturnValue.
+		asm.LDR(jit.X0, mRegRegs, slotOff(a))
+		asm.STR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
 	}
 
-	// Jump to epilogue.
+	// Check CallMode: 0 = normal entry, 1 = direct entry (native BLR call).
+	asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
+	asm.CBNZ(jit.X1, "direct_epilogue")
 	asm.B("baseline_epilogue")
 }
 

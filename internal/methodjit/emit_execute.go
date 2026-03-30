@@ -143,6 +143,92 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 	}
 }
 
+// executeCallExit handles a call-exit by executing the call via the VM.
+// The JIT has stored all register-resident values to memory before exiting,
+// so the VM register file (regs) is fully up-to-date.
+func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Value) error {
+	callSlot := int(ctx.CallSlot)
+	nArgs := int(ctx.CallNArgs)
+	nRets := int(ctx.CallNRets)
+
+	// Get the function value from the register file.
+	if callSlot >= len(regs) {
+		return fmt.Errorf("call slot %d out of range (regs len %d)", callSlot, len(regs))
+	}
+	fnVal := regs[callSlot]
+
+	// Collect arguments from regs[callSlot+1 .. callSlot+nArgs].
+	callArgs := make([]runtime.Value, nArgs)
+	for i := 0; i < nArgs; i++ {
+		idx := callSlot + 1 + i
+		if idx < len(regs) {
+			callArgs[i] = regs[idx]
+		}
+	}
+
+	// Execute the call.
+	var results []runtime.Value
+	var err error
+
+	if cf.CallVM != nil {
+		results, err = cf.CallVM.CallValue(fnVal, callArgs)
+	} else if cf.DeoptFunc != nil {
+		// Fallback: no CallVM, try to use the function value directly.
+		return fmt.Errorf("no CallVM set for call-exit")
+	} else {
+		return fmt.Errorf("no CallVM or DeoptFunc set for call-exit")
+	}
+	if err != nil {
+		return err
+	}
+
+	// Place results back into the register file at regs[callSlot..callSlot+nRets-1].
+	// This follows Lua calling convention: results overwrite the function slot.
+	nr := nRets
+	if nr <= 0 {
+		nr = 1 // at minimum, 1 result
+	}
+	for i := 0; i < nr; i++ {
+		idx := callSlot + i
+		if idx < len(regs) {
+			if i < len(results) {
+				regs[idx] = results[i]
+			} else {
+				regs[idx] = runtime.NilValue()
+			}
+		}
+	}
+
+	return nil
+}
+
+// executeGlobalExit handles a global-exit by loading a global variable via the VM.
+// The global name is looked up from the constants pool and resolved via the VM.
+func (cf *CompiledFunction) executeGlobalExit(ctx *ExecContext, regs []runtime.Value) error {
+	globalSlot := int(ctx.GlobalSlot)
+	constIdx := int(ctx.GlobalConst)
+
+	if cf.CallVM == nil {
+		return fmt.Errorf("no CallVM set for global-exit")
+	}
+
+	// Look up the global name from the constants pool.
+	if cf.Proto == nil || constIdx >= len(cf.Proto.Constants) {
+		return fmt.Errorf("global constant index %d out of range", constIdx)
+	}
+	globalName := cf.Proto.Constants[constIdx].Str()
+
+	// Resolve the global value.
+	val := cf.CallVM.GetGlobal(globalName)
+
+	// Store the global value to the register file.
+	if globalSlot < len(regs) {
+		regs[globalSlot] = val
+	}
+
+	return nil
+}
+
 // executeTableExit handles table operations (NewTable, GetTable, SetTable,
 // GetField/SetField fallback) by executing them in Go, then resuming the JIT.
 func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Value) error {

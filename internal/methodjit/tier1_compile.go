@@ -27,9 +27,13 @@ import (
 
 // BaselineFunc holds the generated native code for a baseline-compiled function.
 type BaselineFunc struct {
-	Code   *jit.CodeBlock     // executable memory
-	Proto  *vm.FuncProto      // source function
-	Labels map[int]int        // bytecodePC -> code offset (for resume after exit)
+	Code             *jit.CodeBlock // executable memory
+	Proto            *vm.FuncProto  // source function
+	Labels           map[int]int    // bytecodePC -> code offset (for resume after exit)
+	HasFieldOps      bool           // true if proto has GETFIELD/SETFIELD (skip syncFieldCache otherwise)
+	GlobalValCache   []uint64       // per-PC NaN-boxed global value cache (0 = not cached)
+	CachedGlobalGen  uint64         // engine.globalCacheGen at time of last cache population
+	DirectEntryOffset int           // byte offset of the direct entry point (for native BLR calls)
 }
 
 // Baseline frame size: save FP/LR + callee-saved GPRs (X19-X28) = 12 regs = 96 bytes.
@@ -55,6 +59,19 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 
 	// Emit prologue.
 	emitBaselinePrologue(asm)
+
+	// Set CallMode = 0 (normal entry) in prologue. This is needed because
+	// the ExecContext is reused across calls, and a previous direct call
+	// might have set CallMode = 1.
+	asm.MOVimm16(jit.X0, 0)
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallMode)
+
+	// Jump past the direct entry (which is only reached via BLR from caller).
+	asm.B("pc_0")
+
+	// Emit the direct entry point for native BLR calls.
+	// This is a lightweight prologue that only saves FP+LR (16 bytes).
+	emitDirectEntryPrologue(asm)
 
 	// Walk bytecodes linearly.
 	for pc := 0; pc < len(code); pc++ {
@@ -126,10 +143,10 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		// ---- Complex ops (exit to Go) ----
 		// All op-exits need a resume stub at pc+1.
 		case vm.OP_CALL:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_CALL)
+			emitBaselineNativeCall(asm, inst, pc, proto)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETGLOBAL:
-			emitBaselineOpExitABx(asm, inst, pc, vm.OP_GETGLOBAL)
+			emitBaselineGetGlobal(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_SETGLOBAL:
 			emitBaselineOpExitABx(asm, inst, pc, vm.OP_SETGLOBAL)
@@ -210,8 +227,9 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 	// Emit a label for one-past-end.
 	asm.Label(pcLabel(len(code)))
 
-	// Emit epilogue.
+	// Emit epilogues: normal and direct.
 	emitBaselineEpilogue(asm)
+	emitDirectExitEpilogue(asm)
 
 	// Deduplicate resume PCs.
 	uniqueResume := make(map[int]bool, len(resumePCs))
@@ -262,10 +280,35 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		}
 	}
 
+	// Scan bytecodes for field ops and GETGLOBAL to set flags.
+	hasFieldOps := false
+	hasGetGlobal := false
+	for _, inst := range code {
+		op := vm.DecodeOp(inst)
+		if op == vm.OP_GETFIELD || op == vm.OP_SETFIELD || op == vm.OP_SELF {
+			hasFieldOps = true
+		}
+		if op == vm.OP_GETGLOBAL {
+			hasGetGlobal = true
+		}
+	}
+
+	// Allocate per-PC global value cache if any GETGLOBAL instructions exist.
+	var globalValCache []uint64
+	if hasGetGlobal {
+		globalValCache = make([]uint64, len(code))
+	}
+
+	// Get the direct entry offset for native BLR calls.
+	directEntryOff := asm.LabelOffset("direct_entry")
+
 	return &BaselineFunc{
-		Code:   block,
-		Proto:  proto,
-		Labels: labels,
+		Code:              block,
+		Proto:             proto,
+		Labels:            labels,
+		HasFieldOps:       hasFieldOps,
+		GlobalValCache:    globalValCache,
+		DirectEntryOffset: directEntryOff,
 	}, nil
 }
 
@@ -363,7 +406,11 @@ func emitBaselineOpExitCommon(asm *jit.Assembler, op vm.Opcode, pc int, a, b, c 
 	asm.LoadImm64(jit.X0, int64(c))
 	asm.STR(jit.X0, mRegCtx, execCtxOffBaselineC)
 
-	// Jump to shared exit.
+	// Check CallMode to choose the right exit path.
+	// CallMode == 0: normal entry, use baseline_exit (96-byte frame)
+	// CallMode == 1: direct entry, use direct_exit (16-byte frame)
+	asm.LDR(jit.X0, mRegCtx, execCtxOffCallMode)
+	asm.CBNZ(jit.X0, "direct_exit")
 	asm.B("baseline_exit")
 }
 

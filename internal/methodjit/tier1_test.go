@@ -325,10 +325,6 @@ result := fib(5)
 }
 
 func TestTier1_Fib10(t *testing.T) {
-	// Known issue: deep recursive fib through JIT returns wrong results.
-	// Same bug as Tier 2 (see TestTiering_EndToEnd_Fib comment).
-	// fib(5) works, fib(10) does not. Skipping until root cause is fixed.
-	t.Skip("known deep-recursion bug shared with Tier 2 JIT")
 	compareVMvsJIT(t, `
 func fib(n) {
     if n < 2 { return n }
@@ -594,4 +590,357 @@ func TestTier1_BenchmarkFiles(t *testing.T) {
 			assertValueEq(t, fmt.Sprintf("%s.%s", f.name, f.global), jitResult, vmResult)
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 11. Fast call path tests: JIT-to-JIT direct calls
+// ---------------------------------------------------------------------------
+
+// TestTier1_FastCall_Simple verifies simple function calls use the fast path.
+func TestTier1_FastCall_Simple(t *testing.T) {
+	compareVMvsJIT(t, `
+func double(x) { return x * 2 }
+result := 0
+for i := 1; i <= 200; i++ { result = double(i) }
+`, "result")
+}
+
+// TestTier1_FastCall_MultiArg verifies multi-argument calls.
+func TestTier1_FastCall_MultiArg(t *testing.T) {
+	compareVMvsJIT(t, `
+func add3(a, b, c) { return a + b + c }
+result := 0
+for i := 1; i <= 200; i++ { result = add3(i, i+1, i+2) }
+`, "result")
+}
+
+// TestTier1_FastCall_FibRecursive verifies recursive calls via the fast path.
+func TestTier1_FastCall_FibRecursive(t *testing.T) {
+	compareVMvsJIT(t, `
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+result := fib(15)
+`, "result")
+}
+
+// TestTier1_FastCall_MutualRecursion verifies mutual recursion across functions.
+func TestTier1_FastCall_MutualRecursion(t *testing.T) {
+	compareVMvsJIT(t, `
+func is_even(n) {
+    if n == 0 { return true }
+    return is_odd(n - 1)
+}
+func is_odd(n) {
+    if n == 0 { return false }
+    return is_even(n - 1)
+}
+result := is_even(20)
+`, "result")
+}
+
+// TestTier1_FastCall_ClosureCall verifies that calling closures with upvalues
+// works correctly through the fast path.
+func TestTier1_FastCall_ClosureCall(t *testing.T) {
+	compareVMvsJIT(t, `
+func make_adder(x) {
+    func adder(y) { return x + y }
+    return adder
+}
+add10 := make_adder(10)
+result := 0
+for i := 1; i <= 200; i++ { result = add10(i) }
+`, "result")
+}
+
+// TestTier1_FastCall_GoFunction verifies that GoFunction calls fall back to
+// the generic path correctly (e.g., math.sqrt, print).
+func TestTier1_FastCall_GoFunction(t *testing.T) {
+	compareVMvsJIT(t, `
+func f(x) { return type(x) }
+result := ""
+for i := 1; i <= 200; i++ { result = f(42) }
+`, "result")
+}
+
+// TestTier1_FastCall_NestedCalls verifies deeply nested function calls.
+func TestTier1_FastCall_NestedCalls(t *testing.T) {
+	compareVMvsJIT(t, `
+func inc(x) { return x + 1 }
+func double(x) { return x * 2 }
+func apply(x) { return double(inc(x)) }
+result := 0
+for i := 1; i <= 200; i++ { result = apply(i) }
+`, "result")
+}
+
+// TestTier1_FastCall_Ackermann verifies the Ackermann function (stress test
+// for deeply recursive fast calls).
+func TestTier1_FastCall_Ackermann(t *testing.T) {
+	compareVMvsJIT(t, `
+func ack(m, n) {
+    if m == 0 { return n + 1 }
+    if n == 0 { return ack(m - 1, 1) }
+    return ack(m - 1, ack(m, n - 1))
+}
+result := ack(3, 4)
+`, "result")
+}
+
+// TestTier1_FastCall_NoArgs verifies calling a zero-argument function.
+func TestTier1_FastCall_NoArgs(t *testing.T) {
+	compareVMvsJIT(t, `
+func fortytwo() { return 42 }
+result := 0
+for i := 1; i <= 200; i++ { result = fortytwo() }
+`, "result")
+}
+
+// TestTier1_FastCall_MultipleResults verifies functions that return values
+// used in subsequent computations.
+func TestTier1_FastCall_MultipleResults(t *testing.T) {
+	compareVMvsJIT(t, `
+func compute(x) { return x * x + x }
+result := 0
+for i := 1; i <= 200; i++ {
+    a := compute(i)
+    b := compute(i + 1)
+    result = a + b
+}
+`, "result")
+}
+
+// TestTier1_FastCall_SumPrimes verifies isPrime called in a loop (benchmark-
+// representative workload).
+func TestTier1_FastCall_SumPrimes(t *testing.T) {
+	compareVMvsJIT(t, `
+func is_prime(n) {
+    if n < 2 { return false }
+    i := 2
+    for i * i <= n {
+        if n % i == 0 { return false }
+        i = i + 1
+    }
+    return true
+}
+func sum_primes(limit) {
+    s := 0
+    for i := 2; i <= limit; i++ {
+        if is_prime(i) { s = s + i }
+    }
+    return s
+}
+result := sum_primes(200)
+`, "result")
+}
+
+// ---------------------------------------------------------------------------
+// Regression: top-level while loop with baseline JIT
+// The top-level proto gets compiled by baseline JIT (threshold=1, called once).
+// While loops must not reset local variables between iterations.
+// ---------------------------------------------------------------------------
+
+func TestTier1_TopLevelWhileLoop(t *testing.T) {
+	// Regression: top-level while loop with globals used as loop variables.
+	// The global value cache used a single CachedGlobalGen for all PCs.
+	// When SETGLOBAL bumped globalCacheGen and a subsequent GETGLOBAL at
+	// a different PC updated CachedGlobalGen, other PCs' stale cached values
+	// appeared valid. Fix: clear all cache entries on generation mismatch.
+	src := `
+depth := 4
+count := 0
+for depth <= 10 {
+    count = count + 1
+    depth = depth + 2
+}
+result := count
+`
+	compareVMvsJIT(t, src, "result")
+}
+
+func TestTier1_TopLevelWhileLoopDepth(t *testing.T) {
+	src := `
+depth := 4
+count := 0
+for depth <= 10 {
+    count = count + 1
+    depth = depth + 2
+}
+result := depth
+`
+	compareVMvsJIT(t, src, "result")
+}
+
+// ---------------------------------------------------------------------------
+// Native BLR call tests: verify ARM64 native call path
+// ---------------------------------------------------------------------------
+
+// TestTier1_NativeCall_CalleeOpExit verifies that when a callee does an op-exit
+// (like NEWTABLE) during a native BLR call, the ExitNativeCallExit handler
+// correctly finishes the callee and returns the result.
+func TestTier1_NativeCall_CalleeOpExit(t *testing.T) {
+	compareVMvsJIT(t, `
+func make_pair(a, b) {
+    t := {}
+    t[1] = a
+    t[2] = b
+    return t[1] + t[2]
+}
+result := 0
+for i := 1; i <= 200; i++ { result = make_pair(i, i * 2) }
+`, "result")
+}
+
+// TestTier1_NativeCall_DeepRecursionWithOpExit verifies recursive native calls
+// where the callee also does op-exits.
+func TestTier1_NativeCall_DeepRecursionWithOpExit(t *testing.T) {
+	compareVMvsJIT(t, `
+func sum_with_table(n) {
+    if n <= 0 { return 0 }
+    t := {val: n}
+    return t.val + sum_with_table(n - 1)
+}
+result := sum_with_table(10)
+`, "result")
+}
+
+// TestTier1_NativeCall_Fib20 verifies fib(20) produces correct results via native calls.
+func TestTier1_NativeCall_Fib20(t *testing.T) {
+	compareVMvsJIT(t, `
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+result := fib(20)
+`, "result")
+}
+
+// TestTier1_NativeCall_RecursiveWithTableOps verifies recursive calls combined
+// with table access ops work correctly (no corruption from native BLR + op-exit).
+func TestTier1_NativeCall_RecursiveWithTableOps(t *testing.T) {
+	compareVMvsJIT(t, `
+func fill(arr, n) {
+    if n <= 0 { return }
+    arr[n] = n * 10
+    fill(arr, n - 1)
+}
+arr := {}
+fill(arr, 20)
+result := arr[1] + arr[10] + arr[20]
+`, "result")
+}
+
+// TestTier1_NativeCall_TwoRecursiveCalls verifies double recursion with table ops.
+func TestTier1_NativeCall_TwoRecursiveCalls(t *testing.T) {
+	compareVMvsJIT(t, `
+func work(arr, lo, hi) {
+    if lo >= hi { return }
+    mid := lo + (hi - lo) / 2
+    arr[mid] = mid * 10
+    work(arr, lo, mid)
+    work(arr, mid + 1, hi)
+}
+arr := {}
+for i := 1; i <= 32; i++ { arr[i] = 0 }
+work(arr, 1, 32)
+result := arr[1] + arr[16] + arr[32]
+`, "result")
+}
+
+// TestTier1_NativeCall_Quicksort_Small verifies quicksort on a small array.
+func TestTier1_NativeCall_Quicksort_Small(t *testing.T) {
+	compareVMvsJIT(t, `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            tmp := arr[i]
+            arr[i] = arr[j]
+            arr[j] = tmp
+            i = i + 1
+        }
+    }
+    tmp := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = tmp
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+
+arr := {5, 3, 8, 1, 9, 2, 7, 4, 6, 10}
+quicksort(arr, 1, 10)
+result := arr[1] * 1000000000 + arr[2] * 100000000 + arr[3] * 10000000 + arr[4] * 1000000 + arr[5] * 100000 + arr[6] * 10000 + arr[7] * 1000 + arr[8] * 100 + arr[9] * 10 + arr[10]
+`, "result")
+}
+
+// TestTier1_NativeCall_Quicksort verifies quicksort with table ops and deep
+// recursion works correctly. This reproduces a corruption crash caused by
+// native BLR call + op-exit interaction.
+func TestTier1_NativeCall_Quicksort(t *testing.T) {
+	compareVMvsJIT(t, `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            tmp := arr[i]
+            arr[i] = arr[j]
+            arr[j] = tmp
+            i = i + 1
+        }
+    }
+    tmp := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = tmp
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+
+N := 500
+arr := {}
+x := 42
+for i := 1; i <= N; i++ {
+    x = (x * 1103515245 + 12345) % 2147483648
+    arr[i] = x
+}
+quicksort(arr, 1, N)
+
+sorted := true
+for i := 1; i < N; i++ {
+    if arr[i] > arr[i + 1] { sorted = false }
+}
+result := sorted
+`, "result")
+}
+
+// TestTier1_NativeCall_Ackermann verifies ack(3,4) with variable-return (C=0)
+// and variable-arg (B=0) native calls works correctly.
+func TestTier1_NativeCall_Ackermann(t *testing.T) {
+	compareVMvsJIT(t, `
+func ack(m, n) {
+    if m == 0 { return n + 1 }
+    if n == 0 { return ack(m - 1, 1) }
+    return ack(m - 1, ack(m, n - 1))
+}
+result := ack(3, 4)
+`, "result")
+}
+
+// TestTier1_NativeCall_MutualRecursion verifies mutual recursion with C=0/B=0.
+func TestTier1_NativeCall_MutualRecursion(t *testing.T) {
+	compareVMvsJIT(t, `
+func F(n) {
+    if n == 0 { return 1 }
+    return n - M(F(n - 1))
+}
+func M(n) {
+    if n == 0 { return 0 }
+    return n - F(M(n - 1))
+}
+result := F(15)
+`, "result")
 }

@@ -21,6 +21,61 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
+// emitBaselineGetGlobal emits native ARM64 for OP_GETGLOBAL: R(A) = globals[K(Bx)]
+// Uses a per-PC value cache stored in BaselineFunc.GlobalValCache with a
+// generation-based invalidation scheme. The cache is populated by the Go slow
+// path (handleGetGlobal) on first miss. SetGlobal increments the generation
+// counter, causing all caches to miss on next access.
+//
+// Fast path (~8 instructions):
+//   1. Version check: engine.globalCacheGen == bf.CachedGlobalGen
+//   2. Load GlobalCache pointer from ExecContext
+//   3. Load cached value at GlobalValCache[pc]
+//   4. If non-zero (cached), store to R(A) and continue
+// Slow path: standard exit-resume to handleGetGlobal in Go.
+func emitBaselineGetGlobal(asm *jit.Assembler, inst uint32, pc int) {
+	a := vm.DecodeA(inst)
+	bx := vm.DecodeBx(inst)
+
+	slowLabel := nextLabel("getglobal_slow")
+	doneLabel := nextLabel("getglobal_done")
+
+	// Version check: engine.globalCacheGen == ctx.BaselineGlobalCachedGen
+	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineGlobalGenPtr)
+	asm.CBZ(jit.X0, slowLabel) // no gen pointer = no cache
+	asm.LDR(jit.X1, jit.X0, 0)                                       // X1 = current gen
+	asm.LDR(jit.X2, mRegCtx, execCtxOffBaselineGlobalCachedGen) // X2 = cached gen
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, slowLabel) // generation mismatch -> cache invalid
+
+	// Load GlobalCache pointer from ExecContext.
+	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineGlobalCache)
+	asm.CBZ(jit.X0, slowLabel) // no cache allocated
+
+	// Load cached value at GlobalValCache[pc].
+	cacheOff := pc * 8 // each entry is 8 bytes (uint64)
+	if cacheOff < 4096 {
+		asm.LDR(jit.X1, jit.X0, cacheOff)
+	} else {
+		asm.LoadImm64(jit.X1, int64(cacheOff))
+		asm.ADDreg(jit.X0, jit.X0, jit.X1)
+		asm.LDR(jit.X1, jit.X0, 0)
+	}
+
+	// If zero (cache miss), go to slow path.
+	asm.CBZ(jit.X1, slowLabel)
+
+	// Cache hit: store to R(A).
+	asm.STR(jit.X1, mRegRegs, slotOff(a))
+	asm.B(doneLabel)
+
+	// Slow path: exit-resume.
+	asm.Label(slowLabel)
+	emitBaselineOpExitCommon(asm, vm.OP_GETGLOBAL, pc, a, bx, 0)
+
+	asm.Label(doneLabel)
+}
+
 // emitBaselineGetField emits native ARM64 for OP_GETFIELD: R(A) = R(B).field[C]
 // Uses runtime inline cache from proto.FieldCache[pc].
 // Falls back to exit-resume if cache miss or non-table.
@@ -76,8 +131,9 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 	asm.BCond(jit.CondGE, slowLabel) // unsigned >= means out of bounds
 
 	// Direct field access: svals[fieldIdx]
+	// LDRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
+	// so X3 must hold the raw fieldIdx (not pre-multiplied).
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
-	jit.EmitMulValueSize(asm, jit.X3, jit.X3, jit.X4) // X3 = fieldIdx * 8
 	asm.LDRreg(jit.X0, jit.X1, jit.X3) // X0 = svals[fieldIdx]
 
 	// Store result to R(A).
@@ -145,8 +201,9 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int) {
 	loadRK(asm, jit.X4, c) // X4 = value
 
 	// Direct field store: svals[fieldIdx] = value.
+	// STRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
+	// so X3 must hold the raw fieldIdx (not pre-multiplied).
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
-	jit.EmitMulValueSize(asm, jit.X3, jit.X3, jit.X5) // X3 = fieldIdx * 8
 	asm.STRreg(jit.X4, jit.X1, jit.X3) // svals[fieldIdx] = value
 
 	asm.B(doneLabel)
@@ -205,9 +262,10 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.BCond(jit.CondLT, slowLabel)
 
 	// Direct array access: array[key]
+	// LDRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
+	// so X1 must hold the raw key index (not pre-multiplied).
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
-	jit.EmitMulValueSize(asm, jit.X3, jit.X1, jit.X4) // X3 = key * 8
-	asm.LDRreg(jit.X0, jit.X2, jit.X3) // X0 = array[key]
+	asm.LDRreg(jit.X0, jit.X2, jit.X1) // X0 = array[key]
 
 	// Store result to R(A).
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
@@ -269,9 +327,10 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	loadRK(asm, jit.X4, cidx) // X4 = value
 
 	// Direct array store: array[key] = value
+	// STRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
+	// so X1 must hold the raw key index (not pre-multiplied).
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
-	jit.EmitMulValueSize(asm, jit.X3, jit.X1, jit.X5) // X3 = key * 8
-	asm.STRreg(jit.X4, jit.X2, jit.X3) // array[key] = value
+	asm.STRreg(jit.X4, jit.X2, jit.X1) // array[key] = value
 
 	// Mark keysDirty = true.
 	asm.MOVimm16(jit.X5, 1)
@@ -364,8 +423,9 @@ func emitBaselineSelf(asm *jit.Assembler, inst uint32, pc int) {
 	asm.BCond(jit.CondGE, slowLabel)
 
 	// Direct access: svals[fieldIdx].
+	// LDRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
+	// so X3 must hold the raw fieldIdx (not pre-multiplied).
 	asm.LDR(jit.X4, jit.X0, jit.TableOffSvals)
-	jit.EmitMulValueSize(asm, jit.X3, jit.X3, jit.X5)
 	asm.LDRreg(jit.X0, jit.X4, jit.X3)
 
 	// Store result to R(A).

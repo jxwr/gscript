@@ -116,7 +116,6 @@ Every optimization round: review file sizes, module boundaries, pass pipeline, t
 ## Reference Documents
 
 - Architecture: @docs-internal/architecture/overview.md
-- Architecture audit: @docs-internal/architecture/audit.md
 - ADRs (past decisions): @docs-internal/decisions/
 - Debug JIT correctness: @docs-internal/diagnostics/debug-jit-correctness.md
 - Debug deopt failures: @docs-internal/diagnostics/debug-deopt.md

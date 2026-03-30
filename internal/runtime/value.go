@@ -457,6 +457,19 @@ func FunctionValue(f interface{}) Value {
 	}
 }
 
+// VMClosureFunctionValue stores a vm.Closure pointer using ptrSubVMClosure (8).
+// The JIT can fast-check sub-type == 8 to know this is a vm.Closure and safely
+// dereference the 44-bit pointer to access Proto and CompiledCodePtr.
+// The caller must pass the raw unsafe.Pointer to the vm.Closure struct.
+// The original interface is stored via keepAliveIface for Go-side reconstruction.
+func VMClosureFunctionValue(p unsafe.Pointer, f interface{}) Value {
+	if p == nil {
+		return Value(valNil)
+	}
+	keepAliveIface(p, f)
+	return Value(tagPtr | ptrSubVMClosure | (uint64(uintptr(p)) & ptrAddrMask))
+}
+
 func CoroutineValue(c *Coroutine) Value {
 	if c == nil {
 		return Value(valNil)
@@ -651,7 +664,7 @@ func (v Value) Type() ValueType {
 			return TypeTable
 		case ptrSubString:
 			return TypeString
-		case ptrSubClosure, ptrSubGoFunction, ptrSubAnyFunction:
+		case ptrSubClosure, ptrSubGoFunction, ptrSubAnyFunction, ptrSubVMClosure:
 			return TypeFunction
 		case ptrSubCoroutine, ptrSubAnyCoro:
 			return TypeCoroutine
@@ -684,7 +697,7 @@ func (v Value) IsFunction() bool {
 		return false
 	}
 	sub := v.ptrSubType()
-	return sub == ptrSubClosure || sub == ptrSubGoFunction || sub == ptrSubAnyFunction
+	return sub == ptrSubClosure || sub == ptrSubGoFunction || sub == ptrSubAnyFunction || sub == ptrSubVMClosure
 }
 
 func (v Value) IsCoroutine() bool {
@@ -817,7 +830,7 @@ func (v Value) Ptr() any {
 		return (*Coroutine)(p)
 	case ptrSubChannel:
 		return (*Channel)(p)
-	case ptrSubAnyFunction, ptrSubAnyCoro:
+	case ptrSubAnyFunction, ptrSubAnyCoro, ptrSubVMClosure:
 		// Recover the original interface from gcRoots.
 		return lookupIface(p)
 	default:
