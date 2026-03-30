@@ -217,6 +217,7 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int) {
 
 // emitBaselineGetTable emits native ARM64 for OP_GETTABLE: R(A) = R(B)[RK(C)]
 // Fast path for integer keys with array bounds check.
+// Supports both ArrayMixed ([]Value) and ArrayInt ([]int64) array kinds.
 func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
@@ -224,6 +225,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 
 	slowLabel := nextLabel("gettable_slow")
 	doneLabel := nextLabel("gettable_done")
+	intArrayLabel := nextLabel("gettable_intarr")
 
 	// Load table value from R(B).
 	asm.LDR(jit.X0, mRegRegs, slotOff(b))
@@ -249,25 +251,34 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Extract integer key.
 	asm.SBFX(jit.X1, jit.X1, 0, 48) // X1 = signed int key
 
-	// Check arrayKind == ArrayMixed (0).
-	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
-	asm.CBNZ(jit.X2, slowLabel) // non-mixed array -> slow (typed arrays)
-
-	// Bounds check: 0 <= key < array.len
-	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // X2 = array.len
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondGE, slowLabel) // key >= len -> out of bounds (also catches negative via unsigned)
-	// Also check key >= 0
+	// Check key >= 0 (shared by both array kinds).
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, slowLabel)
 
-	// Direct array access: array[key]
-	// LDRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
-	// so X1 must hold the raw key index (not pre-multiplied).
-	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
-	asm.LDRreg(jit.X0, jit.X2, jit.X1) // X0 = array[key]
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, else=slow.
+	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKInt)
+	asm.BCond(jit.CondEQ, intArrayLabel)
+	asm.CBNZ(jit.X2, slowLabel) // not Mixed (0) and not Int (1) -> slow
 
-	// Store result to R(A).
+	// --- ArrayMixed fast path ---
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // X2 = array.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, slowLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
+	asm.LDRreg(jit.X0, jit.X2, jit.X1)         // X0 = array[key] (NaN-boxed Value)
+	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	asm.B(doneLabel)
+
+	// --- ArrayInt fast path ---
+	asm.Label(intArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArrayLen) // X2 = intArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, slowLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)    // X2 = intArray data pointer
+	asm.LDRreg(jit.X0, jit.X2, jit.X1)               // X0 = intArray[key] (raw int64)
+	// NaN-box the int64: UBFX + ORR with pinned tag register.
+	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
 	asm.B(doneLabel)
 
@@ -280,6 +291,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 
 // emitBaselineSetTable emits native ARM64 for OP_SETTABLE: R(A)[RK(B)] = RK(C)
 // Fast path for integer keys with array bounds check.
+// Supports both ArrayMixed ([]Value) and ArrayInt ([]int64) array kinds.
 func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	a := vm.DecodeA(inst)
 	bidx := vm.DecodeB(inst) // RK(B) = key
@@ -287,6 +299,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 
 	slowLabel := nextLabel("settable_slow")
 	doneLabel := nextLabel("settable_done")
+	intArrayLabel := nextLabel("settable_intarr")
 
 	// Load table value from R(A).
 	asm.LDR(jit.X0, mRegRegs, slotOff(a))
@@ -312,30 +325,44 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Extract integer key.
 	asm.SBFX(jit.X1, jit.X1, 0, 48) // X1 = signed int key
 
-	// Check arrayKind == ArrayMixed (0).
-	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
-	asm.CBNZ(jit.X2, slowLabel)
-
-	// Bounds check: 0 <= key < array.len (only fast path for in-bounds writes)
-	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen)
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondGE, slowLabel)
+	// Check key >= 0 (shared by both array kinds).
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, slowLabel)
 
-	// Load value RK(C).
-	loadRK(asm, jit.X4, cidx) // X4 = value
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, else=slow.
+	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKInt)
+	asm.BCond(jit.CondEQ, intArrayLabel)
+	asm.CBNZ(jit.X2, slowLabel) // not Mixed (0) and not Int (1) -> slow
 
-	// Direct array store: array[key] = value
-	// STRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
-	// so X1 must hold the raw key index (not pre-multiplied).
-	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
+	// --- ArrayMixed fast path ---
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, slowLabel)
+	loadRK(asm, jit.X4, cidx) // X4 = value (NaN-boxed)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArray)
 	asm.STRreg(jit.X4, jit.X2, jit.X1) // array[key] = value
-
-	// Mark keysDirty = true.
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	asm.B(doneLabel)
 
+	// --- ArrayInt fast path ---
+	asm.Label(intArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArrayLen)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, slowLabel)
+	// Load value RK(C) and check it's an integer.
+	loadRK(asm, jit.X4, cidx) // X4 = value (NaN-boxed)
+	asm.LSRimm(jit.X5, jit.X4, 48)
+	asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
+	asm.CMPreg(jit.X5, jit.X6)
+	asm.BCond(jit.CondNE, slowLabel) // value not int -> slow (type mismatch)
+	// Unbox int64 from NaN-boxed value.
+	asm.SBFX(jit.X4, jit.X4, 0, 48) // X4 = raw int64
+	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
+	asm.STRreg(jit.X4, jit.X2, jit.X1) // intArray[key] = int64
+	asm.MOVimm16(jit.X5, 1)
+	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.

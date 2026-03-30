@@ -122,6 +122,9 @@ func (e *BaselineJITEngine) TryCompile(proto *vm.FuncProto) interface{} {
 	if bf.DirectEntryOffset >= 0 {
 		proto.DirectEntryPtr = uintptr(bf.Code.Ptr()) + uintptr(bf.DirectEntryOffset)
 	}
+	if len(bf.GlobalValCache) > 0 {
+		proto.GlobalValCachePtr = uintptr(unsafe.Pointer(&bf.GlobalValCache[0]))
+	}
 	return bf
 }
 

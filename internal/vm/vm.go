@@ -12,7 +12,7 @@ import (
 
 const (
 	maxStack     = 256 // max registers per call frame
-	maxCallDepth = 1000 // max call stack depth
+	maxCallDepth = 100000 // max call stack depth
 	maxMetaDepth = 50  // max __index chain depth
 )
 

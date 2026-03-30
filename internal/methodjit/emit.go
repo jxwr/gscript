@@ -101,6 +101,12 @@ type ExecContext struct {
 	// TopPtr is a pointer to vm.top (int). Used by native BLR to set Top
 	// after a C=0 CALL (variable returns) and read Top for B=0 (variable args).
 	TopPtr uintptr
+	// NativeCallDepth tracks the current depth of nested native BLR calls.
+	// Incremented before BLR, decremented after. When it exceeds
+	// maxNativeCallDepth, the BLR path falls to slow path (exit-resume)
+	// to prevent native stack overflow. The slow path goes through Go which
+	// triggers goroutine stack growth as needed.
+	NativeCallDepth int64
 }
 
 // ExitCode constants.
@@ -175,6 +181,7 @@ var (
 	execCtxOffRegsEnd             = int(unsafe.Offsetof(ExecContext{}.RegsEnd))
 	execCtxOffRegsBase            = int(unsafe.Offsetof(ExecContext{}.RegsBase))
 	execCtxOffTopPtr              = int(unsafe.Offsetof(ExecContext{}.TopPtr))
+	execCtxOffNativeCallDepth     = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))
 )
 
 // CompiledFunction holds the generated native code for a function.

@@ -390,6 +390,7 @@ func emitBaselineEQ(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	doneLabel := nextLabel("eq_done")
 	notEqualLabel := nextLabel("eq_ne")
 	floatCmpLabel := nextLabel("eq_fcmp")
+	bothNumLabel := nextLabel("eq_both_num")
 
 	// Fast path: raw bit equality (works for int==int, nil==nil, bool==bool, ptr==ptr)
 	asm.CMPreg(jit.X0, jit.X1)
@@ -415,13 +416,13 @@ func emitBaselineEQ(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	asm.LSRimm(jit.X2, jit.X1, 48)
 	asm.MOVimm16(jit.X3, uint16(jit.NB_TagNilShr48))
 	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondLT, nextLabel("eq_both_num")) // float → is number
+	asm.BCond(jit.CondLT, bothNumLabel) // float → is number
 	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
 	asm.CMPreg(jit.X2, jit.X3)
 	asm.BCond(jit.CondNE, notEqualLabel) // not int → not number
 
 	// Both are numbers: convert to float and compare
-	asm.Label(nextLabel("eq_both_num"))
+	asm.Label(bothNumLabel)
 	emitToFloat(asm, jit.D0, jit.X0, jit.X4, jit.X5)
 	emitToFloat(asm, jit.D1, jit.X1, jit.X4, jit.X5)
 	asm.FCMPd(jit.D0, jit.D1)

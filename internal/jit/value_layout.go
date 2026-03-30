@@ -57,8 +57,9 @@ const (
 	TableOffArrayKind  = 137 // ArrayKind (uint8)
 	TableOffShapeID    = 140 // uint32 — shape identifier for field cache validation
 	TableOffShape      = 144 // *Shape (pointer, 8 bytes) — TODO: verify with unsafe.Offsetof
-	TableOffIntArray   = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
-	TableOffFloatArray = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
+	TableOffIntArray    = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
+	TableOffIntArrayLen = 152 // intArray slice len field (8 bytes after data ptr)
+	TableOffFloatArray  = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
 	TableOffBoolArray  = 192 // []byte slice header (ptr+len+cap = 24 bytes)
 )
 

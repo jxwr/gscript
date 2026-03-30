@@ -41,12 +41,13 @@ var (
 	vmClosureOffProto    int // vm.Closure.Proto offset (should be 0)
 	vmClosureOffUpvalues int // vm.Closure.Upvalues offset (should be 8)
 
-	funcProtoOffCompiledCodePtr int // vm.FuncProto.CompiledCodePtr offset
-	funcProtoOffDirectEntryPtr  int // vm.FuncProto.DirectEntryPtr offset
-	funcProtoOffConstants       int // vm.FuncProto.Constants offset (slice header)
-	funcProtoOffMaxStack        int // vm.FuncProto.MaxStack offset
-	funcProtoOffNumParams       int // vm.FuncProto.NumParams offset
-	funcProtoOffIsVarArg        int // vm.FuncProto.IsVarArg offset
+	funcProtoOffCompiledCodePtr  int // vm.FuncProto.CompiledCodePtr offset
+	funcProtoOffDirectEntryPtr   int // vm.FuncProto.DirectEntryPtr offset
+	funcProtoOffConstants        int // vm.FuncProto.Constants offset (slice header)
+	funcProtoOffMaxStack         int // vm.FuncProto.MaxStack offset
+	funcProtoOffNumParams        int // vm.FuncProto.NumParams offset
+	funcProtoOffIsVarArg         int // vm.FuncProto.IsVarArg offset
+	funcProtoOffGlobalValCachePtr int // vm.FuncProto.GlobalValCachePtr offset
 )
 
 func init() {
@@ -62,6 +63,7 @@ func init() {
 	funcProtoOffMaxStack = int(unsafe.Offsetof(proto.MaxStack))
 	funcProtoOffNumParams = int(unsafe.Offsetof(proto.NumParams))
 	funcProtoOffIsVarArg = int(unsafe.Offsetof(proto.IsVarArg))
+	funcProtoOffGlobalValCachePtr = int(unsafe.Offsetof(proto.GlobalValCachePtr))
 }
 
 // NaN-boxing pointer sub-type constants for ARM64 type checks.
@@ -99,6 +101,12 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	// Precompute callee base offset (bytes) from caller's register base.
 	maxStack := callerProto.MaxStack
 	calleeBaseOff := maxStack * 8
+
+	// 0. Check NativeCallDepth limit (prevent native stack overflow)
+	const maxNativeCallDepth = 48
+	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	asm.CMPimm(jit.X3, maxNativeCallDepth)
+	asm.BCond(jit.CondGE, slowLabel) // too deep → exit-resume
 
 	// 1. Load function value from regs[A]
 	asm.LDR(jit.X0, mRegRegs, slotOff(a))
@@ -141,12 +149,17 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	// All checks passed. Stack is clean.
 	// X0 = *vm.Closure, X1 = *FuncProto, X2 = DirectEntryPtr
 
-	// 4. Save caller state ON STACK (48 bytes, 16-byte aligned)
-	asm.SUBimm(jit.SP, jit.SP, 48)
+	// 4. Save caller state ON STACK (64 bytes, 16-byte aligned)
+	asm.SUBimm(jit.SP, jit.SP, 64)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
 	asm.STR(jit.X3, jit.SP, 32)
+	// Save caller's ClosurePtr and GlobalCache
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X3, jit.SP, 40)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+	asm.STR(jit.X3, jit.SP, 48)
 
 	// 5. Copy args to callee register window
 	if varArgs {
@@ -216,16 +229,35 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.MOVimm16(jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
 
-	// 7. BLR to callee
+	// Load callee's GlobalValCache from Proto (prevent cross-function cache pollution)
+	// X1 still holds callee's FuncProto pointer from the type check
+	asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
+	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+
+	// 7. Increment NativeCallDepth, BLR to callee, decrement
+	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+
 	asm.MOVreg(jit.X0, mRegCtx)
 	asm.BLR(jit.X2)
+
+	// Decrement NativeCallDepth after callee returns
+	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	asm.SUBimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
 	// 8. Restore caller state
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 32)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	// Restore caller's ClosurePtr and GlobalCache
+	asm.LDR(jit.X3, jit.SP, 40)
+	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.LDR(jit.X3, jit.SP, 48)
+	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.SP, jit.SP, 48)
+	asm.ADDimm(jit.SP, jit.SP, 64)
 
 	// Restore context pointers
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)

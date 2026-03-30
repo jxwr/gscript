@@ -507,6 +507,10 @@ func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtim
 	cl := ptrToVMClosure(closurePtr)
 	calleeProto := cl.Proto
 
+	// Disable BLR for this callee — it has exit-resume ops that make BLR counterproductive.
+	// Future calls will see DirectEntryPtr==0 and go straight to slow path.
+	calleeProto.DirectEntryPtr = 0
+
 	calleeBF, ok := e.compiled[calleeProto]
 	if !ok {
 		return runtime.NilValue(), fmt.Errorf("native-call-exit: callee not compiled")
