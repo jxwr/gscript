@@ -36,10 +36,10 @@ import (
 )
 
 // tmDefaultTier2Threshold is the default number of calls before a function
-// is promoted from Tier 1 to Tier 2. Tier 1's native BLR call sequence
-// increments the callee's proto.CallCount (see tier1_call.go), so both
-// VM-path calls and BLR calls contribute to this counter. A threshold of 2
-// means: first call compiles Tier 1, second call triggers Tier 2 compilation.
+// is promoted from Tier 1 to Tier 2. With threshold=2, the first call compiles
+// Tier 1 and the second triggers Tier 2. This avoids promoting single-call
+// functions where Tier 2's code may be slower (e.g., float-heavy functions
+// without raw float mode).
 const tmDefaultTier2Threshold = 2
 
 // TieringManager manages automatic promotion between Tier 1 and Tier 2.
@@ -165,7 +165,14 @@ func canPromoteToTier2(proto *vm.FuncProto) bool {
 	return true
 }
 
-func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (*CompiledFunction, error) {
+func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunction, retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cf = nil
+			retErr = fmt.Errorf("tier2: panic during compilation: %v", r)
+		}
+	}()
+
 	// Only promote pure-compute functions (no calls, no globals, no tables).
 	if !canPromoteToTier2(proto) {
 		return nil, fmt.Errorf("tier2: function has call/global/table ops, staying at tier 1")
