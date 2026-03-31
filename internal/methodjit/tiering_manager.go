@@ -95,8 +95,16 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 
-	// Below Tier 2 threshold? Use Tier 1.
-	if proto.CallCount < tm.tier2Threshold {
+	// Tier 2 promotion threshold depends on function type:
+	// - Pure-compute functions (no calls/globals/tables): promote immediately (threshold=1)
+	//   because Tier 2 raw int/float mode gives 5-100x speedup
+	// - Functions with calls/globals: use configured threshold (default=2)
+	//   because Tier 2 can't handle these ops yet
+	threshold := tm.tier2Threshold
+	if canPromoteToTier2(proto) {
+		threshold = 1 // immediate promotion for pure-compute
+	}
+	if proto.CallCount < threshold {
 		return tm.tier1.TryCompile(proto)
 	}
 
@@ -158,7 +166,9 @@ func canPromoteToTier2(proto *vm.FuncProto) bool {
 		switch op {
 		case vm.OP_CALL, vm.OP_CLOSURE, vm.OP_GETGLOBAL, vm.OP_SETGLOBAL,
 			vm.OP_NEWTABLE, vm.OP_SETLIST, vm.OP_VARARG, vm.OP_SELF,
-			vm.OP_CONCAT, vm.OP_GETUPVAL, vm.OP_SETUPVAL:
+			vm.OP_CONCAT, vm.OP_GETUPVAL, vm.OP_SETUPVAL,
+			vm.OP_GETFIELD, vm.OP_SETFIELD, vm.OP_GETTABLE, vm.OP_SETTABLE,
+			vm.OP_APPEND, vm.OP_LEN:
 			return false
 		}
 	}
