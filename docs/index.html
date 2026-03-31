@@ -94,6 +94,20 @@
 <div class="post">
   <span class="date">March 2026</span>
   <br>
+  <a href="22-jit-optimization-techniques">What Makes a JIT Compiler Fast</a>
+  <p>Seven optimization techniques ranked by impact, with real numbers from GScript's multi-tier JIT. Type specialization delivers 14.6x on fibonacci, inline caches deliver 6.25x on field access, mandelbrot micro hits 591x. But the key insight is about coverage: a 10x optimizer that handles 100% of functions beats a 1000x optimizer that handles 10%.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
+  <a href="21-three-tiers">Three Tiers</a>
+  <p>Deleted 5,600 lines of broken emission code. The three-tier architecture: interpreter for correctness, baseline JIT for universal compilation, optimizing JIT for hot code. Same proven IR infrastructure, new emission layers with clean separation of concerns.</p>
+</div>
+
+<div class="post">
+  <span class="date">March 2026</span>
+  <br>
   <a href="20-the-pivot">The Pivot</a>
   <p>Three attempts to handle functions in a trace JIT. All failed. Now we're pivoting to V8's Maglev-style Method JIT &mdash; compiling whole functions with type feedback, CFG-based SSA, and speculative optimization. The trace JIT stays for loops. The Method JIT handles everything else.</p>
 </div>
