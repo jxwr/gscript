@@ -5,10 +5,8 @@
 // encounters operations it cannot handle natively (calls, globals, tables,
 // generic ops).
 //
-// The handlers are functionally identical to those in tiering_execute.go and
-// tiering_op_exit.go (MethodJITEngine), but operate on the TieringManager
-// receiver. Slot indices in ExecContext are relative to the callee's frame
-// (base=0 in JIT), so we add `base` for absolute positions.
+// Slot indices in ExecContext are relative to the callee's frame (base=0 in
+// JIT), so we add `base` for absolute positions.
 
 package methodjit
 

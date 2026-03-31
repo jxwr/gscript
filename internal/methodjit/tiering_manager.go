@@ -22,7 +22,7 @@
 //
 // Execution dispatches based on the compiled type:
 //   - *BaselineFunc:       executed by BaselineJITEngine
-//   - *CompiledFunction:   executed by Tier 2 execute loop (same as MethodJITEngine)
+//   - *CompiledFunction:   executed by Tier 2 execute loop
 
 package methodjit
 
@@ -152,7 +152,7 @@ func (tm *TieringManager) Execute(compiled interface{}, regs []runtime.Value, ba
 }
 
 // compileTier2 compiles a function at Tier 2 (optimizing).
-// Uses the same pipeline as MethodJITEngine: BuildGraph → TypeSpec → ConstProp →
+// Uses the pipeline: BuildGraph → TypeSpec → ConstProp →
 // DCE → RegAlloc → Compile.
 // canPromoteToTier2 checks if a function is safe for Tier 2 compilation.
 // Most ops are now supported via exit-resume (exit to Go, execute, resume JIT).
@@ -226,8 +226,7 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 }
 
 // executeTier2 runs a Tier 2 compiled function using the VM's register file.
-// This is essentially the same execute loop as MethodJITEngine.Execute, reusing
-// the same exit handlers.
+// This is the Tier 2 execute loop, handling exit codes and resuming JIT code.
 func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
 	// Ensure register space.
 	needed := base + cf.numRegs

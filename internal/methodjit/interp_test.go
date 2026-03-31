@@ -21,6 +21,13 @@ func compileFunction(t *testing.T, src string) *vm.FuncProto {
 	return compile(t, src)
 }
 
+// compileProto compiles GScript source and returns the top-level proto.
+// Alias for compileTop, used by tiering_manager_test.go.
+func compileProto(t *testing.T, src string) *vm.FuncProto {
+	t.Helper()
+	return compileTop(t, src)
+}
+
 // compileTop compiles full GScript source and returns the top-level (main) proto.
 func compileTop(t *testing.T, src string) *vm.FuncProto {
 	t.Helper()

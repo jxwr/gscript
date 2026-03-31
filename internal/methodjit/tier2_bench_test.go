@@ -1,10 +1,9 @@
 //go:build darwin && arm64
 
-// tier2_bench_test.go benchmarks all three execution tiers for direct comparison:
+// tier2_bench_test.go benchmarks all execution tiers for direct comparison:
 //   - VM interpreter (BenchmarkVMSum_*)
 //   - Tier 1 baseline JIT via full VM + engine (BenchmarkTier1_Sum*)
-//   - Tier 2 memory-to-memory JIT (BenchmarkTier2Mem_Sum*)
-//   - Tier 2 regalloc JIT (BenchmarkTier2Reg_Sum*)
+//   - Tier 2 optimizing JIT with regalloc (BenchmarkTier2Reg_Sum*)
 //
 // The Sum benchmark is the primary workload: sum(N) = 1+2+...+N.
 // It exercises integer arithmetic and loop control flow.
@@ -19,54 +18,6 @@ import (
 )
 
 const benchSumSrc = `func sum(n) { s := 0; for i := 1; i <= n; i++ { s = s + i }; return s }`
-
-// ---------------------------------------------------------------------------
-// Tier 2 memory-to-memory benchmarks (IR pipeline, no register allocation)
-// ---------------------------------------------------------------------------
-
-func tier2MemPipelineB(b *testing.B, src string) *Tier2CompiledFunc {
-	b.Helper()
-	proto := compileFunctionB(b, src)
-	fn := BuildGraph(proto)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
-	cf, err := Tier2Compile(fn)
-	if err != nil {
-		b.Fatalf("Tier2Compile failed: %v", err)
-	}
-	return cf
-}
-
-func BenchmarkTier2Mem_Sum100(b *testing.B) {
-	cf := tier2MemPipelineB(b, benchSumSrc)
-	defer cf.Code.Free()
-	args := []runtime.Value{runtime.IntValue(100)}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cf.Execute(args)
-	}
-}
-
-func BenchmarkTier2Mem_Sum1000(b *testing.B) {
-	cf := tier2MemPipelineB(b, benchSumSrc)
-	defer cf.Code.Free()
-	args := []runtime.Value{runtime.IntValue(1000)}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cf.Execute(args)
-	}
-}
-
-func BenchmarkTier2Mem_Sum10000(b *testing.B) {
-	cf := tier2MemPipelineB(b, benchSumSrc)
-	defer cf.Code.Free()
-	args := []runtime.Value{runtime.IntValue(10000)}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cf.Execute(args)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Tier 2 regalloc benchmarks (IR pipeline + register allocation)
