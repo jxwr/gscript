@@ -124,6 +124,10 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpSetField:
 		ec.emitSetField(instr)
 
+	// --- Guards ---
+	case OpGuardType:
+		ec.emitGuardType(instr)
+
 	// --- Op-exit: unsupported ops exit to Go, execute there, resume JIT ---
 	case OpSelf,
 		OpSetGlobal,
@@ -137,7 +141,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		OpTForCall, OpTForLoop,
 		OpVararg, OpTestSet,
 		OpGo, OpMakeChan, OpSend, OpRecv,
-		OpGuardType, OpGuardNonNil, OpGuardTruthy:
+		OpGuardNonNil, OpGuardTruthy:
 		ec.emitOpExit(instr)
 
 	default:

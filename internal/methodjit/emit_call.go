@@ -37,6 +37,42 @@ func (ec *emitContext) emitDeopt(instr *Instr) {
 	asm.B("deopt_epilogue")
 }
 
+// emitGuardType emits a native type check for OpGuardType.
+// On success, passes the value through. On failure, deopts.
+func (ec *emitContext) emitGuardType(instr *Instr) {
+	if len(instr.Args) == 0 {
+		return
+	}
+	asm := ec.asm
+
+	// Load the value to check.
+	srcReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if srcReg != jit.X0 {
+		asm.MOVreg(jit.X0, srcReg)
+	}
+
+	guardType := Type(instr.Aux)
+	switch guardType {
+	case TypeInt:
+		// Check NaN-box int tag: top 16 bits must be 0xFFFE.
+		emitCheckIsInt(asm, jit.X0, jit.X2)
+		deoptLabel := ec.uniqueLabel("guard_deopt")
+		asm.BCond(jit.CondNE, deoptLabel)
+		// Success: store the value as the guard's result.
+		ec.storeResultNB(jit.X0, instr.ID)
+		doneLabel := ec.uniqueLabel("guard_done")
+		asm.B(doneLabel)
+		// Deopt path.
+		asm.Label(deoptLabel)
+		ec.emitDeopt(instr)
+		asm.Label(doneLabel)
+
+	default:
+		// Unsupported guard type: just pass through.
+		ec.storeResultNB(jit.X0, instr.ID)
+	}
+}
+
 // emitDiv emits ARM64 code for OpDiv (a / b, always returns float).
 // Both operands may be int or float. Result is always NaN-boxed float.
 //

@@ -265,6 +265,7 @@ func (ec *emitContext) invalidateReg(reg int, newValueID int) {
 // resolveRawFloat returns an FPR holding the raw float64 for a value.
 // If the value already has an allocated FPR (from a prior raw float op),
 // returns that FPR directly -- zero instructions emitted.
+// If the value is a raw int in a GPR, converts to float via SCVTF.
 // Otherwise, loads the NaN-boxed value from GPR or memory and moves to the
 // scratch FPR (float bits ARE the NaN-boxed representation, so FMOVtoFP
 // reinterprets the bits as a double).
@@ -272,6 +273,13 @@ func (ec *emitContext) resolveRawFloat(valueID int, scratch jit.FReg) jit.FReg {
 	// Already in an FPR?
 	if ec.hasFPReg(valueID) {
 		return ec.physFPReg(valueID)
+	}
+	// Raw int in a GPR? Convert to float via SCVTF (signed int64 -> float64).
+	// This handles mixed int/float operations like 2.0 * n where n is an int.
+	if ec.hasReg(valueID) && ec.rawIntRegs[valueID] {
+		gpr := ec.physReg(valueID)
+		ec.asm.SCVTF(scratch, gpr)
+		return scratch
 	}
 	// Value is NaN-boxed in a GPR or memory slot. Load and convert.
 	gpr := ec.resolveValueNB(valueID, jit.X0)

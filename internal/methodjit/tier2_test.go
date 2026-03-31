@@ -344,3 +344,38 @@ func f(size) {
 `
 	tier2Check(t, src, []runtime.Value{intArg(3)})
 }
+
+func TestTier2_MixedIntFloat_ParamGuard(t *testing.T) {
+	// Parameter used with ConstInt triggers guard; then used in float division.
+	// Tests int→float conversion in DivFloat when one operand is guarded int.
+	src := `func f(n) { return 2.0 * n + 1.5 }`
+	tier2Check(t, src, []runtime.Value{intArg(3)})
+	tier2Check(t, src, []runtime.Value{intArg(10)})
+}
+
+func TestTier2_ParamDiv_IntArg(t *testing.T) {
+	// Division with int parameter: result should be float.
+	src := `func f(n) { return 10.0 / n }`
+	tier2Check(t, src, []runtime.Value{intArg(4)})
+	tier2Check(t, src, []runtime.Value{intArg(3)})
+}
+
+func TestTier2_ParamSub_IntContext(t *testing.T) {
+	// Parameter subtracted from ConstInt: both int, result int.
+	src := `func f(n) { return n - 1 }`
+	tier2Check(t, src, []runtime.Value{intArg(10)})
+	tier2Check(t, src, []runtime.Value{intArg(0)})
+}
+
+func TestTier2_GuardDeopt_FloatArg(t *testing.T) {
+	// Parameter used with ConstInt gets a guard. When called with float,
+	// the guard deopts. Verify the deopt fires (returns error from Execute).
+	src := `func f(n) { return n - 1 }`
+	cf, _ := tier2Pipeline(t, src)
+	// No DeoptFunc: Execute should return error on deopt.
+	_, err := cf.Execute([]runtime.Value{floatArg(10.5)})
+	if err == nil {
+		t.Fatal("expected deopt error for float arg with int guard")
+	}
+	t.Logf("got expected deopt: %v", err)
+}

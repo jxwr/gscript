@@ -155,12 +155,20 @@ func (tm *TieringManager) Execute(compiled interface{}, regs []runtime.Value, ba
 // Uses the same pipeline as MethodJITEngine: BuildGraph → TypeSpec → ConstProp →
 // DCE → RegAlloc → Compile.
 // canPromoteToTier2 checks if a function is safe for Tier 2 compilation.
-// Currently, only pure-compute functions (no function calls, no table creation)
-// are promoted. Functions with calls stay at Tier 1 which handles them natively.
+// Most ops are now supported via exit-resume (exit to Go, execute, resume JIT).
+// Only ops requiring special VM state (closures, upvalues, vararg) are blocked.
+//
+// Supported exit-resume ops:
+//   - CALL: handled by emitCallExit / t2EmitCallExit
+//   - GETGLOBAL, SETGLOBAL: handled by emitGetGlobalExit / t2EmitGlobalExit
+//   - GETTABLE, SETTABLE: handled by emitSetTableExit / t2EmitTableExit
+//   - GETFIELD, SETFIELD: handled by emitGetField / emitSetField / t2EmitTableExit
+//   - NEWTABLE, SETLIST, APPEND, LEN, CONCAT: handled by emitOpExit / t2EmitOpExit
 func canPromoteToTier2(proto *vm.FuncProto) bool {
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
 		switch op {
+		// Ops that Tier 1 handles better via native BLR or inline cache:
 		case vm.OP_CALL, vm.OP_CLOSURE, vm.OP_GETGLOBAL, vm.OP_SETGLOBAL,
 			vm.OP_NEWTABLE, vm.OP_SETLIST, vm.OP_VARARG, vm.OP_SELF,
 			vm.OP_CONCAT, vm.OP_GETUPVAL, vm.OP_SETUPVAL,

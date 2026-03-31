@@ -13,10 +13,22 @@ package methodjit
 // TypeSpecializePass performs forward type propagation and replaces generic
 // arithmetic/comparison ops with type-specialized variants when operand types
 // are known.
+//
+// Phase 0: Insert speculative type guards on parameters used in numeric
+// contexts. This enables downstream specialization of operations like
+// `2.0 * size / size` where `size` is a function parameter (LoadSlot).
+//
+// Phase 1: Forward type propagation (fixed-point over phis).
+//
+// Phase 2: Replace generic ops with type-specialized variants.
 func TypeSpecializePass(fn *Function) (*Function, error) {
 	ts := &typeSpecializer{
 		types: make(map[int]Type),
 	}
+
+	// Phase 0: Insert speculative type guards on untyped parameters.
+	ts.insertParamGuards(fn)
+
 	// Phase 1: Forward type propagation (may need a fixed point for phis).
 	changed := true
 	for pass := 0; changed && pass < 10; pass++ {
@@ -101,6 +113,10 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 	case OpPhi:
 		return ts.inferPhiType(instr)
 
+	// Guards: the guarded type is stored in Aux.
+	case OpGuardType:
+		return Type(instr.Aux)
+
 	// Table/closure/call produce dynamic types.
 	case OpNewTable:
 		return TypeTable
@@ -171,6 +187,131 @@ func (ts *typeSpecializer) argType(v *Value) Type {
 		return v.Def.Type
 	}
 	return TypeUnknown
+}
+
+// insertParamGuards inserts speculative GuardType instructions after LoadSlot
+// parameters that are used in numeric operations. This allows downstream type
+// specialization to fully specialize code like `2.0 * size / size - 1.0`.
+//
+// For each parameter used in arithmetic/comparison, we insert:
+//   v_guard = GuardType v_param is int
+// and replace all downstream uses of v_param with v_guard.
+// If the guard fails at runtime, the function deopts to the interpreter.
+func (ts *typeSpecializer) insertParamGuards(fn *Function) {
+	// Collect all LoadSlot instructions and build a use map.
+	type paramInfo struct {
+		instr *Instr
+		block *Block
+		index int // position in block.Instrs
+	}
+	var params []paramInfo
+
+	// Find all LoadSlot params in the entry block (or pre-header).
+	entry := fn.Entry
+	for i, instr := range entry.Instrs {
+		if instr.Op == OpLoadSlot && (instr.Type == TypeAny || instr.Type == TypeUnknown) {
+			params = append(params, paramInfo{instr: instr, block: entry, index: i})
+		}
+	}
+	if len(params) == 0 {
+		return
+	}
+
+	// Build a set of param value IDs for quick lookup.
+	paramIDs := make(map[int]bool)
+	for _, p := range params {
+		paramIDs[p.instr.ID] = true
+	}
+
+	// Determine which params are used in int-like contexts: paired with a
+	// ConstInt in binary arithmetic/comparison. This is the heuristic for
+	// guessing that a parameter is int. For example, `size - 1` (Sub with
+	// ConstInt) implies `size` is int.
+	intLikeParams := make(map[int]bool) // param value ID -> likely int
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !isNumericOp(instr.Op) || len(instr.Args) < 2 {
+				continue
+			}
+			// Check if one arg is a param and the other is ConstInt.
+			for i := 0; i < 2; i++ {
+				arg := instr.Args[i]
+				other := instr.Args[1-i]
+				if arg == nil || other == nil {
+					continue
+				}
+				if !paramIDs[arg.ID] {
+					continue
+				}
+				if other.Def != nil && other.Def.Op == OpConstInt {
+					intLikeParams[arg.ID] = true
+				}
+			}
+		}
+	}
+
+	// Insert guards for params used in numeric contexts.
+	// We insert in reverse order so indices don't shift.
+	for i := len(params) - 1; i >= 0; i-- {
+		p := params[i]
+		if !intLikeParams[p.instr.ID] {
+			continue
+		}
+
+		// Create GuardType instruction: assume int (most common numeric type).
+		guardID := fn.newValueID()
+		guard := &Instr{
+			ID:    guardID,
+			Op:    OpGuardType,
+			Type:  TypeInt,
+			Args:  []*Value{p.instr.Value()},
+			Aux:   int64(TypeInt),
+			Block: p.block,
+		}
+
+		// Insert guard right after the LoadSlot.
+		instrs := p.block.Instrs
+		pos := p.index + 1
+		newInstrs := make([]*Instr, 0, len(instrs)+1)
+		newInstrs = append(newInstrs, instrs[:pos]...)
+		newInstrs = append(newInstrs, guard)
+		newInstrs = append(newInstrs, instrs[pos:]...)
+		p.block.Instrs = newInstrs
+
+		// Replace all uses of the LoadSlot value with the GuardType value
+		// (except in the guard itself).
+		guardVal := guard.Value()
+		replaceValueUses(fn, p.instr.ID, guardVal, guardID)
+	}
+}
+
+// replaceValueUses replaces all uses of oldID with newVal across all blocks,
+// except in the instruction that defines newVal (identified by exceptID).
+func replaceValueUses(fn *Function, oldID int, newVal *Value, exceptID int) {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.ID == exceptID {
+				continue
+			}
+			for i, arg := range instr.Args {
+				if arg != nil && arg.ID == oldID {
+					instr.Args[i] = newVal
+				}
+			}
+		}
+	}
+}
+
+// isNumericOp returns true for ops that require numeric operands.
+func isNumericOp(op Op) bool {
+	switch op {
+	case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+		OpLt, OpLe, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat:
+		return true
+	}
+	return false
 }
 
 // specialize replaces a generic op with its type-specialized variant if

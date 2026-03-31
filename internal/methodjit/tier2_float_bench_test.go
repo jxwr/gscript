@@ -58,3 +58,21 @@ func BenchmarkAll_VM_Mandelbrot10(b *testing.B) {
 func BenchmarkAll_T1_Mandelbrot10(b *testing.B) {
 	allBenchTier1(b, mandelbrotSrc, []runtime.Value{runtime.IntValue(10)})
 }
+
+func BenchmarkTier2Mem_Mandelbrot10(b *testing.B) {
+	proto := compileFunctionB(b, mandelbrotSrc)
+	fn := BuildGraph(proto)
+	fn, _ = TypeSpecializePass(fn)
+	fn, _ = ConstPropPass(fn)
+	fn, _ = DCEPass(fn)
+	cf, err := Tier2Compile(fn)
+	if err != nil {
+		b.Fatalf("Tier2Compile error: %v", err)
+	}
+	b.Cleanup(func() { cf.Code.Free() })
+	args := []runtime.Value{runtime.IntValue(10)}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cf.Execute(args)
+	}
+}

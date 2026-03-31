@@ -376,6 +376,114 @@ func TestPipeline_ConstFolding(t *testing.T) {
 	}
 }
 
+// TestTypeSpec_ParamGuard_IntContext verifies that a parameter used with ConstInt
+// gets a GuardType(int) inserted and downstream ops become type-specialized.
+func TestTypeSpec_ParamGuard_IntContext(t *testing.T) {
+	proto := compile(t, `
+func f(n) {
+	return n - 1
+}
+`)
+	fn := BuildGraph(proto)
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+	t.Logf("After:\n%s", Print(result))
+
+	// Expect: GuardType inserted for parameter n, Sub becomes SubInt.
+	hasGuard := false
+	hasSubInt := false
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpGuardType && Type(instr.Aux) == TypeInt {
+				hasGuard = true
+			}
+			if instr.Op == OpSubInt {
+				hasSubInt = true
+			}
+		}
+	}
+	if !hasGuard {
+		t.Error("expected GuardType(int) for parameter n")
+	}
+	if !hasSubInt {
+		t.Error("expected SubInt after guard insertion")
+	}
+}
+
+// TestTypeSpec_ParamGuard_NoGuardForFloatOnly verifies that no guard is inserted
+// when params are only used with other params (no ConstInt context).
+func TestTypeSpec_ParamGuard_NoGuardForFloatOnly(t *testing.T) {
+	proto := compile(t, `
+func f(a, b) {
+	return a + b
+}
+`)
+	fn := BuildGraph(proto)
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpGuardType {
+				t.Errorf("unexpected GuardType for params only used with each other")
+			}
+		}
+	}
+}
+
+// TestTypeSpec_MandelbrotFullySpecialized verifies mandelbrot has 0 generic ops.
+func TestTypeSpec_MandelbrotFullySpecialized(t *testing.T) {
+	proto := compile(t, `
+func f(size) {
+	count := 0
+	for y := 0; y < size; y = y + 1 {
+		ci := 2.0 * y / size - 1.0
+		for x := 0; x < size; x = x + 1 {
+			cr := 2.0 * x / size - 1.5
+			zr := 0.0
+			zi := 0.0
+			escaped := false
+			for iter := 0; iter < 50; iter = iter + 1 {
+				tr := zr * zr - zi * zi + cr
+				ti := 2.0 * zr * zi + ci
+				zr = tr
+				zi = ti
+				if zr * zr + zi * zi > 4.0 {
+					escaped = true
+					break
+				}
+			}
+			if !escaped { count = count + 1 }
+		}
+	}
+	return count
+}
+`)
+	fn := BuildGraph(proto)
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+
+	genericCount := 0
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpLt, OpLe, OpEq:
+				genericCount++
+				t.Errorf("generic op: v%d = %s", instr.ID, instr.Op)
+			}
+		}
+	}
+	if genericCount > 0 {
+		t.Errorf("expected 0 generic ops, got %d", genericCount)
+	}
+}
+
 // TestTypeSpec_ValidatorPass verifies that the output passes validation.
 func TestTypeSpec_ValidatorPass(t *testing.T) {
 	fn := &Function{

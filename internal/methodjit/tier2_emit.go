@@ -121,8 +121,10 @@ func (tc *tier2Context) emitInstr(instr *Instr, block *Block) {
 			tc.t2StoreValue(jit.X0, instr.ID)
 		}
 
-	// --- Guards (pass through) ---
-	case OpGuardType, OpGuardNonNil, OpGuardTruthy:
+	// --- Guards ---
+	case OpGuardType:
+		tc.t2EmitGuardType(instr)
+	case OpGuardNonNil, OpGuardTruthy:
 		if len(instr.Args) > 0 {
 			tc.t2LoadValue(jit.X0, instr.Args[0].ID)
 			tc.t2StoreValue(jit.X0, instr.ID)
@@ -208,6 +210,45 @@ func (tc *tier2Context) t2EmitStoreSlot(instr *Instr) {
 	tc.t2LoadValue(jit.X0, instr.Args[0].ID)
 	slot := int(instr.Aux)
 	tc.asm.STR(jit.X0, mRegRegs, t2SlotOffset(slot))
+}
+
+// --- Guards ---
+
+// t2EmitGuardType emits a native type check that deopts if the value doesn't
+// match the expected type. Currently supports TypeInt guards: checks the NaN-box
+// tag (top 16 bits == 0xFFFE). On success, passes the value through. On failure,
+// sets ExitCode=ExitDeopt and jumps to the exit.
+func (tc *tier2Context) t2EmitGuardType(instr *Instr) {
+	if len(instr.Args) == 0 {
+		return
+	}
+	asm := tc.asm
+	tc.t2LoadValue(jit.X0, instr.Args[0].ID)
+
+	guardType := Type(instr.Aux)
+	switch guardType {
+	case TypeInt:
+		// Check NaN-box int tag: top 16 bits must be 0xFFFE.
+		asm.LSRimm(jit.X2, jit.X0, 48)
+		asm.MOVimm16(jit.X3, jit.NB_TagIntShr48) // 0xFFFE
+		asm.CMPreg(jit.X2, jit.X3)
+		deoptLabel := fmt.Sprintf("t2_guard_deopt_%d", instr.ID)
+		asm.BCond(jit.CondNE, deoptLabel)
+		// Success: pass through.
+		tc.t2StoreValue(jit.X0, instr.ID)
+		doneLabel := fmt.Sprintf("t2_guard_done_%d", instr.ID)
+		asm.B(doneLabel)
+		// Deopt path.
+		asm.Label(deoptLabel)
+		asm.LoadImm64(jit.X0, ExitDeopt)
+		asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+		asm.B("t2_exit")
+		asm.Label(doneLabel)
+
+	default:
+		// Unsupported guard type: just pass through (no check).
+		tc.t2StoreValue(jit.X0, instr.ID)
+	}
 }
 
 // --- Type-specialized integer binary ops ---

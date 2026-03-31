@@ -172,7 +172,9 @@ func (tc *tier3Context) t3EmitInstr(instr *Instr, block *Block) {
 		}
 
 	// --- Guards ---
-	case OpGuardType, OpGuardNonNil, OpGuardTruthy:
+	case OpGuardType:
+		tc.t3EmitGuardType(instr)
+	case OpGuardNonNil, OpGuardTruthy:
 		if len(instr.Args) > 0 {
 			src := tc.t3LoadValue(jit.X0, instr.Args[0].ID)
 			tc.t3StoreValue(src, instr.ID)
@@ -256,6 +258,42 @@ func (tc *tier3Context) t3EmitStoreSlot(instr *Instr) {
 	src := tc.t3LoadValue(jit.X0, instr.Args[0].ID)
 	slot := int(instr.Aux)
 	tc.asm.STR(src, mRegRegs, t2SlotOffset(slot))
+}
+
+// --- Guards ---
+
+// t3EmitGuardType emits a native type check that deopts if the value doesn't
+// match the expected type. Currently supports TypeInt guards.
+func (tc *tier3Context) t3EmitGuardType(instr *Instr) {
+	if len(instr.Args) == 0 {
+		return
+	}
+	asm := tc.asm
+	src := tc.t3LoadValue(jit.X0, instr.Args[0].ID)
+	if src != jit.X0 {
+		asm.MOVreg(jit.X0, src)
+	}
+
+	guardType := Type(instr.Aux)
+	switch guardType {
+	case TypeInt:
+		asm.LSRimm(jit.X2, jit.X0, 48)
+		asm.MOVimm16(jit.X3, jit.NB_TagIntShr48)
+		asm.CMPreg(jit.X2, jit.X3)
+		deoptLabel := fmt.Sprintf("t3_guard_deopt_%d", instr.ID)
+		asm.BCond(jit.CondNE, deoptLabel)
+		tc.t3StoreValue(jit.X0, instr.ID)
+		doneLabel := fmt.Sprintf("t3_guard_done_%d", instr.ID)
+		asm.B(doneLabel)
+		asm.Label(deoptLabel)
+		asm.LoadImm64(jit.X0, ExitDeopt)
+		asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+		asm.B("t3_exit")
+		asm.Label(doneLabel)
+
+	default:
+		tc.t3StoreValue(jit.X0, instr.ID)
+	}
 }
 
 // --- Type-specialized integer binary ops ---
