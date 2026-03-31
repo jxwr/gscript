@@ -237,19 +237,19 @@ particles := {}
 for i := 1; i <= 100; i++ {
     particles[i] = {x: 1.0 * i, y: 2.0 * i, z: 3.0 * i, vx: 0.01, vy: 0.02, vz: 0.03}
 }
-func step(ps, n) {
-    for i := 1; i <= n; i++ {
-        p := ps[i]
+func step() {
+    for i := 1; i <= 100; i++ {
+        p := particles[i]
         p.x = p.x + p.vx
         p.y = p.y + p.vy
         p.z = p.z + p.vz
     }
 }
-for i := 1; i <= 15; i++ { step(particles, 100) }
+for i := 1; i <= 15; i++ { step() }
 `)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vm.Call("step", nil, 100)
+		vm.Call("step")
 	}
 }
 
@@ -260,9 +260,9 @@ particles := {}
 for i := 1; i <= 100; i++ {
     particles[i] = {x: 1.0 * i, y: 2.0 * i, z: 3.0 * i, vx: 0.01, vy: 0.02, vz: 0.03}
 }
-func step(ps, n) {
-    for i := 1; i <= n; i++ {
-        p := ps[i]
+func step() {
+    for i := 1; i <= 100; i++ {
+        p := particles[i]
         p.x = p.x + p.vx
         p.y = p.y + p.vy
         p.z = p.z + p.vz
@@ -271,7 +271,7 @@ func step(ps, n) {
 `)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vm.Call("step", nil, 100)
+		vm.Call("step")
 	}
 }
 

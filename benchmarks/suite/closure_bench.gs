@@ -65,6 +65,8 @@ t0 = time.now()
 r3 := test_map()
 t3 := time.since(t0)
 
+total := t1 + t2 + t3
 print(string.format("closure_call:  %.3fs (result=%d)", t1, r1))
 print(string.format("accumulator:   %.3fs (result=%d)", t2, r2))
 print(string.format("map_array:     %.3fs (result=%d)", t3, r3))
+print(string.format("Time: %.3fs", total))

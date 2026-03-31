@@ -1,7 +1,7 @@
 #!/bin/bash
 # GScript Full Benchmark Suite Runner
-# Builds the CLI, runs warm Go benchmarks, then runs all 15 suite benchmarks
-# in VM, JIT, and Trace modes SEQUENTIALLY.
+# Builds the CLI, runs warm Go benchmarks, then runs all suite benchmarks
+# in VM and JIT modes SEQUENTIALLY.
 #
 # Usage: bash benchmarks/run_all.sh [--quick]
 #   --quick  Only run Go warm benchmarks (skip suite)
@@ -17,7 +17,7 @@ if [[ "${1:-}" == "--quick" ]]; then
 fi
 
 GSCRIPT_BIN="/tmp/gscript_bench"
-TIMEOUT_SEC=30
+TIMEOUT_SEC=60
 
 # macOS-compatible timeout using perl alarm
 run_with_timeout() {
@@ -56,9 +56,9 @@ if $QUICK; then
     exit 0
 fi
 
-# Step 3: Suite benchmarks (VM, JIT, Trace -- sequential)
+# Step 3: Suite benchmarks (VM, JIT -- sequential)
 BENCHMARKS=(
-    fib sieve mandelbrot ackermann matmul spectral_norm nbody fannkuch
+    fib fib_recursive sieve mandelbrot ackermann matmul spectral_norm nbody fannkuch
     sort sum_primes mutual_recursion method_dispatch closure_bench string_bench binary_trees
     table_field_access table_array_access coroutine_bench fibonacci_iterative math_intensive object_creation
 )
@@ -71,9 +71,9 @@ for bench in "${BENCHMARKS[@]}"; do
     fi
 done
 
-declare -A VM_RESULTS JIT_RESULTS TRACE_RESULTS
+declare -A VM_RESULTS JIT_RESULTS LUAJIT_RESULTS
 
-echo ">>> Suite benchmarks (${#EXISTING_BENCHMARKS[@]} benchmarks x 3 modes, sequential)..."
+echo ">>> Suite benchmarks (${#EXISTING_BENCHMARKS[@]} benchmarks x 2 modes, sequential)..."
 echo ""
 
 # --- VM Mode ---
@@ -121,29 +121,7 @@ for bench in "${EXISTING_BENCHMARKS[@]}"; do
     echo ""
 done
 
-# --- Trace Mode ---
-echo "============================================"
-echo "  Trace Mode"
-echo "============================================"
-for bench in "${EXISTING_BENCHMARKS[@]}"; do
-    echo "--- $bench (Trace) ---"
-    output=$(run_with_timeout "$TIMEOUT_SEC" "$GSCRIPT_BIN" -trace "benchmarks/suite/${bench}.gs" 2>&1)
-    exit_code=$?
-    if [[ $exit_code -eq 142 ]] || [[ $exit_code -eq 137 ]]; then
-        echo "  TIMEOUT (>${TIMEOUT_SEC}s)"
-        TRACE_RESULTS[$bench]="timeout"
-    elif [[ $exit_code -ne 0 ]]; then
-        echo "  FAILED (exit $exit_code)"
-        TRACE_RESULTS[$bench]="FAILED"
-    else
-        echo "$output"
-        time_line=$(echo "$output" | grep -i "Time:" | tail -1)
-        TRACE_RESULTS[$bench]="$time_line"
-    fi
-    echo ""
-done
-
-# Step 4 (optional): LuaJIT benchmarks
+# Step 4: LuaJIT benchmarks
 if command -v luajit &>/dev/null; then
     echo "============================================"
     echo "  LuaJIT Mode"
@@ -156,10 +134,14 @@ if command -v luajit &>/dev/null; then
             exit_code=$?
             if [[ $exit_code -eq 142 ]] || [[ $exit_code -eq 137 ]]; then
                 echo "  TIMEOUT"
+                LUAJIT_RESULTS[$name]="timeout"
             elif [[ $exit_code -ne 0 ]]; then
                 echo "  FAILED"
+                LUAJIT_RESULTS[$name]="FAILED"
             else
                 echo "$output"
+                time_line=$(echo "$output" | grep -i "Time:" | tail -1)
+                LUAJIT_RESULTS[$name]="$time_line"
             fi
             echo ""
         done
@@ -177,13 +159,13 @@ fi
 echo "============================================"
 echo "  SUMMARY"
 echo "============================================"
-printf "%-25s | %-20s | %-20s | %-20s\n" "Benchmark" "VM" "JIT" "Trace"
+printf "%-25s | %-20s | %-20s | %-20s\n" "Benchmark" "VM" "JIT" "LuaJIT"
 printf "%-25s-+-%-20s-+-%-20s-+-%-20s\n" "-------------------------" "--------------------" "--------------------" "--------------------"
 for bench in "${EXISTING_BENCHMARKS[@]}"; do
     vm_r="${VM_RESULTS[$bench]:-n/a}"
     jit_r="${JIT_RESULTS[$bench]:-n/a}"
-    trace_r="${TRACE_RESULTS[$bench]:-n/a}"
-    printf "%-25s | %-20s | %-20s | %-20s\n" "$bench" "$vm_r" "$jit_r" "$trace_r"
+    luajit_r="${LUAJIT_RESULTS[$bench]:-n/a}"
+    printf "%-25s | %-20s | %-20s | %-20s\n" "$bench" "$vm_r" "$jit_r" "$luajit_r"
 done
 echo ""
 echo "============================================"

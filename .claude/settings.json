@@ -18,6 +18,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/check_docs.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/optimize_continue.sh"
           }
         ]
       }
