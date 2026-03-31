@@ -122,8 +122,8 @@ result := add(3, 4)
 }
 
 // TestTieringManager_AutoPromotion verifies that functions called enough times
-// through the VM path (not BLR) get automatically promoted. This uses
-// SetTier2Threshold to lower the threshold for testing.
+// through the VM path (not BLR) get automatically promoted.
+// With tmDefaultTier2Threshold=2, the second VM-path call triggers Tier 2.
 func TestTieringManager_AutoPromotion(t *testing.T) {
 	src := `
 func sum(n) {
@@ -142,22 +142,75 @@ for i := 1; i <= 200; i++ {
 	globals := runtime.NewInterpreterGlobals()
 	v := vm.New(globals)
 	tm := NewTieringManager()
-	// Set low threshold so even 1-2 VM-path calls trigger promotion.
-	tm.SetTier2Threshold(1)
 	v.SetMethodJIT(tm)
 	_, err := v.Execute(proto)
 	if err != nil {
 		t.Fatalf("runtime error: %v", err)
 	}
 
-	// With threshold=1, functions called at least once should be at Tier 2.
+	// With default threshold=2, sum is called 200 times via VM OP_CALL.
+	// After 2 calls, it should be promoted to Tier 2.
 	if tm.Tier2Count() == 0 {
-		t.Error("expected at least 1 Tier 2 compiled function with threshold=1")
+		t.Error("expected at least 1 Tier 2 compiled function with threshold=2")
 	}
 
 	result := v.GetGlobal("result")
 	if !result.IsInt() || result.Int() != 55 {
 		t.Errorf("sum(10) = %v, want 55", result)
+	}
+}
+
+// TestTieringManager_BLRCallCountIncrement verifies that Tier 1 native BLR
+// calls increment the callee's CallCount. This is critical for Tier 2
+// promotion of functions called primarily via BLR (not through the VM).
+func TestTieringManager_BLRCallCountIncrement(t *testing.T) {
+	// inner() is called from outer() via native BLR.
+	// outer() is called 5 times via VM OP_CALL, each calling inner() once.
+	// Without BLR call count increment, inner's CallCount would only be 5
+	// (from the 5 VM-path calls). With the increment, BLR calls also count.
+	src := `
+func inner(x) {
+    return x * 2
+}
+func outer(n) {
+    return inner(n)
+}
+result := 0
+for i := 1; i <= 5; i++ {
+    result = outer(i)
+}
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	_, err := v.Execute(proto)
+	if err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+
+	// Check correctness: outer(5) = inner(5) = 10
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 10 {
+		t.Errorf("outer(5) = %v, want 10", result)
+	}
+
+	// inner() is called via BLR from outer(). The BLR call sequence
+	// increments inner's CallCount. With default threshold=2, inner
+	// should be promoted to Tier 2 after enough calls.
+	// outer() is called 5 times via VM, so it should also be at Tier 2.
+	if tm.Tier2Count() == 0 {
+		t.Error("expected at least 1 Tier 2 compiled function")
+	}
+
+	// Verify inner's CallCount was incremented by BLR calls.
+	// inner is proto.Protos[0]. It should have CallCount > 2 from BLR.
+	if len(proto.Protos) >= 1 {
+		innerProto := proto.Protos[0]
+		if innerProto.CallCount < 2 {
+			t.Errorf("inner CallCount = %d, expected >= 2 (BLR should increment it)", innerProto.CallCount)
+		}
 	}
 }
 

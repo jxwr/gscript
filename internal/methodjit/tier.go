@@ -4,10 +4,10 @@
 //   Executes all bytecodes. Collects type feedback. Always correct.
 //   Promotes to Tier 1 at 2 calls (fast startup).
 //
-// Tier 1: Baseline JIT (PLANNED -- not implemented yet)
+// Tier 1: Baseline JIT (internal/methodjit/tier1_*.go)
 //   Compiles all ops natively using simple templates.
 //   No optimization passes. Fast to compile. ~3-5x speedup.
-//   Promotes to Tier 2 at 100 calls with stable feedback.
+//   Promotes to Tier 2 at 2 calls (via TieringManager).
 //
 // Tier 2: Optimizing JIT (current methodjit pipeline)
 //   Full optimization: TypeSpec, ConstProp, DCE, Inline.

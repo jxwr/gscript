@@ -52,6 +52,10 @@ type BaselineJITEngine struct {
 	ctxPool        []*ExecContext // pre-allocated ExecContext pool (acts as stack for recursive calls)
 	ctxTop         int            // next free index in ctxPool
 	globalCacheGen uint64         // incremented on every SETGLOBAL; used to invalidate GlobalValCache
+	// tierUpThreshold: when > 0, handleCall falls to slow path (callVM.CallValue)
+	// for callees whose CallCount >= this threshold. This allows the TieringManager
+	// to intercept calls and trigger Tier 2 compilation via the VM's TryCompile.
+	tierUpThreshold int
 }
 
 // NewBaselineJITEngine creates a new baseline JIT engine.
@@ -97,6 +101,13 @@ func (e *BaselineJITEngine) releaseCtx() {
 // SetCallVM sets the VM used for exit-resume during JIT execution.
 func (e *BaselineJITEngine) SetCallVM(v *vm.VM) {
 	e.callVM = v
+}
+
+// SetTierUpThreshold configures the CallCount threshold at which handleCall
+// falls to the slow path (callVM.CallValue) instead of executing the callee
+// directly. This allows the TieringManager to trigger Tier 2 compilation.
+func (e *BaselineJITEngine) SetTierUpThreshold(n int) {
+	e.tierUpThreshold = n
 }
 
 // TryCompile checks if a function should be baseline-compiled.

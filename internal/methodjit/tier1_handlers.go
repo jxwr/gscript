@@ -102,6 +102,12 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 	if fnVal.IsFunction() {
 		if cl, ok := fnVal.Ptr().(*vm.Closure); ok && !cl.Proto.IsVarArg {
 			calleeProto := cl.Proto
+			// If the TieringManager has set a tier-up threshold and the callee
+			// has reached it, fall to slow path so the VM's TryCompile can
+			// trigger Tier 2 compilation.
+			if e.tierUpThreshold > 0 && calleeProto.CallCount >= e.tierUpThreshold {
+				goto slowPath
+			}
 			calleeBF, compiled := e.compiled[calleeProto]
 			if !compiled {
 				// Try to compile the callee on the fly.

@@ -13,12 +13,10 @@
 //   - CallCount >= 1 && < Tier2T:  Tier 1 (baseline JIT)
 //   - CallCount >= Tier2T:         try Tier 2 (optimizing JIT)
 //
-// The CallCount is incremented by the VM on every vm.call(). Once a function
-// is Tier 1 compiled, subsequent calls from JIT code via native BLR bypass
-// vm.call() entirely, so CallCount stops incrementing for those call sites.
-// However, calls through the interpreter path (exit-resume, recursive calls,
-// uncompiled callers) continue to increment CallCount. Functions that receive
-// enough interpreter-path calls will eventually promote to Tier 2.
+// The CallCount is incremented both by the VM on every vm.call() and by
+// Tier 1's native BLR call sequence (which increments the callee's
+// proto.CallCount before the BLR instruction). This ensures that functions
+// called via BLR also accumulate call counts toward Tier 2 promotion.
 //
 // If Tier 2 compilation fails for a function, it falls back to Tier 1 permanently.
 //
@@ -37,16 +35,12 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
-// tmDefaultTier2Threshold is the default number of VM-path calls before a
-// function is promoted from Tier 1 to Tier 2. With Tier 1 native BLR calls,
-// most functions only reach CallCount=1-2 because BLR bypasses vm.call().
-// The default threshold is set high (matching Tier2Threshold) to avoid
-// promoting functions that Tier 2 cannot yet handle correctly.
-//
-// To enable automatic promotion, a future version will embed a counter
-// decrement in Tier 1 compiled code (like V8's feedback vector entry) so
-// that BLR calls also contribute to the call count.
-const tmDefaultTier2Threshold = Tier2Threshold
+// tmDefaultTier2Threshold is the default number of calls before a function
+// is promoted from Tier 1 to Tier 2. Tier 1's native BLR call sequence
+// increments the callee's proto.CallCount (see tier1_call.go), so both
+// VM-path calls and BLR calls contribute to this counter. A threshold of 2
+// means: first call compiles Tier 1, second call triggers Tier 2 compilation.
+const tmDefaultTier2Threshold = 2
 
 // TieringManager manages automatic promotion between Tier 1 and Tier 2.
 // It implements vm.MethodJITEngine.
@@ -61,8 +55,13 @@ type TieringManager struct {
 // NewTieringManager creates a new TieringManager with Tier 1 baseline support
 // and Tier 2 optimizing support.
 func NewTieringManager() *TieringManager {
+	t1 := NewBaselineJITEngine()
+	// Tell the Tier 1 engine to fall to slow path (callVM.CallValue) for callees
+	// that have reached the Tier 2 threshold. The slow path goes through the VM's
+	// call() which calls TieringManager.TryCompile(), enabling Tier 2 promotion.
+	t1.SetTierUpThreshold(tmDefaultTier2Threshold)
 	return &TieringManager{
-		tier1:          NewBaselineJITEngine(),
+		tier1:          t1,
 		tier2Compiled:  make(map[*vm.FuncProto]*CompiledFunction),
 		tier2Failed:    make(map[*vm.FuncProto]bool),
 		tier2Threshold: tmDefaultTier2Threshold,
@@ -73,6 +72,7 @@ func NewTieringManager() *TieringManager {
 // Only affects future compilations.
 func (tm *TieringManager) SetTier2Threshold(n int) {
 	tm.tier2Threshold = n
+	tm.tier1.SetTierUpThreshold(n)
 }
 
 // SetCallVM sets the VM used for call-exit and global-exit during JIT execution.

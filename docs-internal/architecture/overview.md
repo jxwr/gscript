@@ -16,7 +16,8 @@ Tier 1: Baseline JIT (internal/methodjit/tier1_*.go)
   - Inline field cache (shape-guarded, per-PC)
   - GETGLOBAL value cache (generation-based invalidation)
   - Two entry points per function (normal 96B frame + direct 16B frame)
-  → Tier 2 at N calls with stable feedback (future)
+  - BLR call counter: increments callee's CallCount + falls to slow path at threshold
+  → Tier 2 at 2 calls (automatic promotion via TieringManager)
 
 Tier 2: Optimizing JIT (internal/methodjit/)
   Bytecode → CFG SSA IR → Optimization passes → RegAlloc → ARM64
@@ -48,16 +49,20 @@ Each compiled function has two entry points:
 - **Normal entry** (96-byte frame): saves all callee-saved registers (X19-X28, FP, LR). Used by Go's `Execute()` loop via `callJIT`.
 - **Direct entry** (16-byte frame): saves only FP+LR, reloads X26/X27 from ctx. Used by native BLR from caller JIT code.
 
-Caller-side native CALL sequence (~15 ARM64 instructions):
+Caller-side native CALL sequence (~18 ARM64 instructions):
 1. Load function value, check VMClosure sub-type
 2. Load `FuncProto.DirectEntryPtr` (zero = uncompiled → slow path)
-3. Save caller state (X26, X27, FP, LR) on native stack
-4. Copy args to callee register window
-5. Set up callee context (Regs, Constants, ClosurePtr, CallMode=1)
-6. `BLR` to callee's direct entry
-7. Restore caller state, read return value from `ctx.BaselineReturnValue`
+3. Bounds check: callee register window fits in register file
+4. Increment callee's `proto.CallCount` (3 insns: LDR, ADD, STR)
+5. If CallCount == Tier2Threshold → fall to slow path (triggers Tier 2 compilation)
+6. Save caller state (X26, X27, FP, LR) on native stack
+7. Copy args to callee register window
+8. Set up callee context (Regs, Constants, ClosurePtr, CallMode=1)
+9. `BLR` to callee's direct entry
+10. Restore caller state, read return value from `ctx.BaselineReturnValue`
 
-Slow path fallback (exit-resume) for: GoFunctions, uncompiled closures, metatable __call.
+Slow path fallback (exit-resume) for: GoFunctions, uncompiled closures, metatable __call,
+and callees that just crossed the Tier 2 threshold (one-time detour to trigger compilation).
 
 ### Inline Field Cache
 

@@ -48,6 +48,7 @@ var (
 	funcProtoOffNumParams        int // vm.FuncProto.NumParams offset
 	funcProtoOffIsVarArg         int // vm.FuncProto.IsVarArg offset
 	funcProtoOffGlobalValCachePtr int // vm.FuncProto.GlobalValCachePtr offset
+	funcProtoOffCallCount         int // vm.FuncProto.CallCount offset
 )
 
 func init() {
@@ -64,6 +65,7 @@ func init() {
 	funcProtoOffNumParams = int(unsafe.Offsetof(proto.NumParams))
 	funcProtoOffIsVarArg = int(unsafe.Offsetof(proto.IsVarArg))
 	funcProtoOffGlobalValCachePtr = int(unsafe.Offsetof(proto.GlobalValCachePtr))
+	funcProtoOffCallCount = int(unsafe.Offsetof(proto.CallCount))
 }
 
 // NaN-boxing pointer sub-type constants for ARM64 type checks.
@@ -148,6 +150,19 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 
 	// All checks passed. Stack is clean.
 	// X0 = *vm.Closure, X1 = *FuncProto, X2 = DirectEntryPtr
+
+	// Increment callee's CallCount so the TieringManager can promote it to Tier 2.
+	// Without this, BLR calls bypass the VM's CallCount++ and functions stay at Tier 1.
+	// X1 = callee's *FuncProto, X3/X4 are scratch.
+	asm.LDR(jit.X3, jit.X1, funcProtoOffCallCount)   // X3 = proto.CallCount
+	asm.ADDimm(jit.X3, jit.X3, 1)                     // X3++
+	asm.STR(jit.X3, jit.X1, funcProtoOffCallCount)    // proto.CallCount = X3
+	// If CallCount just reached the Tier 2 threshold, fall to slow path so the
+	// VM's TryCompile triggers Tier 2 compilation. This detour happens at most
+	// once per function (on the exact threshold crossing). After that, BLR calls
+	// continue at Tier 1 but the Tier 2 code is compiled and cached.
+	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
+	asm.BCond(jit.CondEQ, slowLabel) // exactly at threshold → trigger Tier 2 via slow path
 
 	// 4. Save caller state ON STACK (64 bytes, 16-byte aligned)
 	asm.SUBimm(jit.SP, jit.SP, 64)
