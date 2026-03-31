@@ -352,6 +352,91 @@ func (ec *emitContext) emitNewTableExit(instr *Instr) {
 	})
 }
 
+// emitGetTableNative emits a native ARM64 fast path for OpGetTable with
+// deopt fallback to exit-resume. The fast path handles integer keys with
+// bounds-checked access to the table's array part (both Mixed and Int kinds).
+// Non-integer keys, tables with metatables, and out-of-bounds access fall
+// through to the exit-resume slow path.
+//
+// Instr layout:
+//   - Args[0] = table value (NaN-boxed)
+//   - Args[1] = key value (NaN-boxed)
+func (ec *emitContext) emitGetTableNative(instr *Instr) {
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("gettable_deopt")
+	doneLabel := ec.uniqueLabel("gettable_done")
+	intArrayLabel := ec.uniqueLabel("gettable_intarr")
+
+	// Load table value (NaN-boxed) into X0.
+	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+
+	// Check table pointer (tag=0xFFFF, sub=0).
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+
+	// Extract raw *Table pointer (44-bit payload).
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, deoptLabel)
+
+	// Check metatable is nil (tables with metatables need __index).
+	asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+	asm.CBNZ(jit.X1, deoptLabel)
+
+	// Load key value (NaN-boxed) into X1.
+	keyReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if keyReg != jit.X1 {
+		asm.MOVreg(jit.X1, keyReg)
+	}
+
+	// Check key is integer (tag = 0xFFFE).
+	asm.LSRimm(jit.X2, jit.X1, 48)
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, deoptLabel)
+
+	// Extract integer key (sign-extend 48 bits).
+	asm.SBFX(jit.X1, jit.X1, 0, 48)
+
+	// Check key >= 0.
+	asm.CMPimm(jit.X1, 0)
+	asm.BCond(jit.CondLT, deoptLabel)
+
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, else=slow.
+	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKInt)
+	asm.BCond(jit.CondEQ, intArrayLabel)
+	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0), not Int(1) -> deopt
+
+	// --- ArrayMixed fast path ---
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // array.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // array data pointer
+	asm.LDRreg(jit.X0, jit.X2, jit.X1)         // value = array[key]
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	// --- ArrayInt fast path ---
+	asm.Label(intArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArrayLen) // intArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
+	asm.LDRreg(jit.X0, jit.X2, jit.X1)            // raw int64 = intArray[key]
+	// NaN-box the int64: UBFX + ORR with pinned tag register.
+	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	// Deopt: fall back to exit-resume.
+	asm.Label(deoptLabel)
+	ec.emitGetTableExit(instr)
+
+	asm.Label(doneLabel)
+}
+
 // emitGetTableExit emits a table-exit for OpGetTable (dynamic key access).
 //
 // Instr layout:
@@ -438,6 +523,110 @@ func (ec *emitContext) emitGetTableExit(instr *Instr) {
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
 	})
+}
+
+// emitSetTableNative emits a native ARM64 fast path for OpSetTable with
+// deopt fallback to exit-resume. The fast path handles integer keys with
+// bounds-checked store to the table's array part (both Mixed and Int kinds).
+// Non-integer keys, tables with metatables, and out-of-bounds access fall
+// through to the exit-resume slow path.
+//
+// Instr layout:
+//   - Args[0] = table value (NaN-boxed)
+//   - Args[1] = key value (NaN-boxed)
+//   - Args[2] = value to store (NaN-boxed)
+func (ec *emitContext) emitSetTableNative(instr *Instr) {
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("settable_deopt")
+	doneLabel := ec.uniqueLabel("settable_done")
+	intArrayLabel := ec.uniqueLabel("settable_intarr")
+
+	// Load table value (NaN-boxed) into X0.
+	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+
+	// Check table pointer (tag=0xFFFF, sub=0).
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+
+	// Extract raw *Table pointer.
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, deoptLabel)
+
+	// Check metatable is nil (tables with metatables need __newindex).
+	asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+	asm.CBNZ(jit.X1, deoptLabel)
+
+	// Load key value (NaN-boxed) into X1.
+	keyReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if keyReg != jit.X1 {
+		asm.MOVreg(jit.X1, keyReg)
+	}
+
+	// Check key is integer (tag = 0xFFFE).
+	asm.LSRimm(jit.X2, jit.X1, 48)
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, deoptLabel)
+
+	// Extract integer key (sign-extend 48 bits).
+	asm.SBFX(jit.X1, jit.X1, 0, 48)
+
+	// Check key >= 0.
+	asm.CMPimm(jit.X1, 0)
+	asm.BCond(jit.CondLT, deoptLabel)
+
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, else=slow.
+	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKInt)
+	asm.BCond(jit.CondEQ, intArrayLabel)
+	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0), not Int(1) -> deopt
+
+	// --- ArrayMixed fast path ---
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // array.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, deoptLabel)
+	// Load value to store into X4.
+	valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+	if valReg != jit.X4 {
+		asm.MOVreg(jit.X4, valReg)
+	}
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // array data pointer
+	asm.STRreg(jit.X4, jit.X2, jit.X1)          // array[key] = value
+	// Set keysDirty flag.
+	asm.MOVimm16(jit.X5, 1)
+	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	asm.B(doneLabel)
+
+	// --- ArrayInt fast path ---
+	asm.Label(intArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArrayLen) // intArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, deoptLabel)
+	// Load value to store and check it's an integer.
+	valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+	if valReg2 != jit.X4 {
+		asm.MOVreg(jit.X4, valReg2)
+	}
+	asm.LSRimm(jit.X5, jit.X4, 48)
+	asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
+	asm.CMPreg(jit.X5, jit.X6)
+	asm.BCond(jit.CondNE, deoptLabel) // value not int -> deopt
+	// Unbox int64 from NaN-boxed value.
+	asm.SBFX(jit.X4, jit.X4, 0, 48)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
+	asm.STRreg(jit.X4, jit.X2, jit.X1)             // intArray[key] = int64
+	// Set keysDirty flag.
+	asm.MOVimm16(jit.X5, 1)
+	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	asm.B(doneLabel)
+
+	// Deopt: fall back to exit-resume.
+	asm.Label(deoptLabel)
+	ec.emitSetTableExit(instr)
+
+	asm.Label(doneLabel)
 }
 
 // emitSetTableExit emits a table-exit for OpSetTable (dynamic key access).

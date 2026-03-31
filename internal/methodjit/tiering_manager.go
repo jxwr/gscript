@@ -247,13 +247,15 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 // DCE → RegAlloc → Compile.
 
 // canPromoteToTier2 checks if a function is safe for Tier 2 compilation.
-// Most ops are now supported via exit-resume (exit to Go, execute, resume JIT).
-// Only ops requiring special VM state (closures, upvalues, vararg) are blocked.
+// Most ops are now supported via native fast paths or exit-resume (exit to Go,
+// execute, resume JIT). Only ops requiring special VM state are blocked.
+//
+// Supported natively:
+//   - GETTABLE, SETTABLE: emitGetTableNative / emitSetTableNative (fast path + deopt)
 //
 // Supported via exit-resume:
 //   - CALL: emitCallExit
 //   - GETGLOBAL, SETGLOBAL: emitGlobalExit / emitOpExit
-//   - GETTABLE, SETTABLE: emitGetTableExit / emitSetTableExit
 //   - GETFIELD, SETFIELD: emitGetField / emitSetField (inline cache + exit)
 //   - NEWTABLE, SETLIST, APPEND, LEN, CONCAT, SELF: emitOpExit
 func canPromoteToTier2(proto *vm.FuncProto) bool {
@@ -297,7 +299,7 @@ func canPromoteWithInlining(proto *vm.FuncProto, globals map[string]*vm.FuncProt
 		case vm.OP_CLOSURE, vm.OP_SETGLOBAL,
 			vm.OP_NEWTABLE, vm.OP_SETLIST, vm.OP_VARARG, vm.OP_SELF,
 			vm.OP_CONCAT, vm.OP_GETUPVAL, vm.OP_SETUPVAL,
-			vm.OP_GETFIELD, vm.OP_SETFIELD, vm.OP_GETTABLE, vm.OP_SETTABLE,
+			vm.OP_GETFIELD, vm.OP_SETFIELD,
 			vm.OP_APPEND, vm.OP_LEN:
 			// Other blocking ops remain after inlining → can't promote
 			return false

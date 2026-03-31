@@ -760,7 +760,8 @@ result := sum(10)
 }
 
 // TestTieringManager_Tier2TableOps verifies that functions with table operations
-// (GETTABLE, SETTABLE) work correctly at Tier 2 via exit-resume.
+// (GETTABLE, SETTABLE) promote to Tier 2 and produce correct results using
+// native ARM64 fast paths (emitGetTableNative / emitSetTableNative).
 func TestTieringManager_Tier2TableOps(t *testing.T) {
 	src := `
 func sum_array(arr, n) {
@@ -776,7 +777,7 @@ for call := 1; call <= 5; call++ {
     result = sum_array(arr, 5)
 }
 `
-	v, _ := runWithTieringManager(t, src)
+	v, tm := runWithTieringManager(t, src)
 	result := v.GetGlobal("result")
 	if !result.IsInt() {
 		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
@@ -785,6 +786,44 @@ for call := 1; call <= 5; call++ {
 	if result.Int() != 150 {
 		t.Errorf("sum_array = %d, want 150", result.Int())
 	}
+	// Verify sum_array was promoted to Tier 2 (GETTABLE is now allowed).
+	if tm.Tier2Count() == 0 {
+		t.Error("expected sum_array to be promoted to Tier 2 (GETTABLE native fast path)")
+	}
+	t.Logf("tier2Count=%d", tm.Tier2Count())
+}
+
+// TestTieringManager_Tier2SetTableOps verifies that functions with SETTABLE
+// promote to Tier 2 and produce correct results via native fast paths.
+// Uses for-loop with <= (FORPREP/FORLOOP) to avoid while-loop IR issues.
+func TestTieringManager_Tier2SetTableOps(t *testing.T) {
+	src := `
+func write_and_read(arr, n) {
+    for i := 1; i <= n; i++ {
+        arr[i] = i + 10
+    }
+    return arr[3]
+}
+arr := {0, 0, 0, 0, 0, 0}
+result := 0
+for call := 1; call <= 5; call++ {
+    result = write_and_read(arr, 5)
+}
+`
+	v, tm := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	// arr[3] = 3 + 10 = 13
+	if result.Int() != 13 {
+		t.Errorf("write_and_read result = %d, want 13", result.Int())
+	}
+	// Verify write_and_read was promoted to Tier 2 (SETTABLE is now allowed).
+	if tm.Tier2Count() == 0 {
+		t.Error("expected write_and_read to be promoted to Tier 2 (SETTABLE native fast path)")
+	}
+	t.Logf("tier2Count=%d", tm.Tier2Count())
 }
 
 // TestTieringManager_Tier2FieldOps verifies that functions with field operations

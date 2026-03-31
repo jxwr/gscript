@@ -226,6 +226,46 @@ func (ec *emitContext) emitNot(instr *Instr) {
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 
+// emitGuardTruthy emits ARM64 code for OpGuardTruthy.
+// Converts any value to a NaN-boxed bool based on truthiness:
+// nil and false are falsy (returns NB_TagBool|0), everything else is truthy
+// (returns NB_TagBool|1). This is the non-inverted version of emitNot.
+func (ec *emitContext) emitGuardTruthy(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	asm := ec.asm
+
+	// Load operand as NaN-boxed for truthiness check.
+	src := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if src != jit.X0 {
+		asm.MOVreg(jit.X0, src)
+	}
+
+	// Check for nil: val == NB_ValNil.
+	asm.LoadImm64(jit.X1, nb64(jit.NB_ValNil))
+	asm.CMPreg(jit.X0, jit.X1)
+	isFalsy := ec.uniqueLabel("truthy_falsy")
+	asm.BCond(jit.CondEQ, isFalsy)
+
+	// Check for false: val == NB_TagBool|0. Use pinned X25.
+	asm.CMPreg(jit.X0, mRegTagBool)
+	asm.BCond(jit.CondEQ, isFalsy)
+
+	// Truthy value: return true (NB_TagBool|1).
+	asm.ADDimm(jit.X0, mRegTagBool, 1)
+	done := ec.uniqueLabel("truthy_done")
+	asm.B(done)
+
+	// Nil or false: return false (NB_TagBool|0).
+	asm.Label(isFalsy)
+	asm.MOVreg(jit.X0, mRegTagBool)
+
+	asm.Label(done)
+	// Store NaN-boxed bool result.
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
 // emitFloatBinOp emits ARM64 code for type-generic binary arithmetic
 // that handles both int and float operands. For int+int, produces int result.
 // For any float operand, promotes to float and produces float result.

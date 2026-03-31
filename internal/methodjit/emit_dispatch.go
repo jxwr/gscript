@@ -116,9 +116,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpNewTable:
 		ec.emitNewTableExit(instr)
 	case OpGetTable:
-		ec.emitGetTableExit(instr)
+		ec.emitGetTableNative(instr)
 	case OpSetTable:
-		ec.emitSetTableExit(instr)
+		ec.emitSetTableNative(instr)
 	case OpGetField:
 		ec.emitGetField(instr)
 	case OpSetField:
@@ -127,6 +127,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	// --- Guards ---
 	case OpGuardType:
 		ec.emitGuardType(instr)
+	case OpGuardTruthy:
+		ec.emitGuardTruthy(instr)
 
 	// --- Op-exit: unsupported ops exit to Go, execute there, resume JIT ---
 	case OpSelf,
@@ -141,7 +143,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		OpTForCall, OpTForLoop,
 		OpVararg, OpTestSet,
 		OpGo, OpMakeChan, OpSend, OpRecv,
-		OpGuardNonNil, OpGuardTruthy:
+		OpGuardNonNil:
 		ec.emitOpExit(instr)
 
 	default:
