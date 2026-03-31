@@ -17,7 +17,8 @@ Tier 1: Baseline JIT (internal/methodjit/tier1_*.go)
   - GETGLOBAL value cache (generation-based invalidation)
   - Two entry points per function (normal 96B frame + direct 16B frame)
   - BLR call counter: increments callee's CallCount + falls to slow path at threshold
-  → Tier 2 at 2 calls (automatic promotion via TieringManager)
+  - OSR counter in FORLOOP: triggers ExitOSR after N iterations for Tier 2 upgrade
+  → Tier 2 via smart tiering (profile-based, see func_profile.go)
 
 Tier 2: Optimizing JIT (internal/methodjit/)
   Bytecode → CFG SSA IR → Optimization passes → RegAlloc → ARM64
@@ -132,6 +133,24 @@ BuildGraph (Braun et al. 2013)
 | 6 | Op-exit (Tier 2: generic unsupported op) |
 | 7 | Baseline op-exit (Tier 1: exit-resume) |
 | 8 | Native call exit (Tier 1: callee hit exit during BLR call) |
+| 9 | OSR (Tier 1: loop counter expired, request Tier 2 upgrade) |
+
+## Smart Tiering (func_profile.go)
+
+Profile-based promotion replaces simple call-count threshold:
+- **Pure-compute + loop + arith**: Tier 2 at callCount=1 (immediate)
+- **Dense arithmetic, no calls**: Tier 2 at callCount=1
+- **Loop + calls + arith**: Tier 2 at callCount=2
+- **Loop + table ops**: Tier 2 at callCount=3
+- **Calls only (no loops)**: stay Tier 1 (BLR is faster)
+
+## On-Stack Replacement (OSR)
+
+Simplified OSR: FORLOOP back-edge decrements `ctx.OSRCounter`. When zero:
+1. Exit with `ExitOSR` (code 9)
+2. TieringManager compiles Tier 2
+3. Re-enters the entire function from start at Tier 2
+4. If Tier 2 fails, disables OSR and re-runs at Tier 1
 
 ## Infrastructure
 

@@ -61,13 +61,16 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		}
 	}
 
-	// Build constant int map for immediate optimization.
+	// Build constant int map for immediate optimization, and IR type map for
+	// resolveRawFloat to detect int-typed values that need SCVTF conversion.
 	constInts := make(map[int]int64)
+	irTypes := make(map[int]Type)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr.Op == OpConstInt {
 				constInts[instr.ID] = instr.Aux
 			}
+			irTypes[instr.ID] = instr.Type
 		}
 	}
 
@@ -88,6 +91,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		loopPhiOnlyArgs:  phiOnlyArgs,
 		loopExitBoxPhis:  exitBoxPhis,
 		constInts:        constInts,
+		irTypes:          irTypes,
 	}
 
 	// Assign home slots for all SSA values.
@@ -217,6 +221,11 @@ type emitContext struct {
 	// constInts maps value ID -> int64 for ConstInt instructions.
 	// Used by emitRawIntBinOp to emit ADDimm/SUBimm for small constants.
 	constInts map[int]int64
+
+	// irTypes maps value ID -> IR Type from the defining instruction.
+	// Used by resolveRawFloat to detect NaN-boxed ints that need SCVTF
+	// conversion instead of FMOVtoFP.
+	irTypes map[int]Type
 }
 
 // assignSlots assigns a home slot for every SSA value.

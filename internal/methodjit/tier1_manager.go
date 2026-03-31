@@ -60,13 +60,18 @@ type BaselineJITEngine struct {
 	// for on-the-fly compilation. Set by TieringManager so that uncompiled callees
 	// go through the tiering pipeline instead of being locked to Tier 1.
 	outerCompiler func(*vm.FuncProto) interface{}
+	// osrEnabled: per-proto OSR configuration. Maps proto -> initial OSR counter.
+	// Positive value = counter threshold (triggers OSR after N iterations).
+	// 0 or absent = OSR disabled. Set by TieringManager before Execute.
+	osrCounters map[*vm.FuncProto]int64
 }
 
 // NewBaselineJITEngine creates a new baseline JIT engine.
 func NewBaselineJITEngine() *BaselineJITEngine {
 	e := &BaselineJITEngine{
-		compiled: make(map[*vm.FuncProto]*BaselineFunc),
-		failed:   make(map[*vm.FuncProto]bool),
+		compiled:    make(map[*vm.FuncProto]*BaselineFunc),
+		failed:      make(map[*vm.FuncProto]bool),
+		osrCounters: make(map[*vm.FuncProto]int64),
 	}
 	// Pre-allocate pool of ExecContexts (heap-allocated, safe for uintptr).
 	const poolSize = 32
@@ -174,6 +179,13 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 	ctx := e.acquireCtx()
 	defer e.releaseCtx()
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
+
+	// Set OSR counter for this function. Positive = enabled, negative = disabled.
+	if counter, ok := e.osrCounters[proto]; ok && counter > 0 {
+		ctx.OSRCounter = counter
+	} else {
+		ctx.OSRCounter = -1 // disabled
+	}
 	ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
 	if len(proto.Constants) > 0 {
 		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
@@ -300,10 +312,27 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 			ctx.ExitCode = 0
 			continue
 
+		case ExitOSR:
+			// OSR: loop counter expired. Return a sentinel error so the
+			// TieringManager can intercept and upgrade to Tier 2.
+			return nil, errOSRRequested
+
 		default:
 			return nil, fmt.Errorf("baseline: unknown exit code %d", ctx.ExitCode)
 		}
 	}
+}
+
+// errOSRRequested is a sentinel error returned by BaselineJITEngine.Execute
+// when the OSR counter reaches zero. The TieringManager intercepts this to
+// compile Tier 2 and re-enter the function at optimizing speed.
+var errOSRRequested = fmt.Errorf("baseline: OSR requested")
+
+// SetOSRCounter sets the OSR loop iteration counter for a function.
+// When positive, Tier 1's FORLOOP will exit with ExitOSR after this many
+// iterations, triggering Tier 2 compilation.
+func (e *BaselineJITEngine) SetOSRCounter(proto *vm.FuncProto, counter int64) {
+	e.osrCounters[proto] = counter
 }
 
 // CompiledCount returns the number of compiled functions.

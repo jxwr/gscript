@@ -72,6 +72,8 @@ func emitBaselineForPrep(asm *jit.Assembler, inst uint32, pc int) {
 }
 
 // emitBaselineForLoop: R(A) += R(A+2); if R(A) <?= R(A+1) then PC += sBx; R(A+3) = R(A)
+// Includes OSR counter: each back-edge decrements ctx.OSRCounter. When it
+// reaches 0, exits with ExitOSR so the TieringManager can compile Tier 2.
 func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 	a := vm.DecodeA(inst)
 	sbx := vm.DecodesBx(inst)
@@ -83,6 +85,7 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 
 	floatLabel := nextLabel("forloop_float")
 	exitLabel := nextLabel("forloop_exit")
+	osrCheckLabel := nextLabel("forloop_osr")
 	contLabel := pcLabel(pc + 1 + sbx) // loop body
 
 	// Check all three are int
@@ -113,11 +116,11 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 	// Negative step: idx >= limit
 	asm.CMPreg(jit.X3, jit.X5)
 	asm.BCond(jit.CondLT, exitLabel)
-	// Continue: store idx, R(A+3) = idx, jump to body.
+	// Continue: store idx, R(A+3) = idx, jump to OSR check then body.
 	jit.EmitBoxIntFast(asm, jit.X3, jit.X3, mRegTagInt)
 	asm.STR(jit.X3, mRegRegs, slotOff(a))
 	asm.STR(jit.X3, mRegRegs, slotOff(a+3))
-	asm.B(contLabel)
+	asm.B(osrCheckLabel)
 
 	asm.Label(positiveStepLabel)
 	// Positive step: idx <= limit
@@ -126,7 +129,7 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 	jit.EmitBoxIntFast(asm, jit.X3, jit.X3, mRegTagInt)
 	asm.STR(jit.X3, mRegRegs, slotOff(a))
 	asm.STR(jit.X3, mRegRegs, slotOff(a+3))
-	asm.B(contLabel)
+	asm.B(osrCheckLabel)
 
 	// Float fallback
 	asm.Label(floatLabel)
@@ -153,7 +156,7 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 
 	// Continue
 	asm.STR(jit.X0, mRegRegs, slotOff(a+3)) // R(A+3) = idx
-	asm.B(contLabel)
+	asm.B(osrCheckLabel)
 
 	asm.Label(floatPosLabel)
 	// Positive step: idx <= limit
@@ -162,7 +165,28 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 
 	// Continue
 	asm.STR(jit.X0, mRegRegs, slotOff(a+3))
-	asm.B(contLabel)
+	asm.B(osrCheckLabel)
+
+	// --- OSR check: decrement counter and exit if zero ---
+	asm.Label(osrCheckLabel)
+	// Load OSRCounter from ctx.
+	asm.LDR(jit.X7, mRegCtx, execCtxOffOSRCounter)
+	// If counter < 0 (disabled), skip directly to loop body.
+	asm.CMPimm(jit.X7, 0)
+	asm.BCond(jit.CondLT, contLabel) // counter < 0 -> disabled, continue loop
+	// Decrement counter.
+	asm.SUBimm(jit.X7, jit.X7, 1)
+	asm.STR(jit.X7, mRegCtx, execCtxOffOSRCounter)
+	// If counter > 0, continue loop normally.
+	asm.CMPimm(jit.X7, 0)
+	asm.BCond(jit.CondGT, contLabel) // counter > 0 -> continue
+	// Counter reached 0: request OSR exit.
+	asm.LoadImm64(jit.X0, ExitOSR)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	// Check CallMode to choose the right exit path.
+	asm.LDR(jit.X0, mRegCtx, execCtxOffCallMode)
+	asm.CBNZ(jit.X0, "direct_exit")
+	asm.B("baseline_exit")
 
 	asm.Label(exitLabel)
 }

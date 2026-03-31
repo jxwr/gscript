@@ -107,6 +107,12 @@ type ExecContext struct {
 	// to prevent native stack overflow. The slow path goes through Go which
 	// triggers goroutine stack growth as needed.
 	NativeCallDepth int64
+
+	// OSRCounter is decremented on each FORLOOP back-edge in Tier 1.
+	// When it reaches 0, the JIT exits with ExitOSR so the TieringManager
+	// can compile Tier 2 and re-enter the function at Tier 2 speed.
+	// Set to -1 to disable OSR (e.g., after a failed Tier 2 compilation).
+	OSRCounter int64
 }
 
 // ExitCode constants.
@@ -119,6 +125,7 @@ const (
 	ExitOpExit         = 6 // op-exit: pause JIT, Go handles the operation, resume JIT
 	ExitBaselineOpExit = 7 // baseline op-exit: bytecode-level exit for Tier 1
 	ExitNativeCallExit = 8 // native call exit: callee hit exit-resume during BLR call
+	ExitOSR            = 9 // OSR: Tier 1 loop counter expired, request Tier 2 compilation
 )
 
 // TableOp constants (stored in ExecContext.TableOp).
@@ -182,6 +189,7 @@ var (
 	execCtxOffRegsBase            = int(unsafe.Offsetof(ExecContext{}.RegsBase))
 	execCtxOffTopPtr              = int(unsafe.Offsetof(ExecContext{}.TopPtr))
 	execCtxOffNativeCallDepth     = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))
+	execCtxOffOSRCounter          = int(unsafe.Offsetof(ExecContext{}.OSRCounter))
 )
 
 // CompiledFunction holds the generated native code for a function.

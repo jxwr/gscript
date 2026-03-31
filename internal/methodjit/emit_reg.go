@@ -281,7 +281,19 @@ func (ec *emitContext) resolveRawFloat(valueID int, scratch jit.FReg) jit.FReg {
 		ec.asm.SCVTF(scratch, gpr)
 		return scratch
 	}
-	// Value is NaN-boxed in a GPR or memory slot. Load and convert.
+	// Check if the value is known to be int-typed from the IR. If so, we need
+	// to unbox the NaN-boxed int and convert via SCVTF, NOT FMOVtoFP (which
+	// would treat the NaN-boxing tag bits as float bits, producing NaN).
+	// This occurs when TypeSpecializePass creates float ops with int operands
+	// (e.g., AddFloat(DivFloat_result, ConstInt) after inlining).
+	if irType, ok := ec.irTypes[valueID]; ok && irType == TypeInt {
+		gpr := ec.resolveValueNB(valueID, jit.X0)
+		jit.EmitUnboxInt(ec.asm, jit.X0, gpr)
+		ec.asm.SCVTF(scratch, jit.X0)
+		return scratch
+	}
+	// Value is NaN-boxed float in a GPR or memory slot. Load and interpret
+	// bits as float (for NaN-boxed floats, the bits ARE the IEEE 754 value).
 	gpr := ec.resolveValueNB(valueID, jit.X0)
 	ec.asm.FMOVtoFP(scratch, gpr)
 	return scratch
