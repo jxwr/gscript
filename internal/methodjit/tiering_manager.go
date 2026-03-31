@@ -60,12 +60,17 @@ func NewTieringManager() *TieringManager {
 	// that have reached the Tier 2 threshold. The slow path goes through the VM's
 	// call() which calls TieringManager.TryCompile(), enabling Tier 2 promotion.
 	t1.SetTierUpThreshold(tmDefaultTier2Threshold)
-	return &TieringManager{
+	tm := &TieringManager{
 		tier1:          t1,
 		tier2Compiled:  make(map[*vm.FuncProto]*CompiledFunction),
 		tier2Failed:    make(map[*vm.FuncProto]bool),
 		tier2Threshold: tmDefaultTier2Threshold,
 	}
+	// Wire the outer compiler so handleCallFast routes through TieringManager
+	t1.SetOuterCompiler(func(proto *vm.FuncProto) interface{} {
+		return tm.TryCompile(proto)
+	})
+	return tm
 }
 
 // SetTier2Threshold sets the call count threshold for Tier 2 promotion.
@@ -95,16 +100,8 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 
-	// Tier 2 promotion threshold depends on function type:
-	// - Pure-compute functions (no calls/globals/tables): promote immediately (threshold=1)
-	//   because Tier 2 raw int/float mode gives 5-100x speedup
-	// - Functions with calls/globals: use configured threshold (default=2)
-	//   because Tier 2 can't handle these ops yet
-	threshold := tm.tier2Threshold
-	if canPromoteToTier2(proto) {
-		threshold = 1 // immediate promotion for pure-compute
-	}
-	if proto.CallCount < threshold {
+	// Below Tier 2 threshold? Use Tier 1.
+	if proto.CallCount < tm.tier2Threshold {
 		return tm.tier1.TryCompile(proto)
 	}
 

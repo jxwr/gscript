@@ -56,6 +56,10 @@ type BaselineJITEngine struct {
 	// for callees whose CallCount >= this threshold. This allows the TieringManager
 	// to intercept calls and trigger Tier 2 compilation via the VM's TryCompile.
 	tierUpThreshold int
+	// outerCompiler: when set, handleCallFast uses this instead of e.TryCompile
+	// for on-the-fly compilation. Set by TieringManager so that uncompiled callees
+	// go through the tiering pipeline instead of being locked to Tier 1.
+	outerCompiler func(*vm.FuncProto) interface{}
 }
 
 // NewBaselineJITEngine creates a new baseline JIT engine.
@@ -108,6 +112,14 @@ func (e *BaselineJITEngine) SetCallVM(v *vm.VM) {
 // directly. This allows the TieringManager to trigger Tier 2 compilation.
 func (e *BaselineJITEngine) SetTierUpThreshold(n int) {
 	e.tierUpThreshold = n
+}
+
+// SetOuterCompiler sets a callback used by handleCallFast for on-the-fly
+// compilation of callees. When set, this replaces e.TryCompile so that
+// uncompiled callees go through the TieringManager's pipeline (which can
+// route to Tier 2) instead of being locked to Tier 1.
+func (e *BaselineJITEngine) SetOuterCompiler(fn func(*vm.FuncProto) interface{}) {
+	e.outerCompiler = fn
 }
 
 // TryCompile checks if a function should be baseline-compiled.

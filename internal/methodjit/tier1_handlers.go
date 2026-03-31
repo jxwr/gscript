@@ -113,9 +113,21 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 			if !compiled {
 				// Try to compile the callee on the fly.
 				calleeProto.CallCount++
-				if bf := e.TryCompile(calleeProto); bf != nil {
-					calleeBF = bf.(*BaselineFunc)
+				var compileResult interface{}
+				if e.outerCompiler != nil {
+					compileResult = e.outerCompiler(calleeProto)
+				} else {
+					compileResult = e.TryCompile(calleeProto)
+				}
+				// If the result is a *BaselineFunc, use it for fast-path execution.
+				// If it's a *CompiledFunction (Tier 2), fall to slow path
+				// so Execute dispatches to executeTier2.
+				if bf, ok := compileResult.(*BaselineFunc); ok {
+					calleeBF = bf
 					compiled = true
+				} else if compileResult != nil {
+					// Tier 2 compiled — fall to slow path for proper dispatch.
+					goto slowPath
 				}
 			}
 			if compiled {
