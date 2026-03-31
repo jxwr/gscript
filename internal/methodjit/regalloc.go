@@ -222,13 +222,20 @@ func freeDeadValues(block *Block, instrIdx int, alloc *RegAllocation, gprs, fprs
 }
 
 // needsFloatReg returns true if the instruction's result should go in an FPR.
+// Note: Float COMPARISON ops (OpLtFloat, OpLeFloat) produce boolean results
+// (NaN-boxed bool), NOT float results, so they should NOT get FPR allocations.
 func needsFloatReg(instr *Instr) bool {
+	// Comparisons produce bools, not floats, regardless of operand type.
+	switch instr.Op {
+	case OpLtFloat, OpLeFloat:
+		return false
+	}
 	if instr.Type == TypeFloat {
 		return true
 	}
 	switch instr.Op {
 	case OpConstFloat, OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
-		OpUnboxFloat, OpBoxFloat, OpLtFloat, OpLeFloat:
+		OpUnboxFloat, OpBoxFloat:
 		return true
 	}
 	return false

@@ -181,6 +181,13 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 	// Check if the destination is a loop header — use raw-int phi transfer.
 	toIsLoopHeader := ec.loop != nil && ec.loop.loopHeaders[to.ID]
 
+	// Pre-pass: emit FPR phi moves with dependency-aware ordering.
+	// FPR phi moves are semantically parallel assignments. When two FPR
+	// moves conflict (e.g., D4→D5 and D6→D4 where D4 is both a source
+	// and a destination), sequential emission clobbers the source value.
+	// We detect this and reorder, using D0 as scratch to break cycles.
+	ec.emitFPRPhiMovesOrdered(to, predIdx)
+
 	for _, instr := range to.Instrs {
 		if instr.Op != OpPhi {
 			break
@@ -197,10 +204,8 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 		dstHasFPR := dstHasReg && dstPR.IsFloat
 
 		// --- FPR phi path ---
-		// When the destination phi has an FPR allocation, resolve the source
-		// as a raw float and transfer directly to the FPR.
+		// Already emitted in the pre-pass above. Skip.
 		if dstHasFPR {
-			ec.emitPhiMoveRawFloat(srcArg, instr, dstPR)
 			continue
 		}
 
@@ -253,6 +258,132 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 				} else {
 					ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
 				}
+			}
+		}
+	}
+}
+
+// emitFPRPhiMovesOrdered emits all FPR-targeted phi moves for the edge
+// predIdx→to, ordered to avoid clobbering source values when there are
+// register conflicts. Uses D0 as scratch to break cycles.
+//
+// Example conflict: phis v_zi (D6→D4) and v_zr (D4→D5). If emitted in
+// order, the first move writes D4 which clobbers the source for the second.
+// We detect this and emit the second (D4→D5) first, then the first (D6→D4).
+func (ec *emitContext) emitFPRPhiMovesOrdered(to *Block, predIdx int) {
+	type fprPhiMove struct {
+		srcArg    *Value
+		phiInstr  *Instr
+		dstPR     PhysReg
+		srcFPR    jit.FReg
+		dstFPR    jit.FReg
+		hasSrcFPR bool
+	}
+	var moves []fprPhiMove
+
+	for _, instr := range to.Instrs {
+		if instr.Op != OpPhi {
+			break
+		}
+		if predIdx >= len(instr.Args) {
+			continue
+		}
+		dstPR, dstHasReg := ec.alloc.ValueRegs[instr.ID]
+		if !dstHasReg || !dstPR.IsFloat {
+			continue
+		}
+		srcArg := instr.Args[predIdx]
+		m := fprPhiMove{
+			srcArg:   srcArg,
+			phiInstr: instr,
+			dstPR:    dstPR,
+			dstFPR:   jit.FReg(dstPR.Reg),
+		}
+		if ec.hasFPReg(srcArg.ID) {
+			m.srcFPR = ec.physFPReg(srcArg.ID)
+			m.hasSrcFPR = true
+		}
+		moves = append(moves, m)
+	}
+
+	if len(moves) <= 1 {
+		for i := range moves {
+			ec.emitPhiMoveRawFloat(moves[i].srcArg, moves[i].phiInstr, moves[i].dstPR)
+		}
+		return
+	}
+
+	// Emit in dependency-aware order. A move is safe if its destination FPR
+	// is NOT a source FPR of another un-emitted move.
+	emitted := make([]bool, len(moves))
+	totalEmitted := 0
+
+	for totalEmitted < len(moves) {
+		progress := false
+
+		for i := range moves {
+			if emitted[i] {
+				continue
+			}
+			m := &moves[i]
+			if !m.hasSrcFPR || m.srcFPR == m.dstFPR {
+				ec.emitPhiMoveRawFloat(m.srcArg, m.phiInstr, m.dstPR)
+				emitted[i] = true
+				totalEmitted++
+				progress = true
+				continue
+			}
+			blocked := false
+			for j := range moves {
+				if j == i || emitted[j] || !moves[j].hasSrcFPR {
+					continue
+				}
+				if moves[j].srcFPR == m.dstFPR {
+					blocked = true
+					break
+				}
+			}
+			if !blocked {
+				ec.emitPhiMoveRawFloat(m.srcArg, m.phiInstr, m.dstPR)
+				emitted[i] = true
+				totalEmitted++
+				progress = true
+			}
+		}
+
+		if totalEmitted >= len(moves) {
+			break
+		}
+
+		if !progress {
+			// Cycle: break with D0 scratch.
+			for i := range moves {
+				if emitted[i] || !moves[i].hasSrcFPR {
+					continue
+				}
+				m := &moves[i]
+				ec.asm.FMOVd(jit.D0, m.srcFPR)
+				for j := range moves {
+					if j == i || emitted[j] {
+						continue
+					}
+					if moves[j].dstFPR == m.srcFPR {
+						ec.emitPhiMoveRawFloat(moves[j].srcArg, moves[j].phiInstr, moves[j].dstPR)
+						emitted[j] = true
+						totalEmitted++
+						break
+					}
+				}
+				ec.asm.FMOVd(m.dstFPR, jit.D0)
+				if ec.crossBlockLive[m.phiInstr.ID] {
+					if dstSlot, ok := ec.slotMap[m.phiInstr.ID]; ok {
+						ec.asm.FMOVtoGP(jit.X0, m.dstFPR)
+						ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+					}
+				}
+				emitted[i] = true
+				totalEmitted++
+				break
 			}
 		}
 	}
