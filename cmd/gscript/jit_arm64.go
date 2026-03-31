@@ -8,8 +8,10 @@ import (
 )
 
 func cliEnableJIT(bvm *bytecodevm.VM) {
-	// Tier 1 Baseline JIT: compiles every function on first call.
-	// Tier 2 (MethodJITEngine) is disabled until recursive call handling is fixed.
-	bjit := methodjit.NewBaselineJITEngine()
-	bvm.SetMethodJIT(bjit)
+	// TieringManager: Tier 1 (baseline) + Tier 2 (optimizing) with threshold-based
+	// promotion. With default threshold (100), functions must be called 100+ times
+	// through the VM path to promote. Tier 1 BLR calls bypass the VM, so most
+	// functions stay at Tier 1 until counter integration is added to Tier 1 code.
+	tm := methodjit.NewTieringManager()
+	bvm.SetMethodJIT(tm)
 }
