@@ -130,12 +130,16 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		}
 	}
 
+	// Resolve direct entry offset for BLR callers.
+	directEntryOff := ec.asm.LabelOffset("t2_direct_entry")
+
 	return &CompiledFunction{
-		Code:        cb,
-		Proto:       fn.Proto,
-		NumSpills:   alloc.NumSpillSlots,
-		numRegs:     ec.nextSlot,
-		ResumeAddrs: resumeAddrs,
+		Code:              cb,
+		Proto:             fn.Proto,
+		NumSpills:         alloc.NumSpillSlots,
+		numRegs:           ec.nextSlot,
+		ResumeAddrs:       resumeAddrs,
+		DirectEntryOffset: directEntryOff,
 	}, nil
 }
 
@@ -309,6 +313,51 @@ func (ec *emitContext) emitEpilogue() {
 	// Deallocate stack frame.
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	// Return.
+	asm.RET()
+
+	// --- Direct entry point for BLR callers (Tier 1 native call) ---
+	// Uses the FULL frame (same as normal entry) because Tier 2 may use
+	// callee-saved GPRs (X20-X23) for register allocation. The Tier 1
+	// caller expects callee-saved registers to be preserved across BLR.
+	// Caller has set: X0=ctx, ctx.Regs=callee regs base,
+	// ctx.Constants=callee constants, CallMode=1.
+	asm.Label("t2_direct_entry")
+	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+	asm.STP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.X29, jit.SP, 0)
+	asm.STP(jit.X19, jit.X20, jit.SP, 16)
+	asm.STP(jit.X21, jit.X22, jit.SP, 32)
+	asm.STP(jit.X23, jit.X24, jit.SP, 48)
+	asm.STP(jit.X25, jit.X26, jit.SP, 64)
+	asm.STP(jit.X27, jit.X28, jit.SP, 80)
+	if ec.useFPR {
+		asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+	}
+	asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
+	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
+	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants)  // X27 = ctx.Constants
+	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))     // X24
+	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))   // X25
+	asm.B("B0") // Jump to first SSA block.
+
+	// --- Direct epilogue for BLR callers ---
+	// Return path when CallMode == 1 in emitReturn. Uses the same frame
+	// restore as normal epilogue since the direct entry uses a full frame.
+	asm.Label("t2_direct_epilogue")
+	asm.MOVimm16(jit.X0, 0)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.useFPR {
+		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+	}
+	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+	asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+	asm.LDP(jit.X21, jit.X22, jit.SP, 32)
+	asm.LDP(jit.X19, jit.X20, jit.SP, 16)
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.RET()
 }
 

@@ -365,9 +365,23 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 		} else {
 			// NaN-boxed: resolve and store directly.
 			retReg := ec.resolveValueNB(valID, jit.X0)
-			ec.asm.STR(retReg, mRegRegs, 0)
+			if retReg != jit.X0 {
+				ec.asm.MOVreg(jit.X0, retReg)
+			}
+			ec.asm.STR(jit.X0, mRegRegs, 0)
 		}
+	} else {
+		// No return value: use nil.
+		ec.asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
+		ec.asm.STR(jit.X0, mRegRegs, 0)
 	}
-	// Jump to epilogue.
+	// Also write to ctx.BaselineReturnValue for BLR caller compatibility.
+	// When called via BLR from Tier 1, the caller reads BaselineReturnValue.
+	ec.asm.STR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
+	// Check CallMode: 0 = normal entry (from Execute/callJIT), 1 = direct entry (from BLR).
+	// Both use a full 128B frame, but the direct epilogue returns to the BLR caller
+	// while the normal epilogue returns to the callJIT trampoline.
+	ec.asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
+	ec.asm.CBNZ(jit.X1, "t2_direct_epilogue")
 	ec.asm.B("epilogue")
 }

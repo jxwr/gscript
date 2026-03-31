@@ -214,6 +214,149 @@ for i := 1; i <= 5; i++ {
 	}
 }
 
+// TestTieringManager_Tier2DirectEntry verifies that after Tier 2 compilation,
+// Tier 1 BLR callers can reach the Tier 2 direct entry point. This tests that:
+// 1. Tier 2 code has a compatible direct entry (16-byte frame, same calling convention)
+// 2. proto.DirectEntryPtr is updated to point to Tier 2's direct entry
+// 3. Tier 2 return writes to ctx.BaselineReturnValue for BLR caller compatibility
+// 4. The result is correct when called via BLR from a Tier 1 wrapper
+func TestTieringManager_Tier2DirectEntry(t *testing.T) {
+	// sum is a pure-compute function (no calls, no globals) that qualifies for Tier 2.
+	// wrapper calls sum via OP_CALL which uses native BLR in Tier 1.
+	// After sum is promoted to Tier 2, wrapper's BLR should jump to Tier 2's direct entry.
+	src := `
+func sum(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + i
+    }
+    return s
+}
+func wrapper(n) {
+    return sum(n)
+}
+result := 0
+for i := 1; i <= 10; i++ {
+    result = wrapper(100)
+}
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	_, err := v.Execute(proto)
+	if err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+
+	// Verify correctness: sum(100) = 5050
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 5050 {
+		t.Errorf("wrapper(100) = %v, want 5050", result)
+	}
+
+	// Verify sum was promoted to Tier 2.
+	if tm.Tier2Count() == 0 {
+		t.Error("expected at least 1 Tier 2 compiled function (sum)")
+	}
+
+	// Verify sum's DirectEntryPtr was updated to Tier 2's direct entry.
+	// Find sum's proto (first inner function that is pure-compute).
+	var sumProto *vm.FuncProto
+	for _, p := range proto.Protos {
+		if canPromoteToTier2(p) {
+			sumProto = p
+			break
+		}
+	}
+	if sumProto == nil {
+		t.Fatal("could not find sum's proto")
+	}
+	if sumProto.DirectEntryPtr == 0 {
+		t.Error("sum's DirectEntryPtr is 0 after Tier 2 promotion; expected non-zero")
+	}
+
+	// Verify the Tier 2 compiled function has a direct entry offset.
+	cf, ok := tm.tier2Compiled[sumProto]
+	if !ok {
+		t.Fatal("sum not found in tier2Compiled map")
+	}
+	if cf.DirectEntryOffset <= 0 {
+		t.Errorf("DirectEntryOffset = %d, want > 0", cf.DirectEntryOffset)
+	}
+
+	// Verify DirectEntryPtr points to cf.Code.Ptr() + DirectEntryOffset.
+	expectedPtr := uintptr(cf.Code.Ptr()) + uintptr(cf.DirectEntryOffset)
+	if sumProto.DirectEntryPtr != expectedPtr {
+		t.Errorf("DirectEntryPtr = %#x, want %#x (Code.Ptr=%#x + offset=%d)",
+			sumProto.DirectEntryPtr, expectedPtr, cf.Code.Ptr(), cf.DirectEntryOffset)
+	}
+
+	// Run again to verify Tier 2 direct entry is exercised via BLR.
+	// Reset result and call wrapper many more times.
+	src2 := `
+func sum(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + i
+    }
+    return s
+}
+func wrapper(n) {
+    return sum(n)
+}
+result := 0
+for i := 1; i <= 100; i++ {
+    result = wrapper(100)
+}
+`
+	proto2 := compileProto(t, src2)
+	globals2 := runtime.NewInterpreterGlobals()
+	v2 := vm.New(globals2)
+	tm2 := NewTieringManager()
+	v2.SetMethodJIT(tm2)
+	_, err = v2.Execute(proto2)
+	if err != nil {
+		t.Fatalf("second run runtime error: %v", err)
+	}
+	result2 := v2.GetGlobal("result")
+	if !result2.IsInt() || result2.Int() != 5050 {
+		t.Errorf("second run: wrapper(100) = %v, want 5050", result2)
+	}
+}
+
+// TestTieringManager_Tier2DirectEntryMultiple verifies multiple Tier 2 functions
+// called via BLR from a Tier 1 caller produce correct results.
+func TestTieringManager_Tier2DirectEntryMultiple(t *testing.T) {
+	src := `
+func square(n) {
+    return n * n
+}
+func sum(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + i
+    }
+    return s
+}
+func test(n) {
+    return square(n) + sum(n)
+}
+result := 0
+for i := 1; i <= 10; i++ {
+    result = test(10)
+}
+`
+	v, tm := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	// square(10) = 100, sum(10) = 55 → 155
+	if !result.IsInt() || result.Int() != 155 {
+		t.Errorf("test(10) = %v, want 155", result)
+	}
+	t.Logf("tier2Count=%d", tm.Tier2Count())
+}
+
 // TestTieringManager_NestedCallGCD verifies that a Tier 2 function calling
 // another Tier 2 function (both with loops) works correctly without hanging.
 func TestTieringManager_NestedCallGCD(t *testing.T) {

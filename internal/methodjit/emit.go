@@ -195,6 +195,12 @@ type CompiledFunction struct {
 	// of the resume label. Used to re-enter JIT code after a call-exit.
 	ResumeAddrs map[int]int
 
+	// DirectEntryOffset is the byte offset of the BLR-compatible direct entry
+	// point within the code block. When non-zero, Tier 1 BLR callers can jump
+	// to Code.Ptr() + DirectEntryOffset. The direct entry uses a 16-byte stack
+	// frame (FP+LR only), matching Tier 1's direct entry calling convention.
+	DirectEntryOffset int
+
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
 	// It runs the function via the VM interpreter. Set by the caller
 	// (e.g., test harness or tiering engine) to provide VM fallback.

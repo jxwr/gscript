@@ -124,6 +124,12 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 
 	tm.tier2Compiled[proto] = t2
+
+	// Update DirectEntryPtr so Tier 1 BLR callers jump to Tier 2's direct entry.
+	if t2.DirectEntryOffset > 0 {
+		proto.DirectEntryPtr = uintptr(t2.Code.Ptr()) + uintptr(t2.DirectEntryOffset)
+	}
+
 	return t2
 }
 
@@ -325,6 +331,12 @@ func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
 		return err
 	}
 	tm.tier2Compiled[proto] = t2
+
+	// Update DirectEntryPtr so Tier 1 BLR callers jump to Tier 2's direct entry.
+	if t2.DirectEntryOffset > 0 {
+		proto.DirectEntryPtr = uintptr(t2.Code.Ptr()) + uintptr(t2.DirectEntryOffset)
+	}
+
 	return nil
 }
 

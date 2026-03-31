@@ -22,6 +22,9 @@ Tier 1: Baseline JIT (internal/methodjit/tier1_*.go)
 Tier 2: Optimizing JIT (internal/methodjit/)
   Bytecode → CFG SSA IR → Optimization passes → RegAlloc → ARM64
   Type-specialized registers, deopt guards, function inlining
+  Two entry points: normal (128B frame for Execute) + direct (128B frame for BLR)
+  After Tier 2 promotion, proto.DirectEntryPtr points to Tier 2's direct entry
+  Tier 1 BLR callers seamlessly call Tier 2 code via DirectEntryPtr
 
 Legacy: Trace JIT (internal/jit/) — deprecated, disconnected from CLI
 ```
