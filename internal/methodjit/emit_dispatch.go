@@ -188,6 +188,15 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 		// Destination: use allocation directly (target block context).
 		dstPR, dstHasReg := ec.alloc.ValueRegs[instr.ID]
 		dstHasGPR := dstHasReg && !dstPR.IsFloat
+		dstHasFPR := dstHasReg && dstPR.IsFloat
+
+		// --- FPR phi path ---
+		// When the destination phi has an FPR allocation, resolve the source
+		// as a raw float and transfer directly to the FPR.
+		if dstHasFPR {
+			ec.emitPhiMoveRawFloat(srcArg, instr, dstPR)
+			continue
+		}
 
 		// --- Raw-int loop path ---
 		// When targeting a loop header with int-typed phi, transfer raw int
@@ -239,6 +248,34 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 					ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
 				}
 			}
+		}
+	}
+}
+
+// emitPhiMoveRawFloat transfers a raw float value to a phi's FPR allocation.
+// The source may be a raw float in FPR, NaN-boxed in GPR, or NaN-boxed in memory.
+// In all cases, the destination phi FPR receives the raw float64 bits.
+func (ec *emitContext) emitPhiMoveRawFloat(srcArg *Value, phiInstr *Instr, dstPR PhysReg) {
+	dstFPR := jit.FReg(dstPR.Reg)
+
+	if ec.hasFPReg(srcArg.ID) {
+		// Source is raw float in FPR: transfer directly.
+		srcFPR := ec.physFPReg(srcArg.ID)
+		if srcFPR != dstFPR {
+			ec.asm.FMOVd(dstFPR, srcFPR)
+		}
+	} else {
+		// Source is NaN-boxed in GPR or memory: resolve and move to FPR.
+		gpr := ec.resolveValueNB(srcArg.ID, jit.X0)
+		ec.asm.FMOVtoFP(dstFPR, gpr)
+	}
+
+	// Write-through to memory (NaN-boxed) if the phi is used cross-block.
+	if ec.crossBlockLive[phiInstr.ID] {
+		dstSlot, ok := ec.slotMap[phiInstr.ID]
+		if ok {
+			ec.asm.FMOVtoGP(jit.X0, dstFPR)
+			ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
 		}
 	}
 }
@@ -357,8 +394,14 @@ func (ec *emitContext) emitLoopExitBoxing() {
 func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 	if len(instr.Args) > 0 {
 		valID := instr.Args[0].ID
-		// If the return value is a raw int in register, box it first.
-		if ec.hasReg(valID) && ec.rawIntRegs[valID] {
+		// If the return value is a raw float in FPR, move bits to GPR.
+		// Float bits ARE the NaN-boxed representation.
+		if ec.hasFPReg(valID) {
+			fpr := ec.physFPReg(valID)
+			ec.asm.FMOVtoGP(jit.X0, fpr)
+			ec.asm.STR(jit.X0, mRegRegs, 0)
+		} else if ec.hasReg(valID) && ec.rawIntRegs[valID] {
+			// Raw int in register: box it first.
 			reg := ec.physReg(valID)
 			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
 			ec.asm.STR(jit.X0, mRegRegs, 0)

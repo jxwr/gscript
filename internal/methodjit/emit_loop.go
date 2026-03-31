@@ -235,6 +235,12 @@ type loopRegEntry struct {
 	IsRawInt bool
 }
 
+// loopFPRegEntry describes an FPR's state at the end of the loop header.
+// Maps FPR number -> valueID.
+type loopFPRegEntry struct {
+	ValueID int
+}
+
 // computeHeaderExitRegs analyzes the loop header block to determine
 // which registers hold which values after all instructions are processed.
 // This allows non-header loop blocks to know which registers are valid
@@ -280,11 +286,59 @@ func (li *loopInfo) computeHeaderExitRegs(fn *Function, alloc *RegAllocation) ma
 	return regs
 }
 
+// computeHeaderExitFPRegs analyzes the loop header to determine which FPR
+// registers hold which values after all instructions are processed. This
+// allows non-header loop blocks to activate FPR-resident float values.
+func (li *loopInfo) computeHeaderExitFPRegs(fn *Function, alloc *RegAllocation) map[int]loopFPRegEntry {
+	regs := make(map[int]loopFPRegEntry) // FPR number -> entry
+
+	for _, block := range fn.Blocks {
+		if !li.loopHeaders[block.ID] {
+			continue
+		}
+
+		// Start with phi activations.
+		for _, instr := range block.Instrs {
+			if instr.Op != OpPhi {
+				break
+			}
+			if pr, ok := alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+				regs[pr.Reg] = loopFPRegEntry{ValueID: instr.ID}
+			}
+		}
+
+		// Process instructions to track FPR overwrites.
+		for _, instr := range block.Instrs {
+			if instr.Op == OpPhi || instr.Op.IsTerminator() {
+				continue
+			}
+			pr, ok := alloc.ValueRegs[instr.ID]
+			if !ok || !pr.IsFloat {
+				continue
+			}
+			regs[pr.Reg] = loopFPRegEntry{ValueID: instr.ID}
+		}
+	}
+
+	return regs
+}
+
 // isRawIntOp returns true if the op produces a raw int64 result
 // (stored via storeRawInt rather than storeResultNB).
 func isRawIntOp(op Op) bool {
 	switch op {
 	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt:
+		return true
+	default:
+		return false
+	}
+}
+
+// isRawFloatOp returns true if the op produces a raw float64 result
+// (stored via storeRawFloat in an FPR).
+func isRawFloatOp(op Op) bool {
+	switch op {
+	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat:
 		return true
 	default:
 		return false

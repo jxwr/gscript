@@ -260,3 +260,87 @@ func f(a) {
 	tier2Check(t, src, []runtime.Value{intArg(5)})
 	tier2Check(t, src, []runtime.Value{intArg(15)})
 }
+
+// --- Raw float mode tests ---
+// These test that type-specialized float operations keep values in FPRs.
+
+func TestTier2_FloatChainedOps(t *testing.T) {
+	// Chained float ops: (a + b) * c - d. Tests that intermediate results
+	// stay in FPRs across multiple operations without GPR round-trips.
+	src := `func f(a, b, c, d) { return (a + b) * c - d }`
+	tier2Check(t, src, []runtime.Value{
+		floatArg(1.5), floatArg(2.5), floatArg(3.0), floatArg(1.0),
+	})
+}
+
+func TestTier2_FloatNeg(t *testing.T) {
+	src := `func f(a) { return -a }`
+	tier2Check(t, src, []runtime.Value{floatArg(3.14)})
+}
+
+func TestTier2_FloatCompare(t *testing.T) {
+	src := `func f(a, b) { if a < b { return 1 } else { return 0 } }`
+	tier2Check(t, src, []runtime.Value{floatArg(1.5), floatArg(2.5)})
+	tier2Check(t, src, []runtime.Value{floatArg(3.5), floatArg(2.5)})
+}
+
+func TestTier2_FloatLoop(t *testing.T) {
+	// Float accumulation loop: tests float phis in loop headers.
+	src := `
+func f(n) {
+	sum := 0.0
+	for i := 0; i < n; i = i + 1 {
+		sum = sum + 1.5
+	}
+	return sum
+}
+`
+	tier2Check(t, src, []runtime.Value{intArg(0)})
+	tier2Check(t, src, []runtime.Value{intArg(1)})
+	tier2Check(t, src, []runtime.Value{intArg(4)})
+	tier2Check(t, src, []runtime.Value{intArg(100)})
+}
+
+func TestTier2_FloatConstExpr(t *testing.T) {
+	// Float constant expression: tests emitConstFloat raw mode.
+	src := `func f() { return 3.14 + 2.86 }`
+	tier2Check(t, src, nil)
+}
+
+func TestTier2_FloatDiv(t *testing.T) {
+	// Float division with type-specialized operands.
+	src := `func f(a, b) { return a / b }`
+	tier2Check(t, src, []runtime.Value{floatArg(10.0), floatArg(3.0)})
+	tier2Check(t, src, []runtime.Value{floatArg(7.5), floatArg(2.5)})
+}
+
+func TestTier2_FloatMandelbrotSmall(t *testing.T) {
+	// Miniature mandelbrot: exercises float mul, sub, add, compare in a loop.
+	src := `
+func f(size) {
+	count := 0
+	for y := 0; y < size; y = y + 1 {
+		ci := 2.0 * y / size - 1.0
+		for x := 0; x < size; x = x + 1 {
+			cr := 2.0 * x / size - 1.5
+			zr := 0.0
+			zi := 0.0
+			escaped := false
+			for iter := 0; iter < 50; iter = iter + 1 {
+				tr := zr * zr - zi * zi + cr
+				ti := 2.0 * zr * zi + ci
+				zr = tr
+				zi = ti
+				if zr * zr + zi * zi > 4.0 {
+					escaped = true
+					break
+				}
+			}
+			if !escaped { count = count + 1 }
+		}
+	}
+	return count
+}
+`
+	tier2Check(t, src, []runtime.Value{intArg(3)})
+}

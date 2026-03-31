@@ -2,12 +2,16 @@
 
 // emit_reg.go implements register-resident value resolution for the Method JIT.
 // This is the #1 performance optimization: values allocated to physical registers
-// (X20-X23 via regalloc.go) stay in those registers, avoiding memory load/store
-// on every instruction.
+// (X20-X23 GPRs, D4-D11 FPRs via regalloc.go) stay in those registers, avoiding
+// memory load/store on every instruction.
 //
 // Raw int mode: type-specialized int operations (OpAddInt, OpSubInt, etc.) keep
-// values as raw int64 in registers, with NO NaN-boxing. A register-resident value
-// is either NaN-boxed (for generic ops) or raw int (tracked by rawIntRegs).
+// values as raw int64 in GPRs, with NO NaN-boxing. A GPR-resident value is either
+// NaN-boxed (for generic ops) or raw int (tracked by rawIntRegs).
+//
+// Raw float mode: type-specialized float operations (OpAddFloat, OpSubFloat, etc.)
+// keep values as raw float64 in FPRs (D4-D11). This avoids FMOVtoFP/FMOVtoGP
+// conversions between every float op. Tracked by activeFPRegs.
 //
 // Raw int sources:
 //   - OpConstInt with TypeInt: loads raw int64 directly (no boxing)
@@ -15,14 +19,24 @@
 //   - OpAddInt/OpSubInt/OpMulInt/OpModInt/OpNegInt: produce raw int results
 //   - Loop header phis with TypeInt: delivered as raw ints by emitPhiMoveRawInt
 //
+// Raw float sources:
+//   - OpConstFloat with TypeFloat: loads into FPR directly
+//   - OpLoadSlot with TypeFloat: loads from memory into FPR via FLDRd
+//   - OpAddFloat/OpSubFloat/OpMulFloat/OpDivFloat/OpNegFloat: produce raw float results
+//   - Phi nodes with FPR allocation: delivered by emitPhiMoveRawFloat
+//
 // Transitions:
 //   - Raw int -> NaN-boxed: resolveValueNB auto-boxes when a generic op needs it
 //   - NaN-boxed -> raw int: resolveRawInt auto-unboxes when a specialized op needs it
-//   - Cross-block raw ints: storeRawInt boxes to memory for other blocks to load
+//   - Raw float -> NaN-boxed: resolveValueNB auto-converts via FMOVtoGP
+//   - NaN-boxed -> raw float: resolveRawFloat auto-converts via FMOVtoFP
+//   - Cross-block raw values: storeRawInt/storeRawFloat write NaN-boxed to memory
 //
 // Register convention:
 //   X20-X23, X28: allocatable GPRs (callee-saved, hold raw int or NaN-boxed)
-//   X0-X3:   scratch registers for values without allocation
+//   D4-D11:  allocatable FPRs (callee-saved, hold raw float64)
+//   X0-X3:   scratch GPRs for values without allocation
+//   D0-D3:   scratch FPRs for values without allocation
 //   X19:     ExecContext pointer (pinned)
 //   X24:     NaN-boxing int tag (pinned)
 //   X25:     NaN-boxing bool tag (pinned)
@@ -91,6 +105,23 @@ func (ec *emitContext) hasReg(valueID int) bool {
 	return ec.activeRegs[valueID]
 }
 
+// hasFPReg returns true if the given value ID has a physical FPR register
+// allocation AND the register is currently active. Mirrors hasReg for FPRs.
+func (ec *emitContext) hasFPReg(valueID int) bool {
+	pr, ok := ec.alloc.ValueRegs[valueID]
+	if !ok || !pr.IsFloat {
+		return false
+	}
+	return ec.activeFPRegs[valueID]
+}
+
+// physFPReg returns the jit.FReg for a value's physical FPR allocation.
+// Only call if hasFPReg returns true.
+func (ec *emitContext) physFPReg(valueID int) jit.FReg {
+	pr := ec.alloc.ValueRegs[valueID]
+	return jit.FReg(pr.Reg)
+}
+
 // physReg returns the jit.Reg for a value's physical register allocation.
 // Only call if hasReg returns true.
 func (ec *emitContext) physReg(valueID int) jit.Reg {
@@ -101,11 +132,19 @@ func (ec *emitContext) physReg(valueID int) jit.Reg {
 // resolveValueNB ensures the NaN-boxed value identified by valueID is available
 // in a GPR. If the value has an allocated register holding a NaN-boxed value,
 // returns that register directly. If the register holds a raw int (from
-// type-specialized ops), boxes it into scratchReg first. Otherwise, loads from
-// memory into scratchReg and returns scratchReg.
+// type-specialized ops), boxes it into scratchReg first. If the value is a raw
+// float in an FPR, moves bits to scratchReg (float bits ARE NaN-boxed).
+// Otherwise, loads from memory into scratchReg and returns scratchReg.
 //
 // The returned register holds a NaN-BOXED value.
 func (ec *emitContext) resolveValueNB(valueID int, scratchReg jit.Reg) jit.Reg {
+	// Check raw float first: value is in an FPR, move bits to GPR.
+	// Float64 bits ARE the NaN-boxed representation (no tag needed).
+	if ec.hasFPReg(valueID) {
+		fpr := ec.physFPReg(valueID)
+		ec.asm.FMOVtoGP(scratchReg, fpr)
+		return scratchReg
+	}
 	if ec.hasReg(valueID) {
 		if ec.rawIntRegs[valueID] {
 			// Raw int in register: box into scratch before returning.
@@ -223,6 +262,62 @@ func (ec *emitContext) invalidateReg(reg int, newValueID int) {
 	}
 }
 
+// resolveRawFloat returns an FPR holding the raw float64 for a value.
+// If the value already has an allocated FPR (from a prior raw float op),
+// returns that FPR directly -- zero instructions emitted.
+// Otherwise, loads the NaN-boxed value from GPR or memory and moves to the
+// scratch FPR (float bits ARE the NaN-boxed representation, so FMOVtoFP
+// reinterprets the bits as a double).
+func (ec *emitContext) resolveRawFloat(valueID int, scratch jit.FReg) jit.FReg {
+	// Already in an FPR?
+	if ec.hasFPReg(valueID) {
+		return ec.physFPReg(valueID)
+	}
+	// Value is NaN-boxed in a GPR or memory slot. Load and convert.
+	gpr := ec.resolveValueNB(valueID, jit.X0)
+	ec.asm.FMOVtoFP(scratch, gpr)
+	return scratch
+}
+
+// storeRawFloat stores a raw float64 result to the allocated FPR (if any)
+// and marks it as active. For cross-block values, writes NaN-boxed to memory
+// (float bits ARE the NaN-boxed representation, so FMOVtoGP gives us the
+// NaN-boxed value directly).
+func (ec *emitContext) storeRawFloat(srcFPR jit.FReg, valueID int) {
+	pr, ok := ec.alloc.ValueRegs[valueID]
+	if ok && pr.IsFloat {
+		// Invalidate any other value that was previously in this FPR.
+		ec.invalidateFPReg(pr.Reg, valueID)
+		ec.activeFPRegs[valueID] = true
+		dstFPR := jit.FReg(pr.Reg)
+		if srcFPR != dstFPR {
+			ec.asm.FMOVd(dstFPR, srcFPR)
+		}
+		// Write-through to memory if the value is used cross-block.
+		if ec.crossBlockLive[valueID] && !ec.loopPhiOnlyArgs[valueID] {
+			ec.asm.FMOVtoGP(jit.X0, dstFPR)
+			ec.storeValue(jit.X0, valueID)
+		}
+		return
+	}
+	// No FPR allocation: move to GPR and store NaN-boxed to memory.
+	ec.asm.FMOVtoGP(jit.X0, srcFPR)
+	ec.storeValue(jit.X0, valueID)
+}
+
+// invalidateFPReg removes any other value that was previously active in the
+// given FPR (reg is the register number). Mirrors invalidateReg for FPRs.
+func (ec *emitContext) invalidateFPReg(reg int, newValueID int) {
+	for valID := range ec.activeFPRegs {
+		if valID == newValueID {
+			continue
+		}
+		if pr, ok := ec.alloc.ValueRegs[valID]; ok && pr.Reg == reg && pr.IsFloat {
+			delete(ec.activeFPRegs, valID)
+		}
+	}
+}
+
 // constIntImm12 checks if a value ID refers to a ConstInt whose value fits
 // in a 12-bit unsigned immediate (0-4095). Returns the value and true if so.
 // Used to emit ADDimm/SUBimm instead of register-based forms.
@@ -239,15 +334,27 @@ func (ec *emitContext) constIntImm12(valueID int) (uint16, bool) {
 
 // emitLoadSlotToReg emits code to load a VM register slot's value into the
 // value's allocated physical register. For TypeInt values, unboxes the NaN-boxed
-// int to a raw int64 and marks the register as raw. For other types, loads
-// the NaN-boxed value directly.
+// int to a raw int64 (GPR) and marks the register as raw. For TypeFloat values,
+// loads NaN-boxed from memory and moves bits to the allocated FPR. For other
+// types, loads the NaN-boxed value directly into the GPR.
 func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 	pr, ok := ec.alloc.ValueRegs[instr.ID]
-	if !ok || pr.IsFloat {
+	if !ok {
 		return
 	}
-	reg := jit.Reg(pr.Reg)
 	slot := int(instr.Aux)
+
+	if pr.IsFloat {
+		// TypeFloat: load NaN-boxed from memory, move bits to FPR.
+		// Float bits ARE the NaN-boxed representation, so FMOVtoFP
+		// reinterprets the IEEE 754 bits as a double in the FPR.
+		fpr := jit.FReg(pr.Reg)
+		ec.asm.FLDRd(fpr, mRegRegs, slotOffset(slot))
+		ec.activeFPRegs[instr.ID] = true
+		return
+	}
+
+	reg := jit.Reg(pr.Reg)
 	ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
 	if instr.Type == TypeInt {
 		// Unbox NaN-boxed int to raw int64 at load time.

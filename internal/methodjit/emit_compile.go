@@ -33,10 +33,12 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	li := computeLoopInfo(fn)
 	crossBlockLive := computeCrossBlockLive(fn)
 	var headerRegs map[int]loopRegEntry
+	var headerFPRegs map[int]loopFPRegEntry
 	var phiOnlyArgs loopPhiArgSet
 	exitBoxPhis := make(map[int]bool)
 	if li.hasLoops() {
 		headerRegs = li.computeHeaderExitRegs(fn, alloc)
+		headerFPRegs = li.computeHeaderExitFPRegs(fn, alloc)
 		phiOnlyArgs = computeLoopPhiArgs(fn, li)
 
 		// Identify loop header phis that need exit-time boxing:
@@ -77,13 +79,15 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		nextSlot:       fn.NumRegs,
 		activeRegs:     make(map[int]bool),
 		rawIntRegs:     make(map[int]bool),
+		activeFPRegs:   make(map[int]bool),
 		crossBlockLive: crossBlockLive,
 		useFPR:         hasFPR,
-		loop:           li,
-		loopHeaderRegs:  headerRegs,
-		loopPhiOnlyArgs: phiOnlyArgs,
-		loopExitBoxPhis: exitBoxPhis,
-		constInts:       constInts,
+		loop:             li,
+		loopHeaderRegs:   headerRegs,
+		loopHeaderFPRegs: headerFPRegs,
+		loopPhiOnlyArgs:  phiOnlyArgs,
+		loopExitBoxPhis:  exitBoxPhis,
+		constInts:        constInts,
 	}
 
 	// Assign home slots for all SSA values.
@@ -167,6 +171,11 @@ type emitContext struct {
 	// Reset at block boundaries (raw state doesn't carry across blocks).
 	rawIntRegs map[int]bool
 
+	// activeFPRegs tracks which value IDs have their FPR allocation active
+	// in the current block. Mirrors activeRegs for FPR-allocated values.
+	// Reset at the start of each block.
+	activeFPRegs map[int]bool
+
 	// useFPR is true if any values are allocated to FPR registers.
 	// When false, FPR save/restore in prologue/epilogue is skipped.
 	useFPR bool
@@ -187,6 +196,10 @@ type emitContext struct {
 	// Non-header loop blocks use this to activate registers that survive
 	// from the header. Computed once during Compile.
 	loopHeaderRegs map[int]loopRegEntry
+
+	// loopHeaderFPRegs is the FPR register state at the end of the loop header.
+	// Non-header loop blocks use this to activate FPR-resident float values.
+	loopHeaderFPRegs map[int]loopFPRegEntry
 
 	// loopPhiOnlyArgs is the set of value IDs that are ONLY used as phi args
 	// to loop header phis. storeRawInt skips write-through for these values
@@ -372,6 +385,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 	// Reset active register set for this block.
 	ec.activeRegs = make(map[int]bool)
 	ec.rawIntRegs = make(map[int]bool)
+	ec.activeFPRegs = make(map[int]bool)
 
 	if isLoopBlock && !isHeader && ec.loopHeaderRegs != nil {
 		// Non-header loop block: activate registers that survive from the
@@ -384,6 +398,12 @@ func (ec *emitContext) emitBlock(block *Block) {
 			}
 		}
 	}
+	if isLoopBlock && !isHeader && ec.loopHeaderFPRegs != nil {
+		// Non-header loop block: activate FPR registers from the header.
+		for _, entry := range ec.loopHeaderFPRegs {
+			ec.activeFPRegs[entry.ValueID] = true
+		}
+	}
 
 	// Phi values are active at block entry (their registers were loaded
 	// by emitPhiMoves from the predecessor).
@@ -391,13 +411,18 @@ func (ec *emitContext) emitBlock(block *Block) {
 		if instr.Op != OpPhi {
 			break
 		}
-		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
-			ec.activeRegs[instr.ID] = true
-			// Loop header phis: mark int-typed phis as raw int.
-			// emitPhiMoves delivers raw ints to loop header phis from
-			// both the initial entry (unboxing) and back-edge (raw transfer).
-			if isHeader && instr.Type == TypeInt {
-				ec.rawIntRegs[instr.ID] = true
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok {
+			if pr.IsFloat {
+				// FPR phi: activated by emitPhiMoves which delivers raw float.
+				ec.activeFPRegs[instr.ID] = true
+			} else {
+				ec.activeRegs[instr.ID] = true
+				// Loop header phis: mark int-typed phis as raw int.
+				// emitPhiMoves delivers raw ints to loop header phis from
+				// both the initial entry (unboxing) and back-edge (raw transfer).
+				if isHeader && instr.Type == TypeInt {
+					ec.rawIntRegs[instr.ID] = true
+				}
 			}
 		}
 	}

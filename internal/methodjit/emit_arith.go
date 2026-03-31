@@ -49,8 +49,20 @@ func (ec *emitContext) emitConstBool(instr *Instr) {
 }
 
 func (ec *emitContext) emitConstFloat(instr *Instr) {
+	// If type-specialized (TypeFloat) with FPR allocation, load directly into FPR.
+	// The constant's Aux is math.Float64bits(value), which we load into a GPR
+	// and then FMOV to the allocated FPR.
+	if instr.Type == TypeFloat {
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			ec.asm.LoadImm64(jit.X0, instr.Aux)
+			dstF := jit.FReg(pr.Reg)
+			ec.asm.FMOVtoFP(dstF, jit.X0)
+			ec.storeRawFloat(dstF, instr.ID)
+			return
+		}
+	}
+	// Fallback: NaN-boxed path (float bits ARE NaN-boxed representation).
 	ec.asm.LoadImm64(jit.X0, instr.Aux)
-	// Float constants stored as raw IEEE 754 bits (NaN-boxed representation).
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 
@@ -59,9 +71,10 @@ func (ec *emitContext) emitConstFloat(instr *Instr) {
 func (ec *emitContext) emitLoadSlot(instr *Instr) {
 	// Check if this value has a register allocation (don't use hasReg which
 	// checks activeRegs -- this is where we ACTIVATE the register).
-	pr, ok := ec.alloc.ValueRegs[instr.ID]
-	if ok && !pr.IsFloat {
+	_, ok := ec.alloc.ValueRegs[instr.ID]
+	if ok {
 		// Register-resident: load from VM slot into allocated register.
+		// Handles both GPR (int, any) and FPR (float) allocations.
 		ec.emitLoadSlotToReg(instr)
 		return
 	}

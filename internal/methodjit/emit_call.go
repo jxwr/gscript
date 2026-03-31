@@ -39,12 +39,29 @@ func (ec *emitContext) emitDeopt(instr *Instr) {
 
 // emitDiv emits ARM64 code for OpDiv (a / b, always returns float).
 // Both operands may be int or float. Result is always NaN-boxed float.
+//
+// When the instruction is OpDivFloat with TypeFloat, both operands are known
+// to be float, so we use the raw float fast path with no type checks.
 func (ec *emitContext) emitDiv(instr *Instr) {
 	if len(instr.Args) < 2 {
 		return
 	}
 	asm := ec.asm
 
+	// Fast path: OpDivFloat with TypeFloat — both operands are float, use raw FPR path.
+	if instr.Op == OpDivFloat && instr.Type == TypeFloat {
+		lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+		rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
+		dstF := jit.FReg(jit.D0)
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			dstF = jit.FReg(pr.Reg)
+		}
+		asm.FDIVd(dstF, lhsF, rhsF)
+		ec.storeRawFloat(dstF, instr.ID)
+		return
+	}
+
+	// Generic path: operands may be int or float, with type checks.
 	// Load both operands as NaN-boxed values.
 	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	if lhsReg != jit.X0 {
@@ -273,13 +290,38 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 // emitTypedFloatBinOp emits ARM64 code for type-specialized float binary ops
 // (OpAddFloat, OpSubFloat, OpMulFloat). Both operands are known to be float,
 // so we skip the type check and go straight to FP arithmetic.
+//
+// Raw float mode: when the result type is TypeFloat and has an FPR allocation,
+// operands are resolved as raw floats in FPRs and the result stays in an FPR.
+// This avoids FMOVtoFP/FMOVtoGP conversions between every float op.
 func (ec *emitContext) emitTypedFloatBinOp(instr *Instr, op intBinOp) {
 	if len(instr.Args) < 2 {
 		return
 	}
 	asm := ec.asm
 
-	// Load both operands as NaN-boxed and reinterpret as FP.
+	// Raw float mode: resolve operands into FPRs, compute in FPR, store as raw float.
+	if instr.Type == TypeFloat {
+		lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+		rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
+		// Destination: use allocated FPR if available, else D0.
+		dstF := jit.FReg(jit.D0)
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			dstF = jit.FReg(pr.Reg)
+		}
+		switch op {
+		case intBinAdd:
+			asm.FADDd(dstF, lhsF, rhsF)
+		case intBinSub:
+			asm.FSUBd(dstF, lhsF, rhsF)
+		case intBinMul:
+			asm.FMULd(dstF, lhsF, rhsF)
+		}
+		ec.storeRawFloat(dstF, instr.ID)
+		return
+	}
+
+	// Fallback: NaN-boxed float ops (original code path for non-TypeFloat).
 	lhs := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	asm.FMOVtoFP(jit.D0, lhs)
 	rhs := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
@@ -303,20 +345,21 @@ func (ec *emitContext) emitTypedFloatBinOp(instr *Instr, op intBinOp) {
 // Uses FCMP on FP registers instead of integer CMP, since NaN-boxed floats
 // are raw IEEE 754 bits and integer comparison doesn't handle sign/exponent
 // ordering correctly for floats.
+//
+// With raw float mode, resolves operands from FPRs directly when available,
+// avoiding the FMOVtoFP conversion from GPR.
 func (ec *emitContext) emitFloatCmp(instr *Instr, cond jit.Cond) {
 	if len(instr.Args) < 2 {
 		return
 	}
 	asm := ec.asm
 
-	// Load both operands as NaN-boxed and reinterpret as FP.
-	lhs := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-	asm.FMOVtoFP(jit.D0, lhs)
-	rhs := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
-	asm.FMOVtoFP(jit.D1, rhs)
+	// Resolve both operands as raw floats in FPRs.
+	lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+	rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
 
 	// Float compare sets NZCV flags.
-	asm.FCMPd(jit.D0, jit.D1)
+	asm.FCMPd(lhsF, rhsF)
 
 	// Set result: 1 if condition true, 0 if false.
 	asm.CSET(jit.X0, cond)
@@ -324,18 +367,31 @@ func (ec *emitContext) emitFloatCmp(instr *Instr, cond jit.Cond) {
 	// Box as bool: NB_TagBool | (0 or 1).
 	asm.ORRreg(jit.X0, jit.X0, mRegTagBool)
 
-	// Store NaN-boxed bool result.
+	// Store NaN-boxed bool result (comparison result is always bool, not float).
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 // emitNegFloat emits ARM64 code for OpNegFloat (-float).
 // The operand is known to be float, so we skip the type check.
+// With raw float mode, operates directly on FPRs.
 func (ec *emitContext) emitNegFloat(instr *Instr) {
 	if len(instr.Args) < 1 {
 		return
 	}
 	asm := ec.asm
 
+	if instr.Type == TypeFloat {
+		srcF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+		dstF := jit.FReg(jit.D0)
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			dstF = jit.FReg(pr.Reg)
+		}
+		asm.FNEGd(dstF, srcF)
+		ec.storeRawFloat(dstF, instr.ID)
+		return
+	}
+
+	// Fallback: NaN-boxed path.
 	src := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	asm.FMOVtoFP(jit.D0, src)
 	asm.FNEGd(jit.D0, jit.D0)
