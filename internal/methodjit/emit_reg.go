@@ -5,18 +5,23 @@
 // (X20-X23 via regalloc.go) stay in those registers, avoiding memory load/store
 // on every instruction.
 //
-// Key principle: values in allocated GPRs are NaN-boxed (same representation as
-// in the VM register file). This keeps type dispatch working for generic ops
-// (OpAdd, OpDiv) while eliminating memory traffic.
+// Raw int mode: type-specialized int operations (OpAddInt, OpSubInt, etc.) keep
+// values as raw int64 in registers, with NO NaN-boxing. A register-resident value
+// is either NaN-boxed (for generic ops) or raw int (tracked by rawIntRegs).
 //
-// For type-specialized int ops (OpAddInt, OpSubInt, etc.), the emit path unboxes
-// from the register (1 SBFX instruction) instead of loading from memory (1 LDR),
-// then reboxes the result back into the destination register (2 instructions:
-// UBFX + ORR) instead of storing to memory (1 STR). The net win is eliminating
-// memory latency on every operation.
+// Raw int sources:
+//   - OpConstInt with TypeInt: loads raw int64 directly (no boxing)
+//   - OpLoadSlot with TypeInt: loads NaN-boxed from memory, unboxes immediately
+//   - OpAddInt/OpSubInt/OpMulInt/OpModInt/OpNegInt: produce raw int results
+//   - Loop header phis with TypeInt: delivered as raw ints by emitPhiMoveRawInt
+//
+// Transitions:
+//   - Raw int -> NaN-boxed: resolveValueNB auto-boxes when a generic op needs it
+//   - NaN-boxed -> raw int: resolveRawInt auto-unboxes when a specialized op needs it
+//   - Cross-block raw ints: storeRawInt boxes to memory for other blocks to load
 //
 // Register convention:
-//   X20-X23, X28: allocatable GPRs (callee-saved, hold NaN-boxed values)
+//   X20-X23, X28: allocatable GPRs (callee-saved, hold raw int or NaN-boxed)
 //   X0-X3:   scratch registers for values without allocation
 //   X19:     ExecContext pointer (pinned)
 //   X24:     NaN-boxing int tag (pinned)
@@ -94,13 +99,20 @@ func (ec *emitContext) physReg(valueID int) jit.Reg {
 }
 
 // resolveValueNB ensures the NaN-boxed value identified by valueID is available
-// in a GPR. If the value has an allocated register, returns that register directly
-// (the register holds the NaN-boxed value). Otherwise, loads from memory into
-// scratchReg and returns scratchReg.
+// in a GPR. If the value has an allocated register holding a NaN-boxed value,
+// returns that register directly. If the register holds a raw int (from
+// type-specialized ops), boxes it into scratchReg first. Otherwise, loads from
+// memory into scratchReg and returns scratchReg.
 //
 // The returned register holds a NaN-BOXED value.
 func (ec *emitContext) resolveValueNB(valueID int, scratchReg jit.Reg) jit.Reg {
 	if ec.hasReg(valueID) {
+		if ec.rawIntRegs[valueID] {
+			// Raw int in register: box into scratch before returning.
+			reg := ec.physReg(valueID)
+			jit.EmitBoxIntFast(ec.asm, scratchReg, reg, mRegTagInt)
+			return scratchReg
+		}
 		return ec.physReg(valueID)
 	}
 	// Fallback: load NaN-boxed from memory slot
@@ -225,8 +237,10 @@ func (ec *emitContext) constIntImm12(valueID int) (uint16, bool) {
 	return 0, false
 }
 
-// emitLoadSlotToReg emits code to load a VM register slot's NaN-boxed value
-// into the value's allocated physical register. Marks the value as active.
+// emitLoadSlotToReg emits code to load a VM register slot's value into the
+// value's allocated physical register. For TypeInt values, unboxes the NaN-boxed
+// int to a raw int64 and marks the register as raw. For other types, loads
+// the NaN-boxed value directly.
 func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 	pr, ok := ec.alloc.ValueRegs[instr.ID]
 	if !ok || pr.IsFloat {
@@ -235,5 +249,13 @@ func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 	reg := jit.Reg(pr.Reg)
 	slot := int(instr.Aux)
 	ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
-	ec.activeRegs[instr.ID] = true
+	if instr.Type == TypeInt {
+		// Unbox NaN-boxed int to raw int64 at load time.
+		// This avoids unboxing at every use site.
+		jit.EmitUnboxInt(ec.asm, reg, reg)
+		ec.activeRegs[instr.ID] = true
+		ec.rawIntRegs[instr.ID] = true
+	} else {
+		ec.activeRegs[instr.ID] = true
+	}
 }

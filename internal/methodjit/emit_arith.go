@@ -14,7 +14,19 @@ import (
 // Each stores the NaN-boxed constant to the value's home slot via X0 scratch.
 
 func (ec *emitContext) emitConstInt(instr *Instr) {
-	// Load raw int value, NaN-box it, store to register (activating it) or memory.
+	// If type-specialized (TypeInt), store as raw int64. This avoids boxing
+	// the constant and then immediately unboxing it for type-specialized ops.
+	// The raw int will be boxed on demand by resolveValueNB if a generic op needs it.
+	if instr.Type == TypeInt {
+		dst := jit.X0
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
+			dst = jit.Reg(pr.Reg)
+		}
+		ec.asm.LoadImm64(dst, instr.Aux)
+		ec.storeRawInt(dst, instr.ID)
+		return
+	}
+	// Fallback: Load raw int value, NaN-box it, store as NaN-boxed.
 	ec.asm.LoadImm64(jit.X0, instr.Aux)
 	jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
 	ec.storeResultNB(jit.X0, instr.ID)
@@ -61,6 +73,7 @@ func (ec *emitContext) emitStoreSlot(instr *Instr) {
 		return
 	}
 	// Get the NaN-boxed value from register or memory, store to target VM slot.
+	// resolveValueNB handles raw-int values by boxing them automatically.
 	reg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	slot := int(instr.Aux)
 	ec.asm.STR(reg, mRegRegs, slotOffset(slot))
