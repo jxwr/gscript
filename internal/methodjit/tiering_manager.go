@@ -143,7 +143,28 @@ func (tm *TieringManager) Execute(compiled interface{}, regs []runtime.Value, ba
 // compileTier2 compiles a function at Tier 2 (optimizing).
 // Uses the same pipeline as MethodJITEngine: BuildGraph → TypeSpec → ConstProp →
 // DCE → RegAlloc → Compile.
+// canPromoteToTier2 checks if a function is safe for Tier 2 compilation.
+// Currently, only pure-compute functions (no function calls, no table creation)
+// are promoted. Functions with calls stay at Tier 1 which handles them natively.
+func canPromoteToTier2(proto *vm.FuncProto) bool {
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		switch op {
+		case vm.OP_CALL, vm.OP_CLOSURE, vm.OP_GETGLOBAL, vm.OP_SETGLOBAL,
+			vm.OP_NEWTABLE, vm.OP_SETLIST, vm.OP_VARARG, vm.OP_SELF,
+			vm.OP_CONCAT, vm.OP_GETUPVAL, vm.OP_SETUPVAL:
+			return false
+		}
+	}
+	return true
+}
+
 func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (*CompiledFunction, error) {
+	// Only promote pure-compute functions (no calls, no globals, no tables).
+	if !canPromoteToTier2(proto) {
+		return nil, fmt.Errorf("tier2: function has call/global/table ops, staying at tier 1")
+	}
+
 	// Build SSA IR.
 	fn := BuildGraph(proto)
 

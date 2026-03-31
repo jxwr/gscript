@@ -214,6 +214,153 @@ for i := 1; i <= 5; i++ {
 	}
 }
 
+// TestTieringManager_NestedCallGCD verifies that a Tier 2 function calling
+// another Tier 2 function (both with loops) works correctly without hanging.
+func TestTieringManager_NestedCallGCD(t *testing.T) {
+	src := `
+func gcd(a, b) {
+    for b != 0 {
+        t := b
+        b = a % b
+        a = t
+    }
+    return a
+}
+func gcd_bench(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        total = total + gcd(i*7+13, i*11+3)
+    }
+    return total
+}
+result := 0
+for call := 1; call <= 5; call++ {
+    result = gcd_bench(10)
+}
+`
+	v, tm := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	t.Logf("gcd_bench(10) = %d, tier2Count=%d", result.Int(), tm.Tier2Count())
+}
+
+// TestTieringManager_GCDAlone tests gcd function alone at Tier 2 (no nesting).
+func TestTieringManager_GCDAlone(t *testing.T) {
+	src := `
+func gcd(a, b) {
+    for b != 0 {
+        t := b
+        b = a % b
+        a = t
+    }
+    return a
+}
+result := 0
+for i := 1; i <= 5; i++ {
+    result = gcd(20, 8)
+}
+`
+	v, tm := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	if result.Int() != 4 {
+		t.Errorf("gcd(20,8) = %d, want 4", result.Int())
+	}
+	t.Logf("gcd(20,8) = %d, tier2Count=%d", result.Int(), tm.Tier2Count())
+}
+
+// TestTieringManager_WhileLoopIR verifies that while-style loops (where
+// the first bytecode is the loop header) produce correct phi nodes in the
+// SSA IR. This was a bug: the graph builder sealed the entry block
+// immediately, preventing phi insertion for while-loops at function start.
+func TestTieringManager_WhileLoopIR(t *testing.T) {
+	src := `
+func gcd(a, b) {
+    for b != 0 {
+        t := b
+        b = a % b
+        a = t
+    }
+    return a
+}
+`
+	proto := compileProto(t, src)
+	gcdProto := proto.Protos[0]
+	gcdProto.EnsureFeedback()
+
+	fn := BuildGraph(gcdProto)
+	errs := Validate(fn)
+	if len(errs) > 0 {
+		t.Fatalf("Validation errors: %v", errs)
+	}
+
+	// The loop header must have phi nodes for a and b.
+	foundPhis := 0
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpPhi {
+				foundPhis++
+			}
+		}
+	}
+	if foundPhis < 2 {
+		t.Errorf("expected at least 2 phi nodes for while-loop variables, got %d", foundPhis)
+		t.Logf("IR:\n%s", Print(fn))
+	}
+
+	// Verify the IR interpreter produces the correct result.
+	fn, _ = TypeSpecializePass(fn)
+	fn, _ = ConstPropPass(fn)
+	fn, _ = DCEPass(fn)
+	args := []runtime.Value{runtime.IntValue(20), runtime.IntValue(8)}
+	result, err := Interpret(fn, args)
+	if err != nil {
+		t.Fatalf("Interpret error: %v", err)
+	}
+	if len(result) == 0 || !result[0].IsInt() || result[0].Int() != 4 {
+		t.Errorf("Interpret(gcd, 20, 8) = %v, want [4]", result)
+	}
+}
+
+// TestTieringManager_NestedCallSimple verifies minimal nested Tier 2 call.
+// Outer has a loop that calls inner. Both promoted to Tier 2.
+func TestTieringManager_NestedCallSimple(t *testing.T) {
+	src := `
+func inner(x) {
+    s := 0
+    for i := 1; i <= x; i++ {
+        s = s + i
+    }
+    return s
+}
+func outer(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        total = total + inner(i)
+    }
+    return total
+}
+result := 0
+for call := 1; call <= 5; call++ {
+    result = outer(5)
+}
+`
+	v, tm := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	// outer(5) = inner(1)+inner(2)+inner(3)+inner(4)+inner(5) = 1+3+6+10+15 = 35
+	if result.Int() != 35 {
+		t.Errorf("outer(5) = %d, want 35", result.Int())
+	}
+	t.Logf("outer(5) = %d, tier2Count=%d", result.Int(), tm.Tier2Count())
+}
+
 // TestTieringManager_Tier1Correct verifies single-call functions produce
 // correct results. With eager Tier 2 promotion, these may be at Tier 2.
 func TestTieringManager_Tier1Correct(t *testing.T) {

@@ -103,9 +103,10 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 		if cl, ok := fnVal.Ptr().(*vm.Closure); ok && !cl.Proto.IsVarArg {
 			calleeProto := cl.Proto
 			// If the TieringManager has set a tier-up threshold and the callee
-			// has reached it, fall to slow path so the VM's TryCompile can
-			// trigger Tier 2 compilation.
-			if e.tierUpThreshold > 0 && calleeProto.CallCount >= e.tierUpThreshold {
+			// has EXACTLY reached it, fall to slow path ONCE so the VM's
+			// TryCompile can trigger Tier 2 compilation. Using == instead of
+			// >= ensures this detour happens only once per function.
+			if e.tierUpThreshold > 0 && calleeProto.CallCount == e.tierUpThreshold {
 				goto slowPath
 			}
 			calleeBF, compiled := e.compiled[calleeProto]

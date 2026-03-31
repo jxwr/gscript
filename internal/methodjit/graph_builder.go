@@ -26,10 +26,11 @@ func BuildGraph(proto *vm.FuncProto) *Function {
 
 // graphBuilder holds transient state for the SSA construction pass.
 type graphBuilder struct {
-	fn       *Function
-	proto    *vm.FuncProto
-	pcToBlock map[int]*Block // maps PC → Block that starts at that PC
-	nextBlock int            // next block ID
+	fn             *Function
+	proto          *vm.FuncProto
+	pcToBlock      map[int]*Block // maps PC → Block that starts at that PC
+	nextBlock      int            // next block ID
+	backEdgeTargets map[int]bool  // PCs that are targets of backward jumps (loop headers)
 }
 
 // --------------------------------------------------------------------
@@ -142,6 +143,7 @@ func (b *graphBuilder) cleanup() {
 func (b *graphBuilder) findLeaders() []int {
 	code := b.proto.Code
 	leaderSet := map[int]bool{0: true}
+	b.backEdgeTargets = make(map[int]bool)
 
 	for pc := 0; pc < len(code); pc++ {
 		inst := code[pc]
@@ -152,6 +154,10 @@ func (b *graphBuilder) findLeaders() []int {
 			sbx := vm.DecodesBx(inst)
 			target := pc + 1 + sbx
 			leaderSet[target] = true
+			// Backward jump: target <= pc means it's a loop back-edge.
+			if target <= pc {
+				b.backEdgeTargets[target] = true
+			}
 			// Fall-through after JMP is also a leader (if reachable).
 			if pc+1 < len(code) {
 				leaderSet[pc+1] = true
@@ -169,6 +175,10 @@ func (b *graphBuilder) findLeaders() []int {
 			sbx := vm.DecodesBx(inst)
 			target := pc + 1 + sbx
 			leaderSet[target] = true
+			// FORLOOP always jumps backward to the loop body.
+			if target <= pc {
+				b.backEdgeTargets[target] = true
+			}
 			if pc+1 < len(code) {
 				leaderSet[pc+1] = true
 			}
@@ -177,6 +187,9 @@ func (b *graphBuilder) findLeaders() []int {
 			sbx := vm.DecodesBx(inst)
 			target := pc + 1 + sbx
 			leaderSet[target] = true
+			if target <= pc {
+				b.backEdgeTargets[target] = true
+			}
 			if pc+1 < len(code) {
 				leaderSet[pc+1] = true
 			}
@@ -190,6 +203,9 @@ func (b *graphBuilder) findLeaders() []int {
 					jmpSbx := vm.DecodesBx(jmpInst)
 					jmpTarget := pc + 2 + jmpSbx
 					leaderSet[jmpTarget] = true
+					if jmpTarget <= pc {
+						b.backEdgeTargets[jmpTarget] = true
+					}
 					leaderSet[pc+2] = true
 				}
 			}
@@ -224,11 +240,36 @@ func (b *graphBuilder) emitBlocks() {
 	numParams := b.proto.NumParams
 
 	// Entry block: load parameters into initial variable defs.
+	//
+	// If PC=0 is a back-edge target (while-loop at function start), the block
+	// at PC=0 is a loop header. In the Braun algorithm, loop headers must remain
+	// unsealed until all predecessors are known. We create a synthetic pre-header
+	// block that loads the parameters and jumps to the actual loop header. This
+	// ensures the loop header's reads of R0, R1, etc. trigger phi insertion
+	// (Braun et al. 2013).
 	entry := b.fn.Entry
-	entry.sealed = true
-	for i := 0; i < numParams; i++ {
-		instr := b.emit(entry, OpLoadSlot, TypeAny, nil, int64(i), 0)
-		b.writeVariable(i, entry, instr.Value())
+	if b.backEdgeTargets[0] {
+		// Create pre-header: becomes the new entry, jumps to the original PC=0 block.
+		preHeader := b.newBlock()
+		preHeader.sealed = true
+		b.fn.Entry = preHeader
+
+		// Load parameters in the pre-header.
+		for i := 0; i < numParams; i++ {
+			instr := b.emit(preHeader, OpLoadSlot, TypeAny, nil, int64(i), 0)
+			b.writeVariable(i, preHeader, instr.Value())
+		}
+
+		// Edge from pre-header to the loop header at PC=0.
+		b.addEdge(preHeader, entry)
+		b.emit(preHeader, OpJump, TypeUnknown, nil, 0, 0)
+		// entry (PC=0 block) stays unsealed — it's a loop header.
+	} else {
+		entry.sealed = true
+		for i := 0; i < numParams; i++ {
+			instr := b.emit(entry, OpLoadSlot, TypeAny, nil, int64(i), 0)
+			b.writeVariable(i, entry, instr.Value())
+		}
 	}
 
 	// Build a sorted list of block start PCs for quick lookup.
