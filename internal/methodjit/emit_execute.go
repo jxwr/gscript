@@ -382,6 +382,22 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 			}
 		}
 
+	case OpSetList:
+		// slot=nValues, arg1=table slot, arg2=tempBase slot, aux=arrayStart
+		nValues := slot
+		tableSlot := arg1
+		tempBase := arg2
+		arrayStart := aux
+		if tableSlot < len(regs) && regs[tableSlot].IsTable() {
+			tbl := regs[tableSlot].Table()
+			for i := 0; i < nValues; i++ {
+				valSlot := tempBase + i
+				if valSlot < len(regs) {
+					tbl.RawSetInt(int64(arrayStart+i), regs[valSlot])
+				}
+			}
+		}
+
 	default:
 		return fmt.Errorf("unsupported op-exit in standalone mode: %s (%d)", op, int(op))
 	}

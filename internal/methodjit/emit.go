@@ -9,11 +9,13 @@
 //   - emit_compile.go: Tier 2 compile pipeline (Compile, emitContext, prologue/epilogue)
 //   - emit_dispatch.go: instruction dispatch, phi moves, control flow
 //   - emit_arith.go: arithmetic and comparison emission
+//   - emit_call.go: float ops, typed float binop, neg, div, guards
+//   - emit_call_exit.go: call-exit and global-exit emission
+//   - emit_call_native.go: native BLR call (spill/reload around BLR)
 //   - emit_execute.go: CompiledFunction.Execute loop and exit handlers
-//   - emit_call_exit.go: call-exit emission
-//   - emit_table.go: table operation emission
-//   - emit_op_exit.go: generic op-exit emission
+//   - emit_op_exit.go: generic op-exit and SetList exit emission
 //   - emit_reg.go: register resolution helpers
+//   - emit_table.go: table operation emission (native + IC)
 //   - emit_loop.go: loop analysis
 
 package methodjit

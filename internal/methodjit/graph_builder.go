@@ -638,13 +638,15 @@ func (b *graphBuilder) emitBlocks() {
 			case vm.OP_SETLIST:
 				a := vm.DecodeA(inst)
 				bOp := vm.DecodeB(inst)
-				// c := vm.DecodeC(inst) // batch number, not needed for IR
+				c := vm.DecodeC(inst)
+				// Aux = 1-based array start index: (C-1)*50+1
+				arrayStart := int64((c-1)*50 + 1)
 				tbl := b.readVariable(a, block)
 				args := []*Value{tbl}
 				for i := 1; i <= bOp; i++ {
 					args = append(args, b.readVariable(a+i, block))
 				}
-				b.emit(block, OpSetList, TypeUnknown, args, 0, 0)
+				b.emit(block, OpSetList, TypeUnknown, args, arrayStart, 0)
 
 			case vm.OP_APPEND:
 				a := vm.DecodeA(inst)

@@ -109,3 +109,87 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 		continueLabel: continueLabel,
 	})
 }
+
+// emitSetListExit emits ARM64 code for OpSetList via exit-resume.
+// OpSetList has variable args: Args[0]=table, Args[1..N]=values.
+// Before exiting, stores all values to consecutive temp slots in the
+// register file so the Go-side handler can read them sequentially.
+//
+// Op-exit descriptor:
+//   OpExitArg1 = table slot
+//   OpExitArg2 = start of consecutive value slots (temp base)
+//   OpExitAux  = array start index (1-based, from Aux)
+//   OpExitSlot = number of values (len(Args)-1)
+func (ec *emitContext) emitSetListExit(instr *Instr) {
+	asm := ec.asm
+
+	// Allocate consecutive temp slots for the values.
+	nValues := len(instr.Args) - 1
+	tempBase := ec.nextSlot
+	ec.nextSlot += nValues
+
+	// Resolve and store each value to its temp slot.
+	for i := 1; i < len(instr.Args); i++ {
+		valReg := ec.resolveValueNB(instr.Args[i].ID, jit.X0)
+		if valReg != jit.X0 {
+			asm.MOVreg(jit.X0, valReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(tempBase+i-1))
+	}
+
+	// Store all active register-resident values to memory.
+	ec.emitStoreAllActiveRegs()
+
+	// Resolve table slot.
+	tableSlot := int64(0)
+	if len(instr.Args) > 0 {
+		if s, ok := ec.slotMap[instr.Args[0].ID]; ok {
+			tableSlot = int64(s)
+		}
+	}
+
+	// Write op descriptor to ExecContext.
+	asm.LoadImm64(jit.X0, int64(instr.Op))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitOp)
+
+	// Slot = nValues (re-purpose for count).
+	asm.LoadImm64(jit.X0, int64(nValues))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitSlot)
+
+	// Arg1 = table slot.
+	asm.LoadImm64(jit.X0, tableSlot)
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitArg1)
+
+	// Arg2 = temp base slot (where consecutive values start).
+	asm.LoadImm64(jit.X0, int64(tempBase))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitArg2)
+
+	// Aux = array start index (1-based).
+	asm.LoadImm64(jit.X0, instr.Aux)
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitAux)
+
+	asm.LoadImm64(jit.X0, int64(instr.ID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitID)
+
+	// Set ExitCode = ExitOpExit and return to Go.
+	asm.LoadImm64(jit.X0, ExitOpExit)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	asm.B("deopt_epilogue")
+
+	// Continue label.
+	continueLabel := fmt.Sprintf("op_continue_%d", instr.ID)
+	asm.Label(continueLabel)
+
+	// Reload all active registers from memory.
+	ec.emitReloadAllActiveRegs()
+
+	// SetList is side-effect only (no result), but we still need to
+	// proceed to the next instruction. No result to store.
+
+	// Record for deferred resume entry generation.
+	ec.callExitIDs = append(ec.callExitIDs, instr.ID)
+	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
+		instrID:       instr.ID,
+		continueLabel: continueLabel,
+	})
+}

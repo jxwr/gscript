@@ -101,10 +101,35 @@ BuildGraph (Braun et al. 2013)
   → Emit             (ARM64 code generation)
 ```
 
+## Tier 2 Opcode Coverage
+
+Tier 2 handles ALL IR ops that the graph builder can produce:
+
+**Native ARM64 fast paths:**
+- Arithmetic: Add/Sub/Mul/Div/Mod + Int/Float specialized variants
+- Comparison: Lt/Le/Eq + Int/Float specialized variants
+- Unary: Unm/Not/NegInt/NegFloat
+- Constants: ConstInt/Float/Bool/Nil/String(exit)
+- Registers: LoadSlot/StoreSlot
+- Tables: GetTable/SetTable(native), GetField/SetField(IC), NewTable(exit)
+- Control: Branch/Jump/Return/Phi/Nop
+- Guards: GuardType/GuardTruthy
+- CALL: emitCallNative (BLR with spill/reload, fallback to exit-resume)
+- Globals: GetGlobal(exit-resume)
+
+**Exit-resume (exit to Go, execute, resume):**
+- SetGlobal, Self, Concat, Len, Pow, Append, Close, SetList
+- ForPrep, ForLoop, TForCall, TForLoop (rare: decomposed by graph builder)
+- Closure, GetUpval, SetUpval, Vararg (handler exists, but blocked by canPromoteToTier2)
+
+**canPromoteToTier2 blocks only:**
+- CALL, GETGLOBAL: Performance-blocked (Tier 1 BLR/cache is faster)
+- CLOSURE, GETUPVAL, SETUPVAL, VARARG: Needs VM closure/upvalue state
+
 ## Key Design Points
 
 - **Universal compilation**: Every function compiles on first call. Unsupported ops use exit-resume (exit to Go, execute, resume JIT at next PC).
-- **Native BLR calls**: Compiled function calls use ARM64 `BLR` directly (~10ns), vs exit-resume (~55ns).
+- **Native BLR calls**: Both Tier 1 and Tier 2 support ARM64 `BLR` for compiled function calls. Tier 1: ~10ns per call. Tier 2: ~15-20ns per call (spill/reload SSA registers around BLR).
 - **Deoptimization**: Type guard failures bail to interpreter.
 - **NaN-boxing**: Every value is uint64. Float64 = raw IEEE 754 bits. Tagged values use quiet-NaN space (int=0xFFFE, bool=0xFFFD, ptr=0xFFFF, nil=0xFFFC). VMClosure uses ptr sub-type 8 for fast type checks.
 

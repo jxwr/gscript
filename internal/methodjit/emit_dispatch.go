@@ -104,9 +104,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpNop:
 		// nothing
 
-	// --- Call-exit: execute calls via VM and resume JIT ---
+	// --- Call: native BLR with spill/reload, slow path falls to exit-resume ---
 	case OpCall:
-		ec.emitCallExit(instr)
+		ec.emitCallNative(instr)
 
 	// --- Global-exit: load globals via VM and resume JIT ---
 	case OpGetGlobal:
@@ -130,11 +130,15 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpGuardTruthy:
 		ec.emitGuardTruthy(instr)
 
+	// --- SetList: store values to consecutive temp slots, then op-exit ---
+	case OpSetList:
+		ec.emitSetListExit(instr)
+
 	// --- Op-exit: unsupported ops exit to Go, execute there, resume JIT ---
 	case OpSelf,
 		OpSetGlobal,
 		OpGetUpval, OpSetUpval,
-		OpSetList, OpAppend,
+		OpAppend,
 		OpConcat,
 		OpLen,
 		OpPow,

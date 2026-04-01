@@ -258,7 +258,20 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 		// No-op.
 
 	case OpSetList:
-		return fmt.Errorf("op-exit not yet implemented: %s", op)
+		// SetList: slot=nValues, arg1=table slot, arg2=tempBase slot, aux=arrayStart
+		nValues := int(ctx.OpExitSlot)
+		absTable := base + int(ctx.OpExitArg1)
+		absTempBase := base + int(ctx.OpExitArg2)
+		arrayStart := aux // 1-based array start index
+		if absTable < len(regs) && regs[absTable].IsTable() {
+			tbl := regs[absTable].Table()
+			for i := 0; i < nValues; i++ {
+				absVal := absTempBase + i
+				if absVal < len(regs) {
+					tbl.RawSetInt(int64(arrayStart+i), regs[absVal])
+				}
+			}
+		}
 
 	case OpGetUpval, OpSetUpval, OpClosure:
 		return fmt.Errorf("op-exit not yet implemented: %s (needs closure)", op)
