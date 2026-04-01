@@ -206,6 +206,159 @@ func TestEmit_ForLoop(t *testing.T) {
 	}
 }
 
+// TestEmit_NestedLoopCount tests that count propagation works across 2 nested loops.
+// This is the minimal reproducer for the mandelbrot bug where count stays 0.
+func TestEmit_NestedLoopCount(t *testing.T) {
+	src := `func f(n) {
+		count := 0
+		for i := 0; i < n; i++ {
+			for j := 0; j < n; j++ {
+				count = count + 1
+			}
+		}
+		return count
+	}`
+	proto := compileFunction(t, src)
+	fn := BuildGraph(proto)
+	fn, _ = TypeSpecializePass(fn)
+	fn, _ = ConstPropPass(fn)
+	fn, _ = DCEPass(fn)
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, n := range []int64{1, 2, 3, 5, 10} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(n)})
+		if err != nil {
+			t.Fatalf("Execute error for n=%d: %v", n, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(n)})
+		expected := n * n
+		if result[0].Int() != expected {
+			t.Errorf("n=%d: Tier2=%d, VM=%d, expected %d", n, result[0].Int(), vmResult[0].Int(), expected)
+		}
+	}
+}
+
+// TestEmit_NestedLoopCountConditional tests count propagation with conditional increment.
+func TestEmit_NestedLoopCountConditional(t *testing.T) {
+	src := `func f(n) {
+		count := 0
+		for i := 0; i < n; i++ {
+			for j := 0; j < n; j++ {
+				if j > 2 { count = count + 1 }
+			}
+		}
+		return count
+	}`
+	proto := compileFunction(t, src)
+	fn := BuildGraph(proto)
+	fn, _ = TypeSpecializePass(fn)
+	fn, _ = ConstPropPass(fn)
+	fn, _ = DCEPass(fn)
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, n := range []int64{3, 5, 10} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(n)})
+		if err != nil {
+			t.Fatalf("Execute error for n=%d: %v", n, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(n)})
+		if uint64(result[0]) != uint64(vmResult[0]) {
+			t.Errorf("n=%d: Tier2=%v vs VM=%v MISMATCH", n, result[0], vmResult[0])
+		}
+	}
+}
+
+// TestEmit_ThreeNestedLoops tests 3-level nested loop count propagation.
+func TestEmit_ThreeNestedLoops(t *testing.T) {
+	src := `func f(n) {
+		count := 0
+		for i := 0; i < n; i++ {
+			for j := 0; j < n; j++ {
+				for k := 0; k < n; k++ {
+					count = count + 1
+				}
+			}
+		}
+		return count
+	}`
+	proto := compileFunction(t, src)
+	fn := BuildGraph(proto)
+	fn, _ = TypeSpecializePass(fn)
+	fn, _ = ConstPropPass(fn)
+	fn, _ = DCEPass(fn)
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, n := range []int64{1, 2, 3, 4} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(n)})
+		if err != nil {
+			t.Fatalf("Execute error for n=%d: %v", n, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(n)})
+		expected := n * n * n
+		if result[0].Int() != expected {
+			t.Errorf("n=%d: Tier2=%d, VM=%d, expected %d", n, result[0].Int(), vmResult[0].Int(), expected)
+		}
+	}
+}
+
+// TestEmit_NestedLoopBreak tests nested loops with break + conditional
+// count — the mandelbrot pattern.
+func TestEmit_NestedLoopBreak(t *testing.T) {
+	src := `func f(n) {
+		count := 0
+		for i := 0; i < n; i++ {
+			for j := 0; j < n; j++ {
+				escaped := false
+				for k := 0; k < 10; k++ {
+					if k > 3 {
+						escaped = true
+						break
+					}
+				}
+				if !escaped { count = count + 1 }
+			}
+		}
+		return count
+	}`
+	proto := compileFunction(t, src)
+	fn := BuildGraph(proto)
+	fn, _ = TypeSpecializePass(fn)
+	fn, _ = ConstPropPass(fn)
+	fn, _ = DCEPass(fn)
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, n := range []int64{1, 2, 3, 5} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(n)})
+		if err != nil {
+			t.Fatalf("Execute error for n=%d: %v", n, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(n)})
+		if uint64(result[0]) != uint64(vmResult[0]) {
+			t.Errorf("n=%d: Tier2=%v vs VM=%v MISMATCH", n, result[0], vmResult[0])
+		}
+	}
+}
+
 // itoa for test labels (no import strconv needed).
 func itoa(n int) string {
 	if n == 0 {

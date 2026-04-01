@@ -247,28 +247,42 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 // DCE → RegAlloc → Compile.
 
 // canPromoteToTier2 checks if a function is safe for Tier 2 compilation.
-// Most ops are now supported via native fast paths or exit-resume (exit to Go,
-// execute, resume JIT). Only ops requiring special VM state are blocked.
 //
-// Supported natively:
-//   - GETTABLE, SETTABLE: emitGetTableNative / emitSetTableNative (fast path + deopt)
+// Supported with native ARM64 fast paths (fast path + deopt to exit-resume):
+//   - GETTABLE, SETTABLE: emitGetTableNative / emitSetTableNative
+//   - GETFIELD, SETFIELD: emitGetField / emitSetField (inline cache + shape guard)
 //
-// Supported via exit-resume:
+// Supported via exit-resume (exit to Go, execute, resume JIT):
 //   - CALL: emitCallExit
 //   - GETGLOBAL, SETGLOBAL: emitGlobalExit / emitOpExit
-//   - GETFIELD, SETFIELD: emitGetField / emitSetField (inline cache + exit)
 //   - NEWTABLE, SETLIST, APPEND, LEN, CONCAT, SELF: emitOpExit
+//
+// Blocked (require special VM state not available in Tier 2):
+//   - CLOSURE, GETUPVAL, SETUPVAL: closure/upvalue state
+//   - VARARG: variable argument state
 func canPromoteToTier2(proto *vm.FuncProto) bool {
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
 		switch op {
-		// Ops that Tier 2 doesn't handle natively yet.
-		// These either need inline cache (Tier 1 is better) or Go allocation.
-		case vm.OP_CALL, vm.OP_CLOSURE, vm.OP_GETGLOBAL, vm.OP_SETGLOBAL,
-			vm.OP_NEWTABLE, vm.OP_SETLIST, vm.OP_VARARG, vm.OP_SELF,
-			vm.OP_CONCAT, vm.OP_GETUPVAL, vm.OP_SETUPVAL,
-			vm.OP_GETFIELD, vm.OP_SETFIELD, vm.OP_GETTABLE, vm.OP_SETTABLE,
-			vm.OP_APPEND, vm.OP_LEN:
+		// Ops with native ARM64 fast paths in Tier 2 — ALLOWED:
+		//   GETTABLE/SETTABLE: emitGetTableNative / emitSetTableNative
+		//   GETFIELD/SETFIELD: emitGetField / emitSetField (inline cache)
+		// (these are not listed here, so they pass through)
+
+		// Ops where Tier 2 exit-resume is SLOWER than Tier 1 native — BLOCKED:
+		case vm.OP_CALL,      // Tier 1 has native BLR (~10ns), Tier 2 exit-resume (~80ns)
+			vm.OP_GETGLOBAL,  // Tier 1 has value cache (~5ns), Tier 2 exit-resume (~55ns)
+			vm.OP_SETGLOBAL,  // Tier 1 exit-resume + cache invalidation
+			vm.OP_NEWTABLE,   // Must call Go allocator (exit-resume only)
+			vm.OP_SETLIST,    // Batch init (exit-resume only)
+			vm.OP_CONCAT,     // Go string ops (exit-resume only)
+			vm.OP_SELF,       // Method lookup (exit-resume only)
+			vm.OP_APPEND,     // Array append (exit-resume only)
+			vm.OP_LEN:        // Length access (exit-resume only)
+			return false
+
+		// Ops that require VM closure/upvalue/vararg state — BLOCKED:
+		case vm.OP_CLOSURE, vm.OP_GETUPVAL, vm.OP_SETUPVAL, vm.OP_VARARG:
 			return false
 		}
 	}

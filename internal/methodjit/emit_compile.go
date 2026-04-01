@@ -32,18 +32,30 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 
 	li := computeLoopInfo(fn)
 	crossBlockLive := computeCrossBlockLive(fn)
-	var headerRegs map[int]loopRegEntry
-	var headerFPRegs map[int]loopFPRegEntry
+	var headerRegs map[int]map[int]loopRegEntry
+	var headerFPRegs map[int]map[int]loopFPRegEntry
+	var safeHdrRegs map[int]map[int]loopRegEntry
+	var safeHdrFPRegs map[int]map[int]loopFPRegEntry
 	var phiOnlyArgs loopPhiArgSet
 	exitBoxPhis := make(map[int]bool)
 	if li.hasLoops() {
 		headerRegs = li.computeHeaderExitRegs(fn, alloc)
 		headerFPRegs = li.computeHeaderExitFPRegs(fn, alloc)
-		phiOnlyArgs = computeLoopPhiArgs(fn, li)
+		// Compute safe header regs: only registers NOT clobbered by any
+		// non-header block in the loop body. These are used for both
+		// block activation and loopPhiOnlyArgs checking.
+		safeHdrRegs = computeSafeHeaderRegs(fn, li, alloc, headerRegs)
+		safeHdrFPRegs = computeSafeHeaderFPRegs(fn, li, alloc, headerFPRegs)
+		phiOnlyArgs = computeLoopPhiArgs(fn, li, alloc, safeHdrRegs)
 
 		// Identify loop header phis that need exit-time boxing:
-		// cross-block live (used outside loop) AND register survives to end of header.
-		for _, phiIDs := range li.loopPhis {
+		// cross-block live AND register survives through the ENTIRE loop body
+		// (not just the header). If any non-header block in the loop has an
+		// instruction allocated to the same GPR, the phi's register will be
+		// clobbered, so we must write-through on every iteration.
+		for headerID, phiIDs := range li.loopPhis {
+			hdrRegs := headerRegs[headerID]
+			bodyBlocks := li.headerBlocks[headerID]
 			for _, phiID := range phiIDs {
 				if !crossBlockLive[phiID] {
 					continue
@@ -52,9 +64,35 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 				if !ok || pr.IsFloat {
 					continue
 				}
-				// Check if this phi's register still holds this phi at end of header.
-				entry, inRegs := headerRegs[pr.Reg]
-				if inRegs && entry.ValueID == phiID && entry.IsRawInt {
+				// Check if this phi's register still holds this phi at
+				// end of its own header.
+				entry, inRegs := hdrRegs[pr.Reg]
+				if !inRegs || entry.ValueID != phiID || !entry.IsRawInt {
+					continue
+				}
+				// Check that no non-header block in the loop body clobbers
+				// this register. If clobbered, the phi value can't survive
+				// in-register and must be written to memory.
+				clobbered := false
+				for _, block := range fn.Blocks {
+					if block.ID == headerID || !bodyBlocks[block.ID] {
+						continue
+					}
+					for _, instr := range block.Instrs {
+						if instr.Op == OpPhi || instr.Op.IsTerminator() {
+							continue
+						}
+						instrPR, ok := alloc.ValueRegs[instr.ID]
+						if ok && !instrPR.IsFloat && instrPR.Reg == pr.Reg {
+							clobbered = true
+							break
+						}
+					}
+					if clobbered {
+						break
+					}
+				}
+				if !clobbered {
 					exitBoxPhis[phiID] = true
 				}
 			}
@@ -88,6 +126,8 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		loop:             li,
 		loopHeaderRegs:   headerRegs,
 		loopHeaderFPRegs: headerFPRegs,
+		safeHeaderRegs:   safeHdrRegs,
+		safeHeaderFPRegs: safeHdrFPRegs,
 		loopPhiOnlyArgs:  phiOnlyArgs,
 		loopExitBoxPhis:  exitBoxPhis,
 		constInts:        constInts,
@@ -196,14 +236,20 @@ type emitContext struct {
 	// headers transfers raw ints, and loop header phis are marked rawInt.
 	loop *loopInfo
 
-	// loopHeaderRegs is the register state at the end of the loop header.
-	// Non-header loop blocks use this to activate registers that survive
-	// from the header. Computed once during Compile.
-	loopHeaderRegs map[int]loopRegEntry
+	// loopHeaderRegs is the per-header register state at the end of each loop
+	// header. Maps headerBlockID -> (register number -> entry). Non-header
+	// loop blocks look up their innermost header to activate the right registers.
+	loopHeaderRegs map[int]map[int]loopRegEntry
 
-	// loopHeaderFPRegs is the FPR register state at the end of the loop header.
-	// Non-header loop blocks use this to activate FPR-resident float values.
-	loopHeaderFPRegs map[int]loopFPRegEntry
+	// loopHeaderFPRegs is the per-header FPR register state at the end of
+	// each loop header. Maps headerBlockID -> (FPR number -> entry).
+	loopHeaderFPRegs map[int]map[int]loopFPRegEntry
+
+	// safeHeaderRegs are the subset of loopHeaderRegs whose registers are
+	// NOT clobbered by any non-header block in the loop body. Only these
+	// values can safely be activated in non-header blocks.
+	safeHeaderRegs   map[int]map[int]loopRegEntry
+	safeHeaderFPRegs map[int]map[int]loopFPRegEntry
 
 	// loopPhiOnlyArgs is the set of value IDs that are ONLY used as phi args
 	// to loop header phis. storeRawInt skips write-through for these values
@@ -396,26 +442,36 @@ func (ec *emitContext) emitBlock(block *Block) {
 	ec.rawIntRegs = make(map[int]bool)
 	ec.activeFPRegs = make(map[int]bool)
 
-	if isLoopBlock && !isHeader && ec.loopHeaderRegs != nil {
-		// Non-header loop block: activate registers that survive from the
-		// loop header. This allows the loop body to directly use values
-		// computed in the header without loading from memory.
-		for _, entry := range ec.loopHeaderRegs {
-			ec.activeRegs[entry.ValueID] = true
-			if entry.IsRawInt {
-				ec.rawIntRegs[entry.ValueID] = true
+	if isLoopBlock && !isHeader && ec.safeHeaderRegs != nil {
+		// Non-header loop block: activate SAFE registers from the innermost
+		// enclosing loop header. Only registers that are NOT clobbered by
+		// any non-header block in the loop body are activated. This prevents
+		// stale register assumptions in nested or complex loop bodies.
+		if innerHeader, ok := ec.loop.blockInnerHeader[block.ID]; ok {
+			if hdrRegs, ok := ec.safeHeaderRegs[innerHeader]; ok {
+				for _, entry := range hdrRegs {
+					ec.activeRegs[entry.ValueID] = true
+					if entry.IsRawInt {
+						ec.rawIntRegs[entry.ValueID] = true
+					}
+				}
 			}
 		}
 	}
-	if isLoopBlock && !isHeader && ec.loopHeaderFPRegs != nil {
-		// Non-header loop block: activate FPR registers from the header.
-		for _, entry := range ec.loopHeaderFPRegs {
-			ec.activeFPRegs[entry.ValueID] = true
+	if isLoopBlock && !isHeader && ec.safeHeaderFPRegs != nil {
+		// Non-header loop block: activate SAFE FPR registers from innermost header.
+		if innerHeader, ok := ec.loop.blockInnerHeader[block.ID]; ok {
+			if hdrFPRegs, ok := ec.safeHeaderFPRegs[innerHeader]; ok {
+				for _, entry := range hdrFPRegs {
+					ec.activeFPRegs[entry.ValueID] = true
+				}
+			}
 		}
 	}
 
 	// Phi values are active at block entry (their registers were loaded
-	// by emitPhiMoves from the predecessor).
+	// by emitPhiMoves from the predecessor). When a phi's register
+	// conflicts with a loopHeaderRegs value, invalidate the header value.
 	for _, instr := range block.Instrs {
 		if instr.Op != OpPhi {
 			break
@@ -423,8 +479,11 @@ func (ec *emitContext) emitBlock(block *Block) {
 		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok {
 			if pr.IsFloat {
 				// FPR phi: activated by emitPhiMoves which delivers raw float.
+				ec.invalidateFPReg(pr.Reg, instr.ID)
 				ec.activeFPRegs[instr.ID] = true
 			} else {
+				// Invalidate any header reg value that shares this register.
+				ec.invalidateReg(pr.Reg, instr.ID)
 				ec.activeRegs[instr.ID] = true
 				// Loop header phis: mark int-typed phis as raw int.
 				// emitPhiMoves delivers raw ints to loop header phis from
