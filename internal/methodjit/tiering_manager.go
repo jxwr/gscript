@@ -248,37 +248,38 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 
 // canPromoteToTier2 checks if a function is safe for Tier 2 compilation.
 //
+// All standard ops are now handled by Tier 2, either natively or via exit-resume:
+//
 // Native ARM64 fast paths:
 //   - Arithmetic, comparison, unary: emitRawIntBinOp / emitFloatBinOp / etc.
 //   - GETTABLE, SETTABLE: emitGetTableNative / emitSetTableNative
 //   - GETFIELD, SETFIELD: emitGetField / emitSetField (inline cache + shape guard)
 //
+// Native + exit-resume fallback:
+//   - CALL: emitCallNative (selective spill/reload BLR + exit-resume fallback)
+//   - GETGLOBAL: emitGlobalExit (exit-resume)
+//
 // Exit-resume (exit to Go, execute, resume JIT):
-//   - CALL: emitCallNative (native BLR + exit-resume fallback)
-//   - GETGLOBAL: emitGlobalExit
 //   - SETGLOBAL, NEWTABLE, SETLIST, APPEND, LEN, CONCAT, SELF, POW: emitOpExit
+//   - CLOSURE, GETUPVAL, SETUPVAL: emitOpExit with closure state from VM
+//   - VARARG: emitOpExit with vararg state from VM frame
 //
-// Performance-blocked (Tier 2 exit-resume is slower than Tier 1 native):
-//   - CALL: Tier 2 spill/reload around BLR costs ~80ns vs Tier 1's ~10ns BLR.
-//     Functions with CALL in hot loops regress badly. Allowed via canPromoteWithInlining.
-//   - GETGLOBAL: Tier 1 has per-PC value cache (~5ns), Tier 2 exit-resume (~55ns).
-//     Functions with GETGLOBAL in loops regress 2x+.
-//
-// Blocked (require VM closure/upvalue/vararg state not available in Tier 2):
-//   - CLOSURE, GETUPVAL, SETUPVAL: closure/upvalue state
-//   - VARARG: variable argument state
+// Only goroutine/channel ops are blocked (fundamentally require Go runtime):
+//   - GO, MAKECHAN, SEND, RECV
 func canPromoteToTier2(proto *vm.FuncProto) bool {
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
 		switch op {
-		// Performance-blocked: Tier 2 is slower than Tier 1 for these ops.
-		// CALL and GETGLOBAL have native fast paths in Tier 1 that Tier 2
-		// cannot match without significant spill/reload overhead.
+		// Performance-blocked: Tier 2 exit-resume is slower than Tier 1 native.
+		// CALL: Tier 1 has native BLR (~10ns), Tier 2 spill+BLR (~30-80ns)
+		// GETGLOBAL: Tier 1 has per-PC value cache (~5ns), Tier 2 exit-resume (~55ns)
+		// Functions with these in hot loops regress badly. Use canPromoteWithInlining
+		// to allow them when all calls are inlineable.
 		case vm.OP_CALL, vm.OP_GETGLOBAL:
 			return false
 
-		// Blocked: require VM closure/upvalue/vararg state.
-		case vm.OP_CLOSURE, vm.OP_GETUPVAL, vm.OP_SETUPVAL, vm.OP_VARARG:
+		// Goroutine/channel ops (not in Tier 2):
+		case vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV:
 			return false
 		}
 	}
@@ -307,8 +308,8 @@ func canPromoteWithInlining(proto *vm.FuncProto, globals map[string]*vm.FuncProt
 		case vm.OP_GETGLOBAL:
 			// GETGLOBAL is needed for CALL resolution — allowed
 			continue
-		case vm.OP_CLOSURE, vm.OP_GETUPVAL, vm.OP_SETUPVAL, vm.OP_VARARG:
-			// These require VM closure/upvalue/vararg state — still blocked
+		case vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV:
+			// Goroutine/channel ops not in Tier 2
 			return false
 		}
 	}

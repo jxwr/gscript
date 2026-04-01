@@ -46,6 +46,9 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 	// Resolve arg slots. For ops with 0, 1, or 2 args, store the
 	// home slot of each arg. The Go side reads the NaN-boxed values
 	// from regs[base+argSlot].
+	//
+	// For 0-arg ops that carry extra aux data (e.g., OpVararg with Aux2=B),
+	// Arg1 carries instr.Aux2 so the Go handler can access it.
 	arg1Slot := int64(0)
 	arg2Slot := int64(0)
 	if len(instr.Args) > 0 {
@@ -54,6 +57,10 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 		if ok {
 			arg1Slot = int64(a1Slot)
 		}
+	} else {
+		// No args: carry instr.Aux2 in Arg1 for ops that need it
+		// (e.g., OpVararg uses Aux2 for the B count).
+		arg1Slot = instr.Aux2
 	}
 	if len(instr.Args) > 1 {
 		a2Slot, ok := ec.slotMap[instr.Args[1].ID]

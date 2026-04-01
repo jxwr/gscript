@@ -114,17 +114,17 @@ Tier 2 handles ALL IR ops that the graph builder can produce:
 - Tables: GetTable/SetTable(native), GetField/SetField(IC), NewTable(exit)
 - Control: Branch/Jump/Return/Phi/Nop
 - Guards: GuardType/GuardTruthy
-- CALL: emitCallNative (BLR with spill/reload, fallback to exit-resume)
+- CALL: emitCallNative (selective spill/reload BLR, fallback to exit-resume)
 - Globals: GetGlobal(exit-resume)
 
 **Exit-resume (exit to Go, execute, resume):**
 - SetGlobal, Self, Concat, Len, Pow, Append, Close, SetList
+- Closure, GetUpval, SetUpval (closure/upvalue state from VM)
+- Vararg (vararg state from VM frame)
 - ForPrep, ForLoop, TForCall, TForLoop (rare: decomposed by graph builder)
-- Closure, GetUpval, SetUpval, Vararg (handler exists, but blocked by canPromoteToTier2)
 
 **canPromoteToTier2 blocks only:**
-- CALL, GETGLOBAL: Performance-blocked (Tier 1 BLR/cache is faster)
-- CLOSURE, GETUPVAL, SETUPVAL, VARARG: Needs VM closure/upvalue state
+- GO, MAKECHAN, SEND, RECV: goroutine/channel ops (require Go runtime)
 
 ## Key Design Points
 

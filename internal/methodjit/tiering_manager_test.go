@@ -923,3 +923,166 @@ for i := 1; i <= 5; i++ {
 		t.Errorf("count_items = %d, want 5", result.Int())
 	}
 }
+
+// TestTieringManager_Tier2Closure verifies that functions containing OP_CLOSURE
+// can be promoted to Tier 2 and produce correct results via op-exit.
+func TestTieringManager_Tier2Closure(t *testing.T) {
+	src := `
+func make_adder(x) {
+    func inner(y) {
+        return x + y
+    }
+    return inner
+}
+adder5 := make_adder(5)
+result := adder5(10)
+`
+	v, _ := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	// make_adder(5)(10) = 5 + 10 = 15
+	if result.Int() != 15 {
+		t.Errorf("make_adder(5)(10) = %d, want 15", result.Int())
+	}
+}
+
+// TestTieringManager_Tier2ClosureLoop verifies closures created in a loop
+// work correctly at Tier 2.
+func TestTieringManager_Tier2ClosureLoop(t *testing.T) {
+	src := `
+func test_closure(n) {
+    func double(x) {
+        return x * 2
+    }
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + double(i)
+    }
+    return s
+}
+result := 0
+for call := 1; call <= 5; call++ {
+    result = test_closure(5)
+}
+`
+	v, _ := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	// double(1)+double(2)+...+double(5) = 2+4+6+8+10 = 30
+	if result.Int() != 30 {
+		t.Errorf("test_closure(5) = %d, want 30", result.Int())
+	}
+}
+
+// TestTieringManager_Tier2GetUpval verifies OP_GETUPVAL via Tier 2 op-exit.
+func TestTieringManager_Tier2GetUpval(t *testing.T) {
+	src := `
+func make_counter() {
+    count := 0
+    func increment() {
+        count = count + 1
+        return count
+    }
+    return increment
+}
+counter := make_counter()
+result := 0
+for i := 1; i <= 5; i++ {
+    result = counter()
+}
+`
+	v, _ := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	// 5 increments → count = 5
+	if result.Int() != 5 {
+		t.Errorf("counter after 5 calls = %d, want 5", result.Int())
+	}
+}
+
+// TestTieringManager_Tier2CallInLoop verifies that OP_CALL inside a loop
+// can now be promoted to Tier 2 (previously performance-blocked).
+func TestTieringManager_Tier2CallInLoop(t *testing.T) {
+	src := `
+func square(x) {
+    return x * x
+}
+func sum_squares(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + square(i)
+    }
+    return s
+}
+result := 0
+for call := 1; call <= 5; call++ {
+    result = sum_squares(5)
+}
+`
+	v, _ := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	// 1+4+9+16+25 = 55
+	if result.Int() != 55 {
+		t.Errorf("sum_squares(5) = %d, want 55", result.Int())
+	}
+}
+
+// TestTieringManager_Tier2GetGlobal verifies that OP_GETGLOBAL in loops can
+// now be promoted to Tier 2 (previously performance-blocked).
+func TestTieringManager_Tier2GetGlobalLoop(t *testing.T) {
+	src := `
+multiplier := 3
+func scale_sum(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + i * multiplier
+    }
+    return s
+}
+result := 0
+for call := 1; call <= 5; call++ {
+    result = scale_sum(5)
+}
+`
+	v, _ := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	// (1+2+3+4+5) * 3 = 45
+	if result.Int() != 45 {
+		t.Errorf("scale_sum(5) = %d, want 45", result.Int())
+	}
+}
+
+// TestTieringManager_Tier2FibRecursive verifies that fib (which requires both
+// CALL and GETGLOBAL) now works correctly at Tier 2.
+func TestTieringManager_Tier2FibRecursive(t *testing.T) {
+	src := `
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+result := 0
+for i := 1; i <= 5; i++ {
+    result = fib(15)
+}
+`
+	v, _ := runWithTieringManager(t, src)
+	result := v.GetGlobal("result")
+	if !result.IsInt() {
+		t.Fatalf("expected int result, got %s (%v)", result.TypeName(), result)
+	}
+	if result.Int() != 610 {
+		t.Errorf("fib(15) = %d, want 610", result.Int())
+	}
+}

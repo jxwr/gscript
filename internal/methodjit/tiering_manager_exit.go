@@ -13,6 +13,7 @@ package methodjit
 import (
 	"fmt"
 	"math"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -273,11 +274,17 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 			}
 		}
 
-	case OpGetUpval, OpSetUpval, OpClosure:
-		return fmt.Errorf("op-exit not yet implemented: %s (needs closure)", op)
+	case OpClosure:
+		return tm.executeClosureOpExit(ctx, regs, base, proto)
+
+	case OpGetUpval:
+		return tm.executeGetUpvalOpExit(ctx, regs, base)
+
+	case OpSetUpval:
+		return tm.executeSetUpvalOpExit(ctx, regs, base)
 
 	case OpVararg:
-		return fmt.Errorf("op-exit not yet implemented: %s", op)
+		return tm.executeVarargOpExit(ctx, regs, base)
 
 	case OpTestSet:
 		return fmt.Errorf("op-exit not yet implemented: %s", op)
@@ -296,6 +303,174 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 
 	default:
 		return fmt.Errorf("unsupported op-exit: %s (%d)", op, int(op))
+	}
+
+	return nil
+}
+
+// executeClosureOpExit handles OpClosure via op-exit. Creates a new closure
+// with the child proto and captures upvalues from the parent closure and the
+// register file, mirroring Tier 1's handleClosure in tier1_handlers_misc.go.
+//
+// Op-exit descriptor:
+//   OpExitSlot = result slot (where to store the new closure)
+//   OpExitAux  = child proto index (bx from OP_CLOSURE)
+func (tm *TieringManager) executeClosureOpExit(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+	absSlot := base + int(ctx.OpExitSlot)
+	bx := int(ctx.OpExitAux)
+
+	if bx < 0 || bx >= len(proto.Protos) {
+		return fmt.Errorf("closure proto index %d out of range (len %d)", bx, len(proto.Protos))
+	}
+	subProto := proto.Protos[bx]
+
+	cl := &vm.Closure{
+		Proto:    subProto,
+		Upvalues: make([]*vm.Upvalue, len(subProto.Upvalues)),
+	}
+
+	// Get the parent closure for non-InStack upvalues.
+	var parentCl *vm.Closure
+	if tm.callVM != nil {
+		parentCl = tm.callVM.CurrentClosure()
+	}
+
+	for i, desc := range subProto.Upvalues {
+		if desc.InStack {
+			// Upvalue refers to a local in the current frame's register file.
+			absIdx := base + desc.Index
+			if absIdx < len(regs) {
+				uv := vm.NewOpenUpvalue(&regs[absIdx], absIdx)
+				cl.Upvalues[i] = uv
+				if tm.callVM != nil {
+					tm.callVM.RegisterOpenUpvalue(uv)
+				}
+			}
+		} else {
+			// Upvalue refers to a parent closure's upvalue.
+			if parentCl != nil && desc.Index < len(parentCl.Upvalues) && parentCl.Upvalues[desc.Index] != nil {
+				cl.Upvalues[i] = parentCl.Upvalues[desc.Index]
+			} else {
+				cl.Upvalues[i] = vm.NewOpenUpvalue(new(runtime.Value), 0)
+			}
+		}
+	}
+
+	if absSlot < len(regs) {
+		regs[absSlot] = runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
+	}
+	return nil
+}
+
+// executeGetUpvalOpExit handles OpGetUpval via op-exit. Reads a captured
+// upvalue from the current closure.
+//
+// Op-exit descriptor:
+//   OpExitSlot = result slot
+//   OpExitAux  = upvalue index
+func (tm *TieringManager) executeGetUpvalOpExit(ctx *ExecContext, regs []runtime.Value, base int) error {
+	if tm.callVM == nil {
+		return fmt.Errorf("no callVM for GetUpval op-exit")
+	}
+	cl := tm.callVM.CurrentClosure()
+	if cl == nil {
+		return fmt.Errorf("GetUpval: no current closure")
+	}
+
+	absSlot := base + int(ctx.OpExitSlot)
+	uvIdx := int(ctx.OpExitAux)
+
+	if uvIdx < 0 || uvIdx >= len(cl.Upvalues) || cl.Upvalues[uvIdx] == nil {
+		return fmt.Errorf("GetUpval: upvalue %d out of range (len %d)", uvIdx, len(cl.Upvalues))
+	}
+
+	if absSlot < len(regs) {
+		regs[absSlot] = cl.Upvalues[uvIdx].Get()
+	}
+	return nil
+}
+
+// executeSetUpvalOpExit handles OpSetUpval via op-exit. Writes a value to a
+// captured upvalue in the current closure.
+//
+// Op-exit descriptor:
+//   OpExitArg1 = source slot (the value to set)
+//   OpExitAux  = upvalue index
+func (tm *TieringManager) executeSetUpvalOpExit(ctx *ExecContext, regs []runtime.Value, base int) error {
+	if tm.callVM == nil {
+		return fmt.Errorf("no callVM for SetUpval op-exit")
+	}
+	cl := tm.callVM.CurrentClosure()
+	if cl == nil {
+		return fmt.Errorf("SetUpval: no current closure")
+	}
+
+	absArg1 := base + int(ctx.OpExitArg1)
+	uvIdx := int(ctx.OpExitAux)
+
+	if uvIdx < 0 || uvIdx >= len(cl.Upvalues) || cl.Upvalues[uvIdx] == nil {
+		return fmt.Errorf("SetUpval: upvalue %d out of range (len %d)", uvIdx, len(cl.Upvalues))
+	}
+
+	if absArg1 < len(regs) {
+		cl.Upvalues[uvIdx].Set(regs[absArg1])
+	}
+	return nil
+}
+
+// executeVarargOpExit handles OpVararg via op-exit. Copies variable arguments
+// from the VM frame into the register file.
+//
+// Op-exit descriptor:
+//   OpExitAux  = dest register (a from OP_VARARG)
+//   OpExitSlot = result slot (used for storing first vararg result to SSA home)
+//
+// The actual varargs come from the VM frame. Aux2 encoding: Aux = a (dest base),
+// the count is derived from the graph builder's Aux2 (stored in OpExitArg1 as
+// a secondary channel since op-exit only has Aux for one aux field).
+func (tm *TieringManager) executeVarargOpExit(ctx *ExecContext, regs []runtime.Value, base int) error {
+	if tm.callVM == nil {
+		return fmt.Errorf("no callVM for Vararg op-exit")
+	}
+
+	destReg := int(ctx.OpExitAux)      // destination register (a)
+	resultSlot := int(ctx.OpExitSlot)   // SSA result slot
+	bCount := int(ctx.OpExitArg1)       // B field (0 = all, >=2 means B-1 results)
+
+	va := tm.callVM.CurrentVarargs()
+
+	if bCount == 0 {
+		// B=0: copy all varargs.
+		for i, v := range va {
+			absIdx := base + destReg + i
+			if absIdx < len(regs) {
+				regs[absIdx] = v
+			}
+		}
+	} else {
+		// B>=2: copy exactly B-1 varargs.
+		n := bCount - 1
+		for i := 0; i < n; i++ {
+			absIdx := base + destReg + i
+			if absIdx < len(regs) {
+				if i < len(va) {
+					regs[absIdx] = va[i]
+				} else {
+					regs[absIdx] = runtime.NilValue()
+				}
+			}
+		}
+	}
+
+	// Also write the first vararg to the SSA result slot so the JIT can
+	// pick it up after resuming.
+	absResult := base + resultSlot
+	if absResult < len(regs) {
+		if len(va) > 0 {
+			regs[absResult] = va[0]
+		} else {
+			regs[absResult] = runtime.NilValue()
+		}
 	}
 
 	return nil

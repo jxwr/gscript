@@ -33,8 +33,9 @@ import (
 )
 
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
-// Uses spill/reload of SSA registers around the BLR. Falls back to
-// emitCallExit on the slow path (non-closure, uncompiled, overflow, etc.).
+// Uses selective spill/reload of SSA registers around the BLR: only registers
+// that are actually live across the call point are saved/restored. Falls back
+// to emitCallExit on the slow path (non-closure, uncompiled, overflow, etc.).
 func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm := ec.asm
 
@@ -63,8 +64,11 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
 	}
 
-	// Step 2: Spill ALL live SSA registers to memory (GPR + FPR).
-	ec.emitSpillAllForCall()
+	// Step 2: Selectively spill only registers that are LIVE across this call.
+	// A value is live across the call if it's used by any instruction after the
+	// call in the same block, or is used by a phi in a successor block.
+	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
+	ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
 
 	// Labels for the native call path.
 	slowLabel := ec.uniqueLabel("t2call_slow")
@@ -211,8 +215,8 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Store result to regs[funcSlot] (overwrites the function slot, Lua convention).
 	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
 
-	// Step 12: Reload ALL live SSA registers from memory.
-	ec.emitReloadAllForCall()
+	// Step 12: Reload only live SSA registers from memory.
+	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 
 	// Step 13: Store result into the SSA value's home.
 	// The result is at regs[funcSlot], load it and store to SSA home.
@@ -235,8 +239,15 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 // take the native BLR path. This is identical to emitCallExit but without the
 // arg-store (args were already stored in emitCallNative step 1) and without
 // re-spilling (already spilled in step 2).
+//
+// The fallback path also spills ALL active registers (not just live ones) because
+// the Go-side exit handler may inspect any register in the register file.
 func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets int) {
 	asm := ec.asm
+
+	// The selective spill from the native path only saved live-across-call values.
+	// The Go-side handler needs all active registers in memory, so spill the rest.
+	ec.emitStoreAllActiveRegs()
 
 	// Write call descriptor to ExecContext.
 	asm.LoadImm64(jit.X0, int64(funcSlot))
@@ -258,7 +269,7 @@ func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.
-	ec.emitReloadAllForCall()
+	ec.emitReloadAllActiveRegs()
 
 	// Load call result from regs[funcSlot].
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
@@ -272,12 +283,62 @@ func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets
 	})
 }
 
-// emitSpillAllForCall writes ALL active register-resident values (GPR and FPR)
-// to their memory home slots. Called before a native BLR to ensure the VM
-// register file is fully up-to-date and callee-saved registers can be reused.
-func (ec *emitContext) emitSpillAllForCall() {
-	// Spill GPRs (same as emitStoreAllActiveRegs).
+// computeLiveAcrossCall returns the set of GPR and FPR value IDs that are live
+// across a CALL instruction. A value is live across the call if:
+//   1. It's currently active in a register, AND
+//   2. It's used by any instruction AFTER the call in the same block, OR
+//   3. It's used by a phi in a successor block (cross-block live).
+//
+// Typically only 1-3 registers are live across a call (e.g., fib(n) only has
+// n live across each recursive call). This lets selective spill emit 1-3 STR
+// instructions instead of 12 (4 GPRs + 8 FPRs).
+func (ec *emitContext) computeLiveAcrossCall(callInstr *Instr) (gprLive map[int]bool, fprLive map[int]bool) {
+	gprLive = make(map[int]bool)
+	fprLive = make(map[int]bool)
+
+	// Collect all value IDs used after the call in the same block.
+	usedAfter := make(map[int]bool)
+	block := callInstr.Block
+	if block != nil {
+		found := false
+		for _, instr := range block.Instrs {
+			if instr == callInstr {
+				found = true
+				continue
+			}
+			if !found {
+				continue
+			}
+			for _, arg := range instr.Args {
+				if arg != nil {
+					usedAfter[arg.ID] = true
+				}
+			}
+		}
+	}
+
+	// Check GPRs: is the active value used after the call or cross-block live?
 	for valueID := range ec.activeRegs {
+		if usedAfter[valueID] || ec.crossBlockLive[valueID] {
+			gprLive[valueID] = true
+		}
+	}
+
+	// Check FPRs: same criterion.
+	for valueID := range ec.activeFPRegs {
+		if usedAfter[valueID] || ec.crossBlockLive[valueID] {
+			fprLive[valueID] = true
+		}
+	}
+
+	return gprLive, fprLive
+}
+
+// emitSpillSelectiveForCall writes only the specified live register-resident
+// values to their memory home slots. Called before a native BLR to save only
+// registers that are actually needed after the call returns.
+func (ec *emitContext) emitSpillSelectiveForCall(gprLive, fprLive map[int]bool) {
+	for valueID := range gprLive {
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || pr.IsFloat {
 			continue
@@ -295,9 +356,7 @@ func (ec *emitContext) emitSpillAllForCall() {
 		}
 	}
 
-	// Spill FPRs: float bits ARE the NaN-boxed representation, so
-	// FMOVtoGP gives us the correct NaN-boxed value for storage.
-	for valueID := range ec.activeFPRegs {
+	for valueID := range fprLive {
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || !pr.IsFloat {
 			continue
@@ -312,11 +371,11 @@ func (ec *emitContext) emitSpillAllForCall() {
 	}
 }
 
-// emitReloadAllForCall reloads ALL active register-resident values (GPR and FPR)
-// from their memory home slots. Called after a native BLR or call-exit resume.
-func (ec *emitContext) emitReloadAllForCall() {
-	// Reload GPRs.
-	for valueID := range ec.activeRegs {
+// emitReloadSelectiveForCall reloads only the specified live register-resident
+// values from their memory home slots. Called after a native BLR to restore
+// only registers that are needed after the call.
+func (ec *emitContext) emitReloadSelectiveForCall(gprLive, fprLive map[int]bool) {
+	for valueID := range gprLive {
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || pr.IsFloat {
 			continue
@@ -327,14 +386,10 @@ func (ec *emitContext) emitReloadAllForCall() {
 		}
 		reg := jit.Reg(pr.Reg)
 		ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
-		// After reload, registers hold NaN-boxed values (not raw).
 		delete(ec.rawIntRegs, valueID)
 	}
 
-	// Reload FPRs: load NaN-boxed from memory, move bits to FPR.
-	// Since float bits ARE the NaN-boxed representation, we can use
-	// FLDRd to load directly into the FPR.
-	for valueID := range ec.activeFPRegs {
+	for valueID := range fprLive {
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || !pr.IsFloat {
 			continue

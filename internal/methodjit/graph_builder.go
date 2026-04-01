@@ -775,8 +775,10 @@ func (b *graphBuilder) emitBlocks() {
 			case vm.OP_VARARG:
 				a := vm.DecodeA(inst)
 				bOp := vm.DecodeB(inst)
-				// Model as a single instruction; individual results are opaque.
-				instr := b.emit(block, OpNop, TypeAny, nil, int64(a), int64(bOp))
+				// Emit OpVararg so it goes through op-exit. The Go-side handler
+				// copies varargs from the VM frame into the register file.
+				// Aux = dest register (a), Aux2 = count (b).
+				instr := b.emit(block, OpVararg, TypeAny, nil, int64(a), int64(bOp))
 				if bOp >= 2 {
 					for i := 0; i < bOp-1; i++ {
 						b.writeVariable(a+i, block, instr.Value())

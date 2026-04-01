@@ -85,6 +85,15 @@ func (vm *VM) CurrentClosure() *Closure {
 	return nil
 }
 
+// CurrentVarargs returns the varargs for the current (topmost) call frame.
+// Used by the Tier 2 JIT to support OP_VARARG via exit-resume.
+func (vm *VM) CurrentVarargs() []runtime.Value {
+	if vm.frameCount > 0 {
+		return vm.frames[vm.frameCount-1].varargs
+	}
+	return nil
+}
+
 // PushFrame pushes a minimal call frame for the given closure and base.
 // Used by the baseline JIT's fast call path so that CurrentClosure() and
 // CloseUpvalues() work correctly for the callee.
