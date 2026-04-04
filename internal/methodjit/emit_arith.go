@@ -129,7 +129,8 @@ func (ec *emitContext) emitIntBinOp(instr *Instr, op intBinOp) {
 	}
 
 	// Check for int48 overflow on ADD/SUB/MUL (MOD cannot overflow).
-	if op != intBinMod {
+	// Skip for loop counter increments (Aux2=1): bounded by loop limit.
+	if op != intBinMod && instr.Aux2 == 0 {
 		ec.emitInt48OverflowCheck(jit.X0, instr)
 	}
 
@@ -164,7 +165,9 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 			} else {
 				ec.asm.SUBimm(dst, lhs, imm)
 			}
-			ec.emitInt48OverflowCheck(dst, instr)
+			if instr.Aux2 == 0 {
+				ec.emitInt48OverflowCheck(dst, instr)
+			}
 			ec.storeRawInt(dst, instr.ID)
 			return
 		}
@@ -173,7 +176,9 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 			if imm, ok := ec.constIntImm12(instr.Args[0].ID); ok {
 				rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
 				ec.asm.ADDimm(dst, rhs, imm)
-				ec.emitInt48OverflowCheck(dst, instr)
+				if instr.Aux2 == 0 {
+					ec.emitInt48OverflowCheck(dst, instr)
+				}
 				ec.storeRawInt(dst, instr.ID)
 				return
 			}
@@ -196,7 +201,8 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 	}
 
 	// Check for int48 overflow on ADD/SUB/MUL (MOD cannot overflow).
-	if op != intBinMod {
+	// Skip for loop counter increments (Aux2=1): bounded by loop limit.
+	if op != intBinMod && instr.Aux2 == 0 {
 		ec.emitInt48OverflowCheck(dst, instr)
 	}
 
@@ -245,6 +251,13 @@ func (ec *emitContext) emitInt48OverflowCheck(result jit.Reg, instr *Instr) {
 	asm.SBFX(scratch, result, 0, 48)
 	asm.CMPreg(scratch, result)
 	asm.BCond(jit.CondEQ, okLabel)
+
+	// Flush ALL register-resident values to VM register file before deopt.
+	// This ensures the interpreter sees correct state when it re-runs.
+	// Without this, loopExitBoxPhis values live only in registers and the
+	// interpreter would find stale memory (e.g., fibonacci_iterative bug).
+	ec.emitStoreAllActiveRegs()
+	ec.emitLoopExitBoxing()
 
 	// Overflow: deopt to interpreter.
 	asm.LoadImm64(jit.X0, ExitDeopt)

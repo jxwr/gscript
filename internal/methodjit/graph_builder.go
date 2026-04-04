@@ -687,7 +687,7 @@ func (b *graphBuilder) emitBlocks() {
 				// Annotate with TypeInt when for-loop vars are known-int.
 				// This gives TypeSpec a head start on phi resolution.
 				forType := b.inferForLoopType(a, block)
-				prepped := b.emit(block, OpSub, forType, []*Value{idx, step}, 0, 0)
+				prepped := b.emit(block, OpSub, forType, []*Value{idx, step}, 0, 1) // Aux2=1: loop counter, safe from int48 overflow
 				b.writeVariable(a, block, prepped.Value())
 
 				// Jump to FORLOOP test block.
@@ -706,7 +706,7 @@ func (b *graphBuilder) emitBlocks() {
 				step := b.readVariable(a+2, block)
 				// Annotate with TypeInt when for-loop vars are known-int.
 				forType := b.inferForLoopType(a, block)
-				incremented := b.emit(block, OpAdd, forType, []*Value{idx, step}, 0, 0)
+				incremented := b.emit(block, OpAdd, forType, []*Value{idx, step}, 0, 1) // Aux2=1: loop counter, safe from int48 overflow
 				b.writeVariable(a, block, incremented.Value())
 
 				// if R(A) <= R(A+1) { R(A+3) = R(A); jump back }

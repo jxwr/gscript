@@ -412,3 +412,29 @@ result := sum_points(100)
 		t.Errorf("sum_points(100) VM sanity check: got %f, want 15150.0", vmResult.Float())
 	}
 }
+
+// TestTier2_FibIterLargeN tests fibonacci_iterative with n=70, where the result
+// (190392490709135) exceeds int48 range (2^47-1 = 140737488355327). This
+// exercises the deopt-on-overflow path: when a+b overflows int48 mid-loop, the
+// JIT must flush all register-resident values (including loopExitBoxPhis) to
+// the VM register file before deopting to the interpreter.
+func TestTier2_FibIterLargeN(t *testing.T) {
+	src := `
+func fib_iter(n) {
+    a := 0
+    b := 1
+    for i := 1; i <= n; i++ {
+        temp := a + b
+        a = b
+        b = temp
+    }
+    return a
+}
+result := fib_iter(70)
+`
+	compareTier2Result(t, src, "result")
+
+	// fib(70) = 190392490709135 which exceeds int48 range.
+	// The VM should promote to float or handle overflow correctly.
+	// The key check is that VM and JIT produce the same result.
+}
