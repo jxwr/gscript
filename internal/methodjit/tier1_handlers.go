@@ -60,9 +60,76 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 		return e.handleTForLoop(ctx, regs, base, proto)
 	case vm.OP_POW:
 		return e.handlePow(ctx, regs, base, proto)
+	case vm.OP_LT:
+		return e.handleLT(ctx, regs, base, proto)
+	case vm.OP_LE:
+		return e.handleLE(ctx, regs, base, proto)
 	default:
 		return fmt.Errorf("unhandled baseline op-exit: %s (%d)", vm.OpName(opCode), opCode)
 	}
+}
+
+// resolveCmpRK resolves a comparison operand (RK). For registers, base+idx;
+// for constants, proto.Constants[idx - RKBit].
+func resolveCmpRK(regs []runtime.Value, base int, proto *vm.FuncProto, idx int) runtime.Value {
+	if idx >= vm.RKBit {
+		k := idx - vm.RKBit
+		if k >= 0 && k < len(proto.Constants) {
+			return proto.Constants[k]
+		}
+		return runtime.NilValue()
+	}
+	abs := base + idx
+	if abs >= 0 && abs < len(regs) {
+		return regs[abs]
+	}
+	return runtime.NilValue()
+}
+
+// handleLT handles OP_LT exit for operands that the native path can't compare
+// (typically strings). Computes (bval < cval) via Value.LessThan and overrides
+// BaselinePC based on the VM semantics: if (result) != bool(A), then PC++.
+// The exit emitter stored BaselinePC = pc+1 (instruction after LT); we adjust
+// to pc+2 when the skip fires.
+func (e *BaselineJITEngine) handleLT(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+	a := int(ctx.BaselineA)
+	bidx := int(ctx.BaselineB)
+	cidx := int(ctx.BaselineC)
+
+	bval := resolveCmpRK(regs, base, proto, bidx)
+	cval := resolveCmpRK(regs, base, proto, cidx)
+
+	lt, ok := bval.LessThan(cval)
+	if !ok {
+		return fmt.Errorf("LT: cannot compare %s with %s", bval.TypeName(), cval.TypeName())
+	}
+	if lt != (a != 0) {
+		// VM does PC++ to skip the next instruction. BaselinePC is
+		// already pc+1; bump to pc+2.
+		ctx.BaselinePC++
+	}
+	return nil
+}
+
+// handleLE mirrors handleLT for OP_LE.
+func (e *BaselineJITEngine) handleLE(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+	a := int(ctx.BaselineA)
+	bidx := int(ctx.BaselineB)
+	cidx := int(ctx.BaselineC)
+
+	bval := resolveCmpRK(regs, base, proto, bidx)
+	cval := resolveCmpRK(regs, base, proto, cidx)
+
+	// (b <= c) == !(c < b)
+	gt, ok := cval.LessThan(bval)
+	if !ok {
+		return fmt.Errorf("LE: cannot compare %s with %s", bval.TypeName(), cval.TypeName())
+	}
+	le := !gt
+	if le != (a != 0) {
+		ctx.BaselinePC++
+	}
+	return nil
 }
 
 // handleCall handles OP_CALL exit: execute the function call via the VM.

@@ -482,7 +482,20 @@ func emitBaselineLT(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 
 	doneLabel := nextLabel("lt_done")
 	floatLabel := nextLabel("lt_float")
+	slowLabel := nextLabel("lt_slow")
 	skipLabel := pcLabel(pc + 2) // skip next instruction
+
+	// String/pointer fast exit: if either operand has the pointer tag
+	// (0xFFFF), the FCMP float fallback would treat the raw pointer bits as
+	// a float and produce wrong results (FCMP of a NaN-boxed ptr is
+	// "unordered", never LT). Exit to Go so Value.LessThan handles it.
+	asm.LSRimm(jit.X2, jit.X0, 48)
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagPtrShr48)) // 0xFFFF
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondEQ, slowLabel)
+	asm.LSRimm(jit.X2, jit.X1, 48)
+	asm.CMPreg(jit.X2, jit.X3) // X3 still 0xFFFF
+	asm.BCond(jit.CondEQ, slowLabel)
 
 	// Check both are int
 	asm.LSRimm(jit.X2, jit.X0, 48)
@@ -520,6 +533,12 @@ func emitBaselineLT(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 		// Note: FCMP sets MI for LT
 		asm.BCond(jit.CondMI, skipLabel) // LT → skip
 	}
+	asm.B(doneLabel)
+
+	// Slow path: exit to Go; the handler computes LT via Value.LessThan
+	// and overrides BaselinePC to pc+1 (no skip) or pc+2 (skip) as needed.
+	asm.Label(slowLabel)
+	emitBaselineOpExitCommon(asm, vm.OP_LT, pc, a, bidx, cidx)
 
 	asm.Label(doneLabel)
 }
@@ -535,7 +554,17 @@ func emitBaselineLE(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 
 	doneLabel := nextLabel("le_done")
 	floatLabel := nextLabel("le_float")
+	slowLabel := nextLabel("le_slow")
 	skipLabel := pcLabel(pc + 2) // skip next instruction
+
+	// String/pointer fast exit: see emitBaselineLT for rationale.
+	asm.LSRimm(jit.X2, jit.X0, 48)
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagPtrShr48)) // 0xFFFF
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondEQ, slowLabel)
+	asm.LSRimm(jit.X2, jit.X1, 48)
+	asm.CMPreg(jit.X2, jit.X3) // X3 still 0xFFFF
+	asm.BCond(jit.CondEQ, slowLabel)
 
 	// Check both are int
 	asm.LSRimm(jit.X2, jit.X0, 48)
@@ -572,6 +601,12 @@ func emitBaselineLE(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	} else {
 		asm.BCond(jit.CondLS, skipLabel) // LE → skip
 	}
+	asm.B(doneLabel)
+
+	// Slow path: exit to Go; the handler computes LE via Value.LessThan
+	// and overrides BaselinePC to pc+1 or pc+2 as needed.
+	asm.Label(slowLabel)
+	emitBaselineOpExitCommon(asm, vm.OP_LE, pc, a, bidx, cidx)
 
 	asm.Label(doneLabel)
 }

@@ -117,8 +117,19 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineEQ(asm, inst, pc, code)
 		case vm.OP_LT:
 			emitBaselineLT(asm, inst, pc, code)
+			// LT has a string-operand slow path that exits to Go.
+			// The handler resumes at pc+1 (no skip) or pc+2 (skip next).
+			resumePCs = append(resumePCs, pc+1)
+			if pc+2 <= len(code) {
+				resumePCs = append(resumePCs, pc+2)
+			}
 		case vm.OP_LE:
 			emitBaselineLE(asm, inst, pc, code)
+			// LE has a string-operand slow path that exits to Go.
+			resumePCs = append(resumePCs, pc+1)
+			if pc+2 <= len(code) {
+				resumePCs = append(resumePCs, pc+2)
+			}
 
 		// ---- Logical test ----
 		case vm.OP_TEST:
