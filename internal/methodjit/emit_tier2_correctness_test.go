@@ -438,3 +438,50 @@ result := fib_iter(70)
 	// The VM should promote to float or handle overflow correctly.
 	// The key check is that VM and JIT produce the same result.
 }
+
+// TestTier2_RepeatedCallPhiRegalloc exercises the register allocator's
+// handling of 3+ simultaneously-live loop-carried phis. Before the fix,
+// allocateBlock processed phis sequentially and freed each phi's args after
+// allocation, which caused a later phi to be assigned the same physical
+// register as an earlier phi (e.g. v19->X20, v18->X21, v12->X20 all in the
+// same loop header). The back-edge phi moves then clobbered each other,
+// corrupting loop state.
+//
+// fib_iter has 3 loop-carried phis (a, b, i). bench(n, reps) calls fib_iter
+// multiple times; the first call uses Tier 1 (correct), then the function
+// is promoted to Tier 2 where the phi regalloc clash manifests. Without the
+// fix, bench(10, >=2) returns fib(8)=21 instead of fib(10)=55.
+func TestTier2_RepeatedCallPhiRegalloc(t *testing.T) {
+	src := `
+func fib_iter(n) {
+    a := 0
+    b := 1
+    for i := 0; i < n; i++ {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+func bench(n, reps) {
+    result := 0
+    for r := 1; r <= reps; r++ {
+        result = fib_iter(n)
+    }
+    return result
+}
+result := bench(10, 3)
+`
+	compareTier2Result(t, src, "result")
+
+	// fib(10) = 55. Verify VM independently.
+	protoVM := compileProto(t, src)
+	globalsVM := runtime.NewInterpreterGlobals()
+	vVM := vm.New(globalsVM)
+	defer vVM.Close()
+	vVM.Execute(protoVM)
+	vmResult := vVM.GetGlobal("result")
+	if !vmResult.IsInt() || vmResult.Int() != 55 {
+		t.Errorf("bench(10, 3) VM sanity check: got %v, want 55", vmResult)
+	}
+}

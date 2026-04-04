@@ -141,13 +141,65 @@ func (rs *regState) removeLRU(valueID int) {
 
 // allocateBlock performs per-block register allocation.
 // Each block starts with a fresh register state (simple per-block model).
+//
+// Phi handling: All phi instructions in a block are simultaneously live at
+// block entry (they represent merged values from predecessor blocks). They
+// MUST NOT share physical registers, otherwise the phi moves at the end of
+// predecessor blocks would clobber each other.
+//
+// To enforce this, we pre-allocate registers for ALL phis in the block first,
+// WITHOUT calling freeDeadValues between them. This ensures that each phi
+// gets a distinct register. After all phis are allocated, we process non-phi
+// instructions normally.
 func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int) {
 	gprs := newRegState(allocatableGPRs[:], false)
 	fprs := newRegState(allocatableFPRs[:], true)
 
+	// Phase 1: pre-allocate registers for all phi instructions.
+	// Do NOT call freeDeadValues between phis -- they are simultaneously live.
+	for _, instr := range block.Instrs {
+		if instr.Op != OpPhi {
+			continue
+		}
+
+		// Determine which pool to use based on the phi's result type.
+		wantFloat := needsFloatReg(instr)
+		var rs *regState
+		if wantFloat {
+			rs = fprs
+		} else {
+			rs = gprs
+		}
+
+		// Try to allocate a free register.
+		r := rs.findFree()
+		if r >= 0 {
+			rs.assign(instr.ID, r)
+			alloc.ValueRegs[instr.ID] = PhysReg{Reg: r, IsFloat: wantFloat}
+		} else {
+			// All registers full -- we cannot evict another phi (they are all
+			// simultaneously live). Spill this phi to a spill slot.
+			// Note: evicting the LRU here would evict another phi, which is
+			// wrong. So we directly spill this phi.
+			alloc.SpillSlots[instr.ID] = alloc.NumSpillSlots
+			alloc.NumSpillSlots++
+		}
+	}
+
+	// Phase 2: process non-phi instructions normally.
 	for instrIdx, instr := range block.Instrs {
 		// Skip terminators -- they don't produce values.
 		if instr.Op.IsTerminator() {
+			continue
+		}
+		// Skip phis -- already allocated in phase 1.
+		if instr.Op == OpPhi {
+			// Still need to free dead values after this instruction's position
+			// for args that had their last use at this phi. However, phi args
+			// come from predecessor blocks, not from this block, so typically
+			// no values in our regState need to be freed here. But to be safe
+			// and consistent with the old behavior, call freeDeadValues.
+			freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse)
 			continue
 		}
 
