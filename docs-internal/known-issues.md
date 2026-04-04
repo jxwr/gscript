@@ -4,12 +4,10 @@
 
 ## Current
 
-### fibonacci_iterative: fib(70) returns fib(68) — deopt state at overflow boundary
-- Int48 overflow check fires when a+b exceeds 2^47 at iteration 69→70
-- Deopt exits before the loop body completes (a=b, b=temp assignments not executed)
-- Returns `a` = fib(68) instead of continuing in interpreter to complete the iteration
-- Root cause: deopt at mid-instruction granularity doesn't complete the current loop body
-- Fix needed: deopt should restore state so interpreter can complete the current iteration
+### fibonacci_iterative: FIXED (phi regalloc clash)
+- Root cause was NOT overflow — register allocator assigned 2 phis the same physical register
+- Loop header with 3+ phis (a, b, i) triggered the clash
+- Fixed by pre-allocating all phis simultaneously in allocateBlock
 
 ### string_bench: compare sub-test gives different sort order
 - VM: first..last=key_00000 .. key_00999
