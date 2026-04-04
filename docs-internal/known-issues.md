@@ -9,16 +9,16 @@
 - Loop header with 3+ phis (a, b, i) triggered the clash
 - Fixed by pre-allocating all phis simultaneously in allocateBlock
 
-### string_bench: compare sub-test gives different sort order
-- VM: first..last=key_00000 .. key_00999
-- JIT: first..last=key_00007 .. key_00000
-- String comparison or sort correctness issue in JIT mode
-- Not yet investigated
+### string_bench: FIXED (Tier 1 string LT/LE exit-resume)
+- Root cause: emitBaselineLT/LE fell through to float fallback for string operands
+- FCMPd on NaN-boxed pointers returned "unordered", branch never taken, swap never fired
+- Fixed by exiting to Go via ExitBaselineOpExit for string-tagged operands
 
-### spectral_norm: 3.7x regression from int48 overflow check
-- Was 0.138s (7.2x vs VM), now 0.506s (2.0x vs VM)
-- The int48 overflow check (SBFX+CMP+B.NE after every ADD/SUB/MUL) adds overhead to tight numeric loops
-- Fix needed: skip overflow check on loop counters with known-small range, or use type-specialized overflow-free paths
+### spectral_norm: 2.0x vs VM (still slower than pre-overflow-check baseline)
+- Was 0.138s before int48 overflow check, now 0.502s
+- Loop-counter exemption (Aux2=1) + range analysis eliminate most checks but wall-time unchanged
+- Likely bottleneck elsewhere: FPR spills, guard overhead, or Tier 2 float codegen
+- Next investigation: pprof Tier 2 emitted code for spectral_norm inner loop
 
 ### method_dispatch: 0.85x regression (known)
 - Native BLR call adds type-check + DirectEntryPtr-load overhead even when falling to slow path
