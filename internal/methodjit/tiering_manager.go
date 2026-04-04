@@ -40,10 +40,10 @@ import (
 )
 
 // inlineMaxCalleeSize is the maximum bytecode count for a callee to be
-// considered inlineable during the pre-scan. Callees larger than this
-// are not inlined, and functions containing such calls are not promoted
-// via the inlining path.
-const inlineMaxCalleeSize = 50
+// considered inlineable during the pre-scan and by the inline pass.
+// Raised from 50 to 80 to allow more aggressive inlining of medium-sized
+// callees (e.g., spectral_norm's A(i,j), point_distance, vec3_add).
+const inlineMaxCalleeSize = 80
 
 // tmDefaultTier2Threshold is the BLR tier-up threshold. Controls when Tier 1's
 // BLR call path falls to slow path to give TieringManager.TryCompile a chance
@@ -132,17 +132,10 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	profile := tm.getProfile(proto)
 
 	// Use smart tiering to decide if this function should be promoted to Tier 2.
+	// shouldPromoteTier2 considers loops, arithmetic density, call patterns, and
+	// table ops. Functions with loops + calls + arithmetic are promoted at
+	// threshold=2 — compileTier2 will try inlining and reject if calls remain.
 	if !shouldPromoteTier2(proto, profile, proto.CallCount) {
-		// Standard rules say no. Check if inlining could make it worthwhile:
-		// functions with calls + arithmetic that are called enough times AND
-		// whose calls are all inlineable.
-		if profile.CallCount > 0 && profile.ArithCount > 0 && proto.CallCount >= 2 {
-			inlineGlobals := tm.buildInlineGlobals()
-			if canPromoteWithInlining(proto, inlineGlobals) {
-				// Fall through to Tier 2 compilation with inlining.
-				goto tryTier2
-			}
-		}
 		// Not ready for Tier 2: use Tier 1, but enable OSR for loop-heavy
 		// functions so they can be upgraded mid-execution if they run hot.
 		t1 := tm.tier1.TryCompile(proto)
@@ -153,8 +146,6 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		// }
 		return t1
 	}
-
-tryTier2:
 
 	// Tier 2 already failed? Use Tier 1.
 	if tm.tier2Failed[proto] {
@@ -254,10 +245,10 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 //   - Arithmetic, comparison, unary: emitRawIntBinOp / emitFloatBinOp / etc.
 //   - GETTABLE, SETTABLE: emitGetTableNative / emitSetTableNative
 //   - GETFIELD, SETFIELD: emitGetField / emitSetField (inline cache + shape guard)
+//   - GETGLOBAL: emitGetGlobalNative (per-instruction value cache + exit-resume)
 //
 // Native + exit-resume fallback:
-//   - CALL: emitCallNative (selective spill/reload BLR + exit-resume fallback)
-//   - GETGLOBAL: emitGlobalExit (exit-resume)
+//   - CALL: eliminated by inline pass; if not inlined, compileTier2 rejects via irHasCall
 //
 // Exit-resume (exit to Go, execute, resume JIT):
 //   - SETGLOBAL, NEWTABLE, SETLIST, APPEND, LEN, CONCAT, SELF, POW: emitOpExit
@@ -266,18 +257,15 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 //
 // Only goroutine/channel ops are blocked (fundamentally require Go runtime):
 //   - GO, MAKECHAN, SEND, RECV
+//
+// CALL is no longer blocked here. Instead, compileTier2 runs the inline pass to
+// eliminate calls, then checks the optimized IR with irHasCall. If calls remain
+// after inlining, the function falls back to Tier 1 where BLR calls are faster.
+// GETGLOBAL is fully native with a per-instruction value cache (~5ns on hit).
 func canPromoteToTier2(proto *vm.FuncProto) bool {
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
 		switch op {
-		// Performance-blocked: Tier 2 exit-resume is slower than Tier 1 native.
-		// CALL: Tier 1 has native BLR (~10ns), Tier 2 spill+BLR (~30-80ns)
-		// GETGLOBAL: Tier 1 has per-PC value cache (~5ns), Tier 2 exit-resume (~55ns)
-		// Functions with these in hot loops regress badly. Use canPromoteWithInlining
-		// to allow them when all calls are inlineable.
-		case vm.OP_CALL, vm.OP_GETGLOBAL:
-			return false
-
 		// Goroutine/channel ops (not in Tier 2):
 		case vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV:
 			return false
@@ -286,11 +274,28 @@ func canPromoteToTier2(proto *vm.FuncProto) bool {
 	return true
 }
 
-// canPromoteWithInlining checks if a function whose only blockers are
-// OP_CALL and OP_GETGLOBAL (performance-blocked) can be promoted by inlining
-// all calls. Returns true if ALL calls are to known, small, non-recursive
-// global functions. The inline pass eliminates those calls and their GETGLOBAL,
-// removing the performance blockers.
+// canPromoteToTier2NoCalls is the conservative version of canPromoteToTier2
+// that also blocks CALL. Used by shouldPromoteTier2 to identify pure-compute
+// functions that don't need the inline pass. GETGLOBAL is allowed because
+// Tier 2 has a per-instruction value cache matching Tier 1's performance.
+func canPromoteToTier2NoCalls(proto *vm.FuncProto) bool {
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		switch op {
+		case vm.OP_CALL:
+			return false
+		case vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV:
+			return false
+		}
+	}
+	return true
+}
+
+// canPromoteWithInlining checks if a function whose only blocker is OP_CALL
+// (performance-blocked) can be promoted by inlining all calls. Returns true if
+// ALL calls are to known, small, non-recursive global functions. The inline
+// pass eliminates those calls, removing the performance blocker. GETGLOBAL is
+// allowed regardless (Tier 2 has native value cache).
 func canPromoteWithInlining(proto *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
 	if len(globals) == 0 {
 		return false
@@ -393,15 +398,10 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	}()
 
 	// Check if function can be promoted to Tier 2.
-	inlineGlobals := tm.buildInlineGlobals()
-	needsInlining := false
+	// canPromoteToTier2 now only blocks goroutine/channel ops.
+	// CALL and GETGLOBAL are handled by the inline pass + post-inline IR checks.
 	if !canPromoteToTier2(proto) {
-		// Standard check failed — try inlining-aware check.
-		if canPromoteWithInlining(proto, inlineGlobals) {
-			needsInlining = true
-		} else {
-			return nil, fmt.Errorf("tier2: function has unsupported ops, staying at tier 1")
-		}
+		return nil, fmt.Errorf("tier2: function has unsupported ops, staying at tier 1")
 	}
 
 	// Build SSA IR.
@@ -415,8 +415,11 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	// Run optimization passes.
 	fn, _ = TypeSpecializePass(fn)
 
-	// Inline small monomorphic callees if the function needs inlining to qualify.
-	if needsInlining && len(inlineGlobals) > 0 {
+	// Always try inlining to eliminate calls. The inline pass is a no-op if
+	// no inlineable call sites are found. When it succeeds, OpCall instructions
+	// are replaced with the callee's body, and the caller becomes pure-compute.
+	inlineGlobals := tm.buildInlineGlobals()
+	if len(inlineGlobals) > 0 {
 		config := InlineConfig{Globals: inlineGlobals, MaxSize: inlineMaxCalleeSize}
 		fn, _ = InlinePassWith(config)(fn)
 		// Re-run TypeSpec after inlining (new optimization opportunities from
@@ -426,6 +429,19 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 
 	fn, _ = ConstPropPass(fn)
 	fn, _ = DCEPass(fn)
+
+	// Range analysis: mark int arithmetic ops whose result provably fits in
+	// int48, so the emitter can skip their overflow checks. Must run AFTER
+	// DCE (so dead values don't waste analysis budget) and BEFORE RegAlloc.
+	fn, _ = RangeAnalysisPass(fn)
+
+	// Post-inline safety check: reject if the optimized IR still has OpCall.
+	// Tier 2's CALL exit-resume (~30-80ns) is slower than Tier 1's native BLR (~10ns).
+	// Functions with un-inlineable calls (recursive, too large) fall back to Tier 1.
+	// GETGLOBAL is allowed — Tier 2 has a native per-instruction value cache (~5ns).
+	if irHasCall(fn) {
+		return nil, fmt.Errorf("tier2: IR has OpCall after inlining, staying at Tier 1")
+	}
 
 	// Register allocation.
 	alloc := AllocateRegisters(fn)
@@ -470,6 +486,13 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
 	}
 
+	// Set up Tier 2 global value cache pointers.
+	if len(cf.GlobalCache) > 0 {
+		ctx.Tier2GlobalCache = uintptr(unsafe.Pointer(&cf.GlobalCache[0]))
+		ctx.Tier2GlobalCacheGen = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))
+		ctx.Tier2GlobalGenPtr = uintptr(unsafe.Pointer(&tm.tier1.globalCacheGen))
+	}
+
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
 
@@ -510,7 +533,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			continue
 
 		case ExitGlobalExit:
-			if err := tm.executeGlobalExit(ctx, regs, base, proto); err != nil {
+			if err := tm.executeGlobalExit(ctx, regs, base, proto, cf); err != nil {
 				return nil, fmt.Errorf("tier2: global-exit: %w", err)
 			}
 			resyncRegs()
@@ -590,4 +613,34 @@ func (tm *TieringManager) Tier2Count() int {
 // Tier1Count returns the number of functions compiled at Tier 1.
 func (tm *TieringManager) Tier1Count() int {
 	return tm.tier1.CompiledCount()
+}
+
+// irHasCall scans the optimized IR for any remaining OpCall instructions.
+// Used after the inline pass to determine if all calls were eliminated.
+// If OpCall remains, the function should stay at Tier 1 where BLR calls
+// are faster than Tier 2's exit-resume.
+func irHasCall(fn *Function) bool {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// irHasGetGlobal scans the optimized IR for any remaining OpGetGlobal
+// instructions. Used after the inline pass + DCE to determine if global
+// accesses remain. OpGetGlobal uses exit-resume which is slower than
+// Tier 1's per-PC value cache.
+func irHasGetGlobal(fn *Function) bool {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpGetGlobal {
+				return true
+			}
+		}
+	}
+	return false
 }

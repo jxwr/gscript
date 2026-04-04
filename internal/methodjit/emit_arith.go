@@ -130,7 +130,8 @@ func (ec *emitContext) emitIntBinOp(instr *Instr, op intBinOp) {
 
 	// Check for int48 overflow on ADD/SUB/MUL (MOD cannot overflow).
 	// Skip for loop counter increments (Aux2=1): bounded by loop limit.
-	if op != intBinMod && instr.Aux2 == 0 {
+	// Skip when range analysis proved the result fits in int48.
+	if op != intBinMod && instr.Aux2 == 0 && !ec.int48Safe(instr.ID) {
 		ec.emitInt48OverflowCheck(jit.X0, instr)
 	}
 
@@ -165,7 +166,7 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 			} else {
 				ec.asm.SUBimm(dst, lhs, imm)
 			}
-			if instr.Aux2 == 0 {
+			if instr.Aux2 == 0 && !ec.int48Safe(instr.ID) {
 				ec.emitInt48OverflowCheck(dst, instr)
 			}
 			ec.storeRawInt(dst, instr.ID)
@@ -176,7 +177,7 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 			if imm, ok := ec.constIntImm12(instr.Args[0].ID); ok {
 				rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
 				ec.asm.ADDimm(dst, rhs, imm)
-				if instr.Aux2 == 0 {
+				if instr.Aux2 == 0 && !ec.int48Safe(instr.ID) {
 					ec.emitInt48OverflowCheck(dst, instr)
 				}
 				ec.storeRawInt(dst, instr.ID)
@@ -202,12 +203,23 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 
 	// Check for int48 overflow on ADD/SUB/MUL (MOD cannot overflow).
 	// Skip for loop counter increments (Aux2=1): bounded by loop limit.
-	if op != intBinMod && instr.Aux2 == 0 {
+	// Skip when range analysis proved the result fits in int48.
+	if op != intBinMod && instr.Aux2 == 0 && !ec.int48Safe(instr.ID) {
 		ec.emitInt48OverflowCheck(dst, instr)
 	}
 
 	// Mark as raw int in register (no box needed until block boundary/return).
 	ec.storeRawInt(dst, instr.ID)
+}
+
+// int48Safe reports whether range analysis proved that instr's result
+// fits in the int48 signed range. When true, the emitter may skip the
+// SBFX+CMP+B.NE overflow check (saves 3 ARM64 instructions per op).
+func (ec *emitContext) int48Safe(id int) bool {
+	if ec.fn == nil || ec.fn.Int48Safe == nil {
+		return false
+	}
+	return ec.fn.Int48Safe[id]
 }
 
 // --- Raw int unary negate (type-specialized, no unbox/box) ---
@@ -228,7 +240,10 @@ func (ec *emitContext) emitNegInt(instr *Instr) {
 	ec.asm.NEG(dst, src)
 
 	// Check for int48 overflow (e.g., negating minInt48 produces maxInt48+1).
-	ec.emitInt48OverflowCheck(dst, instr)
+	// Skip when range analysis proved the result fits in int48.
+	if !ec.int48Safe(instr.ID) {
+		ec.emitInt48OverflowCheck(dst, instr)
+	}
 
 	// Mark as raw int in register (no box needed until block boundary/return).
 	ec.storeRawInt(dst, instr.ID)

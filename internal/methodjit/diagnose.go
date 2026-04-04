@@ -62,11 +62,12 @@ func Diagnose(proto *vm.FuncProto, args []runtime.Value) *DiagReport {
 	r.InterpResult = interpResult
 	r.InterpError = interpErr
 
-	// 4. Pipeline with dump: TypeSpec -> ConstProp -> DCE.
+	// 4. Pipeline with dump: TypeSpec -> ConstProp -> DCE -> RangeAnalysis.
 	pipe := NewPipeline()
 	pipe.Add("TypeSpecialize", TypeSpecializePass)
 	pipe.Add("ConstProp", ConstPropPass)
 	pipe.Add("DCE", DCEPass)
+	pipe.Add("RangeAnalysis", RangeAnalysisPass)
 	pipe.EnableDump(true)
 
 	optimized, pipeErr := pipe.Run(fn)

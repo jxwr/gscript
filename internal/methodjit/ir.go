@@ -20,6 +20,12 @@ type Function struct {
 	Proto   *vm.FuncProto   // source bytecode
 	NumRegs int             // number of VM registers used
 	nextID  int             // next value ID
+
+	// Int48Safe is the set of integer arithmetic SSA value IDs whose runtime
+	// result is provably within the int48 signed range. Populated by
+	// RangeAnalysisPass. The emitter consults this set to skip the
+	// SBFX+CMP+B.NE overflow check for provably safe AddInt/SubInt/MulInt/NegInt.
+	Int48Safe map[int]bool
 }
 
 // newValueID allocates a unique ID for a new SSA value.
