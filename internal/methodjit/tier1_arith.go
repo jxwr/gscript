@@ -169,10 +169,24 @@ func emitBaselineArith(asm *jit.Assembler, inst uint32, op string) {
 		asm.MUL(jit.X4, jit.X4, jit.X5)
 	}
 
+	// Check for int48 overflow: SBFX sign-extends lower 48 bits; if it
+	// differs from the full 64-bit result, the value doesn't fit.
+	overflowLabel := nextLabel("arith_overflow")
+	asm.SBFX(jit.X6, jit.X4, 0, 48)
+	asm.CMPreg(jit.X6, jit.X4)
+	asm.BCond(jit.CondNE, overflowLabel)
+
 	// Re-box: UBFX to clear top 16 bits, ORR with tag register.
 	jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
 
 	// Store result.
+	asm.STR(jit.X4, mRegRegs, slotOff(a))
+	asm.B(doneLabel)
+
+	// Int overflow: convert 64-bit int result to float64 and store as NaN-boxed float.
+	asm.Label(overflowLabel)
+	asm.SCVTF(jit.D0, jit.X4)
+	asm.FMOVtoGP(jit.X4, jit.D0)
 	asm.STR(jit.X4, mRegRegs, slotOff(a))
 	asm.B(doneLabel)
 
@@ -325,7 +339,21 @@ func emitBaselineUnm(asm *jit.Assembler, inst uint32) {
 	// Int: negate the 48-bit payload.
 	asm.SBFX(jit.X4, jit.X0, 0, 48)
 	asm.NEG(jit.X4, jit.X4)
+
+	// Check for int48 overflow (negating minInt48 = -2^47 produces 2^47 which doesn't fit).
+	unmOverflowLabel := nextLabel("unm_overflow")
+	asm.SBFX(jit.X5, jit.X4, 0, 48)
+	asm.CMPreg(jit.X5, jit.X4)
+	asm.BCond(jit.CondNE, unmOverflowLabel)
+
 	jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
+	asm.STR(jit.X4, mRegRegs, slotOff(a))
+	asm.B(doneLabel)
+
+	// Overflow: convert to float.
+	asm.Label(unmOverflowLabel)
+	asm.SCVTF(jit.D0, jit.X4)
+	asm.FMOVtoGP(jit.X4, jit.D0)
 	asm.STR(jit.X4, mRegRegs, slotOff(a))
 	asm.B(doneLabel)
 

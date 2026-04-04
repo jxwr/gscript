@@ -92,7 +92,9 @@ type ExecContext struct {
 	NativeCallA            int64 // caller's A field (destination slot)
 	NativeCallB            int64 // caller's B field (arg count)
 	NativeCallC            int64 // caller's C field (return count)
-	NativeCalleeBaseOff    int64 // callee base offset from caller regs (MaxStack*8)
+	NativeCalleeBaseOff    int64   // callee base offset from caller regs (MaxStack*8)
+	NativeCalleeResumePC   int64   // callee's resume PC (saved before caller restores its own BaselinePC)
+	NativeCalleeClosurePtr uintptr // callee's closure pointer (saved before caller restores its own ClosurePtr)
 	// Register file bounds: pointer one past the last valid register slot.
 	// Used by native BLR to detect when the callee's register window would
 	// exceed the allocated register file, falling to slow path instead.
@@ -115,6 +117,15 @@ type ExecContext struct {
 	// can compile Tier 2 and re-enter the function at Tier 2 speed.
 	// Set to -1 to disable OSR (e.g., after a failed Tier 2 compilation).
 	OSRCounter int64
+
+	// Tier 2 global value cache fields. Mirrors Tier 1's per-PC global
+	// cache but uses a per-GetGlobal-instruction index instead of per-PC.
+	// Cache hit: load value directly from cache (~5ns).
+	// Cache miss: exit-resume to Go which populates the cache.
+	Tier2GlobalCache    uintptr // pointer to CompiledFunction.GlobalCache[0]
+	Tier2GlobalCacheGen uintptr // pointer to CompiledFunction.GlobalCacheGen
+	Tier2GlobalGenPtr   uintptr // pointer to tier1.globalCacheGen (shared counter)
+	GlobalCacheIdx      int64   // cache index for current GetGlobal (set by emitter on exit)
 }
 
 // ExitCode constants.
@@ -186,12 +197,19 @@ var (
 	execCtxOffNativeCallA         = int(unsafe.Offsetof(ExecContext{}.NativeCallA))
 	execCtxOffNativeCallB         = int(unsafe.Offsetof(ExecContext{}.NativeCallB))
 	execCtxOffNativeCallC         = int(unsafe.Offsetof(ExecContext{}.NativeCallC))
-	execCtxOffNativeCalleeBaseOff = int(unsafe.Offsetof(ExecContext{}.NativeCalleeBaseOff))
-	execCtxOffRegsEnd             = int(unsafe.Offsetof(ExecContext{}.RegsEnd))
+	execCtxOffNativeCalleeBaseOff   = int(unsafe.Offsetof(ExecContext{}.NativeCalleeBaseOff))
+	execCtxOffNativeCalleeResumePC = int(unsafe.Offsetof(ExecContext{}.NativeCalleeResumePC))
+	execCtxOffNativeCalleeClosurePtr = int(unsafe.Offsetof(ExecContext{}.NativeCalleeClosurePtr))
+	execCtxOffRegsEnd              = int(unsafe.Offsetof(ExecContext{}.RegsEnd))
 	execCtxOffRegsBase            = int(unsafe.Offsetof(ExecContext{}.RegsBase))
 	execCtxOffTopPtr              = int(unsafe.Offsetof(ExecContext{}.TopPtr))
 	execCtxOffNativeCallDepth     = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))
 	execCtxOffOSRCounter          = int(unsafe.Offsetof(ExecContext{}.OSRCounter))
+	// Tier 2 global cache offsets
+	execCtxOffTier2GlobalCache    = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCache))
+	execCtxOffTier2GlobalCacheGen = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCacheGen))
+	execCtxOffTier2GlobalGenPtr   = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalGenPtr))
+	execCtxOffGlobalCacheIdx      = int(unsafe.Offsetof(ExecContext{}.GlobalCacheIdx))
 )
 
 // CompiledFunction holds the generated native code for a function.
@@ -220,6 +238,17 @@ type CompiledFunction struct {
 	// CallVM is used for call-exit: executing calls via the VM interpreter.
 	// Set by the caller. If nil, calls fall back to DeoptFunc.
 	CallVM *vm.VM
+
+	// GlobalCache is a per-GetGlobal-instruction NaN-boxed value cache.
+	// Indexed by the emitter-assigned cache index (0, 1, 2, ...).
+	// Populated on first miss by the global-exit handler in Go.
+	// Invalidated when GlobalCacheGen mismatches the engine's globalCacheGen.
+	GlobalCache []uint64
+
+	// GlobalCacheGen is the engine's globalCacheGen at the time this
+	// function's GlobalCache was last populated. A mismatch means the
+	// cache may contain stale values and must be repopulated.
+	GlobalCacheGen uint64
 }
 
 // Execute, executeCallExit, executeGlobalExit, executeTableExit, executeOpExit

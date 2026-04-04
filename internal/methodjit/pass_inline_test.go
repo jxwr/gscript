@@ -319,6 +319,98 @@ func f(x, y) {
 	}
 }
 
+// TestInline_TrivialInLoopPhiRewrite verifies that when a call inside a loop body
+// is inlined, the loop header phi that references the old call result ID is
+// properly rewritten to the inlined result. This is the regression test for the
+// bug where rewriteValueRefs only scanned the current block, leaving cross-block
+// phi references pointing to the dead call ID.
+func TestInline_TrivialInLoopPhiRewrite(t *testing.T) {
+	src := `
+func add_xy(a, b) {
+	return a + b
+}
+func sum_inline(n) {
+	total := 0.0
+	for i := 1; i <= n; i++ {
+		total = add_xy(total, i * 1.0)
+	}
+	return total
+}
+`
+	fn, config := buildInlineTestIR(t, src, "sum_inline")
+	t.Logf("Before inline:\n%s", Print(fn))
+
+	// Verify there is an OpCall before inlining.
+	if countOp(fn, OpCall) == 0 {
+		t.Fatal("expected at least one OpCall before inlining")
+	}
+
+	pass := InlinePassWith(config)
+	result, err := pass(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	t.Logf("After inline:\n%s", Print(result))
+
+	// After inlining, no OpCall should remain.
+	if n := countOp(result, OpCall); n != 0 {
+		t.Errorf("expected 0 OpCall after inlining, got %d", n)
+	}
+
+	// Validate structural integrity (catches orphan references).
+	if errs := Validate(result); len(errs) > 0 {
+		for _, e := range errs {
+			t.Errorf("validation error: %v", e)
+		}
+	}
+
+	// Verify that all phi arguments reference live values (not the dead call ID).
+	// Collect all defined value IDs.
+	definedIDs := make(map[int]bool)
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			definedIDs[instr.ID] = true
+		}
+	}
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpPhi {
+				for i, arg := range instr.Args {
+					if arg != nil && !definedIDs[arg.ID] {
+						// Check if arg is a parameter (LoadSlot) which may not be in definedIDs
+						// but is a valid function input. Skip those.
+						if arg.Def != nil && arg.Def.Op == OpLoadSlot {
+							continue
+						}
+						// Also skip constants
+						if arg.Def != nil && (arg.Def.Op == OpConstInt || arg.Def.Op == OpConstFloat || arg.Def.Op == OpConstNil) {
+							continue
+						}
+						t.Errorf("phi v%d arg[%d] references undefined v%d (dead call ID not rewritten)",
+							instr.ID, i, arg.ID)
+					}
+				}
+			}
+		}
+	}
+
+	// Run the IR interpreter to verify correctness.
+	irResults, err := Interpret(result, []runtime.Value{runtime.IntValue(100)})
+	if err != nil {
+		t.Fatalf("IR interpreter error: %v", err)
+	}
+	if len(irResults) == 0 {
+		t.Fatal("IR interpreter returned no results")
+	}
+
+	// Expected: sum(1..100) = 5050.0
+	vmResults := runVMFunc(t, src, "sum_inline", []runtime.Value{runtime.IntValue(100)})
+	if len(vmResults) == 0 {
+		t.Fatal("VM returned no results")
+	}
+	assertValuesEqual(t, "sum_inline(100)", irResults[0], vmResults[0])
+}
+
 // TestInline_CorrectnessSpectralA verifies inlined spectral_norm A matches VM.
 func TestInline_CorrectnessSpectralA(t *testing.T) {
 	src := `

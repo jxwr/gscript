@@ -244,10 +244,15 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.MOVimm16(jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
 
-	// Load callee's GlobalValCache from Proto (prevent cross-function cache pollution)
+	// Load callee's GlobalValCache from Proto (prevent cross-function cache pollution).
+	// Also zero BaselineGlobalCachedGen to force a cache miss on the callee's first
+	// GETGLOBAL — the caller's CachedGen may match the current globalCacheGen even
+	// though the callee's cache is stale from a previous execution.
 	// X1 still holds callee's FuncProto pointer from the type check
 	asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+	asm.MOVimm16(jit.X3, 0)
+	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
 
 	// 7. Increment NativeCallDepth, BLR to callee, decrement
 	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)

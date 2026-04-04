@@ -128,6 +128,11 @@ func (ec *emitContext) emitIntBinOp(instr *Instr, op intBinOp) {
 		ec.asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
 	}
 
+	// Check for int48 overflow on ADD/SUB/MUL (MOD cannot overflow).
+	if op != intBinMod {
+		ec.emitInt48OverflowCheck(jit.X0, instr)
+	}
+
 	// Rebox result and store to register or memory.
 	jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
 	ec.storeResultNB(jit.X0, instr.ID)
@@ -159,6 +164,7 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 			} else {
 				ec.asm.SUBimm(dst, lhs, imm)
 			}
+			ec.emitInt48OverflowCheck(dst, instr)
 			ec.storeRawInt(dst, instr.ID)
 			return
 		}
@@ -167,6 +173,7 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 			if imm, ok := ec.constIntImm12(instr.Args[0].ID); ok {
 				rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
 				ec.asm.ADDimm(dst, rhs, imm)
+				ec.emitInt48OverflowCheck(dst, instr)
 				ec.storeRawInt(dst, instr.ID)
 				return
 			}
@@ -186,6 +193,11 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 	case intBinMod:
 		ec.asm.SDIV(jit.X2, lhs, rhs)
 		ec.asm.MSUB(dst, jit.X2, rhs, lhs)
+	}
+
+	// Check for int48 overflow on ADD/SUB/MUL (MOD cannot overflow).
+	if op != intBinMod {
+		ec.emitInt48OverflowCheck(dst, instr)
 	}
 
 	// Mark as raw int in register (no box needed until block boundary/return).
@@ -209,8 +221,37 @@ func (ec *emitContext) emitNegInt(instr *Instr) {
 
 	ec.asm.NEG(dst, src)
 
+	// Check for int48 overflow (e.g., negating minInt48 produces maxInt48+1).
+	ec.emitInt48OverflowCheck(dst, instr)
+
 	// Mark as raw int in register (no box needed until block boundary/return).
 	ec.storeRawInt(dst, instr.ID)
+}
+
+// emitInt48OverflowCheck emits an overflow check for a raw int64 result.
+// If the value does not fit in 48-bit signed range (i.e., SBFX(result,0,48) != result),
+// the JIT deopts to the interpreter which handles overflow via float promotion.
+// Uses X0 as scratch (safe: X0 is always available for scratch).
+func (ec *emitContext) emitInt48OverflowCheck(result jit.Reg, instr *Instr) {
+	asm := ec.asm
+	okLabel := ec.uniqueLabel("int48_ok")
+
+	// SBFX X0, result, #0, #48 — sign-extend the lower 48 bits to 64 bits.
+	// If the result fits in 48-bit signed, this produces the same value.
+	scratch := jit.X0
+	if result == jit.X0 {
+		scratch = jit.X1
+	}
+	asm.SBFX(scratch, result, 0, 48)
+	asm.CMPreg(scratch, result)
+	asm.BCond(jit.CondEQ, okLabel)
+
+	// Overflow: deopt to interpreter.
+	asm.LoadImm64(jit.X0, ExitDeopt)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	asm.B("deopt_epilogue")
+
+	asm.Label(okLabel)
 }
 
 // --- Integer comparison (NaN-boxed) ---

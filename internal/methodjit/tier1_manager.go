@@ -217,10 +217,14 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 	syncClosure()
 
 	// Set up GlobalCache pointer and generation for native GETGLOBAL.
+	// Always set BaselineGlobalCachedGen from the function's BF, or 0 if
+	// no cache (prevents stale CachedGen from pool reuse).
 	if bf.GlobalValCache != nil && len(bf.GlobalValCache) > 0 {
 		ctx.BaselineGlobalCache = uintptr(unsafe.Pointer(&bf.GlobalValCache[0]))
 		ctx.BaselineGlobalGenPtr = uintptr(unsafe.Pointer(&e.globalCacheGen))
 		ctx.BaselineGlobalCachedGen = bf.CachedGlobalGen
+	} else {
+		ctx.BaselineGlobalCachedGen = 0
 	}
 
 	// Set RegsEnd for native BLR bounds checking.
@@ -283,6 +287,16 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 				return nil, fmt.Errorf("baseline: native-call-exit: %w", err)
 			}
 
+			// Re-read regs first — the callee's Execute may have grown the register file.
+			resyncRegs()
+
+			// The callee's re-execution may have changed globalCacheGen (e.g.,
+			// via SETGLOBAL). Force a cache miss on subsequent GETGLOBAL ops
+			// by invalidating ALL global value caches. This is heavy-handed but
+			// safe: it only happens once per callee (DirectEntryPtr cleared).
+			e.globalCacheGen++
+			ctx.BaselineGlobalCachedGen = e.globalCacheGen
+
 			// Place result in caller's register[A].
 			callA := int(ctx.NativeCallA)
 			callC := int(ctx.NativeCallC)
@@ -299,8 +313,6 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 					}
 				}
 			}
-
-			resyncRegs()
 
 			// Resume caller at PC+1.
 			resumePC := int(ctx.BaselinePC)

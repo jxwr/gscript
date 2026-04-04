@@ -245,6 +245,17 @@ func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, callee
 	// Rewrite all references to the old call result to use the inlined result.
 	if inlineResult != nil {
 		rewriteValueRefs(newInstrs[idx:], callInstr.ID, inlineResult)
+
+		// Also rewrite references in ALL other blocks. The call result may be
+		// used as a phi argument in another block (e.g., a loop header phi for
+		// a loop-carried variable). Without this, the phi would still reference
+		// the old (now dead) call ID and get garbage/zero at emit time.
+		for _, b := range fn.Blocks {
+			if b == block {
+				continue // already handled above via newInstrs
+			}
+			rewriteValueRefs(b.Instrs, callInstr.ID, inlineResult)
+		}
 	}
 
 	// Also remove the OpGetGlobal that loaded the function (it's now dead).
@@ -402,6 +413,17 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 	// Rewrite references to old call result in post-call instructions.
 	if inlineResult != nil {
 		rewriteValueRefs(mergeBlock.Instrs, callInstr.ID, inlineResult)
+
+		// Also rewrite references in ALL other blocks. The call result may be
+		// used as a phi argument in another block (e.g., a loop header phi for
+		// a loop-carried variable). Without this, the phi would still reference
+		// the old (now dead) call ID and get garbage/zero at emit time.
+		for _, b := range fn.Blocks {
+			if b == block || b == mergeBlock {
+				continue // already handled
+			}
+			rewriteValueRefs(b.Instrs, callInstr.ID, inlineResult)
+		}
 	}
 
 	// Transfer successor edges from original block's terminator to merge block.

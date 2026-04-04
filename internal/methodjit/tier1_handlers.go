@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/gscript/gscript/internal/jit"
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -508,22 +507,36 @@ func (e *BaselineJITEngine) handleAppend(ctx *ExecContext, regs []runtime.Value,
 
 // handleNativeCallExit handles the case where a callee invoked via native BLR
 // hits an exit-resume op mid-execution. The callee's exit state is in ctx.
-// We need to:
-// 1. Look up the callee's proto and compiled function
-// 2. Handle the callee's pending op-exit
-// 3. Continue the callee's execution via the exit-resume loop
-// 4. Return the callee's result
+//
+// Rather than trying to resume the callee mid-execution (which is fragile with
+// nested BLR calls — the exitHandleLabel chain overwrites BaselinePC at each
+// level), we take the simpler approach:
+//   1. Disable BLR for this callee (prevent future mid-execution exits)
+//   2. Re-execute the callee from scratch via e.Execute() which handles all
+//      op-exits correctly through its own exit-resume loop
+//
+// This only happens ONCE per callee (DirectEntryPtr is cleared), so the cost
+// of re-execution is amortized across all future calls.
 func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtime.Value, base int, callerProto *vm.FuncProto, callerBF *BaselineFunc) (runtime.Value, error) {
 	calleeBaseOff := int(ctx.NativeCalleeBaseOff)
 	calleeBase := base + calleeBaseOff/8
 
-	// We need to figure out which callee function was being executed.
-	// The callee's closure pointer is in ctx.BaselineClosurePtr.
-	closurePtr := ctx.BaselineClosurePtr
-	if closurePtr == 0 {
-		return runtime.NilValue(), fmt.Errorf("native-call-exit: no closure pointer")
+	// Identify the callee closure. The caller's regs[A] holds the function value
+	// that was called. We read it from the register file since ctx.BaselineClosurePtr
+	// was already restored to the caller's closure by the ARM64 restore sequence.
+	callA := int(ctx.NativeCallA)
+	absCallA := base + callA
+	if absCallA >= len(regs) {
+		return runtime.NilValue(), fmt.Errorf("native-call-exit: call slot %d out of range", absCallA)
 	}
-	cl := ptrToVMClosure(closurePtr)
+	fnVal := regs[absCallA]
+	if !fnVal.IsFunction() {
+		return runtime.NilValue(), fmt.Errorf("native-call-exit: regs[%d] is not a function", absCallA)
+	}
+	cl, ok := fnVal.Ptr().(*vm.Closure)
+	if !ok {
+		return runtime.NilValue(), fmt.Errorf("native-call-exit: regs[%d] is not a vm.Closure", absCallA)
+	}
 	calleeProto := cl.Proto
 
 	// Disable BLR for this callee — it has exit-resume ops that make BLR counterproductive.
@@ -535,87 +548,47 @@ func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtim
 		return runtime.NilValue(), fmt.Errorf("native-call-exit: callee not compiled")
 	}
 
-	// Re-read regs (may have been grown)
+	// Re-read regs (may have been grown).
 	if e.callVM != nil {
 		regs = e.callVM.Regs()
 	}
 
-	// Set up context for the callee's execution
-	ctx.Regs = uintptr(unsafe.Pointer(&regs[calleeBase]))
-	if len(calleeProto.Constants) > 0 {
-		ctx.Constants = uintptr(unsafe.Pointer(&calleeProto.Constants[0]))
+	// The BLR caller already copied arguments to regs[calleeBase..]. Re-initialize
+	// unused registers to nil (same as Execute does), then re-execute the callee
+	// from scratch. This is safe because:
+	// - The callee's partial execution only modified registers (no external side effects)
+	// - Op-exits like NEWTABLE are at the beginning or are idempotent on retry
+	for i := calleeBase + calleeProto.NumParams; i < calleeBase+calleeProto.MaxStack; i++ {
+		if i < len(regs) {
+			regs[i] = runtime.NilValue()
+		}
 	}
 
-	// Set CallMode = 0 for the callee's resumed execution (it will use normal prologues)
-	ctx.CallMode = 0
-
-	// Set up FieldCache if the callee has field ops
-	if calleeBF.HasFieldOps && calleeProto.FieldCache != nil && len(calleeProto.FieldCache) > 0 {
-		ctx.BaselineFieldCache = uintptr(unsafe.Pointer(&calleeProto.FieldCache[0]))
-	}
-
-	// Set up GlobalCache for callee
-	if calleeBF.GlobalValCache != nil && len(calleeBF.GlobalValCache) > 0 {
-		ctx.BaselineGlobalCache = uintptr(unsafe.Pointer(&calleeBF.GlobalValCache[0]))
-		ctx.BaselineGlobalGenPtr = uintptr(unsafe.Pointer(&e.globalCacheGen))
-		ctx.BaselineGlobalCachedGen = calleeBF.CachedGlobalGen
-	}
-
-	// Push a VM frame for the callee (needed for GETUPVAL, CloseUpvalues)
+	// Push a VM frame for the callee (needed for GETUPVAL, CloseUpvalues).
 	if e.callVM != nil {
 		if !e.callVM.PushFrame(cl, calleeBase) {
 			return runtime.NilValue(), fmt.Errorf("native-call-exit: stack overflow")
 		}
-		defer func() {
-			e.callVM.CloseUpvalues(calleeBase)
-			e.callVM.PopFrame()
-		}()
 	}
 
-	// Now handle the pending op-exit and continue the callee's execution
-	// via the exit-resume loop (same as the normal Execute path).
-	ctxPtr := uintptr(unsafe.Pointer(ctx))
+	// Re-execute the callee from scratch via Execute, which has a proper
+	// exit-resume loop that handles all op-exits correctly.
+	results, err := e.Execute(calleeBF, regs, calleeBase, calleeProto)
 
-	resyncCalleeRegs := func() {
-		if e.callVM != nil {
-			regs = e.callVM.Regs()
-			ctx.Regs = uintptr(unsafe.Pointer(&regs[calleeBase]))
-			ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
-			ctx.RegsEnd = uintptr(unsafe.Pointer(&regs[0])) + uintptr(len(regs)*8)
-		}
-		if calleeBF.HasFieldOps {
-			if calleeProto.FieldCache != nil && len(calleeProto.FieldCache) > 0 {
-				ctx.BaselineFieldCache = uintptr(unsafe.Pointer(&calleeProto.FieldCache[0]))
-			}
-		}
+	// Close upvalues and pop frame regardless of error.
+	if e.callVM != nil {
+		e.callVM.CloseUpvalues(calleeBase)
+		e.callVM.PopFrame()
 	}
 
-	for {
-		switch ctx.ExitCode {
-		case ExitNormal:
-			result := runtime.Value(ctx.BaselineReturnValue)
-			return result, nil
-
-		case ExitBaselineOpExit:
-			if err := e.handleBaselineOpExit(ctx, regs, calleeBase, calleeProto, calleeBF); err != nil {
-				return runtime.NilValue(), err
-			}
-			resyncCalleeRegs()
-
-			resumePC := int(ctx.BaselinePC)
-			resumeOff, ok := calleeBF.Labels[resumePC]
-			if !ok {
-				return runtime.NilValue(), fmt.Errorf("native-call-exit: no resume label for PC %d", resumePC)
-			}
-			codePtr := uintptr(calleeBF.Code.Ptr()) + uintptr(resumeOff)
-			ctx.ExitCode = 0
-			jit.CallJIT(codePtr, ctxPtr)
-			continue
-
-		default:
-			return runtime.NilValue(), fmt.Errorf("native-call-exit: unexpected exit code %d", ctx.ExitCode)
-		}
+	if err != nil {
+		return runtime.NilValue(), err
 	}
+
+	if len(results) > 0 {
+		return results[0], nil
+	}
+	return runtime.NilValue(), nil
 }
 
 // ptrToVMClosure converts a uintptr (from JIT-stored BaselineClosurePtr) to *vm.Closure.

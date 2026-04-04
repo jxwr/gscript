@@ -285,6 +285,41 @@ for iter := 1; iter <= 5; iter++ {
 	}
 }
 
+// TestTier2_InlineCallInLoop tests that when a small function call inside a
+// loop body is inlined at Tier 2, the loop-carried phi correctly references
+// the inlined result (not the dead call ID). This is the end-to-end regression
+// test for the pass_inline.go phi rewrite scope bug.
+func TestTier2_InlineCallInLoop(t *testing.T) {
+	src := `
+func add_xy(a, b) {
+    return a + b
+}
+func sum_with_inline(n) {
+    total := 0.0
+    for i := 1; i <= n; i++ {
+        total = add_xy(total, i * 1.0)
+    }
+    return total
+}
+result := 0.0
+for iter := 1; iter <= 5; iter++ {
+    result = sum_with_inline(100)
+}
+`
+	compareTier2Result(t, src, "result")
+
+	// Verify expected value: sum(1..100) = 5050.0
+	protoVM := compileProto(t, src)
+	globalsVM := runtime.NewInterpreterGlobals()
+	vVM := vm.New(globalsVM)
+	defer vVM.Close()
+	vVM.Execute(protoVM)
+	vmResult := vVM.GetGlobal("result")
+	if vmResult.IsFloat() && math.Abs(vmResult.Float()-5050.0) > 1e-6 {
+		t.Errorf("sum_with_inline(100) VM sanity check: got %f, want 5050.0", vmResult.Float())
+	}
+}
+
 // TestTier2_MixedIntFloatCorrectness tests mixed int/float arithmetic in a
 // loop. Exercises type specialization correctness when integer loop variable
 // is multiplied by a float constant.
@@ -313,5 +348,67 @@ for iter := 1; iter <= 5; iter++ {
 	vmResult := vVM.GetGlobal("result")
 	if vmResult.IsFloat() && math.Abs(vmResult.Float()-2525.0) > 1e-6 {
 		t.Errorf("mixed(100) VM sanity check: got %f, want 2525.0", vmResult.Float())
+	}
+}
+
+// TestTier2_Int48Overflow tests that integer arithmetic correctly handles
+// overflow beyond the 48-bit signed NaN-boxed int range (|value| > 2^47-1).
+// The VM promotes overflowing ints to float64; the JIT must match.
+// big_sum(100000) computes sum(i*i for i=1..100000). The running sum exceeds
+// int48 around i=12000, so the result must be a float or correctly promoted.
+func TestTier2_Int48Overflow(t *testing.T) {
+	src := `
+func big_sum(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + i * i
+    }
+    return s
+}
+result := 0
+for iter := 1; iter <= 3; iter++ {
+    result = big_sum(100000)
+}
+`
+	compareTier2Result(t, src, "result")
+}
+
+// TestTier1_BLRCalleeOpExit verifies that when a BLR-called callee function
+// triggers an op-exit (NEWTABLE), the callee is correctly re-executed from
+// scratch and produces the right result. This is a regression test for a bug
+// where handleNativeCallExit failed to handle the initial ExitCode
+// (ExitNativeCallExit instead of ExitBaselineOpExit), causing silent fallback
+// to the interpreter.
+//
+// make_point hits NEWTABLE (op-exit) when called via BLR from sum_points.
+// Expected: sum of (i + 2i) for i=1..100 = 3 * 5050 = 15150.0
+func TestTier1_BLRCalleeOpExit(t *testing.T) {
+	src := `
+func make_point(x, y) {
+    return {x: x, y: y}
+}
+func sum_points(n) {
+    sx := 0.0
+    sy := 0.0
+    for i := 1; i <= n; i++ {
+        p := make_point(i * 1.0, i * 2.0)
+        sx = sx + p.x
+        sy = sy + p.y
+    }
+    return sx + sy
+}
+result := sum_points(100)
+`
+	compareTier2Result(t, src, "result")
+
+	// Verify expected value independently via VM.
+	protoVM := compileProto(t, src)
+	globalsVM := runtime.NewInterpreterGlobals()
+	vVM := vm.New(globalsVM)
+	defer vVM.Close()
+	vVM.Execute(protoVM)
+	vmResult := vVM.GetGlobal("result")
+	if vmResult.IsFloat() && math.Abs(vmResult.Float()-15150.0) > 1e-6 {
+		t.Errorf("sum_points(100) VM sanity check: got %f, want 15150.0", vmResult.Float())
 	}
 }
