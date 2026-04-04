@@ -110,13 +110,101 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 	})
 }
 
-// emitGlobalExit emits ARM64 code for an OpGetGlobal instruction using the
-// global-exit mechanism. Instead of deopting the entire function, exits to
-// Go which resolves the global, writes it to the register file, and resumes.
+// emitGetGlobalNative emits ARM64 code for OpGetGlobal with an inline value
+// cache. On cache hit (~5 ARM64 instructions), the cached NaN-boxed value is
+// loaded directly from CompiledFunction.GlobalCache[cacheIdx]. On cache miss
+// (first access or generation mismatch after SetGlobal), falls through to the
+// existing exit-resume path which populates the cache in Go.
 //
-// OpGetGlobal: Aux = constant pool index for the global name.
-// The result is stored in the SSA value's home slot.
+// Each GetGlobal instruction gets a unique cache index (0, 1, 2, ...) assigned
+// at emission time. The generation counter (shared with Tier 1's globalCacheGen)
+// is checked before reading the cache: if SetGlobal has incremented it since
+// the cache was last populated, the cache is invalidated.
+//
+// ARM64 fast path:
+//   1. Load genPtr from ExecContext, CBZ → slow
+//   2. Load current gen, load cached gen, CMP → slow if mismatch
+//   3. Load cache pointer, CBZ → slow
+//   4. Load cached value at [cache + cacheIdx*8], CBZ → slow (uncached)
+//   5. Store result to SSA home
+func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
+	asm := ec.asm
+	slowLabel := ec.uniqueLabel("getglobal_slow")
+	doneLabel := ec.uniqueLabel("getglobal_done")
+
+	// Assign a cache index for this GetGlobal instruction.
+	cacheIdx := ec.nextGlobalCacheIndex
+	ec.nextGlobalCacheIndex++
+
+	// --- Fast path: check generation, then load from cache ---
+
+	// Check generation: *genPtr == *cachedGen?
+	asm.LDR(jit.X0, mRegCtx, execCtxOffTier2GlobalGenPtr)
+	asm.CBZ(jit.X0, slowLabel) // no gen pointer → cache not set up
+	asm.LDR(jit.X1, jit.X0, 0) // X1 = current gen (*genPtr)
+
+	asm.LDR(jit.X0, mRegCtx, execCtxOffTier2GlobalCacheGen)
+	asm.CBZ(jit.X0, slowLabel) // no cachedGen pointer
+	asm.LDR(jit.X2, jit.X0, 0) // X2 = cached gen (*cachedGen)
+
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, slowLabel) // gen mismatch → cache invalid
+
+	// Load cache pointer.
+	asm.LDR(jit.X0, mRegCtx, execCtxOffTier2GlobalCache)
+	asm.CBZ(jit.X0, slowLabel) // no cache allocated
+
+	// Load cached value at GlobalCache[cacheIdx].
+	cacheOff := cacheIdx * 8 // each entry is 8 bytes (uint64)
+	if cacheOff < 4096 {
+		asm.LDR(jit.X1, jit.X0, cacheOff)
+	} else {
+		asm.LoadImm64(jit.X1, int64(cacheOff))
+		asm.ADDreg(jit.X0, jit.X0, jit.X1)
+		asm.LDR(jit.X1, jit.X0, 0)
+	}
+
+	// If zero (cache miss / not yet populated), go to slow path.
+	asm.CBZ(jit.X1, slowLabel)
+
+	// Cache hit! Store to result.
+	ec.storeResultNB(jit.X1, instr.ID)
+	asm.B(doneLabel)
+
+	// --- Slow path: exit-resume to Go, which populates the cache ---
+	asm.Label(slowLabel)
+
+	// Write cache index to ExecContext so the Go handler can populate the cache.
+	asm.LoadImm64(jit.X0, int64(cacheIdx))
+	asm.STR(jit.X0, mRegCtx, execCtxOffGlobalCacheIdx)
+
+	// Save rawIntRegs before slow path emission — emitGlobalExitInner calls
+	// emitReloadAllActiveRegs which clears rawIntRegs entries. The slow path
+	// code is correct (after Go execution, values ARE NaN-boxed), but the
+	// build-time state must be preserved for subsequent fast-path instructions.
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
+	ec.emitGlobalExitInner(instr)
+	ec.rawIntRegs = savedRawIntRegs
+
+	asm.Label(doneLabel)
+}
+
+// emitGlobalExit emits ARM64 code for an OpGetGlobal instruction using the
+// global-exit mechanism (no cache). Kept for fallback use; the normal path
+// uses emitGetGlobalNative which adds an inline value cache.
 func (ec *emitContext) emitGlobalExit(instr *Instr) {
+	// Write a dummy cache index of -1 so the Go handler knows not to cache.
+	ec.asm.LoadImm64(jit.X0, -1)
+	ec.asm.STR(jit.X0, mRegCtx, execCtxOffGlobalCacheIdx)
+	ec.emitGlobalExitInner(instr)
+}
+
+// emitGlobalExitInner emits the exit-resume body for OpGetGlobal. Shared by
+// both emitGetGlobalNative (slow path) and emitGlobalExit (uncached fallback).
+func (ec *emitContext) emitGlobalExitInner(instr *Instr) {
 	asm := ec.asm
 	constIdx := int(instr.Aux)
 
@@ -245,5 +333,28 @@ func (ec *emitContext) emitReloadAllActiveRegs() {
 		// After reload, registers hold NaN-boxed values (not raw).
 		// Clear raw int tracking for this value.
 		delete(ec.rawIntRegs, valueID)
+	}
+}
+
+// emitUnboxRawIntRegs emits ARM64 unbox instructions to convert NaN-boxed
+// register values back to raw int form. Called after emitReloadAllActiveRegs
+// on deopt fallback paths of native table/field operations, where the fast
+// path leaves registers in raw-int form but the slow path (exit-resume)
+// reloads them as NaN-boxed. Both paths must converge with the same register
+// state, so the slow path unboxes to match the fast path's raw-int convention.
+func (ec *emitContext) emitUnboxRawIntRegs(rawRegs map[int]bool) {
+	for valueID, isRaw := range rawRegs {
+		if !isRaw {
+			continue
+		}
+		pr, ok := ec.alloc.ValueRegs[valueID]
+		if !ok || pr.IsFloat {
+			continue
+		}
+		if _, active := ec.activeRegs[valueID]; !active {
+			continue
+		}
+		reg := jit.Reg(pr.Reg)
+		jit.EmitUnboxInt(ec.asm, reg, reg)
 	}
 }

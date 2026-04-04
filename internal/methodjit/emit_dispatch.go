@@ -12,6 +12,26 @@ import (
 	"github.com/gscript/gscript/internal/jit"
 )
 
+// gprPhiMove represents a single GPR phi move for dependency-aware ordering.
+type gprPhiMove struct {
+	srcArg    *Value
+	phiInstr  *Instr
+	dstPR     PhysReg
+	srcGPR    jit.Reg // source GPR (if hasSrcGPR)
+	dstGPR    jit.Reg // destination GPR
+	hasSrcGPR bool    // source is in a GPR register
+	hasDstGPR bool    // destination has a GPR allocation
+	isRawInt  bool    // use raw-int transfer (loop header path)
+
+	// Memory slot tracking for write-through conflict detection.
+	// A phi move may write through its result to a memory slot, and another
+	// phi move may read its source from a memory slot. If the write-through
+	// slot equals another move's read slot, sequential emission clobbers
+	// the source value.
+	readsMemSlot  int  // memory slot this move reads from (-1 = none)
+	writesMemSlot int  // memory slot this move writes through to (-1 = none)
+}
+
 // emitInstr emits ARM64 code for a single SSA instruction.
 func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	switch instr.Op {
@@ -192,6 +212,24 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 	// We detect this and reorder, using D0 as scratch to break cycles.
 	ec.emitFPRPhiMovesOrdered(to, predIdx)
 
+	// Emit GPR phi moves with dependency-aware ordering.
+	// GPR phi moves are semantically parallel assignments. When two GPR
+	// moves conflict (e.g., X20→X21 and X21→X22 where X21 is both a source
+	// and a destination), sequential emission clobbers the source value.
+	// We detect this and reorder, using X0 as scratch to break cycles.
+	ec.emitGPRPhiMovesOrdered(to, predIdx, toIsLoopHeader)
+}
+
+// emitGPRPhiMovesOrdered emits all GPR-targeted phi moves for the edge
+// predIdx→to, ordered to avoid clobbering source values when there are
+// register conflicts. Uses X0 as scratch to break cycles.
+//
+// Handles both raw-int loop header phis and standard NaN-boxed phis.
+// The key invariant: all phi moves are semantically parallel, so we must
+// not clobber a source register that another move still needs.
+func (ec *emitContext) emitGPRPhiMovesOrdered(to *Block, predIdx int, toIsLoopHeader bool) {
+	var moves []gprPhiMove
+
 	for _, instr := range to.Instrs {
 		if instr.Op != OpPhi {
 			break
@@ -199,70 +237,351 @@ func (ec *emitContext) emitPhiMoves(from *Block, to *Block) {
 		if predIdx >= len(instr.Args) {
 			continue
 		}
+		dstPR, dstHasReg := ec.alloc.ValueRegs[instr.ID]
+		// Skip FPR phis — already handled by emitFPRPhiMovesOrdered.
+		if dstHasReg && dstPR.IsFloat {
+			continue
+		}
+		dstHasGPR := dstHasReg && !dstPR.IsFloat
 
 		srcArg := instr.Args[predIdx]
+		isRawInt := toIsLoopHeader && dstHasGPR && instr.Type == TypeInt
 
-		// Destination: use allocation directly (target block context).
-		dstPR, dstHasReg := ec.alloc.ValueRegs[instr.ID]
-		dstHasGPR := dstHasReg && !dstPR.IsFloat
-		dstHasFPR := dstHasReg && dstPR.IsFloat
-
-		// --- FPR phi path ---
-		// Already emitted in the pre-pass above. Skip.
-		if dstHasFPR {
-			continue
+		m := gprPhiMove{
+			srcArg:        srcArg,
+			phiInstr:      instr,
+			dstPR:         dstPR,
+			hasDstGPR:     dstHasGPR,
+			isRawInt:      isRawInt,
+			readsMemSlot:  -1,
+			writesMemSlot: -1,
 		}
 
-		// --- Raw-int loop path ---
-		// When targeting a loop header with int-typed phi, transfer raw int
-		// directly. This avoids box/unbox overhead on every iteration.
-		if toIsLoopHeader && dstHasGPR && instr.Type == TypeInt {
-			ec.emitPhiMoveRawInt(srcArg, instr, dstPR)
-			continue
-		}
-
-		// --- Standard NaN-boxed path ---
-		// Source: use activeRegs (current block context).
-		srcHasReg := ec.hasReg(srcArg.ID)
-
-		// Get NaN-boxed source value.
-		// If the source is a raw int in register (from type-specialized ops),
-		// we must box it first since phi moves expect NaN-boxed values.
-		var srcVal jit.Reg
-		if srcHasReg && ec.rawIntRegs[srcArg.ID] {
-			// Raw int in register: box into X0 before the phi move.
-			reg := ec.physReg(srcArg.ID)
-			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
-			srcVal = jit.X0
-		} else if srcHasReg {
-			srcVal = ec.physReg(srcArg.ID)
-		} else {
-			ec.loadValue(jit.X0, srcArg.ID)
-			srcVal = jit.X0
-		}
-
-		// Store to destination register (if allocated).
 		if dstHasGPR {
-			dstReg := jit.Reg(dstPR.Reg)
-			if srcVal != dstReg {
-				ec.asm.MOVreg(dstReg, srcVal)
+			m.dstGPR = jit.Reg(dstPR.Reg)
+		}
+
+		// Determine source GPR for dependency analysis.
+		// For raw-int path: source may be raw int in GPR or NaN-boxed in GPR.
+		// For NaN-boxed path: source is NaN-boxed in GPR (raw ints get boxed
+		// to X0 first, so they don't conflict with allocated GPR destinations).
+		srcHasReg := ec.hasReg(srcArg.ID)
+		if isRawInt {
+			if srcHasReg {
+				m.srcGPR = ec.physReg(srcArg.ID)
+				m.hasSrcGPR = true
+			}
+		} else {
+			if srcHasReg && !ec.rawIntRegs[srcArg.ID] {
+				m.srcGPR = ec.physReg(srcArg.ID)
+				m.hasSrcGPR = true
+			}
+			// Raw int in GPR: will be boxed to X0, so effective source is X0.
+			// Memory source: loaded to X0. Neither conflicts with allocated GPRs.
+		}
+
+		// Track memory slot reads: source loaded from memory when not in a GPR.
+		// For raw-int path: !srcHasReg means load from memory.
+		// For NaN-boxed path: !srcHasReg or (srcHasReg && rawInt) both use X0,
+		// but only !srcHasReg actually reads from a memory slot.
+		if !srcHasReg {
+			if srcSlot, ok := ec.slotMap[srcArg.ID]; ok {
+				m.readsMemSlot = srcSlot
 			}
 		}
 
-		// Write-through to memory only if the phi value is used in another block.
-		// Block-local phis skip the store entirely.
-		if ec.crossBlockLive[instr.ID] || !dstHasGPR {
-			dstSlot, hasDst := ec.slotMap[instr.ID]
-			if hasDst {
-				if dstHasGPR {
-					ec.asm.STR(jit.Reg(dstPR.Reg), mRegRegs, slotOffset(dstSlot))
-				} else if srcVal != jit.X0 {
-					ec.asm.MOVreg(jit.X0, srcVal)
-					ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
-				} else {
-					ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+		// Track memory slot writes: write-through to phi's destination slot.
+		// Raw-int: writes if crossBlockLive && !loopExitBoxPhis.
+		// NaN-boxed: writes if crossBlockLive || !hasDstGPR.
+		if isRawInt {
+			if ec.crossBlockLive[instr.ID] && !ec.loopExitBoxPhis[instr.ID] {
+				if dstSlot, ok := ec.slotMap[instr.ID]; ok {
+					m.writesMemSlot = dstSlot
 				}
 			}
+		} else {
+			if ec.crossBlockLive[instr.ID] || !dstHasGPR {
+				if dstSlot, ok := ec.slotMap[instr.ID]; ok {
+					m.writesMemSlot = dstSlot
+				}
+			}
+		}
+
+		moves = append(moves, m)
+	}
+
+	if len(moves) <= 1 {
+		for i := range moves {
+			ec.emitSingleGPRPhiMove(&moves[i])
+		}
+		return
+	}
+
+	// Emit in dependency-aware order considering BOTH register and memory
+	// conflicts. A move blocks another if:
+	//   (a) Register conflict: move's dst GPR == another's src GPR
+	//   (b) Memory conflict: move writes through to a memory slot that
+	//       another move reads its source from
+	//
+	// The isBlocked helper checks both conflict types.
+	isBlocked := func(i int, emitted []bool) bool {
+		m := &moves[i]
+		// Check register conflict: does m's dst GPR block another's source?
+		if m.hasDstGPR {
+			for j := range moves {
+				if j == i || emitted[j] {
+					continue
+				}
+				if moves[j].hasSrcGPR && moves[j].srcGPR == m.dstGPR {
+					return true
+				}
+			}
+		}
+		// Check memory conflict: does m's write-through slot conflict with
+		// another move's read slot?
+		if m.writesMemSlot >= 0 {
+			for j := range moves {
+				if j == i || emitted[j] {
+					continue
+				}
+				if moves[j].readsMemSlot == m.writesMemSlot {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	emitted := make([]bool, len(moves))
+	totalEmitted := 0
+
+	for totalEmitted < len(moves) {
+		progress := false
+
+		// Emit all moves that are not blocked by any other.
+		for i := range moves {
+			if emitted[i] {
+				continue
+			}
+
+			if !isBlocked(i, emitted) {
+				ec.emitSingleGPRPhiMove(&moves[i])
+				emitted[i] = true
+				totalEmitted++
+				progress = true
+			}
+		}
+
+		if totalEmitted >= len(moves) {
+			break
+		}
+
+		if !progress {
+			// All remaining moves form register cycles. Break one cycle
+			// using X0 as scratch. Pick the first un-emitted move with a
+			// register source, save its source GPR to X0, then emit the
+			// register blocker carefully to avoid clobbering X0.
+			for i := range moves {
+				if emitted[i] || !moves[i].hasSrcGPR {
+					continue
+				}
+				m := &moves[i]
+
+				// Save m's source GPR to X0.
+				ec.asm.MOVreg(jit.X0, m.srcGPR)
+
+				// Find the register-blocker: the move whose dstGPR == m.srcGPR.
+				blockerIdx := -1
+				for j := range moves {
+					if j == i || emitted[j] {
+						continue
+					}
+					if moves[j].hasDstGPR && moves[j].dstGPR == m.srcGPR {
+						blockerIdx = j
+						break
+					}
+				}
+
+				if blockerIdx >= 0 {
+					// Emit ONLY the blocker's register transfer (not the full
+					// emitSingleGPRPhiMove which uses X0 for write-through
+					// and would clobber our saved value).
+					b := &moves[blockerIdx]
+					ec.emitGPRPhiRegTransferOnly(b)
+					// Mark as emitted for register purposes; write-through
+					// is deferred until after m is emitted.
+				}
+
+				// Emit m from X0 (its original source value).
+				ec.emitGPRPhiMoveFromScratch(m)
+				emitted[i] = true
+				totalEmitted++
+
+				// Now do the blocker's write-through if needed.
+				if blockerIdx >= 0 {
+					b := &moves[blockerIdx]
+					ec.emitGPRPhiWriteThrough(b)
+					emitted[blockerIdx] = true
+					totalEmitted++
+				}
+				break
+			}
+		}
+	}
+}
+
+// emitSingleGPRPhiMove emits a single GPR phi move using the standard paths.
+// For raw-int loop header phis, delegates to emitPhiMoveRawInt.
+// For NaN-boxed phis, performs boxing/loading and register/memory transfer.
+func (ec *emitContext) emitSingleGPRPhiMove(m *gprPhiMove) {
+	if m.isRawInt {
+		ec.emitPhiMoveRawInt(m.srcArg, m.phiInstr, m.dstPR)
+		return
+	}
+
+	// Standard NaN-boxed path.
+	srcHasReg := ec.hasReg(m.srcArg.ID)
+
+	var srcVal jit.Reg
+	if srcHasReg && ec.rawIntRegs[m.srcArg.ID] {
+		reg := ec.physReg(m.srcArg.ID)
+		jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
+		srcVal = jit.X0
+	} else if srcHasReg {
+		srcVal = ec.physReg(m.srcArg.ID)
+	} else {
+		ec.loadValue(jit.X0, m.srcArg.ID)
+		srcVal = jit.X0
+	}
+
+	if m.hasDstGPR {
+		dstReg := jit.Reg(m.dstPR.Reg)
+		if srcVal != dstReg {
+			ec.asm.MOVreg(dstReg, srcVal)
+		}
+	}
+
+	if ec.crossBlockLive[m.phiInstr.ID] || !m.hasDstGPR {
+		dstSlot, hasDst := ec.slotMap[m.phiInstr.ID]
+		if hasDst {
+			if m.hasDstGPR {
+				ec.asm.STR(jit.Reg(m.dstPR.Reg), mRegRegs, slotOffset(dstSlot))
+			} else if srcVal != jit.X0 {
+				ec.asm.MOVreg(jit.X0, srcVal)
+				ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+			} else {
+				ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+			}
+		}
+	}
+}
+
+// emitGPRPhiMoveFromScratch emits a GPR phi move where the source value
+// has already been saved to X0 (cycle-breaking scratch). This handles
+// both raw-int and NaN-boxed paths.
+func (ec *emitContext) emitGPRPhiMoveFromScratch(m *gprPhiMove) {
+	if m.isRawInt {
+		dstReg := jit.Reg(m.dstPR.Reg)
+		// Source was in a GPR, now saved to X0.
+		if ec.rawIntRegs[m.srcArg.ID] {
+			// Was raw int: X0 has raw int bits, transfer directly.
+			if dstReg != jit.X0 {
+				ec.asm.MOVreg(dstReg, jit.X0)
+			}
+		} else {
+			// Was NaN-boxed in GPR: X0 has NaN-boxed value, unbox.
+			jit.EmitUnboxInt(ec.asm, dstReg, jit.X0)
+		}
+		// Write-through if needed.
+		if ec.crossBlockLive[m.phiInstr.ID] && !ec.loopExitBoxPhis[m.phiInstr.ID] {
+			dstSlot, ok := ec.slotMap[m.phiInstr.ID]
+			if ok {
+				jit.EmitBoxIntFast(ec.asm, jit.X0, dstReg, mRegTagInt)
+				ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+			}
+		}
+		return
+	}
+
+	// NaN-boxed path: source value is in X0 (NaN-boxed).
+	if m.hasDstGPR {
+		dstReg := jit.Reg(m.dstPR.Reg)
+		ec.asm.MOVreg(dstReg, jit.X0)
+	}
+
+	if ec.crossBlockLive[m.phiInstr.ID] || !m.hasDstGPR {
+		dstSlot, hasDst := ec.slotMap[m.phiInstr.ID]
+		if hasDst {
+			if m.hasDstGPR {
+				ec.asm.STR(jit.Reg(m.dstPR.Reg), mRegRegs, slotOffset(dstSlot))
+			} else {
+				ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+			}
+		}
+	}
+}
+
+// emitGPRPhiRegTransferOnly emits ONLY the register-to-register part of a
+// GPR phi move, WITHOUT the memory write-through. Used during cycle-breaking
+// to avoid clobbering X0 (which holds a saved source value for another move).
+func (ec *emitContext) emitGPRPhiRegTransferOnly(m *gprPhiMove) {
+	if !m.hasDstGPR {
+		return
+	}
+	dstReg := jit.Reg(m.dstPR.Reg)
+
+	if m.isRawInt {
+		srcHasReg := ec.hasReg(m.srcArg.ID)
+		if srcHasReg && ec.rawIntRegs[m.srcArg.ID] {
+			srcReg := ec.physReg(m.srcArg.ID)
+			if srcReg != dstReg {
+				ec.asm.MOVreg(dstReg, srcReg)
+			}
+		} else if srcHasReg {
+			srcReg := ec.physReg(m.srcArg.ID)
+			jit.EmitUnboxInt(ec.asm, dstReg, srcReg)
+		}
+		// Memory source case: cannot happen in a register cycle (hasSrcGPR
+		// is required to be in a cycle), so skip.
+		return
+	}
+
+	// NaN-boxed path: register transfer only.
+	srcHasReg := ec.hasReg(m.srcArg.ID)
+	if srcHasReg && ec.rawIntRegs[m.srcArg.ID] {
+		// Raw int in register: box to dstReg (use dstReg as temp, skip X0).
+		reg := ec.physReg(m.srcArg.ID)
+		jit.EmitBoxIntFast(ec.asm, dstReg, reg, mRegTagInt)
+	} else if srcHasReg {
+		srcReg := ec.physReg(m.srcArg.ID)
+		if srcReg != dstReg {
+			ec.asm.MOVreg(dstReg, srcReg)
+		}
+	}
+}
+
+// emitGPRPhiWriteThrough emits ONLY the memory write-through part of a GPR
+// phi move. The register must already hold the correct value. Used after
+// cycle-breaking to complete the move without clobbering X0 during the
+// critical cycle resolution window.
+func (ec *emitContext) emitGPRPhiWriteThrough(m *gprPhiMove) {
+	if m.isRawInt {
+		if ec.crossBlockLive[m.phiInstr.ID] && !ec.loopExitBoxPhis[m.phiInstr.ID] {
+			dstSlot, ok := ec.slotMap[m.phiInstr.ID]
+			if ok && m.hasDstGPR {
+				dstReg := jit.Reg(m.dstPR.Reg)
+				jit.EmitBoxIntFast(ec.asm, jit.X0, dstReg, mRegTagInt)
+				ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
+			}
+		}
+		return
+	}
+
+	// NaN-boxed path.
+	if ec.crossBlockLive[m.phiInstr.ID] || !m.hasDstGPR {
+		dstSlot, hasDst := ec.slotMap[m.phiInstr.ID]
+		if hasDst && m.hasDstGPR {
+			ec.asm.STR(jit.Reg(m.dstPR.Reg), mRegRegs, slotOffset(dstSlot))
 		}
 	}
 }

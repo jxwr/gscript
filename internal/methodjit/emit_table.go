@@ -86,7 +86,14 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 
 	// Deopt fallback: use table-exit to perform the field access in Go.
 	asm.Label(deoptLabel)
+	// Save rawIntRegs before deopt path emission (see emitGetTableNative).
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
 	ec.emitGetFieldExit(instr)
+	ec.emitUnboxRawIntRegs(savedRawIntRegs)
+	ec.rawIntRegs = savedRawIntRegs
 
 	asm.Label(doneLabel)
 }
@@ -152,7 +159,14 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 
 	// Deopt fallback: use table-exit.
 	asm.Label(deoptLabel)
+	// Save rawIntRegs before deopt path emission (see emitGetTableNative).
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
 	ec.emitSetFieldExit(instr)
+	ec.emitUnboxRawIntRegs(savedRawIntRegs)
+	ec.rawIntRegs = savedRawIntRegs
 
 	asm.Label(doneLabel)
 }
@@ -432,7 +446,20 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 
 	// Deopt: fall back to exit-resume.
 	asm.Label(deoptLabel)
+	// Save rawIntRegs before deopt path emission — emitGetTableExit calls
+	// emitReloadAllActiveRegs which clears rawIntRegs entries. We need to
+	// restore them AND emit unbox instructions on the slow path so that
+	// registers are in raw-int form (matching the fast path) when execution
+	// reaches doneLabel.
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
 	ec.emitGetTableExit(instr)
+	// After the exit-resume reload, registers hold NaN-boxed values.
+	// Unbox any that were raw-int so both paths converge with raw ints.
+	ec.emitUnboxRawIntRegs(savedRawIntRegs)
+	ec.rawIntRegs = savedRawIntRegs
 
 	asm.Label(doneLabel)
 }
@@ -624,7 +651,16 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 
 	// Deopt: fall back to exit-resume.
 	asm.Label(deoptLabel)
+	// Save rawIntRegs before deopt path emission (see emitGetTableNative).
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
 	ec.emitSetTableExit(instr)
+	// After the exit-resume reload, registers hold NaN-boxed values.
+	// Unbox any that were raw-int so both paths converge with raw ints.
+	ec.emitUnboxRawIntRegs(savedRawIntRegs)
+	ec.rawIntRegs = savedRawIntRegs
 
 	asm.Label(doneLabel)
 }
