@@ -32,6 +32,8 @@ package methodjit
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -62,6 +64,8 @@ type TieringManager struct {
 	tier1           *BaselineJITEngine
 	tier2Compiled   map[*vm.FuncProto]*CompiledFunction
 	tier2Failed     map[*vm.FuncProto]bool
+	tier2FailReason map[*vm.FuncProto]string // reason a function failed Tier 2 (keyed by proto)
+	tier2Attempts   int                      // total Tier 2 compilation attempts
 	callVM          *vm.VM
 	tier2Threshold  int // configurable threshold for testing (legacy fallback)
 	profileCache    map[*vm.FuncProto]FuncProfile // cached function profiles
@@ -76,11 +80,12 @@ func NewTieringManager() *TieringManager {
 	// call() which calls TieringManager.TryCompile(), enabling Tier 2 promotion.
 	t1.SetTierUpThreshold(tmDefaultTier2Threshold)
 	tm := &TieringManager{
-		tier1:          t1,
-		tier2Compiled:  make(map[*vm.FuncProto]*CompiledFunction),
-		tier2Failed:    make(map[*vm.FuncProto]bool),
-		tier2Threshold: tmDefaultTier2Threshold,
-		profileCache:   make(map[*vm.FuncProto]FuncProfile),
+		tier1:           t1,
+		tier2Compiled:   make(map[*vm.FuncProto]*CompiledFunction),
+		tier2Failed:     make(map[*vm.FuncProto]bool),
+		tier2FailReason: make(map[*vm.FuncProto]string),
+		tier2Threshold:  tmDefaultTier2Threshold,
+		profileCache:    make(map[*vm.FuncProto]FuncProfile),
 	}
 	// Wire the outer compiler so handleCallFast routes through TieringManager
 	t1.SetOuterCompiler(func(proto *vm.FuncProto) interface{} {
@@ -390,10 +395,25 @@ func (tm *TieringManager) buildInlineGlobals() map[string]*vm.FuncProto {
 }
 
 func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunction, retErr error) {
+	tm.tier2Attempts++
 	defer func() {
 		if r := recover(); r != nil {
 			cf = nil
 			retErr = fmt.Errorf("tier2: panic during compilation: %v", r)
+			if os.Getenv("GSCRIPT_JIT_DEBUG") == "1" {
+				fmt.Fprintf(os.Stderr, "tier2: panic during compilation of %q: %v\n", proto.Name, r)
+			}
+		}
+		if retErr != nil {
+			if tm.tier2FailReason == nil {
+				tm.tier2FailReason = make(map[*vm.FuncProto]string)
+			}
+			tm.tier2FailReason[proto] = retErr.Error()
+			if os.Getenv("GSCRIPT_JIT_DEBUG") == "1" {
+				fmt.Fprintf(os.Stderr, "tier2: compilation failed for %q: %v\n", proto.Name, retErr)
+			}
+		} else if os.Getenv("GSCRIPT_JIT_DEBUG") == "1" {
+			fmt.Fprintf(os.Stderr, "tier2: compiled %q\n", proto.Name)
 		}
 	}()
 
@@ -613,6 +633,33 @@ func (tm *TieringManager) Tier2Count() int {
 // Tier1Count returns the number of functions compiled at Tier 1.
 func (tm *TieringManager) Tier1Count() int {
 	return tm.tier1.CompiledCount()
+}
+
+// Tier2Compiled returns the names of protos that successfully compiled at
+// Tier 2, sorted alphabetically. Used by CLI diagnostics (-jit-stats).
+func (tm *TieringManager) Tier2Compiled() []string {
+	names := make([]string, 0, len(tm.tier2Compiled))
+	for proto := range tm.tier2Compiled {
+		names = append(names, proto.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Tier2Failed returns a map of proto name -> error message for Tier 2
+// compilations that failed. Used by CLI diagnostics (-jit-stats).
+func (tm *TieringManager) Tier2Failed() map[string]string {
+	out := make(map[string]string, len(tm.tier2FailReason))
+	for proto, reason := range tm.tier2FailReason {
+		out[proto.Name] = reason
+	}
+	return out
+}
+
+// Tier2Attempted returns the total number of Tier 2 compilation attempts
+// (both successes and failures).
+func (tm *TieringManager) Tier2Attempted() int {
+	return tm.tier2Attempts
 }
 
 // irHasCall scans the optimized IR for any remaining OpCall instructions.

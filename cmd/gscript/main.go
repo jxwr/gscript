@@ -8,12 +8,23 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"runtime/pprof"
+	"sort"
 
 	"github.com/gscript/gscript/internal/lexer"
 	"github.com/gscript/gscript/internal/parser"
 	"github.com/gscript/gscript/internal/runtime"
 	bytecodevm "github.com/gscript/gscript/internal/vm"
 )
+
+// jitStatsReporter is implemented by the platform-specific JIT engine wrapper
+// so the CLI can print tier statistics after execution.
+type jitStatsReporter interface {
+	PrintStats(w *os.File)
+}
+
+// sortStrings is a tiny helper shared with platform files to keep them from
+// each importing "sort".
+func sortStrings(s []string) { sort.Strings(s) }
 
 func init() {
 	goruntime.LockOSThread() // Required for GLFW/OpenGL on macOS
@@ -26,6 +37,7 @@ func main() {
 	useJIT := flag.Bool("jit", true, "use bytecode VM with JIT compilation (default)")
 	cpuprofile := flag.String("cpuprofile", "", "write CPU profile to file")
 	memprofile := flag.String("memprofile", "", "write memory profile to file")
+	jitStats := flag.Bool("jit-stats", false, "print JIT tier statistics after execution")
 	flag.Parse()
 
 	if *cpuprofile != "" {
@@ -105,7 +117,7 @@ func main() {
 	interp.SetScriptDir(filepath.Dir(absPath))
 
 	if *useVM {
-		if err := runFileVM(interp, filename, *useJIT); err != nil {
+		if err := runFileVM(interp, filename, *useJIT, *jitStats); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
 			os.Exit(1)
 		}
@@ -139,15 +151,15 @@ func runString(interp *runtime.Interpreter, src string) error {
 	return interp.Exec(prog)
 }
 
-func runFileVM(interp *runtime.Interpreter, filename string, jit bool) error {
+func runFileVM(interp *runtime.Interpreter, filename string, jit bool, showJITStats bool) error {
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		return err
 	}
-	return runStringVM(interp, string(src), jit)
+	return runStringVM(interp, string(src), jit, showJITStats)
 }
 
-func runStringVM(interp *runtime.Interpreter, src string, jit bool) error {
+func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats bool) error {
 	tokens, err := lexer.New(src).Tokenize()
 	if err != nil {
 		return fmt.Errorf("lexer error: %w", err)
@@ -163,10 +175,18 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool) error {
 	globals := interp.ExportGlobals()
 	bvm := bytecodevm.New(globals)
 	bvm.SetStringMeta(interp.StringMeta())
+	var reporter jitStatsReporter
 	if jit {
-		cliEnableJIT(bvm)
+		reporter = cliEnableJIT(bvm)
 	}
 	_, err = bvm.Execute(proto)
+	if showJITStats {
+		if reporter != nil {
+			reporter.PrintStats(os.Stderr)
+		} else {
+			fmt.Fprintln(os.Stderr, "JIT Statistics: JIT disabled or unavailable on this platform")
+		}
+	}
 	return err
 }
 
