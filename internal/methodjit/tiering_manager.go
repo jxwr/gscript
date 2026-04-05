@@ -481,6 +481,14 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	// DCE (so dead values don't waste analysis budget) and BEFORE RegAlloc.
 	fn, _ = RangeAnalysisPass(fn)
 
+	// LICM: hoist pure loop-invariant values (constants, LoadSlot with no
+	// in-loop StoreSlot, float arith, and int48-safe int arith) into a
+	// synthetic pre-header block. Targets mandelbrot B3's re-materialization
+	// of cr/ci/ConstFloat 2/4. Runs AFTER RangeAnalysis so Int48Safe gates
+	// hoisting of int arith (overflow-check-free only). Runs BEFORE
+	// hasCallInLoop and RegAlloc because LICM changes the CFG.
+	fn, _ = LICMPass(fn)
+
 	// Post-inline safety check: reject if the optimized IR has OpCall INSIDE a loop.
 	// Tier 2's CALL exit-resume (~30-80ns) is slower than Tier 1's native BLR (~10ns).
 	// Inside a hot loop this cost is multiplied and hurts badly (spectral_norm's

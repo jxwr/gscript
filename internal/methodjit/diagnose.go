@@ -68,6 +68,7 @@ func Diagnose(proto *vm.FuncProto, args []runtime.Value) *DiagReport {
 	pipe.Add("ConstProp", ConstPropPass)
 	pipe.Add("DCE", DCEPass)
 	pipe.Add("RangeAnalysis", RangeAnalysisPass)
+	pipe.Add("LICM", LICMPass)
 	pipe.EnableDump(true)
 
 	optimized, pipeErr := pipe.Run(fn)
