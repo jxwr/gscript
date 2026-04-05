@@ -11,17 +11,53 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/phase_guard.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/file_size_guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/check_docs.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/check_docs.sh"
+            "command": ".claude/hooks/checkpoint.sh"
           },
           {
             "type": "command",
-            "command": ".claude/hooks/optimize_continue.sh"
+            "command": ".claude/hooks/budget_check.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/stop-evaluator.sh",
+            "timeout": 60
           }
         ]
       }
