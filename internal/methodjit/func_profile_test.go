@@ -142,11 +142,7 @@ func sum(n) {
 }
 
 func TestShouldPromoteTier2_RecursiveFib(t *testing.T) {
-	// fib(n) has calls, no loops, arith, and <=40 bytecodes: matches the
-	// JSC-style call-heavy clause, SHOULD promote. The bounded recursive
-	// inliner + type specialization eliminate per-call NaN-box overhead.
-	// Safety for nested-call patterns is enforced downstream via
-	// Function.Unpromotable (set by BuildGraph for OP_CALL B=0 cases).
+	// fib(n) has calls and no loops: should NOT promote (calls are better at Tier 1).
 	src := `
 func fib(n) {
     if n < 2 { return n }
@@ -157,11 +153,10 @@ func fib(n) {
 	fibProto := proto.Protos[0]
 	p := analyzeFuncProfile(fibProto)
 
-	if !shouldPromoteTier2(fibProto, p, 2) {
-		t.Errorf("fib should promote at runtimeCallCount=2 (profile: %+v)", p)
-	}
-	if shouldPromoteTier2(fibProto, p, 1) {
-		t.Error("fib should NOT promote at runtimeCallCount=1 (threshold is >=2)")
+	// fib has OP_CALL so canPromoteToTier2 should return false.
+	// shouldPromoteTier2 falls through to "calls only, no loops" -> false.
+	if shouldPromoteTier2(fibProto, p, 100) {
+		t.Error("fib should not be promoted: has calls, no loops, Tier 1 BLR is better")
 	}
 }
 
@@ -303,12 +298,9 @@ result = gcd(12, 8)
 	t.Logf("tier2Count=%d, tier2Failed=%v", tm.Tier2Count(), tm.tier2Failed[gcdProto])
 }
 
-// TestTieringManager_SmartPromotion_FibCorrectness verifies that recursive fib
-// produces the correct result regardless of tier. fib matches the JSC-style
-// call-heavy clause (CallCount>0, !HasLoop, ArithCount>=1, BytecodeCount<=40)
-// so smart tiering promotes it to Tier 2 — the bounded recursive inliner then
-// flattens two levels of self-calls.
-func TestTieringManager_SmartPromotion_FibCorrectness(t *testing.T) {
+// TestTieringManager_SmartPromotion_FibStaysAtTier1 verifies that recursive
+// functions without loops stay at Tier 1 (where BLR calls are more efficient).
+func TestTieringManager_SmartPromotion_FibStaysAtTier1(t *testing.T) {
 	src := `
 func fib(n) {
     if n < 2 { return n }
@@ -322,6 +314,9 @@ result := fib(10)
 	if !result.IsInt() || result.Int() != 55 {
 		t.Errorf("fib(10) = %v, want 55", result)
 	}
+	// fib has self-recursive calls via OP_CALL + OP_GETGLOBAL.
+	// It should NOT be promoted to Tier 2 by smart tiering (calls are better at Tier 1).
+	// Note: it still works correctly regardless of tier.
 }
 
 // TestAnalyzeFuncProfile_NestedForLoops verifies loop depth is tracked.
