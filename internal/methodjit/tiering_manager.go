@@ -455,12 +455,19 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	// DCE (so dead values don't waste analysis budget) and BEFORE RegAlloc.
 	fn, _ = RangeAnalysisPass(fn)
 
-	// Post-inline safety check: reject if the optimized IR still has OpCall.
+	// Post-inline safety check: reject if the optimized IR has OpCall INSIDE a loop.
 	// Tier 2's CALL exit-resume (~30-80ns) is slower than Tier 1's native BLR (~10ns).
-	// Functions with un-inlineable calls (recursive, too large) fall back to Tier 1.
+	// Inside a hot loop this cost is multiplied and hurts badly (spectral_norm's
+	// A(i,j) call inside inner loops caused a 7.10x→0.82x regression).
+	//
+	// However, calls at loop depth 0 (outside any loop) execute at most a few times
+	// per function invocation and the exit-resume cost is amortized. Allow those so
+	// that outer driver functions (e.g., spectral_norm's multiplyAtAv which calls
+	// multiplyAv/multiplyAtv at the top level) can still enjoy Tier 2 for their
+	// loop-heavy bodies.
 	// GETGLOBAL is allowed — Tier 2 has a native per-instruction value cache (~5ns).
-	if irHasCall(fn) {
-		return nil, fmt.Errorf("tier2: IR has OpCall after inlining, staying at Tier 1")
+	if hasCallInLoop(fn) {
+		return nil, fmt.Errorf("tier2: has OpCall inside loop (performance-blocked), staying at Tier 1")
 	}
 
 	// Register allocation.
@@ -672,6 +679,38 @@ func irHasCall(fn *Function) bool {
 			if instr.Op == OpCall {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// hasCallInLoop reports whether any OpCall in the optimized IR resides in
+// a block that is part of a loop. Tier 2 exit-resume for CALL is ~30-80ns
+// vs Tier 1's native BLR at ~10ns; inside a hot loop this difference
+// destroys performance, but outside loops (loop depth 0) it is amortized.
+// Uses the existing loopInfo infrastructure (natural-loop detection via
+// back-edges + dominator analysis) — the same loopBlocks set the emitter
+// uses for raw-int loop mode.
+func hasCallInLoop(fn *Function) bool {
+	var li *loopInfo
+	for _, block := range fn.Blocks {
+		// Fast path: skip blocks with no OpCall.
+		hasCall := false
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall {
+				hasCall = true
+				break
+			}
+		}
+		if !hasCall {
+			continue
+		}
+		// Lazily compute loop info only when we actually find a call.
+		if li == nil {
+			li = computeLoopInfo(fn)
+		}
+		if li.loopBlocks[block.ID] {
+			return true
 		}
 	}
 	return false
