@@ -540,6 +540,17 @@ func (b *graphBuilder) emitBlocks() {
 					for i := a + 1; i <= a+bOp-1; i++ {
 						args = append(args, b.readVariable(i, block))
 					}
+				} else if bOp == 0 {
+					// B==0: arguments run from A+1 to current top, where
+					// top is set by a preceding variadic-return op (a
+					// CALL/VARARG/TFORCALL with C=0). Static SSA
+					// construction cannot know the runtime top, so we
+					// cannot emit a correct arg list. Pattern: the outer
+					// call of `outer(x, inner(...))` / `return f(g(...))`.
+					// Mark the function unpromotable so compileTier2
+					// rejects it; fall through to emit a best-effort Call
+					// (args-so-far) to keep downstream passes safe.
+					b.fn.Unpromotable = true
 				}
 				instr := b.emit(block, OpCall, TypeAny, args, int64(a), int64(c))
 				b.writeVariable(a, block, instr.Value())

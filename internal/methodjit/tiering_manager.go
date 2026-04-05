@@ -429,6 +429,15 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	// Build SSA IR.
 	fn := BuildGraph(proto)
 
+	// Reject functions the graph builder flagged as unpromotable. Today this
+	// fires for OP_CALL B==0 (variadic args threaded via top), which cannot
+	// be modeled in SSA without a runtime top tracker. Without this gate,
+	// recursive nested-call patterns (ack, mutual_recursion, f(g(...)))
+	// compile to Call-with-no-args IR and hang at runtime.
+	if fn.Unpromotable {
+		return nil, fmt.Errorf("tier2: function uses unmodeled bytecode (variadic CALL), staying at Tier 1")
+	}
+
 	// Validate.
 	if errs := Validate(fn); len(errs) > 0 {
 		return nil, fmt.Errorf("tier2: validation failed: %v", errs[0])

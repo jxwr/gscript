@@ -238,13 +238,13 @@ func fibInt(n int) int {
 //
 // The pattern `return outer(x, inner(...))` compiles the outer call with B=0
 // so its argument count can absorb inner's variable returns. BuildGraph's
-// OP_CALL handler only reads args when B>=2, emitting Call-with-no-args IR
-// for B=0. Tier 2 then executes the wrong IR, corrupting recursive results
-// and causing exponential blowup that looks like a hang.
+// OP_CALL handler cannot statically model the arg count, so until the SSA
+// machinery grows a "top" tracker, the graph builder marks the function
+// Unpromotable and compileTier2 rejects it — ack/F/M stay at Tier 1 and the
+// hang is impossible.
 //
-// When fixed, the Diagnose output for ack B4 must contain
-//    vN = Call <fn>, <arg0>, <arg1>  (not `Call <fn>` alone)
-// and f(n) = 1 + f(f(n-1)) must return n for n >= 1.
+// This test verifies both halves: (1) the graph flags Unpromotable, and
+// (2) compileTier2 returns an error for ack.
 func TestTier2NestedCallArgBug(t *testing.T) {
 	src := `
 func ack(m, n) {
@@ -265,34 +265,24 @@ func ack(m, n) {
 		t.Fatal("no ack proto")
 	}
 	fn := BuildGraph(ackProto)
-	// The outer `ack(m-1, ack(m, n-1))` uses OP_CALL with B=0. BuildGraph
-	// currently drops its args. Once fixed, the last Call in the IR MUST
-	// have at least 3 args (fn + m-1 + inner-result).
-	var lastCall *Instr
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			if instr.Op == OpCall {
-				lastCall = instr
+	if !fn.Unpromotable {
+		// Dump the offending Call for diagnostics.
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr.Op == OpCall {
+					t.Logf("Call in ack IR has %d args", len(instr.Args))
+				}
 			}
 		}
+		t.Fatal("expected ack to be marked Unpromotable (outer ack(m-1, ack(m,n-1)) uses OP_CALL B=0)")
 	}
-	if lastCall == nil {
-		t.Fatal("no OpCall in ack IR")
-	}
-	t.Logf("last Call in ack IR has %d args (fn + %d params)",
-		len(lastCall.Args), len(lastCall.Args)-1)
-	// Regression assertion: the outer ack call must pass 2 args, so
-	// OpCall.Args has 3 entries (fn + 2 args). This assertion is tracked
-	// but skipped (t.Skip) until the graph builder fix lands — this keeps
-	// the test green in CI while documenting the exact bug signature.
-	// Remove the Skip once graph_builder.go handles OP_CALL B=0.
-	if len(lastCall.Args) < 3 {
-		t.Skipf("KNOWN BUG (diagnosis pending fix): outer ack() emitted "+
-			"as Call with %d args; expected 3 (fn + m-1 + inner-result). "+
-			"Graph builder does not handle OP_CALL B=0 (varargs). Fix: "+
-			"graph_builder.go:532 must track `top` from previous "+
-			"variadic-return calls. See opt/diagnose_tier2_hang.md.",
-			len(lastCall.Args))
+	// Second half: compileTier2 must reject ack. Use a TieringManager so we
+	// exercise the full path (not just direct BuildGraph).
+	tm := NewTieringManager()
+	if _, err := tm.compileTier2(ackProto); err == nil {
+		t.Fatal("expected compileTier2(ack) to fail with unmodeled-bytecode error")
+	} else {
+		t.Logf("compileTier2(ack) correctly refused: %v", err)
 	}
 }
 

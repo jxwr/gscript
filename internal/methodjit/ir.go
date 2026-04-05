@@ -34,6 +34,18 @@ type Function struct {
 	// code paths never consult this field — it exists only as a hook for
 	// the IR correctness oracle.
 	Globals map[string]*vm.FuncProto
+
+	// Unpromotable, when true, signals that this function cannot be safely
+	// compiled at Tier 2 because BuildGraph encountered bytecode patterns
+	// it does not model. Set by the graph builder and checked by
+	// compileTier2; an unpromotable function stays at Tier 1.
+	//
+	// Currently set when OP_CALL B==0 (variadic args threaded via top) is
+	// seen: the graph builder cannot statically determine the argument
+	// count, so emitting an OpCall would drop arguments and corrupt the
+	// call. Patterns like `outer(x, inner(...))` and `return f(g(...))`
+	// compile to CALL B=0.
+	Unpromotable bool
 }
 
 // newValueID allocates a unique ID for a new SSA value.
