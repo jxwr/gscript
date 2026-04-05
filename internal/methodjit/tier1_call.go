@@ -170,11 +170,13 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
 	asm.STR(jit.X3, jit.SP, 32)
-	// Save caller's ClosurePtr and GlobalCache
+	// Save caller's ClosurePtr, GlobalCache, and GlobalCachedGen
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X3, jit.SP, 40)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
 	asm.STR(jit.X3, jit.SP, 48)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
+	asm.STR(jit.X3, jit.SP, 56)
 
 	// 5. Copy args to callee register window
 	if varArgs {
@@ -271,11 +273,13 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 32)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
-	// Restore caller's ClosurePtr and GlobalCache
+	// Restore caller's ClosurePtr, GlobalCache, and GlobalCachedGen
 	asm.LDR(jit.X3, jit.SP, 40)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.LDR(jit.X3, jit.SP, 48)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+	asm.LDR(jit.X3, jit.SP, 56)
+	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, 64)
 
