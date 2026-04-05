@@ -35,9 +35,9 @@
     "opt/plan_template.md",
     "opt/state.json"
   ],
-  "head_commit": "7f1c47df48395b70fff145d84e935321f4abc01c",
+  "head_commit": "a162a332f14aac3d7413243d7ff110d61bcec7b4",
   "branch": "jit-v3-clean",
-  "last_checkpoint": "2026-04-05T13:20:38Z",
+  "last_checkpoint": "2026-04-05T14:48:29Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -97,6 +97,13 @@
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "no_change",
       "summary": "Phase 1 diagnostic: profiled all 5 float benchmarks (spectral_norm/nbody/matmul/mandelbrot/math_intensive). Top-3 hot patterns ranked: (1) per-op NaN box/unbox 5/5, (2) generic Mul/Add on any-typed loads 3/5, (3) redundant same-slot load 4/5. Escalation: shallow. Round-7 target: Pattern 1 (FPR-resident SSA across blocks)."
+    },
+    {
+      "cycle_id": "2026-04-05-tier2-fpr-resident",
+      "category": "tier2_float_loop",
+      "initiative": "opt/initiatives/tier2-float-loops.md",
+      "outcome": "improved",
+      "summary": "Phase 2: FPR-resident infra (scratch-FPR operand cache + loop-header phi FPR carry into tight bodies). Mandelbrot -2.62% (0.382s->0.372s, far short of 35% target); aggregate -1.88% (41.98s->41.20s), zero regressions. Pivot to LICM (Phase 4) for loop-invariant materialisation."
     }
   ],
   "session_summary": {
@@ -106,8 +113,8 @@
   },
   "category_failures": {
     "recursive_call": 2,
-    "tier2_float_loop": 1
+    "tier2_float_loop": 0
   },
-  "rounds_since_review": 1,
-  "rounds_since_research": 1
+  "rounds_since_review": 2,
+  "rounds_since_research": 2
 }
