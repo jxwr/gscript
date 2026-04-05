@@ -172,5 +172,39 @@ echo "============================================"
 echo "  Done: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "============================================"
 
+# --- JSON output ---
+JSON_FILE="benchmarks/data/latest.json"
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+
+# Build JSON using python3 (robust, handles escaping)
+python3 -c "
+import json, sys
+data = {
+    'timestamp': '$TIMESTAMP',
+    'commit': '$COMMIT',
+    'results': {}
+}
+# Read from environment/stdin
+for line in sys.stdin:
+    parts = line.strip().split('|')
+    if len(parts) == 4:
+        name, vm, jit, luajit = [p.strip() for p in parts]
+        data['results'][name] = {'vm': vm, 'jit': jit, 'luajit': luajit}
+json.dump(data, open('$JSON_FILE', 'w'), indent=2)
+
+# Archive to history
+import shutil
+hist = f'benchmarks/data/history/{data[\"timestamp\"][:10]}.json'
+shutil.copy('$JSON_FILE', hist)
+" <<BENCH_DATA
+$(for bench in "${EXISTING_BENCHMARKS[@]}"; do
+    echo "${bench}|${VM_RESULTS[$bench]:-ERROR}|${JIT_RESULTS[$bench]:-ERROR}|${LUAJIT_RESULTS[$bench]:-N/A}"
+done)
+BENCH_DATA
+
+echo ""
+echo ">>> JSON results saved to $JSON_FILE"
+
 # Cleanup
 rm -f "$GSCRIPT_BIN"
