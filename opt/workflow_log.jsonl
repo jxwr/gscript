@@ -1,0 +1,1 @@
+{"round":"2026-04-05-recursive-inlining","outcome":"abandoned","plan_accuracy":"predicted 0.40-0.55s for fib, actual HANG on ackermann/mutual_recursion at Tier 2","budget_used":"3/5 commits (3 functional, Task3 reverted in commit 4)","drift_events":0}
