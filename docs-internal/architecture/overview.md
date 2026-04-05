@@ -115,7 +115,7 @@ Tier 2 handles ALL IR ops that the graph builder can produce:
 - Control: Branch/Jump/Return/Phi/Nop
 - Guards: GuardType/GuardTruthy
 - CALL: emitCallNative (selective spill/reload BLR, fallback to exit-resume)
-- Globals: GetGlobal(exit-resume)
+- Globals: GetGlobal(native value cache, ~5ns hit, exit-resume on miss)
 
 **Exit-resume (exit to Go, execute, resume):**
 - SetGlobal, Self, Concat, Len, Pow, Append, Close, SetList
