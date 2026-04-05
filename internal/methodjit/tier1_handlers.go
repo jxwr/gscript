@@ -175,6 +175,14 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 			if e.tierUpThreshold > 0 && calleeProto.CallCount == e.tierUpThreshold {
 				goto slowPath
 			}
+			// If Tier 2 applied an intrinsic (e.g., math.sqrt→FSQRT), Tier 1
+			// code would execute a different (slower, allocating) sequence.
+			// Dispatch via slowPath so Tier 2's compiled code runs.
+			// For functions without intrinsics, Tier 1 execution is equivalent
+			// and faster than going through VM.CallValue.
+			if calleeProto.NeedsTier2 {
+				goto slowPath
+			}
 			calleeBF, compiled := e.compiled[calleeProto]
 			if !compiled {
 				// Try to compile the callee on the fly.

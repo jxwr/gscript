@@ -176,6 +176,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 
 	tm.tier2Compiled[proto] = t2
+	proto.Tier2Promoted = true
 
 	// Update DirectEntryPtr so Tier 1 BLR callers jump to Tier 2's direct entry.
 	if t2.DirectEntryOffset > 0 {
@@ -230,6 +231,7 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 
 	// Cache the Tier 2 compilation for future calls.
 	tm.tier2Compiled[proto] = t2
+	proto.Tier2Promoted = true
 	if t2.DirectEntryOffset > 0 {
 		proto.DirectEntryPtr = uintptr(t2.Code.Ptr()) + uintptr(t2.DirectEntryOffset)
 	}
@@ -439,7 +441,13 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	// BEFORE inlining and BEFORE the has-call-in-loop gate. This removes the
 	// GetGlobal + GetField + Call triple and lets pure-math loops (nbody,
 	// spectral_norm) reach Tier 2 without tripping the call-in-loop block.
-	fn, _ = IntrinsicPass(fn)
+	fn, intrinsicNotes := IntrinsicPass(fn)
+	if len(intrinsicNotes) > 0 {
+		// Tier 2 replaced calls that Tier 1 would execute differently
+		// (calling the Go implementation). Mark the proto so Tier 1 BLR
+		// callers' handleCall fallback dispatches to Tier 2 code.
+		proto.NeedsTier2 = true
+	}
 	// Re-run TypeSpecializePass so freshly-inserted OpSqrt results propagate
 	// float types into downstream arithmetic/comparisons.
 	fn, _ = TypeSpecializePass(fn)
@@ -500,6 +508,7 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 
 // executeTier2 runs a Tier 2 compiled function using the VM's register file.
 // This is the Tier 2 execute loop, handling exit codes and resuming JIT code.
+
 func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
 	// Ensure register space.
 	needed := base + cf.numRegs
@@ -632,6 +641,7 @@ func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
 		return err
 	}
 	tm.tier2Compiled[proto] = t2
+	proto.Tier2Promoted = true
 
 	// Update DirectEntryPtr so Tier 1 BLR callers jump to Tier 2's direct entry.
 	if t2.DirectEntryOffset > 0 {

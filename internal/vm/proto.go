@@ -33,6 +33,8 @@ type FuncProto struct {
 	DirectEntryPtr     uintptr // pointer to direct entry point for native BLR calls
 	GlobalValCachePtr  uintptr // pointer to BaselineFunc.GlobalValCache[0] (for BLR callee GETGLOBAL)
 	GlobalValCacheGen  uint64  // BaselineFunc.CachedGlobalGen (for BLR callee generation check)
+	Tier2Promoted      bool    // set true when TieringManager compiles this proto at Tier 2
+	NeedsTier2         bool    // set true when Tier 2 applied ops (e.g., intrinsics) that Tier 1 would execute differently
 }
 
 // EnsureFeedback lazily initializes the type feedback vector for this function.
