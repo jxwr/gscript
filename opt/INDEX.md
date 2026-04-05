@@ -5,6 +5,7 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 
 | # | Round ID | Date | Category | Target | Outcome | Key Commit | 1-line Lesson |
 |---|----------|------|----------|--------|---------|------------|----------------|
+| 8 | 2026-04-06-tier2-licm | 2026-04-06 | tier2_float_loop | LICM pass — hoist loop-invariants (mandelbrot ≥35%) | no_change (mandelbrot -1.6%, infra landed) | 9da7d4c | 17 constants hoisted cleanly but wall-time unmoved — B3's bottleneck is the surviving FMUL/FADD chain, not constant materialisation |
 | 7 | 2026-04-05-tier2-fpr-resident | 2026-04-05 | tier2_float_loop | FPR-resident float SSA (mandelbrot ≥35%) | improved (aggregate -1.88%, target missed) | 686ba11 | Diagnostic-first killed Gap B hypothesis early; scratch-FPR cache alone is 1% — LICM is the real next bottleneck |
 | 6 | 2026-04-05-tier2-float-profile | 2026-04-05 | tier2_float_loop | Profile Tier 2 float loops (5 benchmarks) | no_change (diagnostic) | 7f1c47d | Per-op NaN box/unbox dominates 5/5 float loops — IR + ASM dumps must agree before optimizing |
 | 5 | 2026-04-05-tier2-recursion-diagnose | 2026-04-05 | recursive_call | Diagnose tier2 hang from round 4 | no_change + fix | 239f0d7 | BuildGraph drops `CALL B=0` args — Tier 2 IR silently wrong; `Unpromotable` gate blocks the proto |

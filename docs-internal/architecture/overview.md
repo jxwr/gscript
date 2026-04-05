@@ -90,14 +90,16 @@ Per-PC value cache with generation-based invalidation:
 BuildGraph (Braun et al. 2013)
   → Validate
   → TypeSpecialize   (generic OpAdd → OpAddInt when both int)
-  → Validate
+  → Intrinsic        (math.sqrt → OpSqrt, etc.)
+  → TypeSpecialize   (propagate intrinsic result types)
+  → Inline           (monomorphic small callees, bounded recursion)
+  → TypeSpecialize   (re-run over inlined bodies)
   → ConstProp        (fold arithmetic on constants)
-  → Validate
   → DCE              (remove unused values)
+  → RangeAnalysis    (populate Int48Safe set; loop-counter exemption)
+  → LICM             (hoist pure invariants into loop pre-header)
   → Validate
-  → Inline           (monomorphic small callees)
-  → Validate
-  → RegAlloc         (forward-walk: 5 GPR, 8 FPR)
+  → RegAlloc         (forward-walk: 4 GPR (X20-X23), 8 FPR (D4-D11))
   → Emit             (ARM64 code generation)
 ```
 
