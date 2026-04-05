@@ -125,18 +125,17 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		return runtimeCallCount >= 3
 	}
 
-	// Functions with calls (no loops): keep at Tier 1.
-	// Tier 1's native BLR handles calls efficiently (~10ns per call).
-	// Even after inlining, non-loop functions don't benefit enough from
-	// Tier 2's type specialization to justify compilation overhead.
-	// Functions with loops + calls are handled by the clause above —
-	// compileTier2 will try inlining and reject if calls remain via irHasCall.
-	if profile.CallCount > 0 && !profile.HasLoop {
-		return false
+	// Call-heavy, no-loop, small: candidates for recursive inlining at Tier 2.
+	// Inlining + type specialization eliminate per-call NaN-box/unbox overhead.
+	// JSC-style: tier up based on call score, no loop requirement.
+	if profile.CallCount > 0 && !profile.HasLoop &&
+		profile.ArithCount >= 1 &&
+		profile.BytecodeCount <= 40 {
+		return runtimeCallCount >= 2
 	}
 
-	// Default: stay at Tier 1. Simple functions without loops, calls, or
-	// significant arithmetic don't benefit enough from Tier 2 to justify
-	// compilation overhead.
+	// Default: stay at Tier 1. Simple functions that didn't match any
+	// promotion clause stay at Tier 1. This includes large no-loop funcs
+	// (>40 bytecodes) even if call-heavy.
 	return false
 }
