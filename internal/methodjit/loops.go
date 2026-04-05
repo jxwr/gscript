@@ -315,3 +315,115 @@ func loopPreds(li *loopInfo, hdr *Block) (inside []*Block, outside []*Block) {
 	}
 	return inside, outside
 }
+
+// computeLoopPreheaders identifies the dedicated pre-header block of each
+// loop header, matching the structure that LICMPass constructs. Result
+// maps loop-header block ID → pre-header block ID. A block PH qualifies
+// as the pre-header of header H only when:
+//
+//   - H has exactly one predecessor that is NOT inside H's loop body
+//     (i.e. exactly one "outside" pred in loopPreds terminology), and
+//   - that predecessor PH's Succs is precisely [H] (single successor).
+//
+// Headers without a unique outside predecessor, or whose outside
+// predecessor has additional successors, are omitted from the map.
+// The function is read-only: it mutates neither fn nor li.
+func computeLoopPreheaders(fn *Function, li *loopInfo) map[int]int {
+	if fn == nil || li == nil {
+		return map[int]int{}
+	}
+	result := make(map[int]int, len(li.loopHeaders))
+	for _, block := range fn.Blocks {
+		if !li.loopHeaders[block.ID] {
+			continue
+		}
+		_, outside := loopPreds(li, block)
+		if len(outside) != 1 {
+			continue
+		}
+		ph := outside[0]
+		if len(ph.Succs) != 1 || ph.Succs[0] != block {
+			continue
+		}
+		result[block.ID] = ph.ID
+	}
+	return result
+}
+
+// collectPreheaderInvariants walks each header → pre-header pair in
+// preheaders and returns the set of SSA value IDs produced by non-terminator
+// instructions in the pre-header that are consumed by at least one
+// instruction (phi or otherwise) inside that header's loop body (the blocks
+// listed in li.headerBlocks[headerID], which includes the header itself).
+//
+// The returned slices are sorted ascending for deterministic output. The
+// function is read-only: it mutates neither fn nor li.
+func collectPreheaderInvariants(fn *Function, li *loopInfo, preheaders map[int]int) map[int][]int {
+	result := make(map[int][]int, len(preheaders))
+	if fn == nil || li == nil || len(preheaders) == 0 {
+		return result
+	}
+
+	// Build a quick map: block ID → *Block for pre-header lookups.
+	blockByID := make(map[int]*Block, len(fn.Blocks))
+	for _, b := range fn.Blocks {
+		blockByID[b.ID] = b
+	}
+
+	for headerID, phID := range preheaders {
+		ph := blockByID[phID]
+		if ph == nil {
+			continue
+		}
+		// Collect the value IDs defined by non-terminator instructions
+		// in the pre-header — these are the candidates.
+		defs := make(map[int]bool, len(ph.Instrs))
+		for _, instr := range ph.Instrs {
+			if instr.Op.IsTerminator() {
+				continue
+			}
+			defs[instr.ID] = true
+		}
+		if len(defs) == 0 {
+			continue
+		}
+
+		// Walk every instruction in the header's loop body and record
+		// which pre-header defs appear as Args.
+		body := li.headerBlocks[headerID]
+		if body == nil {
+			continue
+		}
+		used := make(map[int]bool, len(defs))
+		for _, b := range fn.Blocks {
+			if !body[b.ID] {
+				continue
+			}
+			for _, instr := range b.Instrs {
+				for _, a := range instr.Args {
+					if a == nil {
+						continue
+					}
+					if defs[a.ID] {
+						used[a.ID] = true
+					}
+				}
+			}
+		}
+		if len(used) == 0 {
+			continue
+		}
+		ids := make([]int, 0, len(used))
+		for id := range used {
+			ids = append(ids, id)
+		}
+		// Sort ascending for deterministic output.
+		for i := 1; i < len(ids); i++ {
+			for j := i; j > 0 && ids[j-1] > ids[j]; j-- {
+				ids[j-1], ids[j] = ids[j], ids[j-1]
+			}
+		}
+		result[headerID] = ids
+	}
+	return result
+}
