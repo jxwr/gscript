@@ -1,0 +1,37 @@
+File: gscript_profile
+Type: cpu
+Time: 2026-04-05 21:00:40 CST
+Duration: 302.56ms, Total samples = 190ms (62.80%)
+Showing nodes accounting for 190ms, 100% of 190ms total
+      flat  flat%   sum%        cum   cum%
+     120ms 63.16% 63.16%      120ms 63.16%  runtime._ExternalCode
+         0     0% 63.16%      120ms 63.16%  runtime._System
+         0     0% 63.16%       70ms 36.84%  runtime.systemstack
+         0     0% 63.16%       60ms 31.58%  runtime.(*mheap).alloc.func1
+         0     0% 63.16%       60ms 31.58%  runtime.(*mheap).allocSpan
+      60ms 31.58% 94.74%       60ms 31.58%  runtime.madvise
+         0     0% 94.74%       60ms 31.58%  runtime.sysUsed (inline)
+         0     0% 94.74%       60ms 31.58%  runtime.sysUsedOS (inline)
+         0     0% 94.74%       10ms  5.26%  github.com/gscript/gscript/internal/methodjit.(*BaselineJITEngine).Execute
+         0     0% 94.74%       10ms  5.26%  github.com/gscript/gscript/internal/methodjit.(*BaselineJITEngine).handleBaselineOpExit
+         0     0% 94.74%       10ms  5.26%  github.com/gscript/gscript/internal/methodjit.(*BaselineJITEngine).handleCall
+         0     0% 94.74%       10ms  5.26%  github.com/gscript/gscript/internal/methodjit.(*TieringManager).Execute
+         0     0% 94.74%       10ms  5.26%  github.com/gscript/gscript/internal/runtime.buildMathLib.func5
+         0     0% 94.74%       10ms  5.26%  github.com/gscript/gscript/internal/vm.(*VM).CallValue (inline)
+         0     0% 94.74%       10ms  5.26%  github.com/gscript/gscript/internal/vm.(*VM).Execute
+         0     0% 94.74%       10ms  5.26%  github.com/gscript/gscript/internal/vm.(*VM).call
+         0     0% 94.74%       10ms  5.26%  github.com/gscript/gscript/internal/vm.(*VM).callValue
+         0     0% 94.74%       10ms  5.26%  main.main
+         0     0% 94.74%       10ms  5.26%  main.runFileVM
+         0     0% 94.74%       10ms  5.26%  main.runStringVM
+         0     0% 94.74%       10ms  5.26%  runtime.(*unwinder).next
+      10ms  5.26%   100%       10ms  5.26%  runtime.(*unwinder).resolveInternal
+         0     0%   100%       10ms  5.26%  runtime.callers
+         0     0%   100%       10ms  5.26%  runtime.callers.func1
+         0     0%   100%       10ms  5.26%  runtime.mProf_Malloc
+         0     0%   100%       10ms  5.26%  runtime.main
+         0     0%   100%       10ms  5.26%  runtime.mallocgc
+         0     0%   100%       10ms  5.26%  runtime.mallocgcTiny
+         0     0%   100%       10ms  5.26%  runtime.newobject
+         0     0%   100%       10ms  5.26%  runtime.profilealloc
+         0     0%   100%       10ms  5.26%  runtime.tracebackPCs
