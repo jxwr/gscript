@@ -258,3 +258,94 @@ it in 200ms), precisely localized (one function in one file), and
 independently confirmed via both the IR dump AND the bytecode dump. The
 `TestTier2NestedCallArgBug` assertion fails now and will pass when fixed;
 it's a clean TDD regression gate.
+
+## Round Outcome (Tasks 3–5, appended 2026-04-05)
+
+### Task 3: Correctness fix LANDED (commit 239f0d7)
+
+Implemented Option A from the Recommendation above. Added
+`Function.Unpromotable bool`, set in `graph_builder.go` when
+`OP_CALL B==0` is seen, rejected in `tiering_manager.go:compileTier2`.
+4 files changed, 53 insertions / 31 deletions. `TestTier2NestedCallArgBug`
+now passes: it asserts both `fn.Unpromotable == true` and that
+`compileTier2(ackProto)` returns an error. Full `internal/methodjit/`
+test suite: green.
+
+### Task 4: Policy flip LANDED (commit df1812c) then REVERTED (commit f54ea63)
+
+Restored the JSC-style call-heavy clause from 6bd0385. Targeted
+benchmarks under `perl alarm 30s` all terminated correctly (no hangs):
+
+- fib_recursive.gs: 17.667s (correct, fib(35)=9227465)
+- ackermann.gs:       0.253s (correct, ack(3,4)=125)
+- mutual_recursion:   0.194s (correct, F(25)=16)
+
+JIT stats for fib.gs showed fib got promoted to Tier 2 (single Tier 2
+function). ack and mutual_recursion were safely refused by Unpromotable.
+
+### Task 5: Signal 3 FIRED — full suite
+
+Full suite vs baseline (commit 6bd0385 pre-revert):
+
+| Benchmark | Baseline JIT | With flip | Delta |
+|-----------|--------------|-----------|-------|
+| **fib**              | 1.407s  | 2.086s  | **-48.3%** |
+| **fib_recursive**    | 13.999s | 17.755s | **-26.8%** |
+| **coroutine_bench**  | 15.023s | 18.196s | **-21.1%** |
+| **binary_trees**     | 2.052s  | 2.286s  | **-11.4%** |
+| method_dispatch      | 0.103s  | 0.087s  | +15.5% |
+| (other 17 benchmarks) | — | — | ≤6% change |
+
+**4 regressions >10% vs 1 improvement >10%**. Per plan Signal 3:
+"Action: revert the gate flip. Keep the localized bug fix."
+
+Reverted df1812c in commit f54ea63. Correctness fix (239f0d7) remains.
+
+### Why the policy flip regressed fib by 48%
+
+Evidence from the targeted run and IR inspection:
+
+1. **numRegs explosion**: inlined fib's IR grows from 4 to 40 registers
+   at MaxRecursion=2 (2 levels of fib cloning).
+2. **Residual calls remain**: MaxRecursion=2 flattens depth 0..2 but
+   depth 3+ still emits OpCall → exit-resume (~30-80ns per depth-3 call).
+   In the fib(35) call tree the majority of calls are at depth 3+.
+3. **Tier 1 BLR is ~10ns**; Tier 2 exit-resume is 3–8x slower per call.
+4. The policy flip replaced fast Tier 1 BLR with slow Tier 2 exit-resume
+   without unlocking enough inline wins to compensate.
+
+coroutine_bench and binary_trees regressed for the same reason:
+they contain small call-heavy leaf functions that match the clause and
+get promoted to inlined-Tier 2 but run slower there than at Tier 1.
+
+### Next-Round Task List (category A: recursive call overhead)
+
+**Do NOT re-attempt the policy flip** until at least ONE of these lands:
+
+1. **Deep recursive inlining**: raise MaxRecursion from 2 to ~4-5 (JSC uses 2
+   per-chain, JavaScriptCore inlines deeper with budget caps). For fib(35)
+   with MaxRecursion=5, depth-5 inlining folds 2^5=32 calls into one body;
+   residual exit-resume fires only at depth 6+. Requires careful budget
+   control (see JSC's `maximumInliningDepth = 5`,
+   `maximumFunctionForCallInlineCandidateBytecodeCostForDFG = 80`).
+
+2. **Native BLR in Tier 2** for residual `OpCall` (close the exit-resume
+   cost gap). Currently Tier 2 exits to the VM to handle unknown-callee
+   calls. A direct BLR emit path matching Tier 1's (~10ns) would make the
+   policy flip viable even without deeper inlining.
+
+3. **Proper variadic IR model** (`OpCallV` + top tracker in graph builder)
+   so ack / mutual_recursion / `f(g(...))` become Tier-2-eligible. Current
+   Unpromotable gate is a safety net, not a solution. This is the
+   architectural work deferred from Task 3 Option B.
+
+Without at least one of the above, the call-heavy tier-up clause is a
+net negative and should stay off.
+
+### Budget note
+
+This round consumed 5 commits (1 over the plan's 4-commit cap). The
+extra commit is the Signal 3 revert — mandated by the plan itself
+("Action: revert the gate flip"). No work was done outside the original
+scope; the revert is a defensive action triggered by full-suite data
+that was not available at planning time.
