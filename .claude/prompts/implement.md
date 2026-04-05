@@ -29,7 +29,11 @@ Execute tasks from `current_plan.md` in order. For each task:
 ## Rules
 - TDD: write failing test FIRST, then implementation
 - No Go file exceeds 1000 lines
-- Commit after each working step
+- **Commit frequently** — do NOT accumulate uncommitted work:
+  - Commit after each task completes (not at the end of the phase)
+  - Each commit should be a logical, reviewable unit
+  - If a task touches 3+ files, consider splitting into 2 commits (e.g., tests first, then implementation)
+  - Run `git status` after each Coder returns — if there are uncommitted changes, commit them
 - Do NOT skip tasks or do tasks out of order
 - Do NOT modify files outside the plan scope
 - If a Coder fails 3 times on one task, STOP and report — do not continue to the next task
