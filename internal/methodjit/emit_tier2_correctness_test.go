@@ -485,3 +485,39 @@ result := bench(10, 3)
 		t.Errorf("bench(10, 3) VM sanity check: got %v, want 55", vmResult)
 	}
 }
+
+// TestTier2_SqrtIntrinsic exercises the math.sqrt intrinsic recognition pass.
+// The IntrinsicPass rewrites the GetGlobal("math") + GetField("sqrt") + Call
+// sequence into a single OpSqrt, which the emitter lowers to an ARM64 FSQRT.
+// The loop body becomes pure-compute (no OpCall), unblocking Tier 2 promotion.
+// We verify the JIT result matches the VM oracle across a range of inputs.
+func TestTier2_SqrtIntrinsic(t *testing.T) {
+	src := `
+func compute_distance(n) {
+    sum := 0.0
+    for i := 1; i <= n; i++ {
+        sum = sum + math.sqrt(i * 1.0)
+    }
+    return sum
+}
+result := compute_distance(100)
+`
+	compareTier2Result(t, src, "result")
+
+	// Independent sanity check: sum of sqrt(i) for i=1..100 ~= 671.4629.
+	protoVM := compileProto(t, src)
+	globalsVM := runtime.NewInterpreterGlobals()
+	vVM := vm.New(globalsVM)
+	defer vVM.Close()
+	vVM.Execute(protoVM)
+	vmResult := vVM.GetGlobal("result")
+	if !vmResult.IsFloat() {
+		t.Fatalf("compute_distance(100): expected float, got %v (%s)",
+			vmResult, vmResult.TypeName())
+	}
+	want := 671.4629
+	got := vmResult.Float()
+	if math.Abs(got-want) > 0.01 {
+		t.Errorf("compute_distance(100) VM sanity: got %f, want ~%f", got, want)
+	}
+}

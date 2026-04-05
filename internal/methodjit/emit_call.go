@@ -475,6 +475,34 @@ func (ec *emitContext) emitNegFloat(instr *Instr) {
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 
+// emitSqrtFloat emits ARM64 code for OpSqrt (sqrt(float)).
+// The operand is known to be float, so we skip the type check and use FSQRT
+// directly on an FPR. With raw float mode, operates entirely in FPRs.
+func (ec *emitContext) emitSqrtFloat(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	asm := ec.asm
+
+	if instr.Type == TypeFloat {
+		srcF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+		dstF := jit.FReg(jit.D0)
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			dstF = jit.FReg(pr.Reg)
+		}
+		asm.FSQRTd(dstF, srcF)
+		ec.storeRawFloat(dstF, instr.ID)
+		return
+	}
+
+	// Fallback: NaN-boxed path (operand float bits interpreted as double).
+	src := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	asm.FMOVtoFP(jit.D0, src)
+	asm.FSQRTd(jit.D0, jit.D0)
+	asm.FMOVtoGP(jit.X0, jit.D0)
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
 // uniqueLabel generates a unique label for the emitter to avoid collisions.
 func (ec *emitContext) uniqueLabel(prefix string) string {
 	ec.labelCounter++

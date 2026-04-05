@@ -92,6 +92,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitNegInt(instr)
 	case OpNegFloat:
 		ec.emitNegFloat(instr)
+	case OpSqrt:
+		ec.emitSqrtFloat(instr)
 	case OpNot:
 		ec.emitNot(instr)
 

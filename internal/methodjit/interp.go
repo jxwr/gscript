@@ -312,6 +312,10 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		a := s.val(instr.Args[0])
 		s.values[instr.ID] = runtime.FloatValue(-a.Number())
 
+	case OpSqrt:
+		a := s.val(instr.Args[0])
+		s.values[instr.ID] = runtime.FloatValue(math.Sqrt(a.Number()))
+
 	// ---------- Comparison (type-generic) ----------
 	case OpEq:
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])

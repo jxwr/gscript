@@ -435,6 +435,15 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	// Run optimization passes.
 	fn, _ = TypeSpecializePass(fn)
 
+	// Rewrite well-known intrinsic call patterns (e.g., math.sqrt(x) → OpSqrt)
+	// BEFORE inlining and BEFORE the has-call-in-loop gate. This removes the
+	// GetGlobal + GetField + Call triple and lets pure-math loops (nbody,
+	// spectral_norm) reach Tier 2 without tripping the call-in-loop block.
+	fn, _ = IntrinsicPass(fn)
+	// Re-run TypeSpecializePass so freshly-inserted OpSqrt results propagate
+	// float types into downstream arithmetic/comparisons.
+	fn, _ = TypeSpecializePass(fn)
+
 	// Always try inlining to eliminate calls. The inline pass is a no-op if
 	// no inlineable call sites are found. When it succeeds, OpCall instructions
 	// are replaced with the callee's body, and the caller becomes pure-compute.

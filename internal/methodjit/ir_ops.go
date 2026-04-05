@@ -41,6 +41,7 @@ const (
 	OpMulFloat // float * float → float
 	OpDivFloat // float / float → float (also int/int → float)
 	OpNegFloat // -float → float
+	OpSqrt     // sqrt(float) → float (intrinsic: rewrites math.sqrt(x))
 
 	// Comparison (type-generic)
 	OpEq // Args[0] == Args[1]
@@ -154,6 +155,7 @@ var opNames = [...]string{
 	OpMulFloat:   "MulFloat",
 	OpDivFloat:   "DivFloat",
 	OpNegFloat:   "NegFloat",
+	OpSqrt:       "Sqrt",
 	OpEq:         "Eq",
 	OpLt:         "Lt",
 	OpLe:         "Le",
