@@ -6,6 +6,7 @@ import (
 	"math/rand"
 )
 
+
 // buildMathLib creates the "math" standard library table.
 func buildMathLib() *Table {
 	t := NewTable()

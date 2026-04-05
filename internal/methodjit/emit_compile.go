@@ -181,6 +181,12 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// Resolve direct entry offset for BLR callers.
 	directEntryOff := ec.asm.LabelOffset("t2_direct_entry")
 
+	// Allocate per-GetGlobal value cache if any GetGlobal instructions exist.
+	var globalCache []uint64
+	if ec.nextGlobalCacheIndex > 0 {
+		globalCache = make([]uint64, ec.nextGlobalCacheIndex)
+	}
+
 	return &CompiledFunction{
 		Code:              cb,
 		Proto:             fn.Proto,
@@ -188,6 +194,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		numRegs:           ec.nextSlot,
 		ResumeAddrs:       resumeAddrs,
 		DirectEntryOffset: directEntryOff,
+		GlobalCache:       globalCache,
 	}, nil
 }
 
@@ -272,6 +279,11 @@ type emitContext struct {
 	// Used by resolveRawFloat to detect NaN-boxed ints that need SCVTF
 	// conversion instead of FMOVtoFP.
 	irTypes map[int]Type
+
+	// nextGlobalCacheIndex is the next available cache slot index for
+	// OpGetGlobal native cache. Each GetGlobal instruction gets a unique
+	// index (0, 1, 2, ...) assigned at emission time.
+	nextGlobalCacheIndex int
 }
 
 // assignSlots assigns a home slot for every SSA value.

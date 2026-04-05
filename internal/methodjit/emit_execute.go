@@ -50,6 +50,15 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 		ctx.Constants = uintptr(unsafe.Pointer(&cf.Proto.Constants[0]))
 	}
 
+	// Set up Tier 2 global value cache pointers (standalone mode).
+	// Uses a local generation counter since there's no TieringManager.
+	var standaloneGenCounter uint64
+	if len(cf.GlobalCache) > 0 {
+		ctx.Tier2GlobalCache = uintptr(unsafe.Pointer(&cf.GlobalCache[0]))
+		ctx.Tier2GlobalCacheGen = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))
+		ctx.Tier2GlobalGenPtr = uintptr(unsafe.Pointer(&standaloneGenCounter))
+	}
+
 	// Entry point: start at the beginning of the function.
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(&ctx))
@@ -204,6 +213,7 @@ func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Val
 
 // executeGlobalExit handles a global-exit by loading a global variable via the VM.
 // The global name is looked up from the constants pool and resolved via the VM.
+// Also populates the per-instruction global value cache in CompiledFunction.
 func (cf *CompiledFunction) executeGlobalExit(ctx *ExecContext, regs []runtime.Value) error {
 	globalSlot := int(ctx.GlobalSlot)
 	constIdx := int(ctx.GlobalConst)
@@ -224,6 +234,17 @@ func (cf *CompiledFunction) executeGlobalExit(ctx *ExecContext, regs []runtime.V
 	// Store the global value to the register file.
 	if globalSlot < len(regs) {
 		regs[globalSlot] = val
+	}
+
+	// Populate the per-instruction global value cache (standalone mode).
+	// In standalone mode there's no shared generation counter, so we just
+	// populate and never invalidate (no SetGlobal path in standalone tests).
+	cacheIdx := int(ctx.GlobalCacheIdx)
+	if cacheIdx >= 0 && cf.GlobalCache != nil && cacheIdx < len(cf.GlobalCache) {
+		valBits := uint64(val)
+		if valBits != 0 {
+			cf.GlobalCache[cacheIdx] = valBits
+		}
 	}
 
 	return nil

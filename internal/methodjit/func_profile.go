@@ -104,11 +104,13 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 // shouldPromoteTier2 decides whether a function should be promoted to Tier 2
 // based on its static profile and runtime call count.
 func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCount int) bool {
-	// Pure-compute functions with loops: promote at threshold=2.
+	// Pure-compute functions with loops (no CALL/GETGLOBAL): promote at threshold=2.
 	// Threshold=1 caused regressions on float-heavy functions (mandelbrot)
 	// where Tier 2's code was slower than Tier 1. Threshold=2 ensures the
 	// function is called at least twice, giving Tier 1 a chance on first call.
-	if profile.HasLoop && profile.ArithCount >= 1 && canPromoteToTier2(proto) {
+	// Uses canPromoteToTier2NoCalls (conservative) to identify functions that
+	// don't need the inline pass.
+	if profile.HasLoop && profile.ArithCount >= 1 && canPromoteToTier2NoCalls(proto) {
 		return runtimeCallCount >= 2
 	}
 
@@ -124,13 +126,11 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	}
 
 	// Functions with calls (no loops): keep at Tier 1.
-	// Tier 1's native BLR handles calls efficiently. Tier 2 uses exit-resume
-	// for calls which is slower.
-	// NOTE: Functions with inlineable callees can still be promoted by
-	// compileTier2's canPromoteWithInlining check -- but shouldPromoteTier2
-	// returns false here because we don't have the globals map to verify
-	// inlineability. Instead, the "loop + calls + arith" clause above
-	// handles the most common case (loop body with inlineable inner calls).
+	// Tier 1's native BLR handles calls efficiently (~10ns per call).
+	// Even after inlining, non-loop functions don't benefit enough from
+	// Tier 2's type specialization to justify compilation overhead.
+	// Functions with loops + calls are handled by the clause above —
+	// compileTier2 will try inlining and reject if calls remain via irHasCall.
 	if profile.CallCount > 0 && !profile.HasLoop {
 		return false
 	}

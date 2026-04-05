@@ -70,7 +70,9 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 }
 
 // executeGlobalExit handles a global-exit in the TieringManager's Tier 2 path.
-func (tm *TieringManager) executeGlobalExit(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+// After resolving the global value, populates the per-instruction value cache
+// in CompiledFunction.GlobalCache so subsequent accesses hit the fast path.
+func (tm *TieringManager) executeGlobalExit(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, cf *CompiledFunction) error {
 	if tm.callVM == nil {
 		return fmt.Errorf("no callVM set for global-exit")
 	}
@@ -87,6 +89,24 @@ func (tm *TieringManager) executeGlobalExit(ctx *ExecContext, regs []runtime.Val
 	absSlot := base + globalSlot
 	if absSlot < len(regs) {
 		regs[absSlot] = val
+	}
+
+	// Populate the per-instruction global value cache.
+	cacheIdx := int(ctx.GlobalCacheIdx)
+	if cacheIdx >= 0 && cf != nil && cf.GlobalCache != nil && cacheIdx < len(cf.GlobalCache) {
+		valBits := uint64(val)
+		if valBits != 0 { // don't cache zero (used as "empty" sentinel)
+			// If the generation has changed since we last cached, clear all
+			// entries before repopulating. Without this, updating GlobalCacheGen
+			// would make other entries' stale values appear valid.
+			if cf.GlobalCacheGen != tm.tier1.globalCacheGen {
+				for i := range cf.GlobalCache {
+					cf.GlobalCache[i] = 0
+				}
+			}
+			cf.GlobalCache[cacheIdx] = valBits
+			cf.GlobalCacheGen = tm.tier1.globalCacheGen
+		}
 	}
 
 	return nil
@@ -233,6 +253,9 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 				tm.callVM.SetGlobal(name, regs[absArg1])
 			}
 		}
+		// Invalidate all global value caches by bumping the generation.
+		// This is shared with Tier 1 (same counter).
+		tm.tier1.globalCacheGen++
 
 	case OpAppend:
 		if absArg1 < len(regs) && absArg2 < len(regs) {
