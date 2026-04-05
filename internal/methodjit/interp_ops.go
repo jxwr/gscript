@@ -51,6 +51,19 @@ func (s *interpState) callViaVM(fnVal runtime.Value, args []runtime.Value) (runt
 	v := vm.New(globals)
 	defer v.Close()
 
+	// Populate VM globals with any function protos known to the caller.
+	// This lets residual cross-function calls (e.g., after bounded recursive
+	// inlining) resolve their callees when the VM executes their bytecode.
+	if s.fn.Globals != nil {
+		for name, p := range s.fn.Globals {
+			if p == nil {
+				continue
+			}
+			cl := &vm.Closure{Proto: p}
+			v.SetGlobal(name, runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl))
+		}
+	}
+
 	results, err := v.CallValue(fnVal, args)
 	if err != nil {
 		return runtime.NilValue(), err
@@ -64,12 +77,22 @@ func (s *interpState) callViaVM(fnVal runtime.Value, args []runtime.Value) (runt
 // getGlobal looks up a global variable by name.
 // In the IR interpreter, globals are not available unless we have a VM context.
 // For self-recursive functions, the function itself is the only global needed.
+// When the Function's Globals table is populated (e.g., after bounded recursive
+// inlining leaves residual cross-function calls), other named protos are also
+// resolvable.
 func (s *interpState) getGlobal(name string) runtime.Value {
 	// If the name matches the function being interpreted, return a closure
 	// wrapping the current proto so self-recursive calls work.
 	if name == s.fn.Proto.Name {
 		cl := &vm.Closure{Proto: s.fn.Proto}
 		return runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
+	}
+	// Consult the inline pass's globals table if available.
+	if s.fn.Globals != nil {
+		if p, ok := s.fn.Globals[name]; ok && p != nil {
+			cl := &vm.Closure{Proto: p}
+			return runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
+		}
 	}
 	return runtime.NilValue()
 }

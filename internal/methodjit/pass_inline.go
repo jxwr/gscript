@@ -72,11 +72,32 @@ func InlinePassWith(config InlineConfig) PassFunc {
 	if config.MaxSize == 0 {
 		config.MaxSize = 30
 	}
+	// MaxRecursion is NOT defaulted here: a zero value is a valid caller
+	// choice meaning "do not inline any recursive callee" (matches legacy
+	// isRecursive-veto behavior). Callers that want bounded recursive
+	// inlining set this explicitly (e.g., 2 for Tier 2).
 	return func(fn *Function) (*Function, error) {
+		// Expose the globals table on the Function so the IR correctness
+		// oracle (Interpret) can resolve residual cross-function calls left
+		// behind by bounded recursive inlining. Production code paths don't
+		// read this field.
+		if fn.Globals == nil && config.Globals != nil {
+			fn.Globals = config.Globals
+		}
+		// recursionCounts tracks, per callee proto, how many times that proto
+		// has been inlined into this caller across the whole fixpoint. It is
+		// used to bound inlining of self- and mutually-recursive callees.
+		// Non-recursive callees increment the counter too (harmless: the gate
+		// only triggers for recursive callees), and since they don't produce
+		// more calls to themselves, the counter never restricts useful work.
+		recursionCounts := make(map[*vm.FuncProto]int)
+		// recursiveMemo caches the isRecursiveOrMutual result so we don't
+		// re-walk the transitive call graph on every call site.
+		recursiveMemo := make(map[*vm.FuncProto]bool)
 		for i := 0; i < inlineMaxIterations; i++ {
 			var inlined bool
 			var err error
-			fn, inlined, err = inlineCalls(fn, config)
+			fn, inlined, err = inlineCalls(fn, config, recursionCounts, recursiveMemo)
 			if err != nil {
 				return fn, err
 			}
@@ -95,7 +116,7 @@ func InlinePassWith(config InlineConfig) PassFunc {
 // instructions that can be resolved statically and inlines eligible callees.
 // Returns (fn, inlined, err) where inlined indicates whether any call was
 // inlined during this pass (used by the fixpoint driver).
-func inlineCalls(fn *Function, config InlineConfig) (*Function, bool, error) {
+func inlineCalls(fn *Function, config InlineConfig, recursionCounts map[*vm.FuncProto]int, recursiveMemo map[*vm.FuncProto]bool) (*Function, bool, error) {
 	// Iterate over blocks. We may add new blocks during inlining, so we
 	// snapshot the block list and process only the original blocks.
 	origBlocks := make([]*Block, len(fn.Blocks))
@@ -103,7 +124,7 @@ func inlineCalls(fn *Function, config InlineConfig) (*Function, bool, error) {
 
 	inlined := false
 	for _, block := range origBlocks {
-		if inlineCallsInBlock(fn, block, config) {
+		if inlineCallsInBlock(fn, block, config, recursionCounts, recursiveMemo) {
 			inlined = true
 		}
 	}
@@ -120,7 +141,7 @@ func inlineCalls(fn *Function, config InlineConfig) (*Function, bool, error) {
 // inlineCallsInBlock processes one block, looking for inlineable OpCall sites.
 // When a call is inlined, the block's instruction list is rewritten in place.
 // Returns true if at least one call in this block was inlined.
-func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig) bool {
+func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursionCounts map[*vm.FuncProto]int, recursiveMemo map[*vm.FuncProto]bool) bool {
 	inlined := false
 	// We iterate by index because we'll be replacing instructions in-place.
 	for i := 0; i < len(block.Instrs); i++ {
@@ -134,9 +155,15 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig) bool {
 			continue
 		}
 
-		// Don't inline recursive functions (callee calls itself).
-		if isRecursive(calleeProto) {
-			continue
+		// Bounded recursion gate: if this callee is (self- or mutually-)
+		// recursive, we cap how many times it may be inlined across the whole
+		// fixpoint for this caller. Non-recursive callees are never gated:
+		// they don't generate more calls to themselves, so their counter
+		// never restricts useful inlining.
+		if isRecursiveOrMutualCached(calleeProto, config.Globals, recursiveMemo) {
+			if recursionCounts[calleeProto] >= config.MaxRecursion {
+				continue
+			}
 		}
 
 		// Check size budget.
@@ -153,6 +180,7 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig) bool {
 			if newInstrs != nil {
 				block.Instrs = newInstrs
 				inlined = true
+				recursionCounts[calleeProto]++
 				// Adjust index: the call was replaced, re-scan from the
 				// same position since new instructions were inserted.
 				i-- // will be incremented by the loop
@@ -164,6 +192,7 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig) bool {
 		// This modifies block.Instrs directly (truncates + adds jump),
 		// moves post-call instrs to a merge block. Stop processing this block.
 		inlineMultiBlock(fn, block, instr, i, calleeFn, calleeName)
+		recursionCounts[calleeProto]++
 		return true
 	}
 	return inlined
@@ -204,6 +233,9 @@ func resolveCallee(callInstr *Instr, fn *Function, config InlineConfig) (string,
 
 // isRecursive checks if a FuncProto contains any OP_GETGLOBAL that loads
 // its own name, indicating it calls itself (directly recursive).
+// Kept for the Tier 2 promotion heuristic in tiering_manager.go which gates
+// on direct self-recursion only. Bounded inlining uses the broader
+// isRecursiveOrMutualCached helper.
 func isRecursive(proto *vm.FuncProto) bool {
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
@@ -217,6 +249,54 @@ func isRecursive(proto *vm.FuncProto) bool {
 		}
 	}
 	return false
+}
+
+// isRecursiveOrMutualCached returns true if proto participates in any
+// call cycle reachable from itself through OP_GETGLOBAL -> globals lookup.
+// Covers both direct self-recursion (f -> f) and mutual recursion
+// (f -> g -> ... -> f). Results are memoized per proto.
+func isRecursiveOrMutualCached(proto *vm.FuncProto, globals map[string]*vm.FuncProto, memo map[*vm.FuncProto]bool) bool {
+	if r, ok := memo[proto]; ok {
+		return r
+	}
+	// DFS through the transitive call graph. We consider `proto` recursive
+	// if any path from `proto` (through OP_GETGLOBAL references resolved via
+	// the globals table) loops back to `proto` itself.
+	visited := make(map[*vm.FuncProto]bool)
+	var walk func(p *vm.FuncProto) bool
+	walk = func(p *vm.FuncProto) bool {
+		for _, inst := range p.Code {
+			if vm.DecodeOp(inst) != vm.OP_GETGLOBAL {
+				continue
+			}
+			bx := vm.DecodeBx(inst)
+			if bx < 0 || bx >= len(p.Constants) {
+				continue
+			}
+			nameConst := p.Constants[bx]
+			if !nameConst.IsString() {
+				continue
+			}
+			target, ok := globals[nameConst.Str()]
+			if !ok || target == nil {
+				continue
+			}
+			if target == proto {
+				return true
+			}
+			if visited[target] {
+				continue
+			}
+			visited[target] = true
+			if walk(target) {
+				return true
+			}
+		}
+		return false
+	}
+	result := walk(proto)
+	memo[proto] = result
+	return result
 }
 
 // inlineTrivial inlines a single-block callee into the caller at position idx.

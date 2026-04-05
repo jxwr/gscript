@@ -26,6 +26,14 @@ type Function struct {
 	// RangeAnalysisPass. The emitter consults this set to skip the
 	// SBFX+CMP+B.NE overflow check for provably safe AddInt/SubInt/MulInt/NegInt.
 	Int48Safe map[int]bool
+
+	// Globals, if non-nil, maps global function names to their protos.
+	// Used by the IR interpreter to resolve residual cross-function calls
+	// (e.g., those left after bounded recursive inlining). Populated by
+	// the inline pass when its config includes a globals map. Production
+	// code paths never consult this field — it exists only as a hook for
+	// the IR correctness oracle.
+	Globals map[string]*vm.FuncProto
 }
 
 // newValueID allocates a unique ID for a new SSA value.

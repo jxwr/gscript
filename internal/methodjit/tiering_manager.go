@@ -457,7 +457,7 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	// are replaced with the callee's body, and the caller becomes pure-compute.
 	inlineGlobals := tm.buildInlineGlobals()
 	if len(inlineGlobals) > 0 {
-		config := InlineConfig{Globals: inlineGlobals, MaxSize: inlineMaxCalleeSize}
+		config := InlineConfig{Globals: inlineGlobals, MaxSize: inlineMaxCalleeSize, MaxRecursion: 2}
 		fn, _ = InlinePassWith(config)(fn)
 		// Re-run TypeSpec after inlining (new optimization opportunities from
 		// cross-function type propagation).
