@@ -34,6 +34,10 @@ type gprPhiMove struct {
 
 // emitInstr emits ARM64 code for a single SSA instruction.
 func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
+	// Clear per-instruction scratch FPR cache (D0-D3 are clobber-scoped per-instr).
+	for k := range ec.scratchFPRCache {
+		delete(ec.scratchFPRCache, k)
+	}
 	switch instr.Op {
 	// --- Constants ---
 	case OpConstInt:

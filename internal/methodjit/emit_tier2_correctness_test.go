@@ -521,3 +521,75 @@ result := compute_distance(100)
 		t.Errorf("compute_distance(100) VM sanity: got %f, want ~%f", got, want)
 	}
 }
+
+// TestScratchFPRCacheDedup validates that the per-instruction scratch-FPR
+// cache does not change semantics when the SAME value is used as multiple
+// operands of a single float instruction (e.g. v*v*v*v). The emitter should
+// load v once into a scratch FPR and reuse it for all operand references.
+// Primary goal: correctness — cache must not change results.
+func TestScratchFPRCacheDedup(t *testing.T) {
+	src := `
+func quad(x) {
+    return x * x * x * x
+}
+result := 0.0
+for iter := 1; iter <= 5; iter++ {
+    result = quad(3.0)
+}
+`
+	compareTier2Result(t, src, "result")
+
+	// Independent sanity check: 3^4 = 81.
+	protoVM := compileProto(t, src)
+	globalsVM := runtime.NewInterpreterGlobals()
+	vVM := vm.New(globalsVM)
+	defer vVM.Close()
+	vVM.Execute(protoVM)
+	vmResult := vVM.GetGlobal("result")
+	if !vmResult.IsFloat() {
+		t.Fatalf("quad(3.0): expected float, got %v (%s)",
+			vmResult, vmResult.TypeName())
+	}
+	want := 81.0
+	got := vmResult.Float()
+	if math.Abs(got-want) > 1e-9 {
+		t.Errorf("quad(3.0) VM sanity: got %f, want %f", got, want)
+	}
+}
+
+// TestScratchFPRCacheClearedPerInstr validates that the scratch-FPR cache
+// is cleared between instructions. Multiple independent doubled-operand
+// instructions in sequence must each produce correct results — a stale
+// cache entry from a prior instruction must not leak into the next.
+func TestScratchFPRCacheClearedPerInstr(t *testing.T) {
+	src := `
+func sumSquares(x, y) {
+    a := x * x
+    b := y * y
+    c := (x + y) * (x + y)
+    return a + b + c
+}
+result := 0.0
+for iter := 1; iter <= 5; iter++ {
+    result = sumSquares(3.0, 4.0)
+}
+`
+	compareTier2Result(t, src, "result")
+
+	// Independent sanity check: 3*3 + 4*4 + 7*7 = 9 + 16 + 49 = 74.
+	protoVM := compileProto(t, src)
+	globalsVM := runtime.NewInterpreterGlobals()
+	vVM := vm.New(globalsVM)
+	defer vVM.Close()
+	vVM.Execute(protoVM)
+	vmResult := vVM.GetGlobal("result")
+	if !vmResult.IsFloat() {
+		t.Fatalf("sumSquares(3,4): expected float, got %v (%s)",
+			vmResult, vmResult.TypeName())
+	}
+	want := 74.0
+	got := vmResult.Float()
+	if math.Abs(got-want) > 1e-9 {
+		t.Errorf("sumSquares(3,4) VM sanity: got %f, want %f", got, want)
+	}
+}

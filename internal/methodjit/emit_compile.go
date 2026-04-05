@@ -132,6 +132,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		loopExitBoxPhis:  exitBoxPhis,
 		constInts:        constInts,
 		irTypes:          irTypes,
+		scratchFPRCache:  make(map[int]jit.FReg),
 	}
 
 	// Assign home slots for all SSA values.
@@ -284,6 +285,12 @@ type emitContext struct {
 	// OpGetGlobal native cache. Each GetGlobal instruction gets a unique
 	// index (0, 1, 2, ...) assigned at emission time.
 	nextGlobalCacheIndex int
+
+	// scratchFPRCache maps value ID -> scratch FPR (D0-D3) currently holding
+	// that value's raw float. Scoped to a SINGLE instruction's operand resolution
+	// — cleared at the start of every emitInstr call. Enables dedup of same-value
+	// operands within one instruction (e.g., v*v loads v only once).
+	scratchFPRCache map[int]jit.FReg
 }
 
 // assignSlots assigns a home slot for every SSA value.

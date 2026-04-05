@@ -262,6 +262,16 @@ func (ec *emitContext) invalidateReg(reg int, newValueID int) {
 	}
 }
 
+// invalidateScratchFPR removes any cache entry whose FPR equals reg.
+// Called when `reg` is about to be overwritten with a new value.
+func (ec *emitContext) invalidateScratchFPR(reg jit.FReg) {
+	for vid, fpr := range ec.scratchFPRCache {
+		if fpr == reg {
+			delete(ec.scratchFPRCache, vid)
+		}
+	}
+}
+
 // resolveRawFloat returns an FPR holding the raw float64 for a value.
 // If the value already has an allocated FPR (from a prior raw float op),
 // returns that FPR directly -- zero instructions emitted.
@@ -269,7 +279,16 @@ func (ec *emitContext) invalidateReg(reg int, newValueID int) {
 // Otherwise, loads the NaN-boxed value from GPR or memory and moves to the
 // scratch FPR (float bits ARE the NaN-boxed representation, so FMOVtoFP
 // reinterprets the bits as a double).
+//
+// Per-instruction scratch-FPR cache: within ONE emitInstr call, if the SAME
+// valueID is requested twice (e.g., v*v), the second call returns the scratch
+// FPR populated by the first call — zero instructions emitted. The cache is
+// cleared at the start of every emitInstr call.
 func (ec *emitContext) resolveRawFloat(valueID int, scratch jit.FReg) jit.FReg {
+	// Cache hit: value is already in a scratch FPR from earlier this instruction.
+	if fpr, ok := ec.scratchFPRCache[valueID]; ok {
+		return fpr
+	}
 	// Already in an FPR?
 	if ec.hasFPReg(valueID) {
 		return ec.physFPReg(valueID)
@@ -278,7 +297,9 @@ func (ec *emitContext) resolveRawFloat(valueID int, scratch jit.FReg) jit.FReg {
 	// This handles mixed int/float operations like 2.0 * n where n is an int.
 	if ec.hasReg(valueID) && ec.rawIntRegs[valueID] {
 		gpr := ec.physReg(valueID)
+		ec.invalidateScratchFPR(scratch)
 		ec.asm.SCVTF(scratch, gpr)
+		ec.scratchFPRCache[valueID] = scratch
 		return scratch
 	}
 	// Check if the value is known to be int-typed from the IR. If so, we need
@@ -289,13 +310,17 @@ func (ec *emitContext) resolveRawFloat(valueID int, scratch jit.FReg) jit.FReg {
 	if irType, ok := ec.irTypes[valueID]; ok && irType == TypeInt {
 		gpr := ec.resolveValueNB(valueID, jit.X0)
 		jit.EmitUnboxInt(ec.asm, jit.X0, gpr)
+		ec.invalidateScratchFPR(scratch)
 		ec.asm.SCVTF(scratch, jit.X0)
+		ec.scratchFPRCache[valueID] = scratch
 		return scratch
 	}
 	// Value is NaN-boxed float in a GPR or memory slot. Load and interpret
 	// bits as float (for NaN-boxed floats, the bits ARE the IEEE 754 value).
 	gpr := ec.resolveValueNB(valueID, jit.X0)
+	ec.invalidateScratchFPR(scratch)
 	ec.asm.FMOVtoFP(scratch, gpr)
+	ec.scratchFPRCache[valueID] = scratch
 	return scratch
 }
 
