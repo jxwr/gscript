@@ -443,3 +443,66 @@ func f(i, j) {
 
 	assertValuesEqual(t, "A(3,4)", irResults[0], vmResults[0])
 }
+
+// TestInline_Recursive_Transitive verifies that a call inside an already-
+// inlined callee body is itself inlined on a subsequent iteration. This is
+// the spectral_norm pattern: multiplyAtAv -> multiplyAv -> A. After the
+// first round, multiplyAv is inlined but its internal A(i,j) calls remain.
+// The fixpoint iteration must inline those A calls too.
+func TestInline_Recursive_Transitive(t *testing.T) {
+	src := `
+func leaf(x) {
+	return x + 1
+}
+func mid(n) {
+	s := 0
+	for i := 0; i < n; i++ {
+		s = s + leaf(i)
+	}
+	return s
+}
+func top(n) {
+	return mid(n) + mid(n)
+}
+`
+	fn, config := buildInlineTestIR(t, src, "top")
+	t.Logf("Before inline:\n%s", Print(fn))
+
+	// Before: top has 2 OpCalls (to mid).
+	if n := countOp(fn, OpCall); n != 2 {
+		t.Fatalf("expected 2 OpCall before inlining, got %d", n)
+	}
+
+	pass := InlinePassWith(config)
+	result, err := pass(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	t.Logf("After inline:\n%s", Print(result))
+
+	// After recursive inlining: both mid calls are inlined AND the leaf calls
+	// inside them are also inlined. Expect 0 remaining OpCall.
+	if n := countOp(result, OpCall); n != 0 {
+		t.Errorf("expected 0 OpCall after recursive inlining, got %d", n)
+	}
+
+	if errs := Validate(result); len(errs) > 0 {
+		for _, e := range errs {
+			t.Errorf("validation error: %v", e)
+		}
+	}
+
+	// Correctness: top(10) should equal VM's top(10).
+	vmResults := runVMFunc(t, src, "top", []runtime.Value{runtime.IntValue(10)})
+	if len(vmResults) == 0 {
+		t.Fatal("VM returned no results")
+	}
+	irResults, err := Interpret(result, []runtime.Value{runtime.IntValue(10)})
+	if err != nil {
+		t.Fatalf("IR interpreter error: %v", err)
+	}
+	if len(irResults) == 0 {
+		t.Fatal("IR interpreter returned no results")
+	}
+	assertValuesEqual(t, "top(10)", irResults[0], vmResults[0])
+}

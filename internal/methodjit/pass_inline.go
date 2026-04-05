@@ -16,13 +16,32 @@
 //      caller at the call site.
 //
 // Inlining budget: callee must have <= MaxSize bytecode instructions (default 30).
-// Only inline one level deep (no recursive or transitive inlining).
+// Transitive inlining: the pass runs to fixpoint — if an inlined callee body
+// itself contains calls to eligible globals, those are inlined on subsequent
+// rounds, up to inlineMaxIterations. The size budget naturally bounds the
+// depth: each inlining grows the caller, so callees eventually stop fitting.
 
 package methodjit
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/gscript/gscript/internal/vm"
 )
+
+// countOpHelper counts instructions of the given op (debug helper).
+func countOpHelper(fn *Function, op Op) int {
+	n := 0
+	for _, b := range fn.Blocks {
+		for _, instr := range b.Instrs {
+			if instr.Op == op {
+				n++
+			}
+		}
+	}
+	return n
+}
 
 // InlineConfig configures the function inlining pass.
 type InlineConfig struct {
@@ -30,34 +49,78 @@ type InlineConfig struct {
 	MaxSize int                       // max callee bytecode count (default 30)
 }
 
+// inlineMaxIterations is the safety cap on recursive inlining iterations.
+// Each iteration inlines one level of callees into the caller. A callee that
+// itself makes calls is only fully flattened after multiple iterations.
+// The budget (MaxSize) naturally bounds recursion — each inline grows the
+// caller, and eventually no more callees fit the budget. This cap is a belt-
+// and-suspenders guard against pathological cases (e.g., mutual recursion).
+const inlineMaxIterations = 5
+
 // InlinePassWith returns a PassFunc that inlines small monomorphic call sites.
+// The pass runs to fixpoint: after each inlining round, it re-scans for new
+// inlineable call sites (introduced by inlining callees that themselves made
+// calls). Stops when no callee was inlined in a round or the iteration cap
+// is reached.
+//
+// Note: we cannot terminate purely on call-count: inlining a multi-block
+// callee can REPLACE one call with another (a leaf call from the callee
+// body), leaving the count unchanged while still making progress. Instead,
+// each round reports whether it inlined anything.
 func InlinePassWith(config InlineConfig) PassFunc {
 	if config.MaxSize == 0 {
 		config.MaxSize = 30
 	}
 	return func(fn *Function) (*Function, error) {
-		return inlineCalls(fn, config)
+		for i := 0; i < inlineMaxIterations; i++ {
+			var inlined bool
+			var err error
+			fn, inlined, err = inlineCalls(fn, config)
+			if err != nil {
+				return fn, err
+			}
+			if os.Getenv("GSCRIPT_INLINE_DEBUG") == "1" {
+				fmt.Fprintf(os.Stderr, "inline iter %d: inlined=%v calls=%d\n", i, inlined, countOpHelper(fn, OpCall))
+			}
+			if !inlined {
+				break
+			}
+		}
+		return fn, nil
 	}
 }
 
 // inlineCalls is the main inlining driver. It scans the caller for OpCall
 // instructions that can be resolved statically and inlines eligible callees.
-func inlineCalls(fn *Function, config InlineConfig) (*Function, error) {
+// Returns (fn, inlined, err) where inlined indicates whether any call was
+// inlined during this pass (used by the fixpoint driver).
+func inlineCalls(fn *Function, config InlineConfig) (*Function, bool, error) {
 	// Iterate over blocks. We may add new blocks during inlining, so we
 	// snapshot the block list and process only the original blocks.
 	origBlocks := make([]*Block, len(fn.Blocks))
 	copy(origBlocks, fn.Blocks)
 
+	inlined := false
 	for _, block := range origBlocks {
-		inlineCallsInBlock(fn, block, config)
+		if inlineCallsInBlock(fn, block, config) {
+			inlined = true
+		}
 	}
 
-	return fn, nil
+	if inlined {
+		// Rewire placeholder Value.Def pointers produced by remapDef so that
+		// later passes (and the next fixpoint iteration) see the live Instr.
+		relinkValueDefs(fn)
+	}
+
+	return fn, inlined, nil
 }
 
 // inlineCallsInBlock processes one block, looking for inlineable OpCall sites.
 // When a call is inlined, the block's instruction list is rewritten in place.
-func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig) {
+// Returns true if at least one call in this block was inlined.
+func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig) bool {
+	inlined := false
 	// We iterate by index because we'll be replacing instructions in-place.
 	for i := 0; i < len(block.Instrs); i++ {
 		instr := block.Instrs[i]
@@ -88,6 +151,7 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig) {
 			newInstrs := inlineTrivial(fn, block, instr, i, calleeFn, calleeName)
 			if newInstrs != nil {
 				block.Instrs = newInstrs
+				inlined = true
 				// Adjust index: the call was replaced, re-scan from the
 				// same position since new instructions were inserted.
 				i-- // will be incremented by the loop
@@ -99,8 +163,9 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig) {
 		// This modifies block.Instrs directly (truncates + adds jump),
 		// moves post-call instrs to a merge block. Stop processing this block.
 		inlineMultiBlock(fn, block, instr, i, calleeFn, calleeName)
-		return
+		return true
 	}
+	return inlined
 }
 
 // resolveCallee checks if an OpCall's function argument comes from an
@@ -275,9 +340,21 @@ func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, callee
 func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, calleeFn *Function, calleeName string) {
 	callArgs := callInstr.Args[1:]
 
+	// Find the maximum block ID currently in use. Scanning is required because
+	// after previous inlining rounds the block list is not necessarily sorted
+	// by ID (the original entry keeps its low ID, newly spliced blocks get
+	// high IDs, and any block added since then may follow). Using the tail
+	// block's ID would not be safe in the fixpoint loop.
+	maxBlockID := 0
+	for _, b := range fn.Blocks {
+		if b.ID > maxBlockID {
+			maxBlockID = b.ID
+		}
+	}
+
 	// Create a merge block for instructions after the call.
 	mergeBlock := &Block{
-		ID:   fn.Blocks[len(fn.Blocks)-1].ID + 1,
+		ID:   maxBlockID + 1,
 		defs: make(map[int]*Value),
 	}
 
@@ -481,7 +558,9 @@ func remapValue(v *Value, idMap map[int]int, paramValues map[int]*Value) *Value 
 }
 
 // remapDef returns a remapped Def pointer if the original def's ID is in idMap.
-// This is a shallow remap — just updates the ID for Value lookups.
+// This is a shallow remap — just updates the ID for Value lookups. The Def
+// pointer is rewired to the true (live) Instr by relinkValueDefs after
+// inlining completes, so downstream passes see the remapped Aux and Args.
 func remapDef(def *Instr, idMap map[int]int) *Instr {
 	if def == nil {
 		return nil
@@ -492,6 +571,33 @@ func remapDef(def *Instr, idMap map[int]int) *Instr {
 		return &Instr{ID: newID, Op: def.Op, Type: def.Type}
 	}
 	return def
+}
+
+// relinkValueDefs scans the entire function and rewires each Value.Def to
+// point to the live Instr with the matching ID. This repairs placeholder
+// Def pointers produced by remapDef (and remapValue) during inlining so
+// that later passes / subsequent inlining iterations can read fields like
+// Aux directly off Value.Def.
+func relinkValueDefs(fn *Function) {
+	// Build id -> live Instr index.
+	liveByID := make(map[int]*Instr, 64)
+	for _, b := range fn.Blocks {
+		for _, instr := range b.Instrs {
+			liveByID[instr.ID] = instr
+		}
+	}
+	for _, b := range fn.Blocks {
+		for _, instr := range b.Instrs {
+			for _, arg := range instr.Args {
+				if arg == nil {
+					continue
+				}
+				if live, ok := liveByID[arg.ID]; ok {
+					arg.Def = live
+				}
+			}
+		}
+	}
 }
 
 // remapAux handles Aux field remapping for instructions that reference the
