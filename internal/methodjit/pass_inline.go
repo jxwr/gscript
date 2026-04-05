@@ -45,8 +45,9 @@ func countOpHelper(fn *Function, op Op) int {
 
 // InlineConfig configures the function inlining pass.
 type InlineConfig struct {
-	Globals map[string]*vm.FuncProto // global function name -> proto
-	MaxSize int                       // max callee bytecode count (default 30)
+	Globals      map[string]*vm.FuncProto // global function name -> proto
+	MaxSize      int                      // max callee bytecode count (default 30)
+	MaxRecursion int                      // max inlining depth for self/mutually-recursive callees (0 = no recursive inlining)
 }
 
 // inlineMaxIterations is the safety cap on recursive inlining iterations.

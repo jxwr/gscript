@@ -382,6 +382,94 @@ for call := 1; call <= 5; call++ {
 	t.Logf("tier2Count=%d, result=%d", tm.Tier2Count(), result.Int())
 }
 
+// TestShouldPromoteTier2_CallHeavyNoLoop verifies that small call-heavy
+// no-loop functions (like fib) DO get promoted under the new policy. This
+// is the flip side of the current hard-block that prevents Tier 2 for any
+// CallCount>0 && !HasLoop function.
+func TestShouldPromoteTier2_CallHeavyNoLoop(t *testing.T) {
+	src := `
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+`
+	proto := compileProto(t, src)
+	fibProto := proto.Protos[0]
+	p := analyzeFuncProfile(fibProto)
+
+	// New policy: call-heavy no-loop small funcs promote at runtimeCallCount>=2.
+	if !shouldPromoteTier2(fibProto, p, 2) {
+		t.Error("expected fib (call-heavy, no-loop, small) to promote at runtimeCallCount=2 under new policy")
+	}
+	// Must not promote before the threshold is reached.
+	if shouldPromoteTier2(fibProto, p, 0) {
+		t.Error("should not promote at runtimeCallCount=0")
+	}
+}
+
+// TestShouldPromoteTier2_LargeCallHeavyNoLoop verifies the bytecode cap (40)
+// excludes large call-heavy no-loop functions from the new promotion clause.
+func TestShouldPromoteTier2_LargeCallHeavyNoLoop(t *testing.T) {
+	src := `
+func other(p, q) { return p * q }
+func big(a, b, c, d, e) {
+    x := a + b
+    y := c + d
+    z := x * y
+    w := z - e
+    u := w + x
+    v := u * y
+    r := v - z
+    s := r + w
+    t := s * u
+    k := t + a
+    m := k - b
+    n := m * c
+    o := n + d
+    q := o - e
+    aa := q + x
+    bb := aa - y
+    cc := bb * z
+    dd := cc + w
+    ee := dd - u
+    ff := ee * v
+    gg := ff + r
+    hh := gg - s
+    return hh + other(r, s) + other(x, y) + other(k, m) + other(n, o) + other(aa, bb) + other(cc, dd)
+}
+`
+	proto := compileProto(t, src)
+	// Find big proto by name.
+	var bigProto *vm.FuncProto
+	for _, inner := range proto.Protos {
+		if inner.Name == "big" {
+			bigProto = inner
+			break
+		}
+	}
+	if bigProto == nil {
+		t.Fatal("big proto not found")
+	}
+	p := analyzeFuncProfile(bigProto)
+	t.Logf("big profile: %+v", p)
+
+	if p.BytecodeCount <= 40 {
+		t.Skipf("need > 40 bytecodes, got %d — adjust test source", p.BytecodeCount)
+	}
+	if p.HasLoop {
+		t.Fatalf("big should not have loops, got HasLoop=true")
+	}
+	if p.CallCount == 0 {
+		t.Fatalf("big should have calls, got CallCount=0")
+	}
+
+	// Under the new policy, the call-heavy-no-loop clause has a bytecode cap
+	// (40). big exceeds it, so it must NOT be promoted.
+	if shouldPromoteTier2(bigProto, p, 100) {
+		t.Error("expected big (>40 bytecodes, call-heavy, no-loop) to NOT promote under call-heavy clause")
+	}
+}
+
 // TestFuncProfile_CachedInTieringManager verifies profiles are cached.
 func TestFuncProfile_CachedInTieringManager(t *testing.T) {
 	src := `

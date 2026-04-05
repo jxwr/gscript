@@ -506,3 +506,145 @@ func top(n) {
 	}
 	assertValuesEqual(t, "top(10)", irResults[0], vmResults[0])
 }
+
+// TestInlineBoundedRecursion verifies that with MaxRecursion=2, a self-
+// recursive callee (fib) gets inlined exactly 2 levels deep and then leaves
+// residual OpCalls for the remaining recursion at runtime. Also verifies
+// that MaxRecursion=0 disables recursive inlining (falls back to current
+// behavior where fib stays as a call).
+func TestInlineBoundedRecursion(t *testing.T) {
+	src := `
+func fib(n) {
+	if n < 2 { return n }
+	return fib(n-1) + fib(n-2)
+}
+func f(x) {
+	return fib(x)
+}
+`
+
+	// --- Case 1: MaxRecursion=2 ---
+	fn, config := buildInlineTestIR(t, src, "f")
+	config.MaxRecursion = 2
+	t.Logf("Before inline (MaxRecursion=2):\n%s", Print(fn))
+
+	pass := InlinePassWith(config)
+	result, err := pass(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	t.Logf("After inline (MaxRecursion=2):\n%s", Print(result))
+
+	// With MaxRecursion=2, fib is inlined 2 levels deep. Tree shape:
+	//   f -> fib (depth 1)
+	//          fib(n-1) -> depth 2 -> stop, leave OpCall (2 leaves)
+	//          fib(n-2) -> depth 2 -> stop, leave OpCall (2 leaves)
+	// Residual OpCalls = 4. Allow a 2..6 range for fixpoint variation.
+	callCount := countOp(result, OpCall)
+	if callCount == 0 {
+		t.Errorf("expected residual OpCall > 0 after bounded inlining of fib, got 0 (recursion not inlined at all)")
+	}
+	if callCount >= 10 {
+		t.Errorf("expected residual OpCall < 10 after bounded inlining of fib, got %d (inlining exploded)", callCount)
+	}
+	if callCount != 4 {
+		t.Logf("note: expected exactly 4 residual OpCalls, got %d (acceptable if in range 2..6)", callCount)
+		if callCount < 2 || callCount > 6 {
+			t.Errorf("residual OpCall count %d outside acceptable range 2..6", callCount)
+		}
+	}
+
+	// Validate structural integrity after bounded recursive inlining.
+	if errs := Validate(result); len(errs) > 0 {
+		for _, e := range errs {
+			t.Errorf("validation error: %v", e)
+		}
+	}
+
+	// Correctness: the inlined IR must match the VM for fib(6) = 8.
+	vmResults := runVMFunc(t, src, "f", []runtime.Value{runtime.IntValue(6)})
+	if len(vmResults) == 0 {
+		t.Fatal("VM returned no results")
+	}
+	irResults, err := Interpret(result, []runtime.Value{runtime.IntValue(6)})
+	if err != nil {
+		t.Fatalf("IR interpreter error: %v", err)
+	}
+	if len(irResults) == 0 {
+		t.Fatal("IR interpreter returned no results")
+	}
+	assertValuesEqual(t, "f(6) with bounded recursive inlining", irResults[0], vmResults[0])
+
+	// --- Case 2: MaxRecursion=0 should fall back to current behavior ---
+	// (recursive callee NOT inlined, original single OpCall remains).
+	fn2, config2 := buildInlineTestIR(t, src, "f")
+	config2.MaxRecursion = 0
+	pass2 := InlinePassWith(config2)
+	result2, err := pass2(fn2)
+	if err != nil {
+		t.Fatalf("InlinePass (MaxRecursion=0) error: %v", err)
+	}
+	if n := countOp(result2, OpCall); n != 1 {
+		t.Errorf("with MaxRecursion=0 expected exactly 1 OpCall (no recursive inlining), got %d", n)
+	}
+}
+
+// TestInlineMutualRecursion verifies that MaxRecursion bounds apply across
+// mutual recursion (ping -> pong -> ping -> pong -> ...). Inlining must
+// terminate, produce valid IR, and match VM output.
+func TestInlineMutualRecursion(t *testing.T) {
+	src := `
+func ping(n) {
+	if n < 1 { return 0 }
+	return pong(n-1) + 1
+}
+func pong(n) {
+	if n < 1 { return 0 }
+	return ping(n-1) + 1
+}
+func caller(x) {
+	return ping(x)
+}
+`
+	fn, config := buildInlineTestIR(t, src, "caller")
+	config.MaxRecursion = 2
+	t.Logf("Before inline (mutual, MaxRecursion=2):\n%s", Print(fn))
+
+	pass := InlinePassWith(config)
+	result, err := pass(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	t.Logf("After inline (mutual, MaxRecursion=2):\n%s", Print(result))
+
+	// With MaxRecursion=2 per-callee, ping/pong alternate up to depth=2 each,
+	// then leave an OpCall to finish the remaining recursion at runtime.
+	callCount := countOp(result, OpCall)
+	if callCount < 1 {
+		t.Errorf("expected at least 1 residual OpCall after bounded mutual inlining, got %d", callCount)
+	}
+	if callCount >= 20 {
+		t.Errorf("mutual inlining exploded: %d residual OpCalls", callCount)
+	}
+
+	// Validate structural integrity.
+	if errs := Validate(result); len(errs) > 0 {
+		for _, e := range errs {
+			t.Errorf("validation error: %v", e)
+		}
+	}
+
+	// Correctness: caller(5) must match VM.
+	vmResults := runVMFunc(t, src, "caller", []runtime.Value{runtime.IntValue(5)})
+	if len(vmResults) == 0 {
+		t.Fatal("VM returned no results")
+	}
+	irResults, err := Interpret(result, []runtime.Value{runtime.IntValue(5)})
+	if err != nil {
+		t.Fatalf("IR interpreter error: %v", err)
+	}
+	if len(irResults) == 0 {
+		t.Fatal("IR interpreter returned no results")
+	}
+	assertValuesEqual(t, "caller(5) with bounded mutual inlining", irResults[0], vmResults[0])
+}
