@@ -29,13 +29,15 @@
     "benchmarks/data/baseline.json",
     "benchmarks/data/latest.json",
     "benchmarks/run_all.sh",
+    "benchmarks/set_baseline.sh",
     "opt/analyze_report.md",
     "opt/measure_report.md",
+    "opt/plan_template.md",
     "opt/state.json"
   ],
-  "head_commit": "51c517bad3bf8b8894245a0a6c78a075937fac3b",
+  "head_commit": "7f1c47df48395b70fff145d84e935321f4abc01c",
   "branch": "jit-v3-clean",
-  "last_checkpoint": "2026-04-05T11:39:11Z",
+  "last_checkpoint": "2026-04-05T13:20:38Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -88,11 +90,24 @@
       "cycle_id": "2026-04-05-tier2-recursion-diagnose",
       "outcome": "no_change",
       "summary": "Diagnosed tier2 hang: BuildGraph silently drops CALL B=0 args, producing exponentially wrong recursion depth. Landed Unpromotable gate so compileTier2 refuses such protos; policy flip reverted. 0 wall-time win, but latent crash now impossible + reproducer committed."
+    },
+    {
+      "cycle_id": "2026-04-05-tier2-float-profile",
+      "category": "tier2_float_loop",
+      "initiative": "opt/initiatives/tier2-float-loops.md",
+      "outcome": "no_change",
+      "summary": "Phase 1 diagnostic: profiled all 5 float benchmarks (spectral_norm/nbody/matmul/mandelbrot/math_intensive). Top-3 hot patterns ranked: (1) per-op NaN box/unbox 5/5, (2) generic Mul/Add on any-typed loads 3/5, (3) redundant same-slot load 4/5. Escalation: shallow. Round-7 target: Pattern 1 (FPR-resident SSA across blocks)."
     }
   ],
   "session_summary": {
     "correctness_progress": "15/22 -> 21/22 benchmarks correct",
     "root_causes_fixed": 7,
     "commits": 5
-  }
+  },
+  "category_failures": {
+    "recursive_call": 2,
+    "tier2_float_loop": 1
+  },
+  "rounds_since_review": 1,
+  "rounds_since_research": 1
 }
