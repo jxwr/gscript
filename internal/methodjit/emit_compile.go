@@ -73,20 +73,26 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 				// Check that no non-header block in the loop body clobbers
 				// this register. If clobbered, the phi value can't survive
 				// in-register and must be written to memory.
+				//
+				// A "clobber" is any instruction whose allocated register
+				// equals this phi's register. Nested loop header phis
+				// count: their phi moves write the register at inner-loop
+				// entry, overwriting the outer header's phi value.
 				clobbered := false
 				for _, block := range fn.Blocks {
 					if block.ID == headerID || !bodyBlocks[block.ID] {
 						continue
 					}
 					for _, instr := range block.Instrs {
-						if instr.Op == OpPhi || instr.Op.IsTerminator() {
+						if instr.Op.IsTerminator() {
 							continue
 						}
 						instrPR, ok := alloc.ValueRegs[instr.ID]
-						if ok && !instrPR.IsFloat && instrPR.Reg == pr.Reg {
-							clobbered = true
-							break
+						if !ok || instrPR.IsFloat || instrPR.Reg != pr.Reg {
+							continue
 						}
+						clobbered = true
+						break
 					}
 					if clobbered {
 						break

@@ -272,7 +272,9 @@ func (ec *emitContext) emitInt48OverflowCheck(result jit.Reg, instr *Instr) {
 	// Without this, loopExitBoxPhis values live only in registers and the
 	// interpreter would find stale memory (e.g., fibonacci_iterative bug).
 	ec.emitStoreAllActiveRegs()
-	ec.emitLoopExitBoxing()
+	// Deopt may happen anywhere inside the loop nest; box ALL deferred
+	// phis to keep the interpreter's view of memory consistent.
+	ec.emitLoopExitBoxing(-1)
 
 	// Overflow: deopt to interpreter.
 	asm.LoadImm64(jit.X0, ExitDeopt)

@@ -792,7 +792,7 @@ func (ec *emitContext) emitJump(instr *Instr, block *Block) {
 	}
 	target := block.Succs[0]
 	if ec.isLoopExit(block, target) {
-		ec.emitLoopExitBoxing()
+		ec.emitLoopExitBoxing(ec.exitingHeaderID(block, target))
 	}
 	ec.emitPhiMoves(block, target)
 	ec.asm.B(blockLabel(target))
@@ -818,7 +818,7 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 
 	// False path (fall-through).
 	if ec.isLoopExit(block, falseBlock) {
-		ec.emitLoopExitBoxing()
+		ec.emitLoopExitBoxing(ec.exitingHeaderID(block, falseBlock))
 	}
 	ec.emitPhiMoves(block, falseBlock)
 	ec.asm.B(blockLabel(falseBlock))
@@ -826,7 +826,7 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 	// True path (trampoline).
 	ec.asm.Label(trueTrampolineLabel)
 	if ec.isLoopExit(block, trueBlock) {
-		ec.emitLoopExitBoxing()
+		ec.emitLoopExitBoxing(ec.exitingHeaderID(block, trueBlock))
 	}
 	ec.emitPhiMoves(block, trueBlock)
 	ec.asm.B(blockLabel(trueBlock))
@@ -834,18 +834,73 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 
 // isLoopExit returns true if the edge from 'from' to 'to' exits a loop
 // (from is in a loop, to is not).
+//
+// For nested loops: returns true if 'to' is outside 'from's innermost
+// enclosing loop, even if 'to' is still inside an outer loop. This lets
+// emitLoopExitBoxing run on inner-loop exits so that any loop-header phi
+// values whose write-through was deferred (loopExitBoxPhis) are boxed to
+// memory before leaving their loop's body.
 func (ec *emitContext) isLoopExit(from *Block, to *Block) bool {
 	if ec.loop == nil {
 		return false
 	}
-	return ec.loop.loopBlocks[from.ID] && !ec.loop.loopBlocks[to.ID]
+	if !ec.loop.loopBlocks[from.ID] {
+		return false
+	}
+	// 'from' is in some loop. Find from's innermost enclosing loop and
+	// check whether 'to' is still inside it.
+	var fromHeader int
+	if ec.loop.loopHeaders[from.ID] {
+		fromHeader = from.ID
+	} else if h, ok := ec.loop.blockInnerHeader[from.ID]; ok {
+		fromHeader = h
+	} else {
+		// Shouldn't happen: from is in loopBlocks but no header found.
+		return !ec.loop.loopBlocks[to.ID]
+	}
+	bodyBlocks := ec.loop.headerBlocks[fromHeader]
+	// 'to' exits from's loop if it is NOT in the header's body set
+	// (including the header itself).
+	return !bodyBlocks[to.ID]
+}
+
+// exitingHeaderID returns the header ID of the innermost loop being exited
+// by the edge from→to. Returns -1 if the edge is not a loop exit (caller
+// should have pre-checked via isLoopExit).
+func (ec *emitContext) exitingHeaderID(from *Block, to *Block) int {
+	if ec.loop == nil || !ec.loop.loopBlocks[from.ID] {
+		return -1
+	}
+	if ec.loop.loopHeaders[from.ID] {
+		return from.ID
+	}
+	if h, ok := ec.loop.blockInnerHeader[from.ID]; ok {
+		return h
+	}
+	return -1
 }
 
 // emitLoopExitBoxing boxes loop header phi values that need exit-time
 // boxing (in loopExitBoxPhis). These are phis whose write-through was
 // deferred to exit time. Uses the loopHeaderRegs to find the register.
-func (ec *emitContext) emitLoopExitBoxing() {
+//
+// When exitingHeaderID >= 0, only phis belonging to that specific loop
+// header are boxed — this matters for nested loops, where boxing ALL
+// deferred phis at an inner-loop exit would corrupt slots belonging to
+// outer-loop phis (those registers may currently hold unrelated values).
+// Pass -1 to box everything (whole-function exits).
+func (ec *emitContext) emitLoopExitBoxing(exitingHeaderID int) {
+	var phiSet map[int]bool
+	if exitingHeaderID >= 0 && ec.loop != nil {
+		phiSet = make(map[int]bool)
+		for _, phiID := range ec.loop.loopPhis[exitingHeaderID] {
+			phiSet[phiID] = true
+		}
+	}
 	for valID := range ec.loopExitBoxPhis {
+		if phiSet != nil && !phiSet[valID] {
+			continue
+		}
 		pr, ok := ec.alloc.ValueRegs[valID]
 		if !ok || pr.IsFloat {
 			continue

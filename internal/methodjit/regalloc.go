@@ -52,20 +52,113 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 
 	lastUse := computeLastUse(fn)
 
+	// Compute loop info so that non-header loop blocks can reserve their
+	// innermost header's phi registers. Without this, the forward-walk
+	// per-block allocator reuses the phi's FPR/GPR for body SSA results,
+	// clobbering the loop-carried value and forcing per-use slot reloads.
+	li := computeLoopInfo(fn)
+
+	// Identify headers with a "tight" body: exactly 2 blocks (header + one
+	// body). For these, the body block is directly reached from the header
+	// and no other intervening block can clobber the header's phi registers
+	// between their write and the body's entry. Only tight-body headers are
+	// eligible for phi register carrying — nested/complex loops are skipped
+	// because an inner-loop phi could write the same physical register and
+	// invalidate the reservation at runtime.
+	tightHeaders := make(map[int]bool)
+	for hid, blocks := range li.headerBlocks {
+		if len(blocks) == 2 { // header + exactly one body block
+			tightHeaders[hid] = true
+		}
+	}
+
+	// Pre-pass: pre-allocate loop-header phi registers into alloc.ValueRegs
+	// for tight-body headers only. Block order is RPO but loop headers can
+	// follow their body in RPO, so we can't rely on "allocate headers first
+	// via natural order". This pre-pass is phi-only and deterministic.
+	for hid := range tightHeaders {
+		preAllocateHeaderPhis(findBlockByID(fn, hid), alloc)
+	}
+
 	for _, block := range fn.Blocks {
-		allocateBlock(block, alloc, lastUse)
+		var carried map[int]PhysReg
+		if li.loopBlocks[block.ID] && !li.loopHeaders[block.ID] {
+			if innerHeader, ok := li.blockInnerHeader[block.ID]; ok {
+				if tightHeaders[innerHeader] {
+					carried = make(map[int]PhysReg)
+					for _, phiID := range li.loopPhis[innerHeader] {
+						if pr, ok := alloc.ValueRegs[phiID]; ok {
+							carried[phiID] = pr
+						}
+					}
+				}
+			}
+		}
+		allocateBlock(block, alloc, lastUse, carried)
 	}
 
 	return alloc
 }
 
+// findBlockByID looks up a block by its ID. Returns nil if not found.
+func findBlockByID(fn *Function, id int) *Block {
+	for _, b := range fn.Blocks {
+		if b.ID == id {
+			return b
+		}
+	}
+	return nil
+}
+
+// preAllocateHeaderPhis walks the leading phi instructions of a loop header
+// block and commits their FPR/GPR assignments into alloc.ValueRegs. This is
+// called before the main block-by-block allocation loop so that non-header
+// loop-body blocks (which may be processed before their header in RPO) can
+// reserve the header's phi registers and avoid clobbering them. If a phi
+// cannot fit (pool exhausted), it is spilled here, matching Phase 1 of
+// allocateBlock's logic.
+func preAllocateHeaderPhis(block *Block, alloc *RegAllocation) {
+	if block == nil {
+		return
+	}
+	gprs := newRegState(allocatableGPRs[:], false)
+	fprs := newRegState(allocatableFPRs[:], true)
+	for _, instr := range block.Instrs {
+		if instr.Op != OpPhi {
+			break
+		}
+		wantFloat := needsFloatReg(instr)
+		var rs *regState
+		if wantFloat {
+			rs = fprs
+		} else {
+			rs = gprs
+		}
+		r := rs.findFree()
+		if r >= 0 {
+			rs.assign(instr.ID, r)
+			alloc.ValueRegs[instr.ID] = PhysReg{Reg: r, IsFloat: wantFloat}
+		} else {
+			// Pool exhausted: spill. The later full allocateBlock call on
+			// this header will see the spill and skip re-allocation.
+			alloc.SpillSlots[instr.ID] = alloc.NumSpillSlots
+			alloc.NumSpillSlots++
+		}
+	}
+}
+
 // regState tracks the current state of a register pool (GPR or FPR).
 type regState struct {
-	pool    []int          // allocatable register numbers
-	regToID map[int]int    // register number -> value ID currently held (-1 if free)
-	idToReg map[int]int    // value ID -> register number
-	lru     []int          // value IDs in order of last use (oldest first)
-	isFloat bool           // true for FPR pool
+	pool    []int       // allocatable register numbers
+	regToID map[int]int // register number -> value ID currently held (-1 if free)
+	idToReg map[int]int // value ID -> register number
+	lru     []int       // value IDs in order of last use (oldest first)
+	isFloat bool        // true for FPR pool
+	// pinned is the set of value IDs that must not be evicted. Used to
+	// reserve loop-header phi registers in non-header loop-body blocks so
+	// that body SSA results cannot clobber the loop-carried value at
+	// runtime. Pinned IDs never appear in the lru list.
+	pinned map[int]bool
 }
 
 func newRegState(pool []int, isFloat bool) *regState {
@@ -75,11 +168,20 @@ func newRegState(pool []int, isFloat bool) *regState {
 		idToReg: make(map[int]int),
 		lru:     nil,
 		isFloat: isFloat,
+		pinned:  make(map[int]bool),
 	}
 	for _, r := range pool {
 		rs.regToID[r] = -1 // free
 	}
 	return rs
+}
+
+// pin marks valueID as non-evictable. The value keeps its register until
+// the block finishes. Pinned values are kept out of the LRU list, so they
+// are never picked as eviction victims.
+func (rs *regState) pin(valueID int) {
+	rs.pinned[valueID] = true
+	rs.removeLRU(valueID)
 }
 
 // findFree returns a free register, or -1 if all are occupied.
@@ -99,8 +201,12 @@ func (rs *regState) assign(valueID, r int) {
 	rs.touchLRU(valueID)
 }
 
-// free releases the register held by valueID.
+// free releases the register held by valueID. Pinned values are immune:
+// they retain their register for the full block lifetime.
 func (rs *regState) free(valueID int) {
+	if rs.pinned[valueID] {
+		return
+	}
 	r, ok := rs.idToReg[valueID]
 	if !ok {
 		return
@@ -124,8 +230,13 @@ func (rs *regState) evictLRU() (reg int, evictedID int) {
 }
 
 // touchLRU moves valueID to the end of the LRU list (most recently used).
+// Pinned values are NOT re-added to the LRU list; they stay out-of-band
+// so evictLRU never considers them.
 func (rs *regState) touchLRU(valueID int) {
 	rs.removeLRU(valueID)
+	if rs.pinned[valueID] {
+		return
+	}
 	rs.lru = append(rs.lru, valueID)
 }
 
@@ -151,12 +262,41 @@ func (rs *regState) removeLRU(valueID int) {
 // WITHOUT calling freeDeadValues between them. This ensures that each phi
 // gets a distinct register. After all phis are allocated, we process non-phi
 // instructions normally.
-func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int) {
+func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carried map[int]PhysReg) {
 	gprs := newRegState(allocatableGPRs[:], false)
 	fprs := newRegState(allocatableFPRs[:], true)
 
+	// Pre-populate regstate with loop-header phi assignments so that body
+	// SSA results don't reuse the phi's physical register. carriedIDs
+	// tracks which IDs were pre-populated so that eviction does NOT delete
+	// their global alloc.ValueRegs entry (that entry was set by the
+	// defining header's allocation and must remain authoritative).
+	carriedIDs := make(map[int]bool, len(carried))
+	for valID, pr := range carried {
+		var rs *regState
+		if pr.IsFloat {
+			rs = fprs
+		} else {
+			rs = gprs
+		}
+		// Skip if the register is already taken (defensive — shouldn't
+		// happen with fresh regstates but guards against future changes).
+		if rs.regToID[pr.Reg] != -1 {
+			continue
+		}
+		// Pin FIRST so that the subsequent assign's touchLRU is a no-op.
+		// Pinned phis are never eviction candidates: a body instruction
+		// cannot take this register and clobber the loop-carried value.
+		rs.pin(valID)
+		rs.assign(valID, pr.Reg)
+		carriedIDs[valID] = true
+	}
+
 	// Phase 1: pre-allocate registers for all phi instructions.
 	// Do NOT call freeDeadValues between phis -- they are simultaneously live.
+	// If a phi was already assigned by preAllocateHeaderPhis (loop headers),
+	// honor that assignment by occupying the same register in the fresh
+	// regstate rather than allocating a new one.
 	for _, instr := range block.Instrs {
 		if instr.Op != OpPhi {
 			continue
@@ -169,6 +309,18 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int) {
 			rs = fprs
 		} else {
 			rs = gprs
+		}
+
+		// Honor pre-allocated assignments from preAllocateHeaderPhis.
+		if pr, ok := alloc.ValueRegs[instr.ID]; ok {
+			if pr.IsFloat == wantFloat && rs.regToID[pr.Reg] == -1 {
+				rs.assign(instr.ID, pr.Reg)
+				continue
+			}
+		}
+		// Honor pre-committed spill from preAllocateHeaderPhis.
+		if _, ok := alloc.SpillSlots[instr.ID]; ok {
+			continue
 		}
 
 		// Try to allocate a free register.
@@ -242,8 +394,14 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int) {
 				alloc.SpillSlots[evictedID] = alloc.NumSpillSlots
 				alloc.NumSpillSlots++
 			}
-			// The evicted value loses its register.
-			delete(alloc.ValueRegs, evictedID)
+			// The evicted value loses its register -- BUT only delete the
+			// global assignment if this value was DEFINED in this block.
+			// Pre-populated loop-header phis have their canonical PhysReg
+			// set by the header's allocation; evicting locally doesn't
+			// invalidate the header's assignment.
+			if !carriedIDs[evictedID] {
+				delete(alloc.ValueRegs, evictedID)
+			}
 
 			// Assign the freed register to the new value.
 			rs.assign(instr.ID, r)
