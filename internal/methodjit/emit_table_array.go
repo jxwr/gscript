@@ -85,21 +85,25 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	floatArrayLabel := ec.uniqueLabel("gettable_floatarr")
 
 	// Load table value (NaN-boxed) into X0.
-	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	tblValueID := instr.Args[0].ID
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
 	if tblReg != jit.X0 {
 		asm.MOVreg(jit.X0, tblReg)
 	}
 
-	// Check table pointer (tag=0xFFFF, sub=0).
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
-
-	// Extract raw *Table pointer (44-bit payload).
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.CBZ(jit.X0, deoptLabel)
-
-	// Check metatable is nil (tables with metatables need __index).
-	asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
-	asm.CBNZ(jit.X1, deoptLabel)
+	if ec.tableVerified[tblValueID] {
+		// Table already validated in this block — skip type/nil/metatable checks.
+		// Just extract the raw pointer.
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else {
+		// Full validation.
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X1, deoptLabel)
+		ec.tableVerified[tblValueID] = true
+	}
 
 	// Load key into X1 with type-specialized fast paths.
 	keyID := instr.Args[1].ID
@@ -332,21 +336,25 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	floatArrayLabel := ec.uniqueLabel("settable_floatarr")
 
 	// Load table value (NaN-boxed) into X0.
-	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	tblValueID := instr.Args[0].ID
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
 	if tblReg != jit.X0 {
 		asm.MOVreg(jit.X0, tblReg)
 	}
 
-	// Check table pointer (tag=0xFFFF, sub=0).
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
-
-	// Extract raw *Table pointer.
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.CBZ(jit.X0, deoptLabel)
-
-	// Check metatable is nil (tables with metatables need __newindex).
-	asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
-	asm.CBNZ(jit.X1, deoptLabel)
+	if ec.tableVerified[tblValueID] {
+		// Table already validated in this block — skip type/nil/metatable checks.
+		// Just extract the raw pointer.
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else {
+		// Full validation.
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X1, deoptLabel)
+		ec.tableVerified[tblValueID] = true
+	}
 
 	// Load key into X1 with type-specialized fast paths.
 	keyID := instr.Args[1].ID

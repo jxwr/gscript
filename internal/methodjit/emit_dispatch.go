@@ -142,6 +142,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitCallNative(instr)
 		// Calls can modify any table's shape — invalidate all shape verification.
 		ec.shapeVerified = make(map[int]uint32)
+		ec.tableVerified = make(map[int]bool)
 
 	// --- Global-exit: load globals via VM and resume JIT ---
 	case OpGetGlobal:
@@ -175,6 +176,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpSelf:
 		ec.emitOpExit(instr)
 		ec.shapeVerified = make(map[int]uint32)
+		ec.tableVerified = make(map[int]bool)
 
 	// --- Op-exit: unsupported ops exit to Go, execute there, resume JIT ---
 	case OpSetGlobal,

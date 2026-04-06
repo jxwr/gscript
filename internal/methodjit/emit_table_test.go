@@ -403,3 +403,51 @@ func TestShapeGuardDedup_MixedGetSet(t *testing.T) {
 func TestEmitTable_SetTableWithOptPasses(t *testing.T) {
 	t.Skip("known issue: SETTABLE with TypeSpecialize creates exit-resume loop")
 }
+
+// TestTableVerifiedDedup tests that multiple array accesses of the same table
+// in the same basic block produce correct results. Table verification dedup
+// should skip redundant type/nil/metatable checks on subsequent accesses.
+func TestTableVerifiedDedup(t *testing.T) {
+	src := `func f(arr) { return arr[0] + arr[1] + arr[2] }`
+	tbl := runtime.NewTable()
+	for i := 0; i < 5; i++ {
+		tbl.RawSetInt(int64(i), runtime.IntValue(int64(i*10)))
+	}
+	args := []runtime.Value{runtime.TableValue(tbl)}
+
+	vmResult := runVM(t, src, args)
+	if len(vmResult) == 0 {
+		t.Fatal("VM returned no results")
+	}
+	// arr[0] + arr[1] + arr[2] = 0 + 10 + 20 = 30
+	assertValuesEqual(t, "table dedup VM", vmResult[0], runtime.IntValue(30))
+
+	jitResult := runJITFull(t, src, args)
+	if len(jitResult) == 0 {
+		t.Fatal("JIT returned no results")
+	}
+	assertValuesEqual(t, "table dedup JIT", jitResult[0], vmResult[0])
+}
+
+// TestTableVerifiedDedup_SetGet tests mixed SetTable+GetTable on the same table.
+func TestTableVerifiedDedup_SetGet(t *testing.T) {
+	src := `func f(arr) { arr[0] = 42; return arr[0] }`
+	tbl := runtime.NewTable()
+	tbl.RawSetInt(0, runtime.IntValue(0))
+	args := []runtime.Value{runtime.TableValue(tbl)}
+
+	vmResult := runVM(t, src, args)
+	if len(vmResult) == 0 {
+		t.Fatal("VM returned no results")
+	}
+	assertValuesEqual(t, "set+get VM", vmResult[0], runtime.IntValue(42))
+
+	tbl2 := runtime.NewTable()
+	tbl2.RawSetInt(0, runtime.IntValue(0))
+	args2 := []runtime.Value{runtime.TableValue(tbl2)}
+	jitResult := runJITFull(t, src, args2)
+	if len(jitResult) == 0 {
+		t.Fatal("JIT returned no results")
+	}
+	assertValuesEqual(t, "set+get JIT", jitResult[0], vmResult[0])
+}
