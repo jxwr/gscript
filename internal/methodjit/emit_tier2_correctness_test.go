@@ -593,3 +593,31 @@ for iter := 1; iter <= 5; iter++ {
 		t.Errorf("sumSquares(3,4) VM sanity: got %f, want %f", got, want)
 	}
 }
+
+// TestTier2_SetTableConstBool validates that constant bool values stored to a
+// bool-typed array bypass runtime tag checks. The inner loop writes a literal
+// `false` to every element, which the emitter should lower to a single
+// MOVimm16 + STRB (no value load, tag check, or payload extraction).
+func TestTier2_SetTableConstBool(t *testing.T) {
+	src := `
+func mark_false(arr, n) {
+    for i := 0; i < n; i++ {
+        arr[i] = false
+    }
+}
+arr := {}
+for i := 0; i < 100; i++ {
+    arr[i] = true
+}
+for iter := 1; iter <= 200; iter++ {
+    mark_false(arr, 100)
+}
+result := 0
+for i := 0; i < 100; i++ {
+    if arr[i] == false {
+        result = result + 1
+    }
+}
+`
+	compareTier2Result(t, src, "result")
+}

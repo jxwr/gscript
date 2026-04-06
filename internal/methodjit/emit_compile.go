@@ -105,14 +105,18 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		}
 	}
 
-	// Build constant int map for immediate optimization, and IR type map for
+	// Build constant int/bool maps for immediate optimization, and IR type map for
 	// resolveRawFloat to detect int-typed values that need SCVTF conversion.
 	constInts := make(map[int]int64)
+	constBools := make(map[int]int64)
 	irTypes := make(map[int]Type)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr.Op == OpConstInt {
 				constInts[instr.ID] = instr.Aux
+			}
+			if instr.Op == OpConstBool {
+				constBools[instr.ID] = instr.Aux
 			}
 			irTypes[instr.ID] = instr.Type
 		}
@@ -156,6 +160,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		loopPhiOnlyArgs:  phiOnlyArgs,
 		loopExitBoxPhis:  exitBoxPhis,
 		constInts:        constInts,
+		constBools:       constBools,
 		irTypes:          irTypes,
 		scratchFPRCache:  make(map[int]jit.FReg),
 		fusedCmps:        fusedCmps,
@@ -301,6 +306,10 @@ type emitContext struct {
 	// constInts maps value ID -> int64 for ConstInt instructions.
 	// Used by emitRawIntBinOp to emit ADDimm/SUBimm for small constants.
 	constInts map[int]int64
+
+	// constBools maps value ID -> 0 (false) or 1 (true) for ConstBool instructions.
+	// Used by emitSetTableNative to bypass runtime tag checks for constant bools.
+	constBools map[int]int64
 
 	// irTypes maps value ID -> IR Type from the defining instruction.
 	// Used by resolveRawFloat to detect NaN-boxed ints that need SCVTF

@@ -712,23 +712,45 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArrayLen) // intArray.len
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondGE, deoptLabel)
-	// Load value to store and check it's an integer.
-	valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-	if valReg2 != jit.X4 {
-		asm.MOVreg(jit.X4, valReg2)
+
+	if val, ok := ec.constInts[instr.Args[2].ID]; ok {
+		// Constant int bypass: load immediate, skip tag check and unbox.
+		asm.LoadImm64(jit.X4, val)
+		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
+		asm.STRreg(jit.X4, jit.X2, jit.X1)
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		asm.B(doneLabel)
+	} else if ec.hasReg(instr.Args[2].ID) && ec.rawIntRegs[instr.Args[2].ID] {
+		// Raw int register bypass: value already unboxed, skip tag check.
+		reg := ec.physReg(instr.Args[2].ID)
+		if reg != jit.X4 {
+			asm.MOVreg(jit.X4, reg)
+		}
+		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
+		asm.STRreg(jit.X4, jit.X2, jit.X1)
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		asm.B(doneLabel)
+	} else {
+		// Load value to store and check it's an integer.
+		valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+		if valReg2 != jit.X4 {
+			asm.MOVreg(jit.X4, valReg2)
+		}
+		asm.LSRimm(jit.X5, jit.X4, 48)
+		asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
+		asm.CMPreg(jit.X5, jit.X6)
+		asm.BCond(jit.CondNE, deoptLabel) // value not int -> deopt
+		// Unbox int64 from NaN-boxed value.
+		asm.SBFX(jit.X4, jit.X4, 0, 48)
+		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
+		asm.STRreg(jit.X4, jit.X2, jit.X1)             // intArray[key] = int64
+		// Set keysDirty flag.
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		asm.B(doneLabel)
 	}
-	asm.LSRimm(jit.X5, jit.X4, 48)
-	asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
-	asm.CMPreg(jit.X5, jit.X6)
-	asm.BCond(jit.CondNE, deoptLabel) // value not int -> deopt
-	// Unbox int64 from NaN-boxed value.
-	asm.SBFX(jit.X4, jit.X4, 0, 48)
-	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
-	asm.STRreg(jit.X4, jit.X2, jit.X1)             // intArray[key] = int64
-	// Set keysDirty flag.
-	asm.MOVimm16(jit.X5, 1)
-	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-	asm.B(doneLabel)
 
 	// --- ArrayFloat fast path ---
 	asm.Label(floatArrayLabel)
@@ -757,39 +779,52 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArrayLen) // boolArray.len
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondGE, deoptLabel)
-	// Load value to store.
-	valRegBool := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-	if valRegBool != jit.X4 {
-		asm.MOVreg(jit.X4, valRegBool)
+
+	// Constant bool bypass: skip value load, tag check, and payload extraction.
+	if boolVal, ok := ec.constBools[instr.Args[2].ID]; ok {
+		// false(0)→byte 1, true(1)→byte 2
+		byteVal := uint16(boolVal + 1)
+		asm.MOVimm16(jit.X4, byteVal)
+		asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
+		asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		asm.B(doneLabel)
+	} else {
+		// Load value to store.
+		valRegBool := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+		if valRegBool != jit.X4 {
+			asm.MOVreg(jit.X4, valRegBool)
+		}
+		// Check value type: must be bool (tag=0xFFFD) or nil (0xFFFC).
+		asm.LSRimm(jit.X5, jit.X4, 48)
+		asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
+		asm.CMPreg(jit.X5, jit.X6)
+		boolOkLabel := ec.uniqueLabel("settable_bool_isbool")
+		asm.BCond(jit.CondEQ, boolOkLabel)
+		// Check if nil.
+		asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
+		asm.CMPreg(jit.X5, jit.X6)
+		asm.BCond(jit.CondNE, deoptLabel) // not bool, not nil → deopt
+		// Nil → byte 0.
+		asm.MOVimm16(jit.X4, 0)
+		setByteLabel := ec.uniqueLabel("settable_bool_store")
+		asm.B(setByteLabel)
+		asm.Label(boolOkLabel)
+		// Bool: extract payload bit 0. false=0xFFFD000000000000 (payload=0) → byte 1
+		//                                true=0xFFFD000000000001 (payload=1) → byte 2
+		// Conversion: byte = payload + 1
+		asm.LoadImm64(jit.X5, 1)
+		asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
+		asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
+		asm.Label(setByteLabel)
+		asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
+		asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
+		// Set keysDirty flag.
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		asm.B(doneLabel)
 	}
-	// Check value type: must be bool (tag=0xFFFD) or nil (0xFFFC).
-	asm.LSRimm(jit.X5, jit.X4, 48)
-	asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
-	asm.CMPreg(jit.X5, jit.X6)
-	boolOkLabel := ec.uniqueLabel("settable_bool_isbool")
-	asm.BCond(jit.CondEQ, boolOkLabel)
-	// Check if nil.
-	asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
-	asm.CMPreg(jit.X5, jit.X6)
-	asm.BCond(jit.CondNE, deoptLabel) // not bool, not nil → deopt
-	// Nil → byte 0.
-	asm.MOVimm16(jit.X4, 0)
-	setByteLabel := ec.uniqueLabel("settable_bool_store")
-	asm.B(setByteLabel)
-	asm.Label(boolOkLabel)
-	// Bool: extract payload bit 0. false=0xFFFD000000000000 (payload=0) → byte 1
-	//                                true=0xFFFD000000000001 (payload=1) → byte 2
-	// Conversion: byte = payload + 1
-	asm.LoadImm64(jit.X5, 1)
-	asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
-	asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
-	asm.Label(setByteLabel)
-	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
-	asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
-	// Set keysDirty flag.
-	asm.MOVimm16(jit.X5, 1)
-	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-	asm.B(doneLabel)
 
 	// Deopt: fall back to exit-resume.
 	asm.Label(deoptLabel)
