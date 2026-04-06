@@ -79,6 +79,8 @@ Just read the existing documents:
 
 ## Step 2 — External Research (knowledge layer)
 
+If you need to spawn sub-agents for research, **use Sonnet model** (cheaper, sufficient for search + source reading).
+
 #### 2a. Web search
 Use `WebSearch` for the specific technique. Specific, not generic:
 - Good: `"V8 TurboFan escape analysis scalar replacement 2024"`

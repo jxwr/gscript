@@ -31,7 +31,7 @@ bash benchmarks/run_all.sh
 Build before/after table. Flag regressions ≥5%.
 
 ### 1d. Evaluator
-Spawn an Evaluator sub-agent to review the git diff:
+Spawn an Evaluator sub-agent (**use Sonnet model** to reduce token cost) to review the git diff:
 - Correctness risks, scope creep, code quality, missed edge cases
 - Output: pass/fail with specific issues
 - If fail with actionable issues → fix and re-verify

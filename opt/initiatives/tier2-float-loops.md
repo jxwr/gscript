@@ -35,8 +35,9 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 - [x] Phase 2 (round 7): **Pattern 1 — eliminate per-op box/unbox** — scratch-FPR operand cache (Fix 1, commit 3ded153) + loop-header phi FPR carry into tight bodies (Fix 3, commit 686ba11). Infrastructure landed. Mandelbrot only -2.62% (target ≥35% missed); aggregate -1.88%. Loop-invariant materialisation (LICM) is the real remaining bottleneck.
 - [x] Phase 3 (round 12): **Pattern 2 — feedback-typed heap loads** — graph builder reads `proto.Feedback[pc].Result` for GetTable/GetField; inserts `OpGuardType` when monomorphic. IR-level mechanism works correctly, but **blocked**: Tier 1 doesn't collect feedback and interpreter never runs (BaselineCompileThreshold=1), so FeedbackVector always empty at Tier 2 compile time. Code landed but inert. Requires Tier 1 feedback collection (Option A/B/C in plan lessons).
 - [x] Phase 4 (round 8): **LICM pass** (`pass_licm.go`, commit f601801 + wiring 9da7d4c) — hoists loop-invariant `ConstInt`/`ConstFloat`/`LoadSlot`/pure arith, inside-out, with `Int48Safe` gate for int arith. 17 consts hoisted in mandelbrot including ConstFloat 2/4 named in round 7. Validator clean, zero correctness regressions. **Wall-time unmoved**: mandelbrot -1.6% (target ≥35%); aggregate LuaJIT-row ~+0.3%. Infrastructure landed — pre-header is now a home for future loop-aware transforms.
-- [ ] Phase 5 (deferred): **Investigate matmul Tier 2 tier-up** — profile shows matmul stuck in Tier 1; needs `-jit-stats` instrumentation.
+- [x] Phase 5 (resolved round 15): **matmul reaches Tier 2 via OSR** (LoopDepth >= 2 gate)
 - [ ] Phase 6 (deferred): **Range analysis / overflow-check elimination in float loops** — extend round-3 work (commit f2bb4bf archive) to float arithmetic.
+- [ ] Phase 8 (round 16): **Load Elimination + GuardType fix** — block-local GetField CSE for redundant field loads (bj.mass, bi.mass in nbody) + fix emitGuardType TypeFloat no-op (correctness bug)
 
 ## Prior Art
 
@@ -60,12 +61,15 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 
 **Phase 7 complete** (round 14): Tier 1 feedback collection + ArrayFloat/ArrayBool fast paths landed. matmul -80.2%, spectral -54.0%, sieve -55.9%. Phase 3's guard insertion code is now unblocked (feedback flows Tier 1 → FeedbackVector → Tier 2 graph builder).
 
-**Phase 5 partially resolved** (round 15): matmul now reaches Tier 2 via OSR (LoopDepth >= 2 gate). The original "matmul stuck at Tier 1" problem is solved. Remaining question: does matmul's inner loop benefit from feedback-typed loads now that it runs at Tier 2 with feedback available?
+**Phase 5 partially resolved** (round 15): matmul now reaches Tier 2 via OSR (LoopDepth >= 2 gate). The original "matmul stuck at Tier 1" problem is solved.
+
+**Phase 8 (round 16)**: Load Elimination + GuardType correctness fix targeting nbody (22.1x from LuaJIT). nbody's advance() inner loop has ~20 GETFIELD per iteration (64% of instruction count). 4 are redundant (bj.mass×3, bi.mass×3). Block-local GetField CSE + fix for emitGuardType TypeFloat no-op (correctness bug: no runtime check for float guards).
 
 Remaining deferred phases:
-- **Phase 5 (residual)**: Verify matmul Tier 2 inner loop uses typed loads (feedback collected by Tier 1 → GuardType in Tier 2 graph). If so, this initiative's primary gaps are closed.
 - **Phase 6 (range analysis for float loops)**: extend overflow-check elimination to float arithmetic.
-- **New direction**: the real bottleneck in float loops is memory traffic (LDR/STR to VM register file per float op) and the surviving FMUL/FADD dependency chain. Consider unboxed float SSA (eliminate NaN-boxing in Tier 2 float paths entirely) or loop unrolling to break dependency chains.
+- **Phase 9 (future)**: Shape check hoisting — hoist GETFIELD shape guards to loop preheader when object reference is loop-invariant. Saves ~5 insns × 14 fields per iteration.
+- **Phase 10 (future)**: Store-to-load forwarding — after SETFIELD(obj, field, val), subsequent GETFIELD(obj, field) returns val without memory access.
+- **Long-term**: Unboxed float SSA (eliminate NaN-boxing in Tier 2 float paths entirely) or loop unrolling.
 
 ## Risks / Failure Signals
 
