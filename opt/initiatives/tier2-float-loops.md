@@ -53,27 +53,16 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 | 7 (2026-04-05) | Phase 2 FPR-resident | **improved (aggregate -1.88%, primary target missed)** | 2 functional commits: Fix 1 scratch-FPR operand cache (3ded153), Fix 3 loop-header phi FPR carry into tight 2-block bodies (686ba11). Fix 2 (phi typing) skipped — diagnostic harness showed all float phis already FPR-allocated. Mandelbrot -2.62% (0.382s→0.372s, target ≥35%). Zero regressions. `safeHeaderFPRegs` now populated for all 5 float benchmarks' inner loops — infrastructure win enables downstream LICM. |
 | 8 (2026-04-06) | Phase 4 LICM | **no_change (infrastructure landed, wall-time unmoved)** | 3 functional commits: extract dominator/loop infra to `loops.go` (387dd88), `pass_licm.go` with IonMonkey-shaped invariance + `Int48Safe` gate (f601801), wire into Tier 2 pipeline after RangeAnalysis (9da7d4c). 17 constants hoisted in mandelbrot_iter (including ConstFloat 2/4 named in round 7's B3 analysis). Validator clean, `TestTieringManager_NestedCallSimple` passes. Mandelbrot -1.6% (0.387s→0.381s, target ≥35%); LuaJIT-row aggregate ~+0.3%. **B3's critical path is the surviving FMUL/FADD chain, not constant rematerialisation.** |
 | 9 (2026-04-06) | Phase 4b invariant carry | **improved (mandelbrot -6.2%, nbody -12.2%, spectral -15.2%, matmul -12.7%)** | 2 functional commits: pre-header + invariant detection helpers (8618876), carry LICM-hoisted invariants in FPRs across loop body (de874ce). Extended `carried` map in regalloc to pin pre-header-defined float invariants in FPRs with budget (8 - 3 reserved). Lazy harvest of pre-header allocations instead of pre-allocation. Second-order effects dominated: nbody/spectral improved more than mandelbrot. Zero regressions across 22 benchmarks. |
+| 10 (2026-04-06) | B3 items #2+#3: GPR counter + fused branch | **improved (fibonacci_iterative -7.4%, matmul -2.7%, math_intensive -3.5%)** | 3 functional commits: GPR-resident int counter (f3ab338), fused compare+branch (aba72f0), verification tests (61f960c). Int-only loops benefit most (fibonacci_iterative). Float-heavy loops show only 1-2% due to superscalar execution hiding instruction-level savings. Instruction count ≠ wall time — key lesson. |
 
 ## Next Step
 
-**Round 10 — profile post-invariant-carry inner loops.** Round 9 delivered
-the first significant wall-time improvement across all float benchmarks:
-mandelbrot -6.2%, nbody -12.2%, spectral_norm -15.2%, matmul -12.7%.
-The invariant-carry mechanism is now proven infrastructure.
+**B3 peephole items exhausted for float loops.** Remaining gains require deeper changes:
 
-Remaining B3 bottlenecks (per round 9 plan's b3-analysis):
-- 11 insns (23.4%) int counter box/unbox round trip — **next candidate**
-- 5 insns (10.6%) fcmp/cset/orr NaN-box bool tail
-- 8 insns (17.0%) spill of loop-carried zr/zi to regfile (now partially addressed)
-- FMUL/FADD dependency chains (pipeline stalls)
-
-**Action:** Re-profile mandelbrot/nbody/spectral_norm post-carry to
-quantify remaining overhead. Primary candidate: GPR-resident int loop
-counter (eliminate box/unbox round trip, ~23% of mandelbrot inner loop).
-
-**Phase 3 (feedback-typed heap loads)** remains deferred — mandelbrot has
-no heap loads in its hot loop. **Phase 5 (matmul tier-up)** may now be
-less urgent given matmul's -12.7% from invariant carry alone.
+- **Phase 3 (feedback-typed heap loads)** — still deferred, mandelbrot has no heap loads in hot loop
+- **Phase 5 (matmul tier-up investigation)** — matmul may still be partially Tier 1; needs `-jit-stats` check
+- **Phase 6 (range analysis for float loops)** — extend overflow-check elimination to float arithmetic
+- **New direction**: the real bottleneck in float loops is memory traffic (LDR/STR to VM register file per float op) and the surviving FMUL/FADD dependency chain. Consider unboxed float SSA (eliminate NaN-boxing in Tier 2 float paths entirely) or loop unrolling to break dependency chains.
 
 ## Risks / Failure Signals
 
