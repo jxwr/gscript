@@ -1,90 +1,89 @@
-# Analyze Report — Round 17
+# Analyze Report — Round 18
 
 > Date: 2026-04-06
-> Cycle ID: 2026-04-06-getfield-feedback-fix
+> Cycle ID: 2026-04-06-licm-getfield
 
 ## Architecture Audit
 
-**FULL AUDIT** (rounds_since_arch_audit = 2).
+Quick read (rounds_since_arch_audit=1). arch_check.sh:
+- ⚠ emit_table.go 978 lines (22 from limit) — no changes planned this round
+- ⚠ emit_dispatch.go 969 lines — no changes planned
+- ⚠ graph_builder.go 939 lines — no changes planned
+- 1 TODO/HACK marker. 25 source files without test files. constraints.md current (updated round 17).
 
-### File sizes
-| File | Lines | Status |
-|------|-------|--------|
-| emit_dispatch.go | 961 | ⚠ SPLIT (unchanged since R15) |
-| graph_builder.go | 939 | ⚠ SPLIT (unchanged since R15) |
-| emit_table.go | 937 | ⚠ SPLIT (unchanged since R15) |
-| tiering_manager.go | 775 | OK |
-| tier1_table.go | 774 | OK |
-| pass_inline.go | 726 | OK |
-
-### Key findings
-1. **Source: 44 files, 17979 lines. Tests: 15130 lines. Ratio: 84%** (up from 81% at R12 audit).
-2. **25 source files lack dedicated test files** (same as R15 audit — no change).
-3. **Technical debt markers: 1** (down from historical). Codebase is clean.
-4. **New finding**: GETFIELD feedback pipeline has a cold-start gap. Go exit handler (`handleGetField`) does NOT record type feedback into `proto.Feedback`. This means ALL benchmarks that reach Tier 2 via call-count threshold (not OSR) have empty GETFIELD feedback. nbody's advance() has generic arithmetic despite the full feedback infrastructure being in place.
-5. **Pipeline order unchanged** since R15: BuildGraph → Validate �� TypeSpec → Intrinsic → TypeSpec �� Inline → TypeSpec → ConstProp → LoadElim ��� DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit
-6. **No new infrastructure since R15** (no new files, passes, or data structures added).
-
-### Diagnostic data (nbody advance() inner j-loop)
-- **1887 ARM64 instructions** per j-iteration
-- **27 float arithmetic ops** (1.4% compute)
-- **20 GetField/SetField** with inline shape guards (320 insns, 17%)
-- **80 lsr#48 arithmetic type checks** (~240 insns, 12.7%) — caused by GETFIELD results being TypeUnknown
-- **22 table-exit stubs** (~550 insns of slow-path code)
+No new issues. Plan touches only pass_licm.go and pass_load_elim.go (506 and 85 lines respectively — safe).
 
 ## Gap Classification
 
 | Category | Benchmarks | Total Gap vs LuaJIT | Blocked? |
 |----------|------------|---------------------|----------|
-| recursive_call | fib (56x), ackermann (42x), mutual_recursion (37.8x) | ~1.8s total | YES (ceiling=2) |
-| tier2_float_loop | nbody (17.4x), spectral_norm (6.6x), matmul (6.0x), fannkuch (2.7x), mandelbrot (1.22x) | ~0.75s total | no |
-| field_access | sieve (8x), sort (5.3x), sum_primes (2x) | ~0.11s total | no |
-| allocation_heavy | binary_trees (regression), object_creation (regression) | N/A (no LuaJIT baseline) | no (but known architectural wall — NEWTABLE exit-resume) |
-| gofunction_overhead | method_dispatch (regression) | unknown | no |
+| recursive_call | fib (47.9x), ackermann (41.8x), mutual_recursion (47.3x) | 1.744s | **BLOCKED** (failures=2) |
+| tier2_float_loop | nbody (15.9x), spectral_norm (6.0x), matmul (5.5x), sum_primes (2.0x), mandelbrot (1.10x) | 0.648s | No (failures=0) |
+| field_access | sieve (8.5x), sort (5.4x), fannkuch (2.7x) | 0.153s | No (failures=0) |
+| gofunction_overhead | method_dispatch (huge) | 0.097s | No (failures=0) |
+| allocation_heavy | binary_trees (regression), object_creation (regression) | N/A (no LuaJIT baseline) | No |
 
 ## Blocked Categories
-- `recursive_call` (ceiling=2): Tier 2 net-negative for recursive functions (Round 11). Needs native recursive BLR or Tier 1 specialization.
+- `recursive_call` (category_failures=2): Tier 2 net-negative for recursive functions. Needs native recursive BLR or Tier 1 specialization.
 
 ## Active Initiatives
-- `tier2-float-loops.md` (paused): Phases 1-8 complete. Remaining: Phase 6 (range analysis for floats), Phase 9 (shape check hoisting), Phase 10 (store-to-load forwarding).
-- `recursive-tier2-unlock.md` (paused, blocked by ceiling rule)
+- `opt/initiatives/tier2-float-loops.md` — Phase 9 next (shape check / field load hoisting)
+- `opt/initiatives/recursive-tier2-unlock.md` — paused (blocked)
 
 ## Selected Target
+
 - **Category**: tier2_float_loop
-- **Initiative**: opt/initiatives/tier2-float-loops.md (Phase 9 prerequisite)
-- **Reason**: nbody has the largest absolute gap (0.556s) in any non-blocked category. Root cause identified: GETFIELD feedback cold-start gap causes 240 insns/iter of unnecessary type dispatch overhead (12.7% of inner loop). Fix is bounded (~10 lines in Go handler). Shape guard dedup adds another ~162 insns/iter savings. Combined: ~400 insns/iter from 1887 = 21% instruction reduction.
-- **Benchmarks**: nbody (primary), matmul/spectral_norm (secondary)
+- **Initiative**: opt/initiatives/tier2-float-loops.md (Phase 9)
+- **Reason**: nbody has the largest absolute gap (0.507s) among non-blocked benchmarks. Active initiative with clear next phase. LICM for GetField builds on existing infrastructure (pass_licm.go from round 8-9). No architectural constraints blocking this work.
+- **Benchmarks**: nbody (primary), spectral_norm/matmul (secondary)
 
 ## Prior Art Research
 
 ### Web Search Findings
-No new search needed — prior art well-documented in knowledge base from Rounds 6, 12, 16.
+Confirmed V8 TurboFan, LuaJIT, and SpiderMonkey all implement cross-block load elimination with store-to-load forwarding. V8's approach (ComputeLoopState kills written fields, survivors propagate) maps directly to GScript's LICM fixpoint.
 
 ### Reference Source Findings
-V8's feedback pipeline records type info in BOTH interpreter and Sparkplug baseline paths. SpiderMonkey's CacheIR records in both IC hit and miss paths. **All production engines record feedback on all code paths.** GScript's gap is unique: ARM64 fast path records feedback, Go slow path doesn't.
+- V8 `load-elimination.cc:1363-1465`: ComputeLoopState scans loop body, kills StoreField fields, propagates survivors as loop-invariant
+- V8 `load-elimination.cc:786-817`: ReduceCheckMaps eliminates shape checks when Maps already known (cross-block)
+- V8 `load-elimination.cc:1048`: ReduceStoreField records stored value for forwarding
+- LuaJIT `lj_opt_mem.c:162`: fwd_ahload with ALIAS_MUST → store-to-load forwarding
+- LuaJIT `lj_opt_loop.c:77-85`: cross-iteration forwarding via loop_unroll re-emission
 
 ### Knowledge Base Update
-No new knowledge file needed. Existing `opt/knowledge/feedback-typed-loads.md` already documents the full pipeline. The GAP (Go handler not recording) is captured in constraints.md.
+Written: `opt/knowledge/cross-block-load-elim.md` — comprehensive comparison of V8/LuaJIT/SpiderMonkey load elimination with GScript gap analysis and implementation guidance.
 
 ## Source Code Findings
 
 ### Files Read
-- `tier1_handlers.go:477-504` (handleGetField): Populates FieldCache but does NOT record feedback.
-- `tier1_table.go:100-149` (emitBaselineGetField ARM64): Records feedback via `emitBaselineFeedbackResultFromValue` on inline cache HIT only.
-- `graph_builder.go:655-660`: Correctly reads `proto.Feedback[pc].Result` and inserts `OpGuardType` when feedback is monomorphic.
-- `tiering_manager.go:148-149, 172-173`: `EnsureFeedback()` called correctly before Tier 1 and Tier 2 compilation.
-- `emit_call.go:42-89` (emitGuardType): TypeFloat guard correctly implemented (fixed in R16).
-- `feedback_getfield_integration_test.go`: Passes because it uses VM interpreter to collect feedback, bypassing the Go exit handler gap.
+- `pass_licm.go` (506 lines): `canHoistOp` whitelist does NOT include OpGetField. LICM currently only hoists constants, LoadSlot, and pure arithmetic. Extension point is clear: add OpGetField with field-write alias check.
+- `pass_load_elim.go` (85 lines): Block-local only. OpSetField case does `delete(available, key)` but never records the stored value. 3-line fix enables store-to-load forwarding.
+- `emit_table.go` (978 lines): `emitGetField` full shape check ~16 insns, deduped path ~5-6 insns. shapeVerified reset at block boundaries (emit_compile.go:527).
+- `graph_builder.go:639-661`: GetField emits with TypeAny, inserts OpGuardType when feedback is available. Aux = constant pool index, Aux2 = shapeID<<32|fieldIndex.
+- `regalloc.go`: carried map + LICM invariant carry already support pinning preheader-defined values in FPRs across loop body. Hoisted GetField values would automatically benefit.
 
 ### Diagnostic Data
-See Architecture Audit section above. Key number: **80 lsr#48 type dispatch checks** in nbody's j-loop that would be eliminated by feedback-driven type specialization.
+
+**CAVEAT**: The profile test (tier2_float_profile_test.go) uses a simplified pipeline missing IntrinsicPass, InlinePass, LoadEliminationPass, RangeAnalysisPass, LICM. Production codegen is better.
+
+From the simplified pipeline IR dump (advance() block B2 = inner j-loop body):
+- 56 IR instructions: 19 GetField, 6 SetField, 19 float arith, 1 Call (math.sqrt before intrinsic), 2 GetGlobal + 1 GetTable
+- Redundant loads: bi.mass×3, bj.mass×3 (handled by LoadElim in production)
+- Static ARM64: ~1,768 insns total in B2+B3
+- Estimated hot-path: ~1,250 insns/iter (simplified pipeline)
+- Only 28/1,250 are float compute (2.2%) — rest is overhead
+
+In production (full pipeline), TypeSpecialize eliminates 3-way type dispatch, IntrinsicPass converts math.sqrt to FSQRT, LoadElim deduplicates mass loads, ShapeGuardDedup reduces shape checks. Estimated production: ~250-350 insns/iter. Still ~3-5x more than LuaJIT's ~60 insns/iter.
 
 ### Actual Bottleneck (data-backed)
-nbody's inner j-loop: 1887 insns/iter, 27 float ops (1.4% compute).
-- **~240 insns** (12.7%): arithmetic type dispatch (lsr#48 + cmp + branch per operand) — caused by GETFIELD returning TypeUnknown
-- **~320 insns** (17%): GetField/SetField shape guards + type checks — 20 field ops × 16 insns each, 18 of which are redundant (same table, same shape)
-- Fix Task 1 eliminates the first category. Fix Task 2 eliminates most of the second.
+
+For the PRODUCTION pipeline, the remaining overhead in nbody's inner j-loop per iteration:
+1. **4 loop-invariant GetField loads** (bi.x, bi.y, bi.z, bi.mass): ~40 insns + 8 dependent-load stalls (~32 cycles). These never change but are reloaded every iteration because LICM doesn't hoist GetField.
+2. **3 GetField + 3 SetField on bi.vx/vy/vz** (read-modify-write per iteration): ~36 insns. Store-to-load forwarding doesn't help here (no subsequent read after write in same block).
+3. **Full shape check per iteration** for bi and bj (first access each): ~34 insns.
+4. **7 GetField + 3 SetField on bj** (different bj each iteration, unavoidable): ~60 insns.
+
+Bottleneck #1 is addressable via LICM GetField hoisting. Bottleneck #3 partially addressable (bi's shape check moves to preheader with hoisted GetField).
 
 ## Plan Summary
 
-Fix the GETFIELD feedback cold-start gap by recording type feedback in the Go exit handler (`handleGetField`). This is a ~10-line change that unlocks the entire feedback → GuardType → TypeSpecialize cascade for all GETFIELD-heavy benchmarks. Combined with emitter-level shape guard deduplication (skip redundant type+shape checks on same table within a block), this eliminates ~400 of 1887 insns per nbody inner-loop iteration. Conservative estimate: nbody −10-13% (0.590s → ~0.51s), with compound effects on matmul/spectral_norm.
+Extend LICM to hoist loop-invariant GetField operations to loop preheaders, and add store-to-load forwarding to LoadElimination. For nbody's inner j-loop, this hoists 4 field loads (bi.x, bi.y, bi.z, bi.mass) out of the hot loop, eliminating ~40 instructions and 8 dependent-load stalls per iteration. Estimated nbody improvement: 8-10% (superscalar-discounted). Store-to-load forwarding is a 3-line change that enables value reuse after SetField. Risk is low: the LICM extension reuses existing infrastructure (fixpoint iteration, preheader creation, invariant carry), and the alias analysis is conservative (kills all GetField hoisting if any OpCall exists in the loop). Two new test files verify both optimizations independently.

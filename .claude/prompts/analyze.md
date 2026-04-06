@@ -82,9 +82,9 @@ Just read the existing documents:
 
 ## Step 2 — External Research (knowledge layer)
 
-If you need to spawn sub-agents for research, **use Sonnet model** (cheaper, sufficient for search + source reading).
-**Sub-agent budget**: each research/diagnostic sub-agent must complete within **50 tool calls**.
-If approaching the limit, wrap up with partial findings rather than continuing to explore.
+Spawn exactly **ONE Research sub-agent** (Sonnet model) for all of Step 2 (web search + reference source + knowledge base).
+**HARD LIMIT: 50 tool calls per sub-agent.** Do NOT spawn a second Research agent.
+At 40 calls, wrap up immediately with partial findings. Round 17 Research agents used 161+145 calls (29M tokens, 58% of total). This is the #1 token waste vector.
 
 #### 2a. Web search
 Use `WebSearch` for the specific technique. Specific, not generic:
@@ -147,6 +147,7 @@ Write `opt/current_plan.md` using `opt/plan_template.md`. Fill ALL sections:
 - **Prior Art**: from Step 2, with file:line citations
 - **Approach**: concrete file changes, based on Step 3 source reading
 - **Prerequisite**: if arch_check flagged files >800 lines that this round touches → plan includes split as Task 0
+- **Infrastructure fixes**: if Steps 0-4 discovered broken/stale tooling (e.g. Diagnose() pipeline doesn't match compileTier2(), stale docs, missing test coverage), include as a Task in this plan. Don't just note it in the report — fix it this round.
 - **Expected Effect**: quantified, halved for ARM64 superscalar
 - **Failure Signals**: specific conditions
 - **Task Breakdown**: each task = one Coder sub-agent, with file + test

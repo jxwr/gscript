@@ -8,11 +8,16 @@
   "completed_steps": [],
   "next_action": "",
   "uncommitted_files": [
+    ".claude/prompts/analyze.md",
+    ".claude/skills/harness-review/SKILL.md",
+    "docs-internal/architecture/constraints.md",
+    "opt/analyze_report.md",
+    "opt/pprof-tier2-float.md",
     "opt/state.json"
   ],
-  "head_commit": "1489bd251759c0950f6e94fcfec2c4ecbc1c5047",
+  "head_commit": "e560daf3a81dc04005637dd4f77de16b857573b2",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T13:51:42Z",
+  "last_checkpoint": "2026-04-06T14:37:05Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -161,6 +166,6 @@
     "tier2_float_loop": 0,
     "field_access": 0
   },
-  "rounds_since_review": 1,
+  "rounds_since_review": 0,
   "rounds_since_arch_audit": 1
 }
