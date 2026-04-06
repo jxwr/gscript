@@ -111,7 +111,8 @@ func TestLoadElimination_DifferentFields(t *testing.T) {
 
 // TestLoadElimination_SetFieldKill verifies that a SetField on the same
 // (obj, field) invalidates the cached GetField, so a subsequent GetField
-// is NOT eliminated.
+// is NOT forwarded to the earlier GetField. Instead, store-to-load
+// forwarding kicks in: the GetField is forwarded to the stored value.
 func TestLoadElimination_SetFieldKill(t *testing.T) {
 	fn := &Function{
 		Proto:   &vm.FuncProto{Name: "setfield_kill"},
@@ -125,10 +126,10 @@ func TestLoadElimination_SetFieldKill(t *testing.T) {
 	// First load
 	gf1 := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
 		Args: []*Value{obj.Value()}, Aux: 42, Block: b}
-	// Store to the same field — kills the available entry
+	// Store to the same field — kills the gf1 entry, records val
 	sf := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeAny,
 		Args: []*Value{obj.Value(), val.Value()}, Aux: 42, Block: b}
-	// Second load — should NOT be eliminated (field was overwritten)
+	// Second load — NOT forwarded to gf1, but forwarded to val via store-to-load
 	gf2 := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
 		Args: []*Value{obj.Value()}, Aux: 42, Block: b}
 
@@ -145,12 +146,21 @@ func TestLoadElimination_SetFieldKill(t *testing.T) {
 		t.Fatalf("LoadEliminationPass error: %v", err)
 	}
 
-	// gf2 should NOT have been replaced — it still has its own uses.
+	// gf2 should NOT be forwarded to gf1 (SetField killed that entry).
+	// Instead, store-to-load forwarding replaces gf2 with val.
 	for _, instr := range result.Entry.Instrs {
 		if instr.ID == add.ID {
-			if instr.Args[1].ID != gf2.ID {
-				t.Errorf("expected add.Args[1] = gf2 (v%d), got v%d — SetField kill failed",
-					gf2.ID, instr.Args[1].ID)
+			if instr.Args[0].ID != gf1.ID {
+				t.Errorf("expected add.Args[0] = gf1 (v%d), got v%d",
+					gf1.ID, instr.Args[0].ID)
+			}
+			if instr.Args[1].ID == gf1.ID {
+				t.Errorf("add.Args[1] should NOT be gf1 (v%d) — SetField kill failed",
+					gf1.ID)
+			}
+			if instr.Args[1].ID != val.ID {
+				t.Errorf("expected add.Args[1] = val (v%d) via store-to-load forwarding, got v%d",
+					val.ID, instr.Args[1].ID)
 			}
 		}
 	}
@@ -199,6 +209,65 @@ func TestLoadElimination_CallKill(t *testing.T) {
 					gf2.ID, instr.Args[1].ID)
 			}
 		}
+	}
+}
+
+// TestLoadElim_StoreToLoadForwarding verifies that after SetField(obj, field, val),
+// a subsequent GetField(obj, field) is forwarded to val (the stored value)
+// rather than reloading from memory. After DCE, the GetField should be eliminated.
+func TestLoadElim_StoreToLoadForwarding(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "store_to_load_fwd"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	// obj = some table
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	// val = 3.14
+	val := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b}
+	// SetField(obj, 42, val)
+	sf := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeAny,
+		Args: []*Value{obj.Value(), val.Value()}, Aux: 42, Block: b}
+	// gf = GetField(obj, 42) — should be forwarded to val
+	gf := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
+		Args: []*Value{obj.Value()}, Aux: 42, Block: b}
+	// return gf
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{gf.Value()}, Block: b}
+
+	b.Instrs = []*Instr{obj, val, sf, gf, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+
+	// After store-to-load forwarding, the return should reference val, not gf.
+	for _, instr := range result.Entry.Instrs {
+		if instr.ID == ret.ID {
+			if instr.Args[0].ID != val.ID {
+				t.Errorf("expected ret.Args[0] to reference val (v%d), got v%d",
+					val.ID, instr.Args[0].ID)
+			}
+		}
+	}
+
+	// After DCE, the GetField should be eliminated (no remaining uses).
+	result, err = DCEPass(result)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+
+	getFieldCount := 0
+	for _, instr := range result.Entry.Instrs {
+		if instr.Op == OpGetField {
+			getFieldCount++
+		}
+	}
+	if getFieldCount != 0 {
+		t.Errorf("expected 0 GetField after DCE, got %d", getFieldCount)
 	}
 }
 

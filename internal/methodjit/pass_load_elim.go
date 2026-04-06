@@ -1,11 +1,16 @@
-// pass_load_elim.go implements block-local load elimination (GetField CSE).
-// Within each basic block, it tracks available GetField results keyed by
-// (object value ID, field Aux). When a second GetField with the same key
-// is encountered, all uses of the redundant GetField are replaced with the
-// original's value, making the redundant instruction dead for DCE.
+// pass_load_elim.go implements block-local load elimination (GetField CSE)
+// with store-to-load forwarding. Within each basic block, it tracks available
+// values keyed by (object value ID, field Aux). When a GetField matches an
+// available entry, all uses of the redundant GetField are replaced with the
+// available value, making the redundant instruction dead for DCE.
+//
+// Store-to-load forwarding: after SetField(obj, field, val), the stored
+// value is recorded so a subsequent GetField(obj, field) reuses val
+// directly instead of reloading from memory.
 //
 // Invalidation rules:
-//   - OpSetField on the same (obj, field) kills that specific entry.
+//   - OpSetField on the same (obj, field) kills the previous entry,
+//     then records the stored value for forwarding.
 //   - OpCall / OpSelf conservatively clear the entire available map,
 //     because a call could mutate any table.
 
@@ -32,7 +37,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 	}
 
 	for _, block := range fn.Blocks {
-		available := make(map[loadKey]int) // loadKey → first GetField instr ID
+		available := make(map[loadKey]int) // loadKey → value ID to forward to
 
 		for _, instr := range block.Instrs {
 			switch instr.Op {
@@ -54,9 +59,14 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				if len(instr.Args) < 1 {
 					continue
 				}
-				// Kill the specific (obj, field) entry.
+				// Kill the specific (obj, field) entry, then record stored value.
 				key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
 				delete(available, key)
+				// Store-to-load forwarding: a subsequent GetField on the same
+				// (obj, field) can reuse the stored value directly.
+				if len(instr.Args) >= 2 {
+					available[key] = instr.Args[1].ID
+				}
 
 			case OpCall, OpSelf:
 				// Conservative: a call could mutate any table.
