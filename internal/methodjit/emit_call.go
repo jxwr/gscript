@@ -437,6 +437,15 @@ func (ec *emitContext) emitFloatCmp(instr *Instr, cond jit.Cond) {
 	// Float compare sets NZCV flags.
 	asm.FCMPd(lhsF, rhsF)
 
+	// Fused path: preceding FCMP already set flags; the following Branch
+	// will emit B.cc directly. Skip bool materialization (saves 3 insns).
+	if ec.fusedCmps[instr.ID] {
+		ec.fusedCond = cond
+		ec.fusedActive = true
+		return
+	}
+
+	// Normal path: materialize NaN-boxed bool.
 	// Set result: 1 if condition true, 0 if false.
 	asm.CSET(jit.X0, cond)
 

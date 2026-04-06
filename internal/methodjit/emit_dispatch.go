@@ -38,6 +38,13 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	for k := range ec.scratchFPRCache {
 		delete(ec.scratchFPRCache, k)
 	}
+	// Reset fused compare state if this is NOT a Branch that should consume
+	// the fused comparison. A fused comparison sets fusedActive, and only
+	// the immediately-following Branch should see it. If any other instruction
+	// runs between them (shouldn't happen per our pre-scan), clear it.
+	if instr.Op != OpBranch {
+		ec.fusedActive = false
+	}
 	switch instr.Op {
 	// --- Constants ---
 	case OpConstInt:
@@ -805,16 +812,19 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 
 	trueBlock := block.Succs[0]
 	falseBlock := block.Succs[1]
-
-	// Load condition value (NaN-boxed bool) from register or memory.
-	condReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-
-	// The condition value is a NaN-boxed bool.
-	// Test bit 0 directly: if 1 -> true branch, 0 -> false branch.
-	// TBNZ is a single instruction replacing LoadImm64+AND+CBNZ (3 instructions).
 	trueTrampolineLabel := fmt.Sprintf("B%d_true_from_B%d", trueBlock.ID, block.ID)
 
-	ec.asm.TBNZ(condReg, 0, trueTrampolineLabel)
+	// Fused compare+branch: the preceding CMP/FCMP already set NZCV flags.
+	// Emit B.cc directly instead of materializing a bool and testing bit 0.
+	if ec.fusedActive {
+		cond := ec.fusedCond
+		ec.fusedActive = false
+		ec.asm.BCond(cond, trueTrampolineLabel)
+	} else {
+		// Standard path: load NaN-boxed bool, test bit 0.
+		condReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		ec.asm.TBNZ(condReg, 0, trueTrampolineLabel)
+	}
 
 	// False path (fall-through).
 	if ec.isLoopExit(block, falseBlock) {

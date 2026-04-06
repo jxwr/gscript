@@ -295,9 +295,18 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
 	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
 
-	// Compare.
+	// Compare: sets NZCV flags.
 	ec.asm.CMPreg(lhs, rhs)
 
+	// Fused path: preceding CMP already set flags; the following Branch
+	// will emit B.cc directly. Skip bool materialization (saves 3 insns).
+	if ec.fusedCmps[instr.ID] {
+		ec.fusedCond = cond
+		ec.fusedActive = true
+		return
+	}
+
+	// Normal path: materialize NaN-boxed bool.
 	// Set result: 1 if condition true, 0 if false.
 	ec.asm.CSET(jit.X0, cond)
 

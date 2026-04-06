@@ -118,6 +118,25 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		}
 	}
 
+	// Identify single-use comparisons that can be fused with their
+	// immediately-following Branch. Fused pairs emit CMP/FCMP + B.cc
+	// instead of CMP + CSET + ORR + TBNZ (saves 3 instructions).
+	useCounts := computeUseCounts(fn)
+	fusedCmps := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for i, instr := range block.Instrs {
+			if !isFusableComparison(instr.Op) || useCounts[instr.ID] != 1 {
+				continue
+			}
+			if i+1 < len(block.Instrs) {
+				next := block.Instrs[i+1]
+				if next.Op == OpBranch && len(next.Args) > 0 && next.Args[0].ID == instr.ID {
+					fusedCmps[instr.ID] = true
+				}
+			}
+		}
+	}
+
 	ec := &emitContext{
 		fn:             fn,
 		alloc:          alloc,
@@ -139,6 +158,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		constInts:        constInts,
 		irTypes:          irTypes,
 		scratchFPRCache:  make(map[int]jit.FReg),
+		fusedCmps:        fusedCmps,
 	}
 
 	// Assign home slots for all SSA values.
@@ -297,6 +317,29 @@ type emitContext struct {
 	// — cleared at the start of every emitInstr call. Enables dedup of same-value
 	// operands within one instruction (e.g., v*v loads v only once).
 	scratchFPRCache map[int]jit.FReg
+
+	// fusedCmps is the set of comparison instruction IDs that will be fused
+	// with their immediately-following Branch. These comparisons emit only
+	// CMP/FCMP (no CSET+ORR bool materialization).
+	fusedCmps map[int]bool
+
+	// fusedCond holds the condition code from the last fused comparison.
+	// Set by emitIntCmp/emitFloatCmp when the comparison is in fusedCmps.
+	fusedCond jit.Cond
+
+	// fusedActive is true when the preceding comparison was fused and
+	// emitBranch should use fusedCond + B.cc instead of TBNZ.
+	fusedActive bool
+}
+
+// isFusableComparison returns true for comparison ops that can be fused
+// with an immediately-following Branch (emit CMP/FCMP + B.cc).
+func isFusableComparison(op Op) bool {
+	switch op {
+	case OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat:
+		return true
+	}
+	return false
 }
 
 // assignSlots assigns a home slot for every SSA value.
