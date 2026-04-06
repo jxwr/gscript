@@ -532,3 +532,28 @@ for i := 1; i <= 5; i++ { result = f() }
 		t.Errorf("expected at least one GETTABLE with FBInt feedback, got none")
 	}
 }
+
+func TestBaselineFeedback_GetField_Float(t *testing.T) {
+	src := `
+func f() {
+    t := {x: 1.5, y: 2.5, z: 3.5}
+    return t.x + t.y + t.z
+}
+result := 0.0
+for i := 1; i <= 5; i++ { result = f() }
+`
+	_, proto := compileAndRunForFeedback(t, src)
+	foundFloat := false
+	for pc, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		if op == vm.OP_GETFIELD && proto.Feedback != nil && pc < len(proto.Feedback) {
+			fb := proto.Feedback[pc]
+			if fb.Result == vm.FBFloat {
+				foundFloat = true
+			}
+		}
+	}
+	if !foundFloat {
+		t.Errorf("expected at least one GETFIELD with FBFloat feedback, got none")
+	}
+}

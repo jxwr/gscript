@@ -138,6 +138,8 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 
 	// Store result to R(A).
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	// Record type feedback for Tier 2 specialization.
+	emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "getfield")
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.
@@ -697,6 +699,76 @@ func emitBaselineFeedbackResult(asm *jit.Assembler, pc int, expectedFB uint16, s
 		asm.Label(fbSetLabel)
 		asm.MOVimm16(jit.X6, expectedFB)
 		asm.STRB(jit.X6, jit.X5, 0)
+	}
+	asm.Label(fbSkipLabel)
+}
+
+// emitBaselineFeedbackResultFromValue emits ARM64 code to extract the type
+// from a NaN-boxed value and record it as Result feedback for TypeFeedback[pc].
+// The value must be in valReg. Only distinguishes float (FBFloat=2) and int
+// (FBInt=1); all other types map to FBAny=7. This covers the important cases
+// for nbody (float fields) and spectral_norm (float/int fields).
+//
+// Uses scratch registers X5, X6, X7. Does not clobber valReg.
+func emitBaselineFeedbackResultFromValue(asm *jit.Assembler, pc int, valReg jit.Reg, suffix string) {
+	fbSkipLabel := nextLabel("fb_val_skip_" + suffix)
+	fbFloatLabel := nextLabel("fb_val_float_" + suffix)
+	fbIntLabel := nextLabel("fb_val_int_" + suffix)
+	fbSetLabel := nextLabel("fb_val_set_" + suffix)
+	fbUpdateLabel := nextLabel("fb_val_update_" + suffix)
+
+	// Load feedback pointer.
+	asm.LDR(jit.X5, mRegCtx, execCtxOffBaselineFeedbackPtr)
+	asm.CBZ(jit.X5, fbSkipLabel)
+
+	// Extract type from NaN-boxed value.
+	// Tag = top 16 bits. Float: tag < 0xFFFC. Int: tag == 0xFFFE.
+	asm.LSRimm(jit.X7, valReg, 48)       // X7 = tag
+	asm.MOVimm16(jit.X6, 0xFFFC)         // NB_TagNilShr48
+	asm.CMPreg(jit.X7, jit.X6)
+	asm.BCond(jit.CondLT, fbFloatLabel)   // tag < 0xFFFC → float
+	asm.MOVimm16(jit.X6, 0xFFFE)         // NB_TagIntShr48
+	asm.CMPreg(jit.X7, jit.X6)
+	asm.BCond(jit.CondEQ, fbIntLabel)     // tag == 0xFFFE → int
+	// Everything else (bool, nil, ptr, string, table, function) → FBAny
+	asm.MOVimm16(jit.X7, 7) // FBAny
+	asm.B(fbUpdateLabel)
+	asm.Label(fbFloatLabel)
+	asm.MOVimm16(jit.X7, 2) // FBFloat
+	asm.B(fbUpdateLabel)
+	asm.Label(fbIntLabel)
+	asm.MOVimm16(jit.X7, 1) // FBInt
+
+	// Monotonic update: X7 = observed type.
+	asm.Label(fbUpdateLabel)
+	fbResultOff := pc*3 + 2 // TypeFeedback[pc].Result byte offset
+	if fbResultOff < 4096 {
+		asm.LDRB(jit.X6, jit.X5, fbResultOff)       // X6 = current Result
+		asm.CMPreg(jit.X6, jit.X7)
+		asm.BCond(jit.CondEQ, fbSkipLabel)            // same type → skip
+		asm.CMPimm(jit.X6, 7)                         // FBAny?
+		asm.BCond(jit.CondEQ, fbSkipLabel)            // already megamorphic → skip
+		asm.CBZ(jit.X6, fbSetLabel)                   // Unobserved → set
+		// Different type → FBAny
+		asm.MOVimm16(jit.X6, 7)
+		asm.STRB(jit.X6, jit.X5, fbResultOff)
+		asm.B(fbSkipLabel)
+		asm.Label(fbSetLabel)
+		asm.STRB(jit.X7, jit.X5, fbResultOff) // store observed type
+	} else {
+		asm.LoadImm64(jit.X6, int64(fbResultOff))
+		asm.ADDreg(jit.X5, jit.X5, jit.X6)
+		asm.LDRB(jit.X6, jit.X5, 0)
+		asm.CMPreg(jit.X6, jit.X7)
+		asm.BCond(jit.CondEQ, fbSkipLabel)
+		asm.CMPimm(jit.X6, 7)
+		asm.BCond(jit.CondEQ, fbSkipLabel)
+		asm.CBZ(jit.X6, fbSetLabel)
+		asm.MOVimm16(jit.X6, 7)
+		asm.STRB(jit.X6, jit.X5, 0)
+		asm.B(fbSkipLabel)
+		asm.Label(fbSetLabel)
+		asm.STRB(jit.X7, jit.X5, 0)
 	}
 	asm.Label(fbSkipLabel)
 }
