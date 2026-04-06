@@ -129,8 +129,30 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	// 3. Extract raw pointer -> X0 = *vm.Closure
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 
-	// Load Proto, DirectEntryPtr
+	// Load Proto
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
+
+	// Self-call fast path: if callee proto == caller proto, skip DirectEntryPtr
+	// load and CallCount increment, and use BL direct_entry (PC-relative, direct
+	// branch) instead of BLR X2 (indirect). This saves ~4 instructions per
+	// recursive call. The bounds check is still required because each recursive
+	// call advances mRegRegs by calleeBaseOff and can overflow the register file.
+	//
+	// For self-calls, MaxStack is known at compile time, so the bounds check
+	// uses a precomputed constant instead of loading from the proto at runtime.
+	//
+	// X20 is used as a flag register (1 = self-call, 0 = normal). X20 is
+	// callee-saved (saved/restored in the full prologue/epilogue) and not used
+	// by Tier 1 baseline code between instructions, so it is safe to use here.
+	// Steps 4-6 only use X0-X7 as scratch, so X20 survives until the CBNZ
+	// check at step 7.
+	afterNormalChecksLabel := nextLabel("after_normal_checks")
+	selfCallSkipLabel := nextLabel("self_call_skip")
+	asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(callerProto))))
+	asm.CMPreg(jit.X1, jit.X3)
+	asm.BCond(jit.CondEQ, selfCallSkipLabel)
+
+	// --- Normal path: callee is a different function ---
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr)
 	asm.CBZ(jit.X2, slowLabel) // not compiled -> slow
 
@@ -163,6 +185,22 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	// continue at Tier 1 but the Tier 2 code is compiled and cached.
 	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
 	asm.BCond(jit.CondEQ, slowLabel) // exactly at threshold → trigger Tier 2 via slow path
+
+	asm.MOVimm16(jit.X20, 0) // flag: normal call
+	asm.B(afterNormalChecksLabel)
+
+	// Self-call path: skip DirectEntryPtr load and CallCount increment.
+	// Bounds check uses compile-time constant: totalNeeded = calleeBaseOff + MaxStack*8.
+	asm.Label(selfCallSkipLabel)
+	selfCallTotalNeeded := int64(calleeBaseOff + maxStack*8)
+	asm.LoadImm64(jit.X3, selfCallTotalNeeded)
+	asm.ADDreg(jit.X3, jit.X3, mRegRegs)        // X3 = mRegRegs + totalNeeded
+	asm.LDR(jit.X4, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X3, jit.X4)
+	asm.BCond(jit.CondHI, slowLabel)              // overflow -> slow path
+	asm.MOVimm16(jit.X20, 1)                     // flag: self-call -> use BL direct_entry
+
+	asm.Label(afterNormalChecksLabel)
 
 	// 4. Save caller state ON STACK (64 bytes, 16-byte aligned)
 	asm.SUBimm(jit.SP, jit.SP, 64)
@@ -256,13 +294,23 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.MOVimm16(jit.X3, 0)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
 
-	// 7. Increment NativeCallDepth, BLR to callee, decrement
+	// 7. Increment NativeCallDepth, call callee, decrement
+	selfCallBLLabel := nextLabel("self_call_bl")
+	afterCallLabel := nextLabel("after_call")
+
 	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 	asm.ADDimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
 	asm.MOVreg(jit.X0, mRegCtx)
+
+	// X20 flag: 0 = normal (BLR X2), 1 = self-call (BL direct_entry)
+	asm.CBNZ(jit.X20, selfCallBLLabel)
 	asm.BLR(jit.X2)
+	asm.B(afterCallLabel)
+	asm.Label(selfCallBLLabel)
+	asm.BL("direct_entry")
+	asm.Label(afterCallLabel)
 
 	// Decrement NativeCallDepth after callee returns
 	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)

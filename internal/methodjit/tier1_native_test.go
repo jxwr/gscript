@@ -434,6 +434,76 @@ for i := 1; i <= 200; i++ { result = apply(i) }
 }
 
 // ---------------------------------------------------------------------------
+// Self-call direct branch optimization
+// ---------------------------------------------------------------------------
+
+func TestTier1_SelfCallDirect_Fib(t *testing.T) {
+	// Fibonacci is the canonical self-recursive function. The self-call
+	// optimization skips DirectEntryPtr load, bounds check, and CallCount
+	// increment, using BL direct_entry instead of BLR X2.
+	compareVMvsJIT(t, `
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+result := fib(15)
+`, "result")
+}
+
+func TestTier1_SelfCallDirect_Factorial(t *testing.T) {
+	// Single-branch recursion (only one self-call per invocation).
+	compareVMvsJIT(t, `
+func fact(n) {
+    if n <= 1 { return 1 }
+    return n * fact(n-1)
+}
+result := fact(12)
+`, "result")
+}
+
+func TestTier1_SelfCallDirect_DeepRecursion(t *testing.T) {
+	// Deeper recursion to stress the native call stack. NativeCallDepth
+	// limit (48) should not be hit for depth=40.
+	compareVMvsJIT(t, `
+func sum_to(n) {
+    if n <= 0 { return 0 }
+    return n + sum_to(n-1)
+}
+result := sum_to(40)
+`, "result")
+}
+
+func TestTier1_SelfCallDirect_MutualNotSelf(t *testing.T) {
+	// Mutual recursion is NOT a self-call. This test verifies that the
+	// normal (non-self) path still works correctly when self-call
+	// detection is active.
+	compareVMvsJIT(t, `
+func is_even(n) {
+    if n == 0 { return true }
+    return is_odd(n - 1)
+}
+func is_odd(n) {
+    if n == 0 { return false }
+    return is_even(n - 1)
+}
+result := is_even(20)
+`, "result")
+}
+
+func TestTier1_SelfCallDirect_MixedCalls(t *testing.T) {
+	// A function that calls both itself (self-call) and another function
+	// (normal call) in the same body.
+	compareVMvsJIT(t, `
+func double(x) { return x * 2 }
+func f(n) {
+    if n <= 0 { return 0 }
+    return double(n) + f(n-1)
+}
+result := f(10)
+`, "result")
+}
+
+// ---------------------------------------------------------------------------
 // Baseline feedback tests: verify Tier 1 type feedback collection
 // ---------------------------------------------------------------------------
 
