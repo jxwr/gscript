@@ -17,8 +17,9 @@ func BuildGraph(proto *vm.FuncProto) *Function {
 			Proto:   proto,
 			NumRegs: proto.MaxStack,
 		},
-		proto:    proto,
-		pcToBlock: make(map[int]*Block),
+		proto:           proto,
+		pcToBlock:       make(map[int]*Block),
+		lastMultiRetReg: -1,
 	}
 	b.build()
 	return b.fn
@@ -26,11 +27,12 @@ func BuildGraph(proto *vm.FuncProto) *Function {
 
 // graphBuilder holds transient state for the SSA construction pass.
 type graphBuilder struct {
-	fn             *Function
-	proto          *vm.FuncProto
-	pcToBlock      map[int]*Block // maps PC → Block that starts at that PC
-	nextBlock      int            // next block ID
-	backEdgeTargets map[int]bool  // PCs that are targets of backward jumps (loop headers)
+	fn              *Function
+	proto           *vm.FuncProto
+	pcToBlock       map[int]*Block // maps PC → Block that starts at that PC
+	nextBlock       int            // next block ID
+	backEdgeTargets map[int]bool   // PCs that are targets of backward jumps (loop headers)
+	lastMultiRetReg int            // register set by preceding CALL/VARARG with C=0; -1 = no pending top
 }
 
 // --------------------------------------------------------------------
@@ -296,6 +298,11 @@ func (b *graphBuilder) emitBlocks() {
 		block := b.pcToBlock[startPC]
 		endPC := blockEndPC[startPC]
 
+		// Reset top-tracking at block boundaries. lastMultiRetReg only
+		// applies within a single basic block (C=0 call immediately
+		// precedes the B=0 call in the same block).
+		b.lastMultiRetReg = -1
+
 		for pc := startPC; pc < endPC; pc++ {
 			inst := code[pc]
 			op := vm.DecodeOp(inst)
@@ -543,14 +550,18 @@ func (b *graphBuilder) emitBlocks() {
 				} else if bOp == 0 {
 					// B==0: arguments run from A+1 to current top, where
 					// top is set by a preceding variadic-return op (a
-					// CALL/VARARG/TFORCALL with C=0). Static SSA
-					// construction cannot know the runtime top, so we
-					// cannot emit a correct arg list. Pattern: the outer
-					// call of `outer(x, inner(...))` / `return f(g(...))`.
-					// Mark the function unpromotable so compileTier2
-					// rejects it; fall through to emit a best-effort Call
-					// (args-so-far) to keep downstream passes safe.
-					b.fn.Unpromotable = true
+					// CALL/VARARG/TFORCALL with C=0).
+					// If a preceding CALL/VARARG with C=0 set lastMultiRetReg,
+					// we know the top: args are A+1 through lastMultiRetReg (inclusive).
+					if b.lastMultiRetReg >= 0 && b.lastMultiRetReg >= a+1 {
+						for i := a + 1; i <= b.lastMultiRetReg; i++ {
+							args = append(args, b.readVariable(i, block))
+						}
+						b.lastMultiRetReg = -1
+					} else {
+						// Cannot determine top statically. Mark unpromotable.
+						b.fn.Unpromotable = true
+					}
 				}
 				instr := b.emit(block, OpCall, TypeAny, args, int64(a), int64(c))
 				b.writeVariable(a, block, instr.Value())
@@ -561,6 +572,12 @@ func (b *graphBuilder) emitBlocks() {
 						// For now, write them as the same call result.
 						b.writeVariable(a+i, block, instr.Value())
 					}
+				}
+				// Track "top" for a subsequent B=0 call.
+				// C=0 means variable returns; top = A (the call result register).
+				// A subsequent B=0 call will read args from its own A+1 through this A.
+				if c == 0 {
+					b.lastMultiRetReg = a
 				}
 
 			case vm.OP_GETGLOBAL:
@@ -796,6 +813,11 @@ func (b *graphBuilder) emitBlocks() {
 					}
 				} else {
 					b.writeVariable(a, block, instr.Value())
+				}
+				// Track top for subsequent B=0 call.
+				// B=0 means variable count; top = A (the vararg dest register).
+				if bOp == 0 {
+					b.lastMultiRetReg = a
 				}
 
 			case vm.OP_GO:
