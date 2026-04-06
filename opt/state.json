@@ -8,16 +8,11 @@
   "completed_steps": [],
   "next_action": "",
   "uncommitted_files": [
-    ".claude/prompts/analyze.md",
-    ".claude/skills/harness-review/SKILL.md",
-    "docs-internal/architecture/constraints.md",
-    "opt/analyze_report.md",
-    "opt/pprof-tier2-float.md",
     "opt/state.json"
   ],
-  "head_commit": "e560daf3a81dc04005637dd4f77de16b857573b2",
+  "head_commit": "50d7b90a20252a34cbb3c2f69b11a6b8d2b84e89",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T14:37:05Z",
+  "last_checkpoint": "2026-04-06T14:39:35Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",

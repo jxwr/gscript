@@ -31,8 +31,16 @@ Execute tasks from `current_plan.md` in order. For each task:
    - What NOT to touch (scope boundary)
    - "If you need to read additional files not provided above, use Read. But try the provided code first."
    - "If you can't make it work in 3 attempts, return a failure report"
-3. **Update current_plan.md**: mark task done or record failure
-4. **Check scope**: did the Coder change files outside the plan?
+4. **Update current_plan.md**: mark task done or record failure
+5. **Check scope**: did the Coder change files outside the plan?
+6. **Collect incidental findings**: if the Coder reports pre-existing failures, stale tests,
+   deprecated code, or other issues unrelated to the current task:
+   - **Quick fix** (≤5 min, e.g. delete a stale test reference, fix a typo): add as a bonus task
+     in this round, do it after the planned tasks complete. Note in current_plan.md.
+   - **Not quick** (requires design, touches other modules): append to `docs-internal/known-issues.md`
+     with a one-line description so it gets picked up by a future ANALYZE.
+   - Do NOT ignore these findings. "Pre-existing, not related to our changes" is not a reason
+     to drop information — it's a reason to record it properly.
 
 ## Abort Conditions (from current_plan.md)
 - Budget exceeded → report to user, STOP
