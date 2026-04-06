@@ -106,10 +106,22 @@ Write `opt/reviews/<date>-round<N>.md`:
 [2-3 sentences: what is the user trying to achieve at the meta level?
  What kind of workflow would make them stop intervening?]
 
+### Consistency Audit
+| Check | Files Scanned | Issues Found | Fixed? |
+|-------|---------------|-------------|--------|
+| Phase names | optimize.sh, prompts, hooks, skills | N | Y/N |
+| Role descriptions | CLAUDE.md, skills | N | Y/N |
+| Category taxonomy | INDEX, plan_template, _template, analyze.md | N | Y/N |
+| Pass pipeline | CLAUDE.md, overview, constraints, debug-ir-pipeline | N | Y/N |
+| State fields | state.json vs prompts | N | Y/N |
+| Hook branches | phase_guard.sh, etc. | N | Y/N |
+| File references | all prompts + docs | N | Y/N |
+| Dead content | all files | N | Y/N |
+
 ### Self-Evolution Actions
 [List changes you APPLIED this review (not just recommended). For each:]
 1. **What**: [file changed + what was modified]
-   **Why**: [which user intervention or round failure triggered this]
+   **Why**: [which user intervention / round failure / consistency issue triggered this]
    **Verify**: [how the next round will show if this helped]
 2. ...
 
@@ -121,16 +133,53 @@ Write `opt/reviews/<date>-round<N>.md`:
 
 ---
 
+## D. Harness Consistency Audit (MANDATORY)
+
+Every review must check that all workflow documents are internally consistent.
+Read ALL of these files and cross-check:
+
+**Files to read:**
+- `CLAUDE.md` — master doc (roles, phases, pipeline, conventions)
+- `.claude/optimize.sh` — orchestrator (phase list, REVIEW_INTERVAL, comments)
+- `.claude/prompts/*.md` — all active phase prompts
+- `.claude/skills/*/SKILL.md` — all skill descriptions
+- `.claude/hooks/*.sh` — all hooks (check case branches match active phase names)
+- `docs-internal/architecture/overview.md` — pipeline, tiers, registers
+- `docs-internal/architecture/constraints.md` — known limits
+- `docs-internal/diagnostics/*.md` — debug guides
+- `opt/plan_template.md` — category list
+- `opt/initiatives/_template.md` — category list
+- `opt/INDEX.md` — category list
+- `opt/state.json` — field names
+
+**Check for these 10 types of inconsistency:**
+
+1. **Phase names**: old names (MEASURE, RESEARCH, PLAN, DOCUMENT) in active files?
+   Active phases: `analyze`, `implement`, `verify` (+ `review` conditional).
+2. **Role descriptions**: stale roles? Current: Workflow Auditor, Analyst+Planner, Orchestrator, Coder, Evaluator, Profiler.
+3. **File references**: prompts referencing files that don't exist? Docs referencing deprecated prompts?
+4. **State fields**: prompts referencing state.json fields that don't exist?
+5. **Category taxonomy**: consistent across CLAUDE.md, INDEX.md, analyze.md, plan_template.md, _template.md?
+6. **Pass pipeline**: consistent across CLAUDE.md, overview.md, constraints.md, debug-ir-pipeline.md?
+7. **Hook case branches**: only active phase names? No stale MEASURE/PLAN/DOCUMENT branches?
+8. **Skill descriptions**: match current workflow? Phase counts, feature descriptions, flags all current?
+9. **Cross-references**: docs reference each other correctly?
+10. **Dead content**: sections describing features that no longer exist?
+
+**For each inconsistency found**: fix it directly (you have Write access). Note in "Self-Evolution Actions".
+
+---
+
 ## Self-Evolution Protocol
 
 **The harness must evolve itself, not just report.** See CLAUDE.md → Meta-Principle.
 
-After writing the review report:
+After completing sections A-D:
 
-### 1. Apply structural changes directly
-You have Write access to `.claude/prompts/`, `.claude/optimize.sh`, `scripts/`, `opt/`.
-If you identified a gap backed by data (user intervention or round failure):
-- Edit the relevant prompt/script NOW
+### 1. Apply changes directly
+You have Write access to `.claude/prompts/`, `.claude/optimize.sh`, `.claude/hooks/`, `scripts/`, `opt/`, `docs-internal/`.
+For every gap found (user intervention, round failure, consistency issue):
+- Edit the relevant file NOW
 - Note what you changed in "Self-Evolution Actions"
 - Define how next round will verify the change worked
 
@@ -138,11 +187,11 @@ If you identified a gap backed by data (user intervention or round failure):
 Read the previous review (`opt/reviews/` most recent). Check its "Self-Evolution Actions → Verify" column. Did the changes help? If not, iterate or revert.
 
 ### 3. Don't duplicate user work
-Read `.claude/prompts/*.md` and `.claude/optimize.sh` BEFORE making changes.
-If the user already implemented a fix in the current session → mark as "implemented by user" and move on. Understand WHY they made that choice.
+Read current file contents BEFORE making changes.
+If the user already implemented a fix → mark "implemented by user" and understand WHY.
 
 ### 4. Escalate what you can't fix
-Some changes need user decision (e.g., "should we add a new phase?" or "should we change the mission?"). Flag these under "Request for Human Input" with your reasoning.
+Some changes need user decision. Flag under "Request for Human Input" with reasoning.
 
 ---
 
