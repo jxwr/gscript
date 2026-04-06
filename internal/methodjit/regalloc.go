@@ -235,6 +235,15 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 							carried[phiID] = pr
 						}
 					}
+					// Loop-bound carry: pin GPR-allocated non-phi int values
+					// used by header comparisons (LeInt/LtInt/EqInt) so they
+					// survive across the loop body without eviction.
+					hdr := findBlockByID(fn, innerHeader)
+					for _, vid := range collectLoopBoundGPRs(hdr, alloc) {
+						if pr, ok := alloc.ValueRegs[vid]; ok {
+							carried[vid] = pr
+						}
+					}
 				}
 
 				// Invariant carry: works for any loop with a pre-header.
@@ -318,6 +327,37 @@ func preAllocateHeaderPhis(block *Block, alloc *RegAllocation) {
 			alloc.NumSpillSlots++
 		}
 	}
+}
+
+// collectLoopBoundGPRs scans a loop header block for int comparison ops
+// (LeInt, LtInt, EqInt) and returns value IDs of non-phi, GPR-allocated
+// arguments (e.g., loop bounds from LoadSlot). These are candidates for
+// carrying across the loop body to avoid eviction and per-iteration reloads.
+func collectLoopBoundGPRs(hdr *Block, alloc *RegAllocation) []int {
+	if hdr == nil {
+		return nil
+	}
+	phiIDs := make(map[int]bool)
+	for _, instr := range hdr.Instrs {
+		if instr.Op == OpPhi {
+			phiIDs[instr.ID] = true
+		}
+	}
+	var bounds []int
+	for _, instr := range hdr.Instrs {
+		if instr.Op != OpLeInt && instr.Op != OpLtInt && instr.Op != OpEqInt {
+			continue
+		}
+		for _, arg := range instr.Args {
+			if arg == nil || phiIDs[arg.ID] {
+				continue
+			}
+			if pr, ok := alloc.ValueRegs[arg.ID]; ok && !pr.IsFloat {
+				bounds = append(bounds, arg.ID)
+			}
+		}
+	}
+	return bounds
 }
 
 // regState tracks the current state of a register pool (GPR or FPR).

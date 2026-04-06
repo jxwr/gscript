@@ -164,6 +164,196 @@ func TestRegAlloc_FloatValues(t *testing.T) {
 	}
 }
 
+// TestRegAlloc_IntPhiAlreadyCarried verifies existing behavior: an int phi in a
+// tight 2-block loop (header + one body) gets a GPR allocation and is carried
+// into the body block so that the body's AddInt result does NOT clobber the
+// phi's GPR. This is a baseline test for the existing carried-phi mechanism.
+func TestRegAlloc_IntPhiAlreadyCarried(t *testing.T) {
+	fn := &Function{NumRegs: 2}
+
+	// CFG: b0(entry) → b1(header, phi:int) → b2(body, AddInt) → b1 (back-edge)
+	//                                        \→ b3(exit)
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	b1 := &Block{ID: 1, defs: make(map[int]*Value)}
+	b2 := &Block{ID: 2, defs: make(map[int]*Value)}
+	b3 := &Block{ID: 3, defs: make(map[int]*Value)}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2, b3}
+
+	b0.Succs = []*Block{b1}
+	b1.Preds = []*Block{b0, b2}
+	b1.Succs = []*Block{b2, b3}
+	b2.Preds = []*Block{b1}
+	b2.Succs = []*Block{b1}
+	b3.Preds = []*Block{b1}
+
+	// b0: seed = ConstInt 0
+	vSeed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 0}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0,
+		Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{vSeed, b0Term}
+
+	// b1: phi(seed, bodyResult) : int
+	vPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: b1}
+	vCond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{vCond.Value()},
+		Aux:  int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{vPhi, vCond, b1Term}
+
+	// b2: body = AddInt(phi, ConstInt 1) → back to b1
+	vOne := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b2, Aux: 1}
+	vBody := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Block: b2,
+		Args: []*Value{vPhi.Value(), vOne.Value()}}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2,
+		Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{vOne, vBody, b2Term}
+
+	// Wire phi: from b0 → vSeed, from b2 → vBody
+	vPhi.Args = []*Value{vSeed.Value(), vBody.Value()}
+
+	// b3: return phi
+	b3Term := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+		Args: []*Value{vPhi.Value()}}
+	b3.Instrs = []*Instr{b3Term}
+
+	alloc := AllocateRegisters(fn)
+
+	// The phi should get a GPR (not FPR, not spill).
+	phiReg, ok := alloc.ValueRegs[vPhi.ID]
+	if !ok {
+		t.Fatalf("phi v%d has no register assignment", vPhi.ID)
+	}
+	if phiReg.IsFloat {
+		t.Fatalf("int phi v%d expected GPR, got FPR D%d", vPhi.ID, phiReg.Reg)
+	}
+
+	// The body's AddInt should also get a GPR.
+	bodyReg, ok := alloc.ValueRegs[vBody.ID]
+	if !ok {
+		t.Fatalf("body AddInt v%d has no register assignment", vBody.ID)
+	}
+	if bodyReg.IsFloat {
+		t.Fatalf("body AddInt v%d expected GPR, got FPR D%d", vBody.ID, bodyReg.Reg)
+	}
+
+	// Critical: the body AddInt must NOT clobber the phi's GPR.
+	if phiReg.Reg == bodyReg.Reg {
+		t.Fatalf("body AddInt v%d assigned X%d, same as loop-header phi v%d (X%d); "+
+			"this clobbers the loop-carried value",
+			vBody.ID, bodyReg.Reg, vPhi.ID, phiReg.Reg)
+	}
+	t.Logf("phi=X%d body=X%d (no clobber)", phiReg.Reg, bodyReg.Reg)
+}
+
+// TestRegAlloc_IntPhiCarry builds a loop with an int counter phi and a LeInt
+// comparison against a LoadSlot bound. It verifies that:
+//   - The counter phi gets a GPR
+//   - The body's AddInt result does not clobber the phi's GPR
+//   - The loop bound (LoadSlot) gets a GPR that is pinned in the body
+func TestRegAlloc_IntPhiCarry(t *testing.T) {
+	fn := &Function{NumRegs: 4}
+
+	// CFG: b0(entry) → b1(header) → b2(body) → b1 (back-edge)
+	//                              \→ b3(exit)
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	b1 := &Block{ID: 1, defs: make(map[int]*Value)}
+	b2 := &Block{ID: 2, defs: make(map[int]*Value)}
+	b3 := &Block{ID: 3, defs: make(map[int]*Value)}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2, b3}
+
+	b0.Succs = []*Block{b1}
+	b1.Preds = []*Block{b0, b2}
+	b1.Succs = []*Block{b2, b3}
+	b2.Preds = []*Block{b1}
+	b2.Succs = []*Block{b1}
+	b3.Preds = []*Block{b1}
+
+	// b0: seed = ConstInt 0; bound = LoadSlot(3)
+	vSeed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 0}
+	vBound := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Block: b0, Aux: 3}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0,
+		Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{vSeed, vBound, b0Term}
+
+	// b1: phi(seed, bodyResult) : int
+	//     cmp = LeInt(phi, bound) : bool
+	//     branch cmp, b2, b3
+	vPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: b1}
+	vCmp := &Instr{ID: fn.newValueID(), Op: OpLeInt, Type: TypeBool, Block: b1,
+		Args: []*Value{vPhi.Value(), vBound.Value()}}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{vCmp.Value()},
+		Aux:  int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{vPhi, vCmp, b1Term}
+
+	// b2: body = AddInt(phi, ConstInt 1)
+	vOne := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b2, Aux: 1}
+	vBody := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Block: b2,
+		Args: []*Value{vPhi.Value(), vOne.Value()}}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2,
+		Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{vOne, vBody, b2Term}
+
+	// Wire phi
+	vPhi.Args = []*Value{vSeed.Value(), vBody.Value()}
+
+	// b3: return phi
+	b3Term := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+		Args: []*Value{vPhi.Value()}}
+	b3.Instrs = []*Instr{b3Term}
+
+	alloc := AllocateRegisters(fn)
+
+	// The phi must get a GPR.
+	phiReg, ok := alloc.ValueRegs[vPhi.ID]
+	if !ok {
+		t.Fatalf("phi v%d has no register assignment", vPhi.ID)
+	}
+	if phiReg.IsFloat {
+		t.Fatalf("int phi v%d expected GPR, got FPR D%d", vPhi.ID, phiReg.Reg)
+	}
+
+	// The body AddInt must get a different GPR from the phi.
+	bodyReg, ok := alloc.ValueRegs[vBody.ID]
+	if !ok {
+		t.Fatalf("body AddInt v%d has no register assignment", vBody.ID)
+	}
+	if phiReg.Reg == bodyReg.Reg {
+		t.Fatalf("body AddInt v%d assigned X%d, same as phi v%d (X%d); clobbers loop-carried value",
+			vBody.ID, bodyReg.Reg, vPhi.ID, phiReg.Reg)
+	}
+
+	// The loop bound (LoadSlot) should have a GPR assignment.
+	boundReg, hasBound := alloc.ValueRegs[vBound.ID]
+	if !hasBound {
+		t.Fatalf("loop bound v%d has no register assignment", vBound.ID)
+	}
+	if boundReg.IsFloat {
+		t.Fatalf("loop bound v%d expected GPR, got FPR D%d", vBound.ID, boundReg.Reg)
+	}
+
+	// The bound GPR must not collide with the phi GPR.
+	if boundReg.Reg == phiReg.Reg {
+		t.Errorf("bound v%d assigned X%d, same as phi v%d", vBound.ID, boundReg.Reg, vPhi.ID)
+	}
+
+	// The bound's GPR should be carried/pinned in the body block, meaning the
+	// body's AddInt or ConstInt did not reuse the bound's register.
+	for _, bodyInstr := range []*Instr{vOne, vBody} {
+		if br, ok := alloc.ValueRegs[bodyInstr.ID]; ok && !br.IsFloat {
+			if br.Reg == boundReg.Reg {
+				t.Errorf("body instr v%d assigned X%d, same as loop bound v%d; "+
+					"bound GPR was not carried/pinned",
+					bodyInstr.ID, br.Reg, vBound.ID)
+			}
+		}
+	}
+
+	t.Logf("phi=X%d body=X%d bound=X%d", phiReg.Reg, bodyReg.Reg, boundReg.Reg)
+}
+
 // --- Test helpers ---
 
 // assertAllValuesAssigned checks that every non-terminator instruction in the
