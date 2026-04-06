@@ -3,16 +3,19 @@
 You are in the IMPLEMENT phase of the GScript optimization loop.
 
 ## Context
-Read these files (in this order):
-1. `opt/current_plan.md` — the approved plan with task breakdown
-2. `CLAUDE.md` — coding conventions (TDD, file size limits, commit style)
-3. `docs-internal/diagnostics/debug-jit-correctness.md` — debugging tools
-4. `docs-internal/diagnostics/debug-ir-pipeline.md` — IR pipeline debugging
+
+Read the plan (one call):
+```bash
+cat opt/current_plan.md
+```
+
+CLAUDE.md is already loaded as project instructions — do NOT read it again.
+Diagnostic docs (`docs-internal/diagnostics/`) — only read if a test fails and you need debugging guidance.
 
 ## Task
 Execute tasks from `current_plan.md` in order. For each task:
 
-1. **Re-read current_plan.md** (prevent context drift)
+1. **Check plan task list** (`bash -c 'grep "^\- \[" opt/current_plan.md'` — don't re-read the whole plan)
 2. **Spawn a Coder sub-agent** (Opus model) with a bounded task:
    - Specific file(s) to modify
    - Specific test(s) that must pass

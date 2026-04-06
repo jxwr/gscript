@@ -4,17 +4,20 @@ You are in the ANALYZE+PLAN phase of the GScript optimization loop.
 Top-down flow: architecture → strategy → research → source → diagnostics → plan.
 **No code changes.** Output: `opt/analyze_report.md` + `opt/current_plan.md` + knowledge base + architecture notes.
 
-## Context — Read These Files (MANDATORY, in order)
+## Context — Load ALL data in ONE call
 
-1. `CLAUDE.md` — project mission
-2. `opt/state.json` — optimization state (`category_failures`, `rounds_since_arch_audit`)
-3. `opt/INDEX.md` — **flat index of ALL past rounds — READ CAREFULLY**
-4. `opt/initiatives/` — active multi-round initiatives (`ls opt/initiatives/*.md 2>/dev/null`; skip `_template.md`, `README.md`)
-5. `docs-internal/architecture/overview.md` — architecture overview
-6. `docs-internal/architecture/constraints.md` — **known constraints + ceilings + module notes**
-7. `docs-internal/lessons-learned.md` + `docs-internal/known-issues.md`
-8. `benchmarks/data/latest.json` + `benchmarks/data/baseline.json`
-9. `opt/knowledge/` — **existing knowledge base** (read all .md, build on them)
+**IMPORTANT**: Do NOT read files one by one with the Read tool. Use ONE Bash call:
+
+```bash
+bash scripts/analyze_dump.sh
+```
+
+This dumps in one shot: state.json, INDEX.md, overview.md, constraints.md, lessons-learned,
+known-issues, latest.json, baseline.json, all initiatives, all knowledge base files.
+
+CLAUDE.md is already loaded as project instructions (system prompt) — do NOT read it again.
+
+**Only use Read for additional files** discovered during Steps 2-4 (source code, diagnostics).
 
 ---
 

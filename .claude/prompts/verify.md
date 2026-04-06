@@ -3,13 +3,16 @@
 You are in the final phase of an optimization round.
 Your job: verify the implementation (tests + benchmarks + evaluator), then close out the round (update all cross-round state).
 
-## Context
-Read:
-1. `opt/current_plan.md` — plan with expected effects + task breakdown
-2. `CLAUDE.md` — project conventions, test commands
-3. `benchmarks/data/baseline.json` — baseline from previous round
-4. `opt/state.json` — current counters
-5. `opt/INDEX.md` — round table
+## Context — Load ALL data in ONE call
+
+```bash
+bash scripts/verify_dump.sh
+```
+
+This dumps: current_plan.md, baseline.json, state.json, INDEX.md, workflow_log,
+overview.md, constraints.md, docs/index.html, plus git diff stat.
+
+CLAUDE.md is already loaded as project instructions — do NOT read it again.
 
 ---
 
