@@ -55,25 +55,30 @@ FG_DIMWHITE=$'\033[38;5;252m'
 BG_DARKGRAY=$'\033[48;5;236m'
 
 # ─── box drawing helpers ──────────────────────────────────────────────
-# WIDTH is the inner width (between left and right borders)
-BOX_W=$((COLS - 2))
+# BOX_W: inner content width between "│ " and " │"  (total row = BOX_W + 4)
+# BOX_BORDER: fill width for horizontal lines between ┌/└/├ and ┐/┘/┤ (total = BOX_BORDER + 2)
+# Both should produce lines of exactly COLS display columns.
+BOX_W=$((COLS - 4))
+BOX_BORDER=$((COLS - 2))
 
-# Draw a horizontal line with left/right/fill characters
+# Draw a horizontal line with left/right/fill characters (uses BOX_BORDER width)
 hline() {
-    local left="$1" right="$2" fill="$3" width=$BOX_W
+    local left="$1" right="$2" fill="$3"
     local line=""
-    for ((i=0; i<width; i++)); do
+    for ((i=0; i<BOX_BORDER; i++)); do
         line+="$fill"
     done
     printf "%s%s%s\n" "$left" "$line" "$right"
 }
 
 # Draw a horizontal line with a middle junction
+# The junction position matches row2's middle │, which is at offset (1 + split_at) from the left border
 hline_mid() {
     local left="$1" mid="$2" right="$3" fill="$4" split_at="$5"
+    local junction=$((split_at + 1))  # +1 for the leading space in content rows
     local line=""
-    for ((i=0; i<BOX_W; i++)); do
-        if [ "$i" -eq "$split_at" ]; then
+    for ((i=0; i<BOX_BORDER; i++)); do
+        if [ "$i" -eq "$junction" ]; then
             line+="$mid"
         else
             line+="$fill"
@@ -82,18 +87,22 @@ hline_mid() {
     printf "%s%s%s\n" "$left" "$line" "$right"
 }
 
-# Pad a string to exact width (truncate or pad with spaces)
+# Pad a string to exact display width (pad with spaces if short, truncate if long)
 pad() {
     local str="$1" width="$2"
     local visible_len
     # Strip ANSI codes for length calculation
     visible_len=$(printf "%s" "$str" | sed $'s/\033\\[[0-9;]*m//g' | wc -m | tr -d ' ')
-    if [ "$visible_len" -ge "$width" ]; then
-        # Truncate: this is approximate for colored strings
-        printf "%s" "$str"
-    else
+    if [ "$visible_len" -gt "$width" ]; then
+        # Truncate: strip ANSI, cut to width, re-add reset
+        local plain
+        plain=$(printf "%s" "$str" | sed $'s/\033\\[[0-9;]*m//g')
+        printf "%s%s" "${plain:0:$((width-1))}" "${RST}"
+    elif [ "$visible_len" -lt "$width" ]; then
         local padding=$((width - visible_len))
         printf "%s%*s" "$str" "$padding" ""
+    else
+        printf "%s" "$str"
     fi
 }
 
@@ -104,11 +113,16 @@ row() {
 }
 
 # Print a row with two columns split at a position
+# Layout: "│ " + left(split chars) + " │ " + right(rest) + " │"
+# Total = 1 + 1 + split + 1 + 1 + 1 + right + 1 + 1 = split + right + 7... no.
+# Simpler: "│ LEFT│ RIGHT │"  where LEFT is padded to split, RIGHT to the rest.
+# Total: │(1) + " "(1) + LEFT(left_w) + │(1) + " "(1) + RIGHT(right_w) + " "(1) + │(1) = left_w + right_w + 6
+# Want total = COLS, so left_w + right_w = COLS - 6
 row2() {
     local left="$1" right="$2" split_at="$3"
-    local left_w=$((split_at - 1))
-    local right_w=$((BOX_W - split_at - 1))
-    printf "%s %s%s%s %s\n" "│" "$(pad "$left" $left_w)" "│" "$(pad "$right" $right_w)" "│"
+    local left_w=$split_at
+    local right_w=$((COLS - 6 - split_at))
+    printf "│ %s│ %s │\n" "$(pad "$left" $left_w)" "$(pad "$right" $right_w)"
 }
 
 # ─── cache infrastructure ─────────────────────────────────────────────
@@ -603,11 +617,14 @@ render() {
     local split=$((BOX_W / 2))
 
     # ─── Title bar ────────────────────────────────────────────────
+    # Layout: "┌─ TITLE fill_chars TIME ─┐" = COLS chars total
+    # "┌─ " = 3, " ─┐" = 3, so fill = COLS - 6 - title_len - time_len
     local title_text="GScript Optimization Dashboard"
     local title_len=${#title_text}
     local time_text="$now"
     local time_len=${#time_text}
-    local fill_len=$((BOX_W - title_len - time_len - 4))
+    # "┌─ " (3) + title + " " (1) + fill + " " (1) + time + " ─┐" (3) = COLS
+    local fill_len=$((COLS - 8 - title_len - time_len))
     local fill=""
     for ((i=0; i<fill_len; i++)); do fill+="─"; done
     printf "${FG_CYAN}${BOLD}┌─ %s %s %s ─┐${RST}\n" "$title_text" "$fill" "$time_text"
@@ -664,12 +681,10 @@ render() {
         "$split"
     row ""
 
-    # ─── Separator ────────────────────────────────────────────────
-    printf "${FG_CYAN}├"
-    for ((i=0; i<BOX_W; i++)); do
-        if [ "$i" -eq "$split" ]; then printf "┼"; else printf "─"; fi
-    done
-    printf "┤${RST}\n"
+    # ─── Separator (with column split) ──────────────────────────
+    printf "${FG_CYAN}"
+    hline_mid "├" "┼" "┤" "─" "$split"
+    printf "${RST}"
 
     # ─── Commits + Codebase ───────────────────────────────────────
     row2 \
@@ -708,9 +723,9 @@ render() {
     row ""
 
     # ─── Separator ────────────────────────────────────────────────
-    printf "${FG_CYAN}├"
-    for ((i=0; i<BOX_W; i++)); do printf "─"; done
-    printf "┤${RST}\n"
+    printf "${FG_CYAN}"
+    hline "├" "┤" "─"
+    printf "${RST}"
 
     # ─── Benchmark Snapshot ───────────────────────────────────────
     row "${BOLD}${FG_CYAN}  BENCHMARK SNAPSHOT (JIT vs LuaJIT)${RST}"
@@ -783,17 +798,17 @@ render() {
     row ""
 
     # ─── Separator ────────────────────────────────────────────────
-    printf "${FG_CYAN}├"
-    for ((i=0; i<BOX_W; i++)); do printf "─"; done
-    printf "┤${RST}\n"
+    printf "${FG_CYAN}"
+    hline "├" "┤" "─"
+    printf "${RST}"
 
     # ─── Active Session ───────────────────────────────────────────
     row "  ${BOLD}${FG_CYAN}ACTIVE:${RST} ${ACTIVE_SESSION_LINE}"
 
     # ─── Bottom border ────────────────────────────────────────────
-    printf "${FG_CYAN}${BOLD}└"
-    for ((i=0; i<BOX_W; i++)); do printf "─"; done
-    printf "┘${RST}\n"
+    printf "${FG_CYAN}${BOLD}"
+    hline "└" "┘" "─"
+    printf "${RST}"
 }
 
 # ─── main loop ─────────────────────────────────────────────────────────
