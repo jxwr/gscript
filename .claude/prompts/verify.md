@@ -148,9 +148,15 @@ Scoped message: `opt: close out <cycle_id> (<outcome>)`
 
 Include the blog post in the commit.
 
+### 2k. Push to remote
+```bash
+git push origin main
+```
+
 ## Rules
 - Part 1 (VERIFY) may loop: fix → re-test → re-verify
 - Part 2 (DOCUMENT) is one-shot after VERIFY passes
 - Do NOT leave `current_plan.md` in place after archiving
 - Do NOT leave `docs/draft.md` — must be renamed to final post
 - Do NOT write new implementation code (only test fixes if needed)
+- **MUST push to remote at the end** — every round's results must be on GitHub
