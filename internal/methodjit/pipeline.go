@@ -19,6 +19,8 @@ package methodjit
 import (
 	"fmt"
 	"strings"
+
+	"github.com/gscript/gscript/internal/vm"
 )
 
 // PassFunc is the signature for an optimization pass.
@@ -252,4 +254,111 @@ func lineDiff(a, b []string) string {
 	}
 
 	return strings.Join(result, "\n")
+}
+
+// ---------------------------------------------------------------------------
+// Production Tier 2 pipeline helpers
+// ---------------------------------------------------------------------------
+
+// Tier2PipelineOpts configures the production Tier 2 optimization pipeline.
+// A nil *Tier2PipelineOpts uses defaults (MaxSize 40, no globals).
+type Tier2PipelineOpts struct {
+	InlineGlobals map[string]*vm.FuncProto // global function protos for inlining
+	InlineMaxSize int                      // max callee bytecode count; 0 → 40
+}
+
+// RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
+//
+//	TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp →
+//	LoadElim → DCE → RangeAnalysis → LICM
+//
+// Returns the optimized function, any intrinsic rewrite notes (non-nil means
+// the function uses intrinsics that Tier 1 would execute differently), and an
+// error if a pass fails.
+//
+// If opts is nil, defaults are used (MaxSize: 40, no globals).
+func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []string, error) {
+	var err error
+
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TypeSpecialize: %w", err)
+	}
+
+	fn, intrinsicNotes := IntrinsicPass(fn)
+
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TypeSpecialize (post-intrinsic): %w", err)
+	}
+
+	// Inline pass: build config from opts.
+	maxSize := 40
+	var globals map[string]*vm.FuncProto
+	if opts != nil {
+		globals = opts.InlineGlobals
+		if opts.InlineMaxSize > 0 {
+			maxSize = opts.InlineMaxSize
+		}
+	}
+	if len(globals) > 0 {
+		config := InlineConfig{Globals: globals, MaxSize: maxSize, MaxRecursion: 2}
+		fn, err = InlinePassWith(config)(fn)
+		if err != nil {
+			return nil, nil, fmt.Errorf("Inline: %w", err)
+		}
+		fn, err = TypeSpecializePass(fn)
+		if err != nil {
+			return nil, nil, fmt.Errorf("TypeSpecialize (post-inline): %w", err)
+		}
+	}
+
+	fn, err = ConstPropPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ConstProp: %w", err)
+	}
+
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("LoadElimination: %w", err)
+	}
+
+	fn, err = DCEPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("DCE: %w", err)
+	}
+
+	fn, err = RangeAnalysisPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("RangeAnalysis: %w", err)
+	}
+
+	fn, err = LICMPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("LICM: %w", err)
+	}
+
+	return fn, intrinsicNotes, nil
+}
+
+// NewTier2Pipeline returns a Pipeline pre-loaded with the production Tier 2
+// passes. This is intended for diagnostic/dump use (Diagnose) where callers
+// need IR snapshots between passes. For normal compilation, use
+// RunTier2Pipeline instead.
+func NewTier2Pipeline() *Pipeline {
+	pipe := NewPipeline()
+	pipe.Add("TypeSpecialize", TypeSpecializePass)
+	pipe.Add("Intrinsic", func(fn *Function) (*Function, error) {
+		result, _ := IntrinsicPass(fn)
+		return result, nil
+	})
+	pipe.Add("TypeSpecialize2", TypeSpecializePass)
+	pipe.Add("Inline", InlinePassWith(InlineConfig{MaxSize: 40, MaxRecursion: 2}))
+	pipe.Add("TypeSpecialize3", TypeSpecializePass)
+	pipe.Add("ConstProp", ConstPropPass)
+	pipe.Add("LoadElimination", LoadEliminationPass)
+	pipe.Add("DCE", DCEPass)
+	pipe.Add("RangeAnalysis", RangeAnalysisPass)
+	pipe.Add("LICM", LICMPass)
+	return pipe
 }

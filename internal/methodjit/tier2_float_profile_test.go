@@ -78,12 +78,13 @@ func profileTier2Func(t *testing.T, benchFile, fnName, outName string) {
 	t.Logf("=== %s / %s (numParams=%d, maxStack=%d) ===",
 		benchFile, fnName, target.NumParams, target.MaxStack)
 
-	// Run Tier 2 pipeline (same order as tier2_bench_test.go and
-	// tier2_float_bench_test.go).
+	// Run Tier 2 pipeline (production order via RunTier2Pipeline).
 	fn := BuildGraph(target)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
+	fn, _, pipeErr := RunTier2Pipeline(fn, nil)
+	if pipeErr != nil {
+		t.Fatalf("%s/%s: pipeline error: %v", benchFile, fnName, pipeErr)
+	}
+	fn.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(fn)
 	cf, err := Compile(fn, alloc)
 	if err != nil {

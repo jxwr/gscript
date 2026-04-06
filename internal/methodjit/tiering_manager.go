@@ -448,52 +448,19 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 		return nil, fmt.Errorf("tier2: validation failed: %v", errs[0])
 	}
 
-	// Run optimization passes.
-	fn, _ = TypeSpecializePass(fn)
-
-	// Rewrite well-known intrinsic call patterns (e.g., math.sqrt(x) → OpSqrt)
-	// BEFORE inlining and BEFORE the has-call-in-loop gate. This removes the
-	// GetGlobal + GetField + Call triple and lets pure-math loops (nbody,
-	// spectral_norm) reach Tier 2 without tripping the call-in-loop block.
-	fn, intrinsicNotes := IntrinsicPass(fn)
+	// Run the full production Tier 2 optimization pipeline.
+	inlineGlobals := tm.buildInlineGlobals()
+	opts := &Tier2PipelineOpts{InlineGlobals: inlineGlobals, InlineMaxSize: inlineMaxCalleeSize}
+	fn, intrinsicNotes, err := RunTier2Pipeline(fn, opts)
+	if err != nil {
+		return nil, fmt.Errorf("tier2: pipeline: %w", err)
+	}
 	if len(intrinsicNotes) > 0 {
 		// Tier 2 replaced calls that Tier 1 would execute differently
 		// (calling the Go implementation). Mark the proto so Tier 1 BLR
 		// callers' handleCall fallback dispatches to Tier 2 code.
 		proto.NeedsTier2 = true
 	}
-	// Re-run TypeSpecializePass so freshly-inserted OpSqrt results propagate
-	// float types into downstream arithmetic/comparisons.
-	fn, _ = TypeSpecializePass(fn)
-
-	// Always try inlining to eliminate calls. The inline pass is a no-op if
-	// no inlineable call sites are found. When it succeeds, OpCall instructions
-	// are replaced with the callee's body, and the caller becomes pure-compute.
-	inlineGlobals := tm.buildInlineGlobals()
-	if len(inlineGlobals) > 0 {
-		config := InlineConfig{Globals: inlineGlobals, MaxSize: inlineMaxCalleeSize, MaxRecursion: 2}
-		fn, _ = InlinePassWith(config)(fn)
-		// Re-run TypeSpec after inlining (new optimization opportunities from
-		// cross-function type propagation).
-		fn, _ = TypeSpecializePass(fn)
-	}
-
-	fn, _ = ConstPropPass(fn)
-	fn, _ = LoadEliminationPass(fn)
-	fn, _ = DCEPass(fn)
-
-	// Range analysis: mark int arithmetic ops whose result provably fits in
-	// int48, so the emitter can skip their overflow checks. Must run AFTER
-	// DCE (so dead values don't waste analysis budget) and BEFORE RegAlloc.
-	fn, _ = RangeAnalysisPass(fn)
-
-	// LICM: hoist pure loop-invariant values (constants, LoadSlot with no
-	// in-loop StoreSlot, float arith, and int48-safe int arith) into a
-	// synthetic pre-header block. Targets mandelbrot B3's re-materialization
-	// of cr/ci/ConstFloat 2/4. Runs AFTER RangeAnalysis so Int48Safe gates
-	// hoisting of int arith (overflow-check-free only). Runs BEFORE
-	// hasCallInLoop and RegAlloc because LICM changes the CFG.
-	fn, _ = LICMPass(fn)
 	fn.CarryPreheaderInvariants = true
 
 	// Post-inline safety check: reject if the optimized IR has OpCall INSIDE a loop.
@@ -515,7 +482,7 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	alloc := AllocateRegisters(fn)
 
 	// Compile to ARM64.
-	cf, err := Compile(fn, alloc)
+	cf, err = Compile(fn, alloc)
 	if err != nil {
 		return nil, fmt.Errorf("tier2: compile failed: %w", err)
 	}

@@ -21,11 +21,10 @@ func TestTier2Emit_FusedBranch_IntCmp(t *testing.T) {
 	src := `func f(n) { s := 0; for i := 1; i <= n; i++ { s = s + i }; return s }`
 	proto := compileFunction(t, src)
 	fn := BuildGraph(proto)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
-	fn, _ = RangeAnalysisPass(fn)
-	fn, _ = LICMPass(fn)
+	fn, _, err := RunTier2Pipeline(fn, nil)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
 	fn.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(fn)
 
@@ -64,11 +63,10 @@ func TestTier2Emit_FusedBranch_IntLt(t *testing.T) {
 	src := `func f(n) { s := 0; for i := 0; i < n; i++ { s = s + 1 }; return s }`
 	proto := compileFunction(t, src)
 	fn := BuildGraph(proto)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
-	fn, _ = RangeAnalysisPass(fn)
-	fn, _ = LICMPass(fn)
+	fn, _, err := RunTier2Pipeline(fn, nil)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
 	fn.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(fn)
 
@@ -118,11 +116,10 @@ func TestTier2Emit_FusedBranch_FloatCmp(t *testing.T) {
 	}`
 	proto := compileFunction(t, src)
 	fn := BuildGraph(proto)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
-	fn, _ = RangeAnalysisPass(fn)
-	fn, _ = LICMPass(fn)
+	fn, _, err := RunTier2Pipeline(fn, nil)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
 	fn.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(fn)
 
@@ -160,11 +157,10 @@ func TestTier2Emit_FusedBranch_IntEq(t *testing.T) {
 	src := `func f(n) { if n == 0 { return 1 } else { return n * 2 } }`
 	proto := compileFunction(t, src)
 	fn := BuildGraph(proto)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
-	fn, _ = RangeAnalysisPass(fn)
-	fn, _ = LICMPass(fn)
+	fn, _, err := RunTier2Pipeline(fn, nil)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
 	fn.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(fn)
 
@@ -210,11 +206,10 @@ func TestTier2Emit_FusedBranch_NestedBranch(t *testing.T) {
 	}`
 	proto := compileFunction(t, src)
 	fn := BuildGraph(proto)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
-	fn, _ = RangeAnalysisPass(fn)
-	fn, _ = LICMPass(fn)
+	fn, _, err := RunTier2Pipeline(fn, nil)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
 	fn.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(fn)
 

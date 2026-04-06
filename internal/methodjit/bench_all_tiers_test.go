@@ -112,9 +112,11 @@ func allBenchTier2(b *testing.B, src string, args []runtime.Value) {
 	b.Helper()
 	proto := compileFunctionB(b, src)
 	fn := BuildGraph(proto)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
+	fn, _, pipeErr := RunTier2Pipeline(fn, nil)
+	if pipeErr != nil {
+		b.Fatalf("pipeline: %v", pipeErr)
+	}
+	fn.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(fn)
 	cf, err := Compile(fn, alloc)
 	if err != nil {

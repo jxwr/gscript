@@ -62,22 +62,9 @@ func Diagnose(proto *vm.FuncProto, args []runtime.Value) *DiagReport {
 	r.InterpResult = interpResult
 	r.InterpError = interpErr
 
-	// 4. Pipeline with dump — mirrors compileTier2() exactly:
-	//    TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → LoadElim → DCE → RangeAnalysis → LICM
-	pipe := NewPipeline()
-	pipe.Add("TypeSpecialize", TypeSpecializePass)
-	pipe.Add("Intrinsic", func(fn *Function) (*Function, error) {
-		result, _ := IntrinsicPass(fn)
-		return result, nil
-	})
-	pipe.Add("TypeSpecialize2", TypeSpecializePass) // re-run after intrinsic (propagate OpSqrt types)
-	pipe.Add("Inline", InlinePassWith(InlineConfig{MaxSize: 40, MaxRecursion: 2}))
-	pipe.Add("TypeSpecialize3", TypeSpecializePass) // re-run after inline
-	pipe.Add("ConstProp", ConstPropPass)
-	pipe.Add("LoadElimination", LoadEliminationPass)
-	pipe.Add("DCE", DCEPass)
-	pipe.Add("RangeAnalysis", RangeAnalysisPass)
-	pipe.Add("LICM", LICMPass)
+	// 4. Pipeline with dump — uses NewTier2Pipeline() to ensure pass list
+	//    matches the production compileTier2() order exactly.
+	pipe := NewTier2Pipeline()
 	pipe.EnableDump(true)
 
 	optimized, pipeErr := pipe.Run(fn)

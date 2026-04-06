@@ -25,11 +25,10 @@ func fullPipelineBuild(t *testing.T, src string) (*Function, *RegAllocation) {
 	t.Helper()
 	proto := compileFunction(t, src)
 	fn := BuildGraph(proto)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
-	fn, _ = RangeAnalysisPass(fn)
-	fn, _ = LICMPass(fn)
+	fn, _, err := RunTier2Pipeline(fn, nil)
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
 	fn.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(fn)
 	return fn, alloc
