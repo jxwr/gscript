@@ -99,7 +99,8 @@ BuildGraph (Braun et al. 2013)
   → RangeAnalysis    (populate Int48Safe set; loop-counter exemption)
   → LICM             (hoist pure invariants into loop pre-header)
   → Validate
-  → RegAlloc         (forward-walk: 4 GPR (X20-X23), 8 FPR (D4-D11))
+  → RegAlloc         (forward-walk: 4 GPR (X20-X23), 8 FPR (D4-D11),
+                       loop-phi FPR carry + LICM-invariant FPR pinning)
   → Emit             (ARM64 code generation)
 ```
 

@@ -2,41 +2,21 @@
   "cycle": "",
   "cycle_id": "",
   "target": "",
-  "started": "",
-  "baseline": {},
+  "started": "2026-04-06",
+  "baseline": {
+    "mandelbrot_jit": "0.417s",
+    "nbody_jit": "0.765s",
+    "spectral_norm_jit": "0.401s",
+    "math_intensive_jit": "0.194s",
+    "matmul_jit": "0.999s"
+  },
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [
-    ".claude/current_plan.md",
-    ".claude/hooks/archive_plan.sh",
-    ".claude/hooks/budget_check.sh",
-    ".claude/hooks/checkpoint.sh",
-    ".claude/hooks/phase_guard.sh",
-    ".claude/hooks/stop-evaluator.sh",
-    ".claude/optimize.sh",
-    ".claude/plan_template.md",
-    ".claude/plans/.gitkeep",
-    ".claude/prompts/analyze.md",
-    ".claude/prompts/document.md",
-    ".claude/prompts/implement.md",
-    ".claude/prompts/measure.md",
-    ".claude/prompts/plan.md",
-    ".claude/prompts/verify.md",
-    ".claude/skills/gs-opt-loop/SKILL.md",
-    ".claude/skills/harness-review/SKILL.md",
-    ".claude/state.json",
-    "benchmarks/data/baseline.json",
-    "benchmarks/run_all.sh",
-    "benchmarks/set_baseline.sh",
-    "opt/analyze_report.md",
-    "opt/measure_report.md",
-    "opt/plan_template.md",
-    "opt/state.json"
-  ],
-  "head_commit": "75ba473ce6ce6ec7b1b428ee8a33f6da6e18648c",
+  "uncommitted_files": [],
+  "head_commit": "39c4c164ec10bee20fe2150f52af7410b70e3c8c",
   "branch": "jit-v3-clean",
-  "last_checkpoint": "2026-04-05T21:44:24Z",
+  "last_checkpoint": "2026-04-06T04:14:04Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -110,6 +90,13 @@
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "no_change",
       "summary": "Phase 4: LICM pass landed cleanly (hoists 17 consts from mandelbrot inc. ConstFloat 2/4 named in round 7). Validator clean, all tests pass, zero correctness regressions. But wall-time unchanged: mandelbrot -1.6% (0.387s->0.381s, target was -40%); LuaJIT-row aggregate ~+0.3%. Constant-rematerialisation was not the true B3 bottleneck; surviving FMUL/FADD chain dominates."
+    },
+    {
+      "cycle_id": "2026-04-06-tier2-licm-carry",
+      "category": "tier2_float_loop",
+      "initiative": "opt/initiatives/tier2-float-loops.md",
+      "outcome": "improved",
+      "summary": "Extend carried map to pin LICM-hoisted loop invariants in FPRs. Mandelbrot -6.2%, nbody -12.2%, spectral_norm -15.2%, matmul -12.7%. Zero regressions across 22 benchmarks."
     }
   ],
   "session_summary": {
@@ -119,8 +106,8 @@
   },
   "category_failures": {
     "recursive_call": 2,
-    "tier2_float_loop": 1
+    "tier2_float_loop": 0
   },
-  "rounds_since_review": 3,
-  "rounds_since_research": 3
+  "rounds_since_review": 4,
+  "rounds_since_research": 4
 }

@@ -52,31 +52,28 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 | 6 (2026-04-05) | Phase 1 diagnostic | **complete — non-flat, shallow escalation** | Top-3 hot patterns: (1) per-op box/unbox round-trip (5/5 benchmarks), (2) generic Mul/Add dispatch on `any`-typed loads (3/5), (3) redundant same-slot load (4/5). Primary target for round 7: Pattern 1 (FPR-resident SSA across blocks). Artifacts: `opt/pprof-tier2-float.md` + `opt/pprof-tier2-float-artifacts/` (5 pprof + 5 .asm). |
 | 7 (2026-04-05) | Phase 2 FPR-resident | **improved (aggregate -1.88%, primary target missed)** | 2 functional commits: Fix 1 scratch-FPR operand cache (3ded153), Fix 3 loop-header phi FPR carry into tight 2-block bodies (686ba11). Fix 2 (phi typing) skipped — diagnostic harness showed all float phis already FPR-allocated. Mandelbrot -2.62% (0.382s→0.372s, target ≥35%). Zero regressions. `safeHeaderFPRegs` now populated for all 5 float benchmarks' inner loops — infrastructure win enables downstream LICM. |
 | 8 (2026-04-06) | Phase 4 LICM | **no_change (infrastructure landed, wall-time unmoved)** | 3 functional commits: extract dominator/loop infra to `loops.go` (387dd88), `pass_licm.go` with IonMonkey-shaped invariance + `Int48Safe` gate (f601801), wire into Tier 2 pipeline after RangeAnalysis (9da7d4c). 17 constants hoisted in mandelbrot_iter (including ConstFloat 2/4 named in round 7's B3 analysis). Validator clean, `TestTieringManager_NestedCallSimple` passes. Mandelbrot -1.6% (0.387s→0.381s, target ≥35%); LuaJIT-row aggregate ~+0.3%. **B3's critical path is the surviving FMUL/FADD chain, not constant rematerialisation.** |
+| 9 (2026-04-06) | Phase 4b invariant carry | **improved (mandelbrot -6.2%, nbody -12.2%, spectral -15.2%, matmul -12.7%)** | 2 functional commits: pre-header + invariant detection helpers (8618876), carry LICM-hoisted invariants in FPRs across loop body (de874ce). Extended `carried` map in regalloc to pin pre-header-defined float invariants in FPRs with budget (8 - 3 reserved). Lazy harvest of pre-header allocations instead of pre-allocation. Second-order effects dominated: nbody/spectral improved more than mandelbrot. Zero regressions across 22 benchmarks. |
 
 ## Next Step
 
-**Round 9 — profile post-LICM B3 on real ARM64 hardware.** Round 8 proved
-that constant rematerialisation was not mandelbrot's wall-time bottleneck.
-LICM fired as designed (17 consts hoisted, pre-header inserted, validator
-clean) but mandelbrot moved only -1.6%. Per round 8 lessons, remaining
-B3 cost lives in: (a) phi FPR moves at loop back-edge, (b) surviving
-bounds/type guards inside the loop, (c) FMUL/FADD dependency chains
-stalling the ARM64 NEON pipeline.
+**Round 10 — profile post-invariant-carry inner loops.** Round 9 delivered
+the first significant wall-time improvement across all float benchmarks:
+mandelbrot -6.2%, nbody -12.2%, spectral_norm -15.2%, matmul -12.7%.
+The invariant-carry mechanism is now proven infrastructure.
 
-**Action:** Use `opt/pprof-tier2-float-artifacts/mandelbrot.asm` (regenerate
-post-LICM via round 6's harness) + a fresh pprof run on mandelbrot. Look
-for: how many FMUL/FADD are chained with true RAW hazards? Are guards
-still inside B3? How many phi D-register moves fire per iteration?
+Remaining B3 bottlenecks (per round 9 plan's b3-analysis):
+- 11 insns (23.4%) int counter box/unbox round trip — **next candidate**
+- 5 insns (10.6%) fcmp/cset/orr NaN-box bool tail
+- 8 insns (17.0%) spill of loop-carried zr/zi to regfile (now partially addressed)
+- FMUL/FADD dependency chains (pipeline stalls)
 
-**Candidate techniques if profile points there:** reduction splitting
-(independent float accumulators), software pipelining of the
-`x²+y²`/`2xy` pair, scalar replacement of aggregates, or a NEON-aware
-instruction scheduler. Phase 3 (feedback-typed heap loads) remains
-deferred — mandelbrot has no heap loads in its hot loop.
+**Action:** Re-profile mandelbrot/nbody/spectral_norm post-carry to
+quantify remaining overhead. Primary candidate: GPR-resident int loop
+counter (eliminate box/unbox round trip, ~23% of mandelbrot inner loop).
 
-**Secondary:** rebuild `Diagnose` output for spectral_norm and
-math_intensive to confirm LICM fired there too; the mandelbrot-only view
-may have missed non-trivial gains elsewhere.
+**Phase 3 (feedback-typed heap loads)** remains deferred — mandelbrot has
+no heap loads in its hot loop. **Phase 5 (matmul tier-up)** may now be
+less urgent given matmul's -12.7% from invariant carry alone.
 
 ## Risks / Failure Signals
 
