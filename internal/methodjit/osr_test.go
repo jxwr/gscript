@@ -9,6 +9,7 @@
 package methodjit
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -220,5 +221,197 @@ func loop(n) {
 	}
 	if !results[0].IsInt() || results[0].Int() != 100 {
 		t.Errorf("loop(100) = %v, want 100", results[0])
+	}
+}
+
+// TestOSR_FeedbackTypedMatmul verifies that feedback from Tier 1 execution
+// flows into Tier 2 IR, producing typed float operations. A small matmul
+// function is executed via the VM to collect real GETTABLE type feedback
+// (FBFloat), then BuildGraph reads that feedback to insert OpGuardType, and
+// TypeSpecialize cascades the float type into MulFloat/AddFloat.
+func TestOSR_FeedbackTypedMatmul(t *testing.T) {
+	src := `
+func matmul_small(a, b, n) {
+    c := {}
+    for i := 1; i <= n; i++ {
+        c[i] = {}
+        for j := 1; j <= n; j++ {
+            sum := 0.0
+            for k := 1; k <= n; k++ {
+                sum = sum + a[i][k] * b[k][j]
+            }
+            c[i][j] = sum
+        }
+    }
+    return c
+}
+`
+	// Step 1: Compile and get the inner function proto.
+	topProto := compileTop(t, src)
+	if len(topProto.Protos) == 0 {
+		t.Fatal("expected inner function proto")
+	}
+	innerProto := topProto.Protos[0]
+
+	// Step 2: Initialize feedback and execute via VM to collect real feedback.
+	innerProto.EnsureFeedback()
+
+	globals := make(map[string]runtime.Value)
+	v := vm.New(globals)
+	defer v.Close()
+
+	// Execute top-level to register matmul_small in globals.
+	if _, err := v.Execute(topProto); err != nil {
+		t.Fatalf("VM execute top-level error: %v", err)
+	}
+
+	// Build two 4x4 tables of float values.
+	n := int64(4)
+	tableA := runtime.NewTable()
+	tableB := runtime.NewTable()
+	for i := int64(1); i <= n; i++ {
+		rowA := runtime.NewTable()
+		rowB := runtime.NewTable()
+		for j := int64(1); j <= n; j++ {
+			rowA.RawSetInt(j, runtime.FloatValue(float64(i*n+j)*0.5))
+			rowB.RawSetInt(j, runtime.FloatValue(float64(j*n+i)*0.25))
+		}
+		tableA.RawSetInt(i, runtime.TableValue(rowA))
+		tableB.RawSetInt(i, runtime.TableValue(rowB))
+	}
+
+	// Call matmul_small(a, b, 4) via the VM to collect type feedback.
+	fnVal := v.GetGlobal("matmul_small")
+	if fnVal.IsNil() {
+		t.Fatal("function 'matmul_small' not found in globals after execution")
+	}
+	vmResult, err := v.CallValue(fnVal, []runtime.Value{
+		runtime.TableValue(tableA),
+		runtime.TableValue(tableB),
+		runtime.IntValue(n),
+	})
+	if err != nil {
+		t.Fatalf("VM call error: %v", err)
+	}
+	t.Logf("VM result (table): %v", vmResult)
+
+	// Step 3: Verify that feedback was collected on GETTABLE instructions.
+	gettablePCs := []int{}
+	for pc, inst := range innerProto.Code {
+		if vm.DecodeOp(inst) == vm.OP_GETTABLE {
+			gettablePCs = append(gettablePCs, pc)
+		}
+	}
+	if len(gettablePCs) == 0 {
+		t.Fatal("no GETTABLE instruction found in inner proto bytecode")
+	}
+	floatFBCount := 0
+	for _, pc := range gettablePCs {
+		fb := innerProto.Feedback[pc]
+		if fb.Result == vm.FBFloat {
+			floatFBCount++
+		} else {
+			t.Logf("GETTABLE at PC %d: feedback Result=%d (not FBFloat)", pc, fb.Result)
+		}
+	}
+	t.Logf("GETTABLE feedback: %d/%d are FBFloat", floatFBCount, len(gettablePCs))
+
+	// Step 4: Build the IR graph (feedback is now populated).
+	fn := BuildGraph(innerProto)
+	irBefore := Print(fn)
+	t.Logf("IR before optimization:\n%s", irBefore)
+
+	// Verify that OpGuardType appears after OpGetTable in the IR.
+	// In matmul, some GETTABLEs return tables (a[i], b[k] are rows) and some
+	// return floats (a[i][k], b[k][j] are elements). We expect at least one
+	// GuardType(TypeFloat) for the element accesses.
+	hasFloatGuard := false
+	hasTableGuard := false
+	for _, blk := range fn.Blocks {
+		for i, instr := range blk.Instrs {
+			if instr.Op == OpGetTable && i+1 < len(blk.Instrs) {
+				next := blk.Instrs[i+1]
+				if next.Op == OpGuardType && len(next.Args) > 0 && next.Args[0].ID == instr.ID {
+					if next.Type == TypeFloat {
+						hasFloatGuard = true
+					} else {
+						hasTableGuard = true
+						t.Logf("GuardType after GetTable has Type=%v (table row access)", next.Type)
+					}
+				}
+			}
+		}
+	}
+	if hasTableGuard {
+		t.Log("confirmed: OpGuardType(TypeTable) found for table row accesses")
+	}
+	if !hasFloatGuard {
+		t.Fatal("expected at least one OpGuardType(TypeFloat) after OpGetTable for float element accesses")
+	}
+	t.Log("confirmed: OpGuardType(TypeFloat) found after OpGetTable for float element accesses")
+
+	// Step 5: Run TypeSpecialize and verify float-specialized ops cascade.
+	fnOpt, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+	irAfter := Print(fnOpt)
+	t.Logf("IR after TypeSpecialize:\n%s", irAfter)
+
+	hasMulFloat := strings.Contains(irAfter, "MulFloat")
+	hasAddFloat := strings.Contains(irAfter, "AddFloat")
+	if !hasMulFloat && !hasAddFloat {
+		t.Error("expected MulFloat or AddFloat in optimized IR after TypeSpecialize " +
+			"(float type from GuardType should cascade through arithmetic)")
+	}
+	if hasMulFloat {
+		t.Log("confirmed: MulFloat present in optimized IR")
+	}
+	if hasAddFloat {
+		t.Log("confirmed: AddFloat present in optimized IR")
+	}
+
+	// Step 6: Verify correctness via IR interpreter on the optimized IR.
+	fnOpt, _ = ConstPropPass(fnOpt)
+	fnOpt, _ = DCEPass(fnOpt)
+
+	args := []runtime.Value{
+		runtime.TableValue(tableA),
+		runtime.TableValue(tableB),
+		runtime.IntValue(n),
+	}
+	irResult, irErr := Interpret(fnOpt, args)
+	if irErr != nil {
+		t.Fatalf("IR interpreter error: %v", irErr)
+	}
+	t.Logf("IR interpreter result: %v", irResult)
+
+	// The result is a table (matrix C). Verify it matches VM result by
+	// spot-checking C[1][1].
+	if len(vmResult) > 0 && len(irResult) > 0 {
+		// Both should be tables — compare C[1][1] element.
+		vmTbl := vmResult[0].Table()
+		irTbl := irResult[0].Table()
+		if vmTbl != nil && irTbl != nil {
+			vmRow1 := vmTbl.RawGetInt(1).Table()
+			irRow1 := irTbl.RawGetInt(1).Table()
+			if vmRow1 != nil && irRow1 != nil {
+				vmVal := vmRow1.RawGetInt(1).Number()
+				irVal := irRow1.RawGetInt(1).Number()
+				diff := vmVal - irVal
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff > 1e-6 {
+					t.Errorf("C[1][1] mismatch: VM=%.10f, IR=%.10f (diff=%.2e)", vmVal, irVal, diff)
+				} else {
+					t.Logf("C[1][1] match: VM=%.6f, IR=%.6f", vmVal, irVal)
+				}
+			} else {
+				t.Log("could not extract row 1 from result tables for comparison")
+			}
+		} else {
+			t.Log("result is not a table — cannot spot-check elements")
+		}
 	}
 }
