@@ -15,7 +15,7 @@
 - **`emit_dispatch.go` 969 lines** ⚠ CRITICAL: 31 lines from limit. Must split before any changes (extract `emit_branch.go` for fused compare+branch logic).
 - **`graph_builder.go` 939 lines** ⚠: approaching limit. Round 12 added feedback-typed guards. Consider extracting `graph_builder_feedback.go`.
 - **`regalloc.go` ↔ `emit_loop.go` coupling**: `carried` map concept spans both files. `regalloc.go` builds the map, `emit_loop.go` uses it for loop-exit boxing. Changes to one often require changes to the other.
-- **25 source files lack test files** (up from 15 at Round 12 audit). Mostly Tier 1 handlers and emit files. Coverage is indirect via integration tests, but direct unit tests would catch regressions earlier.
+- **24 source files lack test files** (up from 15 at Round 12 audit). Mostly Tier 1 handlers and emit files. Coverage is indirect via integration tests, but direct unit tests would catch regressions earlier.
 
 ## Pass Pipeline Order
 
@@ -60,5 +60,5 @@ Ordering constraints:
 ## Test Coverage Notes
 
 - 81% test-to-source ratio (14207 test lines / 17450 source lines)
-- 15 source files have no corresponding test file (mostly Tier 1 handlers and IR definition files)
+- 24 source files have no corresponding test file (mostly Tier 1 handlers and emit files)
 - Key gap: `loops.go` (loop infrastructure) has no dedicated tests — tested indirectly via `pass_licm_test.go`

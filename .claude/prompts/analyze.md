@@ -153,6 +153,12 @@ Write `opt/current_plan.md` using `opt/plan_template.md`. Fill ALL sections:
 - **Task Breakdown**: each task = one Coder sub-agent, with file + test
 - **Budget**: max commits, max files, abort condition
 
+**MANDATORY pre-plan checklist** (round 18 failed this — user intervened twice):
+- [ ] If Diagnose() or arch_check found broken tooling / pipeline mismatches → is there a fix Task?
+- [ ] If constraints.md flags files >800 lines that this plan touches → is there a split Task 0?
+- [ ] If known-issues.md has items in this plan's category → are quick-fix items included?
+Do NOT finalize the plan until all boxes are checked.
+
 If initiative is **new**, create `opt/initiatives/<name>.md` from `_template.md`.
 
 ---

@@ -66,6 +66,45 @@ if ! $VALID; then
 fi
 
 # --- Utility ---
+## Progress monitor: runs in background during each phase, prints status every MONITOR_INTERVAL seconds.
+MONITOR_INTERVAL="${MONITOR_INTERVAL:-600}"  # default 10 minutes
+
+start_monitor() {
+    local phase=$1
+    (
+        sleep "$MONITOR_INTERVAL"
+        while true; do
+            echo ""
+            echo "  [monitor $(date '+%H:%M:%S')] phase=$phase still running..."
+            # Show latest child session activity
+            local latest_child
+            latest_child=$(ls -t "$ROOT/.claude/../.claude/projects/$(echo "$ROOT" | sed 's|[/_.]|-|g')"/*.jsonl 2>/dev/null | head -2 | tail -1)
+            if [ -n "$latest_child" ] && [ -f "$latest_child" ]; then
+                local lines mtime
+                lines=$(wc -l < "$latest_child" | tr -d ' ')
+                mtime=$(stat -f '%Sm' -t '%H:%M:%S' "$latest_child" 2>/dev/null || echo "?")
+                echo "  [monitor] child session: ${lines}L, last write: $mtime"
+            fi
+            # Token usage
+            if [ -f "$ROOT/scripts/token_usage.sh" ]; then
+                local tokens
+                tokens=$(bash "$ROOT/scripts/token_usage.sh" --last 2>/dev/null | grep "GRAND TOTAL" | awk '{print $NF}')
+                [ -n "$tokens" ] && echo "  [monitor] tokens this round: $tokens"
+            fi
+            sleep "$MONITOR_INTERVAL"
+        done
+    ) &
+    MONITOR_PID=$!
+}
+
+stop_monitor() {
+    if [ -n "${MONITOR_PID:-}" ]; then
+        kill "$MONITOR_PID" 2>/dev/null
+        wait "$MONITOR_PID" 2>/dev/null
+        MONITOR_PID=""
+    fi
+}
+
 run_phase() {
     local phase=$1
     local prompt_file="$PROMPTS/${phase}.md"
@@ -87,11 +126,15 @@ run_phase() {
         return 0
     fi
 
+    start_monitor "$phase"
+
     claude -p "$(cat "$prompt_file")" \
         --dangerously-skip-permissions \
         --allowedTools "Bash,Read,Write,Edit,Glob,Grep,WebSearch,Agent"
 
     local exit_code=$?
+    stop_monitor
+
     if [ $exit_code -ne 0 ]; then
         echo ""
         echo "ERROR: phase '$phase' exited with code $exit_code"

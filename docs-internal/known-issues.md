@@ -24,13 +24,13 @@
 - Coroutine yield/resume goes through Go runtime, JIT can't optimize
 - Not a priority target
 
-### emit_dispatch.go: 961 lines (approaching 1000 limit)
+### emit_dispatch.go: 969 lines (approaching 1000 limit)
 - Needs split: extract `emit_branch.go` for fused compare+branch logic
 - Flagged by evaluator in Round 10, 14. Must split before next change to this file.
 
-### emit_table.go: 937 lines (approaching limit)
+### emit_table.go: 978 lines (CRITICAL — 22 from limit)
 - Four-way arrayKind dispatch in both GetTable and SetTable creates duplication
-- Consider splitting into `emit_table_get.go` / `emit_table_set.go`
+- Must split into `emit_table_get.go` / `emit_table_set.go` BEFORE any changes
 
 ### LICM GetField alias scan incomplete (Round 18)
 - `OpAppend` and `OpSetList` not included in LICM's aliasing scan
