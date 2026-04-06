@@ -16,10 +16,20 @@ Diagnostic docs (`docs-internal/diagnostics/`) — only read if a test fails and
 Execute tasks from `current_plan.md` in order. For each task:
 
 1. **Check plan task list** (`bash -c 'grep "^\- \[" opt/current_plan.md'` — don't re-read the whole plan)
-2. **Spawn a Coder sub-agent** (Opus model) with a bounded task:
+2. **Pre-read code for the Coder** — before spawning, use Bash to read the files the task mentions:
+   ```bash
+   # Read only the relevant functions, not entire 900-line files
+   sed -n '100,150p' internal/methodjit/regalloc.go   # the function to change
+   cat internal/methodjit/regalloc_test.go | head -50  # existing test patterns
+   ```
+   Paste the output into the Coder's prompt so it doesn't need to Read them itself.
+
+3. **Spawn a Coder sub-agent** (Opus model) with a bounded task:
+   - The code snippets you just read (pasted in the prompt)
    - Specific file(s) to modify
    - Specific test(s) that must pass
    - What NOT to touch (scope boundary)
+   - "If you need to read additional files not provided above, use Read. But try the provided code first."
    - "If you can't make it work in 3 attempts, return a failure report"
 3. **Update current_plan.md**: mark task done or record failure
 4. **Check scope**: did the Coder change files outside the plan?
