@@ -168,6 +168,28 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 		}
 	}
 
+	// Collect in-loop field writes and calls for GetField alias analysis.
+	setFields := make(map[loadKey]bool)
+	hasLoopCall := false
+	for _, b := range bodyList {
+		for _, instr := range b.Instrs {
+			switch instr.Op {
+			case OpSetField:
+				if len(instr.Args) >= 1 {
+					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}] = true
+				}
+			case OpSetTable:
+				// SetTable uses dynamic keys — conservatively kills all fields on that obj.
+				// Use fieldAux = -1 as sentinel for "any field on this obj".
+				if len(instr.Args) >= 1 {
+					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: -1}] = true
+				}
+			case OpCall, OpSelf:
+				hasLoopCall = true
+			}
+		}
+	}
+
 	// Seed 2: in-loop constants with no args are invariant.
 	for _, loc := range inLoop {
 		op := loc.instr.Op
@@ -195,6 +217,22 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			if instr.Op == OpLoadSlot {
 				if storedSlots[instr.Aux] {
 					continue
+				}
+			}
+			// GetField: require no in-loop store to same (obj, field) and no calls.
+			if instr.Op == OpGetField {
+				if hasLoopCall {
+					continue
+				}
+				if len(instr.Args) >= 1 {
+					key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
+					if setFields[key] {
+						continue
+					}
+					// Also check if SetTable on the same obj (any field).
+					if setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
+						continue
+					}
 				}
 			}
 			// Int arithmetic: require Int48Safe marking.
@@ -479,6 +517,9 @@ func canHoistOp(op Op) bool {
 	case OpConstInt, OpConstFloat, OpConstBool, OpConstNil:
 		return true
 	case OpLoadSlot:
+		return true
+	case OpGetField:
+		// Caller must also check alias info (no SetField/SetTable/Call in loop).
 		return true
 	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat:
 		return true

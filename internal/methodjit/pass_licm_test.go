@@ -320,9 +320,9 @@ func TestLICM_NoHoistGuard(t *testing.T) {
 	}
 }
 
-// ---------- Test 6: no-hoist GetField ----------
+// ---------- Test 6: hoist GetField when no store and no call ----------
 
-func TestLICM_NoHoistGetField(t *testing.T) {
+func TestLICM_HoistGetField_NoStoreNoCall(t *testing.T) {
 	fn := &Function{NumRegs: 8}
 	b0, b1, b2, b3 := buildSimpleLoop(fn)
 
@@ -336,7 +336,7 @@ func TestLICM_NoHoistGetField(t *testing.T) {
 		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
 	b1.Instrs = []*Instr{phi, cond, b1Term}
 
-	// b2: GetField(tbl), jump b1
+	// b2: GetField(tbl), jump b1 — no SetField, no Call in loop
 	gf := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny, Block: b2,
 		Args: []*Value{tbl.Value()}, Aux: 0}
 	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
@@ -357,6 +357,64 @@ func TestLICM_NoHoistGetField(t *testing.T) {
 	}
 	assertValidates(t, fn, "after LICM")
 
+	// GetField should be hoisted OUT of b2 (no store/call in loop).
+	for _, instr := range b2.Instrs {
+		if instr.ID == gfID {
+			t.Fatalf("OpGetField v%d should have been hoisted out of body B%d", gfID, b2.ID)
+		}
+	}
+	// Should be in the pre-header now.
+	phBlock, _ := findInstrByID(fn, gfID)
+	if phBlock == nil {
+		t.Fatalf("hoisted GetField v%d not found anywhere in fn", gfID)
+	}
+	if len(b1.Preds) < 1 || b1.Preds[0] != phBlock {
+		t.Fatalf("expected hoisted GetField to live in pre-header (b1.Preds[0]), "+
+			"got b1.Preds=%v, phBlock=B%d", blockIDs(b1.Preds), phBlock.ID)
+	}
+}
+
+// ---------- Test 6b: no-hoist GetField when SetField on same (obj, field) ----------
+
+func TestLICM_NoHoistGetField_WhenStored(t *testing.T) {
+	fn := &Function{NumRegs: 8}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Block: b0, Aux: 0}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{tbl, b0Term}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeAny, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{phi, cond, b1Term}
+
+	// b2: GetField(tbl, field=0), SetField(tbl, field=0, val), jump b1
+	gf := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny, Block: b2,
+		Args: []*Value{tbl.Value()}, Aux: 0}
+	val := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b2, Aux: 42}
+	sf := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown, Block: b2,
+		Args: []*Value{tbl.Value(), val.Value()}, Aux: 0}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{gf, val, sf, b2Term}
+
+	phi.Args = []*Value{tbl.Value(), gf.Value()}
+	b3.Instrs = []*Instr{
+		&Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+			Args: []*Value{phi.Value()}},
+	}
+
+	assertValidates(t, fn, "input")
+	gfID := gf.ID
+
+	_, err := LICMPass(fn)
+	if err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+
+	// GetField must stay in b2 because SetField writes the same (obj, field).
 	found := false
 	for _, instr := range b2.Instrs {
 		if instr.ID == gfID {
@@ -365,7 +423,60 @@ func TestLICM_NoHoistGetField(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("OpGetField v%d should NOT be hoisted", gfID)
+		t.Fatalf("OpGetField v%d should NOT be hoisted (SetField on same obj+field in loop)", gfID)
+	}
+}
+
+// ---------- Test 6c: no-hoist GetField when call in loop ----------
+
+func TestLICM_NoHoistGetField_WhenCallInLoop(t *testing.T) {
+	fn := &Function{NumRegs: 8}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Block: b0, Aux: 0}
+	callee := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Block: b0, Aux: 1}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{tbl, callee, b0Term}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeAny, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{phi, cond, b1Term}
+
+	// b2: GetField(tbl, field=0), Call(callee), jump b1
+	gf := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny, Block: b2,
+		Args: []*Value{tbl.Value()}, Aux: 0}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeAny, Block: b2,
+		Args: []*Value{callee.Value()}}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{gf, call, b2Term}
+
+	phi.Args = []*Value{tbl.Value(), gf.Value()}
+	b3.Instrs = []*Instr{
+		&Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+			Args: []*Value{phi.Value()}},
+	}
+
+	assertValidates(t, fn, "input")
+	gfID := gf.ID
+
+	_, err := LICMPass(fn)
+	if err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+
+	// GetField must stay in b2 because a Call in the loop may mutate any field.
+	found := false
+	for _, instr := range b2.Instrs {
+		if instr.ID == gfID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("OpGetField v%d should NOT be hoisted (Call in loop body)", gfID)
 	}
 }
 
