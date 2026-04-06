@@ -140,6 +140,7 @@ Every review must check that all workflow documents are internally consistent.
 Read ALL of these files and cross-check:
 
 **Files to read:**
+- `README.md` — public-facing project description (architecture, quick start, links)
 - `CLAUDE.md` — master doc (roles, phases, pipeline, conventions)
 - `.claude/optimize.sh` — orchestrator (phase list, REVIEW_INTERVAL, comments)
 - `.claude/prompts/*.md` — all active phase prompts
