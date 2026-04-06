@@ -144,6 +144,10 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		// Not ready for Tier 2: use Tier 1, but enable OSR for loop-heavy
 		// functions so they can be upgraded mid-execution if they run hot.
 		t1 := tm.tier1.TryCompile(proto)
+		// Ensure feedback is initialized for Tier 1 type collection.
+		if t1 != nil && proto.Feedback == nil {
+			proto.EnsureFeedback()
+		}
 		// OSR disabled for now: mandelbrot's Tier 2 float code is slower than Tier 1.
 		// Re-enable once Tier 2 float handling is fully optimized.
 		// if profile.HasLoop && !tm.tier2Failed[proto] {

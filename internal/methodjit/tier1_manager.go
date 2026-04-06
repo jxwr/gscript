@@ -227,6 +227,13 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 		ctx.BaselineGlobalCachedGen = 0
 	}
 
+	// Set up FeedbackPtr for Tier 1 type feedback collection.
+	if proto.Feedback != nil && len(proto.Feedback) > 0 {
+		ctx.BaselineFeedbackPtr = uintptr(unsafe.Pointer(&proto.Feedback[0]))
+	} else {
+		ctx.BaselineFeedbackPtr = 0
+	}
+
 	// Set RegsEnd for native BLR bounds checking.
 	ctx.RegsEnd = uintptr(unsafe.Pointer(&regs[0])) + uintptr(len(regs)*8)
 

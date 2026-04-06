@@ -8,6 +8,11 @@ package methodjit
 
 import (
 	"testing"
+
+	"github.com/gscript/gscript/internal/lexer"
+	"github.com/gscript/gscript/internal/parser"
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
 )
 
 // ---------------------------------------------------------------------------
@@ -426,4 +431,104 @@ func apply(x) { return double(x) }
 result := 0
 for i := 1; i <= 200; i++ { result = apply(i) }
 `, "result")
+}
+
+// ---------------------------------------------------------------------------
+// Baseline feedback tests: verify Tier 1 type feedback collection
+// ---------------------------------------------------------------------------
+
+// compileAndRunForFeedback compiles and runs a GScript program with the
+// baseline JIT, then finds the inner function named "f" and returns its proto
+// so the caller can inspect the Feedback vector.
+func compileAndRunForFeedback(t *testing.T, src string) (*vm.VM, *vm.FuncProto) {
+	t.Helper()
+	tokens, err := lexer.New(src).Tokenize()
+	if err != nil {
+		t.Fatalf("lexer error: %v", err)
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	proto, err := vm.Compile(prog)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	// Pre-allocate feedback vectors for all child protos so the JIT
+	// feedback stubs have somewhere to write during execution.
+	for _, child := range proto.Protos {
+		child.EnsureFeedback()
+	}
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	engine := NewBaselineJITEngine()
+	v.SetMethodJIT(engine)
+	_, err = v.Execute(proto)
+	if err != nil {
+		t.Fatalf("JIT runtime error: %v", err)
+	}
+	// Find the inner function proto named "f".
+	var fProto *vm.FuncProto
+	for _, child := range proto.Protos {
+		if child.Name == "f" {
+			fProto = child
+			break
+		}
+	}
+	if fProto == nil {
+		t.Fatalf("could not find inner function 'f' in proto.Protos")
+	}
+	return v, fProto
+}
+
+func TestBaselineFeedback_GetTable_Float(t *testing.T) {
+	src := `
+func f() {
+    t := {1.5, 2.5, 3.5}
+    return t[0] + t[1] + t[2]
+}
+result := 0.0
+for i := 1; i <= 5; i++ { result = f() }
+`
+	_, proto := compileAndRunForFeedback(t, src)
+	// Find the GETTABLE instructions and check their feedback.
+	foundFloat := false
+	for pc, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		if op == vm.OP_GETTABLE && proto.Feedback != nil && pc < len(proto.Feedback) {
+			fb := proto.Feedback[pc]
+			if fb.Result == vm.FBFloat {
+				foundFloat = true
+			}
+		}
+	}
+	if !foundFloat {
+		t.Errorf("expected at least one GETTABLE with FBFloat feedback, got none")
+	}
+}
+
+func TestBaselineFeedback_GetTable_Int(t *testing.T) {
+	src := `
+func f() {
+    t := {}
+    for i := 0; i < 10; i++ { t[i] = i }
+    return t[0] + t[5] + t[9]
+}
+result := 0
+for i := 1; i <= 5; i++ { result = f() }
+`
+	_, proto := compileAndRunForFeedback(t, src)
+	foundInt := false
+	for pc, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		if op == vm.OP_GETTABLE && proto.Feedback != nil && pc < len(proto.Feedback) {
+			fb := proto.Feedback[pc]
+			if fb.Result == vm.FBInt {
+				foundInt = true
+			}
+		}
+	}
+	if !foundInt {
+		t.Errorf("expected at least one GETTABLE with FBInt feedback, got none")
+	}
 }
