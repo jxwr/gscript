@@ -8,11 +8,12 @@
   "completed_steps": [],
   "next_action": "",
   "uncommitted_files": [
+    "internal/methodjit/test_nbody_full_test.go",
     "opt/state.json"
   ],
-  "head_commit": "0868308bf00f2dd1339dbd1dbcc5afe674548b60",
+  "head_commit": "06333dd385bbd12b894d8c4bdc1e004767f739a5",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T13:05:41Z",
+  "last_checkpoint": "2026-04-06T13:21:53Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",

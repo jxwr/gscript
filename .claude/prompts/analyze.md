@@ -83,6 +83,8 @@ Just read the existing documents:
 ## Step 2 — External Research (knowledge layer)
 
 If you need to spawn sub-agents for research, **use Sonnet model** (cheaper, sufficient for search + source reading).
+**Sub-agent budget**: each research/diagnostic sub-agent must complete within **50 tool calls**.
+If approaching the limit, wrap up with partial findings rather than continuing to explore.
 
 #### 2a. Web search
 Use `WebSearch` for the specific technique. Specific, not generic:
@@ -114,7 +116,7 @@ Use the architecture overview to locate them. For each file:
 
 ## Step 4 — Micro Diagnostics (instruction layer)
 
-Spawn a sub-agent to get **actual data** from the target benchmark:
+Spawn a diagnostic sub-agent (**budget: 50 tool calls max**) to get **actual data** from the target benchmark:
 
 1. **IR dump**: `Diagnose()` from `internal/methodjit/diagnose.go`
 2. **ARM64 disasm**: Tier 2 disasm harness (`tier2_float_profile_test.go`)
