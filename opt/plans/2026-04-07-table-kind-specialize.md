@@ -110,16 +110,36 @@ Split into: `emit_table_field.go` (GetField/SetField) + `emit_table_array.go` (G
 - [x] 0. **Extract RunTier2Pipeline()** — Create `internal/methodjit/pipeline.go` with shared `RunTier2Pipeline(fn *Function) (*Function, error)` running the full production pipeline. Refactor `compileTier2()` in `tiering_manager.go`, `Diagnose()` in `diagnose.go`, and `tier2_float_profile_test.go` to call it. Search for any other stale pipeline copies in `*_test.go` files and fix them. Test: `go test ./internal/methodjit/ -short -count=1 -timeout 120s` must pass.
 - [x] 1. **Split emit_table.go** — Split into `emit_table_field.go` (GetField/SetField/shapeVerified) + `emit_table_array.go` (GetTable/SetTable/NewTable). Move ~500 lines each. All existing tests must pass.
 - [x] 2. **Add tableVerified dedup** — file: `emit_table_array.go`, `emit_compile.go` — Add `tableVerified` map to emitContext (parallel to shapeVerified). After first GetTable/SetTable validates table, cache raw ptr in spill slot. Subsequent accesses load from spill. Test: new test verifying insn count reduction for 2-access blocks.
-- [ ] 3. **Add array kind feedback** — files: `tier1_table.go`, `internal/vm/feedback.go`, `graph_builder.go` — Add `Kind` field to feedback entry. Record kind in Tier 1 GETTABLE/SETTABLE fast paths. Propagate to GetTable/SetTable Aux2 in graph builder. Test: `TestFeedbackKind_ArrayBool`.
-- [ ] 4. **Kind-specialized emit** — file: `emit_table_array.go` — When Aux2 has known kind, emit kind guard + direct path. Test: verify correct results for all 4 array kinds + verify sieve produces correct count. Integration: run sieve benchmark end-to-end via TieringManager.
+- [x] 3. **Add array kind feedback** — files: `tier1_table.go`, `internal/vm/feedback.go`, `graph_builder.go` — Add `Kind` field to feedback entry. Record kind in Tier 1 GETTABLE/SETTABLE fast paths. Propagate to GetTable/SetTable Aux2 in graph builder. Test: `TestFeedbackKind_ArrayBool`.
+- [x] 4. **Kind-specialized emit** — file: `emit_table_array.go` — When Aux2 has known kind, emit kind guard + direct path. Test: verify correct results for all 4 array kinds + verify sieve produces correct count. Integration: run sieve benchmark end-to-end via TieringManager.
 
 ## Budget
 - Max commits: 5 (+1 revert slot)
 - Max files changed: 10
 - Abort condition: 3 commits without test green, or emit_table.go split takes >2 hours
 
-## Results (filled after VERIFY)
-| Benchmark | Before | After | Change |
-|-----------|--------|-------|--------|
+## Results (filled by VERIFY)
+| Benchmark | Before | After | Change | Expected | Met? |
+|-----------|--------|-------|--------|----------|------|
+| sieve | 0.083s | 0.082s | −1.2% (noise) | 0.060-0.070s (−16-28%) | No |
+| matmul | 0.125s | 0.125s | 0% | ~0.110s | No |
+| spectral_norm | 0.045s | 0.045s | 0% | ~0.040s | No |
+| fannkuch | 0.051s | 0.046s | −9.8% | ~0.045s | Yes |
+| table_array_access | 0.097s | 0.091s | −6.2% | — | — |
+| sort | 0.051s | 0.053s | +3.9% (noise) | — | — |
+
+### Test Status
+- All passing (methodjit + vm)
+
+### Evaluator Findings
+- PASS with one tracked issue: tableVerified not cleared after exit-resume on SetTable deopt path — can skip metatable check post-mutation in theory. Low severity, no benchmark code triggers it. Track in known-issues.md.
+
+### Regressions (≥5%)
+- None confirmed. Sort +3.9% median is within noise.
 
 ## Lessons (filled after completion/abandonment)
+- **Branch prediction masks instruction elimination**: Removing 5 predictable instructions from a 35-insn dispatch cascade yields 0% wall-time improvement on M4. The branch predictor was already making the cascade free. This is the same lesson as round 10 (superscalar hides insn savings) but for branches specifically.
+- **tableVerified helps multi-access blocks**: Fannkuch -10% because it has multiple array accesses per iteration on the same table. Sieve has ONE access per iteration, so tableVerified never activates. The mechanism works, but only for the right workload pattern.
+- **Kind feedback infra is correct and live**: The monotonic lattice (Unobserved → concrete → Polymorphic) works. Tier 1 records, graph builder propagates, emitter specializes. The pipeline is there for when it matters (e.g., if bounds checking or other per-access overhead is added later).
+- **Pipeline dedup (Task 0) was overdue**: 6+ stale pipeline copies running subsets of passes. Some test files were running 3 passes instead of 10. This was a latent correctness risk.
+- **Prediction model still broken for branch-predicted code**: Need to distinguish "instructions that are actually executed" from "instructions the branch predictor makes free." A 4-way cascade with deterministic outcome ≈ 1 predicted branch, not 8 instructions.

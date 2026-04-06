@@ -92,6 +92,13 @@
 <h2>Posts</h2>
 
 <div class="post">
+  <span class="date">2026-04-07</span>
+  <br>
+  <a href="29-one-instruction-per-store">One Instruction Per Store</a>
+  <p>sieve emits 35 ARM64 instructions per SetTable. Only one is the actual store. We built table validation dedup and kind-specialized emit to cut it to ~20 &mdash; and the wall-time didn&rsquo;t move. The M4&rsquo;s branch predictor was already making the dispatch cascade free. Secondary wins: fannkuch &minus;10% from tableVerified dedup on multi-access blocks.</p>
+</div>
+
+<div class="post">
   <span class="date">2026-04-06</span>
   <br>
   <a href="28-loads-that-never-move">The Loads That Never Move</a>

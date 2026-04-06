@@ -28,9 +28,12 @@
 - Needs split: extract `emit_branch.go` for fused compare+branch logic
 - Flagged by evaluator in Round 10, 14. Must split before next change to this file.
 
-### emit_table.go: 978 lines (CRITICAL — 22 from limit)
-- Four-way arrayKind dispatch in both GetTable and SetTable creates duplication
-- Must split into `emit_table_get.go` / `emit_table_set.go` BEFORE any changes
+### tableVerified not cleared after SetTable exit-resume (Round 19)
+- After `emitSetTableNative` takes deopt/exit-resume path, `tableVerified[tblValueID]` persists
+- If interpreter sets metatable during exit-resume, subsequent GetTable skips metatable check
+- Low severity: setting metatable during integer-keyed access is unusual
+- Fix: clear `tableVerified[tblValueID]` before returning from exit-resume path
+- Category: `field_access`
 
 ### LICM GetField alias scan incomplete (Round 18)
 - `OpAppend` and `OpSetList` not included in LICM's aliasing scan
@@ -44,13 +47,8 @@
 - Pre-existing before Round 18, but store-to-load forwarding makes stale entries more visible
 - Low risk: dynamic-key overwrites of named fields are unusual
 
-### Tier 2 pipeline duplicated in 3 places — extract shared RunTier2Pipeline()
-- `compileTier2()` in tiering_manager.go is the production pipeline (10 passes)
-- `Diagnose()` in diagnose.go had its own copy (synced in Round 18 fix, but still a separate copy)
-- `tier2_float_profile_test.go` still has a stale 4-pass copy (missing Intrinsic/Inline/LoadElim/Range/LICM)
-- Other test files may also have stale copies
-- **Fix**: extract `RunTier2Pipeline(fn) (*Function, error)` as a shared function. One definition, zero drift.
-- Category: `arch_refactor`
+### Tier 2 pipeline duplicated — FIXED (Round 19, Task 0)
+- Extracted `RunTier2Pipeline()` in pipeline.go. All callers consolidated.
 
 ### benchmarks/run_all.sh: VM/JIT suite may report inaccurate times
 - Round 12 MEASURE discovered silent failures in suite mode
