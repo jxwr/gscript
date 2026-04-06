@@ -19,7 +19,7 @@
 
 Current (from `compileTier2`):
 ```
-BuildGraph → Validate → IntrinsicPass → TypeSpecialize → ConstProp → DCE → Inline → RangeAnalysis → LICM → RegAlloc → Emit
+BuildGraph → Validate → TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit
 ```
 
 Ordering constraints:
@@ -42,8 +42,7 @@ Ordering constraints:
 
 ## Technical Debt
 
-- `benchmarks/run_all.sh` has a bug: VM/JIT suite benchmarks silently fail (Round 12 MEASURE discovered). Individual benchmark runs work.
-- Deprecated prompts in `.claude/prompts/_deprecated_*` — can be deleted after confirming new 3-phase pipeline is stable.
+- `benchmarks/run_all.sh` has a bug: VM/JIT suite benchmarks silently fail (discovered round 12). Individual benchmark runs work.
 
 ## Test Coverage Notes
 
