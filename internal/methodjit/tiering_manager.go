@@ -479,6 +479,7 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	}
 
 	fn, _ = ConstPropPass(fn)
+	fn, _ = LoadEliminationPass(fn)
 	fn, _ = DCEPass(fn)
 
 	// Range analysis: mark int arithmetic ops whose result provably fits in
