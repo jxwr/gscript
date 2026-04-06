@@ -59,8 +59,10 @@ const (
 	TableOffShape      = 144 // *Shape (pointer, 8 bytes) — TODO: verify with unsafe.Offsetof
 	TableOffIntArray    = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
 	TableOffIntArrayLen = 152 // intArray slice len field (8 bytes after data ptr)
-	TableOffFloatArray  = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
-	TableOffBoolArray  = 192 // []byte slice header (ptr+len+cap = 24 bytes)
+	TableOffFloatArray     = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
+	TableOffFloatArrayLen  = 176 // floatArray slice len field (168 + 8)
+	TableOffBoolArray      = 192 // []byte slice header (ptr+len+cap = 24 bytes)
+	TableOffBoolArrayLen   = 200 // boolArray slice len field (192 + 8)
 )
 
 // Legacy compatibility alias for codegen transition.
