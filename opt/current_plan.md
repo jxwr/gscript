@@ -83,7 +83,7 @@ Each task = one Coder sub-agent invocation.
 
 - [x] 1. **TDD + offset constants** — Write failing tests for ArrayBool and ArrayFloat GetTable/SetTable at Tier 2. Add `TableOffFloatArrayLen` and `TableOffBoolArrayLen` to `value_layout.go`. — file(s): `emit_table_typed_test.go` (new), `value_layout.go` — test: `TestTier2_GetTableArrayBool`, `TestTier2_SetTableArrayBool`, `TestTier2_GetTableArrayFloat`, `TestTier2_SetTableArrayFloat`
 - [x] 2. **ArrayBool fast path** — Add ArrayBool read/write paths to `emitGetTableNative` and `emitSetTableNative`. Extend arrayKind dispatch chain. — file(s): `emit_table.go` — test: tests from Task 1
-- [ ] 3. **ArrayFloat fast path** — Add ArrayFloat read/write paths to `emitGetTableNative` and `emitSetTableNative`. — file(s): `emit_table.go` — test: tests from Task 1
+- [x] 3. **ArrayFloat fast path** — Add ArrayFloat read/write paths to `emitGetTableNative` and `emitSetTableNative`. — file(s): `emit_table.go` — test: tests from Task 1
 - [ ] 4. **Integration test + benchmark** — Run full test suite + sieve benchmark. Compare against latest.json baseline. — test: `go test ./internal/methodjit/ -timeout 120s` + manual sieve benchmark
 
 ## Budget
