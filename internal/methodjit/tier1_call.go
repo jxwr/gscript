@@ -189,8 +189,9 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.MOVimm16(jit.X20, 0) // flag: normal call
 	asm.B(afterNormalChecksLabel)
 
-	// Self-call path: skip DirectEntryPtr load and CallCount increment.
+	// Self-call path: skip DirectEntryPtr load (use BL direct_entry).
 	// Bounds check uses compile-time constant: totalNeeded = calleeBaseOff + MaxStack*8.
+	// CallCount is still incremented so the function can be promoted to Tier 2.
 	asm.Label(selfCallSkipLabel)
 	selfCallTotalNeeded := int64(calleeBaseOff + maxStack*8)
 	asm.LoadImm64(jit.X3, selfCallTotalNeeded)
@@ -198,6 +199,14 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.LDR(jit.X4, mRegCtx, execCtxOffRegsEnd)
 	asm.CMPreg(jit.X3, jit.X4)
 	asm.BCond(jit.CondHI, slowLabel)              // overflow -> slow path
+
+	// Increment CallCount so Tier 2 promotion can still happen.
+	asm.LDR(jit.X3, jit.X1, funcProtoOffCallCount)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, jit.X1, funcProtoOffCallCount)
+	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
+	asm.BCond(jit.CondEQ, slowLabel)
+
 	asm.MOVimm16(jit.X20, 1)                     // flag: self-call -> use BL direct_entry
 
 	asm.Label(afterNormalChecksLabel)
