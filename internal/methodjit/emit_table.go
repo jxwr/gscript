@@ -400,22 +400,37 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
 	asm.CBNZ(jit.X1, deoptLabel)
 
-	// Load key value (NaN-boxed) into X1.
-	keyReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
-	if keyReg != jit.X1 {
-		asm.MOVreg(jit.X1, keyReg)
+	// Load key into X1 with type-specialized fast paths.
+	keyID := instr.Args[1].ID
+
+	if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
+		// Fast path 1: key is raw int in a register (rawIntRegs).
+		reg := ec.physReg(keyID)
+		if reg != jit.X1 {
+			asm.MOVreg(jit.X1, reg)
+		}
+		// Key is already a raw int64 — skip boxing, tag check, and unbox.
+	} else if ec.irTypes[keyID] == TypeInt {
+		// Fast path 2: key is known TypeInt but NaN-boxed — skip tag check, just unbox.
+		keyReg := ec.resolveValueNB(keyID, jit.X1)
+		if keyReg != jit.X1 {
+			asm.MOVreg(jit.X1, keyReg)
+		}
+		asm.SBFX(jit.X1, jit.X1, 0, 48)
+	} else {
+		// Slow path: full NaN-boxed key with tag check.
+		keyReg := ec.resolveValueNB(keyID, jit.X1)
+		if keyReg != jit.X1 {
+			asm.MOVreg(jit.X1, keyReg)
+		}
+		asm.LSRimm(jit.X2, jit.X1, 48)
+		asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+		asm.CMPreg(jit.X2, jit.X3)
+		asm.BCond(jit.CondNE, deoptLabel)
+		asm.SBFX(jit.X1, jit.X1, 0, 48)
 	}
 
-	// Check key is integer (tag = 0xFFFE).
-	asm.LSRimm(jit.X2, jit.X1, 48)
-	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
-	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondNE, deoptLabel)
-
-	// Extract integer key (sign-extend 48 bits).
-	asm.SBFX(jit.X1, jit.X1, 0, 48)
-
-	// Check key >= 0.
+	// Check key >= 0 (shared by all paths).
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, deoptLabel)
 
@@ -632,22 +647,37 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
 	asm.CBNZ(jit.X1, deoptLabel)
 
-	// Load key value (NaN-boxed) into X1.
-	keyReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
-	if keyReg != jit.X1 {
-		asm.MOVreg(jit.X1, keyReg)
+	// Load key into X1 with type-specialized fast paths.
+	keyID := instr.Args[1].ID
+
+	if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
+		// Fast path 1: key is raw int in a register (rawIntRegs).
+		reg := ec.physReg(keyID)
+		if reg != jit.X1 {
+			asm.MOVreg(jit.X1, reg)
+		}
+		// Key is already a raw int64 — skip boxing, tag check, and unbox.
+	} else if ec.irTypes[keyID] == TypeInt {
+		// Fast path 2: key is known TypeInt but NaN-boxed — skip tag check, just unbox.
+		keyReg := ec.resolveValueNB(keyID, jit.X1)
+		if keyReg != jit.X1 {
+			asm.MOVreg(jit.X1, keyReg)
+		}
+		asm.SBFX(jit.X1, jit.X1, 0, 48)
+	} else {
+		// Slow path: full NaN-boxed key with tag check.
+		keyReg := ec.resolveValueNB(keyID, jit.X1)
+		if keyReg != jit.X1 {
+			asm.MOVreg(jit.X1, keyReg)
+		}
+		asm.LSRimm(jit.X2, jit.X1, 48)
+		asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+		asm.CMPreg(jit.X2, jit.X3)
+		asm.BCond(jit.CondNE, deoptLabel)
+		asm.SBFX(jit.X1, jit.X1, 0, 48)
 	}
 
-	// Check key is integer (tag = 0xFFFE).
-	asm.LSRimm(jit.X2, jit.X1, 48)
-	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
-	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondNE, deoptLabel)
-
-	// Extract integer key (sign-extend 48 bits).
-	asm.SBFX(jit.X1, jit.X1, 0, 48)
-
-	// Check key >= 0.
+	// Check key >= 0 (shared by all paths).
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, deoptLabel)
 
