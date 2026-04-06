@@ -73,6 +73,10 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 	// This is a lightweight prologue that only saves FP+LR (16 bytes).
 	emitDirectEntryPrologue(asm)
 
+	// Emit the self-call entry point: even lighter than direct_entry.
+	// Skips MOVreg X19,X0 and LDR for Regs/Constants (same function).
+	emitSelfCallEntryPrologue(asm)
+
 	// Walk bytecodes linearly.
 	for pc := 0; pc < len(code); pc++ {
 		// Label for this PC (used as jump target within JIT code).

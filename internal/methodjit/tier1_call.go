@@ -202,7 +202,15 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 
 	asm.Label(afterNormalChecksLabel)
 
-	// 4. Save caller state ON STACK (64 bytes, 16-byte aligned)
+	// 4. Save caller state ON STACK
+	// Self-call (X20=1): lightweight save (32 bytes) — skip mRegConsts,
+	// ClosurePtr, GlobalCache, GlobalCachedGen (unchanged for same proto).
+	// Normal call (X20=0): full save (64 bytes).
+	selfCallSaveLabel := nextLabel("self_call_save")
+	saveDoneLabel := nextLabel("save_done")
+	asm.CBNZ(jit.X20, selfCallSaveLabel)
+
+	// Normal save (64 bytes, 16-byte aligned)
 	asm.SUBimm(jit.SP, jit.SP, 64)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
@@ -215,6 +223,17 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STR(jit.X3, jit.SP, 48)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
 	asm.STR(jit.X3, jit.SP, 56)
+	asm.B(saveDoneLabel)
+
+	// Self-call save (32 bytes, 16-byte aligned)
+	asm.Label(selfCallSaveLabel)
+	asm.SUBimm(jit.SP, jit.SP, 32)
+	asm.STP(jit.X29, jit.X30, jit.SP, 0)
+	asm.STR(mRegRegs, jit.SP, 16)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
+	asm.STR(jit.X3, jit.SP, 24)
+
+	asm.Label(saveDoneLabel)
 
 	// 5. Copy args to callee register window
 	if varArgs {
@@ -267,6 +286,13 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	}
 
 	// 6. Set up callee context
+	// Self-call (X20=1): only advance mRegRegs and set CallMode.
+	// Skip: Constants reload, ClosurePtr, GlobalCache, GlobalCachedGen.
+	selfCallSetupLabel := nextLabel("self_call_setup")
+	setupDoneLabel := nextLabel("setup_done")
+	asm.CBNZ(jit.X20, selfCallSetupLabel)
+
+	// Normal setup
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
 	} else {
@@ -293,6 +319,21 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
 	asm.MOVimm16(jit.X3, 0)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
+	asm.B(setupDoneLabel)
+
+	// Self-call setup: only advance mRegRegs and set CallMode
+	asm.Label(selfCallSetupLabel)
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X3, int64(calleeBaseOff))
+		asm.ADDreg(mRegRegs, mRegRegs, jit.X3)
+	}
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+	asm.MOVimm16(jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+
+	asm.Label(setupDoneLabel)
 
 	// 7. Increment NativeCallDepth, call callee, decrement
 	selfCallBLLabel := nextLabel("self_call_bl")
@@ -309,7 +350,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.BLR(jit.X2)
 	asm.B(afterCallLabel)
 	asm.Label(selfCallBLLabel)
-	asm.BL("direct_entry")
+	asm.BL("self_call_entry")
 	asm.Label(afterCallLabel)
 
 	// Decrement NativeCallDepth after callee returns
@@ -318,6 +359,13 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
 	// 8. Restore caller state
+	// Self-call (X20=1): lightweight restore (32-byte frame).
+	// Normal call (X20=0): full restore (64-byte frame).
+	selfCallRestoreLabel := nextLabel("self_call_restore")
+	restoreDoneLabel := nextLabel("restore_done")
+	asm.CBNZ(jit.X20, selfCallRestoreLabel)
+
+	// Normal restore (64-byte frame)
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 32)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
@@ -330,7 +378,17 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, 64)
+	asm.B(restoreDoneLabel)
 
+	// Self-call restore (32-byte frame)
+	asm.Label(selfCallRestoreLabel)
+	asm.LDR(mRegRegs, jit.SP, 16)
+	asm.LDR(jit.X3, jit.SP, 24)
+	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, 32)
+
+	asm.Label(restoreDoneLabel)
 	// Restore context pointers
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
@@ -399,6 +457,26 @@ func emitDirectEntryPrologue(asm *jit.Assembler) {
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
 	// X24 (tagInt) and X25 (tagBool) are callee-saved, preserved from caller.
 	// Jump to first bytecode.
+	asm.B("pc_0")
+}
+
+// emitSelfCallEntryPrologue emits a lightweight entry point used only by
+// self-call BL instructions. For self-calls, the caller and callee are the
+// same function, so:
+//   - X19 (mRegCtx) is already set (same context)
+//   - X26 (mRegRegs) was already updated by the caller's step 6
+//   - X27 (mRegConsts) is preserved (same proto → same constants)
+//
+// This avoids the MOVreg X19,X0 and the two LDR for Regs/Constants that
+// the normal direct_entry prologue performs.
+func emitSelfCallEntryPrologue(asm *jit.Assembler) {
+	asm.Label("self_call_entry")
+	// Save FP+LR with pre-index (SP -= 16)
+	asm.STPpre(jit.X29, jit.X30, jit.SP, -16)
+	asm.ADDimm(jit.X29, jit.SP, 0) // FP = SP
+	// Skip: MOVreg X19, X0 — X19 already holds ctx for self-call
+	// Skip: LDR X26 from ctx.Regs — already set by caller's step 6
+	// Skip: LDR X27 from ctx.Constants — same function, preserved
 	asm.B("pc_0")
 }
 

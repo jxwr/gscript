@@ -504,6 +504,63 @@ result := f(10)
 }
 
 // ---------------------------------------------------------------------------
+// Self-call lightweight save/restore (register pass optimization)
+// ---------------------------------------------------------------------------
+
+func TestSelfCallRegisterPass(t *testing.T) {
+	// Verify fib(20) correctness with the lightweight self-call path.
+	// This exercises the optimized save/restore/setup that skips
+	// Constants, ClosurePtr, GlobalCache, and GlobalCachedGen for
+	// self-recursive calls.
+	compareVMvsJIT(t, `
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+result := fib(20)
+`, "result")
+}
+
+func TestSelfCallRegisterPass_DeepFactorial(t *testing.T) {
+	// Single-branch deep recursion to stress the lightweight frame.
+	compareVMvsJIT(t, `
+func fact(n) {
+    if n <= 1 { return 1 }
+    return n * fact(n-1)
+}
+result := fact(15)
+`, "result")
+}
+
+func TestSelfCallRegisterPass_MixedSelfAndNonSelf(t *testing.T) {
+	// A function that makes both self-calls (lightweight path) and
+	// non-self calls (normal path) in the same body. Verifies that
+	// the X20 flag correctly distinguishes the two cases.
+	compareVMvsJIT(t, `
+func helper(x) { return x + 1 }
+func f(n) {
+    if n <= 0 { return 0 }
+    return helper(n) + f(n-1)
+}
+result := f(20)
+`, "result")
+}
+
+func TestSelfCallRegisterPass_WithGlobals(t *testing.T) {
+	// Self-recursive function that also accesses globals.
+	// Verifies GlobalCache/CachedGen preservation is correct.
+	compareVMvsJIT(t, `
+counter := 0
+func fib(n) {
+    counter = counter + 1
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+result := fib(15)
+`, "result")
+}
+
+// ---------------------------------------------------------------------------
 // Baseline feedback tests: verify Tier 1 type feedback collection
 // ---------------------------------------------------------------------------
 
