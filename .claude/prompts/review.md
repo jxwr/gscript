@@ -56,6 +56,7 @@ Quick scan (subordinate to Section A):
 | Plan accuracy | Predictions vs actuals — are they converging after calibration? |
 | Initiative health | Active but stalled? |
 | Budget adherence | Overruns? |
+| Token usage | Run `bash scripts/token_usage.sh --last`. Flag anomalies only: sub-agents >5M tokens, duplicate agents doing the same work, python ARM64 decoders instead of otool, or total round >20M. Do NOT optimize normal usage — only flag clear waste. |
 
 ### C. Process Understanding
 
