@@ -12,8 +12,23 @@ cat opt/current_plan.md
 CLAUDE.md is already loaded as project instructions — do NOT read it again.
 Diagnostic docs (`docs-internal/diagnostics/`) — only read if a test fails and you need debugging guidance.
 
+## Pre-flight: check for injected tasks
+
+```bash
+cat opt/inject_tasks.md 2>/dev/null
+```
+
+If `opt/inject_tasks.md` exists, it contains tasks the user wants inserted into this round.
+**Prepend them to `current_plan.md`'s Task Breakdown** (before the existing tasks, as Task 0, 0b, etc.),
+then delete the injection file:
+```bash
+rm opt/inject_tasks.md
+```
+
+This lets the user inject work into a running round without restarting.
+
 ## Task
-Execute tasks from `current_plan.md` in order. For each task:
+Execute tasks from `current_plan.md` in order (including any injected tasks). For each task:
 
 1. **Check plan task list** (`bash -c 'grep "^\- \[" opt/current_plan.md'` — don't re-read the whole plan)
 2. **Pre-read code for the Coder** — before spawning, use Bash to read the files the task mentions:
