@@ -1,83 +1,117 @@
 # Analyze Report — Round 14
 
 > Date: 2026-04-06
-> Cycle ID: 2026-04-06-tier1-feedback-fast-paths
+> Cycle ID: 2026-04-06-table-access-bypass
 
 ## Architecture Audit
 
-Quick read (rounds_since_arch_audit=1). Ran `scripts/arch_check.sh`:
+Quick read (rounds_since_arch_audit=1 < 2). `bash scripts/arch_check.sh` results:
 
-- `emit_dispatch.go` 961 lines ⚠ — not touched this round
-- `graph_builder.go` 939 lines ⚠ — not touched this round
-- `emit_table.go` 872 lines ⚠ — not touched this round (Tier 2 only)
-- `tier1_table.go` 545 lines — target file, will grow to ~665 lines. OK.
-- Test ratio: 81% (14309 test lines / 17562 source lines)
-- No new constraint violations. constraints.md is current from round 12 audit.
+- `emit_dispatch.go` 961 lines -- approaching limit (no changes planned this round)
+- `graph_builder.go` 939 lines -- approaching limit (no changes planned this round)
+- `emit_table.go` 872 lines -- grew from round 13 native array kinds; this round modifies existing functions, not adding new ones
+- Source: 43 files, 17562 lines. Test ratio: 81% (14309 test lines)
+- 1 TODO/HACK marker (emit_call.go:24, pre-existing)
+- No new constraints beyond what's in constraints.md
+
+**No constraint changes needed.** This round touches only emit_table.go (872 lines, within budget).
 
 ## Gap Classification
 
 | Category | Benchmarks | Total Gap vs LuaJIT | Blocked? |
 |----------|------------|---------------------|----------|
-| recursive_call | fib (57x), ackermann (44x), mutual_recursion (33x) | 1.87s aggregate | YES (failures=2) |
-| tier2_float_loop | matmul (42.8x), spectral_norm (41.9x), nbody (19.3x), mandelbrot (6.7x) | 2.26s aggregate | No (failures=1) |
-| field_access | sieve (15.5x) | 0.17s aggregate | No (failures=0) |
-| allocation_heavy | binary_trees, object_creation | N/A (no LuaJIT baseline) | No (never attempted) |
-| gofunction_overhead | method_dispatch (∞x — LuaJIT reports 0.000s) | 0.10s | No (never attempted) |
-| other | fannkuch (3.5x), sort (4.9x), sum_primes (2x) | 0.07s aggregate | No |
+| recursive_call | fib (57x), ackermann (43.7x), mutual_recursion (32.8x), method_dispatch (huge) | ~1.86s | YES (ceiling=2) |
+| tier2_float_loop | mandelbrot (6.7x), spectral_norm (41.9x), nbody (19.3x), matmul (42.8x) | ~2.27s | No (failures=1) |
+| field_access | sieve (15.5x), fannkuch (3.5x), table_field/array (N/A) | ~0.22s | No (failures=0) |
+| allocation_heavy | binary_trees (N/A), object_creation (regression) | N/A | No (failures=0) |
+| other | sort (4.9x), sum_primes (2x) | ~0.05s | No |
 
 ## Blocked Categories
-
-- `recursive_call` (category_failures=2): Tier 2 is net-negative for recursive functions (round 11). Needs fundamentally different mechanism (Tier 1 BLR specialization or native recursive calling convention).
+- `recursive_call` (ceiling=2): Tier 2 is net-negative for recursive functions. Needs native recursive BLR or Tier 1 specialization.
 
 ## Active Initiatives
-
-- **tier2-float-loops** (paused): Phase 3 blocked on feedback availability. B3 peephole items exhausted. This round directly unblocks Phase 3.
-- **recursive-tier2-unlock** (paused, blocked): category_failures=2. Phase 5 invalidated. Phase 6 (native recursive BLR) is the next viable path.
+- `tier2-float-loops.md` (paused): B3 peephole items exhausted. Next step requires feedback collection or deeper arch changes (deopt frame descriptors, loop-exit boxing).
+- `recursive-tier2-unlock.md` (paused/blocked): category_failures=2.
 
 ## Selected Target
 
-- **Category**: tier2_float_loop
-- **Initiative**: opt/initiatives/tier2-float-loops.md (Phase 3 unblock)
-- **Reason**: Largest aggregate gap (2.26s) in non-blocked category. The round 12 feedback-typed-loads infrastructure is complete at IR level but inert because Tier 1 doesn't collect feedback. This round closes the loop by (a) adding missing Tier 1 array fast paths and (b) adding feedback collection stubs. Cross-checked with constraints.md: no architectural ceiling applies — this is a concrete missing-implementation gap, not a fundamental limit.
-- **Benchmarks**: matmul (primary — Tier 1 speedup), spectral_norm (secondary — Tier 2 typed loads), nbody (tertiary — GETFIELD feedback)
+- **Category**: field_access
+- **Initiative**: standalone
+- **Reason**: Zero failures in this category. Sieve shows 15.5x gap despite round 13 native ArrayBool paths. Diagnostic data reveals massive per-access overhead (57 insns, only 9% compute). Two emit-level optimizations (key bypass + value bypass) are zero-risk and save 12+ insns per table access. tier2_float_loop has larger absolute gap but is paused/needing architectural changes.
+- **Benchmarks**: sieve (primary), fannkuch (secondary)
 
 ## Prior Art Research
 
 ### Web Search Findings
-V8 Sparkplug always collects IC feedback during baseline execution. LuaJIT interpreter records type hints. JSC Baseline records ValueProfile per bytecode. All production engines collect feedback at the baseline tier — GScript is the outlier here.
+- **V8 TurboFan**: Uses loop peeling + LoadElimination to hoist CheckMaps out of loops. JSNativeContextSpecialization specializes element access based on ElementAccessFeedback. SimplifiedLowering converts tagged ops to untagged machine ops.
+- **LuaJIT**: ABC (Array Bounds Check Elimination) via range analysis. Array base pointer kept in register. Trace JIT naturally eliminates per-access dispatch by recording only the taken path.
+- **.NET CLR**: Loop cloning creates fast/slow paths. x64 JIT hoists bounds check to pre-header; if it passes, all range checks in loop body eliminated.
+- **Common pattern**: All production compilers prove safety once at loop entry, not per-access.
 
 ### Reference Source Findings
-Round 12's knowledge entry (`opt/knowledge/feedback-typed-loads.md`) already documents V8/SpiderMonkey/JSC approaches in detail with file:line citations. The universal pattern: baseline tier records per-PC result type → optimizing tier reads it to insert speculative guards.
+- V8 `src/compiler/load-elimination.cc`: Tracks maps/elements kind across nodes, kills redundant CheckMaps
+- V8 `src/compiler/simplified-lowering.cc`: PROPAGATE/RETYPE/LOWER phases for representation selection
+- LuaJIT `lj_asm.c`: Backward register allocation with PHI shuffle, snapshot-based deopt restoration
 
 ### Knowledge Base Update
-No new knowledge file needed — `feedback-typed-loads.md` and `array-kind-table-access.md` already cover the technique. Will update `feedback-typed-loads.md` after implementation to reflect Tier 1 collection approach.
+No new knowledge base entry needed — findings are emit-level optimizations, not new techniques.
 
 ## Source Code Findings
 
 ### Files Read
-1. **tier1_table.go** (545 lines): `emitBaselineGetTable` dispatches only Mixed(0)/Int(1). Line 258-262 show the CBNZ fallthrough for anything else. SetTable same pattern at line 332-336.
-2. **emit_table.go** (872 lines): Tier 2 `emitGetTableNative` already has Float/Bool fast paths (lines 422-490, round 13). Pattern to replicate.
-3. **emit.go** (ExecContext struct, lines 45-129): No FeedbackPtr field exists. Struct ends with `Tier2GlobalGenPtr`/`GlobalCacheIdx`. BaselineFeedbackPtr would go after `BaselineGlobalCachedGen` (line 84).
-4. **tier1_manager.go** (353 lines): `BaselineJITEngine.Execute` sets up ExecContext at lines 161-234. FeedbackPtr would be set alongside other Baseline* fields.
-5. **tiering_manager.go** (769 lines): `TryCompile` calls `proto.EnsureFeedback()` only before Tier 2 compilation (line 167). Need to move this earlier.
-6. **graph_builder.go** (939 lines): Lines 622-657 already insert OpGuardType from feedback. `feedbackToIRType` (line 925) maps FBFloat→TypeFloat, FBInt→TypeInt. Ready to consume feedback.
-7. **feedback.go** (79 lines): TypeFeedback is 3 bytes (Left/Right/Result, each uint8). FeedbackType lattice: Unobserved→concrete→Any.
-8. **func_profile.go** (142 lines): `shouldPromoteTier2` gates: pure-compute+loop→callCount≥2, loop+table→callCount≥3.
+- `emit_table.go:378-510` (emitGetTableNative): Full dispatch sequence for GetTable
+- `emit_table.go:610-770` (emitSetTableNative): Full dispatch sequence for SetTable
+- `emit_reg.go:140-160` (resolveValueNB): Boxes rawIntRegs values before returning
+- `regalloc.go:1-280` (AllocateRegisters): Carried map, invariant carry, phi pre-allocation
+- `pass_licm.go:473-505` (canHoistOp): Whitelist of hoistable ops (GetTable/SetTable not included)
+- `ir_ops.go:62-64`: OpNewTable/GetTable/SetTable definitions
 
 ### Diagnostic Data
 
-**spectral_norm inner loop**: `v[j]` is GETTABLE on float array (ArrayFloat), `av[i] = sum` is SETTABLE on float array. With Tier 1 Float fast path, these become native. With feedback, Tier 2 inserts GuardType(float) → TypeSpecialize turns `Mul(any,any)` → `MulFloat(float,float)`.
+**Sieve function Tier 2 IR** (19 blocks, 15 regs, 1 spill slot):
+- Init loop (B2/B1): SetTable with ConstBool(true)
+- Outer sieve (B4): MulInt + Le comparison (Le is generic, not LeInt — v22 is TypeAny)
+- Inner marking (B7/B8): SetTable + AddInt + Le comparison — 57 insns/iter
+- Counting (B13/B11/B12): GetTable + GuardTruthy + AddInt — ~57 insns/iter
 
-**nbody inner loop**: `bodies[i]` is GETTABLE on Mixed array (table pointers). Then `bi.x`, `bi.y`, `bi.z` are GETFIELD returning float. GETTABLE feedback for bodies[i] would be FBTable. GETFIELD feedback for bi.x would be FBFloat — this is what enables typed arithmetic.
+**Inner marking loop instruction breakdown (57 insns/iter):**
 
-**matmul inner loop**: `a[i][k]` and `b[k][j]` are double-GETTABLE: first access (row lookup) is on Mixed array (returns table), second access (element) is on Float array (returns float). Currently at Tier 1: the second GETTABLE exits to Go on every inner iteration (ArrayFloat not handled).
+| Category | Count | % |
+|----------|-------|---|
+| Actual compute (CMP, ADD, STR) | 5 | 9% |
+| Table access overhead (type/meta/kind) | 15 | 26% |
+| NaN-boxing overhead (box/unbox round trips) | 14 | 25% |
+| Bounds check | 5 | 9% |
+| Overflow check | 3 | 5% |
+| Phi slot loads/stores | 10 | 18% |
+| Control flow + dead | 5 | 9% |
 
 ### Actual Bottleneck (data-backed)
 
-matmul: each inner iteration does 2 GETTABLE on float arrays (a_row[k], b_row[j]), each going through exit-resume at ~100-200ns. 27M inner iterations × 2 exit-resumes × ~150ns = ~8s of overhead. But matmul only takes 0.985s, suggesting either the inner loop count is smaller or exit-resume is faster (~35ns). Either way, eliminating exit-resume for float arrays removes the dominant per-iteration overhead.
+**The key box-unbox round trip is the cheapest win.** In the SetTable emit path:
+```
+644: UBFX  X1, X23, #0, #48     // unbox from rawIntRegs
+648: ORR   X1, X1, X24           // re-box as int
+64c: LSR   X2, X1, #48           // check tag (guaranteed to be 0xFFFE)
+650: MOV   X3, #0xfffe
+654: CMP   X2, X3
+658: B.NE  exit                  // never taken
+65c: SBFX  X1, X1, #0, #48      // unbox again
+```
+7 instructions that are 100% wasted when the emitter knows the key is a raw int.
 
-spectral_norm/nbody: these reach Tier 2, but the optimized code has `Mul(any, any)` because GETTABLE/GETFIELD results are untyped. Each generic Mul dispatches on type at runtime (~15-20 insns). With feedback→GuardType→MulFloat, the dispatch is eliminated (~3-4 insns).
+**The constant bool value path is the second win.** For `is_prime[j] = false`:
+- `resolveValueNB` loads the pre-computed NaN-boxed false value
+- Then checks its tag (known to be bool)
+- Then extracts the payload (known to be 0)
+- Then converts 0 -> byte 1 (false)
+All of this can be replaced with `MOVimm16 X4, #1` (1 instruction).
 
 ## Plan Summary
 
-Extend Tier 1's GETTABLE/SETTABLE with ArrayFloat/ArrayBool native fast paths (eliminating exit-resume) and add inline feedback collection stubs that record result types into FeedbackVector during Tier 1 execution. This closes the feedback pipeline: Tier 1 collects → Tier 2 reads → GuardType inserts → TypeSpecialize cascades. Expected -5-15% aggregate improvement, with matmul seeing the largest immediate gain (-15-25% from exit-resume elimination). Primary value is foundational: enables all future GetTable/GetField type specialization work.
+Emit-level optimization: eliminate redundant NaN-boxing round trips for integer table keys and compile-time-known bool/int values in SetTable. Two changes to `emit_table.go`, no IR changes, no new ops. Expected 10-12% sieve improvement (0.186s -> 0.165-0.170s), calibrated for superscalar ARM64. Zero correctness risk — emit path only changes the instruction sequence for cases where the input is already known-typed.
+
+**Future directions identified** (not this round):
+1. **Table pointer guard hoisting**: New IR op (OpCheckTablePtr) to hoist table type check + metatable check to pre-header via LICM. Saves 10+ insns per access. Requires emit_dispatch.go split first.
+2. **Le/Lt specialization for TypeAny operands**: v22 (n parameter) stays TypeAny → Le doesn't specialize to LeInt → fused compare+branch doesn't fire. Needs parameter type guards or feedback.
+3. **Phi slot reload elimination**: After SetTable fast path, phis are unnecessarily reloaded. Needs split fast/slow path at emit level or IR-level exit-point tracking.

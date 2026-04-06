@@ -81,7 +81,7 @@ TERM_WIDTH=$(tput cols 2>/dev/null || echo 160)
 FULL=false
 THINK_LINES=50
 STATUS_BAR=true
-STATUS_INTERVAL=15
+STATUS_INTERVAL=5
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -583,20 +583,45 @@ else
     fi
 
     # Check for completed Haiku result and update status bar.
+    # Color per activity tag
+    tag_color() {
+        case "$1" in
+            coding)       printf '\033[38;5;82m' ;;   # green
+            debugging)    printf '\033[38;5;196m' ;;   # red
+            testing)      printf '\033[38;5;214m' ;;   # orange
+            reading)      printf '\033[38;5;45m' ;;    # cyan
+            researching)  printf '\033[38;5;141m' ;;   # purple
+            documenting)  printf '\033[38;5;244m' ;;   # gray
+            reviewing)    printf '\033[38;5;220m' ;;   # yellow
+            planning)     printf '\033[38;5;39m' ;;    # blue
+            profiling)    printf '\033[38;5;208m' ;;   # dark orange
+            *)            printf '\033[38;5;245m' ;;   # dim
+        esac
+    }
+
     check_status_result() {
         $STATUS_BAR || return
         if [ -n "$STATUS_PID" ] && ! kill -0 "$STATUS_PID" 2>/dev/null; then
             if [ -f "$STATUS_TMPDIR/result" ]; then
-                local result
-                result=$(head -1 "$STATUS_TMPDIR/result" 2>/dev/null | head -c 100)
-                if [ -n "$result" ] && [ "$result" != "$STATUS_RESULT" ]; then
-                    STATUS_RESULT="$result"
-                    local agent_label agent_kind
+                local tag desc
+                tag=$(sed -n '1p' "$STATUS_TMPDIR/result" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+                desc=$(sed -n '2p' "$STATUS_TMPDIR/result" 2>/dev/null | head -c 100)
+                # Validate tag
+                case "$tag" in
+                    coding|debugging|testing|reading|researching|documenting|reviewing|planning|profiling) ;;
+                    *) tag="reading"; desc=$(head -1 "$STATUS_TMPDIR/result" 2>/dev/null | head -c 100) ;;
+                esac
+                [ -z "$desc" ] && desc="$tag"
+
+                if [ "$desc" != "$STATUS_RESULT" ]; then
+                    STATUS_RESULT="$desc"
+                    local agent_label agent_kind tc
                     agent_label=$(session_title "$current_file" 20)
                     if [ "$current_file" = "$MAIN_SESSION" ]; then agent_kind="main"
                     elif is_subagent "$current_file"; then agent_kind="agent"
                     else agent_kind="child"; fi
-                    STATUS_TEXT="[${agent_kind}|${agent_label}] ${result}"
+                    tc=$(tag_color "$tag")
+                    STATUS_TEXT="${tc}${tag}${R} [${agent_kind}|${agent_label}] ${desc}"
                     draw_status_bar
                 fi
             fi
@@ -642,7 +667,21 @@ else
         [ -z "$recent" ] && return
 
         cat > "$STATUS_TMPDIR/prompt" <<PROMPT_EOF
-Based on these recent tool calls from a coding agent, write ONE sentence (under 80 chars, in Chinese) describing what the agent is currently doing. Be specific: mention file names, function names, techniques. Output ONLY the sentence.
+Analyze these recent tool calls from a coding agent. Output exactly TWO lines, nothing else:
+
+Line 1: One activity tag from this list: coding | debugging | testing | reading | researching | documenting | reviewing | planning | profiling
+Line 2: One sentence (under 80 chars, Chinese) describing what the agent is doing. Be specific: mention file names, function names.
+
+Rules for choosing the tag:
+- coding: Edit/Write to source files (.go, not test/doc/opt)
+- debugging: Bash running tests that fail, then Edit to fix; reading error output
+- testing: Bash running go test / benchmark; Read test files
+- reading: Read source files without editing; Grep/Glob to explore
+- researching: WebSearch, WebFetch, reading reference repos (/tmp/research-cache/)
+- documenting: Write/Edit to docs/, opt/knowledge/, opt/reviews/, blog draft
+- reviewing: Read multiple files checking consistency, Read git diff
+- planning: Write/Edit to opt/current_plan.md, opt/analyze_report.md
+- profiling: Bash running benchmarks, pprof, diagnose; Read benchmark data
 
 RECENT TOOL CALLS:
 $recent

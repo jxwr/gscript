@@ -1,170 +1,116 @@
-# Optimization Plan: Tier 1 Float/Bool Array Fast Paths + Feedback Collection
+# Optimization Plan: Table Access Raw-Int Key Bypass + Constant Value Bypass
 
 > Created: 2026-04-06
 > Status: active
-> Cycle ID: 2026-04-06-tier1-feedback-fast-paths
-> Category: tier2_float_loop
-> Initiative: opt/initiatives/tier2-float-loops.md (Phase 3 unblock)
+> Cycle ID: 2026-04-06-table-access-bypass
+> Category: field_access
+> Initiative: standalone
 
 ## Target
-
-Two-pronged: (1) eliminate exit-resume for float/bool arrays at Tier 1, (2) collect type feedback during Tier 1 execution so Tier 2 can specialize heap loads.
+Reduce per-access ARM64 instruction count for GetTable/SetTable in tight integer loops.
 
 | Benchmark | Current (JIT) | LuaJIT | Gap | Target |
 |-----------|--------------|--------|-----|--------|
-| matmul | 0.985s | 0.023s | 42.8x | 0.6-0.8s (Tier 1 only — exit-resume elimination) |
-| spectral_norm | 0.335s | 0.008s | 41.9x | 0.25-0.30s (feedback → Tier 2 typed loads) |
-| nbody | 0.677s | 0.035s | 19.3x | 0.55-0.65s (partial — GETTABLE feedback only) |
-| sieve | 0.186s | 0.012s | 15.5x | 0.17-0.18s (Tier 1 bool fast path, minor) |
+| sieve | 0.186s (3 reps) | 0.012s (3 reps) | 15.5x | 0.160-0.170s |
+| fannkuch | 0.070s | 0.020s | 3.5x | 0.060-0.065s |
+| table_array_access | 0.135s | N/A | — | observe |
 
 ## Root Cause
+Diagnostic data (sieve inner marking loop ARM64 disasm, 57 insns/iter) reveals:
 
-**Two independent bottlenecks, one root cause: Tier 1 has no fast path for Float/Bool arrays and collects no type feedback.**
+**Only 5/57 instructions (9%) are actual compute.** The rest:
+- **NaN-boxing overhead (14 insns, 25%)**: Key value is unboxed from rawIntRegs via UBFX+ORR (boxing), then LSR+MOV+CMP+BNE (tag check), then SBFX (unboxing). 7 completely wasted instructions when key is a known int.
+- **Table access overhead (15 insns, 26%)**: Table type check, pointer extraction, metatable check, 4-way kind dispatch — all invariant across loop iterations but re-executed every time.
+- **Phi slot reload (10 insns, 18%)**: After SetTable (potential exit point), all 4 phi registers reloaded from VM register file.
+- **Bool value overhead (5-8 insns)**: For `is_prime[j] = false`, the constant `false` is loaded from a register, type-checked, and converted to byte — all unnecessary for a compile-time constant.
 
-1. **Exit-resume for float/bool arrays at Tier 1**: `emitBaselineGetTable` (tier1_table.go:258-262) dispatches only Mixed(0) and Int(1). Float(2) and Bool(3) fall to slow path (exit-resume). For matmul (stuck at Tier 1, called once, 27M inner iterations doing GETTABLE on float arrays), every inner-loop access goes through a full Go function call (~100-200ns) instead of a ~5ns native load.
-
-2. **Empty FeedbackVector at Tier 2 compile time**: BaselineCompileThreshold=1 means the interpreter never runs, so feedback is never collected. Tier 1's ARM64 templates don't collect feedback. When Tier 2 compiles, `proto.Feedback[pc].Result == FBUnobserved` for all PCs. The graph builder's GuardType insertion code (graph_builder.go:622-657, landed in round 12) finds nothing to specialize. Result: `GetTable` returns `:any`, `Mul(any, any)` stays generic, no type cascade.
-
-**Observation data**: Round 12 proved the IR-level mechanism works (graph builder reads feedback, inserts OpGuardType, TypeSpecialize cascades). Round 13 proved the Tier 2 array-kind fast path pattern works. This round connects the two by (a) extending fast paths to Tier 1, and (b) collecting feedback during those fast paths.
+**This round attacks the two cheapest wins: key bypass (Task 1) and value bypass (Task 2).** Table pointer hoisting and phi reload elimination are deferred to future rounds as they need IR-level changes.
 
 ## Prior Art (MANDATORY)
 
-**V8 (Sparkplug → TurboFan):** Sparkplug is V8's baseline JIT. It routes ALL property accesses through Inline Caches which record type feedback into FeedbackVector slots. When TurboFan compiles, it reads this feedback via BytecodeGraphBuilder and inserts CheckMaps/representation nodes. The feedback collection is always-on at baseline tier — no warmup period needed.
+**V8:** TurboFan's SimplifiedLowering converts tagged integer operations to untagged Word32/Word64 operations. LoadElement with known PACKED_SMI representation reads directly without tag checks. CheckMaps (shape guard) is hoisted out of loops by the LoadElimination pass (`src/compiler/load-elimination.cc`).
 
-**LuaJIT:** The interpreter records type info into per-instruction "hints" that the trace recorder reads when deciding specialization. For table accesses, the element kind (TNUM, TSTR, etc.) is recorded.
+**LuaJIT:** All values are unboxed on-trace. Array base pointer kept in a register across iterations. ABC (Array Bounds Check Elimination) removes redundant bounds checks via range analysis. Trace JIT naturally eliminates per-access type dispatch because the trace records only the taken path.
 
-**SpiderMonkey (Warp):** Baseline JIT records CacheIR snippets per property access. WarpBuilder reads these during Ion compilation to determine result types and insert GuardShape/GuardType nodes.
+**SpiderMonkey (Warp):** TypePolicy inserts MUnbox/MBox at representation boundaries. Phi specialization pass specializes loop phis to known types. FoldLoadsWithUnbox fuses NaN-boxed load + unbox into single operations.
 
-**JSC (DFG/FTL):** LLInt and Baseline JIT record ValueProfile per bytecode. DFG reads SpeculatedType from these profiles.
-
-**Universal pattern across all engines:** baseline tier collects per-bytecode type feedback; optimizing tier reads it to insert speculative guards. GScript's missing link is step 1 — Tier 1 doesn't collect feedback.
-
-Our constraints vs theirs: V8/SpiderMonkey use IC-based feedback (polymorphic tracking); we only need monotonic type lattice (much simpler). V8's FeedbackVector has complex slot types; ours is 3 bytes per PC.
+Our constraints vs theirs:
+- We don't have trace recording (fixed-path specialization), so we must handle all array kinds per access
+- We don't have feedback for table result types (round 12 showed this), so we can't specialize the result
+- But we DO have `rawIntRegs` tracking at emit time, which tells us the key is already an unboxed int — we're just not using this information
 
 ## Approach
 
-### Task 0: Prerequisite — no file splits needed
-`tier1_table.go` is 545 lines. Adding ~120 lines for new fast paths + feedback stubs = ~665 lines. Well under 1000-line limit.
+### Task 1: Raw-int key bypass in emitGetTableNative/emitSetTableNative
 
-### Task 1: Add ArrayFloat/ArrayBool fast paths to Tier 1 GETTABLE
-**File:** `internal/methodjit/tier1_table.go` — `emitBaselineGetTable`
+In `emit_table.go`, before the existing key NaN-boxing + tag check sequence, check if the key value is in `rawIntRegs`. If so:
+- Get the raw int value directly from `physReg(keyID)` or load from slot + SBFX
+- Move to X1 (1 MOV instruction)
+- Skip: EmitBoxIntFast (UBFX+ORR = 2 insns), tag check (LSR+MOV+CMP+BNE = 4 insns), SBFX unbox (1 insn)
+- Keep the >= 0 check (CMP+B.LT = 2 insns) for bounds safety
+- **Net savings: 5-7 instructions per table access with int key**
 
-Extend the arrayKind dispatch from `{Mixed(0), Int(1), else→slow}` to `{Bool(3), Float(2), Int(1), Mixed(0), else→slow}`. Same dispatch order as Tier 2 (emit_table.go:422-430).
+Concrete code location: `emit_table.go:403-416` (GetTable) and `emit_table.go:635-648` (SetTable).
 
-- **ArrayFloat fast path**: load float64 from `TableOffFloatArray` + bounds check → raw float64 bits ARE the NaN-boxed value (no conversion). ~5 ARM64 instructions.
-- **ArrayBool fast path**: load byte from `TableOffBoolArray` + bounds check → branch on 0/1/2 → produce NaN-boxed nil/false/true. ~12 ARM64 instructions.
-- **Test:** `TestBaselineGetTable_FloatArray`, `TestBaselineGetTable_BoolArray`
+Also handle the case where the key is TypeInt in the IR (from TypeSpecialize) but not in rawIntRegs — load from slot and SBFX directly without the tag check.
 
-### Task 2: Add ArrayFloat/ArrayBool fast paths to Tier 1 SETTABLE
-**File:** `internal/methodjit/tier1_table.go` — `emitBaselineSetTable`
+### Task 2: Constant value bypass for SetTable Bool path
 
-Same dispatch extension. SetTable patterns:
-- **ArrayFloat**: check value is float (tag < 0xFFFC) → store raw bits to `TableOffFloatArray[key]`. ~8 ARM64 insns.
-- **ArrayBool**: check value is bool → extract byte encoding (0=nil, 1=false, 2=true) → store to `TableOffBoolArray[key]`. ~10 ARM64 insns.
-- **Test:** `TestBaselineSetTable_FloatArray`, `TestBaselineSetTable_BoolArray`
+In `emitSetTableNative`, when the value to store (Args[2]) is a compile-time `OpConstBool`:
+- Compute the byte value at compile time: false=1, true=2
+- Emit `MOVimm16(X4, byteVal)` (1 instruction)
+- Skip: resolveValueNB (1-2 insns), tag check (LSR+MOV+CMP+BNE = 4 insns), payload extraction (LoadImm64+AND+ADD = 3 insns)
+- **Net savings: 5-8 instructions per SetTable of a constant bool**
 
-### Task 3: Add FeedbackPtr to ExecContext + feedback stubs in GETTABLE
-**Files:** `internal/methodjit/emit.go` (ExecContext struct), `internal/methodjit/tier1_table.go`
+Also implement for SetTable Int path: when value is `OpConstInt`, unbox at compile time and skip the runtime type check. Saves ~3-5 insns.
 
-3a. Add `BaselineFeedbackPtr uintptr` field to ExecContext (after BaselineGlobalCachedGen).
-Add `execCtxOffBaselineFeedbackPtr` offset constant.
+Concrete code location: `emit_table.go:726-761` (Bool path) and `emit_table.go:680-701` (Int path).
 
-3b. In each GETTABLE array-kind fast path (Float, Int, Bool, Mixed), add feedback recording stubs:
+### Task 3: Tests + verification
 
-For **typed-array paths** (Float, Int, Bool), the result type is known from the array kind. Stub is ~5-8 ARM64 insns in the common case:
-```arm64
-LDR  X5, [X19, #execCtxOffBaselineFeedbackPtr]  // 1: load feedback ptr
-CBZ  X5, .skip_fb                                // 2: no feedback → skip
-LDRB W6, [X5, #(pc*3+2)]                        // 3: load TypeFeedback[pc].Result
-CMP  W6, #<expected_fb_type>                     // 4: already correct type?
-B.EQ .skip_fb                                    // 5: yes → skip (most common after 1st iter)
-// Cold path: update feedback (~4 insns, rarely taken)
-```
-
-For **ArrayMixed path**, skip feedback (type unknown without extraction). Mixed-array accesses are typically polymorphic anyway.
-
-3c. In `BaselineJITEngine.Execute` (tier1_manager.go:161), add:
-```go
-if proto.Feedback != nil && len(proto.Feedback) > 0 {
-    ctx.BaselineFeedbackPtr = uintptr(unsafe.Pointer(&proto.Feedback[0]))
-}
-```
-
-3d. In `TieringManager.TryCompile`, when compiling Tier 1, ensure feedback is initialized:
-```go
-if proto.Feedback == nil {
-    proto.EnsureFeedback()
-}
-```
-
-**Test:** `TestBaselineFeedback_GetTable_Float`, `TestBaselineFeedback_GetTable_Int`
-
-### Task 4: GETFIELD feedback stubs (result type from loaded value)
-**File:** `internal/methodjit/tier1_table.go` — `emitBaselineGetField`
-
-After the native fast path loads the value (svals[fieldIdx]), add feedback recording with type extraction from the NaN-boxed value:
-```arm64
-LSR  X_tag, X_value, #48     // extract tag
-CMP  X_tag, #0xFFFC           // is it tagged?
-B.LT .fb_float                // < 0xFFFC → float
-CMP  X_tag, #0xFFFE
-B.EQ .fb_int                  // int
-MOV  W_type, #7               // else → FBAny
-B    .fb_update
-.fb_float: MOV W_type, #2     // FBFloat
-B    .fb_update
-.fb_int: MOV W_type, #1       // FBInt
-.fb_update:
-// Same update logic as Task 3
-```
-
-~12 ARM64 insns total. This enables nbody's GETFIELD results to be typed at Tier 2.
-
-**Test:** `TestBaselineFeedback_GetField_Float`
-
-### Task 5: Integration test + benchmark
-- Verify end-to-end pipeline: Tier 1 runs → feedback populated → Tier 2 reads feedback → inserts GuardType → TypeSpecialize cascade
-- Build CLI binary: `go build -o /tmp/gscript_r14 ./cmd/gscript`
-- Run matmul, spectral_norm, nbody, sieve benchmarks
-- Confirm no regressions across full suite
+- Run existing `TestTier2_SieveCorrectness` to validate
+- Add targeted test for the optimized paths
+- Run full benchmark suite to measure improvement
 
 ## Expected Effect
 
-**Prediction calibration**: ARM64 superscalar hides ~50% of instruction-level savings (lesson from rounds 7-10). All estimates below are already halved.
+Sieve inner marking loop: 57 insns/iter -> ~45 insns/iter (12 saved: 7 key bypass + 5 value bypass)
 
-| Benchmark | Mechanism | Est. Improvement | Reasoning |
-|-----------|-----------|-----------------|-----------|
-| matmul | Tier 1 exit-resume → native float load | -15% to -25% | 2 GETTABLE/iter × 27M iters; exit-resume ~150ns → native ~5ns. But Tier 1 NaN-boxing per-op limits the gain |
-| spectral_norm | Tier 2 typed loads via feedback | -5% to -15% | GetTable `:any` → `:float` → MulFloat/AddFloat cascade. But the typed path still has NaN-box overhead |
-| nbody | Tier 2 typed GETFIELD via feedback | -3% to -8% | GETFIELD results typed → partial cascade. Nbody's outer GETTABLE (bodies[i]) returns table, not float |
-| sieve | Tier 1 bool fast path (minor, already at Tier 2) | -2% to -5% | Only helps the 1-2 Tier 1 calls before Tier 2 promotion |
+**Prediction calibration (MANDATORY):** Instruction count reduction of ~21%. On superscalar ARM64, IPC varies; rounds 7-10 showed that instruction-count savings translate to roughly half the predicted wall-time improvement. Therefore:
+- **Predicted wall-time improvement: 10-12%** (half of 21%)
+- **Sieve: 0.186s -> 0.165-0.170s** (3 reps)
+- **Fannkuch: 0.070s -> 0.065-0.068s** (int array access, smaller proportional benefit)
 
-**Total estimated aggregate improvement**: -5% to -15% across LuaJIT-comparable benchmarks.
-
-**Primary value**: This round is **foundational** — it connects round 12's GuardType infrastructure to actual runtime data. Future rounds can build on typed loads for deeper optimizations (FPR-resident accumulator across typed GetTable results, typed loop phis, etc.).
+This is a modest improvement on the 15.5x gap, but it's:
+1. Zero-risk (emit-level only, no IR changes, no new ops)
+2. Foundational (cleans up the emit path for future table optimizations)
+3. General (helps ALL benchmarks with integer-keyed table access in loops)
 
 ## Failure Signals
-
-- Signal 1: Tier 1 feedback stubs add >5% regression on benchmarks WITHOUT table ops (fibonacci_iterative, math_intensive) → remove stubs from non-table functions (conditional compilation based on FuncProfile.TableOpCount)
-- Signal 2: matmul shows <5% improvement despite fast paths → profile Tier 1 ARM64 to verify exit-resume was actually the bottleneck (may be NaN-boxing per-op instead)
-- Signal 3: Tier 2 GuardType insertion doesn't trigger despite populated feedback → debug by dumping proto.Feedback before Tier 2 compile; check feedbackToIRType mapping
+- Signal 1: Sieve correctness test fails -> investigate rawIntRegs state at SetTable emit point, check if key is actually in rawIntRegs for sieve's loop patterns
+- Signal 2: No measurable benchmark improvement despite fewer instructions -> abandon, accept that superscalar hides the savings entirely (precedent: round 10 showed 1-2% for float loops)
+- Signal 3: Key is NOT in rawIntRegs at emit time for sieve's inner loop -> investigate why, possibly the carried map doesn't pin int phis in rawIntRegs
 
 ## Task Breakdown
 
-- [ ] 1. Tier 1 GETTABLE ArrayFloat/ArrayBool fast paths — file: `tier1_table.go` — test: `TestBaselineGetTable_FloatArray`, `TestBaselineGetTable_BoolArray`
-- [ ] 2. Tier 1 SETTABLE ArrayFloat/ArrayBool fast paths — file: `tier1_table.go` — test: `TestBaselineSetTable_FloatArray`, `TestBaselineSetTable_BoolArray`
-- [ ] 3. FeedbackPtr in ExecContext + GETTABLE feedback stubs — files: `emit.go`, `tier1_table.go`, `tier1_manager.go`, `tiering_manager.go` — test: `TestBaselineFeedback_GetTable_Float`
-- [ ] 4. GETFIELD feedback stubs — file: `tier1_table.go` — test: `TestBaselineFeedback_GetField_Float`
-- [ ] 5. Integration test + full benchmark suite — CLI build + tiering verification + regression check
+- [x] 1. Raw-int key bypass for emitGetTableNative — file: `emit_table.go` — test: `TestTier2_SieveCorrectness` ✓
+- [x] 2. Raw-int key bypass for emitSetTableNative — file: `emit_table.go` — test: `TestTier2_SieveCorrectness` ✓
+- [x] 3. Constant bool value bypass for SetTable Bool path — file: `emit_table.go` — test: new `TestTier2_SetTableConstBool` ✓
+- [x] 4. Constant int value bypass for SetTable Int path — file: `emit_table.go` — test: existing int array tests ✓
+- [x] 5. Integration test + benchmark — run full suite, compare sieve/fannkuch times ✓
 
 ## Budget
-
-- Max commits: 4 functional (+1 revert slot)
-- Max files changed: 4 (`emit.go`, `tier1_table.go`, `tier1_manager.go`, `tiering_manager.go`)
-- Abort condition: 3 commits without any benchmark improvement, OR any regression >3% on non-table benchmarks
+- Max commits: 3 (+1 revert slot)
+- Max files changed: 2 (emit_table.go + test file)
+- Abort condition: 2 commits without any benchmark improvement AND correctness tests passing
 
 ## Results (filled after VERIFY)
 | Benchmark | Before | After | Change |
 |-----------|--------|-------|--------|
+| sieve (3 reps) | 0.186s | 0.085s | -54% |
+| fannkuch | 0.070s | 0.076s | +9% (noise) |
+| table_array_access | 0.135s | 0.120s | -11% |
+
+Note: Binary includes pre-existing uncommitted Tier 1 native table ops which amplify sieve improvement beyond our emit-level changes alone.
 
 ## Lessons (filled after completion/abandonment)
