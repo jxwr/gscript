@@ -125,7 +125,7 @@ rounds_since_review() {
 run_cycle() {
     local cycle_from="$1"
 
-    # Conditional REVIEW (before analyze, every 5 rounds)
+    # Conditional REVIEW (before analyze, every REVIEW_INTERVAL rounds)
     # REVIEW runs every round in early stage (REVIEW_INTERVAL=1).
     # Increase to 3-5 once workflow stabilizes.
     local REVIEW_INTERVAL=1

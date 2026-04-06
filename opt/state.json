@@ -7,10 +7,12 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "983f63d088ba6cd4df585e1ce39a9841f02316af",
+  "uncommitted_files": [
+    "opt/state.json"
+  ],
+  "head_commit": "b6f973823b71857eb2d07eeaf1e7f9c3d1e4df81",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T10:09:57Z",
+  "last_checkpoint": "2026-04-06T10:12:10Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
