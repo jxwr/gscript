@@ -148,15 +148,51 @@ mtime_epoch() {
 get_round_status() {
     local cycle_id="" phase="" target="" category="" initiative="" started=""
 
+    # --- Primary: state.json top-level fields (set during active round) ---
     if [ -f "$STATE_FILE" ]; then
         cycle_id=$(jq -r '.cycle_id // ""' "$STATE_FILE" 2>/dev/null)
         phase=$(jq -r '.cycle // ""' "$STATE_FILE" 2>/dev/null)
         target=$(jq -r '.target // ""' "$STATE_FILE" 2>/dev/null)
-        # category/initiative may be at top level or in the last previous_round
-        category=$(jq -r '(.category // .previous_rounds[-1].category) // ""' "$STATE_FILE" 2>/dev/null)
-        initiative=$(jq -r '(.initiative // .previous_rounds[-1].initiative) // ""' "$STATE_FILE" 2>/dev/null)
+        category=$(jq -r '.category // ""' "$STATE_FILE" 2>/dev/null)
+        initiative=$(jq -r '.initiative // ""' "$STATE_FILE" 2>/dev/null)
         started=$(jq -r '.started // ""' "$STATE_FILE" 2>/dev/null)
     fi
+
+    # --- Fallback 1: current_plan.md (plan written, IMPLEMENT/VERIFY in progress) ---
+    local plan_title="" plan_category="" plan_initiative=""
+    if [ -f "$PLAN_FILE" ]; then
+        plan_title=$(head -1 "$PLAN_FILE" | sed 's/^# Optimization Plan: //' | head -c 50)
+        plan_category=$(grep -m1 '^> Category:' "$PLAN_FILE" 2>/dev/null | sed 's/^> Category: //' | awk '{print $1}')
+        plan_initiative=$(grep -m1 '^> Initiative:' "$PLAN_FILE" 2>/dev/null | sed 's/^> Initiative: //')
+    fi
+
+    # --- Fallback 2: analyze_report.md (ANALYZE done, plan may not exist yet) ---
+    local report_file="$PROJECT_DIR/opt/analyze_report.md"
+    local report_target="" report_category="" report_initiative=""
+    if [ -f "$report_file" ]; then
+        report_category=$(grep -m1 '^\- \*\*Category\*\*' "$report_file" 2>/dev/null | sed 's/.*: //' | awk '{print $1}')
+        report_initiative=$(grep -m1 '^\- \*\*Initiative\*\*' "$report_file" 2>/dev/null | sed 's/.*: //')
+        report_target=$(grep -m1 '^\- \*\*Benchmarks\*\*\|^\- \*\*Reason\*\*' "$report_file" 2>/dev/null | sed 's/.*: //' | head -c 50)
+    fi
+
+    # --- Fallback 3: previous_rounds[-1] (between rounds) ---
+    local prev_category="" prev_initiative=""
+    if [ -f "$STATE_FILE" ]; then
+        prev_category=$(jq -r '(.previous_rounds[-1].category) // ""' "$STATE_FILE" 2>/dev/null)
+        prev_initiative=$(jq -r '(.previous_rounds[-1].initiative) // ""' "$STATE_FILE" 2>/dev/null)
+    fi
+
+    # --- Merge: prefer state.json > current_plan > analyze_report > previous_round ---
+    [ -z "$target" ] && target="$plan_title"
+    [ -z "$target" ] && target="$report_target"
+
+    [ -z "$category" ] || [ "$category" = "null" ] && category="$plan_category"
+    [ -z "$category" ] && category="$report_category"
+    [ -z "$category" ] && category="$prev_category"
+
+    [ -z "$initiative" ] || [ "$initiative" = "null" ] && initiative="$plan_initiative"
+    [ -z "$initiative" ] && initiative="$report_initiative"
+    [ -z "$initiative" ] && initiative="$prev_initiative"
 
     # Count previous rounds
     local round_num=0
@@ -165,16 +201,22 @@ get_round_status() {
         round_num=$((round_num + 1))
     fi
 
-    # Get target from plan file as fallback
-    local plan_title=""
-    if [ -z "$target" ] && [ -f "$PLAN_FILE" ]; then
-        plan_title=$(head -1 "$PLAN_FILE" | sed 's/^# Optimization Plan: //' | head -c 50)
-    fi
-
-    # Extract start time (HH:MM) from ISO8601 like "2026-04-06T09:15:00Z"
+    # Extract start time — fallback to ANALYZE session mtime
     local start_time=""
-    if [ -n "$started" ] && [ "$started" != "null" ]; then
+    if [ -n "$started" ] && [ "$started" != "null" ] && [ "$started" != "" ]; then
         start_time=$(echo "$started" | grep -oE 'T[0-9]{2}:[0-9]{2}' | sed 's/T//')
+    fi
+    if [ -z "$start_time" ] && [ -d "$SESSION_DIR" ]; then
+        # Find the most recent ANALYZE child session, use its creation time
+        local analyze_session
+        analyze_session=$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | while read f; do
+            local fp
+            fp=$(head -50 "$f" 2>/dev/null | jq -r 'select(.type=="user") | .message.content | if type == "string" then . else (.[0].text // "") end' 2>/dev/null | head -1)
+            [[ "$fp" == "# ANALYZE"* ]] && echo "$f" && break
+        done)
+        if [ -n "$analyze_session" ]; then
+            start_time=$(head -5 "$analyze_session" 2>/dev/null | jq -r '.timestamp // empty' 2>/dev/null | head -1 | grep -oE 'T[0-9]{2}:[0-9]{2}' | sed 's/T//')
+        fi
     fi
 
     # Detect active phase from child sessions
