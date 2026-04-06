@@ -1,21 +1,16 @@
 {
-  "cycle": "IMPLEMENT",
-  "cycle_id": "2026-04-06-table-access-bypass",
-  "target": "Table access raw-int key bypass + constant value bypass",
-  "started": "2026-04-06T09:15:00Z",
+  "cycle": "",
+  "cycle_id": "",
+  "target": "",
+  "started": "",
   "baseline": {},
-  "plan_budget": {
-    "max_commits": 3,
-    "max_files": 2
-  },
-  "completed_steps": [
-    "ANALYZE"
-  ],
-  "next_action": "IMPLEMENT",
+  "plan_budget": {},
+  "completed_steps": [],
+  "next_action": "",
   "uncommitted_files": [],
-  "head_commit": "fcc8a7a152c4f478a3f496bba2894d0c1165059c",
+  "head_commit": "",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T09:58:07Z",
+  "last_checkpoint": "",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -109,21 +104,28 @@
       "category": "recursive_call",
       "initiative": "opt/initiatives/recursive-tier2-unlock.md",
       "outcome": "no_change",
-      "summary": "Phase 3+5: B=0 fix kept (correctness). Tier 2 net-negative for recursive functions \u2014 27-50% regressions, reverted."
+      "summary": "Phase 3+5: B=0 fix kept (correctness). Tier 2 net-negative for recursive functions — 27-50% regressions, reverted."
     },
     {
       "cycle_id": "2026-04-06-feedback-typed-loads",
       "category": "tier2_float_loop",
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "no_change",
-      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected \u2014 Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
+      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected — Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
     },
     {
       "cycle_id": "2026-04-06-native-array-kinds",
       "category": "field_access",
       "initiative": "standalone",
       "outcome": "improved",
-      "summary": "Native ArrayBool/ArrayFloat fast paths in emitGetTableNative/emitSetTableNative. Sieve -18-25% (0.227s\u21920.186s). Eliminated exit-resume for bool/float typed arrays."
+      "summary": "Native ArrayBool/ArrayFloat fast paths in emitGetTableNative/emitSetTableNative. Sieve -18-25% (0.227s→0.186s). Eliminated exit-resume for bool/float typed arrays."
+    },
+    {
+      "cycle_id": "2026-04-06-table-access-bypass",
+      "category": "field_access",
+      "initiative": "standalone",
+      "outcome": "improved",
+      "summary": "Tier 1 float/bool GETTABLE/SETTABLE fast paths + feedback infra + Tier 2 raw-int key/const-value bypasses. matmul -80.2%, spectral -54.0%, sieve -55.9%."
     }
   ],
   "session_summary": {
@@ -136,6 +138,6 @@
     "tier2_float_loop": 1,
     "field_access": 0
   },
-  "rounds_since_review": 0,
-  "rounds_since_arch_audit": 1
+  "rounds_since_review": 1,
+  "rounds_since_arch_audit": 2
 }

@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">April 2026</span>
   <br>
+  <a href="24-the-missing-fast-paths">The Missing Fast Paths</a>
+  <p>matmul went from 0.985s to 0.195s. Tier 1 had no float or bool array fast paths &mdash; every table access exited ARM64 and called into Go. Four commits added the missing fast paths, feedback collection infrastructure, and Tier 2 emit-level bypasses. The prediction model was useless because it targeted the wrong tier.</p>
+</div>
+
+<div class="post">
+  <span class="date">April 2026</span>
+  <br>
   <a href="23-the-harness">The Harness</a>
   <p>After twelve optimization rounds, the compiler is 10% faster. The workflow that optimizes it is unrecognizable. Predictions were off by 2-25&times; because ANALYZE never read the code. The workflow rewrite: 7 phases &rarr; 3, knowledge base, architecture audit, REVIEW that reads user interventions. The process became the product.</p>
 </div>

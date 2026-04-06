@@ -74,4 +74,37 @@ The infrastructure was minimal: one new `constBools` map in `emitContext` (6 lin
 
 TDD caught nothing dramatic — these are emit-level changes that don't alter the IR or pass pipeline, so correctness regressions would show as wrong ARM64 output, not IR invariant violations. The existing `TestTier2_SieveCorrectness` covers the hot path. We added `TestTier2_SetTableConstBool` for targeted coverage of the bool bypass.
 
-*[Results coming next...]*
+## The results
+
+| Benchmark | Before | After | Change | vs LuaJIT |
+|-----------|--------|-------|--------|-----------|
+| matmul | 0.985s | 0.195s | **-80.2%** | 8.9x |
+| spectral_norm | 0.335s | 0.154s | **-54.0%** | 19.3x |
+| sieve | 0.186s | 0.082s | **-55.9%** | 7.5x |
+| nbody | 0.677s | 0.615s | -9.2% | 18.1x |
+| table_array_access | 0.135s | 0.119s | -11.9% | — |
+| fibonacci_iterative | 0.292s | 0.283s | -3.1% | — |
+| mandelbrot | 0.391s | 0.381s | -2.6% | 6.7x |
+
+The plan predicted 10-12% for sieve. We got 55.9%. The plan predicted nothing for matmul. We got 80.2%.
+
+The lesson is the same one round 13 tried to teach us: exit-resume overhead is binary, not gradual. A function either stays fully native or it exits on every table operation. Matmul calls one function with N=300 — 27 million inner-loop iterations at Tier 1, two GETTABLE per iteration. Before this round, every float array access exited ARM64, called into Go, did the lookup, and returned. 54 million round-trips at ~150ns each. The float fast path replaces each round-trip with a 5-instruction inline load (~5ns). That's a 30x reduction in per-access cost, applied to 54 million accesses.
+
+Sieve's improvement was the same story for bool arrays. Every `is_prime[j] = false` and `if is_prime[i]` was exiting to Go. The Tier 2 emit-level bypasses (raw-int key, constant bool value) contributed a few percent on top — the Tier 1 fast paths did the heavy lifting.
+
+The feedback infrastructure shows zero overhead on non-table benchmarks. fibonacci_iterative and math_intensive are within noise of the baseline. The hot-path branch (type already recorded, matches observation) is load-compare-skip — one cycle when predicted correctly, which is always after the first iteration.
+
+The remaining gaps are still large. We're 7.5x from LuaJIT on sieve, 8.9x on matmul. The next bottleneck for matmul is the Tier 1 emitter's template-based approach: no register allocation, no constant propagation, no loop-invariant hoisting. For sieve, the surviving cost is phi slot reloads after SetTable (10 instructions per iteration that reload values already in registers). Both are architectural, not incremental.
+
+## What I'd do differently
+
+The plan was scoped as "Tier 2 emit-level bypasses" with a prediction of 10-12% on sieve. The Tier 1 fast paths were added during implementation when we realized the Tier 1 gap was far larger than the Tier 2 gap. This was the right call — but it means the plan's predictions were useless because they modeled the wrong thing.
+
+Next time: before writing the plan, check which tier each target benchmark actually runs at. Matmul never reaches Tier 2. Sieve's inner function does, but the outer loop and initialization run at Tier 1. The prediction model assumed Tier 2, so it predicted instruction-level savings when the actual bottleneck was Tier 1 exit-resume overhead.
+
+The feedback infrastructure was the right architectural investment. Round 12 failed specifically because feedback was never collected. Now it is. Whether Tier 2 can use it effectively is a question for the next round — but the plumbing is in place.
+
+*Previous: [The Harness](/23-the-harness)*
+
+*This is post 24 in the [GScript JIT series](https://jxwr.github.io/gscript/).
+All numbers from a single-thread ARM64 Apple Silicon machine.*
