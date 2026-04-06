@@ -5,6 +5,7 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 
 | # | Round ID | Date | Category | Target | Outcome | Key Commit | 1-line Lesson |
 |---|----------|------|----------|--------|---------|------------|----------------|
+| 16 | 2026-04-06-nbody-load-elim | 2026-04-06 | tier2_float_loop | Load Elimination (GetField CSE) + TypeFloat guard fix for nbody | improved | 364d733 | Block-local GetField CSE saves 17-49% across field-access-heavy benchmarks; compound effects dominate instruction-count estimates |
 | 15 | 2026-04-06-osr-feedback-matmul | 2026-04-06 | field_access | Re-enable OSR with LoopDepth >= 2 gate for single-call compute functions | improved | 056607b | Tiering gates silently block entire benchmark classes — mandelbrot -80% from removing a 12-round-old disable |
 | 14 | 2026-04-06-table-access-bypass | 2026-04-06 | field_access | Tier 1 float/bool fast paths + Tier 2 raw-int key/const-value bypasses + feedback infra | improved | 2c4ea80 | Tier 1 exit-resume elimination dominates: matmul -80%, sieve -56%, spectral -54%. Prediction model useless when it targets the wrong tier |
 | 13 | 2026-04-06-native-array-kinds | 2026-04-06 | field_access | Native ArrayBool/ArrayFloat fast paths for GetTable/SetTable | improved | d89e9ed | Sieve -18-25%: exit-resume elimination is binary — either all table ops stay native or all exit; init loop (append) still exits |

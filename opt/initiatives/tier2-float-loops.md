@@ -37,7 +37,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 - [x] Phase 4 (round 8): **LICM pass** (`pass_licm.go`, commit f601801 + wiring 9da7d4c) — hoists loop-invariant `ConstInt`/`ConstFloat`/`LoadSlot`/pure arith, inside-out, with `Int48Safe` gate for int arith. 17 consts hoisted in mandelbrot including ConstFloat 2/4 named in round 7. Validator clean, zero correctness regressions. **Wall-time unmoved**: mandelbrot -1.6% (target ≥35%); aggregate LuaJIT-row ~+0.3%. Infrastructure landed — pre-header is now a home for future loop-aware transforms.
 - [x] Phase 5 (resolved round 15): **matmul reaches Tier 2 via OSR** (LoopDepth >= 2 gate)
 - [ ] Phase 6 (deferred): **Range analysis / overflow-check elimination in float loops** — extend round-3 work (commit f2bb4bf archive) to float arithmetic.
-- [ ] Phase 8 (round 16): **Load Elimination + GuardType fix** — block-local GetField CSE for redundant field loads (bj.mass, bi.mass in nbody) + fix emitGuardType TypeFloat no-op (correctness bug)
+- [x] Phase 8 (round 16): **Load Elimination + GuardType fix** — block-local GetField CSE for redundant field loads (bj.mass, bi.mass in nbody) + fix emitGuardType TypeFloat no-op (correctness bug). nbody -26%, broad 17-49% improvement across GetField-heavy benchmarks.
 
 ## Prior Art
 
@@ -56,6 +56,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 | 9 (2026-04-06) | Phase 4b invariant carry | **improved (mandelbrot -6.2%, nbody -12.2%, spectral -15.2%, matmul -12.7%)** | 2 functional commits: pre-header + invariant detection helpers (8618876), carry LICM-hoisted invariants in FPRs across loop body (de874ce). Extended `carried` map in regalloc to pin pre-header-defined float invariants in FPRs with budget (8 - 3 reserved). Lazy harvest of pre-header allocations instead of pre-allocation. Second-order effects dominated: nbody/spectral improved more than mandelbrot. Zero regressions across 22 benchmarks. |
 | 10 (2026-04-06) | B3 items #2+#3: GPR counter + fused branch | **improved (fibonacci_iterative -7.4%, matmul -2.7%, math_intensive -3.5%)** | 3 functional commits: GPR-resident int counter (f3ab338), fused compare+branch (aba72f0), verification tests (61f960c). Int-only loops benefit most (fibonacci_iterative). Float-heavy loops show only 1-2% due to superscalar execution hiding instruction-level savings. Instruction count ≠ wall time — key lesson. |
 | 12 (2026-04-06) | Phase 3: feedback-typed heap loads | **no_change (mechanism works, feedback unavailable)** | Guard insertion code landed (graph_builder.go reads FeedbackVector, inserts OpGuardType). IR-level test confirms TypeSpecialize cascade works. But feedback never populated: BaselineCompileThreshold=1 → interpreter never runs → FeedbackVector empty at Tier 2 compile time. Needs Tier 1 feedback collection. |
+| 16 (2026-04-06) | Phase 8: Load Elimination + GuardType fix | **improved (nbody -26%, broad 17-49%)** | Block-local GetField CSE (84 lines, pass_load_elim.go) + TypeFloat guard fix (emit_call.go). Compound effects (register pressure, cache, DCE cleanup) dominated instruction-count predictions. Diagnostic (Task 0) confirmed feedback pipeline works end-to-end. |
 
 ## Next Step
 
@@ -63,7 +64,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 
 **Phase 5 partially resolved** (round 15): matmul now reaches Tier 2 via OSR (LoopDepth >= 2 gate). The original "matmul stuck at Tier 1" problem is solved.
 
-**Phase 8 (round 16)**: Load Elimination + GuardType correctness fix targeting nbody (22.1x from LuaJIT). nbody's advance() inner loop has ~20 GETFIELD per iteration (64% of instruction count). 4 are redundant (bj.mass×3, bi.mass×3). Block-local GetField CSE + fix for emitGuardType TypeFloat no-op (correctness bug: no runtime check for float guards).
+**Phase 8 complete** (round 16): Load Elimination + TypeFloat guard fix. nbody -26% (0.796s → 0.590s), now 17.4x from LuaJIT (was 22.1x). Broad 17-49% improvement across GetField-heavy benchmarks.
 
 Remaining deferred phases:
 - **Phase 6 (range analysis for float loops)**: extend overflow-check elimination to float arithmetic.

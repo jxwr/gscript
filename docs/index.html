@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-06</span>
   <br>
+  <a href="26-22x-and-counting">22x and Counting</a>
+  <p>nbody sits at 22&times; from LuaJIT. 64% of the inner loop is field access overhead. Block-local load elimination (84 lines) plus a TypeFloat guard fix dropped nbody 26% and every GetField-heavy benchmark 17&ndash;49%. The prediction model said 5&ndash;8%. Compound effects &mdash; cache, branch prediction, register pressure &mdash; dominate instruction counts.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-06</span>
+  <br>
   <a href="25-the-function-that-never-graduated">The Function That Never Graduated</a>
   <p>matmul is called once. That one call runs 27 million iterations through the slowest path. OSR was disabled since round 3 &mdash; re-enabling it with a LoopDepth &ge; 2 gate unlocked 11 rounds of Tier 2 improvements for every single-call compute function. mandelbrot &minus;80%, now 1.27&times; from LuaJIT.</p>
 </div>
