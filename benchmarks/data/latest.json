@@ -1,50 +1,50 @@
 {
-  "timestamp": "2026-04-05T21:39:53Z",
-  "commit": "9da7d4c03c9e4bb081e48a0169655a12cc88e044",
+  "timestamp": "2026-04-06T04:04:13Z",
+  "commit": "de874cee0093a09e64100af5109aaa39c04e463c",
   "results": {
     "fib": {
-      "vm": "Time: 1.679s",
-      "jit": "Time: 1.432s",
-      "luajit": "Time: 0.026s (25.9 us/call)"
+      "vm": "Time: 1.678s",
+      "jit": "Time: 1.394s",
+      "luajit": "Time: 0.025s (25.0 us/call)"
     },
     "fib_recursive": {
-      "vm": "Time: 16.831s (10 reps)",
-      "jit": "Time: 14.390s (10 reps)",
+      "vm": "Time: 16.913s (10 reps)",
+      "jit": "Time: 13.894s (10 reps)",
       "luajit": "N/A"
     },
     "sieve": {
-      "vm": "Time: 0.245s (3 reps)",
-      "jit": "Time: 0.219s (3 reps)",
+      "vm": "Time: 0.252s (3 reps)",
+      "jit": "Time: 0.238s (3 reps)",
       "luajit": "Time: 0.011s (3 reps)"
     },
     "mandelbrot": {
-      "vm": "Time: 1.400s",
-      "jit": "Time: 0.376s",
+      "vm": "Time: 1.419s",
+      "jit": "Time: 0.378s",
       "luajit": "Time: 0.058s"
     },
     "ackermann": {
-      "vm": "Time: 0.297s",
-      "jit": "Time: 0.260s",
-      "luajit": "Time: 0.006s (12.4 us/call)"
+      "vm": "Time: 0.295s",
+      "jit": "Time: 0.253s",
+      "luajit": "Time: 0.006s (12.2 us/call)"
     },
     "matmul": {
-      "vm": "Time: 1.046s",
-      "jit": "Time: 0.827s",
+      "vm": "Time: 1.039s",
+      "jit": "Time: 0.817s",
       "luajit": "Time: 0.022s"
     },
     "spectral_norm": {
-      "vm": "Time: 1.009s",
-      "jit": "Time: 0.337s",
-      "luajit": "Time: 0.008s"
+      "vm": "Time: 1.018s",
+      "jit": "Time: 0.336s",
+      "luajit": "Time: 0.007s"
     },
     "nbody": {
-      "vm": "Time: 1.932s",
-      "jit": "Time: 0.638s",
-      "luajit": "Time: 0.034s"
+      "vm": "Time: 1.912s",
+      "jit": "Time: 0.628s",
+      "luajit": "Time: 0.035s"
     },
     "fannkuch": {
-      "vm": "Time: 0.563s",
-      "jit": "Time: 0.069s",
+      "vm": "Time: 0.562s",
+      "jit": "Time: 0.070s",
       "luajit": "Time: 0.020s"
     },
     "sort": {
@@ -58,58 +58,58 @@
       "luajit": "Time: 0.002s"
     },
     "mutual_recursion": {
-      "vm": "Time: 0.202s",
-      "jit": "Time: 0.186s",
+      "vm": "Time: 0.206s",
+      "jit": "Time: 0.193s",
       "luajit": "Time: 0.005s"
     },
     "method_dispatch": {
-      "vm": "Time: 0.086s",
-      "jit": "Time: 0.101s",
+      "vm": "Time: 0.090s",
+      "jit": "Time: 0.104s",
       "luajit": "Time: 0.000s"
     },
     "closure_bench": {
-      "vm": "Time: 0.086s",
+      "vm": "Time: 0.088s",
       "jit": "Time: 0.028s",
       "luajit": ""
     },
     "string_bench": {
-      "vm": "Time: 0.046s",
-      "jit": "Time: 0.032s",
+      "vm": "Time: 0.045s",
+      "jit": "Time: 0.031s",
       "luajit": ""
     },
     "binary_trees": {
-      "vm": "Time: 1.695s",
-      "jit": "Time: 2.096s",
+      "vm": "Time: 1.665s",
+      "jit": "Time: 2.109s",
       "luajit": ""
     },
     "table_field_access": {
-      "vm": "Time: 0.753s",
-      "jit": "Time: 0.073s",
+      "vm": "Time: 0.739s",
+      "jit": "Time: 0.074s",
       "luajit": "N/A"
     },
     "table_array_access": {
-      "vm": "Time: 0.408s",
+      "vm": "Time: 0.412s",
       "jit": "Time: 0.138s",
       "luajit": "N/A"
     },
     "coroutine_bench": {
-      "vm": "Time: 18.767s",
-      "jit": "Time: 18.819s",
+      "vm": "Time: 16.622s",
+      "jit": "Time: 17.907s",
       "luajit": "N/A"
     },
     "fibonacci_iterative": {
-      "vm": "Time: 1.030s",
-      "jit": "Time: 0.288s",
+      "vm": "Time: 1.021s",
+      "jit": "Time: 0.292s",
       "luajit": "N/A"
     },
     "math_intensive": {
-      "vm": "Time: 0.937s",
-      "jit": "Time: 0.189s",
+      "vm": "Time: 0.921s",
+      "jit": "Time: 0.197s",
       "luajit": "N/A"
     },
     "object_creation": {
-      "vm": "Time: 0.650s",
-      "jit": "Time: 0.773s",
+      "vm": "Time: 0.643s",
+      "jit": "Time: 0.780s",
       "luajit": "N/A"
     }
   }

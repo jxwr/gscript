@@ -86,6 +86,7 @@ func Diagnose(proto *vm.FuncProto, args []runtime.Value) *DiagReport {
 	r.PassDiffs = collectPassDiffs(pipe)
 
 	// 5. Register allocation (display only).
+	optimized.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(optimized)
 	r.RegAllocMap = formatRegAlloc(alloc)
 
