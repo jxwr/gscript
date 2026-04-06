@@ -11,6 +11,7 @@ import (
 
 	"github.com/gscript/gscript/internal/lexer"
 	"github.com/gscript/gscript/internal/parser"
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -689,4 +690,165 @@ func f(a, b) {
 	if !strings.Contains(ir, "B0") {
 		t.Error("expected B0 block label in IR output")
 	}
+}
+
+// TestFeedbackGuards_Integration verifies that feedback-typed guard insertion
+// works end-to-end through the full Tier 2 pipeline: compile a function that
+// accesses a float array in a loop, execute it via the interpreter to collect
+// real type feedback, then build the IR graph and verify:
+//   - OpGuardType appears after OpGetTable (from FBFloat feedback)
+//   - TypeSpecialize cascades the float type, producing OpMulFloat/OpAddFloat
+//   - The IR interpreter produces the correct result
+func TestFeedbackGuards_Integration(t *testing.T) {
+	// Source: a function that sums the squares of table elements.
+	// The GETTABLE results will be float, so the interpreter should record
+	// FBFloat feedback. After graph building, we expect GuardType(Float)
+	// guards, and after TypeSpecialize, float-specialized MulFloat/AddFloat.
+	src := `
+func f(t, n) {
+	sum := 0
+	for i := 1; i <= n; i++ {
+		sum = sum + t[i] * t[i]
+	}
+	return sum
+}
+`
+	// Step 1: Compile the full program and get the inner function proto.
+	topProto := compileTop(t, src)
+	if len(topProto.Protos) == 0 {
+		t.Fatal("expected inner function proto")
+	}
+	innerProto := topProto.Protos[0]
+
+	// Step 2: Initialize feedback and execute via VM to collect real feedback.
+	innerProto.EnsureFeedback()
+
+	globals := make(map[string]runtime.Value)
+	v := vm.New(globals)
+	defer v.Close()
+
+	// Execute top-level to register function f in globals.
+	if _, err := v.Execute(topProto); err != nil {
+		t.Fatalf("VM execute top-level error: %v", err)
+	}
+
+	// Build a table with float values: t[1]=1.1, t[2]=2.2, ..., t[10]=11.0.
+	tbl := runtime.NewTable()
+	for i := int64(1); i <= 10; i++ {
+		tbl.RawSetInt(i, runtime.FloatValue(float64(i)*1.1))
+	}
+
+	// Call f(t, 10) via the VM to collect type feedback.
+	fnVal := v.GetGlobal("f")
+	if fnVal.IsNil() {
+		t.Fatal("function 'f' not found in globals after execution")
+	}
+	vmResult, err := v.CallValue(fnVal, []runtime.Value{
+		runtime.TableValue(tbl),
+		runtime.IntValue(10),
+	})
+	if err != nil {
+		t.Fatalf("VM call error: %v", err)
+	}
+	t.Logf("VM result: %v", vmResult)
+
+	// Step 3: Verify that feedback was collected on GETTABLE instructions.
+	// Find all GETTABLE PCs and check that their Result feedback is FBFloat.
+	gettablePCs := []int{}
+	for pc, inst := range innerProto.Code {
+		if vm.DecodeOp(inst) == vm.OP_GETTABLE {
+			gettablePCs = append(gettablePCs, pc)
+		}
+	}
+	if len(gettablePCs) == 0 {
+		t.Fatal("no GETTABLE instruction found in inner proto bytecode")
+	}
+	for _, pc := range gettablePCs {
+		fb := innerProto.Feedback[pc]
+		if fb.Result != vm.FBFloat {
+			t.Errorf("GETTABLE at PC %d: expected FBFloat feedback, got %d", pc, fb.Result)
+		}
+	}
+
+	// Step 4: Build the IR graph (feedback is now populated).
+	fn := BuildGraph(innerProto)
+	irBefore := Print(fn)
+	t.Logf("IR before optimization:\n%s", irBefore)
+
+	// Verify that OpGuardType appears after OpGetTable in the IR.
+	hasGuardAfterGetTable := false
+	for _, blk := range fn.Blocks {
+		for i, instr := range blk.Instrs {
+			if instr.Op == OpGetTable && i+1 < len(blk.Instrs) {
+				next := blk.Instrs[i+1]
+				if next.Op == OpGuardType && len(next.Args) > 0 && next.Args[0].ID == instr.ID {
+					hasGuardAfterGetTable = true
+					if next.Type != TypeFloat {
+						t.Errorf("GuardType after GetTable has Type=%v, want TypeFloat", next.Type)
+					}
+				}
+			}
+		}
+	}
+	if !hasGuardAfterGetTable {
+		t.Fatal("expected OpGuardType after OpGetTable in IR (from FBFloat feedback), but none found")
+	}
+
+	// Verify the IR text contains "GuardType".
+	if !strings.Contains(irBefore, "GuardType") {
+		t.Error("IR text should contain 'GuardType'")
+	}
+
+	// Step 5: Run TypeSpecialize and verify float-specialized ops cascade.
+	fnOpt, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+	irAfter := Print(fnOpt)
+	t.Logf("IR after TypeSpecialize:\n%s", irAfter)
+
+	// After type specialization, the float type from GuardType should cascade
+	// through the multiply and add, producing MulFloat and/or AddFloat.
+	hasMulFloat := strings.Contains(irAfter, "MulFloat")
+	hasAddFloat := strings.Contains(irAfter, "AddFloat")
+	if !hasMulFloat && !hasAddFloat {
+		t.Error("expected MulFloat or AddFloat in optimized IR after TypeSpecialize " +
+			"(float type from GuardType should cascade through arithmetic)")
+	}
+	if hasMulFloat {
+		t.Log("confirmed: MulFloat present in optimized IR")
+	}
+	if hasAddFloat {
+		t.Log("confirmed: AddFloat present in optimized IR")
+	}
+
+	// Step 6: Verify correctness via IR interpreter on the optimized IR.
+	// Run ConstProp + DCE for cleaner IR before interpreting.
+	fnOpt, _ = ConstPropPass(fnOpt)
+	fnOpt, _ = DCEPass(fnOpt)
+
+	args := []runtime.Value{runtime.TableValue(tbl), runtime.IntValue(10)}
+	irResult, irErr := Interpret(fnOpt, args)
+	if irErr != nil {
+		t.Fatalf("IR interpreter error: %v", irErr)
+	}
+	t.Logf("IR interpreter result: %v", irResult)
+
+	// Compare: VM and IR interpreter should produce the same result.
+	if len(vmResult) == 0 || len(irResult) == 0 {
+		t.Fatalf("empty results: VM=%v, IR=%v", vmResult, irResult)
+	}
+	vmNum := vmResult[0].Number()
+	irNum := irResult[0].Number()
+	if vmNum != irNum {
+		// Allow small epsilon for float comparison.
+		diff := vmNum - irNum
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > 1e-6 {
+			t.Errorf("result mismatch: VM=%.10f, IR=%.10f (diff=%.2e)", vmNum, irNum, diff)
+		}
+	}
+	t.Logf("VM result=%.6f, IR result=%.6f -- match", vmNum, irNum)
 }
