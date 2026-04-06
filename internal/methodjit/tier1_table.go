@@ -217,7 +217,8 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int) {
 
 // emitBaselineGetTable emits native ARM64 for OP_GETTABLE: R(A) = R(B)[RK(C)]
 // Fast path for integer keys with array bounds check.
-// Supports both ArrayMixed ([]Value) and ArrayInt ([]int64) array kinds.
+// Supports ArrayMixed ([]Value), ArrayInt ([]int64), ArrayFloat ([]float64),
+// and ArrayBool ([]byte) array kinds.
 func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
@@ -285,6 +286,45 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)               // X0 = intArray[key] (raw int64)
 	// NaN-box the int64: UBFX + ORR with pinned tag register.
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	asm.B(doneLabel)
+
+	// --- ArrayFloat fast path ---
+	asm.Label(floatArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArrayLen) // X2 = floatArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, slowLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // X2 = floatArray data pointer
+	asm.LDRreg(jit.X0, jit.X2, jit.X1)              // X0 = raw float64 bits = floatArray[key]
+	// Float64 bits ARE the NaN-boxed value — no conversion needed!
+	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	asm.B(doneLabel)
+
+	// --- ArrayBool fast path ---
+	asm.Label(boolArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArrayLen) // X2 = boolArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, slowLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // X2 = boolArray data pointer
+	asm.LDRBreg(jit.X3, jit.X2, jit.X1)            // X3 = byte = boolArray[key]
+	// Convert byte to NaN-boxed value: 0=nil, 1=false, 2=true
+	boolNilLabel := nextLabel("gettable_bool_nil")
+	boolFalseLabel := nextLabel("gettable_bool_false")
+	asm.CBZ(jit.X3, boolNilLabel)         // byte == 0 → nil
+	asm.CMPimm(jit.X3, 1)
+	asm.BCond(jit.CondEQ, boolFalseLabel) // byte == 1 → false
+	// byte == 2 → true: NaN-boxed true = 0xFFFD000000000001
+	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1))
+	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	asm.B(doneLabel)
+	asm.Label(boolFalseLabel)
+	// NaN-boxed false = 0xFFFD000000000000
+	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
+	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	asm.B(doneLabel)
+	asm.Label(boolNilLabel)
+	// NaN-boxed nil = 0xFFFC000000000000
+	asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
 	asm.B(doneLabel)
 
