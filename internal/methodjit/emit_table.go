@@ -380,6 +380,7 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	deoptLabel := ec.uniqueLabel("gettable_deopt")
 	doneLabel := ec.uniqueLabel("gettable_done")
 	intArrayLabel := ec.uniqueLabel("gettable_intarr")
+	boolArrayLabel := ec.uniqueLabel("gettable_boolarr")
 
 	// Load table value (NaN-boxed) into X0.
 	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
@@ -417,11 +418,13 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, deoptLabel)
 
-	// Dispatch on arrayKind: 0=Mixed, 1=Int, else=slow.
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, 3=Bool, else=slow.
 	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKBool)
+	asm.BCond(jit.CondEQ, boolArrayLabel)
 	asm.CMPimm(jit.X2, jit.AKInt)
 	asm.BCond(jit.CondEQ, intArrayLabel)
-	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0), not Int(1) -> deopt
+	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0) -> deopt
 
 	// --- ArrayMixed fast path ---
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // array.len
@@ -441,6 +444,34 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)            // raw int64 = intArray[key]
 	// NaN-box the int64: UBFX + ORR with pinned tag register.
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	// --- ArrayBool fast path ---
+	asm.Label(boolArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArrayLen) // boolArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
+	asm.LDRBreg(jit.X3, jit.X2, jit.X1)            // byte = boolArray[key]
+	// Convert byte to NaN-boxed value: 0=nil, 1=false, 2=true
+	nilLabel := ec.uniqueLabel("gettable_bool_nil")
+	falseLabel := ec.uniqueLabel("gettable_bool_false")
+	asm.CBZ(jit.X3, nilLabel)         // byte == 0 → nil
+	asm.CMPimm(jit.X3, 1)
+	asm.BCond(jit.CondEQ, falseLabel) // byte == 1 → false
+	// byte == 2 → true: NaN-boxed true = 0xFFFD000000000001
+	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1))
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+	asm.Label(falseLabel)
+	// NaN-boxed false = 0xFFFD000000000000
+	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+	asm.Label(nilLabel)
+	// NaN-boxed nil = 0xFFFC000000000000
+	asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
 	ec.storeResultNB(jit.X0, instr.ID)
 	asm.B(doneLabel)
 
@@ -567,6 +598,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	deoptLabel := ec.uniqueLabel("settable_deopt")
 	doneLabel := ec.uniqueLabel("settable_done")
 	intArrayLabel := ec.uniqueLabel("settable_intarr")
+	boolArrayLabel := ec.uniqueLabel("settable_boolarr")
 
 	// Load table value (NaN-boxed) into X0.
 	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
@@ -604,11 +636,13 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, deoptLabel)
 
-	// Dispatch on arrayKind: 0=Mixed, 1=Int, else=slow.
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, 3=Bool, else=slow.
 	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKBool)
+	asm.BCond(jit.CondEQ, boolArrayLabel)
 	asm.CMPimm(jit.X2, jit.AKInt)
 	asm.BCond(jit.CondEQ, intArrayLabel)
-	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0), not Int(1) -> deopt
+	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0) -> deopt
 
 	// --- ArrayMixed fast path ---
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // array.len
@@ -644,6 +678,45 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	asm.SBFX(jit.X4, jit.X4, 0, 48)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
 	asm.STRreg(jit.X4, jit.X2, jit.X1)             // intArray[key] = int64
+	// Set keysDirty flag.
+	asm.MOVimm16(jit.X5, 1)
+	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	asm.B(doneLabel)
+
+	// --- ArrayBool fast path ---
+	asm.Label(boolArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArrayLen) // boolArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, deoptLabel)
+	// Load value to store.
+	valRegBool := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+	if valRegBool != jit.X4 {
+		asm.MOVreg(jit.X4, valRegBool)
+	}
+	// Check value type: must be bool (tag=0xFFFD) or nil (0xFFFC).
+	asm.LSRimm(jit.X5, jit.X4, 48)
+	asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
+	asm.CMPreg(jit.X5, jit.X6)
+	boolOkLabel := ec.uniqueLabel("settable_bool_isbool")
+	asm.BCond(jit.CondEQ, boolOkLabel)
+	// Check if nil.
+	asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
+	asm.CMPreg(jit.X5, jit.X6)
+	asm.BCond(jit.CondNE, deoptLabel) // not bool, not nil → deopt
+	// Nil → byte 0.
+	asm.MOVimm16(jit.X4, 0)
+	setByteLabel := ec.uniqueLabel("settable_bool_store")
+	asm.B(setByteLabel)
+	asm.Label(boolOkLabel)
+	// Bool: extract payload bit 0. false=0xFFFD000000000000 (payload=0) → byte 1
+	//                                true=0xFFFD000000000001 (payload=1) → byte 2
+	// Conversion: byte = payload + 1
+	asm.LoadImm64(jit.X5, 1)
+	asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
+	asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
+	asm.Label(setByteLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
+	asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
 	// Set keysDirty flag.
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
