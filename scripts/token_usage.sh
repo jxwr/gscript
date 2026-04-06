@@ -3,6 +3,7 @@
 #
 # Usage:
 #   bash scripts/token_usage.sh              # recent sessions (last 2h)
+#   bash scripts/token_usage.sh --last       # last completed round only (ANALYZE+IMPLEMENT+VERIFY)
 #   bash scripts/token_usage.sh --all        # all sessions in project
 #   bash scripts/token_usage.sh <uuid>       # specific session
 #   bash scripts/token_usage.sh --round      # group by round (ANALYZE/IMPLEMENT/VERIFY + subagents)
@@ -19,6 +20,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --all) MODE="all" ;;
         --round) MODE="round" ;;
+        --last) MODE="last" ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \?//' | head -6
             exit 0 ;;
@@ -104,12 +106,95 @@ collect_files() {
     esac
 }
 
+# Helper: print one phase session + its subagents, accumulate into GRAND_TOTAL
+print_phase() {
+    local f="$1"
+    [ -f "$f" ] || return
+    local title
+    title=$(session_title "$f")
+    IFS=$'\t' read -r total inp cw cr out calls <<< "$(sum_tokens "$f")"
+    [ "$total" -eq 0 ] && return
+    print_row "$title" "$total" "$inp" "$cw" "$cr" "$out" "$calls"
+    GRAND_TOTAL=$((GRAND_TOTAL + total))
+
+    # Subagents
+    local stem subdir
+    stem=$(basename "$f" .jsonl)
+    subdir="$PROJECT_DIR/$stem/subagents"
+    if [ -d "$subdir" ]; then
+        for sf in "$subdir"/*.jsonl; do
+            [ -f "$sf" ] || continue
+            local stitle
+            stitle="  └ $(session_title "$sf")"
+            IFS=$'\t' read -r stotal sinp scw scr sout scalls <<< "$(sum_tokens "$sf")"
+            [ "$stotal" -eq 0 ] && continue
+            print_row "$stitle" "$stotal" "$sinp" "$scw" "$scr" "$sout" "$scalls"
+            GRAND_TOTAL=$((GRAND_TOTAL + stotal))
+        done
+    fi
+}
+
+print_grand_total() {
+    echo ""
+    printf "%-30s %10s\n" "GRAND TOTAL" "$(echo "$GRAND_TOTAL" | awk '{if($1>=1000000) printf "%.1fM",$1/1000000; else if($1>=1000) printf "%.1fK",$1/1000; else print $1}')"
+}
+
 # Main
 echo "Token Usage Report"
 echo ""
 
-if [ "$MODE" = "round" ]; then
-    # Group: project-level sessions + their subagents
+if [ "$MODE" = "last" ]; then
+    # Find the most recent ANALYZE session, then collect it + subsequent IMPLEMENT + VERIFY.
+    echo "Last round:"
+    echo ""
+    print_header
+    GRAND_TOTAL=0
+
+    # Find the most recent ANALYZE+PLAN session
+    ANALYZE_FILE=""
+    ANALYZE_MTIME=0
+    for f in $(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null); do
+        first=$(head -50 "$f" | jq -r 'select(.type=="user") | .message.content | if type == "string" then . else (.[0].text // "") end' 2>/dev/null | head -1)
+        if [[ "$first" == "# ANALYZE"* ]]; then
+            ANALYZE_FILE="$f"
+            ANALYZE_MTIME=$(stat -f "%m" "$f" 2>/dev/null || stat -c "%Y" "$f" 2>/dev/null || echo 0)
+            break
+        fi
+    done
+
+    if [ -z "$ANALYZE_FILE" ]; then
+        echo "(no ANALYZE session found)"
+    else
+        # Print ANALYZE
+        print_phase "$ANALYZE_FILE"
+
+        # Find IMPLEMENT and VERIFY that are newer than (or same age as) this ANALYZE
+        for f in $(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null); do
+            [ "$f" = "$ANALYZE_FILE" ] && continue
+            fmtime=$(stat -f "%m" "$f" 2>/dev/null || stat -c "%Y" "$f" 2>/dev/null || echo 0)
+            [ "$fmtime" -lt "$ANALYZE_MTIME" ] && continue
+            first=$(head -50 "$f" | jq -r 'select(.type=="user") | .message.content | if type == "string" then . else (.[0].text // "") end' 2>/dev/null | head -1)
+            if [[ "$first" == "# IMPLEMENT"* ]] || [[ "$first" == "# VERIFY"* ]]; then
+                print_phase "$f"
+            fi
+        done
+
+        # Also check for REVIEW right before ANALYZE
+        for f in $(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null); do
+            fmtime=$(stat -f "%m" "$f" 2>/dev/null || stat -c "%Y" "$f" 2>/dev/null || echo 0)
+            age_diff=$(( ANALYZE_MTIME - fmtime ))
+            # REVIEW within 5 min before ANALYZE
+            [ "$age_diff" -lt 0 ] || [ "$age_diff" -gt 300 ] && continue
+            first=$(head -50 "$f" | jq -r 'select(.type=="user") | .message.content | if type == "string" then . else (.[0].text // "") end' 2>/dev/null | head -1)
+            if [[ "$first" == *"REVIEW"* ]]; then
+                print_phase "$f"
+                break
+            fi
+        done
+    fi
+    print_grand_total
+
+elif [ "$MODE" = "round" ]; then
     echo "Sessions grouped by phase (last ${WINDOW_MIN}m):"
     echo ""
     print_header
@@ -119,29 +204,9 @@ if [ "$MODE" = "round" ]; then
         now=$(date +%s)
         age=$(( (now - mtime) / 60 ))
         [ "$age" -gt "$WINDOW_MIN" ] && continue
-
-        title=$(session_title "$f")
-        IFS=$'\t' read -r total inp cw cr out calls <<< "$(sum_tokens "$f")"
-        [ "$total" -eq 0 ] && continue
-        print_row "$title" "$total" "$inp" "$cw" "$cr" "$out" "$calls"
-        GRAND_TOTAL=$((GRAND_TOTAL + total))
-
-        # Check for subagents
-        stem=$(basename "$f" .jsonl)
-        subdir="$PROJECT_DIR/$stem/subagents"
-        if [ -d "$subdir" ]; then
-            for sf in "$subdir"/*.jsonl; do
-                [ -f "$sf" ] || continue
-                stitle="  └ $(session_title "$sf")"
-                IFS=$'\t' read -r stotal sinp scw scr sout scalls <<< "$(sum_tokens "$sf")"
-                [ "$stotal" -eq 0 ] && continue
-                print_row "$stitle" "$stotal" "$sinp" "$scw" "$scr" "$sout" "$scalls"
-                GRAND_TOTAL=$((GRAND_TOTAL + stotal))
-            done
-        fi
+        print_phase "$f"
     done
-    echo ""
-    printf "%-30s %10s\n" "GRAND TOTAL" "$(echo "$GRAND_TOTAL" | awk '{if($1>=1000000) printf "%.1fM",$1/1000000; else if($1>=1000) printf "%.1fK",$1/1000; else print $1}')"
+    print_grand_total
 else
     print_header
     GRAND_TOTAL=0
