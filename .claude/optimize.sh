@@ -9,7 +9,7 @@
 #   verify    — tests + benchmarks + evaluator + close out round (INDEX/state/archive)
 #
 # Conditional:
-#   review    — (every 5 rounds) harness self-audit, runs before analyze
+#   review    — (every REVIEW_INTERVAL rounds) harness self-audit, runs before analyze
 #
 # Usage:
 #   bash .claude/optimize.sh                # one full cycle

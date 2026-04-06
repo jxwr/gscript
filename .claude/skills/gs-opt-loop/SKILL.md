@@ -1,6 +1,6 @@
 ---
 name: gs-opt-loop
-description: GScript optimization loop. Launches the external orchestrator that runs REVIEW→MEASURE→ANALYZE→RESEARCH→PLAN→IMPLEMENT→VERIFY→DOCUMENT as independent Claude sessions.
+description: GScript optimization loop. Launches the external orchestrator that runs REVIEW→ANALYZE→IMPLEMENT→VERIFY as independent Claude sessions.
 ---
 
 # GScript Optimization Loop
@@ -14,72 +14,64 @@ bash .claude/optimize.sh
 ## What It Does
 
 Each phase runs as an **independent Claude session** — no context accumulation, no drift.
-State passes between phases via files:
+State passes between phases via files in `opt/`:
 
 ```
-REVIEW    → opt/reviews/<date>.md       (every 5 rounds, harness audit)
-MEASURE   → opt/measure_report.md       (+ history snapshot + ASCII trajectory)
-ANALYZE   → opt/analyze_report.md       (category + initiative + research_depth)
-RESEARCH  → opt/research_report.md      (conditional: if research_depth=deep)
-PLAN      → opt/current_plan.md         (auto-approved to IMPLEMENT)
-IMPLEMENT → updates opt/current_plan.md (TDD, scope-bounded coders)
-VERIFY    → fills Results section       (tests + benchmark diff + evaluator)
-DOCUMENT  → archives plan, updates INDEX.md, initiatives, state.json
+REVIEW    → opt/reviews/<date>.md           (every round, reads user session log)
+ANALYZE   → opt/analyze_report.md           (gaps + research + source reading + diagnostics)
+            opt/current_plan.md             (concrete plan with tasks + budget)
+            opt/knowledge/<topic>.md        (persistent knowledge base updates)
+IMPLEMENT → updates opt/current_plan.md     (TDD, scope-bounded Coder sub-agents)
+VERIFY    → fills Results section in plan   (tests + benchmarks + evaluator)
+            archives plan, updates INDEX.md, initiatives, state.json
 ```
 
 ## Usage
 
 ```bash
-bash .claude/optimize.sh                # full cycle
-bash .claude/optimize.sh --from=analyze # resume from a specific phase
-bash .claude/optimize.sh --review       # force review phase now
-bash .claude/optimize.sh --no-review    # skip review even if due
-bash .claude/optimize.sh --dry-run      # preview phases
+bash .claude/optimize.sh                   # one full cycle (3 phases)
+bash .claude/optimize.sh --rounds=5        # run up to 5 cycles back-to-back
+bash .claude/optimize.sh --from=implement  # resume from a specific phase
+bash .claude/optimize.sh --review          # force review phase
+bash .claude/optimize.sh --no-review       # skip review
+bash .claude/optimize.sh --dry-run         # preview phases
 ```
+
+Multi-round: round 1 honors `--from=`, rounds 2..N start from analyze.
 
 ## Cross-Round Infrastructure
 
-**Files the agent reads across rounds:**
-
-- `opt/INDEX.md` — flat table of every round (one line each). ANALYZE's pattern detector.
-- `opt/initiatives/*.md` — multi-round engineering projects. ANALYZE prefers continuing them.
-- `opt/state.json` — counters: `category_failures`, `rounds_since_review`, `rounds_since_research`.
-- `opt/plans/*.md` — archived plans for deep dives / retrospectives.
-- `opt/reviews/*.md` — harness self-audits.
+- `opt/state.json` — counters: `category_failures`, `rounds_since_review`, `rounds_since_arch_audit`
+- `opt/INDEX.md` — flat table of every round. ANALYZE's pattern detector.
+- `opt/initiatives/*.md` — multi-round engineering projects.
+- `opt/knowledge/*.md` — persistent technique knowledge base.
+- `opt/plans/*.md` — archived plans for retrospectives.
+- `opt/reviews/*.md` — harness self-audits (with user intervention analysis).
 - `opt/workflow_log.jsonl` — per-round metrics.
-- `benchmarks/data/history/*.json` — daily benchmark snapshots.
+- `docs-internal/architecture/constraints.md` — known architectural constraints + ceilings.
+- `scripts/arch_check.sh` — mechanical architecture scan.
 
-## Ceiling Rule (Anti-Stall)
+## Key Mechanisms
 
-Categories with `category_failures >= 2` are **forbidden** as targets. ANALYZE must pick a different category or continue an active initiative in a different category. This prevents grinding on the same wall for 10 rounds.
+**Ceiling Rule**: `category_failures >= 2` → category blocked. Prevents grinding.
 
-## Initiative Rule (Multi-Round Architecture)
+**Initiative Rule**: Active initiatives with a `Next Step` are preferred over new targets.
 
-Big changes (Tier 2 native BLR, variadic IR model, escape analysis) span many rounds. Track them in `opt/initiatives/*.md`. ANALYZE prefers advancing active initiatives over opportunistic new targets.
+**Architecture Audit**: Every 2 rounds, ANALYZE does a thorough code reading + updates `constraints.md`.
 
-## Research Depth
-
-ANALYZE emits `research_depth: shallow|deep`. If `deep`, the RESEARCH phase runs between ANALYZE and PLAN — reads V8/JSC source directly for technique-level prior art, writes `opt/research_report.md`. PLAN uses it instead of shallow web-search.
-
-## Review Cadence
-
-Every 5 rounds, the REVIEW phase runs before MEASURE:
-- Audits category distribution, outcome distribution, budget overruns
-- Checks initiative health
-- Recommends harness changes if patterns emerge
-- Resets `rounds_since_review` counter
+**Review**: Every round, REVIEW reads the user's session log to learn from interventions and evolve the workflow.
 
 ## Monitoring
 
-Watch child session in real time:
 ```bash
-bash .claude/watch-child.sh       # most recent child session
+bash .claude/watch-child.sh       # interactive session picker, auto-follows across phases
 bash .claude/watch-child.sh --list
+bash .claude/watch-child.sh --main  # watch your own conversation
 ```
 
 ## Interrupting and Resuming
 
-If a phase fails or is interrupted:
-1. Fix the issue (edit files, run commands)
-2. Re-run from the failed phase: `bash .claude/optimize.sh --from=<phase>`
-3. The orchestrator checks that the previous phase's output exists before starting
+If a phase fails:
+1. Fix the issue
+2. Resume: `bash .claude/optimize.sh --from=<phase>`
+3. Valid phases: `analyze`, `implement`, `verify`

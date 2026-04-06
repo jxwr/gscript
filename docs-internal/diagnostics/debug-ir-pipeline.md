@@ -65,7 +65,9 @@ If `Interpret()` differs, the bug is in BuildGraph or a pass. Use `Validate()` t
 ## Pass pipeline order
 
 ```
-BuildGraph → Validate → TypeSpecialize → Validate → ConstProp → Validate → DCE → Validate → Inline → Validate → RegAlloc → Emit
+BuildGraph → Validate → IntrinsicPass → TypeSpecialize → ConstProp → DCE → Inline → RangeAnalysis → LICM → RegAlloc → Emit
 ```
+
+Validate runs after every pass (omitted above for brevity). If a pass breaks IR, you know exactly which one.
 
 Validation after EVERY pass. If a pass breaks the IR, you know exactly which one.

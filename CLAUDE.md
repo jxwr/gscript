@@ -139,4 +139,5 @@ The workflow uses **specialized sub-agents**, not a single monolithic agent:
 - Debug deopt: `docs-internal/diagnostics/debug-deopt.md`
 - Debug IR: `docs-internal/diagnostics/debug-ir-pipeline.md`
 - Known issues: `docs-internal/known-issues.md`
+- Lessons learned: `docs-internal/lessons-learned.md`
 - Knowledge base: `opt/knowledge/`

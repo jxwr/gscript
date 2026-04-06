@@ -74,7 +74,7 @@ Spawn an Evaluator sub-agent to review the git diff:
   {"cycle_id":"...","category":"...","initiative":"...","outcome":"...","summary":"..."}
   ```
 - **category_failures**: `abandoned`/`no_change`/`regressed` → +1; `improved` → reset to 0
-- Increment: `rounds_since_review += 1`, `rounds_since_research += 1`, `rounds_since_arch_audit += 1`
+- Increment: `rounds_since_review += 1`, `rounds_since_arch_audit += 1`
   (Note: ANALYZE resets `rounds_since_arch_audit` to 0 when it does a full audit)
 
 ### 2c. Update `opt/INDEX.md`

@@ -3,7 +3,7 @@
 > Status: draft | active | paused | complete | abandoned
 > Created: YYYY-MM-DD
 > Owner: gs-opt-loop
-> Category: [recursive_call | tier2_float_loop | allocation | gofunction_overhead | call_ic | regalloc | missing_intrinsic | arch_refactor | other]
+> Category: [recursive_call | tier2_float_loop | tier2_correctness | allocation_heavy | gofunction_overhead | field_access | call_ic | regalloc | missing_intrinsic | arch_refactor | other]
 
 ## Motivation
 

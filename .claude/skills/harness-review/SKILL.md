@@ -1,6 +1,6 @@
 ---
 name: harness-review
-description: Meta-level workflow review. Analyzes optimization round data to find workflow bottlenecks and improve the harness itself. Run after every 3 rounds or when workflow feels stuck.
+description: Meta-level workflow review. Reads user session log for interventions, audits workflow health, applies structural changes. Runs every round (REVIEW_INTERVAL=1 in early stage).
 ---
 
 # Harness Review — Workflow Self-Optimization
