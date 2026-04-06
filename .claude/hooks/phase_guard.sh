@@ -4,7 +4,7 @@
 # Exit 0 = allow, Exit 2 = block with message.
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-STATE="$ROOT/.claude/state.json"
+STATE="$ROOT/opt/state.json"
 
 # Read cycle phase from state.json
 CYCLE=""
@@ -36,29 +36,29 @@ REL_PATH=$(echo "$FILE_PATH" | sed "s|^$ROOT/||")
 
 case "$CYCLE" in
     MEASURE|ANALYZE)
-        # Only allow editing .claude/ state files and test files
-        if [[ "$REL_PATH" == .claude/* ]]; then
+        # Only allow editing opt/ state files and test files
+        if [[ "$REL_PATH" == opt/* ]]; then
             exit 0
         fi
         echo "BLOCKED: cycle=$CYCLE — read-only phase. Run MEASURE/ANALYZE first." >&2
-        echo "If you need to write analysis output, use .claude/ directory." >&2
+        echo "If you need to write analysis output, use opt/ directory." >&2
         exit 2
         ;;
     PLAN)
-        # Allow .claude/ directory (plan files, state)
-        if [[ "$REL_PATH" == .claude/* ]]; then
+        # Allow opt/ directory (plan files, state)
+        if [[ "$REL_PATH" == opt/* ]]; then
             exit 0
         fi
-        echo "BLOCKED: cycle=$PLAN — only .claude/ files allowed during planning." >&2
-        echo "Write your plan in .claude/current_plan.md, then wait for user approval." >&2
+        echo "BLOCKED: cycle=$PLAN — only opt/ files allowed during planning." >&2
+        echo "Write your plan in opt/current_plan.md, then wait for user approval." >&2
         exit 2
         ;;
     IMPLEMENT)
         # Check if file is in the plan's scope (read plan for allowed files)
-        PLAN="$ROOT/.claude/current_plan.md"
+        PLAN="$ROOT/opt/current_plan.md"
         if [ -f "$PLAN" ]; then
-            # Allow .claude/ and test files always
-            if [[ "$REL_PATH" == .claude/* ]] || [[ "$REL_PATH" == *_test.go ]]; then
+            # Allow opt/ and test files always
+            if [[ "$REL_PATH" == opt/* ]] || [[ "$REL_PATH" == *_test.go ]]; then
                 exit 0
             fi
             # Extract file references from plan
@@ -74,8 +74,8 @@ case "$CYCLE" in
         exit 0
         ;;
     VERIFY|DOCUMENT)
-        # Allow .claude/ files, test files
-        if [[ "$REL_PATH" == .claude/* ]] || [[ "$REL_PATH" == *_test.go ]]; then
+        # Allow opt/ files, test files
+        if [[ "$REL_PATH" == opt/* ]] || [[ "$REL_PATH" == *_test.go ]]; then
             exit 0
         fi
         echo "BLOCKED: cycle=$CYCLE — implementation is frozen during VERIFY/DOCUMENT." >&2

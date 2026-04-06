@@ -7,10 +7,37 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "644bd3c1bcf748e82bc966e273c3d9083529ab33",
+  "uncommitted_files": [
+    ".claude/current_plan.md",
+    ".claude/hooks/archive_plan.sh",
+    ".claude/hooks/budget_check.sh",
+    ".claude/hooks/checkpoint.sh",
+    ".claude/hooks/phase_guard.sh",
+    ".claude/hooks/stop-evaluator.sh",
+    ".claude/optimize.sh",
+    ".claude/plan_template.md",
+    ".claude/plans/.gitkeep",
+    ".claude/prompts/analyze.md",
+    ".claude/prompts/document.md",
+    ".claude/prompts/implement.md",
+    ".claude/prompts/measure.md",
+    ".claude/prompts/plan.md",
+    ".claude/prompts/verify.md",
+    ".claude/skills/gs-opt-loop/SKILL.md",
+    ".claude/skills/harness-review/SKILL.md",
+    ".claude/state.json",
+    "benchmarks/data/baseline.json",
+    "benchmarks/data/latest.json",
+    "benchmarks/run_all.sh",
+    "benchmarks/set_baseline.sh",
+    "opt/analyze_report.md",
+    "opt/current_plan.md",
+    "opt/measure_report.md",
+    "opt/plan_template.md"
+  ],
+  "head_commit": "3609699506982f792c6ad36f1a686361b6ac6126",
   "branch": "jit-v3-clean",
-  "last_checkpoint": "2026-04-06T07:11:56Z",
+  "last_checkpoint": "2026-04-06T07:14:42Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -111,7 +138,7 @@
       "category": "tier2_float_loop",
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "no_change",
-      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected — Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
+      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected \u2014 Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
     }
   ],
   "session_summary": {

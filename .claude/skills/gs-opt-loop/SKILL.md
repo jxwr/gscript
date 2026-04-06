@@ -1,6 +1,6 @@
 ---
 name: gs-opt-loop
-description: GScript optimization loop. Launches the external orchestrator that runs MEASURE→ANALYZE→PLAN→IMPLEMENT→VERIFY→DOCUMENT as independent Claude sessions.
+description: GScript optimization loop. Launches the external orchestrator that runs REVIEW→MEASURE→ANALYZE→RESEARCH→PLAN→IMPLEMENT→VERIFY→DOCUMENT as independent Claude sessions.
 ---
 
 # GScript Optimization Loop
@@ -17,56 +17,65 @@ Each phase runs as an **independent Claude session** — no context accumulation
 State passes between phases via files:
 
 ```
-MEASURE → .claude/measure_report.md
-ANALYZE → .claude/analyze_report.md
-PLAN    → .claude/current_plan.md (waits for human approval)
-IMPLEMENT → updates current_plan.md
-VERIFY  → fills Results section
-DOCUMENT → archives plan, updates state.json, commits
+REVIEW    → opt/reviews/<date>.md       (every 5 rounds, harness audit)
+MEASURE   → opt/measure_report.md       (+ history snapshot + ASCII trajectory)
+ANALYZE   → opt/analyze_report.md       (category + initiative + research_depth)
+RESEARCH  → opt/research_report.md      (conditional: if research_depth=deep)
+PLAN      → opt/current_plan.md         (auto-approved to IMPLEMENT)
+IMPLEMENT → updates opt/current_plan.md (TDD, scope-bounded coders)
+VERIFY    → fills Results section       (tests + benchmark diff + evaluator)
+DOCUMENT  → archives plan, updates INDEX.md, initiatives, state.json
 ```
 
 ## Usage
 
 ```bash
-# Full cycle
-bash .claude/optimize.sh
-
-# Resume from a specific phase
-bash .claude/optimize.sh --from=analyze
-
-# Preview what would run
-bash .claude/optimize.sh --dry-run
+bash .claude/optimize.sh                # full cycle
+bash .claude/optimize.sh --from=analyze # resume from a specific phase
+bash .claude/optimize.sh --review       # force review phase now
+bash .claude/optimize.sh --no-review    # skip review even if due
+bash .claude/optimize.sh --dry-run      # preview phases
 ```
 
-## Human Gates
+## Cross-Round Infrastructure
 
-The orchestrator pauses for human input at ONE point:
-- **PLAN → IMPLEMENT**: reviews current_plan.md, asks for approval
+**Files the agent reads across rounds:**
 
-All other gates are enforced by output file checks (each phase must produce its expected output before the next phase starts).
+- `opt/INDEX.md` — flat table of every round (one line each). ANALYZE's pattern detector.
+- `opt/initiatives/*.md` — multi-round engineering projects. ANALYZE prefers continuing them.
+- `opt/state.json` — counters: `category_failures`, `rounds_since_review`, `rounds_since_research`.
+- `opt/plans/*.md` — archived plans for deep dives / retrospectives.
+- `opt/reviews/*.md` — harness self-audits.
+- `opt/workflow_log.jsonl` — per-round metrics.
+- `benchmarks/data/history/*.json` — daily benchmark snapshots.
 
-## Prompt Files
+## Ceiling Rule (Anti-Stall)
 
-Each phase prompt lives in `.claude/prompts/<phase>.md`. To adjust a phase's behavior, edit the corresponding prompt file. Do NOT edit the orchestrator script unless changing the phase sequence.
+Categories with `category_failures >= 2` are **forbidden** as targets. ANALYZE must pick a different category or continue an active initiative in a different category. This prevents grinding on the same wall for 10 rounds.
 
-## Phase Descriptions
+## Initiative Rule (Multi-Round Architecture)
 
-| Phase | Input | Output | Restrictions |
-|-------|-------|--------|-------------|
-| MEASURE | — | measure_report.md | Read-only, run benchmarks only |
-| ANALYZE | measure_report.md, lessons-learned.md, known-issues.md | analyze_report.md | Read-only, classification only |
-| PLAN | analyze_report.md | current_plan.md | Write .claude/ only, no code |
-| IMPLEMENT | current_plan.md | updated current_plan.md | TDD, scope-bounded coders |
-| VERIFY | current_plan.md, baseline.json | filled Results section | Tests + benchmarks only |
-| DOCUMENT | current_plan.md | archived plan, workflow log | Docs + commit only |
+Big changes (Tier 2 native BLR, variadic IR model, escape analysis) span many rounds. Track them in `opt/initiatives/*.md`. ANALYZE prefers advancing active initiatives over opportunistic new targets.
 
-## Parallel Research (Phase 1 enhancement)
+## Research Depth
 
-For the ANALYZE phase, the prompt instructs the agent to spawn parallel sub-agents:
-- **Profiler**: pprof on worst benchmark
-- **Researcher**: web search for V8/LuaJIT solutions
+ANALYZE emits `research_depth: shallow|deep`. If `deep`, the RESEARCH phase runs between ANALYZE and PLAN — reads V8/JSC source directly for technique-level prior art, writes `opt/research_report.md`. PLAN uses it instead of shallow web-search.
 
-These run concurrently within the ANALYZE session and feed into the analyze_report.
+## Review Cadence
+
+Every 5 rounds, the REVIEW phase runs before MEASURE:
+- Audits category distribution, outcome distribution, budget overruns
+- Checks initiative health
+- Recommends harness changes if patterns emerge
+- Resets `rounds_since_review` counter
+
+## Monitoring
+
+Watch child session in real time:
+```bash
+bash .claude/watch-child.sh       # most recent child session
+bash .claude/watch-child.sh --list
+```
 
 ## Interrupting and Resuming
 
@@ -74,11 +83,3 @@ If a phase fails or is interrupted:
 1. Fix the issue (edit files, run commands)
 2. Re-run from the failed phase: `bash .claude/optimize.sh --from=<phase>`
 3. The orchestrator checks that the previous phase's output exists before starting
-
-## Direction Judgment
-
-When choosing what to optimize (referenced by ANALYZE prompt):
-- Pursue root causes affecting 3+ benchmarks first
-- Prefer approaches with V8/LuaJIT prior art
-- Abandon if 2 consecutive rounds fail on same category (ceiling hit)
-- Check `docs-internal/lessons-learned.md` before every direction choice

@@ -71,7 +71,10 @@ for bench in "${BENCHMARKS[@]}"; do
     fi
 done
 
-declare -A VM_RESULTS JIT_RESULTS LUAJIT_RESULTS
+# bash 3.2 compat: use parallel indexed arrays (same ordering as EXISTING_BENCHMARKS)
+VM_RESULTS=()
+JIT_RESULTS=()
+LUAJIT_RESULTS=()
 
 echo ">>> Suite benchmarks (${#EXISTING_BENCHMARKS[@]} benchmarks x 2 modes, sequential)..."
 echo ""
@@ -86,15 +89,15 @@ for bench in "${EXISTING_BENCHMARKS[@]}"; do
     exit_code=$?
     if [[ $exit_code -eq 142 ]] || [[ $exit_code -eq 137 ]]; then
         echo "  TIMEOUT (>${TIMEOUT_SEC}s)"
-        VM_RESULTS[$bench]="timeout"
+        VM_RESULTS+=("timeout")
     elif [[ $exit_code -ne 0 ]]; then
         echo "  FAILED (exit $exit_code)"
-        VM_RESULTS[$bench]="FAILED"
+        VM_RESULTS+=("FAILED")
     else
         echo "$output"
         # Extract time from output
         time_line=$(echo "$output" | grep -i "Time:" | tail -1)
-        VM_RESULTS[$bench]="$time_line"
+        VM_RESULTS+=("$time_line")
     fi
     echo ""
 done
@@ -109,19 +112,20 @@ for bench in "${EXISTING_BENCHMARKS[@]}"; do
     exit_code=$?
     if [[ $exit_code -eq 142 ]] || [[ $exit_code -eq 137 ]]; then
         echo "  TIMEOUT (>${TIMEOUT_SEC}s)"
-        JIT_RESULTS[$bench]="timeout"
+        JIT_RESULTS+=("timeout")
     elif [[ $exit_code -ne 0 ]]; then
         echo "  FAILED (exit $exit_code)"
-        JIT_RESULTS[$bench]="FAILED"
+        JIT_RESULTS+=("FAILED")
     else
         echo "$output"
         time_line=$(echo "$output" | grep -i "Time:" | tail -1)
-        JIT_RESULTS[$bench]="$time_line"
+        JIT_RESULTS+=("$time_line")
     fi
     echo ""
 done
 
-# Step 4: LuaJIT benchmarks
+# Step 4: LuaJIT benchmarks — parallel arrays of (name, value)
+LUAJIT_NAMES=()
 if command -v luajit &>/dev/null; then
     echo "============================================"
     echo "  LuaJIT Mode"
@@ -129,19 +133,20 @@ if command -v luajit &>/dev/null; then
     if [[ -d benchmarks/lua ]]; then
         for f in benchmarks/lua/*.lua; do
             name=$(basename "$f" .lua)
+            LUAJIT_NAMES+=("$name")
             echo "--- $name (LuaJIT) ---"
             output=$(run_with_timeout "$TIMEOUT_SEC" luajit "$f" 2>&1)
             exit_code=$?
             if [[ $exit_code -eq 142 ]] || [[ $exit_code -eq 137 ]]; then
                 echo "  TIMEOUT"
-                LUAJIT_RESULTS[$name]="timeout"
+                LUAJIT_RESULTS+=("timeout")
             elif [[ $exit_code -ne 0 ]]; then
                 echo "  FAILED"
-                LUAJIT_RESULTS[$name]="FAILED"
+                LUAJIT_RESULTS+=("FAILED")
             else
                 echo "$output"
                 time_line=$(echo "$output" | grep -i "Time:" | tail -1)
-                LUAJIT_RESULTS[$name]="$time_line"
+                LUAJIT_RESULTS+=("$time_line")
             fi
             echo ""
         done
@@ -155,17 +160,34 @@ else
     echo ""
 fi
 
+# Helper: look up LuaJIT result for a given benchmark name.
+lookup_luajit() {
+    local target="$1"
+    local i=0
+    while [[ $i -lt ${#LUAJIT_NAMES[@]} ]]; do
+        if [[ "${LUAJIT_NAMES[$i]}" == "$target" ]]; then
+            echo "${LUAJIT_RESULTS[$i]}"
+            return 0
+        fi
+        i=$((i+1))
+    done
+    echo "N/A"
+}
+
 # Step 5: Summary
 echo "============================================"
 echo "  SUMMARY"
 echo "============================================"
 printf "%-25s | %-20s | %-20s | %-20s\n" "Benchmark" "VM" "JIT" "LuaJIT"
 printf "%-25s-+-%-20s-+-%-20s-+-%-20s\n" "-------------------------" "--------------------" "--------------------" "--------------------"
-for bench in "${EXISTING_BENCHMARKS[@]}"; do
-    vm_r="${VM_RESULTS[$bench]:-n/a}"
-    jit_r="${JIT_RESULTS[$bench]:-n/a}"
-    luajit_r="${LUAJIT_RESULTS[$bench]:-n/a}"
+i=0
+while [[ $i -lt ${#EXISTING_BENCHMARKS[@]} ]]; do
+    bench="${EXISTING_BENCHMARKS[$i]}"
+    vm_r="${VM_RESULTS[$i]:-n/a}"
+    jit_r="${JIT_RESULTS[$i]:-n/a}"
+    luajit_r="$(lookup_luajit "$bench")"
     printf "%-25s | %-20s | %-20s | %-20s\n" "$bench" "$vm_r" "$jit_r" "$luajit_r"
+    i=$((i+1))
 done
 echo ""
 echo "============================================"
@@ -198,8 +220,14 @@ import shutil
 hist = f'benchmarks/data/history/{data[\"timestamp\"][:10]}.json'
 shutil.copy('$JSON_FILE', hist)
 " <<BENCH_DATA
-$(for bench in "${EXISTING_BENCHMARKS[@]}"; do
-    echo "${bench}|${VM_RESULTS[$bench]:-ERROR}|${JIT_RESULTS[$bench]:-ERROR}|${LUAJIT_RESULTS[$bench]:-N/A}"
+$(i=0
+while [[ $i -lt ${#EXISTING_BENCHMARKS[@]} ]]; do
+    bench="${EXISTING_BENCHMARKS[$i]}"
+    vm_r="${VM_RESULTS[$i]:-ERROR}"
+    jit_r="${JIT_RESULTS[$i]:-ERROR}"
+    luajit_r="$(lookup_luajit "$bench")"
+    echo "${bench}|${vm_r}|${jit_r}|${luajit_r}"
+    i=$((i+1))
 done)
 BENCH_DATA
 

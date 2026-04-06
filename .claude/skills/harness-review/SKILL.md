@@ -18,11 +18,11 @@ Your output: specific, actionable changes to hooks, skills, templates, or proces
 
 Read ALL of these before analysis:
 
-1. **`.claude/workflow_log.jsonl`** — per-round metrics (time per phase, drift events, budget usage, plan accuracy, hook triggers, evaluator findings, outcome, stalls)
-2. **`.claude/plans/`** — archived plans (compare predicted vs actual results, check if Prior Art was useful)
+1. **`opt/workflow_log.jsonl`** — per-round metrics (time per phase, drift events, budget usage, plan accuracy, hook triggers, evaluator findings, outcome, stalls)
+2. **`opt/plans/`** — archived plans (compare predicted vs actual results, check if Prior Art was useful)
 3. **`benchmarks/data/history/`** — benchmark trajectory over time
 4. **`docs-internal/lessons-learned.md`** — are new detours being captured?
-5. **`.claude/state.json`** — any stuck state?
+5. **`opt/state.json`** — any stuck state?
 
 ## Analysis Framework
 

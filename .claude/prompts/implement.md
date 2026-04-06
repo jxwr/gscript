@@ -4,7 +4,7 @@ You are in the IMPLEMENT phase of the GScript optimization loop.
 
 ## Context
 Read these files (in this order):
-1. `.claude/current_plan.md` — the approved plan with task breakdown
+1. `opt/current_plan.md` — the approved plan with task breakdown
 2. `CLAUDE.md` — coding conventions (TDD, file size limits, commit style)
 3. `docs-internal/diagnostics/debug-jit-correctness.md` — debugging tools
 4. `docs-internal/diagnostics/debug-ir-pipeline.md` — IR pipeline debugging

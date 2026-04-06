@@ -2,8 +2,8 @@
 # budget_check.sh — Check optimization round budget from current_plan.md
 # Stop hook: warns if approaching budget, blocks if exceeded.
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PLAN="$ROOT/.claude/current_plan.md"
-STATE="$ROOT/.claude/state.json"
+PLAN="$ROOT/opt/current_plan.md"
+STATE="$ROOT/opt/state.json"
 
 # Skip if no active plan
 [ -f "$PLAN" ] || exit 0

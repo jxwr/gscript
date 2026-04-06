@@ -1,10 +1,10 @@
 #!/bin/bash
-# checkpoint.sh — Stop hook that writes .claude/state.json
+# checkpoint.sh — Stop hook that writes opt/state.json
 # Saves git + project state. Preserves optimization loop fields set by skills.
 # Always exits 0 — must never block stopping.
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-STATE_FILE="$ROOT/.claude/state.json"
+STATE_FILE="$ROOT/opt/state.json"
 
 # --- Gather git state ---
 HEAD_COMMIT=""

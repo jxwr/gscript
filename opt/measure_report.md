@@ -1,38 +1,86 @@
-## Benchmark Results — 2026-04-05
+## Benchmark Results — 2026-04-06 (post revert f7496b4)
 
-Commit: 1932fbbb (jit-v3-clean)
+Commit: `f7496b4` (jit-v3-clean, post recursive-tier2 revert)
 
-| Benchmark            | VM       | JIT      | LuaJIT   | JIT/VM | JIT/LuaJIT |
-|----------------------|----------|----------|----------|--------|------------|
-| fib                  | 1.621s   | 1.387s   | 0.023s   | 0.86x  | 60.3x      |
-| fib_recursive        | 16.116s  | 13.919s  | N/A      | 0.86x  | N/A        |
-| sieve                | 0.238s   | 0.230s   | 0.010s   | 0.97x  | 23.0x      |
-| mandelbrot           | 1.341s   | 0.378s   | 0.052s   | 0.28x  | 7.3x       |
-| ackermann            | 0.282s   | 0.253s   | 0.006s   | 0.90x  | 42.2x      |
-| matmul               | 1.002s   | 0.801s   | 0.021s   | 0.80x  | 38.1x      |
-| spectral_norm        | 0.998s   | 0.329s   | 0.007s   | 0.33x  | 47.0x      |
-| nbody                | 1.867s   | 0.598s   | 0.033s   | 0.32x  | 18.1x      |
-| fannkuch             | 0.549s   | 0.070s   | 0.019s   | 0.13x  | 3.7x       |
-| sort                 | 0.177s   | 0.048s   | 0.010s   | 0.27x  | 4.8x       |
-| sum_primes           | 0.027s   | 0.004s   | 0.002s   | 0.15x  | 2.0x       |
-| mutual_recursion     | 0.199s   | 0.184s   | 0.005s   | 0.92x  | 36.8x      |
-| method_dispatch      | 0.085s   | 0.099s   | ~0.000s  | 1.16x  | N/A        |
-| closure_bench        | 0.085s   | 0.026s   | -        | 0.31x  | -          |
-| string_bench         | 0.041s   | 0.032s   | -        | 0.78x  | -          |
-| binary_trees         | 1.570s   | 2.002s   | -        | 1.27x  | -          |
-| table_field_access   | 0.722s   | 0.070s   | N/A      | 0.10x  | -          |
-| table_array_access   | 0.408s   | 0.131s   | N/A      | 0.32x  | -          |
-| coroutine_bench      | 15.147s  | 12.922s  | N/A      | 0.85x  | -          |
-| fibonacci_iterative  | 1.018s   | 0.282s   | N/A      | 0.28x  | -          |
-| math_intensive       | 0.918s   | 0.185s   | N/A      | 0.20x  | -          |
-| object_creation      | 0.636s   | 0.749s   | N/A      | 1.18x  | -          |
+| Benchmark | VM | JIT | LuaJIT | JIT/VM | JIT/LuaJIT |
+|-----------|-----|-----|--------|--------|------------|
+| fib | 1.684s | 1.417s | 0.025s | 0.84x | 56.7x |
+| fib_recursive | 16.816s | 14.147s | N/A | 0.84x | — |
+| sieve | 0.248s | 0.227s | 0.011s | 0.92x | 20.6x |
+| mandelbrot | 1.412s | 0.372s | 0.058s | 0.26x | 6.4x |
+| ackermann | 0.291s | 0.257s | 0.006s | 0.88x | 42.8x |
+| matmul | 1.041s | 0.834s | 0.022s | 0.80x | 37.9x |
+| spectral_norm | 1.014s | 0.336s | 0.008s | 0.33x | 42.0x |
+| nbody | 1.931s | 0.631s | 0.033s | 0.33x | 19.1x |
+| fannkuch | 0.565s | 0.071s | 0.020s | 0.13x | 3.6x |
+| sort | 0.186s | 0.052s | 0.011s | 0.28x | 4.7x |
+| sum_primes | 0.028s | 0.004s | 0.002s | 0.14x | 2.0x |
+| mutual_recursion | 0.205s | 0.187s | 0.005s | 0.91x | 37.4x |
+| method_dispatch | 0.094s | 0.101s | <0.001s | 1.07x | >100x |
+| closure_bench | 0.086s | 0.027s | — | 0.31x | — |
+| string_bench | 0.044s | 0.030s | — | 0.68x | — |
+| binary_trees | 1.681s | 2.095s | — | 1.25x | — |
+| table_field_access | 0.752s | 0.072s | N/A | 0.10x | — |
+| table_array_access | 0.415s | 0.138s | N/A | 0.33x | — |
+| coroutine_bench | 16.709s | 19.691s | N/A | 1.18x | — |
+| fibonacci_iterative | 1.035s | 0.300s | N/A | 0.29x | — |
+| math_intensive | 0.924s | 0.194s | N/A | 0.21x | — |
+| object_creation | 0.659s | 0.782s | N/A | 1.19x | — |
 
 ## Top 3 Gaps vs LuaJIT
-1. **fib** — 60.3x slower (1.387s vs 0.023s, gap 1.364s). JIT barely faster than VM (0.86x). Recursive call overhead dominates.
-2. **matmul** — 38.1x slower (0.801s vs 0.021s, gap 0.780s). JIT only 0.80x of VM. Nested-loop table access, likely GETTABLE/SETTABLE bounds-check overhead.
-3. **spectral_norm** — 47.0x slower (0.329s vs 0.007s, gap 0.322s). JIT good vs VM (0.33x). Float-heavy hot loop — suspected FPR spill / guard overhead per known-issues.md.
 
-## Honorable mentions
-- **ackermann** (42.2x), **mutual_recursion** (36.8x): deep recursive call overhead; same class as fib.
-- **nbody** (18.1x, gap 0.565s): float-heavy with function calls; large absolute gap.
-- **binary_trees** (1.27x regression vs VM), **object_creation** (1.18x regression): JIT hurts allocation-heavy code.
+Ranked by ratio (how far from LuaJIT):
+
+1. **fib**: 1.417s vs 0.025s (56.7x) — recursive call overhead, Tier 2 unpromotable
+2. **ackermann**: 0.257s vs 0.006s (42.8x) — recursive call overhead, Tier 2 unpromotable
+3. **spectral_norm**: 0.336s vs 0.008s (42.0x) — float loop codegen, NaN box/unbox overhead
+
+Runners-up: matmul (37.9x), mutual_recursion (37.4x), sieve (20.6x), nbody (19.1x)
+
+By absolute wall-time gap: fib (1.392s), matmul (0.812s), nbody (0.598s)
+
+## Trajectory (from plot_history.sh)
+
+```
+Benchmark                  04-04     04-05     04-06    LuaJIT
+---------                   ----      ----      ----      ----
+ackermann                0.245s   0.297s↑   0.257s↓    0.006s
+binary_trees             1.893s   2.788s↑   2.095s↓       N/A
+closure_bench            0.035s   0.035s·   0.027s↓       N/A
+coroutine_bench         16.441s  29.606s↑  19.691s↓       N/A
+fannkuch                 0.066s   0.081s↑   0.071s↓    0.020s
+fib                      1.347s   1.421s↑   1.417s·    0.025s
+fib_recursive           13.450s  15.134s↑  14.147s↓       N/A
+fibonacci_iterative      0.071s   0.301s↑   0.300s·       N/A
+mandelbrot               0.344s   0.417s↑   0.372s↓    0.058s
+math_intensive           0.188s   0.194s·   0.194s·       N/A
+matmul                   0.810s   0.999s↑   0.834s↓    0.022s
+method_dispatch          0.143s   0.122s↓   0.101s↓    0.000s
+mutual_recursion         0.181s   0.221s↑   0.187s↓    0.005s
+nbody                    0.654s   0.765s↑   0.631s↓    0.033s
+object_creation          0.947s   0.863s↓   0.782s↓       N/A
+sieve                    0.105s   0.261s↑   0.227s↓    0.011s
+sort                     0.037s   0.063s↑   0.052s↓    0.011s
+spectral_norm            0.138s   0.401s↑   0.336s↓    0.008s
+string_bench             0.020s   0.040s↑   0.030s↓       N/A
+sum_primes               0.006s   0.005s↓   0.004s↓    0.002s
+table_array_access       0.127s   0.195s↑   0.138s↓       N/A
+table_field_access       0.072s   0.110s↑   0.072s↓       N/A
+```
+
+### Notable Movement (vs previous baseline 6591926)
+- **coroutine_bench**: 17.595s → 19.691s (+11.9% regression, likely run-to-run variance)
+- **fibonacci_iterative**: 0.276s → 0.300s (+8.7% regression, likely variance)
+- **sieve**: 0.241s → 0.227s (-5.8% improved)
+- Most other benchmarks flat (within ±3% noise)
+
+### JIT Regressions (JIT slower than VM)
+- **binary_trees**: 1.25x slower (allocation-heavy, known)
+- **coroutine_bench**: 1.18x slower (Go runtime overhead)
+- **object_creation**: 1.19x slower (NEWTABLE exit-resume, known)
+- **method_dispatch**: 1.07x slower (BLR overhead for GoFunctions, known)
+
+### Still far from 04-04 best (int48 overflow check regressions)
+- fibonacci_iterative: 0.300s now vs 0.071s on 04-04 (+323%)
+- sieve: 0.227s now vs 0.105s on 04-04 (+116%)
+- spectral_norm: 0.336s now vs 0.138s on 04-04 (+143%)

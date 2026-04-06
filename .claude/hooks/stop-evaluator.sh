@@ -79,7 +79,7 @@ PROMPT_END
 
 # ── Inject optimization cycle context ──
 CYCLE_CONTEXT=""
-STATE_FILE="$(cd "$(dirname "$0")/../.." && pwd)/.claude/state.json"
+STATE_FILE="$(cd "$(dirname "$0")/../.." && pwd)/opt/state.json"
 if [ -f "$STATE_FILE" ]; then
     CYCLE=$(python3 -c "import json; d=json.load(open('$STATE_FILE')); print(d.get('cycle',''))" 2>/dev/null || echo "")
     TARGET=$(python3 -c "import json; d=json.load(open('$STATE_FILE')); print(d.get('target',''))" 2>/dev/null || echo "")
