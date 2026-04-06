@@ -418,6 +418,11 @@ func (e *BaselineJITEngine) handleGetTable(ctx *ExecContext, regs []runtime.Valu
 	if tblVal.IsTable() {
 		if absA < len(regs) {
 			regs[absA] = tblVal.Table().RawGet(key)
+			// Record type feedback so Tier 2 can specialize.
+			pc := int(ctx.BaselinePC) - 1
+			if proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) {
+				proto.Feedback[pc].Result.Observe(regs[absA].Type())
+			}
 		}
 	} else if absA < len(regs) {
 		regs[absA] = runtime.NilValue()
@@ -497,6 +502,10 @@ func (e *BaselineJITEngine) handleGetField(ctx *ExecContext, regs []runtime.Valu
 		pc := int(ctx.BaselinePC) - 1
 		ensureFieldCache(proto)
 		regs[absA] = tbl.RawGetStringCached(fieldName, &proto.FieldCache[pc])
+		// Record type feedback so Tier 2 can specialize.
+		if proto.Feedback != nil && pc < len(proto.Feedback) {
+			proto.Feedback[pc].Result.Observe(regs[absA].Type())
+		}
 	} else {
 		regs[absA] = runtime.NilValue()
 	}
