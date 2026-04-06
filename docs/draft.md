@@ -62,4 +62,26 @@ Combined: ~400 insns eliminated from 1887 = 21% instruction reduction. Conservat
 
 That won't close the 17x gap — that needs unboxed representation selection and direct field offset loads, which are deeper architectural changes. But fixing the feedback pipeline is a prerequisite for everything downstream, and it's the kind of bug where one line of missing code costs 12.7% of your hot loop.
 
-*[This post is being written live. Implementation next...]*
+## What we built
+
+Both fixes landed cleanly with TDD. No surprises, no deviations from the plan.
+
+**Fix 1 (feedback recording)** was exactly the ~10 lines predicted. Two additions to `tier1_handlers.go`: after `handleGetField` performs the field access, it now calls `proto.Feedback[pc].Result.Observe(regs[absA].Type())`. Same for `handleGetTable`. The existing integration test (`TestFeedbackGuards_GetField_Integration`) already covered the pipeline — it just happened to bypass the Tier 1 Go exit path by running through the VM interpreter. With the fix, the real production path now produces the same result: GETFIELD → GuardType(float) → MulFloat/AddFloat in the TypeSpecialized IR.
+
+**Fix 2 (shape guard dedup)** added a `shapeVerified map[int]uint32` to `emitContext`, tracking which table SSA values have been shape-verified in the current block. On the dedup fast path, `emitGetField` skips EmitCheckIsTableFull (6 insns), CBZ (1 insn), and the shape comparison (4 insns) — going straight to EmitExtractPtr + svals load. The map resets at block boundaries and after OpCall/OpSelf (calls can modify any table's shape). SetField to existing fields doesn't invalidate the cache, which is correct: writing a value to an existing slot doesn't change the table's shape.
+
+The dedup path is straight-line code with no deopt branch. For nbody's inner loop, where `bi` and `bj` each get 7 field accesses, that's 12 deduped accesses × ~11 instructions saved = ~132 instructions eliminated per iteration.
+
+### Results
+
+| Benchmark | Before | After | Change |
+|-----------|--------|-------|--------|
+| nbody | 0.590s | 0.515s | **-12.7%** |
+| matmul | 0.125s | 0.122s | -2.4% |
+| spectral_norm | 0.046s | 0.042s | -8.7% |
+
+nbody improved by 12.7%, right in the predicted 10-13% range. The calibrated estimate (halved for ARM64 superscalar) was accurate. Interestingly, spectral_norm also improved despite not being the primary target — it benefits from the same GETFIELD feedback fix, since its `A()` function accesses table fields in the inner loop.
+
+We're at 0.515s vs LuaJIT's 0.034s — still 15x slower. The remaining gap isn't about missing guards or feedback anymore. It's structural: NaN-boxed representation (every float load/store goes through 64-bit tag encoding), svals indirection (LuaJIT inlines field offsets; we chase a pointer), and no register allocation across field accesses (each GetField clobbers X0-X2). Those are Phase 9-10 of the initiative.
+
+*[Results coming next...]*

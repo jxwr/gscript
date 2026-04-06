@@ -91,8 +91,8 @@ Add per-block tracking of shape-verified table objects in `emitContext`:
 ## Task Breakdown
 
 - [x] 1. Fix feedback recording in Go exit handlers — file(s): `tier1_handlers.go` — test: `TestHandleGetField_RecordsFeedback` + existing `TestFeedbackGuards_GetField_Integration`
-- [ ] 2. Shape guard deduplication in emitter — file(s): `emit_table.go` — test: `TestShapeGuardDedup` + `TestTieringManager_NBody`
-- [ ] 3. Integration test + full benchmark suite — verify: nbody IR has MulFloat/AddFloat, benchmark shows improvement
+- [x] 2. Shape guard deduplication in emitter — file(s): `emit_table.go` — test: `TestShapeGuardDedup` + `TestTieringManager_NBody`
+- [x] 3. Integration test + full benchmark suite — verify: nbody IR has MulFloat/AddFloat, benchmark shows improvement
 
 ## Budget
 - Max commits: 4 functional (+1 revert slot)
