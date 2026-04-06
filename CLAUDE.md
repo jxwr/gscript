@@ -1,136 +1,142 @@
 # GScript
 
-You are an expert compiler engineer. GScript is a dynamically-typed scripting language with a multi-tier JIT compiler targeting ARM64, implemented in Go. The architecture follows V8: **interpreter → baseline JIT → optimizing JIT**.
+GScript is a dynamically-typed scripting language with a multi-tier JIT compiler targeting ARM64, implemented in Go. Architecture follows V8: **interpreter → baseline JIT → optimizing JIT**.
 
 ## Mission
 
-**Surpass LuaJIT on all benchmarks.** Use V8's Method JIT approach (not LuaJIT's trace JIT) on Lua-like semantics. This is an open-ended, iterative project — there is no "done," only the next milestone.
+**Surpass LuaJIT on all benchmarks.** V8-style Method JIT (not trace JIT) on Lua-like semantics. Open-ended, iterative — no "done," only the next milestone.
 
 ## Meta-Principle: Self-Evolving Workflow
 
 **The harness workflow must be capable of self-evolution. All efforts serve this principle.**
 
-Achieving the compiler goal matters, but the higher-order goal is that the *process* of achieving it improves itself over time. A workflow that delivers results but requires constant human redesign is brittle. A workflow that evolves its own prompts, tools, and structure based on what it learns each round is antifragile.
+The compiler goal matters, but the higher-order goal is that the *process* improves itself over time. A workflow requiring constant human redesign is brittle. A workflow that evolves its own prompts, tools, and structure based on what it learns each round is antifragile.
 
-Concretely:
-- Every round's outcome is feedback on the workflow, not just on the compiler
-- REVIEW reads user interventions and applies structural changes, not just parameter tweaks
-- If the user has to intervene to fix the same class of problem twice, the workflow has failed to learn
-- New capabilities (architecture audit, knowledge base, diagnostic tools) should emerge from the workflow's own observations, not only from human prompts
+- Every round's outcome is feedback on the workflow, not just the compiler
+- REVIEW reads user interventions and applies structural changes, not parameter tweaks
+- If the user intervenes twice for the same class of problem, the workflow has failed to learn
+- New capabilities should emerge from the workflow's own observations
+
+## Workflow: 3-Phase Optimization Loop
+
+Orchestrated by `bash .claude/optimize.sh`. Each phase is an **independent Claude session** — no context accumulation, state passes via files in `opt/`.
+
+```
+  REVIEW (every round, reads user session log for interventions)
+    │
+    ▼
+  ANALYZE + PLAN (one session)
+    Step 0: Architecture audit (full every 2 rounds / quick read on off-rounds)
+    Step 1: Gap classification + target selection (ceiling rule, initiative rule)
+    Step 2: External research (web search + reference engine source + knowledge base)
+    Step 3: Project source reading (read the actual code that will change)
+    Step 4: Micro diagnostics (IR dump, ARM64 disasm, instruction breakdown)
+    Step 5: Write plan (concrete, bounded, with calibrated predictions)
+    Step 6: Write analyze report
+    │
+    ▼
+  IMPLEMENT (one session)
+    Spawn Coder sub-agents per task. TDD. Commit per task.
+    │
+    ▼
+  VERIFY + DOCUMENT (one session)
+    Part 1: Run tests + benchmarks + evaluator → fill Results
+    Part 2: Update state.json, INDEX.md, initiative, archive plan, commit
+```
+
+Multi-round: `bash .claude/optimize.sh --rounds=5`
+
+## Roles
+
+The workflow uses **specialized sub-agents**, not a single monolithic agent:
+
+| Context | Role | What it does |
+|---------|------|-------------|
+| REVIEW session | **Workflow Auditor** | Reads user session log, identifies intervention patterns, applies harness changes |
+| ANALYZE session | **Analyst + Planner** | Top-down: architecture → strategy → research → source → diagnostics → plan |
+| IMPLEMENT session | **Orchestrator** | Spawns bounded Coder sub-agents, tracks budget, checks scope |
+| Coder sub-agent | **Implementer** | TDD within bounded scope. 3 attempts max, then failure report |
+| Evaluator sub-agent | **Code Reviewer** | Reviews git diff against checklist. No intent from caller |
+| Diagnostic sub-agent | **Profiler** | IR dumps, ARM64 disasm, instruction counting |
+
+**Main conversation** (with the user): strategic direction, harness design, architectural decisions. Not implementation detail.
+
+## Cross-Round Infrastructure
+
+| File | Purpose |
+|------|---------|
+| `opt/state.json` | Counters: category_failures, rounds_since_review, rounds_since_arch_audit |
+| `opt/INDEX.md` | Flat table of all rounds — ANALYZE's pattern detector |
+| `opt/initiatives/*.md` | Multi-round engineering projects |
+| `opt/knowledge/*.md` | Persistent knowledge base (techniques, algorithms, thresholds) |
+| `opt/plans/*.md` | Archived plans for retrospectives |
+| `opt/reviews/*.md` | Harness self-audit reports |
+| `opt/workflow_log.jsonl` | Per-round metrics |
+| `docs-internal/architecture/constraints.md` | Known architectural constraints + ceilings |
+| `docs-internal/architecture/overview.md` | Tier/pipeline/register reference |
+| `benchmarks/data/latest.json` | Current benchmark results (written by VERIFY) |
+| `benchmarks/data/baseline.json` | Comparison baseline |
+| `scripts/arch_check.sh` | Mechanical architecture scan (file sizes, tech debt, test gaps) |
+
+## Anti-Drift Mechanisms
+
+| Mechanism | Prevents |
+|-----------|----------|
+| **Ceiling Rule** (category_failures ≥ 2 → blocked) | Grinding on same wall |
+| **Initiative files** | Losing multi-round architectural continuity |
+| **Architecture audit** (every 2 rounds) | Structural drift without awareness |
+| **Knowledge base** | Forgetting what was researched |
+| **REVIEW every round** (reads user interventions) | Workflow rot |
+| **Budget per round** | Scope creep |
+| **Calibrated predictions** (halved for ARM64 superscalar) | Chronic overestimation |
 
 ## Non-Goals
 
-- Trace JIT — deprecated, disconnected from CLI. `internal/jit/` is scheduled for deletion
-- Hacks/workarounds that sacrifice correctness for speed (function-entry tracing broke 8 benchmarks)
-- Arbitrary speedup ratios — theoretical max ~33x. Target is LuaJIT's absolute times
-
-## Optimization Loop
-
-Every major milestone follows this cycle. It runs **forever** until we surpass LuaJIT:
-
-1. **MEASURE** → Run `bash benchmarks/run_all.sh`, profile with pprof, identify the #1 bottleneck
-2. **RESEARCH** → Study how LuaJIT / V8 / SpiderMonkey / LLVM / academia solved this problem
-3. **BLOG** → Write a detailed blog post documenting findings + plan (English)
-4. **IMPLEMENT** → TDD: tests first, then code. Commit after each working step
-5. **BENCHMARK** → Run full suite, compare before/after. Record exact numbers
-6. **PUBLISH** → Update blog with results, push to GitHub Pages
-7. **GOTO 1** → The next bottleneck is now exposed. Repeat.
-
-## Team Workflow
-
-Each milestone uses **parallel agents** to maximize throughput.
-
-### Phase 1: Research (parallel — no code changes)
-
-| Role | Task |
-|------|------|
-| **Profiler** | Run benchmarks + pprof, identify #1 bottleneck |
-| **Researcher** | Web search LuaJIT/V8/SpiderMonkey/papers for the target technique |
-| **Architect** | Read all relevant code, audit architecture, design refactoring plan |
-| **Blogger** | Read existing blog posts, prepare outline for next post |
-
-Main agent waits for all reports, then synthesizes into an implementation plan.
-
-### Phase 2: Implement (parallel where possible)
-
-After plan alignment with user, spawn coding agents in parallel for independent modules.
-
-Rules:
-- **Research agents never write code. Coding agents don't do open-ended research.**
-- **Main agent is the integrator** — synthesizes reports, makes architectural decisions
-- **Main agent NEVER runs benchmarks directly** — always spawn a benchmark sub-agent
-- **Always use Opus model** for coding agents
-- **Each coding agent gets a clear, bounded scope** — one pass, one module, one test file
+- Trace JIT — deprecated, disconnected from CLI
+- Hacks that sacrifice correctness for speed
+- Arbitrary speedup ratios — target is LuaJIT's absolute times
 
 ## Coding Conventions
 
-### File Size (IMPORTANT)
+### File Size
 - **No Go file exceeds 1000 lines.** Split proactively at 800 lines
-- One concern per file. Every file starts with a doc comment explaining its purpose
-- Test files mirror source files: `foo.go` → `foo_test.go`
+- One concern per file. Every file starts with a doc comment
+- Test files mirror source: `foo.go` → `foo_test.go`
+- `scripts/arch_check.sh` scans for violations; ANALYZE Step 0 reads the output
 
-### Test-Driven Development (YOU MUST)
+### TDD (mandatory)
 1. Write a failing test specifying desired behavior
 2. Write minimum code to pass
 3. Refactor without changing behavior
-4. **Tests before code, no exception.** If you can't write a test, you don't understand the requirement
+4. No exceptions. If you can't write a test, you don't understand the requirement
 
 ### Pass Pipeline
-- Each pass: one file (`pass_<name>.go`) + one test file (`pass_<name>_test.go`)
-- Passes are independent and reversible in isolation
-- Pipeline: `BuildGraph → [Validate → Pass → Validate → ...] → RegAlloc → Emit`
+- Each pass: `pass_<name>.go` + `pass_<name>_test.go`
+- Current order: `BuildGraph → Validate → Intrinsic → TypeSpec → ConstProp → DCE → Inline → RangeAnalysis → LICM → RegAlloc → Emit`
+- Ordering constraints documented in `docs-internal/architecture/constraints.md`
 
-### Code Standards
-- **High-leverage first**: Prioritize optimizations affecting the most benchmarks. Ask: "1 benchmark or 10?"
-- **Profile before optimizing**: `pprof` to find actual bottlenecks, never guess
-- **Commit often**: Each working step gets a commit with detailed message
-- **No time estimates**: Focus on what needs to be done, not how long it might take
-- **Diagnostic tools first**: Use IR printer, pipeline dump, validator before reading source code. Convert reasoning problems into data-reading problems
-
-## Benchmark Protocol
-
-- Run `bash benchmarks/run_all.sh` before AND after every optimization
-- Always compare VM, JIT, and LuaJIT
-- **NEVER delete benchmarks.** If a benchmark errors or hangs, show as "ERROR"/"HANG" — do not remove the row
-- Run the full suite, not a subset. Broken benchmarks expose JIT bugs
-
-## Blog
-
-Published at: https://jxwr.github.io/gscript/
-
-Each post: **story + data + research + honest assessment + next steps.** All content in English. Make posts interesting to read, not dry technical reports.
-
-Each post should include:
-- **Previous results recap**: Summary of where we are from the last post
-- **Research deep-dive**: What do the experts say? Quote relevant sources
-- **Architecture diagrams**: Pipeline, data flow, register allocation strategy
-- **Code examples**: GScript code + generated ARM64 assembly side by side
-- **Honest assessment**: What worked, what didn't, what we'd do differently
-
-**When to write:**
-- **After a breakthrough** — write while data is fresh
-- **After getting stuck** — research done, lessons learned, planning next approach
+### Standards
+- **Profile before optimizing**: ARM64 disasm (not pprof — JIT code is opaque to pprof)
+- **Diagnostic tools first**: IR printer, pipeline dump, validator before reading source code
+- **Commit often**: each working step gets a commit
+- **Observation beats reasoning**: 5 hours of guessing vs 5 minutes of looking at the data
 
 ## Hard-Won Rules
 
-### 1. Observation beats reasoning — use diagnostic tools
-Don't read code and guess. Use diagnostic tools first: IR interpreter, pipeline dump, hex dump. Only then read source code — only the file diagnostics identified. Five hours of guessing vs five minutes of observation.
-
-### 2. Architecture over patches
-Third bug in the same subsystem? Stop and redesign. Don't add special cases to broken designs.
-
-### 3. Never stack on unverified code
-Before adding Pass N+1, ALL tests must pass with passes 1..N. Run correctness checks before timing.
-
-### 4. Proactive architecture review
-Every optimization round: review file sizes, module boundaries, pass pipeline, test coverage, diagnostic tools. Don't wait for things to break.
+1. **Observation beats reasoning** — use diagnostic tools (Diagnose(), IR printer, ARM64 disasm). Don't read code and guess.
+2. **Architecture over patches** — third bug in same subsystem? Redesign. Don't add special cases.
+3. **Never stack on unverified code** — all tests pass before adding the next pass.
+4. **Architecture audit every 2 rounds** — review file sizes, module boundaries, pipeline, test coverage. Findings go to `constraints.md`.
+5. **Calibrate predictions** — halve instruction-count estimates on ARM64 superscalar. Cross-check with diagnostic data.
+6. **Read the code before planning** — ANALYZE must read the source files it plans to change. Rounds 7-8 predicted −35% because nobody read regalloc.go.
 
 ## Reference Documents
 
-- Architecture: @docs-internal/architecture/overview.md
-- ADRs (past decisions): @docs-internal/decisions/
-- Debug JIT correctness: @docs-internal/diagnostics/debug-jit-correctness.md
-- Debug deopt failures: @docs-internal/diagnostics/debug-deopt.md
-- Debug IR pipeline: @docs-internal/diagnostics/debug-ir-pipeline.md
-- Known issues: @docs-internal/known-issues.md
-
+- Architecture: `docs-internal/architecture/overview.md`
+- Constraints: `docs-internal/architecture/constraints.md`
+- ADRs: `docs-internal/decisions/`
+- Debug JIT: `docs-internal/diagnostics/debug-jit-correctness.md`
+- Debug deopt: `docs-internal/diagnostics/debug-deopt.md`
+- Debug IR: `docs-internal/diagnostics/debug-ir-pipeline.md`
+- Known issues: `docs-internal/known-issues.md`
+- Knowledge base: `opt/knowledge/`
