@@ -7,10 +7,14 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "25a0213136fe1a38d4cd4518a02309fa85345364",
+  "uncommitted_files": [
+    "docs-internal/architecture/constraints.md",
+    "opt/analyze_report.md",
+    "opt/state.json"
+  ],
+  "head_commit": "eb23d902d229d0d075e455504384065ee4c759a4",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T13:24:36Z",
+  "last_checkpoint": "2026-04-06T13:38:47Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -153,5 +157,5 @@
     "field_access": 0
   },
   "rounds_since_review": 0,
-  "rounds_since_arch_audit": 2
+  "rounds_since_arch_audit": 0
 }

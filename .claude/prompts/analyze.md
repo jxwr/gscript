@@ -119,13 +119,20 @@ Use the architecture overview to locate them. For each file:
 Spawn a diagnostic sub-agent to get **actual data** from the target benchmark:
 
 1. **IR dump**: `Diagnose()` from `internal/methodjit/diagnose.go`
-2. **ARM64 disasm**: Tier 2 disasm harness (`tier2_float_profile_test.go`)
+2. **ARM64 disasm** — use existing tools, **NOT python manual decoding**:
+   ```bash
+   go test ./internal/methodjit/ -run TestProfile_<name> -v  # compile + dump .bin
+   xcrun otool -tv /tmp/gscript_<name>_t2.bin                # disassemble (one call)
+   ```
+   **NEVER write python ARM64 decoders** — that wastes 100+ API calls for what otool does in one.
 3. **Instruction breakdown**: classify hot-block insns (compute vs overhead)
 
 State concretely: "Hot block has N insns/iter, M overhead. Overhead: X (N%), Y (N%).
 Technique eliminates X → −P% estimated (halved for ARM64 superscalar)."
 
-pprof is useless for JIT code. ARM64 disasm is authoritative.
+pprof is useless for JIT code. `otool -tv` / `objdump` is authoritative.
+
+**Do NOT spawn duplicate diagnostic agents.** One agent per target. If you need IR + disasm, the same agent does both.
 
 ---
 

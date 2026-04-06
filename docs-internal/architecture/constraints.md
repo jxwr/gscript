@@ -1,7 +1,7 @@
 # Architecture Constraints & Notes
 
 > **ANALYZE reads this every round.** Updated by Architecture Audit (every 2 rounds).
-> Last full audit: Round 15 (2026-04-06)
+> Last full audit: Round 17 (2026-04-06)
 
 ## Tier Constraints
 
@@ -46,6 +46,12 @@ Ordering constraints:
 - **End-to-end pipeline verified** (TestFeedbackGuards_Integration): feedback → GuardType → TypeSpecialize → MulFloat/AddFloat cascade works.
 - **Tier-up timing**: threshold=2 for pure-compute functions. First call at Tier 1 collects feedback. Second call at Tier 2 uses feedback. Functions called only once (matmul) need OSR to benefit.
 - NOT covered: Call return type, ForLoop counter type.
+
+## Feedback Pipeline
+
+- **GETFIELD feedback cold-start gap** (Round 17 finding): Tier 1's Go exit handler (`handleGetField` in `tier1_handlers.go`) does NOT record type feedback into `proto.Feedback[pc].Result`. Only the ARM64 inline cache HIT path records feedback. On call 1, all GETFIELDs miss the cache → Go handler → no feedback. By call 2, Tier 2 compiles with empty feedback → generic arithmetic. **Fix**: add `proto.Feedback[pc].Result.Observe(result.Type())` to handleGetField.
+- **GETTABLE Go exit handler** has the same gap: `handleGetTable` in `tier1_handlers.go` does not record feedback. Less critical because GETTABLE typed-array ARM64 fast paths record feedback on the first call for ArrayInt/ArrayFloat/ArrayBool. Only affects mixed-array accesses that fall to slow path.
+- **End-to-end pipeline verified**: feedback → GuardType → TypeSpecialize → MulFloat/AddFloat cascade works (TestFeedbackGuards_GetField_Integration, TestFeedbackGuards_Integration). The gap is ONLY in the Go exit handler recording.
 
 ## Technical Debt
 
