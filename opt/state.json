@@ -8,9 +8,9 @@
   "completed_steps": [],
   "next_action": "",
   "uncommitted_files": [],
-  "head_commit": "3682e19a116358a2ca4782c5985a7508429626c0",
+  "head_commit": "644bd3c1bcf748e82bc966e273c3d9083529ab33",
   "branch": "jit-v3-clean",
-  "last_checkpoint": "2026-04-06T06:09:23Z",
+  "last_checkpoint": "2026-04-06T07:11:56Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -105,6 +105,13 @@
       "initiative": "opt/initiatives/recursive-tier2-unlock.md",
       "outcome": "no_change",
       "summary": "Phase 3+5: B=0 fix kept (correctness). Tier 2 net-negative for recursive functions \u2014 27-50% regressions, reverted."
+    },
+    {
+      "cycle_id": "2026-04-06-feedback-typed-loads",
+      "category": "tier2_float_loop",
+      "initiative": "opt/initiatives/tier2-float-loops.md",
+      "outcome": "no_change",
+      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected — Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
     }
   ],
   "session_summary": {
@@ -114,8 +121,8 @@
   },
   "category_failures": {
     "recursive_call": 2,
-    "tier2_float_loop": 0
+    "tier2_float_loop": 1
   },
-  "rounds_since_review": 1,
-  "rounds_since_research": 7
+  "rounds_since_review": 2,
+  "rounds_since_research": 8
 }
