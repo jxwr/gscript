@@ -1,53 +1,86 @@
 # ANALYZE + PLAN Phase
 
 You are in the ANALYZE+PLAN phase of the GScript optimization loop.
-Your job: classify gaps → pick a target → research it → read the code → diagnose → write a concrete plan.
-**No code changes.** Output: `opt/analyze_report.md` + `opt/current_plan.md` + knowledge base updates.
+Top-down flow: architecture → strategy → research → source → diagnostics → plan.
+**No code changes.** Output: `opt/analyze_report.md` + `opt/current_plan.md` + knowledge base + architecture notes.
 
 ## Context — Read These Files (MANDATORY, in order)
 
 1. `CLAUDE.md` — project mission
-2. `opt/state.json` — optimization state (check `category_failures` counters)
-3. `opt/INDEX.md` — **flat index of ALL past rounds — READ CAREFULLY, this is the pattern detector**
-4. `opt/initiatives/` — active multi-round initiatives. `ls opt/initiatives/*.md 2>/dev/null`; skip `_template.md` and `README.md`
-5. `docs-internal/lessons-learned.md` — project-level detours and mistakes
-6. `docs-internal/known-issues.md` — current known issues
-7. `benchmarks/data/latest.json` — current benchmark results (produced by last round's VERIFY)
-8. `benchmarks/data/baseline.json` — previous baseline
-9. `opt/measure_report.md` — if exists, read for context (may be stale)
-10. `opt/knowledge/` — **existing knowledge base** (read all .md files, build on them)
-
-## Category Taxonomy (from opt/INDEX.md)
-
-Every target MUST be classified into ONE canonical category:
-`recursive_call`, `tier2_float_loop`, `tier2_correctness`, `allocation_heavy`,
-`gofunction_overhead`, `field_access`, `call_ic`, `regalloc`,
-`missing_intrinsic`, `arch_refactor`, `other`.
-
-## Ceiling Rule (MANDATORY)
-
-Read `opt/state.json` → `category_failures`. Any category with `count >= 2`:
-- **FORBIDDEN.** Pick a different category or continue an active initiative in a different category.
-- State in your report: "Category X blocked (failures=N, last: <round-id>)".
-
-## Initiative Rule (MANDATORY)
-
-For each initiative with `Status: active` AND non-empty `Next Step`:
-- **Strong candidate.** Prefer over opportunistic new targets when ROI is comparable.
-- If you skip an active initiative, explain why.
+2. `opt/state.json` — optimization state (`category_failures`, `rounds_since_arch_audit`)
+3. `opt/INDEX.md` — **flat index of ALL past rounds — READ CAREFULLY**
+4. `opt/initiatives/` — active multi-round initiatives (`ls opt/initiatives/*.md 2>/dev/null`; skip `_template.md`, `README.md`)
+5. `docs-internal/architecture/overview.md` — architecture overview
+6. `docs-internal/architecture/constraints.md` — **known constraints + ceilings + module notes**
+7. `docs-internal/lessons-learned.md` + `docs-internal/known-issues.md`
+8. `benchmarks/data/latest.json` + `benchmarks/data/baseline.json`
+9. `opt/knowledge/` — **existing knowledge base** (read all .md, build on them)
 
 ---
 
-## Step 1 — Classify gaps and pick target
+## Step 0 — Architecture Audit (every 2 rounds: FULL / off-rounds: READ ONLY)
 
+Check `opt/state.json` → `rounds_since_arch_audit`.
+
+### If `rounds_since_arch_audit >= 2`: FULL AUDIT
+
+This is a **thorough code reading session**. Goal: update your understanding of the codebase
+and write findings into architecture documents. Budget: ~15 minutes.
+
+#### 0a. Run `bash scripts/arch_check.sh`
+Mechanical scan: file sizes, pipeline order, tech debt markers, test gaps.
+
+#### 0b. Read key source files (not just target-related)
+Walk through the major subsystems. For each, note what changed since last audit:
+- **Tier 2 pipeline**: `tiering_manager.go` (compileTier2 function), pass ordering
+- **Register allocation**: `regalloc.go` — carried map, FPR/GPR pools, spill strategy
+- **Code emission**: `emit_compile.go`, `emit_dispatch.go`, `emit_arith.go` — hot paths
+- **Graph builder**: `graph_builder.go` — what gets IR'd, what gets exit-resume'd
+- **Loop infrastructure**: `loops.go`, `emit_loop.go`, `pass_licm.go`
+- **Tiering policy**: `func_profile.go` — which functions get promoted when
+
+Don't read everything — skim headers + key functions. Note:
+- New infrastructure since last audit (new files, new passes, new data structures)
+- Growing complexity (functions getting long, abstractions leaking)
+- Opportunities spotted (low-hanging fruit, dead code, consolidation chances)
+
+#### 0c. Update `docs-internal/architecture/constraints.md`
+Add or revise entries based on what you found. Date each update.
+
+#### 0d. Update `docs-internal/architecture/overview.md` (if pipeline/tiers changed)
+
+#### 0e. Write audit summary
+Include in your analyze_report under `## Architecture Audit`. This informs target selection.
+
+### If `rounds_since_arch_audit < 2`: QUICK READ
+
+Just read the existing documents:
+- `docs-internal/architecture/constraints.md` (already in Context list)
+- Run `bash scripts/arch_check.sh` and scan for ⚠ flags
+- Note any constraint that affects target selection
+- Include a 2-line summary in analyze_report under `## Architecture Audit`
+
+---
+
+## Step 1 — Gap Classification + Target Selection (strategic)
+
+### Rules
+- **Ceiling Rule**: `category_failures >= 2` → FORBIDDEN
+- **Initiative Rule**: active initiative with non-empty `Next Step` → strong candidate
+- **INDEX pattern check**: don't repeat failed patterns from last 5 rounds
+
+### Task
 1. Classify ALL benchmark gaps into canonical categories.
-2. Per category: count affected benchmarks + total wall-time gap.
-3. Pick target by: ceiling rule → initiative rule → INDEX pattern check → ROI.
+2. Per category: affected benchmarks + total wall-time gap.
+3. **Cross-check with constraints.md**: is the proposed target blocked by a known architectural ceiling?
+4. Pick target by: ceiling rule → constraints check → initiative rule → ROI.
 
-## Step 2 — Web search + reference engine source
+---
+
+## Step 2 — External Research (knowledge layer)
 
 #### 2a. Web search
-Use `WebSearch` for the specific technique. Specific queries:
+Use `WebSearch` for the specific technique. Specific, not generic:
 - Good: `"V8 TurboFan escape analysis scalar replacement 2024"`
 - Bad: `"how to optimize JIT compiler"`
 
@@ -56,54 +89,68 @@ Clone if not cached:
 ```bash
 [ -d /tmp/research-cache/v8 ] || git clone --depth=1 --filter=blob:none https://chromium.googlesource.com/v8/v8.git /tmp/research-cache/v8
 ```
-Grep and read the relevant functions. **Cite file:line.**
+Grep + read relevant functions. **Cite file:line.**
 
 #### 2c. Update knowledge base
-Write or update `opt/knowledge/<topic>.md` with concrete findings (thresholds, algorithms, file:line).
+Write or update `opt/knowledge/<topic>.md` with concrete findings.
 
-## Step 3 — Read THIS project's source code (MANDATORY)
+---
 
-**Most important step.** Without this, predictions will be off by 2-25×.
+## Step 3 — Project Source Reading (implementation layer)
 
-#### 3a. Read relevant source files
-Based on the target, read the files that will need to change. Use `docs-internal/architecture/overview.md` to locate them.
-- Look at actual data structures, what the code already handles vs doesn't
-- Find existing infrastructure to build on
-- Note performance-relevant details and design constraints
+Read the specific files that this round's target will touch.
+Use the architecture overview to locate them. For each file:
+- What data structures exist
+- What the code already handles vs doesn't
+- Existing infrastructure to build on
+- Performance-relevant details + design constraints from comments
 
-#### 3b. Run diagnostic tools on target benchmark
-Spawn a sub-agent to get **actual data**:
+---
+
+## Step 4 — Micro Diagnostics (instruction layer)
+
+Spawn a sub-agent to get **actual data** from the target benchmark:
+
 1. **IR dump**: `Diagnose()` from `internal/methodjit/diagnose.go`
 2. **ARM64 disasm**: Tier 2 disasm harness (`tier2_float_profile_test.go`)
 3. **Instruction breakdown**: classify hot-block insns (compute vs overhead)
 
-pprof is useless for JIT code (opaque `runtime._ExternalCode`). ARM64 disasm is authoritative.
+State concretely: "Hot block has N insns/iter, M overhead. Overhead: X (N%), Y (N%).
+Technique eliminates X → −P% estimated (halved for ARM64 superscalar)."
 
-#### 3c. Identify ACTUAL bottleneck with data
-State concretely: "Hot block has N insns/iter, M overhead. Overhead: X (N%), Y (N%). Technique eliminates X → −P% estimated (halved for ARM64 superscalar)."
+pprof is useless for JIT code. ARM64 disasm is authoritative.
 
-## Step 4 — Write the plan
+---
 
-Now write `opt/current_plan.md` using `opt/plan_template.md`. Fill ALL sections:
+## Step 5 — Write Plan (synthesis)
 
-- **Target**: specific benchmarks + expected improvement (calibrated — halve instruction-count estimates on ARM64)
+Write `opt/current_plan.md` using `opt/plan_template.md`. Fill ALL sections:
+
+- **Target**: benchmarks + calibrated expected improvement
 - **Category**: one canonical category
 - **Initiative**: path or "standalone" or "NEW: <name>"
-- **Root Cause**: from Step 3 data, not guesswork
+- **Root Cause**: from Step 3-4 data, cross-checked with constraints.md
 - **Prior Art**: from Step 2, with file:line citations
-- **Approach**: concrete file changes, based on Step 3a source reading
-- **Expected Effect**: quantified, cross-checked against Step 3c diagnostic data
+- **Approach**: concrete file changes, based on Step 3 source reading
+- **Prerequisite**: if arch_check flagged files >800 lines that this round touches → plan includes split as Task 0
+- **Expected Effect**: quantified, halved for ARM64 superscalar
 - **Failure Signals**: specific conditions
 - **Task Breakdown**: each task = one Coder sub-agent, with file + test
 - **Budget**: max commits, max files, abort condition
 
-If an initiative is referenced and it's **new**, create `opt/initiatives/<name>.md` from `_template.md`.
+If initiative is **new**, create `opt/initiatives/<name>.md` from `_template.md`.
 
-## Step 5 — Write analyze report
+---
+
+## Step 6 — Write Analyze Report
 
 Write `opt/analyze_report.md`:
 
 ```markdown
+## Architecture Audit
+[Full audit summary OR "Quick read: no new issues. constraints.md current."]
+[Flag any ⚠ from arch_check.sh]
+
 ## Gap Classification
 | Category | Benchmarks | Total Gap vs LuaJIT | Blocked? |
 |----------|------------|---------------------|----------|
@@ -117,30 +164,32 @@ Write `opt/analyze_report.md`:
 ## Selected Target
 - **Category**: ...
 - **Initiative**: ...
-- **Reason**: ...
+- **Reason**: ... (including constraints check)
 - **Benchmarks**: ...
 
 ## Prior Art Research
 ### Web Search Findings
-[...]
 ### Reference Source Findings
-[engine, file:line, algorithm, thresholds]
 ### Knowledge Base Update
-[which opt/knowledge/ file updated]
 
 ## Source Code Findings
 ### Files Read
-[project files read + key observations]
 ### Diagnostic Data
-[hot block breakdown, instruction counts]
-### Actual Bottleneck
-[data-backed: "N insns/iter, M% overhead from X"]
+### Actual Bottleneck (data-backed)
 
 ## Plan Summary
-[1-paragraph: what IMPLEMENT will do, expected impact, key risk]
+[1-paragraph: what, expected impact, key risk]
 ```
+
+---
+
+## Counter Updates
+
+At the end of this phase, update `opt/state.json`:
+- If full audit was done: set `rounds_since_arch_audit` to `0`
+- Otherwise: leave it (VERIFY+DOCUMENT will increment it)
 
 ## Restrictions
 - Do NOT write implementation code
-- Only write to `opt/` directory
-- If no non-blocked target exists, output `status: all-categories-blocked` and STOP
+- Only write to `opt/` + `docs-internal/architecture/`
+- If no non-blocked target exists: output `status: all-categories-blocked` and STOP

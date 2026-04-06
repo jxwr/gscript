@@ -126,11 +126,14 @@ run_cycle() {
     local cycle_from="$1"
 
     # Conditional REVIEW (before analyze, every 5 rounds)
+    # REVIEW runs every round in early stage (REVIEW_INTERVAL=1).
+    # Increase to 3-5 once workflow stabilizes.
+    local REVIEW_INTERVAL=1
     if [ "$cycle_from" = "analyze" ] && ! $SKIP_REVIEW; then
         SINCE_REVIEW=$(rounds_since_review)
-        if $FORCE_REVIEW || [ "$SINCE_REVIEW" -ge 5 ]; then
+        if $FORCE_REVIEW || [ "$SINCE_REVIEW" -ge "$REVIEW_INTERVAL" ]; then
             echo ""
-            echo "=== Triggering REVIEW phase (rounds_since_review=$SINCE_REVIEW) ==="
+            echo "=== Triggering REVIEW phase (rounds_since_review=$SINCE_REVIEW, interval=$REVIEW_INTERVAL) ==="
             run_phase "review" || {
                 echo "REVIEW phase failed. Auto-continuing."
             }

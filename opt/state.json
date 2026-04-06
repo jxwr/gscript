@@ -8,36 +8,11 @@
   "completed_steps": [],
   "next_action": "",
   "uncommitted_files": [
-    ".claude/current_plan.md",
-    ".claude/hooks/archive_plan.sh",
-    ".claude/hooks/budget_check.sh",
-    ".claude/hooks/checkpoint.sh",
-    ".claude/hooks/phase_guard.sh",
-    ".claude/hooks/stop-evaluator.sh",
-    ".claude/optimize.sh",
-    ".claude/plan_template.md",
-    ".claude/plans/.gitkeep",
-    ".claude/prompts/analyze.md",
-    ".claude/prompts/document.md",
-    ".claude/prompts/implement.md",
-    ".claude/prompts/measure.md",
-    ".claude/prompts/plan.md",
-    ".claude/prompts/verify.md",
-    ".claude/skills/gs-opt-loop/SKILL.md",
-    ".claude/skills/harness-review/SKILL.md",
-    ".claude/state.json",
-    "benchmarks/data/baseline.json",
-    "benchmarks/data/latest.json",
-    "benchmarks/run_all.sh",
-    "benchmarks/set_baseline.sh",
-    "opt/analyze_report.md",
-    "opt/current_plan.md",
-    "opt/measure_report.md",
-    "opt/plan_template.md"
+    "opt/state.json"
   ],
-  "head_commit": "3609699506982f792c6ad36f1a686361b6ac6126",
-  "branch": "jit-v3-clean",
-  "last_checkpoint": "2026-04-06T07:14:42Z",
+  "head_commit": "3e2030e4ffff3021bc064e0569f1652e03771b1c",
+  "branch": "main",
+  "last_checkpoint": "2026-04-06T07:23:44Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -151,5 +126,6 @@
     "tier2_float_loop": 1
   },
   "rounds_since_review": 2,
-  "rounds_since_research": 8
+  "rounds_since_research": 8,
+  "rounds_since_arch_audit": 0
 }
