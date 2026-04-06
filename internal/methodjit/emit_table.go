@@ -651,10 +651,12 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, deoptLabel)
 
-	// Dispatch on arrayKind: 0=Mixed, 1=Int, 3=Bool, else=slow.
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, 2=Float, 3=Bool, else=slow.
 	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
 	asm.CMPimm(jit.X2, jit.AKBool)
 	asm.BCond(jit.CondEQ, boolArrayLabel)
+	asm.CMPimm(jit.X2, jit.AKFloat)
+	asm.BCond(jit.CondEQ, floatArrayLabel)
 	asm.CMPimm(jit.X2, jit.AKInt)
 	asm.BCond(jit.CondEQ, intArrayLabel)
 	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0) -> deopt
@@ -693,6 +695,28 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	asm.SBFX(jit.X4, jit.X4, 0, 48)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
 	asm.STRreg(jit.X4, jit.X2, jit.X1)             // intArray[key] = int64
+	// Set keysDirty flag.
+	asm.MOVimm16(jit.X5, 1)
+	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	asm.B(doneLabel)
+
+	// --- ArrayFloat fast path ---
+	asm.Label(floatArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArrayLen) // floatArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, deoptLabel)
+	// Load value to store.
+	valRegFloat := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+	if valRegFloat != jit.X4 {
+		asm.MOVreg(jit.X4, valRegFloat)
+	}
+	// Check value is a float (NOT tagged — bits 50-62 NOT all set).
+	// Tagged values have (val >> 50) == 0x3FFF. Floats don't.
+	jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
+	asm.BCond(jit.CondEQ, deoptLabel)      // tagged (int/bool/nil/ptr) → deopt
+	// Float64 bits ARE the NaN-boxed representation — store directly.
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
+	asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
 	// Set keysDirty flag.
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
