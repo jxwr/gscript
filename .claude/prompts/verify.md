@@ -110,11 +110,46 @@ One JSON line in `opt/workflow_log.jsonl`:
 - `docs-internal/architecture/overview.md`
 - `CLAUDE.md` (if conventions changed)
 
-### 2i. Commit all changes
+### 2i. Finalize the round blog
+
+Read `docs/draft.md`. Append the results section and finalize:
+
+```markdown
+## The results
+
+[Before/after benchmark table. But don't just dump numbers — interpret them.
+"sieve dropped 18% because the marking loop no longer exits to Go for bool
+array writes" is better than "sieve: 0.227s → 0.186s."
+
+Did it meet expectations? If not, why? What did we learn? Be specific about
+what the remaining bottleneck is — this is the seed for the next round.]
+
+## What I'd do differently
+
+[Honest retrospective. Was the diagnostic accurate? Was the plan right?
+What would you tell yourself before starting this round?]
+
+*Previous: [last post title](/last-post-slug)*
+
+*This is post NN in the [GScript JIT series](https://jxwr.github.io/gscript/).
+All numbers from a single-thread ARM64 Apple Silicon machine.*
+```
+
+Then:
+1. Determine the next post number: `ls docs/[0-9]*.md | wc -l` + 1, or check `docs/index.html`
+2. Rename `docs/draft.md` → `docs/NN-slug.md` (slug from title, lowercase, hyphens)
+3. Fix the frontmatter: set correct `permalink: /NN-slug`
+4. Remove the `*[This post is being written live...]*` markers
+5. Add the new post to `docs/index.html` at the top of the Posts section
+
+### 2j. Commit all changes
 Scoped message: `opt: close out <cycle_id> (<outcome>)`
+
+Include the blog post in the commit.
 
 ## Rules
 - Part 1 (VERIFY) may loop: fix → re-test → re-verify
 - Part 2 (DOCUMENT) is one-shot after VERIFY passes
 - Do NOT leave `current_plan.md` in place after archiving
+- Do NOT leave `docs/draft.md` — must be renamed to final post
 - Do NOT write new implementation code (only test fixes if needed)

@@ -189,7 +189,46 @@ At the end of this phase, update `opt/state.json`:
 - If full audit was done: set `rounds_since_arch_audit` to `0`
 - Otherwise: leave it (VERIFY+DOCUMENT will increment it)
 
+## Step 7 — Start the round blog post
+
+Create `docs/draft.md` for this round's blog post. This will be updated by IMPLEMENT and VERIFY.
+
+**Writing style**: You're a programmer telling a colleague what you found today. Be specific,
+opinionated, show real data. NOT a status report. NOT corporate. Think "engineering notebook
+that someone would actually want to read." Reference existing posts in `docs/` for tone.
+
+Write the first section of the blog:
+
+```markdown
+---
+layout: default
+title: "[short evocative title — NOT 'Round N Update']"
+permalink: /NN-slug
+---
+
+# [Title]
+
+[Opening hook — 1-2 sentences that make someone want to keep reading.
+State the problem or surprise, not the solution.]
+
+## What we found
+
+[Describe the analysis: what the numbers showed, what the code revealed,
+what the diagnostic data said. Include the actual data (tables, code blocks,
+instruction counts). Explain WHY this is the bottleneck — the mechanism,
+not just "it's slow." Show what you expected vs what you found.]
+
+## The plan
+
+[What we're going to try and why. Reference prior art (V8/JSC/etc).
+What's the risk? What's the expected payoff? Be honest about uncertainty.]
+
+*[This post is being written live. Implementation next...]*
+```
+
+Use the next available post number (check `ls docs/*.md | tail -1` for the latest).
+
 ## Restrictions
 - Do NOT write implementation code
-- Only write to `opt/` + `docs-internal/architecture/`
+- Only write to `opt/` + `docs-internal/architecture/` + `docs/draft.md`
 - If no non-blocked target exists: output `status: all-categories-blocked` and STOP
