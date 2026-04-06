@@ -116,7 +116,7 @@ Use the architecture overview to locate them. For each file:
 
 ## Step 4 — Micro Diagnostics (instruction layer)
 
-Spawn a diagnostic sub-agent (**budget: 50 tool calls max**) to get **actual data** from the target benchmark:
+Spawn a diagnostic sub-agent to get **actual data** from the target benchmark:
 
 1. **IR dump**: `Diagnose()` from `internal/methodjit/diagnose.go`
 2. **ARM64 disasm**: Tier 2 disasm harness (`tier2_float_profile_test.go`)
