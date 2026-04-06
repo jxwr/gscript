@@ -1,80 +1,83 @@
-# Analyze Report — Round 13 (2026-04-06)
+# Analyze Report — Round 14
+
+> Date: 2026-04-06
+> Cycle ID: 2026-04-06-tier1-feedback-fast-paths
 
 ## Architecture Audit
-Quick read: `rounds_since_arch_audit=0` — full audit was done last round.
-- `emit_dispatch.go` (961 ⚠) and `graph_builder.go` (939 ⚠) still approaching 1000-line limit
-- No new issues beyond what's documented in `constraints.md`
-- arch_check.sh: 1 TODO marker, 25 test-gap files (mostly emit/tier1 handlers — pre-existing)
+
+Quick read (rounds_since_arch_audit=1). Ran `scripts/arch_check.sh`:
+
+- `emit_dispatch.go` 961 lines ⚠ — not touched this round
+- `graph_builder.go` 939 lines ⚠ — not touched this round
+- `emit_table.go` 872 lines ⚠ — not touched this round (Tier 2 only)
+- `tier1_table.go` 545 lines — target file, will grow to ~665 lines. OK.
+- Test ratio: 81% (14309 test lines / 17562 source lines)
+- No new constraint violations. constraints.md is current from round 12 audit.
 
 ## Gap Classification
 
 | Category | Benchmarks | Total Gap vs LuaJIT | Blocked? |
 |----------|------------|---------------------|----------|
-| recursive_call | fib (52.8x), ackermann (42.8x), mutual_recursion (46.8x) | 1.83s | **YES** (failures=2) |
-| tier2_float_loop | matmul (37.7x), spectral_norm (42.3x), nbody (18.7x), mandelbrot (6.6x) | 2.07s | No (failures=1) |
-| field_access | sieve (21.7x), fannkuch (3.5x), sort (4.8x) | 0.32s | No (failures=0) |
-| allocation_heavy | binary_trees (0.81x regression), object_creation (0.84x regression) | N/A | No (failures=0) |
-| gofunction_overhead | method_dispatch (huge ratio) | ~0.1s | No (failures=0) |
-
-Regressions (JIT slower than VM):
-- binary_trees: 2.079s JIT vs 1.688s VM (NEWTABLE exit-resume overhead)
-- coroutine_bench: 19.112s vs 18.148s (Go runtime goroutine/channel ops)
-- object_creation: 0.774s vs 0.653s (NEWTABLE exit-resume)
+| recursive_call | fib (57x), ackermann (44x), mutual_recursion (33x) | 1.87s aggregate | YES (failures=2) |
+| tier2_float_loop | matmul (42.8x), spectral_norm (41.9x), nbody (19.3x), mandelbrot (6.7x) | 2.26s aggregate | No (failures=1) |
+| field_access | sieve (15.5x) | 0.17s aggregate | No (failures=0) |
+| allocation_heavy | binary_trees, object_creation | N/A (no LuaJIT baseline) | No (never attempted) |
+| gofunction_overhead | method_dispatch (∞x — LuaJIT reports 0.000s) | 0.10s | No (never attempted) |
+| other | fannkuch (3.5x), sort (4.9x), sum_primes (2x) | 0.07s aggregate | No |
 
 ## Blocked Categories
-- `recursive_call` (ceiling=2): Tier 2 SSA overhead > inlining gains for recursive functions
+
+- `recursive_call` (category_failures=2): Tier 2 is net-negative for recursive functions (round 11). Needs fundamentally different mechanism (Tier 1 BLR specialization or native recursive calling convention).
 
 ## Active Initiatives
-- `tier2-float-loops.md`: active but at inflection — B3 peephole exhausted, Phase 3 blocked on feedback availability
-- `recursive-tier2-unlock.md`: paused, blocked by ceiling rule
-- `tier2-float-loops-b3-analysis.md`: complete (diagnostic reference)
+
+- **tier2-float-loops** (paused): Phase 3 blocked on feedback availability. B3 peephole items exhausted. This round directly unblocks Phase 3.
+- **recursive-tier2-unlock** (paused, blocked): category_failures=2. Phase 5 invalidated. Phase 6 (native recursive BLR) is the next viable path.
 
 ## Selected Target
-- **Category**: field_access
-- **Initiative**: standalone (first round in this category)
-- **Reason**: Fresh category (0 failures). Diagnostic revealed critical root cause: sieve's boolean array falls to exit-resume on every table op because the emitter only handles ArrayMixed(0) and ArrayInt(1). 6–7M exit-resume round-trips per sieve call. Fix is bounded (emit_table.go only) and binary (either exits or doesn't).
-- **Benchmarks**: sieve (primary), potentially table_array_access, fannkuch
 
-**Why not tier2_float_loop?** Initiative is at inflection point (B3 peephole exhausted, Phase 3 blocked). Category has 1 failure. Further gains require heavy architectural work (deopt frame descriptors / Tier 1 feedback collection). Following round 12 review recommendation to diversify.
-
-**Why not allocation_heavy?** Also recommended by round 12 review. Valid target (2.87s untouched) but: (a) no LuaJIT baseline for comparison, (b) fix requires escape analysis (deep architectural change), (c) sieve's ArrayBool fix is more bounded and has a clear LuaJIT comparison.
-
-**Why sieve over matmul?** Matmul also has a critical issue (stuck at Tier 1, see findings below), but fixing it touches tiering policy (risky, round 4 lesson) AND even at Tier 2 matmul's arithmetic stays generic (untyped GetTable results). Sieve's fix is pure codegen — no policy changes, no cross-cutting concerns.
+- **Category**: tier2_float_loop
+- **Initiative**: opt/initiatives/tier2-float-loops.md (Phase 3 unblock)
+- **Reason**: Largest aggregate gap (2.26s) in non-blocked category. The round 12 feedback-typed-loads infrastructure is complete at IR level but inert because Tier 1 doesn't collect feedback. This round closes the loop by (a) adding missing Tier 1 array fast paths and (b) adding feedback collection stubs. Cross-checked with constraints.md: no architectural ceiling applies — this is a concrete missing-implementation gap, not a fundamental limit.
+- **Benchmarks**: matmul (primary — Tier 1 speedup), spectral_norm (secondary — Tier 2 typed loads), nbody (tertiary — GETFIELD feedback)
 
 ## Prior Art Research
 
 ### Web Search Findings
-- **LuaJIT sieve optimization**: LuaJIT achieves ~4 ARM64 instructions per table access via SCEV-based invariant bounds check hoisting (`lj_record.c:1396-1434`), copy-substitution loop optimization (`lj_opt_loop.c:22-90`), and fused array addressing (`lj_asm_arm64.h:165-198`). These are trace JIT techniques not directly applicable to method JIT, but the target (4 insns/access) is the ceiling.
-- **V8 TurboFan element kind specialization**: TurboFan specializes loads/stores based on JSArray element kind (PACKED_SMI, PACKED_DOUBLE). Uses `CheckMaps` guards + unboxed representations. GScript's ArrayKind system is directly analogous.
+V8 Sparkplug always collects IC feedback during baseline execution. LuaJIT interpreter records type hints. JSC Baseline records ValueProfile per bytecode. All production engines collect feedback at the baseline tier — GScript is the outlier here.
 
 ### Reference Source Findings
-- **LuaJIT `lj_opt_fold.c:1886-1951`**: ABC fold rules eliminate redundant bounds checks. `abc_invar` specifically folds iteration-dependent bounds checks when SCEV analysis proves the loop variable is bounded by array length.
-- **LuaJIT `lj_asm_arm64.h:1037-1043`**: Colocated array optimization — small tables allocated with TNEW have array part colocated with header, eliminating pointer load.
+Round 12's knowledge entry (`opt/knowledge/feedback-typed-loads.md`) already documents V8/SpiderMonkey/JSC approaches in detail with file:line citations. The universal pattern: baseline tier records per-PC result type → optimizing tier reads it to insert speculative guards.
 
 ### Knowledge Base Update
-- Created `opt/knowledge/array-kind-table-access.md` — documents ArrayBool/ArrayFloat encoding, offsets, and the emitter dispatch gap
-- Created `opt/knowledge/matmul-tier-up-gap.md` — documents matmul stuck at Tier 1 (for future round)
+No new knowledge file needed — `feedback-typed-loads.md` and `array-kind-table-access.md` already cover the technique. Will update `feedback-typed-loads.md` after implementation to reflect Tier 1 collection approach.
 
 ## Source Code Findings
 
 ### Files Read
-- `emit_table.go:369-666` — emitGetTableNative and emitSetTableNative. Both have identical dispatch: Mixed(0) fall-through, Int(1) branch, else deopt. ArrayBool(3) and ArrayFloat(2) always deopt.
-- `ir_ops.go:1-222` — OpGetTable and OpSetTable are the only table access ops in IR. No typed variants.
-- `pass_licm.go:473-492` — canHoistOp whitelist does NOT include OpGetTable/OpSetTable (correctly: they have side effects). Future optimization: decompose into guard + raw access, let LICM hoist guard.
-- `graph_builder.go:614-637` — GETTABLE/SETTABLE → OpGetTable/OpSetTable. No arrayKind-aware lowering.
-- `jit/value_layout.go:57-77` — ArrayKind constants: AKMixed=0, AKInt=1, AKFloat=2, AKBool=3. Missing: `TableOffFloatArrayLen`, `TableOffBoolArrayLen`.
-- `runtime/table.go:8-46` — ArrayBool encoding: `[]byte`, 0=nil, 1=false, 2=true. ArrayFloat: `[]float64`, raw IEEE 754 (= NaN-boxed Value directly).
+1. **tier1_table.go** (545 lines): `emitBaselineGetTable` dispatches only Mixed(0)/Int(1). Line 258-262 show the CBNZ fallthrough for anything else. SetTable same pattern at line 332-336.
+2. **emit_table.go** (872 lines): Tier 2 `emitGetTableNative` already has Float/Bool fast paths (lines 422-490, round 13). Pattern to replicate.
+3. **emit.go** (ExecContext struct, lines 45-129): No FeedbackPtr field exists. Struct ends with `Tier2GlobalGenPtr`/`GlobalCacheIdx`. BaselineFeedbackPtr would go after `BaselineGlobalCachedGen` (line 84).
+4. **tier1_manager.go** (353 lines): `BaselineJITEngine.Execute` sets up ExecContext at lines 161-234. FeedbackPtr would be set alongside other Baseline* fields.
+5. **tiering_manager.go** (769 lines): `TryCompile` calls `proto.EnsureFeedback()` only before Tier 2 compilation (line 167). Need to move this earlier.
+6. **graph_builder.go** (939 lines): Lines 622-657 already insert OpGuardType from feedback. `feedbackToIRType` (line 925) maps FBFloat→TypeFloat, FBInt→TypeInt. Ready to consume feedback.
+7. **feedback.go** (79 lines): TypeFeedback is 3 bytes (Left/Right/Result, each uint8). FeedbackType lattice: Unobserved→concrete→Any.
+8. **func_profile.go** (142 lines): `shouldPromoteTier2` gates: pure-compute+loop→callCount≥2, loop+table→callCount≥3.
 
 ### Diagnostic Data
 
-**Sieve tiering**: Matches first clause in shouldPromoteTier2 (HasLoop + ArithCount >= 1 + no calls). Threshold=2. With REPS=3: call 1 at Tier 1, calls 2-3 at Tier 2. Sieve IS at Tier 2 for 2/3 of execution.
+**spectral_norm inner loop**: `v[j]` is GETTABLE on float array (ArrayFloat), `av[i] = sum` is SETTABLE on float array. With Tier 1 Float fast path, these become native. With feedback, Tier 2 inserts GuardType(float) → TypeSpecialize turns `Mul(any,any)` → `MulFloat(float,float)`.
 
-**ArrayBool exit-resume storm**: Sieve's `is_prime` table stores only booleans → Go runtime promotes to ArrayBool(3). The emitter dispatch hits `CBNZ X2, deoptLabel` for ArrayBool(3). Result: ~6–7M exit-resume round-trips per sieve(1M) call.
+**nbody inner loop**: `bodies[i]` is GETTABLE on Mixed array (table pointers). Then `bi.x`, `bi.y`, `bi.z` are GETFIELD returning float. GETTABLE feedback for bodies[i] would be FBTable. GETFIELD feedback for bi.x would be FBFloat — this is what enables typed arithmetic.
 
-**Matmul stuck at Tier 1**: matmul function called only once, threshold=2, OSR disabled. The hot O(n³) loop runs entirely at Tier 1 baseline JIT. Even at Tier 2, inner loop arithmetic would be generic (GetTable results typed `:any`). Documented in knowledge base for future round.
+**matmul inner loop**: `a[i][k]` and `b[k][j]` are double-GETTABLE: first access (row lookup) is on Mixed array (returns table), second access (element) is on Float array (returns float). Currently at Tier 1: the second GETTABLE exits to Go on every inner iteration (ArrayFloat not handled).
 
 ### Actual Bottleneck (data-backed)
-**Sieve**: ~100% of table operations fall to exit-resume due to missing ArrayBool fast path. This is the dominant bottleneck. The fast path type checks + bounds checks (~25 ARM64 insns per access) are secondary — they won't even execute until the ArrayBool dispatch is fixed.
+
+matmul: each inner iteration does 2 GETTABLE on float arrays (a_row[k], b_row[j]), each going through exit-resume at ~100-200ns. 27M inner iterations × 2 exit-resumes × ~150ns = ~8s of overhead. But matmul only takes 0.985s, suggesting either the inner loop count is smaller or exit-resume is faster (~35ns). Either way, eliminating exit-resume for float arrays removes the dominant per-iteration overhead.
+
+spectral_norm/nbody: these reach Tier 2, but the optimized code has `Mul(any, any)` because GETTABLE/GETFIELD results are untyped. Each generic Mul dispatches on type at runtime (~15-20 insns). With feedback→GuardType→MulFloat, the dispatch is eliminated (~3-4 insns).
 
 ## Plan Summary
-Add native ARM64 fast paths for ArrayBool and ArrayFloat to `emitGetTableNative` and `emitSetTableNative` in `emit_table.go`. This eliminates the exit-resume storm that makes sieve barely faster than VM (1.05x). Expected: sieve 0.239s → 0.10–0.15s (30–50% improvement). The fix is bounded (emit_table.go + value_layout.go + tests), high-confidence (binary optimization — either exits or doesn't), and establishes the `field_access` category for future rounds. Key risk: if sieve's table demotes to ArrayMixed at runtime due to nil writes, the optimization won't fire (diagnostic test required as Task 1 validation).
+
+Extend Tier 1's GETTABLE/SETTABLE with ArrayFloat/ArrayBool native fast paths (eliminating exit-resume) and add inline feedback collection stubs that record result types into FeedbackVector during Tier 1 execution. This closes the feedback pipeline: Tier 1 collects → Tier 2 reads → GuardType inserts → TypeSpecialize cascades. Expected -5-15% aggregate improvement, with matmul seeing the largest immediate gain (-15-25% from exit-resume elimination). Primary value is foundational: enables all future GetTable/GetField type specialization work.

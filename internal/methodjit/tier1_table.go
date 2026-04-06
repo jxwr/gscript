@@ -226,6 +226,8 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	slowLabel := nextLabel("gettable_slow")
 	doneLabel := nextLabel("gettable_done")
 	intArrayLabel := nextLabel("gettable_intarr")
+	floatArrayLabel := nextLabel("gettable_floatarr")
+	boolArrayLabel := nextLabel("gettable_boolarr")
 
 	// Load table value from R(B).
 	asm.LDR(jit.X0, mRegRegs, slotOff(b))
@@ -251,15 +253,19 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Extract integer key.
 	asm.SBFX(jit.X1, jit.X1, 0, 48) // X1 = signed int key
 
-	// Check key >= 0 (shared by both array kinds).
+	// Check key >= 0 (shared by all array kinds).
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, slowLabel)
 
-	// Dispatch on arrayKind: 0=Mixed, 1=Int, else=slow.
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, 2=Float, 3=Bool, else=slow.
 	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKBool)
+	asm.BCond(jit.CondEQ, boolArrayLabel)
+	asm.CMPimm(jit.X2, jit.AKFloat)
+	asm.BCond(jit.CondEQ, floatArrayLabel)
 	asm.CMPimm(jit.X2, jit.AKInt)
 	asm.BCond(jit.CondEQ, intArrayLabel)
-	asm.CBNZ(jit.X2, slowLabel) // not Mixed (0) and not Int (1) -> slow
+	asm.CBNZ(jit.X2, slowLabel) // not Mixed (0) -> slow
 
 	// --- ArrayMixed fast path ---
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // X2 = array.len

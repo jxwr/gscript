@@ -101,6 +101,32 @@ for i := 1; i <= 200; i++ { result = f(3) }
 `, "result")
 }
 
+func TestBaselineGetTable_FloatArray(t *testing.T) {
+	compareVMvsJIT(t, `
+func f() {
+    t := {1.5, 2.5, 3.5}
+    return t[0] + t[1] + t[2]
+}
+result := 0.0
+for i := 1; i <= 200; i++ { result = f() }
+`, "result")
+}
+
+func TestBaselineGetTable_BoolArray(t *testing.T) {
+	compareVMvsJIT(t, `
+func f() {
+    t := {true, false, true}
+    a := 0
+    if t[0] { a = a + 1 }
+    if t[1] { a = a + 10 }
+    if t[2] { a = a + 100 }
+    return a
+}
+result := 0
+for i := 1; i <= 200; i++ { result = f() }
+`, "result")
+}
+
 // ---------------------------------------------------------------------------
 // LEN
 // ---------------------------------------------------------------------------

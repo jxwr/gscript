@@ -58,9 +58,9 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 
 ## Next Step
 
-**Phase 3 blocked on feedback availability.** B3 peephole items exhausted. Remaining gains require deeper changes:
+**Phase 7 (round 14): Tier 1 feedback collection + ArrayFloat/ArrayBool fast paths.** Option C chosen: inline feedback stubs in Tier 1 ARM64. Also extends Tier 1 GETTABLE/SETTABLE with native Float/Bool array fast paths (same pattern as Tier 2 round 13). This unblocks Phase 3's guard insertion code AND gives immediate Tier 1 speedup for matmul/sieve.
 
-- **Feedback collection for Tier 1 (new phase needed)** — Option A: add lightweight feedback to Tier 1's Go-side exit handlers (GETTABLE/GETFIELD cache miss). Option B: one interpreter pass before Tier 2 compilation. Option C: inline feedback stubs in Tier 1 ARM64. This unblocks Phase 3's guard insertion code.
+After Phase 7:
 - **Phase 5 (matmul tier-up investigation)** — matmul may still be partially Tier 1; needs `-jit-stats` check
 - **Phase 6 (range analysis for float loops)** — extend overflow-check elimination to float arithmetic
 - **New direction**: the real bottleneck in float loops is memory traffic (LDR/STR to VM register file per float op) and the surviving FMUL/FADD dependency chain. Consider unboxed float SSA (eliminate NaN-boxing in Tier 2 float paths entirely) or loop unrolling to break dependency chains.
