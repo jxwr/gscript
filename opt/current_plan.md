@@ -1,7 +1,7 @@
 # Optimization Plan: Native ArrayBool/ArrayFloat Table Access
 
 > Created: 2026-04-06
-> Status: active
+> Status: completed
 > Cycle ID: 2026-04-06-native-array-kinds
 > Category: field_access
 > Initiative: standalone
@@ -84,7 +84,7 @@ Each task = one Coder sub-agent invocation.
 - [x] 1. **TDD + offset constants** — Write failing tests for ArrayBool and ArrayFloat GetTable/SetTable at Tier 2. Add `TableOffFloatArrayLen` and `TableOffBoolArrayLen` to `value_layout.go`. — file(s): `emit_table_typed_test.go` (new), `value_layout.go` — test: `TestTier2_GetTableArrayBool`, `TestTier2_SetTableArrayBool`, `TestTier2_GetTableArrayFloat`, `TestTier2_SetTableArrayFloat`
 - [x] 2. **ArrayBool fast path** — Add ArrayBool read/write paths to `emitGetTableNative` and `emitSetTableNative`. Extend arrayKind dispatch chain. — file(s): `emit_table.go` — test: tests from Task 1
 - [x] 3. **ArrayFloat fast path** — Add ArrayFloat read/write paths to `emitGetTableNative` and `emitSetTableNative`. — file(s): `emit_table.go` — test: tests from Task 1
-- [ ] 4. **Integration test + benchmark** — Run full test suite + sieve benchmark. Compare against latest.json baseline. — test: `go test ./internal/methodjit/ -timeout 120s` + manual sieve benchmark
+- [x] 4. **Integration test + benchmark** — Run full test suite + sieve benchmark. Compare against latest.json baseline. — test: `go test ./internal/methodjit/ -timeout 120s` + manual sieve benchmark
 
 ## Budget
 - Max commits: 4 functional (+1 revert slot)
@@ -94,6 +94,14 @@ Each task = one Coder sub-agent invocation.
 ## Results (filled after VERIFY)
 | Benchmark | Before | After | Change |
 |-----------|--------|-------|--------|
+| sieve | ~0.52s | ~0.39s | -25% (consistent across interleaved runs) |
+| table_array_access | ~0.30s | ~0.30s | neutral (within noise) |
+| fannkuch | 0.072s | 0.070s | neutral |
+| mandelbrot | 0.389s | 0.394s | neutral |
 
 ## Lessons (filled after completion/abandonment)
-What worked, what didn't, what to remember for next time.
+- Sieve improvement was 25%, not the predicted 30-50%. The gap is because the initialization loop (`is_prime[i] = true` for i=2..1M) does 1M sequential appends that are out-of-bounds, all going through exit-resume. Only the sieve marking loop and counting loop benefit from the native bool fast path.
+- ArrayFloat fast path is the simplest (float64 bits = NaN-boxed value, no conversion needed).
+- ArrayBool fast path is the most complex (3-way byte→value conversion for read, type check + conversion for write).
+- No regression in existing benchmarks — the 2 extra CMP+B.EQ instructions in the dispatch chain are negligible.
+- Next step for sieve: optimize table growth (append) path, or implement SCEV/bounds hoisting to eliminate per-access bounds checks in loops.

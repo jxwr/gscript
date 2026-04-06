@@ -7,10 +7,14 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "776d8007acc91fa71bc3f656bdacfaef67451ec6",
+  "uncommitted_files": [
+    "docs/23-the-harness.md",
+    "opt/current_plan.md",
+    "opt/state.json"
+  ],
+  "head_commit": "18dd63b00c8e71056b56463a6f9a4a9bc3e78a31",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T08:41:22Z",
+  "last_checkpoint": "2026-04-06T08:46:30Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",

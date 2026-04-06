@@ -10,8 +10,6 @@ After twelve optimization rounds, the compiler is about 10% faster. The workflow
 
 This post isn't about the compiler. It's about what happened when we tried to automate the process of making it faster, and discovered that the process was the real project all along.
 
----
-
 Post 20 ended with a pivot: trace JIT → V8-style Method JIT. Two tiers — baseline (1:1 bytecode templates) and optimizing (SSA IR → ARM64). The architecture worked. We had native BLR calls, inline field caches, GETGLOBAL value caches, on-stack replacement. The machine was built. Now we needed to make it fast.
 
 We built an automated optimization loop — each round a fresh Claude Code session cycling through phases: measure the gaps, analyze the bottleneck, plan a fix, implement it, verify, document. Every round independent, state passing through files on disk. Twelve rounds ran. Here's what actually happened:
@@ -48,8 +46,6 @@ Round 9 was different. Before writing the plan, we sat down and disassembled man
 
 Round 9 worked because we had data. Rounds 7-8 failed because we had theory.
 
----
-
 After round 11 (predict 2-4×, have to revert), a pattern was undeniable: **the bottleneck wasn't the compiler. It was the process of deciding what to do to the compiler.**
 
 Every round that failed had the same failure mode: read benchmark numbers → guess the root cause from theory → web-search how V8 solves it → write a plan assuming the V8 technique applies → implement → discover the plan was based on a wrong assumption about our own code.
@@ -57,8 +53,6 @@ Every round that failed had the same failure mode: read benchmark numbers → gu
 Every round that succeeded had a different pattern: read the actual ARM64 disassembly → count instructions per category → identify the exact code path causing overhead → check if existing infrastructure supports the fix → plan a surgical change → implement.
 
 The difference isn't technique knowledge. It's **whether you read your own code before planning.**
-
----
 
 Once we saw this, the workflow itself became the project. Over two days, we rebuilt the entire harness.
 
@@ -72,8 +66,6 @@ Once we saw this, the workflow itself became the project. Over two days, we rebu
 
 **REVIEW reads the user.** The most meta change. REVIEW (which runs every round) now reads the actual session log — the conversation between the user and Claude Code. It looks for interventions: moments where the user corrected or redirected the workflow. The goal isn't to list the user's requests. It's to understand *why* they intervened, check if the fix was already made, and identify remaining gaps. The principle: **if the user has to intervene twice for the same class of problem, the workflow has failed to learn.**
 
----
-
 This became the project's meta-principle, written into `CLAUDE.md`:
 
 > **The harness workflow must be capable of self-evolution. All efforts serve this principle.**
@@ -82,13 +74,9 @@ This became the project's meta-principle, written into `CLAUDE.md`:
 
 We're not there yet. Over 12 rounds, **every significant harness improvement came from human intervention**. REVIEW made parameter tweaks — calibration clauses, cooldown adjustments. But the structural changes — "read the code," "merge redundant phases," "add architecture audit" — all came from the user observing what went wrong and redesigning. The gap between "human-driven evolution" and "self-driven evolution" is the real project now.
 
----
-
 We set out to build a JIT compiler that beats LuaJIT. We ended up building a framework for iterative improvement — `opt-loop` — that's completely generic. The framework doesn't know it's optimizing a compiler. It just knows: measure something, pick the biggest gap, research how others solved it, read your own code, plan a bounded fix, implement with TDD, verify and record.
 
 We extracted it into a [standalone project](https://github.com/jxwr/opt-loop). You give it a `harness.md` describing what to measure and what categories your work falls into, and it runs the loop. We have example configs for bug-fix campaigns, test-coverage drives, and performance optimization. The anti-drift mechanisms — ceiling rule, initiative files, knowledge base, REVIEW that reads the user — are all generic. They solve the universal problem: long iterative work degrades into firefighting without structure.
-
----
 
 After 12 rounds, the honest numbers:
 
@@ -110,8 +98,6 @@ Round 13 is running as I write this. The new 3-phase pipeline, REVIEW every roun
 The compiler still needs to beat LuaJIT. The gap is 7-55×. But we're no longer guessing at what to fix. The harness reads the code, counts the instructions, and checks its own predictions.
 
 The process is the product.
-
----
 
 *Previous: [What Makes a JIT Compiler Fast](/22-jit-optimization-techniques)*
 
