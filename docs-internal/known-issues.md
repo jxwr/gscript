@@ -44,6 +44,14 @@
 - Pre-existing before Round 18, but store-to-load forwarding makes stale entries more visible
 - Low risk: dynamic-key overwrites of named fields are unusual
 
+### Tier 2 pipeline duplicated in 3 places — extract shared RunTier2Pipeline()
+- `compileTier2()` in tiering_manager.go is the production pipeline (10 passes)
+- `Diagnose()` in diagnose.go had its own copy (synced in Round 18 fix, but still a separate copy)
+- `tier2_float_profile_test.go` still has a stale 4-pass copy (missing Intrinsic/Inline/LoadElim/Range/LICM)
+- Other test files may also have stale copies
+- **Fix**: extract `RunTier2Pipeline(fn) (*Function, error)` as a shared function. One definition, zero drift.
+- Category: `arch_refactor`
+
 ### benchmarks/run_all.sh: VM/JIT suite may report inaccurate times
 - Round 12 MEASURE discovered silent failures in suite mode
 - Individual benchmark runs (`gscript -jit file.gs`) are reliable
