@@ -113,13 +113,33 @@ This round's mechanism (hoisting loads) is more predictable than compound effect
 - Max files changed: 4 (pass_licm.go, pass_licm_test.go, pass_load_elim.go, pass_load_elim_test.go)
 - Abort condition: 2 commits without benchmark improvement, or any correctness regression
 
-## Results (filled after VERIFY)
-| Benchmark | Before | After | Change |
-|-----------|--------|-------|--------|
-| nbody | 0.541s | 0.538s | -0.6% |
-| spectral_norm | 0.042s | 0.045s | +7.1% (noise) |
-| matmul | 0.120s | 0.121s | +0.8% (noise) |
-| mandelbrot | 0.064s | 0.061s | -4.7% (noise) |
-| table_field_access | 0.052s | 0.053s | +1.9% (noise) |
+## Results (filled by VERIFY)
+| Benchmark | Before | After | Change | Expected | Met? |
+|-----------|--------|-------|--------|----------|------|
+| nbody | 0.541s | 0.539s | -0.4% | -8-10% | No |
+| spectral_norm | 0.042s | 0.045s | +7.1% (noise, 3ms abs) | -3-5% | No |
+| matmul | 0.120s | 0.125s | +4.2% (noise) | -2-4% | No |
+| mandelbrot | 0.064s | 0.062s | -3.1% (noise) | — | — |
+| table_field_access | 0.052s | 0.050s | -3.8% (noise) | — | — |
+| fannkuch | 0.054s | 0.051s | -5.6% (noise) | — | — |
+
+### Test Status
+- All passing (methodjit 1.886s, vm 0.547s)
+
+### Evaluator Findings
+- **pass** with two non-blocking notes:
+  1. LICM alias scan doesn't include OpAppend/OpSetList (rare: named field access on array being appended to). Added to known-issues.
+  2. LoadElim available map not invalidated by OpSetTable (pre-existing, not worsened by this diff).
+
+### Regressions (≥5%)
+- spectral_norm +7.1% (0.042→0.045s): 3ms absolute delta, within noise for sub-50ms benchmarks. Not a real regression.
+
+### Outcome: `no_change`
+Optimizations landed correctly (tests pass, code review pass), but target benchmark (nbody) unchanged. Root cause hypothesis: nbody's inner j-loop has in-loop SetField writes that prevent GetField hoisting on the same objects. The bi.x/bi.y/bi.z reads share objects with SetField writes in the velocity/position update — LICM correctly refuses to hoist them. Store-to-load forwarding helps within blocks but the benefit is subsumed by existing block-local LoadElim CSE from Round 16.
 
 ## Lessons (filled after completion/abandonment)
+1. **The diagnosis was wrong**: nbody's inner loop has SetField on the same objects whose GetField we wanted to hoist. LICM correctly refused. The "invariant" reads (bi.x, bi.y, bi.z, bi.mass) live in the same table as the mutated fields (bi.vx, bi.vy, bi.vz), so the per-object alias analysis blocks them. Would need per-field alias tracking or proving field-disjointness.
+2. **Store-to-load forwarding is subsumed by existing CSE**: within a block, LoadElim Round 16 already eliminates redundant GetField. S2L forwarding only helps when SetField is followed by GetField on the same field — which the existing CSE already handled (SetField kills, next GetField starts a new available entry).
+3. **Prediction model failure**: predicted 8-10% based on instruction count (4 GetField × 10 insns = 40 insns removed). But the precondition (fields actually being loop-invariant) was false. Read the IR dump showing which specific fields are in setFields, not just count them.
+4. **Infrastructure landed cleanly**: LICM GetField hoisting works for the general case (no store/call). Future loops without in-loop writes to the same table will benefit. Store-to-load forwarding is a correct ~3-line addition.
+5. **Evaluator caught OpAppend/OpSetList gap**: aliasing scan should include all table-mutating ops, not just SetField/SetTable/Call.

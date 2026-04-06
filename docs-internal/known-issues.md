@@ -32,6 +32,18 @@
 - Four-way arrayKind dispatch in both GetTable and SetTable creates duplication
 - Consider splitting into `emit_table_get.go` / `emit_table_set.go`
 
+### LICM GetField alias scan incomplete (Round 18)
+- `OpAppend` and `OpSetList` not included in LICM's aliasing scan
+- Both mutate the table but LICM won't block GetField hoisting if they appear in loop
+- Low risk: named-field access on a table being appended to is rare
+- Fix: add OpAppend/OpSetList to hasLoopCall or a separate flag in pass_licm.go
+
+### LoadElim available map not invalidated by OpSetTable (pre-existing)
+- `SetTable(obj, key, val)` with dynamic key could alias a GetField(obj, field)
+- The available map only invalidates on SetField/Call/Self
+- Pre-existing before Round 18, but store-to-load forwarding makes stale entries more visible
+- Low risk: dynamic-key overwrites of named fields are unusual
+
 ### benchmarks/run_all.sh: VM/JIT suite may report inaccurate times
 - Round 12 MEASURE discovered silent failures in suite mode
 - Individual benchmark runs (`gscript -jit file.gs`) are reliable

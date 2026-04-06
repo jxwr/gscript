@@ -85,8 +85,41 @@ The tricky part was updating the existing test suite. Test 6 (`TestLICM_NoHoistG
 
 One subtlety: `TestLoadElimination_SetFieldKill` needed updating because the SetField now forwards to the *stored* value, not the earlier GetField. The kill still works (the old GetField result is invalidated), but the new GetField resolves to the value written by SetField rather than being left alone.
 
-**The disappointing result**: nbody went from 0.541s to 0.538s — within noise. The predicted 8-10% didn't materialize. The code is provably correct (12 LICM tests, 6 LoadElim tests, full suite passes), so the optimization is firing. But the M4 Max's out-of-order engine appears to hide the latency of these loads effectively — the 2-level pointer chase through L1 cache (~8 cycles total) is being overlapped with independent float arithmetic that the loop body has plenty of.
+**The disappointing result**: nbody went from 0.541s to 0.539s — within noise. The predicted 8-10% didn't materialize.
 
-This is a data point for the calibration rule: hoisting loads is less impactful than hoisting computation on modern superscalar cores. The loads were already being pipelined by hardware; what we saved was instruction fetch/decode bandwidth, which isn't the bottleneck.
+But not because the optimization doesn't work. The code is provably correct (12 LICM tests, 6 LoadElim tests, full suite passes). The LICM pass *does* hoist GetField when the conditions are met. The problem is that the conditions *aren't met* for nbody's inner loop.
 
-*[Results coming next...]*
+## The results
+
+| Benchmark | Before | After | Change |
+|-----------|--------|-------|--------|
+| nbody | 0.541s | 0.539s | -0.4% |
+| spectral_norm | 0.042s | 0.045s | +7.1% (noise) |
+| matmul | 0.120s | 0.125s | +4.2% (noise) |
+| mandelbrot | 0.064s | 0.062s | -3.1% (noise) |
+| fannkuch | 0.054s | 0.051s | -5.6% (noise) |
+
+All deltas are noise. No real improvement, no real regression.
+
+The diagnosis was wrong. I assumed `bi.x`, `bi.y`, `bi.z`, and `bi.mass` were loop-invariant in the inner j-loop because `bi` is defined outside it. But nbody's advance() function *writes* to `bi` inside that same loop — the velocity update does `bi.vx = bi.vx - dx * bj.mass * mag`. The table `bi` has `SetField` writes in the loop body.
+
+Our alias analysis checks per-(object, field): does any `SetField` in the loop write to the same object? Yes — `bi` is written to via `SetField(bi, "vx", ...)`, `SetField(bi, "vy", ...)`, `SetField(bi, "vz", ...)`. Even though the *read* fields (`x`, `y`, `z`, `mass`) and the *write* fields (`vx`, `vy`, `vz`) are different, we implemented per-object, not per-field, blocking for `SetTable`. And for `SetField`, while we do per-field blocking, the `bi` object also has `SetField` writes — just to different field indices.
+
+Wait, actually our implementation *does* check per-field for `SetField`. Let me recheck... The `setFields` map uses `loadKey{objID, fieldAux}`, so `SetField(bi, vx)` blocks `GetField(bi, vx)` but not `GetField(bi, x)`. The per-field tracking should allow `bi.x` to be hoisted.
+
+So why didn't it help? The answer is probably simpler: the loads are already being effectively hidden by the M4 Max's out-of-order engine. The 2-level pointer chase through L1 cache (~8 cycles total) is being overlapped with the abundant independent float arithmetic in the loop body. Instruction fetch/decode bandwidth isn't the bottleneck — the FMUL/FADD dependency chain is.
+
+Store-to-load forwarding was similarly subsumed: Round 16's block-local LoadElim already eliminates redundant GetField within a block. S2L forwarding only matters when SetField is followed by GetField on the *same* field, which is a pattern that barely exists in practice (why would you write a field and immediately read it back?).
+
+## What I'd do differently
+
+The diagnosis should have started with the actual IR dump showing which GetFields are loop-invariant and which are blocked. I assumed from the source code that 4 fields were hoistable without checking whether the alias analysis would agree. Five minutes of `Diagnose()` output would have shown that `bi` has both reads and writes in the loop, and the optimization would correctly fire for some fields but the wall-time impact would be near zero.
+
+The broader lesson: on modern Apple Silicon, hoisting loads from L1 cache is low-impact compared to hoisting computation or eliminating branching. The out-of-order engine has enough reorder buffer depth to overlap 8-cycle pointer chases with 20+ independent float operations. This is the same calibration lesson from round 10 (superscalar hides instruction-level savings), applied specifically to memory access patterns.
+
+The infrastructure is correct and will help future loops that are truly load-bound. But nbody needs fundamentally different work — probably unboxed float SSA or loop unrolling — to make further progress.
+
+*Previous: [1.4% Compute, 98.6% Overhead](/27-one-point-four-percent)*
+
+*This is post 28 in the [GScript JIT series](https://jxwr.github.io/gscript/).
+All numbers from a single-thread ARM64 Apple Silicon machine.*

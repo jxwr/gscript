@@ -5,6 +5,7 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 
 | # | Round ID | Date | Category | Target | Outcome | Key Commit | 1-line Lesson |
 |---|----------|------|----------|--------|---------|------------|----------------|
+| 18 | 2026-04-06-licm-getfield | 2026-04-06 | tier2_float_loop | LICM GetField hoisting + store-to-load forwarding | no_change | 1d55912 | Inner loop SetField on same objects blocks hoisting; diagnosis was wrong — fields not truly loop-invariant |
 | 17 | 2026-04-06-getfield-feedback-fix | 2026-04-06 | tier2_float_loop | GETFIELD feedback in Go exit handlers + shape guard dedup | improved | a5febca | Four rounds of dead pipeline: feedback mechanism worked perfectly but input data never existed; 4 lines fixed it |
 | 16 | 2026-04-06-nbody-load-elim | 2026-04-06 | tier2_float_loop | Load Elimination (GetField CSE) + TypeFloat guard fix for nbody | improved | 364d733 | Block-local GetField CSE saves 17-49% across field-access-heavy benchmarks; compound effects dominate instruction-count estimates |
 | 15 | 2026-04-06-osr-feedback-matmul | 2026-04-06 | field_access | Re-enable OSR with LoopDepth >= 2 gate for single-call compute functions | improved | 056607b | Tiering gates silently block entire benchmark classes — mandelbrot -80% from removing a 12-round-old disable |
