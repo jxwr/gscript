@@ -7,22 +7,10 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [
-    ".claude/prompts/review.md",
-    "docs-internal/decisions/001-method-jit-over-trace-jit.md",
-    "docs-internal/decisions/002-three-tier-architecture.md",
-    "docs-internal/decisions/003-cfg-ssa-braun-builder.md",
-    "docs-internal/decisions/004-op-exit-resume.md",
-    "docs-internal/decisions/005-raw-int-loop-optimization.md",
-    "docs-internal/decisions/006-forward-walk-regalloc.md",
-    "docs-internal/diagnostics/debug-ir-pipeline.md",
-    "opt/initiatives/recursive-tier2-unlock.md",
-    "opt/initiatives/tier2-float-loops.md",
-    "opt/state.json"
-  ],
-  "head_commit": "2d77747817107d8d29918e8161bac3741217dae1",
+  "uncommitted_files": [],
+  "head_commit": "1b60021944f16f609ed817f93d314b865384ad4e",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T09:06:11Z",
+  "last_checkpoint": "2026-04-06T09:06:50Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
