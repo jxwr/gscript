@@ -535,11 +535,54 @@ else
 
     if $STATUS_BAR; then
         STATUS_TMPDIR=$(mktemp -d)
-        trap "rm -rf '$STATUS_TMPDIR' 2>/dev/null; kill '$STATUS_PID' 2>/dev/null" EXIT
-        printf "%s%s⚡ status bar: summarizing every %ss via Haiku%s\n" "$B" "$C_HEAD" "$STATUS_INTERVAL" "$R"
+        STATUS_TEXT="⚡ waiting for first summary..."
+        # Fixed bar only works on real TTY; fall back to inline otherwise
+        STATUS_FIXED=false
+        if [ -t 1 ]; then
+            STATUS_FIXED=true
+        fi
+
+        if $STATUS_FIXED; then
+            TERM_LINES=$(tput lines 2>/dev/null || echo 24)
+
+            setup_scroll_region() {
+                TERM_LINES=$(tput lines 2>/dev/null || echo 24)
+                printf '\033[1;%dr' "$((TERM_LINES - 1))"
+                draw_status_bar
+                printf '\033[%d;1H' "$((TERM_LINES - 1))"
+            }
+
+            draw_status_bar() {
+                printf '\033[s'
+                printf '\033[%d;1H\033[K' "$TERM_LINES"
+                printf '%s %s⚡ %s %s' "$C_TIME$(date '+%H:%M:%S')$R" "$B$C_HEAD" "$STATUS_TEXT" "$R"
+                printf '\033[u'
+            }
+
+            cleanup_status_bar() {
+                printf '\033[1;%dr' "$(tput lines 2>/dev/null || echo 24)"
+                printf '\033[%d;1H\n' "$(tput lines 2>/dev/null || echo 24)"
+                rm -rf "$STATUS_TMPDIR" 2>/dev/null
+                kill "$STATUS_PID" 2>/dev/null
+            }
+            trap cleanup_status_bar EXIT INT TERM
+            trap 'setup_scroll_region' WINCH
+            setup_scroll_region
+        else
+            # Inline fallback (pipe/non-TTY): print status lines in stream
+            draw_status_bar() {
+                printf "%s%s%s  %s⚡ %s%s\n" \
+                    "$C_TIME" "$(date '+%H:%M:%S')" "$R" "$B$C_HEAD" "$STATUS_TEXT" "$R"
+            }
+            cleanup_status_bar() {
+                rm -rf "$STATUS_TMPDIR" 2>/dev/null
+                kill "$STATUS_PID" 2>/dev/null
+            }
+            trap cleanup_status_bar EXIT INT TERM
+        fi
     fi
 
-    # Check for completed Haiku result and print it.
+    # Check for completed Haiku result and update status bar.
     check_status_result() {
         $STATUS_BAR || return
         if [ -n "$STATUS_PID" ] && ! kill -0 "$STATUS_PID" 2>/dev/null; then
@@ -548,16 +591,13 @@ else
                 result=$(head -1 "$STATUS_TMPDIR/result" 2>/dev/null | head -c 100)
                 if [ -n "$result" ] && [ "$result" != "$STATUS_RESULT" ]; then
                     STATUS_RESULT="$result"
-                    # Show current agent/session context
-                    local agent_label
+                    local agent_label agent_kind
                     agent_label=$(session_title "$current_file" 20)
-                    local agent_kind
                     if [ "$current_file" = "$MAIN_SESSION" ]; then agent_kind="main"
                     elif is_subagent "$current_file"; then agent_kind="agent"
                     else agent_kind="child"; fi
-                    printf "%s%s%s  %s⚡ [%s|%s] %s%s\n" \
-                        "$C_TIME" "$(date '+%H:%M:%S')" "$R" \
-                        "$B$C_HEAD" "$agent_kind" "$agent_label" "$result" "$R"
+                    STATUS_TEXT="[${agent_kind}|${agent_label}] ${result}"
+                    draw_status_bar
                 fi
             fi
             STATUS_PID=""
@@ -641,7 +681,6 @@ PROMPT_EOF
                 print_switch_banner "$new_best"
                 current_file="$new_best"
                 offset=0
-                STATUS_BUFFER=""
                 total=$(wc -l < "$current_file" | tr -d ' ')
                 if [ "$total" -gt 0 ]; then
                     process_lines "$current_file" 0 "$total"
