@@ -337,7 +337,8 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 
 // emitBaselineSetTable emits native ARM64 for OP_SETTABLE: R(A)[RK(B)] = RK(C)
 // Fast path for integer keys with array bounds check.
-// Supports both ArrayMixed ([]Value) and ArrayInt ([]int64) array kinds.
+// Supports ArrayMixed ([]Value), ArrayInt ([]int64), ArrayFloat ([]float64),
+// and ArrayBool ([]byte) array kinds.
 func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	a := vm.DecodeA(inst)
 	bidx := vm.DecodeB(inst) // RK(B) = key
@@ -346,6 +347,8 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	slowLabel := nextLabel("settable_slow")
 	doneLabel := nextLabel("settable_done")
 	intArrayLabel := nextLabel("settable_intarr")
+	floatArrayLabel := nextLabel("settable_floatarr")
+	boolArrayLabel := nextLabel("settable_boolarr")
 
 	// Load table value from R(A).
 	asm.LDR(jit.X0, mRegRegs, slotOff(a))
@@ -375,11 +378,15 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, slowLabel)
 
-	// Dispatch on arrayKind: 0=Mixed, 1=Int, else=slow.
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, 2=Float, 3=Bool, else=slow.
 	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKBool)
+	asm.BCond(jit.CondEQ, boolArrayLabel)
+	asm.CMPimm(jit.X2, jit.AKFloat)
+	asm.BCond(jit.CondEQ, floatArrayLabel)
 	asm.CMPimm(jit.X2, jit.AKInt)
 	asm.BCond(jit.CondEQ, intArrayLabel)
-	asm.CBNZ(jit.X2, slowLabel) // not Mixed (0) and not Int (1) -> slow
+	asm.CBNZ(jit.X2, slowLabel) // not Mixed (0) -> slow
 
 	// --- ArrayMixed fast path ---
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen)
@@ -407,6 +414,60 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.SBFX(jit.X4, jit.X4, 0, 48) // X4 = raw int64
 	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 	asm.STRreg(jit.X4, jit.X2, jit.X1) // intArray[key] = int64
+	asm.MOVimm16(jit.X5, 1)
+	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	asm.B(doneLabel)
+
+	// --- ArrayFloat fast path ---
+	asm.Label(floatArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArrayLen) // floatArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, slowLabel)
+	// Load value RK(C) and check it's a float.
+	loadRK(asm, jit.X4, cidx) // X4 = value (NaN-boxed)
+	// Float check: if top bits indicate tagged (int/bool/nil/ptr), not a float → slow.
+	jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
+	asm.BCond(jit.CondEQ, slowLabel)       // tagged → slow (not a float)
+	// Float64 bits ARE the NaN-boxed representation — store directly.
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
+	asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
+	// Set keysDirty flag.
+	asm.MOVimm16(jit.X5, 1)
+	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	asm.B(doneLabel)
+
+	// --- ArrayBool fast path ---
+	asm.Label(boolArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArrayLen) // boolArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, slowLabel)
+	// Load value RK(C).
+	loadRK(asm, jit.X4, cidx) // X4 = value (NaN-boxed)
+	// Check value type: must be bool (tag=0xFFFD) or nil (0xFFFC).
+	asm.LSRimm(jit.X5, jit.X4, 48)
+	asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
+	asm.CMPreg(jit.X5, jit.X6)
+	boolOkLabel := nextLabel("settable_bool_isbool")
+	asm.BCond(jit.CondEQ, boolOkLabel)
+	// Check if nil.
+	asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
+	asm.CMPreg(jit.X5, jit.X6)
+	asm.BCond(jit.CondNE, slowLabel) // not bool, not nil → slow
+	// Nil → byte 0.
+	asm.MOVimm16(jit.X4, 0)
+	setByteLabel := nextLabel("settable_bool_store")
+	asm.B(setByteLabel)
+	asm.Label(boolOkLabel)
+	// Bool: extract payload bit 0. false=0xFFFD000000000000 (payload=0) → byte 1
+	//                                true=0xFFFD000000000001 (payload=1) → byte 2
+	// Conversion: byte = payload + 1
+	asm.LoadImm64(jit.X5, 1)
+	asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
+	asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
+	asm.Label(setByteLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
+	asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
+	// Set keysDirty flag.
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 	asm.B(doneLabel)

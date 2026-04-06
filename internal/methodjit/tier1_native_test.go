@@ -127,6 +127,36 @@ for i := 1; i <= 200; i++ { result = f() }
 `, "result")
 }
 
+func TestBaselineSetTable_FloatArray(t *testing.T) {
+	compareVMvsJIT(t, `
+func f() {
+    t := {1.0, 2.0, 3.0}
+    t[0] = 10.5
+    t[2] = 30.5
+    return t[0] + t[1] + t[2]
+}
+result := 0.0
+for i := 1; i <= 200; i++ { result = f() }
+`, "result")
+}
+
+func TestBaselineSetTable_BoolArray(t *testing.T) {
+	compareVMvsJIT(t, `
+func f() {
+    t := {true, false, true}
+    t[0] = false
+    t[2] = false
+    a := 0
+    if t[0] { a = a + 1 }
+    if t[1] { a = a + 10 }
+    if t[2] { a = a + 100 }
+    return a
+}
+result := 0
+for i := 1; i <= 200; i++ { result = f() }
+`, "result")
+}
+
 // ---------------------------------------------------------------------------
 // LEN
 // ---------------------------------------------------------------------------
