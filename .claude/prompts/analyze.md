@@ -80,6 +80,35 @@ Just read the existing documents:
 
 ---
 
+## Step 1b — Architectural Reasoning (before diving into code)
+
+After selecting a target, step back and think at the **system design** level.
+Don't look at instructions yet. Ask these questions:
+
+1. **What DESIGN DECISION causes this gap?** Not "which instruction is slow" but "which architectural
+   choice makes this class of code slow." Examples:
+   - "The calling convention spills all registers before every call — this limits ALL call-heavy code"
+   - "NaN-boxing means every value crosses a 64-bit boundary — this limits all tight loops"
+   - "Tier 2 treats self-calls and foreign-calls identically — missed specialization opportunity"
+
+2. **Is this bottleneck shared across benchmarks?** If fib/ackermann/mutual_recursion all have the
+   same root cause (call overhead), the fix should be architectural (calling convention redesign),
+   not per-benchmark (fib-specific hack).
+
+3. **What would V8/JSC do here?** Not "what pass do they have" but "how is their system designed
+   differently to avoid this class of problem."
+
+4. **Read `docs/` blog posts** for prior art in THIS project — we may have solved this before
+   under a different architecture (e.g., trace JIT had accumulator pinning for fib, deleted during pivot).
+
+5. **Check `constraints.md` as OPPORTUNITY source**, not just blocklist. A constraint like "Tier 2 BLR
+   is 15-20ns vs Tier 1's 10ns" isn't just a warning — it's pointing at a design flaw worth fixing.
+
+Write 2-3 sentences in the analyze report under `## Architectural Insight`. If the answer is
+"this is a local code issue, not architectural" — say that and move on. But don't skip the question.
+
+---
+
 ## Step 2 — External Research (knowledge layer)
 
 Spawn exactly **ONE Research sub-agent** (Sonnet model) for all of Step 2 (web search + reference source + knowledge base).
