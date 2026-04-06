@@ -76,23 +76,8 @@ Execute tasks from `current_plan.md` in order (including any injected tasks). Fo
 
 ## After all tasks — Update the round blog
 
-Read `docs/draft.md` (created by ANALYZE). Append the implementation section:
+Read `docs/draft.md` (created by ANALYZE). Continue the post naturally — tell what happened
+during implementation. No fixed headers. Tell the story: what was easy, what broke, what
+surprised you. Show interesting code or IR, not task checklists. Be honest.
 
-```markdown
-## What we built
-
-[Describe what actually happened during implementation. Not a task checklist —
-tell the story. What was straightforward? What surprised you? Did TDD catch
-anything? Did you have to deviate from the plan?
-
-Show real code or IR diffs where they're interesting. "We added 20 lines to
-graph_builder.go" is boring. "The key insight was that GetTable's result type
-is already in the FeedbackVector — we just weren't reading it" is interesting.
-
-If something broke, say what and how you fixed it. If a Coder agent struggled,
-say why. Be honest about what was hard.]
-
-*[Results coming next...]*
-```
-
-Write like you're explaining to a smart colleague what you just spent 2 hours on.
+End with `*[Results coming next...]*`.

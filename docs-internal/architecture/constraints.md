@@ -1,7 +1,7 @@
 # Architecture Constraints & Notes
 
 > **ANALYZE reads this every round.** Updated by Architecture Audit (every 2 rounds).
-> Last full audit: Round 17 (2026-04-06)
+> Last full audit: Round 19 (2026-04-07)
 
 ## Tier Constraints
 
@@ -53,12 +53,21 @@ Ordering constraints:
 - **Shape guard deduplication** (Round 17): `emitContext.shapeVerified` tracks per-block shape-verified table SSA values. Subsequent GetField/SetField on same table with same shapeID skip type+nil+shape check (~11 insns saved). Invalidated by OpCall, OpSelf, OpSetTable, and block boundaries.
 - **Remaining feedback gap**: GETTABLE mixed-array path does NOT record feedback (line 279 of tier1_table.go). Mixed-array accesses returning tables or mixed values get FBUnobserved. Acceptable — typed arrays are the important case.
 
+## Table Access Overhead (Round 19 audit)
+
+- **GetTable/SetTable per-access: ~35 ARM64 insns** (from diagnostic on sieve). Only 1-2 are the actual load/store. Overhead: table type check (10), nil/metatable check (3), key validation (6), array kind dispatch (8), bounds check + base load (4), dirty flag (3).
+- **No dedup for GetTable/SetTable** — unlike GetField (which has `shapeVerified`), GetTable does full validation on every access. Multiple table accesses on the same table in the same block repeat all checks.
+- **No cross-block table validation** — even for loop-invariant tables (e.g., sieve's `is_prime`), the full validation runs every iteration. V8 hoists CheckMaps to loop preheaders; GScript does not.
+- **No array kind feedback** — Tier 1 does not record which array kind (Mixed/Int/Float/Bool) is used. The 4-way dispatch in GetTable/SetTable runs every time. Adding kind feedback would let Tier 2 specialize to a single path.
+- **Diagnostic test pipeline mismatch**: `tier2_float_profile_test.go:profileTier2Func` uses a simplified pipeline (no Intrinsic, Inline, LoadElim, RangeAnalysis, LICM, no feedback). Diagnostics from this test do NOT reflect production codegen. Use `Diagnose()` or TieringManager for production-accurate data.
+
 ## Technical Debt
 
 - `benchmarks/run_all.sh` has a bug: VM/JIT suite benchmarks silently fail (discovered round 12). Individual benchmark runs work.
+- `tier2_float_profile_test.go:profileTier2Func` uses stale simplified pipeline — does not match `compileTier2()` (missing 6 passes + feedback). Diagnostic data is misleading for type-specialized analysis.
 
 ## Test Coverage Notes
 
-- 81% test-to-source ratio (14207 test lines / 17450 source lines)
+- 85% test-to-source ratio (15,459 test lines / 18,104 source lines) — up from 81% at Round 17
 - 24 source files have no corresponding test file (mostly Tier 1 handlers and emit files)
 - Key gap: `loops.go` (loop infrastructure) has no dedicated tests — tested indirectly via `pass_licm_test.go`

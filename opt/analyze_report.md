@@ -1,89 +1,95 @@
-# Analyze Report — Round 18
+# Analyze Report — Round 19
 
-> Date: 2026-04-06
-> Cycle ID: 2026-04-06-licm-getfield
+> Date: 2026-04-07
+> Cycle ID: 2026-04-07-table-kind-specialize
 
 ## Architecture Audit
 
-Quick read (rounds_since_arch_audit=1). arch_check.sh:
-- ⚠ emit_table.go 978 lines (22 from limit) — no changes planned this round
-- ⚠ emit_dispatch.go 969 lines — no changes planned
-- ⚠ graph_builder.go 939 lines — no changes planned
-- 1 TODO/HACK marker. 25 source files without test files. constraints.md current (updated round 17).
+**Full audit** (rounds_since_arch_audit=2). Key findings:
 
-No new issues. Plan touches only pass_licm.go and pass_load_elim.go (506 and 85 lines respectively — safe).
+- **emit_table.go 978 lines** ⚠ CRITICAL (unchanged since R17). MUST split this round — plan includes as Task 0.
+- **emit_dispatch.go 969 lines** ⚠ CRITICAL (unchanged). No changes planned this round.
+- **graph_builder.go 939 lines** ⚠ (unchanged). Minor change planned (kind feedback propagation, ~10 lines).
+- **pass_licm.go 546 lines** — grew +40 from R17 (GetField hoisting in R18). Healthy.
+- **Total source: 18,104 lines** (up from 17,450 at R17 audit). Test ratio: 85% (up from 81%).
+- **Diagnose() pipeline synced** (R18 commit 92e08d1). But `tier2_float_profile_test.go:profileTier2Func` still uses simplified pipeline (only TypeSpec→ConstProp→DCE, no Intrinsic/Inline/LoadElim/RangeAnalysis/LICM, no feedback). Diagnostic data from this test is misleading for type-specialized analysis. Added to constraints.md.
+- **New finding: table access overhead** — GetTable/SetTable emit 35 insns per access (1 actual load/store). No dedup exists (unlike GetField's shapeVerified). No array kind feedback. Added to constraints.md.
+- **LICM GetField hoisting** (R18 infra): works correctly for loops without calls or same-field writes. Infrastructure is clean.
+- **Feedback pipeline**: end-to-end working. GETFIELD records on Tier 1 fast path (line 142 tier1_table.go). GETTABLE records on Tier 1 typed-array fast paths.
+
+Updated: `docs-internal/architecture/constraints.md` with Table Access Overhead section and diagnostic test mismatch note.
 
 ## Gap Classification
 
 | Category | Benchmarks | Total Gap vs LuaJIT | Blocked? |
 |----------|------------|---------------------|----------|
-| recursive_call | fib (47.9x), ackermann (41.8x), mutual_recursion (47.3x) | 1.744s | **BLOCKED** (failures=2) |
-| tier2_float_loop | nbody (15.9x), spectral_norm (6.0x), matmul (5.5x), sum_primes (2.0x), mandelbrot (1.10x) | 0.648s | No (failures=0) |
-| field_access | sieve (8.5x), sort (5.4x), fannkuch (2.7x) | 0.153s | No (failures=0) |
-| gofunction_overhead | method_dispatch (huge) | 0.097s | No (failures=0) |
-| allocation_heavy | binary_trees (regression), object_creation (regression) | N/A (no LuaJIT baseline) | No |
+| recursive_call | fib (56.8x), ackermann (41.7x), mutual_recursion (45.0x) | 1.770s | **BLOCKED** (failures=2) |
+| tier2_float_loop | nbody (16.3x), spectral_norm (5.6x), matmul (6.0x), mandelbrot (1.2x), sum_primes (2.0x) | 0.660s | No (failures=1) |
+| field_access | sieve (7.5x), sort (4.6x), fannkuch (2.7x) | 0.144s | No (failures=0) |
+| gofunction_overhead | method_dispatch (regression) | 0.100s | No (failures=0) |
+| allocation_heavy | binary_trees, object_creation (regressions) | N/A | No (failures=0) |
 
 ## Blocked Categories
 - `recursive_call` (category_failures=2): Tier 2 net-negative for recursive functions. Needs native recursive BLR or Tier 1 specialization.
 
 ## Active Initiatives
-- `opt/initiatives/tier2-float-loops.md` — Phase 9 next (shape check / field load hoisting)
+- `opt/initiatives/tier2-float-loops.md` — paused (R18 no_change, failures=1)
 - `opt/initiatives/recursive-tier2-unlock.md` — paused (blocked)
 
 ## Selected Target
 
-- **Category**: tier2_float_loop
-- **Initiative**: opt/initiatives/tier2-float-loops.md (Phase 9)
-- **Reason**: nbody has the largest absolute gap (0.507s) among non-blocked benchmarks. Active initiative with clear next phase. LICM for GetField builds on existing infrastructure (pass_licm.go from round 8-9). No architectural constraints blocking this work.
-- **Benchmarks**: nbody (primary), spectral_norm/matmul (secondary)
+- **Category**: field_access
+- **Initiative**: standalone
+- **Reason**: (1) field_access has 0 failures, safe to try. (2) sieve at 7.5x has clear, data-backed bottleneck in table access overhead. (3) Table access optimization benefits ALL table-heavy benchmarks (sieve, matmul, spectral_norm, fannkuch, nbody). (4) Previous rounds (13-14) showed field_access optimizations can yield large gains (matmul -80%, sieve -56%). (5) tier2_float_loop has failures=1 — one more no_change risks ceiling.
+- **Benchmarks**: sieve (primary), matmul/spectral_norm/fannkuch (secondary)
 
 ## Prior Art Research
 
 ### Web Search Findings
-Confirmed V8 TurboFan, LuaJIT, and SpiderMonkey all implement cross-block load elimination with store-to-load forwarding. V8's approach (ComputeLoopState kills written fields, survivors propagate) maps directly to GScript's LICM fixpoint.
+V8, LuaJIT, and SpiderMonkey all specialize table/array access based on observed element kind. V8 uses CheckMaps + element-kind-specific LoadElement/StoreElement. LuaJIT records exact table layout during trace recording and emits direct AREF/HREF ops. SpiderMonkey Warp reads CacheIR stubs for kind-specific emit.
 
 ### Reference Source Findings
-- V8 `load-elimination.cc:1363-1465`: ComputeLoopState scans loop body, kills StoreField fields, propagates survivors as loop-invariant
-- V8 `load-elimination.cc:786-817`: ReduceCheckMaps eliminates shape checks when Maps already known (cross-block)
-- V8 `load-elimination.cc:1048`: ReduceStoreField records stored value for forwarding
-- LuaJIT `lj_opt_mem.c:162`: fwd_ahload with ALIAS_MUST → store-to-load forwarding
-- LuaJIT `lj_opt_loop.c:77-85`: cross-iteration forwarding via loop_unroll re-emission
+- V8 `load-elimination.cc:786`: ReduceCheckMaps eliminates redundant shape/kind checks when already known
+- V8 `simplified-lowering.cc`: Element kind from Maps drives LoadElement/StoreElement lowering
+- LuaJIT `lj_record.c`: AREF instruction specializes array-part access, HREF for hash part. No runtime dispatch.
+- SpiderMonkey `WarpBuilder.cpp`: GuardShape + kind-specific LoadElement
 
 ### Knowledge Base Update
-Written: `opt/knowledge/cross-block-load-elim.md` — comprehensive comparison of V8/LuaJIT/SpiderMonkey load elimination with GScript gap analysis and implementation guidance.
+Research agent writing `opt/knowledge/table-access-specialization.md` (in progress).
 
 ## Source Code Findings
 
 ### Files Read
-- `pass_licm.go` (506 lines): `canHoistOp` whitelist does NOT include OpGetField. LICM currently only hoists constants, LoadSlot, and pure arithmetic. Extension point is clear: add OpGetField with field-write alias check.
-- `pass_load_elim.go` (85 lines): Block-local only. OpSetField case does `delete(available, key)` but never records the stored value. 3-line fix enables store-to-load forwarding.
-- `emit_table.go` (978 lines): `emitGetField` full shape check ~16 insns, deduped path ~5-6 insns. shapeVerified reset at block boundaries (emit_compile.go:527).
-- `graph_builder.go:639-661`: GetField emits with TypeAny, inserts OpGuardType when feedback is available. Aux = constant pool index, Aux2 = shapeID<<32|fieldIndex.
-- `regalloc.go`: carried map + LICM invariant carry already support pinning preheader-defined values in FPRs across loop body. Hoisted GetField values would automatically benefit.
+- `emit_table.go` (978 lines): Full GetTable/SetTable emit with 4-way kind dispatch. `emitGetTableNative` and `emitSetTableNative` handle all array kinds (Mixed/Int/Float/Bool). No dedup mechanism (unlike GetField's shapeVerified).
+- `tier1_table.go` (774 lines): Tier 1 GETFIELD fast path with feedback recording (line 142). GETTABLE fast paths for typed arrays with feedback. No array KIND feedback — only value TYPE feedback.
+- `graph_builder.go` (939 lines): GetTable/GetField with GuardType insertion from feedback. No kind information propagated.
+- `regalloc.go` (684 lines): LICM invariant carry (FPR-only). Preheader detection and pinned invariants.
+- `emit_compile.go` (585 lines): Compile pipeline, shapeVerified init, loop info computation.
+- `pass_licm.go` (546 lines): LICM with GetField hoisting (R18). canHoistOp whitelist.
 
 ### Diagnostic Data
 
-**CAVEAT**: The profile test (tier2_float_profile_test.go) uses a simplified pipeline missing IntrinsicPass, InlinePass, LoadEliminationPass, RangeAnalysisPass, LICM. Production codegen is better.
+**Sieve inner marking loop (B7+B8, while-style loop):**
+- IR: `Le v33, v34 → Branch → SetTable v77, v33, v37 → AddInt v33, v78 → Jump`
+- ARM64: ~62 insns per iteration on fast path
+- SetTable breakdown: 35 insns (1 actual store, 32 overhead, 2 branching)
+- AddInt: 11 insns (includes NaN-box unbox + overflow check)
+- Le+Branch: ~8 insns (comparison + NaN-box bool + branch)
+- Note: diagnostic from simplified pipeline (no LICM/carry). Production may be better for AddInt/Le.
 
-From the simplified pipeline IR dump (advance() block B2 = inner j-loop body):
-- 56 IR instructions: 19 GetField, 6 SetField, 19 float arith, 1 Call (math.sqrt before intrinsic), 2 GetGlobal + 1 GetTable
-- Redundant loads: bi.mass×3, bj.mass×3 (handled by LoadElim in production)
-- Static ARM64: ~1,768 insns total in B2+B3
-- Estimated hot-path: ~1,250 insns/iter (simplified pipeline)
-- Only 28/1,250 are float compute (2.2%) — rest is overhead
+**nbody advance() inner loop:**
+- 2,923 total ARM64 insns (simplified pipeline, no feedback → no type specialization)
+- Float compute ops: 35 (actual fmul/fadd/fsub/fdiv/fsqrt)
+- Type check sequences: 101 (would be eliminated in production with feedback)
+- Frame spills: 730
+- Deopt stubs: 39 × ~16 insns = 624 (21% of binary, dead code on fast path)
 
-In production (full pipeline), TypeSpecialize eliminates 3-way type dispatch, IntrinsicPass converts math.sqrt to FSQRT, LoadElim deduplicates mass loads, ShapeGuardDedup reduces shape checks. Estimated production: ~250-350 insns/iter. Still ~3-5x more than LuaJIT's ~60 insns/iter.
+**CAVEAT**: Both diagnostics are from `profileTier2Func` which uses a simplified pipeline without feedback, Intrinsic, Inline, LoadElim, RangeAnalysis, or LICM. Production codegen via TieringManager is significantly better — type-specialized arithmetic, LICM-hoisted invariants, shape guard dedup, etc. The sieve table access overhead (35 insns per SetTable) is accurate regardless of pipeline because it's emitter-level structural overhead, not pass-dependent.
 
 ### Actual Bottleneck (data-backed)
 
-For the PRODUCTION pipeline, the remaining overhead in nbody's inner j-loop per iteration:
-1. **4 loop-invariant GetField loads** (bi.x, bi.y, bi.z, bi.mass): ~40 insns + 8 dependent-load stalls (~32 cycles). These never change but are reloaded every iteration because LICM doesn't hoist GetField.
-2. **3 GetField + 3 SetField on bi.vx/vy/vz** (read-modify-write per iteration): ~36 insns. Store-to-load forwarding doesn't help here (no subsequent read after write in same block).
-3. **Full shape check per iteration** for bi and bj (first access each): ~34 insns.
-4. **7 GetField + 3 SetField on bj** (different bj each iteration, unavoidable): ~60 insns.
-
-Bottleneck #1 is addressable via LICM GetField hoisting. Bottleneck #3 partially addressable (bi's shape check moves to preheader with hoisted GetField).
+**Sieve**: The inner marking loop's SetTable emits 35 ARM64 instructions per store. The table `is_prime` is loop-invariant (defined before the outer loop, never reassigned). The array kind is always ArrayBool (set during init loop, never changes). The table validation (type check, ptr extract, nil check, metatable check = 13 insns) and kind dispatch (8 insns) are redundant per iteration. Eliminating them would reduce SetTable to ~14 insns (kind guard 3 + bounds 4 + access 3 + dirty 3 + branch 1).
 
 ## Plan Summary
 
-Extend LICM to hoist loop-invariant GetField operations to loop preheaders, and add store-to-load forwarding to LoadElimination. For nbody's inner j-loop, this hoists 4 field loads (bi.x, bi.y, bi.z, bi.mass) out of the hot loop, eliminating ~40 instructions and 8 dependent-load stalls per iteration. Estimated nbody improvement: 8-10% (superscalar-discounted). Store-to-load forwarding is a 3-line change that enables value reuse after SetField. Risk is low: the LICM extension reuses existing infrastructure (fixpoint iteration, preheader creation, invariant carry), and the alias analysis is conservative (kills all GetField hoisting if any OpCall exists in the loop). Two new test files verify both optimizations independently.
+Split emit_table.go (mandatory, 978 lines), then add two complementary optimizations: (A) table validation dedup within blocks (`tableVerified`, mirrors shapeVerified for GetField), and (B) array kind feedback from Tier 1 → kind-specialized emit at Tier 2 (skip 4-way dispatch cascade). Together these eliminate ~15 instructions per GetTable/SetTable access. Expected sieve improvement: 20-25% wall-time. Risk is low: both mechanisms mirror existing patterns (shapeVerified, feedback pipeline). The emit_table.go split is the prerequisite and largest task.

@@ -115,36 +115,15 @@ One JSON line in `opt/workflow_log.jsonl`:
 
 ### 2i. Finalize the round blog
 
-Read `docs/draft.md`. Append the results section and finalize:
-
-```markdown
-## The results
-
-[Before/after benchmark table. But don't just dump numbers — interpret them.
-"sieve dropped 18% because the marking loop no longer exits to Go for bool
-array writes" is better than "sieve: 0.227s → 0.186s."
-
-Did it meet expectations? If not, why? What did we learn? Be specific about
-what the remaining bottleneck is — this is the seed for the next round.]
-
-## What I'd do differently
-
-[Honest retrospective. Was the diagnostic accurate? Was the plan right?
-What would you tell yourself before starting this round?]
-
-*Previous: [last post title](/last-post-slug)*
-
-*This is post NN in the [GScript JIT series](https://jxwr.github.io/gscript/).
-All numbers from a single-thread ARM64 Apple Silicon machine.*
-```
+Read `docs/draft.md`. Finish the post — add the results, your honest take on what worked
+and what didn't. No fixed structure. Include benchmark numbers but interpret them, don't
+just dump a table. End naturally, not with a template footer.
 
 Then:
-1. Determine the next post number: `ls docs/[0-9]*.md | wc -l` + 1, or check `docs/index.html`
-2. Rename `docs/draft.md` → `docs/NN-slug.md` (slug from title, lowercase, hyphens)
-3. Fix the frontmatter: set correct `permalink: /NN-slug`
-4. Remove the `*[This post is being written live...]*` markers
-5. Add the new post to `docs/index.html` at the top of the Posts section.
-   Use **full date** (YYYY-MM-DD) in the `<span class="date">` tag, e.g. `<span class="date">2026-04-06</span>`
+1. Rename `docs/draft.md` → `docs/NN-slug.md` (next number, slug from title)
+2. Fix frontmatter permalink
+3. Remove any `*[...next...]*` markers
+4. Add to `docs/index.html` top of Posts section (date: YYYY-MM-DD)
 
 ### 2j. Commit all changes
 Scoped message: `opt: close out <cycle_id> (<outcome>)`

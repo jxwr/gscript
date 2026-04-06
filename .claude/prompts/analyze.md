@@ -212,42 +212,18 @@ At the end of this phase, update `opt/state.json`:
 
 ## Step 7 — Start the round blog post
 
-Create `docs/draft.md` for this round's blog post. This will be updated by IMPLEMENT and VERIFY.
+Create `docs/draft.md`. Read a few recent posts in `docs/` first to match the voice and style.
 
-**Writing style**: You're a programmer telling a colleague what you found today. Be specific,
-opinionated, show real data. NOT a status report. NOT corporate. Think "engineering notebook
-that someone would actually want to read." Reference existing posts in `docs/` for tone.
+Write like a person — a programmer writing about their day. No fixed template. No `## What we found` / `## The plan` headers unless they feel natural. Some posts might be a narrative, some might lead with a surprise, some might start with code. Vary the structure.
 
-Write the first section of the blog:
+**Must include** (weave in naturally, don't use as section headers):
+- What the diagnostic data showed (actual numbers, code, IR)
+- Why this is the target and what you're going to try
+- Frontmatter: `layout: default`, `title:`, `permalink: /NN-slug`
 
-```markdown
----
-layout: default
-title: "[short evocative title — NOT 'Round N Update']"
-permalink: /NN-slug
----
+End with `*[Implementation next...]*` so IMPLEMENT knows to append.
 
-# [Title]
-
-[Opening hook — 1-2 sentences that make someone want to keep reading.
-State the problem or surprise, not the solution.]
-
-## What we found
-
-[Describe the analysis: what the numbers showed, what the code revealed,
-what the diagnostic data said. Include the actual data (tables, code blocks,
-instruction counts). Explain WHY this is the bottleneck — the mechanism,
-not just "it's slow." Show what you expected vs what you found.]
-
-## The plan
-
-[What we're going to try and why. Reference prior art (V8/JSC/etc).
-What's the risk? What's the expected payoff? Be honest about uncertainty.]
-
-*[This post is being written live. Implementation next...]*
-```
-
-Use the next available post number (check `ls docs/*.md | tail -1` for the latest).
+Use the next available post number (`ls docs/*.md | tail -1`).
 
 ## Restrictions
 - Do NOT write implementation code
