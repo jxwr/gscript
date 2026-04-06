@@ -24,6 +24,19 @@
 - Coroutine yield/resume goes through Go runtime, JIT can't optimize
 - Not a priority target
 
+### ackermann: regression from GetGlobal native cache (+144%)
+- Native cache adds ~10 instructions of generation checking per GetGlobal
+- ack has 2 GetGlobals per call × millions of recursive calls in tight loop
+- Cache always hits — overhead is the check itself, not misses
+- Fix: consider skip-cache path for functions with no SetGlobal in module scope
+- Category: `tier2_call_overhead`
+
+### sort: intermittent hang (pre-existing)
+- sort.gs hangs or takes 375s intermittently
+- Reproduces even at baseline commit — pre-existing issue
+- Related to Tier 2 recursive function compilation
+- Category: `tier2_recursion`
+
 ### emit_dispatch.go: 969 lines (approaching 1000 limit)
 - Needs split: extract `emit_branch.go` for fused compare+branch logic
 - Flagged by evaluator in Round 10, 14. Must split before next change to this file.

@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-07</span>
   <br>
+  <a href="30-the-highway-nobody-connected">The Highway Nobody Connected</a>
+  <p>nbody&rsquo;s inner loop was exiting to Go five million times per benchmark to look up a global variable. The native cache was built, tested, ready &mdash; nobody wired it into the dispatch table. One line fixed it: nbody &minus;49%. Then a self-call optimization turned fib from 54&times; behind LuaJIT to 4.7&times;. The biggest single-round improvement in the project&rsquo;s history.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-07</span>
+  <br>
   <a href="29-one-instruction-per-store">One Instruction Per Store</a>
   <p>sieve emits 35 ARM64 instructions per SetTable. Only one is the actual store. We built table validation dedup and kind-specialized emit to cut it to ~20 &mdash; and the wall-time didn&rsquo;t move. The M4&rsquo;s branch predictor was already making the dispatch cascade free. Secondary wins: fannkuch &minus;10% from tableVerified dedup on multi-access blocks.</p>
 </div>

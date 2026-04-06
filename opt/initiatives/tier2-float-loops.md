@@ -59,6 +59,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 | 16 (2026-04-06) | Phase 8: Load Elimination + GuardType fix | **improved (nbody -26%, broad 17-49%)** | Block-local GetField CSE (84 lines, pass_load_elim.go) + TypeFloat guard fix (emit_call.go). Compound effects (register pressure, cache, DCE cleanup) dominated instruction-count predictions. Diagnostic (Task 0) confirmed feedback pipeline works end-to-end. |
 | 17 (2026-04-06) | Phase 3 unblock: feedback fix + shape dedup | **improved (nbody -8.3%, table_field -23.5%, spectral -8.7%)** | Fixed GETFIELD/GETTABLE feedback recording in Go exit handlers (4 lines in tier1_handlers.go). Added shape guard dedup in emitter (emit_table.go). Phase 3's GuardType→TypeSpecialize pipeline now works end-to-end in production, not just tests. |
 | 18 (2026-04-06) | Phase 9: LICM GetField hoisting + S2L forwarding | **no_change (infra landed, target unchanged)** | LICM GetField hoisting works for loops without same-object writes. nbody's inner loop has SetField on same objects as GetField targets, blocking hoisting. S2L forwarding subsumed by existing block-local CSE. |
+| 20 (2026-04-07) | Phase 10: Native GetGlobal + LICM + self-call | **improved (nbody -49%, fib -90%)** | Wired native GetGlobal into Tier 2 dispatch (1 line), added OpGetGlobal to LICM whitelist, Tier 1 self-call BL optimization. ackermann +137% regression documented. |
 
 ## Next Step
 
