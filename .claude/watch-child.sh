@@ -10,6 +10,8 @@
 #   bash .claude/watch-child.sh <uuid-prefix>    # watch specific session
 #   bash .claude/watch-child.sh --main           # watch YOUR conversation (alias --all)
 #   bash .claude/watch-child.sh --no-follow / -n # history only, no tail (default: follow)
+#   bash .claude/watch-child.sh --status         # enable Haiku status bar (1-line summary)
+#   bash .claude/watch-child.sh --status=5       # status bar every 5 seconds (default 15)
 #   bash .claude/watch-child.sh --width=N        # override terminal width
 #   bash .claude/watch-child.sh --full           # no truncation at all (verbose!)
 #   bash .claude/watch-child.sh --think-lines=N  # max lines per thinking (default 50)
@@ -78,6 +80,8 @@ SESSION_MATCH=""
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 160)
 FULL=false
 THINK_LINES=50
+STATUS_BAR=false
+STATUS_INTERVAL=15
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -88,6 +92,8 @@ while [ $# -gt 0 ]; do
         --width=*) TERM_WIDTH="${1#*=}" ;;
         --full) FULL=true ;;
         --follow|-f) FOLLOW=true ;;
+        --status) STATUS_BAR=true ;;
+        --status=*) STATUS_BAR=true; STATUS_INTERVAL="${1#*=}" ;;
         --think-lines=*) THINK_LINES="${1#*=}" ;;
         --help|-h)
             sed -n '3,15p' "$0" | sed 's/^# \?//'
@@ -520,6 +526,85 @@ else
     current_file="$FILE"
     offset=0
 
+    # --- Status bar state ---
+    STATUS_TMPDIR=""
+    STATUS_PID=""
+    STATUS_RESULT=""
+    STATUS_TICK=0
+
+    if $STATUS_BAR; then
+        STATUS_TMPDIR=$(mktemp -d)
+        trap "rm -rf '$STATUS_TMPDIR' 2>/dev/null; kill '$STATUS_PID' 2>/dev/null" EXIT
+        printf "%s%s⚡ status bar: summarizing every %ss via Haiku%s\n" "$B" "$C_HEAD" "$STATUS_INTERVAL" "$R"
+    fi
+
+    # Check for completed Haiku result and print it.
+    check_status_result() {
+        $STATUS_BAR || return
+        if [ -n "$STATUS_PID" ] && ! kill -0 "$STATUS_PID" 2>/dev/null; then
+            if [ -f "$STATUS_TMPDIR/result" ]; then
+                local result
+                result=$(head -1 "$STATUS_TMPDIR/result" 2>/dev/null | head -c 100)
+                if [ -n "$result" ] && [ "$result" != "$STATUS_RESULT" ]; then
+                    STATUS_RESULT="$result"
+                    printf "%s%s%s  %s⚡ %s%s\n" \
+                        "$C_TIME" "$(date '+%H:%M:%S')" "$R" \
+                        "$B$C_HEAD" "$result" "$R"
+                fi
+            fi
+            STATUS_PID=""
+            rm -f "$STATUS_TMPDIR/result" "$STATUS_TMPDIR/prompt"
+        fi
+    }
+
+    # Extract concise recent activity from the current JSONL session file.
+    # Output: last ~8 tool calls as "ToolName: brief_input" lines (lightweight, no full content).
+    extract_recent_activity() {
+        local f="$1"
+        tail -50 "$f" 2>/dev/null | jq -r '
+            select(.type == "assistant") |
+            (.message.content // []) | if type == "array" then .[] else empty end |
+            select(.type == "tool_use") |
+            if .name == "Bash" then "Bash: \(.input.command // "" | .[0:80])"
+            elif .name == "Read" then "Read: \(.input.file_path // "" | split("/") | .[-1])"
+            elif .name == "Edit" then "Edit: \(.input.file_path // "" | split("/") | .[-1])"
+            elif .name == "Write" then "Write: \(.input.file_path // "" | split("/") | .[-1])"
+            elif .name == "Grep" then "Grep: /\(.input.pattern // "")/"
+            elif .name == "Glob" then "Glob: \(.input.pattern // "")"
+            elif .name == "Agent" then "Agent: \(.input.description // "")"
+            elif .name == "WebSearch" then "WebSearch: \(.input.query // "")"
+            else "\(.name): \(.input | tostring | .[0:60])"
+            end
+        ' 2>/dev/null | tail -8
+    }
+
+    # Launch a Haiku summarization (non-blocking, background).
+    launch_status_summary() {
+        $STATUS_BAR || return
+        [ -n "$STATUS_PID" ] && kill -0 "$STATUS_PID" 2>/dev/null && return
+
+        # Prefer parent child session for status (sub-agents switch too fast).
+        # Fall back to current_file if no parent child found.
+        local summary_file
+        summary_file=$(all_candidates | grep -v "^${MAIN_SESSION}$" | grep -v "/subagents/" | head -1)
+        [ -z "$summary_file" ] && summary_file="$current_file"
+
+        local recent
+        recent=$(extract_recent_activity "$summary_file")
+        [ -z "$recent" ] && return
+
+        cat > "$STATUS_TMPDIR/prompt" <<PROMPT_EOF
+Based on these recent tool calls from a coding agent, write ONE sentence (under 80 chars, in Chinese) describing what the agent is currently doing. Be specific: mention file names, function names, techniques. Output ONLY the sentence.
+
+RECENT TOOL CALLS:
+$recent
+PROMPT_EOF
+
+        # Run from /tmp so Haiku session doesn't pollute the project's session dir
+        (cd /tmp && claude -p "$(cat "$STATUS_TMPDIR/prompt")" --model haiku > "$STATUS_TMPDIR/result" 2>/dev/null) &
+        STATUS_PID=$!
+    }
+
     # Process existing content first
     total=$(wc -l < "$current_file" | tr -d ' ')
     if [ "$total" -gt 0 ]; then
@@ -530,6 +615,10 @@ else
     # Poll loop
     while true; do
         sleep 1
+        STATUS_TICK=$((STATUS_TICK + 1))
+
+        # Check for completed status summary
+        check_status_result
 
         # Check for session switch (only in auto mode)
         if $AUTO_FOLLOW; then
@@ -544,6 +633,7 @@ else
                 print_switch_banner "$new_best"
                 current_file="$new_best"
                 offset=0
+                STATUS_BUFFER=""
                 total=$(wc -l < "$current_file" | tr -d ' ')
                 if [ "$total" -gt 0 ]; then
                     process_lines "$current_file" 0 "$total"
@@ -558,6 +648,11 @@ else
         if [ "$total" -gt "$offset" ]; then
             process_lines "$current_file" "$offset" "$total"
             offset=$total
+        fi
+
+        # Launch status summary periodically
+        if $STATUS_BAR && [ "$((STATUS_TICK % STATUS_INTERVAL))" -eq 0 ]; then
+            launch_status_summary
         fi
     done
 fi

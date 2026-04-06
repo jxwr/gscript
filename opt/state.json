@@ -8,13 +8,12 @@
   "completed_steps": [],
   "next_action": "",
   "uncommitted_files": [
-    "CLAUDE.md",
-    "docs-internal/architecture/constraints.md",
+    ".claude/watch-child.sh",
     "opt/state.json"
   ],
-  "head_commit": "bce7d29d3448d28699b0e006de911b5a5328c6cd",
+  "head_commit": "579da196f60903e7716f5de6608523b30fed33d6",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T08:07:13Z",
+  "last_checkpoint": "2026-04-06T08:11:50Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
