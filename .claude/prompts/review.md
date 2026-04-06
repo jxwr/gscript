@@ -117,6 +117,7 @@ Write `opt/reviews/<date>-round<N>.md`:
 | Hook branches | phase_guard.sh, etc. | N | Y/N |
 | File references | all prompts + docs | N | Y/N |
 | Dead content | all files | N | Y/N |
+| Stale temp files | opt/ top-level, pending-changes/ | N | Y/N |
 
 ### Self-Evolution Actions
 [List changes you APPLIED this review (not just recommended). For each:]
@@ -152,7 +153,7 @@ Read ALL of these files and cross-check:
 - `opt/INDEX.md` — category list
 - `opt/state.json` — field names
 
-**Check for these 10 types of inconsistency:**
+**Check for these 11 types of inconsistency:**
 
 1. **Phase names**: old names (MEASURE, RESEARCH, PLAN, DOCUMENT) in active files?
    Active phases: `analyze`, `implement`, `verify` (+ `review` conditional).
@@ -165,6 +166,12 @@ Read ALL of these files and cross-check:
 8. **Skill descriptions**: match current workflow? Phase counts, feature descriptions, flags all current?
 9. **Cross-references**: docs reference each other correctly?
 10. **Dead content**: sections describing features that no longer exist?
+11. **Stale temp files**: scan `opt/` top-level for files that are NOT part of the known set
+    (state.json, INDEX.md, plan_template.md, current_plan.md, measure_report.md,
+    analyze_report.md, workflow_log.jsonl) and are NOT in a known subdirectory
+    (plans/, initiatives/, reviews/, knowledge/, history/, pprof-tier2-float-artifacts/).
+    One-off diagnostic reports, ad-hoc dumps, scratch files left by past rounds — delete them.
+    Also check `opt/reviews/pending-changes/` for stale applied patches.
 
 **For each inconsistency found**: fix directly. For `.claude/` files use Bash (not Edit/Write — blocked by Claude Code). Note in "Self-Evolution Actions".
 
