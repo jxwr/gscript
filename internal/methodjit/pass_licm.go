@@ -168,8 +168,9 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 		}
 	}
 
-	// Collect in-loop field writes and calls for GetField alias analysis.
+	// Collect in-loop field writes, global writes, and calls for alias analysis.
 	setFields := make(map[loadKey]bool)
+	setGlobals := make(map[int64]bool) // Aux (constant pool index) of in-loop SetGlobal
 	hasLoopCall := false
 	for _, b := range bodyList {
 		for _, instr := range b.Instrs {
@@ -184,6 +185,8 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				if len(instr.Args) >= 1 {
 					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: -1}] = true
 				}
+			case OpSetGlobal:
+				setGlobals[instr.Aux] = true
 			case OpCall, OpSelf:
 				hasLoopCall = true
 			}
@@ -233,6 +236,15 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					if setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
 						continue
 					}
+				}
+			}
+			// GetGlobal: require no in-loop SetGlobal on same name and no calls.
+			if instr.Op == OpGetGlobal {
+				if hasLoopCall {
+					continue
+				}
+				if setGlobals[instr.Aux] {
+					continue
 				}
 			}
 			// Int arithmetic: require Int48Safe marking.
@@ -520,6 +532,9 @@ func canHoistOp(op Op) bool {
 		return true
 	case OpGetField:
 		// Caller must also check alias info (no SetField/SetTable/Call in loop).
+		return true
+	case OpGetGlobal:
+		// Caller must also check alias info (no SetGlobal on same name, no Call in loop).
 		return true
 	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat:
 		return true

@@ -771,3 +771,158 @@ func TestLICM_NoHoistAddInt_NotInt48Safe(t *testing.T) {
 		t.Fatalf("AddInt v%d should NOT be hoisted without Int48Safe", addInvID)
 	}
 }
+
+// ---------- Test 12: hoist GetGlobal when no SetGlobal and no Call ----------
+
+func TestLICM_HoistGetGlobal_NoSetNoCall(t *testing.T) {
+	fn := &Function{NumRegs: 8}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 0}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{seed, b0Term}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeAny, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{phi, cond, b1Term}
+
+	// b2: GetGlobal (Aux=5, no args), no SetGlobal, no Call
+	gg := &Instr{ID: fn.newValueID(), Op: OpGetGlobal, Type: TypeAny, Block: b2, Aux: 5}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{gg, b2Term}
+
+	phi.Args = []*Value{seed.Value(), gg.Value()}
+	b3.Instrs = []*Instr{
+		&Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+			Args: []*Value{phi.Value()}},
+	}
+
+	assertValidates(t, fn, "input")
+	ggID := gg.ID
+
+	_, err := LICMPass(fn)
+	if err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+
+	// GetGlobal should be hoisted out of b2.
+	for _, instr := range b2.Instrs {
+		if instr.ID == ggID {
+			t.Fatalf("OpGetGlobal v%d should have been hoisted out of body B%d", ggID, b2.ID)
+		}
+	}
+	// Should be in the pre-header.
+	phBlock, _ := findInstrByID(fn, ggID)
+	if phBlock == nil {
+		t.Fatalf("hoisted GetGlobal v%d not found anywhere in fn", ggID)
+	}
+	if len(b1.Preds) < 1 || b1.Preds[0] != phBlock {
+		t.Fatalf("expected hoisted GetGlobal in pre-header, got B%d", phBlock.ID)
+	}
+}
+
+// ---------- Test 13: no-hoist GetGlobal when SetGlobal on same name ----------
+
+func TestLICM_NoHoistGetGlobal_WhenSetGlobal(t *testing.T) {
+	fn := &Function{NumRegs: 8}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 0}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{seed, b0Term}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeAny, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{phi, cond, b1Term}
+
+	// b2: GetGlobal(Aux=5) + SetGlobal(Aux=5) — same name, can't hoist
+	gg := &Instr{ID: fn.newValueID(), Op: OpGetGlobal, Type: TypeAny, Block: b2, Aux: 5}
+	sg := &Instr{ID: fn.newValueID(), Op: OpSetGlobal, Type: TypeUnknown, Block: b2,
+		Args: []*Value{gg.Value()}, Aux: 5}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{gg, sg, b2Term}
+
+	phi.Args = []*Value{seed.Value(), gg.Value()}
+	b3.Instrs = []*Instr{
+		&Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+			Args: []*Value{phi.Value()}},
+	}
+
+	assertValidates(t, fn, "input")
+	ggID := gg.ID
+
+	_, err := LICMPass(fn)
+	if err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+
+	// GetGlobal must stay in b2 (SetGlobal on same name in loop).
+	found := false
+	for _, instr := range b2.Instrs {
+		if instr.ID == ggID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("GetGlobal v%d should NOT be hoisted when SetGlobal on same name in loop", ggID)
+	}
+}
+
+// ---------- Test 14: no-hoist GetGlobal when Call in loop ----------
+
+func TestLICM_NoHoistGetGlobal_WhenCallInLoop(t *testing.T) {
+	fn := &Function{NumRegs: 8}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 0}
+	funcVal := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Block: b0, Aux: 1}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{seed, funcVal, b0Term}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeAny, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{phi, cond, b1Term}
+
+	// b2: GetGlobal(Aux=5) + Call — call can modify globals
+	gg := &Instr{ID: fn.newValueID(), Op: OpGetGlobal, Type: TypeAny, Block: b2, Aux: 5}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeAny, Block: b2,
+		Args: []*Value{funcVal.Value()}, Aux: 1, Aux2: 1}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{gg, call, b2Term}
+
+	phi.Args = []*Value{seed.Value(), gg.Value()}
+	b3.Instrs = []*Instr{
+		&Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+			Args: []*Value{phi.Value()}},
+	}
+
+	assertValidates(t, fn, "input")
+	ggID := gg.ID
+
+	_, err := LICMPass(fn)
+	if err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+
+	// GetGlobal must stay in b2 (Call in loop can modify globals).
+	found := false
+	for _, instr := range b2.Instrs {
+		if instr.ID == ggID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("GetGlobal v%d should NOT be hoisted when Call in loop", ggID)
+	}
+}
