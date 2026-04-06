@@ -173,7 +173,7 @@ Profile-based promotion replaces simple call-count threshold:
 - **Loop + table ops**: Tier 2 at callCount=3
 - **Calls only (no loops)**: stay Tier 1 (BLR is faster)
 - **Default**: stay Tier 1
-- **OSR**: currently disabled (comment in tiering_manager.go:151-155)
+- **OSR**: enabled for functions with LoopDepth >= 2 (re-enabled in round 15, tiering_manager.go:151-155). Single-call compute functions (mandelbrot, matmul, fannkuch) reach Tier 2 via OSR.
 
 ## On-Stack Replacement (OSR)
 

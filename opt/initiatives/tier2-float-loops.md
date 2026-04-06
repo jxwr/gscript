@@ -58,11 +58,13 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 
 ## Next Step
 
-**Phase 7 (round 14): Tier 1 feedback collection + ArrayFloat/ArrayBool fast paths.** Option C chosen: inline feedback stubs in Tier 1 ARM64. Also extends Tier 1 GETTABLE/SETTABLE with native Float/Bool array fast paths (same pattern as Tier 2 round 13). This unblocks Phase 3's guard insertion code AND gives immediate Tier 1 speedup for matmul/sieve.
+**Phase 7 complete** (round 14): Tier 1 feedback collection + ArrayFloat/ArrayBool fast paths landed. matmul -80.2%, spectral -54.0%, sieve -55.9%. Phase 3's guard insertion code is now unblocked (feedback flows Tier 1 → FeedbackVector → Tier 2 graph builder).
 
-After Phase 7:
-- **Phase 5 (matmul tier-up investigation)** — matmul may still be partially Tier 1; needs `-jit-stats` check
-- **Phase 6 (range analysis for float loops)** — extend overflow-check elimination to float arithmetic
+**Phase 5 partially resolved** (round 15): matmul now reaches Tier 2 via OSR (LoopDepth >= 2 gate). The original "matmul stuck at Tier 1" problem is solved. Remaining question: does matmul's inner loop benefit from feedback-typed loads now that it runs at Tier 2 with feedback available?
+
+Remaining deferred phases:
+- **Phase 5 (residual)**: Verify matmul Tier 2 inner loop uses typed loads (feedback collected by Tier 1 → GuardType in Tier 2 graph). If so, this initiative's primary gaps are closed.
+- **Phase 6 (range analysis for float loops)**: extend overflow-check elimination to float arithmetic.
 - **New direction**: the real bottleneck in float loops is memory traffic (LDR/STR to VM register file per float op) and the surviving FMUL/FADD dependency chain. Consider unboxed float SSA (eliminate NaN-boxing in Tier 2 float paths entirely) or loop unrolling to break dependency chains.
 
 ## Risks / Failure Signals

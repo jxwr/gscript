@@ -35,7 +35,7 @@ Ordering constraints:
 - `recursive_call` (ceiling=2): needs fundamentally different mechanism (see Tier Constraints)
 - `allocation_heavy` (binary_trees, object_creation): NEWTABLE is exit-resume, can't inline allocation; needs escape analysis + scalar replacement
 - mandelbrot inner loop: FMUL/FADD dependency chain is the compute floor (~3ns/iter). All peephole opportunities exhausted (Rounds 7-10). Further gains need loop unrolling or software pipelining.
-- **matmul stuck at Tier 1** (Round 15 finding): matmul called once, threshold=2 → never promotes. OSR disabled. Even at Tier 2 without feedback, inner loop is untyped (GetTable→any→generic dispatch). Needs BOTH OSR re-enable AND feedback-typed loads.
+- **matmul Tier 2 via OSR** (Round 15, RESOLVED): Was stuck at Tier 1 (called once, threshold=2). Fixed by re-enabling OSR with LoopDepth >= 2 gate (commit 056607b). matmul now reaches Tier 2, mandelbrot -80%, spectral_norm -64%. Remaining gap: inner loop still uses generic GetTable dispatch — feedback-typed loads (Phase 3 infra from round 12) could further specialize once Tier 1 feedback collection covers GETTABLE mixed-array path.
 - pprof is useless for JIT code (79% shows as opaque `runtime._ExternalCode`). ARM64 disasm via `tier2_float_profile_test.go` is the only reliable profiling method.
 
 ## Feedback System

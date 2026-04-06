@@ -1,72 +1,95 @@
 # Known Issues
 
-> Last updated: 2026-04-04
+> Last updated: 2026-04-06
 
 ## Current
-
-### fibonacci_iterative: FIXED (phi regalloc clash)
-- Root cause was NOT overflow — register allocator assigned 2 phis the same physical register
-- Loop header with 3+ phis (a, b, i) triggered the clash
-- Fixed by pre-allocating all phis simultaneously in allocateBlock
-
-### string_bench: FIXED (Tier 1 string LT/LE exit-resume)
-- Root cause: emitBaselineLT/LE fell through to float fallback for string operands
-- FCMPd on NaN-boxed pointers returned "unordered", branch never taken, swap never fired
-- Fixed by exiting to Go via ExitBaselineOpExit for string-tagged operands
-
-### spectral_norm: 2.0x vs VM (still slower than pre-overflow-check baseline)
-- Was 0.138s before int48 overflow check, now 0.502s
-- Loop-counter exemption (Aux2=1) + range analysis eliminate most checks but wall-time unchanged
-- Likely bottleneck elsewhere: FPR spills, guard overhead, or Tier 2 float codegen
-- Next investigation: pprof Tier 2 emitted code for spectral_norm inner loop
 
 ### method_dispatch: 0.85x regression (known)
 - Native BLR call adds type-check + DirectEntryPtr-load overhead even when falling to slow path
 - method_dispatch calls many small functions per iteration, some are GoFunctions (math.sqrt)
+- Category: `gofunction_overhead`
 
 ### binary_trees: 0.84x regression (known)
 - Allocation-heavy benchmark, JIT overhead with no compute benefit
+- NEWTABLE is exit-resume, can't inline allocation
+- Needs escape analysis + scalar replacement
+- Category: `allocation_heavy`
 
 ### object_creation: 0.81x regression (known)
 - NEWTABLE exit-resume overhead dominates
-- BLR callee re-execution (post fix) adds overhead for functions with op-exits
+- Same root cause as binary_trees
+- Category: `allocation_heavy`
 
-## Fixed (2026-04-04)
+### coroutine_bench: 1.0x (JIT = VM, no benefit)
+- Coroutine yield/resume goes through Go runtime, JIT can't optimize
+- Not a priority target
 
-### sieve: was hanging (infinite loop) — FIXED
-- Root cause: rawIntRegs build-time state corruption in deopt path emission
-- emitReloadAllActiveRegs deleted rawIntRegs entries, corrupting while-loop body arithmetic
-- Fix: save/restore rawIntRegs around deopt path emission + emitUnboxRawIntRegs
+### emit_dispatch.go: 961 lines (approaching 1000 limit)
+- Needs split: extract `emit_branch.go` for fused compare+branch logic
+- Flagged by evaluator in Round 10, 14. Must split before next change to this file.
 
-### sum_primes: wrong count — FIXED
-- Root cause: GPR phi move ordering (same as sieve)
+### emit_table.go: 937 lines (approaching limit)
+- Four-way arrayKind dispatch in both GetTable and SetTable creates duplication
+- Consider splitting into `emit_table_get.go` / `emit_table_set.go`
 
-### nbody: energy not updating — FIXED
-- Root cause: resyncRegs() in Tier 1 execute loop reset ctx.Regs to outer function's base after BLR callee op-exit
-- Fix: re-execute callee from scratch via e.Execute(), disable DirectEntryPtr
+### benchmarks/run_all.sh: VM/JIT suite may report inaccurate times
+- Round 12 MEASURE discovered silent failures in suite mode
+- Individual benchmark runs (`gscript -jit file.gs`) are reliable
+- Suite mode output parsing can lose time values
 
-### table_field_access: garbage checksum — FIXED
-- Root cause: same as nbody (resyncRegs corruption)
+### fib/ackermann/mutual_recursion: Tier 2 is net-negative (Round 11)
+- Tier 2 BLR overhead (15-20ns) > Tier 1 BLR (10ns) for recursive functions
+- SSA construction + type guards cost more than inlining gains
+- These stay at Tier 1; speedup needs native recursive BLR or Tier 1 specialization
+- Category: `recursive_call` (ceiling = 2)
 
-### coroutine_bench: generator_sum wrong — FIXED
-- Root cause: int48 overflow truncation in EmitBoxIntFast (UBFX silently dropped bits > 47)
-- Fix: SBFX+CMP overflow check after ADD/SUB/MUL, Tier 1 promotes to float, Tier 2 deopts
+## Fixed (2026-04-06, Rounds 13-15)
 
-### object_creation: len_sq=0 — FIXED
-- Root cause: inline pass rewriteValueRefs only updated current block, not loop header phis
-- Fix: scan ALL blocks after inlining to rewrite references to dead CALL ID
+### spectral_norm: was 42x behind LuaJIT — now 7.1x (Round 15)
+- Root cause: OSR was disabled since Round 4 hang. Single-call functions never promoted to Tier 2.
+- Fix: re-enable OSR with `LoopDepth >= 2` gate. 11 rounds of Tier 2 improvements became visible.
 
-## Historical (Trace JIT — deprecated, for reference only)
+### mandelbrot: was 6.4x behind LuaJIT — now 1.27x (Round 15)
+- Same OSR root cause as spectral_norm
+- mandelbrot 0.393s → 0.080s (−80%). First benchmark approaching LuaJIT parity.
+
+### sieve: was 0.227s — now 0.085s (Rounds 13-14)
+- Round 13: native ArrayBool/ArrayFloat fast paths in Tier 2 emit (−18%)
+- Round 14: Tier 1 float/bool table fast paths + feedback infrastructure + Tier 2 raw-int/const-bool bypass (−54%)
+
+### matmul: was 0.999s — now 0.152s (Rounds 9-15)
+- Round 9: LICM-carry (−13%). Round 15: OSR re-enable (−29%)
+
+## Fixed (2026-04-04-05, Rounds 1-12)
+
+### fibonacci_iterative: FIXED (Round 3, phi regalloc clash)
+- Register allocator assigned 2 phis the same physical register
+- Fixed by pre-allocating all phis simultaneously
+
+### sieve: was hanging — FIXED (Round 1)
+- rawIntRegs build-time state corruption in deopt path emission
+
+### sum_primes: wrong count — FIXED (Round 1)
+- GPR phi move ordering
+
+### nbody: energy not updating — FIXED (Round 2)
+- resyncRegs() in Tier 1 execute loop reset ctx.Regs after BLR callee op-exit
+
+### table_field_access: garbage checksum — FIXED (Round 2)
+- Same resyncRegs corruption as nbody
+
+### coroutine_bench: generator_sum wrong — FIXED (Round 2)
+- int48 overflow truncation in EmitBoxIntFast
+
+### object_creation: len_sq=0 — FIXED (Round 2)
+- inline pass rewriteValueRefs only updated current block, not loop header phis
+
+### string_bench: FIXED (Tier 1 string LT/LE exit-resume)
+- FCMPd on NaN-boxed pointers returned "unordered"
+
+## Historical (Trace JIT — deprecated)
 
 ### spectral_norm: float accumulator treated as int
-- `findAccumulators()` detected `sum` as int accumulator, but `sum := 0.0` is float
-
 ### nbody: guard-fail from slot reuse type mismatch
-- GETTABLE not recognized as a write by `isWrittenBeforeFirstReadExt`
-
 ### sort: stack overflow from recursive calls via call-exit
-- Trace JIT's call-exit went through `vm.call`, deep recursion exceeded `maxCallDepth=200`
-
-### GC scanTableRoots intermittent SIGSEGV
-- GC compaction encountered stale NaN-boxed pointers in edge cases
-- Partially fixed via safe-point mechanism
+### GC scanTableRoots intermittent SIGSEGV (partially fixed)
