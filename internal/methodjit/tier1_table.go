@@ -277,6 +277,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)         // X0 = array[key] (NaN-boxed Value)
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	emitBaselineFeedbackKind(asm, pc, 1, "mixed") // FBKindMixed=1
 	asm.B(doneLabel)
 
 	// --- ArrayInt fast path ---
@@ -290,6 +291,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
 	emitBaselineFeedbackResult(asm, pc, 1, "int") // FBInt=1
+	emitBaselineFeedbackKind(asm, pc, 2, "int")   // FBKindInt=2
 	asm.B(doneLabel)
 
 	// --- ArrayFloat fast path ---
@@ -302,6 +304,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Float64 bits ARE the NaN-boxed value — no conversion needed!
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
 	emitBaselineFeedbackResult(asm, pc, 2, "float") // FBFloat=2
+	emitBaselineFeedbackKind(asm, pc, 3, "float")   // FBKindFloat=3
 	asm.B(doneLabel)
 
 	// --- ArrayBool fast path ---
@@ -321,18 +324,21 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1))
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
 	emitBaselineFeedbackResult(asm, pc, 4, "bool_true") // FBBool=4
+	emitBaselineFeedbackKind(asm, pc, 4, "bool_true")   // FBKindBool=4
 	asm.B(doneLabel)
 	asm.Label(boolFalseLabel)
 	// NaN-boxed false = 0xFFFD000000000000
 	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
 	emitBaselineFeedbackResult(asm, pc, 4, "bool_false") // FBBool=4
+	emitBaselineFeedbackKind(asm, pc, 4, "bool_false")   // FBKindBool=4
 	asm.B(doneLabel)
 	asm.Label(boolNilLabel)
 	// NaN-boxed nil = 0xFFFC000000000000
 	asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
 	asm.STR(jit.X0, mRegRegs, slotOff(a))
 	emitBaselineFeedbackResult(asm, pc, 7, "bool_nil") // FBAny=7 for nil
+	emitBaselineFeedbackKind(asm, pc, 4, "bool_nil")   // FBKindBool=4 (still a bool array)
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.
@@ -404,6 +410,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.STRreg(jit.X4, jit.X2, jit.X1) // array[key] = value
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	emitBaselineFeedbackKind(asm, pc, 1, "set_mixed") // FBKindMixed=1
 	asm.B(doneLabel)
 
 	// --- ArrayInt fast path ---
@@ -423,6 +430,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.STRreg(jit.X4, jit.X2, jit.X1) // intArray[key] = int64
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	emitBaselineFeedbackKind(asm, pc, 2, "set_int") // FBKindInt=2
 	asm.B(doneLabel)
 
 	// --- ArrayFloat fast path ---
@@ -441,6 +449,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Set keysDirty flag.
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	emitBaselineFeedbackKind(asm, pc, 3, "set_float") // FBKindFloat=3
 	asm.B(doneLabel)
 
 	// --- ArrayBool fast path ---
@@ -477,6 +486,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Set keysDirty flag.
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	emitBaselineFeedbackKind(asm, pc, 4, "set_bool") // FBKindBool=4
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.
@@ -669,7 +679,7 @@ func emitBaselineFeedbackResult(asm *jit.Assembler, pc int, expectedFB uint16, s
 	asm.LDR(jit.X5, mRegCtx, execCtxOffBaselineFeedbackPtr)
 	asm.CBZ(jit.X5, fbSkipLabel)
 
-	fbResultOff := pc*3 + 2 // TypeFeedback[pc].Result offset
+	fbResultOff := pc*4 + 2 // TypeFeedback[pc].Result offset
 	if fbResultOff < 4096 {
 		asm.LDRB(jit.X6, jit.X5, fbResultOff)
 		asm.CMPimm(jit.X6, expectedFB)
@@ -741,7 +751,7 @@ func emitBaselineFeedbackResultFromValue(asm *jit.Assembler, pc int, valReg jit.
 
 	// Monotonic update: X7 = observed type.
 	asm.Label(fbUpdateLabel)
-	fbResultOff := pc*3 + 2 // TypeFeedback[pc].Result byte offset
+	fbResultOff := pc*4 + 2 // TypeFeedback[pc].Result byte offset
 	if fbResultOff < 4096 {
 		asm.LDRB(jit.X6, jit.X5, fbResultOff)       // X6 = current Result
 		asm.CMPreg(jit.X6, jit.X7)
@@ -769,6 +779,51 @@ func emitBaselineFeedbackResultFromValue(asm *jit.Assembler, pc int, valReg jit.
 		asm.B(fbSkipLabel)
 		asm.Label(fbSetLabel)
 		asm.STRB(jit.X7, jit.X5, 0)
+	}
+	asm.Label(fbSkipLabel)
+}
+
+// emitBaselineFeedbackKind emits ARM64 code to record the array kind
+// in the TypeFeedback[pc].Kind field. Uses monotonic observe logic:
+// Unobserved->concrete kind, same->nop, different->Polymorphic, Polymorphic->nop.
+// expectedKind is the FBKind* constant (1=Mixed, 2=Int, 3=Float, 4=Bool).
+func emitBaselineFeedbackKind(asm *jit.Assembler, pc int, expectedKind uint16, suffix string) {
+	fbSkipLabel := nextLabel("fbk_skip_" + suffix)
+	fbSetLabel := nextLabel("fbk_set_" + suffix)
+
+	asm.LDR(jit.X5, mRegCtx, execCtxOffBaselineFeedbackPtr)
+	asm.CBZ(jit.X5, fbSkipLabel)
+
+	fbKindOff := pc*4 + 3 // TypeFeedback[pc].Kind offset
+	if fbKindOff < 4096 {
+		asm.LDRB(jit.X6, jit.X5, fbKindOff)
+		asm.CMPimm(jit.X6, expectedKind)
+		asm.BCond(jit.CondEQ, fbSkipLabel) // same kind -> skip
+		asm.CMPimm(jit.X6, 0xFF)          // FBKindPolymorphic
+		asm.BCond(jit.CondEQ, fbSkipLabel) // already poly -> skip
+		asm.CBZ(jit.X6, fbSetLabel)        // unobserved -> set
+		// different kind -> polymorphic
+		asm.MOVimm16(jit.X6, 0xFF)
+		asm.STRB(jit.X6, jit.X5, fbKindOff)
+		asm.B(fbSkipLabel)
+		asm.Label(fbSetLabel)
+		asm.MOVimm16(jit.X6, expectedKind)
+		asm.STRB(jit.X6, jit.X5, fbKindOff)
+	} else {
+		asm.LoadImm64(jit.X6, int64(fbKindOff))
+		asm.ADDreg(jit.X5, jit.X5, jit.X6)
+		asm.LDRB(jit.X6, jit.X5, 0)
+		asm.CMPimm(jit.X6, expectedKind)
+		asm.BCond(jit.CondEQ, fbSkipLabel)
+		asm.CMPimm(jit.X6, 0xFF)
+		asm.BCond(jit.CondEQ, fbSkipLabel)
+		asm.CBZ(jit.X6, fbSetLabel)
+		asm.MOVimm16(jit.X6, 0xFF)
+		asm.STRB(jit.X6, jit.X5, 0)
+		asm.B(fbSkipLabel)
+		asm.Label(fbSetLabel)
+		asm.MOVimm16(jit.X6, expectedKind)
+		asm.STRB(jit.X6, jit.X5, 0)
 	}
 	asm.Label(fbSkipLabel)
 }

@@ -58,6 +58,17 @@ func (ft *FeedbackType) Observe(vt runtime.ValueType) {
 	}
 }
 
+// ArrayKind feedback encoding for TypeFeedback.Kind.
+// 0 = unobserved, 1..4 = monomorphic (value = 1 + runtime.ArrayKind), 0xFF = polymorphic.
+const (
+	FBKindUnobserved  uint8 = 0
+	FBKindMixed       uint8 = 1    // 1 + ArrayMixed(0)
+	FBKindInt         uint8 = 2    // 1 + ArrayInt(1)
+	FBKindFloat       uint8 = 3    // 1 + ArrayFloat(2)
+	FBKindBool        uint8 = 4    // 1 + ArrayBool(3)
+	FBKindPolymorphic uint8 = 0xFF
+)
+
 // TypeFeedback records observed types for one bytecode instruction.
 // For arithmetic/comparison: Left = B operand, Right = C operand, Result = A destination.
 // For table access: Left = table type, Right = key type, Result = value type.
@@ -66,6 +77,24 @@ type TypeFeedback struct {
 	Left   FeedbackType // type of left operand (B in ABC format)
 	Right  FeedbackType // type of right operand (C in ABC format)
 	Result FeedbackType // type of result (A in ABC format)
+	Kind   uint8        // observed array kind for GETTABLE/SETTABLE (0=unobserved, 1+kind for stable, 0xFF=polymorphic)
+}
+
+// ObserveKind records an array kind observation. Monotonic like Observe:
+// Unobserved -> concrete kind -> Polymorphic.
+func (tf *TypeFeedback) ObserveKind(arrayKind uint8) {
+	encoded := arrayKind + 1 // shift so 0 means unobserved
+	cur := tf.Kind
+	if cur == FBKindPolymorphic {
+		return
+	}
+	if cur == FBKindUnobserved {
+		tf.Kind = encoded
+		return
+	}
+	if cur != encoded {
+		tf.Kind = FBKindPolymorphic
+	}
 }
 
 // FeedbackVector is per-function type feedback, indexed by bytecode PC.

@@ -5,6 +5,7 @@ package vm
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/lexer"
 	"github.com/gscript/gscript/internal/parser"
@@ -308,5 +309,72 @@ func TestFeedback_NoOverheadWithoutInit(t *testing.T) {
 	runWithFeedback(t, proto) // runs WITHOUT EnsureFeedback
 	if proto.Feedback != nil {
 		t.Fatalf("expected nil Feedback when not initialized")
+	}
+}
+
+// --- ObserveKind unit tests ---
+
+func TestFeedbackKind_StructSize(t *testing.T) {
+	// TypeFeedback must be exactly 4 bytes (Left + Right + Result + Kind).
+	var tf TypeFeedback
+	size := unsafe.Sizeof(tf)
+	if size != 4 {
+		t.Fatalf("expected TypeFeedback size=4 bytes, got %d", size)
+	}
+}
+
+func TestFeedbackKind_ObserveKind_Lattice(t *testing.T) {
+	var tf TypeFeedback
+
+	// Starts unobserved
+	if tf.Kind != FBKindUnobserved {
+		t.Fatalf("expected FBKindUnobserved, got %d", tf.Kind)
+	}
+
+	// Observe Int array -> FBKindInt
+	tf.ObserveKind(1) // ArrayInt=1
+	if tf.Kind != FBKindInt {
+		t.Fatalf("after ArrayInt: expected FBKindInt(%d), got %d", FBKindInt, tf.Kind)
+	}
+
+	// Observe Int again -> still FBKindInt
+	tf.ObserveKind(1)
+	if tf.Kind != FBKindInt {
+		t.Fatalf("after Int+Int: expected FBKindInt, got %d", tf.Kind)
+	}
+
+	// Observe Float -> FBKindPolymorphic
+	tf.ObserveKind(2) // ArrayFloat=2
+	if tf.Kind != FBKindPolymorphic {
+		t.Fatalf("after Int+Float: expected FBKindPolymorphic(0xFF), got %d", tf.Kind)
+	}
+
+	// Polymorphic is sticky
+	tf.ObserveKind(0) // ArrayMixed=0
+	if tf.Kind != FBKindPolymorphic {
+		t.Fatalf("FBKindPolymorphic should be sticky, got %d", tf.Kind)
+	}
+}
+
+func TestFeedbackKind_ObserveKind_AllKinds(t *testing.T) {
+	for _, tc := range []struct {
+		arrayKind uint8
+		want      uint8
+	}{
+		{0, FBKindMixed}, // ArrayMixed
+		{1, FBKindInt},   // ArrayInt
+		{2, FBKindFloat}, // ArrayFloat
+		{3, FBKindBool},  // ArrayBool
+	} {
+		var tf TypeFeedback
+		tf.ObserveKind(tc.arrayKind)
+		if tf.Kind != tc.want {
+			t.Errorf("arrayKind=%d: expected Kind=%d, got %d", tc.arrayKind, tc.want, tf.Kind)
+		}
+		// Same kind again -> still monomorphic
+		tf.ObserveKind(tc.arrayKind)
+		if tf.Kind != tc.want {
+			t.Errorf("arrayKind=%d (repeat): expected Kind=%d, got %d", tc.arrayKind, tc.want, tf.Kind)
+		}
 	}
 }

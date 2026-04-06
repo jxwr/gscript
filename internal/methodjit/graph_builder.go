@@ -617,7 +617,15 @@ func (b *graphBuilder) emitBlocks() {
 				c := vm.DecodeC(inst)
 				tbl := b.readVariable(bOp, block)
 				key := b.resolveRK(c, block)
-				instr := b.emit(block, OpGetTable, TypeAny, []*Value{tbl, key}, 0, 0)
+				// Read kind feedback for array specialization.
+				var kindAux2 int64
+				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
+					kind := b.proto.Feedback[pc].Kind
+					if kind != vm.FBKindUnobserved && kind != vm.FBKindPolymorphic {
+						kindAux2 = int64(kind)
+					}
+				}
+				instr := b.emit(block, OpGetTable, TypeAny, []*Value{tbl, key}, 0, kindAux2)
 				result := instr.Value()
 				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
 					if irType, ok := feedbackToIRType(b.proto.Feedback[pc].Result); ok {
@@ -634,7 +642,15 @@ func (b *graphBuilder) emitBlocks() {
 				tbl := b.readVariable(a, block)
 				key := b.resolveRK(bOp, block)
 				val := b.resolveRK(c, block)
-				b.emit(block, OpSetTable, TypeUnknown, []*Value{tbl, key, val}, 0, 0)
+				// Read kind feedback for array specialization.
+				var setKindAux2 int64
+				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
+					kind := b.proto.Feedback[pc].Kind
+					if kind != vm.FBKindUnobserved && kind != vm.FBKindPolymorphic {
+						setKindAux2 = int64(kind)
+					}
+				}
+				b.emit(block, OpSetTable, TypeUnknown, []*Value{tbl, key, val}, 0, setKindAux2)
 
 			case vm.OP_GETFIELD:
 				// GETFIELD A B C: R(A) = R(B).Constants[C]

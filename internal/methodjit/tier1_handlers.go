@@ -417,11 +417,14 @@ func (e *BaselineJITEngine) handleGetTable(ctx *ExecContext, regs []runtime.Valu
 	absA := base + a
 	if tblVal.IsTable() {
 		if absA < len(regs) {
-			regs[absA] = tblVal.Table().RawGet(key)
+			tbl := tblVal.Table()
+			regs[absA] = tbl.RawGet(key)
 			// Record type feedback so Tier 2 can specialize.
 			pc := int(ctx.BaselinePC) - 1
 			if proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) {
 				proto.Feedback[pc].Result.Observe(regs[absA].Type())
+				// Record array kind for table-access specialization.
+				proto.Feedback[pc].ObserveKind(uint8(tbl.GetArrayKind()))
 			}
 		}
 	} else if absA < len(regs) {
@@ -465,7 +468,13 @@ func (e *BaselineJITEngine) handleSetTable(ctx *ExecContext, regs []runtime.Valu
 	}
 
 	if tblVal.IsTable() {
-		tblVal.Table().RawSet(key, val)
+		tbl := tblVal.Table()
+		tbl.RawSet(key, val)
+		// Record array kind feedback for table-access specialization.
+		pc := int(ctx.BaselinePC) - 1
+		if proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) {
+			proto.Feedback[pc].ObserveKind(uint8(tbl.GetArrayKind()))
+		}
 	}
 	return nil
 }
