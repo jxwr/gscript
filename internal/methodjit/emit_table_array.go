@@ -139,17 +139,40 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, deoptLabel)
 
-	// Dispatch on arrayKind: 0=Mixed, 1=Int, 2=Float, 3=Bool, else=slow.
-	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
-	asm.CMPimm(jit.X2, jit.AKBool)
-	asm.BCond(jit.CondEQ, boolArrayLabel)
-	asm.CMPimm(jit.X2, jit.AKFloat)
-	asm.BCond(jit.CondEQ, floatArrayLabel)
-	asm.CMPimm(jit.X2, jit.AKInt)
-	asm.BCond(jit.CondEQ, intArrayLabel)
-	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0) -> deopt
+	// Kind-specialized dispatch: when Aux2 carries feedback, emit a kind
+	// guard (3 insns) instead of the 4-way cascade (8 insns).
+	mixedArrayLabel := ec.uniqueLabel("gettable_mixedarr")
+	knownGetKind := int(instr.Aux2) // 0=unknown, 1..4=known FBKind
+	if knownGetKind >= 1 && knownGetKind <= 4 {
+		expectedKind := uint16(knownGetKind - 1) // convert FBKind to AK constant
+		asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+		asm.CMPimm(jit.X2, expectedKind)
+		asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+		// Jump directly to the matching kind path.
+		switch expectedKind {
+		case jit.AKMixed:
+			asm.B(mixedArrayLabel)
+		case jit.AKInt:
+			asm.B(intArrayLabel)
+		case jit.AKFloat:
+			asm.B(floatArrayLabel)
+		case jit.AKBool:
+			asm.B(boolArrayLabel)
+		}
+	} else {
+		// Unknown kind: use existing 4-way dispatch cascade.
+		asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+		asm.CMPimm(jit.X2, jit.AKBool)
+		asm.BCond(jit.CondEQ, boolArrayLabel)
+		asm.CMPimm(jit.X2, jit.AKFloat)
+		asm.BCond(jit.CondEQ, floatArrayLabel)
+		asm.CMPimm(jit.X2, jit.AKInt)
+		asm.BCond(jit.CondEQ, intArrayLabel)
+		asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0) -> deopt
+	}
 
 	// --- ArrayMixed fast path ---
+	asm.Label(mixedArrayLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // array.len
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondGE, deoptLabel)
@@ -390,17 +413,40 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, deoptLabel)
 
-	// Dispatch on arrayKind: 0=Mixed, 1=Int, 2=Float, 3=Bool, else=slow.
-	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
-	asm.CMPimm(jit.X2, jit.AKBool)
-	asm.BCond(jit.CondEQ, boolArrayLabel)
-	asm.CMPimm(jit.X2, jit.AKFloat)
-	asm.BCond(jit.CondEQ, floatArrayLabel)
-	asm.CMPimm(jit.X2, jit.AKInt)
-	asm.BCond(jit.CondEQ, intArrayLabel)
-	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0) -> deopt
+	// Kind-specialized dispatch: when Aux2 carries feedback, emit a kind
+	// guard (3 insns) instead of the 4-way cascade (8 insns).
+	mixedArrayLabel := ec.uniqueLabel("settable_mixedarr")
+	knownSetKind := int(instr.Aux2) // 0=unknown, 1..4=known FBKind
+	if knownSetKind >= 1 && knownSetKind <= 4 {
+		expectedKind := uint16(knownSetKind - 1) // convert FBKind to AK constant
+		asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+		asm.CMPimm(jit.X2, expectedKind)
+		asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+		// Jump directly to the matching kind path.
+		switch expectedKind {
+		case jit.AKMixed:
+			asm.B(mixedArrayLabel)
+		case jit.AKInt:
+			asm.B(intArrayLabel)
+		case jit.AKFloat:
+			asm.B(floatArrayLabel)
+		case jit.AKBool:
+			asm.B(boolArrayLabel)
+		}
+	} else {
+		// Unknown kind: use existing 4-way dispatch cascade.
+		asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+		asm.CMPimm(jit.X2, jit.AKBool)
+		asm.BCond(jit.CondEQ, boolArrayLabel)
+		asm.CMPimm(jit.X2, jit.AKFloat)
+		asm.BCond(jit.CondEQ, floatArrayLabel)
+		asm.CMPimm(jit.X2, jit.AKInt)
+		asm.BCond(jit.CondEQ, intArrayLabel)
+		asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0) -> deopt
+	}
 
 	// --- ArrayMixed fast path ---
+	asm.Label(mixedArrayLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // array.len
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondGE, deoptLabel)

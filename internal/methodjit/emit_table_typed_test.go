@@ -78,6 +78,54 @@ for iter := 1; iter <= 5; iter++ {
 	compareTier2Result(t, src, "result")
 }
 
+// TestKindSpecialize_IntArray tests kind-specialized GetTable on ArrayInt.
+func TestKindSpecialize_IntArray(t *testing.T) {
+	src := `
+func sum_ints(n) {
+    arr := {10, 20, 30, 40, 50}
+    total := 0
+    for i := 1; i <= n; i++ {
+        for j := 1; j <= 5; j++ {
+            total = total + arr[j]
+        }
+    }
+    return total
+}
+result := 0
+for iter := 1; iter <= 5; iter++ {
+    result = sum_ints(10)
+}
+`
+	compareTier2Result(t, src, "result")
+}
+
+// TestKindSpecialize_Sieve tests kind-specialized GetTable/SetTable on ArrayBool.
+func TestKindSpecialize_Sieve(t *testing.T) {
+	src := `
+func sieve(n) {
+    is_prime := {}
+    for i := 0; i <= n; i++ {
+        is_prime[i] = true
+    }
+    count := 0
+    for i := 2; i <= n; i++ {
+        if is_prime[i] {
+            count = count + 1
+            for j := i + i; j <= n; j = j + i {
+                is_prime[j] = false
+            }
+        }
+    }
+    return count
+}
+result := 0
+for iter := 1; iter <= 5; iter++ {
+    result = sieve(1000)
+}
+`
+	compareTier2Result(t, src, "result")
+}
+
 func TestTier2_SetTableArrayFloat(t *testing.T) {
 	src := `
 func scale_floats(n) {
