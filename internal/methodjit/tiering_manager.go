@@ -148,11 +148,13 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		if t1 != nil && proto.Feedback == nil {
 			proto.EnsureFeedback()
 		}
-		// OSR disabled for now: mandelbrot's Tier 2 float code is slower than Tier 1.
-		// Re-enable once Tier 2 float handling is fully optimized.
-		// if profile.HasLoop && !tm.tier2Failed[proto] {
-		// 	tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
-		// }
+		// Enable OSR for deeply-nested-loop functions (LoopDepth >= 2) that
+		// don't reach Tier 2 via call count. matmul (LoopDepth=3, called once)
+		// benefits; mandelbrot (LoopDepth=1, called 1000x) already reaches
+		// Tier 2 via call count and is unaffected.
+		if profile.HasLoop && profile.LoopDepth >= 2 && !tm.tier2Failed[proto] {
+			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
+		}
 		return t1
 	}
 
