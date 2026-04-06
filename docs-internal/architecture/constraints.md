@@ -49,9 +49,9 @@ Ordering constraints:
 
 ## Feedback Pipeline
 
-- **GETFIELD feedback cold-start gap** (Round 17 finding): Tier 1's Go exit handler (`handleGetField` in `tier1_handlers.go`) does NOT record type feedback into `proto.Feedback[pc].Result`. Only the ARM64 inline cache HIT path records feedback. On call 1, all GETFIELDs miss the cache → Go handler → no feedback. By call 2, Tier 2 compiles with empty feedback → generic arithmetic. **Fix**: add `proto.Feedback[pc].Result.Observe(result.Type())` to handleGetField.
-- **GETTABLE Go exit handler** has the same gap: `handleGetTable` in `tier1_handlers.go` does not record feedback. Less critical because GETTABLE typed-array ARM64 fast paths record feedback on the first call for ArrayInt/ArrayFloat/ArrayBool. Only affects mixed-array accesses that fall to slow path.
-- **End-to-end pipeline verified**: feedback → GuardType → TypeSpecialize → MulFloat/AddFloat cascade works (TestFeedbackGuards_GetField_Integration, TestFeedbackGuards_Integration). The gap is ONLY in the Go exit handler recording.
+- **GETFIELD/GETTABLE feedback cold-start gap** (Round 17, **FIXED**): Go exit handlers now record type feedback via `proto.Feedback[pc].Result.Observe()`. Both `handleGetField` and `handleGetTable` in `tier1_handlers.go` record feedback on the slow path. End-to-end pipeline verified in production: feedback → GuardType → TypeSpecialize → MulFloat/AddFloat.
+- **Shape guard deduplication** (Round 17): `emitContext.shapeVerified` tracks per-block shape-verified table SSA values. Subsequent GetField/SetField on same table with same shapeID skip type+nil+shape check (~11 insns saved). Invalidated by OpCall, OpSelf, OpSetTable, and block boundaries.
+- **Remaining feedback gap**: GETTABLE mixed-array path does NOT record feedback (line 279 of tier1_table.go). Mixed-array accesses returning tables or mixed values get FBUnobserved. Acceptable — typed arrays are the important case.
 
 ## Technical Debt
 

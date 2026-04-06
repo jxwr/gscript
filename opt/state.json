@@ -10,9 +10,9 @@
   "uncommitted_files": [
     "opt/state.json"
   ],
-  "head_commit": "5f4c7b80ce393d30477e88fa642be3e8f993b8d8",
+  "head_commit": "1489bd251759c0950f6e94fcfec2c4ecbc1c5047",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T13:41:46Z",
+  "last_checkpoint": "2026-04-06T13:51:42Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -142,6 +142,13 @@
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "improved",
       "summary": "Load Elimination (block-local GetField CSE) + TypeFloat guard fix. nbody -26%, broad 17-49% across GetField-heavy benchmarks."
+    },
+    {
+      "cycle_id": "2026-04-06-getfield-feedback-fix",
+      "category": "tier2_float_loop",
+      "initiative": "opt/initiatives/tier2-float-loops.md",
+      "outcome": "improved",
+      "summary": "GETFIELD feedback recording in Go exit handlers + shape guard dedup. nbody -8.3%, table_field_access -23.5%, spectral_norm -8.7%."
     }
   ],
   "session_summary": {
@@ -154,6 +161,6 @@
     "tier2_float_loop": 0,
     "field_access": 0
   },
-  "rounds_since_review": 0,
-  "rounds_since_arch_audit": 0
+  "rounds_since_review": 1,
+  "rounds_since_arch_audit": 1
 }

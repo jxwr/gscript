@@ -72,16 +72,32 @@ Both fixes landed cleanly with TDD. No surprises, no deviations from the plan.
 
 The dedup path is straight-line code with no deopt branch. For nbody's inner loop, where `bi` and `bj` each get 7 field accesses, that's 12 deduped accesses × ~11 instructions saved = ~132 instructions eliminated per iteration.
 
-### Results
+## The results
 
-| Benchmark | Before | After | Change |
-|-----------|--------|-------|--------|
-| nbody | 0.590s | 0.515s | **-12.7%** |
-| matmul | 0.125s | 0.122s | -2.4% |
-| spectral_norm | 0.046s | 0.042s | -8.7% |
+| Benchmark | Before | After | Change | vs LuaJIT |
+|-----------|--------|-------|--------|-----------|
+| nbody | 0.590s | 0.541s | **-8.3%** | 15.9x |
+| table_field_access | 0.068s | 0.052s | **-23.5%** | — |
+| spectral_norm | 0.046s | 0.042s | **-8.7%** | 6.0x |
+| matmul | 0.125s | 0.120s | -4.0% | 5.5x |
+| math_intensive | 0.069s | 0.065s | -5.8% | — |
+| fibonacci_iterative | 0.288s | 0.275s | -4.5% | — |
 
-nbody improved by 12.7%, right in the predicted 10-13% range. The calibrated estimate (halved for ARM64 superscalar) was accurate. Interestingly, spectral_norm also improved despite not being the primary target — it benefits from the same GETFIELD feedback fix, since its `A()` function accesses table fields in the inner loop.
+nbody improved 8.3%, slightly below the predicted 10-13% range. The calibrated estimate (halved for ARM64 superscalar) was close but still optimistic — branch prediction on the eliminated type dispatch was partially hiding the cost. The real surprise was table_field_access at -23.5%: it's a pure field-access benchmark, so shape guard dedup eliminated a higher proportion of its total instruction count.
 
-We're at 0.515s vs LuaJIT's 0.034s — still 15x slower. The remaining gap isn't about missing guards or feedback anymore. It's structural: NaN-boxed representation (every float load/store goes through 64-bit tag encoding), svals indirection (LuaJIT inlines field offsets; we chase a pointer), and no register allocation across field accesses (each GetField clobbers X0-X2). Those are Phase 9-10 of the initiative.
+spectral_norm at -8.7% exceeded its -4% target. It benefits from both fixes: its inner loop accesses table fields and does float arithmetic, so feedback-driven specialization and guard dedup both apply. The compound effect exceeds the sum of the parts, as we've seen before.
 
-*[Results coming next...]*
+We're at 0.541s vs LuaJIT's 0.034s — still 15.9x slower. The remaining gap isn't about missing guards or feedback anymore. It's structural: NaN-boxed representation (every float load/store goes through 64-bit tag encoding), svals indirection (LuaJIT inlines field offsets; we chase a pointer), and no register allocation across field accesses (each GetField clobbers X0-X2). Those are Phase 9-10 of the initiative.
+
+## What I'd do differently
+
+The evaluator caught a real bug: `OpSetTable` (dynamic key writes like `t["newkey"] = val`) can change a table's shape, but we weren't invalidating the shape dedup cache. In production this is unlikely to fire — dynamic key writes and IC-cached field accesses rarely mix in the same basic block — but it's the kind of thing that becomes a debugging nightmare six months later. Now it resets on `OpSetTable`, `OpCall`, and `OpSelf`.
+
+Looking back, the real lesson of this round is about round 12. Four rounds ago we built the entire feedback-typed loads pipeline — graph builder reads FeedbackVector, inserts GuardType, TypeSpecialize converts to float ops. It worked perfectly in tests. It did nothing in production because feedback was never collected. The fix was four lines. We spent four rounds building a mechanism that was dead on arrival because nobody checked whether the input data existed.
+
+Observation beats reasoning. The integration test passed because it ran through the interpreter. The production path goes through Tier 1's Go exit handler. Nobody looked at the actual production code path.
+
+*Previous: [22x and Counting](/26-22x-and-counting)*
+
+*This is post 27 in the [GScript JIT series](https://jxwr.github.io/gscript/).
+All numbers from a single-thread ARM64 Apple Silicon machine.*

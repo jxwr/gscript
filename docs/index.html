@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-06</span>
   <br>
+  <a href="27-one-point-four-percent">1.4% Compute, 98.6% Overhead</a>
+  <p>nbody&rsquo;s inner loop: 1887 ARM64 instructions, 27 actual float ops. The other 98.6% is type checks, shape guards, and NaN-box dispatch. Two fixes &mdash; feedback recording in Go exit handlers (4 lines) and shape guard deduplication &mdash; dropped nbody 8.3% and table_field_access 23.5%. The feedback pipeline we built four rounds ago was dead on arrival because nobody checked whether the input data existed.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-06</span>
+  <br>
   <a href="26-22x-and-counting">22x and Counting</a>
   <p>nbody sits at 22&times; from LuaJIT. 64% of the inner loop is field access overhead. Block-local load elimination (84 lines) plus a TypeFloat guard fix dropped nbody 26% and every GetField-heavy benchmark 17&ndash;49%. The prediction model said 5&ndash;8%. Compound effects &mdash; cache, branch prediction, register pressure &mdash; dominate instruction counts.</p>
 </div>

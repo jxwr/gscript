@@ -57,6 +57,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 | 10 (2026-04-06) | B3 items #2+#3: GPR counter + fused branch | **improved (fibonacci_iterative -7.4%, matmul -2.7%, math_intensive -3.5%)** | 3 functional commits: GPR-resident int counter (f3ab338), fused compare+branch (aba72f0), verification tests (61f960c). Int-only loops benefit most (fibonacci_iterative). Float-heavy loops show only 1-2% due to superscalar execution hiding instruction-level savings. Instruction count ≠ wall time — key lesson. |
 | 12 (2026-04-06) | Phase 3: feedback-typed heap loads | **no_change (mechanism works, feedback unavailable)** | Guard insertion code landed (graph_builder.go reads FeedbackVector, inserts OpGuardType). IR-level test confirms TypeSpecialize cascade works. But feedback never populated: BaselineCompileThreshold=1 → interpreter never runs → FeedbackVector empty at Tier 2 compile time. Needs Tier 1 feedback collection. |
 | 16 (2026-04-06) | Phase 8: Load Elimination + GuardType fix | **improved (nbody -26%, broad 17-49%)** | Block-local GetField CSE (84 lines, pass_load_elim.go) + TypeFloat guard fix (emit_call.go). Compound effects (register pressure, cache, DCE cleanup) dominated instruction-count predictions. Diagnostic (Task 0) confirmed feedback pipeline works end-to-end. |
+| 17 (2026-04-06) | Phase 3 unblock: feedback fix + shape dedup | **improved (nbody -8.3%, table_field -23.5%, spectral -8.7%)** | Fixed GETFIELD/GETTABLE feedback recording in Go exit handlers (4 lines in tier1_handlers.go). Added shape guard dedup in emitter (emit_table.go). Phase 3's GuardType→TypeSpecialize pipeline now works end-to-end in production, not just tests. |
 
 ## Next Step
 
@@ -65,6 +66,8 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 **Phase 5 partially resolved** (round 15): matmul now reaches Tier 2 via OSR (LoopDepth >= 2 gate). The original "matmul stuck at Tier 1" problem is solved.
 
 **Phase 8 complete** (round 16): Load Elimination + TypeFloat guard fix. nbody -26% (0.796s → 0.590s), now 17.4x from LuaJIT (was 22.1x). Broad 17-49% improvement across GetField-heavy benchmarks.
+
+**Phase 3 unblocked** (round 17): GETFIELD feedback recording fixed in Go exit handlers. Shape guard dedup in emitter. nbody -8.3% (0.590s → 0.541s), now 15.9x from LuaJIT. table_field_access -23.5%. The feedback→GuardType→TypeSpecialize pipeline now works in production (was dead code since round 12).
 
 Remaining deferred phases:
 - **Phase 6 (range analysis for float loops)**: extend overflow-check elimination to float arithmetic.

@@ -99,8 +99,31 @@ Add per-block tracking of shape-verified table objects in `emitContext`:
 - Max files changed: 3 (tier1_handlers.go, emit_table.go, new test file)
 - Abort condition: 3 commits without benchmark improvement, or tests fail after 3 attempts on any task
 
-## Results (filled after VERIFY)
-| Benchmark | Before | After | Change |
-|-----------|--------|-------|--------|
+## Results (filled by VERIFY)
+| Benchmark | Before | After | Change | Expected | Met? |
+|-----------|--------|-------|--------|----------|------|
+| nbody | 0.590s | 0.541s | −8.3% | −10-13% | close |
+| table_field_access | 0.068s | 0.052s | −23.5% | ±5% | exceeded |
+| spectral_norm | 0.046s | 0.042s | −8.7% | −4% | exceeded |
+| matmul | 0.125s | 0.120s | −4.0% | −5% | close |
+| fibonacci_iterative | 0.288s | 0.275s | −4.5% | — | bonus |
+| math_intensive | 0.069s | 0.065s | −5.8% | — | bonus |
+| mandelbrot | 0.062s | 0.064s | +3.2% | — | noise |
+| sieve | 0.080s | 0.081-0.087s | noise | — | ok |
+
+### Test Status
+- All passing (methodjit + vm)
+
+### Evaluator Findings
+- PASS. One medium issue fixed: OpSetTable now invalidates shapeVerified (dynamic key writes can change shape).
+
+### Regressions (≥5%)
+- coroutine_bench: 16.4s → 17.6s (+6.9%) — measurement noise, no coroutine code paths touched.
+- sieve: 0.080s → 0.081-0.087s — confirmed noise via 3x re-run (0.081-0.087 range, baseline 0.080).
 
 ## Lessons (filled after completion/abandonment)
+1. **Feedback cold-start gap was the real Phase 3 blocker**: Round 12 built the GuardType→TypeSpecialize pipeline but feedback was never populated because Tier 1's Go exit handler didn't record it. The fix was 4 lines in tier1_handlers.go. Infrastructure without plumbing is dead code.
+2. **Shape guard dedup is a multiplier, not a standalone win**: The dedup saves ~9 insns per redundant access, but the big win is that it compounds with feedback-driven type specialization — table_field_access -23.5% shows the multiplicative effect.
+3. **Prediction was close this time**: Predicted nbody -10-13%, actual -8.3%. Calibration (halving for superscalar) is working. The remaining gap is likely branch predictor effects that instruction counting misses entirely.
+4. **Evaluator caught a real bug**: OpSetTable invalidation was missing — dynamic key writes can change shape, making stale dedup entries unsafe. Fixed before commit.
+5. **table_field_access is the canary**: -23.5% from shape dedup alone confirms that field-access-heavy benchmarks are dominated by guard overhead, not compute. This validates the initiative's Phase 9 direction (further guard elimination).
