@@ -105,7 +105,44 @@ Write `opt/reviews/<date>-round<N>.md`:
 ### Process Understanding
 [2-3 sentences: what is the user trying to achieve at the meta level?
  What kind of workflow would make them stop intervening?]
+
+### Self-Evolution Actions
+[List changes you APPLIED this review (not just recommended). For each:]
+1. **What**: [file changed + what was modified]
+   **Why**: [which user intervention or round failure triggered this]
+   **Verify**: [how the next round will show if this helped]
+2. ...
+
+### Evolution Tracker
+[Compare with the previous review's "Verify" items. Did the changes work?]
+| Previous Change | Expected Effect | Actual Outcome |
+|----------------|-----------------|----------------|
 ```
+
+---
+
+## Self-Evolution Protocol
+
+**The harness must evolve itself, not just report.** See CLAUDE.md → Meta-Principle.
+
+After writing the review report:
+
+### 1. Apply structural changes directly
+You have Write access to `.claude/prompts/`, `.claude/optimize.sh`, `scripts/`, `opt/`.
+If you identified a gap backed by data (user intervention or round failure):
+- Edit the relevant prompt/script NOW
+- Note what you changed in "Self-Evolution Actions"
+- Define how next round will verify the change worked
+
+### 2. Track previous changes
+Read the previous review (`opt/reviews/` most recent). Check its "Self-Evolution Actions → Verify" column. Did the changes help? If not, iterate or revert.
+
+### 3. Don't duplicate user work
+Read `.claude/prompts/*.md` and `.claude/optimize.sh` BEFORE making changes.
+If the user already implemented a fix in the current session → mark as "implemented by user" and move on. Understand WHY they made that choice.
+
+### 4. Escalate what you can't fix
+Some changes need user decision (e.g., "should we add a new phase?" or "should we change the mission?"). Flag these under "Request for Human Input" with your reasoning.
 
 ---
 
@@ -114,10 +151,10 @@ Write `opt/reviews/<date>-round<N>.md`:
 After writing the review, update `opt/state.json`:
 - Set `rounds_since_review` to `0`
 
-## Rules
+## Core Principles
 
-1. **User interventions are the #1 data source.** Statistics are secondary.
-2. **Don't re-request what's done.** Read the current prompts/scripts BEFORE recommending changes. If the user asked for X and it's already in analyze.md, say "already implemented" not "recommend adding X".
-3. **Understand before prescribing.** The goal is to model the user's thinking, not generate action items.
-4. **Apply changes directly** if they're small and clearly warranted (you have Write access to `.claude/`). But note what you changed.
-5. Keep it lightweight. Read, think, write. No sub-agents.
+1. **User interventions are the #1 signal.** They reveal what the workflow gets wrong better than any metric.
+2. **Don't re-request what's done.** Read current state before acting.
+3. **Understand before prescribing.** Model the user's thinking, not just their words.
+4. **Act, don't just recommend.** Apply changes, define verification criteria, track outcomes.
+5. **The workflow that needs no human intervention is the goal.** Every review should make that closer.

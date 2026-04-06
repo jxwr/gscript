@@ -6,6 +6,18 @@ You are an expert compiler engineer. GScript is a dynamically-typed scripting la
 
 **Surpass LuaJIT on all benchmarks.** Use V8's Method JIT approach (not LuaJIT's trace JIT) on Lua-like semantics. This is an open-ended, iterative project — there is no "done," only the next milestone.
 
+## Meta-Principle: Self-Evolving Workflow
+
+**The harness workflow must be capable of self-evolution. All efforts serve this principle.**
+
+Achieving the compiler goal matters, but the higher-order goal is that the *process* of achieving it improves itself over time. A workflow that delivers results but requires constant human redesign is brittle. A workflow that evolves its own prompts, tools, and structure based on what it learns each round is antifragile.
+
+Concretely:
+- Every round's outcome is feedback on the workflow, not just on the compiler
+- REVIEW reads user interventions and applies structural changes, not just parameter tweaks
+- If the user has to intervene to fix the same class of problem twice, the workflow has failed to learn
+- New capabilities (architecture audit, knowledge base, diagnostic tools) should emerge from the workflow's own observations, not only from human prompts
+
 ## Non-Goals
 
 - Trace JIT — deprecated, disconnected from CLI. `internal/jit/` is scheduled for deletion
