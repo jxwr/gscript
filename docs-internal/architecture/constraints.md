@@ -21,7 +21,7 @@
 
 Current (from `compileTier2`):
 ```
-BuildGraph → Validate → TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit
+BuildGraph → Validate → TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → LoadElim → DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit
 ```
 
 Ordering constraints:

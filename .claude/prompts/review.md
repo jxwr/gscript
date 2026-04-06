@@ -5,28 +5,23 @@ Key input: the user's session log. The user's interventions are the highest-sign
 
 ---
 
-## Context — Read These (in order)
+## Context — Load ALL data in ONE call
 
-1. **Main session JSONL log** — extract user's typed messages to understand their interventions:
-   ```bash
-   # Find the main session (most lines, non-phase-prompt first message)
-   MAIN=$(ls -t ~/.claude/projects/$(pwd | sed 's|[/_.]|-|g')/*.jsonl | head -5 \
-     | while read f; do
-       first=$(head -50 "$f" | jq -r 'select(.type=="user") | .message.content | if type=="string" then . else "" end' 2>/dev/null | head -1)
-       [[ "$first" != "# "* ]] && echo "$f" && break
-     done)
-   # Extract user messages
-   jq -r 'select(.type=="user" and (.message.content|type)=="string") | "\(.timestamp | split("T")[1][:8]) \(.message.content)"' "$MAIN" | tail -100
-   ```
-   Read the last ~100 user messages. These tell you what the user corrected, asked for, or redirected.
+**IMPORTANT**: Do NOT read files one by one with the Read tool. That creates 25+ API calls,
+each carrying the full conversation context (~50K tokens per call). Instead, use ONE Bash call:
 
-2. `opt/INDEX.md` — round history
-3. `opt/state.json` — counters
-4. `opt/plans/` — archived plans (last 3-5)
-5. `opt/workflow_log.jsonl` — per-round metrics
-6. `opt/initiatives/*.md` — active initiatives
-7. `.claude/prompts/*.md` — current prompts (read them to see what's already been changed)
-8. `.claude/optimize.sh` — current orchestrator config
+```bash
+bash scripts/review_dump.sh --all
+```
+
+This dumps in one shot:
+- User session log (last 100 messages)
+- All 23 workflow files (README, CLAUDE.md, prompts, hooks, skills, docs, state, INDEX, etc.)
+- Directory listings (initiatives, plans, reviews, pending-changes, opt/ top-level)
+
+Read the output carefully — it has clear `──── filename (N lines) ────` separators.
+
+**Only use Read/Bash for additional files** if you discover a specific issue that needs deeper inspection (e.g., reading a specific initiative file not in the standard dump).
 
 ---
 

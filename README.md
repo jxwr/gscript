@@ -21,7 +21,7 @@ Three-tier execution: **interpreter → Tier 1 baseline JIT → Tier 2 optimizin
 
 **Tier 1** — V8 Sparkplug-style 1:1 bytecode→ARM64 templates. Native BLR calls (~10ns), inline field cache, GETGLOBAL value cache, NaN-boxing (8-byte Value: int/float/pointer in uint64).
 
-**Tier 2** — SSA IR pipeline: `BuildGraph → TypeSpec → Intrinsic → Inline → ConstProp → DCE → RangeAnalysis → LICM → RegAlloc → ARM64`. Type-specialized registers, deopt guards, FPR/GPR carry across loop iterations, feedback-typed speculation.
+**Tier 2** — SSA IR pipeline: `BuildGraph → TypeSpec → Intrinsic → Inline → ConstProp → LoadElim → DCE → RangeAnalysis → LICM → RegAlloc → ARM64`. Type-specialized registers, deopt guards, FPR/GPR carry across loop iterations, feedback-typed speculation.
 
 > Architecture details: [docs-internal/architecture/overview.md](docs-internal/architecture/overview.md)
 

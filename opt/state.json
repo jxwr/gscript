@@ -8,11 +8,17 @@
   "completed_steps": [],
   "next_action": "",
   "uncommitted_files": [
+    "CLAUDE.md",
+    "README.md",
+    "docs-internal/architecture/constraints.md",
+    "docs-internal/architecture/overview.md",
+    "docs-internal/diagnostics/debug-ir-pipeline.md",
+    "opt/measure_report.md",
     "opt/state.json"
   ],
-  "head_commit": "5978905cdb9bcc5cce0f03868063f6f2f6e8e479",
+  "head_commit": "a873d5dca135798f6b851b866428b55aece89413",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T12:24:27Z",
+  "last_checkpoint": "2026-04-06T12:53:33Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -154,6 +160,6 @@
     "tier2_float_loop": 0,
     "field_access": 0
   },
-  "rounds_since_review": 1,
+  "rounds_since_review": 0,
   "rounds_since_arch_audit": 2
 }

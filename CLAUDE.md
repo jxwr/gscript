@@ -112,7 +112,7 @@ The workflow uses **specialized sub-agents**, not a single monolithic agent:
 
 ### Pass Pipeline
 - Each pass: `pass_<name>.go` + `pass_<name>_test.go`
-- Current order: `BuildGraph → Validate → TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit`
+- Current order: `BuildGraph → Validate → TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → LoadElim → DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit`
 - Ordering constraints documented in `docs-internal/architecture/constraints.md`
 
 ### Standards
