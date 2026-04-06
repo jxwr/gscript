@@ -29,6 +29,9 @@ Execute tasks from `current_plan.md` in order. For each task:
 ## Rules
 - TDD: write failing test FIRST, then implementation
 - No Go file exceeds 1000 lines
+- **Test scope**: run `go test ./internal/methodjit/ ./internal/vm/ -short -count=1 -timeout 120s`.
+  **NEVER run `go test ./...`** — it includes `./benchmarks/` which runs the full benchmark suite
+  and takes 10+ minutes. Benchmarks are only run in VERIFY, not IMPLEMENT.
 - **Commit frequently** — do NOT accumulate uncommitted work:
   - Commit after each task completes (not at the end of the phase)
   - Each commit should be a logical, reviewable unit
