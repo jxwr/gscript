@@ -358,6 +358,40 @@ func runJITFull(t *testing.T, src string, args []runtime.Value) []runtime.Value 
 	return result
 }
 
+// TestShapeGuardDedup tests that multiple field accesses of the same table
+// in the same basic block produce correct results. Shape guard dedup should
+// skip redundant type check + nil check + shape guard on subsequent accesses.
+func TestShapeGuardDedup(t *testing.T) {
+	src := `func f() { t := {x: 10, y: 20, z: 30}; return t.x + t.y + t.z }`
+	result := runJITWithWarmCache(t, src, nil)
+	if len(result) == 0 {
+		t.Fatal("no results")
+	}
+	assertValuesEqual(t, "shape dedup", result[0], runtime.IntValue(60))
+}
+
+// TestShapeGuardDedup_SetField tests that multiple SetField operations on the
+// same table in the same block produce correct results with shape guard dedup.
+func TestShapeGuardDedup_SetField(t *testing.T) {
+	src := `func f() { t := {x: 0, y: 0}; t.x = 5; t.y = 10; return t.x + t.y }`
+	result := runJITWithWarmCache(t, src, nil)
+	if len(result) == 0 {
+		t.Fatal("no results")
+	}
+	assertValuesEqual(t, "setfield dedup", result[0], runtime.IntValue(15))
+}
+
+// TestShapeGuardDedup_MixedGetSet tests mixed GetField and SetField on the
+// same table with shape guard dedup.
+func TestShapeGuardDedup_MixedGetSet(t *testing.T) {
+	src := `func f() { t := {x: 3, y: 7}; t.x = t.x + t.y; return t.x }`
+	result := runJITWithWarmCache(t, src, nil)
+	if len(result) == 0 {
+		t.Fatal("no results")
+	}
+	assertValuesEqual(t, "mixed get/set dedup", result[0], runtime.IntValue(10))
+}
+
 // TestEmitTable_SetTableWithOptPasses tests SETTABLE with optimization passes
 // (TypeSpec + ConstProp + DCE) to reproduce tiering manager behavior.
 // Known issue: TypeSpecialize produces raw int operands (AddInt) for

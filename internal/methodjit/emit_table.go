@@ -49,9 +49,25 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	}
 
 	asm := ec.asm
+	tblValueID := instr.Args[0].ID
+
+	// Shape guard dedup: if this table was already verified with the same
+	// shapeID in this block, skip the type check + nil check + shape guard.
+	if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
+		// Fast path: already verified. Just extract pointer and load field.
+		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
+		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
+		ec.storeResultNB(jit.X0, instr.ID)
+		return
+	}
 
 	// Load table value (NaN-boxed) into X0.
-	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
 	if tblReg != jit.X0 {
 		asm.MOVreg(jit.X0, tblReg)
 	}
@@ -71,6 +87,9 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	asm.LoadImm64(jit.X2, int64(shapeID))
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondNE, deoptLabel)
+
+	// Record shape verification for dedup in subsequent field accesses.
+	ec.shapeVerified[tblValueID] = shapeID
 
 	// Direct field access: svals[fieldIndex].
 	// svals is a Go slice: first 8 bytes = data pointer.
@@ -120,6 +139,25 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	}
 
 	asm := ec.asm
+	tblValueID := instr.Args[0].ID
+
+	// Shape guard dedup: if this table was already verified with the same
+	// shapeID in this block, skip the type check + nil check + shape guard.
+	if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
+		// Fast path: shape already verified. Load value, extract ptr, store.
+		valReg := ec.resolveValueNB(instr.Args[1].ID, jit.X3)
+		if valReg != jit.X3 {
+			asm.MOVreg(jit.X3, valReg)
+		}
+		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
+		asm.STR(jit.X3, jit.X1, fieldIdx*jit.ValueSize)
+		return
+	}
 
 	// Load value to store into X3 first (before we use X0 for the table).
 	valReg := ec.resolveValueNB(instr.Args[1].ID, jit.X3)
@@ -128,7 +166,7 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	}
 
 	// Load table value (NaN-boxed) into X0.
-	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
 	if tblReg != jit.X0 {
 		asm.MOVreg(jit.X0, tblReg)
 	}
@@ -148,6 +186,9 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	asm.LoadImm64(jit.X2, int64(shapeID))
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondNE, deoptLabel)
+
+	// Record shape verification for dedup in subsequent field accesses.
+	ec.shapeVerified[tblValueID] = shapeID
 
 	// Direct field store: svals[fieldIndex] = value.
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer

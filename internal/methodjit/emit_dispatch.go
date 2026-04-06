@@ -140,6 +140,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	// --- Call: native BLR with spill/reload, slow path falls to exit-resume ---
 	case OpCall:
 		ec.emitCallNative(instr)
+		// Calls can modify any table's shape — invalidate all shape verification.
+		ec.shapeVerified = make(map[int]uint32)
 
 	// --- Global-exit: load globals via VM and resume JIT ---
 	case OpGetGlobal:
@@ -167,9 +169,13 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpSetList:
 		ec.emitSetListExit(instr)
 
+	// --- Op-exit: OpSelf exits to Go and may modify table shapes ---
+	case OpSelf:
+		ec.emitOpExit(instr)
+		ec.shapeVerified = make(map[int]uint32)
+
 	// --- Op-exit: unsupported ops exit to Go, execute there, resume JIT ---
-	case OpSelf,
-		OpSetGlobal,
+	case OpSetGlobal,
 		OpGetUpval, OpSetUpval,
 		OpAppend,
 		OpConcat,

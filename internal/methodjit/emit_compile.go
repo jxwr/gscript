@@ -150,6 +150,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		activeRegs:     make(map[int]bool),
 		rawIntRegs:     make(map[int]bool),
 		activeFPRegs:   make(map[int]bool),
+		shapeVerified:  make(map[int]uint32),
 		crossBlockLive: crossBlockLive,
 		useFPR:         hasFPR,
 		loop:             li,
@@ -253,6 +254,11 @@ type emitContext struct {
 	// in their allocated register. Set by emitRawIntBinOp, read by resolveRawInt.
 	// Reset at block boundaries (raw state doesn't carry across blocks).
 	rawIntRegs map[int]bool
+
+	// shapeVerified tracks table SSA value IDs whose shape has been verified
+	// in the current block. Maps table value ID -> verified shapeID.
+	// Reset at block boundaries and after calls.
+	shapeVerified map[int]uint32
 
 	// activeFPRegs tracks which value IDs have their FPR allocation active
 	// in the current block. Mirrors activeRegs for FPR-allocated values.
@@ -518,6 +524,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 	ec.activeRegs = make(map[int]bool)
 	ec.rawIntRegs = make(map[int]bool)
 	ec.activeFPRegs = make(map[int]bool)
+	ec.shapeVerified = make(map[int]uint32)
 
 	if isLoopBlock && !isHeader && ec.safeHeaderRegs != nil {
 		// Non-header loop block: activate SAFE registers from the innermost
