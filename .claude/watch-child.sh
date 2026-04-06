@@ -10,7 +10,7 @@
 #   bash .claude/watch-child.sh <uuid-prefix>    # watch specific session
 #   bash .claude/watch-child.sh --main           # watch YOUR conversation (alias --all)
 #   bash .claude/watch-child.sh --no-follow / -n # history only, no tail (default: follow)
-#   bash .claude/watch-child.sh --status         # enable Haiku status bar (1-line summary)
+#   bash .claude/watch-child.sh --no-status       # disable Haiku status bar (on by default)
 #   bash .claude/watch-child.sh --status=5       # status bar every 5 seconds (default 15)
 #   bash .claude/watch-child.sh --width=N        # override terminal width
 #   bash .claude/watch-child.sh --full           # no truncation at all (verbose!)
@@ -80,7 +80,7 @@ SESSION_MATCH=""
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 160)
 FULL=false
 THINK_LINES=50
-STATUS_BAR=false
+STATUS_BAR=true
 STATUS_INTERVAL=15
 
 while [ $# -gt 0 ]; do
@@ -94,6 +94,7 @@ while [ $# -gt 0 ]; do
         --follow|-f) FOLLOW=true ;;
         --status) STATUS_BAR=true ;;
         --status=*) STATUS_BAR=true; STATUS_INTERVAL="${1#*=}" ;;
+        --no-status) STATUS_BAR=false ;;
         --think-lines=*) THINK_LINES="${1#*=}" ;;
         --help|-h)
             sed -n '3,15p' "$0" | sed 's/^# \?//'
@@ -547,9 +548,16 @@ else
                 result=$(head -1 "$STATUS_TMPDIR/result" 2>/dev/null | head -c 100)
                 if [ -n "$result" ] && [ "$result" != "$STATUS_RESULT" ]; then
                     STATUS_RESULT="$result"
-                    printf "%s%s%s  %s⚡ %s%s\n" \
+                    # Show current agent/session context
+                    local agent_label
+                    agent_label=$(session_title "$current_file" 20)
+                    local agent_kind
+                    if [ "$current_file" = "$MAIN_SESSION" ]; then agent_kind="main"
+                    elif is_subagent "$current_file"; then agent_kind="agent"
+                    else agent_kind="child"; fi
+                    printf "%s%s%s  %s⚡ [%s|%s] %s%s\n" \
                         "$C_TIME" "$(date '+%H:%M:%S')" "$R" \
-                        "$B$C_HEAD" "$result" "$R"
+                        "$B$C_HEAD" "$agent_kind" "$agent_label" "$result" "$R"
                 fi
             fi
             STATUS_PID=""
