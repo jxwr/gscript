@@ -1,7 +1,7 @@
 ---
 layout: default
 title: "The Harness"
-permalink: /21-the-harness
+permalink: /23-the-harness
 ---
 
 # The Harness
@@ -218,6 +218,6 @@ The process is the product.
 
 ---
 
-*Previous: [The Pivot](/20-the-pivot) — switching from trace JIT to method JIT*
+*Previous: [What Makes a JIT Compiler Fast](/22-jit-optimization-techniques) — switching from trace JIT to method JIT*
 
 *This is post 21 in the [GScript JIT series](https://jxwr.github.io/gscript/). All numbers from a single-thread ARM64 Apple Silicon machine.*

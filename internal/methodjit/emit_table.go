@@ -381,6 +381,7 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	doneLabel := ec.uniqueLabel("gettable_done")
 	intArrayLabel := ec.uniqueLabel("gettable_intarr")
 	boolArrayLabel := ec.uniqueLabel("gettable_boolarr")
+	floatArrayLabel := ec.uniqueLabel("gettable_floatarr")
 
 	// Load table value (NaN-boxed) into X0.
 	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
@@ -418,10 +419,12 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.CMPimm(jit.X1, 0)
 	asm.BCond(jit.CondLT, deoptLabel)
 
-	// Dispatch on arrayKind: 0=Mixed, 1=Int, 3=Bool, else=slow.
+	// Dispatch on arrayKind: 0=Mixed, 1=Int, 2=Float, 3=Bool, else=slow.
 	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
 	asm.CMPimm(jit.X2, jit.AKBool)
 	asm.BCond(jit.CondEQ, boolArrayLabel)
+	asm.CMPimm(jit.X2, jit.AKFloat)
+	asm.BCond(jit.CondEQ, floatArrayLabel)
 	asm.CMPimm(jit.X2, jit.AKInt)
 	asm.BCond(jit.CondEQ, intArrayLabel)
 	asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0) -> deopt
@@ -444,6 +447,17 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)            // raw int64 = intArray[key]
 	// NaN-box the int64: UBFX + ORR with pinned tag register.
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	// --- ArrayFloat fast path ---
+	asm.Label(floatArrayLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArrayLen) // floatArray.len
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
+	asm.LDRreg(jit.X0, jit.X2, jit.X1)              // raw float64 bits = floatArray[key]
+	// Float64 bits ARE the NaN-boxed value — no conversion needed!
 	ec.storeResultNB(jit.X0, instr.ID)
 	asm.B(doneLabel)
 
@@ -599,6 +613,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	doneLabel := ec.uniqueLabel("settable_done")
 	intArrayLabel := ec.uniqueLabel("settable_intarr")
 	boolArrayLabel := ec.uniqueLabel("settable_boolarr")
+	floatArrayLabel := ec.uniqueLabel("settable_floatarr")
 
 	// Load table value (NaN-boxed) into X0.
 	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
