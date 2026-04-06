@@ -140,7 +140,8 @@ Then:
 2. Rename `docs/draft.md` → `docs/NN-slug.md` (slug from title, lowercase, hyphens)
 3. Fix the frontmatter: set correct `permalink: /NN-slug`
 4. Remove the `*[This post is being written live...]*` markers
-5. Add the new post to `docs/index.html` at the top of the Posts section
+5. Add the new post to `docs/index.html` at the top of the Posts section.
+   Use **full date** (YYYY-MM-DD) in the `<span class="date">` tag, e.g. `<span class="date">2026-04-06</span>`
 
 ### 2j. Commit all changes
 Scoped message: `opt: close out <cycle_id> (<outcome>)`

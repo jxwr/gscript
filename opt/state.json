@@ -7,10 +7,12 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "",
+  "uncommitted_files": [
+    "opt/state.json"
+  ],
+  "head_commit": "4047c58cd8354ab68fa91509f20b7ee73a0a1360",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T10:56:44Z",
+  "last_checkpoint": "2026-04-06T11:14:52Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -104,21 +106,21 @@
       "category": "recursive_call",
       "initiative": "opt/initiatives/recursive-tier2-unlock.md",
       "outcome": "no_change",
-      "summary": "Phase 3+5: B=0 fix kept (correctness). Tier 2 net-negative for recursive functions — 27-50% regressions, reverted."
+      "summary": "Phase 3+5: B=0 fix kept (correctness). Tier 2 net-negative for recursive functions \u2014 27-50% regressions, reverted."
     },
     {
       "cycle_id": "2026-04-06-feedback-typed-loads",
       "category": "tier2_float_loop",
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "no_change",
-      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected — Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
+      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected \u2014 Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
     },
     {
       "cycle_id": "2026-04-06-native-array-kinds",
       "category": "field_access",
       "initiative": "standalone",
       "outcome": "improved",
-      "summary": "Native ArrayBool/ArrayFloat fast paths in emitGetTableNative/emitSetTableNative. Sieve -18-25% (0.227s→0.186s). Eliminated exit-resume for bool/float typed arrays."
+      "summary": "Native ArrayBool/ArrayFloat fast paths in emitGetTableNative/emitSetTableNative. Sieve -18-25% (0.227s\u21920.186s). Eliminated exit-resume for bool/float typed arrays."
     },
     {
       "cycle_id": "2026-04-06-table-access-bypass",

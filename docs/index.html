@@ -92,175 +92,175 @@
 <h2>Posts</h2>
 
 <div class="post">
-  <span class="date">April 2026</span>
+  <span class="date">2026-04-06</span>
   <br>
   <a href="25-the-function-that-never-graduated">The Function That Never Graduated</a>
   <p>matmul is called once. That one call runs 27 million iterations through the slowest path. OSR was disabled since round 3 &mdash; re-enabling it with a LoopDepth &ge; 2 gate unlocked 11 rounds of Tier 2 improvements for every single-call compute function. mandelbrot &minus;80%, now 1.27&times; from LuaJIT.</p>
 </div>
 
 <div class="post">
-  <span class="date">April 2026</span>
+  <span class="date">2026-04-06</span>
   <br>
   <a href="24-the-missing-fast-paths">The Missing Fast Paths</a>
   <p>matmul went from 0.985s to 0.195s. Tier 1 had no float or bool array fast paths &mdash; every table access exited ARM64 and called into Go. Four commits added the missing fast paths, feedback collection infrastructure, and Tier 2 emit-level bypasses. The prediction model was useless because it targeted the wrong tier.</p>
 </div>
 
 <div class="post">
-  <span class="date">April 2026</span>
+  <span class="date">2026-04-06</span>
   <br>
   <a href="23-the-harness">The Harness</a>
   <p>After twelve optimization rounds, the compiler is 10% faster. The workflow that optimizes it is unrecognizable. Predictions were off by 2-25&times; because ANALYZE never read the code. The workflow rewrite: 7 phases &rarr; 3, knowledge base, architecture audit, REVIEW that reads user interventions. The process became the product.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="22-jit-optimization-techniques">What Makes a JIT Compiler Fast</a>
   <p>Seven optimization techniques ranked by impact, with real numbers from GScript's multi-tier JIT. Type specialization delivers 14.6x on fibonacci, inline caches deliver 6.25x on field access, mandelbrot micro hits 591x. But the key insight is about coverage: a 10x optimizer that handles 100% of functions beats a 1000x optimizer that handles 10%.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="21-three-tiers">Three Tiers</a>
   <p>Deleted 5,600 lines of broken emission code. The three-tier architecture: interpreter for correctness, baseline JIT for universal compilation, optimizing JIT for hot code. Same proven IR infrastructure, new emission layers with clean separation of concerns.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="20-the-pivot">The Pivot</a>
   <p>Three attempts to handle functions in a trace JIT. All failed. Now we're pivoting to V8's Maglev-style Method JIT &mdash; compiling whole functions with type feedback, CFG-based SSA, and speculative optimization. The trace JIT stays for loops. The Method JIT handles everything else.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="19-the-long-road-back">The Long Road Back</a>
   <p>The rewrite cost us fib, sieve, ackermann, mandelbrot. This round we tried to get them back: function inlining failed (register corruption), the build was broken, three bugs hid in NaN-boxing. We got fib to 46ms via native BL recursion, but sieve is still 5.7x slower than the old JIT. An honest look at what the rewrite gained, what it lost, and where AI agent debugging hits its limits.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="18-eleven-x">Eleven X</a>
   <p>Deleted 13K lines, wrote 7K. The new trace-only JIT hits 11.3x on field access, 5.5x on mandelbrot. Four-layer test framework with 136 tests from first principles. Seven one-line bugs that took a full rewrite to find.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="17-the-rewrite">The Rewrite</a>
   <p>Deleted 13,000 lines, wrote 4,500. The new trace-only JIT has value-based SSA, snapshots, and correct call-exit handling. mandelbrot 5.4x speedup, all benchmarks correct. Why doing less is more correct.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="16-the-snapshot-wall">The Snapshot Wall</a>
   <p>Six rounds of guard elimination fixes, all failed. The real problem: no snapshot mechanism for precise side-exit state restoration. A deep-dive into LuaJIT's lj_snap.c, an honest look at why AI keeps failing on architectural problems, and the plan to fix it properly.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="15-the-grand-refactor">The Grand Refactor</a>
   <p>20K lines of JIT compiler, too complex to hold in context. Six rounds of modularization: god objects broken up, 73 dead symbols removed, call-exit handling unified. Max file dropped from 1,479 to 645 lines, zero behavior changes, all tests pass. Plus: a free performance win from deduplication.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="14-one-jit-to-rule-them-all">One JIT to Rule Them All</a>
   <p>Three JIT compilers became two. Deleted 2,800 lines, unified the flags, and made Method JIT + SSA Trace JIT coexist. Plus: why the 5 biggest benchmark gaps are all float-heavy, and the two paths forward.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="13-three-bugs-one-evening">Three Bugs, One Evening</a>
   <p>A GC safe-point race, a JIT stack corruption, and a goroutine that couldn't talk back. Three bugs that blocked the Chinese Chess demo and the binary_trees benchmark, fixed in one session.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="12-the-box-unbox-toll">The Box/Unbox Toll</a>
   <p>NaN-boxing regressed compute benchmarks by 16-48%. Seven optimizations across three JIT tiers and the VM eliminate the overhead: pinned tag register, UBFX pointer extraction, trace FORLOOP register pinning, branchless sign extension. FibRecursive recovers from 47.9us to 23.9us.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="11-eight-bytes-that-change-everything">Eight Bytes That Change Everything</a>
   <p>Season 2 begins. NaN-boxing shrinks Value from 24 bytes to 8. IEEE 754 quiet NaN payload, pointer sub-types, gcRoots safety net, and 210+ JIT codegen changes. The foundation for closing the table-heavy gap.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="10-the-last-thirty-percent">The Last Thirty Percent</a>
   <p>Slot reuse guard fix, type-specialized arrays, FMADD/FMSUB fusion. Mandelbrot drops 33%. binary_trees runs for the first time. And the Value 24B wall becomes undeniable.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="09-the-cold-code-revolution">The Cold Code Revolution</a>
   <p>BOLT-style cold code splitting turns fn_calls from 70% behind LuaJIT to 5% behind. Seven optimizations, six bug fixes, one failed experiment, and the day we nearly caught LuaJIT on function calls.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="08-what-the-academics-know">What the Academics Know That We Don't</a>
   <p>Five cutting-edge techniques surveyed: Copy-and-Patch, Deegen, MLGO, BOLT, and NaN-boxing. Which ones actually help close the LuaJIT gap?</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="07-the-day-we-beat-luajit">The Day We Beat LuaJIT</a>
   <p>fib(20): GScript 24&micro;s, LuaJIT 26&micro;s. Function inlining, register pinning, and the moment we saw the number.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="06-the-four-point-two-x-wall">The 4.2&times; Wall</a>
   <p>We hit a wall at 4.2x behind LuaJIT. 50 instructions per iteration vs theoretical 15. The path forward: live-range register allocation.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="05-the-blacklist-that-changed-everything">The Blacklist That Changed Everything</a>
   <p>One simple blacklist turned mandelbrot from 1.53x to 6.09x. How a million wasted recording attempts were killing performance.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="04-from-monolith-to-pipeline">The Profiler Told Us We Were Wrong</a>
   <p>Our trace JIT makes most programs slower. Four research agents, one bombshell, and a new plan.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="03-the-day-i-wasted-chasing-a-fake-88x">The Day I Wasted Chasing a Fake 88x</a>
   <p>The &times;88 was wrong. Eight bugs, one humbling day, and the real path to 10x.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="02-introducing-ssa-ir">Introducing SSA IR</a>
   <p>Why every successful JIT uses SSA. Our IR design, type specialization, and integer unboxing.</p>
 </div>
 
 <div class="post">
-  <span class="date">March 2026</span>
+  <span class="date">2026-03</span>
   <br>
   <a href="01-from-interpreter-to-tracing-jit">From Interpreter to Tracing JIT</a>
   <p>18 optimizations, 2.4x result. What worked, what didn't, and why we need SSA.</p>
