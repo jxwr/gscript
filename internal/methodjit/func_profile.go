@@ -125,6 +125,14 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		return runtimeCallCount >= 3
 	}
 
+	// Small recursive functions with arithmetic: promote at callCount>=2.
+	// Tier 2 inlining (MaxRecursion=2) + type-specialized arithmetic
+	// eliminates NaN-boxing overhead across inlined call boundaries.
+	if !profile.HasLoop && profile.CallCount > 0 && profile.ArithCount >= 1 &&
+		profile.BytecodeCount <= 40 {
+		return runtimeCallCount >= 2
+	}
+
 	// Functions with calls (no loops): keep at Tier 1.
 	// Tier 1's native BLR handles calls efficiently (~10ns per call).
 	// Even after inlining, non-loop functions don't benefit enough from
