@@ -99,7 +99,7 @@ BuildGraph (Braun et al. 2013)
   → RangeAnalysis    (populate Int48Safe set; loop-counter exemption)
   → LICM             (hoist pure invariants into loop pre-header)
   → Validate
-  → RegAlloc         (forward-walk: 4 GPR (X20-X23), 8 FPR (D4-D11),
+  → RegAlloc         (forward-walk: 5 GPR (X20-X23,X28), 8 FPR (D4-D11),
                        loop-phi FPR carry, int-counter GPR carry,
                        loop-bound GPR pinning, LICM-invariant FPR pinning)
   → Emit             (ARM64 code generation, fused compare+branch for
@@ -147,8 +147,8 @@ Tier 2 handles ALL IR ops that the graph builder can produce:
 | X25 | Bool tag constant |
 | X26 | VM register base (callee's `regs[base]`) |
 | X27 | Constants pointer |
-| X20-X23 | Allocatable GPRs (4) |
-| X28 | Saved by prologue (Go's g register) |
+| X20-X23 | Allocatable GPRs (4 primary) |
+| X28 | Allocatable GPR (5th, freed from trace JIT) |
 | D4-D11 | Allocatable FPRs (8) |
 
 ## Exit Codes
@@ -168,11 +168,12 @@ Tier 2 handles ALL IR ops that the graph builder can produce:
 ## Smart Tiering (func_profile.go)
 
 Profile-based promotion replaces simple call-count threshold:
-- **Pure-compute + loop + arith**: Tier 2 at callCount=1 (immediate)
-- **Dense arithmetic, no calls**: Tier 2 at callCount=1
+- **Pure-compute + loop + arith (no calls/globals)**: Tier 2 at callCount=2
 - **Loop + calls + arith**: Tier 2 at callCount=2
 - **Loop + table ops**: Tier 2 at callCount=3
 - **Calls only (no loops)**: stay Tier 1 (BLR is faster)
+- **Default**: stay Tier 1
+- **OSR**: currently disabled (comment in tiering_manager.go:151-155)
 
 ## On-Stack Replacement (OSR)
 

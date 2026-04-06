@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">April 2026</span>
   <br>
+  <a href="25-the-function-that-never-graduated">The Function That Never Graduated</a>
+  <p>matmul is called once. That one call runs 27 million iterations through the slowest path. OSR was disabled since round 3 &mdash; re-enabling it with a LoopDepth &ge; 2 gate unlocked 11 rounds of Tier 2 improvements for every single-call compute function. mandelbrot &minus;80%, now 1.27&times; from LuaJIT.</p>
+</div>
+
+<div class="post">
+  <span class="date">April 2026</span>
+  <br>
   <a href="24-the-missing-fast-paths">The Missing Fast Paths</a>
   <p>matmul went from 0.985s to 0.195s. Tier 1 had no float or bool array fast paths &mdash; every table access exited ARM64 and called into Go. Four commits added the missing fast paths, feedback collection infrastructure, and Tier 2 emit-level bypasses. The prediction model was useless because it targeted the wrong tier.</p>
 </div>

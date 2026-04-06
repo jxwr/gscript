@@ -5,6 +5,7 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 
 | # | Round ID | Date | Category | Target | Outcome | Key Commit | 1-line Lesson |
 |---|----------|------|----------|--------|---------|------------|----------------|
+| 15 | 2026-04-06-osr-feedback-matmul | 2026-04-06 | field_access | Re-enable OSR with LoopDepth >= 2 gate for single-call compute functions | improved | 056607b | Tiering gates silently block entire benchmark classes — mandelbrot -80% from removing a 12-round-old disable |
 | 14 | 2026-04-06-table-access-bypass | 2026-04-06 | field_access | Tier 1 float/bool fast paths + Tier 2 raw-int key/const-value bypasses + feedback infra | improved | 2c4ea80 | Tier 1 exit-resume elimination dominates: matmul -80%, sieve -56%, spectral -54%. Prediction model useless when it targets the wrong tier |
 | 13 | 2026-04-06-native-array-kinds | 2026-04-06 | field_access | Native ArrayBool/ArrayFloat fast paths for GetTable/SetTable | improved | d89e9ed | Sieve -18-25%: exit-resume elimination is binary — either all table ops stay native or all exit; init loop (append) still exits |
 | 12 | 2026-04-06-feedback-typed-loads | 2026-04-06 | tier2_float_loop | Feedback-typed heap loads (GuardType after GetTable/GetField) | no_change (IR-level mechanism works, but feedback never collected: Tier 1 has no feedback, interpreter never runs) | 644bd3c | Feedback availability is gated by tiering: BaselineCompileThreshold=1 means interpreter never runs, so FeedbackVector is always empty at Tier 2 compile time |

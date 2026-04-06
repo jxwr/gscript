@@ -148,10 +148,9 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		if t1 != nil && proto.Feedback == nil {
 			proto.EnsureFeedback()
 		}
-		// Enable OSR for deeply-nested-loop functions (LoopDepth >= 2) that
-		// don't reach Tier 2 via call count. matmul (LoopDepth=3, called once)
-		// benefits; mandelbrot (LoopDepth=1, called 1000x) already reaches
-		// Tier 2 via call count and is unaffected.
+		// Enable OSR for deeply-nested-loop functions (LoopDepth >= 2).
+		// Single-call compute functions (matmul, mandelbrot, spectral_norm,
+		// fannkuch) reach Tier 2 via OSR instead of call-count threshold.
 		if profile.HasLoop && profile.LoopDepth >= 2 && !tm.tier2Failed[proto] {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
 		}

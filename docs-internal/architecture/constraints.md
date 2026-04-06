@@ -1,7 +1,7 @@
 # Architecture Constraints & Notes
 
 > **ANALYZE reads this every round.** Updated by Architecture Audit (every 2 rounds).
-> Last full audit: Round 12 (2026-04-06)
+> Last full audit: Round 15 (2026-04-06)
 
 ## Tier Constraints
 
@@ -13,7 +13,9 @@
 
 - **`emit_dispatch.go` 961 lines** ⚠: approaching 1000-line limit. Next change must split first (extract `emit_branch.go` for fused compare+branch logic).
 - **`graph_builder.go` 939 lines** ⚠: approaching limit. Round 12 added feedback-typed guards. Consider extracting `graph_builder_feedback.go`.
+- **`emit_table.go` 937 lines** ⚠ (NEW): grew significantly in rounds 13-14 with ArrayFloat/ArrayBool fast paths + raw-int key bypass + const-value bypass. Consider extracting `emit_table_native.go` for Tier 2 table paths.
 - **`regalloc.go` ↔ `emit_loop.go` coupling**: `carried` map concept spans both files. `regalloc.go` builds the map, `emit_loop.go` uses it for loop-exit boxing. Changes to one often require changes to the other.
+- **25 source files lack test files** (up from 15 at Round 12 audit). Mostly Tier 1 handlers and emit files. Coverage is indirect via integration tests, but direct unit tests would catch regressions earlier.
 
 ## Pass Pipeline Order
 
@@ -33,12 +35,17 @@ Ordering constraints:
 - `recursive_call` (ceiling=2): needs fundamentally different mechanism (see Tier Constraints)
 - `allocation_heavy` (binary_trees, object_creation): NEWTABLE is exit-resume, can't inline allocation; needs escape analysis + scalar replacement
 - mandelbrot inner loop: FMUL/FADD dependency chain is the compute floor (~3ns/iter). All peephole opportunities exhausted (Rounds 7-10). Further gains need loop unrolling or software pipelining.
+- **matmul stuck at Tier 1** (Round 15 finding): matmul called once, threshold=2 → never promotes. OSR disabled. Even at Tier 2 without feedback, inner loop is untyped (GetTable→any→generic dispatch). Needs BOTH OSR re-enable AND feedback-typed loads.
 - pprof is useless for JIT code (79% shows as opaque `runtime._ExternalCode`). ARM64 disasm via `tier2_float_profile_test.go` is the only reliable profiling method.
 
 ## Feedback System
 
-- `FeedbackVector` records per-PC result types in interpreter. Round 12 added `OpGuardType` insertion after `GetTable`/`GetField` when feedback says monomorphic.
-- Current feedback coverage: GetTable result, GetField result. NOT covered: Call return type, ForLoop counter type.
+- `FeedbackVector` records per-PC result types. Round 12 added `OpGuardType` insertion in graph builder after `GetTable`/`GetField` when feedback says monomorphic.
+- **Round 14**: Tier 1 now collects feedback via ARM64 stubs in GETTABLE typed-array fast paths (Float→FBFloat, Int→FBInt, Bool→FBBool) and GETFIELD (runtime value type extraction). `BaselineFeedbackPtr` in ExecContext points to `proto.Feedback[0]`.
+- **Coverage gap**: GETTABLE mixed-array path does NOT record feedback (line 279 of tier1_table.go has no stub). Mixed-array accesses returning tables or mixed values get FBUnobserved. This is acceptable for now — the important case is typed arrays returning floats/ints.
+- **End-to-end pipeline verified** (TestFeedbackGuards_Integration): feedback → GuardType → TypeSpecialize → MulFloat/AddFloat cascade works.
+- **Tier-up timing**: threshold=2 for pure-compute functions. First call at Tier 1 collects feedback. Second call at Tier 2 uses feedback. Functions called only once (matmul) need OSR to benefit.
+- NOT covered: Call return type, ForLoop counter type.
 
 ## Technical Debt
 

@@ -1,117 +1,99 @@
-# Analyze Report — Round 14
+# Analyze Report — Round 15
 
 > Date: 2026-04-06
-> Cycle ID: 2026-04-06-table-access-bypass
+> Cycle ID: 2026-04-06-osr-feedback-matmul
 
 ## Architecture Audit
 
-Quick read (rounds_since_arch_audit=1 < 2). `bash scripts/arch_check.sh` results:
+**Full audit (rounds_since_arch_audit=2).**
 
-- `emit_dispatch.go` 961 lines -- approaching limit (no changes planned this round)
-- `graph_builder.go` 939 lines -- approaching limit (no changes planned this round)
-- `emit_table.go` 872 lines -- grew from round 13 native array kinds; this round modifies existing functions, not adding new ones
-- Source: 43 files, 17562 lines. Test ratio: 81% (14309 test lines)
-- 1 TODO/HACK marker (emit_call.go:24, pre-existing)
-- No new constraints beyond what's in constraints.md
+### arch_check.sh findings
+- **3 files over 800 lines**: `emit_dispatch.go` (961⚠), `graph_builder.go` (939⚠), `emit_table.go` (937⚠ NEW)
+- `emit_table.go` grew significantly in rounds 13-14 (ArrayFloat/ArrayBool fast paths + raw-int key bypass + const-value bypass). Added to constraints.md.
+- Source: 43 files, 17878 lines (+428 lines since Round 12 audit)
+- Test ratio: 81% (14523/17878). 25 source files without tests (up from 15 at Round 12).
+- Technical debt markers: 1 (unchanged)
 
-**No constraint changes needed.** This round touches only emit_table.go (872 lines, within budget).
+### Key source file changes since Round 12
+- **regalloc.go** (684 lines): GPR pool is actually 5 registers (X20-X23 + X28), not 4 as documented. X28 was freed when trace JIT was removed. Fixed in overview.md.
+- **func_profile.go**: All tiering thresholds are now ≥2. The overview.md claimed threshold=1 for pure-compute; corrected to threshold=2.
+- **tier1_table.go** (774 lines): Grew with feedback stubs (emitBaselineFeedbackResult, emitBaselineFeedbackResultFromValue). GETTABLE typed-array paths record FBFloat/FBInt/FBBool. GETFIELD records via value-type extraction. Mixed-array path has NO feedback stub.
+- **tiering_manager.go** (773 lines): OSR remains disabled (lines 151-155 commented). Feedback initialization added at Tier 1 compile time (line 148-149).
+
+### New infrastructure since Round 12
+- Tier 1 feedback collection (BaselineFeedbackPtr in ExecContext)
+- emit_table.go: native ArrayFloat/ArrayBool fast paths for Tier 2 (GetTable/SetTable)
+- emit_table.go: raw-int key bypass + const-value bypass for Tier 2
+
+### Opportunities spotted
+- **OSR re-enable**: The reason for disabling OSR (mandelbrot Tier 2 regression) no longer applies — mandelbrot reaches Tier 2 via call count now. Re-enabling would unlock matmul.
+- **Mixed-array feedback**: Adding `emitBaselineFeedbackResultFromValue` to the mixed-array path in tier1_table.go would improve feedback coverage.
 
 ## Gap Classification
 
 | Category | Benchmarks | Total Gap vs LuaJIT | Blocked? |
 |----------|------------|---------------------|----------|
-| recursive_call | fib (57x), ackermann (43.7x), mutual_recursion (32.8x), method_dispatch (huge) | ~1.86s | YES (ceiling=2) |
-| tier2_float_loop | mandelbrot (6.7x), spectral_norm (41.9x), nbody (19.3x), matmul (42.8x) | ~2.27s | No (failures=1) |
-| field_access | sieve (15.5x), fannkuch (3.5x), table_field/array (N/A) | ~0.22s | No (failures=0) |
-| allocation_heavy | binary_trees (N/A), object_creation (regression) | N/A | No (failures=0) |
-| other | sort (4.9x), sum_primes (2x) | ~0.05s | No |
+| recursive_call | fib (52x), ackermann (42x), mutual_recursion (49x) | ~1.83s | YES (failures=2) |
+| tier2_float_loop | mandelbrot (6.6x), matmul (9.4x), spectral (19.5x), nbody (17.7x) | ~1.24s | No (failures=1) |
+| field_access | sieve (7.5x), sort (5.0x), fannkuch (3.9x) | ~0.17s | No (failures=0) |
+| gofunction_overhead | method_dispatch (huge) | ~0.10s | No (failures=0) |
+| allocation_heavy | binary_trees (1.87x regr), object_creation (1.21x regr) | JIT regressions | No (failures=0) |
 
 ## Blocked Categories
-- `recursive_call` (ceiling=2): Tier 2 is net-negative for recursive functions. Needs native recursive BLR or Tier 1 specialization.
+- `recursive_call` (category_failures=2): Tier 2 is net-negative for recursive functions. Needs Tier 1 BLR specialization or native recursive calling convention.
 
 ## Active Initiatives
-- `tier2-float-loops.md` (paused): B3 peephole items exhausted. Next step requires feedback collection or deeper arch changes (deopt frame descriptors, loop-exit boxing).
-- `recursive-tier2-unlock.md` (paused/blocked): category_failures=2.
+- `recursive-tier2-unlock.md` — paused (blocked by ceiling rule)
+- `tier2-float-loops.md` — paused (Phase 7 partially done in rounds 13-14)
+- `tier2-float-loops-b3-analysis.md` — complete (reference document)
 
 ## Selected Target
-
 - **Category**: field_access
 - **Initiative**: standalone
-- **Reason**: Zero failures in this category. Sieve shows 15.5x gap despite round 13 native ArrayBool paths. Diagnostic data reveals massive per-access overhead (57 insns, only 9% compute). Two emit-level optimizations (key bypass + value bypass) are zero-risk and save 12+ insns per table access. tier2_float_loop has larger absolute gap but is paused/needing architectural changes.
-- **Benchmarks**: sieve (primary), fannkuch (secondary)
+- **Reason**: matmul is 9.4x slower than LuaJIT and stuck at Tier 1 forever because it's called once and OSR is disabled. All infrastructure for the fix is already in place: Tier 1 feedback stubs (Round 14), GuardType insertion in graph builder (Round 12), OSR mechanism (existing, just disabled). This is a configuration change, not an architecture change. No flagged-⚠ files are touched. Zero risk of regression to other benchmarks (LoopDepth >= 2 gate targets only matmul in current suite).
+- **Benchmarks**: matmul (primary), regression check on all others
 
 ## Prior Art Research
 
 ### Web Search Findings
-- **V8 TurboFan**: Uses loop peeling + LoadElimination to hoist CheckMaps out of loops. JSNativeContextSpecialization specializes element access based on ElementAccessFeedback. SimplifiedLowering converts tagged ops to untagged machine ops.
-- **LuaJIT**: ABC (Array Bounds Check Elimination) via range analysis. Array base pointer kept in register. Trace JIT naturally eliminates per-access dispatch by recording only the taken path.
-- **.NET CLR**: Loop cloning creates fast/slow paths. x64 JIT hoists bounds check to pre-header; if it passes, all range checks in loop body eliminated.
-- **Common pattern**: All production compilers prove safety once at loop entry, not per-access.
+No web search needed — OSR is a well-understood technique. V8, SpiderMonkey, and JSC all use OSR as the primary mechanism for promoting single-call long-running functions. GScript already has the full OSR implementation; it's just disabled.
 
 ### Reference Source Findings
-- V8 `src/compiler/load-elimination.cc`: Tracks maps/elements kind across nodes, kills redundant CheckMaps
-- V8 `src/compiler/simplified-lowering.cc`: PROPAGATE/RETYPE/LOWER phases for representation selection
-- LuaJIT `lj_asm.c`: Backward register allocation with PHI shuffle, snapshot-based deopt restoration
+- V8's `Runtime_CompileOptimizedOSR` — triggers on back-edge interrupt, compiles at loop header
+- LuaJIT's hot-loop detection (default `hotloop=56`) — trace recording triggers on back-edge count, analogous to our OSR counter
+- GScript's OSR: `tiering_manager.go:211-245`, `tier1_control.go:172-179` (FORLOOP counter decrement), `tier1_manager.go:184-187` (counter setup). All working code, just needs uncommenting.
 
 ### Knowledge Base Update
-No new knowledge base entry needed — findings are emit-level optimizations, not new techniques.
+No new knowledge base entries. Existing entries `matmul-tier-up-gap.md` and `feedback-typed-loads.md` already document the problem and pipeline.
 
 ## Source Code Findings
 
 ### Files Read
-- `emit_table.go:378-510` (emitGetTableNative): Full dispatch sequence for GetTable
-- `emit_table.go:610-770` (emitSetTableNative): Full dispatch sequence for SetTable
-- `emit_reg.go:140-160` (resolveValueNB): Boxes rawIntRegs values before returning
-- `regalloc.go:1-280` (AllocateRegisters): Carried map, invariant carry, phi pre-allocation
-- `pass_licm.go:473-505` (canHoistOp): Whitelist of hoistable ops (GetTable/SetTable not included)
-- `ir_ops.go:62-64`: OpNewTable/GetTable/SetTable definitions
+- `tiering_manager.go:140-245` — OSR mechanism, shouldPromoteTier2, handleOSR
+- `func_profile.go:104-142` — tiering thresholds (all ≥2 now)
+- `tier1_table.go:220-343` — GETTABLE feedback stubs (Float/Int/Bool but NOT Mixed)
+- `tier1_table.go:661-754` — emitBaselineFeedbackResult + emitBaselineFeedbackResultFromValue
+- `graph_builder.go:614-661` — feedback reading + GuardType insertion for GetTable/GetField
+- `graph_builder.go:925-937` — feedbackToIRType mapping
+- `regalloc.go:0-200` — GPR/FPR pools, invariant carry
+- `osr_test.go:81` — existing OSR test uses SetOSRCounter(proto, 500)
+- `benchmarks/suite/matmul.gs` — triple-nested loop, float-array table access
 
 ### Diagnostic Data
+Fresh benchmark run (CLI, commit 823b444):
 
-**Sieve function Tier 2 IR** (19 blocks, 15 regs, 1 spill slot):
-- Init loop (B2/B1): SetTable with ConstBool(true)
-- Outer sieve (B4): MulInt + Le comparison (Le is generic, not LeInt — v22 is TypeAny)
-- Inner marking (B7/B8): SetTable + AddInt + Le comparison — 57 insns/iter
-- Counting (B13/B11/B12): GetTable + GuardTruthy + AddInt — ~57 insns/iter
-
-**Inner marking loop instruction breakdown (57 insns/iter):**
-
-| Category | Count | % |
-|----------|-------|---|
-| Actual compute (CMP, ADD, STR) | 5 | 9% |
-| Table access overhead (type/meta/kind) | 15 | 26% |
-| NaN-boxing overhead (box/unbox round trips) | 14 | 25% |
-| Bounds check | 5 | 9% |
-| Overflow check | 3 | 5% |
-| Phi slot loads/stores | 10 | 18% |
-| Control flow + dead | 5 | 9% |
+| Benchmark | JIT | LuaJIT | Ratio |
+|-----------|-----|--------|-------|
+| matmul | 0.207s | 0.022s | 9.4x |
+| mandelbrot | 0.383s | 0.058s | 6.6x |
+| spectral_norm | 0.156s | 0.008s | 19.5x |
+| nbody | 0.620s | 0.035s | 17.7x |
+| sieve | 0.082s | 0.011s | 7.5x |
+| fannkuch | 0.078s | 0.020s | 3.9x |
+| sort | 0.055s | 0.011s | 5.0x |
 
 ### Actual Bottleneck (data-backed)
-
-**The key box-unbox round trip is the cheapest win.** In the SetTable emit path:
-```
-644: UBFX  X1, X23, #0, #48     // unbox from rawIntRegs
-648: ORR   X1, X1, X24           // re-box as int
-64c: LSR   X2, X1, #48           // check tag (guaranteed to be 0xFFFE)
-650: MOV   X3, #0xfffe
-654: CMP   X2, X3
-658: B.NE  exit                  // never taken
-65c: SBFX  X1, X1, #0, #48      // unbox again
-```
-7 instructions that are 100% wasted when the emitter knows the key is a raw int.
-
-**The constant bool value path is the second win.** For `is_prime[j] = false`:
-- `resolveValueNB` loads the pre-computed NaN-boxed false value
-- Then checks its tag (known to be bool)
-- Then extracts the payload (known to be 0)
-- Then converts 0 -> byte 1 (false)
-All of this can be replaced with `MOVimm16 X4, #1` (1 instruction).
+matmul's inner loop (`sum = sum + ai[k] * b[k][j]`) runs 27M iterations (300³) entirely at Tier 1. Generic MUL/ADD dispatch costs ~10 instructions each (type check, unbox, compute, re-box). With feedback-typed Tier 2: FMUL + FADD = 2 instructions. Saving ~18 insns/iter × 27M iters × ~0.3ns/insn ≈ 146ms on a 207ms baseline. Halved for superscalar: ~73ms savings → target 0.06-0.12s.
 
 ## Plan Summary
-
-Emit-level optimization: eliminate redundant NaN-boxing round trips for integer table keys and compile-time-known bool/int values in SetTable. Two changes to `emit_table.go`, no IR changes, no new ops. Expected 10-12% sieve improvement (0.186s -> 0.165-0.170s), calibrated for superscalar ARM64. Zero correctness risk — emit path only changes the instruction sequence for cases where the input is already known-typed.
-
-**Future directions identified** (not this round):
-1. **Table pointer guard hoisting**: New IR op (OpCheckTablePtr) to hoist table type check + metatable check to pre-header via LICM. Saves 10+ insns per access. Requires emit_dispatch.go split first.
-2. **Le/Lt specialization for TypeAny operands**: v22 (n parameter) stays TypeAny → Le doesn't specialize to LeInt → fused compare+branch doesn't fire. Needs parameter type guards or feedback.
-3. **Phi slot reload elimination**: After SetTable fast path, phis are unnecessarily reloaded. Needs split fast/slow path at emit level or IR-level exit-point tracking.
+Re-enable OSR with a LoopDepth >= 2 safety gate in `tiering_manager.go`. This is a 3-line change that unlocks matmul for Tier 2 promotion mid-execution. Combined with Round 12's feedback-typed GuardType insertion and Round 14's Tier 1 feedback stubs, the Tier 2 inner loop will have typed float operations (MulFloat/AddFloat) instead of generic dispatch. Expected improvement: matmul 0.207s → 0.06-0.12s. Key risk: OSR restart correctness (mitigated by existing OSR tests). No other benchmarks affected.
