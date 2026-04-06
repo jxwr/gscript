@@ -618,7 +618,14 @@ func (b *graphBuilder) emitBlocks() {
 				tbl := b.readVariable(bOp, block)
 				key := b.resolveRK(c, block)
 				instr := b.emit(block, OpGetTable, TypeAny, []*Value{tbl, key}, 0, 0)
-				b.writeVariable(a, block, instr.Value())
+				result := instr.Value()
+				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
+					if irType, ok := feedbackToIRType(b.proto.Feedback[pc].Result); ok {
+						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
+						result = guard.Value()
+					}
+				}
+				b.writeVariable(a, block, result)
 
 			case vm.OP_SETTABLE:
 				a := vm.DecodeA(inst)
@@ -644,7 +651,14 @@ func (b *graphBuilder) emitBlocks() {
 					}
 				}
 				instr := b.emit(block, OpGetField, TypeAny, []*Value{tbl}, int64(c), aux2)
-				b.writeVariable(a, block, instr.Value())
+				result := instr.Value()
+				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
+					if irType, ok := feedbackToIRType(b.proto.Feedback[pc].Result); ok {
+						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
+						result = guard.Value()
+					}
+				}
+				b.writeVariable(a, block, result)
 
 			case vm.OP_SETFIELD:
 				// SETFIELD A B C: R(A).Constants[B] = RK(C)
@@ -906,5 +920,20 @@ func (b *graphBuilder) inferForLoopType(a int, block *Block) Type {
 		}
 	}
 	return TypeInt
+}
+
+// feedbackToIRType maps interpreter feedback types to IR types for guard insertion.
+// Returns the IR type and true if the feedback is monomorphic and worth guarding.
+func feedbackToIRType(fb vm.FeedbackType) (Type, bool) {
+	switch fb {
+	case vm.FBFloat:
+		return TypeFloat, true
+	case vm.FBInt:
+		return TypeInt, true
+	case vm.FBTable:
+		return TypeTable, true
+	default:
+		return TypeAny, false
+	}
 }
 

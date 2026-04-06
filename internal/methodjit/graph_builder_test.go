@@ -468,6 +468,201 @@ func f(n) {
 	}
 }
 
+// TestBuildGraph_FeedbackTypedGuards verifies that the graph builder inserts
+// OpGuardType instructions after OpGetTable/OpGetField when per-PC feedback
+// indicates a monomorphic result type, and that no guard is inserted when
+// feedback is FBUnobserved or FBAny.
+func TestBuildGraph_FeedbackTypedGuards(t *testing.T) {
+	// findPC returns the bytecode PC of the first instruction matching the given opcode.
+	findPC := func(t *testing.T, proto *vm.FuncProto, op vm.Opcode) int {
+		t.Helper()
+		for pc, inst := range proto.Code {
+			if vm.DecodeOp(inst) == op {
+				return pc
+			}
+		}
+		t.Fatalf("opcode %v not found in bytecode", op)
+		return -1
+	}
+
+	// findGuardAfterOp walks all IR blocks looking for an OpGuardType whose
+	// Args[0] points to a value produced by targetOp. Returns the guard
+	// instruction, or nil if none found.
+	findGuardAfterOp := func(fn *Function, targetOp Op) *Instr {
+		for _, blk := range fn.Blocks {
+			for i, instr := range blk.Instrs {
+				if instr.Op == targetOp && i+1 < len(blk.Instrs) {
+					next := blk.Instrs[i+1]
+					if next.Op == OpGuardType && len(next.Args) > 0 && next.Args[0].ID == instr.ID {
+						return next
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	t.Run("GetTable_FBFloat_inserts_guard", func(t *testing.T) {
+		// Compile a function with a GETTABLE: local x = t[1]
+		proto := compile(t, `
+func f(t) {
+	return t[1]
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETTABLE)
+
+		// Set monomorphic float feedback for the GETTABLE result.
+		proto.EnsureFeedback()
+		proto.Feedback[pc] = vm.TypeFeedback{Result: vm.FBFloat}
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		guard := findGuardAfterOp(fn, OpGetTable)
+		if guard == nil {
+			t.Fatal("expected OpGuardType after OpGetTable when feedback is FBFloat, but none found")
+		}
+		if guard.Type != TypeFloat {
+			t.Errorf("guard.Type = %v, want TypeFloat", guard.Type)
+		}
+		if guard.Aux != int64(TypeFloat) {
+			t.Errorf("guard.Aux = %d, want %d (TypeFloat)", guard.Aux, int64(TypeFloat))
+		}
+	})
+
+	t.Run("GetField_FBFloat_inserts_guard", func(t *testing.T) {
+		// Compile a function with a GETFIELD: return t.x
+		proto := compile(t, `
+func f(t) {
+	return t.x
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETFIELD)
+
+		// Set monomorphic float feedback.
+		proto.EnsureFeedback()
+		proto.Feedback[pc] = vm.TypeFeedback{Result: vm.FBFloat}
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		guard := findGuardAfterOp(fn, OpGetField)
+		if guard == nil {
+			t.Fatal("expected OpGuardType after OpGetField when feedback is FBFloat, but none found")
+		}
+		if guard.Type != TypeFloat {
+			t.Errorf("guard.Type = %v, want TypeFloat", guard.Type)
+		}
+		if guard.Aux != int64(TypeFloat) {
+			t.Errorf("guard.Aux = %d, want %d (TypeFloat)", guard.Aux, int64(TypeFloat))
+		}
+	})
+
+	t.Run("GetTable_FBInt_inserts_guard", func(t *testing.T) {
+		proto := compile(t, `
+func f(t) {
+	return t[1]
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETTABLE)
+		proto.EnsureFeedback()
+		proto.Feedback[pc] = vm.TypeFeedback{Result: vm.FBInt}
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		guard := findGuardAfterOp(fn, OpGetTable)
+		if guard == nil {
+			t.Fatal("expected OpGuardType after OpGetTable when feedback is FBInt, but none found")
+		}
+		if guard.Type != TypeInt {
+			t.Errorf("guard.Type = %v, want TypeInt", guard.Type)
+		}
+		if guard.Aux != int64(TypeInt) {
+			t.Errorf("guard.Aux = %d, want %d (TypeInt)", guard.Aux, int64(TypeInt))
+		}
+	})
+
+	t.Run("GetTable_FBUnobserved_no_guard", func(t *testing.T) {
+		proto := compile(t, `
+func f(t) {
+	return t[1]
+}
+`)
+		// EnsureFeedback initializes all entries to FBUnobserved (zero value).
+		proto.EnsureFeedback()
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		guard := findGuardAfterOp(fn, OpGetTable)
+		if guard != nil {
+			t.Errorf("expected no OpGuardType after OpGetTable when feedback is FBUnobserved, but found one with Type=%v", guard.Type)
+		}
+	})
+
+	t.Run("GetTable_FBAny_no_guard", func(t *testing.T) {
+		proto := compile(t, `
+func f(t) {
+	return t[1]
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETTABLE)
+		proto.EnsureFeedback()
+		proto.Feedback[pc] = vm.TypeFeedback{Result: vm.FBAny}
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		guard := findGuardAfterOp(fn, OpGetTable)
+		if guard != nil {
+			t.Errorf("expected no OpGuardType after OpGetTable when feedback is FBAny, but found one with Type=%v", guard.Type)
+		}
+	})
+
+	t.Run("GetField_FBUnobserved_no_guard", func(t *testing.T) {
+		proto := compile(t, `
+func f(t) {
+	return t.x
+}
+`)
+		proto.EnsureFeedback()
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		guard := findGuardAfterOp(fn, OpGetField)
+		if guard != nil {
+			t.Errorf("expected no OpGuardType after OpGetField when feedback is FBUnobserved, but found one with Type=%v", guard.Type)
+		}
+	})
+
+	t.Run("no_feedback_vector_no_guard", func(t *testing.T) {
+		// Without calling EnsureFeedback, proto.Feedback is nil.
+		// The graph builder should not panic and should not insert guards.
+		proto := compile(t, `
+func f(t) {
+	return t[1]
+}
+`)
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		guard := findGuardAfterOp(fn, OpGetTable)
+		if guard != nil {
+			t.Errorf("expected no OpGuardType when feedback vector is nil, but found one with Type=%v", guard.Type)
+		}
+	})
+}
+
 // TestBuildGraph_PrintOutput verifies the IR printer produces expected strings.
 func TestBuildGraph_PrintOutput(t *testing.T) {
 	proto := compile(t, `
