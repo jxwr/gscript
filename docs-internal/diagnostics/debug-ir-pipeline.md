@@ -65,9 +65,7 @@ If `Interpret()` differs, the bug is in BuildGraph or a pass. Use `Validate()` t
 ## Pass pipeline order
 
 ```
-BuildGraph → Validate → IntrinsicPass → TypeSpecialize → ConstProp → DCE → Inline → RangeAnalysis → LICM → RegAlloc → Emit
+BuildGraph → Validate → TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit
 ```
 
-Validate runs after every pass (omitted above for brevity). If a pass breaks IR, you know exactly which one.
-
-Validation after EVERY pass. If a pass breaks the IR, you know exactly which one.
+TypeSpecialize runs 3 times: before Intrinsic, after Intrinsic (propagate intrinsic result types), and after Inline (re-run over inlined bodies). Validate runs after BuildGraph and before RegAlloc (shown above); also run it after any pass you are debugging to isolate the offending pass.

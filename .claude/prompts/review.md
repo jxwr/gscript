@@ -166,7 +166,7 @@ Read ALL of these files and cross-check:
 9. **Cross-references**: docs reference each other correctly?
 10. **Dead content**: sections describing features that no longer exist?
 
-**For each inconsistency found**: fix it directly (you have Write access). Note in "Self-Evolution Actions".
+**For each inconsistency found**: fix files in `opt/`/`docs-internal/`/`scripts/` directly. For `.claude/` files, write proposed changes to `opt/reviews/pending-changes/`. Note in "Self-Evolution Actions".
 
 ---
 
@@ -177,9 +177,14 @@ Read ALL of these files and cross-check:
 After completing sections A-D:
 
 ### 1. Apply changes directly
-You have Write access to `.claude/prompts/`, `.claude/optimize.sh`, `.claude/hooks/`, `scripts/`, `opt/`, `docs-internal/`.
+You can write to: `opt/`, `docs-internal/`, `scripts/`.
+For `.claude/` files (prompts, hooks, skills, optimize.sh): write the proposed change to
+`opt/reviews/pending-changes/<filename>.patch.md` describing what to change and why.
+The user or a subsequent step will apply `.claude/` changes.
+
 For every gap found (user intervention, round failure, consistency issue):
-- Edit the relevant file NOW
+- Edit the relevant file NOW (if in opt/docs-internal/scripts)
+- For `.claude/` changes: write to pending-changes
 - Note what you changed in "Self-Evolution Actions"
 - Define how next round will verify the change worked
 

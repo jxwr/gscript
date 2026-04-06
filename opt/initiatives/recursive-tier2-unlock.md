@@ -1,6 +1,6 @@
 # Initiative: Recursive Tier 2 Unlock
 
-> Status: active
+> Status: paused
 > Created: 2026-04-05
 > Owner: gs-opt-loop
 > Category: recursive_call

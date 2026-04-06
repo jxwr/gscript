@@ -1,6 +1,6 @@
 # Initiative: Tier 2 Float Loop Performance
 
-> Status: active
+> Status: paused
 > Created: 2026-04-05
 > Owner: gs-opt-loop
 > Category: tier2_float_loop
