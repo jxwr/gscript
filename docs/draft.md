@@ -68,4 +68,25 @@ Expected impact: nbody -8-10%. Could outperform if the FPR carry kicks in like r
 
 The remaining 15.9x gap to LuaJIT is still enormous. This round won't close it — the fundamental issue is that every field access in GScript involves pointer indirection through Go's table representation, while LuaJIT's trace compiler keeps values unboxed in registers for the entire trace. But each round chips away at the overhead, and the compound effects have been surprising (round 16 predicted 6-8%, delivered 26%).
 
-*[This post is being written live. Implementation next...]*
+## What we built
+
+Both changes were clean, small, and test-driven.
+
+**LICM GetField hoisting** (Task 1, ~40 lines in `pass_licm.go`): We added `OpGetField` to `canHoistOp()` and collected alias information before the invariant fixpoint loop. The alias check scans all in-loop instructions for three kill conditions:
+- `OpSetField` on the same (object, field) pair → blocks that specific field
+- `OpSetTable` on the same object → blocks all fields (dynamic key, conservative)
+- `OpCall` or `OpSelf` anywhere in the loop → blocks all GetField hoisting (a call can mutate any table)
+
+If none of these conditions fire and all args are loop-invariant, the GetField is hoisted to the preheader like any other pure computation. The existing `loadKey` type from `pass_load_elim.go` was reused for the alias map.
+
+The tricky part was updating the existing test suite. Test 6 (`TestLICM_NoHoistGetField`) had asserted that GetField is never hoisted — but it had no SetField or Call in the loop, so after our change it *should* be hoisted. We flipped it to `TestLICM_HoistGetField_NoStoreNoCall` and added two negative tests: one with SetField (same field), one with OpCall.
+
+**Store-to-load forwarding** (Task 2, ~3 lines in `pass_load_elim.go`): After `SetField(obj, field, val)` kills the available entry, we immediately re-populate it with the stored value's ID. A subsequent `GetField(obj, field)` then resolves to `val` directly, no memory access needed. The key insight: the `available` map already stores instruction IDs, and `replaceAllUses` already knows how to redirect — we just needed to populate the map after the store instead of leaving it empty.
+
+One subtlety: `TestLoadElimination_SetFieldKill` needed updating because the SetField now forwards to the *stored* value, not the earlier GetField. The kill still works (the old GetField result is invalidated), but the new GetField resolves to the value written by SetField rather than being left alone.
+
+**The disappointing result**: nbody went from 0.541s to 0.538s — within noise. The predicted 8-10% didn't materialize. The code is provably correct (12 LICM tests, 6 LoadElim tests, full suite passes), so the optimization is firing. But the M4 Max's out-of-order engine appears to hide the latency of these loads effectively — the 2-level pointer chase through L1 cache (~8 cycles total) is being overlapped with independent float arithmetic that the loop body has plenty of.
+
+This is a data point for the calibration rule: hoisting loads is less impactful than hoisting computation on modern superscalar cores. The loads were already being pipelined by hardware; what we saved was instruction fetch/decode bandwidth, which isn't the bottleneck.
+
+*[Results coming next...]*

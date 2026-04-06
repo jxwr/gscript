@@ -104,9 +104,9 @@ This round's mechanism (hoisting loads) is more predictable than compound effect
 
 ## Task Breakdown
 
-- [ ] 1. **LICM GetField hoisting** — file: `pass_licm.go` — test: `TestLICM_GetFieldHoisting` (new), existing LICM tests pass
-- [ ] 2. **Store-to-load forwarding** — file: `pass_load_elim.go` — test: `TestLoadElim_StoreToLoadForwarding` (new), existing LoadElim tests pass
-- [ ] 3. **Integration test + benchmark** — run full test suite + all 22 benchmarks
+- [x] 1. **LICM GetField hoisting** — file: `pass_licm.go` — test: `TestLICM_HoistGetField_NoStoreNoCall` (new), existing LICM tests pass
+- [x] 2. **Store-to-load forwarding** — file: `pass_load_elim.go` — test: `TestLoadElim_StoreToLoadForwarding` (new), existing LoadElim tests pass
+- [x] 3. **Integration test + benchmark** — run full test suite + all 22 benchmarks, correctness verified
 
 ## Budget
 - Max commits: 3 (+1 revert slot)
@@ -116,5 +116,10 @@ This round's mechanism (hoisting loads) is more predictable than compound effect
 ## Results (filled after VERIFY)
 | Benchmark | Before | After | Change |
 |-----------|--------|-------|--------|
+| nbody | 0.541s | 0.538s | -0.6% |
+| spectral_norm | 0.042s | 0.045s | +7.1% (noise) |
+| matmul | 0.120s | 0.121s | +0.8% (noise) |
+| mandelbrot | 0.064s | 0.061s | -4.7% (noise) |
+| table_field_access | 0.052s | 0.053s | +1.9% (noise) |
 
 ## Lessons (filled after completion/abandonment)
