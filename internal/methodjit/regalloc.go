@@ -80,10 +80,154 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		preAllocateHeaderPhis(findBlockByID(fn, hid), alloc)
 	}
 
+	// Invariant carry: identify LICM-hoisted loop-invariant float values
+	// defined in pre-header blocks that should be pinned in FPRs across
+	// loop-body blocks. Unlike phi carry (which requires tight 2-block
+	// loops), invariant carry works for any loop with a pre-header.
+	//
+	// Phase 1 (pre-pass): identify candidate invariants per header,
+	// filter, rank, and budget-limit. No FPR assignments yet.
+	//
+	// Phase 2 (main loop): after a pre-header block is naturally allocated,
+	// collect the FPR assignments from alloc.ValueRegs for the top-N
+	// candidates. Store these as pinnedInvariants.
+	//
+	// Phase 3 (body blocks): merge pinnedInvariants into the carried map.
+
+	// invariantCandidates: headerID → ranked+budgeted list of value IDs
+	invariantCandidates := make(map[int][]int)
+	// preheaderToHeader: preheader block ID → header block ID
+	preheaderToHeader := make(map[int]int)
+	// pinnedInvariants: headerID → map[valueID]PhysReg (filled lazily)
+	pinnedInvariants := make(map[int]map[int]PhysReg)
+
+	if fn.CarryPreheaderInvariants {
+		preheaders := computeLoopPreheaders(fn, li)
+		allInvariants := collectPreheaderInvariants(fn, li, preheaders)
+
+		// Build blockByID for instruction lookups.
+		blockByID := make(map[int]*Block, len(fn.Blocks))
+		for _, b := range fn.Blocks {
+			blockByID[b.ID] = b
+		}
+
+		// Record reverse mapping: preheader block → header.
+		for headerID, phID := range preheaders {
+			preheaderToHeader[phID] = headerID
+		}
+
+		for headerID, invIDs := range allInvariants {
+			phBlock := blockByID[preheaders[headerID]]
+			if phBlock == nil {
+				continue
+			}
+
+			// Build value ID → *Instr map for pre-header defs.
+			phInstrs := make(map[int]*Instr, len(phBlock.Instrs))
+			for _, instr := range phBlock.Instrs {
+				if !instr.Op.IsTerminator() {
+					phInstrs[instr.ID] = instr
+				}
+			}
+
+			bodyBlocks := li.headerBlocks[headerID]
+
+			// Filter 1: only float-typed values.
+			// Filter 2: exclude values used OUTSIDE the loop body.
+			var candidates []int
+			for _, vid := range invIDs {
+				instr := phInstrs[vid]
+				if instr == nil || !needsFloatReg(instr) {
+					continue
+				}
+				usedOutside := false
+				for _, b := range fn.Blocks {
+					if bodyBlocks[b.ID] {
+						continue
+					}
+					if b.ID == preheaders[headerID] {
+						continue
+					}
+					for _, bi := range b.Instrs {
+						for _, a := range bi.Args {
+							if a != nil && a.ID == vid {
+								usedOutside = true
+								break
+							}
+						}
+						if usedOutside {
+							break
+						}
+					}
+					if usedOutside {
+						break
+					}
+				}
+				if usedOutside {
+					continue
+				}
+				candidates = append(candidates, vid)
+			}
+
+			if len(candidates) == 0 {
+				continue
+			}
+
+			// Rank by use-count inside the loop body (higher = better).
+			useCount := make(map[int]int, len(candidates))
+			for _, b := range fn.Blocks {
+				if !bodyBlocks[b.ID] {
+					continue
+				}
+				for _, bi := range b.Instrs {
+					for _, a := range bi.Args {
+						if a != nil {
+							useCount[a.ID]++
+						}
+					}
+				}
+			}
+			// Sort: descending use-count, tie-break ascending value ID.
+			for i := 1; i < len(candidates); i++ {
+				for j := i; j > 0; j-- {
+					a, b := candidates[j-1], candidates[j]
+					if useCount[a] < useCount[b] || (useCount[a] == useCount[b] && a > b) {
+						candidates[j-1], candidates[j] = candidates[j], candidates[j-1]
+					} else {
+						break
+					}
+				}
+			}
+
+			// Budget: available FPRs minus reserved temps minus float phis
+			// already pre-allocated for this header.
+			const reservedTemps = 3
+			floatPhiCount := 0
+			for _, phiID := range li.loopPhis[headerID] {
+				if pr, ok := alloc.ValueRegs[phiID]; ok && pr.IsFloat {
+					floatPhiCount++
+				}
+			}
+			budget := len(allocatableFPRs) - reservedTemps - floatPhiCount
+			if budget <= 0 {
+				continue
+			}
+			if len(candidates) > budget {
+				candidates = candidates[:budget]
+			}
+			invariantCandidates[headerID] = candidates
+		}
+	}
+
 	for _, block := range fn.Blocks {
+		// After allocating a pre-header block, collect FPR assignments
+		// for invariant candidates from alloc.ValueRegs (set naturally by
+		// the pre-header's allocateBlock). This avoids pre-allocating FPRs
+		// that allocateBlock would overwrite.
 		var carried map[int]PhysReg
 		if li.loopBlocks[block.ID] && !li.loopHeaders[block.ID] {
 			if innerHeader, ok := li.blockInnerHeader[block.ID]; ok {
+				// Phi carry: only for tight-body headers (existing logic).
 				if tightHeaders[innerHeader] {
 					carried = make(map[int]PhysReg)
 					for _, phiID := range li.loopPhis[innerHeader] {
@@ -92,9 +236,38 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 						}
 					}
 				}
+
+				// Invariant carry: works for any loop with a pre-header.
+				// Merge pinned invariant FPRs into the carried map.
+				if pinned, ok := pinnedInvariants[innerHeader]; ok {
+					if carried == nil {
+						carried = make(map[int]PhysReg, len(pinned))
+					}
+					for vid, pr := range pinned {
+						carried[vid] = pr
+					}
+				}
 			}
 		}
 		allocateBlock(block, alloc, lastUse, carried)
+
+		// After allocating a pre-header, collect the natural FPR assignments
+		// for the top-N invariant candidates. These will be carried into
+		// the loop body blocks to prevent eviction.
+		if headerID, ok := preheaderToHeader[block.ID]; ok {
+			candidates := invariantCandidates[headerID]
+			if len(candidates) > 0 {
+				headerPinned := make(map[int]PhysReg, len(candidates))
+				for _, vid := range candidates {
+					if pr, ok := alloc.ValueRegs[vid]; ok && pr.IsFloat {
+						headerPinned[vid] = pr
+					}
+				}
+				if len(headerPinned) > 0 {
+					pinnedInvariants[headerID] = headerPinned
+				}
+			}
+		}
 	}
 
 	return alloc

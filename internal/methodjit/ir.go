@@ -46,6 +46,13 @@ type Function struct {
 	// call. Patterns like `outer(x, inner(...))` and `return f(g(...))`
 	// compile to CALL B=0.
 	Unpromotable bool
+
+	// CarryPreheaderInvariants, when true, enables the register allocator
+	// to pin LICM-hoisted loop-invariant float values (defined in a
+	// pre-header block) into FPRs across loop-body blocks. This avoids
+	// per-iteration memory reloads for invariant constants. Set to true
+	// by compileTier2 after LICM runs. Defaults to false (Go zero value).
+	CarryPreheaderInvariants bool
 }
 
 // newValueID allocates a unique ID for a new SSA value.
