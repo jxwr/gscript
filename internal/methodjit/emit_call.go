@@ -67,6 +67,21 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 		ec.emitDeopt(instr)
 		asm.Label(doneLabel)
 
+	case TypeFloat:
+		// Float: tag < 0xFFFC (raw IEEE754 bits have no NaN-box tag).
+		// Extract top 16 bits and compare against NB_TagNilShr48.
+		asm.LSRimm(jit.X2, jit.X0, 48)
+		asm.MOVimm16(jit.X3, jit.NB_TagNilShr48) // 0xFFFC
+		asm.CMPreg(jit.X2, jit.X3)
+		deoptLabel := ec.uniqueLabel("guard_deopt")
+		asm.BCond(jit.CondGE, deoptLabel) // tag >= 0xFFFC means non-float → deopt
+		ec.storeResultNB(jit.X0, instr.ID)
+		doneLabel := ec.uniqueLabel("guard_done")
+		asm.B(doneLabel)
+		asm.Label(deoptLabel)
+		ec.emitDeopt(instr)
+		asm.Label(doneLabel)
+
 	default:
 		// Unsupported guard type: just pass through.
 		ec.storeResultNB(jit.X0, instr.ID)
