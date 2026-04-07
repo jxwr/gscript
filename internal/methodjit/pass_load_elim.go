@@ -1,8 +1,15 @@
 // pass_load_elim.go implements block-local load elimination (GetField CSE)
-// with store-to-load forwarding. Within each basic block, it tracks available
-// values keyed by (object value ID, field Aux). When a GetField matches an
-// available entry, all uses of the redundant GetField are replaced with the
-// available value, making the redundant instruction dead for DCE.
+// with store-to-load forwarding and GuardType CSE. Within each basic block,
+// it tracks available values keyed by (object value ID, field Aux). When a
+// GetField matches an available entry, all uses of the redundant GetField
+// are replaced with the available value, making the redundant instruction
+// dead for DCE.
+//
+// GuardType CSE: when the same value is guarded for the same type multiple
+// times within a block, redundant guards are eliminated. The redundant guard
+// is converted to OpNop (since guards are side-effecting and DCE would
+// otherwise keep them). This is important for hot loops like nbody where
+// feedback-driven guards on the same GetField result appear multiple times.
 //
 // Store-to-load forwarding: after SetField(obj, field, val), the stored
 // value is recorded so a subsequent GetField(obj, field) reuses val
@@ -11,8 +18,9 @@
 // Invalidation rules:
 //   - OpSetField on the same (obj, field) kills the previous entry,
 //     then records the stored value for forwarding.
-//   - OpCall / OpSelf conservatively clear the entire available map,
-//     because a call could mutate any table.
+//   - OpCall / OpSelf conservatively clear the entire available map
+//     and the guard available map, because a call could mutate any table
+//     or change runtime types.
 
 package methodjit
 
@@ -21,6 +29,13 @@ package methodjit
 type loadKey struct {
 	objID    int
 	fieldAux int64
+}
+
+// guardKey identifies a specific type guard: the SSA value ID of the
+// guarded operand plus the guard type (stored in Aux).
+type guardKey struct {
+	argID     int   // the value being guarded (Args[0].ID)
+	guardType int64 // the guard type (Aux field)
 }
 
 // LoadEliminationPass eliminates redundant GetField operations within
@@ -37,7 +52,8 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 	}
 
 	for _, block := range fn.Blocks {
-		available := make(map[loadKey]int) // loadKey → value ID to forward to
+		available := make(map[loadKey]int)  // loadKey → value ID to forward to
+		guardAvail := make(map[guardKey]int) // guardKey → guard instr ID
 
 		for _, instr := range block.Instrs {
 			switch instr.Op {
@@ -55,6 +71,24 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 					available[key] = instr.ID
 				}
 
+			case OpGuardType:
+				if len(instr.Args) < 1 {
+					continue
+				}
+				key := guardKey{argID: instr.Args[0].ID, guardType: instr.Aux}
+				if origID, ok := guardAvail[key]; ok {
+					// Redundant guard — replace all uses with the original.
+					origInstr := instrByID[origID]
+					replaceAllUses(fn, instr.ID, origInstr)
+					// Guards are side-effecting so DCE won't remove them.
+					// Convert to Nop to make the redundant guard dead.
+					instr.Op = OpNop
+					instr.Args = nil
+					instr.Aux = 0
+				} else {
+					guardAvail[key] = instr.ID
+				}
+
 			case OpSetField:
 				if len(instr.Args) < 1 {
 					continue
@@ -69,8 +103,9 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				}
 
 			case OpCall, OpSelf:
-				// Conservative: a call could mutate any table.
+				// Conservative: a call could mutate any table or change types.
 				available = make(map[loadKey]int)
+				guardAvail = make(map[guardKey]int)
 			}
 		}
 	}

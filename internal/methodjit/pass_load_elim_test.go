@@ -271,6 +271,178 @@ func TestLoadElim_StoreToLoadForwarding(t *testing.T) {
 	}
 }
 
+// TestLoadElim_GuardTypeCSE verifies that redundant GuardType instructions
+// on the same (value, type) pair are eliminated. When a value is guarded for
+// the same type multiple times within a block, only the first guard is kept.
+func TestLoadElim_GuardTypeCSE(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "guard_type_cse"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	// obj = table
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	// v = GetField(obj, 42)
+	v := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
+		Args: []*Value{obj.Value()}, Aux: 42, Block: b}
+	// guard1 = GuardType(v, TypeFloat) — first guard
+	guard1 := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeFloat,
+		Args: []*Value{v.Value()}, Aux: int64(TypeFloat), Block: b}
+	// use1 = AddFloat(guard1, guard1)
+	use1 := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat,
+		Args: []*Value{guard1.Value(), guard1.Value()}, Block: b}
+	// guard2 = GuardType(v, TypeFloat) — REDUNDANT, same value, same type
+	guard2 := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeFloat,
+		Args: []*Value{v.Value()}, Aux: int64(TypeFloat), Block: b}
+	// use2 = MulFloat(guard2, use1)
+	use2 := &Instr{ID: fn.newValueID(), Op: OpMulFloat, Type: TypeFloat,
+		Args: []*Value{guard2.Value(), use1.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{use2.Value()}, Block: b}
+
+	b.Instrs = []*Instr{obj, v, guard1, use1, guard2, use2, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+
+	// After guard CSE, use2's first arg should reference guard1, not guard2.
+	for _, instr := range result.Entry.Instrs {
+		if instr.ID == use2.ID {
+			if instr.Args[0].ID != guard1.ID {
+				t.Errorf("expected use2.Args[0] = guard1 (v%d), got v%d",
+					guard1.ID, instr.Args[0].ID)
+			}
+		}
+	}
+
+	// The redundant guard2 should have been converted to Nop.
+	guard2Alive := false
+	for _, instr := range result.Entry.Instrs {
+		if instr.ID == guard2.ID && instr.Op == OpGuardType {
+			guard2Alive = true
+		}
+	}
+	if guard2Alive {
+		t.Error("redundant guard2 should have been converted to Nop, but is still OpGuardType")
+	}
+
+	// After DCE, only one GuardType should remain.
+	result, err = DCEPass(result)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+
+	guardCount := 0
+	for _, instr := range result.Entry.Instrs {
+		if instr.Op == OpGuardType {
+			guardCount++
+		}
+	}
+	if guardCount != 1 {
+		t.Errorf("expected 1 GuardType after DCE, got %d", guardCount)
+	}
+}
+
+// TestLoadElim_GuardTypeCSE_DifferentTypes verifies that GuardType instructions
+// with the SAME value but DIFFERENT types are NOT eliminated — they guard for
+// different conditions.
+func TestLoadElim_GuardTypeCSE_DifferentTypes(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "guard_different_types"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	v := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
+		Args: []*Value{obj.Value()}, Aux: 42, Block: b}
+	// guard1 = GuardType(v, TypeFloat)
+	guard1 := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeFloat,
+		Args: []*Value{v.Value()}, Aux: int64(TypeFloat), Block: b}
+	// guard2 = GuardType(v, TypeInt) — NOT redundant, different type
+	guard2 := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeInt,
+		Args: []*Value{v.Value()}, Aux: int64(TypeInt), Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn,
+		Args: []*Value{guard1.Value(), guard2.Value()}, Block: b}
+
+	b.Instrs = []*Instr{obj, v, guard1, guard2, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+
+	// Both guards should remain — different types.
+	for _, instr := range result.Entry.Instrs {
+		if instr.ID == ret.ID {
+			if instr.Args[0].ID != guard1.ID {
+				t.Errorf("expected ret.Args[0] = guard1 (v%d), got v%d",
+					guard1.ID, instr.Args[0].ID)
+			}
+			if instr.Args[1].ID != guard2.ID {
+				t.Errorf("expected ret.Args[1] = guard2 (v%d), got v%d",
+					guard2.ID, instr.Args[1].ID)
+			}
+		}
+	}
+}
+
+// TestLoadElim_GuardTypeCSE_CallKill verifies that a call clears the guard
+// available map, so a guard after a call is NOT eliminated even if it has
+// the same (value, type) as a guard before the call.
+func TestLoadElim_GuardTypeCSE_CallKill(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "guard_call_kill"},
+		NumRegs: 2,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	callee := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFunction, Aux: 1, Block: b}
+	v := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
+		Args: []*Value{obj.Value()}, Aux: 42, Block: b}
+	// guard1 = GuardType(v, TypeFloat) — before call
+	guard1 := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeFloat,
+		Args: []*Value{v.Value()}, Aux: int64(TypeFloat), Block: b}
+	// call — kills guard available map
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeAny,
+		Args: []*Value{callee.Value()}, Aux: 1, Block: b}
+	// guard2 = GuardType(v, TypeFloat) — NOT redundant (call could change type)
+	guard2 := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeFloat,
+		Args: []*Value{v.Value()}, Aux: int64(TypeFloat), Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn,
+		Args: []*Value{guard1.Value(), guard2.Value()}, Block: b}
+
+	b.Instrs = []*Instr{obj, callee, v, guard1, call, guard2, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+
+	// Both guards should remain — call kills availability.
+	for _, instr := range result.Entry.Instrs {
+		if instr.ID == ret.ID {
+			if instr.Args[0].ID != guard1.ID {
+				t.Errorf("expected ret.Args[0] = guard1 (v%d), got v%d",
+					guard1.ID, instr.Args[0].ID)
+			}
+			if instr.Args[1].ID != guard2.ID {
+				t.Errorf("expected ret.Args[1] = guard2 (v%d), got v%d",
+					guard2.ID, instr.Args[1].ID)
+			}
+		}
+	}
+}
+
 // TestLoadElimination_DifferentObjects verifies that two GetField ops on
 // DIFFERENT objects but the same field Aux are both preserved.
 func TestLoadElimination_DifferentObjects(t *testing.T) {
