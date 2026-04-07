@@ -33,6 +33,28 @@ func slotOff(slot int) int {
 	return slot * jit.ValueSize
 }
 
+// mRegR0 pins VM register R(0) to a callee-saved ARM64 register.
+// Reads of slot 0 use this register instead of loading from memory.
+// Writes to slot 0 update both memory and this register.
+const mRegR0 = jit.X22
+
+// loadSlot loads a VM register, using the pinned register for slot 0.
+func loadSlot(asm *jit.Assembler, dst jit.Reg, slot int) {
+	if slot == 0 {
+		asm.MOVreg(dst, mRegR0)
+	} else {
+		asm.LDR(dst, mRegRegs, slotOff(slot))
+	}
+}
+
+// storeSlot stores to a VM register, also syncing the pinned register for slot 0.
+func storeSlot(asm *jit.Assembler, slot int, src jit.Reg) {
+	asm.STR(src, mRegRegs, slotOff(slot))
+	if slot == 0 {
+		asm.MOVreg(mRegR0, src)
+	}
+}
+
 // loadRK loads an RK operand (register or constant) into the given scratch register.
 // If idx >= RKBit, loads from constants; otherwise from regs.
 func loadRK(asm *jit.Assembler, dst jit.Reg, idx int) {
@@ -41,8 +63,8 @@ func loadRK(asm *jit.Assembler, dst jit.Reg, idx int) {
 		constIdx := idx - vm.RKBit
 		asm.LDR(dst, mRegConsts, slotOff(constIdx))
 	} else {
-		// Register: load from regs[idx]
-		asm.LDR(dst, mRegRegs, slotOff(idx))
+		// Register: load from regs[idx], using pinned register for slot 0.
+		loadSlot(asm, dst, idx)
 	}
 }
 
@@ -66,7 +88,7 @@ func emitBaselineLoadNil(asm *jit.Assembler, inst uint32) {
 	// Load NaN-boxed nil value.
 	asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
 	for i := a; i <= a+b; i++ {
-		asm.STR(jit.X0, mRegRegs, slotOff(i))
+		storeSlot(asm, i, jit.X0)
 	}
 }
 
@@ -83,7 +105,7 @@ func emitBaselineLoadBool(asm *jit.Assembler, inst uint32, pc int, code []uint32
 		// false: tag_bool | 0
 		asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
 	}
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 
 	if c != 0 {
 		// Skip next instruction.
@@ -101,7 +123,7 @@ func emitBaselineLoadInt(asm *jit.Assembler, inst uint32) {
 	// Box the integer: tag_int | (sbx & 0x0000FFFFFFFFFFFF)
 	boxed := jit.NB_TagInt | (uint64(int64(sbx)) & jit.NB_PayloadMask)
 	asm.LoadImm64(jit.X0, int64(boxed))
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 }
 
 // emitBaselineLoadK: R(A) = Constants[Bx]
@@ -109,7 +131,7 @@ func emitBaselineLoadK(asm *jit.Assembler, inst uint32) {
 	a := vm.DecodeA(inst)
 	bx := vm.DecodeBx(inst)
 	asm.LDR(jit.X0, mRegConsts, slotOff(bx))
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 }
 
 // ---------------------------------------------------------------------------
@@ -123,8 +145,8 @@ func emitBaselineMove(asm *jit.Assembler, inst uint32) {
 	if a == b {
 		return // no-op
 	}
-	asm.LDR(jit.X0, mRegRegs, slotOff(b))
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	loadSlot(asm, jit.X0, b)
+	storeSlot(asm, a, jit.X0)
 }
 
 // ---------------------------------------------------------------------------
@@ -180,20 +202,20 @@ func emitBaselineArith(asm *jit.Assembler, inst uint32, op string) {
 	jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
 
 	// Store result.
-	asm.STR(jit.X4, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X4)
 	asm.B(doneLabel)
 
 	// Int overflow: convert 64-bit int result to float64 and store as NaN-boxed float.
 	asm.Label(overflowLabel)
 	asm.SCVTF(jit.D0, jit.X4)
 	asm.FMOVtoGP(jit.X4, jit.D0)
-	asm.STR(jit.X4, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X4)
 	asm.B(doneLabel)
 
 	// Float fallback.
 	asm.Label(floatLabel)
 	emitFloatArith(asm, jit.X0, jit.X1, op)
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 
 	asm.Label(doneLabel)
 }
@@ -267,7 +289,7 @@ func emitBaselineDiv(asm *jit.Assembler, inst uint32) {
 
 	// DIV always returns float in GScript (5/2 = 2.5).
 	emitFloatArith(asm, jit.X0, jit.X1, "div")
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 }
 
 // emitBaselineMod: R(A) = RK(B) % RK(C)
@@ -300,7 +322,7 @@ func emitBaselineMod(asm *jit.Assembler, inst uint32) {
 
 	// Re-box as int.
 	jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
-	asm.STR(jit.X4, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X4)
 	asm.B(doneLabel)
 
 	// Float fallback: convert to float, use FDIV + FRINTZS + FMSUB
@@ -315,7 +337,7 @@ func emitBaselineMod(asm *jit.Assembler, inst uint32) {
 	asm.FMULd(jit.D2, jit.D2, jit.D1)     // D2 = floor(a/b)*b
 	asm.FSUBd(jit.D0, jit.D0, jit.D2)     // D0 = a - floor(a/b)*b
 	asm.FMOVtoGP(jit.X0, jit.D0)
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 
 	asm.Label(doneLabel)
 }
@@ -325,7 +347,7 @@ func emitBaselineUnm(asm *jit.Assembler, inst uint32) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
 
-	asm.LDR(jit.X0, mRegRegs, slotOff(b))
+	loadSlot(asm, jit.X0, b)
 
 	doneLabel := nextLabel("unm_done")
 	floatLabel := nextLabel("unm_float")
@@ -347,14 +369,14 @@ func emitBaselineUnm(asm *jit.Assembler, inst uint32) {
 	asm.BCond(jit.CondNE, unmOverflowLabel)
 
 	jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
-	asm.STR(jit.X4, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X4)
 	asm.B(doneLabel)
 
 	// Overflow: convert to float.
 	asm.Label(unmOverflowLabel)
 	asm.SCVTF(jit.D0, jit.X4)
 	asm.FMOVtoGP(jit.X4, jit.D0)
-	asm.STR(jit.X4, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X4)
 	asm.B(doneLabel)
 
 	// Float: negate the float.
@@ -362,7 +384,7 @@ func emitBaselineUnm(asm *jit.Assembler, inst uint32) {
 	asm.FMOVtoFP(jit.D0, jit.X0)
 	asm.FNEGd(jit.D0, jit.D0)
 	asm.FMOVtoGP(jit.X0, jit.D0)
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 
 	asm.Label(doneLabel)
 }
@@ -372,7 +394,7 @@ func emitBaselineNot(asm *jit.Assembler, inst uint32) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
 
-	asm.LDR(jit.X0, mRegRegs, slotOff(b))
+	loadSlot(asm, jit.X0, b)
 
 	// Truthy: value != nil AND value != false
 	// nil = 0xFFFC000000000000, false = 0xFFFD000000000000
@@ -390,13 +412,13 @@ func emitBaselineNot(asm *jit.Assembler, inst uint32) {
 
 	// Truthy: result = false
 	asm.LoadImm64(jit.X0, nb64(jit.NB_ValFalse))
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	asm.B(doneLabel)
 
 	// Not truthy: result = true
 	asm.Label(notTruthyLabel)
 	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1))
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 
 	asm.Label(doneLabel)
 }
@@ -620,7 +642,7 @@ func emitBaselineTest(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	a := vm.DecodeA(inst)
 	c := vm.DecodeC(inst)
 
-	asm.LDR(jit.X0, mRegRegs, slotOff(a))
+	loadSlot(asm, jit.X0, a)
 	skipLabel := pcLabel(pc + 2)
 
 	// Truthy = not nil AND not false
@@ -664,7 +686,7 @@ func emitBaselineTestSet(asm *jit.Assembler, inst uint32, pc int, code []uint32)
 	b := vm.DecodeB(inst)
 	c := vm.DecodeC(inst)
 
-	asm.LDR(jit.X0, mRegRegs, slotOff(b))
+	loadSlot(asm, jit.X0, b)
 	skipLabel := pcLabel(pc + 2)
 	isFalsyLabel := nextLabel("testset_falsy")
 	isTruthyLabel := nextLabel("testset_truthy")
@@ -687,7 +709,7 @@ func emitBaselineTestSet(asm *jit.Assembler, inst uint32, pc int, code []uint32)
 		asm.B(skipLabel)
 	} else {
 		// bool(C)=false, truthy=false → assign R(A)=R(B)
-		asm.STR(jit.X0, mRegRegs, slotOff(a))
+		storeSlot(asm, a, jit.X0)
 	}
 	asm.B(doneLabel)
 
@@ -697,7 +719,7 @@ func emitBaselineTestSet(asm *jit.Assembler, inst uint32, pc int, code []uint32)
 		asm.B(skipLabel)
 	} else {
 		// bool(C)=true, truthy=true → assign R(A)=R(B)
-		asm.STR(jit.X0, mRegRegs, slotOff(a))
+		storeSlot(asm, a, jit.X0)
 	}
 
 	asm.Label(doneLabel)

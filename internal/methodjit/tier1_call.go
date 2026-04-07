@@ -120,7 +120,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.BCond(jit.CondGE, slowLabel) // too deep → exit-resume
 
 	// 1. Load function value from regs[A]
-	asm.LDR(jit.X0, mRegRegs, slotOff(a))
+	loadSlot(asm, jit.X0, a)
 
 	// Fast self-call check: compare NaN-boxed R(A) with cached self-closure value.
 	// If they match, skip the entire type check + pointer extraction + proto comparison
@@ -242,8 +242,8 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	saveDoneLabel := nextLabel("save_done")
 	asm.CBNZ(jit.X20, selfCallSaveLabel)
 
-	// Normal save (80 bytes, 16-byte aligned)
-	asm.SUBimm(jit.SP, jit.SP, 80)
+	// Normal save (96 bytes, 16-byte aligned)
+	asm.SUBimm(jit.SP, jit.SP, 96)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
@@ -257,15 +257,19 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STR(jit.X3, jit.SP, 56)
 	// Save caller's NaN-boxed self-closure cache (X21)
 	asm.STR(mRegSelfClosure, jit.SP, 64)
+	// Save caller's pinned R(0) (X22)
+	asm.STR(mRegR0, jit.SP, 72)
 	asm.B(saveDoneLabel)
 
-	// Self-call save (32 bytes, 16-byte aligned)
+	// Self-call save (48 bytes, 16-byte aligned)
 	asm.Label(selfCallSaveLabel)
-	asm.SUBimm(jit.SP, jit.SP, 32)
+	asm.SUBimm(jit.SP, jit.SP, 48)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STR(mRegRegs, jit.SP, 16)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
 	asm.STR(jit.X3, jit.SP, 24)
+	// Save caller's pinned R(0) (X22)
+	asm.STR(mRegR0, jit.SP, 32)
 
 	asm.Label(saveDoneLabel)
 
@@ -399,7 +403,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	restoreDoneLabel := nextLabel("restore_done")
 	asm.CBNZ(jit.X20, selfCallRestoreLabel)
 
-	// Normal restore (80-byte frame)
+	// Normal restore (96-byte frame)
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 32)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
@@ -412,17 +416,21 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
 	// Restore caller's NaN-boxed self-closure cache (X21)
 	asm.LDR(mRegSelfClosure, jit.SP, 64)
+	// Restore caller's pinned R(0) (X22)
+	asm.LDR(mRegR0, jit.SP, 72)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.SP, jit.SP, 80)
+	asm.ADDimm(jit.SP, jit.SP, 96)
 	asm.B(restoreDoneLabel)
 
-	// Self-call restore (32-byte frame)
+	// Self-call restore (48-byte frame)
 	asm.Label(selfCallRestoreLabel)
 	asm.LDR(mRegRegs, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 24)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	// Restore caller's pinned R(0) (X22)
+	asm.LDR(mRegR0, jit.SP, 32)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.SP, jit.SP, 32)
+	asm.ADDimm(jit.SP, jit.SP, 48)
 
 	asm.Label(restoreDoneLabel)
 	// Restore context pointers
@@ -435,7 +443,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 
 	// 10. Normal return: result -> regs[A]
 	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	if varRets {
 		// C=0: update *TopPtr = absSlot + 1
 		// absSlot = (mRegRegs - RegsBase) / 8 + a
@@ -454,6 +462,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.B(doneLabel)
 
 	// Callee exited mid-execution (op-exit). Fall back to Go handler.
+	// No flush needed for pinned R(0) — storeSlot always keeps memory in sync.
 	asm.Label(exitHandleLabel)
 	asm.LoadImm64(jit.X0, ExitNativeCallExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
@@ -498,6 +507,9 @@ func emitDirectEntryPrologue(asm *jit.Assembler) {
 	asm.LoadImm64(jit.X3, nbClosureTagBits)
 	asm.ORRreg(mRegSelfClosure, mRegSelfClosure, jit.X3)
 
+	// Pin R(0): load from callee's register window.
+	asm.LDR(mRegR0, mRegRegs, 0)
+
 	// Jump to first bytecode.
 	asm.B("pc_0")
 }
@@ -519,6 +531,12 @@ func emitSelfCallEntryPrologue(asm *jit.Assembler) {
 	// Skip: MOVreg X19, X0 — X19 already holds ctx for self-call
 	// Skip: LDR X26 from ctx.Regs — already set by caller's step 6
 	// Skip: LDR X27 from ctx.Constants — same function, preserved
+
+	// Pin R(0): load from callee's register window.
+	// For fixed-arg self-calls, X22 was already set by the caller's arg copy,
+	// but we reload for safety (covers vararg self-calls).
+	asm.LDR(mRegR0, mRegRegs, 0)
+
 	asm.B("pc_0")
 }
 

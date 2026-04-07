@@ -33,7 +33,7 @@ func emitBaselineForPrep(asm *jit.Assembler, inst uint32, pc int) {
 	sbx := vm.DecodesBx(inst)
 
 	// Load init (R(A)) and step (R(A+2))
-	asm.LDR(jit.X0, mRegRegs, slotOff(a))   // init
+	loadSlot(asm, jit.X0, a)                 // init
 	asm.LDR(jit.X1, mRegRegs, slotOff(a+2)) // step
 
 	floatLabel := nextLabel("forprep_float")
@@ -54,7 +54,7 @@ func emitBaselineForPrep(asm *jit.Assembler, inst uint32, pc int) {
 	asm.SBFX(jit.X5, jit.X1, 0, 48)
 	asm.SUBreg(jit.X4, jit.X4, jit.X5)
 	jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
-	asm.STR(jit.X4, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X4)
 	asm.B(doneLabel)
 
 	// Float fallback
@@ -63,7 +63,7 @@ func emitBaselineForPrep(asm *jit.Assembler, inst uint32, pc int) {
 	emitToFloat(asm, jit.D1, jit.X1, jit.X4, jit.X5)
 	asm.FSUBd(jit.D0, jit.D0, jit.D1)
 	asm.FMOVtoGP(jit.X0, jit.D0)
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 
 	asm.Label(doneLabel)
 	// Jump to loop test.
@@ -79,7 +79,7 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 	sbx := vm.DecodesBx(inst)
 
 	// Load idx (R(A)), limit (R(A+1)), step (R(A+2))
-	asm.LDR(jit.X0, mRegRegs, slotOff(a))   // idx
+	loadSlot(asm, jit.X0, a)                 // idx
 	asm.LDR(jit.X1, mRegRegs, slotOff(a+1)) // limit
 	asm.LDR(jit.X2, mRegRegs, slotOff(a+2)) // step
 
@@ -118,7 +118,7 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 	asm.BCond(jit.CondLT, exitLabel)
 	// Continue: store idx, R(A+3) = idx, jump to OSR check then body.
 	jit.EmitBoxIntFast(asm, jit.X3, jit.X3, mRegTagInt)
-	asm.STR(jit.X3, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X3)
 	asm.STR(jit.X3, mRegRegs, slotOff(a+3))
 	asm.B(osrCheckLabel)
 
@@ -127,7 +127,7 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 	asm.CMPreg(jit.X3, jit.X5)
 	asm.BCond(jit.CondGT, exitLabel)
 	jit.EmitBoxIntFast(asm, jit.X3, jit.X3, mRegTagInt)
-	asm.STR(jit.X3, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X3)
 	asm.STR(jit.X3, mRegRegs, slotOff(a+3))
 	asm.B(osrCheckLabel)
 
@@ -139,7 +139,7 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 
 	asm.FADDd(jit.D0, jit.D0, jit.D2) // idx += step
 	asm.FMOVtoGP(jit.X0, jit.D0)
-	asm.STR(jit.X0, mRegRegs, slotOff(a)) // store updated idx
+	storeSlot(asm, a, jit.X0) // store updated idx
 
 	// Check step direction with FCMP
 	floatPosLabel := nextLabel("forloop_fpos")
@@ -181,6 +181,7 @@ func emitBaselineForLoop(asm *jit.Assembler, inst uint32, pc int) {
 	asm.CMPimm(jit.X7, 0)
 	asm.BCond(jit.CondGT, contLabel) // counter > 0 -> continue
 	// Counter reached 0: request OSR exit.
+	// No flush needed for pinned R(0) — storeSlot always keeps memory in sync.
 	asm.LoadImm64(jit.X0, ExitOSR)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
 	// Check CallMode to choose the right exit path.
@@ -209,17 +210,15 @@ func emitBaselineReturn(asm *jit.Assembler, inst uint32) {
 	} else if b >= 2 {
 		// Return b-1 values starting from R(A).
 		// Store the first return value in ctx.BaselineReturnValue.
-		if a != 0 {
-			asm.LDR(jit.X0, mRegRegs, slotOff(a))
-		} else {
-			asm.LDR(jit.X0, mRegRegs, slotOff(0))
-		}
+		loadSlot(asm, jit.X0, a)
 		asm.STR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
 	} else {
 		// b == 0: variable return. Store R(A) in ctx.BaselineReturnValue.
-		asm.LDR(jit.X0, mRegRegs, slotOff(a))
+		loadSlot(asm, jit.X0, a)
 		asm.STR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
 	}
+
+	// No flush needed for pinned R(0) — storeSlot always keeps memory in sync.
 
 	// Check CallMode: 0 = normal entry, 1 = direct entry (native BLR call).
 	asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
@@ -244,7 +243,7 @@ func emitBaselineTForLoop(asm *jit.Assembler, inst uint32, pc int) {
 	asm.BCond(jit.CondEQ, doneLabel) // nil -> exit loop
 
 	// Not nil: R(A) = R(A+1), jump back
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	target := pc + 1 + sbx
 	asm.B(pcLabel(target))
 

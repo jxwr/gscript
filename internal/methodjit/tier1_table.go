@@ -66,7 +66,7 @@ func emitBaselineGetGlobal(asm *jit.Assembler, inst uint32, pc int) {
 	asm.CBZ(jit.X1, slowLabel)
 
 	// Cache hit: store to R(A).
-	asm.STR(jit.X1, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X1)
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.
@@ -111,7 +111,7 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X3, jit.X0, jit.FieldCacheEntryOffFieldIdx) // X3 = fieldIdx
 
 	// Load table value from R(B).
-	asm.LDR(jit.X0, mRegRegs, slotOff(b))
+	loadSlot(asm, jit.X0, b)
 
 	// Check it's a table pointer (tag = 0xFFFF, sub = 0).
 	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X4, slowLabel)
@@ -137,7 +137,7 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDRreg(jit.X0, jit.X1, jit.X3) // X0 = svals[fieldIdx]
 
 	// Store result to R(A).
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	// Record type feedback for Tier 2 specialization.
 	emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "getfield")
 	asm.B(doneLabel)
@@ -182,7 +182,7 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X3, jit.X0, jit.FieldCacheEntryOffFieldIdx) // X3 = fieldIdx
 
 	// Load table value from R(A).
-	asm.LDR(jit.X0, mRegRegs, slotOff(a))
+	loadSlot(asm, jit.X0, a)
 
 	// Check table pointer.
 	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X4, slowLabel)
@@ -233,7 +233,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	boolArrayLabel := nextLabel("gettable_boolarr")
 
 	// Load table value from R(B).
-	asm.LDR(jit.X0, mRegRegs, slotOff(b))
+	loadSlot(asm, jit.X0, b)
 
 	// Check table pointer.
 	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, slowLabel)
@@ -276,7 +276,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.BCond(jit.CondGE, slowLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)         // X0 = array[key] (NaN-boxed Value)
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	emitBaselineFeedbackKind(asm, pc, 1, "mixed") // FBKindMixed=1
 	asm.B(doneLabel)
 
@@ -289,7 +289,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)               // X0 = intArray[key] (raw int64)
 	// NaN-box the int64: UBFX + ORR with pinned tag register.
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	emitBaselineFeedbackResult(asm, pc, 1, "int") // FBInt=1
 	emitBaselineFeedbackKind(asm, pc, 2, "int")   // FBKindInt=2
 	asm.B(doneLabel)
@@ -302,7 +302,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // X2 = floatArray data pointer
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)              // X0 = raw float64 bits = floatArray[key]
 	// Float64 bits ARE the NaN-boxed value — no conversion needed!
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	emitBaselineFeedbackResult(asm, pc, 2, "float") // FBFloat=2
 	emitBaselineFeedbackKind(asm, pc, 3, "float")   // FBKindFloat=3
 	asm.B(doneLabel)
@@ -322,21 +322,21 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.BCond(jit.CondEQ, boolFalseLabel) // byte == 1 → false
 	// byte == 2 → true: NaN-boxed true = 0xFFFD000000000001
 	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1))
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	emitBaselineFeedbackResult(asm, pc, 4, "bool_true") // FBBool=4
 	emitBaselineFeedbackKind(asm, pc, 4, "bool_true")   // FBKindBool=4
 	asm.B(doneLabel)
 	asm.Label(boolFalseLabel)
 	// NaN-boxed false = 0xFFFD000000000000
 	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	emitBaselineFeedbackResult(asm, pc, 4, "bool_false") // FBBool=4
 	emitBaselineFeedbackKind(asm, pc, 4, "bool_false")   // FBKindBool=4
 	asm.B(doneLabel)
 	asm.Label(boolNilLabel)
 	// NaN-boxed nil = 0xFFFC000000000000
 	asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	emitBaselineFeedbackResult(asm, pc, 7, "bool_nil") // FBAny=7 for nil
 	emitBaselineFeedbackKind(asm, pc, 4, "bool_nil")   // FBKindBool=4 (still a bool array)
 	asm.B(doneLabel)
@@ -364,7 +364,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	boolArrayLabel := nextLabel("settable_boolarr")
 
 	// Load table value from R(A).
-	asm.LDR(jit.X0, mRegRegs, slotOff(a))
+	loadSlot(asm, jit.X0, a)
 
 	// Check table pointer.
 	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, slowLabel)
@@ -516,7 +516,7 @@ func emitBaselineSelf(asm *jit.Assembler, inst uint32, pc int) {
 	doneLabel := nextLabel("self_done")
 
 	// R(A+1) = R(B) (copy the object reference).
-	asm.LDR(jit.X0, mRegRegs, slotOff(b))
+	loadSlot(asm, jit.X0, b)
 	asm.STR(jit.X0, mRegRegs, slotOff(a+1))
 
 	// Now do table lookup: R(A) = R(B)[RK(C)]
@@ -580,7 +580,7 @@ func emitBaselineSelf(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDRreg(jit.X0, jit.X4, jit.X3)
 
 	// Store result to R(A).
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.
@@ -620,7 +620,7 @@ func emitBaselineGetUpval(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X0, jit.X3, 0) // X0 = *ref (the actual value)
 
 	// Store to R(A).
-	asm.STR(jit.X0, mRegRegs, slotOff(a))
+	storeSlot(asm, a, jit.X0)
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.
@@ -654,7 +654,7 @@ func emitBaselineSetUpval(asm *jit.Assembler, inst uint32, pc int) {
 	asm.CBZ(jit.X3, slowLabel)
 
 	// Load value from R(A).
-	asm.LDR(jit.X4, mRegRegs, slotOff(a))
+	loadSlot(asm, jit.X4, a)
 
 	// Store: *ref = value.
 	asm.STR(jit.X4, jit.X3, 0)

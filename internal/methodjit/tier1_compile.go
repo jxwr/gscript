@@ -6,6 +6,8 @@
 //
 // Register convention:
 //   X19: ExecContext pointer (pinned)
+//   X21: NaN-boxed self-closure cache (pinned)
+//   X22: VM register R(0) pinned for fast slot-0 access (pinned)
 //   X24: NaN-boxing int tag 0xFFFE000000000000 (pinned)
 //   X25: NaN-boxing bool tag 0xFFFD000000000000 (pinned)
 //   X26: VM register base pointer (pinned)
@@ -356,6 +358,9 @@ func emitBaselinePrologue(asm *jit.Assembler) {
 	asm.LDR(mRegSelfClosure, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.LoadImm64(jit.X3, nbClosureTagBits)
 	asm.ORRreg(mRegSelfClosure, mRegSelfClosure, jit.X3)
+
+	// Pin R(0) to X22 for fast slot-0 access.
+	asm.LDR(mRegR0, mRegRegs, 0)
 }
 
 // emitBaselineEpilogue emits the ARM64 function epilogue.
@@ -406,11 +411,17 @@ func emitBaselineResumePrologue(asm *jit.Assembler) {
 	asm.LDR(mRegSelfClosure, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.LoadImm64(jit.X3, nbClosureTagBits)
 	asm.ORRreg(mRegSelfClosure, mRegSelfClosure, jit.X3)
+
+	// Pin R(0) to X22 for fast slot-0 access.
+	asm.LDR(mRegR0, mRegRegs, 0)
 }
 
 // emitBaselineOpExitCommon is the shared exit sequence for baseline op-exits.
 // It stores the exit descriptor and jumps to the exit epilogue.
 func emitBaselineOpExitCommon(asm *jit.Assembler, op vm.Opcode, pc int, a, b, c int) {
+	// Note: no need to flush pinned R(0) — storeSlot always writes to memory
+	// first, so memory is always in sync. Resume prologue reloads X22.
+
 	// Set ExitCode = ExitBaselineOpExit (7)
 	asm.LoadImm64(jit.X0, ExitBaselineOpExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
