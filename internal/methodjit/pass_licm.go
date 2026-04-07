@@ -186,6 +186,16 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				if len(instr.Args) >= 1 {
 					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: -1}] = true
 				}
+			case OpAppend:
+				// table.insert mutates the table's array part.
+				if len(instr.Args) >= 1 {
+					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: -1}] = true
+				}
+			case OpSetList:
+				// table.setlist mutates the table's array part.
+				if len(instr.Args) >= 1 {
+					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: -1}] = true
+				}
 			case OpSetGlobal:
 				setGlobals[instr.Aux] = true
 			case OpCall, OpSelf:

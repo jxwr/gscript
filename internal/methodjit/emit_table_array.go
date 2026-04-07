@@ -595,6 +595,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	ec.rawIntRegs = savedRawIntRegs
 
 	asm.Label(doneLabel)
+	// The interpreter may have modified the table during exit-resume
+	// (e.g., set a metatable via __newindex). Invalidate so subsequent
+	// ops re-verify.
+	delete(ec.tableVerified, tblValueID)
 }
 
 // emitSetTableExit emits a table-exit for OpSetTable (dynamic key access).
