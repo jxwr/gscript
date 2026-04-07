@@ -25,8 +25,9 @@
 //      pre-header is interposed).
 //
 // Correctness notes:
-//   - Guards (OpGuardType, etc) are NOT hoisted: their deopt metadata is
-//     tied to a specific PC.
+//   - OpGuardType IS hoisted when its operand is invariant. GScript's deopt
+//     model (ExitCode=2, jump to deopt_epilogue) has no PC-dependent state.
+//   - OpGuardTruthy/OpGuardNonNil are NOT hoisted (control-flow guards).
 //   - OpLoadSlot is only hoisted if no in-loop OpStoreSlot writes the
 //     same slot number (slots are independent VM registers).
 //   - Int arithmetic is only hoisted when fn.Int48Safe marks it safe
@@ -560,6 +561,10 @@ func canHoistOp(op Op) bool {
 		// Caller must also check fn.Int48Safe.
 		return true
 	case OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat, OpNot:
+		return true
+	case OpGuardType:
+		// Pure type check; deopt metadata has no PC-dependent state,
+		// so hoisting is safe when the guarded value is invariant.
 		return true
 	}
 	return false

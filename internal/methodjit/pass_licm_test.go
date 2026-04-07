@@ -270,9 +270,9 @@ func TestLICM_NoHoistLoadSlot_WhenStored(t *testing.T) {
 	}
 }
 
-// ---------- Test 5: no-hoist guard ----------
+// ---------- Test 5: hoist GuardType with invariant operand ----------
 
-func TestLICM_NoHoistGuard(t *testing.T) {
+func TestLICM_HoistGuardType(t *testing.T) {
 	fn := &Function{NumRegs: 8}
 	b0, b1, b2, b3 := buildSimpleLoop(fn)
 
@@ -286,7 +286,7 @@ func TestLICM_NoHoistGuard(t *testing.T) {
 		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
 	b1.Instrs = []*Instr{phi, cond, b1Term}
 
-	// b2: GuardType(seed, TypeInt) — args are invariant but guards are never hoisted.
+	// b2: GuardType(seed, TypeInt) — args are invariant, guard should be hoisted.
 	guard := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeInt, Block: b2,
 		Args: []*Value{seed.Value()}, Aux: int64(TypeInt)}
 	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
@@ -307,16 +307,20 @@ func TestLICM_NoHoistGuard(t *testing.T) {
 	}
 	assertValidates(t, fn, "after LICM")
 
-	// Guard must remain in b2.
-	found := false
+	// Guard should be hoisted OUT of b2.
 	for _, instr := range b2.Instrs {
 		if instr.ID == guardID {
-			found = true
-			break
+			t.Fatalf("OpGuardType v%d should have been hoisted out of body B%d", guardID, b2.ID)
 		}
 	}
-	if !found {
-		t.Fatalf("OpGuardType v%d should NOT be hoisted", guardID)
+	// Should be in the pre-header now.
+	phBlock, _ := findInstrByID(fn, guardID)
+	if phBlock == nil {
+		t.Fatalf("hoisted GuardType v%d not found anywhere in fn", guardID)
+	}
+	if len(b1.Preds) < 1 || b1.Preds[0] != phBlock {
+		t.Fatalf("expected hoisted GuardType to live in pre-header (b1.Preds[0]), "+
+			"got b1.Preds=%v, phBlock=B%d", blockIDs(b1.Preds), phBlock.ID)
 	}
 }
 
@@ -924,5 +928,90 @@ func TestLICM_NoHoistGetGlobal_WhenCallInLoop(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("GetGlobal v%d should NOT be hoisted when Call in loop", ggID)
+	}
+}
+
+// ---------- Test 15: hoist GuardType on hoisted GetField ----------
+
+func TestLICM_GuardTypeHoist(t *testing.T) {
+	fn := &Function{NumRegs: 8}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	// b0: obj = LoadSlot 0 (object from outside the loop), jump b1
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Block: b0, Aux: 0}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{obj, b0Term}
+
+	// b1: phi, cond, branch
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{phi, cond, b1Term}
+
+	// b2: gf = GetField(obj, field=0), guard = GuardType(gf, TypeFloat),
+	//     add = AddFloat(phi, gf), jump b1
+	// No SetField/Call in loop, so GetField is invariant.
+	// GuardType's arg (gf) is invariant, so guard is also hoisted.
+	gf := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny, Block: b2,
+		Args: []*Value{obj.Value()}, Aux: 0}
+	guard := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeFloat, Block: b2,
+		Args: []*Value{gf.Value()}, Aux: int64(TypeFloat)}
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b0, Aux: 0}
+	// Insert seed into b0 before the terminator.
+	b0.Instrs = []*Instr{obj, seed, b0Term}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Block: b2,
+		Args: []*Value{phi.Value(), gf.Value()}}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{gf, guard, add, b2Term}
+
+	phi.Args = []*Value{seed.Value(), add.Value()}
+	b3.Instrs = []*Instr{
+		&Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+			Args: []*Value{phi.Value()}},
+	}
+
+	assertValidates(t, fn, "input")
+	gfID := gf.ID
+	guardID := guard.ID
+
+	_, err := LICMPass(fn)
+	if err != nil {
+		t.Fatalf("LICMPass error: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+
+	// GetField should NOT be in b2 (body).
+	for _, instr := range b2.Instrs {
+		if instr.ID == gfID {
+			t.Fatalf("GetField v%d should have been hoisted out of body B%d", gfID, b2.ID)
+		}
+	}
+	// GuardType should NOT be in b2 (body).
+	for _, instr := range b2.Instrs {
+		if instr.ID == guardID {
+			t.Fatalf("GuardType v%d should have been hoisted out of body B%d", guardID, b2.ID)
+		}
+	}
+
+	// Both should be in the pre-header block.
+	gfBlock, _ := findInstrByID(fn, gfID)
+	if gfBlock == nil {
+		t.Fatalf("hoisted GetField v%d not found anywhere in fn", gfID)
+	}
+	guardBlock, _ := findInstrByID(fn, guardID)
+	if guardBlock == nil {
+		t.Fatalf("hoisted GuardType v%d not found anywhere in fn", guardID)
+	}
+
+	// Both should be in the same pre-header.
+	if gfBlock != guardBlock {
+		t.Fatalf("GetField (B%d) and GuardType (B%d) should be in the same pre-header",
+			gfBlock.ID, guardBlock.ID)
+	}
+	// The pre-header should be b1.Preds[0].
+	if len(b1.Preds) < 1 || b1.Preds[0] != gfBlock {
+		t.Fatalf("expected hoisted instrs in pre-header (b1.Preds[0]), "+
+			"got b1.Preds=%v, block=B%d", blockIDs(b1.Preds), gfBlock.ID)
 	}
 }
