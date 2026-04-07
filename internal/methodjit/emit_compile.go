@@ -31,6 +31,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	}
 
 	li := computeLoopInfo(fn)
+	dom := computeDominators(fn)
 	crossBlockLive := computeCrossBlockLive(fn)
 	var headerRegs map[int]map[int]loopRegEntry
 	var headerFPRegs map[int]map[int]loopFPRegEntry
@@ -152,6 +153,9 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		activeFPRegs:   make(map[int]bool),
 		shapeVerified:  make(map[int]uint32),
 		tableVerified:  make(map[int]bool),
+		dom:            dom,
+		blockOutShapes: make(map[int]map[int]uint32),
+		blockOutTables: make(map[int]map[int]bool),
 		crossBlockLive: crossBlockLive,
 		useFPR:         hasFPR,
 		loop:             li,
@@ -266,6 +270,16 @@ type emitContext struct {
 	// current block. Maps table value ID -> true.
 	// Reset at block boundaries and after calls (same as shapeVerified).
 	tableVerified map[int]bool
+
+	// dom holds dominator info for cross-block shape propagation.
+	dom *domInfo
+
+	// blockOutShapes saves the shapeVerified state at the END of each emitted block.
+	// Used to seed dominated blocks with their dominator's verified shapes.
+	blockOutShapes map[int]map[int]uint32
+
+	// blockOutTables saves the tableVerified state at the END of each emitted block.
+	blockOutTables map[int]map[int]bool
 
 	// activeFPRegs tracks which value IDs have their FPR allocation active
 	// in the current block. Mirrors activeRegs for FPR-allocated values.
@@ -531,8 +545,30 @@ func (ec *emitContext) emitBlock(block *Block) {
 	ec.activeRegs = make(map[int]bool)
 	ec.rawIntRegs = make(map[int]bool)
 	ec.activeFPRegs = make(map[int]bool)
-	ec.shapeVerified = make(map[int]uint32)
-	ec.tableVerified = make(map[int]bool)
+	// Seed shape/table verification from immediate dominator's outgoing state.
+	// This avoids re-verifying shapes already checked in dominating blocks
+	// (e.g., pre-header verification flows into loop body).
+	if idomID, ok := ec.dom.idom[block.ID]; ok && idomID >= 0 {
+		if domShapes, ok := ec.blockOutShapes[idomID]; ok {
+			ec.shapeVerified = make(map[int]uint32, len(domShapes))
+			for k, v := range domShapes {
+				ec.shapeVerified[k] = v
+			}
+		} else {
+			ec.shapeVerified = make(map[int]uint32)
+		}
+		if domTables, ok := ec.blockOutTables[idomID]; ok {
+			ec.tableVerified = make(map[int]bool, len(domTables))
+			for k, v := range domTables {
+				ec.tableVerified[k] = v
+			}
+		} else {
+			ec.tableVerified = make(map[int]bool)
+		}
+	} else {
+		ec.shapeVerified = make(map[int]uint32)
+		ec.tableVerified = make(map[int]bool)
+	}
 
 	if isLoopBlock && !isHeader && ec.safeHeaderRegs != nil {
 		// Non-header loop block: activate SAFE registers from the innermost
@@ -590,4 +626,16 @@ func (ec *emitContext) emitBlock(block *Block) {
 	for _, instr := range block.Instrs {
 		ec.emitInstr(instr, block)
 	}
+
+	// Save outgoing shape/table state for dominated blocks.
+	outShapes := make(map[int]uint32, len(ec.shapeVerified))
+	for k, v := range ec.shapeVerified {
+		outShapes[k] = v
+	}
+	ec.blockOutShapes[block.ID] = outShapes
+	outTables := make(map[int]bool, len(ec.tableVerified))
+	for k, v := range ec.tableVerified {
+		outTables[k] = v
+	}
+	ec.blockOutTables[block.ID] = outTables
 }
