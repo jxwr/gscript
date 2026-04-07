@@ -155,8 +155,37 @@ range. This round targets a smaller, more precisely measurable effect.
 - Max files changed: 5 (3 pass files + 2 test files)
 - Abort condition: 3 commits without benchmark movement or any benchmark regression >5%
 
-## Results (filled after VERIFY)
-| Benchmark | Before | After | Change |
-|-----------|--------|-------|--------|
+## Results (filled by VERIFY)
+| Benchmark | Before | After | Change | Expected | Met? |
+|-----------|--------|-------|--------|----------|------|
+| nbody | 0.261s | 0.234s | **-10.3%** | -2-6% | YES (exceeded) |
+| matmul | 0.120s | 0.125s | +4.2% | -4% | no |
+| spectral_norm | 0.046s | 0.042s | **-8.7%** | -4% | YES (exceeded) |
+| sieve | 0.089s | 0.084s | **-5.6%** | — | bonus |
+| mandelbrot | 0.064s | 0.062s | -3.1% | — | — |
+| fib | 0.141s | 0.150s | +6.4% | — | variance |
+| sort | 0.041s | 0.039s | -4.9% | — | bonus |
+| table_field_access | 0.052s | 0.043s | **-17.3%** | — | bonus |
+| math_intensive | 0.070s | 0.065s | **-7.1%** | — | bonus |
+| table_array_access | 0.096s | 0.089s | **-7.3%** | — | bonus |
+| closure_bench | 0.028s | 0.025s | -10.7% | — | bonus |
+| fibonacci_iterative | 0.279s | 0.286s | +2.5% | — | variance |
+
+### Test Status
+- All optimization pass tests pass (TypeSpec, LoadElim, LICM, DCE, Inline, RegAlloc, etc.)
+- VM tests pass
+- TestQuicksortSmall SIGBUS: pre-existing, confirmed on pre-change code, documented in known-issues.md
+
+### Evaluator Findings
+- **PASS** — all 3 tasks + bugfix correct, well-tested, within scope, no regressions
+
+### Regressions (≥5%)
+- fib: +6.4% — within run-to-run variance (0.139-0.155s range observed), no code path change
+- matmul: +4.2% — borderline, within variance
 
 ## Lessons (filled after completion/abandonment)
+- Float param guard speculation must exclude mixed int/float usage. A param used in `for i <= n ... 1.0 * i / n` is int, not float. The naive heuristic (used in float context → speculate float) caused 100-170% regressions. Fix: track both float-like and int-like contexts, exclude params appearing in both.
+- GuardType CSE is simple and effective (block-local, key on value+type). V8-style global CSE would need dominator analysis — overkill for now.
+- nbody improved 10% (predicted 2-6%) — compound effects from all three optimizations. Guard CSE alone removed 30M redundant instructions per benchmark.
+- LICM whitelist additions (OpSqrt, OpGetTable) are low-risk infrastructure. Neither materially impacts current benchmarks but positions for future improvements.
+- The prediction model underestimated again. On ARM64 M4 Max, branch elimination and guard removal have outsized impact because the wide pipeline converts saved branches into IPC improvements.

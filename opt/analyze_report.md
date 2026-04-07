@@ -1,97 +1,127 @@
-# Analyze Report — Round 21
+# Analyze Report — Round 22
 
 > Date: 2026-04-07
-> Cycle ID: 2026-04-07-nbody-typing-diagnostic
+> Cycle ID: 2026-04-07-float-param-guard
 
 ## Architecture Audit
 
-**Full audit** (rounds_since_arch_audit=2). Key findings:
+Quick read (rounds_since_arch_audit = 1). No new issues beyond existing flags.
 
-- **emit_table.go split RESOLVED** (Round 19): Now emit_table_field.go (341) + emit_table_array.go (692). ✅
-- **emit_dispatch.go 971 lines** ⚠ CRITICAL (grew 2 from R19). No changes planned this round.
-- **graph_builder.go 955 lines** ⚠ CRITICAL (grew 16 from R19). Minor read-only changes for diagnostic.
-- **tier1_table.go 829 lines** ⚠ NEW threshold crossing. No changes planned.
-- **Self-call optimization landed** (Round 20, commits db2431f+e39cac0+b094383): Tier 1 proto comparison + BL direct for self-calls. 32-byte frame vs 64-byte. CallCount increment restored.
-- **Native GetGlobal in Tier 2** (Round 20, commit 6bb9209): Inline value cache with generation-based invalidation.
-- **LICM GetGlobal hoisting** (Round 20, commit 7cb0a54): GetGlobal added to canHoistOp whitelist.
-- **Ackermann +137% regression** (Round 20): Self-call proto comparison adds ~13 insns to every Tier 1 call site. For ackermann's 67M calls: unacceptable overhead.
-- **pass_load_elim.go: 94 lines** — S2L forwarding already landed. Room for growth.
-- **27 source files lack test files** (up from 24 at R19).
+arch_check.sh flags:
+- ⚠ emit_dispatch.go: 971 lines (29 from limit)
+- ⚠ graph_builder.go: 955 lines (45 from limit)
+- ⚠ tier1_table.go: 829 lines (29 over 800 threshold)
+- 27 source files lack test files (unchanged from R21)
 
-Updated: `docs-internal/architecture/constraints.md` — Tier 1 Self-Call section, file sizes, table access dedup status, test coverage.
+**This round's plan does NOT touch any flagged files.** All changes in pass_typespec.go
+(402 lines), pass_load_elim.go (95 lines), pass_licm.go (562 lines).
 
 ## Gap Classification
 
 | Category | Benchmarks | Total Gap vs LuaJIT | Blocked? |
 |----------|------------|---------------------|----------|
-| recursive_call | fib (4.7x), ackermann (87x), mutual_recursion (68x) | 0.978s | **BLOCKED** (failures=2) |
-| tier2_float_loop | nbody (7.5x), spectral (5.3x), matmul (5.2x), mandelbrot (0.96x!) | 0.392s | No (failures=0) |
-| field_access | sieve (6.5x), sort (3.8x), fannkuch (2.3x) | 0.139s | No (failures=1) |
-| gofunction_overhead | method_dispatch (regression) | 0.119s | No (failures=0) |
-| allocation_heavy | binary_trees, object_creation (regressions) | N/A | No (failures=0) |
-
-**mandelbrot now BEATS LuaJIT** (0.064s vs 0.067s). First benchmark at parity.
+| tier2_float_loop | nbody (0.227s), matmul (0.098s), spectral (0.039s), fannkuch (0.026s), mandelbrot (0.006s), sum_primes (0.002s) | 0.398s | No (failures=0) |
+| field_access | sieve (0.079s), sort (0.030s) | 0.109s | No (failures=1) |
+| gofunction_overhead | method_dispatch (0.100s) | 0.100s | No |
+| recursive_call | fib (0.116s), ackermann (0.589s), mutual_recursion (0.232s) | 0.937s | **BLOCKED (ceiling=2)** |
+| allocation_heavy | binary_trees, object_creation | N/A (no LuaJIT data) | No |
 
 ## Blocked Categories
-- `recursive_call` (category_failures=2): Tier 2 net-negative for recursive functions.
+- `recursive_call` (ceiling=2): needs native recursive BLR or Tier 1 specialization
 
 ## Active Initiatives
-- `opt/initiatives/tier2-float-loops.md` — active (R20 improved: nbody -49%, fib -90%)
-- `opt/initiatives/recursive-tier2-unlock.md` — paused (blocked)
+- `tier2-float-loops.md` (paused): remaining phases 6/9/10 + this round adds Phase 12
+- `recursive-tier2-unlock.md` (paused, BLOCKED): waiting for net-positive Tier 2 recursion
 
 ## Selected Target
 
 - **Category**: tier2_float_loop
-- **Initiative**: opt/initiatives/tier2-float-loops.md
-- **Reason**: (1) 0 failures, safe. (2) nbody at 7.5x has largest absolute gap (0.246s). (3) Round 20 cut nbody from 0.555s to 0.284s — momentum. (4) Diagnostic found critical typing gap.
-- **Benchmarks**: nbody (primary), matmul/spectral_norm (secondary)
+- **Initiative**: opt/initiatives/tier2-float-loops.md (Phase 12: Parameter Type Specialization)
+- **Reason**: Largest non-blocked gap (0.398s total). Diagnostic revealed concrete, fixable
+  root cause: 7 generic ops in nbody from untyped `dt` parameter. Additionally, GuardType CSE
+  and LICM whitelist gaps identified as secondary wins.
+- **Benchmarks**: nbody (primary), matmul/spectral/broad (secondary)
 
 ## Architectural Insight
 
-The key question is whether the feedback pipeline delivers typed GetField results to nbody's Tier 2 compilation. A diagnostic test (without Tier 1 feedback) showed 29/31 arithmetic ops as generic — but in production, Tier 1 collects feedback first. The graph builder code for inserting GuardType after GetField exists (`graph_builder.go:669-676`). Whether it actually fires for nbody in production determines whether the bottleneck is untyped arithmetic (huge fix: -30-50%) or field access overhead (medium fix: -10-15%).
+The remaining nbody gap (7.7x vs LuaJIT) is dominated by **per-access validation overhead**.
+Every GetField/GetTable in the inner j-loop re-validates table type, shape, and kind — all
+loop-invariant properties. The Method JIT's block-local validation (shapeVerified, tableVerified)
+helps within a block but is cleared at loop back-edges.
+
+However, the IMMEDIATE bottleneck is simpler: function parameters have type `:any` because
+there's no parameter type feedback. TypeSpecialize Phase 0 only detects int-like params
+(used with ConstInt). Float-like params (used with float operands) are not detected. This
+blocks specialization for ALL arithmetic involving parameters — a design gap, not a per-benchmark
+hack.
+
+The architectural fix (cross-block shape propagation, IR-level guard splitting) remains the
+long-term path to closing the 7.7x gap. This round addresses the typing pipeline gap first.
 
 ## Prior Art Research
 
 ### Web Search Findings
-- V8 field-sensitive alias analysis in loops: `ComputeLoopState` kills only specific (object, field). GScript already matches.
-- ARM64 M-series: L1D 3-cycle hit, FSQRT 13-cycle latency, 2 loads/cycle throughput.
+Not needed — knowledge base already has comprehensive research on parameter typing from V8
+(CheckFloat64, SpeculativeNumberOps), LuaJIT (recording-time type capture), and SpiderMonkey
+(CacheIR → GuardTo(Double)).
 
 ### Reference Source Findings
-- V8 `load-elimination.cc:1363`: field-sensitive kill in loop body scan
-- V8 `load-elimination.cc:786`: CheckMaps elimination propagation
+V8 TurboFan: `JSCallReducer` inserts type checks for parameters based on call-site feedback.
+GScript lacks call-site feedback but can use use-site inference as workaround.
 
 ### Knowledge Base Update
-Created `opt/knowledge/nbody-field-hoisting.md` (152 lines).
+No new knowledge files needed. Existing `feedback-typed-loads.md` and
+`cross-block-load-elim.md` already cover the relevant techniques.
 
 ## Source Code Findings
 
 ### Files Read
-- `pass_licm.go:174-248`: Per-field alias check. hasLoopCall blocks all GetField hoisting.
-- `pass_load_elim.go` (94 lines): Block-local CSE + S2L forwarding. Complete.
-- `graph_builder.go:655-677`: GetField feedback → GuardType insertion. Code present and correct.
-- `pass_intrinsic.go`: math.sqrt → OpSqrt. Working for nbody.
-- `tier1_call.go:120-200`: Self-call detection. Proto comparison on every call.
+1. **pass_typespec.go** (402 lines): Phase 0 `insertParamGuards` only detects int-like params
+   (ConstInt pairing). Float-like params ignored. Phase 1 correctly infers types from GuardType
+   and propagates through phis. Phase 2 `specialize()` requires both operands typed — blocks
+   specialization for Mul(any, float) and Add(float, any).
+
+2. **pass_load_elim.go** (95 lines): Handles GetField CSE and SetField invalidation. S2L
+   forwarding already implemented (records stored value after SetField). Does NOT track GuardType
+   — redundant guards on same value pass through untouched.
+
+3. **pass_licm.go** (562 lines): `canHoistOp` whitelist missing OpSqrt and OpGetTable. GetField
+   hoisting works correctly with alias checking (setFields, hasLoopCall). GetTable could use
+   identical alias pattern.
+
+4. **graph_builder.go** (lines 620-676): Inserts GuardType after BOTH GetTable AND GetField when
+   feedback is monomorphic. This means matmul's production codegen likely HAS typed arithmetic —
+   the static diagnostic was misleading.
 
 ### Diagnostic Data
 
-**nbody advance() through full Tier 2 pipeline (no Tier 1 feedback):**
+Production diagnostic (TestDiag_NbodyProduction):
+- **33 typed arithmetic ops** (confirmed: feedback pipeline works end-to-end)
+- **7 generic arithmetic ops** (all involving `v0 = LoadSlot slot[0]` — the `dt` parameter)
+  - 1 × Div (inner j-loop) — `mag = dt / (dsq * distance)`
+  - 3 × Mul (position update) — `dt * b.vx`, `dt * b.vy`, `dt * b.vz`
+  - 3 × Add (position update) — `b.x + result`, `b.y + result`, `b.z + result`
+- **24 GuardType nodes** — every GetField result type-checked
+- **Redundant GuardType**: bj.mass (v48) guarded 3 times for same TypeFloat
+- **LICM hoisting confirmed**: bi.x/y/z/mass hoisted to j-loop preheader (4 instructions)
 
-```
-INTRINSIC: math.sqrt → OpSqrt ✅
-LICM: hasCall=false for j-loop ✅
-LICM: 4 GetField hoisted (bi.x, bi.y, bi.z, bi.mass) ✅
-TYPE: 4 typed / 44 untyped (inner loop) ⚠️
-ARITH: 2 specialized / 29 generic ⚠️
-CODE: 620 ARM64 insns (Tier 2), 10 spills
-```
+### Actual Bottleneck (data-backed)
 
-CAVEAT: No Tier 1 feedback in this compilation. Production codegen may be typed.
+**Primary**: `dt` parameter as `:any` blocks 7/40 arithmetic ops from specializing. The
+TypeSpecialize pass has no mechanism to detect float-like parameters.
 
-### Actual Bottleneck
+**Secondary**: Redundant GuardType instructions waste ~30M instructions per benchmark run.
 
-**Scenario A (feedback broken):** 29 generic arith × ~10 insns overhead = ~290 insns/iter wasted. ~230ms of nbody's 0.284s.
-**Scenario B (feedback working):** Field access overhead: 10 GetField + 6 SetField + 1 GetTable × ~5-15 insns each = ~150-250 insns/iter. Shape checks dominate.
+**Tertiary**: OpSqrt not LICM-hoistable (no current benchmark impact but general gap).
+
+**Structural (not addressable this round)**: Per-GetField/GetTable validation overhead accounts
+for ~85% of inner loop time. Closing the 7.7x gap requires cross-block shape propagation or
+IR-level guard splitting (future rounds).
 
 ## Plan Summary
 
-Diagnostic-first round. Task 1: production-accurate diagnostic (TieringManager path). Task 2: fix confirmed bottleneck. Task 3 (bonus): ackermann self-call regression fix. Conservative: verify before optimizing.
+Extend TypeSpecialize's parameter guard mechanism to detect and guard float-like parameters
+(those used in arithmetic with float-typed operands). This eliminates all 7 generic ops in
+nbody's advance(). Also: GuardType CSE in LoadElim, and OpSqrt + OpGetTable in LICM whitelist.
+Expected nbody improvement: −2-6% (conservative 2-3%, optimistic 4-6% from branch elimination
+benefits on M4). All changes in IR passes — no emitter changes, no file size risk.

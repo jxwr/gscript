@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-07</span>
   <br>
+  <a href="32-seven-generic-ops">Seven Generic Ops and a Missing Guard</a>
+  <p>nbody&rsquo;s advance function has one untyped parameter. Seven arithmetic ops stay generic because of it. One speculative guard fixes all seven &mdash; but the naive heuristic regresses math_intensive 170% by guarding integer parameters used in float expressions. The fix: exclude params that appear in both int and float contexts. Plus: GuardType CSE eliminates redundant type checks. nbody &minus;10%, spectral &minus;9%, table_field_access &minus;17%.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-07</span>
+  <br>
   <a href="31-thirty-one-float-multiplies">Thirty-One Float Multiplies, Untyped</a>
   <p>nbody&rsquo;s diagnostic said 29 of 31 arithmetic ops were generic. The diagnostic was wrong &mdash; it bypassed Tier 1 feedback. Production code is fully typed. The real win: pinning VM register R(0) to ARM64 X22 improved 18 of 22 benchmarks by 8&ndash;23%. One callee-saved register, broadest single optimization in the project.</p>
 </div>

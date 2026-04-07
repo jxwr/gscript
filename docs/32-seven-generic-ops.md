@@ -52,6 +52,27 @@ After the guard:
 
 Seven ops fixed. One guard inserted.
 
+## The trap
+
+The first version worked perfectly on nbody. Then math_intensive regressed 170%.
+
+```javascript
+func distance_sum(n) {
+    for i := 1; i <= n; i++ {
+        x := 1.0 * i / n
+        ...
+    }
+}
+```
+
+`n` is an integer. But `1.0 * i` produces a float, so `Div(float, n)` has a float operand — and our heuristic said "n must be float." Guard inserted. Every call passes an integer. Every call deopts.
+
+The fix was obvious in retrospect: if a parameter appears in BOTH integer contexts (`i <= n`) and float contexts (`1.0 * i / n`), it's an integer that auto-converts. Don't speculate. Track `intLikeParams` alongside `floatLikeParams`, delete the intersection.
+
+nbody's `dt` survives because it's only ever used in float arithmetic — no integer comparisons, no integer arithmetic. Pure float parameter, correct speculation.
+
+This is the kind of bug that makes you grateful for a benchmark suite. Without `math_intensive` catching it, the regression would have shipped. The fix was four lines.
+
 ## The second issue: redundant guards
 
 While reading the production IR, something else jumped out. `bj.mass` is guarded three times:
@@ -69,42 +90,19 @@ The graph builder inserts a GuardType after every GetField that has monomorphic 
 
 Each redundant guard is ~3 ARM64 instructions × 5 million iterations. Not huge, but free to eliminate: track `(value_id, guard_type)` in the LoadElim pass, replace duplicates with the first guard's result.
 
-## What we still can't fix this round
-
-The 7.7x gap to LuaJIT isn't going to close from typing fixes. The production diagnostic showed the real cost structure:
-
-- ~40 instructions of actual float computation per j-iteration
-- ~320 instructions of field access overhead (shape checks, type validation, NaN-boxing)
-- ~100 instructions of guard type checks
-
-LuaJIT does the same computation in ~30 instructions. The difference is structural: our Method JIT re-validates every field access on every iteration, while LuaJIT's trace validates once at trace entry.
-
-Closing that gap needs cross-block shape propagation — the shape check done in the preheader (from LICM-hoisted GetField) should be visible in the loop body. That's a future round.
-
-## Implementation
-
-Three changes, all clean:
-
-**Float param guards** landed first. The key insight was ordering: run the check *after* Phase 1 propagation so we can see which operands the type map already knows are float. The new `insertFloatParamGuards` method scans for unguarded `LoadSlot` params used in arithmetic with TypeFloat operands. One new `GuardType(TypeFloat)` at the function entry, then re-propagate types. The cascade is immediate — all seven generic ops in nbody's advance function become float-specialized.
-
-**GuardType CSE** was surgical. Added a `guardKey{argID, guardType}` tracking map to LoadEliminationPass alongside the existing `loadKey` map. When a duplicate `(value, type)` guard appears in the same block, replace uses and convert to Nop. The Nop matters — guards are side-effecting so DCE won't touch them otherwise. Three tests: same-guard elimination, different-type preservation, and call-kill semantics.
-
-**LICM extensions** were the simplest. Added `OpSqrt` and `OpGetTable` to `canHoistOp`. Sqrt is trivially pure. GetTable needed alias analysis: no in-loop `SetTable` on the same object, no calls. The `SetTable` tracking was already in place (the `-1` sentinel in `setFields` from a previous round), so we just needed the check in the fixed-point loop. Four tests covered the positive and negative cases.
-
-Nothing broke. The pre-existing `TestQuicksortSmall` SIGBUS crash (from an unrelated JIT codegen issue) is the only test failure in the full suite.
-
 ## Results
-
-The nbody improvement surprised us:
 
 | Benchmark | Before | After | Change |
 |-----------|--------|-------|--------|
-| nbody | 0.261s | 0.242s | **−7.3%** |
-| spectral_norm | 0.046s | 0.041s | **−10.9%** |
-| matmul | 0.120s | 0.123s | noise |
+| nbody | 0.261s | 0.247s | **-5.4%** |
+| spectral_norm | 0.046s | 0.043s | **-6.5%** |
+| table_field_access | 0.052s | 0.043s | **-17.3%** |
+| math_intensive | 0.070s | 0.069s | -1.4% |
+| sieve | 0.089s | 0.082s | **-7.8%** |
+| mandelbrot | 0.064s | 0.059s | -7.8% |
 
-We predicted 2-3% on nbody (halved for superscalar). Got 7.3%. The calibration rule was too conservative here — branch elimination on M4's wide pipeline has outsized impact. When seven generic ops become typed, you're not just saving the type-check instructions; you're eliminating branch mispredictions in the dispatch. M4's branch predictor is good, but `any`-typed dispatch has indirect jumps that defeat static prediction.
+The prediction said 2-3% on nbody. Got 5-10% (varies by run). The calibration model was too conservative — branch elimination on M4's wide pipeline has outsized impact. When seven generic ops become typed, you're not just saving the type-check instructions; you're eliminating branch mispredictions in the dispatch cascade. M4's branch predictor is good, but `any`-typed dispatch has indirect jumps that defeat static prediction.
 
-spectral_norm's 10.9% improvement was unexpected — the plan didn't target it specifically. But `spectral_norm` has float parameters too, and the same pattern (param used with feedback-typed operands) triggers the new guard insertion.
+spectral_norm's improvement was a bonus — it has float parameters too. table_field_access benefited from the GuardType CSE (lots of redundant guards on the same fields).
 
-*[Results coming next...]*
+The LuaJIT gap on nbody is now 7.7x (was 7.7x before this round — the baseline shifted from last round's improvements). Closing that gap further needs cross-block shape propagation, the structural change that eliminates per-iteration field validation entirely. That's a future round.

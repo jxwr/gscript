@@ -61,6 +61,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 | 18 (2026-04-06) | Phase 9: LICM GetField hoisting + S2L forwarding | **no_change (infra landed, target unchanged)** | LICM GetField hoisting works for loops without same-object writes. nbody's inner loop has SetField on same objects as GetField targets, blocking hoisting. S2L forwarding subsumed by existing block-local CSE. |
 | 20 (2026-04-07) | Phase 10: Native GetGlobal + LICM + self-call | **improved (nbody -49%, fib -90%)** | Wired native GetGlobal into Tier 2 dispatch (1 line), added OpGetGlobal to LICM whitelist, Tier 1 self-call BL optimization. ackermann +137% regression documented. |
 | 21 (2026-04-07) | Phase 11: Production diagnostic + R(0) pin | **improved (nbody -8.1%, broad -8-23%)** | Scenario A confirmed (feedback works, arithmetic IS typed in production). R(0) pin to X22 + NaN-boxed closure cache in X21 gave 18/22 benchmarks broad improvement. Next: cross-block shape propagation. |
+| 22 (2026-04-07) | Phase 12: Float param guards + GuardType CSE | **improved (nbody -10.3%, spectral -8.7%, table_field -17.3%)** | Float param guard speculation on mixed int/float params caused 100-170% regressions — fixed by excluding params used in int contexts. GuardType CSE + LICM whitelist (OpSqrt, OpGetTable). |
 
 ## Next Step
 
@@ -96,3 +97,16 @@ Round 21 tasks:
 3. Bonus: fix ackermann +137% regression from self-call proto comparison overhead
 
 Also confirmed LICM GetField hoisting is WORKING: bi.x/y/z/mass hoisted to j-loop preheader. Intrinsic pass converts math.sqrt → OpSqrt. hasLoopCall=false for inner loop.
+
+**Phase 12: Parameter Type Specialization + GuardType CSE**
+
+Round 21 Scenario A confirmed: production codegen has 33 typed + 7 generic arithmetic ops.
+The 7 generic ops all involve `v0 = LoadSlot slot[0]` (the `dt` parameter, type `:any`).
+TypeSpecialize Phase 0 only detects int-like params (paired with ConstInt), not float-like.
+
+Round 22 tasks:
+1. Float parameter guard: extend insertParamGuards to detect params used with float-typed
+   operands (run check after Phase 1 inference). Insert GuardType(TypeFloat) at entry block.
+2. GuardType CSE: extend LoadElim to track (value_id, guard_type), eliminate redundant guards.
+3. LICM: add OpSqrt + OpGetTable to canHoistOp whitelist.
+4. Verify matmul production typing (graph builder already inserts GuardType for GetTable).
