@@ -238,6 +238,18 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					}
 				}
 			}
+			// GetTable: require no in-loop SetTable on same obj and no calls.
+			if instr.Op == OpGetTable {
+				if hasLoopCall {
+					continue
+				}
+				if len(instr.Args) >= 1 {
+					// SetTable on same obj kills all table accesses (fieldAux=-1 sentinel).
+					if setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
+						continue
+					}
+				}
+			}
 			// GetGlobal: require no in-loop SetGlobal on same name and no calls.
 			if instr.Op == OpGetGlobal {
 				if hasLoopCall {
@@ -535,6 +547,12 @@ func canHoistOp(op Op) bool {
 		return true
 	case OpGetGlobal:
 		// Caller must also check alias info (no SetGlobal on same name, no Call in loop).
+		return true
+	case OpSqrt:
+		// Pure single-input float op with no side effects.
+		return true
+	case OpGetTable:
+		// Caller must also check alias info (no SetTable on same obj, no Call in loop).
 		return true
 	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat:
 		return true
