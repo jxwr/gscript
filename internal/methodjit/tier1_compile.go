@@ -350,6 +350,12 @@ func emitBaselinePrologue(asm *jit.Assembler) {
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
 	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24 = 0xFFFE000000000000
 	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25 = 0xFFFD000000000000
+
+	// Cache NaN-boxed self-closure value for fast self-call detection.
+	// BaselineClosurePtr is set by the execution loop before calling JIT.
+	asm.LDR(mRegSelfClosure, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.LoadImm64(jit.X3, nbClosureTagBits)
+	asm.ORRreg(mRegSelfClosure, mRegSelfClosure, jit.X3)
 }
 
 // emitBaselineEpilogue emits the ARM64 function epilogue.
@@ -395,6 +401,11 @@ func emitBaselineResumePrologue(asm *jit.Assembler) {
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants)
 	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))
 	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))
+
+	// Cache NaN-boxed self-closure value for fast self-call detection.
+	asm.LDR(mRegSelfClosure, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.LoadImm64(jit.X3, nbClosureTagBits)
+	asm.ORRreg(mRegSelfClosure, mRegSelfClosure, jit.X3)
 }
 
 // emitBaselineOpExitCommon is the shared exit sequence for baseline op-exits.

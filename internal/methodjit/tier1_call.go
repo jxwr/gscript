@@ -74,6 +74,15 @@ const (
 	nbPtrSubVMClosure  = 8 // ptrSubVMClosure = 8 << 44
 )
 
+// mRegSelfClosure caches the NaN-boxed closure value of the current function
+// in callee-saved register X21. At CALL sites, comparing R(A) directly with
+// X21 detects self-calls in 2 instructions instead of ~14.
+const mRegSelfClosure = jit.X21
+
+// nbClosureTagBits is the NaN-boxing tag for a VMClosure pointer:
+// 0xFFFF800000000000 = NB_TagPtr | (ptrSubVMClosure << nbPtrSubShift).
+const nbClosureTagBits = ^int64(1<<47 - 1)
+
 // emitBaselineNativeCall emits a native ARM64 call sequence for OP_CALL.
 // For compiled vm.Closure targets, this uses BLR instead of exit-resume.
 // For all other cases, falls through to the slow path (exit-resume).
@@ -112,6 +121,13 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 
 	// 1. Load function value from regs[A]
 	asm.LDR(jit.X0, mRegRegs, slotOff(a))
+
+	// Fast self-call check: compare NaN-boxed R(A) with cached self-closure value.
+	// If they match, skip the entire type check + pointer extraction + proto comparison
+	// sequence (~10-14 instructions saved per self-call).
+	selfCallFastLabel := nextLabel("self_call_fast")
+	asm.CMPreg(jit.X0, mRegSelfClosure)
+	asm.BCond(jit.CondEQ, selfCallFastLabel)
 
 	// 2. Type-check: must be ptr (0xFFFF) with sub-type = 8 (VMClosure)
 	asm.LSRimm(jit.X1, jit.X0, 48)
@@ -208,6 +224,13 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.BCond(jit.CondEQ, slowLabel)
 
 	asm.MOVimm16(jit.X20, 1)                     // flag: self-call -> use BL direct_entry
+	asm.B(afterNormalChecksLabel)
+
+	// Fast self-call path: NaN-boxed R(A) matched cached self-closure.
+	// X1 = callerProto is needed for CallCount increment at selfCallSkipLabel.
+	asm.Label(selfCallFastLabel)
+	asm.LoadImm64(jit.X1, int64(uintptr(unsafe.Pointer(callerProto))))
+	asm.B(selfCallSkipLabel)
 
 	asm.Label(afterNormalChecksLabel)
 
@@ -219,8 +242,8 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	saveDoneLabel := nextLabel("save_done")
 	asm.CBNZ(jit.X20, selfCallSaveLabel)
 
-	// Normal save (64 bytes, 16-byte aligned)
-	asm.SUBimm(jit.SP, jit.SP, 64)
+	// Normal save (80 bytes, 16-byte aligned)
+	asm.SUBimm(jit.SP, jit.SP, 80)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
@@ -232,6 +255,8 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STR(jit.X3, jit.SP, 48)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
 	asm.STR(jit.X3, jit.SP, 56)
+	// Save caller's NaN-boxed self-closure cache (X21)
+	asm.STR(mRegSelfClosure, jit.SP, 64)
 	asm.B(saveDoneLabel)
 
 	// Self-call save (32 bytes, 16-byte aligned)
@@ -374,7 +399,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	restoreDoneLabel := nextLabel("restore_done")
 	asm.CBNZ(jit.X20, selfCallRestoreLabel)
 
-	// Normal restore (64-byte frame)
+	// Normal restore (80-byte frame)
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 32)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
@@ -385,8 +410,10 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
 	asm.LDR(jit.X3, jit.SP, 56)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
+	// Restore caller's NaN-boxed self-closure cache (X21)
+	asm.LDR(mRegSelfClosure, jit.SP, 64)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.SP, jit.SP, 64)
+	asm.ADDimm(jit.SP, jit.SP, 80)
 	asm.B(restoreDoneLabel)
 
 	// Self-call restore (32-byte frame)
@@ -465,6 +492,12 @@ func emitDirectEntryPrologue(asm *jit.Assembler) {
 	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)       // X26 = ctx.Regs
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
 	// X24 (tagInt) and X25 (tagBool) are callee-saved, preserved from caller.
+
+	// Cache NaN-boxed self-closure for fast self-call detection.
+	asm.LDR(mRegSelfClosure, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.LoadImm64(jit.X3, nbClosureTagBits)
+	asm.ORRreg(mRegSelfClosure, mRegSelfClosure, jit.X3)
+
 	// Jump to first bytecode.
 	asm.B("pc_0")
 }
