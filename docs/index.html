@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-07</span>
   <br>
+  <a href="33-four-guards-fourteen-times">Four Guards, Fourteen Times</a>
+  <p>nbody&rsquo;s j-loop has 431 ARM64 instructions and 29 float ops. Four type guards on loop-invariant values run five million times each but can never fail. We hoisted them to the pre-header and propagated shape verification across block boundaries. Instruction count went down. Wall time didn&rsquo;t move. The M4&rsquo;s branch predictor was already making the guards free. The lesson: on a wide superscalar core, removing bandwidth-bound overhead does nothing when latency is the bottleneck.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-07</span>
+  <br>
   <a href="32-seven-generic-ops">Seven Generic Ops and a Missing Guard</a>
   <p>nbody&rsquo;s advance function has one untyped parameter. Seven arithmetic ops stay generic because of it. One speculative guard fixes all seven &mdash; but the naive heuristic regresses math_intensive 170% by guarding integer parameters used in float expressions. The fix: exclude params that appear in both int and float contexts. Plus: GuardType CSE eliminates redundant type checks. nbody &minus;10%, spectral &minus;9%, table_field_access &minus;17%.</p>
 </div>

@@ -7,10 +7,19 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "",
+  "uncommitted_files": [
+    "benchmarks/data/baseline.json",
+    "benchmarks/data/history/2026-04-07.json",
+    "benchmarks/data/latest.json",
+    "docs/index.html",
+    "opt/INDEX.md",
+    "opt/initiatives/tier2-float-loops.md",
+    "opt/state.json",
+    "opt/workflow_log.jsonl"
+  ],
+  "head_commit": "df2e2ecea239bc6f074c935a6eb451406900928d",
   "branch": "main",
-  "last_checkpoint": "",
+  "last_checkpoint": "2026-04-07T09:25:45Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -104,21 +113,21 @@
       "category": "recursive_call",
       "initiative": "opt/initiatives/recursive-tier2-unlock.md",
       "outcome": "no_change",
-      "summary": "Phase 3+5: B=0 fix kept (correctness). Tier 2 net-negative for recursive functions — 27-50% regressions, reverted."
+      "summary": "Phase 3+5: B=0 fix kept (correctness). Tier 2 net-negative for recursive functions \u2014 27-50% regressions, reverted."
     },
     {
       "cycle_id": "2026-04-06-feedback-typed-loads",
       "category": "tier2_float_loop",
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "no_change",
-      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected — Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
+      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected \u2014 Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
     },
     {
       "cycle_id": "2026-04-06-native-array-kinds",
       "category": "field_access",
       "initiative": "standalone",
       "outcome": "improved",
-      "summary": "Native ArrayBool/ArrayFloat fast paths in emitGetTableNative/emitSetTableNative. Sieve -18-25% (0.227s→0.186s). Eliminated exit-resume for bool/float typed arrays."
+      "summary": "Native ArrayBool/ArrayFloat fast paths in emitGetTableNative/emitSetTableNative. Sieve -18-25% (0.227s\u21920.186s). Eliminated exit-resume for bool/float typed arrays."
     },
     {
       "cycle_id": "2026-04-06-table-access-bypass",
@@ -167,7 +176,7 @@
       "category": "tier2_float_loop",
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "improved",
-      "summary": "Native GetGlobal dispatch + LICM hoisting + Tier 1 self-call optimization. nbody -49% (0.555s→0.284s), fib -90% (1.365s→0.135s), fib_recursive -90%. ackermann +137% regression from self-call overhead on tight recursion."
+      "summary": "Native GetGlobal dispatch + LICM hoisting + Tier 1 self-call optimization. nbody -49% (0.555s\u21920.284s), fib -90% (1.365s\u21920.135s), fib_recursive -90%. ackermann +137% regression from self-call overhead on tight recursion."
     },
     {
       "cycle_id": "2026-04-07-nbody-typing-diagnostic",
@@ -182,6 +191,13 @@
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "improved",
       "summary": "Float param guards + GuardType CSE + LICM whitelist. nbody -10.3%, spectral -8.7%, table_field_access -17.3%, broad improvements. Bugfix: mixed int/float params excluded from float speculation."
+    },
+    {
+      "cycle_id": "2026-04-07-guard-hoist-shape-prop",
+      "category": "tier2_float_loop",
+      "initiative": "opt/initiatives/tier2-float-loops.md",
+      "outcome": "no_change",
+      "summary": "Guard hoisting in LICM + cross-block shape/table verification propagation (single-predecessor). Infra landed correctly. A/B testing confirmed zero wall-time change \u2014 M4 superscalar hides removed guards (predicted branches, low IPC cost). Also fixed OpAppend/OpSetList LICM alias, tableVerified exit-resume clearing."
     }
   ],
   "session_summary": {
@@ -191,9 +207,9 @@
   },
   "category_failures": {
     "recursive_call": 2,
-    "tier2_float_loop": 0,
+    "tier2_float_loop": 1,
     "field_access": 1
   },
-  "rounds_since_review": 4,
-  "rounds_since_arch_audit": 2
+  "rounds_since_review": 5,
+  "rounds_since_arch_audit": 3
 }

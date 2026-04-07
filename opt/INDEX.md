@@ -5,6 +5,7 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 
 | # | Round ID | Date | Category | Target | Outcome | Key Commit | 1-line Lesson |
 |---|----------|------|----------|--------|---------|------------|----------------|
+| 23 | 2026-04-07-guard-hoist-shape-prop | 2026-04-07 | tier2_float_loop | Guard hoisting in LICM + cross-block shape verification propagation | no_change | df2e2ec | M4 superscalar hides removed guard instructions (predicted branches, ~0 IPC cost); instruction-count reduction ≠ wall-time on branch-heavy code |
 | 22 | 2026-04-07-float-param-guard | 2026-04-07 | tier2_float_loop | Float param guards + GuardType CSE + LICM whitelist | improved | 7a044e1 | Speculative float guards on mixed int/float params cause 100-170% regressions — must exclude params also used in int contexts |
 | 21 | 2026-04-07-nbody-typing-diagnostic | 2026-04-07 | tier2_float_loop | Production typing diagnostic + R(0) pin X22 + closure cache X21 | improved | 7e838b6 | R(0) pin to callee-saved register is the broadest single optimization: 18/22 benchmarks -8-23% from eliminating slot-0 memory loads |
 | 20 | 2026-04-07-getglobal-native-licm | 2026-04-07 | tier2_float_loop | Native GetGlobal dispatch + LICM hoisting + Tier 1 self-call | improved | b094383 | Read the dispatch table: every emitFooExit with a matching emitFooNative is leaving performance on the table; direct BL self-call is 10x on recursion |

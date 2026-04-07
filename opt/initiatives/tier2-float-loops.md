@@ -62,6 +62,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 | 20 (2026-04-07) | Phase 10: Native GetGlobal + LICM + self-call | **improved (nbody -49%, fib -90%)** | Wired native GetGlobal into Tier 2 dispatch (1 line), added OpGetGlobal to LICM whitelist, Tier 1 self-call BL optimization. ackermann +137% regression documented. |
 | 21 (2026-04-07) | Phase 11: Production diagnostic + R(0) pin | **improved (nbody -8.1%, broad -8-23%)** | Scenario A confirmed (feedback works, arithmetic IS typed in production). R(0) pin to X22 + NaN-boxed closure cache in X21 gave 18/22 benchmarks broad improvement. Next: cross-block shape propagation. |
 | 22 (2026-04-07) | Phase 12: Float param guards + GuardType CSE | **improved (nbody -10.3%, spectral -8.7%, table_field -17.3%)** | Float param guard speculation on mixed int/float params caused 100-170% regressions — fixed by excluding params used in int contexts. GuardType CSE + LICM whitelist (OpSqrt, OpGetTable). |
+| 23 (2026-04-07) | Phase 9: Guard hoisting + shape propagation | **no_change (infra landed, A/B confirmed zero wall-time)** | Guard hoisting in LICM (OpGuardType whitelisted). Cross-block shape/table verification propagation (single-predecessor, dominator approach unsound at merge points). LICM alias fix (OpAppend/OpSetList). All instruction-count improvements absorbed by M4 superscalar (predicted branches cost ~0 IPC). |
 
 ## Next Step
 
@@ -75,9 +76,9 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 
 Remaining deferred phases:
 - **Phase 6 (range analysis for float loops)**: extend overflow-check elimination to float arithmetic.
-- **Phase 9 (future)**: Shape check hoisting — hoist GETFIELD shape guards to loop preheader when object reference is loop-invariant. Saves ~5 insns × 14 fields per iteration.
+- **Phase 9 (DONE, round 23)**: Guard hoisting + cross-block shape propagation. Infra landed, zero wall-time impact (M4 superscalar). Single-predecessor propagation is the sound subset; dominator-based needs dataflow merge.
 - **Phase 10 (future)**: Store-to-load forwarding — after SETFIELD(obj, field, val), subsequent GETFIELD(obj, field) returns val without memory access.
-- **Long-term**: Unboxed float SSA (eliminate NaN-boxing in Tier 2 float paths entirely) or loop unrolling.
+- **Long-term**: Unboxed float SSA (eliminate NaN-boxing in Tier 2 float paths entirely) or loop unrolling. Register moves (91 of 431 in nbody) and spill/reload (77 of 431) are the next architectural bottleneck.
 
 ## Risks / Failure Signals
 
