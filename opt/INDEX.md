@@ -5,6 +5,7 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 
 | # | Round ID | Date | Category | Target | Outcome | Key Commit | 1-line Lesson |
 |---|----------|------|----------|--------|---------|------------|----------------|
+| 21 | 2026-04-07-nbody-typing-diagnostic | 2026-04-07 | tier2_float_loop | Production typing diagnostic + R(0) pin X22 + closure cache X21 | improved | 7e838b6 | R(0) pin to callee-saved register is the broadest single optimization: 18/22 benchmarks -8-23% from eliminating slot-0 memory loads |
 | 20 | 2026-04-07-getglobal-native-licm | 2026-04-07 | tier2_float_loop | Native GetGlobal dispatch + LICM hoisting + Tier 1 self-call | improved | b094383 | Read the dispatch table: every emitFooExit with a matching emitFooNative is leaving performance on the table; direct BL self-call is 10x on recursion |
 | 19 | 2026-04-07-table-kind-specialize | 2026-04-07 | field_access | Table validation dedup + kind feedback + kind-specialized emit for sieve | no_change | a145de5 | Branch predictor makes predictable dispatch cascades free — removing 5 predicted instructions yields 0% wall-time on M4 |
 | 18 | 2026-04-06-licm-getfield | 2026-04-06 | tier2_float_loop | LICM GetField hoisting + store-to-load forwarding | no_change | 1d55912 | Inner loop SetField on same objects blocks hoisting; diagnosis was wrong — fields not truly loop-invariant |

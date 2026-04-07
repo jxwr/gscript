@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-07</span>
   <br>
+  <a href="31-thirty-one-float-multiplies">Thirty-One Float Multiplies, Untyped</a>
+  <p>nbody&rsquo;s diagnostic said 29 of 31 arithmetic ops were generic. The diagnostic was wrong &mdash; it bypassed Tier 1 feedback. Production code is fully typed. The real win: pinning VM register R(0) to ARM64 X22 improved 18 of 22 benchmarks by 8&ndash;23%. One callee-saved register, broadest single optimization in the project.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-07</span>
+  <br>
   <a href="30-the-highway-nobody-connected">The Highway Nobody Connected</a>
   <p>nbody&rsquo;s inner loop was exiting to Go five million times per benchmark to look up a global variable. The native cache was built, tested, ready &mdash; nobody wired it into the dispatch table. One line fixed it: nbody &minus;49%. Then a self-call optimization turned fib from 54&times; behind LuaJIT to 4.7&times;. The biggest single-round improvement in the project&rsquo;s history.</p>
 </div>

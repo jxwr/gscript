@@ -1,95 +1,97 @@
-# Analyze Report — Round 19
+# Analyze Report — Round 21
 
 > Date: 2026-04-07
-> Cycle ID: 2026-04-07-table-kind-specialize
+> Cycle ID: 2026-04-07-nbody-typing-diagnostic
 
 ## Architecture Audit
 
 **Full audit** (rounds_since_arch_audit=2). Key findings:
 
-- **emit_table.go 978 lines** ⚠ CRITICAL (unchanged since R17). MUST split this round — plan includes as Task 0.
-- **emit_dispatch.go 969 lines** ⚠ CRITICAL (unchanged). No changes planned this round.
-- **graph_builder.go 939 lines** ⚠ (unchanged). Minor change planned (kind feedback propagation, ~10 lines).
-- **pass_licm.go 546 lines** — grew +40 from R17 (GetField hoisting in R18). Healthy.
-- **Total source: 18,104 lines** (up from 17,450 at R17 audit). Test ratio: 85% (up from 81%).
-- **Diagnose() pipeline synced** (R18 commit 92e08d1). But `tier2_float_profile_test.go:profileTier2Func` still uses simplified pipeline (only TypeSpec→ConstProp→DCE, no Intrinsic/Inline/LoadElim/RangeAnalysis/LICM, no feedback). Diagnostic data from this test is misleading for type-specialized analysis. Added to constraints.md.
-- **New finding: table access overhead** — GetTable/SetTable emit 35 insns per access (1 actual load/store). No dedup exists (unlike GetField's shapeVerified). No array kind feedback. Added to constraints.md.
-- **LICM GetField hoisting** (R18 infra): works correctly for loops without calls or same-field writes. Infrastructure is clean.
-- **Feedback pipeline**: end-to-end working. GETFIELD records on Tier 1 fast path (line 142 tier1_table.go). GETTABLE records on Tier 1 typed-array fast paths.
+- **emit_table.go split RESOLVED** (Round 19): Now emit_table_field.go (341) + emit_table_array.go (692). ✅
+- **emit_dispatch.go 971 lines** ⚠ CRITICAL (grew 2 from R19). No changes planned this round.
+- **graph_builder.go 955 lines** ⚠ CRITICAL (grew 16 from R19). Minor read-only changes for diagnostic.
+- **tier1_table.go 829 lines** ⚠ NEW threshold crossing. No changes planned.
+- **Self-call optimization landed** (Round 20, commits db2431f+e39cac0+b094383): Tier 1 proto comparison + BL direct for self-calls. 32-byte frame vs 64-byte. CallCount increment restored.
+- **Native GetGlobal in Tier 2** (Round 20, commit 6bb9209): Inline value cache with generation-based invalidation.
+- **LICM GetGlobal hoisting** (Round 20, commit 7cb0a54): GetGlobal added to canHoistOp whitelist.
+- **Ackermann +137% regression** (Round 20): Self-call proto comparison adds ~13 insns to every Tier 1 call site. For ackermann's 67M calls: unacceptable overhead.
+- **pass_load_elim.go: 94 lines** — S2L forwarding already landed. Room for growth.
+- **27 source files lack test files** (up from 24 at R19).
 
-Updated: `docs-internal/architecture/constraints.md` with Table Access Overhead section and diagnostic test mismatch note.
+Updated: `docs-internal/architecture/constraints.md` — Tier 1 Self-Call section, file sizes, table access dedup status, test coverage.
 
 ## Gap Classification
 
 | Category | Benchmarks | Total Gap vs LuaJIT | Blocked? |
 |----------|------------|---------------------|----------|
-| recursive_call | fib (56.8x), ackermann (41.7x), mutual_recursion (45.0x) | 1.770s | **BLOCKED** (failures=2) |
-| tier2_float_loop | nbody (16.3x), spectral_norm (5.6x), matmul (6.0x), mandelbrot (1.2x), sum_primes (2.0x) | 0.660s | No (failures=1) |
-| field_access | sieve (7.5x), sort (4.6x), fannkuch (2.7x) | 0.144s | No (failures=0) |
-| gofunction_overhead | method_dispatch (regression) | 0.100s | No (failures=0) |
+| recursive_call | fib (4.7x), ackermann (87x), mutual_recursion (68x) | 0.978s | **BLOCKED** (failures=2) |
+| tier2_float_loop | nbody (7.5x), spectral (5.3x), matmul (5.2x), mandelbrot (0.96x!) | 0.392s | No (failures=0) |
+| field_access | sieve (6.5x), sort (3.8x), fannkuch (2.3x) | 0.139s | No (failures=1) |
+| gofunction_overhead | method_dispatch (regression) | 0.119s | No (failures=0) |
 | allocation_heavy | binary_trees, object_creation (regressions) | N/A | No (failures=0) |
 
+**mandelbrot now BEATS LuaJIT** (0.064s vs 0.067s). First benchmark at parity.
+
 ## Blocked Categories
-- `recursive_call` (category_failures=2): Tier 2 net-negative for recursive functions. Needs native recursive BLR or Tier 1 specialization.
+- `recursive_call` (category_failures=2): Tier 2 net-negative for recursive functions.
 
 ## Active Initiatives
-- `opt/initiatives/tier2-float-loops.md` — paused (R18 no_change, failures=1)
+- `opt/initiatives/tier2-float-loops.md` — active (R20 improved: nbody -49%, fib -90%)
 - `opt/initiatives/recursive-tier2-unlock.md` — paused (blocked)
 
 ## Selected Target
 
-- **Category**: field_access
-- **Initiative**: standalone
-- **Reason**: (1) field_access has 0 failures, safe to try. (2) sieve at 7.5x has clear, data-backed bottleneck in table access overhead. (3) Table access optimization benefits ALL table-heavy benchmarks (sieve, matmul, spectral_norm, fannkuch, nbody). (4) Previous rounds (13-14) showed field_access optimizations can yield large gains (matmul -80%, sieve -56%). (5) tier2_float_loop has failures=1 — one more no_change risks ceiling.
-- **Benchmarks**: sieve (primary), matmul/spectral_norm/fannkuch (secondary)
+- **Category**: tier2_float_loop
+- **Initiative**: opt/initiatives/tier2-float-loops.md
+- **Reason**: (1) 0 failures, safe. (2) nbody at 7.5x has largest absolute gap (0.246s). (3) Round 20 cut nbody from 0.555s to 0.284s — momentum. (4) Diagnostic found critical typing gap.
+- **Benchmarks**: nbody (primary), matmul/spectral_norm (secondary)
+
+## Architectural Insight
+
+The key question is whether the feedback pipeline delivers typed GetField results to nbody's Tier 2 compilation. A diagnostic test (without Tier 1 feedback) showed 29/31 arithmetic ops as generic — but in production, Tier 1 collects feedback first. The graph builder code for inserting GuardType after GetField exists (`graph_builder.go:669-676`). Whether it actually fires for nbody in production determines whether the bottleneck is untyped arithmetic (huge fix: -30-50%) or field access overhead (medium fix: -10-15%).
 
 ## Prior Art Research
 
 ### Web Search Findings
-V8, LuaJIT, and SpiderMonkey all specialize table/array access based on observed element kind. V8 uses CheckMaps + element-kind-specific LoadElement/StoreElement. LuaJIT records exact table layout during trace recording and emits direct AREF/HREF ops. SpiderMonkey Warp reads CacheIR stubs for kind-specific emit.
+- V8 field-sensitive alias analysis in loops: `ComputeLoopState` kills only specific (object, field). GScript already matches.
+- ARM64 M-series: L1D 3-cycle hit, FSQRT 13-cycle latency, 2 loads/cycle throughput.
 
 ### Reference Source Findings
-- V8 `load-elimination.cc:786`: ReduceCheckMaps eliminates redundant shape/kind checks when already known
-- V8 `simplified-lowering.cc`: Element kind from Maps drives LoadElement/StoreElement lowering
-- LuaJIT `lj_record.c`: AREF instruction specializes array-part access, HREF for hash part. No runtime dispatch.
-- SpiderMonkey `WarpBuilder.cpp`: GuardShape + kind-specific LoadElement
+- V8 `load-elimination.cc:1363`: field-sensitive kill in loop body scan
+- V8 `load-elimination.cc:786`: CheckMaps elimination propagation
 
 ### Knowledge Base Update
-Research agent writing `opt/knowledge/table-access-specialization.md` (in progress).
+Created `opt/knowledge/nbody-field-hoisting.md` (152 lines).
 
 ## Source Code Findings
 
 ### Files Read
-- `emit_table.go` (978 lines): Full GetTable/SetTable emit with 4-way kind dispatch. `emitGetTableNative` and `emitSetTableNative` handle all array kinds (Mixed/Int/Float/Bool). No dedup mechanism (unlike GetField's shapeVerified).
-- `tier1_table.go` (774 lines): Tier 1 GETFIELD fast path with feedback recording (line 142). GETTABLE fast paths for typed arrays with feedback. No array KIND feedback — only value TYPE feedback.
-- `graph_builder.go` (939 lines): GetTable/GetField with GuardType insertion from feedback. No kind information propagated.
-- `regalloc.go` (684 lines): LICM invariant carry (FPR-only). Preheader detection and pinned invariants.
-- `emit_compile.go` (585 lines): Compile pipeline, shapeVerified init, loop info computation.
-- `pass_licm.go` (546 lines): LICM with GetField hoisting (R18). canHoistOp whitelist.
+- `pass_licm.go:174-248`: Per-field alias check. hasLoopCall blocks all GetField hoisting.
+- `pass_load_elim.go` (94 lines): Block-local CSE + S2L forwarding. Complete.
+- `graph_builder.go:655-677`: GetField feedback → GuardType insertion. Code present and correct.
+- `pass_intrinsic.go`: math.sqrt → OpSqrt. Working for nbody.
+- `tier1_call.go:120-200`: Self-call detection. Proto comparison on every call.
 
 ### Diagnostic Data
 
-**Sieve inner marking loop (B7+B8, while-style loop):**
-- IR: `Le v33, v34 → Branch → SetTable v77, v33, v37 → AddInt v33, v78 → Jump`
-- ARM64: ~62 insns per iteration on fast path
-- SetTable breakdown: 35 insns (1 actual store, 32 overhead, 2 branching)
-- AddInt: 11 insns (includes NaN-box unbox + overflow check)
-- Le+Branch: ~8 insns (comparison + NaN-box bool + branch)
-- Note: diagnostic from simplified pipeline (no LICM/carry). Production may be better for AddInt/Le.
+**nbody advance() through full Tier 2 pipeline (no Tier 1 feedback):**
 
-**nbody advance() inner loop:**
-- 2,923 total ARM64 insns (simplified pipeline, no feedback → no type specialization)
-- Float compute ops: 35 (actual fmul/fadd/fsub/fdiv/fsqrt)
-- Type check sequences: 101 (would be eliminated in production with feedback)
-- Frame spills: 730
-- Deopt stubs: 39 × ~16 insns = 624 (21% of binary, dead code on fast path)
+```
+INTRINSIC: math.sqrt → OpSqrt ✅
+LICM: hasCall=false for j-loop ✅
+LICM: 4 GetField hoisted (bi.x, bi.y, bi.z, bi.mass) ✅
+TYPE: 4 typed / 44 untyped (inner loop) ⚠️
+ARITH: 2 specialized / 29 generic ⚠️
+CODE: 620 ARM64 insns (Tier 2), 10 spills
+```
 
-**CAVEAT**: Both diagnostics are from `profileTier2Func` which uses a simplified pipeline without feedback, Intrinsic, Inline, LoadElim, RangeAnalysis, or LICM. Production codegen via TieringManager is significantly better — type-specialized arithmetic, LICM-hoisted invariants, shape guard dedup, etc. The sieve table access overhead (35 insns per SetTable) is accurate regardless of pipeline because it's emitter-level structural overhead, not pass-dependent.
+CAVEAT: No Tier 1 feedback in this compilation. Production codegen may be typed.
 
-### Actual Bottleneck (data-backed)
+### Actual Bottleneck
 
-**Sieve**: The inner marking loop's SetTable emits 35 ARM64 instructions per store. The table `is_prime` is loop-invariant (defined before the outer loop, never reassigned). The array kind is always ArrayBool (set during init loop, never changes). The table validation (type check, ptr extract, nil check, metatable check = 13 insns) and kind dispatch (8 insns) are redundant per iteration. Eliminating them would reduce SetTable to ~14 insns (kind guard 3 + bounds 4 + access 3 + dirty 3 + branch 1).
+**Scenario A (feedback broken):** 29 generic arith × ~10 insns overhead = ~290 insns/iter wasted. ~230ms of nbody's 0.284s.
+**Scenario B (feedback working):** Field access overhead: 10 GetField + 6 SetField + 1 GetTable × ~5-15 insns each = ~150-250 insns/iter. Shape checks dominate.
 
 ## Plan Summary
 
-Split emit_table.go (mandatory, 978 lines), then add two complementary optimizations: (A) table validation dedup within blocks (`tableVerified`, mirrors shapeVerified for GetField), and (B) array kind feedback from Tier 1 → kind-specialized emit at Tier 2 (skip 4-way dispatch cascade). Together these eliminate ~15 instructions per GetTable/SetTable access. Expected sieve improvement: 20-25% wall-time. Risk is low: both mechanisms mirror existing patterns (shapeVerified, feedback pipeline). The emit_table.go split is the prerequisite and largest task.
+Diagnostic-first round. Task 1: production-accurate diagnostic (TieringManager path). Task 2: fix confirmed bottleneck. Task 3 (bonus): ackermann self-call regression fix. Conservative: verify before optimizing.

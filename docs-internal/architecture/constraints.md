@@ -1,7 +1,7 @@
 # Architecture Constraints & Notes
 
 > **ANALYZE reads this every round.** Updated by Architecture Audit (every 2 rounds).
-> Last full audit: Round 19 (2026-04-07)
+> Last full audit: Round 21 (2026-04-07)
 
 ## Tier Constraints
 
@@ -11,11 +11,12 @@
 
 ## Module Boundaries
 
-- **`emit_table.go` 978 lines** ⚠ CRITICAL: 22 lines from 1000-line limit. Grew 41 lines in round 17 (shape guard dedup). Must split BEFORE any changes (extract `emit_table_native.go` for Tier 2 table paths).
-- **`emit_dispatch.go` 969 lines** ⚠ CRITICAL: 31 lines from limit. Must split before any changes (extract `emit_branch.go` for fused compare+branch logic).
-- **`graph_builder.go` 939 lines** ⚠: approaching limit. Round 12 added feedback-typed guards. Consider extracting `graph_builder_feedback.go`.
+- **`emit_table.go` SPLIT** (Round 19): Now `emit_table_field.go` (341 lines) + `emit_table_array.go` (692 lines). ✅ RESOLVED.
+- **`emit_dispatch.go` 971 lines** ⚠ CRITICAL: 29 lines from limit. Grew 2 lines since R19. Must split before any changes (extract `emit_branch.go` for fused compare+branch logic).
+- **`graph_builder.go` 955 lines** ⚠ CRITICAL: 45 lines from limit. Grew 16 lines since R19. Must split before any changes (extract `graph_builder_feedback.go` for feedback/guard insertion).
+- **`tier1_table.go` 829 lines** ⚠ NEW: crossed 800-line threshold. Grew from ~774 lines (R14 additions: float/bool table fast paths + feedback stubs).
 - **`regalloc.go` ↔ `emit_loop.go` coupling**: `carried` map concept spans both files. `regalloc.go` builds the map, `emit_loop.go` uses it for loop-exit boxing. Changes to one often require changes to the other.
-- **24 source files lack test files** (up from 15 at Round 12 audit). Mostly Tier 1 handlers and emit files. Coverage is indirect via integration tests, but direct unit tests would catch regressions earlier.
+- **27 source files lack test files** (up from 24 at Round 19 audit). Mostly Tier 1 handlers, emit files, and new emit_call_exit.go.
 
 ## Pass Pipeline Order
 
@@ -56,10 +57,18 @@ Ordering constraints:
 ## Table Access Overhead (Round 19 audit)
 
 - **GetTable/SetTable per-access: ~35 ARM64 insns** (from diagnostic on sieve). Only 1-2 are the actual load/store. Overhead: table type check (10), nil/metatable check (3), key validation (6), array kind dispatch (8), bounds check + base load (4), dirty flag (3).
-- **No dedup for GetTable/SetTable** — unlike GetField (which has `shapeVerified`), GetTable does full validation on every access. Multiple table accesses on the same table in the same block repeat all checks.
-- **No cross-block table validation** — even for loop-invariant tables (e.g., sieve's `is_prime`), the full validation runs every iteration. V8 hoists CheckMaps to loop preheaders; GScript does not.
-- **No array kind feedback** — Tier 1 does not record which array kind (Mixed/Int/Float/Bool) is used. The 4-way dispatch in GetTable/SetTable runs every time. Adding kind feedback would let Tier 2 specialize to a single path.
+- **tableVerified dedup** (Round 19, commit 4202fac): `emitContext.tableVerified` now tracks per-block validated table SSA values for GetTable/SetTable. Subsequent accesses on same table skip type+nil+metatable check. Invalidated by OpCall, OpSelf, OpSetField, and block boundaries.
+- **Array kind feedback** (Round 19, commit c7d0b76): Tier 1 GETTABLE/SETTABLE now records array kind (Mixed/Int/Float/Bool) in feedback. Tier 2 emits kind-specialized fast paths when feedback is monomorphic.
+- **Kind specialization limited impact** (Round 19 lesson): Sieve unchanged — branch predictor on M4 makes predictable 4-way dispatch cascade free. Secondary benchmarks (fannkuch -10%, table_array -6%) showed modest gains.
+- **No cross-block table validation** — even for loop-invariant tables, full validation runs every iteration. V8 hoists CheckMaps to loop preheaders; GScript does not.
 - **Diagnostic test pipeline mismatch**: `tier2_float_profile_test.go:profileTier2Func` uses a simplified pipeline (no Intrinsic, Inline, LoadElim, RangeAnalysis, LICM, no feedback). Diagnostics from this test do NOT reflect production codegen. Use `Diagnose()` or TieringManager for production-accurate data.
+
+## Tier 1 Self-Call Optimization (Round 20)
+
+- **Self-call detection**: For each CALL bytecode, Tier 1 compares callee proto address with a compile-time constant of the caller proto. If match, uses `BL self_call_entry` (PC-relative direct branch) instead of `BLR X2` (indirect). Lighter 32-byte frame save/restore instead of 64-byte.
+- **CallCount increment restored** (commit b094383): Self-call path now increments proto.CallCount to enable Tier 2 promotion for recursive functions.
+- **ackermann +137% regression**: Ackermann calls `ack` via GetGlobal("ack") + CALL ~67M times. Self-call path adds LoadImm64 (2-3 insns) for proto comparison to EVERY call. Net per-call overhead estimated at 4-5 insns × 67M = 268-335M extra instructions. The Tier 1 GetGlobal cache also contributes ~10 insns × 2 GetGlobals × 67M = 1.34B insns. Combined overhead accounts for the regression.
+- **Fix options**: (a) Skip GetGlobal generation check for modules without SetGlobal, (b) Hoist GetGlobal("ack") to function prologue (only load once), (c) Add Tier 1 "known-callee" optimization that caches the last resolved function value per CALL site.
 
 ## Technical Debt
 
@@ -68,6 +77,7 @@ Ordering constraints:
 
 ## Test Coverage Notes
 
-- 85% test-to-source ratio (15,459 test lines / 18,104 source lines) — up from 81% at Round 17
-- 24 source files have no corresponding test file (mostly Tier 1 handlers and emit files)
+- 86% test-to-source ratio (15,834 test lines / 18,466 source lines) — up from 85% at Round 19
+- 27 source files have no corresponding test file (mostly Tier 1 handlers and emit files)
 - Key gap: `loops.go` (loop infrastructure) has no dedicated tests — tested indirectly via `pass_licm_test.go`
+- New: `emit_call_exit.go` added (Round 20, GetGlobal native) without test file

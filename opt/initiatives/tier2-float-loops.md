@@ -60,6 +60,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 | 17 (2026-04-06) | Phase 3 unblock: feedback fix + shape dedup | **improved (nbody -8.3%, table_field -23.5%, spectral -8.7%)** | Fixed GETFIELD/GETTABLE feedback recording in Go exit handlers (4 lines in tier1_handlers.go). Added shape guard dedup in emitter (emit_table.go). Phase 3's GuardType→TypeSpecialize pipeline now works end-to-end in production, not just tests. |
 | 18 (2026-04-06) | Phase 9: LICM GetField hoisting + S2L forwarding | **no_change (infra landed, target unchanged)** | LICM GetField hoisting works for loops without same-object writes. nbody's inner loop has SetField on same objects as GetField targets, blocking hoisting. S2L forwarding subsumed by existing block-local CSE. |
 | 20 (2026-04-07) | Phase 10: Native GetGlobal + LICM + self-call | **improved (nbody -49%, fib -90%)** | Wired native GetGlobal into Tier 2 dispatch (1 line), added OpGetGlobal to LICM whitelist, Tier 1 self-call BL optimization. ackermann +137% regression documented. |
+| 21 (2026-04-07) | Phase 11: Production diagnostic + R(0) pin | **improved (nbody -8.1%, broad -8-23%)** | Scenario A confirmed (feedback works, arithmetic IS typed in production). R(0) pin to X22 + NaN-boxed closure cache in X21 gave 18/22 benchmarks broad improvement. Next: cross-block shape propagation. |
 
 ## Next Step
 
@@ -82,3 +83,16 @@ Remaining deferred phases:
 - If pprof shows no dominant hotspot (flat profile), architecture is already optimal and the gap may be a deeper codegen issue (NaN-box overhead on every float op). Pivot to arch_refactor.
   - **Round 6 result: not flat — Pattern 1 (per-op box/unbox) accounts for >30% of mandelbrot's inner loop instructions and affects 5/5 benchmarks. Shallow escalation.**
 - Abandon if 2 rounds of inner-loop tuning fail to move spectral_norm below 0.25s.
+
+## Round 21 Plan (2026-04-07)
+
+**Phase 11: nbody Production Typing Diagnostic + Fix**
+
+Diagnostic found that without Tier 1 feedback, 29/31 arithmetic ops in nbody's inner loop are generic (`:any` type). The graph builder code for GuardType insertion after GetField exists and is correct (`graph_builder.go:669-676`), but the diagnostic test bypassed Tier 1 feedback collection.
+
+Round 21 tasks:
+1. Production-accurate diagnostic: compile advance() through TieringManager (with Tier 1 feedback) to determine if production codegen has typed or untyped arithmetic
+2. Fix confirmed bottleneck: either feedback pipeline gap (Scenario B: -30-50%) or cross-block shape propagation (Scenario A: -10-15%)
+3. Bonus: fix ackermann +137% regression from self-call proto comparison overhead
+
+Also confirmed LICM GetField hoisting is WORKING: bi.x/y/z/mass hoisted to j-loop preheader. Intrinsic pass converts math.sqrt → OpSqrt. hasLoopCall=false for inner loop.

@@ -7,15 +7,10 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [
-    "benchmarks/data/history/2026-04-06.json",
-    "benchmarks/data/latest.json",
-    "docs-internal/known-issues.md",
-    "opt/state.json"
-  ],
-  "head_commit": "b094383ba60bcaf51357261d6037190bf60d66ad",
+  "uncommitted_files": [],
+  "head_commit": "",
   "branch": "main",
-  "last_checkpoint": "2026-04-06T20:21:17Z",
+  "last_checkpoint": "",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -172,7 +167,14 @@
       "category": "tier2_float_loop",
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "improved",
-      "summary": "Native GetGlobal dispatch + LICM hoisting + Tier 1 self-call optimization. nbody -49% (0.555s→0.284s), fib -90% (1.365s→0.135s), fib_recursive -90%. ackermann +137% regression from self-call overhead on tight recursion."
+      "summary": "Native GetGlobal dispatch + LICM hoisting + Tier 1 self-call optimization. nbody -49% (0.555s\u21920.284s), fib -90% (1.365s\u21920.135s), fib_recursive -90%. ackermann +137% regression from self-call overhead on tight recursion."
+    },
+    {
+      "cycle_id": "2026-04-07-nbody-typing-diagnostic",
+      "category": "tier2_float_loop",
+      "initiative": "opt/initiatives/tier2-float-loops.md",
+      "outcome": "improved",
+      "summary": "Production typing diagnostic confirms Scenario A (feedback works). R(0) pin to X22 + NaN-boxed closure cache in X21. nbody -8.1%, broad 8-23% across 18/22 benchmarks from slot-0 register pinning."
     }
   ],
   "session_summary": {
@@ -185,6 +187,6 @@
     "tier2_float_loop": 0,
     "field_access": 1
   },
-  "rounds_since_review": 2,
-  "rounds_since_arch_audit": 2
+  "rounds_since_review": 3,
+  "rounds_since_arch_audit": 1
 }
