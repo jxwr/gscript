@@ -31,6 +31,12 @@
 - Fix: consider skip-cache path for functions with no SetGlobal in module scope
 - Category: `tier2_call_overhead`
 
+### TestQuicksortSmall: SIGBUS crash in JIT-generated code (pre-existing)
+- `callJIT` hits SIGBUS executing generated ARM64 code for quicksort
+- Reproduces consistently at baseline commit (before Round 22 changes)
+- Likely partition/swap codegen issue with table array access + recursive calls
+- Category: `tier2_recursion`
+
 ### sort: intermittent hang (pre-existing)
 - sort.gs hangs or takes 375s intermittently
 - Reproduces even at baseline commit — pre-existing issue
