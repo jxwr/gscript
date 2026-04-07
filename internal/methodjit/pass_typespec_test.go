@@ -484,6 +484,108 @@ func f(size) {
 	}
 }
 
+// TestTypeSpec_FloatParamGuard verifies that a parameter used with ConstFloat
+// gets a GuardType(float) inserted and downstream ops become float-specialized.
+// This covers the nbody pattern: advance(dt) where dt is used in dt * 2.0.
+func TestTypeSpec_FloatParamGuard(t *testing.T) {
+	proto := compile(t, `
+func f(dt) {
+	return dt * 2.0
+}
+`)
+	fn := BuildGraph(proto)
+	t.Logf("Before:\n%s", Print(fn))
+
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+	t.Logf("After:\n%s", Print(result))
+
+	// Expect: GuardType(float) inserted for parameter dt, Mul becomes MulFloat.
+	hasFloatGuard := false
+	hasMulFloat := false
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpGuardType && Type(instr.Aux) == TypeFloat {
+				hasFloatGuard = true
+			}
+			if instr.Op == OpMulFloat {
+				hasMulFloat = true
+			}
+		}
+	}
+	if !hasFloatGuard {
+		t.Error("expected GuardType(float) for parameter dt")
+	}
+	if !hasMulFloat {
+		t.Error("expected MulFloat after float guard insertion")
+	}
+}
+
+// TestTypeSpec_FloatParamGuard_DivContext verifies that a parameter used in
+// division (which always returns float) gets a float guard when the other
+// operand is already typed.
+func TestTypeSpec_FloatParamGuard_DivContext(t *testing.T) {
+	proto := compile(t, `
+func f(dt) {
+	return 1.0 / dt
+}
+`)
+	fn := BuildGraph(proto)
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+	t.Logf("After:\n%s", Print(result))
+
+	hasFloatGuard := false
+	hasDivFloat := false
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpGuardType && Type(instr.Aux) == TypeFloat {
+				hasFloatGuard = true
+			}
+			if instr.Op == OpDivFloat {
+				hasDivFloat = true
+			}
+		}
+	}
+	if !hasFloatGuard {
+		t.Error("expected GuardType(float) for parameter dt in division context")
+	}
+	if !hasDivFloat {
+		t.Error("expected DivFloat after float guard insertion")
+	}
+}
+
+// TestTypeSpec_FloatParamGuard_NoDoubleGuard verifies that a parameter already
+// guarded as int (from Phase 0) does not get a second float guard.
+func TestTypeSpec_FloatParamGuard_NoDoubleGuard(t *testing.T) {
+	proto := compile(t, `
+func f(n) {
+	return n - 1
+}
+`)
+	fn := BuildGraph(proto)
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+
+	guardCount := 0
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpGuardType {
+				guardCount++
+			}
+		}
+	}
+	if guardCount != 1 {
+		t.Errorf("expected exactly 1 guard (int), got %d", guardCount)
+	}
+}
+
 // TestTypeSpec_ValidatorPass verifies that the output passes validation.
 func TestTypeSpec_ValidatorPass(t *testing.T) {
 	fn := &Function{

@@ -29,20 +29,16 @@ func TypeSpecializePass(fn *Function) (*Function, error) {
 	// Phase 0: Insert speculative type guards on untyped parameters.
 	ts.insertParamGuards(fn)
 
-	// Phase 1: Forward type propagation (may need a fixed point for phis).
-	changed := true
-	for pass := 0; changed && pass < 10; pass++ {
-		changed = false
-		for _, block := range fn.Blocks {
-			for _, instr := range block.Instrs {
-				newType := ts.inferType(instr)
-				if newType != TypeUnknown && ts.types[instr.ID] != newType {
-					ts.types[instr.ID] = newType
-					changed = true
-				}
-			}
-		}
-	}
+	// Phase 1a: Forward type propagation (may need a fixed point for phis).
+	ts.runTypePropagation(fn)
+
+	// Phase 1b: Insert float param guards for parameters that Phase 0
+	// didn't guard (no ConstInt context) but that Phase 1a reveals are
+	// used in float arithmetic contexts.
+	ts.insertFloatParamGuards(fn)
+
+	// Phase 1c: Re-run propagation to cascade the new float types.
+	ts.runTypePropagation(fn)
 
 	// Phase 2: Replace generic ops with specialized variants.
 	// Also update phi/instr Type fields from inferred types.
@@ -62,6 +58,23 @@ func TypeSpecializePass(fn *Function) (*Function, error) {
 // typeSpecializer holds the inferred type map and does specialization.
 type typeSpecializer struct {
 	types map[int]Type // value ID -> inferred Type
+}
+
+// runTypePropagation performs forward type propagation until fixed point.
+func (ts *typeSpecializer) runTypePropagation(fn *Function) {
+	changed := true
+	for pass := 0; changed && pass < 10; pass++ {
+		changed = false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				newType := ts.inferType(instr)
+				if newType != TypeUnknown && ts.types[instr.ID] != newType {
+					ts.types[instr.ID] = newType
+					changed = true
+				}
+			}
+		}
+	}
 }
 
 // inferType returns the inferred type for an instruction based on its op and
@@ -284,6 +297,110 @@ func (ts *typeSpecializer) insertParamGuards(fn *Function) {
 		// (except in the guard itself).
 		guardVal := guard.Value()
 		replaceValueUses(fn, p.instr.ID, guardVal, guardID)
+	}
+}
+
+// insertFloatParamGuards inserts speculative GuardType(float) instructions for
+// LoadSlot parameters that Phase 0 did not guard (no ConstInt context) but that
+// Phase 1a's type propagation reveals are used in float arithmetic contexts.
+//
+// The heuristic: if a still-unguarded param is used in a numeric op where the
+// OTHER operand has inferred TypeFloat, the param is likely float.
+func (ts *typeSpecializer) insertFloatParamGuards(fn *Function) {
+	type paramInfo struct {
+		instr *Instr
+		block *Block
+		index int
+	}
+
+	// Build set of already-guarded param IDs (from Phase 0 int guards).
+	guardedParams := make(map[int]bool)
+	entry := fn.Entry
+	for _, instr := range entry.Instrs {
+		if instr.Op == OpGuardType && len(instr.Args) > 0 {
+			guardedParams[instr.Args[0].ID] = true
+		}
+	}
+
+	// Find LoadSlot params in entry block that are still unguarded.
+	var params []paramInfo
+	for i, instr := range entry.Instrs {
+		if instr.Op == OpLoadSlot &&
+			(instr.Type == TypeAny || instr.Type == TypeUnknown) &&
+			!guardedParams[instr.ID] {
+			params = append(params, paramInfo{instr: instr, block: entry, index: i})
+		}
+	}
+	if len(params) == 0 {
+		return
+	}
+
+	// Build param ID set.
+	paramIDs := make(map[int]bool)
+	for _, p := range params {
+		paramIDs[p.instr.ID] = true
+	}
+
+	// Detect float-like params: used in numeric op where the other operand
+	// has inferred TypeFloat.
+	floatLikeParams := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !isNumericOp(instr.Op) {
+				continue
+			}
+			if len(instr.Args) < 2 {
+				continue
+			}
+			for i := 0; i < 2; i++ {
+				arg := instr.Args[i]
+				other := instr.Args[1-i]
+				if arg == nil || other == nil {
+					continue
+				}
+				if !paramIDs[arg.ID] {
+					continue
+				}
+				otherType := ts.argType(other)
+				if otherType == TypeFloat {
+					floatLikeParams[arg.ID] = true
+				}
+			}
+		}
+	}
+
+	// Insert guards in reverse order so indices don't shift.
+	for i := len(params) - 1; i >= 0; i-- {
+		p := params[i]
+		if !floatLikeParams[p.instr.ID] {
+			continue
+		}
+
+		guardID := fn.newValueID()
+		guard := &Instr{
+			ID:    guardID,
+			Op:    OpGuardType,
+			Type:  TypeFloat,
+			Args:  []*Value{p.instr.Value()},
+			Aux:   int64(TypeFloat),
+			Block: p.block,
+		}
+
+		// Insert guard right after the LoadSlot.
+		instrs := p.block.Instrs
+		pos := p.index + 1
+		newInstrs := make([]*Instr, 0, len(instrs)+1)
+		newInstrs = append(newInstrs, instrs[:pos]...)
+		newInstrs = append(newInstrs, guard)
+		newInstrs = append(newInstrs, instrs[pos:]...)
+		p.block.Instrs = newInstrs
+
+		// Replace all uses.
+		guardVal := guard.Value()
+		replaceValueUses(fn, p.instr.ID, guardVal, guardID)
+
+		// Register the guard's type so re-propagation picks it up.
+		ts.types[guardID] = TypeFloat
 	}
 }
 
