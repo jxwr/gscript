@@ -342,8 +342,10 @@ func (ts *typeSpecializer) insertFloatParamGuards(fn *Function) {
 	}
 
 	// Detect float-like params: used in numeric op where the other operand
-	// has inferred TypeFloat.
+	// has inferred TypeFloat. Also track int-like usage to avoid false positives
+	// (e.g., n used in both "1.0 * i / n" and "i <= n").
 	floatLikeParams := make(map[int]bool)
+	intLikeParams := make(map[int]bool)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if !isNumericOp(instr.Op) {
@@ -365,8 +367,17 @@ func (ts *typeSpecializer) insertFloatParamGuards(fn *Function) {
 				if otherType == TypeFloat {
 					floatLikeParams[arg.ID] = true
 				}
+				if otherType == TypeInt {
+					intLikeParams[arg.ID] = true
+				}
 			}
 		}
+	}
+
+	// If a param is used in both float AND int contexts, it's likely an int
+	// that gets auto-converted in float expressions. Don't speculate float.
+	for id := range intLikeParams {
+		delete(floatLikeParams, id)
 	}
 
 	// Insert guards in reverse order so indices don't shift.

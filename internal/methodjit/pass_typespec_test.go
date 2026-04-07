@@ -586,6 +586,49 @@ func f(n) {
 	}
 }
 
+// TestTypeSpec_FloatParamGuard_MixedIntFloat verifies that a parameter used
+// in both int and float contexts does NOT get a float guard (e.g., n in
+// "for i := 1; i <= n; i++ { ... 1.0 * i / n ... }").
+func TestTypeSpec_FloatParamGuard_MixedIntFloat(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "mixed"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	// v0 = LoadSlot (param n, unguarded)
+	param := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Aux: 0, Block: b}
+	// v1 = ConstInt 1 (for i <= n)
+	ci := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	// v2 = Le n, ci — int context
+	le := &Instr{ID: fn.newValueID(), Op: OpLe, Type: TypeBool,
+		Args: []*Value{ci.Value(), param.Value()}, Block: b}
+	// v3 = ConstFloat 1.0
+	cf := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Aux: 0, Block: b}
+	// v4 = Div cf, param — float context
+	div := &Instr{ID: fn.newValueID(), Op: OpDiv, Type: TypeAny,
+		Args: []*Value{cf.Value(), param.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{div.Value()}, Block: b}
+	_ = le
+
+	b.Instrs = []*Instr{param, ci, le, cf, div, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+
+	// Should NOT have a GuardType(float) for param since it's used in both int and float contexts.
+	// Phase 0 may insert a GuardType(int) which is fine — we only check for float guards.
+	for _, instr := range result.Entry.Instrs {
+		if instr.Op == OpGuardType && instr.Type == TypeFloat && instr.Args[0].ID == param.ID {
+			t.Errorf("unexpected GuardType(float) on mixed int/float param; should not speculate float")
+		}
+	}
+}
+
 // TestTypeSpec_ValidatorPass verifies that the output passes validation.
 func TestTypeSpec_ValidatorPass(t *testing.T) {
 	fn := &Function{
