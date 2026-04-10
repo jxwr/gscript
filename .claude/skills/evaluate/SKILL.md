@@ -71,3 +71,8 @@ You have NO knowledge of what the developer intended. You only see the diff.
 2. **You only look at the diff and overview.md.** Do not read other conversation context.
 3. **WARN is acceptable; FAIL blocks the pipeline.** Use FAIL only for clear violations.
 4. **Be specific.** "C2 FAIL: NewFunc emitGetGlobalNative in emit_call_exit.go has no test" — not "missing tests."
+5. **Hard budget cap (added R23 review)**: ≤50 tool calls, ≤3M tokens per invocation. R23 Evaluator used 131 calls / 9.6M tokens on Sonnet for a 4-commit diff — ~2× over budget. If the diff is too large to review under cap:
+   - Return verdict **FAIL — "scope too large"** and list the separable concerns
+   - Suggest splitting into per-concern reviews in the Issues Found section
+   - Do NOT attempt to review everything in one pass
+6. **Batch-read the diff once.** Single `git diff HEAD` call at the top. Do not re-read files individually unless a specific concern (e.g., file size verification) requires it.

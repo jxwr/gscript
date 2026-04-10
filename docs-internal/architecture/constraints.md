@@ -1,22 +1,25 @@
 # Architecture Constraints & Notes
 
 > **ANALYZE reads this every round.** Updated by Architecture Audit (every 2 rounds).
-> Last full audit: Round 21 (2026-04-07)
+> Last full audit: Round 24 (2026-04-10)
 
 ## Tier Constraints
 
 - **Tier 2 is net-negative for recursive functions** (Round 11): SSA construction + type guards + BLR ~15-20ns overhead > inlining gains. Recursive speedup needs Tier 1 BLR specialization or native recursive calling convention, NOT Tier 2 promotion.
+- **Tier 1 has no forward type tracking** (Round 24 audit): every arith/compare template re-runs full int/float tag dispatch from scratch. `emitBaselineArith` is ~22 insns (10 dispatch + 12 int-path), `emitBaselineEQ` is ~35 insns (polymorphic compare). There is no intra-function SSA-like tracking of "slot X is known int," so even in obviously-int functions (ack, fib, mutual_recursion, fibonacci_iterative) every op pays the dispatch toll. This is the #1 Tier 1 bottleneck for int-arith-heavy code.
+- **Tier 1 slot-file memory round-trip** (Round 24 diagnostic on ackermann): ~40% of hot-path instructions are LDR/STR against the NaN-boxed VM register file. Slots 0-1 are the only ones pinned (X22=R(0), X21=self closure). Pinning more hot params (R(1)..R(3)) into X20/X23/X28 is untapped.
 - **8-FPR pool is a hard limit** (D4-D11): carried invariants + body temps share 8 registers. >5 carried invariants squeezes body temp space. Round 9's LICM-carry reserves up to 5, leaving 3 for body.
 - **4-GPR pool** (X20-X23): int counter carry + loop bounds use 2-3, leaving 1-2 for body temps.
 
 ## Module Boundaries
 
 - **`emit_table.go` SPLIT** (Round 19): Now `emit_table_field.go` (341 lines) + `emit_table_array.go` (692 lines). ✅ RESOLVED.
-- **`emit_dispatch.go` 971 lines** ⚠ CRITICAL: 29 lines from limit. Grew 2 lines since R19. Must split before any changes (extract `emit_branch.go` for fused compare+branch logic).
-- **`graph_builder.go` 955 lines** ⚠ CRITICAL: 45 lines from limit. Grew 16 lines since R19. Must split before any changes (extract `graph_builder_feedback.go` for feedback/guard insertion).
-- **`tier1_table.go` 829 lines** ⚠ NEW: crossed 800-line threshold. Grew from ~774 lines (R14 additions: float/bool table fast paths + feedback stubs).
-- **`regalloc.go` ↔ `emit_loop.go` coupling**: `carried` map concept spans both files. `regalloc.go` builds the map, `emit_loop.go` uses it for loop-exit boxing. Changes to one often require changes to the other.
-- **27 source files lack test files** (up from 24 at Round 19 audit). Mostly Tier 1 handlers, emit files, and new emit_call_exit.go.
+- **`emit_dispatch.go` 971 lines** ⚠ CRITICAL: 29 lines from limit. Unchanged since R21 (R22-R23 did not touch). Must still split before any dispatch-touching change — extract `emit_branch.go` for fused compare+branch.
+- **`graph_builder.go` 955 lines** ⚠ CRITICAL: 45 lines from limit. Unchanged since R21 (R22-R23 did not touch — float param guard landed in a helper). Must split before next change — extract `graph_builder_feedback.go`.
+- **`tier1_table.go` 829 lines** ⚠ Unchanged since R21.
+- **`tier1_arith.go` 728 lines** — not at limit but already >700. Round 24's int-specialization will add templates here. Watch this file for growth past 800 next round.
+- **`regalloc.go` ↔ `emit_loop.go` coupling**: `carried` map concept spans both files. Unchanged — invariant-carry infra from R9 is stable.
+- **27 source files lack test files** (same count as Round 21 — no new test files added for `emit_call_exit.go`, `loops.go`, Tier 1 handlers). Test/source ratio is 88% (up from 86% at Round 19) — total lines grew faster in tests than source.
 
 ## Pass Pipeline Order
 

@@ -1,6 +1,6 @@
 # Table Access Specialization in Production JIT Compilers
 
-> Research date: 2026-04-06 | Sources: V8 (TurboFan+Turboshaft), LuaJIT 2
+> Research date: 2026-04-06 | Category: field_access | Sources: V8 (TurboFan+Turboshaft), LuaJIT 2
 
 ## 1. V8 TurboFan: Element Kind Specialization
 

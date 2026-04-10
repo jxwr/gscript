@@ -31,6 +31,13 @@
 - Fix: consider skip-cache path for functions with no SetGlobal in module scope
 - Category: `tier2_call_overhead`
 
+### TestDeepRecursionRegression: goroutine deadlock/hang (pre-existing)
+- `testing.(*T).Run` goroutine hangs in `chanrecv` — test never completes
+- Reproduces on baseline (test_deep_recursion_test.go:132)
+- Likely: JIT-compiled deep recursion hits a blocking codepath (coroutine resume channel?)
+- Run with `-run TestDeepRecursion -timeout 10s` to avoid blocking CI
+- Category: `tier2_recursion`
+
 ### TestQuicksortSmall: SIGBUS crash in JIT-generated code (pre-existing)
 - `callJIT` hits SIGBUS executing generated ARM64 code for quicksort
 - Reproduces consistently at baseline commit (before Round 22 changes)

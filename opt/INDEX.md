@@ -5,6 +5,7 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 
 | # | Round ID | Date | Category | Target | Outcome | Key Commit | 1-line Lesson |
 |---|----------|------|----------|--------|---------|------------|----------------|
+| 24 | 2026-04-10-tier1-int-spec | 2026-04-10 | tier1_dispatch | Tier 1 int-specialized arith/compare templates + forward KnownInt tracking | improved | 19f148a | Guard overhead on small bodies can exceed body saving; EQ direct-compare on NaN-boxed ints is correct (same value = same bits) |
 | 23 | 2026-04-07-guard-hoist-shape-prop | 2026-04-07 | tier2_float_loop | Guard hoisting in LICM + cross-block shape verification propagation | no_change | df2e2ec | M4 superscalar hides removed guard instructions (predicted branches, ~0 IPC cost); instruction-count reduction ≠ wall-time on branch-heavy code |
 | 22 | 2026-04-07-float-param-guard | 2026-04-07 | tier2_float_loop | Float param guards + GuardType CSE + LICM whitelist | improved | 7a044e1 | Speculative float guards on mixed int/float params cause 100-170% regressions — must exclude params also used in int contexts |
 | 21 | 2026-04-07-nbody-typing-diagnostic | 2026-04-07 | tier2_float_loop | Production typing diagnostic + R(0) pin X22 + closure cache X21 | improved | 7e838b6 | R(0) pin to callee-saved register is the broadest single optimization: 18/22 benchmarks -8-23% from eliminating slot-0 memory loads |
@@ -42,5 +43,6 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 - `call_ic` — inline cache improvements for CALL
 - `regalloc` — register spilling / phi conflicts / live range
 - `missing_intrinsic` — math.sqrt-style fast paths
+- `tier1_dispatch` — Tier 1 per-op polymorphic type dispatch overhead (int/float tag checks in every arith/compare template). Added R24 after ackermann diagnostic revealed 13% of hot path is type dispatch, not GetGlobal gen check (2.8%).
 - `arch_refactor` — multi-round architectural rework (new pass, new IR op, new tier)
 - `other` — use sparingly; prefer adding a new category

@@ -92,6 +92,13 @@
 <h2>Posts</h2>
 
 <div class="post">
+  <span class="date">2026-04-11</span>
+  <br>
+  <a href="34-the-real-ackermann-bottleneck">The Real Ackermann Bottleneck</a>
+  <p>The known-issues file said ackermann's bottleneck was GetGlobal gen-check overhead. The disassembly said it was 2.8% of the hot path. The actual bottleneck &mdash; EQ/SUB type dispatch, 13% of every call &mdash; required a forward KnownInt analysis pass and int-specialized templates. ackermann &minus;5.2%, fib &minus;4.3%. mutual_recursion regressed: guard overhead exceeds body saving on small bodies.</p>
+</div>
+
+<div class="post">
   <span class="date">2026-04-07</span>
   <br>
   <a href="33-four-guards-fourteen-times">Four Guards, Fourteen Times</a>

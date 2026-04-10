@@ -4,13 +4,16 @@ You are in the IMPLEMENT phase of the GScript optimization loop.
 
 ## Context
 
-Read the plan (one call):
+Read the plan and codebase index (one call):
 ```bash
-cat opt/current_plan.md
+cat opt/current_plan.md && echo "---" && cat opt/knowledge/codebase-index.md
 ```
+
+For per-file purpose + key functions, consult `opt/knowledge/passes.md` (read on demand, not upfront).
 
 CLAUDE.md is already loaded as project instructions — do NOT read it again.
 Diagnostic docs (`docs-internal/diagnostics/`) — only read if a test fails and you need debugging guidance.
+Baseline test snapshot (pre-existing failures): `opt/baseline_test_snapshot.txt` — read before spawning Coders so failures attributed correctly.
 
 ## Pre-flight: check for injected tasks
 
@@ -61,6 +64,7 @@ Execute tasks from `current_plan.md` in order (including any injected tasks). Fo
 - Budget exceeded → report to user, STOP
 - Failure signal triggered → report to user, STOP
 - Correctness regression (tests fail) → fix first, then continue
+- **Plan premise contradicted by code** (R24): Coder observes file/function/bottleneck ≠ plan's claim → STOP phase, write `opt/premise_error.md` (claim vs reality vs suspected tool bug), hand to VERIFY as `data-premise-error`. No silent adapt, no in-phase replan.
 
 ## Rules
 - TDD: write failing test FIRST, then implementation

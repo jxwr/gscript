@@ -114,9 +114,18 @@ run_phase() {
         exit 1
     fi
 
+    # Per-phase model selection.
+    # ANALYZE uses Opus (strategic: target selection, plan writing).
+    # REVIEW/IMPLEMENT/VERIFY use Sonnet (coordination + mechanical work).
+    # Coder sub-agents (spawned inside IMPLEMENT) stay on Opus per implement.md.
+    case $phase in
+        analyze)  PHASE_MODEL="claude-opus-4-6" ;;
+        *)        PHASE_MODEL="claude-sonnet-4-6" ;;
+    esac
+
     echo ""
     echo "================================================"
-    echo "  Phase: $phase"
+    echo "  Phase: $phase  [model: $PHASE_MODEL]"
     echo "  Time:  $(date '+%H:%M:%S')"
     echo "================================================"
     echo ""
@@ -129,6 +138,7 @@ run_phase() {
     start_monitor "$phase"
 
     claude -p "$(cat "$prompt_file")" \
+        --model "$PHASE_MODEL" \
         --dangerously-skip-permissions \
         --allowedTools "Bash,Read,Write,Edit,Glob,Grep,WebSearch,Agent"
 
@@ -192,6 +202,18 @@ run_cycle() {
         case $phase in
             implement)
                 check_output "analyze" "opt/current_plan.md" || return 1
+                # Pre-flight: clear stale stash entries and snapshot baseline test state
+                if ! $DRY_RUN; then
+                    stash_count=$(git stash list | wc -l | tr -d ' ')
+                    if [ "$stash_count" -gt 0 ]; then
+                        echo "  [pre-flight] Clearing $stash_count stale stash entries..."
+                        git stash clear
+                    fi
+                    # Snapshot which tests fail on HEAD (so Coder knows what's pre-existing)
+                    echo "  [pre-flight] Recording baseline test failures..."
+                    go test ./internal/methodjit/... -short -count=1 -timeout 60s 2>&1 | grep -E "^(FAIL|PASS|---)" | head -20 > opt/baseline_test_snapshot.txt || true
+                    echo "  [pre-flight] Baseline snapshot: opt/baseline_test_snapshot.txt"
+                fi
                 echo ""
                 echo "=== ANALYZE+PLAN → IMPLEMENT ==="
                 echo "Plan: opt/current_plan.md"

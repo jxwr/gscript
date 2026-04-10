@@ -13,11 +13,13 @@ bash scripts/analyze_dump.sh
 ```
 
 This dumps in one shot: state.json, INDEX.md, overview.md, constraints.md, lessons-learned,
-known-issues, latest.json, baseline.json, all initiatives, all knowledge base files.
+known-issues, latest.json, baseline.json, active initiatives, and KB files matching last round's category.
+
+Note: large KB files from other categories are skipped to save tokens. The dump footer lists what was skipped. If your selected target requires a skipped KB file, fetch it with `Read opt/knowledge/<file>.md`.
 
 CLAUDE.md is already loaded as project instructions (system prompt) — do NOT read it again.
 
-**Only use Read for additional files** discovered during Steps 2-4 (source code, diagnostics).
+**Only use Read for additional files** discovered during Steps 2-4 (source code, diagnostics) or skipped KB files.
 
 ---
 
@@ -71,12 +73,17 @@ Just read the existing documents:
 - **Ceiling Rule**: `category_failures >= 2` → FORBIDDEN
 - **Initiative Rule**: active initiative with non-empty `Next Step` → strong candidate
 - **INDEX pattern check**: don't repeat failed patterns from last 5 rounds
+- **Constraints are cost, not block** (R24): file-size/style flags never filter out targets. High-ROI target in an oversized file → plan adds split Task 0. Hard blocks: `category_failures ≥ 2`, correctness bugs, broken subsystems. Nothing else.
 
 ### Task
 1. Classify ALL benchmark gaps into canonical categories.
 2. Per category: affected benchmarks + total wall-time gap.
 3. **Cross-check with constraints.md**: is the proposed target blocked by a known architectural ceiling?
 4. Pick target by: ceiling rule → constraints check → initiative rule → ROI.
+5. **Initiative exhaustion check** (added R23 review): if the active initiative has ≥2 `no_change` outcomes in its last 4 rounds, you MUST either:
+   - (a) propose closing the initiative this round, writing a retrospective sub-section in the analyze report under `## Initiative Retrospective`, OR
+   - (b) justify continuing with a concrete, data-backed reason (not "we think the next phase will work"). Include the justification under `## Initiative Retrospective` in the analyze report.
+   Rationale: `tier2_float_loop` delivered 4 of 5 rounds with only 2 improved (R20–R23). The harness must detect and escalate exhaustion patterns instead of grinding silently.
 
 ---
 
@@ -145,7 +152,7 @@ Use the architecture overview to locate them. For each file:
 
 ## Step 4 — Micro Diagnostics (instruction layer)
 
-Spawn a diagnostic sub-agent to get **actual data** from the target benchmark:
+Spawn a diagnostic sub-agent (**Sonnet model** — needs ARM64 + JIT domain understanding for instruction classification) to get **actual data** from the target benchmark:
 
 1. **IR dump**: `Diagnose()` from `internal/methodjit/diagnose.go`
 2. **ARM64 disasm** — use existing tools, **NOT python manual decoding**:
@@ -162,6 +169,18 @@ Technique eliminates X → −P% estimated (halved for ARM64 superscalar)."
 pprof is useless for JIT code. `otool -tv` / `objdump` is authoritative.
 
 **Do NOT spawn duplicate diagnostic agents.** One agent per target. If you need IR + disasm, the same agent does both.
+
+### Diagnostic cross-check (mandatory, R24)
+
+Before publishing any number, the diagnostic sub-agent MUST verify:
+1. `.bin` mtime matches current HEAD
+2. bytes are from the intended tier (`Diagnose()` or tier marker)
+3. disasm function = target function (first 2 insns + symbol)
+4. instruction class counts sum to total ±2%
+5. claimed bottleneck share × wall-time ≈ predicted speedup (within 2×)
+6. key numbers reproducible on re-run (±5%)
+
+Any failure → STOP, write `opt/diagnostic_failure.md` (failed check + root cause + fix), re-measure. If unrecoverable in ≤15 calls → `status: diagnostic-blocked`, stop the round. Forbidden: "the number was off but the conclusion still holds."
 
 ---
 
@@ -180,6 +199,19 @@ Write `opt/current_plan.md` using `opt/plan_template.md`. Fill ALL sections:
 - **Expected Effect**: quantified, halved for ARM64 superscalar
 - **Failure Signals**: specific conditions
 - **Task Breakdown**: each task = one Coder sub-agent, with file + test
+  - **Surgical precision required** (R24): each task spec MUST include:
+    - Exact file path + function name + line numbers to modify
+    - The data structure fields/types being added or changed
+    - The algorithm in pseudocode (not prose) — 5-10 lines is enough
+    - Which existing test to extend, or exact test function to write
+    - What NOT to touch (explicit scope boundary)
+    - Reason: vague specs cause Coder to explore → repeated read-modify-test loops → 3-5× token cost
+  - **Conceptual complexity cap** (added R23 review): any task meeting ANY of these must be split into two sub-tasks (a diagnostic task that writes findings to `opt/`, then an implementation task that consumes them):
+    - requires reading >2 pass files
+    - couples regalloc.go with emit_*.go
+    - implements cross-block dataflow (shape/type/value propagation across basic blocks)
+    - Coder is expected to exceed 80 tool calls
+  - File/line caps (R22 review): ≤3 files, ≤200 lines changed per task. Still applies.
 - **Budget**: max commits, max files, abort condition
 
 **MANDATORY pre-plan checklist** (round 18 failed this — user intervened twice):

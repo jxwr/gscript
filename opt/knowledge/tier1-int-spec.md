@@ -1,6 +1,6 @@
 # Tier 1 Integer Specialization — Forward KnownInt Tracking
 
-> Created: 2026-04-10 (Round 24, `2026-04-10-tier1-int-spec`)
+> Created: 2026-04-10 | Category: tier1_dispatch | Round 24, `2026-04-10-tier1-int-spec`)
 > Status: active design doc
 > Owner: Tier 1 baseline JIT
 

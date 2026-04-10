@@ -1,127 +1,125 @@
-# Analyze Report — Round 22
-
-> Date: 2026-04-07
-> Cycle ID: 2026-04-07-float-param-guard
+# Analyze Report — Round 24 (2026-04-10)
 
 ## Architecture Audit
 
-Quick read (rounds_since_arch_audit = 1). No new issues beyond existing flags.
+**Full audit performed** (rounds_since_arch_audit=3 at entry, ≥2 threshold).
 
-arch_check.sh flags:
-- ⚠ emit_dispatch.go: 971 lines (29 from limit)
-- ⚠ graph_builder.go: 955 lines (45 from limit)
-- ⚠ tier1_table.go: 829 lines (29 over 800 threshold)
-- 27 source files lack test files (unchanged from R21)
+Findings (deltas from Round 21 audit):
+- **File sizes unchanged** for the three flagged files: `emit_dispatch.go` 971, `graph_builder.go` 955, `tier1_table.go` 829. R22–R23 did not touch them. Still CRITICAL for any plan that touches dispatch, graph builder, or Tier 1 table paths.
+- **New watchlist entry**: `tier1_arith.go` at 728 lines. Round 24's plan adds int-spec templates here — will push toward 800. Flagged for split decision in R26 audit if it crosses 800.
+- **Pipeline unchanged**: `BuildGraph → Validate → TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → LoadElim → DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit`. No new passes added in R22–R23.
+- **Regalloc carry infrastructure is stable**: LICM-invariant FPR carry (R9), loop-bound GPR carry, and tight-body phi pre-allocation (R7) coexist cleanly. No churn in `regalloc.go` in R22–R23.
+- **New constraint documented**: Tier 1 has no forward type tracking. Every `emitBaselineArith` pays ~10 insns of dispatch, every `emitBaselineEQ` pays ~35 insns. This surfaced from the R24 ackermann diagnostic and had never been written down. Added to constraints.md under Tier Constraints.
+- **Tech debt markers**: 1 (unchanged).
+- **Test coverage**: 88% (up from 86% at R19). 27 files without test files (same as R21).
 
-**This round's plan does NOT touch any flagged files.** All changes in pass_typespec.go
-(402 lines), pass_load_elim.go (95 lines), pass_licm.go (562 lines).
+Counter: reset `rounds_since_arch_audit` → 0.
 
 ## Gap Classification
 
 | Category | Benchmarks | Total Gap vs LuaJIT | Blocked? |
 |----------|------------|---------------------|----------|
-| tier2_float_loop | nbody (0.227s), matmul (0.098s), spectral (0.039s), fannkuch (0.026s), mandelbrot (0.006s), sum_primes (0.002s) | 0.398s | No (failures=0) |
-| field_access | sieve (0.079s), sort (0.030s) | 0.109s | No (failures=1) |
-| gofunction_overhead | method_dispatch (0.100s) | 0.100s | No |
-| recursive_call | fib (0.116s), ackermann (0.589s), mutual_recursion (0.232s) | 0.937s | **BLOCKED (ceiling=2)** |
-| allocation_heavy | binary_trees, object_creation | N/A (no LuaJIT data) | No |
+| `recursive_call` | fib (0.116s), ackermann (0.589s), mutual_recursion (0.219s), fib_recursive (n/a), method_dispatch (0.096s) | **~1.02s** | **YES** (ceiling=2, R4+R11) |
+| `tier2_float_loop` | nbody (0.212s), matmul (0.097s), spectral_norm (0.037s), mandelbrot (0.011s), math_intensive (n/a) | ~0.36s | 1 failure (R23) — 1 away from ceiling |
+| `field_access` | sieve (0.074s), table_array (n/a), fannkuch (0.028s) | ~0.10s | 1 failure (R19) |
+| `allocation_heavy` | binary_trees (JIT 2.25s > VM 1.58s ⚠ regression), object_creation (JIT 0.76s > VM 0.64s ⚠ regression) | wall-time ~+0.8s regression | 0 failures |
+| `gofunction_overhead` | method_dispatch (0.10s), coroutine_bench (n/a) | ~0.10s | 0 failures |
+| `tier1_dispatch` (**NEW**) | ack, fib, mutual_recursion, fibonacci_iterative, sum_primes, sieve (int-counter loops) | affects all int-heavy hot paths | 0 failures |
 
 ## Blocked Categories
-- `recursive_call` (ceiling=2): needs native recursive BLR or Tier 1 specialization
+
+- `recursive_call` (ceiling reached R4+R11)
 
 ## Active Initiatives
-- `tier2-float-loops.md` (paused): remaining phases 6/9/10 + this round adds Phase 12
-- `recursive-tier2-unlock.md` (paused, BLOCKED): waiting for net-positive Tier 2 recursion
+
+- `tier2-float-loops` (paused this round — see Initiative Retrospective)
+- `recursive-tier2-unlock` (paused — blocked by recursive_call ceiling, Phase 6 gated on Tier 1 prerequisites)
+
+## Initiative Retrospective (tier2-float-loops)
+
+**Rule trigger check**: last 4 rounds on this initiative — R20 improved, R21 improved, R22 improved, R23 no_change. That's **1 no_change in 4 rounds**, so the "≥2 no_change" exhaustion rule does NOT formally trigger.
+
+**However**, the R23 review noted the same pattern with stronger framing: "tier2_float_loop has delivered 12 phases of productive work and is approaching diminishing returns. Round 23's `no_change` on 'remove predicted branches' is a signal that the M4 superscalar floor has been reached at the IPC level." R23 recommended a pivot the next time the user engaged at strategy level; the user gave no strategic guidance, so the harness is deciding.
+
+**Decision**: **pause, do not close**. Reasons:
+1. The initiative has NOT delivered two consecutive no_changes, so the hard rule does not require closing.
+2. Long-term phases (unboxed float SSA; loop unrolling) are still valid but require multi-round architectural work — not a single-round target.
+3. Near-term items in "Next Step" (Phase 6 range analysis for float loops) remain on the board and can be resumed later.
+4. `category_failures[tier2_float_loop]=1` — one more no_change hits the ceiling. Continuing to grind on the same category is high-risk.
+
+**What we do instead**: pivot to a **different category** (`tier1_dispatch`, new) that (a) has concrete diagnostic motivation from R24's ack probe, (b) addresses multiple benchmarks (ack, fib, mutual_recursion, fibonacci_iterative, sum_primes), and (c) is off the float-loop treadmill.
 
 ## Selected Target
 
-- **Category**: tier2_float_loop
-- **Initiative**: opt/initiatives/tier2-float-loops.md (Phase 12: Parameter Type Specialization)
-- **Reason**: Largest non-blocked gap (0.398s total). Diagnostic revealed concrete, fixable
-  root cause: 7 generic ops in nbody from untyped `dt` parameter. Additionally, GuardType CSE
-  and LICM whitelist gaps identified as secondary wins.
-- **Benchmarks**: nbody (primary), matmul/spectral/broad (secondary)
+- **Category**: `tier1_dispatch` (**new canonical category** — added to the taxonomy this round)
+- **Initiative**: standalone (may spawn `tier1-int-specialization` initiative if this round improves)
+- **Reason**: R23's pivot signal + R24 diagnostic shows Tier 1 type dispatch is 40–70% of ack's hot-path overhead, not GetGlobal gen check (which is 2.8%). Fresh category with no ceiling.
+- **Benchmarks (primary)**: ackermann (0.595s → target 0.52–0.56s), fib (0.140s → 0.125–0.135s), mutual_recursion (0.224s → 0.19–0.21s). Secondary: fibonacci_iterative (0.277s), sum_primes (0.004s).
 
 ## Architectural Insight
 
-The remaining nbody gap (7.7x vs LuaJIT) is dominated by **per-access validation overhead**.
-Every GetField/GetTable in the inner j-loop re-validates table type, shape, and kind — all
-loop-invariant properties. The Method JIT's block-local validation (shapeVerified, tableVerified)
-helps within a block but is cleared at loop back-edges.
+The design decision that causes this gap: **Tier 1 is a stateless 1:1 bytecode→ARM64 template compiler with no inter-op type information**. V8/JSC Baseline (Sparkplug / LLInt) have the same model but use **handler-local ICs** with runtime feedback, or fall through to a higher tier. GScript already has Tier 2 for feedback-specialized IR, but Tier 2 is architecturally wrong for recursive integer code (R11: Tier 2 BLR is 15–20ns vs Tier 1's 10ns). That leaves ack and its cousins running the polymorphic dispatch path *forever*.
 
-However, the IMMEDIATE bottleneck is simpler: function parameters have type `:any` because
-there's no parameter type feedback. TypeSpecialize Phase 0 only detects int-like params
-(used with ConstInt). Float-like params (used with float operands) are not detected. This
-blocks specialization for ALL arithmetic involving parameters — a design gap, not a per-benchmark
-hack.
+The fix is to push a **sliver of type specialization into Tier 1 itself** — a simple forward-tracking pass that marks slots as KnownInt after a function-entry guard, and switches arithmetic/compare templates to int-only emission when the analysis is satisfied. This is *not* Tier 1.5 or a new tier; it's an in-place template choice driven by a trivial bytecode walk. It occupies exactly the semantic space between "generic Tier 1 template" and "fully-specialized Tier 2 SSA," where recursive int code belongs.
 
-The architectural fix (cross-block shape propagation, IR-level guard splitting) remains the
-long-term path to closing the 7.7x gap. This round addresses the typing pipeline gap first.
+V8 analogue: Sparkplug's `BaselineAssembler` stays generic, but the Ignition→Sparkplug tier transition doesn't do this because V8 has Maglev / TurboFan for that case. GScript can't lean on higher tiers for recursion, so it has to put specialization earlier in the pipeline.
 
 ## Prior Art Research
 
 ### Web Search Findings
-Not needed — knowledge base already has comprehensive research on parameter typing from V8
-(CheckFloat64, SpeculativeNumberOps), LuaJIT (recording-time type capture), and SpiderMonkey
-(CacheIR → GuardTo(Double)).
+
+Research sub-agent delivered findings in `opt/knowledge/global-cache-stable-opt.md` — but the target pivoted after the ackermann diagnostic (GetGlobal is 2.8% of the body, not the bottleneck). That knowledge file is still useful if we revisit global-cache work later, but is not the driver this round.
 
 ### Reference Source Findings
-V8 TurboFan: `JSCallReducer` inserts type checks for parameters based on call-site feedback.
-GScript lacks call-site feedback but can use use-site inference as workaround.
+
+Not pursued this round — V8 Sparkplug does not do what we're proposing (it relies on higher tiers), so the cross-engine comparison wouldn't be productive for a fast round. If this approach improves benchmarks, R25 can mine LuaJIT's interpreter specialization patterns.
 
 ### Knowledge Base Update
-No new knowledge files needed. Existing `feedback-typed-loads.md` and
-`cross-block-load-elim.md` already cover the relevant techniques.
+
+Will add `opt/knowledge/tier1-int-spec.md` in IMPLEMENT phase documenting the emit pattern and the KnownInt tracking algorithm, after we verify the approach works.
 
 ## Source Code Findings
 
-### Files Read
-1. **pass_typespec.go** (402 lines): Phase 0 `insertParamGuards` only detects int-like params
-   (ConstInt pairing). Float-like params ignored. Phase 1 correctly infers types from GuardType
-   and propagates through phis. Phase 2 `specialize()` requires both operands typed — blocks
-   specialization for Mul(any, float) and Add(float, any).
+### Files Read (for this plan)
 
-2. **pass_load_elim.go** (95 lines): Handles GetField CSE and SetField invalidation. S2L
-   forwarding already implemented (records stored value after SetField). Does NOT track GuardType
-   — redundant guards on same value pass through untouched.
-
-3. **pass_licm.go** (562 lines): `canHoistOp` whitelist missing OpSqrt and OpGetTable. GetField
-   hoisting works correctly with alias checking (setFields, hasLoopCall). GetTable could use
-   identical alias pattern.
-
-4. **graph_builder.go** (lines 620-676): Inserts GuardType after BOTH GetTable AND GetField when
-   feedback is monomorphic. This means matmul's production codegen likely HAS typed arithmetic —
-   the static diagnostic was misleading.
+- `internal/methodjit/tier1_arith.go:156–221` — `emitBaselineArith` generic template (ADD/SUB/MUL). Dispatch = LSR+MOV+CMP+BCond twice (10 insns), then int path with SBFX+op+overflow-check+box (12 insns).
+- `internal/methodjit/tier1_arith.go:430–512` — `emitBaselineEQ` full polymorphic compare (raw-bit-eq fast path, float fallback, type dispatch). ~35 insns total.
+- `internal/methodjit/tier1_arith.go:36–56` — `loadSlot`/`storeSlot` pin R(0) to X22 (Round 21).
+- `internal/methodjit/tier1_table.go:24–77` — `emitBaselineGetGlobal`: 12-insn fast path, confirmed as non-bottleneck (2.8% of ack).
+- `internal/methodjit/tier1_compile.go:165` — Tier 1 op dispatch in the template emission loop. This is where we'd gate specialized vs generic templates.
+- `internal/methodjit/tier1_compile.go:300–311` — existing per-proto scan pattern (bytecode walk producing `hasFieldOps`, `hasGetGlobal`). Good template for the new KnownInt analysis.
+- `internal/methodjit/regalloc.go` (read for audit, not this plan) — no changes needed; this is Tier 2 only.
+- `internal/methodjit/emit_call.go:40–89` — `emitGuardType` is Tier 2 only; the Tier 1 parameter guards will need similar logic in a new helper.
 
 ### Diagnostic Data
 
-Production diagnostic (TestDiag_NbodyProduction):
-- **33 typed arithmetic ops** (confirmed: feedback pipeline works end-to-end)
-- **7 generic arithmetic ops** (all involving `v0 = LoadSlot slot[0]` — the `dt` parameter)
-  - 1 × Div (inner j-loop) — `mag = dt / (dsq * distance)`
-  - 3 × Mul (position update) — `dt * b.vx`, `dt * b.vy`, `dt * b.vz`
-  - 3 × Add (position update) — `b.x + result`, `b.y + result`, `b.z + result`
-- **24 GuardType nodes** — every GetField result type-checked
-- **Redundant GuardType**: bj.mass (v48) guarded 3 times for same TypeFloat
-- **LICM hoisting confirmed**: bi.x/y/z/mass hoisted to j-loop preheader (4 instructions)
+R24 diagnostic sub-agent produced `/tmp/gscript_ack_tier1.bin` + `/tmp/gscript_ack_tier1.disasm`. Key numbers from actual ARM64 disassembly:
+
+- **ack body: 846 instructions** (pc=0 start 0x90 → RET 0xec4).
+- **140 LDR + 176 STR + 15 LDP + 9 STP = 340 memory ops / 846 body insns = 40%** of the hot path is NaN-boxed slot traffic.
+- **GETGLOBAL sequences are 12 insns each**, 2 sites per hot recursive call → 24 insns of gen-check-and-load. That is **only 2.8%** of the body.
+- **EQ (m==0, n==0) and SUB (m-1, n-1) are the real cost**: each EQ ~35 insns, each SUB ~22 insns of full int/float dispatch. Four of these per recursive call = ~114 insns = ~13% of the body.
+- Three CALL sites in the body, each with a `blr x2` + `bl 0x80` post-call re-pin of X22/X21 (re-load R(0) and closure cache after callee returns).
 
 ### Actual Bottleneck (data-backed)
 
-**Primary**: `dt` parameter as `:any` blocks 7/40 arithmetic ops from specializing. The
-TypeSpecialize pass has no mechanism to detect float-like parameters.
+The top three overheads in ack's Tier 1 body:
+1. **Type dispatch in EQ/SUB/ADD templates: ~114 insns/call (13%)** — addressable by int-specialized templates.
+2. **NaN-box slot-file memory traffic: ~340 insns/call (40%)** — partially addressable by pinning more hot params to callee-saved registers (not this round).
+3. **BLR call overhead + post-call re-pin: ~30 insns × 3 calls (11%)** — architectural, `recursive_call` ceiling, not addressable this round.
 
-**Secondary**: Redundant GuardType instructions waste ~30M instructions per benchmark run.
-
-**Tertiary**: OpSqrt not LICM-hoistable (no current benchmark impact but general gap).
-
-**Structural (not addressable this round)**: Per-GetField/GetTable validation overhead accounts
-for ~85% of inner loop time. Closing the 7.7x gap requires cross-block shape propagation or
-IR-level guard splitting (future rounds).
+Round 24 targets #1 directly.
 
 ## Plan Summary
 
-Extend TypeSpecialize's parameter guard mechanism to detect and guard float-like parameters
-(those used in arithmetic with float-typed operands). This eliminates all 7 generic ops in
-nbody's advance(). Also: GuardType CSE in LoadElim, and OpSqrt + OpGetTable in LICM whitelist.
-Expected nbody improvement: −2-6% (conservative 2-3%, optimistic 4-6% from branch elimination
-benefits on M4). All changes in IR passes — no emitter changes, no file size risk.
+**What**: Add a simple forward KnownInt tracking pass to Tier 1 compilation (Task 1), then emit int-specialized arithmetic/compare templates with function-entry parameter guards (Task 2). The analysis marks parameter slots as KnownInt after an entry guard (deopt-on-non-int), then forward-propagates through arithmetic and compare writes. Each arith/compare op checks the KnownInt state of both operands (or recognizes integer constants) and picks between the generic and int-spec template. Generic template remains the default; int-spec is opt-in when analysis permits.
+
+**Expected impact** (halved for ARM64 superscalar): ackermann 0.595s → 0.52–0.56s (-6 to -12%), fib 0.140s → 0.125–0.135s (-4 to -10%), mutual_recursion 0.224s → 0.19–0.21s (-6 to -15%). Integer-loop benchmarks (fibonacci_iterative, sum_primes) may see secondary gains. Zero regressions expected on float-heavy code (specialization is opt-in).
+
+**Key risk**: parameter guard semantics must match existing Tier 1 deopt handlers; a mistake here causes correctness regressions on mixed int/float calls. Mitigated by Task 1 being a pure analysis task that writes findings to `opt/knowledge/tier1-int-spec.md` before Task 2 consumes them — conforms to the R23 review's conceptual-complexity split rule.
+
+## Mandatory pre-plan checklist
+
+- [x] If Diagnose() or arch_check found broken tooling / pipeline mismatches → is there a fix Task? — **No broken tooling found this round.**
+- [x] If constraints.md flags files >800 lines that this plan touches → is there a split Task 0? — **Plan touches `tier1_arith.go` (728, below limit) and `tier1_compile.go` (not flagged). NO split needed.**
+- [x] If known-issues.md has items in this plan's category → are quick-fix items included? — **The ackermann +137% regression is in known-issues.md under `tier2_call_overhead`; the diagnostic showed it's actually dispatch-dominated, not GetGlobal-dominated. Quick-fix (GetGlobal skip) was investigated and rejected as low-ROI. Dispatch fix IS the quick fix.**

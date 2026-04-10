@@ -1,6 +1,6 @@
 # nbody Field Hoisting: Research Notes
 
-> Created: 2026-04-07 | Round: 21 (research)
+> Created: 2026-04-07 | Category: tier2_float_loop | Round: 21 (research)
 
 ## Context
 

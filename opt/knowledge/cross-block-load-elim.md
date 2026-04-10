@@ -1,6 +1,6 @@
 # Cross-Block / Dominator-Based Load Elimination
 
-> Created: 2026-04-06 | Motivation: nbody at 15.9x behind LuaJIT; inner loop
+> Created: 2026-04-06 | Category: tier2_float_loop | Motivation: nbody at 15.9x behind LuaJIT; inner loop
 > accesses 7-10 fields per iteration; existing block-local CSE insufficient.
 
 ---

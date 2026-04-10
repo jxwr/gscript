@@ -61,6 +61,9 @@ Spawn an Evaluator sub-agent (**use Sonnet model** to reduce token cost) to revi
 - Tests pass + target unchanged → `no_change`
 - Target regressed or unrelated ≥10% regressed → `regressed`
 - Tests broken beyond budget → `abandoned`
+- `premise_error.md` exists OR predictions inverted >2× OR Step-4 numbers unreproducible → `data-premise-error`
+
+`data-premise-error` handling (R24): don't retry plan. Root-cause the measurement tool, write `opt/diagnostic_failure_<cycle_id>.md`, fix the tool in a `diagnostic-fix:` commit, set `previous_rounds[].outcome=data-premise-error` with the tool-failure (not the technique) as summary. REVIEW counts occurrences; 2 in 5 rounds → harness patch required.
 
 ---
 
@@ -124,6 +127,25 @@ Then:
 2. Fix frontmatter permalink
 3. Remove any `*[...next...]*` markers
 4. Add to `docs/index.html` top of Posts section (date: YYYY-MM-DD)
+
+### 2i-token. Write token reflection
+
+Run `bash scripts/token_usage.sh --last` and write `opt/token_reflection.md`:
+
+```markdown
+# Token Reflection — <cycle_id>
+
+## Usage by Phase
+<token_usage output>
+
+## Waste Points
+- [phase/sub-agent: what consumed excess tokens and why]
+
+## Saving Suggestions
+- [concrete change + estimated saving + risk to effectiveness: none/low/medium]
+```
+
+Rules: (a) only flag concrete waste (duplicate work, unnecessary web search, oversized prompts, runaway sub-agents). (b) each suggestion must state the trade-off. (c) keep it under 20 lines — REVIEW will read and decide.
 
 ### 2j. Commit all changes
 Scoped message: `opt: close out <cycle_id> (<outcome>)`

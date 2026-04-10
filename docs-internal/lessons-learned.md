@@ -65,6 +65,14 @@ The original 7-phase loop (MEASURE→ANALYZE→RESEARCH→PLAN→IMPLEMENT→VER
 
 **Rule**: invest in the workflow (diagnostics, source reading, knowledge base, architecture audit) before investing in more optimization rounds.
 
+### 10. Wrong diagnostic data poisons the entire round (Round 24)
+
+Step 4 publishes a bad number (stale bin, wrong tier, wrong function, miscounted region) → plan + IMPLEMENT + VERIFY all burn on a broken premise. 15–25M tokens wasted per occurrence.
+
+**Rule**: any contradiction mid-round → HALT, root-cause the tool, fix it, re-measure. Never "the number was off but the conclusion still holds."
+
+**Early warning**: phrase "earlier number was a bit off, but…" anywhere in the round.
+
 ---
 
 ## General Principles

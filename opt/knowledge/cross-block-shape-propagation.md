@@ -1,6 +1,6 @@
 # Cross-Block Shape Check Propagation
 
-> Created: 2026-04-07 | Task: Research how V8 propagates shape/map checks across
+> Created: 2026-04-07 | Category: tier2_float_loop | Task: Research how V8 propagates shape/map checks across
 > basic block boundaries using the dominator tree, so that shape checks verified
 > in a loop pre-header are available in the loop body blocks.
 

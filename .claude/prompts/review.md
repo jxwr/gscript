@@ -58,6 +58,8 @@ Quick scan (subordinate to Section A):
 | Budget adherence | Overruns? |
 | Token usage | Run `bash scripts/token_usage.sh --last`. Flag anomalies only: sub-agents >5M tokens, duplicate agents doing the same work, python ARM64 decoders instead of otool, or total round >20M. Do NOT optimize normal usage — only flag clear waste. |
 | known-issues.md | Prune stale entries: move Fixed items older than 5 rounds to a `## Historical` section (collapsed, not read by ANALYZE). Update Current items with latest data (e.g. file sizes, benchmark numbers). Remove items that were fixed but not marked. |
+| Data-premise errors (R24) | Scan last 5 rounds: `outcome=data-premise-error`, `opt/diagnostic_failure_*.md`, `opt/premise_error.md`, or phrases like "earlier number was off" / "actually not the bottleneck" in reports. 2 in 5 rounds → mandatory harness patch (cross-check step or tool replacement). |
+| Token reflection (R24) | Read `opt/token_reflection.md`. For each suggestion: accept (apply to relevant prompt now) or reject (write reason). Record decisions in the review doc. Acceptance criterion: saves tokens without degrading analysis quality or correctness confidence. |
 
 ### C. Process Understanding
 
@@ -180,6 +182,9 @@ Read ALL of these files and cross-check:
 **The harness must evolve itself, not just report.** See CLAUDE.md → Meta-Principle.
 
 After completing sections A-D:
+
+### 0. Terse-rule style (R24)
+Prompt files (`.claude/prompts/*.md`) are loaded into every phase session's system prompt — verbose additions compound across rounds. When adding a rule: **one line rule, one line reason, one line action**. No cost comparisons, no anti-pattern stories, no repeated reinforcement. Long explanations go to `docs-internal/lessons-learned.md` or memory, not to hot-path prompts.
 
 ### 1. Apply changes directly
 You can write to: `opt/`, `docs-internal/`, `scripts/`, `.claude/`.
