@@ -1,7 +1,7 @@
 # Lessons Learned — GScript JIT Compiler
 
 > **Purpose**: Detours and mistakes. ANALYZE reads this every round before choosing a target.
-> Last updated: 2026-04-06 (Round 15)
+> Last updated: 2026-04-11 (Round 25)
 
 ---
 
@@ -72,6 +72,16 @@ Step 4 publishes a bad number (stale bin, wrong tier, wrong function, miscounted
 **Rule**: any contradiction mid-round → HALT, root-cause the tool, fix it, re-measure. Never "the number was off but the conclusion still holds."
 
 **Early warning**: phrase "earlier number was a bit off, but…" anywhere in the round.
+
+### 11. Single-shot benchmarks produce false regressions (Round 25)
+
+Round 24 showed fibonacci_iterative +10.5% and mutual_recursion +4.0%. Both were single-shot noise, not real regressions. A 15-run rerun at HEAD gave 0.67σ and 0.47σ respectively — statistically indistinguishable from baseline. R24 was actually a clean win (ackermann −6%, fib −4.3%).
+
+The cause: `run_all.sh` ran each benchmark once. M4 cold/warm caches, thermal state, and GC scheduling introduce 3–5% CV. One sample from a 5% CV distribution converts any real ±3% change into a ±10% reported number with one-in-three probability.
+
+R25 burned an entire round chasing the phantom. The "Wrong data → stop & fix tool" rule (Lesson 10) applied but wasn't triggered fast enough because the regression looked plausible.
+
+**Rule**: always median-of-N for benchmark comparisons. Default `--runs=3` in `run_all.sh`; use `--runs=5` for publish-grade baselines. Never report a regression from a single sample without statistical context.
 
 ---
 

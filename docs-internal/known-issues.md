@@ -76,10 +76,10 @@
 ### Tier 2 pipeline duplicated — FIXED (Round 19, Task 0)
 - Extracted `RunTier2Pipeline()` in pipeline.go. All callers consolidated.
 
-### benchmarks/run_all.sh: VM/JIT suite may report inaccurate times
-- Round 12 MEASURE discovered silent failures in suite mode
-- Individual benchmark runs (`gscript -jit file.gs`) are reliable
-- Suite mode output parsing can lose time values
+### benchmarks/run_all.sh: benchmarks use median-of-3 by default (R25)
+- Fixed in R25: replaced single-shot runner (3-5% CV → fake regressions) with median-of-N
+- Use `--runs=5` for publish-grade baselines before archiving a round's results
+- Use `--runs=1` only for fast iteration where ±5% noise is acceptable
 
 ### fib/ackermann/mutual_recursion: Tier 2 is net-negative (Round 11)
 - Tier 2 BLR overhead (15-20ns) > Tier 1 BLR (10ns) for recursive functions
