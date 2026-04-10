@@ -7,29 +7,61 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "6ba79c35debd406836c59693fd1bdb3f435fc4bb",
+  "uncommitted_files": [
+    "benchmarks/data/history/2026-04-10.json",
+    "benchmarks/data/latest.json",
+    "docs/index.html",
+    "opt/INDEX.md",
+    "opt/analyze_report.md",
+    "opt/current_plan.md",
+    "opt/state.json",
+    "opt/workflow_log.jsonl"
+  ],
+  "head_commit": "5b4741bdf7b013b4aff8b3e65ae65c2157465cc1",
   "branch": "main",
-  "last_checkpoint": "2026-04-11T02:00:00Z",
+  "last_checkpoint": "2026-04-10T18:23:28Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
       "outcome": "partial",
-      "fixed": ["sieve", "sum_primes"],
-      "bugs_found": ["GPR phi move ordering", "rawIntRegs deopt corruption"]
+      "fixed": [
+        "sieve",
+        "sum_primes"
+      ],
+      "bugs_found": [
+        "GPR phi move ordering",
+        "rawIntRegs deopt corruption"
+      ]
     },
     {
       "cycle_id": "2026-04-04-tier2-correctness-r2",
       "outcome": "improved",
-      "fixed": ["nbody", "table_field_access", "coroutine_bench", "object_creation"],
-      "bugs_found": ["int48 overflow", "resyncRegs BLR callee corruption", "inline pass phi rewrite"]
+      "fixed": [
+        "nbody",
+        "table_field_access",
+        "coroutine_bench",
+        "object_creation"
+      ],
+      "bugs_found": [
+        "int48 overflow",
+        "resyncRegs BLR callee corruption",
+        "inline pass phi rewrite"
+      ]
     },
     {
       "cycle_id": "2026-04-04-overflow-opt",
       "outcome": "improved",
-      "fixed": ["fibonacci_iterative"],
-      "bugs_found": ["phi regalloc clash (3+ phis share register)", "deopt state flush", "overflow check on loop counters"],
-      "remaining": ["string_bench (compare sort order)"]
+      "fixed": [
+        "fibonacci_iterative"
+      ],
+      "bugs_found": [
+        "phi regalloc clash (3+ phis share register)",
+        "deopt state flush",
+        "overflow check on loop counters"
+      ],
+      "remaining": [
+        "string_bench (compare sort order)"
+      ]
     },
     {
       "cycle_id": "2026-04-05-recursive-inlining",
@@ -173,19 +205,22 @@
       "initiative": "standalone",
       "outcome": "improved",
       "summary": "Forward KnownInt analysis + int-specialized ADD/SUB/MUL/EQ/LT/LE templates. ackermann -5.2% (0.595s\u21920.564s), fib -4.3% (0.140s\u21920.134s). mutual_recursion +4.9% regression (guard overhead exceeds body saving on small protos). Float benchmarks untouched."
+    },
+    {
+      "cycle_id": "2026-04-11-measurement-repair",
+      "category": "other",
+      "initiative": "standalone",
+      "outcome": "improved",
+      "summary": "Harness repair: median-of-N benchmark runner + re-baseline with median-of-5. Confirmed R24 wins (ackermann -6.2%, fib -5.0%). Phantom regressions were single-shot noise. Stretch: int-spec overflow deopt now resumes at guard PC (not pc=0) via vm.ResumeFromPC \u2014 prevents side-effect replay."
     }
   ],
-  "session_summary": {
-    "correctness_progress": "21/22 benchmarks correct (unchanged)",
-    "root_causes_fixed": 0,
-    "commits": 4
-  },
   "category_failures": {
     "recursive_call": 2,
     "tier2_float_loop": 1,
     "field_access": 1,
-    "tier1_dispatch": 0
+    "tier1_dispatch": 0,
+    "other": 0
   },
-  "rounds_since_review": 1,
-  "rounds_since_arch_audit": 1
+  "rounds_since_review": 2,
+  "rounds_since_arch_audit": 2
 }

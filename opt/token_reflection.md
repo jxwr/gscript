@@ -1,21 +1,23 @@
-# Token Reflection — 2026-04-10-tier1-int-spec
+# Token Reflection — 2026-04-11-measurement-repair
 
 ## Usage by Phase
+```
 SESSION                             TOTAL      INPUT    CACHE_W    CACHE_R     OUTPUT  CALLS
------------------------------- ---------- ---------- ---------- ---------- ---------- ------
-ANALYZE + PLAN P                     4.3M         60     314.4K       3.9M      50.6K     45
+ANALYZE + PLAN                       7.6M         92     382.2K       7.2M      81.2K     67
   └ Diagnostic sub-agent             1.9M         71      98.0K       1.8M      10.5K     65
   └ Research                         3.0M         85     143.0K       2.9M      13.3K     81
-VERIFY + DOCUMENT P                 17.8M        489     348.1K      17.4M     130.6K    201
+IMPLEMENT                           23.0M       1.4K     293.9K      22.6M     152.7K    235
+VERIFY + DOCUMENT                   12.4M        171     249.1K      12.1M      82.7K    163
 
-GRAND TOTAL                         27.0M
+GRAND TOTAL                         47.9M
+```
 
 ## Waste Points
-- VERIFY session (17.8M, 201 calls): extensive test-failure debugging (flaky crash bisection across 15+ test runs) consumed ~40% of the session. The crash was pre-existing; a known-flaky-tests register in state.json would have saved 30+ tool calls.
-- ANALYZE diagnostic sub-agent (1.9M, 65 calls): 65 calls is high for a diagnostic. Could have been bounded to 30 calls with a tighter prompt specifying exactly which disasm regions to count.
-- Research sub-agent (3.0M, 81 calls): broad web search for prior art (V8/LuaJIT/JSC approaches) used 81 calls. Most relevant findings were in the knowledge base already.
+- **IMPLEMENT (23M, 235 calls)**: Bash scripting for the median runner likely required 3-4 iterations to get awk parsing and sort-and-pick-median correct. 235 calls for 4 tasks (~40 lines of bash + small Go changes) is high.
+- **VERIFY crash investigation**: Pre-existing TestDeepRecursion crash consumed ~1M tokens before git-stash confirmation. Should have stashed immediately on first appearance of JIT stack crash.
+- **Research sub-agent (3M, 81 calls)**: V8/LuaJIT deopt PC prior-art is findable in 2-3 targeted fetches (lj_snap.c, simplified-lowering.cc). 81 calls over-indexed on breadth.
 
 ## Saving Suggestions
-- Register pre-existing flaky tests in `docs-internal/known-issues.md` with a "do not debug in VERIFY" tag. Saves ~40 tool calls per VERIFY that hits one. **Risk: low** — the test legitimately passes in isolation.
-- Bound diagnostic sub-agent to ≤30 calls with `--max-turns=30` flag. **Saving: ~35 calls, ~1M tokens. Risk: low** — diagnostic tasks are well-defined and don't need open-ended exploration.
-- Skip web research for well-covered topics (V8 Sparkplug, LuaJIT interpreter dispatch) already in the knowledge base. ANALYZE should check `opt/knowledge/` first and only search for gaps. **Saving: ~1.5M tokens. Risk: low.**
+- **Bash iteration limit in IMPLEMENT prompt**: add "max 3 attempts for any bash task; if still failing, write a minimal failing case and report" — saves ~3-5M on harness rounds. **Risk: low.**
+- **VERIFY crash protocol**: add rule "on JIT stack crash, run `git stash && go test -run <failing test>; git stash pop` immediately before any further investigation" — saves ~1M per occurrence. **Risk: none.**
+- **Research cap**: limit web fetches to 5 per prior-art query; check `opt/knowledge/` first — saves ~1.5M. **Risk: low.**

@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-11</span>
   <br>
+  <a href="35-the-regression-that-wasnt">The Regression That Wasn&rsquo;t</a>
+  <p>Round 24 reported a 10.5% regression on fibonacci_iterative. Fifteen diagnostic runs later: the delta was 0.67&sigma;. The regression didn&rsquo;t exist &mdash; the single-shot benchmark runner converted 3&ndash;5% thermal noise into a confident &ldquo;+10.5%&rdquo; in the commit message. This round: median-of-N runner, re-baseline with median-of-5, and a correctness fix for int-spec overflow deopt (resume at guard PC, not pc=0).</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-11</span>
+  <br>
   <a href="34-the-real-ackermann-bottleneck">The Real Ackermann Bottleneck</a>
   <p>The known-issues file said ackermann's bottleneck was GetGlobal gen-check overhead. The disassembly said it was 2.8% of the hot path. The actual bottleneck &mdash; EQ/SUB type dispatch, 13% of every call &mdash; required a forward KnownInt analysis pass and int-specialized templates. ackermann &minus;5.2%, fib &minus;4.3%. mutual_recursion regressed: guard overhead exceeds body saving on small bodies.</p>
 </div>
