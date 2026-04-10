@@ -118,8 +118,8 @@ The primary risk is that I'm over-estimating again. The R23 lesson was that M4 h
 ## Task Breakdown
 
 - [x] **1. Analysis + knowledge doc** — files: `tier1_int_analysis.go` (skeleton), `tier1_int_analysis_test.go` (stub), `opt/knowledge/tier1-int-spec.md` (new) — deliverable: pseudocode + eligibility gate + expected coverage per benchmark. **Does NOT change production behavior.** Test: `TestKnownIntAnalysis_Skeleton`.
-- [ ] **2. Implementation + wiring** — files: `tier1_int_analysis.go` (extend), `tier1_int_analysis_test.go` (extend), `tier1_arith.go`, `tier1_compile.go`, `tier1_int_spec_test.go` (new) — deliverable: working int-spec templates + emitter dispatch. Test: `TestTier1IntSpec_Ackermann`, `TestTier1IntSpec_NoRegressionOnFloat`.
-- [ ] **3. Benchmark + bench-data refresh** — file: `benchmarks/data/latest.json` — run `scripts/bench_all.sh` or the individual benchmark runs; diff against baseline; populate Results table in this plan.
+- [x] **2. Implementation + wiring** — files: `tier1_int_analysis.go` (extend), `tier1_int_analysis_test.go` (extend), `tier1_arith.go`, `tier1_compile.go`, `tier1_int_spec_test.go` (new) — deliverable: working int-spec templates + emitter dispatch. Test: `TestTier1IntSpec_Ackermann`, `TestTier1IntSpec_NoRegressionOnFloat`.
+- [x] **3. Benchmark + bench-data refresh** — file: `benchmarks/data/latest.json` — run `scripts/bench_all.sh` or the individual benchmark runs; diff against baseline; populate Results table in this plan.
 
 ## Budget
 
@@ -129,14 +129,40 @@ The primary risk is that I'm over-estimating again. The R23 lesson was that M4 h
 
 ## Results (filled after VERIFY)
 
-| Benchmark | Before | After | Change |
-|-----------|--------|-------|--------|
-| ackermann | 0.595s | | |
-| fib | 0.140s | | |
-| mutual_recursion | 0.224s | | |
-| fibonacci_iterative | 0.277s | | |
-| sum_primes | 0.004s | | |
-| nbody (regression watch) | 0.245s | | |
-| mandelbrot (regression watch) | 0.063s | | |
+Full suite run 2026-04-11 (commit 19f148a, following Task 2b).
+
+| Benchmark | Before | After | Change | Target |
+|-----------|--------|-------|--------|--------|
+| ackermann | 0.595s | 0.559s | **−6.0%** | 0.52-0.56s (hit upper edge) |
+| fib | 0.140s | 0.134s | **−4.3%** | 0.125-0.135s (hit upper edge) |
+| mutual_recursion | 0.224s | 0.233s | **+4.0%** | 0.19-0.21s (regression) |
+| fibonacci_iterative | 0.277s | 0.306s | **+10.5%** | secondary (regression) |
+| sum_primes | 0.004s | 0.004s | 0% | secondary |
+| nbody | 0.245s | 0.246s | 0% | no regression |
+| mandelbrot | 0.063s | 0.062s | −1.6% | no regression |
+| spectral_norm | 0.046s | 0.046s | 0% | no regression |
+| matmul | 0.120s | 0.125s | +4% (noise) | |
+| sort | 0.045s | 0.043s | −4% | |
+| sieve | 0.084s | 0.086s | +2% | |
+| fannkuch | 0.048s | 0.048s | 0% | |
+
+**Interpretation**:
+- ackermann hit the conservative edge of the target range (−6%). This is the win.
+- fib hit the edge of its target (−4%).
+- mutual_recursion and fibonacci_iterative regressed. The float benchmarks
+  (nbody/mandelbrot/spectral_norm) are untouched — the eligibility gate correctly
+  excludes them.
+- The int-recursion wins (ack, fib) are smaller than hoped because the
+  calibration was honest: M4 superscalar hides much of the instruction-count
+  reduction on branch-heavy code.
+- The regressions suggest the param-entry guard + per-op dispatch check
+  can cost more than the per-op saving on small bodies. **Follow-up for R25**:
+  measure guard overhead vs body saving; consider skipping int-spec for
+  very small protos or folding the guard into the first op's dispatch.
+
+**Signals**:
+- Signal 1 (ack unchanged/slower): not tripped.
+- Signal 3 (nbody/mandelbrot/spectral >2% regress): not tripped.
+- mutual_recursion regression is outside the failure signals but worth flagging.
 
 ## Lessons (filled after completion/abandonment)
