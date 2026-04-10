@@ -736,9 +736,14 @@ func emitBaselineTestSet(asm *jit.Assembler, inst uint32, pc int, code []uint32)
 // the target benchmarks (ack/fib/mutual_recursion with small values) it
 // never fires.
 
-// emitIntSpecDeopt emits the shared ExitDeopt exit sequence: set ExitCode=2,
-// then branch to the appropriate exit epilogue based on CallMode.
-func emitIntSpecDeopt(asm *jit.Assembler) {
+// emitIntSpecDeopt emits the ExitDeopt exit sequence: store the guard PC,
+// set ExitCode=2, then branch to the exit epilogue based on CallMode.
+// deoptPC is the bytecode PC of the overflowing instruction; it is baked into
+// the emitted code so Execute can resume the interpreter at exactly that point
+// instead of restarting at pc=0 (which would replay earlier side effects).
+func emitIntSpecDeopt(asm *jit.Assembler, deoptPC int) {
+	asm.MOVimm16(jit.X0, uint16(deoptPC))
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitResumePC)
 	asm.LoadImm64(jit.X0, int64(ExitDeopt))
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
 	asm.LDR(jit.X0, mRegCtx, execCtxOffCallMode)
@@ -771,8 +776,9 @@ func emitParamIntGuards(asm *jit.Assembler, guardedParams uint64) {
 	asm.B(okLabel)
 
 	// Fail path: ExitDeopt → tiering manager falls back to generic.
+	// PC=0 because param guards fire before any bytecode; no side effects to replay.
 	asm.Label(failLabel)
-	emitIntSpecDeopt(asm)
+	emitIntSpecDeopt(asm, 0)
 
 	asm.Label(okLabel)
 }
@@ -780,7 +786,7 @@ func emitParamIntGuards(asm *jit.Assembler, guardedParams uint64) {
 // emitBaselineArithIntSpec emits ADD/SUB/MUL assuming both operands are
 // statically known to be ints. Skips the polymorphic tag dispatch. On int48
 // overflow, exits via ExitDeopt.
-func emitBaselineArithIntSpec(asm *jit.Assembler, inst uint32, op string) {
+func emitBaselineArithIntSpec(asm *jit.Assembler, inst uint32, op string, pc int) {
 	a := vm.DecodeA(inst)
 	bidx := vm.DecodeB(inst)
 	cidx := vm.DecodeC(inst)
@@ -815,8 +821,10 @@ func emitBaselineArithIntSpec(asm *jit.Assembler, inst uint32, op string) {
 	asm.B(doneLabel)
 
 	// Overflow → ExitDeopt (rare; target benchmarks never trip this).
+	// Store this instruction's PC so Execute can resume the interpreter at
+	// exactly this point, skipping re-execution of earlier side effects.
 	asm.Label(overflowLabel)
-	emitIntSpecDeopt(asm)
+	emitIntSpecDeopt(asm, pc)
 
 	asm.Label(doneLabel)
 }

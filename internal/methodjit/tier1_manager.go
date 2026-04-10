@@ -81,6 +81,11 @@ type BaselineJITEngine struct {
 	// Positive value = counter threshold (triggers OSR after N iterations).
 	// 0 or absent = OSR disabled. Set by TieringManager before Execute.
 	osrCounters map[*vm.FuncProto]int64
+	// intSpecDeoptPC holds the bytecode PC saved by the most recent int-spec
+	// deopt. It is read in Execute to resume the interpreter at that exact
+	// instruction instead of restarting at pc=0 (which replays side effects).
+	// Safe: Execute is called serially within a single goroutine.
+	intSpecDeoptPC int
 }
 
 // NewBaselineJITEngine creates a new baseline JIT engine.
@@ -178,12 +183,20 @@ func (e *BaselineJITEngine) TryCompile(proto *vm.FuncProto) interface{} {
 func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
 	results, err := e.executeInner(compiled, regs, base, proto)
 	if err == errIntSpecDeopt {
-		// Int-spec guard failed or arith overflowed. Disable int-spec for
-		// this proto, rebuild the compiled BaselineFunc with generic
-		// templates, and re-execute. Safe because the param guard runs
-		// before any bytecode; register state is untouched.
 		DisableIntSpec(proto)
 		e.EvictCompiled(proto)
+		deoptPC := e.intSpecDeoptPC
+		e.intSpecDeoptPC = 0
+		// If the deopt was from an arithmetic overflow (deoptPC > 0), resume
+		// the interpreter at the exact guard PC. This avoids replaying side
+		// effects (SETGLOBAL exits, native SETFIELD writes, etc.) that occurred
+		// between pc=0 and the overflow. The JIT has already executed those
+		// instructions and their results are live in the register file.
+		if deoptPC > 0 && e.callVM != nil {
+			return e.callVM.ResumeFromPC(deoptPC)
+		}
+		// Param-entry guard failure (deoptPC=0): no bytecodes ran, so restarting
+		// from pc=0 is safe. Recompile and re-execute with generic templates.
 		recompiled := e.TryCompile(proto)
 		if recompiled == nil {
 			return nil, fmt.Errorf("baseline: int-spec deopt recompile failed")
@@ -374,9 +387,10 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 			return nil, errOSRRequested
 
 		case ExitDeopt:
-			// Int-spec guard failed or int-spec arith overflowed. The tiering
-			// manager recognizes this and disables int-spec for this proto
-			// (marks intSpecDisabled), recompiles generic, and re-executes.
+			// Int-spec guard failed or int-spec arith overflowed. Save the
+			// guard PC so Execute can resume the interpreter there rather than
+			// restarting at pc=0 (which would replay earlier side effects).
+			e.intSpecDeoptPC = int(ctx.ExitResumePC)
 			return nil, errIntSpecDeopt
 
 		default:

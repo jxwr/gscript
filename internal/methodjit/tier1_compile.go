@@ -127,19 +127,19 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		// ---- Arithmetic (native) ----
 		case vm.OP_ADD:
 			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
-				emitBaselineArithIntSpec(asm, inst, "add")
+				emitBaselineArithIntSpec(asm, inst, "add", pc)
 			} else {
 				emitBaselineArith(asm, inst, "add")
 			}
 		case vm.OP_SUB:
 			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
-				emitBaselineArithIntSpec(asm, inst, "sub")
+				emitBaselineArithIntSpec(asm, inst, "sub", pc)
 			} else {
 				emitBaselineArith(asm, inst, "sub")
 			}
 		case vm.OP_MUL:
 			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
-				emitBaselineArithIntSpec(asm, inst, "mul")
+				emitBaselineArithIntSpec(asm, inst, "mul", pc)
 			} else {
 				emitBaselineArith(asm, inst, "mul")
 			}

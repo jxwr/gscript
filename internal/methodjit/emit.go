@@ -127,6 +127,11 @@ type ExecContext struct {
 	Tier2GlobalCacheGen uintptr // pointer to CompiledFunction.GlobalCacheGen
 	Tier2GlobalGenPtr   uintptr // pointer to tier1.globalCacheGen (shared counter)
 	GlobalCacheIdx      int64   // cache index for current GetGlobal (set by emitter on exit)
+
+	// ExitResumePC is the bytecode PC of the int-spec overflow instruction.
+	// Set by emitIntSpecDeopt so that Execute can resume the interpreter at the
+	// exact guard PC instead of restarting at pc=0 (which replays side effects).
+	ExitResumePC int64
 }
 
 // ExitCode constants.
@@ -212,6 +217,7 @@ var (
 	execCtxOffTier2GlobalCacheGen = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCacheGen))
 	execCtxOffTier2GlobalGenPtr   = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalGenPtr))
 	execCtxOffGlobalCacheIdx      = int(unsafe.Offsetof(ExecContext{}.GlobalCacheIdx))
+	execCtxOffExitResumePC        = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
 )
 
 // CompiledFunction holds the generated native code for a function.
