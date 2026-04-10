@@ -1,2 +1,2 @@
-FAIL	github.com/gscript/gscript/internal/methodjit	126.021s
+FAIL	github.com/gscript/gscript/internal/methodjit	0.961s
 FAIL

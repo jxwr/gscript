@@ -5,6 +5,7 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 
 | # | Round ID | Date | Category | Target | Outcome | Key Commit | 1-line Lesson |
 |---|----------|------|----------|--------|---------|------------|----------------|
+| 26 | 2026-04-11-tier1-selfcall-overhead | 2026-04-11 | tier1_dispatch | Tier 1 self-call fast path: SP-floor guard replaces NativeCallDepth; drop dead ctx.Constants STR | data-premise-error | 878e64a (Task 0 only) | Go goroutines start at 8KB stack; JIT cannot call morestack; NativeCallDepth=48 is a goroutine-stack budget constraint, not paranoia — SP-floor approach causes SIGSEGV on deep recursion |
 | 25 | 2026-04-11-measurement-repair | 2026-04-11 | other | Median-of-N benchmark runner + re-baseline; int-spec deopt resume at guard PC | improved | 5b4741b | Single-shot benchmarks produce false regressions — fix the tool before chasing the symptom |
 | 24 | 2026-04-10-tier1-int-spec | 2026-04-10 | tier1_dispatch | Tier 1 int-specialized arith/compare templates + forward KnownInt tracking | improved | 19f148a | Guard overhead on small bodies can exceed body saving; EQ direct-compare on NaN-boxed ints is correct (same value = same bits) |
 | 23 | 2026-04-07-guard-hoist-shape-prop | 2026-04-07 | tier2_float_loop | Guard hoisting in LICM + cross-block shape verification propagation | no_change | df2e2ec | M4 superscalar hides removed guard instructions (predicted branches, ~0 IPC cost); instruction-count reduction ≠ wall-time on branch-heavy code |

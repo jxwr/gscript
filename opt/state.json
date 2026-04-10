@@ -1,16 +1,58 @@
 {
-  "cycle": "",
-  "cycle_id": "",
-  "target": "",
-  "started": "",
-  "baseline": {},
-  "plan_budget": {},
-  "completed_steps": [],
-  "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "2e32c7ceb2aedd607e85a74c528ed98512b0214d",
+  "cycle": "VERIFY",
+  "cycle_id": "2026-04-11-tier1-selfcall-overhead",
+  "target": "Tier 1 self-call fast path overhead reduction (ackermann)",
+  "started": "2026-04-11",
+  "baseline": {
+    "ackermann": "0.563s",
+    "mutual_recursion": "0.237s",
+    "object_creation": "0.765s",
+    "binary_trees": "2.323s",
+    "method_dispatch": "0.104s",
+    "coroutine_bench": "18.438s",
+    "source_commit": "5b4741bdf7b013b4aff8b3e65ae65c2157465cc1"
+  },
+  "plan_budget": {
+    "hours": 3,
+    "loc": 120,
+    "commits": 4
+  },
+  "completed_steps": [
+    "architecture_audit_full",
+    "gap_classification",
+    "diagnostic_ackermann_tier1_disasm",
+    "source_read_tier1_call_tier1_control",
+    "plan_written"
+  ],
+  "next_action": "VERIFY (data-premise-error)",
+  "round_outcome": "data-premise-error",
+  "outcome_summary": "Task 0 (insn-count fixture) committed at 878e64a. Task 1 (SP-floor replace NativeCallDepth) failed: Go goroutines start at 8KB stack, JIT cannot call morestack, removing NativeCallDepth tracking causes SIGSEGV on deep recursion. Tasks 2-3 skipped per abort protocol. See opt/premise_error.md.",
+  "uncommitted_files": [
+    "docs-internal/architecture/constraints.md",
+    "opt/INDEX.md",
+    "opt/baseline_test_snapshot.txt",
+    "opt/state.json",
+    "opt/premise_error.md",
+    "opt/current_plan.md",
+    "docs/draft.md"
+  ],
+  "head_commit": "878e64ae4255afd12ae23399b404997c5282461c",
   "branch": "main",
-  "last_checkpoint": "2026-04-11T00:00:00Z",
+  "last_checkpoint": "2026-04-10T23:26:22Z",
+  "category": "tier1_dispatch",
+  "initiative": "opt/initiatives/tier1-call-overhead.md",
+  "plan_tasks": [
+    "Task 0: commit diagnostic fixture (tier1_ack_dump_test.go)",
+    "Task 1: SP-floor prologue guard; drop NativeCallDepth on self-call fast path",
+    "Task 2: drop dead ctx.Constants STR in shared restore",
+    "Task 3: verify via median-of-5 benchmarks"
+  ],
+  "predicted_outcome": {
+    "ackermann_wall_time": "-3 to -10%",
+    "ackermann_insn_delta": "-10 per self-call",
+    "regression_gate": "mutual_recursion <=2%",
+    "stop_condition": "ackermann <3% improvement despite insn-count drop -> no_change + calibration note"
+  },
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -213,5 +255,5 @@
     "other": 0
   },
   "rounds_since_review": 0,
-  "rounds_since_arch_audit": 2
+  "rounds_since_arch_audit": 0
 }

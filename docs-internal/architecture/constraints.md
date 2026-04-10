@@ -1,23 +1,27 @@
 # Architecture Constraints & Notes
 
 > **ANALYZE reads this every round.** Updated by Architecture Audit (every 2 rounds).
-> Last full audit: Round 24 (2026-04-10)
+> Last full audit: Round 26 (2026-04-11)
 
 ## Tier Constraints
 
 - **Tier 2 is net-negative for recursive functions** (Round 11): SSA construction + type guards + BLR ~15-20ns overhead > inlining gains. Recursive speedup needs Tier 1 BLR specialization or native recursive calling convention, NOT Tier 2 promotion.
 - **Tier 1 has no forward type tracking** (Round 24 audit): every arith/compare template re-runs full int/float tag dispatch from scratch. `emitBaselineArith` is ~22 insns (10 dispatch + 12 int-path), `emitBaselineEQ` is ~35 insns (polymorphic compare). There is no intra-function SSA-like tracking of "slot X is known int," so even in obviously-int functions (ack, fib, mutual_recursion, fibonacci_iterative) every op pays the dispatch toll. This is the #1 Tier 1 bottleneck for int-arith-heavy code.
 - **Tier 1 slot-file memory round-trip** (Round 24 diagnostic on ackermann): ~40% of hot-path instructions are LDR/STR against the NaN-boxed VM register file. Slots 0-1 are the only ones pinned (X22=R(0), X21=self closure). Pinning more hot params (R(1)..R(3)) into X20/X23/X28 is untapped.
+- **Tier 1 CALL/RETURN is slower than the interpreter** (Round 26 measurement): JIT/VM ratio ≥1.16× on 6 benchmarks (ackermann 1.91×, binary_trees 1.42×, coroutine 1.21×, object_creation 1.20×, method_dispatch 1.18×, mutual_recursion 1.16×). `emitBaselineNativeCall` (`tier1_call.go:95`) emits ~60 caller-side insns per self-call fast path vs the interpreter's inline `continue` (~50-80 Go-compiled insns with no BL/RET). Per-call overhead = 14 memory stores to `ctx` + 2 depth LDR/STR pairs + 96-byte frame save/restore. New initiative `tier1-call-overhead.md` opened R26.
+- **`tier1_control.go:224` RETURN reads `ctx.CallMode`** — branches on it to pick `direct_epilogue` (returns to BL site) vs `baseline_epilogue` (exits the JIT). This constrains any scheme that tries to remove the `STR ctx.CallMode=1` on self-call setup. Future work (R27+) needs to either compile two RETURN variants or encode the distinction in LR target, not remove the CallMode write naively.
+- **NativeCallDepth=48 is a goroutine-stack budget constraint** (R26 premise error): Go goroutines start at 8KB stack. JIT code is a raw ARM64 blob — it has no prologue metadata and cannot call `morestack` to grow the stack. Each self-call frame = 64 bytes. 48 × 64 = 3072 bytes fits within 8KB. Removing NativeCallDepth tracking from the self-call path causes SIGSEGV on `countdown(900)`: 900 × 64 = 57.6KB overflows the goroutine stack segment, corrupting adjacent memory. SP-floor approach (StackFloor = SP - 2MB) is unsafe — goroutines do not have 2MB of native stack. **Any scheme that allows unbounded JIT-native recursion will corrupt memory.** Options: (a) pre-grow goroutine stack before entering JIT, (b) reduce bytes-per-frame to raise the depth limit.
 - **8-FPR pool is a hard limit** (D4-D11): carried invariants + body temps share 8 registers. >5 carried invariants squeezes body temp space. Round 9's LICM-carry reserves up to 5, leaving 3 for body.
 - **4-GPR pool** (X20-X23): int counter carry + loop bounds use 2-3, leaving 1-2 for body temps.
 
 ## Module Boundaries
 
 - **`emit_table.go` SPLIT** (Round 19): Now `emit_table_field.go` (341 lines) + `emit_table_array.go` (692 lines). ✅ RESOLVED.
-- **`emit_dispatch.go` 971 lines** ⚠ CRITICAL: 29 lines from limit. Unchanged since R21 (R22-R23 did not touch). Must still split before any dispatch-touching change — extract `emit_branch.go` for fused compare+branch.
-- **`graph_builder.go` 955 lines** ⚠ CRITICAL: 45 lines from limit. Unchanged since R21 (R22-R23 did not touch — float param guard landed in a helper). Must split before next change — extract `graph_builder_feedback.go`.
+- **`emit_dispatch.go` 971 lines** ⚠ CRITICAL: 29 lines from limit. Unchanged since R21 (R22-R25 did not touch). Must still split before any dispatch-touching change — extract `emit_branch.go` for fused compare+branch.
+- **`graph_builder.go` 955 lines** ⚠ CRITICAL: 45 lines from limit. Unchanged since R21 (R22-R25 did not touch — float param guard landed in a helper). Must split before next change — extract `graph_builder_feedback.go`.
+- **`tier1_arith.go` 903 lines** ⚠ CRITICAL (R26 audit): grew from 728→903 across R24-R25 via int-spec templates. 97 lines from limit. Must split before the next Tier 1 arith change — extract `tier1_arith_intspec.go` for the KnownInt path. Item queued for R27 Task 0.
 - **`tier1_table.go` 829 lines** ⚠ Unchanged since R21.
-- **`tier1_arith.go` 728 lines** — not at limit but already >700. Round 24's int-specialization will add templates here. Watch this file for growth past 800 next round.
+- **`tier1_call.go` 554 lines** — R26 target file. Plenty of headroom (~450 lines) but the initiative will eventually force a split into `tier1_call_self.go` / `tier1_call_normal.go` once Item 5 (BL→B tail-thread) lands.
 - **`regalloc.go` ↔ `emit_loop.go` coupling**: `carried` map concept spans both files. Unchanged — invariant-carry infra from R9 is stable.
 - **27 source files lack test files** (same count as Round 21 — no new test files added for `emit_call_exit.go`, `loops.go`, Tier 1 handlers). Test/source ratio is 88% (up from 86% at Round 19) — total lines grew faster in tests than source.
 
