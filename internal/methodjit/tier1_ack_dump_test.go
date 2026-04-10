@@ -2,7 +2,8 @@
 
 // tier1_ack_dump_test.go dumps the Tier 1 baseline ARM64 code for the
 // ackermann benchmark's recursive `ack` function so it can be disassembled
-// externally with `xcrun otool -tv`. Round 24 diagnostic artifact.
+// externally with `xcrun otool -tv`. Promoted to a regression fixture in R26:
+// asserts total instruction count does not regress past the R26 baseline.
 
 package methodjit
 
@@ -13,6 +14,16 @@ import (
 
 	"github.com/gscript/gscript/internal/vm"
 )
+
+// ackTotalInsnBaseline is the total ARM64 instruction count for the Tier 1
+// compiled `ack` function as measured in R26 (pre-Task-1). Each self-call
+// path optimization that lands reduces this count. If this assertion fires,
+// someone re-introduced overhead to the call path.
+//
+// History:
+//
+//	R26 pre-Task1: 923 insns (3692 bytes) — NativeCallDepth on every call + ctx.Constants STR
+const ackTotalInsnBaseline = 923
 
 func TestDumpTier1_AckermannBody(t *testing.T) {
 	srcBytes, err := os.ReadFile("../../benchmarks/suite/ackermann.gs")
@@ -44,8 +55,20 @@ func TestDumpTier1_AckermannBody(t *testing.T) {
 	t.Cleanup(func() { bf.Code.Free() })
 
 	size := bf.Code.Size()
+	totalInsns := size / 4
 	t.Logf("tier1 code: size=%d bytes (%d insns), DirectEntryOffset=%d",
-		size, size/4, bf.DirectEntryOffset)
+		size, totalInsns, bf.DirectEntryOffset)
+
+	// Regression guard: assert total insn count has not grown.
+	// Self-call path optimizations (R26 Tasks 1+2) will reduce this count.
+	// Update ackTotalInsnBaseline when a task legitimately reduces it.
+	if totalInsns > ackTotalInsnBaseline {
+		t.Errorf("tier1 ack insn count REGRESSED: %d > baseline %d (+%d insns)",
+			totalInsns, ackTotalInsnBaseline, totalInsns-ackTotalInsnBaseline)
+	} else {
+		t.Logf("insn count OK: %d <= baseline %d (delta=%d)",
+			totalInsns, ackTotalInsnBaseline, totalInsns-ackTotalInsnBaseline)
+	}
 
 	// Log PC-to-offset labels so the disassembly can be correlated with
 	// bytecode PCs.
