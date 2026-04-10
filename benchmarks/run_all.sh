@@ -3,8 +3,9 @@
 # Builds the CLI, runs warm Go benchmarks, then runs all suite benchmarks
 # in VM and JIT modes SEQUENTIALLY.
 #
-# Usage: bash benchmarks/run_all.sh [--quick]
-#   --quick  Only run Go warm benchmarks (skip suite)
+# Usage: bash benchmarks/run_all.sh [--quick] [--runs=N]
+#   --quick    Only run Go warm benchmarks (skip suite)
+#   --runs=N   Runs per benchmark for median (default 3; use 5 for publish-grade baselines)
 #
 # Works on macOS (no coreutils timeout required).
 
@@ -12,9 +13,13 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 QUICK=false
-if [[ "${1:-}" == "--quick" ]]; then
-    QUICK=true
-fi
+RUNS=3
+for arg in "$@"; do
+    case "$arg" in
+        --quick) QUICK=true ;;
+        --runs=*) RUNS="${arg#--runs=}" ;;
+    esac
+done
 
 GSCRIPT_BIN="/tmp/gscript_bench"
 TIMEOUT_SEC=60
@@ -25,6 +30,67 @@ run_with_timeout() {
     shift
     perl -e "alarm $timeout; exec @ARGV" -- "$@" 2>&1
     return $?
+}
+
+# Run a GScript benchmark RUNS times, output sample stdout with median Time:.
+# Returns 0 on success, 1 on failure, 2 on timeout.
+run_benchmark_median() {
+    local mode="$1"
+    local bench="$2"
+    local runs="${RUNS:-3}"
+    local times=()
+    local sample_output=""
+    local i
+    for i in $(seq 1 "$runs"); do
+        local output
+        output=$(run_with_timeout "$TIMEOUT_SEC" "$GSCRIPT_BIN" "$mode" "benchmarks/suite/${bench}.gs" 2>&1)
+        local ec=$?
+        if [[ $ec -eq 142 ]] || [[ $ec -eq 137 ]]; then
+            echo "  TIMEOUT (>${TIMEOUT_SEC}s)"
+            return 2
+        elif [[ $ec -ne 0 ]]; then
+            echo "  FAILED (exit $ec)"
+            return 1
+        fi
+        [[ -z "$sample_output" ]] && sample_output="$output"
+        local t
+        t=$(echo "$output" | awk '/^Time:/ { gsub("s",""); print $2; exit }')
+        times+=("$t")
+    done
+    local median
+    median=$(printf '%s\n' "${times[@]}" | sort -n | awk -v n="$runs" 'NR==int((n+1)/2)')
+    echo "$sample_output" | grep -v "^Time:"
+    echo "Time: ${median}s"
+}
+
+# Run a LuaJIT benchmark RUNS times, output sample stdout with median Time:.
+# Returns 0 on success, 1 on failure, 2 on timeout.
+run_luajit_median() {
+    local f="$1"
+    local runs="${RUNS:-3}"
+    local times=()
+    local sample_output=""
+    local i
+    for i in $(seq 1 "$runs"); do
+        local output
+        output=$(run_with_timeout "$TIMEOUT_SEC" luajit "$f" 2>&1)
+        local ec=$?
+        if [[ $ec -eq 142 ]] || [[ $ec -eq 137 ]]; then
+            echo "  TIMEOUT"
+            return 2
+        elif [[ $ec -ne 0 ]]; then
+            echo "  FAILED"
+            return 1
+        fi
+        [[ -z "$sample_output" ]] && sample_output="$output"
+        local t
+        t=$(echo "$output" | awk '/^Time:/ { gsub("s",""); print $2; exit }')
+        times+=("$t")
+    done
+    local median
+    median=$(printf '%s\n' "${times[@]}" | sort -n | awk -v n="$runs" 'NR==int((n+1)/2)')
+    echo "$sample_output" | grep -v "^Time:"
+    echo "Time: ${median}s"
 }
 
 # =========================================================================
@@ -76,7 +142,7 @@ VM_RESULTS=()
 JIT_RESULTS=()
 LUAJIT_RESULTS=()
 
-echo ">>> Suite benchmarks (${#EXISTING_BENCHMARKS[@]} benchmarks x 2 modes, sequential)..."
+echo ">>> Suite benchmarks (${#EXISTING_BENCHMARKS[@]} benchmarks x 2 modes, median-of-${RUNS}, sequential)..."
 echo ""
 
 # --- VM Mode ---
@@ -85,17 +151,14 @@ echo "  VM Mode"
 echo "============================================"
 for bench in "${EXISTING_BENCHMARKS[@]}"; do
     echo "--- $bench (VM) ---"
-    output=$(run_with_timeout "$TIMEOUT_SEC" "$GSCRIPT_BIN" -vm "benchmarks/suite/${bench}.gs" 2>&1)
-    exit_code=$?
-    if [[ $exit_code -eq 142 ]] || [[ $exit_code -eq 137 ]]; then
-        echo "  TIMEOUT (>${TIMEOUT_SEC}s)"
+    output=$(run_benchmark_median "-vm" "$bench")
+    ec=$?
+    echo "$output"
+    if [[ $ec -eq 2 ]]; then
         VM_RESULTS+=("timeout")
-    elif [[ $exit_code -ne 0 ]]; then
-        echo "  FAILED (exit $exit_code)"
+    elif [[ $ec -ne 0 ]]; then
         VM_RESULTS+=("FAILED")
     else
-        echo "$output"
-        # Extract time from output
         time_line=$(echo "$output" | grep -i "Time:" | tail -1)
         VM_RESULTS+=("$time_line")
     fi
@@ -108,16 +171,14 @@ echo "  JIT Mode"
 echo "============================================"
 for bench in "${EXISTING_BENCHMARKS[@]}"; do
     echo "--- $bench (JIT) ---"
-    output=$(run_with_timeout "$TIMEOUT_SEC" "$GSCRIPT_BIN" -jit "benchmarks/suite/${bench}.gs" 2>&1)
-    exit_code=$?
-    if [[ $exit_code -eq 142 ]] || [[ $exit_code -eq 137 ]]; then
-        echo "  TIMEOUT (>${TIMEOUT_SEC}s)"
+    output=$(run_benchmark_median "-jit" "$bench")
+    ec=$?
+    echo "$output"
+    if [[ $ec -eq 2 ]]; then
         JIT_RESULTS+=("timeout")
-    elif [[ $exit_code -ne 0 ]]; then
-        echo "  FAILED (exit $exit_code)"
+    elif [[ $ec -ne 0 ]]; then
         JIT_RESULTS+=("FAILED")
     else
-        echo "$output"
         time_line=$(echo "$output" | grep -i "Time:" | tail -1)
         JIT_RESULTS+=("$time_line")
     fi
@@ -135,16 +196,14 @@ if command -v luajit &>/dev/null; then
             name=$(basename "$f" .lua)
             LUAJIT_NAMES+=("$name")
             echo "--- $name (LuaJIT) ---"
-            output=$(run_with_timeout "$TIMEOUT_SEC" luajit "$f" 2>&1)
-            exit_code=$?
-            if [[ $exit_code -eq 142 ]] || [[ $exit_code -eq 137 ]]; then
-                echo "  TIMEOUT"
+            output=$(run_luajit_median "$f")
+            ec=$?
+            echo "$output"
+            if [[ $ec -eq 2 ]]; then
                 LUAJIT_RESULTS+=("timeout")
-            elif [[ $exit_code -ne 0 ]]; then
-                echo "  FAILED"
+            elif [[ $ec -ne 0 ]]; then
                 LUAJIT_RESULTS+=("FAILED")
             else
-                echo "$output"
                 time_line=$(echo "$output" | grep -i "Time:" | tail -1)
                 LUAJIT_RESULTS+=("$time_line")
             fi
