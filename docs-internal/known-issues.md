@@ -1,6 +1,6 @@
 # Known Issues
 
-> Last updated: 2026-04-06
+> Last updated: 2026-04-11 (R26 review)
 
 ## Current
 
@@ -73,65 +73,32 @@
 - Pre-existing before Round 18, but store-to-load forwarding makes stale entries more visible
 - Low risk: dynamic-key overwrites of named fields are unusual
 
-### Tier 2 pipeline duplicated — FIXED (Round 19, Task 0)
-- Extracted `RunTier2Pipeline()` in pipeline.go. All callers consolidated.
-
-### benchmarks/run_all.sh: benchmarks use median-of-3 by default (R25)
-- Fixed in R25: replaced single-shot runner (3-5% CV → fake regressions) with median-of-N
-- Use `--runs=5` for publish-grade baselines before archiving a round's results
-- Use `--runs=1` only for fast iteration where ±5% noise is acceptable
-
 ### fib/ackermann/mutual_recursion: Tier 2 is net-negative (Round 11)
 - Tier 2 BLR overhead (15-20ns) > Tier 1 BLR (10ns) for recursive functions
 - SSA construction + type guards cost more than inlining gains
 - These stay at Tier 1; speedup needs native recursive BLR or Tier 1 specialization
 - Category: `recursive_call` (ceiling = 2)
 
-## Fixed (2026-04-06, Rounds 13-15)
+## Historical (>5 rounds old — not read by ANALYZE)
 
-### spectral_norm: was 42x behind LuaJIT — now 7.1x (Round 15)
-- Root cause: OSR was disabled since Round 4 hang. Single-call functions never promoted to Tier 2.
-- Fix: re-enable OSR with `LoopDepth >= 2` gate. 11 rounds of Tier 2 improvements became visible.
+### Fixed (Rounds 13-15, 2026-04-06)
+- spectral_norm 42x→7.1x (R15): OSR re-enabled with LoopDepth≥2 gate
+- mandelbrot 6.4x→1.27x (R15): same OSR fix; 0.393s→0.080s
+- sieve (R13-14): native bool/float fast paths + Tier 1 bypass; 0.227s→0.085s
+- matmul (R9-15): LICM-carry −13%, OSR −29%; 0.999s→0.152s
+- Tier 2 pipeline duplicated (R19): extracted RunTier2Pipeline() in pipeline.go
+- benchmarks: single-shot runner (R25): replaced with median-of-N; 3-5% CV eliminated
 
-### mandelbrot: was 6.4x behind LuaJIT — now 1.27x (Round 15)
-- Same OSR root cause as spectral_norm
-- mandelbrot 0.393s → 0.080s (−80%). First benchmark approaching LuaJIT parity.
+### Fixed (Rounds 1-12, 2026-04-04-05)
+- fibonacci_iterative (R3): phi regalloc clash — 2 phis assigned same GPR
+- sieve hang (R1): rawIntRegs state corruption in deopt path
+- sum_primes wrong count (R1): GPR phi move ordering
+- nbody/table_field_access (R2): resyncRegs() reset ctx.Regs after BLR op-exit
+- coroutine_bench wrong (R2): int48 overflow truncation in EmitBoxIntFast
+- object_creation len_sq=0 (R2): inline pass phi rewrite missed loop header
+- string_bench (early): FCMPd on NaN-boxed pointers returned unordered
 
-### sieve: was 0.227s — now 0.085s (Rounds 13-14)
-- Round 13: native ArrayBool/ArrayFloat fast paths in Tier 2 emit (−18%)
-- Round 14: Tier 1 float/bool table fast paths + feedback infrastructure + Tier 2 raw-int/const-bool bypass (−54%)
-
-### matmul: was 0.999s — now 0.152s (Rounds 9-15)
-- Round 9: LICM-carry (−13%). Round 15: OSR re-enable (−29%)
-
-## Fixed (2026-04-04-05, Rounds 1-12)
-
-### fibonacci_iterative: FIXED (Round 3, phi regalloc clash)
-- Register allocator assigned 2 phis the same physical register
-- Fixed by pre-allocating all phis simultaneously
-
-### sieve: was hanging — FIXED (Round 1)
-- rawIntRegs build-time state corruption in deopt path emission
-
-### sum_primes: wrong count — FIXED (Round 1)
-- GPR phi move ordering
-
-### nbody: energy not updating — FIXED (Round 2)
-- resyncRegs() in Tier 1 execute loop reset ctx.Regs after BLR callee op-exit
-
-### table_field_access: garbage checksum — FIXED (Round 2)
-- Same resyncRegs corruption as nbody
-
-### coroutine_bench: generator_sum wrong — FIXED (Round 2)
-- int48 overflow truncation in EmitBoxIntFast
-
-### object_creation: len_sq=0 — FIXED (Round 2)
-- inline pass rewriteValueRefs only updated current block, not loop header phis
-
-### string_bench: FIXED (Tier 1 string LT/LE exit-resume)
-- FCMPd on NaN-boxed pointers returned "unordered"
-
-## Historical (Trace JIT — deprecated)
+### Historical (Trace JIT — deprecated)
 
 ### spectral_norm: float accumulator treated as int
 ### nbody: guard-fail from slot reuse type mismatch

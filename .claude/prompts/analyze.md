@@ -122,6 +122,9 @@ Spawn exactly **ONE Research sub-agent** (Sonnet model) for all of Step 2 (web s
 **HARD LIMIT: 50 tool calls per sub-agent.** Do NOT spawn a second Research agent.
 At 40 calls, wrap up immediately with partial findings. Round 17 Research agents used 161+145 calls (29M tokens, 58% of total). This is the #1 token waste vector.
 
+**Before any web search**: check `opt/knowledge/` first — if a file covers the topic, read it and skip web search entirely.
+**Web fetch cap**: max 5 fetches per prior-art query. If V8/LuaJIT source is needed, use targeted grep + read ≤3 functions. Do NOT read entire files.
+
 #### 2a. Web search
 Use `WebSearch` for the specific technique. Specific, not generic:
 - Good: `"V8 TurboFan escape analysis scalar replacement 2024"`

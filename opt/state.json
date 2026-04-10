@@ -7,19 +7,10 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [
-    "benchmarks/data/history/2026-04-10.json",
-    "benchmarks/data/latest.json",
-    "docs/index.html",
-    "opt/INDEX.md",
-    "opt/analyze_report.md",
-    "opt/current_plan.md",
-    "opt/state.json",
-    "opt/workflow_log.jsonl"
-  ],
-  "head_commit": "5b4741bdf7b013b4aff8b3e65ae65c2157465cc1",
+  "uncommitted_files": [],
+  "head_commit": "2e32c7ceb2aedd607e85a74c528ed98512b0214d",
   "branch": "main",
-  "last_checkpoint": "2026-04-10T18:23:28Z",
+  "last_checkpoint": "2026-04-11T00:00:00Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -221,6 +212,6 @@
     "tier1_dispatch": 0,
     "other": 0
   },
-  "rounds_since_review": 2,
+  "rounds_since_review": 0,
   "rounds_since_arch_audit": 2
 }

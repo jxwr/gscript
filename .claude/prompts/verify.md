@@ -24,6 +24,7 @@ go test ./internal/methodjit/... -short -count=1 -timeout 120s
 go test ./internal/vm/... -short -count=1 -timeout 120s
 ```
 If tests fail: **fix first**. Correctness before performance.
+**JIT stack crash protocol**: on first SIGSEGV/SIGBUS in JIT code, immediately run `git stash && go test -run <failing_test> -timeout 10s; git stash pop` to confirm pre-existing. Do NOT investigate further — log in known-issues and continue.
 
 ### 1b. Run benchmarks
 ```

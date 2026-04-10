@@ -77,6 +77,7 @@ Execute tasks from `current_plan.md` in order (including any injected tasks). Fo
 - Do NOT skip tasks or do tasks out of order
 - Do NOT modify files outside the plan scope
 - If a Coder fails 3 times on one task, STOP and report — do not continue to the next task
+- **Bash iteration cap**: if a shell/script task fails after 3 attempts, write a minimal failing case to `opt/bash_failure.md` and report — do NOT keep iterating
 
 ## After all tasks — Update the round blog
 
