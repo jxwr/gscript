@@ -17,9 +17,16 @@ import (
 // of KnownInt slots before pc executes; bit i is set iff slot i is known
 // to hold int48. MaxStack > 64 is ineligible (ack/fib/mutual_recursion all
 // use <10 slots).
+//
+// guardedParams is the bitmap of param slots that the emitter must check
+// with a runtime tag-guard at function entry. Only params that are actually
+// used as operands of arith/compare ops are guarded; params used as tables
+// or callables (quicksort's `arr`) are excluded so their non-int runtime
+// type doesn't trigger a spurious deopt.
 type knownIntInfo struct {
-	perPC     []uint64
-	numParams int
+	perPC         []uint64
+	numParams     int
+	guardedParams uint64
 }
 
 // maxTrackedSlots is the limit on MaxStack for int-spec eligibility. Protos
@@ -144,11 +151,48 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 		}
 	}
 
-	// Build initial paramSet for the first NumParams slots.
-	var paramSet uint64
-	for i := 0; i < proto.NumParams && i < maxTrackedSlots; i++ {
-		paramSet = setSlot(paramSet, i)
+	// Classify params by how they're used in the body:
+	//   arithUse   — appears as B or C of ADD/SUB/MUL/EQ/LT/LE (as a register)
+	//   nonIntUse  — appears as the table slot in GETTABLE/SETTABLE/SETLIST/APPEND
+	//                or as the callable in CALL
+	// A param with both classifications is inconsistent (can't be int AND table);
+	// the proto is ineligible. A param used only as non-int is excluded from
+	// the seed and not guarded at entry — that's exactly quicksort's `arr`.
+	var arithUse, nonIntUse uint64
+	for _, inst := range code {
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		c := vm.DecodeC(inst)
+		switch op {
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_EQ, vm.OP_LT, vm.OP_LE:
+			if b < vm.RKBit && b < proto.NumParams {
+				arithUse = setSlot(arithUse, b)
+			}
+			if c < vm.RKBit && c < proto.NumParams {
+				arithUse = setSlot(arithUse, c)
+			}
+		case vm.OP_GETTABLE:
+			if b < proto.NumParams {
+				nonIntUse = setSlot(nonIntUse, b)
+			}
+		case vm.OP_SETTABLE, vm.OP_SETLIST, vm.OP_APPEND:
+			if a < proto.NumParams {
+				nonIntUse = setSlot(nonIntUse, a)
+			}
+		case vm.OP_CALL:
+			if a < proto.NumParams {
+				nonIntUse = setSlot(nonIntUse, a)
+			}
+		}
 	}
+	if arithUse&nonIntUse != 0 {
+		return nil, false
+	}
+
+	// Build initial paramSet: only the arith-used param slots. This is also
+	// the set of slots the param-entry guard will runtime-check.
+	paramSet := arithUse
 
 	// Pre-pass: record branch targets.
 	branchTargets := make(map[int]bool)
@@ -174,8 +218,9 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 	}
 
 	info := &knownIntInfo{
-		perPC:     make([]uint64, len(code)),
-		numParams: proto.NumParams,
+		perPC:         make([]uint64, len(code)),
+		numParams:     proto.NumParams,
+		guardedParams: paramSet,
 	}
 
 	known := paramSet

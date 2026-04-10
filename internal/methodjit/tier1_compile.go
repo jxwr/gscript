@@ -79,10 +79,32 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 	// Skips MOVreg X19,X0 and LDR for Regs/Constants (same function).
 	emitSelfCallEntryPrologue(asm)
 
+	// Int-spec analysis: compute per-PC KnownInt slot bitmap. If eligible,
+	// emit the param-entry guard so all three entry paths (normal, direct,
+	// self-call) flow through it on their way to pc_0. Protos marked by
+	// DisableIntSpec (from a prior deopt) skip analysis.
+	var intInfo *knownIntInfo
+	intSpecEnabled := false
+	if !IsIntSpecDisabled(proto) {
+		intInfo, intSpecEnabled = computeKnownIntSlots(proto)
+	}
+	guardEmitted := false
+	if intSpecEnabled && intInfo.guardedParams != 0 {
+		// All three entry prologues end with `B pc_0`. Place the guard at
+		// the pc_0 label so every entry flows through it. We skip the usual
+		// `asm.Label(pcLabel(0))` at pc==0 in the bytecode loop below.
+		asm.Label(pcLabel(0))
+		emitParamIntGuards(asm, intInfo.guardedParams)
+		guardEmitted = true
+	}
+
 	// Walk bytecodes linearly.
 	for pc := 0; pc < len(code); pc++ {
 		// Label for this PC (used as jump target within JIT code).
-		asm.Label(pcLabel(pc))
+		// Skip pc==0 when we already labeled it for the int-spec guard.
+		if !(pc == 0 && guardEmitted) {
+			asm.Label(pcLabel(pc))
+		}
 
 		inst := code[pc]
 		op := vm.DecodeOp(inst)
@@ -104,11 +126,23 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 
 		// ---- Arithmetic (native) ----
 		case vm.OP_ADD:
-			emitBaselineArith(asm, inst, "add")
+			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
+				emitBaselineArithIntSpec(asm, inst, "add")
+			} else {
+				emitBaselineArith(asm, inst, "add")
+			}
 		case vm.OP_SUB:
-			emitBaselineArith(asm, inst, "sub")
+			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
+				emitBaselineArithIntSpec(asm, inst, "sub")
+			} else {
+				emitBaselineArith(asm, inst, "sub")
+			}
 		case vm.OP_MUL:
-			emitBaselineArith(asm, inst, "mul")
+			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
+				emitBaselineArithIntSpec(asm, inst, "mul")
+			} else {
+				emitBaselineArith(asm, inst, "mul")
+			}
 		case vm.OP_DIV:
 			emitBaselineDiv(asm, inst)
 		case vm.OP_MOD:
@@ -120,21 +154,34 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 
 		// ---- Comparison (native) ----
 		case vm.OP_EQ:
-			emitBaselineEQ(asm, inst, pc, code)
+			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
+				emitBaselineEQIntSpec(asm, inst, pc, code)
+			} else {
+				emitBaselineEQ(asm, inst, pc, code)
+			}
 		case vm.OP_LT:
-			emitBaselineLT(asm, inst, pc, code)
-			// LT has a string-operand slow path that exits to Go.
-			// The handler resumes at pc+1 (no skip) or pc+2 (skip next).
-			resumePCs = append(resumePCs, pc+1)
-			if pc+2 <= len(code) {
-				resumePCs = append(resumePCs, pc+2)
+			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
+				emitBaselineLTIntSpec(asm, inst, pc, code)
+				// Spec path can't exit to Go — no resume PCs needed.
+			} else {
+				emitBaselineLT(asm, inst, pc, code)
+				// LT has a string-operand slow path that exits to Go.
+				// The handler resumes at pc+1 (no skip) or pc+2 (skip next).
+				resumePCs = append(resumePCs, pc+1)
+				if pc+2 <= len(code) {
+					resumePCs = append(resumePCs, pc+2)
+				}
 			}
 		case vm.OP_LE:
-			emitBaselineLE(asm, inst, pc, code)
-			// LE has a string-operand slow path that exits to Go.
-			resumePCs = append(resumePCs, pc+1)
-			if pc+2 <= len(code) {
-				resumePCs = append(resumePCs, pc+2)
+			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
+				emitBaselineLEIntSpec(asm, inst, pc, code)
+			} else {
+				emitBaselineLE(asm, inst, pc, code)
+				// LE has a string-operand slow path that exits to Go.
+				resumePCs = append(resumePCs, pc+1)
+				if pc+2 <= len(code) {
+					resumePCs = append(resumePCs, pc+2)
+				}
 			}
 
 		// ---- Logical test ----
@@ -475,4 +522,18 @@ func emitBaselineOpExitABx(asm *jit.Assembler, inst uint32, pc int, op vm.Opcode
 	a := vm.DecodeA(inst)
 	bx := vm.DecodeBx(inst)
 	emitBaselineOpExitCommon(asm, op, pc, a, bx, 0)
+}
+
+// intSpecEligible reports whether an ADD/SUB/MUL/EQ/LT/LE instruction at the
+// given PC is eligible for the int-specialized template: both RK operands
+// must be statically known to hold int48 values. Returns false when int-spec
+// is globally disabled for this proto or the analyzer returned nil.
+func intSpecEligible(enabled bool, info *knownIntInfo, pc int, inst uint32, proto *vm.FuncProto) bool {
+	if !enabled || info == nil {
+		return false
+	}
+	bidx := vm.DecodeB(inst)
+	cidx := vm.DecodeC(inst)
+	return info.isKnownIntOperand(pc, bidx, proto.Constants) &&
+		info.isKnownIntOperand(pc, cidx, proto.Constants)
 }

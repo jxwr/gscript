@@ -201,6 +201,7 @@ func (tm *TieringManager) Execute(compiled interface{}, regs []runtime.Value, ba
 		if err == errOSRRequested {
 			return tm.handleOSR(regs, base, proto)
 		}
+		// errIntSpecDeopt is handled internally by tier1.Execute.
 		return results, err
 	case *CompiledFunction:
 		return tm.executeTier2(c, regs, base, proto)

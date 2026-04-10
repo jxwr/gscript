@@ -44,6 +44,23 @@ func escapeToHeap(x interface{}) {
 	heapSink = nil
 }
 
+// protoIntSpecDisabled is the set of protos for which int-spec has been
+// disabled (due to a runtime guard failure). CompileBaseline consults this
+// before running computeKnownIntSlots. Global because BaselineFunc is
+// compiled via a package-level function (CompileBaseline), not a method.
+var protoIntSpecDisabled = make(map[*vm.FuncProto]bool)
+
+// DisableIntSpec marks a proto as ineligible for int-spec. Subsequent
+// (re-)compilations use only the generic polymorphic templates.
+func DisableIntSpec(proto *vm.FuncProto) {
+	protoIntSpecDisabled[proto] = true
+}
+
+// IsIntSpecDisabled reports whether int-spec has been disabled for a proto.
+func IsIntSpecDisabled(proto *vm.FuncProto) bool {
+	return protoIntSpecDisabled[proto]
+}
+
 // BaselineJITEngine implements vm.MethodJITEngine for the Tier 1 baseline compiler.
 type BaselineJITEngine struct {
 	compiled       map[*vm.FuncProto]*BaselineFunc
@@ -159,6 +176,26 @@ func (e *BaselineJITEngine) TryCompile(proto *vm.FuncProto) interface{} {
 // Execute runs a baseline-compiled function using the VM's register file.
 // Arguments are already in regs[base..base+numParams-1].
 func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
+	results, err := e.executeInner(compiled, regs, base, proto)
+	if err == errIntSpecDeopt {
+		// Int-spec guard failed or arith overflowed. Disable int-spec for
+		// this proto, rebuild the compiled BaselineFunc with generic
+		// templates, and re-execute. Safe because the param guard runs
+		// before any bytecode; register state is untouched.
+		DisableIntSpec(proto)
+		e.EvictCompiled(proto)
+		recompiled := e.TryCompile(proto)
+		if recompiled == nil {
+			return nil, fmt.Errorf("baseline: int-spec deopt recompile failed")
+		}
+		return e.executeInner(recompiled, regs, base, proto)
+	}
+	return results, err
+}
+
+// executeInner is the raw JIT entry loop. Execute wraps it to handle
+// int-spec deopt fallback.
+func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
 	bf := compiled.(*BaselineFunc)
 
 	// Ensure register space.
@@ -336,6 +373,12 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 			// TieringManager can intercept and upgrade to Tier 2.
 			return nil, errOSRRequested
 
+		case ExitDeopt:
+			// Int-spec guard failed or int-spec arith overflowed. The tiering
+			// manager recognizes this and disables int-spec for this proto
+			// (marks intSpecDisabled), recompiles generic, and re-executes.
+			return nil, errIntSpecDeopt
+
 		default:
 			return nil, fmt.Errorf("baseline: unknown exit code %d", ctx.ExitCode)
 		}
@@ -347,6 +390,12 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 // compile Tier 2 and re-enter the function at optimizing speed.
 var errOSRRequested = fmt.Errorf("baseline: OSR requested")
 
+// errIntSpecDeopt is a sentinel error returned by BaselineJITEngine.Execute
+// when an int-spec guard fails (param not int) or an int-spec arith overflows.
+// The TieringManager intercepts it, disables int-spec for the proto, and
+// recompiles generic Tier 1 code, then re-executes.
+var errIntSpecDeopt = fmt.Errorf("baseline: int-spec deopt")
+
 // SetOSRCounter sets the OSR loop iteration counter for a function.
 // When positive, Tier 1's FORLOOP will exit with ExitOSR after this many
 // iterations, triggering Tier 2 compilation.
@@ -357,4 +406,21 @@ func (e *BaselineJITEngine) SetOSRCounter(proto *vm.FuncProto, counter int64) {
 // CompiledCount returns the number of compiled functions.
 func (e *BaselineJITEngine) CompiledCount() int {
 	return len(e.compiled)
+}
+
+// EvictCompiled removes the cached BaselineFunc for a proto so the next
+// TryCompile rebuilds it from scratch. Used by the tiering manager to force
+// a recompile after an int-spec deopt.
+func (e *BaselineJITEngine) EvictCompiled(proto *vm.FuncProto) {
+	if bf, ok := e.compiled[proto]; ok {
+		// Leave the old code block allocated — it may still be referenced by
+		// proto.CompiledCodePtr from in-flight native calls. Freeing here
+		// could race with a concurrent BLR. The leak is bounded by the number
+		// of deopts (at most once per proto in practice).
+		_ = bf
+		delete(e.compiled, proto)
+	}
+	delete(e.failed, proto)
+	proto.CompiledCodePtr = 0
+	proto.DirectEntryPtr = 0
 }

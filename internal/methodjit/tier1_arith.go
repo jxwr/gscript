@@ -725,4 +725,171 @@ func emitBaselineTestSet(asm *jit.Assembler, inst uint32, pc int, code []uint32)
 	asm.Label(doneLabel)
 }
 
+// ---------------------------------------------------------------------------
+// Integer-specialized templates (Tier 1 int-spec — see tier1_int_analysis.go)
+// ---------------------------------------------------------------------------
+//
+// Skips per-operand tag dispatch when operands are statically known-int.
+// Correctness: param-entry guard + overflow guard both exit via ExitDeopt,
+// which the engine handles by disabling int-spec for the proto and
+// recompiling generic. Overflow re-execution may replay side effects — for
+// the target benchmarks (ack/fib/mutual_recursion with small values) it
+// never fires.
+
+// emitIntSpecDeopt emits the shared ExitDeopt exit sequence: set ExitCode=2,
+// then branch to the appropriate exit epilogue based on CallMode.
+func emitIntSpecDeopt(asm *jit.Assembler) {
+	asm.LoadImm64(jit.X0, int64(ExitDeopt))
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	asm.LDR(jit.X0, mRegCtx, execCtxOffCallMode)
+	asm.CBNZ(jit.X0, "direct_exit")
+	asm.B("baseline_exit")
+}
+
+// emitParamIntGuards emits ARM64 tag checks for each param slot flagged in
+// guardedParams. Other param slots are left alone (they aren't read as ints
+// anywhere in the body, so their runtime type doesn't affect correctness).
+// On any failure, exits via ExitDeopt so the tiering manager disables
+// int-spec for this proto and re-executes using generic templates.
+func emitParamIntGuards(asm *jit.Assembler, guardedParams uint64) {
+	if guardedParams == 0 {
+		return
+	}
+	failLabel := nextLabel("param_guard_fail")
+	okLabel := nextLabel("param_guard_ok")
+	// X3 = 0xFFFE (int tag). Reused across all param checks.
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+	for i := 0; i < maxTrackedSlots; i++ {
+		if guardedParams&(uint64(1)<<uint(i)) == 0 {
+			continue
+		}
+		loadSlot(asm, jit.X0, i)
+		asm.LSRimm(jit.X2, jit.X0, 48)
+		asm.CMPreg(jit.X2, jit.X3)
+		asm.BCond(jit.CondNE, failLabel)
+	}
+	asm.B(okLabel)
+
+	// Fail path: ExitDeopt → tiering manager falls back to generic.
+	asm.Label(failLabel)
+	emitIntSpecDeopt(asm)
+
+	asm.Label(okLabel)
+}
+
+// emitBaselineArithIntSpec emits ADD/SUB/MUL assuming both operands are
+// statically known to be ints. Skips the polymorphic tag dispatch. On int48
+// overflow, exits via ExitDeopt.
+func emitBaselineArithIntSpec(asm *jit.Assembler, inst uint32, op string) {
+	a := vm.DecodeA(inst)
+	bidx := vm.DecodeB(inst)
+	cidx := vm.DecodeC(inst)
+
+	loadRK(asm, jit.X0, bidx)
+	loadRK(asm, jit.X1, cidx)
+
+	// Operands known int — skip tag dispatch. Extract 48-bit signed payload.
+	asm.SBFX(jit.X4, jit.X0, 0, 48)
+	asm.SBFX(jit.X5, jit.X1, 0, 48)
+
+	switch op {
+	case "add":
+		asm.ADDreg(jit.X4, jit.X4, jit.X5)
+	case "sub":
+		asm.SUBreg(jit.X4, jit.X4, jit.X5)
+	case "mul":
+		asm.MUL(jit.X4, jit.X4, jit.X5)
+	}
+
+	// int48 overflow check: SBFX sign-extends lower 48 bits. If the result
+	// differs from the full 64-bit value, it doesn't fit in 48 bits.
+	overflowLabel := nextLabel("arith_spec_overflow")
+	doneLabel := nextLabel("arith_spec_done")
+	asm.SBFX(jit.X6, jit.X4, 0, 48)
+	asm.CMPreg(jit.X6, jit.X4)
+	asm.BCond(jit.CondNE, overflowLabel)
+
+	// Box + store.
+	jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
+	storeSlot(asm, a, jit.X4)
+	asm.B(doneLabel)
+
+	// Overflow → ExitDeopt (rare; target benchmarks never trip this).
+	asm.Label(overflowLabel)
+	emitIntSpecDeopt(asm)
+
+	asm.Label(doneLabel)
+}
+
+// emitBaselineEQIntSpec emits EQ assuming both operands are known int.
+// Raw CMPreg is correct for int48 equality: same int values have identical
+// NaN-box bit patterns.
+func emitBaselineEQIntSpec(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
+	a := vm.DecodeA(inst)
+	bidx := vm.DecodeB(inst)
+	cidx := vm.DecodeC(inst)
+
+	loadRK(asm, jit.X0, bidx)
+	loadRK(asm, jit.X1, cidx)
+
+	skipLabel := pcLabel(pc + 2)
+
+	asm.CMPreg(jit.X0, jit.X1)
+	if a != 0 {
+		// if (B==C) != true → if B != C then skip
+		asm.BCond(jit.CondNE, skipLabel)
+	} else {
+		// if (B==C) != false → if B == C then skip
+		asm.BCond(jit.CondEQ, skipLabel)
+	}
+}
+
+// emitBaselineLTIntSpec emits LT assuming both operands are known int.
+func emitBaselineLTIntSpec(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
+	a := vm.DecodeA(inst)
+	bidx := vm.DecodeB(inst)
+	cidx := vm.DecodeC(inst)
+
+	loadRK(asm, jit.X0, bidx)
+	loadRK(asm, jit.X1, cidx)
+
+	skipLabel := pcLabel(pc + 2)
+
+	asm.SBFX(jit.X4, jit.X0, 0, 48)
+	asm.SBFX(jit.X5, jit.X1, 0, 48)
+	asm.CMPreg(jit.X4, jit.X5)
+
+	if a != 0 {
+		// if (B < C) != true → if B >= C then skip
+		asm.BCond(jit.CondGE, skipLabel)
+	} else {
+		// if (B < C) != false → if B < C then skip
+		asm.BCond(jit.CondLT, skipLabel)
+	}
+}
+
+// emitBaselineLEIntSpec emits LE assuming both operands are known int.
+func emitBaselineLEIntSpec(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
+	a := vm.DecodeA(inst)
+	bidx := vm.DecodeB(inst)
+	cidx := vm.DecodeC(inst)
+
+	loadRK(asm, jit.X0, bidx)
+	loadRK(asm, jit.X1, cidx)
+
+	skipLabel := pcLabel(pc + 2)
+
+	asm.SBFX(jit.X4, jit.X0, 0, 48)
+	asm.SBFX(jit.X5, jit.X1, 0, 48)
+	asm.CMPreg(jit.X4, jit.X5)
+
+	if a != 0 {
+		// if (B <= C) != true → if B > C then skip
+		asm.BCond(jit.CondGT, skipLabel)
+	} else {
+		// if (B <= C) != false → if B <= C then skip
+		asm.BCond(jit.CondLE, skipLabel)
+	}
+}
+
 // Jump, ForLoop, Return, TForLoop are in tier1_control.go

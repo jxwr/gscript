@@ -20,7 +20,8 @@ func bit(slots ...int) uint64 {
 }
 
 // TestKnownInt_SimpleAdd: a 2-param proto with LOADINT + ADD + RETURN.
-// Verifies per-PC snapshots track the KnownInt slot set correctly.
+// Only slot 0 is arith-used (slot 1 never appears as an operand), so the
+// guardedParams seed contains {0} and the per-PC set tracks slots 0, 2, 3.
 func TestKnownInt_SimpleAdd(t *testing.T) {
 	proto := &vm.FuncProto{
 		NumParams: 2,
@@ -35,13 +36,16 @@ func TestKnownInt_SimpleAdd(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected eligible, got ok=false")
 	}
-	if got, want := info.knownIntAt(0), bit(0, 1); got != want {
+	if got, want := info.guardedParams, bit(0); got != want {
+		t.Errorf("guardedParams=%#x want %#x", got, want)
+	}
+	if got, want := info.knownIntAt(0), bit(0); got != want {
 		t.Errorf("knownIntAt(0)=%#x want %#x", got, want)
 	}
-	if got, want := info.knownIntAt(1), bit(0, 1, 2); got != want {
+	if got, want := info.knownIntAt(1), bit(0, 2); got != want {
 		t.Errorf("knownIntAt(1)=%#x want %#x", got, want)
 	}
-	if got, want := info.knownIntAt(2), bit(0, 1, 2, 3); got != want {
+	if got, want := info.knownIntAt(2), bit(0, 2, 3); got != want {
 		t.Errorf("knownIntAt(2)=%#x want %#x", got, want)
 	}
 }
@@ -169,42 +173,45 @@ func TestKnownInt_BranchTargetParamsSurvive(t *testing.T) {
 	}
 }
 
-// TestKnownInt_CallClearsReturnSlot: OP_CALL A=2 B=2 C=2 should clear slot 2
-// (the single return value) and no other.
+// TestKnownInt_CallClearsReturnSlot: OP_CALL A=4 B=2 C=2 should clear slot 4
+// (the single return value) but not slot 5. A trailing ADD keeps the proto
+// eligible and forces both params into the guardedParams seed.
 func TestKnownInt_CallClearsReturnSlot(t *testing.T) {
-	// pc=0 LOADINT R(2)=7
-	// pc=1 LOADINT R(3)=8
-	// pc=2 CALL A=2 B=2 C=2  (1 return value at slot 2)
-	// pc=3 RETURN
+	// pc=0 ADD R(3) = R(0) + R(1)  (arith use of both params)
+	// pc=1 LOADINT R(4)=7
+	// pc=2 LOADINT R(5)=8
+	// pc=3 CALL A=4 B=2 C=2         (1 return value → clears slot 4 only)
+	// pc=4 RETURN R(3), 2
 	proto := &vm.FuncProto{
 		NumParams: 2,
 		MaxStack:  8,
 		Code: []uint32{
-			vm.EncodeAsBx(vm.OP_LOADINT, 2, 7),
-			vm.EncodeAsBx(vm.OP_LOADINT, 3, 8),
-			vm.EncodeABC(vm.OP_CALL, 2, 2, 2),
-			vm.EncodeABC(vm.OP_RETURN, 0, 1, 0),
+			vm.EncodeABC(vm.OP_ADD, 3, 0, 1),
+			vm.EncodeAsBx(vm.OP_LOADINT, 4, 7),
+			vm.EncodeAsBx(vm.OP_LOADINT, 5, 8),
+			vm.EncodeABC(vm.OP_CALL, 4, 2, 2),
+			vm.EncodeABC(vm.OP_RETURN, 3, 2, 0),
 		},
 	}
 	info, ok := computeKnownIntSlots(proto)
 	if !ok {
 		t.Fatalf("expected eligible, got ok=false")
 	}
-	// Before pc=2, both 2 and 3 are known-int.
-	if got := info.knownIntAt(2); got&bit(2, 3) != bit(2, 3) {
-		t.Errorf("knownIntAt(2)=%#x missing slots 2,3 before CALL", got)
+	// Before the CALL (pc=3), both 4 and 5 are known-int.
+	if got := info.knownIntAt(3); got&bit(4, 5) != bit(4, 5) {
+		t.Errorf("knownIntAt(3)=%#x missing slots 4,5 before CALL", got)
 	}
-	// After the CALL (i.e. at pc=3), slot 2 must be cleared; slot 3 must
-	// remain, and params {0,1} must remain.
-	got := info.knownIntAt(3)
-	if got&bit(2) != 0 {
-		t.Errorf("knownIntAt(3)=%#x: slot 2 (CALL return) not cleared", got)
+	// After the CALL (pc=4), slot 4 must be cleared; slot 5 must remain,
+	// and the arith-seeded params {0,1} must remain.
+	got := info.knownIntAt(4)
+	if got&bit(4) != 0 {
+		t.Errorf("knownIntAt(4)=%#x: slot 4 (CALL return) not cleared", got)
 	}
-	if got&bit(3) == 0 {
-		t.Errorf("knownIntAt(3)=%#x: slot 3 wrongly cleared (C=2 means only 1 ret)", got)
+	if got&bit(5) == 0 {
+		t.Errorf("knownIntAt(4)=%#x: slot 5 wrongly cleared (C=2 means only 1 ret)", got)
 	}
 	if got&bit(0, 1) != bit(0, 1) {
-		t.Errorf("knownIntAt(3)=%#x: params wrongly cleared", got)
+		t.Errorf("knownIntAt(4)=%#x: arith-used params wrongly cleared", got)
 	}
 }
 
