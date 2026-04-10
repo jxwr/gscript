@@ -1,7 +1,7 @@
 ---
 layout: default
 title: "Slower Than The Interpreter"
-permalink: /draft-r26
+permalink: /36-slower-than-the-interpreter
 ---
 
 # Slower Than The Interpreter

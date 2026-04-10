@@ -155,3 +155,25 @@ If **ackermann doesn't move by ≥3%** after both tasks land and insn count drop
 2. `perf: drop NativeCallDepth on tier1 self-call fast path; SP-floor guard at prologue (R26 Task 1)`
 3. `perf: drop dead ctx.Constants STR on tier1 self-call restore (R26 Task 2)`
 4. `verify: R26 baseline refresh — ackermann −X%` (Task 3, single commit with latest.json update)
+
+---
+
+## Results (filled by VERIFY)
+
+| Benchmark | Before | After | Change | Expected | Met? |
+|-----------|--------|-------|--------|----------|------|
+| ackermann | 0.558s | 0.699s | +25% | −3–10% | ✗ (machine load; no code change) |
+| mutual_recursion | 0.238s | 0.283s | +19% | ±0 | N/A (no code change) |
+| object_creation | 0.764s | 0.931s | +22% | unchanged | N/A |
+
+*Note: All across-the-board regressions (20-50%) are machine load artifacts, not code regressions. Zero runtime code changed this round — Task 1 was fully reverted. The baseline.json will NOT be updated (measurements are unreliable due to machine load).*
+
+### Test Status
+- methodjit: **all tests pass** except `TestDeepRecursionRegression` — pre-existing crash (GC scanstack SIGSEGV on JIT frames during deep recursion; confirmed pre-existing at baseline commit 0ecdc5e). Logged to known-issues.
+- vm: PASS
+
+### Evaluator Findings
+- **PASS** — Test fixture correct, baseline constant consistent, premise_error.md accurate. No correctness risks.
+
+### Regressions (≥5%)
+- None from code changes. Measurement-only artifact (all regressions observed are due to machine load; no runtime code was modified).

@@ -31,11 +31,12 @@
 - Fix: consider skip-cache path for functions with no SetGlobal in module scope
 - Category: `tier2_call_overhead`
 
-### TestDeepRecursionRegression: goroutine deadlock/hang (pre-existing)
-- `testing.(*T).Run` goroutine hangs in `chanrecv` — test never completes
-- Reproduces on baseline (test_deep_recursion_test.go:132)
-- Likely: JIT-compiled deep recursion hits a blocking codepath (coroutine resume channel?)
-- Run with `-run TestDeepRecursion -timeout 10s` to avoid blocking CI
+### TestDeepRecursionRegression: GC stack-scan crash + goroutine deadlock (pre-existing)
+- `quicksort_5000` sub-test: Go GC scanner hits JIT frames → "fatal error: traceback did not unwind completely" or SIGSEGV during `mgcmark.go:scanstack`
+- `linear_recursion_500` sub-test: goroutine hangs in `chanrecv` — test never completes
+- Both reproduce at baseline (test_deep_recursion_test.go:132, commit 0ecdc5e)
+- Root cause: JIT-compiled native frames are not annotated for Go GC unwinding; GC triggered during deep JIT recursion can't walk the stack
+- Workaround: run full suite with `-short` flag; the two sub-tests inside `TestDeepRecursionRegression` are affected
 - Category: `tier2_recursion`
 
 ### TestQuicksortSmall: SIGBUS crash in JIT-generated code (pre-existing)

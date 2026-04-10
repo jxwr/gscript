@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-11</span>
   <br>
+  <a href="36-slower-than-the-interpreter">Slower Than The Interpreter</a>
+  <p>Six benchmarks where the Tier 1 JIT is slower than the interpreter it compiles from. Ackermann: 1.91&times; slower. The plan: replace the NativeCallDepth depth counter with an SP-floor guard and save 10 instructions per recursive call. The plan failed: Go goroutines start with 8KB of stack, not 2MB. NativeCallDepth=48 is the goroutine stack budget, not paranoia. One test fixture committed, one constraint documented, zero performance change.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-11</span>
+  <br>
   <a href="35-the-regression-that-wasnt">The Regression That Wasn&rsquo;t</a>
   <p>Round 24 reported a 10.5% regression on fibonacci_iterative. Fifteen diagnostic runs later: the delta was 0.67&sigma;. The regression didn&rsquo;t exist &mdash; the single-shot benchmark runner converted 3&ndash;5% thermal noise into a confident &ldquo;+10.5%&rdquo; in the commit message. This round: median-of-N runner, re-baseline with median-of-5, and a correctness fix for int-spec overflow deopt (resume at guard PC, not pc=0).</p>
 </div>
