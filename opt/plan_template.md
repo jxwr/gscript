@@ -3,7 +3,7 @@
 > Created: [YYYY-MM-DD HH:MM]
 > Status: active | completed | abandoned
 > Cycle ID: [YYYY-MM-DD-short-name]
-> Category: [recursive_call | tier2_float_loop | tier2_correctness | allocation_heavy | gofunction_overhead | field_access | call_ic | regalloc | missing_intrinsic | arch_refactor | other]
+> Category: [recursive_call | tier2_float_loop | tier2_correctness | allocation_heavy | gofunction_overhead | field_access | call_ic | regalloc | missing_intrinsic | tier1_dispatch | arch_refactor | other]
 > Initiative: opt/initiatives/X.md | standalone
 
 ## Target

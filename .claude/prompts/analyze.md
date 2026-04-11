@@ -123,6 +123,7 @@ Spawn exactly **ONE Research sub-agent** (Sonnet model) for all of Step 2 (web s
 At 40 calls, wrap up immediately with partial findings. Round 17 Research agents used 161+145 calls (29M tokens, 58% of total). This is the #1 token waste vector.
 
 **Before any web search**: check `opt/knowledge/` first — if a file covers the topic, read it and skip web search entirely.
+**Go runtime questions**: `grep -r 'keyword' $(go env GOROOT)/src/runtime/ | head -20` before web search — goroutine stack, morestack, scheduler internals are in source.
 **Web fetch cap**: max 5 fetches per prior-art query. If V8/LuaJIT source is needed, use targeted grep + read ≤3 functions. Do NOT read entire files.
 
 #### 2a. Web search
@@ -172,6 +173,7 @@ Technique eliminates X → −P% estimated (halved for ARM64 superscalar)."
 pprof is useless for JIT code. `otool -tv` / `objdump` is authoritative.
 
 **Do NOT spawn duplicate diagnostic agents.** One agent per target. If you need IR + disasm, the same agent does both.
+**Architecture audit sub-agent (Step 0b) MUST NOT run ARM64 disasm** — disasm work belongs to Step 4 diagnostic sub-agent only.
 
 ### Diagnostic cross-check (mandatory, R24)
 
@@ -202,6 +204,7 @@ Write `opt/current_plan.md` using `opt/plan_template.md`. Fill ALL sections:
 - **Expected Effect**: quantified, halved for ARM64 superscalar
 - **Failure Signals**: specific conditions
 - **Task Breakdown**: each task = one Coder sub-agent, with file + test
+  - **1-Coder rule (R27)**: the plan MUST have exactly ONE implementation Coder task. Infrastructure/diagnostic tasks (Task 0) don't count. If the optimization requires two changes, pick the safer/smaller one and defer the other to the next round. Reason: each additional Coder multiplies token cost by 2-3×; a focused single task is more likely to land cleanly.
   - **Surgical precision required** (R24): each task spec MUST include:
     - Exact file path + function name + line numbers to modify
     - The data structure fields/types being added or changed

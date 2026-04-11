@@ -55,6 +55,7 @@ CronCreate:
     - grep "Phase .* complete" <task_output_file>
     - bash .claude/watch-child.sh --list 2>&1 | head -6  
     - bash scripts/token_usage.sh --last 2>&1 | tail -8
+    If the task is still running: remind the user that the orchestrator advances phases automatically — do NOT manually run optimize.sh --from=<phase>. Manual intervention causes duplicate phase execution.
 ```
 
 Replace `<task_output_file>` with the actual output file path from the background task.

@@ -42,7 +42,7 @@ Execute tasks from `current_plan.md` in order (including any injected tasks). Fo
    ```
    Paste the output into the Coder's prompt so it doesn't need to Read them itself.
 
-3. **Spawn a Coder sub-agent** (Opus model) with a bounded task:
+3. **Spawn a Coder sub-agent** (Opus model) with a bounded task — **maximum 1 implementation Coder per round** (R27 rule). If the plan has multiple implementation tasks, execute only the first and mark the rest as deferred:
    - The code snippets you just read (pasted in the prompt)
    - Specific file(s) to modify
    - Specific test(s) that must pass
@@ -78,6 +78,7 @@ Execute tasks from `current_plan.md` in order (including any injected tasks). Fo
 - Do NOT modify files outside the plan scope
 - If a Coder fails 3 times on one task, STOP and report — do not continue to the next task
 - **Bash iteration cap**: if a shell/script task fails after 3 attempts, write a minimal failing case to `opt/bash_failure.md` and report — do NOT keep iterating
+- **JIT SIGSEGV = data-premise-error** (R26): Coder crash with `fault addr: 0xFFFE...`/`0xFFFF...` (NaN-boxed value) = goroutine stack corruption by JIT code. Abort immediately — do NOT retry. Revert all changes, write `opt/premise_error.md`, output `data-premise-error`. Reason: JIT blobs cannot call morestack; architecture mismatches cause immediate corruption, iteration is impossible.
 
 ## After all tasks — Update the round blog
 
