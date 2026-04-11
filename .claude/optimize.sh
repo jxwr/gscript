@@ -3,10 +3,12 @@
 # Each phase runs as an independent Claude session (no context accumulation).
 # State is passed via files between phases.
 #
-# Phases (3):
+# Phases (4):
 #   analyze   — classify gaps + research + read source + diagnose + write plan
 #   implement — execute plan tasks (spawn Coder sub-agents)
 #   verify    — tests + benchmarks + evaluator + close out round (INDEX/state/archive)
+#   sanity    — independent common-sense check: did VERIFY actually close out? is the
+#               data physically consistent with the plan? blocks auto-continue if not.
 #
 # Conditional:
 #   review    — (every REVIEW_INTERVAL rounds) harness self-audit, runs before analyze
@@ -27,7 +29,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROMPTS="$ROOT/.claude/prompts"
 STATE="$ROOT/opt/state.json"
-PHASES=(analyze implement verify)
+PHASES=(analyze implement verify sanity)
 
 # --- Parse args ---
 FROM="analyze"
@@ -114,14 +116,15 @@ run_phase() {
         exit 1
     fi
 
-    # Per-phase model selection.
-    # ANALYZE uses Opus (strategic: target selection, plan writing).
-    # REVIEW/IMPLEMENT/VERIFY use Sonnet (coordination + mechanical work).
-    # Coder sub-agents (spawned inside IMPLEMENT) stay on Opus per implement.md.
-    case $phase in
-        analyze)  PHASE_MODEL="claude-opus-4-6" ;;
-        *)        PHASE_MODEL="claude-sonnet-4-6" ;;
-    esac
+    # All phases use Opus 4.6. Sonnet downgrade for REVIEW/IMPLEMENT/VERIFY
+    # proved too weak — workflow quality suffered more than it saved tokens.
+    PHASE_MODEL="claude-opus-4-6"
+
+    local start_iso start_epoch
+    start_iso=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    start_epoch=$(date '+%s')
+    local cycle_id
+    cycle_id=$(python3 -c "import json; print(json.load(open('$STATE')).get('cycle_id','') or '')" 2>/dev/null || echo "")
 
     echo ""
     echo "================================================"
@@ -135,6 +138,13 @@ run_phase() {
         return 0
     fi
 
+    # Append phase-start record to phase_log.jsonl (mechanical, independent of agent).
+    python3 -c "
+import json
+rec={'cycle_id':'$cycle_id','phase':'$phase','model':'$PHASE_MODEL','event':'start','ts':'$start_iso'}
+open('$ROOT/opt/phase_log.jsonl','a').write(json.dumps(rec)+'\n')
+" 2>/dev/null || true
+
     start_monitor "$phase"
 
     claude -p "$(cat "$prompt_file")" \
@@ -144,6 +154,23 @@ run_phase() {
 
     local exit_code=$?
     stop_monitor
+
+    local end_iso end_epoch duration
+    end_iso=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    end_epoch=$(date '+%s')
+    duration=$((end_epoch - start_epoch))
+
+    # After phase runs, cycle_id may have changed (verify clears it). Re-read for end record.
+    local end_cycle_id
+    end_cycle_id=$(python3 -c "import json; print(json.load(open('$STATE')).get('cycle_id','') or '')" 2>/dev/null || echo "")
+    # Prefer the non-empty one
+    local log_cycle_id="${cycle_id:-$end_cycle_id}"
+
+    python3 -c "
+import json
+rec={'cycle_id':'$log_cycle_id','phase':'$phase','model':'$PHASE_MODEL','event':'end','ts':'$end_iso','duration_s':$duration,'exit_code':$exit_code}
+open('$ROOT/opt/phase_log.jsonl','a').write(json.dumps(rec)+'\n')
+" 2>/dev/null || true
 
     if [ $exit_code -ne 0 ]; then
         echo ""
@@ -222,6 +249,10 @@ run_cycle() {
             verify)
                 check_output "implement" "opt/current_plan.md" || return 1
                 ;;
+            sanity)
+                # sanity is independent — reads artifacts only, no code execution.
+                # Runs even if verify didn't fully close out, so it can detect that.
+                ;;
         esac
 
         run_phase "$phase" || {
@@ -230,6 +261,19 @@ run_cycle() {
             echo "Resume: bash .claude/optimize.sh --from=$phase"
             return 1
         }
+
+        # Post-sanity gate: if verdict is not clean, halt auto-continue.
+        if [ "$phase" = "sanity" ] && ! $DRY_RUN; then
+            verdict=$(python3 -c "import json; print(json.load(open('$STATE')).get('sanity_verdict','missing'))" 2>/dev/null || echo "missing")
+            echo ""
+            echo "=== Sanity verdict: $verdict ==="
+            if [ "$verdict" != "clean" ]; then
+                echo ""
+                echo "Sanity check flagged issues. Review: opt/sanity_report.md"
+                echo "Auto-continue is BLOCKED. Fix problems and resume manually, or re-run sanity."
+                return 2
+            fi
+        fi
     done
     return 0
 }
@@ -252,11 +296,18 @@ for ((round=1; round<=ROUNDS; round++)); do
         echo "################################################"
     fi
 
-    run_cycle "$CYCLE_FROM" || {
+    run_cycle "$CYCLE_FROM"
+    rc=$?
+    if [ $rc -eq 2 ]; then
+        echo ""
+        echo "=== Multi-round run halted by sanity check at round $round/$ROUNDS ==="
+        echo "Inspect opt/sanity_report.md, fix, then resume:  bash .claude/optimize.sh --rounds=$((ROUNDS-round+1))"
+        exit 2
+    elif [ $rc -ne 0 ]; then
         echo ""
         echo "=== Multi-round run stopped at round $round/$ROUNDS ==="
         exit 1
-    }
+    fi
 
     echo ""
     echo "=== Round $round complete ==="

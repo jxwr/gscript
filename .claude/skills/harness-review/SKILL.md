@@ -20,7 +20,33 @@ Your output: `opt/reviews/<date>-round<N>.md` with applied changes documented.
 2. **Workflow Statistics** — category distribution, outcome distribution, plan accuracy, initiative health, budget adherence, token usage anomalies
 3. **Process Understanding** — synthesizes what the workflow does well, what needs fixing, user's implicit priorities
 4. **Consistency Audit** — cross-checks all workflow documents for internal consistency (phase names, role descriptions, category taxonomy, pass pipeline, state fields, hook branches, file references, dead content, README, file sizes)
-5. **Self-Evolution** — applies fixes directly to `opt/`, `docs-internal/`, `scripts/`, `.claude/` (via Bash for .claude/ files)
+5. **Documentation Quality Audit** — walks the live doc set and deletes obsolete content instead of letting it accumulate. See section below for the checklist and rules.
+6. **Self-Evolution** — applies fixes directly to `opt/`, `docs-internal/`, `scripts/`, `.claude/` (via Bash for .claude/ files)
+
+## Documentation Quality Audit (Step 5 detail)
+
+Run this every review. Stale docs are a drift vector — they mislead ANALYZE into planning against a model of the system that no longer exists.
+
+### What to audit
+
+1. **`docs-internal/architecture/overview.md`** — pipeline order, tier roles, register convention. Cross-check against the actual code: `internal/methodjit/pass_*.go` (pipeline), `internal/methodjit/tier*.go` (tier boundaries), constant files for register names.
+2. **`docs-internal/architecture/constraints.md`** — every listed constraint/ceiling must still apply. Delete entries whose underlying code changed. Keep the R# reference that added it so the history is auditable.
+3. **`docs-internal/decisions/*.md` (ADRs)** — ADRs are historical, DO NOT delete. But if an ADR was superseded, add a one-line `**Status: superseded by ADR-NNN (R##)**` header.
+4. **`docs-internal/known-issues.md`** — remove entries that are fixed (check with `grep` for the referenced symbols / tests). Keep entries still reproducible.
+5. **`docs-internal/lessons-learned.md`** — keep, it's append-only history. Do not edit old entries.
+6. **`docs-internal/diagnostics/*.md`** — verify referenced commands, flags, file paths still exist. Delete sections that refer to removed tools.
+7. **`opt/initiatives/*.md`** — every initiative with `Status: complete` or `Status: abandoned` and last-round > 5 rounds ago → move to `opt/initiatives/archive/`. Active initiatives: verify `Next Step` still matches reality.
+8. **`opt/knowledge/*.md`** — knowledge entries should age well, but delete entries whose referenced APIs/files no longer exist.
+9. **`CLAUDE.md`** — top-level file references, phase names, role names must match `.claude/prompts/*.md`. A drift here is the worst kind — it's the entry point every new session reads.
+10. **`README.md`** (if present) — user-facing commands must still work.
+
+### Rules
+
+- **Delete, don't comment out.** Git preserves the history; dead content in live files is noise.
+- **One reason per deletion.** Add a one-line entry to the review's "Documentation Quality" section: `deleted X from Y — reason (R## made it obsolete)`.
+- **Never delete ADRs or lessons-learned.** These are historical records. Only add superseded markers.
+- **If unsure, flag don't delete.** Put flagged items under `## Docs flagged for user review` in the review output; the user decides.
+- **Budget cap**: ≤10 doc edits per review. If more is needed, prioritize top-level (CLAUDE.md, overview, constraints) and defer the rest to next review with a pointer.
 
 ## Data Sources
 

@@ -72,6 +72,8 @@ The workflow uses **specialized sub-agents**, not a single monolithic agent:
 | `opt/plans/*.md` | Archived plans for retrospectives |
 | `opt/reviews/*.md` | Harness self-audit reports |
 | `opt/workflow_log.jsonl` | Per-round metrics |
+| `opt/phase_log.jsonl` | Per-phase model + duration (written mechanically by orchestrator) |
+| `opt/sanity_report.md` | Per-round independent common-sense check output |
 | `docs-internal/architecture/constraints.md` | Known architectural constraints + ceilings |
 | `docs-internal/architecture/overview.md` | Tier/pipeline/register reference |
 | `benchmarks/data/latest.json` | Current benchmark results (written by VERIFY) |

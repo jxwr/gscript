@@ -80,7 +80,13 @@ Spawn an Evaluator sub-agent (**use Sonnet model** to reduce token cost) to revi
   ```json
   {"cycle_id":"...","category":"...","initiative":"...","outcome":"...","summary":"..."}
   ```
-- **category_failures**: `abandoned`/`no_change`/`regressed` → +1; `improved` → reset to 0
+- **Note**: An independent SANITY phase runs after you. It re-reads plan + state + benchmark data with fresh context and flags unclosed outcome, stale baseline, physics-violating deltas, or skipped MUST steps. If you cut corners here, sanity will halt auto-continue and surface it to the user. Close out fully.
+- **category_failures** for the current round's category: `abandoned`/`no_change`/`regressed` → +1; `improved` → reset to 0
+- **Ceiling decay (mechanical, run AFTER appending current round to previous_rounds)**:
+  For every category in `category_failures` with value ≥ 2 that is NOT the current round's category:
+    - Scan the last 3 entries of `previous_rounds` (including the round just appended)
+    - If that category does NOT appear in any of those 3 entries → reset `category_failures[category] = 0` and note the reset in the Results section: `"Ceiling decay: reset <category> failures (3 rounds skipped)"`
+  Rationale: ceiling rule is temporary deprioritization, not permanent block. After 3 rounds of trying other directions, the category becomes eligible again with fresh approach.
 - Increment: `rounds_since_review += 1`, `rounds_since_arch_audit += 1`
   (Note: ANALYZE resets `rounds_since_arch_audit` to 0 when it does a full audit)
 

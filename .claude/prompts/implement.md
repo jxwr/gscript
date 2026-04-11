@@ -49,6 +49,7 @@ Execute tasks from `current_plan.md` in order (including any injected tasks). Fo
    - What NOT to touch (scope boundary)
    - "If you need to read additional files not provided above, use Read. But try the provided code first."
    - "If you can't make it work in 3 attempts, return a failure report"
+   - **Small-task cap (R27)**: if task changes ≤2 files, add to Coder prompt: "Cap at 15 tool calls. Run targeted tests (`-run TestX`) not full suite — VERIFY runs the full suite."
 4. **Update current_plan.md**: mark task done or record failure
 5. **Check scope**: did the Coder change files outside the plan?
 6. **Collect incidental findings**: if the Coder reports pre-existing failures, stale tests,

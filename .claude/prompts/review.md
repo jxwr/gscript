@@ -168,12 +168,30 @@ Read ALL of these files and cross-check:
 10. **Dead content**: sections describing features that no longer exist?
 11. **Stale temp files**: scan `opt/` top-level for files that are NOT part of the known set
     (state.json, INDEX.md, plan_template.md, current_plan.md, measure_report.md,
-    analyze_report.md, workflow_log.jsonl) and are NOT in a known subdirectory
+    analyze_report.md, workflow_log.jsonl, phase_log.jsonl, sanity_report.md) and are NOT in a known subdirectory
     (plans/, initiatives/, reviews/, knowledge/, history/, pprof-tier2-float-artifacts/).
     One-off diagnostic reports, ad-hoc dumps, scratch files left by past rounds — delete them.
     Also check `opt/reviews/pending-changes/` for stale applied patches.
 
 **For each inconsistency found**: fix directly. For `.claude/` files use Bash (not Edit/Write — blocked by Claude Code). Note in "Self-Evolution Actions".
+
+---
+
+## E. Documentation Quality Audit (MANDATORY)
+
+Walk the live doc set and delete obsolete content. Rule: delete, don't comment out. One-line reason per deletion in review output. See `.claude/skills/harness-review/SKILL.md` → "Documentation Quality Audit" for the full checklist.
+
+**Scope (every review):**
+- `docs-internal/architecture/overview.md` + `constraints.md` — cross-check against code; delete entries whose code changed.
+- `docs-internal/known-issues.md` — remove fixed entries (grep for referenced symbols/tests to confirm).
+- `docs-internal/diagnostics/*.md` — verify commands/flags still exist.
+- `opt/initiatives/*.md` — `complete`/`abandoned` with last-round > 5 ago → move to `opt/initiatives/archive/`. Active: verify `Next Step` matches reality.
+- `opt/knowledge/*.md` — delete entries whose referenced APIs no longer exist.
+- `CLAUDE.md` — phase/role names match `.claude/prompts/*.md`.
+
+**Never delete:** ADRs (add `Status: superseded` marker only), `lessons-learned.md` (append-only).
+**Budget:** ≤10 doc edits per review. More → defer to next review with a pointer.
+**Unsure → flag:** list under `## Docs flagged for user review` in output; user decides.
 
 ---
 

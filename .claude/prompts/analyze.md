@@ -70,10 +70,10 @@ Just read the existing documents:
 ## Step 1 — Gap Classification + Target Selection (strategic)
 
 ### Rules
-- **Ceiling Rule**: `category_failures >= 2` → FORBIDDEN
+- **Ceiling Rule**: `category_failures >= 2` → **skip this round, try a different category**. After 3 rounds away from the category, it becomes eligible again (reset `category_failures` to 0 in state.json at that point). This is temporary deprioritization, NOT a permanent block — high-ROI targets should be retried with a fresh approach after other directions are explored.
 - **Initiative Rule**: active initiative with non-empty `Next Step` → strong candidate
 - **INDEX pattern check**: don't repeat failed patterns from last 5 rounds
-- **Constraints are cost, not block** (R24): file-size/style flags never filter out targets. High-ROI target in an oversized file → plan adds split Task 0. Hard blocks: `category_failures ≥ 2`, correctness bugs, broken subsystems. Nothing else.
+- **Constraints are cost, not block** (R24): file-size/style flags never filter out targets. High-ROI target in an oversized file → plan adds split Task 0. Hard blocks: correctness bugs, broken subsystems. `category_failures ≥ 2` is a skip-for-now, not a hard block.
 
 ### Task
 1. Classify ALL benchmark gaps into canonical categories.
