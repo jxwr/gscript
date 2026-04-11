@@ -347,6 +347,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("LICM: %w", err)
 	}
 
+	fn, err = ScalarPromotionPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ScalarPromotion: %w", err)
+	}
+
 	return fn, intrinsicNotes, nil
 }
 
@@ -371,5 +376,6 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("DCE", DCEPass)
 	pipe.Add("RangeAnalysis", RangeAnalysisPass)
 	pipe.Add("LICM", LICMPass)
+	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	return pipe
 }
