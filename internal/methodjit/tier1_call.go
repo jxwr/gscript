@@ -148,27 +148,26 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	// Load Proto
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
 
-	// Self-call fast path: if callee proto == caller proto, skip DirectEntryPtr
-	// load and CallCount increment, and use BL direct_entry (PC-relative, direct
-	// branch) instead of BLR X2 (indirect). This saves ~4 instructions per
-	// recursive call. The bounds check is still required because each recursive
-	// call advances mRegRegs by calleeBaseOff and can overflow the register file.
+	// Self-call detection: compare callee proto with callerProto.
+	// If equal → self-call path (BL self_call_entry, lightweight save).
+	// If not equal → normal path (BLR X2, full save).
 	//
-	// For self-calls, MaxStack is known at compile time, so the bounds check
-	// uses a precomputed constant instead of loading from the proto at runtime.
-	//
-	// X20 is used as a flag register (1 = self-call, 0 = normal). X20 is
-	// callee-saved (saved/restored in the full prologue/epilogue) and not used
-	// by Tier 1 baseline code between instructions, so it is safe to use here.
-	// Steps 4-6 only use X0-X7 as scratch, so X20 survives until the CBNZ
-	// check at step 7.
-	afterNormalChecksLabel := nextLabel("after_normal_checks")
-	selfCallSkipLabel := nextLabel("self_call_skip")
+	// NOTE: X20 is intentionally NOT used as a flag across BLR/BL. direct_entry
+	// and self_call_entry only save FP+LR, so the callee freely overwrites X20
+	// for its own call sites. Using X20 to select the restore path after BLR
+	// would therefore read the callee's last X20 value, not the caller's — causing
+	// wrong-frame-size restores and goroutine stack corruption. The fix is to give
+	// each path (normal and self-call) its own complete save/call/restore sequence
+	// with no shared flag register needed.
+	selfCallExecLabel := nextLabel("self_call_exec")
 	asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(callerProto))))
 	asm.CMPreg(jit.X1, jit.X3)
-	asm.BCond(jit.CondEQ, selfCallSkipLabel)
+	asm.BCond(jit.CondEQ, selfCallExecLabel)
 
-	// --- Normal path: callee is a different function ---
+	// -----------------------------------------------------------------------
+	// Normal path: callee is a different function.
+	// X0 = *vm.Closure, X1 = *FuncProto, X2 = DirectEntryPtr (loaded below)
+	// -----------------------------------------------------------------------
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr)
 	asm.CBZ(jit.X2, slowLabel) // not compiled -> slow
 
@@ -186,63 +185,14 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.CMPreg(jit.X3, jit.X4)
 	asm.BCond(jit.CondHI, slowLabel) // unsigned greater than -> slow path
 
-	// All checks passed. Stack is clean.
-	// X0 = *vm.Closure, X1 = *FuncProto, X2 = DirectEntryPtr
-
 	// Increment callee's CallCount so the TieringManager can promote it to Tier 2.
-	// Without this, BLR calls bypass the VM's CallCount++ and functions stay at Tier 1.
-	// X1 = callee's *FuncProto, X3/X4 are scratch.
-	asm.LDR(jit.X3, jit.X1, funcProtoOffCallCount)   // X3 = proto.CallCount
-	asm.ADDimm(jit.X3, jit.X3, 1)                     // X3++
-	asm.STR(jit.X3, jit.X1, funcProtoOffCallCount)    // proto.CallCount = X3
-	// If CallCount just reached the Tier 2 threshold, fall to slow path so the
-	// VM's TryCompile triggers Tier 2 compilation. This detour happens at most
-	// once per function (on the exact threshold crossing). After that, BLR calls
-	// continue at Tier 1 but the Tier 2 code is compiled and cached.
-	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
-	asm.BCond(jit.CondEQ, slowLabel) // exactly at threshold → trigger Tier 2 via slow path
-
-	asm.MOVimm16(jit.X20, 0) // flag: normal call
-	asm.B(afterNormalChecksLabel)
-
-	// Self-call path: skip DirectEntryPtr load (use BL direct_entry).
-	// Bounds check uses compile-time constant: totalNeeded = calleeBaseOff + MaxStack*8.
-	// CallCount is still incremented so the function can be promoted to Tier 2.
-	asm.Label(selfCallSkipLabel)
-	selfCallTotalNeeded := int64(calleeBaseOff + maxStack*8)
-	asm.LoadImm64(jit.X3, selfCallTotalNeeded)
-	asm.ADDreg(jit.X3, jit.X3, mRegRegs)        // X3 = mRegRegs + totalNeeded
-	asm.LDR(jit.X4, mRegCtx, execCtxOffRegsEnd)
-	asm.CMPreg(jit.X3, jit.X4)
-	asm.BCond(jit.CondHI, slowLabel)              // overflow -> slow path
-
-	// Increment CallCount so Tier 2 promotion can still happen.
 	asm.LDR(jit.X3, jit.X1, funcProtoOffCallCount)
 	asm.ADDimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, jit.X1, funcProtoOffCallCount)
 	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
-	asm.BCond(jit.CondEQ, slowLabel)
+	asm.BCond(jit.CondEQ, slowLabel) // exactly at threshold → trigger Tier 2 via slow path
 
-	asm.MOVimm16(jit.X20, 1)                     // flag: self-call -> use BL direct_entry
-	asm.B(afterNormalChecksLabel)
-
-	// Fast self-call path: NaN-boxed R(A) matched cached self-closure.
-	// X1 = callerProto is needed for CallCount increment at selfCallSkipLabel.
-	asm.Label(selfCallFastLabel)
-	asm.LoadImm64(jit.X1, int64(uintptr(unsafe.Pointer(callerProto))))
-	asm.B(selfCallSkipLabel)
-
-	asm.Label(afterNormalChecksLabel)
-
-	// 4. Save caller state ON STACK
-	// Self-call (X20=1): lightweight save (32 bytes) — skip mRegConsts,
-	// ClosurePtr, GlobalCache, GlobalCachedGen (unchanged for same proto).
-	// Normal call (X20=0): full save (64 bytes).
-	selfCallSaveLabel := nextLabel("self_call_save")
-	saveDoneLabel := nextLabel("save_done")
-	asm.CBNZ(jit.X20, selfCallSaveLabel)
-
-	// Normal save (96 bytes, 16-byte aligned)
+	// 4-N. Normal save (96 bytes, 16-byte aligned)
 	asm.SUBimm(jit.SP, jit.SP, 96)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
@@ -259,34 +209,14 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.STR(mRegSelfClosure, jit.SP, 64)
 	// Save caller's pinned R(0) (X22)
 	asm.STR(mRegR0, jit.SP, 72)
-	asm.B(saveDoneLabel)
 
-	// Self-call save (48 bytes, 16-byte aligned)
-	asm.Label(selfCallSaveLabel)
-	asm.SUBimm(jit.SP, jit.SP, 48)
-	asm.STP(jit.X29, jit.X30, jit.SP, 0)
-	asm.STR(mRegRegs, jit.SP, 16)
-	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
-	asm.STR(jit.X3, jit.SP, 24)
-	// Save caller's pinned R(0) (X22)
-	asm.STR(mRegR0, jit.SP, 32)
-
-	asm.Label(saveDoneLabel)
-
-	// 5. Copy args to callee register window
+	// 5-N. Copy args to callee register window (normal path)
 	if varArgs {
-		// B=0: variable args. Read Top from *TopPtr to compute nArgs.
-		// nArgs = *TopPtr - (absSlot + 1) where absSlot = (mRegRegs - RegsBase)/8 + a
-		// Simpler: *TopPtr tells us the absolute top slot.
-		// Args are at regs[absSlot+1] to regs[Top-1].
-		// We compute: argStart = mRegRegs + (a+1)*8, argEnd = RegsBase + Top*8
-		// nArgs = (argEnd - argStart) / 8
-		asm.LDR(jit.X3, mRegCtx, execCtxOffTopPtr) // X3 = &vm.top
-		asm.LDR(jit.X3, jit.X3, 0)                 // X3 = vm.top (int, abs index)
-		asm.LSLimm(jit.X3, jit.X3, 3)              // X3 = vm.top * 8 (bytes)
+		asm.LDR(jit.X3, mRegCtx, execCtxOffTopPtr)
+		asm.LDR(jit.X3, jit.X3, 0)
+		asm.LSLimm(jit.X3, jit.X3, 3)
 		asm.LDR(jit.X4, mRegCtx, execCtxOffRegsBase)
-		asm.ADDreg(jit.X3, jit.X3, jit.X4) // X3 = &regs[Top] = absolute end pointer
-		// X5 = &regs[absSlot+1] = mRegRegs + (a+1)*8
+		asm.ADDreg(jit.X3, jit.X3, jit.X4)
 		argStartOff := slotOff(a + 1)
 		if argStartOff <= 4095 {
 			asm.ADDimm(jit.X5, mRegRegs, uint16(argStartOff))
@@ -294,11 +224,8 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 			asm.LoadImm64(jit.X5, int64(argStartOff))
 			asm.ADDreg(jit.X5, mRegRegs, jit.X5)
 		}
-		// nArgs in bytes = X3 - X5; nArgs = (X3 - X5) / 8
-		// Copy loop: while X5 < X3, copy *X5 to calleeBase + i*8
 		copyLabel := nextLabel("call_vararg_copy")
 		copyDoneLabel := nextLabel("call_vararg_done")
-		// X6 = dest pointer = mRegRegs + calleeBaseOff
 		if calleeBaseOff <= 4095 {
 			asm.ADDimm(jit.X6, mRegRegs, uint16(calleeBaseOff))
 		} else {
@@ -307,7 +234,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 		}
 		asm.Label(copyLabel)
 		asm.CMPreg(jit.X5, jit.X3)
-		asm.BCond(jit.CondHS, copyDoneLabel) // unsigned >= : done
+		asm.BCond(jit.CondHS, copyDoneLabel)
 		asm.LDR(jit.X4, jit.X5, 0)
 		asm.STR(jit.X4, jit.X6, 0)
 		asm.ADDimm(jit.X5, jit.X5, 8)
@@ -323,14 +250,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 		}
 	}
 
-	// 6. Set up callee context
-	// Self-call (X20=1): only advance mRegRegs and set CallMode.
-	// Skip: Constants reload, ClosurePtr, GlobalCache, GlobalCachedGen.
-	selfCallSetupLabel := nextLabel("self_call_setup")
-	setupDoneLabel := nextLabel("setup_done")
-	asm.CBNZ(jit.X20, selfCallSetupLabel)
-
-	// Normal setup
+	// 6-N. Normal setup: advance mRegRegs, reload Constants, set ClosurePtr/GlobalCache
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
 	} else {
@@ -338,100 +258,155 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 		asm.ADDreg(mRegRegs, mRegRegs, jit.X3)
 	}
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
-
 	asm.LDR(mRegConsts, jit.X1, funcProtoOffConstants)
 	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
-
 	asm.STR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr)
-
-	// Set CallMode = 1 (direct call) for the callee
 	asm.MOVimm16(jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
-
-	// Load callee's GlobalValCache from Proto (prevent cross-function cache pollution).
-	// Also zero BaselineGlobalCachedGen to force a cache miss on the callee's first
-	// GETGLOBAL — the caller's CachedGen may match the current globalCacheGen even
-	// though the callee's cache is stale from a previous execution.
-	// X1 still holds callee's FuncProto pointer from the type check
 	asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
 	asm.MOVimm16(jit.X3, 0)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
-	asm.B(setupDoneLabel)
 
-	// Self-call setup: only advance mRegRegs and set CallMode
-	asm.Label(selfCallSetupLabel)
-	if calleeBaseOff <= 4095 {
-		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
-	} else {
-		asm.LoadImm64(jit.X3, int64(calleeBaseOff))
-		asm.ADDreg(mRegRegs, mRegRegs, jit.X3)
-	}
-	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
-	asm.MOVimm16(jit.X3, 1)
-	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
-
-	asm.Label(setupDoneLabel)
-
-	// 7. Increment NativeCallDepth, call callee, decrement
-	selfCallBLLabel := nextLabel("self_call_bl")
-	afterCallLabel := nextLabel("after_call")
-
+	// 7-N. Increment NativeCallDepth, BLR X2, decrement
 	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 	asm.ADDimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
-
 	asm.MOVreg(jit.X0, mRegCtx)
-
-	// X20 flag: 0 = normal (BLR X2), 1 = self-call (BL direct_entry)
-	asm.CBNZ(jit.X20, selfCallBLLabel)
 	asm.BLR(jit.X2)
-	asm.B(afterCallLabel)
-	asm.Label(selfCallBLLabel)
-	asm.BL("self_call_entry")
-	asm.Label(afterCallLabel)
-
-	// Decrement NativeCallDepth after callee returns
 	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 	asm.SUBimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
-	// 8. Restore caller state
-	// Self-call (X20=1): lightweight restore (32-byte frame).
-	// Normal call (X20=0): full restore (64-byte frame).
-	selfCallRestoreLabel := nextLabel("self_call_restore")
+	// 8-N. Normal restore (96-byte frame)
 	restoreDoneLabel := nextLabel("restore_done")
-	asm.CBNZ(jit.X20, selfCallRestoreLabel)
-
-	// Normal restore (96-byte frame)
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 32)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
-	// Restore caller's ClosurePtr, GlobalCache, and GlobalCachedGen
 	asm.LDR(jit.X3, jit.SP, 40)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.LDR(jit.X3, jit.SP, 48)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
 	asm.LDR(jit.X3, jit.SP, 56)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCachedGen)
-	// Restore caller's NaN-boxed self-closure cache (X21)
 	asm.LDR(mRegSelfClosure, jit.SP, 64)
-	// Restore caller's pinned R(0) (X22)
 	asm.LDR(mRegR0, jit.SP, 72)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, 96)
-	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants) // only needed on normal-call path; self-call never clobbers X27
+	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants) // sync X27 back to ctx
 	asm.B(restoreDoneLabel)
 
-	// Self-call restore (48-byte frame)
-	asm.Label(selfCallRestoreLabel)
+	// -----------------------------------------------------------------------
+	// Self-call path: callee proto == callerProto (or fast-path X0 == X21).
+	// Uses BL self_call_entry (PC-relative) instead of BLR X2.
+	// selfCallFastLabel: X0 == mRegSelfClosure; X1 not yet loaded → load now.
+	// selfCallExecLabel: X1 = callerProto (either loaded or from proto compare).
+	// -----------------------------------------------------------------------
+	asm.Label(selfCallFastLabel)
+	asm.LoadImm64(jit.X1, int64(uintptr(unsafe.Pointer(callerProto))))
+	// fall through to selfCallExecLabel
+
+	asm.Label(selfCallExecLabel)
+
+	// Check DirectEntryPtr: if handleNativeCallExit cleared it (set to 0 because
+	// the callee had op-exits), fall to the slow exit-resume path. Without this
+	// check, self-calls bypass the DirectEntryPtr guard, causing deeply-nested
+	// handleNativeCallExit → executeInner chains that overflow the goroutine stack.
+	// X1 = callerProto (set by selfCallFastLabel or by the proto comparison above).
+	asm.LDR(jit.X3, jit.X1, funcProtoOffDirectEntryPtr)
+	asm.CBZ(jit.X3, slowLabel) // DirectEntryPtr=0 → slow path
+
+	// Bounds check (self-call: compile-time constant totalNeeded)
+	selfCallTotalNeeded := int64(calleeBaseOff + maxStack*8)
+	asm.LoadImm64(jit.X3, selfCallTotalNeeded)
+	asm.ADDreg(jit.X3, jit.X3, mRegRegs)
+	asm.LDR(jit.X4, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X3, jit.X4)
+	asm.BCond(jit.CondHI, slowLabel)
+
+	// Increment CallCount so Tier 2 promotion can still happen.
+	asm.LDR(jit.X3, jit.X1, funcProtoOffCallCount)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, jit.X1, funcProtoOffCallCount)
+	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
+	asm.BCond(jit.CondEQ, slowLabel)
+
+	// 4-S. Self-call save (48 bytes, 16-byte aligned)
+	asm.SUBimm(jit.SP, jit.SP, 48)
+	asm.STP(jit.X29, jit.X30, jit.SP, 0)
+	asm.STR(mRegRegs, jit.SP, 16)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
+	asm.STR(jit.X3, jit.SP, 24)
+	asm.STR(mRegR0, jit.SP, 32)
+
+	// 5-S. Copy args to callee register window (self-call path)
+	if varArgs {
+		asm.LDR(jit.X3, mRegCtx, execCtxOffTopPtr)
+		asm.LDR(jit.X3, jit.X3, 0)
+		asm.LSLimm(jit.X3, jit.X3, 3)
+		asm.LDR(jit.X4, mRegCtx, execCtxOffRegsBase)
+		asm.ADDreg(jit.X3, jit.X3, jit.X4)
+		argStartOff := slotOff(a + 1)
+		if argStartOff <= 4095 {
+			asm.ADDimm(jit.X5, mRegRegs, uint16(argStartOff))
+		} else {
+			asm.LoadImm64(jit.X5, int64(argStartOff))
+			asm.ADDreg(jit.X5, mRegRegs, jit.X5)
+		}
+		scCopyLabel := nextLabel("sc_vararg_copy")
+		scCopyDoneLabel := nextLabel("sc_vararg_done")
+		if calleeBaseOff <= 4095 {
+			asm.ADDimm(jit.X6, mRegRegs, uint16(calleeBaseOff))
+		} else {
+			asm.LoadImm64(jit.X6, int64(calleeBaseOff))
+			asm.ADDreg(jit.X6, mRegRegs, jit.X6)
+		}
+		asm.Label(scCopyLabel)
+		asm.CMPreg(jit.X5, jit.X3)
+		asm.BCond(jit.CondHS, scCopyDoneLabel)
+		asm.LDR(jit.X4, jit.X5, 0)
+		asm.STR(jit.X4, jit.X6, 0)
+		asm.ADDimm(jit.X5, jit.X5, 8)
+		asm.ADDimm(jit.X6, jit.X6, 8)
+		asm.B(scCopyLabel)
+		asm.Label(scCopyDoneLabel)
+	} else {
+		for i := 0; i < nArgs; i++ {
+			srcOff := slotOff(a + 1 + i)
+			dstOff := calleeBaseOff + i*8
+			asm.LDR(jit.X3, mRegRegs, srcOff)
+			asm.STR(jit.X3, mRegRegs, dstOff)
+		}
+	}
+
+	// 6-S. Self-call setup: only advance mRegRegs and set CallMode
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X3, int64(calleeBaseOff))
+		asm.ADDreg(mRegRegs, mRegRegs, jit.X3)
+	}
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+	asm.MOVimm16(jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+
+	// 7-S. Increment NativeCallDepth, BL self_call_entry, decrement
+	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	asm.BL("self_call_entry")
+	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	asm.SUBimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+
+	// 8-S. Self-call restore (48-byte frame)
 	asm.LDR(mRegRegs, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 24)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
-	// Restore caller's pinned R(0) (X22)
 	asm.LDR(mRegR0, jit.SP, 32)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, 48)
+	// fall through to restoreDoneLabel
 
 	asm.Label(restoreDoneLabel)
 	// Restore context pointers

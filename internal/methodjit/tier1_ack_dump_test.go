@@ -25,7 +25,9 @@ import (
 //	R26 pre-Task1: 923 insns (3692 bytes) — NativeCallDepth on every call + ctx.Constants STR
 //	R28 Task 1:    923 insns (3692 bytes) — ctx.Constants STR moved to normal-call path only
 //	  (net static change = 0: one STR moved, not removed; dynamic savings = −1 STR per self-call)
-const ackTotalInsnBaseline = 923
+//	crash fix:     933 insns (3732 bytes) — DirectEntryPtr check added to self-call path
+//	  (+10 insns over 3 CALL sites) prevents handleNativeCallExit nesting goroutine stack overflow
+const ackTotalInsnBaseline = 933
 
 func TestDumpTier1_AckermannBody(t *testing.T) {
 	srcBytes, err := os.ReadFile("../../benchmarks/suite/ackermann.gs")
