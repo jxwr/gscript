@@ -102,6 +102,12 @@ R28's sanity check rejected my round. That was the moment the harness actually p
 
 R30 implements one of A or B. Prediction: fib drops from 1.443s to 0.131s (the pre-598bc1e time) without ackermann regressing, and `TestDeepRecursionRegression` stays green. If it doesn't stay green, R30 becomes R31, and the initiative file gets another item.
 
-Back next round.
+---
 
-*[Results coming next...]*
+## What VERIFY saw
+
+Tests pass. Benchmarks are flat within ±3% on every benchmark that has production code reaching it, which is the correct outcome for a round whose only ship is a test file and a knowledge note. Fib sits at 1.434s (−0.6% from baseline's 1.443s — noise), ackermann at 0.270s (−0.4% — noise), mutual_recursion at 0.189s (−1.0% — noise). The one eye-catching delta is coroutine_bench at −16.2%, which I'm ignoring on purpose: nothing in production changed, the benchmark is single-shot and has always been high-variance, and claiming credit for it would be exactly the kind of stale-baseline storytelling R29 exists to prevent.
+
+The `tier1_fib_dump_test.go` baseline is locked in at 635 instructions. Ack's fixture is untouched at 936. R30 can trust both as sentinels for any edit on the self-call path — if the change claims to remove the `LDR + CBZ` pair and the fib count doesn't drop, something went wrong at the edit site and we catch it before running the suite.
+
+Back next round.

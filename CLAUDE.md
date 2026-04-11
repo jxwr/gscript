@@ -17,7 +17,7 @@ The compiler goal matters, but the higher-order goal is that the *process* impro
 - If the user intervenes twice for the same class of problem, the workflow has failed to learn
 - New capabilities should emerge from the workflow's own observations
 
-## Workflow: 3-Phase Optimization Loop
+## Workflow: 4-Phase Optimization Loop
 
 Orchestrated by `bash .claude/optimize.sh`. Each phase is an **independent Claude session** — no context accumulation, state passes via files in `opt/`.
 
@@ -42,6 +42,12 @@ Orchestrated by `bash .claude/optimize.sh`. Each phase is an **independent Claud
   VERIFY + DOCUMENT (one session)
     Part 1: Run tests + benchmarks + evaluator → fill Results
     Part 2: Update state.json, INDEX.md, initiative, archive plan, commit
+    │
+    ▼
+  SANITY (independent common-sense check, read-only)
+    Reads plan + state + benchmark data with fresh context.
+    Flags physics violations, prediction gaps, skipped mandated steps,
+    stale baselines, scope explosion. Non-clean verdict blocks auto-continue.
 ```
 
 Multi-round: `bash .claude/optimize.sh --rounds=5`
@@ -58,6 +64,7 @@ The workflow uses **specialized sub-agents**, not a single monolithic agent:
 | Coder sub-agent | **Implementer** | TDD within bounded scope. 3 attempts max, then failure report |
 | Evaluator sub-agent | **Code Reviewer** | Reviews git diff against checklist. No intent from caller |
 | Diagnostic sub-agent | **Profiler** | IR dumps, ARM64 disasm, instruction counting |
+| SANITY session | **Skeptical Reviewer** | Fresh-context common-sense check on round artifacts — no trust in prior reports |
 
 **Main conversation** (with the user): strategic direction, harness design, architectural decisions. Not implementation detail.
 

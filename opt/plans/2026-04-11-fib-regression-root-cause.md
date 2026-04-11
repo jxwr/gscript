@@ -100,3 +100,61 @@ R30 ANALYZE must run the deep-recursion regression test against candidate A befo
 1. `opt/knowledge/r29-fib-root-cause.md` documents which mechanism zeroes `DirectEntryPtr`, how many times, and why ack is OK — DONE by sub-agent
 2. `tier1_fib_dump_test.go` exists and the insn-count sentinel is recorded
 3. R30 ANALYZE has enough data to pick between candidate A and B without re-running the diagnostic
+
+## Results (filled by VERIFY)
+
+R29 was a diagnostic round with **no production code changes**. Expected wall-time outcome:
+all deltas within noise. That is what happened.
+
+| Benchmark            | Before (5b5336c) | After (R29) | Change  | Note |
+|----------------------|-----------------:|------------:|--------:|------|
+| fib                  |           1.443s |      1.434s |  −0.6%  | noise |
+| fib_recursive        |          14.383s |     14.285s |  −0.7%  | noise |
+| ackermann            |           0.271s |      0.270s |  −0.4%  | noise |
+| mutual_recursion     |           0.191s |      0.189s |  −1.0%  | noise |
+| sieve                |           0.084s |      0.084s |   0.0%  | flat |
+| mandelbrot           |           0.061s |      0.061s |   0.0%  | flat |
+| matmul               |           0.120s |      0.121s |  +0.8%  | noise |
+| spectral_norm        |           0.045s |      0.045s |   0.0%  | flat |
+| nbody                |           0.251s |      0.245s |  −2.4%  | noise |
+| fannkuch             |           0.048s |      0.049s |  +2.1%  | noise |
+| sort                 |           0.050s |      0.051s |  +2.0%  | noise |
+| sum_primes           |           0.004s |      0.004s |   0.0%  | flat |
+| method_dispatch      |           0.104s |      0.101s |  −2.9%  | noise |
+| closure_bench        |           0.027s |      0.027s |   0.0%  | flat |
+| string_bench         |           0.031s |      0.031s |   0.0%  | flat |
+| binary_trees         |           2.043s |      2.029s |  −0.7%  | noise |
+| table_field_access   |           0.043s |      0.043s |   0.0%  | flat |
+| table_array_access   |           0.093s |      0.094s |  +1.1%  | noise |
+| coroutine_bench      |          17.551s |     14.709s | −16.2%  | high-variance benchmark; no code change |
+| fibonacci_iterative  |           0.289s |      0.299s |  +3.5%  | noise |
+| math_intensive       |           0.070s |      0.069s |  −1.4%  | noise |
+| object_creation      |           1.096s |      1.063s |  −3.0%  | noise |
+
+**Regressions ≥5%**: none
+**Improvements ≥5%**: coroutine_bench −16.2% (ignored — no production code touched; known high-variance benchmark; will regress back next run)
+
+### Tier 1 instruction-count fixtures
+- `fibTotalInsnBaseline = 635` (new, this round — sentinel for R30's fix)
+- `ackTotalInsnBaseline = 936` (unchanged)
+
+### Test Status
+- `./internal/methodjit/...`: PASS
+- `./internal/vm/...`: PASS
+
+### Evaluator Findings
+- **PASS** (Sonnet sub-agent). Fixture mirrors `tier1_ack_dump_test.go` cleanly, 76 lines, no stale `ack`/`ackermann` strings. Knowledge file cites concrete counters (`handleNativeCallExit` fires exactly once, `DirectEntryPtr` 0x12c960054 → 0x0), specific PCs, specific exit codes. No production `.go` files touched. Only non-blocking note: the history-comment block on the baseline constant is a single run-on sentence where ack's is a GoDoc table — cosmetic, acceptable for a first-round fixture.
+
+### Regressions (≥5%)
+- none
+
+### Outcome
+`no_change` — diagnostic round, production code untouched, wall-time deltas within noise, both success-criteria deliverables landed.
+
+## Lessons
+
+1. **Diagnostic rounds are cheap and high-leverage when the next-round fix is controversial.** R28 produced a 988% regression mystery with two plausible fixes (drop the CBZ vs. add an indirection flag). Burning one round on pure measurement — counting how many times `handleNativeCallExit` fires, confirming `DirectEntryPtr` is the discriminator, checking `EvictCompiled` is *not* involved — makes R30's fix-choice a ~15-minute decision instead of a multi-round bisect. Don't skip the measurement round when the production code is load-bearing for correctness (598bc1e is a stack-overflow fix).
+2. **Insn-count fixtures are a R30+ sentinel, not a ceiling target.** `fibTotalInsnBaseline = 635` will catch the expected `−2 insns` from dropping the `LDR+CBZ` pair on the self-call exec label. The fixture is not asserting a number goal — it's asserting "the instruction actually moved." This matches the pattern that proved its worth on R27/R28 with the ack fixture.
+3. **"Nothing in production" is a legitimate round outcome.** The harness wanted to push R29 into implementation territory (the fix is "obvious" — drop two instructions). Refusing was correct: R28's no_change was itself caused by comparing against a stale baseline, and doing the fix in the same session as the analysis would have blurred the hypothesis-test discipline. The 1-Coder rule held.
+4. **Two candidate fixes, both have regression tests already in-tree.** `TestDeepRecursionRegression` and `TestQuicksortSmall` exist precisely to catch the `handleNativeCallExit → executeInner` nesting overflow that 598bc1e fixed. R30 can run candidate A and trust those tests as the safety net — no new fixture needed.
+5. **The coroutine_bench −16.2% swing is a harness reminder, not a win.** It's high-variance across runs and nothing in production changed. Future VERIFY should not claim credit for it without a stable re-run. The median-of-N runner exists specifically to filter these swings on the other benchmarks; coroutine is still single-shot and noisy.

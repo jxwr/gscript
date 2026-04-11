@@ -45,6 +45,7 @@ The JIT is paying for infrastructure (NativeCallDepth counter, ExecContext shutt
 | R26 | Item 1 | data-premise-error | SP-floor cannot replace NativeCallDepth — Go goroutine stack is 8KB, not 2MB. Task 0 (insn-count fixture) committed at 878e64a. Task 2 (ctx.Constants drop) queued as Item 1a. |
 | R27 | Item 1a | improved | ctx.Constants STR moved to normal-call block only (2748fb2). ackermann −5.2%, fib −3.8%, mutual_recursion −4.2% vs single-shot baseline. True self-call signal ~0.5-1.3%. Item 1a closed. |
 | R28 | Item 3a | no_change | ctx.Regs STR elided + lazy-flushed (144c1a4). Static +3 insns, wall-time ≈0 vs true predecessor 39b5ef3. VERIFY compared against stale a388f78 baseline; user-led bisect exposed 598bc1e as true pivot (see Item 8). Initiative peephole line of work confirmed dead ROI — store-buffer coalescing hypothesis holds. |
+| R29 | Item 8 | diagnostic | Root cause confirmed: `handleNativeCallExit` fires once on first self-call (cold GETGLOBAL miss), permanently zeros `proto.DirectEntryPtr`, and the 598bc1e guard at `tier1_call.go:316-317` forces every subsequent self-call through slow Go-dispatch. Fib pays this ~29M times; ack pays it ~thousands. Evidence in `opt/knowledge/r29-fib-root-cause.md`. Fix deferred to R30 — candidate A: drop self-call guard only; candidate B: split `HasOpExits` flag from `DirectEntryPtr`. Fib insn-count fixture landed as Task 0 sentinel. |
 
 ## Pivot: new initiative spawned from R28 bisect
 
@@ -63,4 +64,4 @@ Same self-call code path, opposite direction. The regression is **by far the lar
 
 **Why ackermann vs fib diverge**: unknown. Hypothesis: the rewrite changed the ratio of fast-path vs slow-path transitions, and fib's call pattern (1-arg, binary branch) falls through to slow path more often than ackermann's (2-arg, nested eval). Must verify with `Diagnose()` + ARM64 disasm.
 
-**Status**: Open. Target R29 for root-cause analysis, R30+ for fix.
+**Status**: Analysis complete (R29). Target R30 for fix — candidate A (drop self-call `CBZ` only) or candidate B (split `HasOpExits` flag). R30 ANALYZE must pick between them after re-reading `tier1_call.go:311-317` and running `TestDeepRecursionRegression` + `TestQuicksortSmall` as the correctness gate.

@@ -7,27 +7,10 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [
-    ".claude/optimize.sh",
-    ".claude/prompts/analyze.md",
-    ".claude/prompts/implement.md",
-    ".claude/prompts/review.md",
-    ".claude/prompts/verify.md",
-    ".claude/scheduled_tasks.lock",
-    ".claude/skills/harness-review/SKILL.md",
-    "CLAUDE.md",
-    "benchmarks/data/history/2026-04-11.json",
-    "benchmarks/data/latest.json",
-    "docs-internal/architecture/constraints.md",
-    "opt/analyze_report.md",
-    "opt/baseline_test_snapshot.txt",
-    "opt/initiatives/tier1-call-overhead.md",
-    "opt/state.json",
-    "opt/token_reflection.md"
-  ],
-  "head_commit": "5b5336cf5c55fd91e6e93f9340c3e07c644298e7",
+  "uncommitted_files": [],
+  "head_commit": "3a512b77e5396313a89c0e2107cbab36d7c264fa",
   "branch": "main",
-  "last_checkpoint": "2026-04-11T08:35:00Z",
+  "last_checkpoint": "2026-04-11T09:12:07Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -121,21 +104,21 @@
       "category": "recursive_call",
       "initiative": "opt/initiatives/recursive-tier2-unlock.md",
       "outcome": "no_change",
-      "summary": "Phase 3+5: B=0 fix kept (correctness). Tier 2 net-negative for recursive functions — 27-50% regressions, reverted."
+      "summary": "Phase 3+5: B=0 fix kept (correctness). Tier 2 net-negative for recursive functions \u2014 27-50% regressions, reverted."
     },
     {
       "cycle_id": "2026-04-06-feedback-typed-loads",
       "category": "tier2_float_loop",
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "no_change",
-      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected — Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
+      "summary": "Phase 3: Guard insertion code correct at IR level, but feedback never collected \u2014 Tier 1 doesn't collect feedback, interpreter never runs with BaselineCompileThreshold=1."
     },
     {
       "cycle_id": "2026-04-06-native-array-kinds",
       "category": "field_access",
       "initiative": "standalone",
       "outcome": "improved",
-      "summary": "Native ArrayBool/ArrayFloat fast paths in emitGetTableNative/emitSetTableNative. Sieve -18-25% (0.227s→0.186s). Eliminated exit-resume for bool/float typed arrays."
+      "summary": "Native ArrayBool/ArrayFloat fast paths in emitGetTableNative/emitSetTableNative. Sieve -18-25% (0.227s\u21920.186s). Eliminated exit-resume for bool/float typed arrays."
     },
     {
       "cycle_id": "2026-04-06-table-access-bypass",
@@ -184,7 +167,7 @@
       "category": "tier2_float_loop",
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "improved",
-      "summary": "Native GetGlobal dispatch + LICM hoisting + Tier 1 self-call optimization. nbody -49% (0.555s→0.284s), fib -90% (1.365s→0.135s), fib_recursive -90%. ackermann +137% regression from self-call overhead on tight recursion."
+      "summary": "Native GetGlobal dispatch + LICM hoisting + Tier 1 self-call optimization. nbody -49% (0.555s\u21920.284s), fib -90% (1.365s\u21920.135s), fib_recursive -90%. ackermann +137% regression from self-call overhead on tight recursion."
     },
     {
       "cycle_id": "2026-04-07-nbody-typing-diagnostic",
@@ -205,21 +188,21 @@
       "category": "tier2_float_loop",
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "no_change",
-      "summary": "Guard hoisting in LICM + cross-block shape/table verification propagation (single-predecessor). Infra landed correctly. A/B testing confirmed zero wall-time change — M4 superscalar hides removed guards (predicted branches, low IPC cost). Also fixed OpAppend/OpSetList LICM alias, tableVerified exit-resume clearing."
+      "summary": "Guard hoisting in LICM + cross-block shape/table verification propagation (single-predecessor). Infra landed correctly. A/B testing confirmed zero wall-time change \u2014 M4 superscalar hides removed guards (predicted branches, low IPC cost). Also fixed OpAppend/OpSetList LICM alias, tableVerified exit-resume clearing."
     },
     {
       "cycle_id": "2026-04-10-tier1-int-spec",
       "category": "tier1_dispatch",
       "initiative": "standalone",
       "outcome": "improved",
-      "summary": "Forward KnownInt analysis + int-specialized ADD/SUB/MUL/EQ/LT/LE templates. ackermann -5.2% (0.595s→0.564s), fib -4.3% (0.140s→0.134s). mutual_recursion +4.9% regression (guard overhead exceeds body saving on small protos). Float benchmarks untouched."
+      "summary": "Forward KnownInt analysis + int-specialized ADD/SUB/MUL/EQ/LT/LE templates. ackermann -5.2% (0.595s\u21920.564s), fib -4.3% (0.140s\u21920.134s). mutual_recursion +4.9% regression (guard overhead exceeds body saving on small protos). Float benchmarks untouched."
     },
     {
       "cycle_id": "2026-04-11-measurement-repair",
       "category": "other",
       "initiative": "standalone",
       "outcome": "improved",
-      "summary": "Harness repair: median-of-N benchmark runner + re-baseline with median-of-5. Confirmed R24 wins (ackermann -6.2%, fib -5.0%). Phantom regressions were single-shot noise. Stretch: int-spec overflow deopt now resumes at guard PC (not pc=0) via vm.ResumeFromPC — prevents side-effect replay."
+      "summary": "Harness repair: median-of-N benchmark runner + re-baseline with median-of-5. Confirmed R24 wins (ackermann -6.2%, fib -5.0%). Phantom regressions were single-shot noise. Stretch: int-spec overflow deopt now resumes at guard PC (not pc=0) via vm.ResumeFromPC \u2014 prevents side-effect replay."
     },
     {
       "cycle_id": "2026-04-11-tier1-selfcall-overhead",
@@ -233,25 +216,32 @@
       "category": "tier1_dispatch",
       "initiative": "opt/initiatives/tier1-call-overhead.md",
       "outcome": "improved",
-      "summary": "ctx.Constants STR moved from shared restore_done join to normal-call-only block. ackermann −5.2%, fib −3.8%, mutual_recursion −4.2% (vs single-shot baseline; true self-call signal ~0.5-1.3%). Item 1a of tier1-call-overhead closed. No regressions."
+      "summary": "ctx.Constants STR moved from shared restore_done join to normal-call-only block. ackermann \u22125.2%, fib \u22123.8%, mutual_recursion \u22124.2% (vs single-shot baseline; true self-call signal ~0.5-1.3%). Item 1a of tier1-call-overhead closed. No regressions."
     },
     {
       "cycle_id": "2026-04-11-tier1-selfcall-ctx-regs-lazy-flush",
       "category": "tier1_dispatch",
       "initiative": "opt/initiatives/tier1-call-overhead.md",
       "outcome": "no_change",
-      "summary": "ctx.Regs STR elided at self-call setup (tier1_call.go:389), lazy-flushed in emitBaselineOpExitCommon. Static +3 insns (6 op-exit sites, not 3 as predicted). Wall-time vs true predecessor 39b5ef3: ackermann 0.272→0.273, fib 1.421→1.446 — within noise. VERIFY incorrectly compared against stale a388f78 baseline; user-led bisect found 598bc1e (deep-recursion correctness fix) as true pivot: ackermann -50% / fib +988% on same self-call path. Re-baselined to 5b5336c."
+      "summary": "ctx.Regs STR elided at self-call setup (tier1_call.go:389), lazy-flushed in emitBaselineOpExitCommon. Static +3 insns (6 op-exit sites, not 3 as predicted). Wall-time vs true predecessor 39b5ef3: ackermann 0.272\u21920.273, fib 1.421\u21921.446 \u2014 within noise. VERIFY incorrectly compared against stale a388f78 baseline; user-led bisect found 598bc1e (deep-recursion correctness fix) as true pivot: ackermann -50% / fib +988% on same self-call path. Re-baselined to 5b5336c."
+    },
+    {
+      "cycle_id": "2026-04-11-fib-regression-root-cause",
+      "category": "tier1_dispatch",
+      "initiative": "opt/initiatives/tier1-call-overhead.md",
+      "outcome": "no_change",
+      "summary": "R29 diagnostic round for fib +988% regression. Root cause confirmed: handleNativeCallExit fires exactly once per benchmark (cold GETGLOBAL miss during first self-call), permanently zeros DirectEntryPtr, and the 598bc1e CBZ guard at tier1_call.go:316-317 then routes every subsequent self-call through emitBaselineOpExitCommon(OP_CALL) \u2014 ~29M Go/JIT roundtrips for fib(35). Ack survives because call depth is tiny. Deliverables: opt/knowledge/r29-fib-root-cause.md + tier1_fib_dump_test.go (fibTotalInsnBaseline=635, 76 lines). No production code touched. R30 picks between (A) drop self-call CBZ or (B) HasOpExits proto flag. Ceiling decay: recursive_call reset (3 rounds absent). Results: coroutine_bench -16.2% (high-variance, ignored); all other deltas \u00b13% noise."
     }
   ],
   "category_failures": {
-    "recursive_call": 2,
+    "recursive_call": 0,
     "tier2_float_loop": 1,
     "field_access": 1,
-    "tier1_dispatch": 1,
+    "tier1_dispatch": 2,
     "other": 0
   },
-  "rounds_since_review": 2,
-  "rounds_since_arch_audit": 0,
-  "sanity_verdict": "user_closed",
-  "sanity_report": "user-led bisect; see R28 summary in previous_rounds"
+  "rounds_since_review": 1,
+  "rounds_since_arch_audit": 1,
+  "sanity_verdict": "",
+  "sanity_report": ""
 }

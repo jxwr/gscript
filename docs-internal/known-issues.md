@@ -1,6 +1,6 @@
 # Known Issues
 
-> Last updated: 2026-04-11 (R26 review)
+> Last updated: 2026-04-11 (R28 review)
 
 ## Current
 
@@ -54,19 +54,6 @@
 ### emit_dispatch.go: 969 lines (approaching 1000 limit)
 - Needs split: extract `emit_branch.go` for fused compare+branch logic
 - Flagged by evaluator in Round 10, 14. Must split before next change to this file.
-
-### tableVerified not cleared after SetTable exit-resume (Round 19)
-- After `emitSetTableNative` takes deopt/exit-resume path, `tableVerified[tblValueID]` persists
-- If interpreter sets metatable during exit-resume, subsequent GetTable skips metatable check
-- Low severity: setting metatable during integer-keyed access is unusual
-- Fix: clear `tableVerified[tblValueID]` before returning from exit-resume path
-- Category: `field_access`
-
-### LICM GetField alias scan incomplete (Round 18)
-- `OpAppend` and `OpSetList` not included in LICM's aliasing scan
-- Both mutate the table but LICM won't block GetField hoisting if they appear in loop
-- Low risk: named-field access on a table being appended to is rare
-- Fix: add OpAppend/OpSetList to hasLoopCall or a separate flag in pass_licm.go
 
 ### LoadElim available map not invalidated by OpSetTable (pre-existing)
 - `SetTable(obj, key, val)` with dynamic key could alias a GetField(obj, field)

@@ -168,7 +168,7 @@ Read ALL of these files and cross-check:
 10. **Dead content**: sections describing features that no longer exist?
 11. **Stale temp files**: scan `opt/` top-level for files that are NOT part of the known set
     (state.json, INDEX.md, plan_template.md, current_plan.md, measure_report.md,
-    analyze_report.md, workflow_log.jsonl, phase_log.jsonl, sanity_report.md) and are NOT in a known subdirectory
+    analyze_report.md, workflow_log.jsonl, phase_log.jsonl, sanity_report.md, baseline_test_snapshot.txt) and are NOT in a known subdirectory
     (plans/, initiatives/, reviews/, knowledge/, history/, pprof-tier2-float-artifacts/).
     One-off diagnostic reports, ad-hoc dumps, scratch files left by past rounds — delete them.
     Also check `opt/reviews/pending-changes/` for stale applied patches.
