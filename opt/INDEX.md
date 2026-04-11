@@ -5,6 +5,7 @@ This is the cross-round pattern detector — scan for repeat categories, ceiling
 
 | # | Round ID | Date | Category | Target | Outcome | Key Commit | 1-line Lesson |
 |---|----------|------|----------|--------|---------|------------|----------------|
+| 28 | 2026-04-11-tier1-selfcall-ctx-regs-lazy-flush | 2026-04-11 | tier1_dispatch | Drop ctx.Regs STR at self-call setup, lazy-flush at op-exit | no_change | 144c1a4 | R28 was neutral; user-bisect revealed 598bc1e correctness fix is the real pivot — ackermann -50%, fib +988% on same self-call path. Stale baseline hid this. |
 | 27 | 2026-04-11-tier1-selfcall-constants-str | 2026-04-11 | tier1_dispatch | Drop dead ctx.Constants STR on self-call restore path (Item 1a) | improved | 2748fb2 | Dead store proof requires reading both call paths end-to-end; structural fixture (STR→B(forward)) beats bytewise count for placement assertions |
 | 26 | 2026-04-11-tier1-selfcall-overhead | 2026-04-11 | tier1_dispatch | Tier 1 self-call fast path: SP-floor guard replaces NativeCallDepth; drop dead ctx.Constants STR | data-premise-error | 878e64a (Task 0 only) | Go goroutines start with 8KB stack; JIT native blobs can't call morestack; NativeCallDepth=48 is the goroutine stack budget constraint — SP-floor approach underflows the address space |
 | 25 | 2026-04-11-measurement-repair | 2026-04-11 | other | Median-of-N benchmark runner + re-baseline; int-spec deopt resume at guard PC | improved | 5b4741b | Single-shot benchmarks produce false regressions — fix the tool before chasing the symptom |

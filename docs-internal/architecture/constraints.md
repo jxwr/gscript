@@ -1,7 +1,7 @@
 # Architecture Constraints & Notes
 
 > **ANALYZE reads this every round.** Updated by Architecture Audit (every 2 rounds).
-> Last full audit: Round 26 (2026-04-11)
+> Last full audit: Round 28 (2026-04-11)
 
 ## Tier Constraints
 
@@ -11,6 +11,8 @@
 - **Tier 1 CALL/RETURN is slower than the interpreter** (Round 26 measurement): JIT/VM ratio ≥1.16× on 6 benchmarks (ackermann 1.91×, binary_trees 1.42×, coroutine 1.21×, object_creation 1.20×, method_dispatch 1.18×, mutual_recursion 1.16×). `emitBaselineNativeCall` (`tier1_call.go:95`) emits ~60 caller-side insns per self-call fast path vs the interpreter's inline `continue` (~50-80 Go-compiled insns with no BL/RET). Per-call overhead = 14 memory stores to `ctx` + 2 depth LDR/STR pairs + 96-byte frame save/restore. New initiative `tier1-call-overhead.md` opened R26.
 - **`tier1_control.go:224` RETURN reads `ctx.CallMode`** — branches on it to pick `direct_epilogue` (returns to BL site) vs `baseline_epilogue` (exits the JIT). This constrains any scheme that tries to remove the `STR ctx.CallMode=1` on self-call setup. Future work (R27+) needs to either compile two RETURN variants or encode the distinction in LR target, not remove the CallMode write naively.
 - **NativeCallDepth=48 is a goroutine-stack budget constraint** (R26 premise error): Go goroutines start at 8KB stack. JIT code is a raw ARM64 blob — it has no prologue metadata and cannot call `morestack` to grow the stack. Each self-call frame = 64 bytes. 48 × 64 = 3072 bytes fits within 8KB. Removing NativeCallDepth tracking from the self-call path causes SIGSEGV on `countdown(900)`: 900 × 64 = 57.6KB overflows the goroutine stack segment, corrupting adjacent memory. SP-floor approach (StackFloor = SP - 2MB) is unsafe — goroutines do not have 2MB of native stack. **Any scheme that allows unbounded JIT-native recursion will corrupt memory.** Options: (a) pre-grow goroutine stack before entering JIT, (b) reduce bytes-per-frame to raise the depth limit.
+- **Tier 1 self-call DirectEntryPtr check is load-bearing** (commit `598bc1e`, 2026-04-11): `tier1_call.go:316-317` emits `LDR X3, [X1, funcProtoOffDirectEntryPtr]; CBZ X3, slowLabel` at the self-call exec label. When `handleNativeCallExit` clears `DirectEntryPtr=0` to force slow exit-resume, self-calls must respect it — otherwise nested `handleNativeCallExit → executeInner` chains overflow the 8KB goroutine stack on deep recursion. Cost: +2 insns/site × 3 sites = +10 insns per self-call fast path vs the R26 `923`-insn fixture. **New fixture count: 933.** Any round that compares against a pre-598bc1e baseline without re-baselining will mis-attribute this +10 to the round's own work.
+- **Shape system is the table/object model** (commit `39b5ef3`, 2026-04-11): V8-style FieldMap + Transition graph + global `shapeByKey`/`shapeByID` registries replaced the pre-R28 direct-slot layout. `vm.go ScanGCRoots` now scans all register files. Affects any pass or IR op that reasons about object layout; pass-level code is unchanged because access is via `Shape.LookupField`. Note: `offset_check_test.go` (added R28 Task 0) guards the struct-offset contract against future Shape changes — do not delete.
 - **8-FPR pool is a hard limit** (D4-D11): carried invariants + body temps share 8 registers. >5 carried invariants squeezes body temp space. Round 9's LICM-carry reserves up to 5, leaving 3 for body.
 - **4-GPR pool** (X20-X23): int counter carry + loop bounds use 2-3, leaving 1-2 for body temps.
 
@@ -21,7 +23,7 @@
 - **`graph_builder.go` 955 lines** ⚠ CRITICAL: 45 lines from limit. Unchanged since R21 (R22-R25 did not touch — float param guard landed in a helper). Must split before next change — extract `graph_builder_feedback.go`.
 - **`tier1_arith.go` 903 lines** ⚠ CRITICAL (R26 audit): grew from 728→903 across R24-R25 via int-spec templates. 97 lines from limit. Must split before the next Tier 1 arith change — extract `tier1_arith_intspec.go` for the KnownInt path. Item queued for R27 Task 0.
 - **`tier1_table.go` 829 lines** ⚠ Unchanged since R21.
-- **`tier1_call.go` 554 lines** — R26 target file. Plenty of headroom (~450 lines) but the initiative will eventually force a split into `tier1_call_self.go` / `tier1_call_normal.go` once Item 5 (BL→B tail-thread) lands.
+- **`tier1_call.go` 529 lines** (R28 audit) — shrunk from 554 after R27's dead-store removal and R28's line-389 delete. Plenty of headroom (~470 lines) but the initiative will eventually force a split into `tier1_call_self.go` / `tier1_call_normal.go` once Item 5 (BL→B tail-thread) lands.
 - **`regalloc.go` ↔ `emit_loop.go` coupling**: `carried` map concept spans both files. Unchanged — invariant-carry infra from R9 is stable.
 - **27 source files lack test files** (same count as Round 21 — no new test files added for `emit_call_exit.go`, `loops.go`, Tier 1 handlers). Test/source ratio is 88% (up from 86% at Round 19) — total lines grew faster in tests than source.
 

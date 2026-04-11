@@ -1,2 +1,0 @@
-FAIL	github.com/gscript/gscript/internal/methodjit	1.070s
-FAIL
