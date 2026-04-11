@@ -197,7 +197,25 @@ Any failure → STOP, write `opt/diagnostic_failure.md` (failed check + root cau
 
 ## Step 5 — Write Plan (synthesis)
 
-Write `opt/current_plan.md` using `opt/plan_template.md`. Fill ALL sections:
+**Harness v3 plan schema (MANDATORY)**: `opt/plan_template.md` has a strict YAML frontmatter. plan_check (the next phase) will read the frontmatter and FAIL the plan if any required field is missing or malformed. Every `claim` in the markdown body MUST reference an assumption ID (A1, A2, ...) from the `assumptions:` list in the frontmatter. Do not introduce new claims in the body that are not in the frontmatter assumptions list.
+
+**Required frontmatter fields** (every one is non-optional):
+- `cycle_id`, `date`, `category`, `initiative`
+- `target[]` — each entry needs `benchmark`, `current_jit_s`, `reference_jit_s` (from `benchmarks/data/reference.json`), `expected_jit_s`, `expected_delta_pct`, `confidence` (HIGH/MEDIUM/LOW), `confidence_why`
+- `max_files`, `max_source_loc`, `max_commits` — hard scope budget
+- `assumptions[]` — each entry needs `id`, `claim`, `type` (one of cited-evidence / derivable-from-code / requires-live-run / unverifiable), `evidence` (file:line or reproducible command), `confidence`, `source`
+- `prior_art[]`, `failure_signals[]`
+- `self_assessment` block — YOU MUST set all 5 booleans honestly. `uses_profileTier2Func: true` or `uses_hand_constructed_ir_in_tests: true` → plan_check will hard-FAIL per P3.
+
+**Harness core principles must be honored**:
+- P1: every claim in Root Cause / Approach / Prior Art cites a source
+- P2: every assumption has `evidence:` pointing at a real file:line or a reproducible command
+- P3: authoritative evidence comes from `opt/authoritative-context.json` (written by CONTEXT_GATHER phase), NOT from `profileTier2Func` or `TestProfile_*` or hand-built IR
+- P4: every prediction has `confidence:` label with `confidence_why:` justification; HIGH requires a cited source
+- P5: `current_jit_s` and `reference_jit_s` come from `latest.json` and `reference.json`; use the reference for "improvement" metric
+- P6: if your plan enumerates alternatives, cite sources for each; <3 sources = label as "incomplete enumeration"
+
+Fill ALL template sections:
 
 - **Target**: benchmarks + calibrated expected improvement
 - **Category**: one canonical category
