@@ -35,7 +35,9 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROMPTS="$ROOT/.claude/prompts"
 STATE="$ROOT/opt/state.json"
-PHASES=(context_gather analyze implement verify sanity)
+PHASES=(context_gather analyze plan_check implement verify sanity)
+# PLAN_CHECK loop max iterations (tripwire T3)
+PLAN_CHECK_MAX_ITER=3
 
 # --- Parse args ---
 FROM="context_gather"
@@ -226,6 +228,10 @@ run_cycle() {
         fi
     fi
 
+    # Tracks whether the plan_check loop exhausted without PASS.
+    # If so, implement/verify are skipped and we jump to sanity.
+    local PLAN_CHECK_UNRESOLVED=false
+
     local skipping=true
     for phase in "${PHASES[@]}"; do
         [ "$phase" = "$cycle_from" ] && skipping=false
@@ -243,7 +249,17 @@ run_cycle() {
                     return 1
                 }
                 ;;
+            plan_check)
+                # plan_check runs as part of the analyze+plan_check loop; see the
+                # analyze case's run_phase handler below. When the outer loop reaches
+                # plan_check here, it's already been run. Skip it.
+                continue
+                ;;
             implement)
+                if $PLAN_CHECK_UNRESOLVED; then
+                    echo "  [plan_check unresolved] skipping IMPLEMENT, jumping to sanity"
+                    continue
+                fi
                 check_output "analyze" "opt/current_plan.md" || return 1
                 # Pre-flight: clear stale stash entries and snapshot baseline test state
                 if ! $DRY_RUN; then
@@ -258,18 +274,67 @@ run_cycle() {
                     echo "  [pre-flight] Baseline snapshot: opt/baseline_test_snapshot.txt"
                 fi
                 echo ""
-                echo "=== ANALYZE+PLAN → IMPLEMENT ==="
+                echo "=== ANALYZE+PLAN_CHECK → IMPLEMENT ==="
                 echo "Plan: opt/current_plan.md"
                 echo ""
                 ;;
             verify)
+                if $PLAN_CHECK_UNRESOLVED; then
+                    echo "  [plan_check unresolved] skipping VERIFY, jumping to sanity"
+                    continue
+                fi
                 check_output "implement" "opt/current_plan.md" || return 1
                 ;;
             sanity)
                 # sanity is independent — reads artifacts only, no code execution.
                 # Runs even if verify didn't fully close out, so it can detect that.
+                # Also runs after plan_check_unresolved to record the outcome.
                 ;;
         esac
+
+        # Special dispatch: analyze runs inside an analyze+plan_check loop
+        if [ "$phase" = "analyze" ]; then
+            local pc_iter=1
+            local pc_verdict="PENDING"
+            while [ "$pc_iter" -le "$PLAN_CHECK_MAX_ITER" ]; do
+                echo "  [plan_check loop] iteration $pc_iter of $PLAN_CHECK_MAX_ITER"
+                export PLAN_CHECK_ITERATION=$pc_iter
+                run_phase "analyze" || {
+                    echo "ANALYZE failed at iteration $pc_iter"
+                    return 1
+                }
+                run_phase "plan_check" || {
+                    echo "PLAN_CHECK phase itself failed at iteration $pc_iter"
+                    return 1
+                }
+                if $DRY_RUN; then
+                    pc_verdict="PASS"  # in dry-run, assume PASS
+                else
+                    pc_verdict=$(python3 -c "import json; print(json.load(open('$STATE')).get('plan_check_verdict','PENDING'))" 2>/dev/null || echo "PENDING")
+                fi
+                echo "  [plan_check loop] iteration $pc_iter verdict: $pc_verdict"
+                if [ "$pc_verdict" = "PASS" ]; then
+                    break
+                fi
+                pc_iter=$((pc_iter + 1))
+            done
+            unset PLAN_CHECK_ITERATION
+            if [ "$pc_verdict" != "PASS" ]; then
+                echo ""
+                echo "  [plan_check unresolved] exhausted $PLAN_CHECK_MAX_ITER iterations without PASS"
+                echo "  Round outcome will be marked 'plan_check_unresolved'"
+                PLAN_CHECK_UNRESOLVED=true
+                # Write a flag state.json entry so SANITY and REVIEW can detect it
+                python3 -c "
+import json
+s = json.load(open('$STATE'))
+s['plan_check_unresolved'] = True
+s['plan_check_final_verdict'] = '$pc_verdict'
+json.dump(s, open('$STATE','w'), indent=2, ensure_ascii=False)
+" 2>/dev/null || true
+            fi
+            continue  # skip the default run_phase below since analyze+plan_check already ran
+        fi
 
         run_phase "$phase" || {
             echo ""
@@ -295,7 +360,7 @@ run_cycle() {
 }
 
 # --- Main ---
-echo "GScript Optimization Loop (3-phase)"
+echo "GScript Optimization Loop (v3: context_gather → analyze ⇄ plan_check → implement → verify → sanity)"
 if [ "$ROUNDS" -gt 1 ]; then
     echo "Running up to $ROUNDS rounds (starting from: $FROM)"
 else

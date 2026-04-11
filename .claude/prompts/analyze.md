@@ -6,6 +6,20 @@ You are in the ANALYZE+PLAN phase of the GScript optimization loop.
 Top-down flow: architecture → strategy → research → source → diagnostics → plan.
 **No code changes.** Output: `opt/analyze_report.md` + `opt/current_plan.md` + knowledge base + architecture notes.
 
+## Plan rewrite iteration check (MANDATORY, harness v3 S1.3)
+
+**Check `$PLAN_CHECK_ITERATION` env var and `opt/plan_check.md` FIRST.** If:
+- `PLAN_CHECK_ITERATION=1` (or unset) → this is a fresh plan, proceed normally through all steps below.
+- `PLAN_CHECK_ITERATION=2` or `3` → this is a **rewrite iteration**. plan_check FAILED or FLAGGED the previous plan. You MUST:
+  1. Read `opt/plan_check.md` in full, paying attention to the `<feedback>` section and per-assumption verdicts
+  2. Read the previous `opt/current_plan.md` to understand what was proposed
+  3. Skip Steps 0-4 (architecture audit, target selection, research, source reading, diagnostics) — they've already run this round. Keep their outputs from `opt/analyze_report.md`.
+  4. Jump to Step 5 (write plan) and produce a REWRITTEN plan that addresses every item in plan_check's feedback
+  5. Do NOT change the target unless plan_check explicitly recommended pivoting
+  6. Do NOT re-spawn Research or Diagnostic sub-agents in rewrite mode — you already have the context
+
+**If the feedback cannot be addressed within the current target** (e.g., the assumption it flagged is fundamental to the approach): change the target. Write a brief note in the plan's overview explaining why the target changed.
+
 ## Primary evidence source (MANDATORY, harness v3 P3)
 
 **Read `opt/authoritative-context.json` FIRST.** This file is produced by CONTEXT_GATHER before you run, and it is your authoritative evidence source. It contains production-pipeline IR dumps, ARM64 disasm summaries, and factual observations for the top candidate benchmarks. You MUST consume it before any other analysis.
