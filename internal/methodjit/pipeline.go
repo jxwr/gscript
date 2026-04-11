@@ -280,6 +280,11 @@ type Tier2PipelineOpts struct {
 func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []string, error) {
 	var err error
 
+	fn, err = SimplifyPhisPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("SimplifyPhis: %w", err)
+	}
+
 	fn, err = TypeSpecializePass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("TypeSpecialize: %w", err)
@@ -306,6 +311,10 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		fn, err = InlinePassWith(config)(fn)
 		if err != nil {
 			return nil, nil, fmt.Errorf("Inline: %w", err)
+		}
+		fn, err = SimplifyPhisPass(fn)
+		if err != nil {
+			return nil, nil, fmt.Errorf("SimplifyPhis (post-inline): %w", err)
 		}
 		fn, err = TypeSpecializePass(fn)
 		if err != nil {
@@ -347,6 +356,7 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 // RunTier2Pipeline instead.
 func NewTier2Pipeline() *Pipeline {
 	pipe := NewPipeline()
+	pipe.Add("SimplifyPhis", SimplifyPhisPass)
 	pipe.Add("TypeSpecialize", TypeSpecializePass)
 	pipe.Add("Intrinsic", func(fn *Function) (*Function, error) {
 		result, _ := IntrinsicPass(fn)
@@ -354,6 +364,7 @@ func NewTier2Pipeline() *Pipeline {
 	})
 	pipe.Add("TypeSpecialize2", TypeSpecializePass)
 	pipe.Add("Inline", InlinePassWith(InlineConfig{MaxSize: 40, MaxRecursion: 2}))
+	pipe.Add("SimplifyPhis2", SimplifyPhisPass)
 	pipe.Add("TypeSpecialize3", TypeSpecializePass)
 	pipe.Add("ConstProp", ConstPropPass)
 	pipe.Add("LoadElimination", LoadEliminationPass)
