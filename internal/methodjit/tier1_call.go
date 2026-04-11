@@ -420,6 +420,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.LDR(mRegR0, jit.SP, 72)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, 96)
+	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants) // only needed on normal-call path; self-call never clobbers X27
 	asm.B(restoreDoneLabel)
 
 	// Self-call restore (48-byte frame)
@@ -435,7 +436,6 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.Label(restoreDoneLabel)
 	// Restore context pointers
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
-	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
 
 	// 9. Check callee exit code
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)

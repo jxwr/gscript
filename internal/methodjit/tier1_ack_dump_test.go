@@ -23,6 +23,8 @@ import (
 // History:
 //
 //	R26 pre-Task1: 923 insns (3692 bytes) — NativeCallDepth on every call + ctx.Constants STR
+//	R28 Task 1:    923 insns (3692 bytes) — ctx.Constants STR moved to normal-call path only
+//	  (net static change = 0: one STR moved, not removed; dynamic savings = −1 STR per self-call)
 const ackTotalInsnBaseline = 923
 
 func TestDumpTier1_AckermannBody(t *testing.T) {
