@@ -1,35 +1,37 @@
-# User Strategic Priority (updated 2026-04-11 19:20 after R31)
+# User Strategic Priority (updated 2026-04-11 20:30 after R32)
 
 **This file overrides ANALYZE Step 1's automatic gap classification when present.**
 
-## Priority order for upcoming rounds
+## R33: ceiling override authorized — complete R32's one-line gate fix
 
-1. ~~**field_access**~~ — **attempted R31, hit ceiling (2 failures)**.
-   - R31 landed SimplifyPhisPass (commit c375913) but production IR path already collapses the targeted phis; sieve moved -1.2% (below 5% floor).
-   - Ceiling rule: skip for 3 rounds, then eligible with a fresh approach.
-   - If retried later, the fresh approach MUST NOT use `profileTier2Func` as evidence — that diagnostic test reads a stale pipeline (R19 and R31 both wasted a round on it).
+R32 landed `LoopScalarPromotionPass` (commit 56b19e7) and the pass infrastructure is correct. The only reason nbody showed 0% is a **one-line type-gate bug** at `pass_scalar_promote.go:99`: the gate checks `instr.Type == TypeFloat` but production IR emits `GetField:any` followed by a trailing `GuardType float`. Unit tests used hand-constructed `TypeFloat` nodes and passed — production saw zero matches.
 
-2. **tier2_float_loop (PRIMARY NOW)**
-   - Targets in ROI order: `nbody` (7.6× LuaJIT, 0.251s), `matmul` (5.7×, 0.119s), `spectral_norm` (5.6×, 0.045s), `mandelbrot` (1.1×, 0.063s — almost there).
-   - Initiative `opt/initiatives/tier2-float-loops.md` was paused 7 rounds. **User has un-paused it.** ANALYZE must re-read the initiative's backlog and pick the next phase with a fresh approach.
-   - **Constraint (hard)**: do NOT use `profileTier2Func` as root-cause evidence. If the analysis needs production IR, instrument `compileTier2()` end-to-end or read ARM64 disasm from a real run, not from the stale diagnostic.
+**R33 MUST:**
+1. Apply the one-line fix: walk consumers of each `GetField` to find a `GuardType float` (the same pattern LICM's whitelist uses).
+2. Add a **production-pipeline diagnostic test** that runs the pass through `RunTier2Pipeline` on a real nbody proto and asserts the pair count > 0 after the pass runs. This test is the gate against unit/production drift. Second round in a row we've hit this class of bug.
+3. Run full-package tests.
+4. Benchmark and compare against the R32 baseline (56b19e7).
 
-3. **DO NOT** return to `tier1_dispatch` (fib/ack work) — category at 3 failures.
+**Ceiling override**: `tier2_float_loop` is at 2 failures. R33 is authorized to re-enter the category this once because R32 was a known-diagnosed 1-line fix, not an approach failure. If R33 still shows 0% improvement on nbody, THEN count it as a real category failure and skip tier2_float_loop for 3 rounds per the standard decay rule.
 
-## Required REVIEW item (for next REVIEW session)
+**Budget**: ≤30 LOC change (1-line functional + diagnostic test), 1 Coder, tight scope. Do not expand the pass logic itself — the algorithm was audited in R32 and is correct.
 
-**Diagnostic tool debt: `profileTier2Func` is load-bearing AND stale.** Two rounds (R19 table-kind-specialize, R31 Braun phi cleanup) have now wasted an ANALYZE + IMPLEMENT cycle because this diagnostic test reads a pre-production IR pipeline. Options:
-- (a) Delete `profileTier2Func` and force ANALYZE to use real `compileTier2()` output.
-- (b) Rewrite `profileTier2Func` to call the full production pipeline.
-- (c) Gate it behind `//go:build diagnostic_stale` and have ANALYZE refuse to treat its output as evidence.
+## Priority order after R33 (if R33 succeeds)
 
-Pick one before R34 (when field_access becomes eligible again).
+1. **tier2_float_loop** continues — next phases target matmul (5.7×), spectral_norm (5.6×), and exhaust the float-loop initiative before pivoting.
+2. **tier1_dispatch** re-enters after 3+ rounds absent (earliest R35) with a fresh approach — NOT another peephole STR drop. Candidates: Item 5 BL→B tail-thread (research), Item 2 pre-grown goroutine stack.
+3. **field_access** re-enters after 3+ rounds absent, NOT via SimplifyPhisPass (R31 proved it's dead ROI on production IR).
+
+## Required REVIEW items (for R33+ REVIEW sessions)
+
+1. **Unit-pass + production-no-op pattern** has now hit two consecutive rounds (R31 stale profileTier2Func, R32 synthetic-IR type gate). Harness rule MUST formalize: every new Tier 2 pass requires a real-pipeline diagnostic test that asserts observable IR changes via `RunTier2Pipeline` or `compileTier2()`. Absence = R4 mandate violation in sanity.
+2. **LOC budget miscalibration**: R31 (2.29× overrun) and R32 (plan's own arithmetic was wrong 264+296=560>350). Replace LOC budgets with file-count bounds OR require plan arithmetic check in VERIFY.
+3. **`profileTier2Func` structural fix**: R32 review flagged this (rewrite wiring real `FeedbackVector`). Unblock R34+ field_access retry.
 
 ## How ANALYZE should use this file
 
 - Read this file BEFORE Step 1 gap classification.
 - Honor the numbered priority order.
-- The Ceiling Rule still applies (don't pick a category with `category_failures >= 2`).
-- If user priority conflicts with ceiling, pick the next unblocked priority.
+- The Ceiling Rule still applies UNLESS this file explicitly authorizes an override (R33 is the only current override).
 - Mention this file in the analyze report under `## User Priority Honored`.
-- Delete the file when the user's stated priority list is exhausted OR when the user writes a new directive.
+- Delete this file when R33 completes AND the user writes a new directive OR when the priority list is exhausted.
