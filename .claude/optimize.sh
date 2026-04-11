@@ -3,15 +3,21 @@
 # Each phase runs as an independent Claude session (no context accumulation).
 # State is passed via files between phases.
 #
-# Phases (4):
-#   analyze   — classify gaps + research + read source + diagnose + write plan
+# Phases (5):
+#   context_gather — authoritative production-pipeline evidence for top-N drift
+#                    candidates via RunTier2Pipeline; writes opt/authoritative-context.json
+#                    (harness v3 P3: authoritative context first). NEW in v3 Stage 1.
+#   analyze   — classify gaps + research + read source + diagnose + write plan.
+#               Consumes authoritative-context.json as primary evidence source.
 #   implement — execute plan tasks (spawn Coder sub-agents)
-#   verify    — tests + benchmarks + evaluator + close out round (INDEX/state/archive)
+#   verify    — tests + benchmarks + evaluator + close out round (INDEX/state/archive).
+#               Compares against frozen reference.json per P5.
 #   sanity    — independent common-sense check: did VERIFY actually close out? is the
-#               data physically consistent with the plan? blocks auto-continue if not.
+#               data physically consistent with the plan? R7 checks cumulative drift
+#               vs reference.json. Blocks auto-continue if non-clean.
 #
 # Conditional:
-#   review    — (every REVIEW_INTERVAL rounds) harness self-audit, runs before analyze
+#   review    — (every REVIEW_INTERVAL rounds) harness self-audit, runs before context_gather
 #
 # Usage:
 #   bash .claude/optimize.sh                # one full cycle
@@ -21,7 +27,7 @@
 #   bash .claude/optimize.sh --review       # force review phase
 #   bash .claude/optimize.sh --no-review    # skip review even if due
 #
-# Multi-round: round 1 honors --from=, rounds 2..N start from analyze.
+# Multi-round: round 1 honors --from=, rounds 2..N start from context_gather.
 # Any phase failure stops the run.
 
 set -uo pipefail
@@ -29,10 +35,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROMPTS="$ROOT/.claude/prompts"
 STATE="$ROOT/opt/state.json"
-PHASES=(analyze implement verify sanity)
+PHASES=(context_gather analyze implement verify sanity)
 
 # --- Parse args ---
-FROM="analyze"
+FROM="context_gather"
 DRY_RUN=false
 FORCE_REVIEW=false
 SKIP_REVIEW=false
@@ -205,11 +211,11 @@ rounds_since_review() {
 run_cycle() {
     local cycle_from="$1"
 
-    # Conditional REVIEW (before analyze, every REVIEW_INTERVAL rounds)
+    # Conditional REVIEW (before context_gather, every REVIEW_INTERVAL rounds)
     # REVIEW runs every round in early stage (REVIEW_INTERVAL=1).
     # Increase to 3-5 once workflow stabilizes.
     local REVIEW_INTERVAL=1
-    if [ "$cycle_from" = "analyze" ] && ! $SKIP_REVIEW; then
+    if [ "$cycle_from" = "context_gather" ] && ! $SKIP_REVIEW; then
         SINCE_REVIEW=$(rounds_since_review)
         if $FORCE_REVIEW || [ "$SINCE_REVIEW" -ge "$REVIEW_INTERVAL" ]; then
             echo ""
@@ -227,6 +233,16 @@ run_cycle() {
 
         # Pre-phase gate checks
         case $phase in
+            context_gather)
+                # No prerequisite; it's the first real-work phase per round.
+                ;;
+            analyze)
+                check_output "context_gather" "opt/authoritative-context.json" || {
+                    echo "ERROR: CONTEXT_GATHER did not produce authoritative-context.json"
+                    echo "ANALYZE cannot run without authoritative evidence (P3)."
+                    return 1
+                }
+                ;;
             implement)
                 check_output "analyze" "opt/current_plan.md" || return 1
                 # Pre-flight: clear stale stash entries and snapshot baseline test state
@@ -312,8 +328,8 @@ for ((round=1; round<=ROUNDS; round++)); do
     echo ""
     echo "=== Round $round complete ==="
 
-    # Rounds 2..N always start from analyze
-    CYCLE_FROM="analyze"
+    # Rounds 2..N always start from context_gather (which triggers REVIEW)
+    CYCLE_FROM="context_gather"
 done
 
 if [ "$ROUNDS" -gt 1 ]; then

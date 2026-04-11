@@ -6,6 +6,14 @@ You are in the ANALYZE+PLAN phase of the GScript optimization loop.
 Top-down flow: architecture → strategy → research → source → diagnostics → plan.
 **No code changes.** Output: `opt/analyze_report.md` + `opt/current_plan.md` + knowledge base + architecture notes.
 
+## Primary evidence source (MANDATORY, harness v3 P3)
+
+**Read `opt/authoritative-context.json` FIRST.** This file is produced by CONTEXT_GATHER before you run, and it is your authoritative evidence source. It contains production-pipeline IR dumps, ARM64 disasm summaries, and factual observations for the top candidate benchmarks. You MUST consume it before any other analysis.
+
+- Every assumption in your plan's `assumptions:` frontmatter MUST cite an entry from `authoritative-context.json` (via `evidence: opt/authoritative-context.json#candidates[<bench>].<field>`) OR a file:line in the source that you've read directly.
+- Do NOT re-derive what CONTEXT_GATHER already measured. If the JSON says "GetField appears 8× in inner loop", cite that, don't re-count.
+- If CONTEXT_GATHER failed (`opt/context_gather_failed.md` exists), STOP and halt this round with `status: context_gather_failed`. Do NOT proceed to write a plan on no evidence.
+
 ## Context — Load ALL data in ONE call
 
 **IMPORTANT**: Do NOT read files one by one with the Read tool. Use ONE Bash call:
