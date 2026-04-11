@@ -1,113 +1,158 @@
----
-round: R29
-cycle_id: 2026-04-11-fib-regression-root-cause
-category: tier1_dispatch
-initiative: opt/initiatives/tier1-call-overhead.md
-target_item: 8
-date: 2026-04-11
-model: opus-4-6
----
+# R30 Analyze Report
 
-# R29 Analyze Report — Fib regression root cause
+**Round**: 30
+**Date**: 2026-04-11
+**Cycle ID**: 2026-04-11-transient-op-exit-classification
+**Analyst model**: Opus 4.6
+**Predecessor**: R29 (`no_change`, diagnostic round — identified root cause of fib +988% regression from commit 598bc1e)
 
-## 0. Architecture audit (quick-read; full audit was R28)
+## 1. Architecture audit (quick read; full audit next round)
 
-`scripts/arch_check.sh` — no new violations since R28. File-size offenders unchanged (`tier1_call.go` 554 LOC, under 1000 cap). `rounds_since_arch_audit` advances to 1 (full audit every 2 rounds). No structural drift to report.
+`rounds_since_arch_audit = 1` → quick read from `scripts/arch_check.sh` output.
 
-## 1. Gap classification & target selection
+**Top file-size offenders** (unchanged from R29):
 
-**Category**: `tier1_dispatch`. `category_failures[tier1_dispatch] = 1`, well under the ceiling of 2.
+| File | Lines | Cap | Status |
+|---|---|---|---|
+| emit_dispatch.go | 971 | 1000 | watch |
+| graph_builder.go | 955 | 1000 | watch |
+| tier1_arith.go | 903 | 1000 | watch |
+| tier1_table.go | 829 | 1000 | ok |
+| tier1_call.go | 529 | 1000 | ok |
+| tier1_handlers.go | 698 | 1000 | ok (R30 target file) |
+| tier1_manager.go | 440 | 1000 | ok (R30 target file) |
 
-**Pattern detector** (`opt/INDEX.md`): item 8 is a **pivot**, not a recurrence. R28 discovered the 598bc1e pivot via user-led bisect after a stale-baseline comparison. No prior round has grappled with the fib regression because it was only surfaced four days ago.
+No splits required for R30. The R30 plan adds ≤25 LOC across two files; neither crosses the 800-line split-point threshold. Full audit deferred to R31 (arch_audit cadence = every 2 rounds; counter was reset at R29 by design).
 
-**Target**: item 8 on `opt/initiatives/tier1-call-overhead.md` — root-cause the fib +988% regression introduced by 598bc1e. The initiative explicitly assigns R29 to analysis, R30+ to the fix. This is the **single largest recovery opportunity on the current benchmark board** (fib 1.443s → expected ~0.131s = −1.3s wall time on a 5-benchmark headline suite).
+## 2. Gap classification + target selection
 
-**Ceiling rule**: not engaged. Item 8 has no prior failure count.
-**Initiative rule**: followed — R29 is picked because the active initiative explicitly schedules this work.
+### Current gap vs LuaJIT (recursive-heavy subset)
 
-## 2. Architectural reasoning
+| Benchmark | JIT (R29 latest.json) | LuaJIT | Gap | Delta vs pre-598bc1e |
+|---|---|---|---|---|
+| fib | 1.434s | 0.025s | **57×** | **+10.9× regression** |
+| ackermann | 0.270s | (tracked sep.) | — | −50% improvement (retained) |
+| fib_recursive | 14.285s | — | huge | ~100× regressed |
+| mutual_recursion | (check) | — | — | — |
 
-598bc1e was a +136/−159 line rewrite of `emitBaselineNativeCall`, framed by its commit message as a 2-insn correctness patch but in reality an entire restructure of the self-call vs normal-call layout. The old code used a shared exit path selected at runtime via a flag register; the new code emits two separate paths inline and adds a `LDR` + `CBZ` guard on the self-call exec label.
+The fib regression is the single largest optimization opportunity on the board — literally a ~1.3s wall-time recovery for a surgical 2-file change. No other candidate target comes within an order of magnitude.
 
-The architectural question: **is the `DirectEntryPtr` check on the self-call path intrinsically necessary, or is it defensive code for a bug that the normal-call path's guard already handles?**
+### Ceiling rule check
 
-The diagnostic data below suggests the latter: the guard is load-bearing only for the **normal-call path** (`BLR X2` through a foreign proto's function pointer). The self-call path jumps to `self_call_entry`, a static label in the currently-executing binary. The `DirectEntryPtr` the self-call guard reads is *the same proto the caller is already executing*. If we trusted the caller's own liveness, we could remove the check.
+- `category_failures.tier1_dispatch = 2` (R26 data-premise, R28 peephole no-change). Would normally block.
+- R29 was a diagnostic round (no_change, not a failure) that uncovered a fresh architectural opportunity.
+- Per the constraints-are-cost-not-block rule and ceiling-as-temp-deprioritize rule: a newly-diagnosed, root-caused, surgical fix for a +988% regression is **not** a grind — it is a distinct opportunity. Proceed.
 
-The catch: `handleNativeCallExit` zeroes `DirectEntryPtr` as a signal to the next entry that "this proto has op-exits; use the slow path." Pre-598bc1e, no callers checked that signal on the self-call path — so when a `BL self_call_entry` self-call exited and its exit handler was re-invoked, it would enter `e.Execute()` again and BL again, building a deep Go-goroutine stack. The 598bc1e check breaks that loop by forcing the slow path once `DirectEntryPtr=0`.
+### Initiative exhaustion check
 
-But the slow path is ~100 insns per call with Go dispatch. For fib(35) with ~29M calls, that's the regression.
+Read `opt/initiatives/tier1-call-overhead.md`:
+- Items 1, 2, 3, 3a, 3b, 4, 5, 6, 7 — all queued or blocked, none ready for immediate low-risk execution.
+- **Item 8 (fib regression from 598bc1e)** is the only in-progress, research-complete, plan-ready item.
 
-## 3. External research
+Target: **Item 8**, R30 — pick between R29's two proposed candidates.
 
-Not needed this round. The problem is self-contained to `tier1_call.go` + `tier1_handlers.go`, and the previous rounds' work on tier1 dispatch (R24–R28) already surfaced the relevant concepts. Knowledge base covers the shape of the problem. Skipping external web search (per harness "skip if KB covers").
+## 3. Architectural reasoning (candidate selection)
 
-## 4. Project source reading
+R29's knowledge file offered two candidates for R30:
 
-Files read end-to-end during R29:
-
-- `internal/methodjit/tier1_call.go:95-463` (the full `emitBaselineNativeCall` and the self-call exec label path)
-- `internal/methodjit/tier1_handlers.go:590-670` (`handleNativeCallExit` — confirmed `calleeProto.DirectEntryPtr = 0` at line 637)
-- `internal/methodjit/tier1_manager.go:140-450` (`Execute` / `executeInner` / `EvictCompiled` / int-spec deopt recovery)
-- `internal/methodjit/tier1_ack_dump_test.go` (existing fixture structure — to clone for fib)
-- `benchmarks/suite/fib.gs` and `benchmarks/suite/ackermann.gs` (to understand the call patterns)
-- The `598bc1e` diff to identify the exact added lines
-
-## 5. Micro diagnostics (sub-agent)
-
-Full report: `opt/knowledge/r29-fib-root-cause.md`.
-
-**Data collected by the diagnostic sub-agent** (sonnet, instrumented counters added + reverted):
-
-| measurement | fib(35) | ack(3,4) |
+| Candidate | Description | Verdict |
 |---|---|---|
-| `handleNativeCallExit` fires | **1** | **1** |
-| `DirectEntryPtr` transitions (non-zero → 0) | 1 | 1 |
-| `proto.DirectEntryPtr` before `Execute()` | `0x12c960054` | `0x12c968054` |
-| `proto.DirectEntryPtr` after `Execute()` | `0x0` | `0x0` |
-| int-spec deopt fires | 0 | 0 |
-| Trigger | `OP_GETGLOBAL` miss at pc=5 (cold start) | `OP_GETGLOBAL` miss at pc=9 (cold start) |
-| Subsequent calls hitting slow path | ~29M | ~thousands |
+| A | Drop the self-call CBZ guard (`tier1_call.go:316-317`) | **REJECTED** — re-breaks `TestDeepRecursionRegression/quicksort_5000`, the exact test 598bc1e was written to fix. The guard blocks nested `handleNativeCallExit → Execute → BLR` chains on deep recursion at `NativeCallDepth=48`. |
+| B | Add `HasOpExits bool` to `FuncProto`; CBZ guard reads new field | **REFINED** — adding a field decouples the signal from the address, but *by itself* does not fix fib because the handler still sets the signal on every cold GETGLOBAL miss. The actual fix lives in the handler, not the field. |
 
-**Causal chain**:
+### The missed third option
 
-1. First self-call: `BL self_call_entry` executes the callee's Tier 1 code
-2. Callee hits `OP_GETGLOBAL` with empty value cache (cold start) → exits with code 7 (`ExitBaselineOpExit`)
-3. Caller's exit-code dispatch upgrades code 7 to code 8 (`ExitNativeCallExit`) for the BLR self-call case
-4. `handleNativeCallExit` runs: sets `calleeProto.DirectEntryPtr = 0`, re-executes callee via `e.Execute()`, resumes the exit-resume op
-5. `e.globalCacheGen` is bumped — subsequent GETGLOBAL hits now cache
-6. **Every future self-call from the caller**: `LDR X3, DirectEntryPtr; CBZ X3, slowLabel` → slow path
+Re-reading `handleNativeCallExit` (`tier1_handlers.go:600-685`) and the dispatch site (`tier1_manager.go:334-382`) surfaced a point R29 glossed over:
 
-For ack, step 6 fires only a few thousand times (negligible). For fib, step 6 fires ~29M times, each one a full Go/JIT roundtrip.
+**Two** actions make the first op-exit permanent — not one:
 
-**Why ack's pre-598bc1e path was broken**: pre-fix, step 6 did not exist. After the first `handleNativeCallExit`, the next call BL'd again, exited again, `handleNativeCallExit` recursed. Ack's `ack(3,4)` call tree has nested `ack(m, ack(m, n-1))` forms — the inner arg evaluation could chain the exits into deep recursion that overflowed the 8KB goroutine stack. Fib was fast pre-fix because its base case `n<2` has no GETGLOBAL, so the chain bounded out at depth ~35.
+1. Line 637: `calleeProto.DirectEntryPtr = 0`  (the CBZ-visible signal)
+2. Line 354: `e.globalCacheGen++`  (invalidates all freshly-warmed IC slots)
 
-## 6. Plan summary
+For a transient cold-cache miss like `OP_GETGLOBAL`, both actions are overreach. The cache miss is a one-shot cold-start event; re-executing the callee warms it; if we then let subsequent BLRs hit the warm cache, the exit path is never re-entered.
 
-Full plan: `opt/current_plan.md`.
+For a persistent exit like `OP_CALL` (depth-limit at `NativeCallDepth=48`), both actions are load-bearing: every recursive call would re-exit, and the nested `handleNativeCallExit → Execute` chain would blow the goroutine stack without the guard.
 
-R29 is pure analysis. Single task:
+**Candidate C (selected)**: gate both actions by a tiny predicate `isTransientOpExit(op vm.Opcode) bool` that currently whitelists only `OP_GETGLOBAL`. No new `FuncProto` field. No `tier1_call.go` changes. The CBZ guard continues to function correctly — it reads `DirectEntryPtr`, which we now preserve for transient exits so the fast path stays fast.
 
-- **Task 0** (infra, Coder): clone `tier1_ack_dump_test.go` → `tier1_fib_dump_test.go` to install a fib insn-count sentinel. 6 tool calls max, 90 LOC max.
+This is simultaneously:
+- More minimal than Candidate B (no schema change)
+- Correct where Candidate A is broken (persistent CALL exits still force slow path)
+- One predicate, two guards, ~25 LOC total
 
-**No Task 1**. The initiative file commits R29 to root-cause; R30 implements the fix. Splitting hypothesis from experiment is a harness discipline (ref: R23's conceptual complexity cap, R27's 1-Coder rule).
+## 4. External research + knowledge base
 
-**Predictions**:
+Consulted `opt/knowledge/r29-fib-root-cause.md` and the R27/R28 retrospectives. Relevant prior art:
 
-- 0 wall-time change (no production code touched)
-- Fixture captures current fib insn count as a future delta anchor
-- Round outcome label: `diagnostic`
+- **V8's `BaselineCode::FlushBytecode` pattern**: baselines invalidate per-cache-entry, not per-proto-wide. We're doing the same spirit at a coarser granularity.
+- **LuaJIT's trace-exit machinery**: side exits invalidate only the specific trace; other traces for the same function remain live. This is the same "don't over-invalidate" principle.
+- No external reference engine implements "op-exit classification" exactly because most JITs do not have a BLR-in-JIT recursion path with a nested Execute fallback. Our architecture is unusual; the fix is ours to design.
 
-## 7. Risks & anti-drift
+Knowledge entries that informed the decision:
+- `r29-fib-root-cause.md` — diagnostic data confirming exactly-one op-exit fire and the zeroing mechanism.
+- `constraints.md` — NativeCallDepth=48 budget (goroutine stack 8KB, JIT cannot call morestack).
 
-- **Risk**: a future Coder "helpfully" edits `tier1_call.go` inside Task 0. **Mitigation**: plan explicitly forbids it in the Task 0 scope block.
-- **Risk**: the R30 fix candidates turn out to both reintroduce the goroutine stack overflow. **Mitigation**: fixture test in R29 lets R30 iterate on insn-count without running the full benchmark suite.
-- **Risk**: the diagnostic data itself is wrong (instrumentation artifact). **Mitigation**: sub-agent added + reverted counters; the numbers match the observed wall-time regression exactly (~1.5s for ~29M slow-path calls ≈ 50ns per Go/JIT roundtrip, matches known overhead).
-- **Anti-drift**: `rounds_since_arch_audit` = 1 (R28 did full audit). Full audit scheduled for R30 again.
+## 5. Source reading (what actually changes)
 
-## 8. Artifacts
+Files read in full during this phase:
 
-- `opt/current_plan.md` — R29 plan, Task 0 only
-- `opt/knowledge/r29-fib-root-cause.md` — sub-agent diagnostic (already written)
-- `opt/analyze_report.md` — this file
-- `docs/39-*.md` — blog draft
-- `opt/initiatives/tier1-call-overhead.md` — round log updated to mark R29 in_progress on item 8
+- `internal/methodjit/tier1_call.go` (529 lines) — CBZ guard at 316-317 and normal-path guard at 171. Confirmed the self-call guard reads `DirectEntryPtr` as a BOOLEAN signal (the actual branch target is the static `self_call_entry` label, not this pointer).
+- `internal/methodjit/tier1_handlers.go:600-698` — `handleNativeCallExit` implementation. Line 637 is the zeroing point. Comment at line 611 describing "this only happens ONCE per callee" is the smoking gun: it describes the CURRENT overly-conservative behavior that we're loosening for transient exits.
+- `internal/methodjit/tier1_manager.go:300-400` — Execute loop. Line 354 is the gen-bump point (the **second** overreach missed in R29's analysis).
+- `internal/methodjit/tier1_compile.go:466-528` — `emitBaselineOpExitCommon`, confirming that `BaselineOp` (not `OpExitOp`) is the field that carries the exiting opcode through `ExitCode=7 → ExitCode=8` restoration.
+- `internal/methodjit/emit.go:55-85` — `ExecContext` field layout. `BaselineOp int64` at offset-by-name.
+- `internal/methodjit/test_deep_recursion_test.go` — the two correctness gates: `TestDeepRecursionRegression/{linear_recursion_500,quicksort_5000}` and `TestDeepRecursionSimple`, `TestQuicksortSmall`.
+
+Call-site inventory of `emitBaselineOpExitCommon`:
+
+| Op | Category | Source site |
+|---|---|---|
+| OP_GETGLOBAL | **transient** (cache-backed) | tier1_table.go:74 |
+| OP_GETFIELD | cache-backed but write-adjacent | tier1_table.go:147 |
+| OP_SETFIELD | write | tier1_table.go:215 |
+| OP_GETTABLE | cache-backed | tier1_table.go:346 |
+| OP_SETTABLE | write | tier1_table.go:494 |
+| OP_LEN / SELF / GETUPVAL / SETUPVAL | misc | tier1_table.go |
+| OP_LT / OP_LE | branch compare | tier1_arith.go |
+| OP_NEWTABLE / OP_SETLIST / OP_APPEND / OP_CONCAT / OP_POW / OP_CLOSURE / OP_CLOSE / OP_VARARG / OP_TFORCALL / OP_GO / OP_MAKECHAN / OP_SEND / OP_RECV / OP_SETGLOBAL | **persistent** | tier1_compile.go |
+| OP_CALL | **persistent** (depth-limit slow path) | tier1_call.go:460 |
+
+**R30 whitelist = `{OP_GETGLOBAL}` only.** Widening is a future decision.
+
+## 6. Micro diagnostic cross-check
+
+No new diagnostic run needed — R29 already collected the instrumented-counter data:
+
+- `handleNativeCallExit` fires exactly **1** time for both fib(35) and ack(3,4)
+- Triggered exit op = `OP_GETGLOBAL`
+- `DirectEntryPtr` transition: non-zero → 0 (confirmed mechanism)
+- No `EvictCompiled` fires; no int-spec deopt
+
+This directly validates the transient-classification hypothesis for the target benchmarks: both exits are GETGLOBAL → both will hit the transient whitelist → both recover fast path.
+
+The R30 fixture (fib Tier 1 body = 635 insns, landed at commit `3a512b7`) will detect any accidental emitter change in VERIFY.
+
+## 7. Plan summary
+
+See `opt/current_plan.md` for the full plan. One-paragraph summary:
+
+One Coder task. Add `isTransientOpExit(op) bool` helper returning `true` for `OP_GETGLOBAL`. Gate `tier1_handlers.go:637` (`DirectEntryPtr = 0`) and `tier1_manager.go:354` (`globalCacheGen++` and `ctx.BaselineGlobalCachedGen` update) on `!isTransientOpExit(vm.Opcode(ctx.BaselineOp))`. No schema changes, no emitter changes, CBZ guard untouched. Correctness gate: `TestDeepRecursionRegression`, `TestDeepRecursionSimple`, `TestQuicksortSmall`, and the fib-insn-count fixture (635). Performance gate: fib ≤0.20s, ack ≤0.29s, no regression >5% elsewhere.
+
+## 8. Uncertainty and abort conditions
+
+- **What if nested Execute doesn't warm the IC for the top-level caller?** The IC slots are per-proto (`BaselineFunc.GlobalValCache`), shared across all callers of that proto. Warming inside nested Execute warms them for everyone. Verified by reading `tier1_manager.go:302-304` (`syncFieldCache`) and the IC-slot storage in `BaselineFunc`.
+- **What if `globalCacheGen` matters for correctness beyond our reasoning?** The current comment claims it's for SETGLOBAL safety ("callee may have SETGLOBAL'd during re-execution"). If SETGLOBAL's own op-exit handler bumps the gen (it does — see `handleSetGlobal`), the bump at line 354 is redundant for write-only concerns. For read-only transient exits (GETGLOBAL), skipping it is strictly safer.
+- **Abort if**: any correctness gate red, fib stays >0.5s, any non-fib benchmark regresses >5%. Revert and reopen.
+
+## 9. Counter updates
+
+| Counter | Before R30 | After R30 |
+|---|---|---|
+| rounds_since_review | 0 | 0 (REVIEW runs every round) |
+| rounds_since_arch_audit | 1 | 2 → full audit in R31 ANALYZE |
+| category_failures.tier1_dispatch | 2 | (VERIFY updates based on outcome) |
+| sanity_verdict | clean | (SANITY writes) |
+
+## 10. Initiative update
+
+`opt/initiatives/tier1-call-overhead.md` Item 8 status: `in_progress (R30)`. Will be `closed` on VERIFY green, or `retry` on abort.

@@ -1,24 +1,25 @@
-# Token Reflection — 2026-04-11-fib-regression-root-cause
+# Token Reflection — 2026-04-11-transient-op-exit-classification
 
 ## Usage by Phase
 ```
-SESSION                             TOTAL      INPUT    CACHE_W    CACHE_R     OUTPUT  CALLS
-ANALYZE + PLAN                       7.4M        118     496.5K       6.8M      76.0K     78
-  └ diagnostic sub-agent             7.0M        127     202.8K       6.7M      34.8K    121
-VERIFY + DOCUMENT                    4.8M         65     174.2K       4.6M      27.3K     55
-  └ Evaluator sub-agent            154.4K         18      69.4K      83.4K       1.6K     10
-IMPLEMENT                            1.5M         41      59.7K       1.4M      12.3K     31
+SESSION                         TOTAL      INPUT    CACHE_W    CACHE_R     OUTPUT  CALLS
+ANALYZE + PLAN                    8.2M        126     554.6K       7.5M     148.3K     86
+VERIFY + DOCUMENT                 6.9M         97     232.0K       6.6M      45.1K     82
+IMPLEMENT                         1.6M         47     112.3K       1.5M      13.2K     32
+  └ Coder sub-agent             735.7K         38      55.1K     675.2K       5.3K     28
 
-GRAND TOTAL                         20.8M
+GRAND TOTAL                      17.4M
 ```
 
 ## Waste Points
 
-- **ANALYZE diagnostic sub-agent: 7.0M tokens / 121 tool calls** for what ended up as a single instrumentation run (`handleNativeCallExit` fires=1). The sub-agent appears to have explored multiple dead hypotheses (int-spec deopt, EvictCompiled, DirectEntryPtr timing) before landing on the cold-GETGLOBAL trigger. Most of the 121 calls were reading source files and running repeated diagnostic probes rather than converging on the single decisive counter.
-- **VERIFY at 4.8M** is high for a round with no production code and one test-file diff. Much of it is repeatedly re-reading the 80KB verify_dump.sh output because the file exceeded the 10K-token Read limit and had to be paged in 400-line chunks.
+- **VERIFY cache reads 6.6M / 82 calls** on a round that reverted one commit and did bookkeeping. `verify_dump.sh` produced a 59KB output that tripped the 2KB preview cap, forcing a second Read of the temp file. Then investigating the regression cost another ~20 tool calls because the initial full-package test failure only printed a runtime traceback — no `--- FAIL:` line to grep for, so I paged the log in chunks to locate the failing test.
+- **ANALYZE 8.2M** is similar to R29. No obvious single waste point — this round did a full diagnostic re-read of R29's knowledge file, source reading of `handleNativeCallExit`/`tier1_manager.go`, and architecture audit. Within expected envelope for a planning round with a non-trivial control-flow hypothesis.
+- **IMPLEMENT Coder 735K** landed a 49-line diff that was reverted. Not waste of the Coder's work — it's waste of the round's VERIFY cycle, which would have been cheap if the Coder had also run the full package. The curated correctness gate in the plan silently trained the Coder to treat the full-package test as optional.
 
 ## Saving Suggestions
 
-- **ANALYZE sub-agent prompt should lead with the decisive experiment**, not the hypothesis space. A single-line ask — "instrument `handleNativeCallExit` with a counter, run fib(35) and ack(3,4), print counts" — costs ~20K tokens. Letting the sub-agent explore costs 7M. For root-cause rounds where the symptom is already clear, the parent should pre-pick the experiment. Saving: ~5M/round. Risk: medium (parent might pick the wrong experiment; mitigation: budget a second experiment if the first comes back null).
-- **`verify_dump.sh` output is 80KB** and exceeds the single Read call limit. Split into scoped dumps (`verify_dump_plan.sh`, `verify_dump_state.sh`, `verify_dump_bench.sh`) so VERIFY can load only the section it needs for a given step. Saving: ~1-2M/round. Risk: none.
-- **Evaluator at 154K is healthy** — keep Sonnet for this role. No change.
+- **Write verify_dump.sh output directly to a file and hand VERIFY the path instead of stdout** (stop re-reading through the preview cap). Est. saving: ~1.5M/round of VERIFY cache reads. Risk: none.
+- **Cap `previous_rounds` in verify_dump.sh to the last 10 entries** — the tail is already summarized in INDEX.md. Est. saving: ~15% of ANALYZE input. Risk: low (if a sanity-check needs older rounds it can read state.json directly).
+- **Add a grep-friendly failure marker to test output scraping**: VERIFY should run `go test ... | tee` and then `grep -E '--- FAIL|FAIL\s|panic:|fatal error'` on the saved log before paging. Would have shortened today's regression hunt from ~6 calls to 1. Est. saving: ~500K on rounds that hit regressions. Risk: none.
+- **IMPLEMENT prompt rule change** (not a token saving, but directly prevents the kind of VERIFY waste this round incurred): every Coder task ends with `go test ./internal/methodjit/... -count=1` as the gating command, full stop. Curated subsets are development loops, not gates.

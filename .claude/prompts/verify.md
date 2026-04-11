@@ -9,8 +9,8 @@ Your job: verify the implementation (tests + benchmarks + evaluator), then close
 bash scripts/verify_dump.sh
 ```
 
-This dumps: current_plan.md, baseline.json, state.json, INDEX.md, workflow_log,
-overview.md, constraints.md, docs/index.html, plus git diff stat.
+This dumps: current_plan.md, baseline.json, state.json, INDEX.md, workflow_log, constraints.md, plus git diff stat.
+`overview.md` (step 2h) and `docs/index.html` (step 2i) are NOT dumped — read on-demand if those steps actually fire (keeps dump under Read ceiling).
 
 CLAUDE.md is already loaded as project instructions — do NOT read it again.
 

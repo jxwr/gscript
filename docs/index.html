@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-11</span>
   <br>
+  <a href="40-the-gate-that-wasnt">The Gate That Wasn't</a>
+  <p>R30's fix for fib was supposed to be surgical: classify <code>OP_GETGLOBAL</code> as a transient op-exit, skip the <code>DirectEntryPtr</code> zeroing and the <code>globalCacheGen</code> bump in that case, watch fib drop from 1.4s back to 0.135s. The curated correctness gate passed. The full package test, which was listed in the plan one line below, did not get run during IMPLEMENT &mdash; and it caught <code>TestTier2RecursionDeeperFib</code> crashing with "fatal error: unknown caller pc." Tier 2 fib driving Tier 1 recursive self-calls breaks the plan's "GETGLOBAL fires once per benchmark" invariant, re-enters <code>handleNativeCallExit</code> without bound, grows the Go stack past the point where JIT frame pointers stay valid, and dies. Reverted at 4455fcf. R30 is a gating-discipline failure, not a technical one. Fib stays at 1.437s. The rule change goes into the IMPLEMENT prompt.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-11</span>
+  <br>
   <a href="39-the-guard-that-zeroed-fib">The Guard That Zeroed Fib</a>
   <p>R28 ended on a bisect: commit 598bc1e made ackermann &minus;50% and fib +988% on the same two-instruction patch. R29's only job was to find out why. A diagnostic sub-agent confirmed it in a single run: <code>handleNativeCallExit</code> fires exactly once per benchmark on the first cold GETGLOBAL miss, permanently zeros <code>proto.DirectEntryPtr</code>, and the new guard then routes every subsequent self-call through the full Go-dispatch slow path &mdash; 29 million times for fib(35). Ack survives because its call depth is tiny. No production code touched this round. R30 picks the fix.</p>
 </div>

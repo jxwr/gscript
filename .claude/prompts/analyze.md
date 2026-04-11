@@ -174,6 +174,7 @@ pprof is useless for JIT code. `otool -tv` / `objdump` is authoritative.
 
 **Do NOT spawn duplicate diagnostic agents.** One agent per target. If you need IR + disasm, the same agent does both.
 **Architecture audit sub-agent (Step 0b) MUST NOT run ARM64 disasm** — disasm work belongs to Step 4 diagnostic sub-agent only.
+**Root-cause rounds** (symptom already known from a prior round): pre-specify the decisive experiment in the sub-agent prompt — one counter, one run, one print. Do not hand the sub-agent a hypothesis space. Reason: R29 diagnostic sub-agent used 7M tokens / 121 calls exploring dead hypotheses before finding a 1-line instrumentation answer.
 
 ### Diagnostic cross-check (mandatory, R24)
 

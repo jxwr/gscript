@@ -14,10 +14,11 @@ FILES=(
     "$ROOT/opt/state.json"
     "$ROOT/opt/INDEX.md"
     "$ROOT/opt/workflow_log.jsonl"
-    "$ROOT/docs-internal/architecture/overview.md"
     "$ROOT/docs-internal/architecture/constraints.md"
-    "$ROOT/docs/index.html"
 )
+# docs/index.html (21KB, step 2i only) + overview.md (8KB, step 2h conditional):
+# read on-demand to keep dump under the 10K-token Read ceiling. R29 token
+# reflection: VERIFY spent ~1-2M tokens re-reading the oversized dump.
 
 for f in "${FILES[@]}"; do
     if [ -f "$f" ]; then

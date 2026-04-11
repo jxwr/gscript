@@ -7,10 +7,19 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "3a512b77e5396313a89c0e2107cbab36d7c264fa",
+  "uncommitted_files": [
+    ".claude/prompts/analyze.md",
+    ".claude/prompts/review.md",
+    ".claude/prompts/verify.md",
+    "opt/analyze_report.md",
+    "opt/initiatives/tier1-call-overhead.md",
+    "opt/phase_log.jsonl",
+    "opt/state.json",
+    "scripts/verify_dump.sh"
+  ],
+  "head_commit": "4455fcf7174650c0fb396d25f10deb0494ee8a69",
   "branch": "main",
-  "last_checkpoint": "2026-04-11T09:12:07Z",
+  "last_checkpoint": "2026-04-11T10:01:05Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -231,17 +240,24 @@
       "initiative": "opt/initiatives/tier1-call-overhead.md",
       "outcome": "no_change",
       "summary": "R29 diagnostic round for fib +988% regression. Root cause confirmed: handleNativeCallExit fires exactly once per benchmark (cold GETGLOBAL miss during first self-call), permanently zeros DirectEntryPtr, and the 598bc1e CBZ guard at tier1_call.go:316-317 then routes every subsequent self-call through emitBaselineOpExitCommon(OP_CALL) \u2014 ~29M Go/JIT roundtrips for fib(35). Ack survives because call depth is tiny. Deliverables: opt/knowledge/r29-fib-root-cause.md + tier1_fib_dump_test.go (fibTotalInsnBaseline=635, 76 lines). No production code touched. R30 picks between (A) drop self-call CBZ or (B) HasOpExits proto flag. Ceiling decay: recursive_call reset (3 rounds absent). Results: coroutine_bench -16.2% (high-variance, ignored); all other deltas \u00b13% noise."
+    },
+    {
+      "cycle_id": "2026-04-11-transient-op-exit-classification",
+      "category": "tier1_dispatch",
+      "initiative": "opt/initiatives/tier1-call-overhead.md",
+      "outcome": "regressed",
+      "summary": "R30 Task 1 landed isTransientOpExit(OP_GETGLOBAL) predicate gating DirectEntryPtr clearing + globalCacheGen bump in handleNativeCallExit. Curated correctness gate passed during IMPLEMENT, but full ./internal/methodjit/... run in VERIFY caught TestTier2RecursionDeeperFib crashing with 'fatal error: unknown caller pc' \u2014 unbounded re-entry into handleNativeCallExit under Tier 2/Tier 1 cross-tier recursion corrupts the Go stack. Reverted at commit 4455fcf. Lessons: (1) every IMPLEMENT task must run the full package, not a curated subset; (2) R29's 'GETGLOBAL fires once per benchmark' invariant was Tier 1-only and silently broke under CompileTier2. fib still 1.437s (10x pre-598bc1e pivot). Post-revert benchmarks within noise of R29 baseline."
     }
   ],
   "category_failures": {
     "recursive_call": 0,
     "tier2_float_loop": 1,
     "field_access": 1,
-    "tier1_dispatch": 2,
+    "tier1_dispatch": 3,
     "other": 0
   },
   "rounds_since_review": 1,
-  "rounds_since_arch_audit": 1,
-  "sanity_verdict": "",
-  "sanity_report": ""
+  "rounds_since_arch_audit": 2,
+  "sanity_verdict": "clean",
+  "sanity_report": "opt/sanity_report.md"
 }
