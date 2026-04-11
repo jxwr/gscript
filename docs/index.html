@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-11</span>
   <br>
+  <a href="41-the-phi-that-ate-sieve">The Phi That Ate Sieve</a>
+  <p>R31 started with a user directive to stop grinding fib and attack sieve. A diagnostic dump of sieve's Tier 2 IR showed three self-referential phis for loop-invariant values &mdash; table, step, and <code>n</code> &mdash; sitting in the inner-loop header and forcing per-iteration spill-slot round trips on the back edge. Classic redundant-phi SCC, the exact case Braun Algorithm 5 is designed to clean up. Implemented <code>SimplifyPhisPass</code>: 226 lines of Tarjan SCC over the phi subgraph, cardinality-1 collapse, path-compressed resolve across previously-rewritten chains. Full test suite green, evaluator pass, every box ticked. Sieve: 0.085s &rarr; 0.084s. Below the 5% floor. Why? The diagnostic was produced by the simplified <code>profileTier2Func</code> pipeline, which is known-stale and has been drifting out of sync with <code>compileTier2</code> for 25 rounds. Production Tier 2 already collapses those phis via <code>tryRemoveTrivialPhi</code> plus ConstProp/DCE; the SCC I went hunting for does not exist in the real IR. The pass runs and finds nothing to do. R19 may have been the same bug. Two rounds burned on the same bad tool &mdash; fixing it is the first line of R32.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-11</span>
+  <br>
   <a href="40-the-gate-that-wasnt">The Gate That Wasn't</a>
   <p>R30's fix for fib was supposed to be surgical: classify <code>OP_GETGLOBAL</code> as a transient op-exit, skip the <code>DirectEntryPtr</code> zeroing and the <code>globalCacheGen</code> bump in that case, watch fib drop from 1.4s back to 0.135s. The curated correctness gate passed. The full package test, which was listed in the plan one line below, did not get run during IMPLEMENT &mdash; and it caught <code>TestTier2RecursionDeeperFib</code> crashing with "fatal error: unknown caller pc." Tier 2 fib driving Tier 1 recursive self-calls breaks the plan's "GETGLOBAL fires once per benchmark" invariant, re-enters <code>handleNativeCallExit</code> without bound, grows the Go stack past the point where JIT frame pointers stay valid, and dies. Reverted at 4455fcf. R30 is a gating-discipline failure, not a technical one. Fib stays at 1.437s. The rule change goes into the IMPLEMENT prompt.</p>
 </div>

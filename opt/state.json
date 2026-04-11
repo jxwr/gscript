@@ -2,24 +2,41 @@
   "cycle": "",
   "cycle_id": "",
   "target": "",
-  "started": "2026-04-11T07:42:22Z",
-  "baseline": {},
+  "started": "2026-04-11T18:30:00Z",
+  "baseline": {
+    "sieve": 0.085,
+    "luajit_sieve": 0.011,
+    "ratio": 7.7
+  },
   "plan_budget": {},
-  "completed_steps": [],
+  "completed_steps": [
+    "analyze",
+    "implement",
+    "verify"
+  ],
   "next_action": "",
   "uncommitted_files": [
     ".claude/prompts/analyze.md",
-    ".claude/prompts/review.md",
+    ".claude/prompts/implement.md",
     ".claude/prompts/verify.md",
+    "benchmarks/data/baseline.json",
+    "benchmarks/data/history/2026-04-11.json",
+    "benchmarks/data/latest.json",
+    "docs/index.html",
+    "internal/methodjit/tier2_float_profile_test.go",
+    "opt/INDEX.md",
     "opt/analyze_report.md",
-    "opt/initiatives/tier1-call-overhead.md",
+    "opt/baseline_test_snapshot.txt",
     "opt/phase_log.jsonl",
+    "opt/sanity_report.md",
     "opt/state.json",
+    "opt/workflow_log.jsonl",
+    "scripts/analyze_dump.sh",
     "scripts/verify_dump.sh"
   ],
-  "head_commit": "4455fcf7174650c0fb396d25f10deb0494ee8a69",
+  "head_commit": "c375913d40ad9beb86d76c0364b2acbeea3fe77f",
   "branch": "main",
-  "last_checkpoint": "2026-04-11T10:01:05Z",
+  "last_checkpoint": "2026-04-11T11:11:49Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -247,17 +264,25 @@
       "initiative": "opt/initiatives/tier1-call-overhead.md",
       "outcome": "regressed",
       "summary": "R30 Task 1 landed isTransientOpExit(OP_GETGLOBAL) predicate gating DirectEntryPtr clearing + globalCacheGen bump in handleNativeCallExit. Curated correctness gate passed during IMPLEMENT, but full ./internal/methodjit/... run in VERIFY caught TestTier2RecursionDeeperFib crashing with 'fatal error: unknown caller pc' \u2014 unbounded re-entry into handleNativeCallExit under Tier 2/Tier 1 cross-tier recursion corrupts the Go stack. Reverted at commit 4455fcf. Lessons: (1) every IMPLEMENT task must run the full package, not a curated subset; (2) R29's 'GETGLOBAL fires once per benchmark' invariant was Tier 1-only and silently broke under CompileTier2. fib still 1.437s (10x pre-598bc1e pivot). Post-revert benchmarks within noise of R29 baseline."
+    },
+    {
+      "cycle_id": "2026-04-11-braun-redundant-phi-cleanup",
+      "category": "field_access",
+      "initiative": "standalone",
+      "outcome": "no_change",
+      "summary": "R31 SimplifyPhisPass (Braun Algorithm 5 \u2014 Tarjan SCC over phi-subgraph, cardinality-1 collapse) landed in commit c375913. 226 LOC impl + 450 LOC tests; wired at two sites in both RunTier2Pipeline and NewTier2Pipeline. All tests green, evaluator PASS. Sieve 0.085\u21920.084 (-1.2%, below 5% floor). Root cause of miss: the diagnostic at opt/diagnostics/r31-sieve.md was produced by the known-stale profileTier2Func pipeline (constraints.md flag); production compileTier2 already collapses these phis via tryRemoveTrivialPhi + ConstProp/DCE, so the new pass catches nothing on sieve. Generic infra kept as safety net for future construction bugs or inliner-introduced SCCs. All other benchmarks within \u00b13% noise; coroutine_bench +12.2% is known high-variance."
     }
   ],
   "category_failures": {
     "recursive_call": 0,
     "tier2_float_loop": 1,
-    "field_access": 1,
+    "field_access": 2,
     "tier1_dispatch": 3,
     "other": 0
   },
-  "rounds_since_review": 1,
-  "rounds_since_arch_audit": 2,
-  "sanity_verdict": "clean",
-  "sanity_report": "opt/sanity_report.md"
+  "rounds_since_review": 2,
+  "rounds_since_arch_audit": 1,
+  "sanity_verdict": "pending",
+  "sanity_report": "opt/sanity_report.md",
+  "sanity_cycle_id": "2026-04-11-braun-redundant-phi-cleanup"
 }

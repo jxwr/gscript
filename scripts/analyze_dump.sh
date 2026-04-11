@@ -13,8 +13,28 @@ echo "=== ANALYZE CONTEXT DUMP ==="
 echo "================================================================"
 echo ""
 
+# state.json is large (previous_rounds grows every round). Render a trimmed
+# view (last 10 entries) — INDEX.md has the full history already. R30 review:
+# saved ~50% of state.json bytes + equivalent VERIFY/ANALYZE cache cost.
+render_state_trimmed() {
+    python3 - "$ROOT/opt/state.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+pr = data.get('previous_rounds', [])
+if len(pr) > 10:
+    data['previous_rounds'] = pr[-10:]
+    data['_previous_rounds_truncated'] = f"kept last 10 of {len(pr)} — see opt/INDEX.md for full history"
+print(json.dumps(data, indent=2))
+PY
+}
+if [ -f "$ROOT/opt/state.json" ]; then
+    echo "──── opt/state.json (trimmed: previous_rounds last 10) ────"
+    render_state_trimmed
+    echo ""
+fi
+
 FILES=(
-    "$ROOT/opt/state.json"
     "$ROOT/opt/INDEX.md"
     "$ROOT/docs-internal/architecture/overview.md"
     "$ROOT/docs-internal/architecture/constraints.md"

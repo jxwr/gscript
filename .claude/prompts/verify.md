@@ -20,9 +20,10 @@ CLAUDE.md is already loaded as project instructions — do NOT read it again.
 
 ### 1a. Run tests
 ```
-go test ./internal/methodjit/... -short -count=1 -timeout 120s
-go test ./internal/vm/... -short -count=1 -timeout 120s
+go test ./internal/methodjit/... -short -count=1 -timeout 120s 2>&1 | tee /tmp/verify_mj.log
+go test ./internal/vm/... -short -count=1 -timeout 120s 2>&1 | tee /tmp/verify_vm.log
 ```
+On failure: `grep -E '--- FAIL|^FAIL\s|panic:|fatal error' /tmp/verify_mj.log /tmp/verify_vm.log` FIRST to locate the failure marker. Avoid paging the full log — R30 burned ~6 calls hunting a runtime traceback.
 If tests fail: **fix first**. Correctness before performance.
 **JIT stack crash protocol**: on first SIGSEGV/SIGBUS in JIT code, immediately run `git stash && go test -run <failing_test> -timeout 10s; git stash pop` to confirm pre-existing. Do NOT investigate further — log in known-issues and continue.
 

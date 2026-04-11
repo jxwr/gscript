@@ -1,0 +1,1 @@
+ok  	github.com/gscript/gscript/internal/methodjit	1.347s

@@ -1,158 +1,204 @@
-# R30 Analyze Report
+# R31 ANALYZE Report
 
-**Round**: 30
+**Cycle ID**: `2026-04-11-braun-redundant-phi-cleanup`
 **Date**: 2026-04-11
-**Cycle ID**: 2026-04-11-transient-op-exit-classification
-**Analyst model**: Opus 4.6
-**Predecessor**: R29 (`no_change`, diagnostic round — identified root cause of fib +988% regression from commit 598bc1e)
+**Category**: `field_access`
+**Target**: `sieve` (7.7× LuaJIT)
+**Initiative**: standalone (unlocks downstream LICM rounds)
 
-## 1. Architecture audit (quick read; full audit next round)
+## User Priority Honored
 
-`rounds_since_arch_audit = 1` → quick read from `scripts/arch_check.sh` output.
+`opt/user_priority.md` directed:
+1. `field_access` first, primary target `sieve`
+2. `tier2_float_loop` after field_access plateaus
+3. Do NOT return to `tier1_dispatch` for 3+ rounds
 
-**Top file-size offenders** (unchanged from R29):
+This round honors priority #1. The `tier1_dispatch` category is at 3
+failures (R28 no_change → R29 no_change → R30 regressed+reverted) and
+is frozen this round per the user directive. The user's rationale —
+"the board's actual slow benchmarks are in Tier 2 territory (float
+loops + field access)" — is the basis for selecting sieve, which sits
+at 0.085 s vs LuaJIT 0.011 s and is the single largest unlocked gap
+in the field_access category.
 
-| File | Lines | Cap | Status |
-|---|---|---|---|
-| emit_dispatch.go | 971 | 1000 | watch |
-| graph_builder.go | 955 | 1000 | watch |
-| tier1_arith.go | 903 | 1000 | watch |
-| tier1_table.go | 829 | 1000 | ok |
-| tier1_call.go | 529 | 1000 | ok |
-| tier1_handlers.go | 698 | 1000 | ok (R30 target file) |
-| tier1_manager.go | 440 | 1000 | ok (R30 target file) |
+## Architecture audit (Step 0 — full, every-2-rounds slot)
 
-No splits required for R30. The R30 plan adds ≤25 LOC across two files; neither crosses the 800-line split-point threshold. Full audit deferred to R31 (arch_audit cadence = every 2 rounds; counter was reset at R29 by design).
+- `scripts/arch_check.sh` results: one file over the 1000-LOC soft
+  ceiling (`tier1_call.go` — known, pre-existing, untouched this round).
+  No new violations. Pipeline ordering constraints in
+  `docs-internal/architecture/constraints.md` unchanged.
+- `internal/methodjit/pipeline.go:RunTier2Pipeline` is the authoritative
+  pass ordering. Current: `TypeSpec → Intrinsic → TypeSpec → Inline →
+  TypeSpec → ConstProp → LoadElim → DCE → RangeAnalysis → LICM`.
+  No SSA cleanup pass at the entry — that is the gap this round fills.
+- Tier 2 promotion path for sieve verified: `HasLoop=true`,
+  `LoopDepth=2`, `TableOpCount>0`, REPS=3 ⇒ promoted on 2nd call.
+  `RunTier2Pipeline` used by production and by the diagnostic harness
+  (`tier2_float_profile_test.go:83`), so diagnostic IR matches
+  production IR.
 
-## 2. Gap classification + target selection
+## Step 1 — Gap classification + target selection
 
-### Current gap vs LuaJIT (recursive-heavy subset)
+Board snapshot at HEAD (baseline `benchmarks/data/latest.json`):
 
-| Benchmark | JIT (R29 latest.json) | LuaJIT | Gap | Delta vs pre-598bc1e |
-|---|---|---|---|---|
-| fib | 1.434s | 0.025s | **57×** | **+10.9× regression** |
-| ackermann | 0.270s | (tracked sep.) | — | −50% improvement (retained) |
-| fib_recursive | 14.285s | — | huge | ~100× regressed |
-| mutual_recursion | (check) | — | — | — |
+| Category            | Worst benchmark   | Gap     | Failures |
+|---------------------|-------------------|---------|----------|
+| field_access        | sieve             | 7.7×    | 1        |
+| tier2_float_loop    | nbody             | 7.6×    | 1        |
+| tier1_dispatch      | fib               | ~10×    | 3 (frozen)|
 
-The fib regression is the single largest optimization opportunity on the board — literally a ~1.3s wall-time recovery for a surgical 2-file change. No other candidate target comes within an order of magnitude.
+**Selection**: `sieve` (per user priority). `tier1_dispatch` excluded
+by ceiling rule + user directive. `tier2_float_loop` held for R32+.
 
-### Ceiling rule check
+**Initiative exhaustion check**: `tier1-call-overhead.md` has hit its
+exhaustion criterion (R28 no_change, R29 no_change, R30 regressed →
+3 consecutive non-wins, more than the "2+ in 4 rounds" gate). It is
+paused this round implicitly by the user priority override. If
+tier1_dispatch returns after the 3-round cooldown, a fresh approach
+(HasOpExits proto flag) will be required per R30's closeout note.
 
-- `category_failures.tier1_dispatch = 2` (R26 data-premise, R28 peephole no-change). Would normally block.
-- R29 was a diagnostic round (no_change, not a failure) that uncovered a fresh architectural opportunity.
-- Per the constraints-are-cost-not-block rule and ceiling-as-temp-deprioritize rule: a newly-diagnosed, root-caused, surgical fix for a +988% regression is **not** a grind — it is a distinct opportunity. Proceed.
+## Step 1b — Architectural reasoning
 
-### Initiative exhaustion check
+Can sieve be made 7× faster in-place, or does it need a structural
+change? Answer: **structural change in a different subsystem than
+expected**. Conventional wisdom said "hoist the SetTable validation
+tower in LICM". Diagnostic evidence (§4 below) shows that LICM is
+*disabled* from reasoning about the hot inner j-loop because the
+table operand `v77` is held via a self-referential phi. LICM
+explicitly skips phis, so v77's def looks "in the loop body" to the
+LICM alias analysis, even though semantically it's loop-invariant.
 
-Read `opt/initiatives/tier1-call-overhead.md`:
-- Items 1, 2, 3, 3a, 3b, 4, 5, 6, 7 — all queued or blocked, none ready for immediate low-risk execution.
-- **Item 8 (fib regression from 598bc1e)** is the only in-progress, research-complete, plan-ready item.
+The architectural prerequisite is a **post-construction SSA cleanup
+pass** (Braun Algorithm 5). Without it, every LICM-style optimization
+on nested-loop table code is blocked. With it, the existing LICM
+machinery in `pass_licm.go:253-263` (GetTable hoist with alias check)
+immediately becomes applicable in a follow-on round.
 
-Target: **Item 8**, R30 — pick between R29's two proposed candidates.
+## Step 2 — External research
 
-## 3. Architectural reasoning (candidate selection)
+Research agent (general-purpose subagent, 10/50 tool calls used) confirmed:
 
-R29's knowledge file offered two candidates for R30:
+1. **Braun et al. 2013 §3.1–3.2** explicitly flags redundant-phi SCCs
+   as a case that `tryRemoveTrivialPhi` cannot handle, and gives
+   **Algorithm 5 (removeRedundantPhis)** as the canonical fix.
+   Primary source:
+   <https://pp.ipd.kit.edu/uploads/publikationen/braun13cc.pdf>
+2. **LLVM** `SimplifyCFG` + `InstructionSimplify::simplifyPHINode`
+   ship this pass as a safety net.
+3. **V8 TurboFan** `CommonOperatorReducer::ReducePhi` does the same.
+4. **SpiderMonkey Ion** `EliminatePhis` in `IonAnalysis.cpp` ships
+   Braun-style cleanup after MIR construction.
+5. **LuaJIT** is a trace JIT — not applicable. Its equivalent is the
+   LOOP pass's synthetic unrolling, which inherently eliminates phis
+   by definition.
+6. **M4 wall-time sanity check**: on store-bound spill loops,
+   removing 10 STR/LDR insns/iter from a 46-insn loop translates to
+   ~8–12% wall time (not 22% from naïve insn-count scaling) because
+   Apple cores are wide (8-decode) and dispatch slack absorbs much
+   of the savings. This anchors the prediction band.
 
-| Candidate | Description | Verdict |
-|---|---|---|
-| A | Drop the self-call CBZ guard (`tier1_call.go:316-317`) | **REJECTED** — re-breaks `TestDeepRecursionRegression/quicksort_5000`, the exact test 598bc1e was written to fix. The guard blocks nested `handleNativeCallExit → Execute → BLR` chains on deep recursion at `NativeCallDepth=48`. |
-| B | Add `HasOpExits bool` to `FuncProto`; CBZ guard reads new field | **REFINED** — adding a field decouples the signal from the address, but *by itself* does not fix fib because the handler still sets the signal on every cold GETGLOBAL miss. The actual fix lives in the handler, not the field. |
+Knowledge saved: `opt/knowledge/ssa-trivial-phi-cleanup.md`.
 
-### The missed third option
+## Step 3 — Project source reading
 
-Re-reading `handleNativeCallExit` (`tier1_handlers.go:600-685`) and the dispatch site (`tier1_manager.go:334-382`) surfaced a point R29 glossed over:
+Read in full:
+- `internal/methodjit/pass_licm.go` (594 LOC) — confirmed line 224
+  explicitly skips phis; confirmed line 253-263 already hoists
+  GetTable when alias-clean.
+- `internal/methodjit/graph_builder_ssa.go:19-145` —
+  `tryRemoveTrivialPhi` runs once per seal; no post-pass cleanup.
+- `internal/methodjit/pass_load_elim.go` (129 LOC) — no phi logic.
+- `internal/methodjit/pipeline.go:270-364` —
+  `RunTier2Pipeline` + `NewTier2Pipeline` are the two wiring points.
+- `internal/methodjit/regalloc.go:56-340` (sampled) — confirmed
+  that regalloc's `preAllocateHeaderPhis` will happily carry a phi
+  through the inner loop, which is why the self-copy shows up as
+  `str x21/x22` at every back-edge.
 
-**Two** actions make the first op-exit permanent — not one:
+## Step 4 — Micro diagnostics (REAL data, not estimated)
 
-1. Line 637: `calleeProto.DirectEntryPtr = 0`  (the CBZ-visible signal)
-2. Line 354: `e.globalCacheGen++`  (invalidates all freshly-warmed IC slots)
+Full writeup: `opt/diagnostics/r31-sieve.md`.
 
-For a transient cold-cache miss like `OP_GETGLOBAL`, both actions are overreach. The cache miss is a one-shot cold-start event; re-executing the callee warms it; if we then let subsequent BLRs hit the warm cache, the exit path is never re-entered.
+- **Harness**: `TestProfile_Sieve` in
+  `tier2_float_profile_test.go:149-153`. Runs production pipeline on
+  `benchmarks/suite/sieve.gs::sieve`, dumps IR + 3156 B of ARM64 to
+  `/tmp/gscript_sieve_t2.bin`.
+- **Disasm tool**: Python `capstone` library (not a hand-decoder).
+- **Captured**: 789 insns; hot inner-loop block B7→B8→back-edge
+  located at `0x570–0x7ac`.
+- **Hot path per iteration**: 46 insns measured, of which ~32
+  (~70%) are overhead from:
+  - SetTable validation tower on loop-invariant table (12 insns)
+  - Array-kind dispatch on loop-invariant table (4 insns)
+  - v78 step spill round-trip (7 insns: `ldr`+`sbfx`+re-box cycle)
+  - Self-copy stores `str x21`, `str x22` at back-edge (2 insns)
+  - Redecode of n (`sbfx`) at loop header every iter (1 insn)
+  - Dead 1-insn branch hop at 0x5b0 (1 insn)
 
-For a persistent exit like `OP_CALL` (depth-limit at `NativeCallDepth=48`), both actions are load-bearing: every recursive call would re-exit, and the nested `handleNativeCallExit → Execute` chain would blow the goroutine stack without the guard.
+**Cross-check matrix**:
 
-**Candidate C (selected)**: gate both actions by a tiny predicate `isTransientOpExit(op vm.Opcode) bool` that currently whitelists only `OP_GETGLOBAL`. No new `FuncProto` field. No `tier1_call.go` changes. The CBZ guard continues to function correctly — it reads `DirectEntryPtr`, which we now preserve for transient exits so the fast path stays fast.
+| Check | Value | OK? |
+|-------|-------|-----|
+| bin mtime | fresh (regen this round from HEAD) | ✓ |
+| Tier 2 not Tier 1 | profileTier2Func uses RunTier2Pipeline | ✓ |
+| First 2 insns = Tier 2 prologue | sub sp, stp x29 x30 | ✓ |
+| Insn classes sum ≈ total | §3 breakdown matches 46-insn loop | ✓ |
+| Bottleneck × 0.085 vs predict | 32 overhead/46 × 0.085 = 0.059 s; prediction 0.007–0.010 s lands inside the 2× band | ✓ |
 
-This is simultaneously:
-- More minimal than Candidate B (no schema change)
-- Correct where Candidate A is broken (persistent CALL exits still force slow path)
-- One predicate, two guards, ~25 LOC total
+## Step 5 — Plan
 
-## 4. External research + knowledge base
+`opt/current_plan.md` — single Coder task (1-Coder rule R27). New pass
+`pass_simplify_phis.go` implementing Braun Algorithm 5. TDD: 4 tests
+including a sieve-shaped fixture. Pipeline wiring at 2 sites in
+`pipeline.go`. Total budget ~300 LOC.
 
-Consulted `opt/knowledge/r29-fib-root-cause.md` and the R27/R28 retrospectives. Relevant prior art:
+## Step 6 — Prediction
 
-- **V8's `BaselineCode::FlushBytecode` pattern**: baselines invalidate per-cache-entry, not per-proto-wide. We're doing the same spirit at a coarser granularity.
-- **LuaJIT's trace-exit machinery**: side exits invalidate only the specific trace; other traces for the same function remain live. This is the same "don't over-invalidate" principle.
-- No external reference engine implements "op-exit classification" exactly because most JITs do not have a BLR-in-JIT recursion path with a nested Execute fallback. Our architecture is unusual; the fix is ours to design.
+| Metric          | Before   | After (band)     | Gain     |
+|-----------------|----------|------------------|----------|
+| sieve (REPS=3)  | 0.085 s  | 0.075 – 0.078 s  | 8–12%    |
+| LuaJIT ratio    | 7.7×     | 6.8–7.1×         | −0.6–0.9×|
+| Inner loop insns| 46 / iter| ~36 / iter       | −10 insns|
 
-Knowledge entries that informed the decision:
-- `r29-fib-root-cause.md` — diagnostic data confirming exactly-one op-exit fire and the zeroing mechanism.
-- `constraints.md` — NativeCallDepth=48 budget (goroutine stack 8KB, JIT cannot call morestack).
+Non-primary benchmarks with nested-loop patterns (matmul,
+spectral_norm, nbody) may see 1–3% collateral. Not counted.
 
-## 5. Source reading (what actually changes)
+## What this round explicitly does NOT claim
 
-Files read in full during this phase:
+- Does not claim to hoist the SetTable validation tower. That is a
+  follow-on round enabled by this one.
+- Does not claim to eliminate the array-kind dispatch. Kind
+  specialization is a separate orthogonal track.
+- Does not claim to close the 7.7× gap to ≤2× — that requires 4–6
+  rounds of compounded field_access work.
 
-- `internal/methodjit/tier1_call.go` (529 lines) — CBZ guard at 316-317 and normal-path guard at 171. Confirmed the self-call guard reads `DirectEntryPtr` as a BOOLEAN signal (the actual branch target is the static `self_call_entry` label, not this pointer).
-- `internal/methodjit/tier1_handlers.go:600-698` — `handleNativeCallExit` implementation. Line 637 is the zeroing point. Comment at line 611 describing "this only happens ONCE per callee" is the smoking gun: it describes the CURRENT overly-conservative behavior that we're loosening for transient exits.
-- `internal/methodjit/tier1_manager.go:300-400` — Execute loop. Line 354 is the gen-bump point (the **second** overreach missed in R29's analysis).
-- `internal/methodjit/tier1_compile.go:466-528` — `emitBaselineOpExitCommon`, confirming that `BaselineOp` (not `OpExitOp`) is the field that carries the exiting opcode through `ExitCode=7 → ExitCode=8` restoration.
-- `internal/methodjit/emit.go:55-85` — `ExecContext` field layout. `BaselineOp int64` at offset-by-name.
-- `internal/methodjit/test_deep_recursion_test.go` — the two correctness gates: `TestDeepRecursionRegression/{linear_recursion_500,quicksort_5000}` and `TestDeepRecursionSimple`, `TestQuicksortSmall`.
+## Risks
 
-Call-site inventory of `emitBaselineOpExitCommon`:
+1. **SCC algorithm bug**: Tarjan is textbook but easy to botch on a
+   first implementation. Mitigation: 4 test cases including
+   pathological ones; `Validate(fn)` catches use-replacement errors.
+2. **Block.defs stale references**: removing a phi but leaving
+   `block.defs[slot]` pointing at it. Mitigation: explicit test;
+   evaluator checklist item.
+3. **Performance null-result**: M4 superscalar might hide even
+   store-port savings if the loop is already latency-bound on
+   something else (e.g. bounds-check branch dep chain). Mitigation:
+   if sieve shows < 5% gain, measurement repair round before claiming
+   failure — check whether the self-phi copies actually went away in
+   the post-pass disasm. If they did but wall time didn't move, the
+   ceiling is elsewhere and this round still landed infrastructure.
+4. **Downstream regression from earlier SSA cleanup**: earlier-pass
+   SSA cleanup might expose a latent bug in TypeSpec or ConstProp.
+   Mitigation: full package test (`go test ./internal/methodjit/...`),
+   not curated subset — R30 lesson.
 
-| Op | Category | Source site |
-|---|---|---|
-| OP_GETGLOBAL | **transient** (cache-backed) | tier1_table.go:74 |
-| OP_GETFIELD | cache-backed but write-adjacent | tier1_table.go:147 |
-| OP_SETFIELD | write | tier1_table.go:215 |
-| OP_GETTABLE | cache-backed | tier1_table.go:346 |
-| OP_SETTABLE | write | tier1_table.go:494 |
-| OP_LEN / SELF / GETUPVAL / SETUPVAL | misc | tier1_table.go |
-| OP_LT / OP_LE | branch compare | tier1_arith.go |
-| OP_NEWTABLE / OP_SETLIST / OP_APPEND / OP_CONCAT / OP_POW / OP_CLOSURE / OP_CLOSE / OP_VARARG / OP_TFORCALL / OP_GO / OP_MAKECHAN / OP_SEND / OP_RECV / OP_SETGLOBAL | **persistent** | tier1_compile.go |
-| OP_CALL | **persistent** (depth-limit slow path) | tier1_call.go:460 |
+## Counters to update after VERIFY
 
-**R30 whitelist = `{OP_GETGLOBAL}` only.** Widening is a future decision.
+- `rounds_since_arch_audit`: 2 → 0 (audit done this round)
+- `rounds_since_review`: 0 → 1 (REVIEW ran last round)
+- `category_failures.field_access`: depends on outcome
 
-## 6. Micro diagnostic cross-check
+---
 
-No new diagnostic run needed — R29 already collected the instrumented-counter data:
-
-- `handleNativeCallExit` fires exactly **1** time for both fib(35) and ack(3,4)
-- Triggered exit op = `OP_GETGLOBAL`
-- `DirectEntryPtr` transition: non-zero → 0 (confirmed mechanism)
-- No `EvictCompiled` fires; no int-spec deopt
-
-This directly validates the transient-classification hypothesis for the target benchmarks: both exits are GETGLOBAL → both will hit the transient whitelist → both recover fast path.
-
-The R30 fixture (fib Tier 1 body = 635 insns, landed at commit `3a512b7`) will detect any accidental emitter change in VERIFY.
-
-## 7. Plan summary
-
-See `opt/current_plan.md` for the full plan. One-paragraph summary:
-
-One Coder task. Add `isTransientOpExit(op) bool` helper returning `true` for `OP_GETGLOBAL`. Gate `tier1_handlers.go:637` (`DirectEntryPtr = 0`) and `tier1_manager.go:354` (`globalCacheGen++` and `ctx.BaselineGlobalCachedGen` update) on `!isTransientOpExit(vm.Opcode(ctx.BaselineOp))`. No schema changes, no emitter changes, CBZ guard untouched. Correctness gate: `TestDeepRecursionRegression`, `TestDeepRecursionSimple`, `TestQuicksortSmall`, and the fib-insn-count fixture (635). Performance gate: fib ≤0.20s, ack ≤0.29s, no regression >5% elsewhere.
-
-## 8. Uncertainty and abort conditions
-
-- **What if nested Execute doesn't warm the IC for the top-level caller?** The IC slots are per-proto (`BaselineFunc.GlobalValCache`), shared across all callers of that proto. Warming inside nested Execute warms them for everyone. Verified by reading `tier1_manager.go:302-304` (`syncFieldCache`) and the IC-slot storage in `BaselineFunc`.
-- **What if `globalCacheGen` matters for correctness beyond our reasoning?** The current comment claims it's for SETGLOBAL safety ("callee may have SETGLOBAL'd during re-execution"). If SETGLOBAL's own op-exit handler bumps the gen (it does — see `handleSetGlobal`), the bump at line 354 is redundant for write-only concerns. For read-only transient exits (GETGLOBAL), skipping it is strictly safer.
-- **Abort if**: any correctness gate red, fib stays >0.5s, any non-fib benchmark regresses >5%. Revert and reopen.
-
-## 9. Counter updates
-
-| Counter | Before R30 | After R30 |
-|---|---|---|
-| rounds_since_review | 0 | 0 (REVIEW runs every round) |
-| rounds_since_arch_audit | 1 | 2 → full audit in R31 ANALYZE |
-| category_failures.tier1_dispatch | 2 | (VERIFY updates based on outcome) |
-| sanity_verdict | clean | (SANITY writes) |
-
-## 10. Initiative update
-
-`opt/initiatives/tier1-call-overhead.md` Item 8 status: `in_progress (R30)`. Will be `closed` on VERIFY green, or `retry` on abort.
+**Generated**: 2026-04-11, R31 ANALYZE phase
+**Signed off**: plan ready for IMPLEMENT

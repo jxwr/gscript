@@ -70,6 +70,7 @@ Just read the existing documents:
 ## Step 1 — Gap Classification + Target Selection (strategic)
 
 ### Rules
+- **User Priority Rule (highest)**: if `opt/user_priority.md` exists, read it FIRST and honor its numbered priority order. This file is how the user injects strategic direction between rounds. It overrides automatic category ROI ranking but does NOT override the Ceiling Rule. Mention it in the analyze report under `## User Priority Honored`. Delete the file only when the user's stated priority list is exhausted.
 - **Ceiling Rule**: `category_failures >= 2` → **skip this round, try a different category**. After 3 rounds away from the category, it becomes eligible again (reset `category_failures` to 0 in state.json at that point). This is temporary deprioritization, NOT a permanent block — high-ROI targets should be retried with a fresh approach after other directions are explored.
 - **Initiative Rule**: active initiative with non-empty `Next Step` → strong candidate
 - **INDEX pattern check**: don't repeat failed patterns from last 5 rounds

@@ -145,3 +145,9 @@ func TestProfile_Mandelbrot(t *testing.T) {
 func TestProfile_MathIntensive(t *testing.T) {
 	profileTier2Func(t, "math_intensive.gs", "distance_sum", "math_intensive")
 }
+
+// TestProfile_Sieve dumps Tier 2 IR + ARM64 bytes for sieve's inner
+// function (nested loop with GETTABLE/SETTABLE on ArrayBool).
+func TestProfile_Sieve(t *testing.T) {
+	profileTier2Func(t, "sieve.gs", "sieve", "sieve")
+}
