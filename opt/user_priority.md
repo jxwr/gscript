@@ -1,30 +1,35 @@
-# User Strategic Priority (2026-04-11 18:11)
+# User Strategic Priority (updated 2026-04-11 19:20 after R31)
 
 **This file overrides ANALYZE Step 1's automatic gap classification when present.**
 
 ## Priority order for upcoming rounds
 
-1. **field_access** category FIRST
-   - Primary target: `sieve` (currently 7.7× LuaJIT, 0.085s vs 0.011s)
-   - Secondary: `table_field_access`, `table_array_access`, `method_dispatch` if sieve fully closed
-   - This category has `category_failures=1`, not blocked. Initiative: standalone or new.
+1. ~~**field_access**~~ — **attempted R31, hit ceiling (2 failures)**.
+   - R31 landed SimplifyPhisPass (commit c375913) but production IR path already collapses the targeted phis; sieve moved -1.2% (below 5% floor).
+   - Ceiling rule: skip for 3 rounds, then eligible with a fresh approach.
+   - If retried later, the fresh approach MUST NOT use `profileTier2Func` as evidence — that diagnostic test reads a stale pipeline (R19 and R31 both wasted a round on it).
 
-2. **tier2_float_loop** category AFTER field_access plateaus
-   - Primary targets: `nbody` (7.6×), `matmul` (5.7×), `spectral_norm` (5.6×)
-   - Initiative `tier2-float-loops.md` has been paused 6 rounds — R29 REVIEW flagged this.
-   - User has now un-paused it. ANALYZE should re-read the initiative's backlog and pick the next phase.
+2. **tier2_float_loop (PRIMARY NOW)**
+   - Targets in ROI order: `nbody` (7.6× LuaJIT, 0.251s), `matmul` (5.7×, 0.119s), `spectral_norm` (5.6×, 0.045s), `mandelbrot` (1.1×, 0.063s — almost there).
+   - Initiative `opt/initiatives/tier2-float-loops.md` was paused 7 rounds. **User has un-paused it.** ANALYZE must re-read the initiative's backlog and pick the next phase with a fresh approach.
+   - **Constraint (hard)**: do NOT use `profileTier2Func` as root-cause evidence. If the analysis needs production IR, instrument `compileTier2()` end-to-end or read ARM64 disasm from a real run, not from the stale diagnostic.
 
-3. **DO NOT** return to `tier1_dispatch` (fib/ack work) until both above have had 3+ rounds of effort. That category is at 3 failures and should stay cold.
+3. **DO NOT** return to `tier1_dispatch` (fib/ack work) — category at 3 failures.
 
-## Rationale
+## Required REVIEW item (for next REVIEW session)
 
-User explicit directive: stop grinding fib/ack peephole. The board's actual slow benchmarks are in Tier 2 territory (float loops + field access). The 598bc1e fib regression is a known issue; a revisit requires a fresh approach (probably HasOpExits proto flag), not more R30-style guard tweaks.
+**Diagnostic tool debt: `profileTier2Func` is load-bearing AND stale.** Two rounds (R19 table-kind-specialize, R31 Braun phi cleanup) have now wasted an ANALYZE + IMPLEMENT cycle because this diagnostic test reads a pre-production IR pipeline. Options:
+- (a) Delete `profileTier2Func` and force ANALYZE to use real `compileTier2()` output.
+- (b) Rewrite `profileTier2Func` to call the full production pipeline.
+- (c) Gate it behind `//go:build diagnostic_stale` and have ANALYZE refuse to treat its output as evidence.
+
+Pick one before R34 (when field_access becomes eligible again).
 
 ## How ANALYZE should use this file
 
 - Read this file BEFORE Step 1 gap classification.
-- Treat the numbered priority as overriding the automatic category ROI ranking.
+- Honor the numbered priority order.
 - The Ceiling Rule still applies (don't pick a category with `category_failures >= 2`).
-- If the user's priority conflicts with a blocked category, pick the next unblocked priority.
-- Delete this file when the user's priority list is exhausted OR when the user writes a new directive.
-- Mention this file in the analyze report under `## User Priority Honored` section so it's visible.
+- If user priority conflicts with ceiling, pick the next unblocked priority.
+- Mention this file in the analyze report under `## User Priority Honored`.
+- Delete the file when the user's stated priority list is exhausted OR when the user writes a new directive.
