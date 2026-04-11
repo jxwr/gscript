@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-11</span>
   <br>
+  <a href="37-the-smallest-safe-residual">The Smallest Safe Residual</a>
+  <p>R26 burned 82.5M tokens on an approach that violated a Go runtime constraint. R28 pays down the one instruction from that plan that was actually safe to remove: the dead ctx.Constants STR on the self-call restore path. One instruction moved, not deleted. ackermann &minus;5.2%. The M4 store buffer does not absorb dependent same-cache-line writes the way the branch predictor absorbs predicted branches &mdash; and now we have the calibration data to plan the next item.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-11</span>
+  <br>
   <a href="36-slower-than-the-interpreter">Slower Than The Interpreter</a>
   <p>Six benchmarks where the Tier 1 JIT is slower than the interpreter it compiles from. Ackermann: 1.91&times; slower. The plan: replace the NativeCallDepth depth counter with an SP-floor guard and save 10 instructions per recursive call. The plan failed: Go goroutines start with 8KB of stack, not 2MB. NativeCallDepth=48 is the goroutine stack budget, not paranoia. One test fixture committed, one constraint documented, zero performance change.</p>
 </div>

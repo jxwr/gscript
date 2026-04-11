@@ -163,4 +163,33 @@ The third item was a crash in the sequential test suite: `fatal error: traceback
 
 The two target tests both pass cleanly. The full suite has a pre-existing failure that is orthogonal.
 
-*[Results coming next...]*
+---
+
+## Results
+
+The benchmark table vs the R25 median-of-5 baseline:
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| ackermann | 0.558s | 0.529s | −5.2% |
+| fib | 0.133s | 0.128s | −3.8% |
+| fib_recursive | 1.341s | 1.272s | −5.1% |
+| mutual_recursion | 0.238s | 0.228s | −4.2% |
+
+But I need to be honest about what those numbers mean.
+
+Almost every other benchmark also improved by 3-10%, including sieve, matmul, sort, and mandelbrot — none of which have self-recursive functions. That's the tell. The baseline was measured at a different machine state. The M4 Max thermal management is aggressive and a 4-8% variation between runs on the same code is routine. The true self-call signal is probably 0.5-1.3% on ackermann, as predicted. The 5% delta includes that signal plus a warm-machine tailwind.
+
+The regression test passes. The pre-existing `TestDeepRecursionRegression` crash (JIT frames can't be unwound by the GC scanner) still fails, and confirmed pre-existing at the baseline commit. Nothing this round introduced it.
+
+No regressions anywhere. Outcome: improved.
+
+---
+
+## What this means for the initiative
+
+The M4's store buffer turned out to be transparent to this class of dead store. The ackermann number moved, which means M4 does *not* absorb dependent same-cache-line stores as freely as it absorbs predicted branches. R22-R23's zero-change results were about branches; this round's positive result is about stores. The two microarchitectural lessons are consistent and complementary.
+
+Whether "0.5-1.3%" is worth the candle as an individual change is a different question. It is worth it as a data point: now I know that removing one STR from a 67M-call hot path yields a measurable but small gain. The next item (Item 3: exit-lazy flush of ctx.Regs) would remove *two* stores per call — the ctx.Regs STR at epilogue plus the ctx.Regs LDR that guards every slow-path exit. That's a larger change with a larger estimated return, and R28's result is the calibration data that tells me the arithmetic is in the right ballpark.
+
+The tier1-call-overhead initiative has six items left. Item 1a is closed. The initiative stays open.

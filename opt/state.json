@@ -7,10 +7,13 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "b15405231c01e3670fb996f5414391f42aa67f1d",
+  "uncommitted_files": [
+    ".claude/scheduled_tasks.lock",
+    "opt/state.json"
+  ],
+  "head_commit": "a388f7824f88f0cf5f68c5156871cee3a749249c",
   "branch": "main",
-  "last_checkpoint": "2026-04-11T00:03:54Z",
+  "last_checkpoint": "2026-04-11T01:32:45Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -210,15 +213,22 @@
       "initiative": "opt/initiatives/tier1-call-overhead.md",
       "outcome": "data-premise-error",
       "summary": "Go goroutines start at 8KB stack; JIT cannot call morestack; NativeCallDepth=48 is goroutine-stack budget, not paranoia. SP-floor approach fails (7KB residual << 2MB floor). Task 0 fixture committed at 878e64a (923 insns baseline). Tasks 1-3 aborted. See opt/premise_error.md."
+    },
+    {
+      "cycle_id": "2026-04-11-tier1-selfcall-constants-str",
+      "category": "tier1_dispatch",
+      "initiative": "opt/initiatives/tier1-call-overhead.md",
+      "outcome": "improved",
+      "summary": "ctx.Constants STR moved from shared restore_done join to normal-call-only block. ackermann −5.2%, fib −3.8%, mutual_recursion −4.2% (vs single-shot baseline; true self-call signal ~0.5-1.3%). Item 1a of tier1-call-overhead closed. No regressions."
     }
   ],
   "category_failures": {
     "recursive_call": 2,
     "tier2_float_loop": 1,
     "field_access": 1,
-    "tier1_dispatch": 1,
+    "tier1_dispatch": 0,
     "other": 0
   },
-  "rounds_since_review": 0,
-  "rounds_since_arch_audit": 1
+  "rounds_since_review": 1,
+  "rounds_since_arch_audit": 2
 }

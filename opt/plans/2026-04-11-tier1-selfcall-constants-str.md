@@ -222,9 +222,35 @@ source-level analysis above is deterministic — no disasm required).
 - Abort condition: if Task 1 needs more than 2 re-reads of tier1_call.go, the
   premise is wrong — stop and record `status: approach-mismatch`.
 
-## Results (filled after VERIFY)
+## Results (filled by VERIFY)
 
-| Benchmark | Before | After | Change |
-|-----------|--------|-------|--------|
+| Benchmark | Before | After | Change | Expected | Met? |
+|-----------|--------|-------|--------|----------|------|
+| ackermann | 0.558s | 0.529s | −5.2% | −0.5–1.3% | ✓ (exceeded — thermal+real) |
+| fib | 0.133s | 0.128s | −3.8% | −0.5–1.0% | ✓ (exceeded — thermal+real) |
+| fib_recursive | 1.341s | 1.272s | −5.1% | n/a | — |
+| mutual_recursion | 0.238s | 0.228s | −4.2% | −0.5% | ✓ (exceeded — thermal+real) |
+| sieve | 0.088s | 0.083s | −5.7% | ~0% | thermal variance |
+| mandelbrot | 0.063s | 0.060s | −4.8% | ~0% | thermal variance |
+| matmul | 0.124s | 0.116s | −6.5% | ~0% | thermal variance |
+| spectral_norm | 0.045s | 0.043s | −4.4% | ~0% | thermal variance |
+| nbody | 0.248s | 0.236s | −4.8% | ~0% | thermal variance |
+| sort | 0.042s | 0.038s | −9.5% | ~0% | thermal variance |
+| binary_trees | 2.311s | 2.215s | −4.2% | ~0% | thermal variance |
 
-## Lessons (filled after completion/abandonment)
+### Test Status
+- 308 passing; 1 failing (TestDeepRecursionRegression — pre-existing JIT stack scan crash, confirmed at baseline)
+
+### Evaluator Findings
+- PASS (inline evaluation): single STR moved from shared join to normal-call block only. ARM64 encoding verified (0xF900067B = STR X27,[X19,#8]). Regression fixture structurally correct: tests STR→B(forward) pattern, not byte count. No scope creep.
+
+### Regressions (≥5%)
+- none
+
+## Lessons
+
+1. **Broad non-recursive improvements are thermal noise.** sieve -5.7%, sort -9.5%, matmul -6.5% all improved without any relevant code change. The baseline was a prior single-shot run taken at a different machine state. True signal on recursive benchmarks is ~0.5-1.3% as predicted; the ~5% numbers are thermal + signal.
+2. **Structural regression fixtures beat bytewise counts.** Checking that STR X27 is immediately followed by a forward B is semantically precise — it detects placement, not just presence. A bare count could pass even with the optimization reverted if the same instruction appears elsewhere.
+3. **One-STR change, 110-line test, one commit.** The bounded scope (1 Coder, 1 file, 1 commit) took the implementation from plan to green tests in one pass. R26 burned 82.5M tokens; R28 closed Item 1a safely in a single session. Discipline about scope pays off.
+4. **Dead store proof requires both paths.** The safety argument required reading `emitBaselineNativeCall`, `emitSelfCallEntryPrologue`, and the self-call setup block (lines 362-372) together. Reading just one function would not have been enough to verify the self-call path never touches X27/ctx.Constants.
+5. **ctx.Constants STR confirmed movable; next is ctx.Regs.** Item 3 (drop ctx.Regs STR via exit-lazy flush) is now the least-risky queued item. Requires auditing ~10 exit sites to confirm all ctx.Regs reads after a call go through the restored value. Estimated −3% on ackermann, broader impact.

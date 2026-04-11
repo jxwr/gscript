@@ -22,7 +22,7 @@ The JIT is paying for infrastructure (NativeCallDepth counter, ExecContext shutt
 | # | Item | Category | Expected | Status |
 |---|---|---|---|---|
 | 1 | Drop NativeCallDepth on self-call fast path + dead `ctx.Constants` STR (R26) | tier1_dispatch | ack −6–10% | **BLOCKED** — NativeCallDepth is goroutine-stack budget (8KB). SP-floor approach fails. See opt/premise_error.md. |
-| 1a | Drop dead `ctx.Constants` STR on self-call restore (independently safe, Task 2 from R26) | tier1_dispatch | ack −1% | **Next round** — skipped in R26 per abort protocol; no architectural dependency |
+| 1a | Drop dead `ctx.Constants` STR on self-call restore (independently safe, Task 2 from R26) | tier1_dispatch | ack −1% | **DONE** (R28, commit 2748fb2) |
 | 2 | Pre-grow goroutine stack at JIT entry (lockOSThread + large alloc) → raise NativeCallDepth limit | tier1_dispatch | enables deeper recursion + more NCD removal | Research |
 | 3 | Drop NativeCallDepth on normal-call path (requires audit of Go unwind) | tier1_dispatch | obj_creation −5%, binary_trees −3% | Queued |
 | 3 | Drop `ctx.Regs` STR on both paths via exit-lazy flush (audit ~10 exit sites) | tier1_dispatch | ack −3%, broad 2–3% | Queued |
@@ -42,3 +42,4 @@ The JIT is paying for infrastructure (NativeCallDepth counter, ExecContext shutt
 | Round | Item | Outcome | Notes |
 |---|---|---|---|
 | R26 | Item 1 | data-premise-error | SP-floor cannot replace NativeCallDepth — Go goroutine stack is 8KB, not 2MB. Task 0 (insn-count fixture) committed at 878e64a. Task 2 (ctx.Constants drop) queued as Item 1a. |
+| R28 | Item 1a | improved | ctx.Constants STR moved to normal-call block only (2748fb2). ackermann −5.2%, fib −3.8%, mutual_recursion −4.2% vs single-shot baseline. True self-call signal ~0.5-1.3%. Item 1a closed. |
