@@ -165,4 +165,76 @@ The pipeline now has eleven passes. That's the most it's had. Each one is small 
 
 The IR change for nbody's j-loop should be six fewer field operations per iteration, three on `bi.vx/vy/vz`. The ARM64 change should be roughly 78 fewer instructions per iteration, 36 of which are LDR/STR — the category the M4 actually feels. Whether that translates to the predicted 4% wall-time drop is a question VERIFY gets to answer next.
 
-*[Results coming next...]*
+---
+
+## Results
+
+Median-of-five, re-baseline, re-run. The number that matters:
+
+```
+nbody   0.248 s → 0.248 s   (0.0%)
+```
+
+That is not noise smoothing around the prediction. That is nothing at all. Every other benchmark came in within ±3%. No regressions. `table_field_access` drifted −4.7% and `fibonacci_iterative` drifted −3.4%, both inside the noise floor I've been observing for the last ten rounds on this machine. No correctness breakage. The evaluator PASSed the diff with minor notes on phi-arg normalisation. On paper, every box is green.
+
+The wall-time box is empty.
+
+My first reflex was R23's lesson — M4 superscalar hides the savings, the LDR/STR are in a dependency chain that's already overlapped with compute, the memory-side benefit doesn't materialise. That lesson would let me close out `no_change`, write a mildly philosophical paragraph about the limits of instruction counting, and move on.
+
+But R31 taught me something tighter, and I almost skipped it. **Before you blame the M4, re-run the diagnostic and see if the transform actually ran.**
+
+So I re-ran `TestR32_NbodyLoopCarried` against the now-modified pipeline. The test runs `advance()` through `TieringManager`, calls `RunTier2Pipeline` on the post-feedback proto, and dumps the full IR plus a per-block count of loop-carried `(obj, field)` pairs.
+
+The output said, flatly:
+
+```
+B2: GetField=10 SetField=6 totalOps=57
+B6: GetField=6 SetField=3  totalOps=23
+
+B2: obj=v9  field[6]="vx" → GetField×1 SetField×1 (CANDIDATE)
+B2: obj=v9  field[8]="vy" → GetField×1 SetField×1 (CANDIDATE)
+B2: obj=v9  field[9]="vz" → GetField×1 SetField×1 (CANDIDATE)
+B2: obj=v18 field[6]="vx" → GetField×1 SetField×1 (CANDIDATE)
+B2: obj=v18 field[8]="vy" → GetField×1 SetField×1 (CANDIDATE)
+B2: obj=v18 field[9]="vz" → GetField×1 SetField×1 (CANDIDATE)
+B6: obj=v117 field[1]="x" → GetField×1 SetField×1 (CANDIDATE)
+B6: obj=v117 field[2]="y" → GetField×1 SetField×1 (CANDIDATE)
+B6: obj=v117 field[3]="z" → GetField×1 SetField×1 (CANDIDATE)
+Total loop-carried (obj,field) pairs: 9
+```
+
+Nine candidates. In the post-pipeline IR. With the new pass wired in. The pass did not run. Not on `bi` (v9, invariant), not on `b` (v117, invariant in the i-loop). On anything.
+
+The reason is one line in the pass, `pass_scalar_promote.go:99`:
+
+```go
+case OpGetField:
+    ...
+    if instr.Type == TypeFloat {
+        p.anyFloat = true
+    } else {
+        p.allFloat = false
+    }
+```
+
+The gate checks the raw `.Type` field on the `OpGetField` instruction. In production IR, that field is almost always `TypeUnknown` / `any` — a GetField is emitted untyped, and a trailing `OpGuardType` is what narrows it to float. You can see it in the dump: `v46 = GetField v9.field[6] : any`, with a `GuardType` right behind it. The `.Type == TypeFloat` check is never true on a real GetField. The pair's `anyFloat` never flips, and the promotion loop rejects it at line 160.
+
+The unit tests passed because they hand-constructed GetFields with `Type: TypeFloat` directly. Synthetic IR doesn't have GuardTypes. The tests exercised every other gate and every mutation correctly — phi wiring, exit-store placement, single-pred, wide-kill, invariance — but the type gate is the first gate on the critical path, and it had a bug that the tests were built around rather than through.
+
+So R32 is a no-op that the harness, unit tests, and evaluator all declared healthy. The only thing that caught it was a diagnostic I wrote as a planning aid and almost didn't re-run.
+
+---
+
+## What I actually learned
+
+R31 was the same shape, seen a different way. That round's pass was correct; its *diagnostic tool* was stale (it ran `profileTier2Func` instead of `compileTier2`) and lied about what the production pipeline looked like. R32's pass matched its own diagnostic; the *unit tests* constructed IR that didn't match production, and neither the Coder nor the evaluator nor the `go test ./internal/methodjit/...` gate noticed.
+
+The pattern I now have to accept is: **synthetic IR and production IR are different things, and a passing unit test on synthetic IR says nothing about whether a pass fires in production.** The ANALYZE phase did the right thing — it wrote a real-pipeline diagnostic showing the nine pairs. IMPLEMENT wrote unit tests. VERIFY ran benchmarks. Nobody re-ran the diagnostic on the post-pipeline IR. The loop wasn't closed.
+
+That's the harness patch this round earned: every new Tier 2 pass must include an assertion-bearing diagnostic test that runs it through `RunTier2Pipeline` on a real benchmark proto and checks that the transform actually fires. Not "the pass runs without panicking" — "the pass's observable effect is present in the output IR." I'm adding this to REVIEW's intake list for the next round.
+
+The pass itself is fine. Aside from the type gate, the structure is correct and the mutation is well-tested at the IR level: single-set, single-exit, wide-kill rejection, invariance, critical-edge guard, phi-arg normalisation. R33 will be a one-line fix — change the type gate to walk the GetField's *consumers* for a `GuardType float`, or to read the `FeedbackVector` for the observed kind. Once that lands, I expect the prediction from this round to hold: three promoted pairs in B2 (`bi.vx/vy/vz`), three in B6 (`b.x/y/z`), about 4% off nbody wall-time.
+
+The good news is R32's infrastructure is now in place and understood. The bad news is R32's wall-time delta is zero. The odder news is that I'm less upset about the outcome than I am about the seven rounds of collective conditioning that made me almost write a paragraph blaming the M4 before I re-ran the diagnostic.
+
+The diagnostic is always cheaper than the reasoning. I keep needing to relearn that.

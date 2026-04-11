@@ -2,27 +2,29 @@
   "cycle": "",
   "cycle_id": "",
   "target": "",
-  "started": "2026-04-11T18:30:00Z",
+  "started": "",
   "baseline": {
     "sieve": 0.085,
     "luajit_sieve": 0.011,
     "ratio": 7.7
   },
   "plan_budget": {},
-  "completed_steps": [
-    "analyze",
-    "implement",
-    "verify"
-  ],
+  "completed_steps": [],
   "next_action": "",
   "uncommitted_files": [
+    ".claude/prompts/analyze.md",
+    ".claude/prompts/review.md",
+    "benchmarks/data/history/2026-04-11.json",
+    "benchmarks/data/latest.json",
+    "opt/analyze_report.md",
+    "opt/baseline_test_snapshot.txt",
     "opt/phase_log.jsonl",
-    "opt/sanity_report.md",
-    "opt/state.json"
+    "opt/state.json",
+    "scripts/review_dump.sh"
   ],
-  "head_commit": "cf9ce7243a333d0db10f7388588c5bddcd01066c",
+  "head_commit": "56b19e7ee4a149c2679adaede7d736fd5978a741",
   "branch": "main",
-  "last_checkpoint": "2026-04-11T11:20:53Z",
+  "last_checkpoint": "2026-04-11T12:10:34Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -257,18 +259,25 @@
       "initiative": "standalone",
       "outcome": "no_change",
       "summary": "R31 SimplifyPhisPass (Braun Algorithm 5 \u2014 Tarjan SCC over phi-subgraph, cardinality-1 collapse) landed in commit c375913. 226 LOC impl + 450 LOC tests; wired at two sites in both RunTier2Pipeline and NewTier2Pipeline. All tests green, evaluator PASS. Sieve 0.085\u21920.084 (-1.2%, below 5% floor). Root cause of miss: the diagnostic at opt/diagnostics/r31-sieve.md was produced by the known-stale profileTier2Func pipeline (constraints.md flag); production compileTier2 already collapses these phis via tryRemoveTrivialPhi + ConstProp/DCE, so the new pass catches nothing on sieve. Generic infra kept as safety net for future construction bugs or inliner-introduced SCCs. All other benchmarks within \u00b13% noise; coroutine_bench +12.2% is known high-variance."
+    },
+    {
+      "cycle_id": "2026-04-11-loop-scalar-promote-nbody",
+      "category": "tier2_float_loop",
+      "initiative": "opt/initiatives/tier2-float-loops.md",
+      "outcome": "no_change",
+      "summary": "R32 LoopScalarPromotionPass (264 LOC + 296 LOC tests) wired after LICM in both RunTier2Pipeline and NewTier2Pipeline at commit 56b19e7. All tests green, evaluator PASS. nbody 0.248\u21920.248 (0.0%, target was -4%); no regressions \u22655%. Post-round re-run of TestR32_NbodyLoopCarried on post-pipeline IR shows all 9 loop-carried pairs still present. Root cause of miss: the pass's float-type gate (pass_scalar_promote.go:99 \u2014 `if instr.Type == TypeFloat`) rejects every pair because production IR emits `GetField : any` followed by separate `GuardType float`; unit tests hand-constructed TypeFloat directly so they passed while the pass was silently a no-op on real Tier 2 compilation. R33 plan-starter: change the gate to inspect GetField consumers for GuardType float (one-line fix). Cross-round pattern with R31: every new Tier 2 pass needs a real-pipeline diagnostic test, not just synthetic IR."
     }
   ],
   "category_failures": {
     "recursive_call": 0,
-    "tier2_float_loop": 1,
+    "tier2_float_loop": 2,
     "field_access": 2,
     "tier1_dispatch": 3,
     "other": 0
   },
-  "rounds_since_review": 2,
-  "rounds_since_arch_audit": 1,
-  "sanity_verdict": "flagged",
-  "sanity_report": "opt/sanity_report.md",
-  "sanity_cycle_id": "2026-04-11-braun-redundant-phi-cleanup"
+  "rounds_since_review": 1,
+  "rounds_since_arch_audit": 2,
+  "sanity_verdict": "",
+  "sanity_report": "",
+  "sanity_cycle_id": ""
 }

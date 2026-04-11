@@ -49,6 +49,12 @@ dump_files() {
     echo "================================================================"
     echo ""
 
+    # state.json is rendered with previous_rounds capped to last 10 entries
+    # (INDEX.md carries full history). Matches analyze_dump.sh / verify_dump.sh (R30 review).
+    local STATE_TRIM="/tmp/review_state_trim.json"
+    python3 "$ROOT/scripts/_trim_state.py" "$ROOT/opt/state.json" > "$STATE_TRIM" 2>/dev/null \
+        || cp "$ROOT/opt/state.json" "$STATE_TRIM"
+
     # List of all files REVIEW needs for consistency audit
     local FILES=(
         "$ROOT/README.md"
@@ -64,7 +70,7 @@ dump_files() {
         "$ROOT/docs-internal/diagnostics/debug-ir-pipeline.md"
         "$ROOT/docs-internal/known-issues.md"
         "$ROOT/docs-internal/lessons-learned.md"
-        "$ROOT/opt/state.json"
+        "$STATE_TRIM"
         "$ROOT/opt/INDEX.md"
         "$ROOT/opt/plan_template.md"
         "$ROOT/opt/initiatives/_template.md"

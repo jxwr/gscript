@@ -160,15 +160,84 @@ existing helpers, not designing a new dataflow analysis.
 - Abort condition: 2 consecutive Coder attempts fail to pass `go test
   ./internal/methodjit/...` → revert, write lessons, mark no_change.
 
-## Results (filled after VERIFY)
+## Results (filled by VERIFY)
 
-| Benchmark | Before | After | Change |
-|-----------|--------|-------|--------|
-| nbody     | 0.248s |       |        |
-| matmul    | 0.119s |       |        |
-| spectral_norm | 0.045s |   |        |
-| mandelbrot | 0.062s |      |        |
+| Benchmark | Before | After | Change | Expected | Met? |
+|-----------|--------|-------|--------|----------|------|
+| nbody     | 0.248s | 0.248s | 0.0% | -4% | NO |
+| matmul    | 0.119s | 0.120s | +0.8% | noise | yes (noise) |
+| spectral_norm | 0.045s | 0.046s | +2.2% | noise | yes (noise) |
+| mandelbrot | 0.062s | 0.063s | +1.6% | noise | yes (noise) |
+| fib       | 1.410s | 1.424s | +1.0% | noise | yes |
+| sieve     | 0.084s | 0.086s | +2.4% | noise | yes |
+| ackermann | 0.267s | 0.270s | +1.1% | noise | yes |
+| fibonacci_iterative | 0.295s | 0.285s | -3.4% | noise | yes |
+| table_field_access | 0.043s | 0.041s | -4.7% | noise | yes |
 
-## Lessons (filled after completion/abandonment)
+### Test Status
+- internal/methodjit: PASS (all tests green, 1.5s)
+- internal/vm: PASS (all tests green, 0.3s)
 
-_TBD_
+### Evaluator Findings
+PASS with minor notes:
+- Phi wiring: `phi.Args[1]` is normalized after `replaceAllUses` but `phi.Args[0]` is not;
+  latent risk only — initLoad is newly minted so no ID collision possible today.
+- `isInvariantObj` checks only `p.gets[0]`, not all gets in the pair. Minor defensive gap.
+- Missing negative tests for multi-exit / wide-kill / non-float gates (implemented but
+  only exercised by inspection).
+- Positive test runs real LICM + ScalarPromotion through the pipeline with IR validator.
+  Substantive.
+
+### Regressions (≥5%)
+None. Largest unrelated delta: table_field_access -4.7% (improvement); sieve +2.4%
+(noise, below 5% floor).
+
+### Root Cause of 0.0% nbody Delta
+After close-out verification, `TestR32_NbodyLoopCarried` (the R32 diagnostic fixture)
+was re-run against the post-pipeline IR. **All 9 loop-carried pair candidates are still
+present** in B2 (j-loop body) and B6 (i-loop body). The pass is wired correctly, but
+its float-type gate at `pass_scalar_promote.go:99` — `if instr.Type == TypeFloat` —
+rejects every pair because production IR emits `GetField : any` followed by a separate
+`GuardType ... float`. The direct `Type` field on `OpGetField` is `TypeUnknown`/`any`,
+never `TypeFloat`, in real IR. The unit tests constructed `OpGetField` with
+`Type: TypeFloat` directly, so they passed; the pass was silently a no-op on every
+real Tier 2 compilation.
+
+**R33 plan-starter (not executed this round):** change the type gate to inspect the
+`GetField`'s *consumers* for a `GuardType float` (or read `FeedbackVector` for the
+observed kind). One-line gate fix; the rest of the pass is correct and ready.
+Post-fix expectation: ~3 promoted pairs in nbody B2 (`bi.vx/vy/vz`) and 3 in B6
+(`b.x/y/z`), delivering on the original -4% nbody prediction.
+
+## Lessons (filled by VERIFY)
+
+1. **Test-IR ≠ production IR for typed heap loads.** Unit tests hand-constructed
+   `OpGetField` with `Type: TypeFloat`; production IR emits `Type: any` + trailing
+   `GuardType`. Every float-gated pass must be validated against a real-pipeline
+   diagnostic before the commit lands, not just a synthetic skeleton. R31 (sieve,
+   stale `profileTier2Func`) and R32 (nbody, synthetic-IR gate) are two rounds in a
+   row where a pass landed correctly at the unit level but did nothing on the
+   production pipeline. **Cross-round pattern: every new Tier 2 pass must include a
+   diagnostic test that runs it through `RunTier2Pipeline` on a real benchmark proto
+   and asserts observable IR changes.** Flagging for REVIEW as next harness patch.
+
+2. **ANALYZE produced a pre-pass diagnostic; nobody re-ran it post-pass.**
+   `opt/diagnostics/r32-nbody-loop-carried.md` showed the 9 loop-carried pairs. The
+   Coder landed the pass + unit tests. Neither IMPLEMENT nor VERIFY re-ran the
+   diagnostic on the modified pipeline to confirm the pairs were actually removed.
+   Closed-loop verification (diagnose → implement → re-diagnose) would have caught the
+   float-type gate bug in minutes. This is a workflow gap, not a code gap.
+
+3. **"M4 superscalar hides wall-time savings" was the wrong default hypothesis.** R23
+   and R9 taught us 0% wall-time can be genuine on M4 for removed branches / tiny
+   LDR/STR. Reaching for that hypothesis here would have buried the real bug
+   (pass-never-fires). **When in doubt, re-run the diagnostic and see if the IR
+   actually changed.** Observation beats reasoning — again.
+
+4. **Evaluator concerns are latent but flagged for R33:** (a) normalize `phi.Args[0]`
+   after `replaceAllUses`; (b) make `isInvariantObj` check all gets, not just
+   `p.gets[0]`; (c) add negative tests for multi-exit / wide-kill / non-float gates.
+
+5. **Scope discipline held.** Pass is 264 LOC, tests 296 LOC, single pipeline wiring
+   edit — inside the 350 LOC cap. The round spent its budget correctly; the miss was
+   in analyze→verify handoff, not in implementation execution.

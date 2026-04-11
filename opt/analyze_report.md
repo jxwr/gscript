@@ -1,204 +1,219 @@
-# R31 ANALYZE Report
+# Analyze Report — Round 32
 
-**Cycle ID**: `2026-04-11-braun-redundant-phi-cleanup`
-**Date**: 2026-04-11
-**Category**: `field_access`
-**Target**: `sieve` (7.7× LuaJIT)
-**Initiative**: standalone (unlocks downstream LICM rounds)
+> Date: 2026-04-11
+> Cycle: 2026-04-11-loop-scalar-promote-nbody
+> Category: tier2_float_loop
+> Initiative: opt/initiatives/tier2-float-loops.md (Phase 13: Scalar Promotion)
+
+## Architecture Audit (Step 0 — quick read)
+
+`rounds_since_arch_audit = 1` in `opt/state.json` → quick read, no full audit.
+
+Quick scan: no new ≥1000-line file (R31 SimplifyPhisPass landed at 226 LOC).
+`pass_licm.go` at 594 lines still the largest pass file; `loops.go` at 429 lines;
+both well under the 800-line warn line. Tier 2 pipeline composition is clean
+(`pipeline.go:280-351`). No new `docs-internal/architecture/constraints.md` entries
+required this round.
 
 ## User Priority Honored
 
-`opt/user_priority.md` directed:
-1. `field_access` first, primary target `sieve`
-2. `tier2_float_loop` after field_access plateaus
-3. Do NOT return to `tier1_dispatch` for 3+ rounds
+`opt/user_priority.md` (updated 2026-04-11 19:20) directs this round to:
 
-This round honors priority #1. The `tier1_dispatch` category is at 3
-failures (R28 no_change → R29 no_change → R30 regressed+reverted) and
-is frozen this round per the user directive. The user's rationale —
-"the board's actual slow benchmarks are in Tier 2 territory (float
-loops + field access)" — is the basis for selecting sieve, which sits
-at 0.085 s vs LuaJIT 0.011 s and is the single largest unlocked gap
-in the field_access category.
+1. **tier2_float_loop (PRIMARY)** — initiative un-paused, nbody is #1 target.
+2. **Hard constraint**: do NOT use `profileTier2Func` as evidence. Either instrument
+   `compileTier2()` end-to-end or read ARM64 disasm from a real run.
 
-## Architecture audit (Step 0 — full, every-2-rounds slot)
+Honored: the diagnostic in Step 4 below was produced by calling `RunTier2Pipeline`
+directly on `advanceProto` with Tier 1 feedback populated from 11 TieringManager
+warm-up runs. No `profileTier2Func` involvement. The output binary was written to
+`/tmp/gscript_nbody_advance_r32.bin` and disassembled with Capstone — this is the
+production code path.
 
-- `scripts/arch_check.sh` results: one file over the 1000-LOC soft
-  ceiling (`tier1_call.go` — known, pre-existing, untouched this round).
-  No new violations. Pipeline ordering constraints in
-  `docs-internal/architecture/constraints.md` unchanged.
-- `internal/methodjit/pipeline.go:RunTier2Pipeline` is the authoritative
-  pass ordering. Current: `TypeSpec → Intrinsic → TypeSpec → Inline →
-  TypeSpec → ConstProp → LoadElim → DCE → RangeAnalysis → LICM`.
-  No SSA cleanup pass at the entry — that is the gap this round fills.
-- Tier 2 promotion path for sieve verified: `HasLoop=true`,
-  `LoopDepth=2`, `TableOpCount>0`, REPS=3 ⇒ promoted on 2nd call.
-  `RunTier2Pipeline` used by production and by the diagnostic harness
-  (`tier2_float_profile_test.go:83`), so diagnostic IR matches
-  production IR.
+## Gap Classification (Step 1)
 
-## Step 1 — Gap classification + target selection
+| Benchmark | JIT | LuaJIT | Ratio | Category | Ceiling status |
+|-----------|-----|--------|-------|----------|----------------|
+| fib_recursive | 14.120s | N/A | — | tier1_dispatch | **3 failures — blocked** |
+| nbody | 0.248s | 0.033s | **7.6×** | tier2_float_loop | 1 failure, open |
+| matmul | 0.119s | 0.022s | 5.7× | tier2_float_loop | 1 failure, open |
+| spectral_norm | 0.045s | 0.007s | 5.6× | tier2_float_loop | 1 failure, open |
+| fib | 1.410s | 0.026s | 54× | tier1_dispatch | **blocked** |
+| ackermann | 0.267s | 0.006s | 44× | tier1_dispatch | **blocked** |
+| sieve | 0.084s | 0.011s | 7.6× | field_access | **2 failures — skip 3 rounds** |
+| mandelbrot | 0.062s | 0.058s | 1.07× | tier2_float_loop | ~parity |
+| fannkuch | 0.049s | 0.020s | 2.4× | tier2_float_loop | |
 
-Board snapshot at HEAD (baseline `benchmarks/data/latest.json`):
+### Blocked Categories
 
-| Category            | Worst benchmark   | Gap     | Failures |
-|---------------------|-------------------|---------|----------|
-| field_access        | sieve             | 7.7×    | 1        |
-| tier2_float_loop    | nbody             | 7.6×    | 1        |
-| tier1_dispatch      | fib               | ~10×    | 3 (frozen)|
+- `tier1_dispatch` — 3 category failures (R29–R30 transient OP_GETGLOBAL,
+  R24–R28 self-call micro-opts). Blocked until ceiling decay.
+- `field_access` — 2 failures (R19 table-kind-specialize, R31 Braun phi cleanup).
+  User priority: "skip 3 rounds, retry with fresh approach; MUST NOT use
+  profileTier2Func as evidence."
 
-**Selection**: `sieve` (per user priority). `tier1_dispatch` excluded
-by ceiling rule + user directive. `tier2_float_loop` held for R32+.
+### Active Initiatives
 
-**Initiative exhaustion check**: `tier1-call-overhead.md` has hit its
-exhaustion criterion (R28 no_change, R29 no_change, R30 regressed →
-3 consecutive non-wins, more than the "2+ in 4 rounds" gate). It is
-paused this round implicitly by the user priority override. If
-tier1_dispatch returns after the 3-round cooldown, a fresh approach
-(HasOpExits proto flag) will be required per R30's closeout note.
+- `opt/initiatives/tier2-float-loops.md` — **un-paused by user for R32**. Backlog:
+  Phase 6 (range analysis for float), Phase 13 (new, this round: scalar promotion),
+  long-term (unboxed float SSA, loop unrolling). R21–R22 were the most recent wins;
+  R23 infrastructure-only (M4 absorbed the guard savings).
+- `opt/initiatives/tier1-call-overhead.md` — paused (category blocked).
+- `opt/initiatives/recursive-tier2-unlock.md` — paused (category blocked).
 
-## Step 1b — Architectural reasoning
+## Selected Target
 
-Can sieve be made 7× faster in-place, or does it need a structural
-change? Answer: **structural change in a different subsystem than
-expected**. Conventional wisdom said "hoist the SetTable validation
-tower in LICM". Diagnostic evidence (§4 below) shows that LICM is
-*disabled* from reasoning about the hot inner j-loop because the
-table operand `v77` is held via a self-referential phi. LICM
-explicitly skips phis, so v77's def looks "in the loop body" to the
-LICM alias analysis, even though semantically it's loop-invariant.
+**nbody's `advance()` j-loop — loop scalar promotion of `bi.vx/vy/vz`.**
 
-The architectural prerequisite is a **post-construction SSA cleanup
-pass** (Braun Algorithm 5). Without it, every LICM-style optimization
-on nested-loop table code is blocked. With it, the existing LICM
-machinery in `pass_licm.go:253-263` (GetTable hoist with alias check)
-immediately becomes applicable in a follow-on round.
+Matches user priority #1. Fresh approach: no round has ever implemented
+cross-iteration scalar replacement in GScript. R18 and R23 hit the wall at LICM
+GetField hoisting (cannot help because SetField is present) and LICM guard hoisting
+(M4 absorbed into predicted branches). This is a structurally different transform:
+it touches memory traffic, not branches.
 
-## Step 2 — External research
+## Architectural Insight
 
-Research agent (general-purpose subagent, 10/50 tool calls used) confirmed:
+GScript's optimizer has **in-block** memory elision (R16 block-local GetField CSE)
+and **pre-header hoisting** (R8–R23 LICM, which requires pure loads), but no
+**cross-iteration** memory elision. The missing piece is the standard LLVM
+mem2reg-for-loops trick: when a loop-invariant object has a read-modify-write pattern
+on a field, lift the field into a phi in the loop header. That's exactly what
+`bi.vx = bi.vx - dx*bj.mass*mag` is in nbody's j-loop.
 
-1. **Braun et al. 2013 §3.1–3.2** explicitly flags redundant-phi SCCs
-   as a case that `tryRemoveTrivialPhi` cannot handle, and gives
-   **Algorithm 5 (removeRedundantPhis)** as the canonical fix.
-   Primary source:
-   <https://pp.ipd.kit.edu/uploads/publikationen/braun13cc.pdf>
-2. **LLVM** `SimplifyCFG` + `InstructionSimplify::simplifyPHINode`
-   ship this pass as a safety net.
-3. **V8 TurboFan** `CommonOperatorReducer::ReducePhi` does the same.
-4. **SpiderMonkey Ion** `EliminatePhis` in `IonAnalysis.cpp` ships
-   Braun-style cleanup after MIR construction.
-5. **LuaJIT** is a trace JIT — not applicable. Its equivalent is the
-   LOOP pass's synthetic unrolling, which inherently eliminates phis
-   by definition.
-6. **M4 wall-time sanity check**: on store-bound spill loops,
-   removing 10 STR/LDR insns/iter from a 46-insn loop translates to
-   ~8–12% wall time (not 22% from naïve insn-count scaling) because
-   Apple cores are wide (8-decode) and dispatch slack absorbs much
-   of the savings. This anchors the prediction band.
+R18 already documented this wall:
 
-Knowledge saved: `opt/knowledge/ssa-trivial-phi-cleanup.md`.
+> Phase 9 (round 18): LICM GetField hoisting works for loops without same-object
+> writes. nbody's inner loop has SetField on same objects as GetField targets,
+> blocking hoisting.
 
-## Step 3 — Project source reading
+R23 confirmed instruction-count savings don't move wall-time when the savings are on
+branches (M4 absorbs them). The lesson: to beat LuaJIT on nbody we need to cut
+**memory traffic**, not branches or guards. Scalar promotion is precisely a
+memory-traffic transform.
 
-Read in full:
-- `internal/methodjit/pass_licm.go` (594 LOC) — confirmed line 224
-  explicitly skips phis; confirmed line 253-263 already hoists
-  GetTable when alias-clean.
-- `internal/methodjit/graph_builder_ssa.go:19-145` —
-  `tryRemoveTrivialPhi` runs once per seal; no post-pass cleanup.
-- `internal/methodjit/pass_load_elim.go` (129 LOC) — no phi logic.
-- `internal/methodjit/pipeline.go:270-364` —
-  `RunTier2Pipeline` + `NewTier2Pipeline` are the two wiring points.
-- `internal/methodjit/regalloc.go:56-340` (sampled) — confirmed
-  that regalloc's `preAllocateHeaderPhis` will happily carry a phi
-  through the inner loop, which is why the self-copy shows up as
-  `str x21/x22` at every back-edge.
+## Prior Art Research (Step 2)
 
-## Step 4 — Micro diagnostics (REAL data, not estimated)
+Full algorithm pseudocode + citations written to
+`opt/knowledge/loop-scalar-promotion.md` (new file, ~290 lines).
 
-Full writeup: `opt/diagnostics/r31-sieve.md`.
+Key findings:
 
-- **Harness**: `TestProfile_Sieve` in
-  `tier2_float_profile_test.go:149-153`. Runs production pipeline on
-  `benchmarks/suite/sieve.gs::sieve`, dumps IR + 3156 B of ARM64 to
-  `/tmp/gscript_sieve_t2.bin`.
-- **Disasm tool**: Python `capstone` library (not a hand-decoder).
-- **Captured**: 789 insns; hot inner-loop block B7→B8→back-edge
-  located at `0x570–0x7ac`.
-- **Hot path per iteration**: 46 insns measured, of which ~32
-  (~70%) are overhead from:
-  - SetTable validation tower on loop-invariant table (12 insns)
-  - Array-kind dispatch on loop-invariant table (4 insns)
-  - v78 step spill round-trip (7 insns: `ldr`+`sbfx`+re-box cycle)
-  - Self-copy stores `str x21`, `str x22` at back-edge (2 insns)
-  - Redecode of n (`sbfx`) at loop header every iter (1 insn)
-  - Dead 1-insn branch hop at 0x5b0 (1 insn)
+- **LLVM**: `promoteLoopAccessesToScalars` in `lib/Transforms/Scalar/LICM.cpp`
+  (~line 1800, LLVM 17). Canonical reference. Structure: pre-header load, header phi,
+  in-loop use replacement, in-loop store removal, exit-block store materialization.
+  Uses MemorySSA for alias queries; GScript equivalent is the `setFields` map.
+- **V8 TurboFan**: does NOT do this at `LoadElimination`
+  (`src/compiler/load-elimination.cc:1363` `ComputeLoopState` *kills* fields with
+  loop stores, doesn't promote). TurboFan relies on `EscapeAnalysis` for
+  non-escaping allocations. nbody's `bi` escapes (global `bodies` element), so V8's
+  model doesn't apply — GScript needs the LLVM-style transform.
+- **LuaJIT**: `src/lj_opt_loop.c:77` trace re-emission achieves equivalent forwarding
+  implicitly. "Load/store forwarding works across loop iterations. `self.idx =
+  self.idx + 1` may become a forwarded loop-recurrence after inlining."
+- **Academic**: standard mem2reg adapted for loops; Aho/Sethi/Ullman Dragon Book §9.4.
 
-**Cross-check matrix**:
+GScript infrastructure already provides: pre-header blocks (`pass_licm.go:337-380`),
+`invariant` map (`pass_licm.go:141`), `setFields` map (`pass_licm.go:173`),
+`hasLoopCall` flag (`pass_licm.go:175`), `loopPhis` tracking (`loops.go:21`),
+`replaceAllUses` helper (`pass_load_elim.go:118`), `TypeFloat` phi type
+(`ir.go:112`), `CarryPreheaderInvariants` regalloc flag (`ir.go:55`), exit-phi
+store patterns (`emit_compile.go:40`). Nothing new; the pass is pure composition.
 
-| Check | Value | OK? |
-|-------|-------|-----|
-| bin mtime | fresh (regen this round from HEAD) | ✓ |
-| Tier 2 not Tier 1 | profileTier2Func uses RunTier2Pipeline | ✓ |
-| First 2 insns = Tier 2 prologue | sub sp, stp x29 x30 | ✓ |
-| Insn classes sum ≈ total | §3 breakdown matches 46-insn loop | ✓ |
-| Bottleneck × 0.085 vs predict | 32 overhead/46 × 0.085 = 0.059 s; prediction 0.007–0.010 s lands inside the 2× band | ✓ |
+## Source Code Findings (Step 3)
 
-## Step 5 — Plan
+Read the files the new pass will interact with:
 
-`opt/current_plan.md` — single Coder task (1-Coder rule R27). New pass
-`pass_simplify_phis.go` implementing Braun Algorithm 5. TDD: 4 tests
-including a sieve-shaped fixture. Pipeline wiring at 2 sites in
-`pipeline.go`. Total budget ~300 LOC.
+- `pipeline.go:280-351` — `RunTier2Pipeline` wiring point. New pass goes after
+  `LICMPass` at line 345. Also add to `NewTier2Pipeline` at line 357-375.
+- `pass_licm.go:141-210` — `invariant` map, `setFields` map, `hasLoopCall` flag.
+  These are the three inputs the new pass needs.
+- `pass_licm.go:337-380` — pre-header creation; guaranteed to exist when we run.
+- `loops.go` — `computeLoopInfo`, `computeDominators`, `computeLoopPreheaders`,
+  `collectPreheaderInvariants`. Reusable.
+- `pass_load_elim.go:102-129` — `replaceAllUses` helper. Reuse for in-loop GetField
+  substitution.
+- `ir.go` — `Instr{Op, Args, Aux, ID}`, `OpGetField`, `OpSetField`, `OpPhi`,
+  `TypeFloat`.
 
-## Step 6 — Prediction
+No new helper files needed.
 
-| Metric          | Before   | After (band)     | Gain     |
-|-----------------|----------|------------------|----------|
-| sieve (REPS=3)  | 0.085 s  | 0.075 – 0.078 s  | 8–12%    |
-| LuaJIT ratio    | 7.7×     | 6.8–7.1×         | −0.6–0.9×|
-| Inner loop insns| 46 / iter| ~36 / iter       | −10 insns|
+## Micro Diagnostics (Step 4)
 
-Non-primary benchmarks with nested-loop patterns (matmul,
-spectral_norm, nbody) may see 1–3% collateral. Not counted.
+Authoritative diagnostic: `opt/diagnostics/r32-nbody-loop-carried.md` (186 lines).
 
-## What this round explicitly does NOT claim
+**How the data was produced**:
+`internal/methodjit/r32_nbody_loop_carried_test.go::TestR32_NbodyLoopCarried` runs
+TieringManager on `advance()` 11 times (populating Tier 1 feedback), then calls
+`RunTier2Pipeline(fn, advanceProto)` → `AllocateRegisters` → `Compile`, writes the
+binary to `/tmp/gscript_nbody_advance_r32.bin` (5464 bytes, 1366 insns), and
+disassembles with Capstone. This is the real Tier 2 production path — **no
+`profileTier2Func`** (honors user priority hard constraint).
 
-- Does not claim to hoist the SetTable validation tower. That is a
-  follow-on round enabled by this one.
-- Does not claim to eliminate the array-kind dispatch. Kind
-  specialization is a separate orthogonal track.
-- Does not claim to close the 7.7× gap to ≤2× — that requires 4–6
-  rounds of compounded field_access work.
+**IR-level findings**:
 
-## Risks
+- `advance()`: 20 `OpGetField`, 9 `OpSetField`, 35 float arith ops, 21 `OpGuardType`,
+  123 total instrs.
+- j-loop body (block B2) has **6 loop-carried `(obj, field)` pairs**:
+  - `bi.vx`, `bi.vy`, `bi.vz` — **promotable** (`bi` invariant across j-loop).
+  - `bj.vx`, `bj.vy`, `bj.vz` — **not promotable** (`bj = bodies[j]`).
+- i-loop body B6 has 3 additional pairs `b.x/y/z` — promotable at the i-loop level
+  but only 5 outer iterations, lower ROI.
 
-1. **SCC algorithm bug**: Tarjan is textbook but easy to botch on a
-   first implementation. Mitigation: 4 test cases including
-   pathological ones; `Validate(fn)` catches use-replacement errors.
-2. **Block.defs stale references**: removing a phi but leaving
-   `block.defs[slot]` pointing at it. Mitigation: explicit test;
-   evaluator checklist item.
-3. **Performance null-result**: M4 superscalar might hide even
-   store-port savings if the loop is already latency-bound on
-   something else (e.g. bounds-check branch dep chain). Mitigation:
-   if sieve shows < 5% gain, measurement repair round before claiming
-   failure — check whether the self-phi copies actually went away in
-   the post-pass disasm. If they did but wall time didn't move, the
-   ceiling is elsewhere and this round still landed infrastructure.
-4. **Downstream regression from earlier SSA cleanup**: earlier-pass
-   SSA cleanup might expose a latent bug in TypeSpec or ConstProp.
-   Mitigation: full package test (`go test ./internal/methodjit/...`),
-   not curated subset — R30 lesson.
+**ARM64 disasm findings** (j-loop body):
 
-## Counters to update after VERIFY
+| Category | Insns | % |
+|----------|------:|--:|
+| Memory (LDR/STR) | 174 | **33.1 %** |
+| MOV/MOVK | 119 | 22.6 % |
+| Box/unbox (SBFX/MOVK#FFFE) | 82 | 15.6 % |
+| Branches (B.cc/TBNZ/CBZ) | 78 | 14.8 % |
+| Guard checks (CMP/CCMP) | 40 | 7.6 % |
+| **Float compute (FADD/FSUB/FMUL/FMOV)** | **29** | **5.5 %** |
+| Total | **526** | 100 % |
 
-- `rounds_since_arch_audit`: 2 → 0 (audit done this round)
-- `rounds_since_review`: 0 → 1 (REVIEW ran last round)
-- `category_failures.field_access`: depends on outcome
+The j-loop body is **memory-bandwidth dominated**, not compute-bound. Float compute
+is 1/6 of memory traffic. Any instruction-count savings on branches or guards are
+absorbed by M4 superscalar (R23 lesson). Savings on LDR/STR *do* move wall-time
+because the M4 load/store queue and D-cache port count are finite.
 
----
+Promoting `bi.vx/vy/vz` removes 3 × (GetField ≈ 14 insns) + 3 × (SetField ≈ 12 insns)
+per j-iteration ≈ 78 insns, of which ~36 are LDR/STR. That's 20 % of the memory
+category and 14.8 % of the loop body.
 
-**Generated**: 2026-04-11, R31 ANALYZE phase
-**Signed off**: plan ready for IMPLEMENT
+All 5 cross-checks PASS.
+
+**Wall-time estimate**: halve for superscalar (R24 rule) → ~7 %; adjust for
+partially-overlapped load-use latency → ~3.5 %; add back small memory-queue headroom
+→ **≈4 % nbody wall-time = 0.248s → 0.238s**.
+
+## Plan Summary
+
+New pass `LoopScalarPromotionPass` wired after `LICMPass`. Per `(obj, field)` pair
+meeting the gate (obj invariant, ≥1 GetField + ≥1 SetField in loop body, no OpCall,
+no dynamic-key kill, single-exit loop, single-SetField per iteration): insert
+pre-header load, insert header phi, replace in-loop GetFields with phi, remove
+in-loop SetFields, insert exit-block store. Single Coder task. Budget: 3 files,
+350 LOC, 1 functional commit. Full algorithm in `opt/knowledge/loop-scalar-promotion.md`.
+Target: nbody −4 %. Failure signal if > −2 %.
+
+Plan file: `opt/current_plan.md`.
+
+## Artifacts Produced This Phase
+
+- `opt/current_plan.md` (new) — R32 plan, calibrated target, failure signals.
+- `opt/knowledge/loop-scalar-promotion.md` (new, ~290 lines) — algorithm pseudocode,
+  LLVM/V8/LuaJIT citations, GScript infra reuse table.
+- `opt/diagnostics/r32-nbody-loop-carried.md` (new, 186 lines) — production-path
+  diagnostic; 6 loop-carried pairs identified; 33.1 % memory vs 5.5 % compute; all
+  cross-checks PASS.
+- `internal/methodjit/r32_nbody_loop_carried_test.go` (new, diagnostic harness only,
+  not production code).
+- `opt/analyze_report.md` (this file).
+- `docs/draft.md` (pending — Step 7).
+
+## Not Done This Round (deferred)
+
+- Multi-SetField-per-iteration handling (out of R32 scope; nbody doesn't need it).
+- Multi-exit loops (out of R32 scope; nbody's j-loop is single-exit).
+- Integer/bool field promotion (nbody is float-only; cost-benefit lower).
+- i-loop `b.x/y/z` promotion — the new pass will apply automatically if the gate
+  passes; no special handling, not listed as primary target.

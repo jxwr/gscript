@@ -38,6 +38,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 - [x] Phase 5 (resolved round 15): **matmul reaches Tier 2 via OSR** (LoopDepth >= 2 gate)
 - [ ] Phase 6 (deferred): **Range analysis / overflow-check elimination in float loops** — extend round-3 work (commit f2bb4bf archive) to float arithmetic.
 - [x] Phase 8 (round 16): **Load Elimination + GuardType fix** — block-local GetField CSE for redundant field loads (bj.mass, bi.mass in nbody) + fix emitGuardType TypeFloat no-op (correctness bug). nbody -26%, broad 17-49% improvement across GetField-heavy benchmarks.
+- [ ] Phase 13 (round 32): **Loop scalar promotion for float (obj,field) pairs** — `LoopScalarPromotionPass` landed after LICM but silently no-ops on production IR because its float gate checks `GetField.Type == TypeFloat` while real Tier 2 emits `GetField:any + GuardType float`. Pass infrastructure is otherwise correct (phi wiring, exit-store materialization, invariance gate, single-set, single-exit, wide-kill guard all tested at IR level). **R33 one-line fix**: gate on consumer GuardType or feedback kind.
 
 ## Prior Art
 
@@ -63,6 +64,7 @@ Target (conservative, based on spectral_norm pre-regression): spectral_norm 0.33
 | 21 (2026-04-07) | Phase 11: Production diagnostic + R(0) pin | **improved (nbody -8.1%, broad -8-23%)** | Scenario A confirmed (feedback works, arithmetic IS typed in production). R(0) pin to X22 + NaN-boxed closure cache in X21 gave 18/22 benchmarks broad improvement. Next: cross-block shape propagation. |
 | 22 (2026-04-07) | Phase 12: Float param guards + GuardType CSE | **improved (nbody -10.3%, spectral -8.7%, table_field -17.3%)** | Float param guard speculation on mixed int/float params caused 100-170% regressions — fixed by excluding params used in int contexts. GuardType CSE + LICM whitelist (OpSqrt, OpGetTable). |
 | 23 (2026-04-07) | Phase 9: Guard hoisting + shape propagation | **no_change (infra landed, A/B confirmed zero wall-time)** | Guard hoisting in LICM (OpGuardType whitelisted). Cross-block shape/table verification propagation (single-predecessor, dominator approach unsound at merge points). LICM alias fix (OpAppend/OpSetList). All instruction-count improvements absorbed by M4 superscalar (predicted branches cost ~0 IPC). |
+| 32 (2026-04-11) | Phase 13: Loop scalar promotion (nbody bi/bj float pairs) | **no_change (pass wired, silent no-op due to type-gate bug)** | `LoopScalarPromotionPass` (264 LOC + 296 LOC tests, commit 56b19e7) wired after LICM in both RunTier2Pipeline and NewTier2Pipeline. All tests green, evaluator PASS. nbody 0.248→0.248 (0.0%, target -4%). Post-round re-run of TestR32_NbodyLoopCarried confirms all 9 candidate pairs still in the IR after the pipeline. **Root cause**: float gate `if instr.Type == TypeFloat` never triggers — production GetField is `:any` + trailing GuardType float. Unit tests hand-built TypeFloat and passed. **R33 plan**: one-line fix to inspect consumer GuardType (or feedback kind); whole pass infra ready to reuse. Cross-round pattern with R31: new Tier 2 passes need post-pipeline diagnostic re-runs, not synthetic IR tests. |
 
 ## Next Step
 
@@ -78,6 +80,7 @@ Remaining deferred phases:
 - **Phase 6 (range analysis for float loops)**: extend overflow-check elimination to float arithmetic.
 - **Phase 9 (DONE, round 23)**: Guard hoisting + cross-block shape propagation. Infra landed, zero wall-time impact (M4 superscalar). Single-predecessor propagation is the sound subset; dominator-based needs dataflow merge.
 - **Phase 10 (future)**: Store-to-load forwarding — after SETFIELD(obj, field, val), subsequent GETFIELD(obj, field) returns val without memory access.
+- **Phase 13 (IN PROGRESS, round 33)**: Fix LoopScalarPromotionPass float gate. The pass landed in R32 but its type gate checks `GetField.Type == TypeFloat` while production emits `GetField:any` + `GuardType float`. R33 should change the gate to walk consumers (or check feedback kind), add negative tests for multi-exit / wide-kill / non-float gates, and normalize `phi.Args[0]` in addition to `phi.Args[1]` after `replaceAllUses`. Expected ~3 promoted pairs in nbody B2 (`bi.vx/vy/vz`) and 3 in B6 (`b.x/y/z`), delivering ~-4% nbody wall-time. **New harness requirement: every new Tier 2 pass needs a post-pipeline diagnostic re-run test (not just synthetic IR).**
 - **Long-term**: Unboxed float SSA (eliminate NaN-boxing in Tier 2 float paths entirely) or loop unrolling. Register moves (91 of 431 in nbody) and spill/reload (77 of 431) are the next architectural bottleneck.
 
 ## Risks / Failure Signals
