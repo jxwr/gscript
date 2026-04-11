@@ -241,16 +241,16 @@ func (vm *VM) ScanGCRoots(visitor func(unsafe.Pointer)) {
 	seen := make(map[uintptr]struct{}, 256)
 	seenProtos := make(map[*FuncProto]struct{}, 32)
 
-	// Scan register file (only up to the used portion).
-	regLimit := len(vm.regs)
-	if vm.frameCount > 0 {
-		// The top frame's base + maxStack is the upper bound of used registers.
-		top := vm.frames[vm.frameCount-1].base + maxStack
-		if top < regLimit {
-			regLimit = top
-		}
-	}
-	for i := 0; i < regLimit; i++ {
+	// Scan the entire register file conservatively.
+	// The previous optimization (capping at frames[-1].base + maxStack) missed
+	// registers used by JIT self-calls: the JIT advances mRegRegs by calleeBaseOff
+	// per recursive level without pushing vm.frames entries.  A table referenced
+	// only from a deep self-call register would be invisible to gcCompact, causing
+	// premature eviction from gcLog and subsequent use-after-free crashes.
+	// Scanning all registers is safe: nil/float/int values return immediately in
+	// ScanValueRoots, and old stale pointers in unused slots keep their referents
+	// alive until those slots are overwritten — a minor delay in GC, not a leak.
+	for i := 0; i < len(vm.regs); i++ {
 		runtime.ScanValueRoots(vm.regs[i], visitor, seen)
 	}
 

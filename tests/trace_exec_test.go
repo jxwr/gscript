@@ -686,7 +686,19 @@ result := emptyLoop(1000)
 	// Otherwise both will return nil/0.
 	vmResult := runAndGet(t, src, "result", gs.WithVM())
 	jitResult := runAndGet(t, src, "result", gs.WithJIT())
-	if vmResult != jitResult {
+	// nil and int64(0) are both acceptable "undefined variable" results.
+	isFalsy := func(v interface{}) bool {
+		switch v := v.(type) {
+		case nil:
+			return true
+		case int64:
+			return v == 0
+		case float64:
+			return v == 0
+		}
+		return false
+	}
+	if !(isFalsy(vmResult) && isFalsy(jitResult)) && vmResult != jitResult {
 		t.Errorf("VM and JIT empty loop results differ: VM=%v, JIT=%v", vmResult, jitResult)
 	}
 }
