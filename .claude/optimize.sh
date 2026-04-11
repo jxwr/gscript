@@ -208,20 +208,41 @@ open('$ROOT/opt/phase_log.jsonl','a').write(json.dumps(rec)+'\n')
             echo "║  Triggered after phase: $phase"
             echo "║  Halting round. Review opt/token_cap_breach.md."
             echo "╚═══════════════════════════════════════════════════════════════╝"
-            python3 - <<PY 2>/dev/null || true
-import json
+            BREACH_TS=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+            BREACH_PHASE="$phase" \
+            BREACH_TS="$BREACH_TS" \
+            BREACH_ROUND_TOK="$round_tok" \
+            BREACH_CAP="$T1_PER_ROUND_TOKEN_CAP" \
+            BREACH_START="$ROUND_START_EPOCH" \
+            BREACH_STATE="$STATE" \
+            BREACH_OUT="$ROOT/opt/token_cap_breach.md" \
+            python3 - <<'PY' 2>/dev/null || true
+import json, os
 rec = {
-    "breached_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
-    "after_phase": "$phase",
-    "round_tokens_consumed": $round_tok,
-    "round_tokens_cap": $T1_PER_ROUND_TOKEN_CAP,
-    "round_start_epoch": $ROUND_START_EPOCH,
-    "cycle_id": json.load(open("$STATE")).get("cycle_id", ""),
+    "breached_at": os.environ["BREACH_TS"],
+    "after_phase": os.environ["BREACH_PHASE"],
+    "round_tokens_consumed": int(os.environ["BREACH_ROUND_TOK"]),
+    "round_tokens_cap": int(os.environ["BREACH_CAP"]),
+    "round_start_epoch": int(os.environ["BREACH_START"]),
+    "cycle_id": json.load(open(os.environ["BREACH_STATE"])).get("cycle_id", ""),
 }
-with open("$ROOT/opt/token_cap_breach.md", "w") as f:
-    f.write("# Tripwire T1 breach\n\n```json\n")
-    f.write(json.dumps(rec, indent=2, ensure_ascii=False))
-    f.write("\n```\n\nHarness v3 Stage 1 tripwire T1 halted the round because cumulative token consumption exceeded the per-round hard cap. Investigate which phase(s) are excessive; the most likely cause is a PLAN_CHECK rewrite loop that's eating more than expected, or a sub-agent that's exploring instead of executing. Raise T1_PER_ROUND_TOKEN_CAP env var if the cap itself is wrong.\n")
+body = [
+    "# Tripwire T1 breach",
+    "",
+    "```json",
+    json.dumps(rec, indent=2, ensure_ascii=False),
+    "```",
+    "",
+    "Harness v3 Stage 1 tripwire T1 halted the round because cumulative",
+    "token consumption exceeded the per-round hard cap. Likely causes:",
+    "1. PLAN_CHECK rewrite loop exceeding budget",
+    "2. A sub-agent exploring instead of executing",
+    "3. round_tokens.sh incorrectly counting the main conversation's JSONL",
+    "",
+    "Raise T1_PER_ROUND_TOKEN_CAP env var if the cap itself is too tight.",
+]
+with open(os.environ["BREACH_OUT"], "w") as f:
+    f.write("\n".join(body) + "\n")
 PY
             return 4  # new exit code: tripwire halt
         fi

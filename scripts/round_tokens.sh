@@ -4,8 +4,15 @@
 #
 # Usage:
 #   bash scripts/round_tokens.sh <start_unix_epoch>
-#     prints total tokens for all Claude session JSONL files modified since
+#     prints total tokens for all Claude session JSONL files CREATED since
 #     that timestamp. Output format: plain integer (no commas, no suffix).
+#
+# IMPORTANT: filters by file BIRTH time (stat -f %B on macOS / stat -c %W on
+# Linux), NOT modification time. The main interactive conversation's JSONL
+# file is constantly modified as the user talks; its total tokens include
+# the entire conversation history, not just the current round. Only fresh
+# per-phase session files (created by each `claude -p` spawn) belong to the
+# current round, and those files have a birth epoch >= ROUND_START_EPOCH.
 #
 # Relies on ~/.claude/projects/<slug>/ JSONL session files and jq.
 
@@ -26,19 +33,31 @@ if [ ! -d "$PROJECT_DIR" ]; then
     exit 0
 fi
 
-# Find JSONL files modified since START_EPOCH.
-# macOS BSD find doesn't accept "@<epoch>" directly; use a formatted date string.
-# BSD date -r <epoch> "+<fmt>" works on macOS; GNU date uses different syntax,
-# so we try BSD first and fall back to GNU.
-if START_DATE=$(date -r "$START_EPOCH" "+%Y-%m-%d %H:%M:%S" 2>/dev/null); then
-    :  # BSD (macOS)
-else
-    START_DATE=$(date -d "@$START_EPOCH" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "1970-01-01 00:00:00")
-fi
+# Portable file birth epoch helper (macOS BSD + Linux GNU)
+file_birth_epoch() {
+    local f="$1"
+    # macOS: stat -f %B
+    local birth
+    birth=$(stat -f %B "$f" 2>/dev/null) && { echo "$birth"; return 0; }
+    # Linux: stat -c %W (0 if unknown; fall back to mtime)
+    birth=$(stat -c %W "$f" 2>/dev/null)
+    if [ -n "$birth" ] && [ "$birth" -gt 0 ]; then
+        echo "$birth"
+        return 0
+    fi
+    # Fallback: mtime (less accurate but works as a floor)
+    stat -c %Y "$f" 2>/dev/null || echo 0
+}
 
 TOTAL=0
+# Collect all jsonl files (main sessions + subagent sessions)
 while IFS= read -r f; do
     [ -f "$f" ] || continue
+    birth=$(file_birth_epoch "$f")
+    # Skip files born before the round started
+    if [ -z "$birth" ] || [ "$birth" -lt "$START_EPOCH" ]; then
+        continue
+    fi
     t=$(jq -r '
         select(.message.usage != null) | .message.usage |
         ((.input_tokens // 0)
@@ -47,6 +66,6 @@ while IFS= read -r f; do
          + (.output_tokens // 0))
     ' "$f" 2>/dev/null | awk '{s+=$1} END {print s+0}')
     TOTAL=$((TOTAL + ${t:-0}))
-done < <(find "$PROJECT_DIR" \( -name "*.jsonl" -or -path "*/subagents/*.jsonl" \) -newermt "$START_DATE" 2>/dev/null)
+done < <(find "$PROJECT_DIR" \( -name "*.jsonl" -or -path "*/subagents/*.jsonl" \) 2>/dev/null)
 
 echo "$TOTAL"
