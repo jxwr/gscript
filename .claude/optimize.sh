@@ -36,7 +36,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROMPTS="$ROOT/.claude/prompts"
 STATE="$ROOT/opt/state.json"
 PHASES=(context_gather analyze plan_check implement verify sanity)
-# PLAN_CHECK loop max iterations (tripwire T3)
+# Harness v3 Stage 1 tripwires:
+#   T1 — per-round token hard cap (halt round if exceeded)
+#   T2 — cumulative v3 budget (halt stage if 0 improved AND tokens over threshold)
+#   T3 — plan_check loop max iterations
+T1_PER_ROUND_TOKEN_CAP=${T1_PER_ROUND_TOKEN_CAP:-50000000}
+T2_STAGE_TOKEN_LIMIT=${T2_STAGE_TOKEN_LIMIT:-100000000}
+T2_STAGE_MIN_IMPROVED=${T2_STAGE_MIN_IMPROVED:-1}
 PLAN_CHECK_MAX_ITER=3
 
 # --- Parse args ---
@@ -186,6 +192,41 @@ open('$ROOT/opt/phase_log.jsonl','a').write(json.dumps(rec)+'\n')
         return $exit_code
     fi
 
+    # Tripwire T1: per-round token hard cap
+    # Check cumulative tokens since ROUND_START_EPOCH. Halt if > cap.
+    if ! $DRY_RUN && [ -n "${ROUND_START_EPOCH:-}" ]; then
+        local round_tok
+        round_tok=$(bash "$ROOT/scripts/round_tokens.sh" "$ROUND_START_EPOCH" 2>/dev/null || echo 0)
+        if [ "$round_tok" -gt "$T1_PER_ROUND_TOKEN_CAP" ]; then
+            local round_tok_m=$((round_tok / 1000000))
+            local cap_m=$((T1_PER_ROUND_TOKEN_CAP / 1000000))
+            echo ""
+            echo "╔═══════════════════════════════════════════════════════════════╗"
+            echo "║  TRIPWIRE T1: per-round token cap exceeded                    ║"
+            echo "╠═══════════════════════════════════════════════════════════════╣"
+            echo "║  Round consumed: ${round_tok_m}M tokens (cap: ${cap_m}M)"
+            echo "║  Triggered after phase: $phase"
+            echo "║  Halting round. Review opt/token_cap_breach.md."
+            echo "╚═══════════════════════════════════════════════════════════════╝"
+            python3 - <<PY 2>/dev/null || true
+import json
+rec = {
+    "breached_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+    "after_phase": "$phase",
+    "round_tokens_consumed": $round_tok,
+    "round_tokens_cap": $T1_PER_ROUND_TOKEN_CAP,
+    "round_start_epoch": $ROUND_START_EPOCH,
+    "cycle_id": json.load(open("$STATE")).get("cycle_id", ""),
+}
+with open("$ROOT/opt/token_cap_breach.md", "w") as f:
+    f.write("# Tripwire T1 breach\n\n```json\n")
+    f.write(json.dumps(rec, indent=2, ensure_ascii=False))
+    f.write("\n```\n\nHarness v3 Stage 1 tripwire T1 halted the round because cumulative token consumption exceeded the per-round hard cap. Investigate which phase(s) are excessive; the most likely cause is a PLAN_CHECK rewrite loop that's eating more than expected, or a sub-agent that's exploring instead of executing. Raise T1_PER_ROUND_TOKEN_CAP env var if the cap itself is wrong.\n")
+PY
+            return 4  # new exit code: tripwire halt
+        fi
+    fi
+
     echo ""
     echo "--- Phase $phase complete ---"
 }
@@ -209,9 +250,32 @@ rounds_since_review() {
     python3 -c "import json; print(json.load(open('$STATE')).get('rounds_since_review', 0))" 2>/dev/null || echo 0
 }
 
+# --- Tripwire T2: stage-level v3 budget check ---
+# Append a row to opt/v3_budget.jsonl per round. Halt stage if cumulative
+# token spend exceeds T2_STAGE_TOKEN_LIMIT AND no improved outcomes yet.
+check_t2_stage_budget() {
+    if $DRY_RUN; then return 0; fi
+    if [ ! -f "$ROOT/opt/v3_budget.jsonl" ]; then
+        return 0  # no data yet
+    fi
+    python3 - "$ROOT/opt/v3_budget.jsonl" "$T2_STAGE_TOKEN_LIMIT" "$T2_STAGE_MIN_IMPROVED" <<'PY' 2>/dev/null || return 0
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+limit = int(sys.argv[2])
+min_improved = int(sys.argv[3])
+total = sum(r.get("round_tokens", 0) for r in rows)
+improved = sum(1 for r in rows if r.get("outcome") == "improved")
+print(f"total={total} improved={improved} limit={limit}")
+if total >= limit and improved < min_improved:
+    print("T2_BREACH")
+PY
+}
+
 # --- Run one cycle ---
 run_cycle() {
     local cycle_from="$1"
+    # Record round start epoch for T1 tripwire
+    export ROUND_START_EPOCH=$(date +%s)
 
     # Conditional REVIEW (before context_gather, every REVIEW_INTERVAL rounds)
     # REVIEW runs every round in early stage (REVIEW_INTERVAL=1).
@@ -336,12 +400,18 @@ json.dump(s, open('$STATE','w'), indent=2, ensure_ascii=False)
             continue  # skip the default run_phase below since analyze+plan_check already ran
         fi
 
-        run_phase "$phase" || {
+        run_phase "$phase"
+        local phase_rc=$?
+        if [ $phase_rc -ne 0 ]; then
+            if [ $phase_rc -eq 4 ]; then
+                # Tripwire T1 halt — exit code 4
+                return 4
+            fi
             echo ""
             echo "Stopped at phase: $phase"
             echo "Resume: bash .claude/optimize.sh --from=$phase"
             return 1
-        }
+        fi
 
         # Post-sanity gate: if verdict is not clean, halt auto-continue.
         if [ "$phase" = "sanity" ] && ! $DRY_RUN; then
@@ -356,6 +426,58 @@ json.dump(s, open('$STATE','w'), indent=2, ensure_ascii=False)
             fi
         fi
     done
+
+    # Record round in v3 budget ledger for T2
+    if ! $DRY_RUN && [ -n "${ROUND_START_EPOCH:-}" ]; then
+        local final_round_tok final_outcome final_cycle_id
+        final_round_tok=$(bash "$ROOT/scripts/round_tokens.sh" "$ROUND_START_EPOCH" 2>/dev/null || echo 0)
+        final_outcome=$(python3 -c "
+import json
+s = json.load(open('$STATE'))
+pr = s.get('previous_rounds', [])
+if pr:
+    print(pr[-1].get('outcome', 'unknown'))
+else:
+    print('unknown')
+" 2>/dev/null || echo "unknown")
+        final_cycle_id=$(python3 -c "
+import json
+s = json.load(open('$STATE'))
+pr = s.get('previous_rounds', [])
+if pr:
+    print(pr[-1].get('cycle_id', 'unknown'))
+else:
+    print('unknown')
+" 2>/dev/null || echo "unknown")
+        python3 -c "
+import json
+rec = {
+    'cycle_id': '$final_cycle_id',
+    'ended_at': '$(date -u '+%Y-%m-%dT%H:%M:%SZ')',
+    'round_tokens': $final_round_tok,
+    'outcome': '$final_outcome',
+}
+with open('$ROOT/opt/v3_budget.jsonl', 'a') as f:
+    f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+" 2>/dev/null || true
+
+        # T2 check
+        local t2_result
+        t2_result=$(check_t2_stage_budget)
+        if echo "$t2_result" | grep -q "T2_BREACH"; then
+            echo ""
+            echo "╔═══════════════════════════════════════════════════════════════╗"
+            echo "║  TRIPWIRE T2: v3 stage budget exhausted                       ║"
+            echo "╠═══════════════════════════════════════════════════════════════╣"
+            echo "║  $t2_result"
+            echo "║  Cumulative tokens spent without any improved outcome."
+            echo "║  Harness v3 Stage 1 has not produced a real improvement."
+            echo "║  Halting. Review opt/v3_budget.jsonl + opt/harness-v3-synthesis.md."
+            echo "╚═══════════════════════════════════════════════════════════════╝"
+            return 5  # new exit code: T2 stage budget halt
+        fi
+    fi
+
     return 0
 }
 
@@ -384,6 +506,16 @@ for ((round=1; round<=ROUNDS; round++)); do
         echo "=== Multi-round run halted by sanity check at round $round/$ROUNDS ==="
         echo "Inspect opt/sanity_report.md, fix, then resume:  bash .claude/optimize.sh --rounds=$((ROUNDS-round+1))"
         exit 2
+    elif [ $rc -eq 4 ]; then
+        echo ""
+        echo "=== Multi-round run halted by T1 tripwire at round $round/$ROUNDS ==="
+        echo "Inspect opt/token_cap_breach.md"
+        exit 4
+    elif [ $rc -eq 5 ]; then
+        echo ""
+        echo "=== Multi-round run halted by T2 v3 stage budget at round $round/$ROUNDS ==="
+        echo "Inspect opt/v3_budget.jsonl"
+        exit 5
     elif [ $rc -ne 0 ]; then
         echo ""
         echo "=== Multi-round run stopped at round $round/$ROUNDS ==="
