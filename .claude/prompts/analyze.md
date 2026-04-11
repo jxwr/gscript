@@ -94,7 +94,11 @@ Just read the existing documents:
 ## Step 1 — Gap Classification + Target Selection (strategic)
 
 ### Rules
-- **User Priority Rule (highest)**: if `opt/user_priority.md` exists, read it FIRST and honor its numbered priority order. This file is how the user injects strategic direction between rounds. It overrides automatic category ROI ranking but does NOT override the Ceiling Rule. Mention it in the analyze report under `## User Priority Honored`. Delete the file only when the user's stated priority list is exhausted.
+- **User Priority Rule (optional, evidence-subordinate)**: `opt/user_priority.md` is an OPTIONAL file the user writes when they have a specific strategic directive. If it does NOT exist → skip this rule entirely and select targets from `opt/authoritative-context.json` (CONTEXT_GATHER evidence). If it exists:
+  (a) verify its directive is consistent with the current CONTEXT_GATHER evidence. If consistent → honor it and mention under `## User Priority Honored` in the analyze report.
+  (b) if CONTEXT_GATHER evidence CONTRADICTS the directive (e.g. file says "focus on X" but X is flat/improved vs reference.json while other benchmarks are regressed) → flag the conflict under `## User Priority Conflict` and **prefer the CONTEXT_GATHER evidence**. Recommend deletion of the stale directive. Do NOT use the directive as a reason to ignore a larger regression.
+  (c) It does NOT override the Ceiling Rule.
+  Rationale (harness v3 P3): authoritative context from real production pipelines beats human-written prose priorities that rot between rounds. R33 proved user_priority.md goes stale within hours — it should not be a mandatory bypass.
 - **Ceiling Rule**: `category_failures >= 2` → **skip this round, try a different category**. After 3 rounds away from the category, it becomes eligible again (reset `category_failures` to 0 in state.json at that point). This is temporary deprioritization, NOT a permanent block — high-ROI targets should be retried with a fresh approach after other directions are explored.
 - **Initiative Rule**: active initiative with non-empty `Next Step` → strong candidate
 - **INDEX pattern check**: don't repeat failed patterns from last 5 rounds

@@ -27,7 +27,7 @@ You are a fresh, independent Opus session. You have no context from REVIEW or pr
 2. `benchmarks/data/latest.json` — current measurements
 3. `opt/state.json` — round counters + category_failures
 4. `opt/INDEX.md` — recent round history to avoid re-targeting
-5. `opt/user_priority.md` (if exists) — user's strategic direction
+5. `opt/user_priority.md` (OPTIONAL, may not exist) — user's strategic direction. If missing, that's normal and correct; rely on reference.json drift data for candidate selection. If present, its targets are ADVISORY — include them in the candidate set IF they also appear as non-trivial drifters, but do NOT prioritize them over larger real regressions.
 6. The source files under `internal/methodjit/tier2_float_profile_test.go` to find existing `TestProfile_*` tests
 
 ## Procedure
@@ -57,7 +57,7 @@ print(J.dumps([{'benchmark': r[0], 'ref': r[1], 'now': r[2], 'drift_pct': r[3]} 
 PY
 ```
 
-**Candidate set**: pick the **top 3 by drift** (where drift > 0, i.e. regressed benchmarks) PLUS any benchmark the user_priority.md explicitly names. If user_priority.md names targets not in the top 3 drifters, include them.
+**Candidate set**: pick the **top 3 by drift** (where drift > 0, i.e. regressed benchmarks). Evidence-first — the drift numbers are authoritative. If `opt/user_priority.md` exists AND names a benchmark with drift > 0 that's not already in the top 3, include it as a 4th candidate; otherwise ignore user_priority suggestions (do NOT displace a real regressor with a flat/improved target just because user_priority mentions it).
 
 Record the candidate set and selection reasoning at the top of `opt/authoritative-context.json`.
 
