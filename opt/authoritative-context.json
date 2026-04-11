@@ -1,0 +1,258 @@
+{
+  "generated_at": "2026-04-11T15:20:35Z",
+  "reference_sha": "1bdfe6d619542d62d76bddcf4423f58494e1786d255301d396058c1b646d093d",
+  "reference_frozen_from_commit": "772bfa7feac75d73be1380a527df4f1cf17aea5c",
+  "latest_commit": "3ce3dd74fc6ede9e4b0fca606697231302be7367",
+  "selection_reason": "Top-3 regressed benchmarks by (latest - reference)/reference drift, from benchmarks/data/reference.json vs benchmarks/data/latest.json. user_priority.md names matmul/spectral_norm as future tier2_float_loop targets but those have drift 2.2% / -3.2% (not in top 3 regressors) so they are not included in this round's CONTEXT_GATHER. Selection is drift-driven per CONTEXT_GATHER prompt.",
+  "candidates": [
+    {
+      "benchmark": "object_creation",
+      "reference_jit_s": 0.764,
+      "latest_jit_s": 1.053,
+      "drift_pct": 37.83,
+      "hot_function": "vec3_add (inner) and create_and_sum (outer loop); new_vec3 is the allocator",
+      "evidence": {
+        "profile_test": "TestContextGather_ObjectCreation, TestContextGather_ObjectCreationTransform, TestContextGather_Vec3Add, TestContextGather_NewVec3 (temporary, cleaned up)",
+        "ir_log_paths": [
+          "/tmp/cg_TestContextGather_ObjectCreation.log",
+          "/tmp/cg_TestContextGather_ObjectCreationTransform.log",
+          "/tmp/cg_vec3.log"
+        ],
+        "disasm_paths": [
+          "/tmp/cg_object_creation_disasm.txt (llvm-objdump unavailable for raw binary; structured counts below come from a Python ARM64 top-level decoder over /tmp/gscript_object_creation_t2.bin)",
+          "/tmp/cg_object_creation_transform_disasm.txt (ditto)"
+        ],
+        "binary_paths": [
+          "/tmp/gscript_object_creation_t2.bin",
+          "/tmp/gscript_object_creation_transform_t2.bin",
+          "/tmp/gscript_vec3_add_t2.bin",
+          "/tmp/gscript_new_vec3_t2.bin"
+        ]
+      },
+      "ir_summary_create_and_sum": {
+        "basic_blocks": 5,
+        "phi_nodes": 2,
+        "get_field_count": 0,
+        "set_field_count": 0,
+        "new_table_count": 0,
+        "call_count": 4,
+        "note": "Inner loop B1 has 2 Call ops per iteration: Call v1 (new_vec3 via globals[0]) and Call v19 (vec3_add via globals[5]). Neither callee is inlined. v29 Phi is typed :any (vec3 object stays boxed)."
+      },
+      "ir_summary_vec3_add": {
+        "basic_blocks": 1,
+        "phi_nodes": 0,
+        "get_field_count": 6,
+        "set_field_count": 0,
+        "new_table_count": 0,
+        "call_count": 1,
+        "note": "GetField v3..v10 all typed :any — no GuardType float, no unboxing. Add ops are untyped (v5=Add:any, v8=Add:any, v11=Add:any) — generic dispatch, not AddFloat."
+      },
+      "ir_summary_new_vec3": {
+        "basic_blocks": 1,
+        "phi_nodes": 0,
+        "get_field_count": 0,
+        "set_field_count": 3,
+        "new_table_count": 1,
+        "call_count": 0,
+        "note": "Straightforward 3-field table allocation."
+      },
+      "disasm_summary_create_and_sum": {
+        "total_insns": 813,
+        "compute_insns": 236,
+        "memory_insns": 466,
+        "branch_insns": 83,
+        "call_insns": 4,
+        "fp_simd_insns": 24,
+        "other_insns": 0,
+        "spill_str_sp_count": 12,
+        "spill_ldr_sp_count": 12,
+        "classifier_note": "Top-level ARM64 decoder over raw instruction words; BL/BLR counted as call; B/B.cond/CBZ/CBNZ/TBZ/TBNZ/BR/RET counted as branch."
+      },
+      "disasm_summary_transform_chain": {
+        "total_insns": 988,
+        "compute_insns": 295,
+        "memory_insns": 573,
+        "branch_insns": 101,
+        "call_insns": 5,
+        "fp_simd_insns": 14,
+        "other_insns": 0,
+        "spill_str_sp_count": 15,
+        "spill_ldr_sp_count": 15
+      },
+      "observations": [
+        {
+          "text": "vec3_add is NOT inlined. Each object_creation inner-loop iteration makes 2 native-style Calls (to new_vec3 and vec3_add) across a Tier2→Tier2 boundary. create_and_sum IR shows 4 Call ops total, transform_chain shows 5. See /tmp/cg_TestContextGather_ObjectCreation.log lines 11, 21, 23.",
+          "confidence": "HIGH",
+          "rationale": "directly visible in logged IR; Call ops enumerated"
+        },
+        {
+          "text": "vec3_add has 6 GetField ops, all with result type :any (NOT typed float). There is no GuardType chain attaching float to these loads. /tmp/cg_vec3.log lines showing 'v3 = GetField v0.field[1] : any' through 'v10 = GetField v1.field[3] : any'.",
+          "confidence": "HIGH",
+          "rationale": "directly visible; IR printer shows : any tag per value"
+        },
+        {
+          "text": "vec3_add's 3 Add ops are generic Add (v5/v8/v11 = Add … : any), not AddFloat. This means the inner hot path in object_creation dispatches through the generic any+any handler, not the float fast path — even though all inputs are floats at runtime.",
+          "confidence": "HIGH",
+          "rationale": "directly visible in vec3_add IR"
+        },
+        {
+          "text": "Memory-heavy instruction mix: create_and_sum disasm is 466/813 (57%) memory, only 236/813 (29%) compute. 12 spill stores + 12 spill loads to [sp, #imm] are present even though the IR reports NumSpills=0 — the spills are in the Call prolog/epilog save area, not register-allocator spills.",
+          "confidence": "MEDIUM",
+          "rationale": "instruction counts are from a top-level ARM64 decoder (not symbolic disasm); the 12 str/ldr-sp counts are exact but attribution to prolog vs spill is inferred"
+        },
+        {
+          "text": "new_vec3 IR is 1 block, 3 SetFields + 1 NewTable + Return. Allocation path is lean; the bottleneck is NOT in the allocator's IR shape — any object_creation regression is more likely in (a) the NewTable runtime cost, (b) the Call overhead to reach new_vec3, or (c) the unboxed-float miss in vec3_add.",
+          "confidence": "MEDIUM",
+          "rationale": "IR structure is directly visible; ranking of causes is inferred"
+        }
+      ],
+      "live_run_time_s": 1.092
+    },
+    {
+      "benchmark": "sort",
+      "reference_jit_s": 0.042,
+      "latest_jit_s": 0.050,
+      "drift_pct": 19.05,
+      "hot_function": "quicksort",
+      "evidence": {
+        "profile_test": "TestContextGather_Sort (temporary, cleaned up)",
+        "ir_log_paths": ["/tmp/cg_TestContextGather_Sort.log"],
+        "disasm_paths": ["/tmp/cg_sort_disasm.txt"],
+        "binary_paths": ["/tmp/gscript_sort_t2.bin"]
+      },
+      "ir_summary": {
+        "basic_blocks": 8,
+        "phi_nodes": 2,
+        "get_table_count": 6,
+        "set_table_count": 4,
+        "guard_type_count": 2,
+        "call_count": 2,
+        "note": "lo/hi are LoadSlot :any then GuardType int (v59, v60). Loop body uses GetTable/SetTable on v0 (arr). 2 Call ops in B6 are recursive quicksort Calls on exit."
+      },
+      "disasm_summary": {
+        "total_insns": 1602,
+        "compute_insns": 635,
+        "memory_insns": 682,
+        "branch_insns": 283,
+        "call_insns": 2,
+        "fp_simd_insns": 0,
+        "other_insns": 0,
+        "spill_str_sp_count": 6,
+        "spill_ldr_sp_count": 6
+      },
+      "observations": [
+        {
+          "text": "quicksort has 2 Call ops (the self-recursive quicksort(arr, lo, i-1) and quicksort(arr, i+1, hi)). Given the reference→latest regression of +19%, and the 598bc1e commit 'fix: self-call DirectEntryPtr check prevents goroutine stack overflow' which added a runtime check on the recursive self-call path, this commit is a high-prior bisect candidate for sort.",
+          "confidence": "MEDIUM",
+          "rationale": "Call-op count and commit message are both directly visible; causal attribution is inferred and must be confirmed by git bisect"
+        },
+        {
+          "text": "No float/SIMD instructions in sort disasm (0 fp_simd_insns). Workload is integer + pointer only. Regression cannot be attributed to any float-path change.",
+          "confidence": "HIGH",
+          "rationale": "direct decoder count"
+        },
+        {
+          "text": "Instruction mix is compute-heavy (635/1602 = 40%) vs memory (682/1602 = 43%). Only 6 spill str/ldr pairs — not spill-bound. The 283 branch instructions (18%) are the loop control + partition comparisons. No obvious code-bloat signal.",
+          "confidence": "HIGH",
+          "rationale": "direct decoder counts"
+        },
+        {
+          "text": "IR shows GuardType int on lo/hi (v59, v60) but the AddInt/SubInt/LeInt ops in the partition loop use the guarded ints directly — int specialization IS working for the inner partition loop. The regression is NOT a loss of int-type specialization.",
+          "confidence": "HIGH",
+          "rationale": "directly visible in logged IR (v3 = LeInt v59 v60, v11 = SubInt v59 v10, etc.)"
+        }
+      ],
+      "live_run_time_s": 0.051
+    },
+    {
+      "benchmark": "coroutine_bench",
+      "reference_jit_s": 16.55,
+      "latest_jit_s": 19.595,
+      "drift_pct": 18.40,
+      "hot_function": "test_yield_loop",
+      "evidence": {
+        "profile_test": "TestContextGather_CoroutineYield (temporary, cleaned up)",
+        "ir_log_paths": ["/tmp/cg_TestContextGather_CoroutineYield.log"],
+        "disasm_paths": ["/tmp/cg_coroutine_yield_disasm.txt"],
+        "binary_paths": ["/tmp/gscript_coroutine_yield_t2.bin"]
+      },
+      "ir_summary": {
+        "basic_blocks": 4,
+        "phi_nodes": 2,
+        "get_field_count": 2,
+        "set_field_count": 0,
+        "call_count": 2,
+        "note": "Loop body B1: GetGlobal coroutine, GetField field[2] (resume), Call resume(co). Also Add v24+v13 : any even though v24 is Phi :int — generic add emitted."
+      },
+      "disasm_summary": {
+        "total_insns": 561,
+        "compute_insns": 196,
+        "memory_insns": 298,
+        "branch_insns": 58,
+        "call_insns": 2,
+        "fp_simd_insns": 7,
+        "other_insns": 0,
+        "spill_str_sp_count": 6,
+        "spill_ldr_sp_count": 6
+      },
+      "observations": [
+        {
+          "text": "Tier 2 IR for test_yield_loop is tiny (4 blocks, 561 ARM64 insns). The hot cost of coroutine_bench is NOT in compiled Tier 2 code; it is in the native-call path into coroutine.resume / coroutine.yield / coroutine.create (goroutine switch). Tier 2 optimization cannot meaningfully move this benchmark — runtime-side improvements (e.g. pre-grown goroutine stack, faster native transition) are required.",
+          "confidence": "HIGH",
+          "rationale": "IR block count and call counts are directly visible; attribution to native path is based on the absence of significant IR work and the well-known coroutine runtime cost"
+        },
+        {
+          "text": "test_yield_loop emits 'v15 = Add v24, v13 : any' where v24 is a Phi typed :int. The loop accumulator is int but Add falls back to the generic any path. This is a missed type-specialization opportunity but its impact on a coroutine-bound benchmark is LOW.",
+          "confidence": "MEDIUM",
+          "rationale": "IR tag is directly visible; impact estimate is inferred"
+        },
+        {
+          "text": "Bisect-candidate-wise: 598bc1e (self-call DirectEntryPtr check) and 39b5ef3 (Shape system, GC scan all regs, split table.go, empty-loop fix) are the two large code-affecting commits between the reference baseline (772bfa7) and HEAD (3ce3dd7). Neither obviously targets coroutine.resume, but a GC-scan-all-regs change could increase goroutine-switch cost if more registers are now root-scanned per switch.",
+          "confidence": "LOW",
+          "rationale": "speculation from commit messages; requires bisect to confirm"
+        },
+        {
+          "text": "test_yield_loop has only 2 GetField ops (coroutine.resume lookup) and 2 Call ops per iteration. Memory / compute / branch ratio is 298/196/58 — not spill-bound (6 str-sp / 6 ldr-sp).",
+          "confidence": "HIGH",
+          "rationale": "direct decoder counts"
+        }
+      ],
+      "live_run_time_s": 15.014
+    }
+  ],
+  "bisect_candidates": [
+    {
+      "commit": "598bc1e",
+      "subject": "fix: self-call DirectEntryPtr check prevents goroutine stack overflow",
+      "why_suspect": "adds a runtime check on the recursive self-call fast path — quicksort is recursive (sort +19%), test_yield_loop's body invokes coroutine.resume which re-enters via goroutine, transform_chain/create_and_sum call vec3_add repeatedly. All three top regressors go through call-heavy paths."
+    },
+    {
+      "commit": "39b5ef3",
+      "subject": "fix: Shape system, GC scan all regs, split table.go, fix empty-loop test",
+      "why_suspect": "Shape system change alters table field access paths; GC-scan-all-regs can lengthen goroutine scan cost (possible coroutine_bench link); table.go split touches NewTable/SetField codegen used by object_creation's new_vec3."
+    },
+    {
+      "commit": "144c1a4",
+      "subject": "opt: R28 Task 1 — ctx.Regs lazy flush on self-call fast path",
+      "why_suspect": "touches the self-call fast path (sort recursion)"
+    },
+    {
+      "commit": "56b19e7",
+      "subject": "opt: R32 Task 1 — LoopScalarPromotionPass for nbody float loop-carried pairs",
+      "why_suspect": "R32 landed a new Tier 2 pass. If the gate matches on unintended shapes, it could affect vec3_add / create_and_sum path. Low prior: R32 post-mortem says the gate was too strict, not too loose."
+    },
+    {
+      "commit": "c375913",
+      "subject": "opt: R31 Task 1 — SimplifyPhisPass (Braun Algorithm 5)",
+      "why_suspect": "another new Tier 2 pass touching phi rewriting; object_creation/sort/coroutine all have phis in their inner loops."
+    }
+  ],
+  "forbidden_patterns_avoided": [
+    "No hand-constructed Function fixtures were used",
+    "No TypeFloat/TypeInt nodes were manually synthesized",
+    "All IR came from profileTier2Func -> RunTier2Pipeline(fn, nil) on real benchmarks/suite/*.gs source"
+  ],
+  "tooling_caveats": [
+    "llvm-objdump (Xcode 15 ships version that does not support -b binary) and otool (requires Mach-O not raw bytes) could not symbolically disassemble the raw JIT code bytes. A Python ARM64 top-level-encoding decoder was used instead to classify instructions by major category (compute/memory/branch/call/fp_simd) and to count STR/LDR [SP,#imm] spill-region accesses. This is exact for category counts but does not give mnemonic-level detail. ANALYZE should run a focused disasm (e.g. by embedding the bytes in a minimal object file or using the project's own diagnostic tooling) if instruction-level sequence is needed."
+  ]
+}
