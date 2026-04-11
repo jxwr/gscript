@@ -49,20 +49,83 @@ Example: plan says "VERIFY MUST re-baseline" but `baseline.json` commit hash equ
 - Plan declares "≤N files touched" — count git diff files, if > N+1 → **red flag**. This is the primary scope guard.
 - Plan declares "≤M LOC" — **count source files only, not `*_test.go`** (tests legitimately 2-3× source). If source LOC > 2M → **red flag**. If only tests overflow, treat as PASS with note.
 
-### R7. New pass without real-pipeline diagnostic test (R32)
+### R7. Cumulative drift vs frozen reference (harness v3 P5)
+
+**This is a hard check against harness-core-principles P5.** Read `benchmarks/data/reference.json`. For each benchmark NOT in `_meta.excluded`, compute `drift_pct = (latest - reference) / reference * 100`.
+
+```bash
+python3 - <<'PY'
+import json, re
+ref = json.load(open('benchmarks/data/reference.json'))
+lat = json.load(open('benchmarks/data/latest.json'))
+excl = set(ref['_meta']['excluded'])
+flag_t = ref['_meta'].get('drift_threshold_flag_pct', 2.0)
+fail_t = ref['_meta'].get('drift_threshold_fail_pct', 5.0)
+def pt(s):
+    m = re.search(r'[\d.]+', str(s)); return float(m.group()) if m else None
+drifters = []
+for k, v in ref['results'].items():
+    if k in excl: continue
+    rj = pt(v.get('jit'))
+    if k not in lat['results']: continue
+    lj = pt(lat['results'][k].get('jit'))
+    if rj and lj and rj > 0:
+        drifters.append((k, rj, lj, (lj - rj) / rj * 100))
+drifters.sort(key=lambda x: -x[3])
+print(f"Top drifters (ref threshold: flag {flag_t}%, fail {fail_t}%):")
+for k, r, l, d in drifters[:5]:
+    flag = 'FAIL' if d >= fail_t else ('FLAG' if d >= flag_t else 'ok')
+    print(f"  {k:25s} ref={r:.3f} now={l:.3f} drift={d:+6.2f}% {flag}")
+worst = drifters[0][3] if drifters else 0
+print(f"\nWorst drift: {worst:+.2f}%")
+if worst >= fail_t: print("R7 VERDICT: FAIL")
+elif worst >= flag_t: print("R7 VERDICT: FLAG")
+else: print("R7 VERDICT: PASS")
+PY
+```
+
+- Any non-excluded benchmark with drift ≥ flag threshold (default 2%) → **flagged**.
+- Any non-excluded benchmark with drift ≥ fail threshold (default 5%) → **failed** (hard halt).
+- Zero drifters exceeding threshold → **PASS**.
+
+**Also verify reference.json integrity**: compute SHA-256 of `reference.json`, compare to `state.json.reference_baseline.sha256`. Mismatch → **hard FAIL** (P5 violation: someone edited reference.json without using `.claude/freeze-reference.sh`).
+
+```bash
+python3 -c "
+import json, hashlib
+content = open('benchmarks/data/reference.json','rb').read()
+actual = hashlib.sha256(content).hexdigest()
+expected = json.load(open('opt/state.json'))['reference_baseline']['sha256']
+if actual == expected:
+    print('R7 integrity: PASS')
+else:
+    print(f'R7 integrity: FAIL (expected {expected[:12]}..., got {actual[:12]}...)')
+"
+```
+
+Rationale: R28-R32 cumulative 3-7% drift on nbody/sieve/matmul/spectral/mandelbrot was invisible to rolling-baseline sanity R5. R7 is the fence.
+
+### R8. New pass without real-pipeline diagnostic test (R32, was R7)
 
 If this round's diff adds or meaningfully edits a file matching `internal/methodjit/pass_*.go`:
 - The diff MUST also include a test that runs the pass through `RunTier2Pipeline` (or `compileTier2()`) on a real benchmark proto and asserts an observable IR change (pair count, instruction replaced, etc.).
 - Hand-constructed IR unit tests are not sufficient — R31 (`SimplifyPhisPass`) and R32 (`LoopScalarPromotionPass`) both landed unit-green and were silent no-ops on production IR. Two wasted rounds.
 - No such test → **red flag** (flagged, not failed — the code is correct, the feedback loop is missing).
 
+### R9. Confidence label audit (harness v3 P4)
+
+Read `opt/current_plan.md`. For every numeric prediction (Expected Effect, target delta, per-benchmark prediction), verify a `confidence:` label exists (HIGH / MEDIUM / LOW).
+- Any unlabelled prediction → **flagged**.
+- HIGH-confidence predictions without a matching source citation (P1) → **flagged**.
+- All predictions labelled with matching sources → **PASS**.
+
 ## Verdict
 
-After checking all 7:
+After checking all 9:
 
 - **`clean`**: zero red flags. Round is real, outcome is trustworthy. Auto-continue OK.
-- **`flagged`**: 1-2 soft red flags (e.g., R3 or R6 — process issues, not data lies). Auto-continue BLOCKED, user review required but round artifacts are kept.
-- **`failed`**: ≥1 hard red flag (R1, R2, R4, R5 — data/mandate violation). Auto-continue BLOCKED. User must decide whether to re-measure, revert, or reclassify.
+- **`flagged`**: 1-2 soft red flags (R3, R6, R8, R9 — process issues, not data lies). Auto-continue BLOCKED, user review required but round artifacts are kept.
+- **`failed`**: ≥1 hard red flag (R1, R2, R4, R5, R7 — data/mandate/P5 violation). Auto-continue BLOCKED. User must decide whether to re-measure, revert, or reclassify.
 
 Be conservative: **uncertain → flagged**, not clean. A false-positive flag costs one user glance; a false-negative clean lets bad data poison the next round's baseline.
 
@@ -80,7 +143,10 @@ Be conservative: **uncertain → flagged**, not clean. A false-positive flag cos
 - R4 (mandated steps): ...
 - R5 (baseline staleness): ...
 - R6 (scope): ...
-- R7 (new-pass real-pipeline test): ...
+- R7 (cumulative drift vs reference.json, P5): [PASS|FLAG|FAIL] — top drifter + worst drift%
+- R7 (reference.json integrity, P5): [PASS|FAIL] — SHA match
+- R8 (new-pass real-pipeline test): ...
+- R9 (confidence labels, P4): ...
 
 ## If flagged/failed: recommended user action
 One or two sentences. "Re-run benchmarks with --runs=5", "revert commit X", "manually close state.json".

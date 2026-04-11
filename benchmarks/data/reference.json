@@ -1,0 +1,130 @@
+{
+  "_meta": {
+    "drift_threshold_fail_pct": 5.0,
+    "drift_threshold_flag_pct": 2.0,
+    "excluded": [
+      "fib",
+      "fib_recursive",
+      "mutual_recursion",
+      "ackermann"
+    ],
+    "excluded_reason": "Dominated by 598bc1e correctness fix (deep-recursion goroutine stack overflow prevention). ackermann/mutual_recursion improved as side-effect; fib/fib_recursive regressed. Sanity R7 ignores these 4 benchmarks; they remain under separate tier1-call-overhead initiative Item 8.",
+    "frozen_at": "2026-04-11T14:55:55Z",
+    "frozen_from_baseline_commit": "772bfa7feac75d73be1380a527df4f1cf17aea5c",
+    "frozen_from_baseline_ts": "2026-04-10T17:51:30Z",
+    "frozen_from_commit": "a388f7824f88f0cf5f68c5156871cee3a749249c",
+    "frozen_reason": "Pre-598bc1e baseline (R25 era); non-recursive benchmarks are canonical, 4 recursive excluded as known 598bc1e-dominated debt"
+  },
+  "results": {
+    "ackermann": {
+      "jit": "Time: 0.558s",
+      "luajit": "Time: 0.006s",
+      "vm": "Time: 0.294s"
+    },
+    "binary_trees": {
+      "jit": "Time: 2.311s",
+      "luajit": "Time: s",
+      "vm": "Time: 1.634s"
+    },
+    "closure_bench": {
+      "jit": "Time: 0.027s",
+      "luajit": "Time: s",
+      "vm": "Time: 0.085s"
+    },
+    "coroutine_bench": {
+      "jit": "Time: 16.550s",
+      "luajit": "N/A",
+      "vm": "Time: 15.886s"
+    },
+    "fannkuch": {
+      "jit": "Time: 0.048s",
+      "luajit": "Time: 0.020s",
+      "vm": "Time: 0.564s"
+    },
+    "fib": {
+      "jit": "Time: 0.133s",
+      "luajit": "Time: 0.026s",
+      "vm": "Time: 1.664s"
+    },
+    "fib_recursive": {
+      "jit": "Time: 1.341s",
+      "luajit": "N/A",
+      "vm": "Time: 16.619s"
+    },
+    "fibonacci_iterative": {
+      "jit": "Time: 0.288s",
+      "luajit": "N/A",
+      "vm": "Time: 1.036s"
+    },
+    "mandelbrot": {
+      "jit": "Time: 0.063s",
+      "luajit": "Time: 0.058s",
+      "vm": "Time: 1.393s"
+    },
+    "math_intensive": {
+      "jit": "Time: 0.070s",
+      "luajit": "N/A",
+      "vm": "Time: 0.928s"
+    },
+    "matmul": {
+      "jit": "Time: 0.124s",
+      "luajit": "Time: 0.022s",
+      "vm": "Time: 1.032s"
+    },
+    "method_dispatch": {
+      "jit": "Time: 0.102s",
+      "luajit": "Time: 0.000s",
+      "vm": "Time: 0.086s"
+    },
+    "mutual_recursion": {
+      "jit": "Time: 0.238s",
+      "luajit": "Time: 0.004s",
+      "vm": "Time: 0.203s"
+    },
+    "nbody": {
+      "jit": "Time: 0.248s",
+      "luajit": "Time: 0.035s",
+      "vm": "Time: 1.932s"
+    },
+    "object_creation": {
+      "jit": "Time: 0.764s",
+      "luajit": "N/A",
+      "vm": "Time: 0.645s"
+    },
+    "sieve": {
+      "jit": "Time: 0.088s",
+      "luajit": "Time: 0.011s",
+      "vm": "Time: 0.251s"
+    },
+    "sort": {
+      "jit": "Time: 0.042s",
+      "luajit": "Time: 0.011s",
+      "vm": "Time: 0.183s"
+    },
+    "spectral_norm": {
+      "jit": "Time: 0.045s",
+      "luajit": "Time: 0.008s",
+      "vm": "Time: 1.007s"
+    },
+    "string_bench": {
+      "jit": "Time: 0.031s",
+      "luajit": "Time: s",
+      "vm": "Time: 0.045s"
+    },
+    "sum_primes": {
+      "jit": "Time: 0.004s",
+      "luajit": "Time: 0.002s",
+      "vm": "Time: 0.028s"
+    },
+    "table_array_access": {
+      "jit": "Time: 0.094s",
+      "luajit": "N/A",
+      "vm": "Time: 0.409s"
+    },
+    "table_field_access": {
+      "jit": "Time: 0.043s",
+      "luajit": "N/A",
+      "vm": "Time: 0.749s"
+    }
+  }
+}

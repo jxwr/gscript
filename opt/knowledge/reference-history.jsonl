@@ -1,0 +1,1 @@
+{"frozen_at": "2026-04-11T14:55:55Z", "from_commit": "a388f7824f88f0cf5f68c5156871cee3a749249c", "from_baseline_commit": "772bfa7feac75d73be1380a527df4f1cf17aea5c", "reason": "Pre-598bc1e baseline (R25 era); non-recursive benchmarks are canonical, 4 recursive excluded as known 598bc1e-dominated debt", "sha256": "1bdfe6d619542d62d76bddcf4423f58494e1786d255301d396058c1b646d093d"}
