@@ -1,5 +1,7 @@
 # ANALYZE + PLAN Phase
 
+> **⚠️ LOAD-BEARING: Before any reasoning, read `opt/harness-core-principles.md` in full.** That file contains the 6 constitutional rules for this harness. Every claim in your plan MUST honor them: (P1) cite sources, (P2) evidence before action, (P3) authoritative context first — NEVER use `profileTier2Func` or `TestProfile_*`, (P4) label every prediction with HIGH/MEDIUM/LOW confidence, (P5) compare against `benchmarks/data/reference.json` (not rolling baseline), (P6) no invented taxonomies. Violation = sanity FAIL and the round is marked `harness-violation`.
+
 You are in the ANALYZE+PLAN phase of the GScript optimization loop.
 Top-down flow: architecture → strategy → research → source → diagnostics → plan.
 **No code changes.** Output: `opt/analyze_report.md` + `opt/current_plan.md` + knowledge base + architecture notes.
@@ -221,13 +223,14 @@ Write `opt/current_plan.md` using `opt/plan_template.md`. Fill ALL sections:
     - couples regalloc.go with emit_*.go
     - implements cross-block dataflow (shape/type/value propagation across basic blocks)
     - Coder is expected to exceed 80 tool calls
-  - File/line caps (R22 review): ≤3 files, ≤200 lines changed per task. Still applies.
+  - File/line caps (R22 review): ≤3 files, ≤200 source lines per task (test files excluded from the LOC cap — R32 review, tests legitimately 2-3× source). File count remains the primary scope guard.
 - **Budget**: max commits, max files, abort condition
 
 **MANDATORY pre-plan checklist** (round 18 failed this — user intervened twice):
 - [ ] If Diagnose() or arch_check found broken tooling / pipeline mismatches → is there a fix Task?
 - [ ] If constraints.md flags files >800 lines that this plan touches → is there a split Task 0?
 - [ ] If known-issues.md has items in this plan's category → are quick-fix items included?
+- [ ] If the plan adds or edits `internal/methodjit/pass_*.go` → does the implementation task include a test that runs the pass via `RunTier2Pipeline`/`compileTier2()` on a real proto and asserts an observable IR change? (R31+R32: two rounds lost to unit-green passes that were silent no-ops on production IR. Hand-constructed IR unit tests are insufficient.)
 Do NOT finalize the plan until all boxes are checked.
 
 If initiative is **new**, create `opt/initiatives/<name>.md` from `_template.md`.

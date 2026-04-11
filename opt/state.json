@@ -13,18 +13,14 @@
   "next_action": "",
   "uncommitted_files": [
     ".claude/prompts/analyze.md",
-    ".claude/prompts/review.md",
-    "benchmarks/data/history/2026-04-11.json",
-    "benchmarks/data/latest.json",
-    "opt/analyze_report.md",
-    "opt/baseline_test_snapshot.txt",
+    ".claude/prompts/sanity.md",
     "opt/phase_log.jsonl",
-    "opt/state.json",
-    "scripts/review_dump.sh"
+    "opt/sanity_report.md",
+    "opt/state.json"
   ],
-  "head_commit": "56b19e7ee4a149c2679adaede7d736fd5978a741",
+  "head_commit": "b5a904361d37d3ce08160b9a64a6f1dd8440153e",
   "branch": "main",
-  "last_checkpoint": "2026-04-11T12:10:34Z",
+  "last_checkpoint": "2026-04-11T13:32:46Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -275,9 +271,9 @@
     "tier1_dispatch": 3,
     "other": 0
   },
-  "rounds_since_review": 1,
+  "rounds_since_review": 0,
   "rounds_since_arch_audit": 2,
-  "sanity_verdict": "",
-  "sanity_report": "",
-  "sanity_cycle_id": ""
+  "sanity_verdict": "clean",
+  "sanity_report": "opt/sanity_report.md",
+  "sanity_cycle_id": "2026-04-11-loop-scalar-promote-nbody"
 }

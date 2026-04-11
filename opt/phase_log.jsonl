@@ -35,3 +35,9 @@
 {"cycle_id": "", "phase": "implement", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T11:51:08Z"}
 {"cycle_id": "", "phase": "implement", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T12:02:30Z", "duration_s": 682, "exit_code": 0}
 {"cycle_id": "", "phase": "verify", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T12:02:30Z"}
+{"cycle_id": "", "phase": "verify", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T12:19:22Z", "duration_s": 1012, "exit_code": 0}
+{"cycle_id": "", "phase": "sanity", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T12:19:22Z"}
+{"cycle_id": "", "phase": "sanity", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T12:22:54Z", "duration_s": 212, "exit_code": 0}
+{"cycle_id": "", "phase": "review", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T12:24:22Z"}
+{"cycle_id": "", "phase": "review", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T12:31:32Z", "duration_s": 430, "exit_code": 0}
+{"cycle_id": "", "phase": "analyze", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T12:31:32Z"}

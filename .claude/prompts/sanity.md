@@ -1,5 +1,7 @@
 # SANITY Phase — Independent Reality Check
 
+> **⚠️ LOAD-BEARING: Before any check, read `opt/harness-core-principles.md` in full.** You are the enforcer. Every one of the 6 principles has a corresponding sanity check (R7 = P5 frozen reference drift, R8 = P3 silent-no-op detection, R9 = P4 confidence label audit). A round that violates any principle gets verdict `failed`, not `flagged`. Do NOT excuse violations as "honest no_change" — the point of these rules is that they catch subtle failures.
+
 You are a skeptical reviewer with **no context** from the round that just ran. You see only artifacts. Your job: **apply common sense** and flag anything that looks physically or logically wrong. Do NOT trust prior phase reports — they may contain confirmation bias.
 
 ## Your budget
@@ -44,12 +46,19 @@ Example: plan says "VERIFY MUST re-baseline" but `baseline.json` commit hash equ
 - If `latest.timestamp > baseline.timestamp` AND the plan required re-baseline → **red flag**.
 
 ### R6. Scope explosion
-- Plan declares "≤N files touched" — count git diff files, if > N+1 → **red flag**.
-- Plan declares "≤M LOC" — count git diff lines, if > 2M → **red flag**.
+- Plan declares "≤N files touched" — count git diff files, if > N+1 → **red flag**. This is the primary scope guard.
+- Plan declares "≤M LOC" — **count source files only, not `*_test.go`** (tests legitimately 2-3× source). If source LOC > 2M → **red flag**. If only tests overflow, treat as PASS with note.
+
+### R7. New pass without real-pipeline diagnostic test (R32)
+
+If this round's diff adds or meaningfully edits a file matching `internal/methodjit/pass_*.go`:
+- The diff MUST also include a test that runs the pass through `RunTier2Pipeline` (or `compileTier2()`) on a real benchmark proto and asserts an observable IR change (pair count, instruction replaced, etc.).
+- Hand-constructed IR unit tests are not sufficient — R31 (`SimplifyPhisPass`) and R32 (`LoopScalarPromotionPass`) both landed unit-green and were silent no-ops on production IR. Two wasted rounds.
+- No such test → **red flag** (flagged, not failed — the code is correct, the feedback loop is missing).
 
 ## Verdict
 
-After checking all 6:
+After checking all 7:
 
 - **`clean`**: zero red flags. Round is real, outcome is trustworthy. Auto-continue OK.
 - **`flagged`**: 1-2 soft red flags (e.g., R3 or R6 — process issues, not data lies). Auto-continue BLOCKED, user review required but round artifacts are kept.
@@ -71,6 +80,7 @@ Be conservative: **uncertain → flagged**, not clean. A false-positive flag cos
 - R4 (mandated steps): ...
 - R5 (baseline staleness): ...
 - R6 (scope): ...
+- R7 (new-pass real-pipeline test): ...
 
 ## If flagged/failed: recommended user action
 One or two sentences. "Re-run benchmarks with --runs=5", "revert commit X", "manually close state.json".

@@ -1,5 +1,7 @@
 # REVIEW Phase (harness self-audit)
 
+> **⚠️ LOAD-BEARING: Before any reasoning, read `opt/harness-core-principles.md` in full.** REVIEW is the enforcer of those 6 rules — you audit whether prior rounds and the current harness state honor them. Violation of any rule detected in the prior round = flag it in your review output. Any harness change YOU propose must itself cite a source per P1 and be labelled per P4.
+
 You audit the **workflow itself** — not the compiler code.
 Key input: the user's session log. The user's interventions are the highest-signal data about what the workflow gets wrong.
 

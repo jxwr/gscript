@@ -6,6 +6,22 @@ GScript is a dynamically-typed scripting language with a multi-tier JIT compiler
 
 **Surpass LuaJIT on all benchmarks.** V8-style Method JIT (not trace JIT) on Lua-like semantics. Open-ended, iterative — no "done," only the next milestone.
 
+## ⚠️ LOAD-BEARING: Core Harness Principles
+
+**Before reasoning about anything else, read `opt/harness-core-principles.md`.** That file contains the 6 constitutional rules for the gs-opt-loop harness, derived from Anthropic canonical patterns, ComPilot 2025, and R28-R33 empirical failures. Every phase session (REVIEW, CONTEXT_GATHER, ANALYZE, PLAN_CHECK, IMPLEMENT, VERIFY, SANITY, META_REFLECT) must honor those rules. Violation = sanity FAIL.
+
+Summary of the 6 rules (authoritative statement is in `harness-core-principles.md`):
+1. **Grounding** — every architectural claim cites a specific source; no invented taxonomies
+2. **Evidence before action** — plan assumptions must cite verified evidence (file:line / reproducible command), never "should be true"
+3. **Authoritative context first** — CONTEXT_GATHER runs real `compileTier2()`; `profileTier2Func` / `TestProfile_*` forbidden as evidence
+4. **Honest confidence labels** — every claim labelled HIGH/MEDIUM/LOW with justification; no default-confident prose
+5. **Frozen reference baseline** — `benchmarks/data/reference.json` does NOT rotate; cumulative drift > 2% = sanity FAIL
+6. **No invented taxonomies** — meta-rule: if fewer than 3 sources exist, label the enumeration "incomplete"
+
+Permanent anti-patterns are listed at the bottom of `harness-core-principles.md`. Adding to that list requires a round where the pattern repeated.
+
+**If you find yourself about to propose something without a citation, STOP and either find a source or label the proposal LOW confidence.**
+
 ## Meta-Principle: Self-Evolving Workflow
 
 **The harness workflow must be capable of self-evolution. All efforts serve this principle.**

@@ -1,5 +1,7 @@
 # IMPLEMENT Phase
 
+> **⚠️ LOAD-BEARING: Before spawning any Coder sub-agent, read `opt/harness-core-principles.md` in full.** Every Coder prompt you write MUST include a summary of P2 (evidence before action) and P3 (authoritative context first). Coder MUST run full-package tests and MUST include a production-pipeline diagnostic test for any new `pass_*.go` file (P3 anti-pattern #6). Violation = sanity FAIL.
+
 You are in the IMPLEMENT phase of the GScript optimization loop.
 
 ## Context

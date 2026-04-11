@@ -1,5 +1,7 @@
 # VERIFY + DOCUMENT Phase
 
+> **⚠️ LOAD-BEARING: Before closing out the round, read `opt/harness-core-principles.md` in full.** You MUST compute cumulative delta vs `benchmarks/data/reference.json` (NOT rolling baseline) and record it in the Results section. You MUST write prediction/actual pairs to `opt/prediction_ledger.jsonl`. You MUST NOT rotate `reference.json`. "improved" outcome requires a delta vs reference, not just vs previous round. Violation = sanity FAIL.
+
 You are in the final phase of an optimization round.
 Your job: verify the implementation (tests + benchmarks + evaluator), then close out the round (update all cross-round state).
 
