@@ -379,14 +379,14 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 		}
 	}
 
-	// 6-S. Self-call setup: only advance mRegRegs and set CallMode
+	// 6-S. Self-call setup: only advance mRegRegs and set CallMode.
+	// No ctx.Regs flush here — lazily flushed at op-exit (emitBaselineOpExitCommon).
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
 	} else {
 		asm.LoadImm64(jit.X3, int64(calleeBaseOff))
 		asm.ADDreg(mRegRegs, mRegRegs, jit.X3)
 	}
-	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 	asm.MOVimm16(jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
 

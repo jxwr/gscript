@@ -466,6 +466,9 @@ func emitBaselineResumePrologue(asm *jit.Assembler) {
 // emitBaselineOpExitCommon is the shared exit sequence for baseline op-exits.
 // It stores the exit descriptor and jumps to the exit epilogue.
 func emitBaselineOpExitCommon(asm *jit.Assembler, op vm.Opcode, pc int, a, b, c int) {
+	// Lazy flush: publish ctx.Regs — caller-side STR was elided on self-call fast path.
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+
 	// Note: no need to flush pinned R(0) — storeSlot always writes to memory
 	// first, so memory is always in sync. Resume prologue reloads X22.
 

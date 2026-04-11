@@ -27,7 +27,10 @@ import (
 //	  (net static change = 0: one STR moved, not removed; dynamic savings = −1 STR per self-call)
 //	crash fix:     933 insns (3732 bytes) — DirectEntryPtr check added to self-call path
 //	  (+10 insns over 3 CALL sites) prevents handleNativeCallExit nesting goroutine stack overflow
-const ackTotalInsnBaseline = 933
+//	R28 Task 1 (ctx.Regs lazy flush): 936 insns (3744 bytes) — net +3:
+//	  −1 STR per self-call setup × 3 sites = −3, +1 STR per emitBaselineOpExitCommon × 6 op-exit sites = +6.
+//	  Dynamic savings: −1 STR per self-call (hot path); op-exit flush is cold path.
+const ackTotalInsnBaseline = 936
 
 func TestDumpTier1_AckermannBody(t *testing.T) {
 	srcBytes, err := os.ReadFile("../../benchmarks/suite/ackermann.gs")
