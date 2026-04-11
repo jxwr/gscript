@@ -348,11 +348,16 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 			resyncRegs()
 
 			// The callee's re-execution may have changed globalCacheGen (e.g.,
-			// via SETGLOBAL). Force a cache miss on subsequent GETGLOBAL ops
-			// by invalidating ALL global value caches. This is heavy-handed but
-			// safe: it only happens once per callee (DirectEntryPtr cleared).
-			e.globalCacheGen++
-			ctx.BaselineGlobalCachedGen = e.globalCacheGen
+			// via SETGLOBAL) or its effect persists (OP_CALL depth limit). For
+			// persistent exits we force a cache miss on subsequent GETGLOBAL
+			// ops by invalidating ALL global value caches. For transient
+			// cache-backed exits (OP_GETGLOBAL), the nested Execute already
+			// warmed the IC, so skip the heavy-handed invalidation to keep the
+			// BLR fast path hot.
+			if !isTransientOpExit(vm.Opcode(ctx.BaselineOp)) {
+				e.globalCacheGen++
+				ctx.BaselineGlobalCachedGen = e.globalCacheGen
+			}
 
 			// Place result in caller's register[A].
 			callA := int(ctx.NativeCallA)

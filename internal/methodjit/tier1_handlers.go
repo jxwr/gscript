@@ -604,12 +604,13 @@ func (e *BaselineJITEngine) handleAppend(ctx *ExecContext, regs []runtime.Value,
 // Rather than trying to resume the callee mid-execution (which is fragile with
 // nested BLR calls — the exitHandleLabel chain overwrites BaselinePC at each
 // level), we take the simpler approach:
-//   1. Disable BLR for this callee (prevent future mid-execution exits)
-//   2. Re-execute the callee from scratch via e.Execute() which handles all
-//      op-exits correctly through its own exit-resume loop
-//
-// This only happens ONCE per callee (DirectEntryPtr is cleared), so the cost
-// of re-execution is amortized across all future calls.
+//   1. For persistent exits (OP_CALL depth limit, NEWTABLE, CONCAT, ...),
+//      disable BLR for this callee so future calls go straight to slow path.
+//   2. For transient cache-backed exits (OP_GETGLOBAL), keep DirectEntryPtr
+//      intact — the nested Execute warms the IC and subsequent BLR calls hit
+//      the fast path without re-exiting.
+//   3. Re-execute the callee from scratch via e.Execute() which handles all
+//      op-exits correctly through its own exit-resume loop.
 func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtime.Value, base int, callerProto *vm.FuncProto, callerBF *BaselineFunc) (runtime.Value, error) {
 	calleeBaseOff := int(ctx.NativeCalleeBaseOff)
 	calleeBase := base + calleeBaseOff/8
@@ -632,9 +633,13 @@ func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtim
 	}
 	calleeProto := cl.Proto
 
-	// Disable BLR for this callee — it has exit-resume ops that make BLR counterproductive.
-	// Future calls will see DirectEntryPtr==0 and go straight to slow path.
-	calleeProto.DirectEntryPtr = 0
+	// Disable BLR for this callee only for persistent exits (OP_CALL depth
+	// limit, NEWTABLE, CONCAT, ...). Transient cache-backed exits
+	// (OP_GETGLOBAL) do not recur after the nested Execute warms the IC slot,
+	// so preserve DirectEntryPtr to keep the BLR fast path.
+	if !isTransientOpExit(vm.Opcode(ctx.BaselineOp)) {
+		calleeProto.DirectEntryPtr = 0
+	}
 
 	calleeBF, ok := e.compiled[calleeProto]
 	if !ok {
@@ -682,6 +687,16 @@ func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtim
 		return results[0], nil
 	}
 	return runtime.NilValue(), nil
+}
+
+// isTransientOpExit reports whether the given baseline opcode represents a
+// one-shot, cache-backed exit that will not recur after the nested Execute
+// warms its IC slot. Transient exits are safe to re-enter via BLR; the
+// handler should NOT zero DirectEntryPtr or bump globalCacheGen for them.
+// Persistent exits (OP_CALL depth limit, writes like NEWTABLE/CONCAT) do
+// recur and must retain the conservative invalidation path.
+func isTransientOpExit(op vm.Opcode) bool {
+	return op == vm.OP_GETGLOBAL
 }
 
 // ptrToVMClosure converts a uintptr (from JIT-stored BaselineClosurePtr) to *vm.Closure.

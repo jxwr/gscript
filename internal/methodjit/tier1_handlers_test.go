@@ -12,6 +12,21 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
+// TestIsTransientOpExit verifies the classification of exit opcodes as
+// transient (cache-backed, one-shot) vs persistent (recurring). Transient
+// exits must preserve DirectEntryPtr and skip globalCacheGen bumps.
+func TestIsTransientOpExit(t *testing.T) {
+	if !isTransientOpExit(vm.OP_GETGLOBAL) {
+		t.Errorf("OP_GETGLOBAL should be transient")
+	}
+	if isTransientOpExit(vm.OP_CALL) {
+		t.Errorf("OP_CALL should not be transient")
+	}
+	if isTransientOpExit(vm.OP_NEWTABLE) {
+		t.Errorf("OP_NEWTABLE should not be transient")
+	}
+}
+
 // TestHandleGetField_RecordsFeedback verifies that handleGetField records
 // result type feedback into proto.Feedback so Tier 2 can specialize.
 func TestHandleGetField_RecordsFeedback(t *testing.T) {
