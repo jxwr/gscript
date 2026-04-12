@@ -240,6 +240,12 @@ body = [
     "3. round_tokens.sh incorrectly counting the main conversation's JSONL",
     "",
     "Raise T1_PER_ROUND_TOKEN_CAP env var if the cap itself is too tight.",
+    "",
+    "Forensics hint (added R34 review): run",
+    "  python3 scripts/phase_duration_breakdown.py <round_start_epoch>",
+    "to see per-phase duration and correlate against token_usage.sh. The breach",
+    "phase is usually the outlier. If no single phase dominates, the cap itself",
+    "is too tight and should be raised.",
 ]
 with open(os.environ["BREACH_OUT"], "w") as f:
     f.write("\n".join(body) + "\n")

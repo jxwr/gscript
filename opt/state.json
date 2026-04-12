@@ -11,10 +11,22 @@
   "plan_budget": {},
   "completed_steps": [],
   "next_action": "",
-  "uncommitted_files": [],
-  "head_commit": "2c743add599e0ee87e07603b733ed050e1be9aaf",
+  "uncommitted_files": [
+    ".claude/optimize.sh",
+    ".claude/prompts/analyze.md",
+    ".claude/prompts/plan_check.md",
+    ".claude/prompts/review.md",
+    ".claude/scheduled_tasks.lock",
+    "opt/analyze_report.md",
+    "opt/authoritative-context.json",
+    "opt/phase_log.jsonl",
+    "opt/plan_check.md",
+    "opt/sanity_report.md",
+    "opt/state.json"
+  ],
+  "head_commit": "9bb4fa9056441307e481aeaa9812bca7de03fe18",
   "branch": "main",
-  "last_checkpoint": "2026-04-12T00:05:00Z",
+  "last_checkpoint": "2026-04-12T02:15:53Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -263,23 +275,32 @@
       "initiative": "opt/initiatives/tier2-float-loops.md",
       "outcome": "data-premise-error",
       "summary": "R33 plan framed the R32 no-op as a single-cause bug: `pass_scalar_promote.go:99` float gate rejecting GetField\u2019s `TypeAny`. Coder wrote the production-pipeline diagnostic test (`pass_scalar_promote_production_test.go`), applied the plan\u2019s exact fix, re-ran \u2014 unpromoted pair count was 9 before AND after (bit-identical, 0 float phis). Two separate upstream gates bail before classification: (1) pass_scalar_promote.go:146-150 exit-block-preds check rejects the j-loop because its exit block `B4.Preds=[B10,B3]` where B10 is the i-loop preheader (outside j-body); (2) isInvariantObj rejects the second i-loop because `b := bodies[i]` is loop-variant by construction. No production code committed. Test file kept as observe-only (t.Skip) template for the R31/R32 real-pipeline rule. See opt/premise_error.md + opt/diagnostic_failure_2026-04-11-scalar-promote-float-gate-fix.md. nbody 0.248\u21920.252 (noise, no code change)."
+    },
+    {
+      "cycle_id": "2026-04-12-object-creation-regression-bisect",
+      "category": "allocation_heavy",
+      "initiative": "standalone",
+      "outcome": "no_change",
+      "summary": "R35 diagnostic round: git bisect identified 39b5ef3 (Shape system + ScanGCRoots uncapped scan) as culprit for object_creation +49.3% drift vs reference. Two compounding causes: (1) write-only shape *Shape GC pointer on every Table, (2) ScanGCRoots scanning full vm.regs slice instead of active frame window. Both are correctness fixes (SIGSEGV prevention) that cannot be reverted. Knowledge doc proposes R36 forward fix: remove dead shape pointer + high-water-mark ScanGCRoots. Same commit likely explains sort +21.4% and closure_bench +3.7% drifts. Deliverables: opt/knowledge/r35-object-creation-regression.md, object_creation_dump_test.go (insn fixture), bisect_object_creation.sh."
     }
   ],
   "category_failures": {
     "recursive_call": 0,
     "tier2_float_loop": 2,
-    "field_access": 2,
+    "field_access": 0,
     "tier1_dispatch": 0,
-    "other": 0
+    "other": 0,
+    "allocation_heavy": 1
   },
   "ceiling_decay": [
-    "tier1_dispatch: reset 3 \u2192 0 (3 rounds absent: R31 field_access, R32 tier2_float_loop, R33 tier2_float_loop)"
+    "tier1_dispatch: reset 3 → 0 (3 rounds absent: R31 field_access, R32 tier2_float_loop, R33 tier2_float_loop)",
+    "field_access: reset 2 → 0 (3 rounds absent: R32 tier2_float_loop, R33 tier2_float_loop, R35 allocation_heavy)"
   ],
   "rounds_since_review": 1,
-  "rounds_since_arch_audit": 1,
+  "rounds_since_arch_audit": 2,
   "sanity_verdict": "pending",
   "sanity_report": "opt/sanity_report.md",
-  "sanity_cycle_id": "2026-04-11-scalar-promote-float-gate-fix",
+  "sanity_cycle_id": "2026-04-12-object-creation-regression-bisect",
   "reference_baseline": {
     "path": "benchmarks/data/reference.json",
     "sha256": "1bdfe6d619542d62d76bddcf4423f58494e1786d255301d396058c1b646d093d",
@@ -295,6 +316,7 @@
     ]
   },
   "plan_check_verdict": "PASS",
-  "plan_check_iteration": 1,
-  "plan_check_timestamp": "2026-04-11T15:40:48Z"
+  "plan_check_iteration": 2,
+  "plan_check_timestamp": "2026-04-12T03:15:00Z",
+  "sanity_run_mode": "manual_outer_session (R34 claude -p auth error)"
 }

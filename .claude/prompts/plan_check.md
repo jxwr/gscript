@@ -92,6 +92,19 @@ For each assumption, produce:
 - `evidence_match`: one of `exact` | `approximate` | `wrong` | `not_found`
 - `feedback`: one sentence if `verdict != verified`
 
+### Step 4.5 — Reachability check (NEW, R34 review)
+
+Rule: for each assumption whose claim names a code path as the intervention point (a file:line, function, pass, or gate), verify that the cited line is actually reached on the target benchmark's production IR. "Does this line exist" is insufficient — reach must also be verified.
+Reason: R33 shipped a plan citing `pass_scalar_promote.go:99` as the fix point; the line existed, the fix was semantically correct, but two upstream gates (`pass_scalar_promote.go:146` exit-block-preds, `isInvariantObj`) bailed before the classification path was reached. Plan check iter-1 passed, the coder applied the fix, output was bit-identical.
+Action: for each `assumption` with a `file:line` or code-path claim, check one of:
+1. `opt/authoritative-context.json` has an instrumented-run field that proves the line is hit under the target benchmark (e.g. `candidates[nbody].reached_lines[pass_scalar_promote.go:99] == true`).
+2. A live diagnostic command (counted toward the 2-per-run budget) asserts the line is hit — e.g. a bpftrace-style breakpoint, a log-printf gate, or a test that prints when the gate fires.
+3. Explicit opt-out field `reachability_proof: deferred_to_implement` with a one-line justification (e.g. "new pass not yet wired, no production flow exists").
+
+If none of the three is present → assumption `verdict = failed`, `evidence_match = not_reachable`, feedback: "The cited code path is not proven reachable on the target benchmark. Add a reachability proof or pivot to an intervention point that is demonstrably on the hot path."
+
+One or more `not_reachable` assumptions → same severity rule as Step 6 (≥2 failed OR HIGH-confidence failed = FAIL).
+
 ### Step 5 — Scope budget pre-check
 
 Compare `max_files` and `max_source_loc` in the plan against the Task Breakdown. If the plan's own Task list already requires >1 file or >1 function with likely >50 LOC per task, and `max_files < 2` or `max_source_loc < 100`, flag as `scope_too_tight` (the plan will exceed its own budget). This is a soft flag.

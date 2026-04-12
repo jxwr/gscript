@@ -1,22 +1,21 @@
-# Token Reflection — 2026-04-11-scalar-promote-float-gate-fix (R33)
+# Token Reflection — 2026-04-12-object-creation-regression-bisect (R35)
 
 ## Usage by Phase
-```
-SESSION                             TOTAL      INPUT    CACHE_W    CACHE_R     OUTPUT  CALLS
-ANALYZE + PLAN                       5.0M         67     189.8K       4.7M      60.0K     57
-VERIFY + DOCUMENT                    6.5M        109     295.1K       6.1M      51.2K     74
-  └ Sonnet evaluator (diff review)   27.9K          4      20.0K       7.5K        330      2
-IMPLEMENT                            2.1M         67     292.5K       1.7M      41.0K     37
-  └ Coder sub-agent                  2.3M         61     119.5K       2.1M      18.3K     51
-GRAND TOTAL                         15.8M
-```
+| Phase | Total | Cache Write | Cache Read | Output | Calls |
+|-------|-------|-------------|------------|--------|-------|
+| ANALYZE + PLAN | 5.4M | 297.1K | 5.0M | 80.6K | 49 |
+| IMPLEMENT | 6.7M | 401.6K | 6.2M | 72.6K | 106 |
+| └ Task 0 (insn fixture) | 2.5M | 112.3K | 2.4M | 10.9K | 70 |
+| └ Task 1 (bisect + doc) | 603.4K | 88.7K | 509.6K | 5.1K | 28 |
+| VERIFY + DOCUMENT | 4.4M | 192.8K | 4.2M | 29.1K | 63 |
+| └ Evaluator | 30.4K | 29.9K | 0 | 482 | 2 |
+| **TOTAL** | **19.5M** | | | | |
 
 ## Waste Points
-- **ANALYZE 5.0M / 57 calls** to ship zero production code is expensive. Drivers: full arch-audit (scheduled, justified), 7 source file reads, 5-assumption plan write-up. Research sub-agent correctly skipped. Not runaway, but not lean either.
-- **VERIFY 6.5M / 74 calls** is the single biggest line. Drivers: verify_dump.sh (42 KB inline) had to be re-chunked, separate reads for analyze_report + premise_error + current_plan, plus plan-archive + INDEX + initiative + blog + state.json round-trip edits. Most are one-shot writes; hard to compress.
-- **IMPLEMENT 2.1M + Coder 2.3M = 4.4M to land zero production code** looks wasteful on paper but is correct behavior for data-premise-error rounds: Coder wrote the production test, applied the fix, observed bit-identical output, root-caused two upstream gate bailouts in-phase, reverted, authored premise_error.md with IR dumps. This is the token cost of NOT shipping a broken fix — the alternative is R30-class regression.
+- **Task 0: 2.5M / 70 calls for 113-line test file** — ARM64 instruction classification and production-pipeline compilation setup required iteration. Could have used R29's `tier1_fib_dump_test.go` as template to save ~40% of calls.
+- **IMPLEMENT 106 calls total** — Task 0 dominated (70 calls); Task 1 was efficient (28 calls for bisect + knowledge doc). The Coder-per-task split worked well here.
 
 ## Saving Suggestions
-- **Chunk or summarize verify_dump.sh output** (est. −0.5M VERIFY). Dumping 42 KB inline forces re-fetch in multiple Read calls downstream. Risk: **low** — formatting-only change to a shell script.
-- **Skip full arch-audit when `rounds_since_arch_audit < 2`** (est. −0.3M per false-trigger round). R33 was at 2 so the full audit was correct; the save is for rounds where the counter is 1 and quick-read suffices. Risk: **low** — counter already discriminates.
-- **Pre-plan premise-reachability check** (new phase or PLAN_CHECK extension): before PLAN_CHECK approves a plan citing "fix at file:line N," require a 1-call test that asserts the cited code path is reached on the target input. Catches R28/R30/R31/R32/R33 class bugs before IMPLEMENT. Est. **+0.2M/round, −2-4M per prevented data-premise-error round**. Risk: **medium** — REVIEW must design carefully to avoid turning into a second IMPLEMENT.
+- **Template provision for fixture tests** — provide existing insn-count fixture (R29 `tier1_fib_dump_test.go`) as context when spawning a Coder that writes a similar fixture. Est. −1M tokens. Risk: none.
+- **Task 1 at 603K is a model of efficiency** — bisect + knowledge doc in 28 calls. No change needed.
+- **VERIFY at 4.4M** — reasonable for full benchmark suite + state update + blog finalization. No savings without cutting quality.

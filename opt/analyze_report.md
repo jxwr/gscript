@@ -1,108 +1,116 @@
-# ANALYZE Report — R33: Scalar Promotion Float Gate Fix
-
-**Cycle**: 2026-04-11-scalar-promote-float-gate-fix
-**Category**: tier2_float_loop (ceiling override authorized by user_priority.md)
-**Target**: nbody (initiative `opt/initiatives/tier2-float-loops.md` Phase 13)
-
-## User Priority Honored
-
-`opt/user_priority.md` (updated 2026-04-11 20:30 post-R32) explicitly authorizes this round:
-
-> R33 MUST: 1. Apply the one-line fix: walk consumers of each GetField to find a GuardType float (the same pattern LICM's whitelist uses). 2. Add a production-pipeline diagnostic test that runs the pass through RunTier2Pipeline on a real nbody proto and asserts the pair count > 0.
-
-The file explicitly grants a one-time **ceiling override** on `tier2_float_loop` (which is at 2 category failures). Ceiling decay resumes if R33 still shows 0% on nbody. Budget cap: ≤30 functional LOC, 1 Coder, no pass-algorithm expansion.
-
-Post-R33 priority order recorded: tier2_float_loop continues (matmul/spectral_norm next), then tier1_dispatch (earliest R35, fresh approach not peephole STR), then field_access (not SimplifyPhisPass).
+# ANALYZE Report — R35: object_creation +50.79% regression bisect (diagnostic round)
 
 ## Architecture Audit
 
-`rounds_since_arch_audit = 2` → scheduled full audit. Executed `bash scripts/arch_check.sh` and performed quick source walk:
+**Quick read** (rounds_since_arch_audit=1). `bash scripts/arch_check.sh` flags:
 
-- **File size ⚠ CRITICAL (unchanged from R28 audit)**: `emit_dispatch.go` 971, `graph_builder.go` 955, `tier1_arith.go` 903, `tier1_table.go` 829. None of these are touched by R33. Queued split work remains valid: `emit_branch.go` extract, `graph_builder_feedback.go` extract, `tier1_arith_intspec.go` extract. Not a blocker for this round; re-flag when the next plan touches any of these files.
-- **Tier 2 pipeline**: unchanged — still `BuildGraph → Validate → TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → LoadElim → DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit`. `LoopScalarPromotionPass` is wired after LICM in both `RunTier2Pipeline` and `NewTier2Pipeline` (committed R32/56b19e7). No pipeline order change needed.
-- **pass_scalar_promote.go**: 264 lines. Well under the 800 soft cap. No split needed. Algorithm audited in R32 sanity; only the gate at line 99 is wrong (A1).
-- **Tech-debt markers**: 2 (unchanged). No new TODO/HACK added since R28.
-- **Test coverage**: 27 source files still without test files (same count as R21). R33 adds a new test file for pass_scalar_promote's production path — does not resolve any of the 27 gaps, not a regression.
-- **Pattern across R31/R32**: two consecutive rounds landed unit-green passes that were silent no-ops on production IR (R31 SimplifyPhisPass, R32 LoopScalarPromotionPass). The diagnostic gap has been formalized: `user_priority.md` §R33 REVIEW items mandates that every new Tier 2 pass requires a real-pipeline diagnostic test via `RunTier2Pipeline` or `compileTier2()`. This plan's Task 1 test is the first under that rule.
+- `emit_dispatch.go` 971, `graph_builder.go` 955, `tier1_arith.go` 903, `tier1_table.go` 829 — all carried from previous audits. **Not touched this round.** No split Task 0 needed.
+- Test ratio 94% (up from 88% at R28). Test files lead lines.
+- `constraints.md` current — Tier constraints + ceilings unchanged since R28 audit.
 
-No updates required to `docs-internal/architecture/constraints.md` — nothing structural changed since R28, and R32's unit-test-vs-production drift finding is already captured in user_priority.md's REVIEW items for harness enforcement rather than as an architecture constraint.
+No new architectural issues to record. Full audit queued for R36 (rounds_since_arch_audit will hit 2 after this round).
 
 ## Gap Classification
 
-From `benchmarks/data/reference.json` vs `benchmarks/data/latest.json` (median-of-5, frozen baseline per P5):
+| Category | R7 drifters | vs reference | Blocked? |
+|----------|-------------|--------------|----------|
+| allocation_heavy (regression) | object_creation | +50.79% (0.764→1.152s) | **MANDATED (R7)** |
+| tier2_table (regression) | sort | +16.67% (0.042→0.049s) | R7 FAIL (secondary) |
+| closure | closure_bench | +11.11% latest / live run 0.026s (BELOW ref) | Noise — explicitly deprioritized by sanity |
+| tier2_float_loop | ceiling=2 | — | Deprioritize (3 rounds) |
+| field_access | ceiling=2 | — | Deprioritize (3 rounds) |
 
-| Category | Benchmarks (non-excluded) | Ratio vs LuaJIT | Ceiling? |
-|----------|---------------------------|-----------------|----------|
-| tier2_float_loop | nbody 0.248/0.035 (7.1×), spectral_norm 0.046/0.007 (6.6×), matmul 0.120/0.023 (5.2×), mandelbrot 0.063/0.057 (1.1×) | aggregate 5-7× | **2 failures — overridden by user** |
-| field_access | sieve | small | 2 failures |
-| tier1_dispatch | — | — | 3 failures (all decayed from prior wins) |
-| allocation_heavy | object_creation 1.053/ref 0.764 (+37.8% drift), binary_trees | large drift | 0 |
-| other | sort +19%, coroutine_bench +18.4% (both drift vs reference) | — | 0 |
-
-**`opt/authoritative-context.json` drift selection**: CONTEXT_GATHER's drift-driven top-3 were `object_creation` (+37.8%), `sort` (+19%), `coroutine_bench` (+18.4%) — none in the user-prioritized float-loop category. Per harness User Priority Rule, user_priority.md overrides automatic ROI selection but NOT the Ceiling Rule; user_priority.md explicitly grants the ceiling override for R33 only. Drift candidates are documented for future rounds but deferred.
+**R7 harness-v3 P5 rule**: next target MUST be an R7-flagged benchmark. Chosen: **object_creation**. Largest drift (+50.79%), HIGH drift confidence, clearest evidence chain in `opt/authoritative-context.json`.
 
 ## Blocked Categories
-
-- tier1_dispatch (3 failures, decaying — earliest re-entry R35+ per user_priority.md)
-- field_access (2 failures; decaying — earliest re-entry R34+ per user_priority.md)
+- `tier2_float_loop`: category_failures=2 (R32, R33). Eligible again after 3 rounds off.
+- `field_access`: category_failures=2 (R31). Eligible again after 3 rounds off.
 
 ## Active Initiatives
+- `tier1-call-overhead.md`: Item 1a DONE (R27), Item 1 BLOCKED (goroutine-stack budget). Not targeted this round.
+- `tier2-float-loops.md`: paused (category_failures=2 + ceiling decay in progress).
+- `recursive-tier2-unlock.md`: paused (ceiling hit R4-R5).
 
-- **tier2-float-loops** (paused → reactivated R32, Phase 13 in progress). R33 is the gate-fix follow-up to R32's infrastructure landing.
-- **tier1-call-overhead**: inactive (last touched R29 root-cause + R30 revert).
-
-## Initiative Retrospective (tier2-float-loops)
-
-`tier2-float-loops` has 2 `no_change` outcomes in its last 4 rounds (R23 guard-hoist, R32 scalar-promote). Per harness rule this would normally trigger a "continue or close" decision. R33 is explicitly a **surgical continuation** per user_priority.md: R32's algorithm was correct and the miss was a 1-line type-gate bug, not an approach failure. Data-backed justification: the R32 post-round re-run observed all 9 loop-carried pairs still present in post-pipeline IR, confirming the pass ran zero transformations — i.e., the "no_change" was not "the transform didn't help" but "the transform didn't execute." R33 converts R32 from a silent no-op to a measurable transform; if the wall-time delta is still ≤1% after R33, THAT is the signal to count a real category failure and pivot.
+**Initiative exhaustion check**: `tier2-float-loops` had R32 no_change + R33 data-premise-error back-to-back — exhaustion pattern confirmed. This round deliberately pivots AWAY from tier2_float_loop per category_failures=2 ceiling. No retrospective required this round because we are not continuing the initiative.
 
 ## Selected Target
 
-- **Category**: tier2_float_loop
-- **Initiative**: `opt/initiatives/tier2-float-loops.md` (Phase 13)
-- **Reason**: user_priority.md R33 directive + ceiling override. Constraints check: `pass_scalar_promote.go` is 264 LOC (under cap), no file touched by R33 is ⚠-flagged.
-- **Benchmarks**: nbody (primary). Secondary: if the fix generalizes, spectral_norm / matmul / mandelbrot could see effects on their inner float-field loops, but none predicted HIGH confidence.
+- **Category**: `allocation_heavy` (canonical name for object_creation gap)
+- **Initiative**: standalone (regression diagnostic round)
+- **Benchmark**: object_creation
+- **Reason**: R7 FAIL hard gate, +50.79% is the largest cumulative drift on any non-excluded benchmark. Evidence in `opt/authoritative-context.json` identifies specific commits as HIGH-suspects. No blocking constraints.
 
-## Architectural Insight
+## Architectural Insight (Step 1b)
 
-**Design-level observation**: this bug is the second instance of a broader pattern — a Tier 2 pass's classifier reading `instr.Type` directly rather than consulting the "shape-on-the-wire" that the graph builder actually produces. R31 (SimplifyPhisPass) missed because production `compileTier2` already collapses trivial phis upstream; R32 missed because production GetField is `TypeAny` with a trailing GuardType. In both cases, the pass's hand-written fixture skipped a real graph-builder phase. Structural fix: R33's production-pipeline diagnostic test is the first enforcement of the "every new Tier 2 pass needs a real-pipeline diagnostic test" rule recorded in user_priority.md for the harness. This is a template for future passes, not a local fix only.
+object_creation's regression is **not a missing optimization** — it's a **recent regression** (50.79% drift appeared within a ~6 hour window between `a388f782` @ 14:55:55Z and HEAD `b3d8824`). This is architecturally different from every prior round: R28-R34 all chased missing optimizations. R35 chases a **lost invariant** — something in the 8 post-reference code-changing commits is costing object_creation ~0.39 wall-seconds.
 
-Not architectural enough to warrant a new pass/IR/constraint this round; the local one-line fix is the right granularity per user directive.
+The design question isn't "what should we add" but "what did we break, and why was the break invisible to round-by-round verification". The correct first move is **bisect**, not **speculate-and-patch**. `opt/authoritative-context.json` already identified 2 HIGH-suspect commits (39b5ef3 Shape system rewrite, 4455fcf R30 revert) and 6 secondary candidates — a `git bisect run` with the benchmark as the witness will converge in ~3 bisect steps.
+
+This is a pure **diagnostic round** — same pattern as R29 (root-caused fib +988%, produced knowledge doc, deferred fix to R30). Delivering a confident, commit-level root-cause to R36 is higher-value than a speculative fix that could miss.
 
 ## Prior Art Research
 
-**Research sub-agent NOT spawned** this round. Rationale: (a) user_priority.md specifies the exact fix and algorithm, (b) knowledge-base-first rule — `opt/initiatives/tier2-float-loops.md` already documents LLVM `promoteLoopAccessesToScalars` prior art from R32, (c) 50-tool-call token guard: Research agents were the #1 waste vector in R17/R32. The authoritative references for the consumer-GuardType detection pattern are in the project source itself (`pass_licm.go:575`, `feedback_getfield_integration_test.go:90-106`, `nbody_production_diag_test.go:153`), read directly in Step 3.
+### Knowledge Base Check (no web search this round)
 
-### Knowledge Base
+Workflow says "check `opt/knowledge/` first — if a file covers the topic, read it and skip web search entirely." Relevant KB entries:
 
-No new KB file. The fix is a gate-classifier change, not a new technique. `opt/knowledge/` already carries the scalar-promotion background from R32.
+- `opt/knowledge/r29-fib-root-cause.md` — **directly relevant**. R29 was the same pattern: root-cause a regression, defer fix. Pattern: instrument the symptom, write knowledge doc, no production code. Outcome `no_change` but enabled a targeted R30.
+- `opt/knowledge/global-cache-stable-opt.md` — touches GetGlobal cache and self-call interaction; relevant to 4455fcf suspect.
+
+**No web search performed this round.** Rationale: bisect is a mechanical, project-internal procedure with no external prior art. Research budget preserved for R36 when the fix direction is known.
+
+### Reference Compiler Source
+Skipped (no new mechanism to research this round).
+
+### Knowledge Base Update
+Will be written by Task 1: `opt/knowledge/r35-object-creation-regression.md`.
 
 ## Source Code Findings
 
 ### Files Read
-- `internal/methodjit/pass_scalar_promote.go` (full, 264 lines) — confirms A1, A4.
-- `internal/methodjit/graph_builder.go` lines 610-700 — confirms A2 exactly: OpGetField is unconditionally emitted with TypeAny at line 669, and an OpGuardType consumer is appended at line 673 when feedback is monomorphic. Same pattern for OpGetTable at lines 628/632.
-- `internal/methodjit/pass_scalar_promote_test.go` — confirms the R32 unit tests construct `OpGetField, Type: TypeFloat` directly (line 54), side-stepping the production gate bug.
-- `internal/methodjit/r32_nbody_loop_carried_test.go` — template for the production-pipeline diagnostic test R33 adds; already shows the TieringManager → RunTier2Pipeline → pair-count pattern.
-- `internal/methodjit/nbody_production_diag_test.go` — further template for real-pipeline diagnostics.
-- `internal/methodjit/feedback_getfield_integration_test.go:90-106` — the existing test that checks "OpGuardType appears after OpGetField in the IR". Confirms the consumer-scan pattern A2 describes is already established in the codebase.
-- `internal/methodjit/pass_licm.go` — confirms OpGuardType is in the hoist whitelist (line 575).
+- `opt/authoritative-context.json` — primary evidence source (P3)
+- `git show --stat 39b5ef3` — top suspect commit. Touches `runtime/shape.go` (+102), `runtime/table.go` (-486, split), `runtime/table_int.go` (+466), `vm/vm.go` (+20). **Does NOT touch `internal/methodjit`** — if this is the culprit, the regression is runtime-side, not JIT-codegen-side.
+- `opt/sanity_report.md` (R34) — R7 FAIL spec + required next-action
+- `git log --format='%h %cI %s' a388f78..HEAD` — post-reference commit chain
 
-### Diagnostic Data
+### Diagnostic Data (from `opt/authoritative-context.json`)
 
-**Diagnostic sub-agent NOT spawned.** Authoritative evidence for the gate bug is:
-1. **Direct file:line read** of the two relevant code sites (pass_scalar_promote.go:99, graph_builder.go:669-676). P2 evidence: deterministic and reproducible.
-2. **R32 post-round re-run** of `TestR32_NbodyLoopCarried` recorded in `opt/state.json` previous_rounds[2026-04-11-loop-scalar-promote-nbody].summary: "post-pipeline IR shows all 9 loop-carried pairs still present". This IS production-pipeline evidence (RunTier2Pipeline, not profileTier2Func), written by the R32 round itself.
-3. **docs/42-the-field-that-stayed-in-a-register.md** (R32 blog): "nbody's j-loop body has six loop-carried (obj,field) pairs. Three of them — bi.vx, bi.vy, bi.vz — are on bi, which is loop-invariant across the j-loop."
+| Function | IR blocks | GetGlobal | Call | GetField/Set | NewTable | Total insns | Memory % |
+|----------|-----------|-----------|------|--------------|----------|-------------|----------|
+| create_and_sum | 5 | 4 | 4 | 0/0 | 0 | 813 | 57.3% |
+| transform_chain | 5 | 5 | 5 | 0/0 | 0 | 988 | 58.0% |
+| new_vec3 | 1 | 0 | 0 | 0/3 | 1 | 208 | 62.0% |
 
-`opt/authoritative-context.json` was generated this round but selected top-3 regressed benchmarks by drift (object_creation, sort, coroutine_bench) not R33's target. Per harness: user_priority.md overrides drift selection, and direct file:line source reads satisfy P2. Not a violation of P3 because `authoritative-context.json` is consulted, its selection logic is acknowledged in the plan assumptions, and the plan's evidence chain uses derivable-from-code + cited-evidence types (both accepted by plan_check).
+**Key facts from CONTEXT_GATHER observations** (all HIGH confidence, citations in `authoritative-context.json#candidates[object_creation].observations`):
 
-### Actual Bottleneck (data-backed, prior-round production evidence)
+1. `create_and_sum` and `transform_chain` are **call-bound**, not allocation-bound — all allocation lives in the `new_vec3` callee.
+2. `new_vec3` is 208 insns / 3 SetField ≈ **~43 memory ops per field write**. Much heavier than a V8-style "2-insn store + shape-stable update".
+3. Memory% is 57-62% across all three functions. Memory-bound despite `NumSpills=0`. The memory ops are NaN-box/unbox, GetGlobal slot loads, and caller-saved save/restore around BL. Register pressure is NOT the issue.
+4. GetGlobal in loop (2 in create_and_sum body B1, 3 in transform_chain body B1) is **not hoisted** by LICM despite being loop-invariant. Cross-cutting pattern also hits `sort` (2 GetGlobals in quicksort B6).
 
-- j-loop body = 526 ARM64 instructions (R32 disasm, production path).
-- 33% memory, 22% MOV/MOVK, 16% box/unbox, 15% branches, 7% guards, **only 5.5% float compute** (R32 disasm category breakdown).
-- 6 loop-carried pairs observed; 3 promotable (bi-invariant); 3 non-promotable (bj changes per j-iter).
-- Each promoted pair removes 1 LDR + 1 STR per j-iter. 3 pairs × 2 = 6 LDR/STR removed per j-iter = ~1.1% of the loop body by instruction count. Halved for M4 superscalar (R23 calibration) ≈ −2 to −5% wall-time. Confidence MEDIUM (A5).
+### Bisect Candidate Set (from `authoritative-context.json#bisect_candidates` + `git log a388f78..HEAD`)
+
+| # | SHA | Commit | Suspect for object_creation | Prior |
+|---|-----|--------|------------------------------|-------|
+| 1 | 598bc1e | self-call DirectEntryPtr check | sort (recursive), not oc | LOW |
+| 2 | 39b5ef3 | **Shape system rewrite + GC scan all regs** | **HIGH** | HIGH |
+| 3 | 4b321fb | test fixtures only | not code | VERY LOW |
+| 4 | 144c1a4 | R28 ctx.Regs lazy flush on self-call | self-call only | LOW |
+| 5 | 903e505 | R30 transient OP_GETGLOBAL | GetGlobal in loop | HIGH (but reverted) |
+| 6 | 4455fcf | Revert of 903e505 | **Net = zero if perfect revert** | HIGH |
+| 7 | c375913 | R31 SimplifyPhisPass | reported no-op | LOW |
+| 8 | 56b19e7 | R32 LoopScalarPromotionPass | reported no-op (upstream gate) | LOW |
+
+### Actual Bottleneck (data-backed, regression-class)
+
+**Unknown until bisect runs.** Hypothesis ranking (LOW confidence until Task 1 completes):
+
+1. **39b5ef3 — Shape system rewrite**: either SetField lowering became heavier, OR `ScanGCRoots` scan-all-regs made every GC pause O(N-regs) instead of O(active-regs). object_creation does ~200K allocations and triggers GC frequently. Cannot be reverted (correctness fix) — forward fix required.
+2. **903e505 / 4455fcf pair**: imperfect revert leaving a side-effect that costs GetGlobal-in-loop performance. Bisect will reveal either the pair is neutral (eliminating this hypothesis) or the revert has residual cost.
+3. **Secondary candidates** (144c1a4, 56b19e7, c375913): unlikely but cheap to rule out via bisect.
 
 ## Plan Summary
 
-One-line-class change to the `OpGetField` classification in `pass_scalar_promote.go` (walk same-block consumers for an `OpGuardType(TypeFloat)` whose arg is this GetField) + one new production-pipeline diagnostic test (`TestR33_ScalarPromoteFiresOnNbody`) asserting ≥3 loop-carried pairs are promoted on real nbody IR after `RunTier2Pipeline`. Budget: ≤30 functional LOC, 1 Coder, 1 commit, 2 files. Expected: nbody −4% MEDIUM confidence; HIGH confidence the pass starts firing at all. Key risk: M4 superscalar may still hide the 6-LDR/STR savings per iter (consistent with R23), in which case R33 counts as a real tier2_float_loop category failure and the category sits for 3 rounds.
+**Pure diagnostic round**, R29 pattern. Task 0 (infra) commits a production-pipeline insn-count fixture locking in the current regression baseline (208/813/988 insns for new_vec3/create_and_sum/transform_chain) so R36 can assert "back to ≤ reference". Task 1 (one Coder) runs automated bisect across 8 post-reference code-changing commits using `benchmarks/run_all.sh --runs=3 -- object_creation` as the witness, identifies the culprit, reads its diff, writes `opt/knowledge/r35-object-creation-regression.md` with root cause + proposed R36 forward-fix. **No production `.go` code changed.** Expected outcome: `no_change` wall-time; knowledge delivery is the primary value; R36 ships the surgical fix.
+
+Key risk: bisect may identify a correctness-fix commit (598bc1e, 39b5ef3's GC scan change) that cannot be reverted. In that case, the knowledge doc proposes a forward fix — e.g., "keep the ScanGCRoots semantic but narrow the scanned-regs window using frame-level tracking" — which R36 implements.

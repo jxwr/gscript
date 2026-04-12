@@ -50,3 +50,20 @@
 {"cycle_id": "", "phase": "implement", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T15:42:48Z"}
 {"cycle_id": "", "phase": "implement", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T15:53:23Z", "duration_s": 635, "exit_code": 0}
 {"cycle_id": "", "phase": "verify", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T15:53:24Z"}
+{"cycle_id": "", "phase": "verify", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T16:11:48Z", "duration_s": 1104, "exit_code": 0}
+{"cycle_id": "", "phase": "sanity", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T16:11:49Z"}
+{"cycle_id": "", "phase": "sanity", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T16:11:50Z", "duration_s": 1, "exit_code": 1}
+{"cycle_id": "", "phase": "review", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T17:52:18Z"}
+{"cycle_id": "", "phase": "review", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T18:05:46Z", "duration_s": 808, "exit_code": 0}
+{"cycle_id": "", "phase": "context_gather", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T18:05:47Z"}
+{"cycle_id": "", "phase": "context_gather", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T18:16:56Z", "duration_s": 669, "exit_code": 0}
+{"cycle_id": "", "phase": "analyze", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T18:16:57Z"}
+{"cycle_id": "", "phase": "analyze", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-11T18:28:07Z", "duration_s": 670, "exit_code": 0}
+{"cycle_id": "", "phase": "plan_check", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-11T18:28:08Z"}
+{"cycle_id": "", "phase": "plan_check", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-12T01:44:24Z", "note": "manual resume after crash"}
+{"cycle_id": "", "phase": "plan_check", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-12T01:49:51Z", "exit_code": 0, "note": "manual resume"}
+{"cycle_id": "", "phase": "plan_check", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-12T01:53:33Z", "note": "manual iter=2 after surgical A2/A3 rewrite"}
+{"cycle_id": "", "phase": "plan_check", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-12T01:57:21Z", "exit_code": 0, "note": "manual iter=2"}
+{"cycle_id": "", "phase": "implement", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-12T01:57:32Z"}
+{"cycle_id": "", "phase": "implement", "model": "claude-opus-4-6", "event": "end", "ts": "2026-04-12T02:15:54Z", "duration_s": 1102, "exit_code": 0}
+{"cycle_id": "", "phase": "verify", "model": "claude-opus-4-6", "event": "start", "ts": "2026-04-12T02:15:55Z"}

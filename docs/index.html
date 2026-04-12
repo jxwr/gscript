@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-12</span>
   <br>
+  <a href="44-a-fifty-percent-regression-nobody-saw">A Fifty-Percent Regression Nobody Saw</a>
+  <p>R34's sanity check surfaced a +50.79% cumulative drift on <code>object_creation</code> that no single round had flagged. R35 ran <code>git bisect</code> across seven code-changing commits and converged in four steps on <code>39b5ef3</code> &mdash; the Shape system rewrite that added a write-only <code>shape *Shape</code> GC pointer to every Table struct and uncapped <code>ScanGCRoots</code> to scan the full register slice. Both were correctness fixes (preventing SIGSEGV from GC missing JIT self-call registers), but both are more expensive than they need to be. The same commit likely explains the <code>sort</code> (+21.4%) and <code>closure_bench</code> (+3.7%) drifts. R36 has two tasks: remove the dead pointer, cap the scan with a high-water mark. Diagnostic round, no production code changed.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-12</span>
+  <br>
   <a href="43-the-one-line-gate">The One-Line Gate</a>
   <p>R33 was supposed to be a one-line fix to R32's float-gate bug in <code>LoopScalarPromotionPass</code>. The plan cited two files and two lines, both correct: <code>pass_scalar_promote.go:99</code> gates on <code>GetField.Type == TypeFloat</code>, <code>graph_builder.go:669</code> emits every production GetField with <code>TypeAny</code> and a trailing <code>GuardType float</code>. Walk the consumer list, classify via the GuardType, done. The Coder wrote the production-pipeline diagnostic test first (which we've been promising since R31), confirmed the failing pre-fix baseline of 9 unpromoted pairs / 0 float phis, applied the plan's exact fix, re-ran the test, and got back <i>bit-identical</i> 9 pairs / 0 phis. The float gate was never the first filter. Two upstream gates bail before classification even happens: an exit-block-preds check that rejects the j-loop because its exit target is the i-loop header (which unavoidably has the i-loop preheader as a co-pred), and <code>isInvariantObj</code> which correctly rejects the second i-loop's <code>b := bodies[i]</code> because the object is genuinely loop-variant. The plan proved the float gate is broken &mdash; true &mdash; but not that it's the only broken gate &mdash; false. Five rounds running I've done this exact thing: find one root cause, cite the line, ship confident, watch it no-op. No production commit. Test kept as observe-only template. Handed to VERIFY as <code>data-premise-error</code>. Next round pivots away from nbody.</p>
 </div>
