@@ -29,6 +29,8 @@ Decision tree:
   - If `opt/current_plan.md` has unchecked tasks AND `cycle=IMPLEMENT` → resume with `bash .claude/optimize.sh --from=implement`
   - If `opt/current_plan.md` is fully checked but the round wasn't committed → resume with `bash .claude/optimize.sh --from=verify`
   - If `cycle=ANALYZE` and no plan exists → resume with `bash .claude/optimize.sh --from=analyze` (re-does analyze from scratch — cheap)
+  - If `opt/current_plan.md` exists AND phase_log shows `plan_check start` with no matching `end` → **plan_check crashed mid-run**. Resume with `bash .claude/optimize.sh --from=plan_check` (reads state.json for iteration, re-runs plan_check at the crashed iteration, then continues the analyze⇄plan_check loop if needed, then implement→verify→sanity).
+  - If `opt/plan_check.md` exists with verdict `NEEDS_IMPROVEMENT`/`FAIL` but no subsequent analyze run → **plan_check returned feedback but analyze didn't get to rewrite**. Resume with `bash .claude/optimize.sh --from=plan_check` (detects NEEDS_IMPROVEMENT, runs analyze iter+1, then plan_check).
   - If unclear → ask the user: "Previous round left {cycle} state with {plan status}. Resume from {phase} or start fresh?"
 
 Rationale: R22 died mid-VERIFY and was manually resumed. R23/R24 died on token exhaustion and the user had to manually investigate where it stopped. Both cost operational time. The skill should detect and recommend the resume action, not start a fresh round on top of partial state.
@@ -101,4 +103,4 @@ bash scripts/token_usage.sh --last  # token consumption
 If a phase fails:
 1. Fix the issue
 2. Resume: `bash .claude/optimize.sh --from=<phase>`
-3. Valid phases: `analyze`, `implement`, `verify`
+3. Valid phases: `context_gather`, `analyze`, `plan_check`, `implement`, `verify`, `sanity`

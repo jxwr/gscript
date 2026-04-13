@@ -341,10 +341,59 @@ run_cycle() {
                 }
                 ;;
             plan_check)
-                # plan_check runs as part of the analyze+plan_check loop; see the
-                # analyze case's run_phase handler below. When the outer loop reaches
-                # plan_check here, it's already been run. Skip it.
-                continue
+                # --from=plan_check: resume a crashed plan_check mid-loop.
+                # Read state.json for the iteration that was in progress.
+                # If plan_check_verdict is empty/PENDING → re-run plan_check at that iter.
+                # If NEEDS_IMPROVEMENT/FAIL → run analyze iter+1 then plan_check.
+                # Otherwise (normal flow from analyze): already handled, skip.
+                if [ "$cycle_from" != "plan_check" ]; then
+                    continue  # normal flow — plan_check already ran inside analyze's loop
+                fi
+                # Resume path: enter the analyze+plan_check loop at the right point
+                local pc_resume_iter pc_resume_verdict
+                pc_resume_iter=$(python3 -c "import json; print(json.load(open('$STATE')).get('plan_check_iteration', 1))" 2>/dev/null || echo 1)
+                pc_resume_verdict=$(python3 -c "import json; print(json.load(open('$STATE')).get('plan_check_verdict', 'PENDING'))" 2>/dev/null || echo "PENDING")
+                echo "  [plan_check resume] iter=$pc_resume_iter verdict=$pc_resume_verdict"
+
+                local pc_iter pc_verdict="PENDING"
+                if [ "$pc_resume_verdict" = "PENDING" ] || [ "$pc_resume_verdict" = "" ]; then
+                    # Crashed during plan_check — re-run plan_check at same iter
+                    pc_iter=$pc_resume_iter
+                else
+                    # NEEDS_IMPROVEMENT/FAIL — run analyze iter+1 then plan_check
+                    pc_iter=$((pc_resume_iter + 1))
+                fi
+
+                while [ "$pc_iter" -le "$PLAN_CHECK_MAX_ITER" ]; do
+                    echo "  [plan_check loop] iteration $pc_iter of $PLAN_CHECK_MAX_ITER (resumed)"
+                    export PLAN_CHECK_ITERATION=$pc_iter
+                    # If resuming at same iter (crashed plan_check), skip analyze re-run
+                    if [ "$pc_iter" -ne "$pc_resume_iter" ] || [ "$pc_resume_verdict" != "PENDING" ]; then
+                        run_phase "analyze" || { echo "ANALYZE failed at iteration $pc_iter"; return 1; }
+                    fi
+                    run_phase "plan_check" || { echo "PLAN_CHECK failed at iteration $pc_iter"; return 1; }
+                    if $DRY_RUN; then
+                        pc_verdict="PASS"
+                    else
+                        pc_verdict=$(python3 -c "import json; print(json.load(open('$STATE')).get('plan_check_verdict','PENDING'))" 2>/dev/null || echo "PENDING")
+                    fi
+                    echo "  [plan_check loop] iteration $pc_iter verdict: $pc_verdict"
+                    if [ "$pc_verdict" = "PASS" ]; then break; fi
+                    pc_iter=$((pc_iter + 1))
+                done
+                unset PLAN_CHECK_ITERATION
+                if [ "$pc_verdict" != "PASS" ]; then
+                    echo "  [plan_check unresolved] exhausted $PLAN_CHECK_MAX_ITER iterations without PASS"
+                    PLAN_CHECK_UNRESOLVED=true
+                    python3 -c "
+import json
+s = json.load(open('$STATE'))
+s['plan_check_unresolved'] = True
+s['plan_check_final_verdict'] = '$pc_verdict'
+json.dump(s, open('$STATE','w'), indent=2, ensure_ascii=False)
+" 2>/dev/null || true
+                fi
+                continue  # handled — skip default run_phase
                 ;;
             implement)
                 if $PLAN_CHECK_UNRESOLVED; then

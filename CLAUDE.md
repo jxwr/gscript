@@ -8,7 +8,7 @@ GScript is a dynamically-typed scripting language with a multi-tier JIT compiler
 
 ## ⚠️ LOAD-BEARING: Core Harness Principles
 
-**Before reasoning about anything else, read `opt/harness-core-principles.md`.** That file contains the 6 constitutional rules for the gs-opt-loop harness, derived from Anthropic canonical patterns, ComPilot 2025, and R28-R33 empirical failures. Every phase session (REVIEW, CONTEXT_GATHER, ANALYZE, PLAN_CHECK, IMPLEMENT, VERIFY, SANITY, META_REFLECT) must honor those rules. Violation = sanity FAIL.
+**Before reasoning about anything else, read `opt/harness-core-principles.md`.** That file contains the 6 constitutional rules for the gs-opt-loop harness, derived from Anthropic canonical patterns, ComPilot 2025, and R28-R33 empirical failures. Every phase session (REVIEW, CONTEXT_GATHER, ANALYZE, PLAN_CHECK, IMPLEMENT, VERIFY, SANITY) must honor those rules. Violation = sanity FAIL.
 
 Summary of the 6 rules (authoritative statement is in `harness-core-principles.md`):
 1. **Grounding** — every architectural claim cites a specific source; no invented taxonomies

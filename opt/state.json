@@ -13,20 +13,21 @@
   "next_action": "",
   "uncommitted_files": [
     ".claude/optimize.sh",
-    ".claude/prompts/analyze.md",
-    ".claude/prompts/plan_check.md",
-    ".claude/prompts/review.md",
+    ".claude/prompts/implement.md",
     ".claude/scheduled_tasks.lock",
+    ".claude/skills/gs-opt-loop/SKILL.md",
+    "CLAUDE.md",
+    "docs-internal/architecture/constraints.md",
+    "docs-internal/known-issues.md",
     "opt/analyze_report.md",
     "opt/authoritative-context.json",
     "opt/phase_log.jsonl",
-    "opt/plan_check.md",
     "opt/sanity_report.md",
     "opt/state.json"
   ],
-  "head_commit": "9bb4fa9056441307e481aeaa9812bca7de03fe18",
+  "head_commit": "67f3ed8a1d72d00388e9bb370594d8383dd1b5be",
   "branch": "main",
-  "last_checkpoint": "2026-04-12T02:15:53Z",
+  "last_checkpoint": "2026-04-13T13:59:27Z",
   "previous_rounds": [
     {
       "cycle_id": "2026-04-04-tier2-correctness",
@@ -293,12 +294,12 @@
     "allocation_heavy": 1
   },
   "ceiling_decay": [
-    "tier1_dispatch: reset 3 → 0 (3 rounds absent: R31 field_access, R32 tier2_float_loop, R33 tier2_float_loop)",
-    "field_access: reset 2 → 0 (3 rounds absent: R32 tier2_float_loop, R33 tier2_float_loop, R35 allocation_heavy)"
+    "tier1_dispatch: reset 3 \u2192 0 (3 rounds absent: R31 field_access, R32 tier2_float_loop, R33 tier2_float_loop)",
+    "field_access: reset 2 \u2192 0 (3 rounds absent: R32 tier2_float_loop, R33 tier2_float_loop, R35 allocation_heavy)"
   ],
-  "rounds_since_review": 1,
-  "rounds_since_arch_audit": 2,
-  "sanity_verdict": "pending",
+  "rounds_since_review": 0,
+  "rounds_since_arch_audit": 0,
+  "sanity_verdict": "failed",
   "sanity_report": "opt/sanity_report.md",
   "sanity_cycle_id": "2026-04-12-object-creation-regression-bisect",
   "reference_baseline": {

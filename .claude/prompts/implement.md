@@ -51,6 +51,7 @@ Execute tasks from `current_plan.md` in order (including any injected tasks). Fo
    - What NOT to touch (scope boundary)
    - "If you need to read additional files not provided above, use Read. But try the provided code first."
    - "If you can't make it work in 3 attempts, return a failure report"
+   - **Fixture template provision (R35)**: if the task writes an insn-count fixture or diagnostic test, provide an existing fixture (e.g. `tier1_fib_dump_test.go` from R29) as template context in the Coder prompt. Saves ~40% of calls on pattern-matching tasks.
    - **Small-task cap (R27)**: if task changes ≤2 files, add to Coder prompt: "Cap at 15 tool calls."
    - **Full-package gate (R30, MANDATORY)**: every Coder prompt MUST end with: "Before marking this task done, run `go test ./internal/methodjit/... -short -count=1 -timeout 120s` as the FINAL gating command. A green targeted-test run is NOT enough. If any test fails (including tests not mentioned in the plan), STOP and report — do not mark the task done." Reason: R30 landed 903e505 under a curated correctness gate, VERIFY's full run caught `TestTier2RecursionDeeperFib` crash, round reverted. Curated test lists miss cross-test interactions.
 4. **Update current_plan.md**: mark task done or record failure

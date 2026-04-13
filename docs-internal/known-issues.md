@@ -51,7 +51,7 @@
 - Related to Tier 2 recursive function compilation
 - Category: `tier2_recursion`
 
-### emit_dispatch.go: 969 lines (approaching 1000 limit)
+### emit_dispatch.go: 971 lines (approaching 1000 limit)
 - Needs split: extract `emit_branch.go` for fused compare+branch logic
 - Flagged by evaluator in Round 10, 14. Must split before next change to this file.
 

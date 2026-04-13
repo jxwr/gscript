@@ -1,7 +1,7 @@
 # Architecture Constraints & Notes
 
 > **ANALYZE reads this every round.** Updated by Architecture Audit (every 2 rounds).
-> Last full audit: Round 28 (2026-04-11)
+> Last full audit: Round 36 (2026-04-12)
 
 ## Tier Constraints
 
@@ -83,10 +83,11 @@ Ordering constraints:
 
 - `benchmarks/run_all.sh` has a bug: VM/JIT suite benchmarks silently fail (discovered round 12). Individual benchmark runs work.
 - `tier2_float_profile_test.go:profileTier2Func` uses stale simplified pipeline — does not match `compileTier2()` (missing 6 passes + feedback). Diagnostic data is misleading for type-specialized analysis.
+- **`TableOffShape = 144` stale constant** (R36 audit): `internal/jit/value_layout.go:59` defines `TableOffShape = 144` which overlaps `TableOffIntArray = 144`. Never used by any JIT code. The actual `shape` field is at offset 216 (after boolArray). Slated for removal in R36.
 
 ## Test Coverage Notes
 
-- 86% test-to-source ratio (15,834 test lines / 18,466 source lines) — up from 85% at Round 19
-- 27 source files have no corresponding test file (mostly Tier 1 handlers and emit files)
+- 95% test-to-source ratio (18,872 test lines / 19,954 source lines) — up from 86% at Round 28
+- 26 source files have no corresponding test file (mostly Tier 1 handlers and emit files)
 - Key gap: `loops.go` (loop infrastructure) has no dedicated tests — tested indirectly via `pass_licm_test.go`
 - New: `emit_call_exit.go` added (Round 20, GetGlobal native) without test file
