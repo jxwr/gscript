@@ -1,168 +1,81 @@
 # GScript
 
-GScript is a dynamically-typed scripting language with a multi-tier JIT compiler targeting ARM64, implemented in Go. Architecture follows V8: **interpreter → baseline JIT → optimizing JIT**.
+A dynamically-typed scripting language with a V8-style multi-tier JIT targeting ARM64, implemented in Go. Architecture: **interpreter → baseline JIT (Tier 1) → optimizing JIT (Tier 2)**.
 
 ## Mission
 
-**Surpass LuaJIT on all benchmarks.** V8-style Method JIT (not trace JIT) on Lua-like semantics. Open-ended, iterative — no "done," only the next milestone.
+**Surpass LuaJIT on wall-time for every benchmark.** No "done," only the next milestone.
 
-## ⚠️ LOAD-BEARING: Core Harness Principles
+## Hard rules
 
-**Before reasoning about anything else, read `opt/harness-core-principles.md`.** That file contains the 6 constitutional rules for the gs-opt-loop harness, derived from Anthropic canonical patterns, ComPilot 2025, and R28-R33 empirical failures. Every phase session (REVIEW, CONTEXT_GATHER, ANALYZE, PLAN_CHECK, IMPLEMENT, VERIFY, SANITY) must honor those rules. Violation = sanity FAIL.
+These are compressions of expensive lessons. Each is present-tense, grep-able, or test-expressible. They are not optional.
 
-Summary of the 6 rules (authoritative statement is in `harness-core-principles.md`):
-1. **Grounding** — every architectural claim cites a specific source; no invented taxonomies
-2. **Evidence before action** — plan assumptions must cite verified evidence (file:line / reproducible command), never "should be true"
-3. **Authoritative context first** — CONTEXT_GATHER runs real `compileTier2()`; `profileTier2Func` / `TestProfile_*` forbidden as evidence
-4. **Honest confidence labels** — every claim labelled HIGH/MEDIUM/LOW with justification; no default-confident prose
-5. **Frozen reference baseline** — `benchmarks/data/reference.json` does NOT rotate; cumulative drift > 2% = sanity FAIL
-6. **No invented taxonomies** — meta-rule: if fewer than 3 sources exist, label the enumeration "incomplete"
+### Correctness
+1. **TDD is mandatory.** Failing test first, then minimum code to pass, then refactor.
+2. **Correctness first.** A wrong-but-fast compiler poisons every subsequent comparison.
+3. **Never stack on unverified code.** All tests must pass before landing the next change.
 
-Permanent anti-patterns are listed at the bottom of `harness-core-principles.md`. Adding to that list requires a round where the pattern repeated.
+### Diagnostics and measurement
+4. **Profile before optimizing.** JIT code is opaque to `pprof` — use ARM64 disasm (`Diagnose()`), not Go profilers.
+5. **Only `compileTier2()` / `RunTier2Pipeline` / `TieringManager.CompileForDiagnostics` produce authoritative Tier 2 evidence.** Parallel pipelines (`profileTier2Func`, hand-rolled `NewTier2Pipeline` sequences) are banned because they drift from production.
+6. **Median-of-N for every benchmark comparison.** Single-shot numbers are ±10% noise on a ±5% signal. Default `--runs=5` for publish-grade, `--runs=3` for mid-round checks.
+7. **Contradicted diagnostic data halts the round.** The phrase "the number was off but the conclusion still holds" is never valid. Root-cause the tool first.
+8. **IR instruction-count savings do not imply wall-time savings.** M4 executes 6–8 instructions per cycle; removed guards are often free. Always validate with benchmarks.
 
-**If you find yourself about to propose something without a citation, STOP and either find a source or label the proposal LOW confidence.**
+### Architecture
+9. **Architecture-first target selection.** Every round asks in order: (Q1) global architecture? (Q2) module boundary? (Q3) local pass/emit? Only Q3 proceeds without user discussion.
+10. **Multiple regressions = architecture problem**, not implementation bug. Don't patch in one place.
+11. **V8's architectural choices are the default.** Deviate only with explicit evidence.
+12. **Tier 2 is not always faster than Tier 1.** BLR + SSA setup cost more than inlining gains for call-dominated code.
 
-## Meta-Principle: Self-Evolving Workflow
+### Code hygiene
+13. **No Go file exceeds 1000 lines.** Split at 800. Enforced by `.claude/hooks/file_size_guard.sh`.
+14. **One concern per file.** Each file opens with a doc comment.
+15. **Test files mirror source:** `foo.go` → `foo_test.go`.
+16. **Commit per task.** Each working step is its own commit.
 
-**The harness workflow must be capable of self-evolution. All efforts serve this principle.**
+### Workflow
+17. **One Claude session per round.** No multi-session phase chaining.
+18. **Three-hour round budget.** Over budget → auto-revert.
+19. **Only mechanical signals gate a round:** reference.json drift, `kb_check.sh` freshness, test failure, scope-budget breach.
+20. **Sunk cost is never a reason to keep broken code.**
 
-The compiler goal matters, but the higher-order goal is that the *process* improves itself over time. A workflow requiring constant human redesign is brittle. A workflow that evolves its own prompts, tools, and structure based on what it learns each round is antifragile.
+## Round shape
 
-- Every round's outcome is feedback on the workflow, not just the compiler
-- REVIEW reads user interventions and applies structural changes, not parameter tweaks
-- If the user intervenes twice for the same class of problem, the workflow has failed to learn
-- New capabilities should emerge from the workflow's own observations
-
-## Workflow: 4-Phase Optimization Loop
-
-Orchestrated by `bash .claude/optimize.sh`. Each phase is an **independent Claude session** — no context accumulation, state passes via files in `opt/`.
+A round is a single session with six internal steps. No orchestrator.
 
 ```
-  REVIEW (every round, reads user session log for interventions)
-    │
-    ▼
-  ANALYZE + PLAN (one session)
-    Step 0: Architecture audit (full every 2 rounds / quick read on off-rounds)
-    Step 1: Gap classification + target selection (ceiling rule, initiative rule)
-    Step 2: External research (web search + reference engine source + knowledge base)
-    Step 3: Project source reading (read the actual code that will change)
-    Step 4: Micro diagnostics (IR dump, ARM64 disasm, instruction breakdown)
-    Step 5: Write plan (concrete, bounded, with calibrated predictions)
-    Step 6: Write analyze report
-    │
-    ▼
-  IMPLEMENT (one session)
-    Spawn Coder sub-agents per task. TDD. Commit per task.
-    │
-    ▼
-  VERIFY + DOCUMENT (one session)
-    Part 1: Run tests + benchmarks + evaluator → fill Results
-    Part 2: Update state.json, INDEX.md, initiative, archive plan, commit
-    │
-    ▼
-  SANITY (independent common-sense check, read-only)
-    Reads plan + state + benchmark data with fresh context.
-    Flags physics violations, prediction gaps, skipped mandated steps,
-    stale baselines, scope explosion. Non-clean verdict blocks auto-continue.
+1. Refresh diagnostics     scripts/diag.sh all          → diag/
+2. KB health check         scripts/kb_index.sh          → kb/index/
+                           scripts/kb_check.sh          (blocks on staleness)
+3. Three-level direction   Read diag/summary.md + kb/modules/architecture.md
+                           Q1 → Q2 → Q3 priority; write direction.md
+4. Act                     TDD, bounded by direction.md scope
+5. Verify                  Re-run diag; diff; pass or revert
+6. KB update               Edit any card whose semantics changed; separate commit
 ```
 
-Multi-round: `bash .claude/optimize.sh --rounds=5`
+## Directory pointers
 
-## Roles
-
-The workflow uses **specialized sub-agents**, not a single monolithic agent:
-
-| Context | Role | What it does |
-|---------|------|-------------|
-| REVIEW session | **Workflow Auditor** | Reads user session log, identifies intervention patterns, applies harness changes |
-| ANALYZE session | **Analyst + Planner** | Top-down: architecture → strategy → research → source → diagnostics → plan |
-| IMPLEMENT session | **Orchestrator** | Spawns bounded Coder sub-agents, tracks budget, checks scope |
-| Coder sub-agent | **Implementer** | TDD within bounded scope. 3 attempts max, then failure report |
-| Evaluator sub-agent | **Code Reviewer** | Reviews git diff against checklist. No intent from caller |
-| Diagnostic sub-agent | **Profiler** | IR dumps, ARM64 disasm, instruction counting |
-| SANITY session | **Skeptical Reviewer** | Fresh-context common-sense check on round artifacts — no trust in prior reports |
-
-**Main conversation** (with the user): strategic direction, harness design, architectural decisions. Not implementation detail.
-
-## Cross-Round Infrastructure
-
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
-| `opt/state.json` | Counters: category_failures, rounds_since_review, rounds_since_arch_audit |
-| `opt/INDEX.md` | Flat table of all rounds — ANALYZE's pattern detector |
-| `opt/initiatives/*.md` | Multi-round engineering projects |
-| `opt/knowledge/*.md` | Persistent knowledge base (techniques, algorithms, thresholds) |
-| `opt/plans/*.md` | Archived plans for retrospectives |
-| `opt/reviews/*.md` | Harness self-audit reports |
-| `opt/workflow_log.jsonl` | Per-round metrics |
-| `opt/phase_log.jsonl` | Per-phase model + duration (written mechanically by orchestrator) |
-| `opt/sanity_report.md` | Per-round independent common-sense check output |
-| `docs-internal/architecture/constraints.md` | Known architectural constraints + ceilings |
-| `docs-internal/architecture/overview.md` | Tier/pipeline/register reference |
-| `benchmarks/data/latest.json` | Current benchmark results (written by VERIFY) |
-| `benchmarks/data/baseline.json` | Comparison baseline |
-| `scripts/arch_check.sh` | Mechanical architecture scan (file sizes, tech debt, test gaps) |
+| `CLAUDE.md` | This file — hard rules + round shape |
+| `docs-internal/workflow-v4-plan.md` | Full rationale for the v4 rebuild |
+| `docs-internal/architecture/overview.md` | Tiers, pipeline, register convention |
+| `docs-internal/architecture/constraints.md` | Mechanical architectural constraints |
+| `docs-internal/decisions/` | ADRs |
+| `docs-internal/diagnostics/` | `Diagnose()`, IR pipeline, deopt debugging |
+| `docs-internal/known-issues.md` | Current known bugs |
+| `docs/` | Blog journal — permanent record of the exploration |
+| `kb/architecture.md` | Top-level invariants |
+| `kb/modules/` | 26 module cards (schema-enforced) |
+| `kb/index/` | L1 mechanical symbol index (auto-generated) |
+| `scripts/diag.sh` | Production-parity diagnostic dump |
+| `scripts/kb_index.sh` | Regenerate L1 index |
+| `scripts/kb_check.sh` | Validate L2 cards against L1 + git blob SHAs |
+| `benchmarks/data/reference.json` | Frozen baseline — never rotates |
+| `opt/archive/v3/` | Dead v3 harness state. Do not read. |
 
-## Anti-Drift Mechanisms
+## Doc-sync rule
 
-| Mechanism | Prevents |
-|-----------|----------|
-| **Ceiling Rule** (category_failures ≥ 2 → blocked) | Grinding on same wall |
-| **Initiative files** | Losing multi-round architectural continuity |
-| **Architecture audit** (every 2 rounds) | Structural drift without awareness |
-| **Knowledge base** | Forgetting what was researched |
-| **REVIEW every round** (reads user interventions) | Workflow rot |
-| **Budget per round** | Scope creep |
-| **Calibrated predictions** (halved for ARM64 superscalar) | Chronic overestimation |
-
-## Non-Goals
-
-- Trace JIT — deprecated, disconnected from CLI
-- Hacks that sacrifice correctness for speed
-- Arbitrary speedup ratios — target is LuaJIT's absolute times
-
-## Coding Conventions
-
-### File Size
-- **No Go file exceeds 1000 lines.** Split proactively at 800 lines
-- One concern per file. Every file starts with a doc comment
-- Test files mirror source: `foo.go` → `foo_test.go`
-- `scripts/arch_check.sh` scans for violations; ANALYZE Step 0 reads the output
-
-### TDD (mandatory)
-1. Write a failing test specifying desired behavior
-2. Write minimum code to pass
-3. Refactor without changing behavior
-4. No exceptions. If you can't write a test, you don't understand the requirement
-
-### Pass Pipeline
-- Each pass: `pass_<name>.go` + `pass_<name>_test.go`
-- Current order: `BuildGraph → Validate → TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp → LoadElim → DCE → RangeAnalysis → LICM → Validate → RegAlloc → Emit`
-- Ordering constraints documented in `docs-internal/architecture/constraints.md`
-
-### Standards
-- **Profile before optimizing**: ARM64 disasm (not pprof — JIT code is opaque to pprof)
-- **Diagnostic tools first**: IR printer, pipeline dump, validator before reading source code
-- **Commit often**: each working step gets a commit
-- **Observation beats reasoning**: 5 hours of guessing vs 5 minutes of looking at the data
-
-## Hard-Won Rules
-
-1. **Observation beats reasoning** — use diagnostic tools (Diagnose(), IR printer, ARM64 disasm). Don't read code and guess.
-2. **Architecture over patches** — third bug in same subsystem? Redesign. Don't add special cases.
-3. **Never stack on unverified code** — all tests pass before adding the next pass.
-4. **Architecture audit every 2 rounds** — review file sizes, module boundaries, pipeline, test coverage. Findings go to `constraints.md`.
-5. **Calibrate predictions** — halve instruction-count estimates on ARM64 superscalar. Cross-check with diagnostic data.
-6. **Read the code before planning** — ANALYZE must read the source files it plans to change. Rounds 7-8 predicted −35% because nobody read regalloc.go.
-
-## Reference Documents
-
-- Architecture: `docs-internal/architecture/overview.md`
-- Constraints: `docs-internal/architecture/constraints.md`
-- ADRs: `docs-internal/decisions/`
-- Debug JIT: `docs-internal/diagnostics/debug-jit-correctness.md`
-- Debug deopt: `docs-internal/diagnostics/debug-deopt.md`
-- Debug IR: `docs-internal/diagnostics/debug-ir-pipeline.md`
-- Known issues: `docs-internal/known-issues.md`
-- Lessons learned: `docs-internal/lessons-learned.md`
-- Knowledge base: `opt/knowledge/`
+See `.claude/rules/doc-sync.md`. On any architectural decision, update the relevant KB card or ADR in the same session. Never leave docs drifted.
