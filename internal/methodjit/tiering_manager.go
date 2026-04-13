@@ -425,31 +425,42 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 		}
 	}()
 
-	// Check if function can be promoted to Tier 2.
-	// canPromoteToTier2 now only blocks goroutine/channel ops.
-	// CALL and GETGLOBAL are handled by the inline pass + post-inline IR checks.
+	return tm.compileTier2Pipeline(proto, nil)
+}
+
+// compileTier2Pipeline is the pure pipeline body shared between production
+// compileTier2 and CompileForDiagnostics. It performs NO bookkeeping
+// (counters, fail-reason maps, debug logging) so diagnostic calls cannot
+// contaminate production state. It DOES mutate proto.NeedsTier2 and
+// proto.MaxStack when the optimized function requires it — both are part of
+// production compilation semantics and must be preserved identically so the
+// diagnostic path is bit-identical to production.
+//
+// trace is optional. When non-nil, intermediate artifacts are captured into
+// it for the diagnostic caller. When nil, the pipeline runs without
+// observation overhead.
+//
+// Any change to this function's body is a change to the production Tier 2
+// compile semantics AND to what the diagnostic tool sees, by construction.
+// That is the load-bearing invariant of rule 5 in CLAUDE.md.
+func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2Trace) (*CompiledFunction, error) {
 	if !canPromoteToTier2(proto) {
 		return nil, fmt.Errorf("tier2: function has unsupported ops, staying at tier 1")
 	}
 
-	// Build SSA IR.
 	fn := BuildGraph(proto)
+	if trace != nil {
+		trace.IRBefore = Print(fn)
+	}
 
-	// Reject functions the graph builder flagged as unpromotable. Today this
-	// fires for OP_CALL B==0 (variadic args threaded via top), which cannot
-	// be modeled in SSA without a runtime top tracker. Without this gate,
-	// recursive nested-call patterns (ack, mutual_recursion, f(g(...)))
-	// compile to Call-with-no-args IR and hang at runtime.
 	if fn.Unpromotable {
 		return nil, fmt.Errorf("tier2: function uses unmodeled bytecode (variadic CALL), staying at Tier 1")
 	}
 
-	// Validate.
 	if errs := Validate(fn); len(errs) > 0 {
 		return nil, fmt.Errorf("tier2: validation failed: %v", errs[0])
 	}
 
-	// Run the full production Tier 2 optimization pipeline.
 	inlineGlobals := tm.buildInlineGlobals()
 	opts := &Tier2PipelineOpts{InlineGlobals: inlineGlobals, InlineMaxSize: inlineMaxCalleeSize}
 	fn, intrinsicNotes, err := RunTier2Pipeline(fn, opts)
@@ -457,40 +468,28 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 		return nil, fmt.Errorf("tier2: pipeline: %w", err)
 	}
 	if len(intrinsicNotes) > 0 {
-		// Tier 2 replaced calls that Tier 1 would execute differently
-		// (calling the Go implementation). Mark the proto so Tier 1 BLR
-		// callers' handleCall fallback dispatches to Tier 2 code.
 		proto.NeedsTier2 = true
 	}
 	fn.CarryPreheaderInvariants = true
+	if trace != nil {
+		trace.IRAfter = Print(fn)
+		trace.IntrinsicNotes = intrinsicNotes
+	}
 
-	// Post-inline safety check: reject if the optimized IR has OpCall INSIDE a loop.
-	// Tier 2's CALL exit-resume (~30-80ns) is slower than Tier 1's native BLR (~10ns).
-	// Inside a hot loop this cost is multiplied and hurts badly (spectral_norm's
-	// A(i,j) call inside inner loops caused a 7.10x→0.82x regression).
-	//
-	// However, calls at loop depth 0 (outside any loop) execute at most a few times
-	// per function invocation and the exit-resume cost is amortized. Allow those so
-	// that outer driver functions (e.g., spectral_norm's multiplyAtAv which calls
-	// multiplyAv/multiplyAtv at the top level) can still enjoy Tier 2 for their
-	// loop-heavy bodies.
-	// GETGLOBAL is allowed — Tier 2 has a native per-instruction value cache (~5ns).
 	if hasCallInLoop(fn) {
 		return nil, fmt.Errorf("tier2: has OpCall inside loop (performance-blocked), staying at Tier 1")
 	}
 
-	// Register allocation.
 	alloc := AllocateRegisters(fn)
+	if trace != nil {
+		trace.RegAllocMap = formatRegAlloc(alloc)
+	}
 
-	// Compile to ARM64.
-	cf, err = Compile(fn, alloc)
+	cf, err := Compile(fn, alloc)
 	if err != nil {
 		return nil, fmt.Errorf("tier2: compile failed: %w", err)
 	}
 
-	// Update MaxStack if the JIT needs more slots than the bytecode compiler
-	// originally allocated. This ensures the VM reserves enough register space
-	// for recursive calls.
 	if cf.numRegs > proto.MaxStack {
 		proto.MaxStack = cf.numRegs
 	}

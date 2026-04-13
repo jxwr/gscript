@@ -355,10 +355,18 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	return fn, intrinsicNotes, nil
 }
 
-// NewTier2Pipeline returns a Pipeline pre-loaded with the production Tier 2
-// passes. This is intended for diagnostic/dump use (Diagnose) where callers
-// need IR snapshots between passes. For normal compilation, use
-// RunTier2Pipeline instead.
+// NewTier2Pipeline returns a Pipeline pre-loaded with a pass list that
+// mirrors the production Tier 2 order. It exists ONLY as a dump helper for
+// Diagnose() and related correctness tests that need per-pass IR snapshots.
+//
+// DO NOT use this for performance diagnostics. It does not accept inline
+// globals and is therefore NOT bit-identical to the production
+// compileTier2Pipeline. Use TieringManager.CompileForDiagnostics instead,
+// which is parity-tested (TestDiag_ProductionParity_*).
+//
+// This is the pattern R31 and R32 wasted rounds on: a "diagnostic pipeline"
+// with subtly different defaults that silently diverges from production.
+// See CLAUDE.md rule 5.
 func NewTier2Pipeline() *Pipeline {
 	pipe := NewPipeline()
 	pipe.Add("SimplifyPhis", SimplifyPhisPass)

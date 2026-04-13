@@ -1,4 +1,16 @@
-//go:build darwin && arm64
+//go:build archived_v3
+
+// ARCHIVED 2026-04-13 as part of the workflow v4 rebuild. See
+// docs-internal/workflow-v4-plan.md and CLAUDE.md rule 5. This file is the
+// reason R31 and R32 silently produced no_change outcomes: profileTier2Func
+// calls RunTier2Pipeline(fn, nil) with no InlineGlobals, so it measures a
+// silently-divergent pipeline that skips inlining — the most impactful
+// production optimization. The replacement is
+// TieringManager.CompileForDiagnostics, parity-tested by
+// internal/methodjit/tiering_manager_diag_test.go.
+//
+// Kept in the tree for historical review only. The `archived_v3` build tag
+// keeps it out of every normal build.
 
 // tier2_float_profile_test.go dumps Tier 2 IR + ARM64 code bytes for the
 // inner-loop functions of the five float-heavy benchmarks tracked in the
