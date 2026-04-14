@@ -1,0 +1,16 @@
+# file_size_exempt.txt — pre-existing over-1000-line files grandfathered
+# by file_size_guard.sh. Format: <path> <max_allowed_lines>
+#
+# An exempt file is allowed to exceed 1000 lines up to its recorded
+# ceiling. Edits that grow the file beyond the ceiling still block.
+# Edits that stay at or below the ceiling pass.
+#
+# The ceiling is set to the file's line count at the time of
+# grandfathering — the rule's intent is to prevent further growth, not
+# freeze pre-existing tech debt. Split and remove the entry when you
+# get the chance.
+#
+# Do not add new entries except to document real pre-existing debt.
+# CLAUDE.md rule 13 ("No Go file exceeds 1000 lines") is the default.
+
+internal/vm/vm.go 1980
