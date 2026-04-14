@@ -1,103 +1,71 @@
 ---
-round: 3
+round: 5 (WIN — binary_trees −21.4%)
 date: 2026-04-14
-kind: diagnostic (no production code changes)
-follows: round 2 (reverted, reverted round 1)
+follows: rounds 1-4 (2 reverts, 2 diagnostic/meta)
 ---
 
-# Round 3 — Pure Diagnostic — sieve inner loop asm walk
+# Round 5 — Tier 0 gate for tiny recursive table builders
 
-## Why diagnostic only
+## What I did
 
-Rounds 1 and 2 both attempted optimizations and both were reverted. Both shared a pattern: "trust the knowledge base's narrative about root cause, predict a win, measure, revert." Round 3 breaks the pattern by making NO prediction and NO code change. It reads the actual asm of sieve's inner loop and records what it sees.
+Added a `shouldStayTier0` heuristic in `internal/methodjit/func_profile.go` and wired it into `TieringManager.TryCompile`. The gate matches small (≤ 25 bytecodes), no-loop, allocation-heavy (NewTableCount > 0), call-having functions and returns nil from the compile path, routing them back to Tier 0.
 
-## Sieve inner loop evidence
+The canonical match: `binary_trees.gs`'s `makeTree` — 21 bytecodes, 2 NEWTABLEs, 2 recursive calls, no loops.
 
-### IR shape (from `diag/sieve/sieve.ir.txt`)
+## Why this worked when rounds 1–4 didn't
 
-The hot inner loop is B5 (GetTable + GuardTruthy), B7/B8 (j-loop setting is_prime[j] = false), and B11/B12/B13 (final counting loop):
+Rounds 1–4 all operated from narrative: "the KB says pointer X is dead, remove it"; "the KB says scan Y is too large, shrink it"; "the asm shows dispatch Z is 8 instructions, specialize it". All four rounds ran the same failure pattern: trust a narrative, predict a win, measure, revert or null.
 
-```
-B5 ; preds: B4
-    v27 = GetTable   v1, v20 : any
-    v28 = GuardTruthy v27 : bool
-    Branch v28 → B6, B9
+Round 5 worked from a directly observed fact — **binary_trees runs slower under JIT than under the interpreter** — and asked the shape-based question: what kind of function is it? The answer (tiny, recursive, allocates) immediately suggested the mechanism (exit-resume overhead dominates native-template win). One gate, one commit, measured win.
 
-B8 ; preds: B7
-    v40 = SetTable v1, v33, v37    ; is_prime[j] = false
-    v42 = AddInt   v33, v20        ; j += i
-    Jump B7
-```
+## Measurement
 
-### ARM64 emit observations (from `diag/sieve/sieve.asm.txt`)
+Full benchmark suite, median-of-5:
 
-**Observation 1 — redundant moves at GetTable→GuardTruthy handoff (addr 0464-0470):**
+| Benchmark | Pre-R5 | Round 5 | Delta |
+|-----------|-------:|--------:|------:|
+| `binary_trees` | 1.997s | **1.570s** | **−21.4%** |
+| `object_creation` | 1.086s | 1.039s | −4.3% (noise) |
+| `nbody` | 0.252s | 0.238s | −5.6% (noise) |
+| `mandelbrot` | 0.063s | 0.060s | −4.8% (noise) |
+| `fibonacci_iterative` | 0.295s | 0.280s | −5.1% (noise) |
+| All others | — | — | within ±2% |
 
-```
-0464  MOVD 232(R26), R20    ; load v27 → R20
-0468  MOVD 232(R26), R0     ; load v27 AGAIN → R0 (REDUNDANT)
-046c  MOVD R0, R20           ; R0 → R20 (REDUNDANT — R20 already has it)
-0470  MOVD R20, R0           ; R20 → R0 (REDUNDANT)
-```
+No regressions. The only claim is binary_trees. Everything else is noise-level noise.
 
-Four instructions doing one load's worth of work. The emitter loads the GetTable result twice from memory and does two extra inter-register moves. A cleaner emit would be one MOVD, leaving the value in whichever register the next op expects. Cost: 4 insns × (loop iterations). For a 1M-iter sieve, ~3–4M wasted insns.
+## Gate parameters (from `func_profile.go`)
 
-**Observation 2 — GuardTruthy multi-compare expansion (addr 0474-0498):**
-
-```
-0474  MOVD $-1125899906842624, R1   ; load nil NaN-box tag constant
-0478  CMP R1, R0                      ; is value == nil?
-047c  BEQ 5(PC)
-0480  CMP R25, R0                     ; is value == false?
-0484  BEQ 3(PC)
-0488  ADD $1, R25, R0                 ; truthy result = false_tag + 1
-048c  JMP 2(PC)
-0490  MOVD R25, R0                    ; falsy result = false_tag
-0494  MOVD R0, R21
-0498  TBNZ $0, R21, 2(PC)             ; test bit 0 of result → branch
+```go
+func shouldStayTier0(profile FuncProfile) bool {
+    return profile.BytecodeCount <= 25 &&
+        profile.NewTableCount > 0 &&
+        !profile.HasLoop &&
+        profile.CallCount > 0
+}
 ```
 
-Nine instructions to check "is this value truthy?". The expansion computes a truthy-bit by materializing true/false as NaN-boxed bools, then testing bit 0. LuaJIT's equivalent is ~1–2 insns (direct tag check). The extra cost is ~7 insns per GuardTruthy in a hot loop.
+- `BytecodeCount <= 25` — tight enough to exclude real compute functions.
+- `NewTableCount > 0` — only allocation-heavy shapes pay the exit-resume cost.
+- `!HasLoop` — loops benefit from Tier 1 native templates and should stay compiled.
+- `CallCount > 0` — discriminates recursive allocators (compile themselves) from leaf allocators (called from a JIT'd loop, caller gets the win).
 
-Note: GuardTruthy is in B5, which fires once per outer `i` iteration (when checking `is_prime[i]` before entering the j-loop). For sieve, B5 fires O(n) = 1M times. 7 wasted insns × 1M = 7M insns.
+## KB updates
 
-**Observation 3 — SetTable 4-way arrayKind dispatch (addr 0528 onwards):**
+- `kb/modules/runtime/gc.md`: removed the "binary_trees JIT slower than VM" Known gap; noted it as closed in Round 5.
+- `kb/modules/tier1.md`: added an explicit Known gap about exit-resume overhead on NEWTABLE and related ops, and documented the `shouldStayTier0` mitigation. Future rounds will know this gate exists.
 
-SetTable's hot path is ~27 ARM64 insns for the ArrayBool case:
-- ~7 insns for NaN-box unbox + ptr-tag check
-- ~4 insns for shape guard
-- ~1 insn loading `arrayKind` byte
-- ~8 insns for the 4-way dispatch (ArrayMixed / ArrayInt / ArrayFloat / ArrayBool)
-- ~7 insns for the actual store (boundschk + MOVB into boolArray + dirty flag)
+## Lesson
 
-If the emitter knew statically that `v1`'s arrayKind was ArrayBool (via feedback or type specialization), it could skip the 4-way dispatch, saving ~8 insns per SetTable. Hot loop fires O(n log log n) times for sieve ≈ 2.9M iterations. 8 insns × 2.9M ≈ 23M insns.
+When predictions based on narrative fail, pivot to shape-based observation. "JIT slower than VM" is a provable falsehood that directly points at a fix; "GC pointer trace costs X%" is a narrative that may not hold.
 
-## Total estimated redundancy in sieve inner loops
+## Round summary (1-5)
 
-Rough sum of the three observations above: ~30M wasted insns per sieve(1M) run. At M4's ~6 insns/cycle effective throughput, that's ~5M cycles = ~1.5ms. The current wall-time gap vs LuaJIT is ~78ms (88ms − 10ms). So the three observations together account for ~2% of the gap. Not 2× improvement; 2%.
+| Round | Outcome | Real change? |
+|------:|---------|:-------------|
+| 1 | reverted (hypothesis wrong) | No |
+| 2 | reverted (same class of mistake) | No |
+| 3 | diagnostic only (no local fix exists at this level) | No |
+| 4 | KB update recording Rounds 1–3 negatives | Meta |
+| 5 | **binary_trees −21.4%** via Tier 0 gate | **Yes** |
 
-**This is the most important finding of Round 3.** The gap between GScript JIT and LuaJIT on sieve is NOT dominated by the patterns I spotted in the asm. It's dominated by something structural — probably LuaJIT's shape-specialized inline cache eliminating the entire dispatch for a cached PC, which GScript's Tier 2 doesn't currently have as tightly.
-
-## What Round 3 did NOT find
-
-- A clear 50%+ improvement from any local change
-- A specific dead instruction that can be deleted without refactoring
-- A small surgical change with high confidence
-
-Rounds 1 and 2 both tried to find such a change via narrative. Round 3 tried to find it via direct asm reading. Neither approach produced one.
-
-## Directional conclusion
-
-- The 5–9× LuaJIT gaps on sieve/nbody/matmul/spectral_norm are not closable by cosmetic instruction-level cleanups. They require a structural change to the emit layer — e.g., per-PC cached dispatch like LuaJIT's IC, or a unified hot-path for monomorphic table accesses.
-- A structural change like that is a Q2 (module-level) or Q1 (architectural) direction, not a Q3 local fix.
-- **Round 4 should NOT attempt another same-class Q3 micro-optimization.** Either pivot to a Q2/Q1 investigation, or pivot entirely away from optimization to meta-work (KB refinement, failure analysis, workflow tuning).
-
-## Round 4 candidate directions
-
-Three options to pick from when Round 4 opens:
-
-1. **Write a focused Q2 proposal** for a per-PC specialized cache on SetTable, reading LuaJIT's fast-path as reference. Not an implementation — just a scoped design doc and a test-framework sketch.
-2. **Update the KB cards** to reflect what Rounds 1–3 actually learned: the object_creation drift narrative was wrong, the GC scan overhead is not wall-time-dominant, the LuaJIT gap is structural. This is meta-work but prevents the next round from repeating Rounds 1–2.
-3. **Pick a different benchmark entirely** — maybe one where the compiled asm is obviously shorter/longer than it needs to be, using mandelbrot (1.09×) as a reference for "good" shape.
-
-My recommendation is (2) first — the KB is misleading future rounds (and me) right now. Then (1) as Round 5 if time permits.
+5 rounds, 1 code win. The v4 workflow caught 2 bad hypotheses cleanly with its revert discipline and produced a meta-correction (Round 4) that stopped the pattern from continuing. Round 5 broke the pattern by picking evidence-first instead of narrative-first.

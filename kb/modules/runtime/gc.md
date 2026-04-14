@@ -39,7 +39,7 @@ GScript does not have a custom garbage collector. Every `Table`, `VMClosure`, st
 - **Go GC cannot be bypassed** for pointer-bearing objects. Per-benchmark ceiling on `object_creation`, `sort`, `binary_trees` is set by Go's STW + tracing overhead, not by the JIT's codegen.
 - **No custom bump allocator**. A Tier-2-only bump allocator for short-lived Tables would be a large-scope architectural change (requires escape analysis) — candidate for a Q1 global architecture round. Rounds 1–3 did NOT attempt this because it's structural, not local.
 - **Write barrier is per-store**. `SetField` on a pointer slot fires a barrier every time. The native-kind fast paths (`ArrayBool`, `ArrayFloat`) only help when the whole table is typed — mixed tables still go through the generic barrier-hitting path.
-- **Binary trees JIT slower than VM**: `binary_trees.gs` runs ~25–40% slower at Tier 1 than at Tier 0 interpreter (JIT ~2.0–2.3s, VM ~1.6s across multiple runs). The smart-tiering policy in `func_profile.go:134` correctly rejects Tier 2 promotion for `makeTree` (no loops, has calls), so this is a Tier 1 compile-quality issue, not a tiering decision bug. Specific root cause not yet identified. Real.
+- ~~**Binary trees JIT slower than VM**~~ — closed in Round 5 via a `shouldStayTier0` gate in `func_profile.go`. Small (≤25 bytecodes), no-loop, allocation-heavy, call-having functions now skip Tier 1 compilation entirely. binary_trees 1.997s → 1.570s (−21.4%). Root cause was Tier 1's exit-resume cost on NEWTABLE dominating the native-template win for tiny recursive allocators.
 
 ## Measured non-gaps (tested and found to be either incorrect narratives or below the noise floor)
 

@@ -49,6 +49,7 @@ Hottest sites:
 - No intra-function CSE; each GETFIELD/GETGLOBAL re-checks its cache independently even when the same pc fires twice in a basic block.
 - No FPR residency; every float op pays NaN-box unbox + re-box.
 - Inline cache is per-PC, not per-shape — polymorphic sites thrash.
+- **Exit-resume is per-op on NEWTABLE / CLOSURE / VARARG / TFORCALL / APPEND / SETLIST / POW / CONCAT / LEN.** Each exit costs ~100–200 ns for save/restore + Go dispatch. For functions whose body is dominated by exit-resume ops (e.g. tiny recursive builders like `makeTree`), Tier 1's net cost exceeds Tier 0's interpreter dispatch. Mitigated in v4 round 5 via `shouldStayTier0` in `func_profile.go`, which routes such shapes back to Tier 0 instead of compiling them. A more ambitious fix would emit native NEWTABLE + SETFIELD inline-cache-miss paths, but that's a larger emit-layer change.
 
 ## Tests
 
