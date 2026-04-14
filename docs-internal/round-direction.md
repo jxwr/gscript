@@ -1,69 +1,63 @@
 ---
-round: 1 (reverted)
+round: 2 (reverted)
 date: 2026-04-14
-outcome: hypothesis-wrong
-next_round: 2
+outcome: hypothesis-wrong (second time — stopping GC-angle rounds)
+next_round: 3
 ---
 
-# Round 1 — Reverted (hypothesis wrong)
+# Round 2 — Reverted (same class of mistake as Round 1)
 
 ## What I predicted
 
-| Benchmark | Current | Expected | Delta | Confidence |
-|-----------|--------:|---------:|------:|:-----------|
-| `object_creation` | 1.086s | ~0.80s | −26% | HIGH |
-| `sort` | 0.048s | ~0.043s | −10% | MEDIUM |
-
-Fix A: delete dead `shape *Shape` field from `runtime.Table`.
-Fix B: change `EnsureRegs` so `len(vm.regs)` is the tight bound and `cap` carries amortized 2× growth, letting `ScanGCRoots` scan fewer slots.
-
-The KB cards `kb/modules/runtime/{table,vm,gc}.md` all listed these as concrete Known gaps. The Round 0 direction promoted them to Q2.
+A 1-line change: `vm.go:225` `MakeNilSlice(1024)` → `MakeNilSlice(128)`. Expected: `ScanGCRoots` scan range shrinks from 1024 → 128 for shallow benchmarks, unlocking a few percent on allocation-heavy workloads. Explicit failure criterion: "revert if ANY benchmark regresses by >5%".
 
 ## What happened
 
-After Fix A + Fix B + the `runtime.MakeNilSliceCap(64, 1024)` initial-length experiment, **object_creation did not close**. Two measurement passes (median-of-5):
+| Benchmark | Pre-R2 | Round 2 | Delta |
+|-----------|-------:|--------:|------:|
+| `object_creation` | 1.086s | 1.078s | −0.7% (noise) |
+| `fannkuch` | 0.048s | 0.871s | **+1714%** CATASTROPHIC |
+| `fibonacci_iterative` | 0.295s | 0.333s | +12.9% |
+| `coroutine_bench` | 14.0s | 16.1s | +15% (noisy) |
 
-```
-benchmark           baseline  R1 run1  R1 run2
-object_creation     1.086     1.158    1.145
-sort                0.048     0.049    0.052
-mandelbrot          0.063     0.061    2.992     ← small-init experiment
-matmul              0.120     0.120    1.714     ← small-init experiment
-binary_trees        1.997     2.281    1.997
-string_bench        0.029     0.038    0.033
-```
+fannkuch 17× slower than baseline. Failure criterion triggered. Reverted.
 
-object_creation moved the wrong direction. The small-initial-length experiment (trying to make ScanGCRoots actually benefit from the tight bound) produced catastrophic regressions on every float/arithmetic benchmark (mandelbrot 47×, matmul 14×, fannkuch 17×) because every JIT-promoted function started triggering `EnsureRegs` reslices in the Tier 1/Tier 2 dispatch path.
+## Root cause (likely)
 
-Reverted everything except the hook grandfather infrastructure.
+The small initial size means the VM grows `vm.regs` via `MakeNilSlice + copy` on the first deep call. But the JIT caches `execCtx.RegsEnd = &regs[0] + len(regs)*8` at compile time based on the pre-growth size. When `vm.regs` is replaced with a new slice (different base pointer), the old compiled JIT code's `RegsEnd` becomes stale — it points into the freed slice. This probably causes either spurious slow-path exits or actual data corruption (caught as benchmark slowdown, not crash).
 
-## Why the prediction was wrong
+Didn't investigate further because the revert path was clear. If I ever revisit initial-slice sizing, the fix would require either (a) not reallocating `vm.regs` (grow in place via `append` on a pre-oversized cap), or (b) forcibly resyncing `RegsEnd` on every slice swap via a callback.
 
-Three things I got wrong, most important first:
+## Pattern alert: two rounds on the same class of mistake
 
-1. **ScanGCRoots scans `vm.regs[:len(vm.regs)]`, and `len(vm.regs)` defaults to 1024.** For object_creation (a shallow-recursion benchmark), `EnsureRegs` was never called — `len` stayed at 1024 forever. Shrinking len would have needed a change to `New()` to start small, which I tried, which blew up every float/arith benchmark by forcing constant reslices.
+Both Round 1 and Round 2 tried to close `object_creation` by reducing GC scan overhead. Both failed. This is evidence that **GC scan is not the dominant cost**, and the +42% drift vs reference.json is either:
 
-2. **The `shape *Shape` removal was structurally correct but its wall-time contribution was too small to measure against the noise floor on allocation_heavy benchmarks.** R35's knowledge doc attributed "25 percentage points" to this field, but I never verified that attribution with a direct before/after measurement — I trusted the narrative. The actual saving was probably a few percent at best, lost in measurement variance.
+- Baseline noise in `reference.json` (it was frozen at `a388f782` and may reflect a slightly different GC schedule that happened to favor object_creation)
+- A real Go-GC-level cost that can't be removed by JIT changes
 
-3. **The GC ceiling, which Round 0 had tabled as a Q1 long-term candidate, is in fact the operative ceiling right now** — not a module bug. `object_creation` runs ~800k allocations through Go's GC; the dominant cost is `mallocgc` + write-barrier + tracing, none of which my fixes touched. The +42% drift vs reference.json is NOT a regression from a specific commit. It's a measurement artifact of noise in the reference baseline combined with Go GC cost that predates R35 anyway.
+Either way: **stop trying to close object_creation via scan/pointer changes**. That drift is accepted.
 
-The deepest mistake was trusting R35's bisect narrative without a direct causation check. A bisect says "this commit caused the drift"; it does NOT say "reverting the specific changes in that commit will close the drift". R35's knowledge doc assumed the former implied the latter. The new workflow did not question this assumption.
+## Lessons for the next round
 
-## What the workflow caught correctly
+The R28-R35 blog post called out the "trying harder at the same wall" pattern as the primary workflow failure mode. I'm one round away from matching it. Breaking the pattern:
 
-The revert discipline worked. Round 0's `round-direction.md` had an explicit failure criterion: "if object_creation does not close below the 5% fail threshold (0.802s), the round is reverted". I honored it. No "the number was off but the conclusion still holds" (CLAUDE.md rule 7). No scope creep into "maybe also try X and Y". Three `git reset` lines and the tree is back to Phase 9. One round cost: ~1.5 hours, about half the 3-hour budget.
+- Round 3 picks a DIFFERENT angle entirely — not GC, not allocation, not ScanGCRoots
+- Round 3 prediction is based on specific disassembly evidence, not a narrative from a knowledge doc
+- Round 3 scope is tightly bounded to a single instruction-level change
 
-## Lessons for the KB
+## Next: Round 3
 
-Both `kb/modules/runtime/table.md` and `kb/modules/runtime/vm.md`/`gc.md` Known gaps entries were **wrong** — or at least, promising more wall-time than they can deliver. They were written during Phase 5 based on R35's knowledge doc, not from direct measurement. KB cards should not promise performance impacts without a measurement citation.
+Pick from the LuaJIT-gap list (recursive benchmarks excluded — they're call-dominated and Tier 1's BLR already handles them as best it can):
 
-Action: update the three cards to note that "removing `shape *Shape`" and "tightening ScanGCRoots to high-water mark" were measured in Round 1 and **did not close the drift**. The entries can stay as structural observations but should be demoted from "Known gap" to "Observed but not wall-time-dominant".
+| Benchmark | JIT | LuaJIT | Gap |
+|-----------|----:|-------:|----:|
+| `sieve` | 0.088 | 0.010 | 8.8× |
+| `nbody` | 0.248 | 0.034 | 7.3× |
+| `spectral_norm` | 0.045 | 0.007 | 6.4× |
+| `matmul` | 0.123 | 0.022 | 5.6× |
+| `sort` | 0.051 | 0.010 | 5.1× |
+| `mandelbrot` | 0.063 | 0.058 | **1.09×** (near-optimal) |
 
-## Next: Round 2
+`mandelbrot` at 1.09× proves this JIT can be near-optimal when the hot loop is well-shaped. The 5–9× gaps on the others are about specific emit-layer costs, not fundamental limits.
 
-The Round 1 failure rules out the module-level story. This leaves two options:
-
-- **Q1 global**: the GC ceiling is real. Tier-2-only bump allocator for short-lived Tables — multi-round architectural project, requires user discussion.
-- **Q3 local**: the LuaJIT gap is the other target — mandelbrot 1.05×, nbody 7.3×, matmul 5.7× vs LuaJIT. Pick the benchmark where a specific emit-layer change has the clearest ROI.
-
-Round 2 direction to be written after round.sh is re-run and the actual drift picture is clean.
+Round 3 direction to be written after reading sieve's actual disasm — no pre-commitment to a specific fix yet.
