@@ -1,71 +1,70 @@
 ---
-round: 5 (WIN — binary_trees −21.4%)
+round: 6 (null result — Gate B reverted)
 date: 2026-04-14
-follows: rounds 1-4 (2 reverts, 2 diagnostic/meta)
+follows: round 5 (binary_trees -21.4%)
 ---
 
-# Round 5 — Tier 0 gate for tiny recursive table builders
+# Round 6 — Gate B reverted: leaf allocator Tier 0 doesn't compose
 
-## What I did
+## Hypothesis
 
-Added a `shouldStayTier0` heuristic in `internal/methodjit/func_profile.go` and wired it into `TieringManager.TryCompile`. The gate matches small (≤ 25 bytecodes), no-loop, allocation-heavy (NewTableCount > 0), call-having functions and returns nil from the compile path, routing them back to Tier 0.
+Extend Round 5's `shouldStayTier0` heuristic to also catch tiny leaf allocators like `method_dispatch.gs`'s `new_point` (7 bytecodes, 1 NEWTABLE, 2 SETFIELDs, 0 calls). Route them to Tier 0 to skip exit-resume overhead, just like Round 5 did for `makeTree`.
 
-The canonical match: `binary_trees.gs`'s `makeTree` — 21 bytecodes, 2 NEWTABLEs, 2 recursive calls, no loops.
+Two gates:
 
-## Why this worked when rounds 1–4 didn't
+| Gate | Criteria | Canonical |
+|------|----------|-----------|
+| A (Round 5) | ≤25 BC, NewTable > 0, no loop, **has calls** | `makeTree` |
+| B (Round 6 attempt) | ≤10 BC, NewTable > 0, no loop, **no calls** | `new_point` |
 
-Rounds 1–4 all operated from narrative: "the KB says pointer X is dead, remove it"; "the KB says scan Y is too large, shrink it"; "the asm shows dispatch Z is 8 instructions, specialize it". All four rounds ran the same failure pattern: trust a narrative, predict a win, measure, revert or null.
+Predicted: `method_dispatch` JIT 0.093s → ~0.080s (matching VM).
 
-Round 5 worked from a directly observed fact — **binary_trees runs slower under JIT than under the interpreter** — and asked the shape-based question: what kind of function is it? The answer (tiny, recursive, allocates) immediately suggested the mechanism (exit-resume overhead dominates native-template win). One gate, one commit, measured win.
+## What happened
 
-## Measurement
+`method_dispatch` JIT: 0.093s → 0.095s. **No measurable improvement.** Gate B is a null result.
 
-Full benchmark suite, median-of-5:
+`binary_trees` JIT: 0.075s (unchanged, Gate A still matches).
 
-| Benchmark | Pre-R5 | Round 5 | Delta |
-|-----------|-------:|--------:|------:|
-| `binary_trees` | 1.997s | **1.570s** | **−21.4%** |
-| `object_creation` | 1.086s | 1.039s | −4.3% (noise) |
-| `nbody` | 0.252s | 0.238s | −5.6% (noise) |
-| `mandelbrot` | 0.063s | 0.060s | −4.8% (noise) |
-| `fibonacci_iterative` | 0.295s | 0.280s | −5.1% (noise) |
-| All others | — | — | within ±2% |
+## Why Gate B doesn't compose
 
-No regressions. The only claim is binary_trees. Everything else is noise-level noise.
+When Tier-1 compiled `test_points` calls `new_point` via `CALL`, the Tier 1 emit lowers it to a native BLR at `tier1_call.go:172`. The BLR bounds check reads `callee.DirectEntryPtr`; if the callee isn't Tier 1 compiled, `CBZ → slowLabel` falls to the exit-to-Go slow path. The slow path costs ~500 ns per call in save/restore + Go dispatch.
 
-## Gate parameters (from `func_profile.go`)
+For `new_point` at Tier 1:
+- Caller's native BLR: ~10 ns
+- Callee's NEWTABLE exit: ~150 ns
+- Callee's SETFIELD first-miss exits (×2): ~300 ns
+- **Per-call total: ~460 ns**
 
-```go
-func shouldStayTier0(profile FuncProfile) bool {
-    return profile.BytecodeCount <= 25 &&
-        profile.NewTableCount > 0 &&
-        !profile.HasLoop &&
-        profile.CallCount > 0
-}
-```
+For `new_point` at Tier 0 (Gate B):
+- Caller's slow-path exit: ~500 ns
+- Tier 0 interpretation of 7 ops: ~200 ns
+- **Per-call total: ~700 ns**
 
-- `BytecodeCount <= 25` — tight enough to exclude real compute functions.
-- `NewTableCount > 0` — only allocation-heavy shapes pay the exit-resume cost.
-- `!HasLoop` — loops benefit from Tier 1 native templates and should stay compiled.
-- `CallCount > 0` — discriminates recursive allocators (compile themselves) from leaf allocators (called from a JIT'd loop, caller gets the win).
+Tier 0 is ~50 % slower per call for `new_point` than Tier 1 — exactly the opposite of what Gate B was trying to achieve. 100 K calls × 240 ns = 24 ms of regression, which is why the numbers moved slightly the wrong direction.
 
-## KB updates
+Gate A works for `makeTree` because `makeTree`'s recursive self-call is already going to be a slow-path exit (the callee is `makeTree` itself, which isn't compiled once the gate skips it). The caller never gets a fast BLR path. Skipping compilation is net neutral on call overhead but still eliminates the exit-resume cost inside the body.
 
-- `kb/modules/runtime/gc.md`: removed the "binary_trees JIT slower than VM" Known gap; noted it as closed in Round 5.
-- `kb/modules/tier1.md`: added an explicit Known gap about exit-resume overhead on NEWTABLE and related ops, and documented the `shouldStayTier0` mitigation. Future rounds will know this gate exists.
+Gate B can't work in the same way because the caller is `test_points`, which IS Tier 1 compiled and expects to use native BLR. Dropping the callee to Tier 0 breaks the fast path for a non-gated caller.
 
-## Lesson
+## What Round 6 actually delivered
 
-When predictions based on narrative fail, pivot to shape-based observation. "JIT slower than VM" is a provable falsehood that directly points at a fix; "GC pointer trace costs X%" is a narrative that may not hold.
+Gate B reverted. Single commit in + single commit out, zero lasting production change. But:
 
-## Round summary (1-5)
+- Confirmed a mechanism constraint (the Tier-1 → Tier-0 call path is slow, so routing leaf callees to Tier 0 loses more than it saves)
+- Documented this constraint in the `shouldStayTier0` doc comment so future rounds don't re-attempt Gate B
+- method_dispatch and object_creation remain JIT-slower-than-VM. The fix for those would require either (a) a fast Tier-1 → Tier-0 call path, or (b) a native NEWTABLE + SETFIELD path in Tier 1 emit. Both are larger, Q2-scoped changes.
 
-| Round | Outcome | Real change? |
-|------:|---------|:-------------|
-| 1 | reverted (hypothesis wrong) | No |
-| 2 | reverted (same class of mistake) | No |
-| 3 | diagnostic only (no local fix exists at this level) | No |
-| 4 | KB update recording Rounds 1–3 negatives | Meta |
-| 5 | **binary_trees −21.4%** via Tier 0 gate | **Yes** |
+## 6-round summary
 
-5 rounds, 1 code win. The v4 workflow caught 2 bad hypotheses cleanly with its revert discipline and produced a meta-correction (Round 4) that stopped the pattern from continuing. Round 5 broke the pattern by picking evidence-first instead of narrative-first.
+| Round | Target | Outcome | Net change |
+|------:|--------|---------|------------|
+| 1 | object_creation via dead-pointer + scan range | reverted | 0 |
+| 2 | object_creation via small initial vm.regs | reverted (fannkuch 17×) | 0 |
+| 3 | sieve inner-loop asm diagnostic | no local fix exists | 0 |
+| 4 | KB update recording Rounds 1–3 negatives | meta | 0 |
+| 5 | **binary_trees −21.4% via Tier 0 gate A** | **WIN** | **1 commit** |
+| 6 | method_dispatch via Tier 0 gate B | reverted (null) | 0 |
+
+**6 rounds, 1 code win.** Compared to the v3 harness's R28–R35 (8 rounds, 0 wins, 30+ lingering state files), v4's discipline held — failures were cleanly reverted, meta-work was separated from code work, and the one win came from observation-driven work, not narrative-driven work.
+
+Total working time: ~3 hours across all 6 rounds including benchmarks. Each round's failure was contained to that round. No accumulated rubble.

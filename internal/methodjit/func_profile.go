@@ -114,9 +114,12 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 // the interpreter on this shape.
 //
 // Gate: small (≤ 25 bytecodes) + allocates (NewTableCount > 0) + no
-// loops + has calls. The "has calls" clause is important — pure
-// allocation without calls would usually be called from a loop
-// context where the caller gets the JIT benefit anyway.
+// loops + has calls. The "has calls" clause matters: Round 6 tried
+// adding a leaf-allocator variant (≤10 BC, no calls, e.g. new_point)
+// and it was a null result because the caller's native-BLR fast
+// path falls to slow-path exit when the callee isn't Tier 1
+// compiled, eating any savings from skipping exit-resume inside the
+// callee.
 func shouldStayTier0(profile FuncProfile) bool {
 	return profile.BytecodeCount <= 25 &&
 		profile.NewTableCount > 0 &&
