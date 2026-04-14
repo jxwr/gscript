@@ -50,9 +50,10 @@ Metatable support via `metatable *Table`. Concurrency opt-in via `SetConcurrent(
 
 ## Known gaps
 
-- **`shape *Shape` field is write-only** (as of 2026-04-13). The JIT never reads the pointer — it only reads `shapeID uint32`. This field costs one traced pointer per table and is the primary contributor to the `object_creation +49%` drift vs `reference.json`. Removing the field and rewriting `applyShape` / `clearShape` to compute `shapeID` directly via `GetShapeID(skeys)` is a ~3-file, ~80 LOC forward fix.
+- **`shape *Shape` field is write-only** — the JIT reads only `shapeID uint32`. This field costs one traced Go pointer per table, which is a structural oddity. **Measured impact**: Round 1 removed the field and re-ran benchmarks; `object_creation` wall-time did NOT close (1.086s → 1.158s, within noise). The field's GC-trace cost is real but below the noise floor on all measured benchmarks. Removing it is a correctness cleanup, not a performance win. Do not promise wall-time from this.
 - **No transition stability for typed arrays**: writing a mixed value to an `ArrayFloat` table bifurcates to `ArrayMixed` and copies — no deoptimization record, no path back.
 - **`smallFieldCap` is hard-coded to 12**. No profile-driven tuning.
+- **SetTable's 4-way arrayKind dispatch** is ~8 ARM64 insns of runtime type switching before any actual store, repeated on every hot-loop store. See `kb/modules/emit/table.md` for the emit-layer view. A per-PC specialization (shape inline cache) would eliminate the dispatch for monomorphic sites but is a structural (Q2/Q1) change, not a cosmetic fix.
 
 ## Tests
 

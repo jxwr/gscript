@@ -41,9 +41,10 @@ The VM is what runs at Tier 0 (interpreter) and what the JIT exits to on deopt. 
 
 ## Known gaps
 
-- **ScanGCRoots scans the full register slice** (as of 2026-04-13). Post-R35 analysis identified this as ~25 percentage points of the `object_creation +49%` drift vs reference. A high-water-mark field in the VM would scan only `regs[:regHighWater]`, skipping the 2×-capacity tail.
-- **No generational GC knob**: Go GC handles everything, including the script heap. The GO runtime's write barrier fires for every SetField on a pointer-bearing Table; unboxed field kinds (ArrayBool, ArrayFloat) sidestep this, but the generic path pays.
+- **ScanGCRoots scans `vm.regs[:len(vm.regs)]`** and `len(vm.regs)` defaults to 1024 — so shallow benchmarks see 1024-slot scans even when only ~50 slots are live. **Measured impact**: Rounds 1 and 2 tried two different approaches to shrink the scan range (len/cap split in `EnsureRegs`, then a smaller initial slice). Neither produced a wall-time improvement on `object_creation` or any other benchmark, and both caused catastrophic regressions on other benchmarks (Round 1 broke nothing but didn't help; Round 2 broke `fannkuch` 17× because the JIT's cached `RegsEnd` went stale after a slice-swap reallocation). GC scan overhead is not the dominant cost on these benchmarks. Do not try this again without a direct measurement proving the scan is on the critical path first.
+- **No generational GC knob**: Go GC handles everything, including the script heap. The Go runtime's write barrier fires for every SetField on a pointer-bearing Table; unboxed field kinds (ArrayBool, ArrayFloat) sidestep this, but the generic path pays.
 - **Per-proto FieldCache / GlobalValCache live in the proto itself** — they survive across VM instances. An old proto reused by a new VM carries stale cache entries; `engine.globalCacheGen` bumping invalidates GetGlobal caches but not FieldCache.
+- **`RegsEnd` cache coherence** — the Tier 1 JIT caches `execCtx.RegsEnd = &regs[0] + len(regs)*8` at function entry via `tier1_manager.go:288`. `resyncRegs` refreshes it on exit-to-Go. But if `vm.regs` is REALLOCATED (not resliced) while the JIT is running — e.g. via a growth site that uses `newRegs := make(...); copy; vm.regs = newRegs` — the JIT's cached `RegsEnd` points into the freed old slice. This is a correctness footgun, not just a perf issue. Any change to `EnsureRegs` that changes allocation behaviour must preserve the `&regs[0]` pointer or be very careful about resync.
 
 ## Tests
 
