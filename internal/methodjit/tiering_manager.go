@@ -136,6 +136,14 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// Get the function profile (cached after first computation).
 	profile := tm.getProfile(proto)
 
+	// Some function shapes are worse off compiled: tiny recursive
+	// table-allocation builders pay more in Tier 1 exit-resume
+	// overhead than they save in native templates. See
+	// shouldStayTier0 in func_profile.go for the heuristic.
+	if shouldStayTier0(profile) {
+		return nil
+	}
+
 	// Use smart tiering to decide if this function should be promoted to Tier 2.
 	// shouldPromoteTier2 considers loops, arithmetic density, call patterns, and
 	// table ops. Functions with loops + calls + arithmetic are promoted at

@@ -27,6 +27,7 @@ type FuncProfile struct {
 	ArithCount    int  // ADD/SUB/MUL/DIV/MOD/UNM count
 	CallCount     int  // OP_CALL count (static, not runtime)
 	TableOpCount  int  // GETTABLE/SETTABLE/GETFIELD/SETFIELD count
+	NewTableCount int  // OP_NEWTABLE count (allocation pressure signal)
 	HasClosure    bool // contains OP_CLOSURE
 	HasUpval      bool // contains OP_GETUPVAL or OP_SETUPVAL
 	HasVararg     bool // contains OP_VARARG
@@ -60,6 +61,9 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 		// Table/field ops
 		case vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD:
 			p.TableOpCount++
+
+		case vm.OP_NEWTABLE:
+			p.NewTableCount++
 
 		// Loop indicators
 		case vm.OP_FORPREP:
@@ -99,6 +103,25 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 	}
 
 	return p
+}
+
+// shouldStayTier0 decides whether a function is better off interpreted
+// than baseline-compiled. The baseline JIT's exit-resume path for
+// NEWTABLE (and other non-native ops) costs ~100–200ns per exit. For
+// tiny recursive allocation builders — the canonical case is
+// binary_trees.gs's `makeTree` (21 bytecodes, 2 NEWTABLEs, 4 SETFIELDs,
+// 2 CALLs) — this overhead is measurable: Tier 1 runs ~25% slower than
+// the interpreter on this shape.
+//
+// Gate: small (≤ 25 bytecodes) + allocates (NewTableCount > 0) + no
+// loops + has calls. The "has calls" clause is important — pure
+// allocation without calls would usually be called from a loop
+// context where the caller gets the JIT benefit anyway.
+func shouldStayTier0(profile FuncProfile) bool {
+	return profile.BytecodeCount <= 25 &&
+		profile.NewTableCount > 0 &&
+		!profile.HasLoop &&
+		profile.CallCount > 0
 }
 
 // shouldPromoteTier2 decides whether a function should be promoted to Tier 2
