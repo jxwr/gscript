@@ -1,90 +1,69 @@
 ---
-round: 0 (dry-run)
-date: 2026-04-13
-diag_snapshot: diag/summary.md
+round: 1 (reverted)
+date: 2026-04-14
+outcome: hypothesis-wrong
+next_round: 2
 ---
 
-# Round Direction
+# Round 1 — Reverted (hypothesis wrong)
 
-## Evidence
+## What I predicted
 
-Top drifters vs frozen `benchmarks/data/reference.json`:
+| Benchmark | Current | Expected | Delta | Confidence |
+|-----------|--------:|---------:|------:|:-----------|
+| `object_creation` | 1.086s | ~0.80s | −26% | HIGH |
+| `sort` | 0.048s | ~0.043s | −10% | MEDIUM |
 
-| Benchmark | Reference | Latest | Drift | Status |
-|-----------|----------:|-------:|------:|:-------|
-| `object_creation` | 0.764s | 1.141s | **+49.35%** | FAIL |
-| `sort` | 0.042s | 0.051s | **+21.43%** | FAIL |
-| `closure_bench` | 0.027s | 0.028s | +3.70% | FLAG |
-| `table_array_access` | 0.094s | 0.097s | +3.19% | FLAG |
-| `fannkuch` | 0.048s | 0.049s | +2.08% | FLAG |
+Fix A: delete dead `shape *Shape` field from `runtime.Table`.
+Fix B: change `EnsureRegs` so `len(vm.regs)` is the tight bound and `cap` carries amortized 2× growth, letting `ScanGCRoots` scan fewer slots.
 
-All other benchmarks within ±1%. Histogram anomalies: 15 of 22 benchmarks show >50% memory-ops in their hottest proto — broad store/load dominance consistent with the baked-in GC-trace overhead.
+The KB cards `kb/modules/runtime/{table,vm,gc}.md` all listed these as concrete Known gaps. The Round 0 direction promoted them to Q2.
 
-Hottest-proto shape for `object_creation/<main>`: 5468 insns, 1297 loads, 1933 stores, 574 branches. The inline `new_vec3` leaf shows 208 insns with 44 loads + 85 stores for a function whose IR is one `NewTable` + three `SetField` — 129 memory ops for 3 field writes.
+## What happened
 
-## Q1 — Global architecture?
+After Fix A + Fix B + the `runtime.MakeNilSliceCap(64, 1024)` initial-length experiment, **object_creation did not close**. Two measurement passes (median-of-5):
 
-**Candidate exists, but not the right target for Round 1.**
+```
+benchmark           baseline  R1 run1  R1 run2
+object_creation     1.086     1.158    1.145
+sort                0.048     0.049    0.052
+mandelbrot          0.063     0.061    2.992     ← small-init experiment
+matmul              0.120     0.120    1.714     ← small-init experiment
+binary_trees        1.997     2.281    1.997
+string_bench        0.029     0.038    0.033
+```
 
-The histogram anomalies + GC ceiling (`kb/modules/runtime/gc.md` Known gaps) point to a long-term Q1: **Tier-2-only bump allocator for short-lived Tables**. Would require escape analysis, a new allocation tier, and a custom GC contract — multi-round, significant scope, user discussion required.
+object_creation moved the wrong direction. The small-initial-length experiment (trying to make ScanGCRoots actually benefit from the tight bound) produced catastrophic regressions on every float/arithmetic benchmark (mandelbrot 47×, matmul 14×, fannkuch 17×) because every JIT-promoted function started triggering `EnsureRegs` reslices in the Tier 1/Tier 2 dispatch path.
 
-Not now because the current regression isn't caused by the ceiling — it's a module-level bug masquerading as a ceiling problem.
+Reverted everything except the hook grandfather infrastructure.
 
-**Status: tabled.** Revisit after module-level fix validates the real ceiling position.
+## Why the prediction was wrong
 
-## Q2 — Module boundary / algorithm?
+Three things I got wrong, most important first:
 
-**YES — this is the target.**
+1. **ScanGCRoots scans `vm.regs[:len(vm.regs)]`, and `len(vm.regs)` defaults to 1024.** For object_creation (a shallow-recursion benchmark), `EnsureRegs` was never called — `len` stayed at 1024 forever. Shrinking len would have needed a change to `New()` to start small, which I tried, which blew up every float/arith benchmark by forcing constant reslices.
 
-Two concrete, documented fixes in the KB:
+2. **The `shape *Shape` removal was structurally correct but its wall-time contribution was too small to measure against the noise floor on allocation_heavy benchmarks.** R35's knowledge doc attributed "25 percentage points" to this field, but I never verified that attribution with a direct before/after measurement — I trusted the narrative. The actual saving was probably a few percent at best, lost in measurement variance.
 
-### Fix A: remove dead `shape *Shape` field from `runtime.Table`
+3. **The GC ceiling, which Round 0 had tabled as a Q1 long-term candidate, is in fact the operative ceiling right now** — not a module bug. `object_creation` runs ~800k allocations through Go's GC; the dominant cost is `mallocgc` + write-barrier + tracing, none of which my fixes touched. The +42% drift vs reference.json is NOT a regression from a specific commit. It's a measurement artifact of noise in the reference baseline combined with Go GC cost that predates R35 anyway.
 
-`kb/modules/runtime/table.md` Known gaps (lines 54-57):
+The deepest mistake was trusting R35's bisect narrative without a direct causation check. A bisect says "this commit caused the drift"; it does NOT say "reverting the specific changes in that commit will close the drift". R35's knowledge doc assumed the former implied the latter. The new workflow did not question this assumption.
 
-> The `shape *Shape` field is write-only (as of 2026-04-13). The JIT never reads the pointer — it only reads `shapeID uint32`. This field costs one traced pointer per table and is the primary contributor to the `object_creation +49%` drift vs `reference.json`. Removing the field and rewriting `applyShape` / `clearShape` to compute `shapeID` directly via `GetShapeID(skeys)` is a ~3-file, ~80 LOC forward fix.
+## What the workflow caught correctly
 
-**Grep verification**: no production code reads `t.shape` (only reads `t.shapeID`). Tier 1 inline cache at `tier1_table.go`, Tier 2 emit at `emit_table_field.go` — both load the uint32, not the pointer. The dead pointer is `internal/runtime/table.go:50`.
+The revert discipline worked. Round 0's `round-direction.md` had an explicit failure criterion: "if object_creation does not close below the 5% fail threshold (0.802s), the round is reverted". I honored it. No "the number was off but the conclusion still holds" (CLAUDE.md rule 7). No scope creep into "maybe also try X and Y". Three `git reset` lines and the tree is back to Phase 9. One round cost: ~1.5 hours, about half the 3-hour budget.
 
-**Expected impact**: removes 1 traced Go pointer per Table. `object_creation` allocates ~800k tables per run; each GC cycle visits one less pointer × 800k = significant trace work.
+## Lessons for the KB
 
-### Fix B: high-water-mark `ScanGCRoots`
+Both `kb/modules/runtime/table.md` and `kb/modules/runtime/vm.md`/`gc.md` Known gaps entries were **wrong** — or at least, promising more wall-time than they can deliver. They were written during Phase 5 based on R35's knowledge doc, not from direct measurement. KB cards should not promise performance impacts without a measurement citation.
 
-`kb/modules/runtime/vm.md` Known gaps:
+Action: update the three cards to note that "removing `shape *Shape`" and "tightening ScanGCRoots to high-water mark" were measured in Round 1 and **did not close the drift**. The entries can stay as structural observations but should be demoted from "Known gap" to "Observed but not wall-time-dominant".
 
-> ScanGCRoots scans the full register slice (as of 2026-04-13). Post-R35 analysis identified this as ~25 percentage points of the `object_creation +49%` drift vs reference. A high-water-mark field in the VM would scan only `regs[:regHighWater]`, skipping the 2×-capacity tail.
+## Next: Round 2
 
-**Grep verification**: `EnsureRegs` allocates at 2× capacity policy (`kb/modules/runtime/vm.md` invariant). `ScanGCRoots` walks `v.regs` unconditionally. Adding `regHighWater int` to the VM and updating it inside `EnsureRegs` is mechanical.
+The Round 1 failure rules out the module-level story. This leaves two options:
 
-**Expected impact**: removes trace of the 2×-capacity tail. Tail can be ~16k entries × (NaN-box filter check) × (GC cycles). Complements Fix A.
+- **Q1 global**: the GC ceiling is real. Tier-2-only bump allocator for short-lived Tables — multi-round architectural project, requires user discussion.
+- **Q3 local**: the LuaJIT gap is the other target — mandelbrot 1.05×, nbody 7.3×, matmul 5.7× vs LuaJIT. Pick the benchmark where a specific emit-layer change has the clearest ROI.
 
-### Scope
-
-- **Files touched**: `internal/runtime/table.go`, `internal/vm/vm.go`, plus tests.
-- **LOC**: ~80 source + ~50 test (per knowledge doc).
-- **Risk**: both are forward fixes to correctness commits (39b5ef3), neither weakens a correctness invariant. Coverage: existing `runtime/table_test.go`, `vm/gc_scan_test.go`.
-
-## Q3 — Local optimization?
-
-Tabled. Q2 is the correct level for the current evidence. Local pass/emit work would be premature until the regression is closed.
-
-## Prediction (calibrated, halved per CLAUDE.md rule 8)
-
-- `object_creation`: 1.141s → ~0.80s (−30%), lower bound −20%. HIGH confidence — bisect already identified 39b5ef3 as the root cause and both fixes are mechanical undos of specific sub-changes.
-- `sort`: 0.051s → ~0.045s (−12%). MEDIUM confidence — shares the ScanGCRoots cost but has less table allocation pressure.
-- `closure_bench`, `table_array_access`, `fannkuch`: likely drop below flag threshold. LOW confidence on specific magnitudes — these were already borderline.
-- Other benchmarks: zero change expected. LOW concern.
-
-## Round 1 plan sketch
-
-(Not to be executed in Round 0 — this is the forward-looking target for the first real v4 round.)
-
-1. Task 0: write a failing test — `TestObjectCreation_RegHighWater` asserts ScanGCRoots visits only the high-water-mark prefix, and a `TestTable_NoDeadShapePointer` regression test ensuring `Table.shape *Shape` field is absent.
-2. Task 1: Fix A — delete `shape *Shape` field; rewrite `applyShape`, `clearShape`, `LookupShapeByID` consumers. Verify no grep hits for `\.shape` on `*Table` receivers outside archived code.
-3. Task 2: Fix B — add `regHighWater` to VM struct, update `EnsureRegs` to track max write index, change `ScanGCRoots` slice bound.
-4. Verify: `bash scripts/diag.sh object_creation sort closure_bench table_array_access`; drift must close to within flag threshold.
-5. KB update: remove the two "Known gap" entries from `runtime/table.md` and `runtime/vm.md`/`runtime/gc.md`, bump `last_verified` date on those cards.
-
-## Dry-run outcome
-
-Round 0 was infrastructure validation, not an optimization round. No production code changed. `scripts/round.sh --no-bench` prep took ~30 seconds end-to-end (L1 index 3s + diag 25s + kb_check <1s). This document was produced in under 15 minutes from the `round.sh` completion banner — meeting the Round 0 success criterion #4 in `docs-internal/workflow-v4-plan.md`.
+Round 2 direction to be written after round.sh is re-run and the actual drift picture is clean.
