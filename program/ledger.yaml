@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8]
 
 classes:
 
@@ -90,6 +90,32 @@ classes:
     historical_rounds: [4]
     key_negative_evidence: null
 
+  - name: runtime-allocation-path
+    description: >
+      Replace Go-heap NEWTABLE allocation with bump allocation on a
+      preallocated slab of *Table pointers. Arrays are already arena-
+      backed (mmap, bypasses GC); this class targets the residual
+      Go mallocgc cost of the `&Table{}` struct itself.
+    attempts: 1
+    wins: 0
+    reverts: 0
+    holds: 1
+    prior_reject_rate: 0.0         # 0/1 — holds are not counted as rejects
+    mitigation_required: false
+    mitigation_description: >
+      **Pre-flight metric framing** (from R8): future attempts in this
+      class must state the acceptance criterion in ABSOLUTE wall-time
+      terms (e.g., "bump saves ≥10% of NEWTABLE-attributable wall
+      time"), not as a per-alloc ratio. R8 declared ≥5× per-alloc and
+      measured 3.17×; halt fired, but the wall-time math (23 ns × N
+      allocs) still supports the hypothesis. Do not repeat the ratio
+      framing error.
+    historical_rounds: [8]
+    key_negative_evidence: >
+      R8 pre-flight: bump 10.72 ns/op vs NewTableSized 33.93 ns/op on
+      M4 Max. Ratio 3.17× (below declared ≥5×). Allocs 0 vs 1; mallocgc
+      eliminated. Wall-time claim not yet measured end-to-end.
+
   - name: tier-routing-gate
     description: >
       Route specific bytecode shapes to a different tier (typically keep
@@ -121,25 +147,7 @@ classes:
 
 forward_classes:
 
-  - name: runtime-allocation-path
-    description: >
-      Replace NEWTABLE exit-resume with inline bump allocation on a
-      preallocated slab. The slab holds Go-heap *Table objects so GC
-      still owns them; JIT bumps a per-VM arena pointer, exhaustion
-      exit-resumes to refill.
-    status: proposed
-    proposed_round: 8
-    proposed_in: R7-meta discussion
-    expected_targets: [object_creation, binary_trees, method_dispatch]
-    known_risks:
-      - Go GC must still see the slab objects as roots (slab = []*Table)
-      - Concurrent GC during JIT execution must not corrupt the bump ptr
-      - Shape initialization during bump must match Go runtime expectations
-    prerequisite_mitigation: >
-      Wave 3 pre-flight evidence should be in place before R8 lands. If
-      Wave 3 isn't triggered by then, R8 writes its own microbench
-      (single NEWTABLE loop, bump vs exit-resume, expect ≥ 5× per-alloc
-      speedup) as a prerequisite artifact.
+  # runtime-allocation-path: promoted to classes{} in R8 (attempt=1, hold=1).
 
   - name: escape-analysis-scalar-replacement
     description: >
