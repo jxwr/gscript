@@ -1,0 +1,73 @@
+# Second meta round: Wave 2 activation.
+round: 10
+date: 2026-04-17
+follows: 9
+
+type: meta
+
+target:
+  benchmark: workflow
+  current_wall_sec: null
+  reference_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    Wave 2 trigger is met (≥3 v5 rounds, ≥6 classes, ledger-consulted).
+    Formalize: (1) dual-clause pre-flight acceptance schema in
+    rounds/TEMPLATE.yaml, (2) program/targets.yaml with per-benchmark
+    budgets + forward_classes addenda, (3) class-gate hypothesis-
+    lookup check in scripts/round.sh --gate.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    (1) Dual-clause pre-flight prevents R8's ratio-vs-wall-time framing
+        error from recurring without explicit deviation.
+    (2) targets.yaml gives Step 3 a fast per-benchmark priority list
+        instead of re-reading 28 KB cards + 22 benchmarks.
+    (3) class-gate script mechanically enforces rule #21 (ledger
+        consulted + mitigation cited if prior_reject_rate > 0.5).
+  counterfactual_check: >
+    The gate extension cannot make rounds worse: it only ADDS checks.
+    Worst case, a future round fails the gate and is forced to write
+    a mitigation — which is the desired behavior, not a regression.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description_cited: null
+  mitigation_description: null
+
+pre_flight:
+  required: []                      # meta rounds exempt
+  result: null
+  passed: null
+
+outcome:
+  status: win
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - rounds/TEMPLATE.yaml dual-clause pre_flight convention added
+    - program/targets.yaml (per-benchmark budgets + tier2-inline-cache forward class)
+    - scripts/round.sh --gate extended with class_gate/mitigation grep
+  verification:
+    - "bash scripts/round.sh --gate against R009.yaml passes"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null
+
+notes: >
+  Wave 3 trigger (≥10 classes + at least one auto-strategy-round fired)
+  is still distant. Estimated 3-5 more tactical rounds. forward_classes
+  additions this round (tier2-inline-cache) take the TOTAL class pool
+  (classes + forward_classes) to 8; once total ≥10, Wave 3 becomes eligible.

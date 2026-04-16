@@ -1,0 +1,129 @@
+# program/targets.yaml — per-benchmark wall-time goals (Wave 2).
+#
+# Read by Step 3 (Direction) when selecting a target benchmark. Per-
+# benchmark budgets bound how much wall-time a single round may spend
+# on compile + bench + iterate. Target gaps are the LuaJIT delta (where
+# LuaJIT numbers exist in reference.json); rounds that close a gap
+# update `best_so_far`.
+#
+# This file is append-and-edit (unlike round cards, which are append-
+# only). Budgets may be renegotiated as the project learns.
+
+version: 1
+updated: 2026-04-17
+schema_notes: >
+  - current_wall_sec is set from `benchmarks/data/latest.json` at
+    targets.yaml touch time; not auto-refreshed.
+  - luajit_wall_sec is NULL for benchmarks where LuaJIT doesn't run
+    the workload (GScript-only semantics).
+  - round_budget_hours is the 3-hour hard rule by default; shorter
+    budgets apply to rounds explicitly marked diagnostic or kb.
+
+benchmarks:
+
+  object_creation:
+    status: active
+    current_wall_sec: 0.990        # after R9
+    reference_wall_sec: 0.764
+    luajit_wall_sec: null
+    gap_to_reference_pct: 29.6     # (current - ref) / ref
+    next_hypothesis_classes: [runtime-allocation-path, escape-analysis-scalar-replacement]
+    round_budget_hours: 3
+
+  binary_trees:
+    status: active
+    current_wall_sec: 1.391        # after R5 + R9 compound
+    reference_wall_sec: 1.997
+    luajit_wall_sec: null
+    gap_to_reference_pct: -30.3    # already 30% below reference
+    next_hypothesis_classes: [runtime-allocation-path]
+    round_budget_hours: 3
+
+  sieve:
+    status: active-hard
+    current_wall_sec: 0.084
+    reference_wall_sec: 0.079
+    luajit_wall_sec: 0.010
+    gap_to_luajit_factor: 8.4
+    next_hypothesis_classes: [tier2-inline-cache]    # new forward class
+    round_budget_hours: 3
+    notes: >
+      R3 diagnostic found emit-layer optimization only gives ~2% of the
+      8.8× gap. Closing this needs per-PC monomorphic dispatch (IC-style)
+      — a new forward class, architecturally non-trivial.
+
+  method_dispatch:
+    status: active
+    current_wall_sec: 0.094
+    reference_wall_sec: null
+    luajit_wall_sec: null          # LuaJIT numbers were 0.000 (noise-level)
+    next_hypothesis_classes: [cross-call-shape-specialization, tier2-inline-cache]
+    round_budget_hours: 3
+
+  sort:
+    status: drift-alert
+    current_wall_sec: 0.048
+    reference_wall_sec: 0.042
+    luajit_wall_sec: 0.010
+    gap_to_reference_pct: 14.3     # drift detected in R8 diag
+    next_hypothesis_classes: [diagnostic]
+    round_budget_hours: 1           # small round — diagnose-only first
+    notes: >
+      +14% drift vs reference.json. Needs a round to identify what
+      landed in source between reference snapshot and now.
+
+  fannkuch:
+    status: stable
+    current_wall_sec: 0.047
+    reference_wall_sec: 0.048
+    luajit_wall_sec: 0.019
+    gap_to_luajit_factor: 2.5
+    next_hypothesis_classes: []
+
+  nbody:
+    status: stable
+    current_wall_sec: 0.244
+    reference_wall_sec: 0.248
+    luajit_wall_sec: 0.033
+    gap_to_luajit_factor: 7.4
+    next_hypothesis_classes: []
+
+  mandelbrot:
+    status: stable
+    current_wall_sec: 0.060
+    reference_wall_sec: 0.063
+    luajit_wall_sec: 0.053
+    gap_to_luajit_factor: 1.1       # nearly at LuaJIT parity
+    next_hypothesis_classes: []
+
+  fibonacci_iterative:
+    status: stable
+    current_wall_sec: 0.290
+    reference_wall_sec: 0.288
+    luajit_wall_sec: null
+    next_hypothesis_classes: []
+
+# --- new forward classes surfaced by Wave 2 ---
+
+forward_classes_addenda:
+  - name: tier2-inline-cache
+    description: >
+      Per-PC cached monomorphic dispatch for GetField / SetField /
+      GetTable / SetTable sites — LuaJIT-style inline caches. R3's
+      diagnostic showed emit-layer optimization cannot close the sieve
+      8.8× gap; IC-style dispatch is the structural answer.
+    status: proposed
+    proposed_round: R11+
+    expected_targets: [sieve, method_dispatch, matmul]
+    known_risks:
+      - Cache invalidation on shape change; must compose with R5's Tier 0 gate
+      - Guard code size balloon risk — must keep Tier 2 emit < threshold
+    prerequisite_mitigation: >
+      Requires an ADR (architecture round). R11 or later should be
+      architecture-type + KB update, not immediate tactical.
+
+round_policy:
+  tactical_default_budget_hours: 3
+  diagnostic_default_budget_hours: 1
+  meta_default_budget_hours: 2
+  # Budget violation → round auto-revert (hard rule #18).

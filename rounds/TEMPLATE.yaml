@@ -47,7 +47,23 @@ class_gate:
   mitigation_required: false        # true when prior_reject_rate > 0.5 and attempts >= 3
   mitigation_description: null      # required iff mitigation_required=true
 
-# --- pre-flight evidence (Wave 3; optional in Wave 1) ---
+# --- pre-flight evidence (Wave 2+; optional in Wave 1) ---
+#
+# Wave 2 convention (enforced after R10): any tactical round declaring a
+# pre_flight microbench SHOULD declare at least one per-op clause AND one
+# absolute wall-time clause. A per-op ratio alone is insufficient — R8
+# learned this the hard way. See program/ledger.yaml →
+# runtime-allocation-path.mitigation_description for the canonical case.
+#
+# Per-op clause shape (example):
+#   - description: …
+#     acceptance: bump_per_alloc_ns <= current_per_alloc_ns / 2.0
+#     halt_on_fail: true
+#
+# Wall-time clause shape (example):
+#   - description: …
+#     acceptance: predicted_wall_pct >= 5
+#     halt_on_fail: true
 pre_flight:
   required: []                      # list of microbench/oracle descriptions
   result: null                      # measured result vs expected

@@ -64,6 +64,48 @@ check_direction_gate() {
         return 4
     fi
     echo "Direction gate: $latest_card is fresh (newer than diag/summary.md)."
+
+    # Wave 2 addition: class_gate.ledger_consulted must be true.
+    # Greps the card for the literal "ledger_consulted: true" line.
+    if ! grep -q 'ledger_consulted: true' "$latest_card"; then
+        echo "ERROR: $latest_card does not declare class_gate.ledger_consulted = true." >&2
+        echo "       Step 3 (Direction) mandates consulting program/ledger.yaml." >&2
+        return 4
+    fi
+    echo "Class gate: ledger_consulted=true present in $latest_card."
+
+    # Wave 2 addition: if the card declares a hypothesis.class that lives
+    # under `classes:` in program/ledger.yaml with prior_reject_rate > 0.5
+    # AND attempts >= 3, a mitigation_description MUST be present in the
+    # card. This is a mechanical grep — soft signal only; Direction is
+    # still the human/agent's responsibility.
+    card_class=$(awk '/^hypothesis:/{flag=1; next} flag && /^  class:/{print $2; exit}' "$latest_card")
+    if [ -n "$card_class" ] && [ -f program/ledger.yaml ]; then
+        # crude YAML walk: find the class block, read prior_reject_rate + attempts
+        rate=$(awk -v c="$card_class" '
+            /^  - name: / {cur=$3}
+            cur==c && /^    prior_reject_rate:/ {print $2; exit}
+        ' program/ledger.yaml)
+        attempts=$(awk -v c="$card_class" '
+            /^  - name: / {cur=$3}
+            cur==c && /^    attempts:/ {print $2; exit}
+        ' program/ledger.yaml)
+        if [ -n "$rate" ] && [ -n "$attempts" ]; then
+            # Compare float > 0.5 and int >= 3 using awk
+            blocked=$(awk -v r="$rate" -v a="$attempts" 'BEGIN{if(r>0.5 && a>=3) print "yes"; else print "no"}')
+            if [ "$blocked" = "yes" ]; then
+                if ! grep -q 'mitigation_description_cited:\|mitigation_description:' "$latest_card" \
+                   || grep -Eq 'mitigation_description(_cited)?:\s*null' "$latest_card"; then
+                    echo "ERROR: class $card_class has prior_reject_rate=$rate, attempts=$attempts" >&2
+                    echo "       but $latest_card has no mitigation_description_cited." >&2
+                    echo "       Per rule #21, round type should flip to 'strategy'." >&2
+                    return 4
+                fi
+                echo "Class gate: $card_class blocked but mitigation cited in card."
+            fi
+        fi
+    fi
+
     return 0
 }
 
