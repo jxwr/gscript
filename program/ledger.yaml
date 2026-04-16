@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 classes:
 
@@ -123,6 +123,25 @@ classes:
       wall-time deltas (median-of-5): object_creation -6.3%, binary_trees
       -11.7%, table_field_access -11.9%, method_dispatch -3.1%. No
       regressions.
+
+  - name: correctness-bug-fix
+    description: >
+      Direct fixes to emitter / runtime correctness bugs surfaced by
+      diagnostics, test failures, or user reports. Exempt from pre-flight
+      (rule #2 — correctness first).
+    attempts: 1
+    wins: 1
+    reverts: 0
+    holds: 0
+    prior_reject_rate: 0.0
+    mitigation_required: false
+    mitigation_description: null
+    historical_rounds: [12]
+    key_negative_evidence: null
+    key_positive_evidence: >
+      R12: emitFloatBinOp intBinMod early-return bug fixed. Tier 2
+      compile of functions using % on potentially-float operands
+      now succeeds. Regression test in func_profile_test.go.
 
   - name: tier-routing-gate
     description: >
