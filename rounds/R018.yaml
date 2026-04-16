@@ -49,7 +49,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 0e3e529
   deliverables:
     - docs-internal/session-summary-r8-r18.md
   verification:
