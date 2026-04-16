@@ -1,0 +1,93 @@
+# First round written under v5 itself. The round's OUTPUT is v5 (meta).
+round: 7
+date: 2026-04-17
+follows: 6
+
+type: meta
+
+target:
+  benchmark: workflow         # meta round; target is the workflow, not a bench
+  current_wall_sec: null
+  reference_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    v4's round-loop shape produced 1 win in 6 rounds because nothing
+    read across rounds. Replacing it with a program loop (persistent
+    ledger + structured round cards + 1M-context reading discipline)
+    will improve the wins/rounds ratio and eliminate same-class reverts.
+  expected_gain_pct: null       # not measured in benchmarks
+  expected_gain_mechanism: >
+    (1) Hypothesis-class lookup at Step 3 prevents R1→R2 class repetition.
+    (2) Structured round cards + fixed revert_class enum make the ledger
+        mechanically updatable, not prose-dependent.
+    (3) Step 0 Recap + expanded Step 3 reading list force the agent to
+        re-read cross-round state every round — the artifacts stop being
+        sediment.
+    (4) Commit schema makes round outcomes grep-computable.
+  counterfactual_check: >
+    Simulated v5 against R1–R6: R2 would have been flipped to strategy
+    at Step 3 (prior_reject_rate=1.0 for go-gc-scan-reduction after R1).
+    R6 would have consulted tier-routing-gate's composability constraint
+    and added a Tier 1 → Tier 0 BLR cost microbench in pre-flight (Wave 3
+    blocks it, Wave 1 would not but documents the constraint). On no
+    benchmark does v5 make a round worse than v4 made it.
+
+class_gate:
+  ledger_consulted: true        # first round under v5
+  prior_reject_rate: 0.0        # workflow-evolution is a new class
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []                  # Wave 3 not active; meta rounds exempt anyway
+  result: null
+  passed: null
+
+outcome:
+  status: win                   # Wave 1 artifacts landed + gates green
+  bench_deltas: {}              # no benchmark impact (meta round)
+  regressions: []
+  commit: pending               # filled after this card commits
+  deliverables:
+    - docs-internal/workflow-v5-plan.md
+    - docs-internal/decisions/adr-workflow-v5.md
+    - rounds/TEMPLATE.yaml + README.md
+    - rounds/R001.yaml .. R007.yaml
+    - program/ledger.yaml (5 classes tracked + 3 forward_classes)
+    - CLAUDE.md v5 rewrite (7-step round shape, rules 21 + 22)
+    - scripts/round.sh --gate (direction-card freshness check)
+    - docs-internal/archive/ (v4 plan + final round-direction preserved)
+  verification:
+    - "bash scripts/round.sh --gate → pass"
+    - "bash scripts/kb_check.sh → OK (28 cards)"
+    - "go build ./... → clean"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: workflow-evolution
+
+# --- round meta ---
+notes: >
+  Wave 1 scope only. Wave 2 (program/targets.yaml + per-target budgets +
+  hypothesis-class lookup gate formalized) enters when: ≥ 3 rounds run
+  under v5, ledger has ≥ 6 classes, at least one round consulted the
+  ledger in direction.md. Wave 3 (pre-flight evidence gate + revert
+  autopsy schema + auto meta-round trigger) enters when: ledger has
+  ≥ 10 classes and at least one auto-strategy-round has fired.
+
+  Next round is R8 tactical: inline bump alloc for NEWTABLE
+  (runtime-allocation-path class, forward_classes entry). First real
+  use of the v5 apparatus — Step 0 Recap reads R1–R7 + ledger, Step 3
+  consults runtime-allocation-path and the tier-routing-gate
+  composability constraint, Step 4 (even without Wave 3) writes a
+  microbench showing bump alloc ≥ 5× faster per-NEWTABLE than the
+  current exit-resume path.
