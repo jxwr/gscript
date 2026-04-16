@@ -44,7 +44,7 @@ outcome:
   status: hold                          # diagnostic finding, no code change
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 78d997d
   findings: >
     1. quicksort proto: 1602 insns, 59% load/store (from diag stats).
        Hot pattern = GetTable + SetTable on integer keys.
