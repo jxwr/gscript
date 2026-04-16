@@ -86,7 +86,7 @@ outcome:
     nbody:    {from: 0.241, to: 0.244, pct: 1.2}              # noise
     mandelbrot: {from: 0.061, to: 0.060, pct: -1.6}           # noise
   regressions: []                   # fibonacci_iterative +3.9% is within historical noise band
-  commit: pending
+  commit: 6b3e84b
 
 revert_class: null
 revert_root_cause_location: null
