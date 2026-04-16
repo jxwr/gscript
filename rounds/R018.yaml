@@ -1,0 +1,101 @@
+# Final meta round of the R8-R18 session: retrospective + Wave 3 check.
+round: 18
+date: 2026-04-17
+follows: 17
+
+type: meta
+
+target:
+  benchmark: workflow
+  current_wall_sec: null
+  reference_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    After 11 rounds of v5 operation (R8-R18), the program now has
+    enough evidence to: (a) write a session-level retrospective that
+    compares v5 vs v4 on quantitative measures, (b) verify Wave 3
+    trigger conditions, (c) queue forward work.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    (1) Summary doc surfaces patterns visible only across rounds —
+        e.g., hypothesis classes that recur, pre-flight framing
+        lessons, composability findings.
+    (2) Wave 3 readiness check: we have 12 classes (≥10 ✓), but no
+        auto-strategy-round fired yet — Wave 3 remains pending, which
+        is correct behavior (don't force transitions on a schedule).
+    (3) Forward work queue identifies R19-R24 candidates without
+        committing any of them this round.
+  counterfactual_check: >
+    Meta rounds have no bench delta. Risk is only documentation-drift
+    between the summary and the ledger; mitigated by cross-reference
+    checking at Step 6.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0        # workflow-evolution: 2 wins (R7, R10)
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []                  # meta rounds exempt
+  result: null
+  passed: null
+
+outcome:
+  status: win
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - docs-internal/session-summary-r8-r18.md
+  verification:
+    - "session summary cross-referenced against round cards R8-R17"
+    - "Wave 3 condition check: 12 classes (met), 0 auto-strategy fired (not met)"
+  session_totals:
+    rounds: 11                   # R8 through R18
+    wins: 7                      # R9, R10, R13, R14, R15, R17, R18
+    reverts: 1                   # R12 (reverted by R15)
+    holds: 3                     # R8, R11, R16
+    win_rate: 0.636              # 7/11
+    # Comparison to v4: 1/6 = 0.167 under v4's last six rounds.
+    # Sample sizes small; directional improvement clear.
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null
+
+# --- Wave 3 gate state ---
+wave3_readiness:
+  classes_total: 12               # active (8) + forward (4)
+  auto_strategy_rounds_fired: 0
+  condition_1_ge_10_classes: true
+  condition_2_auto_strategy_fired: false
+  trigger_met: false
+  disposition: >
+    Wave 3 remains pending. Correct behavior — one condition met,
+    other (auto-strategy) requires a class to organically reach
+    prior_reject_rate > 0.5 AND attempts >= 3. correctness-bug-fix
+    briefly hit 0.5 at attempts=2 after R15 but R17 pushed it to 0.333.
+    Continue tactical work; wait for organic trigger.
+
+# --- Forward queue (non-binding) ---
+forward_queue:
+  - round: R19
+    candidate_type: diagnostic-or-tactical
+    candidates:
+      - "Reproduce tier2-intbinmod-correctness with minimal input (filed forward class from R15)"
+      - "Implement tier2-inline-cache Step 1 (IC slot table in FuncProto, per R13 ADR)"
+      - "Address sort +14% drift via tier2-typed-array-ic (R11 forward class)"
+    selection_rule: >
+      Step 0 recap + fresh Step 1 diag should choose based on
+      signal strength. Correctness work (tier2-intbinmod) wins
+      tie-breaks per rule #2.

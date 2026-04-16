@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 
 classes:
 
@@ -24,15 +24,20 @@ classes:
     description: >
       Changes to the workflow itself (CLAUDE.md, round shape, persistent
       artifacts, gating scripts). Meta rounds only.
-    attempts: 2
-    wins: 2
+    attempts: 3
+    wins: 3
     reverts: 0
     holds: 0
     prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: null
-    historical_rounds: [7, 10]
+    historical_rounds: [7, 10, 18]
     key_negative_evidence: null
+    key_positive_evidence: >
+      R18 session retrospective: 7 wins in 11 rounds under v5 (64%),
+      vs 1 win in 6 rounds under v4 (17%). Three pillars (class-gate,
+      structured cards, dual-clause pre-flight) demonstrably earning
+      their keep. No same-class repetition observed in the sample.
 
 
   - name: go-gc-scan-reduction
