@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 
 classes:
 
@@ -154,12 +154,12 @@ classes:
       Direct fixes to emitter / runtime correctness bugs surfaced by
       diagnostics, test failures, or user reports. Exempt from pre-flight
       (rule #2 — correctness first).
-    attempts: 2
-    wins: 1                   # R15 (revert of R12) counts as a win — restored correctness
+    attempts: 3
+    wins: 2                   # R15 revert + R17 framework
     reverts: 1                # R12 was REVERTED by R15
     holds: 0
-    prior_reject_rate: 0.5    # 1/2 — right at the mitigation threshold
-    mitigation_required: false    # attempts < 3, so rule 21 not triggered
+    prior_reject_rate: 0.333  # 1/3 after R17; below 0.5 threshold
+    mitigation_required: false
     mitigation_description: >
       **Test-coverage depth** (from R15 revert of R12): fixes in this
       class MUST be verified with production-scale iteration counts,
@@ -173,7 +173,7 @@ classes:
       tier-2 emit bug from reaching runtime. Before fixing, check
       whether the failure guards a deeper bug; search for latent
       issues in the same code path.
-    historical_rounds: [12, 15]
+    historical_rounds: [12, 15, 17]
     key_negative_evidence: >
       R12 (reverted): removed early return in emitFloatBinOp intBinMod
       to fix "unresolved label arith_done". But the fix exposed a
