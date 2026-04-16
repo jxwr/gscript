@@ -48,7 +48,7 @@ outcome:
   status: win               # ADR accepted
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: c67ddbf
   deliverables:
     - docs-internal/decisions/adr-tier2-inline-cache.md
   verification:
