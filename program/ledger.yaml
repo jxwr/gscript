@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
 classes:
 
@@ -124,6 +124,25 @@ classes:
       -11.7%, table_field_access -11.9%, method_dispatch -3.1%. No
       regressions.
 
+  - name: tier2-inline-cache
+    description: >
+      Per-PC inline caches for GetField/SetField/GetTable/SetTable in
+      Tier 2. Site-specific guard + direct memory access; miss path
+      falls through to generic dispatch. See adr-tier2-inline-cache.md.
+    attempts: 1               # R13 ADR accepted; counts as an attempt
+    wins: 1                   # architecture outcome = ADR accepted
+    reverts: 0
+    holds: 0
+    prior_reject_rate: 0.0
+    mitigation_required: false
+    mitigation_description: null
+    historical_rounds: [13]
+    key_negative_evidence: null
+    key_positive_evidence: >
+      ADR establishes guard+hit as the structural path for LuaJIT-gap
+      closure on sieve/sort/method_dispatch. Implementation deferred
+      to R14+ tactical rounds, one step at a time per the ADR plan.
+
   - name: correctness-bug-fix
     description: >
       Direct fixes to emitter / runtime correctness bugs surfaced by
@@ -190,18 +209,7 @@ forward_classes:
       - Composes with R5's Tier 0 gate? GetTable sites in Tier 0 paths unaffected.
       - Deopt when arrayKind changes mid-run (demoteToMixed path). Must invalidate.
 
-  - name: tier2-inline-cache
-    description: >
-      Per-PC cached monomorphic dispatch for GetField / SetField /
-      GetTable / SetTable sites — LuaJIT-style inline caches. Surfaced
-      by R3's structural conclusion (sieve) and R11's sort diagnostic.
-    status: proposed
-    proposed_round: R13+            # architecture ADR expected
-    proposed_in: R3 + R10 targets.yaml + R11
-    expected_targets: [sieve, method_dispatch, matmul, sort]
-    known_risks:
-      - Cache invalidation on shape change; must compose with R5's Tier 0 gate.
-      - Guard code size — must keep Tier 2 emit below the file_size_guard threshold.
+  # tier2-inline-cache: promoted to classes{} in R13 after ADR accepted.
 
   - name: escape-analysis-scalar-replacement
     description: >

@@ -1,0 +1,64 @@
+# Architecture round: ADR for tier2-inline-cache.
+round: 13
+date: 2026-04-17
+follows: 12
+
+type: architecture
+
+target:
+  benchmark: multi          # sieve + sort + method_dispatch + matmul
+  current_wall_sec: null
+  reference_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: tier2-inline-cache
+  claim: >
+    An IC per-PC cache for GetField/SetField/GetTable/SetTable is the
+    structural answer to the LuaJIT 8.8× gap (R3) and the sort drift
+    (R11). Both diagnostics converge on the same missing layer.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    Guard+hit is a single compare + branch + offset load, vs current
+    arrayKind switch + shape lookup + RawGetInt. LuaJIT closes similar
+    gaps this way. Per-site monomorphization captures the vast
+    majority of real-world access patterns (observed across sieve,
+    sort, matmul, method_dispatch).
+  counterfactual_check: >
+    Polymorphic sites DON'T benefit — they freeze to the current
+    generic dispatch. Benchmarks with many distinct shapes or
+    arrayKinds mid-run would hit the miss path often and pay more
+    than they save. Countermeasure: record miss-rate in diagnostics;
+    if miss rate > 30% for a site, consider increasing freeze
+    threshold or deopting.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0    # new class, promoted this round
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []              # architecture rounds exempt; ADR only
+  result: null
+  passed: null
+
+outcome:
+  status: win               # ADR accepted
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - docs-internal/decisions/adr-tier2-inline-cache.md
+  verification:
+    - "ADR cross-references: adr-tier2-design.md, kb table.md, R3, R11"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-inline-cache]
+  new_class_introduced: tier2-inline-cache    # promoted from forward_classes
