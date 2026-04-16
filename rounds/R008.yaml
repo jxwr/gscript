@@ -85,7 +85,7 @@ outcome:
   status: hold                       # null-result: halted at Step 4 per card
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: d2eba95
   preflight_artifact: internal/runtime/table_bumpalloc_preflight_test.go
 
 revert_class: data-premise-error     # acceptance metric mis-framed
