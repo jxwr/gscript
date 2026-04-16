@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
 classes:
 
@@ -99,30 +99,36 @@ classes:
       preallocated slab of *Table pointers. Arrays are already arena-
       backed (mmap, bypasses GC); this class targets the residual
       Go mallocgc cost of the `&Table{}` struct itself.
-    attempts: 2
-    wins: 1
+    attempts: 3
+    wins: 2
     reverts: 0
     holds: 1
     prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: >
-      **Pre-flight metric framing** (from R8, validated in R9): pre-flight
-      acceptance must include an ABSOLUTE wall-time clause, not a lone
-      per-alloc ratio. R9 used dual-clause (per-op ≥2× AND wall-time
-      estimate ≥5%) and succeeded.
+      **Pre-flight metric framing** (from R8, validated in R9+R14): pre-
+      flight acceptance must include an ABSOLUTE wall-time clause, not a
+      lone per-alloc ratio. R9 and R14 both used dual-clause.
 
       **Positive compose pattern** (from R9): runtime-level primitives
       (allocator swaps, constructor changes) compose across all tiers
-      automatically because every tier calls the same runtime. Unlike
-      tier-routing-gate's sideways-compose problem, this class is
-      structurally composable.
-    historical_rounds: [8, 9]
+      automatically.
+
+      **Multi-round exhaustion** (from R14): after the biggest single
+      cost (R9's Table struct) is eliminated, remaining wins in this
+      class are smaller (R14's skeys ≈ 3-10% predicted vs R9's 5-15%).
+      Expect diminishing returns; budget future rounds accordingly.
+    historical_rounds: [8, 9, 14]
     key_negative_evidence: null
     key_positive_evidence: >
-      R9: bump-slab for *Table eliminated 1 alloc/op per NEWTABLE. JIT
-      wall-time deltas (median-of-5): object_creation -6.3%, binary_trees
-      -11.7%, table_field_access -11.9%, method_dispatch -3.1%. No
-      regressions.
+      R9: bump-slab for *Table eliminated 1 alloc/op per NEWTABLE.
+      Median-of-5: object_creation -6.3%, binary_trees -11.7%,
+      table_field_access -11.9%, method_dispatch -3.1%.
+      R14: skeys slab eliminated 2nd mallocgc per NEWTABLE for
+      hashHint>0 tables. Microbench: make→slab 2.50× per-op.
+      Median-of-5: object_creation -4.4%, binary_trees -6.3% (compounded
+      from R9), method_dispatch -8.5%, fibonacci_iterative -3.8%.
+      No regressions.
 
   - name: tier2-inline-cache
     description: >
@@ -148,19 +154,36 @@ classes:
       Direct fixes to emitter / runtime correctness bugs surfaced by
       diagnostics, test failures, or user reports. Exempt from pre-flight
       (rule #2 — correctness first).
-    attempts: 1
-    wins: 1
-    reverts: 0
+    attempts: 2
+    wins: 1                   # R15 (revert of R12) counts as a win — restored correctness
+    reverts: 1                # R12 was REVERTED by R15
     holds: 0
-    prior_reject_rate: 0.0
-    mitigation_required: false
-    mitigation_description: null
-    historical_rounds: [12]
-    key_negative_evidence: null
+    prior_reject_rate: 0.5    # 1/2 — right at the mitigation threshold
+    mitigation_required: false    # attempts < 3, so rule 21 not triggered
+    mitigation_description: >
+      **Test-coverage depth** (from R15 revert of R12): fixes in this
+      class MUST be verified with production-scale iteration counts,
+      not token 2-call regression tests. R12's gcd(20,8) test passed;
+      math_intensive's million-iteration collatz hung indefinitely.
+      Future fixes must add at least one benchmark-scale regression
+      case before claiming win.
+
+      **Defensive vs genuine compile failures** (from R15): a tier-2
+      "unresolved label" is often DEFENSIVE — it prevents a deeper
+      tier-2 emit bug from reaching runtime. Before fixing, check
+      whether the failure guards a deeper bug; search for latent
+      issues in the same code path.
+    historical_rounds: [12, 15]
+    key_negative_evidence: >
+      R12 (reverted): removed early return in emitFloatBinOp intBinMod
+      to fix "unresolved label arith_done". But the fix exposed a
+      latent tier-2 correctness bug in intBinMod emit that made
+      collatz's int-int mod loop infinite (amplified over 1M
+      iterations). math_intensive hung at 100% CPU for 3+ min.
     key_positive_evidence: >
-      R12: emitFloatBinOp intBinMod early-return bug fixed. Tier 2
-      compile of functions using % on potentially-float operands
-      now succeeds. Regression test in func_profile_test.go.
+      R15: reverted R12 cleanly. math_intensive back to 0.065 s.
+      Root cause of the underlying tier-2 intBinMod bug deferred
+      to forward class tier2-intbinmod-correctness.
 
   - name: tier-routing-gate
     description: >
@@ -210,6 +233,22 @@ forward_classes:
       - Deopt when arrayKind changes mid-run (demoteToMixed path). Must invalidate.
 
   # tier2-inline-cache: promoted to classes{} in R13 after ADR accepted.
+
+  - name: tier2-intbinmod-correctness
+    description: >
+      Latent correctness bug in Tier 2 emit for intBinMod. R12
+      attempted to fix the "unresolved label" side effect; R15
+      showed a deeper bug: under the R12-enabled emit, collatz-style
+      int-int mod hot loops produce incorrect results (infinite
+      loop in math_intensive). Root cause is unknown; the symptom is
+      masked by keeping the original early-return in emitFloatBinOp.
+    status: proposed
+    proposed_round: null      # next correctness-priority round
+    proposed_in: R15 revert autopsy
+    expected_targets: [math_intensive, gcd-style functions]
+    known_risks:
+      - Re-fixing naively re-enables the hang. Any new fix must pass
+        the math_intensive production-scale regression.
 
   - name: escape-analysis-scalar-replacement
     description: >

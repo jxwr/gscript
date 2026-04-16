@@ -365,18 +365,12 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	case intBinMul:
 		asm.FMULd(jit.D0, jit.D0, jit.D1)
 	case intBinMod:
-		// Float mod is complex; deopt. emitDeopt emits an unconditional
-		// branch to deopt_epilogue; the instructions below are dead at
-		// runtime. We MUST NOT return here — the int-int fast path has
-		// already emitted `B(done)` and relies on `Label(done)` below
-		// to resolve. Returning early leaves `done` unresolved and the
-		// assembler fails finalize.
+		// Float mod is complex; deopt for now.
 		ec.emitDeopt(instr)
+		return
 	}
 
 	// Move float result back to GP and store.
-	// For intBinMod this code is unreachable at runtime (deopt took over)
-	// but must remain in the emitted stream so `done` binds correctly.
 	asm.FMOVtoGP(jit.X0, jit.D0)
 
 	asm.Label(done)
