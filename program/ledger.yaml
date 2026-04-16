@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
 classes:
 
@@ -63,19 +63,22 @@ classes:
     description: >
       Remove wasted instructions in Tier 2 emit (fused compare+branch,
       collapsed guards, reduced dispatch overhead).
-    attempts: 1
+    attempts: 2
     wins: 0
     reverts: 0
-    holds: 1        # R3 was diagnostic, no code change
+    holds: 2        # R3 + R11 both diagnostic
     prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: null
-    historical_rounds: [3]
+    historical_rounds: [3, 11]
     key_negative_evidence: >
-      R3's asm walk on sieve found 3 patterns worth ~2% of the 8.8× LuaJIT
-      gap — not 2×. The emit layer is NOT where the big wins live on the
-      current LuaJIT-gap benchmarks. Use this class only for ≤5% gains,
-      and only when nothing bigger is available.
+      R3 (sieve asm walk): 3 micro-patterns worth ~2% of the 8.8× LuaJIT
+      gap — not 2×. R11 (sort drift): drift cause is arrayKind dispatch
+      + larger Table struct cache footprint, NOT an emit-layer patch-
+      able pattern. In both cases the emit layer gave diagnostic signal
+      pointing to STRUCTURAL (IC-style) solutions, not micro-patches.
+      Use this class only for ≤5% gains, and only when nothing bigger
+      is available.
 
   - name: kb-correction
     description: >
@@ -153,6 +156,33 @@ classes:
 forward_classes:
 
   # runtime-allocation-path: promoted to classes{} in R8 (attempt=1, hold=1).
+
+  - name: tier2-typed-array-ic
+    description: >
+      Per-site ArrayKind cache for Tier 2 GetTable / SetTable emits.
+      When a site always hits ArrayInt (or ArrayFloat, etc.), emit a
+      shape-guarded inline load of t.intArray[key] and skip the
+      arrayKind switch.
+    status: proposed
+    proposed_round: null            # depends on tier2-inline-cache ADR first
+    proposed_in: R11 diagnostic
+    expected_targets: [sort, matmul, spectral_norm]
+    known_risks:
+      - Composes with R5's Tier 0 gate? GetTable sites in Tier 0 paths unaffected.
+      - Deopt when arrayKind changes mid-run (demoteToMixed path). Must invalidate.
+
+  - name: tier2-inline-cache
+    description: >
+      Per-PC cached monomorphic dispatch for GetField / SetField /
+      GetTable / SetTable sites — LuaJIT-style inline caches. Surfaced
+      by R3's structural conclusion (sieve) and R11's sort diagnostic.
+    status: proposed
+    proposed_round: R13+            # architecture ADR expected
+    proposed_in: R3 + R10 targets.yaml + R11
+    expected_targets: [sieve, method_dispatch, matmul, sort]
+    known_risks:
+      - Cache invalidation on shape change; must compose with R5's Tier 0 gate.
+      - Guard code size — must keep Tier 2 emit below the file_size_guard threshold.
 
   - name: escape-analysis-scalar-replacement
     description: >
