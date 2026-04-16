@@ -4,7 +4,7 @@ description: Table data type — associative array with typed native fast paths 
 files:
   - path: internal/runtime/table.go
   - path: internal/runtime/shape.go
-last_verified: 2026-04-13
+last_verified: 2026-04-17
 ---
 
 # Runtime Table
@@ -24,8 +24,8 @@ Metatable support via `metatable *Table`. Concurrency opt-in via `SetConcurrent(
 
 - `type Table struct` — the struct itself (see `internal/runtime/table.go:28`)
 - `type ArrayKind uint8` — `ArrayMixed | ArrayInt | ArrayFloat | ArrayBool`
-- `func NewTable() *Table`
-- `func NewTableSized(arrayHint, hashHint int) *Table`
+- `func NewTable() *Table` — bump-allocates the `*Table` from `Heap.tableSlab` (R9).
+- `func NewTableSized(arrayHint, hashHint int) *Table` — bump-allocates the `*Table` struct from `Heap.tableSlab` (R9); for `hashHint > 0`, `skeys` comes from `Heap.stringSlab` (R14) instead of `make([]string, 0, hashHint)`.
 - `func (t *Table) GetField(key string) Value` — string-keyed lookup; Tier 1 inline cache bypasses this
 - `func (t *Table) SetField(key string, v Value)` — shape-transition on first set; fires write barrier on pointer-bearing slots
 - `func (t *Table) GetIndex(i int64) Value` / `SetIndex(i int64, v Value)` — array-part access; native fast paths dispatch on ArrayKind
@@ -53,7 +53,7 @@ Metatable support via `metatable *Table`. Concurrency opt-in via `SetConcurrent(
 - **`shape *Shape` field is write-only** — the JIT reads only `shapeID uint32`. This field costs one traced Go pointer per table, which is a structural oddity. **Measured impact**: Round 1 removed the field and re-ran benchmarks; `object_creation` wall-time did NOT close (1.086s → 1.158s, within noise). The field's GC-trace cost is real but below the noise floor on all measured benchmarks. Removing it is a correctness cleanup, not a performance win. Do not promise wall-time from this.
 - **No transition stability for typed arrays**: writing a mixed value to an `ArrayFloat` table bifurcates to `ArrayMixed` and copies — no deoptimization record, no path back.
 - **`smallFieldCap` is hard-coded to 12**. No profile-driven tuning.
-- **SetTable's 4-way arrayKind dispatch** is ~8 ARM64 insns of runtime type switching before any actual store, repeated on every hot-loop store. See `kb/modules/emit/table.md` for the emit-layer view. A per-PC specialization (shape inline cache) would eliminate the dispatch for monomorphic sites but is a structural (Q2/Q1) change, not a cosmetic fix.
+- **SetTable's 4-way arrayKind dispatch** is ~8 ARM64 insns of runtime type switching before any actual store, repeated on every hot-loop store. See `kb/modules/emit/table.md` for the emit-layer view. R13 ADR (`docs-internal/decisions/adr-tier2-inline-cache.md`) accepts per-PC inline caches as the structural answer; implementation is staged across R14+ tactical rounds. Per-site ArrayKind caching is the forward class `tier2-typed-array-ic`.
 
 ## Tests
 

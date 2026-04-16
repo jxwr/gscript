@@ -1,0 +1,58 @@
+# KB sync round after R9, R14 landed real code.
+round: 16
+date: 2026-04-17
+follows: 15
+
+type: kb
+
+target:
+  benchmark: multi
+  current_wall_sec: null
+  reference_wall_sec: null
+
+hypothesis:
+  class: kb-correction
+  claim: >
+    kb/modules/runtime/gc.md + table.md still declared "no custom
+    bump allocator" and treated the object_creation drift as
+    "unmovable Go GC cost." R9 and R14 both closed large pieces of
+    that ceiling via runtime-allocation-path (bump slabs for *Table
+    and []string). The KB must reflect what's now true.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    Future rounds reading the cards should see the ACTUAL structure
+    of the allocation path (tableSlab + stringSlab), not stale
+    narrative.
+  counterfactual_check: >
+    (Not required for KB rounds.)
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: hold                 # KB-only, no production code change
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  kb_cards_edited:
+    - kb/modules/runtime/gc.md       # remove "no custom bump allocator"; document R9+R14 impact; demote drift from "unmovable" to "tractable via runtime-allocation-path"
+    - kb/modules/runtime/table.md    # NewTable* signatures now document which slab each allocation comes from; SetTable dispatch gap cross-links the R13 ADR
+  verification:
+    - "bash scripts/kb_check.sh → OK (28 cards)"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [kb-correction]
+  new_class_introduced: null

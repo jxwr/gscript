@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
 classes:
 
@@ -83,14 +83,14 @@ classes:
   - name: kb-correction
     description: >
       Rewrite KB cards when measurement contradicts their narrative claims.
-    attempts: 1
+    attempts: 2
     wins: 0
     reverts: 0
-    holds: 1
+    holds: 2
     prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: null
-    historical_rounds: [4]
+    historical_rounds: [4, 16]
     key_negative_evidence: null
 
   - name: runtime-allocation-path
