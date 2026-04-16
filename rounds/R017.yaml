@@ -59,7 +59,7 @@ outcome:
   status: win                      # test framework shipped; both seed cases green
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 33bed30
   deliverables:
     - internal/methodjit/production_scale_regression_test.go
   verification:
