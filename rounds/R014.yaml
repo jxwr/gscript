@@ -77,7 +77,7 @@ outcome:
     matmul:               {from: 0.115, to: 0.115, pct: 0.0}
     math_intensive:       {from: 0.069, to: 0.068, pct: -1.4}   # confirms R12 revert
   regressions: []
-  commit: pending
+  commit: d02df59
   deliverables:
     - internal/runtime/string_slab.go
     - internal/runtime/string_slab_preflight_test.go
