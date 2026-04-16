@@ -51,7 +51,7 @@ outcome:
   status: win
   bench_deltas: {}          # correctness fix; perf deltas covered in R13+
   regressions: []
-  commit: pending
+  commit: 32dd6fc
   deliverables:
     - internal/methodjit/emit_call.go — remove early return in intBinMod
     - internal/methodjit/func_profile_test.go — R12 regression test upgraded
