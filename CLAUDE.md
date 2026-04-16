@@ -17,10 +17,10 @@ These are compressions of expensive lessons. Each is present-tense, grep-able, o
 
 ### Diagnostics and measurement
 4. **Profile before optimizing.** JIT code is opaque to `pprof` — use ARM64 disasm (`Diagnose()`), not Go profilers.
-5. **Only `compileTier2()` / `RunTier2Pipeline` / `TieringManager.CompileForDiagnostics` produce authoritative Tier 2 evidence.** Parallel pipelines (`profileTier2Func`, hand-rolled `NewTier2Pipeline` sequences) are banned because they drift from production.
-6. **Median-of-N for every benchmark comparison.** Single-shot numbers are ±10% noise on a ±5% signal. Default `--runs=5` for publish-grade, `--runs=3` for mid-round checks.
-7. **Contradicted diagnostic data halts the round.** The phrase "the number was off but the conclusion still holds" is never valid. Root-cause the tool first.
-8. **IR instruction-count savings do not imply wall-time savings.** M4 executes 6–8 instructions per cycle; removed guards are often free. Always validate with benchmarks.
+5. **Only `compileTier2()` / `RunTier2Pipeline` / `TieringManager.CompileForDiagnostics` produce authoritative Tier 2 evidence.** Parallel pipelines are banned — they drift from production.
+6. **Median-of-N for every benchmark comparison.** Default `--runs=5` publish, `--runs=3` mid-round.
+7. **Contradicted diagnostic data halts the round.** Root-cause the tool first; "number off but conclusion holds" is never valid.
+8. **IR instruction-count savings do not imply wall-time savings.** M4 is 6–8-wide superscalar; removed guards are often free. Always validate with benchmarks.
 
 ### Architecture
 9. **Architecture-first target selection.** Every round asks in order: (Q1) global architecture? (Q2) module boundary? (Q3) local pass/emit? Only Q3 proceeds without user discussion.
@@ -34,25 +34,41 @@ These are compressions of expensive lessons. Each is present-tense, grep-able, o
 15. **Test files mirror source:** `foo.go` → `foo_test.go`.
 16. **Commit per task.** Each working step is its own commit.
 
-### Workflow
+### Workflow (v5)
 17. **One Claude session per round.** No multi-session phase chaining.
 18. **Three-hour round budget.** Over budget → auto-revert.
-19. **Only mechanical signals gate a round:** reference.json drift, `kb_check.sh` freshness, test failure, scope-budget breach.
+19. **Only mechanical signals gate a round:** `reference.json` drift, `kb_check.sh` freshness, test failure, scope-budget breach, **missing/stale `rounds/NNN.yaml`**.
 20. **Sunk cost is never a reason to keep broken code.**
+21. **Hypothesis-class lookup is mandatory at Step 3.** Grep `program/ledger.yaml`. If `prior_reject_rate > 0.5` and `attempts >= 3`, write a `mitigation_description` in the round card or flip the round type to `strategy`.
+22. **Round-closing commits use the schema:** `round N [win|revert|hold|diag|KB|meta]: <one-liner>`. Makes the ledger grep-computable.
 
-## Round shape
+## Round shape (v5)
 
-A round is a single session with six internal steps. No orchestrator.
+A round is a single session with seven internal steps. No orchestrator.
 
 ```
-1. Refresh diagnostics     scripts/diag.sh all          → diag/
-2. KB health check         scripts/kb_index.sh          → kb/index/
-                           scripts/kb_check.sh          (blocks on staleness)
-3. Three-level direction   Read diag/summary.md + kb/modules/architecture.md
-                           Q1 → Q2 → Q3 priority; write direction.md
-4. Act                     TDD, bounded by direction.md scope
-5. Verify                  Re-run diag; diff; pass or revert
-6. KB update               Edit any card whose semantics changed; separate commit
+0. Recap         Read last 8 rounds/*.yaml + program/ledger.yaml +
+                  last 5 revert autopsies. Identify class patterns.
+1. Diag          scripts/diag.sh all                 → diag/
+2. KB check      scripts/kb_index.sh                 → kb/index/
+                  scripts/kb_check.sh                 (blocks on staleness)
+3. Direction     Read: program/ledger.yaml + all kb/modules/*.md (28 cards)
+                       + diag/summary.md + 3-5 relevant diag/<bench>/
+                       + last 20 rounds/*.yaml + last 5 revert autopsies
+                  Write: rounds/NNN.yaml with identity, type, target,
+                  hypothesis (class + claim + expected_gain_pct +
+                  expected_gain_mechanism + counterfactual_check),
+                  class_gate (ledger_consulted=true, prior_reject_rate,
+                  mitigation if required).
+                  Q1 → Q2 → Q3 priority; only Q3 autonomous.
+4. Pre-flight    (Wave 3; optional in Wave 1/2.) Microbench or
+                  Diagnose-oracle confirming predicted cost shape.
+5. Act           TDD, bounded by round card scope.
+6. Verify        Re-run diag + median-of-N bench. Pass or revert.
+7. Close         Fill round card outcome + revert fields if applicable.
+                  Update program/ledger.yaml (append to classes_touched).
+                  Commit with schema: round N [type]: <one-liner>.
+                  Separate KB update commit if card semantics changed.
 ```
 
 ## Directory pointers
@@ -60,22 +76,31 @@ A round is a single session with six internal steps. No orchestrator.
 | Path | Purpose |
 |------|---------|
 | `CLAUDE.md` | This file — hard rules + round shape |
-| `docs-internal/workflow-v4-plan.md` | Full rationale for the v4 rebuild |
+| `rounds/` | **v5.** Per-round structured cards. `TEMPLATE.yaml` is the schema. |
+| `program/ledger.yaml` | **v5.** Hypothesis classes + priors, aggregated across rounds. |
+| `docs-internal/workflow-v5-plan.md` | v5 design, three pillars, wave criteria |
+| `docs-internal/decisions/adr-workflow-v5.md` | v4→v5 transition ADR |
 | `docs-internal/architecture/overview.md` | Tiers, pipeline, register convention |
 | `docs-internal/architecture/constraints.md` | Mechanical architectural constraints |
 | `docs-internal/decisions/` | ADRs |
 | `docs-internal/diagnostics/` | `Diagnose()`, IR pipeline, deopt debugging |
 | `docs-internal/known-issues.md` | Current known bugs |
+| `docs-internal/archive/` | Dead workflow docs (v3, v4). Do not read. |
 | `docs/` | Blog journal — permanent record of the exploration |
 | `kb/architecture.md` | Top-level invariants |
-| `kb/modules/` | 26 module cards (schema-enforced) |
+| `kb/modules/` | 28 module cards (schema-enforced) |
 | `kb/index/` | L1 mechanical symbol index (auto-generated) |
 | `scripts/diag.sh` | Production-parity diagnostic dump |
 | `scripts/kb_index.sh` | Regenerate L1 index |
 | `scripts/kb_check.sh` | Validate L2 cards against L1 + git blob SHAs |
+| `scripts/round.sh` | Mechanical prep for Steps 1–2; direction gate at Step 4 |
 | `benchmarks/data/reference.json` | Frozen baseline — never rotates |
 | `opt/archive/v3/` | Dead v3 harness state. Do not read. |
 
 ## Doc-sync rule
 
 See `.claude/rules/doc-sync.md`. On any architectural decision, update the relevant KB card or ADR in the same session. Never leave docs drifted.
+
+## Memory hygiene
+
+The round card + ledger ARE the cross-round memory. They supersede prose notes. When the round card and a prose doc disagree, the round card wins. `docs-internal/round-direction.md` is deprecated — do not read or write it.

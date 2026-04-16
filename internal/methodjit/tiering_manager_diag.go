@@ -14,7 +14,7 @@
 // regardless of whether the caller took the production path or the diag
 // path.
 //
-// See CLAUDE.md rule 5 and docs-internal/workflow-v4-plan.md §Diagnostic tool.
+// See CLAUDE.md rule 5 and docs-internal/workflow-v5-plan.md.
 
 package methodjit
 
