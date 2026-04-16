@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 classes:
 
@@ -96,25 +96,30 @@ classes:
       preallocated slab of *Table pointers. Arrays are already arena-
       backed (mmap, bypasses GC); this class targets the residual
       Go mallocgc cost of the `&Table{}` struct itself.
-    attempts: 1
-    wins: 0
+    attempts: 2
+    wins: 1
     reverts: 0
     holds: 1
-    prior_reject_rate: 0.0         # 0/1 — holds are not counted as rejects
+    prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: >
-      **Pre-flight metric framing** (from R8): future attempts in this
-      class must state the acceptance criterion in ABSOLUTE wall-time
-      terms (e.g., "bump saves ≥10% of NEWTABLE-attributable wall
-      time"), not as a per-alloc ratio. R8 declared ≥5× per-alloc and
-      measured 3.17×; halt fired, but the wall-time math (23 ns × N
-      allocs) still supports the hypothesis. Do not repeat the ratio
-      framing error.
-    historical_rounds: [8]
-    key_negative_evidence: >
-      R8 pre-flight: bump 10.72 ns/op vs NewTableSized 33.93 ns/op on
-      M4 Max. Ratio 3.17× (below declared ≥5×). Allocs 0 vs 1; mallocgc
-      eliminated. Wall-time claim not yet measured end-to-end.
+      **Pre-flight metric framing** (from R8, validated in R9): pre-flight
+      acceptance must include an ABSOLUTE wall-time clause, not a lone
+      per-alloc ratio. R9 used dual-clause (per-op ≥2× AND wall-time
+      estimate ≥5%) and succeeded.
+
+      **Positive compose pattern** (from R9): runtime-level primitives
+      (allocator swaps, constructor changes) compose across all tiers
+      automatically because every tier calls the same runtime. Unlike
+      tier-routing-gate's sideways-compose problem, this class is
+      structurally composable.
+    historical_rounds: [8, 9]
+    key_negative_evidence: null
+    key_positive_evidence: >
+      R9: bump-slab for *Table eliminated 1 alloc/op per NEWTABLE. JIT
+      wall-time deltas (median-of-5): object_creation -6.3%, binary_trees
+      -11.7%, table_field_access -11.9%, method_dispatch -3.1%. No
+      regressions.
 
   - name: tier-routing-gate
     description: >

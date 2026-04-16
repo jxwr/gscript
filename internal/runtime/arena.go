@@ -127,6 +127,7 @@ func (a *Arena) Free() {
 type Heap struct {
 	arenas    [numSizeClasses]*Arena
 	overPages [][]byte // dedicated mmap pages for oversized allocations
+	tableSlab tableSlab
 }
 
 // NewHeap creates a Heap with one Arena per size class.

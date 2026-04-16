@@ -76,16 +76,16 @@ func cleanHashKey(key Value) Value {
 
 // NewTable creates a new empty table (non-concurrent by default).
 func NewTable() *Table {
-	arr := DefaultHeap.AllocValues(1, 1)
-	return &Table{
-		array:     arr,
-		keysDirty: true,
-	}
+	t := DefaultHeap.AllocTable()
+	t.array = DefaultHeap.AllocValues(1, 1)
+	t.keysDirty = true
+	return t
 }
 
 // NewTableSized creates a table with pre-allocated capacity hints.
 func NewTableSized(arrayHint, hashHint int) *Table {
-	t := &Table{keysDirty: true}
+	t := DefaultHeap.AllocTable()
+	t.keysDirty = true
 	if arrayHint > 0 {
 		t.array = DefaultHeap.AllocValues(1, arrayHint+1)
 	} else {
