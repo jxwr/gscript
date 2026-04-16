@@ -92,7 +92,7 @@ func NewTableSized(arrayHint, hashHint int) *Table {
 		t.array = DefaultHeap.AllocValues(1, 1)
 	}
 	if hashHint > 0 && hashHint <= smallFieldCap {
-		t.skeys = make([]string, 0, hashHint)
+		t.skeys = DefaultHeap.AllocStringKeys(hashHint)
 		t.svals = DefaultHeap.AllocValues(0, hashHint)
 	}
 	return t

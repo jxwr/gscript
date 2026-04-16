@@ -75,7 +75,7 @@ outcome:
   bench_deltas:
     math_intensive: {from: infinite_hang, to: 0.065, pct: -100}
   regressions: []
-  commit: pending
+  commit: dbc3fe1
   deliverables:
     - internal/methodjit/emit_call.go — restored early `return` in intBinMod
     - internal/methodjit/func_profile_test.go — restored tolerant assertions
