@@ -49,7 +49,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: c11f3e8
   deliverables:
     - rounds/TEMPLATE.yaml dual-clause pre_flight convention added
     - program/targets.yaml (per-benchmark budgets + tier2-inline-cache forward class)
