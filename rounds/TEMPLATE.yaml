@@ -1,0 +1,73 @@
+# rounds/TEMPLATE.yaml — schema for a v5 round card.
+#
+# One card per round. Written at Step 3 (Direction), finalized at Step 7
+# (Close). Committed in the round's closing commit. Cards are append-only
+# history — never edited after the round closes.
+#
+# All fields are required unless marked "optional".
+
+# --- identity ---
+round: NNN                    # monotonic, matches rounds/NNN.yaml filename
+date: YYYY-MM-DD              # round start (local date is fine)
+follows: NNN-1                # previous round id (or "v5-bootstrap" for R7)
+
+# --- classification ---
+type: tactical                # one of: tactical | architecture | strategy | meta | diagnostic | kb
+# tactical      = specific optimization, code change, benchmark target
+# architecture  = no code, outputs an ADR or pass design
+# strategy      = no code, rewrites direction based on ledger pattern
+# meta          = changes the workflow itself
+# diagnostic    = pure measurement, documents findings
+# kb            = KB-only update
+
+# --- target ---
+target:
+  benchmark: object_creation        # one benchmark, or "multi" for cross-benchmark mechanism
+  current_wall_sec: 1.039           # median-of-5 at round start
+  reference_wall_sec: 0.764         # from benchmarks/data/reference.json
+  luajit_wall_sec: null             # optional, from reference.json if known
+  gap_factor: null                  # optional, current/luajit
+
+# --- hypothesis ---
+hypothesis:
+  class: runtime-allocation-path    # must match a ledger.yaml class or introduce a new one
+  claim: >
+    One-sentence description of the predicted mechanism and effect.
+  expected_gain_pct: [25, 35]       # [low, high]; null for non-tactical rounds
+  expected_gain_mechanism: >
+    The causal chain: why this change produces that gain.
+  counterfactual_check: >
+    Brief in-writing simulation: what happens on benchmarks OTHER than the
+    target? If this breaks any of them, how?
+
+# --- class gate (Step 3 output) ---
+class_gate:
+  ledger_consulted: true            # must be true; Step 3 requires it
+  prior_reject_rate: 0.0            # from ledger.yaml at round start
+  mitigation_required: false        # true when prior_reject_rate > 0.5 and attempts >= 3
+  mitigation_description: null      # required iff mitigation_required=true
+
+# --- pre-flight evidence (Wave 3; optional in Wave 1) ---
+pre_flight:
+  required: []                      # list of microbench/oracle descriptions
+  result: null                      # measured result vs expected
+  passed: null                      # boolean; null in Wave 1
+
+# --- outcome (filled at Step 7) ---
+outcome:
+  status: pending                   # pending | win | revert | hold | null-result
+  bench_deltas: {}                  # {benchmark: {from: X.XXXs, to: Y.YYYs, pct: Z}}
+  regressions: []                   # list of benchmarks that regressed
+  commit: null                      # commit sha of the closing commit
+
+# --- revert autopsy (required iff status=revert) ---
+revert_class: null                  # cost-model-error | compose-failure | data-premise-error |
+                                    # correctness | scope-breach | null
+revert_root_cause_location: null    # file:line or module
+revert_cost_model_delta: null       # predicted vs actual, numerical
+revert_prevention: null             # what gate would have caught this pre-commit
+
+# --- ledger update (Step 7) ---
+ledger_update:
+  classes_touched: []               # list of hypothesis classes whose counters changed
+  new_class_introduced: null        # name of new class if applicable

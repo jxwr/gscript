@@ -1,0 +1,150 @@
+# program/ledger.yaml — hypothesis-class register, aggregated across all rounds.
+#
+# Written by Step 7 (Close) of every round. Read by Step 0 (Recap) and Step 3
+# (Direction) of every round. This is the cross-round memory that v4 lacked.
+#
+# Each entry aggregates one hypothesis class. A class is a family of hypotheses
+# with a shared mechanism — not a specific change. R1 and R2 were different
+# changes, same class.
+#
+# prior_reject_rate = reverts / attempts  (NOT reverts / (reverts + wins),
+# because hold/diagnostic/kb outcomes are neither wins nor reverts).
+#
+# When a round's Step 3 lookup finds prior_reject_rate > 0.5 AND attempts >= 3,
+# the round card's class_gate.mitigation_required is forced to true. Without
+# an explicit mitigation_description, the round type flips to `strategy`.
+
+version: 1
+updated: 2026-04-17
+source_rounds: [1, 2, 3, 4, 5, 6]
+
+classes:
+
+  - name: go-gc-scan-reduction
+    description: >
+      Reduce Go GC scan / write-barrier / mallocgc cost by shrinking
+      scanned regions or removing GC-visible pointers from runtime structs.
+    attempts: 2
+    wins: 0
+    reverts: 2
+    holds: 0
+    prior_reject_rate: 1.0
+    mitigation_required: true
+    mitigation_description: >
+      **Class is effectively blocked.** Measured twice (R1, R2) to have
+      zero wall-time effect on object_creation. The underlying cost is in
+      Go's mallocgc tracing, not in anything the JIT can remove surgically.
+      New attempts in this class require either (a) a custom allocator
+      that bypasses Go GC entirely (architectural, ADR required), or (b)
+      microbench evidence showing a specific cost the JIT CAN remove that
+      R1/R2 didn't address.
+    historical_rounds: [1, 2]
+    key_negative_evidence: >
+      R1 removed the shape *Shape pointer → 0% wall change.
+      R2 shrank initial vm.regs 1024 → 128 → 17× fannkuch regression from
+      stale JIT RegsEnd cache.
+
+  - name: emit-layer-micro-optimization
+    description: >
+      Remove wasted instructions in Tier 2 emit (fused compare+branch,
+      collapsed guards, reduced dispatch overhead).
+    attempts: 1
+    wins: 0
+    reverts: 0
+    holds: 1        # R3 was diagnostic, no code change
+    prior_reject_rate: 0.0
+    mitigation_required: false
+    mitigation_description: null
+    historical_rounds: [3]
+    key_negative_evidence: >
+      R3's asm walk on sieve found 3 patterns worth ~2% of the 8.8× LuaJIT
+      gap — not 2×. The emit layer is NOT where the big wins live on the
+      current LuaJIT-gap benchmarks. Use this class only for ≤5% gains,
+      and only when nothing bigger is available.
+
+  - name: kb-correction
+    description: >
+      Rewrite KB cards when measurement contradicts their narrative claims.
+    attempts: 1
+    wins: 0
+    reverts: 0
+    holds: 1
+    prior_reject_rate: 0.0
+    mitigation_required: false
+    mitigation_description: null
+    historical_rounds: [4]
+    key_negative_evidence: null
+
+  - name: tier-routing-gate
+    description: >
+      Route specific bytecode shapes to a different tier (typically keep
+      at Tier 0) when exit-resume overhead dominates the native-template
+      win at Tier 1.
+    attempts: 2
+    wins: 1
+    reverts: 1
+    holds: 0
+    prior_reject_rate: 0.5
+    mitigation_required: false     # rate exactly 0.5, attempts < 3 → not forced
+    mitigation_description: >
+      **Composability constraint** (from R6): a Tier 0 routing gate works
+      only when the caller is ALSO skipped or when the caller is not
+      Tier 1. If the caller is Tier 1 and reaches the gated callee via
+      native BLR, the slow-path exit (~500 ns) exceeds the saved
+      exit-resume cost. Self-recursive callees (R5 `makeTree`) satisfy
+      this automatically. Leaf allocators called by Tier 1 functions
+      (R6 `new_point`) do not.
+
+      Any future tier-routing-gate attempt must include a Tier 1 caller →
+      gated callee BLR cost microbench in pre-flight evidence.
+    historical_rounds: [5, 6]
+    key_negative_evidence: >
+      R6 Gate B: predicted 100 ns callee cost, actual 700 ns due to caller
+      slow-path exit. Cost-model error from missing the caller's codepath.
+
+# --- classes seen but not yet tried (forward-looking) ---
+
+forward_classes:
+
+  - name: runtime-allocation-path
+    description: >
+      Replace NEWTABLE exit-resume with inline bump allocation on a
+      preallocated slab. The slab holds Go-heap *Table objects so GC
+      still owns them; JIT bumps a per-VM arena pointer, exhaustion
+      exit-resumes to refill.
+    status: proposed
+    proposed_round: 8
+    proposed_in: R7-meta discussion
+    expected_targets: [object_creation, binary_trees, method_dispatch]
+    known_risks:
+      - Go GC must still see the slab objects as roots (slab = []*Table)
+      - Concurrent GC during JIT execution must not corrupt the bump ptr
+      - Shape initialization during bump must match Go runtime expectations
+    prerequisite_mitigation: >
+      Wave 3 pre-flight evidence should be in place before R8 lands. If
+      Wave 3 isn't triggered by then, R8 writes its own microbench
+      (single NEWTABLE loop, bump vs exit-resume, expect ≥ 5× per-alloc
+      speedup) as a prerequisite artifact.
+
+  - name: escape-analysis-scalar-replacement
+    description: >
+      Detect NEWTABLE whose result does not escape and replace it with
+      scalar registers. Follows `runtime-allocation-path` (doesn't
+      replace it): SR applies where objects DON'T escape, bump alloc
+      applies regardless.
+    status: deferred
+    proposed_round: null     # wait until after R8
+    expected_targets: [method_dispatch, object_creation partial]
+    known_risks:
+      - binary_trees escapes (tree nodes stored into parent) — SR useless there
+      - Unsound EA → silent corruption; must compose with validator
+
+  - name: cross-call-shape-specialization
+    description: >
+      Propagate shape feedback from caller into inlined callee so
+      per-access shape guards become unconditional loads.
+    status: deferred
+    proposed_round: null
+    expected_targets: [method_dispatch, matmul, sieve]
+    known_risks:
+      - Small predicted gain (TypeSpec already handles most inlined cases)

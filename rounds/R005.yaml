@@ -1,0 +1,65 @@
+# Backfilled from commit 828df92. WIN.
+round: 5
+date: 2026-04-14
+follows: 4
+
+type: tactical
+
+target:
+  benchmark: binary_trees
+  current_wall_sec: 1.997
+  reference_wall_sec: 1.997
+  luajit_wall_sec: null        # LuaJIT time missing in reference.json
+  gap_factor: null
+
+hypothesis:
+  class: tier-routing-gate
+  claim: >
+    A `shouldStayTier0` gate matching small (≤25 BC), no-loop,
+    allocation-heavy (NewTableCount > 0), call-having functions keeps
+    `makeTree` at Tier 0 — faster than Tier 1's exit-resume NEWTABLE path.
+  expected_gain_pct: [15, 25]
+  expected_gain_mechanism: >
+    Tier 1 NEWTABLE = exit-resume (~100–200 ns × 2 per call). makeTree is
+    21 bytecodes, 2 NEWTABLEs, 2 recursive calls — exit overhead dominates
+    the native template win. Tier 0 (interpreter) calls the Go runtime
+    directly without exit overhead.
+  counterfactual_check: >
+    (Not formally produced; v4 Step 3 did not require it. The round's
+    gate criteria were tight enough that no other benchmark matched.)
+
+class_gate:
+  ledger_consulted: false     # pre-v5
+  prior_reject_rate: null
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+  note: >
+    R5 did run an isolated micro-bench (10 iter × makeTree(14)) that showed
+    JIT 0.092 → 0.074 s before committing to full integration. This is
+    *de facto* pre-flight evidence and is the reason R5 succeeded where
+    R1/R2/R6 failed. Wave 3 formalizes this discipline.
+
+outcome:
+  status: win
+  bench_deltas:
+    binary_trees: {from: 1.997, to: 1.570, pct: -21.4}
+    object_creation: {from: 1.086, to: 1.039, pct: -4.3}     # within noise
+    nbody: {from: 0.252, to: 0.238, pct: -5.6}               # within noise
+    mandelbrot: {from: 0.063, to: 0.060, pct: -4.8}          # within noise
+    fibonacci_iterative: {from: 0.295, to: 0.280, pct: -5.1} # within noise
+  regressions: []
+  commit: 828df92
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier-routing-gate]
+  new_class_introduced: tier-routing-gate

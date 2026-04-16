@@ -1,0 +1,58 @@
+# Backfilled from commit c289621. ledger_consulted=false (pre-v5).
+round: 1
+date: 2026-04-13
+follows: v4-bootstrap
+
+type: tactical
+
+target:
+  benchmark: object_creation
+  current_wall_sec: 1.086
+  reference_wall_sec: 0.764
+  gap_factor: null
+  luajit_wall_sec: null
+
+hypothesis:
+  class: go-gc-scan-reduction
+  claim: >
+    Removing the dead `shape *Shape` pointer + small-initial-length experiment
+    closes object_creation's +42% drift by reducing Go mallocgc / write-barrier
+    / scan overhead.
+  expected_gain_pct: [30, 40]
+  expected_gain_mechanism: >
+    R35's bisect narrative attributed the drift to specific commits in 39b5ef3;
+    reverting their GC-visible side effects should close it.
+  counterfactual_check: >
+    (Not produced; v4 Step 3 did not require counterfactual simulation.)
+
+class_gate:
+  ledger_consulted: false     # pre-v5; ledger did not exist
+  prior_reject_rate: null
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: revert
+  bench_deltas:
+    object_creation: {from: 1.086, to: 1.086, pct: 0.0}
+  regressions: [fannkuch, fibonacci_iterative]
+  commit: c289621
+
+revert_class: data-premise-error
+revert_root_cause_location: "R35 knowledge doc (narrative not measurement)"
+revert_cost_model_delta: >
+  Predicted GC-scan as dominant cost; measured zero wall-time impact from
+  removing the shape pointer. The drift vs reference.json is Go mallocgc /
+  write-barrier tracing cost, not anything the JIT can remove surgically.
+revert_prevention: >
+  A pre-flight microbench instrumenting mallocgc vs non-mallocgc paths on
+  object_creation would have shown the cost is not in the scanned region.
+
+ledger_update:
+  classes_touched: [go-gc-scan-reduction]
+  new_class_introduced: go-gc-scan-reduction

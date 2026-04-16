@@ -1,0 +1,59 @@
+# Backfilled from commit d3089c8. Pure diagnostic round.
+round: 3
+date: 2026-04-13
+follows: 2
+
+type: diagnostic
+
+target:
+  benchmark: sieve
+  current_wall_sec: null   # not measured this round
+  reference_wall_sec: null
+  luajit_wall_sec: 0.011   # approximately
+  gap_factor: 8.8
+
+hypothesis:
+  class: emit-layer-micro-optimization
+  claim: >
+    Direct asm walk of sieve's inner loop will reveal specific wasteful
+    instruction patterns whose removal can close a measurable fraction of
+    the 8.8× LuaJIT gap.
+  expected_gain_pct: null          # diagnostic, no code change
+  expected_gain_mechanism: >
+    Look at diag/sieve/sieve.asm.txt against the IR; count wasted insns.
+  counterfactual_check: >
+    (Not required for diagnostic rounds.)
+
+class_gate:
+  ledger_consulted: false     # pre-v5
+  prior_reject_rate: null
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: hold                # diagnostic finding, no code change
+  bench_deltas: {}
+  regressions: []
+  commit: d3089c8
+  findings: >
+    Three inefficiencies identified: (1) 4-insn move shuffle at
+    GetTable→GuardTruthy handoff; (2) GuardTruthy expanded to ~9 insns;
+    (3) SetTable 4-way arrayKind dispatch. Sum ≈ 30M wasted insns on sieve
+    ≈ 1.5 ms. Current gap vs LuaJIT: ~78 ms. Three findings account for
+    ~2% of the gap, not 2×.
+    **Structural conclusion**: per-PC cached monomorphic dispatch (LuaJIT
+    IC-style) is required to close this gap; Q2/Q1 territory, not Q3.
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [emit-layer-micro-optimization]
+  new_class_introduced: emit-layer-micro-optimization

@@ -1,0 +1,61 @@
+# Backfilled from commit 4ed0478. ledger_consulted=false (pre-v5).
+round: 2
+date: 2026-04-13
+follows: 1
+
+type: tactical
+
+target:
+  benchmark: object_creation
+  current_wall_sec: 1.086
+  reference_wall_sec: 0.764
+  gap_factor: null
+  luajit_wall_sec: null
+
+hypothesis:
+  class: go-gc-scan-reduction
+  claim: >
+    Shrinking `vm.go:225` initial regs slice from 1024 to 128 reduces the
+    ScanGCRoots scan range and closes object_creation drift.
+  expected_gain_pct: [20, 30]
+  expected_gain_mechanism: >
+    Smaller initial slice = smaller scanned region each GC cycle. Same class
+    as R1 (GC scan reduction) but different knob.
+  counterfactual_check: >
+    (Not produced.)
+
+class_gate:
+  ledger_consulted: false     # pre-v5
+  prior_reject_rate: null     # R1 had just reverted same class, but no ledger
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: revert
+  bench_deltas:
+    fannkuch: {from: 0.048, to: 0.82, pct: 1600}        # 17× regression
+    fibonacci_iterative: {from: 0.288, to: 0.325, pct: 13}
+  regressions: [fannkuch, fibonacci_iterative]
+  commit: 4ed0478
+
+revert_class: cost-model-error
+revert_root_cause_location: "internal/methodjit/ — cached execCtx.RegsEnd"
+revert_cost_model_delta: >
+  Shrinking initial vm.regs forces an early MakeNilSlice + copy reallocation
+  (Go slice growth). This invalidates the JIT's cached execCtx.RegsEnd
+  pointer; the JIT reads a stale bound and spurious-exits or produces bad
+  addresses. Cost of the stale-pointer path dwarfed any GC-scan savings.
+revert_prevention: >
+  **A ledger would have caught this.** R1's class (go-gc-scan-reduction)
+  had just failed. A mandatory class lookup at Step 3 would have required
+  a written mitigation ("why is this different from R1?"). None exists —
+  R2 was R1 with a different knob on the same wrong premise.
+
+ledger_update:
+  classes_touched: [go-gc-scan-reduction]
+  new_class_introduced: null

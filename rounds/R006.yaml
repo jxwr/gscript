@@ -1,0 +1,73 @@
+# Backfilled from commit cce2fc2. Revert.
+round: 6
+date: 2026-04-14
+follows: 5
+
+type: tactical
+
+target:
+  benchmark: method_dispatch
+  current_wall_sec: 0.093
+  reference_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: tier-routing-gate
+  claim: >
+    Extend R5's `shouldStayTier0` gate with a second clause (Gate B) for
+    tiny leaf allocators (≤10 BC, no calls — canonical `new_point`) to
+    skip exit-resume NEWTABLE overhead.
+  expected_gain_pct: [10, 15]
+  expected_gain_mechanism: >
+    Same reasoning as R5: NEWTABLE exit-resume dominates for tiny
+    allocators. Route them to Tier 0.
+  counterfactual_check: >
+    (Not produced. This is where the round failed: a written simulation
+    of how Tier 0 callees interact with Tier 1 callers would have caught
+    the compose-failure before commit.)
+
+class_gate:
+  ledger_consulted: false     # pre-v5
+  prior_reject_rate: null     # R5 had just won on same class; no flag
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: revert
+  bench_deltas:
+    method_dispatch: {from: 0.093, to: 0.095, pct: 2.2}      # null result
+    binary_trees: {from: 1.570, to: 1.570, pct: 0.0}         # unchanged
+  regressions: []
+  commit: cce2fc2
+
+revert_class: compose-failure
+revert_root_cause_location: "internal/methodjit/tier1_call.go:172 (native BLR)"
+revert_cost_model_delta: >
+  Predicted Tier 0 callee cost ~100 ns; actual ~700 ns due to caller
+  (Tier 1 `test_points`) reading `callee.DirectEntryPtr`, CBZ → slow-path
+  exit when callee isn't Tier 1. Per-call: Tier 1 = ~460 ns, Tier 0 = ~700 ns.
+  Gate B made calls SLOWER, not faster.
+
+  R5's Gate A works because `makeTree` calls `makeTree` itself — the
+  caller is also skipped by the gate, so there's no lost fast path. Gate B
+  breaks this because the non-gated caller (`test_points`) expected a BLR
+  fast path.
+revert_prevention: >
+  A pre-flight microbench measuring Tier 1 caller → Tier 0 callee BLR
+  cost would have shown ~700 ns vs the assumed ~100 ns. 15 minutes of
+  measurement would have killed Gate B before the 3-hour integration.
+
+ledger_update:
+  classes_touched: [tier-routing-gate]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    Tier routing gates compose correctly only when the caller is ALSO
+    gated (shared self-recursion). Leaf-allocator gates break on
+    ungated-caller fast path. Record as mitigation for future
+    tier-routing-gate attempts.
