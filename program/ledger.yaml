@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
 
 classes:
 
@@ -24,8 +24,8 @@ classes:
     description: >
       Changes to the workflow itself (CLAUDE.md, round shape, persistent
       artifacts, gating scripts). Meta rounds only.
-    attempts: 5
-    wins: 5
+    attempts: 7
+    wins: 7
     reverts: 0
     holds: 0
     prior_reject_rate: 0.0
@@ -38,7 +38,7 @@ classes:
       assumption that the pipeline lacked typespec propagation;
       R23 wasted an implementation round; R24 diagnostic killed
       the premise. R26 closes the lesson into the workflow spine.
-    historical_rounds: [7, 10, 18, 25, 26]
+    historical_rounds: [7, 10, 18, 25, 26, 27, 28]
     key_negative_evidence: >
       R21 architecture round overscoped: projected 40% gains without
       verifying current pipeline state. Cost one implementation
