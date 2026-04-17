@@ -44,7 +44,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 147ecde
   deliverables:
     - docs-internal/session-summary-r29-r38.md
   session_totals:
