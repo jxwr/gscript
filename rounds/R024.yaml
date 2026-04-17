@@ -45,7 +45,7 @@ outcome:
   status: hold                   # diagnostic finding, no code change
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 8598422
   findings: >
     matmul inner loop feedback (PCs 24, 28):
       GETTABLE L=unobs R=unobs Res=FLOAT Kind=Float
