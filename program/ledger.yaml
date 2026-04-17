@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
 
 classes:
 
@@ -179,6 +179,29 @@ classes:
       ADR projects fib 59× → 21× gap, ackermann 44× → 13× gap if
       R22-R25 land 3.1 + 3.2 + 3.3 + 3.4. Implementation staged;
       R22 takes step 3.1 (self-call specialization) first.
+
+  - name: tier2-tight-loop
+    description: >
+      Tier 2 type-propagation + raw-FPR residency for numeric tight
+      loops. Targets sieve/nbody/spectral_norm/matmul/fannkuch.
+      Fix the typespec gap where typed-array loads (ArrayFloat/
+      ArrayInt) return `any` instead of float/int to downstream arith.
+      See adr-tier2-tight-loop.md.
+    attempts: 1
+    wins: 1                    # ADR accepted
+    reverts: 0
+    holds: 0
+    prior_reject_rate: 0.0
+    mitigation_required: false
+    mitigation_description: null
+    historical_rounds: [21]
+    key_negative_evidence: null
+    key_positive_evidence: >
+      80% of infrastructure exists (emitTypedFloatBinOp raw-FPR path,
+      loop-carried regalloc, preheader hoisting). Gap is typespec.
+      Fix is small but has large composed effect. Projection:
+      matmul 5.5× → 3.3×, nbody 7.2× → 3×, sieve 8.4× → 3×,
+      fannkuch 2.4× → 1.3×.
 
   - name: correctness-bug-fix
     description: >
