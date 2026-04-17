@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 
 classes:
 
@@ -159,6 +159,26 @@ classes:
       R13: ADR accepted guard+hit as structural. R19: recosed scope
       after reading existing emit code — the true upgrade is
       polymorphism + adaptive miss, not "build IC from scratch."
+
+  - name: tier2-recursion-closure
+    description: >
+      Tier 2 optimizations for call-heavy / recursive hot paths:
+      self-call specialization, typed calling convention, recursion
+      inlining, tail-call optimization. Target: fib, ackermann,
+      mutual_recursion. See adr-tier2-recursion-closure.md.
+    attempts: 1                  # R20 ADR
+    wins: 1                      # ADR accepted
+    reverts: 0
+    holds: 0
+    prior_reject_rate: 0.0
+    mitigation_required: false
+    mitigation_description: null
+    historical_rounds: [20]
+    key_negative_evidence: null
+    key_positive_evidence: >
+      ADR projects fib 59× → 21× gap, ackermann 44× → 13× gap if
+      R22-R25 land 3.1 + 3.2 + 3.3 + 3.4. Implementation staged;
+      R22 takes step 3.1 (self-call specialization) first.
 
   - name: correctness-bug-fix
     description: >
