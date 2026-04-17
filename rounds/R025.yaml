@@ -49,7 +49,7 @@ outcome:
   status: win                   # v2 ADR accepted
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 5959f4d
   deliverables:
     - docs-internal/decisions/adr-tier2-tight-loop-v2.md
   architecture_findings:
