@@ -62,7 +62,7 @@ outcome:
   status: hold                     # code change kept, no perf win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 202d8f3
   deliverables:
     - internal/methodjit/tiering_manager.go — findInlineableGetGlobal recursion block relaxed
   audit_findings:
