@@ -51,7 +51,7 @@ outcome:
   status: win                    # ADR accepted; drives R22-R25 tactical
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: c6d82a3
   deliverables:
     - docs-internal/decisions/adr-tier2-recursion-closure.md
   architecture_findings:
