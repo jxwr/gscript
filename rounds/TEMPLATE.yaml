@@ -15,6 +15,10 @@ follows: NNN-1                # previous round id (or "v5-bootstrap" for R7)
 type: tactical                # one of: tactical | architecture | strategy | meta | diagnostic | kb
 # tactical      = specific optimization, code change, benchmark target
 # architecture  = no code, outputs an ADR or pass design
+#                 REQUIRED: §1 "Current state audit" per rule 23.
+#                 Ship at least one production measurement that
+#                 disproves the null hypothesis "this is already done"
+#                 before proposing new work.
 # strategy      = no code, rewrites direction based on ledger pattern
 # meta          = changes the workflow itself
 # diagnostic    = pure measurement, documents findings

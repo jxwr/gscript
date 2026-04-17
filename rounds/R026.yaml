@@ -1,0 +1,61 @@
+# R26: meta — codify R25's lesson into CLAUDE.md rule 23.
+round: 26
+date: 2026-04-17
+follows: 25
+
+type: meta
+
+target:
+  benchmark: workflow
+  current_wall_sec: null
+  reference_wall_sec: null
+  luajit_wall_sec: null
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    R25 identified a lesson (architecture rounds need a current-state
+    audit). Codify as CLAUDE.md hard rule 23 + a note in
+    rounds/TEMPLATE.yaml's type: architecture comment. Without
+    codification, the lesson is prose-only and decays.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    Future architecture rounds see the rule in CLAUDE.md at Step 3.
+    Template comment catches authors who don't re-read CLAUDE.md.
+    Two defense layers: docs + schema.
+  counterfactual_check: >
+    Rule addition is pure overhead for round authors who would have
+    done the audit anyway. For authors who wouldn't, catches the
+    R21-style overscope failure. Zero downside.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0         # workflow-evolution: 4/4 wins
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: win
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - CLAUDE.md — add rule 23 (architecture rounds current-state audit)
+    - rounds/TEMPLATE.yaml — comment under type: architecture
+  verification:
+    - "CLAUDE.md rule 23 cites R21/R24 canonical case"
+    - "TEMPLATE.yaml comment points authors at rule 23"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null

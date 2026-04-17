@@ -41,6 +41,7 @@ These are compressions of expensive lessons. Each is present-tense, grep-able, o
 20. **Sunk cost is never a reason to keep broken code.**
 21. **Hypothesis-class lookup is mandatory at Step 3.** Grep `program/ledger.yaml`. If `prior_reject_rate > 0.5` and `attempts >= 3`, write a `mitigation_description` in the round card or flip the round type to `strategy`.
 22. **Round-closing commits use the schema:** `round N [win|revert|hold|diag|KB|meta]: <one-liner>`. Makes the ledger grep-computable.
+23. **Architecture rounds include a current-state audit.** Every `type: architecture` round MUST open with a "current state" section that produces at least one concrete production measurement disproving the null hypothesis "this is already done." R21 overscoped 40% gains based on an unverified assumption about typespec; R24's 30-minute feedback dump disproved it after R23's wasted implementation attempt. The audit prevents the R21→R23→R24 churn from recurring in any class.
 
 ## Round shape (v5)
 
