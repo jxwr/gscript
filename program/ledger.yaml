@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
 
 classes:
 
@@ -199,32 +199,43 @@ classes:
       Fix the typespec gap where typed-array loads (ArrayFloat/
       ArrayInt) return `any` instead of float/int to downstream arith.
       See adr-tier2-tight-loop.md.
-    attempts: 2
+    attempts: 3
     wins: 1                    # R21 ADR
     reverts: 0
-    holds: 1                   # R23: naive approach regressed
+    holds: 2                   # R23 (held), R24 (diagnostic)
     prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: >
-      **Guard insertion must be demand-driven** (R23 lesson): adding
-      OpGuardType to EVERY GetTable when Kind feedback is mono costs
-      ~4 insns per access. For sites where the value is consumed by
-      non-specializing ops (table-valued Gets for nested indexing,
-      iterator values), the guard adds pure overhead with no
-      downstream benefit. Future work needs a USE-SITE analysis that
-      inserts guards only when at least one consumer would specialize.
-    historical_rounds: [21, 23]
+      **R21 ADR's typespec-gap premise is DISPROVEN by R24 data.**
+      In production, matmul/nbody hot-loop GetTable/GetField sites
+      ALREADY have Res=FBFloat populated; the existing
+      feedbackToIRType path ALREADY inserts OpGuardType TypeFloat;
+      typespec ALREADY rewrites Mul→MulFloat; emit ALREADY uses the
+      raw-FPR fast path. The 5-8× LuaJIT gaps remain because the
+      bottleneck is ELSEWHERE:
+        (a) nested-table memory indirection (matmul's table-of-tables)
+        (b) per-iteration row-table pointer refresh
+        (c) arrayKind 4-way dispatch inside emit_table_array
+        (d) cache-unfriendly column walks
+
+      R25+ tactical work in this class should target (a)-(d), not
+      typespec. The R21 ADR's projection (matmul 5.5× → 3.3×) is
+      invalidated; a replacement ADR is needed.
+
+      **R23 regression finding**: R23's spot-check showed 8-12%
+      regression. Per R24 data, the regression was NOISE because
+      R23's extra branch would have fired on ZERO matmul sites.
+    historical_rounds: [21, 23, 24]
     key_negative_evidence: >
-      R23 attempted to propagate TypeFloat from FBKindFloat feedback
-      via OpGuardType after every GetTable. matmul regressed +8.7%,
-      nbody +11.7%, spectral_norm +9.3%. Spot-check halted at
-      pre-flight. Root cause: matmul inner loop has 3 Gets per 1 Mul;
-      per-iteration delta is net negative under blanket guard insertion.
+      R23: blanket Kind-based guard insertion regressed matmul
+      spot-check — turns out that was noise. R24 confirms all
+      target benchmarks already have Res-Float feedback, so the
+      existing pipeline catches them. R21 ADR's 40% projection
+      was based on the wrong bottleneck.
     key_positive_evidence: >
-      80% of infrastructure exists (emitTypedFloatBinOp raw-FPR path,
-      loop-carried regalloc, preheader hoisting). ADR projection
-      (matmul 5.5× → 3.3×) remains valid IF guard insertion is
-      demand-driven.
+      R24 diagnostic found that existing typespec infrastructure is
+      MORE EFFECTIVE in production than the ADR assumed. Disarming
+      a misallocated round of tactical work.
 
   - name: correctness-bug-fix
     description: >
