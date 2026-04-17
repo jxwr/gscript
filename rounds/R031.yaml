@@ -1,0 +1,86 @@
+# Third architecture round of R29-R38 phase. Targets fib 59× / ackermann 43×.
+round: 31
+date: 2026-04-17
+follows: 30
+
+type: architecture
+
+target:
+  benchmark: multi              # fib, ackermann, mutual_recursion
+  current_wall_sec: 1.429       # fib
+  reference_wall_sec: null      # fib reference excluded (598bc1e-dominated)
+  luajit_wall_sec: 0.024
+  gap_factor: 59
+
+hypothesis:
+  class: tier2-bounded-recursive-inline    # new class this round
+  claim: >
+    fib and ackermann's 43-59× gaps are call-overhead × call-count.
+    Existing inline pass explicitly EXCLUDES recursive callees
+    (tiering_manager.go:367). Adding bounded recursive inlining with
+    a depth budget (K=2 initial, K=3 aspirational) reduces call count
+    by 2^K. Depth-3 projection: fib 1.429 → 0.18 s (7.5× gap from
+    59×). ackermann: 0.261 → ~0.19 s (depth-2 is more realistic
+    for its nested pattern).
+  expected_gain_pct: [50, 85]
+  expected_gain_mechanism: >
+    (1) Allow recursive inline at depth K via a size-budgeted
+        expansion of the callee body N times.
+    (2) Raise inlineMaxCalleeSize for recursive inline variant.
+    (3) At level K, leave the recursive call intact as base-case
+        fallback.
+    (4) Safety: textual substitution + SSA renumbering, already
+        handled by existing inline infrastructure.
+  counterfactual_check: >
+    Non-recursive benchmarks untouched (pass only activates on
+    self-recursive callees that fit the budget). Inlining expands
+    code; risk is I-cache eviction of other hot functions. Mitigation:
+    measure via diag after landing.
+
+    R22 failure mode does NOT apply: R22 tried to skip the bounds
+    check on self-calls; this ADR instead REDUCES the number of
+    self-calls via compile-time unrolling. Each remaining call
+    still goes through the full safe BLR path.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.5         # tier2-recursion-closure: 1 win (R20 ADR), 1 revert (R22)
+  mitigation_required: false     # attempts < 3
+  mitigation_description_cited: >
+    Per R22 mitigation: bounds check is load-bearing for recursion
+    depth, NOT redundant. R31's inline approach does NOT touch bounds
+    checking — it reduces call count instead. Composition is safe.
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Inline pass at tiering_manager.go:355-380 explicitly blocks
+    recursive callees. fib/ackermann are never inlined; every call
+    pays the full ~78 ns native BLR sequence. Depth-3 static
+    unrolling would eliminate 87% of fib calls, closing the 59× gap
+    to ~7.5×. NOT ALREADY DONE.
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: win
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - docs-internal/decisions/adr-tier2-bounded-recursive-inline.md
+  architecture_findings:
+    - "Current inline pass excludes recursive by explicit check (line 367)"
+    - "Depth-2 projection: fib 1.429 → 1.07s. Depth-3: → 0.18s."
+    - "ackermann depth-2: 0.261 → ~0.19s (nested recursion limits depth-3)"
+    - "Separate from R22 bounds-check failure mode"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-bounded-recursive-inline]
+  new_class_introduced: tier2-bounded-recursive-inline
