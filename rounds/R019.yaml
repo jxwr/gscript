@@ -1,0 +1,76 @@
+# First architecture-only round of the R19-R28 phase.
+round: 19
+date: 2026-04-17
+follows: 18
+
+type: architecture
+
+target:
+  benchmark: multi              # method_dispatch + escape-analysis-future targets
+  current_wall_sec: null
+  reference_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: tier2-inline-cache
+  claim: >
+    R13's ADR assumed no IC existed. Reading emit_table_field.go +
+    emit_table_array.go shows MONOMORPHIC feedback IC already ships
+    for GetField/SetField/GetTable/SetTable. R19 rescopes: the upgrade
+    target is POLYMORPHIC (up to 4 shapes) + ADAPTIVE MISS (no
+    deopt on mismatch) + POST-COMPILE FEEDBACK UPDATE.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    (1) Single-site polymorphism affects method_dispatch-class
+        benchmarks where 2-3 distinct shapes converge. No impact on
+        sieve/matmul/nbody (those are monomorphic; see R21 ADR).
+    (2) Adaptive miss removes the "single shape change kills Tier 2"
+        failure mode — important when hot functions interact with
+        mutating code.
+    (3) Post-compile feedback update eliminates Tier 2 frozen-feedback
+        pathology.
+  counterfactual_check: >
+    IC upgrade does NOT close any of the big LuaJIT gaps (fib 59×,
+    ackermann 44×, sieve 8.4×, nbody/spectral/matmul 5-7×). Those
+    are the targets of R20 (recursion) and R21 (tight loops). R19
+    therefore recommends LOW IMPLEMENTATION PRIORITY for the IC
+    upgrade — it should land AFTER R20/R21 tactical wins.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0        # tier2-inline-cache: 1/1 win (R13 ADR)
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []                  # architecture rounds exempt
+  result: null
+  passed: null
+
+outcome:
+  status: win                   # ADR accepted
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - docs-internal/decisions/adr-tier2-ic-polymorphic.md
+  architecture_findings:
+    - "Existing monomorphic IC already ships for field + table ops"
+    - "Gap is polymorphism + adaptive miss + post-compile updates"
+    - "Not the structural answer to the big LuaJIT gaps; deprioritized"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-inline-cache]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    BEFORE accepting an "build X" ADR, read the code to confirm X
+    isn't partly built already. R13's ADR overscoped because it
+    didn't verify the existing monomorphic IC. Future architecture
+    rounds should include a "current state audit" as the first
+    section.

@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
 classes:
 
@@ -140,19 +140,25 @@ classes:
       Per-PC inline caches for GetField/SetField/GetTable/SetTable in
       Tier 2. Site-specific guard + direct memory access; miss path
       falls through to generic dispatch. See adr-tier2-inline-cache.md.
-    attempts: 1               # R13 ADR accepted; counts as an attempt
-    wins: 1                   # architecture outcome = ADR accepted
+    attempts: 2
+    wins: 2
     reverts: 0
     holds: 0
     prior_reject_rate: 0.0
     mitigation_required: false
-    mitigation_description: null
-    historical_rounds: [13]
+    mitigation_description: >
+      R19 audit correction: monomorphic feedback IC already ships for
+      field + table ops. Upgrade target is POLYMORPHIC (4 shapes) +
+      ADAPTIVE MISS + post-compile feedback update. Implementation
+      priority LOW vs recursion (R20) and tight-loop (R21) ADRs.
+      Do NOT claim IC-upgrade as the answer to sieve/nbody/matmul —
+      those are monomorphic and blocked on R21 instead.
+    historical_rounds: [13, 19]
     key_negative_evidence: null
     key_positive_evidence: >
-      ADR establishes guard+hit as the structural path for LuaJIT-gap
-      closure on sieve/sort/method_dispatch. Implementation deferred
-      to R14+ tactical rounds, one step at a time per the ADR plan.
+      R13: ADR accepted guard+hit as structural. R19: recosed scope
+      after reading existing emit code — the true upgrade is
+      polymorphism + adaptive miss, not "build IC from scratch."
 
   - name: correctness-bug-fix
     description: >
