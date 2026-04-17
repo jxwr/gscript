@@ -124,6 +124,64 @@ quicksort(arr, 1, 1024)
 	runWithTimeout(t, "quicksort(1024)", src, 3*time.Second)
 }
 
+// TestProductionScale_FibRecursiveDeep is the R35 regression: deep
+// recursive fib at scale. R35 promoted small self-recursive fib-class
+// functions to Tier 2 and saw fib(35) -14% in spot-check, but fib(40)
+// and other deep-recursion benchmarks regressed 19-47%. This test
+// covers the deep-recursion failure mode.
+func TestProductionScale_FibRecursiveDeep(t *testing.T) {
+	src := `
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+result := fib(25)
+result = fib(25)
+`
+	runWithTimeout(t, "fib(25)", src, 5*time.Second)
+}
+
+// TestProductionScale_MutualRecursion is the R35 regression: mutual
+// recursion regressed 47% under R35's naive promotion-gate loosening.
+// Covers the mutual-recursion failure mode.
+func TestProductionScale_MutualRecursion(t *testing.T) {
+	src := `
+func F(n) {
+    if n == 0 { return 1 }
+    return G(n - 1) + 1
+}
+func G(n) {
+    if n == 0 { return 0 }
+    return F(n - 1)
+}
+result := F(20)
+result = F(20)
+`
+	runWithTimeout(t, "mutual_F(20)", src, 5*time.Second)
+}
+
+// TestProductionScale_BinaryTreesAlloc is the R35 regression: binary_trees
+// regressed 13% when makeTree-class functions were drawn into Tier 2 via
+// R35's self-recursive gate (R5's tier-routing gate was defeated). This
+// test exercises the small-recursive-allocator pattern.
+func TestProductionScale_BinaryTreesAlloc(t *testing.T) {
+	src := `
+func makeTree(depth) {
+    if depth == 0 { return {value: 1, left: null, right: null} }
+    return {value: depth, left: makeTree(depth-1), right: makeTree(depth-1)}
+}
+func checkTree(node) {
+    if node.left == null { return node.value }
+    return node.value + checkTree(node.left) - checkTree(node.right)
+}
+tree := makeTree(12)
+result := checkTree(tree)
+tree = makeTree(12)
+result = checkTree(tree)
+`
+	runWithTimeout(t, "binary_trees(depth=12)", src, 5*time.Second)
+}
+
 // TestProductionScale_IterativeFib is a secondary production-scale
 // guard covering long arithmetic hot loops that don't use %.
 func TestProductionScale_IterativeFib(t *testing.T) {
