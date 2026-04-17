@@ -1,0 +1,99 @@
+# Attempt at tier2-tight-loop step 3.1 (typespec from Kind feedback). Halted.
+round: 23
+date: 2026-04-17
+follows: 22
+
+type: tactical
+
+target:
+  benchmark: multi            # matmul, nbody, spectral_norm
+  current_wall_sec: 0.115     # matmul
+  reference_wall_sec: null
+  luajit_wall_sec: 0.021
+  gap_factor: 5.5
+
+hypothesis:
+  class: tier2-tight-loop
+  claim: >
+    Per R21 ADR: extend graph_builder.go's GetTable emission to insert
+    OpGuardType with kind-derived element type (TypeFloat for
+    FBKindFloat, TypeInt for FBKindInt) when fb.Result is not directly
+    observed but fb.Kind is monomorphic. This should propagate type
+    info into downstream Mul/Add, enabling typespec to rewrite them
+    into OpMulFloat/OpAddFloat and emit's raw-FPR fast path.
+    Projected: 40% gain on matmul/nbody/spectral_norm.
+  expected_gain_pct: [20, 40]
+  expected_gain_mechanism: >
+    GuardType TypeFloat costs ~4 insns per GetTable. Raw-FPR downstream
+    saves ~6-8 insns per Mul/Add (skip FMOVtoFP, tag checks, FMOVtoGP).
+    If ratio of arith-ops-to-gets is ≥2:1, net win.
+  counterfactual_check: >
+    Matmul inner loop: 3 GetTables + 1 Mul + 1 Add per iteration. Net
+    ≈ (+4×3) - (+7×2) = +12 - 14 = -2 insns per iter. Break-even.
+    Needed a better ratio or smarter guard insertion (only when
+    downstream consumes as float).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0       # tier2-tight-loop: 1/1 win (R21 ADR)
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: spot-check matmul / nbody / spectral_norm ≥10% improvement
+      acceptance: matmul_jit ≤ baseline * 0.90
+      halt_on_fail: true
+  result: >
+    Spot-check 3 runs each:
+      matmul   0.115 → 0.125 (+8.7% REGRESSION)
+      nbody    0.239 → 0.267 (+11.7% REGRESSION)
+      spectral 0.043 → 0.048 (+9.3% REGRESSION)
+    Pre-flight gate fired. Halt.
+  passed: false
+
+outcome:
+  status: hold                 # null-result, halted at pre-flight
+  bench_deltas: {}
+  regressions: []              # no code landed
+  commit: pending
+  deliverables:
+    - rounds/R023.yaml (this card)
+
+revert_class: cost-model-error
+revert_root_cause_location: "internal/methodjit/graph_builder.go OP_GETTABLE"
+revert_cost_model_delta: >
+  Predicted: per-Mul savings (~6-8 insns) outweigh per-Get guard
+  overhead (~4 insns) when Mul count ≥ Get count. Actual: matmul
+  inner loop has Gets-to-Mul ratio of 3:1 (v31 = ai[k], v33 = b[k],
+  v35 = v33[j], then v36 = v31*v35). Per-iteration delta is net
+  NEGATIVE unless the guard can be ELIDED when it's redundant
+  (e.g. value is already TypeFloat by construction) or the downstream
+  specialization cascade is larger (e.g. compound arith chain, not
+  just one Mul).
+
+  ADR's 40% projection didn't account for this ratio.
+revert_prevention: >
+  Future tier2-tight-loop work needs:
+    (a) A "demand-driven" guard insertion that only guards values
+        actually consumed by arith ops (skip guards on table values,
+        intermediate iterator values, etc.).
+    (b) OR a typespec pass that can infer types DIRECTLY from Kind
+        feedback without needing an explicit GuardType node in IR.
+    (c) OR measure feedback coverage first: if matmul's inner-loop
+        GetTables have fb.Result populated in production (as they
+        probably do after warmup), the existing feedbackToIRType
+        path already handles them. The Kind fallback may be
+        redundant for the target benchmarks.
+
+  Ledger mitigation added to tier2-tight-loop class.
+
+ledger_update:
+  classes_touched: [tier2-tight-loop]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    "Every GetTable gets a guard" is the wrong granularity. Guard
+    insertion must be demand-driven (only when downstream needs the
+    type) to avoid paying guard cost on values consumed by
+    non-specializing ops (table-valued GetTables, iterator vars, etc.).
+    Applies across all tier2-tight-loop future work.

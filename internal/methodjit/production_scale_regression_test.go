@@ -82,6 +82,48 @@ result = collatz_total(5000)
 	runWithTimeout(t, "collatz_total(5000)", src, 3*time.Second)
 }
 
+// TestProductionScale_QuicksortDeepRecursion is the R22 regression:
+// a self-recursive function whose depth advances mRegRegs beyond the
+// register file. R22 attempted to skip the Tier 2 bounds check on
+// self-calls and crashed with SIGSEGV at recursion depth ~16. The
+// bounds check MUST fire to fall to slow path before overflow.
+//
+// Recursion depth log2(N) for quicksort(N); we sort 1024 elements →
+// depth ~10-12, sufficient to trigger the R22 failure mode.
+func TestProductionScale_QuicksortDeepRecursion(t *testing.T) {
+	src := `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            t := arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+            i = i + 1
+        }
+    }
+    t := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = t
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+
+arr := {}
+x := 1
+for i := 1; i <= 1024; i++ {
+    x = (x * 1103515245 + 12345) % 2147483648
+    arr[i] = x
+}
+quicksort(arr, 1, 1024)
+// Force promotion via second run
+quicksort(arr, 1, 1024)
+`
+	runWithTimeout(t, "quicksort(1024)", src, 3*time.Second)
+}
+
 // TestProductionScale_IterativeFib is a secondary production-scale
 // guard covering long arithmetic hot loops that don't use %.
 func TestProductionScale_IterativeFib(t *testing.T) {
