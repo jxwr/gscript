@@ -1,0 +1,85 @@
+# Second architecture round of R29-R38 phase. Targets matmul 5.4× gap.
+round: 30
+date: 2026-04-17
+follows: 29
+
+type: architecture
+
+target:
+  benchmark: matmul
+  current_wall_sec: 0.114
+  reference_wall_sec: 0.124
+  luajit_wall_sec: 0.021
+  gap_factor: 5.4
+
+hypothesis:
+  class: tier2-dense-matrix-kind           # new forward class
+  claim: >
+    matmul's 5.4× LuaJIT gap is memory-pattern-bound: b[k][j] is two
+    GetTable calls per iteration (row fetch + column fetch), totaling
+    ~13 insns per inner iter vs LuaJIT's 2 (flat FFI double[N*N]).
+    Closing this needs a DenseMatrix runtime type that stores flat
+    float64 with compile-time stride, JIT-emitted as single FLDR.
+    This is multi-phase and DOES NOT LAND in R30 scope — ADR only.
+  expected_gain_pct: null                  # architecture, no direct impact
+  expected_gain_mechanism: >
+    (1) ArrayDenseMatrix Table kind with []float64 + stride/rows.
+    (2) Runtime NewDenseMatrix opt-in API.
+    (3) Tier 2 emit: 4 insns per access (base LDR, stride LDR
+        hoistable, MADD, FLDR) vs current 13.
+    Implementation is multi-session; R30 only files the design.
+  counterfactual_check: >
+    No code change this round. Zero regression risk. Implementation
+    risk deferred to future rounds (Phase 1-3).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    matmul inner k loop: 3 GetTable per iter × 10M iter = 30M calls
+    × ~7 insns avg = 210M insns ≈ 105 ms (matches 114ms wall time).
+    tableVerified helps ai but ArrayKind checks + floatArray ptr
+    loads happen every iter. Loop order {i,j,k} makes b[k] row
+    fetch unhoistable. Conclusion: memory-pattern-bound at method-
+    JIT floor; requires runtime type change (DenseMatrix) for
+    further progress. NOT ALREADY DONE, requires multi-phase work.
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: win                              # ADR accepted as design
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - docs-internal/decisions/adr-tier2-dense-matrix.md
+  architecture_findings:
+    - "matmul is at method-JIT memory-pattern floor; needs runtime type change"
+    - "DenseMatrix kind designed; implementation multi-phase, out of this session"
+    - "R29 field residency provides ~5% incidental matmul win via ai ptr hoisting"
+    - "HONEST: this session's matmul closure is ~5% max; gap 5.4× → ~5.1×"
+    - "The big matmul win is a future multi-session project"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: tier2-dense-matrix-kind
+  forward_classes_proposed:
+    - tier2-dense-matrix-kind              # status: proposed, priority: LOW (multi-session)
+
+notes: >
+  Per user direction (超过 luajit on matmul), the honest answer is
+  "not this session." R30 documents WHY and WHAT a future session
+  would do. Treating this as a forward class rather than pretending
+  we can land it in this phase. The architecture round delivers a
+  correct ADR rather than an overpromise.

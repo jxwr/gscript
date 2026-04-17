@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
 
 classes:
 
@@ -382,6 +382,25 @@ forward_classes:
     known_risks:
       - binary_trees escapes (tree nodes stored into parent) — SR useless there
       - Unsound EA → silent corruption; must compose with validator
+
+  - name: tier2-dense-matrix-kind
+    description: >
+      New ArrayKind (ArrayDenseMatrix) storing a flat []float64 with
+      compile-time-known row stride. Target matmul-class 2D numeric
+      loops. Implementation is 3-phase (runtime type, emit, opt-in
+      API); multi-session project. See adr-tier2-dense-matrix.md.
+    status: proposed
+    proposed_round: null              # not in current session scope
+    proposed_in: R30 ADR
+    expected_targets: [matmul, spectral_norm, future NN kernels]
+    known_risks:
+      - Opt-in vs auto-detect: auto-conversion is ambiguous; needs hint syntax or profile data
+      - Composition with existing ArrayFloat (mixed-use matrices)
+      - Memory overhead if misapplied (dense allocation for sparse data)
+    prerequisite_mitigation: >
+      Implementation deferred. Land R29 + R31 first to validate the
+      struct-field-residency / call-spec patterns, then revisit this
+      when the ADR backlog is empty and the runtime team has capacity.
 
   - name: cross-call-shape-specialization
     description: >
