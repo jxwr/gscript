@@ -92,7 +92,7 @@ outcome:
     method_dispatch: {from: 0.086, to: 0.090, pct: 4.7}
     object_creation: {from: 0.953, to: 0.975, pct: 2.3}
   regressions: [fib_recursive, mutual_recursion, binary_trees, sort]
-  commit: pending
+  commit: d1a6079
   deliverables:
     - rounds/R035.yaml (this card)
     - program/ledger.yaml update
