@@ -45,7 +45,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 6ff9a4b
   deliverables:
     - CLAUDE.md — rule 23 amendment block
     - rounds/TEMPLATE.yaml — comment under type: architecture for
