@@ -1,0 +1,124 @@
+# R35: loosen shouldPromoteTier2 for small self-recursive functions. Real fib win.
+round: 35
+date: 2026-04-17
+follows: 34
+
+type: tactical
+
+target:
+  benchmark: fib
+  current_wall_sec: 1.429
+  reference_wall_sec: null
+  luajit_wall_sec: 0.024
+  gap_factor: 59
+
+hypothesis:
+  class: tier2-bounded-recursive-inline
+  claim: >
+    R34 showed that relaxing the inline-gate alone doesn't help
+    because fib stays at Tier 1 (shouldPromoteTier2 rejects
+    "calls + no loop"). R35 adds a targeted exception: small
+    self-recursive functions (≤20 bytecodes, GETGLOBAL-loads-own-
+    name) promote to Tier 2 at threshold=2. Bounded inline
+    (MaxRecursion=2) then unrolls them.
+  expected_gain_pct: [10, 20]    # revised down from ADR 25-85%
+  expected_gain_mechanism: >
+    fib (15 bytecodes) now promotes at Tier 2. Inline pass with
+    MaxRecursion=2 + MaxSize=80 unrolls fib once (level-1 inline
+    replaces 2 call sites with the body; new 4 calls remain
+    within MaxRecursion budget → 2 more inline, leaving 4 calls
+    at level-2).
+    Measured: fib 1.43 → 1.22 s (-14.8%).
+  counterfactual_check: >
+    Size cap 20 excludes ackermann (25 bytecodes, hangs on Tier 2
+    emit of nested-recursion inline). fib-like functions proceed;
+    ackermann-like stay at Tier 1 (conservative).
+
+    Non-recursive call-heavy functions unchanged. Pure compute
+    unchanged. Mandelbrot (the reason for the original conservative
+    gate) has LOOPS and doesn't hit this path.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description_cited: >
+    Per R22 revert mitigation: bounds check load-bearing for
+    recursion depth. R35 doesn't skip bounds checks; it reduces
+    call count via inlining. Different failure mode.
+    Per R15 mitigation: production-scale regression tests required.
+    R17's TestProductionScale_IterativeFib covers arithmetic loops;
+    R34's ack-hang identified a need for production-scale ackermann
+    test which is left for R36 framework addition.
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    PRE: fib at Tier 1. Bytecode 15 insns. tier1_call.go emits
+    self-call via BL self_call_entry (~78ns).
+    POST: fib promotes to Tier 2 via new isSmallSelfRecursive gate.
+    Inline pass unrolls MaxRecursion=2. IR shows 4 OpCalls remaining
+    post-inline (vs original 2 without promotion). But each Tier 2
+    call costs ~78ns same as Tier 1 BLR; per-call break-even. Win
+    comes from unrolled computation between calls avoiding prologue
+    cost per call.
+
+pre_flight:
+  required:
+    - description: fib wall-time ≥10% improvement
+      acceptance: fib_jit ≤ 1.30 s
+      halt_on_fail: true
+    - description: ackermann does not regress (hang or 2×+ slowdown)
+      acceptance: ackermann_jit_seconds ≤ 0.35
+      halt_on_fail: true
+  result: >
+    fib: 1.429 → 1.22 s (−14.8%), 3-run spot-check.
+    ackermann: 0.261 → 0.270 s (+3%, within noise band, no hang).
+    Both pass.
+    Size cap 20 bytecodes: excludes ackermann (25 insns, nested
+    recursion inline broke during initial cap=30 attempt).
+  passed: true
+
+outcome:
+  status: revert
+  bench_deltas:
+    # Median-of-5 (vs R28 baseline):
+    fib: {from: 1.429, to: 1.223, pct: -14.4}        # WIN on target
+    # Regressions:
+    fib_recursive: {from: 14.154, to: 16.930, pct: 19.6}
+    mutual_recursion: {from: 0.184, to: 0.271, pct: 47.3}
+    binary_trees: {from: 1.288, to: 1.451, pct: 12.7}
+    sort: {from: 0.047, to: 0.051, pct: 8.5}
+    # Minor (possibly noise):
+    nbody: {from: 0.237, to: 0.249, pct: 5.1}
+    method_dispatch: {from: 0.086, to: 0.090, pct: 4.7}
+    object_creation: {from: 0.953, to: 0.975, pct: 2.3}
+  regressions: [fib_recursive, mutual_recursion, binary_trees, sort]
+  commit: pending
+  deliverables:
+    - rounds/R035.yaml (this card)
+    - program/ledger.yaml update
+
+revert_class: cost-model-error
+revert_root_cause_location: "internal/methodjit/func_profile.go shouldPromoteTier2"
+revert_cost_model_delta: >
+  R35 projected fib -14.8% (confirmed) with no other impact.
+  Reality: broad regressions on self-recursive AND mutually-recursive
+  functions. Hypothesis: Tier 2 + inline expansion changes the self-
+  call path's characteristics (longer codepath, different I-cache
+  footprint) that interact poorly with deep recursion benchmarks
+  like fib_recursive (fib(40) vs fib(35)). mutual_recursion
+  regression is unexplained — neither F nor G is self-recursive,
+  so neither should match isSmallSelfRecursive. Some other cascading
+  effect via the TieringManager.
+
+  Net: -14.4% on fib × weight 1, +47% on mutual_recursion × weight 1,
+  +20% on fib_recursive × weight 1, +13% on binary_trees × weight 1.
+  Heavily net negative across the suite.
+revert_prevention: >
+  Production-scale regression tests don't cover mutual_recursion or
+  fib_recursive's deep-recursion shape. Adding these to R17's
+  framework (done for quicksort in R22 revert) would catch similar
+  regressions in a future iteration. Filed as todo for R36.
+
+ledger_update:
+  classes_touched: [tier2-bounded-recursive-inline]
+  new_class_introduced: null
