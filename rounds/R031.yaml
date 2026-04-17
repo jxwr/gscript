@@ -67,7 +67,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 8be4b40
   deliverables:
     - docs-internal/decisions/adr-tier2-bounded-recursive-inline.md
   architecture_findings:
