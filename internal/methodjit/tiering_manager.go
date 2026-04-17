@@ -363,14 +363,14 @@ func findInlineableGetGlobal(proto *vm.FuncProto, callPC, targetReg int, globals
 			if len(callee.Code) > inlineMaxCalleeSize {
 				return false
 			}
-			// Check not recursive.
-			if isRecursive(callee) {
-				return false
-			}
-			// Check callee name != caller name (mutual recursion).
-			if callee.Name == proto.Name {
-				return false
-			}
+			// Recursion: permitted when bounded by MaxRecursion in the
+			// inline pass (R31 bounded recursive inline ADR). The pass
+			// caps unrolling depth so self/mutual recursion stays finite.
+			// The name-match + isRecursive checks that previously
+			// rejected here have moved responsibility onto the pass's
+			// MaxRecursion gate. Non-bounded recursion would still blow
+			// the inline budget naturally (per-iteration size growth).
+			//
 			// Check callee has no loops (while-loops produce buggy
 			// code when inlined into the caller's IR).
 			calleeProfile := analyzeFuncProfile(callee)

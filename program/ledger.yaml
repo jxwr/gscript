@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
 
 classes:
 
@@ -288,20 +288,29 @@ classes:
       pass explicitly excludes recursive callees; this class lifts
       that restriction under size + depth bounds. See adr-tier2-bounded-
       recursive-inline.md.
-    attempts: 1
-    wins: 1                      # ADR accepted
+    attempts: 2
+    wins: 1                      # R31 ADR
     reverts: 0
-    holds: 0
+    holds: 1                     # R34 partial-step hold
     prior_reject_rate: 0.0
     mitigation_required: false
-    mitigation_description: null
-    historical_rounds: [31]
-    key_negative_evidence: null
+    mitigation_description: >
+      **Promotion gate blocks inline benefit** (R34 lesson):
+      removing the recursive-callee block at findInlineableGetGlobal
+      is necessary but insufficient. fib (calls, no loop) never
+      reaches Tier 2 because shouldPromoteTier2 rejects it at
+      func_profile.go:160. Both gates must loosen for recursive
+      inline to yield perf wins. R35+ works on promotion gate.
+    historical_rounds: [31, 34]
+    key_negative_evidence: >
+      R34: relaxed findInlineableGetGlobal; fib IR + bench unchanged.
+      Root cause: fib stays at Tier 1 because shouldPromoteTier2
+      returns false for call-heavy-no-loop functions. Inline pass
+      never runs on fib.
     key_positive_evidence: >
-      R31 audit confirmed inline pass at tiering_manager.go:367
-      explicitly blocks recursive inlining. Depth-3 unroll of fib
-      eliminates 87% of calls; projected fib 59× → 7.5×. Implementation
-      staged to R36+. Orthogonal to R22's bounds-check failure mode.
+      The R34 relaxation is semantically correct (aligns with the
+      inline pass's MaxRecursion=2 bound). Unblocks future rounds
+      without changing current behavior.
 
   - name: correctness-bug-fix
     description: >
