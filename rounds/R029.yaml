@@ -1,0 +1,83 @@
+# First architecture round of the R29-R38 phase. Targets nbody 7.2× gap.
+round: 29
+date: 2026-04-17
+follows: 28
+
+type: architecture
+
+target:
+  benchmark: nbody
+  current_wall_sec: 0.237
+  reference_wall_sec: 0.248
+  luajit_wall_sec: 0.033
+  gap_factor: 7.2
+
+hypothesis:
+  class: tier2-struct-field-residency   # new class this round
+  claim: >
+    nbody's 7.2× LuaJIT gap is dominated by ~560M insns spent on
+    GetField in advance()'s inner loop (vs ~280ms total wall time).
+    Most GetFields are LOOP-INVARIANT (bi.x/y/z/mass across the j
+    loop) but the existing LICM pass doesn't hoist GetField
+    because of conservative side-effect assumptions. A struct
+    field residency pass that provably-safe-hoists GetFields
+    whose target (shape, field) isn't written in the loop body
+    saves ~100 ms — projected nbody 0.237 → 0.14 s, gap 7.2× → 4×.
+  expected_gain_pct: [30, 45]            # conservative; nbody only
+  expected_gain_mechanism: >
+    (1) Identify loop-invariant struct reads via SSA + shape feedback.
+    (2) Hoist GetField to preheader.
+    (3) Register allocator pins the hoisted float to an FPR across
+        iterations (existing CarryPreheaderInvariants path).
+    Savings: 4 invariants × 5 insns × 10M iters = 200M insns = ~100 ms.
+  counterfactual_check: >
+    Benchmarks without struct-in-loop patterns untouched (mandelbrot,
+    fannkuch, spectral_norm). Benchmarks with SetField in inner loop
+    (object_creation's hot vec3 allocator) — the v1 pass is
+    conservative; skips loops with SetField to the same shape. Zero
+    regression pathway.
+
+    Safety: SetField to same (shape, field) invalidates the hoist.
+    Calls in loop body also invalidate (except for marked intrinsics
+    like math.sqrt). These are static checks; fail-safe to "don't
+    hoist."
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0                 # new class
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true    # per CLAUDE.md rule 23
+  current_state_audit_summary: >
+    nbody advance() inner body has 14+ GetField per iter × 10M iters
+    = 560M insns, matching the measured 237 ms wall time. Existing
+    LICM does NOT hoist GetField. shapeVerified is block-local,
+    doesn't survive loop iterations. Conclusion: gap is LICM coverage,
+    not runtime layout. NOT ALREADY DONE.
+
+pre_flight:
+  required: []                           # architecture exempt
+  result: null
+  passed: null
+
+outcome:
+  status: win
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - docs-internal/decisions/adr-tier2-struct-field-residency.md
+  architecture_findings:
+    - "GetField hoisting out of loops is the nbody gap, not typespec or layout"
+    - "Existing preheader-invariant + FPR residency infra gives the landing pad"
+    - "Safety gate: loops with SetField to same shape are conservatively skipped"
+    - "Projected nbody 7.2× → 4×; similar pattern in matmul (R34 extends)"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-struct-field-residency]
+  new_class_introduced: tier2-struct-field-residency
