@@ -64,7 +64,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 473b53e
   deliverables:
     - docs-internal/decisions/adr-tier2-struct-field-residency.md
   architecture_findings:
