@@ -43,7 +43,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 42c66c9
   deliverables:
     - CLAUDE.md — add rule 23 (architecture rounds current-state audit)
     - rounds/TEMPLATE.yaml — comment under type: architecture
