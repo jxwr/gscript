@@ -74,7 +74,7 @@ outcome:
   status: win                      # infrastructure ships; activates future rounds
   bench_deltas: {}                  # no bench impact without promotion
   regressions: []
-  commit: pending
+  commit: afb8af6
   deliverables:
     - "internal/methodjit/emit_compile.go — t2_self_entry label emission (conditional on HasSelfCalls)"
     - "internal/methodjit/emit_call_native.go — self-call detection + BL t2_self_entry emit"
