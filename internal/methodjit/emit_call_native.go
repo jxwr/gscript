@@ -28,6 +28,7 @@ package methodjit
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
 )
@@ -182,9 +183,29 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.ADDimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
-	// BLR to callee's direct entry.
+	// R40: Self-call fast path. Only emit the runtime proto compare when
+	// the function is known to have self-calls (HasSelfCalls flag).
+	// This avoids padding insn count on unrelated call sites (e.g.,
+	// new_vec3 which is not self-recursive).
 	asm.MOVreg(jit.X0, mRegCtx)
-	asm.BLR(jit.X2)
+	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
+		selfCallLabel := ec.uniqueLabel("t2call_do_self")
+		afterBlLabel := ec.uniqueLabel("t2call_after_bl")
+		// X1 still holds *FuncProto from step 4 load.
+		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(ec.fn.Proto))))
+		asm.CMPreg(jit.X1, jit.X3)
+		asm.BCond(jit.CondEQ, selfCallLabel)
+		// Non-self: original BLR path.
+		asm.BLR(jit.X2)
+		asm.B(afterBlLabel)
+		// Self-call: PC-relative BL to lightweight entry
+		// (t2_self_entry skips 4 redundant setup insns vs t2_direct_entry).
+		asm.Label(selfCallLabel)
+		asm.BL("t2_self_entry")
+		asm.Label(afterBlLabel)
+	} else {
+		asm.BLR(jit.X2)
+	}
 
 	// Decrement NativeCallDepth.
 	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)

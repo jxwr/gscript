@@ -1,115 +1,115 @@
 {
-  "timestamp": "2026-04-17T00:25:52Z",
-  "commit": "d619534052f27eb71221f9848eea0a3d04c766e4",
+  "timestamp": "2026-04-17T15:24:36Z",
+  "commit": "558967819f5e54f5c766ae0e05b91738ea485d7d",
   "results": {
     "fib": {
-      "vm": "Time: 1.569s",
-      "jit": "Time: 1.429s",
+      "vm": "Time: 1.662s",
+      "jit": "Time: 1.224s",
       "luajit": "Time: 0.024s"
     },
     "fib_recursive": {
-      "vm": "Time: 15.894s",
-      "jit": "Time: 14.154s",
+      "vm": "Time: 16.504s",
+      "jit": "Time: 17.012s",
       "luajit": "N/A"
     },
     "sieve": {
-      "vm": "Time: 0.235s",
-      "jit": "Time: 0.082s",
-      "luajit": "Time: 0.009s"
+      "vm": "Time: 0.243s",
+      "jit": "Time: 0.085s",
+      "luajit": "Time: 0.010s"
     },
     "mandelbrot": {
-      "vm": "Time: 1.359s",
-      "jit": "Time: 0.058s",
-      "luajit": "Time: 0.052s"
+      "vm": "Time: 1.373s",
+      "jit": "Time: 0.063s",
+      "luajit": "Time: 0.057s"
     },
     "ackermann": {
-      "vm": "Time: 0.281s",
-      "jit": "Time: 0.261s",
+      "vm": "Time: 0.293s",
+      "jit": "Time: 0.268s",
       "luajit": "Time: 0.006s"
     },
     "matmul": {
-      "vm": "Time: 0.992s",
-      "jit": "Time: 0.114s",
+      "vm": "Time: 1.016s",
+      "jit": "Time: 0.117s",
       "luajit": "Time: 0.021s"
     },
     "spectral_norm": {
-      "vm": "Time: 0.960s",
-      "jit": "Time: 0.044s",
+      "vm": "Time: 0.992s",
+      "jit": "Time: 0.045s",
       "luajit": "Time: 0.007s"
     },
     "nbody": {
-      "vm": "Time: 1.845s",
-      "jit": "Time: 0.237s",
-      "luajit": "Time: 0.033s"
+      "vm": "Time: 1.890s",
+      "jit": "Time: 0.248s",
+      "luajit": "Time: 0.034s"
     },
     "fannkuch": {
-      "vm": "Time: 0.535s",
-      "jit": "Time: 0.045s",
+      "vm": "Time: 0.554s",
+      "jit": "Time: 0.048s",
       "luajit": "Time: 0.019s"
     },
     "sort": {
-      "vm": "Time: 0.172s",
-      "jit": "FAILED",
+      "vm": "Time: 0.182s",
+      "jit": "Time: 0.049s",
       "luajit": "Time: 0.010s"
     },
     "sum_primes": {
-      "vm": "Time: 0.027s",
+      "vm": "Time: 0.028s",
       "jit": "Time: 0.004s",
       "luajit": "Time: 0.002s"
     },
     "mutual_recursion": {
-      "vm": "Time: 0.189s",
-      "jit": "Time: 0.184s",
+      "vm": "Time: 0.201s",
+      "jit": "Time: 0.190s",
       "luajit": "Time: 0.004s"
     },
     "method_dispatch": {
-      "vm": "Time: 0.070s",
-      "jit": "Time: 0.086s",
+      "vm": "Time: 0.074s",
+      "jit": "Time: 0.089s",
       "luajit": "Time: 0.000s"
     },
     "closure_bench": {
-      "vm": "Time: 0.082s",
+      "vm": "Time: 0.085s",
       "jit": "Time: 0.026s",
       "luajit": "Time: s"
     },
     "string_bench": {
-      "vm": "Time: 0.041s",
-      "jit": "Time: 0.029s",
+      "vm": "Time: 0.043s",
+      "jit": "Time: 0.030s",
       "luajit": "Time: s"
     },
     "binary_trees": {
-      "vm": "Time: 1.274s",
-      "jit": "Time: 1.288s",
+      "vm": "Time: 1.322s",
+      "jit": "Time: 1.317s",
       "luajit": "Time: s"
     },
     "table_field_access": {
-      "vm": "Time: 0.720s",
-      "jit": "Time: 0.037s",
+      "vm": "Time: 0.739s",
+      "jit": "Time: 0.036s",
       "luajit": "N/A"
     },
     "table_array_access": {
-      "vm": "Time: 0.385s",
-      "jit": "Time: 0.092s",
+      "vm": "Time: 0.400s",
+      "jit": "Time: 0.094s",
       "luajit": "N/A"
     },
     "coroutine_bench": {
-      "vm": "Time: 12.725s",
-      "jit": "Time: 14.626s",
+      "vm": "Time: 12.493s",
+      "jit": "Time: 13.790s",
       "luajit": "N/A"
     },
     "fibonacci_iterative": {
-      "vm": "Time: 1.016s",
-      "jit": "Time: 0.282s",
+      "vm": "Time: 1.023s",
+      "jit": "Time: 0.283s",
       "luajit": "N/A"
     },
     "math_intensive": {
-      "vm": "Time: 0.895s",
+      "vm": "Time: 0.917s",
       "jit": "Time: 0.069s",
       "luajit": "N/A"
     },
     "object_creation": {
-      "vm": "Time: 0.833s",
-      "jit": "Time: 0.953s",
+      "vm": "Time: 0.838s",
+      "jit": "Time: 0.981s",
       "luajit": "N/A"
     }
   }

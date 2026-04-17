@@ -508,6 +508,43 @@ func (ec *emitContext) emitEpilogue() {
 	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))   // X25
 	asm.B("B0") // Jump to first SSA block.
 
+	// --- Self-call entry point (R40) ---
+	// Only emitted when the function has self-calls AND the Tier 2 emit
+	// will generate BL "t2_self_entry". Gated on ec.fn.Proto.HasSelfCalls.
+	// This keeps insn count unchanged for non-self-recursive functions.
+	//
+	// Lightweight entry for proven-self Tier 2 calls. Caller has already
+	// set up: ctx (unchanged), ctx.Regs (advanced), ctx.Constants
+	// (unchanged, same proto), tag constants X24/X25 (unchanged).
+	// Skip: MOVreg mRegCtx, LDR mRegConsts, LoadImm64 X24/X25.
+	// Keep: frame allocation, callee-saved regs save (ARM64 ABI),
+	//       LDR mRegRegs from ctx.Regs (caller advanced it).
+	//
+	// Savings: 4 setup insns per self-call (MOVreg + LDR X27 +
+	//          2×LoadImm64). Blast radius: small; correctness argument:
+	//          self-call means same proto, same ctx, tags are
+	//          invariant globals.
+	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
+		asm.Label("t2_self_entry")
+		asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+		asm.STP(jit.X29, jit.X30, jit.SP, 0)
+		asm.ADDimm(jit.X29, jit.SP, 0)
+		asm.STP(jit.X19, jit.X20, jit.SP, 16)
+		asm.STP(jit.X21, jit.X22, jit.SP, 32)
+		asm.STP(jit.X23, jit.X24, jit.SP, 48)
+		asm.STP(jit.X25, jit.X26, jit.SP, 64)
+		asm.STP(jit.X27, jit.X28, jit.SP, 80)
+		if ec.useFPR {
+			asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+		}
+		// Skip MOVreg mRegCtx, X0  (mRegCtx unchanged in self-call)
+		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs) // X26 = ctx.Regs (caller advanced)
+		// Skip LDR mRegConsts from ctx.Constants (unchanged, same proto)
+		// Skip LoadImm64 X24/X25 (tag globals unchanged)
+		asm.B("B0") // Jump to first SSA block (same body)
+	}
+
 	// --- Direct epilogue for BLR callers ---
 	// Return path when CallMode == 1 in emitReturn. Uses the same frame
 	// restore as normal epilogue since the direct entry uses a full frame.

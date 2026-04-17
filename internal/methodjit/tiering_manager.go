@@ -488,6 +488,14 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		return nil, fmt.Errorf("tier2: has OpCall inside loop (performance-blocked), staying at Tier 1")
 	}
 
+	// R40: mark Proto.HasSelfCalls so the emitter opts in to the
+	// t2_self_entry lightweight path. A self-call is an OpCall whose
+	// function argument comes from an OpGetGlobal loading this proto's
+	// own name.
+	if irHasSelfCall(fn) {
+		proto.HasSelfCalls = true
+	}
+
 	alloc := AllocateRegisters(fn)
 	if trace != nil {
 		trace.RegAllocMap = formatRegAlloc(alloc)
@@ -685,6 +693,42 @@ func (tm *TieringManager) Tier2Failed() map[string]string {
 // (both successes and failures).
 func (tm *TieringManager) Tier2Attempted() int {
 	return tm.tier2Attempts
+}
+
+// irHasSelfCall (R40) scans the optimized IR for an OpCall whose function
+// argument is an OpGetGlobal of this proto's own name. Used to gate the
+// t2_self_entry lightweight prologue — only emitted for self-recursive
+// functions so non-recursive functions keep their unchanged insn count.
+func irHasSelfCall(fn *Function) bool {
+	if fn == nil || fn.Proto == nil || fn.Proto.Name == "" {
+		return false
+	}
+	// Find the constant pool index of the proto's own name.
+	nameIdx := int64(-1)
+	for i, c := range fn.Proto.Constants {
+		if c.IsString() && c.Str() == fn.Proto.Name {
+			nameIdx = int64(i)
+			break
+		}
+	}
+	if nameIdx < 0 {
+		return false
+	}
+	for _, b := range fn.Blocks {
+		for _, instr := range b.Instrs {
+			if instr.Op != OpCall {
+				continue
+			}
+			if len(instr.Args) == 0 || instr.Args[0] == nil || instr.Args[0].Def == nil {
+				continue
+			}
+			callee := instr.Args[0].Def
+			if callee.Op == OpGetGlobal && callee.Aux == nameIdx {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // irHasCall scans the optimized IR for any remaining OpCall instructions.
