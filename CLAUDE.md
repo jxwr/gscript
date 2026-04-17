@@ -43,6 +43,8 @@ These are compressions of expensive lessons. Each is present-tense, grep-able, o
 22. **Round-closing commits use the schema:** `round N [win|revert|hold|diag|KB|meta]: <one-liner>`. Makes the ledger grep-computable.
 23. **Architecture rounds include a current-state audit.** Every `type: architecture` round MUST open with a "current state" section that produces at least one concrete production measurement disproving the null hypothesis "this is already done." R21 overscoped 40% gains based on an unverified assumption about typespec; R24's 30-minute feedback dump disproved it after R23's wasted implementation attempt. The audit prevents the R21→R23→R24 churn from recurring in any class.
 
+    **Amendment (from R32)**: for tier-2 bench-optimization rounds, the audit MUST include reading the post-pipeline IR (`diag/<bench>/<hot_proto>.ir.txt`), not just the emit source code. R29 read source paths but missed that LICM (`pass_licm.go:237+`) already hoists the GetFields R29 proposed to hoist. A 5-minute IR read would have caught the overlap.
+
 ## Round shape (v5)
 
 A round is a single session with seven internal steps. No orchestrator.

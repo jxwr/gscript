@@ -1,0 +1,64 @@
+# R33: meta — codify R32's rule-23 amendment.
+round: 33
+date: 2026-04-17
+follows: 32
+
+type: meta
+
+target:
+  benchmark: workflow
+  current_wall_sec: null
+  reference_wall_sec: null
+  luajit_wall_sec: null
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    R32 found that R29's source-code-only audit missed LICM's
+    existing coverage. Per the same pattern as R25→R26 (audit
+    lesson → rule), R33 codifies: "for tier-2 bench rounds, audit
+    MUST include reading diag/<bench>/*.ir.txt, not just emit
+    source." Two defense layers: CLAUDE.md rule 23 amendment +
+    TEMPLATE.yaml comment.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    Future architecture rounds check the IR, not just source; the
+    R29→R32 waste pattern doesn't recur. Consistent with rule 23's
+    original intent.
+  counterfactual_check: >
+    Rule amendment adds ~5 min to architecture rounds (IR read).
+    Saves 3+ rounds when it catches a R29-class overscope. Strongly
+    positive EV.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: win
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - CLAUDE.md — rule 23 amendment block
+    - rounds/TEMPLATE.yaml — comment under type: architecture for
+      tier-2 bench rounds
+  verification:
+    - "rule 23 amendment cites R32 canonical case"
+    - "TEMPLATE.yaml comment points authors at diag/*.ir.txt"
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null

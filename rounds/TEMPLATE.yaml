@@ -19,6 +19,9 @@ type: tactical                # one of: tactical | architecture | strategy | met
 #                 Ship at least one production measurement that
 #                 disproves the null hypothesis "this is already done"
 #                 before proposing new work.
+#                 For tier-2 bench rounds, the audit MUST include
+#                 reading diag/<bench>/<hot_proto>.ir.txt, not just
+#                 emit source code (R32 amendment to rule 23).
 # strategy      = no code, rewrites direction based on ledger pattern
 # meta          = changes the workflow itself
 # diagnostic    = pure measurement, documents findings
