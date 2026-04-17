@@ -43,7 +43,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: a48eb65
   strategy_findings:
     LuaJIT_gaps_by_closability:
       tractable_method_jit:
