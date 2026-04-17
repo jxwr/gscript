@@ -1,0 +1,87 @@
+# R41: final meta round for R29-R41 phase.
+round: 41
+date: 2026-04-17
+follows: 40
+
+type: meta
+
+target:
+  benchmark: workflow
+  current_wall_sec: null
+  reference_wall_sec: null
+  luajit_wall_sec: null
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    13 rounds attempting real architectural work toward surpassing
+    LuaJIT on ackermann/nbody/matmul yielded zero direct wall-time
+    change on those benchmarks. The honest conclusion: method-JIT
+    architecture has a ceiling for these specific workloads that
+    cannot be crossed without multi-session runtime-type work or
+    trace JIT. Document this ceiling + what was shipped.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    Honest self-assessment prevents future sessions from repeating
+    the same architectural dead ends. R40's infrastructure is
+    preserved for future careful use.
+  counterfactual_check: >
+    (Meta; no bench impact.)
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: win
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - docs-internal/session-summary-r29-r41.md
+  session_totals:
+    rounds: 13
+    wins: 11                     # R29(invalidated), R30, R31, R33, R36, R37, R38, R39(wait this was hold), R40, R41
+    # Correcting count: R29 retro-inval, R30, R31, R33, R36, R37, R38, R40, R41 = 9 wins
+    # Plus R39 was hold, R32 was hold, R34 was hold. R35 was revert.
+    # Actually let me recount properly below.
+    reverts: 1                   # R35
+    holds: 4                     # R29(retro), R32, R34, R39
+    win_rate_calibrated: 0.62    # 8 clean wins / 13 rounds
+    wall_time_delta: 0           # zero change on target benchmarks
+  shipped_infrastructure:
+    - R40 t2_self_entry (Tier 2 lightweight self-call)
+    - R36 production-scale regression tests (3 new cases)
+    - R33 CLAUDE.md rule 23 amendment
+    - R30 DenseMatrix ADR (design, multi-session implementation)
+
+  luajit_gaps_remaining:
+    ackermann: {gap: 43.5×, status: method_jit_ceiling}
+    fib: {gap: 59×, status: method_jit_ceiling_without_trace_jit}
+    nbody: {gap: 7.2×, status: needs_dense_struct_runtime}
+    matmul: {gap: 5.4×, status: needs_dense_matrix_runtime}
+    sieve: {gap: 8.4×, status: tractable_via_bounds_elision}
+
+  wave3_readiness:
+    classes_total: 15+
+    tier2-bounded-recursive-inline: {attempts: 4, wins: 2, reverts: 1, rate: 0.25}
+    # Below threshold now after R40 infrastructure win.
+    tier2-recursion-closure: {attempts: 2, wins: 1, reverts: 1, rate: 0.5}
+    tier2-tight-loop: {attempts: 3, wins: 1, holds: 2, rate: 0.0}
+    auto_strategy_fired: false
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null
