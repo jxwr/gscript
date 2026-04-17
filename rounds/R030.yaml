@@ -56,7 +56,7 @@ outcome:
   status: win                              # ADR accepted as design
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 5127b81
   deliverables:
     - docs-internal/decisions/adr-tier2-dense-matrix.md
   architecture_findings:
