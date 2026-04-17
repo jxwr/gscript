@@ -52,7 +52,7 @@ outcome:
   status: win                   # ADR accepted
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: a27ed02
   deliverables:
     - docs-internal/decisions/adr-tier2-ic-polymorphic.md
   architecture_findings:
