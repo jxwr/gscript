@@ -53,7 +53,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: 6b01c44
   deliverables:
     - internal/methodjit/production_scale_regression_test.go — 3 new tests
 
