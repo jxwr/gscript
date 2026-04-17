@@ -40,7 +40,7 @@ outcome:
   status: hold
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: e605cc5
   findings: >
     **R29 ADR's premise was partially WRONG.** Inspecting
     diag/nbody/advance.ir.txt reveals:
