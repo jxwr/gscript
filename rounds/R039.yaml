@@ -51,7 +51,7 @@ outcome:
     fib_recursive: {from: 14.154, to: 17.012, pct: 20.2}   # regresses (fib within fib_recursive promotes too)
     # Others within noise.
   regressions: [fib_recursive]     # only one remaining regression
-  commit: pending
+  commit: 85f8b2c
   findings: >
     **R35's cascade was caused by loose gate matching makeTree/
     checkTree/etc.** With a strict fib-only gate:
