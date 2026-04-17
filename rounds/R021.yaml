@@ -53,7 +53,7 @@ outcome:
   status: win
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: c947e89
   deliverables:
     - docs-internal/decisions/adr-tier2-tight-loop.md
   architecture_findings:
