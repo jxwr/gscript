@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
 
 classes:
 
@@ -250,24 +250,32 @@ classes:
 
   - name: tier2-struct-field-residency
     description: >
-      Hoist loop-invariant GetField out of tier-2 loops when provably
-      safe (no SetField to same (shape, field) in loop body, no
-      arbitrary calls that could alias). Target: nbody, matmul, any
-      struct-in-loop pattern. See adr-tier2-struct-field-residency.md.
-    attempts: 1
-    wins: 1                      # ADR accepted
+      Hoist loop-invariant GetField out of tier-2 loops. R32 audit
+      showed LICM (pass_licm.go:237+) ALREADY does this; no new
+      pass needed. Class effectively closed as a single-pass win;
+      remaining nbody gap requires different approaches (dense
+      struct layout, svals-ptr CSE).
+    attempts: 2
+    wins: 1                      # R29 ADR (later shown partially wrong)
     reverts: 0
-    holds: 0
+    holds: 1                     # R32 diagnostic: premise wrong
     prior_reject_rate: 0.0
     mitigation_required: false
-    mitigation_description: null
-    historical_rounds: [29]
-    key_negative_evidence: null
+    mitigation_description: >
+      **Rule 23 amendment needed** (R32 lesson): "Architecture audit
+      for tier-2 bench rounds MUST include reading the post-pipeline
+      IR (diag/<bench>/<hot_proto>.ir.txt), not just emit source
+      code." R29's audit read source paths but not IR; claimed a
+      gap that LICM had already closed. R33 codifies this amendment.
+    historical_rounds: [29, 32]
+    key_negative_evidence: >
+      R32: diag/nbody/advance.ir.txt shows bi.x/y/z/mass already
+      hoisted to block B9 (j-loop preheader). R29's "hoist these"
+      proposal was already done by existing LICM.
     key_positive_evidence: >
-      R29 audit measured nbody's advance inner loop at ~560M insns
-      spent on GetField (= entire wall time). 4-6 invariant reads per
-      iter can be hoisted. Projected nbody 7.2× → 4× gap. Existing
-      preheader-invariant pass provides landing pad for the new work.
+      R29's ADR remains useful as a REFERENCE for the LICM criteria
+      even though the specific nbody gap it targeted was already
+      closed. The audit lesson (R32) is the round's real value.
 
   - name: tier2-bounded-recursive-inline
     description: >
