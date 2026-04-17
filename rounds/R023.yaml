@@ -56,7 +56,7 @@ outcome:
   status: hold                 # null-result, halted at pre-flight
   bench_deltas: {}
   regressions: []              # no code landed
-  commit: pending
+  commit: 8485314
   deliverables:
     - rounds/R023.yaml (this card)
 

@@ -75,7 +75,7 @@ outcome:
     fib: {from: 1.412, to: 1.429, pct: 1.2}       # noise; bounds-check-skip didn't help
     ackermann: {from: 0.263, to: 0.261, pct: -0.8} # noise
   regressions: [sort]                              # crashed, not just slow
-  commit: pending
+  commit: 8485314
 
 revert_class: correctness
 revert_root_cause_location: "internal/methodjit/emit_call_native.go step 5 (bounds check)"
