@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48]
 
 classes:
 
@@ -325,24 +325,30 @@ classes:
       factory via matrix.dense(r, c) — outer is ArrayMixed, rows are
       ArrayFloat sub-slices. Phase 2+ (future) can add JIT-level fast
       path for single-load t[i][j] direct into flat backing.
-    attempts: 7
+    attempts: 8
     wins: 5                      # R30 ADR + R42 + R43 + R44 + R45
     reverts: 0
     holds: 2                     # R46 RowPtr wiring reverted; R47 FMA Phi-accumulator skip
+    null_results: 1              # R48 sum-splitting pre-flight disproven
     prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: >
       **ARM64 pipeline effects dominate insn-count savings on tight
-      inner loops** (R46 + R47 lesson). Two concrete gotchas:
+      inner loops** (R46 + R47 + R48 lessons). Three concrete gotchas:
         (a) Strength reduction via explicit LSL/MOV can regress when
             LDRreg's built-in address-scale already folds MUL+ADD
             (R46: 0.035→0.037s).
         (b) FMA fusion on loop-carried Phi accumulators serializes
             the dependency chain; separated FMUL+FADD lets FMUL
             execute speculatively (R47: 0.035→0.042s without skip).
-      Future rounds must bench before wiring. Fuse only non-Phi
-      accumulators, or break reductions first (sum-splitting).
-    historical_rounds: [30, 42, 43, 44, 45, 46, 47]
+        (c) Source-level sum-splitting (or 2-way unroll) regresses
+            matmul_dense by +83% because doubling getf call count
+            doubles per-call MatrixLoadFAt guard/addr-compute cost,
+            which dominates the dep-chain savings (R48 pre-flight).
+      Future rounds must bench before wiring. Control-test any
+      dep-chain hypothesis by including a same-dep-chain variant
+      with equal extra work (R48's unroll2 pattern).
+    historical_rounds: [30, 42, 43, 44, 45, 46, 47, 48]
     key_negative_evidence: >
       R46 + R47 both hit ARM64 pipeline counter-effects: the inner
       matmul loop is near the machine's throughput limit, so

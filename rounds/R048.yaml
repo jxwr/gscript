@@ -1,0 +1,144 @@
+# R48: sum-splitting pre-flight — hypothesis disproven, per-call MatrixLoadFAt
+# cost identified as next target.
+round: 48
+date: 2026-04-17
+follows: 47
+
+type: diagnostic
+
+target:
+  benchmark: matmul_dense
+  current_wall_sec: 0.035
+  luajit_wall_sec: 0.021
+  gap_factor: 1.67
+
+hypothesis:
+  class: tier2-dense-matrix-kind
+  claim: >
+    Source-level 2-way sum-splitting breaks the Phi accumulator serial
+    dependency chain — two independent partial sums execute in parallel
+    via M4's 4 FP pipes. R47's Phi-skip kept single-accumulator matmul
+    fused-free; split provides the ILP headroom that makes FMA-on-Phi
+    non-regressive. Expected: 0.035s → 0.022–0.028s (approach LuaJIT).
+  expected_gain_pct: [20, 40]
+  expected_gain_mechanism: >
+    Two independent Phi chains → 2× ILP on the reduction; FMA fuses
+    into each chain without serialization penalty because each chain
+    has independent forward progress.
+  counterfactual_check: >
+    If matmul is NOT FP-chain-bound (e.g. load-port or guard-bound),
+    unroll-without-split is a control — it shares the same dep chain
+    as baseline, so any regression vs baseline must be from the extra
+    per-iter work (more loads, more guards). If unroll regresses and
+    split regresses by the SAME amount, the bottleneck is per-getf
+    overhead, not the FP chain.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Reviewed diag/matmul_dense/matmul.ir.txt (R45 baseline): inner
+    k-loop body is 2×MatrixLoadFAt + MulFloat + AddFloat + loop
+    overhead. At N=300, 27M inner iterations / 0.035s = 1.3ns/iter
+    ≈ 4.5 cycles on M4 @3.5GHz — about right for 5 ops
+    well-pipelined. LuaJIT at 0.021s = 2.7 cycles/iter — needs ~2×
+    ILP to match. Sum-splitting is the textbook way to expose that.
+
+pre_flight:
+  required:
+    - description: matmul_dense_split2 must not regress vs R45 baseline
+      acceptance: matmul_dense_split2_jit <= 0.036
+      halt_on_fail: true
+    - description: matmul_dense_unroll2 (control, same dep chain) measured as baseline
+      acceptance: unroll2_jit vs split2_jit ratio informs bottleneck location
+      halt_on_fail: false
+  result: >
+    5-run median on /tmp/gscript_r47 (pre-CSE):
+      matmul_dense            0.035s  (R45 baseline)
+      matmul_dense_unroll2    0.064s  (+83% regression)
+      matmul_dense_split2     0.064s  (+83% regression)
+
+    Both unroll AND split regress by the SAME amount. The control
+    test disproves the FP-chain-bound hypothesis: the regression
+    source is identical for serial-chain and parallel-chain variants,
+    which means the bottleneck lies BEFORE the reduction — in the
+    per-getf call cost (loads, guards, address computation).
+
+    Attempted MatrixLowerPass CSE to dedupe Flat/Stride ops per
+    matrix-per-block: IR instruction count dropped 12→8 (confirmed
+    in diag), but wall-time unchanged because LICM already hoists
+    all Flat/Stride to function entry B14 — the duplicates were
+    O(1) preheader cost, not per-iteration cost. CSE reverted under
+    rule 20 (no code without validated wall-time win).
+
+    Root cause hypothesis (for R49): matmul_dense inner loop is
+    bound by per-call MatrixLoadFAt emit cost. Each call has:
+      - type-tag check on m (TableValue?)
+      - dmFlat nil-guard
+      - stride-to-offset MUL
+      - row-base ADD
+      - LDRreg final load
+    Doubling the call count (unroll or split) doubles all of this.
+    The extra dep-chain latency (R47 analysis) is a second-order
+    effect — the primary cost is per-call.
+  passed: false
+
+outcome:
+  status: null-result          # pre-flight disproved hypothesis; no production change
+  bench_deltas:
+    matmul_dense: {r47: 0.035, r48: 0.035, pct: 0}
+  regressions: []
+  commit: null
+  deliverables:
+    - benchmarks/suite/matmul_dense_split2.gs — pre-flight harness (2-way sum-split)
+    - benchmarks/suite/matmul_dense_unroll2.gs — pre-flight control (2-way unroll, same dep chain)
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: >
+  Predicted 20–40% win on matmul_dense from ILP exposure. Measured
+  0% change (no code wired) and 83% regression on source-level
+  probes. Cost model assumed FP-chain-bound; control test shows
+  per-call MatrixLoadFAt overhead dominates at the measured
+  iteration granularity.
+revert_prevention: >
+  Pre-flight CONTROL TEST was the decisive mechanism: adding the
+  unroll2 variant (same dep chain, double the loads) alongside the
+  split2 variant (independent chains, double the loads) let us
+  compare dep-chain effect vs per-call effect directly. Without
+  the control, we'd have wired IR-level unroll-and-jam and
+  regressed matmul ~80%. Future rounds in this class MUST include
+  a same-work control when the hypothesis isolates dep-chain effect.
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    For matmul_dense at N=300, doubling per-iter MatrixLoadFAt calls
+    (regardless of dep-chain structure) doubles wall time. The inner
+    loop is per-call-cost-bound, not FP-chain-bound. Before investing
+    in an IR-level unroll/sum-split pass, R49 must reduce per-call
+    MatrixLoadFAt cost — either by merging adjacent loads (LDPx2)
+    or by inlining the address compute as raw LSL+LDR (eliminating
+    the type/null guards that currently live per call).
+
+notes: >
+  This round demonstrates the v5 workflow's pre-flight value: two
+  throwaway source-level benchmarks disproved a plausible hypothesis
+  before committing any IR-pass code. Estimated saved effort: ~2h
+  (unroll-and-jam pass design + implementation + bench + revert).
+
+  R49 direction candidates (ranked):
+    1. MatrixLoadFAt guard elision: if the enclosing block has a
+       preceding MatrixLoadFAt on the same matrix, skip re-checking
+       the type tag and dmFlat nil-guard. Textbook redundant guard
+       elimination. Single-pass, well-scoped.
+    2. Paired load emit: detect LoadFAt(m, *, i, j) + LoadFAt(m, *, i, j+1)
+       → emit single LDP (ARM64 load-pair) for two adjacent float64.
+       Matmul b[k][j] and b[k][j+1] would be perfect — but j doesn't
+       vary inside k-loop, so this applies only after i-j interchange.
+    3. SIMD NEON FMLA: process 2× float64 per iter with NEON vectors.
+       Requires vectorization infrastructure — bigger lift.
