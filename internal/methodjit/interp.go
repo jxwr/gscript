@@ -404,6 +404,40 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		row := m.RawGetInt(int64(i)).Table()
 		row.RawSetInt(int64(j), vv)
 
+	case OpMatrixRowPtr:
+		// R46: interp tunnels (m, i) as an encoded row reference — we
+		// pass the matrix + row index through so LoadFRow/StoreFRow can
+		// still resolve via RawGetInt. JIT uses raw pointer for perf;
+		// interp uses the functional path.
+		mv := s.val(instr.Args[0])
+		iv := s.val(instr.Args[2])
+		if !mv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixRowPtr: arg 0 not a table")
+		}
+		m := mv.Table()
+		i := int(iv.Int())
+		row := m.RawGetInt(int64(i))
+		s.values[instr.ID] = row
+
+	case OpMatrixLoadFRow:
+		rv := s.val(instr.Args[0])
+		jv := s.val(instr.Args[1])
+		if !rv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixLoadFRow: arg 0 not a row table")
+		}
+		j := int(jv.Int())
+		s.values[instr.ID] = rv.Table().RawGetInt(int64(j))
+
+	case OpMatrixStoreFRow:
+		rv := s.val(instr.Args[0])
+		jv := s.val(instr.Args[1])
+		vv := s.val(instr.Args[2])
+		if !rv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixStoreFRow: arg 0 not a row table")
+		}
+		j := int(jv.Int())
+		rv.Table().RawSetInt(int64(j), vv)
+
 	// ---------- Comparison (type-generic) ----------
 	case OpEq:
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])

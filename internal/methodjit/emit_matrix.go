@@ -254,6 +254,75 @@ func (ec *emitContext) emitMatrixStoreFAt(instr *Instr) {
 	asm.STRreg(jit.X6, jit.X5, jit.X4)
 }
 
+// R46: row-pointer strength-reduction ops.
+
+// emitMatrixRowPtr emits OpMatrixRowPtr(flat, stride, i) →
+// int64 raw pointer = flat + i*stride*8. No guards (Flat/Stride
+// already guarded). Hoistable by LICM when i is loop-invariant.
+func (ec *emitContext) emitMatrixRowPtr(instr *Instr) {
+	if len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+	flatReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	if flatReg != jit.X5 {
+		asm.MOVreg(jit.X5, flatReg)
+	}
+	strideReg := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+	if strideReg != jit.X1 {
+		asm.MOVreg(jit.X1, strideReg)
+	}
+	iReg := ec.resolveRawInt(instr.Args[2].ID, jit.X2)
+	if iReg != jit.X2 {
+		asm.MOVreg(jit.X2, iReg)
+	}
+	// X0 = flat + (i * stride) * 8
+	asm.MUL(jit.X0, jit.X2, jit.X1)
+	asm.LSLimm(jit.X0, jit.X0, 3)
+	asm.ADDreg(jit.X0, jit.X5, jit.X0)
+	ec.storeRawInt(jit.X0, instr.ID)
+}
+
+// emitMatrixLoadFRow emits OpMatrixLoadFRow(rowPtr, j) → float.
+// Just LDR [rowPtr + j*8].
+func (ec *emitContext) emitMatrixLoadFRow(instr *Instr) {
+	if len(instr.Args) < 2 {
+		return
+	}
+	asm := ec.asm
+	rowReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	if rowReg != jit.X5 {
+		asm.MOVreg(jit.X5, rowReg)
+	}
+	jReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
+	if jReg != jit.X3 {
+		asm.MOVreg(jit.X3, jReg)
+	}
+	asm.LDRreg(jit.X0, jit.X5, jit.X3)
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+// emitMatrixStoreFRow emits OpMatrixStoreFRow(rowPtr, j, v).
+func (ec *emitContext) emitMatrixStoreFRow(instr *Instr) {
+	if len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+	rowReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	if rowReg != jit.X5 {
+		asm.MOVreg(jit.X5, rowReg)
+	}
+	jReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
+	if jReg != jit.X3 {
+		asm.MOVreg(jit.X3, jReg)
+	}
+	vReg := ec.resolveValueNB(instr.Args[2].ID, jit.X6)
+	if vReg != jit.X6 {
+		asm.MOVreg(jit.X6, vReg)
+	}
+	asm.STRreg(jit.X6, jit.X5, jit.X3)
+}
+
 // emitMatrixSetF emits ARM64 code for OpMatrixSetF(m, i, j, v).
 // Same layout as get, plus resolve v as raw float in D0 and STR it.
 func (ec *emitContext) emitMatrixSetF(instr *Instr) {

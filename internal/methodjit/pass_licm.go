@@ -585,6 +585,11 @@ func canHoistOp(op Op) bool {
 		// m (hasLoopCall) — LICM already enforces that for GetField/
 		// GetTable, and the same guard applies here.
 		return true
+	case OpMatrixRowPtr:
+		// R46: row-pointer arithmetic is pure. Hoists when all 3 inputs
+		// (flat, stride, i) are loop-invariant. In matmul's inner k-loop
+		// with a[i][k], i is invariant → row_a hoists outside the k-loop.
+		return true
 	}
 	return false
 }

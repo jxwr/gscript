@@ -59,6 +59,15 @@ const (
 	OpMatrixStride
 	OpMatrixLoadFAt
 	OpMatrixStoreFAt
+	// R46 Phase 2d row-pointer strength reduction:
+	//   OpMatrixRowPtr(flat, stride, i) → int64 = flat + i*stride*8
+	//   OpMatrixLoadFRow(rowPtr, j) → float = *(rowPtr + j*8)
+	//   OpMatrixStoreFRow(rowPtr, j, v) → void
+	// When i is loop-invariant (matmul: i fixed in j-loop and k-loop),
+	// LICM hoists OpMatrixRowPtr out so the k body is one LDR per load.
+	OpMatrixRowPtr
+	OpMatrixLoadFRow
+	OpMatrixStoreFRow
 
 	// Comparison (type-generic)
 	OpEq // Args[0] == Args[1]
@@ -175,10 +184,13 @@ var opNames = [...]string{
 	OpSqrt:          "Sqrt",
 	OpMatrixGetF:    "MatrixGetF",
 	OpMatrixSetF:    "MatrixSetF",
-	OpMatrixFlat:    "MatrixFlat",
-	OpMatrixStride:  "MatrixStride",
-	OpMatrixLoadFAt: "MatrixLoadFAt",
+	OpMatrixFlat:     "MatrixFlat",
+	OpMatrixStride:   "MatrixStride",
+	OpMatrixLoadFAt:  "MatrixLoadFAt",
 	OpMatrixStoreFAt: "MatrixStoreFAt",
+	OpMatrixRowPtr:   "MatrixRowPtr",
+	OpMatrixLoadFRow: "MatrixLoadFRow",
+	OpMatrixStoreFRow: "MatrixStoreFRow",
 	OpEq:         "Eq",
 	OpLt:         "Lt",
 	OpLe:         "Le",

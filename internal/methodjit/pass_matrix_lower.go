@@ -1,20 +1,30 @@
 // pass_matrix_lower.go — R45 Phase 2c lowering.
 //
-// Splits the compound DenseMatrix intrinsics (OpMatrixGetF /
-// OpMatrixSetF) into LICM-friendly primitives:
+// Splits the compound DenseMatrix intrinsics into LICM-friendly
+// primitives using row-pointer strength reduction (R46):
 //
-//   OpMatrixGetF(m, i, j)  →  flat  = OpMatrixFlat(m)
-//                             stride = OpMatrixStride(m)
-//                             result = OpMatrixLoadFAt(flat, stride, i, j)
+//   OpMatrixGetF(m, i, j)  →  flat    = OpMatrixFlat(m)
+//                             stride  = OpMatrixStride(m)
+//                             rowPtr  = OpMatrixRowPtr(flat, stride, i)
+//                             result  = OpMatrixLoadFRow(rowPtr, j)
 //
-//   OpMatrixSetF(m, i, j, v) →  flat  = OpMatrixFlat(m)
-//                               stride = OpMatrixStride(m)
-//                               OpMatrixStoreFAt(flat, stride, i, j, v)
+//   OpMatrixSetF(m, i, j, v) → flat   = OpMatrixFlat(m)
+//                              stride = OpMatrixStride(m)
+//                              rowPtr = OpMatrixRowPtr(flat, stride, i)
+//                              OpMatrixStoreFRow(rowPtr, j, v)
 //
-// Flat/Stride ops are LICM-safe: their output depends only on m, which
-// is loop-invariant when the caller hoists m (matmul's inner k-loop:
-// a and b are invariant, only i/j vary). LICM will pull Flat/Stride
-// to the preheader, leaving MUL+ADD+LDR per k iteration.
+// Flat/Stride depend only on m → LICM-hoistable when m is invariant.
+// RowPtr depends on (flat, stride, i) → hoistable when i is also
+// invariant (matmul's inner k-loop: a[i][k] has i invariant).
+// LoadFRow depends on (rowPtr, j) → typically not hoistable (j varies).
+//
+// For matmul inner k-loop, post-LICM:
+//   preheader (j-loop):  flat_a, stride_a, flat_b, stride_b
+//   preheader (k-loop):  rowPtr_a = flat_a + i*stride_a*8
+//   k body:              rowPtr_b = flat_b + k*stride_b*8
+//                        load_a = LDR [rowPtr_a + k*8]
+//                        load_b = LDR [rowPtr_b + j*8]
+// rowPtr_a hoisted outside the k-loop; k body = 2×(ADD+MUL+LDR) + FMUL + FADD.
 //
 // Ordering in the pipeline: run AFTER typespec (so OpMatrixGetF's
 // input types are finalized) and BEFORE LICM (so LICM sees the split).
@@ -58,7 +68,12 @@ func MatrixLowerPass(fn *Function) (*Function, error) {
 				flat := emitIRInstr(fn, block, OpMatrixFlat, TypeInt, []*Value{m}, 0, 0)
 				stride := emitIRInstr(fn, block, OpMatrixStride, TypeInt, []*Value{m}, 0, 0)
 				newInstrs = append(newInstrs, flat, stride)
-				// Mutate instr into LoadFAt form.
+				// R45 form (LoadFAt): the ARM64 pipeline absorbs MUL+ADD
+				// inside LoadFAt's single-insn address computation.
+				// R46's RowPtr split added an extra LSL+MOVreg that the
+				// pipeline did NOT absorb, measuring 0.037 vs R45's
+				// 0.035 median. Keep R45 form; RowPtr ops remain
+				// available for future 3D-tensor work or hand-kernels.
 				instr.Op = OpMatrixLoadFAt
 				instr.Args = []*Value{flat.Value(), stride.Value(), i, j}
 				newInstrs = append(newInstrs, instr)

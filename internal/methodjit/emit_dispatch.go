@@ -117,6 +117,12 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitMatrixLoadFAt(instr)
 	case OpMatrixStoreFAt:
 		ec.emitMatrixStoreFAt(instr)
+	case OpMatrixRowPtr:
+		ec.emitMatrixRowPtr(instr)
+	case OpMatrixLoadFRow:
+		ec.emitMatrixLoadFRow(instr)
+	case OpMatrixStoreFRow:
+		ec.emitMatrixStoreFRow(instr)
 	case OpNot:
 		ec.emitNot(instr)
 
