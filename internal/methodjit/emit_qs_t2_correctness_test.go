@@ -16,7 +16,7 @@ import "testing"
 // after enough recursive calls; once at T2, the sort output diverges
 // from VM.
 func TestTier2_Quicksort_LCG_N11(t *testing.T) {
-	t.Skip("BLOCKER-A: threshold bump to 5 fixed the test but regressed 5-50x across matmul/mandelbrot/spectral/sieve/math_intensive (single-entry functions never reach Tier 2). Needs selective-per-function threshold.")
+	t.Skip("BLOCKER-A: requires feedback-architecture rework (see R83/R84 in rounds/). L2 alone insufficient; simple threshold bumps all break single-entry compute benches.")
 	src := `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }
