@@ -150,13 +150,15 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		activeRegs:     make(map[int]bool),
 		rawIntRegs:     make(map[int]bool),
 		activeFPRegs:   make(map[int]bool),
-		shapeVerified:  make(map[int]uint32),
-		tableVerified:  make(map[int]bool),
-		kindVerified:   make(map[int]uint16),
-		dmVerified:     make(map[int]bool),
-		blockOutShapes: make(map[int]map[int]uint32),
-		blockOutTables: make(map[int]map[int]bool),
-		blockOutKinds:  make(map[int]map[int]uint16),
+		shapeVerified:     make(map[int]uint32),
+		tableVerified:     make(map[int]bool),
+		kindVerified:      make(map[int]uint16),
+		keysDirtyWritten:  make(map[int]bool),
+		dmVerified:        make(map[int]bool),
+		blockOutShapes:    make(map[int]map[int]uint32),
+		blockOutTables:    make(map[int]map[int]bool),
+		blockOutKinds:     make(map[int]map[int]uint16),
+		blockOutKeysDirty: make(map[int]map[int]bool),
 		crossBlockLive: crossBlockLive,
 		useFPR:         hasFPR,
 		loop:             li,
@@ -272,6 +274,14 @@ type emitContext struct {
 	// Reset at block boundaries and after calls (same as shapeVerified).
 	tableVerified map[int]bool
 
+	// keysDirtyWritten tracks table SSA value IDs whose keysDirty byte
+	// has already been written to 1 in the current block. Subsequent
+	// SetTables on the same table elide the MOVimm16+STRB (2 insns).
+	// The flag is idempotent (always set to 1), so consecutive writes
+	// produce the same final state. Reset at block boundaries and after
+	// calls (same as tableVerified).
+	keysDirtyWritten map[int]bool
+
 	// kindVerified tracks table SSA value IDs whose ArrayKind has been
 	// guard-checked in the current block. Maps table value ID -> the
 	// AKKind constant (jit.AKMixed/AKInt/AKFloat/AKBool) last verified.
@@ -302,6 +312,9 @@ type emitContext struct {
 	// block. Used to seed single-predecessor blocks with their predecessor's
 	// verified kinds (mirrors blockOutTables).
 	blockOutKinds map[int]map[int]uint16
+
+	// blockOutKeysDirty saves the keysDirtyWritten state at end of block.
+	blockOutKeysDirty map[int]map[int]bool
 
 	// activeFPRegs tracks which value IDs have their FPR allocation active
 	// in the current block. Mirrors activeRegs for FPR-allocated values.
@@ -636,10 +649,19 @@ func (ec *emitContext) emitBlock(block *Block) {
 		} else {
 			ec.kindVerified = make(map[int]uint16)
 		}
+		if predKD, ok := ec.blockOutKeysDirty[predID]; ok {
+			ec.keysDirtyWritten = make(map[int]bool, len(predKD))
+			for k, v := range predKD {
+				ec.keysDirtyWritten[k] = v
+			}
+		} else {
+			ec.keysDirtyWritten = make(map[int]bool)
+		}
 	} else {
 		ec.shapeVerified = make(map[int]uint32)
 		ec.tableVerified = make(map[int]bool)
 		ec.kindVerified = make(map[int]uint16)
+		ec.keysDirtyWritten = make(map[int]bool)
 	}
 	// R44: reset DenseMatrix verification at every block boundary. Cross-
 	// block propagation isn't critical for matmul's inner-k loop (k-loop
@@ -720,4 +742,9 @@ func (ec *emitContext) emitBlock(block *Block) {
 		outKinds[k] = v
 	}
 	ec.blockOutKinds[block.ID] = outKinds
+	outKD := make(map[int]bool, len(ec.keysDirtyWritten))
+	for k, v := range ec.keysDirtyWritten {
+		outKD[k] = v
+	}
+	ec.blockOutKeysDirty[block.ID] = outKD
 }

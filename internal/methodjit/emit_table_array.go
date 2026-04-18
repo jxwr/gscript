@@ -467,9 +467,11 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	}
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // array data pointer
 	asm.STRreg(jit.X4, jit.X2, jit.X1)          // array[key] = value
-	// Set keysDirty flag.
-	asm.MOVimm16(jit.X5, 1)
-	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	// Set keysDirty flag (elided if already set in this block).
+	if !ec.keysDirtyWritten[tblValueID] {
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	}
 	asm.B(doneLabel)
 
 	// --- ArrayInt fast path ---
@@ -483,8 +485,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.LoadImm64(jit.X4, val)
 		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 		asm.STRreg(jit.X4, jit.X2, jit.X1)
-		asm.MOVimm16(jit.X5, 1)
-		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		if !ec.keysDirtyWritten[tblValueID] {
+			asm.MOVimm16(jit.X5, 1)
+			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		}
 		asm.B(doneLabel)
 	} else if ec.hasReg(instr.Args[2].ID) && ec.rawIntRegs[instr.Args[2].ID] {
 		// Raw int register bypass: value already unboxed, skip tag check.
@@ -494,8 +498,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		}
 		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 		asm.STRreg(jit.X4, jit.X2, jit.X1)
-		asm.MOVimm16(jit.X5, 1)
-		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		if !ec.keysDirtyWritten[tblValueID] {
+			asm.MOVimm16(jit.X5, 1)
+			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		}
 		asm.B(doneLabel)
 	} else {
 		// Load value to store and check it's an integer.
@@ -511,9 +517,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.SBFX(jit.X4, jit.X4, 0, 48)
 		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
 		asm.STRreg(jit.X4, jit.X2, jit.X1)             // intArray[key] = int64
-		// Set keysDirty flag.
-		asm.MOVimm16(jit.X5, 1)
-		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		if !ec.keysDirtyWritten[tblValueID] {
+			asm.MOVimm16(jit.X5, 1)
+			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		}
 		asm.B(doneLabel)
 	}
 
@@ -534,9 +541,11 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	// Float64 bits ARE the NaN-boxed representation — store directly.
 	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
 	asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
-	// Set keysDirty flag.
-	asm.MOVimm16(jit.X5, 1)
-	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	// Set keysDirty flag (elided if already set in this block).
+	if !ec.keysDirtyWritten[tblValueID] {
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	}
 	asm.B(doneLabel)
 
 	// --- ArrayBool fast path ---
@@ -552,8 +561,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.MOVimm16(jit.X4, byteVal)
 		asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
 		asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
-		asm.MOVimm16(jit.X5, 1)
-		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		if !ec.keysDirtyWritten[tblValueID] {
+			asm.MOVimm16(jit.X5, 1)
+			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		}
 		asm.B(doneLabel)
 	} else {
 		// Load value to store.
@@ -585,9 +596,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.Label(setByteLabel)
 		asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
 		asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
-		// Set keysDirty flag.
-		asm.MOVimm16(jit.X5, 1)
-		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		if !ec.keysDirtyWritten[tblValueID] {
+			asm.MOVimm16(jit.X5, 1)
+			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		}
 		asm.B(doneLabel)
 	}
 
@@ -611,6 +623,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	// subsequent ops re-verify.
 	delete(ec.tableVerified, tblValueID)
 	delete(ec.kindVerified, tblValueID)
+	// keysDirty is idempotent: after any SetTable (fast or slow), the
+	// flag is 1. Record that so subsequent SetTables in this block
+	// can elide the MOVimm16+STRB.
+	ec.keysDirtyWritten[tblValueID] = true
 }
 
 // emitSetTableExit emits a table-exit for OpSetTable (dynamic key access).
