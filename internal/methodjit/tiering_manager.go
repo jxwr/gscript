@@ -50,7 +50,7 @@ import (
 // patterns. The hasCallInLoop gate (tier2.compileTier2) prevents
 // partial inlining from regressing: if full inline fails, main stays
 // at Tier 1 as before, so the bump is safe-by-construction.
-const inlineMaxCalleeSize = 250
+const inlineMaxCalleeSize = 500
 
 // tmDefaultTier2Threshold is the BLR tier-up threshold. Controls when Tier 1's
 // BLR call path falls to slow path to give TieringManager.TryCompile a chance
