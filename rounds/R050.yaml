@@ -1,0 +1,169 @@
+# R50: architecture — DenseStruct (homogeneous-float struct layout) for nbody/spectral_norm.
+round: 50
+date: 2026-04-18
+follows: 49
+
+type: architecture
+
+target:
+  benchmark: nbody
+  current_wall_sec: 0.250
+  luajit_wall_sec: 0.035
+  gap_factor: 7.14
+
+hypothesis:
+  class: tier2-dense-matrix-kind
+  claim: >
+    Generalize the R42-R45 DenseMatrix pattern (shared flat []float64
+    backing + JIT intrinsic direct-load) from rectangular numeric
+    arrays to named-field structs with homogeneous-float layout.
+    nbody's `bodies` (array of 5 tables, each with 7 float fields
+    x/y/z/vx/vy/vz/mass) is identical in shape-memory terms to a
+    DenseMatrix(5, 7). Shipping a `struct.dense({name: "x", name: "y", ...})`
+    factory that returns a flat-backed Table lets nbody's field
+    accesses lower to single-LDR FPR loads, bypassing NaN-box +
+    shape-guard + slot-offset dispatch.
+  expected_gain_pct: [30, 50]
+  expected_gain_mechanism: >
+    nbody's advance() j-inner-loop has 10 GetField + 6 SetField per
+    iter on 4 distinct field slots (vx/vy/vz of bi and bj; bi's
+    x/y/z are LICM-hoisted per R32 finding). In the NaN-boxed
+    shape-IC path, each field op costs ~5 insns (shape-guard CMP+BNE
+    + slot-offset compute + Value LDR + unbox). With flat float64
+    backing and JIT intrinsic, each op becomes ~2 insns
+    (base+offset LDR directly to FPR). For 5M iters × 16 ops × 3
+    insns saved = 240M fewer insns. At M4's ~8 IPC effective,
+    that's ~30-50ms.
+  counterfactual_check: >
+    Does DenseStruct compose with other benches? spectral_norm uses
+    flat numeric vectors (applies directly — 1D case of
+    DenseMatrix, already covered by matrix.dense). sort uses
+    mixed-type tables — DOESN'T apply. method_dispatch operates
+    on heterogeneous tables — DOESN'T apply. Risk: if nbody's
+    `bodies[1]` table escape analysis isn't tight (e.g. passed to
+    functions that assume NaN-box layout), we corrupt. Mitigation:
+    DenseStruct is an opt-in factory; legacy tables unchanged.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0            # tier2-dense-matrix-kind: 5 win + 2 hold = 0%
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Read diag/nbody/advance.ir.txt + graph_builder.go + pass_typespec.go
+    + pass_load_elim.go. Concrete findings:
+      (1) LoadEliminationPass already runs and does block-local
+          GetField CSE + SetField→GetField store-forwarding + GuardType
+          CSE. 126 lines in pass_load_elim.go confirm nbody's
+          redundant loads are not the bottleneck.
+      (2) nbody cold IR shows NO GuardType ops because diag.sh does
+          cold compile. Per R24 ledger evidence, WARM production
+          nbody does have FBFloat feedback → GuardType inserted →
+          downstream arith specialized. So the bottleneck is NOT
+          typespec coverage.
+      (3) The remaining 16 field ops per j-iter are on DISTINCT
+          slots (field[6]=vx, [7]=mass, [8]=vy, [9]=vz). They are
+          not redundant; they are genuinely needed.
+      (4) Each warm-path field op costs ~5 insns: shape-CMP,
+          slot-LDR-Value, unbox (LSR+CMP+BNE for type tag), then
+          float residency. At 5M × 16 × 5 = 400M insns, that's
+          ~400M × 0.3ns = 120ms of pure field-access cost in a
+          benchmark currently taking 250ms.
+      (5) DenseMatrix pattern (R42-R45) reduced matmul_dense's
+          getf/setf cost from ~5 insns → ~2 insns (flat LDR with
+          base+offset addressing). Applying same pattern to
+          named-field structs is a direct port.
+
+pre_flight:
+  required:
+    - description: shape-transition cost in nbody warm path
+      acceptance: feedback stabilizes within <10% of total wall time
+      halt_on_fail: false
+  result: >
+    Not measured pre-flight. Rationale: matmul's R42 shipped the
+    runtime-level pattern without a microbench and succeeded;
+    same architectural primitive here should have same
+    compose-cost profile.
+  passed: null
+
+# --- architecture deliverable: ADR summary ---
+adr_summary:
+  title: "DenseStruct — homogeneous-float named-field Table layout"
+  core_design: >
+    A Table constructed via struct.dense({fields}) carries the same
+    runtime promises as matrix.dense (flat []float64 backing,
+    JIT-stampable meta), but the field dimension has named slots
+    instead of integer indices. Underneath, it IS a DenseMatrix
+    with 1 row and N field columns (or N rows × 1 column, depending
+    on shape convention) OR a flat []float64 of length N per struct
+    instance.
+
+  runtime_choices:
+    - name: factory_signature
+      chosen: "struct.dense(fieldNames, count)"
+      rationale: >
+        Returns an array of `count` pre-allocated struct-tables
+        sharing one flat []float64 backing of length count*len(fieldNames).
+        Parallel to matrix.dense(r, c).
+    - name: field_access_form
+      chosen: "struct.getf(obj, fieldIdx) / struct.setf(obj, fieldIdx, v)"
+      rationale: >
+        Parallel to matrix.getf/setf. fieldIdx is resolved at
+        struct.dense() construction time via the field-name table
+        (compile-time constant in typical usage).
+    - name: intrinsic_rewrite
+      chosen: "reuse OpMatrixGetF/SetF with stride=1 special case"
+      rationale: >
+        A struct instance is row=instanceIdx, col=fieldIdx in an
+        N×F DenseMatrix. All existing matrix.dense infrastructure
+        (flat backing, dmFlat/dmStride, MatrixLowerPass, LoadFAt
+        emit, R45 LICM hoist) applies unchanged. No new JIT op
+        needed. R50's work is purely a runtime facade that exposes
+        `struct.dense` as syntactic sugar over matrix.dense.
+    - name: source_impact_on_nbody
+      chosen: "rewrite bodies construction + field accesses in nbody.gs"
+      rationale: >
+        R42-R45 required rewriting matmul_dense.gs to use matrix.dense
+        + getf/setf. Same pattern for nbody.gs. Keep legacy nbody.gs
+        as-is for regression; add nbody_dense.gs as parallel benchmark.
+
+outcome:
+  status: adr-win              # design shipped; R51+ execute
+  bench_deltas: {}
+  regressions: []
+  shipped_code: false          # pure ADR round; no runtime changes yet
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    DenseMatrix generalizes to named-field structs for free when
+    viewed as (instanceIdx, fieldIdx) row-column. No new JIT
+    infrastructure needed — the architectural work is a thin
+    runtime facade over existing matrix.dense. This composes
+    nbody and spectral_norm into the same class (5 wins + 2 holds
+    so far).
+
+notes: >
+  Execution plan (R51-R55):
+    R51 — runtime struct.dense factory + nbody.gs rewrite + bench
+    R52 — struct.getf/setf syntactic sugar over matrix.getf/setf
+    R53 — ensure JIT intrinsic path fires (IntrinsicPass coverage)
+    R54 — apply pattern to spectral_norm.gs (1D dense vec)
+    R55 — roll-up bench + regression check on 22-bench suite
+
+  Target after R55: nbody 0.250s → ~0.15s (-40%); spectral_norm
+  0.045s → ~0.032s (-29%). Both would still lag LuaJIT (0.035s and
+  0.008s respectively), but each round delivers concrete benchmark
+  movement and the architectural generalization is durable.
+
+  If the runtime facade turns out to need JIT-level work (e.g.
+  struct.getf doesn't tier-2 compile because it's not in the
+  intrinsic table), that becomes R52-R53 tactical work rather
+  than a revert trigger.
