@@ -1,0 +1,49 @@
+# R96: extract merge helpers to emit_merge.go — file-size hygiene.
+round: 96
+date: 2026-04-19
+follows: 95
+
+type: meta              # pure code organization; no semantic change
+
+target:
+  benchmark: none
+  current_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    R95 bumped emit_compile.go to 808 lines, just over rule 13's
+    800-line soft-split threshold. Extract the new mergeBoolVerified/
+    mergeKindVerified/mergeShapeVerified helpers to emit_merge.go.
+  expected_gain_pct: [0, 0]
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: suite green
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    emit_compile.go now 727 lines (was 808). emit_merge.go 90 lines.
+    Suite green. No semantic change — bench numbers unchanged.
+  passed: true
+
+outcome:
+  status: adr-win        # workflow/hygiene
+  bench_deltas: {}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/emit_merge.go — extracted merge helpers
+    - internal/methodjit/emit_compile.go — reduced to 727 lines
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null
