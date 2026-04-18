@@ -623,15 +623,44 @@ func (ec *emitContext) emitBlock(block *Block) {
 	// so we conservatively reset. Loop headers also reset (back-edge may
 	// have mutated tables). Single-pred propagation captures the main win:
 	// pre-header → body and sequential blocks within a loop.
-	if !isHeader && len(block.Preds) >= 1 {
-		// R95: merge verification state from ALL predecessors. For a key
-		// to survive the merge, all predecessors must have it with the
-		// same value. This extends the single-pred propagation to
-		// multi-pred merge points where all paths agree.
-		ec.shapeVerified = mergeShapeVerified(ec.blockOutShapes, block.Preds)
-		ec.tableVerified = mergeBoolVerified(ec.blockOutTables, block.Preds)
-		ec.kindVerified = mergeKindVerified(ec.blockOutKinds, block.Preds)
-		ec.keysDirtyWritten = mergeBoolVerified(ec.blockOutKeysDirty, block.Preds)
+	// R100: restrict multi-pred merge (R95) to single-pred only — the
+	// multi-pred merge showed no measurable benefit and may have
+	// contributed to the sort regression (though that's unconfirmed).
+	if !isHeader && len(block.Preds) == 1 {
+		predID := block.Preds[0].ID
+		// Seed from the single predecessor's out-state.
+		if m, ok := ec.blockOutShapes[predID]; ok {
+			ec.shapeVerified = make(map[int]uint32, len(m))
+			for k, v := range m {
+				ec.shapeVerified[k] = v
+			}
+		} else {
+			ec.shapeVerified = make(map[int]uint32)
+		}
+		if m, ok := ec.blockOutTables[predID]; ok {
+			ec.tableVerified = make(map[int]bool, len(m))
+			for k, v := range m {
+				ec.tableVerified[k] = v
+			}
+		} else {
+			ec.tableVerified = make(map[int]bool)
+		}
+		if m, ok := ec.blockOutKinds[predID]; ok {
+			ec.kindVerified = make(map[int]uint16, len(m))
+			for k, v := range m {
+				ec.kindVerified[k] = v
+			}
+		} else {
+			ec.kindVerified = make(map[int]uint16)
+		}
+		if m, ok := ec.blockOutKeysDirty[predID]; ok {
+			ec.keysDirtyWritten = make(map[int]bool, len(m))
+			for k, v := range m {
+				ec.keysDirtyWritten[k] = v
+			}
+		} else {
+			ec.keysDirtyWritten = make(map[int]bool)
+		}
 	} else {
 		ec.shapeVerified = make(map[int]uint32)
 		ec.tableVerified = make(map[int]bool)

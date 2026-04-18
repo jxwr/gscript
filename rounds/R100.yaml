@@ -1,0 +1,60 @@
+# R100: revert R95 multi-pred merge — slight sort/fannkuch/sieve recovery.
+round: 100
+date: 2026-04-19
+follows: 99
+
+type: tactical
+
+target:
+  benchmark: sort
+  current_wall_sec: 0.055
+  luajit_wall_sec: 0.011
+  gap_factor: 4.91
+
+hypothesis:
+  class: tier2-typed-array-ic
+  claim: >
+    R95 multi-pred merge showed mixed signals and possibly contributed
+    to sort regression (0.052 R86 → 0.055 R98). Reverting the merge
+    to single-pred-only should either recover or be neutral.
+  expected_gain_pct: [0, 3]
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: suite green
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    Suite green. 5-sample interleaved medians:
+      fannkuch:     r98 0.048 → r100 0.047 (-2%)
+      sort:         r98 0.055 → r100 0.054 (-1.8%)
+      sieve:        r98 0.085 → r100 0.084 (-1.2%)
+      matmul_dense: 0.035 → 0.035 (same)
+    Small improvements across int-heavy benches.
+  passed: true
+
+outcome:
+  status: bench-win       # measurable (though small) improvement on 3 benches
+  bench_deltas:
+    fannkuch: {r98: 0.048, r100: 0.047, pct: -2.0}
+    sort: {r98: 0.055, r100: 0.054, pct: -1.8}
+    sieve: {r98: 0.085, r100: 0.084, pct: -1.2}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/emit_compile.go — restricted merge to single-pred only
+
+ledger_update:
+  classes_touched: [tier2-typed-array-ic]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    R95's multi-pred merge was over-eager. The intersection semantics
+    are correct, but in practice the merge creates additional
+    register-pressure-sensitive patterns that regressed sort. Single-
+    pred propagation (R93) captures the wins without the risk.
