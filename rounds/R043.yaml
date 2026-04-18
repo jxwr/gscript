@@ -76,7 +76,7 @@ outcome:
     matmul_dense_vs_luajit: {gap_was_r42: 4.5, gap_now_r43: 2.2}
     matmul_dense_vs_nested_original: {nested: 0.117, dense_r43: 0.046, pct: -60.7}
   regressions: []
-  commit: pending
+  commit: 551d25a
   deliverables:
     - internal/runtime/table.go — dmFlat/dmStride fields + offset helpers
     - internal/runtime/table_dense_matrix.go — setDenseMatrixMeta in NewDenseMatrix
