@@ -673,15 +673,24 @@ func emitBaselineSetUpval(asm *jit.Assembler, inst uint32, pc int) {
 // (e.g., FBFloat=2, FBInt=1, FBBool=4). This implements the monotonic
 // Observe logic: Unobserved→concrete, concrete→concrete (same=nop, diff→Any), Any→Any.
 func emitBaselineFeedbackResult(asm *jit.Assembler, pc int, expectedFB uint16, suffix string) {
+	emitBaselineFeedbackFixedAt(asm, pc, 2, expectedFB, suffix)
+}
+
+// emitBaselineFeedbackFixedAt is the generalized form — R85 Option 2.
+// Writes expectedFB to the (Left=0|Right=1|Result=2) field of TypeFeedback[pc]
+// with monotonic-observe semantics. Used when the operand type is statically
+// known (e.g., IntSpec variants of OP_EQ/LT/LE where both operands are
+// known-int at compile time).
+func emitBaselineFeedbackFixedAt(asm *jit.Assembler, pc int, fieldOff int, expectedFB uint16, suffix string) {
 	fbSkipLabel := nextLabel("fb_skip_" + suffix)
 	fbSetLabel := nextLabel("fb_set_" + suffix)
 
 	asm.LDR(jit.X5, mRegCtx, execCtxOffBaselineFeedbackPtr)
 	asm.CBZ(jit.X5, fbSkipLabel)
 
-	fbResultOff := pc*4 + 2 // TypeFeedback[pc].Result offset
-	if fbResultOff < 4096 {
-		asm.LDRB(jit.X6, jit.X5, fbResultOff)
+	fbOff := pc*4 + fieldOff
+	if fbOff < 4096 {
+		asm.LDRB(jit.X6, jit.X5, fbOff)
 		asm.CMPimm(jit.X6, expectedFB)
 		asm.BCond(jit.CondEQ, fbSkipLabel)
 		asm.CMPimm(jit.X6, 7) // FBAny
@@ -689,13 +698,13 @@ func emitBaselineFeedbackResult(asm *jit.Assembler, pc int, expectedFB uint16, s
 		asm.CBZ(jit.X6, fbSetLabel)
 		// Different type → FBAny
 		asm.MOVimm16(jit.X6, 7)
-		asm.STRB(jit.X6, jit.X5, fbResultOff)
+		asm.STRB(jit.X6, jit.X5, fbOff)
 		asm.B(fbSkipLabel)
 		asm.Label(fbSetLabel)
 		asm.MOVimm16(jit.X6, expectedFB)
-		asm.STRB(jit.X6, jit.X5, fbResultOff)
+		asm.STRB(jit.X6, jit.X5, fbOff)
 	} else {
-		asm.LoadImm64(jit.X6, int64(fbResultOff))
+		asm.LoadImm64(jit.X6, int64(fbOff))
 		asm.ADDreg(jit.X5, jit.X5, jit.X6)
 		asm.LDRB(jit.X6, jit.X5, 0)
 		asm.CMPimm(jit.X6, expectedFB)
@@ -721,6 +730,16 @@ func emitBaselineFeedbackResult(asm *jit.Assembler, pc int, expectedFB uint16, s
 //
 // Uses scratch registers X5, X6, X7. Does not clobber valReg.
 func emitBaselineFeedbackResultFromValue(asm *jit.Assembler, pc int, valReg jit.Reg, suffix string) {
+	emitBaselineFeedbackFromValueAt(asm, pc, valReg, 2, suffix)
+}
+
+// emitBaselineFeedbackFromValueAt is the generalized form of the above — R85
+// Option 2. fieldOff selects the byte within TypeFeedback[pc] to update:
+//   0 = Left, 1 = Right, 2 = Result, 3 = Kind.
+// Left/Right are consumed by OP_EQ/LT/LE; Result by GETFIELD-style ops. The
+// monotonic-observe semantics are identical across fields — Unobserved→concrete,
+// same→nop, different→FBAny, FBAny→nop.
+func emitBaselineFeedbackFromValueAt(asm *jit.Assembler, pc int, valReg jit.Reg, fieldOff int, suffix string) {
 	fbSkipLabel := nextLabel("fb_val_skip_" + suffix)
 	fbFloatLabel := nextLabel("fb_val_float_" + suffix)
 	fbIntLabel := nextLabel("fb_val_int_" + suffix)
@@ -751,9 +770,9 @@ func emitBaselineFeedbackResultFromValue(asm *jit.Assembler, pc int, valReg jit.
 
 	// Monotonic update: X7 = observed type.
 	asm.Label(fbUpdateLabel)
-	fbResultOff := pc*4 + 2 // TypeFeedback[pc].Result byte offset
-	if fbResultOff < 4096 {
-		asm.LDRB(jit.X6, jit.X5, fbResultOff)       // X6 = current Result
+	fbOff := pc*4 + fieldOff // TypeFeedback[pc] byte offset
+	if fbOff < 4096 {
+		asm.LDRB(jit.X6, jit.X5, fbOff)            // X6 = current value
 		asm.CMPreg(jit.X6, jit.X7)
 		asm.BCond(jit.CondEQ, fbSkipLabel)            // same type → skip
 		asm.CMPimm(jit.X6, 7)                         // FBAny?
@@ -761,12 +780,12 @@ func emitBaselineFeedbackResultFromValue(asm *jit.Assembler, pc int, valReg jit.
 		asm.CBZ(jit.X6, fbSetLabel)                   // Unobserved → set
 		// Different type → FBAny
 		asm.MOVimm16(jit.X6, 7)
-		asm.STRB(jit.X6, jit.X5, fbResultOff)
+		asm.STRB(jit.X6, jit.X5, fbOff)
 		asm.B(fbSkipLabel)
 		asm.Label(fbSetLabel)
-		asm.STRB(jit.X7, jit.X5, fbResultOff) // store observed type
+		asm.STRB(jit.X7, jit.X5, fbOff) // store observed type
 	} else {
-		asm.LoadImm64(jit.X6, int64(fbResultOff))
+		asm.LoadImm64(jit.X6, int64(fbOff))
 		asm.ADDreg(jit.X5, jit.X5, jit.X6)
 		asm.LDRB(jit.X6, jit.X5, 0)
 		asm.CMPreg(jit.X6, jit.X7)
