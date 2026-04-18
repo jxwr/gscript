@@ -1,0 +1,108 @@
+# R73: P3 — MaxRecursion 2→3 + hasCallInLoop relax attempt (REVERTED).
+round: 73
+date: 2026-04-19
+follows: 72
+
+type: tactical
+
+target:
+  benchmark: multi
+  current_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: tier2-bounded-recursive-inline
+  claim: >
+    Two changes:
+    (a) MaxRecursion 2 → 3 — deeper recursive unrolling for fib/ack.
+    (b) Relax hasCallInLoop gate for <main> — allow Tier 2 main with
+        calls in loops, so ackermann/nbody/sort main can escape Tier 1.
+        Calls become Tier 2 → Tier 2 BLR (~20ns).
+  expected_gain_pct: [5, 25]
+  expected_gain_mechanism: >
+    (a) fib call-count reduction via 3-level unroll.
+    (b) main-loop body at Tier 2 speed for driver benches.
+  counterfactual_check: >
+    MaxRecursion=3 should be safe under hasCallInLoop guard.
+    hasCallInLoop relax was the wildcard — needed verification.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.33
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: false
+
+pre_flight:
+  required:
+    - description: correctness across suite
+      acceptance: all benches produce correct output
+      halt_on_fail: true
+  result: >
+    (a) MaxRecursion=3: all tests/benches pass. fib improves ~0.5%
+        (1.458 → 1.453 median). No regressions.
+    (b) hasCallInLoop relax: CRITICAL FAILURES —
+        - nbody_dense: SIGSEGV crash in Tier 2 main with calls
+        - sort: INCORRECT OUTPUT ("Sorted correctly: false")
+        Rule 2 (correctness first) — REVERTED immediately.
+  passed: partial
+
+outcome:
+  status: bench-win               # keep MaxRecursion=3; revert gate relax
+  bench_deltas:
+    fib: {from: 1.458, to: 1.453, pct: -0.3}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/pipeline.go — MaxRecursion 2 → 3
+
+revert_class: null
+revert_root_cause_location: "tier2 emit for OpCall in loop body produces incorrect code"
+revert_cost_model_delta: >
+  Expected [5,25]% gain from unblocking call-heavy main compiles.
+  Blocked by underlying Tier 2 correctness bug: OpCall in main's
+  loop body (after gate removal) miscompiles and produces wrong
+  output OR crashes. The hasCallInLoop gate is load-bearing for
+  CORRECTNESS, not just performance.
+revert_prevention: >
+  Any future attempt to loosen hasCallInLoop MUST first fix the
+  underlying Tier 2 call-in-loop emit/runtime bug. Root cause
+  unknown; needs investigation. Likely candidates:
+    - regalloc assumes no control-flow cycles through OpCall
+    - t2-self-entry / t2-direct-entry setup mismatch when caller
+      re-enters via OSR mid-loop
+    - register save/restore across call boundary breaks for
+      regs held by Phi across loop iterations
+
+ledger_update:
+  classes_touched: [tier2-bounded-recursive-inline]
+  new_class_introduced: tier2-call-in-loop-correctness   # forward class proposed
+  sub_pattern_learned: >
+    The hasCallInLoop gate is a CORRECTNESS firewall, not a perf
+    heuristic. Removing it for <main> caused SIGSEGV on nbody and
+    wrong sort output. Tier 2's OpCall codegen inside a loop body
+    has a latent bug that the gate was hiding.
+
+    Unblocking the full V8-inlining plan requires fixing this
+    correctness bug first. Scope: unknown, likely 3-5 rounds of
+    diagnosis + fix.
+
+notes: >
+  ARC STATE:
+    P1 (R72): main driver promote + inline 250 — landed; no wall win
+              because callees with loops (advance, quicksort, multiplyAv)
+              block inlining.
+    P3 (R73): MaxRecursion 2→3 — landed; fib -0.5% marginal; ackermann
+              still blocked because hasCallInLoop gate fires.
+
+  **Architectural blocker identified**: tier2-call-in-loop is a
+  correctness gap, not just a perf gap. The entire V8-inlining plan
+  is blocked on this.
+
+  Options for next round (R74):
+    (A) Investigate tier2-call-in-loop correctness bug; if fixable
+        in a few rounds, arc unblocks.
+    (B) Pivot to P4 polymorphic IC (unrelated to this blocker).
+    (C) Honest arc close with "blocker found, scope exceeded."

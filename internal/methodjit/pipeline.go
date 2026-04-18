@@ -307,7 +307,13 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		}
 	}
 	if len(globals) > 0 {
-		config := InlineConfig{Globals: globals, MaxSize: maxSize, MaxRecursion: 2}
+		// R73: MaxRecursion 2 → 3. Deeper recursive inlining for fib/
+		// ackermann call trees. Each level ~doubles the inlined body size,
+		// so depth=3 means callee body expanded ~8x at the inline site.
+		// Combined with R72's inlineMaxCalleeSize=250, fib(15 ops) can
+		// unroll to ~120 ops inside main, eliminating BLR chains. Ack has
+		// same pattern. hasCallInLoop gate still protects against explosion.
+		config := InlineConfig{Globals: globals, MaxSize: maxSize, MaxRecursion: 3}
 		fn, err = InlinePassWith(config)(fn)
 		if err != nil {
 			return nil, nil, fmt.Errorf("Inline: %w", err)
