@@ -32,7 +32,7 @@
 
 version: 1
 updated: 2026-04-19
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87]
 
 classes:
 
@@ -490,13 +490,23 @@ forward_classes:
       When a site always hits ArrayInt (or ArrayFloat, etc.), emit a
       shape-guarded inline load of t.intArray[key] and skip the
       arrayKind switch.
-    status: proposed
-    proposed_round: null            # depends on tier2-inline-cache ADR first
+    status: partial-shipped-R87
+    # R87 shipped the TypeSpec side: OpGetTable.Aux2 Kind feedback →
+    # result type. But emit_dispatch.go:132-137 maps OpLe/OpLeInt to
+    # same emitIntCmp, so no wall-time gain yet. R88+ must split emit
+    # to realize the R87-prepared specialization.
+    proposed_round: 87
     proposed_in: R11 diagnostic
-    expected_targets: [sort, matmul, spectral_norm]
+    shipped_in: R87 (infrastructure only)
+    attempts: 1
+    bench_wins: 0
+    adr_wins: 1
+    reverts: 0
+    expected_targets: [sort, matmul, spectral_norm, fannkuch, sieve]
     known_risks:
       - Composes with R5's Tier 0 gate? GetTable sites in Tier 0 paths unaffected.
       - Deopt when arrayKind changes mid-run (demoteToMixed path). Must invalidate.
+      - Type-specialized IR ≠ faster emit (R87 finding) — verify dispatch split before predicting perf.
 
   # tier2-inline-cache: promoted to classes{} in R13 after ADR accepted.
 

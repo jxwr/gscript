@@ -10,6 +10,8 @@
 
 package methodjit
 
+import "github.com/gscript/gscript/internal/vm"
+
 // TypeSpecializePass performs forward type propagation and replaces generic
 // arithmetic/comparison ops with type-specialized variants when operand types
 // are known.
@@ -137,6 +139,21 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 		return TypeTable
 	case OpClosure:
 		return TypeFunction
+
+	// GetTable with monomorphic Kind feedback (Aux2) returns a typed element.
+	// The runtime kind guard at emit_table_array.go:150 deopts on mismatch,
+	// so FBKindInt/Float/Bool → TypeInt/Float/Bool is sound. FBKindMixed stays
+	// unknown because the mixed array can hold any value type.
+	case OpGetTable:
+		switch instr.Aux2 {
+		case int64(vm.FBKindInt):
+			return TypeInt
+		case int64(vm.FBKindFloat):
+			return TypeFloat
+		case int64(vm.FBKindBool):
+			return TypeBool
+		}
+		return TypeUnknown
 
 	default:
 		return TypeUnknown

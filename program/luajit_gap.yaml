@@ -106,3 +106,9 @@ rows:
   - {round: 86, date: 2026-04-19, bench: nbody_dense,         gscript_jit_sec: 0.185, luajit_sec: 0.034, gap_factor: 5.44, notes: "R86 V8-arc close"}
   - {round: 86, date: 2026-04-19, bench: spectral_norm_dense, gscript_jit_sec: 0.025, luajit_sec: 0.007, gap_factor: 3.57, notes: "R86 V8-arc close"}
   - {round: 86, date: 2026-04-19, bench: math_intensive,      gscript_jit_sec: 0.069, luajit_sec: null,  gap_factor: null, notes: "R86 V8-arc close; no LuaJIT port"}
+
+  # --- R87: TypeSpec OpGetTable Kind → type inference (infra shipped, no perf) ---
+  # Dispatch at emit_dispatch.go maps OpLe/OpLeInt to same helper → no wall-time delta.
+  - {round: 87, date: 2026-04-19, bench: sort,                gscript_jit_sec: 0.051, luajit_sec: 0.011, gap_factor: 4.64, notes: "R87 TypeSpec infra — unchanged (LCG demotes arr to Mixed, Kind=FBKindMixed)"}
+  - {round: 87, date: 2026-04-19, bench: fannkuch,            gscript_jit_sec: 0.048, luajit_sec: 0.020, gap_factor: 2.40, notes: "R87 — 6 int-specialized compares added, 0% wall delta (emit dispatch shared)"}
+  - {round: 87, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R87 — Kind=FBKindBool, no int-cascade benefit"}
