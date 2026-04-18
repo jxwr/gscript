@@ -1,0 +1,77 @@
+# R94: GetTable→GetTable CSE within block — REVERTED (sieve +3.6%).
+round: 94
+date: 2026-04-19
+follows: 93
+
+type: tactical
+
+target:
+  benchmark: sieve
+  current_wall_sec: 0.084
+  luajit_wall_sec: 0.011
+  gap_factor: 7.6
+
+hypothesis:
+  class: tier2-typed-array-ic
+  claim: >
+    Extend R93 pass_load_elim to also populate tableAvail with
+    GetTable's own result, enabling GetTable→GetTable CSE when
+    no intervening SetTable. Expected: sieve counting-loop GetTable
+    can be CSE'd with adjacent reads.
+  expected_gain_pct: [0, 3]
+  counterfactual_check: >
+    CSE could extend SSA value lifetime → more register pressure.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: no regression > 2% on any bench
+      acceptance: 5-sample medians within ±2%
+      halt_on_fail: true
+
+  result: >
+    Bench (5 interleaved each):
+      sieve:    r93 0.084 → r94 0.087 (+3.6% REGRESSION — halt)
+      fannkuch: r93 0.047 → r94 0.048 (+2%, within noise)
+      fib:      r93 1.415 → r94 1.432 (+1.2%)
+      others unchanged.
+    Reverted: removed the populate-self line. pass_load_elim.go now
+    back to R93 state (forward from SetTable only).
+  passed: false
+
+outcome:
+  status: revert
+  bench_deltas:
+    sieve:    {r93: 0.084, r94: 0.087, pct: +3.6}
+    fannkuch: {r93: 0.047, r94: 0.048, pct: +2.1}
+    fib:      {r93: 1.415, r94: 1.432, pct: +1.2}
+  regressions: [sieve, fannkuch, fib]
+  shipped_code: false
+  commit: null
+
+revert_class: cost-model-error
+revert_root_cause_location: internal/methodjit/pass_load_elim.go (tableAvail self-populate)
+revert_cost_model_delta: >
+  Predicted 0-3% gain; actual +3.6% regression on sieve.
+  Likely cause: GetTable→GetTable CSE extends the value's SSA
+  lifetime, creating register pressure. First GetTable result must
+  survive until the second GetTable's position for the replacement
+  to be valid; reg allocator spills/reloads the result extra times.
+  Net cost > save.
+revert_prevention: >
+  Before GetTable/GetField CSE: include a microbench or reg-alloc
+  heat check. Tight-loop CSE can regress if the cached value extends
+  across many instructions.
+
+ledger_update:
+  classes_touched: [tier2-typed-array-ic]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    GetTable→GetTable CSE (vs SetTable→GetTable forwarding) causes
+    register pressure increase that erases any insn-count save. R93's
+    store-to-load forwarding is safe because the stored value is
+    already live through the SetTable. Read-after-read CSE is not.

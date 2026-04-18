@@ -173,6 +173,9 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 						replaceAllUses(fn, instr.ID, origInstr)
 					}
 				}
+				// R94 (reverted): don't populate with GetTable's own result
+				// — caused sieve regression, likely due to increased register
+				// pressure extending SSA value lifetimes.
 
 			case OpSetTable:
 				if len(instr.Args) < 3 {
