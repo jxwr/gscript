@@ -179,11 +179,16 @@ Next (inside this same Claude session):
   Step 5  Act — TDD, bounded by round card scope.
 
   Step 6  Verify — median-of-N bench + diag diff. Revert on failure.
+          Append a row to program/luajit_gap.yaml for each measured
+          benchmark (rule 25).
 
-  Step 7  Close — fill round card outcome + revert autopsy if applicable.
-          Update program/ledger.yaml. Commit: "round N [type]: <one-liner>".
+  Step 7  Close — fill round card outcome (rule 24: bench-win | adr-win |
+          revert | no-win) + revert autopsy if applicable. Update
+          program/ledger.yaml. Commit:
+          "round N [bench-win|adr-win|revert|no-win]: <one-liner>".
 
-Hard rules live in CLAUDE.md. 3-hour round budget.
+Hard rules live in CLAUDE.md. Rounds 17/18 (one-session, 3h-budget)
+removed by R49 — a round is a hypothesis-closure unit, not a time unit.
 Do not write docs-internal/round-direction.md — deprecated in v5.
 
 EOF

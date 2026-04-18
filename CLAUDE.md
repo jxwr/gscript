@@ -34,16 +34,24 @@ These are compressions of expensive lessons. Each is present-tense, grep-able, o
 15. **Test files mirror source:** `foo.go` → `foo_test.go`.
 16. **Commit per task.** Each working step is its own commit.
 
-### Workflow (v5)
-17. **One Claude session per round.** No multi-session phase chaining.
-18. **Three-hour round budget.** Over budget → auto-revert.
+### Workflow (v5.1)
+17. **REMOVED by R49.** (was: "One Claude session per round"). A round is a hypothesis-closure unit, not a time/session unit. Multi-round sessions are fine; single hypotheses may span sessions. Closure is mechanical: card + outcome + ledger update.
+18. **REMOVED by R49.** (was: "Three-hour round budget"). Never fired in 48 rounds; rounds genuinely vary from 5min (meta) to multi-hour (IR pass). Rule 20 (no sunk cost) is the real brake.
 19. **Only mechanical signals gate a round:** `reference.json` drift, `kb_check.sh` freshness, test failure, scope-budget breach, **missing/stale `rounds/NNN.yaml`**.
 20. **Sunk cost is never a reason to keep broken code.**
-21. **Hypothesis-class lookup is mandatory at Step 3.** Grep `program/ledger.yaml`. If `prior_reject_rate > 0.5` and `attempts >= 3`, write a `mitigation_description` in the round card or flip the round type to `strategy`.
-22. **Round-closing commits use the schema:** `round N [win|revert|hold|diag|KB|meta]: <one-liner>`. Makes the ledger grep-computable.
+21. **Hypothesis-class lookup is mandatory at Step 3.** Grep `program/ledger.yaml`. If `prior_reject_rate > 0.5` and `attempts >= 3`, write a `mitigation_description` in the round card or flip the round type to `strategy`. **Post-R49:** `prior_reject_rate` counts only rounds with `shipped_code: true` (`reverts / (bench_wins + reverts + shipped_no_wins)`). ADR-wins, meta-wins, and no-code halts do not dilute the denominator.
+22. **Round-closing commits use the schema:** `round N [bench-win|adr-win|revert|no-win]: <one-liner>`. The closing commit is derivable by `git log --grep='^round N \['` — the card's `commit:` field is optional metadata, not load-bearing. (Pre-R49 commits used the legacy schema `[win|revert|hold|diag|KB|meta]`; grep both when scanning history.)
 23. **Architecture rounds include a current-state audit.** Every `type: architecture` round MUST open with a "current state" section that produces at least one concrete production measurement disproving the null hypothesis "this is already done." R21 overscoped 40% gains based on an unverified assumption about typespec; R24's 30-minute feedback dump disproved it after R23's wasted implementation attempt. The audit prevents the R21→R23→R24 churn from recurring in any class.
 
     **Amendment (from R32)**: for tier-2 bench-optimization rounds, the audit MUST include reading the post-pipeline IR (`diag/<bench>/<hot_proto>.ir.txt`), not just the emit source code. R29 read source paths but missed that LICM (`pass_licm.go:237+`) already hoists the GetFields R29 proposed to hoist. A 5-minute IR read would have caught the overlap.
+
+24. **Outcome taxonomy (from R49).** Every round closes with `outcome.status ∈ {bench-win, adr-win, revert, no-win}` plus orthogonal `outcome.shipped_code: bool`.
+    - **bench-win**: a target benchmark measurably moved in the intended direction (verified post-round, median-of-N).
+    - **adr-win**: the round's deliverable was an ADR, meta-rule, KB card, or diagnostic finding — shipped without expectation of immediate bench movement.
+    - **revert**: code was committed then backed out in the same round.
+    - **no-win**: the hypothesis was tested and failed to move any benchmark. `shipped_code` distinguishes "infrastructure left in tree" (true) from "pre-flight halt, no code" (false).
+
+25. **Verify appends to `program/luajit_gap.yaml` (from R49).** On any round that re-runs a benchmark, Step 6 appends one row per measured benchmark: `{round, date, bench, gscript_jit_sec, luajit_sec, gap_factor}`. This is the cross-round per-benchmark trajectory view (ledger.yaml is per-hypothesis-class; luajit_gap.yaml is per-benchmark).
 
 ## Round shape (v5)
 
@@ -68,9 +76,12 @@ A round is a single session with seven internal steps. No orchestrator.
                   Diagnose-oracle confirming predicted cost shape.
 5. Act           TDD, bounded by round card scope.
 6. Verify        Re-run diag + median-of-N bench. Pass or revert.
-7. Close         Fill round card outcome + revert fields if applicable.
-                  Update program/ledger.yaml (append to classes_touched).
-                  Commit with schema: round N [type]: <one-liner>.
+                  Append one row per measured benchmark to
+                  program/luajit_gap.yaml (rule 25).
+7. Close         Fill round card outcome (rule 24) + revert fields
+                  if applicable. Update program/ledger.yaml (append
+                  to classes_touched). Commit with schema:
+                  round N [bench-win|adr-win|revert|no-win]: <one-liner>.
                   Separate KB update commit if card semantics changed.
 ```
 
@@ -81,6 +92,7 @@ A round is a single session with seven internal steps. No orchestrator.
 | `CLAUDE.md` | This file — hard rules + round shape |
 | `rounds/` | **v5.** Per-round structured cards. `TEMPLATE.yaml` is the schema. |
 | `program/ledger.yaml` | **v5.** Hypothesis classes + priors, aggregated across rounds. |
+| `program/luajit_gap.yaml` | **v5.1 (R49).** Per-benchmark append-only gap log; one row per verified bench per round. |
 | `docs-internal/workflow-v5-plan.md` | v5 design, three pillars, wave criteria |
 | `docs-internal/decisions/adr-workflow-v5.md` | v4→v5 transition ADR |
 | `docs-internal/architecture/overview.md` | Tiers, pipeline, register convention |

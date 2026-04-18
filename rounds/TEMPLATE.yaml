@@ -78,10 +78,21 @@ pre_flight:
 
 # --- outcome (filled at Step 7) ---
 outcome:
-  status: pending                   # pending | win | revert | hold | null-result
+  # Post-R49 taxonomy (rule 24):
+  #   pending   — during the round
+  #   bench-win — a target benchmark measurably moved in intended direction
+  #   adr-win   — ADR/meta/kb/diag deliverable shipped; no bench movement expected
+  #   revert    — code was committed then backed out in the same round
+  #   no-win    — hypothesis tested and failed to move a benchmark
+  # orthogonal `shipped_code` distinguishes "code left in tree" from
+  # "pre-flight halt, no code." class-gate (rule 21) counts only
+  # bench_wins + reverts + (no-win ∧ shipped_code=true).
+  status: pending
   bench_deltas: {}                  # {benchmark: {from: X.XXXs, to: Y.YYYs, pct: Z}}
   regressions: []                   # list of benchmarks that regressed
-  commit: null                      # commit sha of the closing commit
+  shipped_code: false               # true if round landed code changes to production
+  commit: null                      # optional metadata; derivable via
+                                    # `git log --grep='^round N \['`
 
 # --- revert autopsy (required iff status=revert) ---
 revert_class: null                  # cost-model-error | compose-failure | data-premise-error |
