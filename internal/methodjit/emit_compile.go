@@ -623,40 +623,15 @@ func (ec *emitContext) emitBlock(block *Block) {
 	// so we conservatively reset. Loop headers also reset (back-edge may
 	// have mutated tables). Single-pred propagation captures the main win:
 	// pre-header → body and sequential blocks within a loop.
-	if !isHeader && len(block.Preds) == 1 {
-		predID := block.Preds[0].ID
-		if predShapes, ok := ec.blockOutShapes[predID]; ok {
-			ec.shapeVerified = make(map[int]uint32, len(predShapes))
-			for k, v := range predShapes {
-				ec.shapeVerified[k] = v
-			}
-		} else {
-			ec.shapeVerified = make(map[int]uint32)
-		}
-		if predTables, ok := ec.blockOutTables[predID]; ok {
-			ec.tableVerified = make(map[int]bool, len(predTables))
-			for k, v := range predTables {
-				ec.tableVerified[k] = v
-			}
-		} else {
-			ec.tableVerified = make(map[int]bool)
-		}
-		if predKinds, ok := ec.blockOutKinds[predID]; ok {
-			ec.kindVerified = make(map[int]uint16, len(predKinds))
-			for k, v := range predKinds {
-				ec.kindVerified[k] = v
-			}
-		} else {
-			ec.kindVerified = make(map[int]uint16)
-		}
-		if predKD, ok := ec.blockOutKeysDirty[predID]; ok {
-			ec.keysDirtyWritten = make(map[int]bool, len(predKD))
-			for k, v := range predKD {
-				ec.keysDirtyWritten[k] = v
-			}
-		} else {
-			ec.keysDirtyWritten = make(map[int]bool)
-		}
+	if !isHeader && len(block.Preds) >= 1 {
+		// R95: merge verification state from ALL predecessors. For a key
+		// to survive the merge, all predecessors must have it with the
+		// same value. This extends the single-pred propagation to
+		// multi-pred merge points where all paths agree.
+		ec.shapeVerified = mergeShapeVerified(ec.blockOutShapes, block.Preds)
+		ec.tableVerified = mergeBoolVerified(ec.blockOutTables, block.Preds)
+		ec.kindVerified = mergeKindVerified(ec.blockOutKinds, block.Preds)
+		ec.keysDirtyWritten = mergeBoolVerified(ec.blockOutKeysDirty, block.Preds)
 	} else {
 		ec.shapeVerified = make(map[int]uint32)
 		ec.tableVerified = make(map[int]bool)
@@ -747,4 +722,87 @@ func (ec *emitContext) emitBlock(block *Block) {
 		outKD[k] = v
 	}
 	ec.blockOutKeysDirty[block.ID] = outKD
+}
+
+// mergeBoolVerified returns the intersection of per-predecessor bool maps:
+// a key is in the result if and only if every predecessor has the same
+// value for that key. If any predecessor hasn't been compiled yet (e.g.,
+// back-edge at a loop header; handled separately by isHeader check), the
+// merge result is empty.
+func mergeBoolVerified(perBlock map[int]map[int]bool, preds []*Block) map[int]bool {
+	if len(preds) == 0 {
+		return make(map[int]bool)
+	}
+	first, ok := perBlock[preds[0].ID]
+	if !ok {
+		return make(map[int]bool)
+	}
+	out := make(map[int]bool, len(first))
+	for k, v := range first {
+		out[k] = v
+	}
+	for i := 1; i < len(preds); i++ {
+		m, ok := perBlock[preds[i].ID]
+		if !ok {
+			return make(map[int]bool)
+		}
+		for k, v := range out {
+			if mv, inM := m[k]; !inM || mv != v {
+				delete(out, k)
+			}
+		}
+	}
+	return out
+}
+
+func mergeKindVerified(perBlock map[int]map[int]uint16, preds []*Block) map[int]uint16 {
+	if len(preds) == 0 {
+		return make(map[int]uint16)
+	}
+	first, ok := perBlock[preds[0].ID]
+	if !ok {
+		return make(map[int]uint16)
+	}
+	out := make(map[int]uint16, len(first))
+	for k, v := range first {
+		out[k] = v
+	}
+	for i := 1; i < len(preds); i++ {
+		m, ok := perBlock[preds[i].ID]
+		if !ok {
+			return make(map[int]uint16)
+		}
+		for k, v := range out {
+			if mv, inM := m[k]; !inM || mv != v {
+				delete(out, k)
+			}
+		}
+	}
+	return out
+}
+
+func mergeShapeVerified(perBlock map[int]map[int]uint32, preds []*Block) map[int]uint32 {
+	if len(preds) == 0 {
+		return make(map[int]uint32)
+	}
+	first, ok := perBlock[preds[0].ID]
+	if !ok {
+		return make(map[int]uint32)
+	}
+	out := make(map[int]uint32, len(first))
+	for k, v := range first {
+		out[k] = v
+	}
+	for i := 1; i < len(preds); i++ {
+		m, ok := perBlock[preds[i].ID]
+		if !ok {
+			return make(map[int]uint32)
+		}
+		for k, v := range out {
+			if mv, inM := m[k]; !inM || mv != v {
+				delete(out, k)
+			}
+		}
+	}
+	return out
 }
