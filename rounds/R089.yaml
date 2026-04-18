@@ -1,0 +1,142 @@
+# R89: insertIntParamGuards — cover "i <= n" pattern where n is a
+# param used in numeric ops with inferred-int neighbors (not just ConstInt).
+round: 89
+date: 2026-04-19
+follows: 88
+
+type: tactical
+
+target:
+  benchmark: fannkuch
+  current_wall_sec: 0.048
+  reference_wall_sec: 0.048
+  luajit_wall_sec: 0.020
+  gap_factor: 2.40
+
+hypothesis:
+  class: tier2-tight-loop
+  claim: >
+    pass_typespec.go's insertParamGuards heuristic is too narrow — it
+    only marks a param as int-like when paired with OpConstInt. For
+    fannkuch, param n is compared with v17 = AddInt (TypeInt), not
+    ConstInt, so no guard is inserted. Post-warmup IR shows Le=3 still
+    generic at the three `i <= n` bounds checks. Adding a Phase 1d
+    insertIntParamGuards that runs AFTER type propagation and inserts
+    TypeInt guards for still-unguarded params whose neighbor has
+    inferred TypeInt will cascade Le → LeInt, eliminating ~4-6 insns
+    per outer-loop iter.
+  expected_gain_pct: [2, 6]
+  expected_gain_mechanism: >
+    Generic Le emits per-operand int-tag checks (2 LSR + 2 CMPreg) +
+    fused compare-branch. LeInt emits only CMPreg + B.cc (2 insns).
+    Save: ~4 insns per iter × ~3-5M iters = 12-20M insn reduction.
+    Also indirectly benefits other Sub/Lt/Eq ops where operands
+    become TypeInt (cascades).
+  counterfactual_check: >
+    sort's quicksort has a similar "i < N" pattern — might also
+    benefit. matmul/spectral (float-heavy) unaffected because their
+    params are float-like (already handled by insertFloatParamGuards).
+    Risk: a param that LOOKS int-like but is actually float at runtime
+    would trigger deopt on the guard — correctness-preserving but
+    perf-negative. Mitigation: only guard when neighbor type is
+    UNAMBIGUOUSLY TypeInt (not also TypeFloat).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0           # tier2-tight-loop: 1 ADR, 0 reverts, 2 holds
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Read warm IR (r89_warm_ir_test.go) after JIT-warmup fannkuch:
+      Sub=0 SubInt=4 Add=0 AddInt=9 Mul=0
+      Lt=0 LtInt=3 Le=3 LeInt=1 Eq=0 EqInt=2 GuardType=9
+    The 3 Le are all `<var> <= v0` where v0 = LoadSlot(0) = param n.
+    insertParamGuards's intLikeParams heuristic (pass_typespec.go:262)
+    only matches ConstInt partner, missing v17 = AddInt, v40 = AddInt,
+    v155 = AddInt. Fix: cascade check via ts.argType after Phase 1a
+    propagation.
+    Rule 23: warm IR is the IR-level audit; confirmed the gap exists.
+    Rule 23 amendment (R32): IR-level reads required — satisfied.
+
+pre_flight:
+  required:
+    - description: unit test — fannkuch warm compile shows Le=0 LeInt=4 (all 3 Le converted)
+      acceptance: warm IR op count Le==0 after fix
+      halt_on_fail: true
+    - description: no correctness regression in methodjit suite
+      acceptance: go test ./internal/methodjit/... green
+      halt_on_fail: true
+    - description: fannkuch bench improvement
+      acceptance: fannkuch median <= 0.046s (vs 0.048 baseline, -4% or better)
+      halt_on_fail: false
+  result: >
+    Warm IR counts after R89: Sub=0 SubInt=4 Le=0 LeInt=4 Lt=0 LtInt=3 Eq=0 EqInt=2 GuardType=10 (was Le=3 pre-R89).
+    Methodjit suite green.
+    Bench (10 interleaved samples each, medians):
+      fannkuch:     r88 0.047s → r89 0.048s (+2.1%, within noise; 3 Le→LeInt did not translate to wall time)
+      sort:         r88 0.051s → r89 0.051s (0%)
+      sieve:        r88 0.086s → r89 0.086s (0%)
+      mandelbrot:   r88 0.058s → r89 0.058s (0%)
+      nbody_dense:  r88 0.184s → r89 0.183s (-0.5%)
+      matmul_dense: r88 0.036s → r89 0.035s (-2.8%, noise)
+  passed: partial           # IR cleanup achieved, wall time within noise
+
+  failing_test: null
+  failing_output: null
+  surgical_scope: >
+    pass_typespec.go: new function insertIntParamGuards. TypeSpecializePass
+    gains a Phase 1d call (after 1c float guards re-propagation).
+    No changes to other passes, graph builder, or emit.
+  ir_diff_before: >
+    B0 (entry): v0 = LoadSlot slot[0] : any
+    B2: v18 = Le v17, v0 : bool   (generic Le)
+  ir_diff_after: >
+    B0 (entry): v0 = LoadSlot slot[0] : any; v_g = GuardType v0 TypeInt
+    B2: v18 = LeInt v17, v_g : bool
+  bisect_range: null
+
+outcome:
+  status: adr-win             # IR cleanup, no bench movement
+  bench_deltas:
+    fannkuch:     {r88: 0.047, r89: 0.048, pct: +2.1}
+    sort:         {r88: 0.051, r89: 0.051, pct:  0.0}
+    sieve:        {r88: 0.086, r89: 0.086, pct:  0.0}
+    mandelbrot:   {r88: 0.058, r89: 0.058, pct:  0.0}
+    nbody_dense:  {r88: 0.184, r89: 0.183, pct: -0.5}
+    matmul_dense: {r88: 0.036, r89: 0.035, pct: -2.8}
+  regressions: []             # all within noise
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/pass_typespec.go — insertIntParamGuards + Phase 1d/1e wiring
+    - rounds/R089.yaml — this card
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: >
+  Predicted 2-6% fannkuch gain; actual ~0% (or slight regression
+  0.047→0.048 within noise). Consistent with R87/R88 lesson: generic-
+  to-typed op specialization reduces insn count but the saved insns
+  retire in the shadow of the LDR's load-use latency on ARM64's
+  superscalar pipeline. Full IR cleanup (Le=0, Sub=0, etc.) is now
+  available for future rounds that do bigger restructurings
+  (e.g., RangeAnalysis-driven bounds elision, LICM kind hoist).
+revert_prevention: >
+  This is the THIRD round in a row (R87, R88, R89) where infra
+  specialization gave adr-win but no bench-win. Pattern: ARM64 6-8
+  superscalar absorbs 2-5-insn hot-loop savings. Future rounds in
+  this direction must demonstrate ≥ 5 insn/iter save in a SEQUENTIAL
+  dep chain (not speculative shadow), OR target a truly out-of-cache
+  data access pattern. Rotating direction in R90+.
+
+ledger_update:
+  classes_touched: [tier2-tight-loop]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    insertParamGuards's ConstInt-only heuristic was too narrow —
+    Phase 1d (R89) closes the gap by using type-propagation results.
+    Now ANY param used in a numeric op with inferred-int neighbor
+    gets TypeInt speculation. Future: also extend to table/struct
+    guards (GuardType TypeTable) on params used as table args.
+    Wall-time payoff limited by ARM64 absorption of small-insn saves.

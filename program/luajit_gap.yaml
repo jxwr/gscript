@@ -119,3 +119,11 @@ rows:
   - {round: 88, date: 2026-04-19, bench: sort,                gscript_jit_sec: 0.050, luajit_sec: 0.011, gap_factor: 4.55, notes: "R88 kindVerified — unchanged"}
   - {round: 88, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R88 kindVerified — unchanged"}
   - {round: 88, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R88 kindVerified — intrinsic path, unaffected"}
+
+  # --- R89: insertIntParamGuards Phase 1d (all generic Le/Sub/Lt/Eq now typed, perf ≤ noise) ---
+  - {round: 89, date: 2026-04-19, bench: fannkuch,            gscript_jit_sec: 0.048, luajit_sec: 0.020, gap_factor: 2.40, notes: "R89 int param guards — Le=3→LeInt, wall time unchanged"}
+  - {round: 89, date: 2026-04-19, bench: sort,                gscript_jit_sec: 0.051, luajit_sec: 0.011, gap_factor: 4.64, notes: "R89 — unchanged"}
+  - {round: 89, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.086, luajit_sec: 0.011, gap_factor: 7.82, notes: "R89 — unchanged"}
+  - {round: 89, date: 2026-04-19, bench: mandelbrot,          gscript_jit_sec: 0.058, luajit_sec: 0.057, gap_factor: 1.02, notes: "R89 — unchanged"}
+  - {round: 89, date: 2026-04-19, bench: nbody_dense,         gscript_jit_sec: 0.183, luajit_sec: 0.034, gap_factor: 5.38, notes: "R89 — slight improvement (noise)"}
+  - {round: 89, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R89 — unchanged"}

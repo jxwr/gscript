@@ -42,6 +42,14 @@ func TypeSpecializePass(fn *Function) (*Function, error) {
 	// Phase 1c: Re-run propagation to cascade the new float types.
 	ts.runTypePropagation(fn)
 
+	// Phase 1d (R89): Insert int param guards for still-unguarded params
+	// whose neighbor in a numeric op has inferred TypeInt. Covers the
+	// common `i <= n` pattern where n is a param and i is AddInt/SubInt.
+	ts.insertIntParamGuards(fn)
+
+	// Phase 1e: Re-run propagation to cascade the new int types.
+	ts.runTypePropagation(fn)
+
 	// Phase 2: Replace generic ops with specialized variants.
 	// Also update phi/instr Type fields from inferred types.
 	for _, block := range fn.Blocks {
@@ -429,6 +437,108 @@ func (ts *typeSpecializer) insertFloatParamGuards(fn *Function) {
 
 		// Register the guard's type so re-propagation picks it up.
 		ts.types[guardID] = TypeFloat
+	}
+}
+
+// insertIntParamGuards (R89) inserts GuardType(TypeInt) for LoadSlot
+// parameters that remain unguarded after Phase 0/1b and whose neighbor
+// in a numeric op has inferred TypeInt. Covers cases like `i <= n`
+// where n is a param and i is a derived int value (AddInt result, Phi
+// of ints, etc.) — too narrow for Phase 0's ConstInt-only heuristic.
+//
+// A param is marked int-like ONLY when it has at least one TypeInt
+// neighbor AND no TypeFloat neighbor (avoids speculating int on a
+// param that's genuinely float-polymorphic).
+func (ts *typeSpecializer) insertIntParamGuards(fn *Function) {
+	type paramInfo struct {
+		instr *Instr
+		block *Block
+		index int
+	}
+
+	// Already-guarded params (Phase 0 int + Phase 1b float).
+	guardedParams := make(map[int]bool)
+	entry := fn.Entry
+	for _, instr := range entry.Instrs {
+		if instr.Op == OpGuardType && len(instr.Args) > 0 {
+			guardedParams[instr.Args[0].ID] = true
+		}
+	}
+
+	var params []paramInfo
+	for i, instr := range entry.Instrs {
+		if instr.Op == OpLoadSlot &&
+			(instr.Type == TypeAny || instr.Type == TypeUnknown) &&
+			!guardedParams[instr.ID] {
+			params = append(params, paramInfo{instr: instr, block: entry, index: i})
+		}
+	}
+	if len(params) == 0 {
+		return
+	}
+
+	paramIDs := make(map[int]bool)
+	for _, p := range params {
+		paramIDs[p.instr.ID] = true
+	}
+
+	intLikeParams := make(map[int]bool)
+	floatSeenParams := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !isNumericOp(instr.Op) || len(instr.Args) < 2 {
+				continue
+			}
+			for i := 0; i < 2; i++ {
+				arg := instr.Args[i]
+				other := instr.Args[1-i]
+				if arg == nil || other == nil || !paramIDs[arg.ID] {
+					continue
+				}
+				otherType := ts.argType(other)
+				switch otherType {
+				case TypeInt:
+					intLikeParams[arg.ID] = true
+				case TypeFloat:
+					floatSeenParams[arg.ID] = true
+				}
+			}
+		}
+	}
+
+	// Exclude params that also appear in float contexts (polymorphic).
+	for id := range floatSeenParams {
+		delete(intLikeParams, id)
+	}
+
+	for i := len(params) - 1; i >= 0; i-- {
+		p := params[i]
+		if !intLikeParams[p.instr.ID] {
+			continue
+		}
+
+		guardID := fn.newValueID()
+		guard := &Instr{
+			ID:    guardID,
+			Op:    OpGuardType,
+			Type:  TypeInt,
+			Args:  []*Value{p.instr.Value()},
+			Aux:   int64(TypeInt),
+			Block: p.block,
+		}
+
+		instrs := p.block.Instrs
+		pos := p.index + 1
+		newInstrs := make([]*Instr, 0, len(instrs)+1)
+		newInstrs = append(newInstrs, instrs[:pos]...)
+		newInstrs = append(newInstrs, guard)
+		newInstrs = append(newInstrs, instrs[pos:]...)
+		p.block.Instrs = newInstrs
+
+		guardVal := guard.Value()
+		replaceValueUses(fn, p.instr.ID, guardVal, guardID)
+
+		ts.types[guardID] = TypeInt
 	}
 }
 
