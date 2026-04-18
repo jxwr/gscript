@@ -1,0 +1,60 @@
+# program/luajit_gap.yaml — per-benchmark gap trajectory, append-only.
+#
+# Written by Step 6 (Verify) of every round that re-runs a benchmark.
+# Complements program/ledger.yaml (which is hypothesis-class-organized).
+# Grep by benchmark to see that benchmark's progress across rounds.
+#
+# Schema: list of rows with these fields:
+#   round             — integer round number (0 = frozen reference)
+#   date              — YYYY-MM-DD (round date)
+#   bench             — benchmark name (matches benchmarks/suite/<bench>.gs)
+#   gscript_jit_sec   — median-of-N (5 for publish, 3 for mid-round)
+#   luajit_sec        — LuaJIT time (null if unavailable)
+#   gap_factor        — gscript_jit_sec / luajit_sec (null if LuaJIT N/A)
+#   notes             — optional short comment
+#
+# Directional guidance: the gap_factor is the primary steering signal.
+# "Which benchmark has the widest gap?" → `awk` / sort by gap_factor.
+# "Has bench X been stuck for N rounds?" → filter by bench name, check
+# trajectory.
+
+version: 1
+created: 2026-04-18
+seeded_from: benchmarks/data/reference.json + R48 current state
+
+rows:
+
+  # --- R7 frozen baseline (benchmarks/data/reference.json, 2026-04-11) ---
+
+  - {round: 0, date: 2026-04-11, bench: ackermann,       gscript_jit_sec: 0.558, luajit_sec: 0.006, gap_factor: 93.00, notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: binary_trees,    gscript_jit_sec: 2.311, luajit_sec: null,  gap_factor: null,  notes: "frozen ref; LuaJIT N/A"}
+  - {round: 0, date: 2026-04-11, bench: closure_bench,   gscript_jit_sec: 0.027, luajit_sec: null,  gap_factor: null,  notes: "frozen ref; LuaJIT N/A"}
+  - {round: 0, date: 2026-04-11, bench: coroutine_bench, gscript_jit_sec: 16.550, luajit_sec: null, gap_factor: null,  notes: "frozen ref; LuaJIT N/A"}
+  - {round: 0, date: 2026-04-11, bench: fannkuch,        gscript_jit_sec: 0.048, luajit_sec: 0.020, gap_factor: 2.40,  notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: fib,             gscript_jit_sec: 0.133, luajit_sec: 0.026, gap_factor: 5.12,  notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: fib_recursive,   gscript_jit_sec: 1.341, luajit_sec: null,  gap_factor: null,  notes: "frozen ref; LuaJIT N/A"}
+  - {round: 0, date: 2026-04-11, bench: fibonacci_iterative, gscript_jit_sec: 0.288, luajit_sec: null, gap_factor: null, notes: "frozen ref; LuaJIT N/A"}
+  - {round: 0, date: 2026-04-11, bench: mandelbrot,      gscript_jit_sec: 0.063, luajit_sec: 0.058, gap_factor: 1.09,  notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: math_intensive,  gscript_jit_sec: 0.070, luajit_sec: null,  gap_factor: null,  notes: "frozen ref; LuaJIT N/A"}
+  - {round: 0, date: 2026-04-11, bench: matmul,          gscript_jit_sec: 0.124, luajit_sec: 0.022, gap_factor: 5.64,  notes: "frozen ref; nested-table form"}
+  - {round: 0, date: 2026-04-11, bench: method_dispatch, gscript_jit_sec: 0.102, luajit_sec: null,  gap_factor: null,  notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: mutual_recursion, gscript_jit_sec: 0.238, luajit_sec: 0.004, gap_factor: 59.50, notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: nbody,           gscript_jit_sec: 0.248, luajit_sec: 0.035, gap_factor: 7.09,  notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: object_creation, gscript_jit_sec: 0.764, luajit_sec: null,  gap_factor: null,  notes: "frozen ref; LuaJIT N/A"}
+  - {round: 0, date: 2026-04-11, bench: sieve,           gscript_jit_sec: 0.088, luajit_sec: 0.011, gap_factor: 8.00,  notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: sort,            gscript_jit_sec: 0.042, luajit_sec: 0.011, gap_factor: 3.82,  notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: spectral_norm,   gscript_jit_sec: 0.045, luajit_sec: 0.008, gap_factor: 5.63,  notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: string_bench,    gscript_jit_sec: 0.031, luajit_sec: null,  gap_factor: null,  notes: "frozen ref; LuaJIT N/A"}
+  - {round: 0, date: 2026-04-11, bench: sum_primes,      gscript_jit_sec: 0.004, luajit_sec: 0.002, gap_factor: 2.00,  notes: "frozen ref"}
+  - {round: 0, date: 2026-04-11, bench: table_array_access, gscript_jit_sec: 0.094, luajit_sec: null, gap_factor: null, notes: "frozen ref; LuaJIT N/A"}
+  - {round: 0, date: 2026-04-11, bench: table_field_access, gscript_jit_sec: 0.043, luajit_sec: null, gap_factor: null, notes: "frozen ref; LuaJIT N/A"}
+
+  # --- matmul_dense (R42-R48 trajectory, DenseMatrix intrinsic path) ---
+
+  - {round: 42, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.095, luajit_sec: 0.021, gap_factor: 4.52, notes: "Phase 1: shared flat backing"}
+  - {round: 43, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.046, luajit_sec: 0.021, gap_factor: 2.19, notes: "Phase 2: JIT intrinsic matrix.getf/setf"}
+  - {round: 44, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.046, luajit_sec: 0.021, gap_factor: 2.19, notes: "Phase 2b: tableVerified/dmVerified cache (neutral, infra)"}
+  - {round: 45, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.035, luajit_sec: 0.021, gap_factor: 1.67, notes: "Phase 2c: IR split + LICM hoist Flat/Stride"}
+  - {round: 46, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.035, luajit_sec: 0.021, gap_factor: 1.67, notes: "RowPtr IR ops shipped, wiring reverted"}
+  - {round: 47, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.035, luajit_sec: 0.021, gap_factor: 1.67, notes: "FMA fusion infra + Phi-accumulator skip (no bench movement)"}
+  - {round: 48, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.035, luajit_sec: 0.021, gap_factor: 1.67, notes: "sum-split pre-flight disproven; per-call cost bound"}
