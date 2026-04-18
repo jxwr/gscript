@@ -61,4 +61,6 @@ rows:
 
   # --- nbody_dense (R51+, DenseMatrix port of nbody) ---
 
-  - {round: 51, date: 2026-04-18, bench: nbody_dense, gscript_jit_sec: 0.130, luajit_sec: 0.035, gap_factor: 3.71, notes: "R51 port: bodies as 5×7 DenseMatrix; -49.2% vs legacy nbody 0.254s"}
+  - {round: 51, date: 2026-04-18, bench: nbody_dense, gscript_jit_sec: 0.130, luajit_sec: 0.035, gap_factor: 3.71, notes: "R51 port: -49% TAINTED — DCE silently dropped matrix.setf; see R52"}
+  - {round: 52, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.038, luajit_sec: 0.021, gap_factor: 1.81, notes: "R52 correctness: DCE now preserves MatrixStoreFAt; +8.5% tax on R45-R48 tainted baseline"}
+  - {round: 52, date: 2026-04-18, bench: nbody_dense, gscript_jit_sec: 0.223, luajit_sec: 0.035, gap_factor: 6.37, notes: "R52 corrected: real nbody_dense gain vs legacy nbody = -12.2%"}

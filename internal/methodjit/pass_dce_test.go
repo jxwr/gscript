@@ -295,3 +295,44 @@ func TestDCE_PhiKept(t *testing.T) {
 		t.Error("Phi node should not be removed by DCE")
 	}
 }
+
+// TestDCE_MatrixStoreFAtNotDropped is the R52 regression: DCE was dropping
+// OpMatrixStoreFAt / OpMatrixSetF / OpMatrixStoreFRow because they had no
+// hasSideEffect entry, so JIT-compiled matrix.setf calls became no-ops and
+// matmul_dense/nbody_dense produced stale zeroed output. The sibling Table
+// store (OpSetField / OpSetTable) has always been side-effect-marked; the
+// DenseMatrix stores were added in R43/R45/R46 without the corresponding
+// DCE registration.
+func TestDCE_MatrixStoresNotDropped(t *testing.T) {
+	ops := []Op{OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow}
+	for _, op := range ops {
+		fn := &Function{Proto: &vm.FuncProto{Name: "setf-live"}, NumRegs: 1}
+		b := &Block{ID: 0, defs: make(map[int]*Value)}
+		// A minimal matrix mutation: m = LoadSlot, i = const 0, j = const 0, v = const 1.
+		m := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Aux: 0, Block: b}
+		c0 := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: b}
+		c1 := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b}
+		store := &Instr{
+			ID: fn.newValueID(), Op: op, Type: TypeUnknown,
+			Args: []*Value{m.Value(), c0.Value(), c0.Value(), c1.Value()}, Block: b,
+		}
+		ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Block: b}
+		b.Instrs = []*Instr{m, c0, c1, store, ret}
+		fn.Entry = b
+		fn.Blocks = []*Block{b}
+
+		if _, err := DCEPass(fn); err != nil {
+			t.Fatalf("%s: DCEPass failed: %v", op.String(), err)
+		}
+		found := false
+		for _, instr := range b.Instrs {
+			if instr.Op == op {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s: DCE dropped a matrix store instruction; must be preserved as side-effectful", op.String())
+		}
+	}
+}

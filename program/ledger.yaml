@@ -401,11 +401,11 @@ classes:
       Direct fixes to emitter / runtime correctness bugs surfaced by
       diagnostics, test failures, or user reports. Exempt from pre-flight
       (rule #2 — correctness first).
-    attempts: 4
-    wins: 3                   # R15 revert + R17 framework + R36 extension
+    attempts: 5
+    wins: 4                   # R15 revert + R17 framework + R36 extension + R52 Matrix store DCE fix
     reverts: 1                # R12 was REVERTED by R15
     holds: 0
-    prior_reject_rate: 0.25   # 1/4 after R36; below 0.5 threshold
+    prior_reject_rate: 0.20   # 1/5 after R52; below 0.5 threshold
     mitigation_required: false
     mitigation_description: >
       **Test-coverage depth** (from R15 revert of R12): fixes in this
@@ -420,7 +420,7 @@ classes:
       tier-2 emit bug from reaching runtime. Before fixing, check
       whether the failure guards a deeper bug; search for latent
       issues in the same code path.
-    historical_rounds: [12, 15, 17, 36]
+    historical_rounds: [12, 15, 17, 36, 52]
     key_negative_evidence: >
       R12 (reverted): removed early return in emitFloatBinOp intBinMod
       to fix "unresolved label arith_done". But the fix exposed a

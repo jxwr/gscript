@@ -66,6 +66,13 @@ func hasSideEffect(instr *Instr) bool {
 	case OpSetTable, OpSetField, OpSetList, OpAppend:
 		return true
 
+	// DenseMatrix writes: observable. Without this, DCE silently drops
+	// matrix.setf since its SSA result is never read; JIT produces zeros
+	// where VM mode produces correct values. R42-R48 matmul_dense wins
+	// were partly on unwritten results. (Correctness fix: R52.)
+	case OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow:
+		return true
+
 	// Calls have arbitrary side effects.
 	case OpCall, OpSelf:
 		return true
