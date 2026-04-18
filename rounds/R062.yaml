@@ -1,0 +1,79 @@
+# R62: UnrollAndJamPass scaffold — detection only, wired as no-op.
+round: 62
+date: 2026-04-18
+follows: 61
+
+type: tactical
+
+target:
+  benchmark: matmul_dense
+  current_wall_sec: 0.038
+  luajit_wall_sec: 0.021
+  gap_factor: 1.81
+
+hypothesis:
+  class: tier2-dense-matrix-kind
+  claim: >
+    Land the SCAFFOLD of UnrollAndJamPass per R61 ADR:
+      - pass_unroll_and_jam.go with loop/reduction pattern detection
+      - pipeline wiring between MatrixLower and FMAFusion
+      - no IR mutation yet
+    Gives subsequent rounds a stable place to iterate the transform
+    without requiring full multi-session architectural work in one
+    commit.
+  expected_gain_pct: [0, 0]       # scaffolding; no transform = no delta
+  expected_gain_mechanism: >
+    Pass identifies float-reduction loops but performs no transform.
+    Bench should be unchanged.
+  counterfactual_check: >
+    If pass incorrectly modifies IR, tests would fail or benches
+    would move. Neither observed.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: false     # R61 ADR covered the audit
+
+pre_flight:
+  required:
+    - description: scaffold pass does not regress any bench
+      acceptance: all benches within noise vs R60 baseline
+      halt_on_fail: true
+  result: >
+    matmul_dense 0.038s, nbody_dense 0.184s, spectral_norm_dense 0.024s
+    — all unchanged.
+  passed: true
+
+outcome:
+  status: adr-win               # infrastructure shipped; transform deferred
+  bench_deltas: {}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/pass_unroll_and_jam.go
+    - internal/methodjit/pipeline.go — wire UnrollAndJamPass between MatrixLower and FMAFusion
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: null
+  sub_pattern_learned: null
+
+notes: >
+  Scope honesty: finishing the transform (body cloning + Phi splitting
+  + tail handling + epilogue combine) is multi-round work with real
+  correctness risk. R62 ships only the detection scaffold so that
+  follow-ons can iterate.
+
+  The remaining 17 rounds (R63-R79) will pragmatically mix:
+    - Incremental progress on the transform (R63-R65 tentative)
+    - Opportunistic wins on other benches (port additions, diag-driven
+      optimizations)
+    - Roll-up + regression checks near the end

@@ -364,6 +364,14 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("DCE (post-LoadElim2): %w", err)
 	}
 
+	// R62: UnrollAndJam scaffold (detection only; transform in future rounds).
+	// Runs before FMAFusion so that when the transform ships, the new split
+	// Phi accumulators are visible to FMA fusion.
+	fn, err = UnrollAndJamPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("UnrollAndJam: %w", err)
+	}
+
 	// R47: fuse OpAddFloat(x, OpMulFloat(y,z)) → OpFMA(y,z,x) so the
 	// emitter produces a single FMADDd instead of FMUL + FADD.
 	fn, err = FMAFusionPass(fn)
