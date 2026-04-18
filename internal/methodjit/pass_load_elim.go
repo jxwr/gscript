@@ -39,6 +39,13 @@ type loadKey struct {
 	fieldAux int64
 }
 
+// tableKey identifies a specific dynamic-keyed table load: the SSA
+// value IDs of the table operand and the key operand.
+type tableKey struct {
+	objID int
+	keyID int
+}
+
 // guardKey identifies a specific type guard: the SSA value ID of the
 // guarded operand plus the guard type (stored in Aux).
 type guardKey struct {
@@ -60,11 +67,15 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 	}
 
 	for _, block := range fn.Blocks {
-		available := make(map[loadKey]int)   // loadKey → value ID to forward to
-		guardAvail := make(map[guardKey]int)  // guardKey → guard instr ID
-		globalAvail := make(map[int64]int)    // globals[idx] → SSA value ID
-		matrixFlatAvail := make(map[int]int)  // MatrixFlat(arg_id) → SSA value ID
-		matrixStrideAvail := make(map[int]int) // MatrixStride(arg_id) → SSA value ID
+		available := make(map[loadKey]int)      // loadKey → value ID to forward to
+		guardAvail := make(map[guardKey]int)    // guardKey → guard instr ID
+		globalAvail := make(map[int64]int)      // globals[idx] → SSA value ID
+		matrixFlatAvail := make(map[int]int)    // MatrixFlat(arg_id) → SSA value ID
+		matrixStrideAvail := make(map[int]int)  // MatrixStride(arg_id) → SSA value ID
+		// R93: store-to-load forwarding for dynamic-key table access.
+		// After SetTable(t, k, v), map (t.ID, k.ID) → v.ID so a
+		// subsequent GetTable(t, k) uses v directly.
+		tableAvail := make(map[tableKey]int)
 
 		for _, instr := range block.Instrs {
 			switch instr.Op {
@@ -150,6 +161,36 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 					available[key] = instr.Args[1].ID
 				}
 
+			case OpGetTable:
+				// R93: forward stored value if same (tbl, key) was just set.
+				if len(instr.Args) < 2 {
+					continue
+				}
+				key := tableKey{objID: instr.Args[0].ID, keyID: instr.Args[1].ID}
+				if origID, ok := tableAvail[key]; ok {
+					origInstr := instrByID[origID]
+					if origInstr != nil {
+						replaceAllUses(fn, instr.ID, origInstr)
+					}
+				}
+
+			case OpSetTable:
+				if len(instr.Args) < 3 {
+					continue
+				}
+				// Any SetTable on t invalidates ALL entries for that obj at
+				// non-matching keys (aliasing unknown). Keep only the
+				// just-written entry.
+				objID := instr.Args[0].ID
+				for k := range tableAvail {
+					if k.objID == objID {
+						delete(tableAvail, k)
+					}
+				}
+				// Record the stored value for future GetTable(t, k).
+				key := tableKey{objID: objID, keyID: instr.Args[1].ID}
+				tableAvail[key] = instr.Args[2].ID
+
 			case OpCall, OpSelf:
 				// Conservative: a call could mutate any table or change types.
 				available = make(map[loadKey]int)
@@ -157,6 +198,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				globalAvail = make(map[int64]int)
 				matrixFlatAvail = make(map[int]int)
 				matrixStrideAvail = make(map[int]int)
+				tableAvail = make(map[tableKey]int)
 			}
 		}
 	}
