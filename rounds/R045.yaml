@@ -84,7 +84,7 @@ outcome:
     matmul_cumulative_vs_nested_original: {nested: 0.117, r45: 0.035, pct: -70.1}
     # Cumulative 85% of the matmul-vs-LuaJIT gap closed across R42+R43+R45.
   regressions: []
-  commit: pending
+  commit: fdc4053
   deliverables:
     - internal/methodjit/ir_ops.go — OpMatrixFlat/Stride/LoadFAt/StoreFAt
     - internal/methodjit/pass_matrix_lower.go — MatrixLowerPass (NEW)

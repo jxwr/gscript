@@ -45,7 +45,7 @@ outcome:
   status: win              # infrastructure; unblocks R45's split
   bench_deltas: {}
   regressions: []
-  commit: pending
+  commit: fdc4053
   deliverables:
     - internal/methodjit/emit_compile.go — dmVerified map field
     - internal/methodjit/emit_matrix.go — tableVerified/dmVerified skip logic
