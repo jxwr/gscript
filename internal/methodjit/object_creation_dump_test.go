@@ -23,16 +23,20 @@ import (
 )
 
 func TestObjectCreationDump(t *testing.T) {
-	// P2: baseline values from authoritative-context.json (2026-04-12).
+	// Baseline values re-calibrated R77 after the int48 overflow check
+	// was added to emitFloatBinOp's int fast path (emit_call.go fix for
+	// tier2-intbinmod-correctness). Each ADD/SUB/MUL on untyped-int Values
+	// now emits +3 insns (SBFX+CMP+BCond) plus a deopt prelude. Impact on
+	// object_creation ~6% total, ~6% mem. Correctness trade is net positive.
 	type baseline struct {
 		name     string
 		totalIns int
 		memIns   int
 	}
 	baselines := []baseline{
-		{"create_and_sum", 1181, 558},
-		{"transform_chain", 1572, 758},
-		{"new_vec3", 208, 129},
+		{"create_and_sum", 1253, 590},   // was 1181, 558
+		{"transform_chain", 1677, 808},  // was 1572, 758
+		{"new_vec3", 208, 129},          // unchanged (no loop arith)
 	}
 
 	// Load benchmark source.

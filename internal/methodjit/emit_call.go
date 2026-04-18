@@ -326,6 +326,13 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 		asm.SDIV(jit.X2, jit.X0, jit.X1)
 		asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
 	}
+	// R77: int48 overflow check. Without this, int*int that exceeds
+	// 2^47 (e.g. x*13 in a loop) wraps to 64-bit then gets NaN-tag-ORed
+	// into a corrupt Value. Mod is exempt — it cannot increase magnitude.
+	// Matches the same check present in emitRawIntBinOp (emit_arith.go).
+	if op != intBinMod && instr.Aux2 == 0 && !ec.int48Safe(instr.ID) {
+		ec.emitInt48OverflowCheck(jit.X0, instr)
+	}
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
 	asm.B(done)
 
