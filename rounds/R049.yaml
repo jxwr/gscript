@@ -1,0 +1,158 @@
+# R49: Workflow v5.1 refinements based on R1-R48 audit.
+round: 49
+date: 2026-04-18
+follows: 48
+
+type: meta
+
+target:
+  benchmark: workflow
+  current_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    After 48 rounds of v5, five mechanical defects are visible:
+      (1) "win" is inflated — 8/8 architecture-win + 8/8 meta-win
+          share a label with bench-moving wins, so prior_reject_rate
+          is computed on a liberal denominator and never fires rule 21;
+      (2) rules 17 (one-session-per-round) and 18 (3-hour budget) are
+          routinely violated in practice (R29-R41: 13 rounds/session;
+          R42-R46: 5 rounds/session) — neither ever triggered a revert;
+      (3) every closing commit is followed by a manual
+          `follow-up: fill sha` commit — pure mechanical noise (10
+          such commits in the last 15);
+      (4) hold vs null-result distinguish on cosmetic grounds (R46
+          "hold" shipped code; R48 "null-result" didn't) but both
+          represent "no benchmark moved" — the split spams the
+          outcome dimension;
+      (5) there's no per-benchmark global progress view — ledger
+          is hypothesis-class-organized, so "which benchmark has the
+          widest LuaJIT gap right now" requires manual collation.
+    Fix all five in a single meta round. Pre-R49 cards stay as-is
+    (append-only history); new fields apply from R50 onward.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    Cleaner taxonomy lets class-gate (rule 21) actually fire on
+    classes that are genuinely exhausted, instead of being diluted
+    by ADR-wins. Eliminating rule 17/18 aligns rules with practice.
+    No-sha cards remove 10+ ceremonial commits per 50 rounds.
+    luajit_gap.yaml gives Step 3 direction a one-read answer for
+    "which bench next." Net effect: more rounds per unit time spent
+    on actual code; fewer rounds spent on workflow-self-correction
+    (which historically is 11/48 ≈ 23%).
+  counterfactual_check: >
+    If the new outcome enum still hides real failures under adr-win
+    (e.g. a meta round that introduces a bug), we'll catch it via
+    rule 20 (no sunk cost) — next tactical round stuck on workflow
+    bug will force meta re-visit.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0            # workflow-evolution: 11 wins, 0 reverts
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Audited all 48 round cards and cross-referenced with ledger.
+    Key concrete findings:
+      - tactical rounds: 22 total, 12 win (55%), 5 revert, 5 hold
+      - architecture rounds: 8/8 labelled "win" (100%) but R21's win
+        was disproven by R24 diagnostic — label is inflated
+      - revert root causes: cost-model-error ×5 (most common)
+      - rule 18 (3h budget): never fired auto-revert across 48 rounds
+      - rule 21 class-gate (>0.5 reject + >=3 attempts): only
+        `go-gc-scan-reduction` approaches the threshold — most
+        classes dilute their reject-rate with ADR-wins
+      - meta+strategy+kb+diag: 18/48 rounds (37.5%) — overhead is
+        real but partly necessary (R33's IR-reading amendment came
+        from real lesson)
+    The five defects are grounded; fix is cleanup, not invention.
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+# --- workflow deliverables (meta round) ---
+deliverables:
+  - CLAUDE.md — rules 17 and 18 marked REMOVED; rule 22 commit schema
+    updated to new outcome enum; add luajit_gap.yaml update to Step 6.
+  - rounds/TEMPLATE.yaml — outcome.status enum refactored to
+    {pending | bench-win | adr-win | revert | no-win}; add
+    outcome.shipped_code bool; drop requirement for commit sha
+    (derivable via `git log --grep='^round N \['`).
+  - program/luajit_gap.yaml — NEW. Append-only log of per-benchmark
+    gscript_jit_sec vs luajit_sec per verify step. Seed from
+    reference.json (R7 baseline) + current R48 state.
+  - program/ledger.yaml — add note that pre-R49 entries use legacy
+    win-taxonomy; post-R49 separate bench_wins vs adr_wins.
+
+outcome:
+  status: pending
+  bench_deltas: {}
+  regressions: []
+  shipped_code: true          # NEW field (self-referential: this round ships schema changes)
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    Audit-driven meta rounds produce clearer specs than
+    reactive-correction meta rounds (cf. R33 reacted to R29-R32
+    drift; R49 proactively audits before drift compounds). Consider
+    a periodic audit cadence: every 15-20 rounds run a read-only
+    workflow audit and rotate ceremonies that have drifted from
+    practice.
+
+notes: >
+  Rationale for each change:
+
+  (1) bench-win vs adr-win:
+      class-gate's prior_reject_rate now measures only rounds that
+      tried to move a benchmark. An ADR round is inherently separate
+      from a code round in its contribution to the class's perf
+      track record. A reverted ADR is rare (architecture rounds
+      don't revert; they get disproven in a later tactical round).
+
+  (2) rule 17 + 18 removal:
+      Both were calibration attempts that the session dynamics
+      never respected. A round IS a hypothesis-closure unit, not a
+      time unit. Multi-round sessions (R29-R41, R42-R46) were net
+      productive — forcing them into 1-round-per-session chunks
+      would have added ceremony without improving signal.
+
+  (3) post-commit auto-fill:
+      User asked for a post-commit hook. On inspection, the sha
+      field is redundant with the commit message schema: the
+      closing commit of round N is `git log --grep='^round N \['
+      -1 --format=%H`. Eliminating the field entirely beats
+      automating its fill — no new hook, no amended commit (which
+      would conflict with "never amend" guidance). The card's
+      `commit:` field becomes optional metadata, not load-bearing.
+
+  (4) hold/null-result merge:
+      New enum: {bench-win | adr-win | revert | no-win}. The
+      orthogonal axis `shipped_code: bool` captures what hold vs
+      null-result used to distinguish. Cleaner 4-way × 2-way
+      matrix; easier grep.
+
+  (5) luajit_gap.yaml:
+      Per-benchmark append-only log makes Step 3 "what's the biggest
+      gap right now" a one-file read. Complements ledger's
+      hypothesis-class view. Seeded from benchmarks/data/reference.json
+      plus current (R48) state for benchmarks we've touched.
+
+  Historical continuity:
+    - Pre-R49 cards stay untouched (append-only).
+    - ledger.yaml entries pre-R49 use legacy `wins` count; a top-level
+      note documents the taxonomy shift.
+    - Rule numbers 17/18 kept as `REMOVED by R49` markers so that the
+      ~15 historical references still resolve.
