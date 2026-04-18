@@ -91,7 +91,7 @@ outcome:
   bench_deltas:
     matmul_dense: {r47: 0.035, r48: 0.035, pct: 0}
   regressions: []
-  commit: null
+  commit: b55e876
   deliverables:
     - benchmarks/suite/matmul_dense_split2.gs — pre-flight harness (2-way sum-split)
     - benchmarks/suite/matmul_dense_unroll2.gs — pre-flight control (2-way unroll, same dep chain)
