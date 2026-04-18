@@ -21,6 +21,14 @@
 //   - OpCall / OpSelf conservatively clear the entire available map
 //     and the guard available map, because a call could mutate any table
 //     or change runtime types.
+//
+// R53: CSE for pure ops. OpGetGlobal with the same index is CSE'd within
+// a block (globals' identity is stable during a function's body —
+// OpSetGlobal kills the matching index). OpMatrixFlat / OpMatrixStride
+// depend only on their SSA arg: two MatrixFlat(v10) return the same
+// pointer; the type guard need only run once. Critical after R52's DCE
+// correctness fix: with stores actually executing, each redundant guard
+// carries real cost.
 
 package methodjit
 
@@ -52,11 +60,51 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 	}
 
 	for _, block := range fn.Blocks {
-		available := make(map[loadKey]int)  // loadKey → value ID to forward to
-		guardAvail := make(map[guardKey]int) // guardKey → guard instr ID
+		available := make(map[loadKey]int)   // loadKey → value ID to forward to
+		guardAvail := make(map[guardKey]int)  // guardKey → guard instr ID
+		globalAvail := make(map[int64]int)    // globals[idx] → SSA value ID
+		matrixFlatAvail := make(map[int]int)  // MatrixFlat(arg_id) → SSA value ID
+		matrixStrideAvail := make(map[int]int) // MatrixStride(arg_id) → SSA value ID
 
 		for _, instr := range block.Instrs {
 			switch instr.Op {
+			case OpGetGlobal:
+				// R53: globals are read-only for the body of a function in
+				// nearly all GScript code. Two reads of globals[i] in the
+				// same block return the same runtime pointer. CSE.
+				if origID, ok := globalAvail[instr.Aux]; ok {
+					origInstr := instrByID[origID]
+					replaceAllUses(fn, instr.ID, origInstr)
+				} else {
+					globalAvail[instr.Aux] = instr.ID
+				}
+
+			case OpMatrixFlat:
+				if len(instr.Args) < 1 {
+					continue
+				}
+				if origID, ok := matrixFlatAvail[instr.Args[0].ID]; ok {
+					origInstr := instrByID[origID]
+					replaceAllUses(fn, instr.ID, origInstr)
+				} else {
+					matrixFlatAvail[instr.Args[0].ID] = instr.ID
+				}
+
+			case OpMatrixStride:
+				if len(instr.Args) < 1 {
+					continue
+				}
+				if origID, ok := matrixStrideAvail[instr.Args[0].ID]; ok {
+					origInstr := instrByID[origID]
+					replaceAllUses(fn, instr.ID, origInstr)
+				} else {
+					matrixStrideAvail[instr.Args[0].ID] = instr.ID
+				}
+
+			case OpSetGlobal:
+				// SetGlobal on globals[i] kills the matching cache entry.
+				delete(globalAvail, instr.Aux)
+
 			case OpGetField:
 				if len(instr.Args) < 1 {
 					continue
@@ -106,6 +154,9 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				// Conservative: a call could mutate any table or change types.
 				available = make(map[loadKey]int)
 				guardAvail = make(map[guardKey]int)
+				globalAvail = make(map[int64]int)
+				matrixFlatAvail = make(map[int]int)
+				matrixStrideAvail = make(map[int]int)
 			}
 		}
 	}

@@ -350,6 +350,20 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("MatrixLower: %w", err)
 	}
 
+	// R53: re-run LoadElimination to CSE the MatrixFlat/MatrixStride ops
+	// that MatrixLowerPass just introduced (many per-call-site duplicates
+	// on the same matrix; the first LoadElim pass above ran before these
+	// existed).
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("LoadElimination (post-MatrixLower): %w", err)
+	}
+
+	fn, err = DCEPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("DCE (post-LoadElim2): %w", err)
+	}
+
 	// R47: fuse OpAddFloat(x, OpMulFloat(y,z)) → OpFMA(y,z,x) so the
 	// emitter produces a single FMADDd instead of FMUL + FADD.
 	fn, err = FMAFusionPass(fn)
