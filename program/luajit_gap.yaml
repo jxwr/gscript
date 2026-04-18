@@ -89,3 +89,6 @@ rows:
   - {round: 68, date: 2026-04-18, bench: mandelbrot, gscript_jit_sec: 0.057, luajit_sec: 0.058, gap_factor: 0.98, notes: "R68 head-to-head: gscript BEATS LuaJIT by 1ms (1.7%)"}
   - {round: 68, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.036, luajit_sec: 0.022, gap_factor: 1.64, notes: "R68 head-to-head (LuaJIT live-measured, reference had 0.021)"}
   - {round: 68, date: 2026-04-18, bench: nbody_dense, gscript_jit_sec: 0.186, luajit_sec: 0.034, gap_factor: 5.47, notes: "R68 head-to-head"}
+
+  # R69 re-verify: 30-sample medians TIE. Gscript edge on mean/min only.
+  - {round: 69, date: 2026-04-18, bench: mandelbrot, gscript_jit_sec: 0.058, luajit_sec: 0.058, gap_factor: 1.00, notes: "R69 n=30: median TIES; gscript mean 0.0575 vs luajit 0.0579 (0.7% edge)"}

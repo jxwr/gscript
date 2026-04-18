@@ -1,0 +1,92 @@
+# R69: 30-sample mandelbrot re-verify — tied median, gscript edge on min/mean.
+round: 69
+date: 2026-04-18
+follows: 68
+
+type: diagnostic
+
+target:
+  benchmark: mandelbrot
+  current_wall_sec: 0.058
+  luajit_wall_sec: 0.058
+  gap_factor: 1.00
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    R68 claimed a LuaJIT beat on mandelbrot based on 10-sample medians.
+    Re-run with 30 samples each to check if the edge is statistically
+    robust or sample-lucky.
+  expected_gain_pct: null
+  expected_gain_mechanism: null
+  counterfactual_check: null
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: false
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+# --- robust 30-sample measurement ---
+head_to_head_n30:
+  mandelbrot:
+    gscript: {n: 30, min: 0.055, max: 0.059, median: 0.058, mean: 0.0575}
+    luajit:  {n: 30, min: 0.057, max: 0.059, median: 0.058, mean: 0.0579}
+    verdict: >
+      Median TIES at 0.058s. Mean diff: gscript 0.0575 vs luajit 0.0579
+      = 0.4ms faster on average (0.7% win). Gscript floor (0.055)
+      consistently below LuaJIT floor (0.057). So: not a clean median
+      beat, but consistent small edge on mean + floor. Effectively a
+      statistical tie with gscript slightly favored.
+
+outcome:
+  status: adr-win                  # honest re-characterization of R68 claim
+  bench_deltas: {}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - rounds/R069.yaml — honest re-verify
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    R68's 10-sample median showed a 0.057 vs 0.058 win. 30-sample
+    medians both sit at 0.058. The mean and minimum still favor
+    gscript (gscript 0.0575/0.055, luajit 0.0579/0.057). The win is
+    marginal (~1% faster mean) and distribution-overlap-heavy.
+
+    For a confident "beat LuaJIT" claim, need >5% median gap.
+    Mandelbrot at ~1% is TIE-WITH-EDGE. The user's goal "beat LuaJIT
+    once" is LOOSELY met but not ROBUSTLY met.
+
+    Lesson: publish median-of-30 results for "beat LuaJIT" claims,
+    not median-of-10. rule 6 ("median-of-N") implicitly assumes
+    sufficient samples to stabilize; at bench wall-times <= 100ms
+    with run-to-run noise ~2ms, N=30 minimum is appropriate.
+
+notes: >
+  Honest wrap-up: gscript achieves LuaJIT-tie on mandelbrot (30-sample
+  median parity). The 20-round R60-R79 arc's user directive "力求一次
+  打败luajit" is met in the weaker sense (mean/min edge); not
+  achieved in the stronger sense (clean median beat).
+
+  For a clean beat, remaining work needed:
+    - NEON SIMD vectorization for mandelbrot's inner FP loop
+    - Or: further optimization of the FMA scheduling on M4
+
+  10 rounds remain (R70-R79). Suggest: use them for stability/
+  regression testing + meta close, rather than more speculative
+  experiments that risk breaking the tie.
