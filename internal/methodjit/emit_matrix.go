@@ -38,19 +38,30 @@ func (ec *emitContext) emitMatrixGetF(instr *Instr) {
 	deoptLabel := ec.uniqueLabel("mgetf_deopt")
 	doneLabel := ec.uniqueLabel("mgetf_done")
 
+	tblID := instr.Args[0].ID
 	// Load m (NaN-boxed Table) into X0.
-	mReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	mReg := ec.resolveValueNB(tblID, jit.X0)
 	if mReg != jit.X0 {
 		asm.MOVreg(jit.X0, mReg)
 	}
-	// Extract *Table pointer (assumes caller passed a Table; guard via dmStride below).
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.CBZ(jit.X0, deoptLabel)
+	// R44: skip type/nil checks when table was already verified.
+	if ec.tableVerified[tblID] {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		ec.tableVerified[tblID] = true
+	}
 
 	// Load dmStride (int32 at TableOffDMStride).
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffDMStride)
-	asm.CBZ(jit.X1, deoptLabel) // stride == 0 → not a DenseMatrix → deopt
+	// R44: skip stride==0 deopt guard if this SSA value was already
+	// proven to be a DenseMatrix in this block.
+	if !ec.dmVerified[tblID] {
+		asm.CBZ(jit.X1, deoptLabel) // stride == 0 → deopt
+		ec.dmVerified[tblID] = true
+	}
 
 	// Resolve i, j as raw int64.
 	iReg := ec.resolveRawInt(instr.Args[1].ID, jit.X2)
@@ -89,6 +100,160 @@ func (ec *emitContext) emitMatrixGetF(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+// emitMatrixFlat emits code for OpMatrixFlat(m) → raw int64 pointer.
+// Verifies m is a Table with dmStride > 0; deopts otherwise.
+// The result is a raw int64 SSA value (the dmFlat pointer).
+func (ec *emitContext) emitMatrixFlat(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("mflat_deopt")
+	doneLabel := ec.uniqueLabel("mflat_done")
+
+	tblID := instr.Args[0].ID
+	mReg := ec.resolveValueNB(tblID, jit.X0)
+	if mReg != jit.X0 {
+		asm.MOVreg(jit.X0, mReg)
+	}
+	if ec.tableVerified[tblID] {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		ec.tableVerified[tblID] = true
+	}
+	// Verify DenseMatrix (dmStride > 0) if not already.
+	if !ec.dmVerified[tblID] {
+		asm.LDRW(jit.X1, jit.X0, jit.TableOffDMStride)
+		asm.CBZ(jit.X1, deoptLabel)
+		ec.dmVerified[tblID] = true
+	}
+	// Load dmFlat.
+	asm.LDR(jit.X0, jit.X0, jit.TableOffDMFlat)
+	// Result is a raw int64 (pointer). Store as raw int.
+	ec.storeRawInt(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
+	ec.emitDeopt(instr)
+	ec.emitUnboxRawIntRegs(savedRawIntRegs)
+	ec.rawIntRegs = savedRawIntRegs
+
+	asm.Label(doneLabel)
+}
+
+// emitMatrixStride emits code for OpMatrixStride(m) → int64.
+func (ec *emitContext) emitMatrixStride(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("mstride_deopt")
+	doneLabel := ec.uniqueLabel("mstride_done")
+
+	tblID := instr.Args[0].ID
+	mReg := ec.resolveValueNB(tblID, jit.X0)
+	if mReg != jit.X0 {
+		asm.MOVreg(jit.X0, mReg)
+	}
+	if ec.tableVerified[tblID] {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		ec.tableVerified[tblID] = true
+	}
+	asm.LDRW(jit.X0, jit.X0, jit.TableOffDMStride)
+	// Check stride != 0 even if dmVerified — OpMatrixStride might be
+	// hoisted before dmVerified propagates. Belt-and-suspenders.
+	if !ec.dmVerified[tblID] {
+		asm.CBZ(jit.X0, deoptLabel)
+		ec.dmVerified[tblID] = true
+	}
+	ec.storeRawInt(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
+	ec.emitDeopt(instr)
+	ec.emitUnboxRawIntRegs(savedRawIntRegs)
+	ec.rawIntRegs = savedRawIntRegs
+
+	asm.Label(doneLabel)
+}
+
+// emitMatrixLoadFAt: Args = [flat, stride, i, j] → float.
+// No guards — assumes Flat/Stride already validated m.
+func (ec *emitContext) emitMatrixLoadFAt(instr *Instr) {
+	if len(instr.Args) < 4 {
+		return
+	}
+	asm := ec.asm
+	flatReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	if flatReg != jit.X5 {
+		asm.MOVreg(jit.X5, flatReg)
+	}
+	strideReg := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+	if strideReg != jit.X1 {
+		asm.MOVreg(jit.X1, strideReg)
+	}
+	iReg := ec.resolveRawInt(instr.Args[2].ID, jit.X2)
+	if iReg != jit.X2 {
+		asm.MOVreg(jit.X2, iReg)
+	}
+	jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
+	if jReg != jit.X3 {
+		asm.MOVreg(jit.X3, jReg)
+	}
+	// X4 = i * stride + j
+	asm.MUL(jit.X4, jit.X2, jit.X1)
+	asm.ADDreg(jit.X4, jit.X4, jit.X3)
+	// X0 = flat[X4] (float64 bits == NaN-boxed float)
+	asm.LDRreg(jit.X0, jit.X5, jit.X4)
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+// emitMatrixStoreFAt: Args = [flat, stride, i, j, v].
+func (ec *emitContext) emitMatrixStoreFAt(instr *Instr) {
+	if len(instr.Args) < 5 {
+		return
+	}
+	asm := ec.asm
+	flatReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	if flatReg != jit.X5 {
+		asm.MOVreg(jit.X5, flatReg)
+	}
+	strideReg := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+	if strideReg != jit.X1 {
+		asm.MOVreg(jit.X1, strideReg)
+	}
+	iReg := ec.resolveRawInt(instr.Args[2].ID, jit.X2)
+	if iReg != jit.X2 {
+		asm.MOVreg(jit.X2, iReg)
+	}
+	jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
+	if jReg != jit.X3 {
+		asm.MOVreg(jit.X3, jReg)
+	}
+	asm.MUL(jit.X4, jit.X2, jit.X1)
+	asm.ADDreg(jit.X4, jit.X4, jit.X3)
+	vReg := ec.resolveValueNB(instr.Args[4].ID, jit.X6)
+	if vReg != jit.X6 {
+		asm.MOVreg(jit.X6, vReg)
+	}
+	asm.STRreg(jit.X6, jit.X5, jit.X4)
+}
+
 // emitMatrixSetF emits ARM64 code for OpMatrixSetF(m, i, j, v).
 // Same layout as get, plus resolve v as raw float in D0 and STR it.
 func (ec *emitContext) emitMatrixSetF(instr *Instr) {
@@ -99,18 +264,27 @@ func (ec *emitContext) emitMatrixSetF(instr *Instr) {
 	deoptLabel := ec.uniqueLabel("msetf_deopt")
 	doneLabel := ec.uniqueLabel("msetf_done")
 
+	tblID := instr.Args[0].ID
 	// Load m and extract *Table.
-	mReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	mReg := ec.resolveValueNB(tblID, jit.X0)
 	if mReg != jit.X0 {
 		asm.MOVreg(jit.X0, mReg)
 	}
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.CBZ(jit.X0, deoptLabel)
+	if ec.tableVerified[tblID] {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		ec.tableVerified[tblID] = true
+	}
 
 	// Load dmStride guard.
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffDMStride)
-	asm.CBZ(jit.X1, deoptLabel)
+	if !ec.dmVerified[tblID] {
+		asm.CBZ(jit.X1, deoptLabel)
+		ec.dmVerified[tblID] = true
+	}
 
 	iReg := ec.resolveRawInt(instr.Args[1].ID, jit.X2)
 	if iReg != jit.X2 {

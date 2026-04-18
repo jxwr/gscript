@@ -152,6 +152,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		activeFPRegs:   make(map[int]bool),
 		shapeVerified:  make(map[int]uint32),
 		tableVerified:  make(map[int]bool),
+		dmVerified:     make(map[int]bool),
 		blockOutShapes: make(map[int]map[int]uint32),
 		blockOutTables: make(map[int]map[int]bool),
 		crossBlockLive: crossBlockLive,
@@ -268,6 +269,13 @@ type emitContext struct {
 	// current block. Maps table value ID -> true.
 	// Reset at block boundaries and after calls (same as shapeVerified).
 	tableVerified map[int]bool
+
+	// dmVerified tracks table SSA value IDs that have been confirmed as
+	// DenseMatrix outers (dmStride > 0) in the current block. Lets
+	// subsequent matrix.getf/setf calls on the same m skip the stride
+	// guard LDR+CBZ. Reset at block boundaries and after calls.
+	// Populated by emitMatrixGetF/emitMatrixSetF (R44).
+	dmVerified map[int]bool
 
 	// blockOutShapes saves the shapeVerified state at the END of each emitted block.
 	// Used to seed single-predecessor blocks with their predecessor's verified shapes.
@@ -605,6 +613,11 @@ func (ec *emitContext) emitBlock(block *Block) {
 		ec.shapeVerified = make(map[int]uint32)
 		ec.tableVerified = make(map[int]bool)
 	}
+	// R44: reset DenseMatrix verification at every block boundary. Cross-
+	// block propagation isn't critical for matmul's inner-k loop (k-loop
+	// body is one block) and complicates merge semantics; conservatively
+	// reset.
+	ec.dmVerified = make(map[int]bool)
 
 	if isLoopBlock && !isHeader && ec.safeHeaderRegs != nil {
 		// Non-header loop block: activate SAFE registers from the innermost

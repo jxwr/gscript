@@ -352,10 +352,57 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		stride := int(m.DMStride())
 		i := int(iv.Int())
 		j := int(jv.Int())
-		// Write through the row wrapper (which aliases the backing).
 		row := m.RawGetInt(int64(i)).Table()
 		row.RawSetInt(int64(j), vv)
 		_ = stride
+
+	case OpMatrixFlat:
+		// R45: interp tunnels the Table as the "flat" SSA value; the
+		// subsequent LoadFAt/StoreFAt instructions access via RawGetInt,
+		// which still resolves correctly. JIT uses raw pointer for perf;
+		// interp doesn't need that path for correctness.
+		mv := s.val(instr.Args[0])
+		if !mv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixFlat: arg 0 not a table")
+		}
+		if mv.Table().DMStride() <= 0 {
+			return nil, false, fmt.Errorf("OpMatrixFlat: not a DenseMatrix")
+		}
+		s.values[instr.ID] = mv
+
+	case OpMatrixStride:
+		mv := s.val(instr.Args[0])
+		if !mv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixStride: arg 0 not a table")
+		}
+		s.values[instr.ID] = runtime.IntValue(int64(mv.Table().DMStride()))
+
+	case OpMatrixLoadFAt:
+		mv := s.val(instr.Args[0])
+		iv := s.val(instr.Args[2])
+		jv := s.val(instr.Args[3])
+		if !mv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixLoadFAt: arg 0 not a table")
+		}
+		m := mv.Table()
+		i := int(iv.Int())
+		j := int(jv.Int())
+		row := m.RawGetInt(int64(i)).Table()
+		s.values[instr.ID] = row.RawGetInt(int64(j))
+
+	case OpMatrixStoreFAt:
+		mv := s.val(instr.Args[0])
+		iv := s.val(instr.Args[2])
+		jv := s.val(instr.Args[3])
+		vv := s.val(instr.Args[4])
+		if !mv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixStoreFAt: arg 0 not a table")
+		}
+		m := mv.Table()
+		i := int(iv.Int())
+		j := int(jv.Int())
+		row := m.RawGetInt(int64(i)).Table()
+		row.RawSetInt(int64(j), vv)
 
 	// ---------- Comparison (type-generic) ----------
 	case OpEq:

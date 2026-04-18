@@ -16,7 +16,7 @@
 
 version: 1
 updated: 2026-04-18
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45]
 
 classes:
 
@@ -325,22 +325,26 @@ classes:
       factory via matrix.dense(r, c) — outer is ArrayMixed, rows are
       ArrayFloat sub-slices. Phase 2+ (future) can add JIT-level fast
       path for single-load t[i][j] direct into flat backing.
-    attempts: 3
-    wins: 3                      # R30 ADR + R42 Phase 1 + R43 Phase 2
+    attempts: 5
+    wins: 5                      # R30 ADR + R42 + R43 + R44 + R45
     reverts: 0
     holds: 0
     prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: null
-    historical_rounds: [30, 42, 43]
+    historical_rounds: [30, 42, 43, 44, 45]
     key_negative_evidence: null
     key_positive_evidence: >
-      R42 Phase 1 (shared flat backing): matmul_dense.gs 0.116 → 0.095
-      (-18.1%); LuaJIT gap 5.5× → 4.5×.
-      R43 Phase 2 (JIT intrinsic matrix.getf/setf): matmul_dense.gs
-      0.095 → 0.046 (-51.6% of Phase 1; -60.7% of original nested).
-      LuaJIT gap 4.5× → 2.2×. Combined 60% of the matmul gap closed
-      via two phases of architectural work across two sessions.
+      Multi-session cumulative win on matmul vs LuaJIT:
+        R42 Phase 1 (shared flat backing): 0.116 → 0.095 s  (-18.1%)
+        R43 Phase 2 (JIT intrinsic getf/setf): 0.095 → 0.046 s  (-51.6%)
+        R44 Phase 2b (tableVerified/dmVerified cache): neutral (infra)
+        R45 Phase 2c (IR split + LICM hoist Flat/Stride): 0.046 → 0.035 s  (-23.9%)
+      Cumulative: 0.117 → 0.035 = -70.1%.
+      LuaJIT gap: 5.5× → 1.67× across 4 rounds in 3 sessions.
+      85% of the original matmul-vs-LuaJIT gap closed.
+      Demonstrates method-JIT + IC + OptJIT can approach trace-JIT
+      perf on tight numeric loops via runtime-type + IR design.
 
   - name: correctness-bug-fix
     description: >

@@ -1,0 +1,61 @@
+# R44: DenseMatrix Phase 2b — infra only (dmVerified cache; no direct win).
+round: 44
+date: 2026-04-18
+follows: 43
+
+type: tactical
+
+target:
+  benchmark: matmul_dense
+  current_wall_sec: 0.046
+  luajit_wall_sec: 0.021
+  gap_factor: 2.2
+
+hypothesis:
+  class: tier2-dense-matrix-kind
+  claim: >
+    Add tableVerified + dmVerified caching in emit_matrix.go so
+    subsequent matrix.getf/setf on the SAME SSA-table in the SAME
+    block skip the type/nil/stride guards. Analogous to shapeVerified
+    for GetField.
+  expected_gain_pct: [0, 5]
+  counterfactual_check: >
+    matmul's inner k-loop only calls matrix.getf ONCE per matrix
+    per block — cache doesn't kick in for this specific pattern.
+    Doesn't regress anything, helps future patterns with multiple
+    accesses per matrix per block.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: no regression on matmul_dense
+      acceptance: matmul_dense_jit_neutral
+      halt_on_fail: true
+  result: >
+    5-run spot-check: 0.046-0.048s (median 0.047s). Neutral vs R43.
+    Expected — cache benefits per-block repeat accesses, matmul is 1-per-block.
+  passed: true
+
+outcome:
+  status: win              # infrastructure; unblocks R45's split
+  bench_deltas: {}
+  regressions: []
+  commit: pending
+  deliverables:
+    - internal/methodjit/emit_compile.go — dmVerified map field
+    - internal/methodjit/emit_matrix.go — tableVerified/dmVerified skip logic
+    - internal/methodjit/emit_dispatch.go — reset dmVerified on OpCall/OpSelf
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: null

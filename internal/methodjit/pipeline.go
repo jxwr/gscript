@@ -342,6 +342,14 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("RangeAnalysis: %w", err)
 	}
 
+	// R45: lower OpMatrixGetF/SetF into OpMatrixFlat + OpMatrixStride +
+	// OpMatrixLoadFAt/StoreFAt so LICM can hoist the Flat/Stride ops
+	// out of inner loops where m is invariant.
+	fn, err = MatrixLowerPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("MatrixLower: %w", err)
+	}
+
 	fn, err = LICMPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("LICM: %w", err)

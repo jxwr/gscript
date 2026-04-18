@@ -576,6 +576,15 @@ func canHoistOp(op Op) bool {
 		// Pure type check; deopt metadata has no PC-dependent state,
 		// so hoisting is safe when the guarded value is invariant.
 		return true
+	case OpMatrixFlat, OpMatrixStride:
+		// R45: extracting dmFlat / dmStride is pure (output depends
+		// only on the Table argument; DenseMatrix descriptor is
+		// immutable once NewDenseMatrix returns). Hoisting these to
+		// the preheader is the entire point of the R45 split.
+		// Caller must still check that no in-loop call could invalidate
+		// m (hasLoopCall) — LICM already enforces that for GetField/
+		// GetTable, and the same guard applies here.
+		return true
 	}
 	return false
 }
