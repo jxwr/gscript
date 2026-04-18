@@ -91,10 +91,10 @@ deliverables:
     win-taxonomy; post-R49 separate bench_wins vs adr_wins.
 
 outcome:
-  status: pending
-  bench_deltas: {}
+  status: adr-win
+  bench_deltas: {}            # meta round; no benchmark movement expected
   regressions: []
-  shipped_code: true          # NEW field (self-referential: this round ships schema changes)
+  shipped_code: true          # schema changes to CLAUDE.md, TEMPLATE.yaml, round.sh, luajit_gap.yaml
 
 revert_class: null
 revert_root_cause_location: null
