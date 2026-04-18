@@ -1,0 +1,123 @@
+# R75: investigate tier2-intbinmod-correctness — actually a quicksort codegen bug.
+round: 75
+date: 2026-04-19
+follows: 74
+
+type: diagnostic
+
+target:
+  benchmark: sort
+  current_wall_sec: 0.051
+  luajit_wall_sec: 0.010
+  gap_factor: 5.10
+
+hypothesis:
+  class: correctness-bug-fix
+  claim: >
+    Investigate the tier2-intbinmod-correctness bug identified in R74.
+    Expected: find root cause in int48-overflow + deopt pipeline for
+    large-int mul+mod (LCG arithmetic).
+  expected_gain_pct: null
+  expected_gain_mechanism: null
+  counterfactual_check: null
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.20
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Reduced repro chain:
+      (1) LCG alone (tight for-loop in main): JIT==VM, correct values.
+      (2) LCG in function, N=8..1000: JIT==VM, correct values.
+      (3) qs on handcrafted descending array: JIT==VM, correct.
+      (4) qs on LCG-produced array, N=50000: DIVERGES starting arr[1].
+      (5) qs on LCG-produced array inline (no make_random_array): STILL diverges.
+      (6) qs on LCG-produced array, N=20: DIVERGES.
+      (7) qs on LCG-produced array, N=11: DIVERGES.
+      (8) qs on LCG-produced array, N=10: correct.
+      (9) qs on LCG-produced array, N=17: correct (!).
+
+    R74 hypothesis REJECTED: bug is NOT in intbinmod emit. LCG values
+    are computed correctly (JIT matches VM before sort). The bug is
+    in **quicksort's Tier 2 codegen** for specific N where JIT's
+    call-count threshold puts quicksort at Tier 2 on inputs with
+    pseudorandom recursion-pattern.
+
+    At N=20 (JIT):
+      first 10 positions: completely wrong (random order)
+      last 5 positions: correctly sorted
+    So T2 quicksort fails on ~70% of positions — not a subtle bug.
+
+    IR inspection: quicksort.ir.txt has unusual v56 Phi self-reference
+    (v56 = Phi[B7:v60, B3:v56, B4:v29]). This "pass-through on B3→B5
+    edge" Phi might be emitting incorrectly. Root cause
+    likely in emitPhiMoves or regalloc for Phi with its own result
+    as one input.
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: no-win
+  bench_deltas: {}
+  regressions: []
+  shipped_code: false
+  commit: null
+  deliverables: []
+
+revert_class: null
+revert_root_cause_location: "quicksort Tier 2 Phi emit / regalloc (not intbinmod)"
+revert_cost_model_delta: >
+  R74 misidentified the bug as intbinmod-correctness. R75 shows it's
+  quicksort-T2-codegen on LCG-shaped arrays. The two look similar
+  because the original failing repro (sort.gs) chains both — LCG for
+  input, quicksort for sort — but only the latter has the bug.
+revert_prevention: >
+  Before declaring a bug class, reduce to minimum repro. If the
+  "intbinmod" repro can be replaced by a non-intbinmod input that
+  still fails, intbinmod isn't the bug. R75's N=11 LCG-arr + qs
+  repro took 5 bisections to isolate.
+
+ledger_update:
+  classes_touched: [correctness-bug-fix]
+  new_class_introduced: tier2-quicksort-phi-codegen    # proposed forward class
+  sub_pattern_learned: >
+    The hasCallInLoop gate in compileTier2 was masking TWO latent
+    bugs simultaneously:
+      1. Unresolved label arith_done in intBinMod float path (R74
+         level-1; fix would unblock make_random_array T2 compile
+         but expose level-2)
+      2. quicksort's self-referential Phi v56=Phi[...,B3:v56,...]
+         emits incorrect code on Tier 2 for LCG-shaped input at
+         N>=11.
+
+    Both are blockers for the V8-inlining arc. Neither is trivially
+    fixable. The arc's progress is stalled on these correctness
+    gaps.
+
+notes: >
+  CORRECTED BLOCKER IDENTIFICATION (fourth attempt now):
+    R73 thought: Tier 2 main call-in-loop bug (vague)
+    R74 thought: tier2-intbinmod-correctness (label + deopt)
+    R75 thinks:  quicksort Phi-self-reference codegen
+
+  Each iteration narrowed the scope. R75's diagnosis is the most
+  precise so far but fixing it still requires SSA/emit expertise
+  I've historically struggled with in this session (R65-R67
+  attempts at similar regalloc-adjacent fixes all regressed).
+
+  Given the pivot-within-pivot pattern, the V8-inlining arc is
+  sliding further from its original goal. Options:
+    (A) Keep diagnosing + attempt fix (2-4 more rounds; may or
+        may not work)
+    (B) Admit this arc is blocked by deep correctness infrastructure
+        work and pivot to a different direction
+    (C) Accept that gscript call-heavy bench parity with LuaJIT
+        requires infrastructure we don't currently have and move
+        on to what we CAN do
+
+  Reporting to user for direction.
