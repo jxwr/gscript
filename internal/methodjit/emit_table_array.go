@@ -108,7 +108,11 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	// Load key into X1 with type-specialized fast paths.
 	keyID := instr.Args[1].ID
 
-	if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
+	if kv, isConst := ec.constInts[keyID]; isConst {
+		// R98: const int key — load the immediate directly, bypass reg
+		// resolution, tag check, and unbox.
+		asm.LoadImm64(jit.X1, kv)
+	} else if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
 		// Fast path 1: key is raw int in a register (rawIntRegs).
 		reg := ec.physReg(keyID)
 		if reg != jit.X1 {
@@ -390,7 +394,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	// Load key into X1 with type-specialized fast paths.
 	keyID := instr.Args[1].ID
 
-	if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
+	if kv, isConst := ec.constInts[keyID]; isConst {
+		// R98: const int key — direct immediate load.
+		asm.LoadImm64(jit.X1, kv)
+	} else if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
 		// Fast path 1: key is raw int in a register (rawIntRegs).
 		reg := ec.physReg(keyID)
 		if reg != jit.X1 {
