@@ -69,3 +69,16 @@ rows:
   # --- spectral_norm_dense (R54+, vector-as-Nx1-matrix port) ---
   - {round: 54, date: 2026-04-18, bench: spectral_norm_dense, gscript_jit_sec: 0.024, luajit_sec: 0.008, gap_factor: 3.00, notes: "R54 port: u/v as matrix.dense(N,1); -46.7% vs legacy 0.045s"}
   - {round: 55, date: 2026-04-18, bench: sort, gscript_jit_sec: 0.050, luajit_sec: 0.011, gap_factor: 4.55, notes: "R55 sort_dense pre-flight REGRESSED +34%; DenseMatrix (float) not for int-heavy"}
+
+  # --- R57 full roll-up: current state of all benchmarks post-R50-to-R56 ---
+  - {round: 57, date: 2026-04-18, bench: matmul_dense,         gscript_jit_sec: 0.038, luajit_sec: 0.021, gap_factor: 1.81, notes: "R57 roll-up"}
+  - {round: 57, date: 2026-04-18, bench: nbody_dense,          gscript_jit_sec: 0.180, luajit_sec: 0.035, gap_factor: 5.14, notes: "R57 roll-up"}
+  - {round: 57, date: 2026-04-18, bench: spectral_norm_dense,  gscript_jit_sec: 0.024, luajit_sec: 0.008, gap_factor: 3.00, notes: "R57 roll-up"}
+  - {round: 57, date: 2026-04-18, bench: mandelbrot,           gscript_jit_sec: 0.058, luajit_sec: 0.058, gap_factor: 1.00, notes: "R57 PARITY with LuaJIT"}
+  - {round: 57, date: 2026-04-18, bench: nbody,                gscript_jit_sec: 0.251, luajit_sec: 0.035, gap_factor: 7.17, notes: "R57 legacy (unchanged)"}
+  - {round: 57, date: 2026-04-18, bench: spectral_norm,        gscript_jit_sec: 0.045, luajit_sec: 0.008, gap_factor: 5.63, notes: "R57 legacy (unchanged)"}
+  - {round: 57, date: 2026-04-18, bench: fib,                  gscript_jit_sec: 1.466, luajit_sec: 0.026, gap_factor: 56.4, notes: "R57 roll-up — call-dominated; untouched this arc"}
+  - {round: 57, date: 2026-04-18, bench: ackermann,            gscript_jit_sec: 0.274, luajit_sec: 0.006, gap_factor: 45.7, notes: "R57 roll-up"}
+  - {round: 57, date: 2026-04-18, bench: sort,                 gscript_jit_sec: 0.050, luajit_sec: 0.011, gap_factor: 4.55, notes: "R57 roll-up"}
+  - {round: 57, date: 2026-04-18, bench: sieve,                gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R57 roll-up"}
+  - {round: 57, date: 2026-04-18, bench: fannkuch,             gscript_jit_sec: 0.049, luajit_sec: 0.020, gap_factor: 2.45, notes: "R57 roll-up"}

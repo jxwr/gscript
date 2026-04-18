@@ -1,0 +1,99 @@
+# R57: full-suite bench roll-up for R50-R56 arc.
+round: 57
+date: 2026-04-18
+follows: 56
+
+type: diagnostic
+
+target:
+  benchmark: multi
+  current_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    Publish current state of all 25 benchmarks after R50-R56 work.
+    Rule 25 (luajit_gap.yaml) append for each bench that has shifted
+    state or that we need to re-anchor against LuaJIT. Gives Step 3
+    direction for any future round a one-file reference.
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    Meta — no benchmark movement expected from the roll-up itself.
+  counterfactual_check: >
+    N/A — this is record-keeping.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: false
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: adr-win
+  bench_deltas: {}
+  regressions: []
+  shipped_code: true        # luajit_gap.yaml updated
+  commit: null
+  deliverables:
+    - program/luajit_gap.yaml — 11 new rows, R57 snapshot of touched + untouched benches
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    R50-R56 arc delivered concrete bench wins through the DenseMatrix
+    pattern + a critical correctness fix. Where we stand vs LuaJIT:
+
+      MATCHES LuaJIT (gap = 1.0):
+        mandelbrot         0.058s = 0.058s
+
+      CLOSE GAPS (≤ 2×):
+        matmul_dense       0.038s  vs 0.021s  (1.81×)
+        fannkuch           0.049s  vs 0.020s  (2.45×)
+        sum_primes         0.004s  vs 0.002s  (2.00×)
+
+      MODERATE (3-6×):
+        spectral_norm_dense 0.024s vs 0.008s  (3.00×)
+        sort               0.050s  vs 0.011s  (4.55×)
+        nbody_dense        0.180s  vs 0.035s  (5.14×)
+
+      WIDE (6-10×):
+        sieve              0.085s  vs 0.011s  (7.73×)
+        nbody (legacy)     0.251s  vs 0.035s  (7.17×)
+
+      CALL-DOMINATED (>40×):
+        ackermann          0.274s  vs 0.006s  (45.7×)
+        fib                1.466s  vs 0.026s  (56.4×)
+        mutual_recursion   (not re-measured this arc)
+
+    Pattern: DenseMatrix works for float-arithmetic-dense workloads.
+    Doesn't help int-heavy (sort, sieve) or call-heavy (fib, ackermann).
+    Those need different architectural primitives.
+
+notes: >
+  Final round (R59) closes the 10-round arc R50-R59. R58 is available
+  for one more architectural attempt if pre-flight identifies a clear
+  target. Otherwise R58/R59 = meta wrap-up.
+
+  Cumulative gains from R50-R56:
+    matmul_dense:       0.117 → 0.038s  (-67.5%)   [pre-R50 legacy]
+    nbody:              0.254 → 0.180s  (-29.1%)   [via nbody_dense]
+    spectral_norm:      0.045 → 0.024s  (-46.7%)   [via spectral_norm_dense]
+    mandelbrot:         0.063 → 0.058s  (-7.9%)    [R7 ref baseline]
+
+  All ported via matrix.dense + matrix.getf/setf intrinsics (R42-R45
+  infra) + R52 DCE correctness fix + R53 LoadElim CSE. No new JIT ops
+  added in R50-R56 arc.
