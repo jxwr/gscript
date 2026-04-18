@@ -1,0 +1,57 @@
+# R101: Test-revert R89 insertIntParamGuards — mildly worse, restored.
+round: 101
+date: 2026-04-19
+follows: 100
+
+type: tactical
+
+target:
+  benchmark: sort
+  current_wall_sec: 0.054
+  luajit_wall_sec: 0.011
+  gap_factor: 4.91
+
+hypothesis:
+  class: tier2-tight-loop
+  claim: >
+    Temporarily disable R89's insertIntParamGuards to check whether
+    it was contributing to the sort gap. If sort improves, keep
+    disabled.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.33
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: suite green
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    5-sample medians:
+      fannkuch:     r100 0.047 → r101 0.047 (same)
+      sort:         r100 0.054 → r101 0.055 (+1.8%, slightly worse)
+      sieve:        r100 0.084 → r101 0.085 (+1.2%)
+      matmul_dense: 0.035 → 0.036 (+3%)
+      nbody_dense:  0.182 → 0.180 (-1%)
+    R89 is actually mildly beneficial overall. Restored.
+  passed: false
+
+outcome:
+  status: no-win               # revert proved R89 was right
+  bench_deltas: {}
+  regressions: []
+  shipped_code: false          # reverted the test-revert
+  commit: null
+
+revert_class: null
+
+ledger_update:
+  classes_touched: [tier2-tight-loop]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    R89 insertIntParamGuards is net-positive even when individual
+    benches show noise-level movement. The cost of the guard (1
+    insn at function entry) is amortized by downstream int ops that
+    avoid tag checks.
