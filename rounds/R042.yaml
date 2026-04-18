@@ -78,7 +78,7 @@ outcome:
     matmul_dense_vs_nested: {nested: 0.116, dense: 0.095, pct: -18.1}
     matmul_dense_vs_luajit: {gap_was: 5.5, gap_now: 4.5}
   regressions: []
-  commit: pending
+  commit: 05a5ea9
   deliverables:
     - internal/runtime/table_dense_matrix.go — NewDenseMatrix constructor
     - internal/runtime/table_dense_matrix_test.go — 4 tests, all green
