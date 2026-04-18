@@ -32,7 +32,7 @@
 
 version: 1
 updated: 2026-04-19
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86]
 
 classes:
 
@@ -40,10 +40,10 @@ classes:
     description: >
       Changes to the workflow itself (CLAUDE.md, round shape, persistent
       artifacts, gating scripts). Meta rounds only.
-    attempts: 15
-    wins: 15                     # legacy; post-R49 = 0 bench_wins + 15 adr_wins
+    attempts: 16                  # +R86 V8-arc formal close
+    wins: 16                     # legacy; post-R49 = 0 bench_wins + 16 adr_wins
     bench_wins: 0
-    adr_wins: 15                 # includes R57 roll-up + R59 + R76 v5.2 correctness rules
+    adr_wins: 16                 # includes R57 roll-up + R59 + R76 v5.2 correctness rules + R86 V8-arc close
     reverts: 0
     holds: 0
     prior_reject_rate: 0.0

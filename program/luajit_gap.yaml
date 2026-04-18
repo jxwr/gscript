@@ -92,3 +92,17 @@ rows:
 
   # R69 re-verify: 30-sample medians TIE. Gscript edge on mean/min only.
   - {round: 69, date: 2026-04-18, bench: mandelbrot, gscript_jit_sec: 0.058, luajit_sec: 0.058, gap_factor: 1.00, notes: "R69 n=30: median TIES; gscript mean 0.0575 vs luajit 0.0579 (0.7% edge)"}
+
+  # --- R77: int48 overflow bench-win (only real bench-win of R72-R85 V8 arc) ---
+  - {round: 77, date: 2026-04-19, bench: sort, gscript_jit_sec: 0.051, luajit_sec: 0.011, gap_factor: 4.64, notes: "R77 int48 overflow check fixed BLOCKER-B; sort correctness + perf restored"}
+
+  # --- R86 V8-arc close roll-up (R72-R85, 14 rounds, 2 bench-wins + 2 meta-wins) ---
+  # After R80-R85 feedback/Tier1 threshold attempts all reverted, state is ~same as R77.
+  - {round: 86, date: 2026-04-19, bench: sort,                gscript_jit_sec: 0.052, luajit_sec: 0.011, gap_factor: 4.73, notes: "R86 V8-arc close roll-up (5 runs median)"}
+  - {round: 86, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.086, luajit_sec: 0.011, gap_factor: 7.82, notes: "R86 V8-arc close roll-up"}
+  - {round: 86, date: 2026-04-19, bench: fannkuch,            gscript_jit_sec: 0.049, luajit_sec: 0.020, gap_factor: 2.45, notes: "R86 V8-arc close roll-up"}
+  - {round: 86, date: 2026-04-19, bench: mandelbrot,          gscript_jit_sec: 0.058, luajit_sec: 0.057, gap_factor: 1.02, notes: "R86 V8-arc close: still at parity"}
+  - {round: 86, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R86 V8-arc close"}
+  - {round: 86, date: 2026-04-19, bench: nbody_dense,         gscript_jit_sec: 0.185, luajit_sec: 0.034, gap_factor: 5.44, notes: "R86 V8-arc close"}
+  - {round: 86, date: 2026-04-19, bench: spectral_norm_dense, gscript_jit_sec: 0.025, luajit_sec: 0.007, gap_factor: 3.57, notes: "R86 V8-arc close"}
+  - {round: 86, date: 2026-04-19, bench: math_intensive,      gscript_jit_sec: 0.069, luajit_sec: null,  gap_factor: null, notes: "R86 V8-arc close; no LuaJIT port"}
