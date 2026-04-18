@@ -1,0 +1,102 @@
+# R64: MatrixLoadFAt direct-FPR emit path — matmul_dense -7.7%.
+round: 64
+date: 2026-04-18
+follows: 63
+
+type: tactical
+
+target:
+  benchmark: matmul_dense
+  current_wall_sec: 0.039
+  luajit_wall_sec: 0.021
+  gap_factor: 1.81
+
+hypothesis:
+  class: tier2-dense-matrix-kind
+  claim: >
+    emitMatrixLoadFAt was loading to GPR X0, then calling storeResultNB.
+    storeResultNB only handles GPR-allocated SSA values; float results
+    with FPR allocations fall through to a memory store. Downstream
+    FMUL then resolves via memory load + FMOV, causing a
+    LDR → STR → LDR → FMOV round-trip per load. Fix: when the SSA
+    result has an FPR allocation, FMOVtoFP directly and call
+    storeRawFloat. Saves ~3 insns per matmul load, 2 loads per iter,
+    27M iters.
+  expected_gain_pct: [5, 15]
+  expected_gain_mechanism: >
+    Current inner loop asm (line 258-274 of diag/matmul_dense/
+    matmul.asm.txt before fix):
+      LDR X0, [X5, X4, LSL #3]    ; flat load
+      STR X0, [R26, #slot_a]      ; NaN-box store to reg slot
+      LDR X0, [R26, #slot_b]      ; reload b from reg slot
+      FMOV F0, X0                 ; to FPR
+    After fix: LDR X0 → FMOVtoFP directly.
+    5 insns → 2 insns per load. For 27M × 2 loads × 3 insns saved =
+    162M insns at M4 effective IPC 6-8 → 25M cycles → ~7ms theoretical.
+    Measured: -3ms (0.039 → 0.036s). Less than theoretical because
+    some memory-round-trip was elsewhere (e.g., phi store).
+  counterfactual_check: >
+    Benches that don't use matrix.getf heavily should be unchanged.
+    Confirmed: nbody (legacy), sort, fib, fannkuch all within noise.
+    Benches that use matrix.getf (nbody_dense, spectral_norm_dense,
+    matmul_dense) should benefit — matmul_dense does; nbody_dense
+    and spectral_norm_dense are at noise floor (their hot path
+    has many NON-matmul FP ops whose regalloc pressure limits the
+    win).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Read diag/matmul_dense/matmul.asm.txt inner loop (lines 245-275):
+    identified the LDR → STR → LDR → FMOV pattern on each matrix load.
+    Confirmed via diag post-fix: load path is now LDR X0 → FMOV F<dst>, X0
+    directly. Downstream FMUL operates on FPR-to-FPR.
+
+pre_flight:
+  required:
+    - description: matmul_dense does not regress
+      acceptance: matmul_dense_median <= 0.040s
+      halt_on_fail: true
+  result: >
+    pre-R64 median: 0.039s (n=5)
+    post-R64 median: 0.036s (n=5)
+    delta: -7.7%.
+  passed: true
+
+outcome:
+  status: bench-win
+  bench_deltas:
+    matmul_dense: {from: 0.039, to: 0.036, pct: -7.7}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/emit_matrix.go — direct-FPR path in emitMatrixLoadFAt
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    storeResultNB's IsFloat branch silently falls through to a
+    memory store when the SSA value has an FPR allocation. The same
+    issue probably exists in other emit helpers that call
+    storeResultNB with a float result. Audit target for future
+    rounds: every op producing float results should prefer
+    storeRawFloat over storeResultNB.
+
+notes: >
+  matmul_dense gap_factor: 1.81 → 1.71 (LuaJIT 0.021s).
+  Still not beating LuaJIT but moving. 15 rounds remain.
+
+  Near-term candidates:
+    - Audit other emit_*.go helpers for the same storeResultNB misuse
+    - LDP pairing (merge adjacent MatrixLoadFAt into single LDP D0, D1, ...)

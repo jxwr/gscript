@@ -194,6 +194,13 @@ func (ec *emitContext) emitMatrixStride(instr *Instr) {
 
 // emitMatrixLoadFAt: Args = [flat, stride, i, j] → float.
 // No guards — assumes Flat/Stride already validated m.
+//
+// R64: when the SSA result has an FPR allocation (typical for float uses
+// in arithmetic), skip the GPR → memory → GPR → FMOV round-trip. Load
+// into a temporary GPR then FMOVtoFP directly to the destination FPR.
+// Saves ~3 insns per load in the matmul inner loop. (The MatrixLoadFAt
+// emit target is :float SSA so the result IS a raw float64 — the flat
+// backing stores float64 not NaN-boxed Values, so no unboxing needed.)
 func (ec *emitContext) emitMatrixLoadFAt(instr *Instr) {
 	if len(instr.Args) < 4 {
 		return
@@ -218,8 +225,18 @@ func (ec *emitContext) emitMatrixLoadFAt(instr *Instr) {
 	// X4 = i * stride + j
 	asm.MUL(jit.X4, jit.X2, jit.X1)
 	asm.ADDreg(jit.X4, jit.X4, jit.X3)
-	// X0 = flat[X4] (float64 bits == NaN-boxed float)
+	// X0 = flat[X4] (raw float64 bits)
 	asm.LDRreg(jit.X0, jit.X5, jit.X4)
+
+	// R64: prefer direct FPR transfer for float results. storeResultNB
+	// only populates GPR allocations; float SSA with FPR allocation
+	// falls through to a memory store there.
+	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+		dstFPR := jit.FReg(pr.Reg)
+		asm.FMOVtoFP(dstFPR, jit.X0)
+		ec.storeRawFloat(dstFPR, instr.ID)
+		return
+	}
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 

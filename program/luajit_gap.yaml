@@ -82,3 +82,5 @@ rows:
   - {round: 57, date: 2026-04-18, bench: sort,                 gscript_jit_sec: 0.050, luajit_sec: 0.011, gap_factor: 4.55, notes: "R57 roll-up"}
   - {round: 57, date: 2026-04-18, bench: sieve,                gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R57 roll-up"}
   - {round: 57, date: 2026-04-18, bench: fannkuch,             gscript_jit_sec: 0.049, luajit_sec: 0.020, gap_factor: 2.45, notes: "R57 roll-up"}
+
+  - {round: 64, date: 2026-04-18, bench: matmul_dense,         gscript_jit_sec: 0.036, luajit_sec: 0.021, gap_factor: 1.71, notes: "R64 direct-FPR MatrixLoadFAt emit; -7.7% vs R57"}
