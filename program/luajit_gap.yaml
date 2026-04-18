@@ -65,3 +65,6 @@ rows:
   - {round: 52, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.038, luajit_sec: 0.021, gap_factor: 1.81, notes: "R52 correctness: DCE now preserves MatrixStoreFAt; +8.5% tax on R45-R48 tainted baseline"}
   - {round: 52, date: 2026-04-18, bench: nbody_dense, gscript_jit_sec: 0.223, luajit_sec: 0.035, gap_factor: 6.37, notes: "R52 corrected: real nbody_dense gain vs legacy nbody = -12.2%"}
   - {round: 53, date: 2026-04-18, bench: nbody_dense, gscript_jit_sec: 0.180, luajit_sec: 0.035, gap_factor: 5.14, notes: "R53 LoadElim for pure ops + 2nd pass post-MatrixLower; -19.3%"}
+
+  # --- spectral_norm_dense (R54+, vector-as-Nx1-matrix port) ---
+  - {round: 54, date: 2026-04-18, bench: spectral_norm_dense, gscript_jit_sec: 0.024, luajit_sec: 0.008, gap_factor: 3.00, notes: "R54 port: u/v as matrix.dense(N,1); -46.7% vs legacy 0.045s"}
