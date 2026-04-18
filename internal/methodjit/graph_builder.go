@@ -420,6 +420,24 @@ func (b *graphBuilder) emitBlocks() {
 				case vm.OP_LE:
 					cmpOp = OpLe
 				}
+
+				// R82 Layer 2: consult bytecode-level feedback for OP_LE/LT/EQ
+				// to insert GuardType on operands. TypeSpec will then rewrite
+				// the generic OpLe to OpLeInt/OpLeFloat, avoiding the buggy
+				// raw-int compare path for NaN-boxed floats. The guard itself
+				// deopts on type mismatch (rare after mono-typed feedback).
+				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
+					fb := b.proto.Feedback[pc]
+					if lhsType, ok := feedbackToIRType(fb.Left); ok {
+						g := b.emit(block, OpGuardType, lhsType, []*Value{lhs}, int64(lhsType), 0)
+						lhs = g.Value()
+					}
+					if rhsType, ok := feedbackToIRType(fb.Right); ok {
+						g := b.emit(block, OpGuardType, rhsType, []*Value{rhs}, int64(rhsType), 0)
+						rhs = g.Value()
+					}
+				}
+
 				cond := b.emit(block, cmpOp, TypeBool, []*Value{lhs, rhs}, 0, 0)
 
 				// Next instruction must be OP_JMP.
