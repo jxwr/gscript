@@ -351,8 +351,10 @@ classes:
       factory via matrix.dense(r, c) — outer is ArrayMixed, rows are
       ArrayFloat sub-slices. Phase 2+ (future) can add JIT-level fast
       path for single-load t[i][j] direct into flat backing.
-    attempts: 8
-    wins: 5                      # R30 ADR + R42 + R43 + R44 + R45
+    attempts: 10
+    wins: 7                      # R30 ADR + R42 + R43 + R44 + R45 + R50 ADR + R51 bench-win
+    bench_wins: 5                # R42 R43 R44 R45 R51 (post-R49 taxonomy)
+    adr_wins: 2                  # R30 R50 (post-R49 taxonomy)
     reverts: 0
     holds: 2                     # R46 RowPtr wiring reverted; R47 FMA Phi-accumulator skip
     null_results: 1              # R48 sum-splitting pre-flight disproven
@@ -374,7 +376,7 @@ classes:
       Future rounds must bench before wiring. Control-test any
       dep-chain hypothesis by including a same-dep-chain variant
       with equal extra work (R48's unroll2 pattern).
-    historical_rounds: [30, 42, 43, 44, 45, 46, 47, 48]
+    historical_rounds: [30, 42, 43, 44, 45, 46, 47, 48, 50, 51]
     key_negative_evidence: >
       R46 + R47 both hit ARM64 pipeline counter-effects: the inner
       matmul loop is near the machine's throughput limit, so

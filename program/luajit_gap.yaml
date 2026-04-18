@@ -58,3 +58,7 @@ rows:
   - {round: 46, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.035, luajit_sec: 0.021, gap_factor: 1.67, notes: "RowPtr IR ops shipped, wiring reverted"}
   - {round: 47, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.035, luajit_sec: 0.021, gap_factor: 1.67, notes: "FMA fusion infra + Phi-accumulator skip (no bench movement)"}
   - {round: 48, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.035, luajit_sec: 0.021, gap_factor: 1.67, notes: "sum-split pre-flight disproven; per-call cost bound"}
+
+  # --- nbody_dense (R51+, DenseMatrix port of nbody) ---
+
+  - {round: 51, date: 2026-04-18, bench: nbody_dense, gscript_jit_sec: 0.130, luajit_sec: 0.035, gap_factor: 3.71, notes: "R51 port: bodies as 5×7 DenseMatrix; -49.2% vs legacy nbody 0.254s"}

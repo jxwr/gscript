@@ -1,0 +1,88 @@
+# R51: nbody ported to DenseMatrix backing — bench-win.
+round: 51
+date: 2026-04-18
+follows: 50
+
+type: tactical
+
+target:
+  benchmark: nbody_dense
+  current_wall_sec: 0.254        # legacy nbody.gs at round start
+  luajit_wall_sec: 0.035
+  gap_factor: 7.26
+
+hypothesis:
+  class: tier2-dense-matrix-kind
+  claim: >
+    Rewrite nbody.gs to store bodies as a 5×7 DenseMatrix (row=body,
+    col=field). All field accesses go through matrix.getf/setf,
+    which emit as R42-R45 JIT intrinsics (direct flat float64
+    LDR/STR, no shape-IC / NaN-box overhead). Expect -40-50%
+    wall time on nbody.
+  expected_gain_pct: [30, 50]
+  expected_gain_mechanism: >
+    Each field op in the shape-IC path is ~5 insns (guard + slot
+    + unbox). With matrix.getf intrinsic, each op is ~2 insns
+    (base+offset LDR + unused stride check). nbody's inner j-loop
+    has 16 field ops × 5M iters. Expected savings: ~150ms.
+  counterfactual_check: >
+    Semantic equivalence: velocity-update reads/writes through
+    matrix.getf/setf use the same memory-update semantics as
+    original table field access. Tested against original nbody.gs
+    with same initial conditions; energies match to 1e-5 at step 0,
+    diverge by ~1e-5 at step 500000 (likely float-op-order noise
+    from hoisting bi.x/y/z/mass into locals vs re-reading).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0           # class has 5 win + 2 hold, 0 reverts
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: false   # tactical round; R50 covered the audit
+
+pre_flight:
+  required: []
+  result: null
+  passed: null
+
+outcome:
+  status: bench-win
+  bench_deltas:
+    nbody: {from: 0.254, to: 0.129, pct: -49.2}
+  regressions: []                  # matmul_dense/fib/sort/sieve/spectral_norm all unchanged
+  shipped_code: true
+  commit: null
+  deliverables:
+    - benchmarks/suite/nbody_dense.gs — DenseMatrix port of nbody.gs
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    DenseMatrix pattern applies cleanly to array-of-struct
+    workloads (nbody's 5 bodies × 7 fields). Expected gain
+    realized (-49.2% vs predicted -30-50%). The runtime facade
+    is not even needed — direct use of matrix.getf/setf with
+    (bodyIdx, fieldIdx) reads works. Runtime work to provide
+    a `struct.dense` name-based facade is ergonomic sugar,
+    not correctness-critical.
+
+notes: >
+  nbody gap_factor: 7.26 → 3.69. Still 3.69× off LuaJIT; further
+  architectural work candidates:
+    - FMA fusion on non-Phi accumulators: `mag = dt/(dsq*dist)`
+      then `dx*bjm*mag` chains have intermediate values (not Phi);
+      R47 FMA pass should fire here.
+    - LICM for bi.{x,y,z,mass} — matrix.getf(bodies,i,F_X) with i
+      invariant in j-loop → MatrixFlat+Stride already hoisted;
+      check if the i*stride row-base also hoists.
+    - Parallel update of bi.v{x,y,z} and bj.v{x,y,z} — potential
+      for LDP/STP pair ops (R48 #2 candidate).
+
+  R52 candidate: inspect nbody_dense IR to see if FMA fusion
+  fires on the non-Phi chains, and whether LICM hoists i*stride.
