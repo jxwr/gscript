@@ -16,7 +16,7 @@ import "testing"
 // after enough recursive calls; once at T2, the sort output diverges
 // from VM.
 func TestTier2_Quicksort_LCG_N11(t *testing.T) {
-	t.Skip("R79 BLOCKER-A: quicksort T2 recursive-call miscompile; remove Skip when fixed")
+	t.Skip("R80 attempt: fix landed but cost +75% on sort hot path; reverted. Forward class: tier2-generic-cmp-polymorphic")
 	src := `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }

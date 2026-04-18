@@ -291,6 +291,7 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 		return
 	}
 
+
 	// Use raw int path if available (from type-specialized ops).
 	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
 	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
