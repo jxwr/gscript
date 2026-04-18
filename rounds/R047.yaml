@@ -66,7 +66,7 @@ outcome:
     ackermann: {r46: 0.267, r47: 0.267, pct: 0}
     matmul: {r46: 0.117, r47: 0.117, pct: 0}
   regressions: []
-  commit: null
+  commit: 514329f
   deliverables:
     - internal/methodjit/ir_ops.go — OpFMA
     - internal/methodjit/pass_fma_fusion.go — FMAFusionPass with Phi-accumulator skip
