@@ -65,7 +65,7 @@ outcome:
     matmul_dense_with_r46_wire: {r45: 0.035, r46: 0.037, pct: 5.7}
     matmul_dense_r46_reverted_wiring: {r45: 0.035, reverted: 0.035}
   regressions: []              # after revert
-  commit: pending
+  commit: afbc584
   deliverables:
     - internal/methodjit/ir_ops.go — OpMatrixRowPtr/LoadFRow/StoreFRow (unused in default lowering, available for future use)
     - internal/methodjit/emit_matrix.go — emit for the 3 new ops
