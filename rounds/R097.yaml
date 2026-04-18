@@ -1,0 +1,54 @@
+# R97: skip key>=0 check when key is ConstInt >= 0.
+round: 97
+date: 2026-04-19
+follows: 96
+
+type: tactical
+
+target:
+  benchmark: fannkuch
+  current_wall_sec: 0.048
+  luajit_wall_sec: 0.020
+  gap_factor: 2.4
+
+hypothesis:
+  class: tier2-typed-array-ic
+  claim: >
+    emit_table_array.go always emits CMP+BCond to check key >= 0.
+    When the key is a ConstInt with a compile-time-known non-negative
+    value, the check is provably unnecessary.
+  expected_gain_pct: [0, 3]
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: suite green
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    Suite green. 5-sample interleaved medians: all unchanged.
+  passed: partial
+
+outcome:
+  status: no-win
+  bench_deltas: {}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/emit_table_array.go — 2 sites skip CMPimm+BCond when key is ConstInt >= 0
+
+revert_class: null
+revert_cost_model_delta: >
+  Predicted 0-3% gain. Actual 0%. Hot table ops in these benches
+  use Phi/AddInt keys (not ConstInt). Const-key ops (e.g., perm[1]
+  in fannkuch B12) execute ~5M times and save 2 insns each → 10M
+  insns. Absorbed by ARM64 speculation.
+
+ledger_update:
+  classes_touched: [tier2-typed-array-ic]
+  new_class_introduced: null

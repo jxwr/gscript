@@ -135,9 +135,12 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 		asm.SBFX(jit.X1, jit.X1, 0, 48)
 	}
 
-	// Check key >= 0 (shared by all paths).
-	asm.CMPimm(jit.X1, 0)
-	asm.BCond(jit.CondLT, deoptLabel)
+	// Check key >= 0 (shared by all paths). R97: skip when key is a
+	// ConstInt with a non-negative compile-time value.
+	if kv, isConst := ec.constInts[keyID]; !isConst || kv < 0 {
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
 
 	// Kind-specialized dispatch: when Aux2 carries feedback, emit a kind
 	// guard (3 insns) instead of the 4-way cascade (8 insns). When the
@@ -414,9 +417,12 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.SBFX(jit.X1, jit.X1, 0, 48)
 	}
 
-	// Check key >= 0 (shared by all paths).
-	asm.CMPimm(jit.X1, 0)
-	asm.BCond(jit.CondLT, deoptLabel)
+	// Check key >= 0 (shared by all paths). R97: skip when key is a
+	// ConstInt with a non-negative compile-time value.
+	if kv, isConst := ec.constInts[keyID]; !isConst || kv < 0 {
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
 
 	// Kind-specialized dispatch: when Aux2 carries feedback, emit a kind
 	// guard (3 insns) instead of the 4-way cascade (8 insns). When the
