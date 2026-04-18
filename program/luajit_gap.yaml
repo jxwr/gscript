@@ -120,6 +120,18 @@ rows:
   - {round: 88, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R88 kindVerified — unchanged"}
   - {round: 88, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R88 kindVerified — intrinsic path, unaffected"}
 
+  # --- R99 diagnostic roll-up: full suite post-R98 state ---
+  - {round: 99, date: 2026-04-19, bench: fannkuch,            gscript_jit_sec: 0.046, luajit_sec: 0.020, gap_factor: 2.30, notes: "R99 roll-up; -4% vs R86"}
+  - {round: 99, date: 2026-04-19, bench: sort,                gscript_jit_sec: 0.054, luajit_sec: 0.011, gap_factor: 4.91, notes: "R99 roll-up; slight regress vs R86 (0.052)"}
+  - {round: 99, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.086, luajit_sec: 0.011, gap_factor: 7.82, notes: "R99 roll-up; unchanged"}
+  - {round: 99, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R99 roll-up; unchanged"}
+  - {round: 99, date: 2026-04-19, bench: nbody_dense,         gscript_jit_sec: 0.180, luajit_sec: 0.034, gap_factor: 5.29, notes: "R99 roll-up; -2.7%"}
+  - {round: 99, date: 2026-04-19, bench: mandelbrot,          gscript_jit_sec: 0.057, luajit_sec: 0.057, gap_factor: 1.00, notes: "R99 roll-up; PARITY"}
+  - {round: 99, date: 2026-04-19, bench: spectral_norm_dense, gscript_jit_sec: 0.024, luajit_sec: 0.007, gap_factor: 3.43, notes: "R99 roll-up"}
+  - {round: 99, date: 2026-04-19, bench: fib,                 gscript_jit_sec: 1.433, luajit_sec: 0.026, gap_factor: 55.1, notes: "R99 roll-up"}
+  - {round: 99, date: 2026-04-19, bench: ackermann,           gscript_jit_sec: 0.270, luajit_sec: 0.006, gap_factor: 45.0, notes: "R99 roll-up"}
+  - {round: 99, date: 2026-04-19, bench: mutual_recursion,    gscript_jit_sec: 0.190, luajit_sec: 0.004, gap_factor: 47.5, notes: "R99 roll-up"}
+
   # --- R90: MaxRecursion 3→5, no-op (upstream gate blocks extra depth) ---
   - {round: 90, date: 2026-04-19, bench: fib,                 gscript_jit_sec: 1.440, luajit_sec: 0.026, gap_factor: 55.4, notes: "R90 MaxRec 3→5 inert"}
   - {round: 90, date: 2026-04-19, bench: ackermann,           gscript_jit_sec: 0.271, luajit_sec: 0.006, gap_factor: 45.2, notes: "R90 — unchanged"}
