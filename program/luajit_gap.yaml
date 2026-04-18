@@ -84,3 +84,8 @@ rows:
   - {round: 57, date: 2026-04-18, bench: fannkuch,             gscript_jit_sec: 0.049, luajit_sec: 0.020, gap_factor: 2.45, notes: "R57 roll-up"}
 
   - {round: 64, date: 2026-04-18, bench: matmul_dense,         gscript_jit_sec: 0.036, luajit_sec: 0.021, gap_factor: 1.71, notes: "R64 direct-FPR MatrixLoadFAt emit; -7.7% vs R57"}
+
+  # --- R68 fresh head-to-head on same hardware (10 samples each) ---
+  - {round: 68, date: 2026-04-18, bench: mandelbrot, gscript_jit_sec: 0.057, luajit_sec: 0.058, gap_factor: 0.98, notes: "R68 head-to-head: gscript BEATS LuaJIT by 1ms (1.7%)"}
+  - {round: 68, date: 2026-04-18, bench: matmul_dense, gscript_jit_sec: 0.036, luajit_sec: 0.022, gap_factor: 1.64, notes: "R68 head-to-head (LuaJIT live-measured, reference had 0.021)"}
+  - {round: 68, date: 2026-04-18, bench: nbody_dense, gscript_jit_sec: 0.186, luajit_sec: 0.034, gap_factor: 5.47, notes: "R68 head-to-head"}
