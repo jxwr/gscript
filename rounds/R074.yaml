@@ -1,0 +1,123 @@
+# R74: diagnostic — the real blocker is tier2-intbinmod-correctness (R15 ledger entry).
+round: 74
+date: 2026-04-19
+follows: 73
+
+type: diagnostic
+
+target:
+  benchmark: multi
+  current_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: correctness-bug-fix
+  claim: >
+    R73 surfaced a blocker: Tier 2 main-with-call-in-loop produces wrong
+    output / crashes. Root cause hypothesis (R73): hasCallInLoop gate
+    hides a Tier 2 codegen bug.
+
+    R74 actual finding (via reduced repro): the blocker is not in
+    main compilation — it's a PRE-EXISTING bug in emitFloatBinOp's
+    intBinMod case. emitDeopt returns without emitting the shared
+    `done` label, causing `asm.B(done)` from the int-success path
+    to dangle. Functions containing mixed int/float mod fail
+    Tier 2 compile with "unresolved label arith_done" and silently
+    stay at Tier 1.
+
+    Fixing the label by emitting it before emitDeopt exposes a
+    DEEPER latent bug: Tier 2's int48-overflow + deopt pipeline
+    miscomputes make_random_array's LCG (large-int MUL + MOD),
+    producing different values than VM. This is the
+    `tier2-intbinmod-correctness` forward class (proposed R15,
+    never implemented).
+  expected_gain_pct: null
+  expected_gain_mechanism: null
+  counterfactual_check: null
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.25           # correctness-bug-fix class
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Reduced repro to 3-function script (make_random_array + quicksort
+    + is_sorted on N=50000). Clean R71 binary reproduces FALSE on
+    repro6 — bug is PRE-EXISTING all arc work. Individual components
+    (make_random_array alone, quicksort on handcrafted array) work
+    correctly. Only the COMBINATION fails, specifically when
+    make_random_array fails Tier 2 compile (label bug) and falls to
+    Tier 1 + its integer-overflow pattern encounters a different
+    codegen than VM.
+
+    Diag after attempted label fix: make_random_array compiles to
+    Tier 2 (360 insns, was failing). But still produces wrong output.
+    Repro8 direct array read confirms JIT=45088768 VM=20736 — values
+    diverge at the LCG multiplications where int48 overflow should
+    trigger deopt.
+
+pre_flight:
+  required:
+    - description: label fix makes make_random_array reach Tier 2 AND produce correct output
+      acceptance: repro6 prints TRUE
+      halt_on_fail: true
+  result: >
+    Label fix attempted: make_random_array compiles to T2, but repro6
+    still FALSE. sort regressed 0.051 → 0.060s (+18%) because T2
+    make_random_array is slower than Tier 1 for this overflow-heavy
+    LCG. Reverted.
+  passed: false
+
+outcome:
+  status: no-win
+  bench_deltas: {}
+  regressions: []
+  shipped_code: false
+  commit: null
+  deliverables: []
+
+revert_class: null
+revert_root_cause_location: "internal/methodjit/emit_call.go:369 + int48 deopt pipeline"
+revert_cost_model_delta: >
+  Expected label fix to unblock V8-inlining arc by making
+  make_random_array T2-compilable. Measured: still fails at runtime
+  due to a different bug (int48 overflow + deopt producing wrong
+  value). Two-layer bug: compile-time label (easy) + runtime deopt
+  (hard, unknown scope).
+revert_prevention: >
+  When a function "unresolved label" error triggers Tier 1 fallback,
+  the Tier 1 path can mask a deeper int arithmetic bug that would
+  otherwise manifest at Tier 2. Before fixing the compile-time label
+  error, add a VM-vs-JIT parity test covering the function's
+  arithmetic on inputs near int48 boundaries (>= 2^31 multiplicand).
+
+ledger_update:
+  classes_touched: [correctness-bug-fix]
+  new_class_introduced: null         # tier2-intbinmod-correctness already forward
+  sub_pattern_learned: >
+    The R15 `tier2-intbinmod-correctness` forward class is the
+    REAL blocker of the V8-inlining arc. Any attempt to route
+    call-heavy main protos to Tier 2 will hit LCG-style arithmetic
+    in target or sibling functions and silently miscompile.
+
+    This gate is structural: it affects sort, sieve, and any
+    benchmark that uses large-int mod. Fixing it unblocks the
+    V8-inlining arc AND closes 5-10 percent off sort/sieve/math
+    intensive benchmarks directly (they'll actually reach Tier 2
+    correctly).
+
+notes: >
+  ARC STATUS UPDATE: The V8-inlining plan (P1-P5) is blocked on
+  fixing tier2-intbinmod-correctness. Per user's directive
+  "持续任意轮" I need to either:
+
+  (A) Pivot this arc to tier2-intbinmod-correctness (unknown scope,
+      3-5+ rounds). Once fixed, resume P3/P4.
+
+  (B) Accept V8-inlining arc is blocked and pivot to a different
+      independent direction (which?).
+
+  Pushing this diagnostic commit; next round will begin the
+  intbinmod investigation in earnest.
