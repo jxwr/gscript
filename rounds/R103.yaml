@@ -1,0 +1,74 @@
+# R103: arc-close meta for R87-R102. Updates memory + direction.
+round: 103
+date: 2026-04-19
+follows: 102
+
+type: meta
+
+target:
+  benchmark: multi
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    R87-R102 is a 16-round arc on int-array type-specialization.
+    Cumulative bench movement: fannkuch 2.40x→2.30x; mandelbrot
+    reached PARITY with LuaJIT; nbody/spectral slight gains.
+    Call-heavy (fib/ack/mut_rec 45-55x) untouched — trace-JIT
+    architectural territory. Memory and next-arc direction set.
+  expected_gain_pct: [0, 0]
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: memory entry written
+      acceptance: project_r87_r102_arc_final.md + MEMORY.md update
+      halt_on_fail: false
+  result: >
+    Memory written. MEMORY.md index updated.
+    Arc stats R87-R102: 16 rounds, 1 bench-win (R100), 1 revert
+    (R94), 10 adr-win, 4 no-win. Infrastructure shipped:
+      - R87 TypeSpec GetTable Kind→type inference
+      - R88 kindVerified intra-block cache
+      - R89 Phase 1d insertIntParamGuards
+      - R91 keysDirtyWritten elision
+      - R93 SetTable→GetTable store-to-load forwarding
+      - R95→R100 multi-pred merge tried and reverted
+      - R97 key>=0 check skip for ConstInt
+      - R98 ConstInt key LoadImm64 bypass
+  passed: true
+
+outcome:
+  status: adr-win
+  bench_deltas: {}
+  regressions: []
+  shipped_code: false
+  commit: null
+  deliverables:
+    - MEMORY.md + project_r87_r102_arc_final.md
+    - rounds/R103.yaml
+
+ledger_update:
+  classes_touched: [workflow-evolution]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    Arc-close template from R86: (1) append luajit_gap.yaml roll-up
+    (done in R99); (2) delete stale tasks (done); (3) write arc
+    summary + direction (this card); (4) update MEMORY.md (done).
+    R87-R102 is the second arc closed mechanically with this
+    template.
+
+notes: >
+  The next productive arc should target ONE of:
+    - Architectural: LICM hoist of full GetTable, OpGetArrayPtr IR op,
+      or escape analysis for small table scalar replacement.
+    - Call-heavy: relax hasCallInLoop + trace-specialize recursion,
+      or flatten via MaxRecursion 5+ with size-gate changes.
+    - Bulk-patterns: intrinsify sieve-style init loops as memset.
+
+  R104+ can start any of these. Single-round IR specialization is
+  over (ARM64 speculation absorbs 2-5 insn saves in load-use shadow).
