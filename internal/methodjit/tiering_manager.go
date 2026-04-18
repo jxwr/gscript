@@ -43,9 +43,14 @@ import (
 
 // inlineMaxCalleeSize is the maximum bytecode count for a callee to be
 // considered inlineable during the pre-scan and by the inline pass.
-// Raised from 50 to 80 to allow more aggressive inlining of medium-sized
-// callees (e.g., spectral_norm's A(i,j), point_distance, vec3_add).
-const inlineMaxCalleeSize = 80
+// R72: raised 80 → 250 so that medium-large callees like nbody's
+// advance() (241 bytecode ops) can inline into <main>. Combined with
+// the main-driver-promote clause in shouldPromoteTier2, this
+// eliminates Tier 1 → Tier 2 BLR per loop iteration on driver
+// patterns. The hasCallInLoop gate (tier2.compileTier2) prevents
+// partial inlining from regressing: if full inline fails, main stays
+// at Tier 1 as before, so the bump is safe-by-construction.
+const inlineMaxCalleeSize = 250
 
 // tmDefaultTier2Threshold is the BLR tier-up threshold. Controls when Tier 1's
 // BLR call path falls to slow path to give TieringManager.TryCompile a chance

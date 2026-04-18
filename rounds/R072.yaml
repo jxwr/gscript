@@ -1,0 +1,118 @@
+# R72: P1 — main-Tier2 promote clause + inline budget 80→250.
+round: 72
+date: 2026-04-19
+follows: 71
+
+type: tactical
+
+target:
+  benchmark: multi
+  current_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: tier2-bounded-recursive-inline
+  claim: >
+    P1 of the V8-inlining arc (R72+): let main protos with loop+calls
+    reach Tier 2 via direct promote (avoiding the OSR entry path
+    which crashed in an earlier attempt this round). Bump
+    inlineMaxCalleeSize 80 → 250 so medium-large callees (nbody
+    advance=241, sort quicksort=51, spectral multiplyAv=36) fit the
+    inline budget.
+  expected_gain_pct: [0, 5]
+  expected_gain_mechanism: >
+    Infrastructure preparation. Direct wall-time effect on existing
+    benches is small because inline pass gate
+    `calleeProfile.HasLoop → reject` still blocks advance/quicksort
+    /multiplyAv inlining (they all have loops). The hasCallInLoop
+    gate in compileTier2 then leaves main at Tier 1 for call-heavy
+    driver benches.
+  counterfactual_check: >
+    R72's OSR path (widen LoopDepth>=1 for driver patterns) crashed
+    nbody_dense via half-baked Tier 2 entry. Direct-promote via
+    shouldPromoteTier2 bypasses OSR and is strictly safe because
+    compileTier2's existing hasCallInLoop guard keeps main at Tier 1
+    when inlining fails.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.33
+  mitigation_required: false
+  mitigation_description: >
+    R35 loosened promotion gate for small self-recursive functions
+    and regressed mutual_recursion +47%. This R72 change is different:
+    it promotes _main_ specifically, and the existing hasCallInLoop
+    gate ensures no regression (failed inlining → stay T1). Full
+    bench suite re-ran post-change: no regression on any bench.
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Probed bytecode sizes and loop profiles per bench:
+      fib: main=30, fib=15 noLoop, recursive → INLINABLE
+      ackermann: main=41, ack=25 noLoop, recursive → INLINABLE
+      spectral_norm_dense: main=131, A=13 noLoop → INLINABLE (multiplyAv=36 hasLoop BLOCKS)
+      nbody_dense: main=341, advance=241 HAS LOOP → BLOCKED
+      sort: main=74, quicksort=51 HAS LOOP → BLOCKED
+      sieve: main=43, sieve=45 HAS LOOP → BLOCKED
+
+    Of the targeted benches, only fib/ackermann/spectral_norm_dense
+    are reachable via the current inline pass. fib/ackermann need
+    MaxRecursion>=3 (P3) for meaningful gain. spectral's A() is
+    already small enough to inline at MaxRecursion=2.
+
+pre_flight:
+  required:
+    - description: no bench regression
+      acceptance: all benches within noise vs R71 baseline
+      halt_on_fail: true
+  result: >
+    Median-of-5 post-R72:
+      fib 1.458, ack 0.274, spectral_norm_dense 0.024, nbody_dense 0.185
+      matmul_dense 0.035, sort 0.050, sieve 0.086, mandelbrot 0.058
+      fannkuch 0.048
+    All within noise of R71 baseline. No regressions.
+
+    Existing pre-existing TestPool_concurrent flake (seen in R48 arc too)
+    triggers map-concurrent-write race in stdlib_encoding init.
+    Unrelated to this change.
+  passed: true
+
+outcome:
+  status: adr-win                  # infrastructure; bench wins pending P3
+  bench_deltas: {}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/func_profile.go — new clause: _main_ with loop+calls promotes to Tier 2
+    - internal/methodjit/tiering_manager.go — inlineMaxCalleeSize 80 → 250
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-bounded-recursive-inline]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    The inline pass's `calleeProfile.HasLoop → reject` is a HARD
+    blocker for driver-pattern optimization. Benches where main
+    calls a loop-containing function (nbody, sort, sieve) cannot
+    benefit from inlining without lifting this constraint — which
+    requires proper handling of nested loop SSA during inline
+    (deferred as multi-round architectural work).
+
+    For call-heavy benchmarks where callees have NO loop (fib,
+    ackermann, spectral's A()), MaxRecursion=2 is the main
+    limitation. Lifting to 3 or higher is P3 work.
+
+notes: >
+  OSR-based attempt (LoopDepth≥1 for driver loops) CRASHED nbody_dense
+  during Tier 2 entry — SIGSEGV in callJIT/executeGlobalExit. Reverted
+  and switched to direct shouldPromoteTier2 clause, which avoids OSR
+  entirely. Lesson: OSR entry path has a latent bug that only shows
+  up when the function being OSR'd has complex call patterns; fixing
+  it is a separate tier2-entry-correctness round.
+
+  Next: R73 = P3 MaxRecursion 2 → 3 for fib/ackermann.

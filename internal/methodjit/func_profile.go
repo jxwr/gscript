@@ -130,6 +130,16 @@ func shouldStayTier0(profile FuncProfile) bool {
 // shouldPromoteTier2 decides whether a function should be promoted to Tier 2
 // based on its static profile and runtime call count.
 func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCount int) bool {
+	// R72: top-level <main> protos with a driver loop (loop body calls
+	// other functions) benefit from Tier 2 because it enables the inline
+	// pass to pull callees into main, eliminating Tier 1 → Tier 2 BLR
+	// transitions on every loop iter. _main_ is only invoked once by
+	// the VM (runtimeCallCount == 1), so the normal `>= 2` threshold
+	// would never fire — special-case it.
+	if proto.Name == "<main>" && profile.HasLoop && profile.CallCount > 0 {
+		return true
+	}
+
 	// Pure-compute functions with loops (no CALL/GETGLOBAL): promote at threshold=2.
 	// Threshold=1 caused regressions on float-heavy functions (mandelbrot)
 	// where Tier 2's code was slower than Tier 1. Threshold=2 ensures the
