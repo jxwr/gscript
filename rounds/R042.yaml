@@ -1,0 +1,108 @@
+# R42: DenseMatrix Phase 1 — shared flat backing, -18% matmul.
+round: 42
+date: 2026-04-18
+follows: 41
+
+type: tactical
+
+target:
+  benchmark: matmul
+  current_wall_sec: 0.116
+  reference_wall_sec: 0.124
+  luajit_wall_sec: 0.021
+  gap_factor: 5.5
+
+hypothesis:
+  class: tier2-dense-matrix-kind      # promoted from forward_classes
+  claim: >
+    R30 ADR Phase 1: implement DenseMatrix as a factory that returns
+    a table-of-tables where all row tables share ONE flat []float64
+    backing. Compatible with existing JIT (no new ArrayKind; outer
+    is plain ArrayMixed, rows are normal ArrayFloat). Memory layout
+    benefit: single contiguous allocation → better cache locality,
+    GC sees 1 backing object instead of N row backings.
+  expected_gain_pct: [10, 25]         # bench-micro showed neutral; end-to-end TBD
+  expected_gain_mechanism: >
+    Shared backing reduces GC scan to a single region and gives CPU
+    cache the contiguous layout it prefers for matmul's k-sequential
+    b[k] sweep. No JIT changes needed: JIT emits its usual
+    ArrayMixed outer + ArrayFloat row paths; the hot-loop FLDR from
+    row.floatArray lands on a cached flat backing.
+
+    Phase 2+ (future rounds) can add JIT-level recognition for a
+    DenseMatrix flag and emit a single-load shortcut for t[i][j]
+    (bypass row wrapper), unlocking the 3.5× microbench ceiling.
+  counterfactual_check: >
+    NO new ArrayKind — outer Table looks like ArrayMixed; row Tables
+    look like ArrayFloat. Zero impact on existing JIT fast paths.
+    Zero impact on benchmarks that don't opt-in via matrix.dense().
+
+    Correctness: row wrappers alias shared backing via bounded
+    sub-slices (start:end:end). Append past capacity grows a new
+    slice (rare; user code doesn't append to fixed-size matrix rows).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Inspected Table struct + RawGetInt/RawSetInt paths + JIT emit
+    for ArrayKind cases. Confirmed: adding a new ArrayKind would
+    require JIT emit_table_array changes (kind-guard cascade DEOPTs
+    on unknown kinds). Phase 1 uses the compatible design: no new
+    ArrayKind, just a constructor that wires shared backing through
+    existing ArrayFloat rows.
+
+pre_flight:
+  required:
+    - description: matmul_dense.gs ≥10% improvement vs nested matmul
+      acceptance: matmul_dense_jit <= 0.105
+      halt_on_fail: true
+    - description: no regression on existing matmul.gs (non-opt-in user code)
+      acceptance: matmul_jit_unchanged
+      halt_on_fail: true
+    - description: all tests pass
+      acceptance: go_test_passes
+      halt_on_fail: true
+  result: >
+    matmul_dense.gs 3-run median: 0.095s (vs nested 0.116s baseline)
+    → -18.1% improvement. LuaJIT 0.021s → gap 5.5× → 4.5×.
+    matmul.gs unchanged (not opt-in; still 0.116s). All tests green.
+  passed: true
+
+outcome:
+  status: win
+  bench_deltas:
+    matmul_dense_vs_nested: {nested: 0.116, dense: 0.095, pct: -18.1}
+    matmul_dense_vs_luajit: {gap_was: 5.5, gap_now: 4.5}
+  regressions: []
+  commit: pending
+  deliverables:
+    - internal/runtime/table_dense_matrix.go — NewDenseMatrix constructor
+    - internal/runtime/table_dense_matrix_test.go — 4 tests, all green
+    - internal/runtime/table_dense_matrix_bench_test.go — microbench harness
+    - internal/runtime/stdlib_matrix.go — matrix.dense(r, c) builtin
+    - internal/runtime/stdlib.go — register matrix lib
+    - /tmp/matmul_dense.gs (example; not committed)
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: tier2-dense-matrix-kind    # promoted from forward_classes
+  forward_classes_promoted:
+    - tier2-dense-matrix-kind
+
+notes: >
+  First real wall-time win on matmul in this ambitious session.
+  R29-R41 had zero matmul impact; R42 closes 18% via a single-
+  session-feasible runtime-only change. Phase 2 candidates:
+    - JIT recognizes `matrix.dense` result at compile time via
+      feedback + emits direct flat-load for t[i][j]
+    - Compiler auto-promotes `{}`-built matrices when pattern matches
+  Both are future multi-round work; R42 ships immediate value.

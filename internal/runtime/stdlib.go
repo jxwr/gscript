@@ -60,6 +60,9 @@ func (interp *Interpreter) registerStdlib() {
 	interp.globals.Define("vec", TableValue(buildVecLib()))
 	interp.globals.Define("color", TableValue(buildColorLib()))
 
+	// --- Numeric matrix (R42 DenseMatrix Phase 1) ---
+	interp.globals.Define("matrix", TableValue(buildMatrixLib()))
+
 	// --- Text processing ---
 	interp.globals.Define("regexp", TableValue(buildRegexpLib()))
 	interp.globals.Define("utf8", TableValue(buildUTF8Lib()))
