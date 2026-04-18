@@ -120,6 +120,13 @@ rows:
   - {round: 88, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R88 kindVerified — unchanged"}
   - {round: 88, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R88 kindVerified — intrinsic path, unaffected"}
 
+  # --- R90: MaxRecursion 3→5, no-op (upstream gate blocks extra depth) ---
+  - {round: 90, date: 2026-04-19, bench: fib,                 gscript_jit_sec: 1.440, luajit_sec: 0.026, gap_factor: 55.4, notes: "R90 MaxRec 3→5 inert"}
+  - {round: 90, date: 2026-04-19, bench: ackermann,           gscript_jit_sec: 0.271, luajit_sec: 0.006, gap_factor: 45.2, notes: "R90 — unchanged"}
+  - {round: 90, date: 2026-04-19, bench: mutual_recursion,    gscript_jit_sec: 0.190, luajit_sec: 0.004, gap_factor: 47.5, notes: "R90 — noise-level -1.5%"}
+  - {round: 90, date: 2026-04-19, bench: fib_recursive,       gscript_jit_sec: 1.436, luajit_sec: null,  gap_factor: null, notes: "R90 — unchanged"}
+  - {round: 90, date: 2026-04-19, bench: binary_trees,        gscript_jit_sec: 1.334, luajit_sec: null,  gap_factor: null, notes: "R90 baseline (not benched prior)"}
+
   # --- R89: insertIntParamGuards Phase 1d (all generic Le/Sub/Lt/Eq now typed, perf ≤ noise) ---
   - {round: 89, date: 2026-04-19, bench: fannkuch,            gscript_jit_sec: 0.048, luajit_sec: 0.020, gap_factor: 2.40, notes: "R89 int param guards — Le=3→LeInt, wall time unchanged"}
   - {round: 89, date: 2026-04-19, bench: sort,                gscript_jit_sec: 0.051, luajit_sec: 0.011, gap_factor: 4.64, notes: "R89 — unchanged"}

@@ -313,7 +313,7 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		// Combined with R72's inlineMaxCalleeSize=250, fib(15 ops) can
 		// unroll to ~120 ops inside main, eliminating BLR chains. Ack has
 		// same pattern. hasCallInLoop gate still protects against explosion.
-		config := InlineConfig{Globals: globals, MaxSize: maxSize, MaxRecursion: 3}
+		config := InlineConfig{Globals: globals, MaxSize: maxSize, MaxRecursion: 5}
 		fn, err = InlinePassWith(config)(fn)
 		if err != nil {
 			return nil, nil, fmt.Errorf("Inline: %w", err)
