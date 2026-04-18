@@ -112,3 +112,10 @@ rows:
   - {round: 87, date: 2026-04-19, bench: sort,                gscript_jit_sec: 0.051, luajit_sec: 0.011, gap_factor: 4.64, notes: "R87 TypeSpec infra — unchanged (LCG demotes arr to Mixed, Kind=FBKindMixed)"}
   - {round: 87, date: 2026-04-19, bench: fannkuch,            gscript_jit_sec: 0.048, luajit_sec: 0.020, gap_factor: 2.40, notes: "R87 — 6 int-specialized compares added, 0% wall delta (emit dispatch shared)"}
   - {round: 87, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R87 — Kind=FBKindBool, no int-cascade benefit"}
+
+  # --- R88: intra-block kindVerified cache (infra shipped, perf ≤ noise) ---
+  # 5 kind-guard elisions per fannkuch compile (probed). ARM64 speculation absorbs 3-insn save.
+  - {round: 88, date: 2026-04-19, bench: fannkuch,            gscript_jit_sec: 0.048, luajit_sec: 0.020, gap_factor: 2.40, notes: "R88 intra-block kindVerified — 2% vs R87 (noise); 5 elisions/compile"}
+  - {round: 88, date: 2026-04-19, bench: sort,                gscript_jit_sec: 0.050, luajit_sec: 0.011, gap_factor: 4.55, notes: "R88 kindVerified — unchanged"}
+  - {round: 88, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R88 kindVerified — unchanged"}
+  - {round: 88, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R88 kindVerified — intrinsic path, unaffected"}

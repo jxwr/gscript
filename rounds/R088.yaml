@@ -1,0 +1,171 @@
+# R88: intra-block kindVerified cache — skip redundant ArrayKind checks
+#      on same-table GetTable/SetTable sequences.
+round: 88
+date: 2026-04-19
+follows: 87
+
+type: tactical
+
+target:
+  benchmark: fannkuch
+  current_wall_sec: 0.048
+  reference_wall_sec: 0.048
+  luajit_wall_sec: 0.020
+  gap_factor: 2.40
+
+hypothesis:
+  class: tier2-typed-array-ic
+  claim: >
+    emit_table_array.go's kind-dispatch emits `LDRB+CMPimm+BCond+B`
+    (3 or 8 insns) on EVERY GetTable/SetTable even when an earlier op
+    in the same block already verified the kind on the same table SSA
+    value. Mirror the existing `tableVerified` map with a new
+    `kindVerified map[int]uint16` — skip redundant kind checks within
+    a block (invalidated on SetTable-end and block boundaries, same
+    pattern as tableVerified).
+
+    Counterfactual check: per R87, type-specialized IR op ≠ faster
+    emit. Here we reduce insn count directly. Risk is that ARM64 6-8
+    wide dispatch retires LDRB+CMP+BCond speculatively in the shadow
+    of the array-pointer LDR's load-use latency, making the save
+    invisible on wall time.
+  expected_gain_pct: [3, 8]
+  expected_gain_mechanism: >
+    Per fannkuch IR audit (diag/fannkuch/fannkuch.ir.txt):
+      B11: 4 ops on v1 (GetTable×2 then SetTable×2). With the cache,
+           first op emits kind check; ops 2-3 skip it (the SetTable-end
+           invalidate makes op 4 re-emit). Savings: 2×3 = 6 insns/iter.
+      B21: 2 ops on v2 (GetTable + SetTable, actually SetTable comes
+           first in B20 within the inner loop). 1 op skips = 3 insns.
+      B22: 3 ops on v3 (SetTable, GetTable, SetTable, GetTable). 1-2
+           ops skip = 3-6 insns.
+    At ~5M iter each, 60-90M insns eliminated. At IPC 2-4, 3-6ms out
+    of 48ms = 6-12% theoretical ceiling. Realistic 3-8% after ARM64
+    speculation absorbs some of the savings.
+  counterfactual_check: >
+    sort (ArrayInt perm, LCG demotes to Mixed per R87): similar within-
+    block reuse pattern expected; small gain. sieve (ArrayBool +
+    ArrayInt primes): gain on ArrayBool marked/unmarked inner loop.
+    matmul_dense: uses intrinsic path (matrix.getf/setf), NOT affected.
+    Risk to non-targets: pure infrastructure, can only skip insns, can
+    not introduce new behavior. Regression pathway would be the ARM64
+    speculation-shadow effect; if negative, reverts via rule 20.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0           # tier2-typed-array-ic: 0 reverts / 1 attempt (R87 adr-win)
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Audited diag/fannkuch/fannkuch.ir.txt (205 lines, 35 blocks).
+    Hot loops:
+      B11 (prefix flip): 2×GetTable+2×SetTable on v1 perm array.
+      B21 (rotation): 1×GetTable+1×SetTable on v2 count array.
+      B22 (after rotation): 3 ops on v3 flags array.
+    Read emit_table_array.go:142-172 (GetTable kind dispatch) and
+    416-446 (SetTable kind dispatch): both emit the 3-insn guard
+    (knownGetKind>=1) or 8-insn cascade (unknownKind). No current
+    intra-block deduplication — every op emits the check fresh.
+    tableVerified cache exists for the type/nil/metatable check but
+    is cleared after each SetTable; kindVerified does not exist.
+    Rule 23 amendment (IR-level audit) satisfied.
+
+pre_flight:
+  required:
+    - description: unit test — second GetTable on same table SSA in block skips kind check
+      acceptance: new test green (assertion on emitted instruction count or label sequence)
+      halt_on_fail: true
+    - description: no correctness regression
+      acceptance: go test ./internal/methodjit/... green
+      halt_on_fail: true
+    - description: fannkuch bench improvement
+      acceptance: fannkuch median < 0.046s (vs 0.048s baseline)
+      halt_on_fail: false          # counterfactual branch — not a revert trigger
+  result: >
+    Full methodjit suite green (go test -count=1 ./internal/methodjit/...).
+    Runtime counter probe (TestR88Debug_FannkuchCounters, temporary) on
+    fannkuch compile: GetHit=1 GetMiss=8 GetUnknown=0 SetHit=4 SetMiss=5.
+    → 5 kind-guard emissions elided at compile time (Get ratio 1/9,
+      Set ratio 4/9). Optimization FIRES correctly.
+    Bench (median of 5 interleaved runs):
+      fannkuch:     base 0.049s → R88 0.048s (-2%, within noise)
+      sort:         base 0.050s → R88 0.050s (0%)
+      sieve:        base 0.085s → R88 0.085s (0%)
+      matmul_dense: base 0.035s → R88 0.035s (0%)
+    Diag insn count unchanged (4794 → 4794) — expected: diag compiles
+    COLD (no Feedback), so Aux2=0 path is taken and my optimization
+    doesn't apply at diag-time. Runtime after Tier 1 warmup IS where
+    it fires (verified by counter probe).
+  passed: partial           # infra correct, perf within noise
+
+  failing_test: null               # not a correctness-bug-fix round
+  failing_output: null
+  surgical_scope: >
+    emit_compile.go: add kindVerified map + blockOutKinds + cross-
+    block single-pred seeding (mirror tableVerified).
+    emit_table_array.go: consult & populate kindVerified in both
+    emitGetTableNative and emitSetTableNative; invalidate at op-end.
+    emit_dispatch.go: reset kindVerified on OpCall and OpSelf.
+    Single concern: kind-guard redundancy elimination. No changes
+    to bounds check or other emit logic. (Rule 27 satisfied.)
+  ir_diff_before: >
+    Each GetTable/SetTable with knownKind>=1 emits:
+      LDRB x2, [x0, #ArrayKind]
+      CMPimm x2, expected
+      BCond NE, deopt
+      B intArrayLabel
+  ir_diff_after: >
+    First GetTable/SetTable on (tbl,kind) in block: same 4 insns.
+    Subsequent: direct B intArrayLabel (1 insn), -3 insns per hit.
+  bisect_range: null
+
+outcome:
+  status: adr-win          # infrastructure shipped, perf within noise
+  bench_deltas:
+    fannkuch:     {base: 0.049, r88: 0.048, pct: -2.0}
+    sort:         {base: 0.050, r88: 0.050, pct:  0.0}
+    sieve:        {base: 0.085, r88: 0.085, pct:  0.0}
+    matmul_dense: {base: 0.035, r88: 0.035, pct:  0.0}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/emit_compile.go — kindVerified + blockOutKinds maps + cross-block seeding
+    - internal/methodjit/emit_dispatch.go — kindVerified reset on OpCall/OpSelf
+    - internal/methodjit/emit_table_array.go — consult + populate + invalidate kindVerified
+    - rounds/R088.yaml — this card
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: >
+  Predicted 3-8% fannkuch gain; actual ~2% (within noise). Root cause:
+  ARM64 6-8-wide superscalar absorbs the 3-insn kind-guard savings
+  in the shadow of load-use latency on the array-pointer LDR. Same
+  pattern as R87 — type-specialized IR op ≠ measurable wall-time gain
+  when the eliminated insns are load-use-shadow absorbable.
+
+  The optimization IS correct and DOES fire (5 elisions per fannkuch
+  compile: 1 GetTable + 4 SetTable). It's shipped as infrastructure
+  for a future round that either (a) hoists the kind check to loop
+  pre-header via LICM (saves dispatch from hot path entirely), or
+  (b) combines with bounds-check elimination via RangeAnalysis to
+  achieve compound savings worth wall-time gain.
+revert_prevention: >
+  For future "elide N insns in hot loop" proposals: require a
+  counterfactual microbench that isolates the predicted insns.
+  Specifically for kind-guard-class rounds: the LDRB+CMPimm+BCond
+  triple retires in 1-2 cycles on M4, dominated by the load-use
+  latency of the subsequent array-pointer LDR. Saving N such triples
+  rarely moves wall-time more than 1%/triple on compare-heavy benches.
+
+ledger_update:
+  classes_touched: [tier2-typed-array-ic]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    Intra-block kindVerified cache fires (5 elisions per fannkuch
+    compile) but wall-time gain ≤ measurement noise. Same lesson
+    as R87: IR-level specialization without wall-time payoff because
+    ARM64 speculation absorbs small insn-count reductions in
+    load-use-shadow. Infra retained for potential composition with
+    future LICM kind-hoist (R89+) or bounds-check elimination.

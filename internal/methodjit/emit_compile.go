@@ -152,9 +152,11 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		activeFPRegs:   make(map[int]bool),
 		shapeVerified:  make(map[int]uint32),
 		tableVerified:  make(map[int]bool),
+		kindVerified:   make(map[int]uint16),
 		dmVerified:     make(map[int]bool),
 		blockOutShapes: make(map[int]map[int]uint32),
 		blockOutTables: make(map[int]map[int]bool),
+		blockOutKinds:  make(map[int]map[int]uint16),
 		crossBlockLive: crossBlockLive,
 		useFPR:         hasFPR,
 		loop:             li,
@@ -270,6 +272,18 @@ type emitContext struct {
 	// Reset at block boundaries and after calls (same as shapeVerified).
 	tableVerified map[int]bool
 
+	// kindVerified tracks table SSA value IDs whose ArrayKind has been
+	// guard-checked in the current block. Maps table value ID -> the
+	// AKKind constant (jit.AKMixed/AKInt/AKFloat/AKBool) last verified.
+	// When an emit path is about to emit a knownKind kind guard and the
+	// map entry already equals that kind, the guard (LDRB+CMP+BCond+B)
+	// is skipped — just emit the direct B to the matching label.
+	// Reset at block boundaries and after calls (same as tableVerified).
+	// Invalidated at the END of each GetTable/SetTable emission because
+	// the deopt path can enter runtime code that may demote the array
+	// kind (same conservative pattern as tableVerified).
+	kindVerified map[int]uint16
+
 	// dmVerified tracks table SSA value IDs that have been confirmed as
 	// DenseMatrix outers (dmStride > 0) in the current block. Lets
 	// subsequent matrix.getf/setf calls on the same m skip the stride
@@ -283,6 +297,11 @@ type emitContext struct {
 
 	// blockOutTables saves the tableVerified state at the END of each emitted block.
 	blockOutTables map[int]map[int]bool
+
+	// blockOutKinds saves the kindVerified state at the END of each emitted
+	// block. Used to seed single-predecessor blocks with their predecessor's
+	// verified kinds (mirrors blockOutTables).
+	blockOutKinds map[int]map[int]uint16
 
 	// activeFPRegs tracks which value IDs have their FPR allocation active
 	// in the current block. Mirrors activeRegs for FPR-allocated values.
@@ -609,9 +628,18 @@ func (ec *emitContext) emitBlock(block *Block) {
 		} else {
 			ec.tableVerified = make(map[int]bool)
 		}
+		if predKinds, ok := ec.blockOutKinds[predID]; ok {
+			ec.kindVerified = make(map[int]uint16, len(predKinds))
+			for k, v := range predKinds {
+				ec.kindVerified[k] = v
+			}
+		} else {
+			ec.kindVerified = make(map[int]uint16)
+		}
 	} else {
 		ec.shapeVerified = make(map[int]uint32)
 		ec.tableVerified = make(map[int]bool)
+		ec.kindVerified = make(map[int]uint16)
 	}
 	// R44: reset DenseMatrix verification at every block boundary. Cross-
 	// block propagation isn't critical for matmul's inner-k loop (k-loop
@@ -687,4 +715,9 @@ func (ec *emitContext) emitBlock(block *Block) {
 		outTables[k] = v
 	}
 	ec.blockOutTables[block.ID] = outTables
+	outKinds := make(map[int]uint16, len(ec.kindVerified))
+	for k, v := range ec.kindVerified {
+		outKinds[k] = v
+	}
+	ec.blockOutKinds[block.ID] = outKinds
 }

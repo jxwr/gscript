@@ -140,14 +140,19 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.BCond(jit.CondLT, deoptLabel)
 
 	// Kind-specialized dispatch: when Aux2 carries feedback, emit a kind
-	// guard (3 insns) instead of the 4-way cascade (8 insns).
+	// guard (3 insns) instead of the 4-way cascade (8 insns). When the
+	// same (table, kind) pair has already been verified earlier in this
+	// block, skip the guard entirely — emit only the direct jump.
 	mixedArrayLabel := ec.uniqueLabel("gettable_mixedarr")
 	knownGetKind := int(instr.Aux2) // 0=unknown, 1..4=known FBKind
 	if knownGetKind >= 1 && knownGetKind <= 4 {
 		expectedKind := uint16(knownGetKind - 1) // convert FBKind to AK constant
-		asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
-		asm.CMPimm(jit.X2, expectedKind)
-		asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+		if ec.kindVerified[tblValueID] != uint16(knownGetKind) {
+			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+			asm.CMPimm(jit.X2, expectedKind)
+			asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+			ec.kindVerified[tblValueID] = uint16(knownGetKind)
+		}
 		// Jump directly to the matching kind path.
 		switch expectedKind {
 		case jit.AKMixed:
@@ -414,14 +419,19 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	asm.BCond(jit.CondLT, deoptLabel)
 
 	// Kind-specialized dispatch: when Aux2 carries feedback, emit a kind
-	// guard (3 insns) instead of the 4-way cascade (8 insns).
+	// guard (3 insns) instead of the 4-way cascade (8 insns). When the
+	// same (table, kind) pair has already been verified earlier in this
+	// block, skip the guard entirely — emit only the direct jump.
 	mixedArrayLabel := ec.uniqueLabel("settable_mixedarr")
 	knownSetKind := int(instr.Aux2) // 0=unknown, 1..4=known FBKind
 	if knownSetKind >= 1 && knownSetKind <= 4 {
 		expectedKind := uint16(knownSetKind - 1) // convert FBKind to AK constant
-		asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
-		asm.CMPimm(jit.X2, expectedKind)
-		asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+		if ec.kindVerified[tblValueID] != uint16(knownSetKind) {
+			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+			asm.CMPimm(jit.X2, expectedKind)
+			asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+			ec.kindVerified[tblValueID] = uint16(knownSetKind)
+		}
 		// Jump directly to the matching kind path.
 		switch expectedKind {
 		case jit.AKMixed:
@@ -596,9 +606,11 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 
 	asm.Label(doneLabel)
 	// The interpreter may have modified the table during exit-resume
-	// (e.g., set a metatable via __newindex). Invalidate so subsequent
-	// ops re-verify.
+	// (e.g., set a metatable via __newindex, or demote the typed array
+	// via a type-mismatched assignment). Invalidate both caches so
+	// subsequent ops re-verify.
 	delete(ec.tableVerified, tblValueID)
+	delete(ec.kindVerified, tblValueID)
 }
 
 // emitSetTableExit emits a table-exit for OpSetTable (dynamic key access).
