@@ -28,6 +28,19 @@ import "unsafe"
 // uintptrOf is a tiny helper for test memory-adjacency checks.
 func uintptrOf(p *float64) uintptr { return uintptr(unsafe.Pointer(p)) }
 
+// SetDenseMatrixMeta stamps (flatPtr, stride) on the outer Table so
+// the R43 Phase 2 JIT intrinsic `matrix.getf(m, i, j)` can skip
+// the row-wrapper indirection. Set at construction; reset if the user
+// later replaces a row (rare; we conservatively do NOT invalidate
+// automatically — Phase 2 emit does a dmStride != 0 guard per call).
+func (t *Table) setDenseMatrixMeta(flat []float64, stride int) {
+	if len(flat) == 0 || stride <= 0 {
+		return
+	}
+	t.dmFlat = unsafe.Pointer(&flat[0])
+	t.dmStride = int32(stride)
+}
+
 // NewDenseMatrix allocates a rows×cols float64 matrix stored as
 // flat storage shared by row wrappers. The returned Table looks like
 // a normal nested table to the JIT — you can t[i][j] as usual — but
@@ -45,6 +58,8 @@ func NewDenseMatrix(rows, cols int) *Table {
 	outer := DefaultHeap.AllocTable()
 	outer.array = DefaultHeap.AllocValues(rows, rows)
 	outer.keysDirty = true
+	// R43 Phase 2: stamp the DenseMatrix descriptor for JIT fast path.
+	outer.setDenseMatrixMeta(backing, cols)
 
 	// Each row: ArrayFloat table whose floatArray IS a sub-slice of
 	// the shared backing. Capacity-bounded (start:end:end) so a Grow

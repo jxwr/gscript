@@ -48,6 +48,15 @@ type Table struct {
 	// Always nil when shapeID == 0 (empty table or hash-mode table).
 	// Kept in sync with shapeID by applyShape / clearShape.
 	shape      *Shape
+
+	// DenseMatrix descriptor (R43 Phase 2). When dmStride > 0, this
+	// Table is a DenseMatrix outer whose rows share the backing at
+	// dmFlat. The JIT fast path for `matrix.getf(m, i, j)` loads
+	// `*((*float64)(dmFlat) + i*dmStride + j)` in 3 ARM64 insns.
+	// dmFlat keeps the backing alive via a Go-managed reference
+	// through the row tables; this field aliases the same memory.
+	dmFlat   unsafe.Pointer
+	dmStride int32
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.
@@ -588,3 +597,19 @@ func TableShapeIDOffset() uintptr {
 func (t *Table) GetArrayKind() ArrayKind {
 	return t.arrayKind
 }
+
+// TableDMFlatOffset / TableDMStrideOffset return the byte offsets of
+// the DenseMatrix descriptor fields for JIT verification (R43).
+func TableDMFlatOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.dmFlat)
+}
+
+func TableDMStrideOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.dmStride)
+}
+
+// DMStride returns the DenseMatrix stride; 0 for non-DenseMatrix tables.
+// Used by tests and feedback-driven intrinsic gating.
+func (t *Table) DMStride() int32 { return t.dmStride }

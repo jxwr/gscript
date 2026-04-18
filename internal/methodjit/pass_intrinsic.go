@@ -23,15 +23,14 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 			if instr.Op != OpCall {
 				continue
 			}
-			// Expect exactly [fnValue, arg] for a 1-arg intrinsic call.
-			if len(instr.Args) != 2 {
+			// Common prefix: decode module.field callee pattern.
+			if len(instr.Args) < 2 {
 				continue
 			}
 			fnArg := instr.Args[0]
 			if fnArg == nil || fnArg.Def == nil {
 				continue
 			}
-			// fn must come from OpGetField on an OpGetGlobal.
 			getField := fnArg.Def
 			if getField.Op != OpGetField || len(getField.Args) < 1 {
 				continue
@@ -40,8 +39,6 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 			if tblArg == nil || tblArg.Def == nil || tblArg.Def.Op != OpGetGlobal {
 				continue
 			}
-
-			// Resolve names via the function's constant pool.
 			moduleName, ok := constString(fn, tblArg.Def.Aux)
 			if !ok {
 				continue
@@ -51,21 +48,41 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 				continue
 			}
 
-			// Match math.sqrt.
-			if moduleName != "math" || fieldName != "sqrt" {
+			// math.sqrt(x) — 1-arg float → float.
+			if moduleName == "math" && fieldName == "sqrt" && len(instr.Args) == 2 {
+				xArg := instr.Args[1]
+				instr.Op = OpSqrt
+				instr.Type = TypeFloat
+				instr.Args = []*Value{xArg}
+				instr.Aux = 0
+				instr.Aux2 = 0
+				notes = append(notes, "intrinsic: math.sqrt → OpSqrt")
 				continue
 			}
 
-			// Rewrite: in-place mutate the OpCall into OpSqrt(x).
-			// The GetGlobal/GetField values lose their only user (the OpCall's
-			// fnArg) once we drop Args[0]; DCE will collect them.
-			xArg := instr.Args[1]
-			instr.Op = OpSqrt
-			instr.Type = TypeFloat
-			instr.Args = []*Value{xArg}
-			instr.Aux = 0
-			instr.Aux2 = 0
-			notes = append(notes, "intrinsic: math.sqrt → OpSqrt")
+			// R43 Phase 2 DenseMatrix intrinsics.
+			// matrix.getf(m, i, j) — 3-arg → float.
+			if moduleName == "matrix" && fieldName == "getf" && len(instr.Args) == 4 {
+				m, i, j := instr.Args[1], instr.Args[2], instr.Args[3]
+				instr.Op = OpMatrixGetF
+				instr.Type = TypeFloat
+				instr.Args = []*Value{m, i, j}
+				instr.Aux = 0
+				instr.Aux2 = 0
+				notes = append(notes, "intrinsic: matrix.getf → OpMatrixGetF")
+				continue
+			}
+			// matrix.setf(m, i, j, v) — 4-arg → (no return).
+			if moduleName == "matrix" && fieldName == "setf" && len(instr.Args) == 5 {
+				m, i, j, v := instr.Args[1], instr.Args[2], instr.Args[3], instr.Args[4]
+				instr.Op = OpMatrixSetF
+				instr.Type = TypeUnknown
+				instr.Args = []*Value{m, i, j, v}
+				instr.Aux = 0
+				instr.Aux2 = 0
+				notes = append(notes, "intrinsic: matrix.setf → OpMatrixSetF")
+				continue
+			}
 		}
 	}
 	return fn, notes

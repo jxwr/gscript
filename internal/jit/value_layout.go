@@ -63,6 +63,9 @@ const (
 	TableOffFloatArrayLen  = 176 // floatArray slice len field (168 + 8)
 	TableOffBoolArray      = 192 // []byte slice header (ptr+len+cap = 24 bytes)
 	TableOffBoolArrayLen   = 200 // boolArray slice len field (192 + 8)
+	// R43 Phase 2 DenseMatrix descriptor fields.
+	TableOffDMFlat   = 224 // unsafe.Pointer — flat backing head
+	TableOffDMStride = 232 // int32 — row stride (columns)
 )
 
 // Legacy compatibility alias for codegen transition.
@@ -153,6 +156,14 @@ func init() {
 	shOff := runtime.TableShapeIDOffset()
 	if shOff != TableOffShapeID {
 		panic("jit: Table.shapeID offset mismatch: expected " + itoa(TableOffShapeID) + ", got " + itoa(int(shOff)))
+	}
+
+	// R43 Phase 2: verify DenseMatrix descriptor offsets.
+	if off := runtime.TableDMFlatOffset(); off != TableOffDMFlat {
+		panic("jit: Table.dmFlat offset mismatch: expected " + itoa(TableOffDMFlat) + ", got " + itoa(int(off)))
+	}
+	if off := runtime.TableDMStrideOffset(); off != TableOffDMStride {
+		panic("jit: Table.dmStride offset mismatch: expected " + itoa(TableOffDMStride) + ", got " + itoa(int(off)))
 	}
 
 	// Verify ArrayKind constants

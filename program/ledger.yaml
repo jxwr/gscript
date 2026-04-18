@@ -15,8 +15,8 @@
 # an explicit mitigation_description, the round type flips to `strategy`.
 
 version: 1
-updated: 2026-04-17
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]
+updated: 2026-04-18
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
 
 classes:
 
@@ -325,20 +325,22 @@ classes:
       factory via matrix.dense(r, c) — outer is ArrayMixed, rows are
       ArrayFloat sub-slices. Phase 2+ (future) can add JIT-level fast
       path for single-load t[i][j] direct into flat backing.
-    attempts: 2
-    wins: 2                      # R30 ADR + R42 Phase 1 implementation
+    attempts: 3
+    wins: 3                      # R30 ADR + R42 Phase 1 + R43 Phase 2
     reverts: 0
     holds: 0
     prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: null
-    historical_rounds: [30, 42]
+    historical_rounds: [30, 42, 43]
     key_negative_evidence: null
     key_positive_evidence: >
-      R42: matmul_dense.gs 0.095s vs nested matmul.gs 0.116s
-      (-18.1%). LuaJIT gap 5.5× → 4.5×. User opts in via
-      matrix.dense(rows, cols); no impact on existing code. Phase 2
-      could unlock 3.5× microbench ceiling via JIT flat-load emit.
+      R42 Phase 1 (shared flat backing): matmul_dense.gs 0.116 → 0.095
+      (-18.1%); LuaJIT gap 5.5× → 4.5×.
+      R43 Phase 2 (JIT intrinsic matrix.getf/setf): matmul_dense.gs
+      0.095 → 0.046 (-51.6% of Phase 1; -60.7% of original nested).
+      LuaJIT gap 4.5× → 2.2×. Combined 60% of the matmul gap closed
+      via two phases of architectural work across two sessions.
 
   - name: correctness-bug-fix
     description: >

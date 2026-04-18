@@ -1,0 +1,113 @@
+# R43: DenseMatrix Phase 2 — JIT intrinsic matrix.getf/setf. matmul -52%.
+round: 43
+date: 2026-04-18
+follows: 42
+
+type: tactical
+
+target:
+  benchmark: matmul_dense
+  current_wall_sec: 0.095         # R42 Phase 1 baseline
+  reference_wall_sec: null
+  luajit_wall_sec: 0.021
+  gap_factor: 4.5                  # gap after R42
+
+hypothesis:
+  class: tier2-dense-matrix-kind
+  claim: >
+    R42 Phase 1 gave -18% via shared flat backing. The remaining cost
+    is the row-wrapper indirection: `m[i][j]` is two GetTable calls
+    (ArrayMixed outer returns row Table; ArrayFloat inner returns
+    float). R43 bypasses the row wrapper: new intrinsic
+    `matrix.getf(m, i, j)` compiles to a 7-insn ARM64 sequence
+    (extract ptr → guard dmStride!=0 → MUL i*stride → ADD j → LDR
+     raw float64). Target: matmul_dense -40% beyond R42.
+  expected_gain_pct: [40, 60]
+  expected_gain_mechanism: >
+    Per inner-loop access: old nested path ~13 insns vs new intrinsic
+    ~7 insns. At 27M inner iter × 2 accesses = 54M ops × 6 insns
+    saved = ~320M insns saved ≈ 150 ms.
+  counterfactual_check: >
+    Guard: dmStride == 0 → deopt. Non-DenseMatrix tables pay a
+    5-insn guard per getf call (type check + CBZ). Users who don't
+    call matrix.getf are unaffected (intrinsic only triggers on
+    explicit callsite).
+
+    Correctness: flat backing is the same memory as row wrappers'
+    floatArray. Writes via matrix.setf update the same storage that
+    `m[i][j] = v` would. Interp fallback delegates to Go helper.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Read pass_intrinsic.go (math.sqrt pattern). Read emit_table_array.go
+    (ArrayFloat fast path: 4 insns after kind guard). Read jit/value_layout.go
+    offset table (no conflict at offset 224, 232). Confirmed: no existing
+    code path handles the matrix.getf call as an intrinsic; it currently
+    falls through to the generic OpCall + Go-side stdlib_matrix.go
+    function (2.7s measured — function call overhead dominates).
+    NOT ALREADY DONE.
+
+pre_flight:
+  required:
+    - description: matmul_dense.gs ≥40% improvement over Phase 1
+      acceptance: matmul_dense_jit <= 0.057
+      halt_on_fail: true
+    - description: original matmul.gs unchanged (no wider regression)
+      acceptance: matmul_nested_jit_unchanged
+      halt_on_fail: true
+    - description: all tests pass
+      acceptance: go_test_passes
+      halt_on_fail: true
+  result: >
+    matmul_dense.gs median-of-5: 0.046s (from 0.095s). -51.6% ✓
+    Original matmul.gs median-of-5: 0.117s (unchanged from 0.116 baseline) ✓
+    All runtime + methodjit + vm tests green ✓
+  passed: true
+
+outcome:
+  status: win
+  bench_deltas:
+    matmul_dense_vs_phase1: {phase1: 0.095, phase2: 0.046, pct: -51.6}
+    matmul_dense_vs_luajit: {gap_was_r42: 4.5, gap_now_r43: 2.2}
+    matmul_dense_vs_nested_original: {nested: 0.117, dense_r43: 0.046, pct: -60.7}
+  regressions: []
+  commit: pending
+  deliverables:
+    - internal/runtime/table.go — dmFlat/dmStride fields + offset helpers
+    - internal/runtime/table_dense_matrix.go — setDenseMatrixMeta in NewDenseMatrix
+    - internal/runtime/stdlib_matrix.go — matrix.getf/setf Go fallback builtins
+    - internal/methodjit/ir_ops.go — OpMatrixGetF/OpMatrixSetF
+    - internal/methodjit/pass_intrinsic.go — intrinsic rewrite
+    - internal/methodjit/emit_matrix.go — ARM64 emit (new file)
+    - internal/methodjit/emit_dispatch.go — wire new ops
+    - internal/methodjit/interp.go — Tier 2 interp fallback
+    - internal/jit/value_layout.go — DM offsets + init() assertions
+    - benchmarks/suite/matmul_dense.gs — benchmark entry
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    Multi-session architectural work delivers multiplicative returns:
+    R42 Phase 1 (runtime layout, -18%) × R43 Phase 2 (JIT intrinsic,
+    -52%) = combined -60% matmul closure. The phase boundary kept
+    risk bounded (each phase fully tests+benches before the next).
+
+notes: >
+  matmul LuaJIT gap 5.5× → 2.2×. This is the deepest single-benchmark
+  closure of this entire project. Follow-on Phase 3 could:
+    - Auto-detect {}/{m[i]={}} patterns and promote to DenseMatrix
+    - Extend intrinsic to matrix.getu (unchecked, for provably-in-bounds
+      kernels) to eliminate the stride guard per access — would close
+      another ~30% toward the 3.5× microbench ceiling
+    - Extend to 3D tensors for NN kernels

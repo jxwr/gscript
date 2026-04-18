@@ -316,6 +316,47 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		a := s.val(instr.Args[0])
 		s.values[instr.ID] = runtime.FloatValue(math.Sqrt(a.Number()))
 
+	case OpMatrixGetF:
+		// R43 Phase 2 interp fallback: delegate to the builtin via Go.
+		mv := s.val(instr.Args[0])
+		iv := s.val(instr.Args[1])
+		jv := s.val(instr.Args[2])
+		if !mv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixGetF: arg 0 not a table")
+		}
+		m := mv.Table()
+		if m.DMStride() <= 0 {
+			return nil, false, fmt.Errorf("OpMatrixGetF: not a DenseMatrix")
+		}
+		stride := int(m.DMStride())
+		i := int(iv.Int())
+		j := int(jv.Int())
+		backing := runtime.DenseMatrixBackingByRows(m)
+		if backing == nil {
+			return nil, false, fmt.Errorf("OpMatrixGetF: invalid backing")
+		}
+		s.values[instr.ID] = runtime.FloatValue(backing[i*stride+j])
+
+	case OpMatrixSetF:
+		mv := s.val(instr.Args[0])
+		iv := s.val(instr.Args[1])
+		jv := s.val(instr.Args[2])
+		vv := s.val(instr.Args[3])
+		if !mv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixSetF: arg 0 not a table")
+		}
+		m := mv.Table()
+		if m.DMStride() <= 0 {
+			return nil, false, fmt.Errorf("OpMatrixSetF: not a DenseMatrix")
+		}
+		stride := int(m.DMStride())
+		i := int(iv.Int())
+		j := int(jv.Int())
+		// Write through the row wrapper (which aliases the backing).
+		row := m.RawGetInt(int64(i)).Table()
+		row.RawSetInt(int64(j), vv)
+		_ = stride
+
 	// ---------- Comparison (type-generic) ----------
 	case OpEq:
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])

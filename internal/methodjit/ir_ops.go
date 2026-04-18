@@ -42,6 +42,12 @@ const (
 	OpDivFloat // float / float → float (also int/int → float)
 	OpNegFloat // -float → float
 	OpSqrt     // sqrt(float) → float (intrinsic: rewrites math.sqrt(x))
+	// R43 Phase 2 DenseMatrix intrinsics.
+	// OpMatrixGetF: Args = [m, i, j]; loads flat[i*m.dmStride + j] as float.
+	// OpMatrixSetF: Args = [m, i, j, v]; stores v at flat[i*m.dmStride + j].
+	// Both guard dmStride > 0 at runtime; deopt on miss.
+	OpMatrixGetF
+	OpMatrixSetF
 
 	// Comparison (type-generic)
 	OpEq // Args[0] == Args[1]
@@ -156,6 +162,8 @@ var opNames = [...]string{
 	OpDivFloat:   "DivFloat",
 	OpNegFloat:   "NegFloat",
 	OpSqrt:       "Sqrt",
+	OpMatrixGetF: "MatrixGetF",
+	OpMatrixSetF: "MatrixSetF",
 	OpEq:         "Eq",
 	OpLt:         "Lt",
 	OpLe:         "Le",
