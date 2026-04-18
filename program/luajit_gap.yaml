@@ -68,3 +68,4 @@ rows:
 
   # --- spectral_norm_dense (R54+, vector-as-Nx1-matrix port) ---
   - {round: 54, date: 2026-04-18, bench: spectral_norm_dense, gscript_jit_sec: 0.024, luajit_sec: 0.008, gap_factor: 3.00, notes: "R54 port: u/v as matrix.dense(N,1); -46.7% vs legacy 0.045s"}
+  - {round: 55, date: 2026-04-18, bench: sort, gscript_jit_sec: 0.050, luajit_sec: 0.011, gap_factor: 4.55, notes: "R55 sort_dense pre-flight REGRESSED +34%; DenseMatrix (float) not for int-heavy"}
