@@ -105,6 +105,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitNegFloat(instr)
 	case OpSqrt:
 		ec.emitSqrtFloat(instr)
+	case OpFMA:
+		ec.emitFMA(instr)
 	case OpMatrixGetF:
 		ec.emitMatrixGetF(instr)
 	case OpMatrixSetF:

@@ -350,6 +350,13 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("MatrixLower: %w", err)
 	}
 
+	// R47: fuse OpAddFloat(x, OpMulFloat(y,z)) → OpFMA(y,z,x) so the
+	// emitter produces a single FMADDd instead of FMUL + FADD.
+	fn, err = FMAFusionPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FMAFusion: %w", err)
+	}
+
 	fn, err = LICMPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("LICM: %w", err)

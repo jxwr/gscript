@@ -68,6 +68,10 @@ const (
 	OpMatrixRowPtr
 	OpMatrixLoadFRow
 	OpMatrixStoreFRow
+	// R47: fused multiply-add. OpFMA(a, b, acc) → acc + a*b.
+	// Emitted by FMAFusionPass when OpAddFloat(acc, OpMulFloat(a,b))
+	// is detected with single-use Mul. Single-insn ARM64 FMADDd.
+	OpFMA
 
 	// Comparison (type-generic)
 	OpEq // Args[0] == Args[1]
@@ -188,9 +192,10 @@ var opNames = [...]string{
 	OpMatrixStride:   "MatrixStride",
 	OpMatrixLoadFAt:  "MatrixLoadFAt",
 	OpMatrixStoreFAt: "MatrixStoreFAt",
-	OpMatrixRowPtr:   "MatrixRowPtr",
-	OpMatrixLoadFRow: "MatrixLoadFRow",
+	OpMatrixRowPtr:    "MatrixRowPtr",
+	OpMatrixLoadFRow:  "MatrixLoadFRow",
 	OpMatrixStoreFRow: "MatrixStoreFRow",
+	OpFMA:             "FMA",
 	OpEq:         "Eq",
 	OpLt:         "Lt",
 	OpLe:         "Le",

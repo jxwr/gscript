@@ -499,6 +499,40 @@ func (ec *emitContext) emitNegFloat(instr *Instr) {
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 
+// emitFMA emits ARM64 code for OpFMA(a, b, acc) → acc + a*b, using a
+// single FMADDd instruction. Args: [a, b, acc], all TypeFloat in raw-
+// FPR mode (ensured by FMAFusionPass running after TypeSpecialize).
+func (ec *emitContext) emitFMA(instr *Instr) {
+	if len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+	if instr.Type == TypeFloat {
+		aF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+		bF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
+		cF := ec.resolveRawFloat(instr.Args[2].ID, jit.D2)
+		dstF := jit.FReg(jit.D0)
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			dstF = jit.FReg(pr.Reg)
+		}
+		// FMADDd: Dd = Da + Dn * Dm  (a + n*m in assembler naming;
+		// our helper is FMADDd(rd, rn, rm, ra).)
+		asm.FMADDd(dstF, aF, bF, cF)
+		ec.storeRawFloat(dstF, instr.ID)
+		return
+	}
+	// NaN-boxed fallback: unlikely but safe.
+	aNB := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	asm.FMOVtoFP(jit.D0, aNB)
+	bNB := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	asm.FMOVtoFP(jit.D1, bNB)
+	cNB := ec.resolveValueNB(instr.Args[2].ID, jit.X2)
+	asm.FMOVtoFP(jit.D2, cNB)
+	asm.FMADDd(jit.D0, jit.D0, jit.D1, jit.D2)
+	asm.FMOVtoGP(jit.X0, jit.D0)
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
 // emitSqrtFloat emits ARM64 code for OpSqrt (sqrt(float)).
 // The operand is known to be float, so we skip the type check and use FSQRT
 // directly on an FPR. With raw float mode, operates entirely in FPRs.

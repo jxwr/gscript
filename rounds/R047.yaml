@@ -1,0 +1,108 @@
+# R47: FMA fusion pass — FMADDd for Add(x, Mul(y,z)); Phi-accumulator pipeline skip.
+round: 47
+date: 2026-04-17
+follows: 46
+
+type: tactical
+
+target:
+  benchmark: matmul_dense
+  current_wall_sec: 0.035
+  luajit_wall_sec: 0.021
+  gap_factor: 1.67
+
+hypothesis:
+  class: tier2-dense-matrix-kind
+  claim: >
+    Detect OpAddFloat(x, OpMulFloat(y, z)) with single-use Mul, rewrite
+    to OpFMA(y, z, x) which lowers to ARM64 FMADDd — one insn vs two
+    (FMUL + FADD). Matmul inner body `sum = sum + a*b` fuses naturally.
+  expected_gain_pct: [5, 15]
+  expected_gain_mechanism: >
+    Matmul does 27M multiply-add ops; collapsing each pair from 2 insns
+    to 1 at identical latency. Theoretical ~25% reduction in FP insn
+    count; projected wall-time 0.035s → 0.029s.
+  counterfactual_check: >
+    Must skip Mul ops with multiple uses (would duplicate work). Ack /
+    fib / string benches don't contain float Add(x, Mul(y,z)) pattern,
+    so unaffected. Nbody has many FMA opportunities.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Diag of simple_matmul.gs confirmed Add+Mul pattern is present in
+    the inner loop IR and fusion fired correctly (v40 = FMA v32, v37,
+    v52 with v52 a Phi accumulator). Initial wiring WITHOUT Phi check
+    measured matmul_dense 10-run median 0.042s vs R45 0.035s (+20%
+    REGRESSION). Added PIPELINE-AWARE SKIP: when accumulator arg is
+    a Phi, FMA serializes the dependency chain across iterations —
+    separated FMUL+FADD lets FMUL execute speculatively ahead. This
+    is a documented ARM64 pipeline behavior (similar on Apple M4).
+
+pre_flight:
+  required:
+    - description: matmul_dense must not regress vs R45 baseline 0.035s
+      acceptance: matmul_dense_jit <= 0.036
+      halt_on_fail: true
+  result: >
+    After Phi-accumulator skip: matmul_dense 5-run median 0.035s
+    (matches R45 baseline). Fusion is now inert on matmul's
+    loop-carried reduction. Infrastructure remains available for
+    future non-reduction float patterns (e.g. horizontal compute
+    that writes to a new destination each time).
+  passed: true
+
+outcome:
+  status: hold                 # infrastructure; no benchmark movement on target
+  bench_deltas:
+    matmul_dense: {r46: 0.035, r47: 0.035, pct: 0}
+    nbody: {r46: 0.250, r47: 0.250, pct: 0}
+    spectral_norm: {r46: 0.045, r47: 0.045, pct: 0}
+    fib: {r46: 1.423, r47: 1.423, pct: 0}
+    ackermann: {r46: 0.267, r47: 0.267, pct: 0}
+    matmul: {r46: 0.117, r47: 0.117, pct: 0}
+  regressions: []
+  commit: null
+  deliverables:
+    - internal/methodjit/ir_ops.go — OpFMA
+    - internal/methodjit/pass_fma_fusion.go — FMAFusionPass with Phi-accumulator skip
+    - internal/methodjit/emit_call.go — emitFMA using FMADDd
+    - internal/methodjit/emit_dispatch.go — OpFMA dispatch
+    - internal/methodjit/interp.go — OpFMA interp fallback
+    - internal/methodjit/pipeline.go — wire FMAFusionPass between MatrixLowerPass and LICMPass
+
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched: [tier2-dense-matrix-kind]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    FMA fusion on loop-carried Phi accumulators REGRESSES matmul by
+    ~20% on Apple M4 (ARM64). The separated FMUL+FADD form allows
+    FMUL to execute speculatively ahead of the accumulator chain;
+    fused FMADDd forces the Mul into the accumulator's critical-path
+    latency chain. Rule: only fuse non-Phi accumulators, or first
+    break the serial reduction via sum-splitting (R48 candidate).
+
+notes: >
+  R47 closes as "hold": Phi-skip gate leaves matmul unchanged, but the
+  infrastructure + Phi-pipeline lesson are durable. Next candidate:
+
+    R48 — Sum-splitting for loop-carried reductions. Split the
+    accumulator into N parallel partial sums (e.g. sum0, sum1, sum2,
+    sum3) to break the serial dependency chain, then fuse each tail
+    add into FMA. Combined, this should give the real speedup:
+    ~4-way ILP × FMA-collapse. Textbook technique (HotSpot loop
+    unroll-and-jam, Clang -ffast-math -funroll-loops).
+
+  Also: the "specialized instruction" pattern (OpFMA, OpMatrixGetF,
+  OpMatrixLoadFAt, OpSqrt, ...) is the standard V8 TurboFan / HotSpot
+  C2 intrinsic-lowering technique. R42–R47 have been textbook IR
+  specialization; documenting for future direction clarity.

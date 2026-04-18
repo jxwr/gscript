@@ -316,6 +316,13 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		a := s.val(instr.Args[0])
 		s.values[instr.ID] = runtime.FloatValue(math.Sqrt(a.Number()))
 
+	case OpFMA:
+		// R47: interp fallback. OpFMA(a, b, c) → c + a*b.
+		a := s.val(instr.Args[0]).Number()
+		b := s.val(instr.Args[1]).Number()
+		c := s.val(instr.Args[2]).Number()
+		s.values[instr.ID] = runtime.FloatValue(c + a*b)
+
 	case OpMatrixGetF:
 		// R43 Phase 2 interp fallback: delegate to the builtin via Go.
 		mv := s.val(instr.Args[0])
