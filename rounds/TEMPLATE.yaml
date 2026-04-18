@@ -76,6 +76,30 @@ pre_flight:
   result: null                      # measured result vs expected
   passed: null                      # boolean; null in Wave 1
 
+  # --- correctness-bug-fix additions (rules 26-29, v5.2) ---
+  # For `class: correctness-bug-fix` rounds modifying emit/pass/regalloc,
+  # the following fields are REQUIRED and the round does not close
+  # without them. Trivial ≤5-line switch-case additions are exempt.
+  #
+  # failing_test:    path:function of the Go test that fails before the fix
+  #                  and passes after. `go test -run <function>` must run
+  #                  in < 5s.
+  # failing_output:  quoted initial failure (e.g. "got X, want Y"). Proof
+  #                  the test was actually red before the code change.
+  # surgical_scope:  exact function name(s) modified. Rule 27: at most
+  #                  ONE of {emit helper, pass function, regalloc decision}.
+  # ir_diff_before:  relevant IR lines BEFORE the fix (from
+  #                  Pipeline.EnableDump or diag/<bench>/<proto>.ir.txt).
+  # ir_diff_after:   same lines AFTER the fix.
+  # bisect_range:    narrowest repro params found (e.g. "fails at N>=11,
+  #                  passes at N<=10, seed=42, input LCG").
+  failing_test: null
+  failing_output: null
+  surgical_scope: null
+  ir_diff_before: null
+  ir_diff_after: null
+  bisect_range: null
+
 # --- outcome (filled at Step 7) ---
 outcome:
   # Post-R49 taxonomy (rule 24):

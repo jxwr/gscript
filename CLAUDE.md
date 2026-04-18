@@ -53,6 +53,30 @@ These are compressions of expensive lessons. Each is present-tense, grep-able, o
 
 25. **Verify appends to `program/luajit_gap.yaml` (from R49).** On any round that re-runs a benchmark, Step 6 appends one row per measured benchmark: `{round, date, bench, gscript_jit_sec, luajit_sec, gap_factor}`. This is the cross-round per-benchmark trajectory view (ledger.yaml is per-hypothesis-class; luajit_gap.yaml is per-benchmark).
 
+### Correctness rounds (v5.2)
+
+Rules 26-29 apply when `class = correctness-bug-fix` AND the round modifies `internal/methodjit/emit_*.go`, `internal/methodjit/pass_*.go`, `internal/methodjit/regalloc*.go`, or similar codegen infrastructure. Trivial fixes (e.g. a missing switch case in a lookup table) are exempt when the change is ≤5 lines and contained in one function.
+
+26. **Test-first for correctness rounds.** Step 5 (Act) cannot modify production code until Step 4 (Pre-flight) has written a failing Go test that:
+    - lives under `internal/methodjit/` (or equivalent), not in `/tmp/*.gs`
+    - fails on the current binary with a concrete assertion (not a flaky bench comparison)
+    - runs in <5 seconds locally
+    - the round card's `pre_flight.required` lists the test function name and the current failing output
+
+    Rationale (from R65-R75): 6 of 7 arc attempts jumped straight to production edits. None had a fast red→green signal. Every revert took a full bench run (minutes) to discover the regression.
+
+27. **Surgical scope: one path per round.** A single correctness round may modify at most ONE emit helper OR ONE pass function OR ONE regalloc decision point. "Centralize the fix in `storeResultNB`" (R65) or "Apply the change to all float store paths" (R66) violate this and must be split into N rounds.
+
+    Rationale: codegen state (regalloc, cross-block live, Phi moves) is mutually coupled; a change that looks local may interact with siblings. Surgical scope keeps the blast radius small enough to debug.
+
+28. **IR-diff or asm-diff evidence required.** For any round modifying a pass or emit helper, the round card's `current_state_audit_summary` MUST quote the relevant lines of IR (or emitted asm bytes) from before and after the change. Use `Pipeline.EnableDump()` in a test or `scripts/diag.sh` + `git diff diag/<bench>/<proto>.ir.txt`.
+
+    A round without quoted IR diff is treated as rule 19 "missing mechanical evidence" and the round does not close.
+
+29. **Bisect range is a required field for correctness rounds.** When the bug reproduces at parameter `P` but not `P'`, the round card's `class_gate.current_state_audit_summary` (or a dedicated `bisect_range:` field) MUST record the narrowest found range (e.g. "fails at N≥11, passes at N≤10, seed=42"). Bisection continues until the range is one of: single input size, single IR-op shape, single code path.
+
+    Rationale (from R75): the N≥11-but-not-N=17 result signalled a non-obvious trigger condition that was never properly bisected. The round closed with the question open.
+
 ## Round shape (v5)
 
 A round is a single session with seven internal steps. No orchestrator.
@@ -74,7 +98,12 @@ A round is a single session with seven internal steps. No orchestrator.
                   Q1 → Q2 → Q3 priority; only Q3 autonomous.
 4. Pre-flight    (Wave 3; optional in Wave 1/2.) Microbench or
                   Diagnose-oracle confirming predicted cost shape.
-5. Act           TDD, bounded by round card scope.
+                  For correctness-bug-fix rounds (rule 26): write a
+                  FAILING Go test BEFORE Step 5; list its name in
+                  the card's pre_flight.required.
+5. Act           TDD, bounded by round card scope. For correctness
+                  rounds (rules 27-28): single emit/pass/regalloc
+                  path only; capture IR/asm diff.
 6. Verify        Re-run diag + median-of-N bench. Pass or revert.
                   Append one row per measured benchmark to
                   program/luajit_gap.yaml (rule 25).
