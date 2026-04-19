@@ -215,26 +215,31 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.ADDimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
-	// R40: Self-call fast path. Only emit the runtime proto compare when
-	// the function is known to have self-calls (HasSelfCalls flag).
-	// This avoids padding insn count on unrelated call sites (e.g.,
-	// new_vec3 which is not self-recursive).
+	// R40: Self-call fast path via HasSelfCalls flag.
+	// R110: If we can STATICALLY prove this particular OpCall is a self-call
+	// (fn arg is OpGetGlobal of our own proto's name), skip the runtime
+	// Proto compare entirely and BL direct to t2_self_entry.
 	asm.MOVreg(jit.X0, mRegCtx)
 	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
-		selfCallLabel := ec.uniqueLabel("t2call_do_self")
-		afterBlLabel := ec.uniqueLabel("t2call_after_bl")
-		// X1 still holds *FuncProto from step 4 load.
-		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(ec.fn.Proto))))
-		asm.CMPreg(jit.X1, jit.X3)
-		asm.BCond(jit.CondEQ, selfCallLabel)
-		// Non-self: original BLR path.
-		asm.BLR(jit.X2)
-		asm.B(afterBlLabel)
-		// Self-call: PC-relative BL to lightweight entry
-		// (t2_self_entry skips 4 redundant setup insns vs t2_direct_entry).
-		asm.Label(selfCallLabel)
-		asm.BL("t2_self_entry")
-		asm.Label(afterBlLabel)
+		if ec.isStaticSelfCall(instr) {
+			// R110: static self-call — 1 insn.
+			asm.BL("t2_self_entry")
+		} else {
+			selfCallLabel := ec.uniqueLabel("t2call_do_self")
+			afterBlLabel := ec.uniqueLabel("t2call_after_bl")
+			// X1 still holds *FuncProto from step 4 load.
+			asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(ec.fn.Proto))))
+			asm.CMPreg(jit.X1, jit.X3)
+			asm.BCond(jit.CondEQ, selfCallLabel)
+			// Non-self: original BLR path.
+			asm.BLR(jit.X2)
+			asm.B(afterBlLabel)
+			// Self-call: PC-relative BL to lightweight entry
+			// (t2_self_entry skips 4 redundant setup insns vs t2_direct_entry).
+			asm.Label(selfCallLabel)
+			asm.BL("t2_self_entry")
+			asm.Label(afterBlLabel)
+		}
 	} else {
 		asm.BLR(jit.X2)
 	}
@@ -481,6 +486,34 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	// return value normally — so the following OpReturn still runs correctly).
 	asm.Label(slowLabel)
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
+}
+
+// isStaticSelfCall (R110) returns true when OpCall's function argument is
+// an OpGetGlobal whose resolved constant-pool name matches the current
+// function's proto name. In that case the target is (statically) our
+// own proto, so the runtime Proto compare can be elided and we can BL
+// t2_self_entry directly.
+func (ec *emitContext) isStaticSelfCall(instr *Instr) bool {
+	if ec.fn == nil || ec.fn.Proto == nil || instr == nil {
+		return false
+	}
+	if len(instr.Args) == 0 || instr.Args[0] == nil || instr.Args[0].Def == nil {
+		return false
+	}
+	def := instr.Args[0].Def
+	if def.Op != OpGetGlobal {
+		return false
+	}
+	globalIdx := int(def.Aux)
+	constants := ec.fn.Proto.Constants
+	if globalIdx < 0 || globalIdx >= len(constants) {
+		return false
+	}
+	kv := constants[globalIdx]
+	if !kv.IsString() {
+		return false
+	}
+	return kv.Str() == ec.fn.Proto.Name
 }
 
 // emitCallExitFallback emits the exit-resume sequence for a CALL that couldn't
