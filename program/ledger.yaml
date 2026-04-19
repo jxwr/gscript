@@ -235,15 +235,14 @@ classes:
       promotes. Result: fib 1.411s → 0.858s (-39.2%), LuaJIT gap
       54× → 33×. FIRST real bench-win of this class via an optimizing
       path (R20 was ADR-only).
-    attempts: 6                  # +R132, +R143 correctness-bug-fix adr-win,
-                                 # +R144 bench-win, +R145 no-win
-    wins: 3                      # R20 ADR + R132 bench-win + R144 bench-win
+    attempts: 10                 # +R132, +R143, +R144, +R145, +R147, +R148, +R149, +R150
+    wins: 5                      # R20 ADR + R132 bench-win + R144 bench-win + R147 ADR + R148 ADR + R150 ADR
     bench_wins: 2                # R132 (fib -39%), R144 (fib -3.4%)
-    adr_wins: 2                  # R20 ADR, R143 root-cause adr-win
-    reverts: 1                   # R22: bounds-check skip broke deep recursion
+    adr_wins: 5                  # R20, R143, R147, R148, R150 ADR/diag
+    reverts: 2                   # R22: bounds-check skip broke deep recursion; R149: static-self fast path reverted after ack cold-start ABI bug + quicksort 3-arg crash
     shipped_no_wins: 1           # R145 (gate opened, lightweight entry reverted)
     holds: 0
-    prior_reject_rate: 0.25      # 1 revert / (2 bench-wins + 1 revert + 1 shipped-no-win)
+    prior_reject_rate: 0.4       # 2 reverts / (2 bench-wins + 2 reverts + 1 shipped-no-win) = 0.4
     mitigation_required: false
     mitigation_description: >
       **Bounds check is not redundant for self-calls** (R22 lesson):
@@ -254,7 +253,7 @@ classes:
       self-call specialization must preserve the bounds check OR
       replace it with a per-level depth limit that's checked once
       per recursion chain.
-    historical_rounds: [20, 22, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145]
+    historical_rounds: [20, 22, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 147, 148, 149, 150]
     key_negative_evidence: >
       R22 attempted to skip the bounds check on self-calls and
       regressed sort (quicksort crashed with SIGSEGV at recursion

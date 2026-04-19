@@ -1,0 +1,146 @@
+# R151: strategy — formally close R147 call-path arc (halt-cond #2 tripped
+#       by R150 findings), open a new hypothesis on the hasCallInLoop
+#       gate. 6 benchmarks currently blocked from Tier 2 by that gate;
+#       if we can prove the post-emit_call_native cost model makes it
+#       safe to widen, we unlock Cluster D — "inline-gated promotion".
+round: 151
+date: 2026-04-19
+follows: 150
+
+type: strategy
+
+target:
+  benchmark: multi
+
+hypothesis:
+  class: tier2-bounded-recursive-inline
+  claim: >
+    The `hasCallInLoop` gate (tiering_manager.go:492) was added in
+    commit a6234be when Tier 2's OpCall was exit-resume (~30-80ns vs
+    Tier 1's ~10ns native BLR, spectral_norm regressed 7.1× → 0.82×).
+    Post-R108 (mono IC), R110 (static self), R111 (ctx skip), R144
+    (single-body collapse), Tier 2's native BLR for OpCall is now
+    ~50 insns/call ≈ 20ns on M4. The 3-5× ratio vs Tier 1's native
+    BLR remains, but the absolute cost is now in the same order of
+    magnitude. A narrow exception — e.g. "allow OpCall in loop iff
+    the callee was inline-attempted but rejected for reasons not
+    related to in-loop execution cost" — could unlock Tier 2 for
+    6 currently-blocked benchmarks: create_and_sum, transform_chain
+    (object_creation), sort's main, sieve's main, binary_trees'
+    hot fn, table_field_access's hot fn.
+  expected_gain_pct: null  # strategy round; no direct gain
+  expected_gain_mechanism: >
+    Tier 2 vs Tier 1 gain varies by benchmark shape. For
+    object_creation, the hot proto `create_and_sum` does N iterations
+    of ~8 table/field ops plus 2 function calls. At Tier 1 (all
+    boxed, no LICM, no type spec), that's ~40 insns/iter × N. At
+    Tier 2, we get type specialization, LICM of loop-invariants,
+    FPR for floats. Historical R72/R73 main-driver-promote yielded
+    ~20-30% on similar driver loops.
+  counterfactual_check: >
+    If the inline pass (MaxRecursion=5) is already handling the
+    create_and_sum → vec3_add → new_vec3 call tree, then the OpCall
+    in loop shouldn't exist post-inline. diag/object_creation/stats
+    shows `create_and_sum` has `skip_reason: has OpCall inside loop`
+    — i.e. inline FAILED or left residual OpCall. R152 must first
+    read the post-inline IR to understand WHY before any gate widen.
+    Without that, we'd widen the gate and inherit the 7× spectral
+    regression a6234be prevented.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0    # tier2-bounded-recursive-inline has 3 attempts / 2 wins / 0 reverts / 1 hold
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: >
+        Formally close the R147 call-path reduction arc by updating
+        program/ledger.yaml tier2-recursion-closure counters
+        (attempts +3 for R147/R148/R149; adr_wins +2 for R147/R148;
+        reverts +1 for R149; holds +0). Append memory note
+        project_call_path_arc_r147_r149 pointer to MEMORY.md.
+      acceptance: ledger updated; memory current
+      halt_on_fail: false
+    - description: >
+        Scout next arc target via diagnostic agent: enumerate all
+        protos currently blocked by hasCallInLoop, count loop depth
+        and in-loop OpCall frequency, classify by whether the callee
+        was (a) inline-attempted and rejected, (b) never scanned as
+        inline candidate, (c) recursive.
+      acceptance: scout report written
+      halt_on_fail: false
+  result: |
+    Pre-flight #1: ledger updated (see ledger_update below).
+
+    Pre-flight #2: diagnostic agent report. Six benchmarks blocked
+    by hasCallInLoop:
+      object_creation  (create_and_sum, transform_chain — 2 protos)
+      sort             (<main>)
+      sieve            (<main>)
+      binary_trees     (hot fn × 2)
+      table_field_access (2 protos)
+      table_array_access (1 proto)
+      nbody_dense      (1 proto)
+    Plus ackermann+mutual_recursion's <main> (already known, not
+    helping since ack body is body-dominated per R150 finding).
+
+    Key question for R152: why doesn't the InlinePass
+    (MaxRecursion=5, MaxSize=500) fully collapse the create_and_sum
+    → vec3_add → new_vec3 call tree? If the answer is a simple
+    pass-level limitation, that's a tractable win for R152-R155.
+    If it's structural (vec3_add returns a new table = allocation,
+    and the inliner can't collapse NewTable without escape analysis),
+    then R152 will document the ceiling and R153+ pivots again.
+
+  passed: true
+
+current_state_audit_summary: |
+  # Arc status table (where the 10-round budget went):
+  #   R147 [adr-win]   Open call-path arc, pick Cluster A
+  #   R148 [adr-win]   Per-insn audit (WRONG on MaxStack)
+  #   R149 [no-win]    Variant A/B prototype reverted (fib -88%
+  #                    was unsafe; ack cold-start ABI)
+  #   R150 [adr-win]   Bisect proved MaxStack is the only lever;
+  #                    safe budget is ~1.5% (noise)
+  #   R151 [this]      Close R147 arc; scout R152 direction
+  #   R152-R156        Reserved for new arc (5 rounds)
+  #
+  # Method-JIT emit-level call-path optimization is depleted on the
+  # current benchmark set. Further call-path gains require:
+  #   — Trace JIT (>10 rounds, architectural)
+  #   — Regalloc cross-call sharing at IR level (different cluster)
+  #   — Inline-level unblocking (the R152 target if feasible)
+  #
+  # The user constraint "10 rounds, focus on big optimizations" is
+  # preserved: R147-R150 were necessary to PROVE Cluster A is
+  # depleted (the alternative was continued micro-round spending).
+  # R151-R156 reinvest the remaining 5 rounds on the
+  # hasCallInLoop-widening hypothesis, which — if it lands — affects
+  # 6+ benchmarks simultaneously via a single gate change (R132-
+  # shaped architectural move).
+
+verify:
+  result: >
+    R151 is strategy, no code. R152 opens the execute phase.
+
+outcome:
+  status: adr-win
+  shipped_code: false
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: false
+  notes: |
+    Next arc candidate name: "inline-gated promotion" (not yet in
+    ledger). Open as a forward_class in ledger.yaml if R152 finds
+    a concrete path. If R152 discovers the limitation is structural
+    (e.g. NewTable escape, upvalue capture), DO NOT force-open the
+    gate — instead ship an ADR documenting why the blocked-6 are
+    fundamentally Tier 1 territory and close the 10-round arc.
+
+ledger_update:
+  classes_touched:
+    - tier2-recursion-closure
+    - tier2-bounded-recursive-inline
+  new_class_introduced: null
