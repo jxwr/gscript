@@ -166,16 +166,24 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.BCond(jit.CondEQ, slowLabel)
 
 	// Step 7: Save caller state on stack (64 bytes, 16-byte aligned).
+	// R111: for a static self-call, CallMode and GlobalCache are
+	// invariant (same proto → same GlobalCache; CallMode stays 1).
+	// Skip saving these two fields (4 insns: 2 LDR + 2 STR).
 	asm.SUBimm(jit.SP, jit.SP, 64)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
-	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
-	asm.STR(jit.X3, jit.SP, 32)
-	// Save caller's ClosurePtr and GlobalCache.
+	staticSelf := ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls && ec.isStaticSelfCall(instr)
+	if !staticSelf {
+		asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
+		asm.STR(jit.X3, jit.SP, 32)
+	}
+	// Save caller's ClosurePtr (always — closure instance may differ).
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X3, jit.SP, 40)
-	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
-	asm.STR(jit.X3, jit.SP, 48)
+	if !staticSelf {
+		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+		asm.STR(jit.X3, jit.SP, 48)
+	}
 
 	// Step 8: Copy args to callee register window.
 	for i := 0; i < nArgs; i++ {
@@ -202,13 +210,18 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Set callee's ClosurePtr.
 	asm.STR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr)
 
-	// Set CallMode = 1 (direct call).
-	asm.MOVimm16(jit.X3, 1)
-	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	// R111: skip CallMode/GlobalCache setup on static self-call
+	// (caller already has CallMode=1 — we'll reach here via t2_direct_entry
+	// or the caller-side setup — and GlobalCache is per-proto so unchanged).
+	if !staticSelf {
+		// Set CallMode = 1 (direct call).
+		asm.MOVimm16(jit.X3, 1)
+		asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
 
-	// Load callee's GlobalValCache from Proto.
-	asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
-	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+		// Load callee's GlobalValCache from Proto.
+		asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
+		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+	}
 
 	// Increment NativeCallDepth.
 	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
@@ -251,12 +264,16 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// Step 10: Restore caller state.
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
-	asm.LDR(jit.X3, jit.SP, 32)
-	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	if !staticSelf {
+		asm.LDR(jit.X3, jit.SP, 32)
+		asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	}
 	asm.LDR(jit.X3, jit.SP, 40)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
-	asm.LDR(jit.X3, jit.SP, 48)
-	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+	if !staticSelf {
+		asm.LDR(jit.X3, jit.SP, 48)
+		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+	}
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, 64)
 
