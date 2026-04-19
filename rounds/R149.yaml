@@ -1,0 +1,191 @@
+# R149: attempted static-self-call fast path in emit_call_native.
+#       Two code variants built (general-static-self and
+#       numeric-static-self-only); first crashed on quicksort 3-arg
+#       call, second broke ack correctness cold-start. Both reverted.
+#       Net: reproducible -88% on fib observed, CAN'T ship without
+#       fixing the cold-start interplay. Halt condition #3 tripped.
+round: 149
+date: 2026-04-19
+follows: 148
+
+type: tactical
+
+target:
+  benchmark: multi
+  # Primary measured: fib, ackermann, mutual_recursion, sort (TestMainT2_SortPattern)
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    A static-self-call fast path in emit_call_native.go (fork on
+    isStaticSelfCall / isNumericStaticSelfCall predicate) that
+    skips IC, MaxStack bounds, CallCount inc, and Closure/Constants
+    ctx writes drops fib from 0.920s to ~0.55s by saving ~25-44
+    insns per recursive call on the steady-state IC-hit path.
+  expected_gain_pct: [-40, -25]
+  expected_gain_mechanism: >
+    Per R148 audit: ~28 insns/call are provably dead for static-self
+    (callee identity is compile-time constant; MaxStack and CallCount
+    are either identical or irrelevant; Closure/Constants are
+    invariant). Removing them collapses the per-call native cost.
+  counterfactual_check: >
+    Benchmarks without self-recursion (mandelbrot, fannkuch, matmul)
+    take the generic emit path unchanged. Mut_recursion F↔M is not
+    `isStaticSelfCall` (callee name differs from current proto) and
+    stays on the generic path too. R155 plans to extend.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.25
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: >
+        internal/methodjit/tier2_recursion_hang_test.go and the
+        broader TestMainT2_* / TestR107_TailCall_* suites must
+        stay green. Any correctness regression halts the round.
+      acceptance: all methodjit tests pass
+      halt_on_fail: true
+  result: |
+    Two successive fast-path implementations both regressed existing
+    tests:
+
+    Variant A — emitCallNativeStaticSelf as general branch gated on
+      isStaticSelfCall (covers both numeric and non-numeric self):
+        TestMainT2_SortPattern SIGSEGV in executeTableExit during
+        quicksort(arr, 1, 50000). Fault address 0xfffe0000000007cf
+        (NB-boxed int 1999) — something downstream of the static-
+        self BL is dereferencing a boxed-int value as a pointer.
+        Reproduces at N=50000; does NOT reproduce at N=20, 100, 1000.
+        Gating to nArgs<=2 made the crash vanish (quicksort's 3-arg
+        signature is the trigger). Root cause NOT identified this
+        round.
+
+    Variant B — narrowed to numeric-static-self only:
+      Quicksort OK (filtered out by qualifyForNumeric → Table arg).
+      But TestR107_TailCall_Ackermann red:
+        VM=125, JIT=15
+      ack(3,4) printed as 125 in benchmark (500-rep loop) but 15 in
+      a single-execution test. Interpretation: when ack promotes to
+      Tier 2 mid-recursion (CallCount threshold reached inside the
+      first invocation), the deeper active frames are still Tier 1 /
+      VM while outer frames start using the numeric-self fast path.
+      The numeric ABI mismatch between Tier 1 BLR callers (pass
+      boxed args via memory) and Tier 2 numeric-self-entry callers
+      (pass raw ints via X0..X(N-1)) produces wrong answers.
+      The OLD code worked because its pre-BL generic setup performed
+      enough Tier-1-inherited work (or had some masking effect)
+      that the bug didn't manifest. The minimal fast path exposed
+      the ABI hazard.
+
+  passed: false
+
+  # This IS a correctness-impacting codegen round, so rules 26-29
+  # apply after the fact. The failing test WAS discovered (not
+  # pre-written), which is itself a lesson for R150.
+  failing_test: "internal/methodjit/r107_tco_test.go:TestR107_TailCall_Ackermann"
+  failing_output: "int mismatch: VM=125, JIT=15"
+  surgical_scope: "emit_call_native.go + new emit_call_native_self.go (reverted)"
+  ir_diff_before: >
+    Pre-R149 emit (diag/ackermann/ack.asm.txt lines ~60-180) has
+    full generic Step 3-9 + BL t2_numeric_self_entry_2.
+  ir_diff_after: >
+    Variant B attempted emit skips Step 4-7 (IC, type, bounds,
+    count) and Step 9 (ctx.Constants/ClosurePtr) for the numeric
+    static self; only Steps 1, 2, 3, 7-frame, 8-args, advance-Regs
+    survive before the BL. Reverted — asm diff not saved.
+  bisect_range: >
+    Quicksort crash: N>=50000 triggers, N<=1000 does not. Inner
+    trigger is the 3-arg shape (gate on nArgs<=2 masks the fault).
+    Ack correctness: cold start (single execution) fails; 500-rep
+    warm loop returns correct 125 on every printed iteration. The
+    distinction suggests a Tier-1→Tier-2 ABI hazard during mid-
+    execution promotion, NOT a bug in pure Tier 2 execution.
+
+current_state_audit_summary: |
+  # Direct observations recorded at the tip of R149 work (reverted):
+  #
+  # 1. fib -88% measured (0.922s → 0.110s) with Variant A.
+  #    Reproduced across 3 samples in same shell. Expected from
+  #    R148 audit of the 44-insn steady-state dead budget.
+  #
+  # 2. ack UNCHANGED (0.452s → 0.455s) with Variant A.
+  #    Inference: ack's per-call cost is dominated by the body
+  #    (GuardType + two nested Calls) not the call path. This
+  #    is a correction to the R147 ADR's expected_gain_mechanism
+  #    for ack — the IR-body cost exceeds the emit dispatch cost
+  #    at ack's complexity level. Persist to memory.
+  #
+  # 3. Halt condition #3 from R147 ADR TRIPPED:
+  #    "Ack Tier 2 > 0.40s after R151 (<10% recovery)" — we never
+  #    reached R151 because R149 already broke correctness on ack.
+  #
+  # 4. Per-arg-count analysis from R148 audit assumed the same
+  #    work was dead for all arg counts on static-self. That is
+  #    TRUE for the emit, but NOT TRUE when interplaying with a
+  #    cold-start Tier 1→Tier 2 promotion. R150+ must pre-flight
+  #    the cold-start path.
+
+verify:
+  result: |
+    Code reverted. Methodjit suite green again. No benchmarks
+    re-run post-revert (no code to measure).
+
+outcome:
+  status: no-win
+  shipped_code: false   # code reverted in-round; no infrastructure left in tree
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: true
+  notes: |
+    R149 is the second no-win in the tier2-recursion-closure class
+    (after R145's lightweight-self-entry). The two failures share
+    a root cause signature: the R110 self-call infrastructure is
+    tightly coupled to the generic caller-side setup; removing
+    "redundant" work from the caller-side exposes ABI hazards at
+    mid-execution tier transitions.
+
+    CONCRETE NEXT STEPS (R150 pivot options):
+
+    Option A — diagnose the quicksort crash AND the ack cold-start
+      bug in a dedicated correctness-bug-fix round. Reproduce
+      both in Go tests; bisect; fix root cause; THEN retry R149
+      fast path. Cost: 2-3 rounds.
+
+    Option B — pivot to Cluster C (LICM / range analysis on nbody /
+      spectral_norm / sieve) per the R147 ADR halt policy.
+      Cost: 1 round to re-audit, 4-5 rounds to execute.
+
+    Option C — narrower R149b: a fast path that ONLY skips the two
+      pieces of dead work with no cold-start interaction: the
+      ClosurePtr save/restore (2 insns) and the Constants ctx
+      write (1 insn). 3 insns × Mcalls = small win on fib,
+      negligible on others. Not worth a round.
+
+    User's guidance ("big optimizations, not case-by-case") points
+    to Option A: the call-path lever is still the biggest-ROI
+    target per R147's cluster analysis. But Option A requires a
+    dedicated diagnostic round — it is NOT a ship-now round.
+
+revert_class: cost-model-error
+revert_root_cause_location: internal/methodjit/emit_call_native_self.go (reverted)
+revert_cost_model_delta: |
+  Predicted: -25 to -40% aggregate across fib/ack/mut.
+  Actual (variant A, pre-revert): fib -88%, ack +0.7%, mut +1%.
+  The fib win validates the insn-count model on a simple call
+  shape. The ack neutral + cold-start correctness failure
+  invalidates the uniform-applicability assumption.
+revert_prevention: |
+  R148 audit should have included a "cold-start tier-mix" section
+  documenting what happens when Tier 1 callers invoke a Tier 2
+  callee that was just promoted. The numeric ABI (raw ints in
+  X0..X(N-1)) is INCOMPATIBLE with Tier 1's boxed-args-in-memory
+  convention — a hazard R137 Layer 4 already knew about but
+  didn't surface to the static-self specialization.
+
+ledger_update:
+  classes_touched:
+    - tier2-recursion-closure
+  new_class_introduced: null
