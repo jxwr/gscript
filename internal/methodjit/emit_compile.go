@@ -175,10 +175,15 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		fusedCmps:        fusedCmps,
 		tailCallInstrs:   computeTailCalls(fn),
 	}
-	// R124: numeric entry is emitted inside this Compile when the proto
-	// qualifies. numericParamCount tells emitEpilogue whether to emit.
+	// R124/R126: numeric entry is emitted as pass-2 body inside this
+	// Compile when the proto qualifies. numericParamCount tells the
+	// post-epilogue dispatcher whether to run pass 2.
 	if ok, np := qualifyForNumeric(fn.Proto); ok {
 		ec.numericParamCount = np
+		ec.numericParamSlots = make(map[int]bool, np)
+		for i := 0; i < np; i++ {
+			ec.numericParamSlots[i] = true
+		}
 	}
 
 	// Assign home slots for all SSA values.
@@ -423,10 +428,23 @@ type emitContext struct {
 	tailCallInstrs map[int]bool
 
 	// numericParamCount (R124) is set at emitContext construction when
-	// the proto qualifies (qualifyForNumeric). emitEpilogue emits an
-	// extra label `t2_numeric_self_entry_N` that takes raw int args in
-	// X0-X(N-1) and boxes them to regs[0..] before jumping to B0.
+	// the proto qualifies (qualifyForNumeric). Non-zero → Compile emits
+	// an additional numeric body (pass 2) with the entry label
+	// `t2_numeric_self_entry_N`.
 	numericParamCount int
+
+	// numericMode (R126) is set to true during pass 2 (numeric variant
+	// emit). When true, block labels are prefixed "num_" (via
+	// blockLabelFor) to avoid collision with pass 1. Future rounds
+	// (R127+) will also branch LoadSlot/GuardType/Return emits on
+	// this flag for body-level raw-int handling.
+	numericMode bool
+
+	// numericParamSlots (R126) is the set of VM register slots that
+	// correspond to function parameters. Populated when numericParamCount
+	// > 0. In pass 2, LoadSlot for these slots will emit raw-int
+	// semantics (R127+).
+	numericParamSlots map[int]bool
 
 	// fusedCond holds the condition code from the last fused comparison.
 	// Set by emitIntCmp/emitFloatCmp when the comparison is in fusedCmps.
@@ -525,8 +543,31 @@ func (ec *emitContext) storeValue(src jit.Reg, valueID int) {
 }
 
 // blockLabel returns the assembler label name for a basic block.
+// Numeric variant (pass 2) prefixes with "num_" to avoid label
+// collision with the normal pass-1 body.
 func blockLabel(b *Block) string {
 	return fmt.Sprintf("B%d", b.ID)
+}
+
+// emitNumericBody (R126 infrastructure, deferred body emit) — when R127+
+// implements layers 2-5, this will run a second pass with numericMode=true,
+// prefixed block labels, raw-arg prologue, raw LoadSlot for param slots,
+// GuardType pass-through, raw Return + numeric epilogue, and deopt-time
+// boxing of live rawIntRegs. For R126 the function is a stub — dual-body
+// emit requires fixing label collisions across many exit/continue sites
+// (call_continue_N, global_continue_N, etc.); that's future work.
+func (ec *emitContext) emitNumericBody() {
+	// No-op placeholder for layers 2-5. See rounds/R126.yaml and
+	// project_numeric_conv_arc_partial.md for the full recipe.
+}
+
+// blockLabelFor returns the label for block b in the given emit pass.
+// When ec.numericMode is true, returns the prefixed variant.
+func (ec *emitContext) blockLabelFor(b *Block) string {
+	if ec.numericMode {
+		return fmt.Sprintf("num_B%d", b.ID)
+	}
+	return blockLabel(b)
 }
 
 // frameSize is the stack frame size for callee-saved registers.
@@ -655,14 +696,10 @@ func (ec *emitContext) emitEpilogue() {
 		asm.B("B0") // Jump to first SSA block (same body)
 	}
 
-	// --- Numeric self-entry (R124) ---
-	// Called from Tier-2-internal static self-calls with raw int args in
-	// X0-X(NumericParamCount-1). Prologue saves callee-saved regs,
-	// reloads mRegRegs (caller advanced ctx.Regs), then boxes raw args
-	// into regs[0..N-1] so the body (shared with normal entries) sees
-	// NaN-boxed args per usual convention.
-	// Only emitted when the proto qualifies AND has self-calls (otherwise
-	// caller would never dispatch here).
+	// --- Numeric self-entry (R124) — same-block label so caller BL is
+	// PC-relative. For R124 behavior: boxes args at entry so body
+	// (shared with normal entries) sees NaN-boxed args. R127+ will
+	// replace this with a dual-body emit.
 	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
 		label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
 		asm.Label(label)
@@ -679,7 +716,6 @@ func (ec *emitContext) emitEpilogue() {
 			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
 		}
 		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
-		// Box raw int args (X0..X(N-1)) into regs[0..N-1].
 		for i := 0; i < ec.numericParamCount; i++ {
 			argReg := jit.Reg(int(jit.X0) + i)
 			asm.ORRreg(argReg, argReg, mRegTagInt)
@@ -710,7 +746,7 @@ func (ec *emitContext) emitEpilogue() {
 
 // emitBlock emits ARM64 code for one basic block.
 func (ec *emitContext) emitBlock(block *Block) {
-	ec.asm.Label(blockLabel(block))
+	ec.asm.Label(ec.blockLabelFor(block))
 	ec.currentBlockID = block.ID
 
 	isLoopBlock := ec.loop != nil && ec.loop.loopBlocks[block.ID]

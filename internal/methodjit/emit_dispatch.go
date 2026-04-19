@@ -832,7 +832,7 @@ func (ec *emitContext) emitJump(instr *Instr, block *Block) {
 		ec.emitLoopExitBoxing(ec.exitingHeaderID(block, target))
 	}
 	ec.emitPhiMoves(block, target)
-	ec.asm.B(blockLabel(target))
+	ec.asm.B(ec.blockLabelFor(target))
 }
 
 func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
@@ -842,7 +842,11 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 
 	trueBlock := block.Succs[0]
 	falseBlock := block.Succs[1]
-	trueTrampolineLabel := fmt.Sprintf("B%d_true_from_B%d", trueBlock.ID, block.ID)
+	prefix := ""
+	if ec.numericMode {
+		prefix = "num_"
+	}
+	trueTrampolineLabel := fmt.Sprintf("%sB%d_true_from_B%d", prefix, trueBlock.ID, block.ID)
 
 	// Fused compare+branch: the preceding CMP/FCMP already set NZCV flags.
 	// Emit B.cc directly instead of materializing a bool and testing bit 0.
@@ -861,7 +865,7 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 		ec.emitLoopExitBoxing(ec.exitingHeaderID(block, falseBlock))
 	}
 	ec.emitPhiMoves(block, falseBlock)
-	ec.asm.B(blockLabel(falseBlock))
+	ec.asm.B(ec.blockLabelFor(falseBlock))
 
 	// True path (trampoline).
 	ec.asm.Label(trueTrampolineLabel)
@@ -869,7 +873,7 @@ func (ec *emitContext) emitBranch(instr *Instr, block *Block) {
 		ec.emitLoopExitBoxing(ec.exitingHeaderID(block, trueBlock))
 	}
 	ec.emitPhiMoves(block, trueBlock)
-	ec.asm.B(blockLabel(trueBlock))
+	ec.asm.B(ec.blockLabelFor(trueBlock))
 }
 
 // isLoopExit returns true if the edge from 'from' to 'to' exits a loop
