@@ -19,8 +19,23 @@ import (
 var _ runtime.Value
 var _ *vm.FuncProto
 
+// CompileOpts (R123) customizes the compile pipeline.
+// NumericMode: produce a "numeric twin" variant — entry takes raw int
+// args in X0-X(NumericParamCount-1), body is unchanged (boxes args at
+// entry for compatibility), epilogue unchanged. Future rounds will
+// extend this to elide the entry box + return as raw int.
+type CompileOpts struct {
+	NumericMode       bool
+	NumericParamCount int // only consulted when NumericMode is true
+}
+
 // Compile takes a Function with register allocation and produces executable ARM64 code.
 func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
+	return CompileWithOpts(fn, alloc, nil)
+}
+
+// CompileWithOpts is the opts-aware variant.
+func CompileWithOpts(fn *Function, alloc *RegAllocation, opts *CompileOpts) (*CompiledFunction, error) {
 	// Check if any FPR allocations exist (to skip FPR save/restore).
 	hasFPR := false
 	for _, pr := range alloc.ValueRegs {
@@ -174,6 +189,10 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		scratchFPRCache:  make(map[int]jit.FReg),
 		fusedCmps:        fusedCmps,
 		tailCallInstrs:   computeTailCalls(fn),
+	}
+	if opts != nil && opts.NumericMode {
+		ec.numericMode = true
+		ec.numericParamCount = opts.NumericParamCount
 	}
 
 	// Assign home slots for all SSA values.
@@ -417,6 +436,13 @@ type emitContext struct {
 	// normal return value that the Return then handles).
 	tailCallInstrs map[int]bool
 
+	// numericMode (R123) flags the compile as a "numeric twin". Entry
+	// emission takes raw int args in X0-X(NumericParamCount-1); body
+	// emission is identical to normal for this round (R124+ will add
+	// rawInt handling for param LoadSlots + raw return).
+	numericMode       bool
+	numericParamCount int
+
 	// fusedCond holds the condition code from the last fused comparison.
 	// Set by emitIntCmp/emitFloatCmp when the comparison is in fusedCmps.
 	fusedCond jit.Cond
@@ -540,6 +566,34 @@ func (ec *emitContext) emitPrologue() {
 	if ec.useFPR {
 		asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
 		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+	}
+
+	if ec.numericMode {
+		// R123 numeric twin prologue: raw int args in X0-X(N-1). Called
+		// only from Tier-2-internal (mRegCtx already set by caller).
+		// Save the args FIRST (before they get clobbered by mRegTag*
+		// setup), then restore pinned regs.
+		// NOTE: X0-X3 are caller-provided raw ints. We need to stash
+		// them to memory (regs[0..N-1], NaN-boxed) so the body can
+		// treat regs[slot] as NaN-boxed per normal convention.
+		// Caller's convention: mRegCtx (X19) is live; mRegTagInt (X24),
+		// mRegTagBool (X25), mRegConsts (X27), mRegRegs (X26) are NOT
+		// yet reloaded at this point (prologue just STP'd them).
+		// So reload the pinned regs that body uses.
+		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
+		// mRegTagInt/Bool and mRegConsts aren't guaranteed same as
+		// caller's (callee-saved, STP saved caller's). Must reload.
+		asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))
+		asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))
+		asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants)
+		// Box args and write to regs[0..N-1]. Use X3 as scratch if
+		// N <= 3 (X3 is arg3 for N==4; handle via reverse order).
+		for i := ec.numericParamCount - 1; i >= 0; i-- {
+			argReg := jit.Reg(int(jit.X0) + i)
+			asm.ORRreg(argReg, argReg, mRegTagInt)
+			asm.STR(argReg, mRegRegs, slotOffset(i))
+		}
+		return
 	}
 
 	// Set up pinned registers.

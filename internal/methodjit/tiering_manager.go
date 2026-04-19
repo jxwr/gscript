@@ -515,6 +515,23 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		proto.MaxStack = cf.numRegs
 	}
 
+	// R123: if the proto qualifies, compile a numeric twin. The twin
+	// expects raw int args in X0-X(N-1) (ARM64 AAPCS), boxes them at
+	// entry, and runs the normal body + epilogue. R124+ will wire
+	// caller dispatch; until then the twin is dead code but linked
+	// via cf.NumericTwin. Infrastructure verification round.
+	if ok, numParams := qualifyForNumeric(proto); ok {
+		twin, terr := CompileWithOpts(fn, alloc, &CompileOpts{
+			NumericMode:       true,
+			NumericParamCount: numParams,
+		})
+		if terr == nil {
+			cf.NumericTwin = twin
+			cf.NumericParamCount = numParams
+		}
+		// If twin compile fails, silently skip — not a correctness issue.
+	}
+
 	return cf, nil
 }
 

@@ -8,6 +8,7 @@ package methodjit
 import (
 	"testing"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -87,3 +88,47 @@ func TestR121_CompiledFunctionHasNumericFields(t *testing.T) {
 
 // Unused-var trick to keep vm import referenced if other tests are pruned.
 var _ = vm.OP_CALL
+
+// TestR123_NumericTwinLinked verifies that qualifying protos get a
+// NumericTwin populated after Tier 2 compile (R123 scaffolding).
+func TestR123_NumericTwinLinked(t *testing.T) {
+	src := `
+func fib(n) {
+    if n < 2 { return n }
+    return fib(n-1) + fib(n-2)
+}
+result := fib(15)
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+
+	// Find fib's child proto and force a Tier 2 compile (bypass threshold).
+	var fibProto *vm.FuncProto
+	for _, c := range proto.Protos {
+		if c.Name == "fib" {
+			fibProto = c
+			break
+		}
+	}
+	if fibProto == nil {
+		t.Fatalf("fib proto not found")
+	}
+	fibProto.EnsureFeedback()
+	if err := tm.CompileTier2(fibProto); err != nil {
+		t.Fatalf("CompileTier2: %v", err)
+	}
+	cf := tm.tier2Compiled[fibProto]
+	if cf == nil {
+		t.Fatalf("fib Tier 2 compile did not populate tier2Compiled")
+	}
+	if cf.NumericTwin == nil {
+		t.Errorf("fib CF should have NumericTwin linked; got nil")
+	}
+	if cf.NumericParamCount != 1 {
+		t.Errorf("fib NumericParamCount: want 1, got %d", cf.NumericParamCount)
+	}
+}
