@@ -25,11 +25,10 @@ import (
 // Real fix deferred; this test documents the reproducer. Run with
 // `-run TestR138_AckTier2Hang -tags r138fix` once a fix is landed.
 func TestR138_AckTier2Hang(t *testing.T) {
-	t.Skip("R141: attempted single-body collapse (pass-2 entry → trampoline → " +
-		"pass-1 B0) did NOT fix the hang. Entry correctly emits ORR+STR for both " +
-		"args (verified in asm dump), yet slot[0] at deopt still holds raw bits. " +
-		"A SECOND leak path writes raw to slot[0] — unidentified. Architectural " +
-		"hypothesis remains plausible but incomplete. See rounds/R141.yaml.")
+	t.Skip("R142 watchpoint findings (see rounds/R142.yaml): the arg0 at " +
+		"executeCallExit for v29 tail-call exit is RAW 0x01 — Step 1 of " +
+		"emitCallNativeTail should have boxed it via resolveValueNB, but " +
+		"evidently didn't, or was overwritten. Root cause still narrowing.")
 
 	src := `
 func ack(m, n) {
