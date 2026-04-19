@@ -34,6 +34,12 @@ type FuncProfile struct {
 	HasGlobal     bool // contains OP_GETGLOBAL or OP_SETGLOBAL
 }
 
+// promoteAckOverride (R138 test hook) widens the shouldPromoteTier2
+// np==1 gate to all qualifying np in tests. Exists ONLY for
+// r138_ack_hang_test.go to reproduce the ack mid-compile hang in-tree
+// (rule 26). Production keeps it false; the real fix is deferred.
+var promoteAckOverride bool
+
 // staticallyCallsOnlySelf returns true when the bytecode's GETGLOBAL
 // targets are all the proto's own name — i.e. this proto calls only
 // itself, no other globals. Used to gate Tier 2 promotion for purely-
@@ -223,7 +229,7 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		// at promotion time it's still false — detect recursion by
 		// bytecode scan instead.
 		if staticallyCallsOnlySelf(proto) {
-			if ok, np := qualifyForNumeric(proto); ok && np == 1 {
+			if ok, np := qualifyForNumeric(proto); ok && (np == 1 || promoteAckOverride) {
 				return runtimeCallCount >= 2
 			}
 		}
