@@ -1,0 +1,180 @@
+# R150: diagnostic — isolated which specific emit_call_native skip
+#       produced the R149 Variant A fib -88%. Finding: it was the
+#       MaxStack bounds skip, which is UNSAFE (the bounds check is
+#       cumulative for deep recursion, not a per-call self check).
+#       ALL the other "safe" skips combined yield ~1% on fib,
+#       within measurement noise. R147 ADR premise invalidated;
+#       halt arc per halt-condition #2 and pivot.
+round: 150
+date: 2026-04-19
+follows: 149
+
+type: diagnostic
+
+target:
+  benchmark: multi   # fib + ackermann + mutual_recursion + quicksort/sort tests
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    The R149 Variant A fib -88% was produced by specifically one of
+    the emit skips. Bisect by adding the fast path as a byte-for-byte
+    copy of the generic path (confirm neutral) and peel skips off
+    one at a time to see which one moves fib AND which one breaks
+    correctness. Expected: a subset of skips is both safe and
+    yields most of the win.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.25
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: >
+        Recreate R149 Variant A in a local uncommitted file
+        (emit_call_native_self.go). Add reproducer tests at various
+        sizes to isolate the crash trigger. Verify TestMainT2_SortPattern
+        still SIGSEGVs with Variant A active (to confirm we are
+        reproducing the original failure mode).
+      acceptance: fault reproduced; Go reproducer tests cover the shape space
+      halt_on_fail: true
+    - description: >
+        Replace emitCallNativeStaticSelf with a byte-for-byte copy
+        of emit_call_native.go's emitCallNative body (static-self
+        always true). Verify this "copy baseline" passes all tests
+        AND produces fib wall time equal to baseline (±1%). This
+        establishes the bisect starting point.
+      acceptance: copy-baseline fib == R146 baseline within noise
+      halt_on_fail: true
+  result: |
+    Pre-flight #1: ran TestMainT2_SortPattern under Variant A →
+      SIGSEGV fault 0xfffe000000000001 reproduced. Wrote 8 smaller
+      reproducers in r150_static_self_crash_test.go covering:
+        qs(N=10), qs(N=100), qs(N=1000) pre-filled reverse-order: PASS
+        binary-3-arg all-int deep self-recursion: PASS
+        Table-arg, depth=2 self-recursion: PASS
+        Table-arg, depth=32 self-recursion, no mutation: PASS
+        Table-arg, depth=32 self-recursion, with mutation: PASS
+        qs with main REPS loop + LCG + inversion check N=5000: FAIL
+        qs with main REPS loop + LCG + inversion check N=200: FAIL
+        qs single run + LCG + inversion check N=200: FAIL
+        qs (N=200) + reverse-order: PASS
+        qs (N=200) + small-range random (0-1000): PASS
+      Failure trigger: LARGE int values (LCG produces 0..2^31) in
+      the array. Size of N secondary.
+      NOTE: TestR150_QS_NoMainLoop fails WITHOUT Variant A too —
+      this is a pre-existing Tier 2 bug, not caused by R149.
+
+    Pre-flight #2: byte-for-byte copy of emit_call_native as
+      emit_call_native_self.go with the staticSelf branches inlined.
+      Verified ALL relevant tests pass. Fib median: 0.910s (vs
+      R146 baseline 0.904s — within noise). ACCEPTED.
+
+  passed: true
+  failing_test: null       # diagnostic, no production red→green test
+  failing_output: null
+  surgical_scope: "emit_call_native_self.go (reverted at end of round)"
+  ir_diff_before: null
+  ir_diff_after: null
+  bisect_range: |
+    Bisected per-skip effects on fib wall time:
+      copy baseline:                         fib 0.910s  (noise)
+      + skip CallCount inc (-5 insns):       fib 0.908s  (noise)
+      + skip MaxStack bounds (-7 insns):     fib 0.120s  ← WIN SOURCE
+                                              + BUT crashes on deep
+                                              recursion (quicksort
+                                              N=50000 SIGSEGV)
+      + skip IC+type+extract (-18 insns):    fib 0.927s  (noise)
+      + thin 32B frame (-4 insns):           fib 0.892s  (-3% noise)
+      + skip ctx.Constants write (-2 insns): fib 0.891s  (-3% noise)
+    Combined safe skips (all above EXCEPT MaxStack): fib 0.891s
+      median-of-5 vs R146 baseline 0.904s — **~1.5% gain, inside
+      warm-bench noise floor**.
+    Crash signature at fault: 0xffff0140... (heap ptr, not code)
+      = callee's register window overflowed regsEnd → wild write
+      into Go heap → subsequent dispatch through corrupted pointer.
+
+current_state_audit_summary: |
+  # CORE FINDING (invalidates R147 ADR's cost model):
+  #
+  # R148 audited emit_call_native's static-self path and listed
+  # 44 insns of "dead work" to skip. The audit was WRONG on
+  # MaxStack bounds (line 152-164): it is NOT dead. The check
+  # ensures `callee_frame_base + callee.MaxStack * 8 <= regsEnd`,
+  # which is CUMULATIVE across recursion depth. Same proto ≠ same
+  # check outcome: at recursion depth N, the Nth call needs
+  # (N * maxStack * 8) bytes ahead of caller's frame. When this
+  # exceeds regsEnd, the emit's job is to fall to slow path so the
+  # Go-side handler can grow the register file.
+  #
+  # Skipping MaxStack = wild writes past the slice → SIGSEGV.
+  #
+  # With MaxStack restored (the only safe configuration), the
+  # remaining safe skips produce ~1.5% on fib. Well inside warm-
+  # bench noise. The call-path lever is **NOT** -25% to -40% safely
+  # achievable. It's ~1-3% at best.
+  #
+  # This matches memory-note project_r87_r102_arc_final: "Call-heavy
+  # (fib/ack/mut_rec 45-55x) untouched — trace-JIT territory. DO NOT
+  # do more IR-specialization micro-rounds." Emit-level micro-cuts
+  # on the call path have been exhausted. The real gap to LuaJIT
+  # for recursive workloads requires a different JIT architecture
+  # (trace JIT), not method-JIT emit tweaks.
+  #
+  # HALT CONDITION #2 from R147 ADR TRIPPED:
+  #   "Null wall-time movement — fib stays within ±1.5% of R146's
+  #    0.912s across 5-sample median despite shipped code."
+  # R150 measurement: 0.891s vs 0.904s = -1.4%. Exactly at the
+  # noise floor. The ADR is explicit: pivot to Cluster C.
+
+verify:
+  result: |
+    Code reverted. Methodjit suite green (sans pre-existing
+    TestR150_QS_NoMainLoop failure that reproduces on R146
+    baseline and is unrelated to this arc).
+
+outcome:
+  status: adr-win
+  # Diagnostic deliverable: proof that R147 ADR's cost model was
+  # incorrect on MaxStack bounds. This finding is more valuable
+  # than shipping a 1% fast path. Per rule 24, `adr-win` covers
+  # "ADR/meta/kb/diag deliverable shipped without expectation of
+  # immediate bench movement".
+  shipped_code: false   # no production code left in tree
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: true
+  notes: |
+    R151 will formally close the arc by pivoting to Cluster C
+    per R147 ADR halt policy: LICM / range analysis on nbody /
+    spectral_norm / sieve. Σ gap ~27 — smaller than A but
+    concrete attack surface with existing infrastructure
+    (`pass_licm.go`, `pass_range_analysis.go`).
+
+revert_class: cost-model-error
+revert_root_cause_location: docs-internal/decisions/adr-call-path-reduction-arc.md (audit of emit_call_native.go:152-164)
+revert_cost_model_delta: |
+  R148 audit: 44-insn dead-budget for static-self.
+  Actual safe dead-budget: ~9 insns (CallCount 5 + Closure save 2 + ctx writes 2).
+  The 35-insn difference is MaxStack bounds (7) + IC/type/extract/proto (18) + ctx.ClosurePtr STR (1) + frame save shaved (4) + CallMode/GlobalCache (5 in !staticSelf, already skipped).
+  Of those, only MaxStack bounds (7) is UNSAFE to skip; the rest
+  are technically safe but each is tiny and M4's superscalar
+  pipeline absorbs them. Net safe savings: 1-3% inside noise.
+revert_prevention: |
+  Future cost-model audits on emit-layer skips must distinguish:
+    (a) PER-CALL dead work (e.g. IC for compile-time-constant callee) — truly skippable.
+    (b) CUMULATIVE safety checks (e.g. MaxStack bounds that
+        guard against register-file overflow across deep
+        recursion) — NOT skippable even for static self.
+    (c) MICRO-CUTS (≤5 insn savings) — M4 pipeline absorbs
+        them; not worth the emit complexity.
+  R148 conflated (a) and (b). The R33 "IR-diff required" rule
+  should be amended to require *runtime cost model* for any skip
+  involving stack/heap bounds.
+
+ledger_update:
+  classes_touched:
+    - tier2-recursion-closure
+  new_class_introduced: null
