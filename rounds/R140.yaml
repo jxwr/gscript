@@ -1,0 +1,131 @@
+# R140: Q1 dispatch — 3 parallel agents identify the failing guard
+#       (v32 entry GuardType on param m). Attempted fix (revert R130
+#       layer 2+3) verified insufficient; secondary raw-slot leak
+#       remains unidentified.
+round: 140
+date: 2026-04-19
+follows: 139
+
+type: correctness-bug-fix
+
+target:
+  benchmark: ackermann
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    Per R139's 4-agent synthesis, ack Tier 2 deopts in a retry loop.
+    R140 dispatches three parallel agents to answer Q1: "which
+    guard at which instr.ID is failing, and what value does it see?"
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.25
+  mitigation_required: true
+
+pre_flight:
+  required:
+    - description: 3 parallel agents (rule 30) on independent Q1 angles
+      acceptance: converged finding
+      halt_on_fail: true
+  result: >
+    Convergent root cause identified:
+
+    Agent 1 (instrument-guard): instrumented `emitDeopt` to write
+      `ctx.DeoptInstrID` before each deopt exit. Ran repro; observed
+      instrID=32 deopting 5.3M times. IR line:
+         v32 = GuardType v0 is int    (entry guard on param m)
+         v0  = LoadSlot  slot[0]
+      Register-dump showed slot[0] holds RAW bits (0x01, or float
+      IEEE754 patterns), not 0xFFFE000000000001.
+
+    Agent 2 (ir-feedback-diff): compiled ack Tier 2 twice — cold vs
+      feedback-populated — and diffed post-pipeline IR + GuardType
+      counts. Production mid-compile sees empty Feedback because
+      Tier 1 NEVER writes feedback for ack (ack has only OP_EQ /
+      OP_ADD / OP_SUB / OP_CALL, none of which trigger feedback
+      recording). ir divergence from R139 was a RED HERRING — IRs
+      are structurally identical. The failing v32 is TypeSpec-
+      driven, not feedback-driven.
+
+    Agent 3 (feedback-analysis): static analysis confirmed feedback
+      is written ONLY by the VM interpreter's op handlers; Tier 1
+      native code never writes it. For ack, feedback is always
+      empty. Hypothesis: the mid-compile divergence observed in R139
+      agent 2 was from mutable proto state (`HasSelfCalls` flag) and
+      not from feedback population.
+
+    Convergent conclusion: the deopt fires when PASS-1 body is
+    entered with slot[0] holding RAW bits. Pass-2 entry stores raw
+    X0..X(N-1) to regs[0..N-1] (R130 layer 2 design). Pass-2 body's
+    LoadSlot for param slots skips unbox (R130 layer 3), treating
+    them as raw. But whenever pass-1 body is re-entered with the
+    same regs[] (e.g., via pass-2 tail call BR → t2_direct_entry,
+    or a deopt-resume), pass-1's normal LoadSlot + GuardType reads
+    slot[0] as NaN-boxed; tag check fails; deopt. The deopt-retry
+    loop (R139 finding) then spins.
+  passed: true
+
+surgical_scope: >
+  Attempted fix: revert R130 layer 2 (pass-2 entry now NaN-boxes
+  args before STR to regs[0..N-1]) + revert R130 layer 3 (remove
+  numericMode skip-unbox in emitLoadSlotToReg). Under these, pass-1
+  and pass-2 share a common NaN-boxed regs[] ABI.
+
+current_state_audit_summary: |
+  # Post-fix verification:
+  # - num entry asm CORRECTLY emits ORR X0,X0,X24 + STR X0,(X26)
+  #   and ORR X1,X1,X24 + STR X1,8(X26) (verified in ack.asm.txt).
+  # - R138 test STILL HANGS. Debug instrumentation shows slot[0]
+  #   STILL holds raw bits at deopt:
+  #     ExitDeopt proto=ack instrID=32 base=240 r0=0x1 r1=0xfffe...3
+  #     ...(repeated at exponentially growing base)
+  # - Fib regressed ~5% with the layer 2+3 revert (0.924s → 0.982s
+  #   median). Cost: 1 ORR per param per entry + kills the skip-
+  #   unbox optimization.
+  # - Since the fix neither eliminates the hang nor is performance-
+  #   neutral, the layer 2+3 revert is REVERTED too. Net code change
+  #   this round is only the DeoptInstrID diagnostic infrastructure.
+
+verify:
+  result: >
+    Layer 2+3 revert REVERTED. Back to R137 emit state. fib/ack/mut
+    bench unchanged from R137. np==1 gate retained.
+
+    Shippable artifacts:
+    - `ctx.DeoptInstrID` field + `execCtxOffDeoptInstrID` offset in
+      emit.go.
+    - `emitDeopt` writes instr.ID to ctx before exiting (2 insns
+      per static deopt site; executes only when that deopt fires).
+    - CLAUDE.md rule 30 (parallel multi-agent debug — committed
+      separately).
+
+outcome:
+  status: adr-win
+  shipped_code: true
+  primary_finding: >
+    The failing guard is v32 (entry GuardType on param m); slot[0]
+    holds RAW int bits at deopt. R130 layer 2+3 design breaks the
+    regs[] NaN-box invariant, but reverting layer 2+3 alone does
+    NOT fix the hang — a SECONDARY path writes raw to slot[0]
+    that remains unidentified after R140. The retry loop discovered
+    in R139 spins on that raw value.
+  shipped_artifact: >
+    ctx.DeoptInstrID diagnostic infrastructure. This will make R141+
+    debugging cheaper — any deopt can be attributed to its exact
+    IR instr.ID without adding test-specific instrumentation.
+  notes: >
+    R141 plan: dispatch another parallel agent set to pinpoint the
+    SECONDARY raw-slot writer. Hypotheses:
+      (a) A tail-call emit path stores raw to regs[0..N-1] under
+          some code path (not resolveValueNB → boxed as we verified).
+      (b) The caller side of numeric BL sets up args in X0..X(N-1)
+          raw; if the BL target is wrong (not t2_numeric_self_entry_N)
+          those raw values land in slot[0..N-1] via some prologue.
+      (c) A deopt resume stub re-enters pass-1 without re-boxing
+          slot values that pass-2 had left raw (once R130 layer 2
+          was in effect).
+
+    The DeoptInstrID infra shipped here is the foundation — combined
+    with a runtime hook that also dumps regs[base..base+N-1] and
+    the calling frame's slot-layout, R141 can pinpoint the writer.

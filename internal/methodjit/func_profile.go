@@ -229,6 +229,9 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		// at promotion time it's still false — detect recursion by
 		// bytecode scan instead.
 		if staticallyCallsOnlySelf(proto) {
+			// R140: revert to np==1 gate. Layer 2/3 revert was correct
+			// hygiene but did NOT fix the ack hang — another path leaks
+			// raw bits to slot[0] (unidentified). Re-investigate in R141.
 			if ok, np := qualifyForNumeric(proto); ok && (np == 1 || promoteAckOverride) {
 				return runtimeCallCount >= 2
 			}

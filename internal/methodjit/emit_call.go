@@ -30,8 +30,15 @@ func emitCheckIsInt(asm *jit.Assembler, valReg, scratch jit.Reg) {
 
 // emitDeopt emits ARM64 code that bails out to the interpreter.
 // Sets ExecContext.ExitCode = ExitDeopt (2) and jumps to the deopt epilogue.
+// R140: also writes instr.ID to ExecContext.DeoptInstrID so that post-
+// deopt diagnostics (e.g., r138_ack_hang_test.go) can identify which
+// specific guard fired without re-running the diag disassembler.
 func (ec *emitContext) emitDeopt(instr *Instr) {
 	asm := ec.asm
+	if instr != nil {
+		asm.LoadImm64(jit.X0, int64(instr.ID))
+		asm.STR(jit.X0, mRegCtx, execCtxOffDeoptInstrID)
+	}
 	asm.LoadImm64(jit.X0, ExitDeopt)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
 	asm.B("deopt_epilogue")

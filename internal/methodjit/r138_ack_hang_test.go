@@ -25,16 +25,13 @@ import (
 // Real fix deferred; this test documents the reproducer. Run with
 // `-run TestR138_AckTier2Hang -tags r138fix` once a fix is landed.
 func TestR138_AckTier2Hang(t *testing.T) {
-	t.Skip("R138/R139: ack mid-compile hang. Root cause identified by 4-agent " +
-		"parallel debug (R139): Tier 2 emit is feedback-dependent; " +
-		"mid-recursion compile produces a body whose guards deopt on " +
-		"re-entry. The ExitDeopt path at tiering_manager.go → vm.run:1206 " +
-		"retries via TryCompile (cache hit!) → re-executes same Tier 2 → " +
-		"deopts again, growing ctx.Regs unboundedly. Fix requires evicting " +
-		"tier2Compiled[proto] + tier2Failed[proto]=true + DirectEntryPtr " +
-		"reset AND ensuring any in-flight Tier 2 execute stacks unwind " +
-		"cleanly. Single-point eviction was verified insufficient. See " +
-		"rounds/R139.yaml for full bisection.")
+	t.Skip("R138/R139/R140: ack mid-compile hang still reproduces even after " +
+		"reverting R130 layer 2/3 (pass-2 entry now NaN-boxes). R140 agents " +
+		"pinpointed DeoptInstrID=32 (v32 entry GuardType on m) with slot[0] " +
+		"holding raw int bits. Box-at-entry fix was applied and verified in " +
+		"asm dump (ORR X0, X0, X24 precedes STR X0, (X26) in num entry), " +
+		"yet the deopt still sees raw slot[0]. Another path writes raw to " +
+		"slot[0] — unidentified. Test remains skipped. See rounds/R140.yaml.")
 
 	src := `
 func ack(m, n) {

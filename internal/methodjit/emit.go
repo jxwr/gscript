@@ -140,6 +140,13 @@ type ExecContext struct {
 	// Set by emitIntSpecDeopt so that Execute can resume the interpreter at the
 	// exact guard PC instead of restarting at pc=0 (which replays side effects).
 	ExitResumePC int64
+
+	// DeoptInstrID is written by emitDeopt (and related deopt exits) with the
+	// IR Instr.ID that triggered the bail-out. Diagnostic infrastructure only —
+	// it lets the tiering manager / tests identify which guard fired without
+	// re-running disasm. Zero value means "no deopt" or "deopt site did not
+	// populate the field".
+	DeoptInstrID int64
 }
 
 // ExitCode constants.
@@ -227,6 +234,7 @@ var (
 	execCtxOffGlobalCacheIdx      = int(unsafe.Offsetof(ExecContext{}.GlobalCacheIdx))
 	execCtxOffExitResumePC        = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
 	execCtxOffTier2CallCache      = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
+	execCtxOffDeoptInstrID        = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
 )
 
 // CompiledFunction holds the generated native code for a function.
