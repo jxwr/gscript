@@ -120,6 +120,13 @@ rows:
   - {round: 88, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R88 kindVerified — unchanged"}
   - {round: 88, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R88 kindVerified — intrinsic path, unaffected"}
 
+  # --- R108 monomorphic call IC — small call-heavy wins ---
+  - {round: 108, date: 2026-04-19, bench: fib,              gscript_jit_sec: 1.436, luajit_sec: 0.026, gap_factor: 55.2, notes: "R108 mono call IC — 15-sample median, -0.5% vs R107"}
+  - {round: 108, date: 2026-04-19, bench: ackermann,        gscript_jit_sec: 0.270, luajit_sec: 0.006, gap_factor: 45.0, notes: "R108 — -0.7%"}
+  - {round: 108, date: 2026-04-19, bench: fib_recursive,    gscript_jit_sec: 14.281, luajit_sec: null, gap_factor: null, notes: "R108 — -0.4%"}
+  - {round: 108, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.191, luajit_sec: 0.004, gap_factor: 47.8, notes: "R108 — noise"}
+  - {round: 108, date: 2026-04-19, bench: object_creation,  gscript_jit_sec: 1.008, luajit_sec: null, gap_factor: null, notes: "R108 — -0.4%"}
+
   # --- R107 TCO infra (emitCallNativeTail, computeTailCalls) — correctness shipped, bench flat ---
   - {round: 107, date: 2026-04-19, bench: ackermann,           gscript_jit_sec: 0.272, luajit_sec: 0.006, gap_factor: 45.3, notes: "R107 TCO — 1/2 tail sites detected post-inline; countdown(200) now works"}
   - {round: 107, date: 2026-04-19, bench: fib,                 gscript_jit_sec: 1.457, luajit_sec: 0.026, gap_factor: 56.0, notes: "R107 — fib has no tail calls, no change expected"}

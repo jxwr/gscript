@@ -549,6 +549,10 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 		ctx.Tier2GlobalCacheGen = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))
 		ctx.Tier2GlobalGenPtr = uintptr(unsafe.Pointer(&tm.tier1.globalCacheGen))
 	}
+	// R108: set mono call-IC cache pointer.
+	if len(cf.CallCache) > 0 {
+		ctx.Tier2CallCache = uintptr(unsafe.Pointer(&cf.CallCache[0]))
+	}
 
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))

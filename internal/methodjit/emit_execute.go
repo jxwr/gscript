@@ -58,6 +58,10 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 		ctx.Tier2GlobalCacheGen = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))
 		ctx.Tier2GlobalGenPtr = uintptr(unsafe.Pointer(&standaloneGenCounter))
 	}
+	// R108: set mono call-IC cache pointer.
+	if len(cf.CallCache) > 0 {
+		ctx.Tier2CallCache = uintptr(unsafe.Pointer(&cf.CallCache[0]))
+	}
 
 	// Entry point: start at the beginning of the function.
 	codePtr := uintptr(cf.Code.Ptr())

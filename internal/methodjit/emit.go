@@ -128,6 +128,14 @@ type ExecContext struct {
 	Tier2GlobalGenPtr   uintptr // pointer to tier1.globalCacheGen (shared counter)
 	GlobalCacheIdx      int64   // cache index for current GetGlobal (set by emitter on exit)
 
+	// Tier 2 monomorphic call IC (R108). Each OpCall in the compiled code
+	// gets a 2-uint64 cache slot: [boxed_closure_value, direct_entry_addr].
+	// On hit (loaded fn value == cached), skip closure type checks + Proto
+	// lookup + DirectEntry lookup — just use the cached direct entry.
+	// On miss, take the full path (which updates the cache on success).
+	// Pointer is set by executeTier2 to &CompiledFunction.CallCache[0].
+	Tier2CallCache uintptr
+
 	// ExitResumePC is the bytecode PC of the int-spec overflow instruction.
 	// Set by emitIntSpecDeopt so that Execute can resume the interpreter at the
 	// exact guard PC instead of restarting at pc=0 (which replays side effects).
@@ -218,6 +226,7 @@ var (
 	execCtxOffTier2GlobalGenPtr   = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalGenPtr))
 	execCtxOffGlobalCacheIdx      = int(unsafe.Offsetof(ExecContext{}.GlobalCacheIdx))
 	execCtxOffExitResumePC        = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
+	execCtxOffTier2CallCache      = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
 )
 
 // CompiledFunction holds the generated native code for a function.
@@ -257,6 +266,16 @@ type CompiledFunction struct {
 	// function's GlobalCache was last populated. A mismatch means the
 	// cache may contain stale values and must be repopulated.
 	GlobalCacheGen uint64
+
+	// CallCache (R108) is a per-OpCall-site monomorphic IC.
+	// Layout: 2 × uint64 per call site.
+	//   [2*i]   = cached boxed closure value (NaN-boxed 0xFFFF...)
+	//   [2*i+1] = cached direct-entry address (uintptr)
+	// On a call with matching closure value, skip closure type checks +
+	// Proto/DirectEntry loads. On miss, full path updates both slots.
+	// Zero entries mean "never populated" — the miss path naturally takes
+	// a non-match and fills them.
+	CallCache []uint64
 }
 
 // Execute, executeCallExit, executeGlobalExit, executeTableExit, executeOpExit

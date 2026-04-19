@@ -89,6 +89,21 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Load function value from regs[funcSlot].
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 
+	// --- R108: Monomorphic call IC fast path ---
+	// Allocate this call site's cache slot (2 × uint64).
+	icIdx := ec.nextCallCacheIndex
+	ec.nextCallCacheIndex++
+	cacheOff := icIdx * 16 // 2 uint64 per slot
+	icHitLabel := ec.uniqueLabel("t2call_ic_hit")
+	icDoneLabel := ec.uniqueLabel("t2call_ic_done")
+
+	// Load cache base + cached closure value + compare.
+	asm.LDR(jit.X3, mRegCtx, execCtxOffTier2CallCache) // X3 = &CallCache[0]
+	asm.LDR(jit.X4, jit.X3, cacheOff)                   // X4 = cached boxed value
+	asm.CMPreg(jit.X0, jit.X4)
+	asm.BCond(jit.CondEQ, icHitLabel)
+
+	// --- IC Miss: original type check + proto load path ---
 	// Type check: must be ptr (0xFFFF) with sub-type = 8 (VMClosure).
 	asm.LSRimm(jit.X1, jit.X0, 48)
 	asm.MOVimm16(jit.X2, jit.NB_TagPtrShr48)
@@ -106,9 +121,26 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 
 	// Load Proto, DirectEntryPtr.
-	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)     // X1 = *FuncProto
+	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)          // X1 = *FuncProto
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr) // X2 = DirectEntryPtr
-	asm.CBZ(jit.X2, slowLabel)                      // not compiled -> slow
+	asm.CBZ(jit.X2, slowLabel)                           // not compiled -> slow
+
+	// R108: update IC cache with the boxed closure value (reload from
+	// memory since X0 now holds the raw ptr) and the direct entry addr.
+	asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot)) // re-load boxed value
+	asm.STR(jit.X4, jit.X3, cacheOff)                // cache[0] = boxed value
+	asm.STR(jit.X2, jit.X3, cacheOff+8)              // cache[1] = direct entry
+	asm.B(icDoneLabel)
+
+	// --- IC Hit: re-derive X0=*Closure and X1=*Proto ---
+	// X0 still holds the boxed closure value (matched cache).
+	// X2 already holds the cached direct-entry addr (from cache CMP setup).
+	asm.Label(icHitLabel)
+	asm.LDR(jit.X2, jit.X3, cacheOff+8)        // X2 = cached direct entry
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)     // X0 = *Closure
+	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)  // X1 = *Proto (needed downstream)
+
+	asm.Label(icDoneLabel)
 
 	// Step 5: Bounds check: callee register window fits in register file.
 	asm.LDR(jit.X3, jit.X1, funcProtoOffMaxStack) // X3 = calleeMaxStack (int)
@@ -336,8 +368,22 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 
 	slowLabel := ec.uniqueLabel("t2tail_slow")
 
-	// Step 2: Closure type check (ptr + sub-type 8).
+	// Step 2: Closure type check (ptr + sub-type 8), with R108 mono-IC
+	// fast path.
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
+
+	icIdx := ec.nextCallCacheIndex
+	ec.nextCallCacheIndex++
+	cacheOff := icIdx * 16
+	icHitLabel := ec.uniqueLabel("t2tail_ic_hit")
+	icDoneLabel := ec.uniqueLabel("t2tail_ic_done")
+
+	asm.LDR(jit.X3, mRegCtx, execCtxOffTier2CallCache)
+	asm.LDR(jit.X4, jit.X3, cacheOff)
+	asm.CMPreg(jit.X0, jit.X4)
+	asm.BCond(jit.CondEQ, icHitLabel)
+
+	// --- IC Miss: full type check + proto load ---
 	asm.LSRimm(jit.X1, jit.X0, 48)
 	asm.MOVimm16(jit.X2, jit.NB_TagPtrShr48)
 	asm.CMPreg(jit.X1, jit.X2)
@@ -355,6 +401,20 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr)
 	asm.CBZ(jit.X2, slowLabel)
+
+	// R108 cache update on successful miss path.
+	asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot))
+	asm.STR(jit.X4, jit.X3, cacheOff)
+	asm.STR(jit.X2, jit.X3, cacheOff+8)
+	asm.B(icDoneLabel)
+
+	// --- IC Hit: re-derive X0=*Closure and X1=*Proto ---
+	asm.Label(icHitLabel)
+	asm.LDR(jit.X2, jit.X3, cacheOff+8)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
+
+	asm.Label(icDoneLabel)
 
 	// Bounds check: callee window (at the TAIL base = 0) fits in register file.
 	asm.LDR(jit.X3, jit.X1, funcProtoOffMaxStack)

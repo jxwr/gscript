@@ -229,6 +229,12 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		globalCache = make([]uint64, ec.nextGlobalCacheIndex)
 	}
 
+	// R108: allocate per-OpCall monomorphic IC cache (2 uint64 per site).
+	var callCache []uint64
+	if ec.nextCallCacheIndex > 0 {
+		callCache = make([]uint64, 2*ec.nextCallCacheIndex)
+	}
+
 	return &CompiledFunction{
 		Code:              cb,
 		Proto:             fn.Proto,
@@ -237,6 +243,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		ResumeAddrs:       resumeAddrs,
 		DirectEntryOffset: directEntryOff,
 		GlobalCache:       globalCache,
+		CallCache:         callCache,
 	}, nil
 }
 
@@ -383,6 +390,11 @@ type emitContext struct {
 	// OpGetGlobal native cache. Each GetGlobal instruction gets a unique
 	// index (0, 1, 2, ...) assigned at emission time.
 	nextGlobalCacheIndex int
+
+	// nextCallCacheIndex (R108) assigns a unique IC slot to each OpCall
+	// in the compiled function. 2 uint64 per slot (closure value +
+	// direct-entry addr). Incremented in emitCallNative.
+	nextCallCacheIndex int
 
 	// scratchFPRCache maps value ID -> scratch FPR (D0-D3) currently holding
 	// that value's raw float. Scoped to a SINGLE instruction's operand resolution
