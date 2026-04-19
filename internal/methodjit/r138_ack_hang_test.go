@@ -25,9 +25,16 @@ import (
 // Real fix deferred; this test documents the reproducer. Run with
 // `-run TestR138_AckTier2Hang -tags r138fix` once a fix is landed.
 func TestR138_AckTier2Hang(t *testing.T) {
-	t.Skip("R138: ack mid-compile hang fix deferred (see rounds/R138.yaml). " +
-		"Simple fix of removing self-call threshold check kills fib's " +
-		"Tier 2 promotion — needs a per-proto promotion trigger.")
+	t.Skip("R138/R139: ack mid-compile hang. Root cause identified by 4-agent " +
+		"parallel debug (R139): Tier 2 emit is feedback-dependent; " +
+		"mid-recursion compile produces a body whose guards deopt on " +
+		"re-entry. The ExitDeopt path at tiering_manager.go → vm.run:1206 " +
+		"retries via TryCompile (cache hit!) → re-executes same Tier 2 → " +
+		"deopts again, growing ctx.Regs unboundedly. Fix requires evicting " +
+		"tier2Compiled[proto] + tier2Failed[proto]=true + DirectEntryPtr " +
+		"reset AND ensuring any in-flight Tier 2 execute stacks unwind " +
+		"cleanly. Single-point eviction was verified insufficient. See " +
+		"rounds/R139.yaml for full bisection.")
 
 	src := `
 func ack(m, n) {

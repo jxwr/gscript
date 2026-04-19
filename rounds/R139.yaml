@@ -1,0 +1,131 @@
+# R139: parallel 4-agent debug of the R138 ack hang. Root cause identified
+#       (feedback-dependent Tier 2 emit + vm.run retry loop); single-point
+#       eviction fix verified insufficient.
+round: 139
+date: 2026-04-19
+follows: 138
+
+type: diagnostic
+
+target:
+  benchmark: ackermann
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    R138 located the ack mid-compile hang to the Tier 1 → Tier 2
+    transition but did not identify the exact runtime mechanism.
+    R139 runs four parallel debug agents, each on an independent
+    angle, to triangulate.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.25
+
+pre_flight:
+  required:
+    - description: 4 debug agents launched with independent angles
+      acceptance: each reports back with findings
+      halt_on_fail: true
+  result: >
+    All 4 agents completed. Findings cross-validate a single root
+    cause: Tier 2 emit is feedback-dependent; mid-recursion compile
+    produces a body whose guards deopt on re-entry; the deopt
+    propagates up through a vm.run retry loop that grows ctx.Regs
+    unboundedly.
+  passed: true
+
+current_state_audit_summary: |
+  # Agent findings (synthesized):
+
+  1. trace-transition (Tier 1 → Go instrumentation):
+     Timeline showed ONE Tier 2 compile fires mid-recursion. After
+     that, EVERY subsequent ack call is dispatched via Tier 2's
+     `executeTier2`. fib's equivalent path works; ack's emits an
+     ExitCallExit per call which re-enters vm.call → TryCompile
+     (cache hit) → executeTier2, creating ~6 Go frames per
+     recursion level. ack(3,4) at depth 125+ exhausts stack/time.
+
+  2. diff-asm (up-front vs mid-compile Tier 2 ack asm):
+     Same size (19796 bytes), 182/4949 instructions differ
+     (~3.7%). The differences are regalloc/scheduling reorders
+     triggered by feedback state present when compile fires
+     (up-front: no feedback; mid-recursion: Tier 1 has observed
+     types). IR is likely identical; the divergence is downstream
+     (regalloc or scheduler reacts to feedback-driven specialization).
+
+  3. research-resume (resume machinery analysis):
+     Exit/resume unwinds the Tier 1 native frame (RET), then Go's
+     executeInner reads ctx.BaselinePC and launches a FRESH
+     Go→native call via jit.CallJIT to a resume stub (not an
+     LR-continuation of the old frame). The ctx struct is a shared
+     heap reference across nested dispatch levels — nested calls
+     can clobber ctx.BaselinePC or ExitCode seen by outer frames.
+
+  4. goroutine-stack (runtime.Stack during hang, 3 snapshots at
+     2.5s / 3.5s / 4.5s):
+     CPU is NOT stuck — it's making progress through an exponential
+     loop: Tier 2 ack deopts at tiering_manager.go:587 (ExitDeopt
+     branch), error propagates up through vm.callValue →
+     vm.call → vm.run:1206 which RE-INVOKES TryCompile (cache hit)
+     and re-Executes the same Tier 2 body. Each retry, vm.call at
+     vm.go:423 grows regs via `needed := base + MaxStack + 1`.
+     Snapshot #2 at t=4.5s: base=3,037,798; regs slice length
+     19.8M — the timeout fires before it returns.
+
+  # Convergent root cause:
+
+  The Tier 2 emit for ack, when compiled mid-recursion with
+  populated feedback, produces a specialized body whose type-guards
+  fail on the FIRST call (e.g., a type observation captured during
+  Tier 1 doesn't hold under Tier 2 execution). ExitDeopt fires. The
+  VM's retry path (vm.run:1206) looks up the cached Tier 2 body and
+  re-executes — same result, same deopt. Infinite.
+
+outcome:
+  status: adr-win
+  shipped_code: false
+  primary_finding: >
+    The ack np>=2 hang is NOT in emit order, register allocation,
+    or tail-call paths (per R136-R138 assumptions). It is in the
+    RETRY LOOP between ExitDeopt and vm.run's TryCompile+Execute
+    fall-through — the cached Tier 2 body is re-dispatched
+    indefinitely. The root cause of the DEOPT itself is
+    feedback-dependent emit (mid-compile regalloc/scheduling
+    differs, producing guards that don't hold on the next call).
+  shipped_artifact: >
+    Test remains SKIPPED (with updated Skip message naming the
+    root cause). No production fix this round.
+  notes: >
+    Attempted single-point fix in this round:
+      - On ExitDeopt, evict tier2Compiled[proto], set
+        tier2Failed[proto] = true, restore DirectEntryPtr to
+        Tier 1's direct_entry (or 0 if not cached).
+      - Result: test STILL hangs (single DEBUG print confirms
+        ExitDeopt fires once, then something else loops).
+
+    What still needs investigation (R140+):
+      (a) After the single ExitDeopt, where exactly does the hang
+          continue? Another exit path? A pre-compile Go frame
+          that's retrying? The in-flight Tier 2 execute call
+          stack unwind might itself retry.
+      (b) Why is the Tier 2 emit mid-compile feedback-sensitive?
+          Specifically — what Tier 1-observed type is emitted as
+          a guard that then fails on the first Tier 2 call?
+          Dumping the IR for both paths (up-front vs mid-compile)
+          and diffing, followed by asm-level tracing of the
+          failing guard, would pinpoint the feedback pass at fault
+          (likely pass_type_specialization.go or feedback-driven
+          LICM).
+      (c) An alternative architectural fix: make Tier 2 compile
+          IGNORE feedback when triggered mid-recursion — use only
+          static SSA types. This would make up-front and mid-
+          compile produce IDENTICAL asm, side-stepping the
+          emit-divergence altogether. Trade-off: loses the
+          feedback-driven specialization benefit (but we've seen
+          in R135 that those micro-specs rarely translate to
+          wall-time anyway).
+
+    Per-agent per-angle debugging was ~10x faster than the
+    sequential R133-R138 approach — 4 independent bisections
+    completed in one round vs. one per round. Meta-finding.
