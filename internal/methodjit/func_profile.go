@@ -34,6 +34,43 @@ type FuncProfile struct {
 	HasGlobal     bool // contains OP_GETGLOBAL or OP_SETGLOBAL
 }
 
+// staticallyCallsOnlySelf returns true when the bytecode's GETGLOBAL
+// targets are all the proto's own name — i.e. this proto calls only
+// itself, no other globals. Used to gate Tier 2 promotion for purely-
+// self-recursive 1-param numeric protos (fib/ack): these benefit from
+// the numeric calling convention's raw-int BL path. Mutual-recursion
+// (F/M in Hofstadter) intentionally returns false — cross-proto BLR is
+// faster in Tier 1 than the mixed Tier 2 path that R132 first tried
+// (mut_recursion regressed +81% when F/M were promoted).
+//
+// Requires at least one GETGLOBAL-of-self (else non-calling functions
+// would trivially qualify). Purely static — no proto compilation
+// needed.
+func staticallyCallsOnlySelf(proto *vm.FuncProto) bool {
+	if proto == nil || proto.Name == "" {
+		return false
+	}
+	sawSelf := false
+	for _, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_GETGLOBAL {
+			continue
+		}
+		bx := vm.DecodeBx(inst)
+		if bx < 0 || bx >= len(proto.Constants) {
+			return false
+		}
+		kv := proto.Constants[bx]
+		if !kv.IsString() {
+			return false
+		}
+		if kv.Str() != proto.Name {
+			return false
+		}
+		sawSelf = true
+	}
+	return sawSelf
+}
+
 // analyzeFuncProfile scans a function's bytecodes once and returns a FuncProfile.
 func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 	p := FuncProfile{
@@ -161,13 +198,40 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		return runtimeCallCount >= 3
 	}
 
-	// Functions with calls (no loops): keep at Tier 1.
-	// Tier 1's native BLR handles calls efficiently (~10ns per call).
-	// Even after inlining, non-loop functions don't benefit enough from
-	// Tier 2's type specialization to justify compilation overhead.
-	// Functions with loops + calls are handled by the clause above —
-	// compileTier2 will try inlining and reject if calls remain via irHasCall.
+	// R132: recursive-SELF protos that qualify for the numeric calling
+	// convention (qualifyForNumeric: 1-4 int params, no upvals, no
+	// nested protos) benefit from Tier 2 even without a loop. The
+	// numeric-conv arc (R121-R130) emits a specialized pass-2 body
+	// that passes raw int64 args via X0-X(N-1), skips NaN-box/unbox
+	// in param loads, and skips TypeInt GuardType — all things Tier 1
+	// BLR cannot do.
+	//
+	// Gated on HasSelfCalls so non-recursive 1-param wrappers (e.g.
+	// `func wrapper(n) { return sum(n) }`) are NOT accidentally
+	// promoted: the inline pass would still eliminate their call,
+	// then irHasCall is fine, but the round up-front cost isn't worth
+	// it for a single static call site.
+	//
+	// **Conservative size gate (R132)**: only 1-param protos are
+	// promoted. 2+ -param paths through emitNumericArgsInRegs
+	// (reg-aliasing swaps for np==2, scratch chains for np==3/4)
+	// were never tested with Tier 2 actually running — ackermann
+	// hangs when promoted. Once the 2-param path is debugged this
+	// gate can widen.
 	if profile.CallCount > 0 && !profile.HasLoop {
+		// proto.HasSelfCalls is only set during compileTier2Pipeline, so
+		// at promotion time it's still false — detect recursion by
+		// bytecode scan instead.
+		if staticallyCallsOnlySelf(proto) {
+			if ok, np := qualifyForNumeric(proto); ok && np == 1 {
+				return runtimeCallCount >= 2
+			}
+		}
+		// Non-numeric (or numeric with np>=2, temporarily gated): keep
+		// at Tier 1. Tier 1's native BLR handles calls efficiently
+		// (~10ns per call). Even after inlining, non-loop functions
+		// don't benefit enough from Tier 2's type specialization to
+		// justify compilation overhead.
 		return false
 	}
 

@@ -177,3 +177,8 @@ rows:
   - {round: 131, date: 2026-04-19, bench: fib,             gscript_jit_sec: 1.401, luajit_sec: 0.026, gap_factor: 53.9, notes: "R131 post-revert; fib runs ONLY Tier 1 — Tier 2 attempts=0 for fib proto"}
   - {round: 131, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.256, luajit_sec: 0.006, gap_factor: 42.7, notes: "R131 post-revert; ack proto never attempted for Tier 2; <main> blocked (OpCall in loop)"}
   - {round: 131, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.183, luajit_sec: 0.004, gap_factor: 45.8, notes: "R131 post-revert; F/M protos never attempted for Tier 2"}
+
+  # --- R132: unblock Tier 2 promotion for purely-self-recursive 1-param int protos — numeric-conv arc finally LIVE ---
+  - {round: 132, date: 2026-04-19, bench: fib,             gscript_jit_sec: 0.858, luajit_sec: 0.026, gap_factor: 33.0, notes: "R132 BENCH-WIN: -39.2% vs R131; Tier 2 active for fib (staticallyCallsOnlySelf + np==1 gate)"}
+  - {round: 132, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.262, luajit_sec: 0.006, gap_factor: 43.7, notes: "R132 neutral; ack stays Tier 1 (np==1 gate; 2-param path hangs — debug in R133+)"}
+  - {round: 132, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.187, luajit_sec: 0.004, gap_factor: 46.8, notes: "R132 neutral; mut stays Tier 1 (staticallyCallsOnlySelf excludes mutual-recursive F/M)"}

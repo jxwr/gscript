@@ -142,7 +142,10 @@ func sum(n) {
 }
 
 func TestShouldPromoteTier2_RecursiveFib(t *testing.T) {
-	// fib(n) has calls and no loops: should NOT promote (calls are better at Tier 1).
+	// R132: fib(n) is self-recursive, 1 int param, qualifies for numeric
+	// calling convention → SHOULD promote at threshold=2. Pre-R132 this
+	// test asserted the opposite; the numeric-conv arc (R121-R130) is
+	// exactly the codepath that makes fib worth promoting.
 	src := `
 func fib(n) {
     if n < 2 { return n }
@@ -153,10 +156,11 @@ func fib(n) {
 	fibProto := proto.Protos[0]
 	p := analyzeFuncProfile(fibProto)
 
-	// fib has OP_CALL so canPromoteToTier2 should return false.
-	// shouldPromoteTier2 falls through to "calls only, no loops" -> false.
-	if shouldPromoteTier2(fibProto, p, 100) {
-		t.Error("fib should not be promoted: has calls, no loops, Tier 1 BLR is better")
+	if !shouldPromoteTier2(fibProto, p, 2) {
+		t.Error("fib should promote at callCount=2 (self-recursive, 1 int param, qualifies for numeric-conv)")
+	}
+	if shouldPromoteTier2(fibProto, p, 0) {
+		t.Error("fib should not promote at callCount=0")
 	}
 }
 
