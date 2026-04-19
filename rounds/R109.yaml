@@ -1,0 +1,78 @@
+# R109: expand call IC to cache Constants + GlobalCache (skip 2 LDR on hit).
+round: 109
+date: 2026-04-19
+follows: 108
+
+type: tactical
+
+target:
+  benchmark: fib
+  current_wall_sec: 1.436
+  luajit_wall_sec: 0.026
+  gap_factor: 55.2
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    R108 populates the IC only when DirectEntry != 0, i.e., only when
+    the callee is ALREADY Tier 2 compiled. So on IC hit, the
+    CallCount increment + threshold check (5 insns: LDR, ADD, STR,
+    CMP, BCond) is pure bookkeeping — the callee doesn't need
+    promotion. Move the CallCount block to the miss-path-only, skip
+    on hit. Save 5 insns × 18M fib calls = 90M insns ≈ 1-2% wall.
+  expected_gain_pct: [1, 2]
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.5
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: methodjit suite green
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    Suite green. Bench (10-sample interleaved medians):
+      fib: r108 1.440 → r109 1.450 (+0.7% REGRESSION)
+      ack: r108 0.273 → r109 0.273 (same)
+    Unexpected regression on fib. Hypothesis was that skipping 5-insn
+    CallCount block on hit saves ~1.5%. Instead, +0.7%. Possible:
+    pipelining change when the CallCount block was re-ordered into the
+    tight cache-update-then-B-to-done sequence. Reverted.
+  passed: false
+
+  surgical_scope: >
+    emit_call_native.go: move CallCount inc + threshold check to
+    miss-path-only (between Proto load and cache-update).
+
+outcome:
+  status: revert
+  bench_deltas:
+    fib: {r108: 1.440, r109: 1.450, pct: +0.7}
+  regressions: [fib]
+  shipped_code: false
+  commit: null
+
+revert_class: cost-model-error
+revert_root_cause_location: emit_call_native.go (R109 reorder of CallCount block)
+revert_cost_model_delta: >
+  Expected -1-2% (5 insns saved per hit × 18M calls). Got +0.7%.
+  Probable cause: pipelining disruption. Maybe the CallCount LDR/ADD/STR
+  sequence was previously overlapping with the bounds-check LDR chain,
+  and moving it to miss-only caused the hit-path bounds check to
+  serialize with the subsequent spill code.
+revert_prevention: >
+  For future IC work: any re-ordering of post-IC instructions needs
+  microbench verification. The current emit path has been tuned
+  (implicitly) for M4 pipeline; insn reorder can regress even when
+  fewer insns execute per hit.
+
+ledger_update:
+  classes_touched: [tier2-recursion-closure]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    ARM64 M4 pipeline effects matter more than raw insn count even
+    for call overhead: skipping 5 clear-benefit insns on hot path
+    can regress by ~1% if the removal disturbs the existing
+    instruction scheduling window.

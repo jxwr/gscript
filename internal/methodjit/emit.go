@@ -271,10 +271,9 @@ type CompiledFunction struct {
 	// Layout: 2 × uint64 per call site.
 	//   [2*i]   = cached boxed closure value (NaN-boxed 0xFFFF...)
 	//   [2*i+1] = cached direct-entry address (uintptr)
-	// On a call with matching closure value, skip closure type checks +
-	// Proto/DirectEntry loads. On miss, full path updates both slots.
-	// Zero entries mean "never populated" — the miss path naturally takes
-	// a non-match and fills them.
+	// Populated only when callee is Tier 2 compiled (direct_entry != 0).
+	// R109: the CallCount inc + threshold check is miss-path-only, since
+	// a hit implies the callee is already Tier 2.
 	CallCache []uint64
 }
 
