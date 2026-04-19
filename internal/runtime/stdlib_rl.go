@@ -1,3 +1,13 @@
+//go:build rl
+// +build rl
+
+// stdlib_rl.go: raylib graphics/audio bindings. Gated behind `-tags rl`
+// because raylib's bundled C sources (raudio.c, stb_vorbis.c) emit
+// tautological-compare warnings that clutter every build. Default
+// build uses the stub in stdlib_rl_stub.go. Enable with:
+//   go build -tags rl ./...
+//   go test  -tags rl ./...
+
 package runtime
 
 import (

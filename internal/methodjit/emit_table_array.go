@@ -49,7 +49,7 @@ func (ec *emitContext) emitNewTableExit(instr *Instr) {
 	asm.B("deopt_epilogue")
 
 	// Continue label.
-	continueLabel := fmt.Sprintf("table_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.
@@ -334,7 +334,7 @@ func (ec *emitContext) emitGetTableExit(instr *Instr) {
 	asm.B("deopt_epilogue")
 
 	// Continue label.
-	continueLabel := fmt.Sprintf("table_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.
@@ -722,7 +722,7 @@ func (ec *emitContext) emitSetTableExit(instr *Instr) {
 	asm.B("deopt_epilogue")
 
 	// Continue label.
-	continueLabel := fmt.Sprintf("table_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.

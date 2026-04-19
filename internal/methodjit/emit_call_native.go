@@ -682,7 +682,7 @@ func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets
 	asm.B("deopt_epilogue")
 
 	// Continue label: the resume entry jumps here after Go handles the call.
-	continueLabel := fmt.Sprintf("call_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.
@@ -697,6 +697,7 @@ func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }
 

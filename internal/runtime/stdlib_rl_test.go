@@ -1,3 +1,6 @@
+//go:build rl
+// +build rl
+
 package runtime
 
 import "testing"

@@ -98,7 +98,7 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 	asm.B("deopt_epilogue")
 
 	// Continue label: the resume entry jumps here after Go handles the op.
-	continueLabel := fmt.Sprintf("op_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("op_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory (Go may have modified the
@@ -184,7 +184,7 @@ func (ec *emitContext) emitSetListExit(instr *Instr) {
 	asm.B("deopt_epilogue")
 
 	// Continue label.
-	continueLabel := fmt.Sprintf("op_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("op_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.

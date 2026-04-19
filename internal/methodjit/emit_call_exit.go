@@ -27,9 +27,11 @@ import (
 	"github.com/gscript/gscript/internal/jit"
 )
 
-// callExitResumeLabel returns the assembler label name for a call-exit resume point.
+// callExitResumeLabel returns the assembler label name for a call-exit
+// resume point in the normal (non-numeric) pass.
+// R128: for numeric pass, use callExitResumeLabelForPass(id, true).
 func callExitResumeLabel(instrID int) string {
-	return fmt.Sprintf("call_resume_%d", instrID)
+	return callExitResumeLabelForPass(instrID, false)
 }
 
 // emitCallExit emits ARM64 code for an OpCall instruction using the call-exit
@@ -90,7 +92,7 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 	asm.B("deopt_epilogue")
 
 	// Continue label: the resume entry jumps here after reloading state.
-	continueLabel := fmt.Sprintf("call_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory (the call may have changed
@@ -107,6 +109,7 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }
 
@@ -231,7 +234,7 @@ func (ec *emitContext) emitGlobalExitInner(instr *Instr) {
 	asm.B("deopt_epilogue")
 
 	// Continue label: the resume entry jumps here after reloading state.
-	continueLabel := fmt.Sprintf("global_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("global_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.
@@ -246,14 +249,18 @@ func (ec *emitContext) emitGlobalExitInner(instr *Instr) {
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }
 
 // deferredResume tracks a resume entry point that must be emitted after the
 // epilogue. Each call-exit or global-exit generates a deferred resume.
+// R128: numericPass flag disambiguates pass-1 vs pass-2 resume entries so
+// their resume labels don't collide.
 type deferredResume struct {
 	instrID       int    // instruction ID (for the resume label name)
 	continueLabel string // label to jump to after prologue
+	numericPass   bool   // true if from numeric (pass-2) body
 }
 
 // emitDeferredResumes emits all resume entry points after the epilogue.
@@ -263,7 +270,7 @@ type deferredResume struct {
 //   3. Jump to the continue label (which reloads values and continues)
 func (ec *emitContext) emitDeferredResumes() {
 	for _, dr := range ec.deferredResumes {
-		resumeLabel := callExitResumeLabel(dr.instrID)
+		resumeLabel := callExitResumeLabelForPass(dr.instrID, dr.numericPass)
 		ec.asm.Label(resumeLabel)
 
 		// Full prologue (identical to the main function entry).

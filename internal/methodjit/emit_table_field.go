@@ -252,7 +252,7 @@ func (ec *emitContext) emitGetFieldExit(instr *Instr) {
 	asm.B("deopt_epilogue")
 
 	// Continue label: resume entry jumps here.
-	continueLabel := fmt.Sprintf("table_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.
@@ -326,7 +326,7 @@ func (ec *emitContext) emitSetFieldExit(instr *Instr) {
 	asm.B("deopt_epilogue")
 
 	// Continue label: resume entry jumps here.
-	continueLabel := fmt.Sprintf("table_continue_%d", instr.ID)
+	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.

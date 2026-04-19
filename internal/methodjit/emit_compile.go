@@ -570,6 +570,29 @@ func (ec *emitContext) blockLabelFor(b *Block) string {
 	return blockLabel(b)
 }
 
+// passLabel (R128 label refactor) wraps a fixed label name with the
+// current pass's suffix. Normal pass → unchanged; numeric pass →
+// "_num" suffix. Used to disambiguate pass-1 vs pass-2 labels that
+// would otherwise collide (call_continue_N, global_continue_N,
+// op_continue_N, table_continue_N, call_resume_N).
+func (ec *emitContext) passLabel(base string) string {
+	if ec.numericMode {
+		return base + "_num"
+	}
+	return base
+}
+
+// callExitResumeLabel returns the resume-label name for an instrID
+// in the current pass. Free function version kept for backward compat
+// in emitDeferredResumes which needs to re-derive the label per entry.
+func callExitResumeLabelForPass(instrID int, numericMode bool) string {
+	s := fmt.Sprintf("call_resume_%d", instrID)
+	if numericMode {
+		s += "_num"
+	}
+	return s
+}
+
 // frameSize is the stack frame size for callee-saved registers.
 const frameSize = 128
 
