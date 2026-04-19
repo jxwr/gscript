@@ -6,7 +6,7 @@ files:
   - path: internal/methodjit/tiering_manager_diag.go
   - path: internal/methodjit/pipeline.go
   - path: internal/methodjit/func_profile.go
-last_verified: 2026-04-13
+last_verified: 2026-04-19
 ---
 
 # Tier 2 — Optimizing JIT
@@ -37,6 +37,7 @@ Compile promoted functions through the full optimization pipeline to specialized
     - validation error
 - **MUST**: `proto.MaxStack` is updated if Tier 2's compiled function uses more register slots than the bytecode compiler originally allocated.
 - **MUST**: `proto.NeedsTier2 = true` when intrinsic rewrites replaced Tier-1-observable calls, so Tier 1 callers dispatch to Tier 2.
+- **MUST**: `proto.EnteredTier2` is set to 1 by the Tier 2 native prologue on every fresh entry (R146). `TieringManager.Tier2Entered()` reports protos where this flag is non-zero. The flag distinguishes "Tier 2 compiled" from "Tier 2 executed" — a proto can be the former but not the latter if routing falls back to Tier 1 / VM. CLI `-jit-stats` surfaces this per proto as `entered=yes|no`, and `benchmarks/run_bench.sh` renders it as the `T2` column (`entered/compiled`).
 - **MUST NOT**: diagnostic code paths mutate `tier2Attempts` or `tier2FailReason`. Those are production-only counters.
 
 ## Hot paths

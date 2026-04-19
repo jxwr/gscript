@@ -4,6 +4,36 @@
 
 JIT produces different output than the interpreter. Benchmark shows wrong values or crashes.
 
+## Step 0: Confirm the hot function is actually in Tier 2
+
+Many perf and correctness investigations from R132 onward started with
+the wrong assumption that a function was running in Tier 2 native code
+when it was actually being routed to Tier 1 / VM. **Always check first**:
+
+```bash
+# Run the benchmark with JIT statistics
+go run ./cmd/gscript -jit -jit-stats benchmarks/suite/fib.gs
+# Look for:
+#   Tier 2 entered:  N functions
+#     - fib (entered=yes)
+```
+
+- `entered=yes` — the Tier 2 native prologue executed at least once for
+  this proto. Safe to reason about Tier 2 emit.
+- `entered=no` but `Tier 2 compiled` includes this proto — compiled but
+  never actually called through. Routing bug; fix the routing before
+  chasing an emit issue.
+- Proto missing from the list — never compiled. Check smart-tiering
+  (`func_profile.go`) and `shouldPromoteTier2` before anything else.
+
+For `benchmarks/run_bench.sh`, the `T2` column in the results table
+shows `entered/compiled` counts per benchmark — same signal, already
+in your bench output.
+
+Mechanics: `proto.EnteredTier2` is a byte set to 1 by a ~6-insn STRB at
+the head of each Tier 2 entry point (R146). Cost is inside warm-bench
+noise; the flag exists purely for observability.
+
 ## Step 1: Diagnose — one call
 
 ```go

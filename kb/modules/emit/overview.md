@@ -8,7 +8,7 @@ files:
   - path: internal/methodjit/emit_execute.go
   - path: internal/methodjit/emit_reg.go
   - path: internal/methodjit/emit_op_exit.go
-last_verified: 2026-04-13
+last_verified: 2026-04-19
 ---
 
 # Emit — ARM64 Code Generation (Overview)
@@ -30,6 +30,7 @@ Internal per-op emitters (`emit_*.go`): `emitAdd`, `emitMul`, `emitGetField`, `e
 ## Invariants
 
 - **MUST**: every emitted function has two entry points — normal (saves X19–X28+FP+LR, 128-byte frame) for Execute() entry, and direct (16-byte frame, reloads fixed regs from ctx) for BLR callers.
+- **MUST** (R146): both entry points (`emitPrologue` and `t2_direct_entry`) begin with `emitTier2EntryMark` — a ~6-insn sequence (LoadImm64 X16 ← &proto.EnteredTier2; MOVimm16 W17 ← 1; STRB W17, [X16]) that uses AAPCS scratch (X16/X17) and runs before the stack frame is allocated. `t2_self_entry` does NOT emit the mark: it is only reached from a Tier 2 caller that has already set the flag, and the per-call cost on self-recursion was judged too pipeline-sensitive to accept (see feedback_m4_pipeline_sensitivity).
 - **MUST**: every register live across a `Call` is spilled to its regalloc slot before the BLR and reloaded afterward.
 - **MUST**: `Int48Safe` values skip the `SBFX+CMP+B.NE` overflow check (3 saved instructions per op). The emitter reads `fn.Int48Safe` directly.
 - **MUST**: type guards lower to a single `CMP+B.NE exit_label` sequence; a contiguous run of guards can share flags if no intervening op overwrites NZCV.
