@@ -202,3 +202,12 @@ rows:
   - {round: 146, date: 2026-04-19, bench: fib,             gscript_jit_sec: 0.912, luajit_sec: 0.026, gap_factor: 35.1, notes: "R146 noise-floor: -0.9% vs R145 (0.920→0.912), 5-sample median. ~6-insn per-entry STRB invisible at bench resolution."}
   - {round: 146, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.452, luajit_sec: 0.006, gap_factor: 75.3, notes: "R146 noise-floor: +1.3% vs R145 (0.446→0.452), 5-sample median. Within CLI-bench variance."}
   - {round: 146, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.190, luajit_sec: 0.004, gap_factor: 47.5, notes: "R146 noise-floor: +1.1% vs R145 (~0.188→0.190), 5-sample median. F/M stay Tier 1; R146 T2 column reports 0/0."}
+
+  # --- R147-R153: call-path arc closed no-win; arc-final measurements ---
+  - {round: 153, date: 2026-04-19, bench: fib,             gscript_jit_sec: 0.884, luajit_sec: 0.026, gap_factor: 34.0, notes: "R153 arc-close: 5-sample median 0.880/0.883/0.884/0.898/0.907 → 0.884. Flat vs R146; call-path arc delivered no bench movement."}
+  - {round: 153, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.440, luajit_sec: 0.006, gap_factor: 73.3, notes: "R153 arc-close: 5-sample median 0.434/0.435/0.440/0.443/0.444 → 0.440. Flat vs R146 (0.452 within noise)."}
+  - {round: 153, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.187, luajit_sec: 0.004, gap_factor: 46.8, notes: "R153 arc-close: 5-sample median 0.185/0.185/0.187/0.192/0.197 → 0.187. Flat vs R146."}
+  - {round: 153, date: 2026-04-19, bench: mandelbrot,      gscript_jit_sec: 0.055, luajit_sec: 0.057, gap_factor: 0.96, notes: "R153 arc-close: 5-sample all 0.055s. Below LuaJIT (SURPASSED)."}
+  - {round: 153, date: 2026-04-19, bench: fannkuch,        gscript_jit_sec: 0.046, luajit_sec: 0.020, gap_factor: 2.30, notes: "R153 arc-close: 5-sample 0.045/0.046/0.046/0.047/0.047 → 0.046. Flat."}
+  - {round: 153, date: 2026-04-19, bench: nbody_dense,     gscript_jit_sec: 0.175, luajit_sec: 0.034, gap_factor: 5.15, notes: "R153 arc-close: 5-sample 0.172/0.173/0.175/0.175/0.176 → 0.175. Flat."}
+  - {round: 153, date: 2026-04-19, bench: sieve,           gscript_jit_sec: 0.083, luajit_sec: 0.011, gap_factor: 7.55, notes: "R153 arc-close: 5-sample 0.081/0.082/0.083/0.083/0.086 → 0.083. Flat vs R99."}
