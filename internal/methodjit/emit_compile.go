@@ -811,6 +811,27 @@ func (ec *emitContext) emitEpilogue() {
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.RET()
+
+	// R137 (retry of R131 Layer 4): numeric epilogue — reached from
+	// pass-2 emitReturn with a RAW int in X0. Writes ExitCode=0 via X1
+	// (preserves X0), then full callee-saved restore + RET.
+	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
+		asm.Label("num_epilogue")
+		asm.MOVimm16(jit.X1, 0)
+		asm.STR(jit.X1, mRegCtx, execCtxOffExitCode)
+		if ec.useFPR {
+			asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+			asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+		}
+		asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+		asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+		asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+		asm.LDP(jit.X21, jit.X22, jit.SP, 32)
+		asm.LDP(jit.X19, jit.X20, jit.SP, 16)
+		asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+		asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+		asm.RET()
+	}
 }
 
 // emitBlock emits ARM64 code for one basic block.

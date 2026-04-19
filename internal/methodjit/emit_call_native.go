@@ -233,9 +233,15 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// R110: If we can STATICALLY prove this particular OpCall is a self-call
 	// (fn arg is OpGetGlobal of our own proto's name), skip the runtime
 	// Proto compare entirely and BL direct to t2_self_entry.
-	// R124: Numeric self-call — when proto qualifies and all args are int,
-	// route to t2_numeric_self_entry_N (raw ints in X0-X(N-1)).
-	if ec.isNumericStaticSelfCall(instr) {
+	// R137 Layer 4 (caller side): numeric BL enters pass-2 which returns
+	// RAW int in X0 via num_epilogue (no BRV write). Post-BL consumes
+	// raw X0, boxes for regs[funcSlot] memory safety, storeRawInt into
+	// the Call's SSA home. Gated on funcSlot >= numericParamCount so
+	// pass-2 LoadSlot of a numeric-param slot doesn't read a NaN-boxed
+	// value as raw. When that gate fails, fall through to normal BL/BLR
+	// path (pass-1 body, writes BRV normally).
+	usedNumericBL := false
+	if ec.isNumericStaticSelfCall(instr) && funcSlot >= ec.numericParamCount {
 		nParams := ec.fn.Proto.NumParams
 		ec.emitNumericArgsInRegs(instr, nParams)
 		switch nParams {
@@ -248,6 +254,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		case 4:
 			asm.BL("t2_numeric_self_entry_4")
 		}
+		usedNumericBL = true
 	} else if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
 		asm.MOVreg(jit.X0, mRegCtx)
 		if ec.isStaticSelfCall(instr) {
@@ -302,18 +309,30 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X3, exitHandleLabel)
 
-	// Normal return: read result from BaselineReturnValue.
-	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
-	// Store result to regs[funcSlot] (overwrites the function slot, Lua convention).
-	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	if usedNumericBL {
+		// R137 Layer 4 consume: X0 holds raw int64 from callee's
+		// num_epilogue. Box via scratch + STR to regs[funcSlot] for
+		// Lua-convention / deopt safety (preserves X0). Reload live
+		// SSA regs (preserves X0). storeRawInt writes raw X0 to the
+		// Call's SSA home and marks rawIntRegs so downstream arith
+		// and GuardType(TypeInt) pass through.
+		jit.EmitBoxIntFast(asm, jit.X1, jit.X0, mRegTagInt)
+		asm.STR(jit.X1, mRegRegs, slotOffset(funcSlot))
+		ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+		ec.storeRawInt(jit.X0, instr.ID)
+	} else {
+		// Normal return: read NaN-boxed result from BaselineReturnValue.
+		asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
+		// Store result to regs[funcSlot] (overwrites the function slot, Lua convention).
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
 
-	// Step 12: Reload only live SSA registers from memory.
-	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+		// Step 12: Reload only live SSA registers from memory.
+		ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 
-	// Step 13: Store result into the SSA value's home.
-	// The result is at regs[funcSlot], load it and store to SSA home.
-	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
-	ec.storeResultNB(jit.X0, instr.ID)
+		// Step 13: Store result into the SSA value's home.
+		asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
+		ec.storeResultNB(jit.X0, instr.ID)
+	}
 
 	asm.B(doneLabel)
 
