@@ -169,6 +169,11 @@ rows:
   - {round: 89, date: 2026-04-19, bench: nbody_dense,         gscript_jit_sec: 0.183, luajit_sec: 0.034, gap_factor: 5.38, notes: "R89 — slight improvement (noise)"}
   - {round: 89, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R89 — unchanged"}
 
-  # --- R130: numeric-conv Phase B layer 2+3 (pass-2 skips entry box + param unbox + int GuardType) ---
-  - {round: 130, date: 2026-04-19, bench: fib,             gscript_jit_sec: 1.411, luajit_sec: 0.026, gap_factor: 54.3, notes: "R130 layer 2+3 — -0.9% vs R129 infra baseline (noise boundary)"}
-  - {round: 130, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.260, luajit_sec: 0.006, gap_factor: 43.3, notes: "R130 layer 2+3 — -2.6% vs R129 (FIRST bench-win of numeric-conv arc)"}
+  # --- R130: numeric-conv Phase B layer 2+3 — RETRACTED by R131 (dead code, no Tier 2 exec) ---
+  - {round: 130, date: 2026-04-19, bench: fib,             gscript_jit_sec: 1.411, luajit_sec: 0.026, gap_factor: 54.3, notes: "R130 — RETRACTED: fib never Tier 2 compiled; observed delta is bench noise. See R131."}
+  - {round: 130, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.260, luajit_sec: 0.006, gap_factor: 43.3, notes: "R130 — RETRACTED: ack never Tier 2 compiled; observed delta is bench noise. See R131."}
+
+  # --- R131: ROOT-CAUSE halt — numeric-conv arc dead code ---
+  - {round: 131, date: 2026-04-19, bench: fib,             gscript_jit_sec: 1.401, luajit_sec: 0.026, gap_factor: 53.9, notes: "R131 post-revert; fib runs ONLY Tier 1 — Tier 2 attempts=0 for fib proto"}
+  - {round: 131, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.256, luajit_sec: 0.006, gap_factor: 42.7, notes: "R131 post-revert; ack proto never attempted for Tier 2; <main> blocked (OpCall in loop)"}
+  - {round: 131, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.183, luajit_sec: 0.004, gap_factor: 45.8, notes: "R131 post-revert; F/M protos never attempted for Tier 2"}

@@ -32,7 +32,7 @@
 
 version: 1
 updated: 2026-04-19
-source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130]
+source_rounds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131]
 
 classes:
 
@@ -227,12 +227,19 @@ classes:
       self-call specialization, typed calling convention, recursion
       inlining, tail-call optimization. Target: fib, ackermann,
       mutual_recursion. See adr-tier2-recursion-closure.md.
-    attempts: 3                  # +R130 numeric-conv Phase B layer 2+3 bench-win
-    wins: 2                      # R20 ADR, R130 bench-win (ack -2.6%)
+
+      **R131 HALT**: numeric-conv arc R121-R130 was dead code. fib/
+      ack/mut never run Tier 2 — compileTier2 not invoked for those
+      protos (see rounds/R131.yaml and kb ADR on Tier 2 promotion).
+      The entire class is gated by a Tier 2 promotion bug that must
+      be root-caused before any further class work is productive.
+    attempts: 3
+    wins: 1                      # R20 ADR only (R130 "bench-win" retracted by R131)
     reverts: 1                   # R22: bounds-check skip broke deep recursion
     holds: 0
     prior_reject_rate: 0.333     # 1 revert / 3 shipped-code attempts
-    mitigation_required: false
+    mitigation_required: true
+    blocker: "tier2-promotion-never-triggers-for-recursive-self-protos"
     mitigation_description: >
       **Bounds check is not redundant for self-calls** (R22 lesson):
       the Tier 2 bounds check tests `mRegRegs + calleeBaseOff +
@@ -242,22 +249,25 @@ classes:
       self-call specialization must preserve the bounds check OR
       replace it with a per-level depth limit that's checked once
       per recursion chain.
-    historical_rounds: [20, 22, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130]
+    historical_rounds: [20, 22, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131]
     key_negative_evidence: >
       R22 attempted to skip the bounds check on self-calls and
       regressed sort (quicksort crashed with SIGSEGV at recursion
       depth ~16). The "savings" (5 insns per call) were already
       noise-level on fib; the correctness cost was total.
+
+      **R131 discovery** (far more consequential than R22): all
+      numeric-conv rounds R121-R130 operate on Tier 2 emit code, but
+      `gscript -jit-stats` reports "Tier 2 compiled: 0 functions" for
+      fib, ack, mut. A debug `fmt.Fprintf` at compileTier2's entry
+      confirmed zero invocations for proto="fib" across 29M+ recursive
+      calls. Tier 2 promotion never triggers for recursive-self
+      protos. The 10+ rounds of numeric-conv work are dead code. All
+      observed "wins" were bench noise.
     key_positive_evidence: >
       ADR projects fib 59× → 21× if R22-R25 land their combined
       strategy. R22's revert leaves the ADR valid but the first
       implementation step needs a different approach.
-
-      **R130 bench-win**: numeric-conv Phase B layer 2+3 (pass-2 entry
-      skips NaN-box, body skips param unbox, int GuardType passes
-      through) moved ack 0.267 → 0.260 (-2.6%) vs R129 infra baseline.
-      First bench-win of the numeric-conv arc (R121-). Layers 4 (raw
-      int return) and 5 (deopt-time boxing) remain for R131-R132.
 
   - name: tier2-tight-loop
     description: >

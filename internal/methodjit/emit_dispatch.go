@@ -956,40 +956,4 @@ func (ec *emitContext) emitLoopExitBoxing(exitingHeaderID int) {
 }
 
 
-func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
-	if len(instr.Args) > 0 {
-		valID := instr.Args[0].ID
-		// If the return value is a raw float in FPR, move bits to GPR.
-		// Float bits ARE the NaN-boxed representation.
-		if ec.hasFPReg(valID) {
-			fpr := ec.physFPReg(valID)
-			ec.asm.FMOVtoGP(jit.X0, fpr)
-			ec.asm.STR(jit.X0, mRegRegs, 0)
-		} else if ec.hasReg(valID) && ec.rawIntRegs[valID] {
-			// Raw int in register: box it first.
-			reg := ec.physReg(valID)
-			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
-			ec.asm.STR(jit.X0, mRegRegs, 0)
-		} else {
-			// NaN-boxed: resolve and store directly.
-			retReg := ec.resolveValueNB(valID, jit.X0)
-			if retReg != jit.X0 {
-				ec.asm.MOVreg(jit.X0, retReg)
-			}
-			ec.asm.STR(jit.X0, mRegRegs, 0)
-		}
-	} else {
-		// No return value: use nil.
-		ec.asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
-		ec.asm.STR(jit.X0, mRegRegs, 0)
-	}
-	// Also write to ctx.BaselineReturnValue for BLR caller compatibility.
-	// When called via BLR from Tier 1, the caller reads BaselineReturnValue.
-	ec.asm.STR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
-	// Check CallMode: 0 = normal entry (from Execute/callJIT), 1 = direct entry (from BLR).
-	// Both use a full 128B frame, but the direct epilogue returns to the BLR caller
-	// while the normal epilogue returns to the callJIT trampoline.
-	ec.asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
-	ec.asm.CBNZ(jit.X1, "t2_direct_epilogue")
-	ec.asm.B("epilogue")
-}
+// emitReturn — moved to emit_return.go (rule 13 file-size split).
