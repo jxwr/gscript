@@ -28,15 +28,24 @@ func TestObjectCreationDump(t *testing.T) {
 	// tier2-intbinmod-correctness). Each ADD/SUB/MUL on untyped-int Values
 	// now emits +3 insns (SBFX+CMP+BCond) plus a deopt prelude. Impact on
 	// object_creation ~6% total, ~6% mem. Correctness trade is net positive.
+	//
+	// R146 re-calibration: each Tier 2 entry point now emits an
+	// emitTier2EntryMark sequence (LoadImm64 heap addr + MOVimm16 + STRB,
+	// ~6 insns per entry) at the head of emitPrologue and t2_direct_entry
+	// so that proto.EnteredTier2 is observably set when native code runs.
+	// Protos with t2_numeric_self_entry_N gain a third affected site
+	// implicitly via shared prologue code; actual per-proto deltas observed:
+	// create_and_sum +24 total / +8 mem, transform_chain +24/+8, new_vec3
+	// +12/+2. Memory-op delta is the single STRB per entry path.
 	type baseline struct {
 		name     string
 		totalIns int
 		memIns   int
 	}
 	baselines := []baseline{
-		{"create_and_sum", 1253, 590},   // was 1181, 558
-		{"transform_chain", 1677, 808},  // was 1572, 758
-		{"new_vec3", 208, 129},          // unchanged (no loop arith)
+		{"create_and_sum", 1277, 598},   // R146: +24/+8; was 1253/590
+		{"transform_chain", 1701, 816},  // R146: +24/+8; was 1677/808
+		{"new_vec3", 220, 131},          // R146: +12/+2; was 208/129
 	}
 
 	// Load benchmark source.

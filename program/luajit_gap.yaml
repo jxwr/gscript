@@ -197,3 +197,8 @@ rows:
   - {round: 145, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.446, luajit_sec: 0.006, gap_factor: 74.3, notes: "R145 REGRESSION vs R144 Tier 1: +64.6% (0.271→0.446). Ack now promotes to Tier 2 but Tier 2 caller-side path (~50 insns/call vs Tier 1's ~26) dominates. R146+ must add static-self-call fast path."}
   - {round: 145, date: 2026-04-19, bench: fib,             gscript_jit_sec: 0.920, luajit_sec: 0.026, gap_factor: 35.4, notes: "R145 ~noise vs R144 (0.885→0.920); gate change doesn't affect fib (already np==1 qualified); 3-sample vs 9-sample — within measurement variance"}
   - {round: 145, date: 2026-04-19, bench: mandelbrot,      gscript_jit_sec: 0.057, luajit_sec: 0.057, gap_factor: 1.00, notes: "R145 ~noise; R144's 0.051s was favorable sample; current matches R143's 0.054-0.058s range"}
+
+  # --- R146: Tier 2 entry visibility — diagnostic/observability, no perf target ---
+  - {round: 146, date: 2026-04-19, bench: fib,             gscript_jit_sec: 0.912, luajit_sec: 0.026, gap_factor: 35.1, notes: "R146 noise-floor: -0.9% vs R145 (0.920→0.912), 5-sample median. ~6-insn per-entry STRB invisible at bench resolution."}
+  - {round: 146, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.452, luajit_sec: 0.006, gap_factor: 75.3, notes: "R146 noise-floor: +1.3% vs R145 (0.446→0.452), 5-sample median. Within CLI-bench variance."}
+  - {round: 146, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.190, luajit_sec: 0.004, gap_factor: 47.5, notes: "R146 noise-floor: +1.1% vs R145 (~0.188→0.190), 5-sample median. F/M stay Tier 1; R146 T2 column reports 0/0."}

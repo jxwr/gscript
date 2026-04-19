@@ -31,17 +31,27 @@ func (r *tieringManagerReporter) PrintStats(w *os.File) {
 		return
 	}
 	compiled := r.tm.Tier2Compiled()
+	entered := r.tm.Tier2Entered()
+	enteredSet := make(map[string]bool, len(entered))
+	for _, n := range entered {
+		enteredSet[n] = true
+	}
 	failed := r.tm.Tier2Failed()
 	fmt.Fprintln(w, "JIT Statistics:")
 	fmt.Fprintf(w, "  Tier 1 compiled: %d functions\n", r.tm.Tier1Count())
 	fmt.Fprintf(w, "  Tier 2 attempted: %d\n", r.tm.Tier2Attempted())
 	fmt.Fprintf(w, "  Tier 2 compiled: %d functions\n", len(compiled))
+	fmt.Fprintf(w, "  Tier 2 entered:  %d functions\n", len(entered))
 	for _, name := range compiled {
 		display := name
 		if display == "" {
 			display = "<anonymous>"
 		}
-		fmt.Fprintf(w, "    - %s\n", display)
+		mark := "no"
+		if enteredSet[name] {
+			mark = "yes"
+		}
+		fmt.Fprintf(w, "    - %s (entered=%s)\n", display, mark)
 	}
 	fmt.Fprintf(w, "  Tier 2 failed: %d functions\n", len(failed))
 	// Sort failed keys for stable output.

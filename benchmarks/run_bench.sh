@@ -74,17 +74,26 @@ for bench in $BENCHMARKS; do
     fi
 done
 
-# Run JIT mode
+# Run JIT mode (with -jit-stats so R146 T2 column can report
+# entered-vs-compiled counts per benchmark).
 echo ">>> JIT mode (22 benchmarks)..."
 for bench in $BENCHMARKS; do
     file="benchmarks/suite/${bench}.gs"
     if [[ ! -f "$file" ]]; then echo "MISSING" > "$RESULTS_DIR/jit_${bench}"; continue; fi
-    output=$(run_with_timeout "$TIMEOUT_SEC" "$GSCRIPT_BIN" -jit "$file" 2>&1)
+    output=$(run_with_timeout "$TIMEOUT_SEC" "$GSCRIPT_BIN" -jit -jit-stats "$file" 2>&1)
     ec=$?
     if [[ $ec -eq 142 ]] || [[ $ec -eq 137 ]]; then echo "TIMEOUT" > "$RESULTS_DIR/jit_${bench}"
     elif [[ $ec -ne 0 ]]; then echo "ERROR" > "$RESULTS_DIR/jit_${bench}"
     else extract_time "$output" > "$RESULTS_DIR/jit_${bench}"
     fi
+    # Parse -jit-stats for the R146 T2 column: how many protos were
+    # compiled at Tier 2, and how many of those had native code actually
+    # execute at least once (proto.EnteredTier2 != 0).
+    compiled=$(echo "$output" | awk '/^  Tier 2 compiled:/ {print $4}')
+    entered=$(echo "$output" | awk '/^  Tier 2 entered:/  {print $4}')
+    compiled=${compiled:-0}
+    entered=${entered:-0}
+    echo "${entered}/${compiled}" > "$RESULTS_DIR/t2_${bench}"
 done
 
 # Run LuaJIT (optional)
@@ -107,8 +116,8 @@ echo ""
 echo "============================================"
 echo "  RESULTS"
 echo "============================================"
-printf "| %-25s | %-10s | %-10s | %-8s | %-10s |\n" "Benchmark" "VM" "JIT" "JIT/VM" "LuaJIT"
-printf "| %-25s | %-10s | %-10s | %-8s | %-10s |\n" "-------------------------" "----------" "----------" "--------" "----------"
+printf "| %-25s | %-10s | %-10s | %-8s | %-10s | %-6s |\n" "Benchmark" "VM" "JIT" "JIT/VM" "LuaJIT" "T2"
+printf "| %-25s | %-10s | %-10s | %-8s | %-10s | %-6s |\n" "-------------------------" "----------" "----------" "--------" "----------" "------"
 
 faster=0; total=0
 for bench in $BENCHMARKS; do
@@ -116,6 +125,7 @@ for bench in $BENCHMARKS; do
     vm=$(cat "$RESULTS_DIR/vm_${bench}" 2>/dev/null || echo "n/a")
     jit=$(cat "$RESULTS_DIR/jit_${bench}" 2>/dev/null || echo "n/a")
     lj=$(cat "$RESULTS_DIR/lj_${bench}" 2>/dev/null || echo "")
+    t2=$(cat "$RESULTS_DIR/t2_${bench}" 2>/dev/null || echo "-/-")
 
     vm_num=$(echo "$vm" | sed 's/s$//')
     jit_num=$(echo "$jit" | sed 's/s$//')
@@ -127,7 +137,7 @@ for bench in $BENCHMARKS; do
         ratio="--"
     fi
 
-    printf "| %-25s | %-10s | %-10s | %-8s | %-10s |\n" "$bench" "$vm" "$jit" "$ratio" "$lj"
+    printf "| %-25s | %-10s | %-10s | %-8s | %-10s | %-6s |\n" "$bench" "$vm" "$jit" "$ratio" "$lj" "$t2"
 done
 
 echo ""

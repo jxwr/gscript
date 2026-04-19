@@ -40,10 +40,10 @@ classes:
     description: >
       Changes to the workflow itself (CLAUDE.md, round shape, persistent
       artifacts, gating scripts). Meta rounds only.
-    attempts: 16                  # +R86 V8-arc formal close
-    wins: 16                     # legacy; post-R49 = 0 bench_wins + 16 adr_wins
+    attempts: 17                  # +R146 Tier-2 entry visibility
+    wins: 17                     # legacy; post-R49 = 0 bench_wins + 17 adr_wins
     bench_wins: 0
-    adr_wins: 16                 # includes R57 roll-up + R59 + R76 v5.2 correctness rules + R86 V8-arc close
+    adr_wins: 17                 # includes R57 roll-up + R59 + R76 v5.2 correctness rules + R86 V8-arc close + R146 T2 entry flag + -jit-stats T2 column
     reverts: 0
     holds: 0
     prior_reject_rate: 0.0
@@ -88,7 +88,7 @@ classes:
       Cumulative R7-R76 v5 usage: 22 wins, 2 self-corrected reverts,
       10 actionable holds, major correctness-arc stall (R65-R75)
       that triggered v5.2.
-    historical_rounds: [7, 10, 18, 25, 26, 27, 28, 33, 37, 38, 41, 49, 57, 59, 76]
+    historical_rounds: [7, 10, 18, 25, 26, 27, 28, 33, 37, 38, 41, 49, 57, 59, 76, 86, 146]
     key_negative_evidence: >
       R21 architecture round overscoped: projected 40% gains without
       verifying current pipeline state. Cost one implementation

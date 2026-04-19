@@ -1,0 +1,243 @@
+# R146: diagnostic — make "did this benchmark run through Tier 2?" a
+#       one-glance answer in the standard perf-test output. R132
+#       (fib promotion unblock), R145 (ack gate open), and the
+#       R133-R139 hang arc each burned round-time on the question
+#       "is the hot function even IN Tier 2 right now?" because
+#       the bench harness is silent about tiering and -jit-stats
+#       only tells us what was COMPILED, not what was ENTERED.
+round: 146
+date: 2026-04-19
+follows: 145
+
+type: diagnostic
+
+target:
+  benchmark: multi
+  # No single target. The deliverable is an observability change
+  # that applies to every benchmark in benchmarks/suite/. We will
+  # spot-verify on fib (known Tier 2 since R132), ack (known Tier 2
+  # since R145), and fib_recursive-under-threshold (known NOT Tier 2).
+  current_wall_sec: null
+  reference_wall_sec: null
+  luajit_wall_sec: null
+  gap_factor: null
+
+hypothesis:
+  class: workflow-evolution
+  # Observability of "did we enter Tier 2" is a harness concern, not
+  # a codegen class. Using workflow-evolution (the same class that
+  # governs harness/infrastructure changes — see ledger.yaml:39).
+  claim: >
+    A tiny, always-on Tier 2 entry flag set once in the Tier 2
+    native prologue (single STRB to a per-proto byte) plus a
+    one-line summary in bench output will cut the "is this in
+    Tier 2?" verification cost from minutes (add print, rebuild,
+    re-run, correlate) to zero (already printed).
+  expected_gain_pct: null   # diagnostic; no benchmark gain claimed
+  expected_gain_mechanism: >
+    Workflow-cost reduction. The same class of evidence that
+    R132/R139/R142/R145 each re-derived ad-hoc (which proto got
+    compiled, which one ran through native code, which one fell
+    back to Tier 1/VM) becomes a byproduct of every perf-test run.
+  counterfactual_check: >
+    Risk to benchmarks:
+      - Prologue STRB cost: 1 insn per Tier 2 invocation, to a
+        fixed per-proto byte. For fib at ~1M Tier 2 entries per
+        run, that is ~1M extra insns across a 0.9s run ≈ ~0.3ms,
+        well inside measurement noise. For tight inner loops that
+        DON'T call (loop body is not an entry), cost is zero.
+      - Alternative "once" flag (branch past the STRB on subsequent
+        entries) was considered and rejected: a predicted branch is
+        no cheaper than the unconditional STRB in steady state, and
+        it complicates the prologue. Go with unconditional STRB.
+      - run_bench.sh adds `-jit-stats` to the -jit run: zero
+        measurable cost (stats printing happens after the timed
+        region).
+    Risk to correctness: none. The counter/flag is write-only and
+    observationally inert (the native code does not branch on it).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  # workflow-evolution is the harness-change class; past entries
+  # are all wins or meta-wins, no reverts on file. Treating as
+  # 0.0 until a first revert appears.
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: >
+        Before emit: confirm that the current Tier 2 prologue has
+        headroom for 1 extra STRB without disturbing alignment or
+        stack-frame invariants. Read the first ~20 bytes of fib's
+        Tier 2 entry in diag/fib/fib.asm.txt and identify where the
+        STRB can land (ideally after X29/X30 save, before first
+        register load — a cold window).
+      acceptance: >
+        Insertion point is identified and the prologue's post-
+        insertion alignment (16-byte SP, nothing straddling a
+        cache line boundary unnaturally) is unchanged.
+      halt_on_fail: true
+    - description: >
+        Before touching production: write a failing Go test
+        under internal/methodjit/ that asserts the new
+        Tier2EntryCount (or EnteredTier2 flag) is zero before
+        invocation and >0 after a single call through Tier 2
+        native code, on a function known to promote (fib).
+      acceptance: "test fails with `Tier2EntryCount == 0 after call`"
+      halt_on_fail: true
+  result: |
+    1. Insertion point chosen: top of emitPrologue (before SUBimm SP)
+       and top of t2_direct_entry (before SUBimm SP). Both are cold
+       windows — X0 holds ctx pre-consume, X16/X17 are AAPCS scratch
+       (IP0/IP1). Frame alignment untouched (SUBimm SP stays first
+       after the mark). t2_self_entry is intentionally NOT marked:
+       it is only reached from a Tier-2 caller that already set the
+       flag, so the invariant "native T2 ran ⟺ EnteredTier2==1"
+       holds without the extra insns.
+    2. Failing Go test written at
+       internal/methodjit/tier2_entry_visibility_test.go:
+       TestTier2EntryVisibility_Fib. Initial red run:
+         --- FAIL: TestTier2EntryVisibility_Fib (0.00s)
+             tier2_entry_visibility_test.go:80: post-execute:
+             fibProto.EnteredTier2 = 0, want 1
+             (Tier 2 prologue did not set the entry flag)
+       Plus a negative test TestTier2EntryVisibility_NotCompiled
+       that stays GREEN throughout — proves the flag is not set
+       for protos that never Tier-2-compile.
+       After emit change: both tests PASS.
+  passed: true
+
+  # This round is NOT correctness-bug-fix class, so rules 26-29
+  # (failing_test, surgical_scope, ir_diff, bisect_range) are not
+  # strictly required. However, it DOES modify emit_compile.go /
+  # Tier 2 prologue emission, so we voluntarily fill the TDD fields:
+  failing_test: "internal/methodjit/tier2_entry_visibility_test.go:TestTier2EntryVisibility_Fib"
+  failing_output: >
+    tier2_entry_visibility_test.go:80: post-execute: fibProto.EnteredTier2 = 0,
+    want 1 (Tier 2 prologue did not set the entry flag)
+  surgical_scope: >
+    Exactly two emit sites modified:
+      1. The single-body Tier 2 prologue in emit_compile.go (wherever
+         X29/X30 save lives today post-R144 collapse). Add one STRB
+         Wzr, [Xptr, #0] (literal 1 via MOV Wtmp, #1; STRB Wtmp, [Xptr])
+         pointing at proto.EnteredTier2 byte.
+      2. The light self-entry epilogue is NOT touched (self-entry
+         does not represent a fresh Tier 2 invocation — the first
+         entry already set the flag).
+    Plus the non-emit wiring:
+      - internal/vm/proto.go: add `EnteredTier2 byte` (or `Tier2Entries uint64`).
+      - internal/methodjit/tiering_manager.go: expose Tier2Entered(proto) for -jit-stats.
+      - cmd/gscript/jit_arm64.go: include entered=yes/no per compiled proto.
+      - benchmarks/run_bench.sh: append -jit-stats to the JIT loop;
+        parse for a one-line T2 column in the results table.
+  ir_diff_before: null   # no IR change; this is emit-only
+  ir_diff_after: null
+  bisect_range: null     # not a bug-fix round
+
+current_state_audit_summary: |
+  # Current-state audit (rule 23, architecture-adjacent):
+  #
+  # 1. What already exists:
+  #    - proto.Tier2Promoted bool (set at compile install).
+  #      Source: internal/vm/proto.go:36.
+  #      Visibility: not printed by any bench harness.
+  #    - tm.Tier2Compiled() []string, sorted.
+  #      Source: tiering_manager.go:689.
+  #      Visibility: only via `-jit-stats` CLI flag.
+  #    - tm.Tier2FailReason map[*FuncProto]string.
+  #      Source: tiering_manager.go:700.
+  #      Visibility: only via `-jit-stats`.
+  #    - GSCRIPT_JIT_DEBUG=1 env prints "tier2: compiled %q" to stderr.
+  #      Source: tiering_manager.go:436-438.
+  #      Visibility: verbose; not suitable for default bench output.
+  #
+  # 2. What is missing — the observable gap:
+  #    - No signal that Tier 2 native code actually RAN. A proto can
+  #      be compiled yet never entered (if the hot loop is elsewhere,
+  #      or if a regression routes the call through Tier 1 BLR /
+  #      VM fallback). R133-R139 spent multiple rounds confused about
+  #      whether ack was even entering Tier 2 after the hang fix.
+  #    - run_bench.sh does not pass -jit-stats; bench output table
+  #      shows only wall time, leaving tiering state implicit.
+  #    - benchmarks/warm_bench_test.go Logs nothing about tiering.
+  #
+  # 3. Minimal fix (null hypothesis "this is already done" — DISPROVED):
+  #    `grep "Entered" internal/vm/proto.go` → no match
+  #    `grep "Tier2Entered" internal/methodjit/*.go` → no match
+  #    `grep jit-stats benchmarks/run_bench.sh` → no match
+  #    The feature is absent; the round is real work, not a relabel.
+  #
+  # 4. Scope budget (rule 27 voluntarily applied — one concern):
+  #    This round ADDS visibility infrastructure. It MUST NOT:
+  #    - change any codegen decision,
+  #    - introduce branches in hot paths,
+  #    - alter pass ordering,
+  #    - touch Tier 1.
+
+verify:
+  result: |
+    Tests:
+      go test ./internal/methodjit/... PASS (incl. new
+      TestTier2EntryVisibility_Fib and _NotCompiled).
+      Pre-existing object_creation_dump baseline re-calibrated for
+      the new emit_prologue insns (+24/+8 on create_and_sum and
+      transform_chain, +12/+2 on new_vec3 — all tracked to the
+      2× emitTier2EntryMark calls per proto).
+
+    Repo-wide: same pre-existing failures as R145 (ChessAI hang in
+    gcCompact/ScanValueRoots + TestPool_concurrent stdlib init
+    race). No new failures introduced by R146. methodjit / jit / vm
+    / runtime / lexer / parser / nanbox all green.
+
+    CLI bench (5-sample median, R145→R146):
+      fib              0.920 → 0.912  (-0.9%)
+      ackermann        0.446 → 0.452  (+1.3%)
+      mutual_recursion 0.188 → 0.190  (+1.1%)
+    All within warm-bench noise.
+
+    Warm Go benches (3-sample median, R145→R146):
+      FibIterativeWarm    263.3 → 261.9 ns     (-0.5%)
+      FibRecursiveWarm    1.97m → 1.89ms       (-4.2%; within run-to-run spread)
+      AckermannWarm       1.98m → 1.99ms       (+0.15%)
+      MathLeibnizWarm     125.9 → 125.9 μs     (flat)
+      TableFieldWarm      663.7 → 695.6 ns     (+4.8%; within spread)
+      FunctionCallsWarm   10.33 → 10.34 μs     (+0.13%)
+    No systemic regression.
+
+    T2 column spot checks via `gscript -jit -jit-stats <bench>.gs`:
+      fib.gs                -> "fib (entered=yes)" ; T2 = 1/1 ✓
+      ackermann.gs          -> "ack (entered=yes)" ; T2 = 1/1 ✓
+      mutual_recursion.gs   -> no compiled protos  ; T2 = 0/0 ✓ (F/M not
+                               admitted by R145's staticallyCallsOnlySelf
+                               gate — exactly the signal this round wanted
+                               to make glance-visible)
+
+    luajit_gap.yaml: 3 rows appended (fib, ackermann, mutual_recursion)
+    per rule 25.
+
+outcome:
+  status: adr-win
+  # Diagnostic/observability infrastructure shipped; no bench movement
+  # promised. Per rule 24, adr-win is the correct taxonomy for this
+  # deliverable. shipped_code=true because code landed in production
+  # emit, runtime, CLI, and bench harness.
+  bench_deltas:
+    fib:             {from: 0.920s, to: 0.912s, pct: -0.9}
+    ackermann:       {from: 0.446s, to: 0.452s, pct: +1.3}
+    mutual_recursion: {from: 0.188s, to: 0.190s, pct: +1.1}
+  regressions: []
+  shipped_code: true
+  commit: null           # filled by closing commit
+
+# Not a revert round.
+revert_class: null
+revert_root_cause_location: null
+revert_cost_model_delta: null
+revert_prevention: null
+
+ledger_update:
+  classes_touched:
+    - workflow-evolution
+  new_class_introduced: null

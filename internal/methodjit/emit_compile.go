@@ -9,6 +9,7 @@ package methodjit
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
 	"github.com/gscript/gscript/internal/runtime"
@@ -650,8 +651,34 @@ func callExitResumeLabelForPass(instrID int, numericMode bool) string {
 // frameSize is the stack frame size for callee-saved registers.
 const frameSize = 128
 
+// emitTier2EntryMark writes 1 to proto.EnteredTier2 (one byte). It is
+// called at the head of each Tier 2 entry point so that a single glance
+// at proto.EnteredTier2 (e.g. through -jit-stats or the bench harness)
+// answers "did native Tier 2 code actually run for this proto?". Uses
+// X16/X17 — AAPCS scratch registers (IP0/IP1) — which are safe at entry
+// before any callee-saved registers are live. Cost: ~6 insns per
+// invocation (LoadImm64 up to 4 + MOVimm16 + STRB). For fib at ~1M
+// entries per run this is ~1.5 ms out of 0.9 s (~0.17%, inside noise).
+//
+// The address of proto.EnteredTier2 is stable because Go's GC is
+// non-moving for heap allocations; FuncProto is heap-allocated and is
+// kept alive by the owning VM/Closure for the lifetime of the code.
+func (ec *emitContext) emitTier2EntryMark() {
+	if ec.fn == nil || ec.fn.Proto == nil {
+		return
+	}
+	asm := ec.asm
+	addr := int64(uintptr(unsafe.Pointer(&ec.fn.Proto.EnteredTier2)))
+	asm.LoadImm64(jit.X16, addr)
+	asm.MOVimm16(jit.X17, 1)
+	asm.STRB(jit.X17, jit.X16, 0)
+}
+
 func (ec *emitContext) emitPrologue() {
 	asm := ec.asm
+
+	// R146: mark native entry before anything else (AAPCS scratch only).
+	ec.emitTier2EntryMark()
 
 	// Allocate stack frame.
 	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
@@ -717,6 +744,8 @@ func (ec *emitContext) emitEpilogue() {
 	// Caller has set: X0=ctx, ctx.Regs=callee regs base,
 	// ctx.Constants=callee constants, CallMode=1.
 	asm.Label("t2_direct_entry")
+	// R146: mark native entry (BLR-from-Tier-1 path).
+	ec.emitTier2EntryMark()
 	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.X29, jit.SP, 0)

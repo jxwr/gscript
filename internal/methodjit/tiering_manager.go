@@ -695,6 +695,23 @@ func (tm *TieringManager) Tier2Compiled() []string {
 	return names
 }
 
+// Tier2Entered returns the subset of Tier2Compiled() protos whose native
+// prologue ran at least once (proto.EnteredTier2 != 0). Set by the
+// emitTier2EntryMark sequence (R146). Used by CLI diagnostics
+// (-jit-stats) and by bench harnesses to confirm that the hot function
+// actually executed through Tier 2 native code — not just that it was
+// compiled.
+func (tm *TieringManager) Tier2Entered() []string {
+	names := make([]string, 0, len(tm.tier2Compiled))
+	for proto := range tm.tier2Compiled {
+		if proto.EnteredTier2 != 0 {
+			names = append(names, proto.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Tier2Failed returns a map of proto name -> error message for Tier 2
 // compilations that failed. Used by CLI diagnostics (-jit-stats).
 func (tm *TieringManager) Tier2Failed() map[string]string {
