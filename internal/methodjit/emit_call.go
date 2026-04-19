@@ -45,6 +45,19 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 	}
 	asm := ec.asm
 
+	// R130 layer 3: in numeric pass 2, if the arg is already a raw int
+	// (e.g., loaded from a param slot that holds raw int), the
+	// GuardType(TypeInt) check is redundant. Pass through: copy raw
+	// int to the guard's destination register, mark it raw.
+	if ec.numericMode && Type(instr.Aux) == TypeInt {
+		argID := instr.Args[0].ID
+		if ec.rawIntRegs[argID] {
+			src := ec.resolveRawInt(argID, jit.X0)
+			ec.storeRawInt(src, instr.ID)
+			return
+		}
+	}
+
 	// Load the value to check.
 	srcReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	if srcReg != jit.X0 {

@@ -616,11 +616,11 @@ func (ec *emitContext) emitNumericBody() {
 		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
 	}
 	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
-	// R129: box args into regs[0..N-1] so the NaN-boxed body works.
-	// R130 will change this to raw-store + body changes.
+	// R130 layer 2: store raw int args directly to regs[0..N-1] (no
+	// NaN-box). Pass-2 body's emitLoadSlot for these slots will load
+	// raw int via the numericMode branch.
 	for i := 0; i < ec.numericParamCount; i++ {
 		argReg := jit.Reg(int(jit.X0) + i)
-		asm.ORRreg(argReg, argReg, mRegTagInt)
 		asm.STR(argReg, mRegRegs, slotOffset(i))
 	}
 	// Jump to pass-2's prefixed entry block.

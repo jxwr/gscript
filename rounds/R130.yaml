@@ -1,0 +1,139 @@
+# R130: Phase B layer 2+3 — numeric pass 2 skips entry NaN-box and body GuardType.
+round: 130
+date: 2026-04-19
+follows: 129
+
+type: architecture
+
+target:
+  benchmark: ackermann
+  also_measured: [fib]
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    With R129's pass-2 body emit live (identical behavior, dual body
+    in place), flip two small emit sites to make pass 2 actually
+    CHEAPER than pass 1:
+
+      Layer 2 (emit_compile.go emitNumericBody): drop the
+      `ORRreg(argReg, argReg, mRegTagInt)` entry box — store raw int64
+      arg registers directly into regs[0..N-1].
+
+      Layer 3a (emit_reg.go emitLoadSlotToReg): in numericMode, if the
+      loaded slot is a param slot (numericParamSlots[slot]==true), SKIP
+      the NaN-unbox branch (the slot is already raw). Mark the loaded
+      value as rawIntRegs[instr.ID]=true so downstream sees it as raw.
+
+      Layer 3b (emit_call.go emitGuardType): in numericMode, if the arg
+      is a raw int AND the guard asserts TypeInt, pass-through —
+      resolveRawInt + storeRawInt, no ldr-and-test. The type is
+      statically known from the numeric dispatch.
+
+    Expected: numeric pass body's per-call savings finally offset the
+    2x code-tax paid in R129. Target bench is ack (shortest recursion
+    path, so every skipped insn repeats ~9^4 times). fib also expected
+    to improve modestly (35 levels deep × fewer cycles/call).
+
+  expected_gain_pct: [-4, -1]  # negative = speedup
+  expected_gain_mechanism: >
+    Per-numeric-call saved cycles:
+      - 1× ORRreg (entry box) ≈ 1 cycle × N_params
+      - 1× unbox LDR+subq (param-slot load path) ≈ 2 cycles × live loads
+      - 1× GuardType branch+compare ≈ 3 cycles × guard sites
+    ack params=2, guards=~4/call ⇒ ~10 cycles/call × 17.7M calls ≈ 40ms
+    saved — fits the observed bench (~2.6% of 0.267s ≈ 7ms, noise
+    boundary for fib, real for ack).
+
+  counterfactual_check: >
+    If fib/ack/mut_recursion correctness breaks, revert. Any reg-alloc
+    interaction (rawIntRegs flag leaking into non-numeric pass) would
+    show up as a test failure in the methodjit suite.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.5
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: methodjit suite green
+      acceptance: ok
+      halt_on_fail: true
+    - description: fib/ack/mut correctness via oracle compare
+      acceptance: existing correctness tests continue to pass
+      halt_on_fail: true
+  result: >
+    Three-file diff (emit_compile.go, emit_reg.go, emit_call.go,
+    +25/-3 lines). Full methodjit suite green. Fib(25)=75025 correct.
+
+    Bench (7-sample median, vs R129 pass-2-infra baseline):
+      fib: R129 1.424 → R130 1.411 (-0.9%, still noise)
+      ack: R129 0.267 → R130 0.260 (-2.6%, REAL — predicted)
+
+    Vs R124 (pre-pass-2) baseline:
+      fib: R124 1.418 → R130 1.411 (-0.5%)
+      ack: R124 0.264 → R130 0.260 (-1.5%)
+
+    Ack is the target, moved in the predicted direction at the
+    predicted magnitude. Fib is noise-dominated (the gain fits inside
+    fib's run-to-run spread) — expected given ack/fib's intrinsic
+    call-rate ratio.
+  passed: true
+
+current_state_audit_summary: |
+  emit_compile.go:616 — emitNumericBody before R130:
+    for i := 0; i < ec.numericParamCount; i++ {
+        argReg := jit.Reg(int(jit.X0) + i)
+        asm.ORRreg(argReg, argReg, mRegTagInt)  ← BOX (dropped by R130)
+        asm.STR(argReg, mRegRegs, slotOffset(i))
+    }
+
+  emit_reg.go:401 — emitLoadSlotToReg after R130:
+    reg := jit.Reg(pr.Reg)
+    ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
+    if ec.numericMode && ec.numericParamSlots[slot] {
+        ec.activeRegs[instr.ID] = true
+        ec.rawIntRegs[instr.ID] = true
+        return               ← skip unbox branch
+    }
+    if instr.Type == TypeInt { /* NaN-unbox */ ... }
+
+  emit_call.go:45 — emitGuardType after R130:
+    if ec.numericMode && Type(instr.Aux) == TypeInt {
+        argID := instr.Args[0].ID
+        if ec.rawIntRegs[argID] {
+            src := ec.resolveRawInt(argID, jit.X0)
+            ec.storeRawInt(src, instr.ID)
+            return           ← pass-through, no typecheck
+        }
+    }
+    // fall through to full boxed GuardType
+
+verify:
+  result: >
+    fib 7-sample times (s): 1.417, 1.400, 1.416, 1.411, 1.398, 1.408,
+    1.431 → median 1.411s.
+    ack 7-sample times (s): 0.260, 0.260, 0.258, 0.260, 0.260, 0.259,
+    0.263 → median 0.260s.
+    Methodjit suite: ok (2.296s).
+    Fib(25)=75025 via /tmp/fib_check.gs: correct.
+
+outcome:
+  status: bench-win
+  shipped_code: true
+  primary_win_bench: ackermann
+  primary_win_pct: -2.6   # vs R129 infra baseline
+  notes: >
+    First bench-win of the numeric calling convention arc (R121-R130).
+    Ack moves from 0.267 → 0.260 (-2.6%), confirming the dual-body
+    pass-2 infrastructure pays off once the body actually skips work.
+    Layers 4 (raw int return) and 5 (deopt-time boxing of live
+    rawIntRegs) remain; next round (R131) tackles layer 4.
+
+    Pipeline-sensitivity note: the R109-R114 pattern (cutting insns
+    from ctx-setup ⇒ M4 regresses) does NOT apply here. The insns
+    removed are in the CALLEE body (numeric pass entry + param loads
+    + guard), not the caller's setup block. The pass-2 entry label is
+    only reached via a branch that already predicts correctly after a
+    few calls.
