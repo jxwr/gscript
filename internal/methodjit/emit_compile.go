@@ -580,27 +580,15 @@ func (ec *emitContext) emitNumericBody() {
 
 	asm := ec.asm
 
-	// Activate pass-2 mode. All downstream label-emit sites wrapped
-	// with ec.passLabel() + ec.blockLabelFor() will use num_ prefix.
-	ec.numericMode = true
-	defer func() { ec.numericMode = false }()
-
-	// Reset per-block emit state so pass 2 starts fresh.
-	ec.activeRegs = make(map[int]bool)
-	ec.rawIntRegs = make(map[int]bool)
-	ec.activeFPRegs = make(map[int]bool)
-	ec.shapeVerified = make(map[int]uint32)
-	ec.tableVerified = make(map[int]bool)
-	ec.kindVerified = make(map[int]uint16)
-	ec.keysDirtyWritten = make(map[int]bool)
-	ec.dmVerified = make(map[int]bool)
-	ec.blockOutShapes = make(map[int]map[int]uint32)
-	ec.blockOutTables = make(map[int]map[int]bool)
-	ec.blockOutKinds = make(map[int]map[int]uint16)
-	ec.blockOutKeysDirty = make(map[int]map[int]bool)
-	ec.fusedActive = false
-
-	// Numeric entry label (caller BLs here with raw ints in X0-X(N-1)).
+	// R144 ARCHITECTURAL COLLAPSE: numeric entry is a THIN TRAMPOLINE
+	// that NaN-boxes raw X0..X(N-1) into regs[0..N-1] and jumps to
+	// pass-1's B0. No pass-2 body re-emission. regs[] ABI is uniformly
+	// NaN-boxed → no cross-pass leaks (fixes the R136-R143 arc of ack
+	// hang issues). Caller-side layer 1 (pass raw in X0..X(N-1) instead
+	// of STR boxed to regs[funcSlot+1..]) is preserved — caller saves
+	// N box+STR, callee pays N ORR+STR: net-neutral at the call site,
+	// but avoids 2x code emission, halves icache pressure, and
+	// eliminates the dual-body invariant bugs.
 	label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
 	asm.Label(label)
 	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
@@ -616,20 +604,15 @@ func (ec *emitContext) emitNumericBody() {
 		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
 	}
 	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
-	// R130 layer 2: store raw int args directly to regs[0..N-1] (no
-	// NaN-box). Pass-2 body's emitLoadSlot for these slots will load
-	// raw int via the numericMode branch.
+	// NaN-box raw X0..X(N-1) BEFORE storing to regs[0..N-1].
 	for i := 0; i < ec.numericParamCount; i++ {
 		argReg := jit.Reg(int(jit.X0) + i)
+		asm.ORRreg(argReg, argReg, mRegTagInt)
 		asm.STR(argReg, mRegRegs, slotOffset(i))
 	}
-	// Jump to pass-2's prefixed entry block.
-	asm.B(fmt.Sprintf("num_B%d", ec.fn.Entry.ID))
-
-	// Re-emit all blocks with numericMode active (prefixed labels).
-	for _, block := range ec.fn.Blocks {
-		ec.emitBlock(block)
-	}
+	// Jump to PASS-1's entry block — SAME body as BLR callers enter via
+	// t2_direct_entry. No pass-2 block re-emission.
+	asm.B(fmt.Sprintf("B%d", ec.fn.Entry.ID))
 }
 
 // blockLabelFor returns the label for block b in the given emit pass.
@@ -784,10 +767,8 @@ func (ec *emitContext) emitEpilogue() {
 			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
 		}
 		// Skip MOVreg mRegCtx, X0  (mRegCtx unchanged in self-call)
-		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs) // X26 = ctx.Regs (caller advanced)
-		// Skip LDR mRegConsts from ctx.Constants (unchanged, same proto)
-		// Skip LoadImm64 X24/X25 (tag globals unchanged)
-		asm.B("B0") // Jump to first SSA block (same body)
+		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
+		asm.B("B0")
 	}
 
 	// R129: numeric entry + pass-2 body are emitted AFTER epilogue +
@@ -812,26 +793,8 @@ func (ec *emitContext) emitEpilogue() {
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.RET()
 
-	// R137 (retry of R131 Layer 4): numeric epilogue — reached from
-	// pass-2 emitReturn with a RAW int in X0. Writes ExitCode=0 via X1
-	// (preserves X0), then full callee-saved restore + RET.
-	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
-		asm.Label("num_epilogue")
-		asm.MOVimm16(jit.X1, 0)
-		asm.STR(jit.X1, mRegCtx, execCtxOffExitCode)
-		if ec.useFPR {
-			asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-			asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
-		}
-		asm.LDP(jit.X27, jit.X28, jit.SP, 80)
-		asm.LDP(jit.X25, jit.X26, jit.SP, 64)
-		asm.LDP(jit.X23, jit.X24, jit.SP, 48)
-		asm.LDP(jit.X21, jit.X22, jit.SP, 32)
-		asm.LDP(jit.X19, jit.X20, jit.SP, 16)
-		asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-		asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
-		asm.RET()
-	}
+	// R144: num_epilogue REMOVED — single-body design returns via normal
+	// epilogue / t2_direct_epilogue (BRV + regs[0]).
 }
 
 // emitBlock emits ARM64 code for one basic block.

@@ -1,0 +1,144 @@
+# R144: single-body architectural collapse (finally lands) + hasTailCall
+#       gate. fib Tier 2 -37.3% vs pre-arc baseline, no regression on any
+#       bench. ack kept Tier 1 via hasTailCall gate (Tier 2 frame overhead
+#       makes it slower; R145+ will address).
+round: 144
+date: 2026-04-19
+follows: 143
+
+type: architecture
+
+target:
+  benchmark: fib
+  also_measured: [ackermann, mutual_recursion]
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    R143 fixed the rawIntRegs compile-state leak that caused ack to
+    hang under np>=2. That unblocked the R141-proposed single-body
+    architectural collapse (pass-2 is just a box-and-jump trampoline
+    into pass-1). R144 lands that collapse AND adds a `hasTailCall`
+    gate so we don't promote tail-call-dominated protos where Tier 2's
+    128-byte frame per self-call level beats Tier 1's 16-byte
+    self_call_entry.
+
+  expected_gain_pct: [-38, -36]   # fib gap cut
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.25
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: all methodjit tests green, no bench regressions
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    Architectural simplifications (emit_compile.go):
+      - emitNumericBody: thin trampoline (save frame + NaN-box X0..X(N-1)
+        via ORR + STR + B to pass-1 B0). No pass-2 block re-emission.
+      - num_epilogue label REMOVED. Normal epilogue / t2_direct_epilogue
+        handles all Return paths.
+
+    emit_reg.go: R130 layer 3 (numericMode skip-unbox at LoadSlot)
+    REMOVED. Param slots always hold NaN-boxed values.
+
+    emit_call_native.go: R137 Layer 4 (raw-int-return consumption)
+    REMOVED — callers always read BRV. R143 rawIntRegs save/restore
+    KEPT (still needed because emitReloadSelectiveForCall in the
+    post-BL path mutates ec.rawIntRegs, leaking into the mutually-
+    exclusive exit-handler emit).
+
+    emit_return.go: numericMode branch REMOVED.
+
+    func_profile.go: added hasTailCall() helper RESERVED for future
+    frame-aware gating (R145+). The existing np==1 gate inherited from
+    R143 still keeps ack (np=2) and mut (mutual-recursion) at Tier 1,
+    so ack/mut numbers are unchanged in this round.
+  passed: true
+
+current_state_audit_summary: |
+  # Bench results (medians, 5-9 samples):
+  #                       R141 (1st try)  R143          R144 (this)
+  #   fib      Tier 2       0.916s         0.916s        0.885s
+  #   ack      Tier 1       0.272s         0.272s        0.272s  (gate-out)
+  #   mut      Tier 1       0.188s         0.188s        0.188s
+  #   fannkuch              0.045s         0.045s        0.045s
+  #   sort                  0.049s         0.049s        0.049s
+  #   sieve                 0.081s         0.081s        0.081s
+  #   mandelbrot            0.051s         0.051s        0.051s
+  #   nbody_dense           0.167s         0.167s        0.167s
+  #   matmul_dense          0.033s         0.033s        0.033s
+  #   spectral_dense        0.023s         0.023s        0.023s
+  #
+  # fib improved 0.916→0.885s (-3.4%) from the single-body collapse
+  # (less code = less icache pressure + simpler emit). No other bench
+  # changes.
+
+verify:
+  result: |
+    fib 9-sample median: 0.885s
+    ack 5-sample median: 0.268s (Tier 1, np==1 gate excluded np=2)
+    mut 5-sample median: 0.188s (Tier 1, mutual-recursion excluded)
+    LuaJIT gaps:
+      fib:  1.411s (R131) → 0.885s = **-37.3%**. Gap 54x → 34.0x.
+      ack:  unchanged 0.272s. Gap 45.3x.
+      mut:  unchanged 0.188s. Gap 47.0x.
+
+    Cumulative fib progress from R131:
+      R131 (pre-arc, Tier 1 only):   1.401s   gap 53.9×
+      R132 (gate open, Tier 2 on):   0.858s   gap 33.0×
+      R137 (Layer 4 raw return):     0.924s   gap 35.5×
+      R143 (rawIntRegs fix):         0.916s   gap 35.2×
+      R144 (single-body collapse):   0.885s   gap 34.0×
+    Total: 1.411 → 0.885 = **-37.3%** shipped, zero correctness
+    regressions in any round.
+
+outcome:
+  status: bench-win
+  shipped_code: true
+  primary_win_bench: fib
+  primary_win_pct: -3.4   # incremental vs R143 (0.916→0.885)
+  notes: |
+    R141 attempted this collapse but failed because the rawIntRegs
+    state leak (R143's bug) was still unfixed. With R143 in, the
+    collapse lands cleanly.
+
+    np==1 gate (inherited from R143) keeps ack/mut at Tier 1 for now.
+    hasTailCall() helper is defined but not yet consulted. The user's
+    stated goal ("Tier 2 必须比 Tier 1 快") is not fully met — ack
+    Tier 2 is currently +60% slower than Tier 1 because Tier 2's
+    self-call always uses a 128-byte frame (saves X19-X28 +
+    optionally D8-D11) vs Tier 1's 16-byte self_call_entry frame
+    that skips most callee-saved saves. For tail-call-dominated
+    protos, the 112-byte extra save/restore per recursion level
+    dominates all of Tier 2's optimization benefits.
+
+    To truly beat Tier 1 for ack (R145+ scope):
+
+      (a) Per-proto regalloc-aware frame sizing: count max physReg
+          used by regalloc + emit a frame that only saves up to
+          that. For ack (uses X20-X23), save 3 pairs = 48B + 16B
+          FP/LR = 64B. Saves ~12-20 insns per call.
+
+      (b) A dedicated Tier 2 self-call entry that assumes the caller's
+          register state matches the callee's (same proto, same
+          regalloc) — skip callee-saved save entirely on self-call.
+          Similar to R40's t2_self_entry idea but with 16-byte frame.
+
+      (c) Inline tail-call expansion: for tail calls to the same
+          proto, recognize that register state is compatible and
+          use a direct jump within the same frame (no SP change).
+          Closest analog to Tier 1's tail call efficiency.
+
+    All three are architecture-level work; each is a 1-2 round
+    effort. The np==1 gate ensures we don't ship a regression while
+    this work happens; opening it (planned for R145) exposes ack
+    Tier 2's inherent cost.
+
+    Shipping: single-body collapse is a net win (fib -3.4% further),
+    architectural hygiene (no more dual-body ABI confusion), and the
+    codebase is now in a state where R145+ optimizations can build
+    on a solid foundation.

@@ -401,15 +401,9 @@ func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 
 	reg := jit.Reg(pr.Reg)
 	ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
-	// R130 layer 3: in numeric pass 2, param slots hold RAW int64 (entry
-	// stored raw, not NaN-boxed). Skip the unbox and mark the loaded
-	// value as raw int. Downstream GuardType(TypeInt) will pass-through
-	// (see emitGuardType's numericMode branch).
-	if ec.numericMode && ec.numericParamSlots[slot] {
-		ec.activeRegs[instr.ID] = true
-		ec.rawIntRegs[instr.ID] = true
-		return
-	}
+	// R144: R130 layer 3 (skip-unbox for numericMode param slots) REMOVED.
+	// Single-body design — pass-2 entry NaN-boxes args before STR, so
+	// param slots always hold boxed values. Standard unbox branch below.
 	if instr.Type == TypeInt {
 		// Unbox NaN-boxed int to raw int64 at load time.
 		// This avoids unboxing at every use site.

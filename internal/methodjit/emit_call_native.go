@@ -309,56 +309,32 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X3, exitHandleLabel)
 
-	// R143: save compile-time rawIntRegs state BEFORE the post-BL
-	// block. The post-BL emit calls emitReloadSelectiveForCall (which
-	// clears rawIntRegs entries for reloaded values) and storeRawInt
-	// (which adds entries). These mutations persist into the emitter's
-	// state and leak into the compile of the mutually-exclusive exit-
-	// handler below (emitCallExitFallback → emitStoreAllActiveRegs).
-	// That leak corrupted v23's stored memory to RAW at ack's v28 exit
-	// path, which was then read as RAW at v29's tail-call arg staging —
-	// the root cause of R136-R142's ack hang.
+	_ = usedNumericBL
+	// R144: single-body design — callee always returns via normal epilogue
+	// (NaN-boxed BRV + regs[0]). Caller reads BRV regardless of whether
+	// the BL was numeric or regular. No layer-4 raw-int-return convention.
+	// R143: save rawIntRegs BEFORE the post-BL emit — emitReloadSelectiveForCall
+	// clears entries, which would leak into the mutually-exclusive exit-
+	// handler compile below (emitStoreAllActiveRegs sees wrong state).
 	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
 	for k, v := range ec.rawIntRegs {
 		savedRawIntRegs[k] = v
 	}
 
-	if usedNumericBL {
-		// R137 Layer 4 consume: X0 holds raw int64 from callee's
-		// num_epilogue. Box via scratch + STR to regs[funcSlot] for
-		// Lua-convention / deopt safety (preserves X0). Reload live
-		// SSA regs (preserves X0). storeRawInt writes raw X0 to the
-		// Call's SSA home and marks rawIntRegs so downstream arith
-		// and GuardType(TypeInt) pass through.
-		jit.EmitBoxIntFast(asm, jit.X1, jit.X0, mRegTagInt)
-		asm.STR(jit.X1, mRegRegs, slotOffset(funcSlot))
-		ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
-		ec.storeRawInt(jit.X0, instr.ID)
-	} else {
-		// Normal return: read NaN-boxed result from BaselineReturnValue.
-		asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
-		// Store result to regs[funcSlot] (overwrites the function slot, Lua convention).
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
+	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
 
-		// Step 12: Reload only live SSA registers from memory.
-		ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 
-		// Step 13: Store result into the SSA value's home.
-		asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
-		ec.storeResultNB(jit.X0, instr.ID)
-	}
+	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	ec.storeResultNB(jit.X0, instr.ID)
 
 	asm.B(doneLabel)
 
 	// --- Callee exited mid-execution (deopt/op-exit within callee) ---
 	// Both callee-exit and slow-path share a single exit-resume sequence.
-	// R143: restore pre-post-BL rawIntRegs so emitStoreAllActiveRegs
-	// correctly boxes values that were raw before the post-BL mutations.
-	// After emitCallExitFallback returns, ec.rawIntRegs reflects the
-	// exit-path's final state (emitReloadAllActiveRegs cleared everything,
-	// storeResultNB set activeRegs only) — that's the correct compile
-	// state for downstream emit because the exit-path + normal-path
-	// converge with the same runtime NaN-boxed invariant at doneLabel.
+	// R143 restore pre-post-BL rawIntRegs so emitStoreAllActiveRegs
+	// correctly boxes values that WERE raw before the post-BL reload.
 	asm.Label(exitHandleLabel)
 	asm.Label(slowLabel)
 	ec.rawIntRegs = savedRawIntRegs
