@@ -25,13 +25,11 @@ import (
 // Real fix deferred; this test documents the reproducer. Run with
 // `-run TestR138_AckTier2Hang -tags r138fix` once a fix is landed.
 func TestR138_AckTier2Hang(t *testing.T) {
-	t.Skip("R138/R139/R140: ack mid-compile hang still reproduces even after " +
-		"reverting R130 layer 2/3 (pass-2 entry now NaN-boxes). R140 agents " +
-		"pinpointed DeoptInstrID=32 (v32 entry GuardType on m) with slot[0] " +
-		"holding raw int bits. Box-at-entry fix was applied and verified in " +
-		"asm dump (ORR X0, X0, X24 precedes STR X0, (X26) in num entry), " +
-		"yet the deopt still sees raw slot[0]. Another path writes raw to " +
-		"slot[0] — unidentified. Test remains skipped. See rounds/R140.yaml.")
+	t.Skip("R141: attempted single-body collapse (pass-2 entry → trampoline → " +
+		"pass-1 B0) did NOT fix the hang. Entry correctly emits ORR+STR for both " +
+		"args (verified in asm dump), yet slot[0] at deopt still holds raw bits. " +
+		"A SECOND leak path writes raw to slot[0] — unidentified. Architectural " +
+		"hypothesis remains plausible but incomplete. See rounds/R141.yaml.")
 
 	src := `
 func ack(m, n) {
