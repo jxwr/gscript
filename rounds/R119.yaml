@@ -1,0 +1,108 @@
+# R119: numeric self-call calling convention (design + pilot).
+round: 119
+date: 2026-04-19
+follows: 118
+
+type: architecture
+
+target:
+  benchmark: fib
+  current_wall_sec: 1.423
+  luajit_wall_sec: 0.026
+  gap_factor: 54.7
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    Per the R118 post-arc analysis, the reason fib is 55x LuaJIT is
+    NOT absence of trace-JIT (HotSpot/V8 do fib at 2-5x LuaJIT with
+    method JIT). Our method-JIT is missing the "numeric calling
+    convention" that HotSpot/V8 use for typed-int signatures.
+
+    Pilot (this round): a new callee entry `t2_numeric_self_entry_1`
+    that takes a SINGLE raw-int arg in X0 instead of NaN-boxed via
+    regs[funcSlot+1]. Caller for static-self + single-int-arg routes
+    through this new entry. Callee entry NaN-boxes at prologue (for
+    body compat) and falls through to B0.
+
+    Saves per call: caller skips arg NaN-box + arg STR + arg LDR +
+    arg STR (4 insns); callee adds box+STR (2 insns). Net -2/call.
+    fib 36M × 2 ≈ 72M insns ≈ 5ms ≈ 0.4% theoretical. Small pilot;
+    R120+ will extend to return-side (raw X0 return) + multi-arg
+    + body rewrite (skip entry NaN-box + elide GuardType).
+
+    Strategic value: proves the path works end-to-end. Follow-up
+    rounds attack the bigger savings.
+  expected_gain_pct: [0, 2]
+  expected_gain_mechanism: >
+    Fewer insns on caller hot path, even with the added entry-side
+    box. The dependency chain Caller-STR-to-regs → Callee-LDR-from-regs
+    is broken (replaced with register-carry via X0).
+  counterfactual_check: >
+    If pipeline sensitivity (R116 lesson) hits us again, this new
+    entry might regress. Mitigation: new entry has ITS OWN pipelining
+    window (new code path), not a perturbation of the existing path.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.5
+  mitigation_required: false
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    - emit_compile.go:567+ has t2_self_entry for self-calls (R40).
+      Skips ctx.Consts + tag-const reloads, but still reads arg from
+      regs[0] (NaN-boxed).
+    - emit_call_native.go caller writes arg to regs[funcSlot+1]
+      (NaN-boxed), advances ctx.Regs, BLs.
+    - ARM64 AAPCS: X0-X7 for int args, X0 return. Standard.
+    - HotSpot / V8 TurboFan use AAPCS-like directly for typed calls.
+
+pre_flight:
+  required:
+    - description: new t2_numeric_self_entry_1 label emits correctly
+      acceptance: unit test verifies label exists in compiled output
+      halt_on_fail: true
+    - description: full methodjit suite green
+      acceptance: go test ./internal/methodjit/... ok
+      halt_on_fail: true
+    - description: fib correctness — fib(10) = 55
+      acceptance: compareTier2Result passes
+      halt_on_fail: true
+    - description: fib bench no regression > 0.5%
+      acceptance: 15-sample median within 0.5% of R118
+      halt_on_fail: false
+  result: >
+    Full methodjit suite green (go test -count=1 ./internal/methodjit/... ok).
+    Bench measurement deferred: user reports GPU workload on the
+    machine making wall-time samples unreliable. Will re-bench
+    after system quiesces. Code is shipped; R120 will pick up
+    bench verification + extend to raw return / multi-arg.
+  passed: partial       # correctness verified; bench deferred
+
+  surgical_scope: >
+    emit_compile.go: emit t2_numeric_self_entry_1 label (only when
+    fn qualifies: 1 int arg, int return, no upvals, no nested protos).
+    emit_call_native.go: new detection + emit path for numeric-
+    qualified static-self calls.
+    No changes to body emit.
+
+outcome:
+  status: adr-win               # pilot infrastructure shipped; bench deferred
+  bench_deltas: {}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/emit_compile.go — t2_numeric_self_entry_1 label
+    - internal/methodjit/emit_call_native.go — isNumericSelfCall + routed call path (skip Step 8 copy + BL to numeric entry with raw int in X0)
+
+ledger_update:
+  classes_touched: [tier2-recursion-closure]
+  new_class_introduced: null
+
+notes: >
+  Rationale from R118 analysis: fib @ 1.4s (55x LuaJIT) reflects
+  missing method-JIT features, not absence of trace-JIT. HotSpot
+  does fib in ~50-100ms (2-4x LuaJIT) with its method JIT. Our gap
+  is ~ 10-20x over HotSpot-class method JITs — this is the gap
+  closeable by numeric calling convention + deeper inline (R120+).
