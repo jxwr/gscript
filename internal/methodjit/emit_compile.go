@@ -173,6 +173,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		irTypes:          irTypes,
 		scratchFPRCache:  make(map[int]jit.FReg),
 		fusedCmps:        fusedCmps,
+		tailCallInstrs:   computeTailCalls(fn),
 	}
 
 	// Assign home slots for all SSA values.
@@ -394,6 +395,16 @@ type emitContext struct {
 	// CMP/FCMP (no CSET+ORR bool materialization).
 	fusedCmps map[int]bool
 
+	// tailCallInstrs (R107) is the set of OpCall instruction IDs that are
+	// in tail position: their result is consumed by the immediately-following
+	// OpReturn in the same block. Populated by computeTailCalls at
+	// emitContext construction. The tail-call emit does a BR to the
+	// callee's direct entry on the fast path; the following OpReturn is
+	// emitted as dead code (fast-path never falls through) but remains
+	// live on the slow-path fallback (emitCallExitFallback produces a
+	// normal return value that the Return then handles).
+	tailCallInstrs map[int]bool
+
 	// fusedCond holds the condition code from the last fused comparison.
 	// Set by emitIntCmp/emitFloatCmp when the comparison is in fusedCmps.
 	fusedCond jit.Cond
@@ -401,6 +412,42 @@ type emitContext struct {
 	// fusedActive is true when the preceding comparison was fused and
 	// emitBranch should use fusedCond + B.cc instead of TBNZ.
 	fusedActive bool
+}
+
+// computeTailCalls (R107) scans the IR for the tail-call pattern:
+// an OpCall immediately followed (within the same block, skipping OpNop)
+// by an OpReturn whose single arg is the Call's result. Returns a set
+// of matching OpCall IDs. The caller's emit path uses emitCallNativeTail
+// for these and skips the following Return's emission.
+func computeTailCalls(fn *Function) map[int]bool {
+	out := make(map[int]bool)
+	if fn == nil {
+		return out
+	}
+	for _, block := range fn.Blocks {
+		for i, instr := range block.Instrs {
+			if instr.Op != OpCall {
+				continue
+			}
+			// Find the next non-nop instruction.
+			j := i + 1
+			for j < len(block.Instrs) && block.Instrs[j].Op == OpNop {
+				j++
+			}
+			if j >= len(block.Instrs) {
+				continue
+			}
+			next := block.Instrs[j]
+			if next.Op != OpReturn {
+				continue
+			}
+			if len(next.Args) != 1 || next.Args[0].ID != instr.ID {
+				continue
+			}
+			out[instr.ID] = true
+		}
+	}
+	return out
 }
 
 // isFusableComparison returns true for comparison ops that can be fused

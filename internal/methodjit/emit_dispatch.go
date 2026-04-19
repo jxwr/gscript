@@ -159,13 +159,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 
 	// --- Call: native BLR with spill/reload, slow path falls to exit-resume ---
 	case OpCall:
-		ec.emitCallNative(instr)
-		// Calls can modify any table's shape — invalidate all shape verification.
-		ec.shapeVerified = make(map[int]uint32)
-		ec.tableVerified = make(map[int]bool)
-		ec.kindVerified = make(map[int]uint16)
-		ec.keysDirtyWritten = make(map[int]bool)
-		ec.dmVerified = make(map[int]bool)
+		ec.emitOpCall(instr)
 
 	// --- Global-exit: load globals via VM and resume JIT ---
 	case OpGetGlobal:

@@ -256,6 +256,173 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+// emitOpCall dispatches OpCall to the regular or tail variant and
+// applies the post-call invalidation of cross-block verification caches.
+// Extracted from emit_dispatch.go to keep that file under rule 13's
+// 1000-line cap.
+func (ec *emitContext) emitOpCall(instr *Instr) {
+	if ec.tailCallInstrs[instr.ID] {
+		// R107: tail call — frame-replacing BR on the fast path. The
+		// slow-path fallback (emitCallExitFallback) still produces a
+		// normal return value, so we DO emit the following OpReturn:
+		// on the fast path it's dead code (BR already transferred
+		// control), on the slow path it correctly completes the call.
+		ec.emitCallNativeTail(instr)
+	} else {
+		ec.emitCallNative(instr)
+	}
+	// Calls can modify any table's shape — invalidate verification caches.
+	ec.shapeVerified = make(map[int]uint32)
+	ec.tableVerified = make(map[int]bool)
+	ec.kindVerified = make(map[int]uint16)
+	ec.keysDirtyWritten = make(map[int]bool)
+	ec.dmVerified = make(map[int]bool)
+}
+
+// emitCallNativeTail emits a tail-call variant of OpCall: when the Call's
+// result is returned immediately (Call→Return pattern in the same block),
+// we replace our stack frame with the callee's instead of stacking a new
+// one. Eliminates caller frame save/restore + BLR/RET overhead, and stops
+// stack growth for tail-recursive chains.
+//
+// Sequence:
+//   1. Store fn + args to regs (same as emitCallNative step 1).
+//   2. Closure type-check + resolve callee's DirectEntry + bounds check.
+//   3. Copy args from regs[funcSlot+1..] to regs[0..nArgs-1] (tail window).
+//   4. Set callee context: Constants, ClosurePtr, CallMode=1, GlobalCache.
+//      Do NOT advance ctx.Regs (reuse current frame's register window).
+//      Do NOT increment NativeCallDepth (we're replacing, not nesting).
+//   5. Inline epilogue: restore callee-saved X19..X28, FP/LR, ADD sp.
+//   6. X0 = X19 (restored ctx pointer).
+//   7. BR X2 (tail jump to callee's direct entry).
+//
+// Correctness: after step 5, LR is the CALLER-OF-CURRENT's return address
+// (saved by our prologue at sp+0). After callee runs and does its own
+// RET in its epilogue, it returns directly to caller-of-current, as
+// required by TCO semantics.
+//
+// Slow-path fallback: emits the same emitCallExitFallback as emitCallNative
+// for non-closure targets, uncompiled callees, or overflow cases.
+func (ec *emitContext) emitCallNativeTail(instr *Instr) {
+	asm := ec.asm
+
+	funcSlot := int(instr.Aux)
+	nArgs := len(instr.Args) - 1
+	nRets := 1
+	if instr.Aux2 >= 2 {
+		nRets = int(instr.Aux2) - 1
+	}
+
+	// Step 1: Store fn + args to regs (same as emitCallNative).
+	if len(instr.Args) > 0 {
+		fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		if fnReg != jit.X0 {
+			asm.MOVreg(jit.X0, fnReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	}
+	for i := 1; i < len(instr.Args); i++ {
+		argReg := ec.resolveValueNB(instr.Args[i].ID, jit.X0)
+		if argReg != jit.X0 {
+			asm.MOVreg(jit.X0, argReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
+	}
+
+	// For the slow-path fallback, still need all active regs in memory so
+	// the Go-side handler can inspect them.
+	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
+	ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
+
+	slowLabel := ec.uniqueLabel("t2tail_slow")
+
+	// Step 2: Closure type check (ptr + sub-type 8).
+	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	asm.LSRimm(jit.X1, jit.X0, 48)
+	asm.MOVimm16(jit.X2, jit.NB_TagPtrShr48)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, slowLabel)
+	asm.LSRimm(jit.X1, jit.X0, uint8(nbPtrSubShift))
+	asm.LoadImm64(jit.X2, 0xF)
+	asm.ANDreg(jit.X1, jit.X1, jit.X2)
+	asm.CMPimm(jit.X1, nbPtrSubVMClosure)
+	asm.BCond(jit.CondNE, slowLabel)
+
+	// Extract raw pointer -> X0 = *vm.Closure.
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+
+	// Load Proto (X1), DirectEntryPtr (X2).
+	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
+	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr)
+	asm.CBZ(jit.X2, slowLabel)
+
+	// Bounds check: callee window (at the TAIL base = 0) fits in register file.
+	asm.LDR(jit.X3, jit.X1, funcProtoOffMaxStack)
+	asm.LSLimm(jit.X3, jit.X3, 3)
+	asm.ADDreg(jit.X3, jit.X3, mRegRegs)
+	asm.LDR(jit.X4, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X3, jit.X4)
+	asm.BCond(jit.CondHI, slowLabel)
+
+	// CallCount increment for tiering.
+	asm.LDR(jit.X3, jit.X1, funcProtoOffCallCount)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, jit.X1, funcProtoOffCallCount)
+	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
+	asm.BCond(jit.CondEQ, slowLabel)
+
+	// Step 3: Copy args to tail window regs[0..nArgs-1]. Forward order is
+	// safe because src = funcSlot+1+i > dst = i for all i >= 0.
+	for i := 0; i < nArgs; i++ {
+		srcOff := slotOffset(funcSlot + 1 + i)
+		dstOff := slotOffset(i)
+		if srcOff == dstOff {
+			continue
+		}
+		asm.LDR(jit.X3, mRegRegs, srcOff)
+		asm.STR(jit.X3, mRegRegs, dstOff)
+	}
+
+	// Step 4: Set callee context. ctx.Regs is UNCHANGED (reuse frame).
+	asm.LDR(mRegConsts, jit.X1, funcProtoOffConstants)
+	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
+	asm.STR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr) // X0 = closure ptr
+	asm.MOVimm16(jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
+	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+	// Persist the (unchanged) mRegRegs back to ctx.Regs so callee's
+	// direct-entry reload sees the correct base.
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+
+	// Step 5: Inline our own epilogue — restore callee-saved regs, FP/LR,
+	// deallocate frame. Do NOT emit RET; we'll BR to callee instead.
+	// X2 (direct entry addr) must survive; none of the LDP writes touch X2.
+	if ec.useFPR {
+		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+	}
+	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+	asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+	asm.LDP(jit.X21, jit.X22, jit.SP, 32)
+	asm.LDP(jit.X19, jit.X20, jit.SP, 16)
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+
+	// Step 6: callee's direct entry expects X0 = ctx pointer. X19 was just
+	// restored to our original ctx value — copy it to X0.
+	asm.MOVreg(jit.X0, jit.X19)
+
+	// Step 7: Tail jump to callee's direct entry (no link register update).
+	asm.BR(jit.X2)
+
+	// Slow-path fallback: falls back to the exit-resume path (which handles
+	// return value normally — so the following OpReturn still runs correctly).
+	asm.Label(slowLabel)
+	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
+}
+
 // emitCallExitFallback emits the exit-resume sequence for a CALL that couldn't
 // take the native BLR path. This is identical to emitCallExit but without the
 // arg-store (args were already stored in emitCallNative step 1) and without
