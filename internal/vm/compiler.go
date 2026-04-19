@@ -1888,31 +1888,32 @@ func (c *compiler) compileCallExprMulti(call *ast.CallExpr, dest int, nResults i
 		return err
 	}
 
-	// R134: compile nested call/methodcall args with nResults=1 (single-
-	// return) instead of -1 (vararg multi-return). The vararg form emits
-	// B=0 which is load-bearing for Lua-style multi-return passing
-	// (`f(g())` where g returns multiple values — all get passed to f),
-	// but GScript's recursive-self int protos (ack, mutual_recursion F/M)
-	// always return a single value, and B=0 outer-call bytecode breaks
-	// the numeric-conv Tier 2 emit (R133 finding: ack hangs under np==2
-	// numeric promotion due to emitCallNativeTail's interaction with
-	// B=0). Decomposing to B=N explicit-arg form sidesteps the JIT bug
-	// AND enables Tier 2 numeric for ack/mut. VarArg (`...`) stays as
-	// multi-return since it has no JIT hot path.
+	// R134+R136: nested Call/MethodCall args compile to a fresh scratch
+	// reg then MOVE to argReg — decouples inner-call result slot from
+	// outer-call arg slot so Tier 2's slotMap doesn't conflate them
+	// (fixes ack hang at np>=2). VarArg keeps Lua multi-return (no JIT).
 	nArgs := len(call.Args)
 	lastArgIsMulti := false
 	for i, arg := range call.Args {
 		argReg := c.allocReg()
-		if i == nArgs-1 {
-			if v, ok := arg.(*ast.VarArgExpr); ok {
-				_ = v
-				lastArgIsMulti = true
-				c.emitABC(OP_VARARG, argReg, 0, 0, line)
-				continue
-			}
+		if _, ok := arg.(*ast.VarArgExpr); ok && i == nArgs-1 {
+			lastArgIsMulti = true
+			c.emitABC(OP_VARARG, argReg, 0, 0, line)
+			continue
 		}
-		if err := c.compileExprTo(arg, argReg); err != nil {
-			return err
+		switch arg.(type) {
+		case *ast.CallExpr, *ast.MethodCallExpr:
+			saved := c.nextReg
+			scratch := c.allocReg()
+			if err := c.compileExprTo(arg, scratch); err != nil {
+				return err
+			}
+			c.emitABC(OP_MOVE, argReg, scratch, 0, line)
+			c.nextReg = saved
+		default:
+			if err := c.compileExprTo(arg, argReg); err != nil {
+				return err
+			}
 		}
 	}
 
