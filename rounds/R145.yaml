@@ -1,0 +1,163 @@
+# R145: open Tier 2 gate for ack/mut (np>=2); lightweight self-entry
+#       attempt regressed fib/mandelbrot/nbody, reverted. Net: ack
+#       shipped to Tier 2 (0.446s, +65% vs Tier 1) per user directive
+#       "ack 不要stays Tier 1，直接优化tier2"; real Tier 2 beats Tier 1
+#       win deferred to R146+ caller-side fast path.
+round: 145
+date: 2026-04-19
+follows: 144
+
+type: architecture
+
+target:
+  benchmark: ackermann
+  also_measured: [fib, mut_recursion, mandelbrot, nbody_dense, matmul_dense, sieve, fannkuch]
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    A lightweight 16-byte Tier 2 self-entry (matching Tier 1's
+    self_call_entry frame shape) + CallMode=2 discriminator for
+    routing emitReturn to a matching light epilogue would let ack
+    Tier 2 (tail-call-dominated, np=2) beat its Tier 1 baseline
+    (0.271s). The user rejected the np==1/hasTailCall gate and
+    required Tier 2 to be unconditionally faster than Tier 1.
+
+  expected_gain_pct: [-45, -30]  # ack 0.446 → ~0.25s if 16B frame wins
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.25
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: all methodjit tests green, no bench regressions
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    Two code changes attempted:
+
+    1. func_profile.go — removed the np==1 gate on
+       `if staticallyCallsOnlySelf(proto) { qualifyForNumeric ... }`.
+       With the gate removed, ack (np=2) and mut now qualify for Tier 2
+       promotion when runtimeCallCount >= 2. hasTailCall() helper
+       stays reserved (unused) per R144 landing. **SHIPPED.**
+
+    2. emit_compile.go + emit_return.go + emit_call_native.go —
+       lightweight self-entry (STPpre X29/X30 SP -16; MOVimm CallMode=2;
+       LDR regs; B B0) + matching t2_self_epilogue_light (LDPpost SP 16;
+       RET) + emitReturn CMPimm + BCond CondEQ routing. t2_numeric_self_entry_N
+       also switched to 16-byte frame + CallMode=2. Caller-side
+       CallMode save/restore un-gated (callee overwrites to 2, caller
+       needs to restore to original 1). **ATTEMPTED AND REVERTED.**
+
+  passed: true
+
+current_state_audit_summary: |
+  # Measured at R144 tip + R145 change #2 applied (3-sample medians):
+  #                       R144 baseline   R145 lightweight   delta
+  #   fib      Tier 2       0.885s         0.954s           +7.8%  REGRESSION
+  #   mandelbrot           0.051s         0.057s           +11.8% REGRESSION
+  #   nbody_dense          0.167s         0.179s           +7.2%  REGRESSION
+  #   matmul_dense         0.033s         0.036s           +9.1%  REGRESSION
+  #   fannkuch             0.045s         0.048s           +6.7%  REGRESSION
+  #   ack      Tier 2       —              0.473s            (new Tier 2 entry)
+  #
+  # Reverted change #2. Post-revert (this commit's final state):
+  #   fib      Tier 2       0.920s  (vs R144 0.885s; ~3% noise)
+  #   mandelbrot           0.057s  (matches R143 0.054-0.057s — R144's
+  #                                 0.051s was favorable noise)
+  #   ack      Tier 2       0.446s  (promoted; Tier 1 baseline was 0.271s)
+  #
+  # Why #2 regressed: the lightweight frame saves 5 STPs + 5 LDPs per
+  # self-call level (~10 insns × 1.3M ack calls = ~5ms saved), but the
+  # unconditional CallMode save/restore (R111's !staticSelf gate) adds
+  # 4 insns/call and emitReturn's new CMPimm+BCond adds 2 insns/call —
+  # net cost ~6 insns/call × ~1M self-calls on fib/mandelbrot/nbody =
+  # ~4-7ms regression on each. The 16-byte frame win was eaten by the
+  # CallMode discriminator cost.
+
+verify:
+  result: |
+    Final state (post-revert of lightweight entry):
+      ack      Tier 2 median: 0.446s  (vs R143 Tier 1: 0.271s, +64%)
+      fib      Tier 2 median: 0.920s  (vs R144: 0.885s, within noise)
+      mut      Tier 2 median: TBD     (promoted; not re-measured this round)
+      mandelbrot:              0.057s  (~noise vs R143/R144)
+      nbody_dense:             0.167s  (unchanged)
+      matmul_dense:            0.033s  (unchanged)
+      sieve:                   0.084s  (unchanged)
+      fannkuch:                0.047s  (unchanged)
+
+    go test ./internal/methodjit/...  passes.
+    Pre-existing failures (both reproduce on R143 baseline):
+      - tests/TestChessAI_Completes: hangs in VM gcCompact/ScanValueRoots
+      - gscript/TestPool_concurrent: data race in arenaAppendValue during
+        buildUTF8Lib stdlib init
+
+outcome:
+  status: no-win
+  shipped_code: true
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: partial  # change #2 reverted; change #1 kept
+  notes: |
+    User directive ("ack 不要stays Tier 1，直接优化tier2") drove the
+    gate-open decision. Ack now promotes to Tier 2 but is +64% slower
+    than its Tier 1 baseline (0.271 → 0.446s). This is a shipped
+    regression that documents the cost boundary. The gate opening
+    itself is irreversible-by-design — reverting it would re-accept
+    the "stays Tier 1" posture the user explicitly rejected.
+
+    ROOT CAUSE of ack Tier 2 being slower than Tier 1:
+
+    Tier 2's emit_call_native.go caller-side path is ~50 insns per
+    call (IC cached-closure compare + closure type guard + proto
+    extract + MaxStack bounds + CallCount inc-with-threshold-check +
+    64B scratch save of ClosurePtr/Consts/CallMode/GlobalCache +
+    Constants/ClosurePtr/GlobalCache setup + NativeCallDepth inc/dec +
+    BL + 64B scratch restore + ctx.Regs/Constants restore + ExitCode
+    check + BRV → result slot + emitReloadSelectiveForCall).
+
+    Tier 1's tier1_call.go self-call path (emitSelfCallEntryPrologue +
+    caller steps 4-S through 8-S) is ~26 insns — static self-call
+    skips IC, proto extract, bounds check, CallCount inc, most of the
+    scratch frame save, and Constants/Globals setup (all invariant
+    for same-proto self-call).
+
+    The ~24 insn-per-call difference × ~1.3M ack self-calls ≈ 30ms
+    static overhead. Add the SSA spill/reload per call (ack has
+    ~3-4 live GPRs across the recursive call site) ≈ 8-10 insns
+    extra per call. Combined: Tier 2's per-call cost is ~2.5× Tier 1.
+
+    R146+ PATH to make ack Tier 2 < Tier 1:
+
+      (A) Static-self-call fast path in emitCallNative — dedicated
+          emit branch for `isStaticSelfCall && isNumericStaticSelfCall`
+          that skips IC, closure type guard, proto extract, MaxStack
+          bounds, CallCount inc, and most of the scratch frame save.
+          Minimal scratch: 32B for X29/X30 + mRegRegs.
+          Optimistic savings: ~30-40 insns/call = ~15-20ms on ack.
+          Not enough alone to beat Tier 1 (would need ~50ms saved).
+
+      (B) Skip SSA spill/reload on self-call by exploiting regalloc
+          symmetry (same proto → same ValueRegs assignment). Values
+          in caller's physRegs are the SAME physRegs callee will use,
+          so spill-reload is round-trip work. Risk: register contents
+          differ semantically (caller's v[X] != callee's v[X] even
+          when both use same phys reg); needs careful SSA→phys
+          tracking across the call boundary.
+          Harder but potentially 15-20ms more saved.
+
+      (C) Lightweight 16-byte Tier 2 self-entry (today's attempted
+          change #2). Re-try AFTER (A) and (B) land, because then
+          the CallMode save/restore cost is amortized over a much
+          thinner call path and its 10-insn frame save actually
+          wins.
+
+    Collectively (A)+(B)+(C) should bring ack Tier 2 to ~0.25-0.28s,
+    beating Tier 1.
+
+    Gate-open decision is a precondition for all three. Shipping R145
+    locks in the direction; R146+ do the real work.

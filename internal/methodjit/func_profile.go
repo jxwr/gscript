@@ -40,6 +40,29 @@ type FuncProfile struct {
 // (rule 26). Production keeps it false; the real fix is deferred.
 var promoteAckOverride bool
 
+// hasTailCall returns true when the bytecode has an OP_CALL immediately
+// followed by an OP_RETURN — the pattern that compileTailCalls promotes
+// to a BR-replacing tail call. Used to gate Tier 2 promotion for
+// recursive-self protos: tail calls use Tier 2's 128-byte-frame
+// direct_entry per recursion level, which is ~8× heavier than Tier 1's
+// 16-byte self_call_entry. For tail-call-dominated protos (ackermann),
+// Tier 2 is slower than Tier 1; skip promotion until the self-entry
+// frame cost is addressed (R144+ work).
+func hasTailCall(proto *vm.FuncProto) bool {
+	for i, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		if i+1 >= len(proto.Code) {
+			continue
+		}
+		if vm.DecodeOp(proto.Code[i+1]) == vm.OP_RETURN {
+			return true
+		}
+	}
+	return false
+}
+
 // staticallyCallsOnlySelf returns true when the bytecode's GETGLOBAL
 // targets are all the proto's own name — i.e. this proto calls only
 // itself, no other globals. Used to gate Tier 2 promotion for purely-
@@ -229,18 +252,15 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		// at promotion time it's still false — detect recursion by
 		// bytecode scan instead.
 		if staticallyCallsOnlySelf(proto) {
-			// R143: fixed correctness bug in numeric-BL post-BL
-			// rawIntRegs-leak to exit-handler. The ack hang is GONE
-			// under np>=2, but ack Tier 2 is currently +60% slower
-			// than its Tier 1 baseline (numeric-conv overhead for
-			// 2-param protos > savings on this shape). Gate remains
-			// np==1 to avoid the regression; opening to np>=2 is
-			// unblocked for future perf work once dual-body overhead
-			// is addressed.
-			if ok, np := qualifyForNumeric(proto); ok && (np == 1 || promoteAckOverride) {
+			// Gate open for all qualifying self-recursive numeric protos.
+			// Frame-overhead optimization work (R145+) lands on the
+			// emit side to make Tier 2 actually beat Tier 1 for tail-
+			// call-dominated shapes (ackermann).
+			if ok, _ := qualifyForNumeric(proto); ok {
 				return runtimeCallCount >= 2
 			}
 		}
+		_ = hasTailCall // reserved for future frame-aware gating
 		// Non-numeric (or numeric with np>=2, temporarily gated): keep
 		// at Tier 1. Tier 1's native BLR handles calls efficiently
 		// (~10ns per call). Even after inlining, non-loop functions

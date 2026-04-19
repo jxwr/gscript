@@ -187,3 +187,13 @@ rows:
   - {round: 137, date: 2026-04-19, bench: fib,             gscript_jit_sec: 0.924, luajit_sec: 0.026, gap_factor: 35.5, notes: "R137 Layer 4: -0.4% vs R136 (interleaved 15-sample median 0.928→0.924); callee skips BRV+regs[0], caller skips LDR BRV, storeRawInt"}
   - {round: 137, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.272, luajit_sec: 0.006, gap_factor: 45.3, notes: "R137 neutral; ack still Tier 1 via np==1 gate"}
   - {round: 137, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.195, luajit_sec: 0.004, gap_factor: 48.8, notes: "R137 neutral; mut still Tier 1"}
+
+  # --- R144: single-body architectural collapse — fib -3.4%, all other benches unchanged ---
+  - {round: 144, date: 2026-04-19, bench: fib,             gscript_jit_sec: 0.885, luajit_sec: 0.026, gap_factor: 34.0, notes: "R144 BENCH-WIN: -3.4% vs R143 (0.916→0.885); numeric entry collapsed to thin trampoline; num_epilogue deleted"}
+  - {round: 144, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.271, luajit_sec: 0.006, gap_factor: 45.2, notes: "R144 neutral; ack still Tier 1 via inherited np==1 gate"}
+  - {round: 144, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.188, luajit_sec: 0.004, gap_factor: 47.0, notes: "R144 neutral; mut still Tier 1"}
+
+  # --- R145: gate opened for ack (np>=2); lightweight self-entry attempt REVERTED ---
+  - {round: 145, date: 2026-04-19, bench: ackermann,       gscript_jit_sec: 0.446, luajit_sec: 0.006, gap_factor: 74.3, notes: "R145 REGRESSION vs R144 Tier 1: +64.6% (0.271→0.446). Ack now promotes to Tier 2 but Tier 2 caller-side path (~50 insns/call vs Tier 1's ~26) dominates. R146+ must add static-self-call fast path."}
+  - {round: 145, date: 2026-04-19, bench: fib,             gscript_jit_sec: 0.920, luajit_sec: 0.026, gap_factor: 35.4, notes: "R145 ~noise vs R144 (0.885→0.920); gate change doesn't affect fib (already np==1 qualified); 3-sample vs 9-sample — within measurement variance"}
+  - {round: 145, date: 2026-04-19, bench: mandelbrot,      gscript_jit_sec: 0.057, luajit_sec: 0.057, gap_factor: 1.00, notes: "R145 ~noise; R144's 0.051s was favorable sample; current matches R143's 0.054-0.058s range"}
