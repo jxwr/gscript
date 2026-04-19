@@ -87,18 +87,34 @@ pre_flight:
     No changes to body emit.
 
 outcome:
-  status: adr-win               # pilot infrastructure shipped; bench deferred
+  status: revert               # reverted in R120 revert (combined)
   bench_deltas: {}
   regressions: []
-  shipped_code: true
+  shipped_code: false
   commit: null
-  deliverables:
-    - internal/methodjit/emit_compile.go — t2_numeric_self_entry_1 label
-    - internal/methodjit/emit_call_native.go — isNumericSelfCall + routed call path (skip Step 8 copy + BL to numeric entry with raw int in X0)
+
+revert_class: cost-model-error
+revert_cost_model_delta: >
+  Predicted 0-2% fib gain from skipping Step 8 copy. Actual +0.8%
+  regression (10-sample median r111 1.428 → r120 1.440).
+  Root cause: pilot only moves 2 insns of work from caller Step 8
+  to callee entry (ORR+STR). Net insn change zero, but adds:
+    - New entry label at function end (cache pressure).
+    - Different BL target (branch predictor warm-up).
+    - Caller dispatch is 2-4 insns instead of MOV+BL (2).
+  For REAL numeric-convention wins, body must be rewritten to
+  operate on raw ints (skip GuardType, raw LoadSlot). That is a
+  multi-round refactor (R121+).
 
 ledger_update:
   classes_touched: [tier2-recursion-closure]
   new_class_introduced: null
+  sub_pattern_learned: >
+    Simply rerouting Steps 1/8 arg transport through registers instead
+    of memory does NOT help when the callee entry still boxes back to
+    memory. Direct numeric calling convention needs end-to-end raw
+    path: raw args + raw return + body using raw ints for the arg
+    parameter. Multi-round effort.
 
 notes: >
   Rationale from R118 analysis: fib @ 1.4s (55x LuaJIT) reflects

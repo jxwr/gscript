@@ -186,16 +186,11 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	}
 
 	// Step 8: Copy args to callee register window.
-	// R119: for numeric self-call path, skip the copy — callee's
-	// t2_numeric_self_entry_1 writes the arg directly from X0 to regs[0].
-	numericSelf := staticSelf && ec.isNumericSelfCall(instr)
-	if !numericSelf {
-		for i := 0; i < nArgs; i++ {
-			srcOff := slotOffset(funcSlot + 1 + i)
-			dstOff := calleeBaseOff + i*jit.ValueSize
-			asm.LDR(jit.X3, mRegRegs, srcOff)
-			asm.STR(jit.X3, mRegRegs, dstOff)
-		}
+	for i := 0; i < nArgs; i++ {
+		srcOff := slotOffset(funcSlot + 1 + i)
+		dstOff := calleeBaseOff + i*jit.ValueSize
+		asm.LDR(jit.X3, mRegRegs, srcOff)
+		asm.STR(jit.X3, mRegRegs, dstOff)
 	}
 
 	// Step 9: Set up callee context and BLR.
@@ -234,21 +229,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
 	// R40: Self-call fast path via HasSelfCalls flag.
+	// R40: Self-call fast path via HasSelfCalls flag.
 	// R110: If we can STATICALLY prove this particular OpCall is a self-call
 	// (fn arg is OpGetGlobal of our own proto's name), skip the runtime
 	// Proto compare entirely and BL direct to t2_self_entry.
-	// R119: numeric self-call pilot — put raw int arg in X0 and BL to
-	// t2_numeric_self_entry_1 which boxes at entry. Skips the caller-
-	// side arg copy (Step 8).
-	if numericSelf {
-		argID := instr.Args[1].ID
-		argReg := ec.resolveRawInt(argID, jit.X0)
-		if argReg != jit.X0 {
-			asm.MOVreg(jit.X0, argReg)
-		}
-		asm.BL("t2_numeric_self_entry_1")
-	} else if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
-		asm.MOVreg(jit.X0, mRegCtx)
+	asm.MOVreg(jit.X0, mRegCtx)
+	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
 		if ec.isStaticSelfCall(instr) {
 			// R110: static self-call — 1 insn.
 			asm.BL("t2_self_entry")
@@ -269,7 +255,6 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 			asm.Label(afterBlLabel)
 		}
 	} else {
-		asm.MOVreg(jit.X0, mRegCtx)
 		asm.BLR(jit.X2)
 	}
 
@@ -519,33 +504,6 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	// return value normally — so the following OpReturn still runs correctly).
 	asm.Label(slowLabel)
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
-}
-
-// isNumericSelfCall (R119) returns true when the call is eligible for
-// the numeric self-call fast path: static self-call (R110), proto has
-// 1 param / no upvals / no nested protos, and the single arg is an int.
-// Used to route calls to t2_numeric_self_entry_1 with X0 = raw int arg.
-func (ec *emitContext) isNumericSelfCall(instr *Instr) bool {
-	if !ec.isStaticSelfCall(instr) {
-		return false
-	}
-	p := ec.fn.Proto
-	if p.NumParams != 1 || len(p.Upvalues) != 0 || len(p.Protos) != 0 {
-		return false
-	}
-	if len(instr.Args) != 2 {
-		return false
-	}
-	argID := instr.Args[1].ID
-	// Accept if arg is raw-int in a register, or if its inferred type is
-	// TypeInt. Either way we can materialize a raw int64 via resolveRawInt.
-	if ec.hasReg(argID) && ec.rawIntRegs[argID] {
-		return true
-	}
-	if ec.irTypes[argID] == TypeInt {
-		return true
-	}
-	return false
 }
 
 // isStaticSelfCall (R110) returns true when OpCall's function argument is

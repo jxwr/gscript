@@ -644,39 +644,6 @@ func (ec *emitContext) emitEpilogue() {
 		asm.B("B0") // Jump to first SSA block (same body)
 	}
 
-	// --- Numeric self-entry (R119, path A pilot) ---
-	// A lightweight self-entry that takes a raw int64 arg in X0 (per
-	// ARM64 AAPCS) instead of NaN-boxed in regs[funcSlot+1]. The body
-	// still expects regs[0] to be NaN-boxed, so the entry boxes X0 and
-	// writes it to regs[0] before jumping to B0. Future rounds will
-	// extend to raw return + body rewrite (skip GuardType).
-	// Emit only when the proto qualifies: exactly 1 numeric param, no
-	// upvalues, no nested protos, and HasSelfCalls (implies self-entry
-	// is also emitted so labels don't conflict).
-	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls &&
-		ec.fn.Proto.NumParams == 1 &&
-		len(ec.fn.Proto.Upvalues) == 0 &&
-		len(ec.fn.Proto.Protos) == 0 {
-		asm.Label("t2_numeric_self_entry_1")
-		asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
-		asm.STP(jit.X29, jit.X30, jit.SP, 0)
-		asm.ADDimm(jit.X29, jit.SP, 0)
-		asm.STP(jit.X19, jit.X20, jit.SP, 16)
-		asm.STP(jit.X21, jit.X22, jit.SP, 32)
-		asm.STP(jit.X23, jit.X24, jit.SP, 48)
-		asm.STP(jit.X25, jit.X26, jit.SP, 64)
-		asm.STP(jit.X27, jit.X28, jit.SP, 80)
-		if ec.useFPR {
-			asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
-		}
-		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
-		// X0 holds the raw int arg. Box and store to regs[0].
-		asm.ORRreg(jit.X0, jit.X0, mRegTagInt)
-		asm.STR(jit.X0, mRegRegs, 0)
-		asm.B("B0")
-	}
-
 	// --- Direct epilogue for BLR callers ---
 	// Return path when CallMode == 1 in emitReturn. Uses the same frame
 	// restore as normal epilogue since the direct entry uses a full frame.
