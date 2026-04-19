@@ -77,6 +77,21 @@ Rules 26-29 apply when `class = correctness-bug-fix` AND the round modifies `int
 
     Rationale (from R75): the N≥11-but-not-N=17 result signalled a non-obvious trigger condition that was never properly bisected. The round closed with the question open.
 
+30. **Parallel multi-agent debug for hard bugs (from R139).** When a correctness-bug-fix round has:
+    - Burned ≥2 prior rounds on the same hypothesis tree without root-causing, OR
+    - Has ≥3 plausible distinct failure mechanisms (e.g. emit bug, regalloc bug, resume bug, feedback bug), OR
+    - The bug requires understanding interactions across ≥3 subsystems (Tier 1 emit, Tier 2 emit, VM dispatch, ctx state, etc.),
+
+    Step 4 (Pre-flight) MUST spawn **3-4 parallel agents**, each assigned ONE independent debugging angle. Typical angle slots:
+    - **(a) Runtime tracing** — instrument the suspect code paths with `fmt.Fprintf(os.Stderr, ...)` gated on an env var; run the repro test; read the last N lines before failure.
+    - **(b) Artifact comparison** — byte-/IR-/asm-level diff of the output in the two scenarios (working vs broken).
+    - **(c) Mechanism analysis** — deep-read the relevant subsystem (resume machinery, call dispatch, register convention) and report invariants that should hold.
+    - **(d) Runtime state capture** — `runtime.Stack`, goroutine dump, `-cpuprofile`, heap snapshot during the hang/failure.
+
+    Each agent MUST restore the repo to clean state before returning. Each returns ≤500 words. The parent synthesizes their findings in Step 4's `pre_flight.result` (convergent root cause) or `current_state_audit_summary` (divergent — needs another parallel round).
+
+    Rationale (R139): ack hang bisected in ONE round via four parallel angles; sequential R133-R138 had taken five rounds to reach the same point without reaching root cause. The per-agent isolation forces independent hypotheses; cross-validation at synthesis time is stronger than a single linear bisect.
+
 ## Round shape (v5)
 
 A round is a single session with seven internal steps. No orchestrator.
