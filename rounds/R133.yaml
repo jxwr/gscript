@@ -1,0 +1,112 @@
+# R133: diagnostic — bisect the ack np==2 hang; narrow to inline call form only.
+round: 133
+date: 2026-04-19
+follows: 132
+
+type: diagnostic
+
+target:
+  benchmark: ackermann
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    R132 left the np==2 numeric path untested ("ackermann hangs on
+    first promotion"). R133 investigates whether the problem is
+    generic to 2-param numeric dispatch or specific to ackermann's
+    IR / bytecode shape, so R134+ can target the right layer.
+
+  expected_gain_pct: [0, 0]   # diagnostic round — no bench movement expected
+
+  counterfactual_check: >
+    If the bug is generic to np==2, every 2-param self-recursive int
+    function should hang. If it's specific to some pattern, fixing
+    that pattern unlocks ack (and any other protos matching it).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.25
+
+pre_flight:
+  required:
+    - description: methodjit suite green
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    Re-opened the np==2 gate temporarily and bisected the np==2
+    population by IR/bytecode shape. All tests pass at the final
+    (np==1) gate state.
+  passed: true
+
+current_state_audit_summary: |
+  # Bisection — 2-param self-recursive int protos under numeric Tier 2:
+
+  (a) fib2(n, k) = fib2(n-1, k) + fib2(n-2, k)          WORKS   (non-tail, both args int-ish)
+  (b) fact_acc(n, acc) = fact_acc(n-1, acc*n)           WORKS   (pure tail, np==2)
+  (c) pure_tail(m, n) = pure_tail(m-1, n)               WORKS   (pure tail, np==2, simpler than fact_acc)
+  (d) ack_decomposed: inner := ack(m, b-1); return ack(a-1, inner)  WORKS
+  (e) ack_inline:    return ack(a-1, ack(m, n-1))       HANGS
+
+  Bytecode diff between (d) and (e):
+
+  (d) DECOMPOSED:
+      [019] CALL R2 B=3 C=2      ; inner call, 1 explicit return
+      [024] CALL R3 B=3 C=0      ; outer tail call, explicit args
+      [025] RETURN R3 B=0
+
+  (e) INLINE:
+      [022] CALL R4 B=3 C=0      ; inner call, VARARG return
+      [023] CALL R2 B=0 C=0      ; outer tail call, VARARG args from Top
+      [024] RETURN R2 B=0
+
+  The inline form's outer tail-call takes B=0 (args from top-of-stack)
+  and C=0 (vararg return). The IR normalization appears to produce a
+  similar v23/v28/v29 layout in both forms, but some JIT emit code
+  path diverges on the B=0 outer call when numericMode is active.
+
+  Fib (np==1) works because np==1 bypasses emitNumericArgsInRegs's
+  np==2 reg-aliasing branch AND because fib's outer call isn't B=0
+  (only one arg to rearrange). Ack's outer tail call at bytecode
+  [023] with B=0 + np==2 + numericMode is the specific failure
+  signature — a NARROW edge case, not a generic np==2 break.
+
+outcome:
+  status: adr-win
+  shipped_code: false
+  primary_finding: >
+    The ack hang is NOT a generic np==2 failure. It's specific to the
+    `return foo(g(), h())` inline-call form (B=0 outer call bytecode)
+    when numericMode pass-2 is active. Any np==2 proto whose outer
+    call is B=3 (explicit args) works correctly.
+  notes: >
+    Narrowed the search space for R134+ from "all np==2 tail calls"
+    to "np==2 outer tail call with B=0 (bytecode vararg args from
+    Top)". Likely culprits:
+
+      (i) emitCallNativeTail's arg-copy loop (lines 395-401) uses
+          `len(instr.Args)` but the bytecode's B=0 form means runtime
+          Top-based arg count; if IR and runtime disagree, args
+          stored to regs[funcSlot+i] may be wrong or off-by-one.
+
+      (ii) emitSpillSelectiveForCall + emitReloadSelectiveForCall
+          interaction with inline-form's v28 (inner result in vararg
+          slot vs explicit slot).
+
+      (iii) emitNumericArgsInRegs only runs for non-tail numeric BL.
+          The outer tail call uses emitCallNativeTail (unchanged
+          from R107), so it stores NaN-boxed args and BRs X2 to
+          DirectEntryPtr. This should be agnostic to numericMode —
+          but the ENTRY's state when arriving via BR X2 expects
+          specific invariants that may not hold when the caller is
+          in pass-2's numericMode.
+
+    R134 direction: write a minimal Go test that mimics the bench's
+    `return ack(m-1, ack(m, n-1))` pattern with a small recursion
+    depth (ack(2,2)) under the np==2 gate to reproduce in-tree. Then
+    bisect emit paths. Do NOT open the np==2 gate in production
+    until a fix is in place.
+
+    Alternative workaround: detect the inline-call pattern in the
+    bytecode→IR compiler and rewrite it to the decomposed form BEFORE
+    IR construction. Less surgical but may be cheaper than fixing the
+    JIT emit.
