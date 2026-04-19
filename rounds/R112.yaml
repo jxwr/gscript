@@ -1,0 +1,54 @@
+# R112: skip Constants LDR+STR on static self-call — REGRESSED, reverted.
+round: 112
+date: 2026-04-19
+follows: 111
+
+type: tactical
+
+target:
+  benchmark: fib
+  current_wall_sec: 1.430
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    For static self-calls, caller+callee share Constants. Skip the
+    LDR from Proto + STR to ctx.Constants (2 insns per call).
+
+pre_flight:
+  required:
+    - description: suite green
+      acceptance: ok
+      halt_on_fail: true
+    - description: no regression > 0.5%
+      acceptance: fib median within 0.5% of r111
+      halt_on_fail: true
+  result: >
+    Suite green. 10-sample interleaved medians:
+      fib: r111 1.427 → r112 1.438 (+0.8% REGRESSION)
+      ack: r111 0.271 → r112 0.273 (+0.7%)
+    Both regressed. Same lesson as R109: removing 2 insns from the
+    tight setup sequence disrupts ARM64 M4 pipelining. Reverted.
+  passed: false
+
+outcome:
+  status: revert
+  bench_deltas:
+    fib: {r111: 1.427, r112: 1.438, pct: +0.8}
+    ack: {r111: 0.271, r112: 0.273, pct: +0.7}
+  regressions: [fib, ack]
+  shipped_code: false
+  commit: null
+
+revert_class: cost-model-error
+revert_root_cause_location: emit_call_native.go step 9 Constants setup
+revert_cost_model_delta: >
+  Predicted -0.3%; got +0.8%. Pipeline disruption again.
+revert_prevention: >
+  Both R109 and R112 reverts suggest the frame-setup sequence is
+  carefully pipelined as-is. Future skip attempts here need
+  microbench validation (not just insn count reasoning).
+
+ledger_update:
+  classes_touched: [tier2-recursion-closure]
+  new_class_introduced: null
