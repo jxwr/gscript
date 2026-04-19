@@ -1,0 +1,53 @@
+# R114: LDP/STP-based arg copy — regressed, reverted.
+round: 114
+date: 2026-04-19
+follows: 113
+
+type: tactical
+
+target:
+  benchmark: ackermann
+  current_wall_sec: 0.270
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    Replace 2×LDR+2×STR with 1×LDP+1×STP for 2-at-a-time arg copy.
+    ARM64 M4 prefers paired loads/stores. Ack has 2 args; fib has 1
+    (unaffected).
+  expected_gain_pct: [0, 2]
+
+pre_flight:
+  required:
+    - description: suite green
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    Suite green. 10-sample interleaved medians (vs R111):
+      ack: 0.268 → 0.270 (+0.7% REGRESSION)
+      fib: 1.419 → 1.426 (+0.5%)
+      mut: 0.190 → 0.190 (noise)
+    Fib has 1 arg so R114 doesn't change its codegen — yet it
+    regressed too. Suggests the changes affect code layout / I-cache.
+    Or maybe LDP/STP pair has unexpected M4 timing cost. Reverted.
+  passed: false
+
+outcome:
+  status: revert
+  bench_deltas:
+    ack: {r111: 0.268, r114: 0.270, pct: +0.7}
+    fib: {r111: 1.419, r114: 1.426, pct: +0.5}
+  regressions: [ack, fib]
+  shipped_code: false
+  commit: null
+
+revert_class: cost-model-error
+revert_prevention: >
+  Micro-schedule is really sensitive. Even "obviously equivalent" LDP
+  vs 2×LDR on the hot path can regress. Future call-heavy work
+  should microbench specific sequences, not assume ARM64 pair prefs
+  translate to wall time.
+
+ledger_update:
+  classes_touched: [tier2-recursion-closure]
+  new_class_introduced: null
