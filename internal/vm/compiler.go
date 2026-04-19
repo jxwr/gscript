@@ -1888,25 +1888,24 @@ func (c *compiler) compileCallExprMulti(call *ast.CallExpr, dest int, nResults i
 		return err
 	}
 
+	// R134: compile nested call/methodcall args with nResults=1 (single-
+	// return) instead of -1 (vararg multi-return). The vararg form emits
+	// B=0 which is load-bearing for Lua-style multi-return passing
+	// (`f(g())` where g returns multiple values — all get passed to f),
+	// but GScript's recursive-self int protos (ack, mutual_recursion F/M)
+	// always return a single value, and B=0 outer-call bytecode breaks
+	// the numeric-conv Tier 2 emit (R133 finding: ack hangs under np==2
+	// numeric promotion due to emitCallNativeTail's interaction with
+	// B=0). Decomposing to B=N explicit-arg form sidesteps the JIT bug
+	// AND enables Tier 2 numeric for ack/mut. VarArg (`...`) stays as
+	// multi-return since it has no JIT hot path.
 	nArgs := len(call.Args)
 	lastArgIsMulti := false
 	for i, arg := range call.Args {
 		argReg := c.allocReg()
 		if i == nArgs-1 {
-			switch a := arg.(type) {
-			case *ast.CallExpr:
-				lastArgIsMulti = true
-				if err := c.compileCallExprMulti(a, argReg, -1); err != nil {
-					return err
-				}
-				continue
-			case *ast.MethodCallExpr:
-				lastArgIsMulti = true
-				if err := c.compileMethodCallExprMulti(a, argReg, -1); err != nil {
-					return err
-				}
-				continue
-			case *ast.VarArgExpr:
+			if v, ok := arg.(*ast.VarArgExpr); ok {
+				_ = v
 				lastArgIsMulti = true
 				c.emitABC(OP_VARARG, argReg, 0, 0, line)
 				continue

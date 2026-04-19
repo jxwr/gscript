@@ -14,3 +14,4 @@
 # CLAUDE.md rule 13 ("No Go file exceeds 1000 lines") is the default.
 
 internal/vm/vm.go 1980
+internal/vm/compiler.go 2410
