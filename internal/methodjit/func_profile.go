@@ -229,8 +229,14 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		// at promotion time it's still false — detect recursion by
 		// bytecode scan instead.
 		if staticallyCallsOnlySelf(proto) {
-			// R141 attempted single-body collapse but ack still hung.
-			// Gate remains np==1 until root cause is fully understood.
+			// R143: fixed correctness bug in numeric-BL post-BL
+			// rawIntRegs-leak to exit-handler. The ack hang is GONE
+			// under np>=2, but ack Tier 2 is currently +60% slower
+			// than its Tier 1 baseline (numeric-conv overhead for
+			// 2-param protos > savings on this shape). Gate remains
+			// np==1 to avoid the regression; opening to np>=2 is
+			// unblocked for future perf work once dual-body overhead
+			// is addressed.
 			if ok, np := qualifyForNumeric(proto); ok && (np == 1 || promoteAckOverride) {
 				return runtimeCallCount >= 2
 			}

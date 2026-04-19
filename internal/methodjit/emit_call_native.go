@@ -309,6 +309,20 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X3, exitHandleLabel)
 
+	// R143: save compile-time rawIntRegs state BEFORE the post-BL
+	// block. The post-BL emit calls emitReloadSelectiveForCall (which
+	// clears rawIntRegs entries for reloaded values) and storeRawInt
+	// (which adds entries). These mutations persist into the emitter's
+	// state and leak into the compile of the mutually-exclusive exit-
+	// handler below (emitCallExitFallback → emitStoreAllActiveRegs).
+	// That leak corrupted v23's stored memory to RAW at ack's v28 exit
+	// path, which was then read as RAW at v29's tail-call arg staging —
+	// the root cause of R136-R142's ack hang.
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
+
 	if usedNumericBL {
 		// R137 Layer 4 consume: X0 holds raw int64 from callee's
 		// num_epilogue. Box via scratch + STR to regs[funcSlot] for
@@ -338,8 +352,16 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// --- Callee exited mid-execution (deopt/op-exit within callee) ---
 	// Both callee-exit and slow-path share a single exit-resume sequence.
+	// R143: restore pre-post-BL rawIntRegs so emitStoreAllActiveRegs
+	// correctly boxes values that were raw before the post-BL mutations.
+	// After emitCallExitFallback returns, ec.rawIntRegs reflects the
+	// exit-path's final state (emitReloadAllActiveRegs cleared everything,
+	// storeResultNB set activeRegs only) — that's the correct compile
+	// state for downstream emit because the exit-path + normal-path
+	// converge with the same runtime NaN-boxed invariant at doneLabel.
 	asm.Label(exitHandleLabel)
 	asm.Label(slowLabel)
+	ec.rawIntRegs = savedRawIntRegs
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
 
 	// --- Done: merge point for native and slow paths ---

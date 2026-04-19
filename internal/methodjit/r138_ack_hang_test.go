@@ -25,11 +25,12 @@ import (
 // Real fix deferred; this test documents the reproducer. Run with
 // `-run TestR138_AckTier2Hang -tags r138fix` once a fix is landed.
 func TestR138_AckTier2Hang(t *testing.T) {
-	t.Skip("R142 watchpoint findings (see rounds/R142.yaml): the arg0 at " +
-		"executeCallExit for v29 tail-call exit is RAW 0x01 — Step 1 of " +
-		"emitCallNativeTail should have boxed it via resolveValueNB, but " +
-		"evidently didn't, or was overwritten. Root cause still narrowing.")
-
+	// R143 fix: rawIntRegs compile-time state no longer leaks from
+	// usedNumericBL post-BL block into emitCallExitFallback's
+	// emitStoreAllActiveRegs. Test enables promoteAckOverride (below)
+	// to verify the correctness fix under np>=2 even though production
+	// gate stays at np==1 (ack Tier 2 is +60% slower than Tier 1 on
+	// this shape; perf tuning deferred).
 	src := `
 func ack(m, n) {
     if m == 0 { return n + 1 }

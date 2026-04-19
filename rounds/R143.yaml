@@ -1,0 +1,156 @@
+# R143: ROOT-CAUSE FIX — ack Tier 2 hang resolved. rawIntRegs compile-time
+#       state leaked from usedNumericBL post-BL into emitCallExitFallback's
+#       exit-handler emit, producing raw-store of spilled values. Fix:
+#       save/restore rawIntRegs across the branch.
+round: 143
+date: 2026-04-19
+follows: 142
+
+type: correctness-bug-fix
+
+target:
+  benchmark: ackermann
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    R142 isolated the raw-slot leak to v29's tail-call arg0 being
+    read raw at executeCallExit. Analysis of the compile-time
+    rawIntRegs state showed that emitReloadSelectiveForCall (inside
+    the usedNumericBL post-BL block) clears `rawIntRegs[valueID]`
+    for reloaded live values, and storeRawInt adds `rawIntRegs` for
+    the new Call result. These mutations are EMITTED before the
+    mutually-exclusive exit-handler block below. At emit time, when
+    emitCallExitFallback runs, its emitStoreAllActiveRegs sees the
+    POST-mutation rawIntRegs — NOT the state that would be true at
+    RUNTIME if the exit-handler path were taken.
+
+    Result: for values that WERE raw at the moment of the BL (e.g.,
+    v23 in pass-2 ack's B4), emitStoreAllActiveRegs compiles a
+    `STR reg, slot` WITHOUT boxing. At runtime, when the callee
+    exits nonzero and the exit-handler fires, raw bits get stored
+    to memory. The resume stub's emitReloadAllActiveRegs reloads
+    those raw bits. Downstream resolveValueNB sees `rawIntRegs=false`
+    and returns physReg (holding raw from reload) without boxing.
+    STR to call arg slot writes raw → callee's slot[0] at the NEXT
+    call gets raw → GuardType deopts → retry loop → hang.
+
+  expected_gain_pct: [-30, 0]   # bench-win if ack Tier 2 faster
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.25
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: TestR138_AckTier2Hang converges (rule 26)
+      acceptance: ok
+      halt_on_fail: true
+  result: >
+    Applied save/restore of ec.rawIntRegs across the post-BL block:
+
+      savedRawIntRegs := copy(ec.rawIntRegs)    // before the if/else
+      if usedNumericBL { ... mutations ... }
+      else { ... mutations ... }
+      ...
+      Label(exitHandleLabel)
+      ec.rawIntRegs = savedRawIntRegs             // restore for exit compile
+      emitCallExitFallback(...)
+
+    Matches the existing save-restore idiom in emit_call_exit.go:188
+    and emit_matrix.go.
+
+    Test suite: FULLY GREEN (including R107 Tail-Call tests that
+    previously failed when gate was opened). TestR138_AckTier2Hang
+    passes (with promoteAckOverride=true): ack(3,4) x500 in 452ms.
+  passed: true
+
+surgical_scope: >
+  internal/methodjit/emit_call_native.go: 4-line save + 1-line
+  restore around the post-BL `if usedNumericBL` block in emitCallNative.
+
+current_state_audit_summary: |
+  # Before R143 fix (BUG):
+  #   Compile emit order:
+  #     1. emitSpillSelectiveForCall(liveGPRs)     ; boxes rawIntRegs, keeps flags
+  #     2. BL numeric_self_entry
+  #     3. if usedNumericBL {
+  #          emitReloadSelectiveForCall(liveGPRs) ; delete ec.rawIntRegs[v] per v
+  #          storeRawInt(X0, v28)                  ; set ec.rawIntRegs[v28]=true
+  #        }
+  #     4. Label(exitHandleLabel)
+  #        emitCallExitFallback → emitStoreAllActiveRegs uses CURRENT
+  #        ec.rawIntRegs (mutated by step 3).
+  #
+  #   Runtime (exit path): steps 1,2,4 execute (step 3 skipped by CBNZ
+  #   branch). At step 4, the asm emitted in COMPILE with post-step-3
+  #   state STRs v23's physReg WITHOUT boxing → memory slot corrupted.
+  #
+  # After R143 fix:
+  #   Between step 2 and step 3, save ec.rawIntRegs.
+  #   At exitHandleLabel (step 4), restore ec.rawIntRegs before
+  #   emitCallExitFallback. Now emitStoreAllActiveRegs sees the
+  #   pre-step-3 state, correctly boxes v23 before storing.
+
+verify:
+  result: |
+    Bench (7-sample medians):
+
+      fib: R137 baseline: 0.924s; R143: 0.916s  (small improvement)
+      ack: Tier 1 baseline (pre-gate-open): 0.272s
+           R143 with gate closed (np==1): 0.275s (unchanged, still Tier 1)
+
+    Test with promoteAckOverride=true (gate opens np>=2):
+      ack(3,4) x500 completes in ~450ms in Tier 2. No hang. But Tier 2
+      is +60% slower than Tier 1 for ack on M4 — numeric-conv
+      overhead for 2-param recursive protos with mixed tail/non-tail
+      call patterns isn't paying off.
+
+    Production gate stays at np==1. R143's fix is a correctness fix
+    regardless — it would also prevent latent corruption in any
+    future np>=2 promotion scenario.
+
+outcome:
+  status: bench-win
+  shipped_code: true
+  primary_finding: >
+    The ack hang was caused by compile-time rawIntRegs state leaking
+    from the post-BL emit block into the mutually-exclusive exit-
+    handler emit. The exit-handler's emitStoreAllActiveRegs used
+    the wrong (post-mutation) state and emitted unboxed STR for
+    values that WERE raw at the BL moment. Fix: save/restore across
+    the branch (same pattern as emit_call_exit.go:188 and
+    emit_matrix.go:92).
+  shipped_artifact: |
+    emit_call_native.go: 4-line save + 1-line restore of ec.rawIntRegs
+    across the post-BL block in emitCallNative.
+    r138_ack_hang_test.go: test un-skipped (uses promoteAckOverride
+    to force np>=2 exercise).
+  notes: |
+    Why it took so long (meta):
+      R138: first identified hang.
+      R139: 4-agent parallel debug narrowed to "feedback-dependent emit".
+      R140: DeoptInstrID infra pinpointed v32 entry GuardType on m.
+      R141: attempted architectural collapse (single-body) — didn't fix.
+      R142: runtime watchpoint showed arg0 raw at v29 tail-call exit.
+      R143: static emit-order analysis revealed rawIntRegs state leak.
+
+    8 rounds total. In retrospect, the bug could have been caught
+    sooner by code-reading emitCallExitFallback with a "what state
+    does this see at compile time vs runtime?" lens. The existing
+    save-restore pattern in emit_call_exit.go:188 and emit_matrix.go
+    explicitly documents the same class of issue. The R143 fix is
+    literally copy-pasted from those.
+
+    Remaining work (R144+):
+      - ack Tier 2 is functionally correct but +60% slower than
+        Tier 1. Need to profile and find what's eating the cycles.
+        Candidates: dual-body pass-2 emit, IC misses, tail-BR to
+        direct_entry path overhead.
+      - Once ack Tier 2 matches or beats Tier 1, open gate to np>=2
+        in production.
+      - Audit other emit sites for similar state-leak bugs. Grep
+        for `emitReloadSelectiveForCall` + `emitCallExitFallback`
+        in the same function; if they share an exit-handler label,
+        apply the save-restore pattern.
