@@ -120,6 +120,11 @@ rows:
   - {round: 88, date: 2026-04-19, bench: sieve,               gscript_jit_sec: 0.085, luajit_sec: 0.011, gap_factor: 7.73, notes: "R88 kindVerified — unchanged"}
   - {round: 88, date: 2026-04-19, bench: matmul_dense,        gscript_jit_sec: 0.035, luajit_sec: 0.022, gap_factor: 1.59, notes: "R88 kindVerified — intrinsic path, unaffected"}
 
+  # --- R115 call-opt arc close (R107-R114 cumulative vs R107 pre-arc) ---
+  - {round: 115, date: 2026-04-19, bench: fib,              gscript_jit_sec: 1.423, luajit_sec: 0.026, gap_factor: 54.7, notes: "R115 cumulative; -1.0% vs R107"}
+  - {round: 115, date: 2026-04-19, bench: ackermann,        gscript_jit_sec: 0.269, luajit_sec: 0.006, gap_factor: 44.8, notes: "R115; -0.7%"}
+  - {round: 115, date: 2026-04-19, bench: mutual_recursion, gscript_jit_sec: 0.190, luajit_sec: 0.004, gap_factor: 47.5, notes: "R115; -0.5%"}
+
   # --- R108 monomorphic call IC — small call-heavy wins ---
   - {round: 108, date: 2026-04-19, bench: fib,              gscript_jit_sec: 1.436, luajit_sec: 0.026, gap_factor: 55.2, notes: "R108 mono call IC — 15-sample median, -0.5% vs R107"}
   - {round: 108, date: 2026-04-19, bench: ackermann,        gscript_jit_sec: 0.270, luajit_sec: 0.006, gap_factor: 45.0, notes: "R108 — -0.7%"}

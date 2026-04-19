@@ -1,0 +1,99 @@
+# R115: call-opt arc close meta (R107-R114).
+round: 115
+date: 2026-04-19
+follows: 114
+
+type: meta
+
+target:
+  benchmark: multi
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    8-round call-opt arc (R107-R114) hit a hard ARM64 M4 pipeline
+    wall on the emit_call_native setup block. 3 rounds banked real
+    wins (R108 IC, R110 static self detect, R111 CallMode/GlobalCache
+    elision); 4 rounds reverted (R109, R112, R113, R114) because
+    cutting insns from the ctx-setup/restore/arg-copy block regressed.
+    Cumulative: fib -1.0%, ack -0.7%, mut -0.5%. LuaJIT gap
+    essentially unchanged (architectural limit).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.5
+  mitigation_required: false
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Rounds (in order):
+      R107 [adr-win]  TCO infra: countdown(200) now works, bench flat.
+      R108 [bench-win] Mono call IC: fib -0.5%, ack -0.7%.
+      R109 [revert]   CallCount miss-only: fib +0.7% regression.
+      R110 [adr-win]  Static self-call detection → 1-insn BL.
+      R111 [bench-win] Skip CallMode+GlobalCache for static-self: fib -0.3%.
+      R112 [revert]   Skip Constants for static-self: fib +0.8%.
+      R113 [revert]   Skip ClosurePtr for upval-free static-self: fib +0.9%.
+      R114 [revert]   LDP/STP arg copy: ack +0.7%, fib +0.5%.
+
+    4/8 rounds reverted — all touching emit_call_native's tight
+    ctx-setup/arg-copy sequence. Lesson: this sequence is
+    pipeline-sensitive; ARM64 M4 scheduling makes insn-count cuts
+    net-negative.
+
+pre_flight:
+  required:
+    - description: update luajit_gap with R115 state
+      acceptance: rows appended
+      halt_on_fail: false
+  result: >
+    Cumulative bench (10-sample median at R114 HEAD vs R107):
+      fib:              1.438 → 1.423 (-1.0%)
+      ackermann:        0.271 → 0.269 (-0.7%)
+      mutual_recursion: 0.191 → 0.190 (-0.5%)
+    LuaJIT gap: fib 55x → 55x, ack 45x → 45x.
+  passed: true
+
+outcome:
+  status: adr-win
+  bench_deltas:
+    fib: {r107: 1.438, r114: 1.423, pct: -1.0}
+    ackermann: {r107: 0.271, r114: 0.269, pct: -0.7}
+    mutual_recursion: {r107: 0.191, r114: 0.190, pct: -0.5}
+  regressions: []
+  shipped_code: false
+  commit: null
+  deliverables:
+    - program/luajit_gap.yaml — R115 roll-up rows
+    - rounds/R115.yaml — this meta card
+
+ledger_update:
+  classes_touched: [tier2-recursion-closure]
+  new_class_introduced: null
+  sub_pattern_learned: >
+    Three call-opt techniques that worked (R108/R110/R111):
+      1. Add an IC to skip dependent LDR chains (Proto → DirectEntry).
+      2. Detect static self-call at compile time to skip runtime
+         Proto comparison.
+      3. Skip SAVE/RESTORE pairs at FIXED sp offsets (CallMode,
+         GlobalCache) for invariant fields under self-call.
+
+    Three techniques that DIDN'T work (R109/R112/R113/R114):
+      4. Re-order CallCount inc to miss-path-only.
+      5. Skip Constants LDR+STR in ctx-setup.
+      6. Skip ClosurePtr save/restore for upval-free static-self.
+      7. Swap LDR+STR pairs for LDP+STP.
+    Common feature of failures: touching emit_call_native's
+    contiguous ctx-setup/arg-copy block disrupts M4 pipeline
+    scheduling. Successful rounds modified PERIPHERAL code (IC
+    entry, BL dispatch, dedicated sp save slots).
+
+    Closing fib/ack/mut 45-55x gap further requires architectural
+    change: polymorphic IC for non-mono calls, Tier 1 IC, or
+    trace-JIT-style specialization.
+
+notes: >
+  Future call-opt direction recommendations:
+    - Multi-target polymorphic IC (2-4 slots) for method_dispatch.
+    - Tier 1 call path IC (same pattern as R108 but in tier1_call.go).
+    - Trace recording: major architectural change but only path to
+      approaching LuaJIT's 1-2ns/call on recursive code.
