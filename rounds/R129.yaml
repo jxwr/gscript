@@ -1,0 +1,60 @@
+# R129: pass-2 body emit (Phase B step 1) — identical-behavior numeric twin body.
+round: 129
+date: 2026-04-19
+follows: 128
+
+type: architecture
+
+target:
+  benchmark: fib
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    With R128's label refactor in place, run a second emitBlock pass
+    under numericMode=true after the normal body + epilogue +
+    deferredResumes. The pass-2 entry label `t2_numeric_self_entry_N`
+    (emitted at the head of pass 2) takes raw int args + boxes them +
+    jumps to pass-2's own `num_B0`. Pass-2 body is identical to pass 1
+    at this point (behavior still same — box, use NaN-boxed body).
+
+    This ISOLATES pass-2 infrastructure. R130+ will flip the body's
+    LoadSlot/GuardType/Return emits to numericMode-aware variants for
+    the REAL raw-int path.
+
+    Correctness verification: fib/ack/mut_recursion still produce
+    identical results (since numeric dispatch still routes to pass-2
+    which does identical work as pass 1).
+
+  expected_gain_pct: [0, 0]
+  counterfactual_check: >
+    If pass 2 breaks anything, revert. Dead code tax is ~2x for
+    qualifying protos (fib 488 → ~1000 insns). Acceptable.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.5
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: methodjit suite green
+      acceptance: ok
+      halt_on_fail: true
+    - description: fib/ack/mut correctness via oracle compare
+      acceptance: existing correctness tests continue to pass
+      halt_on_fail: true
+  result: >
+    emitNumericBody() now runs as second pass after normal body +
+    epilogue. fib insn count 488 → 915 (~2x, dual body confirmed).
+    Full methodjit suite green.
+
+    Bench (10-sample median, cumulative vs R124):
+      fib: r124 1.418 → r129 1.424 (+0.4%, noise boundary)
+      ack: r124 0.264 → r129 0.267 (+1.1%)
+
+    Slight regression attributed to 2x code in I-cache + different
+    branch predictor state. Both within noise / acceptable for
+    infrastructure round. Real gain materializes in R130+ when
+    pass-2 body actually SKIPS the entry box + body GuardType.
+  passed: true

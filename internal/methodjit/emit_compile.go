@@ -200,6 +200,12 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// Emit epilogue.
 	ec.emitEpilogue()
 
+	// R129: emit pass-2 (numeric variant) body BEFORE deferredResumes so
+	// pass-2's deopts/call-exits append to the same deferredResumes
+	// list. emitDeferredResumes then emits both passes' resume entries
+	// with properly-disambiguated labels (numericPass flag on each).
+	ec.emitNumericBody()
+
 	// Emit deferred resume entry points (after epilogue so they're separate
 	// function entry points with their own prologue).
 	ec.emitDeferredResumes()
@@ -549,16 +555,81 @@ func blockLabel(b *Block) string {
 	return fmt.Sprintf("B%d", b.ID)
 }
 
-// emitNumericBody (R126 infrastructure, deferred body emit) — when R127+
-// implements layers 2-5, this will run a second pass with numericMode=true,
-// prefixed block labels, raw-arg prologue, raw LoadSlot for param slots,
-// GuardType pass-through, raw Return + numeric epilogue, and deopt-time
-// boxing of live rawIntRegs. For R126 the function is a stub — dual-body
-// emit requires fixing label collisions across many exit/continue sites
-// (call_continue_N, global_continue_N, etc.); that's future work.
+// emitNumericBody (R129) runs a second emit pass under numericMode=true.
+// Emits the numeric entry label `t2_numeric_self_entry_N`, boxes raw
+// int args into regs[0..N-1], jumps to pass-2's prefixed B0, then
+// re-emits every block with num_ label prefix. Pass-2 deferred resume
+// entries are appended to ec.deferredResumes with numericPass=true
+// (appended during emitBlock), so the outer Compile()'s final
+// emitDeferredResumes() call handles both passes.
+//
+// R129 scope: body emit is BEHAVIORALLY IDENTICAL to pass 1 — LoadSlot
+// still loads NaN-boxed, GuardType still checks tag, Return still
+// boxes. Pass 2 is currently just infrastructure isolation + dead code
+// for the numeric path (caller's BL t2_numeric_self_entry_N now
+// targets pass 2's body, which behaves the same as pass 1).
+//
+// R130+ will flip body emit to numericMode-aware raw-int semantics.
 func (ec *emitContext) emitNumericBody() {
-	// No-op placeholder for layers 2-5. See rounds/R126.yaml and
-	// project_numeric_conv_arc_partial.md for the full recipe.
+	if ec.numericParamCount <= 0 {
+		return
+	}
+	if ec.fn == nil || ec.fn.Proto == nil || !ec.fn.Proto.HasSelfCalls {
+		return
+	}
+
+	asm := ec.asm
+
+	// Activate pass-2 mode. All downstream label-emit sites wrapped
+	// with ec.passLabel() + ec.blockLabelFor() will use num_ prefix.
+	ec.numericMode = true
+	defer func() { ec.numericMode = false }()
+
+	// Reset per-block emit state so pass 2 starts fresh.
+	ec.activeRegs = make(map[int]bool)
+	ec.rawIntRegs = make(map[int]bool)
+	ec.activeFPRegs = make(map[int]bool)
+	ec.shapeVerified = make(map[int]uint32)
+	ec.tableVerified = make(map[int]bool)
+	ec.kindVerified = make(map[int]uint16)
+	ec.keysDirtyWritten = make(map[int]bool)
+	ec.dmVerified = make(map[int]bool)
+	ec.blockOutShapes = make(map[int]map[int]uint32)
+	ec.blockOutTables = make(map[int]map[int]bool)
+	ec.blockOutKinds = make(map[int]map[int]uint16)
+	ec.blockOutKeysDirty = make(map[int]map[int]bool)
+	ec.fusedActive = false
+
+	// Numeric entry label (caller BLs here with raw ints in X0-X(N-1)).
+	label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
+	asm.Label(label)
+	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+	asm.STP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.X29, jit.SP, 0)
+	asm.STP(jit.X19, jit.X20, jit.SP, 16)
+	asm.STP(jit.X21, jit.X22, jit.SP, 32)
+	asm.STP(jit.X23, jit.X24, jit.SP, 48)
+	asm.STP(jit.X25, jit.X26, jit.SP, 64)
+	asm.STP(jit.X27, jit.X28, jit.SP, 80)
+	if ec.useFPR {
+		asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+	}
+	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
+	// R129: box args into regs[0..N-1] so the NaN-boxed body works.
+	// R130 will change this to raw-store + body changes.
+	for i := 0; i < ec.numericParamCount; i++ {
+		argReg := jit.Reg(int(jit.X0) + i)
+		asm.ORRreg(argReg, argReg, mRegTagInt)
+		asm.STR(argReg, mRegRegs, slotOffset(i))
+	}
+	// Jump to pass-2's prefixed entry block.
+	asm.B(fmt.Sprintf("num_B%d", ec.fn.Entry.ID))
+
+	// Re-emit all blocks with numericMode active (prefixed labels).
+	for _, block := range ec.fn.Blocks {
+		ec.emitBlock(block)
+	}
 }
 
 // blockLabelFor returns the label for block b in the given emit pass.
@@ -719,33 +790,8 @@ func (ec *emitContext) emitEpilogue() {
 		asm.B("B0") // Jump to first SSA block (same body)
 	}
 
-	// --- Numeric self-entry (R124) — same-block label so caller BL is
-	// PC-relative. For R124 behavior: boxes args at entry so body
-	// (shared with normal entries) sees NaN-boxed args. R127+ will
-	// replace this with a dual-body emit.
-	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
-		label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
-		asm.Label(label)
-		asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
-		asm.STP(jit.X29, jit.X30, jit.SP, 0)
-		asm.ADDimm(jit.X29, jit.SP, 0)
-		asm.STP(jit.X19, jit.X20, jit.SP, 16)
-		asm.STP(jit.X21, jit.X22, jit.SP, 32)
-		asm.STP(jit.X23, jit.X24, jit.SP, 48)
-		asm.STP(jit.X25, jit.X26, jit.SP, 64)
-		asm.STP(jit.X27, jit.X28, jit.SP, 80)
-		if ec.useFPR {
-			asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
-		}
-		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
-		for i := 0; i < ec.numericParamCount; i++ {
-			argReg := jit.Reg(int(jit.X0) + i)
-			asm.ORRreg(argReg, argReg, mRegTagInt)
-			asm.STR(argReg, mRegRegs, slotOffset(i))
-		}
-		asm.B("B0")
-	}
+	// R129: numeric entry + pass-2 body are emitted AFTER epilogue +
+	// deferredResumes via emitNumericBody() (called from Compile).
 
 	// --- Direct epilogue for BLR callers ---
 	// Return path when CallMode == 1 in emitReturn. Uses the same frame
