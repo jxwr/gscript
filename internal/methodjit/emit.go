@@ -246,6 +246,18 @@ type CompiledFunction struct {
 	// frame (FP+LR only), matching Tier 1's direct entry calling convention.
 	DirectEntryOffset int
 
+	// NumericDirectEntry (R121) is the byte offset of the numeric calling
+	// convention entry point (t2_numeric_direct_entry_N, N = param count).
+	// Zero means this function has no numeric twin (either the proto doesn't
+	// qualify or the arc hasn't compiled one). Callers that route to this
+	// entry pass raw int64 args in X0-X(N-1) and receive raw int64 in X0.
+	// Private to Tier-2-to-Tier-2 calls; Tier 1 always uses DirectEntryOffset.
+	NumericDirectEntry int
+
+	// NumericParamCount (R121) is the number of int params the numeric twin
+	// takes (1-4). Zero if no twin.
+	NumericParamCount int
+
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
 	// It runs the function via the VM interpreter. Set by the caller
 	// (e.g., test harness or tiering engine) to provide VM fallback.

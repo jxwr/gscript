@@ -31,6 +31,7 @@ import (
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/vm"
 )
 
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
@@ -504,6 +505,29 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	// return value normally — so the following OpReturn still runs correctly).
 	asm.Label(slowLabel)
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
+}
+
+// qualifyForNumeric (R121) reports whether a proto is structurally eligible
+// for the end-to-end numeric calling convention. This is the scaffolding
+// predicate; R122+ uses it to decide whether to compile a numeric twin.
+// Returns (ok, numParams). When ok is true, numParams is in [1, 4].
+//
+// Current criteria (R121): 1-4 params, no upvalues, no nested protos.
+// Future tightening (R123): return-flow analysis proves int return.
+func qualifyForNumeric(proto *vm.FuncProto) (bool, int) {
+	if proto == nil {
+		return false, 0
+	}
+	if proto.NumParams < 1 || proto.NumParams > 4 {
+		return false, 0
+	}
+	if len(proto.Upvalues) != 0 {
+		return false, 0
+	}
+	if len(proto.Protos) != 0 {
+		return false, 0
+	}
+	return true, proto.NumParams
 }
 
 // isStaticSelfCall (R110) returns true when OpCall's function argument is

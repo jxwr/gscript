@@ -1,0 +1,165 @@
+# R121: design ADR + scaffolding for end-to-end numeric calling convention.
+round: 121
+date: 2026-04-19
+follows: 120
+
+type: architecture
+
+target:
+  benchmark: fib
+  current_wall_sec: 1.426
+  luajit_wall_sec: 0.026
+  gap_factor: 54.8
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    R119/R120 proved half-pilots don't work. This arc commits to the
+    end-to-end path: for qualifying protos, compile a SECOND
+    CompiledFunction ("numeric twin") with a distinct entry/exit/body
+    pipeline:
+      - Entry: raw int args in X0-X3 (ARM64 AAPCS).
+      - Body: GuardType elided for params; LoadSlot for params returns
+        raw int (rawIntRegs[v] = true at compile time).
+      - Return: raw int in X0 (skip NaN-box + ctx.BaselineReturnValue).
+      - Deopt: must NaN-box args back before exit-resume (runtime
+        handles boxed state).
+
+    Static self-calls to qualifying protos dispatch to the numeric
+    twin instead of the normal compiled function. External (Tier 1)
+    callers always use the normal entry.
+
+    R121 ships: ADR + CompiledFunction.NumericDirectEntry field +
+    qualification predicate. No behavioral change yet.
+
+  expected_gain_pct: [0, 0]       # no bench change this round
+  expected_gain_mechanism: >
+    Scaffolding only; R122+ implements the twin compile + caller
+    routing. Projected full-arc fib gain: 20-40% (HotSpot-class method
+    JIT benchmark territory for int-only recursion).
+  counterfactual_check: >
+    N/A — this round produces no runnable change.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.5
+  mitigation_required: false
+  current_state_audit_performed: true
+  current_state_audit_summary: >
+    Current state (post-R120 revert):
+      - fib Tier 2 body: 488 insns, 7 OpCalls (after depth-3 inline).
+      - Each OpCall emit: ~40 insns (R108 IC + R111 skips).
+      - Callee's t2_self_entry prologue: 7 insns.
+      - Body: GuardType for param (~3 insns) + LoadSlot of param
+        (1 LDR + SBFX unbox or similar).
+      - Return: store NaN-boxed result (3 insns) + branch to epilogue.
+    Bottleneck per fib call: ~50 insns total. HotSpot for fib: ~6-10
+    insns per call. Gap: 5-8x.
+
+pre_flight:
+  required:
+    - description: CompiledFunction.NumericDirectEntry field added
+      acceptance: struct has new field; zero-value means "no numeric twin"
+      halt_on_fail: true
+    - description: qualifyForNumeric(proto) predicate defined
+      acceptance: returns true iff proto has (1-4 params, no upvals,
+                   no nested protos, pure int signature)
+      halt_on_fail: true
+    - description: full methodjit suite green
+      acceptance: no regression
+      halt_on_fail: true
+  result: >
+    Shipped:
+      - emit.go: CompiledFunction.NumericDirectEntry + NumericParamCount fields.
+      - emit_call_native.go: qualifyForNumeric(proto) predicate.
+      - r121_qualify_test.go: 7 unit tests covering fib/ack qualify,
+        0-param reject, 5-param reject, nil, nested-proto reject,
+        CompiledFunction zero-value.
+    Full methodjit suite green. No behavioral change this round.
+  passed: true
+
+  surgical_scope: >
+    internal/methodjit/emit.go: add NumericDirectEntry int field +
+    NumericParamCount int to CompiledFunction.
+    internal/methodjit/emit_call_native.go: add qualifyForNumeric helper.
+    No emit-path changes this round.
+
+design_adr: >
+  ## Numeric Calling Convention — full design
+
+  ### Qualification (proto-level, compile-time)
+  A proto "qualifies for numeric" if ALL:
+    - NumParams ∈ {1, 2, 3, 4}
+    - len(Upvalues) == 0
+    - len(Protos) == 0 (no nested closures)
+    - (Future R123) return flow proves all Return sites produce
+      TypeInt-resolvable values after TypeSpec.
+    - (Future R123) all param uses in the body are through paths that
+      accept int (inserted GuardType is the only enforcer currently).
+
+  ### Compilation (R122)
+  For qualifying protos, Tier 2 compile produces TWO bodies in one
+  CodeBlock:
+    [offset=0]      Normal body — current emit, NaN-boxed args/return.
+                    Entry: t2_direct_entry, t2_self_entry.
+    [offset=NE]    Numeric body — raw int args in X0-X3, raw X0 return.
+                    Entry: t2_numeric_direct_entry,
+                           t2_numeric_self_entry_N (N = NumParams).
+
+  CompiledFunction adds:
+    - NumericDirectEntry int (byte offset into Code; 0 = no twin)
+    - NumericParamCount int (1-4; 0 if no twin)
+
+  ### Body differences for numeric
+  1. Param LoadSlot: emit to pre-populate rawIntRegs[v] = true, and
+     load raw int directly (source depends on entry-prologue
+     convention; see below).
+  2. GuardType for params: skip (already known int).
+  3. Return: store raw int to X0, skip NaN-box, skip regs[0] write,
+     skip ctx.BaselineReturnValue write. Branch to
+     t2_numeric_epilogue (restore callee-saved + RET).
+  4. Deopt from numeric body: all live rawIntRegs values must be
+     NaN-boxed before exit-resume. Implementation: deopt-time box
+     helper takes the rawIntRegs set and emits ORR+STR to regs[].
+
+  ### Caller dispatch (R124)
+  At OpCall:
+    - If isStaticSelfCall && proto.NumericDirectEntry != 0 &&
+      NumParams match && all args are TypeInt/rawInt:
+      use numeric path (BL t2_numeric_self_entry_N, raw args in
+      X0..X(N-1), consume raw X0 return).
+    - Else: existing path.
+
+  ### Cross-tier interop
+  Tier 1 callers: always use normal entry. Numeric twin is private
+  to Tier-2-to-Tier-2 calls.
+
+  ### Implementation phases
+  R121 (this round): scaffolding + ADR.
+  R122: numeric-body compile pipeline + emit numeric entry.
+  R123: numeric Return emit + qualifyForNumeric return-flow check.
+  R124: caller dispatch for static self-calls.
+  R125: deopt boxing for numeric body.
+  R126: test + bench + correctness gate on fib/ack/mut_rec.
+  R127: close arc + next-direction notes.
+
+  Projected combined gain: 20-40% on fib; similar on ack/mut_rec.
+  Risk: R35-class regression on mutual_recursion if qualification
+  is loose; mitigation: pre-flight bench gate all four call-heavy
+  benches.
+
+outcome:
+  status: adr-win
+  bench_deltas: {}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/emit.go — NumericDirectEntry, NumericParamCount fields
+    - internal/methodjit/emit_call_native.go — qualifyForNumeric helper
+    - internal/methodjit/r121_qualify_test.go — 7 unit tests
+    - rounds/R121.yaml — this ADR
+
+ledger_update:
+  classes_touched: [tier2-recursion-closure]
+  new_class_introduced: null
