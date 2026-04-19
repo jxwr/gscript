@@ -230,12 +230,26 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
 	// R40: Self-call fast path via HasSelfCalls flag.
-	// R40: Self-call fast path via HasSelfCalls flag.
 	// R110: If we can STATICALLY prove this particular OpCall is a self-call
 	// (fn arg is OpGetGlobal of our own proto's name), skip the runtime
 	// Proto compare entirely and BL direct to t2_self_entry.
-	asm.MOVreg(jit.X0, mRegCtx)
-	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
+	// R124: Numeric self-call — when proto qualifies and all args are int,
+	// route to t2_numeric_self_entry_N (raw ints in X0-X(N-1)).
+	if ec.isNumericStaticSelfCall(instr) {
+		nParams := ec.fn.Proto.NumParams
+		ec.emitNumericArgsInRegs(instr, nParams)
+		switch nParams {
+		case 1:
+			asm.BL("t2_numeric_self_entry_1")
+		case 2:
+			asm.BL("t2_numeric_self_entry_2")
+		case 3:
+			asm.BL("t2_numeric_self_entry_3")
+		case 4:
+			asm.BL("t2_numeric_self_entry_4")
+		}
+	} else if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
+		asm.MOVreg(jit.X0, mRegCtx)
 		if ec.isStaticSelfCall(instr) {
 			// R110: static self-call — 1 insn.
 			asm.BL("t2_self_entry")
@@ -256,6 +270,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 			asm.Label(afterBlLabel)
 		}
 	} else {
+		asm.MOVreg(jit.X0, mRegCtx)
 		asm.BLR(jit.X2)
 	}
 
@@ -505,6 +520,85 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	// return value normally — so the following OpReturn still runs correctly).
 	asm.Label(slowLabel)
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
+}
+
+// isNumericStaticSelfCall (R124) returns true when this OpCall can use
+// the numeric self-call fast path: static-self (R110), proto qualifies
+// for numeric (R121), all args are int-typed.
+func (ec *emitContext) isNumericStaticSelfCall(instr *Instr) bool {
+	if !ec.isStaticSelfCall(instr) {
+		return false
+	}
+	ok, numParams := qualifyForNumeric(ec.fn.Proto)
+	if !ok {
+		return false
+	}
+	if len(instr.Args) != 1+numParams {
+		return false
+	}
+	for i := 1; i < len(instr.Args); i++ {
+		argID := instr.Args[i].ID
+		if ec.hasReg(argID) && ec.rawIntRegs[argID] {
+			continue
+		}
+		if ec.irTypes[argID] == TypeInt {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// emitNumericArgsInRegs (R124) materializes raw int64 args into X0..X(N-1)
+// ahead of a BL t2_numeric_self_entry_N. Handles aliasing between arg
+// sources and ABI registers.
+func (ec *emitContext) emitNumericArgsInRegs(instr *Instr, nParams int) {
+	asm := ec.asm
+	if nParams == 1 {
+		src0 := ec.resolveRawInt(instr.Args[1].ID, jit.X0)
+		if src0 != jit.X0 {
+			asm.MOVreg(jit.X0, src0)
+		}
+		return
+	}
+	if nParams == 2 {
+		src0 := ec.resolveRawInt(instr.Args[1].ID, jit.X0)
+		src1 := ec.resolveRawInt(instr.Args[2].ID, jit.X1)
+		if src0 == jit.X1 && src1 == jit.X0 {
+			asm.MOVreg(jit.X2, jit.X0)
+			asm.MOVreg(jit.X0, jit.X1)
+			asm.MOVreg(jit.X1, jit.X2)
+			return
+		}
+		if src0 == jit.X1 {
+			// Move arg0 out of X1 first to avoid clobber.
+			asm.MOVreg(jit.X0, jit.X1)
+			if src1 != jit.X1 {
+				asm.MOVreg(jit.X1, src1)
+			}
+			return
+		}
+		if src0 != jit.X0 {
+			asm.MOVreg(jit.X0, src0)
+		}
+		if src1 != jit.X1 {
+			asm.MOVreg(jit.X1, src1)
+		}
+		return
+	}
+	// nParams 3/4: conservative via X2/X3/X4/X5 scratch.
+	scratchRegs := []jit.Reg{jit.X2, jit.X3, jit.X4, jit.X5}
+	srcRegs := make([]jit.Reg, nParams)
+	for i := 0; i < nParams; i++ {
+		srcRegs[i] = ec.resolveRawInt(instr.Args[1+i].ID, scratchRegs[i])
+		if srcRegs[i] != scratchRegs[i] {
+			asm.MOVreg(scratchRegs[i], srcRegs[i])
+		}
+	}
+	for i := 0; i < nParams; i++ {
+		dst := jit.Reg(int(jit.X0) + i)
+		asm.MOVreg(dst, scratchRegs[i])
+	}
 }
 
 // qualifyForNumeric (R121) reports whether a proto is structurally eligible

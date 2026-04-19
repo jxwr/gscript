@@ -75,12 +75,9 @@ func TestR121_QualifyForNumeric_NestedProto(t *testing.T) {
 	}
 }
 
-// CompiledFunction.NumericTwin / NumericParamCount default to nil/0.
+// CompiledFunction.NumericParamCount defaults to 0.
 func TestR121_CompiledFunctionHasNumericFields(t *testing.T) {
 	var cf CompiledFunction
-	if cf.NumericTwin != nil {
-		t.Errorf("zero-value NumericTwin should be nil")
-	}
 	if cf.NumericParamCount != 0 {
 		t.Errorf("zero-value NumericParamCount should be 0")
 	}
@@ -89,9 +86,10 @@ func TestR121_CompiledFunctionHasNumericFields(t *testing.T) {
 // Unused-var trick to keep vm import referenced if other tests are pruned.
 var _ = vm.OP_CALL
 
-// TestR123_NumericTwinLinked verifies that qualifying protos get a
-// NumericTwin populated after Tier 2 compile (R123 scaffolding).
-func TestR123_NumericTwinLinked(t *testing.T) {
+// TestR124_NumericEntryEmitted verifies that qualifying protos emit
+// a `t2_numeric_self_entry_N` label inside their CompiledFunction
+// (R124 restructure — numeric entry is in-block, not a separate CF).
+func TestR124_NumericEntryEmitted(t *testing.T) {
 	src := `
 func fib(n) {
     if n < 2 { return n }
@@ -124,9 +122,6 @@ result := fib(15)
 	cf := tm.tier2Compiled[fibProto]
 	if cf == nil {
 		t.Fatalf("fib Tier 2 compile did not populate tier2Compiled")
-	}
-	if cf.NumericTwin == nil {
-		t.Errorf("fib CF should have NumericTwin linked; got nil")
 	}
 	if cf.NumericParamCount != 1 {
 		t.Errorf("fib NumericParamCount: want 1, got %d", cf.NumericParamCount)

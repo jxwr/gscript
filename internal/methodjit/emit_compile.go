@@ -19,23 +19,8 @@ import (
 var _ runtime.Value
 var _ *vm.FuncProto
 
-// CompileOpts (R123) customizes the compile pipeline.
-// NumericMode: produce a "numeric twin" variant — entry takes raw int
-// args in X0-X(NumericParamCount-1), body is unchanged (boxes args at
-// entry for compatibility), epilogue unchanged. Future rounds will
-// extend this to elide the entry box + return as raw int.
-type CompileOpts struct {
-	NumericMode       bool
-	NumericParamCount int // only consulted when NumericMode is true
-}
-
 // Compile takes a Function with register allocation and produces executable ARM64 code.
 func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
-	return CompileWithOpts(fn, alloc, nil)
-}
-
-// CompileWithOpts is the opts-aware variant.
-func CompileWithOpts(fn *Function, alloc *RegAllocation, opts *CompileOpts) (*CompiledFunction, error) {
 	// Check if any FPR allocations exist (to skip FPR save/restore).
 	hasFPR := false
 	for _, pr := range alloc.ValueRegs {
@@ -190,9 +175,10 @@ func CompileWithOpts(fn *Function, alloc *RegAllocation, opts *CompileOpts) (*Co
 		fusedCmps:        fusedCmps,
 		tailCallInstrs:   computeTailCalls(fn),
 	}
-	if opts != nil && opts.NumericMode {
-		ec.numericMode = true
-		ec.numericParamCount = opts.NumericParamCount
+	// R124: numeric entry is emitted inside this Compile when the proto
+	// qualifies. numericParamCount tells emitEpilogue whether to emit.
+	if ok, np := qualifyForNumeric(fn.Proto); ok {
+		ec.numericParamCount = np
 	}
 
 	// Assign home slots for all SSA values.
@@ -436,11 +422,10 @@ type emitContext struct {
 	// normal return value that the Return then handles).
 	tailCallInstrs map[int]bool
 
-	// numericMode (R123) flags the compile as a "numeric twin". Entry
-	// emission takes raw int args in X0-X(NumericParamCount-1); body
-	// emission is identical to normal for this round (R124+ will add
-	// rawInt handling for param LoadSlots + raw return).
-	numericMode       bool
+	// numericParamCount (R124) is set at emitContext construction when
+	// the proto qualifies (qualifyForNumeric). emitEpilogue emits an
+	// extra label `t2_numeric_self_entry_N` that takes raw int args in
+	// X0-X(N-1) and boxes them to regs[0..] before jumping to B0.
 	numericParamCount int
 
 	// fusedCond holds the condition code from the last fused comparison.
@@ -568,34 +553,6 @@ func (ec *emitContext) emitPrologue() {
 		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
 	}
 
-	if ec.numericMode {
-		// R123 numeric twin prologue: raw int args in X0-X(N-1). Called
-		// only from Tier-2-internal (mRegCtx already set by caller).
-		// Save the args FIRST (before they get clobbered by mRegTag*
-		// setup), then restore pinned regs.
-		// NOTE: X0-X3 are caller-provided raw ints. We need to stash
-		// them to memory (regs[0..N-1], NaN-boxed) so the body can
-		// treat regs[slot] as NaN-boxed per normal convention.
-		// Caller's convention: mRegCtx (X19) is live; mRegTagInt (X24),
-		// mRegTagBool (X25), mRegConsts (X27), mRegRegs (X26) are NOT
-		// yet reloaded at this point (prologue just STP'd them).
-		// So reload the pinned regs that body uses.
-		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
-		// mRegTagInt/Bool and mRegConsts aren't guaranteed same as
-		// caller's (callee-saved, STP saved caller's). Must reload.
-		asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))
-		asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))
-		asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants)
-		// Box args and write to regs[0..N-1]. Use X3 as scratch if
-		// N <= 3 (X3 is arg3 for N==4; handle via reverse order).
-		for i := ec.numericParamCount - 1; i >= 0; i-- {
-			argReg := jit.Reg(int(jit.X0) + i)
-			asm.ORRreg(argReg, argReg, mRegTagInt)
-			asm.STR(argReg, mRegRegs, slotOffset(i))
-		}
-		return
-	}
-
 	// Set up pinned registers.
 	// X0 holds ExecContext pointer (from callJIT trampoline).
 	asm.MOVreg(mRegCtx, jit.X0)                      // X19 = ctx
@@ -696,6 +653,39 @@ func (ec *emitContext) emitEpilogue() {
 		// Skip LDR mRegConsts from ctx.Constants (unchanged, same proto)
 		// Skip LoadImm64 X24/X25 (tag globals unchanged)
 		asm.B("B0") // Jump to first SSA block (same body)
+	}
+
+	// --- Numeric self-entry (R124) ---
+	// Called from Tier-2-internal static self-calls with raw int args in
+	// X0-X(NumericParamCount-1). Prologue saves callee-saved regs,
+	// reloads mRegRegs (caller advanced ctx.Regs), then boxes raw args
+	// into regs[0..N-1] so the body (shared with normal entries) sees
+	// NaN-boxed args per usual convention.
+	// Only emitted when the proto qualifies AND has self-calls (otherwise
+	// caller would never dispatch here).
+	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
+		label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
+		asm.Label(label)
+		asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+		asm.STP(jit.X29, jit.X30, jit.SP, 0)
+		asm.ADDimm(jit.X29, jit.SP, 0)
+		asm.STP(jit.X19, jit.X20, jit.SP, 16)
+		asm.STP(jit.X21, jit.X22, jit.SP, 32)
+		asm.STP(jit.X23, jit.X24, jit.SP, 48)
+		asm.STP(jit.X25, jit.X26, jit.SP, 64)
+		asm.STP(jit.X27, jit.X28, jit.SP, 80)
+		if ec.useFPR {
+			asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+		}
+		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
+		// Box raw int args (X0..X(N-1)) into regs[0..N-1].
+		for i := 0; i < ec.numericParamCount; i++ {
+			argReg := jit.Reg(int(jit.X0) + i)
+			asm.ORRreg(argReg, argReg, mRegTagInt)
+			asm.STR(argReg, mRegRegs, slotOffset(i))
+		}
+		asm.B("B0")
 	}
 
 	// --- Direct epilogue for BLR callers ---

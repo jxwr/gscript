@@ -246,17 +246,11 @@ type CompiledFunction struct {
 	// frame (FP+LR only), matching Tier 1's direct entry calling convention.
 	DirectEntryOffset int
 
-	// NumericTwin (R122) is an optional second CompiledFunction for the
-	// same Proto, compiled with the numeric calling convention: raw int64
-	// args in X0-X(NumParams-1), raw int64 return in X0. Populated when
-	// the proto qualifies (see qualifyForNumeric) and compilation
-	// succeeds. Tier-2-to-Tier-2 static self-calls use the twin to skip
-	// NaN-box / unbox round-trips. Tier 1 callers always use the normal
-	// DirectEntryOffset.
-	NumericTwin *CompiledFunction
-
-	// NumericParamCount (R121) is the number of int params the numeric twin
-	// takes (1-4). Zero if no twin.
+	// NumericParamCount (R124) is the number of int params the numeric
+	// entry (t2_numeric_self_entry_N) takes (1-4). Zero if no numeric
+	// entry was emitted. The entry label is part of THIS Code block
+	// (added at the end by emitEpilogue when proto qualifies) so caller
+	// BL is compile-time PC-relative.
 	NumericParamCount int
 
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).

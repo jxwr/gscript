@@ -1,0 +1,106 @@
+# R124: restructure — numeric entry as extra label in SAME CodeBlock; caller dispatch.
+round: 124
+date: 2026-04-19
+follows: 123
+
+type: architecture
+
+target:
+  benchmark: fib
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    R123's dual-CompiledFunction design has a dispatch problem: BL
+    is PC-relative (±128 MB); two separate mmap'd CodeBlocks may be
+    too far apart. Fix: compile the numeric entry as an EXTRA LABEL
+    inside the SAME CodeBlock as the normal function (like R40's
+    t2_self_entry). Then caller's BL to t2_numeric_self_entry_N is
+    compile-time PC-relative.
+
+    Also wires caller dispatch: at OpCall, if static-self + proto
+    qualifies + all args int, emit:
+      LDR raw int args to X0-X(N-1)
+      BL t2_numeric_self_entry_N
+
+    Numeric entry (in same code block, at end after t2_self_entry):
+      full prologue, reload mRegRegs only, box X0-X(N-1) into
+      regs[0..], jump to B0.
+
+    Body unchanged this round (still NaN-boxes in regs[0..N-1],
+    so CALLEE side "saves" are mirrored in entry). R125 elides
+    the body's GuardType + param LoadSlot unbox.
+
+  expected_gain_pct: [-1, 1]    # wait for R125 for real gain; this round may be flat/slight-regress (same as R119)
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.5
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: revert R123 dual-CF compile; emit numeric entry label in-place
+      acceptance: CompileWithOpts removed or no-op; emitEpilogue adds t2_numeric_self_entry_N label when proto qualifies
+      halt_on_fail: true
+    - description: NumericTwin field removed or repurposed to offset-based
+      acceptance: scaffolding simplified
+      halt_on_fail: true
+    - description: caller dispatch: static-self-call to qualifying proto with all-int args routes via BL t2_numeric_self_entry_N
+      acceptance: unit test compiles fib, inspects emitted asm has the new BL
+      halt_on_fail: true
+    - description: full methodjit suite green
+      acceptance: ok
+      halt_on_fail: true
+    - description: fib, ack correctness
+      acceptance: R107 TCO tests + fib/ack oracle match pass
+      halt_on_fail: true
+  result: >
+    Shipped:
+      - emit.go: NumericTwin field removed; NumericParamCount retained.
+      - emit_compile.go: CompileOpts/CompileWithOpts removed; emitPrologue
+        reverted; emitEpilogue adds `t2_numeric_self_entry_N` label when
+        proto qualifies (inside same Code block; BL is PC-relative).
+      - tiering_manager.go: dual-compile removed; sets
+        cf.NumericParamCount = numParams when qualifying.
+      - emit_call_native.go: isNumericStaticSelfCall helper +
+        emitNumericArgsInRegs helper. OpCall dispatch checks numeric
+        eligibility first; if yes, materializes raw ints in X0-X(N-1)
+        and BL t2_numeric_self_entry_N.
+
+    Full methodjit suite green. Bench (10-sample median):
+      fib: r107 1.408 → r124 1.407 (-0.1%, noise — boxing still happens)
+      ack: r107 0.264 → r124 0.263 (-0.4%)
+      mut: r107 0.188 → r124 0.186 (-1.1%)
+
+    fib is FLAT because the numeric entry STILL boxes args at entry (so
+    body can use NaN-boxed LoadSlot). The REAL win is in R125 — skip
+    GuardType on params + raw LoadSlot for numeric-entry compile so
+    the body operates directly on raw int.
+  passed: partial       # dispatch works; awaits R125 for body changes
+
+  surgical_scope: >
+    emit.go, emit_compile.go, tiering_manager.go: restructured numeric
+    twin → in-block label.
+    emit_call_native.go: caller dispatch.
+
+outcome:
+  status: adr-win           # infrastructure + dispatch live; body-level work R125
+  bench_deltas:
+    fib: {r107: 1.408, r124: 1.407, pct: -0.1}
+    ack: {r107: 0.264, r124: 0.263, pct: -0.4}
+    mut: {r107: 0.188, r124: 0.186, pct: -1.1}
+  regressions: []
+  shipped_code: true
+  commit: null
+  deliverables:
+    - internal/methodjit/emit.go — field cleanup
+    - internal/methodjit/emit_compile.go — numeric entry in-block
+    - internal/methodjit/emit_call_native.go — dispatch helpers
+    - internal/methodjit/tiering_manager.go — simplified
+    - internal/methodjit/r121_qualify_test.go — test updated
+    - rounds/R124.yaml — this card
+
+ledger_update:
+  classes_touched: [tier2-recursion-closure]
+  new_class_introduced: null
