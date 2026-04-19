@@ -74,14 +74,11 @@ func TestR121_QualifyForNumeric_NestedProto(t *testing.T) {
 	}
 }
 
-// CompiledFunction.NumericDirectEntry/NumericParamCount default to 0.
+// CompiledFunction.NumericTwin / NumericParamCount default to nil/0.
 func TestR121_CompiledFunctionHasNumericFields(t *testing.T) {
 	var cf CompiledFunction
-	// Should compile — fields exist.
-	_ = cf.NumericDirectEntry
-	_ = cf.NumericParamCount
-	if cf.NumericDirectEntry != 0 {
-		t.Errorf("zero-value NumericDirectEntry should be 0")
+	if cf.NumericTwin != nil {
+		t.Errorf("zero-value NumericTwin should be nil")
 	}
 	if cf.NumericParamCount != 0 {
 		t.Errorf("zero-value NumericParamCount should be 0")

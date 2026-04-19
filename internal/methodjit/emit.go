@@ -246,13 +246,14 @@ type CompiledFunction struct {
 	// frame (FP+LR only), matching Tier 1's direct entry calling convention.
 	DirectEntryOffset int
 
-	// NumericDirectEntry (R121) is the byte offset of the numeric calling
-	// convention entry point (t2_numeric_direct_entry_N, N = param count).
-	// Zero means this function has no numeric twin (either the proto doesn't
-	// qualify or the arc hasn't compiled one). Callers that route to this
-	// entry pass raw int64 args in X0-X(N-1) and receive raw int64 in X0.
-	// Private to Tier-2-to-Tier-2 calls; Tier 1 always uses DirectEntryOffset.
-	NumericDirectEntry int
+	// NumericTwin (R122) is an optional second CompiledFunction for the
+	// same Proto, compiled with the numeric calling convention: raw int64
+	// args in X0-X(NumParams-1), raw int64 return in X0. Populated when
+	// the proto qualifies (see qualifyForNumeric) and compilation
+	// succeeds. Tier-2-to-Tier-2 static self-calls use the twin to skip
+	// NaN-box / unbox round-trips. Tier 1 callers always use the normal
+	// DirectEntryOffset.
+	NumericTwin *CompiledFunction
 
 	// NumericParamCount (R121) is the number of int params the numeric twin
 	// takes (1-4). Zero if no twin.
