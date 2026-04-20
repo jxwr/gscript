@@ -29,6 +29,11 @@ type virtualAllocInfo struct {
 	allocID     int   // ID of the OpNewTable instruction
 	blockID     int   // block where the allocation lives
 	fieldUses   []int // IDs of OpGetField/OpSetField instrs using this alloc
+	// phiReachable (R161) is true when the alloc has a use by an
+	// OpPhi in addition to block-local field accesses. For these
+	// the block-local rewrite (R159) does not apply directly;
+	// they're handled by identifyVirtualPhis + virtual-Phi rewrite.
+	phiReachable bool
 }
 
 // identifyVirtualAllocs runs a single forward pass over fn's blocks
@@ -84,40 +89,39 @@ func identifyVirtualAllocs(fn *Function) map[int]*virtualAllocInfo {
 					continue
 				}
 
-				// Rule 1: uses must be in the defining block.
-				if block.ID != cand.blockID {
-					kill(arg.ID)
-					continue
-				}
-
-				// Rule 2: determine whether this use is OK or
+				// Rule 1: determine whether this use is OK or
 				// escapes the allocation.
 				switch instr.Op {
 				case OpGetField:
-					// Only argIdx == 0 is the "self" slot. GetField
-					// has exactly one arg, so argIdx must be 0.
 					if argIdx != 0 {
+						kill(arg.ID)
+						continue
+					}
+					if block.ID != cand.blockID {
 						kill(arg.ID)
 						continue
 					}
 					cand.fieldUses = append(cand.fieldUses, instr.ID)
 
 				case OpSetField:
-					// argIdx 0 = self (OK); argIdx 1 = value being
-					// stored INTO another table → escapes.
-					if argIdx == 0 {
-						cand.fieldUses = append(cand.fieldUses, instr.ID)
-					} else {
+					if argIdx != 0 {
 						kill(arg.ID)
+						continue
 					}
+					if block.ID != cand.blockID {
+						kill(arg.ID)
+						continue
+					}
+					cand.fieldUses = append(cand.fieldUses, instr.ID)
 
-				// Any other operation escapes the allocation. The
-				// broad list includes OpCall/OpSelf/OpReturn/
-				// OpSetGlobal/OpSetUpval/OpGuardType/OpGuardNonNil/
-				// OpGuardTruthy/OpPhi/OpEq/OpLt/OpLe and dynamic-
-				// key table ops (OpGetTable/OpSetTable/OpGetField
-				// on OTHER tables when this alloc is their VALUE,
-				// which argIdx!=0 covers above).
+				case OpPhi:
+					// R161: use-by-Phi is reachable-virtual if the
+					// Phi can also be a virtual-Phi. Block-local
+					// rewrite does not apply; the Phi rewrite in
+					// rewriteVirtualPhis will process this feeder.
+					cand.phiReachable = true
+
+				// Any other operation escapes the allocation.
 				default:
 					kill(arg.ID)
 				}
@@ -126,6 +130,319 @@ func identifyVirtualAllocs(fn *Function) map[int]*virtualAllocInfo {
 	}
 
 	return candidates
+}
+
+// identifyVirtualPhis (R161) finds OpPhi instructions that merge
+// multiple virtual NewTable allocations with compatible field
+// shapes. Each feeder must be in `candidates` (from
+// identifyVirtualAllocs) and must have been marked phiReachable.
+//
+// Returns a map from Phi instruction ID → virtualPhiInfo.
+//
+// Compatibility rule: all feeders must write the same set of
+// field names (strings, looked up via proto.Constants[aux]). If
+// feeders differ in the set of fields they set, the Phi cannot
+// be safely rewritten.
+func identifyVirtualPhis(fn *Function, candidates map[int]*virtualAllocInfo) map[int]*virtualPhiInfo {
+	if fn == nil || fn.Proto == nil {
+		return nil
+	}
+	// Build quick lookup: allocID → last-stored value per field name.
+	// For a virtual feeder we capture the full field → value map by
+	// walking the feeder's block in order.
+	instrByID := make(map[int]*Instr)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			instrByID[instr.ID] = instr
+		}
+	}
+	allocFields := make(map[int]map[string]int) // allocID → fieldName → valueID
+	for allocID, info := range candidates {
+		if !info.phiReachable {
+			continue
+		}
+		fm := make(map[string]int)
+		block := fn.Blocks[info.blockID]
+		for _, ins := range block.Instrs {
+			if ins.Op != OpSetField || len(ins.Args) < 2 {
+				continue
+			}
+			if ins.Args[0].ID != allocID {
+				continue
+			}
+			fieldName := fieldNameFromAux(fn, ins.Aux)
+			if fieldName == "" {
+				// Non-string field — bail on this feeder.
+				fm = nil
+				break
+			}
+			fm[fieldName] = ins.Args[1].ID
+		}
+		if fm == nil {
+			continue
+		}
+		allocFields[allocID] = fm
+	}
+
+	// Walk every OpPhi. Candidate if all Args are keys in allocFields
+	// AND all have identical field-name sets.
+	result := make(map[int]*virtualPhiInfo)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpPhi || len(instr.Args) < 2 {
+				continue
+			}
+			feeders := make([]int, 0, len(instr.Args))
+			shape := map[string]bool{}
+			allMatch := true
+			for i, arg := range instr.Args {
+				if arg == nil {
+					allMatch = false
+					break
+				}
+				fields, ok := allocFields[arg.ID]
+				if !ok {
+					allMatch = false
+					break
+				}
+				feeders = append(feeders, arg.ID)
+				if i == 0 {
+					for k := range fields {
+						shape[k] = true
+					}
+				} else {
+					if len(fields) != len(shape) {
+						allMatch = false
+						break
+					}
+					for k := range shape {
+						if _, ok := fields[k]; !ok {
+							allMatch = false
+							break
+						}
+					}
+					if !allMatch {
+						break
+					}
+				}
+			}
+			if !allMatch {
+				continue
+			}
+			// Check uses of the Phi result — must be only GetField
+			// (static key). No SetField (we don't model through-Phi
+			// writes in MVP).
+			allowedUse := true
+			for _, b2 := range fn.Blocks {
+				for _, ins2 := range b2.Instrs {
+					for ui, use := range ins2.Args {
+						if use == nil || use.ID != instr.ID {
+							continue
+						}
+						if ins2.Op == OpGetField && ui == 0 {
+							continue
+						}
+						allowedUse = false
+						break
+					}
+					if !allowedUse {
+						break
+					}
+				}
+				if !allowedUse {
+					break
+				}
+			}
+			if !allowedUse {
+				continue
+			}
+			result[instr.ID] = &virtualPhiInfo{
+				phiID:   instr.ID,
+				blockID: block.ID,
+				feeders: feeders,
+			}
+		}
+	}
+	return result
+}
+
+// virtualPhiInfo records a Phi merging multiple virtual NewTable
+// allocations with identical field shape (R161).
+type virtualPhiInfo struct {
+	phiID   int
+	blockID int
+	feeders []int // allocation IDs in Phi-arg order (matches block.Preds)
+}
+
+// applyVirtualPhiRewrite (R161) rewrites one virtual Phi into per-
+// field Phis. Each feeder's SetField (for each field name F) is
+// captured into a new OpPhi whose args, in pred order, match the
+// feeders' per-F stored values. The feeder allocations and all
+// their SetFields become Nop. The original table-typed Phi becomes
+// Nop. GetField(vphi, F) uses are replaceAllUses'd to the new F-Phi.
+func applyVirtualPhiRewrite(fn *Function, vphi *virtualPhiInfo,
+	candidates map[int]*virtualAllocInfo,
+	instrByID map[int]*Instr,
+) {
+	phiBlock := fn.Blocks[vphi.blockID]
+	phiInstr := instrByID[vphi.phiID]
+	if phiInstr == nil {
+		return
+	}
+
+	// Step 1: build per-feeder field maps {fieldName → stored value ID}.
+	feederFields := make([]map[string]int, len(vphi.feeders))
+	// Also capture the aux index used for each field in ANY feeder, so
+	// we can use it as the Aux for GetField-lookup key. Field names map
+	// to aux indices per-block; for the GetField side (which is what
+	// readers see), we need aux indices used by downstream consumers,
+	// not the feeders. So build field map keyed by name.
+	for i, allocID := range vphi.feeders {
+		cand, ok := candidates[allocID]
+		if !ok {
+			return
+		}
+		fm := make(map[string]int)
+		block := fn.Blocks[cand.blockID]
+		for _, ins := range block.Instrs {
+			if ins.Op == OpSetField && len(ins.Args) >= 2 &&
+				ins.Args[0].ID == allocID {
+				name := fieldNameFromAux(fn, ins.Aux)
+				if name == "" {
+					return
+				}
+				fm[name] = ins.Args[1].ID
+			}
+		}
+		feederFields[i] = fm
+	}
+
+	// Step 2: build a set of all field names (should be identical across
+	// feeders by identifyVirtualPhis's contract; take union to be safe).
+	fieldNames := map[string]bool{}
+	for _, fm := range feederFields {
+		for name := range fm {
+			fieldNames[name] = true
+		}
+	}
+
+	// Step 3: materialize per-field Phis. Insert into phiBlock.Instrs
+	// right BEFORE the original Phi, so definition order stays legal.
+	fieldPhiID := make(map[string]int) // fieldName → new Phi ID
+	// Find the index of the original Phi in phiBlock.Instrs.
+	phiIdx := -1
+	for i, ins := range phiBlock.Instrs {
+		if ins.ID == vphi.phiID {
+			phiIdx = i
+			break
+		}
+	}
+	if phiIdx < 0 {
+		return
+	}
+	newPhis := make([]*Instr, 0, len(fieldNames))
+	for name := range fieldNames {
+		args := make([]*Value, len(vphi.feeders))
+		for i := range vphi.feeders {
+			valID := feederFields[i][name]
+			// Find the defining instr for this valID to build a Value.
+			defInstr := instrByID[valID]
+			if defInstr != nil {
+				args[i] = defInstr.Value()
+			} else {
+				// Value IDs < numRegs come from LoadSlot / parameters;
+				// represent them as an undefined arg. To stay safe,
+				// bail.
+				return
+			}
+		}
+		newID := fn.newValueID()
+		newPhi := &Instr{
+			ID:    newID,
+			Op:    OpPhi,
+			Type:  phiInstr.Type, // inherit; downstream type-spec may refine
+			Args:  args,
+			Block: phiBlock,
+		}
+		fieldPhiID[name] = newID
+		newPhis = append(newPhis, newPhi)
+		instrByID[newID] = newPhi
+	}
+	// Splice into Instrs.
+	phiBlock.Instrs = append(phiBlock.Instrs[:phiIdx],
+		append(append([]*Instr{}, newPhis...), phiBlock.Instrs[phiIdx:]...)...)
+
+	// Step 4: rewrite all GetField(vphi.phiID, Aux=F) uses.
+	for _, b := range fn.Blocks {
+		for _, ins := range b.Instrs {
+			if ins.Op != OpGetField || len(ins.Args) < 1 {
+				continue
+			}
+			if ins.Args[0].ID != vphi.phiID {
+				continue
+			}
+			name := fieldNameFromAux(fn, ins.Aux)
+			if name == "" {
+				continue
+			}
+			newID, ok := fieldPhiID[name]
+			if !ok {
+				continue
+			}
+			newDef := instrByID[newID]
+			if newDef == nil {
+				continue
+			}
+			replaceAllUses(fn, ins.ID, newDef)
+			ins.Op = OpNop
+			ins.Args = nil
+			ins.Aux = 0
+		}
+	}
+
+	// Step 5: Nop the original Phi and each feeder NewTable +
+	// associated SetFields.
+	phiInstr.Op = OpNop
+	phiInstr.Args = nil
+	phiInstr.Aux = 0
+	for _, allocID := range vphi.feeders {
+		cand, ok := candidates[allocID]
+		if !ok {
+			continue
+		}
+		allocInstr := instrByID[allocID]
+		if allocInstr != nil {
+			allocInstr.Op = OpNop
+			allocInstr.Args = nil
+			allocInstr.Aux = 0
+			allocInstr.Aux2 = 0
+		}
+		block := fn.Blocks[cand.blockID]
+		for _, ins := range block.Instrs {
+			if ins.Op == OpSetField && len(ins.Args) >= 2 &&
+				ins.Args[0].ID == allocID {
+				ins.Op = OpNop
+				ins.Args = nil
+				ins.Aux = 0
+			}
+		}
+	}
+}
+
+// fieldNameFromAux resolves a constant-pool index (Instr.Aux) to
+// its string value. Returns "" if the pool slot is not a string.
+func fieldNameFromAux(fn *Function, aux int64) string {
+	if fn == nil || fn.Proto == nil {
+		return ""
+	}
+	if aux < 0 || int(aux) >= len(fn.Proto.Constants) {
+		return ""
+	}
+	k := fn.Proto.Constants[aux]
+	if !k.IsString() {
+		return ""
+	}
+	return k.Str()
 }
 
 // EscapeAnalysisPass identifies virtual allocations and scalar-
@@ -171,61 +488,82 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 		}
 	}
 
-	// For each virtual alloc, walk its block and rewrite field ops.
-	// We process each virtual independently because a block may
-	// contain multiple virtual allocs with disjoint field uses.
-	for allocID, info := range virtuals {
-		block := fn.Blocks[info.blockID]
-		fieldSSA := make(map[int64]int) // fieldAux → value ID to forward
+	// R161: virtual-Phi rewrite FIRST — if a Phi merges multiple
+	// virtual allocations, materialize per-field Phis at the Phi's
+	// block, then rewrite GetField(phi) uses to the field-Phi.
+	// Feeders and their SetFields become Nop.
+	vphis := identifyVirtualPhis(fn, virtuals)
+	for _, vphi := range vphis {
+		applyVirtualPhiRewrite(fn, vphi, virtuals, instrByID)
+	}
 
-		// Bail flag: if we hit a GetField read-before-write, mark
-		// the allocation as non-virtual after all and skip rewrites.
+	// For each (non-Phi-reachable) virtual alloc, walk its block
+	// and rewrite block-local field ops. We process each virtual
+	// independently because a block may contain multiple virtual
+	// allocs with disjoint field uses. Field matching is by
+	// string NAME (not aux index), since inline can introduce
+	// duplicate const-pool entries for the same field across
+	// inline sites.
+	for allocID, info := range virtuals {
+		if info.phiReachable {
+			continue
+		}
+		block := fn.Blocks[info.blockID]
+		fieldSSA := make(map[string]int) // fieldName → value ID to forward
+
 		bailed := false
-		bailReason := ""
 
 		// First forward walk: validate and collect.
 		for _, instr := range block.Instrs {
 			if instr.Op == OpGetField && len(instr.Args) >= 1 &&
 				instr.Args[0].ID == allocID {
-				if _, ok := fieldSSA[instr.Aux]; !ok {
+				name := fieldNameFromAux(fn, instr.Aux)
+				if name == "" {
 					bailed = true
-					bailReason = "read-before-write"
+					break
+				}
+				if _, ok := fieldSSA[name]; !ok {
+					bailed = true
 					break
 				}
 			}
 			if instr.Op == OpSetField && len(instr.Args) >= 2 &&
 				instr.Args[0].ID == allocID {
-				fieldSSA[instr.Aux] = instr.Args[1].ID
+				name := fieldNameFromAux(fn, instr.Aux)
+				if name == "" {
+					bailed = true
+					break
+				}
+				fieldSSA[name] = instr.Args[1].ID
 			}
 		}
-
-		_ = bailReason
 		if bailed {
 			continue
 		}
 
-		// Second forward walk: apply rewrites.
-		// Reset fieldSSA and rebuild as we go, because the first
-		// walk's final map may differ from the mid-walk state.
-		fieldSSA = make(map[int64]int)
+		// Second forward walk: apply rewrites, rebuilding the map.
+		fieldSSA = make(map[string]int)
 		for _, instr := range block.Instrs {
 			switch {
 			case instr.Op == OpSetField && len(instr.Args) >= 2 &&
 				instr.Args[0].ID == allocID:
-				fieldSSA[instr.Aux] = instr.Args[1].ID
-				// Dead-store: the virtual's field value is only
-				// observed through GetField rewrites, not through
-				// the in-memory table. Convert to Nop.
+				name := fieldNameFromAux(fn, instr.Aux)
+				if name == "" {
+					continue
+				}
+				fieldSSA[name] = instr.Args[1].ID
 				instr.Op = OpNop
 				instr.Args = nil
 				instr.Aux = 0
 
 			case instr.Op == OpGetField && len(instr.Args) >= 1 &&
 				instr.Args[0].ID == allocID:
-				valID, ok := fieldSSA[instr.Aux]
+				name := fieldNameFromAux(fn, instr.Aux)
+				if name == "" {
+					continue
+				}
+				valID, ok := fieldSSA[name]
 				if !ok {
-					// Should not happen (first walk validated); be
-					// defensive — leave the instr alone.
 					continue
 				}
 				defInstr, ok := instrByID[valID]
@@ -239,9 +577,6 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 			}
 		}
 
-		// The OpNewTable itself: no more uses after the rewrites
-		// above. DCE will remove it. Make it explicitly Nop too,
-		// so the output IR is clean even if DCE is skipped.
 		if allocInstr, ok := instrByID[allocID]; ok {
 			allocInstr.Op = OpNop
 			allocInstr.Args = nil

@@ -42,10 +42,14 @@ func TestObjectCreationDump(t *testing.T) {
 		totalIns int
 		memIns   int
 	}
+	// R161 EA: -61% on create_and_sum / -63% on transform_chain via
+	// virtual-Phi scalar replacement that eliminates loop-carried
+	// NewTable allocations entirely. new_vec3 unchanged because its
+	// returned table escapes and EA correctly does not touch it.
 	baselines := []baseline{
-		{"create_and_sum", 1277, 598},   // R146: +24/+8; was 1253/590
-		{"transform_chain", 1701, 816},  // R146: +24/+8; was 1677/808
-		{"new_vec3", 220, 131},          // R146: +12/+2; was 208/129
+		{"create_and_sum", 497, 114},  // R161: was 1277/598
+		{"transform_chain", 621, 136}, // R161: was 1701/816
+		{"new_vec3", 220, 131},        // unchanged (returned table escapes)
 	}
 
 	// Load benchmark source.

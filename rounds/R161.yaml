@@ -1,0 +1,190 @@
+# R161: Session 1 / B.3+B.4 combined — virtual-Phi rewrite + pipeline
+#       integration. Handles the loop-carried allocation pattern
+#       directly (object_creation's create_and_sum with 3 NewTable
+#       per iteration collapsing to 3 per-field float-Phis). EA is
+#       complete as an optimization pass.
+#       SHIPS: all NewTable in create_and_sum eliminated.
+#       IN-PRODUCTION VISIBILITY: still blocked by shouldPromoteTier2
+#       gate. With R154_WIDEN=1 + EA: object_creation 0.906 → 0.008s
+#       (-99%, 100× speedup). R162 designs a smart gate.
+round: 161
+date: 2026-04-21
+follows: 159
+
+type: tactical
+
+target:
+  benchmark: object_creation
+
+hypothesis:
+  class: escape-analysis-scalar-replacement
+  claim: >
+    Loop-carried allocations (the most common shape for hot-alloc
+    benchmarks: `total = vec3_add(total, v)` inside a for-loop) can
+    be scalar-replaced by identifying a "virtual Phi" — an OpPhi
+    whose inputs are all NewTable allocations with the same field
+    shape. Rewrite: materialize per-field Phis, replace GetField
+    on the merged Phi with the field-Phi, Nop all feeders.
+  expected_gain_pct: null  # session deliverable: ship EA, not perf
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: >
+        Skip the R160 if/else-merge round (object_creation's loop
+        has no branching inside the body; R160 is not on the
+        critical path). Jump directly to R161 loop-Phi support.
+      acceptance: direct justification recorded
+      halt_on_fail: false
+    - description: >
+        TDD: write TestR161_VirtualPhi_PostPipelineIR asserting
+        create_and_sum's post-pipeline IR has zero NewTable,
+        GetField, SetField. Also TestR161_VirtualPhi_ObjectCreation
+        compareTier2Result(N=10) for VM ↔ JIT correctness.
+      acceptance: tests fail before R161 code, pass after
+      halt_on_fail: true
+  result: |
+    Skipped R160. Dumped create_and_sum post-inline IR; found 3
+    NewTables (1 in B0 "total init", 2 in B1 "inner v" and "new
+    total"). Two of them flow through the B2 loop-header Phi. The
+    body-local one (v / inner NewTable) is block-local and caught
+    by R158's predicate. The two loop-carried ones need virtual-
+    Phi handling.
+
+    Two R161 tests written first (both red before implementation):
+      TestR161_VirtualPhi_PostPipelineIR: asserts 0 table ops after
+      TestR161_VirtualPhi_ObjectCreation: VM↔JIT correctness
+
+    Implementation in pass_escape.go:
+      identifyVirtualPhis: finds OpPhi whose all Args are virtual
+        allocs (phiReachable) with matching field-name shapes.
+      applyVirtualPhiRewrite: materializes per-field Phi at the
+        merged Phi's block; replaceAllUses on GetField(phi, F);
+        Nop all feeders + SetFields + original Phi.
+
+    Critical correctness fix: field matching by STRING NAME, not
+    by const-pool aux index. Inline produces duplicate pool entries
+    for the same field name; earlier block-local rewrite was
+    bailing on create_and_sum because SetField used aux=7 but
+    GetField used aux=11 for the same "x" field.
+
+    Additional: EscapeAnalysisPass now wired into RunTier2Pipeline
+    between LoadElim and DCE (pipeline.go).
+
+    Result on create_and_sum post-pipeline IR:
+      B0: no NewTable (initial total scalar-replaced into B2 Phis)
+      B1: pure MulFloat + Add (no table ops at all)
+      B2: 3 per-field Phis for x/y/z + integer induction Phi
+      B3: Mul + Add reading the field Phis
+    TestR161_* + existing TestR159_* all pass.
+
+    Production measurements:
+      Default -jit run: object_creation 0.906s (unchanged — EA
+        runs but create_and_sum never reaches Tier 2 because
+        shouldPromoteTier2 requires CallCount>=2 AND it's called
+        once from main, so stays Tier 1 and EA never fires).
+      R154_WIDEN=1 + EA: object_creation 0.008s (-99.1%).
+        create_and_sum=0.001s, transform_chain=0.006s,
+        complex_objects=0.001s. All three verified to match VM
+        output exactly (len_sq, total).
+
+  passed: true
+  failing_test: "TestR161_VirtualPhi_PostPipelineIR"
+  failing_output: >
+    pre-R161: post-pipeline has 1+ NewTable remaining (loop-carried
+    allocs not scalar-replaced). Post-R161: 0 NewTable, 0 GetField,
+    0 SetField.
+  surgical_scope: >
+    pass_escape.go: +identifyVirtualPhis +applyVirtualPhiRewrite
+      +virtualPhiInfo +fieldNameFromAux. Switched block-local
+      field matching from aux-index to string-name.
+    pipeline.go: inserted EscapeAnalysisPass between LoadElim and DCE.
+    object_creation_dump_test.go: baselines updated for EA.
+  ir_diff_before: |
+    B0: v35 = NewTable; v36 = SetField v35.x = 0; v37 = SetField v35.y = 0; ...
+    B1: v39 = NewTable; v40..v42 = SetField v39.x/y/z; v44 = GetField v29.x;
+        v45 = GetField v39.x; v46 = Add v44, v45; ...; v54 = NewTable; ...
+    B2: v29 = Phi(v35, v54) : table; ...
+    B3: v58 = GetField v29.x; ...
+  ir_diff_after: |
+    B0: (no NewTable, no SetField — constants remain)
+    B1: v13 = MulFloat v11, v26; ...; v46 = Add v69, v13; ...
+        (no NewTable, no SetField, no GetField)
+    B2: v69 = Phi(v2, v46); v70 = Phi(v3, v49); v71 = Phi(v4, v52);
+        v23 = Phi(v8, v26); v26 = AddInt v23, v7; ...
+    B3: v60 = Mul v69, v69; v63 = Mul v70, v70; v64 = Add v60, v63; ...
+  bisect_range: null
+
+current_state_audit_summary: |
+  # R161 ships the EA MVP in full. Correctness verified against VM
+  # for the canonical object_creation shape. Compile-side insn count
+  # reduction is dramatic (-61% to -63% on benched functions).
+  #
+  # THE REMAINING GAP is PRODUCTION VISIBILITY. EA runs in
+  # RunTier2Pipeline but create_and_sum / transform_chain never
+  # reach that pipeline because shouldPromoteTier2 rejects them
+  # (CallCount=1, LoopDepth=1 — both under thresholds).
+  #
+  # R154 tested widening and found object_creation hangs; R161
+  # proves the hang was caused by NewTable-in-loop, which EA now
+  # eliminates. With R154_WIDEN=1 + EA, object_creation runs cleanly
+  # and is 100× faster.
+  #
+  # BUT wholesale widening regresses other benchmarks (sieve +17%,
+  # fib +24%) because those shapes don't have alloc-in-loop and
+  # Tier 2's generic body is slower than Tier 1's baseline.
+  #
+  # R162 (Session 1 / B.5 revised): build a SMART GATE that widens
+  # per-proto based on post-pipeline IR shape:
+  #   Gate passes if: post-EA IR has no OpCall / OpNewTable /
+  #   OpGetTable(dynamic) / OpSetTable(dynamic) / OpGetGlobal inside
+  #   a loop block. That identifies exactly the cases where Tier 2's
+  #   type-specialized body beats Tier 1.
+  #
+  # Under this gate, create_and_sum / transform_chain pass (all hot
+  # allocs removed by EA, no residual calls). sieve fails (SetTable
+  # in loop). fib fails (OpCall in loop, self-recursive). Clean.
+
+verify:
+  result: |
+    TestR161_VirtualPhi_PostPipelineIR: PASS (0 table ops)
+    TestR161_VirtualPhi_ObjectCreation: PASS (VM ↔ JIT match)
+    TestObjectCreationDump: PASS (baselines updated to reflect
+      -61% / -63% instruction-count reductions on the two
+      EA-affected functions).
+    Full methodjit suite: PASS.
+
+outcome:
+  status: bench-win    # with R154_WIDEN=1 + EA: 100× on object_creation.
+                       # Without widen: shipped infrastructure + bench
+                       # invisibility pending smart gate (R162).
+  bench_deltas:
+    object_creation:
+      from: 0.906s
+      to: 0.008s
+      pct: -99.1
+      conditional: "requires R154_WIDEN=1 env var; R162 will make unconditional"
+  regressions: []     # no regressions under default gate
+  shipped_code: true
+  primary_win_bench: object_creation
+  primary_win_pct: -99.1
+  reverted_in_round: false
+  notes: |
+    Session 1 / B.5 (pipeline integration) folded into R161 since
+    integration was a single-line addition. R162 becomes the
+    smart-gate round. R163 final bench + correctness + arc close.
+
+    The dramatic 100× on object_creation with widen+EA demonstrates
+    that the combination is the REAL lever for allocation-heavy
+    benchmarks. R162 needs to enable this unconditionally without
+    regressing sieve/fib.
+
+ledger_update:
+  classes_touched:
+    - escape-analysis-scalar-replacement
+  new_class_introduced: null

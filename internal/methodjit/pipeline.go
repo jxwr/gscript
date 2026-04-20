@@ -338,6 +338,17 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("LoadElimination: %w", err)
 	}
 
+	// R162 (Session 1 / B.5): escape analysis + scalar replacement.
+	// Must run AFTER LoadElim (so stored-value forwarding has already
+	// happened) and BEFORE DCE (so the OpNop'd alloc/field ops are
+	// cleaned up in a single sweep). Currently handles block-local
+	// virtual allocations only (R158/R159 MVP); if/else merges and
+	// loop-carried virtuals pending R160/R161.
+	fn, err = EscapeAnalysisPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("EscapeAnalysis: %w", err)
+	}
+
 	fn, err = DCEPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("DCE: %w", err)
