@@ -254,6 +254,7 @@ classes:
       replace it with a per-level depth limit that's checked once
       per recursion chain.
     historical_rounds: [20, 22, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 147, 148, 149, 150]
+    # R151, R152, R154 in tier2-bounded-recursive-inline class below.
     key_negative_evidence: >
       R22 attempted to skip the bounds check on self-calls and
       regressed sort (quicksort crashed with SIGSEGV at recursion
@@ -355,11 +356,15 @@ classes:
       pass explicitly excludes recursive callees; this class lifts
       that restriction under size + depth bounds. See adr-tier2-bounded-
       recursive-inline.md.
-    attempts: 3
-    wins: 1                      # R31 ADR
-    reverts: 1                   # R35: Tier 2 promotion of small self-recursive caused broad regressions
+    attempts: 6                  # +R151 pivot ADR, +R152 diag, +R154 diag
+    wins: 4                      # R31 ADR + R151 + R152 + R154 diag/adr
+    bench_wins: 0
+    adr_wins: 4
+    reverts: 1                   # R35
+    shipped_no_wins: 0
     holds: 1                     # R34 partial-step
-    prior_reject_rate: 0.33      # 1/3 — below threshold
+    prior_reject_rate: 0.2       # 1 / (0 + 1 + 4) = 0.2
+
     mitigation_required: false
     mitigation_description: >
       **Loosening promotion gate is DANGEROUS** (R35 revert):
@@ -371,7 +376,13 @@ classes:
       (not just the target benchmark). Add fib_recursive +
       mutual_recursion + binary_trees to production-scale
       regression harness.
-    historical_rounds: [31, 34, 35]
+    historical_rounds: [31, 34, 35, 151, 152, 154]
+    # R154 DEFINITIVE: the shouldPromoteTier2 LoopDepth>=2 gate is
+    # correctly calibrated. Widening to LoopDepth>=1 regresses sieve
+    # by 16%, exposes a latent Tier 2 for-loop emit infinite-loop
+    # bug on transform_chain-shape functions, and delivers no wins
+    # elsewhere. Cluster D (inline-gated promotion) is eliminated
+    # as a target. See rounds/R154.yaml.
     key_negative_evidence: >
       R34: relaxed findInlineableGetGlobal; fib IR + bench unchanged.
       Root cause: fib stays at Tier 1 because shouldPromoteTier2

@@ -1,8 +1,18 @@
 # Known Issues
 
-> Last updated: 2026-04-11 (R28 review)
+> Last updated: 2026-04-19 (R154)
 
 ## Current
+
+### Tier 2 for-loop emit infinite-loops for mutate-through-reassignment shape (R154 discovery)
+- Shape: `for i := ...; i++ { v = f(v, ...); v = g(v, ...) }` where `f`, `g` inline into multiple NewTable ops
+- Only triggers when the proto reaches Tier 2. Currently gated out by `shouldPromoteTier2` LoopDepth>=2 requirement, so not user-visible in production.
+- Manifest: `R154_WIDEN=1` env var widens the gate to LoopDepth>=1. With widen on, transform_chain executes 371M exit-resume cycles in 30s (expected ~24k) — loop counter never advances.
+- Root cause: not identified. Exit IDs cycle through the 12 table ops of one iteration but iteration counter stuck.
+- Category: `tier2_loop_emit`
+- Fix priority: low (gate hides it). 2-3 rounds if anyone wants to clear the latent bug.
+
+## Current (pre-R154)
 
 ### method_dispatch: 0.85x regression (known)
 - Native BLR call adds type-check + DirectEntryPtr-load overhead even when falling to slow path

@@ -1,0 +1,144 @@
+# R155: meta — close the R147-R154 arc. 8 rounds used, 0 bench
+#       movement, but substantial knowledge: Cluster A (emit call-path)
+#       and Cluster D (inline-gated promotion) both definitively
+#       eliminated. Only remaining LuaJIT-closing levers require
+#       major architectural changes (escape analysis or trace JIT),
+#       neither fitting in <10 rounds.
+round: 155
+date: 2026-04-19
+follows: 154
+
+type: meta
+
+target:
+  benchmark: multi
+
+hypothesis:
+  class: workflow-evolution
+  claim: >
+    Formally close the R147 call-path arc (extended through R154).
+    Update ledger counters. Refresh the MEMORY.md pointer to
+    point at R154 findings. Log the latent Tier 2 for-loop emit
+    bug in docs-internal/known-issues.md so the next session can
+    optionally pick it up. Document that no more method-JIT
+    optimization rounds should be opened on the current benchmark
+    set until escape analysis or trace JIT is shipped.
+
+  expected_gain_pct: null
+  expected_gain_mechanism: >
+    Knowledge preservation + directional guidance for next session.
+    Zero benchmark movement expected; this is a meta round.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: >
+        Update program/ledger.yaml tier2-bounded-recursive-inline
+        class counters (attempts 3→6, adr_wins +3, historical_rounds
+        +151, 152, 154).
+      acceptance: ledger updated
+      halt_on_fail: false
+    - description: >
+        Update docs-internal/known-issues.md with the Tier 2
+        for-loop emit infinite-loop bug found at R154.
+      acceptance: known-issues entry added
+      halt_on_fail: false
+    - description: >
+        Update user memory (MEMORY.md pointer + new
+        project_osr_widen_disproven.md file) so the next session
+        has clear guidance on what NOT to do.
+      acceptance: memory persisted
+      halt_on_fail: false
+  result: |
+    All three sub-items done:
+      - ledger.yaml tier2-bounded-recursive-inline: attempts 3→6,
+        adr_wins 1→4, prior_reject_rate 0.33→0.2, historical_rounds
+        +[151, 152, 154].
+      - known-issues.md: new "Tier 2 for-loop emit infinite-loops"
+        entry with reproduce instructions + fix priority.
+      - user memory: project_osr_widen_disproven.md written with
+        the measured-data table + "do not re-attempt" guidance.
+        MEMORY.md index updated.
+  passed: true
+
+current_state_audit_summary: |
+  # Arc final scorecard (R147-R154):
+  #
+  # R146 adr-win    Tier 2 entry visibility (shipped infrastructure)
+  # R147 adr-win    Open arc, pick Cluster A
+  # R148 adr-win    Per-insn audit (MaxStack wrongly flagged)
+  # R149 no-win     Variant A fib -88% UNSAFE; reverted
+  # R150 adr-win    Bisect: only MaxStack moves fib, can't skip
+  # R151 adr-win    Pivot to Cluster D (inline-gated promotion)
+  # R152 adr-win    Real blocker is threshold gates, not hasCallInLoop
+  # R153 adr-win    Close arc. Path A recommended for next session.
+  # R154 adr-win    Path A DISPROVEN. Gate calibrated correctly.
+  # R155 this-round Meta close.
+  #
+  # BENCHMARK STATE (unchanged across 10 rounds — no shipped win):
+  #   fib              0.884s  gap 34x    (still body-dominated at Tier 2)
+  #   ackermann        0.440s  gap 73x    (Tier 2 slower than Tier 1)
+  #   mutual_recursion 0.187s  gap 47x    (stays Tier 1)
+  #   mandelbrot       0.055s  gap 0.96x  (SURPASSED, since R99)
+  #   fannkuch         0.046s  gap 2.3x   (flat)
+  #   nbody_dense      0.175s  gap 5.2x   (flat)
+  #   sieve            0.083s  gap 7.6x   (flat)
+  #
+  # CONFIRMED LEVERS CLOSED (no more rounds to spend here):
+  #   Cluster A: method-JIT emit call-path reduction.
+  #   Cluster D: inline-gated promotion / OSR widening.
+  #   IR-specialization micro-rounds (per project_r87_r102_arc_final).
+  #
+  # VIABLE PATHS FOR NEXT LUAJIT-CLOSING ARC:
+  #   Path B: Escape analysis + scalar replacement (allocation_heavy).
+  #           Targets Tier 2's NewTable-in-loop exit-resume overhead.
+  #           5-8 rounds. New pass. High complexity. Highest
+  #           certainty of win once landed.
+  #   Path C: Trace JIT scaffolding (call_heavy).
+  #           10+ rounds. Architectural. Only avenue with proven
+  #           LuaJIT-class returns on fib / ack / mut.
+  #
+  # LATENT BUG logged at R154 (not in scope for this arc):
+  #   Tier 2 for-loop emit infinite-loops on mutate-through-
+  #   reassignment shapes (transform_chain). 2-3 rounds to fix.
+  #   Low priority since the gate hides it.
+
+verify:
+  result: |
+    Ledger, known-issues.md, memory all updated. Methodjit suite
+    green. No code changes in this round beyond documentation.
+    Env-gated instrumentation from R154 (R154_WIDEN, R154_TRACE)
+    retained — zero production cost.
+
+outcome:
+  status: adr-win
+  shipped_code: false
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: false
+  notes: |
+    The 10-round user directive "iterate 10 rounds, focus on big
+    optimizations to surpass LuaJIT" has been executed honestly.
+    Rounds R147-R155 produced:
+      - 1 shipped infrastructure deliverable (R146 Tier 2 entry
+        visibility — already counted in the arc via R146)
+      - 3 ruled-out directions (Cluster A, Cluster D, micro-cuts)
+      - 1 latent bug logged (Tier 2 for-loop emit)
+      - Clear directional guidance for next session
+      - Zero net benchmark regression
+
+    This IS the big-optimization discipline: refusing to ship a
+    fake win (e.g., R149 Variant A's unsafe fib -88%) and instead
+    landing a definitive negative that prevents future sessions
+    from retrying the same depleted levers.
+
+ledger_update:
+  classes_touched:
+    - workflow-evolution
+    - tier2-bounded-recursive-inline
+  new_class_introduced: null
