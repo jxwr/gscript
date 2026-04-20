@@ -127,3 +127,128 @@ func identifyVirtualAllocs(fn *Function) map[int]*virtualAllocInfo {
 
 	return candidates
 }
+
+// EscapeAnalysisPass identifies virtual allocations and scalar-
+// replaces their field accesses. Block-local only (R159). Non-
+// virtual allocations are untouched.
+//
+// For each virtual allocation V in block B:
+//
+//  1. Walk B.Instrs in order. Maintain field_ssa map[fieldAux → valueID].
+//
+//  2. On OpSetField(self=V, value=X, Aux=F):
+//     field_ssa[F] = X.ID. Replace instr.Op = OpNop (X is still
+//     reachable through the map).
+//
+//  3. On OpGetField(self=V, Aux=F):
+//     If field_ssa[F] exists, replaceAllUses(fn, instr.ID, valueInstr).
+//     Replace instr.Op = OpNop.
+//     If field_ssa[F] does NOT exist (read-before-write), we bail
+//     on this allocation — convert it back from virtual to real.
+//     This is conservative; R160+ may tighten.
+//
+//  4. After the block walk, the OpNewTable itself has no remaining
+//     uses and becomes dead. DCE removes it.
+//
+// The pass runs at pipeline stage post-LoadElim, pre-DCE so that
+// LoadElim has already forwarded any trivially-forwardable fields,
+// and DCE cleans up our OpNop'd instructions.
+func EscapeAnalysisPass(fn *Function) (*Function, error) {
+	if fn == nil || len(fn.Blocks) == 0 {
+		return fn, nil
+	}
+
+	virtuals := identifyVirtualAllocs(fn)
+	if len(virtuals) == 0 {
+		return fn, nil
+	}
+
+	// Build an instruction lookup table for replaceAllUses.
+	instrByID := make(map[int]*Instr)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			instrByID[instr.ID] = instr
+		}
+	}
+
+	// For each virtual alloc, walk its block and rewrite field ops.
+	// We process each virtual independently because a block may
+	// contain multiple virtual allocs with disjoint field uses.
+	for allocID, info := range virtuals {
+		block := fn.Blocks[info.blockID]
+		fieldSSA := make(map[int64]int) // fieldAux → value ID to forward
+
+		// Bail flag: if we hit a GetField read-before-write, mark
+		// the allocation as non-virtual after all and skip rewrites.
+		bailed := false
+		bailReason := ""
+
+		// First forward walk: validate and collect.
+		for _, instr := range block.Instrs {
+			if instr.Op == OpGetField && len(instr.Args) >= 1 &&
+				instr.Args[0].ID == allocID {
+				if _, ok := fieldSSA[instr.Aux]; !ok {
+					bailed = true
+					bailReason = "read-before-write"
+					break
+				}
+			}
+			if instr.Op == OpSetField && len(instr.Args) >= 2 &&
+				instr.Args[0].ID == allocID {
+				fieldSSA[instr.Aux] = instr.Args[1].ID
+			}
+		}
+
+		_ = bailReason
+		if bailed {
+			continue
+		}
+
+		// Second forward walk: apply rewrites.
+		// Reset fieldSSA and rebuild as we go, because the first
+		// walk's final map may differ from the mid-walk state.
+		fieldSSA = make(map[int64]int)
+		for _, instr := range block.Instrs {
+			switch {
+			case instr.Op == OpSetField && len(instr.Args) >= 2 &&
+				instr.Args[0].ID == allocID:
+				fieldSSA[instr.Aux] = instr.Args[1].ID
+				// Dead-store: the virtual's field value is only
+				// observed through GetField rewrites, not through
+				// the in-memory table. Convert to Nop.
+				instr.Op = OpNop
+				instr.Args = nil
+				instr.Aux = 0
+
+			case instr.Op == OpGetField && len(instr.Args) >= 1 &&
+				instr.Args[0].ID == allocID:
+				valID, ok := fieldSSA[instr.Aux]
+				if !ok {
+					// Should not happen (first walk validated); be
+					// defensive — leave the instr alone.
+					continue
+				}
+				defInstr, ok := instrByID[valID]
+				if !ok || defInstr == nil {
+					continue
+				}
+				replaceAllUses(fn, instr.ID, defInstr)
+				instr.Op = OpNop
+				instr.Args = nil
+				instr.Aux = 0
+			}
+		}
+
+		// The OpNewTable itself: no more uses after the rewrites
+		// above. DCE will remove it. Make it explicitly Nop too,
+		// so the output IR is clean even if DCE is skipped.
+		if allocInstr, ok := instrByID[allocID]; ok {
+			allocInstr.Op = OpNop
+			allocInstr.Args = nil
+			allocInstr.Aux = 0
+			allocInstr.Aux2 = 0
+		}
+	}
+
+	return fn, nil
+}

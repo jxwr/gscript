@@ -136,3 +136,126 @@ result := store_in_another()
 	}
 	t.Logf("outer table was flagged virtual: %v (acceptable under MVP)", sawOuterAsVirtual)
 }
+
+// TestR159_Rewrite_ConsumedLocally — verifies the rewrite on the
+// same source as R158 TestR158_Identify_ConsumedLocally. After
+// the pass, the NewTable becomes OpNop, the SetFields become
+// OpNop, and every GetField is replaced by a direct SSA reference
+// to the stored value.
+func TestR159_Rewrite_ConsumedLocally(t *testing.T) {
+	src := `
+func consume() {
+    p := {x: 1, y: 2}
+    return p.x + p.y
+}
+result := consume()
+`
+	top := compileProto(t, src)
+	inner := findProtoByName(top, "consume")
+	if inner == nil {
+		t.Fatal("consume proto missing")
+	}
+	inner.EnsureFeedback()
+	fn := BuildGraph(inner)
+
+	// Count ops pre-pass.
+	preNewTable, preGetField, preSetField := 0, 0, 0
+	for _, block := range fn.Blocks {
+		for _, ins := range block.Instrs {
+			switch ins.Op {
+			case OpNewTable:
+				preNewTable++
+			case OpGetField:
+				preGetField++
+			case OpSetField:
+				preSetField++
+			}
+		}
+	}
+	t.Logf("pre-pass: NewTable=%d GetField=%d SetField=%d",
+		preNewTable, preGetField, preSetField)
+	if preNewTable == 0 || preGetField == 0 || preSetField == 0 {
+		t.Fatalf("expected non-zero table ops pre-pass; got "+
+			"NewTable=%d GetField=%d SetField=%d",
+			preNewTable, preGetField, preSetField)
+	}
+
+	fn2, err := EscapeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("EscapeAnalysisPass: %v", err)
+	}
+
+	// Count ops post-pass (skip OpNop).
+	postNewTable, postGetField, postSetField := 0, 0, 0
+	for _, block := range fn2.Blocks {
+		for _, ins := range block.Instrs {
+			switch ins.Op {
+			case OpNewTable:
+				postNewTable++
+			case OpGetField:
+				postGetField++
+			case OpSetField:
+				postSetField++
+			}
+		}
+	}
+	t.Logf("post-pass: NewTable=%d GetField=%d SetField=%d",
+		postNewTable, postGetField, postSetField)
+	t.Logf("post-pass IR:\n%s", Print(fn2))
+
+	if postNewTable != 0 {
+		t.Errorf("expected 0 NewTable post-pass, got %d", postNewTable)
+	}
+	if postGetField != 0 {
+		t.Errorf("expected 0 GetField post-pass, got %d", postGetField)
+	}
+	if postSetField != 0 {
+		t.Errorf("expected 0 SetField post-pass, got %d", postSetField)
+	}
+}
+
+// TestR159_Rewrite_ReturnedEscape — verifies the rewrite SKIPS
+// allocations that escape. Running the pass on new_vec3's proto
+// should leave the NewTable + SetFields intact.
+func TestR159_Rewrite_ReturnedEscape(t *testing.T) {
+	src := `
+func new_vec3(x, y, z) {
+    return {x: x, y: y, z: z}
+}
+result := new_vec3(1, 2, 3)
+`
+	top := compileProto(t, src)
+	inner := findProtoByName(top, "new_vec3")
+	if inner == nil {
+		t.Fatal("new_vec3 proto missing")
+	}
+	inner.EnsureFeedback()
+	fn := BuildGraph(inner)
+
+	pre := 0
+	for _, block := range fn.Blocks {
+		for _, ins := range block.Instrs {
+			if ins.Op == OpNewTable {
+				pre++
+			}
+		}
+	}
+
+	fn2, err := EscapeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("EscapeAnalysisPass: %v", err)
+	}
+
+	post := 0
+	for _, block := range fn2.Blocks {
+		for _, ins := range block.Instrs {
+			if ins.Op == OpNewTable {
+				post++
+			}
+		}
+	}
+	if post != pre {
+		t.Errorf("expected escaping NewTable to be preserved: "+
+			"pre=%d post=%d", pre, post)
+	}
+}

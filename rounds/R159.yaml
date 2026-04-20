@@ -1,0 +1,133 @@
+# R159: Session 1 / B.2 — field-variable SSA rewrite within a block.
+#       For every virtual NewTable from R158's predicate, rewrite
+#       GetField → direct SSA ref to last-stored value; convert
+#       SetField and NewTable to OpNop.
+round: 159
+date: 2026-04-21
+follows: 158
+
+type: tactical
+
+target:
+  benchmark: multi
+
+hypothesis:
+  class: escape-analysis-scalar-replacement
+  claim: >
+    For a virtual alloc V in block B, walk B's instructions in
+    order; maintain field_ssa[fieldAux → valueID]. Each
+    SetField(V, val, fieldAux) updates the map; each GetField(V,
+    fieldAux) gets replaceAllUses'd to the stored value. NewTable
+    and SetField become Nop. DCE cleans up.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: >
+        TDD: write a rewrite test for `func consume() { p := {x:1,
+        y:2}; return p.x + p.y }`. Pre-pass: 1 NewTable, 2 Set,
+        2 Get. Expected post-pass: 0 NewTable, 0 Set, 0 Get.
+        Return arg is Add(1, 2).
+      acceptance: test fails before implementation, passes after
+      halt_on_fail: true
+    - description: >
+        TDD: write a guard test that escaping new_vec3 (returned
+        from function) is NOT rewritten.
+      acceptance: escaping NewTable is preserved
+      halt_on_fail: true
+  result: |
+    Tests written first (TestR159_Rewrite_ConsumedLocally +
+    TestR159_Rewrite_ReturnedEscape).
+    Implementation: added EscapeAnalysisPass to pass_escape.go
+    (~90 LOC). Two-walk design:
+      Walk 1: validate no read-before-write on virtual alloc's
+              fields. If any, bail on that alloc.
+      Walk 2: rewrite GetField via replaceAllUses, Nop the
+              matching SetField and the originating NewTable.
+    All 3 R158 + 2 R159 tests pass.
+  passed: true
+  failing_test: "TestR159_Rewrite_ConsumedLocally"
+  failing_output: "pre-pass NewTable=1 GetField=2 SetField=2; post-pass NewTable=0 GetField=0 SetField=0 → PASS"
+  surgical_scope: "pass_escape.go (+ 1 new file update; no other file touched)"
+  ir_diff_before: |
+    B0 (entry):
+      v0 = NewTable : table
+      v1 = ConstInt 1 : int
+      v2 = SetField v0.field[0] = v1
+      v3 = ConstInt 2 : int
+      v4 = SetField v0.field[1] = v3
+      v5 = GetField v0.field[0] : any
+      v6 = GetField v0.field[1] : any
+      v7 = Add v5, v6 : any
+      Return v7
+  ir_diff_after: |
+    B0 (entry):
+      v0 = Nop : table
+      v1 = ConstInt 1 : int
+      v2 = Nop
+      v3 = ConstInt 2 : int
+      v4 = Nop
+      v5 = Nop : any
+      v6 = Nop : any
+      v7 = Add v1, v3 : any      ← scalar-replaced: directly using ConstInt refs
+      Return v7
+  bisect_range: null
+
+current_state_audit_summary: |
+  # Correctness argument for the rewrite:
+  #
+  # 1. The virtual alloc's fields are each written at MOST once
+  #    before being read (MVP assumption; violated by
+  #    read-before-write path, which we bail on explicitly).
+  #
+  # 2. After every SetField is Nop'd, the only remaining
+  #    observable effect of the alloc is the SSA values that
+  #    each GetField was rewritten to reference. Those references
+  #    are still in the IR.
+  #
+  # 3. The NewTable's result type (TypeTable) was used only by
+  #    the GetField/SetField uses. After rewrite those all Nop.
+  #    No downstream op sees the virtual's SSA value. DCE removes
+  #    the Nop NewTable.
+  #
+  # 4. Because the pass touches only *virtual* allocations (per
+  #    R158's predicate), tables that escape via Call / Return /
+  #    Guard / Phi / SetGlobal / etc. are untouched. Their
+  #    SetField/GetField continue to hit the real in-memory table.
+  #
+  # Bail paths implemented:
+  #   - read-before-write: first walk detects, skips rewrite for
+  #     that specific alloc
+  #
+  # Bail paths NOT yet needed (ruled out by R158's predicate):
+  #   - cross-block uses (all virtual uses are in def block)
+  #   - Guard-reached values (guards escape the alloc per R158)
+  #   - Phi-merged identities (Phi escapes per R158)
+
+verify:
+  result: |
+    go test ./internal/methodjit/... PASS.
+    5 EA tests pass (3 R158 + 2 R159).
+    No perf measurement yet — pass not wired into
+    RunTier2Pipeline. R162 does that.
+
+outcome:
+  status: adr-win
+  shipped_code: true      # pass exists but not yet wired
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: false
+  notes: |
+    EscapeAnalysisPass is now callable (mutates fn in place + returns).
+    R160 extends across if/else merges. R161 to loops. R162 wires
+    into RunTier2Pipeline. R163 measures.
+
+ledger_update:
+  classes_touched:
+    - escape-analysis-scalar-replacement
+  new_class_introduced: null
