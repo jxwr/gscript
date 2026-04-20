@@ -128,6 +128,10 @@ func (tm *TieringManager) getProfile(proto *vm.FuncProto) FuncProfile {
 // density, call patterns) to decide promotion thresholds instead of a simple
 // call count.
 func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
+	if os.Getenv("R154_TRACE") == "1" {
+		fmt.Fprintf(os.Stderr, "[R154] TryCompile proto=%q CallCount=%d tier2Compiled_has=%v tier2Failed=%v\n",
+			proto.Name, proto.CallCount, tm.tier2Compiled[proto] != nil, tm.tier2Failed[proto])
+	}
 	// Already at Tier 2? Return cached.
 	if t2, ok := tm.tier2Compiled[proto]; ok {
 		return t2
@@ -164,8 +168,17 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		// Enable OSR for deeply-nested-loop functions (LoopDepth >= 2).
 		// Single-call compute functions (matmul, mandelbrot, spectral_norm,
 		// fannkuch) reach Tier 2 via OSR instead of call-count threshold.
-		if profile.HasLoop && profile.LoopDepth >= 2 && !tm.tier2Failed[proto] {
+		// R154: env-gated widen to LoopDepth >= 1 for reproducing the R152 hang.
+		minDepth := 2
+		if os.Getenv("R154_WIDEN") == "1" {
+			minDepth = 1
+		}
+		if profile.HasLoop && profile.LoopDepth >= minDepth && !tm.tier2Failed[proto] {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
+			if os.Getenv("R154_TRACE") == "1" {
+				fmt.Fprintf(os.Stderr, "[R154] SetOSRCounter proto=%q loopDepth=%d\n",
+					proto.Name, profile.LoopDepth)
+			}
 		}
 		return t1
 	}
@@ -232,6 +245,11 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 	// Ensure feedback is initialized.
 	if proto.Feedback == nil {
 		proto.EnsureFeedback()
+	}
+
+	if os.Getenv("R154_TRACE") == "1" {
+		fmt.Fprintf(os.Stderr, "[R154] handleOSR proto=%q tier2Failed=%v tier2Compiled_has=%v\n",
+			proto.Name, tm.tier2Failed[proto], tm.tier2Compiled[proto] != nil)
 	}
 
 	// Try to compile at Tier 2.
@@ -417,6 +435,12 @@ func (tm *TieringManager) buildInlineGlobals() map[string]*vm.FuncProto {
 
 func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunction, retErr error) {
 	tm.tier2Attempts++
+	if os.Getenv("R154_TRACE") == "1" {
+		fmt.Fprintf(os.Stderr, "[R154] compileTier2 ENTER proto=%q attempts=%d\n",
+			proto.Name, tm.tier2Attempts)
+		defer fmt.Fprintf(os.Stderr, "[R154] compileTier2 EXIT  proto=%q err=%v\n",
+			proto.Name, retErr)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			cf = nil
@@ -573,8 +597,18 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 		ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
 	}
 
+	var r154_exitCount int
 	for {
 		jit.CallJIT(codePtr, ctxPtr)
+
+		if os.Getenv("R154_TRACE") == "1" {
+			r154_exitCount++
+			if r154_exitCount <= 20 || r154_exitCount%100000 == 0 {
+				fmt.Fprintf(os.Stderr, "[R154] executeTier2 proto=%q exit#%d code=%d tableExitID=%d tableOp=%d tableSlot=%d\n",
+					proto.Name, r154_exitCount, ctx.ExitCode,
+					ctx.TableExitID, ctx.TableOp, ctx.TableSlot)
+			}
+		}
 
 		switch ctx.ExitCode {
 		case ExitNormal:

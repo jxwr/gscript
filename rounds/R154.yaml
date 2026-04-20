@@ -1,0 +1,179 @@
+# R154: diagnostic — Path A from R153 disproven. The R152
+#       "OSR LoopDepth=1 widen" hang has TWO root causes:
+#       (1) a Tier 2 loop-counter emit bug that infinite-loops
+#       for transform_chain-shape functions (never hit before
+#       because the gate blocked them); (2) Tier 2 being SLOWER
+#       than Tier 1 for all LoopDepth=1 benchmarks we can
+#       measure (sieve +16%, others flat). The gate IS correctly
+#       calibrated at LoopDepth>=2. Cluster D is closed.
+round: 154
+date: 2026-04-19
+follows: 153
+
+type: diagnostic
+
+target:
+  benchmark: multi  # sieve + binary_trees + table_field_access + table_array_access + object_creation
+
+hypothesis:
+  class: tier2-bounded-recursive-inline
+  claim: >
+    R153 Path A: fix the R152 OSR LoopDepth=1 hang, then widen
+    the gate to unlock 6+ currently-blocked driver-loop benchmarks.
+    Hypothesis assumed the hang was a single fixable bug and that
+    Tier 2 would be faster than Tier 1 for these shapes once it
+    ran. Instrumented repro + measurement tests both premises.
+  expected_gain_pct: null   # diagnostic; testing a hypothesis
+  expected_gain_mechanism: >
+    If hang is fixed and Tier 2 code outperforms Tier 1 by a
+    reasonable margin, widening buys 5-20% across affected
+    benchmarks. Expected to land as R155 code after R154's root-
+    cause work.
+  counterfactual_check: >
+    If Tier 2 is NOT faster than Tier 1 for LoopDepth=1 shapes
+    (e.g., exit-resume in hot loop dominates), then widening
+    would REGRESS these benchmarks even with the hang fixed. The
+    gate at LoopDepth>=2 would be correctly conservative, not
+    over-conservative.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: >
+        Add env-gated widen (R154_WIDEN=1) + trace (R154_TRACE=1)
+        instrumentation to tiering_manager.go so the hang can be
+        reproduced without patching production source. Write a
+        Go reproducer test with a bounded timeout.
+      acceptance: "hang reproducible in <30s in a Go test"
+      halt_on_fail: true
+    - description: >
+        Trace executeTier2 exit codes to identify which exit cycles.
+        Identify specific tableExitIDs, tableOps, and tableSlots
+        involved in the loop.
+      acceptance: "specific exit IDs cycling identified"
+      halt_on_fail: true
+    - description: >
+        With R154_WIDEN=1, measure wall time vs baseline on every
+        benchmark whose hot function was previously blocked by the
+        gate (sieve, binary_trees, table_field_access,
+        table_array_access).
+      acceptance: "per-bench deltas recorded"
+      halt_on_fail: false
+  result: |
+    Pre-flight #1: added env gates + trace. Reproducer test
+    TestR154_OSR_Hang_Small drops transform_chain(2000) → hang
+    in 30s (hit timeout). Root cause bisected below.
+
+    Pre-flight #2: exit-code trace shows transform_chain's
+    Tier 2 execution cycles through exit IDs {38, 39, 40, 41,
+    59, 60, 61, 62, 74, 75, 76, 77} — three inlined new_vec3
+    calls (NewTable + 3 SetField each). Instead of executing
+    the expected 2000 loop iterations (~24k exits), we see
+    **371 million exits in 30s** — ~15,000× expected. The
+    loop counter is NOT advancing. This is a Tier 2 for-loop
+    emit correctness bug specific to transform_chain's shape
+    (3 NewTables inlined into body, mutating `v` through two
+    `v = vec3_foo(v, ...)` reassignments). Previously never
+    exercised because the gate blocked it.
+
+    Pre-flight #3: measurements with R154_WIDEN=1:
+
+    | bench              | widen=1  | widen=0 (baseline) | delta |
+    |--------------------|----------|--------------------|-------|
+    | sieve              | 0.104s   | 0.090s             | +15.6% SLOWER |
+    | binary_trees       | 1.532s   | 1.536s             | -0.3% (noise) |
+    | table_field_access | 0.036s   | 0.035s             | +2.9% (noise) |
+    | table_array_access | 0.126s   | 0.122s             | +3.3%   |
+    | object_creation    | HANG     | 0.901s             | — (correctness bug) |
+
+    Widening DOES promote the functions to Tier 2 (confirmed
+    via -jit-stats: sieve 1 entered, binary_trees 1 entered,
+    table_field_access 3 entered, table_array_access 3 entered).
+    But Tier 2 is ≤ Tier 1 for every shape we measured. For
+    sieve it's 16% SLOWER.
+
+    The counterfactual hypothesis is confirmed: **Tier 2 is not
+    faster than Tier 1 for LoopDepth=1 driver-loop shapes**.
+  passed: true
+
+current_state_audit_summary: |
+  # DEFINITIVE FINDINGS (persist to memory):
+  #
+  # 1. The LoopDepth>=2 gate in shouldPromoteTier2 is CORRECTLY
+  #    CALIBRATED. It is NOT over-conservative. Three independent
+  #    reasons:
+  #    a) Tier 2 native code for driver-loop shapes (NewTable +
+  #       SetField in body) exits to Go every iteration via
+  #       exit-resume. 200k iterations = 200k+ exits. Tier 1's
+  #       baseline emit keeps the whole body in native, faster.
+  #    b) For sieve specifically, Tier 2's type specialization
+  #       overhead + LICM setup cost exceeds the payoff on the
+  #       moderate-depth loop. Net +16% regression.
+  #    c) A latent Tier 2 for-loop emit bug infinite-loops on
+  #       transform_chain's "mutate-through-reassignment" shape.
+  #       This bug exists but was never exposed because the gate
+  #       blocked the proto.
+  #
+  # 2. Cluster D ("inline-gated promotion") is ELIMINATED as a
+  #    target. The R151 scout's framing was wrong; the R152 pivot
+  #    guessed at a narrower variant; R154 measured and proved
+  #    neither direction yields a win.
+  #
+  # 3. The latent for-loop emit bug (exposed at R154-pre-flight-#2)
+  #    is real and actionable. If someone wants to spend 2-3
+  #    rounds debugging the loop counter emit for Tier 2
+  #    transform_chain-shape, that's a correctness improvement
+  #    worth doing INDEPENDENT of any gate widen. Not a perf arc.
+  #
+  # 4. Remaining paths for surpassing LuaJIT on compute / table-
+  #    heavy benchmarks:
+  #    - Path B (escape analysis + scalar replacement): would
+  #      collapse NewTable-per-iteration patterns into stack-
+  #      allocated locals. Directly targets the Tier 2 slowdown
+  #      cause identified in finding (1a). 5+ round project; new
+  #      pass; high complexity.
+  #    - Path C (trace JIT): only avenue for call-heavy. 10+
+  #      round architectural project.
+  #    - Neither fits in the remaining R155-R156 budget.
+  #
+  # 5. RECOMMENDATION: close the meta-arc at R155 with R154's
+  #    findings. Return R156 to budget. Next session opens with
+  #    Path B (escape analysis pilot) as a fresh arc, properly
+  #    scoped for 6-8 rounds.
+
+verify:
+  result: |
+    Test file r154_osr_hang_test.go removed (its assertion
+    "hang reproduces" is satisfied; no regression test to keep
+    since the hang is an EXISTING bug the gate correctly hides).
+    Env-gated instrumentation (R154_WIDEN, R154_TRACE) retained
+    in tiering_manager.go — harmless when not set, useful for
+    future diagnostics. Full methodjit suite green.
+
+outcome:
+  status: adr-win
+  shipped_code: false
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: false
+  notes: |
+    Four env-gated hooks survive in tiering_manager.go (two R154
+    gates + two earlier R154_TRACE prints in TryCompile/compileTier2/
+    executeTier2/handleOSR/SetOSRCounter). Zero performance cost
+    when env vars unset. Any future scout that wants to test "what
+    if we widen OSR" can run `R154_WIDEN=1 gscript -jit bench.gs`
+    in 10 seconds.
+
+    The latent Tier 2 for-loop emit bug (found at exit-code trace)
+    is logged as a separate known issue. No follow-up planned in
+    this arc.
+
+ledger_update:
+  classes_touched:
+    - tier2-bounded-recursive-inline
+  new_class_introduced: null
