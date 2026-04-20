@@ -1,0 +1,124 @@
+# R157: Session 1 opener — escape analysis arc strategy + audit.
+#       Confirms pipeline insertion point, MVP predicate, and
+#       correctness traps. No code.
+round: 157
+date: 2026-04-21
+follows: 156
+
+type: strategy
+
+target:
+  benchmark: multi  # object_creation, binary_trees, alloc-heavy
+
+hypothesis:
+  class: escape-analysis-scalar-replacement
+  claim: >
+    A scalar-replacement pass that eliminates short-lived NewTable
+    allocations whose only uses are static-key GetField/SetField
+    lands in 6 sub-rounds (B.1-B.6) per the R156 ADR + agent 2 plan.
+    Expected: -30% to -60% on object_creation (5 NewTable/iter);
+    smaller gains on binary_trees (allocation half); flat on
+    others.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.0
+  mitigation_required: false
+  mitigation_description: null
+
+pre_flight:
+  required:
+    - description: read ir_ops.go + pass_load_elim.go + pipeline.go
+      acceptance: insertion point and pattern confirmed
+      halt_on_fail: true
+  result: |
+    IR audit:
+      OpNewTable — Aux = array hint, Aux2 = hash hint. No SSA args.
+      OpGetField — Args[0] = table; Aux = const-pool index for
+                   field name. Static key.
+      OpSetField — Args[0] = table; Args[1] = value; Aux = const-
+                   pool index. Static key. Kept value's SSA alive.
+      OpGetTable/OpSetTable — dynamic key; NOT handled by MVP.
+    Type: TypeTable for NewTable output.
+
+    Pass pattern audit:
+      LoadEliminationPass (pass_load_elim.go) is the closest
+      template. Block-local forward pass. Uses instrByID map +
+      available map. Replaces uses via replaceAllUses(fn, oldID,
+      newInstr). Deadens via instr.Op = OpNop; instr.Args = nil.
+
+    Pipeline audit:
+      RunTier2Pipeline order (pipeline.go:280+):
+        SimplifyPhis → TypeSpec → Intrinsic → TypeSpec →
+        [Inline → SimplifyPhis → TypeSpec] →
+        ConstProp → LoadElim → DCE → RangeAnalysis →
+        MatrixLower → LoadElim → DCE → UnrollAndJam →
+        FMAFusion → LICM → ScalarPromotion → ... → RegAlloc
+      V8's order: Inline → LoadElim → EA → EAReducer.
+      GScript insertion: AFTER first LoadElim, BEFORE first DCE
+      (so EA sees the already-forwarded values; DCE cleans up
+      the EA's OpNop'd stores afterward).
+
+  passed: true
+
+current_state_audit_summary: |
+  # MVP PREDICATE (R158 target):
+  # A NewTable SSA value V is "virtual" if ALL conditions hold:
+  #
+  #   (a) V is produced by OpNewTable.
+  #   (b) Every use of V in fn.Instrs is one of:
+  #        - OpGetField(Args[0]=V, Aux=static field-idx)
+  #        - OpSetField(Args[0]=V, Args[1]=any, Aux=static)
+  #   (c) ALL uses of V are in the SAME BLOCK as V's definition.
+  #       (R160 lifts this to if/else merges. R161 lifts to loops.)
+  #
+  # ESCAPE KILLERS (any of these → not virtual):
+  #   - Use as Args[i] to OpCall, OpSelf, OpReturn, OpSetGlobal,
+  #     OpSetUpval, OpGuardType, OpGuardNonNil, OpGuardTruthy.
+  #   - Use as Args[1] (the VALUE slot) of OpSetField — i.e. V
+  #     is stored into ANOTHER table's field. That escapes V.
+  #   - Use as Args[2] of OpSetTable (value slot) — same reason.
+  #   - Use as Args[0] of OpSetTable or OpGetTable (dynamic-key
+  #     table op on V itself — MVP can't track dynamic keys).
+  #   - Use by OpPhi — R160 handles, R158 bails.
+  #   - Use by OpEq / OpNeq — reference-equality escapes.
+  #
+  # MVP REWRITE (R159):
+  #   For each virtual V:
+  #     field_ssa = map[int64]int  (fieldAux → last-written SSA value ID)
+  #   Walk V's defining block in order. For each instr:
+  #     OpSetField(V, val, fieldAux): field_ssa[fieldAux] = val.ID.
+  #                                    Convert instr.Op = OpNop.
+  #     OpGetField(V, fieldAux): replaceAllUses(fn, instr.ID,
+  #                                field_ssa[fieldAux]_instr).
+  #                                Convert instr.Op = OpNop.
+  #   The OpNewTable itself becomes dead; DCE removes it.
+  #
+  # WHAT THIS DOES NOT DO (v1):
+  #   - Cross-block / Phi merges (R160).
+  #   - Loops with virtual alloc in body (R161).
+  #   - Deopt-aware materialization (deferred indefinitely;
+  #     we bail if the virtual reaches a frame-state edge).
+  #   - Metatables / __gc / __index semantics (GScript tables
+  #     don't have these yet — confirmed via grep: no
+  #     metatable ops in ir_ops.go).
+
+verify:
+  result: ADR shipped. No code. Next round R158 begins code.
+
+outcome:
+  status: adr-win
+  shipped_code: false
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: false
+  notes: |
+    R158 code target: new file internal/methodjit/pass_escape.go,
+    ~150 LOC, implementing the MVP predicate detection only. No
+    IR rewrite in R158. R159 adds the rewrite. Pipeline insertion
+    deferred to R162.
+
+ledger_update:
+  classes_touched:
+    - escape-analysis-scalar-replacement
+  new_class_introduced: null
