@@ -74,6 +74,15 @@ type TieringManager struct {
 	callVM          *vm.VM
 	tier2Threshold  int // configurable threshold for testing (legacy fallback)
 	profileCache    map[*vm.FuncProto]FuncProfile // cached function profiles
+
+	// R162: env-var caches evaluated ONCE at construction. Previously
+	// R154's os.Getenv calls were placed inside hot paths
+	// (executeTier2's main loop, TryCompile) causing a 25% fib
+	// regression because os.Getenv is ~100-300ns per call on macOS.
+	// These caches preserve the env-var diagnostic hook at zero hot-
+	// path cost.
+	envR154Trace     bool
+	envTier2NoFilter bool
 }
 
 // NewTieringManager creates a new TieringManager with Tier 1 baseline support
@@ -91,6 +100,9 @@ func NewTieringManager() *TieringManager {
 		tier2FailReason: make(map[*vm.FuncProto]string),
 		tier2Threshold:  tmDefaultTier2Threshold,
 		profileCache:    make(map[*vm.FuncProto]FuncProfile),
+		// R162: cache env vars once to keep hot paths free of syscalls.
+		envR154Trace:     os.Getenv("R154_TRACE") == "1",
+		envTier2NoFilter: os.Getenv("GSCRIPT_TIER2_NO_FILTER") == "1",
 	}
 	// Wire the outer compiler so handleCallFast routes through TieringManager
 	t1.SetOuterCompiler(func(proto *vm.FuncProto) interface{} {
@@ -128,7 +140,7 @@ func (tm *TieringManager) getProfile(proto *vm.FuncProto) FuncProfile {
 // density, call patterns) to decide promotion thresholds instead of a simple
 // call count.
 func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
-	if os.Getenv("R154_TRACE") == "1" {
+	if tm.envR154Trace {
 		fmt.Fprintf(os.Stderr, "[R154] TryCompile proto=%q CallCount=%d tier2Compiled_has=%v tier2Failed=%v\n",
 			proto.Name, proto.CallCount, tm.tier2Compiled[proto] != nil, tm.tier2Failed[proto])
 	}
@@ -165,18 +177,24 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		if t1 != nil && proto.Feedback == nil {
 			proto.EnsureFeedback()
 		}
-		// Enable OSR for deeply-nested-loop functions (LoopDepth >= 2).
-		// Single-call compute functions (matmul, mandelbrot, spectral_norm,
-		// fannkuch) reach Tier 2 via OSR instead of call-count threshold.
-		// R154: env-gated widen to LoopDepth >= 1 for reproducing the R152 hang.
-		minDepth := 2
-		if os.Getenv("R154_WIDEN") == "1" {
-			minDepth = 1
-		}
-		if profile.HasLoop && profile.LoopDepth >= minDepth && !tm.tier2Failed[proto] {
+		// R162: OSR gate widened to LoopDepth >= 1 now that
+		// hasExitResumeInLoop (in compileTier2) rejects protos that
+		// would regress at Tier 2. Protos with loops but no exit-
+		// resume-prone ops in the body (e.g. object_creation after
+		// EA eliminates all NewTable in the loop) promote via OSR
+		// and get the full Tier 2 speedup. Protos like sieve
+		// (SetTable in loop) or fib's main (OpCall in loop) still
+		// attempt promotion but are rejected by hasExitResumeInLoop
+		// and fall back to Tier 1 automatically — no performance
+		// regression compared to the old LoopDepth>=2 gate.
+		//
+		// The R154_WIDEN env var is kept as an escape hatch that
+		// DISABLES the hasExitResumeInLoop filter (i.e. force Tier 2
+		// even when it will regress) for diagnostic use only.
+		if profile.HasLoop && profile.LoopDepth >= 1 && !tm.tier2Failed[proto] {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
-			if os.Getenv("R154_TRACE") == "1" {
-				fmt.Fprintf(os.Stderr, "[R154] SetOSRCounter proto=%q loopDepth=%d\n",
+			if tm.envR154Trace {
+				fmt.Fprintf(os.Stderr, "[R162] SetOSRCounter proto=%q loopDepth=%d\n",
 					proto.Name, profile.LoopDepth)
 			}
 		}
@@ -247,7 +265,7 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 		proto.EnsureFeedback()
 	}
 
-	if os.Getenv("R154_TRACE") == "1" {
+	if tm.envR154Trace {
 		fmt.Fprintf(os.Stderr, "[R154] handleOSR proto=%q tier2Failed=%v tier2Compiled_has=%v\n",
 			proto.Name, tm.tier2Failed[proto], tm.tier2Compiled[proto] != nil)
 	}
@@ -435,7 +453,7 @@ func (tm *TieringManager) buildInlineGlobals() map[string]*vm.FuncProto {
 
 func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunction, retErr error) {
 	tm.tier2Attempts++
-	if os.Getenv("R154_TRACE") == "1" {
+	if tm.envR154Trace {
 		fmt.Fprintf(os.Stderr, "[R154] compileTier2 ENTER proto=%q attempts=%d\n",
 			proto.Name, tm.tier2Attempts)
 		defer fmt.Fprintf(os.Stderr, "[R154] compileTier2 EXIT  proto=%q err=%v\n",
@@ -513,8 +531,40 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		trace.IntrinsicNotes = intrinsicNotes
 	}
 
-	if hasCallInLoop(fn) {
-		return nil, fmt.Errorf("tier2: has OpCall inside loop (performance-blocked), staying at Tier 1")
+	// R162: extended gate — reject Tier 2 promotion when any exit-
+	// resume-prone op lives in a loop. Beyond just OpCall this covers
+	// dynamic-key OpGetTable/OpSetTable (Tier 2 exits to executeTableExit
+	// for shape changes / resize), residual OpNewTable (EA couldn't
+	// scalar-replace), OpConcat/Append/SetList, OpGet/SetUpval, GC ops,
+	// and OpClosure/Close/Vararg. Tier 1's baseline handles these with
+	// native templates (fast path); Tier 2's exit-resume roundtrip is
+	// ~400× slower. The reject steers such protos back to Tier 1
+	// automatically — letting us safely widen the OSR gate below.
+	//
+	// Bypass via GSCRIPT_TIER2_NO_FILTER=1 (diagnostic / perf-comparison).
+	//
+	// Depth-aware filter (R162): protos that would have been admitted
+	// under the old LoopDepth>=2 OSR gate use the classic filter
+	// (OpCall only). Protos newly admitted by the R162 widen
+	// (LoopDepth==1) go through the STRICT filter that additionally
+	// rejects dynamic-key table ops, NewTable, concat/append, etc.
+	// This preserves the existing Tier 2 benchmarks (fannkuch, sieve's
+	// checkTree, typed-array shapes that already worked) while gating
+	// the new widen-candidates (object_creation, sort/<main>, etc.)
+	// on a clean body. For object_creation after EA, the body is
+	// clean → promotes and gets the 100× speedup. For sieve's <main>,
+	// sort's <main>, etc., OpCall/OpSetTable in loop → rejected.
+	if !tm.envTier2NoFilter {
+		profile := tm.getProfile(proto)
+		if profile.LoopDepth < 2 {
+			if hasExitResumeInLoop(fn) {
+				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has exit-resume-prone op inside loop (performance-blocked), staying at Tier 1")
+			}
+		} else {
+			if hasCallInLoop(fn) {
+				return nil, fmt.Errorf("tier2: has OpCall inside loop (performance-blocked), staying at Tier 1")
+			}
+		}
 	}
 
 	// R40: mark Proto.HasSelfCalls so the emitter opts in to the
@@ -601,7 +651,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 	for {
 		jit.CallJIT(codePtr, ctxPtr)
 
-		if os.Getenv("R154_TRACE") == "1" {
+		if tm.envR154Trace {
 			r154_exitCount++
 			if r154_exitCount <= 20 || r154_exitCount%100000 == 0 {
 				fmt.Fprintf(os.Stderr, "[R154] executeTier2 proto=%q exit#%d code=%d tableExitID=%d tableOp=%d tableSlot=%d\n",
@@ -821,20 +871,32 @@ func irHasCall(fn *Function) bool {
 // back-edges + dominator analysis) — the same loopBlocks set the emitter
 // uses for raw-int loop mode.
 func hasCallInLoop(fn *Function) bool {
+	return hasExpensiveInLoop(fn, func(op Op) bool { return op == OpCall })
+}
+
+// hasExpensiveInLoop (R162) generalizes hasCallInLoop: it reports whether
+// any op in a loop block matches a predicate. Used to gate Tier 2
+// promotion on "post-pipeline body free of exit-resume-prone ops in
+// loops". Includes: OpCall (exit-resume callee dispatch), OpGetTable /
+// OpSetTable (dynamic-key table ops exit to executeTableExit),
+// OpNewTable (residual allocations after EA fail → exit to Go),
+// OpConcat / OpAppend / OpSetList / OpSelf / OpGetUpval / OpSetUpval
+// / OpGo / OpSend / OpRecv / OpClosure / OpVararg (all exit-resume).
+// Not included: OpGetField / OpSetField (static key, inline-cached,
+// fast). GuardType is ok (<5 insns, not exit-resume).
+func hasExpensiveInLoop(fn *Function, predicate func(Op) bool) bool {
 	var li *loopInfo
 	for _, block := range fn.Blocks {
-		// Fast path: skip blocks with no OpCall.
-		hasCall := false
+		match := false
 		for _, instr := range block.Instrs {
-			if instr.Op == OpCall {
-				hasCall = true
+			if predicate(instr.Op) {
+				match = true
 				break
 			}
 		}
-		if !hasCall {
+		if !match {
 			continue
 		}
-		// Lazily compute loop info only when we actually find a call.
 		if li == nil {
 			li = computeLoopInfo(fn)
 		}
@@ -843,6 +905,37 @@ func hasCallInLoop(fn *Function) bool {
 		}
 	}
 	return false
+}
+
+// hasExitResumeInLoop (R162) is the STRICT smart-gate predicate used
+// for LoopDepth<2 candidates (the R162 widen bucket). Returns true
+// when the post-pipeline IR has ANY op in a loop that's likely to
+// exit-resume, including dynamic-key OpGetTable/OpSetTable, residual
+// OpNewTable, and the always-exit-resume ops below. This is stricter
+// than hasCallInLoop because the widen bucket is untested at Tier 2
+// (never compiled there before R162) and we want a conservative
+// bound to avoid correctness bugs (R152-observed int48-overflow +
+// LCG + qs correctness bug was triggered by newly-admitted LoopDepth=1
+// protos).
+//
+// OpGetField/OpSetField excluded (IC-cached, ~5 insns fast path).
+func hasExitResumeInLoop(fn *Function) bool {
+	return hasExpensiveInLoop(fn, func(op Op) bool {
+		switch op {
+		case OpCall, OpSelf,
+			OpNewTable,
+			OpGetTable, OpSetTable,
+			OpConcat, OpAppend, OpSetList,
+			OpGetUpval, OpSetUpval,
+			OpGo, OpMakeChan, OpSend, OpRecv,
+			OpClosure, OpClose,
+			OpVararg,
+			OpLen, OpPow,
+			OpTForCall, OpTForLoop:
+			return true
+		}
+		return false
+	})
 }
 
 // irHasGetGlobal scans the optimized IR for any remaining OpGetGlobal

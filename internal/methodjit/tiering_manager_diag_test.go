@@ -55,6 +55,16 @@ func TestDiag_ProductionParity_Mandelbrot(t *testing.T) {
 func runParity(t *testing.T, benchFile, fnName string) {
 	t.Helper()
 
+	// R162: bypass the hasExitResumeInLoop filter for parity tests —
+	// parity asserts "diag path produces the same bytes as production"
+	// independent of the promotion policy, and some previously-promoted
+	// protos (sieve) are now correctly rejected by production. The
+	// parity property we care about holds when both paths force-compile.
+	if err := os.Setenv("GSCRIPT_TIER2_NO_FILTER", "1"); err != nil {
+		t.Fatalf("setenv: %v", err)
+	}
+	defer os.Unsetenv("GSCRIPT_TIER2_NO_FILTER")
+
 	src, err := os.ReadFile("../../benchmarks/suite/" + benchFile)
 	if err != nil {
 		t.Fatalf("read %s: %v", benchFile, err)
