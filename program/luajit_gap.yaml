@@ -211,3 +211,17 @@ rows:
   - {round: 153, date: 2026-04-19, bench: fannkuch,        gscript_jit_sec: 0.046, luajit_sec: 0.020, gap_factor: 2.30, notes: "R153 arc-close: 5-sample 0.045/0.046/0.046/0.047/0.047 → 0.046. Flat."}
   - {round: 153, date: 2026-04-19, bench: nbody_dense,     gscript_jit_sec: 0.175, luajit_sec: 0.034, gap_factor: 5.15, notes: "R153 arc-close: 5-sample 0.172/0.173/0.175/0.175/0.176 → 0.175. Flat."}
   - {round: 153, date: 2026-04-19, bench: sieve,           gscript_jit_sec: 0.083, luajit_sec: 0.011, gap_factor: 7.55, notes: "R153 arc-close: 5-sample 0.081/0.082/0.083/0.083/0.086 → 0.083. Flat vs R99."}
+
+  # --- R157-R163: Session 1 escape analysis + smart gate arc (7 rounds). Session closes at R163. ---
+  - {round: 163, date: 2026-04-21, bench: object_creation, gscript_jit_sec: 0.008, luajit_sec: null,  gap_factor: null,  notes: "R161 EA + R162 smart gate: -99.1% vs R146 (0.906→0.008). 100× speedup. create_and_sum/transform_chain/complex_objects all Tier 2 via widened OSR gate; EA eliminates all NewTable in hot loops. VM↔JIT correctness verified."}
+  - {round: 163, date: 2026-04-21, bench: sort,            gscript_jit_sec: 0.046, luajit_sec: 0.011, gap_factor: 4.18, notes: "R163: -6% vs R86 (0.052→0.046) via widened OSR gate letting is_sorted reach Tier 2 and EA+LICM shape work."}
+  - {round: 163, date: 2026-04-21, bench: fib,             gscript_jit_sec: 0.866, luajit_sec: 0.026, gap_factor: 33.3, notes: "R163 noise-floor: -2% vs R153 (0.884→0.866). Ack/mut same (body-dominated per R154)."}
+  - {round: 163, date: 2026-04-21, bench: ackermann,       gscript_jit_sec: 0.416, luajit_sec: 0.006, gap_factor: 69.3, notes: "R163 noise-floor: -5% vs R153 (0.440→0.416); still body-dominated."}
+  - {round: 163, date: 2026-04-21, bench: mutual_recursion, gscript_jit_sec: 0.180, luajit_sec: 0.004, gap_factor: 45.0, notes: "R163 flat vs R153 (0.187→0.180)."}
+  - {round: 163, date: 2026-04-21, bench: mandelbrot,      gscript_jit_sec: 0.053, luajit_sec: 0.057, gap_factor: 0.93, notes: "R163 flat; still SURPASSED LuaJIT."}
+  - {round: 163, date: 2026-04-21, bench: fannkuch,        gscript_jit_sec: 0.043, luajit_sec: 0.020, gap_factor: 2.15, notes: "R163 flat (OpSetTable-in-loop preserved via depth-aware filter)."}
+  - {round: 163, date: 2026-04-21, bench: nbody_dense,     gscript_jit_sec: 0.164, luajit_sec: 0.034, gap_factor: 4.82, notes: "R163 -6% vs R153 (0.175→0.164)."}
+  - {round: 163, date: 2026-04-21, bench: sieve,           gscript_jit_sec: 0.087, luajit_sec: 0.011, gap_factor: 7.91, notes: "R163 +5% noise vs R153 (0.083→0.087). sieve proto now Tier 2 via widen; performs similarly (Tier 2 SetTable cost matches Tier 1 template)."}
+  - {round: 163, date: 2026-04-21, bench: binary_trees,    gscript_jit_sec: 1.448, luajit_sec: null,  gap_factor: null,  notes: "R163 flat (checkTree at Tier 2 as before; NewTable-per-node still allocates)."}
+  - {round: 163, date: 2026-04-21, bench: spectral_norm_dense, gscript_jit_sec: 0.023, luajit_sec: 0.007, gap_factor: 3.29, notes: "R163 -8% vs R86 (0.025→0.023)."}
+  - {round: 163, date: 2026-04-21, bench: matmul_dense,    gscript_jit_sec: 0.034, luajit_sec: 0.022, gap_factor: 1.55, notes: "R163 -3% vs R88 (0.035→0.034)."}

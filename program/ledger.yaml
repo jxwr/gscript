@@ -562,16 +562,37 @@ forward_classes:
 
   - name: escape-analysis-scalar-replacement
     description: >
-      Detect NEWTABLE whose result does not escape and replace it with
-      scalar registers. Follows `runtime-allocation-path` (doesn't
-      replace it): SR applies where objects DON'T escape, bump alloc
-      applies regardless.
-    status: deferred
-    proposed_round: null     # wait until after R8
-    expected_targets: [method_dispatch, object_creation partial]
+      Detect NewTable whose result does not escape and replace it with
+      scalar registers. Shipped R157-R163 (Session 1). MVP handles
+      block-local + loop-carried virtual Phi patterns. Combines with
+      the R162 depth-aware promotion gate: EA-clean post-pipeline
+      bodies with LoopDepth<2 become newly promotable.
+    status: shipped R157-R163
+    attempts: 7
+    wins: 1                      # R161/R162 bench-win (object_creation 100×)
+    bench_wins: 1
+    adr_wins: 6                  # R157/R158/R159/R160 skipped/R161 part/R163
+    reverts: 0
+    holds: 0
+    prior_reject_rate: 0.0
+    mitigation_required: false
+    historical_rounds: [157, 158, 159, 161, 162, 163]
+    key_positive_evidence: >
+      R161: EA on create_and_sum post-pipeline eliminates all
+      NewTable. Compile insn count: 1277 → 497 (-61% total, -81%
+      mem). R162: widened OSR gate with depth-aware filter lets the
+      EA-clean proto reach Tier 2. object_creation bench: 0.906s →
+      0.008s (100× faster), VM↔JIT correctness verified.
+    key_negative_evidence: >
+      R154's cached env-var regression would have hidden EA gains
+      without the R162 hot-path fix (os.Getenv inside executeTier2
+      loop cost 200ms on fib(35) = 9.2M invocations).
+    expected_next_targets: [binary_trees allocation-half (escape-through-parent, needs cross-call EA), ackermann body-half (no alloc, EA won't help)]
     known_risks:
-      - binary_trees escapes (tree nodes stored into parent) — SR useless there
-      - Unsound EA → silent corruption; must compose with validator
+      - R161's identity-semantics gap (a == b on two EA'd tables)
+        requires OpEq filter; MVP bails via OpPhi-escape rule so
+        this doesn't manifest in practice yet.
+      - Metatable / __gc / __index not modelled; GScript has none.
 
   # tier2-dense-matrix-kind: promoted to classes{} in R42 (Phase 1 shipped).
 
