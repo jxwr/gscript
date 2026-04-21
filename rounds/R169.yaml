@@ -1,0 +1,64 @@
+# R169: Session 5 ADR — Self-TCO design. Published halt conditions
+#       for R170-R175. No code.
+round: 169
+date: 2026-04-21
+follows: 168
+
+type: architecture
+
+target:
+  benchmark: ackermann
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    A new `emitCallNativeTailSelf` helper, ~100 LOC, gated by
+    (tailCallInstrs[id] && isStaticSelfCall(instr)), emits a
+    parallel move of new args into param slots followed by
+    asm.B("B0"). Slow-path fallback routes to emitCallNative
+    (generic). Expected ack -20% to -40%.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.33
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: ADR written in docs-internal/decisions/
+      acceptance: adr-self-tco.md exists
+      halt_on_fail: true
+  result: |
+    adr-self-tco.md written. Publishes:
+      - Design: 3-way fork in emitOpCall (tail+self / tail / generic)
+      - Parallel-move algorithm: greedy + X3-cycle-break
+      - Correctness invariants (4): GuardType re-fires, pinned regs
+        unchanged, rawIntRegs emit-state preserved, slow-path fallback
+      - Halt conditions (4): cost-model / correctness / ack-regress /
+        scope-breach
+  passed: true
+
+current_state_audit_summary: |
+  # No additional audit beyond R168. This round is pure ADR.
+
+verify:
+  result: >
+    ADR shipped; halt conditions explicit; scope capped at ~200
+    LOC + 1 parallel-move helper + 1 dispatch fork.
+
+outcome:
+  status: adr-win
+  shipped_code: false
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: false
+  notes: |
+    R170 next: pre-flight — hand-splice a goto-B0 into ack's
+    Tier 2 emit (temporary, reverted after measurement) to
+    validate the ~20-40% cost-model prediction before
+    committing to the full implementation.
+
+ledger_update:
+  classes_touched:
+    - tier2-recursion-closure
+  new_class_introduced: null
