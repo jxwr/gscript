@@ -231,3 +231,6 @@ rows:
   - {round: 166, date: 2026-04-21, bench: ackermann,       gscript_jit_sec: 0.393, luajit_sec: 0.006, gap_factor: 65.5, notes: "R166: -5.5% vs R163 via cumulative-bytecode inline budget preventing ack's exponential blow-up."}
   - {round: 166, date: 2026-04-21, bench: binary_trees,    gscript_jit_sec: 1.495, luajit_sec: null,  gap_factor: null,  notes: "R166: +3.2% minor regression vs R163 — accepted trade-off for fib/ack wins."}
   - {round: 166, date: 2026-04-21, bench: mutual_recursion, gscript_jit_sec: 0.179, luajit_sec: 0.004, gap_factor: 44.8, notes: "R166 flat."}
+
+  # --- R170: Session 5 Self-TCO pre-flight halted; prototype reverted ---
+  - {round: 170, date: 2026-04-21, bench: ackermann,       gscript_jit_sec: 0.391, luajit_sec: 0.006, gap_factor: 65.2, notes: "R170 Self-TCO prototype: -0.5% vs 0.393s baseline, FAR below 15% halt gate. Fork reverted. Cost model wrong: 188 asm insns removed per body but M4 superscalar absorbed them (off-critical-path)."}

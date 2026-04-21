@@ -235,13 +235,14 @@ classes:
       promotes. Result: fib 1.411s → 0.858s (-39.2%), LuaJIT gap
       54× → 33×. FIRST real bench-win of this class via an optimizing
       path (R20 was ADR-only).
-    attempts: 10                 # +R132, +R143, +R144, +R145, +R147, +R148, +R149, +R150
-    wins: 5                      # R20 ADR + R132 bench-win + R144 bench-win + R147 ADR + R148 ADR + R150 ADR
+    attempts: 13                 # +R132, +R143, +R144, +R145, +R147, +R148, +R149, +R150, +R168, +R169, +R170
+    wins: 7                      # R20 ADR + R132 bench-win + R144 bench-win + R147 ADR + R148 ADR + R150 ADR + R168 ADR + R169 ADR
     bench_wins: 2                # R132 (fib -39%), R144 (fib -3.4%)
-    adr_wins: 5                  # R20, R143, R147, R148, R150 ADR/diag
+    adr_wins: 7                  # R20, R143, R147, R148, R150, R168, R169 ADR/diag
     reverts: 2                   # R22: bounds-check skip broke deep recursion; R149: static-self fast path reverted after ack cold-start ABI bug + quicksort 3-arg crash
     shipped_no_wins: 1           # R145 (gate opened, lightweight entry reverted)
     holds: 0
+    # R170 was no-win with shipped_code=false (prototype reverted within round) — does not dilute reject-rate denom
     prior_reject_rate: 0.4       # 2 reverts / (2 bench-wins + 2 reverts + 1 shipped-no-win) = 0.4
     mitigation_required: false
     mitigation_description: >
