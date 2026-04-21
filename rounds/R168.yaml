@@ -1,0 +1,220 @@
+# R168: Session 5 opener — Self-TCO session. Audit existing R107
+#       tail-call infrastructure, identify exactly what's missing
+#       for the goto-back-to-entry transform, produce concrete gap
+#       list. No code.
+round: 168
+date: 2026-04-21
+follows: 167
+
+type: architecture
+
+target:
+  benchmark: ackermann, mutual_recursion
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    GScript has R107's frame-replacing tail call but NOT Self-TCO
+    (goto-back-to-entry). For static-self tail calls — specifically
+    ackermann's outer `ack(m-1, ack(m, n-1))` — the R107 path still
+    runs IC lookup + bounds check + CallCount inc + full epilogue
+    + BR to our OWN direct_entry which runs a FULL prologue again.
+    A goto-B0 transform would collapse this 40-insn dance to ~4
+    insns (parallel move of args into param slots + B B0).
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.33  # tier2-recursion-closure has some reverts
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: >
+        Read computeTailCalls, emitCallNativeTail, emitOpCall,
+        tailCallInstrs wiring. Identify complete control flow of a
+        tail call in production today.
+      acceptance: written out below
+      halt_on_fail: true
+    - description: >
+        Identify the specific insn-level waste for a STATIC SELF
+        tail call (ack's outer call) under R107 today vs the
+        proposed Self-TCO emit.
+      acceptance: insn-count comparison below
+      halt_on_fail: true
+    - description: >
+        Enumerate correctness concerns: SSA value aliasing during
+        parallel move, guard re-firing at B0, mRegRegs/mRegConsts/
+        mRegCtx state, numericMode interaction.
+      acceptance: correctness list below
+      halt_on_fail: true
+
+  result: |
+    # R107 infrastructure (already in tree):
+
+    computeTailCalls(fn) — emit_compile.go:470:
+      Scans IR for `OpCall → OpReturn(callResult)` pattern within
+      the same block (skipping OpNop). Returns map[int]bool of
+      matching OpCall IDs.
+
+    tailCallInstrs field — emit_compile.go:435:
+      Populated at emit init. Consulted by emitOpCall.
+
+    emitOpCall — emit_call_native.go:351:
+      if ec.tailCallInstrs[instr.ID] {
+          ec.emitCallNativeTail(instr)   // R107 frame-replacing
+      } else {
+          ec.emitCallNative(instr)       // generic
+      }
+
+    emitCallNativeTail — emit_call_native.go:394:
+      Step 1: store fn + args to regs[funcSlot..].
+      Step 2: spill live regs (for slow path).
+      Step 3: IC lookup (4 insns) + miss-path type check (8 insns) +
+              hit-path re-derive (3 insns).
+      Step 4: Extract ptr, LDR Proto, LDR DirectEntryPtr, CBZ slow.
+      Step 5: MaxStack bounds check (4 insns).
+      Step 6: CallCount inc + threshold check (4 insns).
+      Step 7: Copy args regs[funcSlot+1+i] → regs[i] (N STR+LDR).
+      Step 8: Set ctx.Constants, ctx.ClosurePtr, ctx.CallMode,
+              ctx.GlobalCache, ctx.Regs (5 STRs).
+      Step 9: Full epilogue — FLDP(D8-D11) + 5×LDP(callee-saves) +
+              LDP(FP/LR) + ADDimm(SP).
+      Step 10: MOVreg X0, X19 (ctx back into arg0).
+      Step 11: BR X2 (to callee's direct entry).
+
+      Then callee's direct_entry runs FULL prologue:
+        SUB SP, 128; STP FP/LR; 5×STP callee-saves; set pinned regs.
+
+    hasTailCall — func_profile.go:51:
+      Bytecode-level OP_CALL+OP_RETURN detector. Currently UNUSED
+      by shouldPromoteTier2 (commented "reserved for future frame-
+      aware gating"). No production behavior hinges on it.
+
+    # Per-call cost today for STATIC SELF tail call (ack's outer):
+
+    R107 path insn count (happy path, IC hit):
+      Step 1 (fn + N args store): 1 + 2N
+      Step 2 (spill): variable (ack: ~2 STRs)
+      Step 3 IC lookup: 4 (LDR cache + LDR slot + CMP + BCond)
+      Step 3 hit re-derive: LDR + Extract + LDR Proto = 3
+      Step 5 MaxStack: LDR MaxStack + LSL + ADD + LDR RegsEnd + CMP + BCond = 6
+      Step 6 CallCount: LDR + ADD + STR + CMP + BCond = 5
+      Step 7 arg copy: 2 STR+LDR per arg = 2N
+      Step 8 ctx setup: LDR Consts + 5×STR = 6
+      Step 9 epilogue: FLDP×2 (if useFPR) + LDP×6 + ADDimm = 8-10
+      Step 10 MOVreg: 1
+      Step 11 BR: 1
+      Callee prologue: SUBimm + STP×6 + FSTP×2 (if useFPR) +
+                       MOVreg + LDR Regs + LDR Consts + LoadImm64×2 +
+                       B B0 = ~14
+      TOTAL: ~55-60 insns per recursive tail call.
+
+    Proposed Self-TCO insn count (ack's outer):
+      resolveRawInt for each arg + parallel move to param slots:
+        2-3 insns per arg × 2 args = 4-6
+      B B0 (asm.B to entry block label): 1
+      TOTAL: ~5-7 insns.
+
+      Savings: ~50 insns per call × ack's 5200 outer-tail calls
+      per invocation × 500 reps = ~130M insns saved on ack.
+      At M4 3 IPC × 4GHz → ~11ms of the 416ms baseline budget
+      (~3%). Upper bound if ALL recursion depth halves (R107's
+      frame-reuse claim): potentially 2-3× on ack.
+
+current_state_audit_summary: |
+  # GAP LIST for Self-TCO (the architectural changes needed):
+  #
+  # GAP 1 — tail-self predicate missing from emitCallNativeTail.
+  #   The path checks tailCallInstrs[instr.ID] but does NOT further
+  #   check isStaticSelfCall(instr). Add a fork:
+  #     if ec.tailCallInstrs[id] && ec.isStaticSelfCall(instr) {
+  #         emitCallNativeTailSelf(instr)  // NEW
+  #     } else if ec.tailCallInstrs[id] {
+  #         emitCallNativeTail(instr)      // existing R107
+  #     }
+  #
+  # GAP 2 — parallel move helper missing.
+  #   Current emit uses resolveValueNB/resolveRawInt with implicit
+  #   scratch-reg allocation. For Self-TCO we need to overwrite
+  #   param SSA slots (regs[0..N-1]) WITHOUT clobbering args that
+  #   depend on them. Canonical approach: swap-based parallel move
+  #   using X2/X3 scratch. ~50 LOC in emit_reg.go or a new file.
+  #
+  # GAP 3 — B B0 label emission.
+  #   Currently "B0" is the entry block label (blockLabel(entry)).
+  #   emitCallNativeTailSelf needs to emit asm.B with the label
+  #   resolved via ec.blockLabelFor(ec.fn.Entry). Same mechanism
+  #   loops already use — no new infra.
+  #
+  # GAP 4 — numericMode interaction.
+  #   Entry has BOTH pass-1 (B0) and pass-2 (num_B0 + the
+  #   t2_numeric_self_entry_N trampoline). During pass-1 emit,
+  #   Self-TCO jumps to B0. During pass-2 emit (if one exists)
+  #   Self-TCO jumps to num_B0 via blockLabelFor which already
+  #   handles the prefix. No new work.
+  #
+  # GAP 5 — GuardType re-firing at B0.
+  #   B0's first instructions are typically GuardType v0 is int.
+  #   After Self-TCO writes new args to param slots, B0's LoadSlot
+  #   reads them, then GuardType re-checks. If the new args still
+  #   match (always true for same-signature self recursion), the
+  #   guard passes. If somehow different types (e.g., ack's inner
+  #   call returned a non-int — impossible by Lua semantics for
+  #   ack's shape), deopt fires. Correctness preserved.
+  #
+  # GAP 6 — rawIntRegs state pollution (R143-class risk).
+  #   Pass-2 body currently sets rawIntRegs flags on SSA values.
+  #   Jumping back to B0 "restarts" the body but the emit-time
+  #   rawIntRegs map is irrelevant (B0 re-LoadSlots which clears
+  #   raw flags). No runtime pollution.
+  #
+  # GAP 7 — inline interaction.
+  #   R166's cumulative budget may inline ack's inner call,
+  #   leaving the OUTER call as a direct self-recursion of a
+  #   larger body. The tail-call pattern survives inline:
+  #   `return ack(m-1, inlined_ack_result)` still ends in a tail
+  #   ack call. tailCallInstrs is computed post-inline so this
+  #   is fine.
+  #
+  # GAP 8 — slow-path fallback semantics.
+  #   R107's emitCallNativeTail has slowLabel → emitCallExitFallback
+  #   which produces a NORMAL return value. For Self-TCO, the
+  #   "slow path" is exactly the generic emitCallNative (not frame-
+  #   replacing). When IC misses or guards fail, fall back to
+  #   regular tail call. No new fallback machinery.
+  #
+  # # CONCLUSION:
+  # 4 real architectural gaps (GAP 1, 2, 3, 8). 4 correctness
+  # non-concerns (GAP 4, 5, 6, 7). The implementation surface is
+  # small and bounded — new helper emitCallNativeTailSelf (~100
+  # LOC) + parallel-move helper (~50 LOC) + one-line fork in
+  # emitOpCall.
+
+verify:
+  result: >
+    Architecture audited. No code.
+
+outcome:
+  status: adr-win
+  shipped_code: false
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: false
+  notes: |
+    Session 5 opens with a clearer infra picture than the
+    rejected-at-R167 hypothesis suggested. Agent 3 correctly
+    flagged "GScript doesn't have tail-call detection" as a
+    rejection reason — but R107 DID ship that detection,
+    agent 2's audit missed the R107 infra because it wasn't in
+    the surface scan.
+    Real gaps are more limited than Agent 3 feared: 4 concrete
+    pieces, all small. The session should fit in 6-8 rounds well
+    below the 17-round budget.
+
+    R169 writes the ADR pinning down the design details
+    (parallel-move semantics, fork structure, halt conditions).
+
+ledger_update:
+  classes_touched:
+    - tier2-recursion-closure
+  new_class_introduced: null
