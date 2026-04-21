@@ -225,3 +225,9 @@ rows:
   - {round: 163, date: 2026-04-21, bench: binary_trees,    gscript_jit_sec: 1.448, luajit_sec: null,  gap_factor: null,  notes: "R163 flat (checkTree at Tier 2 as before; NewTable-per-node still allocates)."}
   - {round: 163, date: 2026-04-21, bench: spectral_norm_dense, gscript_jit_sec: 0.023, luajit_sec: 0.007, gap_factor: 3.29, notes: "R163 -8% vs R86 (0.025→0.023)."}
   - {round: 163, date: 2026-04-21, bench: matmul_dense,    gscript_jit_sec: 0.034, luajit_sec: 0.022, gap_factor: 1.55, notes: "R163 -3% vs R88 (0.035→0.034)."}
+
+  # --- R164-R166: Sessions 2/3/4 close. Session 2/3 no-win; Session 4 (inline heuristic) ships ---
+  - {round: 166, date: 2026-04-21, bench: fib,             gscript_jit_sec: 0.827, luajit_sec: 0.026, gap_factor: 31.8, notes: "R166: -4.5% vs R163 via MaxRec 5→8 + cumulative=120 inline budget. First call-heavy win since R132."}
+  - {round: 166, date: 2026-04-21, bench: ackermann,       gscript_jit_sec: 0.393, luajit_sec: 0.006, gap_factor: 65.5, notes: "R166: -5.5% vs R163 via cumulative-bytecode inline budget preventing ack's exponential blow-up."}
+  - {round: 166, date: 2026-04-21, bench: binary_trees,    gscript_jit_sec: 1.495, luajit_sec: null,  gap_factor: null,  notes: "R166: +3.2% minor regression vs R163 — accepted trade-off for fib/ack wins."}
+  - {round: 166, date: 2026-04-21, bench: mutual_recursion, gscript_jit_sec: 0.179, luajit_sec: 0.004, gap_factor: 44.8, notes: "R166 flat."}

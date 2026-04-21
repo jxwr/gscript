@@ -356,14 +356,14 @@ classes:
       pass explicitly excludes recursive callees; this class lifts
       that restriction under size + depth bounds. See adr-tier2-bounded-
       recursive-inline.md.
-    attempts: 6                  # +R151 pivot ADR, +R152 diag, +R154 diag
-    wins: 4                      # R31 ADR + R151 + R152 + R154 diag/adr
-    bench_wins: 0
-    adr_wins: 4
+    attempts: 8                  # +R165 (Session 3 close), +R166 (Session 4 ship)
+    wins: 6                      # R31 + R151 + R152 + R154 + R165 + R166
+    bench_wins: 1                # R166: fib -4.5%, ack -5.5%
+    adr_wins: 5                  # R31 + R151 + R152 + R154 + R165
     reverts: 1                   # R35
     shipped_no_wins: 0
     holds: 1                     # R34 partial-step
-    prior_reject_rate: 0.2       # 1 / (0 + 1 + 4) = 0.2
+    prior_reject_rate: 0.143     # 1 / (1 + 1 + 5) = 0.143
 
     mitigation_required: false
     mitigation_description: >
@@ -376,13 +376,20 @@ classes:
       (not just the target benchmark). Add fib_recursive +
       mutual_recursion + binary_trees to production-scale
       regression harness.
-    historical_rounds: [31, 34, 35, 151, 152, 154]
+    historical_rounds: [31, 34, 35, 151, 152, 154, 165, 166]
     # R154 DEFINITIVE: the shouldPromoteTier2 LoopDepth>=2 gate is
     # correctly calibrated. Widening to LoopDepth>=1 regresses sieve
     # by 16%, exposes a latent Tier 2 for-loop emit infinite-loop
     # bug on transform_chain-shape functions, and delivers no wins
     # elsewhere. Cluster D (inline-gated promotion) is eliminated
     # as a target. See rounds/R154.yaml.
+    # R165: Session 3 closed early — Path W (proper OSR entry) has
+    # negligible marginal value post-R162 because EA + filter
+    # already prevent the R154 latent bug from production trigger.
+    # R166: Session 4 SHIPPED — V8-style cumulative-bytecode budget
+    # (MaxRec=8, MaxCumulative=120). fib -4.5%, ack -5.5%, BT +3%.
+    # Class status now mature: 8 rounds historical, 1 revert (R35),
+    # multiple wins.
     key_negative_evidence: >
       R34: relaxed findInlineableGetGlobal; fib IR + bench unchanged.
       Root cause: fib stays at Tier 1 because shouldPromoteTier2
