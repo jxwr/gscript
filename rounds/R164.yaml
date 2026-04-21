@@ -1,0 +1,131 @@
+# R164: Session 2 — Gap 1 (IC-patched direct call) confirms R150's
+#       ceiling: emit-level call-path skips are at noise floor.
+#       Tried ClosurePtr + ctx.Constants + ctx.GlobalCache skips
+#       for static self. Measured fib at +2% (slightly WORSE vs R163)
+#       and ack at +2%. Reverted all R164 code; close Session 2
+#       early (1 of 17 rounds used, 16 returned to budget).
+round: 164
+date: 2026-04-21
+follows: 163
+
+type: strategy
+
+target:
+  benchmark: fib, ackermann
+
+hypothesis:
+  class: tier2-recursion-closure
+  claim: >
+    Revisit Gap 1 with R162's depth-aware filter + EA infrastructure
+    in place. Try skipping the staticSelf ctx.ClosurePtr /
+    ctx.Constants / ctx.GlobalCache save+restore+ctx writes. These
+    are invariant for same-proto self-calls but still emitted for
+    safety. Expected: 1-5% fib improvement per R150's noise-floor
+    ceiling.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.4   # tier2-recursion-closure class
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: >
+        Ship narrow ClosurePtr save/restore skip for staticSelf +
+        ctx.Constants/GlobalCache writes skip for staticSelf. Check
+        fib + ack 5-sample medians vs R163 baseline.
+      acceptance: no regression; 1-5% improvement hoped for
+      halt_on_fail: true
+  result: |
+    Implemented two narrow changes for staticSelf:
+      - Skip pre-BL ClosurePtr save (2 insns) and post-BL restore (2 insns).
+      - Skip pre-BL ctx.Constants write (2 insns) and post-BL ctx.Constants
+        restore (1 insn). mRegConsts already invariant across self-call.
+
+    Build + methodjit suite green. 5-sample fib:
+      0.874 / 0.876 / 0.885 / 0.887 / 0.890  → median 0.885s
+    vs R163 baseline 0.866s: **+2% slower** (inside noise).
+
+    5-sample ackermann:
+      0.416 / 0.424 / 0.424 / 0.424 / 0.428  → median 0.424s
+    vs R163 baseline 0.416s: **+2% slower**.
+
+    The skips technically reduce emit size but the removed stores
+    were pipelined behind other work on M4. Removing them exposed
+    other critical-path dependencies or added branch-prediction
+    pressure. Exactly R150's conclusion: emit-layer micro-cuts
+    below 5 insns are absorbed by the pipeline.
+
+    ALL R164 code changes reverted.
+  passed: false   # correctness pre-flight passed; perf pre-flight failed
+
+current_state_audit_summary: |
+  # Gap 1 (Path X) is definitively NOT tractable as a method-JIT
+  # emit win on GScript. R147-R150 arc plus R164 have collectively
+  # tried:
+  #   - R148 audit: identified 44-insn "dead" budget (WRONG on MaxStack).
+  #   - R149 Variant A: skipped MaxStack + full ctx → fib -88% but
+  #     SIGSEGV on deep recursion (MaxStack is cumulative safety).
+  #   - R149 Variant B: narrowed to numeric-static-self → ack
+  #     cold-start ABI bug.
+  #   - R150 bisect: only MaxStack moves fib; safe skips = 1.5% noise.
+  #   - R164 (this): narrow ClosurePtr + Constants skips → +2%
+  #     WORSE (not better) due to pipeline effects.
+  #
+  # Remaining Gap 1 possibilities would require ARCHITECTURAL
+  # changes (not emit-layer):
+  #   - Flip ctx save/restore responsibility to callee prologue
+  #     (V8's model). Requires callee-saved-register expansion to
+  #     include ctx fields. Major change.
+  #   - IC slot caches validated-MaxStack offset (pre-compute
+  #     callee_base + callee_maxstack <= regsEnd at IC install;
+  #     subsequent calls skip bounds). Requires IC invalidation
+  #     plumbing on regsEnd change.
+  #   - Trace JIT (not method JIT).
+  #
+  # None of these fit the "big architectural win" criteria at
+  # reasonable round budget. Session 2 closes early.
+
+verify:
+  result: |
+    Methodjit suite green (working tree unchanged). No code
+    committed in R164. 5-sample bench showed emit-level skips
+    delivered no wins.
+
+outcome:
+  status: no-win
+  shipped_code: false   # reverted all in-round
+  primary_win_bench: none
+  primary_win_pct: 0
+  reverted_in_round: true
+  notes: |
+    Session 2 closes at R164 with 16 rounds returned to the
+    overall budget. The call-path ceiling was already documented
+    in the R147-R150 arc; R164 reconfirmed under post-R162
+    conditions. Method-JIT can't close the fib/ack LuaJIT gap
+    further — that would require trace JIT or a fundamentally
+    different call architecture.
+
+    Sessions 3 (OSR) and 4 (inline heuristic) open next with
+    combined budget 34 + 16 banked = 50 rounds available. Plenty
+    of buffer.
+
+revert_class: cost-model-error
+revert_root_cause_location: internal/methodjit/emit_call_native.go (reverted)
+revert_cost_model_delta: |
+  Predicted: 1-5% fib improvement from ~7 insn reduction per static
+  self-call.
+  Actual: +2% WORSE median on both fib and ackermann.
+  Cause: M4's 6-8 wide superscalar had the removed stores hidden
+  behind other work; removing them exposed the critical path of
+  the BL+epilogue sequence or altered branch prediction.
+revert_prevention: |
+  R150 already documented this: "micro-cuts (≤5 insn savings) —
+  absorbed by M4 pipeline; not worth the emit complexity." The
+  prevention rule was there; R164 ignored it on the theory that
+  post-R162 conditions might differ. They don't.
+
+ledger_update:
+  classes_touched:
+    - tier2-recursion-closure
+  new_class_introduced: null
