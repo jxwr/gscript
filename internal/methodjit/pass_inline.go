@@ -45,9 +45,10 @@ func countOpHelper(fn *Function, op Op) int {
 
 // InlineConfig configures the function inlining pass.
 type InlineConfig struct {
-	Globals      map[string]*vm.FuncProto // global function name -> proto
-	MaxSize      int                      // max callee bytecode count (default 30)
-	MaxRecursion int                      // max inlining depth for self/mutually-recursive callees (0 = no recursive inlining)
+	Globals           map[string]*vm.FuncProto // global function name -> proto
+	MaxSize           int                      // max callee bytecode count (default 30)
+	MaxRecursion      int                      // max inlining depth for self/mutually-recursive callees (0 = no recursive inlining)
+	MaxCumulativeSize int                      // R166: V8-style cumulative-bytecode cap across all inlines in this compilation (0 = unbounded, preserves R73 behavior)
 }
 
 // inlineMaxIterations is the safety cap on recursive inlining iterations.
@@ -94,10 +95,15 @@ func InlinePassWith(config InlineConfig) PassFunc {
 		// recursiveMemo caches the isRecursiveOrMutual result so we don't
 		// re-walk the transitive call graph on every call site.
 		recursiveMemo := make(map[*vm.FuncProto]bool)
+		// R166: track cumulative bytecode across all inlines. V8's model
+		// (max-inlined-bytecode-size-cumulative=920). Bounds explosion for
+		// asymmetric call trees (ack) while allowing deeper linear inline
+		// for symmetric ones (fib).
+		cumulativeCtx := &inlineCumulativeTracker{}
 		for i := 0; i < inlineMaxIterations; i++ {
 			var inlined bool
 			var err error
-			fn, inlined, err = inlineCalls(fn, config, recursionCounts, recursiveMemo)
+			fn, inlined, err = inlineCalls(fn, config, recursionCounts, recursiveMemo, cumulativeCtx)
 			if err != nil {
 				return fn, err
 			}
@@ -116,7 +122,16 @@ func InlinePassWith(config InlineConfig) PassFunc {
 // instructions that can be resolved statically and inlines eligible callees.
 // Returns (fn, inlined, err) where inlined indicates whether any call was
 // inlined during this pass (used by the fixpoint driver).
-func inlineCalls(fn *Function, config InlineConfig, recursionCounts map[*vm.FuncProto]int, recursiveMemo map[*vm.FuncProto]bool) (*Function, bool, error) {
+// inlineCumulativeTracker tracks total inlined bytecode across the
+// entire fixpoint for a single compilation. R166's V8-alignment
+// prevents asymmetric call trees (e.g. ackermann: 2 nested calls per
+// level) from exploding the caller's code size when MaxRecursion is
+// raised to permit deeper inlining of symmetric trees (e.g. fib).
+type inlineCumulativeTracker struct {
+	totalBytes int
+}
+
+func inlineCalls(fn *Function, config InlineConfig, recursionCounts map[*vm.FuncProto]int, recursiveMemo map[*vm.FuncProto]bool, cumulative *inlineCumulativeTracker) (*Function, bool, error) {
 	// Iterate over blocks. We may add new blocks during inlining, so we
 	// snapshot the block list and process only the original blocks.
 	origBlocks := make([]*Block, len(fn.Blocks))
@@ -124,7 +139,7 @@ func inlineCalls(fn *Function, config InlineConfig, recursionCounts map[*vm.Func
 
 	inlined := false
 	for _, block := range origBlocks {
-		if inlineCallsInBlock(fn, block, config, recursionCounts, recursiveMemo) {
+		if inlineCallsInBlock(fn, block, config, recursionCounts, recursiveMemo, cumulative) {
 			inlined = true
 		}
 	}
@@ -141,7 +156,7 @@ func inlineCalls(fn *Function, config InlineConfig, recursionCounts map[*vm.Func
 // inlineCallsInBlock processes one block, looking for inlineable OpCall sites.
 // When a call is inlined, the block's instruction list is rewritten in place.
 // Returns true if at least one call in this block was inlined.
-func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursionCounts map[*vm.FuncProto]int, recursiveMemo map[*vm.FuncProto]bool) bool {
+func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursionCounts map[*vm.FuncProto]int, recursiveMemo map[*vm.FuncProto]bool, cumulative *inlineCumulativeTracker) bool {
 	inlined := false
 	// We iterate by index because we'll be replacing instructions in-place.
 	for i := 0; i < len(block.Instrs); i++ {
@@ -171,6 +186,14 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 			continue
 		}
 
+		// R166: check cumulative-bytecode budget (V8 alignment).
+		// Prevents asymmetric call trees from exploding caller body
+		// when MaxRecursion permits deeper inlining.
+		if config.MaxCumulativeSize > 0 &&
+			cumulative.totalBytes+len(calleeProto.Code) > config.MaxCumulativeSize {
+			continue
+		}
+
 		// Build the callee's IR.
 		calleeFn := BuildGraph(calleeProto)
 
@@ -181,6 +204,7 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 				block.Instrs = newInstrs
 				inlined = true
 				recursionCounts[calleeProto]++
+				cumulative.totalBytes += len(calleeProto.Code)
 				// Adjust index: the call was replaced, re-scan from the
 				// same position since new instructions were inserted.
 				i-- // will be incremented by the loop
@@ -193,6 +217,7 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		// moves post-call instrs to a merge block. Stop processing this block.
 		inlineMultiBlock(fn, block, instr, i, calleeFn, calleeName)
 		recursionCounts[calleeProto]++
+		cumulative.totalBytes += len(calleeProto.Code)
 		return true
 	}
 	return inlined

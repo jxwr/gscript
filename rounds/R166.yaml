@@ -1,0 +1,148 @@
+# R166: Session 4 — Gap 4 (inline heuristic) shipped. Implements
+#       V8-style cumulative-bytecode budget alongside the existing
+#       per-callee MaxRecursion. Tuned MaxRec=8 + cumulative=120
+#       wins fib -5%, ack -6% with one minor regression (BT +3%).
+round: 166
+date: 2026-04-21
+follows: 165
+
+type: tactical
+
+target:
+  benchmark: fib, ackermann
+
+hypothesis:
+  class: tier2-bounded-recursive-inline
+  claim: >
+    V8 uses cumulative-bytecode budget (~920) per compilation +
+    per-callee size cap, not GScript's uniform MaxRecursion. The
+    uniform cap under-inlines symmetric trees (fib) and over-
+    inlines asymmetric ones (ack). Adding cumulative cap lets us
+    raise MaxRecursion for fib's win without ack's blowup.
+
+class_gate:
+  ledger_consulted: true
+  prior_reject_rate: 0.2
+  mitigation_required: false
+
+pre_flight:
+  required:
+    - description: >
+        Add MaxCumulativeSize field to InlineConfig + threading
+        through inlineCalls/inlineCallsInBlock with a shared tracker.
+      acceptance: build passes
+      halt_on_fail: true
+    - description: >
+        Sweep (MaxRec, CumulativeSize) to find the best balance for
+        fib and ack without major regression on others.
+      acceptance: at least one config shows fib AND ack improvement
+      halt_on_fail: true
+  result: |
+    Implementation:
+      - Added InlineConfig.MaxCumulativeSize.
+      - Added inlineCumulativeTracker struct shared across the
+        fixpoint iterations.
+      - inlineCalls / inlineCallsInBlock take *inlineCumulativeTracker.
+      - Each successful inline (trivial or multi-block) increments
+        tracker.totalBytes by len(calleeProto.Code).
+      - Skip inlining if tracker.totalBytes + callee size would exceed
+        MaxCumulativeSize.
+
+    Sweep results (5-sample medians):
+      MaxRec=5, no cumul (R163 baseline):
+        fib 0.866, ack 0.416, BT 1.448
+
+      MaxRec=8, no cumul (the naive widen):
+        fib 0.833 (-4%), ack 0.538 (+29% REGRESS) — ack blowup as expected.
+
+      MaxRec=8, cumul=920 (V8's literal value):
+        fib 0.830 (-4%), ack 0.535 (+29%) — too generous for ack.
+
+      MaxRec=8, cumul=400:
+        fib 0.827 (-5%), ack 0.537 (+29%) — still ack regress.
+
+      MaxRec=8, cumul=150:
+        fib 0.824 (-5%), ack 0.410 (-1%) — ack flat ✓
+
+      MaxRec=8, cumul=130:
+        fib 0.829 (-4%), ack 0.420 (+1% noise), BT 1.553 (+7% REGRESS)
+
+      MaxRec=8, cumul=120:
+        fib 0.827 (-5%), ack 0.393 (-6%), BT 1.495 (+3%) ✓✓
+
+      MaxRec=8, cumul=100:
+        fib 0.890 (+3% REGRESS), ack 0.363 (-13%) — fib regress
+
+    Locked in (8, 120) — fib + ack both win, BT minor regression
+    is acceptable. Other 9 benchmarks all flat (within noise).
+  passed: true
+  failing_test: null
+  failing_output: null
+  surgical_scope: "pass_inline.go: +InlineConfig.MaxCumulativeSize, +inlineCumulativeTracker. pipeline.go: bumped MaxRec 5→8, added MaxCumulativeSize=120."
+  ir_diff_before: null
+  ir_diff_after: null
+  bisect_range: null
+
+current_state_audit_summary: |
+  # Session 4 outcome (1 round used, 16 returned):
+  #
+  #   MaxRecursion: 5 → 8 (more depth allowed)
+  #   MaxCumulativeSize: NEW = 120 bytecodes per compilation
+  #
+  # 5-sample bench medians vs R163 baseline:
+  #   fib              0.866 → 0.827s  -5%   ✓
+  #   ackermann        0.416 → 0.393s  -6%   ✓
+  #   mutual_recursion 0.180 → 0.179s  flat
+  #   mandelbrot       0.053 → 0.052s  flat (still surpassed)
+  #   fannkuch         0.043 → 0.043s  flat
+  #   nbody_dense      0.164 → 0.164s  flat
+  #   sieve            0.087 → 0.085s  flat
+  #   object_creation  0.008 → 0.008s  flat
+  #   binary_trees     1.448 → 1.495s  +3%   minor
+  #   sort             0.046 → 0.045s  flat
+  #   spectral_dense   0.023 → 0.023s  flat
+  #   matmul_dense     0.034 → 0.033s  flat
+  #
+  # The fib/ack improvements are the FIRST genuine wins on the call-
+  # heavy class since R132. They came not from emit-layer tweaks
+  # (which R147-R150, R164 confirmed are exhausted) but from a
+  # higher-level heuristic change — exactly the V8-validated
+  # direction in the R156 ADR.
+  #
+  # Cumulative-bytecode budget is a single-digit-LOC change but
+  # needed careful tuning (sweep showed 100/120/130/150/400/920
+  # have very different trade-offs). 120 hits the sweet spot for
+  # GScript's bench shape; not necessarily the right value for
+  # other workloads.
+
+verify:
+  result: |
+    methodjit + jit + vm + runtime + nanbox + parser + lexer +
+    benchmarks: all PASS. Pre-existing TestPool / TestChessAI
+    failures unchanged.
+
+outcome:
+  status: bench-win
+  bench_deltas:
+    fib: {from: 0.866s, to: 0.827s, pct: -4.5}
+    ackermann: {from: 0.416s, to: 0.393s, pct: -5.5}
+    binary_trees: {from: 1.448s, to: 1.495s, pct: +3.2}
+  regressions: [binary_trees]
+  shipped_code: true
+  primary_win_bench: ackermann
+  primary_win_pct: -5.5
+  reverted_in_round: false
+  notes: |
+    Session 4 closes here at R166 (1 round used, 16 returned).
+
+    Cumulative wins from this 4-session arc (R157-R166):
+      object_creation  -99.1%  (R161/R162)
+      ackermann        -5.5%   (R166)
+      fib              -4.5%   (R166)
+      sort             -6.0%   (R162)
+      various others   flat or small wins
+
+ledger_update:
+  classes_touched:
+    - tier2-bounded-recursive-inline
+  new_class_introduced: null

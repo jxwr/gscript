@@ -313,7 +313,23 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		// Combined with R72's inlineMaxCalleeSize=250, fib(15 ops) can
 		// unroll to ~120 ops inside main, eliminating BLR chains. Ack has
 		// same pattern. hasCallInLoop gate still protects against explosion.
-		config := InlineConfig{Globals: globals, MaxSize: maxSize, MaxRecursion: 5}
+		// R169 (Session 4 / Path I): inline heuristic overhaul. Replaces
+		// uniform MaxRecursion=5 (which under-inlines symmetric trees
+		// like fib and over-inlines asymmetric ones like ack) with
+		// V8-style cumulative-bytecode budget + raised per-callee depth.
+		//
+		// MaxRecursion=8 lets fib's symmetric tree inline 8 levels deep
+		// (vs 5 previously) for additional body fusion.
+		// MaxCumulativeSize=120 caps the total inlined bytecode per
+		// compilation, preventing ack's asymmetric tree (2 nested calls
+		// per level) from blowing up.
+		//
+		// 5-sample bench medians (R169 vs R163):
+		//   fib              0.827s vs 0.866s  -5%   ✓
+		//   ackermann        0.393s vs 0.416s  -6%   ✓
+		//   binary_trees     1.495s vs 1.448s  +3%   minor regression
+		//   others           flat (within noise)
+		config := InlineConfig{Globals: globals, MaxSize: maxSize, MaxRecursion: 8, MaxCumulativeSize: 120}
 		fn, err = InlinePassWith(config)(fn)
 		if err != nil {
 			return nil, nil, fmt.Errorf("Inline: %w", err)
