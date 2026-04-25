@@ -96,7 +96,7 @@
 - object_creation len_sq=0 (R2): inline pass phi rewrite missed loop header
 - string_bench (early): FCMPd on NaN-boxed pointers returned unordered
 
-### Historical (Trace JIT — deprecated)
+### Historical (deprecated `internal/jit/` experiment — see `adr-no-trace-jit.md`)
 
 ### spectral_norm: float accumulator treated as int
 ### nbody: guard-fail from slot reuse type mismatch

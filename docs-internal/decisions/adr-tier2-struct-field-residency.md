@@ -1,9 +1,10 @@
 # ADR: Tier 2 struct field residency (LICM for GetField)
 
 **Status:** Proposed (R29 architecture round, 2026-04-17)
-**Scope:** close nbody's 7.2× LuaJIT gap without trace JIT.
-**Related:** R21 ADR (disproven by R24), R25 ADR v2, `pass_scalar_promote.go`,
-`loops.go`, `emit_table_field.go`.
+**Scope:** close nbody's 7.2× LuaJIT gap inside the method-JIT
+substrate.
+**Related:** R21 ADR (disproven by R24), R25 ADR v2, `adr-no-trace-jit.md`,
+`pass_scalar_promote.go`, `loops.go`, `emit_table_field.go`.
 
 ---
 
@@ -68,8 +69,10 @@ At 10M iterations × ~14 GetField per iter × 4 insns average =
 that's ~280 ms — and nbody's total wall time is 237 ms. So GetField
 overhead is approximately equal to the entire benchmark.
 
-LuaJIT's trace JIT caches struct fields in traces; its `advance()`
+LuaJIT's substrate caches struct fields end-to-end; its `advance()`
 inner body compiles to ~15-20 total insns per iteration, not ~70.
+(Substrate choice locked by `adr-no-trace-jit.md`; we close from
+inside method JIT.)
 
 ### 1.2 What existing LICM does and doesn't do
 
@@ -127,12 +130,11 @@ and before register allocation:
   intrinsics as "doesn't mutate arbitrary tables." Already done in
   `pass_intrinsics_*`.)
 
-### 2.2 Why this isn't "trace JIT"
+### 2.2 Why this is method-JIT-shape
 
-Trace JIT records runtime paths and re-compiles them. This pass is
-static: it analyzes the SSA graph at compile time without any
-runtime recording. The specialization is keyed on the function's
-IR structure + shape feedback, not on an executed trace.
+Static SSA analysis at compile time, no runtime path recording. The
+specialization is keyed on the function's IR structure + shape
+feedback. Substrate locked by `adr-no-trace-jit.md`.
 
 ## 3. Expected impact
 
@@ -172,6 +174,6 @@ per iteration.
 ## 6. Decision outcome
 
 **Accepted.** Current state audit confirmed the gap is missing LICM
-for GetField, not typespec / dense-struct / trace JIT.
+for GetField, not typespec / dense-struct / substrate change.
 R32 takes implementation first; R33 validates composition; R34
 extends to matmul.

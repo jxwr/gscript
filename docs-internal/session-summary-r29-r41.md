@@ -2,10 +2,11 @@
 
 **Date:** 2026-04-17
 **Scope:** 13 rounds, user direction: real architectural restructuring
-(not docs) to surpass LuaJIT on ackermann/nbody/matmul. No trace JIT.
+(not docs) to surpass LuaJIT on ackermann/nbody/matmul. Substrate
+locked to method-JIT (see `decisions/adr-no-trace-jit.md`).
 **Result:** Honest conclusion — method-JIT architecture has a ceiling
 that cannot be crossed for these specific benchmarks without multi-
-session runtime-type work or trace JIT.
+session runtime-type work.
 
 ---
 
@@ -46,7 +47,8 @@ within a single session was not achievable. Reasons:
   - **Tier 2 lightweight self-call** (R40 infrastructure). Shipped
     but saves only ~1 insn per self-call net; not enough to
     reverse the fib_recursive regression.
-  - **Trace JIT**. Excluded by user direction.
+  - **Trace JIT**. Out of scope (substrate locked; see
+    `decisions/adr-no-trace-jit.md`).
 
 ### nbody (7.2×)
 - R29 audit claimed LICM doesn't hoist GetField; R32 IR read
@@ -115,24 +117,24 @@ LuaJIT gaps unchanged on target benchmarks this phase.
 ## 5. The ceiling argument
 
 LuaJIT's advantage on ackermann/nbody/matmul is **structural**:
-- Trace JIT records the execution path through recursion/loops
-  and inlines everything on that path. A trace is a single
-  linear block of native code.
+- End-to-end specialization at the substrate layer: the entire hot
+  path (recursion or inner loop) compiles to a single linear block
+  of native code with all guards elided.
 - FFI provides dense data structures that skip Table/Shape overhead.
 
-Within the method-JIT model (compile each function independently),
-the method-local optimizations we've exhausted (LICM, inline pass,
-typespec, emit-layer tweaks, tier routing) have hit their ceiling
-for these specific workloads. Further progress requires one of:
+Substrate is locked to method JIT (`decisions/adr-no-trace-jit.md`).
+Within that constraint, the method-local optimizations we've exhausted
+(LICM, inline pass, typespec, emit-layer tweaks, tier routing) have
+hit their ceiling for these specific workloads. Further progress must
+come from:
 
-1. **Trace JIT**: ~3-year engineering investment, wholesale
-   architectural replacement. Excluded by user direction.
-2. **FFI / dense-layout runtime types**: multi-session project per
+1. **FFI / dense-layout runtime types**: multi-session project per
    R30 ADR. Starts with ArrayDenseMatrix + compiler auto-detection.
-3. **Whole-program specialization**: inline everything aggressively
+2. **Whole-program specialization**: inline everything aggressively
    at compile time, accepting 10× code size growth. Complex
    engineering; would break binary-compatibility with current
    shape system.
+3. **V8-aligned 4-tier feedback** (Maglev-equivalent): future arc.
 
 None are single-session feasible.
 
@@ -173,12 +175,11 @@ This session attempted real architectural work per user direction
 and shipped R40's infrastructure. Direct LuaJIT-gap closure on the
 three specified benchmarks (ackermann/nbody/matmul) was not
 achieved; the workflow honestly reports that these gaps exceed
-what method-JIT can close without trace JIT or multi-session
-runtime-type work.
+what method-JIT can close without multi-session runtime-type work.
 
 The project's Mission statement — "Surpass LuaJIT on wall-time for
 every benchmark" — remains the north star. Getting there requires
-either a strategic decision to adopt trace JIT (contrary to user
-direction) or committing multi-quarter engineering to dense-layout
+multi-quarter engineering inside the method-JIT substrate (per
+`decisions/adr-no-trace-jit.md`): committing to dense-layout
 runtime types. This session's output is the honest diagnostic that
 informs that decision.

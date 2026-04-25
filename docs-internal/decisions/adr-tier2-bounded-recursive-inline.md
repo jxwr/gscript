@@ -1,10 +1,11 @@
 # ADR: Tier 2 bounded recursive inlining (fib/ackermann)
 
 **Status:** Proposed (R31 architecture round, 2026-04-17)
-**Scope:** close fib (59×) and ackermann (43×) LuaJIT gaps without
-trace JIT.
+**Scope:** close fib (59×) and ackermann (43×) LuaJIT gaps inside the
+method-JIT substrate.
 **Related:** R20 ADR (recursion closure plan — 5 strategies), R22 revert,
-`internal/methodjit/tiering_manager.go` inline pass, `pass_inline*.go`.
+`adr-no-trace-jit.md`, `internal/methodjit/tiering_manager.go` inline
+pass, `pass_inline*.go`.
 
 ---
 
@@ -30,11 +31,11 @@ sequence.
 
 ### 1.3 What LuaJIT does
 
-Trace JIT records fib(35)'s execution path, inlines through recursion
-in the trace, emits ~5 insns per "call" (now a loop iteration in the
-trace). ~20M iterations × 1 ns = 0.024 s. Matches observed.
+LuaJIT specializes fib(35)'s execution end-to-end at the substrate
+layer, producing ~5 insns per "iteration" (no per-call dispatch).
+~20M iterations × 1 ns = 0.024 s. Matches observed.
 
-**Without trace JIT**, the method-JIT equivalent is
+The method-JIT equivalent (per `adr-no-trace-jit.md`) is
 **static bounded recursive inlining**: at compile time, unroll the
 recursion N levels deep.
 
@@ -95,11 +96,11 @@ inline pass:
    without regressing other benchmarks.
 4. Size budget: `inlineMaxRecursiveSize = 160` (vs 80 for non-recursive).
 
-### 2.1 Why this isn't trace JIT
+### 2.1 Why this is method-JIT-shape, not a recording substrate
 
-Trace JIT records a RUNTIME execution path. This is STATIC unrolling
-at compile time based on the function's IR shape. Same code shape
-every time; no trace cache.
+Static unrolling at compile time based on the function's IR shape.
+Same code shape every time; no runtime path recording or trace cache.
+Substrate is locked by `adr-no-trace-jit.md`.
 
 ### 2.2 Safety
 

@@ -29,11 +29,13 @@ Full agent reports on file in `rounds/R156.yaml`. Headline:
    is architecturally equivalent to Maglev, not TurboFan.** Our
    choice of CFG-SSA + optimization pipeline is correct.
 
-2. **V8 picked "more tiers" over trace JIT.** This is strong evidence
-   that method JIT CAN close the recursion gap if the design is right.
-   Trace JIT is not the answer. GScript should not pursue Path C.
+2. **V8 picked "more tiers" over a recording substrate.** This is
+   strong evidence that method JIT CAN close the recursion gap if
+   the design is right. GScript should not pursue Path C
+   (codified in `adr-no-trace-jit.md`).
 
-3. **The single biggest non-trace-JIT gap is IC-patched direct call
+3. **The single biggest gap inside the method-JIT substrate is
+   IC-patched direct call
    without ctx-setup.** At every call site, V8 patches the IC slot to a
    direct JMP/CALL to the target `Code` entry. The caller does not
    rebuild callee ctx (Constants, Regs, ClosurePtr, GlobalCache) — the
@@ -172,9 +174,10 @@ ctx-setup dominates anyway.
 
 ## Non-decisions
 
-- **Path C (trace JIT)**: explicitly rejected. V8's shipped 4-tier
-  design with Turbolev is strong evidence that method JIT closes the
-  LuaJIT gap if the architecture is right. Trace JIT is not required.
+- **Path C (trace JIT)**: explicitly rejected; codified in
+  `adr-no-trace-jit.md`. V8's shipped 4-tier design with Turbolev is
+  strong evidence that method JIT closes the LuaJIT gap if the
+  architecture is right.
 - **Sparkplug-style frame-identical baseline**: deferred. GScript's
   Tier 1 already does native BLR with Tier 2-reachable DirectEntryPtr;
   Sparkplug adds a narrow win (Ignition→Sparkplug OSR is free) that

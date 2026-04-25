@@ -20,7 +20,7 @@ Tier 1  internal/methodjit/tier1_*.go  Baseline JIT: 1:1 bytecode templates, no 
 Tier 2  internal/methodjit/            Optimizing JIT: SSA IR → passes → RegAlloc → Emit.
 ```
 
-`internal/jit/` (trace JIT) is deprecated, disconnected from the CLI. Do not extend it.
+`internal/jit/` is deprecated (a trace-shaped experiment), disconnected from the CLI. Do not extend it; substrate is locked by `docs-internal/decisions/adr-no-trace-jit.md`.
 
 ## Tier 2 pipeline (fixed order)
 

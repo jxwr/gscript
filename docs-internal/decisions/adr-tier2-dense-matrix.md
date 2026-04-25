@@ -1,9 +1,10 @@
 # ADR: Tier 2 dense matrix layout for matmul-class
 
 **Status:** Proposed — PHASED (R30 architecture round, 2026-04-17)
-**Scope:** close matmul's 5.4× LuaJIT gap without trace JIT.
+**Scope:** close matmul's 5.4× LuaJIT gap inside the method-JIT
+substrate.
 **Related:** R21/R25 ADRs (tight-loop), R29 ADR (struct field residency),
-`internal/runtime/table.go` ArrayKind.
+`adr-no-trace-jit.md`, `internal/runtime/table.go` ArrayKind.
 
 ---
 
@@ -106,12 +107,13 @@ LDR Xd, [X2, X4, LSL #3]                  ; load float64 bits
 Stride is table-invariant once allocated → hoistable to enclosing
 loop preheader.
 
-## 3. Why this isn't trace JIT
+## 3. Why this is method-JIT-shape
 
 The kind is a static runtime type, recognized at compile time via
-feedback (Kind = ArrayDenseMatrix). No trace recording. The JIT emits
-the same code shape for every site that accesses the kind — just
-specialized to the known stride.
+feedback (Kind = ArrayDenseMatrix). No runtime path recording. The
+JIT emits the same code shape for every site that accesses the
+kind — just specialized to the known stride. Substrate is locked
+by `adr-no-trace-jit.md`.
 
 ## 4. Phased delivery (HONEST)
 
@@ -135,7 +137,6 @@ session's method-JIT scope. Honest acknowledgment recorded.
 - Automatic table-of-tables → DenseMatrix conversion without explicit
   hint. Too ambiguous in a general-purpose scripting language.
 - SIMD (NEON 2-wide FMULd). Deferred to a separate ADR post-DenseMatrix.
-- Trace JIT. Excluded by user direction.
 
 ## 6. Implementation deferred
 

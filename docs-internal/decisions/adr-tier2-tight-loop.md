@@ -207,7 +207,8 @@ If R26-R28 land 3.1 + 3.2 + 3.3 + 3.6:
 | fannkuch      | 0.046 | 0.025 | 0.019 | 1.3× |
 
 Gaps compress from 2.4-8.4× to 1.3-3.3×. Closing further needs 3.5
-(SIMD) or trace JIT.
+(SIMD) or whole-program speculation inside the method-JIT substrate
+(per `adr-no-trace-jit.md`).
 
 ## 5. Non-goals
 
@@ -238,6 +239,7 @@ fib 59× → 21× gap, ackermann 44× → 13×, sieve 8.4× → 3×,
 nbody/spectral/matmul 5-7× → 2.6-3.3×, fannkuch 2.4× → 1.3×.
 
 This is not LuaJIT parity. It's a 2-3× step toward it, inside the
-method-JIT substrate we have. Beyond this point, honest progress
-requires trace JIT — the topic of a future architecture round when
-we're ready to commit 1-2 engineer-years.
+method-JIT substrate we have. Substrate is locked by
+`adr-no-trace-jit.md`; beyond this point, further closure must come
+from V8-aligned mechanisms (cross-call EA, Maglev-style 4-tier
+feedback, whole-program speculation).

@@ -1,10 +1,11 @@
 # ADR: Tier 2 recursion and call-heavy closure plan
 
 **Status:** Proposed (R20 architecture round, 2026-04-17)
-**Scope:** close the fib (59×) and ackermann (44×) LuaJIT gaps without
-adopting trace JIT.
+**Scope:** close the fib (59×) and ackermann (44×) LuaJIT gaps inside
+the method-JIT substrate.
 **Related:** `internal/methodjit/emit_call_native.go`,
-`docs-internal/architecture/overview.md`, R5 Tier 0 gate, R6 revert.
+`docs-internal/architecture/overview.md`, `adr-no-trace-jit.md`,
+R5 Tier 0 gate, R6 revert.
 
 ---
 
@@ -21,17 +22,9 @@ sequence in `emit_call_native.go` is 13 steps with ~50 instructions
 per call. At M4's ~6 GHz-equivalent (6-8 wide), 50 insns = ~10 ns
 uncached but ~2 ns through the IC stream cache.
 
-LuaJIT's answer: **trace JIT**. It records an execution trace (linear
-path through recursion), compiles the trace including inlined
-recursion, runs the trace natively. Recursion disappears because the
-trace has no calls.
-
-**We are not adopting trace JIT.** Trace JIT is a 6-12 month build;
-the rest of the codebase (register allocator, TypeSpec, Tier 1) is
-method-JIT-shaped. Switching substrate would be a 3-year project.
-
-The ADR proposes what we CAN do within the method JIT to close
-most of this gap.
+The ADR proposes what we can do within the method-JIT substrate to
+close most of this gap. (Substrate choice is locked by
+`adr-no-trace-jit.md`.)
 
 ## 2. Anatomy of the 78 ns/call on fib
 
@@ -217,13 +210,12 @@ If R22-R25 land 3.1 + 3.2 + 3.3 + 3.4 + 3.5:
 | ackermann | 0.263   | 0.20 | 0.16 | 0.14 | 0.08 | **0.08** | 0.006 | 13× |
 
 Gap closes 59× → 21× on fib, 44× → 13× on ackermann. Not LuaJIT parity,
-but a 3× absolute win. Further closure requires trace JIT or
-method-level specialization we don't know how to build without
-trace JIT.
+but a 3× absolute win. Further closure must come from cross-call EA,
+larger inline budgets, or whole-program speculation inside the
+method-JIT substrate (per `adr-no-trace-jit.md`).
 
 ## 5. Non-goals
 
-- **Full trace JIT.** 3-year investment; not this quarter.
 - **Polymorphic inline cache for calls.** Already handled by R19 IC
   ADR for field/table ops; calls are a different structural case.
 - **Changing the calling convention for ALL calls.** Only self-call

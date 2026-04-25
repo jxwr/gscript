@@ -27,6 +27,7 @@ These are compressions of expensive lessons. Each is present-tense, grep-able, o
 10. **Multiple regressions = architecture problem**, not implementation bug. Don't patch in one place.
 11. **V8's architectural choices are the default.** Deviate only with explicit evidence.
 12. **Tier 2 is not always faster than Tier 1.** BLR + SSA setup cost more than inlining gains for call-dominated code.
+12a. **No trace JIT (substrate lock).** GScript stays method-JIT-shaped. A trace-shaped feature is admissible only if it integrates as a pass inside the existing Tier 2 pipeline (V8-aligned), never as a parallel substrate. Codified in `docs-internal/decisions/adr-no-trace-jit.md`. Do not resurrect `internal/jit/`.
 
 ### Code hygiene
 13. **No Go file exceeds 1000 lines.** Split at 800. Enforced by `.claude/hooks/file_size_guard.sh`.

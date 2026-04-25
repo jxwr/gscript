@@ -3,7 +3,8 @@
 **Date:** 2026-04-17
 **Scope:** 10 rounds targeting LuaJIT gaps on ackermann (43×),
 nbody (7.2×), matmul (5.4×). First 3 rounds architecture-only per
-user direction. No trace JIT.
+user direction. Substrate locked: method-JIT only
+(see `decisions/adr-no-trace-jit.md`).
 **Result:** 6 wins / 1 revert / 3 holds. **Zero wall-time change**.
 Substantial structural learning.
 

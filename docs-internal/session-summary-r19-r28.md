@@ -43,7 +43,7 @@ pattern-wasted tactical cycles.
   monomorphic IC already ships; gap is polymorphism + adaptive miss.
   Priority LOWER than R20/R21 work.
 - `adr-tier2-recursion-closure.md` (R20) — five strategies to close
-  fib 59×, ackermann 44× without trace JIT. Projected fib → 0.50s.
+  fib 59×, ackermann 44× inside the method-JIT substrate. Projected fib → 0.50s.
 - `adr-tier2-tight-loop.md` (R21) — typespec-gap premise. **Disproven.**
 - `adr-tier2-tight-loop-v2.md` (R25) — correct premise: the gaps are
   memory-pattern + dispatch + absent dense layout, not typespec.
@@ -176,11 +176,12 @@ the R26-added rule 23 (current-state audit) are compounding.
 This phase reshaped the gscript project's understanding of where
 its LuaJIT gaps come from. We now know:
 - **fib/ackermann**: call-cost-bound. Closable ~3× with R20's plan
-  (without trace JIT).
+  inside the method-JIT substrate.
 - **sieve**: bounds-check-bound. Closable ~2× with R29.
 - **matmul/nbody**: memory-pattern-bound. Not closable within
-  method-JIT scope. Would need a trace JIT or a dense-data-layout
-  runtime redesign — multi-quarter project.
+  current method-JIT capabilities. Needs a dense-data-layout
+  runtime redesign — multi-quarter project. (Substrate locked
+  per `decisions/adr-no-trace-jit.md`.)
 
 The next session's R29–R32 carry the forward queue. The workflow
 (v5 + rule 23) is ready to run them without the premise-based

@@ -30,7 +30,8 @@ Tier 2: Optimizing JIT (internal/methodjit/)
   After Tier 2 promotion, proto.DirectEntryPtr points to Tier 2's direct entry
   Tier 1 BLR callers seamlessly call Tier 2 code via DirectEntryPtr
 
-Legacy: Trace JIT (internal/jit/) — deprecated, disconnected from CLI
+Legacy: `internal/jit/` — deprecated trace-shaped experiment,
+disconnected from CLI; do not resurrect (see `adr-no-trace-jit.md`).
 ```
 
 ## Tier 1 Architecture (current focus)
@@ -152,7 +153,7 @@ Tier 2 handles ALL IR ops that the graph builder can produce:
 | X26 | VM register base (callee's `regs[base]`) |
 | X27 | Constants pointer |
 | X20-X23 | Allocatable GPRs (4 primary) |
-| X28 | Allocatable GPR (5th, freed from trace JIT) |
+| X28 | Allocatable GPR (5th, reclaimed from deprecated `internal/jit/` experiment) |
 | D4-D11 | Allocatable FPRs (8) |
 
 ## Exit Codes

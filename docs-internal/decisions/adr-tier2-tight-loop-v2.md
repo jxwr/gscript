@@ -67,7 +67,9 @@ shape check; `bi.vx`, `bi.vy`, `bi.vz` skip checks. Each GetField is
 
 LuaJIT's nbody uses FFI structs or tightly-packed tables. Same struct
 access but without GetField dispatch at all — direct field offsets
-baked into the trace. That's a trace JIT feature.
+baked into the compiled body. The closest method-JIT analog is a
+typed/dense-table specialization (see `adr-tier2-dense-matrix.md`)
+or whole-program EA — substrate locked by `adr-no-trace-jit.md`.
 
 **Not easily closed within method JIT scope.**
 
@@ -107,10 +109,14 @@ mix of memory-pattern + dispatch-overhead issues.
 ## 4. The honest projection for remaining gaps
 
 LuaJIT's advantage on tight-loop benchmarks is largely **architectural**:
-- Trace JIT specializes end-to-end; guards are elided across traces.
+- End-to-end specialization at the substrate layer; guards are elided
+  across the entire hot path.
 - FFI / packed data structures bypass table overhead.
-- SSA + trace specialization allow cross-call inlining that method JIT
-  can't replicate.
+- Cross-call inlining tighter than what static method-JIT inlining
+  achieves.
+
+(GScript's substrate choice is locked by `adr-no-trace-jit.md`;
+closure must come from V8-aligned mechanisms inside method JIT.)
 
 Inside the method-JIT box:
 - sieve bounds-elision: achievable, maybe 2× (8.4× → 4.2×).
