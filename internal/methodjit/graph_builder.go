@@ -646,7 +646,8 @@ func (b *graphBuilder) emitBlocks() {
 				instr := b.emit(block, OpGetTable, TypeAny, []*Value{tbl, key}, 0, kindAux2)
 				result := instr.Value()
 				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
-					if irType, ok := feedbackToIRType(b.proto.Feedback[pc].Result); ok {
+					fb := b.proto.Feedback[pc]
+					if irType, ok := feedbackToIRType(fb.Result); ok && !getTableKindImpliesType(kindAux2, irType) {
 						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
 						result = guard.Value()
 					}
@@ -971,3 +972,15 @@ func feedbackToIRType(fb vm.FeedbackType) (Type, bool) {
 	}
 }
 
+func getTableKindImpliesType(kindAux2 int64, typ Type) bool {
+	switch kindAux2 {
+	case int64(vm.FBKindInt):
+		return typ == TypeInt
+	case int64(vm.FBKindFloat):
+		return typ == TypeFloat
+	case int64(vm.FBKindBool):
+		return typ == TypeBool
+	default:
+		return false
+	}
+}

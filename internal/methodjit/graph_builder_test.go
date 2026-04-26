@@ -587,6 +587,26 @@ func f(t) {
 		}
 	})
 
+	t.Run("GetTable_FBInt_with_FBKindInt_skips_redundant_guard", func(t *testing.T) {
+		proto := compile(t, `
+func f(t) {
+	return t[1]
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETTABLE)
+		proto.EnsureFeedback()
+		proto.Feedback[pc] = vm.TypeFeedback{Result: vm.FBInt, Kind: vm.FBKindInt}
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		guard := findGuardAfterOp(fn, OpGetTable)
+		if guard != nil {
+			t.Fatalf("expected kind-specialized GetTable to skip redundant int guard, got Type=%v", guard.Type)
+		}
+	})
+
 	t.Run("GetTable_FBUnobserved_no_guard", func(t *testing.T) {
 		proto := compile(t, `
 func f(t) {
