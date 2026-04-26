@@ -1147,6 +1147,40 @@ tp := type(co)
 	expectGlobalString(t, g, "tp", "coroutine")
 }
 
+func TestVMCoroutineLeafNoCallReturn(t *testing.T) {
+	g := compileAndRun(t, `
+outside1 := coroutine.isyieldable()
+co := coroutine.create(func(x) {
+	return x * 2
+})
+ok, val := coroutine.resume(co, 21)
+s := coroutine.status(co)
+ok2, msg := coroutine.resume(co)
+outside2 := coroutine.isyieldable()
+`)
+	expectGlobalBool(t, g, "outside1", false)
+	expectGlobalBool(t, g, "ok", true)
+	expectGlobalInt(t, g, "val", 42)
+	expectGlobalString(t, g, "s", "dead")
+	expectGlobalBool(t, g, "ok2", false)
+	expectGlobalString(t, g, "msg", "cannot resume dead coroutine")
+	expectGlobalBool(t, g, "outside2", false)
+}
+
+func TestVMCoroutineYieldableOutsideWhileSuspended(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {
+	coroutine.yield(1)
+	return 2
+})
+ok, val := coroutine.resume(co)
+outside := coroutine.isyieldable()
+`)
+	expectGlobalBool(t, g, "ok", true)
+	expectGlobalInt(t, g, "val", 1)
+	expectGlobalBool(t, g, "outside", false)
+}
+
 // Test 16: wrap with for-range using iterator function
 func TestVMCoroutineWrapForRange(t *testing.T) {
 	g := compileAndRun(t, `

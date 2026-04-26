@@ -31,21 +31,23 @@ type vmYieldResult struct {
 // Each coroutine runs in its own goroutine with its own VM instance,
 // communicating with the caller via channels.
 type VMCoroutine struct {
-	status   VMCoroutineStatus
-	closure  *Closure
-	started  bool
+	status     VMCoroutineStatus
+	closure    *Closure
+	started    bool
+	leafNoCall bool
 
-	resumeCh chan []rt.Value      // caller -> coroutine
-	yieldCh  chan vmYieldResult   // coroutine -> caller
+	resumeCh chan []rt.Value    // caller -> coroutine
+	yieldCh  chan vmYieldResult // coroutine -> caller
 }
 
 // NewVMCoroutine creates a new VM coroutine wrapping the given closure.
 func NewVMCoroutine(cl *Closure) *VMCoroutine {
 	return &VMCoroutine{
-		status:   VMCoroutineSuspended,
-		closure:  cl,
-		resumeCh: make(chan []rt.Value, 1),
-		yieldCh:  make(chan vmYieldResult, 1),
+		status:     VMCoroutineSuspended,
+		closure:    cl,
+		leafNoCall: cl != nil && cl.Proto != nil && protoHasNoCalls(cl.Proto),
+		resumeCh:   make(chan []rt.Value, 1),
+		yieldCh:    make(chan vmYieldResult, 1),
 	}
 }
 
@@ -85,6 +87,13 @@ func getCurrentVMCoroutine() *VMCoroutine {
 	return v.(*VMCoroutine)
 }
 
+func (vm *VM) activeCoroutine() *VMCoroutine {
+	if vm.currentCoroutine != nil {
+		return vm.currentCoroutine
+	}
+	return getCurrentVMCoroutine()
+}
+
 func vmGoroutineID() int64 {
 	var buf [64]byte
 	n := runtime.Stack(buf[:], false)
@@ -101,6 +110,10 @@ func vmGoroutineID() int64 {
 // RegisterCoroutineLib installs VM-native coroutine functions into globals,
 // overriding the tree-walker's coroutine library which cannot handle VM closures.
 func (vm *VM) RegisterCoroutineLib() {
+	vm.SetGlobal("coroutine", rt.TableValue(vm.newCoroutineLib()))
+}
+
+func (vm *VM) newCoroutineLib() *rt.Table {
 	coLib := rt.NewTable()
 
 	// coroutine.create(fn) -> coroutine
@@ -140,7 +153,7 @@ func (vm *VM) RegisterCoroutineLib() {
 	coLib.RawSet(rt.StringValue("yield"), rt.FunctionValue(&rt.GoFunction{
 		Name: "coroutine.yield",
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
-			co := getCurrentVMCoroutine()
+			co := vm.activeCoroutine()
 			if co == nil {
 				return nil, fmt.Errorf("cannot yield from outside a coroutine")
 			}
@@ -171,7 +184,7 @@ func (vm *VM) RegisterCoroutineLib() {
 	coLib.RawSet(rt.StringValue("isyieldable"), rt.FunctionValue(&rt.GoFunction{
 		Name: "coroutine.isyieldable",
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
-			return []rt.Value{rt.BoolValue(getCurrentVMCoroutine() != nil)}, nil
+			return []rt.Value{rt.BoolValue(vm.activeCoroutine() != nil)}, nil
 		},
 	}))
 
@@ -219,7 +232,7 @@ func (vm *VM) RegisterCoroutineLib() {
 		},
 	}))
 
-	vm.SetGlobal("coroutine", rt.TableValue(coLib))
+	return coLib
 }
 
 // resumeCoroutine resumes a suspended VM coroutine.
@@ -233,6 +246,20 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 
 	co.status = VMCoroutineRunning
 
+	if !co.started && co.leafNoCall {
+		co.started = true
+		coVM := newChildVM(vm, co)
+		results, err := coVM.call(co.closure, args, 0, 0)
+		if results == nil {
+			results = []rt.Value{}
+		}
+		co.status = VMCoroutineDead
+		if err != nil {
+			return []rt.Value{rt.BoolValue(false), rt.StringValue(err.Error())}, nil
+		}
+		return append([]rt.Value{rt.BoolValue(true)}, results...), nil
+	}
+
 	if !co.started {
 		co.started = true
 		// Launch a new goroutine with its own VM sharing globals.
@@ -240,7 +267,7 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 			setCurrentVMCoroutine(co)
 			defer setCurrentVMCoroutine(nil)
 
-			coVM := newChildVM(vm)
+			coVM := newChildVM(vm, co)
 
 			// Wait for initial args from the first resume.
 			initArgs := <-co.resumeCh
@@ -271,4 +298,14 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 	}
 
 	return append([]rt.Value{rt.BoolValue(true)}, result.values...), nil
+}
+
+func protoHasNoCalls(proto *FuncProto) bool {
+	for _, inst := range proto.Code {
+		switch DecodeOp(inst) {
+		case OP_CALL, OP_TFORCALL:
+			return false
+		}
+	}
+	return true
 }

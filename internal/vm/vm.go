@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	maxStack     = 256 // max registers per call frame
-	maxCallDepth = 100000 // max call stack depth
-	maxMetaDepth = 50  // max __index chain depth
+	maxStack                 = 256    // max registers per call frame
+	maxCallDepth             = 100000 // max call stack depth
+	initialCallFrameCapacity = 64
+	maxMetaDepth             = 50 // max __index chain depth
 )
 
 // MethodJITEngine is the interface for the Method JIT compiler.
@@ -21,26 +22,29 @@ const (
 type MethodJITEngine interface {
 	TryCompile(proto *FuncProto) interface{} // returns *CompiledFunction or nil
 	Execute(compiled interface{}, regs []runtime.Value, base int, proto *FuncProto) ([]runtime.Value, error)
-	SetCallVM(v *VM)                         // sets the VM for call-exit/global-exit
+	SetCallVM(v *VM) // sets the VM for call-exit/global-exit
 }
 
 // VM is the bytecode virtual machine.
 type VM struct {
-	regs         []runtime.Value // register file (shared across frames via base offset)
-	frames       []CallFrame     // call stack
-	frameCount   int             // current number of active frames
-	globals      map[string]runtime.Value // legacy map (kept for interop)
-	globalArray  []runtime.Value          // indexed globals (fast path)
-	globalIndex  map[string]int           // name → index in globalArray
-	globalVer    uint32                   // bumped on structural changes (new globals added)
-	globalsMu    *sync.RWMutex  // protects globals for goroutine safety (shared across VMs)
-	noGlobalLock bool           // skip globals mutex (single-threaded mode)
-	openUpvals   []*Upvalue     // list of open upvalues (sorted by regIdx descending)
-	top          int            // top of used registers (for variable returns)
-	stringMeta   *runtime.Table // string metatable
-	methodJIT    MethodJITEngine
-	argBuf       [16]runtime.Value // pre-allocated arg buffer for OP_CALL
-	retBuf       [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
+	regs              []runtime.Value          // register file (shared across frames via base offset)
+	frames            []CallFrame              // call stack
+	frameCount        int                      // current number of active frames
+	globals           map[string]runtime.Value // legacy map (kept for interop)
+	globalArray       []runtime.Value          // indexed globals (fast path)
+	globalIndex       map[string]int           // name → index in globalArray
+	globalVer         uint32                   // bumped on structural changes (new globals added)
+	globalOverrides   map[string]runtime.Value // per-VM global overrides for coroutine-local builtins
+	globalOverrideIdx map[int]runtime.Value    // indexed mirror of globalOverrides for GETGLOBAL cache hits
+	globalsMu         *sync.RWMutex            // protects globals for goroutine safety (shared across VMs)
+	noGlobalLock      bool                     // skip globals mutex (single-threaded mode)
+	openUpvals        []*Upvalue               // list of open upvalues (sorted by regIdx descending)
+	top               int                      // top of used registers (for variable returns)
+	stringMeta        *runtime.Table           // string metatable
+	methodJIT         MethodJITEngine
+	argBuf            [16]runtime.Value // pre-allocated arg buffer for OP_CALL
+	retBuf            [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
+	currentCoroutine  *VMCoroutine      // coroutine currently running on this VM, if any
 }
 
 // SetMethodJIT sets the Method JIT engine for this VM.
@@ -99,7 +103,7 @@ func (vm *VM) CurrentVarargs() []runtime.Value {
 // CloseUpvalues() work correctly for the callee.
 // Returns false if the call stack would overflow.
 func (vm *VM) PushFrame(cl *Closure, base int) bool {
-	if vm.frameCount >= maxCallDepth {
+	if !vm.ensureFrameSlot() {
 		return false
 	}
 	frame := &vm.frames[vm.frameCount]
@@ -109,6 +113,29 @@ func (vm *VM) PushFrame(cl *Closure, base int) bool {
 	frame.numResults = -1
 	frame.varargs = nil
 	vm.frameCount++
+	return true
+}
+
+func (vm *VM) ensureFrameSlot() bool {
+	if vm.frameCount < len(vm.frames) {
+		return true
+	}
+	if vm.frameCount >= maxCallDepth {
+		return false
+	}
+	newLen := len(vm.frames) * 2
+	if newLen == 0 {
+		newLen = initialCallFrameCapacity
+	}
+	if newLen <= vm.frameCount {
+		newLen = vm.frameCount + 1
+	}
+	if newLen > maxCallDepth {
+		newLen = maxCallDepth
+	}
+	newFrames := make([]CallFrame, newLen)
+	copy(newFrames, vm.frames)
+	vm.frames = newFrames
 	return true
 }
 
@@ -143,6 +170,11 @@ func (vm *VM) Globals() map[string]runtime.Value {
 
 // GetGlobal reads a global variable with proper locking.
 func (vm *VM) GetGlobal(name string) runtime.Value {
+	if vm.globalOverrides != nil {
+		if v, ok := vm.globalOverrides[name]; ok {
+			return v
+		}
+	}
 	if vm.noGlobalLock {
 		if idx, ok := vm.globalIndex[name]; ok {
 			return vm.globalArray[idx]
@@ -188,6 +220,28 @@ func (vm *VM) SetGlobal(name string, val runtime.Value) {
 	vm.globalsMu.Unlock()
 }
 
+func (vm *VM) setGlobalOverride(name string, val runtime.Value) {
+	if vm.globalOverrides == nil {
+		vm.globalOverrides = make(map[string]runtime.Value, 1)
+	}
+	vm.globalOverrides[name] = val
+	if vm.globalOverrideIdx == nil {
+		vm.globalOverrideIdx = make(map[int]runtime.Value, 1)
+	}
+	if vm.noGlobalLock {
+		if idx, ok := vm.globalIndex[name]; ok {
+			vm.globalOverrideIdx[idx] = val
+		}
+		return
+	}
+	vm.globalsMu.RLock()
+	idx, ok := vm.globalIndex[name]
+	vm.globalsMu.RUnlock()
+	if ok {
+		vm.globalOverrideIdx[idx] = val
+	}
+}
+
 // resolveGlobalIndex returns the globalArray index for a global name,
 // creating a new entry if it doesn't exist.
 func (vm *VM) resolveGlobalIndex(name string) int {
@@ -215,7 +269,7 @@ func New(globals map[string]runtime.Value) *VM {
 
 	v := &VM{
 		regs:         runtime.MakeNilSlice(1024),
-		frames:       make([]CallFrame, maxCallDepth),
+		frames:       make([]CallFrame, initialCallFrameCapacity),
 		globals:      globals,
 		globalArray:  ga,
 		globalIndex:  gi,
@@ -326,19 +380,20 @@ func scanProtoRoots(proto *FuncProto, visitor func(unsafe.Pointer), seen map[uin
 
 // newChildVM creates a child VM that shares globals with the parent.
 // Used by coroutines which need to see the caller's global state.
-func newChildVM(parent *VM) *VM {
+func newChildVM(parent *VM, co *VMCoroutine) *VM {
 	child := &VM{
-		regs:         runtime.MakeNilSlice(1024),
-		frames:       make([]CallFrame, maxCallDepth),
-		globals:      parent.globals,
-		globalArray:  parent.globalArray,
-		globalIndex:  parent.globalIndex,
-		globalVer:    parent.globalVer,
-		globalsMu:    parent.globalsMu,
-		noGlobalLock: false, // shared globals, must lock
-		stringMeta:   parent.stringMeta,
+		regs:             runtime.MakeNilSlice(1024),
+		frames:           make([]CallFrame, initialCallFrameCapacity),
+		globals:          parent.globals,
+		globalArray:      parent.globalArray,
+		globalIndex:      parent.globalIndex,
+		globalVer:        parent.globalVer,
+		globalsMu:        parent.globalsMu,
+		noGlobalLock:     false, // shared globals, must lock
+		stringMeta:       parent.stringMeta,
+		currentCoroutine: co,
 	}
-	child.RegisterCoroutineLib()
+	child.setGlobalOverride("coroutine", runtime.TableValue(child.newCoroutineLib()))
 	runtime.RegisterVM(child)
 	return child
 }
@@ -363,7 +418,7 @@ func newIsolatedChildVM(parent *VM) *VM {
 
 	child := &VM{
 		regs:         runtime.MakeNilSlice(1024),
-		frames:       make([]CallFrame, maxCallDepth),
+		frames:       make([]CallFrame, initialCallFrameCapacity),
 		globals:      childGlobals,
 		globalArray:  ga,
 		globalIndex:  gi,
@@ -442,7 +497,7 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	}
 
 	// Push frame
-	if vm.frameCount >= maxCallDepth {
+	if !vm.ensureFrameSlot() {
 		return nil, fmt.Errorf("stack overflow (max call depth %d)", maxCallDepth)
 	}
 	frame := &vm.frames[vm.frameCount]
@@ -584,6 +639,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			}
 			cache := &proto.GlobalCache[bx]
 			if cache.index >= 0 && cache.version == vm.globalVer {
+				if vm.globalOverrideIdx != nil {
+					if v, ok := vm.globalOverrideIdx[int(cache.index)]; ok {
+						vm.regs[base+a] = v
+						break
+					}
+				}
 				if vm.noGlobalLock {
 					// Single-threaded: no lock needed
 					vm.regs[base+a] = vm.globalArray[cache.index]
@@ -599,10 +660,32 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				idx := vm.resolveGlobalIndex(name)
 				cache.index = int32(idx)
 				cache.version = vm.globalVer
+				if vm.globalOverrides != nil {
+					if v, ok := vm.globalOverrides[name]; ok {
+						vm.globalOverrideIdx[idx] = v
+						vm.regs[base+a] = v
+						break
+					}
+				}
 				vm.regs[base+a] = vm.globalArray[idx]
 			} else {
 				// Multi-threaded cache miss: locked map fallback
 				name := constants[bx].Str()
+				if vm.globalOverrides != nil {
+					if ov, ok := vm.globalOverrides[name]; ok {
+						vm.globalsMu.RLock()
+						idx, hasIdx := vm.globalIndex[name]
+						ver := vm.globalVer
+						vm.globalsMu.RUnlock()
+						if hasIdx {
+							cache.index = int32(idx)
+							cache.version = ver
+							vm.globalOverrideIdx[idx] = ov
+						}
+						vm.regs[base+a] = ov
+						break
+					}
+				}
 				vm.globalsMu.RLock()
 				v := vm.globals[name]
 				vm.globalsMu.RUnlock()
@@ -949,8 +1032,16 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			bidx := DecodeB(inst)
 			cidx := DecodeC(inst)
 			var bv, cv runtime.Value
-			if bidx >= RKBit { bv = constants[bidx-RKBit] } else { bv = vm.regs[base+bidx] }
-			if cidx >= RKBit { cv = constants[cidx-RKBit] } else { cv = vm.regs[base+cidx] }
+			if bidx >= RKBit {
+				bv = constants[bidx-RKBit]
+			} else {
+				bv = vm.regs[base+bidx]
+			}
+			if cidx >= RKBit {
+				cv = constants[cidx-RKBit]
+			} else {
+				cv = vm.regs[base+cidx]
+			}
 			r, err := vm.arithMod(bv, cv)
 			if err != nil {
 				return nil, wrapLineErr(frame, err)
@@ -968,8 +1059,16 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			bidx := DecodeB(inst)
 			cidx := DecodeC(inst)
 			var bv, cv runtime.Value
-			if bidx >= RKBit { bv = constants[bidx-RKBit] } else { bv = vm.regs[base+bidx] }
-			if cidx >= RKBit { cv = constants[cidx-RKBit] } else { cv = vm.regs[base+cidx] }
+			if bidx >= RKBit {
+				bv = constants[bidx-RKBit]
+			} else {
+				bv = vm.regs[base+bidx]
+			}
+			if cidx >= RKBit {
+				cv = constants[cidx-RKBit]
+			} else {
+				cv = vm.regs[base+cidx]
+			}
 			r, err := vm.arith(bv, cv, "__pow", func(x, y float64) float64 { return math.Pow(x, y) })
 			if err != nil {
 				return nil, wrapLineErr(frame, err)
@@ -1187,7 +1286,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				}
 
 				// Push new frame
-				if vm.frameCount >= maxCallDepth {
+				if !vm.ensureFrameSlot() {
 					return nil, fmt.Errorf("stack overflow (max call depth %d)", maxCallDepth)
 				}
 				newFrame := &vm.frames[vm.frameCount]
