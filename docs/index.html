@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-27</span>
   <br>
+  <a href="53-the-row-was-a-table">The Row Was a Table</a>
+  <p>Matmul's outer mixed-array loads return row tables, but Tier 2 was not carrying that result type through the nested access path. Tier 1 now records <code>FBTable</code> for mixed-array <code>GETTABLE</code> results, GraphBuilder marks those loads as <code>TypeTable</code>, and mixed-array codegen emits the table guard inline. This is a prerequisite for row-header hoisting: the compiler can now prove that <code>a[i]</code> and <code>b[k]</code> are row tables.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-27</span>
+  <br>
   <a href="52-the-two-pointers-that-met-in-the-middle">The Two Pointers That Met in the Middle</a>
   <p>Fannkuch's regression came from boxing the two-pointer reversal loop even though <code>lo &lt; hi</code> proves the single-step updates safe: <code>lo + 1</code> cannot exceed the raw int48 maximum and <code>hi - 1</code> cannot go below the minimum. Range analysis now recognizes only that strict converging shape, with a negative test for <code>hi -= 2</code>. Seven-run guard moved fannkuch from 0.062s to 0.052s while sort and table-array access stayed flat.</p>
 </div>
