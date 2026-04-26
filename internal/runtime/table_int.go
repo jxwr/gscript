@@ -7,6 +7,26 @@ package runtime
 // Keys like board[col*100+row] (range 101-910) will use array instead of imap.
 const sparseArrayMax = 1024
 
+const initialTypedArrayCap = 8
+
+func typedArrayCapFor(needed int) int {
+	if needed < initialTypedArrayCap {
+		return initialTypedArrayCap
+	}
+	return needed
+}
+
+func growTypedArrayCap(current, needed int) int {
+	next := current*2 + 1
+	if next < initialTypedArrayCap {
+		next = initialTypedArrayCap
+	}
+	if next < needed {
+		next = needed
+	}
+	return next
+}
+
 // classifyValueForArray returns the ArrayKind that a value would require.
 // TypeInt maps to ArrayInt; TypeFloat maps to ArrayFloat;
 // TypeBool maps to ArrayBool ([]byte, 1B/element, no GC pointers);
@@ -136,19 +156,19 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				switch vk {
 				case ArrayInt:
 					t.arrayKind = ArrayInt
-					t.intArray = make([]int64, 1, 1)
+					t.intArray = DefaultHeap.AllocInt64s(1, initialTypedArrayCap)
 					t.intArray[0] = valueToInt64(val)
 					t.array = nil
 					return
 				case ArrayFloat:
 					t.arrayKind = ArrayFloat
-					t.floatArray = make([]float64, 1, 1)
+					t.floatArray = DefaultHeap.AllocFloat64s(1, initialTypedArrayCap)
 					t.floatArray[0] = val.Float()
 					t.array = nil
 					return
 				case ArrayBool:
 					t.arrayKind = ArrayBool
-					t.boolArray = make([]byte, 1, 1)
+					t.boolArray = DefaultHeap.AllocByteSlice(1, initialTypedArrayCap)
 					if val.Bool() {
 						t.boolArray[0] = 2
 					} else {
@@ -169,7 +189,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		case ArrayInt:
 			vk := classifyValueForArray(val)
 			if vk == ArrayInt {
-				t.intArray = append(t.intArray, valueToInt64(val))
+				arenaAppendInt64(DefaultHeap, &t.intArray, valueToInt64(val))
 				t.absorbKeys()
 				return
 			}
@@ -179,7 +199,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			return
 		case ArrayFloat:
 			if val.Type() == TypeFloat {
-				t.floatArray = append(t.floatArray, val.Float())
+				arenaAppendFloat64(DefaultHeap, &t.floatArray, val.Float())
 				t.absorbKeys()
 				return
 			}
@@ -193,7 +213,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				if val.Bool() {
 					b = 2 // true
 				}
-				t.boolArray = append(t.boolArray, b)
+				arenaAppendByte(DefaultHeap, &t.boolArray, b)
 				t.absorbKeys()
 				return
 			}
@@ -211,19 +231,19 @@ func (t *Table) RawSetInt(key int64, val Value) {
 					switch vk {
 					case ArrayInt:
 						t.arrayKind = ArrayInt
-						t.intArray = make([]int64, 1, 8)
+						t.intArray = DefaultHeap.AllocInt64s(1, initialTypedArrayCap)
 						t.intArray[0] = valueToInt64(val)
 						t.absorbKeys()
 						return
 					case ArrayFloat:
 						t.arrayKind = ArrayFloat
-						t.floatArray = make([]float64, 1, 8)
+						t.floatArray = DefaultHeap.AllocFloat64s(1, initialTypedArrayCap)
 						t.floatArray[0] = val.Float()
 						t.absorbKeys()
 						return
 					case ArrayBool:
 						t.arrayKind = ArrayBool
-						t.boolArray = make([]byte, 1, 8)
+						t.boolArray = DefaultHeap.AllocByteSlice(1, initialTypedArrayCap)
 						if val.Bool() {
 							t.boolArray[0] = 2
 						} else {
@@ -242,27 +262,27 @@ func (t *Table) RawSetInt(key int64, val Value) {
 					switch vk {
 					case ArrayInt:
 						t.arrayKind = ArrayInt
-						t.intArray = make([]int64, 1, 8)
+						t.intArray = DefaultHeap.AllocInt64s(1, initialTypedArrayCap)
 						if !a0.IsNil() {
 							t.intArray[0] = valueToInt64(a0)
 						}
-						t.intArray = append(t.intArray, valueToInt64(val))
+						arenaAppendInt64(DefaultHeap, &t.intArray, valueToInt64(val))
 						t.array = nil
 						t.absorbKeys()
 						return
 					case ArrayFloat:
 						t.arrayKind = ArrayFloat
-						t.floatArray = make([]float64, 1, 8)
+						t.floatArray = DefaultHeap.AllocFloat64s(1, initialTypedArrayCap)
 						if !a0.IsNil() {
 							t.floatArray[0] = a0.Float()
 						}
-						t.floatArray = append(t.floatArray, val.Float())
+						arenaAppendFloat64(DefaultHeap, &t.floatArray, val.Float())
 						t.array = nil
 						t.absorbKeys()
 						return
 					case ArrayBool:
 						t.arrayKind = ArrayBool
-						t.boolArray = make([]byte, 1, 8) // 0 = nil sentinel
+						t.boolArray = DefaultHeap.AllocByteSlice(1, initialTypedArrayCap) // 0 = nil sentinel
 						if !a0.IsNil() {
 							if a0.Bool() {
 								t.boolArray[0] = 2
@@ -274,7 +294,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 						if val.Bool() {
 							b = 2 // true
 						}
-						t.boolArray = append(t.boolArray, b)
+						arenaAppendByte(DefaultHeap, &t.boolArray, b)
 						t.array = nil
 						t.absorbKeys()
 						return
@@ -295,9 +315,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			vk := classifyValueForArray(val)
 			if vk == ArrayInt {
 				if needed > cap(t.intArray) {
-					newSlice := make([]int64, len(t.intArray), needed)
-					copy(newSlice, t.intArray)
-					t.intArray = newSlice
+					t.intArray = DefaultHeap.GrowInt64s(t.intArray, growTypedArrayCap(cap(t.intArray), needed))
 				}
 				t.intArray = t.intArray[:needed]
 				t.intArray[key] = valueToInt64(val)
@@ -309,9 +327,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		case ArrayFloat:
 			if val.Type() == TypeFloat {
 				if needed > cap(t.floatArray) {
-					newSlice := make([]float64, len(t.floatArray), needed)
-					copy(newSlice, t.floatArray)
-					t.floatArray = newSlice
+					t.floatArray = DefaultHeap.GrowFloat64s(t.floatArray, growTypedArrayCap(cap(t.floatArray), needed))
 				}
 				t.floatArray = t.floatArray[:needed]
 				t.floatArray[key] = val.Float()
@@ -323,9 +339,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		case ArrayBool:
 			if val.Type() == TypeBool {
 				if needed > cap(t.boolArray) {
-					newSlice := make([]byte, len(t.boolArray), needed)
-					copy(newSlice, t.boolArray)
-					t.boolArray = newSlice
+					t.boolArray = DefaultHeap.GrowByteSlice(t.boolArray, growTypedArrayCap(cap(t.boolArray), needed))
 				}
 				t.boolArray = t.boolArray[:needed]
 				if val.Bool() {
@@ -352,7 +366,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 					switch vk {
 					case ArrayInt:
 						t.arrayKind = ArrayInt
-						t.intArray = make([]int64, needed)
+						t.intArray = DefaultHeap.AllocInt64s(needed, typedArrayCapFor(needed))
 						if !a0.IsNil() {
 							t.intArray[0] = valueToInt64(a0)
 						}
@@ -362,7 +376,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 						return
 					case ArrayFloat:
 						t.arrayKind = ArrayFloat
-						t.floatArray = make([]float64, needed)
+						t.floatArray = DefaultHeap.AllocFloat64s(needed, typedArrayCapFor(needed))
 						if !a0.IsNil() {
 							t.floatArray[0] = a0.Float()
 						}
@@ -372,7 +386,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 						return
 					case ArrayBool:
 						t.arrayKind = ArrayBool
-						t.boolArray = make([]byte, needed) // zeros = nil sentinel
+						t.boolArray = DefaultHeap.AllocByteSlice(needed, typedArrayCapFor(needed)) // zeros = nil sentinel
 						if !a0.IsNil() {
 							if a0.Bool() {
 								t.boolArray[0] = 2
@@ -466,14 +480,14 @@ func (t *Table) appendToTypedArray(val Value) {
 	case ArrayInt:
 		vk := classifyValueForArray(val)
 		if vk == ArrayInt {
-			t.intArray = append(t.intArray, valueToInt64(val))
+			arenaAppendInt64(DefaultHeap, &t.intArray, valueToInt64(val))
 		} else {
 			t.demoteToMixed()
 			arenaAppendValue(DefaultHeap, &t.array, val)
 		}
 	case ArrayFloat:
 		if val.Type() == TypeFloat {
-			t.floatArray = append(t.floatArray, val.Float())
+			arenaAppendFloat64(DefaultHeap, &t.floatArray, val.Float())
 		} else {
 			t.demoteToMixed()
 			arenaAppendValue(DefaultHeap, &t.array, val)
@@ -484,7 +498,7 @@ func (t *Table) appendToTypedArray(val Value) {
 			if val.Bool() {
 				b = 2 // true
 			}
-			t.boolArray = append(t.boolArray, b)
+			arenaAppendByte(DefaultHeap, &t.boolArray, b)
 		} else {
 			t.demoteToMixed()
 			arenaAppendValue(DefaultHeap, &t.array, val)
