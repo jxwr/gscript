@@ -6,6 +6,7 @@ import (
 )
 
 const tier2FeedbackArrayHint = 1024
+const tier2FeedbackOuterLoopArrayHint = 64 * 1024
 
 type tablePreallocHint struct {
 	arrayHint int64
@@ -22,6 +23,7 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
+	li := computeLoopInfo(fn)
 	candidates := make(map[int]tablePreallocHint)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -36,7 +38,13 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 				continue
 			}
 			hint := candidates[tbl.Def.ID]
-			hint.arrayHint = tier2FeedbackArrayHint
+			arrayHint := int64(tier2FeedbackArrayHint)
+			if li != nil && tbl.Def.Block != nil && li.loopBlocks[block.ID] && !li.loopBlocks[tbl.Def.Block.ID] {
+				arrayHint = tier2FeedbackOuterLoopArrayHint
+			}
+			if arrayHint > hint.arrayHint {
+				hint.arrayHint = arrayHint
+			}
 			if kind, ok := setTableArrayKindHint(instr); ok {
 				if hint.kind == runtime.ArrayMixed {
 					hint.kind = kind

@@ -66,3 +66,105 @@ func TestTablePreallocHintPassKeepsMixedForTableValues(t *testing.T) {
 		t.Fatalf("array kind = %d, want %d", kind, runtime.ArrayMixed)
 	}
 }
+
+func TestTablePreallocHintPassOuterLoopFillGetsLargeTypedHint(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "outer_loop_fill"}, NumRegs: 1}
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	header := &Block{ID: 1, defs: make(map[int]*Value)}
+	body := &Block{ID: 2, defs: make(map[int]*Value)}
+	exit := &Block{ID: 3, defs: make(map[int]*Value)}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, header, body, exit}
+
+	entry.Succs = []*Block{header}
+	header.Preds = []*Block{entry, body}
+	header.Succs = []*Block{body, exit}
+	body.Preds = []*Block{header}
+	body.Succs = []*Block{header}
+	exit.Preds = []*Block{header}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: entry}
+	entry.Instrs = []*Instr{
+		tbl,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: entry},
+	}
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: header}
+	header.Instrs = []*Instr{
+		phi,
+		cond,
+		{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Aux: int64(body.ID), Aux2: int64(exit.ID), Block: header},
+	}
+	val := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 7, Block: body}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown, Args: []*Value{tbl.Value(), phi.Value(), val.Value()}, Aux2: int64(vm.FBKindInt), Block: body}
+	body.Instrs = []*Instr{
+		val,
+		set,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: body},
+	}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: exit}}
+	phi.Args = []*Value{val.Value(), val.Value()}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+	newTable := got.Entry.Instrs[0]
+	if newTable.Aux != tier2FeedbackOuterLoopArrayHint {
+		t.Fatalf("outer loop fill hint = %d, want %d", newTable.Aux, tier2FeedbackOuterLoopArrayHint)
+	}
+	_, kind := unpackNewTableAux2(newTable.Aux2)
+	if kind != runtime.ArrayInt {
+		t.Fatalf("outer loop typed kind = %d, want %d", kind, runtime.ArrayInt)
+	}
+}
+
+func TestTablePreallocHintPassLoopLocalTableKeepsSmallHint(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "loop_local_table"}, NumRegs: 1}
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	header := &Block{ID: 1, defs: make(map[int]*Value)}
+	body := &Block{ID: 2, defs: make(map[int]*Value)}
+	exit := &Block{ID: 3, defs: make(map[int]*Value)}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, header, body, exit}
+
+	entry.Succs = []*Block{header}
+	header.Preds = []*Block{entry, body}
+	header.Succs = []*Block{body, exit}
+	body.Preds = []*Block{header}
+	body.Succs = []*Block{header}
+	exit.Preds = []*Block{header}
+
+	entry.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: entry}}
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: header}
+	header.Instrs = []*Instr{
+		phi,
+		cond,
+		{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Aux: int64(body.ID), Aux2: int64(exit.ID), Block: header},
+	}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: body}
+	val := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 7, Block: body}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown, Args: []*Value{tbl.Value(), phi.Value(), val.Value()}, Aux2: int64(vm.FBKindInt), Block: body}
+	body.Instrs = []*Instr{
+		tbl,
+		val,
+		set,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: body},
+	}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: exit}}
+	phi.Args = []*Value{val.Value(), val.Value()}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+	newTable := got.Blocks[2].Instrs[0]
+	if newTable.Aux != tier2FeedbackArrayHint {
+		t.Fatalf("loop-local table hint = %d, want %d", newTable.Aux, tier2FeedbackArrayHint)
+	}
+	_, kind := unpackNewTableAux2(newTable.Aux2)
+	if kind != runtime.ArrayInt {
+		t.Fatalf("loop-local typed kind = %d, want %d", kind, runtime.ArrayInt)
+	}
+}
