@@ -138,8 +138,6 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 
 	// Store result to R(A).
 	storeSlot(asm, a, jit.X0)
-	// Record type feedback for Tier 2 specialization.
-	emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "getfield")
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.
