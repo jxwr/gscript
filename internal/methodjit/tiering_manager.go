@@ -86,6 +86,7 @@ type TieringManager struct {
 	r154DeoptPrints  int
 
 	timeline *JITTimeline
+	warmDump *WarmDumpSession
 }
 
 // NewTieringManager creates a new TieringManager with Tier 1 baseline support
@@ -745,6 +746,8 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 		"attempt":    attempt,
 		"call_count": proto.CallCount,
 	})
+	trace := tm.warmDumpTrace(proto)
+	recordedWarmDump := false
 	if tm.envR154Trace {
 		fmt.Fprintf(os.Stderr, "[R154] compileTier2 ENTER proto=%q attempts=%d\n",
 			proto.Name, tm.tier2Attempts)
@@ -768,6 +771,9 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 				"attempt": attempt,
 				"reason":  retErr.Error(),
 			})
+			if trace != nil && !recordedWarmDump {
+				tm.recordWarmDumpCompile(proto, trace, cf, retErr)
+			}
 			if os.Getenv("GSCRIPT_JIT_DEBUG") == "1" {
 				fmt.Fprintf(os.Stderr, "tier2: compilation failed for %q: %v\n", proto.Name, retErr)
 			}
@@ -779,7 +785,12 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 		}
 	}()
 
-	return tm.compileTier2Pipeline(proto, nil)
+	cf, retErr = tm.compileTier2Pipeline(proto, trace)
+	if trace != nil {
+		tm.recordWarmDumpCompile(proto, trace, cf, retErr)
+		recordedWarmDump = true
+	}
+	return cf, retErr
 }
 
 // compileTier2Pipeline is the pure pipeline body shared between production

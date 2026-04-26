@@ -121,3 +121,17 @@ func openJITTimeline(opts jitCLIOptions) (*methodjit.JITTimeline, io.Closer, err
 	}
 	return timeline, closer, nil
 }
+
+func (r *tieringManagerReporter) EnableWarmDump(dir, protoName string) error {
+	if r == nil || r.tm == nil {
+		return fmt.Errorf("JIT unavailable")
+	}
+	return r.tm.EnableWarmDump(dir, protoName)
+}
+
+func (r *tieringManagerReporter) WriteWarmDump(top *bytecodevm.FuncProto) error {
+	if r == nil || r.tm == nil {
+		return fmt.Errorf("JIT unavailable")
+	}
+	return r.tm.WriteWarmDump(top)
+}

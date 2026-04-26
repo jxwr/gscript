@@ -26,6 +26,13 @@ type jitStatsReporter interface {
 type jitCLIOptions struct {
 	TimelinePath   string
 	TimelineFormat string
+	WarmDumpDir    string
+	WarmDumpProto  string
+}
+
+type jitWarmDumpController interface {
+	EnableWarmDump(dir, protoName string) error
+	WriteWarmDump(top *bytecodevm.FuncProto) error
 }
 
 // sortStrings is a tiny helper shared with platform files to keep them from
@@ -46,6 +53,8 @@ func main() {
 	jitStats := flag.Bool("jit-stats", false, "print JIT tier statistics after execution")
 	jitTimeline := flag.String("jit-timeline", "", "write production JIT event timeline to file ('-' for stderr)")
 	jitTimelineFormat := flag.String("jit-timeline-format", "jsonl", "JIT timeline format: jsonl or json")
+	jitDumpWarm := flag.String("jit-dump-warm", "", "write warm production Tier 2 diagnostic dump to directory")
+	jitDumpProto := flag.String("jit-dump-proto", "", "limit -jit-dump-warm to a proto name")
 	flag.Parse()
 
 	if *cpuprofile != "" {
@@ -128,6 +137,8 @@ func main() {
 		if err := runFileVM(interp, filename, *useJIT, *jitStats, jitCLIOptions{
 			TimelinePath:   *jitTimeline,
 			TimelineFormat: *jitTimelineFormat,
+			WarmDumpDir:    *jitDumpWarm,
+			WarmDumpProto:  *jitDumpProto,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
 			os.Exit(1)
@@ -190,13 +201,32 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 	if !jit && jitOpts.TimelinePath != "" {
 		return fmt.Errorf("JIT timeline requires JIT to be enabled")
 	}
+	if !jit && jitOpts.WarmDumpDir != "" {
+		return fmt.Errorf("-jit-dump-warm requires -jit")
+	}
+	var warmDumper jitWarmDumpController
 	if jit {
 		reporter, err = cliEnableJIT(bvm, jitOpts)
 		if err != nil {
 			return err
 		}
+		if reporter != nil {
+			warmDumper, _ = reporter.(jitWarmDumpController)
+		}
+	}
+	if jitOpts.WarmDumpDir != "" {
+		if warmDumper == nil {
+			return fmt.Errorf("-jit-dump-warm requires the darwin/arm64 method JIT")
+		}
+		if err := warmDumper.EnableWarmDump(jitOpts.WarmDumpDir, jitOpts.WarmDumpProto); err != nil {
+			return err
+		}
 	}
 	_, err = bvm.Execute(proto)
+	var dumpErr error
+	if jitOpts.WarmDumpDir != "" && warmDumper != nil {
+		dumpErr = warmDumper.WriteWarmDump(proto)
+	}
 	var closeErr error
 	if reporter != nil {
 		closeErr = reporter.Close()
@@ -208,10 +238,22 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 			fmt.Fprintln(os.Stderr, "JIT Statistics: JIT disabled or unavailable on this platform")
 		}
 	}
-	if err == nil {
-		err = closeErr
+	if err != nil {
+		if dumpErr != nil {
+			return fmt.Errorf("%w; warm dump failed: %v", err, dumpErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("%w; JIT close failed: %v", err, closeErr)
+		}
+		return err
 	}
-	return err
+	if dumpErr != nil {
+		return dumpErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return nil
 }
 
 func runREPL(interp *runtime.Interpreter) {
