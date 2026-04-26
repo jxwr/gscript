@@ -415,9 +415,9 @@ result := sum_points(100)
 
 // TestTier2_FibIterLargeN tests fibonacci_iterative with n=70, where the result
 // (190392490709135) exceeds int48 range (2^47-1 = 140737488355327). This
-// exercises the deopt-on-overflow path: when a+b overflows int48 mid-loop, the
-// JIT must flush all register-resident values (including loopExitBoxPhis) to
-// the VM register file before deopting to the interpreter.
+// exercises int-overflow semantics: when a+b leaves int48 mid-loop, Tier 2
+// must match the VM by promoting the loop-carried numeric values to boxed
+// floats instead of corrupting the NaN-box payload.
 func TestTier2_FibIterLargeN(t *testing.T) {
 	src := `
 func fib_iter(n) {
@@ -437,6 +437,71 @@ result := fib_iter(70)
 	// fib(70) = 190392490709135 which exceeds int48 range.
 	// The VM should promote to float or handle overflow correctly.
 	// The key check is that VM and JIT produce the same result.
+}
+
+func TestTier2_OverflowBoxedValueComparesAsNumber(t *testing.T) {
+	src := `
+func overflow_cmp() {
+    a := 100000000000000
+    b := a + a
+    if a < b {
+        return 1
+    }
+    return 0
+}
+result := overflow_cmp()
+`
+	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_RuntimeDeoptInvalidatesCompiledCode(t *testing.T) {
+	src := `
+func inc(x) {
+    return x + 1
+}
+`
+	proto := compileProto(t, src)
+	inc := findProtoByName(proto, "inc")
+	if inc == nil {
+		t.Fatal("inc proto not found")
+	}
+
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(inc); err != nil {
+		t.Fatalf("CompileTier2(inc): %v", err)
+	}
+	if _, ok := tm.tier2Compiled[inc]; !ok {
+		t.Fatal("inc should be compiled at Tier2 before guard deopt")
+	}
+
+	results, err := v.CallValue(v.GetGlobal("inc"), []runtime.Value{runtime.FloatValue(1.5)})
+	if err != nil {
+		t.Fatalf("CallValue(inc): %v", err)
+	}
+	if len(results) == 0 || !results[0].IsFloat() || math.Abs(results[0].Float()-2.5) > 1e-9 {
+		t.Fatalf("inc(1.5)=%v, want 2.5", results)
+	}
+
+	if !tm.tier2Failed[inc] {
+		t.Fatal("inc should be marked Tier2-failed after runtime guard deopt")
+	}
+	if _, ok := tm.tier2Compiled[inc]; ok {
+		t.Fatal("inc Tier2 code should be invalidated after runtime deopt")
+	}
+	if inc.Tier2Promoted {
+		t.Fatal("inc Tier2Promoted should be cleared after runtime deopt")
+	}
+	if reason := tm.tier2FailReason[inc]; reason == "" {
+		t.Fatal("inc runtime deopt should record a Tier2 fail reason")
+	}
 }
 
 // TestTier2_RepeatedCallPhiRegalloc exercises the register allocator's

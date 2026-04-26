@@ -41,6 +41,12 @@ const (
 	// guard corruption.
 	maxNativeCallDepth = 128
 
+	// Raw-int self calls use a 64-byte caller shim plus a 16-byte numeric
+	// callee frame, much smaller than the boxed direct-entry frame. Keep this
+	// separate so Ackermann-style raw recursion does not bounce through
+	// ExitCallExit at the generic boxed-call depth boundary.
+	maxRawSelfCallDepth = 512
+
 	// Raw-int self BL remains behind a kill switch, but the v1 entry,
 	// resume, fallback, and return contract is now wired through
 	// emitCallNativeRawIntSelf.
@@ -48,9 +54,11 @@ const (
 )
 
 const (
-	rawSelfFrameSize = 96
-	rawSelfArgsOff   = 48
-	rawSelfFuncOff   = 80
+	rawSelfFrameSize   = 64
+	rawSelfRegsOff     = 0
+	rawSelfCallModeOff = 8
+	rawSelfArgsOff     = 16
+	rawSelfFuncOff     = 48
 )
 
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
@@ -498,10 +506,8 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	}
 
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
-	_ = liveGPRs // GPR allocations are callee-saved by the full raw entry.
-	emptyGPRs := map[int]bool{}
-	if len(liveFPRs) > 0 {
-		ec.emitSpillSelectiveForCall(emptyGPRs, liveFPRs)
+	if len(liveGPRs) > 0 || len(liveFPRs) > 0 {
+		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
 	}
 
 	slowLabel := ec.uniqueLabel("t2rawself_slow")
@@ -511,27 +517,26 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
 
 	// Raw-call frame:
-	//   0..15   saved FP/LR
-	//   16..31  saved caller mRegRegs/mRegConsts
-	//   32      saved CallMode
-	//   40      saved BaselineClosurePtr
-	//   48..79  raw int args X0..X3
-	//   80      boxed function operand for VM fallback
-	//   88..95  padding for 16-byte alignment
+	//   0       saved caller mRegRegs
+	//   8       saved CallMode
+	//   16..47  raw int args X0..X3
+	//   48      boxed function operand for VM fallback
+	//   56..63  padding for 16-byte alignment
+	//
+	// The caller's own entry frame already owns FP/LR, and raw-int self calls
+	// stay within one proto/closure/constant domain. We keep the callee base in
+	// mRegRegs instead of round-tripping through ctx.Regs. Before any fallback
+	// to Go, emitRestoreRawSelfCallerState writes the caller base back into
+	// ctx.Regs so resume handlers still see the boxed VM ABI state.
 	asm.SUBimm(jit.SP, jit.SP, rawSelfFrameSize)
-	asm.STP(jit.X29, jit.X30, jit.SP, 0)
-	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
+	asm.STR(mRegRegs, jit.SP, rawSelfRegsOff)
 	asm.LDR(jit.X7, mRegCtx, execCtxOffCallMode)
-	asm.STR(jit.X7, jit.SP, 32)
-	asm.LDR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
-	asm.STR(jit.X7, jit.SP, 40)
+	asm.STR(jit.X7, jit.SP, rawSelfCallModeOff)
 	fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X7)
 	if fnReg != jit.X7 {
 		asm.MOVreg(jit.X7, fnReg)
 	}
 	asm.STR(jit.X7, jit.SP, rawSelfFuncOff)
-	jit.EmitExtractPtr(asm, jit.X8, jit.X7)
-	asm.STR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
 
 	ec.emitNumericArgsInRegs(instr, nParams)
 	for i := 0; i < nParams; i++ {
@@ -542,7 +547,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 
 	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
-	asm.CMPimm(jit.X7, maxNativeCallDepth)
+	asm.CMPimm(jit.X7, maxRawSelfCallDepth)
 	asm.BCond(jit.CondGE, slowLabel)
 
 	calleeFrameBytes := ec.nextSlot * jit.ValueSize
@@ -562,7 +567,6 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 		asm.LoadImm64(jit.X7, int64(calleeBaseOff))
 		asm.ADDreg(mRegRegs, mRegRegs, jit.X7)
 	}
-	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 	asm.MOVimm16(jit.X7, 1)
 	asm.STR(jit.X7, mRegCtx, execCtxOffCallMode)
 
@@ -580,9 +584,10 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.CBNZ(jit.X7, exitLabel)
 
 	ec.emitRestoreRawSelfCallerState()
-	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, rawSelfFrameSize)
-	ec.emitReloadSelectiveForCall(emptyGPRs, liveFPRs)
+	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+	ec.emitUnboxRawIntRegs(preRawIntRegs)
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
 	ec.storeRawInt(jit.X0, instr.ID)
 	postRawIntRegs := cloneBoolMap(ec.rawIntRegs)
 	asm.B(doneLabel)
@@ -591,11 +596,9 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.Label(slowLabel)
 	ec.emitRestoreRawSelfCallerState()
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
-	ec.emitStoreAllActiveRegs()
 	ec.emitMaterializeRawIntSelfCallFrameFromStack(funcSlot, nArgs, rawSelfFuncOff, rawSelfArgsOff)
-	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, rawSelfFrameSize)
-	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs)
+	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs, liveGPRs, liveFPRs)
 	ec.rawIntRegs = postRawIntRegs
 
 	asm.Label(doneLabel)
@@ -603,13 +606,10 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 
 func (ec *emitContext) emitRestoreRawSelfCallerState() {
 	asm := ec.asm
-	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
-	asm.LDR(jit.X7, jit.SP, 32)
+	asm.LDR(mRegRegs, jit.SP, rawSelfRegsOff)
+	asm.LDR(jit.X7, jit.SP, rawSelfCallModeOff)
 	asm.STR(jit.X7, mRegCtx, execCtxOffCallMode)
-	asm.LDR(jit.X7, jit.SP, 40)
-	asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
-	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
 }
 
 func (ec *emitContext) emitBoxCurrentClosure(dst, scratch jit.Reg) {
@@ -630,7 +630,7 @@ func (ec *emitContext) emitMaterializeRawIntSelfCallFrameFromStack(funcSlot, nAr
 	}
 }
 
-func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArgs, nRets int, preRawIntRegs map[int]bool) {
+func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArgs, nRets int, preRawIntRegs, liveGPRs, liveFPRs map[int]bool) {
 	asm := ec.asm
 
 	asm.LoadImm64(jit.X0, int64(funcSlot))
@@ -654,7 +654,7 @@ func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArg
 	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
 	asm.Label(continueLabel)
 
-	ec.emitReloadAllActiveRegs()
+	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 	ec.emitUnboxRawIntRegs(preRawIntRegs)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))

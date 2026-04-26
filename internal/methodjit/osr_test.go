@@ -183,6 +183,68 @@ result := sum_with_init(5000)
 	}
 }
 
+func TestOSR_NestedCallFallbackDoesNotReplayCaller(t *testing.T) {
+	src := `
+func new_point(x, y) {
+    p := {}
+    p.x = x
+    p.y = y
+    return p
+}
+
+func point_distance(p1, p2) {
+    dx := p1.x - p2.x
+    dy := p1.y - p2.y
+    return math.sqrt(dx * dx + dy * dy)
+}
+
+func point_translate(p, dx, dy) {
+    return new_point(p.x + dx, p.y + dy)
+}
+
+func point_scale(p, factor) {
+    return new_point(p.x * factor, p.y * factor)
+}
+
+func test_points(n) {
+    total_dist := 0.0
+    p := new_point(0.0, 0.0)
+    for i := 1; i <= n; i++ {
+        q := new_point(1.0 * i, 2.0 * i)
+        total_dist = total_dist + point_distance(p, q)
+        p = point_translate(p, 0.1, 0.2)
+        p = point_scale(p, 0.999)
+    }
+    return total_dist
+}
+
+result := test_points(1000)
+`
+	run := func(useJIT bool) float64 {
+		t.Helper()
+		proto := compileProto(t, src)
+		globals := runtime.NewInterpreterGlobals()
+		v := vm.New(globals)
+		if useJIT {
+			v.SetMethodJIT(NewTieringManager())
+		}
+		if _, err := v.Execute(proto); err != nil {
+			t.Fatalf("runtime error: %v", err)
+		}
+		result := v.GetGlobal("result")
+		if !result.IsFloat() {
+			t.Fatalf("expected float result, got %s (%v)", result.TypeName(), result)
+		}
+		return result.Float()
+	}
+
+	want := run(false)
+	got := run(true)
+	if got < want-1e-6 || got > want+1e-6 {
+		t.Fatalf("JIT result = %.4f, VM result = %.4f", got, want)
+	}
+}
+
 // TestOSR_CounterDisabled verifies that OSR does not trigger when the counter
 // is set to -1 (disabled). Uses a manual setup to isolate Tier 1 behavior.
 func TestOSR_CounterDisabled(t *testing.T) {

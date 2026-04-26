@@ -3,7 +3,9 @@
 package methodjit
 
 import (
+	"encoding/binary"
 	"testing"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -151,7 +153,9 @@ func caller(n, seed) {
 		t.Fatalf("caller must stay boxed, got %+v", abi)
 	}
 
-	args := []runtime.Value{runtime.IntValue(2), runtime.IntValue(90000000000000)}
+	// n must exceed the recursive inliner budget; otherwise caller can inline
+	// all executed grow frames and the separate grow Tier2 entry is not reached.
+	args := []runtime.Value{runtime.IntValue(10), runtime.IntValue(90000000000000)}
 	vmResults := runVMByName(t, src, "caller", args)
 	jitResults, entered := runForcedTier2ByName(t, top, "caller", []string{"grow", "caller"}, args)
 	assertRawIntSelfResultsEqual(t, "caller", jitResults, vmResults)
@@ -178,6 +182,51 @@ func TestRawIntSelfABI_DepthPressureFallback(t *testing.T) {
 	assertRawIntSelfResultsEqual(t, "sumdown", jitResults, vmResults)
 	if entered["sumdown"] == 0 {
 		t.Fatal("sumdown did not enter Tier 2")
+	}
+}
+
+func TestRawIntSelfABI_NumericEntryUsesThinFrame(t *testing.T) {
+	src := `func ack(m, n) {
+	if m == 0 { return n + 1 }
+	if n == 0 { return ack(m - 1, 1) }
+	return ack(m - 1, ack(m, n - 1))
+}`
+	top := compileTop(t, src)
+	ack := findProtoByName(top, "ack")
+	if ack == nil {
+		t.Fatal("function \"ack\" not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(ack); err != nil {
+		t.Fatalf("CompileTier2(ack): %v", err)
+	}
+	cf := tm.tier2Compiled[ack]
+	if cf == nil {
+		t.Fatal("ack did not compile to Tier 2")
+	}
+	if cf.NumericParamCount != 2 {
+		t.Fatalf("NumericParamCount=%d, want 2", cf.NumericParamCount)
+	}
+	if cf.NumericEntryOffset <= 0 {
+		t.Fatalf("NumericEntryOffset=%d, want positive offset", cf.NumericEntryOffset)
+	}
+
+	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+	entry := cf.NumericEntryOffset
+	if entry+16 > len(code) {
+		t.Fatalf("numeric entry offset %d outside code size %d", entry, len(code))
+	}
+
+	assertThinFramePrologue(t, code, entry, "numeric entry")
+	assertNumericEntryAvoidsCtxRegsReload(t, code, entry)
+
+	if len(cf.NumericResumeAddrs) == 0 {
+		t.Fatal("expected numeric resume entries for raw self-call fallback")
+	}
+	for _, resumeOff := range cf.NumericResumeAddrs {
+		assertThinFramePrologue(t, code, resumeOff, "numeric resume")
+		break
 	}
 }
 
@@ -242,6 +291,70 @@ inner := outer(44)`,
 			}
 		})
 	}
+}
+
+func isUnconditionalB(word uint32) bool {
+	return word&0xFC000000 == 0x14000000
+}
+
+func isGPRPairStoreToSP(word uint32) bool {
+	return word&0xFFC00000 == 0xA9000000 && ((word>>5)&0x1F) == 31
+}
+
+func isFPRPairStoreToSP(word uint32) bool {
+	return word&0xFFC00000 == 0x6D000000 && ((word>>5)&0x1F) == 31
+}
+
+func isLDRCtxRegsToMRegRegs(word uint32) bool {
+	pimm := uint32(execCtxOffRegs >> 3)
+	return word == 0xF9400000|((pimm&0xFFF)<<10)|uint32(mRegCtx)<<5|uint32(mRegRegs)
+}
+
+func assertThinFramePrologue(t *testing.T, code []byte, off int, label string) {
+	t.Helper()
+	if off+16 > len(code) {
+		t.Fatalf("%s offset %d outside code size %d", label, off, len(code))
+	}
+	gprPairStores := 0
+	fprPairStores := 0
+	for pc := off; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		if isUnconditionalB(word) {
+			break
+		}
+		if isGPRPairStoreToSP(word) {
+			gprPairStores++
+		}
+		if isFPRPairStoreToSP(word) {
+			fprPairStores++
+		}
+		if pc-off > 96 {
+			t.Fatalf("%s did not branch within expected prologue window", label)
+		}
+	}
+	if gprPairStores != 1 {
+		t.Fatalf("%s should save only FP/LR before body branch, got %d GPR pair stores", label, gprPairStores)
+	}
+	if fprPairStores != 0 {
+		t.Fatalf("%s should not save FPR pairs, got %d FPR pair stores", label, fprPairStores)
+	}
+}
+
+func assertNumericEntryAvoidsCtxRegsReload(t *testing.T, code []byte, off int) {
+	t.Helper()
+	for pc := off; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		if isUnconditionalB(word) {
+			return
+		}
+		if isLDRCtxRegsToMRegRegs(word) {
+			t.Fatal("numeric entry should receive mRegRegs from the raw caller, not reload ctx.Regs")
+		}
+		if pc-off > 96 {
+			t.Fatal("numeric entry did not branch within expected prologue window")
+		}
+	}
+	t.Fatal("numeric entry prologue scan reached end of code")
 }
 
 func runForcedTier2ByName(t *testing.T, top *vm.FuncProto, fnName string, compileNames []string, args []runtime.Value) ([]runtime.Value, map[string]byte) {

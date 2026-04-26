@@ -272,6 +272,11 @@ type CompiledFunction struct {
 	// BL is compile-time PC-relative.
 	NumericParamCount int
 
+	// NumericEntryOffset is the byte offset of t2_numeric_self_entry_N when
+	// NumericParamCount is non-zero. It is diagnostic metadata for tests and
+	// disassembly; raw callers branch to the label directly at codegen time.
+	NumericEntryOffset int
+
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
 	// It runs the function via the VM interpreter. Set by the caller
 	// (e.g., test harness or tiering engine) to provide VM fallback.

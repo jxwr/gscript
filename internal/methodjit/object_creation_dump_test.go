@@ -50,10 +50,13 @@ func TestObjectCreationDump(t *testing.T) {
 	// virtual-Phi scalar replacement that eliminates loop-carried
 	// NewTable allocations entirely. new_vec3 unchanged because its
 	// returned table escapes and EA correctly does not touch it.
+	//
+	// OverflowBoxing: create_and_sum / transform_chain lose redundant
+	// raw-int overflow deopt bookkeeping on boxed numeric loop values.
 	baselines := []baseline{
-		{"create_and_sum", 497, 114},  // R161: was 1277/598
-		{"transform_chain", 621, 136}, // R161: was 1701/816
-		{"new_vec3", 228, 135},        // unchanged EA shape; codegen bookkeeping moved
+		{"create_and_sum", 476, 85},  // R161: was 1277/598
+		{"transform_chain", 588, 92}, // R161: was 1701/816
+		{"new_vec3", 228, 135},       // unchanged EA shape; codegen bookkeeping moved
 	}
 
 	// Load benchmark source.

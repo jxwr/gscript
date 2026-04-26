@@ -236,6 +236,10 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 
 				// Execute the callee directly via JIT.
 				results, err := e.Execute(calleeBF, currentRegs, calleeBase, calleeProto)
+				if err == errOSRRequested && e.osrHandler != nil {
+					currentRegs = e.callVM.Regs()
+					results, err = e.osrHandler(currentRegs, calleeBase, calleeProto)
+				}
 
 				// Close upvalues and pop frame regardless of error.
 				e.callVM.CloseUpvalues(calleeBase)
@@ -604,9 +608,9 @@ func (e *BaselineJITEngine) handleAppend(ctx *ExecContext, regs []runtime.Value,
 // Rather than trying to resume the callee mid-execution (which is fragile with
 // nested BLR calls — the exitHandleLabel chain overwrites BaselinePC at each
 // level), we take the simpler approach:
-//   1. Disable BLR for this callee (prevent future mid-execution exits)
-//   2. Re-execute the callee from scratch via e.Execute() which handles all
-//      op-exits correctly through its own exit-resume loop
+//  1. Disable BLR for this callee (prevent future mid-execution exits)
+//  2. Re-execute the callee from scratch via e.Execute() which handles all
+//     op-exits correctly through its own exit-resume loop
 //
 // This only happens ONCE per callee (DirectEntryPtr is cleared), so the cost
 // of re-execution is amortized across all future calls.
@@ -667,6 +671,12 @@ func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtim
 	// Re-execute the callee from scratch via Execute, which has a proper
 	// exit-resume loop that handles all op-exits correctly.
 	results, err := e.Execute(calleeBF, regs, calleeBase, calleeProto)
+	if err == errOSRRequested && e.osrHandler != nil {
+		if e.callVM != nil {
+			regs = e.callVM.Regs()
+		}
+		results, err = e.osrHandler(regs, calleeBase, calleeProto)
+	}
 
 	// Close upvalues and pop frame regardless of error.
 	if e.callVM != nil {

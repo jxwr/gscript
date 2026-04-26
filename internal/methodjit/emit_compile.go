@@ -245,6 +245,13 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 
 	// Resolve direct entry offset for BLR callers.
 	directEntryOff := ec.asm.LabelOffset("t2_direct_entry")
+	numericEntryOff := 0
+	if ec.numericParamCount > 0 {
+		label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
+		if off := ec.asm.LabelOffset(label); off >= 0 {
+			numericEntryOff = off
+		}
+	}
 
 	// Allocate per-GetGlobal value cache if any GetGlobal instructions exist.
 	var globalCache []uint64
@@ -266,6 +273,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		ResumeAddrs:        resumeAddrs,
 		NumericResumeAddrs: numericResumeAddrs,
 		DirectEntryOffset:  directEntryOff,
+		NumericEntryOffset: numericEntryOff,
 		GlobalCache:        globalCache,
 		CallCache:          callCache,
 	}, nil
@@ -565,10 +573,11 @@ func blockLabel(b *Block) string {
 
 // emitNumericBody emits a second Tier 2 body under numericMode=true.
 // The numeric entry label `t2_numeric_self_entry_N` receives raw int
-// args in X0..X(N-1), builds the same full native frame, reloads ctx.Regs,
-// and jumps to the pass-2 entry block. Pass 2 re-emits every block with
-// num_ labels and numeric-aware LoadSlot, Return, self-call, and
-// exit-resume behavior.
+// args in X0..X(N-1), builds a thin FP/LR frame, and jumps to the pass-2
+// entry block. Raw callers pass the callee VM register base directly in the
+// pinned mRegRegs register and spill/reload their own live allocated registers
+// around the BL, so this entry does not save the full callee-saved register
+// set used by the boxed public ABI.
 func (ec *emitContext) emitNumericBody() {
 	if ec.numericParamCount <= 0 {
 		return
@@ -581,19 +590,9 @@ func (ec *emitContext) emitNumericBody() {
 
 	label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
 	asm.Label(label)
-	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+	asm.SUBimm(jit.SP, jit.SP, uint16(numericSelfEntryFrameSize))
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.X29, jit.SP, 0)
-	asm.STP(jit.X19, jit.X20, jit.SP, 16)
-	asm.STP(jit.X21, jit.X22, jit.SP, 32)
-	asm.STP(jit.X23, jit.X24, jit.SP, 48)
-	asm.STP(jit.X25, jit.X26, jit.SP, 64)
-	asm.STP(jit.X27, jit.X28, jit.SP, 80)
-	if ec.useFPR {
-		asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
-	}
-	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
 	asm.B(fmt.Sprintf("num_B%d", ec.fn.Entry.ID))
 
 	prevNumericMode := ec.numericMode
@@ -662,6 +661,11 @@ func callExitResumeLabelForPass(instrID int, numericMode bool) string {
 
 // frameSize is the stack frame size for callee-saved registers.
 const frameSize = 128
+
+// numericSelfEntryFrameSize is the thin raw-int self-recursive frame. Raw
+// callers preserve their own live allocated registers, so the numeric entry
+// only needs FP/LR for the native BL/RET chain.
+const numericSelfEntryFrameSize = 16
 
 // emitTier2EntryMark writes 1 to proto.EnteredTier2 (one byte). It is
 // called at the head of each Tier 2 entry point so that a single glance
@@ -838,31 +842,13 @@ func (ec *emitContext) emitEpilogue() {
 		asm.Label("num_epilogue")
 		asm.MOVimm16(jit.X16, 0)
 		asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
-		if ec.useFPR {
-			asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-			asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
-		}
-		asm.LDP(jit.X27, jit.X28, jit.SP, 80)
-		asm.LDP(jit.X25, jit.X26, jit.SP, 64)
-		asm.LDP(jit.X23, jit.X24, jit.SP, 48)
-		asm.LDP(jit.X21, jit.X22, jit.SP, 32)
-		asm.LDP(jit.X19, jit.X20, jit.SP, 16)
 		asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-		asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+		asm.ADDimm(jit.SP, jit.SP, uint16(numericSelfEntryFrameSize))
 		asm.RET()
 
 		asm.Label("num_deopt_epilogue")
-		if ec.useFPR {
-			asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-			asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
-		}
-		asm.LDP(jit.X27, jit.X28, jit.SP, 80)
-		asm.LDP(jit.X25, jit.X26, jit.SP, 64)
-		asm.LDP(jit.X23, jit.X24, jit.SP, 48)
-		asm.LDP(jit.X21, jit.X22, jit.SP, 32)
-		asm.LDP(jit.X19, jit.X20, jit.SP, 16)
 		asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-		asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+		asm.ADDimm(jit.SP, jit.SP, uint16(numericSelfEntryFrameSize))
 		asm.RET()
 	}
 }

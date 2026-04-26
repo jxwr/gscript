@@ -589,6 +589,37 @@ func f(x) {
 	}
 }
 
+func TestInlinePreserveSelfCalls(t *testing.T) {
+	src := `
+func ack(m, n) {
+	if m == 0 { return n + 1 }
+	if n == 0 { return ack(m - 1, 1) }
+	return ack(m - 1, ack(m, n - 1))
+}
+`
+	fn, config := buildInlineTestIR(t, src, "ack")
+	before := countOp(fn, OpCall)
+	if before == 0 {
+		t.Fatal("expected self-recursive OpCall before inlining")
+	}
+
+	config.MaxRecursion = 8
+	config.MaxCumulativeSize = 120
+	config.PreserveSelfCalls = true
+	result, err := InlinePassWith(config)(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	if after := countOp(result, OpCall); after != before {
+		t.Fatalf("PreserveSelfCalls should keep self-call shape: before=%d after=%d", before, after)
+	}
+	if errs := Validate(result); len(errs) > 0 {
+		for _, e := range errs {
+			t.Errorf("validation error: %v", e)
+		}
+	}
+}
+
 // TestInlineMutualRecursion verifies that MaxRecursion bounds apply across
 // mutual recursion (ping -> pong -> ping -> pong -> ...). Inlining must
 // terminate, produce valid IR, and match VM output.

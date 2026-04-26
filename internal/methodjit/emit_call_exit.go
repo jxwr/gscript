@@ -308,7 +308,8 @@ type deferredResume struct {
 
 // emitDeferredResumes emits all resume entry points after the epilogue.
 // Each resume entry is a complete function entry point:
-//  1. Full prologue (save callee-saved regs, set up stack frame)
+//  1. Pass-specific prologue (boxed pass uses full frame; numeric pass uses
+//     the same thin frame as t2_numeric_self_entry_N)
 //  2. Load pinned registers from ExecContext
 //  3. Jump to the continue label (which reloads values and continues)
 func (ec *emitContext) emitDeferredResumes() {
@@ -316,18 +317,24 @@ func (ec *emitContext) emitDeferredResumes() {
 		resumeLabel := callExitResumeLabelForPass(dr.instrID, dr.numericPass)
 		ec.asm.Label(resumeLabel)
 
-		// Full prologue (identical to the main function entry).
-		ec.asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
-		ec.asm.STP(jit.X29, jit.X30, jit.SP, 0)
-		ec.asm.ADDimm(jit.X29, jit.SP, 0)
-		ec.asm.STP(jit.X19, jit.X20, jit.SP, 16)
-		ec.asm.STP(jit.X21, jit.X22, jit.SP, 32)
-		ec.asm.STP(jit.X23, jit.X24, jit.SP, 48)
-		ec.asm.STP(jit.X25, jit.X26, jit.SP, 64)
-		ec.asm.STP(jit.X27, jit.X28, jit.SP, 80)
-		if ec.useFPR {
-			ec.asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-			ec.asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+		if dr.numericPass {
+			ec.asm.SUBimm(jit.SP, jit.SP, uint16(numericSelfEntryFrameSize))
+			ec.asm.STP(jit.X29, jit.X30, jit.SP, 0)
+			ec.asm.ADDimm(jit.X29, jit.SP, 0)
+		} else {
+			// Full prologue (identical to the main boxed function entry).
+			ec.asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+			ec.asm.STP(jit.X29, jit.X30, jit.SP, 0)
+			ec.asm.ADDimm(jit.X29, jit.SP, 0)
+			ec.asm.STP(jit.X19, jit.X20, jit.SP, 16)
+			ec.asm.STP(jit.X21, jit.X22, jit.SP, 32)
+			ec.asm.STP(jit.X23, jit.X24, jit.SP, 48)
+			ec.asm.STP(jit.X25, jit.X26, jit.SP, 64)
+			ec.asm.STP(jit.X27, jit.X28, jit.SP, 80)
+			if ec.useFPR {
+				ec.asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+				ec.asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+			}
 		}
 
 		// Set up pinned registers from ExecContext (X0 = ctx ptr from trampoline).

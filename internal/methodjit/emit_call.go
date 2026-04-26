@@ -309,8 +309,10 @@ func (ec *emitContext) emitGuardTruthy(instr *Instr) {
 }
 
 // emitFloatBinOp emits ARM64 code for type-generic binary arithmetic
-// that handles both int and float operands. For int+int, produces int result.
-// For any float operand, promotes to float and produces float result.
+// that handles both int and float operands. For int+int, it keeps an int
+// result while the value fits the int48 NaN-box payload; otherwise it promotes
+// the result to float, matching runtime.Value.SetInt. For any float operand,
+// it promotes to float and produces a float result.
 func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	if len(instr.Args) < 2 {
 		return
@@ -353,15 +355,25 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 		asm.SDIV(jit.X2, jit.X0, jit.X1)
 		asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
 	}
-	// R77: int48 overflow check. Without this, int*int that exceeds
-	// 2^47 (e.g. x*13 in a loop) wraps to 64-bit then gets NaN-tag-ORed
-	// into a corrupt Value. Mod is exempt — it cannot increase magnitude.
-	// Matches the same check present in emitRawIntBinOp (emit_arith.go).
+	// Int48 overflow in the generic boxed path promotes to float instead of
+	// deopting. Raw-int specialized ops still deopt because their loop phis
+	// cannot carry a boxed float, but OpAdd/OpSub/OpMul can.
 	if op != intBinMod && instr.Aux2 == 0 && !ec.int48Safe(instr.ID) {
-		ec.emitInt48OverflowCheck(jit.X0, instr)
+		overflow := ec.uniqueLabel("arith_int_overflow")
+		asm.SBFX(jit.X2, jit.X0, 0, 48)
+		asm.CMPreg(jit.X2, jit.X0)
+		asm.BCond(jit.CondNE, overflow)
+		jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+		asm.B(done)
+
+		asm.Label(overflow)
+		asm.SCVTF(jit.D0, jit.X0)
+		asm.FMOVtoGP(jit.X0, jit.D0)
+		asm.B(done)
+	} else {
+		jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+		asm.B(done)
 	}
-	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
-	asm.B(done)
 
 	// LHS is float (not int).
 	asm.Label(lhsNotInt)
@@ -401,7 +413,6 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	case intBinMod:
 		// Float mod is complex; deopt for now.
 		ec.emitDeopt(instr)
-		return
 	}
 
 	// Move float result back to GP and store.
@@ -502,6 +513,90 @@ func (ec *emitContext) emitFloatCmp(instr *Instr, cond jit.Cond) {
 	asm.ORRreg(jit.X0, jit.X0, mRegTagBool)
 
 	// Store NaN-boxed bool result (comparison result is always bool, not float).
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+// emitGenericNumericCmp emits comparison for generic numeric values that may be
+// int or float after overflow boxing. Raw int-int comparisons stay integer;
+// mixed int/float comparisons convert the int side to float. For EQ, identical
+// NaN-boxed bit patterns are accepted first so nil/bool/pointer identity keeps
+// the old fast behavior for generic Eq sites.
+func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
+	if len(instr.Args) < 2 {
+		return
+	}
+	asm := ec.asm
+
+	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if lhsReg != jit.X0 {
+		asm.MOVreg(jit.X0, lhsReg)
+	}
+	rhsReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if rhsReg != jit.X1 {
+		asm.MOVreg(jit.X1, rhsReg)
+	}
+
+	trueLabel := ec.uniqueLabel("cmp_true")
+	falseLabel := ec.uniqueLabel("cmp_false")
+	doneLabel := ec.uniqueLabel("cmp_done")
+
+	if cond == jit.CondEQ {
+		asm.CMPreg(jit.X0, jit.X1)
+		asm.BCond(jit.CondEQ, trueLabel)
+	}
+
+	emitCheckIsInt(asm, jit.X0, jit.X2)
+	lhsNotInt := ec.uniqueLabel("cmp_lhs_not_int")
+	asm.BCond(jit.CondNE, lhsNotInt)
+
+	emitCheckIsInt(asm, jit.X1, jit.X2)
+	lhsIntRhsNotInt := ec.uniqueLabel("cmp_lhs_int_rhs_not_int")
+	asm.BCond(jit.CondNE, lhsIntRhsNotInt)
+
+	if cond == jit.CondEQ {
+		asm.B(falseLabel)
+	} else {
+		jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+		jit.EmitUnboxInt(asm, jit.X1, jit.X1)
+		asm.CMPreg(jit.X0, jit.X1)
+		asm.BCond(cond, trueLabel)
+		asm.B(falseLabel)
+	}
+
+	asm.Label(lhsIntRhsNotInt)
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	asm.SCVTF(jit.D0, jit.X0)
+	asm.FMOVtoFP(jit.D1, jit.X1)
+	asm.FCMPd(jit.D0, jit.D1)
+	asm.BCond(cond, trueLabel)
+	asm.B(falseLabel)
+
+	asm.Label(lhsNotInt)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+	emitCheckIsInt(asm, jit.X1, jit.X2)
+	bothNotInt := ec.uniqueLabel("cmp_both_not_int")
+	asm.BCond(jit.CondNE, bothNotInt)
+
+	jit.EmitUnboxInt(asm, jit.X1, jit.X1)
+	asm.SCVTF(jit.D1, jit.X1)
+	asm.FCMPd(jit.D0, jit.D1)
+	asm.BCond(cond, trueLabel)
+	asm.B(falseLabel)
+
+	asm.Label(bothNotInt)
+	asm.FMOVtoFP(jit.D1, jit.X1)
+	asm.FCMPd(jit.D0, jit.D1)
+	asm.BCond(cond, trueLabel)
+	asm.B(falseLabel)
+
+	asm.Label(trueLabel)
+	asm.ADDimm(jit.X0, mRegTagBool, 1)
+	asm.B(doneLabel)
+
+	asm.Label(falseLabel)
+	asm.MOVreg(jit.X0, mRegTagBool)
+
+	asm.Label(doneLabel)
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 

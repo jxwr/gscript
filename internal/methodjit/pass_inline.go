@@ -49,6 +49,7 @@ type InlineConfig struct {
 	MaxSize           int                      // max callee bytecode count (default 30)
 	MaxRecursion      int                      // max inlining depth for self/mutually-recursive callees (0 = no recursive inlining)
 	MaxCumulativeSize int                      // R166: V8-style cumulative-bytecode cap across all inlines in this compilation (0 = unbounded, preserves R73 behavior)
+	PreserveSelfCalls bool                     // keep direct self calls visible for specialized recursive ABIs/TCO
 }
 
 // inlineMaxIterations is the safety cap on recursive inlining iterations.
@@ -169,6 +170,9 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		if calleeProto == nil {
 			continue
 		}
+		if config.PreserveSelfCalls && calleeProto == fn.Proto {
+			continue
+		}
 
 		// Bounded recursion gate: if this callee is (self- or mutually-)
 		// recursive, we cap how many times it may be inlined across the whole
@@ -196,6 +200,14 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 
 		// Build the callee's IR.
 		calleeFn := BuildGraph(calleeProto)
+
+		// Multi-block inlining rewires predecessor lists and phi args. Inlining
+		// a loop-bearing callee at a call site that is itself inside a loop
+		// creates nested loop-header phi edges whose pred-index contract is not
+		// modeled by this inliner yet. Keep that case behind the call boundary.
+		if computeLoopInfo(calleeFn).hasLoops() && computeLoopInfo(fn).loopBlocks[block.ID] {
+			continue
+		}
 
 		// Check if the callee is single-block (trivial inline).
 		if len(calleeFn.Blocks) == 1 {
@@ -328,11 +340,11 @@ func isRecursiveOrMutualCached(proto *vm.FuncProto, globals map[string]*vm.FuncP
 // Returns the new instruction list for the block, or nil if inlining failed.
 //
 // For a single-block callee:
-//   1. Renumber all callee value IDs to be unique in the caller.
-//   2. Replace callee's LoadSlot (parameter loads) with the caller's arguments.
-//   3. Replace callee's OpReturn: the return value becomes the inline result.
-//   4. Splice the callee's instructions (minus LoadSlots and Return) into the
-//      caller block, replacing the OpCall.
+//  1. Renumber all callee value IDs to be unique in the caller.
+//  2. Replace callee's LoadSlot (parameter loads) with the caller's arguments.
+//  3. Replace callee's OpReturn: the return value becomes the inline result.
+//  4. Splice the callee's instructions (minus LoadSlots and Return) into the
+//     caller block, replacing the OpCall.
 func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, calleeFn *Function, calleeName string) []*Instr {
 	calleeBlock := calleeFn.Entry
 	callArgs := callInstr.Args[1:] // skip the function reference arg
@@ -467,7 +479,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 	// Renumber all callee block IDs and value IDs.
 	nextBlockID := mergeBlock.ID + 1
 	idMap := make(map[int]int)       // callee value ID -> caller value ID
-	blockMap := make(map[int]*Block)  // callee block ID -> new block
+	blockMap := make(map[int]*Block) // callee block ID -> new block
 
 	// Map parameter LoadSlots to caller arguments.
 	paramValues := make(map[int]*Value)

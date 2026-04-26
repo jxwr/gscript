@@ -109,6 +109,7 @@ func NewTieringManager() *TieringManager {
 	t1.SetOuterCompiler(func(proto *vm.FuncProto) interface{} {
 		return tm.TryCompile(proto)
 	})
+	t1.SetOSRHandler(tm.handleOSR)
 	return tm
 }
 
@@ -642,8 +643,8 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	if !tm.envTier2NoFilter {
 		profile := tm.getProfile(proto)
 		if profile.LoopDepth < 2 {
-			if hasExitResumeInLoop(fn, loopCallGlobals) {
-				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has exit-resume-prone op inside loop (performance-blocked), staying at Tier 1")
+			if op, ok := firstExitResumeInLoop(fn, loopCallGlobals); ok {
+				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has exit-resume-prone op %s inside loop (performance-blocked), staying at Tier 1", op)
 			}
 		} else {
 			if hasCallInLoop(fn) {
@@ -688,6 +689,10 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 // This is the Tier 2 execute loop, handling exit codes and resuming JIT code.
 
 func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
+	if tm.callVM != nil {
+		regs = tm.ensureTier2RegisterBudget(cf, regs, base, proto)
+	}
+
 	// Ensure register space.
 	needed := base + cf.numRegs
 	if needed > len(regs) {
@@ -779,6 +784,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 				fmt.Fprintf(os.Stderr, "[R154] deopt proto=%q id=%d base=%d r0=%016x r1=%016x callID=%d globalID=%d\n",
 					proto.Name, ctx.DeoptInstrID, base, r0, r1, ctx.CallID, ctx.GlobalExitID)
 			}
+			tm.disableTier2AfterRuntimeDeopt(proto, "tier2: runtime deopt")
 			// Bail to interpreter. Return error so the VM falls through.
 			return nil, fmt.Errorf("tier2: deopt")
 
@@ -846,6 +852,41 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			return nil, fmt.Errorf("tier2: unknown exit code %d", ctx.ExitCode)
 		}
 	}
+}
+
+func (tm *TieringManager) ensureTier2RegisterBudget(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) []runtime.Value {
+	if cf == nil || proto == nil || tm.callVM == nil {
+		return regs
+	}
+	if cf.NumericParamCount <= 0 || !proto.HasSelfCalls || cf.numRegs <= 0 {
+		return regs
+	}
+
+	// Raw-int self recursion advances mRegRegs in native code instead of
+	// pushing VM frames. Pre-grow the shared VM register file to cover the
+	// native recursion budget; otherwise the hot self-call path repeatedly
+	// falls through ExitCallExit solely to let the VM grow this slice.
+	needed := base + cf.numRegs*(maxRawSelfCallDepth+2) + 1
+	if needed <= len(regs) {
+		return regs
+	}
+	return tm.callVM.EnsureRegs(needed)
+}
+
+func (tm *TieringManager) disableTier2AfterRuntimeDeopt(proto *vm.FuncProto, reason string) {
+	if proto == nil {
+		return
+	}
+	tm.tier2Failed[proto] = true
+	if tm.tier2FailReason == nil {
+		tm.tier2FailReason = make(map[*vm.FuncProto]string)
+	}
+	tm.tier2FailReason[proto] = reason
+	delete(tm.tier2Compiled, proto)
+	proto.Tier2Promoted = false
+	proto.DirectEntryPtr = 0
+	tm.tier1.SetOSRCounter(proto, -1)
+	tm.tier1.EvictCompiled(proto)
 }
 
 // CompileTier2 explicitly compiles a function at Tier 2. This bypasses the
@@ -1038,6 +1079,11 @@ func hasExpensiveInLoop(fn *Function, predicate func(Op) bool) bool {
 // allowed only when it statically resolves to a self-recursive raw-int callee:
 // Tier 2 can compile that callee and the call site can use the native path.
 func hasExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
+	_, ok := firstExitResumeInLoop(fn, globals)
+	return ok
+}
+
+func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, bool) {
 	li := computeLoopInfo(fn)
 	for _, block := range fn.Blocks {
 		if !li.loopBlocks[block.ID] {
@@ -1049,7 +1095,7 @@ func hasExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
 				if tier2LoopCallIsNativeCandidate(fn, instr, globals) {
 					continue
 				}
-				return true
+				return instr.Op, true
 			case OpSelf,
 				OpNewTable,
 				OpGetTable, OpSetTable,
@@ -1060,23 +1106,58 @@ func hasExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
 				OpVararg,
 				OpLen, OpPow,
 				OpTForCall, OpTForLoop:
-				return true
+				return instr.Op, true
 			}
 		}
 	}
-	return false
+	return OpNop, false
 }
 
 func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
-	if callee == nil {
+	if callee != nil && staticallyCallsOnlySelf(callee) {
+		ok, _ := qualifyForNumeric(callee)
+		return ok
+	}
+	if callee != nil && tier2LoopCallCalleeIsLeafNativeCandidate(callee) {
+		return true
+	}
+	return false
+}
+
+func tier2LoopCallCalleeIsLeafNativeCandidate(callee *vm.FuncProto) bool {
+	if callee == nil || callee.IsVarArg || len(callee.Code) > inlineMaxCalleeSize {
 		return false
 	}
-	if !staticallyCallsOnlySelf(callee) {
+	if !canPromoteToTier2(callee) {
 		return false
 	}
-	ok, _ := qualifyForNumeric(callee)
-	return ok
+	profile := analyzeFuncProfile(callee)
+	if profile.HasLoop {
+		return false
+	}
+	for _, inst := range callee.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_LEN,
+			vm.OP_CONCAT,
+			vm.OP_APPEND,
+			vm.OP_SETLIST,
+			vm.OP_SELF,
+			vm.OP_GETUPVAL,
+			vm.OP_SETUPVAL,
+			vm.OP_CLOSURE,
+			vm.OP_VARARG,
+			vm.OP_POW,
+			vm.OP_TFORCALL,
+			vm.OP_TFORLOOP,
+			vm.OP_GO,
+			vm.OP_MAKECHAN,
+			vm.OP_SEND,
+			vm.OP_RECV:
+			return false
+		}
+	}
+	return true
 }
 
 // irHasGetGlobal scans the optimized IR for any remaining OpGetGlobal

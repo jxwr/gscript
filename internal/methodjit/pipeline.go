@@ -270,7 +270,7 @@ type Tier2PipelineOpts struct {
 // RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
 //
 //	TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp →
-//	LoadElim → DCE → RangeAnalysis → LICM
+//	LoadElim → DCE → RangeAnalysis → OverflowBoxing → LICM
 //
 // Returns the optimized function, any intrinsic rewrite notes (non-nil means
 // the function uses intrinsics that Tier 1 would execute differently), and an
@@ -329,7 +329,13 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		//   ackermann        0.393s vs 0.416s  -6%   ✓
 		//   binary_trees     1.495s vs 1.448s  +3%   minor regression
 		//   others           flat (within noise)
-		config := InlineConfig{Globals: globals, MaxSize: maxSize, MaxRecursion: 8, MaxCumulativeSize: 120}
+		config := InlineConfig{
+			Globals:           globals,
+			MaxSize:           maxSize,
+			MaxRecursion:      8,
+			MaxCumulativeSize: 120,
+			PreserveSelfCalls: staticallyCallsOnlySelf(fn.Proto),
+		}
 		fn, err = InlinePassWith(config)(fn)
 		if err != nil {
 			return nil, nil, fmt.Errorf("Inline: %w", err)
@@ -337,6 +343,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		fn, err = SimplifyPhisPass(fn)
 		if err != nil {
 			return nil, nil, fmt.Errorf("SimplifyPhis (post-inline): %w", err)
+		}
+		var postInlineNotes []string
+		fn, postInlineNotes = IntrinsicPass(fn)
+		if len(postInlineNotes) > 0 {
+			intrinsicNotes = append(intrinsicNotes, postInlineNotes...)
 		}
 		fn, err = TypeSpecializePass(fn)
 		if err != nil {
@@ -373,6 +384,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	fn, err = RangeAnalysisPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("RangeAnalysis: %w", err)
+	}
+
+	fn, err = OverflowBoxingPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("OverflowBoxing: %w", err)
 	}
 
 	// R45: lower OpMatrixGetF/SetF into OpMatrixFlat + OpMatrixStride +
@@ -453,6 +469,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("LoadElimination", LoadEliminationPass)
 	pipe.Add("DCE", DCEPass)
 	pipe.Add("RangeAnalysis", RangeAnalysisPass)
+	pipe.Add("OverflowBoxing", OverflowBoxingPass)
 	pipe.Add("LICM", LICMPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	return pipe

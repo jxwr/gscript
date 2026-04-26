@@ -129,11 +129,17 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitNot(instr)
 
 	// --- Comparison ---
-	case OpLt, OpLtInt:
+	case OpLt:
+		ec.emitGenericNumericCmp(instr, jit.CondLT)
+	case OpLe:
+		ec.emitGenericNumericCmp(instr, jit.CondLE)
+	case OpEq:
+		ec.emitGenericNumericCmp(instr, jit.CondEQ)
+	case OpLtInt:
 		ec.emitIntCmp(instr, jit.CondLT)
-	case OpLe, OpLeInt:
+	case OpLeInt:
 		ec.emitIntCmp(instr, jit.CondLE)
-	case OpEq, OpEqInt:
+	case OpEqInt:
 		ec.emitIntCmp(instr, jit.CondEQ)
 
 	// --- Float comparison ---
@@ -303,10 +309,9 @@ func (ec *emitContext) emitGPRPhiMovesOrdered(to *Block, predIdx int, toIsLoopHe
 			m.dstGPR = jit.Reg(dstPR.Reg)
 		}
 
-		// Determine source GPR for dependency analysis.
-		// For raw-int path: source may be raw int in GPR or NaN-boxed in GPR.
-		// For NaN-boxed path: source is NaN-boxed in GPR (raw ints get boxed
-		// to X0 first, so they don't conflict with allocated GPR destinations).
+		// Determine source GPR for dependency analysis. Even NaN-boxed phi
+		// moves can read a raw-int source GPR before boxing it through X0, so
+		// raw and boxed moves both participate in register conflict ordering.
 		srcHasReg := ec.hasReg(srcArg.ID)
 		if isRawInt {
 			if srcHasReg {
@@ -314,12 +319,14 @@ func (ec *emitContext) emitGPRPhiMovesOrdered(to *Block, predIdx int, toIsLoopHe
 				m.hasSrcGPR = true
 			}
 		} else {
-			if srcHasReg && !ec.rawIntRegs[srcArg.ID] {
+			if srcHasReg {
 				m.srcGPR = ec.physReg(srcArg.ID)
 				m.hasSrcGPR = true
 			}
-			// Raw int in GPR: will be boxed to X0, so effective source is X0.
-			// Memory source: loaded to X0. Neither conflicts with allocated GPRs.
+			// Raw ints in GPRs are boxed through X0 during emission, but the
+			// boxing still reads the original GPR. Treat that GPR as a real
+			// source for parallel phi ordering, otherwise an earlier move can
+			// clobber it before the boxing happens.
 		}
 
 		// Track memory slot reads: source loaded from memory when not in a GPR.
@@ -545,7 +552,11 @@ func (ec *emitContext) emitGPRPhiMoveFromScratch(m *gprPhiMove) {
 		return
 	}
 
-	// NaN-boxed path: source value is in X0 (NaN-boxed).
+	// NaN-boxed path: source value is in X0. For raw-int sources saved while
+	// breaking a cycle, X0 holds raw bits and must be boxed before transfer.
+	if ec.rawIntRegs[m.srcArg.ID] {
+		jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
+	}
 	if m.hasDstGPR {
 		dstReg := jit.Reg(m.dstPR.Reg)
 		ec.asm.MOVreg(dstReg, jit.X0)
@@ -766,6 +777,18 @@ func (ec *emitContext) emitPhiMoveRawFloat(srcArg *Value, phiInstr *Instr, dstPR
 		if srcFPR != dstFPR {
 			ec.asm.FMOVd(dstFPR, srcFPR)
 		}
+	} else if ec.hasReg(srcArg.ID) && ec.rawIntRegs[srcArg.ID] {
+		// Source is a raw int in a GPR, but the destination phi is float.
+		// Convert numerically; moving raw/boxed bits into an FPR would create
+		// a bogus double and can make mixed int/float loop phis non-terminating.
+		srcReg := ec.physReg(srcArg.ID)
+		ec.asm.SCVTF(dstFPR, srcReg)
+	} else if ec.irTypes[srcArg.ID] == TypeInt {
+		// Source is known int but not raw-register active, so materialize the
+		// boxed value, unbox it, then convert to float64.
+		gpr := ec.resolveValueNB(srcArg.ID, jit.X0)
+		jit.EmitUnboxInt(ec.asm, jit.X0, gpr)
+		ec.asm.SCVTF(dstFPR, jit.X0)
 	} else {
 		// Source is NaN-boxed in GPR or memory: resolve and move to FPR.
 		gpr := ec.resolveValueNB(srcArg.ID, jit.X0)
