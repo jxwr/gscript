@@ -73,3 +73,42 @@ func TestBuildProtoInlineGlobalsStopsAtExecutableBody(t *testing.T) {
 		t.Fatalf("did not expect declaration after executable body to be discovered")
 	}
 }
+
+func TestBuildProtoStableGlobalsFindsPostSetupDeclaration(t *testing.T) {
+	helper := &vm.FuncProto{Name: "helper"}
+	top := &vm.FuncProto{
+		Name:      "<main>",
+		Constants: []runtime.Value{runtime.StringValue("helper")},
+		Protos:    []*vm.FuncProto{helper},
+		Code: []uint32{
+			vm.EncodeAsBx(vm.OP_LOADINT, 3, 1),
+			vm.EncodeABx(vm.OP_CLOSURE, 1, 0),
+			vm.EncodeABx(vm.OP_SETGLOBAL, 1, 0),
+		},
+	}
+
+	globals := buildProtoStableGlobals(top)
+	if globals["helper"] != helper {
+		t.Fatalf("expected stable helper declaration after setup, got %#v", globals["helper"])
+	}
+}
+
+func TestBuildProtoStableGlobalsRejectsReassignment(t *testing.T) {
+	helper := &vm.FuncProto{Name: "helper"}
+	top := &vm.FuncProto{
+		Name:      "<main>",
+		Constants: []runtime.Value{runtime.StringValue("helper")},
+		Protos:    []*vm.FuncProto{helper},
+		Code: []uint32{
+			vm.EncodeABx(vm.OP_CLOSURE, 1, 0),
+			vm.EncodeABx(vm.OP_SETGLOBAL, 1, 0),
+			vm.EncodeAsBx(vm.OP_LOADINT, 1, 1),
+			vm.EncodeABx(vm.OP_SETGLOBAL, 1, 0),
+		},
+	}
+
+	globals := buildProtoStableGlobals(top)
+	if _, ok := globals["helper"]; ok {
+		t.Fatalf("did not expect reassigned helper to be treated as stable")
+	}
+}

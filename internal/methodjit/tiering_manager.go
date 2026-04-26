@@ -222,12 +222,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 
 	tm.tier2Compiled[proto] = t2
-	proto.Tier2Promoted = true
-
-	// Update DirectEntryPtr so Tier 1 BLR callers jump to Tier 2's direct entry.
-	if t2.DirectEntryOffset > 0 {
-		proto.DirectEntryPtr = uintptr(t2.Code.Ptr()) + uintptr(t2.DirectEntryOffset)
-	}
+	tm.installTier2(proto, t2)
 
 	return t2
 }
@@ -314,13 +309,19 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 
 	// Cache the Tier 2 compilation for future calls.
 	tm.tier2Compiled[proto] = t2
-	proto.Tier2Promoted = true
-	if t2.DirectEntryOffset > 0 {
-		proto.DirectEntryPtr = uintptr(t2.Code.Ptr()) + uintptr(t2.DirectEntryOffset)
-	}
+	tm.installTier2(proto, t2)
 
 	// Re-enter the function from the start at Tier 2.
 	return tm.executeTier2(t2, regs, base, proto)
+}
+
+func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction) {
+	proto.Tier2Promoted = true
+
+	// Update DirectEntryPtr so native BLR callers jump to Tier 2's direct entry.
+	if cf != nil && cf.DirectEntryOffset > 0 {
+		proto.DirectEntryPtr = uintptr(cf.Code.Ptr()) + uintptr(cf.DirectEntryOffset)
+	}
 }
 
 // compileTier2 compiles a function at Tier 2 (optimizing).
@@ -615,6 +616,62 @@ func buildProtoInlineGlobals(proto *vm.FuncProto) map[string]*vm.FuncProto {
 	return globals
 }
 
+// buildProtoStableGlobals extracts global function declarations across the
+// whole proto when every write to that global is the same lexical closure.
+// Unlike buildProtoInlineGlobals, this does not feed the inliner: it only gives
+// the loop-call gate a stable callee identity for top-level driver scripts that
+// declare helpers after executable setup code and call them later in a loop.
+func buildProtoStableGlobals(proto *vm.FuncProto) map[string]*vm.FuncProto {
+	globals := make(map[string]*vm.FuncProto)
+	if proto == nil {
+		return globals
+	}
+	invalid := make(map[string]bool)
+	regClosure := make(map[int]*vm.FuncProto)
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		switch op {
+		case vm.OP_CLOSURE:
+			bx := vm.DecodeBx(inst)
+			if bx < 0 || bx >= len(proto.Protos) {
+				delete(regClosure, a)
+				continue
+			}
+			regClosure[a] = proto.Protos[bx]
+		case vm.OP_MOVE:
+			b := vm.DecodeB(inst)
+			if cl := regClosure[b]; cl != nil {
+				regClosure[a] = cl
+			} else {
+				delete(regClosure, a)
+			}
+		case vm.OP_SETGLOBAL:
+			name := protoConstString(proto, vm.DecodeBx(inst))
+			if name == "" || invalid[name] {
+				continue
+			}
+			cl := regClosure[a]
+			if cl == nil {
+				invalid[name] = true
+				delete(globals, name)
+				continue
+			}
+			if prev := globals[name]; prev != nil && prev != cl {
+				invalid[name] = true
+				delete(globals, name)
+				continue
+			}
+			globals[name] = cl
+		case vm.OP_CLOSE:
+			continue
+		default:
+			delete(regClosure, a)
+		}
+	}
+	return globals
+}
+
 func protoConstString(proto *vm.FuncProto, idx int) string {
 	if proto == nil || idx < 0 || idx >= len(proto.Constants) {
 		return ""
@@ -693,12 +750,28 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 
 	inlineGlobals := tm.buildInlineGlobals()
 	loopCallGlobals := inlineGlobals
+	loopCallGlobalsOwned := false
 	if protoGlobals := buildProtoInlineGlobals(proto); len(protoGlobals) > 0 {
 		loopCallGlobals = make(map[string]*vm.FuncProto, len(inlineGlobals)+len(protoGlobals))
+		loopCallGlobalsOwned = true
 		for name, calleeProto := range inlineGlobals {
 			loopCallGlobals[name] = calleeProto
 		}
 		for name, calleeProto := range protoGlobals {
+			if _, ok := loopCallGlobals[name]; !ok {
+				loopCallGlobals[name] = calleeProto
+			}
+		}
+	}
+	if stableGlobals := buildProtoStableGlobals(proto); len(stableGlobals) > 0 {
+		if !loopCallGlobalsOwned {
+			loopCallGlobals = make(map[string]*vm.FuncProto, len(inlineGlobals)+len(stableGlobals))
+			loopCallGlobalsOwned = true
+			for name, calleeProto := range inlineGlobals {
+				loopCallGlobals[name] = calleeProto
+			}
+		}
+		for name, calleeProto := range stableGlobals {
 			if _, ok := loopCallGlobals[name]; !ok {
 				loopCallGlobals[name] = calleeProto
 			}
@@ -748,7 +821,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has exit-resume-prone op %s inside loop (performance-blocked), staying at Tier 1", op)
 			}
 		} else {
-			if hasCallInLoop(fn) {
+			if hasNonNativeCallInLoop(fn, loopCallGlobals) {
 				return nil, fmt.Errorf("tier2: has OpCall inside loop (performance-blocked), staying at Tier 1")
 			}
 		}
@@ -1006,12 +1079,7 @@ func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
 		return err
 	}
 	tm.tier2Compiled[proto] = t2
-	proto.Tier2Promoted = true
-
-	// Update DirectEntryPtr so Tier 1 BLR callers jump to Tier 2's direct entry.
-	if t2.DirectEntryOffset > 0 {
-		proto.DirectEntryPtr = uintptr(t2.Code.Ptr()) + uintptr(t2.DirectEntryOffset)
-	}
+	tm.installTier2(proto, t2)
 
 	return nil
 }
@@ -1163,6 +1231,21 @@ func hasStaticCallInLoop(proto *vm.FuncProto) bool {
 	return false
 }
 
+func hasNonNativeCallInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall && !tier2LoopCallIsNativeCandidate(fn, instr, globals) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // hasExpensiveInLoop (R162) generalizes hasCallInLoop: it reports whether
 // any op in a loop block matches a predicate. Used to gate Tier 2
 // promotion on "post-pipeline body free of exit-resume-prone ops in
@@ -1208,8 +1291,9 @@ func hasExpensiveInLoop(fn *Function, predicate func(Op) bool) bool {
 // protos).
 //
 // OpGetField/OpSetField excluded (IC-cached, ~5 insns fast path). OpCall is
-// allowed only when it statically resolves to a self-recursive raw-int callee:
-// Tier 2 can compile that callee and the call site can use the native path.
+// allowed only when it statically resolves to a callee that can use the native
+// path: an already-Tier2 direct entry, a tier-up-eligible stable function, a
+// self-recursive raw-int callee, or a small leaf native candidate.
 func hasExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
 	_, ok := firstExitResumeInLoop(fn, globals)
 	return ok
@@ -1247,6 +1331,12 @@ func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, 
 
 func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+	if tier2LoopCallCalleeHasTier2DirectEntry(callee) {
+		return true
+	}
+	if callee != nil && tier2LoopCallCalleeCanTierUp(callee) {
+		return true
+	}
 	if callee != nil && staticallyCallsOnlySelf(callee) {
 		ok, _ := qualifyForNumeric(callee)
 		return ok
@@ -1255,6 +1345,31 @@ func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[stri
 		return true
 	}
 	return false
+}
+
+func tier2LoopCallCalleeHasTier2DirectEntry(callee *vm.FuncProto) bool {
+	return callee != nil && callee.Tier2Promoted && callee.DirectEntryPtr != 0
+}
+
+func tier2LoopCallCalleeCanTierUp(callee *vm.FuncProto) bool {
+	if callee == nil || callee.IsVarArg {
+		return false
+	}
+	if !canPromoteToTier2(callee) {
+		return false
+	}
+	profile := analyzeFuncProfile(callee)
+	if shouldStayTier0(profile) {
+		return false
+	}
+	if profile.LoopDepth < 2 {
+		return false
+	}
+	runtimeCallCount := callee.CallCount
+	if runtimeCallCount < tmDefaultTier2Threshold {
+		runtimeCallCount = tmDefaultTier2Threshold
+	}
+	return shouldPromoteTier2(callee, profile, runtimeCallCount)
 }
 
 func tier2LoopCallCalleeIsLeafNativeCandidate(callee *vm.FuncProto) bool {
