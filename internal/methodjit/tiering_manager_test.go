@@ -12,6 +12,7 @@
 package methodjit
 
 import (
+	"os"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -32,6 +33,66 @@ func runWithTieringManager(t *testing.T, src string) (*vm.VM, *TieringManager) {
 		t.Fatalf("runtime error: %v", err)
 	}
 	return v, tm
+}
+
+func TestTieringManager_TableFieldAccessPromotesAtCallBoundary(t *testing.T) {
+	old := os.Getenv("GSCRIPT_TIER2_NO_FILTER")
+	t.Cleanup(func() {
+		if old == "" {
+			os.Unsetenv("GSCRIPT_TIER2_NO_FILTER")
+		} else {
+			os.Setenv("GSCRIPT_TIER2_NO_FILTER", old)
+		}
+	})
+	os.Unsetenv("GSCRIPT_TIER2_NO_FILTER")
+
+	src := `
+func make_particles(n) {
+    particles := {}
+    for i := 1; i <= n; i++ {
+        particles[i] = {x: 0.0}
+    }
+    return particles
+}
+
+func step(particles, n) {
+    for i := 1; i <= n; i++ {
+        p := particles[i]
+        p.x = p.x + 1.0
+    }
+}
+
+func checksum(particles, n) {
+    sum := 0.0
+    for i := 1; i <= n; i++ {
+        sum = sum + particles[i].x
+    }
+    return sum
+}
+
+particles := make_particles(10)
+for s := 1; s <= 20; s++ {
+    step(particles, 10)
+}
+result := checksum(particles, 10)
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+	result := v.GetGlobal("result")
+	if !result.IsFloat() || result.Float() != 200.0 {
+		t.Fatalf("result = %v, want 200.0", result)
+	}
+	stepProto := findProtoByName(proto, "step")
+	if tm.tier2Compiled[stepProto] == nil {
+		t.Fatalf("step should compile at Tier 2 from repeated call boundaries")
+	}
 }
 
 // TestTieringManager_Sum verifies sum(100)=5050 produces correct results

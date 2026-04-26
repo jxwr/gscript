@@ -905,29 +905,21 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		trace.IntrinsicNotes = intrinsicNotes
 	}
 
-	// R162: extended gate — reject Tier 2 promotion when any exit-
-	// resume-prone op lives in a loop. Beyond just OpCall this covers
-	// dynamic-key OpGetTable/OpSetTable (Tier 2 exits to executeTableExit
-	// for shape changes / resize), residual OpNewTable (EA couldn't
-	// scalar-replace), OpConcat/Append/SetList, OpGet/SetUpval, GC ops,
-	// and OpClosure/Close/Vararg. Tier 1's baseline handles these with
-	// native templates (fast path); Tier 2's exit-resume roundtrip is
-	// ~400× slower. The reject steers such protos back to Tier 1
-	// automatically — letting us safely widen the OSR gate below.
+	// R162/R171: reject Tier 2 promotion when a loop contains operations
+	// whose Tier 2 path is still expected to be slower than Tier 1. This is
+	// deliberately a call-boundary performance filter, not the restart-OSR
+	// correctness filter: functions compiled before entering bytecode PC 0 do
+	// not replay partially executed table mutations. Restart-style OSR remains
+	// gated by isOSRRestartSafe before the OSR counter is armed.
 	//
 	// Bypass via GSCRIPT_TIER2_NO_FILTER=1 (diagnostic / perf-comparison).
 	//
-	// Depth-aware filter (R162): protos that would have been admitted
-	// under the old LoopDepth>=2 OSR gate use the classic filter
-	// (OpCall only). Protos newly admitted by the R162 widen
-	// (LoopDepth==1) go through the STRICT filter that additionally
-	// rejects dynamic-key table ops, NewTable, concat/append, etc.
-	// This preserves the existing Tier 2 benchmarks (fannkuch, sieve's
-	// checkTree, typed-array shapes that already worked) while gating
-	// the new widen-candidates (object_creation, sort/<main>, etc.)
-	// on a clean body. For object_creation after EA, the body is
-	// clean → promotes and gets the 100× speedup. For sieve's <main>,
-	// sort's <main>, etc., OpCall/OpSetTable in loop → rejected.
+	// Depth-aware filter (R162): old LoopDepth>=2 candidates use the classic
+	// non-native-call filter. LoopDepth<2 candidates use the stricter blocker
+	// list below, but read-only OpGetTable is allowed because Tier 2 has native
+	// int-key table fast paths plus table-exit resume metadata for misses.
+	// Table writes that can resize/mutate dynamic structure, residual
+	// allocations, and non-native calls are still blocked by default.
 	if !tm.envTier2NoFilter {
 		if hasKnownFloatModInLoop(fn) {
 			remarks.Add("Tier2Gate", "blocked", 0, 0, OpMod,
@@ -936,10 +928,10 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		}
 		profile := tm.getProfile(proto)
 		if profile.LoopDepth < 2 {
-			if op, ok := firstExitResumeInLoop(fn, loopCallGlobals); ok {
+			if op, ok := firstCallBoundaryTier2BlockerInLoop(fn, loopCallGlobals); ok {
 				remarks.Add("Tier2Gate", "blocked", 0, 0, op,
-					fmt.Sprintf("LoopDepth<2 candidate has exit-resume-prone %s inside loop", op))
-				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has exit-resume-prone op %s inside loop (performance-blocked), staying at Tier 1", op)
+					fmt.Sprintf("LoopDepth<2 candidate has performance-blocked %s inside loop", op))
+				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has performance-blocked op %s inside loop, staying at Tier 1", op)
 			}
 		} else {
 			if hasNonNativeCallInLoop(fn, loopCallGlobals) {
@@ -1511,6 +1503,36 @@ func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, 
 			case OpSelf,
 				OpNewTable,
 				OpGetTable, OpSetTable,
+				OpConcat, OpAppend, OpSetList,
+				OpGetUpval, OpSetUpval,
+				OpGo, OpMakeChan, OpSend, OpRecv,
+				OpClosure, OpClose,
+				OpVararg,
+				OpLen, OpPow,
+				OpTForCall, OpTForLoop:
+				return instr.Op, true
+			}
+		}
+	}
+	return OpNop, false
+}
+
+func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, bool) {
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpCall:
+				if tier2LoopCallIsNativeCandidate(fn, instr, globals) {
+					continue
+				}
+				return instr.Op, true
+			case OpSelf,
+				OpNewTable,
+				OpSetTable,
 				OpConcat, OpAppend, OpSetList,
 				OpGetUpval, OpSetUpval,
 				OpGo, OpMakeChan, OpSend, OpRecv,
