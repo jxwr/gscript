@@ -600,6 +600,13 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		a := s.val(instr.Args[0])
 		s.values[instr.ID] = runtime.FloatValue(a.Number())
 
+	case OpNumToFloat:
+		a := s.val(instr.Args[0])
+		if !a.IsNumber() {
+			return nil, false, fmt.Errorf("IR interpreter: cannot convert %s to float", a.TypeName())
+		}
+		s.values[instr.ID] = runtime.FloatValue(a.Number())
+
 	// ---------- Guards ----------
 	case OpGuardType:
 		s.values[instr.ID] = s.val(instr.Args[0])

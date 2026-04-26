@@ -189,6 +189,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	// --- Guards ---
 	case OpGuardType:
 		ec.emitGuardType(instr)
+	case OpNumToFloat:
+		ec.emitNumToFloat(instr)
 	case OpGuardTruthy:
 		ec.emitGuardTruthy(instr)
 

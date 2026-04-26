@@ -6,6 +6,7 @@
 package methodjit
 
 import (
+	"math"
 	"testing"
 
 	"github.com/gscript/gscript/internal/vm"
@@ -119,6 +120,85 @@ func TestTypeSpec_MixedTypes(t *testing.T) {
 				t.Errorf("expected TypeFloat, got %s", instr.Type)
 			}
 		}
+	}
+}
+
+// TestTypeSpec_NumToFloatConversion verifies that TypeSpec can specialize
+// float arithmetic when one operand is known-float and the other is dynamic
+// but expected to be numeric at runtime.
+func TestTypeSpec_NumToFloatConversion(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "numtofloat"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	field := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
+		Args: []*Value{tbl.Value()}, Aux: 0, Block: b}
+	cf := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat,
+		Aux: int64(math.Float64bits(2.5)), Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAdd, Type: TypeAny,
+		Args: []*Value{field.Value(), cf.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, field, cf, add, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+
+	var conv *Instr
+	for _, instr := range result.Entry.Instrs {
+		if instr.Op == OpNumToFloat {
+			conv = instr
+			break
+		}
+	}
+	if conv == nil {
+		t.Fatalf("expected OpNumToFloat to be inserted; IR:\n%s", Print(result))
+	}
+	if conv.Type != TypeFloat {
+		t.Fatalf("expected OpNumToFloat result TypeFloat, got %s", conv.Type)
+	}
+	if add.Op != OpAddFloat {
+		t.Fatalf("expected Add to specialize to OpAddFloat, got %s; IR:\n%s", add.Op, Print(result))
+	}
+	if add.Args[0].ID != conv.ID {
+		t.Fatalf("expected AddFloat lhs to use OpNumToFloat v%d, got v%d", conv.ID, add.Args[0].ID)
+	}
+}
+
+func TestTypeSpec_NumToFloatConversionRequiresFloatNeighbor(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "no_numtofloat"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	field := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
+		Args: []*Value{tbl.Value()}, Aux: 0, Block: b}
+	ci := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 2, Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAdd, Type: TypeAny,
+		Args: []*Value{field.Value(), ci.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, field, ci, add, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+
+	for _, instr := range result.Entry.Instrs {
+		if instr.Op == OpNumToFloat {
+			t.Fatalf("did not expect OpNumToFloat without a float neighbor; IR:\n%s", Print(result))
+		}
+	}
+	if add.Op != OpAdd {
+		t.Fatalf("expected Add to remain generic, got %s", add.Op)
 	}
 }
 

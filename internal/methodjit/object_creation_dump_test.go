@@ -64,9 +64,12 @@ func TestObjectCreationDump(t *testing.T) {
 	// FPRLoopPhiWriteback: raw-float loop phis now defer memory writeback to
 	// loop exit when their FPR survives the loop body, shaving a few
 	// FMOV/STR pairs from the inlined object loops.
+	//
+	// NumToFloat: transform_chain's mixed numeric object fields now widen
+	// dynamic int/float loads once and keep the arithmetic in raw FPR form.
 	baselines := []baseline{
 		{"create_and_sum", 463, 72},  // R161: was 1277/598
-		{"transform_chain", 582, 80}, // R161: was 1701/816
+		{"transform_chain", 536, 82}, // R161: was 1701/816
 		{"new_vec3", 228, 135},       // unchanged EA shape; codegen bookkeeping moved
 	}
 

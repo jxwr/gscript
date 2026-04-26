@@ -50,6 +50,17 @@ func TypeSpecializePass(fn *Function) (*Function, error) {
 	// Phase 1e: Re-run propagation to cascade the new int types.
 	ts.runTypePropagation(fn)
 
+	// Phase 1f: When a generic numeric op has one proven float operand
+	// and one still-dynamic operand, speculate only that the dynamic side
+	// is numeric and convert it to raw float. This preserves int/float
+	// widening semantics while letting the operation specialize to the
+	// raw-FPR path.
+	ts.insertNumToFloatConversions(fn)
+
+	// Phase 1g: Re-run propagation so inserted conversions unlock the
+	// downstream float arithmetic/comparison specialization in Phase 2.
+	ts.runTypePropagation(fn)
+
 	// Phase 2: Replace generic ops with specialized variants.
 	// Also update phi/instr Type fields from inferred types.
 	for _, block := range fn.Blocks {
@@ -131,7 +142,7 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 		return TypeInt
 	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat:
 		return TypeFloat
-	case OpSqrt:
+	case OpNumToFloat, OpSqrt:
 		return TypeFloat
 	case OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat:
 		return TypeBool
@@ -566,6 +577,87 @@ func (ts *typeSpecializer) insertIntParamGuards(fn *Function) {
 		replaceValueUses(fn, p.instr.ID, guardVal, guardID)
 
 		ts.types[guardID] = TypeInt
+	}
+}
+
+// insertNumToFloatConversions converts an unknown operand to float when its
+// paired operand is already proven float. The conversion accepts both int and
+// float values at runtime, deopting only for non-numeric values, so it is less
+// brittle than forcing GuardType(float) on mixed numeric fields.
+func (ts *typeSpecializer) insertNumToFloatConversions(fn *Function) {
+	for _, block := range fn.Blocks {
+		if len(block.Instrs) == 0 {
+			continue
+		}
+
+		newInstrs := make([]*Instr, 0, len(block.Instrs))
+		converted := make(map[int]*Value)
+		for _, instr := range block.Instrs {
+			if shouldInsertNumToFloat(instr.Op) && len(instr.Args) >= 2 {
+				for argIdx := 0; argIdx < 2; argIdx++ {
+					arg := instr.Args[argIdx]
+					other := instr.Args[1-argIdx]
+					if arg == nil || other == nil {
+						continue
+					}
+					if ts.argType(other) != TypeFloat ||
+						!isUnknownNumericCandidate(ts.argType(arg)) ||
+						!canSpeculateNumToFloatArg(arg) {
+						continue
+					}
+					if arg.Def != nil && arg.Def.Op == OpNumToFloat {
+						continue
+					}
+					if v, ok := converted[arg.ID]; ok {
+						instr.Args[argIdx] = v
+						continue
+					}
+
+					conv := &Instr{
+						ID:    fn.newValueID(),
+						Op:    OpNumToFloat,
+						Type:  TypeFloat,
+						Args:  []*Value{arg},
+						Block: block,
+					}
+					conv.copySourceFrom(instr)
+					newInstrs = append(newInstrs, conv)
+					convVal := conv.Value()
+					converted[arg.ID] = convVal
+					instr.Args[argIdx] = convVal
+					ts.types[conv.ID] = TypeFloat
+					functionRemarks(fn).Add("TypeSpec", "changed", block.ID, conv.ID, conv.Op,
+						"inserted numeric-to-float conversion for mixed float arithmetic")
+				}
+			}
+			newInstrs = append(newInstrs, instr)
+		}
+		block.Instrs = newInstrs
+	}
+}
+
+func shouldInsertNumToFloat(op Op) bool {
+	switch op {
+	case OpAdd, OpSub, OpMul, OpDiv, OpLt, OpLe:
+		return true
+	default:
+		return false
+	}
+}
+
+func isUnknownNumericCandidate(t Type) bool {
+	return t == TypeUnknown || t == TypeAny
+}
+
+func canSpeculateNumToFloatArg(v *Value) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	switch v.Def.Op {
+	case OpGetField, OpGetTable, OpLoadSlot, OpPhi:
+		return true
+	default:
+		return false
 	}
 }
 
