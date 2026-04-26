@@ -1855,7 +1855,7 @@ func isScalarArraySetTable(instr *Instr) bool {
 	case TypeInt, TypeFloat, TypeBool:
 		return true
 	default:
-		return false
+		return tier2ValueIsNativeNumeric(val, make(map[int]bool))
 	}
 }
 

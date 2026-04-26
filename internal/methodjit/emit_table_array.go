@@ -522,9 +522,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 
 	// --- ArrayMixed fast path ---
 	asm.Label(mixedArrayLabel)
-	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen) // array.len
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondGE, deoptLabel)
+	mixedStoreLabel := ec.uniqueLabel("settable_mixed_store")
+	mixedAppendLabel := ec.uniqueLabel("settable_mixed_append")
+	emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffArrayLen, mixedAppendLabel, deoptLabel)
+	asm.Label(mixedStoreLabel)
 	// Load value to store into X4.
 	valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
 	if valReg != jit.X4 {
@@ -538,6 +539,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 	}
 	asm.B(doneLabel)
+	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffArrayLen, jit.TableOffArrayCap, mixedAppendLabel, deoptLabel, mixedStoreLabel)
 
 	// --- ArrayInt fast path ---
 	asm.Label(intArrayLabel)
