@@ -115,10 +115,10 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 
 	// --- R108: Monomorphic call IC fast path ---
-	// Allocate this call site's cache slot (2 × uint64).
+	// Allocate this call site's cache slot (4 × uint64).
 	icIdx := ec.nextCallCacheIndex
 	ec.nextCallCacheIndex++
-	cacheOff := icIdx * 16 // 2 uint64 per slot
+	cacheOff := icIdx * 32 // 4 uint64 per slot
 	icHitLabel := ec.uniqueLabel("t2call_ic_hit")
 	icDoneLabel := ec.uniqueLabel("t2call_ic_done")
 
@@ -159,14 +159,16 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot)) // re-load boxed value
 	asm.STR(jit.X4, jit.X3, cacheOff)               // cache[0] = boxed value
 	asm.STR(jit.X2, jit.X3, cacheOff+8)             // cache[1] = direct entry
+	asm.STR(jit.X0, jit.X3, cacheOff+16)            // cache[2] = *Closure
+	asm.STR(jit.X1, jit.X3, cacheOff+24)            // cache[3] = *Proto
 	asm.B(icDoneLabel)
 
-	// --- IC Hit: re-derive X0=*Closure and X1=*Proto ---
+	// --- IC Hit: recover cached raw pointers and refresh direct entry. ---
 	// X0 still holds the boxed closure value (matched cache).
 	asm.Label(icHitLabel)
-	asm.LDR(jit.X2, jit.X3, cacheOff+8)        // X2 = cached direct entry
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)    // X0 = *Closure
-	asm.LDR(jit.X1, jit.X0, vmClosureOffProto) // X1 = *Proto (needed downstream)
+	asm.LDR(jit.X2, jit.X3, cacheOff+8)  // X2 = cached direct entry
+	asm.LDR(jit.X0, jit.X3, cacheOff+16) // X0 = *Closure
+	asm.LDR(jit.X1, jit.X3, cacheOff+24) // X1 = *Proto
 	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
 	icRefreshLabel := ec.uniqueLabel("t2call_ic_refresh")
 	asm.CBNZ(jit.X4, icRefreshLabel)
@@ -847,7 +849,7 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 
 	icIdx := ec.nextCallCacheIndex
 	ec.nextCallCacheIndex++
-	cacheOff := icIdx * 16
+	cacheOff := icIdx * 32
 	icHitLabel := ec.uniqueLabel("t2tail_ic_hit")
 	icDoneLabel := ec.uniqueLabel("t2tail_ic_done")
 
@@ -873,19 +875,35 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	// Load Proto (X1), DirectEntryPtr (X2).
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr)
+	tailMissHaveEntryLabel := ec.uniqueLabel("t2tail_miss_have_entry")
+	asm.CBNZ(jit.X2, tailMissHaveEntryLabel)
+	asm.LDR(jit.X2, jit.X1, funcProtoOffTier2DirectEntryPtr)
+	asm.Label(tailMissHaveEntryLabel)
 	asm.CBZ(jit.X2, slowLabel)
 
 	// R108 cache update on successful miss path.
 	asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot))
 	asm.STR(jit.X4, jit.X3, cacheOff)
 	asm.STR(jit.X2, jit.X3, cacheOff+8)
+	asm.STR(jit.X0, jit.X3, cacheOff+16)
+	asm.STR(jit.X1, jit.X3, cacheOff+24)
 	asm.B(icDoneLabel)
 
-	// --- IC Hit: re-derive X0=*Closure and X1=*Proto ---
+	// --- IC Hit: recover cached raw pointers and refresh direct entry. ---
 	asm.Label(icHitLabel)
 	asm.LDR(jit.X2, jit.X3, cacheOff+8)
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
+	asm.LDR(jit.X0, jit.X3, cacheOff+16)
+	asm.LDR(jit.X1, jit.X3, cacheOff+24)
+	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
+	tailICRefreshLabel := ec.uniqueLabel("t2tail_ic_refresh")
+	asm.CBNZ(jit.X4, tailICRefreshLabel)
+	asm.LDR(jit.X4, jit.X1, funcProtoOffTier2DirectEntryPtr)
+	asm.CBZ(jit.X4, slowLabel)
+	asm.Label(tailICRefreshLabel)
+	asm.CMPreg(jit.X2, jit.X4)
+	asm.BCond(jit.CondEQ, icDoneLabel)
+	asm.MOVreg(jit.X2, jit.X4)
+	asm.STR(jit.X2, jit.X3, cacheOff+8)
 
 	asm.Label(icDoneLabel)
 

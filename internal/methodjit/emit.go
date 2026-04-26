@@ -314,12 +314,15 @@ type CompiledFunction struct {
 	GlobalCacheConsts []int
 
 	// CallCache (R108) is a per-OpCall-site monomorphic IC.
-	// Layout: 2 × uint64 per call site.
-	//   [2*i]   = cached boxed closure value (NaN-boxed 0xFFFF...)
-	//   [2*i+1] = cached direct-entry address (uintptr)
-	// Populated only when callee is Tier 2 compiled (direct_entry != 0).
-	// R109: the CallCount inc + threshold check is miss-path-only, since
-	// a hit implies the callee is already Tier 2.
+	// Layout: 4 × uint64 per call site.
+	//   [4*i]   = cached boxed closure value (NaN-boxed 0xFFFF...)
+	//   [4*i+1] = cached direct-entry address (uintptr)
+	//   [4*i+2] = cached *vm.Closure
+	//   [4*i+3] = cached *vm.FuncProto
+	// Hits refresh the cached direct-entry address from DirectEntryPtr, then
+	// Tier2DirectEntryPtr. That is the KeepCachedDirectEntry protocol: a
+	// generic DirectEntryPtr clear must not evict Tier 2 callers while the
+	// Tier 2 direct entry remains published.
 	CallCache []uint64
 
 	// InstrCodeRanges maps IR instruction IDs to emitted machine-code byte
