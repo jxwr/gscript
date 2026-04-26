@@ -179,21 +179,13 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		if t1 != nil && proto.Feedback == nil {
 			proto.EnsureFeedback()
 		}
-		// R162: OSR gate widened to LoopDepth >= 1 now that
-		// hasExitResumeInLoop (in compileTier2) rejects protos that
-		// would regress at Tier 2. Protos with loops but no exit-
-		// resume-prone ops in the body (e.g. object_creation after
-		// EA eliminates all NewTable in the loop) promote via OSR
-		// and get the full Tier 2 speedup. Protos like sieve
-		// (SetTable in loop) or fib's main (OpCall in loop) still
-		// attempt promotion but are rejected by hasExitResumeInLoop
-		// and fall back to Tier 1 automatically — no performance
-		// regression compared to the old LoopDepth>=2 gate.
-		//
-		// The R154_WIDEN env var is kept as an escape hatch that
-		// DISABLES the hasExitResumeInLoop filter (i.e. force Tier 2
-		// even when it will regress) for diagnostic use only.
-		if profile.HasLoop && profile.LoopDepth >= 1 && !tm.tier2Failed[proto] && tm.isOSRRestartSafe(proto, profile) {
+		// R162 widened OSR to LoopDepth >= 1 for clean post-pipeline bodies.
+		// R170 keeps the classic LoopDepth>=2 path open for already-proven
+		// deep-loop benchmarks (for example fannkuch), while LoopDepth<2
+		// candidates must pass the restart-safety check so restart-style OSR
+		// cannot replay table mutations from single-loop drivers.
+		if profile.HasLoop && profile.LoopDepth >= 1 && !tm.tier2Failed[proto] &&
+			(profile.LoopDepth >= 2 || tm.isOSRRestartSafe(proto, profile)) {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
 			if tm.envR154Trace {
 				fmt.Fprintf(os.Stderr, "[R162] SetOSRCounter proto=%q loopDepth=%d\n",
