@@ -477,8 +477,10 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	case intBinMul:
 		asm.FMULd(jit.D0, jit.D0, jit.D1)
 	case intBinMod:
-		// Float mod is complex; deopt for now.
-		ec.emitDeopt(instr)
+		asm.FDIVd(jit.D2, jit.D0, jit.D1)
+		asm.FRINTMd(jit.D2, jit.D2)
+		asm.FMULd(jit.D2, jit.D2, jit.D1)
+		asm.FSUBd(jit.D0, jit.D0, jit.D2)
 	}
 
 	// Move float result back to GP and store.

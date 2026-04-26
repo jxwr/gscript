@@ -45,7 +45,7 @@ func quicksort(arr, lo, hi) {
 	}
 }
 
-func TestTier2ExitStormGateBlocksNoFilterKnownFloatModLoop(t *testing.T) {
+func TestTier2CompilesNoFilterKnownFloatModLoop(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 
 	top := compileTop(t, collatzTotalSrc+`
@@ -60,18 +60,12 @@ for iter := 1; iter <= 3; iter++ {
 	}
 
 	tm := NewTieringManager()
-	err := tm.CompileTier2(collatz)
-	if err == nil {
-		t.Fatal("CompileTier2(collatz_total) succeeded; want known-float Mod gate failure")
-	}
-	if !strings.Contains(err.Error(), "known-float OpMod inside loop") {
-		t.Fatalf("CompileTier2(collatz_total) error = %q, want known-float Mod gate", err)
+	if err := tm.CompileTier2(collatz); err != nil {
+		t.Fatalf("CompileTier2(collatz_total): %v", err)
 	}
 }
 
-func TestTier2ExitStormGateBlocksNoFilterGenericModLoop(t *testing.T) {
-	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
-
+func TestTier2DefaultGateBlocksGenericModLoop(t *testing.T) {
 	top := compileTop(t, `
 func lcg(n, seed) {
     x := seed
@@ -89,9 +83,32 @@ func lcg(n, seed) {
 	tm := NewTieringManager()
 	err := tm.CompileTier2(lcg)
 	if err == nil {
-		t.Fatal("CompileTier2(lcg) succeeded; want generic Mod gate failure")
+		t.Fatal("CompileTier2(lcg) succeeded; want generic Mod performance gate")
 	}
 	if !strings.Contains(err.Error(), "generic OpMod inside loop") {
 		t.Fatalf("CompileTier2(lcg) error = %q, want generic Mod gate", err)
+	}
+}
+
+func TestTier2CompilesNoFilterGenericModLoop(t *testing.T) {
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+
+	top := compileTop(t, `
+func lcg(n, seed) {
+    x := seed
+    for i := 1; i <= n; i++ {
+        x = (x * 1103515245 + 12345) % 2147483648
+    }
+    return x
+}
+`)
+	lcg := findProtoByName(top, "lcg")
+	if lcg == nil {
+		t.Fatal("lcg proto not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(lcg); err != nil {
+		t.Fatalf("CompileTier2(lcg): %v", err)
 	}
 }

@@ -196,12 +196,17 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// shouldPromoteTier2 considers loops, arithmetic density, call patterns, and
 	// table ops. Functions with loops + calls + arithmetic are promoted at
 	// threshold=2 — compileTier2 will try inlining and reject if calls remain.
-	if !shouldPromoteTier2(proto, profile, proto.CallCount) {
+	preGateTier2 := tm.shouldPreGateTier2(proto, profile)
+	if preGateTier2 || !shouldPromoteTier2(proto, profile, proto.CallCount) {
 		// Not ready for Tier 2: use Tier 1, but enable OSR for loop-heavy
 		// functions so they can be upgraded mid-execution if they run hot.
 		tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
 		t1 := tm.tier1.TryCompile(proto)
-		tm.traceTier1CompileResult(proto, tier1AlreadyCompiled, t1, "not_ready_for_tier2")
+		reason := "not_ready_for_tier2"
+		if preGateTier2 {
+			reason = "tier2_pregate_generic_mod"
+		}
+		tm.traceTier1CompileResult(proto, tier1AlreadyCompiled, t1, reason)
 		// Ensure feedback is initialized for Tier 1 type collection.
 		if t1 != nil && proto.Feedback == nil {
 			proto.EnsureFeedback()
@@ -213,7 +218,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		// cannot replay table mutations from single-loop drivers. No-filter
 		// may bypass the performance-only call-in-loop prefilter, but it must
 		// not bypass restart-safety: replayed side effects are correctness bugs.
-		if profile.HasLoop && profile.LoopDepth >= 1 && !tm.tier2Failed[proto] &&
+		if !preGateTier2 && profile.HasLoop && profile.LoopDepth >= 1 && !tm.tier2Failed[proto] &&
 			(profile.LoopDepth >= 2 || tm.isOSRRestartSafe(proto, profile)) &&
 			(tm.envTier2NoFilter || !tm.osrWouldHitCallInLoopGate(proto, profile)) {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
@@ -316,6 +321,70 @@ func (tm *TieringManager) osrWouldHitCallInLoopGate(proto *vm.FuncProto, profile
 		}
 	}
 	return !canPromoteWithInlining(proto, globals) && !canPromoteWithNativeLoopCalls(proto, globals)
+}
+
+func (tm *TieringManager) shouldPreGateTier2(proto *vm.FuncProto, profile FuncProfile) bool {
+	if tm.envTier2NoFilter {
+		return false
+	}
+	if shouldPreGateGenericModTier2(proto, profile) {
+		return true
+	}
+	if proto == nil || proto.Name != "<main>" || !profile.HasLoop || profile.CallCount == 0 {
+		return false
+	}
+	return tm.loopCallsPreGatedGenericMod(proto)
+}
+
+func (tm *TieringManager) loopCallsPreGatedGenericMod(proto *vm.FuncProto) bool {
+	globals := tm.loopCallGlobals(proto)
+	if len(globals) == 0 {
+		return false
+	}
+	inLoop := bytecodeLoopPCs(proto)
+	for pc, inst := range proto.Code {
+		if !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
+		if !ok {
+			continue
+		}
+		if shouldPreGateGenericModTier2(callee, analyzeFuncProfile(callee)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (tm *TieringManager) loopCallGlobals(proto *vm.FuncProto) map[string]*vm.FuncProto {
+	globals := tm.buildInlineGlobals()
+	if protoGlobals := buildProtoInlineGlobals(proto); len(protoGlobals) > 0 {
+		globals = mergeProtoGlobals(globals, protoGlobals)
+	}
+	if stableGlobals := buildProtoStableGlobals(proto); len(stableGlobals) > 0 {
+		globals = mergeProtoGlobals(globals, stableGlobals)
+	}
+	return globals
+}
+
+func mergeProtoGlobals(base, extra map[string]*vm.FuncProto) map[string]*vm.FuncProto {
+	if len(extra) == 0 {
+		return base
+	}
+	if len(base) == 0 {
+		return extra
+	}
+	merged := make(map[string]*vm.FuncProto, len(base)+len(extra))
+	for name, callee := range base {
+		merged[name] = callee
+	}
+	for name, callee := range extra {
+		if _, ok := merged[name]; !ok {
+			merged[name] = callee
+		}
+	}
+	return merged
 }
 
 // Execute runs compiled code. Dispatches to Tier 1 or Tier 2 based on the
@@ -937,12 +1006,6 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			fmt.Sprintf("self-recursive loop has residual table mutation %s", op))
 		return nil, fmt.Errorf("tier2: self-recursive loop has residual table mutation %s (exit-storm blocked), staying at Tier 1", op)
 	}
-	if modReason, ok := firstTier2ModBlockerInLoop(fn); ok {
-		remarks.Add("Tier2Gate", "blocked", 0, 0, OpMod,
-			modReason+" remains inside loop")
-		return nil, fmt.Errorf("tier2: has %s (performance-blocked), staying at Tier 1", modReason)
-	}
-
 	// R162/R171: reject Tier 2 promotion when a loop contains operations
 	// whose Tier 2 path is still expected to be slower than Tier 1. This is
 	// deliberately a call-boundary performance filter, not the restart-OSR
@@ -959,6 +1022,11 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	// Table writes that can resize/mutate dynamic structure, residual
 	// allocations, and non-native calls are still blocked by default.
 	if !tm.envTier2NoFilter {
+		if modReason, ok := firstTier2ModBlockerInLoop(fn); ok {
+			remarks.Add("Tier2Gate", "blocked", 0, 0, OpMod,
+				modReason+" remains inside loop")
+			return nil, fmt.Errorf("tier2: has %s (performance-blocked), staying at Tier 1", modReason)
+		}
 		profile := tm.getProfile(proto)
 		if profile.LoopDepth < 2 {
 			if op, ok := firstCallBoundaryTier2BlockerInLoop(fn, loopCallGlobals); ok {
@@ -1417,20 +1485,7 @@ func hasStaticCallInLoop(proto *vm.FuncProto) bool {
 	if proto == nil || len(proto.Code) == 0 {
 		return false
 	}
-	inLoop := make([]bool, len(proto.Code))
-	for pc, inst := range proto.Code {
-		op := vm.DecodeOp(inst)
-		if op != vm.OP_FORLOOP && op != vm.OP_JMP {
-			continue
-		}
-		target := pc + 1 + vm.DecodesBx(inst)
-		if target < 0 || target > pc {
-			continue
-		}
-		for i := target; i <= pc && i < len(inLoop); i++ {
-			inLoop[i] = true
-		}
-	}
+	inLoop := bytecodeLoopPCs(proto)
 	for pc, inst := range proto.Code {
 		if inLoop[pc] && vm.DecodeOp(inst) == vm.OP_CALL {
 			return true
@@ -1439,9 +1494,9 @@ func hasStaticCallInLoop(proto *vm.FuncProto) bool {
 	return false
 }
 
-func canPromoteWithNativeLoopCalls(proto *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
-	if proto == nil || len(globals) == 0 {
-		return false
+func bytecodeLoopPCs(proto *vm.FuncProto) []bool {
+	if proto == nil || len(proto.Code) == 0 {
+		return nil
 	}
 	inLoop := make([]bool, len(proto.Code))
 	for pc, inst := range proto.Code {
@@ -1457,6 +1512,14 @@ func canPromoteWithNativeLoopCalls(proto *vm.FuncProto, globals map[string]*vm.F
 			inLoop[i] = true
 		}
 	}
+	return inLoop
+}
+
+func canPromoteWithNativeLoopCalls(proto *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
+	if proto == nil || len(globals) == 0 {
+		return false
+	}
+	inLoop := bytecodeLoopPCs(proto)
 	sawCall := false
 	for pc, inst := range proto.Code {
 		if !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_CALL {
@@ -1549,8 +1612,11 @@ func firstTier2ModBlockerInLoop(fn *Function) (string, bool) {
 			if instr.Op != OpMod {
 				continue
 			}
+			// Float OpMod has a native Tier 2 lowering. Generic OpMod still
+			// carries boxed type dispatch in a loop and is kept behind the
+			// default performance gate; GSCRIPT_TIER2_NO_FILTER may bypass it.
 			if instr.Type == TypeFloat {
-				return "known-float OpMod inside loop", true
+				continue
 			}
 			return "generic OpMod inside loop", true
 		}

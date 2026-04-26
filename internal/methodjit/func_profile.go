@@ -270,6 +270,47 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	return false
 }
 
+func shouldPreGateGenericModTier2(proto *vm.FuncProto, profile FuncProfile) bool {
+	if proto == nil || !profile.HasLoop || profile.ArithCount == 0 {
+		return false
+	}
+	hasMod, hasDivAndMod := bytecodeLoopModShape(proto)
+	return hasMod && !hasDivAndMod
+}
+
+func bytecodeLoopModShape(proto *vm.FuncProto) (hasMod bool, hasDivAndMod bool) {
+	if proto == nil || len(proto.Code) == 0 {
+		return false, false
+	}
+	for pc, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		if op != vm.OP_JMP && op != vm.OP_FORLOOP {
+			continue
+		}
+		target := pc + 1 + vm.DecodesBx(inst)
+		if target > pc || target < 0 {
+			continue
+		}
+		loopHasDiv := false
+		loopHasMod := false
+		for i := target; i <= pc && i < len(proto.Code); i++ {
+			switch vm.DecodeOp(proto.Code[i]) {
+			case vm.OP_DIV:
+				loopHasDiv = true
+			case vm.OP_MOD:
+				loopHasMod = true
+			}
+		}
+		if loopHasMod {
+			hasMod = true
+			if loopHasDiv {
+				hasDivAndMod = true
+			}
+		}
+	}
+	return hasMod, hasDivAndMod
+}
+
 func protoHasMatrixIntrinsicConstants(proto *vm.FuncProto) bool {
 	if proto == nil {
 		return false

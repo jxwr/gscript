@@ -292,6 +292,61 @@ func sum(n) {
 	}
 }
 
+func TestPreGateGenericModTier2(t *testing.T) {
+	src := `
+func is_prime(n) {
+    if n < 2 { return false }
+    i := 5
+    for i * i <= n {
+        if n % i == 0 { return false }
+        i = i + 6
+    }
+    return true
+}
+
+func collatz_total(limit) {
+    total_steps := 0
+    for n := 2; n <= limit; n++ {
+        x := n
+        for x != 1 {
+            if x % 2 == 0 {
+                x = x / 2
+            } else {
+                x = 3 * x + 1
+            }
+            total_steps = total_steps + 1
+        }
+    }
+    return total_steps
+}
+
+sum := 0
+for i := 2; i <= 100; i++ {
+    if is_prime(i) { sum = sum + i }
+}
+`
+	top := compileProto(t, src)
+	isPrime := findProtoByName(top, "is_prime")
+	if isPrime == nil {
+		t.Fatal("is_prime proto not found")
+	}
+	if !shouldPreGateGenericModTier2(isPrime, analyzeFuncProfile(isPrime)) {
+		t.Fatal("is_prime should be pre-gated: loop-carried generic Mod would fail default Tier2")
+	}
+	collatz := findProtoByName(top, "collatz_total")
+	if collatz == nil {
+		t.Fatal("collatz_total proto not found")
+	}
+	if shouldPreGateGenericModTier2(collatz, analyzeFuncProfile(collatz)) {
+		t.Fatal("collatz_total should remain eligible: Div+Mod loop uses native float Mod lowering")
+	}
+
+	tm := NewTieringManager()
+	if !tm.shouldPreGateTier2(top, analyzeFuncProfile(top)) {
+		t.Fatal("<main> loop calling pre-gated predicate should stay in Tier1 by default")
+	}
+}
+
 func TestAnalyzeFuncProfile_WhileLoop(t *testing.T) {
 	// gcd uses a while-style loop (backward JMP).
 	src := `
