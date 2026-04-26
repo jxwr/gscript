@@ -373,10 +373,11 @@ func EmitGuardTypeRelaxedFloat(asm *Assembler, base Reg, slot int, failLabel str
 // Float values have bits 50-62 NOT all set.
 // Tagged values have bits 50-62 all set AND bit 63 set.
 // Quick check: LSR #50, CMP #0x3FFF (bits 63:50 all set = tagged)
-// After this, CondEQ = tagged, CondNE = float.
+// After this, CondEQ = tagged, CondNE = float. Clobbers scratch and X16.
 func EmitIsTagged(asm *Assembler, valReg, scratch Reg) {
 	asm.LSRimm(scratch, valReg, 50)
-	asm.CMPimm(scratch, 0x3FFF) // 14 bits all set = 0x3FFF
+	asm.MOVimm16(X16, 0x3FFF) // 14 bits all set = 0x3FFF
+	asm.CMPreg(scratch, X16)
 }
 
 // EmitCheckIsTableFull is a full table check: tag=ptr AND sub=table.

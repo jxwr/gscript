@@ -124,6 +124,77 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 	})
 }
 
+// emitConcatExit emits OpConcat through exit-resume with all concat operands.
+// The compiler can fold a chain like a .. b .. c into one OpConcat with more
+// than two args, so the generic two-arg op-exit descriptor is not sufficient.
+func (ec *emitContext) emitConcatExit(instr *Instr) {
+	asm := ec.asm
+
+	resultSlot, hasSlot := ec.slotMap[instr.ID]
+	if !hasSlot {
+		resultSlot = ec.nextSlot
+		ec.slotMap[instr.ID] = resultSlot
+		ec.nextSlot++
+	}
+
+	nArgs := len(instr.Args)
+	tempBase := ec.nextSlot
+	ec.nextSlot += nArgs
+
+	for i, arg := range instr.Args {
+		valReg := ec.resolveValueNB(arg.ID, jit.X0)
+		if valReg != jit.X0 {
+			asm.MOVreg(jit.X0, valReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(tempBase+i))
+	}
+
+	ec.recordExitResumeCheckSite(instr, ExitOpExit, []int{resultSlot}, exitResumeCheckOptions{})
+	ec.emitStoreAllActiveRegs()
+
+	asm.LoadImm64(jit.X0, int64(instr.Op))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitOp)
+
+	asm.LoadImm64(jit.X0, int64(resultSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitSlot)
+
+	asm.LoadImm64(jit.X0, int64(tempBase))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitArg1)
+
+	asm.LoadImm64(jit.X0, int64(nArgs))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitArg2)
+
+	asm.LoadImm64(jit.X0, instr.Aux)
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitAux)
+
+	asm.LoadImm64(jit.X0, int64(instr.ID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitID)
+
+	ec.emitSetResumeNumericPass()
+	asm.LoadImm64(jit.X0, ExitOpExit)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+
+	continueLabel := ec.passLabel(fmt.Sprintf("op_continue_%d", instr.ID))
+	asm.Label(continueLabel)
+
+	ec.emitReloadAllActiveRegs()
+
+	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
+	ec.storeResultNB(jit.X0, instr.ID)
+
+	ec.callExitIDs = append(ec.callExitIDs, instr.ID)
+	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
+		instrID:       instr.ID,
+		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
+	})
+}
+
 // emitSetListExit emits ARM64 code for OpSetList via exit-resume.
 // OpSetList has variable args: Args[0]=table, Args[1..N]=values.
 // Before exiting, stores all values to consecutive temp slots in the

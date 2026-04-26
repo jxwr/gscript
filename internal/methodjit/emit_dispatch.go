@@ -206,10 +206,12 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.dmVerified = make(map[int]bool)
 
 	// --- Op-exit: unsupported ops exit to Go, execute there, resume JIT ---
+	case OpConcat:
+		ec.emitConcatExit(instr)
+
 	case OpSetGlobal,
 		OpGetUpval, OpSetUpval,
 		OpAppend,
-		OpConcat,
 		OpPow,
 		OpClosure, OpClose,
 		OpForPrep, OpForLoop,

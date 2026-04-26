@@ -605,6 +605,8 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 	trueLabel := ec.uniqueLabel("cmp_true")
 	falseLabel := ec.uniqueLabel("cmp_false")
 	doneLabel := ec.uniqueLabel("cmp_done")
+	fallbackLabel := ec.uniqueLabel("cmp_fallback")
+	fastDoneLabel := ec.uniqueLabel("cmp_fast_done")
 
 	if cond == jit.CondEQ {
 		asm.CMPreg(jit.X0, jit.X1)
@@ -630,6 +632,8 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 	}
 
 	asm.Label(lhsIntRhsNotInt)
+	jit.EmitIsTagged(asm, jit.X1, jit.X2)
+	asm.BCond(jit.CondEQ, fallbackLabel)
 	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
 	asm.SCVTF(jit.D0, jit.X0)
 	asm.FMOVtoFP(jit.D1, jit.X1)
@@ -638,6 +642,8 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 	asm.B(falseLabel)
 
 	asm.Label(lhsNotInt)
+	jit.EmitIsTagged(asm, jit.X0, jit.X2)
+	asm.BCond(jit.CondEQ, fallbackLabel)
 	asm.FMOVtoFP(jit.D0, jit.X0)
 	emitCheckIsInt(asm, jit.X1, jit.X2)
 	bothNotInt := ec.uniqueLabel("cmp_both_not_int")
@@ -650,6 +656,8 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 	asm.B(falseLabel)
 
 	asm.Label(bothNotInt)
+	jit.EmitIsTagged(asm, jit.X1, jit.X2)
+	asm.BCond(jit.CondEQ, fallbackLabel)
 	asm.FMOVtoFP(jit.D1, jit.X1)
 	asm.FCMPd(jit.D0, jit.D1)
 	asm.BCond(cond, trueLabel)
@@ -664,6 +672,12 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 
 	asm.Label(doneLabel)
 	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(fastDoneLabel)
+
+	asm.Label(fallbackLabel)
+	ec.emitOpExit(instr)
+
+	asm.Label(fastDoneLabel)
 }
 
 // emitNegFloat emits ARM64 code for OpNegFloat (-float).

@@ -10,6 +10,7 @@ package methodjit
 
 import (
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -398,10 +399,14 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 		}
 
 	case OpConcat:
-		if arg1 < len(regs) && arg2 < len(regs) && slot < len(regs) {
-			s1 := regs[arg1].String()
-			s2 := regs[arg2].String()
-			regs[slot] = runtime.StringValue(s1 + s2)
+		tempBase := arg1
+		nArgs := arg2
+		if slot < len(regs) && tempBase >= 0 && nArgs >= 0 && tempBase+nArgs <= len(regs) {
+			var sb strings.Builder
+			for i := 0; i < nArgs; i++ {
+				sb.WriteString(regs[tempBase+i].String())
+			}
+			regs[slot] = runtime.StringValue(sb.String())
 		}
 
 	case OpLen:
@@ -414,6 +419,29 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 			} else {
 				regs[slot] = runtime.IntValue(0)
 			}
+		}
+
+	case OpEq:
+		if arg1 < len(regs) && arg2 < len(regs) && slot < len(regs) {
+			regs[slot] = runtime.BoolValue(regs[arg1].Equal(regs[arg2]))
+		}
+
+	case OpLt:
+		if arg1 < len(regs) && arg2 < len(regs) && slot < len(regs) {
+			lt, ok := regs[arg1].LessThan(regs[arg2])
+			if !ok {
+				return fmt.Errorf("attempt to compare %s with %s", regs[arg1].TypeName(), regs[arg2].TypeName())
+			}
+			regs[slot] = runtime.BoolValue(lt)
+		}
+
+	case OpLe:
+		if arg1 < len(regs) && arg2 < len(regs) && slot < len(regs) {
+			lt, ok := regs[arg2].LessThan(regs[arg1])
+			if !ok {
+				return fmt.Errorf("attempt to compare %s with %s", regs[arg1].TypeName(), regs[arg2].TypeName())
+			}
+			regs[slot] = runtime.BoolValue(!lt)
 		}
 
 	case OpSetGlobal:

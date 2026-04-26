@@ -13,6 +13,7 @@ package methodjit
 import (
 	"fmt"
 	"math"
+	"strings"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -207,10 +208,14 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 		}
 
 	case OpConcat:
-		if absArg1 < len(regs) && absArg2 < len(regs) && absSlot < len(regs) {
-			s1 := regs[absArg1].String()
-			s2 := regs[absArg2].String()
-			regs[absSlot] = runtime.StringValue(s1 + s2)
+		tempBase := absArg1
+		nArgs := int(ctx.OpExitArg2)
+		if absSlot < len(regs) && tempBase >= 0 && nArgs >= 0 && tempBase+nArgs <= len(regs) {
+			var sb strings.Builder
+			for i := 0; i < nArgs; i++ {
+				sb.WriteString(regs[tempBase+i].String())
+			}
+			regs[absSlot] = runtime.StringValue(sb.String())
 		}
 
 	case OpLen:
@@ -223,6 +228,29 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 			} else {
 				regs[absSlot] = runtime.IntValue(0)
 			}
+		}
+
+	case OpEq:
+		if absArg1 < len(regs) && absArg2 < len(regs) && absSlot < len(regs) {
+			regs[absSlot] = runtime.BoolValue(regs[absArg1].Equal(regs[absArg2]))
+		}
+
+	case OpLt:
+		if absArg1 < len(regs) && absArg2 < len(regs) && absSlot < len(regs) {
+			lt, ok := regs[absArg1].LessThan(regs[absArg2])
+			if !ok {
+				return fmt.Errorf("attempt to compare %s with %s", regs[absArg1].TypeName(), regs[absArg2].TypeName())
+			}
+			regs[absSlot] = runtime.BoolValue(lt)
+		}
+
+	case OpLe:
+		if absArg1 < len(regs) && absArg2 < len(regs) && absSlot < len(regs) {
+			lt, ok := regs[absArg2].LessThan(regs[absArg1])
+			if !ok {
+				return fmt.Errorf("attempt to compare %s with %s", regs[absArg1].TypeName(), regs[absArg2].TypeName())
+			}
+			regs[absSlot] = runtime.BoolValue(!lt)
 		}
 
 	case OpPow:
