@@ -31,10 +31,10 @@ type loopPhiArgSet map[int]bool
 // write-through because they'll be register-active at every use site.
 //
 // A value V (defined in block D) can skip write-through only if:
-// 1. V is only used within loop blocks (no use outside loops)
-// 2. At every site where V is read cross-block, V's register is active.
-//    For phi args, the read happens in the predecessor block of the phi's
-//    header. V must be register-active in that predecessor.
+//  1. V is only used within loop blocks (no use outside loops)
+//  2. At every site where V is read cross-block, V's register is active.
+//     For phi args, the read happens in the predecessor block of the phi's
+//     header. V must be register-active in that predecessor.
 //
 // With nested loops, a value defined in an outer header may be used as a
 // phi arg from an inner loop block where the value isn't register-active.
@@ -181,6 +181,7 @@ type loopFPRegEntry struct {
 // can look up registers from their innermost enclosing header.
 func (li *loopInfo) computeHeaderExitRegs(fn *Function, alloc *RegAllocation) map[int]map[int]loopRegEntry {
 	perHeader := make(map[int]map[int]loopRegEntry) // headerBlockID -> (register number -> entry)
+	fusedCmps := computeFusedComparisons(fn)
 
 	for _, block := range fn.Blocks {
 		if !li.loopHeaders[block.ID] {
@@ -205,6 +206,9 @@ func (li *loopInfo) computeHeaderExitRegs(fn *Function, alloc *RegAllocation) ma
 		// Process instructions to track register overwrites.
 		for _, instr := range block.Instrs {
 			if instr.Op == OpPhi || instr.Op.IsTerminator() {
+				continue
+			}
+			if fusedCmps[instr.ID] {
 				continue
 			}
 			pr, ok := alloc.ValueRegs[instr.ID]
@@ -273,6 +277,7 @@ func (li *loopInfo) computeHeaderExitFPRegs(fn *Function, alloc *RegAllocation) 
 func computeSafeHeaderRegs(fn *Function, li *loopInfo, alloc *RegAllocation,
 	headerRegs map[int]map[int]loopRegEntry) map[int]map[int]loopRegEntry {
 	safe := make(map[int]map[int]loopRegEntry)
+	fusedCmps := computeFusedComparisons(fn)
 	for headerID, regs := range headerRegs {
 		bodyBlocks := li.headerBlocks[headerID]
 		safeRegs := make(map[int]loopRegEntry)
@@ -284,6 +289,9 @@ func computeSafeHeaderRegs(fn *Function, li *loopInfo, alloc *RegAllocation,
 				}
 				for _, instr := range block.Instrs {
 					if instr.Op == OpPhi || instr.Op.IsTerminator() {
+						continue
+					}
+					if fusedCmps[instr.ID] {
 						continue
 					}
 					instrPR, ok := alloc.ValueRegs[instr.ID]

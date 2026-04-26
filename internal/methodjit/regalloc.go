@@ -559,12 +559,10 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 		}
 		// Skip phis -- already allocated in phase 1.
 		if instr.Op == OpPhi {
-			// Still need to free dead values after this instruction's position
-			// for args that had their last use at this phi. However, phi args
-			// come from predecessor blocks, not from this block, so typically
-			// no values in our regState need to be freed here. But to be safe
-			// and consistent with the old behavior, call freeDeadValues.
-			freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse)
+			// Phi arguments are consumed on predecessor edges, not in the
+			// header block itself. Freeing them here can incorrectly release
+			// another header phi's live register in loop-carried swaps such as
+			// a'=b, b'=a+b, forcing per-iteration slot reloads.
 			continue
 		}
 

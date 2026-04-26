@@ -126,21 +126,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// Identify single-use comparisons that can be fused with their
 	// immediately-following Branch. Fused pairs emit CMP/FCMP + B.cc
 	// instead of CMP + CSET + ORR + TBNZ (saves 3 instructions).
-	useCounts := computeUseCounts(fn)
-	fusedCmps := make(map[int]bool)
-	for _, block := range fn.Blocks {
-		for i, instr := range block.Instrs {
-			if !isFusableComparison(instr.Op) || useCounts[instr.ID] != 1 {
-				continue
-			}
-			if i+1 < len(block.Instrs) {
-				next := block.Instrs[i+1]
-				if next.Op == OpBranch && len(next.Args) > 0 && next.Args[0].ID == instr.ID {
-					fusedCmps[instr.ID] = true
-				}
-			}
-		}
-	}
+	fusedCmps := computeFusedComparisons(fn)
 
 	ec := &emitContext{
 		fn:                fn,
@@ -537,6 +523,25 @@ func isFusableComparison(op Op) bool {
 		return true
 	}
 	return false
+}
+
+func computeFusedComparisons(fn *Function) map[int]bool {
+	useCounts := computeUseCounts(fn)
+	fusedCmps := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for i, instr := range block.Instrs {
+			if !isFusableComparison(instr.Op) || useCounts[instr.ID] != 1 {
+				continue
+			}
+			if i+1 < len(block.Instrs) {
+				next := block.Instrs[i+1]
+				if next.Op == OpBranch && len(next.Args) > 0 && next.Args[0].ID == instr.ID {
+					fusedCmps[instr.ID] = true
+				}
+			}
+		}
+	}
+	return fusedCmps
 }
 
 // assignSlots assigns a home slot for every SSA value.
