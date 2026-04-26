@@ -54,11 +54,10 @@ const (
 )
 
 const (
-	rawSelfFrameSize   = 64
+	rawSelfFrameSize   = 48
 	rawSelfRegsOff     = 0
 	rawSelfCallModeOff = 8
 	rawSelfArgsOff     = 16
-	rawSelfFuncOff     = 48
 )
 
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
@@ -520,23 +519,19 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	//   0       saved caller mRegRegs
 	//   8       saved CallMode
 	//   16..47  raw int args X0..X3
-	//   48      boxed function operand for VM fallback
-	//   56..63  padding for 16-byte alignment
 	//
 	// The caller's own entry frame already owns FP/LR, and raw-int self calls
 	// stay within one proto/closure/constant domain. We keep the callee base in
 	// mRegRegs instead of round-tripping through ctx.Regs. Before any fallback
 	// to Go, emitRestoreRawSelfCallerState writes the caller base back into
-	// ctx.Regs so resume handlers still see the boxed VM ABI state.
+	// ctx.Regs so resume handlers still see the boxed VM ABI state. The boxed
+	// function operand needed by VM fallback is rebuilt from BaselineClosurePtr;
+	// static self recursion cannot change closure identity while this native
+	// frame is executing.
 	asm.SUBimm(jit.SP, jit.SP, rawSelfFrameSize)
 	asm.STR(mRegRegs, jit.SP, rawSelfRegsOff)
 	asm.LDR(jit.X7, mRegCtx, execCtxOffCallMode)
 	asm.STR(jit.X7, jit.SP, rawSelfCallModeOff)
-	fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X7)
-	if fnReg != jit.X7 {
-		asm.MOVreg(jit.X7, fnReg)
-	}
-	asm.STR(jit.X7, jit.SP, rawSelfFuncOff)
 
 	ec.emitNumericArgsInRegs(instr, nParams)
 	for i := 0; i < nParams; i++ {
@@ -596,7 +591,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.Label(slowLabel)
 	ec.emitRestoreRawSelfCallerState()
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
-	ec.emitMaterializeRawIntSelfCallFrameFromStack(funcSlot, nArgs, rawSelfFuncOff, rawSelfArgsOff)
+	ec.emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlot, nArgs, rawSelfArgsOff)
 	asm.ADDimm(jit.SP, jit.SP, rawSelfFrameSize)
 	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs, liveGPRs, liveFPRs)
 	ec.rawIntRegs = postRawIntRegs
@@ -619,9 +614,9 @@ func (ec *emitContext) emitBoxCurrentClosure(dst, scratch jit.Reg) {
 	ec.asm.ORRreg(dst, dst, scratch)
 }
 
-func (ec *emitContext) emitMaterializeRawIntSelfCallFrameFromStack(funcSlot, nArgs, rawFuncOff, rawArgOff int) {
+func (ec *emitContext) emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlot, nArgs, rawArgOff int) {
 	asm := ec.asm
-	asm.LDR(jit.X0, jit.SP, rawFuncOff)
+	ec.emitBoxCurrentClosure(jit.X0, jit.X1)
 	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
 	for i := 0; i < nArgs; i++ {
 		asm.LDR(jit.X0, jit.SP, rawArgOff+i*jit.ValueSize)
