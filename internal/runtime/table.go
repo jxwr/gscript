@@ -29,7 +29,9 @@ type Table struct {
 	mu    *sync.RWMutex   // nil for single-threaded tables (fast default)
 	array []Value         // 0-indexed: array[0] is usable by user code
 	imap  map[int64]Value // integer keys not in array range
-	// String keys: small tables use flat slices, large tables use map
+	// String keys: small tables use canonical Shape.FieldKeys plus per-table
+	// values, large tables use map. Do not mutate skeys in place: it may be
+	// shared by every table with the same shape.
 	skeys     []string         // parallel with svals for small tables
 	svals     []Value          // parallel with skeys for small tables
 	smap      map[string]Value // only for tables with >smallFieldCap string keys
@@ -98,7 +100,6 @@ func NewTableSized(arrayHint, hashHint int) *Table {
 		t.array = DefaultHeap.AllocValues(1, arrayHint+1)
 	}
 	if hashHint > 0 && hashHint <= smallFieldCap {
-		t.skeys = DefaultHeap.AllocStringKeys(hashHint)
 		t.svals = DefaultHeap.AllocValues(0, hashHint)
 	}
 	return t
@@ -210,8 +211,10 @@ func (t *Table) HasMetatable() bool {
 // needing string comparison. Works across different tables with the
 // same field layout (e.g., all nbody body tables).
 type FieldCacheEntry struct {
-	FieldIdx int    // cached index into skeys/svals (-1 = not cached)
-	ShapeID  uint32 // shapeID when cache was populated
+	FieldIdx      int    // cached index into skeys/svals (-1 = not cached)
+	ShapeID       uint32 // shapeID when cache was populated for existing-field access
+	AppendShapeID uint32 // pre-append shapeID for constructor-style SETFIELD
+	AppendShape   *Shape // result shape for constructor-style SETFIELD
 }
 
 // RawGetString retrieves a value by string key (fast path, no Value boxing).
@@ -276,14 +279,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	idx := cache.FieldIdx
 	if t.shapeID != 0 && cache.ShapeID == t.shapeID && idx >= 0 && idx < len(t.svals) {
 		if val.IsNil() {
-			last := len(t.skeys) - 1
-			if idx != last {
-				t.skeys[idx] = t.skeys[last]
-				t.svals[idx] = t.svals[last]
-			}
-			t.skeys = t.skeys[:last]
-			t.svals = t.svals[:last]
-			t.setShape(t.skeys)
+			t.deleteSmallStringField(idx)
 			cache.FieldIdx = 0 // reset cache
 			cache.ShapeID = 0
 		} else {
@@ -292,16 +288,28 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 		return
 	}
 
+	if !val.IsNil() &&
+		t.smap == nil &&
+		cache.AppendShapeID == t.shapeID &&
+		idx == len(t.svals) &&
+		idx == len(t.skeys) &&
+		idx < smallFieldCap {
+		if cache.AppendShape != nil {
+			t.appendSmallStringValue(val)
+			t.applyShape(cache.AppendShape)
+		} else {
+			t.appendSmallStringField(key, val)
+			cache.AppendShape = t.shape
+		}
+		cache.ShapeID = t.shapeID
+		return
+	}
+
 	// Fall back to normal path
 	for i, k := range t.skeys {
 		if k == key {
 			if val.IsNil() {
-				last := len(t.skeys) - 1
-				t.skeys[i] = t.skeys[last]
-				t.svals[i] = t.svals[last]
-				t.skeys = t.skeys[:last]
-				t.svals = t.svals[:last]
-				t.setShape(t.skeys)
+				t.deleteSmallStringField(i)
 			} else {
 				t.svals[i] = val
 				cache.FieldIdx = i
@@ -322,17 +330,13 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 
 	if !val.IsNil() {
 		if len(t.skeys) < smallFieldCap {
-			t.skeys = append(t.skeys, key)
-			if len(t.svals) < cap(t.svals) {
-				n := len(t.svals)
-				t.svals = t.svals[:n+1]
-				t.svals[n] = val
-			} else {
-				arenaAppendValue(DefaultHeap, &t.svals, val)
-			}
-			t.appendShape(key)
-			cache.FieldIdx = len(t.skeys) - 1
+			preShapeID := t.shapeID
+			idx := len(t.svals)
+			t.appendSmallStringField(key, val)
+			cache.FieldIdx = idx
 			cache.ShapeID = t.shapeID
+			cache.AppendShapeID = preShapeID
+			cache.AppendShape = t.shape
 		} else {
 			t.smap = make(map[string]Value, len(t.skeys)+1)
 			for i, k := range t.skeys {
@@ -388,12 +392,17 @@ func (t *Table) RawSet(key, val Value) {
 // Pass nil/empty skeys to clear (hash-mode or empty table).
 // Must be called with lock held (if mu != nil).
 func (t *Table) setShape(skeys []string) {
-	s := GetShape(skeys)
+	t.applyShape(GetShape(skeys))
+}
+
+func (t *Table) applyShape(s *Shape) {
 	t.shape = s
 	if s != nil {
 		t.shapeID = s.ID
+		t.skeys = s.FieldKeys
 	} else {
 		t.shapeID = 0
+		t.skeys = nil
 	}
 }
 
@@ -410,9 +419,51 @@ func (t *Table) appendShape(key string) {
 	t.shape = s
 	if s != nil {
 		t.shapeID = s.ID
+		t.skeys = s.FieldKeys
 	} else {
 		t.shapeID = 0
+		t.skeys = nil
 	}
+}
+
+func (t *Table) appendSmallStringField(key string, val Value) {
+	t.appendSmallStringValue(val)
+	t.appendShape(key)
+}
+
+func (t *Table) appendSmallStringValue(val Value) {
+	if len(t.svals) < cap(t.svals) {
+		n := len(t.svals)
+		t.svals = t.svals[:n+1]
+		t.svals[n] = val
+	} else {
+		arenaAppendValue(DefaultHeap, &t.svals, val)
+	}
+}
+
+// deleteSmallStringField removes skeys[idx]/svals[idx] from a small string
+// table. skeys may alias an immutable Shape.FieldKeys slice, so this must not
+// mutate the key slice in place. Value order follows the historical swap-delete
+// behavior used by RawSetString.
+func (t *Table) deleteSmallStringField(idx int) {
+	last := len(t.skeys) - 1
+	if idx < 0 || idx > last {
+		return
+	}
+	if idx != last {
+		t.svals[idx] = t.svals[last]
+	}
+	t.svals = t.svals[:last]
+	if last == 0 {
+		t.setShape(nil)
+		return
+	}
+	keys := make([]string, last)
+	copy(keys, t.skeys[:last])
+	if idx != last {
+		keys[idx] = t.skeys[last]
+	}
+	t.setShape(keys)
 }
 
 // RawSetString assigns a value by string key (fast path).
@@ -426,12 +477,7 @@ func (t *Table) RawSetString(key string, val Value) {
 	for i, k := range t.skeys {
 		if k == key {
 			if val.IsNil() {
-				last := len(t.skeys) - 1
-				t.skeys[i] = t.skeys[last]
-				t.svals[i] = t.svals[last]
-				t.skeys = t.skeys[:last]
-				t.svals = t.svals[:last]
-				t.setShape(t.skeys)
+				t.deleteSmallStringField(i)
 			} else {
 				t.svals[i] = val
 			}
@@ -450,15 +496,7 @@ func (t *Table) RawSetString(key string, val Value) {
 
 	if !val.IsNil() {
 		if len(t.skeys) < smallFieldCap {
-			t.skeys = append(t.skeys, key)
-			if len(t.svals) < cap(t.svals) {
-				n := len(t.svals)
-				t.svals = t.svals[:n+1]
-				t.svals[n] = val
-			} else {
-				arenaAppendValue(DefaultHeap, &t.svals, val)
-			}
-			t.appendShape(key)
+			t.appendSmallStringField(key, val)
 		} else {
 			t.smap = make(map[string]Value, len(t.skeys)+1)
 			for i, k := range t.skeys {

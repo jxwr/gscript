@@ -52,9 +52,9 @@ const (
 	TableOffKeysDirty = 136 // bool (1 byte) — must set true on append
 
 	// FieldCacheEntry layout (for GETFIELD/SETFIELD inline caching)
-	FieldCacheEntrySize        = 16 // sizeof(runtime.FieldCacheEntry)
+	FieldCacheEntrySize        = 24 // sizeof(runtime.FieldCacheEntry)
 	FieldCacheEntryOffFieldIdx = 0  // int (8 bytes)
-	FieldCacheEntryOffShapeID  = 8  // uint32 (padded to 8 in struct)
+	FieldCacheEntryOffShapeID  = 8  // uint32
 
 	// Type-specialized array fields (added at end of Table struct)
 	TableOffArrayKind     = 137 // ArrayKind (uint8)

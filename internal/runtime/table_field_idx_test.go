@@ -136,13 +136,13 @@ func TestFieldCacheNbodyPattern(t *testing.T) {
 	bodies := make([]*Table, 5)
 	for i := range bodies {
 		body := NewTable()
-		body.RawSetString("x", FloatValue(float64(i) * 1.0))
-		body.RawSetString("y", FloatValue(float64(i) * 2.0))
-		body.RawSetString("z", FloatValue(float64(i) * 3.0))
-		body.RawSetString("vx", FloatValue(float64(i) * 0.1))
-		body.RawSetString("vy", FloatValue(float64(i) * 0.2))
-		body.RawSetString("vz", FloatValue(float64(i) * 0.3))
-		body.RawSetString("mass", FloatValue(float64(i+1) * 100.0))
+		body.RawSetString("x", FloatValue(float64(i)*1.0))
+		body.RawSetString("y", FloatValue(float64(i)*2.0))
+		body.RawSetString("z", FloatValue(float64(i)*3.0))
+		body.RawSetString("vx", FloatValue(float64(i)*0.1))
+		body.RawSetString("vy", FloatValue(float64(i)*0.2))
+		body.RawSetString("vz", FloatValue(float64(i)*0.3))
+		body.RawSetString("mass", FloatValue(float64(i+1)*100.0))
 		bodies[i] = body
 	}
 
@@ -195,6 +195,57 @@ func TestFieldCacheSetCached(t *testing.T) {
 	tbl.RawSetStringCached("x", FloatValue(200.0), &setCache)
 	if v := tbl.RawGetStringCached("x", &getCache); v.Float() != 200.0 {
 		t.Errorf("expected x=200.0, got %v", v)
+	}
+}
+
+func TestFieldCacheCachedConstructorAppendAcrossTables(t *testing.T) {
+	var cacheX, cacheY FieldCacheEntry
+
+	t1 := NewTable()
+	t1.RawSetStringCached("x", IntValue(1), &cacheX)
+	t1.RawSetStringCached("y", IntValue(2), &cacheY)
+
+	t2 := NewTable()
+	t2.RawSetStringCached("x", IntValue(10), &cacheX)
+	t2.RawSetStringCached("y", IntValue(20), &cacheY)
+
+	if t1.ShapeID() == 0 || t1.ShapeID() != t2.ShapeID() {
+		t.Fatalf("tables should share non-zero constructor shape: %d vs %d", t1.ShapeID(), t2.ShapeID())
+	}
+	if got := t2.RawGetStringCached("x", &cacheX); got.Int() != 10 {
+		t.Fatalf("t2.x = %d, want 10", got.Int())
+	}
+	if got := t2.RawGetStringCached("y", &cacheY); got.Int() != 20 {
+		t.Fatalf("t2.y = %d, want 20", got.Int())
+	}
+}
+
+func TestFieldCacheSharedShapeDeleteDoesNotMutatePeerKeys(t *testing.T) {
+	t1 := NewTable()
+	t1.RawSetString("x", IntValue(1))
+	t1.RawSetString("y", IntValue(2))
+	t1.RawSetString("z", IntValue(3))
+
+	t2 := NewTable()
+	t2.RawSetString("x", IntValue(10))
+	t2.RawSetString("y", IntValue(20))
+	t2.RawSetString("z", IntValue(30))
+
+	if t1.ShapeID() == 0 || t1.ShapeID() != t2.ShapeID() {
+		t.Fatalf("tables should share initial shape: %d vs %d", t1.ShapeID(), t2.ShapeID())
+	}
+
+	t1.RawSetString("y", NilValue())
+
+	var cacheY, cacheZ FieldCacheEntry
+	if got := t1.RawGetStringCached("y", &cacheY); !got.IsNil() {
+		t.Fatalf("deleted t1.y = %v, want nil", got)
+	}
+	if got := t2.RawGetStringCached("y", &cacheY); got.Int() != 20 {
+		t.Fatalf("t2.y = %d, want 20", got.Int())
+	}
+	if got := t2.RawGetStringCached("z", &cacheZ); got.Int() != 30 {
+		t.Fatalf("t2.z = %d, want 30", got.Int())
 	}
 }
 

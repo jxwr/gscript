@@ -14,13 +14,13 @@ import "unsafe"
 
 const (
 	defaultPageSize = 1 << 20 // 1 MB per mmap page
-	numSizeClasses  = 8
+	numSizeClasses  = 10
 )
 
 // sizeClasses maps index → fixed object size in bytes.
 // Chosen to cover common allocation sizes with minimal internal fragmentation.
 var sizeClasses = [numSizeClasses]int{
-	64, 128, 256, 512, 1024, 2048, 4096, 8192,
+	16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192,
 }
 
 // sizeClassIndex returns the arena index for the given allocation size.
