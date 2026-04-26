@@ -1,7 +1,7 @@
 //go:build darwin && arm64
 
 // tier1_int_spec_test.go — integration tests for the Tier 1 int-specialized
-// ADD/SUB/MUL/EQ/LT/LE templates. Uses the full VM→JIT pipeline via
+// ADD/SUB/MUL/MOD/EQ/LT/LE templates. Uses the full VM→JIT pipeline via
 // compareVMvsJIT so correctness is validated end-to-end.
 
 package methodjit
@@ -48,6 +48,13 @@ func fib(n) {
     return fib(n - 1) + fib(n - 2)
 }
 result := fib(15)
+`, "result")
+}
+
+func TestTier1IntSpec_ModSignMatchesVM(t *testing.T) {
+	compareVMvsJIT(t, `
+func f(a, b) { return a % b }
+result := f(-5, 3) * 100 + f(5, -3) * 10 + f(-5, -3)
 `, "result")
 }
 

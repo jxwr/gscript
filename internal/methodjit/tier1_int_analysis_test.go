@@ -27,9 +27,9 @@ func TestKnownInt_SimpleAdd(t *testing.T) {
 		NumParams: 2,
 		MaxStack:  8,
 		Code: []uint32{
-			vm.EncodeAsBx(vm.OP_LOADINT, 2, 1),      // R(2) = 1
-			vm.EncodeABC(vm.OP_ADD, 3, 0, 2),        // R(3) = R(0) + R(2)
-			vm.EncodeABC(vm.OP_RETURN, 3, 2, 0),     // return R(3)
+			vm.EncodeAsBx(vm.OP_LOADINT, 2, 1),  // R(2) = 1
+			vm.EncodeABC(vm.OP_ADD, 3, 0, 2),    // R(3) = R(0) + R(2)
+			vm.EncodeABC(vm.OP_RETURN, 3, 2, 0), // return R(3)
 		},
 	}
 	info, ok := computeKnownIntSlots(proto)
@@ -47,6 +47,38 @@ func TestKnownInt_SimpleAdd(t *testing.T) {
 	}
 	if got, want := info.knownIntAt(2), bit(0, 2, 3); got != want {
 		t.Errorf("knownIntAt(2)=%#x want %#x", got, want)
+	}
+}
+
+func TestKnownInt_ModKeepsIntResult(t *testing.T) {
+	proto := &vm.FuncProto{
+		NumParams: 1,
+		MaxStack:  6,
+		Code: []uint32{
+			vm.EncodeAsBx(vm.OP_LOADINT, 1, 7),
+			vm.EncodeABC(vm.OP_MOD, 2, 0, 1),
+			vm.EncodeAsBx(vm.OP_LOADINT, 3, 0),
+			vm.EncodeABC(vm.OP_EQ, 0, 2, 3),
+			vm.EncodeABC(vm.OP_RETURN, 2, 2, 0),
+		},
+	}
+	info, ok := computeKnownIntSlots(proto)
+	if !ok {
+		t.Fatalf("expected eligible, got ok=false")
+	}
+	if got, want := info.guardedParams, bit(0); got != want {
+		t.Errorf("guardedParams=%#x want %#x", got, want)
+	}
+	if !info.isKnownIntOperand(1, 0, proto.Constants) ||
+		!info.isKnownIntOperand(1, 1, proto.Constants) {
+		t.Fatalf("MOD operands not known-int at pc=1: known=%#x", info.knownIntAt(1))
+	}
+	if got := info.knownIntAt(2); got&bit(2) == 0 {
+		t.Errorf("knownIntAt(2)=%#x missing MOD result slot 2", got)
+	}
+	if !info.isKnownIntOperand(3, 2, proto.Constants) ||
+		!info.isKnownIntOperand(3, 3, proto.Constants) {
+		t.Fatalf("EQ operands after MOD not known-int at pc=3: known=%#x", info.knownIntAt(3))
 	}
 }
 

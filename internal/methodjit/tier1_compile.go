@@ -147,7 +147,11 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		case vm.OP_DIV:
 			emitBaselineDiv(asm, inst)
 		case vm.OP_MOD:
-			emitBaselineMod(asm, inst)
+			if intSpecEligible(intSpecEnabled, intInfo, pc, inst, proto) {
+				emitBaselineModIntSpec(asm, inst, pc)
+			} else {
+				emitBaselineMod(asm, inst)
+			}
 		case vm.OP_UNM:
 			emitBaselineUnm(asm, inst)
 		case vm.OP_NOT:
@@ -537,7 +541,7 @@ func emitBaselineOpExitABx(asm *jit.Assembler, inst uint32, pc int, op vm.Opcode
 	emitBaselineOpExitCommon(asm, op, pc, a, bx, 0)
 }
 
-// intSpecEligible reports whether an ADD/SUB/MUL/EQ/LT/LE instruction at the
+// intSpecEligible reports whether an ADD/SUB/MUL/MOD/EQ/LT/LE instruction at the
 // given PC is eligible for the int-specialized template: both RK operands
 // must be statically known to hold int48 values. Returns false when int-spec
 // is globally disabled for this proto or the analyzer returned nil.

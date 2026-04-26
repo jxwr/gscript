@@ -332,12 +332,56 @@ func emitBaselineMod(asm *jit.Assembler, inst uint32) {
 	// For float mod, we do: a - floor(a/b)*b
 	emitToFloat(asm, jit.D0, jit.X0, jit.X4, jit.X5)
 	emitToFloat(asm, jit.D1, jit.X1, jit.X4, jit.X5)
-	asm.FDIVd(jit.D2, jit.D0, jit.D1)    // D2 = a/b
-	asm.FRINTMd(jit.D2, jit.D2)           // D2 = floor(a/b)
-	asm.FMULd(jit.D2, jit.D2, jit.D1)     // D2 = floor(a/b)*b
-	asm.FSUBd(jit.D0, jit.D0, jit.D2)     // D0 = a - floor(a/b)*b
+	asm.FDIVd(jit.D2, jit.D0, jit.D1) // D2 = a/b
+	asm.FRINTMd(jit.D2, jit.D2)       // D2 = floor(a/b)
+	asm.FMULd(jit.D2, jit.D2, jit.D1) // D2 = floor(a/b)*b
+	asm.FSUBd(jit.D0, jit.D0, jit.D2) // D0 = a - floor(a/b)*b
 	asm.FMOVtoGP(jit.X0, jit.D0)
 	storeSlot(asm, a, jit.X0)
+
+	asm.Label(doneLabel)
+}
+
+// emitBaselineModIntSpec emits MOD assuming both operands are statically known
+// ints. It still preserves VM semantics: n%0 deopts to the interpreter, and
+// the remainder is adjusted so its sign follows the divisor.
+func emitBaselineModIntSpec(asm *jit.Assembler, inst uint32, pc int) {
+	a := vm.DecodeA(inst)
+	bidx := vm.DecodeB(inst)
+	cidx := vm.DecodeC(inst)
+
+	loadRK(asm, jit.X0, bidx)
+	loadRK(asm, jit.X1, cidx)
+
+	zeroLabel := nextLabel("mod_spec_zero")
+	adjustLabel := nextLabel("mod_spec_adjust")
+	storeLabel := nextLabel("mod_spec_store")
+	doneLabel := nextLabel("mod_spec_done")
+
+	asm.SBFX(jit.X4, jit.X0, 0, 48) // dividend
+	asm.SBFX(jit.X5, jit.X1, 0, 48) // divisor
+	asm.CBZ(jit.X5, zeroLabel)
+
+	asm.SDIV(jit.X6, jit.X4, jit.X5)
+	asm.MSUB(jit.X4, jit.X6, jit.X5, jit.X4) // X4 = dividend - quotient*divisor
+
+	// VM modulo follows Lua-style sign rules: if remainder and divisor have
+	// different signs, add the divisor. Zero needs no adjustment.
+	asm.CBZ(jit.X4, storeLabel)
+	asm.EORreg(jit.X7, jit.X4, jit.X5)
+	asm.TBNZ(jit.X7, 63, adjustLabel)
+	asm.B(storeLabel)
+
+	asm.Label(adjustLabel)
+	asm.ADDreg(jit.X4, jit.X4, jit.X5)
+
+	asm.Label(storeLabel)
+	jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
+	storeSlot(asm, a, jit.X4)
+	asm.B(doneLabel)
+
+	asm.Label(zeroLabel)
+	emitIntSpecDeopt(asm, pc)
 
 	asm.Label(doneLabel)
 }
@@ -456,8 +500,8 @@ func emitBaselineEQ(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	asm.LSRimm(jit.X2, jit.X0, 48)
 	asm.MOVimm16(jit.X3, uint16(jit.NB_TagNilShr48)) // 0xFFFC
 	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondLT, floatCmpLabel) // tag < 0xFFFC → float → is number
-	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))  // 0xFFFE
+	asm.BCond(jit.CondLT, floatCmpLabel)             // tag < 0xFFFC → float → is number
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48)) // 0xFFFE
 	asm.CMPreg(jit.X2, jit.X3)
 	asm.BCond(jit.CondNE, notEqualLabel) // tag != 0xFFFE → not int, not float → not number
 

@@ -2,7 +2,7 @@
 
 // tier1_int_analysis.go implements forward-scan KnownInt tracking for the
 // Tier 1 baseline compiler. For each bytecode PC, it computes the set of VM
-// register slots known to hold a NaN-boxed int48, so ADD/SUB/MUL/EQ/LT/LE
+// register slots known to hold a NaN-boxed int48, so ADD/SUB/MUL/MOD/EQ/LT/LE
 // emitters can dispatch to integer-specialized templates without dispatch
 // overhead. Algorithm: see opt/knowledge/tier1-int-spec.md.
 
@@ -100,9 +100,9 @@ func rkIsKnownInt(b uint64, idx int, consts []runtime.Value) bool {
 
 // computeKnownIntSlots performs the forward linear scan. Returns (nil, false)
 // if the proto is ineligible. Eligibility gate: (1) MaxStack > 64,
-// (2) any blacklisted op (CONCAT/LEN/POW/DIV/MOD/CLOSURE/GETFIELD/SETFIELD/
+// (2) any blacklisted op (CONCAT/LEN/POW/DIV/CLOSURE/GETFIELD/SETFIELD/
 // SELF/VARARG/TFORCALL/TFORLOOP/MAKECHAN/SEND/RECV/GO), (3) any OP_LOADK of
-// a non-int constant, (4) any ADD/SUB/MUL/EQ/LT/LE RK operand that is a
+// a non-int constant, (4) any ADD/SUB/MUL/MOD/EQ/LT/LE RK operand that is a
 // non-int constant, (5) any instruction writes a parameter slot with a
 // value not known to be int.
 func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
@@ -123,7 +123,7 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 	for _, inst := range code {
 		op := vm.DecodeOp(inst)
 		switch op {
-		case vm.OP_CONCAT, vm.OP_LEN, vm.OP_POW, vm.OP_DIV, vm.OP_MOD,
+		case vm.OP_CONCAT, vm.OP_LEN, vm.OP_POW, vm.OP_DIV,
 			vm.OP_CLOSURE, vm.OP_GETFIELD, vm.OP_SETFIELD, vm.OP_SELF,
 			vm.OP_VARARG, vm.OP_TFORCALL, vm.OP_TFORLOOP,
 			vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV, vm.OP_GO:
@@ -133,7 +133,7 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 			if bx < 0 || bx >= len(consts) || !consts[bx].IsInt() {
 				return nil, false
 			}
-		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_EQ, vm.OP_LT, vm.OP_LE:
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_EQ, vm.OP_LT, vm.OP_LE:
 			b := vm.DecodeB(inst)
 			c := vm.DecodeC(inst)
 			if b >= vm.RKBit {
@@ -152,7 +152,7 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 	}
 
 	// Classify params by how they're used in the body:
-	//   arithUse   — appears as B or C of ADD/SUB/MUL/EQ/LT/LE (as a register)
+	//   arithUse   — appears as B or C of ADD/SUB/MUL/MOD/EQ/LT/LE (as a register)
 	//   nonIntUse  — appears as the table slot in GETTABLE/SETTABLE/SETLIST/APPEND
 	//                or as the callable in CALL
 	// A param with both classifications is inconsistent (can't be int AND table);
@@ -165,7 +165,7 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 		b := vm.DecodeB(inst)
 		c := vm.DecodeC(inst)
 		switch op {
-		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_EQ, vm.OP_LT, vm.OP_LE:
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_EQ, vm.OP_LT, vm.OP_LE:
 			if b < vm.RKBit && b < proto.NumParams {
 				arithUse = setSlot(arithUse, b)
 			}
@@ -266,7 +266,7 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 		case vm.OP_SETGLOBAL, vm.OP_SETUPVAL, vm.OP_SETTABLE,
 			vm.OP_SETLIST, vm.OP_APPEND:
 			// No register destination written (A holds the table / source).
-		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL:
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD:
 			if rkIsKnownInt(known, b, consts) && rkIsKnownInt(known, c, consts) {
 				known = setSlot(known, a)
 			} else {
@@ -331,7 +331,7 @@ func writesSlotA(op vm.Opcode) bool {
 	switch op {
 	case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_LOADINT, vm.OP_LOADK,
 		vm.OP_MOVE, vm.OP_GETGLOBAL, vm.OP_GETUPVAL, vm.OP_NEWTABLE,
-		vm.OP_GETTABLE, vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_UNM,
+		vm.OP_GETTABLE, vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_UNM,
 		vm.OP_NOT, vm.OP_CALL, vm.OP_TESTSET, vm.OP_FORPREP, vm.OP_FORLOOP:
 		return true
 	}
