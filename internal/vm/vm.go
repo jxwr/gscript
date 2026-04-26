@@ -454,7 +454,7 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	vm.frameCount++
 
 	// Method JIT: check for compiled function.
-	if vm.methodJIT != nil && !proto.IsVarArg {
+	if vm.methodJIT != nil && !proto.IsVarArg && !proto.JITDisabled {
 		proto.CallCount++
 		if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
 			results, err := vm.methodJIT.Execute(compiled, vm.regs, base, proto)
@@ -1200,7 +1200,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				vm.frameCount++
 
 				// Method JIT: check for compiled function
-				if vm.methodJIT != nil && !proto.IsVarArg {
+				if vm.methodJIT != nil && !proto.IsVarArg && !proto.JITDisabled {
 					proto.CallCount++
 					if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
 						results, err := vm.methodJIT.Execute(compiled, vm.regs, newBase, proto)

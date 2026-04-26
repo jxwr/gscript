@@ -28,6 +28,7 @@ type FuncProto struct {
 	FieldCache     []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
 	HasSelfCalls    bool                      // true if function has recursive calls to itself (set during JIT compilation)
 	CallCount       int                       // JIT call count (avoids map lookup in VM hot path)
+	JITDisabled     bool                      // true when the method JIT made a permanent per-proto stay-interpreted decision
 	Feedback        FeedbackVector            // lazily-initialized per-PC type feedback for Method JIT
 	CompiledCodePtr    uintptr // pointer to baseline JIT compiled code (set after CompileBaseline)
 	DirectEntryPtr     uintptr // pointer to direct entry point for native BLR calls

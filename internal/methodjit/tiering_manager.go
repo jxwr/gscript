@@ -164,6 +164,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// overhead than they save in native templates. See
 	// shouldStayTier0 in func_profile.go for the heuristic.
 	if shouldStayTier0(profile) {
+		proto.JITDisabled = true
 		return nil
 	}
 

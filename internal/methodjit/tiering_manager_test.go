@@ -212,6 +212,50 @@ for i := 1; i <= 5; i++ {
 	}
 }
 
+func TestTieringManager_StayTier0DisablesRepeatedCompileChecks(t *testing.T) {
+	src := `
+func makeTree(depth) {
+    if depth == 0 {
+        return {left: nil, right: nil}
+    }
+    return {left: makeTree(depth - 1), right: makeTree(depth - 1)}
+}
+
+result := 0
+for i := 1; i <= 20; i++ {
+    t := makeTree(4)
+    if t.left != nil {
+        result = result + 1
+    }
+}
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 20 {
+		t.Fatalf("result = %v, want 20", result)
+	}
+
+	makeTreeProto := findProtoByName(proto, "makeTree")
+	if makeTreeProto == nil {
+		t.Fatal("makeTree proto not found")
+	}
+	if !makeTreeProto.JITDisabled {
+		t.Fatal("makeTree should cache the stay-tier0 decision in JITDisabled")
+	}
+	if makeTreeProto.CompiledCodePtr != 0 || makeTreeProto.DirectEntryPtr != 0 {
+		t.Fatalf("makeTree compiled despite stay-tier0: compiled=%#x direct=%#x",
+			makeTreeProto.CompiledCodePtr, makeTreeProto.DirectEntryPtr)
+	}
+}
+
 // TestTieringManager_Tier2DirectEntry verifies that after Tier 2 compilation,
 // Tier 1 BLR callers can reach the Tier 2 direct entry point. This tests that:
 // 1. Tier 2 code has a compatible direct entry (16-byte frame, same calling convention)
