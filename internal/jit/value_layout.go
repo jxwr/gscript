@@ -42,6 +42,7 @@ const (
 	// Table struct offsets (must match runtime.Table layout)
 	TableOffArray     = 8   // []Value slice header (ptr+len+cap = 24 bytes)
 	TableOffArrayLen  = 16  // array slice len field (8 bytes after data ptr)
+	TableOffArrayCap  = 24  // array slice cap field
 	TableOffImap      = 32  // map[int64]Value
 	TableOffSkeys     = 40  // []string slice header (ptr+len+cap)
 	TableOffSkeysLen  = 48  // skeys.len

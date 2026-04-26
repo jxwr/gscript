@@ -148,3 +148,20 @@ for iter := 1; iter <= 5; iter++ {
 `
 	compareTier2Result(t, src, "result")
 }
+
+func TestTier2_SetTableArrayMixedAppend(t *testing.T) {
+	src := `
+func mixed_append(n) {
+    arr := {"seed"}
+    x := 42
+    for i := 2; i <= n; i++ {
+        x = (x * 1103515245 + 12345) % 2147483648
+        arr[i] = x
+    }
+    return arr[n]
+}
+mixed_append(50)
+result := mixed_append(50)
+`
+	compareTier2Result(t, src, "result")
+}

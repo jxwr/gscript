@@ -90,6 +90,43 @@ func f(n) {
 	// (Some may remain if phi types can't be resolved, so this is a soft check.)
 }
 
+func TestTypeSpec_LoopCarriedParamSeedGuard(t *testing.T) {
+	proto := compile(t, `
+func lcg(n, seed) {
+	x := seed
+	for i := 1; i <= n; i++ {
+		x = (x * 1103515245 + 12345) % 2147483648
+	}
+	return x
+}
+`)
+	fn := BuildGraph(proto)
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+
+	var guardedSeed, modInt bool
+	for _, instr := range result.Entry.Instrs {
+		if instr.Op == OpGuardType && instr.Aux == int64(TypeInt) && len(instr.Args) == 1 {
+			if instr.Args[0].Def != nil && instr.Args[0].Def.Op == OpLoadSlot && instr.Args[0].Def.Aux == 1 {
+				guardedSeed = true
+			}
+		}
+	}
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpModInt {
+				modInt = true
+			}
+		}
+	}
+	if !guardedSeed || !modInt {
+		t.Fatalf("expected seed guard and ModInt recurrence after TypeSpecialize (guard=%v modInt=%v)\nIR:\n%s",
+			guardedSeed, modInt, Print(result))
+	}
+}
+
 // TestTypeSpec_MixedTypes verifies that int + float stays generic or becomes float-specialized.
 func TestTypeSpec_MixedTypes(t *testing.T) {
 	fn := &Function{

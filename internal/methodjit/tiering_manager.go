@@ -1563,10 +1563,65 @@ func firstTier2ModBlockerInLoop(fn *Function) (string, bool) {
 			if tier2GenericModIsSmallConstAdditiveLoopCounter(instr) {
 				continue
 			}
+			if tier2GenericModIsNativeNumeric(instr) {
+				continue
+			}
 			return "generic OpMod inside loop", true
 		}
 	}
 	return "", false
+}
+
+func tier2GenericModIsNativeNumeric(instr *Instr) bool {
+	if instr == nil || instr.Op != OpMod || len(instr.Args) < 2 {
+		return false
+	}
+	if instr.Type == TypeFloat {
+		return true
+	}
+	return tier2ValueIsNativeNumeric(instr.Args[0], make(map[int]bool)) &&
+		tier2ValueIsNativeNumeric(instr.Args[1], make(map[int]bool))
+}
+
+func tier2ValueIsNativeNumeric(v *Value, seen map[int]bool) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	if v.Def.Type == TypeInt || v.Def.Type == TypeFloat {
+		return true
+	}
+	if seen[v.ID] {
+		return true
+	}
+	seen[v.ID] = true
+
+	switch v.Def.Op {
+	case OpConstInt, OpConstFloat, OpUnboxInt, OpUnboxFloat:
+		return true
+	case OpGuardType:
+		t := Type(v.Def.Aux)
+		return t == TypeInt || t == TypeFloat
+	case OpPhi:
+		return tier2AllValuesNativeNumeric(v.Def.Args, seen)
+	case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat:
+		return tier2AllValuesNativeNumeric(v.Def.Args, seen)
+	default:
+		return false
+	}
+}
+
+func tier2AllValuesNativeNumeric(values []*Value, seen map[int]bool) bool {
+	if len(values) == 0 {
+		return false
+	}
+	for _, arg := range values {
+		if !tier2ValueIsNativeNumeric(arg, seen) {
+			return false
+		}
+	}
+	return true
 }
 
 func tier2GenericModIsSmallConstAdditiveLoopCounter(instr *Instr) bool {
@@ -1799,7 +1854,7 @@ func isScalarArraySetTable(instr *Instr) bool {
 	case TypeInt, TypeFloat, TypeBool:
 		return true
 	default:
-		return false
+		return tier2ValueIsNativeNumeric(val, make(map[int]bool))
 	}
 }
 
