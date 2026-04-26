@@ -28,8 +28,8 @@ type gprPhiMove struct {
 	// phi move may read its source from a memory slot. If the write-through
 	// slot equals another move's read slot, sequential emission clobbers
 	// the source value.
-	readsMemSlot  int  // memory slot this move reads from (-1 = none)
-	writesMemSlot int  // memory slot this move writes through to (-1 = none)
+	readsMemSlot  int // memory slot this move reads from (-1 = none)
+	writesMemSlot int // memory slot this move writes through to (-1 = none)
 }
 
 // emitInstr emits ARM64 code for a single SSA instruction.
@@ -217,7 +217,6 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.asm.NOP() // truly unknown op placeholder
 	}
 }
-
 
 // Constant, slot, arithmetic, comparison emission in emit_arith.go
 
@@ -954,6 +953,5 @@ func (ec *emitContext) emitLoopExitBoxing(exitingHeaderID int) {
 		ec.storeValue(jit.X0, valID)
 	}
 }
-
 
 // emitReturn — moved to emit_return.go (rule 13 file-size split).

@@ -44,9 +44,14 @@ func (ec *emitContext) emitNewTableExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 
 	// Set ExitCode = ExitTableExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitTableExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label.
 	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
@@ -64,6 +69,7 @@ func (ec *emitContext) emitNewTableExit(instr *Instr) {
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }
 
@@ -226,7 +232,7 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	// Convert byte to NaN-boxed value: 0=nil, 1=false, 2=true
 	nilLabel := ec.uniqueLabel("gettable_bool_nil")
 	falseLabel := ec.uniqueLabel("gettable_bool_false")
-	asm.CBZ(jit.X3, nilLabel)         // byte == 0 → nil
+	asm.CBZ(jit.X3, nilLabel) // byte == 0 → nil
 	asm.CMPimm(jit.X3, 1)
 	asm.BCond(jit.CondEQ, falseLabel) // byte == 1 → false
 	// byte == 2 → true: NaN-boxed true = 0xFFFD000000000001
@@ -329,9 +335,14 @@ func (ec *emitContext) emitGetTableExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 
 	// Set ExitCode = ExitTableExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitTableExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label.
 	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
@@ -349,6 +360,7 @@ func (ec *emitContext) emitGetTableExit(instr *Instr) {
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }
 
@@ -479,7 +491,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.MOVreg(jit.X4, valReg)
 	}
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // array data pointer
-	asm.STRreg(jit.X4, jit.X2, jit.X1)          // array[key] = value
+	asm.STRreg(jit.X4, jit.X2, jit.X1)         // array[key] = value
 	// Set keysDirty flag (elided if already set in this block).
 	if !ec.keysDirtyWritten[tblValueID] {
 		asm.MOVimm16(jit.X5, 1)
@@ -529,7 +541,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		// Unbox int64 from NaN-boxed value.
 		asm.SBFX(jit.X4, jit.X4, 0, 48)
 		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
-		asm.STRreg(jit.X4, jit.X2, jit.X1)             // intArray[key] = int64
+		asm.STRreg(jit.X4, jit.X2, jit.X1)            // intArray[key] = int64
 		if !ec.keysDirtyWritten[tblValueID] {
 			asm.MOVimm16(jit.X5, 1)
 			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
@@ -550,7 +562,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	// Check value is a float (NOT tagged — bits 50-62 NOT all set).
 	// Tagged values have (val >> 50) == 0x3FFF. Floats don't.
 	jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
-	asm.BCond(jit.CondEQ, deoptLabel)      // tagged (int/bool/nil/ptr) → deopt
+	asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
 	// Float64 bits ARE the NaN-boxed representation — store directly.
 	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
 	asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
@@ -717,9 +729,14 @@ func (ec *emitContext) emitSetTableExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 
 	// Set ExitCode = ExitTableExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitTableExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label.
 	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
@@ -733,5 +750,6 @@ func (ec *emitContext) emitSetTableExit(instr *Instr) {
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }

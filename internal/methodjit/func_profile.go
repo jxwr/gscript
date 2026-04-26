@@ -34,20 +34,11 @@ type FuncProfile struct {
 	HasGlobal     bool // contains OP_GETGLOBAL or OP_SETGLOBAL
 }
 
-// promoteAckOverride (R138 test hook) widens the shouldPromoteTier2
-// np==1 gate to all qualifying np in tests. Exists ONLY for
-// r138_ack_hang_test.go to reproduce the ack mid-compile hang in-tree
-// (rule 26). Production keeps it false; the real fix is deferred.
-var promoteAckOverride bool
-
 // hasTailCall returns true when the bytecode has an OP_CALL immediately
-// followed by an OP_RETURN — the pattern that compileTailCalls promotes
-// to a BR-replacing tail call. Used to gate Tier 2 promotion for
-// recursive-self protos: tail calls use Tier 2's 128-byte-frame
-// direct_entry per recursion level, which is ~8× heavier than Tier 1's
-// 16-byte self_call_entry. For tail-call-dominated protos (ackermann),
-// Tier 2 is slower than Tier 1; skip promotion until the self-entry
-// frame cost is addressed (R144+ work).
+// followed by an OP_RETURN. Kept as a profiling helper for tests and
+// diagnostics; production promotion no longer rejects raw-int self-recursive
+// candidates solely for this shape because Tier 2 now lowers static self tail
+// calls into in-frame loops and reserves native stack for non-tail recursion.
 func hasTailCall(proto *vm.FuncProto) bool {
 	for i, inst := range proto.Code {
 		if vm.DecodeOp(inst) != vm.OP_CALL {
@@ -227,13 +218,10 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		return runtimeCallCount >= 3
 	}
 
-	// R132: recursive-SELF protos that qualify for the numeric calling
-	// convention (qualifyForNumeric: 1-4 int params, no upvals, no
-	// nested protos) benefit from Tier 2 even without a loop. The
-	// numeric-conv arc (R121-R130) emits a specialized pass-2 body
-	// that passes raw int64 args via X0-X(N-1), skips NaN-box/unbox
-	// in param loads, and skips TypeInt GuardType — all things Tier 1
-	// BLR cannot do.
+	// Recursive-SELF protos that qualify for AnalyzeSpecializedABI's
+	// raw-int contract benefit from Tier 2 even without a loop. The
+	// numeric body passes raw int64 args via X0-X(N-1), reads parameter
+	// loads from those ABI registers, and returns raw int in X0.
 	//
 	// Gated on HasSelfCalls so non-recursive 1-param wrappers (e.g.
 	// `func wrapper(n) { return sum(n) }`) are NOT accidentally
@@ -241,31 +229,23 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	// then irHasCall is fine, but the round up-front cost isn't worth
 	// it for a single static call site.
 	//
-	// **Conservative size gate (R132)**: only 1-param protos are
-	// promoted. 2+ -param paths through emitNumericArgsInRegs
-	// (reg-aliasing swaps for np==2, scratch chains for np==3/4)
-	// were never tested with Tier 2 actually running — ackermann
-	// hangs when promoted. Once the 2-param path is debugged this
-	// gate can widen.
 	if profile.CallCount > 0 && !profile.HasLoop {
 		// proto.HasSelfCalls is only set during compileTier2Pipeline, so
 		// at promotion time it's still false — detect recursion by
 		// bytecode scan instead.
 		if staticallyCallsOnlySelf(proto) {
 			// Gate open for all qualifying self-recursive numeric protos.
-			// Frame-overhead optimization work (R145+) lands on the
-			// emit side to make Tier 2 actually beat Tier 1 for tail-
-			// call-dominated shapes (ackermann).
+			// Static self tail calls are lowered to in-frame loops, and
+			// executeTier2 reserves stack budget for bounded non-tail native
+			// recursion before entering JIT code.
 			if ok, _ := qualifyForNumeric(proto); ok {
 				return runtimeCallCount >= 2
 			}
 		}
-		_ = hasTailCall // reserved for future frame-aware gating
-		// Non-numeric (or numeric with np>=2, temporarily gated): keep
-		// at Tier 1. Tier 1's native BLR handles calls efficiently
-		// (~10ns per call). Even after inlining, non-loop functions
-		// don't benefit enough from Tier 2's type specialization to
-		// justify compilation overhead.
+		// Non-numeric recursive functions stay at Tier 1 for now. Tier 1's
+		// native BLR handles calls efficiently; without the raw-int contract,
+		// Tier 2 usually does not recover enough call overhead to justify
+		// compilation for a non-loop function.
 		return false
 	}
 

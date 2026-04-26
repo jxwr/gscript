@@ -143,14 +143,14 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	}
 
 	ec := &emitContext{
-		fn:             fn,
-		alloc:          alloc,
-		asm:            jit.NewAssembler(),
-		slotMap:        make(map[int]int),
-		nextSlot:       fn.NumRegs,
-		activeRegs:     make(map[int]bool),
-		rawIntRegs:     make(map[int]bool),
-		activeFPRegs:   make(map[int]bool),
+		fn:                fn,
+		alloc:             alloc,
+		asm:               jit.NewAssembler(),
+		slotMap:           make(map[int]int),
+		nextSlot:          fn.NumRegs,
+		activeRegs:        make(map[int]bool),
+		rawIntRegs:        make(map[int]bool),
+		activeFPRegs:      make(map[int]bool),
 		shapeVerified:     make(map[int]uint32),
 		tableVerified:     make(map[int]bool),
 		kindVerified:      make(map[int]uint16),
@@ -160,21 +160,21 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		blockOutTables:    make(map[int]map[int]bool),
 		blockOutKinds:     make(map[int]map[int]uint16),
 		blockOutKeysDirty: make(map[int]map[int]bool),
-		crossBlockLive: crossBlockLive,
-		useFPR:         hasFPR,
-		loop:             li,
-		loopHeaderRegs:   headerRegs,
-		loopHeaderFPRegs: headerFPRegs,
-		safeHeaderRegs:   safeHdrRegs,
-		safeHeaderFPRegs: safeHdrFPRegs,
-		loopPhiOnlyArgs:  phiOnlyArgs,
-		loopExitBoxPhis:  exitBoxPhis,
-		constInts:        constInts,
-		constBools:       constBools,
-		irTypes:          irTypes,
-		scratchFPRCache:  make(map[int]jit.FReg),
-		fusedCmps:        fusedCmps,
-		tailCallInstrs:   computeTailCalls(fn),
+		crossBlockLive:    crossBlockLive,
+		useFPR:            hasFPR,
+		loop:              li,
+		loopHeaderRegs:    headerRegs,
+		loopHeaderFPRegs:  headerFPRegs,
+		safeHeaderRegs:    safeHdrRegs,
+		safeHeaderFPRegs:  safeHdrFPRegs,
+		loopPhiOnlyArgs:   phiOnlyArgs,
+		loopExitBoxPhis:   exitBoxPhis,
+		constInts:         constInts,
+		constBools:        constBools,
+		irTypes:           irTypes,
+		scratchFPRCache:   make(map[int]jit.FReg),
+		fusedCmps:         fusedCmps,
+		tailCallInstrs:    computeTailCalls(fn),
 	}
 	// R124/R126: numeric entry is emitted as pass-2 body inside this
 	// Compile when the proto qualifies. numericParamCount tells the
@@ -227,13 +227,19 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		return nil, fmt.Errorf("methodjit: write code error: %w", err)
 	}
 
-	// Resolve resume addresses for call-exit points.
+	// Resolve pass-specific resume addresses for exit-resume points.
 	resumeAddrs := make(map[int]int)
-	for _, callID := range ec.callExitIDs {
-		label := callExitResumeLabel(callID)
+	numericResumeAddrs := make(map[int]int)
+	for _, dr := range ec.deferredResumes {
+		label := callExitResumeLabelForPass(dr.instrID, dr.numericPass)
 		off := ec.asm.LabelOffset(label)
-		if off >= 0 {
-			resumeAddrs[callID] = off
+		if off < 0 {
+			continue
+		}
+		if dr.numericPass {
+			numericResumeAddrs[dr.instrID] = off
+		} else {
+			resumeAddrs[dr.instrID] = off
 		}
 	}
 
@@ -253,14 +259,15 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	}
 
 	return &CompiledFunction{
-		Code:              cb,
-		Proto:             fn.Proto,
-		NumSpills:         alloc.NumSpillSlots,
-		numRegs:           ec.nextSlot,
-		ResumeAddrs:       resumeAddrs,
-		DirectEntryOffset: directEntryOff,
-		GlobalCache:       globalCache,
-		CallCache:         callCache,
+		Code:               cb,
+		Proto:              fn.Proto,
+		NumSpills:          alloc.NumSpillSlots,
+		numRegs:            ec.nextSlot,
+		ResumeAddrs:        resumeAddrs,
+		NumericResumeAddrs: numericResumeAddrs,
+		DirectEntryOffset:  directEntryOff,
+		GlobalCache:        globalCache,
+		CallCache:          callCache,
 	}, nil
 }
 
@@ -440,17 +447,17 @@ type emitContext struct {
 	// `t2_numeric_self_entry_N`.
 	numericParamCount int
 
-	// numericMode (R126) is set to true during pass 2 (numeric variant
-	// emit). When true, block labels are prefixed "num_" (via
-	// blockLabelFor) to avoid collision with pass 1. Future rounds
-	// (R127+) will also branch LoadSlot/GuardType/Return emits on
-	// this flag for body-level raw-int handling.
+	// numericMode is set to true during pass 2 (numeric variant emit).
+	// When true, block labels are prefixed "num_" (via blockLabelFor),
+	// parameter LoadSlot reads raw ABI registers, Return branches through
+	// num_epilogue with raw X0, and eligible recursive calls use the
+	// raw-int self ABI.
 	numericMode bool
 
 	// numericParamSlots (R126) is the set of VM register slots that
 	// correspond to function parameters. Populated when numericParamCount
-	// > 0. In pass 2, LoadSlot for these slots will emit raw-int
-	// semantics (R127+).
+	// > 0. In pass 2, LoadSlot for these slots reads X0..X(N-1) instead
+	// of loading boxed VM slots.
 	numericParamSlots map[int]bool
 
 	// fusedCond holds the condition code from the last fused comparison.
@@ -556,21 +563,12 @@ func blockLabel(b *Block) string {
 	return fmt.Sprintf("B%d", b.ID)
 }
 
-// emitNumericBody (R129) runs a second emit pass under numericMode=true.
-// Emits the numeric entry label `t2_numeric_self_entry_N`, boxes raw
-// int args into regs[0..N-1], jumps to pass-2's prefixed B0, then
-// re-emits every block with num_ label prefix. Pass-2 deferred resume
-// entries are appended to ec.deferredResumes with numericPass=true
-// (appended during emitBlock), so the outer Compile()'s final
-// emitDeferredResumes() call handles both passes.
-//
-// R129 scope: body emit is BEHAVIORALLY IDENTICAL to pass 1 — LoadSlot
-// still loads NaN-boxed, GuardType still checks tag, Return still
-// boxes. Pass 2 is currently just infrastructure isolation + dead code
-// for the numeric path (caller's BL t2_numeric_self_entry_N now
-// targets pass 2's body, which behaves the same as pass 1).
-//
-// R130+ will flip body emit to numericMode-aware raw-int semantics.
+// emitNumericBody emits a second Tier 2 body under numericMode=true.
+// The numeric entry label `t2_numeric_self_entry_N` receives raw int
+// args in X0..X(N-1), builds the same full native frame, reloads ctx.Regs,
+// and jumps to the pass-2 entry block. Pass 2 re-emits every block with
+// num_ labels and numeric-aware LoadSlot, Return, self-call, and
+// exit-resume behavior.
 func (ec *emitContext) emitNumericBody() {
 	if ec.numericParamCount <= 0 {
 		return
@@ -581,15 +579,6 @@ func (ec *emitContext) emitNumericBody() {
 
 	asm := ec.asm
 
-	// R144 ARCHITECTURAL COLLAPSE: numeric entry is a THIN TRAMPOLINE
-	// that NaN-boxes raw X0..X(N-1) into regs[0..N-1] and jumps to
-	// pass-1's B0. No pass-2 body re-emission. regs[] ABI is uniformly
-	// NaN-boxed → no cross-pass leaks (fixes the R136-R143 arc of ack
-	// hang issues). Caller-side layer 1 (pass raw in X0..X(N-1) instead
-	// of STR boxed to regs[funcSlot+1..]) is preserved — caller saves
-	// N box+STR, callee pays N ORR+STR: net-neutral at the call site,
-	// but avoids 2x code emission, halves icache pressure, and
-	// eliminates the dual-body invariant bugs.
 	label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
 	asm.Label(label)
 	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
@@ -605,15 +594,38 @@ func (ec *emitContext) emitNumericBody() {
 		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
 	}
 	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
-	// NaN-box raw X0..X(N-1) BEFORE storing to regs[0..N-1].
-	for i := 0; i < ec.numericParamCount; i++ {
-		argReg := jit.Reg(int(jit.X0) + i)
-		asm.ORRreg(argReg, argReg, mRegTagInt)
-		asm.STR(argReg, mRegRegs, slotOffset(i))
+	asm.B(fmt.Sprintf("num_B%d", ec.fn.Entry.ID))
+
+	prevNumericMode := ec.numericMode
+	prevActiveRegs := ec.activeRegs
+	prevRawIntRegs := ec.rawIntRegs
+	prevActiveFPRegs := ec.activeFPRegs
+	prevShapeVerified := ec.shapeVerified
+	prevTableVerified := ec.tableVerified
+	prevKindVerified := ec.kindVerified
+	prevKeysDirtyWritten := ec.keysDirtyWritten
+	prevDMVerified := ec.dmVerified
+	ec.numericMode = true
+	ec.activeRegs = make(map[int]bool)
+	ec.rawIntRegs = make(map[int]bool)
+	ec.activeFPRegs = make(map[int]bool)
+	ec.shapeVerified = make(map[int]uint32)
+	ec.tableVerified = make(map[int]bool)
+	ec.kindVerified = make(map[int]uint16)
+	ec.keysDirtyWritten = make(map[int]bool)
+	ec.dmVerified = make(map[int]bool)
+	for _, block := range ec.fn.Blocks {
+		ec.emitBlock(block)
 	}
-	// Jump to PASS-1's entry block — SAME body as BLR callers enter via
-	// t2_direct_entry. No pass-2 block re-emission.
-	asm.B(fmt.Sprintf("B%d", ec.fn.Entry.ID))
+	ec.numericMode = prevNumericMode
+	ec.activeRegs = prevActiveRegs
+	ec.rawIntRegs = prevRawIntRegs
+	ec.activeFPRegs = prevActiveFPRegs
+	ec.shapeVerified = prevShapeVerified
+	ec.tableVerified = prevTableVerified
+	ec.kindVerified = prevKindVerified
+	ec.keysDirtyWritten = prevKeysDirtyWritten
+	ec.dmVerified = prevDMVerified
 }
 
 // blockLabelFor returns the label for block b in the given emit pass.
@@ -700,10 +712,10 @@ func (ec *emitContext) emitPrologue() {
 
 	// Set up pinned registers.
 	// X0 holds ExecContext pointer (from callJIT trampoline).
-	asm.MOVreg(mRegCtx, jit.X0)                      // X19 = ctx
-	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)       // X26 = ctx.Regs
+	asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
+	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
-	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))     // X24 = 0xFFFE000000000000
+	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24 = 0xFFFE000000000000
 	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25 = 0xFFFD000000000000
 }
 
@@ -760,10 +772,10 @@ func (ec *emitContext) emitEpilogue() {
 	}
 	asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
 	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
-	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants)  // X27 = ctx.Constants
-	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))     // X24
-	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))   // X25
-	asm.B("B0") // Jump to first SSA block.
+	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
+	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24
+	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25
+	asm.B("B0")                                       // Jump to first SSA block.
 
 	// --- Self-call entry point (R40) ---
 	// Only emitted when the function has self-calls AND the Tier 2 emit
@@ -822,8 +834,37 @@ func (ec *emitContext) emitEpilogue() {
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.RET()
 
-	// R144: num_epilogue REMOVED — single-body design returns via normal
-	// epilogue / t2_direct_epilogue (BRV + regs[0]).
+	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
+		asm.Label("num_epilogue")
+		asm.MOVimm16(jit.X16, 0)
+		asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+		if ec.useFPR {
+			asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+			asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+		}
+		asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+		asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+		asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+		asm.LDP(jit.X21, jit.X22, jit.SP, 32)
+		asm.LDP(jit.X19, jit.X20, jit.SP, 16)
+		asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+		asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+		asm.RET()
+
+		asm.Label("num_deopt_epilogue")
+		if ec.useFPR {
+			asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+			asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+		}
+		asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+		asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+		asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+		asm.LDP(jit.X21, jit.X22, jit.SP, 32)
+		asm.LDP(jit.X19, jit.X20, jit.SP, 16)
+		asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+		asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+		asm.RET()
+	}
 }
 
 // emitBlock emits ARM64 code for one basic block.

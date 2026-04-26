@@ -67,11 +67,11 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 	}
 
 	for _, block := range fn.Blocks {
-		available := make(map[loadKey]int)      // loadKey → value ID to forward to
-		guardAvail := make(map[guardKey]int)    // guardKey → guard instr ID
-		globalAvail := make(map[int64]int)      // globals[idx] → SSA value ID
-		matrixFlatAvail := make(map[int]int)    // MatrixFlat(arg_id) → SSA value ID
-		matrixStrideAvail := make(map[int]int)  // MatrixStride(arg_id) → SSA value ID
+		available := make(map[loadKey]int)     // loadKey → value ID to forward to
+		guardAvail := make(map[guardKey]int)   // guardKey → guard instr ID
+		globalAvail := make(map[int64]int)     // globals[idx] → SSA value ID
+		matrixFlatAvail := make(map[int]int)   // MatrixFlat(arg_id) → SSA value ID
+		matrixStrideAvail := make(map[int]int) // MatrixStride(arg_id) → SSA value ID
 		// R93: store-to-load forwarding for dynamic-key table access.
 		// After SetTable(t, k, v), map (t.ID, k.ID) → v.ID so a
 		// subsequent GetTable(t, k) uses v directly.

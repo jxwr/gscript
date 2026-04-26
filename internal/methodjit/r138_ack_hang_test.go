@@ -4,8 +4,8 @@
 // recursive int protos (ackermann) found by R136 — the hang only
 // surfaces when Tier 2 compilation is triggered MID-EXECUTION (i.e.,
 // inside a running Tier 1 ack recursion), not when Tier 2 ack is run
-// from a cold top-level frame. Rule 26 test-first for the correctness
-// round. Test HANGS on current code (before fix).
+// from a cold top-level frame. This remains a regression canary for the
+// raw-int self ABI exit-resume protocol.
 
 package methodjit
 
@@ -18,19 +18,10 @@ import (
 )
 
 // TestR138_AckTier2Hang reproduces the bench hang for ack(3,4) x500
-// when the shouldPromoteTier2 gate is widened to np>=2. SKIPPED by
-// default — R138 attempted fix (removing self-call threshold trigger)
-// worked for ack but killed fib's Tier 2 promotion (fib only has one
-// non-self call per execution, so self-path was the sole trigger).
-// Real fix deferred; this test documents the reproducer. Run with
-// `-run TestR138_AckTier2Hang -tags r138fix` once a fix is landed.
+// when Ack is promoted to Tier 2 mid-execution.
 func TestR138_AckTier2Hang(t *testing.T) {
-	// R143 fix: rawIntRegs compile-time state no longer leaks from
-	// usedNumericBL post-BL block into emitCallExitFallback's
-	// emitStoreAllActiveRegs. Test enables promoteAckOverride (below)
-	// to verify the correctness fix under np>=2 even though production
-	// gate stays at np==1 (ack Tier 2 is +60% slower than Tier 1 on
-	// this shape; perf tuning deferred).
+	// The raw self-call path must not leak post-call rawIntRegs state into
+	// fallback materialization or exit-resume.
 	src := `
 func ack(m, n) {
     if m == 0 { return n + 1 }
@@ -43,13 +34,6 @@ for r := 1; r <= 500; r = r + 1 {
     result = ack(3, 4)
 }
 `
-	// R138: widen the gate so ack (2-param) gets promoted at runtime.
-	// Without this, the production np==1 gate keeps ack at Tier 1 and
-	// the test passes trivially. Restore at test exit.
-	prevGate := promoteAckOverride
-	promoteAckOverride = true
-	defer func() { promoteAckOverride = prevGate }()
-
 	proto := compileProto(t, src)
 	globals := runtime.NewInterpreterGlobals()
 	v := vm.New(globals)

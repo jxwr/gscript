@@ -144,8 +144,8 @@ func sum(n) {
 func TestShouldPromoteTier2_RecursiveFib(t *testing.T) {
 	// R132: fib(n) is self-recursive, 1 int param, qualifies for numeric
 	// calling convention → SHOULD promote at threshold=2. Pre-R132 this
-	// test asserted the opposite; the numeric-conv arc (R121-R130) is
-	// exactly the codepath that makes fib worth promoting.
+	// test asserted the opposite; the raw-int self ABI is the codepath
+	// that makes fib worth promoting.
 	src := `
 func fib(n) {
     if n < 2 { return n }
@@ -157,10 +157,36 @@ func fib(n) {
 	p := analyzeFuncProfile(fibProto)
 
 	if !shouldPromoteTier2(fibProto, p, 2) {
-		t.Error("fib should promote at callCount=2 (self-recursive, 1 int param, qualifies for numeric-conv)")
+		t.Error("fib should promote at callCount=2 (self-recursive, 1 int param, qualifies for raw-int self ABI)")
 	}
 	if shouldPromoteTier2(fibProto, p, 0) {
 		t.Error("fib should not promote at callCount=0")
+	}
+}
+
+func TestShouldPromoteTier2_AckermannTailCallsPromote(t *testing.T) {
+	// Ackermann is self-recursive and numeric. Tier 2 lowers static self tail
+	// calls into in-frame loops and reserves native stack for non-tail recursive
+	// calls, so this shape is now allowed to promote.
+	src := `
+func ack(m, n) {
+    if m == 0 { return n + 1 }
+    if n == 0 { return ack(m - 1, 1) }
+    return ack(m - 1, ack(m, n - 1))
+}
+`
+	proto := compileProto(t, src)
+	ackProto := proto.Protos[0]
+	p := analyzeFuncProfile(ackProto)
+
+	if !staticallyCallsOnlySelf(ackProto) {
+		t.Fatal("expected ack to be detected as self-recursive")
+	}
+	if !hasTailCall(ackProto) {
+		t.Fatal("expected ack to have tail-position calls")
+	}
+	if !shouldPromoteTier2(ackProto, p, 2) {
+		t.Error("ack should promote once the self-recursive raw-int shape is hot")
 	}
 }
 

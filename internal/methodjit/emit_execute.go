@@ -91,12 +91,13 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 
 			// Resume at the resume point for this call instruction.
 			callID := int(ctx.CallID)
-			resumeOff, ok := cf.ResumeAddrs[callID]
+			resumeOff, ok := cf.resumeOffset(callID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("methodjit: no resume address for call ID %d", callID)
 			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
 			continue
 
 		case ExitGlobalExit:
@@ -108,12 +109,13 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 
 			// Resume at the resume point for this global instruction.
 			globalID := int(ctx.GlobalExitID)
-			resumeOff, ok := cf.ResumeAddrs[globalID]
+			resumeOff, ok := cf.resumeOffset(globalID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("methodjit: no resume address for global ID %d", globalID)
 			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
 			continue
 
 		case ExitTableExit:
@@ -125,12 +127,13 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 
 			// Resume at the resume point for this table instruction.
 			tableID := int(ctx.TableExitID)
-			resumeOff, ok := cf.ResumeAddrs[tableID]
+			resumeOff, ok := cf.resumeOffset(tableID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("methodjit: no resume address for table ID %d", tableID)
 			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
 			continue
 
 		case ExitOpExit:
@@ -142,12 +145,13 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 
 			// Resume at the resume point for this op instruction.
 			opID := int(ctx.OpExitID)
-			resumeOff, ok := cf.ResumeAddrs[opID]
+			resumeOff, ok := cf.resumeOffset(opID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("methodjit: no resume address for op ID %d", opID)
 			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
 			continue
 
 		default:

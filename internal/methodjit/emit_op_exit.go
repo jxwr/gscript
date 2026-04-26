@@ -93,9 +93,14 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitID)
 
 	// Set ExitCode = ExitOpExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitOpExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label: the resume entry jumps here after Go handles the op.
 	continueLabel := ec.passLabel(fmt.Sprintf("op_continue_%d", instr.ID))
@@ -114,6 +119,7 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }
 
@@ -123,10 +129,11 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 // register file so the Go-side handler can read them sequentially.
 //
 // Op-exit descriptor:
-//   OpExitArg1 = table slot
-//   OpExitArg2 = start of consecutive value slots (temp base)
-//   OpExitAux  = array start index (1-based, from Aux)
-//   OpExitSlot = number of values (len(Args)-1)
+//
+//	OpExitArg1 = table slot
+//	OpExitArg2 = start of consecutive value slots (temp base)
+//	OpExitAux  = array start index (1-based, from Aux)
+//	OpExitSlot = number of values (len(Args)-1)
 func (ec *emitContext) emitSetListExit(instr *Instr) {
 	asm := ec.asm
 
@@ -179,9 +186,14 @@ func (ec *emitContext) emitSetListExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitID)
 
 	// Set ExitCode = ExitOpExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitOpExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label.
 	continueLabel := ec.passLabel(fmt.Sprintf("op_continue_%d", instr.ID))
@@ -198,5 +210,6 @@ func (ec *emitContext) emitSetListExit(instr *Instr) {
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }

@@ -400,10 +400,23 @@ func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 	}
 
 	reg := jit.Reg(pr.Reg)
+	if ec.numericMode && ec.numericParamSlots[slot] {
+		argReg := jit.Reg(int(jit.X0) + slot)
+		ec.activeRegs[instr.ID] = true
+		ec.rawIntRegs[instr.ID] = true
+		if argReg != reg {
+			ec.asm.MOVreg(reg, argReg)
+		}
+		if ec.crossBlockLive[instr.ID] && !ec.loopPhiOnlyArgs[instr.ID] {
+			jit.EmitBoxIntFast(ec.asm, jit.X4, reg, mRegTagInt)
+			ec.storeValue(jit.X4, instr.ID)
+		}
+		return
+	}
 	ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
-	// R144: R130 layer 3 (skip-unbox for numericMode param slots) REMOVED.
-	// Single-body design — pass-2 entry NaN-boxes args before STR, so
-	// param slots always hold boxed values. Standard unbox branch below.
+	// Non-numeric loads, and numeric loads for non-parameter slots, still
+	// read the boxed VM register file. Int values are unboxed into raw GPRs
+	// at the load boundary.
 	if instr.Type == TypeInt {
 		// Unbox NaN-boxed int to raw int64 at load time.
 		// This avoids unboxing at every use site.

@@ -23,9 +23,9 @@ import (
 // is an integer (top 16 bits == 0xFFFE). After this: CondEQ = int, CondNE = not int.
 // Uses scratch as temporary register. Also clobbers X3.
 func emitCheckIsInt(asm *jit.Assembler, valReg, scratch jit.Reg) {
-	asm.LSRimm(scratch, valReg, 48)           // scratch = top 16 bits
-	asm.MOVimm16(jit.X3, jit.NB_TagIntShr48)  // X3 = 0xFFFE
-	asm.CMPreg(scratch, jit.X3)                // EQ = int, NE = not int
+	asm.LSRimm(scratch, valReg, 48)          // scratch = top 16 bits
+	asm.MOVimm16(jit.X3, jit.NB_TagIntShr48) // X3 = 0xFFFE
+	asm.CMPreg(scratch, jit.X3)              // EQ = int, NE = not int
 }
 
 // emitDeopt emits ARM64 code that bails out to the interpreter.
@@ -35,12 +35,19 @@ func emitCheckIsInt(asm *jit.Assembler, valReg, scratch jit.Reg) {
 // specific guard fired without re-running the diag disassembler.
 func (ec *emitContext) emitDeopt(instr *Instr) {
 	asm := ec.asm
+	if ec.numericMode {
+		ec.emitStoreAllActiveRegs()
+	}
 	if instr != nil {
 		asm.LoadImm64(jit.X0, int64(instr.ID))
 		asm.STR(jit.X0, mRegCtx, execCtxOffDeoptInstrID)
 	}
 	asm.LoadImm64(jit.X0, ExitDeopt)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+		return
+	}
 	asm.B("deopt_epilogue")
 }
 

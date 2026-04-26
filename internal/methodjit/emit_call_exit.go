@@ -34,14 +34,24 @@ func callExitResumeLabel(instrID int) string {
 	return callExitResumeLabelForPass(instrID, false)
 }
 
+func (ec *emitContext) emitSetResumeNumericPass() {
+	if ec.numericMode {
+		ec.asm.MOVimm16(jit.X0, 1)
+	} else {
+		ec.asm.MOVimm16(jit.X0, 0)
+	}
+	ec.asm.STR(jit.X0, mRegCtx, execCtxOffResumeNumericPass)
+}
+
 // emitCallExit emits ARM64 code for an OpCall instruction using the call-exit
 // mechanism. This replaces the previous emitDeopt for OpCall.
 //
 // Generated code structure:
-//   [in-line] Store args, store regs, write descriptor, exit to Go
-//   [in-line] Continue label (jumped to from resume entry)
-//   ...rest of function...
-//   [at end] Resume entry: full prologue, load result, jump to continue label
+//
+//	[in-line] Store args, store regs, write descriptor, exit to Go
+//	[in-line] Continue label (jumped to from resume entry)
+//	...rest of function...
+//	[at end] Resume entry: full prologue, load result, jump to continue label
 //
 // The resume entry is a complete function entry point with its own prologue,
 // so callJIT can jump to it directly.
@@ -87,9 +97,14 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
 
 	// Set ExitCode = ExitCallExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitCallExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label: the resume entry jumps here after reloading state.
 	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
@@ -125,13 +140,20 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 // the cache was last populated, the cache is invalidated.
 //
 // ARM64 fast path:
-//   1. Load genPtr from ExecContext, CBZ → slow
-//   2. Load current gen, load cached gen, CMP → slow if mismatch
-//   3. Load cache pointer, CBZ → slow
-//   4. Load cached value at [cache + cacheIdx*8], CBZ → slow (uncached)
-//   5. Store result to SSA home
+//  1. Load genPtr from ExecContext, CBZ → slow
+//  2. Load current gen, load cached gen, CMP → slow if mismatch
+//  3. Load cache pointer, CBZ → slow
+//  4. Load cached value at [cache + cacheIdx*8], CBZ → slow (uncached)
+//  5. Store result to SSA home
 func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
 	asm := ec.asm
+
+	if ec.numericMode && ec.isSelfGlobal(instr) {
+		ec.emitBoxCurrentClosure(jit.X0, jit.X1)
+		ec.storeResultNB(jit.X0, instr.ID)
+		return
+	}
+
 	slowLabel := ec.uniqueLabel("getglobal_slow")
 	doneLabel := ec.uniqueLabel("getglobal_done")
 
@@ -190,9 +212,25 @@ func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
 		savedRawIntRegs[k] = v
 	}
 	ec.emitGlobalExitInner(instr)
+	// The slow path reloads active registers from memory, where raw-int
+	// values are stored boxed. Rebuild the raw register state before
+	// merging back into the fast path.
+	ec.emitUnboxRawIntRegs(savedRawIntRegs)
 	ec.rawIntRegs = savedRawIntRegs
 
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) isSelfGlobal(instr *Instr) bool {
+	if ec.fn == nil || ec.fn.Proto == nil || instr == nil {
+		return false
+	}
+	constIdx := int(instr.Aux)
+	if constIdx < 0 || constIdx >= len(ec.fn.Proto.Constants) {
+		return false
+	}
+	kv := ec.fn.Proto.Constants[constIdx]
+	return kv.IsString() && kv.Str() == ec.fn.Proto.Name
 }
 
 // emitGlobalExit emits ARM64 code for an OpGetGlobal instruction using the
@@ -229,9 +267,14 @@ func (ec *emitContext) emitGlobalExitInner(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffGlobalExitID)
 
 	// Set ExitCode = ExitGlobalExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitGlobalExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label: the resume entry jumps here after reloading state.
 	continueLabel := ec.passLabel(fmt.Sprintf("global_continue_%d", instr.ID))
@@ -265,9 +308,9 @@ type deferredResume struct {
 
 // emitDeferredResumes emits all resume entry points after the epilogue.
 // Each resume entry is a complete function entry point:
-//   1. Full prologue (save callee-saved regs, set up stack frame)
-//   2. Load pinned registers from ExecContext
-//   3. Jump to the continue label (which reloads values and continues)
+//  1. Full prologue (save callee-saved regs, set up stack frame)
+//  2. Load pinned registers from ExecContext
+//  3. Jump to the continue label (which reloads values and continues)
 func (ec *emitContext) emitDeferredResumes() {
 	for _, dr := range ec.deferredResumes {
 		resumeLabel := callExitResumeLabelForPass(dr.instrID, dr.numericPass)

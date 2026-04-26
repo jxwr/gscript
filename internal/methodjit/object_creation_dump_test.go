@@ -42,6 +42,10 @@ func TestObjectCreationDump(t *testing.T) {
 		totalIns int
 		memIns   int
 	}
+	// R170: new_vec3 recalibrated after Tier2 call/return resume metadata
+	// cleanup. The function still escapes its returned table, so EA behavior
+	// is unchanged; only the emitted prologue/return bookkeeping moved.
+	//
 	// R161 EA: -61% on create_and_sum / -63% on transform_chain via
 	// virtual-Phi scalar replacement that eliminates loop-carried
 	// NewTable allocations entirely. new_vec3 unchanged because its
@@ -49,7 +53,7 @@ func TestObjectCreationDump(t *testing.T) {
 	baselines := []baseline{
 		{"create_and_sum", 497, 114},  // R161: was 1277/598
 		{"transform_chain", 621, 136}, // R161: was 1701/816
-		{"new_vec3", 220, 131},        // unchanged (returned table escapes)
+		{"new_vec3", 228, 135},        // unchanged EA shape; codegen bookkeeping moved
 	}
 
 	// Load benchmark source.

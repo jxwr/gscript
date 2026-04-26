@@ -55,13 +55,13 @@ type ExecContext struct {
 	GlobalConst  int64   // constant pool index for global name (global-exit)
 	GlobalExitID int64   // instruction ID for resolving global-exit resume address
 	// Table-exit fields (ExitCode=5): for OpNewTable, OpGetTable, OpSetTable
-	TableOp       int64  // 0=NewTable, 1=GetTable, 2=SetTable, 3=GetField(deopt), 4=SetField(deopt)
-	TableSlot     int64  // VM register slot for the table (or result slot for NewTable)
-	TableKeySlot  int64  // VM register slot for the key (GetTable/SetTable)
-	TableValSlot  int64  // VM register slot for the value (SetTable)
-	TableAux      int64  // Aux data: NewTable=arrayHint, GetField/SetField=constIdx
-	TableAux2     int64  // Aux2 data: NewTable=hashHint
-	TableExitID   int64  // instruction ID for resolving resume address
+	TableOp      int64 // 0=NewTable, 1=GetTable, 2=SetTable, 3=GetField(deopt), 4=SetField(deopt)
+	TableSlot    int64 // VM register slot for the table (or result slot for NewTable)
+	TableKeySlot int64 // VM register slot for the key (GetTable/SetTable)
+	TableValSlot int64 // VM register slot for the value (SetTable)
+	TableAux     int64 // Aux data: NewTable=arrayHint, GetField/SetField=constIdx
+	TableAux2    int64 // Aux2 data: NewTable=hashHint
+	TableExitID  int64 // instruction ID for resolving resume address
 	// Op-exit fields (ExitCode=6): generic exit for unsupported ops
 	OpExitOp   int64 // which Op to execute (cast to Op)
 	OpExitSlot int64 // destination slot for result
@@ -76,11 +76,11 @@ type ExecContext struct {
 	BaselineB  int64 // decoded B field (or Bx for ABx format)
 	BaselineC  int64 // decoded C field
 	// Baseline JIT native table access support
-	BaselineFieldCache   uintptr // pointer to proto.FieldCache[0] (nil if not yet allocated)
-	BaselineClosurePtr   uintptr // pointer to *vm.Closure (for GETUPVAL/SETUPVAL)
-	BaselineReturnValue    uint64  // NaN-boxed return value (set by RETURN, read by Execute)
-	BaselineGlobalCache    uintptr // pointer to BaselineFunc.GlobalValCache[0] (for native GETGLOBAL)
-	BaselineGlobalGenPtr   uintptr // pointer to engine.globalCacheGen (for version check)
+	BaselineFieldCache      uintptr // pointer to proto.FieldCache[0] (nil if not yet allocated)
+	BaselineClosurePtr      uintptr // pointer to *vm.Closure (for GETUPVAL/SETUPVAL)
+	BaselineReturnValue     uint64  // NaN-boxed return value (set by RETURN, read by Execute)
+	BaselineGlobalCache     uintptr // pointer to BaselineFunc.GlobalValCache[0] (for native GETGLOBAL)
+	BaselineGlobalGenPtr    uintptr // pointer to engine.globalCacheGen (for version check)
 	BaselineGlobalCachedGen uint64  // engine.globalCacheGen at time bf's cache was populated
 	BaselineFeedbackPtr     uintptr // pointer to proto.Feedback[0] (for Tier 1 type feedback collection)
 	// Caller context fields: used for JIT-to-JIT calls to save/restore caller state.
@@ -90,9 +90,9 @@ type ExecContext struct {
 	// RETURN checks this to decide between baseline_exit and direct_exit.
 	CallMode int64
 	// Native call exit fields (ExitCode=8): when a native BLR callee hits exit-resume.
-	NativeCallA            int64 // caller's A field (destination slot)
-	NativeCallB            int64 // caller's B field (arg count)
-	NativeCallC            int64 // caller's C field (return count)
+	NativeCallA            int64   // caller's A field (destination slot)
+	NativeCallB            int64   // caller's B field (arg count)
+	NativeCallC            int64   // caller's C field (return count)
 	NativeCalleeBaseOff    int64   // callee base offset from caller regs (MaxStack*8)
 	NativeCalleeResumePC   int64   // callee's resume PC (saved before caller restores its own BaselinePC)
 	NativeCalleeClosurePtr uintptr // callee's closure pointer (saved before caller restores its own ClosurePtr)
@@ -147,15 +147,20 @@ type ExecContext struct {
 	// re-running disasm. Zero value means "no deopt" or "deopt site did not
 	// populate the field".
 	DeoptInstrID int64
+
+	// ResumeNumericPass is written by resumable Tier 2 exits before setting
+	// ExitCode. It selects the pass-specific resume entry after Go handles the
+	// exit. Zero means normal pass; non-zero means numeric pass.
+	ResumeNumericPass int64
 }
 
 // ExitCode constants.
 const (
-	ExitNormal     = 0 // normal return
-	ExitDeopt      = 2 // deopt: bail to interpreter for the entire function
-	ExitCallExit   = 3 // call-exit: pause JIT, execute call via VM, resume JIT
-	ExitGlobalExit = 4 // global-exit: pause JIT, load global via VM, resume JIT
-	ExitTableExit  = 5 // table-exit: pause JIT, do table op via Go, resume JIT
+	ExitNormal         = 0 // normal return
+	ExitDeopt          = 2 // deopt: bail to interpreter for the entire function
+	ExitCallExit       = 3 // call-exit: pause JIT, execute call via VM, resume JIT
+	ExitGlobalExit     = 4 // global-exit: pause JIT, load global via VM, resume JIT
+	ExitTableExit      = 5 // table-exit: pause JIT, do table op via Go, resume JIT
 	ExitOpExit         = 6 // op-exit: pause JIT, Go handles the operation, resume JIT
 	ExitBaselineOpExit = 7 // baseline op-exit: bytecode-level exit for Tier 1
 	ExitNativeCallExit = 8 // native call exit: callee hit exit-resume during BLR call
@@ -164,11 +169,11 @@ const (
 
 // TableOp constants (stored in ExecContext.TableOp).
 const (
-	TableOpNewTable  = 0
-	TableOpGetTable  = 1
-	TableOpSetTable  = 2
-	TableOpGetField  = 3 // deopt fallback for GetField (no field cache)
-	TableOpSetField  = 4 // deopt fallback for SetField (no field cache)
+	TableOpNewTable = 0
+	TableOpGetTable = 1
+	TableOpSetTable = 2
+	TableOpGetField = 3 // deopt fallback for GetField (no field cache)
+	TableOpSetField = 4 // deopt fallback for SetField (no field cache)
 )
 
 // ExecContext field offsets (must match struct layout above).
@@ -198,13 +203,13 @@ var (
 	execCtxOffOpExitAux    = int(unsafe.Offsetof(ExecContext{}.OpExitAux))
 	execCtxOffOpExitID     = int(unsafe.Offsetof(ExecContext{}.OpExitID))
 	// Baseline JIT fields
-	execCtxOffBaselineOp         = int(unsafe.Offsetof(ExecContext{}.BaselineOp))
-	execCtxOffBaselinePC         = int(unsafe.Offsetof(ExecContext{}.BaselinePC))
-	execCtxOffBaselineA          = int(unsafe.Offsetof(ExecContext{}.BaselineA))
-	execCtxOffBaselineB          = int(unsafe.Offsetof(ExecContext{}.BaselineB))
-	execCtxOffBaselineC          = int(unsafe.Offsetof(ExecContext{}.BaselineC))
-	execCtxOffBaselineFieldCache   = int(unsafe.Offsetof(ExecContext{}.BaselineFieldCache))
-	execCtxOffBaselineClosurePtr   = int(unsafe.Offsetof(ExecContext{}.BaselineClosurePtr))
+	execCtxOffBaselineOp              = int(unsafe.Offsetof(ExecContext{}.BaselineOp))
+	execCtxOffBaselinePC              = int(unsafe.Offsetof(ExecContext{}.BaselinePC))
+	execCtxOffBaselineA               = int(unsafe.Offsetof(ExecContext{}.BaselineA))
+	execCtxOffBaselineB               = int(unsafe.Offsetof(ExecContext{}.BaselineB))
+	execCtxOffBaselineC               = int(unsafe.Offsetof(ExecContext{}.BaselineC))
+	execCtxOffBaselineFieldCache      = int(unsafe.Offsetof(ExecContext{}.BaselineFieldCache))
+	execCtxOffBaselineClosurePtr      = int(unsafe.Offsetof(ExecContext{}.BaselineClosurePtr))
 	execCtxOffBaselineReturnValue     = int(unsafe.Offsetof(ExecContext{}.BaselineReturnValue))
 	execCtxOffBaselineGlobalCache     = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalCache))
 	execCtxOffBaselineGlobalGenPtr    = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalGenPtr))
@@ -216,17 +221,17 @@ var (
 	// Native call mode offset
 	execCtxOffCallMode = int(unsafe.Offsetof(ExecContext{}.CallMode))
 	// Native call exit offsets
-	execCtxOffNativeCallA         = int(unsafe.Offsetof(ExecContext{}.NativeCallA))
-	execCtxOffNativeCallB         = int(unsafe.Offsetof(ExecContext{}.NativeCallB))
-	execCtxOffNativeCallC         = int(unsafe.Offsetof(ExecContext{}.NativeCallC))
-	execCtxOffNativeCalleeBaseOff   = int(unsafe.Offsetof(ExecContext{}.NativeCalleeBaseOff))
-	execCtxOffNativeCalleeResumePC = int(unsafe.Offsetof(ExecContext{}.NativeCalleeResumePC))
+	execCtxOffNativeCallA            = int(unsafe.Offsetof(ExecContext{}.NativeCallA))
+	execCtxOffNativeCallB            = int(unsafe.Offsetof(ExecContext{}.NativeCallB))
+	execCtxOffNativeCallC            = int(unsafe.Offsetof(ExecContext{}.NativeCallC))
+	execCtxOffNativeCalleeBaseOff    = int(unsafe.Offsetof(ExecContext{}.NativeCalleeBaseOff))
+	execCtxOffNativeCalleeResumePC   = int(unsafe.Offsetof(ExecContext{}.NativeCalleeResumePC))
 	execCtxOffNativeCalleeClosurePtr = int(unsafe.Offsetof(ExecContext{}.NativeCalleeClosurePtr))
-	execCtxOffRegsEnd              = int(unsafe.Offsetof(ExecContext{}.RegsEnd))
-	execCtxOffRegsBase            = int(unsafe.Offsetof(ExecContext{}.RegsBase))
-	execCtxOffTopPtr              = int(unsafe.Offsetof(ExecContext{}.TopPtr))
-	execCtxOffNativeCallDepth     = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))
-	execCtxOffOSRCounter          = int(unsafe.Offsetof(ExecContext{}.OSRCounter))
+	execCtxOffRegsEnd                = int(unsafe.Offsetof(ExecContext{}.RegsEnd))
+	execCtxOffRegsBase               = int(unsafe.Offsetof(ExecContext{}.RegsBase))
+	execCtxOffTopPtr                 = int(unsafe.Offsetof(ExecContext{}.TopPtr))
+	execCtxOffNativeCallDepth        = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))
+	execCtxOffOSRCounter             = int(unsafe.Offsetof(ExecContext{}.OSRCounter))
 	// Tier 2 global cache offsets
 	execCtxOffTier2GlobalCache    = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCache))
 	execCtxOffTier2GlobalCacheGen = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCacheGen))
@@ -235,6 +240,7 @@ var (
 	execCtxOffExitResumePC        = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
 	execCtxOffTier2CallCache      = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
 	execCtxOffDeoptInstrID        = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
+	execCtxOffResumeNumericPass   = int(unsafe.Offsetof(ExecContext{}.ResumeNumericPass))
 )
 
 // CompiledFunction holds the generated native code for a function.
@@ -248,10 +254,15 @@ type CompiledFunction struct {
 	// of the resume label. Used to re-enter JIT code after a call-exit.
 	ResumeAddrs map[int]int
 
+	// NumericResumeAddrs maps resumable exit instruction ID to the numeric
+	// pass resume entry. The Go-side exit loop selects this when
+	// ExecContext.ResumeNumericPass is set.
+	NumericResumeAddrs map[int]int
+
 	// DirectEntryOffset is the byte offset of the BLR-compatible direct entry
 	// point within the code block. When non-zero, Tier 1 BLR callers can jump
-	// to Code.Ptr() + DirectEntryOffset. The direct entry uses a 16-byte stack
-	// frame (FP+LR only), matching Tier 1's direct entry calling convention.
+	// to Code.Ptr() + DirectEntryOffset. The direct entry uses the same full
+	// frame as the normal Tier 2 entry so callee-saved registers are preserved.
 	DirectEntryOffset int
 
 	// NumericParamCount (R124) is the number of int params the numeric
@@ -290,6 +301,15 @@ type CompiledFunction struct {
 	// R109: the CallCount inc + threshold check is miss-path-only, since
 	// a hit implies the callee is already Tier 2.
 	CallCache []uint64
+}
+
+func (cf *CompiledFunction) resumeOffset(instrID int, numericPass bool) (int, bool) {
+	if numericPass {
+		off, ok := cf.NumericResumeAddrs[instrID]
+		return off, ok
+	}
+	off, ok := cf.ResumeAddrs[instrID]
+	return off, ok
 }
 
 // Execute, executeCallExit, executeGlobalExit, executeTableExit, executeOpExit

@@ -72,7 +72,7 @@ type TieringManager struct {
 	tier2FailReason map[*vm.FuncProto]string // reason a function failed Tier 2 (keyed by proto)
 	tier2Attempts   int                      // total Tier 2 compilation attempts
 	callVM          *vm.VM
-	tier2Threshold  int // configurable threshold for testing (legacy fallback)
+	tier2Threshold  int                           // configurable threshold for testing (legacy fallback)
 	profileCache    map[*vm.FuncProto]FuncProfile // cached function profiles
 
 	// R162: env-var caches evaluated ONCE at construction. Previously
@@ -83,6 +83,7 @@ type TieringManager struct {
 	// path cost.
 	envR154Trace     bool
 	envTier2NoFilter bool
+	r154DeoptPrints  int
 }
 
 // NewTieringManager creates a new TieringManager with Tier 1 baseline support
@@ -436,7 +437,7 @@ func (tm *TieringManager) buildInlineGlobals() map[string]*vm.FuncProto {
 	if tm.callVM == nil {
 		return globals
 	}
-	for _, val := range tm.callVM.Globals() {
+	for name, val := range tm.callVM.Globals() {
 		if !val.IsFunction() {
 			continue
 		}
@@ -445,10 +446,82 @@ func (tm *TieringManager) buildInlineGlobals() map[string]*vm.FuncProto {
 			continue
 		}
 		if cl, ok := ptr.(*vm.Closure); ok && cl != nil && cl.Proto != nil {
-			globals[cl.Proto.Name] = cl.Proto
+			globals[name] = cl.Proto
 		}
 	}
 	return globals
+}
+
+// buildProtoInlineGlobals extracts global function declarations from the
+// current proto's entry straight-line prefix. This covers top-level patterns
+// produced by the compiler:
+//
+//	CLOSURE tmp, child
+//	SETGLOBAL tmp, "name"
+//
+// The VM global table is authoritative once a script has executed, but during
+// early <main> compilation these declarations have not run yet. Feeding this
+// lexical table to the inline/filter pipeline lets the compiler resolve calls
+// in the same top-level body without requiring Ackermann-specific hooks.
+//
+// The scan intentionally stops at the first non-declaration instruction. That
+// keeps the contract conservative: function declarations inside branches,
+// loops, or after executable statements are not treated as globally stable for
+// the whole proto.
+func buildProtoInlineGlobals(proto *vm.FuncProto) map[string]*vm.FuncProto {
+	globals := make(map[string]*vm.FuncProto)
+	if proto == nil {
+		return globals
+	}
+	regClosure := make(map[int]*vm.FuncProto)
+	for _, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_CLOSURE:
+			a := vm.DecodeA(inst)
+			bx := vm.DecodeBx(inst)
+			if bx < 0 || bx >= len(proto.Protos) {
+				delete(regClosure, a)
+				continue
+			}
+			regClosure[a] = proto.Protos[bx]
+		case vm.OP_MOVE:
+			a := vm.DecodeA(inst)
+			b := vm.DecodeB(inst)
+			if cl := regClosure[b]; cl != nil {
+				regClosure[a] = cl
+			} else {
+				delete(regClosure, a)
+			}
+		case vm.OP_SETGLOBAL:
+			a := vm.DecodeA(inst)
+			bx := vm.DecodeBx(inst)
+			name := protoConstString(proto, bx)
+			if name == "" {
+				return globals
+			}
+			cl := regClosure[a]
+			if cl == nil {
+				return globals
+			}
+			globals[name] = cl
+		case vm.OP_CLOSE:
+			continue
+		default:
+			return globals
+		}
+	}
+	return globals
+}
+
+func protoConstString(proto *vm.FuncProto, idx int) string {
+	if proto == nil || idx < 0 || idx >= len(proto.Constants) {
+		return ""
+	}
+	val := proto.Constants[idx]
+	if !val.IsString() {
+		return ""
+	}
+	return val.Str()
 }
 
 func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunction, retErr error) {
@@ -517,6 +590,18 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	}
 
 	inlineGlobals := tm.buildInlineGlobals()
+	loopCallGlobals := inlineGlobals
+	if protoGlobals := buildProtoInlineGlobals(proto); len(protoGlobals) > 0 {
+		loopCallGlobals = make(map[string]*vm.FuncProto, len(inlineGlobals)+len(protoGlobals))
+		for name, calleeProto := range inlineGlobals {
+			loopCallGlobals[name] = calleeProto
+		}
+		for name, calleeProto := range protoGlobals {
+			if _, ok := loopCallGlobals[name]; !ok {
+				loopCallGlobals[name] = calleeProto
+			}
+		}
+	}
 	opts := &Tier2PipelineOpts{InlineGlobals: inlineGlobals, InlineMaxSize: inlineMaxCalleeSize}
 	fn, intrinsicNotes, err := RunTier2Pipeline(fn, opts)
 	if err != nil {
@@ -557,7 +642,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	if !tm.envTier2NoFilter {
 		profile := tm.getProfile(proto)
 		if profile.LoopDepth < 2 {
-			if hasExitResumeInLoop(fn) {
+			if hasExitResumeInLoop(fn, loopCallGlobals) {
 				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has exit-resume-prone op inside loop (performance-blocked), staying at Tier 1")
 			}
 		} else {
@@ -620,8 +705,16 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 	ctx := new(ExecContext)
 	escapeToHeap(ctx)
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
+	ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
+	ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
 	if len(proto.Constants) > 0 {
 		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
+	}
+	if tm.callVM != nil {
+		ctx.TopPtr = uintptr(unsafe.Pointer(tm.callVM.TopPtr()))
+		if cl := tm.callVM.CurrentClosure(); cl != nil {
+			ctx.BaselineClosurePtr = uintptr(unsafe.Pointer(cl))
+		}
 	}
 
 	// Set up Tier 2 global value cache pointers.
@@ -637,6 +730,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
+	ensureTier2NativeStack()
 
 	// resyncRegs re-reads the VM's register file after exits.
 	resyncRegs := func() {
@@ -645,6 +739,11 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 		}
 		regs = tm.callVM.Regs()
 		ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
+		ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
+		ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
+		if cl := tm.callVM.CurrentClosure(); cl != nil {
+			ctx.BaselineClosurePtr = uintptr(unsafe.Pointer(cl))
+		}
 	}
 
 	var r154_exitCount int
@@ -654,8 +753,9 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 		if tm.envR154Trace {
 			r154_exitCount++
 			if r154_exitCount <= 20 || r154_exitCount%100000 == 0 {
-				fmt.Fprintf(os.Stderr, "[R154] executeTier2 proto=%q exit#%d code=%d tableExitID=%d tableOp=%d tableSlot=%d\n",
+				fmt.Fprintf(os.Stderr, "[R154] executeTier2 proto=%q exit#%d code=%d deoptID=%d resumePass=%d callID=%d globalID=%d tableExitID=%d tableOp=%d tableSlot=%d\n",
 					proto.Name, r154_exitCount, ctx.ExitCode,
+					ctx.DeoptInstrID, ctx.ResumeNumericPass, ctx.CallID, ctx.GlobalExitID,
 					ctx.TableExitID, ctx.TableOp, ctx.TableSlot)
 			}
 		}
@@ -667,6 +767,18 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			return []runtime.Value{result}, nil
 
 		case ExitDeopt:
+			if tm.envR154Trace && tm.r154DeoptPrints < 20 {
+				var r0, r1 uint64
+				if base < len(regs) {
+					r0 = uint64(regs[base])
+				}
+				if base+1 < len(regs) {
+					r1 = uint64(regs[base+1])
+				}
+				tm.r154DeoptPrints++
+				fmt.Fprintf(os.Stderr, "[R154] deopt proto=%q id=%d base=%d r0=%016x r1=%016x callID=%d globalID=%d\n",
+					proto.Name, ctx.DeoptInstrID, base, r0, r1, ctx.CallID, ctx.GlobalExitID)
+			}
 			// Bail to interpreter. Return error so the VM falls through.
 			return nil, fmt.Errorf("tier2: deopt")
 
@@ -676,12 +788,13 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			}
 			resyncRegs()
 			callID := int(ctx.CallID)
-			resumeOff, ok := cf.ResumeAddrs[callID]
+			resumeOff, ok := cf.resumeOffset(callID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for call %d", callID)
 			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
 			continue
 
 		case ExitGlobalExit:
@@ -690,12 +803,13 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			}
 			resyncRegs()
 			globalID := int(ctx.GlobalExitID)
-			resumeOff, ok := cf.ResumeAddrs[globalID]
+			resumeOff, ok := cf.resumeOffset(globalID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for global %d", globalID)
 			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
 			continue
 
 		case ExitTableExit:
@@ -704,12 +818,13 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			}
 			resyncRegs()
 			tableID := int(ctx.TableExitID)
-			resumeOff, ok := cf.ResumeAddrs[tableID]
+			resumeOff, ok := cf.resumeOffset(tableID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for table %d", tableID)
 			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
 			continue
 
 		case ExitOpExit:
@@ -718,12 +833,13 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			}
 			resyncRegs()
 			opID := int(ctx.OpExitID)
-			resumeOff, ok := cf.ResumeAddrs[opID]
+			resumeOff, ok := cf.resumeOffset(opID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for op %d", opID)
 			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
 			continue
 
 		default:
@@ -918,24 +1034,49 @@ func hasExpensiveInLoop(fn *Function, predicate func(Op) bool) bool {
 // LCG + qs correctness bug was triggered by newly-admitted LoopDepth=1
 // protos).
 //
-// OpGetField/OpSetField excluded (IC-cached, ~5 insns fast path).
-func hasExitResumeInLoop(fn *Function) bool {
-	return hasExpensiveInLoop(fn, func(op Op) bool {
-		switch op {
-		case OpCall, OpSelf,
-			OpNewTable,
-			OpGetTable, OpSetTable,
-			OpConcat, OpAppend, OpSetList,
-			OpGetUpval, OpSetUpval,
-			OpGo, OpMakeChan, OpSend, OpRecv,
-			OpClosure, OpClose,
-			OpVararg,
-			OpLen, OpPow,
-			OpTForCall, OpTForLoop:
-			return true
+// OpGetField/OpSetField excluded (IC-cached, ~5 insns fast path). OpCall is
+// allowed only when it statically resolves to a self-recursive raw-int callee:
+// Tier 2 can compile that callee and the call site can use the native path.
+func hasExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
 		}
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpCall:
+				if tier2LoopCallIsNativeCandidate(fn, instr, globals) {
+					continue
+				}
+				return true
+			case OpSelf,
+				OpNewTable,
+				OpGetTable, OpSetTable,
+				OpConcat, OpAppend, OpSetList,
+				OpGetUpval, OpSetUpval,
+				OpGo, OpMakeChan, OpSend, OpRecv,
+				OpClosure, OpClose,
+				OpVararg,
+				OpLen, OpPow,
+				OpTForCall, OpTForLoop:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
+	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+	if callee == nil {
 		return false
-	})
+	}
+	if !staticallyCallsOnlySelf(callee) {
+		return false
+	}
+	ok, _ := qualifyForNumeric(callee)
+	return ok
 }
 
 // irHasGetGlobal scans the optimized IR for any remaining OpGetGlobal

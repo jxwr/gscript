@@ -80,7 +80,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 
 	// Direct field access: svals[fieldIndex].
 	// svals is a Go slice: first 8 bytes = data pointer.
-	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
+	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)      // X1 = svals data pointer
 	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize) // X0 = svals[fieldIndex]
 
 	// Store NaN-boxed result.
@@ -178,7 +178,7 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	ec.shapeVerified[tblValueID] = shapeID
 
 	// Direct field store: svals[fieldIndex] = value.
-	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
+	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)      // X1 = svals data pointer
 	asm.STR(jit.X3, jit.X1, fieldIdx*jit.ValueSize) // svals[fieldIndex] = value
 
 	// Skip the deopt fallback.
@@ -247,9 +247,14 @@ func (ec *emitContext) emitGetFieldExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 
 	// Set ExitCode = ExitTableExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitTableExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label: resume entry jumps here.
 	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
@@ -267,6 +272,7 @@ func (ec *emitContext) emitGetFieldExit(instr *Instr) {
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }
 
@@ -321,9 +327,14 @@ func (ec *emitContext) emitSetFieldExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 
 	// Set ExitCode = ExitTableExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitTableExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label: resume entry jumps here.
 	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
@@ -337,5 +348,6 @@ func (ec *emitContext) emitSetFieldExit(instr *Instr) {
 	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
 		instrID:       instr.ID,
 		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
 	})
 }

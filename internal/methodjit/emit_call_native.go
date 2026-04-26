@@ -34,6 +34,25 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
+const (
+	// Tier 2 direct/self entries use a full 128-byte frame. executeTier2
+	// reserves native stack budget before entering JIT code, so this can be
+	// higher than the no-reserve emergency limit while still avoiding Go stack
+	// guard corruption.
+	maxNativeCallDepth = 128
+
+	// Raw-int self BL remains behind a kill switch, but the v1 entry,
+	// resume, fallback, and return contract is now wired through
+	// emitCallNativeRawIntSelf.
+	enableNumericSelfBL = true
+)
+
+const (
+	rawSelfFrameSize = 96
+	rawSelfArgsOff   = 48
+	rawSelfFuncOff   = 80
+)
+
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
 // Uses selective spill/reload of SSA registers around the BLR: only registers
 // that are actually live across the call point are saved/restored. Falls back
@@ -82,7 +101,6 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 
 	// Step 3: Check NativeCallDepth limit.
-	const maxNativeCallDepth = 48
 	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 	asm.CMPimm(jit.X3, maxNativeCallDepth)
 	asm.BCond(jit.CondGE, slowLabel)
@@ -100,7 +118,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// Load cache base + cached closure value + compare.
 	asm.LDR(jit.X3, mRegCtx, execCtxOffTier2CallCache) // X3 = &CallCache[0]
-	asm.LDR(jit.X4, jit.X3, cacheOff)                   // X4 = cached boxed value
+	asm.LDR(jit.X4, jit.X3, cacheOff)                  // X4 = cached boxed value
 	asm.CMPreg(jit.X0, jit.X4)
 	asm.BCond(jit.CondEQ, icHitLabel)
 
@@ -124,13 +142,13 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Load Proto, DirectEntryPtr.
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)          // X1 = *FuncProto
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr) // X2 = DirectEntryPtr
-	asm.CBZ(jit.X2, slowLabel)                           // not compiled -> slow
+	asm.CBZ(jit.X2, slowLabel)                          // not compiled -> slow
 
 	// R108: update IC cache with the boxed closure value (reload from
 	// memory since X0 now holds the raw ptr) and the direct entry addr.
 	asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot)) // re-load boxed value
-	asm.STR(jit.X4, jit.X3, cacheOff)                // cache[0] = boxed value
-	asm.STR(jit.X2, jit.X3, cacheOff+8)              // cache[1] = direct entry
+	asm.STR(jit.X4, jit.X3, cacheOff)               // cache[0] = boxed value
+	asm.STR(jit.X2, jit.X3, cacheOff+8)             // cache[1] = direct entry
 	asm.B(icDoneLabel)
 
 	// --- IC Hit: re-derive X0=*Closure and X1=*Proto ---
@@ -138,8 +156,8 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// X2 already holds the cached direct-entry addr (from cache CMP setup).
 	asm.Label(icHitLabel)
 	asm.LDR(jit.X2, jit.X3, cacheOff+8)        // X2 = cached direct entry
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)     // X0 = *Closure
-	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)  // X1 = *Proto (needed downstream)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)    // X0 = *Closure
+	asm.LDR(jit.X1, jit.X0, vmClosureOffProto) // X1 = *Proto (needed downstream)
 
 	asm.Label(icDoneLabel)
 
@@ -167,17 +185,16 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.BCond(jit.CondEQ, slowLabel)
 
 	// Step 7: Save caller state on stack (64 bytes, 16-byte aligned).
-	// R111: for a static self-call, CallMode and GlobalCache are
-	// invariant (same proto → same GlobalCache; CallMode stays 1).
-	// Skip saving these two fields (4 insns: 2 LDR + 2 STR).
+	// R111: for a static self-call, GlobalCache is invariant
+	// (same proto → same GlobalCache), so skip saving that field.
+	// CallMode cannot be skipped: top-level Tier 2 enters with CallMode=0,
+	// while a BL/BLR callee must return through the direct epilogue.
 	asm.SUBimm(jit.SP, jit.SP, 64)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
 	staticSelf := ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls && ec.isStaticSelfCall(instr)
-	if !staticSelf {
-		asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
-		asm.STR(jit.X3, jit.SP, 32)
-	}
+	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
+	asm.STR(jit.X3, jit.SP, 32)
 	// Save caller's ClosurePtr (always — closure instance may differ).
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X3, jit.SP, 40)
@@ -211,14 +228,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Set callee's ClosurePtr.
 	asm.STR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr)
 
-	// R111: skip CallMode/GlobalCache setup on static self-call
-	// (caller already has CallMode=1 — we'll reach here via t2_direct_entry
-	// or the caller-side setup — and GlobalCache is per-proto so unchanged).
-	if !staticSelf {
-		// Set CallMode = 1 (direct call).
-		asm.MOVimm16(jit.X3, 1)
-		asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	// Set CallMode = 1 (direct call).
+	asm.MOVimm16(jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
 
+	// R111: skip GlobalCache setup on static self-call (per-proto invariant).
+	if !staticSelf {
 		// Load callee's GlobalValCache from Proto.
 		asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
 		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
@@ -229,33 +244,11 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.ADDimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
-	// R40: Self-call fast path via HasSelfCalls flag.
-	// R110: If we can STATICALLY prove this particular OpCall is a self-call
-	// (fn arg is OpGetGlobal of our own proto's name), skip the runtime
-	// Proto compare entirely and BL direct to t2_self_entry.
-	// R137 Layer 4 (caller side): numeric BL enters pass-2 which returns
-	// RAW int in X0 via num_epilogue (no BRV write). Post-BL consumes
-	// raw X0, boxes for regs[funcSlot] memory safety, storeRawInt into
-	// the Call's SSA home. Gated on funcSlot >= numericParamCount so
-	// pass-2 LoadSlot of a numeric-param slot doesn't read a NaN-boxed
-	// value as raw. When that gate fails, fall through to normal BL/BLR
-	// path (pass-1 body, writes BRV normally).
-	usedNumericBL := false
-	if ec.isNumericStaticSelfCall(instr) && funcSlot >= ec.numericParamCount {
-		nParams := ec.fn.Proto.NumParams
-		ec.emitNumericArgsInRegs(instr, nParams)
-		switch nParams {
-		case 1:
-			asm.BL("t2_numeric_self_entry_1")
-		case 2:
-			asm.BL("t2_numeric_self_entry_2")
-		case 3:
-			asm.BL("t2_numeric_self_entry_3")
-		case 4:
-			asm.BL("t2_numeric_self_entry_4")
-		}
-		usedNumericBL = true
-	} else if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
+	// R40/R110: self-call fast path via HasSelfCalls. Statically proven
+	// raw-int self calls are routed before this function to the dedicated
+	// emitCallNativeRawIntSelf protocol; the generic path always keeps the
+	// boxed VM call/return ABI.
+	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
 		asm.MOVreg(jit.X0, mRegCtx)
 		if ec.isStaticSelfCall(instr) {
 			// R110: static self-call — 1 insn.
@@ -288,10 +281,8 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// Step 10: Restore caller state.
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
-	if !staticSelf {
-		asm.LDR(jit.X3, jit.SP, 32)
-		asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
-	}
+	asm.LDR(jit.X3, jit.SP, 32)
+	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
 	asm.LDR(jit.X3, jit.SP, 40)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	if !staticSelf {
@@ -309,10 +300,6 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X3, exitHandleLabel)
 
-	_ = usedNumericBL
-	// R144: single-body design — callee always returns via normal epilogue
-	// (NaN-boxed BRV + regs[0]). Caller reads BRV regardless of whether
-	// the BL was numeric or regular. No layer-4 raw-int-return convention.
 	// R143: save rawIntRegs BEFORE the post-BL emit — emitReloadSelectiveForCall
 	// clears entries, which would leak into the mutually-exclusive exit-
 	// handler compile below (emitStoreAllActiveRegs sees wrong state).
@@ -328,6 +315,10 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 	ec.storeResultNB(jit.X0, instr.ID)
+	postSuccessRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		postSuccessRawIntRegs[k] = v
+	}
 
 	asm.B(doneLabel)
 
@@ -339,9 +330,356 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.Label(slowLabel)
 	ec.rawIntRegs = savedRawIntRegs
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
+	ec.emitUnboxRawIntRegs(postSuccessRawIntRegs)
+	ec.rawIntRegs = postSuccessRawIntRegs
 
 	// --- Done: merge point for native and slow paths ---
 	asm.Label(doneLabel)
+}
+
+// emitCallNativeStaticSelfFast emits the boxed-value self-call path for a
+// statically proven recursive call. It keeps the same public contract as the
+// generic native call path (boxed args/results in the VM register file,
+// ExitCode checked after return), but skips closure type checks, the
+// monomorphic call IC, proto/direct-entry loads, global-cache switching, and
+// the full callee-save frame on the recursive entry.
+func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
+	if ec.fn == nil || ec.fn.Proto == nil || !ec.fn.Proto.HasSelfCalls || !ec.isStaticSelfCall(instr) {
+		ec.emitCallNative(instr)
+		return
+	}
+
+	asm := ec.asm
+	funcSlot := int(instr.Aux)
+	nArgs := len(instr.Args) - 1
+	nRets := 1
+	if instr.Aux2 >= 2 {
+		nRets = int(instr.Aux2) - 1
+	}
+
+	if len(instr.Args) > 0 {
+		fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		if fnReg != jit.X0 {
+			asm.MOVreg(jit.X0, fnReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	}
+	for i := 1; i < len(instr.Args); i++ {
+		argReg := ec.resolveValueNB(instr.Args[i].ID, jit.X0)
+		if argReg != jit.X0 {
+			asm.MOVreg(jit.X0, argReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
+	}
+
+	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
+	ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
+
+	slowLabel := ec.uniqueLabel("t2self_slow")
+	doneLabel := ec.uniqueLabel("t2self_done")
+	exitHandleLabel := ec.uniqueLabel("t2self_callee_exit")
+
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
+
+	calleeBaseOff := ec.nextSlot * jit.ValueSize
+
+	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	asm.CMPimm(jit.X3, maxNativeCallDepth)
+	asm.BCond(jit.CondGE, slowLabel)
+
+	calleeFrameBytes := ec.nextSlot * jit.ValueSize
+	if calleeBaseOff+calleeFrameBytes <= 4095 {
+		asm.ADDimm(jit.X3, mRegRegs, uint16(calleeBaseOff+calleeFrameBytes))
+	} else {
+		asm.LoadImm64(jit.X3, int64(calleeBaseOff+calleeFrameBytes))
+		asm.ADDreg(jit.X3, mRegRegs, jit.X3)
+	}
+	asm.LDR(jit.X4, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X3, jit.X4)
+	asm.BCond(jit.CondHI, slowLabel)
+
+	asm.SUBimm(jit.SP, jit.SP, 64)
+	asm.STP(jit.X29, jit.X30, jit.SP, 0)
+	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
+	asm.STR(jit.X3, jit.SP, 32)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X3, jit.SP, 40)
+
+	for i := 0; i < nArgs; i++ {
+		srcOff := slotOffset(funcSlot + 1 + i)
+		dstOff := calleeBaseOff + i*jit.ValueSize
+		asm.LDR(jit.X3, mRegRegs, srcOff)
+		asm.STR(jit.X3, mRegRegs, dstOff)
+	}
+
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X3, int64(calleeBaseOff))
+		asm.ADDreg(mRegRegs, mRegRegs, jit.X3)
+	}
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+	asm.MOVimm16(jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+
+	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+
+	asm.MOVreg(jit.X0, mRegCtx)
+	asm.BL("t2_self_entry")
+
+	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	asm.SUBimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+
+	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
+	asm.LDR(jit.X3, jit.SP, 32)
+	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	asm.LDR(jit.X3, jit.SP, 40)
+	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, 64)
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
+
+	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
+	asm.CBNZ(jit.X3, exitHandleLabel)
+
+	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
+	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+
+	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+
+	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	ec.storeResultNB(jit.X0, instr.ID)
+	postSuccessRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		postSuccessRawIntRegs[k] = v
+	}
+	asm.B(doneLabel)
+
+	asm.Label(exitHandleLabel)
+	asm.Label(slowLabel)
+	ec.rawIntRegs = savedRawIntRegs
+	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
+	ec.emitUnboxRawIntRegs(postSuccessRawIntRegs)
+	ec.rawIntRegs = postSuccessRawIntRegs
+
+	asm.Label(doneLabel)
+}
+
+// emitCallNativeRawIntSelf emits the v1 raw-int self-recursive ABI. It is a
+// dedicated static-self path rather than another branch inside emitCallNative:
+// args enter the callee as raw ints in X0..X3, success returns raw int in X0,
+// and every fallback materializes a normal boxed VM call frame before
+// ExitCallExit.
+func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
+	if !enableNumericSelfBL || ec.fn == nil || ec.fn.Proto == nil || !ec.isNumericStaticSelfCall(instr) {
+		ec.emitCallNativeStaticSelfFast(instr)
+		return
+	}
+
+	asm := ec.asm
+	funcSlot := int(instr.Aux)
+	nArgs := len(instr.Args) - 1
+	nRets := 1
+	if instr.Aux2 >= 2 {
+		nRets = int(instr.Aux2) - 1
+	}
+	nParams := ec.fn.Proto.NumParams
+	if nArgs != nParams || nParams < 1 || nParams > 4 {
+		ec.emitCallNativeStaticSelfFast(instr)
+		return
+	}
+
+	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
+	_ = liveGPRs // GPR allocations are callee-saved by the full raw entry.
+	emptyGPRs := map[int]bool{}
+	if len(liveFPRs) > 0 {
+		ec.emitSpillSelectiveForCall(emptyGPRs, liveFPRs)
+	}
+
+	slowLabel := ec.uniqueLabel("t2rawself_slow")
+	exitLabel := ec.uniqueLabel("t2rawself_exit")
+	doneLabel := ec.uniqueLabel("t2rawself_done")
+
+	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+
+	// Raw-call frame:
+	//   0..15   saved FP/LR
+	//   16..31  saved caller mRegRegs/mRegConsts
+	//   32      saved CallMode
+	//   40      saved BaselineClosurePtr
+	//   48..79  raw int args X0..X3
+	//   80      boxed function operand for VM fallback
+	//   88..95  padding for 16-byte alignment
+	asm.SUBimm(jit.SP, jit.SP, rawSelfFrameSize)
+	asm.STP(jit.X29, jit.X30, jit.SP, 0)
+	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
+	asm.LDR(jit.X7, mRegCtx, execCtxOffCallMode)
+	asm.STR(jit.X7, jit.SP, 32)
+	asm.LDR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X7, jit.SP, 40)
+	fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X7)
+	if fnReg != jit.X7 {
+		asm.MOVreg(jit.X7, fnReg)
+	}
+	asm.STR(jit.X7, jit.SP, rawSelfFuncOff)
+	jit.EmitExtractPtr(asm, jit.X8, jit.X7)
+	asm.STR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
+
+	ec.emitNumericArgsInRegs(instr, nParams)
+	for i := 0; i < nParams; i++ {
+		argReg := jit.Reg(int(jit.X0) + i)
+		asm.STR(argReg, jit.SP, rawSelfArgsOff+i*jit.ValueSize)
+	}
+
+	calleeBaseOff := ec.nextSlot * jit.ValueSize
+
+	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	asm.CMPimm(jit.X7, maxNativeCallDepth)
+	asm.BCond(jit.CondGE, slowLabel)
+
+	calleeFrameBytes := ec.nextSlot * jit.ValueSize
+	if calleeBaseOff+calleeFrameBytes <= 4095 {
+		asm.ADDimm(jit.X7, mRegRegs, uint16(calleeBaseOff+calleeFrameBytes))
+	} else {
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff+calleeFrameBytes))
+		asm.ADDreg(jit.X7, mRegRegs, jit.X8)
+	}
+	asm.LDR(jit.X8, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X7, jit.X8)
+	asm.BCond(jit.CondHI, slowLabel)
+
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X7, int64(calleeBaseOff))
+		asm.ADDreg(mRegRegs, mRegRegs, jit.X7)
+	}
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+	asm.MOVimm16(jit.X7, 1)
+	asm.STR(jit.X7, mRegCtx, execCtxOffCallMode)
+
+	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	asm.ADDimm(jit.X7, jit.X7, 1)
+	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+
+	asm.BL(fmt.Sprintf("t2_numeric_self_entry_%d", nParams))
+
+	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	asm.SUBimm(jit.X7, jit.X7, 1)
+	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+
+	asm.LDR(jit.X7, mRegCtx, execCtxOffExitCode)
+	asm.CBNZ(jit.X7, exitLabel)
+
+	ec.emitRestoreRawSelfCallerState()
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, rawSelfFrameSize)
+	ec.emitReloadSelectiveForCall(emptyGPRs, liveFPRs)
+	ec.storeRawInt(jit.X0, instr.ID)
+	postRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	asm.B(doneLabel)
+
+	asm.Label(exitLabel)
+	asm.Label(slowLabel)
+	ec.emitRestoreRawSelfCallerState()
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitStoreAllActiveRegs()
+	ec.emitMaterializeRawIntSelfCallFrameFromStack(funcSlot, nArgs, rawSelfFuncOff, rawSelfArgsOff)
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, rawSelfFrameSize)
+	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs)
+	ec.rawIntRegs = postRawIntRegs
+
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitRestoreRawSelfCallerState() {
+	asm := ec.asm
+	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
+	asm.LDR(jit.X7, jit.SP, 32)
+	asm.STR(jit.X7, mRegCtx, execCtxOffCallMode)
+	asm.LDR(jit.X7, jit.SP, 40)
+	asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
+}
+
+func (ec *emitContext) emitBoxCurrentClosure(dst, scratch jit.Reg) {
+	ec.asm.LDR(dst, mRegCtx, execCtxOffBaselineClosurePtr)
+	ec.asm.UBFX(dst, dst, 0, 44)
+	ec.asm.LoadImm64(scratch, nbClosureTagBits)
+	ec.asm.ORRreg(dst, dst, scratch)
+}
+
+func (ec *emitContext) emitMaterializeRawIntSelfCallFrameFromStack(funcSlot, nArgs, rawFuncOff, rawArgOff int) {
+	asm := ec.asm
+	asm.LDR(jit.X0, jit.SP, rawFuncOff)
+	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	for i := 0; i < nArgs; i++ {
+		asm.LDR(jit.X0, jit.SP, rawArgOff+i*jit.ValueSize)
+		jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+1+i))
+	}
+}
+
+func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArgs, nRets int, preRawIntRegs map[int]bool) {
+	asm := ec.asm
+
+	asm.LoadImm64(jit.X0, int64(funcSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
+	asm.LoadImm64(jit.X0, int64(nArgs))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallNArgs)
+	asm.LoadImm64(jit.X0, int64(nRets))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallNRets)
+	asm.LoadImm64(jit.X0, int64(instr.ID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
+
+	ec.emitSetResumeNumericPass()
+	asm.LoadImm64(jit.X0, ExitCallExit)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+
+	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
+	asm.Label(continueLabel)
+
+	ec.emitReloadAllActiveRegs()
+	ec.emitUnboxRawIntRegs(preRawIntRegs)
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	resultIntLabel := ec.uniqueLabel("t2rawself_result_int")
+	asm.LSRimm(jit.X1, jit.X0, 48)
+	asm.MOVimm16(jit.X2, jit.NB_TagIntShr48)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondEQ, resultIntLabel)
+	asm.LoadImm64(jit.X1, ExitDeopt)
+	asm.STR(jit.X1, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+	asm.Label(resultIntLabel)
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	ec.storeRawInt(jit.X0, instr.ID)
+
+	ec.callExitIDs = append(ec.callExitIDs, instr.ID)
+	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
+		instrID:       instr.ID,
+		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
+	})
 }
 
 // emitOpCall dispatches OpCall to the regular or tail variant and
@@ -349,13 +687,21 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 // Extracted from emit_dispatch.go to keep that file under rule 13's
 // 1000-line cap.
 func (ec *emitContext) emitOpCall(instr *Instr) {
-	if ec.tailCallInstrs[instr.ID] {
+	if ec.numericMode && ec.tailCallInstrs[instr.ID] && ec.isNumericStaticSelfCall(instr) {
+		ec.emitCallNativeNumericTail(instr)
+	} else if !ec.tailCallInstrs[instr.ID] && ec.isNumericStaticSelfCall(instr) {
+		ec.emitCallNativeRawIntSelf(instr)
+	} else if ec.tailCallInstrs[instr.ID] && ec.isStaticSelfCall(instr) {
+		ec.emitStaticSelfTailLoop(instr)
+	} else if ec.isStaticSelfCall(instr) {
+		ec.emitCallNativeStaticSelfFast(instr)
+	} else if ec.tailCallInstrs[instr.ID] {
 		// R107: tail call — frame-replacing BR on the fast path. The
 		// slow-path fallback (emitCallExitFallback) still produces a
 		// normal return value, so we DO emit the following OpReturn:
 		// on the fast path it's dead code (BR already transferred
 		// control), on the slow path it correctly completes the call.
-		ec.emitCallNativeTail(instr)
+		ec.emitCallNative(instr)
 	} else {
 		ec.emitCallNative(instr)
 	}
@@ -367,6 +713,53 @@ func (ec *emitContext) emitOpCall(instr *Instr) {
 	ec.dmVerified = make(map[int]bool)
 }
 
+func (ec *emitContext) emitCallNativeNumericTail(instr *Instr) {
+	asm := ec.asm
+	slowLabel := ec.uniqueLabel("t2numtail_slow")
+
+	if len(instr.Args) == 0 || ec.fn == nil || ec.fn.Proto == nil {
+		asm.B(slowLabel)
+	} else {
+		ec.emitNumericArgsInRegs(instr, ec.fn.Proto.NumParams)
+		asm.B(fmt.Sprintf("num_B%d", ec.fn.Entry.ID))
+	}
+
+	asm.Label(slowLabel)
+	ec.emitCallNative(instr)
+}
+
+// emitStaticSelfTailLoop lowers a proven self tail-call into an in-frame loop.
+// This avoids growing the native stack and also avoids the generic BR-to-direct
+// tail path, whose context/slot protocol is too broad for recursive raw-int
+// shapes. The preceding GetGlobal still runs, so cache misses and global exits
+// happen before this point.
+func (ec *emitContext) emitStaticSelfTailLoop(instr *Instr) {
+	if ec.fn == nil || ec.fn.Proto == nil || ec.fn.Entry == nil {
+		ec.emitCallNative(instr)
+		return
+	}
+	nArgs := len(instr.Args) - 1
+	if nArgs != ec.fn.Proto.NumParams || nArgs > 4 {
+		ec.emitCallNative(instr)
+		return
+	}
+
+	// Tail-call argument assignment is semantically parallel. Stage into
+	// scratch registers that cannot be source homes for allocated SSA values
+	// before overwriting parameter slots.
+	scratch := []jit.Reg{jit.X4, jit.X5, jit.X6, jit.X7}
+	for i := 0; i < nArgs; i++ {
+		src := ec.resolveValueNB(instr.Args[1+i].ID, scratch[i])
+		if src != scratch[i] {
+			ec.asm.MOVreg(scratch[i], src)
+		}
+	}
+	for i := 0; i < nArgs; i++ {
+		ec.asm.STR(scratch[i], mRegRegs, slotOffset(i))
+	}
+	ec.asm.B(ec.blockLabelFor(ec.fn.Entry))
+}
+
 // emitCallNativeTail emits a tail-call variant of OpCall: when the Call's
 // result is returned immediately (Call→Return pattern in the same block),
 // we replace our stack frame with the callee's instead of stacking a new
@@ -374,15 +767,14 @@ func (ec *emitContext) emitOpCall(instr *Instr) {
 // stack growth for tail-recursive chains.
 //
 // Sequence:
-//   1. Store fn + args to regs (same as emitCallNative step 1).
-//   2. Closure type-check + resolve callee's DirectEntry + bounds check.
-//   3. Copy args from regs[funcSlot+1..] to regs[0..nArgs-1] (tail window).
-//   4. Set callee context: Constants, ClosurePtr, CallMode=1, GlobalCache.
-//      Do NOT advance ctx.Regs (reuse current frame's register window).
-//      Do NOT increment NativeCallDepth (we're replacing, not nesting).
-//   5. Inline epilogue: restore callee-saved X19..X28, FP/LR, ADD sp.
-//   6. X0 = X19 (restored ctx pointer).
-//   7. BR X2 (tail jump to callee's direct entry).
+//  1. Store fn + args to regs (same as emitCallNative step 1).
+//  2. Closure type-check + resolve callee's DirectEntry + bounds check.
+//  3. Copy args from regs[funcSlot+1..] to regs[0..nArgs-1] (tail window).
+//  4. Set callee context: Constants, ClosurePtr, CallMode=1, GlobalCache.
+//     Do NOT advance ctx.Regs (reuse current frame's register window).
+//     Do NOT increment NativeCallDepth (we're replacing, not nesting).
+//  5. Set X0 to the current ctx pointer, then inline our epilogue.
+//  6. BR X2 (tail jump to callee's direct entry).
 //
 // Correctness: after step 5, LR is the CALLER-OF-CURRENT's return address
 // (saved by our prologue at sp+0). After callee runs and does its own
@@ -514,6 +906,9 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	// Step 5: Inline our own epilogue — restore callee-saved regs, FP/LR,
 	// deallocate frame. Do NOT emit RET; we'll BR to callee instead.
 	// X2 (direct entry addr) must survive; none of the LDP writes touch X2.
+	// The callee direct entry expects X0=ctx. Capture it before restoring
+	// X19, whose saved value belongs to our caller rather than this frame.
+	asm.MOVreg(jit.X0, mRegCtx)
 	if ec.useFPR {
 		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
 		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
@@ -526,11 +921,7 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 
-	// Step 6: callee's direct entry expects X0 = ctx pointer. X19 was just
-	// restored to our original ctx value — copy it to X0.
-	asm.MOVreg(jit.X0, jit.X19)
-
-	// Step 7: Tail jump to callee's direct entry (no link register update).
+	// Step 6: Tail jump to callee's direct entry (no link register update).
 	asm.BR(jit.X2)
 
 	// Slow-path fallback: falls back to the exit-resume path (which handles
@@ -553,8 +944,8 @@ func (ec *emitContext) isNumericStaticSelfCall(instr *Instr) bool {
 	if len(instr.Args) != 1+numParams {
 		return false
 	}
-	for i := 1; i < len(instr.Args); i++ {
-		argID := instr.Args[i].ID
+	for i := 0; i < numParams; i++ {
+		argID := instr.Args[1+i].ID
 		if ec.hasReg(argID) && ec.rawIntRegs[argID] {
 			continue
 		}
@@ -579,28 +970,16 @@ func (ec *emitContext) emitNumericArgsInRegs(instr *Instr, nParams int) {
 		return
 	}
 	if nParams == 2 {
-		src0 := ec.resolveRawInt(instr.Args[1].ID, jit.X0)
-		src1 := ec.resolveRawInt(instr.Args[2].ID, jit.X1)
-		if src0 == jit.X1 && src1 == jit.X0 {
-			asm.MOVreg(jit.X2, jit.X0)
-			asm.MOVreg(jit.X0, jit.X1)
-			asm.MOVreg(jit.X1, jit.X2)
-			return
+		src0 := ec.resolveRawInt(instr.Args[1].ID, jit.X2)
+		if src0 != jit.X2 {
+			asm.MOVreg(jit.X2, src0)
 		}
-		if src0 == jit.X1 {
-			// Move arg0 out of X1 first to avoid clobber.
-			asm.MOVreg(jit.X0, jit.X1)
-			if src1 != jit.X1 {
-				asm.MOVreg(jit.X1, src1)
-			}
-			return
+		src1 := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
+		if src1 != jit.X3 {
+			asm.MOVreg(jit.X3, src1)
 		}
-		if src0 != jit.X0 {
-			asm.MOVreg(jit.X0, src0)
-		}
-		if src1 != jit.X1 {
-			asm.MOVreg(jit.X1, src1)
-		}
+		asm.MOVreg(jit.X0, jit.X2)
+		asm.MOVreg(jit.X1, jit.X3)
 		return
 	}
 	// nParams 3/4: conservative via X2/X3/X4/X5 scratch.
@@ -618,24 +997,13 @@ func (ec *emitContext) emitNumericArgsInRegs(instr *Instr, nParams int) {
 	}
 }
 
-// qualifyForNumeric (R121) reports whether a proto is structurally eligible
-// for the end-to-end numeric calling convention. This is the scaffolding
-// predicate; R122+ uses it to decide whether to compile a numeric twin.
+// qualifyForNumeric reports whether a proto is eligible for the raw-int
+// self-recursive ABI. The predicate delegates to AnalyzeSpecializedABI so the
+// compiler, tests, and future metadata all use the same structural contract.
 // Returns (ok, numParams). When ok is true, numParams is in [1, 4].
-//
-// Current criteria (R121): 1-4 params, no upvalues, no nested protos.
-// Future tightening (R123): return-flow analysis proves int return.
 func qualifyForNumeric(proto *vm.FuncProto) (bool, int) {
-	if proto == nil {
-		return false, 0
-	}
-	if proto.NumParams < 1 || proto.NumParams > 4 {
-		return false, 0
-	}
-	if len(proto.Upvalues) != 0 {
-		return false, 0
-	}
-	if len(proto.Protos) != 0 {
+	abi := AnalyzeSpecializedABI(proto)
+	if !abi.Eligible || abi.Kind != SpecializedABIRawInt {
 		return false, 0
 	}
 	return true, proto.NumParams
@@ -694,9 +1062,14 @@ func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets
 	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
 
 	// Set ExitCode = ExitCallExit and return to Go.
+	ec.emitSetResumeNumericPass()
 	asm.LoadImm64(jit.X0, ExitCallExit)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	asm.B("deopt_epilogue")
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 
 	// Continue label: the resume entry jumps here after Go handles the call.
 	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
@@ -720,9 +1093,9 @@ func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets
 
 // computeLiveAcrossCall returns the set of GPR and FPR value IDs that are live
 // across a CALL instruction. A value is live across the call if:
-//   1. It's currently active in a register, AND
-//   2. It's used by any instruction AFTER the call in the same block, OR
-//   3. It's used by a phi in a successor block (cross-block live).
+//  1. It's currently active in a register, AND
+//  2. It's used by any instruction AFTER the call in the same block, OR
+//  3. It's used by a phi in a successor block (cross-block live).
 //
 // Typically only 1-3 registers are live across a call (e.g., fib(n) only has
 // n live across each recursive call). This lets selective spill emit 1-3 STR
@@ -836,4 +1209,12 @@ func (ec *emitContext) emitReloadSelectiveForCall(gprLive, fprLive map[int]bool)
 		fpr := jit.FReg(pr.Reg)
 		ec.asm.FLDRd(fpr, mRegRegs, slotOffset(slot))
 	}
+}
+
+func cloneBoolMap(src map[int]bool) map[int]bool {
+	dst := make(map[int]bool, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }

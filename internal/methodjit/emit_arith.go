@@ -279,6 +279,11 @@ func (ec *emitContext) emitInt48OverflowCheck(result jit.Reg, instr *Instr) {
 	// Overflow: deopt to interpreter.
 	asm.LoadImm64(jit.X0, ExitDeopt)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+		asm.Label(okLabel)
+		return
+	}
 	asm.B("deopt_epilogue")
 
 	asm.Label(okLabel)
@@ -290,7 +295,6 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 	if len(instr.Args) < 2 {
 		return
 	}
-
 
 	// Use raw int path if available (from type-specialized ops).
 	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
@@ -317,4 +321,3 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 	// Store NaN-boxed bool result to register or memory.
 	ec.storeResultNB(jit.X0, instr.ID)
 }
-

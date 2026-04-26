@@ -9,11 +9,21 @@ import (
 	"github.com/gscript/gscript/internal/jit"
 )
 
-// emitReturn emits ARM64 code for OpReturn. R144: single-body — writes
-// NaN-boxed result to regs[0] and ctx.BaselineReturnValue, then branches
-// to t2_direct_epilogue (CallMode=1, BLR caller) or epilogue
-// (CallMode=0, trampoline). Numeric-BL callers also read BRV normally.
+// emitReturn emits ARM64 code for OpReturn. Numeric pass returns leave a raw
+// int in X0 and branch to num_epilogue. The boxed VM ABI writes the NaN-boxed
+// result to regs[0] and ctx.BaselineReturnValue, then branches to
+// t2_direct_epilogue (CallMode=1, BLR caller) or epilogue (CallMode=0,
+// trampoline).
 func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
+	if ec.numericMode && len(instr.Args) > 0 {
+		src := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+		if src != jit.X0 {
+			ec.asm.MOVreg(jit.X0, src)
+		}
+		ec.asm.B("num_epilogue")
+		return
+	}
+
 	if len(instr.Args) > 0 {
 		valID := instr.Args[0].ID
 		// If the return value is a raw float in FPR, move bits to GPR.
