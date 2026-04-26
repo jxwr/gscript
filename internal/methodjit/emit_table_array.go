@@ -193,7 +193,16 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 		if ec.kindVerified[tblValueID] != uint16(knownGetKind) {
 			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
 			asm.CMPimm(jit.X2, expectedKind)
-			asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+			if expectedKind == jit.AKMixed {
+				asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+			} else {
+				getKindOKLabel := ec.uniqueLabel("gettable_kind_ok")
+				asm.BCond(jit.CondEQ, getKindOKLabel)
+				asm.CMPimm(jit.X2, jit.AKMixed)
+				asm.BCond(jit.CondEQ, mixedArrayLabel)
+				asm.B(deoptLabel)
+				asm.Label(getKindOKLabel)
+			}
 			ec.kindVerified[tblValueID] = uint16(knownGetKind)
 		}
 		// Jump directly to the matching kind path.
@@ -226,7 +235,22 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.BCond(jit.CondGE, deoptLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // array data pointer
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)         // value = array[key]
-	ec.storeResultNB(jit.X0, instr.ID)
+	switch instr.Type {
+	case TypeInt:
+		asm.LSRimm(jit.X2, jit.X0, 48)
+		asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+		asm.CMPreg(jit.X2, jit.X3)
+		asm.BCond(jit.CondNE, deoptLabel)
+		asm.SBFX(jit.X0, jit.X0, 0, 48)
+		ec.storeRawInt(jit.X0, instr.ID)
+	case TypeFloat:
+		jit.EmitIsTagged(asm, jit.X0, jit.X2)
+		asm.BCond(jit.CondEQ, deoptLabel)
+		asm.FMOVtoFP(jit.D0, jit.X0)
+		ec.storeRawFloat(jit.D0, instr.ID)
+	default:
+		ec.storeResultNB(jit.X0, instr.ID)
+	}
 	asm.B(doneLabel)
 
 	// --- ArrayInt fast path ---
@@ -494,7 +518,16 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		if ec.kindVerified[tblValueID] != uint16(knownSetKind) {
 			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
 			asm.CMPimm(jit.X2, expectedKind)
-			asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+			if expectedKind == jit.AKMixed {
+				asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
+			} else {
+				setKindOKLabel := ec.uniqueLabel("settable_kind_ok")
+				asm.BCond(jit.CondEQ, setKindOKLabel)
+				asm.CMPimm(jit.X2, jit.AKMixed)
+				asm.BCond(jit.CondEQ, mixedArrayLabel)
+				asm.B(deoptLabel)
+				asm.Label(setKindOKLabel)
+			}
 			ec.kindVerified[tblValueID] = uint16(knownSetKind)
 		}
 		// Jump directly to the matching kind path.

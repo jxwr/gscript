@@ -377,6 +377,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("ConstProp: %w", err)
 	}
 
+	fn, err = TablePreallocHintPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TablePreallocHint: %w", err)
+	}
+
 	fn, err = LoadEliminationPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("LoadElimination: %w", err)
