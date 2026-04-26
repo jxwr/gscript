@@ -28,6 +28,12 @@ func runStringFuncVM(t *testing.T, src, fnName string, args []runtime.Value) []r
 
 func runStringFuncForcedTier2(t *testing.T, src, fnName string, args []runtime.Value, noFilter bool) []runtime.Value {
 	t.Helper()
+	results, _, _ := runStringFuncForcedTier2WithManager(t, src, fnName, args, noFilter)
+	return results
+}
+
+func runStringFuncForcedTier2WithManager(t *testing.T, src, fnName string, args []runtime.Value, noFilter bool) ([]runtime.Value, *TieringManager, *vm.FuncProto) {
+	t.Helper()
 	if noFilter {
 		t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 	}
@@ -57,7 +63,7 @@ func runStringFuncForcedTier2(t *testing.T, src, fnName string, args []runtime.V
 	if proto.EnteredTier2 == 0 {
 		t.Fatalf("%s did not enter Tier2", fnName)
 	}
-	return results
+	return results, tm, proto
 }
 
 func requireOneString(t *testing.T, label string, values []runtime.Value) string {
@@ -69,6 +75,17 @@ func requireOneString(t *testing.T, label string, values []runtime.Value) string
 		t.Fatalf("%s result=%v (%s), want string", label, values[0], values[0].TypeName())
 	}
 	return values[0].Str()
+}
+
+func requireOneInt(t *testing.T, label string, values []runtime.Value) int64 {
+	t.Helper()
+	if len(values) != 1 {
+		t.Fatalf("%s result count=%d, want 1: %v", label, len(values), values)
+	}
+	if !values[0].IsInt() {
+		t.Fatalf("%s result=%v (%s), want int", label, values[0], values[0].TypeName())
+	}
+	return values[0].Int()
 }
 
 func TestTier2_ConcatExit_AllOperands(t *testing.T) {
@@ -89,7 +106,7 @@ func concat3(a, b, c) {
 	}
 }
 
-func TestTier2_StringCompareFallback_MatchesVM(t *testing.T) {
+func TestTier2_StringCompareFastPath_MatchesVM(t *testing.T) {
 	src := `
 func sort_last() {
     arr := {}
@@ -113,5 +130,41 @@ func sort_last() {
 	got := requireOneString(t, "Tier2", runStringFuncForcedTier2(t, src, "sort_last", nil, true))
 	if got != want {
 		t.Fatalf("sort_last Tier2=%q, want VM=%q", got, want)
+	}
+}
+
+func TestTier2_StringCompareFastPath_NoOpExit(t *testing.T) {
+	src := `
+func cmp(a, b) {
+    if a < b {
+        return 1
+    }
+    if a <= b {
+        return 2
+    }
+    return 3
+}
+`
+	cases := []struct {
+		a, b string
+		want int64
+	}{
+		{"alpha", "beta", 1},
+		{"same", "same", 2},
+		{"zeta", "beta", 3},
+	}
+
+	for _, tc := range cases {
+		gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "cmp", []runtime.Value{
+			runtime.StringValue(tc.a),
+			runtime.StringValue(tc.b),
+		}, true)
+		got := requireOneInt(t, tc.a+"_"+tc.b, gotValues)
+		if got != tc.want {
+			t.Fatalf("cmp(%q,%q)=%d, want %d", tc.a, tc.b, got, tc.want)
+		}
+		if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+			t.Fatalf("cmp(%q,%q) should stay native, ExitOpExit=%d", tc.a, tc.b, exits)
+		}
 	}
 }
