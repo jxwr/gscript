@@ -299,7 +299,23 @@ func (tm *TieringManager) osrWouldHitCallInLoopGate(proto *vm.FuncProto, profile
 			globals = merged
 		}
 	}
-	return !canPromoteWithInlining(proto, globals)
+	if stableGlobals := buildProtoStableGlobals(proto); len(stableGlobals) > 0 {
+		if len(globals) == 0 {
+			globals = stableGlobals
+		} else {
+			merged := make(map[string]*vm.FuncProto, len(globals)+len(stableGlobals))
+			for name, callee := range globals {
+				merged[name] = callee
+			}
+			for name, callee := range stableGlobals {
+				if _, ok := merged[name]; !ok {
+					merged[name] = callee
+				}
+			}
+			globals = merged
+		}
+	}
+	return !canPromoteWithInlining(proto, globals) && !canPromoteWithNativeLoopCalls(proto, globals)
 }
 
 // Execute runs compiled code. Dispatches to Tier 1 or Tier 2 based on the
@@ -562,46 +578,50 @@ func canPromoteWithInlining(proto *vm.FuncProto, globals map[string]*vm.FuncProt
 // that loads the function into register targetReg. Returns true if the callee
 // is in globals, small enough, and non-recursive.
 func findInlineableGetGlobal(proto *vm.FuncProto, callPC, targetReg int, globals map[string]*vm.FuncProto) bool {
+	callee, ok := findGetGlobalCallee(proto, callPC, targetReg, globals)
+	if !ok {
+		return false
+	}
+	// Check size budget.
+	if len(callee.Code) > inlineMaxCalleeSize {
+		return false
+	}
+	// Recursion: permitted when bounded by MaxRecursion in the
+	// inline pass (R31 bounded recursive inline ADR). The pass
+	// caps unrolling depth so self/mutual recursion stays finite.
+	// The name-match + isRecursive checks that previously
+	// rejected here have moved responsibility onto the pass's
+	// MaxRecursion gate. Non-bounded recursion would still blow
+	// the inline budget naturally (per-iteration size growth).
+	//
+	// Check callee has no loops (while-loops produce buggy
+	// code when inlined into the caller's IR).
+	return !analyzeFuncProfile(callee).HasLoop
+}
+
+func findGetGlobalCallee(proto *vm.FuncProto, callPC, targetReg int, globals map[string]*vm.FuncProto) (*vm.FuncProto, bool) {
 	for j := callPC - 1; j >= 0; j-- {
 		prev := proto.Code[j]
 		prevOp := vm.DecodeOp(prev)
 		if prevOp == vm.OP_GETGLOBAL && vm.DecodeA(prev) == targetReg {
 			bx := vm.DecodeBx(prev)
 			if bx < 0 || bx >= len(proto.Constants) {
-				return false
+				return nil, false
 			}
 			name := proto.Constants[bx].Str()
 			callee, ok := globals[name]
 			if !ok {
-				return false
+				return nil, false
 			}
-			// Check size budget.
-			if len(callee.Code) > inlineMaxCalleeSize {
-				return false
-			}
-			// Recursion: permitted when bounded by MaxRecursion in the
-			// inline pass (R31 bounded recursive inline ADR). The pass
-			// caps unrolling depth so self/mutual recursion stays finite.
-			// The name-match + isRecursive checks that previously
-			// rejected here have moved responsibility onto the pass's
-			// MaxRecursion gate. Non-bounded recursion would still blow
-			// the inline budget naturally (per-iteration size growth).
-			//
-			// Check callee has no loops (while-loops produce buggy
-			// code when inlined into the caller's IR).
-			calleeProfile := analyzeFuncProfile(callee)
-			if calleeProfile.HasLoop {
-				return false
-			}
-			return true
+			return callee, true
 		}
 		// If another instruction writes to targetReg before we find GETGLOBAL,
 		// the function reference is not from a GETGLOBAL. Bail out.
 		if prevOp != vm.OP_GETGLOBAL && vm.DecodeA(prev) == targetReg {
-			return false
+			return nil, false
 		}
 	}
-	return false
+	return nil, false
 }
 
 // buildInlineGlobals extracts global function protos from the VM's globals.
@@ -1404,6 +1424,38 @@ func hasStaticCallInLoop(proto *vm.FuncProto) bool {
 	return false
 }
 
+func canPromoteWithNativeLoopCalls(proto *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
+	if proto == nil || len(globals) == 0 {
+		return false
+	}
+	inLoop := make([]bool, len(proto.Code))
+	for pc, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		if op != vm.OP_FORLOOP && op != vm.OP_JMP {
+			continue
+		}
+		target := pc + 1 + vm.DecodesBx(inst)
+		if target < 0 || target > pc {
+			continue
+		}
+		for i := target; i <= pc && i < len(inLoop); i++ {
+			inLoop[i] = true
+		}
+	}
+	sawCall := false
+	for pc, inst := range proto.Code {
+		if !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		sawCall = true
+		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
+		if !ok || !tier2LoopCallCalleeIsNativeCandidate(callee) {
+			return false
+		}
+	}
+	return sawCall
+}
+
 func hasNonNativeCallInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
 	li := computeLoopInfo(fn)
 	for _, block := range fn.Blocks {
@@ -1549,6 +1601,10 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 
 func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+	return tier2LoopCallCalleeIsNativeCandidate(callee)
+}
+
+func tier2LoopCallCalleeIsNativeCandidate(callee *vm.FuncProto) bool {
 	if tier2LoopCallCalleeHasTier2DirectEntry(callee) {
 		return true
 	}
@@ -1560,6 +1616,9 @@ func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[stri
 		return ok
 	}
 	if callee != nil && tier2LoopCallCalleeIsLeafNativeCandidate(callee) {
+		return true
+	}
+	if callee != nil && shouldStayTier1ForBoxedRawIntKernel(callee, analyzeFuncProfile(callee)) {
 		return true
 	}
 	return false
