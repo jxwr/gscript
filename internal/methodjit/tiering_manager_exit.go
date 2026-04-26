@@ -118,8 +118,8 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 	switch ctx.TableOp {
 	case TableOpNewTable:
 		arrayHint := int(ctx.TableAux)
-		hashHint := int(ctx.TableAux2)
-		tbl := runtime.NewTableSized(arrayHint, hashHint)
+		hashHint, arrayKind := unpackNewTableAux2(ctx.TableAux2)
+		tbl := runtime.NewTableSizedKind(arrayHint, hashHint, arrayKind)
 		absSlot := base + int(ctx.TableSlot)
 		if absSlot < len(regs) {
 			regs[absSlot] = runtime.TableValue(tbl)

@@ -507,8 +507,8 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 	// ---------- Table operations ----------
 	case OpNewTable:
 		arrHint := int(instr.Aux)
-		hashHint := int(instr.Aux2)
-		s.values[instr.ID] = runtime.TableValue(runtime.NewTableSized(arrHint, hashHint))
+		hashHint, arrayKind := unpackNewTableAux2(instr.Aux2)
+		s.values[instr.ID] = runtime.TableValue(runtime.NewTableSizedKind(arrHint, hashHint, arrayKind))
 
 	case OpGetTable:
 		tbl := s.val(instr.Args[0])

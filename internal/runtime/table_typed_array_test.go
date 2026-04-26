@@ -261,6 +261,35 @@ func TestArrayKindPromotionPreservesSizedArrayHint(t *testing.T) {
 	})
 }
 
+func TestNewTableSizedKindPreallocatesTypedArray(t *testing.T) {
+	const hint = 128
+
+	tbl := NewTableSizedKind(hint, 0, ArrayFloat)
+	if tbl.arrayKind != ArrayFloat {
+		t.Fatalf("arrayKind = %d, want %d", tbl.arrayKind, ArrayFloat)
+	}
+	if len(tbl.floatArray) != 0 {
+		t.Fatalf("floatArray len = %d, want 0", len(tbl.floatArray))
+	}
+	if cap(tbl.floatArray) < hint+1 {
+		t.Fatalf("floatArray cap = %d, want at least %d", cap(tbl.floatArray), hint+1)
+	}
+	if got := tbl.Length(); got != 0 {
+		t.Fatalf("empty typed table length = %d, want 0", got)
+	}
+
+	tbl.RawSetInt(0, FloatValue(1.5))
+	if tbl.arrayKind != ArrayFloat {
+		t.Fatalf("arrayKind after append = %d, want %d", tbl.arrayKind, ArrayFloat)
+	}
+	if got := tbl.RawGetInt(0); !got.IsFloat() || got.Float() != 1.5 {
+		t.Fatalf("RawGetInt(0) = %v, want 1.5", got)
+	}
+	if cap(tbl.floatArray) < hint+1 {
+		t.Fatalf("floatArray cap after append = %d, want at least %d", cap(tbl.floatArray), hint+1)
+	}
+}
+
 func TestArrayKindOverwrite(t *testing.T) {
 	// Overwriting same-type value should stay specialized
 	tbl := NewTable()

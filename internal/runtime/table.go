@@ -94,10 +94,31 @@ func NewTable() *Table {
 
 // NewTableSized creates a table with pre-allocated capacity hints.
 func NewTableSized(arrayHint, hashHint int) *Table {
+	return NewTableSizedKind(arrayHint, hashHint, ArrayMixed)
+}
+
+// NewTableSizedKind creates a table with pre-allocated capacity hints and, for
+// scalar array builders, an optional typed-array backing. The mixed layout keeps
+// the historical length-1 sentinel allocation; typed arrays start at length 0 so
+// key 0 can use the native append path.
+func NewTableSizedKind(arrayHint, hashHint int, kind ArrayKind) *Table {
 	t := DefaultHeap.AllocTable()
 	t.keysDirty = true
 	if arrayHint > 0 {
-		t.array = DefaultHeap.AllocValues(1, arrayHint+1)
+		capHint := arrayHint + 1
+		switch kind {
+		case ArrayInt:
+			t.arrayKind = ArrayInt
+			t.intArray = DefaultHeap.AllocInt64s(0, capHint)
+		case ArrayFloat:
+			t.arrayKind = ArrayFloat
+			t.floatArray = DefaultHeap.AllocFloat64s(0, capHint)
+		case ArrayBool:
+			t.arrayKind = ArrayBool
+			t.boolArray = DefaultHeap.AllocByteSlice(0, capHint)
+		default:
+			t.array = DefaultHeap.AllocValues(1, capHint)
+		}
 	}
 	if hashHint > 0 && hashHint <= smallFieldCap {
 		t.svals = DefaultHeap.AllocValues(0, hashHint)
@@ -515,9 +536,15 @@ func (t *Table) Length() int {
 	switch t.arrayKind {
 	case ArrayInt:
 		// All slots are valid (no nil concept for int64), length is always full.
+		if len(t.intArray) == 0 {
+			return 0
+		}
 		return len(t.intArray) - 1
 	case ArrayFloat:
 		// All slots are valid for float64 as well.
+		if len(t.floatArray) == 0 {
+			return 0
+		}
 		return len(t.floatArray) - 1
 	case ArrayBool:
 		// Scan backwards past nil sentinels (0 = unset)

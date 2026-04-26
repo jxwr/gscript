@@ -300,8 +300,8 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 	case TableOpNewTable:
 		// Create a new table with the given array/hash hints.
 		arrayHint := int(ctx.TableAux)
-		hashHint := int(ctx.TableAux2)
-		tbl := runtime.NewTableSized(arrayHint, hashHint)
+		hashHint, arrayKind := unpackNewTableAux2(ctx.TableAux2)
+		tbl := runtime.NewTableSizedKind(arrayHint, hashHint, arrayKind)
 		resultSlot := int(ctx.TableSlot)
 		if resultSlot < len(regs) {
 			regs[resultSlot] = runtime.TableValue(tbl)
