@@ -16,6 +16,14 @@ func typedArrayCapFor(needed int) int {
 	return needed
 }
 
+func typedArrayCapWithHint(needed, hint int) int {
+	capacity := typedArrayCapFor(needed)
+	if hint > capacity {
+		return hint
+	}
+	return capacity
+}
+
 func growTypedArrayCap(current, needed int) int {
 	next := current*2 + 1
 	if next < initialTypedArrayCap {
@@ -153,22 +161,23 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			// This handles 0-indexed code like `row[0] = 3.14` on a new table.
 			if arrLen == 1 && key == 0 && !val.IsNil() {
 				vk := classifyValueForArray(val)
+				capHint := cap(t.array)
 				switch vk {
 				case ArrayInt:
 					t.arrayKind = ArrayInt
-					t.intArray = DefaultHeap.AllocInt64s(1, initialTypedArrayCap)
+					t.intArray = DefaultHeap.AllocInt64s(1, typedArrayCapWithHint(1, capHint))
 					t.intArray[0] = valueToInt64(val)
 					t.array = nil
 					return
 				case ArrayFloat:
 					t.arrayKind = ArrayFloat
-					t.floatArray = DefaultHeap.AllocFloat64s(1, initialTypedArrayCap)
+					t.floatArray = DefaultHeap.AllocFloat64s(1, typedArrayCapWithHint(1, capHint))
 					t.floatArray[0] = val.Float()
 					t.array = nil
 					return
 				case ArrayBool:
 					t.arrayKind = ArrayBool
-					t.boolArray = DefaultHeap.AllocByteSlice(1, initialTypedArrayCap)
+					t.boolArray = DefaultHeap.AllocByteSlice(1, typedArrayCapWithHint(1, capHint))
 					if val.Bool() {
 						t.boolArray[0] = 2
 					} else {
@@ -227,23 +236,24 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				// array is empty or has only the [0] slot. Preserve an existing
 				// 0-indexed value, otherwise treat the missing sentinel as nil.
 				vk := classifyValueForArray(val)
+				capHint := cap(t.array)
 				if key == 0 && len(t.array) == 0 {
 					switch vk {
 					case ArrayInt:
 						t.arrayKind = ArrayInt
-						t.intArray = DefaultHeap.AllocInt64s(1, initialTypedArrayCap)
+						t.intArray = DefaultHeap.AllocInt64s(1, typedArrayCapWithHint(1, capHint))
 						t.intArray[0] = valueToInt64(val)
 						t.absorbKeys()
 						return
 					case ArrayFloat:
 						t.arrayKind = ArrayFloat
-						t.floatArray = DefaultHeap.AllocFloat64s(1, initialTypedArrayCap)
+						t.floatArray = DefaultHeap.AllocFloat64s(1, typedArrayCapWithHint(1, capHint))
 						t.floatArray[0] = val.Float()
 						t.absorbKeys()
 						return
 					case ArrayBool:
 						t.arrayKind = ArrayBool
-						t.boolArray = DefaultHeap.AllocByteSlice(1, initialTypedArrayCap)
+						t.boolArray = DefaultHeap.AllocByteSlice(1, typedArrayCapWithHint(1, capHint))
 						if val.Bool() {
 							t.boolArray[0] = 2
 						} else {
@@ -262,7 +272,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 					switch vk {
 					case ArrayInt:
 						t.arrayKind = ArrayInt
-						t.intArray = DefaultHeap.AllocInt64s(1, initialTypedArrayCap)
+						t.intArray = DefaultHeap.AllocInt64s(1, typedArrayCapWithHint(1, capHint))
 						if !a0.IsNil() {
 							t.intArray[0] = valueToInt64(a0)
 						}
@@ -272,7 +282,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 						return
 					case ArrayFloat:
 						t.arrayKind = ArrayFloat
-						t.floatArray = DefaultHeap.AllocFloat64s(1, initialTypedArrayCap)
+						t.floatArray = DefaultHeap.AllocFloat64s(1, typedArrayCapWithHint(1, capHint))
 						if !a0.IsNil() {
 							t.floatArray[0] = a0.Float()
 						}
@@ -282,7 +292,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 						return
 					case ArrayBool:
 						t.arrayKind = ArrayBool
-						t.boolArray = DefaultHeap.AllocByteSlice(1, initialTypedArrayCap) // 0 = nil sentinel
+						t.boolArray = DefaultHeap.AllocByteSlice(1, typedArrayCapWithHint(1, capHint)) // 0 = nil sentinel
 						if !a0.IsNil() {
 							if a0.Bool() {
 								t.boolArray[0] = 2
@@ -356,6 +366,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			// First write with sparse key on empty/sentinel array → try to specialize
 			if len(t.array) <= 1 {
 				vk := classifyValueForArray(val)
+				capHint := cap(t.array)
 				// Check if array[0] is compatible with the target type
 				a0 := NilValue()
 				if len(t.array) == 1 {
@@ -366,7 +377,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 					switch vk {
 					case ArrayInt:
 						t.arrayKind = ArrayInt
-						t.intArray = DefaultHeap.AllocInt64s(needed, typedArrayCapFor(needed))
+						t.intArray = DefaultHeap.AllocInt64s(needed, typedArrayCapWithHint(needed, capHint))
 						if !a0.IsNil() {
 							t.intArray[0] = valueToInt64(a0)
 						}
@@ -376,7 +387,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 						return
 					case ArrayFloat:
 						t.arrayKind = ArrayFloat
-						t.floatArray = DefaultHeap.AllocFloat64s(needed, typedArrayCapFor(needed))
+						t.floatArray = DefaultHeap.AllocFloat64s(needed, typedArrayCapWithHint(needed, capHint))
 						if !a0.IsNil() {
 							t.floatArray[0] = a0.Float()
 						}
@@ -386,7 +397,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 						return
 					case ArrayBool:
 						t.arrayKind = ArrayBool
-						t.boolArray = DefaultHeap.AllocByteSlice(needed, typedArrayCapFor(needed)) // zeros = nil sentinel
+						t.boolArray = DefaultHeap.AllocByteSlice(needed, typedArrayCapWithHint(needed, capHint)) // zeros = nil sentinel
 						if !a0.IsNil() {
 							if a0.Bool() {
 								t.boolArray[0] = 2
