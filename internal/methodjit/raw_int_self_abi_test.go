@@ -230,6 +230,53 @@ func TestRawIntSelfABI_NumericEntryUsesThinFrame(t *testing.T) {
 	}
 }
 
+func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
+	src := `func ack(m, n) {
+	if m == 0 { return n + 1 }
+	if n == 0 { return ack(m - 1, 1) }
+	return ack(m - 1, ack(m, n - 1))
+}`
+	top := compileTop(t, src)
+	ack := findProtoByName(top, "ack")
+	if ack == nil {
+		t.Fatal("function \"ack\" not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(ack); err != nil {
+		t.Fatalf("CompileTier2(ack): %v", err)
+	}
+	cf := tm.tier2Compiled[ack]
+	if cf == nil {
+		t.Fatal("ack did not compile to Tier 2")
+	}
+
+	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+	rawSelfShims := 0
+	for pc := 0; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		if !isSubSPImm(word, rawSelfFrameSize) {
+			continue
+		}
+		rawSelfShims++
+		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isCtxCallModeAccess(scanWord) {
+				t.Fatalf("raw self-call shim at %#x touches ctx.CallMode before BL at %#x", pc, scan)
+			}
+			if isBL(scanWord) {
+				break
+			}
+			if scan-pc > 160 {
+				t.Fatalf("raw self-call shim at %#x did not reach BL within expected window", pc)
+			}
+		}
+	}
+	if rawSelfShims == 0 {
+		t.Fatal("expected at least one raw self-call shim")
+	}
+}
+
 func TestRawIntSelfABI_NonEligibleStaysBoxed(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -297,6 +344,18 @@ func isUnconditionalB(word uint32) bool {
 	return word&0xFC000000 == 0x14000000
 }
 
+func isBL(word uint32) bool {
+	return word&0xFC000000 == 0x94000000
+}
+
+func isSubSPImm(word uint32, imm int) bool {
+	if imm < 0 || imm > 4095 {
+		return false
+	}
+	encodedImm := uint32(imm) << 10
+	return word == 0xD10003FF|encodedImm
+}
+
 func isGPRPairStoreToSP(word uint32) bool {
 	return word&0xFFC00000 == 0xA9000000 && ((word>>5)&0x1F) == 31
 }
@@ -308,6 +367,14 @@ func isFPRPairStoreToSP(word uint32) bool {
 func isLDRCtxRegsToMRegRegs(word uint32) bool {
 	pimm := uint32(execCtxOffRegs >> 3)
 	return word == 0xF9400000|((pimm&0xFFF)<<10)|uint32(mRegCtx)<<5|uint32(mRegRegs)
+}
+
+func isCtxCallModeAccess(word uint32) bool {
+	if word&0xFFC003E0 != 0xF9400000|uint32(mRegCtx)<<5 &&
+		word&0xFFC003E0 != 0xF9000000|uint32(mRegCtx)<<5 {
+		return false
+	}
+	return ((word >> 10) & 0xFFF) == uint32(execCtxOffCallMode>>3)
 }
 
 func assertThinFramePrologue(t *testing.T, code []byte, off int, label string) {

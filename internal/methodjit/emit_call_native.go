@@ -54,10 +54,9 @@ const (
 )
 
 const (
-	rawSelfFrameSize   = 48
-	rawSelfRegsOff     = 0
-	rawSelfCallModeOff = 8
-	rawSelfArgsOff     = 16
+	rawSelfFrameSize = 48
+	rawSelfRegsOff   = 0
+	rawSelfArgsOff   = 8
 )
 
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
@@ -517,8 +516,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 
 	// Raw-call frame:
 	//   0       saved caller mRegRegs
-	//   8       saved CallMode
-	//   16..47  raw int args X0..X3
+	//   8..39   raw int args X0..X3
 	//
 	// The caller's own entry frame already owns FP/LR, and raw-int self calls
 	// stay within one proto/closure/constant domain. We keep the callee base in
@@ -527,11 +525,10 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	// ctx.Regs so resume handlers still see the boxed VM ABI state. The boxed
 	// function operand needed by VM fallback is rebuilt from BaselineClosurePtr;
 	// static self recursion cannot change closure identity while this native
-	// frame is executing.
+	// frame is executing. Numeric entries return through num_epilogue and do
+	// not branch on CallMode, so raw self calls leave ctx.CallMode unchanged.
 	asm.SUBimm(jit.SP, jit.SP, rawSelfFrameSize)
 	asm.STR(mRegRegs, jit.SP, rawSelfRegsOff)
-	asm.LDR(jit.X7, mRegCtx, execCtxOffCallMode)
-	asm.STR(jit.X7, jit.SP, rawSelfCallModeOff)
 
 	ec.emitNumericArgsInRegs(instr, nParams)
 	for i := 0; i < nParams; i++ {
@@ -562,8 +559,6 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 		asm.LoadImm64(jit.X7, int64(calleeBaseOff))
 		asm.ADDreg(mRegRegs, mRegRegs, jit.X7)
 	}
-	asm.MOVimm16(jit.X7, 1)
-	asm.STR(jit.X7, mRegCtx, execCtxOffCallMode)
 
 	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
 	asm.ADDimm(jit.X7, jit.X7, 1)
@@ -602,8 +597,6 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 func (ec *emitContext) emitRestoreRawSelfCallerState() {
 	asm := ec.asm
 	asm.LDR(mRegRegs, jit.SP, rawSelfRegsOff)
-	asm.LDR(jit.X7, jit.SP, rawSelfCallModeOff)
-	asm.STR(jit.X7, mRegCtx, execCtxOffCallMode)
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 }
 
