@@ -19,10 +19,10 @@ func TestSatAdd(t *testing.T) {
 	}{
 		{1, 2, 3},
 		{-1, -2, -3},
-		{math.MaxInt64, 1, math.MaxInt64},        // saturation
-		{math.MaxInt64 - 5, 10, math.MaxInt64},   // saturation
-		{math.MinInt64, -1, math.MinInt64},       // saturation
-		{math.MinInt64 + 5, -10, math.MinInt64},  // saturation
+		{math.MaxInt64, 1, math.MaxInt64},       // saturation
+		{math.MaxInt64 - 5, 10, math.MaxInt64},  // saturation
+		{math.MinInt64, -1, math.MinInt64},      // saturation
+		{math.MinInt64 + 5, -10, math.MinInt64}, // saturation
 		{0, 0, 0},
 	}
 	for _, c := range cases {
@@ -38,9 +38,9 @@ func TestSatSub(t *testing.T) {
 	}{
 		{5, 3, 2},
 		{3, 5, -2},
-		{math.MaxInt64, -1, math.MaxInt64},   // overflow → saturate
-		{math.MinInt64, 1, math.MinInt64},    // overflow → saturate
-		{0, math.MinInt64, math.MaxInt64},    // -MinInt64 is MaxInt64+1 → saturate
+		{math.MaxInt64, -1, math.MaxInt64}, // overflow → saturate
+		{math.MinInt64, 1, math.MinInt64},  // overflow → saturate
+		{0, math.MinInt64, math.MaxInt64},  // -MinInt64 is MaxInt64+1 → saturate
 	}
 	for _, c := range cases {
 		if got := satSub(c.a, c.b); got != c.want {
@@ -57,9 +57,9 @@ func TestSatMul(t *testing.T) {
 		{-3, 4, -12},
 		{-3, -4, 12},
 		{0, math.MaxInt64, 0},
-		{math.MaxInt64, 2, math.MaxInt64},    // overflow → saturate
-		{math.MinInt64, 2, math.MinInt64},    // overflow → saturate
-		{math.MinInt64, -1, math.MaxInt64},   // classic MinInt64 * -1 → saturate
+		{math.MaxInt64, 2, math.MaxInt64},  // overflow → saturate
+		{math.MinInt64, 2, math.MinInt64},  // overflow → saturate
+		{math.MinInt64, -1, math.MaxInt64}, // classic MinInt64 * -1 → saturate
 	}
 	for _, c := range cases {
 		if got := satMul(c.a, c.b); got != c.want {
@@ -424,5 +424,108 @@ func TestRangePass_LoopCounter(t *testing.T) {
 	// The post-loop AddInt consumes the phi, so its range should also fit.
 	if !result.Int48Safe[x.ID] {
 		t.Errorf("post-loop AddInt(phi, 1) should be Int48Safe (phi bounded by loop)")
+	}
+}
+
+// TestRangePass_GuardedForwardInductionWhileModInt verifies the generic
+// while-style pattern:
+//
+//	i = const; for i*i <= n { n%i; n%(i+k); i += step }
+//
+// The guarded forward induction range should keep i-derived arithmetic raw-int
+// safe so OverflowBoxing does not force the loop's ModInt operations back to
+// generic Mod.
+func TestRangePass_GuardedForwardInductionWhileModInt(t *testing.T) {
+	proto := compile(t, `
+func f(n) {
+    if n < 2 { return 0 }
+    i := 5
+    acc := 0
+    for i * i <= n {
+        acc = acc + (n % i)
+        acc = acc + (n % (i + 2))
+        i = i + 6
+    }
+    return acc
+}
+`)
+	fn := BuildGraph(proto)
+	if errs := Validate(fn); len(errs) > 0 {
+		t.Fatalf("validate: %v", errs[0])
+	}
+
+	var err error
+	fn, err = SimplifyPhisPass(fn)
+	if err != nil {
+		t.Fatalf("SimplifyPhisPass: %v", err)
+	}
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass: %v", err)
+	}
+	fn, err = ConstPropPass(fn)
+	if err != nil {
+		t.Fatalf("ConstPropPass: %v", err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+	fn, err = RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+
+	var safeStep, safeOffset bool
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpAddInt || len(instr.Args) < 2 {
+				continue
+			}
+			if !fn.Int48Safe[instr.ID] {
+				continue
+			}
+			if c, ok := constIntFromValue(instr.Args[1]); ok {
+				switch c {
+				case 2:
+					safeOffset = true
+				case 6:
+					safeStep = true
+				}
+			}
+		}
+	}
+	if !safeOffset || !safeStep {
+		t.Fatalf("expected i+2 and i+6 to be Int48Safe after guarded induction analysis (i+2=%v i+6=%v)\nIR:\n%s",
+			safeOffset, safeStep, Print(fn))
+	}
+
+	fn, err = OverflowBoxingPass(fn)
+	if err != nil {
+		t.Fatalf("OverflowBoxingPass: %v", err)
+	}
+	if reason, blocked := firstTier2ModBlockerInLoop(fn); blocked {
+		t.Fatalf("expected no generic Mod blocker after OverflowBoxing, got %q\nIR:\n%s", reason, Print(fn))
+	}
+
+	li := computeLoopInfo(fn)
+	modIntInLoop := 0
+	genericModInLoop := 0
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpModInt:
+				modIntInLoop++
+			case OpMod:
+				genericModInLoop++
+			}
+		}
+	}
+	if modIntInLoop < 2 || genericModInLoop != 0 {
+		t.Fatalf("expected loop mods to stay ModInt, got ModInt=%d Mod=%d\nIR:\n%s",
+			modIntInLoop, genericModInLoop, Print(fn))
 	}
 }
