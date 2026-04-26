@@ -38,6 +38,13 @@ type Function struct {
 	// by RangeAnalysisPass so the emitter can skip the sign-adjust slow path.
 	IntModNoSignAdjust map[int]bool
 
+	// IntRanges records the integer range facts computed by RangeAnalysisPass.
+	// Unlike Int48Safe, consumers must treat these facts as optimization hints:
+	// missing or unknown ranges mean "top", not failure. OverflowBoxing uses
+	// this to distinguish bounded linear inductions from overflow-prone
+	// arithmetic recurrences such as multiplicative LCGs.
+	IntRanges map[int]intRange
+
 	// Globals, if non-nil, maps global function names to their protos.
 	// Used by the IR interpreter to resolve residual cross-function calls
 	// (e.g., those left after bounded recursive inlining). Populated by

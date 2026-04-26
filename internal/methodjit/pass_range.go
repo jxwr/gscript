@@ -320,6 +320,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 		}
 	}
 	fn.Int48Safe = safe
+	fn.IntRanges = ranges
 	populateIntModFacts(fn, ranges)
 	return fn, nil
 }
