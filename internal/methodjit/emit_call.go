@@ -665,7 +665,8 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 
 	asm.Label(lhsNotInt)
 	jit.EmitIsTagged(asm, jit.X0, jit.X2)
-	asm.BCond(jit.CondEQ, fallbackLabel)
+	lhsTaggedLabel := ec.uniqueLabel("cmp_lhs_tagged")
+	asm.BCond(jit.CondEQ, lhsTaggedLabel)
 	asm.FMOVtoFP(jit.D0, jit.X0)
 	emitCheckIsInt(asm, jit.X1, jit.X2)
 	bothNotInt := ec.uniqueLabel("cmp_both_not_int")
@@ -685,6 +686,15 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 	asm.BCond(cond, trueLabel)
 	asm.B(falseLabel)
 
+	asm.Label(lhsTaggedLabel)
+	if cond == jit.CondEQ {
+		asm.B(fallbackLabel)
+	} else {
+		jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, fallbackLabel)
+		jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, fallbackLabel)
+		ec.emitStringCmpFast(cond, trueLabel, falseLabel)
+	}
+
 	asm.Label(trueLabel)
 	asm.ADDimm(jit.X0, mRegTagBool, 1)
 	asm.B(doneLabel)
@@ -700,6 +710,54 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 	ec.emitOpExit(instr)
 
 	asm.Label(fastDoneLabel)
+}
+
+// emitStringCmpFast compares two NaN-boxed string values in X0 and X1.
+// Both operands must already be checked as strings. The runtime represents
+// strings as tagged pointers to Go string headers, so the native path can load
+// data/len and do the same byte-wise lexicographic comparison as Go strings.
+func (ec *emitContext) emitStringCmpFast(cond jit.Cond, trueLabel, falseLabel string) {
+	asm := ec.asm
+
+	loopLabel := ec.uniqueLabel("str_cmp_loop")
+	prefixLabel := ec.uniqueLabel("str_cmp_prefix")
+
+	// Strip NaN-boxing tag/subtype bits and recover *string pointers.
+	asm.LSLimm(jit.X2, jit.X0, 20)
+	asm.LSRimm(jit.X2, jit.X2, 20)
+	asm.LSLimm(jit.X3, jit.X1, 20)
+	asm.LSRimm(jit.X3, jit.X3, 20)
+
+	// Go string header: data pointer at +0, length at +8.
+	asm.LDR(jit.X4, jit.X2, 0) // lhs data
+	asm.LDR(jit.X5, jit.X2, 8) // lhs len
+	asm.LDR(jit.X6, jit.X3, 0) // rhs data
+	asm.LDR(jit.X7, jit.X3, 8) // rhs len
+
+	asm.MOVimm16(jit.X8, 0) // byte index
+
+	asm.Label(loopLabel)
+	asm.CMPreg(jit.X8, jit.X5)
+	asm.BCond(jit.CondHS, prefixLabel)
+	asm.CMPreg(jit.X8, jit.X7)
+	asm.BCond(jit.CondHS, prefixLabel)
+
+	asm.LDRBreg(jit.X9, jit.X4, jit.X8)
+	asm.LDRBreg(jit.X10, jit.X6, jit.X8)
+	asm.CMPreg(jit.X9, jit.X10)
+	asm.BCond(jit.CondLO, trueLabel)
+	asm.BCond(jit.CondHI, falseLabel)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.B(loopLabel)
+
+	asm.Label(prefixLabel)
+	asm.CMPreg(jit.X5, jit.X7)
+	if cond == jit.CondLE {
+		asm.BCond(jit.CondLS, trueLabel)
+	} else {
+		asm.BCond(jit.CondLO, trueLabel)
+	}
+	asm.B(falseLabel)
 }
 
 // emitNegFloat emits ARM64 code for OpNegFloat (-float).
