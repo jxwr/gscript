@@ -7,11 +7,28 @@ import (
 
 const tier2FeedbackArrayHint = 1024
 const tier2FeedbackOuterLoopArrayHint = 64 * 1024
+const tier2MaxFeedbackArrayHint = 1 << 20
 
 type tablePreallocHint struct {
 	arrayHint int64
 	kind      runtime.ArrayKind
 	mixed     bool
+}
+
+func (h *tablePreallocHint) observeArrayHint(hint int64) {
+	if hint > tier2MaxFeedbackArrayHint {
+		hint = tier2MaxFeedbackArrayHint
+	}
+	if hint > h.arrayHint {
+		h.arrayHint = hint
+	}
+}
+
+func (h *tablePreallocHint) observeIntKeyFeedback(feedback vm.TableKeyFeedback) {
+	if !feedback.HasIntKey {
+		return
+	}
+	h.observeArrayHint(int64(feedback.MaxIntKey) + 1)
 }
 
 // TablePreallocHintPass annotates empty table allocations that feed observed
@@ -42,8 +59,9 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			if li != nil && tbl.Def.Block != nil && li.loopBlocks[block.ID] && !li.loopBlocks[tbl.Def.Block.ID] {
 				arrayHint = tier2FeedbackOuterLoopArrayHint
 			}
-			if arrayHint > hint.arrayHint {
-				hint.arrayHint = arrayHint
+			hint.observeArrayHint(arrayHint)
+			if fn.Proto != nil && fn.Proto.TableKeyFeedback != nil && instr.HasSource && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.TableKeyFeedback) {
+				hint.observeIntKeyFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC])
 			}
 			if kind, ok := setTableArrayKindHint(instr); ok {
 				if hint.kind == runtime.ArrayMixed {

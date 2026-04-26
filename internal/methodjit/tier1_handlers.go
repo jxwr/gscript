@@ -432,6 +432,9 @@ func (e *BaselineJITEngine) handleGetTable(ctx *ExecContext, regs []runtime.Valu
 				proto.Feedback[pc].Result.Observe(regs[absA].Type())
 				// Record array kind for table-access specialization.
 				proto.Feedback[pc].ObserveKind(uint8(tbl.GetArrayKind()))
+				if proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) {
+					proto.TableKeyFeedback[pc].ObserveIntKey(key)
+				}
 			}
 		}
 	} else if absA < len(regs) {
@@ -481,6 +484,9 @@ func (e *BaselineJITEngine) handleSetTable(ctx *ExecContext, regs []runtime.Valu
 		pc := int(ctx.BaselinePC) - 1
 		if proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) {
 			proto.Feedback[pc].ObserveKind(uint8(tbl.GetArrayKind()))
+			if proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) {
+				proto.TableKeyFeedback[pc].ObserveIntKey(key)
+			}
 		}
 	}
 	return nil

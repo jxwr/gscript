@@ -59,6 +59,10 @@ type Table struct {
 	// through the row tables; this field aliases the same memory.
 	dmFlat   unsafe.Pointer
 	dmStride int32
+
+	// arrayHint carries large array capacity hints until the first typed-array
+	// promotion. Keep this after all JIT-verified fields.
+	arrayHint int
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.
@@ -117,7 +121,12 @@ func NewTableSizedKind(arrayHint, hashHint int, kind ArrayKind) *Table {
 			t.arrayKind = ArrayBool
 			t.boolArray = DefaultHeap.AllocByteSlice(0, capHint)
 		default:
-			t.array = DefaultHeap.AllocValues(1, capHint)
+			if capHint <= sparseArrayMax+1 {
+				t.array = DefaultHeap.AllocValues(1, capHint)
+			} else {
+				t.array = DefaultHeap.AllocValues(1, sparseArrayMax+1)
+				t.arrayHint = capHint
+			}
 		}
 	}
 	if hashHint > 0 && hashHint <= smallFieldCap {

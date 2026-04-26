@@ -261,6 +261,22 @@ func TestArrayKindPromotionPreservesSizedArrayHint(t *testing.T) {
 	})
 }
 
+func TestArrayKindPromotionPreservesLargeSizedArrayHintLazily(t *testing.T) {
+	const hint = sparseArrayMax * 4
+
+	tbl := NewTableSized(hint, 0)
+	if got := cap(tbl.array); got > sparseArrayMax+1 {
+		t.Fatalf("mixed array cap = %d, want lazy cap <= %d", got, sparseArrayMax+1)
+	}
+	tbl.RawSetInt(2, BoolValue(true))
+	if tbl.arrayKind != ArrayBool {
+		t.Fatalf("arrayKind = %d, want %d", tbl.arrayKind, ArrayBool)
+	}
+	if got := cap(tbl.boolArray); got < hint+1 {
+		t.Fatalf("boolArray cap = %d, want at least %d", got, hint+1)
+	}
+}
+
 func TestNewTableSizedKindPreallocatesTypedArray(t *testing.T) {
 	const hint = 128
 

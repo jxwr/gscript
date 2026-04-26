@@ -37,6 +37,43 @@ func TestTablePreallocHintPassCarriesFloatKind(t *testing.T) {
 	}
 }
 
+func TestTablePreallocHintPassUsesObservedMaxIntKeyAndCarriesKind(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:             "prealloc_bool_range",
+		Code:             make([]uint32, 4),
+		TableKeyFeedback: vm.NewTableKeyFeedbackVector(4),
+	}
+	proto.TableKeyFeedback[2].ObserveIntKey(runtime.IntValue(4096))
+	fn := &Function{Proto: proto, NumRegs: 3}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Aux2: 3, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeBool, Aux: 1, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{tbl.Value(), key.Value(), val.Value()}, Aux2: int64(vm.FBKindBool),
+		Block: b, HasSource: true, SourcePC: 2}
+	b.Instrs = []*Instr{tbl, key, val, set}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	newTable := got.Entry.Instrs[0]
+	if newTable.Aux != 4097 {
+		t.Fatalf("array hint = %d, want 4097", newTable.Aux)
+	}
+	hashHint, kind := unpackNewTableAux2(newTable.Aux2)
+	if hashHint != 3 {
+		t.Fatalf("hash hint = %d, want 3", hashHint)
+	}
+	if kind != runtime.ArrayBool {
+		t.Fatalf("array kind = %d, want %d", kind, runtime.ArrayBool)
+	}
+}
+
 func TestTablePreallocHintPassKeepsMixedForTableValues(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_mixed"}, NumRegs: 3}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}

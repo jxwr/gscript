@@ -24,6 +24,14 @@ func typedArrayCapWithHint(needed, hint int) int {
 	return capacity
 }
 
+func (t *Table) typedArrayCapacityHint() int {
+	hint := cap(t.array)
+	if t.arrayHint > hint {
+		return t.arrayHint
+	}
+	return hint
+}
+
 func growTypedArrayCap(current, needed int) int {
 	next := current*2 + 1
 	if next < initialTypedArrayCap {
@@ -161,7 +169,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			// This handles 0-indexed code like `row[0] = 3.14` on a new table.
 			if arrLen == 1 && key == 0 && !val.IsNil() {
 				vk := classifyValueForArray(val)
-				capHint := cap(t.array)
+				capHint := t.typedArrayCapacityHint()
 				switch vk {
 				case ArrayInt:
 					t.arrayKind = ArrayInt
@@ -236,7 +244,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				// array is empty or has only the [0] slot. Preserve an existing
 				// 0-indexed value, otherwise treat the missing sentinel as nil.
 				vk := classifyValueForArray(val)
-				capHint := cap(t.array)
+				capHint := t.typedArrayCapacityHint()
 				if key == 0 && len(t.array) == 0 {
 					switch vk {
 					case ArrayInt:
@@ -366,7 +374,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			// First write with sparse key on empty/sentinel array → try to specialize
 			if len(t.array) <= 1 {
 				vk := classifyValueForArray(val)
-				capHint := cap(t.array)
+				capHint := t.typedArrayCapacityHint()
 				// Check if array[0] is compatible with the target type
 				a0 := NilValue()
 				if len(t.array) == 1 {

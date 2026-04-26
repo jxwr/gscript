@@ -16,13 +16,13 @@ type FeedbackType uint8
 
 const (
 	FBUnobserved FeedbackType = iota // no observations yet
-	FBInt                             // only int seen
-	FBFloat                           // only float seen
-	FBString                          // only string seen
-	FBBool                            // only bool seen
-	FBTable                           // only table seen
-	FBFunction                        // only function seen
-	FBAny                             // multiple types seen (megamorphic)
+	FBInt                            // only int seen
+	FBFloat                          // only float seen
+	FBString                         // only string seen
+	FBBool                           // only bool seen
+	FBTable                          // only table seen
+	FBFunction                       // only function seen
+	FBAny                            // multiple types seen (megamorphic)
 )
 
 // feedbackFromValueType maps runtime.ValueType to FeedbackType.
@@ -62,10 +62,10 @@ func (ft *FeedbackType) Observe(vt runtime.ValueType) {
 // 0 = unobserved, 1..4 = monomorphic (value = 1 + runtime.ArrayKind), 0xFF = polymorphic.
 const (
 	FBKindUnobserved  uint8 = 0
-	FBKindMixed       uint8 = 1    // 1 + ArrayMixed(0)
-	FBKindInt         uint8 = 2    // 1 + ArrayInt(1)
-	FBKindFloat       uint8 = 3    // 1 + ArrayFloat(2)
-	FBKindBool        uint8 = 4    // 1 + ArrayBool(3)
+	FBKindMixed       uint8 = 1 // 1 + ArrayMixed(0)
+	FBKindInt         uint8 = 2 // 1 + ArrayInt(1)
+	FBKindFloat       uint8 = 3 // 1 + ArrayFloat(2)
+	FBKindBool        uint8 = 4 // 1 + ArrayBool(3)
 	FBKindPolymorphic uint8 = 0xFF
 )
 
@@ -78,6 +78,14 @@ type TypeFeedback struct {
 	Right  FeedbackType // type of right operand (C in ABC format)
 	Result FeedbackType // type of result (A in ABC format)
 	Kind   uint8        // observed array kind for GETTABLE/SETTABLE (0=unobserved, 1+kind for stable, 0xFF=polymorphic)
+}
+
+// TableKeyFeedback records non-type table-access facts for one bytecode PC.
+// It intentionally lives outside TypeFeedback so the 4-byte type/kind feedback
+// stays compact for the hot arithmetic and guard-specialization path.
+type TableKeyFeedback struct {
+	MaxIntKey uint32
+	HasIntKey bool
 }
 
 // ObserveKind records an array kind observation. Monotonic like Observe:
@@ -97,11 +105,37 @@ func (tf *TypeFeedback) ObserveKind(arrayKind uint8) {
 	}
 }
 
+// ObserveIntKey records the largest non-negative integer key observed at a
+// table access site. Negative or non-int keys are ignored because they cannot
+// drive array-part capacity hints.
+func (tk *TableKeyFeedback) ObserveIntKey(key runtime.Value) {
+	if key.Type() != runtime.TypeInt {
+		return
+	}
+	n := key.Int()
+	if n < 0 || n > int64(^uint32(0)) {
+		return
+	}
+	u := uint32(n)
+	if !tk.HasIntKey || u > tk.MaxIntKey {
+		tk.MaxIntKey = u
+		tk.HasIntKey = true
+	}
+}
+
 // FeedbackVector is per-function type feedback, indexed by bytecode PC.
 type FeedbackVector []TypeFeedback
+
+// TableKeyFeedbackVector is per-function table key feedback, indexed by PC.
+type TableKeyFeedbackVector []TableKeyFeedback
 
 // NewFeedbackVector creates a zero-initialized feedback vector for a function.
 // All entries start as FBUnobserved.
 func NewFeedbackVector(codeLen int) FeedbackVector {
 	return make(FeedbackVector, codeLen)
+}
+
+// NewTableKeyFeedbackVector creates a zero-initialized table key feedback vector.
+func NewTableKeyFeedbackVector(codeLen int) TableKeyFeedbackVector {
+	return make(TableKeyFeedbackVector, codeLen)
 }

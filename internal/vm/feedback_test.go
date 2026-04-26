@@ -228,6 +228,9 @@ func TestFeedback_LazyInit(t *testing.T) {
 	if fv2 := proto.EnsureFeedback(); len(fv2) != len(fv) {
 		t.Fatalf("second EnsureFeedback returned different length")
 	}
+	if proto.TableKeyFeedback == nil || len(proto.TableKeyFeedback) != len(proto.Code) {
+		t.Fatalf("table key feedback vector not initialized with code length")
+	}
 }
 
 func TestFeedback_ForLoop(t *testing.T) {
@@ -276,6 +279,52 @@ func TestFeedback_TableAccess(t *testing.T) {
 	fb := findFeedbackForOp(t, proto, OP_GETFIELD)
 	if fb.Result != FBInt {
 		t.Errorf("GETFIELD result: expected FBInt, got %d", fb.Result)
+	}
+}
+
+func TestTableKeyFeedback_ObserveIntKey(t *testing.T) {
+	var tk TableKeyFeedback
+	tk.ObserveIntKey(runtime.StringValue("x"))
+	tk.ObserveIntKey(runtime.IntValue(-1))
+	if tk.HasIntKey {
+		t.Fatal("non-int and negative keys should not be recorded")
+	}
+
+	tk.ObserveIntKey(runtime.IntValue(7))
+	tk.ObserveIntKey(runtime.IntValue(3))
+	tk.ObserveIntKey(runtime.IntValue(42))
+	if !tk.HasIntKey || tk.MaxIntKey != 42 {
+		t.Fatalf("expected max int key 42, got has=%v max=%d", tk.HasIntKey, tk.MaxIntKey)
+	}
+}
+
+func TestFeedback_TableIntKeyRange(t *testing.T) {
+	proto := compileFeedback(t, `
+		t := {}
+		t[2] = true
+		t[10] = false
+		v := t[10]
+	`)
+	if proto.TableKeyFeedback == nil {
+		t.Fatal("missing table key feedback")
+	}
+	var sawSet, sawGet bool
+	for pc, inst := range proto.Code {
+		switch DecodeOp(inst) {
+		case OP_SETTABLE:
+			sawSet = true
+			if !proto.TableKeyFeedback[pc].HasIntKey {
+				t.Fatalf("SETTABLE pc=%d did not record int key", pc)
+			}
+		case OP_GETTABLE:
+			sawGet = true
+			if got := proto.TableKeyFeedback[pc].MaxIntKey; got != 10 {
+				t.Fatalf("GETTABLE pc=%d max int key=%d, want 10", pc, got)
+			}
+		}
+	}
+	if !sawSet || !sawGet {
+		t.Fatalf("expected both SETTABLE and GETTABLE in test bytecode")
 	}
 }
 

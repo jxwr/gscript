@@ -30,6 +30,7 @@ type FuncProto struct {
 	CallCount              int                       // JIT call count (avoids map lookup in VM hot path)
 	JITDisabled            bool                      // true when the method JIT made a permanent per-proto stay-interpreted decision
 	Feedback               FeedbackVector            // lazily-initialized per-PC type feedback for Method JIT
+	TableKeyFeedback       TableKeyFeedbackVector    // lazily-initialized per-PC table int-key range feedback
 	CompiledCodePtr        uintptr                   // pointer to baseline JIT compiled code (set after CompileBaseline)
 	DirectEntryPtr         uintptr                   // pointer to direct entry point for native BLR calls
 	Tier2DirectEntryPtr    uintptr                   // pointer to Tier 2 direct entry for Method JIT call IC refresh
@@ -48,6 +49,9 @@ type FuncProto struct {
 func (p *FuncProto) EnsureFeedback() FeedbackVector {
 	if p.Feedback == nil {
 		p.Feedback = NewFeedbackVector(len(p.Code))
+	}
+	if p.TableKeyFeedback == nil {
+		p.TableKeyFeedback = NewTableKeyFeedbackVector(len(p.Code))
 	}
 	return p.Feedback
 }
