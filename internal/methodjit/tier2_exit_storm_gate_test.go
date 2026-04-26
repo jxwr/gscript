@@ -89,6 +89,29 @@ func lcg(n, seed) {
 	}
 }
 
+func TestTier2LoopGateAllowsNativeNumericSetTableLoop(t *testing.T) {
+	top := compileTop(t, `
+func make_values(n, seed) {
+    arr := {}
+    x := seed
+    for i := 1; i <= n; i++ {
+        x = (x * 1103515245 + 12345) % 2147483648
+        arr[i] = x
+    }
+    return arr[n]
+}
+`)
+	makeValues := findProtoByName(top, "make_values")
+	if makeValues == nil {
+		t.Fatal("make_values proto not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(makeValues); err != nil {
+		t.Fatalf("CompileTier2(make_values) failed: %v", err)
+	}
+}
+
 func TestTier2ExitStormGateBlocksNoFilterUnknownGenericModLoop(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 
