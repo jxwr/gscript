@@ -203,11 +203,14 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			return
 		default:
 			// ArrayMixed: first non-nil write to an empty array → try to specialize
-			if len(t.array) == 1 {
-				// array has only the [0] slot → first append (key=1)
-				// array[0] may have been written by 0-indexed code; preserve it.
+			if len(t.array) <= 1 {
+				// array is empty or has only the [0] slot. Preserve an existing
+				// 0-indexed value, otherwise treat the missing sentinel as nil.
 				vk := classifyValueForArray(val)
-				a0 := t.array[0]
+				a0 := NilValue()
+				if len(t.array) == 1 {
+					a0 = t.array[0]
+				}
 				a0Compatible := a0.IsNil() || classifyValueForArray(a0) == vk
 				if a0Compatible {
 					switch vk {
@@ -314,7 +317,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			if len(t.array) <= 1 {
 				vk := classifyValueForArray(val)
 				// Check if array[0] is compatible with the target type
-				var a0 Value
+				a0 := NilValue()
 				if len(t.array) == 1 {
 					a0 = t.array[0]
 				}

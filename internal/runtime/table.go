@@ -26,9 +26,9 @@ const smallFieldCap = 12
 // Tables start WITHOUT a mutex (fast single-threaded path). When shared
 // across goroutines, call SetConcurrent(true) to enable locking.
 type Table struct {
-	mu        *sync.RWMutex    // nil for single-threaded tables (fast default)
-	array     []Value          // 0-indexed: array[0] is usable by user code
-	imap      map[int64]Value  // integer keys not in array range
+	mu    *sync.RWMutex   // nil for single-threaded tables (fast default)
+	array []Value         // 0-indexed: array[0] is usable by user code
+	imap  map[int64]Value // integer keys not in array range
 	// String keys: small tables use flat slices, large tables use map
 	skeys     []string         // parallel with svals for small tables
 	svals     []Value          // parallel with skeys for small tables
@@ -43,11 +43,11 @@ type Table struct {
 	intArray   []int64
 	floatArray []float64
 	boolArray  []byte // 1 byte per bool, no GC pointers → zero GC scan
-	                  // Encoding: 0 = nil/unset, 1 = false, 2 = true
+	// Encoding: 0 = nil/unset, 1 = false, 2 = true
 	// shape is the hidden-class descriptor for the string-keyed fields.
 	// Always nil when shapeID == 0 (empty table or hash-mode table).
 	// Kept in sync with shapeID by applyShape / clearShape.
-	shape      *Shape
+	shape *Shape
 
 	// DenseMatrix descriptor (R43 Phase 2). When dmStride > 0, this
 	// Table is a DenseMatrix outer whose rows share the backing at
@@ -86,7 +86,6 @@ func cleanHashKey(key Value) Value {
 // NewTable creates a new empty table (non-concurrent by default).
 func NewTable() *Table {
 	t := DefaultHeap.AllocTable()
-	t.array = DefaultHeap.AllocValues(1, 1)
 	t.keysDirty = true
 	return t
 }
@@ -97,8 +96,6 @@ func NewTableSized(arrayHint, hashHint int) *Table {
 	t.keysDirty = true
 	if arrayHint > 0 {
 		t.array = DefaultHeap.AllocValues(1, arrayHint+1)
-	} else {
-		t.array = DefaultHeap.AllocValues(1, 1)
 	}
 	if hashHint > 0 && hashHint <= smallFieldCap {
 		t.skeys = DefaultHeap.AllocStringKeys(hashHint)
@@ -326,8 +323,14 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	if !val.IsNil() {
 		if len(t.skeys) < smallFieldCap {
 			t.skeys = append(t.skeys, key)
-			arenaAppendValue(DefaultHeap, &t.svals, val)
-			t.setShape(t.skeys)
+			if len(t.svals) < cap(t.svals) {
+				n := len(t.svals)
+				t.svals = t.svals[:n+1]
+				t.svals[n] = val
+			} else {
+				arenaAppendValue(DefaultHeap, &t.svals, val)
+			}
+			t.appendShape(key)
 			cache.FieldIdx = len(t.skeys) - 1
 			cache.ShapeID = t.shapeID
 		} else {
@@ -394,6 +397,24 @@ func (t *Table) setShape(skeys []string) {
 	}
 }
 
+// appendShape advances the hidden-class descriptor for the common case where a
+// new string field is appended. It avoids rebuilding the full joined shape key
+// for every object with the same field insertion order.
+func (t *Table) appendShape(key string) {
+	var s *Shape
+	if t.shape != nil {
+		s = t.shape.Transition(key)
+	} else {
+		s = getOrCreateSingleFieldShape(key)
+	}
+	t.shape = s
+	if s != nil {
+		t.shapeID = s.ID
+	} else {
+		t.shapeID = 0
+	}
+}
+
 // RawSetString assigns a value by string key (fast path).
 func (t *Table) RawSetString(key string, val Value) {
 	if t.mu != nil {
@@ -430,8 +451,14 @@ func (t *Table) RawSetString(key string, val Value) {
 	if !val.IsNil() {
 		if len(t.skeys) < smallFieldCap {
 			t.skeys = append(t.skeys, key)
-			arenaAppendValue(DefaultHeap, &t.svals, val)
-			t.setShape(t.skeys)
+			if len(t.svals) < cap(t.svals) {
+				n := len(t.svals)
+				t.svals = t.svals[:n+1]
+				t.svals[n] = val
+			} else {
+				arenaAppendValue(DefaultHeap, &t.svals, val)
+			}
+			t.appendShape(key)
 		} else {
 			t.smap = make(map[string]Value, len(t.skeys)+1)
 			for i, k := range t.skeys {
@@ -444,6 +471,7 @@ func (t *Table) RawSetString(key string, val Value) {
 		}
 	}
 }
+
 // Length returns the length of the array part (the # operator).
 func (t *Table) Length() int {
 	switch t.arrayKind {
@@ -461,6 +489,9 @@ func (t *Table) Length() int {
 		}
 		return n
 	default:
+		if len(t.array) == 0 {
+			return 0
+		}
 		n := len(t.array) - 1
 		for n > 0 && t.array[n].IsNil() {
 			n--

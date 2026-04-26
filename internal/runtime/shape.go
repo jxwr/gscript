@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	shapeIDCounter uint32   = 0   // atomic; first real shape gets ID 1
-	shapeByKey     sync.Map       // string → *Shape  (key = NUL-joined field names)
-	shapeByID      sync.Map       // uint32 → *Shape
+	shapeIDCounter uint32   = 0 // atomic; first real shape gets ID 1
+	shapeByKey     sync.Map     // string → *Shape  (key = NUL-joined field names)
+	shapeByID      sync.Map     // uint32 → *Shape
 )
 
 // Shape is an immutable hidden-class descriptor for a GScript table.
@@ -58,6 +58,9 @@ func getOrCreateShape(keys []string) *Shape {
 	if len(keys) == 0 {
 		return nil
 	}
+	if len(keys) == 1 {
+		return getOrCreateSingleFieldShape(keys[0])
+	}
 	k := strings.Join(keys, "\x00")
 	if v, ok := shapeByKey.Load(k); ok {
 		return v.(*Shape)
@@ -75,6 +78,25 @@ func getOrCreateShape(keys []string) *Shape {
 	actual, loaded := shapeByKey.LoadOrStore(k, s)
 	if loaded {
 		// Another goroutine won the race; discard ours (ID is wasted, harmless).
+		return actual.(*Shape)
+	}
+	shapeByID.Store(id, s)
+	return s
+}
+
+func getOrCreateSingleFieldShape(key string) *Shape {
+	if v, ok := shapeByKey.Load(key); ok {
+		return v.(*Shape)
+	}
+	id := atomic.AddUint32(&shapeIDCounter, 1)
+	keys := []string{key}
+	s := &Shape{
+		ID:        id,
+		FieldKeys: keys,
+		FieldMap:  map[string]int{key: 0},
+	}
+	actual, loaded := shapeByKey.LoadOrStore(key, s)
+	if loaded {
 		return actual.(*Shape)
 	}
 	shapeByID.Store(id, s)
