@@ -266,7 +266,8 @@ func safeDivBound(a, b int64) int64 {
 
 // RangeAnalysisPass computes integer ranges across the IR and marks every
 // AddInt/SubInt/MulInt/DivIntExact/NegInt whose range provably fits in signed int48.
-// Populates `fn.Int48Safe` with safe value IDs.
+// It also records ModInt facts whose operands make the native ARM64 remainder
+// sequence equivalent to Lua modulo semantics.
 func RangeAnalysisPass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.Blocks) == 0 {
 		return fn, nil
@@ -319,6 +320,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 		}
 	}
 	fn.Int48Safe = safe
+	populateIntModFacts(fn, ranges)
 	return fn, nil
 }
 
@@ -418,6 +420,263 @@ func argRange(v *Value, ranges map[int]intRange) intRange {
 		return r
 	}
 	return topRange()
+}
+
+func populateIntModFacts(fn *Function, baseRanges map[int]intRange) {
+	nonZeroDivisor := make(map[int]bool)
+	noSignAdjust := make(map[int]bool)
+	blockEntries := computeBlockEntryRanges(fn, baseRanges)
+
+	for _, block := range fn.Blocks {
+		env := cloneRangeMap(blockEntries[block.ID])
+		for _, instr := range block.Instrs {
+			if instr.Op == OpModInt && len(instr.Args) >= 2 {
+				lhs := argRangeInEnv(instr.Args[0], env, baseRanges)
+				rhs := argRangeInEnv(instr.Args[1], env, baseRanges)
+				if rangeExcludesZero(rhs) {
+					nonZeroDivisor[instr.ID] = true
+				}
+				if rangesHaveSameKnownModuloSign(lhs, rhs) {
+					noSignAdjust[instr.ID] = true
+				}
+			}
+			if instr.Type.isIntegerLike() {
+				env[instr.ID] = computeRangeInEnv(instr, env, baseRanges)
+			}
+		}
+	}
+
+	fn.IntModNonZeroDivisor = nonZeroDivisor
+	fn.IntModNoSignAdjust = noSignAdjust
+}
+
+func computeBlockEntryRanges(fn *Function, baseRanges map[int]intRange) map[int]map[int]intRange {
+	entries := make(map[int]map[int]intRange, len(fn.Blocks))
+	if fn.Entry != nil {
+		entries[fn.Entry.ID] = make(map[int]intRange)
+	}
+
+	const maxIter = 8
+	for iter := 0; iter < maxIter; iter++ {
+		changed := false
+		for _, block := range fn.Blocks {
+			env := cloneRangeMap(entries[block.ID])
+			for _, instr := range block.Instrs {
+				if instr.Type.isIntegerLike() {
+					env[instr.ID] = computeRangeInEnv(instr, env, baseRanges)
+				}
+			}
+			if len(block.Instrs) == 0 {
+				continue
+			}
+			term := block.Instrs[len(block.Instrs)-1]
+			if term.Op == OpBranch && len(term.Args) > 0 && len(block.Succs) >= 2 {
+				trueEnv := cloneRangeMap(env)
+				falseEnv := cloneRangeMap(env)
+				refineBranchEnvs(term.Args[0], trueEnv, falseEnv)
+				if mergeBlockEntry(entries, block.Succs[0], trueEnv) {
+					changed = true
+				}
+				if mergeBlockEntry(entries, block.Succs[1], falseEnv) {
+					changed = true
+				}
+				continue
+			}
+			for _, succ := range block.Succs {
+				if mergeBlockEntry(entries, succ, env) {
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return entries
+}
+
+func computeRangeInEnv(instr *Instr, env, baseRanges map[int]intRange) intRange {
+	switch instr.Op {
+	case OpConstInt:
+		return pointRange(instr.Aux)
+	case OpAddInt:
+		if len(instr.Args) < 2 {
+			return topRange()
+		}
+		return addRange(argRangeInEnv(instr.Args[0], env, baseRanges), argRangeInEnv(instr.Args[1], env, baseRanges))
+	case OpSubInt:
+		if len(instr.Args) < 2 {
+			return topRange()
+		}
+		return subRange(argRangeInEnv(instr.Args[0], env, baseRanges), argRangeInEnv(instr.Args[1], env, baseRanges))
+	case OpMulInt:
+		if len(instr.Args) < 2 {
+			return topRange()
+		}
+		return mulRange(argRangeInEnv(instr.Args[0], env, baseRanges), argRangeInEnv(instr.Args[1], env, baseRanges))
+	case OpModInt:
+		if len(instr.Args) < 2 {
+			return topRange()
+		}
+		return modRange(argRangeInEnv(instr.Args[1], env, baseRanges))
+	case OpDivIntExact:
+		if len(instr.Args) < 2 {
+			return topRange()
+		}
+		return divExactRange(argRangeInEnv(instr.Args[0], env, baseRanges), argRangeInEnv(instr.Args[1], env, baseRanges))
+	case OpNegInt:
+		if len(instr.Args) < 1 {
+			return topRange()
+		}
+		return negRange(argRangeInEnv(instr.Args[0], env, baseRanges))
+	case OpPhi:
+		if r, ok := baseRanges[instr.ID]; ok && r.known {
+			return r
+		}
+		if len(instr.Args) == 0 {
+			return topRange()
+		}
+		acc := argRangeInEnv(instr.Args[0], env, baseRanges)
+		for i := 1; i < len(instr.Args); i++ {
+			acc = joinRange(acc, argRangeInEnv(instr.Args[i], env, baseRanges))
+			if !acc.known {
+				break
+			}
+		}
+		return acc
+	case OpBoxInt, OpUnboxInt:
+		if len(instr.Args) < 1 {
+			return topRange()
+		}
+		return argRangeInEnv(instr.Args[0], env, baseRanges)
+	}
+	if r, ok := baseRanges[instr.ID]; ok {
+		return r
+	}
+	return topRange()
+}
+
+func argRangeInEnv(v *Value, env, baseRanges map[int]intRange) intRange {
+	if v == nil || v.Def == nil {
+		return topRange()
+	}
+	if r, ok := env[v.ID]; ok && r.known {
+		return r
+	}
+	if r, ok := baseRanges[v.ID]; ok {
+		return r
+	}
+	return topRange()
+}
+
+func refineBranchEnvs(condValue *Value, trueEnv, falseEnv map[int]intRange) {
+	if condValue == nil || condValue.Def == nil || len(condValue.Def.Args) < 2 {
+		return
+	}
+	cond := condValue.Def
+	switch cond.Op {
+	case OpLtInt, OpLt:
+		refineComparison(cond.Args[0], cond.Args[1], trueEnv, falseEnv, true)
+	case OpLeInt, OpLe:
+		refineComparison(cond.Args[0], cond.Args[1], trueEnv, falseEnv, false)
+	}
+}
+
+func refineComparison(lhs, rhs *Value, trueEnv, falseEnv map[int]intRange, strict bool) {
+	if c, ok := constIntFromValue(rhs); ok && lhs != nil {
+		trueMax := c
+		falseMin := c
+		if strict {
+			trueMax = satSub(c, 1)
+		} else {
+			falseMin = satAdd(c, 1)
+		}
+		constrainUpper(trueEnv, lhs.ID, trueMax)
+		constrainLower(falseEnv, lhs.ID, falseMin)
+		return
+	}
+	if c, ok := constIntFromValue(lhs); ok && rhs != nil {
+		trueMin := c
+		falseMax := c
+		if strict {
+			trueMin = satAdd(c, 1)
+		} else {
+			falseMax = satSub(c, 1)
+		}
+		constrainLower(trueEnv, rhs.ID, trueMin)
+		constrainUpper(falseEnv, rhs.ID, falseMax)
+	}
+}
+
+func constrainLower(env map[int]intRange, id int, min int64) {
+	r := env[id]
+	if !r.known {
+		r = intRange{min: math.MinInt64, max: math.MaxInt64, known: true}
+	}
+	if min > r.min {
+		r.min = min
+	}
+	env[id] = r
+}
+
+func constrainUpper(env map[int]intRange, id int, max int64) {
+	r := env[id]
+	if !r.known {
+		r = intRange{min: math.MinInt64, max: math.MaxInt64, known: true}
+	}
+	if max < r.max {
+		r.max = max
+	}
+	env[id] = r
+}
+
+func mergeBlockEntry(entries map[int]map[int]intRange, block *Block, incoming map[int]intRange) bool {
+	if block == nil {
+		return false
+	}
+	current, ok := entries[block.ID]
+	if !ok {
+		entries[block.ID] = cloneRangeMap(incoming)
+		return len(incoming) > 0
+	}
+	changed := false
+	for id, in := range incoming {
+		if !in.known {
+			continue
+		}
+		if old, ok := current[id]; ok && old.known {
+			joined := joinRange(old, in)
+			if !rangeEqual(old, joined) {
+				current[id] = joined
+				changed = true
+			}
+			continue
+		}
+		current[id] = in
+		changed = true
+	}
+	return changed
+}
+
+func cloneRangeMap(in map[int]intRange) map[int]intRange {
+	out := make(map[int]intRange, len(in))
+	for id, r := range in {
+		if r.known {
+			out[id] = r
+		}
+	}
+	return out
+}
+
+func rangeExcludesZero(r intRange) bool {
+	return r.known && (r.max < 0 || r.min > 0)
+}
+
+func rangesHaveSameKnownModuloSign(lhs, rhs intRange) bool {
+	if !lhs.known || !rhs.known {
+		return false
+	}
+	return (lhs.min >= 0 && rhs.min > 0) || (lhs.max <= 0 && rhs.max < 0)
 }
 
 // --- Phase A: seed loop-counter ranges ---

@@ -28,6 +28,16 @@ type Function struct {
 	// SBFX+CMP+B.NE overflow check for provably safe AddInt/SubInt/MulInt/NegInt.
 	Int48Safe map[int]bool
 
+	// IntModNonZeroDivisor is the set of ModInt SSA value IDs whose divisor
+	// range excludes zero. Populated by RangeAnalysisPass so the emitter can
+	// skip the modulo-by-zero deopt guard at those sites.
+	IntModNonZeroDivisor map[int]bool
+
+	// IntModNoSignAdjust is the set of ModInt SSA value IDs whose operand signs
+	// prove that ARM64 SDIV/MSUB already matches Lua modulo semantics. Populated
+	// by RangeAnalysisPass so the emitter can skip the sign-adjust slow path.
+	IntModNoSignAdjust map[int]bool
+
 	// Globals, if non-nil, maps global function names to their protos.
 	// Used by the IR interpreter to resolve residual cross-function calls
 	// (e.g., those left after bounded recursive inlining). Populated by

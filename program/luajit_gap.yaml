@@ -234,3 +234,6 @@ rows:
 
   # --- R170: Session 5 Self-TCO pre-flight halted; prototype reverted ---
   - {round: 170, date: 2026-04-21, bench: ackermann,       gscript_jit_sec: 0.391, luajit_sec: 0.006, gap_factor: 65.2, notes: "R170 Self-TCO prototype: -0.5% vs 0.393s baseline, FAR below 15% halt gate. Fork reverted. Cost model wrong: 188 asm insns removed per body but M4 superscalar absorbed them (off-critical-path)."}
+
+  # --- R171: sum_primes guarded ModInt scalar fast path; code-size win, no wall-time win ---
+  - {round: 171, date: 2026-04-27, bench: sum_primes,       gscript_jit_sec: 0.006, luajit_sec: 0.002, gap_factor: 3.0, notes: "R171: is_prime shrank 293→244 ARM64 insns by proving ModInt non-zero divisor + no sign-adjust sites; suite median stayed 0.006s. <main> no-filter still slower (0.009s) due global sum/count exits."}

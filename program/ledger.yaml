@@ -285,7 +285,7 @@ classes:
     attempts: 3
     wins: 1                    # R21 ADR
     reverts: 0
-    holds: 2                   # R23 (held), R24 (diagnostic)
+    holds: 3                   # R23 (held), R24 (diagnostic), R171 code-size/no-wall win
     prior_reject_rate: 0.0
     mitigation_required: false
     mitigation_description: >
@@ -308,13 +308,16 @@ classes:
       **R23 regression finding**: R23's spot-check showed 8-12%
       regression. Per R24 data, the regression was NOISE because
       R23's extra branch would have fired on ZERO matmul sites.
-    historical_rounds: [21, 23, 24]
+    historical_rounds: [21, 23, 24, 171]
     key_negative_evidence: >
       R23: blanket Kind-based guard insertion regressed matmul
       spot-check — turns out that was noise. R24 confirms all
       target benchmarks already have Res-Float feedback, so the
       existing pipeline catches them. R21 ADR's 40% projection
       was based on the wrong bottleneck.
+      R171: guarded ModInt fast path shrank sum_primes/is_prime
+      (293→244 ARM64 instructions) but did not move wall-time
+      beyond 0.006s benchmark resolution.
     key_positive_evidence: >
       R24 diagnostic found that existing typespec infrastructure is
       MORE EFFECTIVE in production than the ADR assumed. Disarming

@@ -337,10 +337,23 @@ func (ec *emitContext) emitIntModX0X1(instr *Instr) {
 	zero := ec.uniqueLabel("int_mod_zero")
 	adjust := ec.uniqueLabel("int_mod_adjust")
 	done := ec.uniqueLabel("int_mod_done")
+	nonZeroDivisor := ec.intModNonZeroDivisor(instr.ID)
 
-	asm.CBZ(jit.X1, zero)
+	if !nonZeroDivisor {
+		asm.CBZ(jit.X1, zero)
+	}
 	asm.SDIV(jit.X2, jit.X0, jit.X1)
 	asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
+
+	if ec.intModNoSignAdjust(instr.ID) {
+		if !nonZeroDivisor {
+			asm.B(done)
+			asm.Label(zero)
+			ec.emitIntModZeroDeopt()
+			asm.Label(done)
+		}
+		return
+	}
 
 	asm.CBZ(jit.X0, done)
 	asm.EORreg(jit.X3, jit.X0, jit.X1)
@@ -351,18 +364,24 @@ func (ec *emitContext) emitIntModX0X1(instr *Instr) {
 	asm.ADDreg(jit.X0, jit.X0, jit.X1)
 	asm.B(done)
 
-	asm.Label(zero)
-	ec.emitStoreAllActiveRegs()
-	ec.emitLoopExitBoxing(-1)
-	asm.LoadImm64(jit.X0, ExitDeopt)
-	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	if ec.numericMode {
-		asm.B("num_deopt_epilogue")
-	} else {
-		asm.B("deopt_epilogue")
+	if !nonZeroDivisor {
+		asm.Label(zero)
+		ec.emitIntModZeroDeopt()
 	}
 
 	asm.Label(done)
+}
+
+func (ec *emitContext) emitIntModZeroDeopt() {
+	ec.emitStoreAllActiveRegs()
+	ec.emitLoopExitBoxing(-1)
+	ec.asm.LoadImm64(jit.X0, ExitDeopt)
+	ec.asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		ec.asm.B("num_deopt_epilogue")
+	} else {
+		ec.asm.B("deopt_epilogue")
+	}
 }
 
 // int48Safe reports whether range analysis proved that instr's result
@@ -373,6 +392,20 @@ func (ec *emitContext) int48Safe(id int) bool {
 		return false
 	}
 	return ec.fn.Int48Safe[id]
+}
+
+func (ec *emitContext) intModNonZeroDivisor(id int) bool {
+	if ec.fn == nil || ec.fn.IntModNonZeroDivisor == nil {
+		return false
+	}
+	return ec.fn.IntModNonZeroDivisor[id]
+}
+
+func (ec *emitContext) intModNoSignAdjust(id int) bool {
+	if ec.fn == nil || ec.fn.IntModNoSignAdjust == nil {
+		return false
+	}
+	return ec.fn.IntModNoSignAdjust[id]
 }
 
 // --- Raw int unary negate (type-specialized, no unbox/box) ---

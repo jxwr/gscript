@@ -529,3 +529,103 @@ func f(n) {
 			modIntInLoop, genericModInLoop, Print(fn))
 	}
 }
+
+func TestRangePass_ModIntPositiveFactsFromGuards(t *testing.T) {
+	proto := compile(t, `
+func f(n) {
+    if n < 2 { return 0 }
+    if n < 4 { return 1 }
+    if n % 2 == 0 { return 2 }
+    if n % 3 == 0 { return 3 }
+    i := 5
+    for i * i <= n {
+        if n % i == 0 { return 4 }
+        if n % (i + 2) == 0 { return 5 }
+        i = i + 6
+    }
+    return 6
+}
+`)
+	fn := BuildGraph(proto)
+	if errs := Validate(fn); len(errs) > 0 {
+		t.Fatalf("validate: %v", errs[0])
+	}
+
+	var err error
+	fn, err = SimplifyPhisPass(fn)
+	if err != nil {
+		t.Fatalf("SimplifyPhisPass: %v", err)
+	}
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass: %v", err)
+	}
+	fn, err = ConstPropPass(fn)
+	if err != nil {
+		t.Fatalf("ConstPropPass: %v", err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+	fn, err = RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+
+	modCount := 0
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpModInt {
+				continue
+			}
+			modCount++
+			if !fn.IntModNonZeroDivisor[instr.ID] {
+				t.Fatalf("ModInt v%d should have non-zero divisor fact\nIR:\n%s", instr.ID, Print(fn))
+			}
+			if !fn.IntModNoSignAdjust[instr.ID] {
+				t.Fatalf("ModInt v%d should have no-sign-adjust fact\nIR:\n%s", instr.ID, Print(fn))
+			}
+		}
+	}
+	if modCount != 4 {
+		t.Fatalf("expected four ModInt sites, got %d\nIR:\n%s", modCount, Print(fn))
+	}
+}
+
+func TestRangePass_ModIntFactsStayConservative(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "mod_conservative"},
+		NumRegs: 2,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	neg := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: -7, Block: b}
+	pos := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 3, Block: b}
+	dynDivisor := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	mixedSign := &Instr{ID: fn.newValueID(), Op: OpModInt, Type: TypeInt,
+		Args: []*Value{neg.Value(), pos.Value()}, Block: b}
+	unknownDivisor := &Instr{ID: fn.newValueID(), Op: OpModInt, Type: TypeInt,
+		Args: []*Value{pos.Value(), dynDivisor.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{mixedSign.Value()}, Block: b}
+	b.Instrs = []*Instr{neg, pos, dynDivisor, mixedSign, unknownDivisor, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	got, err := RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+
+	if !got.IntModNonZeroDivisor[mixedSign.ID] {
+		t.Fatalf("constant positive divisor should be non-zero")
+	}
+	if got.IntModNoSignAdjust[mixedSign.ID] {
+		t.Fatalf("mixed-sign modulo must keep Lua sign-adjust path")
+	}
+	if got.IntModNonZeroDivisor[unknownDivisor.ID] {
+		t.Fatalf("unknown divisor must keep zero-divisor guard")
+	}
+	if got.IntModNoSignAdjust[unknownDivisor.ID] {
+		t.Fatalf("unknown divisor sign must keep Lua sign-adjust path")
+	}
+}
