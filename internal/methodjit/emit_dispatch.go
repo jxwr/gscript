@@ -359,7 +359,7 @@ func (ec *emitContext) emitGPRPhiMovesOrdered(to *Block, predIdx int, toIsLoopHe
 
 		// Track memory slot writes: write-through to phi's destination slot.
 		// Raw-int: writes if crossBlockLive && !loopExitBoxPhis.
-		// NaN-boxed: writes if crossBlockLive || !hasDstGPR.
+		// NaN-boxed: writes if crossBlockLive && !loopExitStorePhis, or no GPR.
 		if isRawInt {
 			if ec.crossBlockLive[instr.ID] && !ec.loopExitBoxPhis[instr.ID] {
 				if dstSlot, ok := ec.slotMap[instr.ID]; ok {
@@ -367,7 +367,7 @@ func (ec *emitContext) emitGPRPhiMovesOrdered(to *Block, predIdx int, toIsLoopHe
 				}
 			}
 		} else {
-			if ec.crossBlockLive[instr.ID] || !dstHasGPR {
+			if (ec.crossBlockLive[instr.ID] && !ec.loopExitStorePhis[instr.ID]) || !dstHasGPR {
 				if dstSlot, ok := ec.slotMap[instr.ID]; ok {
 					m.writesMemSlot = dstSlot
 				}
@@ -528,7 +528,7 @@ func (ec *emitContext) emitSingleGPRPhiMove(m *gprPhiMove) {
 		}
 	}
 
-	if ec.crossBlockLive[m.phiInstr.ID] || !m.hasDstGPR {
+	if (ec.crossBlockLive[m.phiInstr.ID] && !ec.loopExitStorePhis[m.phiInstr.ID]) || !m.hasDstGPR {
 		dstSlot, hasDst := ec.slotMap[m.phiInstr.ID]
 		if hasDst {
 			if m.hasDstGPR {
@@ -580,7 +580,7 @@ func (ec *emitContext) emitGPRPhiMoveFromScratch(m *gprPhiMove) {
 		ec.asm.MOVreg(dstReg, jit.X0)
 	}
 
-	if ec.crossBlockLive[m.phiInstr.ID] || !m.hasDstGPR {
+	if (ec.crossBlockLive[m.phiInstr.ID] && !ec.loopExitStorePhis[m.phiInstr.ID]) || !m.hasDstGPR {
 		dstSlot, hasDst := ec.slotMap[m.phiInstr.ID]
 		if hasDst {
 			if m.hasDstGPR {
@@ -649,7 +649,7 @@ func (ec *emitContext) emitGPRPhiWriteThrough(m *gprPhiMove) {
 	}
 
 	// NaN-boxed path.
-	if ec.crossBlockLive[m.phiInstr.ID] || !m.hasDstGPR {
+	if (ec.crossBlockLive[m.phiInstr.ID] && !ec.loopExitStorePhis[m.phiInstr.ID]) || !m.hasDstGPR {
 		dstSlot, hasDst := ec.slotMap[m.phiInstr.ID]
 		if hasDst && m.hasDstGPR {
 			ec.asm.STR(jit.Reg(m.dstPR.Reg), mRegRegs, slotOffset(dstSlot))
@@ -992,6 +992,16 @@ func (ec *emitContext) emitLoopExitBoxing(exitingHeaderID int) {
 		reg := jit.Reg(pr.Reg)
 		jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
 		ec.storeValue(jit.X0, valID)
+	}
+	for valID := range ec.loopExitStorePhis {
+		if phiSet != nil && !phiSet[valID] {
+			continue
+		}
+		pr, ok := ec.alloc.ValueRegs[valID]
+		if !ok || pr.IsFloat {
+			continue
+		}
+		ec.storeValue(jit.Reg(pr.Reg), valID)
 	}
 	for valID := range ec.loopExitBoxFPPhis {
 		if phiSet != nil && !phiSet[valID] {

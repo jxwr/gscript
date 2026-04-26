@@ -40,6 +40,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	var phiOnlyArgs loopPhiArgSet
 	var fpPhiOnlyArgs loopPhiArgSet
 	exitBoxPhis := make(map[int]bool)
+	exitStorePhis := make(map[int]bool)
 	exitBoxFPPhis := make(map[int]bool)
 	if li.hasLoops() {
 		headerRegs = li.computeHeaderExitRegs(fn, alloc)
@@ -71,7 +72,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 				// Check if this phi's register still holds this phi at
 				// end of its own header.
 				entry, inRegs := hdrRegs[pr.Reg]
-				if !inRegs || entry.ValueID != phiID || !entry.IsRawInt {
+				if !inRegs || entry.ValueID != phiID {
 					continue
 				}
 				// Check that no non-header block in the loop body clobbers
@@ -103,7 +104,11 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 					}
 				}
 				if !clobbered {
-					exitBoxPhis[phiID] = true
+					if entry.IsRawInt {
+						exitBoxPhis[phiID] = true
+					} else if !loopBodyHasExitResumeRisk(fn, bodyBlocks, headerID) {
+						exitStorePhis[phiID] = true
+					}
 				}
 			}
 		}
@@ -201,6 +206,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		loopPhiOnlyArgs:   phiOnlyArgs,
 		loopFPPhiOnlyArgs: fpPhiOnlyArgs,
 		loopExitBoxPhis:   exitBoxPhis,
+		loopExitStorePhis: exitStorePhis,
 		loopExitBoxFPPhis: exitBoxFPPhis,
 		constInts:         constInts,
 		constBools:        constBools,
@@ -318,6 +324,32 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		ExitSites:          buildExitSiteMeta(fn),
 		ExitResumeCheck:    ec.exitResumeCheck,
 	}, nil
+}
+
+func loopBodyHasExitResumeRisk(fn *Function, bodyBlocks map[int]bool, headerID int) bool {
+	if fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		if block.ID == headerID || !bodyBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpConstInt, OpConstFloat, OpConstBool, OpConstNil, OpConstString,
+				OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm, OpNot,
+				OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
+				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA,
+				OpEq, OpLt, OpLe, OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat,
+				OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
+				OpPhi, OpNop, OpJump, OpBranch:
+				continue
+			default:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // emitContext holds transient state during code generation.
@@ -444,6 +476,10 @@ type emitContext struct {
 	// exit. These are loop header phis that are cross-block live (used
 	// outside the loop) but whose write-through is deferred to exit time.
 	loopExitBoxPhis map[int]bool
+	// loopExitStorePhis is the NaN-boxed GPR equivalent. It is enabled only for
+	// loop bodies that cannot exit/resume, so no fallback path observes stale
+	// VM register slots while the loop is running.
+	loopExitStorePhis map[int]bool
 	// loopExitBoxFPPhis is the FPR equivalent for raw-float header phis.
 	loopExitBoxFPPhis map[int]bool
 

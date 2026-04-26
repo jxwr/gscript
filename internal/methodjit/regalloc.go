@@ -75,9 +75,13 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 	// Pre-pass: pre-allocate loop-header phi registers into alloc.ValueRegs
 	// for tight-body headers only. Block order is RPO but loop headers can
 	// follow their body in RPO, so we can't rely on "allocate headers first
-	// via natural order". This pre-pass is phi-only and deterministic.
+	// via natural order". This pre-pass is deterministic.
 	for hid := range tightHeaders {
-		preAllocateHeaderPhis(findBlockByID(fn, hid), alloc)
+		hdr := findBlockByID(fn, hid)
+		preAllocateHeaderPhis(hdr, alloc)
+		if !loopBodyHasCall(fn, li.headerBlocks[hid], hid) {
+			preAllocateHeaderBackedgeValues(hdr, alloc)
+		}
 	}
 
 	// Invariant carry: identify LICM-hoisted loop-invariant float values
@@ -232,16 +236,28 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 					carried = make(map[int]PhysReg)
 					for _, phiID := range li.loopPhis[innerHeader] {
 						if pr, ok := alloc.ValueRegs[phiID]; ok {
-							carried[phiID] = pr
+							addCarriedReg(carried, phiID, pr)
 						}
 					}
 					// Loop-bound carry: pin GPR-allocated non-phi int values
 					// used by header comparisons (LeInt/LtInt/EqInt) so they
-					// survive across the loop body without eviction.
+					// survive across body blocks that also read them.
 					hdr := findBlockByID(fn, innerHeader)
-					for _, vid := range collectLoopBoundGPRs(hdr, alloc) {
+					for _, vid := range collectLoopBoundGPRs(fn, hdr, alloc, li.headerBlocks[innerHeader]) {
 						if pr, ok := alloc.ValueRegs[vid]; ok {
-							carried[vid] = pr
+							addCarriedReg(carried, vid, pr)
+						}
+					}
+					// Header back-edge carry: FORLOOP-style CFGs compute the
+					// next counter value in the header, execute the body, then
+					// feed that header value into the next header phi on the
+					// body->header edge. Keep those values pinned through the
+					// body so the phi move can read the register directly.
+					if !loopBodyHasCall(fn, li.headerBlocks[innerHeader], innerHeader) {
+						for _, vid := range collectHeaderBackedgeGPRs(hdr, alloc) {
+							if pr, ok := alloc.ValueRegs[vid]; ok {
+								addCarriedReg(carried, vid, pr)
+							}
 						}
 					}
 				}
@@ -329,11 +345,56 @@ func preAllocateHeaderPhis(block *Block, alloc *RegAllocation) {
 	}
 }
 
+// preAllocateHeaderBackedgeValues reserves registers for values computed in a
+// loop header and consumed by a back-edge phi move after the body runs. This is
+// common for FORLOOP lowering, where the header computes the next counter value
+// before branching into the body.
+func preAllocateHeaderBackedgeValues(block *Block, alloc *RegAllocation) {
+	if block == nil {
+		return
+	}
+	gprs := newRegState(allocatableGPRs[:], false)
+	fprs := newRegState(allocatableFPRs[:], true)
+
+	for _, instr := range block.Instrs {
+		if instr.Op != OpPhi {
+			break
+		}
+		if pr, ok := alloc.ValueRegs[instr.ID]; ok {
+			if pr.IsFloat {
+				fprs.assign(instr.ID, pr.Reg)
+			} else {
+				gprs.assign(instr.ID, pr.Reg)
+			}
+		}
+	}
+
+	for _, instr := range collectHeaderBackedgeInstrs(block) {
+		if _, ok := alloc.ValueRegs[instr.ID]; ok {
+			continue
+		}
+		wantFloat := needsFloatReg(instr)
+		rs := gprs
+		if wantFloat {
+			rs = fprs
+		}
+		r := rs.findFree()
+		if r >= 0 {
+			rs.assign(instr.ID, r)
+			alloc.ValueRegs[instr.ID] = PhysReg{Reg: r, IsFloat: wantFloat}
+		} else {
+			alloc.SpillSlots[instr.ID] = alloc.NumSpillSlots
+			alloc.NumSpillSlots++
+		}
+	}
+}
+
 // collectLoopBoundGPRs scans a loop header block for int comparison ops
 // (LeInt, LtInt, EqInt) and returns value IDs of non-phi, GPR-allocated
-// arguments (e.g., loop bounds from LoadSlot). These are candidates for
-// carrying across the loop body to avoid eviction and per-iteration reloads.
-func collectLoopBoundGPRs(hdr *Block, alloc *RegAllocation) []int {
+// arguments that are also used in non-header loop body blocks. These are
+// candidates for carrying across the loop body to avoid eviction and
+// per-iteration reloads without stealing registers from unrelated bodies.
+func collectLoopBoundGPRs(fn *Function, hdr *Block, alloc *RegAllocation, bodyBlocks map[int]bool) []int {
 	if hdr == nil {
 		return nil
 	}
@@ -353,11 +414,105 @@ func collectLoopBoundGPRs(hdr *Block, alloc *RegAllocation) []int {
 				continue
 			}
 			if pr, ok := alloc.ValueRegs[arg.ID]; ok && !pr.IsFloat {
-				bounds = append(bounds, arg.ID)
+				if valueUsedInNonHeaderBody(fn, arg.ID, hdr.ID, bodyBlocks) {
+					bounds = append(bounds, arg.ID)
+				}
 			}
 		}
 	}
 	return bounds
+}
+
+func valueUsedInNonHeaderBody(fn *Function, valueID int, headerID int, bodyBlocks map[int]bool) bool {
+	if fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		if block.ID == headerID || !bodyBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			for _, arg := range instr.Args {
+				if arg != nil && arg.ID == valueID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func loopBodyHasCall(fn *Function, bodyBlocks map[int]bool, headerID int) bool {
+	if fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		if block.ID == headerID || !bodyBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// collectHeaderBackedgeGPRs returns values that are defined in a loop header
+// and consumed as phi inputs on a non-header predecessor edge back to that same
+// header. These values must live through the loop body even though their def is
+// in the header block.
+func collectHeaderBackedgeGPRs(hdr *Block, alloc *RegAllocation) []int {
+	var values []int
+	for _, instr := range collectHeaderBackedgeInstrs(hdr) {
+		pr, ok := alloc.ValueRegs[instr.ID]
+		if !ok || pr.IsFloat {
+			continue
+		}
+		values = append(values, instr.ID)
+	}
+	return values
+}
+
+func collectHeaderBackedgeInstrs(hdr *Block) []*Instr {
+	if hdr == nil {
+		return nil
+	}
+	seen := make(map[int]bool)
+	var values []*Instr
+	for _, instr := range hdr.Instrs {
+		if instr.Op != OpPhi {
+			break
+		}
+		for predIdx, arg := range instr.Args {
+			if arg == nil || arg.Def == nil || arg.Def.Block != hdr {
+				continue
+			}
+			if predIdx >= len(hdr.Preds) {
+				continue
+			}
+			pred := hdr.Preds[predIdx]
+			if pred == nil || pred.ID == hdr.ID {
+				continue
+			}
+			if seen[arg.ID] {
+				continue
+			}
+			seen[arg.ID] = true
+			values = append(values, arg.Def)
+		}
+	}
+	return values
+}
+
+func addCarriedReg(carried map[int]PhysReg, valueID int, pr PhysReg) {
+	for _, existing := range carried {
+		if existing.Reg == pr.Reg && existing.IsFloat == pr.IsFloat {
+			return
+		}
+	}
+	carried[valueID] = pr
 }
 
 // regState tracks the current state of a register pool (GPR or FPR).
@@ -400,6 +555,18 @@ func (rs *regState) pin(valueID int) {
 // findFree returns a free register, or -1 if all are occupied.
 func (rs *regState) findFree() int {
 	for _, r := range rs.pool {
+		if rs.regToID[r] == -1 {
+			return r
+		}
+	}
+	return -1
+}
+
+func (rs *regState) findFreeExcept(reserved map[int]bool) int {
+	for _, r := range rs.pool {
+		if reserved[r] {
+			continue
+		}
 		if rs.regToID[r] == -1 {
 			return r
 		}
@@ -478,6 +645,7 @@ func (rs *regState) removeLRU(valueID int) {
 func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carried map[int]PhysReg) {
 	gprs := newRegState(allocatableGPRs[:], false)
 	fprs := newRegState(allocatableFPRs[:], true)
+	reservedGPRs, reservedFPRs := reservedNonPhiRegs(block, alloc)
 
 	// Pre-populate regstate with loop-header phi assignments so that body
 	// SSA results don't reuse the phi's physical register. carriedIDs
@@ -585,12 +753,32 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 			rs = gprs
 		}
 
+		assigned := false
+		if pr, ok := alloc.ValueRegs[instr.ID]; ok && pr.IsFloat == wantFloat && rs.regToID[pr.Reg] == -1 {
+			if wantFloat {
+				delete(reservedFPRs, pr.Reg)
+			} else {
+				delete(reservedGPRs, pr.Reg)
+			}
+			rs.assign(instr.ID, pr.Reg)
+			assigned = true
+		}
+
 		// Try to allocate a free register.
-		r := rs.findFree()
-		if r >= 0 {
-			rs.assign(instr.ID, r)
-			alloc.ValueRegs[instr.ID] = PhysReg{Reg: r, IsFloat: wantFloat}
-		} else {
+		if !assigned {
+			reserved := reservedGPRs
+			if wantFloat {
+				reserved = reservedFPRs
+			}
+			r := rs.findFreeExcept(reserved)
+			if r >= 0 {
+				rs.assign(instr.ID, r)
+				alloc.ValueRegs[instr.ID] = PhysReg{Reg: r, IsFloat: wantFloat}
+				assigned = true
+			}
+		}
+
+		if !assigned {
 			// All registers full -- spill the LRU value.
 			r, evictedID := rs.evictLRU()
 			if r == -1 {
@@ -624,6 +812,26 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 		// that uses it last, since the output was already allocated above.
 		freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse)
 	}
+}
+
+func reservedNonPhiRegs(block *Block, alloc *RegAllocation) (map[int]bool, map[int]bool) {
+	gprs := make(map[int]bool)
+	fprs := make(map[int]bool)
+	for _, instr := range block.Instrs {
+		if instr.Op == OpPhi || instr.Op.IsTerminator() {
+			continue
+		}
+		pr, ok := alloc.ValueRegs[instr.ID]
+		if !ok {
+			continue
+		}
+		if pr.IsFloat {
+			fprs[pr.Reg] = true
+		} else {
+			gprs[pr.Reg] = true
+		}
+	}
+	return gprs, fprs
 }
 
 // freeDeadValues frees registers for values whose last use is at instrIdx.

@@ -288,10 +288,10 @@ func TestRegAlloc_IntPhiCarry(t *testing.T) {
 		Aux:  int64(b2.ID), Aux2: int64(b3.ID)}
 	b1.Instrs = []*Instr{vPhi, vCmp, b1Term}
 
-	// b2: body = AddInt(phi, ConstInt 1)
+	// b2: body = AddInt(phi, bound)
 	vOne := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b2, Aux: 1}
 	vBody := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Block: b2,
-		Args: []*Value{vPhi.Value(), vOne.Value()}}
+		Args: []*Value{vPhi.Value(), vBound.Value()}}
 	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2,
 		Aux: int64(b1.ID)}
 	b2.Instrs = []*Instr{vOne, vBody, b2Term}
@@ -352,6 +352,74 @@ func TestRegAlloc_IntPhiCarry(t *testing.T) {
 	}
 
 	t.Logf("phi=X%d body=X%d bound=X%d", phiReg.Reg, bodyReg.Reg, boundReg.Reg)
+}
+
+// TestRegAlloc_HeaderBackedgeValueCarried verifies FORLOOP-style loops where
+// the header computes a value that is consumed by the next header phi on the
+// body->header edge. The body must not reuse that register, otherwise the edge
+// phi move has to reload through memory every iteration.
+func TestRegAlloc_HeaderBackedgeValueCarried(t *testing.T) {
+	fn := &Function{NumRegs: 4}
+
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	b1 := &Block{ID: 1, defs: make(map[int]*Value)} // body appears before header in RPO
+	b2 := &Block{ID: 2, defs: make(map[int]*Value)} // header
+	b3 := &Block{ID: 3, defs: make(map[int]*Value)}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2, b3}
+
+	b0.Succs = []*Block{b2}
+	b1.Preds = []*Block{b2}
+	b1.Succs = []*Block{b2}
+	b2.Preds = []*Block{b0, b1}
+	b2.Succs = []*Block{b1, b3}
+	b3.Preds = []*Block{b2}
+
+	seedA := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 0}
+	seedB := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 1}
+	seedI := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: -1}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0}
+	b0.Instrs = []*Instr{seedA, seedB, seedI, b0Term}
+
+	phiA := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeUnknown, Block: b2}
+	phiB := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeUnknown, Block: b2}
+	phiI := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: b2}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b2, Aux: 1}
+	inc := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Block: b2,
+		Args: []*Value{phiI.Value(), one.Value()}, Aux2: 1}
+	limit := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b2, Aux: 10}
+	cmp := &Instr{ID: fn.newValueID(), Op: OpLeInt, Type: TypeBool, Block: b2,
+		Args: []*Value{inc.Value(), limit.Value()}}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b2,
+		Args: []*Value{cmp.Value()}}
+	b2.Instrs = []*Instr{phiA, phiB, phiI, one, inc, limit, cmp, b2Term}
+
+	bodyAdd := &Instr{ID: fn.newValueID(), Op: OpAdd, Type: TypeUnknown, Block: b1,
+		Args: []*Value{phiA.Value(), phiB.Value()}}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b1}
+	b1.Instrs = []*Instr{bodyAdd, b1Term}
+
+	phiA.Args = []*Value{seedA.Value(), phiB.Value()}
+	phiB.Args = []*Value{seedB.Value(), bodyAdd.Value()}
+	phiI.Args = []*Value{seedI.Value(), inc.Value()}
+	b3Term := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+		Args: []*Value{phiA.Value()}}
+	b3.Instrs = []*Instr{b3Term}
+
+	alloc := AllocateRegisters(fn)
+
+	incReg, ok := alloc.ValueRegs[inc.ID]
+	if !ok || incReg.IsFloat {
+		t.Fatalf("header back-edge value v%d has no GPR assignment: %+v", inc.ID, incReg)
+	}
+	bodyReg, ok := alloc.ValueRegs[bodyAdd.ID]
+	if !ok || bodyReg.IsFloat {
+		t.Fatalf("body add v%d has no GPR assignment: %+v", bodyAdd.ID, bodyReg)
+	}
+	if bodyReg.Reg == incReg.Reg {
+		t.Fatalf("body add v%d assigned X%d, clobbering header back-edge value v%d",
+			bodyAdd.ID, bodyReg.Reg, inc.ID)
+	}
 }
 
 // --- Test helpers ---

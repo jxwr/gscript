@@ -398,12 +398,15 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	done := ec.uniqueLabel("arith_done")
 
 	// Check if LHS is int.
-	emitCheckIsInt(asm, jit.X0, jit.X2)
+	asm.MOVimm16(jit.X3, jit.NB_TagIntShr48)
+	asm.LSRimm(jit.X2, jit.X0, 48)
+	asm.CMPreg(jit.X2, jit.X3)
 	lhsNotInt := ec.uniqueLabel("arith_lhs_not_int")
 	asm.BCond(jit.CondNE, lhsNotInt)
 
 	// LHS is int. Check RHS.
-	emitCheckIsInt(asm, jit.X1, jit.X2)
+	asm.LSRimm(jit.X2, jit.X1, 48)
+	asm.CMPreg(jit.X2, jit.X3)
 	rhsNotInt := ec.uniqueLabel("arith_rhs_not_int")
 	asm.BCond(jit.CondNE, rhsNotInt)
 
