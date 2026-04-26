@@ -15,10 +15,10 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 	candidates := make(map[int]bool)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if instr == nil || instr.Op != OpSetTable || len(instr.Args) == 0 {
+			if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 2 {
 				continue
 			}
-			if instr.Aux2 == 0 || instr.Aux2 == int64(vm.FBKindPolymorphic) {
+			if !setTableHasArrayStoreEvidence(instr) {
 				continue
 			}
 			tbl := instr.Args[0]
@@ -39,4 +39,21 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 		}
 	}
 	return fn, nil
+}
+
+func setTableHasArrayStoreEvidence(instr *Instr) bool {
+	if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 2 {
+		return false
+	}
+	if instr.Aux2 != 0 && instr.Aux2 != int64(vm.FBKindPolymorphic) {
+		return true
+	}
+	key := instr.Args[1]
+	if key == nil {
+		return false
+	}
+	if key.Def != nil {
+		return key.Def.Op == OpConstInt || key.Def.Type == TypeInt
+	}
+	return false
 }
