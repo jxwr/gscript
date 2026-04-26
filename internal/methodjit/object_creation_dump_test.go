@@ -60,9 +60,13 @@ func TestObjectCreationDump(t *testing.T) {
 	//
 	// LoopPhiHeaderLiveness: header phi register-state fixes remove a small
 	// amount of spill/reload traffic from the inlined object loops.
+	//
+	// FPRLoopPhiWriteback: raw-float loop phis now defer memory writeback to
+	// loop exit when their FPR survives the loop body, shaving a few
+	// FMOV/STR pairs from the inlined object loops.
 	baselines := []baseline{
-		{"create_and_sum", 469, 75},  // R161: was 1277/598
-		{"transform_chain", 588, 83}, // R161: was 1701/816
+		{"create_and_sum", 463, 72},  // R161: was 1277/598
+		{"transform_chain", 582, 80}, // R161: was 1701/816
 		{"new_vec3", 228, 135},       // unchanged EA shape; codegen bookkeeping moved
 	}
 

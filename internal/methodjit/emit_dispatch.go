@@ -766,7 +766,7 @@ func (ec *emitContext) emitFPRPhiMovesOrdered(to *Block, predIdx int) {
 					}
 				}
 				ec.asm.FMOVd(m.dstFPR, jit.D0)
-				if ec.crossBlockLive[m.phiInstr.ID] {
+				if ec.crossBlockLive[m.phiInstr.ID] && !ec.loopExitBoxFPPhis[m.phiInstr.ID] {
 					if dstSlot, ok := ec.slotMap[m.phiInstr.ID]; ok {
 						ec.asm.FMOVtoGP(jit.X0, m.dstFPR)
 						ec.asm.STR(jit.X0, mRegRegs, slotOffset(dstSlot))
@@ -811,7 +811,7 @@ func (ec *emitContext) emitPhiMoveRawFloat(srcArg *Value, phiInstr *Instr, dstPR
 	}
 
 	// Write-through to memory (NaN-boxed) if the phi is used cross-block.
-	if ec.crossBlockLive[phiInstr.ID] {
+	if ec.crossBlockLive[phiInstr.ID] && !ec.loopExitBoxFPPhis[phiInstr.ID] {
 		dstSlot, ok := ec.slotMap[phiInstr.ID]
 		if ok {
 			ec.asm.FMOVtoGP(jit.X0, dstFPR)
@@ -988,6 +988,18 @@ func (ec *emitContext) emitLoopExitBoxing(exitingHeaderID int) {
 		}
 		reg := jit.Reg(pr.Reg)
 		jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
+		ec.storeValue(jit.X0, valID)
+	}
+	for valID := range ec.loopExitBoxFPPhis {
+		if phiSet != nil && !phiSet[valID] {
+			continue
+		}
+		pr, ok := ec.alloc.ValueRegs[valID]
+		if !ok || !pr.IsFloat {
+			continue
+		}
+		fpr := jit.FReg(pr.Reg)
+		ec.asm.FMOVtoGP(jit.X0, fpr)
 		ec.storeValue(jit.X0, valID)
 	}
 }

@@ -200,6 +200,10 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		return true
 	}
 
+	if profile.HasLoop && profile.LoopDepth >= 2 && protoHasMatrixIntrinsicConstants(proto) {
+		return true
+	}
+
 	// Pure-compute functions with loops (no CALL/GETGLOBAL): promote at threshold=2.
 	// Threshold=1 caused regressions on float-heavy functions (mandelbrot)
 	// where Tier 2's code was slower than Tier 1. Threshold=2 ensures the
@@ -263,6 +267,26 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	// significant arithmetic don't benefit enough from Tier 2 to justify
 	// compilation overhead.
 	return false
+}
+
+func protoHasMatrixIntrinsicConstants(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	hasMatrix := false
+	hasGetSet := false
+	for _, c := range proto.Constants {
+		if !c.IsString() {
+			continue
+		}
+		switch c.Str() {
+		case "matrix":
+			hasMatrix = true
+		case "getf", "setf":
+			hasGetSet = true
+		}
+	}
+	return hasMatrix && hasGetSet
 }
 
 // shouldStayTier1ForBoxedRawIntKernel keeps small non-recursive raw-int while

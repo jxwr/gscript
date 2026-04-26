@@ -161,6 +161,115 @@ func computeLoopPhiArgs(fn *Function, li *loopInfo, alloc *RegAllocation,
 	return result
 }
 
+// computeLoopFPPhiArgs is the FPR equivalent of computeLoopPhiArgs. It marks
+// raw-float values whose cross-block uses are satisfied by FPR phi moves, so
+// storeRawFloat can skip per-iteration memory write-through.
+func computeLoopFPPhiArgs(fn *Function, li *loopInfo, alloc *RegAllocation,
+	headerRegs map[int]map[int]loopFPRegEntry) loopPhiArgSet {
+	if !li.hasLoops() {
+		return nil
+	}
+
+	defBlock := make(map[int]int)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !instr.Op.IsTerminator() {
+				defBlock[instr.ID] = block.ID
+			}
+		}
+	}
+
+	result := make(loopPhiArgSet)
+	for valID := range li.loopValues {
+		db := defBlock[valID]
+		pr, hasReg := alloc.ValueRegs[valID]
+		if !hasReg || !pr.IsFloat {
+			continue
+		}
+
+		safe := true
+		usedCrossBlock := false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr.Op == OpPhi {
+					for predIdx, arg := range instr.Args {
+						if arg.ID != valID {
+							continue
+						}
+						usedCrossBlock = true
+						if predIdx >= len(instr.Block.Preds) {
+							safe = false
+							break
+						}
+						pred := instr.Block.Preds[predIdx]
+						if pred.ID == db {
+							continue
+						}
+						if !li.loopBlocks[pred.ID] {
+							safe = false
+							break
+						}
+						if li.loopHeaders[pred.ID] {
+							hdrRegs := headerRegs[pred.ID]
+							if entry, ok := hdrRegs[pr.Reg]; !ok || entry.ValueID != valID {
+								safe = false
+							}
+						} else {
+							innerH, ok := li.blockInnerHeader[pred.ID]
+							if !ok {
+								safe = false
+								break
+							}
+							hdrRegs := headerRegs[innerH]
+							if entry, ok := hdrRegs[pr.Reg]; !ok || entry.ValueID != valID {
+								safe = false
+							}
+						}
+					}
+				} else {
+					for _, arg := range instr.Args {
+						if arg.ID != valID || block.ID == db {
+							continue
+						}
+						usedCrossBlock = true
+						if !li.loopBlocks[block.ID] {
+							safe = false
+							break
+						}
+						if li.loopHeaders[block.ID] {
+							hdrRegs := headerRegs[block.ID]
+							if entry, ok := hdrRegs[pr.Reg]; !ok || entry.ValueID != valID {
+								safe = false
+							}
+						} else {
+							innerH, ok := li.blockInnerHeader[block.ID]
+							if !ok {
+								safe = false
+								break
+							}
+							hdrRegs := headerRegs[innerH]
+							if entry, ok := hdrRegs[pr.Reg]; !ok || entry.ValueID != valID {
+								safe = false
+							}
+						}
+					}
+				}
+				if !safe {
+					break
+				}
+			}
+			if !safe {
+				break
+			}
+		}
+		if safe && usedCrossBlock {
+			result[valID] = true
+		}
+	}
+
+	return result
+}
+
 // loopRegState describes the register state at the end of the loop header,
 // which is the state that non-header loop blocks will see at entry.
 // Maps register number -> (valueID, isRawInt).

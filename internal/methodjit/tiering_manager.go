@@ -1449,7 +1449,7 @@ func canPromoteWithNativeLoopCalls(proto *vm.FuncProto, globals map[string]*vm.F
 		}
 		sawCall = true
 		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
-		if !ok || !tier2LoopCallCalleeIsNativeCandidate(callee) {
+		if !ok || !tier2LoopCallCalleeIsNativeCandidate(callee, globals) {
 			return false
 		}
 	}
@@ -1618,20 +1618,30 @@ func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
 	case int64(vm.FBKindInt), int64(vm.FBKindFloat), int64(vm.FBKindBool):
 		return true
 	default:
+		return isFloatArraySetTable(instr)
+	}
+}
+
+func isFloatArraySetTable(instr *Instr) bool {
+	if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 3 {
 		return false
 	}
+	key := instr.Args[1]
+	val := instr.Args[2]
+	return key != nil && key.Def != nil && key.Def.Type == TypeInt &&
+		val != nil && val.Def != nil && val.Def.Type == TypeFloat
 }
 
 func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
-	return tier2LoopCallCalleeIsNativeCandidate(callee)
+	return tier2LoopCallCalleeIsNativeCandidate(callee, globals)
 }
 
-func tier2LoopCallCalleeIsNativeCandidate(callee *vm.FuncProto) bool {
+func tier2LoopCallCalleeIsNativeCandidate(callee *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
 	if tier2LoopCallCalleeHasTier2DirectEntry(callee) {
 		return true
 	}
-	if callee != nil && tier2LoopCallCalleeCanTierUp(callee) {
+	if callee != nil && tier2LoopCallCalleeCanTierUp(callee, globals) {
 		return true
 	}
 	if callee != nil && staticallyCallsOnlySelf(callee) {
@@ -1651,7 +1661,7 @@ func tier2LoopCallCalleeHasTier2DirectEntry(callee *vm.FuncProto) bool {
 	return callee != nil && callee.Tier2Promoted && callee.DirectEntryPtr != 0
 }
 
-func tier2LoopCallCalleeCanTierUp(callee *vm.FuncProto) bool {
+func tier2LoopCallCalleeCanTierUp(callee *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
 	if callee == nil || callee.IsVarArg {
 		return false
 	}
@@ -1663,13 +1673,67 @@ func tier2LoopCallCalleeCanTierUp(callee *vm.FuncProto) bool {
 		return false
 	}
 	if profile.LoopDepth < 2 {
-		return false
+		return tier2LoopCallCalleePassesLoopDepth1Gate(callee, globals)
 	}
 	runtimeCallCount := callee.CallCount
 	if runtimeCallCount < tmDefaultTier2Threshold {
 		runtimeCallCount = tmDefaultTier2Threshold
 	}
 	return shouldPromoteTier2(callee, profile, runtimeCallCount)
+}
+
+func tier2LoopCallCalleePassesLoopDepth1Gate(callee *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
+	fn := BuildGraph(callee)
+	if fn == nil || fn.Entry == nil || fn.Unpromotable {
+		return false
+	}
+	var err error
+	fn, _, err = RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals: globals,
+		InlineMaxSize: inlineMaxCalleeSize,
+	})
+	if err != nil {
+		return false
+	}
+	if hasKnownFloatModInLoop(fn) {
+		return false
+	}
+	hasFloatSet, hasBlocker := loopDepth1GateSetTableShape(fn)
+	if !hasFloatSet || hasBlocker {
+		return false
+	}
+	return true
+}
+
+func loopDepth1GateSetTableShape(fn *Function) (hasFloatSet bool, hasBlocker bool) {
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpSetTable:
+				if isFloatArraySetTable(instr) {
+					hasFloatSet = true
+					continue
+				}
+				return hasFloatSet, true
+			case OpCall,
+				OpSelf,
+				OpNewTable,
+				OpConcat, OpAppend, OpSetList,
+				OpGetUpval, OpSetUpval,
+				OpGo, OpMakeChan, OpSend, OpRecv,
+				OpClosure, OpClose,
+				OpVararg,
+				OpLen, OpPow,
+				OpTForCall, OpTForLoop:
+				return hasFloatSet, true
+			}
+		}
+	}
+	return hasFloatSet, false
 }
 
 func tier2LoopCallCalleeIsLeafNativeCandidate(callee *vm.FuncProto) bool {

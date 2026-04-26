@@ -38,7 +38,9 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	var safeHdrRegs map[int]map[int]loopRegEntry
 	var safeHdrFPRegs map[int]map[int]loopFPRegEntry
 	var phiOnlyArgs loopPhiArgSet
+	var fpPhiOnlyArgs loopPhiArgSet
 	exitBoxPhis := make(map[int]bool)
+	exitBoxFPPhis := make(map[int]bool)
 	if li.hasLoops() {
 		headerRegs = li.computeHeaderExitRegs(fn, alloc)
 		headerFPRegs = li.computeHeaderExitFPRegs(fn, alloc)
@@ -48,6 +50,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		safeHdrRegs = computeSafeHeaderRegs(fn, li, alloc, headerRegs)
 		safeHdrFPRegs = computeSafeHeaderFPRegs(fn, li, alloc, headerFPRegs)
 		phiOnlyArgs = computeLoopPhiArgs(fn, li, alloc, safeHdrRegs)
+		fpPhiOnlyArgs = computeLoopFPPhiArgs(fn, li, alloc, safeHdrFPRegs)
 
 		// Identify loop header phis that need exit-time boxing:
 		// cross-block live AND register survives through the ENTIRE loop body
@@ -104,6 +107,47 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 				}
 			}
 		}
+
+		for headerID, phiIDs := range li.loopPhis {
+			hdrFPRegs := headerFPRegs[headerID]
+			bodyBlocks := li.headerBlocks[headerID]
+			for _, phiID := range phiIDs {
+				if !crossBlockLive[phiID] {
+					continue
+				}
+				pr, ok := alloc.ValueRegs[phiID]
+				if !ok || !pr.IsFloat {
+					continue
+				}
+				entry, inRegs := hdrFPRegs[pr.Reg]
+				if !inRegs || entry.ValueID != phiID {
+					continue
+				}
+				clobbered := false
+				for _, block := range fn.Blocks {
+					if block.ID == headerID || !bodyBlocks[block.ID] {
+						continue
+					}
+					for _, instr := range block.Instrs {
+						if instr.Op.IsTerminator() {
+							continue
+						}
+						instrPR, ok := alloc.ValueRegs[instr.ID]
+						if !ok || !instrPR.IsFloat || instrPR.Reg != pr.Reg {
+							continue
+						}
+						clobbered = true
+						break
+					}
+					if clobbered {
+						break
+					}
+				}
+				if !clobbered {
+					exitBoxFPPhis[phiID] = true
+				}
+			}
+		}
 	}
 
 	// Build constant int/bool maps for immediate optimization, and IR type map for
@@ -154,7 +198,9 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		safeHeaderRegs:    safeHdrRegs,
 		safeHeaderFPRegs:  safeHdrFPRegs,
 		loopPhiOnlyArgs:   phiOnlyArgs,
+		loopFPPhiOnlyArgs: fpPhiOnlyArgs,
 		loopExitBoxPhis:   exitBoxPhis,
+		loopExitBoxFPPhis: exitBoxFPPhis,
 		constInts:         constInts,
 		constBools:        constBools,
 		irTypes:           irTypes,
@@ -389,11 +435,15 @@ type emitContext struct {
 	// to loop header phis. storeRawInt skips write-through for these values
 	// since emitPhiMoveRawInt reads from the register directly.
 	loopPhiOnlyArgs loopPhiArgSet
+	// loopFPPhiOnlyArgs is the FPR equivalent for raw-float values.
+	loopFPPhiOnlyArgs loopPhiArgSet
 
 	// loopExitBoxPhis is the set of phi value IDs that need boxing at loop
 	// exit. These are loop header phis that are cross-block live (used
 	// outside the loop) but whose write-through is deferred to exit time.
 	loopExitBoxPhis map[int]bool
+	// loopExitBoxFPPhis is the FPR equivalent for raw-float header phis.
+	loopExitBoxFPPhis map[int]bool
 
 	// currentBlockID is the ID of the block currently being emitted.
 	currentBlockID int
