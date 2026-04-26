@@ -84,6 +84,8 @@ type TieringManager struct {
 	envR154Trace     bool
 	envTier2NoFilter bool
 	r154DeoptPrints  int
+
+	timeline *JITTimeline
 }
 
 // NewTieringManager creates a new TieringManager with Tier 1 baseline support
@@ -153,6 +155,15 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 
 	// Below Tier 1 threshold? Stay interpreted.
 	if proto.CallCount < BaselineCompileThreshold {
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason":     "below_threshold",
+			"call_count": proto.CallCount,
+			"threshold":  BaselineCompileThreshold,
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "tier1_below_threshold",
+			"target": "interpreter",
+		})
 		return nil
 	}
 
@@ -165,6 +176,17 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// shouldStayTier0 in func_profile.go for the heuristic.
 	if shouldStayTier0(profile) {
 		proto.JITDisabled = true
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "stay_tier0_profile",
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "stay_tier0_profile",
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "jit_disabled",
+			"target": "interpreter",
+		})
 		return nil
 	}
 
@@ -175,7 +197,9 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	if !shouldPromoteTier2(proto, profile, proto.CallCount) {
 		// Not ready for Tier 2: use Tier 1, but enable OSR for loop-heavy
 		// functions so they can be upgraded mid-execution if they run hot.
+		tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
 		t1 := tm.tier1.TryCompile(proto)
+		tm.traceTier1CompileResult(proto, tier1AlreadyCompiled, t1, "not_ready_for_tier2")
 		// Ensure feedback is initialized for Tier 1 type collection.
 		if t1 != nil && proto.Feedback == nil {
 			proto.EnsureFeedback()
@@ -191,6 +215,10 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 			(profile.LoopDepth >= 2 || tm.isOSRRestartSafe(proto, profile)) &&
 			(tm.envTier2NoFilter || !tm.osrWouldHitCallInLoopGate(proto, profile)) {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
+			tm.traceEvent("osr_armed", "tier1", proto, map[string]any{
+				"counter":    osrDefaultIterations,
+				"loop_depth": profile.LoopDepth,
+			})
 			if tm.envR154Trace {
 				fmt.Fprintf(os.Stderr, "[R162] SetOSRCounter proto=%q loopDepth=%d\n",
 					proto.Name, profile.LoopDepth)
@@ -201,11 +229,20 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 
 	// Tier 2 already failed? Use Tier 1.
 	if tm.tier2Failed[proto] {
-		return tm.tier1.TryCompile(proto)
+		tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
+		t1 := tm.tier1.TryCompile(proto)
+		tm.traceTier1CompileResult(proto, tier1AlreadyCompiled, t1, "tier2_failed")
+		tm.traceEvent("fallback", "tier1", proto, map[string]any{
+			"reason": "tier2_failed",
+			"target": "tier1",
+		})
+		return t1
 	}
 
 	// Ensure Tier 1 is compiled first (needed as deopt fallback).
+	tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
 	t1 := tm.tier1.TryCompile(proto)
+	tm.traceTier1CompileResult(proto, tier1AlreadyCompiled, t1, "tier2_deopt_fallback")
 
 	// Ensure feedback is initialized for type specialization.
 	// Initialize now if needed -- TypeSpecializePass uses SSA-local inference
@@ -219,6 +256,10 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
 		tm.tier2Failed[proto] = true
+		tm.traceEvent("fallback", "tier1", proto, map[string]any{
+			"reason": err.Error(),
+			"target": "tier1",
+		})
 		return t1
 	}
 
@@ -269,6 +310,12 @@ func (tm *TieringManager) Execute(compiled interface{}, regs []runtime.Value, ba
 		if err == errOSRRequested {
 			return tm.handleOSR(regs, base, proto)
 		}
+		if err != nil {
+			tm.traceEvent("fallback", "tier0", proto, map[string]any{
+				"reason": err.Error(),
+				"target": "interpreter",
+			})
+		}
 		// errIntSpecDeopt is handled internally by tier1.Execute.
 		return results, err
 	case *CompiledFunction:
@@ -284,6 +331,9 @@ func (tm *TieringManager) Execute(compiled interface{}, regs []runtime.Value, ba
 // the entire function at Tier 2. The restart overhead is negligible compared to
 // long-running loops (e.g., mandelbrot(1000) with 1M iterations).
 func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
+	tm.traceEvent("osr_fired", "tier1", proto, map[string]any{
+		"base": base,
+	})
 	// Ensure feedback is initialized.
 	if proto.Feedback == nil {
 		proto.EnsureFeedback()
@@ -301,6 +351,10 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 		// re-run at Tier 1 from the start with OSR disabled.
 		tm.tier2Failed[proto] = true
 		tm.tier1.SetOSRCounter(proto, -1) // disable OSR
+		tm.traceEvent("fallback", "tier1", proto, map[string]any{
+			"reason": err.Error(),
+			"target": "tier1",
+		})
 		t1 := tm.tier1.TryCompile(proto)
 		if t1 == nil {
 			return nil, fmt.Errorf("tiering: OSR fallback failed: no Tier 1 code")
@@ -686,6 +740,11 @@ func protoConstString(proto *vm.FuncProto, idx int) string {
 
 func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunction, retErr error) {
 	tm.tier2Attempts++
+	attempt := tm.tier2Attempts
+	tm.traceEvent("tier2_attempt", "tier2", proto, map[string]any{
+		"attempt":    attempt,
+		"call_count": proto.CallCount,
+	})
 	if tm.envR154Trace {
 		fmt.Fprintf(os.Stderr, "[R154] compileTier2 ENTER proto=%q attempts=%d\n",
 			proto.Name, tm.tier2Attempts)
@@ -705,11 +764,18 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 				tm.tier2FailReason = make(map[*vm.FuncProto]string)
 			}
 			tm.tier2FailReason[proto] = retErr.Error()
+			tm.traceEvent("tier2_fail", "tier2", proto, map[string]any{
+				"attempt": attempt,
+				"reason":  retErr.Error(),
+			})
 			if os.Getenv("GSCRIPT_JIT_DEBUG") == "1" {
 				fmt.Fprintf(os.Stderr, "tier2: compilation failed for %q: %v\n", proto.Name, retErr)
 			}
 		} else if os.Getenv("GSCRIPT_JIT_DEBUG") == "1" {
+			tm.traceTier2Success(proto, cf, attempt)
 			fmt.Fprintf(os.Stderr, "tier2: compiled %q\n", proto.Name)
+		} else {
+			tm.traceTier2Success(proto, cf, attempt)
 		}
 	}()
 
@@ -914,6 +980,11 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
 	ensureTier2NativeStack()
+	tm.traceEvent("tier2_entered", "tier2", proto, map[string]any{
+		"base":       base,
+		"num_regs":   cf.numRegs,
+		"code_bytes": cf.Code.Size(),
+	})
 
 	// resyncRegs re-reads the VM's register file after exits.
 	resyncRegs := func() {
@@ -962,7 +1033,16 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 				fmt.Fprintf(os.Stderr, "[R154] deopt proto=%q id=%d base=%d r0=%016x r1=%016x callID=%d globalID=%d\n",
 					proto.Name, ctx.DeoptInstrID, base, r0, r1, ctx.CallID, ctx.GlobalExitID)
 			}
+			tm.traceEvent("runtime_deopt", "tier2", proto, map[string]any{
+				"exit_code":      ctx.ExitCode,
+				"deopt_instr_id": ctx.DeoptInstrID,
+				"resume_pass":    ctx.ResumeNumericPass,
+			})
 			tm.disableTier2AfterRuntimeDeopt(proto, "tier2: runtime deopt")
+			tm.traceEvent("fallback", "tier0", proto, map[string]any{
+				"reason": "tier2_runtime_deopt",
+				"target": "interpreter",
+			})
 			// Bail to interpreter. Return error so the VM falls through.
 			return nil, fmt.Errorf("tier2: deopt")
 
@@ -1065,6 +1145,9 @@ func (tm *TieringManager) disableTier2AfterRuntimeDeopt(proto *vm.FuncProto, rea
 	proto.DirectEntryPtr = 0
 	tm.tier1.SetOSRCounter(proto, -1)
 	tm.tier1.EvictCompiled(proto)
+	tm.traceEvent("runtime_disable", "tier2", proto, map[string]any{
+		"reason": reason,
+	})
 }
 
 // CompileTier2 explicitly compiles a function at Tier 2. This bypasses the

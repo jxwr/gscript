@@ -2,9 +2,16 @@
 
 package main
 
-import bytecodevm "github.com/gscript/gscript/internal/vm"
+import (
+	"fmt"
 
-func cliEnableJIT(_ *bytecodevm.VM) jitStatsReporter {
+	bytecodevm "github.com/gscript/gscript/internal/vm"
+)
+
+func cliEnableJIT(_ *bytecodevm.VM, opts jitCLIOptions) (jitStatsReporter, error) {
 	// JIT not available on this platform.
-	return nil
+	if opts.TimelinePath != "" {
+		return nil, fmt.Errorf("JIT timeline unavailable on this platform")
+	}
+	return nil, nil
 }

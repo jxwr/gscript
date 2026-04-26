@@ -20,6 +20,12 @@ import (
 // so the CLI can print tier statistics after execution.
 type jitStatsReporter interface {
 	PrintStats(w *os.File)
+	Close() error
+}
+
+type jitCLIOptions struct {
+	TimelinePath   string
+	TimelineFormat string
 }
 
 // sortStrings is a tiny helper shared with platform files to keep them from
@@ -38,6 +44,8 @@ func main() {
 	cpuprofile := flag.String("cpuprofile", "", "write CPU profile to file")
 	memprofile := flag.String("memprofile", "", "write memory profile to file")
 	jitStats := flag.Bool("jit-stats", false, "print JIT tier statistics after execution")
+	jitTimeline := flag.String("jit-timeline", "", "write production JIT event timeline to file ('-' for stderr)")
+	jitTimelineFormat := flag.String("jit-timeline-format", "jsonl", "JIT timeline format: jsonl or json")
 	flag.Parse()
 
 	if *cpuprofile != "" {
@@ -117,7 +125,10 @@ func main() {
 	interp.SetScriptDir(filepath.Dir(absPath))
 
 	if *useVM {
-		if err := runFileVM(interp, filename, *useJIT, *jitStats); err != nil {
+		if err := runFileVM(interp, filename, *useJIT, *jitStats, jitCLIOptions{
+			TimelinePath:   *jitTimeline,
+			TimelineFormat: *jitTimelineFormat,
+		}); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
 			os.Exit(1)
 		}
@@ -151,15 +162,15 @@ func runString(interp *runtime.Interpreter, src string) error {
 	return interp.Exec(prog)
 }
 
-func runFileVM(interp *runtime.Interpreter, filename string, jit bool, showJITStats bool) error {
+func runFileVM(interp *runtime.Interpreter, filename string, jit bool, showJITStats bool, jitOpts jitCLIOptions) error {
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		return err
 	}
-	return runStringVM(interp, string(src), jit, showJITStats)
+	return runStringVM(interp, string(src), jit, showJITStats, jitOpts)
 }
 
-func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats bool) error {
+func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats bool, jitOpts jitCLIOptions) error {
 	tokens, err := lexer.New(src).Tokenize()
 	if err != nil {
 		return fmt.Errorf("lexer error: %w", err)
@@ -176,16 +187,29 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 	bvm := bytecodevm.New(globals)
 	bvm.SetStringMeta(interp.StringMeta())
 	var reporter jitStatsReporter
+	if !jit && jitOpts.TimelinePath != "" {
+		return fmt.Errorf("JIT timeline requires JIT to be enabled")
+	}
 	if jit {
-		reporter = cliEnableJIT(bvm)
+		reporter, err = cliEnableJIT(bvm, jitOpts)
+		if err != nil {
+			return err
+		}
 	}
 	_, err = bvm.Execute(proto)
+	var closeErr error
+	if reporter != nil {
+		closeErr = reporter.Close()
+	}
 	if showJITStats {
 		if reporter != nil {
 			reporter.PrintStats(os.Stderr)
 		} else {
 			fmt.Fprintln(os.Stderr, "JIT Statistics: JIT disabled or unavailable on this platform")
 		}
+	}
+	if err == nil {
+		err = closeErr
 	}
 	return err
 }
