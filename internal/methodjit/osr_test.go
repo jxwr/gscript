@@ -194,6 +194,13 @@ result := gcd_bench(1200)
 	if tm.tier2Compiled[gcdBench] == nil {
 		t.Fatal("gcd_bench should promote: loop calls stable raw-int gcd kernel")
 	}
+	gcd := findProtoByName(proto, "gcd")
+	if gcd == nil {
+		t.Fatal("gcd proto not found")
+	}
+	if tm.tier2Compiled[gcd] == nil || gcd.Tier2NumericEntryPtr == 0 {
+		t.Fatal("gcd should be compiled with a raw-int numeric entry for nested loop calls")
+	}
 }
 
 // TestOSR_CorrectResultWithRestart verifies that the simplified OSR approach
