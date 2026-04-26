@@ -28,6 +28,7 @@ package methodjit
 
 import (
 	"fmt"
+	"sort"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -519,6 +520,23 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 		return
 	}
 
+	nArgs := len(instr.Args) - 1
+	nParams := ec.fn.Proto.NumParams
+	if nArgs != nParams || nParams < 1 || nParams > 4 {
+		ec.emitCallNativeStaticSelfFast(instr)
+		return
+	}
+
+	allLive := ec.computeLiveAfterCall(instr)
+	if ec.canUseRegisterOnlyRawSelfCall(allLive) {
+		regOnlyGPRs, regOnlyFPRs := ec.liveRegisterSetsForRawSelf(allLive)
+		ec.emitCallNativeRawIntSelfRegisterOnly(instr, nArgs, nParams, regOnlyGPRs, regOnlyFPRs)
+		return
+	}
+	ec.emitCallNativeRawIntSelfFramed(instr)
+}
+
+func (ec *emitContext) emitCallNativeRawIntSelfFramed(instr *Instr) {
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
 	nArgs := len(instr.Args) - 1
@@ -531,6 +549,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 		ec.emitCallNativeStaticSelfFast(instr)
 		return
 	}
+	ec.rawIntSelfFramedCalls++
 
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
 	if len(liveGPRs) > 0 || len(liveFPRs) > 0 {
@@ -621,6 +640,145 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	ec.rawIntRegs = postRawIntRegs
 
 	asm.Label(doneLabel)
+}
+
+type rawSelfNativeSpill struct {
+	valueID int
+	offset  int
+	isFloat bool
+}
+
+const (
+	rawSelfRegisterArgsOff  = 0
+	rawSelfRegisterSpillOff = rawSelfRegisterArgsOff + 4*jit.ValueSize
+)
+
+func (ec *emitContext) emitCallNativeRawIntSelfRegisterOnly(instr *Instr, nArgs, nParams int, liveGPRs, liveFPRs map[int]bool) {
+	asm := ec.asm
+	funcSlot := int(instr.Aux)
+	nRets := 1
+	if instr.Aux2 >= 2 {
+		nRets = int(instr.Aux2) - 1
+	}
+	ec.rawIntSelfRegisterOnlyCalls++
+
+	gprSpills, fprSpills, frameSize := ec.rawSelfNativeSpillPlan(liveGPRs, liveFPRs)
+	if frameSize > 0 {
+		asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+	}
+	ec.emitStoreRawSelfNativeSpills(gprSpills, fprSpills)
+
+	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	slowLabel := ec.uniqueLabel("t2rawself_regonly_slow")
+	exitLabel := ec.uniqueLabel("t2rawself_regonly_exit")
+	doneLabel := ec.uniqueLabel("t2rawself_regonly_done")
+
+	ec.emitNumericArgsInRegs(instr, nParams)
+	for i := 0; i < nParams; i++ {
+		argReg := jit.Reg(int(jit.X0) + i)
+		asm.STR(argReg, jit.SP, rawSelfRegisterArgsOff+i*jit.ValueSize)
+	}
+
+	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	asm.CMPimm(jit.X7, maxRawSelfCallDepth)
+	asm.BCond(jit.CondGE, slowLabel)
+
+	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	asm.ADDimm(jit.X7, jit.X7, 1)
+	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+
+	asm.BL(fmt.Sprintf("t2_numeric_self_entry_%d", nParams))
+
+	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	asm.SUBimm(jit.X7, jit.X7, 1)
+	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+
+	asm.LDR(jit.X7, mRegCtx, execCtxOffExitCode)
+	asm.CBNZ(jit.X7, exitLabel)
+
+	ec.emitLoadRawSelfNativeSpills(gprSpills, fprSpills)
+	if frameSize > 0 {
+		asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+	}
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.storeRawInt(jit.X0, instr.ID)
+	postRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	asm.B(doneLabel)
+
+	asm.Label(exitLabel)
+	asm.Label(slowLabel)
+	ec.emitLoadRawSelfNativeSpills(gprSpills, fprSpills)
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
+	ec.emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlot, nArgs, rawSelfRegisterArgsOff)
+	if frameSize > 0 {
+		asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+	}
+	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs, liveGPRs, liveFPRs)
+	ec.rawIntRegs = postRawIntRegs
+
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) rawSelfNativeSpillPlan(gprLive, fprLive map[int]bool) ([]rawSelfNativeSpill, []rawSelfNativeSpill, int) {
+	gprIDs := sortedLiveValueIDs(gprLive)
+	fprIDs := sortedLiveValueIDs(fprLive)
+	gprSpills := make([]rawSelfNativeSpill, 0, len(gprIDs))
+	fprSpills := make([]rawSelfNativeSpill, 0, len(fprIDs))
+	off := rawSelfRegisterSpillOff
+	for _, valueID := range gprIDs {
+		if pr, ok := ec.alloc.ValueRegs[valueID]; ok && !pr.IsFloat {
+			gprSpills = append(gprSpills, rawSelfNativeSpill{valueID: valueID, offset: off})
+			off += jit.ValueSize
+		}
+	}
+	for _, valueID := range fprIDs {
+		if pr, ok := ec.alloc.ValueRegs[valueID]; ok && pr.IsFloat {
+			fprSpills = append(fprSpills, rawSelfNativeSpill{valueID: valueID, offset: off, isFloat: true})
+			off += jit.ValueSize
+		}
+	}
+	return gprSpills, fprSpills, align16(off)
+}
+
+func (ec *emitContext) emitStoreRawSelfNativeSpills(gprSpills, fprSpills []rawSelfNativeSpill) {
+	for _, spill := range gprSpills {
+		pr := ec.alloc.ValueRegs[spill.valueID]
+		ec.asm.STR(jit.Reg(pr.Reg), jit.SP, spill.offset)
+	}
+	for _, spill := range fprSpills {
+		pr := ec.alloc.ValueRegs[spill.valueID]
+		ec.asm.FSTRd(jit.FReg(pr.Reg), jit.SP, spill.offset)
+	}
+}
+
+func (ec *emitContext) emitLoadRawSelfNativeSpills(gprSpills, fprSpills []rawSelfNativeSpill) {
+	for _, spill := range gprSpills {
+		pr := ec.alloc.ValueRegs[spill.valueID]
+		ec.asm.LDR(jit.Reg(pr.Reg), jit.SP, spill.offset)
+	}
+	for _, spill := range fprSpills {
+		pr := ec.alloc.ValueRegs[spill.valueID]
+		ec.asm.FLDRd(jit.FReg(pr.Reg), jit.SP, spill.offset)
+	}
+}
+
+func align16(n int) int {
+	if n%16 == 0 {
+		return n
+	}
+	return n + 16 - n%16
+}
+
+func sortedLiveValueIDs(m map[int]bool) []int {
+	ids := make([]int, 0, len(m))
+	for id, live := range m {
+		if live {
+			ids = append(ids, id)
+		}
+	}
+	sort.Ints(ids)
+	return ids
 }
 
 func (ec *emitContext) emitRestoreRawSelfCallerState() {
@@ -1169,6 +1327,149 @@ func (ec *emitContext) computeLiveAcrossCall(callInstr *Instr) (gprLive map[int]
 	}
 
 	return gprLive, fprLive
+}
+
+func (ec *emitContext) canUseRegisterOnlyRawSelfCall(liveAfter map[int]bool) bool {
+	for valueID := range liveAfter {
+		if valueID < 0 {
+			return false
+		}
+		if ec.hasReg(valueID) || ec.hasFPReg(valueID) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (ec *emitContext) liveRegisterSetsForRawSelf(liveAfter map[int]bool) (map[int]bool, map[int]bool) {
+	gprLive := make(map[int]bool)
+	fprLive := make(map[int]bool)
+	for valueID := range liveAfter {
+		if ec.hasReg(valueID) {
+			gprLive[valueID] = true
+			continue
+		}
+		if ec.hasFPReg(valueID) {
+			fprLive[valueID] = true
+		}
+	}
+	return gprLive, fprLive
+}
+
+func (ec *emitContext) computeLiveAfterCall(callInstr *Instr) map[int]bool {
+	if ec.fn == nil || callInstr == nil || callInstr.Block == nil {
+		return map[int]bool{}
+	}
+	liveOut := computeBlockLiveOut(ec.fn)
+	live := cloneBoolMap(liveOut[callInstr.Block.ID])
+	block := callInstr.Block
+	for i := len(block.Instrs) - 1; i >= 0; i-- {
+		instr := block.Instrs[i]
+		if instr == callInstr {
+			break
+		}
+		if !instr.Op.IsTerminator() {
+			delete(live, instr.ID)
+		}
+		for _, arg := range instr.Args {
+			live[arg.ID] = true
+		}
+	}
+	delete(live, callInstr.ID)
+	return live
+}
+
+func computeBlockLiveOut(fn *Function) map[int]map[int]bool {
+	liveIn := make(map[int]map[int]bool, len(fn.Blocks))
+	liveOut := make(map[int]map[int]bool, len(fn.Blocks))
+	use := make(map[int]map[int]bool, len(fn.Blocks))
+	def := make(map[int]map[int]bool, len(fn.Blocks))
+
+	for _, block := range fn.Blocks {
+		use[block.ID] = make(map[int]bool)
+		def[block.ID] = make(map[int]bool)
+		liveIn[block.ID] = make(map[int]bool)
+		liveOut[block.ID] = make(map[int]bool)
+		for _, instr := range block.Instrs {
+			if instr.Op == OpPhi {
+				def[block.ID][instr.ID] = true
+				continue
+			}
+			for _, arg := range instr.Args {
+				if !def[block.ID][arg.ID] {
+					use[block.ID][arg.ID] = true
+				}
+			}
+			if !instr.Op.IsTerminator() {
+				def[block.ID][instr.ID] = true
+			}
+		}
+	}
+
+	changed := true
+	for changed {
+		changed = false
+		for i := len(fn.Blocks) - 1; i >= 0; i-- {
+			block := fn.Blocks[i]
+			nextOut := make(map[int]bool)
+			for _, succ := range block.Succs {
+				for id := range liveIn[succ.ID] {
+					nextOut[id] = true
+				}
+				addPhiEdgeUses(nextOut, block, succ)
+			}
+
+			nextIn := cloneBoolMap(use[block.ID])
+			for id := range nextOut {
+				if !def[block.ID][id] {
+					nextIn[id] = true
+				}
+			}
+			if !sameBoolSet(liveOut[block.ID], nextOut) {
+				liveOut[block.ID] = nextOut
+				changed = true
+			}
+			if !sameBoolSet(liveIn[block.ID], nextIn) {
+				liveIn[block.ID] = nextIn
+				changed = true
+			}
+		}
+	}
+	return liveOut
+}
+
+func addPhiEdgeUses(dst map[int]bool, pred, succ *Block) {
+	predIndex := -1
+	for i, p := range succ.Preds {
+		if p == pred {
+			predIndex = i
+			break
+		}
+	}
+	if predIndex < 0 {
+		return
+	}
+	for _, instr := range succ.Instrs {
+		if instr.Op != OpPhi {
+			return
+		}
+		if predIndex < len(instr.Args) {
+			dst[instr.Args[predIndex].ID] = true
+		}
+	}
+}
+
+func sameBoolSet(a, b map[int]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // emitSpillSelectiveForCall writes only the specified live register-resident

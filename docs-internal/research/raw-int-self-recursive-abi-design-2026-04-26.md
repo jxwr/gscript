@@ -286,6 +286,36 @@ metadata.
 - Add an internal verifier that rejects raw call emission when the function
   descriptor and call-site descriptor disagree.
 
+### Slice 3.5: register-only raw self success path
+
+Completed for the conservative self-recursive case.
+
+- `CompiledFunction` now carries the `SpecializedABI` descriptor plus raw self
+  call-site counters for register-only vs framed emission.
+- A raw self call uses the register-only success path only when SSA liveness
+  proves every value live across the call is active in an allocated GPR/FPR and
+  can be preserved on the native raw-call metadata frame.
+- The success path no longer advances `mRegRegs`, writes `ctx.Regs`, performs a
+  callee VM-window bounds check, or requires `ensureTier2RegisterBudget` to
+  pre-grow the VM register file.
+- The older framed raw self path remains as a safety fallback for call sites
+  with memory-only live values across the call.
+- Fallback raw args are still saved on the native metadata frame. Removing those
+  stores is not safe until raw callee exits have precise resume metadata or an
+  equivalent way to recover the callee arguments after the BL has clobbered ABI
+  registers. Without that metadata, fallback must still materialize a boxed VM
+  call frame before `ExitCallExit`.
+
+This is intentionally generic: it is driven by `AnalyzeSpecializedABI` plus
+call-site liveness, not by Ackermann-specific bytecode or IR patterns.
+
+`mutual_recursion` remains outside the self-recursive raw ABI. Its F/M protos
+can be recognized as numeric cross-recursive candidates for Tier 2 promotion,
+but their hot peer calls still use the boxed direct-entry convention. A
+cross-proto raw ABI needs callee identity, peer numeric entry, constants/closure
+domain, and callee-exit metadata before it can safely share this register-only
+success path.
+
 ### Slice 4: performance pass
 
 Only after correctness is stable:
@@ -305,6 +335,8 @@ The enabled raw ABI deliberately still changes one variable at a time:
 - boxed fallback materialization is eager at fallback points;
 - Go remains boxed-only;
 - raw success returns through `X0`;
+- raw self success can now skip the callee VM frame window when liveness proves
+  all caller-live values are preserved by native metadata spills;
 - success/fallback join with the same `rawIntRegs` state.
 
 That is slower than the final target, but it makes the ABI mechanically

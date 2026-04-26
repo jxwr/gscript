@@ -172,6 +172,8 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// instead of CMP + CSET + ORR + TBNZ (saves 3 instructions).
 	fusedCmps := computeFusedComparisons(fn)
 
+	specializedABI := AnalyzeSpecializedABI(fn.Proto)
+
 	ec := &emitContext{
 		fn:                fn,
 		alloc:             alloc,
@@ -216,10 +218,10 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// R124/R126: numeric entry is emitted as pass-2 body inside this
 	// Compile when the proto qualifies. numericParamCount tells the
 	// post-epilogue dispatcher whether to run pass 2.
-	if ok, np := qualifyForNumeric(fn.Proto); ok {
-		ec.numericParamCount = np
-		ec.numericParamSlots = make(map[int]bool, np)
-		for i := 0; i < np; i++ {
+	if specializedABI.Eligible && specializedABI.Kind == SpecializedABIRawInt {
+		ec.numericParamCount = len(specializedABI.Params)
+		ec.numericParamSlots = make(map[int]bool, ec.numericParamCount)
+		for i := 0; i < ec.numericParamCount; i++ {
 			ec.numericParamSlots[i] = true
 		}
 	}
@@ -303,20 +305,24 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	}
 
 	return &CompiledFunction{
-		Code:               cb,
-		Proto:              fn.Proto,
-		NumSpills:          alloc.NumSpillSlots,
-		numRegs:            ec.nextSlot,
-		ResumeAddrs:        resumeAddrs,
-		NumericResumeAddrs: numericResumeAddrs,
-		DirectEntryOffset:  directEntryOff,
-		NumericEntryOffset: numericEntryOff,
-		GlobalCache:        globalCache,
-		GlobalCacheConsts:  ec.globalCacheConsts,
-		CallCache:          callCache,
-		InstrCodeRanges:    ec.instrCodeRanges,
-		ExitSites:          buildExitSiteMeta(fn),
-		ExitResumeCheck:    ec.exitResumeCheck,
+		Code:                        cb,
+		Proto:                       fn.Proto,
+		NumSpills:                   alloc.NumSpillSlots,
+		numRegs:                     ec.nextSlot,
+		ResumeAddrs:                 resumeAddrs,
+		NumericResumeAddrs:          numericResumeAddrs,
+		DirectEntryOffset:           directEntryOff,
+		NumericParamCount:           ec.numericParamCount,
+		NumericEntryOffset:          numericEntryOff,
+		SpecializedABI:              specializedABI,
+		RawIntSelfRegisterOnlyCalls: ec.rawIntSelfRegisterOnlyCalls,
+		RawIntSelfFramedCalls:       ec.rawIntSelfFramedCalls,
+		GlobalCache:                 globalCache,
+		GlobalCacheConsts:           ec.globalCacheConsts,
+		CallCache:                   callCache,
+		InstrCodeRanges:             ec.instrCodeRanges,
+		ExitSites:                   buildExitSiteMeta(fn),
+		ExitResumeCheck:             ec.exitResumeCheck,
 	}, nil
 }
 
@@ -513,6 +519,9 @@ type emitContext struct {
 	// > 0. In pass 2, LoadSlot for these slots reads X0..X(N-1) instead
 	// of loading boxed VM slots.
 	numericParamSlots map[int]bool
+
+	rawIntSelfRegisterOnlyCalls int
+	rawIntSelfFramedCalls       int
 
 	// fusedCond holds the condition code from the last fused comparison.
 	// Set by emitIntCmp/emitFloatCmp when the comparison is in fusedCmps.

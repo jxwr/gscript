@@ -286,6 +286,17 @@ type CompiledFunction struct {
 	// disassembly; raw callers branch to the label directly at codegen time.
 	NumericEntryOffset int
 
+	// SpecializedABI is the structural descriptor used when emitting optional
+	// raw-int entries. Non-eligible functions carry the rejected descriptor.
+	SpecializedABI SpecializedABI
+
+	// RawIntSelfRegisterOnlyCalls counts raw self-call sites whose success path
+	// reuses the caller VM frame and preserves caller values through native
+	// metadata spills. RawIntSelfFramedCalls counts sites that still advance a
+	// callee VM frame window for safety.
+	RawIntSelfRegisterOnlyCalls int
+	RawIntSelfFramedCalls       int
+
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
 	// It runs the function via the VM interpreter. Set by the caller
 	// (e.g., test harness or tiering engine) to provide VM fallback.

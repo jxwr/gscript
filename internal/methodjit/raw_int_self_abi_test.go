@@ -277,6 +277,87 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 	}
 }
 
+func TestRawIntSelfABI_AckUsesRegisterOnlySuccessPath(t *testing.T) {
+	src := `func ack(m, n) {
+	if m == 0 { return n + 1 }
+	if n == 0 { return ack(m - 1, 1) }
+	return ack(m - 1, ack(m, n - 1))
+}`
+	top := compileTop(t, src)
+	ack := findProtoByName(top, "ack")
+	if ack == nil {
+		t.Fatal("function \"ack\" not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(ack); err != nil {
+		t.Fatalf("CompileTier2(ack): %v", err)
+	}
+	cf := tm.tier2Compiled[ack]
+	if cf == nil {
+		t.Fatal("ack did not compile to Tier 2")
+	}
+	assertRawIntSpecializedABI(t, cf.SpecializedABI, 2)
+	if cf.RawIntSelfRegisterOnlyCalls == 0 {
+		t.Fatalf("expected register-only raw self calls, got register-only=%d framed=%d",
+			cf.RawIntSelfRegisterOnlyCalls, cf.RawIntSelfFramedCalls)
+	}
+	if cf.RawIntSelfFramedCalls != 0 {
+		t.Fatalf("ack should not need a callee VM frame window on raw success, framed=%d register-only=%d",
+			cf.RawIntSelfFramedCalls, cf.RawIntSelfRegisterOnlyCalls)
+	}
+
+	args := []runtime.Value{runtime.IntValue(3), runtime.IntValue(4)}
+	vmResults := runVMByName(t, src, "ack", args)
+	jitResults, entered := runForcedTier2ByName(t, top, "ack", []string{"ack"}, args)
+	assertRawIntSelfResultsEqual(t, "ack", jitResults, vmResults)
+	if entered["ack"] == 0 {
+		t.Fatal("ack did not enter Tier 2")
+	}
+}
+
+func TestRawIntSelfABI_RegisterOnlyRequiresAllLiveValuesInRegs(t *testing.T) {
+	src := `func f(n) {
+	if n == 0 { return 0 }
+	a := n + 1
+	b := n + 2
+	c := n + 3
+	d := n + 4
+	e := n + 5
+	g := n + 6
+	h := n + 7
+	r := f(n - 1)
+	return r + a + b + c + d + e + g + h
+}`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "f")
+	if proto == nil {
+		t.Fatal("function \"f\" not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(f): %v", err)
+	}
+	cf := tm.tier2Compiled[proto]
+	if cf == nil {
+		t.Fatal("f did not compile to Tier 2")
+	}
+	assertRawIntSpecializedABI(t, cf.SpecializedABI, 1)
+	if cf.RawIntSelfFramedCalls == 0 {
+		t.Fatalf("expected framed raw self fallback for memory-live values, register-only=%d framed=%d",
+			cf.RawIntSelfRegisterOnlyCalls, cf.RawIntSelfFramedCalls)
+	}
+
+	args := []runtime.Value{runtime.IntValue(4)}
+	vmResults := runVMByName(t, src, "f", args)
+	jitResults, entered := runForcedTier2ByName(t, top, "f", []string{"f"}, args)
+	assertRawIntSelfResultsEqual(t, "f", jitResults, vmResults)
+	if entered["f"] == 0 {
+		t.Fatal("f did not enter Tier 2")
+	}
+}
+
 func TestRawIntSelfABI_NonEligibleStaysBoxed(t *testing.T) {
 	tests := []struct {
 		name    string

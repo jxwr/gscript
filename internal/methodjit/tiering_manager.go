@@ -1237,7 +1237,7 @@ func (tm *TieringManager) ensureTier2RegisterBudget(cf *CompiledFunction, regs [
 	if cf == nil || proto == nil || tm.callVM == nil {
 		return regs
 	}
-	if cf.NumericParamCount <= 0 || !proto.HasSelfCalls || cf.numRegs <= 0 {
+	if cf.NumericParamCount <= 0 || !proto.HasSelfCalls || cf.numRegs <= 0 || cf.RawIntSelfFramedCalls == 0 {
 		return regs
 	}
 
