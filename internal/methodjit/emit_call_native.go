@@ -148,7 +148,11 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Load Proto, DirectEntryPtr.
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)          // X1 = *FuncProto
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr) // X2 = DirectEntryPtr
-	asm.CBZ(jit.X2, slowLabel)                          // not compiled -> slow
+	missHaveEntryLabel := ec.uniqueLabel("t2call_miss_have_entry")
+	asm.CBNZ(jit.X2, missHaveEntryLabel)
+	asm.LDR(jit.X2, jit.X1, funcProtoOffTier2DirectEntryPtr)
+	asm.Label(missHaveEntryLabel)
+	asm.CBZ(jit.X2, slowLabel) // not compiled -> slow
 
 	// R108: update IC cache with the boxed closure value (reload from
 	// memory since X0 now holds the raw ptr) and the direct entry addr.
@@ -164,10 +168,18 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)    // X0 = *Closure
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto) // X1 = *Proto (needed downstream)
 	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
+	icRefreshLabel := ec.uniqueLabel("t2call_ic_refresh")
+	asm.CBNZ(jit.X4, icRefreshLabel)
+	asm.LDR(jit.X4, jit.X1, funcProtoOffTier2DirectEntryPtr)
+	// DirectEntryPtr can be cleared when a baseline/native caller disables
+	// generic BLR after an exit. Tier 2 ICs may still use the separate Tier 2
+	// entry while it is published, but must not keep a stale entry after both
+	// published entry pointers have been cleared.
+	asm.CBZ(jit.X4, slowLabel)
+	asm.Label(icRefreshLabel)
 	asm.CMPreg(jit.X2, jit.X4)
 	asm.BCond(jit.CondEQ, icDoneLabel)
 	asm.MOVreg(jit.X2, jit.X4)
-	asm.CBZ(jit.X2, slowLabel)
 	asm.STR(jit.X2, jit.X3, cacheOff+8)
 
 	asm.Label(icDoneLabel)

@@ -413,10 +413,11 @@ func ack(m, n) {
 	}
 }
 
-func TestShouldPromoteTier2_MutualNumericStaysTier1(t *testing.T) {
-	// Cross-recursive numeric functions are structurally analyzable, but until
-	// codegen has a raw-int peer-call ABI, promoting them leaves residual boxed
-	// calls that exit-resume far more often than Tier 1's native BLR path.
+func TestShouldPromoteTier2_MutualNumericUsesTier2EntryProtocol(t *testing.T) {
+	// Cross-recursive numeric functions still call through the boxed ABI, but
+	// Tier 2 has a separate direct entry pointer for peer-call ICs. That makes
+	// promotion profitable again while the raw-int peer-call ABI is still future
+	// work.
 	src := `
 func F(n) {
     if n == 0 { return 1 }
@@ -435,8 +436,8 @@ func M(n) {
 	if !qualifiesForNumericCrossRecursiveCandidate(fProto) {
 		t.Fatal("expected F to remain structurally recognized as a cross-recursive numeric candidate")
 	}
-	if shouldPromoteTier2(fProto, p, 2) {
-		t.Error("mutual numeric recursion should stay in Tier 1 until raw-int peer-call ABI exists")
+	if !shouldPromoteTier2(fProto, p, 2) {
+		t.Error("mutual numeric recursion should promote once the Tier 2 entry protocol is available")
 	}
 }
 
