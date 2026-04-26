@@ -84,6 +84,7 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 	}
 
 	// Store all active register-resident values to memory.
+	ec.recordExitResumeCheckSite(instr, ExitCallExit, callExitModifiedSlots(funcSlot, nRets), exitResumeCheckOptions{RequireCallFunc: true})
 	ec.emitStoreAllActiveRegs()
 
 	// Write call descriptor to ExecContext.
@@ -256,6 +257,7 @@ func (ec *emitContext) emitGlobalExitInner(instr *Instr) {
 	}
 
 	// Store all active register values to memory before exiting.
+	ec.recordExitResumeCheckSite(instr, ExitGlobalExit, []int{resultSlot}, exitResumeCheckOptions{})
 	ec.emitStoreAllActiveRegs()
 
 	// Write global descriptor to ExecContext.
@@ -367,8 +369,10 @@ func (ec *emitContext) emitStoreAllActiveRegs() {
 		if ec.rawIntRegs[valueID] {
 			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
 			ec.asm.STR(jit.X0, mRegRegs, slotOffset(slot))
+			ec.emitExitResumeCheckShadowStoreGPR(slot, jit.X0)
 		} else {
 			ec.asm.STR(reg, mRegRegs, slotOffset(slot))
+			ec.emitExitResumeCheckShadowStoreGPR(slot, reg)
 		}
 	}
 	for valueID := range ec.activeFPRegs {
@@ -381,7 +385,30 @@ func (ec *emitContext) emitStoreAllActiveRegs() {
 			continue
 		}
 		ec.asm.FSTRd(jit.FReg(pr.Reg), mRegRegs, slotOffset(slot))
+		ec.emitExitResumeCheckShadowStoreFPR(slot, jit.FReg(pr.Reg))
 	}
+}
+
+func (ec *emitContext) emitExitResumeCheckShadowStoreGPR(slot int, src jit.Reg) {
+	if ec.exitResumeCheck == nil {
+		return
+	}
+	skip := ec.uniqueLabel("exitcheck_no_shadow")
+	ec.asm.LDR(jit.X17, mRegCtx, execCtxOffExitResumeCheckShadow)
+	ec.asm.CBZ(jit.X17, skip)
+	ec.asm.STR(src, jit.X17, slotOffset(slot))
+	ec.asm.Label(skip)
+}
+
+func (ec *emitContext) emitExitResumeCheckShadowStoreFPR(slot int, src jit.FReg) {
+	if ec.exitResumeCheck == nil {
+		return
+	}
+	skip := ec.uniqueLabel("exitcheck_no_shadow")
+	ec.asm.LDR(jit.X17, mRegCtx, execCtxOffExitResumeCheckShadow)
+	ec.asm.CBZ(jit.X17, skip)
+	ec.asm.FSTRd(src, jit.X17, slotOffset(slot))
+	ec.asm.Label(skip)
 }
 
 // emitReloadAllActiveRegs reloads all register-resident values from their

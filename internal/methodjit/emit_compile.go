@@ -177,6 +177,9 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		tailCallInstrs:    computeTailCalls(fn),
 		instrCodeRanges:   make([]InstrCodeRange, 0, fn.nextID),
 	}
+	if exitResumeCheckEnabled() {
+		ec.exitResumeCheck = newExitResumeCheckMetadata()
+	}
 	// R124/R126: numeric entry is emitted as pass-2 body inside this
 	// Compile when the proto qualifies. numericParamCount tells the
 	// post-epilogue dispatcher whether to run pass 2.
@@ -279,6 +282,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		CallCache:          callCache,
 		InstrCodeRanges:    ec.instrCodeRanges,
 		ExitSites:          buildExitSiteMeta(fn),
+		ExitResumeCheck:    ec.exitResumeCheck,
 	}, nil
 }
 
@@ -483,6 +487,10 @@ type emitContext struct {
 	// instruction. It is diagnostic metadata only; offsets are relative to the
 	// start of the compiled code block.
 	instrCodeRanges []InstrCodeRange
+
+	// exitResumeCheck carries debug-only site metadata and enables shadow
+	// materialization writes when GSCRIPT_EXIT_RESUME_CHECK=1 at compile time.
+	exitResumeCheck *exitResumeCheckMetadata
 }
 
 // computeTailCalls (R107) scans the IR for the tail-call pattern:

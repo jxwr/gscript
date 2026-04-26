@@ -232,6 +232,7 @@ func (ec *emitContext) emitGetFieldExit(instr *Instr) {
 	}
 
 	// Store all active register-resident values to memory.
+	ec.recordExitResumeCheckSite(instr, ExitTableExit, []int{resultSlot}, exitResumeCheckOptions{RequireTableInputs: true})
 	ec.emitStoreAllActiveRegs()
 
 	// Write table-exit descriptor.
@@ -312,6 +313,7 @@ func (ec *emitContext) emitSetFieldExit(instr *Instr) {
 	}
 
 	// Store all active register-resident values to memory.
+	ec.recordExitResumeCheckSite(instr, ExitTableExit, nil, exitResumeCheckOptions{RequireTableInputs: true})
 	ec.emitStoreAllActiveRegs()
 
 	// Write table-exit descriptor.

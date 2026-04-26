@@ -628,6 +628,14 @@ func (ec *emitContext) emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlo
 func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArgs, nRets int, preRawIntRegs, liveGPRs, liveFPRs map[int]bool) {
 	asm := ec.asm
 
+	ec.recordExitResumeCheckSiteWithLive(
+		instr,
+		ExitCallExit,
+		ec.exitResumeCheckLiveSlots(liveGPRs, liveFPRs),
+		callExitModifiedSlots(funcSlot, nRets),
+		exitResumeCheckOptions{RequireCallFunc: true, RequireRawIntArgs: true},
+	)
+
 	asm.LoadImm64(jit.X0, int64(funcSlot))
 	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
 	asm.LoadImm64(jit.X0, int64(nArgs))
@@ -1044,6 +1052,10 @@ func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets
 
 	// The selective spill from the native path only saved live-across-call values.
 	// The Go-side handler needs all active registers in memory, so spill the rest.
+	ec.recordExitResumeCheckSite(instr, ExitCallExit, callExitModifiedSlots(funcSlot, nRets), exitResumeCheckOptions{
+		RequireCallFunc:   true,
+		RequireRawIntArgs: ec.isNumericStaticSelfCall(instr),
+	})
 	ec.emitStoreAllActiveRegs()
 
 	// Write call descriptor to ExecContext.
@@ -1154,8 +1166,10 @@ func (ec *emitContext) emitSpillSelectiveForCall(gprLive, fprLive map[int]bool) 
 		if ec.rawIntRegs[valueID] {
 			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
 			ec.asm.STR(jit.X0, mRegRegs, slotOffset(slot))
+			ec.emitExitResumeCheckShadowStoreGPR(slot, jit.X0)
 		} else {
 			ec.asm.STR(reg, mRegRegs, slotOffset(slot))
+			ec.emitExitResumeCheckShadowStoreGPR(slot, reg)
 		}
 	}
 
@@ -1171,6 +1185,7 @@ func (ec *emitContext) emitSpillSelectiveForCall(gprLive, fprLive map[int]bool) 
 		fpr := jit.FReg(pr.Reg)
 		ec.asm.FMOVtoGP(jit.X0, fpr)
 		ec.asm.STR(jit.X0, mRegRegs, slotOffset(slot))
+		ec.emitExitResumeCheckShadowStoreGPR(slot, jit.X0)
 	}
 }
 

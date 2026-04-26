@@ -71,6 +71,7 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 
 	// Store all active register-resident values to memory so the Go
 	// handler can read correct values from the register file.
+	ec.recordExitResumeCheckSite(instr, ExitOpExit, []int{resultSlot}, exitResumeCheckOptions{})
 	ec.emitStoreAllActiveRegs()
 
 	// Write op descriptor to ExecContext.
@@ -152,6 +153,7 @@ func (ec *emitContext) emitSetListExit(instr *Instr) {
 	}
 
 	// Store all active register-resident values to memory.
+	ec.recordExitResumeCheckSite(instr, ExitOpExit, nil, exitResumeCheckOptions{RequireTableInputs: true})
 	ec.emitStoreAllActiveRegs()
 
 	// Resolve table slot.

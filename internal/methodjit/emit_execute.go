@@ -62,6 +62,8 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 	if len(cf.CallCache) > 0 {
 		ctx.Tier2CallCache = uintptr(unsafe.Pointer(&cf.CallCache[0]))
 	}
+	exitCheck := newExitResumeCheckState(cf)
+	ctx.ExitResumeCheckShadow = exitCheck.shadowPtr()
 
 	// Entry point: start at the beginning of the function.
 	codePtr := uintptr(cf.Code.Ptr())
@@ -83,10 +85,18 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 			return nil, fmt.Errorf("methodjit: deopt with no DeoptFunc set")
 
 		case ExitCallExit:
+			site := cf.exitResumeCheckSite(&ctx)
+			before, err := exitCheck.checkBefore(&ctx, site, regs, 0, protoNameForCheck(cf.Proto))
+			if err != nil {
+				return nil, err
+			}
 			// Call-exit: execute the call via VM, then resume JIT.
-			err := cf.executeCallExit(&ctx, regs)
+			err = cf.executeCallExit(&ctx, regs)
 			if err != nil {
 				return nil, fmt.Errorf("methodjit: call-exit error: %w", err)
+			}
+			if err := exitCheck.checkAfter(site, before, regs, 0, protoNameForCheck(cf.Proto)); err != nil {
+				return nil, err
 			}
 
 			// Resume at the resume point for this call instruction.
@@ -101,10 +111,18 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 			continue
 
 		case ExitGlobalExit:
+			site := cf.exitResumeCheckSite(&ctx)
+			before, err := exitCheck.checkBefore(&ctx, site, regs, 0, protoNameForCheck(cf.Proto))
+			if err != nil {
+				return nil, err
+			}
 			// Global-exit: load a global variable via the VM, then resume JIT.
-			err := cf.executeGlobalExit(&ctx, regs)
+			err = cf.executeGlobalExit(&ctx, regs)
 			if err != nil {
 				return nil, fmt.Errorf("methodjit: global-exit error: %w", err)
+			}
+			if err := exitCheck.checkAfter(site, before, regs, 0, protoNameForCheck(cf.Proto)); err != nil {
+				return nil, err
 			}
 
 			// Resume at the resume point for this global instruction.
@@ -119,10 +137,18 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 			continue
 
 		case ExitTableExit:
+			site := cf.exitResumeCheckSite(&ctx)
+			before, err := exitCheck.checkBefore(&ctx, site, regs, 0, protoNameForCheck(cf.Proto))
+			if err != nil {
+				return nil, err
+			}
 			// Table-exit: perform table operation via Go, then resume JIT.
-			err := cf.executeTableExit(&ctx, regs)
+			err = cf.executeTableExit(&ctx, regs)
 			if err != nil {
 				return nil, fmt.Errorf("methodjit: table-exit error: %w", err)
+			}
+			if err := exitCheck.checkAfter(site, before, regs, 0, protoNameForCheck(cf.Proto)); err != nil {
+				return nil, err
 			}
 
 			// Resume at the resume point for this table instruction.
@@ -137,10 +163,18 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 			continue
 
 		case ExitOpExit:
+			site := cf.exitResumeCheckSite(&ctx)
+			before, err := exitCheck.checkBefore(&ctx, site, regs, 0, protoNameForCheck(cf.Proto))
+			if err != nil {
+				return nil, err
+			}
 			// Op-exit: execute unsupported operation via Go, then resume JIT.
-			err := cf.executeOpExit(&ctx, regs)
+			err = cf.executeOpExit(&ctx, regs)
 			if err != nil {
 				return nil, fmt.Errorf("methodjit: op-exit error: %w", err)
+			}
+			if err := exitCheck.checkAfter(site, before, regs, 0, protoNameForCheck(cf.Proto)); err != nil {
+				return nil, err
 			}
 
 			// Resume at the resume point for this op instruction.

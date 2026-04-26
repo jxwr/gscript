@@ -152,6 +152,12 @@ type ExecContext struct {
 	// ExitCode. It selects the pass-specific resume entry after Go handles the
 	// exit. Zero means normal pass; non-zero means numeric pass.
 	ResumeNumericPass int64
+
+	// ExitResumeCheckShadow points at a debug-only []runtime.Value shadow
+	// buffer. When GSCRIPT_EXIT_RESUME_CHECK=1 at Tier 2 compile time, exit
+	// stubs mirror materialized live register values here before returning to
+	// Go so the execute loop can verify VM home-slot consistency.
+	ExitResumeCheckShadow uintptr
 }
 
 // ExitCode constants.
@@ -233,14 +239,15 @@ var (
 	execCtxOffNativeCallDepth        = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))
 	execCtxOffOSRCounter             = int(unsafe.Offsetof(ExecContext{}.OSRCounter))
 	// Tier 2 global cache offsets
-	execCtxOffTier2GlobalCache    = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCache))
-	execCtxOffTier2GlobalCacheGen = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCacheGen))
-	execCtxOffTier2GlobalGenPtr   = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalGenPtr))
-	execCtxOffGlobalCacheIdx      = int(unsafe.Offsetof(ExecContext{}.GlobalCacheIdx))
-	execCtxOffExitResumePC        = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
-	execCtxOffTier2CallCache      = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
-	execCtxOffDeoptInstrID        = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
-	execCtxOffResumeNumericPass   = int(unsafe.Offsetof(ExecContext{}.ResumeNumericPass))
+	execCtxOffTier2GlobalCache      = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCache))
+	execCtxOffTier2GlobalCacheGen   = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCacheGen))
+	execCtxOffTier2GlobalGenPtr     = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalGenPtr))
+	execCtxOffGlobalCacheIdx        = int(unsafe.Offsetof(ExecContext{}.GlobalCacheIdx))
+	execCtxOffExitResumePC          = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
+	execCtxOffTier2CallCache        = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
+	execCtxOffDeoptInstrID          = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
+	execCtxOffResumeNumericPass     = int(unsafe.Offsetof(ExecContext{}.ResumeNumericPass))
+	execCtxOffExitResumeCheckShadow = int(unsafe.Offsetof(ExecContext{}.ExitResumeCheckShadow))
 )
 
 // CompiledFunction holds the generated native code for a function.
@@ -314,6 +321,10 @@ type CompiledFunction struct {
 	// ExitSites maps Tier 2 exit/deopt instruction IDs to production profile
 	// metadata used by TieringManager.ExitStats.
 	ExitSites map[int]ExitSiteMeta
+
+	// ExitResumeCheck is populated only when GSCRIPT_EXIT_RESUME_CHECK=1 at
+	// compile time. Nil keeps the normal execute path at near-zero overhead.
+	ExitResumeCheck *exitResumeCheckMetadata
 }
 
 func (cf *CompiledFunction) resumeOffset(instrID int, numericPass bool) (int, bool) {

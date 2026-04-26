@@ -1034,6 +1034,8 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 	if len(cf.CallCache) > 0 {
 		ctx.Tier2CallCache = uintptr(unsafe.Pointer(&cf.CallCache[0]))
 	}
+	exitCheck := newExitResumeCheckState(cf)
+	ctx.ExitResumeCheckShadow = exitCheck.shadowPtr()
 
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
@@ -1107,10 +1109,18 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			return nil, fmt.Errorf("tier2: deopt")
 
 		case ExitCallExit:
+			site := cf.exitResumeCheckSite(ctx)
+			before, err := exitCheck.checkBefore(ctx, site, regs, base, protoNameForCheck(proto))
+			if err != nil {
+				return nil, err
+			}
 			if err := tm.executeCallExit(ctx, regs, base, proto); err != nil {
 				return nil, fmt.Errorf("tier2: call-exit: %w", err)
 			}
 			resyncRegs()
+			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
+				return nil, err
+			}
 			callID := int(ctx.CallID)
 			resumeOff, ok := cf.resumeOffset(callID, ctx.ResumeNumericPass != 0)
 			if !ok {
@@ -1122,10 +1132,18 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			continue
 
 		case ExitGlobalExit:
+			site := cf.exitResumeCheckSite(ctx)
+			before, err := exitCheck.checkBefore(ctx, site, regs, base, protoNameForCheck(proto))
+			if err != nil {
+				return nil, err
+			}
 			if err := tm.executeGlobalExit(ctx, regs, base, proto, cf); err != nil {
 				return nil, fmt.Errorf("tier2: global-exit: %w", err)
 			}
 			resyncRegs()
+			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
+				return nil, err
+			}
 			globalID := int(ctx.GlobalExitID)
 			resumeOff, ok := cf.resumeOffset(globalID, ctx.ResumeNumericPass != 0)
 			if !ok {
@@ -1137,10 +1155,18 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			continue
 
 		case ExitTableExit:
+			site := cf.exitResumeCheckSite(ctx)
+			before, err := exitCheck.checkBefore(ctx, site, regs, base, protoNameForCheck(proto))
+			if err != nil {
+				return nil, err
+			}
 			if err := tm.executeTableExit(ctx, regs, base, proto); err != nil {
 				return nil, fmt.Errorf("tier2: table-exit: %w", err)
 			}
 			resyncRegs()
+			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
+				return nil, err
+			}
 			tableID := int(ctx.TableExitID)
 			resumeOff, ok := cf.resumeOffset(tableID, ctx.ResumeNumericPass != 0)
 			if !ok {
@@ -1152,10 +1178,18 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			continue
 
 		case ExitOpExit:
+			site := cf.exitResumeCheckSite(ctx)
+			before, err := exitCheck.checkBefore(ctx, site, regs, base, protoNameForCheck(proto))
+			if err != nil {
+				return nil, err
+			}
 			if err := tm.executeOpExit(ctx, regs, base, proto); err != nil {
 				return nil, fmt.Errorf("tier2: op-exit: %w", err)
 			}
 			resyncRegs()
+			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
+				return nil, err
+			}
 			opID := int(ctx.OpExitID)
 			resumeOff, ok := cf.resumeOffset(opID, ctx.ResumeNumericPass != 0)
 			if !ok {
