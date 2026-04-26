@@ -32,6 +32,7 @@ type FuncProto struct {
 	Feedback               FeedbackVector            // lazily-initialized per-PC type feedback for Method JIT
 	CompiledCodePtr        uintptr                   // pointer to baseline JIT compiled code (set after CompileBaseline)
 	DirectEntryPtr         uintptr                   // pointer to direct entry point for native BLR calls
+	Tier2DirectEntryPtr    uintptr                   // pointer to Tier 2 direct entry for Method JIT call IC refresh
 	GlobalValCachePtr      uintptr                   // pointer to BaselineFunc.GlobalValCache[0] (for BLR callee GETGLOBAL)
 	GlobalValCacheGen      uint64                    // BaselineFunc.CachedGlobalGen (for BLR callee generation check)
 	Tier2GlobalCachePtr    uintptr                   // pointer to CompiledFunction.GlobalCache[0] (for Tier 2 BLR callees)

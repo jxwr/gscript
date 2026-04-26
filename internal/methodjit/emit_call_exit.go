@@ -161,6 +161,7 @@ func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
 	// Assign a cache index for this GetGlobal instruction.
 	cacheIdx := ec.nextGlobalCacheIndex
 	ec.nextGlobalCacheIndex++
+	ec.globalCacheConsts = append(ec.globalCacheConsts, int(instr.Aux))
 
 	// --- Fast path: check generation, then load from cache ---
 

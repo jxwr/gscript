@@ -453,6 +453,7 @@ func (e *BaselineJITEngine) EvictCompiled(proto *vm.FuncProto) {
 	delete(e.failed, proto)
 	proto.CompiledCodePtr = 0
 	proto.DirectEntryPtr = 0
+	proto.Tier2DirectEntryPtr = 0
 	e.clearBaselineCallCachesForProto(proto)
 }
 
@@ -469,6 +470,30 @@ func (e *BaselineJITEngine) clearBaselineCallCachesForProto(proto *vm.FuncProto)
 				cache[i+1] = 0
 				cache[i+2] = 0
 				cache[i+3] = 0
+			}
+		}
+	}
+}
+
+func (e *BaselineJITEngine) invalidateGlobalValueCaches(name string) {
+	if e == nil || name == "" {
+		return
+	}
+	for _, bf := range e.compiled {
+		if bf == nil || bf.Proto == nil || len(bf.GlobalValCache) == 0 {
+			continue
+		}
+		for pc, inst := range bf.Proto.Code {
+			if pc >= len(bf.GlobalValCache) || vm.DecodeOp(inst) != vm.OP_GETGLOBAL {
+				continue
+			}
+			bx := vm.DecodeBx(inst)
+			if bx < 0 || bx >= len(bf.Proto.Constants) {
+				continue
+			}
+			kv := bf.Proto.Constants[bx]
+			if kv.IsString() && kv.Str() == name {
+				bf.GlobalValCache[pc] = 0
 			}
 		}
 	}

@@ -252,10 +252,8 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 			if absArg1 < len(regs) {
 				tm.callVM.SetGlobal(name, regs[absArg1])
 			}
+			tm.invalidateGlobalValueCaches(name)
 		}
-		// Invalidate all global value caches by bumping the generation.
-		// This is shared with Tier 1 (same counter).
-		tm.tier1.globalCacheGen++
 
 	case OpAppend:
 		if absArg1 < len(regs) && absArg2 < len(regs) {
@@ -336,8 +334,9 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 // register file, mirroring Tier 1's handleClosure in tier1_handlers_misc.go.
 //
 // Op-exit descriptor:
-//   OpExitSlot = result slot (where to store the new closure)
-//   OpExitAux  = child proto index (bx from OP_CLOSURE)
+//
+//	OpExitSlot = result slot (where to store the new closure)
+//	OpExitAux  = child proto index (bx from OP_CLOSURE)
 func (tm *TieringManager) executeClosureOpExit(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
 	absSlot := base + int(ctx.OpExitSlot)
 	bx := int(ctx.OpExitAux)
@@ -385,12 +384,34 @@ func (tm *TieringManager) executeClosureOpExit(ctx *ExecContext, regs []runtime.
 	return nil
 }
 
+func (tm *TieringManager) invalidateGlobalValueCaches(name string) {
+	if name == "" {
+		return
+	}
+	tm.tier1.invalidateGlobalValueCaches(name)
+	for _, cf := range tm.tier2Compiled {
+		if cf == nil || cf.Proto == nil || len(cf.GlobalCache) == 0 {
+			continue
+		}
+		for cacheIdx, constIdx := range cf.GlobalCacheConsts {
+			if cacheIdx >= len(cf.GlobalCache) || constIdx < 0 || constIdx >= len(cf.Proto.Constants) {
+				continue
+			}
+			kv := cf.Proto.Constants[constIdx]
+			if kv.IsString() && kv.Str() == name {
+				cf.GlobalCache[cacheIdx] = 0
+			}
+		}
+	}
+}
+
 // executeGetUpvalOpExit handles OpGetUpval via op-exit. Reads a captured
 // upvalue from the current closure.
 //
 // Op-exit descriptor:
-//   OpExitSlot = result slot
-//   OpExitAux  = upvalue index
+//
+//	OpExitSlot = result slot
+//	OpExitAux  = upvalue index
 func (tm *TieringManager) executeGetUpvalOpExit(ctx *ExecContext, regs []runtime.Value, base int) error {
 	if tm.callVM == nil {
 		return fmt.Errorf("no callVM for GetUpval op-exit")
@@ -417,8 +438,9 @@ func (tm *TieringManager) executeGetUpvalOpExit(ctx *ExecContext, regs []runtime
 // captured upvalue in the current closure.
 //
 // Op-exit descriptor:
-//   OpExitArg1 = source slot (the value to set)
-//   OpExitAux  = upvalue index
+//
+//	OpExitArg1 = source slot (the value to set)
+//	OpExitAux  = upvalue index
 func (tm *TieringManager) executeSetUpvalOpExit(ctx *ExecContext, regs []runtime.Value, base int) error {
 	if tm.callVM == nil {
 		return fmt.Errorf("no callVM for SetUpval op-exit")
@@ -445,8 +467,9 @@ func (tm *TieringManager) executeSetUpvalOpExit(ctx *ExecContext, regs []runtime
 // from the VM frame into the register file.
 //
 // Op-exit descriptor:
-//   OpExitAux  = dest register (a from OP_VARARG)
-//   OpExitSlot = result slot (used for storing first vararg result to SSA home)
+//
+//	OpExitAux  = dest register (a from OP_VARARG)
+//	OpExitSlot = result slot (used for storing first vararg result to SSA home)
 //
 // The actual varargs come from the VM frame. Aux2 encoding: Aux = a (dest base),
 // the count is derived from the graph builder's Aux2 (stored in OpExitArg1 as
@@ -456,9 +479,9 @@ func (tm *TieringManager) executeVarargOpExit(ctx *ExecContext, regs []runtime.V
 		return fmt.Errorf("no callVM for Vararg op-exit")
 	}
 
-	destReg := int(ctx.OpExitAux)      // destination register (a)
-	resultSlot := int(ctx.OpExitSlot)   // SSA result slot
-	bCount := int(ctx.OpExitArg1)       // B field (0 = all, >=2 means B-1 results)
+	destReg := int(ctx.OpExitAux)     // destination register (a)
+	resultSlot := int(ctx.OpExitSlot) // SSA result slot
+	bCount := int(ctx.OpExitArg1)     // B field (0 = all, >=2 means B-1 results)
 
 	va := tm.callVM.CurrentVarargs()
 

@@ -307,6 +307,12 @@ type CompiledFunction struct {
 	// cache may contain stale values and must be repopulated.
 	GlobalCacheGen uint64
 
+	// GlobalCacheConsts maps each Tier 2 GlobalCache index back to the
+	// constant-pool index naming that global. It lets SetGlobal invalidate
+	// only cache entries for the written global instead of bumping the shared
+	// generation and flushing unrelated function/global ICs.
+	GlobalCacheConsts []int
+
 	// CallCache (R108) is a per-OpCall-site monomorphic IC.
 	// Layout: 2 × uint64 per call site.
 	//   [2*i]   = cached boxed closure value (NaN-boxed 0xFFFF...)

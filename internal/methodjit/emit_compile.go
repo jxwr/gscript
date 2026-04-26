@@ -191,6 +191,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		blockOutKinds:     make(map[int]map[int]uint16),
 		blockOutKeysDirty: make(map[int]map[int]bool),
 		crossBlockLive:    crossBlockLive,
+		globalCacheConsts: make([]int, 0),
 		useFPR:            hasFPR,
 		loop:              li,
 		loopHeaderRegs:    headerRegs,
@@ -311,6 +312,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		DirectEntryOffset:  directEntryOff,
 		NumericEntryOffset: numericEntryOff,
 		GlobalCache:        globalCache,
+		GlobalCacheConsts:  ec.globalCacheConsts,
 		CallCache:          callCache,
 		InstrCodeRanges:    ec.instrCodeRanges,
 		ExitSites:          buildExitSiteMeta(fn),
@@ -465,6 +467,7 @@ type emitContext struct {
 	// OpGetGlobal native cache. Each GetGlobal instruction gets a unique
 	// index (0, 1, 2, ...) assigned at emission time.
 	nextGlobalCacheIndex int
+	globalCacheConsts    []int
 
 	// nextCallCacheIndex (R108) assigns a unique IC slot to each OpCall
 	// in the compiled function. 2 uint64 per slot (closure value +
