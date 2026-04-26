@@ -347,6 +347,78 @@ func TestLoadElim_GuardTypeCSE(t *testing.T) {
 	}
 }
 
+func TestLoadElim_GuardTypeTypedProducer(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "guard_typed_producer"},
+		NumRegs: 0,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	a := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b}
+	bb := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b}
+	mul := &Instr{ID: fn.newValueID(), Op: OpMulFloat, Type: TypeFloat,
+		Args: []*Value{a.Value(), bb.Value()}, Block: b}
+	guard := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeFloat,
+		Args: []*Value{mul.Value()}, Aux: int64(TypeFloat), Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{guard.Value()}, Block: b}
+
+	b.Instrs = []*Instr{a, bb, mul, guard, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+
+	if ret.Args[0].ID != mul.ID {
+		t.Fatalf("expected return to use MulFloat v%d directly, got v%d", mul.ID, ret.Args[0].ID)
+	}
+	if guard.Op != OpNop {
+		t.Fatalf("expected proven GuardType to become Nop, got %s", guard.Op)
+	}
+
+	result, err = DCEPass(result)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+	for _, instr := range result.Entry.Instrs {
+		if instr.Op == OpGuardType {
+			t.Fatal("expected no GuardType after DCE")
+		}
+	}
+}
+
+func TestLoadElim_GuardTypeKeepsDynamicProducer(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "guard_dynamic_producer"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	field := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeFloat,
+		Args: []*Value{obj.Value()}, Aux: 42, Block: b}
+	guard := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeFloat,
+		Args: []*Value{field.Value()}, Aux: int64(TypeFloat), Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{guard.Value()}, Block: b}
+
+	b.Instrs = []*Instr{obj, field, guard, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	if _, err := LoadEliminationPass(fn); err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+
+	if guard.Op != OpGuardType {
+		t.Fatalf("expected dynamic producer guard to remain, got %s", guard.Op)
+	}
+	if ret.Args[0].ID != guard.ID {
+		t.Fatalf("expected return to keep guard v%d, got v%d", guard.ID, ret.Args[0].ID)
+	}
+}
+
 // TestLoadElim_GuardTypeCSE_DifferentTypes verifies that GuardType instructions
 // with the SAME value but DIFFERENT types are NOT eliminated — they guard for
 // different conditions.

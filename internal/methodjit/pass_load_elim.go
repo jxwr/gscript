@@ -134,6 +134,15 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				if len(instr.Args) < 1 {
 					continue
 				}
+				if guardProvenByProducer(instr.Args[0], Type(instr.Aux)) {
+					if def := instr.Args[0].Def; def != nil {
+						replaceAllUses(fn, instr.ID, def)
+					}
+					instr.Op = OpNop
+					instr.Args = nil
+					instr.Aux = 0
+					continue
+				}
 				key := guardKey{argID: instr.Args[0].ID, guardType: instr.Aux}
 				if origID, ok := guardAvail[key]; ok {
 					// Redundant guard — replace all uses with the original.
@@ -207,6 +216,38 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 	}
 
 	return fn, nil
+}
+
+func guardProvenByProducer(v *Value, guardType Type) bool {
+	if v == nil || v.Def == nil || guardType == TypeUnknown {
+		return false
+	}
+	switch guardType {
+	case TypeInt:
+		switch v.Def.Op {
+		case OpConstInt, OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt:
+			return true
+		}
+	case TypeFloat:
+		switch v.Def.Op {
+		case OpConstFloat, OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA:
+			return true
+		}
+	case TypeBool:
+		switch v.Def.Op {
+		case OpConstBool, OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat, OpEq, OpLt, OpLe, OpNot:
+			return true
+		}
+	case TypeNil:
+		return v.Def.Op == OpConstNil
+	case TypeString:
+		return v.Def.Op == OpConstString
+	case TypeTable:
+		return v.Def.Op == OpNewTable
+	case TypeFunction:
+		return v.Def.Op == OpClosure
+	}
+	return false
 }
 
 // replaceAllUses rewrites every instruction argument that references oldID
