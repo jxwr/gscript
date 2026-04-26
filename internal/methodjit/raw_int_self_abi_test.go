@@ -7,6 +7,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/gscript/gscript/internal/jit"
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -255,7 +256,7 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 	rawSelfShims := 0
 	for pc := 0; pc+4 <= len(code); pc += 4 {
 		word := binary.LittleEndian.Uint32(code[pc : pc+4])
-		if !isSubSPImm(word, rawSelfFrameSize) {
+		if !isSubSPImm(word, rawSelfFrameSizeFor(2)) {
 			continue
 		}
 		rawSelfShims++
@@ -274,6 +275,101 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 	}
 	if rawSelfShims == 0 {
 		t.Fatal("expected at least one raw self-call shim")
+	}
+}
+
+func TestRawIntSelfABI_FastPathUsesCompactFrameAndPairSave(t *testing.T) {
+	tests := []struct {
+		name           string
+		src            string
+		fnName         string
+		wantParams     int
+		wantMaxArgSTRs int
+	}{
+		{
+			name:       "fib one arg",
+			fnName:     "fib",
+			wantParams: 1,
+			src: `func fib(n) {
+	if n < 2 { return n }
+	return fib(n - 1) + fib(n - 2)
+}`,
+			wantMaxArgSTRs: 0,
+		},
+		{
+			name:       "ack two args",
+			fnName:     "ack",
+			wantParams: 2,
+			src: `func ack(m, n) {
+	if m == 0 { return n + 1 }
+	if n == 0 { return ack(m - 1, 1) }
+	return ack(m - 1, ack(m, n - 1))
+}`,
+			wantMaxArgSTRs: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			top := compileTop(t, tt.src)
+			proto := findProtoByName(top, tt.fnName)
+			if proto == nil {
+				t.Fatalf("function %q not found", tt.fnName)
+			}
+			assertRawIntSpecializedABI(t, AnalyzeSpecializedABI(proto), tt.wantParams)
+
+			tm := NewTieringManager()
+			if err := tm.CompileTier2(proto); err != nil {
+				t.Fatalf("CompileTier2(%s): %v", tt.fnName, err)
+			}
+			cf := tm.tier2Compiled[proto]
+			if cf == nil {
+				t.Fatalf("%s did not compile to Tier 2", tt.fnName)
+			}
+
+			code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+			frameSize := rawSelfFrameSizeFor(tt.wantParams)
+			rawSelfShims := 0
+			for pc := 0; pc+4 <= len(code); pc += 4 {
+				word := binary.LittleEndian.Uint32(code[pc : pc+4])
+				if !isSubSPImm(word, frameSize) {
+					continue
+				}
+
+				sawBL := false
+				sawPairSave := false
+				argSTRs := 0
+				for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+					scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+					if isSTPToSPPair(scanWord, mRegRegs, jit.X0) {
+						sawPairSave = true
+					}
+					if isSTRArgToSP(scanWord) {
+						argSTRs++
+					}
+					if isBL(scanWord) {
+						sawBL = true
+						break
+					}
+					if isUnconditionalB(scanWord) || scan-pc > 200 {
+						break
+					}
+				}
+				if !sawBL {
+					continue
+				}
+				rawSelfShims++
+				if !sawPairSave {
+					t.Fatalf("raw self-call shim at %#x does not pair-save mRegRegs+arg0", pc)
+				}
+				if argSTRs > tt.wantMaxArgSTRs {
+					t.Fatalf("raw self-call shim at %#x emitted %d arg STRs, want <= %d", pc, argSTRs, tt.wantMaxArgSTRs)
+				}
+			}
+			if rawSelfShims == 0 {
+				t.Fatal("expected at least one compact raw self-call shim")
+			}
+		})
 	}
 }
 
@@ -452,6 +548,23 @@ func isLDRCtxRegsToMRegRegs(word uint32) bool {
 
 func isSTRToMRegRegs(word uint32) bool {
 	return word&0xFFC003E0 == 0xF9000000|uint32(mRegRegs)<<5
+}
+
+func isSTPToSPPair(word uint32, rt1, rt2 jit.Reg) bool {
+	if word&0xFFC00000 != 0xA9000000 {
+		return false
+	}
+	return word&0x1F == uint32(rt1) &&
+		(word>>10)&0x1F == uint32(rt2) &&
+		(word>>5)&0x1F == uint32(jit.SP)
+}
+
+func isSTRArgToSP(word uint32) bool {
+	if word&0xFFC00000 != 0xF9000000 || (word>>5)&0x1F != uint32(jit.SP) {
+		return false
+	}
+	rt := word & 0x1F
+	return rt >= uint32(jit.X0) && rt <= uint32(jit.X3)
 }
 
 func isCtxCallModeAccess(word uint32) bool {

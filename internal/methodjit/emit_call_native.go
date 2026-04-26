@@ -54,9 +54,8 @@ const (
 )
 
 const (
-	rawSelfFrameSize = 48
-	rawSelfRegsOff   = 0
-	rawSelfArgsOff   = 8
+	rawSelfRegsOff = 0
+	rawSelfArgsOff = 8
 
 	rawPeerFrameSize = 64
 	rawPeerRegsOff   = 0
@@ -64,6 +63,11 @@ const (
 	rawPeerFuncOff   = 16
 	rawPeerArgsOff   = 24
 )
+
+func rawSelfFrameSizeFor(nParams int) int {
+	size := rawSelfArgsOff + nParams*jit.ValueSize
+	return (size + 15) &^ 15
+}
 
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
 // Uses selective spill/reload of SSA registers around the BLR: only registers
@@ -550,8 +554,8 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
 
 	// Raw-call frame:
-	//   0       saved caller mRegRegs
-	//   8..39   raw int args X0..X3
+	//   0        saved caller mRegRegs
+	//   8..39    raw int args X0..X3, truncated to actual fixed arity
 	//
 	// The caller's own entry frame already owns FP/LR, and raw-int self calls
 	// stay within one proto/closure/constant domain. We keep the callee base in
@@ -562,14 +566,11 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	// static self recursion cannot change closure identity while this native
 	// frame is executing. Numeric entries return through num_epilogue and do
 	// not branch on CallMode, so raw self calls leave ctx.CallMode unchanged.
-	asm.SUBimm(jit.SP, jit.SP, rawSelfFrameSize)
-	asm.STR(mRegRegs, jit.SP, rawSelfRegsOff)
+	rawFrameSize := rawSelfFrameSizeFor(nParams)
+	asm.SUBimm(jit.SP, jit.SP, uint16(rawFrameSize))
 
 	ec.emitNumericArgsInRegs(instr, nParams)
-	for i := 0; i < nParams; i++ {
-		argReg := jit.Reg(int(jit.X0) + i)
-		asm.STR(argReg, jit.SP, rawSelfArgsOff+i*jit.ValueSize)
-	}
+	ec.emitSaveRawSelfCallerFrame(nParams)
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 
@@ -579,23 +580,22 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 
 	calleeFrameBytes := ec.nextSlot * jit.ValueSize
 	if calleeBaseOff+calleeFrameBytes <= 4095 {
-		asm.ADDimm(jit.X7, mRegRegs, uint16(calleeBaseOff+calleeFrameBytes))
+		asm.ADDimm(jit.X8, mRegRegs, uint16(calleeBaseOff+calleeFrameBytes))
 	} else {
 		asm.LoadImm64(jit.X8, int64(calleeBaseOff+calleeFrameBytes))
-		asm.ADDreg(jit.X7, mRegRegs, jit.X8)
+		asm.ADDreg(jit.X8, mRegRegs, jit.X8)
 	}
-	asm.LDR(jit.X8, mRegCtx, execCtxOffRegsEnd)
-	asm.CMPreg(jit.X7, jit.X8)
+	asm.LDR(jit.X9, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X8, jit.X9)
 	asm.BCond(jit.CondHI, slowLabel)
 
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
 	} else {
-		asm.LoadImm64(jit.X7, int64(calleeBaseOff))
-		asm.ADDreg(mRegRegs, mRegRegs, jit.X7)
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
+		asm.ADDreg(mRegRegs, mRegRegs, jit.X8)
 	}
 
-	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
 	asm.ADDimm(jit.X7, jit.X7, 1)
 	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
 
@@ -609,7 +609,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.CBNZ(jit.X7, exitLabel)
 
 	ec.emitRestoreRawSelfCallerState()
-	asm.ADDimm(jit.SP, jit.SP, rawSelfFrameSize)
+	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 	ec.emitUnboxRawIntRegs(preRawIntRegs)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
@@ -622,11 +622,24 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	ec.emitRestoreRawSelfCallerState()
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
 	ec.emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlot, nArgs, rawSelfArgsOff)
-	asm.ADDimm(jit.SP, jit.SP, rawSelfFrameSize)
+	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
 	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs, liveGPRs, liveFPRs)
 	ec.rawIntRegs = postRawIntRegs
 
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitSaveRawSelfCallerFrame(nParams int) {
+	asm := ec.asm
+	asm.STP(mRegRegs, jit.X0, jit.SP, rawSelfRegsOff)
+	if nParams >= 3 {
+		asm.STP(jit.X1, jit.X2, jit.SP, rawSelfArgsOff+jit.ValueSize)
+	} else if nParams >= 2 {
+		asm.STR(jit.X1, jit.SP, rawSelfArgsOff+jit.ValueSize)
+	}
+	if nParams >= 4 {
+		asm.STR(jit.X3, jit.SP, rawSelfArgsOff+3*jit.ValueSize)
+	}
 }
 
 func (ec *emitContext) emitRestoreRawSelfCallerState() {
