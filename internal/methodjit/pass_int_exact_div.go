@@ -20,8 +20,12 @@ func IntExactDivisionPass(fn *Function) (*Function, error) {
 	if len(proven) == 0 {
 		return fn, nil
 	}
+	candidates := collectIntExactDivCandidates(fn, proven)
+	if len(candidates) == 0 {
+		return fn, nil
+	}
 
-	intPossible := solveIntNarrowableValues(fn, proven)
+	intPossible := solveIntNarrowableValues(fn, proven, candidates)
 	changed := false
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -180,11 +184,118 @@ func parseModZeroArgs(modVal, zeroVal *Value) (modZeroProof, bool) {
 	return modZeroProof{lhs: mod.Args[0], divisor: divisor}, true
 }
 
-func solveIntNarrowableValues(fn *Function, provenDiv map[int]bool) map[int]bool {
+func collectIntExactDivCandidates(fn *Function, provenDiv map[int]bool) map[int]bool {
+	uses := buildInstrUses(fn)
+	defs := buildInstrDefs(fn)
+	out := make(map[int]bool)
+	for divID := range provenDiv {
+		component := collectExactDivComponent(divID, uses, defs, provenDiv)
+		if !componentHasPhi(component, defs) || componentHasObservableUse(component, uses) {
+			continue
+		}
+		for id := range component {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+func collectExactDivComponent(root int, uses map[int][]*Instr, defs map[int]*Instr, provenDiv map[int]bool) map[int]bool {
+	component := make(map[int]bool)
+	work := []int{root}
+	for len(work) > 0 {
+		id := work[len(work)-1]
+		work = work[:len(work)-1]
+		if component[id] {
+			continue
+		}
+		instr := defs[id]
+		if instr == nil || !isExactDivComponentOp(instr, provenDiv) {
+			continue
+		}
+		component[id] = true
+		for _, arg := range instr.Args {
+			if arg != nil && arg.Def != nil && isExactDivComponentOp(arg.Def, provenDiv) {
+				work = append(work, arg.ID)
+			}
+		}
+		for _, use := range uses[id] {
+			if use != nil && isExactDivComponentOp(use, provenDiv) {
+				work = append(work, use.ID)
+			}
+		}
+	}
+	return component
+}
+
+func isExactDivComponentOp(instr *Instr, provenDiv map[int]bool) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpPhi,
+		OpAdd, OpSub, OpMul, OpMod,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt,
+		OpAddFloat, OpSubFloat, OpMulFloat:
+		return true
+	case OpDiv, OpDivFloat:
+		return provenDiv[instr.ID]
+	default:
+		return false
+	}
+}
+
+func componentHasPhi(component map[int]bool, defs map[int]*Instr) bool {
+	for id := range component {
+		if defs[id] != nil && defs[id].Op == OpPhi {
+			return true
+		}
+	}
+	return false
+}
+
+func componentHasObservableUse(component map[int]bool, uses map[int][]*Instr) bool {
+	for id := range component {
+		for _, use := range uses[id] {
+			if use == nil || component[use.ID] {
+				continue
+			}
+			if isExactDivAllowedExternalUse(use.Op) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func isExactDivAllowedExternalUse(op Op) bool {
+	switch op {
+	case OpEq, OpLt, OpLe, OpEqInt, OpLtInt, OpLeInt,
+		OpGuardType, OpBranch:
+		return true
+	default:
+		return false
+	}
+}
+
+func buildInstrDefs(fn *Function) map[int]*Instr {
+	defs := make(map[int]*Instr)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && !instr.Op.IsTerminator() {
+				defs[instr.ID] = instr
+			}
+		}
+	}
+	return defs
+}
+
+func solveIntNarrowableValues(fn *Function, provenDiv, candidates map[int]bool) map[int]bool {
 	possible := make(map[int]bool)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if mayBeIntNarrowed(instr, provenDiv) {
+			if candidates[instr.ID] && mayBeIntNarrowed(instr, provenDiv) {
 				possible[instr.ID] = true
 			}
 		}

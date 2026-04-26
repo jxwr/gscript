@@ -108,3 +108,39 @@ result := half(7)`
 		t.Fatalf("unguarded x / 2 must remain float division, IR:\n%s", Print(fn))
 	}
 }
+
+func TestTier2ExactDivDoesNotNarrowObservableGuardedDivision(t *testing.T) {
+	src := `
+func half_even(x) {
+    if x % 2 == 0 {
+        return x / 2
+    }
+    return 0
+}
+result := half_even(8)`
+	proto := compileProto(t, src)
+	halfEven := findProtoByName(proto, "half_even")
+	if halfEven == nil {
+		t.Fatal("half_even proto not found")
+	}
+	fn := BuildGraph(halfEven)
+	fn, _, err := RunTier2Pipeline(fn, nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(half_even): %v", err)
+	}
+	if countOpHelper(fn, OpDivIntExact) != 0 {
+		t.Fatalf("guarded but observable x / 2 must remain float division, IR:\n%s", Print(fn))
+	}
+
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	v.SetMethodJIT(NewTieringManager())
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("JIT execute: %v", err)
+	}
+	result := v.GetGlobal("result")
+	if !result.IsFloat() || result.Float() != 4.0 {
+		t.Fatalf("half_even(8) result=%v, want float(4.0)", result)
+	}
+}
