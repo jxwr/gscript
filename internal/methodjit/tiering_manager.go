@@ -816,6 +816,9 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	// clean → promotes and gets the 100× speedup. For sieve's <main>,
 	// sort's <main>, etc., OpCall/OpSetTable in loop → rejected.
 	if !tm.envTier2NoFilter {
+		if hasKnownFloatModInLoop(fn) {
+			return nil, fmt.Errorf("tier2: has known-float OpMod inside loop (performance-blocked), staying at Tier 1")
+		}
 		profile := tm.getProfile(proto)
 		if profile.LoopDepth < 2 {
 			if op, ok := firstExitResumeInLoop(fn, loopCallGlobals); ok {
@@ -1298,6 +1301,21 @@ func hasExpensiveInLoop(fn *Function, predicate func(Op) bool) bool {
 func hasExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
 	_, ok := firstExitResumeInLoop(fn, globals)
 	return ok
+}
+
+func hasKnownFloatModInLoop(fn *Function) bool {
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op == OpMod && instr.Type == TypeFloat {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, bool) {
