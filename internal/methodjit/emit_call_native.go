@@ -796,13 +796,6 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	asm.ADDimm(jit.X8, jit.X8, 1)
 	asm.STR(jit.X8, jit.X7, funcProtoOffCallCount)
 
-	for i := 0; i < nArgs; i++ {
-		argReg := jit.Reg(int(jit.X0) + i)
-		dstOff := calleeBaseOff + i*jit.ValueSize
-		jit.EmitBoxIntFast(asm, jit.X9, argReg, mRegTagInt)
-		asm.STR(jit.X9, mRegRegs, dstOff)
-	}
-
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
 	} else {

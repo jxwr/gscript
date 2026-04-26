@@ -277,6 +277,83 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 	}
 }
 
+func TestRawIntPeerABI_FastPathDoesNotBoxArgsToCalleeWindow(t *testing.T) {
+	src := `func dec(n) {
+	return n - 1
+}
+func caller(n) {
+	total := 0
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= 2; j++ {
+			total = total + dec(i + j)
+		}
+	}
+	return total
+}`
+	top := compileTop(t, src)
+	dec := findProtoByName(top, "dec")
+	caller := findProtoByName(top, "caller")
+	if dec == nil || caller == nil {
+		t.Fatalf("missing protos: dec=%v caller=%v", dec != nil, caller != nil)
+	}
+	assertRawIntSpecializedABI(t, AnalyzeSpecializedABI(dec), 1)
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(dec); err != nil {
+		t.Fatalf("CompileTier2(dec): %v", err)
+	}
+	if dec.Tier2NumericEntryPtr == 0 {
+		t.Fatal("dec did not publish a numeric entry")
+	}
+	fn := BuildGraph(caller)
+	fn, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals: map[string]*vm.FuncProto{"dec": dec},
+		InlineMaxSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(caller): %v", err)
+	}
+	// The production raw-peer gate is still restricted to int-typed call
+	// results. Force that shape here so this test is about the emitted ABI
+	// shim, not the caller-side type propagation heuristic.
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall {
+				instr.Type = TypeInt
+			}
+		}
+	}
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile(caller): %v", err)
+	}
+
+	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+	rawPeerShims := 0
+	for pc := 0; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		if !isSubSPImm(word, rawPeerFrameSize) {
+			continue
+		}
+		rawPeerShims++
+		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isSTRToMRegRegs(scanWord) {
+				t.Fatalf("raw peer-call shim at %#x boxes/stores args to VM window before BLR at %#x", pc, scan)
+			}
+			if isBLR(scanWord) {
+				break
+			}
+			if scan-pc > 240 {
+				t.Fatalf("raw peer-call shim at %#x did not reach BLR within expected window", pc)
+			}
+		}
+	}
+	if rawPeerShims == 0 {
+		t.Fatal("expected at least one raw peer-call shim")
+	}
+}
+
 func TestRawIntSelfABI_NonEligibleStaysBoxed(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -348,6 +425,10 @@ func isBL(word uint32) bool {
 	return word&0xFC000000 == 0x94000000
 }
 
+func isBLR(word uint32) bool {
+	return word&0xFFFFFC1F == 0xD63F0000
+}
+
 func isSubSPImm(word uint32, imm int) bool {
 	if imm < 0 || imm > 4095 {
 		return false
@@ -367,6 +448,10 @@ func isFPRPairStoreToSP(word uint32) bool {
 func isLDRCtxRegsToMRegRegs(word uint32) bool {
 	pimm := uint32(execCtxOffRegs >> 3)
 	return word == 0xF9400000|((pimm&0xFFF)<<10)|uint32(mRegCtx)<<5|uint32(mRegRegs)
+}
+
+func isSTRToMRegRegs(word uint32) bool {
+	return word&0xFFC003E0 == 0xF9000000|uint32(mRegRegs)<<5
 }
 
 func isCtxCallModeAccess(word uint32) bool {
