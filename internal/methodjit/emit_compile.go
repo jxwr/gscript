@@ -296,7 +296,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		globalCache = make([]uint64, ec.nextGlobalCacheIndex)
 	}
 
-	// R108: allocate per-OpCall monomorphic IC cache (2 uint64 per site).
+	// R108/R151: allocate per-OpCall monomorphic IC cache (2 uint64 per site).
 	var callCache []uint64
 	if ec.nextCallCacheIndex > 0 {
 		callCache = make([]uint64, 2*ec.nextCallCacheIndex)

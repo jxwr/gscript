@@ -104,6 +104,66 @@ func caller(f, n) {
 	}
 }
 
+func TestTier2TailCallICUsesTier2EntryWhenGenericEntryCleared(t *testing.T) {
+	src := `
+func inc(n) {
+    return n + 1
+}
+func caller(f, n) {
+    return f(n)
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	inc := findProtoByName(top, "inc")
+	caller := findProtoByName(top, "caller")
+	if inc == nil || caller == nil {
+		t.Fatalf("missing protos: inc=%v caller=%v", inc != nil, caller != nil)
+	}
+
+	fnInc := v.GetGlobal("inc")
+	fnCaller := v.GetGlobal("caller")
+	if _, err := v.CallValue(fnCaller, []runtime.Value{fnInc, runtime.IntValue(40)}); err != nil {
+		t.Fatalf("warm CallValue(caller): %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(inc); err != nil {
+		t.Fatalf("CompileTier2(inc): %v", err)
+	}
+	if err := tm.CompileTier2(caller); err != nil {
+		t.Fatalf("CompileTier2(caller): %v", err)
+	}
+
+	if inc.Tier2DirectEntryPtr == 0 {
+		t.Fatal("inc Tier2DirectEntryPtr was not published")
+	}
+	inc.DirectEntryPtr = 0
+	inc.CallCount = 100
+
+	results, err := v.CallValue(fnCaller, []runtime.Value{fnInc, runtime.IntValue(40)})
+	if err != nil {
+		t.Fatalf("CallValue(caller): %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 41 {
+		t.Fatalf("caller result=%v, want int 41", results)
+	}
+	if inc.EnteredTier2 == 0 || caller.EnteredTier2 == 0 {
+		t.Fatalf("expected both protos to enter Tier 2, inc=%d caller=%d",
+			inc.EnteredTier2, caller.EnteredTier2)
+	}
+	if got := tm.ExitStats().ByExitCode["ExitCallExit"]; got != 0 {
+		t.Fatalf("generic DirectEntryPtr clear forced tail ExitCallExit count=%d; want 0", got)
+	}
+}
+
 func TestTier2GlobalCacheInvalidatesByName(t *testing.T) {
 	tm := NewTieringManager()
 	proto := &vm.FuncProto{
