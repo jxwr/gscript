@@ -963,6 +963,11 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	if !tm.envTier2NoFilter {
 		profile := tm.getProfile(proto)
 		if profile.LoopDepth < 2 {
+			if hasReadWriteGlobalInSameLoop(fn) {
+				remarks.Add("Tier2Gate", "blocked", 0, 0, OpSetGlobal,
+					"LoopDepth<2 candidate reads and writes a global in the same loop")
+				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has read/write global state inside loop, staying at Tier 1")
+			}
 			if op, ok := firstCallBoundaryTier2BlockerInLoop(fn, loopCallGlobals); ok {
 				remarks.Add("Tier2Gate", "blocked", 0, 0, op,
 					fmt.Sprintf("LoopDepth<2 candidate has performance-blocked %s inside loop", op))
@@ -1713,6 +1718,33 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 		}
 	}
 	return OpNop, false
+}
+
+func hasReadWriteGlobalInSameLoop(fn *Function) bool {
+	li := computeLoopInfo(fn)
+	for _, blocks := range li.headerBlocks {
+		read := make(map[int64]bool)
+		write := make(map[int64]bool)
+		for _, block := range fn.Blocks {
+			if !blocks[block.ID] {
+				continue
+			}
+			for _, instr := range block.Instrs {
+				switch instr.Op {
+				case OpGetGlobal:
+					read[instr.Aux] = true
+				case OpSetGlobal:
+					write[instr.Aux] = true
+				}
+			}
+		}
+		for nameIdx := range write {
+			if read[nameIdx] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func firstSelfRecursiveTableMutationInLoop(fn *Function) (Op, bool) {

@@ -7,6 +7,7 @@ package methodjit
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -195,6 +196,23 @@ for r := 1; r <= 3; r++ {
 				t.Fatalf("expected <main> Tier2 compile to pass loop-call gate: %v", err)
 			}
 		})
+	}
+}
+
+func TestLoopCallGateBlocksLoopGlobalReduction(t *testing.T) {
+	top := compileProto(t, `
+func helper(x) { return x + 1 }
+
+sum := 0
+for i := 1; i <= 10; i++ {
+    sum = sum + helper(i)
+}
+`)
+	tm := NewTieringManager()
+	if _, err := tm.CompileForDiagnostics(top); err == nil {
+		t.Fatalf("expected <main> Tier2 compile to block global loop reduction")
+	} else if !strings.Contains(err.Error(), "read/write global state inside loop") {
+		t.Fatalf("CompileForDiagnostics error = %q, want read/write global loop gate", err)
 	}
 }
 

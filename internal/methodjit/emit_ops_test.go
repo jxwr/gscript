@@ -132,6 +132,53 @@ func TestEmit_Div(t *testing.T) {
 	}
 }
 
+func TestEmit_ModIntSignMatchesVM(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		args []runtime.Value
+	}{
+		{name: "negative dividend", src: `func f(a) { return a % 3 }`, args: []runtime.Value{runtime.IntValue(-5)}},
+		{name: "negative divisor", src: `func f(a) { return a % -3 }`, args: []runtime.Value{runtime.IntValue(5)}},
+		{name: "both negative", src: `func f(a) { return a % -3 }`, args: []runtime.Value{runtime.IntValue(-5)}},
+		{name: "param divisor", src: `func f(b) { return -5 % b }`, args: []runtime.Value{runtime.IntValue(3)}},
+	}
+	for _, tc := range cases {
+		proto := compileFunction(t, tc.src)
+		fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+		if err != nil {
+			t.Fatalf("%s: RunTier2Pipeline error: %v", tc.name, err)
+		}
+		foundModInt := false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr.Op == OpModInt {
+					foundModInt = true
+				}
+			}
+		}
+		if !foundModInt {
+			t.Fatalf("%s: expected pipeline to specialize to OpModInt, IR:\n%s", tc.name, Print(fn))
+		}
+
+		alloc := AllocateRegisters(fn)
+		cf, err := Compile(fn, alloc)
+		if err != nil {
+			t.Fatalf("%s: Compile error: %v", tc.name, err)
+		}
+		result, err := cf.Execute(tc.args)
+		cf.Code.Free()
+		if err != nil {
+			t.Fatalf("%s: Execute error for args=%v: %v", tc.name, tc.args, err)
+		}
+		vmResult := runVM(t, tc.src, tc.args)
+		if len(result) == 0 || len(vmResult) == 0 {
+			t.Fatalf("%s: empty result for args=%v: JIT=%v VM=%v", tc.name, tc.args, result, vmResult)
+		}
+		assertValuesEqual(t, fmt.Sprintf("%s f(%v)", tc.name, tc.args), result[0], vmResult[0])
+	}
+}
+
 // TestEmit_Div_Exact: 10 / 2 = 5.0 (float, not int).
 func TestEmit_Div_Exact(t *testing.T) {
 	src := `func f(a, b) { return a / b }`

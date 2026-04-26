@@ -124,8 +124,7 @@ func (ec *emitContext) emitIntBinOp(instr *Instr, op intBinOp) {
 	case intBinMul:
 		ec.asm.MUL(jit.X0, jit.X0, jit.X1)
 	case intBinMod:
-		ec.asm.SDIV(jit.X2, jit.X0, jit.X1)
-		ec.asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
+		ec.emitIntModX0X1(instr)
 	}
 
 	// Check for int48 overflow on ADD/SUB/MUL (MOD cannot overflow).
@@ -188,6 +187,25 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 
 	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
 	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+	if op == intBinMod {
+		if lhs == jit.X1 && rhs == jit.X0 {
+			ec.asm.MOVreg(jit.X3, rhs)
+			ec.asm.MOVreg(jit.X0, lhs)
+			ec.asm.MOVreg(jit.X1, jit.X3)
+		} else {
+			if rhs == jit.X0 {
+				ec.asm.MOVreg(jit.X1, rhs)
+			}
+			if lhs != jit.X0 {
+				ec.asm.MOVreg(jit.X0, lhs)
+			}
+			if rhs != jit.X1 {
+				ec.asm.MOVreg(jit.X1, rhs)
+			}
+		}
+		lhs = jit.X0
+		rhs = jit.X1
+	}
 
 	switch op {
 	case intBinAdd:
@@ -197,8 +215,8 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 	case intBinMul:
 		ec.asm.MUL(dst, lhs, rhs)
 	case intBinMod:
-		ec.asm.SDIV(jit.X2, lhs, rhs)
-		ec.asm.MSUB(dst, jit.X2, rhs, lhs)
+		ec.emitIntModX0X1(instr)
+		dst = jit.X0
 	}
 
 	// Check for int48 overflow on ADD/SUB/MUL (MOD cannot overflow).
@@ -210,6 +228,42 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 
 	// Mark as raw int in register (no box needed until block boundary/return).
 	ec.storeRawInt(dst, instr.ID)
+}
+
+// emitIntModX0X1 computes X0 = X0 % X1 for raw signed integers using VM
+// modulo semantics. The VM reports n%0 as an error; Tier 2 reaches that by
+// deopting so the interpreter handles the exact runtime error path.
+func (ec *emitContext) emitIntModX0X1(instr *Instr) {
+	asm := ec.asm
+	zero := ec.uniqueLabel("int_mod_zero")
+	adjust := ec.uniqueLabel("int_mod_adjust")
+	done := ec.uniqueLabel("int_mod_done")
+
+	asm.CBZ(jit.X1, zero)
+	asm.SDIV(jit.X2, jit.X0, jit.X1)
+	asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
+
+	asm.CBZ(jit.X0, done)
+	asm.EORreg(jit.X3, jit.X0, jit.X1)
+	asm.TBNZ(jit.X3, 63, adjust)
+	asm.B(done)
+
+	asm.Label(adjust)
+	asm.ADDreg(jit.X0, jit.X0, jit.X1)
+	asm.B(done)
+
+	asm.Label(zero)
+	ec.emitStoreAllActiveRegs()
+	ec.emitLoopExitBoxing(-1)
+	asm.LoadImm64(jit.X0, ExitDeopt)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+
+	asm.Label(done)
 }
 
 // int48Safe reports whether range analysis proved that instr's result

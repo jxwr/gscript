@@ -432,8 +432,7 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	case intBinMul:
 		asm.MUL(jit.X0, jit.X0, jit.X1)
 	case intBinMod:
-		asm.SDIV(jit.X2, jit.X0, jit.X1)
-		asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
+		ec.emitIntModX0X1(instr)
 	}
 	// Int48 overflow in the generic boxed path promotes to float instead of
 	// deopting. Raw-int specialized ops still deopt because their loop phis
