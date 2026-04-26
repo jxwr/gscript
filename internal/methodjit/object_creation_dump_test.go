@@ -64,8 +64,11 @@ func TestObjectCreationDump(t *testing.T) {
 	// FPRLoopPhiWriteback: raw-float loop phis now defer memory writeback to
 	// loop exit when their FPR survives the loop body, shaving a few
 	// FMOV/STR pairs from the inlined object loops.
+	//
+	// FloatScaleReuse: create_and_sum drops one duplicated float scale chain
+	// after rewriting 2.0*x to reuse an existing 1.0*x materialization.
 	baselines := []baseline{
-		{"create_and_sum", 463, 72},  // R161: was 1277/598
+		{"create_and_sum", 454, 69},  // R161: was 1277/598
 		{"transform_chain", 582, 80}, // R161: was 1701/816
 		{"new_vec3", 228, 135},       // unchanged EA shape; codegen bookkeeping moved
 	}

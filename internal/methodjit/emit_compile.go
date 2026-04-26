@@ -37,6 +37,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	var headerFPRegs map[int]map[int]loopFPRegEntry
 	var safeHdrRegs map[int]map[int]loopRegEntry
 	var safeHdrFPRegs map[int]map[int]loopFPRegEntry
+	var safeInvariantFPRegs map[int]map[int]loopFPRegEntry
 	var phiOnlyArgs loopPhiArgSet
 	var fpPhiOnlyArgs loopPhiArgSet
 	exitBoxPhis := make(map[int]bool)
@@ -49,6 +50,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		// block activation and loopPhiOnlyArgs checking.
 		safeHdrRegs = computeSafeHeaderRegs(fn, li, alloc, headerRegs)
 		safeHdrFPRegs = computeSafeHeaderFPRegs(fn, li, alloc, headerFPRegs)
+		safeInvariantFPRegs = computeSafeLoopInvariantFPRegs(fn, li, alloc)
 		phiOnlyArgs = computeLoopPhiArgs(fn, li, alloc, safeHdrRegs)
 		fpPhiOnlyArgs = computeLoopFPPhiArgs(fn, li, alloc, safeHdrFPRegs)
 
@@ -173,42 +175,43 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	fusedCmps := computeFusedComparisons(fn)
 
 	ec := &emitContext{
-		fn:                fn,
-		alloc:             alloc,
-		asm:               jit.NewAssembler(),
-		slotMap:           make(map[int]int),
-		nextSlot:          fn.NumRegs,
-		activeRegs:        make(map[int]bool),
-		rawIntRegs:        make(map[int]bool),
-		activeFPRegs:      make(map[int]bool),
-		shapeVerified:     make(map[int]uint32),
-		tableVerified:     make(map[int]bool),
-		kindVerified:      make(map[int]uint16),
-		keysDirtyWritten:  make(map[int]bool),
-		dmVerified:        make(map[int]bool),
-		blockOutShapes:    make(map[int]map[int]uint32),
-		blockOutTables:    make(map[int]map[int]bool),
-		blockOutKinds:     make(map[int]map[int]uint16),
-		blockOutKeysDirty: make(map[int]map[int]bool),
-		crossBlockLive:    crossBlockLive,
-		globalCacheConsts: make([]int, 0),
-		useFPR:            hasFPR,
-		loop:              li,
-		loopHeaderRegs:    headerRegs,
-		loopHeaderFPRegs:  headerFPRegs,
-		safeHeaderRegs:    safeHdrRegs,
-		safeHeaderFPRegs:  safeHdrFPRegs,
-		loopPhiOnlyArgs:   phiOnlyArgs,
-		loopFPPhiOnlyArgs: fpPhiOnlyArgs,
-		loopExitBoxPhis:   exitBoxPhis,
-		loopExitBoxFPPhis: exitBoxFPPhis,
-		constInts:         constInts,
-		constBools:        constBools,
-		irTypes:           irTypes,
-		scratchFPRCache:   make(map[int]jit.FReg),
-		fusedCmps:         fusedCmps,
-		tailCallInstrs:    computeTailCalls(fn),
-		instrCodeRanges:   make([]InstrCodeRange, 0, fn.nextID),
+		fn:                  fn,
+		alloc:               alloc,
+		asm:                 jit.NewAssembler(),
+		slotMap:             make(map[int]int),
+		nextSlot:            fn.NumRegs,
+		activeRegs:          make(map[int]bool),
+		rawIntRegs:          make(map[int]bool),
+		activeFPRegs:        make(map[int]bool),
+		shapeVerified:       make(map[int]uint32),
+		tableVerified:       make(map[int]bool),
+		kindVerified:        make(map[int]uint16),
+		keysDirtyWritten:    make(map[int]bool),
+		dmVerified:          make(map[int]bool),
+		blockOutShapes:      make(map[int]map[int]uint32),
+		blockOutTables:      make(map[int]map[int]bool),
+		blockOutKinds:       make(map[int]map[int]uint16),
+		blockOutKeysDirty:   make(map[int]map[int]bool),
+		crossBlockLive:      crossBlockLive,
+		globalCacheConsts:   make([]int, 0),
+		useFPR:              hasFPR,
+		loop:                li,
+		loopHeaderRegs:      headerRegs,
+		loopHeaderFPRegs:    headerFPRegs,
+		safeHeaderRegs:      safeHdrRegs,
+		safeHeaderFPRegs:    safeHdrFPRegs,
+		safeInvariantFPRegs: safeInvariantFPRegs,
+		loopPhiOnlyArgs:     phiOnlyArgs,
+		loopFPPhiOnlyArgs:   fpPhiOnlyArgs,
+		loopExitBoxPhis:     exitBoxPhis,
+		loopExitBoxFPPhis:   exitBoxFPPhis,
+		constInts:           constInts,
+		constBools:          constBools,
+		irTypes:             irTypes,
+		scratchFPRCache:     make(map[int]jit.FReg),
+		fusedCmps:           fusedCmps,
+		tailCallInstrs:      computeTailCalls(fn),
+		instrCodeRanges:     make([]InstrCodeRange, 0, fn.nextID),
 	}
 	if exitResumeCheckEnabled() {
 		ec.exitResumeCheck = newExitResumeCheckMetadata()
@@ -430,8 +433,9 @@ type emitContext struct {
 	// safeHeaderRegs are the subset of loopHeaderRegs whose registers are
 	// NOT clobbered by any non-header block in the loop body. Only these
 	// values can safely be activated in non-header blocks.
-	safeHeaderRegs   map[int]map[int]loopRegEntry
-	safeHeaderFPRegs map[int]map[int]loopFPRegEntry
+	safeHeaderRegs      map[int]map[int]loopRegEntry
+	safeHeaderFPRegs    map[int]map[int]loopFPRegEntry
+	safeInvariantFPRegs map[int]map[int]loopFPRegEntry
 
 	// loopPhiOnlyArgs is the set of value IDs that are ONLY used as phi args
 	// to loop header phis. storeRawInt skips write-through for these values
@@ -1016,6 +1020,11 @@ func (ec *emitContext) emitBlock(block *Block) {
 		if innerHeader, ok := ec.loop.blockInnerHeader[block.ID]; ok {
 			if hdrFPRegs, ok := ec.safeHeaderFPRegs[innerHeader]; ok {
 				for _, entry := range hdrFPRegs {
+					ec.activeFPRegs[entry.ValueID] = true
+				}
+			}
+			if invFPRegs, ok := ec.safeInvariantFPRegs[innerHeader]; ok {
+				for _, entry := range invFPRegs {
 					ec.activeFPRegs[entry.ValueID] = true
 				}
 			}

@@ -187,8 +187,9 @@ func TestRegallocCarriesLoopHeaderPhis_Mandelbrot(t *testing.T) {
 // collide with the body's arithmetic result or with each other.
 //
 // CFG shape:
-//   entry(b0) → preheader(b1) → header(b2) → body(b3) → header (back-edge)
-//                                           → exit(b4)
+//
+//	entry(b0) → preheader(b1) → header(b2) → body(b3) → header (back-edge)
+//	                                        → exit(b4)
 func TestRegalloc_PreheaderInvariantPinned(t *testing.T) {
 	fn := &Function{NumRegs: 2, CarryPreheaderInvariants: true}
 
@@ -304,6 +305,91 @@ func TestRegalloc_PreheaderInvariantPinned(t *testing.T) {
 	}
 }
 
+func TestRegalloc_PreheaderInvariantPinned_OutOfOrderBlocks(t *testing.T) {
+	fn := &Function{NumRegs: 2, CarryPreheaderInvariants: true}
+
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)} // entry
+	b1 := &Block{ID: 1, defs: make(map[int]*Value)} // pre-header
+	b2 := &Block{ID: 2, defs: make(map[int]*Value)} // loop header
+	b3 := &Block{ID: 3, defs: make(map[int]*Value)} // loop body
+	b4 := &Block{ID: 4, defs: make(map[int]*Value)} // exit
+	fn.Entry = b0
+	// Production graphs can place the body before the pre-header in fn.Blocks.
+	fn.Blocks = []*Block{b0, b3, b1, b2, b4}
+
+	b0.Succs = []*Block{b1}
+	b1.Preds = []*Block{b0}
+	b1.Succs = []*Block{b2}
+	b2.Preds = []*Block{b1, b3}
+	b2.Succs = []*Block{b3, b4}
+	b3.Preds = []*Block{b2}
+	b3.Succs = []*Block{b2}
+	b4.Preds = []*Block{b2}
+
+	b0.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}}
+
+	vConst1 := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b1}
+	vConst2 := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b1}
+	vSeed := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b1, Aux: int64(b2.ID)}
+	b1.Instrs = []*Instr{vConst1, vConst2, vSeed, b1Term}
+
+	vPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: b2}
+	vCond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b2, Aux: 1}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b2,
+		Args: []*Value{vCond.Value()},
+		Aux:  int64(b3.ID), Aux2: int64(b4.ID)}
+	b2.Instrs = []*Instr{vPhi, vCond, b2Term}
+
+	vMul := &Instr{ID: fn.newValueID(), Op: OpMulFloat, Type: TypeFloat, Block: b3,
+		Args: []*Value{vPhi.Value(), vConst1.Value()}}
+	vAdd := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Block: b3,
+		Args: []*Value{vMul.Value(), vConst2.Value()}}
+	b3Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b3, Aux: int64(b2.ID)}
+	b3.Instrs = []*Instr{vMul, vAdd, b3Term}
+
+	vPhi.Args = []*Value{vSeed.Value(), vAdd.Value()}
+	b4.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b4,
+		Args: []*Value{vPhi.Value()}}}
+
+	alloc := AllocateRegisters(fn)
+
+	regConst1, ok1 := alloc.ValueRegs[vConst1.ID]
+	regConst2, ok2 := alloc.ValueRegs[vConst2.ID]
+	if !ok1 || !ok2 || !regConst1.IsFloat || !regConst2.IsFloat {
+		t.Fatalf("pre-header invariants did not get FPRs: v%d=%v/%v v%d=%v/%v",
+			vConst1.ID, regConst1, ok1, vConst2.ID, regConst2, ok2)
+	}
+	if regConst1.Reg == regConst2.Reg {
+		t.Fatalf("pre-header invariants share D%d", regConst1.Reg)
+	}
+
+	for _, bodyOp := range []*Instr{vMul, vAdd} {
+		pr, ok := alloc.ValueRegs[bodyOp.ID]
+		if !ok || !pr.IsFloat {
+			continue
+		}
+		if pr.Reg == regConst1.Reg || pr.Reg == regConst2.Reg {
+			t.Fatalf("body %s v%d assigned D%d, clobbering pre-header invariant", bodyOp.Op, bodyOp.ID, pr.Reg)
+		}
+	}
+
+	li := computeLoopInfo(fn)
+	safeInv := computeSafeLoopInvariantFPRegs(fn, li, alloc)
+	if !safeLoopInvariantContains(safeInv[2], vConst1.ID) || !safeLoopInvariantContains(safeInv[2], vConst2.ID) {
+		t.Fatalf("safe invariant FPRs missing pre-header constants: got %#v", safeInv[2])
+	}
+}
+
+func safeLoopInvariantContains(regs map[int]loopFPRegEntry, valueID int) bool {
+	for _, entry := range regs {
+		if entry.ValueID == valueID {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRegalloc_InvariantBudgetRespected constructs a pre-header with 7
 // ConstFloat definitions (more than the FPR budget allows) and verifies
 // that the budget limits pinning. Pinned invariants are protected: no body
@@ -312,9 +398,10 @@ func TestRegalloc_PreheaderInvariantPinned(t *testing.T) {
 // are not in the carried map.
 //
 // Budget = len(allocatableFPRs) - reservedTemps - floatPhisInHeader
-//        = 8 - 3 - 1 = 4
 //
-// So 4 invariants are pinned (protected), 3 are not.
+//	= 8 - 4 - 1 = 3
+//
+// So 3 invariants are pinned (protected), 4 are not.
 func TestRegalloc_InvariantBudgetRespected(t *testing.T) {
 	fn := &Function{NumRegs: 2, CarryPreheaderInvariants: true}
 
@@ -418,8 +505,8 @@ func TestRegalloc_InvariantBudgetRespected(t *testing.T) {
 		}
 	}
 
-	// Count invariants whose FPR is NOT reused by any body instruction.
-	// These are the truly "pinned" (protected) invariants.
+	// Count invariants whose FPR is NOT reused by any body instruction. This
+	// includes the force-pinned budget and may include accidental non-clobbers.
 	protectedCount := 0
 	for _, inv := range invariants {
 		pr, ok := alloc.ValueRegs[inv.ID]
@@ -431,20 +518,25 @@ func TestRegalloc_InvariantBudgetRespected(t *testing.T) {
 		}
 	}
 
+	li := computeLoopInfo(fn)
+	safeInv := computeSafeLoopInvariantFPRegs(fn, li, alloc)
+	safeCount := len(safeInv[b2.ID])
+
 	// Budget = len(allocatableFPRs) - reservedTemps - floatPhisInHeader
-	// = 8 - 3 - 1 = 4
-	expectedBudget := len(allocatableFPRs) - 3 - 1
+	// = 8 - 4 - 1 = 3
+	expectedBudget := len(allocatableFPRs) - 4 - 1
 	if expectedBudget < 0 {
 		expectedBudget = 0
 	}
-	t.Logf("invariant budget: %d (8 FPRs - 3 reserved - 1 phi)", expectedBudget)
+	t.Logf("invariant budget: %d (8 FPRs - 4 reserved - 1 phi)", expectedBudget)
 	t.Logf("protected (pinned) invariants: %d / %d", protectedCount, numInvariants)
+	t.Logf("safe carried invariants: %d / %d", safeCount, numInvariants)
 
-	if protectedCount > expectedBudget {
-		t.Errorf("protected %d invariants, exceeds budget %d", protectedCount, expectedBudget)
+	if safeCount > expectedBudget {
+		t.Errorf("carried %d invariants, exceeds budget %d", safeCount, expectedBudget)
 	}
-	if protectedCount == 0 && expectedBudget > 0 {
-		t.Errorf("expected at least 1 protected invariant with budget %d, got 0", expectedBudget)
+	if safeCount == 0 && expectedBudget > 0 {
+		t.Errorf("expected at least 1 carried invariant with budget %d, got 0", expectedBudget)
 	}
 
 	// Verify the phi also got an FPR.
@@ -456,18 +548,12 @@ func TestRegalloc_InvariantBudgetRespected(t *testing.T) {
 		t.Fatalf("phi v%d expected FPR, got GPR", vPhi.ID)
 	}
 
-	// Verify no two pinned invariants share the same FPR.
+	// Verify no two carried invariants share the same FPR.
 	seen := make(map[int]int) // regNum → value ID
-	for _, inv := range invariants {
-		pr, ok := alloc.ValueRegs[inv.ID]
-		if !ok || !pr.IsFloat {
-			continue
+	for reg, entry := range safeInv[b2.ID] {
+		if prevID, dup := seen[reg]; dup {
+			t.Errorf("carried invariants v%d and v%d both assigned D%d", prevID, entry.ValueID, reg)
 		}
-		if !bodyFPRs[pr.Reg] { // only check protected ones
-			if prevID, dup := seen[pr.Reg]; dup {
-				t.Errorf("protected invariants v%d and v%d both assigned D%d", prevID, inv.ID, pr.Reg)
-			}
-			seen[pr.Reg] = inv.ID
-		}
+		seen[reg] = entry.ValueID
 	}
 }

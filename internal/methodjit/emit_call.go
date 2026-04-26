@@ -526,13 +526,36 @@ func (ec *emitContext) emitTypedFloatBinOp(instr *Instr, op intBinOp) {
 
 	// Raw float mode: resolve operands into FPRs, compute in FPR, store as raw float.
 	if instr.Type == TypeFloat {
+		if op == intBinMul {
+			if isConstFloatOne(instr.Args[0]) {
+				rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D0)
+				ec.storeRawFloat(rhsF, instr.ID)
+				return
+			}
+			if isConstFloatOne(instr.Args[1]) {
+				lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+				ec.storeRawFloat(lhsF, instr.ID)
+				return
+			}
+			if isConstFloatTwo(instr.Args[0]) {
+				rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D0)
+				dstF := ec.floatResultReg(instr)
+				asm.FADDd(dstF, rhsF, rhsF)
+				ec.storeRawFloat(dstF, instr.ID)
+				return
+			}
+			if isConstFloatTwo(instr.Args[1]) {
+				lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+				dstF := ec.floatResultReg(instr)
+				asm.FADDd(dstF, lhsF, lhsF)
+				ec.storeRawFloat(dstF, instr.ID)
+				return
+			}
+		}
 		lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
 		rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
 		// Destination: use allocated FPR if available, else D0.
-		dstF := jit.FReg(jit.D0)
-		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
-			dstF = jit.FReg(pr.Reg)
-		}
+		dstF := ec.floatResultReg(instr)
 		switch op {
 		case intBinAdd:
 			asm.FADDd(dstF, lhsF, rhsF)
@@ -563,6 +586,21 @@ func (ec *emitContext) emitTypedFloatBinOp(instr *Instr, op intBinOp) {
 	// Move float result back to GP (raw IEEE 754 bits = NaN-boxed float).
 	asm.FMOVtoGP(jit.X0, jit.D0)
 	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+func isConstFloatOne(v *Value) bool {
+	return isConstFloatBits(v, floatOneBits)
+}
+
+func isConstFloatTwo(v *Value) bool {
+	return isConstFloatBits(v, floatTwoBits)
+}
+
+func (ec *emitContext) floatResultReg(instr *Instr) jit.FReg {
+	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+		return jit.FReg(pr.Reg)
+	}
+	return jit.D0
 }
 
 // emitFloatCmp emits ARM64 code for float comparison (OpLtFloat, OpLeFloat).

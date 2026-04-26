@@ -399,6 +399,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("RedundantGuardElimination: %w", err)
 	}
 
+	fn, err = FloatScaleReusePass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FloatScaleReuse: %w", err)
+	}
+
 	fn, err = DCEPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("DCE: %w", err)
@@ -498,6 +503,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("TypeSpecialize3", TypeSpecializePass)
 	pipe.Add("ConstProp", ConstPropPass)
 	pipe.Add("LoadElimination", LoadEliminationPass)
+	pipe.Add("FloatScaleReuse", FloatScaleReusePass)
 	pipe.Add("DCE", DCEPass)
 	pipe.Add("RangeAnalysis", RangeAnalysisPass)
 	pipe.Add("OverflowBoxing", OverflowBoxingPass)
