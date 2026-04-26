@@ -236,9 +236,13 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.BCond(jit.CondGE, deoptLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)            // raw int64 = intArray[key]
-	// NaN-box the int64: UBFX + ORR with pinned tag register.
-	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
-	ec.storeResultNB(jit.X0, instr.ID)
+	if instr.Type == TypeInt {
+		ec.storeRawInt(jit.X0, instr.ID)
+	} else {
+		// NaN-box the int64: UBFX + ORR with pinned tag register.
+		jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+		ec.storeResultNB(jit.X0, instr.ID)
+	}
 	asm.B(doneLabel)
 
 	// --- ArrayFloat fast path ---
@@ -248,8 +252,13 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.BCond(jit.CondGE, deoptLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)              // raw float64 bits = floatArray[key]
-	// Float64 bits ARE the NaN-boxed value — no conversion needed!
-	ec.storeResultNB(jit.X0, instr.ID)
+	if instr.Type == TypeFloat {
+		asm.FMOVtoFP(jit.D0, jit.X0)
+		ec.storeRawFloat(jit.D0, instr.ID)
+	} else {
+		// Float64 bits ARE the NaN-boxed value — no conversion needed!
+		ec.storeResultNB(jit.X0, instr.ID)
+	}
 	asm.B(doneLabel)
 
 	// --- ArrayBool fast path ---
@@ -566,6 +575,25 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		}
 		asm.B(doneLabel)
 		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+	} else if ec.irTypes[instr.Args[2].ID] == TypeInt {
+		// Known-int value: unbox directly and skip the redundant tag check.
+		intStoreLabel := ec.uniqueLabel("settable_int_store")
+		intAppendLabel := ec.uniqueLabel("settable_int_append")
+		valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+		if valReg2 != jit.X4 {
+			asm.MOVreg(jit.X4, valReg2)
+		}
+		asm.SBFX(jit.X4, jit.X4, 0, 48)
+		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
+		asm.Label(intStoreLabel)
+		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
+		asm.STRreg(jit.X4, jit.X2, jit.X1)
+		if !ec.keysDirtyWritten[tblValueID] {
+			asm.MOVimm16(jit.X5, 1)
+			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		}
+		asm.B(doneLabel)
+		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
 	} else {
 		// Load value to store and check it's an integer.
 		intStoreLabel := ec.uniqueLabel("settable_int_store")
@@ -601,10 +629,12 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	if valRegFloat != jit.X4 {
 		asm.MOVreg(jit.X4, valRegFloat)
 	}
-	// Check value is a float (NOT tagged — bits 50-62 NOT all set).
-	// Tagged values have (val >> 50) == 0x3FFF. Floats don't.
-	jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
-	asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
+	if ec.irTypes[instr.Args[2].ID] != TypeFloat {
+		// Check value is a float (NOT tagged — bits 50-62 NOT all set).
+		// Tagged values have (val >> 50) == 0x3FFF. Floats don't.
+		jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
+		asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
+	}
 	emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, deoptLabel)
 	asm.Label(floatStoreLabel)
 	// Float64 bits ARE the NaN-boxed representation — store directly.

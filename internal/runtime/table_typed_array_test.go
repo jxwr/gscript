@@ -214,6 +214,27 @@ func TestArrayKindSequentialAppend(t *testing.T) {
 	}
 }
 
+func TestArrayKindInitialSparseWriteKeepsAppendHeadroom(t *testing.T) {
+	tbl := NewTable()
+	tbl.RawSetInt(1, IntValue(10))
+	if tbl.arrayKind != ArrayInt {
+		t.Fatalf("expected ArrayInt, got %d", tbl.arrayKind)
+	}
+	if cap(tbl.intArray) < initialTypedArrayCap {
+		t.Fatalf("initial sparse int array cap = %d, want at least %d", cap(tbl.intArray), initialTypedArrayCap)
+	}
+
+	for i := int64(2); i <= int64(initialTypedArrayCap-1); i++ {
+		tbl.RawSetInt(i, IntValue(i*10))
+	}
+	if tbl.arrayKind != ArrayInt {
+		t.Fatalf("expected ArrayInt after appends, got %d", tbl.arrayKind)
+	}
+	if got := tbl.RawGetInt(int64(initialTypedArrayCap - 1)); !got.IsInt() || got.Int() != int64(initialTypedArrayCap-1)*10 {
+		t.Fatalf("last appended value = %v", got)
+	}
+}
+
 func TestArrayKindOverwrite(t *testing.T) {
 	// Overwriting same-type value should stay specialized
 	tbl := NewTable()
