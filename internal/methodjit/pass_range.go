@@ -319,6 +319,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 			}
 		}
 	}
+	markConvergingInductionSafe(fn, safe)
 	fn.Int48Safe = safe
 	fn.IntRanges = ranges
 	populateIntModFacts(fn, ranges)
@@ -1118,6 +1119,121 @@ func isqrt64(v int64) int64 {
 		x--
 	}
 	return x
+}
+
+// markConvergingInductionSafe recognizes the common two-pointer loop:
+//
+//	header:
+//	  lo = Phi(initLo, lo + 1)
+//	  hi = Phi(initHi, hi - 1)
+//	  lo < hi
+//
+// On the true branch, both operands are int48 values and the strict comparison
+// proves lo <= MaxInt48-1 and hi >= MinInt48+1. Therefore lo+1 and hi-1 cannot
+// leave the int48 payload range. This keeps swap/reverse loops in raw-int form
+// without making a benchmark-specific assumption about arrays or table values.
+func markConvergingInductionSafe(fn *Function, safe map[int]bool) {
+	if fn == nil || safe == nil {
+		return
+	}
+	li := computeLoopInfo(fn)
+	if !li.hasLoops() {
+		return
+	}
+	for _, header := range fn.Blocks {
+		if !li.loopHeaders[header.ID] {
+			continue
+		}
+		cond := loopHeaderBranchCond(header)
+		if cond == nil || len(cond.Args) < 2 {
+			continue
+		}
+		switch cond.Op {
+		case OpLt, OpLtInt:
+		default:
+			continue
+		}
+		leftPhi := headerPhiValue(cond.Args[0], header)
+		rightPhi := headerPhiValue(cond.Args[1], header)
+		if leftPhi == nil || rightPhi == nil {
+			continue
+		}
+		if !leftPhi.Type.isIntegerLike() || !rightPhi.Type.isIntegerLike() {
+			continue
+		}
+		body := li.headerBlocks[header.ID]
+		leftUpdate, ok := loopPhiBackedgeValue(leftPhi, body)
+		if !ok || !isSelfAddConst(leftUpdate, leftPhi.ID, 1) {
+			continue
+		}
+		rightUpdate, ok := loopPhiBackedgeValue(rightPhi, body)
+		if !ok || !isSelfSubConst(rightUpdate, rightPhi.ID, 1) {
+			continue
+		}
+		safe[leftUpdate.ID] = true
+		safe[rightUpdate.ID] = true
+	}
+}
+
+func headerPhiValue(v *Value, header *Block) *Instr {
+	if v == nil || v.Def == nil || header == nil {
+		return nil
+	}
+	if v.Def.Op != OpPhi || v.Def.Block != header {
+		return nil
+	}
+	return v.Def
+}
+
+func loopPhiBackedgeValue(phi *Instr, body map[int]bool) (*Instr, bool) {
+	if phi == nil || body == nil {
+		return nil, false
+	}
+	var update *Instr
+	for predIdx, arg := range phi.Args {
+		if arg == nil || arg.Def == nil {
+			continue
+		}
+		fromLoop := false
+		if predIdx < len(phi.Block.Preds) {
+			fromLoop = body[phi.Block.Preds[predIdx].ID]
+		} else if arg.Def.Block != nil {
+			fromLoop = body[arg.Def.Block.ID]
+		}
+		if !fromLoop {
+			continue
+		}
+		if update != nil {
+			return nil, false
+		}
+		update = arg.Def
+	}
+	return update, update != nil
+}
+
+func isSelfAddConst(instr *Instr, phiID int, c int64) bool {
+	if instr == nil || instr.Op != OpAddInt || len(instr.Args) < 2 {
+		return false
+	}
+	if instr.Args[0] != nil && instr.Args[0].ID == phiID {
+		return valueIsConstInt(instr.Args[1], c)
+	}
+	if instr.Args[1] != nil && instr.Args[1].ID == phiID {
+		return valueIsConstInt(instr.Args[0], c)
+	}
+	return false
+}
+
+func isSelfSubConst(instr *Instr, phiID int, c int64) bool {
+	if instr == nil || instr.Op != OpSubInt || len(instr.Args) < 2 {
+		return false
+	}
+	return instr.Args[0] != nil && instr.Args[0].ID == phiID && valueIsConstInt(instr.Args[1], c)
+}
+
+func valueIsConstInt(v *Value, want int64) bool {
+	got, ok := constIntFromValue(v)
+	return ok && got == want
 }
 
 func floorDiv(a, b int64) int64 {

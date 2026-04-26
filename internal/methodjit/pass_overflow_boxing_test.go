@@ -138,3 +138,81 @@ func f(n) {
 		t.Fatalf("expected boxed Sub for decrementing induction\nIR:\n%s", Print(fn))
 	}
 }
+
+func TestOverflowBoxing_KeepsConvergingSwapIndicesRaw(t *testing.T) {
+	fn := runOverflowBoxingPipelineForTest(t, `
+func f(n) {
+    lo := 1
+    hi := n
+    acc := 0
+    for lo < hi {
+        acc = acc + lo
+        lo = lo + 1
+        hi = hi - 1
+    }
+    return lo + hi + acc
+}
+`)
+
+	foundAdd := false
+	foundSub := false
+	for _, block := range fn.Blocks {
+		cond := loopHeaderBranchCond(block)
+		if cond == nil || cond.Op != OpLtInt || len(cond.Args) < 2 {
+			continue
+		}
+		leftPhi := headerPhiValue(cond.Args[0], block)
+		rightPhi := headerPhiValue(cond.Args[1], block)
+		if leftPhi == nil || rightPhi == nil {
+			continue
+		}
+		for _, phi := range []*Instr{leftPhi, rightPhi} {
+			for _, arg := range phi.Args {
+				if arg == nil || arg.Def == nil {
+					continue
+				}
+				switch arg.Def.Op {
+				case OpAddInt:
+					foundAdd = true
+				case OpSubInt:
+					foundSub = true
+				case OpAdd, OpSub:
+					t.Fatalf("converging loop index was boxed: %s\nIR:\n%s", arg.Def.Op, Print(fn))
+				}
+			}
+		}
+	}
+	if !foundAdd || !foundSub {
+		t.Fatalf("expected raw AddInt/SubInt converging indices (add=%v sub=%v)\nIR:\n%s",
+			foundAdd, foundSub, Print(fn))
+	}
+}
+
+func TestOverflowBoxing_BoxesWideConvergingSub(t *testing.T) {
+	fn := runOverflowBoxingPipelineForTest(t, `
+func f(n) {
+    lo := 1
+    hi := n
+    for lo < hi {
+        lo = lo + 1
+        hi = hi - 2
+    }
+    return hi
+}
+`)
+
+	hasGenericSub := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpSub {
+				hasGenericSub = true
+			}
+			if instr.Op == OpSubInt && len(instr.Args) >= 2 && valueIsConstInt(instr.Args[1], 2) {
+				t.Fatalf("hi-2 under lo<hi is not generally int48-safe and should be boxed\nIR:\n%s", Print(fn))
+			}
+		}
+	}
+	if !hasGenericSub {
+		t.Fatalf("expected generic Sub for wide decrement\nIR:\n%s", Print(fn))
+	}
+}
