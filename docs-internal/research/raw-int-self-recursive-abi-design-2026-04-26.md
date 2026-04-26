@@ -20,8 +20,9 @@ instead of resuming the native callee frame.
   Tier 1 / Tier 2 direct-entry ABI.
 - Do not store raw values in `ExecContext.BaselineReturnValue`.
 - Do not teach Go call-exit handlers about raw arguments.
-- Do not implement a thin recursive frame yet. Reuse the existing full frame
-  until the ABI contract is proven.
+- Do not make the boxed public direct entry thin. Only the private raw-int
+  self entry may use a thin frame, and only because raw callers now own
+  live-register preservation.
 - Do not resurrect `OpStaticSelfCall` or add Ack-specific lowering in the first
   slice.
 - Do not exactly resume a raw callee frame after callee exit in v1.
@@ -101,39 +102,47 @@ Before `BL t2_numeric_self_entry_N`, the caller must guarantee:
 - The caller has captured the boxed function operand for fallback.
 - `mRegCtx` is the same `ExecContext` pointer as the caller.
 - `mRegTagInt` and `mRegTagBool` are valid pinned constants.
-- `ctx.Regs` points at the callee VM frame base.
-- `ctx.BaselineClosurePtr` points at the self closure while the raw callee is
-  running, derived from the boxed function operand rather than assumed from the
-  outer VM state.
-- `mRegRegs` may be caller base or callee base, but raw entry reloads it from
-  `ctx.Regs` before entering the numeric body.
-- `ctx.CallMode` may remain the boxed-direct value; numeric return does not use
-  it because it branches to `num_epilogue`.
+- `mRegRegs` has already been advanced to the callee VM frame base. The raw
+  entry consumes this pinned register directly; it does not reload `ctx.Regs`.
+- `ctx.Regs` may still point at the caller VM frame during the raw BL. Before
+  any fallback to Go, the caller restores the caller base into `ctx.Regs`, so
+  boxed resume handlers see normal VM ABI state.
+- `ctx.BaselineClosurePtr` and `mRegConsts` remain invariant for v1 raw self
+  calls. `AnalyzeSpecializedABI` rejects upvalues and nested protos, so the
+  self closure/constant domain does not change on the success path.
+- The caller saves/restores `ctx.CallMode`; numeric return does not use it
+  because it branches to `num_epilogue`.
 - `ctx.NativeCallDepth` has been incremented.
 
-The raw entry reuses the existing full frame save/restore. Therefore the first
-slice can rely on ARM64 callee-saved registers (`X20..X28`, `D8..D11`) surviving
-across the raw call. This is why v1 does not need to spill caller allocated
-registers on the fast path.
+The raw entry uses a thin FP/LR frame. It does not preserve the allocator's
+callee-saved registers (`X20..X23`, `X28`, `D4..D11`). The raw caller therefore
+must spill every allocated value that is live across the call before the BL, and
+reload/unbox those values after success or fallback resume.
 
 ## Liveness protocol
 
-The fast raw call path treats `X0..X7` and temporary scratch registers as
-clobbered. It does not treat allocated callee-saved GPRs/FPRs as clobbered
-because `t2_numeric_self_entry_N` saves and restores the full frame.
+The fast raw call path treats scratch registers and allocated registers as
+clobbered by `t2_numeric_self_entry_N`. This is different from the boxed public
+ABI: raw self calls preserve caller values through explicit caller-side
+selective spill/reload, not through callee full-frame save/restore.
 
 At emission time:
 
 1. Clone `ec.rawIntRegs` into `preRaw`.
-2. Materialize raw args into `X0..X(N-1)`.
-3. Save the raw args and boxed function operand on the native stack before the
-   call. This is for slow fallback and callee-exit fallback; do not store raw
-   args in `ExecContext`, because nested recursion would overwrite global fields.
-4. On success, read raw return `X0`, restore caller context, and call
+2. Compute live-across-call GPR/FPR sets and spill those values to their boxed
+   home slots.
+3. Materialize raw args into `X0..X(N-1)`.
+4. Save the raw args and boxed function operand on the 64-byte raw-call frame.
+   This is for slow fallback and callee-exit fallback; do not store raw args in
+   `ExecContext`, because nested recursion would overwrite global fields.
+5. On success, read raw return `X0`, restore caller `mRegRegs`/`ctx.CallMode`,
+   selectively reload live values, unbox the values that were raw in `preRaw`,
+   and call
    `storeRawInt(X0, instr.ID)`.
-5. Clone the resulting raw map into `postRaw`.
-6. On fallback resume, reload active regs from boxed memory and call
-   `emitUnboxRawIntRegs(postRaw)` before joining the done label.
+6. Clone the resulting raw map into `postRaw`.
+7. On fallback resume, selectively reload live values and call
+   `emitUnboxRawIntRegs(preRaw)` before materializing the raw call result and
+   joining the done label.
 
 This makes success and fallback converge with the same physical register
 representation.
@@ -179,14 +188,17 @@ from the native raw-call frame and boxed with `EmitBoxIntFast`.
 
 Fallback order:
 
-1. Restore caller `mRegRegs`, `mRegConsts`, `ctx.Regs`, `ctx.Constants`,
-   `ctx.CallMode`, and `ctx.BaselineClosurePtr`.
+1. Restore caller `mRegRegs`, `ctx.Regs`, and `ctx.CallMode`. `mRegConsts`,
+   `ctx.Constants`, and `ctx.BaselineClosurePtr` are invariant for v1 raw self
+   calls.
 2. Set `ec.rawIntRegs = preRaw`.
-3. `emitStoreAllActiveRegs()` so caller live values are boxed in memory.
+3. Do not store all active registers after a raw callee exit: the thin callee
+   may have clobbered allocated registers. Caller live values were already
+   selectively spilled before the BL.
 4. Materialize `regs[funcSlot..funcSlot+N]` as a boxed VM call frame.
 5. Write normal `ExitCallExit` descriptor.
 6. Exit through the current pass epilogue.
-7. On resume, `emitReloadAllActiveRegs()`.
+7. On resume, selectively reload live-across-call registers.
 8. Restore `preRaw` register representation with `emitUnboxRawIntRegs(preRaw)`.
 9. Check the boxed VM call result is an int. If it is not an int, deopt the
    current JIT execution; the raw continuation is not valid for float-promoted
@@ -206,6 +218,9 @@ This same fallback is used for:
 return representation. v1 therefore uses this rule:
 
 - Top-level exits from the numeric body can use existing numeric resume labels.
+- Numeric resume labels use the same thin FP/LR frame shape as
+  `t2_numeric_self_entry_N`; boxed pass resume labels keep the full public ABI
+  frame.
 - Exits from a raw callee called through `BL t2_numeric_self_entry_N` are handled
   by the caller as call-boundary fallback.
 - The caller does not attempt to resume the callee native frame.
@@ -235,10 +250,33 @@ metadata.
 - Completed for non-tail static self calls that pass `AnalyzeSpecializedABI`.
 - `emitCallNativeRawIntSelf(instr *Instr)` is the only raw self-call BL path;
   generic `emitCallNative` remains boxed ABI only.
-- The implementation keeps the full frame and callee VM frame window.
+- The implementation now uses a thin FP/LR numeric entry frame while keeping the
+  callee VM frame window.
 - The caller saves raw args and the boxed function operand on a small native
   stack frame.
 - Fallback materializes a boxed VM call frame before `ExitCallExit`.
+
+### Slice 2.5: thin raw entry
+
+- Completed. `t2_numeric_self_entry_N` saves only FP/LR.
+- Numeric exit-resume entries also use the thin FP/LR frame, so
+  `num_epilogue` and `num_deopt_epilogue` pop the same frame shape regardless
+  of whether execution entered through raw BL or a Go-side resume.
+
+### Slice 2.6: thin raw caller frame
+
+- Completed. The raw self-call frame is now 64 bytes:
+  caller `mRegRegs`, caller `CallMode`, raw args `X0..X3`, boxed function
+  operand, and alignment padding.
+- The frame no longer saves FP/LR, `mRegConsts`, or `BaselineClosurePtr`.
+  FP/LR belong to the caller's own entry frame, while constants and closure are
+  invariant for the v1 raw self ABI.
+- The raw caller no longer writes the callee base to `ctx.Regs` before the BL,
+  and `t2_numeric_self_entry_N` no longer reloads `mRegRegs` from `ctx.Regs`.
+  The callee base is carried directly in the pinned `mRegRegs` register.
+- Raw callers spill/reload live allocated GPR/FPR values around the BL.
+- Fallback resume uses selective reload instead of storing/reloading all active
+  registers, because a thin raw callee may clobber non-live active registers.
 
 ### Slice 3: metadata cleanup
 
@@ -252,22 +290,23 @@ metadata.
 
 Only after correctness is stable:
 
-- remove eager boxed arg stores from the fast path;
+- move fallback-only raw arg/function saves out of the hot path once precise
+  callee-exit resume metadata exists;
 - avoid generic native-call IC/proto checks for static self;
-- reduce save/restore frame for raw entry;
+- remove or shrink the callee VM frame window on raw success;
 - optionally lower proven self calls to a raw-only call op to remove hot
   `GETGLOBAL` overhead.
 
-## Once-feasible v1 rule
+## Current v1 rule
 
-The first enabled raw ABI patch must change only one variable at a time:
+The enabled raw ABI deliberately still changes one variable at a time:
 
-- full frame stays;
+- private raw entry is thin, but boxed public direct entries stay full-frame;
 - boxed fallback materialization is eager at fallback points;
 - Go remains boxed-only;
 - raw success returns through `X0`;
 - success/fallback join with the same `rawIntRegs` state.
 
 That is slower than the final target, but it makes the ABI mechanically
-checkable. After this passes, performance work can remove the remaining boxed
-stores and shrink the recursive entry frame.
+checkable. Further performance work can remove the remaining boxed stores and
+shrink or remove the callee VM frame window on raw success.

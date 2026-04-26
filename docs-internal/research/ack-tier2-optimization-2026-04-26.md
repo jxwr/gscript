@@ -16,11 +16,16 @@ The stable fix in this round keeps method JIT, does not introduce tracing, and m
 | CLI JIT before `<main>` fix | ~0.41s |
 | CLI JIT after boxed self-call path | ~0.027-0.030s |
 | CLI JIT after raw self ABI v1 | ~0.017-0.019s |
-| LuaJIT `benchmarks/lua/ackermann.lua` | ~0.006s |
-| Go benchmark VM `BenchmarkGScriptVMAckermannWarm` | ~573-577us/op |
-| Go benchmark JIT `BenchmarkGScriptJITAckermannWarm` | ~32.1-32.3us/op |
+| CLI JIT after thin raw entry + 64B raw caller frame | ~0.014-0.015s steady |
+| LuaJIT `benchmarks/lua/ackermann.lua` | ~0.006-0.007s |
+| Go benchmark VM `BenchmarkGScriptVMAckermannWarm` | ~512-551us/op |
+| Go benchmark JIT `BenchmarkGScriptJITAckermannWarm` | ~58-70us/op |
+| Go forced Tier2 steady `BenchmarkAckermannForcedTier2CallValueSteady` | ~26.3-30.3us/op |
 
-Tier2 is now about 15-18x faster than the VM for Ackermann, and the CLI gap to LuaJIT is about 3x on this machine. The remaining gap is now mostly recursive frame/call overhead rather than boxed argument/result traffic.
+Tier2 is now clearly faster than the VM for Ackermann. In the steady CLI script
+it is roughly 19x faster than VM and about 2-2.5x slower than LuaJIT on this
+machine. The remaining gap is now mostly recursive frame/call overhead rather
+than boxed argument/result traffic.
 
 ## Why Tier2 Was Slower Than VM
 
@@ -78,11 +83,22 @@ Key points:
 - The raw call path is separate from the boxed `emitCallNative` path.
 - The caller passes raw int args in `X0..X3` and receives raw int in `X0`.
 - The caller saves raw args plus the boxed function operand in a small native frame so fallback can materialize a normal VM call frame.
-- The raw caller sets `ctx.BaselineClosurePtr` from the boxed function operand while the raw callee runs.
+- `ctx.BaselineClosurePtr` stays invariant while the raw callee runs; v1 raw
+  ABI rejects upvalues and nested protos, so the self closure does not need a
+  per-call context switch.
 - Numeric self `GETGLOBAL` materializes the current closure instead of taking the global cache exit path. This prevents mid-tier Ackermann fallback storms.
 - VM fallback results are tag-checked before rejoining the raw continuation; non-int fallback results deopt instead of being unboxed as raw ints.
+- `t2_numeric_self_entry_N` now uses a thin FP/LR frame. Raw callers preserve
+  live allocated registers through selective spill/reload around the BL.
+- The raw caller frame is now 64 bytes and only stores caller `mRegRegs`,
+  caller `CallMode`, raw args, and the boxed function operand needed for
+  fallback.
+- The raw caller carries the callee VM frame base directly in `mRegRegs`; it no
+  longer writes callee `ctx.Regs` before the BL or reloads it in the numeric
+  entry.
 
-The current implementation still reuses the full recursive frame, so it is correct but not yet LuaJIT-class.
+The current implementation still keeps a callee VM frame window and a raw caller
+fallback frame, so it is correct but not yet LuaJIT-class.
 
 This is the main remaining path toward LuaJIT-class Ackermann performance.
 
@@ -101,7 +117,8 @@ The Ackermann fix follows that rule: `<main>` is allowed into Tier2 only after t
 The next high-impact work is no longer "turn raw self BL on"; it is to reduce the remaining overhead in the now-correct raw ABI:
 
 1. Introduce an explicit IR/call-lowering concept for static self calls, separate from generic `OpCall`, so hot self `GETGLOBAL` instructions disappear from both passes.
-2. Shrink `t2_numeric_self_entry_N` from a full frame to a verified thin frame.
-3. Remove fallback-only boxed materialization from the hot path where the safepoint proves it is unnecessary.
+2. Remove or shrink the callee VM frame window on raw success.
+3. Move fallback-only raw arg/function saves out of the hot path once precise
+   callee-exit resume metadata exists.
 4. Tighten raw ABI eligibility with range/deopt metadata so overflow-heavy functions avoid entering raw continuations.
 5. Re-measure Ackermann against LuaJIT after each frame/call reduction.
