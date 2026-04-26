@@ -207,6 +207,32 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				// array is empty or has only the [0] slot. Preserve an existing
 				// 0-indexed value, otherwise treat the missing sentinel as nil.
 				vk := classifyValueForArray(val)
+				if key == 0 && len(t.array) == 0 {
+					switch vk {
+					case ArrayInt:
+						t.arrayKind = ArrayInt
+						t.intArray = make([]int64, 1, 8)
+						t.intArray[0] = valueToInt64(val)
+						t.absorbKeys()
+						return
+					case ArrayFloat:
+						t.arrayKind = ArrayFloat
+						t.floatArray = make([]float64, 1, 8)
+						t.floatArray[0] = val.Float()
+						t.absorbKeys()
+						return
+					case ArrayBool:
+						t.arrayKind = ArrayBool
+						t.boolArray = make([]byte, 1, 8)
+						if val.Bool() {
+							t.boolArray[0] = 2
+						} else {
+							t.boolArray[0] = 1
+						}
+						t.absorbKeys()
+						return
+					}
+				}
 				a0 := NilValue()
 				if len(t.array) == 1 {
 					a0 = t.array[0]

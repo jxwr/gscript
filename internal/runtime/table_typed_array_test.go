@@ -20,6 +20,36 @@ func TestArrayKindPromotionInt(t *testing.T) {
 	}
 }
 
+func TestArrayKindPromotionEmptyTableKeyZero(t *testing.T) {
+	cases := []struct {
+		name string
+		val  Value
+		want Value
+		kind ArrayKind
+	}{
+		{name: "int", val: IntValue(10), want: IntValue(10), kind: ArrayInt},
+		{name: "float", val: FloatValue(1.25), want: FloatValue(1.25), kind: ArrayFloat},
+		{name: "bool", val: BoolValue(false), want: BoolValue(false), kind: ArrayBool},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tbl := NewTable()
+			tbl.RawSetInt(0, tc.val)
+			if tbl.arrayKind != tc.kind {
+				t.Fatalf("arrayKind = %d, want %d", tbl.arrayKind, tc.kind)
+			}
+			got := tbl.RawGetInt(0)
+			if got != tc.want {
+				t.Fatalf("RawGetInt(0) = %v, want %v", got, tc.want)
+			}
+			if got1 := tbl.RawGetInt(1); !got1.IsNil() {
+				t.Fatalf("RawGetInt(1) = %v, want nil", got1)
+			}
+		})
+	}
+}
+
 func TestArrayKindPromotionBool(t *testing.T) {
 	tbl := NewTable()
 	tbl.RawSetInt(1, BoolValue(true))
