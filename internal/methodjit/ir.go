@@ -3,7 +3,8 @@
 // a CFG-based SSA intermediate representation.
 //
 // Architecture:
-//   Bytecode → GraphBuilder → CFG SSA IR → (future: Optimize → RegAlloc → Emit → ARM64)
+//
+//	Bytecode → GraphBuilder → CFG SSA IR → (future: Optimize → RegAlloc → Emit → ARM64)
 //
 // The IR uses the Braun et al. algorithm for SSA construction:
 // single forward pass, lazy phi insertion, no dominance frontier computation.
@@ -15,11 +16,11 @@ import (
 
 // Function is the complete IR for one compiled function.
 type Function struct {
-	Entry   *Block          // entry basic block
-	Blocks  []*Block        // all blocks in RPO (reverse postorder)
-	Proto   *vm.FuncProto   // source bytecode
-	NumRegs int             // number of VM registers used
-	nextID  int             // next value ID
+	Entry   *Block        // entry basic block
+	Blocks  []*Block      // all blocks in RPO (reverse postorder)
+	Proto   *vm.FuncProto // source bytecode
+	NumRegs int           // number of VM registers used
+	nextID  int           // next value ID
 
 	// Int48Safe is the set of integer arithmetic SSA value IDs whose runtime
 	// result is provably within the int48 signed range. Populated by
@@ -53,6 +54,11 @@ type Function struct {
 	// per-iteration memory reloads for invariant constants. Set to true
 	// by compileTier2 after LICM runs. Defaults to false (Go zero value).
 	CarryPreheaderInvariants bool
+
+	// Remarks is an optional diagnostic sink for optimization decisions.
+	// Production compiles leave it nil; CompileForDiagnostics wires it so
+	// passes can explain important changes and misses without stderr prints.
+	Remarks *OptimizationRemarks
 }
 
 // newValueID allocates a unique ID for a new SSA value.
@@ -70,9 +76,9 @@ type Block struct {
 	Succs  []*Block // successor blocks
 
 	// SSA construction state (used by graph builder, not needed after)
-	sealed     bool             // all predecessors known
-	incomplete []incompletePhi  // phis waiting for predecessors
-	defs       map[int]*Value   // slot → current SSA value definition in this block
+	sealed     bool            // all predecessors known
+	incomplete []incompletePhi // phis waiting for predecessors
+	defs       map[int]*Value  // slot → current SSA value definition in this block
 }
 
 // incompletePhi tracks a phi node that needs more args when predecessors are sealed.

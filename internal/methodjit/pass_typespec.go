@@ -54,15 +54,37 @@ func TypeSpecializePass(fn *Function) (*Function, error) {
 	// Also update phi/instr Type fields from inferred types.
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
+			beforeOp := instr.Op
+			beforeType := instr.Type
 			ts.specialize(instr)
+			if beforeOp != instr.Op {
+				functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
+					"specialized "+beforeOp.String()+" to "+instr.Op.String())
+			} else if isGenericSpecializableOp(beforeOp) {
+				functionRemarks(fn).Add("TypeSpec", "missed", block.ID, instr.ID, beforeOp,
+					"operands not precise enough for specialization")
+			}
 			// Update Type field for all instructions with inferred types.
 			if t, ok := ts.types[instr.ID]; ok && t != TypeUnknown {
 				instr.Type = t
+				if beforeType != t && beforeOp == instr.Op {
+					functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
+						"inferred result type "+t.String())
+				}
 			}
 		}
 	}
 
 	return fn, nil
+}
+
+func isGenericSpecializableOp(op Op) bool {
+	switch op {
+	case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm, OpEq, OpLt, OpLe:
+		return true
+	default:
+		return false
+	}
 }
 
 // typeSpecializer holds the inferred type map and does specialization.
@@ -234,7 +256,9 @@ func (ts *typeSpecializer) argType(v *Value) Type {
 // specialization to fully specialize code like `2.0 * size / size - 1.0`.
 //
 // For each parameter used in arithmetic/comparison, we insert:
-//   v_guard = GuardType v_param is int
+//
+//	v_guard = GuardType v_param is int
+//
 // and replace all downstream uses of v_param with v_guard.
 // If the guard fails at runtime, the function deopts to the interpreter.
 func (ts *typeSpecializer) insertParamGuards(fn *Function) {

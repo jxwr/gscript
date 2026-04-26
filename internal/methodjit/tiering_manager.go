@@ -421,6 +421,20 @@ func canPromoteToTier2(proto *vm.FuncProto) bool {
 	return true
 }
 
+func firstUnsupportedTier2Bytecode(proto *vm.FuncProto) (string, bool) {
+	if proto == nil {
+		return "", false
+	}
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		switch op {
+		case vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV:
+			return vm.OpName(op), true
+		}
+	}
+	return "", false
+}
+
 // canPromoteToTier2NoCalls is the conservative version of canPromoteToTier2
 // that also blocks CALL. Used by shouldPromoteTier2 to identify pure-compute
 // functions that don't need the inline pass. GETGLOBAL is allowed because
@@ -809,20 +823,39 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 // compile semantics AND to what the diagnostic tool sees, by construction.
 // That is the load-bearing invariant of rule 5 in CLAUDE.md.
 func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2Trace) (*CompiledFunction, error) {
+	var remarks *OptimizationRemarks
+	if trace != nil {
+		remarks = &OptimizationRemarks{}
+		defer func() {
+			trace.OptimizationRemarks = remarks.List()
+		}()
+	}
 	if !canPromoteToTier2(proto) {
+		if op, ok := firstUnsupportedTier2Bytecode(proto); ok {
+			remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
+				fmt.Sprintf("unsupported bytecode %s", op))
+		} else {
+			remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
+				"function has unsupported ops")
+		}
 		return nil, fmt.Errorf("tier2: function has unsupported ops, staying at tier 1")
 	}
 
 	fn := BuildGraph(proto)
+	fn.Remarks = remarks
 	if trace != nil {
 		trace.IRBefore = Print(fn)
 	}
 
 	if fn.Unpromotable {
+		remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
+			"BuildGraph marked function unpromotable")
 		return nil, fmt.Errorf("tier2: function uses unmodeled bytecode (variadic CALL), staying at Tier 1")
 	}
 
 	if errs := Validate(fn); len(errs) > 0 {
+		remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
+			"initial IR validation failed: "+errs[0].Error())
 		return nil, fmt.Errorf("tier2: validation failed: %v", errs[0])
 	}
 
@@ -855,9 +888,11 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			}
 		}
 	}
-	opts := &Tier2PipelineOpts{InlineGlobals: inlineGlobals, InlineMaxSize: inlineMaxCalleeSize}
+	opts := &Tier2PipelineOpts{InlineGlobals: inlineGlobals, InlineMaxSize: inlineMaxCalleeSize, Remarks: remarks}
 	fn, intrinsicNotes, err := RunTier2Pipeline(fn, opts)
 	if err != nil {
+		remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
+			"optimization pipeline failed: "+err.Error())
 		return nil, fmt.Errorf("tier2: pipeline: %w", err)
 	}
 	if len(intrinsicNotes) > 0 {
@@ -894,15 +929,21 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	// sort's <main>, etc., OpCall/OpSetTable in loop → rejected.
 	if !tm.envTier2NoFilter {
 		if hasKnownFloatModInLoop(fn) {
+			remarks.Add("Tier2Gate", "blocked", 0, 0, OpMod,
+				"known-float OpMod remains inside loop")
 			return nil, fmt.Errorf("tier2: has known-float OpMod inside loop (performance-blocked), staying at Tier 1")
 		}
 		profile := tm.getProfile(proto)
 		if profile.LoopDepth < 2 {
 			if op, ok := firstExitResumeInLoop(fn, loopCallGlobals); ok {
+				remarks.Add("Tier2Gate", "blocked", 0, 0, op,
+					fmt.Sprintf("LoopDepth<2 candidate has exit-resume-prone %s inside loop", op))
 				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has exit-resume-prone op %s inside loop (performance-blocked), staying at Tier 1", op)
 			}
 		} else {
 			if hasNonNativeCallInLoop(fn, loopCallGlobals) {
+				remarks.Add("Tier2Gate", "blocked", 0, 0, OpCall,
+					"non-native OpCall remains inside loop after inlining")
 				return nil, fmt.Errorf("tier2: has OpCall inside loop (performance-blocked), staying at Tier 1")
 			}
 		}
@@ -923,6 +964,8 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 
 	cf, err := Compile(fn, alloc)
 	if err != nil {
+		remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
+			"ARM64 compile failed: "+err.Error())
 		return nil, fmt.Errorf("tier2: compile failed: %w", err)
 	}
 

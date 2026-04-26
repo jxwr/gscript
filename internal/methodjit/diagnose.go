@@ -23,20 +23,21 @@ import (
 
 // DiagReport is the complete diagnostic output for one function invocation.
 type DiagReport struct {
-	FuncName       string
-	NumArgs        int
-	Args           []runtime.Value
-	IRBefore       string          // IR after BuildGraph (before passes)
-	IRAfter        string          // IR after all passes
-	PassDiffs      []string        // diff for each pass that changed the IR
-	ValidateErrors []error         // structural invariant violations
-	RegAllocMap    string          // human-readable register assignments
-	InterpResult   []runtime.Value // IR interpreter output
-	InterpError    error
-	NativeResult   []runtime.Value // compiled ARM64 output
-	NativeError    error
-	Match          bool            // true if interp and native agree
-	Mismatch       string          // description of mismatch (empty if Match)
+	FuncName            string
+	NumArgs             int
+	Args                []runtime.Value
+	IRBefore            string               // IR after BuildGraph (before passes)
+	IRAfter             string               // IR after all passes
+	PassDiffs           []string             // diff for each pass that changed the IR
+	OptimizationRemarks []OptimizationRemark // structured pass/gate diagnostics
+	ValidateErrors      []error              // structural invariant violations
+	RegAllocMap         string               // human-readable register assignments
+	InterpResult        []runtime.Value      // IR interpreter output
+	InterpError         error
+	NativeResult        []runtime.Value // compiled ARM64 output
+	NativeError         error
+	Match               bool   // true if interp and native agree
+	Mismatch            string // description of mismatch (empty if Match)
 }
 
 // Diagnose runs the full Method JIT pipeline on a function and compares
@@ -50,6 +51,8 @@ func Diagnose(proto *vm.FuncProto, args []runtime.Value) *DiagReport {
 
 	// 1. BuildGraph: bytecode -> CFG SSA IR.
 	fn := BuildGraph(proto)
+	remarks := &OptimizationRemarks{}
+	fn.Remarks = remarks
 	r.IRBefore = Print(fn)
 
 	// 2. Validate the initial IR.
@@ -71,12 +74,14 @@ func Diagnose(proto *vm.FuncProto, args []runtime.Value) *DiagReport {
 	if pipeErr != nil {
 		// Pipeline failed; record what we can.
 		r.IRAfter = r.IRBefore
+		r.OptimizationRemarks = remarks.List()
 		r.NativeError = fmt.Errorf("pipeline error: %w", pipeErr)
 		r.compareResults()
 		return r
 	}
 
 	r.IRAfter = Print(optimized)
+	r.OptimizationRemarks = remarks.List()
 
 	// Collect diffs for passes that changed the IR.
 	r.PassDiffs = collectPassDiffs(pipe)
@@ -243,6 +248,7 @@ func (r *DiagReport) String() string {
 	for _, d := range r.PassDiffs {
 		w("\n%s\n", d)
 	}
+	w("\n--- Optimization remarks ---\n%s", formatOptimizationRemarks(r.OptimizationRemarks))
 	w("\n--- IR (after passes) ---\n%s", r.IRAfter)
 	w("\n--- Register Allocation ---\n%s\n", r.RegAllocMap)
 	w("\n--- Validation ---\n")

@@ -47,6 +47,7 @@ func LICMPass(fn *Function) (*Function, error) {
 
 	li := computeLoopInfo(fn)
 	if !li.hasLoops() {
+		functionRemarks(fn).Add("LICM", "missed", 0, 0, OpNop, "function has no loops")
 		return fn, nil
 	}
 
@@ -225,26 +226,38 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				continue
 			}
 			if !canHoistOp(instr.Op) {
+				if isInterestingLICMMiss(instr.Op) {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"op is not on the hoist-safe whitelist")
+				}
 				continue
 			}
 			// LoadSlot: also require no in-loop store to same slot.
 			if instr.Op == OpLoadSlot {
 				if storedSlots[instr.Aux] {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"slot is stored inside the loop")
 					continue
 				}
 			}
 			// GetField: require no in-loop store to same (obj, field) and no calls.
 			if instr.Op == OpGetField {
 				if hasLoopCall {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"loop contains a call that may mutate fields")
 					continue
 				}
 				if len(instr.Args) >= 1 {
 					key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
 					if setFields[key] {
+						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+							"field is written inside the loop")
 						continue
 					}
 					// Also check if SetTable on the same obj (any field).
 					if setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
+						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+							"table write may alias this field")
 						continue
 					}
 				}
@@ -252,11 +265,15 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			// GetTable: require no in-loop SetTable on same obj and no calls.
 			if instr.Op == OpGetTable {
 				if hasLoopCall {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"loop contains a call that may mutate tables")
 					continue
 				}
 				if len(instr.Args) >= 1 {
 					// SetTable on same obj kills all table accesses (fieldAux=-1 sentinel).
 					if setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
+						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+							"table is written inside the loop")
 						continue
 					}
 				}
@@ -264,15 +281,21 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			// GetGlobal: require no in-loop SetGlobal on same name and no calls.
 			if instr.Op == OpGetGlobal {
 				if hasLoopCall {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"loop contains a call that may mutate globals")
 					continue
 				}
 				if setGlobals[instr.Aux] {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"global is written inside the loop")
 					continue
 				}
 			}
 			// Int arithmetic: require Int48Safe marking.
 			if isIntArithOp(instr.Op) {
 				if fn.Int48Safe == nil || !fn.Int48Safe[instr.ID] {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"integer arithmetic is not proven int48-safe")
 					continue
 				}
 			}
@@ -291,6 +314,8 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				}
 			}
 			if !allInv {
+				functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+					"operand is variant inside the loop")
 				continue
 			}
 			invariant[instr.ID] = true
@@ -321,15 +346,19 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 		}
 		toHoist = append(toHoist, instr)
 		hoistSet[instr.ID] = true
+		functionRemarks(fn).Add("LICM", "changed", instr.Block.ID, instr.ID, instr.Op,
+			"hoisted loop-invariant instruction to pre-header")
 	}
 
 	if len(toHoist) == 0 {
+		functionRemarks(fn).Add("LICM", "missed", hdr.ID, 0, OpNop, "loop had no hoistable instructions")
 		return
 	}
 
 	// Split predecessors of hdr into inside/outside.
 	inside, outside := loopPreds(li, hdr)
 	if len(outside) == 0 {
+		functionRemarks(fn).Add("LICM", "missed", hdr.ID, 0, OpNop, "loop header has no outside predecessor")
 		return // unreachable header; skip
 	}
 
@@ -592,6 +621,19 @@ func canHoistOp(op Op) bool {
 		return true
 	}
 	return false
+}
+
+func isInterestingLICMMiss(op Op) bool {
+	switch op {
+	case OpGetField, OpGetTable, OpGetGlobal, OpLoadSlot,
+		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+		OpMatrixFlat, OpMatrixStride, OpMatrixRowPtr, OpSqrt:
+		return true
+	default:
+		return false
+	}
 }
 
 // isIntArithOp reports whether the op is an integer arithmetic op that

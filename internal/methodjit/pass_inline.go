@@ -168,9 +168,13 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 
 		calleeName, calleeProto := resolveCallee(instr, fn, config)
 		if calleeProto == nil {
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				"callee is not statically resolved from inline globals")
 			continue
 		}
 		if config.PreserveSelfCalls && calleeProto == fn.Proto {
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				"preserved self call for specialized recursive entry")
 			continue
 		}
 
@@ -181,12 +185,16 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		// never restricts useful inlining.
 		if isRecursiveOrMutualCached(calleeProto, config.Globals, recursiveMemo) {
 			if recursionCounts[calleeProto] >= config.MaxRecursion {
+				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("recursive inline depth cap reached for %s", calleeName))
 				continue
 			}
 		}
 
 		// Check size budget.
 		if len(calleeProto.Code) > config.MaxSize {
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("callee %s bytecode size %d exceeds max %d", calleeName, len(calleeProto.Code), config.MaxSize))
 			continue
 		}
 
@@ -195,6 +203,8 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		// when MaxRecursion permits deeper inlining.
 		if config.MaxCumulativeSize > 0 &&
 			cumulative.totalBytes+len(calleeProto.Code) > config.MaxCumulativeSize {
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("cumulative inline bytecode budget reached before %s", calleeName))
 			continue
 		}
 
@@ -206,6 +216,8 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		// creates nested loop-header phi edges whose pred-index contract is not
 		// modeled by this inliner yet. Keep that case behind the call boundary.
 		if computeLoopInfo(calleeFn).hasLoops() && computeLoopInfo(fn).loopBlocks[block.ID] {
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("callee %s has loops and call site is inside a loop", calleeName))
 			continue
 		}
 
@@ -217,11 +229,15 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 				inlined = true
 				recursionCounts[calleeProto]++
 				cumulative.totalBytes += len(calleeProto.Code)
+				functionRemarks(fn).Add("Inline", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("inlined single-block callee %s", calleeName))
 				// Adjust index: the call was replaced, re-scan from the
 				// same position since new instructions were inserted.
 				i-- // will be incremented by the loop
 				continue
 			}
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("single-block callee %s could not be spliced", calleeName))
 		}
 
 		// Multi-block callee: inline with block splicing.
@@ -230,6 +246,8 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		inlineMultiBlock(fn, block, instr, i, calleeFn, calleeName)
 		recursionCounts[calleeProto]++
 		cumulative.totalBytes += len(calleeProto.Code)
+		functionRemarks(fn).Add("Inline", "changed", block.ID, instr.ID, instr.Op,
+			fmt.Sprintf("inlined multi-block callee %s", calleeName))
 		return true
 	}
 	return inlined

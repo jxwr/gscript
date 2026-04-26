@@ -131,6 +131,9 @@ func (p *Pipeline) Run(fn *Function) (*Function, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pass %q: %w", entry.name, err)
 		}
+		if result != nil && result.Remarks == nil {
+			result.Remarks = current.Remarks
+		}
 
 		current = result
 
@@ -265,6 +268,7 @@ func lineDiff(a, b []string) string {
 type Tier2PipelineOpts struct {
 	InlineGlobals map[string]*vm.FuncProto // global function protos for inlining
 	InlineMaxSize int                      // max callee bytecode count; 0 → 40
+	Remarks       *OptimizationRemarks     // optional structured optimization diagnostics
 }
 
 // RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
@@ -279,6 +283,9 @@ type Tier2PipelineOpts struct {
 // If opts is nil, defaults are used (MaxSize: 40, no globals).
 func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []string, error) {
 	var err error
+	if opts != nil && opts.Remarks != nil {
+		fn.Remarks = opts.Remarks
+	}
 
 	fn, err = SimplifyPhisPass(fn)
 	if err != nil {
@@ -289,13 +296,16 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("TypeSpecialize: %w", err)
 	}
+	attachRemarks(fn, opts)
 
 	fn, intrinsicNotes := IntrinsicPass(fn)
+	attachRemarks(fn, opts)
 
 	fn, err = TypeSpecializePass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("TypeSpecialize (post-intrinsic): %w", err)
 	}
+	attachRemarks(fn, opts)
 
 	// Inline pass: build config from opts.
 	maxSize := 40
@@ -340,19 +350,26 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		if err != nil {
 			return nil, nil, fmt.Errorf("Inline: %w", err)
 		}
+		attachRemarks(fn, opts)
 		fn, err = SimplifyPhisPass(fn)
 		if err != nil {
 			return nil, nil, fmt.Errorf("SimplifyPhis (post-inline): %w", err)
 		}
+		attachRemarks(fn, opts)
 		var postInlineNotes []string
 		fn, postInlineNotes = IntrinsicPass(fn)
 		if len(postInlineNotes) > 0 {
 			intrinsicNotes = append(intrinsicNotes, postInlineNotes...)
 		}
+		attachRemarks(fn, opts)
 		fn, err = TypeSpecializePass(fn)
 		if err != nil {
 			return nil, nil, fmt.Errorf("TypeSpecialize (post-inline): %w", err)
 		}
+		attachRemarks(fn, opts)
+	} else if countOpHelper(fn, OpCall) > 0 {
+		functionRemarks(fn).Add("Inline", "missed", 0, 0, OpCall,
+			"inline pass skipped because no inline globals were available")
 	}
 
 	fn, err = ConstPropPass(fn)
@@ -364,6 +381,7 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("LoadElimination: %w", err)
 	}
+	attachRemarks(fn, opts)
 
 	// R162 (Session 1 / B.5): escape analysis + scalar replacement.
 	// Must run AFTER LoadElim (so stored-value forwarding has already
@@ -407,6 +425,7 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("LoadElimination (post-MatrixLower): %w", err)
 	}
+	attachRemarks(fn, opts)
 
 	fn, err = DCEPass(fn)
 	if err != nil {
@@ -432,6 +451,7 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("LICM: %w", err)
 	}
+	attachRemarks(fn, opts)
 
 	fn, err = ScalarPromotionPass(fn)
 	if err != nil {
@@ -439,6 +459,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 
 	return fn, intrinsicNotes, nil
+}
+
+func attachRemarks(fn *Function, opts *Tier2PipelineOpts) {
+	if fn != nil && opts != nil && opts.Remarks != nil {
+		fn.Remarks = opts.Remarks
+	}
 }
 
 // NewTier2Pipeline returns a Pipeline pre-loaded with a pass list that

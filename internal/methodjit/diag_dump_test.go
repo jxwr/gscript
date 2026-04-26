@@ -28,13 +28,14 @@ import (
 
 // diagProtoStats is the per-proto summary written into stats.json.
 type diagProtoStats struct {
-	Name          string         `json:"name"`
-	NumParams     int            `json:"num_params"`
-	MaxStack      int            `json:"max_stack"`
-	InsnCount     int            `json:"insn_count"`
-	InsnHistogram map[string]int `json:"insn_histogram"`
-	CodeBytes     int            `json:"code_bytes"`
-	SkipReason    string         `json:"skip_reason,omitempty"`
+	Name                string               `json:"name"`
+	NumParams           int                  `json:"num_params"`
+	MaxStack            int                  `json:"max_stack"`
+	InsnCount           int                  `json:"insn_count"`
+	InsnHistogram       map[string]int       `json:"insn_histogram"`
+	CodeBytes           int                  `json:"code_bytes"`
+	SkipReason          string               `json:"skip_reason,omitempty"`
+	OptimizationRemarks []OptimizationRemark `json:"optimization_remarks,omitempty"`
 }
 
 // TestDiagDump writes diagnostic artifacts for one benchmark to disk. It
@@ -69,10 +70,11 @@ func TestDiagDump(t *testing.T) {
 	for _, art := range arts {
 		if art.CompileErr != nil {
 			stats = append(stats, diagProtoStats{
-				Name:       art.ProtoName,
-				NumParams:  art.NumParams,
-				MaxStack:   art.MaxStack,
-				SkipReason: art.CompileErr.Error(),
+				Name:                art.ProtoName,
+				NumParams:           art.NumParams,
+				MaxStack:            art.MaxStack,
+				SkipReason:          art.CompileErr.Error(),
+				OptimizationRemarks: art.OptimizationRemarks,
 			})
 			continue
 		}
@@ -105,18 +107,20 @@ func TestDiagDump(t *testing.T) {
 			}
 			irContent += "\n"
 		}
+		irContent += "--- Optimization remarks ---\n" + formatOptimizationRemarks(art.OptimizationRemarks) + "\n"
 		irContent += "--- IR (after full Tier 2 pipeline) ---\n" + art.IRAfter
 		if err := os.WriteFile(irPath, []byte(irContent), 0o644); err != nil {
 			t.Fatalf("write %s: %v", irPath, err)
 		}
 
 		stats = append(stats, diagProtoStats{
-			Name:          art.ProtoName,
-			NumParams:     art.NumParams,
-			MaxStack:      art.MaxStack,
-			InsnCount:     art.InsnCount,
-			InsnHistogram: art.InsnHistogram,
-			CodeBytes:     len(art.CompiledCode),
+			Name:                art.ProtoName,
+			NumParams:           art.NumParams,
+			MaxStack:            art.MaxStack,
+			InsnCount:           art.InsnCount,
+			InsnHistogram:       art.InsnHistogram,
+			CodeBytes:           len(art.CompiledCode),
+			OptimizationRemarks: art.OptimizationRemarks,
 		})
 	}
 

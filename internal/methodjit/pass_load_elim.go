@@ -86,6 +86,8 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				if origID, ok := globalAvail[instr.Aux]; ok {
 					origInstr := instrByID[origID]
 					replaceAllUses(fn, instr.ID, origInstr)
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+						"reused earlier GetGlobal result")
 				} else {
 					globalAvail[instr.Aux] = instr.ID
 				}
@@ -97,6 +99,8 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				if origID, ok := matrixFlatAvail[instr.Args[0].ID]; ok {
 					origInstr := instrByID[origID]
 					replaceAllUses(fn, instr.ID, origInstr)
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+						"reused earlier MatrixFlat result")
 				} else {
 					matrixFlatAvail[instr.Args[0].ID] = instr.ID
 				}
@@ -108,12 +112,18 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				if origID, ok := matrixStrideAvail[instr.Args[0].ID]; ok {
 					origInstr := instrByID[origID]
 					replaceAllUses(fn, instr.ID, origInstr)
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+						"reused earlier MatrixStride result")
 				} else {
 					matrixStrideAvail[instr.Args[0].ID] = instr.ID
 				}
 
 			case OpSetGlobal:
 				// SetGlobal on globals[i] kills the matching cache entry.
+				if _, ok := globalAvail[instr.Aux]; ok {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"SetGlobal invalidated cached global value")
+				}
 				delete(globalAvail, instr.Aux)
 
 			case OpGetField:
@@ -126,6 +136,8 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 					// with the original one.
 					origInstr := instrByID[origID]
 					replaceAllUses(fn, instr.ID, origInstr)
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+						"reused earlier GetField result")
 				} else {
 					available[key] = instr.ID
 				}
@@ -137,6 +149,8 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				if guardProvenByProducer(instr.Args[0], Type(instr.Aux)) {
 					if def := instr.Args[0].Def; def != nil {
 						replaceAllUses(fn, instr.ID, def)
+						functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+							"guard proven by producer type")
 					}
 					instr.Op = OpNop
 					instr.Args = nil
@@ -148,6 +162,8 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 					// Redundant guard — replace all uses with the original.
 					origInstr := instrByID[origID]
 					replaceAllUses(fn, instr.ID, origInstr)
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+						"reused earlier GuardType result")
 					// Guards are side-effecting so DCE won't remove them.
 					// Convert to Nop to make the redundant guard dead.
 					instr.Op = OpNop
@@ -163,11 +179,17 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				}
 				// Kill the specific (obj, field) entry, then record stored value.
 				key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
+				if _, ok := available[key]; ok {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"SetField invalidated earlier field load")
+				}
 				delete(available, key)
 				// Store-to-load forwarding: a subsequent GetField on the same
 				// (obj, field) can reuse the stored value directly.
 				if len(instr.Args) >= 2 {
 					available[key] = instr.Args[1].ID
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+						"recorded SetField value for forwarding")
 				}
 
 			case OpGetTable:
@@ -180,6 +202,8 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 					origInstr := instrByID[origID]
 					if origInstr != nil {
 						replaceAllUses(fn, instr.ID, origInstr)
+						functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+							"forwarded value from earlier SetTable")
 					}
 				}
 				// R94 (reverted): don't populate with GetTable's own result
@@ -197,14 +221,23 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				for k := range tableAvail {
 					if k.objID == objID {
 						delete(tableAvail, k)
+						functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+							"SetTable invalidated dynamic-key table cache")
 					}
 				}
 				// Record the stored value for future GetTable(t, k).
 				key := tableKey{objID: objID, keyID: instr.Args[1].ID}
 				tableAvail[key] = instr.Args[2].ID
+				functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+					"recorded SetTable value for forwarding")
 
 			case OpCall, OpSelf:
 				// Conservative: a call could mutate any table or change types.
+				if len(available) > 0 || len(guardAvail) > 0 || len(globalAvail) > 0 ||
+					len(matrixFlatAvail) > 0 || len(matrixStrideAvail) > 0 || len(tableAvail) > 0 {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"call invalidated available load/guard facts")
+				}
 				available = make(map[loadKey]int)
 				guardAvail = make(map[guardKey]int)
 				globalAvail = make(map[int64]int)

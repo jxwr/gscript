@@ -36,29 +36,31 @@ import (
 // and is non-nil only when the pass replaced ops that Tier 1 would execute
 // differently.
 type Tier2Trace struct {
-	IRBefore       string
-	IRAfter        string
-	IntrinsicNotes []string
-	RegAllocMap    string
+	IRBefore            string
+	IRAfter             string
+	IntrinsicNotes      []string
+	OptimizationRemarks []OptimizationRemark
+	RegAllocMap         string
 }
 
 // DiagArtifact is the full diagnostic payload for one Tier 2 compile.
 // CompiledCode is a defensive copy of the mmap'd code region — the caller
 // can retain it after the underlying CompiledFunction is freed.
 type DiagArtifact struct {
-	ProtoName        string
-	NumParams        int
-	MaxStack         int
-	IRBefore         string
-	IRAfter          string
-	IntrinsicNotes   []string
-	RegAllocMap      string
-	CompiledCode     []byte            // copy of cf.Code bytes
-	InsnCount        int               // total ARM64 instructions
-	InsnHistogram    map[string]int    // class -> count
-	DirectEntryOff   int
-	NumSpills        int
-	CompileErr       error
+	ProtoName           string
+	NumParams           int
+	MaxStack            int
+	IRBefore            string
+	IRAfter             string
+	IntrinsicNotes      []string
+	OptimizationRemarks []OptimizationRemark
+	RegAllocMap         string
+	CompiledCode        []byte         // copy of cf.Code bytes
+	InsnCount           int            // total ARM64 instructions
+	InsnHistogram       map[string]int // class -> count
+	DirectEntryOff      int
+	NumSpills           int
+	CompileErr          error
 }
 
 // CompileForDiagnostics runs the production Tier 2 compile pipeline on a
@@ -77,14 +79,15 @@ func (tm *TieringManager) CompileForDiagnostics(proto *vm.FuncProto) (*DiagArtif
 	cf, err := tm.compileTier2Pipeline(proto, trace)
 
 	art := &DiagArtifact{
-		ProtoName:      proto.Name,
-		NumParams:      proto.NumParams,
-		MaxStack:       proto.MaxStack,
-		IRBefore:       trace.IRBefore,
-		IRAfter:        trace.IRAfter,
-		IntrinsicNotes: trace.IntrinsicNotes,
-		RegAllocMap:    trace.RegAllocMap,
-		CompileErr:     err,
+		ProtoName:           proto.Name,
+		NumParams:           proto.NumParams,
+		MaxStack:            proto.MaxStack,
+		IRBefore:            trace.IRBefore,
+		IRAfter:             trace.IRAfter,
+		IntrinsicNotes:      trace.IntrinsicNotes,
+		OptimizationRemarks: trace.OptimizationRemarks,
+		RegAllocMap:         trace.RegAllocMap,
+		CompileErr:          err,
 	}
 
 	if cf == nil {
