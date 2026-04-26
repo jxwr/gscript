@@ -332,6 +332,7 @@ func (ts *typeSpecializer) insertParamGuards(fn *Function) {
 			Aux:   int64(TypeInt),
 			Block: p.block,
 		}
+		guard.copySourceFrom(p.instr)
 
 		// Insert guard right after the LoadSlot.
 		instrs := p.block.Instrs
@@ -445,6 +446,7 @@ func (ts *typeSpecializer) insertFloatParamGuards(fn *Function) {
 			Aux:   int64(TypeFloat),
 			Block: p.block,
 		}
+		guard.copySourceFrom(p.instr)
 
 		// Insert guard right after the LoadSlot.
 		instrs := p.block.Instrs
@@ -550,6 +552,7 @@ func (ts *typeSpecializer) insertIntParamGuards(fn *Function) {
 			Aux:   int64(TypeInt),
 			Block: p.block,
 		}
+		guard.copySourceFrom(p.instr)
 
 		instrs := p.block.Instrs
 		pos := p.index + 1

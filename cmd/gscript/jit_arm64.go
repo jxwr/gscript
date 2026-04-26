@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -134,4 +135,20 @@ func (r *tieringManagerReporter) WriteWarmDump(top *bytecodevm.FuncProto) error 
 		return fmt.Errorf("JIT unavailable")
 	}
 	return r.tm.WriteWarmDump(top)
+}
+
+func (r *tieringManagerReporter) PrintExitStats(w *os.File) {
+	if r == nil || r.tm == nil {
+		return
+	}
+	r.tm.WriteExitStatsText(w)
+}
+
+func (r *tieringManagerReporter) PrintExitStatsJSON(w *os.File) error {
+	if r == nil || r.tm == nil {
+		return nil
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(r.tm.ExitStats())
 }

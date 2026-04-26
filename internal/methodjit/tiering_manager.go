@@ -71,6 +71,7 @@ type TieringManager struct {
 	tier2Failed     map[*vm.FuncProto]bool
 	tier2FailReason map[*vm.FuncProto]string // reason a function failed Tier 2 (keyed by proto)
 	tier2Attempts   int                      // total Tier 2 compilation attempts
+	exitStats       exitStatsCollector
 	callVM          *vm.VM
 	tier2Threshold  int                           // configurable threshold for testing (legacy fallback)
 	profileCache    map[*vm.FuncProto]FuncProfile // cached function profiles
@@ -1070,6 +1071,8 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 					ctx.TableExitID, ctx.TableOp, ctx.TableSlot)
 			}
 		}
+
+		tm.recordTier2Exit(proto, cf, ctx)
 
 		switch ctx.ExitCode {
 		case ExitNormal:

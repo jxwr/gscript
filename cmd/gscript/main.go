@@ -20,14 +20,18 @@ import (
 // so the CLI can print tier statistics after execution.
 type jitStatsReporter interface {
 	PrintStats(w *os.File)
+	PrintExitStats(w *os.File)
+	PrintExitStatsJSON(w *os.File) error
 	Close() error
 }
 
 type jitCLIOptions struct {
-	TimelinePath   string
-	TimelineFormat string
-	WarmDumpDir    string
-	WarmDumpProto  string
+	TimelinePath      string
+	TimelineFormat    string
+	WarmDumpDir       string
+	WarmDumpProto     string
+	ShowExitStats     bool
+	ShowExitStatsJSON bool
 }
 
 type jitWarmDumpController interface {
@@ -55,6 +59,8 @@ func main() {
 	jitTimelineFormat := flag.String("jit-timeline-format", "jsonl", "JIT timeline format: jsonl or json")
 	jitDumpWarm := flag.String("jit-dump-warm", "", "write warm production Tier 2 diagnostic dump to directory")
 	jitDumpProto := flag.String("jit-dump-proto", "", "limit -jit-dump-warm to a proto name")
+	exitStats := flag.Bool("exit-stats", false, "print Tier 2 exit/deopt profile after execution")
+	exitStatsJSON := flag.Bool("exit-stats-json", false, "print Tier 2 exit/deopt profile as JSON after execution")
 	flag.Parse()
 
 	if *cpuprofile != "" {
@@ -135,10 +141,12 @@ func main() {
 
 	if *useVM {
 		if err := runFileVM(interp, filename, *useJIT, *jitStats, jitCLIOptions{
-			TimelinePath:   *jitTimeline,
-			TimelineFormat: *jitTimelineFormat,
-			WarmDumpDir:    *jitDumpWarm,
-			WarmDumpProto:  *jitDumpProto,
+			TimelinePath:      *jitTimeline,
+			TimelineFormat:    *jitTimelineFormat,
+			WarmDumpDir:       *jitDumpWarm,
+			WarmDumpProto:     *jitDumpProto,
+			ShowExitStats:     *exitStats,
+			ShowExitStatsJSON: *exitStatsJSON,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
 			os.Exit(1)
@@ -238,12 +246,30 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 			fmt.Fprintln(os.Stderr, "JIT Statistics: JIT disabled or unavailable on this platform")
 		}
 	}
+	var statsErr error
+	if jitOpts.ShowExitStats {
+		if reporter != nil {
+			reporter.PrintExitStats(os.Stderr)
+		} else {
+			fmt.Fprintln(os.Stderr, "Tier 2 Exit Profile: JIT disabled or unavailable on this platform")
+		}
+	}
+	if jitOpts.ShowExitStatsJSON {
+		if reporter != nil {
+			statsErr = reporter.PrintExitStatsJSON(os.Stderr)
+		} else {
+			fmt.Fprintln(os.Stderr, `{"error":"JIT disabled or unavailable on this platform"}`)
+		}
+	}
 	if err != nil {
 		if dumpErr != nil {
 			return fmt.Errorf("%w; warm dump failed: %v", err, dumpErr)
 		}
 		if closeErr != nil {
 			return fmt.Errorf("%w; JIT close failed: %v", err, closeErr)
+		}
+		if statsErr != nil {
+			return fmt.Errorf("%w; exit stats failed: %v", err, statsErr)
 		}
 		return err
 	}
@@ -252,6 +278,9 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 	}
 	if closeErr != nil {
 		return closeErr
+	}
+	if statsErr != nil {
+		return statsErr
 	}
 	return nil
 }

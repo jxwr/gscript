@@ -310,6 +310,10 @@ type CompiledFunction struct {
 	// InstrCodeRanges maps IR instruction IDs to emitted machine-code byte
 	// ranges. Diagnostic metadata only; execution never consults it.
 	InstrCodeRanges []InstrCodeRange
+
+	// ExitSites maps Tier 2 exit/deopt instruction IDs to production profile
+	// metadata used by TieringManager.ExitStats.
+	ExitSites map[int]ExitSiteMeta
 }
 
 func (cf *CompiledFunction) resumeOffset(instrID int, numericPass bool) (int, bool) {

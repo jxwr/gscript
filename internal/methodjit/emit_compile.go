@@ -278,6 +278,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		GlobalCache:        globalCache,
 		CallCache:          callCache,
 		InstrCodeRanges:    ec.instrCodeRanges,
+		ExitSites:          buildExitSiteMeta(fn),
 	}, nil
 }
 

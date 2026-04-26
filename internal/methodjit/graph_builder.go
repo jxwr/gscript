@@ -105,6 +105,7 @@ func (b *graphBuilder) build() {
 	}
 
 	// Step 4: Cleanup — ensure all blocks are well-formed.
+	b.currentPC = -1
 	b.cleanup()
 }
 
@@ -310,6 +311,7 @@ func (b *graphBuilder) emitBlocks() {
 			b.currentPC = pc
 			inst := code[pc]
 			op := vm.DecodeOp(inst)
+			b.currentPC = pc
 
 			switch op {
 			case vm.OP_MOVE:
@@ -937,6 +939,7 @@ func (b *graphBuilder) emitBlocks() {
 	for _, blk := range b.fn.Blocks {
 		b.sealBlock(blk)
 	}
+	b.currentPC = -1
 }
 
 // inferForLoopType checks if the for-loop's index (R(A)), limit (R(A+1)),
