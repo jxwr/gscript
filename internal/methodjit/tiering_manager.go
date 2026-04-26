@@ -932,6 +932,17 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		trace.IntrinsicNotes = intrinsicNotes
 	}
 
+	if op, ok := firstSelfRecursiveTableMutationInLoop(fn); ok {
+		remarks.Add("Tier2Gate", "blocked", 0, 0, op,
+			fmt.Sprintf("self-recursive loop has residual table mutation %s", op))
+		return nil, fmt.Errorf("tier2: self-recursive loop has residual table mutation %s (exit-storm blocked), staying at Tier 1", op)
+	}
+	if modReason, ok := firstTier2ModBlockerInLoop(fn); ok {
+		remarks.Add("Tier2Gate", "blocked", 0, 0, OpMod,
+			modReason+" remains inside loop")
+		return nil, fmt.Errorf("tier2: has %s (performance-blocked), staying at Tier 1", modReason)
+	}
+
 	// R162/R171: reject Tier 2 promotion when a loop contains operations
 	// whose Tier 2 path is still expected to be slower than Tier 1. This is
 	// deliberately a call-boundary performance filter, not the restart-OSR
@@ -948,11 +959,6 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	// Table writes that can resize/mutate dynamic structure, residual
 	// allocations, and non-native calls are still blocked by default.
 	if !tm.envTier2NoFilter {
-		if hasKnownFloatModInLoop(fn) {
-			remarks.Add("Tier2Gate", "blocked", 0, 0, OpMod,
-				"known-float OpMod remains inside loop")
-			return nil, fmt.Errorf("tier2: has known-float OpMod inside loop (performance-blocked), staying at Tier 1")
-		}
 		profile := tm.getProfile(proto)
 		if profile.LoopDepth < 2 {
 			if op, ok := firstCallBoundaryTier2BlockerInLoop(fn, loopCallGlobals); ok {
@@ -1533,19 +1539,23 @@ func hasExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
 	return ok
 }
 
-func hasKnownFloatModInLoop(fn *Function) bool {
+func firstTier2ModBlockerInLoop(fn *Function) (string, bool) {
 	li := computeLoopInfo(fn)
 	for _, block := range fn.Blocks {
 		if !li.loopBlocks[block.ID] {
 			continue
 		}
 		for _, instr := range block.Instrs {
-			if instr.Op == OpMod && instr.Type == TypeFloat {
-				return true
+			if instr.Op != OpMod {
+				continue
 			}
+			if instr.Type == TypeFloat {
+				return "known-float OpMod inside loop", true
+			}
+			return "generic OpMod inside loop", true
 		}
 	}
-	return false
+	return "", false
 }
 
 func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, bool) {
@@ -1612,10 +1622,30 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 	return OpNop, false
 }
 
+func firstSelfRecursiveTableMutationInLoop(fn *Function) (Op, bool) {
+	if !irHasSelfCall(fn) {
+		return OpNop, false
+	}
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpSetTable, OpSetField, OpAppend, OpSetList:
+				return instr.Op, true
+			}
+		}
+	}
+	return OpNop, false
+}
+
 func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
-	// Keep recursive partition-style loops at Tier 1 unless explicitly forced:
-	// sort/quicksort can enter much slower recursive Tier 2 behavior even when
-	// individual table stores are typed.
+	// Keep recursive partition-style loops at Tier 1: sort/quicksort can enter
+	// much slower recursive Tier 2 behavior even when individual table stores
+	// are typed. firstSelfRecursiveTableMutationInLoop enforces the same rule as
+	// a hard no-filter safety gate before the broader performance filters below.
 	if irHasSelfCall(fn) {
 		return false
 	}
@@ -1704,7 +1734,7 @@ func tier2LoopCallCalleePassesLoopDepth1Gate(callee *vm.FuncProto, globals map[s
 	if err != nil {
 		return false
 	}
-	if hasKnownFloatModInLoop(fn) {
+	if _, ok := firstTier2ModBlockerInLoop(fn); ok {
 		return false
 	}
 	hasFloatSet, hasBlocker := loopDepth1GateSetTableShape(fn)
