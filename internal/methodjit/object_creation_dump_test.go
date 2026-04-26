@@ -57,9 +57,12 @@ func TestObjectCreationDump(t *testing.T) {
 	// RedundantGuardElimination: create_and_sum / transform_chain drop
 	// post-EA GuardType load/branch sequences once virtual field Phis keep
 	// their stored value type.
+	//
+	// LoopPhiHeaderLiveness: header phi register-state fixes remove a small
+	// amount of spill/reload traffic from the inlined object loops.
 	baselines := []baseline{
-		{"create_and_sum", 472, 78},  // R161: was 1277/598
-		{"transform_chain", 590, 85}, // R161: was 1701/816
+		{"create_and_sum", 469, 75},  // R161: was 1277/598
+		{"transform_chain", 588, 83}, // R161: was 1701/816
 		{"new_vec3", 228, 135},       // unchanged EA shape; codegen bookkeeping moved
 	}
 
