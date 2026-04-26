@@ -66,7 +66,7 @@ for iter := 1; iter <= 3; iter++ {
 	}
 }
 
-func TestTier2ExitStormGateBlocksNoFilterGenericModLoop(t *testing.T) {
+func TestTier2ExitStormGateAllowsNoFilterNativeNumericGenericModLoop(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 
 	top := compileTop(t, `
@@ -84,12 +84,35 @@ func lcg(n, seed) {
 	}
 
 	tm := NewTieringManager()
-	err := tm.CompileTier2(lcg)
+	if err := tm.CompileTier2(lcg); err != nil {
+		t.Fatalf("CompileTier2(lcg) failed: %v", err)
+	}
+}
+
+func TestTier2ExitStormGateBlocksNoFilterUnknownGenericModLoop(t *testing.T) {
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+
+	top := compileTop(t, `
+func mod_unknown(xs, n) {
+    x := xs[1]
+    for i := 1; i <= n; i++ {
+        x = (x + 1) % 2147483648
+    }
+    return x
+}
+`)
+	modUnknown := findProtoByName(top, "mod_unknown")
+	if modUnknown == nil {
+		t.Fatal("mod_unknown proto not found")
+	}
+
+	tm := NewTieringManager()
+	err := tm.CompileTier2(modUnknown)
 	if err == nil {
-		t.Fatal("CompileTier2(lcg) succeeded; want generic Mod gate failure")
+		t.Fatal("CompileTier2(mod_unknown) succeeded; want generic Mod gate failure")
 	}
 	if !strings.Contains(err.Error(), "generic OpMod inside loop") {
-		t.Fatalf("CompileTier2(lcg) error = %q, want generic Mod gate", err)
+		t.Fatalf("CompileTier2(mod_unknown) error = %q, want generic Mod gate", err)
 	}
 }
 
