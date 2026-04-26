@@ -609,6 +609,18 @@ func TableFieldOffsets() (arrayKind, intArray, floatArray, boolArray uintptr) {
 	return unsafe.Offsetof(t.arrayKind), unsafe.Offsetof(t.intArray), unsafe.Offsetof(t.floatArray), unsafe.Offsetof(t.boolArray)
 }
 
+// TableMapOffsets returns byte offsets of sparse integer/general hash maps for JIT verification.
+func TableMapOffsets() (imap, hash uintptr) {
+	var t Table
+	return unsafe.Offsetof(t.imap), unsafe.Offsetof(t.hash)
+}
+
+// TableTypedArrayCapOffsets returns byte offsets of typed-array cap fields for JIT verification.
+func TableTypedArrayCapOffsets() (intArrayCap, floatArrayCap, boolArrayCap uintptr) {
+	var t Table
+	return unsafe.Offsetof(t.intArray) + 16, unsafe.Offsetof(t.floatArray) + 16, unsafe.Offsetof(t.boolArray) + 16
+}
+
 // TableKeysDirtyOffset returns the byte offset of the keysDirty field for JIT verification.
 func TableKeysDirtyOffset() uintptr {
 	var t Table

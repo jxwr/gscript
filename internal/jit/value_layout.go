@@ -10,11 +10,12 @@ import (
 // runtime.Value is now a uint64 (NaN-boxed). No sub-field offsets exist.
 //
 // NaN-boxing encoding:
-//   Float64:  raw IEEE 754 bits (bits 50-62 NOT all 1)
-//   Tagged:   bits 50-62 all 1 (qNaN), sign=1, bits 48-49 = type tag,
-//             bits 0-47 = 48-bit payload.
 //
-//   Tag (top 16 bits): 0xFFFC=nil, 0xFFFD=bool, 0xFFFE=int, 0xFFFF=pointer
+//	Float64:  raw IEEE 754 bits (bits 50-62 NOT all 1)
+//	Tagged:   bits 50-62 all 1 (qNaN), sign=1, bits 48-49 = type tag,
+//	          bits 0-47 = 48-bit payload.
+//
+//	Tag (top 16 bits): 0xFFFC=nil, 0xFFFD=bool, 0xFFFE=int, 0xFFFF=pointer
 const (
 	ValueSize = 8 // sizeof(runtime.Value) = sizeof(uint64)
 
@@ -39,30 +40,35 @@ const (
 	NB_PtrSubShift = 44
 
 	// Table struct offsets (must match runtime.Table layout)
-	TableOffArray    = 8  // []Value slice header (ptr+len+cap = 24 bytes)
-	TableOffArrayLen = 16 // array slice len field (8 bytes after data ptr)
-	TableOffSkeys      = 40  // []string slice header (ptr+len+cap)
-	TableOffSkeysLen   = 48  // skeys.len
-	TableOffSvals      = 64  // []Value slice header
-	TableOffSvalsLen   = 72  // svals slice len field
-	TableOffMetatable  = 104 // *Table
-	TableOffKeysDirty  = 136 // bool (1 byte) — must set true on append
+	TableOffArray     = 8   // []Value slice header (ptr+len+cap = 24 bytes)
+	TableOffArrayLen  = 16  // array slice len field (8 bytes after data ptr)
+	TableOffImap      = 32  // map[int64]Value
+	TableOffSkeys     = 40  // []string slice header (ptr+len+cap)
+	TableOffSkeysLen  = 48  // skeys.len
+	TableOffSvals     = 64  // []Value slice header
+	TableOffSvalsLen  = 72  // svals slice len field
+	TableOffHash      = 96  // map[Value]Value
+	TableOffMetatable = 104 // *Table
+	TableOffKeysDirty = 136 // bool (1 byte) — must set true on append
 
 	// FieldCacheEntry layout (for GETFIELD/SETFIELD inline caching)
-	FieldCacheEntrySize       = 16 // sizeof(runtime.FieldCacheEntry)
+	FieldCacheEntrySize        = 16 // sizeof(runtime.FieldCacheEntry)
 	FieldCacheEntryOffFieldIdx = 0  // int (8 bytes)
 	FieldCacheEntryOffShapeID  = 8  // uint32 (padded to 8 in struct)
 
 	// Type-specialized array fields (added at end of Table struct)
-	TableOffArrayKind  = 137 // ArrayKind (uint8)
-	TableOffShapeID    = 140 // uint32 — shape identifier for field cache validation
-	TableOffShape      = 144 // *Shape (pointer, 8 bytes) — TODO: verify with unsafe.Offsetof
-	TableOffIntArray    = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
-	TableOffIntArrayLen = 152 // intArray slice len field (8 bytes after data ptr)
-	TableOffFloatArray     = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
-	TableOffFloatArrayLen  = 176 // floatArray slice len field (168 + 8)
-	TableOffBoolArray      = 192 // []byte slice header (ptr+len+cap = 24 bytes)
-	TableOffBoolArrayLen   = 200 // boolArray slice len field (192 + 8)
+	TableOffArrayKind     = 137 // ArrayKind (uint8)
+	TableOffShapeID       = 140 // uint32 — shape identifier for field cache validation
+	TableOffShape         = 144 // *Shape (pointer, 8 bytes) — TODO: verify with unsafe.Offsetof
+	TableOffIntArray      = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
+	TableOffIntArrayLen   = 152 // intArray slice len field (8 bytes after data ptr)
+	TableOffIntArrayCap   = 160 // intArray slice cap field
+	TableOffFloatArray    = 168 // []float64 slice header (ptr+len+cap = 24 bytes)
+	TableOffFloatArrayLen = 176 // floatArray slice len field (168 + 8)
+	TableOffFloatArrayCap = 184 // floatArray slice cap field
+	TableOffBoolArray     = 192 // []byte slice header (ptr+len+cap = 24 bytes)
+	TableOffBoolArrayLen  = 200 // boolArray slice len field (192 + 8)
+	TableOffBoolArrayCap  = 208 // boolArray slice cap field
 	// R43 Phase 2 DenseMatrix descriptor fields.
 	TableOffDMFlat   = 224 // unsafe.Pointer — flat backing head
 	TableOffDMStride = 232 // int32 — row stride (columns)
@@ -144,6 +150,23 @@ func init() {
 	}
 	if baOff != TableOffBoolArray {
 		panic("jit: Table.boolArray offset mismatch: expected " + itoa(TableOffBoolArray) + ", got " + itoa(int(baOff)))
+	}
+	imapOff, hashOff := runtime.TableMapOffsets()
+	if imapOff != TableOffImap {
+		panic("jit: Table.imap offset mismatch: expected " + itoa(TableOffImap) + ", got " + itoa(int(imapOff)))
+	}
+	if hashOff != TableOffHash {
+		panic("jit: Table.hash offset mismatch: expected " + itoa(TableOffHash) + ", got " + itoa(int(hashOff)))
+	}
+	iaCapOff, faCapOff, baCapOff := runtime.TableTypedArrayCapOffsets()
+	if iaCapOff != TableOffIntArrayCap {
+		panic("jit: Table.intArray cap offset mismatch: expected " + itoa(TableOffIntArrayCap) + ", got " + itoa(int(iaCapOff)))
+	}
+	if faCapOff != TableOffFloatArrayCap {
+		panic("jit: Table.floatArray cap offset mismatch: expected " + itoa(TableOffFloatArrayCap) + ", got " + itoa(int(faCapOff)))
+	}
+	if baCapOff != TableOffBoolArrayCap {
+		panic("jit: Table.boolArray cap offset mismatch: expected " + itoa(TableOffBoolArrayCap) + ", got " + itoa(int(baCapOff)))
 	}
 
 	// Verify keysDirty offset
@@ -235,7 +258,7 @@ func EmitMulValueSize(asm *Assembler, rd, rn, scratch Reg) {
 		// ADD rd, rn, rn LSL #1   (rd = rn + rn*2 = rn*3)
 		// LSL rd, rd, #3          (rd = rn*3 * 8 = rn*24)
 		asm.ADDregLSL(rd, rn, rn, 1) // rd = rn * 3
-		asm.LSLimm(rd, rd, 3)         // rd = rn * 24
+		asm.LSLimm(rd, rd, 3)        // rd = rn * 24
 	case 32:
 		asm.LSLimm(rd, rn, 5)
 	default:

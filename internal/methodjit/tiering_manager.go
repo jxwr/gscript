@@ -1584,7 +1584,6 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				return instr.Op, true
 			case OpSelf,
 				OpNewTable,
-				OpSetTable,
 				OpConcat, OpAppend, OpSetList,
 				OpGetUpval, OpSetUpval,
 				OpGo, OpMakeChan, OpSend, OpRecv,
@@ -1593,10 +1592,34 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				OpLen, OpPow,
 				OpTForCall, OpTForLoop:
 				return instr.Op, true
+			case OpSetTable:
+				if tier2SetTableLoopCandidateIsSafe(fn, instr) {
+					continue
+				}
+				return instr.Op, true
 			}
 		}
 	}
 	return OpNop, false
+}
+
+func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
+	// Keep recursive partition-style loops at Tier 1 unless explicitly forced:
+	// sort/quicksort can enter much slower recursive Tier 2 behavior even when
+	// individual table stores are typed.
+	if irHasSelfCall(fn) {
+		return false
+	}
+	// Aux2 carries monomorphic array-kind feedback from Tier 1. Only typed
+	// arrays get the Tier 2 append/write fast path; Mixed stores remain too
+	// broad because they can carry pointers and rely more on runtime table
+	// growth/absorb behavior.
+	switch instr.Aux2 {
+	case int64(vm.FBKindInt), int64(vm.FBKindFloat), int64(vm.FBKindBool):
+		return true
+	default:
+		return false
+	}
 }
 
 func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
