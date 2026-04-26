@@ -41,12 +41,12 @@ var (
 	vmClosureOffProto    int // vm.Closure.Proto offset (should be 0)
 	vmClosureOffUpvalues int // vm.Closure.Upvalues offset (should be 8)
 
-	funcProtoOffCompiledCodePtr  int // vm.FuncProto.CompiledCodePtr offset
-	funcProtoOffDirectEntryPtr   int // vm.FuncProto.DirectEntryPtr offset
-	funcProtoOffConstants        int // vm.FuncProto.Constants offset (slice header)
-	funcProtoOffMaxStack         int // vm.FuncProto.MaxStack offset
-	funcProtoOffNumParams        int // vm.FuncProto.NumParams offset
-	funcProtoOffIsVarArg         int // vm.FuncProto.IsVarArg offset
+	funcProtoOffCompiledCodePtr   int // vm.FuncProto.CompiledCodePtr offset
+	funcProtoOffDirectEntryPtr    int // vm.FuncProto.DirectEntryPtr offset
+	funcProtoOffConstants         int // vm.FuncProto.Constants offset (slice header)
+	funcProtoOffMaxStack          int // vm.FuncProto.MaxStack offset
+	funcProtoOffNumParams         int // vm.FuncProto.NumParams offset
+	funcProtoOffIsVarArg          int // vm.FuncProto.IsVarArg offset
 	funcProtoOffGlobalValCachePtr int // vm.FuncProto.GlobalValCachePtr offset
 	funcProtoOffCallCount         int // vm.FuncProto.CallCount offset
 )
@@ -70,8 +70,8 @@ func init() {
 
 // NaN-boxing pointer sub-type constants for ARM64 type checks.
 const (
-	nbPtrSubShift      = 44
-	nbPtrSubVMClosure  = 8 // ptrSubVMClosure = 8 << 44
+	nbPtrSubShift     = 44
+	nbPtrSubVMClosure = 8 // ptrSubVMClosure = 8 << 44
 )
 
 // mRegSelfClosure caches the NaN-boxed closure value of the current function
@@ -129,6 +129,22 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.CMPreg(jit.X0, mRegSelfClosure)
 	asm.BCond(jit.CondEQ, selfCallFastLabel)
 
+	useCallIC := !isBaselineStaticSelfCall(callerProto, pc, a)
+	callICHitLabel := ""
+	callICDoneLabel := ""
+	callICOff := pc * 32 // 4 uint64 entries per bytecode PC
+	if useCallIC {
+		// Monomorphic CALL IC for stable non-self closures. This keeps mutual
+		// and cross-recursive calls on the direct-entry path without repeating
+		// the closure tag/proto/direct-entry lookup sequence at every call site.
+		callICHitLabel = nextLabel("call_ic_hit")
+		callICDoneLabel = nextLabel("call_ic_done")
+		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineCallCache)
+		asm.LDR(jit.X4, jit.X3, callICOff) // cached boxed closure
+		asm.CMPreg(jit.X0, jit.X4)
+		asm.BCond(jit.CondEQ, callICHitLabel)
+	}
+
 	// 2. Type-check: must be ptr (0xFFFF) with sub-type = 8 (VMClosure)
 	asm.LSRimm(jit.X1, jit.X0, 48)
 	asm.MOVimm16(jit.X2, jit.NB_TagPtrShr48)
@@ -170,6 +186,22 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	// -----------------------------------------------------------------------
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr)
 	asm.CBZ(jit.X2, slowLabel) // not compiled -> slow
+	if useCallIC {
+		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineCallCache)
+		loadSlot(asm, jit.X4, a)
+		asm.STR(jit.X4, jit.X3, callICOff)    // boxed closure
+		asm.STR(jit.X2, jit.X3, callICOff+8)  // direct entry
+		asm.STR(jit.X0, jit.X3, callICOff+16) // *vm.Closure
+		asm.STR(jit.X1, jit.X3, callICOff+24) // *vm.FuncProto
+		asm.B(callICDoneLabel)
+
+		asm.Label(callICHitLabel)
+		asm.LDR(jit.X1, jit.X3, callICOff+24) // cached *FuncProto
+		asm.LDR(jit.X2, jit.X3, callICOff+8)  // cached DirectEntryPtr
+
+		asm.Label(callICDoneLabel)
+		asm.LDR(jit.X0, jit.X3, callICOff+16) // cached *vm.Closure
+	}
 
 	// Bounds check: verify callee's register window fits in the register file.
 	asm.LDR(jit.X3, jit.X1, funcProtoOffMaxStack) // X3 = calleeMaxStack (int)
@@ -472,8 +504,8 @@ func emitDirectEntryPrologue(asm *jit.Assembler) {
 	asm.ADDimm(jit.X29, jit.SP, 0) // FP = SP
 
 	// Set up pinned registers from ctx (X0 = ctx, set by caller)
-	asm.MOVreg(mRegCtx, jit.X0)                      // X19 = ctx
-	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)       // X26 = ctx.Regs
+	asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
+	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
 	// X24 (tagInt) and X25 (tagBool) are callee-saved, preserved from caller.
 
@@ -487,6 +519,36 @@ func emitDirectEntryPrologue(asm *jit.Assembler) {
 
 	// Jump to first bytecode.
 	asm.B("pc_0")
+}
+
+func isBaselineStaticSelfCall(proto *vm.FuncProto, callPC, callA int) bool {
+	if proto == nil || callPC <= 0 || callPC >= len(proto.Code) {
+		return false
+	}
+	for pc := callPC - 1; pc >= 0; pc-- {
+		inst := proto.Code[pc]
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		if op == vm.OP_GETGLOBAL && a == callA {
+			bx := vm.DecodeBx(inst)
+			return bx >= 0 && bx < len(proto.Constants) && proto.Constants[bx].IsString() && proto.Constants[bx].Str() == proto.Name
+		}
+		if baselineOpWritesSlot(op) && a == callA {
+			return false
+		}
+	}
+	return false
+}
+
+func baselineOpWritesSlot(op vm.Opcode) bool {
+	switch op {
+	case vm.OP_JMP, vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_SETGLOBAL,
+		vm.OP_SETUPVAL, vm.OP_CLOSE, vm.OP_RETURN, vm.OP_TFORLOOP,
+		vm.OP_GO, vm.OP_SEND:
+		return false
+	default:
+		return true
+	}
 }
 
 // emitSelfCallEntryPrologue emits a lightweight entry point used only by

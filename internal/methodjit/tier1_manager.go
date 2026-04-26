@@ -283,7 +283,14 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 		ctx.BaselineGlobalGenPtr = uintptr(unsafe.Pointer(&e.globalCacheGen))
 		ctx.BaselineGlobalCachedGen = bf.CachedGlobalGen
 	} else {
+		ctx.BaselineGlobalCache = 0
+		ctx.BaselineGlobalGenPtr = 0
 		ctx.BaselineGlobalCachedGen = 0
+	}
+	if len(bf.CallCache) > 0 {
+		ctx.BaselineCallCache = uintptr(unsafe.Pointer(&bf.CallCache[0]))
+	} else {
+		ctx.BaselineCallCache = 0
 	}
 
 	// Set up FeedbackPtr for Tier 1 type feedback collection.
@@ -446,4 +453,23 @@ func (e *BaselineJITEngine) EvictCompiled(proto *vm.FuncProto) {
 	delete(e.failed, proto)
 	proto.CompiledCodePtr = 0
 	proto.DirectEntryPtr = 0
+	e.clearBaselineCallCachesForProto(proto)
+}
+
+func (e *BaselineJITEngine) clearBaselineCallCachesForProto(proto *vm.FuncProto) {
+	if proto == nil {
+		return
+	}
+	protoPtr := uint64(uintptr(unsafe.Pointer(proto)))
+	for _, bf := range e.compiled {
+		cache := bf.CallCache
+		for i := 0; i+3 < len(cache); i += 4 {
+			if cache[i+3] == protoPtr {
+				cache[i] = 0
+				cache[i+1] = 0
+				cache[i+2] = 0
+				cache[i+3] = 0
+			}
+		}
+	}
 }

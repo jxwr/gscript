@@ -202,6 +202,114 @@ func AnalyzeSpecializedABI(proto *vm.FuncProto) SpecializedABI {
 	}
 }
 
+func qualifiesForNumericCrossRecursiveCandidate(proto *vm.FuncProto) bool {
+	if proto == nil || proto.IsVarArg || proto.NumParams < 1 || proto.NumParams > 4 {
+		return false
+	}
+	if len(proto.Upvalues) != 0 || len(proto.Protos) != 0 || proto.MaxStack > maxTrackedSlots {
+		return false
+	}
+
+	slots := make([]specializedSlotRep, maxTrackedSlots)
+	for i := 0; i < proto.NumParams; i++ {
+		slots[i] = specializedSlotRawInt
+	}
+
+	branchTargets := specializedABIBranchTargets(proto.Code)
+	sawReturn := false
+	sawSelfCall := false
+	sawPeerCall := false
+
+	for pc, inst := range proto.Code {
+		if pc > 0 && branchTargets[pc] {
+			for i := range slots {
+				slots[i] = specializedSlotUnknown
+			}
+			for i := 0; i < proto.NumParams; i++ {
+				slots[i] = specializedSlotRawInt
+			}
+		}
+
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		c := vm.DecodeC(inst)
+
+		switch op {
+		case vm.OP_LOADINT:
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		case vm.OP_LOADK:
+			if !specializedABIConstIsInt(proto, vm.DecodeBx(inst)) {
+				return false
+			}
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		case vm.OP_MOVE:
+			setSpecializedSlot(slots, a, getSpecializedSlot(slots, b))
+		case vm.OP_GETGLOBAL:
+			if specializedABIConstString(proto, vm.DecodeBx(inst)) == proto.Name {
+				setSpecializedSlot(slots, a, specializedSlotSelfFunc)
+			} else {
+				setSpecializedSlot(slots, a, specializedSlotOtherFunc)
+			}
+		case vm.OP_SETUPVAL, vm.OP_CLOSE, vm.OP_JMP:
+		case vm.OP_SETGLOBAL:
+			return false
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_DIV, vm.OP_MOD:
+			if !specializedABIRKIsRawInt(slots, proto, b) || !specializedABIRKIsRawInt(slots, proto, c) {
+				return false
+			}
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		case vm.OP_UNM:
+			if !specializedABIRepIsRawInt(getSpecializedSlot(slots, b)) {
+				return false
+			}
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		case vm.OP_EQ, vm.OP_LT, vm.OP_LE:
+			if !specializedABIRKIsRawInt(slots, proto, b) || !specializedABIRKIsRawInt(slots, proto, c) {
+				return false
+			}
+		case vm.OP_TEST:
+		case vm.OP_TESTSET:
+			setSpecializedSlot(slots, a, specializedSlotUnknown)
+		case vm.OP_CALL:
+			callee := getSpecializedSlot(slots, a)
+			if callee != specializedSlotSelfFunc && callee != specializedSlotOtherFunc {
+				return false
+			}
+			if b == 0 || b-1 != proto.NumParams {
+				return false
+			}
+			for arg := a + 1; arg <= a+b-1; arg++ {
+				if !specializedABIRepIsRawInt(getSpecializedSlot(slots, arg)) {
+					return false
+				}
+			}
+			if callee == specializedSlotSelfFunc {
+				sawSelfCall = true
+			} else {
+				sawPeerCall = true
+			}
+			switch c {
+			case 2:
+				setSpecializedSlot(slots, a, specializedSlotRawInt)
+			case 1:
+				setSpecializedSlot(slots, a, specializedSlotUnknown)
+			default:
+				return false
+			}
+		case vm.OP_RETURN:
+			if b != 2 || !specializedABIRepIsRawInt(getSpecializedSlot(slots, a)) {
+				return false
+			}
+			sawReturn = true
+		default:
+			return false
+		}
+	}
+
+	return sawReturn && sawSelfCall && sawPeerCall
+}
+
 func specializedABIReject(reason string) SpecializedABI {
 	return SpecializedABI{
 		Kind:      SpecializedABINone,

@@ -136,6 +136,38 @@ func f(x) { return g(x) }`,
 	}
 }
 
+func TestQualifiesForNumericCrossRecursiveCandidate(t *testing.T) {
+	top := compileTop(t, `func F(n) {
+	if n == 0 { return 1 }
+	return n - M(F(n - 1))
+}
+func M(n) {
+	if n == 0 { return 0 }
+	return n - F(M(n - 1))
+}`)
+	for _, name := range []string{"F", "M"} {
+		proto := findProtoByName(top, name)
+		if proto == nil {
+			t.Fatalf("function %q not found", name)
+		}
+		if !qualifiesForNumericCrossRecursiveCandidate(proto) {
+			t.Fatalf("%s should qualify as numeric cross-recursive candidate", name)
+		}
+		if abi := AnalyzeSpecializedABI(proto); abi.Eligible {
+			t.Fatalf("%s must not be accepted by self-only raw ABI analysis: %+v", name, abi)
+		}
+	}
+
+	wrapper := findProtoByName(compileTop(t, `func g(n) { return n + 1 }
+func f(n) { return g(n) }`), "f")
+	if wrapper == nil {
+		t.Fatal("function \"f\" not found")
+	}
+	if qualifiesForNumericCrossRecursiveCandidate(wrapper) {
+		t.Fatal("non-recursive wrapper should not qualify")
+	}
+}
+
 func TestAnalyzeSpecializedABI_NilAndManualProto(t *testing.T) {
 	if abi := AnalyzeSpecializedABI(nil); abi.Eligible {
 		t.Fatalf("nil proto should be ineligible: %+v", abi)

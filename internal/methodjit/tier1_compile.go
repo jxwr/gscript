@@ -29,13 +29,14 @@ import (
 
 // BaselineFunc holds the generated native code for a baseline-compiled function.
 type BaselineFunc struct {
-	Code             *jit.CodeBlock // executable memory
-	Proto            *vm.FuncProto  // source function
-	Labels           map[int]int    // bytecodePC -> code offset (for resume after exit)
-	HasFieldOps      bool           // true if proto has GETFIELD/SETFIELD (skip syncFieldCache otherwise)
-	GlobalValCache   []uint64       // per-PC NaN-boxed global value cache (0 = not cached)
-	CachedGlobalGen  uint64         // engine.globalCacheGen at time of last cache population
-	DirectEntryOffset int           // byte offset of the direct entry point (for native BLR calls)
+	Code              *jit.CodeBlock // executable memory
+	Proto             *vm.FuncProto  // source function
+	Labels            map[int]int    // bytecodePC -> code offset (for resume after exit)
+	HasFieldOps       bool           // true if proto has GETFIELD/SETFIELD (skip syncFieldCache otherwise)
+	GlobalValCache    []uint64       // per-PC NaN-boxed global value cache (0 = not cached)
+	CallCache         []uint64       // per-PC CALL IC: boxed closure, direct entry, closure ptr, proto ptr
+	CachedGlobalGen   uint64         // engine.globalCacheGen at time of last cache population
+	DirectEntryOffset int            // byte offset of the direct entry point (for native BLR calls)
 }
 
 // Baseline frame size: save FP/LR + callee-saved GPRs (X19-X28) = 12 regs = 96 bytes.
@@ -347,6 +348,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 	// Scan bytecodes for field ops and GETGLOBAL to set flags.
 	hasFieldOps := false
 	hasGetGlobal := false
+	hasCall := false
 	for _, inst := range code {
 		op := vm.DecodeOp(inst)
 		if op == vm.OP_GETFIELD || op == vm.OP_SETFIELD || op == vm.OP_SELF {
@@ -355,12 +357,19 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		if op == vm.OP_GETGLOBAL {
 			hasGetGlobal = true
 		}
+		if op == vm.OP_CALL {
+			hasCall = true
+		}
 	}
 
 	// Allocate per-PC global value cache if any GETGLOBAL instructions exist.
 	var globalValCache []uint64
 	if hasGetGlobal {
 		globalValCache = make([]uint64, len(code))
+	}
+	var callCache []uint64
+	if hasCall {
+		callCache = make([]uint64, len(code)*4)
 	}
 
 	// Get the direct entry offset for native BLR calls.
@@ -372,6 +381,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		Labels:            labels,
 		HasFieldOps:       hasFieldOps,
 		GlobalValCache:    globalValCache,
+		CallCache:         callCache,
 		DirectEntryOffset: directEntryOff,
 	}, nil
 }
@@ -394,8 +404,8 @@ func emitBaselinePrologue(asm *jit.Assembler) {
 
 	// Set up pinned registers.
 	// X0 holds ExecContext pointer (from callJIT trampoline).
-	asm.MOVreg(mRegCtx, jit.X0)                      // X19 = ctx
-	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)       // X26 = ctx.Regs
+	asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
+	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
 	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24 = 0xFFFE000000000000
 	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25 = 0xFFFD000000000000

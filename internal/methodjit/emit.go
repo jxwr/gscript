@@ -82,6 +82,7 @@ type ExecContext struct {
 	BaselineGlobalCache     uintptr // pointer to BaselineFunc.GlobalValCache[0] (for native GETGLOBAL)
 	BaselineGlobalGenPtr    uintptr // pointer to engine.globalCacheGen (for version check)
 	BaselineGlobalCachedGen uint64  // engine.globalCacheGen at time bf's cache was populated
+	BaselineCallCache       uintptr // pointer to BaselineFunc.CallCache[0] (for native CALL)
 	BaselineFeedbackPtr     uintptr // pointer to proto.Feedback[0] (for Tier 1 type feedback collection)
 	// Caller context fields: used for JIT-to-JIT calls to save/restore caller state.
 	CallerRegs      uintptr // caller's VM register base pointer (saved before callee entry)
@@ -220,6 +221,7 @@ var (
 	execCtxOffBaselineGlobalCache     = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalCache))
 	execCtxOffBaselineGlobalGenPtr    = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalGenPtr))
 	execCtxOffBaselineGlobalCachedGen = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalCachedGen))
+	execCtxOffBaselineCallCache       = int(unsafe.Offsetof(ExecContext{}.BaselineCallCache))
 	execCtxOffBaselineFeedbackPtr     = int(unsafe.Offsetof(ExecContext{}.BaselineFeedbackPtr))
 	// Caller context offsets
 	execCtxOffCallerRegs      = int(unsafe.Offsetof(ExecContext{}.CallerRegs))
