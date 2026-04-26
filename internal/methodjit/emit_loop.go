@@ -458,6 +458,115 @@ func computeSafeHeaderFPRegs(fn *Function, li *loopInfo, alloc *RegAllocation,
 	return safe
 }
 
+// computeSafeLoopInvariantFPRegs returns pre-header float values that regalloc
+// kept resident in FPRs and whose registers are not clobbered anywhere in the
+// loop. emitBlock can mark these active at loop-body entry even when fn.Blocks
+// lists the body before the pre-header.
+func computeSafeLoopInvariantFPRegs(fn *Function, li *loopInfo, alloc *RegAllocation) map[int]map[int]loopFPRegEntry {
+	safe := make(map[int]map[int]loopFPRegEntry)
+	if fn == nil || li == nil || alloc == nil || !li.hasLoops() {
+		return safe
+	}
+
+	preheaders := computeLoopPreheaders(fn, li)
+	candidates := selectPreheaderInvariantFPRCandidates(fn, li, preheaders, alloc)
+	if len(candidates) == 0 {
+		return safe
+	}
+
+	blockByID := make(map[int]*Block, len(fn.Blocks))
+	for _, block := range fn.Blocks {
+		blockByID[block.ID] = block
+	}
+
+	for headerID, ids := range candidates {
+		phID, ok := preheaders[headerID]
+		if !ok {
+			continue
+		}
+		bodyBlocks := li.headerBlocks[headerID]
+		if !loopAllowsInvariantFPRCarry(fn, bodyBlocks) {
+			continue
+		}
+		ph := blockByID[phID]
+		if ph == nil {
+			continue
+		}
+		phInstrs := make(map[int]*Instr, len(ph.Instrs))
+		for _, instr := range ph.Instrs {
+			if !instr.Op.IsTerminator() {
+				phInstrs[instr.ID] = instr
+			}
+		}
+		for _, vid := range ids {
+			instr := phInstrs[vid]
+			if instr == nil || !needsFloatReg(instr) {
+				continue
+			}
+			if preheaderInvariantUsedOutsideLoop(fn, bodyBlocks, phID, vid) {
+				continue
+			}
+			pr, ok := alloc.ValueRegs[vid]
+			if !ok || !pr.IsFloat {
+				continue
+			}
+			if loopClobbersFPR(fn, bodyBlocks, alloc, pr.Reg) {
+				continue
+			}
+			if safe[headerID] == nil {
+				safe[headerID] = make(map[int]loopFPRegEntry)
+			}
+			safe[headerID][pr.Reg] = loopFPRegEntry{ValueID: vid}
+		}
+	}
+	return safe
+}
+
+func loopAllowsInvariantFPRCarry(fn *Function, bodyBlocks map[int]bool) bool {
+	for _, block := range fn.Blocks {
+		if !bodyBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op == OpPhi || instr.Op.IsTerminator() {
+				continue
+			}
+			switch instr.Op {
+			case OpNop,
+				OpConstInt, OpConstFloat, OpConstBool, OpConstNil, OpConstString,
+				OpLoadSlot,
+				OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
+				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+				OpSqrt, OpFMA,
+				OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat,
+				OpGuardType:
+				continue
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func loopClobbersFPR(fn *Function, bodyBlocks map[int]bool, alloc *RegAllocation, reg int) bool {
+	for _, block := range fn.Blocks {
+		if !bodyBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op.IsTerminator() {
+				continue
+			}
+			pr, ok := alloc.ValueRegs[instr.ID]
+			if ok && pr.IsFloat && pr.Reg == reg {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // isRawIntOp returns true if the op produces a raw int64 result
 // (stored via storeRawInt rather than storeResultNB).
 func isRawIntOp(op Op) bool {
