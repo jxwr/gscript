@@ -94,6 +94,27 @@
 <div class="post">
   <span class="date">2026-04-27</span>
   <br>
+  <a href="51-the-frame-we-did-not-write">The Frame We Did Not Write</a>
+  <p>Raw peer calls were already passing integer arguments in registers, but the success path still pre-boxed those raw args into the callee VM window for fallback. That made fallback simple and the common path slower. The new convention keeps raw peer success register-only and materializes the boxed VM call frame only if fallback or exit-resume needs it. A machine-code test now scans the raw peer shim and verifies there are no <code>mRegRegs</code> stores before <code>BLR</code>.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-27</span>
+  <br>
+  <a href="50-the-table-remembered-its-largest-key">The Table Remembered Its Largest Key</a>
+  <p>Tier 1 already knew table value kinds; it did not remember how large integer-key arrays became. The new per-PC <code>TableKeyFeedback</code> records the largest non-negative integer key observed at table access sites, then Tier 2 folds that into typed preallocation hints with a capped, lazy mixed-array capacity path. Sieve exits dropped into the low 40s while table-array and matmul stayed inside the guard thresholds.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-27</span>
+  <br>
+  <a href="49-the-induction-that-stayed-raw">The Induction That Stayed Raw</a>
+  <p>Sieve's inner loop was still boxing loop-carried integer arithmetic because overflow safety treated too many recurrences as unsafe. The new rule keeps only guarded forward linear inductions raw: a loop-header phi bounded by <code>&lt;</code> or <code>&lt;=</code>, updated by a loop-invariant non-negative <code>AddInt</code>. Multiplicative and decrementing recurrences stay boxed. Sieve moved from about 0.055s to 0.050s without reopening the overflow-deopt bug class.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-27</span>
+  <br>
   <a href="48-the-debugger-that-runs-production">The Debugger That Runs Production</a>
   <p>The next optimization loop needed production-grade visibility before more performance work. Six tools now answer the questions that used to require guesswork: <code>-jit-timeline</code> for tier chronology, <code>-jit-dump-warm</code> for real warm Tier 2 artifacts, structured optimization remarks, IR/ASM/source mapping, <code>-exit-stats</code> for hot deopt and exit sites, and <code>GSCRIPT_EXIT_RESUME_CHECK=1</code> for executable exit-resume invariants. The goal is not prettier dumps. The goal is that every performance premise has to survive production evidence before code changes begin.</p>
 </div>
