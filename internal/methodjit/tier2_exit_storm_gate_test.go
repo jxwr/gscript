@@ -3,6 +3,7 @@
 package methodjit
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -93,5 +94,26 @@ func lcg(n, seed) {
 	}
 	if !strings.Contains(err.Error(), "generic OpMod inside loop") {
 		t.Fatalf("CompileTier2(lcg) error = %q, want generic Mod gate", err)
+	}
+}
+
+func TestTier2ExitStormGateAllowsFannkuchSmallConstModulo(t *testing.T) {
+	srcBytes, err := os.ReadFile("../../benchmarks/suite/fannkuch.gs")
+	if err != nil {
+		t.Fatalf("read fannkuch.gs: %v", err)
+	}
+	top := compileTop(t, string(srcBytes))
+	fannkuch := findProtoByName(top, "fannkuch")
+	if fannkuch == nil {
+		t.Fatal("fannkuch proto not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(fannkuch); err != nil {
+		t.Fatalf("CompileTier2(fannkuch) failed: %v", err)
+	}
+	if !fannkuch.Tier2Promoted || fannkuch.DirectEntryPtr == 0 {
+		t.Fatalf("fannkuch did not install Tier2: promoted=%v direct=%#x",
+			fannkuch.Tier2Promoted, fannkuch.DirectEntryPtr)
 	}
 }

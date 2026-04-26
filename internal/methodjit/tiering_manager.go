@@ -1552,10 +1552,100 @@ func firstTier2ModBlockerInLoop(fn *Function) (string, bool) {
 			if instr.Type == TypeFloat {
 				return "known-float OpMod inside loop", true
 			}
+			if tier2GenericModIsSmallConstAdditiveLoopCounter(instr) {
+				continue
+			}
 			return "generic OpMod inside loop", true
 		}
 	}
 	return "", false
+}
+
+func tier2GenericModIsSmallConstAdditiveLoopCounter(instr *Instr) bool {
+	if instr == nil || instr.Op != OpMod || len(instr.Args) < 2 {
+		return false
+	}
+	if instr.Type == TypeFloat {
+		return false
+	}
+	divisor := instr.Args[1]
+	if divisor == nil || divisor.Def == nil || divisor.Def.Op != OpConstInt {
+		return false
+	}
+	if divisor.Def.Aux == 0 || divisor.Def.Aux < -16 || divisor.Def.Aux > 16 {
+		return false
+	}
+	return tier2ValueIsAdditiveIntLike(instr.Args[0], make(map[int]bool))
+}
+
+func tier2ValueIsAdditiveIntLike(v *Value, seen map[int]bool) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	if v.Def.Type == TypeFloat {
+		return false
+	}
+	if seen[v.ID] {
+		return true
+	}
+	seen[v.ID] = true
+
+	switch v.Def.Op {
+	case OpConstInt, OpUnboxInt:
+		return true
+	case OpGuardType:
+		return v.Def.Type == TypeInt && len(v.Def.Args) == 1 &&
+			tier2ValueIsAdditiveIntLike(v.Def.Args[0], seen)
+	case OpPhi:
+		return tier2AllValuesAdditiveIntLike(v.Def.Args, seen)
+	case OpAdd, OpAddInt:
+		return tier2SmallConstPlusAdditive(v.Def.Args, seen)
+	case OpSub, OpSubInt:
+		return tier2AdditiveMinusSmallConst(v.Def.Args, seen)
+	default:
+		return false
+	}
+}
+
+func tier2AllValuesAdditiveIntLike(values []*Value, seen map[int]bool) bool {
+	if len(values) == 0 {
+		return false
+	}
+	for _, arg := range values {
+		if !tier2ValueIsAdditiveIntLike(arg, seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func tier2SmallConstPlusAdditive(args []*Value, seen map[int]bool) bool {
+	if len(args) < 2 {
+		return false
+	}
+	if tier2ValueIsSmallConst(args[0], 16) {
+		return tier2ValueIsAdditiveIntLike(args[1], seen)
+	}
+	if tier2ValueIsSmallConst(args[1], 16) {
+		return tier2ValueIsAdditiveIntLike(args[0], seen)
+	}
+	return false
+}
+
+func tier2AdditiveMinusSmallConst(args []*Value, seen map[int]bool) bool {
+	if len(args) < 2 {
+		return false
+	}
+	return tier2ValueIsAdditiveIntLike(args[0], seen) &&
+		tier2ValueIsSmallConst(args[1], 16)
+}
+
+func tier2ValueIsSmallConst(v *Value, limit int64) bool {
+	if v == nil || v.Def == nil || v.Def.Op != OpConstInt {
+		return false
+	}
+	c := v.Def.Aux
+	return c >= -limit && c <= limit
 }
 
 func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, bool) {
