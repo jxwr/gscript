@@ -1657,18 +1657,62 @@ func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
 	case int64(vm.FBKindInt), int64(vm.FBKindFloat), int64(vm.FBKindBool):
 		return true
 	default:
-		return isFloatArraySetTable(instr)
+		return isScalarArraySetTable(instr)
 	}
 }
 
-func isFloatArraySetTable(instr *Instr) bool {
+func isScalarArraySetTable(instr *Instr) bool {
 	if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 3 {
 		return false
 	}
 	key := instr.Args[1]
 	val := instr.Args[2]
-	return key != nil && key.Def != nil && key.Def.Type == TypeInt &&
-		val != nil && val.Def != nil && val.Def.Type == TypeFloat
+	if !isIntLikeTableKey(key, make(map[int]bool)) || val == nil || val.Def == nil {
+		return false
+	}
+	switch val.Def.Type {
+	case TypeInt, TypeFloat, TypeBool:
+		return true
+	default:
+		return false
+	}
+}
+
+func isIntLikeTableKey(v *Value, seen map[int]bool) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	if v.Def.Type == TypeInt {
+		return true
+	}
+	if seen[v.ID] {
+		return true
+	}
+	seen[v.ID] = true
+	switch v.Def.Op {
+	case OpConstInt, OpUnboxInt:
+		return true
+	case OpAddInt, OpSubInt, OpMulInt, OpModInt:
+		return allIntLikeArgs(v.Def, seen)
+	case OpAdd, OpSub, OpMul, OpMod:
+		return allIntLikeArgs(v.Def, seen)
+	case OpPhi:
+		return allIntLikeArgs(v.Def, seen)
+	default:
+		return false
+	}
+}
+
+func allIntLikeArgs(instr *Instr, seen map[int]bool) bool {
+	if instr == nil || len(instr.Args) == 0 {
+		return false
+	}
+	for _, arg := range instr.Args {
+		if !isIntLikeTableKey(arg, seen) {
+			return false
+		}
+	}
+	return true
 }
 
 func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
@@ -1712,6 +1756,9 @@ func tier2LoopCallCalleeCanTierUp(callee *vm.FuncProto, globals map[string]*vm.F
 		return false
 	}
 	if profile.LoopDepth < 2 {
+		if !profile.HasLoop {
+			return false
+		}
 		return tier2LoopCallCalleePassesLoopDepth1Gate(callee, globals)
 	}
 	runtimeCallCount := callee.CallCount
@@ -1737,42 +1784,10 @@ func tier2LoopCallCalleePassesLoopDepth1Gate(callee *vm.FuncProto, globals map[s
 	if _, ok := firstTier2ModBlockerInLoop(fn); ok {
 		return false
 	}
-	hasFloatSet, hasBlocker := loopDepth1GateSetTableShape(fn)
-	if !hasFloatSet || hasBlocker {
+	if _, blocked := firstCallBoundaryTier2BlockerInLoop(fn, globals); blocked {
 		return false
 	}
 	return true
-}
-
-func loopDepth1GateSetTableShape(fn *Function) (hasFloatSet bool, hasBlocker bool) {
-	li := computeLoopInfo(fn)
-	for _, block := range fn.Blocks {
-		if !li.loopBlocks[block.ID] {
-			continue
-		}
-		for _, instr := range block.Instrs {
-			switch instr.Op {
-			case OpSetTable:
-				if isFloatArraySetTable(instr) {
-					hasFloatSet = true
-					continue
-				}
-				return hasFloatSet, true
-			case OpCall,
-				OpSelf,
-				OpNewTable,
-				OpConcat, OpAppend, OpSetList,
-				OpGetUpval, OpSetUpval,
-				OpGo, OpMakeChan, OpSend, OpRecv,
-				OpClosure, OpClose,
-				OpVararg,
-				OpLen, OpPow,
-				OpTForCall, OpTForLoop:
-				return hasFloatSet, true
-			}
-		}
-	}
-	return hasFloatSet, false
 }
 
 func tier2LoopCallCalleeIsLeafNativeCandidate(callee *vm.FuncProto) bool {

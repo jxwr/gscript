@@ -6,6 +6,7 @@
 package methodjit
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -101,6 +102,157 @@ func outside(n) {
 	}
 	if hasStaticCallInLoop(outside) {
 		t.Fatal("outside should not report its pre-loop call as in-loop")
+	}
+}
+
+func TestLoopCallGateAllowsNativeLoopCallees(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "field_update_callee",
+			src: `
+func step(particles, n, dt) {
+    for i := 1; i <= n; i++ {
+        p := particles[i]
+        p.x = p.x + p.vx * dt
+        p.vx = p.vx * 0.999
+    }
+}
+
+particles := {{x: 1.0, vx: 0.1}}
+for s := 1; s <= 3; s++ {
+    step(particles, 1, 0.01)
+}
+result := particles[1].x
+`,
+		},
+		{
+			name: "bool_table_callee",
+			src: `
+func sieve(n) {
+    is_prime := {}
+    for i := 2; i <= n; i++ {
+        is_prime[i] = true
+    }
+    i := 2
+    for i * i <= n {
+        if is_prime[i] {
+            j := i * i
+            for j <= n {
+                is_prime[j] = false
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    count := 0
+    for i := 2; i <= n; i++ {
+        if is_prime[i] { count = count + 1 }
+    }
+    return count
+}
+
+result := 0
+for r := 1; r <= 3; r++ {
+    result = sieve(100)
+}
+`,
+		},
+		{
+			name: "int_array_callee",
+			src: `
+func int_array_sum(n) {
+    arr := {}
+    for i := 1; i <= n; i++ {
+        arr[i] = i
+    }
+    sum := 0
+    for i := 1; i <= n; i++ {
+        sum = sum + arr[i]
+    }
+    return sum
+}
+
+result := 0
+for r := 1; r <= 3; r++ {
+    result = int_array_sum(100)
+}
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			top := compileProto(t, tc.src)
+			globals := buildProtoStableGlobals(top)
+			if !canPromoteWithNativeLoopCalls(top, globals) {
+				t.Fatalf("expected <main> loop call to be recognized as native-call safe; globals=%v", sortedProtoGlobalNames(globals))
+			}
+			tm := NewTieringManager()
+			if _, err := tm.CompileForDiagnostics(top); err != nil {
+				t.Fatalf("expected <main> Tier2 compile to pass loop-call gate: %v", err)
+			}
+		})
+	}
+}
+
+func sortedProtoGlobalNames(globals map[string]*vm.FuncProto) []string {
+	names := make([]string, 0, len(globals))
+	for name := range globals {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestLoopCallGateKeepsQuicksortBlocked(t *testing.T) {
+	src := `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            t := arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+            i = i + 1
+        }
+    }
+    t := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = t
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+
+func make_random_array(n, seed) {
+    arr := {}
+    x := seed
+    for i := 1; i <= n; i++ {
+        x = (x * 1103515245 + 12345) % 2147483648
+        arr[i] = x
+    }
+    return arr
+}
+
+N := 20
+for rep := 1; rep <= 2; rep++ {
+    arr := make_random_array(N, rep * 42)
+    quicksort(arr, 1, N)
+}
+result := 1
+`
+	top := compileProto(t, src)
+	globals := buildProtoStableGlobals(top)
+	if canPromoteWithNativeLoopCalls(top, globals) {
+		t.Fatal("quicksort driver loop should remain blocked by the native-call gate")
+	}
+	tm := NewTieringManager()
+	if _, err := tm.CompileForDiagnostics(top); err == nil {
+		t.Fatal("expected <main> Tier2 compile to remain blocked")
 	}
 }
 
