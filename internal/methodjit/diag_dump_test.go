@@ -96,6 +96,20 @@ func TestDiagDump(t *testing.T) {
 			t.Fatalf("write %s: %v", asmPath, err)
 		}
 
+		mapPath := filepath.Join(outDir, base+".map.json")
+		mapBytes, err := json.MarshalIndent(art.SourceMap, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal %s: %v", mapPath, err)
+		}
+		if err := os.WriteFile(mapPath, append(mapBytes, '\n'), 0o644); err != nil {
+			t.Fatalf("write %s: %v", mapPath, err)
+		}
+
+		annotatedASMPath := filepath.Join(outDir, base+".asm.annotated.txt")
+		if err := os.WriteFile(annotatedASMPath, []byte(disasmARM64Annotated(art.CompiledCode, art.SourceMap)), 0o644); err != nil {
+			t.Fatalf("write %s: %v", annotatedASMPath, err)
+		}
+
 		// IR text — post-RunTier2Pipeline, as Print(fn) formats it.
 		irPath := filepath.Join(outDir, base+".ir.txt")
 		irContent := fmt.Sprintf("=== %s (numParams=%d, maxStack=%d) ===\n\n", art.ProtoName, art.NumParams, art.MaxStack)
@@ -152,7 +166,7 @@ func TestDiagDump(t *testing.T) {
 			nonSkipped++
 		}
 	}
-	t.Logf("wrote %d artifacts (%d protos) to %s", 2*nonSkipped, len(stats), outDir)
+	t.Logf("wrote %d artifacts (%d protos) to %s", 4*nonSkipped, len(stats), outDir)
 }
 
 // disasmARM64 decodes a flat ARM64 code region into a human-readable
@@ -170,6 +184,46 @@ func disasmARM64(code []byte) string {
 		// GoSyntax returns an assembly-like form similar to Go's internal
 		// assembler. Use it rather than GNUSyntax for consistency with
 		// Go-side tooling; either is readable.
+		fmt.Fprintf(&b, "%04x  %08x  %s\n", i, word, arm64asm.GoSyntax(inst, 0, nil, nil))
+	}
+	return b.String()
+}
+
+// disasmARM64Annotated emits the same listing as disasmARM64 with source/IR
+// comments inserted at instruction ranges recorded by the Tier 2 emitter.
+func disasmARM64Annotated(code []byte, sourceMap []IRASMMapEntry) string {
+	byStart := make(map[int][]IRASMMapEntry)
+	for _, entry := range sourceMap {
+		if entry.CodeStart < 0 {
+			continue
+		}
+		byStart[entry.CodeStart] = append(byStart[entry.CodeStart], entry)
+	}
+	for off := range byStart {
+		sort.Slice(byStart[off], func(i, j int) bool {
+			if byStart[off][i].InstrID != byStart[off][j].InstrID {
+				return byStart[off][i].InstrID < byStart[off][j].InstrID
+			}
+			return byStart[off][i].Pass < byStart[off][j].Pass
+		})
+	}
+
+	var b strings.Builder
+	for i := 0; i+4 <= len(code); i += 4 {
+		if entries := byStart[i]; len(entries) > 0 {
+			for _, entry := range entries {
+				fmt.Fprintf(&b, "; line=%d pc=%d bc=%s ir=v%d %s B%d pass=%s code=[0x%04x,0x%04x)\n",
+					entry.SourceLine, entry.BytecodePC, entry.BytecodeOp,
+					entry.InstrID, entry.IROp, entry.BlockID, entry.Pass,
+					entry.CodeStart, entry.CodeEnd)
+			}
+		}
+		word := binary.LittleEndian.Uint32(code[i : i+4])
+		inst, err := arm64asm.Decode(code[i : i+4])
+		if err != nil {
+			fmt.Fprintf(&b, "%04x  %08x  .word\n", i, word)
+			continue
+		}
 		fmt.Fprintf(&b, "%04x  %08x  %s\n", i, word, arm64asm.GoSyntax(inst, 0, nil, nil))
 	}
 	return b.String()

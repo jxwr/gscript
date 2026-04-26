@@ -968,6 +968,9 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			"ARM64 compile failed: "+err.Error())
 		return nil, fmt.Errorf("tier2: compile failed: %w", err)
 	}
+	if trace != nil {
+		trace.SourceMap = BuildIRASMMap(fn, cf.InstrCodeRanges)
+	}
 
 	if cf.numRegs > proto.MaxStack {
 		proto.MaxStack = cf.numRegs

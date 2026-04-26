@@ -34,6 +34,7 @@ type gprPhiMove struct {
 
 // emitInstr emits ARM64 code for a single SSA instruction.
 func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
+	codeStart := len(ec.asm.Code())
 	// Clear per-instruction scratch FPR cache (D0-D3 are clobber-scoped per-instr).
 	for k := range ec.scratchFPRCache {
 		delete(ec.scratchFPRCache, k)
@@ -221,6 +222,20 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 
 	default:
 		ec.asm.NOP() // truly unknown op placeholder
+	}
+	codeEnd := len(ec.asm.Code())
+	if codeEnd > codeStart {
+		pass := "normal"
+		if ec.numericMode {
+			pass = "numeric"
+		}
+		ec.instrCodeRanges = append(ec.instrCodeRanges, InstrCodeRange{
+			InstrID:   instr.ID,
+			BlockID:   block.ID,
+			CodeStart: codeStart,
+			CodeEnd:   codeEnd,
+			Pass:      pass,
+		})
 	}
 }
 

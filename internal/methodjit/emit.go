@@ -306,6 +306,10 @@ type CompiledFunction struct {
 	// R109: the CallCount inc + threshold check is miss-path-only, since
 	// a hit implies the callee is already Tier 2.
 	CallCache []uint64
+
+	// InstrCodeRanges maps IR instruction IDs to emitted machine-code byte
+	// ranges. Diagnostic metadata only; execution never consults it.
+	InstrCodeRanges []InstrCodeRange
 }
 
 func (cf *CompiledFunction) resumeOffset(instrID int, numericPass bool) (int, bool) {

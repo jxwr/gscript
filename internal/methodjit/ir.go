@@ -96,6 +96,13 @@ type Instr struct {
 	Aux   int64    // auxiliary data (constant value, field index, slot number, etc.)
 	Aux2  int64    // second auxiliary (e.g., for Branch: true block ID)
 	Block *Block   // owning block
+
+	// Source metadata links this IR instruction back to the bytecode that
+	// produced it. HasSource is false for synthetic instructions introduced by
+	// passes or CFG repair unless the pass explicitly copies source metadata.
+	HasSource  bool
+	SourcePC   int
+	SourceLine int
 }
 
 // Value returns the SSA value produced by this instruction.

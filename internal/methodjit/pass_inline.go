@@ -420,6 +420,7 @@ func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, callee
 			Aux2:  ci.Aux2,
 			Block: block,
 		}
+		newInstr.copySourceFrom(ci)
 		// Remap args.
 		newInstr.Args = make([]*Value, len(ci.Args))
 		for j, arg := range ci.Args {
@@ -560,6 +561,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 					Type:  TypeUnknown,
 					Block: newBlock,
 				}
+				jmp.copySourceFrom(ci)
 				newBlock.Instrs = append(newBlock.Instrs, jmp)
 				newBlock.Succs = append(newBlock.Succs, mergeBlock)
 				mergeBlock.Preds = append(mergeBlock.Preds, newBlock)
@@ -574,6 +576,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 				Aux2:  ci.Aux2,
 				Block: newBlock,
 			}
+			newInstr.copySourceFrom(ci)
 
 			// Remap args.
 			newInstr.Args = make([]*Value, len(ci.Args))
@@ -612,6 +615,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 			Args:  returnValues,
 			Block: mergeBlock,
 		}
+		phi.copySourceFrom(callInstr)
 		mergeBlock.Instrs = append(mergeBlock.Instrs, phi)
 		inlineResult = phi.Value()
 	}
@@ -663,6 +667,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 		Type:  TypeUnknown,
 		Block: block,
 	}
+	jmpToCallee.copySourceFrom(callInstr)
 	block.Instrs = append(block.Instrs, jmpToCallee)
 	block.Succs = []*Block{calleeEntry}
 	calleeEntry.Preds = append(calleeEntry.Preds, block)

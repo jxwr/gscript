@@ -175,6 +175,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		scratchFPRCache:   make(map[int]jit.FReg),
 		fusedCmps:         fusedCmps,
 		tailCallInstrs:    computeTailCalls(fn),
+		instrCodeRanges:   make([]InstrCodeRange, 0, fn.nextID),
 	}
 	// R124/R126: numeric entry is emitted as pass-2 body inside this
 	// Compile when the proto qualifies. numericParamCount tells the
@@ -276,6 +277,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		NumericEntryOffset: numericEntryOff,
 		GlobalCache:        globalCache,
 		CallCache:          callCache,
+		InstrCodeRanges:    ec.instrCodeRanges,
 	}, nil
 }
 
@@ -475,6 +477,11 @@ type emitContext struct {
 	// fusedActive is true when the preceding comparison was fused and
 	// emitBranch should use fusedCond + B.cc instead of TBNZ.
 	fusedActive bool
+
+	// instrCodeRanges records the machine-code byte range emitted for each IR
+	// instruction. It is diagnostic metadata only; offsets are relative to the
+	// start of the compiled code block.
+	instrCodeRanges []InstrCodeRange
 }
 
 // computeTailCalls (R107) scans the IR for the tail-call pattern:

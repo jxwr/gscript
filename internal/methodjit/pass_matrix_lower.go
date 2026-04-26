@@ -67,6 +67,8 @@ func MatrixLowerPass(fn *Function) (*Function, error) {
 				m, i, j := instr.Args[0], instr.Args[1], instr.Args[2]
 				flat := emitIRInstr(fn, block, OpMatrixFlat, TypeInt, []*Value{m}, 0, 0)
 				stride := emitIRInstr(fn, block, OpMatrixStride, TypeInt, []*Value{m}, 0, 0)
+				flat.copySourceFrom(instr)
+				stride.copySourceFrom(instr)
 				newInstrs = append(newInstrs, flat, stride)
 				// R45 form (LoadFAt): the ARM64 pipeline absorbs MUL+ADD
 				// inside LoadFAt's single-insn address computation.
@@ -85,6 +87,8 @@ func MatrixLowerPass(fn *Function) (*Function, error) {
 				m, i, j, v := instr.Args[0], instr.Args[1], instr.Args[2], instr.Args[3]
 				flat := emitIRInstr(fn, block, OpMatrixFlat, TypeInt, []*Value{m}, 0, 0)
 				stride := emitIRInstr(fn, block, OpMatrixStride, TypeInt, []*Value{m}, 0, 0)
+				flat.copySourceFrom(instr)
+				stride.copySourceFrom(instr)
 				newInstrs = append(newInstrs, flat, stride)
 				instr.Op = OpMatrixStoreFAt
 				instr.Args = []*Value{flat.Value(), stride.Value(), i, j, v}

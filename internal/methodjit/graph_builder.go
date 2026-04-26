@@ -19,6 +19,7 @@ func BuildGraph(proto *vm.FuncProto) *Function {
 		},
 		proto:           proto,
 		pcToBlock:       make(map[int]*Block),
+		currentPC:       -1,
 		lastMultiRetReg: -1,
 	}
 	b.build()
@@ -32,6 +33,7 @@ type graphBuilder struct {
 	pcToBlock       map[int]*Block // maps PC → Block that starts at that PC
 	nextBlock       int            // next block ID
 	backEdgeTargets map[int]bool   // PCs that are targets of backward jumps (loop headers)
+	currentPC       int            // bytecode PC currently being translated; -1 for synthetic IR
 	lastMultiRetReg int            // register set by preceding CALL/VARARG with C=0; -1 = no pending top
 }
 
@@ -59,6 +61,7 @@ func (b *graphBuilder) emit(block *Block, op Op, typ Type, args []*Value, aux, a
 		Aux2:  aux2,
 		Block: block,
 	}
+	instr.setSourceFromPC(b.proto, b.currentPC)
 	block.Instrs = append(block.Instrs, instr)
 	return instr
 }
@@ -304,6 +307,7 @@ func (b *graphBuilder) emitBlocks() {
 		b.lastMultiRetReg = -1
 
 		for pc := startPC; pc < endPC; pc++ {
+			b.currentPC = pc
 			inst := code[pc]
 			op := vm.DecodeOp(inst)
 
@@ -909,6 +913,7 @@ func (b *graphBuilder) emitBlocks() {
 		}
 
 		// If block is not terminated, add a fallthrough edge to the next block.
+		b.currentPC = -1
 		if !terminated[startPC] {
 			nextPC := blockEndPC[startPC]
 			if nextBlock, ok := b.pcToBlock[nextPC]; ok {
