@@ -9,6 +9,7 @@ does not abort the full run.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import platform
@@ -90,6 +91,25 @@ class BenchmarkResult:
     baseline_seconds: float | None = None
     regression_pct: float | None = None
     regression: bool = False
+
+
+CSV_COLUMNS = [
+    "benchmark",
+    "vm_seconds",
+    "default_seconds",
+    "no_filter_seconds",
+    "luajit_seconds",
+    "jit_vm_speedup",
+    "jit_luajit_ratio",
+    "baseline_seconds",
+    "regression_pct",
+    "regression",
+    "default_status",
+    "t2_attempted",
+    "t2_entered",
+    "t2_failed",
+    "exit_total",
+]
 
 
 def parse_time(output: str) -> float | None:
@@ -245,10 +265,23 @@ def load_baseline(path: Path | None) -> dict[str, float]:
     with path.open() as f:
         data = json.load(f)
     out: dict[str, float] = {}
-    for name, row in data.get("results", {}).items():
-        sec = parse_seconds(row.get("jit"))
-        if sec is not None:
-            out[name] = sec
+    results = data.get("results", {})
+    if isinstance(results, dict):
+        for name, row in results.items():
+            sec = parse_seconds(row.get("jit"))
+            if sec is not None:
+                out[name] = sec
+    elif isinstance(results, list):
+        for row in results:
+            if not isinstance(row, dict):
+                continue
+            name = row.get("benchmark")
+            default = row.get("default")
+            if not isinstance(name, str) or not isinstance(default, dict):
+                continue
+            sec = parse_seconds(default.get("seconds"))
+            if sec is not None:
+                out[name] = sec
     return out
 
 
@@ -264,10 +297,110 @@ def speedup(numer: float | None, denom: float | None) -> str:
     return f"{numer / denom:.2f}x"
 
 
+def ratio(numer: float | None, denom: float | None) -> float | None:
+    if numer is None or denom is None or denom == 0:
+        return None
+    return numer / denom
+
+
+def report_row(row: BenchmarkResult) -> dict[str, object]:
+    vm = row.vm or ModeResult("missing")
+    default = row.default or ModeResult("missing")
+    no_filter = row.no_filter or ModeResult("missing")
+    luajit = row.luajit or ModeResult("missing")
+    return {
+        "benchmark": row.benchmark,
+        "vm_seconds": vm.seconds,
+        "default_seconds": default.seconds,
+        "no_filter_seconds": no_filter.seconds,
+        "luajit_seconds": luajit.seconds,
+        "jit_vm_speedup": ratio(vm.seconds, default.seconds),
+        "jit_luajit_ratio": ratio(default.seconds, luajit.seconds),
+        "baseline_seconds": row.baseline_seconds,
+        "regression_pct": row.regression_pct,
+        "regression": row.regression,
+        "default_status": default.status,
+        "t2_attempted": default.t2_attempted,
+        "t2_entered": default.t2_entered,
+        "t2_failed": default.t2_failed,
+        "exit_total": default.exit_total,
+    }
+
+
+def fmt_ratio(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:.2f}x"
+
+
+def fmt_pct(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:+.1f}%"
+
+
+def write_csv(path: Path, results: Iterable[BenchmarkResult]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        for row in results:
+            writer.writerow(report_row(row))
+
+
+def markdown_table(results: Iterable[BenchmarkResult], threshold_pct: float) -> str:
+    lines = [
+        "| Benchmark | VM | Default JIT | NoFilter | LuaJIT | JIT/VM | JIT/LJ | Baseline | Regress | T2 a/e/f | Exits |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    regressions = 0
+    for row in results:
+        vm = row.vm or ModeResult("missing")
+        default = row.default or ModeResult("missing")
+        no_filter = row.no_filter or ModeResult("missing")
+        luajit = row.luajit or ModeResult("missing")
+        if row.regression:
+            regressions += 1
+        t2 = f"{default.t2_attempted}/{default.t2_entered}/{default.t2_failed}"
+        marker = ("REG " if row.regression else "") + fmt_pct(row.regression_pct)
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    row.benchmark,
+                    fmt_seconds(vm.seconds, vm.status),
+                    fmt_seconds(default.seconds, default.status),
+                    fmt_seconds(no_filter.seconds, no_filter.status),
+                    fmt_seconds(luajit.seconds, luajit.status),
+                    fmt_ratio(ratio(vm.seconds, default.seconds)),
+                    fmt_ratio(ratio(default.seconds, luajit.seconds)),
+                    fmt_seconds(row.baseline_seconds),
+                    marker,
+                    t2,
+                    str(default.exit_total),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            f"Regression threshold: >{threshold_pct:.1f}% slower than baseline default JIT.",
+            f"Regressions: {regressions}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def write_markdown(path: Path, results: Iterable[BenchmarkResult], threshold_pct: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(markdown_table(results, threshold_pct))
+
+
 def print_table(results: Iterable[BenchmarkResult], threshold_pct: float) -> None:
     header = (
         f"{'Benchmark':<22} {'VM':>9} {'Default':>9} {'NoFilter':>9} {'LuaJIT':>9} "
-        f"{'JIT/VM':>8} {'JIT/LJ':>8} {'T2 a/e/f':>11} {'Exits':>7} {'Regress':>9}"
+        f"{'JIT/VM':>8} {'JIT/LJ':>8} {'Baseline':>9} {'T2 a/e/f':>11} {'Exits':>7} {'Regress':>9}"
     )
     print(header)
     print("-" * len(header))
@@ -292,6 +425,7 @@ def print_table(results: Iterable[BenchmarkResult], threshold_pct: float) -> Non
             f"{fmt_seconds(luajit.seconds, luajit.status):>9} "
             f"{speedup(vm.seconds, default.seconds):>8} "
             f"{speedup(default.seconds, luajit.seconds):>8} "
+            f"{fmt_seconds(row.baseline_seconds):>9} "
             f"{t2:>11} "
             f"{default.exit_total:>7} "
             f"{marker:>9}"
@@ -303,11 +437,20 @@ def print_table(results: Iterable[BenchmarkResult], threshold_pct: float) -> Non
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs", type=int, default=3, help="samples per benchmark/mode")
+    parser.add_argument(
+        "--runs",
+        "--count",
+        dest="runs",
+        type=int,
+        default=3,
+        help="samples per benchmark/mode; --count is an alias for Go bench users",
+    )
     parser.add_argument("--timeout", type=int, default=60, help="timeout per sample in seconds")
     parser.add_argument("--threshold", type=float, default=10.0, help="regression threshold percent")
     parser.add_argument("--baseline", type=Path, default=Path("benchmarks/data/baseline.json"))
     parser.add_argument("--json", type=Path, help="write machine-readable results to this path")
+    parser.add_argument("--csv", type=Path, help="write flat per-benchmark summary to this path")
+    parser.add_argument("--markdown", type=Path, help="write markdown summary table to this path")
     parser.add_argument("--bench", action="append", help="benchmark to run; repeatable")
     parser.add_argument("--no-luajit", action="store_true", help="skip LuaJIT even when installed")
     parser.add_argument("--keep-bin", action="store_true", help="keep temporary gscript binary")
@@ -367,6 +510,14 @@ def main(argv: list[str] | None = None) -> int:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(json.dumps(payload, indent=2) + "\n")
             print(f"Wrote JSON: {out}")
+        if args.csv:
+            out = root / args.csv if not args.csv.is_absolute() else args.csv
+            write_csv(out, results)
+            print(f"Wrote CSV: {out}")
+        if args.markdown:
+            out = root / args.markdown if not args.markdown.is_absolute() else args.markdown
+            write_markdown(out, results, args.threshold)
+            print(f"Wrote Markdown: {out}")
 
         return 1 if any(r.regression for r in results) else 0
     finally:

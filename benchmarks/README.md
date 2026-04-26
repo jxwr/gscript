@@ -9,10 +9,16 @@
 bash benchmarks/run_bench.sh
 
 # Regression guard: VM + default JIT + no-filter JIT + LuaJIT, median-of-3
-bash benchmarks/regression_guard.sh --runs=3 --json benchmarks/data/regression_guard_latest.json
+bash benchmarks/regression_guard.sh --runs=3 \
+  --json benchmarks/data/regression_guard_latest.json \
+  --csv benchmarks/data/regression_guard_latest.csv \
+  --markdown benchmarks/data/regression_guard_latest.md
 
 # Publish-grade guard
 bash benchmarks/regression_guard.sh --runs=5 --timeout=90
+
+# Promote a reviewed guard JSON to the checked-in baseline
+bash benchmarks/set_baseline.sh benchmarks/data/regression_guard_latest.json
 
 # Quick mode (Go warm benchmarks only, ~15s)
 bash benchmarks/run_bench.sh --quick
@@ -49,6 +55,12 @@ default JIT is more than 10% slower than `benchmarks/data/baseline.json`.
 Each benchmark/mode/sample has its own timeout; a timeout or crash records that
 cell and the runner continues with the rest of the suite. The process exits
 non-zero only after the table is complete and at least one regression is marked.
+Use `--runs=N` to choose median sample count for the guard. `--count=N` is an
+alias for the same setting; it does not invoke Go benchmark `-count`. For Go
+micro-benchmarks, use `go test ./benchmarks/ -bench=Warm -count=N`.
+
+For the push-before-push workflow and report examples, see
+[docs/perf/bench-guard.md](../docs/perf/bench-guard.md).
 
 `run_bench.sh` renders a table with five comparative columns and one
 tiering indicator:
