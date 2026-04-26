@@ -258,7 +258,7 @@ func guardProvenByProducer(v *Value, guardType Type) bool {
 	switch guardType {
 	case TypeInt:
 		switch v.Def.Op {
-		case OpConstInt, OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt:
+		case OpConstInt, OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt:
 			return true
 		}
 	case TypeFloat:

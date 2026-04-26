@@ -1,6 +1,6 @@
 // pass_range.go implements forward dataflow range analysis for integer SSA
 // values. It computes [min, max] ranges over the IR, then marks every
-// AddInt/SubInt/MulInt/NegInt whose range provably fits in the signed int48
+// AddInt/SubInt/MulInt/DivIntExact/NegInt whose range provably fits in the signed int48
 // space. The emitter consults `fn.Int48Safe` to skip the 3-instruction
 // SBFX+CMP+B.NE overflow check on provably safe arithmetic.
 //
@@ -227,10 +227,45 @@ func modRange(b intRange) intRange {
 	return intRange{min: -bound, max: bound, known: true}
 }
 
+func divExactRange(a, b intRange) intRange {
+	if !a.known || !b.known {
+		return topRange()
+	}
+	if b.min <= 0 && b.max >= 0 {
+		return topRange()
+	}
+	qs := []int64{
+		safeDivBound(a.min, b.min),
+		safeDivBound(a.min, b.max),
+		safeDivBound(a.max, b.min),
+		safeDivBound(a.max, b.max),
+	}
+	lo, hi := qs[0], qs[0]
+	for _, q := range qs[1:] {
+		if q < lo {
+			lo = q
+		}
+		if q > hi {
+			hi = q
+		}
+	}
+	return intRange{min: lo, max: hi, known: true}
+}
+
+func safeDivBound(a, b int64) int64 {
+	if b == 0 {
+		return math.MaxInt64
+	}
+	if a == math.MinInt64 && b == -1 {
+		return math.MaxInt64
+	}
+	return a / b
+}
+
 // --- Main pass ---
 
 // RangeAnalysisPass computes integer ranges across the IR and marks every
-// AddInt/SubInt/MulInt/NegInt whose range provably fits in signed int48.
+// AddInt/SubInt/MulInt/DivIntExact/NegInt whose range provably fits in signed int48.
 // Populates `fn.Int48Safe` with safe value IDs.
 func RangeAnalysisPass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.Blocks) == 0 {
@@ -276,7 +311,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			switch instr.Op {
-			case OpAddInt, OpSubInt, OpMulInt, OpNegInt:
+			case OpAddInt, OpSubInt, OpMulInt, OpDivIntExact, OpNegInt:
 				if r, ok := ranges[instr.ID]; ok && r.fitsInt48() {
 					safe[instr.ID] = true
 				}
@@ -324,6 +359,12 @@ func computeRange(instr *Instr, ranges map[int]intRange) intRange {
 			return topRange()
 		}
 		return modRange(argRange(instr.Args[1], ranges))
+
+	case OpDivIntExact:
+		if len(instr.Args) < 2 {
+			return topRange()
+		}
+		return divExactRange(argRange(instr.Args[0], ranges), argRange(instr.Args[1], ranges))
 
 	case OpNegInt:
 		if len(instr.Args) < 1 {

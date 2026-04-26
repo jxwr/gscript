@@ -288,6 +288,14 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
 		s.values[instr.ID] = runtime.IntValue(a.Int() % b.Int())
 
+	case OpDivIntExact:
+		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
+		bi := b.Int()
+		if bi == 0 || a.Int()%bi != 0 {
+			return nil, false, fmt.Errorf("IR interpreter: non-exact integer division")
+		}
+		s.values[instr.ID] = runtime.IntValue(a.Int() / bi)
+
 	case OpNegInt:
 		a := s.val(instr.Args[0])
 		s.values[instr.ID] = runtime.IntValue(-a.Int())

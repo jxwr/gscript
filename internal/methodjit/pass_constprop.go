@@ -34,8 +34,8 @@ func ConstPropPass(fn *Function) (*Function, error) {
 
 // constVal holds a known constant value: either int64 or float64.
 type constVal struct {
-	isInt   bool
-	intVal  int64
+	isInt    bool
+	intVal   int64
 	floatVal float64
 }
 
@@ -53,7 +53,7 @@ func (cp *constProp) process(instr *Instr) {
 		cp.constants[instr.ID] = constVal{isInt: false, floatVal: math.Float64frombits(uint64(instr.Aux))}
 
 	// Integer arithmetic.
-	case OpAddInt, OpSubInt, OpMulInt, OpModInt:
+	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact:
 		cp.foldIntBinary(instr)
 	case OpNegInt:
 		cp.foldIntUnary(instr)
@@ -100,6 +100,11 @@ func (cp *constProp) foldIntBinary(instr *Instr) {
 			return // don't fold division by zero
 		}
 		result = a.intVal % b.intVal
+	case OpDivIntExact:
+		if b.intVal == 0 || a.intVal%b.intVal != 0 {
+			return
+		}
+		result = a.intVal / b.intVal
 	default:
 		return
 	}

@@ -42,7 +42,7 @@ func OverflowBoxingPass(fn *Function) (*Function, error) {
 						boxed[instr.ID] = true
 						changed = true
 					}
-				case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt:
+				case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt:
 					if anyArgBoxed(instr, boxed) ||
 						(loopCarriedDeps[instr.ID] && isUnsafeIntArithmetic(fn, instr)) {
 						boxed[instr.ID] = true
@@ -70,6 +70,9 @@ func OverflowBoxingPass(fn *Function) (*Function, error) {
 					instr.Type = TypeUnknown
 				case OpModInt:
 					instr.Op = OpMod
+					instr.Type = TypeUnknown
+				case OpDivIntExact:
+					instr.Op = OpDiv
 					instr.Type = TypeUnknown
 				case OpNegInt:
 					instr.Op = OpUnm
@@ -122,7 +125,7 @@ func collectPhiArithmeticDeps(fn *Function) map[int]bool {
 			continue
 		}
 		switch instr.Op {
-		case OpPhi, OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt:
+		case OpPhi, OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt:
 			deps[id] = true
 			for _, arg := range instr.Args {
 				if arg != nil {
@@ -143,6 +146,8 @@ func isUnsafeIntArithmetic(fn *Function, instr *Instr) bool {
 		if instr.Aux2 != 0 {
 			return false
 		}
+		return fn.Int48Safe == nil || !fn.Int48Safe[instr.ID]
+	case OpDivIntExact:
 		return fn.Int48Safe == nil || !fn.Int48Safe[instr.ID]
 	default:
 		return false

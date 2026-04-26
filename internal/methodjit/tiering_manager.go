@@ -1817,7 +1817,7 @@ func isIntLikeTableKey(v *Value, seen map[int]bool) bool {
 	switch v.Def.Op {
 	case OpConstInt, OpUnboxInt:
 		return true
-	case OpAddInt, OpSubInt, OpMulInt, OpModInt:
+	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact:
 		return allIntLikeArgs(v.Def, seen)
 	case OpAdd, OpSub, OpMul, OpMod:
 		return allIntLikeArgs(v.Def, seen)

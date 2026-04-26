@@ -414,6 +414,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("OverflowBoxing: %w", err)
 	}
 
+	fn, err = IntExactDivisionPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("IntExactDivision: %w", err)
+	}
+
 	// R45: lower OpMatrixGetF/SetF into OpMatrixFlat + OpMatrixStride +
 	// OpMatrixLoadFAt/StoreFAt so LICM can hoist the Flat/Stride ops
 	// out of inner loops where m is invariant.
@@ -501,6 +506,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("DCE", DCEPass)
 	pipe.Add("RangeAnalysis", RangeAnalysisPass)
 	pipe.Add("OverflowBoxing", OverflowBoxingPass)
+	pipe.Add("IntExactDivision", IntExactDivisionPass)
 	pipe.Add("LICM", LICMPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	return pipe

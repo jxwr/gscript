@@ -142,7 +142,7 @@ for iter := 1; iter <= 10; iter++ {
 
 	genericArithOps := map[Op]bool{OpAdd: true, OpSub: true, OpMul: true, OpDiv: true, OpMod: true}
 	typedArithOps := map[Op]bool{
-		OpAddInt: true, OpSubInt: true, OpMulInt: true, OpModInt: true,
+		OpAddInt: true, OpSubInt: true, OpMulInt: true, OpModInt: true, OpDivIntExact: true,
 		OpAddFloat: true, OpSubFloat: true, OpMulFloat: true, OpDivFloat: true,
 		OpSqrt: true,
 	}

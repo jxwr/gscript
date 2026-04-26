@@ -462,7 +462,7 @@ func computeSafeHeaderFPRegs(fn *Function, li *loopInfo, alloc *RegAllocation,
 // (stored via storeRawInt rather than storeResultNB).
 func isRawIntOp(op Op) bool {
 	switch op {
-	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt:
+	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt:
 		return true
 	default:
 		return false
