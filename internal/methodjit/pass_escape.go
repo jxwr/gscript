@@ -48,6 +48,10 @@ type virtualAllocInfo struct {
 // Any other use kills the candidacy. R160 will relax (c) to allow
 // if/else merges; R161 relaxes to loops.
 func identifyVirtualAllocs(fn *Function) map[int]*virtualAllocInfo {
+	return identifyVirtualAllocsWithRemarks(fn, nil)
+}
+
+func identifyVirtualAllocsWithRemarks(fn *Function, remarks *OptimizationRemarks) map[int]*virtualAllocInfo {
 	if fn == nil || len(fn.Blocks) == 0 {
 		return nil
 	}
@@ -72,7 +76,12 @@ func identifyVirtualAllocs(fn *Function) map[int]*virtualAllocInfo {
 
 	// Second pass: scan every use of every candidate. Any violating
 	// use removes the candidate.
-	kill := func(allocID int) {
+	kill := func(allocID int, reason string) {
+		if remarks != nil {
+			if cand, ok := candidates[allocID]; ok {
+				remarks.Add("EscapeAnalysis", "missed", cand.blockID, allocID, OpNewTable, reason)
+			}
+		}
 		delete(candidates, allocID)
 	}
 
@@ -94,22 +103,22 @@ func identifyVirtualAllocs(fn *Function) map[int]*virtualAllocInfo {
 				switch instr.Op {
 				case OpGetField:
 					if argIdx != 0 {
-						kill(arg.ID)
+						kill(arg.ID, "table is used as a field key or value")
 						continue
 					}
 					if block.ID != cand.blockID {
-						kill(arg.ID)
+						kill(arg.ID, "field access is outside the allocation block")
 						continue
 					}
 					cand.fieldUses = append(cand.fieldUses, instr.ID)
 
 				case OpSetField:
 					if argIdx != 0 {
-						kill(arg.ID)
+						kill(arg.ID, "table is stored as a field value")
 						continue
 					}
 					if block.ID != cand.blockID {
-						kill(arg.ID)
+						kill(arg.ID, "field store is outside the allocation block")
 						continue
 					}
 					cand.fieldUses = append(cand.fieldUses, instr.ID)
@@ -123,13 +132,32 @@ func identifyVirtualAllocs(fn *Function) map[int]*virtualAllocInfo {
 
 				// Any other operation escapes the allocation.
 				default:
-					kill(arg.ID)
+					kill(arg.ID, escapeAnalysisMissReason(instr.Op))
 				}
 			}
 		}
 	}
 
 	return candidates
+}
+
+func escapeAnalysisMissReason(op Op) string {
+	switch op {
+	case OpReturn:
+		return "table escapes through return"
+	case OpSetTable:
+		return "table is used for dynamic-key array/table storage"
+	case OpGetTable:
+		return "table is used for dynamic-key array/table lookup"
+	case OpSetList:
+		return "table is used by SETLIST array construction"
+	case OpAppend:
+		return "table is used by append array construction"
+	case OpCall:
+		return "table escapes through call"
+	default:
+		return "table escapes through " + op.String()
+	}
 }
 
 // identifyVirtualPhis (R161) finds OpPhi instructions that merge
@@ -407,6 +435,7 @@ func applyVirtualPhiRewrite(fn *Function, vphi *virtualPhiInfo,
 
 	// Step 5: Nop the original Phi and each feeder NewTable +
 	// associated SetFields.
+	remarks := functionRemarks(fn)
 	phiInstr.Op = OpNop
 	phiInstr.Args = nil
 	phiInstr.Aux = 0
@@ -417,6 +446,10 @@ func applyVirtualPhiRewrite(fn *Function, vphi *virtualPhiInfo,
 		}
 		allocInstr := instrByID[allocID]
 		if allocInstr != nil {
+			if remarks != nil {
+				remarks.Add("EscapeAnalysis", "changed", cand.blockID, allocID, OpNewTable,
+					"scalar-replaced phi-carried table allocation")
+			}
 			allocInstr.Op = OpNop
 			allocInstr.Args = nil
 			allocInstr.Aux = 0
@@ -496,7 +529,8 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 		return fn, nil
 	}
 
-	virtuals := identifyVirtualAllocs(fn)
+	remarks := functionRemarks(fn)
+	virtuals := identifyVirtualAllocsWithRemarks(fn, remarks)
 	if len(virtuals) == 0 {
 		return fn, nil
 	}
@@ -599,6 +633,10 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 		}
 
 		if allocInstr, ok := instrByID[allocID]; ok {
+			if remarks != nil {
+				remarks.Add("EscapeAnalysis", "changed", info.blockID, allocID, OpNewTable,
+					"scalar-replaced block-local table allocation")
+			}
 			allocInstr.Op = OpNop
 			allocInstr.Args = nil
 			allocInstr.Aux = 0

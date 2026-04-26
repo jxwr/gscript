@@ -136,3 +136,55 @@ The next useful general direction is a code-size and branch-count reduction in
 
 That should be handled as a table-codegen cleanup rather than a
 `fannkuch`-specific benchmark patch.
+
+## Follow-up on `9b2887c`
+
+Re-ran the focused diagnostic on `9b2887cd18fd345304016a208a51ea011237441f`
+from branch `codex/fannkuch-alloc-20260427`:
+
+```bash
+./benchmarks/diagnose_tier2.sh fannkuch
+
+/tmp/gscript_fann_codex -jit -jit-stats -exit-stats \
+  -jit-dump-warm /tmp/fann_codex_dump2 -jit-dump-proto fannkuch \
+  benchmarks/suite/fannkuch.gs
+```
+
+Observed:
+
+- VM: `0.557s`
+- default JIT: `0.055s`
+- no-filter JIT: `0.054s`
+- Tier2: `attempted=1`, `entered=1`, `failed=0`
+- checksum: `8629`
+- exits: unchanged at 6 one-shot `ExitTableExit` sites
+
+The remaining exit profile is still:
+
+```text
+1  proto=fannkuch exit=ExitTableExit id=1   pc=0   reason=NewTable
+1  proto=fannkuch exit=ExitTableExit id=2   pc=1   reason=NewTable
+1  proto=fannkuch exit=ExitTableExit id=3   pc=2   reason=NewTable
+1  proto=fannkuch exit=ExitTableExit id=164 pc=121 reason=NewTable
+1  proto=fannkuch exit=ExitTableExit id=166 pc=123 reason=SetField
+1  proto=fannkuch exit=ExitTableExit id=168 pc=125 reason=SetField
+```
+
+Added diagnostic support so production warm dumps now include optimization
+remarks (`*.remarks.txt` plus `optimization_remarks` in `*.status.json`).
+With that support, `fannkuch.remarks.txt` explains the residual allocations
+without manually cross-walking IR IDs:
+
+```text
+[missed] EscapeAnalysis B0/v2 NewTable: table is used for dynamic-key array/table storage
+[missed] EscapeAnalysis B0/v3 NewTable: table is used for dynamic-key array/table storage
+[missed] EscapeAnalysis B0/v1 NewTable: table is used for dynamic-key array/table storage
+[missed] EscapeAnalysis B29/v164 NewTable: table escapes through return
+```
+
+This confirms the current gap is not a resurrected table-exit storm. The three
+entry allocations are array work tables (`perm`, `perm1`, `count`), and the
+tail allocation is the returned result object `{maxFlips, checksum}`. A next
+codegen optimization should therefore target generic table allocation/result
+construction lowering or table fast-path code size; benchmark-specific rewrites
+would not address the underlying issue.

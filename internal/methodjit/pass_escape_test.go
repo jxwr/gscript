@@ -3,6 +3,7 @@
 package methodjit
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -31,6 +32,55 @@ result := new_vec3(1, 2, 3)
 	virtuals := identifyVirtualAllocs(fn)
 	if len(virtuals) != 0 {
 		t.Fatalf("expected 0 virtual allocs (table escapes via Return); got %d", len(virtuals))
+	}
+}
+
+func TestEscapeAnalysis_RemarksExplainMisses(t *testing.T) {
+	src := `
+func ret_obj(x) {
+    return {x: x}
+}
+func fill_obj(x) {
+    t := {}
+    t[1] = x
+    return t
+}
+result1 := ret_obj(1)
+result2 := fill_obj(2)
+`
+	top := compileProto(t, src)
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "ret_obj", want: "table escapes through return"},
+		{name: "fill_obj", want: "dynamic-key array/table storage"},
+	}
+	for _, tc := range tests {
+		inner := findProtoByName(top, tc.name)
+		if inner == nil {
+			t.Fatalf("%s proto missing", tc.name)
+		}
+		inner.EnsureFeedback()
+		fn := BuildGraph(inner)
+		remarks := &OptimizationRemarks{}
+		fn.Remarks = remarks
+		if _, err := EscapeAnalysisPass(fn); err != nil {
+			t.Fatalf("EscapeAnalysisPass(%s): %v", tc.name, err)
+		}
+		var got []string
+		found := false
+		for _, remark := range remarks.List() {
+			got = append(got, remark.Reason)
+			if remark.Pass == "EscapeAnalysis" &&
+				remark.Kind == "missed" &&
+				strings.Contains(remark.Reason, tc.want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s: expected EscapeAnalysis missed remark containing %q, got %#v", tc.name, tc.want, got)
+		}
 	}
 }
 

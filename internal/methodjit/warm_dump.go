@@ -35,20 +35,21 @@ type WarmDumpSession struct {
 
 // WarmDumpRecord is the captured artifact for one production Tier 2 attempt.
 type WarmDumpRecord struct {
-	Attempt        int
-	ProtoName      string
-	NumParams      int
-	MaxStack       int
-	IRBefore       string
-	IRAfter        string
-	IntrinsicNotes []string
-	RegAllocMap    string
-	CompiledCode   []byte
-	InsnCount      int
-	InsnHistogram  map[string]int
-	DirectEntryOff int
-	NumSpills      int
-	CompileErr     string
+	Attempt             int
+	ProtoName           string
+	NumParams           int
+	MaxStack            int
+	IRBefore            string
+	IRAfter             string
+	IntrinsicNotes      []string
+	OptimizationRemarks []OptimizationRemark
+	RegAllocMap         string
+	CompiledCode        []byte
+	InsnCount           int
+	InsnHistogram       map[string]int
+	DirectEntryOff      int
+	NumSpills           int
+	CompileErr          string
 }
 
 type warmDumpManifest struct {
@@ -57,24 +58,25 @@ type warmDumpManifest struct {
 }
 
 type warmDumpProtoManifest struct {
-	Name           string              `json:"name"`
-	Status         string              `json:"status"`
-	Attempt        int                 `json:"attempt,omitempty"`
-	Entered        bool                `json:"entered"`
-	Compiled       bool                `json:"compiled"`
-	Failed         bool                `json:"failed"`
-	FailureReason  string              `json:"failure_reason,omitempty"`
-	CallCount      int                 `json:"call_count"`
-	Tier2Promoted  bool                `json:"tier2_promoted"`
-	NumParams      int                 `json:"num_params"`
-	MaxStack       int                 `json:"max_stack"`
-	InsnCount      int                 `json:"insn_count,omitempty"`
-	InsnHistogram  map[string]int      `json:"insn_histogram,omitempty"`
-	CodeBytes      int                 `json:"code_bytes,omitempty"`
-	DirectEntryOff int                 `json:"direct_entry_offset,omitempty"`
-	NumSpills      int                 `json:"num_spills,omitempty"`
-	Feedback       warmFeedbackSummary `json:"feedback"`
-	Files          map[string]string   `json:"files,omitempty"`
+	Name                string               `json:"name"`
+	Status              string               `json:"status"`
+	Attempt             int                  `json:"attempt,omitempty"`
+	Entered             bool                 `json:"entered"`
+	Compiled            bool                 `json:"compiled"`
+	Failed              bool                 `json:"failed"`
+	FailureReason       string               `json:"failure_reason,omitempty"`
+	CallCount           int                  `json:"call_count"`
+	Tier2Promoted       bool                 `json:"tier2_promoted"`
+	NumParams           int                  `json:"num_params"`
+	MaxStack            int                  `json:"max_stack"`
+	InsnCount           int                  `json:"insn_count,omitempty"`
+	InsnHistogram       map[string]int       `json:"insn_histogram,omitempty"`
+	CodeBytes           int                  `json:"code_bytes,omitempty"`
+	DirectEntryOff      int                  `json:"direct_entry_offset,omitempty"`
+	NumSpills           int                  `json:"num_spills,omitempty"`
+	OptimizationRemarks []OptimizationRemark `json:"optimization_remarks,omitempty"`
+	Feedback            warmFeedbackSummary  `json:"feedback"`
+	Files               map[string]string    `json:"files,omitempty"`
 }
 
 type warmFeedbackSummary struct {
@@ -147,7 +149,9 @@ func (s *WarmDumpSession) record(proto *vm.FuncProto, trace *Tier2Trace, cf *Com
 		IRBefore:       trace.IRBefore,
 		IRAfter:        trace.IRAfter,
 		IntrinsicNotes: append([]string(nil), trace.IntrinsicNotes...),
-		RegAllocMap:    trace.RegAllocMap,
+		OptimizationRemarks: append([]OptimizationRemark(nil),
+			trace.OptimizationRemarks...),
+		RegAllocMap: trace.RegAllocMap,
 	}
 	if compileErr != nil {
 		rec.CompileErr = compileErr.Error()
@@ -235,6 +239,13 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 				}
 				files["intrinsics"] = name
 			}
+			if len(rec.OptimizationRemarks) > 0 {
+				name := base + ".remarks.txt"
+				if err := os.WriteFile(filepath.Join(s.dir, name), []byte(formatOptimizationRemarks(rec.OptimizationRemarks)), 0o644); err != nil {
+					return fmt.Errorf("write remarks for %s: %w", proto.Name, err)
+				}
+				files["remarks"] = name
+			}
 			if len(rec.CompiledCode) > 0 {
 				binName := base + ".bin"
 				if err := os.WriteFile(filepath.Join(s.dir, binName), rec.CompiledCode, 0o644); err != nil {
@@ -270,6 +281,7 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 			protoManifest.CodeBytes = len(rec.CompiledCode)
 			protoManifest.DirectEntryOff = rec.DirectEntryOff
 			protoManifest.NumSpills = rec.NumSpills
+			protoManifest.OptimizationRemarks = append([]OptimizationRemark(nil), rec.OptimizationRemarks...)
 		}
 
 		statusName := base + ".status.json"
