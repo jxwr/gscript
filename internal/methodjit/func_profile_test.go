@@ -69,6 +69,77 @@ func fib(n) {
 	t.Logf("fib profile: %+v", p)
 }
 
+func TestHasStaticCallInLoop(t *testing.T) {
+	src := `
+func helper(x) { return x + 1 }
+func caller(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        total = total + helper(i)
+    }
+    return total
+}
+func outside(n) {
+    x := helper(n)
+    for i := 1; i <= n; i++ {
+        x = x + i
+    }
+    return x
+}
+`
+	proto := compileProto(t, src)
+	caller := findProtoByName(proto, "caller")
+	if caller == nil {
+		t.Fatal("caller proto not found")
+	}
+	if !hasStaticCallInLoop(caller) {
+		t.Fatal("caller should report a static call inside its loop")
+	}
+	outside := findProtoByName(proto, "outside")
+	if outside == nil {
+		t.Fatal("outside proto not found")
+	}
+	if hasStaticCallInLoop(outside) {
+		t.Fatal("outside should not report its pre-loop call as in-loop")
+	}
+}
+
+func TestShouldStayTier1ForBoxedRawIntKernel(t *testing.T) {
+	src := `
+func gcd(a, b) {
+    for b != 0 {
+        t := b
+        b = a % b
+        a = t
+    }
+    return a
+}
+
+func sum(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + i
+    }
+    return s
+}
+`
+	proto := compileProto(t, src)
+	gcd := findProtoByName(proto, "gcd")
+	if gcd == nil {
+		t.Fatal("gcd proto not found")
+	}
+	if !shouldStayTier1ForBoxedRawIntKernel(gcd, analyzeFuncProfile(gcd)) {
+		t.Fatal("gcd-shaped raw-int while kernel should stay Tier 1 for boxed cross-calls")
+	}
+	sum := findProtoByName(proto, "sum")
+	if sum == nil {
+		t.Fatal("sum proto not found")
+	}
+	if shouldStayTier1ForBoxedRawIntKernel(sum, analyzeFuncProfile(sum)) {
+		t.Fatal("numeric for-loop reductions should remain eligible for Tier 2 OSR")
+	}
+}
+
 func TestAnalyzeFuncProfile_WhileLoop(t *testing.T) {
 	// gcd uses a while-style loop (backward JMP).
 	src := `
@@ -278,12 +349,11 @@ result = sum(100)
 	t.Logf("tier2Count=%d", tm.Tier2Count())
 }
 
-// TestTieringManager_SmartPromotion_GCD verifies gcd (while-loop + arithmetic)
-// is ATTEMPTED for Tier 2 on first call. Note: the actual Tier 2 compilation
-// may fail due to pre-existing emitter bugs (unresolved label). The test
-// verifies the smart tiering decision is correct (should attempt promotion),
-// and that the function still produces correct results via Tier 1 fallback.
-func TestTieringManager_SmartPromotion_GCD(t *testing.T) {
+// TestTieringManager_SmartPromotion_GCDStaysTier1 verifies gcd-shaped raw-int
+// while kernels stay on the Tier 1 boxed-call path. Tier 2 can compile this
+// body, but repeated cross-function calls pay the full Tier 2 direct-entry ABI;
+// Tier 1 BLR is faster until a cross-proto raw-int call ABI exists.
+func TestTieringManager_SmartPromotion_GCDStaysTier1(t *testing.T) {
 	src := `
 func gcd(a, b) {
     for b != 0 {
@@ -312,20 +382,15 @@ result = gcd(12, 8)
 		t.Errorf("gcd(20,8) = %v, want 4", result)
 	}
 
-	// Smart tiering should have attempted Tier 2 promotion for gcd.
-	// If compilation fails (pre-existing emitter bug), it falls back to Tier 1
-	// and the function is marked as tier2Failed.
 	gcdProto := proto.Protos[0]
 	profile := tm.getProfile(gcdProto)
-	if !shouldPromoteTier2(gcdProto, profile, 2) {
-		t.Error("smart tiering should decide to promote gcd at callCount=1")
+	if shouldPromoteTier2(gcdProto, profile, 2) {
+		t.Error("smart tiering should keep gcd-shaped boxed raw-int kernels in Tier 1")
 	}
-
-	// Verify it was attempted (either succeeded or failed).
-	if tm.Tier2Count() == 0 && !tm.tier2Failed[gcdProto] {
-		t.Error("expected Tier 2 promotion to be attempted for gcd")
+	if tm.tier2Compiled[gcdProto] != nil || tm.tier2Failed[gcdProto] {
+		t.Fatalf("expected gcd to avoid Tier 2 attempt, compiled=%v failed=%v",
+			tm.tier2Compiled[gcdProto] != nil, tm.tier2Failed[gcdProto])
 	}
-	t.Logf("tier2Count=%d, tier2Failed=%v", tm.Tier2Count(), tm.tier2Failed[gcdProto])
 }
 
 // TestTieringManager_SmartPromotion_FibStaysAtTier1 verifies that recursive

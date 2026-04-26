@@ -147,6 +147,55 @@ result := gcd(20, 8)
 	}
 }
 
+func TestOSR_DisabledForUninlineableCallInLoop(t *testing.T) {
+	src := `
+func gcd(a, b) {
+    for b != 0 {
+        t := b
+        b = a % b
+        a = t
+    }
+    return a
+}
+
+func gcd_bench(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        for j := 1; j <= 100; j++ {
+            total = total + gcd(i * 7 + 13, j * 11 + 3)
+        }
+    }
+    return total
+}
+result := gcd_bench(1200)
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+
+	_, err := v.Execute(proto)
+	if err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() <= 0 {
+		t.Fatalf("unexpected result: %v", result)
+	}
+	gcdBench := findProtoByName(proto, "gcd_bench")
+	if gcdBench == nil {
+		t.Fatal("gcd_bench proto not found")
+	}
+	if tm.tier2Failed[gcdBench] {
+		t.Fatalf("gcd_bench should not attempt futile OSR Tier 2 compile, failed with %q", tm.tier2FailReason[gcdBench])
+	}
+	if tm.tier2Compiled[gcdBench] != nil {
+		t.Fatal("gcd_bench should stay in Tier 1; call-in-loop path is not safely inlineable")
+	}
+}
+
 // TestOSR_CorrectResultWithRestart verifies that the simplified OSR approach
 // (restarting the function from the beginning at Tier 2) produces correct
 // results even when the function has already partially executed.

@@ -187,6 +187,9 @@ func shouldStayTier0(profile FuncProfile) bool {
 // shouldPromoteTier2 decides whether a function should be promoted to Tier 2
 // based on its static profile and runtime call count.
 func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCount int) bool {
+	if shouldStayTier1ForBoxedRawIntKernel(proto, profile) {
+		return false
+	}
 	// R72: top-level <main> protos with a driver loop (loop body calls
 	// other functions) benefit from Tier 2 because it enables the inline
 	// pass to pull callees into main, eliminating Tier 1 → Tier 2 BLR
@@ -253,4 +256,24 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	// significant arithmetic don't benefit enough from Tier 2 to justify
 	// compilation overhead.
 	return false
+}
+
+// shouldStayTier1ForBoxedRawIntKernel keeps small non-recursive raw-int while
+// kernels on the Tier 1 BLR path. Tier 2 can compile these bodies well, but a
+// boxed cross-function call pays the full Tier 2 direct-entry frame on every
+// invocation. In hot loop-call patterns (math_intensive.gcd_bench), that call
+// ABI cost dominates the tiny callee body; Tier 1's baseline direct entry is
+// faster until a cross-proto raw-int call ABI exists.
+//
+// Self-recursive numeric protos are excluded: they use Tier 2's specialized
+// raw-int self ABI and are a known win.
+func shouldStayTier1ForBoxedRawIntKernel(proto *vm.FuncProto, profile FuncProfile) bool {
+	if proto == nil || !profile.HasLoop || profile.CallCount != 0 {
+		return false
+	}
+	if staticallyCallsOnlySelf(proto) {
+		return false
+	}
+	ok, _ := qualifyForNumeric(proto)
+	return ok
 }

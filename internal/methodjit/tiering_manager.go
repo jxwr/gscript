@@ -183,9 +183,12 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		// R170 keeps the classic LoopDepth>=2 path open for already-proven
 		// deep-loop benchmarks (for example fannkuch), while LoopDepth<2
 		// candidates must pass the restart-safety check so restart-style OSR
-		// cannot replay table mutations from single-loop drivers.
+		// cannot replay table mutations from single-loop drivers. No-filter
+		// may bypass the performance-only call-in-loop prefilter, but it must
+		// not bypass restart-safety: replayed side effects are correctness bugs.
 		if profile.HasLoop && profile.LoopDepth >= 1 && !tm.tier2Failed[proto] &&
-			(profile.LoopDepth >= 2 || tm.isOSRRestartSafe(proto, profile)) {
+			(profile.LoopDepth >= 2 || tm.isOSRRestartSafe(proto, profile)) &&
+			(tm.envTier2NoFilter || !tm.osrWouldHitCallInLoopGate(proto, profile)) {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
 			if tm.envR154Trace {
 				fmt.Fprintf(os.Stderr, "[R162] SetOSRCounter proto=%q loopDepth=%d\n",
@@ -227,6 +230,37 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 
 	return t2
+}
+
+// osrWouldHitCallInLoopGate returns true when the cheap bytecode profile says
+// OSR would likely restart a running Tier 1 loop only to hit compileTier2's
+// post-inline OpCall-in-loop performance gate. That failed OSR path restarts
+// the function from the beginning in Tier 1, which is visible in hot callers
+// like math_intensive.gcd_bench. Keep this conservative: only suppress OSR
+// when there is a static call in a loop and the existing inline pre-scan cannot
+// prove all calls are inlineable under the current globals.
+func (tm *TieringManager) osrWouldHitCallInLoopGate(proto *vm.FuncProto, profile FuncProfile) bool {
+	if proto == nil || profile.LoopDepth < 2 || profile.CallCount == 0 || !hasStaticCallInLoop(proto) {
+		return false
+	}
+	globals := tm.buildInlineGlobals()
+	if protoGlobals := buildProtoInlineGlobals(proto); len(protoGlobals) > 0 {
+		if len(globals) == 0 {
+			globals = protoGlobals
+		} else {
+			merged := make(map[string]*vm.FuncProto, len(globals)+len(protoGlobals))
+			for name, callee := range globals {
+				merged[name] = callee
+			}
+			for name, callee := range protoGlobals {
+				if _, ok := merged[name]; !ok {
+					merged[name] = callee
+				}
+			}
+			globals = merged
+		}
+	}
+	return !canPromoteWithInlining(proto, globals)
 }
 
 // Execute runs compiled code. Dispatches to Tier 1 or Tier 2 based on the
@@ -1096,6 +1130,37 @@ func irHasCall(fn *Function) bool {
 // uses for raw-int loop mode.
 func hasCallInLoop(fn *Function) bool {
 	return hasExpensiveInLoop(fn, func(op Op) bool { return op == OpCall })
+}
+
+// hasStaticCallInLoop is the bytecode-side prefilter for OSR. It marks PCs
+// covered by backward loop edges (FORLOOP and while-style JMP) and reports
+// whether an OP_CALL falls inside one of those ranges. The full Tier 2 gate
+// still uses SSA loopInfo after inline; this helper only avoids known-futile
+// OSR restarts before the expensive path runs.
+func hasStaticCallInLoop(proto *vm.FuncProto) bool {
+	if proto == nil || len(proto.Code) == 0 {
+		return false
+	}
+	inLoop := make([]bool, len(proto.Code))
+	for pc, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		if op != vm.OP_FORLOOP && op != vm.OP_JMP {
+			continue
+		}
+		target := pc + 1 + vm.DecodesBx(inst)
+		if target < 0 || target > pc {
+			continue
+		}
+		for i := target; i <= pc && i < len(inLoop); i++ {
+			inLoop[i] = true
+		}
+	}
+	for pc, inst := range proto.Code {
+		if inLoop[pc] && vm.DecodeOp(inst) == vm.OP_CALL {
+			return true
+		}
+	}
+	return false
 }
 
 // hasExpensiveInLoop (R162) generalizes hasCallInLoop: it reports whether
