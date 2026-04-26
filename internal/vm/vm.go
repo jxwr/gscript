@@ -2003,6 +2003,13 @@ func (vm *VM) RegisterOpenUpvalue(uv *Upvalue) {
 	vm.openUpvals = append(vm.openUpvals, uv)
 }
 
+// FindOrCreateUpvalue returns the VM-tracked open upvalue for regIdx.
+// JIT op-exit closure creation uses this to mirror interpreter OP_CLOSURE
+// semantics and avoid accumulating duplicate open upvalues for loop locals.
+func (vm *VM) FindOrCreateUpvalue(regIdx int) *Upvalue {
+	return vm.findOrCreateUpvalue(regIdx)
+}
+
 // CloseUpvalues closes all open upvalues at or above fromReg.
 // Used by the baseline JIT for OP_CLOSE handling.
 func (vm *VM) CloseUpvalues(fromReg int) {

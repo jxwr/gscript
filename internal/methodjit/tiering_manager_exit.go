@@ -364,10 +364,10 @@ func (tm *TieringManager) executeClosureOpExit(ctx *ExecContext, regs []runtime.
 			absIdx := base + desc.Index
 			if absIdx < len(regs) {
 				uv := vm.NewOpenUpvalue(&regs[absIdx], absIdx)
-				cl.Upvalues[i] = uv
 				if tm.callVM != nil {
-					tm.callVM.RegisterOpenUpvalue(uv)
+					uv = tm.callVM.FindOrCreateUpvalue(absIdx)
 				}
+				cl.Upvalues[i] = uv
 			}
 		} else {
 			// Upvalue refers to a parent closure's upvalue.

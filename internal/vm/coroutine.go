@@ -35,6 +35,7 @@ type VMCoroutine struct {
 	closure    *Closure
 	started    bool
 	leafNoCall bool
+	resultBuf  [8]rt.Value
 
 	resumeCh chan []rt.Value    // caller -> coroutine
 	yieldCh  chan vmYieldResult // coroutine -> caller
@@ -248,16 +249,19 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 
 	if !co.started && co.leafNoCall {
 		co.started = true
-		coVM := newChildVM(vm, co)
-		results, err := coVM.call(co.closure, args, 0, 0)
+		results, err, ok := vm.callLeafCoroutine(co, args)
+		if !ok {
+			coVM := newChildVM(vm, co)
+			results, err = coVM.call(co.closure, args, 0, 0)
+		}
 		if results == nil {
 			results = []rt.Value{}
 		}
 		co.status = VMCoroutineDead
 		if err != nil {
-			return []rt.Value{rt.BoolValue(false), rt.StringValue(err.Error())}, nil
+			return co.resumeResults(false, []rt.Value{rt.StringValue(err.Error())}), nil
 		}
-		return append([]rt.Value{rt.BoolValue(true)}, results...), nil
+		return co.resumeResults(true, results), nil
 	}
 
 	if !co.started {
@@ -294,10 +298,10 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 	}
 
 	if result.err != nil {
-		return []rt.Value{rt.BoolValue(false), rt.StringValue(result.err.Error())}, nil
+		return co.resumeResults(false, []rt.Value{rt.StringValue(result.err.Error())}), nil
 	}
 
-	return append([]rt.Value{rt.BoolValue(true)}, result.values...), nil
+	return co.resumeResults(true, result.values), nil
 }
 
 func protoHasNoCalls(proto *FuncProto) bool {
@@ -308,4 +312,48 @@ func protoHasNoCalls(proto *FuncProto) bool {
 		}
 	}
 	return true
+}
+
+func (co *VMCoroutine) resumeResults(ok bool, values []rt.Value) []rt.Value {
+	n := 1 + len(values)
+	if n <= len(co.resultBuf) {
+		out := co.resultBuf[:n]
+		out[0] = rt.BoolValue(ok)
+		copy(out[1:], values)
+		return out
+	}
+	out := make([]rt.Value, n)
+	out[0] = rt.BoolValue(ok)
+	copy(out[1:], values)
+	return out
+}
+
+func (vm *VM) callLeafCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, error, bool) {
+	cl := co.closure
+	if cl == nil || cl.Proto == nil {
+		return nil, nil, false
+	}
+
+	base := vm.top
+	if vm.frameCount > 0 {
+		curFrame := &vm.frames[vm.frameCount-1]
+		minBase := curFrame.base + curFrame.closure.Proto.MaxStack
+		if base < minBase {
+			base = minBase
+		}
+	}
+	if base+cl.Proto.MaxStack+1 > len(vm.regs) {
+		return nil, nil, false
+	}
+
+	savedTop := vm.top
+	savedJIT := vm.methodJIT
+	vm.methodJIT = nil
+	defer func() {
+		vm.methodJIT = savedJIT
+		vm.top = savedTop
+	}()
+
+	results, err := vm.call(cl, args, base, 0)
+	return results, err, true
 }
