@@ -225,7 +225,7 @@ func sortedProtoGlobalNames(globals map[string]*vm.FuncProto) []string {
 	return names
 }
 
-func TestLoopCallGateKeepsQuicksortBlocked(t *testing.T) {
+func TestLoopCallGateAllowsQuicksortDriverButKeepsQuicksortBlocked(t *testing.T) {
 	src := `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }
@@ -265,12 +265,22 @@ result := 1
 `
 	top := compileProto(t, src)
 	globals := buildProtoStableGlobals(top)
-	if canPromoteWithNativeLoopCalls(top, globals) {
-		t.Fatal("quicksort driver loop should remain blocked by the native-call gate")
+	if !canPromoteWithNativeLoopCalls(top, globals) {
+		t.Fatal("quicksort driver loop should pass through the stable hard-gated callee boundary")
 	}
 	tm := NewTieringManager()
-	if _, err := tm.CompileForDiagnostics(top); err == nil {
-		t.Fatal("expected <main> Tier2 compile to remain blocked")
+	if _, err := tm.CompileForDiagnostics(top); err != nil {
+		t.Fatalf("expected <main> Tier2 compile to pass loop-call gate: %v", err)
+	}
+
+	qs := findProtoByName(top, "quicksort")
+	if qs == nil {
+		t.Fatal("quicksort proto not found")
+	}
+	if _, err := tm.CompileForDiagnostics(qs); err == nil {
+		t.Fatal("expected quicksort Tier2 compile to remain blocked")
+	} else if !strings.Contains(err.Error(), "self-recursive loop has residual table mutation") {
+		t.Fatalf("CompileForDiagnostics(quicksort) error = %q, want self-recursive table mutation gate", err)
 	}
 }
 
