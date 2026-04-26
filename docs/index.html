@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-27</span>
   <br>
+  <a href="52-the-two-pointers-that-met-in-the-middle">The Two Pointers That Met in the Middle</a>
+  <p>Fannkuch's regression came from boxing the two-pointer reversal loop even though <code>lo &lt; hi</code> proves the single-step updates safe: <code>lo + 1</code> cannot exceed the raw int48 maximum and <code>hi - 1</code> cannot go below the minimum. Range analysis now recognizes only that strict converging shape, with a negative test for <code>hi -= 2</code>. Seven-run guard moved fannkuch from 0.062s to 0.052s while sort and table-array access stayed flat.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-27</span>
+  <br>
   <a href="51-the-frame-we-did-not-write">The Frame We Did Not Write</a>
   <p>Raw peer calls were already passing integer arguments in registers, but the success path still pre-boxed those raw args into the callee VM window for fallback. That made fallback simple and the common path slower. The new convention keeps raw peer success register-only and materializes the boxed VM call frame only if fallback or exit-resume needs it. A machine-code test now scans the raw peer shim and verifies there are no <code>mRegRegs</code> stores before <code>BLR</code>.</p>
 </div>
