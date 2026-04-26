@@ -16,7 +16,7 @@
 // Raw int sources:
 //   - OpConstInt with TypeInt: loads raw int64 directly (no boxing)
 //   - OpLoadSlot with TypeInt: loads NaN-boxed from memory, unboxes immediately
-//   - OpAddInt/OpSubInt/OpMulInt/OpModInt/OpNegInt: produce raw int results
+//   - OpAddInt/OpSubInt/OpMulInt/OpModInt/OpDivIntExact/OpNegInt: produce raw int results
 //   - Loop header phis with TypeInt: delivered as raw ints by emitPhiMoveRawInt
 //
 // Raw float sources:

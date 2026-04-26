@@ -596,7 +596,7 @@ func canHoistOp(op Op) bool {
 		return true
 	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat:
 		return true
-	case OpAddInt, OpSubInt, OpMulInt, OpNegInt:
+	case OpAddInt, OpSubInt, OpMulInt, OpDivIntExact, OpNegInt:
 		// Caller must also check fn.Int48Safe.
 		return true
 	case OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat, OpNot:
@@ -631,7 +631,7 @@ func isInterestingLICMMiss(op Op) bool {
 	switch op {
 	case OpGetField, OpGetTable, OpGetGlobal, OpLoadSlot,
 		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
-		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 		OpMatrixFlat, OpMatrixStride, OpMatrixRowPtr, OpSqrt, OpNumToFloat:
 		return true
@@ -647,7 +647,7 @@ func isInterestingLICMMiss(op Op) bool {
 // emitter's SBFX+CMP overflow sequence — comparisons don't.
 func isIntArithOp(op Op) bool {
 	switch op {
-	case OpAddInt, OpSubInt, OpMulInt, OpNegInt:
+	case OpAddInt, OpSubInt, OpMulInt, OpDivIntExact, OpNegInt:
 		return true
 	}
 	return false

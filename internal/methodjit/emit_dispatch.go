@@ -84,6 +84,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitRawIntBinOp(instr, intBinMul)
 	case OpModInt:
 		ec.emitRawIntBinOp(instr, intBinMod)
+	case OpDivIntExact:
+		ec.emitRawIntExactDiv(instr)
 
 	// --- Type-specialized float arithmetic ---
 	case OpAddFloat:

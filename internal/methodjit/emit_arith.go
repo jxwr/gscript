@@ -230,6 +230,105 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 	ec.storeRawInt(dst, instr.ID)
 }
 
+func (ec *emitContext) emitRawIntExactDiv(instr *Instr) {
+	if len(instr.Args) < 2 {
+		return
+	}
+
+	dst := jit.X0
+	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
+		dst = jit.Reg(pr.Reg)
+	}
+
+	if divisor, ok := constIntFromValue(instr.Args[1]); ok && divisor != 0 {
+		lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+		if divisor == 1 {
+			if dst != lhs {
+				ec.asm.MOVreg(dst, lhs)
+			}
+			ec.storeRawInt(dst, instr.ID)
+			return
+		}
+		if divisor == -1 {
+			ec.asm.NEG(dst, lhs)
+			if !ec.int48Safe(instr.ID) {
+				ec.emitInt48OverflowCheck(dst, instr)
+			}
+			ec.storeRawInt(dst, instr.ID)
+			return
+		}
+		if shift, negative, ok := exactPow2DivisorShift(divisor); ok {
+			ec.asm.SBFX(dst, lhs, shift, 64-shift)
+			if negative {
+				ec.asm.NEG(dst, dst)
+			}
+			if !ec.int48Safe(instr.ID) {
+				ec.emitInt48OverflowCheck(dst, instr)
+			}
+			ec.storeRawInt(dst, instr.ID)
+			return
+		}
+	}
+
+	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+	if lhs == jit.X1 && rhs == jit.X0 {
+		ec.asm.MOVreg(jit.X3, rhs)
+		ec.asm.MOVreg(jit.X0, lhs)
+		ec.asm.MOVreg(jit.X1, jit.X3)
+	} else {
+		if rhs == jit.X0 {
+			ec.asm.MOVreg(jit.X1, rhs)
+		}
+		if lhs != jit.X0 {
+			ec.asm.MOVreg(jit.X0, lhs)
+		}
+		if rhs != jit.X1 {
+			ec.asm.MOVreg(jit.X1, rhs)
+		}
+	}
+
+	if instr.Aux2 == 0 {
+		okLabel := ec.uniqueLabel("exact_div_ok")
+		ec.asm.CBZ(jit.X1, okLabel+"_deopt")
+		ec.asm.SDIV(jit.X2, jit.X0, jit.X1)
+		ec.asm.MSUB(jit.X3, jit.X2, jit.X1, jit.X0)
+		ec.asm.CBZ(jit.X3, okLabel)
+		ec.asm.Label(okLabel + "_deopt")
+		ec.emitDeopt(instr)
+		ec.asm.Label(okLabel)
+		if dst != jit.X2 {
+			ec.asm.MOVreg(dst, jit.X2)
+		}
+	} else {
+		ec.asm.SDIV(dst, jit.X0, jit.X1)
+	}
+
+	if !ec.int48Safe(instr.ID) {
+		ec.emitInt48OverflowCheck(dst, instr)
+	}
+	ec.storeRawInt(dst, instr.ID)
+}
+
+func exactPow2DivisorShift(divisor int64) (uint8, bool, bool) {
+	negative := divisor < 0
+	if negative {
+		if divisor == -divisor {
+			return 0, false, false
+		}
+		divisor = -divisor
+	}
+	if divisor <= 1 || divisor&(divisor-1) != 0 {
+		return 0, false, false
+	}
+	var shift uint8
+	for divisor > 1 {
+		divisor >>= 1
+		shift++
+	}
+	return shift, negative, true
+}
+
 // emitIntModX0X1 computes X0 = X0 % X1 for raw signed integers using VM
 // modulo semantics. The VM reports n%0 as an error; Tier 2 reaches that by
 // deopting so the interpreter handles the exact runtime error path.

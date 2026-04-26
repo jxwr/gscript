@@ -31,17 +31,18 @@ const (
 	OpLen // #Args[0]
 
 	// Type-specialized arithmetic (inserted by optimization passes)
-	OpAddInt   // int + int → int
-	OpSubInt   // int - int → int
-	OpMulInt   // int * int → int
-	OpModInt   // int % int → int
-	OpNegInt   // -int → int
-	OpAddFloat // float + float → float
-	OpSubFloat // float - float → float
-	OpMulFloat // float * float → float
-	OpDivFloat // float / float → float (also int/int → float)
-	OpNegFloat // -float → float
-	OpSqrt     // sqrt(float) → float (intrinsic: rewrites math.sqrt(x))
+	OpAddInt      // int + int → int
+	OpSubInt      // int - int → int
+	OpMulInt      // int * int → int
+	OpModInt      // int % int → int
+	OpDivIntExact // int / int → int when exact; deopts otherwise
+	OpNegInt      // -int → int
+	OpAddFloat    // float + float → float
+	OpSubFloat    // float - float → float
+	OpMulFloat    // float * float → float
+	OpDivFloat    // float / float → float (also int/int → float)
+	OpNegFloat    // -float → float
+	OpSqrt        // sqrt(float) → float (intrinsic: rewrites math.sqrt(x))
 	// R43 Phase 2 DenseMatrix intrinsics (compound; self-contained).
 	// OpMatrixGetF: Args = [m, i, j]; loads flat[i*m.dmStride + j] as float.
 	// OpMatrixSetF: Args = [m, i, j, v]; stores v at flat[i*m.dmStride + j].
@@ -180,6 +181,7 @@ var opNames = [...]string{
 	OpSubInt:          "SubInt",
 	OpMulInt:          "MulInt",
 	OpModInt:          "ModInt",
+	OpDivIntExact:     "DivIntExact",
 	OpNegInt:          "NegInt",
 	OpAddFloat:        "AddFloat",
 	OpSubFloat:        "SubFloat",
