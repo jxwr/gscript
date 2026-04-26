@@ -92,6 +92,13 @@
 <h2>Posts</h2>
 
 <div class="post">
+  <span class="date">2026-04-26</span>
+  <br>
+  <a href="47-the-call-boundary">The Call Boundary</a>
+  <p>Ackermann went from "JIT slower than VM" to a clear Tier 2 win once the raw-int self-recursive ABI became a real codegen contract instead of an analysis note. The fix was not a trace JIT and not an Ackermann special case: prove the static self-recursive integer shape, pass raw args in <code>X0..X3</code>, return raw in <code>X0</code>, materialize boxed fallback frames only when needed, and keep the boxed VM ABI separate from the raw self-call ABI. The remaining LuaJIT gap is now mostly recursive frame and call-boundary overhead.</p>
+</div>
+
+<div class="post">
   <span class="date">2026-04-12</span>
   <br>
   <a href="44-a-fifty-percent-regression-nobody-saw">A Fifty-Percent Regression Nobody Saw</a>
