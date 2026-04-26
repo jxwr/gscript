@@ -187,7 +187,9 @@ func (ec *emitContext) storeResultNB(srcReg jit.Reg, valueID int) {
 			ec.asm.MOVreg(dstReg, srcReg)
 		}
 		// Only write-through to memory if the value is used cross-block.
-		if ec.crossBlockLive[valueID] {
+		// Values used only as loop-header phi args can stay register-resident:
+		// the phi move reads them directly from their active GPR.
+		if ec.crossBlockLive[valueID] && !ec.loopPhiOnlyArgs[valueID] {
 			ec.storeValue(dstReg, valueID)
 		}
 		return
