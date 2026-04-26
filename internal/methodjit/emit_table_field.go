@@ -49,7 +49,17 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
-		ec.storeResultNB(jit.X0, instr.ID)
+		if instr.Type == TypeFloat {
+			typeDeoptLabel := ec.uniqueLabel("getfield_type_deopt")
+			doneLabel := ec.uniqueLabel("getfield_typed_done")
+			ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+			asm.B(doneLabel)
+			asm.Label(typeDeoptLabel)
+			ec.emitDeopt(instr)
+			asm.Label(doneLabel)
+			return
+		}
+		ec.emitStoreTypedFieldLoad(instr, jit.X0, "")
 		return
 	}
 
@@ -83,8 +93,8 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)      // X1 = svals data pointer
 	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize) // X0 = svals[fieldIndex]
 
-	// Store NaN-boxed result.
-	ec.storeResultNB(jit.X0, instr.ID)
+	typeDeoptLabel := ec.uniqueLabel("getfield_type_deopt")
+	ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
 
 	// Skip the deopt fallback.
 	doneLabel := ec.uniqueLabel("getfield_done")
@@ -101,7 +111,25 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	ec.emitUnboxRawIntRegs(savedRawIntRegs)
 	ec.rawIntRegs = savedRawIntRegs
 
+	if instr.Type == TypeFloat {
+		asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+	}
+
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typeDeoptLabel string) {
+	if instr.Type == TypeFloat {
+		ec.asm.LSRimm(jit.X2, valReg, 48)
+		ec.asm.MOVimm16(jit.X3, jit.NB_TagNilShr48)
+		ec.asm.CMPreg(jit.X2, jit.X3)
+		ec.asm.BCond(jit.CondGE, typeDeoptLabel)
+		ec.asm.FMOVtoFP(jit.D0, valReg)
+		ec.storeRawFloat(jit.D0, instr.ID)
+		return
+	}
+	ec.storeResultNB(valReg, instr.ID)
 }
 
 // emitSetField emits ARM64 code for OpSetField (table field write).
@@ -266,7 +294,17 @@ func (ec *emitContext) emitGetFieldExit(instr *Instr) {
 
 	// Load result from register file.
 	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
-	ec.storeResultNB(jit.X0, instr.ID)
+	if instr.Type == TypeFloat {
+		typeDeoptLabel := ec.uniqueLabel("getfield_exit_type_deopt")
+		doneLabel := ec.uniqueLabel("getfield_exit_typed_done")
+		ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+		asm.B(doneLabel)
+		asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+		asm.Label(doneLabel)
+	} else {
+		ec.emitStoreTypedFieldLoad(instr, jit.X0, "")
+	}
 
 	// Record for deferred resume.
 	ec.callExitIDs = append(ec.callExitIDs, instr.ID)

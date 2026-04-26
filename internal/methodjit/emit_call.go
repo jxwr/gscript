@@ -102,7 +102,8 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 		asm.CMPreg(jit.X2, jit.X3)
 		deoptLabel := ec.uniqueLabel("guard_deopt")
 		asm.BCond(jit.CondGE, deoptLabel) // tag >= 0xFFFC means non-float → deopt
-		ec.storeResultNB(jit.X0, instr.ID)
+		asm.FMOVtoFP(jit.D0, jit.X0)
+		ec.storeRawFloat(jit.D0, instr.ID)
 		doneLabel := ec.uniqueLabel("guard_done")
 		asm.B(doneLabel)
 		asm.Label(deoptLabel)
