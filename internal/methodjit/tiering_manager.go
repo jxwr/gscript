@@ -193,7 +193,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		// The R154_WIDEN env var is kept as an escape hatch that
 		// DISABLES the hasExitResumeInLoop filter (i.e. force Tier 2
 		// even when it will regress) for diagnostic use only.
-		if profile.HasLoop && profile.LoopDepth >= 1 && !tm.tier2Failed[proto] {
+		if profile.HasLoop && profile.LoopDepth >= 1 && !tm.tier2Failed[proto] && tm.isOSRRestartSafe(proto, profile) {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
 			if tm.envR154Trace {
 				fmt.Fprintf(os.Stderr, "[R162] SetOSRCounter proto=%q loopDepth=%d\n",
@@ -353,6 +353,81 @@ func canPromoteToTier2NoCalls(proto *vm.FuncProto) bool {
 		}
 	}
 	return true
+}
+
+// isOSRRestartSafe reports whether the current restart-style OSR can be used
+// for proto. Tier 1 OSR exits after part of the loop has already executed, and
+// handleOSR restarts the function from bytecode PC 0 at Tier 2. That is only
+// correct when replaying the prefix cannot repeat externally visible effects.
+//
+// This is intentionally based on post-pipeline IR, not source bytecode. Some
+// important loops (object_creation's create_and_sum/transform_chain) contain
+// source-level calls and NewTable ops, but Inline + EscapeAnalysis fully
+// virtualize them into pure numeric loops. Those are restart-safe. By contrast,
+// table update loops such as table_field_access.step still contain residual
+// GetTable/SetField/table exits after optimization and must not use restart OSR.
+func (tm *TieringManager) isOSRRestartSafe(proto *vm.FuncProto, profile FuncProfile) bool {
+	if proto == nil || !profile.HasLoop {
+		return false
+	}
+	if profile.HasClosure || profile.HasUpval || profile.HasVararg {
+		return false
+	}
+
+	fn := BuildGraph(proto)
+	if fn.Unpromotable {
+		return false
+	}
+	if errs := Validate(fn); len(errs) > 0 {
+		return false
+	}
+
+	inlineGlobals := tm.buildInlineGlobals()
+	loopCallGlobals := inlineGlobals
+	if protoGlobals := buildProtoInlineGlobals(proto); len(protoGlobals) > 0 {
+		loopCallGlobals = make(map[string]*vm.FuncProto, len(inlineGlobals)+len(protoGlobals))
+		for name, calleeProto := range inlineGlobals {
+			loopCallGlobals[name] = calleeProto
+		}
+		for name, calleeProto := range protoGlobals {
+			if _, ok := loopCallGlobals[name]; !ok {
+				loopCallGlobals[name] = calleeProto
+			}
+		}
+	}
+	fn, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{InlineGlobals: inlineGlobals, InlineMaxSize: inlineMaxCalleeSize})
+	if err != nil {
+		return false
+	}
+	if _, ok := firstExitResumeInLoop(fn, loopCallGlobals); ok {
+		return false
+	}
+	if hasRestartVisibleSideEffect(fn) {
+		return false
+	}
+	return true
+}
+
+func hasRestartVisibleSideEffect(fn *Function) bool {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpCall,
+				OpSetGlobal,
+				OpSetTable, OpSetField,
+				OpNewTable, OpSetList, OpAppend,
+				OpSelf,
+				OpSetUpval,
+				OpGo, OpMakeChan, OpSend, OpRecv,
+				OpClosure, OpClose,
+				OpVararg,
+				OpConcat, OpLen, OpPow,
+				OpTForCall, OpTForLoop:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // canPromoteWithInlining checks if a function whose only blocker is OP_CALL

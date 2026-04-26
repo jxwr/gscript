@@ -10,6 +10,7 @@ package methodjit
 import (
 	"context"
 	"math"
+	"os"
 	"testing"
 	"time"
 
@@ -215,6 +216,80 @@ for iter := 1; iter <= 5; iter++ {
 }
 `
 	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_TableExitPreservesFPRValuesNoFilter(t *testing.T) {
+	old := os.Getenv("GSCRIPT_TIER2_NO_FILTER")
+	t.Cleanup(func() {
+		if old == "" {
+			os.Unsetenv("GSCRIPT_TIER2_NO_FILTER")
+		} else {
+			os.Setenv("GSCRIPT_TIER2_NO_FILTER", old)
+		}
+	})
+	os.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+
+	src := `
+func make_particle(x, y, z, vx, vy, vz) {
+    return {x: x, y: y, z: z, vx: vx, vy: vy, vz: vz, mass: 1.0}
+}
+
+func create_particles(n) {
+    particles := {}
+    for i := 1; i <= n; i++ {
+        x := 1.0 * i / n
+        y := 2.0 * i / n - 0.5
+        z := 0.5 * i / n + 0.3
+        vx := 0.01 * (i % 7)
+        vy := 0.02 * (i % 11)
+        vz := -0.01 * (i % 13)
+        particles[i] = make_particle(x, y, z, vx, vy, vz)
+    }
+    return particles
+}
+
+func checksum(particles, n) {
+    sum := 0.0
+    for i := 1; i <= n; i++ {
+        p := particles[i]
+        sum = sum + p.x + p.y + p.z + p.vx + p.vy + p.vz + p.mass
+    }
+    return sum
+}
+
+p := create_particles(1000)
+p = create_particles(1000)
+result := checksum(p, 1000)
+`
+	protoVM := compileProto(t, src)
+	globalsVM := runtime.NewInterpreterGlobals()
+	vVM := vm.New(globalsVM)
+	defer vVM.Close()
+	if _, err := vVM.Execute(protoVM); err != nil {
+		t.Fatalf("VM execute error: %v", err)
+	}
+	vmResult := vVM.GetGlobal("result")
+
+	protoJIT := compileProto(t, src)
+	globalsJIT := runtime.NewInterpreterGlobals()
+	vJIT := vm.New(globalsJIT)
+	defer vJIT.Close()
+	tm := NewTieringManager()
+	vJIT.SetMethodJIT(tm)
+	if _, err := vJIT.Execute(protoJIT); err != nil {
+		t.Fatalf("JIT execute error: %v", err)
+	}
+	jitResult := vJIT.GetGlobal("result")
+
+	if !vmResult.IsFloat() || !jitResult.IsFloat() {
+		t.Fatalf("expected float results, VM=%s JIT=%s", vmResult.TypeName(), jitResult.TypeName())
+	}
+	if math.Abs(vmResult.Float()-jitResult.Float()) > 1e-9 {
+		t.Fatalf("float mismatch: VM=%.6f JIT=%.6f", vmResult.Float(), jitResult.Float())
+	}
+	if tm.tier2Compiled[findProtoByName(protoJIT, "create_particles")] == nil {
+		t.Fatalf("expected create_particles to compile at Tier 2 under no-filter")
+	}
 }
 
 // TestTier2_CallInLoopCorrectness tests function calls inside a loop.

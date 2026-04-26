@@ -351,7 +351,7 @@ func (ec *emitContext) emitDeferredResumes() {
 
 // emitStoreAllActiveRegs writes all register-resident values (active in the
 // current block) back to their memory home slots. This ensures the VM register
-// file is fully up-to-date before a call-exit.
+// file is fully up-to-date before a call/table/op exit.
 func (ec *emitContext) emitStoreAllActiveRegs() {
 	for valueID := range ec.activeRegs {
 		pr, ok := ec.alloc.ValueRegs[valueID]
@@ -371,10 +371,21 @@ func (ec *emitContext) emitStoreAllActiveRegs() {
 			ec.asm.STR(reg, mRegRegs, slotOffset(slot))
 		}
 	}
+	for valueID := range ec.activeFPRegs {
+		pr, ok := ec.alloc.ValueRegs[valueID]
+		if !ok || !pr.IsFloat {
+			continue
+		}
+		slot, hasSlot := ec.slotMap[valueID]
+		if !hasSlot {
+			continue
+		}
+		ec.asm.FSTRd(jit.FReg(pr.Reg), mRegRegs, slotOffset(slot))
+	}
 }
 
 // emitReloadAllActiveRegs reloads all register-resident values from their
-// memory home slots. Called at resume points after a call-exit.
+// memory home slots. Called at resume points after a call/table/op exit.
 func (ec *emitContext) emitReloadAllActiveRegs() {
 	for valueID := range ec.activeRegs {
 		pr, ok := ec.alloc.ValueRegs[valueID]
@@ -390,6 +401,17 @@ func (ec *emitContext) emitReloadAllActiveRegs() {
 		// After reload, registers hold NaN-boxed values (not raw).
 		// Clear raw int tracking for this value.
 		delete(ec.rawIntRegs, valueID)
+	}
+	for valueID := range ec.activeFPRegs {
+		pr, ok := ec.alloc.ValueRegs[valueID]
+		if !ok || !pr.IsFloat {
+			continue
+		}
+		slot, hasSlot := ec.slotMap[valueID]
+		if !hasSlot {
+			continue
+		}
+		ec.asm.FLDRd(jit.FReg(pr.Reg), mRegRegs, slotOffset(slot))
 	}
 }
 

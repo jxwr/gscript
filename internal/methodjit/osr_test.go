@@ -9,6 +9,7 @@
 package methodjit
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -180,6 +181,67 @@ result := sum_with_init(5000)
 	// sum_with_init(5000) = 5000*5001/2 = 12502500
 	if result.Int() != 12502500 {
 		t.Errorf("sum_with_init(5000) = %d, want 12502500", result.Int())
+	}
+}
+
+func TestOSR_RestartDisabledForTableSideEffectsNoFilter(t *testing.T) {
+	old := os.Getenv("GSCRIPT_TIER2_NO_FILTER")
+	t.Cleanup(func() {
+		if old == "" {
+			os.Unsetenv("GSCRIPT_TIER2_NO_FILTER")
+		} else {
+			os.Setenv("GSCRIPT_TIER2_NO_FILTER", old)
+		}
+	})
+	os.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+
+	src := `
+func make_particles(n) {
+    particles := {}
+    for i := 1; i <= n; i++ {
+        particles[i] = {x: 0.0}
+    }
+    return particles
+}
+
+func step(particles, n) {
+    for i := 1; i <= n; i++ {
+        p := particles[i]
+        p.x = p.x + 1.0
+    }
+}
+
+func checksum(particles, n) {
+    sum := 0.0
+    for i := 1; i <= n; i++ {
+        sum = sum + particles[i].x
+    }
+    return sum
+}
+
+particles := make_particles(1200)
+step(particles, 1200)
+result := checksum(particles, 1200)
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+
+	result := v.GetGlobal("result")
+	if !result.IsFloat() {
+		t.Fatalf("expected float result, got %s (%v)", result.TypeName(), result)
+	}
+	if result.Float() != 1200.0 {
+		t.Fatalf("table side effects were replayed across OSR: got %.1f, want 1200.0", result.Float())
+	}
+	if tm.tier2Compiled[findProtoByName(proto, "step")] != nil {
+		t.Fatalf("step should not be OSR-compiled while running; restart would replay table mutations")
 	}
 }
 
