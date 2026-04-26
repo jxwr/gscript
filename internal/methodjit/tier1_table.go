@@ -28,10 +28,11 @@ import (
 // counter, causing all caches to miss on next access.
 //
 // Fast path (~8 instructions):
-//   1. Version check: engine.globalCacheGen == bf.CachedGlobalGen
-//   2. Load GlobalCache pointer from ExecContext
-//   3. Load cached value at GlobalValCache[pc]
-//   4. If non-zero (cached), store to R(A) and continue
+//  1. Version check: engine.globalCacheGen == bf.CachedGlobalGen
+//  2. Load GlobalCache pointer from ExecContext
+//  3. Load cached value at GlobalValCache[pc]
+//  4. If non-zero (cached), store to R(A) and continue
+//
 // Slow path: standard exit-resume to handleGetGlobal in Go.
 func emitBaselineGetGlobal(asm *jit.Assembler, inst uint32, pc int) {
 	a := vm.DecodeA(inst)
@@ -42,8 +43,8 @@ func emitBaselineGetGlobal(asm *jit.Assembler, inst uint32, pc int) {
 
 	// Version check: engine.globalCacheGen == ctx.BaselineGlobalCachedGen
 	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineGlobalGenPtr)
-	asm.CBZ(jit.X0, slowLabel) // no gen pointer = no cache
-	asm.LDR(jit.X1, jit.X0, 0)                                       // X1 = current gen
+	asm.CBZ(jit.X0, slowLabel)                                  // no gen pointer = no cache
+	asm.LDR(jit.X1, jit.X0, 0)                                  // X1 = current gen
 	asm.LDR(jit.X2, mRegCtx, execCtxOffBaselineGlobalCachedGen) // X2 = cached gen
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondNE, slowLabel) // generation mismatch -> cache invalid
@@ -105,7 +106,7 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 
 	// Load entry.ShapeID (uint32 at offset 8). Use LDRW for 32-bit.
 	asm.LDRW(jit.X2, jit.X0, jit.FieldCacheEntryOffShapeID) // X2 = cached shapeID
-	asm.CBZ(jit.X2, slowLabel) // shapeID==0 means not cached
+	asm.CBZ(jit.X2, slowLabel)                              // shapeID==0 means not cached
 
 	// Load entry.FieldIdx (int at offset 0).
 	asm.LDR(jit.X3, jit.X0, jit.FieldCacheEntryOffFieldIdx) // X3 = fieldIdx
@@ -122,19 +123,24 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 
 	// Shape guard: table.shapeID must match cached shapeID.
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID) // X1 = table.shapeID
-	asm.CMPreg(jit.X1, jit.X2) // compare with cached shapeID
+	asm.CMPreg(jit.X1, jit.X2)                    // compare with cached shapeID
 	asm.BCond(jit.CondNE, slowLabel)
 
 	// Bounds check: fieldIdx < len(svals)
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvalsLen) // X1 = svals.len
-	asm.CMPreg(jit.X3, jit.X1) // fieldIdx < svals.len?
-	asm.BCond(jit.CondGE, slowLabel) // unsigned >= means out of bounds
+	asm.CMPreg(jit.X3, jit.X1)                    // fieldIdx < svals.len?
+	asm.BCond(jit.CondGE, slowLabel)              // unsigned >= means out of bounds
 
 	// Direct field access: svals[fieldIdx]
 	// LDRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
 	// so X3 must hold the raw fieldIdx (not pre-multiplied).
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
-	asm.LDRreg(jit.X0, jit.X1, jit.X3) // X0 = svals[fieldIdx]
+	asm.LDRreg(jit.X0, jit.X1, jit.X3)         // X0 = svals[fieldIdx]
+
+	// Keep type feedback current on the field-cache fast path. The slow path
+	// updates feedback in Go; without this, a site can stay stuck on the first
+	// cached value's type even after later cache hits observe a different type.
+	emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "getfield")
 
 	// Store result to R(A).
 	storeSlot(asm, a, jit.X0)
@@ -200,11 +206,14 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int) {
 	// Load value to store: RK(C).
 	loadRK(asm, jit.X4, c) // X4 = value
 
+	// Mirror the interpreter/slow-path SETFIELD feedback for cache hits too.
+	emitBaselineFeedbackResultFromValue(asm, pc, jit.X4, "setfield")
+
 	// Direct field store: svals[fieldIdx] = value.
 	// STRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
 	// so X3 must hold the raw fieldIdx (not pre-multiplied).
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
-	asm.STRreg(jit.X4, jit.X1, jit.X3) // svals[fieldIdx] = value
+	asm.STRreg(jit.X4, jit.X1, jit.X3)         // svals[fieldIdx] = value
 
 	asm.B(doneLabel)
 
@@ -283,8 +292,8 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArrayLen) // X2 = intArray.len
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondGE, slowLabel)
-	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)    // X2 = intArray data pointer
-	asm.LDRreg(jit.X0, jit.X2, jit.X1)               // X0 = intArray[key] (raw int64)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // X2 = intArray data pointer
+	asm.LDRreg(jit.X0, jit.X2, jit.X1)            // X0 = intArray[key] (raw int64)
 	// NaN-box the int64: UBFX + ORR with pinned tag register.
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
 	storeSlot(asm, a, jit.X0)
@@ -315,7 +324,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Convert byte to NaN-boxed value: 0=nil, 1=false, 2=true
 	boolNilLabel := nextLabel("gettable_bool_nil")
 	boolFalseLabel := nextLabel("gettable_bool_false")
-	asm.CBZ(jit.X3, boolNilLabel)         // byte == 0 → nil
+	asm.CBZ(jit.X3, boolNilLabel) // byte == 0 → nil
 	asm.CMPimm(jit.X3, 1)
 	asm.BCond(jit.CondEQ, boolFalseLabel) // byte == 1 → false
 	// byte == 2 → true: NaN-boxed true = 0xFFFD000000000001
@@ -440,7 +449,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	loadRK(asm, jit.X4, cidx) // X4 = value (NaN-boxed)
 	// Float check: if top bits indicate tagged (int/bool/nil/ptr), not a float → slow.
 	jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
-	asm.BCond(jit.CondEQ, slowLabel)       // tagged → slow (not a float)
+	asm.BCond(jit.CondEQ, slowLabel)      // tagged → slow (not a float)
 	// Float64 bits ARE the NaN-boxed representation — store directly.
 	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
 	asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
@@ -733,7 +742,9 @@ func emitBaselineFeedbackResultFromValue(asm *jit.Assembler, pc int, valReg jit.
 
 // emitBaselineFeedbackFromValueAt is the generalized form of the above — R85
 // Option 2. fieldOff selects the byte within TypeFeedback[pc] to update:
-//   0 = Left, 1 = Right, 2 = Result, 3 = Kind.
+//
+//	0 = Left, 1 = Right, 2 = Result, 3 = Kind.
+//
 // Left/Right are consumed by OP_EQ/LT/LE; Result by GETFIELD-style ops. The
 // monotonic-observe semantics are identical across fields — Unobserved→concrete,
 // same→nop, different→FBAny, FBAny→nop.
@@ -750,13 +761,13 @@ func emitBaselineFeedbackFromValueAt(asm *jit.Assembler, pc int, valReg jit.Reg,
 
 	// Extract type from NaN-boxed value.
 	// Tag = top 16 bits. Float: tag < 0xFFFC. Int: tag == 0xFFFE.
-	asm.LSRimm(jit.X7, valReg, 48)       // X7 = tag
-	asm.MOVimm16(jit.X6, 0xFFFC)         // NB_TagNilShr48
+	asm.LSRimm(jit.X7, valReg, 48) // X7 = tag
+	asm.MOVimm16(jit.X6, 0xFFFC)   // NB_TagNilShr48
 	asm.CMPreg(jit.X7, jit.X6)
-	asm.BCond(jit.CondLT, fbFloatLabel)   // tag < 0xFFFC → float
-	asm.MOVimm16(jit.X6, 0xFFFE)         // NB_TagIntShr48
+	asm.BCond(jit.CondLT, fbFloatLabel) // tag < 0xFFFC → float
+	asm.MOVimm16(jit.X6, 0xFFFE)        // NB_TagIntShr48
 	asm.CMPreg(jit.X7, jit.X6)
-	asm.BCond(jit.CondEQ, fbIntLabel)     // tag == 0xFFFE → int
+	asm.BCond(jit.CondEQ, fbIntLabel) // tag == 0xFFFE → int
 	// Everything else (bool, nil, ptr, string, table, function) → FBAny
 	asm.MOVimm16(jit.X7, 7) // FBAny
 	asm.B(fbUpdateLabel)
@@ -770,12 +781,12 @@ func emitBaselineFeedbackFromValueAt(asm *jit.Assembler, pc int, valReg jit.Reg,
 	asm.Label(fbUpdateLabel)
 	fbOff := pc*4 + fieldOff // TypeFeedback[pc] byte offset
 	if fbOff < 4096 {
-		asm.LDRB(jit.X6, jit.X5, fbOff)            // X6 = current value
+		asm.LDRB(jit.X6, jit.X5, fbOff) // X6 = current value
 		asm.CMPreg(jit.X6, jit.X7)
-		asm.BCond(jit.CondEQ, fbSkipLabel)            // same type → skip
-		asm.CMPimm(jit.X6, 7)                         // FBAny?
-		asm.BCond(jit.CondEQ, fbSkipLabel)            // already megamorphic → skip
-		asm.CBZ(jit.X6, fbSetLabel)                   // Unobserved → set
+		asm.BCond(jit.CondEQ, fbSkipLabel) // same type → skip
+		asm.CMPimm(jit.X6, 7)              // FBAny?
+		asm.BCond(jit.CondEQ, fbSkipLabel) // already megamorphic → skip
+		asm.CBZ(jit.X6, fbSetLabel)        // Unobserved → set
 		// Different type → FBAny
 		asm.MOVimm16(jit.X6, 7)
 		asm.STRB(jit.X6, jit.X5, fbOff)
@@ -816,7 +827,7 @@ func emitBaselineFeedbackKind(asm *jit.Assembler, pc int, expectedKind uint16, s
 		asm.LDRB(jit.X6, jit.X5, fbKindOff)
 		asm.CMPimm(jit.X6, expectedKind)
 		asm.BCond(jit.CondEQ, fbSkipLabel) // same kind -> skip
-		asm.CMPimm(jit.X6, 0xFF)          // FBKindPolymorphic
+		asm.CMPimm(jit.X6, 0xFF)           // FBKindPolymorphic
 		asm.BCond(jit.CondEQ, fbSkipLabel) // already poly -> skip
 		asm.CBZ(jit.X6, fbSetLabel)        // unobserved -> set
 		// different kind -> polymorphic

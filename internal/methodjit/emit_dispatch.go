@@ -210,7 +210,6 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		OpGetUpval, OpSetUpval,
 		OpAppend,
 		OpConcat,
-		OpLen,
 		OpPow,
 		OpClosure, OpClose,
 		OpForPrep, OpForLoop,
@@ -219,6 +218,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		OpGo, OpMakeChan, OpSend, OpRecv,
 		OpGuardNonNil:
 		ec.emitOpExit(instr)
+	case OpLen:
+		ec.emitLenNative(instr)
 
 	default:
 		ec.asm.NOP() // truly unknown op placeholder

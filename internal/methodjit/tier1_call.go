@@ -41,14 +41,16 @@ var (
 	vmClosureOffProto    int // vm.Closure.Proto offset (should be 0)
 	vmClosureOffUpvalues int // vm.Closure.Upvalues offset (should be 8)
 
-	funcProtoOffCompiledCodePtr   int // vm.FuncProto.CompiledCodePtr offset
-	funcProtoOffDirectEntryPtr    int // vm.FuncProto.DirectEntryPtr offset
-	funcProtoOffConstants         int // vm.FuncProto.Constants offset (slice header)
-	funcProtoOffMaxStack          int // vm.FuncProto.MaxStack offset
-	funcProtoOffNumParams         int // vm.FuncProto.NumParams offset
-	funcProtoOffIsVarArg          int // vm.FuncProto.IsVarArg offset
-	funcProtoOffGlobalValCachePtr int // vm.FuncProto.GlobalValCachePtr offset
-	funcProtoOffCallCount         int // vm.FuncProto.CallCount offset
+	funcProtoOffCompiledCodePtr        int // vm.FuncProto.CompiledCodePtr offset
+	funcProtoOffDirectEntryPtr         int // vm.FuncProto.DirectEntryPtr offset
+	funcProtoOffConstants              int // vm.FuncProto.Constants offset (slice header)
+	funcProtoOffMaxStack               int // vm.FuncProto.MaxStack offset
+	funcProtoOffNumParams              int // vm.FuncProto.NumParams offset
+	funcProtoOffIsVarArg               int // vm.FuncProto.IsVarArg offset
+	funcProtoOffGlobalValCachePtr      int // vm.FuncProto.GlobalValCachePtr offset
+	funcProtoOffTier2GlobalCachePtr    int // vm.FuncProto.Tier2GlobalCachePtr offset
+	funcProtoOffTier2GlobalCacheGenPtr int // vm.FuncProto.Tier2GlobalCacheGenPtr offset
+	funcProtoOffCallCount              int // vm.FuncProto.CallCount offset
 )
 
 func init() {
@@ -65,6 +67,8 @@ func init() {
 	funcProtoOffNumParams = int(unsafe.Offsetof(proto.NumParams))
 	funcProtoOffIsVarArg = int(unsafe.Offsetof(proto.IsVarArg))
 	funcProtoOffGlobalValCachePtr = int(unsafe.Offsetof(proto.GlobalValCachePtr))
+	funcProtoOffTier2GlobalCachePtr = int(unsafe.Offsetof(proto.Tier2GlobalCachePtr))
+	funcProtoOffTier2GlobalCacheGenPtr = int(unsafe.Offsetof(proto.Tier2GlobalCacheGenPtr))
 	funcProtoOffCallCount = int(unsafe.Offsetof(proto.CallCount))
 }
 

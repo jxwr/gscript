@@ -395,6 +395,13 @@ func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction
 	if cf != nil && cf.DirectEntryOffset > 0 {
 		proto.DirectEntryPtr = uintptr(cf.Code.Ptr()) + uintptr(cf.DirectEntryOffset)
 	}
+	if cf != nil && len(cf.GlobalCache) > 0 {
+		proto.Tier2GlobalCachePtr = uintptr(unsafe.Pointer(&cf.GlobalCache[0]))
+		proto.Tier2GlobalCacheGenPtr = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))
+	} else {
+		proto.Tier2GlobalCachePtr = 0
+		proto.Tier2GlobalCacheGenPtr = 0
+	}
 }
 
 // compileTier2 compiles a function at Tier 2 (optimizing).
@@ -1249,6 +1256,8 @@ func (tm *TieringManager) disableTier2AfterRuntimeDeopt(proto *vm.FuncProto, rea
 	delete(tm.tier2Compiled, proto)
 	proto.Tier2Promoted = false
 	proto.DirectEntryPtr = 0
+	proto.Tier2GlobalCachePtr = 0
+	proto.Tier2GlobalCacheGenPtr = 0
 	tm.tier1.SetOSRCounter(proto, -1)
 	tm.tier1.EvictCompiled(proto)
 	tm.traceEvent("runtime_disable", "tier2", proto, map[string]any{

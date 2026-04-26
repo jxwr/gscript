@@ -13,30 +13,32 @@ type globalCacheEntry struct {
 // FuncProto is the bytecode function prototype.
 // It contains the compiled instructions, constants, and metadata for a function.
 type FuncProto struct {
-	Name        string      // function name (for debugging)
-	Source      string      // source file
-	LineDefined int         // line where the function is defined
-	NumParams   int         // number of fixed parameters
-	IsVarArg    bool        // whether the function accepts varargs
-	MaxStack    int         // maximum number of registers used
-	Code        []uint32    // bytecode instructions
-	Constants   []runtime.Value // constant pool
-	Upvalues    []UpvalDesc // upvalue descriptors
-	Protos      []*FuncProto // nested function prototypes
-	LineInfo    []int       // source line for each instruction (debug)
-	GlobalCache    []globalCacheEntry        // lazily-initialized cache indexed by constant pool index
-	FieldCache     []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
-	HasSelfCalls    bool                      // true if function has recursive calls to itself (set during JIT compilation)
-	CallCount       int                       // JIT call count (avoids map lookup in VM hot path)
-	JITDisabled     bool                      // true when the method JIT made a permanent per-proto stay-interpreted decision
-	Feedback        FeedbackVector            // lazily-initialized per-PC type feedback for Method JIT
-	CompiledCodePtr    uintptr // pointer to baseline JIT compiled code (set after CompileBaseline)
-	DirectEntryPtr     uintptr // pointer to direct entry point for native BLR calls
-	GlobalValCachePtr  uintptr // pointer to BaselineFunc.GlobalValCache[0] (for BLR callee GETGLOBAL)
-	GlobalValCacheGen  uint64  // BaselineFunc.CachedGlobalGen (for BLR callee generation check)
-	Tier2Promoted      bool    // set true when TieringManager compiles this proto at Tier 2
-	NeedsTier2         bool    // set true when Tier 2 applied ops (e.g., intrinsics) that Tier 1 would execute differently
-	EnteredTier2       byte    // R146: set to 1 by Tier 2 native prologue on first entry — observable signal that native code actually ran (not just compiled)
+	Name                   string                    // function name (for debugging)
+	Source                 string                    // source file
+	LineDefined            int                       // line where the function is defined
+	NumParams              int                       // number of fixed parameters
+	IsVarArg               bool                      // whether the function accepts varargs
+	MaxStack               int                       // maximum number of registers used
+	Code                   []uint32                  // bytecode instructions
+	Constants              []runtime.Value           // constant pool
+	Upvalues               []UpvalDesc               // upvalue descriptors
+	Protos                 []*FuncProto              // nested function prototypes
+	LineInfo               []int                     // source line for each instruction (debug)
+	GlobalCache            []globalCacheEntry        // lazily-initialized cache indexed by constant pool index
+	FieldCache             []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
+	HasSelfCalls           bool                      // true if function has recursive calls to itself (set during JIT compilation)
+	CallCount              int                       // JIT call count (avoids map lookup in VM hot path)
+	JITDisabled            bool                      // true when the method JIT made a permanent per-proto stay-interpreted decision
+	Feedback               FeedbackVector            // lazily-initialized per-PC type feedback for Method JIT
+	CompiledCodePtr        uintptr                   // pointer to baseline JIT compiled code (set after CompileBaseline)
+	DirectEntryPtr         uintptr                   // pointer to direct entry point for native BLR calls
+	GlobalValCachePtr      uintptr                   // pointer to BaselineFunc.GlobalValCache[0] (for BLR callee GETGLOBAL)
+	GlobalValCacheGen      uint64                    // BaselineFunc.CachedGlobalGen (for BLR callee generation check)
+	Tier2GlobalCachePtr    uintptr                   // pointer to CompiledFunction.GlobalCache[0] (for Tier 2 BLR callees)
+	Tier2GlobalCacheGenPtr uintptr                   // pointer to CompiledFunction.GlobalCacheGen (for Tier 2 BLR callees)
+	Tier2Promoted          bool                      // set true when TieringManager compiles this proto at Tier 2
+	NeedsTier2             bool                      // set true when Tier 2 applied ops (e.g., intrinsics) that Tier 1 would execute differently
+	EnteredTier2           byte                      // R146: set to 1 by Tier 2 native prologue on first entry — observable signal that native code actually ran (not just compiled)
 }
 
 // EnsureFeedback lazily initializes the type feedback vector for this function.
@@ -52,8 +54,8 @@ func (p *FuncProto) EnsureFeedback() FeedbackVector {
 type UpvalDesc struct {
 	Name    string // variable name (for debugging)
 	InStack bool   // true: capture from enclosing function's register at Index
-	                // false: capture from enclosing function's upvalue at Index
-	Index   int    // register index (if InStack) or upvalue index in parent
+	// false: capture from enclosing function's upvalue at Index
+	Index int // register index (if InStack) or upvalue index in parent
 }
 
 // Closure is a bytecode closure: a FuncProto paired with captured upvalues.
@@ -100,10 +102,10 @@ func (u *Upvalue) Close() {
 // CallFrame represents a single activation record on the VM call stack.
 type CallFrame struct {
 	closure     *Closure
-	pc          int    // program counter within closure.Proto.Code
-	base        int    // base register index in the VM register file
-	numResults  int    // expected number of results (-1 = variable)
+	pc          int             // program counter within closure.Proto.Code
+	base        int             // base register index in the VM register file
+	numResults  int             // expected number of results (-1 = variable)
 	varargs     []runtime.Value // extra arguments beyond fixed params
-	resultBase   int    // register in parent frame where results should be placed (for inline return)
-	resultCount  int    // C parameter from caller's OP_CALL (0 = return all; for inline return)
+	resultBase  int             // register in parent frame where results should be placed (for inline return)
+	resultCount int             // C parameter from caller's OP_CALL (0 = return all; for inline return)
 }

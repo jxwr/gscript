@@ -268,6 +268,72 @@ func (ec *emitContext) emitNot(instr *Instr) {
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 
+func (ec *emitContext) emitLenNative(instr *Instr) {
+	if len(instr.Args) == 0 {
+		ec.emitOpExit(instr)
+		return
+	}
+	asm := ec.asm
+	slowLabel := ec.uniqueLabel("len_slow")
+	doneLabel := ec.uniqueLabel("len_done")
+	mixedLabel := ec.uniqueLabel("len_mixed")
+	intLabel := ec.uniqueLabel("len_int")
+	floatLabel := ec.uniqueLabel("len_float")
+	boxLabel := ec.uniqueLabel("len_box_result")
+
+	src := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if src != jit.X0 {
+		asm.MOVreg(jit.X0, src)
+	}
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, slowLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, slowLabel)
+
+	// Respect __len by falling back when a table has a metatable.
+	asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+	asm.CBNZ(jit.X1, slowLabel)
+
+	asm.LDRB(jit.X1, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X1, jit.AKMixed)
+	asm.BCond(jit.CondEQ, mixedLabel)
+	asm.CMPimm(jit.X1, jit.AKInt)
+	asm.BCond(jit.CondEQ, intLabel)
+	asm.CMPimm(jit.X1, jit.AKFloat)
+	asm.BCond(jit.CondEQ, floatLabel)
+	asm.B(slowLabel)
+
+	// Mixed arrays need the runtime's trailing-nil scan. Fast-path only when
+	// the last array slot is non-nil, which is the common dense-array case.
+	asm.Label(mixedLabel)
+	asm.LDR(jit.X1, jit.X0, jit.TableOffArrayLen)
+	asm.SUBimm(jit.X1, jit.X1, 1)
+	asm.CBZ(jit.X1, boxLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArray)
+	asm.LDRreg(jit.X3, jit.X2, jit.X1)
+	asm.LoadImm64(jit.X2, nb64(jit.NB_ValNil))
+	asm.CMPreg(jit.X3, jit.X2)
+	asm.BCond(jit.CondEQ, slowLabel)
+	asm.B(boxLabel)
+
+	asm.Label(intLabel)
+	asm.LDR(jit.X1, jit.X0, jit.TableOffIntArrayLen)
+	asm.SUBimm(jit.X1, jit.X1, 1)
+	asm.B(boxLabel)
+
+	asm.Label(floatLabel)
+	asm.LDR(jit.X1, jit.X0, jit.TableOffFloatArrayLen)
+	asm.SUBimm(jit.X1, jit.X1, 1)
+
+	asm.Label(boxLabel)
+	jit.EmitBoxIntFast(asm, jit.X0, jit.X1, mRegTagInt)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(slowLabel)
+	ec.emitOpExit(instr)
+	asm.Label(doneLabel)
+}
+
 // emitGuardTruthy emits ARM64 code for OpGuardTruthy.
 // Converts any value to a NaN-boxed bool based on truthiness:
 // nil and false are falsy (returns NB_TagBool|0), everything else is truthy
