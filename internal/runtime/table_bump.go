@@ -6,8 +6,8 @@
 // that Go GC treats correctly (whole backing stays live while any
 // interior pointer is reachable).
 //
-// NOT thread-safe — mirrors the rest of the heap. The GScript VM runs
-// single-threaded.
+// tableSlab itself is not thread-safe. Heap serializes public allocation
+// entry points before calling into it.
 
 package runtime
 
@@ -51,6 +51,8 @@ func (s *tableSlab) refill() {
 // AllocTable returns a fresh, zero-initialized *Table from the bump slab.
 // Caller is responsible for any field initialization beyond the zero value.
 func (h *Heap) AllocTable() *Table {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.tableSlab.backing == nil {
 		h.tableSlab.refill()
 	}

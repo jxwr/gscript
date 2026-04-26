@@ -10,7 +10,8 @@
 // Cannot use arena (mmap) because []string contains GC pointers (string
 // data). Backing must be Go-heap so GC scans string contents.
 //
-// NOT thread-safe — mirrors the rest of the runtime.
+// stringSlab itself is not thread-safe. Heap serializes public allocation
+// entry points before calling into it.
 
 package runtime
 
@@ -58,5 +59,7 @@ func (s *stringSlab) refill() {
 // capacity, backed by the Heap's string slab. Suitable for
 // NewTableSized's skeys initialization.
 func (h *Heap) AllocStringKeys(capacity int) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	return h.stringSlab.allocStringKeys(capacity)
 }

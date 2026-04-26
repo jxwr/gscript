@@ -2,15 +2,18 @@
 
 package runtime
 
-import "unsafe"
+import (
+	"sync"
+	"unsafe"
+)
 
 // ---------------------------------------------------------------------------
 // Arena allocator — bump-pointer allocation from mmap'd pages
 // ---------------------------------------------------------------------------
 //
-// NOT thread-safe. The GScript VM is single-threaded; adding a mutex here
-// would add ~20ns per allocation for no benefit. If concurrency is ever
-// needed, add a sync.Mutex to Arena and Heap.
+// Arena itself is not thread-safe. Heap serializes public allocation entry
+// points so independent VMs can be constructed and used concurrently through
+// the package-level DefaultHeap.
 
 const (
 	defaultPageSize = 1 << 20 // 1 MB per mmap page
@@ -125,6 +128,7 @@ func (a *Arena) Free() {
 // Allocations up to 8192 bytes use the appropriate size-class arena.
 // Larger allocations get their own dedicated mmap page.
 type Heap struct {
+	mu         sync.Mutex
 	arenas     [numSizeClasses]*Arena
 	overPages  [][]byte // dedicated mmap pages for oversized allocations
 	tableSlab  tableSlab
@@ -144,6 +148,12 @@ func NewHeap() *Heap {
 // For sizes <= 8192, the allocation comes from a size-class arena.
 // For larger sizes, a dedicated mmap page is allocated.
 func (h *Heap) AllocBytes(size int) unsafe.Pointer {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.allocBytesLocked(size)
+}
+
+func (h *Heap) allocBytesLocked(size int) unsafe.Pointer {
 	idx := sizeClassIndex(size)
 	if idx >= 0 {
 		return h.arenas[idx].Alloc()
@@ -188,6 +198,8 @@ func (h *Heap) GrowValues(old []Value, newCap int) []Value {
 
 // Free releases all memory (arenas + oversized pages).
 func (h *Heap) Free() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for _, a := range h.arenas {
 		if a != nil {
 			a.Free()
