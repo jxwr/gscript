@@ -131,6 +131,14 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 		// Table already validated in this block — skip type/nil/metatable checks.
 		// Just extract the raw pointer.
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else if ec.irTypes[tblValueID] == TypeTable {
+		// The producer already guards/proves table-ness. Re-check the dynamic
+		// metatable because table identity can still carry metamethods.
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X1, deoptLabel)
+		ec.tableVerified[tblValueID] = true
 	} else {
 		// Full validation.
 		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
@@ -251,6 +259,9 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 		asm.BCond(jit.CondEQ, deoptLabel)
 		asm.FMOVtoFP(jit.D0, jit.X0)
 		ec.storeRawFloat(jit.D0, instr.ID)
+	case TypeTable:
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+		ec.storeResultNB(jit.X0, instr.ID)
 	default:
 		ec.storeResultNB(jit.X0, instr.ID)
 	}
@@ -460,6 +471,14 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		// Table already validated in this block — skip type/nil/metatable checks.
 		// Just extract the raw pointer.
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else if ec.irTypes[tblValueID] == TypeTable {
+		// The producer already guards/proves table-ness. Re-check the dynamic
+		// metatable because table identity can still carry metamethods.
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X1, deoptLabel)
+		ec.tableVerified[tblValueID] = true
 	} else {
 		// Full validation.
 		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)

@@ -607,6 +607,44 @@ func f(t) {
 		}
 	})
 
+	t.Run("GetTable_FBTable_with_FBKindMixed_marks_result_table", func(t *testing.T) {
+		proto := compile(t, `
+func f(t) {
+	return t[1][2]
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETTABLE)
+		proto.EnsureFeedback()
+		proto.Feedback[pc] = vm.TypeFeedback{Result: vm.FBTable, Kind: vm.FBKindMixed}
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		var get *Instr
+		for _, blk := range fn.Blocks {
+			for _, instr := range blk.Instrs {
+				if instr.Op == OpGetTable {
+					get = instr
+					break
+				}
+			}
+			if get != nil {
+				break
+			}
+		}
+		if get == nil {
+			t.Fatal("expected GetTable in IR")
+		}
+		if get.Type != TypeTable {
+			t.Fatalf("first GetTable.Type = %s, want table", get.Type)
+		}
+		guard := findGuardAfterOp(fn, OpGetTable)
+		if guard != nil && guard.Aux == int64(TypeTable) {
+			t.Fatalf("expected table result guard to be folded into GetTable, got %s", Print(fn))
+		}
+	})
+
 	t.Run("GetTable_FBUnobserved_no_guard", func(t *testing.T) {
 		proto := compile(t, `
 func f(t) {

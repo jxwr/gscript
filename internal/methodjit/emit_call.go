@@ -110,6 +110,16 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 		ec.emitDeopt(instr)
 		asm.Label(doneLabel)
 
+	case TypeTable:
+		deoptLabel := ec.uniqueLabel("guard_deopt")
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+		ec.storeResultNB(jit.X0, instr.ID)
+		doneLabel := ec.uniqueLabel("guard_done")
+		asm.B(doneLabel)
+		asm.Label(deoptLabel)
+		ec.emitDeopt(instr)
+		asm.Label(doneLabel)
+
 	default:
 		// Unsupported guard type: just pass through.
 		ec.storeResultNB(jit.X0, instr.ID)

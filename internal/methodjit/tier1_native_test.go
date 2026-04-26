@@ -660,6 +660,33 @@ for i := 1; i <= 5; i++ { result = f() }
 	}
 }
 
+func TestBaselineFeedback_GetTable_MixedTableResult(t *testing.T) {
+	src := `
+func f() {
+    rows := {}
+    row := {}
+    row[0] = 1.0
+    rows[0] = row
+    return rows[0]
+}
+result := nil
+for i := 1; i <= 5; i++ { result = f() }
+`
+	_, proto := compileAndRunForFeedback(t, src)
+	foundTable := false
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) == vm.OP_GETTABLE && proto.Feedback != nil && pc < len(proto.Feedback) {
+			fb := proto.Feedback[pc]
+			if fb.Result == vm.FBTable && fb.Kind == vm.FBKindMixed {
+				foundTable = true
+			}
+		}
+	}
+	if !foundTable {
+		t.Errorf("expected mixed GETTABLE to record FBTable result feedback")
+	}
+}
+
 func TestBaselineFeedback_GetField_Float(t *testing.T) {
 	src := `
 func f() {

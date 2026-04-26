@@ -284,7 +284,8 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)         // X0 = array[key] (NaN-boxed Value)
 	storeSlot(asm, a, jit.X0)
-	emitBaselineFeedbackKind(asm, pc, 1, "mixed") // FBKindMixed=1
+	emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "mixed") // includes FBTable for table-of-tables rows
+	emitBaselineFeedbackKind(asm, pc, 1, "mixed")                 // FBKindMixed=1
 	asm.B(doneLabel)
 
 	// --- ArrayInt fast path ---
@@ -729,11 +730,11 @@ func emitBaselineFeedbackFixedAt(asm *jit.Assembler, pc int, fieldOff int, expec
 	asm.Label(fbSkipLabel)
 }
 
-// emitBaselineFeedbackResultFromValue emits ARM64 code to extract the type
-// from a NaN-boxed value and record it as Result feedback for TypeFeedback[pc].
-// The value must be in valReg. Only distinguishes float (FBFloat=2) and int
-// (FBInt=1); all other types map to FBAny=7. This covers the important cases
-// for nbody (float fields) and spectral_norm (float/int fields).
+// emitBaselineFeedbackResultFromValue emits ARM64 code to extract the type from
+// a NaN-boxed value and record it as Result feedback for TypeFeedback[pc]. The
+// value must be in valReg. It distinguishes float, int, and table; all other
+// types map to FBAny. Table feedback is important for mixed table-of-tables
+// array access where the outer array stores row tables.
 //
 // Uses scratch registers X5, X6, X7. Does not clobber valReg.
 func emitBaselineFeedbackResultFromValue(asm *jit.Assembler, pc int, valReg jit.Reg, suffix string) {
@@ -752,6 +753,8 @@ func emitBaselineFeedbackFromValueAt(asm *jit.Assembler, pc int, valReg jit.Reg,
 	fbSkipLabel := nextLabel("fb_val_skip_" + suffix)
 	fbFloatLabel := nextLabel("fb_val_float_" + suffix)
 	fbIntLabel := nextLabel("fb_val_int_" + suffix)
+	fbPtrLabel := nextLabel("fb_val_ptr_" + suffix)
+	fbTableLabel := nextLabel("fb_val_table_" + suffix)
 	fbSetLabel := nextLabel("fb_val_set_" + suffix)
 	fbUpdateLabel := nextLabel("fb_val_update_" + suffix)
 
@@ -761,6 +764,7 @@ func emitBaselineFeedbackFromValueAt(asm *jit.Assembler, pc int, valReg jit.Reg,
 
 	// Extract type from NaN-boxed value.
 	// Tag = top 16 bits. Float: tag < 0xFFFC. Int: tag == 0xFFFE.
+	// Pointers need the subtype check to distinguish table from string/function.
 	asm.LSRimm(jit.X7, valReg, 48) // X7 = tag
 	asm.MOVimm16(jit.X6, 0xFFFC)   // NB_TagNilShr48
 	asm.CMPreg(jit.X7, jit.X6)
@@ -768,14 +772,28 @@ func emitBaselineFeedbackFromValueAt(asm *jit.Assembler, pc int, valReg jit.Reg,
 	asm.MOVimm16(jit.X6, 0xFFFE)        // NB_TagIntShr48
 	asm.CMPreg(jit.X7, jit.X6)
 	asm.BCond(jit.CondEQ, fbIntLabel) // tag == 0xFFFE → int
-	// Everything else (bool, nil, ptr, string, table, function) → FBAny
+	asm.MOVimm16(jit.X6, 0xFFFF)      // NB_TagPtrShr48
+	asm.CMPreg(jit.X7, jit.X6)
+	asm.BCond(jit.CondEQ, fbPtrLabel) // ptr → maybe table
+	// Everything else (bool, nil) → FBAny.
 	asm.MOVimm16(jit.X7, 7) // FBAny
+	asm.B(fbUpdateLabel)
+	asm.Label(fbPtrLabel)
+	asm.LSRimm(jit.X6, valReg, uint8(jit.NB_PtrSubShift))
+	asm.LoadImm64(jit.X7, 0xF)
+	asm.ANDreg(jit.X6, jit.X6, jit.X7)
+	asm.CMPimm(jit.X6, 0) // ptrSubTable
+	asm.BCond(jit.CondEQ, fbTableLabel)
+	asm.MOVimm16(jit.X7, 7) // non-table pointer → FBAny
 	asm.B(fbUpdateLabel)
 	asm.Label(fbFloatLabel)
 	asm.MOVimm16(jit.X7, 2) // FBFloat
 	asm.B(fbUpdateLabel)
 	asm.Label(fbIntLabel)
 	asm.MOVimm16(jit.X7, 1) // FBInt
+	asm.B(fbUpdateLabel)
+	asm.Label(fbTableLabel)
+	asm.MOVimm16(jit.X7, 5) // FBTable
 
 	// Monotonic update: X7 = observed type.
 	asm.Label(fbUpdateLabel)
