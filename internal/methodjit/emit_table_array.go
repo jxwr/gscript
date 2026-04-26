@@ -193,6 +193,7 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 		if ec.kindVerified[tblValueID] != uint16(knownGetKind) {
 			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
 			asm.CMPimm(jit.X2, expectedKind)
+			cacheKind := expectedKind == jit.AKMixed
 			if expectedKind == jit.AKMixed {
 				asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
 			} else {
@@ -203,7 +204,9 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 				asm.B(deoptLabel)
 				asm.Label(getKindOKLabel)
 			}
-			ec.kindVerified[tblValueID] = uint16(knownGetKind)
+			if cacheKind {
+				ec.kindVerified[tblValueID] = uint16(knownGetKind)
+			}
 		}
 		// Jump directly to the matching kind path.
 		switch expectedKind {
@@ -518,6 +521,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		if ec.kindVerified[tblValueID] != uint16(knownSetKind) {
 			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
 			asm.CMPimm(jit.X2, expectedKind)
+			cacheKind := expectedKind == jit.AKMixed
 			if expectedKind == jit.AKMixed {
 				asm.BCond(jit.CondNE, deoptLabel) // kind mismatch → deopt
 			} else {
@@ -528,7 +532,9 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 				asm.B(deoptLabel)
 				asm.Label(setKindOKLabel)
 			}
-			ec.kindVerified[tblValueID] = uint16(knownSetKind)
+			if cacheKind {
+				ec.kindVerified[tblValueID] = uint16(knownSetKind)
+			}
 		}
 		// Jump directly to the matching kind path.
 		switch expectedKind {
