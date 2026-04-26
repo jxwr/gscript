@@ -26,9 +26,9 @@ package methodjit
 // R158's MVP escape predicate. Populated by the analysis phase of
 // EscapeAnalysisPass (R159); consumed by the rewrite phase.
 type virtualAllocInfo struct {
-	allocID     int   // ID of the OpNewTable instruction
-	blockID     int   // block where the allocation lives
-	fieldUses   []int // IDs of OpGetField/OpSetField instrs using this alloc
+	allocID   int   // ID of the OpNewTable instruction
+	blockID   int   // block where the allocation lives
+	fieldUses []int // IDs of OpGetField/OpSetField instrs using this alloc
 	// phiReachable (R161) is true when the alloc has a use by an
 	// OpPhi in addition to block-local field accesses. For these
 	// the block-local rewrite (R159) does not apply directly;
@@ -343,12 +343,14 @@ func applyVirtualPhiRewrite(fn *Function, vphi *virtualPhiInfo,
 	newPhis := make([]*Instr, 0, len(fieldNames))
 	for name := range fieldNames {
 		args := make([]*Value, len(vphi.feeders))
+		phiType := TypeUnknown
 		for i := range vphi.feeders {
 			valID := feederFields[i][name]
 			// Find the defining instr for this valID to build a Value.
 			defInstr := instrByID[valID]
 			if defInstr != nil {
 				args[i] = defInstr.Value()
+				phiType = joinVirtualFieldType(phiType, defInstr.Type)
 			} else {
 				// Value IDs < numRegs come from LoadSlot / parameters;
 				// represent them as an undefined arg. To stay safe,
@@ -356,11 +358,14 @@ func applyVirtualPhiRewrite(fn *Function, vphi *virtualPhiInfo,
 				return
 			}
 		}
+		if phiType == TypeUnknown {
+			phiType = phiInstr.Type
+		}
 		newID := fn.newValueID()
 		newPhi := &Instr{
 			ID:    newID,
 			Op:    OpPhi,
-			Type:  phiInstr.Type, // inherit; downstream type-spec may refine
+			Type:  phiType,
 			Args:  args,
 			Block: phiBlock,
 		}
@@ -427,6 +432,22 @@ func applyVirtualPhiRewrite(fn *Function, vphi *virtualPhiInfo,
 			}
 		}
 	}
+}
+
+func joinVirtualFieldType(current, next Type) Type {
+	if next == TypeUnknown || next == TypeAny {
+		return current
+	}
+	if current == TypeUnknown || current == TypeAny {
+		return next
+	}
+	if current == next {
+		return current
+	}
+	if (current == TypeInt && next == TypeFloat) || (current == TypeFloat && next == TypeInt) {
+		return TypeFloat
+	}
+	return TypeUnknown
 }
 
 // fieldNameFromAux resolves a constant-pool index (Instr.Aux) to

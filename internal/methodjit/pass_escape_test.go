@@ -5,6 +5,7 @@ package methodjit
 import (
 	"testing"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -313,6 +314,60 @@ result := create_and_sum(10)
 	if nt != 0 || gf != 0 || sf != 0 {
 		t.Logf("IR:\n%s", Print(fn))
 		t.Errorf("expected all table ops eliminated; got NewTable=%d GetField=%d SetField=%d", nt, gf, sf)
+	}
+}
+
+func TestR161_VirtualPhi_FieldPhiUsesStoredValueType(t *testing.T) {
+	fn := &Function{
+		Proto: &vm.FuncProto{
+			Name: "virtual_phi_types",
+			Constants: []runtime.Value{
+				runtime.StringValue("x"),
+				runtime.StringValue("y"),
+			},
+		},
+	}
+	b0 := &Block{ID: 0}
+	b1 := &Block{ID: 1}
+	b2 := &Block{ID: 2}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2}
+	b2.Preds = []*Block{b0, b1}
+
+	a0 := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b0}
+	x0 := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b0}
+	y0 := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b0}
+	sx0 := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown, Args: []*Value{a0.Value(), x0.Value()}, Aux: 0, Block: b0}
+	sy0 := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown, Args: []*Value{a0.Value(), y0.Value()}, Aux: 1, Block: b0}
+	j0 := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(b2.ID), Block: b0}
+	b0.Instrs = []*Instr{a0, x0, y0, sx0, sy0, j0}
+
+	a1 := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b1}
+	x1 := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Args: []*Value{x0.Value(), y0.Value()}, Block: b1}
+	y1 := &Instr{ID: fn.newValueID(), Op: OpMulFloat, Type: TypeFloat, Args: []*Value{x0.Value(), y0.Value()}, Block: b1}
+	sx1 := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown, Args: []*Value{a1.Value(), x1.Value()}, Aux: 0, Block: b1}
+	sy1 := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown, Args: []*Value{a1.Value(), y1.Value()}, Aux: 1, Block: b1}
+	j1 := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(b2.ID), Block: b1}
+	b1.Instrs = []*Instr{a1, x1, y1, sx1, sy1, j1}
+
+	tablePhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeTable, Args: []*Value{a0.Value(), a1.Value()}, Block: b2}
+	getX := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny, Args: []*Value{tablePhi.Value()}, Aux: 0, Block: b2}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{getX.Value()}, Block: b2}
+	b2.Instrs = []*Instr{tablePhi, getX, ret}
+
+	out, err := EscapeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("EscapeAnalysisPass: %v", err)
+	}
+
+	var foundFloatPhi bool
+	for _, instr := range out.Blocks[2].Instrs {
+		if instr.Op == OpPhi && instr.ID != tablePhi.ID && instr.Type == TypeFloat {
+			foundFloatPhi = true
+		}
+	}
+	if !foundFloatPhi {
+		t.Fatalf("expected virtual field phi to be TypeFloat, IR:\n%s", Print(out))
 	}
 }
 

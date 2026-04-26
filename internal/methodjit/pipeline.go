@@ -394,6 +394,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("EscapeAnalysis: %w", err)
 	}
 
+	fn, err = RedundantGuardEliminationPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("RedundantGuardElimination: %w", err)
+	}
+
 	fn, err = DCEPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("DCE: %w", err)
