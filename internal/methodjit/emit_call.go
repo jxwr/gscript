@@ -115,6 +115,58 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 	}
 }
 
+// emitNumToFloat emits a numeric widening check/conversion. It accepts either
+// NaN-boxed int or NaN-boxed float and stores a raw float result for the
+// downstream FPR pipeline. Non-numeric values deopt.
+func (ec *emitContext) emitNumToFloat(instr *Instr) {
+	if len(instr.Args) == 0 {
+		return
+	}
+	asm := ec.asm
+	argID := instr.Args[0].ID
+
+	if ec.hasFPReg(argID) {
+		ec.storeRawFloat(ec.physFPReg(argID), instr.ID)
+		return
+	}
+	if ec.hasReg(argID) && ec.rawIntRegs[argID] {
+		asm.SCVTF(jit.D0, ec.physReg(argID))
+		ec.storeRawFloat(jit.D0, instr.ID)
+		return
+	}
+
+	srcReg := ec.resolveValueNB(argID, jit.X0)
+	if srcReg != jit.X0 {
+		asm.MOVreg(jit.X0, srcReg)
+	}
+
+	floatLabel := ec.uniqueLabel("num_to_float_float")
+	storeLabel := ec.uniqueLabel("num_to_float_store")
+	deoptLabel := ec.uniqueLabel("num_to_float_deopt")
+	doneLabel := ec.uniqueLabel("num_to_float_done")
+
+	emitCheckIsInt(asm, jit.X0, jit.X2)
+	asm.BCond(jit.CondNE, floatLabel)
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	asm.SCVTF(jit.D0, jit.X0)
+	asm.B(storeLabel)
+
+	asm.Label(floatLabel)
+	asm.LSRimm(jit.X2, jit.X0, 48)
+	asm.MOVimm16(jit.X3, jit.NB_TagNilShr48)
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+
+	asm.Label(storeLabel)
+	ec.storeRawFloat(jit.D0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 // emitDiv emits ARM64 code for OpDiv (a / b, always returns float).
 // Both operands may be int or float. Result is always NaN-boxed float.
 //

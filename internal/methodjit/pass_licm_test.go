@@ -79,8 +79,10 @@ func TestLICM_NoLoops_Noop(t *testing.T) {
 // ---------- Test 2: hoist ConstFloat ----------
 
 // buildSimpleLoop constructs:
-//   b0 (entry) -> b1 (header, phi) ->[true] b2 (body) ->(jump) b1
-//                                   \->[false] b3 (exit)
+//
+//	b0 (entry) -> b1 (header, phi) ->[true] b2 (body) ->(jump) b1
+//	                                \->[false] b3 (exit)
+//
 // Caller fills b2's body instrs and b1's branch cond.
 func buildSimpleLoop(fn *Function) (entry, header, body, exit *Block) {
 	b0 := newBlock(0)
@@ -324,6 +326,57 @@ func TestLICM_HoistGuardType(t *testing.T) {
 	}
 }
 
+func TestLICM_HoistNumToFloat(t *testing.T) {
+	fn := &Function{NumRegs: 8}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 3}
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b0, Aux: 0}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{seed, zero, b0Term}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{phi, cond, b1Term}
+
+	conv := &Instr{ID: fn.newValueID(), Op: OpNumToFloat, Type: TypeFloat, Block: b2,
+		Args: []*Value{seed.Value()}}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Block: b2,
+		Args: []*Value{phi.Value(), conv.Value()}}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{conv, add, b2Term}
+
+	phi.Args = []*Value{zero.Value(), add.Value()}
+	b3.Instrs = []*Instr{
+		&Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+			Args: []*Value{phi.Value()}},
+	}
+
+	assertValidates(t, fn, "input")
+	convID := conv.ID
+
+	_, err := LICMPass(fn)
+	if err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+
+	for _, instr := range b2.Instrs {
+		if instr.ID == convID {
+			t.Fatalf("OpNumToFloat v%d should have been hoisted out of body B%d", convID, b2.ID)
+		}
+	}
+	convBlock, _ := findInstrByID(fn, convID)
+	if convBlock == nil {
+		t.Fatalf("hoisted OpNumToFloat v%d not found anywhere in fn", convID)
+	}
+	if len(b1.Preds) < 1 || b1.Preds[0] != convBlock {
+		t.Fatalf("expected OpNumToFloat in pre-header (b1.Preds[0]), got block B%d", convBlock.ID)
+	}
+}
+
 // ---------- Test 6: hoist GetField when no store and no call ----------
 
 func TestLICM_HoistGetField_NoStoreNoCall(t *testing.T) {
@@ -551,11 +604,12 @@ func TestLICM_PreHeaderPhiReorder(t *testing.T) {
 // ---------- Test 8: nested loops (hoist inside-out) ----------
 
 // Shape:
-//   b0 -> b1 (outer header, phi)
-//   b1 -> b2 (inner header, phi)
-//   b2 -> b3 (inner body) -> b2 (back)
-//   b2 -> b4 (after inner, in outer body) -> b1 (back)
-//   b1 -> b5 (exit)
+//
+//	b0 -> b1 (outer header, phi)
+//	b1 -> b2 (inner header, phi)
+//	b2 -> b3 (inner body) -> b2 (back)
+//	b2 -> b4 (after inner, in outer body) -> b1 (back)
+//	b1 -> b5 (exit)
 func TestLICM_NestedLoop_InsideOut(t *testing.T) {
 	fn := &Function{NumRegs: 4}
 	b0 := newBlock(0)

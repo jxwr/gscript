@@ -605,6 +605,10 @@ func canHoistOp(op Op) bool {
 		// Pure type check; deopt metadata has no PC-dependent state,
 		// so hoisting is safe when the guarded value is invariant.
 		return true
+	case OpNumToFloat:
+		// Pure numeric widening check; like GuardType, deopt state is not
+		// PC-dependent, so it can move with invariant operands.
+		return true
 	case OpMatrixFlat, OpMatrixStride:
 		// R45: extracting dmFlat / dmStride is pure (output depends
 		// only on the Table argument; DenseMatrix descriptor is
@@ -629,7 +633,7 @@ func isInterestingLICMMiss(op Op) bool {
 		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
-		OpMatrixFlat, OpMatrixStride, OpMatrixRowPtr, OpSqrt:
+		OpMatrixFlat, OpMatrixStride, OpMatrixRowPtr, OpSqrt, OpNumToFloat:
 		return true
 	default:
 		return false
