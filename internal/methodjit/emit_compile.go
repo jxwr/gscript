@@ -646,17 +646,16 @@ func blockLabel(b *Block) string {
 }
 
 // emitNumericBody emits a second Tier 2 body under numericMode=true.
-// The numeric entry label `t2_numeric_self_entry_N` receives raw int
-// args in X0..X(N-1), builds a thin FP/LR frame, and jumps to the pass-2
-// entry block. Raw callers pass the callee VM register base directly in the
-// pinned mRegRegs register and spill/reload their own live allocated registers
-// around the BL, so this entry does not save the full callee-saved register
-// set used by the boxed public ABI.
+// The numeric entry label receives raw int args in X0..X(N-1), builds a thin
+// FP/LR frame, and jumps to the pass-2 entry block. Raw callers pass the callee
+// VM register base directly in the pinned mRegRegs register and spill/reload
+// their own live allocated registers around the BL/BLR, so this entry does not
+// save the full callee-saved register set used by the boxed public ABI.
 func (ec *emitContext) emitNumericBody() {
 	if ec.numericParamCount <= 0 {
 		return
 	}
-	if ec.fn == nil || ec.fn.Proto == nil || !ec.fn.Proto.HasSelfCalls {
+	if ec.fn == nil || ec.fn.Proto == nil {
 		return
 	}
 
@@ -912,7 +911,7 @@ func (ec *emitContext) emitEpilogue() {
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.RET()
 
-	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls {
+	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil {
 		asm.Label("num_epilogue")
 		asm.MOVimm16(jit.X16, 0)
 		asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)

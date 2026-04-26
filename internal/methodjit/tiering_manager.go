@@ -241,6 +241,8 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return t1
 	}
 
+	tm.ensureRawIntLoopCallees(proto)
+
 	// Ensure Tier 1 is compiled first (needed as deopt fallback).
 	tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
 	t1 := tm.tier1.TryCompile(proto)
@@ -363,6 +365,7 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 	}
 
 	// Try to compile at Tier 2.
+	tm.ensureRawIntLoopCallees(proto)
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
 		// Tier 2 compilation failed. Disable OSR for this function and
@@ -396,6 +399,11 @@ func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction
 		entry := uintptr(cf.Code.Ptr()) + uintptr(cf.DirectEntryOffset)
 		proto.DirectEntryPtr = entry
 		proto.Tier2DirectEntryPtr = entry
+	}
+	if cf != nil && cf.NumericEntryOffset > 0 {
+		proto.Tier2NumericEntryPtr = uintptr(cf.Code.Ptr()) + uintptr(cf.NumericEntryOffset)
+	} else {
+		proto.Tier2NumericEntryPtr = 0
 	}
 	if cf != nil && len(cf.GlobalCache) > 0 {
 		proto.Tier2GlobalCachePtr = uintptr(unsafe.Pointer(&cf.GlobalCache[0]))
@@ -772,6 +780,164 @@ func buildProtoStableGlobals(proto *vm.FuncProto) map[string]*vm.FuncProto {
 	return globals
 }
 
+func (tm *TieringManager) buildLoopCallGlobals(proto *vm.FuncProto) map[string]*vm.FuncProto {
+	globals := tm.buildInlineGlobals()
+	if protoGlobals := buildProtoInlineGlobals(proto); len(protoGlobals) > 0 {
+		merged := make(map[string]*vm.FuncProto, len(globals)+len(protoGlobals))
+		for name, callee := range globals {
+			merged[name] = callee
+		}
+		for name, callee := range protoGlobals {
+			if _, ok := merged[name]; !ok {
+				merged[name] = callee
+			}
+		}
+		globals = merged
+	}
+	if stableGlobals := buildProtoStableGlobals(proto); len(stableGlobals) > 0 {
+		merged := make(map[string]*vm.FuncProto, len(globals)+len(stableGlobals))
+		for name, callee := range globals {
+			merged[name] = callee
+		}
+		for name, callee := range stableGlobals {
+			if _, ok := merged[name]; !ok {
+				merged[name] = callee
+			}
+		}
+		globals = merged
+	}
+	return globals
+}
+
+func (tm *TieringManager) ensureRawIntLoopCallees(proto *vm.FuncProto) {
+	if proto == nil || tm == nil {
+		return
+	}
+	if analyzeFuncProfile(proto).LoopDepth < 2 {
+		return
+	}
+	globals := tm.buildLoopCallGlobals(proto)
+	if len(globals) == 0 {
+		return
+	}
+	for _, callee := range rawIntLoopCallCallees(BuildGraph(proto), globals) {
+		if callee == nil || tm.tier2Compiled[callee] != nil || tm.tier2Failed[callee] {
+			continue
+		}
+		if !shouldStayTier1ForBoxedRawIntKernel(callee, analyzeFuncProfile(callee)) {
+			continue
+		}
+		cf, err := tm.compileTier2(callee)
+		if err != nil {
+			tm.tier2Failed[callee] = true
+			continue
+		}
+		tm.tier2Compiled[callee] = cf
+		tm.installTier2(callee, cf)
+	}
+}
+
+func rawIntLoopCallCallees(fn *Function, globals map[string]*vm.FuncProto) []*vm.FuncProto {
+	if fn == nil || len(globals) == 0 {
+		return nil
+	}
+	seen := make(map[*vm.FuncProto]bool)
+	var out []*vm.FuncProto
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op != OpCall {
+				continue
+			}
+			_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+			if callee == nil || seen[callee] {
+				continue
+			}
+			if shouldStayTier1ForBoxedRawIntKernel(callee, analyzeFuncProfile(callee)) {
+				seen[callee] = true
+				out = append(out, callee)
+			}
+		}
+	}
+	return out
+}
+
+func forceRawIntKernelIR(fn *Function) {
+	if fn == nil || fn.Proto == nil {
+		return
+	}
+	for {
+		changed := false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				switch instr.Op {
+				case OpLoadSlot:
+					if int(instr.Aux) < fn.Proto.NumParams && instr.Type != TypeInt {
+						instr.Type = TypeInt
+						changed = true
+					}
+				case OpConstInt:
+					if instr.Type != TypeInt {
+						instr.Type = TypeInt
+						changed = true
+					}
+				case OpPhi:
+					if instr.Type != TypeInt {
+						instr.Type = TypeInt
+						changed = true
+					}
+				case OpAdd, OpSub, OpMul:
+					if allInstrArgsType(instr, TypeInt) {
+						switch instr.Op {
+						case OpAdd:
+							instr.Op = OpAddInt
+						case OpSub:
+							instr.Op = OpSubInt
+						case OpMul:
+							instr.Op = OpMulInt
+						}
+						instr.Type = TypeInt
+						changed = true
+					}
+				case OpEq, OpLt, OpLe:
+					if allInstrArgsType(instr, TypeInt) {
+						switch instr.Op {
+						case OpEq:
+							instr.Op = OpEqInt
+						case OpLt:
+							instr.Op = OpLtInt
+						case OpLe:
+							instr.Op = OpLeInt
+						}
+						if instr.Type != TypeBool {
+							instr.Type = TypeBool
+						}
+						changed = true
+					}
+				}
+			}
+		}
+		if !changed {
+			return
+		}
+	}
+}
+
+func allInstrArgsType(instr *Instr, typ Type) bool {
+	if instr == nil || len(instr.Args) == 0 {
+		return false
+	}
+	for _, arg := range instr.Args {
+		if arg == nil || arg.Def == nil || arg.Def.Type != typ {
+			return false
+		}
+	}
+	return true
+}
+
 func protoConstString(proto *vm.FuncProto, idx int) string {
 	if proto == nil || idx < 0 || idx >= len(proto.Constants) {
 		return ""
@@ -928,6 +1094,9 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	if len(intrinsicNotes) > 0 {
 		proto.NeedsTier2 = true
 	}
+	if shouldStayTier1ForBoxedRawIntKernel(proto, analyzeFuncProfile(proto)) {
+		forceRawIntKernelIR(fn)
+	}
 	fn.CarryPreheaderInvariants = true
 	if trace != nil {
 		trace.IRAfter = Print(fn)
@@ -940,9 +1109,11 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		return nil, fmt.Errorf("tier2: self-recursive loop has residual table mutation %s (exit-storm blocked), staying at Tier 1", op)
 	}
 	if modReason, ok := firstTier2ModBlockerInLoop(fn); ok {
-		remarks.Add("Tier2Gate", "blocked", 0, 0, OpMod,
-			modReason+" remains inside loop")
-		return nil, fmt.Errorf("tier2: has %s (performance-blocked), staying at Tier 1", modReason)
+		if !shouldStayTier1ForBoxedRawIntKernel(proto, analyzeFuncProfile(proto)) {
+			remarks.Add("Tier2Gate", "blocked", 0, 0, OpMod,
+				modReason+" remains inside loop")
+			return nil, fmt.Errorf("tier2: has %s (performance-blocked), staying at Tier 1", modReason)
+		}
 	}
 
 	// R162/R171: reject Tier 2 promotion when a loop contains operations
@@ -1270,6 +1441,7 @@ func (tm *TieringManager) disableTier2AfterRuntimeDeopt(proto *vm.FuncProto, rea
 	proto.Tier2Promoted = false
 	proto.DirectEntryPtr = 0
 	proto.Tier2DirectEntryPtr = 0
+	proto.Tier2NumericEntryPtr = 0
 	proto.Tier2GlobalCachePtr = 0
 	proto.Tier2GlobalCacheGenPtr = 0
 	tm.tier1.SetOSRCounter(proto, -1)

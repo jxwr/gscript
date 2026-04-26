@@ -57,6 +57,12 @@ const (
 	rawSelfFrameSize = 48
 	rawSelfRegsOff   = 0
 	rawSelfArgsOff   = 8
+
+	rawPeerFrameSize = 64
+	rawPeerRegsOff   = 0
+	rawPeerConstsOff = 8
+	rawPeerFuncOff   = 16
+	rawPeerArgsOff   = 24
 )
 
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
@@ -707,6 +713,258 @@ func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArg
 	})
 }
 
+func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
+	callee := ec.rawIntPeerCallee(instr)
+	if callee == nil {
+		return false
+	}
+	nArgs := len(instr.Args) - 1
+	nRets := 1
+	if instr.Aux2 >= 2 {
+		nRets = int(instr.Aux2) - 1
+	}
+	if nRets != 1 || nArgs != callee.NumParams || nArgs < 1 || nArgs > 4 {
+		return false
+	}
+
+	asm := ec.asm
+	funcSlot := int(instr.Aux)
+	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
+	if len(liveGPRs) > 0 || len(liveFPRs) > 0 {
+		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
+	}
+
+	fallbackLabel := ec.uniqueLabel("t2rawpeer_fallback")
+	exitLabel := ec.uniqueLabel("t2rawpeer_exit")
+	doneLabel := ec.uniqueLabel("t2rawpeer_done")
+	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+
+	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
+	asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
+	asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+
+	fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X6)
+	if fnReg != jit.X6 {
+		asm.MOVreg(jit.X6, fnReg)
+	}
+	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
+
+	ec.emitNumericArgsInRegs(instr, nArgs)
+	for i := 0; i < nArgs; i++ {
+		argReg := jit.Reg(int(jit.X0) + i)
+		asm.STR(argReg, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+	}
+
+	// Guard the static callee identity. Stable globals make this hot-path
+	// predictable, but the guard keeps rebinding and cache invalidation safe.
+	asm.LSRimm(jit.X7, jit.X6, 48)
+	asm.MOVimm16(jit.X8, jit.NB_TagPtrShr48)
+	asm.CMPreg(jit.X7, jit.X8)
+	asm.BCond(jit.CondNE, fallbackLabel)
+	asm.LSRimm(jit.X7, jit.X6, uint8(nbPtrSubShift))
+	asm.LoadImm64(jit.X8, 0xF)
+	asm.ANDreg(jit.X7, jit.X7, jit.X8)
+	asm.CMPimm(jit.X7, nbPtrSubVMClosure)
+	asm.BCond(jit.CondNE, fallbackLabel)
+	jit.EmitExtractPtr(asm, jit.X7, jit.X6)
+	asm.LDR(jit.X7, jit.X7, vmClosureOffProto)
+	asm.LoadImm64(jit.X8, int64(uintptr(unsafe.Pointer(callee))))
+	asm.CMPreg(jit.X7, jit.X8)
+	asm.BCond(jit.CondNE, fallbackLabel)
+	asm.LDR(jit.X16, jit.X7, funcProtoOffTier2NumericEntryPtr)
+	asm.CBZ(jit.X16, fallbackLabel)
+
+	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	asm.CMPimm(jit.X8, maxNativeCallDepth)
+	asm.BCond(jit.CondGE, fallbackLabel)
+
+	calleeBaseOff := ec.nextSlot * jit.ValueSize
+	asm.LDR(jit.X8, jit.X7, funcProtoOffMaxStack)
+	asm.LSLimm(jit.X8, jit.X8, 3)
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(jit.X8, jit.X8, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X9, int64(calleeBaseOff))
+		asm.ADDreg(jit.X8, jit.X8, jit.X9)
+	}
+	asm.ADDreg(jit.X8, jit.X8, mRegRegs)
+	asm.LDR(jit.X9, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X8, jit.X9)
+	asm.BCond(jit.CondHI, fallbackLabel)
+
+	asm.LDR(jit.X8, jit.X7, funcProtoOffCallCount)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.STR(jit.X8, jit.X7, funcProtoOffCallCount)
+
+	for i := 0; i < nArgs; i++ {
+		argReg := jit.Reg(int(jit.X0) + i)
+		dstOff := calleeBaseOff + i*jit.ValueSize
+		jit.EmitBoxIntFast(asm, jit.X9, argReg, mRegTagInt)
+		asm.STR(jit.X9, mRegRegs, dstOff)
+	}
+
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
+		asm.ADDreg(mRegRegs, mRegRegs, jit.X8)
+	}
+	asm.LDR(mRegConsts, jit.X7, funcProtoOffConstants)
+
+	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	asm.BLR(jit.X16)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	asm.SUBimm(jit.X8, jit.X8, 1)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+
+	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
+	asm.CBNZ(jit.X8, exitLabel)
+
+	boxedResultLabel := ec.uniqueLabel("t2rawpeer_boxed_result")
+	rawResultLabel := ec.uniqueLabel("t2rawpeer_raw_result")
+	asm.LSRimm(jit.X10, jit.X0, 48)
+	asm.MOVimm16(jit.X9, jit.NB_TagIntShr48)
+	asm.CMPreg(jit.X10, jit.X9)
+	asm.BCond(jit.CondEQ, boxedResultLabel)
+	asm.B(rawResultLabel)
+	asm.Label(boxedResultLabel)
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	asm.Label(rawResultLabel)
+
+	ec.emitRestoreRawPeerCallerState()
+	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
+	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+	ec.emitUnboxRawIntRegs(preRawIntRegs)
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.storeRawInt(jit.X0, instr.ID)
+	postRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	asm.B(doneLabel)
+
+	asm.Label(exitLabel)
+	asm.Label(fallbackLabel)
+	ec.emitRestoreRawPeerCallerState()
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitMaterializeRawIntPeerCallFrame(funcSlot, nArgs)
+	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
+	ec.emitRawIntPeerCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs, liveGPRs, liveFPRs)
+	ec.rawIntRegs = postRawIntRegs
+
+	asm.Label(doneLabel)
+	return true
+}
+
+func (ec *emitContext) rawIntPeerCallee(instr *Instr) *vm.FuncProto {
+	if instr == nil || ec.fn == nil || !ec.inLoopBlock() || instr.Type != TypeInt {
+		return nil
+	}
+	if ec.tailCallInstrs[instr.ID] || ec.isStaticSelfCall(instr) {
+		return nil
+	}
+	if len(instr.Args) < 2 || ec.fn.Globals == nil {
+		return nil
+	}
+	_, callee := resolveCallee(instr, ec.fn, InlineConfig{Globals: ec.fn.Globals})
+	if callee == nil || callee.Tier2NumericEntryPtr == 0 {
+		return nil
+	}
+	ok, numParams := qualifyForNumeric(callee)
+	if !ok || len(instr.Args) != 1+numParams {
+		return nil
+	}
+	for i := 0; i < numParams; i++ {
+		argID := instr.Args[1+i].ID
+		if ec.hasReg(argID) && ec.rawIntRegs[argID] {
+			continue
+		}
+		if ec.irTypes[argID] == TypeInt {
+			continue
+		}
+		return nil
+	}
+	return callee
+}
+
+func (ec *emitContext) emitRestoreRawPeerCallerState() {
+	asm := ec.asm
+	asm.LDR(mRegRegs, jit.SP, rawPeerRegsOff)
+	asm.LDR(mRegConsts, jit.SP, rawPeerConstsOff)
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
+}
+
+func (ec *emitContext) emitMaterializeRawIntPeerCallFrame(funcSlot, nArgs int) {
+	asm := ec.asm
+	asm.LDR(jit.X0, jit.SP, rawPeerFuncOff)
+	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	for i := 0; i < nArgs; i++ {
+		asm.LDR(jit.X0, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+		jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+1+i))
+	}
+}
+
+func (ec *emitContext) emitRawIntPeerCallExitResume(instr *Instr, funcSlot, nArgs, nRets int, preRawIntRegs, liveGPRs, liveFPRs map[int]bool) {
+	asm := ec.asm
+
+	ec.recordExitResumeCheckSiteWithLive(
+		instr,
+		ExitCallExit,
+		ec.exitResumeCheckLiveSlots(liveGPRs, liveFPRs),
+		callExitModifiedSlots(funcSlot, nRets),
+		exitResumeCheckOptions{RequireCallFunc: true, RequireRawIntArgs: true},
+	)
+
+	asm.LoadImm64(jit.X0, int64(funcSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
+	asm.LoadImm64(jit.X0, int64(nArgs))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallNArgs)
+	asm.LoadImm64(jit.X0, int64(nRets))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallNRets)
+	asm.LoadImm64(jit.X0, int64(instr.ID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
+
+	ec.emitSetResumeNumericPass()
+	asm.LoadImm64(jit.X0, ExitCallExit)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+
+	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
+	asm.Label(continueLabel)
+
+	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+	ec.emitUnboxRawIntRegs(preRawIntRegs)
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	resultIntLabel := ec.uniqueLabel("t2rawpeer_result_int")
+	asm.LSRimm(jit.X1, jit.X0, 48)
+	asm.MOVimm16(jit.X2, jit.NB_TagIntShr48)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondEQ, resultIntLabel)
+	asm.LoadImm64(jit.X1, ExitDeopt)
+	asm.STR(jit.X1, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+	asm.Label(resultIntLabel)
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	ec.storeRawInt(jit.X0, instr.ID)
+
+	ec.callExitIDs = append(ec.callExitIDs, instr.ID)
+	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
+		instrID:       instr.ID,
+		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
+	})
+}
+
 // emitOpCall dispatches OpCall to the regular or tail variant and
 // applies the post-call invalidation of cross-block verification caches.
 // Extracted from emit_dispatch.go to keep that file under rule 13's
@@ -716,6 +974,7 @@ func (ec *emitContext) emitOpCall(instr *Instr) {
 		ec.emitCallNativeNumericTail(instr)
 	} else if !ec.tailCallInstrs[instr.ID] && ec.isNumericStaticSelfCall(instr) {
 		ec.emitCallNativeRawIntSelf(instr)
+	} else if ec.emitCallNativeRawIntPeerIfEligible(instr) {
 	} else if ec.tailCallInstrs[instr.ID] && ec.isStaticSelfCall(instr) {
 		ec.emitStaticSelfTailLoop(instr)
 	} else if ec.isStaticSelfCall(instr) {

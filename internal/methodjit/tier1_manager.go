@@ -454,6 +454,7 @@ func (e *BaselineJITEngine) EvictCompiled(proto *vm.FuncProto) {
 	proto.CompiledCodePtr = 0
 	proto.DirectEntryPtr = 0
 	proto.Tier2DirectEntryPtr = 0
+	proto.Tier2NumericEntryPtr = 0
 	e.clearBaselineCallCachesForProto(proto)
 }
 
