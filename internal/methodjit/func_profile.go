@@ -249,12 +249,13 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 				return runtimeCallCount >= 2
 			}
 		}
-		// Cross-recursive numeric protos can win in Tier 2 when bounded
-		// inlining peels the self/peer recursion enough for the raw-int body
-		// to dominate the remaining call exits. Keep the gate structural:
-		// fixed int params/return, self + peer global calls, no side effects.
+		// Cross-recursive numeric protos are structurally recognizable, but
+		// they do not yet have a raw-int cross-proto ABI. Promoting them leaves
+		// residual peer calls on the boxed native-call path, which repeatedly
+		// falls back through ExitCallExit after bounded inlining. Keep them at
+		// Tier 1 until codegen grows a register-only peer-call convention.
 		if qualifiesForNumericCrossRecursiveCandidate(proto) {
-			return runtimeCallCount >= 2
+			return false
 		}
 		// Other non-loop call functions stay at Tier 1 for now. Tier 1's
 		// native BLR handles calls efficiently; without a raw-int contract,

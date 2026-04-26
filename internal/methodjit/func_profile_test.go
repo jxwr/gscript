@@ -261,6 +261,33 @@ func ack(m, n) {
 	}
 }
 
+func TestShouldPromoteTier2_MutualNumericStaysTier1(t *testing.T) {
+	// Cross-recursive numeric functions are structurally analyzable, but until
+	// codegen has a raw-int peer-call ABI, promoting them leaves residual boxed
+	// calls that exit-resume far more often than Tier 1's native BLR path.
+	src := `
+func F(n) {
+    if n == 0 { return 1 }
+    return n - M(F(n - 1))
+}
+
+func M(n) {
+    if n == 0 { return 0 }
+    return n - F(M(n - 1))
+}
+`
+	proto := compileProto(t, src)
+	fProto := proto.Protos[0]
+	p := analyzeFuncProfile(fProto)
+
+	if !qualifiesForNumericCrossRecursiveCandidate(fProto) {
+		t.Fatal("expected F to remain structurally recognized as a cross-recursive numeric candidate")
+	}
+	if shouldPromoteTier2(fProto, p, 2) {
+		t.Error("mutual numeric recursion should stay in Tier 1 until raw-int peer-call ABI exists")
+	}
+}
+
 func TestShouldPromoteTier2_Simple(t *testing.T) {
 	// double(x) = x * 2: pure compute, no loops, small arith count.
 	src := `
