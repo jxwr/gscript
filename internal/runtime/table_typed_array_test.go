@@ -235,6 +235,32 @@ func TestArrayKindInitialSparseWriteKeepsAppendHeadroom(t *testing.T) {
 	}
 }
 
+func TestArrayKindPromotionPreservesSizedArrayHint(t *testing.T) {
+	const hint = 128
+
+	t.Run("bool sparse promotion", func(t *testing.T) {
+		tbl := NewTableSized(hint, 0)
+		tbl.RawSetInt(2, BoolValue(true))
+		if tbl.arrayKind != ArrayBool {
+			t.Fatalf("arrayKind = %d, want %d", tbl.arrayKind, ArrayBool)
+		}
+		if got := cap(tbl.boolArray); got < hint+1 {
+			t.Fatalf("boolArray cap = %d, want at least %d", got, hint+1)
+		}
+	})
+
+	t.Run("int append promotion", func(t *testing.T) {
+		tbl := NewTableSized(hint, 0)
+		tbl.RawSetInt(1, IntValue(10))
+		if tbl.arrayKind != ArrayInt {
+			t.Fatalf("arrayKind = %d, want %d", tbl.arrayKind, ArrayInt)
+		}
+		if got := cap(tbl.intArray); got < hint+1 {
+			t.Fatalf("intArray cap = %d, want at least %d", got, hint+1)
+		}
+	})
+}
+
 func TestArrayKindOverwrite(t *testing.T) {
 	// Overwriting same-type value should stay specialized
 	tbl := NewTable()
