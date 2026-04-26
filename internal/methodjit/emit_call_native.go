@@ -161,12 +161,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.STR(jit.X2, jit.X3, cacheOff+8)             // cache[1] = direct entry
 	asm.B(icDoneLabel)
 
-	// --- IC Hit: re-derive X0=*Closure and X1=*Proto ---
+	// --- IC Hit: re-derive X0=*Closure and X1=*Proto, then refresh entry. ---
 	// X0 still holds the boxed closure value (matched cache).
 	asm.Label(icHitLabel)
 	asm.LDR(jit.X2, jit.X3, cacheOff+8)        // X2 = cached direct entry
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)    // X0 = *Closure
-	asm.LDR(jit.X1, jit.X0, vmClosureOffProto) // X1 = *Proto (needed downstream)
+	asm.LDR(jit.X1, jit.X0, vmClosureOffProto) // X1 = *Proto
 	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
 	icRefreshLabel := ec.uniqueLabel("t2call_ic_refresh")
 	asm.CBNZ(jit.X4, icRefreshLabel)
@@ -873,6 +873,10 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	// Load Proto (X1), DirectEntryPtr (X2).
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr)
+	tailMissHaveEntryLabel := ec.uniqueLabel("t2tail_miss_have_entry")
+	asm.CBNZ(jit.X2, tailMissHaveEntryLabel)
+	asm.LDR(jit.X2, jit.X1, funcProtoOffTier2DirectEntryPtr)
+	asm.Label(tailMissHaveEntryLabel)
 	asm.CBZ(jit.X2, slowLabel)
 
 	// R108 cache update on successful miss path.
@@ -881,11 +885,21 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	asm.STR(jit.X2, jit.X3, cacheOff+8)
 	asm.B(icDoneLabel)
 
-	// --- IC Hit: re-derive X0=*Closure and X1=*Proto ---
+	// --- IC Hit: re-derive X0=*Closure and X1=*Proto, then refresh entry. ---
 	asm.Label(icHitLabel)
 	asm.LDR(jit.X2, jit.X3, cacheOff+8)
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
+	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
+	tailICRefreshLabel := ec.uniqueLabel("t2tail_ic_refresh")
+	asm.CBNZ(jit.X4, tailICRefreshLabel)
+	asm.LDR(jit.X4, jit.X1, funcProtoOffTier2DirectEntryPtr)
+	asm.CBZ(jit.X4, slowLabel)
+	asm.Label(tailICRefreshLabel)
+	asm.CMPreg(jit.X2, jit.X4)
+	asm.BCond(jit.CondEQ, icDoneLabel)
+	asm.MOVreg(jit.X2, jit.X4)
+	asm.STR(jit.X2, jit.X3, cacheOff+8)
 
 	asm.Label(icDoneLabel)
 
