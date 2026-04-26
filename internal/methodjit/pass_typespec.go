@@ -50,6 +50,15 @@ func TypeSpecializePass(fn *Function) (*Function, error) {
 	// Phase 1e: Re-run propagation to cascade the new int types.
 	ts.runTypePropagation(fn)
 
+	// Phase 1f: Insert int guards for params that seed a loop-carried
+	// integer recurrence. This covers x := seed; x = (x*C + K) % M, where
+	// the param only appears through a Phi cycle and has no direct ConstInt
+	// neighbor for the earlier guard heuristics.
+	ts.insertLoopCarriedIntParamGuards(fn)
+
+	// Phase 1g: Re-run propagation to cascade recurrence seed guards.
+	ts.runTypePropagation(fn)
+
 	// Phase 2: Replace generic ops with specialized variants.
 	// Also update phi/instr Type fields from inferred types.
 	for _, block := range fn.Blocks {
@@ -566,6 +575,174 @@ func (ts *typeSpecializer) insertIntParamGuards(fn *Function) {
 		replaceValueUses(fn, p.instr.ID, guardVal, guardID)
 
 		ts.types[guardID] = TypeInt
+	}
+}
+
+// insertLoopCarriedIntParamGuards guards LoadSlot params that initialize a Phi
+// whose value flows back to itself through integer-only arithmetic. The guard
+// is speculative like the other param guards: non-int callers deopt before the
+// optimized body runs.
+func (ts *typeSpecializer) insertLoopCarriedIntParamGuards(fn *Function) {
+	type paramInfo struct {
+		instr *Instr
+		block *Block
+		index int
+	}
+
+	entry := fn.Entry
+	guardedParams := make(map[int]bool)
+	for _, instr := range entry.Instrs {
+		if instr.Op == OpGuardType && len(instr.Args) > 0 {
+			guardedParams[instr.Args[0].ID] = true
+		}
+	}
+
+	var params []paramInfo
+	paramByID := make(map[int]paramInfo)
+	for i, instr := range entry.Instrs {
+		if instr.Op != OpLoadSlot ||
+			(instr.Type != TypeAny && instr.Type != TypeUnknown) ||
+			guardedParams[instr.ID] {
+			continue
+		}
+		info := paramInfo{instr: instr, block: entry, index: i}
+		params = append(params, info)
+		paramByID[instr.ID] = info
+	}
+	if len(params) == 0 {
+		return
+	}
+
+	uses := buildInstrUses(fn)
+	needsGuard := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpPhi {
+				continue
+			}
+			for _, arg := range instr.Args {
+				if arg == nil || needsGuard[arg.ID] {
+					continue
+				}
+				if _, ok := paramByID[arg.ID]; !ok {
+					continue
+				}
+				if ts.valueFlowsBackThroughIntRecurrence(instr.ID, instr.ID, uses, make(map[int]bool)) {
+					needsGuard[arg.ID] = true
+				}
+			}
+		}
+	}
+	if len(needsGuard) == 0 {
+		return
+	}
+
+	for i := len(params) - 1; i >= 0; i-- {
+		p := params[i]
+		if !needsGuard[p.instr.ID] {
+			continue
+		}
+
+		guardID := fn.newValueID()
+		guard := &Instr{
+			ID:    guardID,
+			Op:    OpGuardType,
+			Type:  TypeInt,
+			Args:  []*Value{p.instr.Value()},
+			Aux:   int64(TypeInt),
+			Block: p.block,
+		}
+		guard.copySourceFrom(p.instr)
+
+		instrs := p.block.Instrs
+		pos := p.index + 1
+		newInstrs := make([]*Instr, 0, len(instrs)+1)
+		newInstrs = append(newInstrs, instrs[:pos]...)
+		newInstrs = append(newInstrs, guard)
+		newInstrs = append(newInstrs, instrs[pos:]...)
+		p.block.Instrs = newInstrs
+
+		guardVal := guard.Value()
+		replaceValueUses(fn, p.instr.ID, guardVal, guardID)
+		ts.types[guardID] = TypeInt
+	}
+}
+
+func buildInstrUses(fn *Function) map[int][]*Instr {
+	uses := make(map[int][]*Instr)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			for _, arg := range instr.Args {
+				if arg != nil {
+					uses[arg.ID] = append(uses[arg.ID], instr)
+				}
+			}
+		}
+	}
+	return uses
+}
+
+func (ts *typeSpecializer) valueFlowsBackThroughIntRecurrence(id, phiID int, uses map[int][]*Instr, seen map[int]bool) bool {
+	if seen[id] {
+		return false
+	}
+	seen[id] = true
+	for _, use := range uses[id] {
+		if use.Op == OpPhi && use.ID == phiID {
+			return true
+		}
+		if !isIntRecurrenceOp(use.Op) || !ts.intRecurrenceArgsOK(use, id) {
+			continue
+		}
+		if ts.valueFlowsBackThroughIntRecurrence(use.ID, phiID, uses, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+func isIntRecurrenceOp(op Op) bool {
+	switch op {
+	case OpAdd, OpSub, OpMul, OpMod,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt:
+		return true
+	default:
+		return false
+	}
+}
+
+func (ts *typeSpecializer) intRecurrenceArgsOK(instr *Instr, recurrenceID int) bool {
+	if len(instr.Args) == 0 {
+		return false
+	}
+	for _, arg := range instr.Args {
+		if arg == nil {
+			return false
+		}
+		if arg.ID == recurrenceID {
+			continue
+		}
+		if !ts.isKnownIntValue(arg) {
+			return false
+		}
+	}
+	return true
+}
+
+func (ts *typeSpecializer) isKnownIntValue(v *Value) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	if ts.argType(v) == TypeInt {
+		return true
+	}
+	switch v.Def.Op {
+	case OpConstInt, OpUnboxInt:
+		return true
+	case OpGuardType:
+		return Type(v.Def.Aux) == TypeInt
+	default:
+		return false
 	}
 }
 
