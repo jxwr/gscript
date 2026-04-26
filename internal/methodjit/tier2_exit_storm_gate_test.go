@@ -46,7 +46,7 @@ func quicksort(arr, lo, hi) {
 	}
 }
 
-func TestTier2ExitStormGateBlocksNoFilterKnownFloatModLoop(t *testing.T) {
+func TestTier2ExitStormGateAllowsNoFilterKnownFloatModLoop(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 
 	top := compileTop(t, collatzTotalSrc+`
@@ -61,12 +61,8 @@ for iter := 1; iter <= 3; iter++ {
 	}
 
 	tm := NewTieringManager()
-	err := tm.CompileTier2(collatz)
-	if err == nil {
-		t.Fatal("CompileTier2(collatz_total) succeeded; want known-float Mod gate failure")
-	}
-	if !strings.Contains(err.Error(), "known-float OpMod inside loop") {
-		t.Fatalf("CompileTier2(collatz_total) error = %q, want known-float Mod gate", err)
+	if err := tm.CompileTier2(collatz); err != nil {
+		t.Fatalf("CompileTier2(collatz_total): %v", err)
 	}
 }
 

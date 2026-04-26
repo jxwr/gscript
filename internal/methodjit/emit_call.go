@@ -385,6 +385,20 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	}
 	asm := ec.asm
 
+	if op == intBinMod && instr.Type == TypeFloat {
+		lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+		rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
+		if lhsF != jit.D0 {
+			asm.FMOVd(jit.D0, lhsF)
+		}
+		if rhsF != jit.D1 {
+			asm.FMOVd(jit.D1, rhsF)
+		}
+		emitFloatMod(asm)
+		ec.storeRawFloat(jit.D0, instr.ID)
+		return
+	}
+
 	// Load both operands as NaN-boxed for type dispatch.
 	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	if lhsReg != jit.X0 {
@@ -477,8 +491,7 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	case intBinMul:
 		asm.FMULd(jit.D0, jit.D0, jit.D1)
 	case intBinMod:
-		// Float mod is complex; deopt for now.
-		ec.emitDeopt(instr)
+		emitFloatMod(asm)
 	}
 
 	// Move float result back to GP and store.
@@ -487,6 +500,15 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	asm.Label(done)
 	// Store NaN-boxed result (int or float).
 	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+// emitFloatMod computes D0 = D0 % D1 using Lua-style modulo semantics:
+// a - floor(a / b) * b. Callers must have numeric operands in D0 and D1.
+func emitFloatMod(asm *jit.Assembler) {
+	asm.FDIVd(jit.D2, jit.D0, jit.D1)
+	asm.FRINTMd(jit.D2, jit.D2)
+	asm.FMULd(jit.D2, jit.D2, jit.D1)
+	asm.FSUBd(jit.D0, jit.D0, jit.D2)
 }
 
 // emitTypedFloatBinOp emits ARM64 code for type-specialized float binary ops

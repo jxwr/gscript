@@ -1553,7 +1553,7 @@ func firstTier2ModBlockerInLoop(fn *Function) (string, bool) {
 				continue
 			}
 			if instr.Type == TypeFloat {
-				return "known-float OpMod inside loop", true
+				continue
 			}
 			if tier2GenericModIsSmallConstAdditiveLoopCounter(instr) {
 				continue

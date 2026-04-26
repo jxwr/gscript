@@ -3,7 +3,6 @@
 package methodjit
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -44,11 +43,7 @@ for iter := 1; iter <= 3; iter++ {
 	tm := NewTieringManager()
 	err := tm.CompileTier2(collatz)
 	if err != nil {
-		if !strings.Contains(err.Error(), "known-float OpMod inside loop") {
-			t.Fatalf("CompileTier2 rejected for unexpected reason: %v", err)
-		}
-	} else {
-		t.Fatal("CompileTier2(collatz_total) unexpectedly succeeded")
+		t.Fatalf("CompileTier2(collatz_total): %v", err)
 	}
 
 	globals := runtime.NewInterpreterGlobals()
@@ -64,7 +59,7 @@ for iter := 1; iter <= 3; iter++ {
 	if !result.IsInt() || result.Int() != 3142 {
 		t.Fatalf("collatz_total(100)=%v, want int(3142)", result)
 	}
-	if reason := jitTM.tier2FailReason[collatz]; !strings.Contains(reason, "known-float OpMod inside loop") {
-		t.Fatalf("collatz_total Tier2 fail reason=%q, want known-float OpMod gate", reason)
+	if reason := jitTM.tier2FailReason[collatz]; reason != "" {
+		t.Fatalf("collatz_total Tier2 fail reason=%q, want successful native float mod", reason)
 	}
 }
