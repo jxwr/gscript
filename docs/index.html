@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="59-the-recurrence-split-before-it-overflowed">The Recurrence Split Before It Overflowed</a>
+  <p><code>fibonacci_iterative</code> was not fixed by hard-coding Fibonacci. Tier 2 now recognizes a narrow shift-add recurrence shape, runs the raw-int prefix entirely in registers, and switches to a float continuation exactly when the int48 representation stops being valid. The callee publishes a boxed leaf direct entry instead of pretending to satisfy the raw-int peer ABI, and the benchmark driver can tier up only when its native callees make that profitable. The focused guard moved the benchmark to about 0.025s while preserving the overflow boundary cases.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="58-the-allocation-exit-became-a-cache">The Allocation Exit Became a Cache</a>
   <p>Matmul's table exits were not one problem. Typed dense <code>NewTable</code> sites now refill a bounded per-site cache, mixed dense stores such as <code>c[i] = row</code> infer array preallocation before feedback arrives, and a second post-LICM load-elimination pass removes duplicated table-array facts after hoisting. Exits fell from the old hundreds into the low dozens, but wall time stayed near 0.09s, making the next bottleneck the native success path rather than fallback traffic.</p>
 </div>
