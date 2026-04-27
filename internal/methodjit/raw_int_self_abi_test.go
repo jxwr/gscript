@@ -186,6 +186,28 @@ func TestRawIntSelfABI_DepthPressureFallback(t *testing.T) {
 	}
 }
 
+func TestRawIntSelfABI_NonTailFourArgReturnConvention(t *testing.T) {
+	src := `func mix(a, b, c, d) {
+	if a == 0 { return b + c + d }
+	inner := mix(a - 1, b + 1, c + 2, d + 3)
+	return inner + d
+}`
+	top := compileTop(t, src)
+	mix := findProtoByName(top, "mix")
+	if mix == nil {
+		t.Fatal("function \"mix\" not found")
+	}
+	assertRawIntSpecializedABI(t, AnalyzeSpecializedABI(mix), 4)
+
+	args := []runtime.Value{runtime.IntValue(5), runtime.IntValue(7), runtime.IntValue(11), runtime.IntValue(13)}
+	vmResults := runVMByName(t, src, "mix", args)
+	jitResults, entered := runForcedTier2ByName(t, top, "mix", []string{"mix"}, args)
+	assertRawIntSelfResultsEqual(t, "mix", jitResults, vmResults)
+	if entered["mix"] == 0 {
+		t.Fatal("mix did not enter Tier 2")
+	}
+}
+
 func TestRawIntSelfABI_NumericEntryUsesThinFrame(t *testing.T) {
 	src := `func ack(m, n) {
 	if m == 0 { return n + 1 }
@@ -259,18 +281,22 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 		if !isSubSPImm(word, rawSelfFrameSizeFor(2)) {
 			continue
 		}
-		rawSelfShims++
+		sawBL := false
 		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
 			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
 			if isCtxCallModeAccess(scanWord) {
 				t.Fatalf("raw self-call shim at %#x touches ctx.CallMode before BL at %#x", pc, scan)
 			}
 			if isBL(scanWord) {
+				sawBL = true
 				break
 			}
-			if scan-pc > 160 {
-				t.Fatalf("raw self-call shim at %#x did not reach BL within expected window", pc)
+			if isUnconditionalB(scanWord) || scan-pc > 200 {
+				break
 			}
+		}
+		if sawBL {
+			rawSelfShims++
 		}
 	}
 	if rawSelfShims == 0 {
@@ -278,13 +304,13 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 	}
 }
 
-func TestRawIntSelfABI_FastPathUsesCompactFrameAndPairSave(t *testing.T) {
+func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 	tests := []struct {
-		name           string
-		src            string
-		fnName         string
-		wantParams     int
-		wantMaxArgSTRs int
+		name             string
+		src              string
+		fnName           string
+		wantParams       int
+		wantArgSaveInsns int
 	}{
 		{
 			name:       "fib one arg",
@@ -294,7 +320,7 @@ func TestRawIntSelfABI_FastPathUsesCompactFrameAndPairSave(t *testing.T) {
 	if n < 2 { return n }
 	return fib(n - 1) + fib(n - 2)
 }`,
-			wantMaxArgSTRs: 0,
+			wantArgSaveInsns: 1,
 		},
 		{
 			name:       "ack two args",
@@ -305,7 +331,27 @@ func TestRawIntSelfABI_FastPathUsesCompactFrameAndPairSave(t *testing.T) {
 	if n == 0 { return ack(m - 1, 1) }
 	return ack(m - 1, ack(m, n - 1))
 }`,
-			wantMaxArgSTRs: 1,
+			wantArgSaveInsns: 1,
+		},
+		{
+			name:       "sum3 three args",
+			fnName:     "sum3",
+			wantParams: 3,
+			src: `func sum3(a, b, c) {
+	if a == 0 { return b + c }
+	return sum3(a - 1, b + 1, c + 2) + c
+}`,
+			wantArgSaveInsns: 2,
+		},
+		{
+			name:       "mix4 four args",
+			fnName:     "mix4",
+			wantParams: 4,
+			src: `func mix4(a, b, c, d) {
+	if a == 0 { return b + c + d }
+	return mix4(a - 1, b + 1, c + 2, d + 3) + d
+}`,
+			wantArgSaveInsns: 2,
 		},
 	}
 
@@ -337,15 +383,21 @@ func TestRawIntSelfABI_FastPathUsesCompactFrameAndPairSave(t *testing.T) {
 				}
 
 				sawBL := false
-				sawPairSave := false
-				argSTRs := 0
+				sawCallerBaseSave := false
+				argSaveInsns := 0
 				for scan := pc + 4; scan+4 <= len(code); scan += 4 {
 					scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
 					if isSTPToSPPair(scanWord, mRegRegs, jit.X0) {
-						sawPairSave = true
+						sawCallerBaseSave = true
+					}
+					if isSTRRegToSP(scanWord, mRegRegs) {
+						sawCallerBaseSave = true
+					}
+					if isSTPToSPPair(scanWord, jit.X0, jit.X1) || isSTPToSPPair(scanWord, jit.X2, jit.X3) {
+						argSaveInsns++
 					}
 					if isSTRArgToSP(scanWord) {
-						argSTRs++
+						argSaveInsns++
 					}
 					if isBL(scanWord) {
 						sawBL = true
@@ -359,15 +411,15 @@ func TestRawIntSelfABI_FastPathUsesCompactFrameAndPairSave(t *testing.T) {
 					continue
 				}
 				rawSelfShims++
-				if !sawPairSave {
-					t.Fatalf("raw self-call shim at %#x does not pair-save mRegRegs+arg0", pc)
+				if sawCallerBaseSave {
+					t.Fatalf("raw self-call shim at %#x still saves caller mRegRegs in the fallback arg frame", pc)
 				}
-				if argSTRs > tt.wantMaxArgSTRs {
-					t.Fatalf("raw self-call shim at %#x emitted %d arg STRs, want <= %d", pc, argSTRs, tt.wantMaxArgSTRs)
+				if argSaveInsns != tt.wantArgSaveInsns {
+					t.Fatalf("raw self-call shim at %#x emitted %d arg-save insns, want %d", pc, argSaveInsns, tt.wantArgSaveInsns)
 				}
 			}
 			if rawSelfShims == 0 {
-				t.Fatal("expected at least one compact raw self-call shim")
+				t.Fatal("expected at least one args-only raw self-call shim")
 			}
 		})
 	}
@@ -576,6 +628,12 @@ func isSTRArgToSP(word uint32) bool {
 	}
 	rt := word & 0x1F
 	return rt >= uint32(jit.X0) && rt <= uint32(jit.X3)
+}
+
+func isSTRRegToSP(word uint32, reg jit.Reg) bool {
+	return word&0xFFC00000 == 0xF9000000 &&
+		(word>>5)&0x1F == uint32(jit.SP) &&
+		word&0x1F == uint32(reg)
 }
 
 func isCtxCallModeAccess(word uint32) bool {

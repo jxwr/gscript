@@ -41,7 +41,7 @@ const (
 	// guard corruption.
 	maxNativeCallDepth = 128
 
-	// Raw-int self calls use a 64-byte caller shim plus a 16-byte numeric
+	// Raw-int self calls use an args-only caller shim plus a 16-byte numeric
 	// callee frame, much smaller than the boxed direct-entry frame. Keep this
 	// separate so Ackermann-style raw recursion does not bounce through
 	// ExitCallExit at the generic boxed-call depth boundary.
@@ -54,8 +54,7 @@ const (
 )
 
 const (
-	rawSelfRegsOff = 0
-	rawSelfArgsOff = 8
+	rawSelfArgsOff = 0
 
 	rawPeerFrameSize = 64
 	rawPeerRegsOff   = 0
@@ -65,7 +64,7 @@ const (
 )
 
 func rawSelfFrameSizeFor(nParams int) int {
-	size := rawSelfArgsOff + nParams*jit.ValueSize
+	size := nParams * jit.ValueSize
 	return (size + 15) &^ 15
 }
 
@@ -553,20 +552,21 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
 	}
 
-	slowLabel := ec.uniqueLabel("t2rawself_slow")
+	preCallSlowLabel := ec.uniqueLabel("t2rawself_slow")
 	exitLabel := ec.uniqueLabel("t2rawself_exit")
+	fallbackLabel := ec.uniqueLabel("t2rawself_fallback")
 	doneLabel := ec.uniqueLabel("t2rawself_done")
 
 	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
 
 	// Raw-call frame:
-	//   0        saved caller mRegRegs
-	//   8..39    raw int args X0..X3, truncated to actual fixed arity
+	//   0..31    raw int args X0..X3, truncated to actual fixed arity
 	//
 	// The caller's own entry frame already owns FP/LR, and raw-int self calls
-	// stay within one proto/closure/constant domain. We keep the callee base in
-	// mRegRegs instead of round-tripping through ctx.Regs. Before any fallback
-	// to Go, emitRestoreRawSelfCallerState writes the caller base back into
+	// stay within one proto/closure/constant domain. The callee base is always
+	// caller base + calleeBaseOff, so the successful and callee-exit paths
+	// restore mRegRegs with offset arithmetic instead of saving it in the shim
+	// frame. Before any fallback to Go, the caller base is written back into
 	// ctx.Regs so resume handlers still see the boxed VM ABI state. The boxed
 	// function operand needed by VM fallback is rebuilt from BaselineClosurePtr;
 	// static self recursion cannot change closure identity while this native
@@ -576,13 +576,13 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.SUBimm(jit.SP, jit.SP, uint16(rawFrameSize))
 
 	ec.emitNumericArgsInRegs(instr, nParams)
-	ec.emitSaveRawSelfCallerFrame(nParams)
+	ec.emitSaveRawSelfFallbackArgs(nParams)
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 
 	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
 	asm.CMPimm(jit.X7, maxRawSelfCallDepth)
-	asm.BCond(jit.CondGE, slowLabel)
+	asm.BCond(jit.CondGE, preCallSlowLabel)
 
 	calleeFrameBytes := ec.nextSlot * jit.ValueSize
 	if calleeBaseOff+calleeFrameBytes <= 4095 {
@@ -593,7 +593,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	}
 	asm.LDR(jit.X9, mRegCtx, execCtxOffRegsEnd)
 	asm.CMPreg(jit.X8, jit.X9)
-	asm.BCond(jit.CondHI, slowLabel)
+	asm.BCond(jit.CondHI, preCallSlowLabel)
 
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
@@ -614,7 +614,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.LDR(jit.X7, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X7, exitLabel)
 
-	ec.emitRestoreRawSelfCallerState()
+	ec.emitRestoreRawSelfCallerStateFromCalleeBase(calleeBaseOff)
 	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 	ec.emitUnboxRawIntRegs(preRawIntRegs)
@@ -624,8 +624,13 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(exitLabel)
-	asm.Label(slowLabel)
-	ec.emitRestoreRawSelfCallerState()
+	ec.emitRestoreRawSelfCallerStateFromCalleeBase(calleeBaseOff)
+	asm.B(fallbackLabel)
+
+	asm.Label(preCallSlowLabel)
+	ec.emitPublishRawSelfCallerState()
+
+	asm.Label(fallbackLabel)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
 	ec.emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlot, nArgs, rawSelfArgsOff)
 	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
@@ -635,23 +640,33 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
-func (ec *emitContext) emitSaveRawSelfCallerFrame(nParams int) {
+func (ec *emitContext) emitSaveRawSelfFallbackArgs(nParams int) {
 	asm := ec.asm
-	asm.STP(mRegRegs, jit.X0, jit.SP, rawSelfRegsOff)
-	if nParams >= 3 {
-		asm.STP(jit.X1, jit.X2, jit.SP, rawSelfArgsOff+jit.ValueSize)
-	} else if nParams >= 2 {
-		asm.STR(jit.X1, jit.SP, rawSelfArgsOff+jit.ValueSize)
+	if nParams >= 2 {
+		asm.STP(jit.X0, jit.X1, jit.SP, rawSelfArgsOff)
+	} else {
+		asm.STR(jit.X0, jit.SP, rawSelfArgsOff)
 	}
 	if nParams >= 4 {
-		asm.STR(jit.X3, jit.SP, rawSelfArgsOff+3*jit.ValueSize)
+		asm.STP(jit.X2, jit.X3, jit.SP, rawSelfArgsOff+2*jit.ValueSize)
+	} else if nParams >= 3 {
+		asm.STR(jit.X2, jit.SP, rawSelfArgsOff+2*jit.ValueSize)
 	}
 }
 
-func (ec *emitContext) emitRestoreRawSelfCallerState() {
+func (ec *emitContext) emitRestoreRawSelfCallerStateFromCalleeBase(calleeBaseOff int) {
 	asm := ec.asm
-	asm.LDR(mRegRegs, jit.SP, rawSelfRegsOff)
-	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+	if calleeBaseOff <= 4095 {
+		asm.SUBimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
+		asm.SUBreg(mRegRegs, mRegRegs, jit.X8)
+	}
+	ec.emitPublishRawSelfCallerState()
+}
+
+func (ec *emitContext) emitPublishRawSelfCallerState() {
+	ec.asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 }
 
 func (ec *emitContext) emitBoxCurrentClosure(dst, scratch jit.Reg) {
