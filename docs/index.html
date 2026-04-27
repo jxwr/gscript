@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="60-the-load-that-did-not-replay-the-write">The Load That Did Not Replay The Write</a>
+  <p>Typed table-array loads can now miss without replaying earlier writes. The cold path reconstructs the original <code>GetTable</code> from <code>data -&gt; header -&gt; table</code>, executes it through <code>TableOpGetTable</code>, and resumes after the lowered load. Remaining representation mismatches use precise interpreter resume at the source PC, while the exit-resume checker treats the load result as an output rather than a pre-exit live input. This is replay infrastructure, not a headline speedup, but it lets future table optimizations avoid a coarse mutation veto.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="59-the-recurrence-split-before-it-overflowed">The Recurrence Split Before It Overflowed</a>
   <p><code>fibonacci_iterative</code> was not fixed by hard-coding Fibonacci. Tier 2 now recognizes a narrow shift-add recurrence shape, runs the raw-int prefix entirely in registers, and switches to a float continuation exactly when the int48 representation stops being valid. The callee publishes a boxed leaf direct entry instead of pretending to satisfy the raw-int peer ABI, and the benchmark driver can tier up only when its native callees make that profitable. The focused guard moved the benchmark to about 0.025s while preserving the overflow boundary cases.</p>
 </div>
