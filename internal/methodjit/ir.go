@@ -58,6 +58,11 @@ type Function struct {
 	// the IR correctness oracle.
 	Globals map[string]*vm.FuncProto
 
+	// CallABIs records stable callsite ABI facts keyed by OpCall instruction
+	// ID. A descriptor is required before codegen may use a specialized
+	// cross-proto raw-int call path; OpCall.Type alone is not authoritative.
+	CallABIs map[int]CallABIDescriptor
+
 	// Unpromotable, when true, signals that this function cannot be safely
 	// compiled at Tier 2 because BuildGraph encountered bytecode patterns
 	// it does not model. Set by the graph builder and checked by
@@ -81,6 +86,25 @@ type Function struct {
 	// Production compiles leave it nil; CompileForDiagnostics wires it so
 	// passes can explain important changes and misses without stderr prints.
 	Remarks *OptimizationRemarks
+}
+
+// CallABIDescriptor is the stable callsite ABI contract for one OpCall.
+// It is intentionally exact: the callee proto, argument/result counts, and
+// raw-int parameter/result representations must all match before codegen can
+// use a specialized call path.
+type CallABIDescriptor struct {
+	Callee       *vm.FuncProto
+	NumArgs      int
+	NumRets      int
+	RawIntParams []bool
+	RawIntReturn bool
+}
+
+// CallABIAnnotationConfig supplies global function facts to the call ABI
+// annotation pass. The pass also derives conservative stable globals from the
+// current proto when possible.
+type CallABIAnnotationConfig struct {
+	Globals map[string]*vm.FuncProto
 }
 
 // newValueID allocates a unique ID for a new SSA value.

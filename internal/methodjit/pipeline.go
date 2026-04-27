@@ -372,6 +372,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 			"inline pass skipped because no inline globals were available")
 	}
 
+	fn, err = AnnotateCallABIsPass(CallABIAnnotationConfig{Globals: globals})(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("CallABI: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = ConstPropPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ConstProp: %w", err)
@@ -525,6 +531,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("Inline", InlinePassWith(InlineConfig{MaxSize: 40, MaxRecursion: 2}))
 	pipe.Add("SimplifyPhis2", SimplifyPhisPass)
 	pipe.Add("TypeSpecialize3", TypeSpecializePass)
+	pipe.Add("CallABI", AnnotateCallABIsPass(CallABIAnnotationConfig{}))
 	pipe.Add("ConstProp", ConstPropPass)
 	pipe.Add("LoadElimination", LoadEliminationPass)
 	pipe.Add("DCE", DCEPass)

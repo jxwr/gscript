@@ -874,18 +874,25 @@ func (ec *emitContext) rawIntPeerCallee(instr *Instr) *vm.FuncProto {
 	if ec.tailCallInstrs[instr.ID] || ec.isStaticSelfCall(instr) {
 		return nil
 	}
-	if len(instr.Args) < 2 || ec.fn.Globals == nil {
+	if len(instr.Args) < 2 || ec.fn.CallABIs == nil {
 		return nil
 	}
-	_, callee := resolveCallee(instr, ec.fn, InlineConfig{Globals: ec.fn.Globals})
-	if callee == nil || callee.Tier2NumericEntryPtr == 0 {
+	desc, ok := ec.fn.CallABIs[instr.ID]
+	if !ok || desc.Callee == nil || !desc.RawIntReturn || desc.NumRets != 1 {
+		return nil
+	}
+	callee := desc.Callee
+	if callee.Tier2NumericEntryPtr == 0 {
 		return nil
 	}
 	ok, numParams := qualifyForNumeric(callee)
-	if !ok || len(instr.Args) != 1+numParams {
+	if !ok || desc.NumArgs != numParams || len(desc.RawIntParams) != numParams || len(instr.Args) != 1+numParams {
 		return nil
 	}
 	for i := 0; i < numParams; i++ {
+		if !desc.RawIntParams[i] {
+			return nil
+		}
 		argID := instr.Args[1+i].ID
 		if ec.hasReg(argID) && ec.rawIntRegs[argID] {
 			continue

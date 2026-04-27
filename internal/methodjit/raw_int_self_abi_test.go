@@ -409,15 +409,26 @@ func caller(n) {
 	if err != nil {
 		t.Fatalf("RunTier2Pipeline(caller): %v", err)
 	}
-	// The production raw-peer gate is still restricted to int-typed call
-	// results. Force that shape here so this test is about the emitted ABI
-	// shim, not the caller-side type propagation heuristic.
+	annotatedCall := false
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr.Op == OpCall {
-				instr.Type = TypeInt
+				desc, ok := fn.CallABIs[instr.ID]
+				if !ok {
+					t.Fatalf("call %d missing raw-int CallABI descriptor", instr.ID)
+				}
+				if desc.Callee != dec || desc.NumArgs != 1 || desc.NumRets != 1 || !desc.RawIntReturn || len(desc.RawIntParams) != 1 || !desc.RawIntParams[0] {
+					t.Fatalf("unexpected CallABI descriptor for call %d: %+v", instr.ID, desc)
+				}
+				if instr.Type != TypeInt {
+					t.Fatalf("call %d Type=%s, want int", instr.ID, instr.Type)
+				}
+				annotatedCall = true
 			}
 		}
+	}
+	if !annotatedCall {
+		t.Fatal("expected residual call to dec")
 	}
 	cf, err := Compile(fn, AllocateRegisters(fn))
 	if err != nil {
