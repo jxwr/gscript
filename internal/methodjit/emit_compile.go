@@ -231,46 +231,48 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// immediately-following Branch. Fused pairs emit CMP/FCMP + B.cc
 	// instead of CMP + CSET + ORR + TBNZ (saves 3 instructions).
 	fusedCmps := computeFusedComparisons(fn)
+	nativeCallReplaySafe := tier2NativeCallReplaySafe(fn)
 
 	ec := &emitContext{
-		fn:                fn,
-		alloc:             alloc,
-		asm:               jit.NewAssembler(),
-		slotMap:           make(map[int]int),
-		nextSlot:          fn.NumRegs,
-		activeRegs:        make(map[int]bool),
-		rawIntRegs:        make(map[int]bool),
-		activeFPRegs:      make(map[int]bool),
-		shapeVerified:     make(map[int]uint32),
-		tableVerified:     make(map[int]bool),
-		kindVerified:      make(map[int]uint16),
-		keysDirtyWritten:  make(map[int]bool),
-		dmVerified:        make(map[int]bool),
-		blockOutShapes:    make(map[int]map[int]uint32),
-		blockOutTables:    make(map[int]map[int]bool),
-		blockOutKinds:     make(map[int]map[int]uint16),
-		blockOutKeysDirty: make(map[int]map[int]bool),
-		crossBlockLive:    crossBlockLive,
-		globalCacheConsts: make([]int, 0),
-		useFPR:            hasFPR,
-		loop:              li,
-		loopHeaderRegs:    headerRegs,
-		loopHeaderFPRegs:  headerFPRegs,
-		safeHeaderRegs:    safeHdrRegs,
-		safeHeaderFPRegs:  safeHdrFPRegs,
-		loopPhiOnlyArgs:   phiOnlyArgs,
-		loopFPPhiOnlyArgs: fpPhiOnlyArgs,
-		loopExitBoxPhis:   exitBoxPhis,
-		loopExitBoxFPPhis: exitBoxFPPhis,
-		loopExitStorePhis: exitStorePhis,
-		constInts:         constInts,
-		constBools:        constBools,
-		irTypes:           irTypes,
-		scratchFPRCache:   make(map[int]jit.FReg),
-		fusedCmps:         fusedCmps,
-		tailCallInstrs:    computeTailCalls(fn),
-		newTableCaches:    newTableCacheSlotsForFunction(fn),
-		instrCodeRanges:   make([]InstrCodeRange, 0, fn.nextID),
+		fn:                   fn,
+		alloc:                alloc,
+		asm:                  jit.NewAssembler(),
+		slotMap:              make(map[int]int),
+		nextSlot:             fn.NumRegs,
+		activeRegs:           make(map[int]bool),
+		rawIntRegs:           make(map[int]bool),
+		activeFPRegs:         make(map[int]bool),
+		shapeVerified:        make(map[int]uint32),
+		tableVerified:        make(map[int]bool),
+		kindVerified:         make(map[int]uint16),
+		keysDirtyWritten:     make(map[int]bool),
+		dmVerified:           make(map[int]bool),
+		blockOutShapes:       make(map[int]map[int]uint32),
+		blockOutTables:       make(map[int]map[int]bool),
+		blockOutKinds:        make(map[int]map[int]uint16),
+		blockOutKeysDirty:    make(map[int]map[int]bool),
+		crossBlockLive:       crossBlockLive,
+		globalCacheConsts:    make([]int, 0),
+		useFPR:               hasFPR,
+		loop:                 li,
+		loopHeaderRegs:       headerRegs,
+		loopHeaderFPRegs:     headerFPRegs,
+		safeHeaderRegs:       safeHdrRegs,
+		safeHeaderFPRegs:     safeHdrFPRegs,
+		loopPhiOnlyArgs:      phiOnlyArgs,
+		loopFPPhiOnlyArgs:    fpPhiOnlyArgs,
+		loopExitBoxPhis:      exitBoxPhis,
+		loopExitBoxFPPhis:    exitBoxFPPhis,
+		loopExitStorePhis:    exitStorePhis,
+		constInts:            constInts,
+		constBools:           constBools,
+		irTypes:              irTypes,
+		scratchFPRCache:      make(map[int]jit.FReg),
+		fusedCmps:            fusedCmps,
+		tailCallInstrs:       computeTailCalls(fn),
+		newTableCaches:       newTableCacheSlotsForFunction(fn),
+		instrCodeRanges:      make([]InstrCodeRange, 0, fn.nextID),
+		nativeCallReplaySafe: nativeCallReplaySafe,
 	}
 	if exitResumeCheckEnabled() {
 		ec.exitResumeCheck = newExitResumeCheckMetadata()
@@ -385,6 +387,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		ResumeAddrs:        resumeAddrs,
 		NumericResumeAddrs: numericResumeAddrs,
 		DirectEntryOffset:  directEntryOff,
+		DirectEntrySafe:    nativeCallReplaySafe,
 		NumericEntryOffset: numericEntryOff,
 		GlobalCache:        globalCache,
 		GlobalCacheConsts:  ec.globalCacheConsts,
@@ -672,6 +675,10 @@ type emitContext struct {
 	// skipStandardDirectEntry lets a custom leaf emitter publish its own
 	// t2_direct_entry without colliding with the standard full-frame entry.
 	skipStandardDirectEntry bool
+
+	// nativeCallReplaySafe is false when direct/native callers must not enter
+	// this function because a callee exit would replay visible side effects.
+	nativeCallReplaySafe bool
 
 	// numericParamCount (R124) is set at emitContext construction when
 	// the proto qualifies (qualifyForNumeric). Non-zero → Compile emits

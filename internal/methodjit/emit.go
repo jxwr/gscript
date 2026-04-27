@@ -283,6 +283,12 @@ type CompiledFunction struct {
 	// frame as the normal Tier 2 entry so callee-saved registers are preserved.
 	DirectEntryOffset int
 
+	// DirectEntrySafe is false when a native caller would have to replay this
+	// function from pc=0 after the function may already have performed a
+	// visible side effect. In that case Tier 2 stays callable through the
+	// execute loop, but direct BLR entries are not published.
+	DirectEntrySafe bool
+
 	// NumericParamCount (R124) is the number of int params the numeric
 	// entry (t2_numeric_self_entry_N) takes (1-4). Zero if no numeric
 	// entry was emitted. The entry label is part of THIS Code block

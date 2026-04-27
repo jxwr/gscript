@@ -280,6 +280,130 @@ func caller(f, n) {
 	}
 }
 
+func TestTier2NativeCallDoesNotReplayCalleeSideEffectsBeforeExit(t *testing.T) {
+	src := `
+state := {x: 0}
+
+func bump_then_exit(t) {
+    t.x = t.x + 1
+    tmp := {}
+    tmp[1] = 7
+    return t.x + tmp[1] - 7
+}
+
+func caller(f, t) {
+    return f(t)
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	callee := findProtoByName(top, "bump_then_exit")
+	caller := findProtoByName(top, "caller")
+	if callee == nil || caller == nil {
+		t.Fatalf("missing protos: callee=%v caller=%v", callee != nil, caller != nil)
+	}
+
+	fnCallee := v.GetGlobal("bump_then_exit")
+	fnCaller := v.GetGlobal("caller")
+	state := v.GetGlobal("state")
+	if fnCallee.IsNil() || fnCaller.IsNil() || !state.IsTable() {
+		t.Fatalf("missing globals: callee=%v caller=%v state=%v", fnCallee, fnCaller, state)
+	}
+	if _, err := v.CallValue(fnCallee, []runtime.Value{state}); err != nil {
+		t.Fatalf("warm callee field cache: %v", err)
+	}
+	state.Table().RawSetString("x", runtime.IntValue(0))
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(callee); err != nil {
+		t.Fatalf("CompileTier2(callee): %v", err)
+	}
+	if callee.DirectEntryPtr != 0 || callee.Tier2DirectEntryPtr != 0 {
+		t.Fatalf("unsafe callee direct entries published: direct=%#x tier2=%#x",
+			callee.DirectEntryPtr, callee.Tier2DirectEntryPtr)
+	}
+	if err := tm.CompileTier2(caller); err != nil {
+		t.Fatalf("CompileTier2(caller): %v", err)
+	}
+
+	results, err := v.CallValue(fnCaller, []runtime.Value{fnCallee, state})
+	if err != nil {
+		t.Fatalf("CallValue(caller): %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 1 {
+		t.Fatalf("caller result=%v, want int 1", results)
+	}
+	slot := state.Table().RawGetString("x")
+	if !slot.IsInt() || slot.Int() != 1 {
+		t.Fatalf("state.x=%v, want int 1", slot)
+	}
+}
+
+func TestTier2RecursiveNativeCallDoesNotReplaySideEffectsBeforeExit(t *testing.T) {
+	src := `
+state := {x: 0}
+
+func rec_bump_then_exit(t, n) {
+    if n <= 0 { return t.x }
+    t.x = t.x + 1
+    tmp := {}
+    tmp[1] = 7
+    child := rec_bump_then_exit(t, n - 1)
+    return child + tmp[1] - 7
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	rec := findProtoByName(top, "rec_bump_then_exit")
+	if rec == nil {
+		t.Fatal("rec_bump_then_exit proto not found")
+	}
+	fnRec := v.GetGlobal("rec_bump_then_exit")
+	state := v.GetGlobal("state")
+	if fnRec.IsNil() || !state.IsTable() {
+		t.Fatalf("missing globals: rec=%v state=%v", fnRec, state)
+	}
+	if _, err := v.CallValue(fnRec, []runtime.Value{state, runtime.IntValue(1)}); err != nil {
+		t.Fatalf("warm recursive field cache: %v", err)
+	}
+	state.Table().RawSetString("x", runtime.IntValue(0))
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(rec); err != nil {
+		t.Fatalf("CompileTier2(rec): %v", err)
+	}
+	if rec.DirectEntryPtr != 0 || rec.Tier2DirectEntryPtr != 0 {
+		t.Fatalf("unsafe recursive direct entries published: direct=%#x tier2=%#x",
+			rec.DirectEntryPtr, rec.Tier2DirectEntryPtr)
+	}
+
+	results, err := v.CallValue(fnRec, []runtime.Value{state, runtime.IntValue(2)})
+	if err != nil {
+		t.Fatalf("CallValue(rec): %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 2 {
+		t.Fatalf("recursive result=%v, want int 2", results)
+	}
+	slot := state.Table().RawGetString("x")
+	if !slot.IsInt() || slot.Int() != 2 {
+		t.Fatalf("state.x=%v, want int 2", slot)
+	}
+}
+
 func TestTier2GlobalCacheInvalidatesByName(t *testing.T) {
 	tm := NewTieringManager()
 	proto := &vm.FuncProto{

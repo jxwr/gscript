@@ -398,10 +398,13 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction) {
 	proto.Tier2Promoted = true
 
-	// Update DirectEntryPtr so native BLR callers jump to Tier 2's direct entry.
-	if cf != nil && cf.DirectEntryOffset > 0 {
+	// Update DirectEntryPtr so native BLR callers jump to Tier 2's direct
+	// entry only when a callee exit cannot force replay of visible work.
+	if cf != nil && cf.DirectEntryOffset > 0 && cf.DirectEntrySafe {
 		entry := uintptr(cf.Code.Ptr()) + uintptr(cf.DirectEntryOffset)
 		setFuncProtoTier2DirectEntries(proto, entry, entry)
+	} else {
+		setFuncProtoTier2DirectEntries(proto, 0, 0)
 	}
 	if cf != nil && cf.NumericEntryOffset > 0 {
 		proto.Tier2NumericEntryPtr = uintptr(cf.Code.Ptr()) + uintptr(cf.NumericEntryOffset)
