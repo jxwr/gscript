@@ -57,7 +57,8 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 				continue
 			}
 			kind, hasKind := setTableArrayKindHint(instr, defs)
-			if !hasKind && instr.Aux2 == 0 {
+			hasMixedValue := setTableMixedArrayValueHint(instr, defs)
+			if !hasKind && instr.Aux2 == 0 && !hasMixedValue {
 				continue
 			}
 			hint := candidates[tblDef.ID]
@@ -68,6 +69,9 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			hint.observeArrayHint(arrayHint)
 			if fn.Proto != nil && fn.Proto.TableKeyFeedback != nil && instr.HasSource && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.TableKeyFeedback) {
 				hint.observeIntKeyFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC])
+			}
+			if hasMixedValue {
+				hint.mixed = true
 			}
 			if hasKind {
 				if hint.kind == runtime.ArrayMixed {
@@ -191,5 +195,25 @@ func setTableArrayKindHint(instr *Instr, defs map[int]*Instr) (runtime.ArrayKind
 		return runtime.ArrayBool, true
 	default:
 		return runtime.ArrayMixed, false
+	}
+}
+
+func setTableMixedArrayValueHint(instr *Instr, defs map[int]*Instr) bool {
+	if len(instr.Args) < 3 {
+		return false
+	}
+	keyDef := tablePreallocValueDef(instr.Args[1], defs)
+	if keyDef == nil || keyDef.Type != TypeInt {
+		return false
+	}
+	valDef := tablePreallocValueDef(instr.Args[2], defs)
+	if valDef == nil {
+		return false
+	}
+	switch valDef.Type {
+	case TypeTable, TypeString, TypeFunction:
+		return true
+	default:
+		return false
 	}
 }
