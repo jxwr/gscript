@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="65-the-call-could-not-be-replayed">The Call Could Not Be Replayed</a>
+  <p>Tier 2 direct BLR entries are now published only when caller-boundary replay is safe. A native caller cannot resume a callee at the callee's own exit point; replaying the whole call after a visible side effect duplicates program state. The new replay-safety analysis keeps unsafe side-effect-then-exit functions callable through the normal TieringManager path, while preserving raw recursive wins such as <code>ackermann</code>.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="64-the-coroutine-stayed-on-the-stack">The Coroutine Stayed On The Stack</a>
   <p><code>coroutine_bench</code> was dominated by runtime handoff cost, not Tier 2. Long-lived coroutines now keep their child VM frame paused at <code>coroutine.yield</code>, write resume values back into the saved yield result slots, and continue <code>run()</code> without a goroutine/channel ping-pong. After hardening cached yield, nested resume, <code>Value.Ptr()</code>, and child VM cleanup semantics, the focused guard moved from about 1.6s to 0.03s.</p>
 </div>
