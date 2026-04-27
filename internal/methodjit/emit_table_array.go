@@ -279,7 +279,7 @@ func (ec *emitContext) intNonNegative(id int) bool {
 //
 // Instr layout:
 //   - Aux = array hint
-//   - Aux2 = hash hint
+//   - Aux2 = packed hash hint and array kind
 func (ec *emitContext) emitNewTableExit(instr *Instr) {
 	asm := ec.asm
 
@@ -287,6 +287,13 @@ func (ec *emitContext) emitNewTableExit(instr *Instr) {
 	if !hasSlot {
 		ec.emitDeopt(instr)
 		return
+	}
+
+	doneLabel := ec.uniqueLabel("newtable_done")
+	missLabel := ec.uniqueLabel("newtable_cache_miss")
+	hasCacheFastPath := ec.emitNewTableCacheFastPath(instr, doneLabel, missLabel)
+	if hasCacheFastPath {
+		asm.Label(missLabel)
 	}
 
 	// Store all active register-resident values to memory.
@@ -333,6 +340,9 @@ func (ec *emitContext) emitNewTableExit(instr *Instr) {
 		continueLabel: continueLabel,
 		numericPass:   ec.numericMode,
 	})
+	if hasCacheFastPath {
+		asm.Label(doneLabel)
+	}
 }
 
 // emitGetTableNative emits a native ARM64 fast path for OpGetTable with

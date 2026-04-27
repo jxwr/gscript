@@ -1403,7 +1403,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			if err != nil {
 				return nil, err
 			}
-			if err := tm.executeTableExit(ctx, regs, base, proto); err != nil {
+			if err := tm.executeTableExit(ctx, regs, base, proto, cf); err != nil {
 				return nil, fmt.Errorf("tier2: table-exit: %w", err)
 			}
 			resyncRegs()

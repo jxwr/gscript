@@ -114,12 +114,12 @@ func (tm *TieringManager) executeGlobalExit(ctx *ExecContext, regs []runtime.Val
 }
 
 // executeTableExit handles table operations in the TieringManager's Tier 2 path.
-func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, cf *CompiledFunction) error {
 	switch ctx.TableOp {
 	case TableOpNewTable:
 		arrayHint := int(ctx.TableAux)
 		hashHint, arrayKind := unpackNewTableAux2(ctx.TableAux2)
-		tbl := runtime.NewTableSizedKind(arrayHint, hashHint, arrayKind)
+		tbl := cf.allocateNewTableForExit(int(ctx.TableExitID), arrayHint, hashHint, arrayKind)
 		absSlot := base + int(ctx.TableSlot)
 		if absSlot < len(regs) {
 			regs[absSlot] = runtime.TableValue(tbl)

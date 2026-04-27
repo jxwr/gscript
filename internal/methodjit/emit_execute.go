@@ -300,7 +300,7 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 		// Create a new table with the given array/hash hints.
 		arrayHint := int(ctx.TableAux)
 		hashHint, arrayKind := unpackNewTableAux2(ctx.TableAux2)
-		tbl := runtime.NewTableSizedKind(arrayHint, hashHint, arrayKind)
+		tbl := cf.allocateNewTableForExit(int(ctx.TableExitID), arrayHint, hashHint, arrayKind)
 		resultSlot := int(ctx.TableSlot)
 		if resultSlot < len(regs) {
 			regs[resultSlot] = runtime.TableValue(tbl)

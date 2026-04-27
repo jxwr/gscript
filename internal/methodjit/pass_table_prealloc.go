@@ -41,6 +41,7 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 		return fn, nil
 	}
 	li := computeLoopInfo(fn)
+	defs := tablePreallocDefs(fn)
 	candidates := make(map[int]tablePreallocHint)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -51,16 +52,17 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 				continue
 			}
 			tbl := instr.Args[0]
-			if tbl == nil || tbl.Def == nil || tbl.Def.Op != OpNewTable {
+			tblDef := tablePreallocValueDef(tbl, defs)
+			if tblDef == nil || tblDef.Op != OpNewTable {
 				continue
 			}
-			kind, hasKind := setTableArrayKindHint(instr)
+			kind, hasKind := setTableArrayKindHint(instr, defs)
 			if !hasKind && instr.Aux2 == 0 {
 				continue
 			}
-			hint := candidates[tbl.Def.ID]
+			hint := candidates[tblDef.ID]
 			arrayHint := int64(tier2FeedbackArrayHint)
-			if li != nil && tbl.Def.Block != nil && li.loopBlocks[block.ID] && !li.loopBlocks[tbl.Def.Block.ID] {
+			if li != nil && tblDef.Block != nil && li.loopBlocks[block.ID] && !li.loopBlocks[tblDef.Block.ID] {
 				arrayHint = tier2FeedbackOuterLoopArrayHint
 			}
 			hint.observeArrayHint(arrayHint)
@@ -76,7 +78,7 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			} else {
 				hint.mixed = true
 			}
-			candidates[tbl.Def.ID] = hint
+			candidates[tblDef.ID] = hint
 		}
 	}
 	if len(candidates) == 0 {
@@ -102,16 +104,18 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 }
 
 func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePreallocHint) {
+	defs := tablePreallocDefs(fn)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr == nil || (instr.Op != OpGetTable && instr.Op != OpSetTable) || instr.Aux2 != 0 || len(instr.Args) == 0 {
 				continue
 			}
 			tbl := instr.Args[0]
-			if tbl == nil || tbl.Def == nil {
+			tblDef := tablePreallocValueDef(tbl, defs)
+			if tblDef == nil {
 				continue
 			}
-			hint, ok := candidates[tbl.Def.ID]
+			hint, ok := candidates[tblDef.ID]
 			if !ok || hint.mixed || hint.kind == runtime.ArrayMixed {
 				continue
 			}
@@ -120,6 +124,31 @@ func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePrealloc
 			}
 		}
 	}
+}
+
+func tablePreallocDefs(fn *Function) map[int]*Instr {
+	defs := make(map[int]*Instr)
+	if fn == nil {
+		return defs
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && !instr.Op.IsTerminator() {
+				defs[instr.ID] = instr
+			}
+		}
+	}
+	return defs
+}
+
+func tablePreallocValueDef(v *Value, defs map[int]*Instr) *Instr {
+	if v == nil {
+		return nil
+	}
+	if v.Def != nil {
+		return v.Def
+	}
+	return defs[v.ID]
 }
 
 func arrayKindToFBKind(kind runtime.ArrayKind) (uint8, bool) {
@@ -135,7 +164,7 @@ func arrayKindToFBKind(kind runtime.ArrayKind) (uint8, bool) {
 	}
 }
 
-func setTableArrayKindHint(instr *Instr) (runtime.ArrayKind, bool) {
+func setTableArrayKindHint(instr *Instr, defs map[int]*Instr) (runtime.ArrayKind, bool) {
 	switch instr.Aux2 {
 	case int64(vm.FBKindInt):
 		return runtime.ArrayInt, true
@@ -146,10 +175,14 @@ func setTableArrayKindHint(instr *Instr) (runtime.ArrayKind, bool) {
 	case int64(vm.FBKindMixed):
 		return runtime.ArrayMixed, false
 	}
-	if len(instr.Args) < 3 || instr.Args[2] == nil || instr.Args[2].Def == nil {
+	if len(instr.Args) < 3 {
 		return runtime.ArrayMixed, false
 	}
-	switch instr.Args[2].Def.Type {
+	valDef := tablePreallocValueDef(instr.Args[2], defs)
+	if valDef == nil {
+		return runtime.ArrayMixed, false
+	}
+	switch valDef.Type {
 	case TypeInt:
 		return runtime.ArrayInt, true
 	case TypeFloat:

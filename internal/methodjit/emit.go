@@ -343,6 +343,11 @@ type CompiledFunction struct {
 	// Tier 2 direct entry remains published.
 	CallCache []uint64
 
+	// NewTableCaches is indexed by IR instruction ID. Hinted dense table
+	// allocation sites refill it on table-exit misses; native NewTable code pops
+	// pre-boxed tables from the matching entry until empty.
+	NewTableCaches []newTableCacheEntry
+
 	// InstrCodeRanges maps IR instruction IDs to emitted machine-code byte
 	// ranges. Diagnostic metadata only; execution never consults it.
 	InstrCodeRanges []InstrCodeRange

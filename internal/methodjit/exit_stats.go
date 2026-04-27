@@ -66,6 +66,8 @@ func buildExitSiteMeta(fn *Function) map[int]ExitSiteMeta {
 			reason := instr.Op.String()
 			if instr.Op == OpGuardType {
 				reason = fmt.Sprintf("GuardType(%s)", Type(instr.Aux))
+			} else if instr.Op == OpNewTable {
+				reason = newTableExitReason(instr)
 			}
 			pc := -1
 			if instr.HasSource {

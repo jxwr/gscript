@@ -269,6 +269,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		scratchFPRCache:   make(map[int]jit.FReg),
 		fusedCmps:         fusedCmps,
 		tailCallInstrs:    computeTailCalls(fn),
+		newTableCaches:    newTableCacheSlotsForFunction(fn),
 		instrCodeRanges:   make([]InstrCodeRange, 0, fn.nextID),
 	}
 	if exitResumeCheckEnabled() {
@@ -377,6 +378,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		GlobalCacheConsts:  ec.globalCacheConsts,
 		NativeSetGlobals:   nativeSetGlobals,
 		CallCache:          callCache,
+		NewTableCaches:     ec.newTableCaches,
 		InstrCodeRanges:    ec.instrCodeRanges,
 		ExitSites:          buildExitSiteMeta(fn),
 		ExitResumeCheck:    ec.exitResumeCheck,
@@ -649,6 +651,10 @@ type emitContext struct {
 	// live on the slow-path fallback (emitCallExitFallback produces a
 	// normal return value that the Return then handles).
 	tailCallInstrs map[int]bool
+
+	// newTableCaches is owned by the eventual CompiledFunction but allocated
+	// before emission so native NewTable fast paths can embed its backing address.
+	newTableCaches []newTableCacheEntry
 
 	// numericParamCount (R124) is set at emitContext construction when
 	// the proto qualifies (qualifyForNumeric). Non-zero → Compile emits
