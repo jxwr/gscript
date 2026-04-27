@@ -94,6 +94,20 @@ for i := 1; i <= 200; i++ { result = f() }
 `, "result")
 }
 
+func TestTier1_NativeSetTableSequentialAppend(t *testing.T) {
+	compareVMvsJIT(t, `
+func f(n) {
+    t := {}
+    for i := 1; i <= n; i++ {
+        t[i] = i * 3
+    }
+    return t[1] + t[n]
+}
+result := 0
+for i := 1; i <= 200; i++ { result = f(64) }
+`, "result")
+}
+
 func TestTier1_NativeGetTableDynamic(t *testing.T) {
 	// Test with dynamic integer key (register, not constant)
 	compareVMvsJIT(t, `

@@ -410,9 +410,10 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.CBNZ(jit.X2, slowLabel) // not Mixed (0) -> slow
 
 	// --- ArrayMixed fast path ---
-	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen)
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondGE, slowLabel)
+	mixedStoreLabel := nextLabel("settable_mixed_store")
+	mixedAppendLabel := nextLabel("settable_mixed_append")
+	emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffArrayLen, mixedAppendLabel, slowLabel)
+	asm.Label(mixedStoreLabel)
 	loadRK(asm, jit.X4, cidx) // X4 = value (NaN-boxed)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray)
 	asm.STRreg(jit.X4, jit.X2, jit.X1) // array[key] = value
@@ -420,12 +421,14 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 	emitBaselineFeedbackKind(asm, pc, 1, "set_mixed") // FBKindMixed=1
 	asm.B(doneLabel)
+	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffArrayLen, jit.TableOffArrayCap, mixedAppendLabel, slowLabel, mixedStoreLabel)
 
 	// --- ArrayInt fast path ---
 	asm.Label(intArrayLabel)
-	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArrayLen)
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondGE, slowLabel)
+	intStoreLabel := nextLabel("settable_int_store")
+	intAppendLabel := nextLabel("settable_int_append")
+	emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, slowLabel)
+	asm.Label(intStoreLabel)
 	// Load value RK(C) and check it's an integer.
 	loadRK(asm, jit.X4, cidx) // X4 = value (NaN-boxed)
 	asm.LSRimm(jit.X5, jit.X4, 48)
@@ -440,12 +443,14 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 	emitBaselineFeedbackKind(asm, pc, 2, "set_int") // FBKindInt=2
 	asm.B(doneLabel)
+	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, slowLabel, intStoreLabel)
 
 	// --- ArrayFloat fast path ---
 	asm.Label(floatArrayLabel)
-	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArrayLen) // floatArray.len
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondGE, slowLabel)
+	floatStoreLabel := nextLabel("settable_float_store")
+	floatAppendLabel := nextLabel("settable_float_append")
+	emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, slowLabel)
+	asm.Label(floatStoreLabel)
 	// Load value RK(C) and check it's a float.
 	loadRK(asm, jit.X4, cidx) // X4 = value (NaN-boxed)
 	// Float check: if top bits indicate tagged (int/bool/nil/ptr), not a float → slow.
@@ -459,12 +464,14 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 	emitBaselineFeedbackKind(asm, pc, 3, "set_float") // FBKindFloat=3
 	asm.B(doneLabel)
+	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, slowLabel, floatStoreLabel)
 
 	// --- ArrayBool fast path ---
 	asm.Label(boolArrayLabel)
-	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArrayLen) // boolArray.len
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondGE, slowLabel)
+	boolStoreLabel := nextLabel("settable_bool_store")
+	boolAppendLabel := nextLabel("settable_bool_append")
+	emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, slowLabel)
+	asm.Label(boolStoreLabel)
 	// Load value RK(C).
 	loadRK(asm, jit.X4, cidx) // X4 = value (NaN-boxed)
 	// Check value type: must be bool (tag=0xFFFD) or nil (0xFFFC).
@@ -496,6 +503,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 	emitBaselineFeedbackKind(asm, pc, 4, "set_bool") // FBKindBool=4
 	asm.B(doneLabel)
+	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, slowLabel, boolStoreLabel)
 
 	// Slow path: exit-resume.
 	asm.Label(slowLabel)
