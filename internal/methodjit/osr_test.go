@@ -181,8 +181,8 @@ result := gcd_bench(1200)
 	}
 
 	result := v.GetGlobal("result")
-	if !result.IsInt() || result.Int() <= 0 {
-		t.Fatalf("unexpected result: %v", result)
+	if !result.IsInt() || result.Int() != 496370 {
+		t.Fatalf("gcd_bench(1200) = %v, want 496370", result)
 	}
 	gcdBench := findProtoByName(proto, "gcd_bench")
 	if gcdBench == nil {

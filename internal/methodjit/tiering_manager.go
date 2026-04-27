@@ -890,7 +890,7 @@ func forceRawIntKernelIR(fn *Function) {
 						instr.Type = TypeInt
 						changed = true
 					}
-				case OpAdd, OpSub, OpMul:
+				case OpAdd, OpSub, OpMul, OpMod:
 					if allInstrArgsType(instr, TypeInt) {
 						switch instr.Op {
 						case OpAdd:
@@ -899,6 +899,8 @@ func forceRawIntKernelIR(fn *Function) {
 							instr.Op = OpSubInt
 						case OpMul:
 							instr.Op = OpMulInt
+						case OpMod:
+							instr.Op = OpModInt
 						}
 						instr.Type = TypeInt
 						changed = true
@@ -925,6 +927,21 @@ func forceRawIntKernelIR(fn *Function) {
 			return
 		}
 	}
+}
+
+func firstResidualRawIntKernelGenericNumeric(fn *Function) (Op, bool) {
+	if fn == nil {
+		return OpNop, false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm:
+				return instr.Op, true
+			}
+		}
+	}
+	return OpNop, false
 }
 
 func allInstrArgsType(instr *Instr, typ Type) bool {
@@ -1097,6 +1114,11 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	}
 	if shouldStayTier1ForBoxedRawIntKernel(proto, analyzeFuncProfile(proto)) {
 		forceRawIntKernelIR(fn)
+		if op, ok := firstResidualRawIntKernelGenericNumeric(fn); ok {
+			remarks.Add("Tier2Gate", "blocked", 0, 0, op,
+				fmt.Sprintf("raw-int kernel has residual generic numeric op %s", op))
+			return nil, fmt.Errorf("tier2: raw-int kernel has residual generic numeric op %s, staying at Tier 1", op)
+		}
 	}
 	fn.CarryPreheaderInvariants = true
 	if trace != nil {

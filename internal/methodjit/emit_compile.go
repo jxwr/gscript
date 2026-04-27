@@ -770,6 +770,13 @@ func blockLabel(b *Block) string {
 	return fmt.Sprintf("B%d", b.ID)
 }
 
+func (ec *emitContext) entryBlockLabel() string {
+	if ec.fn != nil && ec.fn.Entry != nil {
+		return ec.blockLabelFor(ec.fn.Entry)
+	}
+	return "B0"
+}
+
 // emitNumericBody emits a second Tier 2 body under numericMode=true.
 // The numeric entry label receives raw int args in X0..X(N-1), builds a thin
 // FP/LR frame, and jumps to the pass-2 entry block. Raw callers pass the callee
@@ -919,6 +926,9 @@ func (ec *emitContext) emitPrologue() {
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
 	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24 = 0xFFFE000000000000
 	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25 = 0xFFFD000000000000
+	if ec.fn != nil && ec.fn.Entry != nil && len(ec.fn.Blocks) > 0 && ec.fn.Blocks[0] != ec.fn.Entry {
+		asm.B(ec.entryBlockLabel())
+	}
 }
 
 func (ec *emitContext) emitEpilogue() {
@@ -977,7 +987,7 @@ func (ec *emitContext) emitEpilogue() {
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
 	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24
 	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25
-	asm.B("B0")                                       // Jump to first SSA block.
+	asm.B(ec.entryBlockLabel())
 
 	// --- Self-call entry point (R40) ---
 	// Only emitted when the function has self-calls AND the Tier 2 emit
@@ -1011,7 +1021,7 @@ func (ec *emitContext) emitEpilogue() {
 		}
 		// Skip MOVreg mRegCtx, X0  (mRegCtx unchanged in self-call)
 		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
-		asm.B("B0")
+		asm.B(ec.entryBlockLabel())
 	}
 
 	// R129: numeric entry + pass-2 body are emitted AFTER epilogue +
