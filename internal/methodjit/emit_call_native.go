@@ -1013,11 +1013,12 @@ func (ec *emitContext) emitCallNativeNumericTail(instr *Instr) {
 	asm := ec.asm
 	slowLabel := ec.uniqueLabel("t2numtail_slow")
 
-	if len(instr.Args) == 0 || ec.fn == nil || ec.fn.Proto == nil {
+	entryLabel, hasEntry := ec.entryBlockLabelOK()
+	if len(instr.Args) == 0 || ec.fn == nil || ec.fn.Proto == nil || !hasEntry {
 		asm.B(slowLabel)
 	} else {
 		ec.emitNumericArgsInRegs(instr, ec.fn.Proto.NumParams)
-		asm.B(fmt.Sprintf("num_B%d", ec.fn.Entry.ID))
+		asm.B(entryLabel)
 	}
 
 	asm.Label(slowLabel)

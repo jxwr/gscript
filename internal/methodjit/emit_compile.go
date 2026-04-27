@@ -22,6 +22,10 @@ var _ *vm.FuncProto
 
 // Compile takes a Function with register allocation and produces executable ARM64 code.
 func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
+	if err := validateCompileInputs(fn, alloc); err != nil {
+		return nil, err
+	}
+
 	// Check if any FPR allocations exist (to skip FPR save/restore).
 	hasFPR := false
 	for _, pr := range alloc.ValueRegs {
@@ -377,6 +381,32 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		ExitSites:          buildExitSiteMeta(fn),
 		ExitResumeCheck:    ec.exitResumeCheck,
 	}, nil
+}
+
+func validateCompileInputs(fn *Function, alloc *RegAllocation) error {
+	if fn == nil {
+		return fmt.Errorf("methodjit: compile nil function")
+	}
+	if alloc == nil {
+		return fmt.Errorf("methodjit: compile nil register allocation")
+	}
+	if fn.Entry == nil {
+		return fmt.Errorf("methodjit: compile function has nil entry block")
+	}
+	if len(fn.Blocks) == 0 {
+		return fmt.Errorf("methodjit: compile function has no blocks")
+	}
+	entryFound := false
+	for _, block := range fn.Blocks {
+		if block == fn.Entry {
+			entryFound = true
+			break
+		}
+	}
+	if !entryFound {
+		return fmt.Errorf("methodjit: compile entry block B%d is missing from block list", fn.Entry.ID)
+	}
+	return nil
 }
 
 func collectNativeSetGlobals(fn *Function) map[int]bool {
@@ -771,10 +801,18 @@ func blockLabel(b *Block) string {
 }
 
 func (ec *emitContext) entryBlockLabel() string {
-	if ec.fn != nil && ec.fn.Entry != nil {
-		return ec.blockLabelFor(ec.fn.Entry)
+	label, ok := ec.entryBlockLabelOK()
+	if !ok {
+		panic("methodjit: entry label requested without function entry")
 	}
-	return "B0"
+	return label
+}
+
+func (ec *emitContext) entryBlockLabelOK() (string, bool) {
+	if ec == nil || ec.fn == nil || ec.fn.Entry == nil {
+		return "", false
+	}
+	return ec.blockLabelFor(ec.fn.Entry), true
 }
 
 // emitNumericBody emits a second Tier 2 body under numericMode=true.
@@ -792,14 +830,6 @@ func (ec *emitContext) emitNumericBody() {
 	}
 
 	asm := ec.asm
-
-	label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
-	asm.Label(label)
-	asm.SUBimm(jit.SP, jit.SP, uint16(numericSelfEntryFrameSize))
-	asm.STP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.X29, jit.SP, 0)
-	asm.B(fmt.Sprintf("num_B%d", ec.fn.Entry.ID))
-
 	prevNumericMode := ec.numericMode
 	prevActiveRegs := ec.activeRegs
 	prevRawIntRegs := ec.rawIntRegs
@@ -810,6 +840,19 @@ func (ec *emitContext) emitNumericBody() {
 	prevKeysDirtyWritten := ec.keysDirtyWritten
 	prevDMVerified := ec.dmVerified
 	ec.numericMode = true
+	entryLabel, ok := ec.entryBlockLabelOK()
+	if !ok {
+		ec.numericMode = prevNumericMode
+		return
+	}
+
+	label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
+	asm.Label(label)
+	asm.SUBimm(jit.SP, jit.SP, uint16(numericSelfEntryFrameSize))
+	asm.STP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.X29, jit.SP, 0)
+	asm.B(entryLabel)
+
 	ec.activeRegs = make(map[int]bool)
 	ec.rawIntRegs = make(map[int]bool)
 	ec.activeFPRegs = make(map[int]bool)
