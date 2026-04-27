@@ -55,7 +55,7 @@ func printInstr(sb *strings.Builder, i *Instr) {
 	}
 
 	// Op name
-	fmt.Fprintf(sb, "%-12s", i.Op.String())
+	fmt.Fprintf(sb, "%-18s", i.Op.String())
 
 	// Arguments
 	switch i.Op {
@@ -101,7 +101,7 @@ func printInstr(sb *strings.Builder, i *Instr) {
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, " = v%d", i.Args[0].ID)
 		}
-	case OpGetField, OpSetField:
+	case OpGetField, OpGetFieldNumToFloat, OpSetField:
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d.field[%d]", i.Args[0].ID, i.Aux)
 		}

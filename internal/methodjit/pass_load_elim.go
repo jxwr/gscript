@@ -263,7 +263,7 @@ func guardProvenByProducer(v *Value, guardType Type) bool {
 		}
 	case TypeFloat:
 		switch v.Def.Op {
-		case OpConstFloat, OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpNumToFloat, OpSqrt, OpFMA:
+		case OpConstFloat, OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpNumToFloat, OpGetFieldNumToFloat, OpSqrt, OpFMA:
 			return true
 		}
 	case TypeBool:

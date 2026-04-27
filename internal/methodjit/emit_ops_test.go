@@ -329,6 +329,58 @@ func TestEmit_NumToFloat_IntAndFloatInputs(t *testing.T) {
 	}
 }
 
+func TestEmit_GetFieldNumToFloatExit_IntAndFloatInputs(t *testing.T) {
+	fn := &Function{
+		Proto: &vm.FuncProto{
+			Name:      "field_numtofloat",
+			NumParams: 1,
+			MaxStack:  1,
+			Constants: []runtime.Value{runtime.StringValue("x")},
+		},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	arg := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Aux: 0, Block: b}
+	field := &Instr{ID: fn.newValueID(), Op: OpGetFieldNumToFloat, Type: TypeFloat,
+		Args: []*Value{arg.Value()}, Aux: 0, Block: b}
+	cf := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat,
+		Aux: int64(math.Float64bits(2.5)), Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat,
+		Args: []*Value{field.Value(), cf.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown,
+		Args: []*Value{add.Value()}, Block: b}
+	b.Instrs = []*Instr{arg, field, cf, add, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	alloc := AllocateRegisters(fn)
+	cfNative, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	defer cfNative.Code.Free()
+
+	tests := []struct {
+		name string
+		val  runtime.Value
+		want float64
+	}{
+		{name: "int field", val: runtime.IntValue(3), want: 5.5},
+		{name: "float field", val: runtime.FloatValue(1.25), want: 3.75},
+	}
+	for _, tt := range tests {
+		tbl := runtime.NewTable()
+		tbl.RawSetString("x", tt.val)
+		result, err := cfNative.Execute([]runtime.Value{runtime.TableValue(tbl)})
+		if err != nil {
+			t.Fatalf("%s Execute error: %v", tt.name, err)
+		}
+		if len(result) != 1 || !result[0].IsFloat() || math.Abs(result[0].Float()-tt.want) > 1e-12 {
+			t.Fatalf("%s: expected %v as float, got %v", tt.name, tt.want, result)
+		}
+	}
+}
+
 // TestEmit_FloatSub: func f(a, b) { return a - b } with float args.
 // 5.0 - 1.5 = 3.5.
 func TestEmit_FloatSub(t *testing.T) {

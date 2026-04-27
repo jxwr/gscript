@@ -537,6 +537,20 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			s.values[instr.ID] = runtime.NilValue()
 		}
 
+	case OpGetFieldNumToFloat:
+		tbl := s.val(instr.Args[0])
+		idx := int(instr.Aux)
+		if tbl.IsTable() && idx >= 0 && idx < len(s.fn.Proto.Constants) {
+			key := s.fn.Proto.Constants[idx]
+			val := tbl.Table().RawGet(key)
+			if !val.IsNumber() {
+				return nil, false, fmt.Errorf("IR interpreter: cannot convert %s field to float", val.TypeName())
+			}
+			s.values[instr.ID] = runtime.FloatValue(val.Number())
+		} else {
+			return nil, false, fmt.Errorf("IR interpreter: cannot convert missing field to float")
+		}
+
 	case OpSetField:
 		tbl := s.val(instr.Args[0])
 		val := s.val(instr.Args[1])

@@ -476,6 +476,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = FieldNumToFloatFusionPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FieldNumToFloatFusion (post-LICM): %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = ScalarPromotionPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ScalarPromotion: %w", err)
@@ -521,6 +527,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("OverflowBoxing", OverflowBoxingPass)
 	pipe.Add("IntExactDivision", IntExactDivisionPass)
 	pipe.Add("LICM", LICMPass)
+	pipe.Add("FieldNumToFloatFusion", FieldNumToFloatFusionPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	return pipe
 }

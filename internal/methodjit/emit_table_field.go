@@ -119,6 +119,77 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
+	shapeID := uint32(instr.Aux2 >> 32)
+	fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
+
+	// No field cache or invalid: use table-exit fallback. The resume path
+	// applies the same int-or-float conversion as the inline fast path.
+	if shapeID == 0 || instr.Aux2 == 0 {
+		ec.emitGetFieldExit(instr)
+		return
+	}
+
+	asm := ec.asm
+	tblValueID := instr.Args[0].ID
+	typeDeoptLabel := ec.uniqueLabel("getfield_num_deopt")
+
+	if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
+		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
+		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
+		ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
+		doneLabel := ec.uniqueLabel("getfield_num_done")
+		asm.B(doneLabel)
+		asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+		asm.Label(doneLabel)
+		return
+	}
+
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+
+	deoptLabel := ec.uniqueLabel("getfield_num_shape_deopt")
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, deoptLabel)
+	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+	asm.LoadImm64(jit.X2, int64(shapeID))
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, deoptLabel)
+
+	ec.shapeVerified[tblValueID] = shapeID
+
+	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
+	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
+	ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
+
+	doneLabel := ec.uniqueLabel("getfield_num_done")
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
+	ec.emitGetFieldExit(instr)
+	ec.emitUnboxRawIntRegs(savedRawIntRegs)
+	ec.rawIntRegs = savedRawIntRegs
+	asm.B(doneLabel)
+
+	asm.Label(typeDeoptLabel)
+	ec.emitDeopt(instr)
+
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typeDeoptLabel string) {
 	if instr.Type == TypeFloat {
 		ec.asm.LSRimm(jit.X2, valReg, 48)
@@ -130,6 +201,32 @@ func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typ
 		return
 	}
 	ec.storeResultNB(valReg, instr.ID)
+}
+
+func (ec *emitContext) emitStoreNumericFieldLoad(instr *Instr, valReg jit.Reg, deoptLabel string) {
+	asm := ec.asm
+	intLabel := ec.uniqueLabel("field_num_int")
+	storeLabel := ec.uniqueLabel("field_num_store")
+
+	asm.LSRimm(jit.X2, valReg, 48)
+	asm.MOVimm16(jit.X3, jit.NB_TagNilShr48)
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondGE, intLabel)
+	asm.FMOVtoFP(jit.D0, valReg)
+	asm.B(storeLabel)
+
+	asm.Label(intLabel)
+	asm.MOVimm16(jit.X3, jit.NB_TagIntShr48)
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, deoptLabel)
+	if valReg != jit.X0 {
+		asm.MOVreg(jit.X0, valReg)
+	}
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	asm.SCVTF(jit.D0, jit.X0)
+
+	asm.Label(storeLabel)
+	ec.storeRawFloat(jit.D0, instr.ID)
 }
 
 // emitSetField emits ARM64 code for OpSetField (table field write).
@@ -294,7 +391,15 @@ func (ec *emitContext) emitGetFieldExit(instr *Instr) {
 
 	// Load result from register file.
 	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
-	if instr.Type == TypeFloat {
+	if instr.Op == OpGetFieldNumToFloat {
+		typeDeoptLabel := ec.uniqueLabel("getfield_exit_num_deopt")
+		doneLabel := ec.uniqueLabel("getfield_exit_num_done")
+		ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
+		asm.B(doneLabel)
+		asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+		asm.Label(doneLabel)
+	} else if instr.Type == TypeFloat {
 		typeDeoptLabel := ec.uniqueLabel("getfield_exit_type_deopt")
 		doneLabel := ec.uniqueLabel("getfield_exit_typed_done")
 		ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)

@@ -183,6 +183,8 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 	// Guards: the guarded type is stored in Aux.
 	case OpGuardType:
 		return Type(instr.Aux)
+	case OpGetFieldNumToFloat:
+		return TypeFloat
 
 	// Table/closure/call produce dynamic types.
 	case OpNewTable:

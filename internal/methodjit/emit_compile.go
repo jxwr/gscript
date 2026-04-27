@@ -397,6 +397,7 @@ func instrMayDirectDeoptWithoutFullFlush(instr *Instr) bool {
 	}
 	switch instr.Op {
 	case OpGuardType, OpNumToFloat, OpDivIntExact,
+		OpGetFieldNumToFloat,
 		OpMatrixGetF, OpMatrixSetF, OpMatrixFlat, OpMatrixStride:
 		return true
 	case OpGetField:

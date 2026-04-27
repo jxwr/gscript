@@ -185,6 +185,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.shapeVerified = make(map[int]uint32)
 	case OpGetField:
 		ec.emitGetField(instr)
+	case OpGetFieldNumToFloat:
+		ec.emitGetFieldNumToFloat(instr)
 	case OpSetField:
 		ec.emitSetField(instr)
 
