@@ -120,7 +120,7 @@ func TestRegAlloc_AllValuesAssigned(t *testing.T) {
 	}
 }
 
-// TestRegAlloc_FloatValues: float-typed values go to FPRs (D4-D11).
+// TestRegAlloc_FloatValues: float-typed values go to allocatable FPRs.
 func TestRegAlloc_FloatValues(t *testing.T) {
 	// Build a function manually with float-typed instructions to verify FPR allocation.
 	fn := &Function{
@@ -158,9 +158,44 @@ func TestRegAlloc_FloatValues(t *testing.T) {
 		if !reg.IsFloat {
 			t.Errorf("float value v%d assigned to GPR %d, expected FPR", instr.ID, reg.Reg)
 		}
-		if reg.Reg < 4 || reg.Reg > 11 {
-			t.Errorf("float value v%d assigned to D%d, expected D4-D11", instr.ID, reg.Reg)
+		if !isAllocatableFPR(reg.Reg) {
+			t.Errorf("float value v%d assigned to D%d, expected allocatable FPR", instr.ID, reg.Reg)
 		}
+	}
+}
+
+func TestRegAlloc_FloatPhiUsesHighCallerSavedFPRs(t *testing.T) {
+	fn := &Function{NumRegs: 1}
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry}
+
+	const phiCount = 12
+	phis := make([]*Instr, 0, phiCount)
+	for i := 0; i < phiCount; i++ {
+		phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: entry}
+		phis = append(phis, phi)
+		entry.Instrs = append(entry.Instrs, phi)
+	}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: entry}
+	entry.Instrs = append(entry.Instrs, ret)
+
+	alloc := AllocateRegisters(fn)
+	if alloc.NumSpillSlots != 0 {
+		t.Fatalf("expected widened FPR pool to hold %d simultaneous float phis, got %d spills", phiCount, alloc.NumSpillSlots)
+	}
+	usedHigh := false
+	for _, phi := range phis {
+		pr, ok := alloc.ValueRegs[phi.ID]
+		if !ok || !pr.IsFloat {
+			t.Fatalf("float phi v%d did not get an FPR: %+v", phi.ID, pr)
+		}
+		if pr.Reg >= 16 {
+			usedHigh = true
+		}
+	}
+	if !usedHigh {
+		t.Fatalf("expected at least one float phi to use D16-D23; allocation=%s", formatRegAlloc(alloc))
 	}
 }
 
@@ -374,15 +409,15 @@ func assertAllValuesAssigned(t *testing.T, fn *Function, alloc *RegAllocation) {
 	}
 }
 
-// assertValidRegisters checks that all GPR assignments are in the allocatable
-// set {X20-X23, X28} and all FPR assignments are in D4-D11.
+// assertValidRegisters checks that all assignments use the current allocatable
+// register sets.
 func assertValidRegisters(t *testing.T, alloc *RegAllocation) {
 	t.Helper()
 	validGPRs := map[int]bool{20: true, 21: true, 22: true, 23: true, 28: true}
 	for id, reg := range alloc.ValueRegs {
 		if reg.IsFloat {
-			if reg.Reg < 4 || reg.Reg > 11 {
-				t.Errorf("value v%d: FPR D%d out of range D4-D11", id, reg.Reg)
+			if !isAllocatableFPR(reg.Reg) {
+				t.Errorf("value v%d: FPR D%d not in allocatable set", id, reg.Reg)
 			}
 		} else {
 			if !validGPRs[reg.Reg] {
@@ -390,4 +425,13 @@ func assertValidRegisters(t *testing.T, alloc *RegAllocation) {
 			}
 		}
 	}
+}
+
+func isAllocatableFPR(reg int) bool {
+	for _, r := range allocatableFPRs {
+		if r == reg {
+			return true
+		}
+	}
+	return false
 }

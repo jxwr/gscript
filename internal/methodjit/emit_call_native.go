@@ -4,8 +4,8 @@
 //
 // When Tier 2 encounters OpCall, instead of exiting to Go (emitCallExit ~80ns),
 // it emits a native BLR sequence (~10ns) identical to Tier 1's tier1_call.go.
-// The key difference: Tier 2 must spill/reload SSA register allocations (GPR X20-X23,
-// FPR D4-D11) around the BLR since the callee is free to use the same registers.
+// The key difference: Tier 2 must spill/reload live SSA register allocations
+// around the BLR since the callee is free to use the same allocatable registers.
 //
 // Native call sequence:
 //   1. Store function value and arguments to the VM register file
@@ -1469,7 +1469,7 @@ func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets
 //
 // Typically only 1-3 registers are live across a call (e.g., fib(n) only has
 // n live across each recursive call). This lets selective spill emit 1-3 STR
-// instructions instead of 12 (4 GPRs + 8 FPRs).
+// instructions instead of spilling the full allocatable GPR/FPR pools.
 func (ec *emitContext) computeLiveAcrossCall(callInstr *Instr) (gprLive map[int]bool, fprLive map[int]bool) {
 	gprLive = make(map[int]bool)
 	fprLive = make(map[int]bool)

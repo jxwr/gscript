@@ -73,6 +73,14 @@ const (
 	D13 FReg = 13 // callee-saved
 	D14 FReg = 14 // callee-saved
 	D15 FReg = 15 // callee-saved
+	D16 FReg = 16 // caller-saved
+	D17 FReg = 17 // caller-saved
+	D18 FReg = 18 // caller-saved
+	D19 FReg = 19 // caller-saved
+	D20 FReg = 20 // caller-saved
+	D21 FReg = 21 // caller-saved
+	D22 FReg = 22 // caller-saved
+	D23 FReg = 23 // caller-saved
 )
 
 // Condition codes for B.cond.

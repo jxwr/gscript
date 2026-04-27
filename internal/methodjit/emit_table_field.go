@@ -12,6 +12,34 @@ import (
 	"github.com/gscript/gscript/internal/jit"
 )
 
+// emitPrepareFieldTablePtr leaves the raw *Table pointer in X0 and returns
+// true when the field shape was already verified in this block. TypeTable
+// producers, such as TableArrayLoad, have already proved the NaN-boxed value is
+// a non-string table pointer, so the first field access can skip the full tag
+// and pointer-subtype check and go straight to the shape guard.
+func (ec *emitContext) emitPrepareFieldTablePtr(tblValueID int, shapeID uint32, deoptLabel string) bool {
+	asm := ec.asm
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		return true
+	}
+	if ec.irTypes[tblValueID] != TypeTable {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+	}
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, deoptLabel)
+	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+	asm.LoadImm64(jit.X2, int64(shapeID))
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, deoptLabel)
+	ec.shapeVerified[tblValueID] = shapeID
+	return false
+}
+
 // emitGetField emits ARM64 code for OpGetField (table field read).
 //
 // If field cache info is available (Aux2 != 0), emits inline shape-guarded
@@ -38,20 +66,14 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	asm := ec.asm
 	tblValueID := instr.Args[0].ID
 
-	// Shape guard dedup: if this table was already verified with the same
-	// shapeID in this block, skip the type check + nil check + shape guard.
-	if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
-		// Fast path: already verified. Just extract pointer and load field.
-		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
-		if tblReg != jit.X0 {
-			asm.MOVreg(jit.X0, tblReg)
-		}
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	typeDeoptLabel := ec.uniqueLabel("getfield_type_deopt")
+	doneLabel := ec.uniqueLabel("getfield_done")
+	deoptLabel := ec.uniqueLabel("getfield_deopt")
+	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
+	if shapeWasVerified {
 		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
 		if instr.Type == TypeFloat {
-			typeDeoptLabel := ec.uniqueLabel("getfield_type_deopt")
-			doneLabel := ec.uniqueLabel("getfield_typed_done")
 			ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
 			asm.B(doneLabel)
 			asm.Label(typeDeoptLabel)
@@ -63,41 +85,14 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 		return
 	}
 
-	// Load table value (NaN-boxed) into X0.
-	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
-	if tblReg != jit.X0 {
-		asm.MOVreg(jit.X0, tblReg)
-	}
-
-	// Deopt label for shape guard failure.
-	deoptLabel := ec.uniqueLabel("getfield_deopt")
-
-	// Check it's a table pointer (tag = 0xFFFF, sub = 0).
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
-
-	// Extract raw *Table pointer (44-bit payload).
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.CBZ(jit.X0, deoptLabel)
-
-	// Shape guard: load table.shapeID (uint32 at TableOffShapeID), compare.
-	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
-	asm.LoadImm64(jit.X2, int64(shapeID))
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondNE, deoptLabel)
-
-	// Record shape verification for dedup in subsequent field accesses.
-	ec.shapeVerified[tblValueID] = shapeID
-
 	// Direct field access: svals[fieldIndex].
 	// svals is a Go slice: first 8 bytes = data pointer.
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)      // X1 = svals data pointer
 	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize) // X0 = svals[fieldIndex]
 
-	typeDeoptLabel := ec.uniqueLabel("getfield_type_deopt")
 	ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
 
 	// Skip the deopt fallback.
-	doneLabel := ec.uniqueLabel("getfield_done")
 	asm.B(doneLabel)
 
 	// Deopt fallback: use table-exit to perform the field access in Go.
@@ -133,17 +128,14 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	asm := ec.asm
 	tblValueID := instr.Args[0].ID
 	typeDeoptLabel := ec.uniqueLabel("getfield_num_deopt")
+	doneLabel := ec.uniqueLabel("getfield_num_done")
+	deoptLabel := ec.uniqueLabel("getfield_num_shape_deopt")
 
-	if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
-		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
-		if tblReg != jit.X0 {
-			asm.MOVreg(jit.X0, tblReg)
-		}
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
+	if shapeWasVerified {
 		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
 		ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
-		doneLabel := ec.uniqueLabel("getfield_num_done")
 		asm.B(doneLabel)
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
@@ -151,27 +143,10 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 		return
 	}
 
-	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
-	if tblReg != jit.X0 {
-		asm.MOVreg(jit.X0, tblReg)
-	}
-
-	deoptLabel := ec.uniqueLabel("getfield_num_shape_deopt")
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.CBZ(jit.X0, deoptLabel)
-	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
-	asm.LoadImm64(jit.X2, int64(shapeID))
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondNE, deoptLabel)
-
-	ec.shapeVerified[tblValueID] = shapeID
-
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
 	ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
 
-	doneLabel := ec.uniqueLabel("getfield_num_done")
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
@@ -253,58 +228,21 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	asm := ec.asm
 	tblValueID := instr.Args[0].ID
 
-	// Shape guard dedup: if this table was already verified with the same
-	// shapeID in this block, skip the type check + nil check + shape guard.
-	if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
-		// Fast path: shape already verified. Load value, extract ptr, store.
-		valReg := ec.resolveValueNB(instr.Args[1].ID, jit.X3)
-		if valReg != jit.X3 {
-			asm.MOVreg(jit.X3, valReg)
-		}
-		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
-		if tblReg != jit.X0 {
-			asm.MOVreg(jit.X0, tblReg)
-		}
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
-		asm.STR(jit.X3, jit.X1, fieldIdx*jit.ValueSize)
-		return
-	}
-
+	deoptLabel := ec.uniqueLabel("setfield_deopt")
 	// Load value to store into X3 first (before we use X0 for the table).
 	valReg := ec.resolveValueNB(instr.Args[1].ID, jit.X3)
 	if valReg != jit.X3 {
 		asm.MOVreg(jit.X3, valReg)
 	}
 
-	// Load table value (NaN-boxed) into X0.
-	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
-	if tblReg != jit.X0 {
-		asm.MOVreg(jit.X0, tblReg)
-	}
-
-	// Deopt label for shape guard failure.
-	deoptLabel := ec.uniqueLabel("setfield_deopt")
-
-	// Check it's a table pointer.
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
-
-	// Extract raw *Table pointer.
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.CBZ(jit.X0, deoptLabel)
-
-	// Shape guard: load table.shapeID, compare.
-	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
-	asm.LoadImm64(jit.X2, int64(shapeID))
-	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondNE, deoptLabel)
-
-	// Record shape verification for dedup in subsequent field accesses.
-	ec.shapeVerified[tblValueID] = shapeID
+	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
 
 	// Direct field store: svals[fieldIndex] = value.
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)      // X1 = svals data pointer
 	asm.STR(jit.X3, jit.X1, fieldIdx*jit.ValueSize) // svals[fieldIndex] = value
+	if shapeWasVerified {
+		return
+	}
 
 	// Skip the deopt fallback.
 	doneLabel := ec.uniqueLabel("setfield_done")

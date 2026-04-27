@@ -12,7 +12,7 @@
 //   X26:     VM register base pointer (reserved)
 //   X27:     constants pointer (reserved)
 //   X28:     allocatable GPR (callee-saved, 5th register)
-//   D4-D11:  allocatable FPRs (callee-saved, 8 registers)
+//   D4-D11,D16-D23: allocatable FPRs
 
 package methodjit
 
@@ -22,13 +22,16 @@ package methodjit
 // self-calls are removed in the Method JIT, freeing X28 as a 5th GPR.
 var allocatableGPRs = [5]int{20, 21, 22, 23, 28}
 
-// Allocatable FPR pool: D4, D5, D6, D7, D8, D9, D10, D11.
-var allocatableFPRs = [8]int{4, 5, 6, 7, 8, 9, 10, 11}
+// Allocatable FPR pool. D4-D7 and D16-D23 are caller-saved, and D8-D11 are
+// already saved by the Tier 2 prologue when any FPR is used. Native BLR paths
+// selectively spill live FPR SSA values across calls, so the caller-saved high
+// registers are safe for call-free float-heavy loops without growing the frame.
+var allocatableFPRs = [16]int{4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 20, 21, 22, 23}
 
 // PhysReg represents a physical ARM64 register.
 type PhysReg struct {
 	Reg     int  // register number (X19=19, D4=4, etc.)
-	IsFloat bool // true for FPR (D4-D11), false for GPR (X19-X23)
+	IsFloat bool // true for FPR, false for GPR
 }
 
 // RegAllocation is the result of register allocation for a function.

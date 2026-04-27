@@ -187,8 +187,9 @@ func TestRegallocCarriesLoopHeaderPhis_Mandelbrot(t *testing.T) {
 // collide with the body's arithmetic result or with each other.
 //
 // CFG shape:
-//   entry(b0) → preheader(b1) → header(b2) → body(b3) → header (back-edge)
-//                                           → exit(b4)
+//
+//	entry(b0) → preheader(b1) → header(b2) → body(b3) → header (back-edge)
+//	                                        → exit(b4)
 func TestRegalloc_PreheaderInvariantPinned(t *testing.T) {
 	fn := &Function{NumRegs: 2, CarryPreheaderInvariants: true}
 
@@ -312,7 +313,8 @@ func TestRegalloc_PreheaderInvariantPinned(t *testing.T) {
 // are not in the carried map.
 //
 // Budget = len(allocatableFPRs) - reservedTemps - floatPhisInHeader
-//        = 8 - 3 - 1 = 4
+//
+//	= 8 - 3 - 1 = 4
 //
 // So 4 invariants are pinned (protected), 3 are not.
 func TestRegalloc_InvariantBudgetRespected(t *testing.T) {
@@ -437,7 +439,7 @@ func TestRegalloc_InvariantBudgetRespected(t *testing.T) {
 	if expectedBudget < 0 {
 		expectedBudget = 0
 	}
-	t.Logf("invariant budget: %d (8 FPRs - 3 reserved - 1 phi)", expectedBudget)
+	t.Logf("invariant budget: %d (%d FPRs - 3 reserved - 1 phi)", expectedBudget, len(allocatableFPRs))
 	t.Logf("protected (pinned) invariants: %d / %d", protectedCount, numInvariants)
 
 	if protectedCount > expectedBudget {

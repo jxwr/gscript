@@ -2,7 +2,7 @@
 
 // emit_reg.go implements register-resident value resolution for the Method JIT.
 // This is the #1 performance optimization: values allocated to physical registers
-// (X20-X23 GPRs, D4-D11 FPRs via regalloc.go) stay in those registers, avoiding
+// (X20-X23/X28 GPRs and allocatable FPRs via regalloc.go) stay in those registers, avoiding
 // memory load/store on every instruction.
 //
 // Raw int mode: type-specialized int operations (OpAddInt, OpSubInt, etc.) keep
@@ -10,7 +10,7 @@
 // NaN-boxed (for generic ops) or raw int (tracked by rawIntRegs).
 //
 // Raw float mode: type-specialized float operations (OpAddFloat, OpSubFloat, etc.)
-// keep values as raw float64 in FPRs (D4-D11). This avoids FMOVtoFP/FMOVtoGP
+// keep values as raw float64 in FPRs. This avoids FMOVtoFP/FMOVtoGP
 // conversions between every float op. Tracked by activeFPRegs.
 //
 // Raw int sources:
@@ -34,7 +34,7 @@
 //
 // Register convention:
 //   X20-X23, X28: allocatable GPRs (callee-saved, hold raw int or NaN-boxed)
-//   D4-D11:  allocatable FPRs (callee-saved, hold raw float64)
+//   D4-D11,D16-D23: allocatable FPRs (hold raw float64)
 //   X0-X3:   scratch GPRs for values without allocation
 //   D0-D3:   scratch FPRs for values without allocation
 //   X19:     ExecContext pointer (pinned)
