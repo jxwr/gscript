@@ -536,6 +536,17 @@ func AnyCoroutineValue(c any) Value {
 	return Value(tagPtr | ptrSubAnyCoro | (uint64(uintptr(p)) & ptrAddrMask))
 }
 
+// VMCoroutineValue stores a VM-owned coroutine pointer without registering an
+// interface lookup entry. The VM recovers this value through
+// AnyCoroutinePointer on hot resume/status paths.
+func VMCoroutineValue(p unsafe.Pointer, c any) Value {
+	if p == nil {
+		return Value(valNil)
+	}
+	keepAlive(p, c)
+	return Value(tagPtr | ptrSubAnyCoro | (uint64(uintptr(p)) & ptrAddrMask))
+}
+
 func ChannelValue(ch *Channel) Value {
 	if ch == nil {
 		return Value(valNil)
@@ -751,6 +762,16 @@ func (v Value) IsCoroutine() bool {
 	}
 	sub := v.ptrSubType()
 	return sub == ptrSubCoroutine || sub == ptrSubAnyCoro
+}
+
+// AnyCoroutinePointer returns the raw data pointer stored by AnyCoroutineValue.
+// It is intentionally narrower than Ptr(): VM coroutine hot paths only need to
+// recover their own concrete pointer and should not take the ifaceRoots mutex.
+func (v Value) AnyCoroutinePointer() unsafe.Pointer {
+	if uint64(v)&tagMask != tagPtr || v.ptrSubType() != ptrSubAnyCoro {
+		return nil
+	}
+	return v.ptrPayload()
 }
 
 func (v Value) IsChannel() bool {

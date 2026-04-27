@@ -593,6 +593,9 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	}
 
 	result, err := vm.run()
+	if err == errCoroutineYield {
+		return result, err
+	}
 	vm.frameCount--
 	return result, err
 }
@@ -621,10 +624,13 @@ func wrapLineErr(frame *CallFrame, err error) error {
 // Go stack growth for GScript function calls.
 func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 	initialFC := vm.frameCount
+	if vm.currentCoroutine != nil && initialFC > 1 {
+		initialFC = 1
+	}
 
 	// On error, reset frame count to clean up any inline sub-frames.
 	defer func() {
-		if retErr != nil {
+		if retErr != nil && retErr != errCoroutineYield {
 			vm.frameCount = initialFC
 		}
 	}()
@@ -1418,6 +1424,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				if gf := fnVal.GoFunction(); gf != nil {
 					if handled, err := vm.tryFastCoroutineCall(gf, base, a, nArgs, c); handled {
 						if err != nil {
+							if err == errCoroutineYield {
+								return nil, err
+							}
 							return nil, wrapLineErr(frame, err)
 						}
 						break
@@ -1804,7 +1813,7 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 		if nArgs < 1 || !vm.regs[base+a+1].IsCoroutine() {
 			return true, fmt.Errorf("coroutine.resume expects a coroutine")
 		}
-		co, ok := vm.regs[base+a+1].Ptr().(*VMCoroutine)
+		co, ok := vmCoroutineFromValue(vm.regs[base+a+1])
 		if !ok {
 			return true, fmt.Errorf("coroutine.resume expects a VM coroutine")
 		}
@@ -1827,6 +1836,13 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 			start := base + a + 1
 			args = vm.regs[start : start+nArgs]
 		}
+		if co := vm.currentCoroutine; co != nil {
+			vm.recordCoroutineYield()
+			co.yieldResult = vmYieldResult{values: args}
+			co.yieldDst = base + a
+			co.yieldC = c
+			return true, errCoroutineYield
+		}
 		results, err := vm.yieldCoroutine(args)
 		if err != nil {
 			return true, err
@@ -1845,6 +1861,15 @@ func (vm *VM) writeCoroutineResumeResults(dst, c int, ok bool, values []runtime.
 			vm.regs[dst+1+i] = r
 		}
 		vm.top = dst + 1 + len(values)
+		return
+	}
+	if c == 3 && len(values) == 1 {
+		vm.regs[dst] = runtime.BoolValue(ok)
+		vm.regs[dst+1] = values[0]
+		return
+	}
+	if c == 2 && len(values) == 0 {
+		vm.regs[dst] = runtime.BoolValue(ok)
 		return
 	}
 	nr := c - 1
@@ -1866,6 +1891,17 @@ func (vm *VM) writeCallResults(dst, c int, results []runtime.Value) {
 			vm.regs[dst+i] = r
 		}
 		vm.top = dst + len(results)
+		return
+	}
+	if c == 1 {
+		return
+	}
+	if c == 2 {
+		if len(results) > 0 {
+			vm.regs[dst] = results[0]
+		} else {
+			vm.regs[dst] = runtime.NilValue()
+		}
 		return
 	}
 	nr := c - 1

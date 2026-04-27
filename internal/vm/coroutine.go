@@ -1,11 +1,9 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
-	"runtime"
-	"strconv"
-	"strings"
-	"sync"
+	"unsafe"
 
 	rt "github.com/gscript/gscript/internal/runtime"
 )
@@ -20,27 +18,26 @@ const (
 	VMCoroutineNormal // resumed another coroutine
 )
 
-// vmYieldResult carries values or completion signals from a coroutine goroutine.
+// vmYieldResult carries yielded values from a paused coroutine VM.
 type vmYieldResult struct {
 	values []rt.Value
-	err    error
-	done   bool
 }
 
-// VMCoroutine holds the state of a VM-based coroutine.
-// Each coroutine runs in its own goroutine with its own VM instance,
-// communicating with the caller via channels.
+var errCoroutineYield = errors.New("coroutine yield")
+
+// VMCoroutine holds the state of a VM-based coroutine. Long-lived coroutines
+// keep a child VM paused at the bytecode immediately after coroutine.yield.
 type VMCoroutine struct {
 	status     VMCoroutineStatus
 	closure    *Closure
 	started    bool
 	leafNoCall bool
 	resultBuf  [8]rt.Value
+	vm         *VM
+	yieldDst   int
+	yieldC     int
 
-	resumeArgs  []rt.Value
 	yieldResult vmYieldResult
-	resumeCh    chan struct{} // caller -> coroutine
-	yieldCh     chan struct{} // coroutine -> caller
 }
 
 // NewVMCoroutine creates a new VM coroutine wrapping the given closure.
@@ -49,8 +46,6 @@ func NewVMCoroutine(cl *Closure) *VMCoroutine {
 		status:     VMCoroutineSuspended,
 		closure:    cl,
 		leafNoCall: cl != nil && cl.Proto != nil && protoHasNoCalls(cl.Proto),
-		resumeCh:   make(chan struct{}),
-		yieldCh:    make(chan struct{}),
 	}
 }
 
@@ -69,45 +64,16 @@ func (co *VMCoroutine) Status() string {
 	return "dead"
 }
 
-// goroutine-local map for finding the current coroutine from yield calls.
-var vmCoMap sync.Map // goroutineID -> *VMCoroutine
-
-func setCurrentVMCoroutine(co *VMCoroutine) {
-	gid := vmGoroutineID()
-	if co == nil {
-		vmCoMap.Delete(gid)
-	} else {
-		vmCoMap.Store(gid, co)
+func vmCoroutineFromValue(v rt.Value) (*VMCoroutine, bool) {
+	if p := v.AnyCoroutinePointer(); p != nil {
+		return (*VMCoroutine)(p), true
 	}
-}
-
-func getCurrentVMCoroutine() *VMCoroutine {
-	gid := vmGoroutineID()
-	v, ok := vmCoMap.Load(gid)
-	if !ok {
-		return nil
-	}
-	return v.(*VMCoroutine)
+	co, ok := v.Ptr().(*VMCoroutine)
+	return co, ok
 }
 
 func (vm *VM) activeCoroutine() *VMCoroutine {
-	if vm.currentCoroutine != nil {
-		return vm.currentCoroutine
-	}
-	return getCurrentVMCoroutine()
-}
-
-func vmGoroutineID() int64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-	s := string(buf[:n])
-	s = strings.TrimPrefix(s, "goroutine ")
-	idx := strings.IndexByte(s, ' ')
-	if idx < 0 {
-		return 0
-	}
-	id, _ := strconv.ParseInt(s[:idx], 10, 64)
-	return id
+	return vm.currentCoroutine
 }
 
 // RegisterCoroutineLib installs VM-native coroutine functions into globals,
@@ -134,7 +100,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			}
 			co := NewVMCoroutine(cl)
 			vm.recordCoroutineCreated(false)
-			return []rt.Value{rt.AnyCoroutineValue(co)}, nil
+			return []rt.Value{rt.VMCoroutineValue(unsafe.Pointer(co), co)}, nil
 		},
 	}))
 
@@ -145,7 +111,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			if len(args) < 1 || !args[0].IsCoroutine() {
 				return nil, fmt.Errorf("coroutine.resume expects a coroutine")
 			}
-			co, ok := args[0].Ptr().(*VMCoroutine)
+			co, ok := vmCoroutineFromValue(args[0])
 			if !ok {
 				return nil, fmt.Errorf("coroutine.resume expects a VM coroutine")
 			}
@@ -172,7 +138,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			if len(args) < 1 || !args[0].IsCoroutine() {
 				return nil, fmt.Errorf("coroutine.status expects a coroutine")
 			}
-			co, ok := args[0].Ptr().(*VMCoroutine)
+			co, ok := vmCoroutineFromValue(args[0])
 			if !ok {
 				return nil, fmt.Errorf("coroutine.status expects a VM coroutine")
 			}
@@ -280,49 +246,43 @@ func (vm *VM) resumeCoroutineRaw(co *VMCoroutine, args []rt.Value) (bool, []rt.V
 	if !co.started {
 		co.started = true
 		vm.recordCoroutineGoroutineStart()
-		// Launch a new goroutine with its own VM sharing globals.
-		go func() {
-			setCurrentVMCoroutine(co)
-			defer setCurrentVMCoroutine(nil)
-
-			coVM := newChildVM(vm, co)
-
-			// Wait for initial args from the first resume.
-			<-co.resumeCh
-			initArgs := co.resumeArgs
-			co.resumeArgs = nil
-
-			// Execute the closure.
-			results, err := coVM.call(co.closure, initArgs, 0, 0)
-			if results == nil {
-				results = []rt.Value{}
-			}
-			co.yieldResult = vmYieldResult{values: results, err: err, done: true}
-			co.yieldCh <- struct{}{}
-		}()
+		co.vm = newChildVM(vm, co)
+		results, err := co.vm.call(co.closure, args, 0, 0)
+		return vm.finishCoroutineRun(co, results, err)
 	}
 
-	// Send args to the coroutine goroutine.
-	co.resumeArgs = args
-	co.resumeCh <- struct{}{}
+	if co.vm == nil {
+		co.status = VMCoroutineDead
+		vm.recordCoroutineResumeError()
+		return false, []rt.Value{rt.StringValue("cannot resume dead coroutine")}, nil
+	}
+	co.vm.writeCallResults(co.yieldDst, co.yieldC, args)
+	results, err := co.vm.run()
+	return vm.finishCoroutineRun(co, results, err)
+}
 
-	// Wait for yield or completion.
-	<-co.yieldCh
-	result := co.yieldResult
-	co.yieldResult = vmYieldResult{}
-
-	if result.done || result.err != nil {
+func (vm *VM) finishCoroutineRun(co *VMCoroutine, results []rt.Value, err error) (bool, []rt.Value, error) {
+	if err == errCoroutineYield {
+		result := co.yieldResult
+		co.yieldResult = vmYieldResult{}
+		co.status = VMCoroutineSuspended
+		return true, result.values, nil
+	}
+	if results == nil {
+		results = []rt.Value{}
+	}
+	if co.vm != nil {
+		co.vm.frameCount = 0
+		co.vm.top = 0
+	}
+	if err != nil {
 		co.status = VMCoroutineDead
 		vm.recordCoroutineCompleted()
-	} else {
-		co.status = VMCoroutineSuspended
+		return false, []rt.Value{rt.StringValue(err.Error())}, nil
 	}
-
-	if result.err != nil {
-		return false, []rt.Value{rt.StringValue(result.err.Error())}, nil
-	}
-
-	return true, result.values, nil
+	co.status = VMCoroutineDead
+	vm.recordCoroutineCompleted()
+	return true, results, nil
 }
 
 func (vm *VM) yieldCoroutine(args []rt.Value) ([]rt.Value, error) {
@@ -330,13 +290,7 @@ func (vm *VM) yieldCoroutine(args []rt.Value) ([]rt.Value, error) {
 	if co == nil {
 		return nil, fmt.Errorf("cannot yield from outside a coroutine")
 	}
-	vm.recordCoroutineYield()
-	co.yieldResult = vmYieldResult{values: args}
-	co.yieldCh <- struct{}{}
-	<-co.resumeCh
-	resumeVals := co.resumeArgs
-	co.resumeArgs = nil
-	return resumeVals, nil
+	return nil, fmt.Errorf("coroutine.yield requires VM call dispatch")
 }
 
 func protoHasNoCalls(proto *FuncProto) bool {

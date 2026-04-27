@@ -1233,6 +1233,27 @@ ok3, v3 := coroutine.resume(co, "world")
 	expectGlobalString(t, g, "v3", "hello world")
 }
 
+func TestVMCoroutineYieldInsideNestedCall(t *testing.T) {
+	g := compileAndRun(t, `
+func helper() {
+	x := coroutine.yield(10)
+	return x + 1
+}
+
+co := coroutine.create(func() {
+	y := helper()
+	return y * 2
+})
+
+ok1, v1 := coroutine.resume(co)
+ok2, v2 := coroutine.resume(co, 20)
+`)
+	expectGlobalBool(t, g, "ok1", true)
+	expectGlobalInt(t, g, "v1", 10)
+	expectGlobalBool(t, g, "ok2", true)
+	expectGlobalInt(t, g, "v2", 42)
+}
+
 // Test 15: Type function reports "coroutine"
 func TestVMCoroutineType(t *testing.T) {
 	g := compileAndRun(t, `
