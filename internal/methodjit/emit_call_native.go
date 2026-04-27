@@ -238,6 +238,8 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, jit.SP, 56)
 		asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
 		asm.STR(jit.X3, jit.SP, 64)
+		asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
+		asm.STR(jit.X3, jit.SP, 72)
 	}
 
 	// Step 8: Copy args to callee register window.
@@ -278,6 +280,8 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
 		asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalCacheGenPtr)
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
+		asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalIndexPtr)
+		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
 	}
 
 	// Increment NativeCallDepth.
@@ -333,6 +337,8 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
 		asm.LDR(jit.X3, jit.SP, 64)
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
+		asm.LDR(jit.X3, jit.SP, 72)
+		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
 	}
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, 80)
@@ -1203,6 +1209,12 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
 	asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+	asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalCachePtr)
+	asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
+	asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalCacheGenPtr)
+	asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
+	asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalIndexPtr)
+	asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
 	// Persist the (unchanged) mRegRegs back to ctx.Regs so callee's
 	// direct-entry reload sees the correct base.
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)

@@ -7,7 +7,6 @@ package methodjit
 
 import (
 	"sort"
-	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -199,7 +198,7 @@ for r := 1; r <= 3; r++ {
 	}
 }
 
-func TestLoopCallGateBlocksLoopGlobalReduction(t *testing.T) {
+func TestLoopCallGateAllowsIndexedGlobalReduction(t *testing.T) {
 	top := compileProto(t, `
 func helper(x) { return x + 1 }
 
@@ -209,10 +208,8 @@ for i := 1; i <= 10; i++ {
 }
 `)
 	tm := NewTieringManager()
-	if _, err := tm.CompileForDiagnostics(top); err == nil {
-		t.Fatalf("expected <main> Tier2 compile to block global loop reduction")
-	} else if !strings.Contains(err.Error(), "read/write global state inside loop") {
-		t.Fatalf("CompileForDiagnostics error = %q, want read/write global loop gate", err)
+	if _, err := tm.CompileForDiagnostics(top); err != nil {
+		t.Fatalf("expected <main> Tier2 compile to use indexed global protocol: %v", err)
 	}
 }
 

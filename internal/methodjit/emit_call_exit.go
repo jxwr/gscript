@@ -158,6 +158,12 @@ func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
 	slowLabel := ec.uniqueLabel("getglobal_slow")
 	doneLabel := ec.uniqueLabel("getglobal_done")
 
+	if ec.supportsIndexedGlobalGetProtocol() {
+		indexFallbackLabel := ec.uniqueLabel("getglobal_index_fallback")
+		ec.emitIndexedGetGlobalFast(instr, indexFallbackLabel, doneLabel)
+		asm.Label(indexFallbackLabel)
+	}
+
 	// Assign a cache index for this GetGlobal instruction.
 	cacheIdx := ec.nextGlobalCacheIndex
 	ec.nextGlobalCacheIndex++
@@ -221,6 +227,84 @@ func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
 	ec.rawIntRegs = savedRawIntRegs
 
 	asm.Label(doneLabel)
+}
+
+// emitSetGlobalNative stores directly into VM.globalArray when the VM prepared
+// an indexed global table with a matching structural version. If that protocol
+// is unavailable or invalidated, it falls back to the existing OpExit path.
+func (ec *emitContext) emitSetGlobalNative(instr *Instr) {
+	if !ec.supportsIndexedGlobalSetProtocol() {
+		ec.emitOpExit(instr)
+		return
+	}
+
+	asm := ec.asm
+	slowLabel := ec.uniqueLabel("setglobal_slow")
+	doneLabel := ec.uniqueLabel("setglobal_done")
+
+	ec.emitIndexedGlobalAddress(int(instr.Aux), slowLabel)
+
+	if len(instr.Args) > 0 {
+		valReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		if valReg != jit.X0 {
+			asm.MOVreg(jit.X0, valReg)
+		}
+		asm.STRreg(jit.X0, jit.X16, jit.X17)
+	}
+
+	// Native SetGlobal changes global values without an exit. Bump the shared
+	// generation counter so Tier 1/Tier 2 value caches miss instead of reading
+	// stale cached globals after this store.
+	asm.LDR(jit.X1, mRegCtx, execCtxOffTier2GlobalGenPtr)
+	asm.CBZ(jit.X1, doneLabel)
+	asm.LDR(jit.X2, jit.X1, 0)
+	asm.ADDimm(jit.X2, jit.X2, 1)
+	asm.STR(jit.X2, jit.X1, 0)
+	asm.B(doneLabel)
+
+	asm.Label(slowLabel)
+	ec.emitOpExit(instr)
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitIndexedGetGlobalFast(instr *Instr, slowLabel, doneLabel string) {
+	ec.emitIndexedGlobalAddress(int(instr.Aux), slowLabel)
+	ec.asm.LDRreg(jit.X1, jit.X16, jit.X17)
+	ec.storeResultNB(jit.X1, instr.ID)
+	ec.asm.B(doneLabel)
+}
+
+func (ec *emitContext) emitIndexedGlobalAddress(constIdx int, slowLabel string) {
+	asm := ec.asm
+	asm.LDR(jit.X16, mRegCtx, execCtxOffTier2GlobalArray)
+	asm.CBZ(jit.X16, slowLabel)
+	asm.LDR(jit.X17, mRegCtx, execCtxOffTier2GlobalIndex)
+	asm.CBZ(jit.X17, slowLabel)
+	asm.LDR(jit.X0, mRegCtx, execCtxOffTier2GlobalVerPtr)
+	asm.CBZ(jit.X0, slowLabel)
+	asm.LDRW(jit.X1, jit.X0, 0)
+	asm.LDR(jit.X2, mRegCtx, execCtxOffTier2GlobalVer)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, slowLabel)
+	constOff := constIdx * 4
+	if constOff < 4096*4 {
+		asm.LDRW(jit.X17, jit.X17, constOff)
+	} else {
+		asm.LoadImm64(jit.X3, int64(constOff))
+		asm.ADDreg(jit.X17, jit.X17, jit.X3)
+		asm.LDRW(jit.X17, jit.X17, 0)
+	}
+	asm.LoadImm64(jit.X3, 0xFFFFFFFF)
+	asm.CMPreg(jit.X17, jit.X3)
+	asm.BCond(jit.CondEQ, slowLabel)
+}
+
+func (ec *emitContext) supportsIndexedGlobalGetProtocol() bool {
+	return ec != nil && ec.fn != nil && ec.fn.Proto != nil
+}
+
+func (ec *emitContext) supportsIndexedGlobalSetProtocol() bool {
+	return ec != nil && ec.fn != nil && fnSupportsNativeSetGlobalProtocol(ec.fn)
 }
 
 func (ec *emitContext) isSelfGlobal(instr *Instr) bool {

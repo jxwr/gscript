@@ -352,6 +352,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	if ec.nextGlobalCacheIndex > 0 {
 		globalCache = make([]uint64, ec.nextGlobalCacheIndex)
 	}
+	nativeSetGlobals := collectNativeSetGlobals(fn)
 
 	// R108/R151: allocate per-OpCall monomorphic IC cache (2 uint64 per site).
 	var callCache []uint64
@@ -370,11 +371,43 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		NumericEntryOffset: numericEntryOff,
 		GlobalCache:        globalCache,
 		GlobalCacheConsts:  ec.globalCacheConsts,
+		NativeSetGlobals:   nativeSetGlobals,
 		CallCache:          callCache,
 		InstrCodeRanges:    ec.instrCodeRanges,
 		ExitSites:          buildExitSiteMeta(fn),
 		ExitResumeCheck:    ec.exitResumeCheck,
 	}, nil
+}
+
+func collectNativeSetGlobals(fn *Function) map[int]bool {
+	out := make(map[int]bool)
+	if !fnSupportsNativeSetGlobalProtocol(fn) {
+		return out
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpSetGlobal {
+				out[int(instr.Aux)] = true
+			}
+		}
+	}
+	return out
+}
+
+func fnSupportsIndexedGlobalProtocol(fn *Function) bool {
+	return fn != nil && fn.Proto != nil
+}
+
+func protoSupportsIndexedGlobalProtocol(proto *vm.FuncProto) bool {
+	return proto != nil
+}
+
+func fnSupportsNativeSetGlobalProtocol(fn *Function) bool {
+	return fn != nil && protoSupportsNativeSetGlobalProtocol(fn.Proto)
+}
+
+func protoSupportsNativeSetGlobalProtocol(proto *vm.FuncProto) bool {
+	return proto != nil && proto.Name == "<main>"
 }
 
 func loopBodyHasDirectDeopt(fn *Function, bodyBlocks map[int]bool) bool {

@@ -128,6 +128,10 @@ type ExecContext struct {
 	Tier2GlobalCacheGen uintptr // pointer to CompiledFunction.GlobalCacheGen
 	Tier2GlobalGenPtr   uintptr // pointer to tier1.globalCacheGen (shared counter)
 	GlobalCacheIdx      int64   // cache index for current GetGlobal (set by emitter on exit)
+	Tier2GlobalArray    uintptr // pointer to VM.globalArray[0] for indexed globals
+	Tier2GlobalIndex    uintptr // pointer to []int32 const-index -> globalArray index
+	Tier2GlobalVerPtr   uintptr // pointer to VM.globalVer
+	Tier2GlobalVer      uint64  // VM.globalVer captured when the array pointer was prepared
 
 	// Tier 2 monomorphic call IC (R108). Each OpCall in the compiled code
 	// gets a 2-uint64 cache slot: [boxed_closure_value, direct_entry_addr].
@@ -245,6 +249,10 @@ var (
 	execCtxOffTier2GlobalCacheGen   = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCacheGen))
 	execCtxOffTier2GlobalGenPtr     = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalGenPtr))
 	execCtxOffGlobalCacheIdx        = int(unsafe.Offsetof(ExecContext{}.GlobalCacheIdx))
+	execCtxOffTier2GlobalArray      = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalArray))
+	execCtxOffTier2GlobalIndex      = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalIndex))
+	execCtxOffTier2GlobalVerPtr     = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalVerPtr))
+	execCtxOffTier2GlobalVer        = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalVer))
 	execCtxOffExitResumePC          = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
 	execCtxOffTier2CallCache        = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
 	execCtxOffDeoptInstrID          = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
@@ -312,6 +320,17 @@ type CompiledFunction struct {
 	// only cache entries for the written global instead of bumping the shared
 	// generation and flushing unrelated function/global ICs.
 	GlobalCacheConsts []int
+
+	// GlobalIndexByConst maps proto constant indices to VM.globalArray indices
+	// for the native indexed global protocol. The tier manager prepares it
+	// with the VM and publishes the backing pointer on FuncProto for direct
+	// Tier 2 callees.
+	GlobalIndexByConst []int32
+
+	// NativeSetGlobals is the set of proto constant indices written by native
+	// SetGlobal. The execute loop syncs these array slots back into the legacy
+	// globals map before every exit and on normal return.
+	NativeSetGlobals map[int]bool
 
 	// CallCache (R108) is a per-OpCall-site monomorphic IC.
 	// Layout: 2 × uint64 per call site.

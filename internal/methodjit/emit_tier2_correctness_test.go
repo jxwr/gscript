@@ -115,6 +115,103 @@ func compareTier2Result(t *testing.T, src, globalName string) {
 	}
 }
 
+func TestTier2_TopLevelGlobalReductionNative(t *testing.T) {
+	src := `
+func helper(x) { return x + 1 }
+
+sum := 0
+for i := 1; i <= 1000; i++ {
+    sum = sum + helper(i)
+}
+result := sum
+`
+	compareTier2Result(t, src, "result")
+
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("JIT execute error: %v", err)
+	}
+	if !containsString(tm.Tier2Entered(), "<main>") {
+		t.Fatalf("expected <main> to enter Tier2, entered=%v failed=%v", tm.Tier2Entered(), tm.Tier2Failed())
+	}
+	if got := v.GetGlobal("result"); !got.IsInt() || got.Int() != 501500 {
+		t.Fatalf("result=%v, want 501500", got)
+	}
+}
+
+func TestTier2_TopLevelGlobalReductionFallbackAfterGlobalShapeChange(t *testing.T) {
+	src := `
+func observe(i) {
+    if i == 3 { z := 99 }
+    return x
+}
+
+x := 0
+ok := 1
+for i := 1; i <= 5; i++ {
+    x = x + i
+    if observe(i) != x { ok = 0 }
+}
+result := x * ok
+`
+	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_DirectCalleeIndexedGlobalLookup(t *testing.T) {
+	src := `
+func F(n) {
+    if n == 0 { return 1 }
+    return M(n - 1) + 1
+}
+
+func M(n) {
+    if n == 0 { return 0 }
+    return F(n - 1) + 1
+}
+
+result := 0
+for i := 1; i <= 200; i++ {
+    result = result + F(8)
+}
+`
+	compareTier2Result(t, src, "result")
+
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	for _, name := range []string{"F", "M"} {
+		if err := tm.CompileTier2(findProtoByName(proto, name)); err != nil {
+			t.Fatalf("CompileTier2(%s): %v", name, err)
+		}
+	}
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("JIT execute error: %v", err)
+	}
+	if !containsString(tm.Tier2Entered(), "F") || !containsString(tm.Tier2Entered(), "M") {
+		t.Fatalf("expected F and M to enter Tier2, entered=%v failed=%v", tm.Tier2Entered(), tm.Tier2Failed())
+	}
+	if got := tm.ExitStats().ByExitCode["ExitGlobalExit"]; got != 0 {
+		t.Fatalf("direct Tier2 callees should use their own indexed globals, got %d GlobalExit exits", got)
+	}
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestTier2_SieveCorrectness exercises GETTABLE+SETTABLE in nested loops with
 // a boolean array. The sieve of Eratosthenes pattern stresses table read/write
 // inside while-style and for-style loops.

@@ -412,6 +412,7 @@ func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction
 		proto.Tier2GlobalCachePtr = 0
 		proto.Tier2GlobalCacheGenPtr = 0
 	}
+	tm.prepareTier2GlobalIndexes(proto, cf)
 }
 
 // compileTier2 compiles a function at Tier 2 (optimizing).
@@ -1135,9 +1136,13 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		profile := tm.getProfile(proto)
 		if profile.LoopDepth < 2 {
 			if hasReadWriteGlobalInSameLoop(fn) {
-				remarks.Add("Tier2Gate", "blocked", 0, 0, OpSetGlobal,
-					"LoopDepth<2 candidate reads and writes a global in the same loop")
-				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has read/write global state inside loop, staying at Tier 1")
+				if !hasIndexedGlobalLoopProtocol(fn) {
+					remarks.Add("Tier2Gate", "blocked", 0, 0, OpSetGlobal,
+						"LoopDepth<2 candidate reads and writes a global in the same loop")
+					return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has read/write global state inside loop, staying at Tier 1")
+				}
+				remarks.Add("Tier2Gate", "changed", 0, 0, OpSetGlobal,
+					"LoopDepth<2 read/write globals accepted by indexed native global protocol")
 			}
 			if op, ok := firstCallBoundaryTier2BlockerInLoop(fn, loopCallGlobals); ok {
 				remarks.Add("Tier2Gate", "blocked", 0, 0, op,
@@ -1228,10 +1233,16 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 	}
 
 	// Set up Tier 2 global value cache pointers.
+	ctx.Tier2GlobalGenPtr = uintptr(unsafe.Pointer(&tm.tier1.globalCacheGen))
 	if len(cf.GlobalCache) > 0 {
 		ctx.Tier2GlobalCache = uintptr(unsafe.Pointer(&cf.GlobalCache[0]))
 		ctx.Tier2GlobalCacheGen = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))
-		ctx.Tier2GlobalGenPtr = uintptr(unsafe.Pointer(&tm.tier1.globalCacheGen))
+	}
+	if arrayPtr, verPtr, ver, ok := tm.prepareTier2GlobalIndexes(proto, cf); ok {
+		ctx.Tier2GlobalIndex = proto.Tier2GlobalIndexPtr
+		ctx.Tier2GlobalArray = arrayPtr
+		ctx.Tier2GlobalVerPtr = uintptr(unsafe.Pointer(verPtr))
+		ctx.Tier2GlobalVer = uint64(ver)
 	}
 	// R108: set mono call-IC cache pointer.
 	if len(cf.CallCache) > 0 {
@@ -1262,10 +1273,17 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			ctx.BaselineClosurePtr = uintptr(unsafe.Pointer(cl))
 		}
 	}
+	syncNativeGlobals := func() {
+		if tm.callVM == nil || len(cf.NativeSetGlobals) == 0 || len(cf.GlobalIndexByConst) == 0 {
+			return
+		}
+		tm.callVM.SyncTier2GlobalMap(proto.Constants, cf.GlobalIndexByConst, cf.NativeSetGlobals)
+	}
 
 	var r154_exitCount int
 	for {
 		jit.CallJIT(codePtr, ctxPtr)
+		syncNativeGlobals()
 
 		if tm.envR154Trace {
 			r154_exitCount++
@@ -1444,6 +1462,7 @@ func (tm *TieringManager) disableTier2AfterRuntimeDeopt(proto *vm.FuncProto, rea
 	proto.Tier2NumericEntryPtr = 0
 	proto.Tier2GlobalCachePtr = 0
 	proto.Tier2GlobalCacheGenPtr = 0
+	proto.Tier2GlobalIndexPtr = 0
 	tm.tier1.SetOSRCounter(proto, -1)
 	tm.tier1.EvictCompiled(proto)
 	tm.traceEvent("runtime_disable", "tier2", proto, map[string]any{
@@ -1972,6 +1991,63 @@ func hasReadWriteGlobalInSameLoop(fn *Function) bool {
 		}
 	}
 	return false
+}
+
+func collectCompiledGlobalConsts(cf *CompiledFunction) map[int]bool {
+	if cf == nil {
+		return nil
+	}
+	out := make(map[int]bool, len(cf.GlobalCacheConsts)+len(cf.NativeSetGlobals))
+	for _, constIdx := range cf.GlobalCacheConsts {
+		out[constIdx] = true
+	}
+	for constIdx := range cf.NativeSetGlobals {
+		out[constIdx] = true
+	}
+	return out
+}
+
+func (tm *TieringManager) prepareTier2GlobalIndexes(proto *vm.FuncProto, cf *CompiledFunction) (uintptr, *uint32, uint32, bool) {
+	if proto != nil {
+		proto.Tier2GlobalIndexPtr = 0
+	}
+	if cf != nil {
+		cf.GlobalIndexByConst = nil
+	}
+	if tm == nil || tm.callVM == nil || proto == nil || cf == nil || len(proto.Constants) == 0 || !protoSupportsIndexedGlobalProtocol(proto) {
+		return 0, nil, 0, false
+	}
+	globalConsts := collectCompiledGlobalConsts(cf)
+	if len(globalConsts) == 0 {
+		return 0, nil, 0, false
+	}
+	indices, arrayPtr, verPtr, ver, ok := tm.callVM.PrepareTier2GlobalArray(proto.Constants, globalConsts)
+	if !ok {
+		return 0, nil, 0, false
+	}
+	cf.GlobalIndexByConst = indices
+	if len(indices) > 0 {
+		proto.Tier2GlobalIndexPtr = uintptr(unsafe.Pointer(&indices[0]))
+	}
+	return arrayPtr, verPtr, ver, true
+}
+
+func hasIndexedGlobalLoopProtocol(fn *Function) bool {
+	if !fnSupportsNativeSetGlobalProtocol(fn) {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGetGlobal && instr.Op != OpSetGlobal {
+				continue
+			}
+			constIdx := int(instr.Aux)
+			if constIdx < 0 || constIdx >= len(fn.Proto.Constants) || !fn.Proto.Constants[constIdx].IsString() {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func firstSelfRecursiveTableMutationInLoop(fn *Function) (Op, bool) {

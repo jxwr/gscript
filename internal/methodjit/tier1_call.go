@@ -52,6 +52,7 @@ var (
 	funcProtoOffGlobalValCachePtr      int // vm.FuncProto.GlobalValCachePtr offset
 	funcProtoOffTier2GlobalCachePtr    int // vm.FuncProto.Tier2GlobalCachePtr offset
 	funcProtoOffTier2GlobalCacheGenPtr int // vm.FuncProto.Tier2GlobalCacheGenPtr offset
+	funcProtoOffTier2GlobalIndexPtr    int // vm.FuncProto.Tier2GlobalIndexPtr offset
 	funcProtoOffCallCount              int // vm.FuncProto.CallCount offset
 )
 
@@ -73,6 +74,7 @@ func init() {
 	funcProtoOffGlobalValCachePtr = int(unsafe.Offsetof(proto.GlobalValCachePtr))
 	funcProtoOffTier2GlobalCachePtr = int(unsafe.Offsetof(proto.Tier2GlobalCachePtr))
 	funcProtoOffTier2GlobalCacheGenPtr = int(unsafe.Offsetof(proto.Tier2GlobalCacheGenPtr))
+	funcProtoOffTier2GlobalIndexPtr = int(unsafe.Offsetof(proto.Tier2GlobalIndexPtr))
 	funcProtoOffCallCount = int(unsafe.Offsetof(proto.CallCount))
 }
 

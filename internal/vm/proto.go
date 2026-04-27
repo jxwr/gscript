@@ -39,6 +39,7 @@ type FuncProto struct {
 	GlobalValCacheGen      uint64                    // BaselineFunc.CachedGlobalGen (for BLR callee generation check)
 	Tier2GlobalCachePtr    uintptr                   // pointer to CompiledFunction.GlobalCache[0] (for Tier 2 BLR callees)
 	Tier2GlobalCacheGenPtr uintptr                   // pointer to CompiledFunction.GlobalCacheGen (for Tier 2 BLR callees)
+	Tier2GlobalIndexPtr    uintptr                   // pointer to CompiledFunction.GlobalIndexByConst[0] (for Tier 2 indexed globals)
 	Tier2Promoted          bool                      // set true when TieringManager compiles this proto at Tier 2
 	NeedsTier2             bool                      // set true when Tier 2 applied ops (e.g., intrinsics) that Tier 1 would execute differently
 	EnteredTier2           byte                      // R146: set to 1 by Tier 2 native prologue on first entry — observable signal that native code actually ran (not just compiled)

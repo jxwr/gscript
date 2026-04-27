@@ -219,6 +219,69 @@ func (vm *VM) SetGlobal(name string, val runtime.Value) {
 	vm.globalsMu.Unlock()
 }
 
+// PrepareTier2GlobalArray resolves the requested string constants as indexed
+// globals and returns the data needed by the Tier 2 indexed-global fast path.
+// The native path is enabled only for single-threaded VMs without per-VM
+// overrides; other VM shapes fall back to the existing exit-resume protocol.
+func (vm *VM) PrepareTier2GlobalArray(constants []runtime.Value, usedConsts map[int]bool) ([]int32, uintptr, *uint32, uint32, bool) {
+	if vm == nil || !vm.noGlobalLock || vm.globalOverrides != nil {
+		return nil, 0, nil, 0, false
+	}
+	indices := make([]int32, len(constants))
+	for i := range indices {
+		indices[i] = -1
+	}
+	for constIdx := range usedConsts {
+		if constIdx < 0 || constIdx >= len(constants) {
+			return nil, 0, nil, 0, false
+		}
+		c := constants[constIdx]
+		if !c.IsString() {
+			return nil, 0, nil, 0, false
+		}
+		idx := vm.resolveGlobalIndex(c.Str())
+		indices[constIdx] = int32(idx)
+	}
+	if len(vm.globalArray) == 0 {
+		return indices, 0, &vm.globalVer, vm.globalVer, true
+	}
+	return indices, uintptr(unsafe.Pointer(&vm.globalArray[0])), &vm.globalVer, vm.globalVer, true
+}
+
+// SyncTier2GlobalMap mirrors indexed global values back into the legacy globals
+// map for names written natively by Tier 2. VM.GetGlobal reads globalArray, but
+// the map is still part of the VM's public interop surface.
+func (vm *VM) SyncTier2GlobalMap(constants []runtime.Value, indices []int32, constSet map[int]bool) {
+	if vm == nil || len(indices) == 0 || len(constSet) == 0 {
+		return
+	}
+	if vm.noGlobalLock {
+		for constIdx := range constSet {
+			if constIdx < 0 || constIdx >= len(constants) || constIdx >= len(indices) {
+				continue
+			}
+			idx := int(indices[constIdx])
+			if idx < 0 || idx >= len(vm.globalArray) || !constants[constIdx].IsString() {
+				continue
+			}
+			vm.globals[constants[constIdx].Str()] = vm.globalArray[idx]
+		}
+		return
+	}
+	vm.globalsMu.Lock()
+	for constIdx := range constSet {
+		if constIdx < 0 || constIdx >= len(constants) || constIdx >= len(indices) {
+			continue
+		}
+		idx := int(indices[constIdx])
+		if idx < 0 || idx >= len(vm.globalArray) || !constants[constIdx].IsString() {
+			continue
+		}
+		vm.globals[constants[constIdx].Str()] = vm.globalArray[idx]
+	}
+	vm.globalsMu.Unlock()
+}
+
 func (vm *VM) setGlobalOverride(name string, val runtime.Value) {
 	if vm.globalOverrides == nil {
 		vm.globalOverrides = make(map[string]runtime.Value, 1)
@@ -249,7 +312,10 @@ func (vm *VM) resolveGlobalIndex(name string) int {
 	}
 	// New global — add to array
 	idx := len(vm.globalArray)
-	val := vm.globals[name] // may be nil
+	val, ok := vm.globals[name]
+	if !ok {
+		val = runtime.NilValue()
+	}
 	vm.globalArray = append(vm.globalArray, val)
 	vm.globalIndex[name] = idx
 	vm.globalVer++
@@ -1649,6 +1715,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			if vm.noGlobalLock {
 				vm.markGlobalTablesConcurrent()
 				vm.noGlobalLock = false
+				vm.globalVer++
 			}
 
 			a := DecodeA(inst)

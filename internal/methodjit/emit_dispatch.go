@@ -173,6 +173,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	// --- Global-exit: load globals via VM and resume JIT ---
 	case OpGetGlobal:
 		ec.emitGetGlobalNative(instr)
+	case OpSetGlobal:
+		ec.emitSetGlobalNative(instr)
 
 	// --- Table operations ---
 	case OpNewTable:
@@ -215,8 +217,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpConcat:
 		ec.emitConcatExit(instr)
 
-	case OpSetGlobal,
-		OpGetUpval, OpSetUpval,
+	case OpGetUpval, OpSetUpval,
 		OpAppend,
 		OpPow,
 		OpClosure, OpClose,
