@@ -780,12 +780,16 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 
 	fallbackLabel := ec.uniqueLabel("t2rawpeer_fallback")
 	exitLabel := ec.uniqueLabel("t2rawpeer_exit")
+	materializeLabel := ec.uniqueLabel("t2rawpeer_materialize")
 	doneLabel := ec.uniqueLabel("t2rawpeer_done")
 	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	leafCallee := rawIntPeerLeafCallee(callee)
 
 	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
-	asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
-	asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+	if !leafCallee {
+		asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
+		asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+	}
 
 	fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X6)
 	if fnReg != jit.X6 {
@@ -801,14 +805,9 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 
 	// Guard the static callee identity. Stable globals make this hot-path
 	// predictable, but the guard keeps rebinding and cache invalidation safe.
-	asm.LSRimm(jit.X7, jit.X6, 48)
-	asm.MOVimm16(jit.X8, jit.NB_TagPtrShr48)
-	asm.CMPreg(jit.X7, jit.X8)
-	asm.BCond(jit.CondNE, fallbackLabel)
 	asm.LSRimm(jit.X7, jit.X6, uint8(nbPtrSubShift))
-	asm.LoadImm64(jit.X8, 0xF)
-	asm.ANDreg(jit.X7, jit.X7, jit.X8)
-	asm.CMPimm(jit.X7, nbPtrSubVMClosure)
+	asm.LoadImm64(jit.X8, int64((jit.NB_TagPtrShr48<<4)|nbPtrSubVMClosure))
+	asm.CMPreg(jit.X7, jit.X8)
 	asm.BCond(jit.CondNE, fallbackLabel)
 	jit.EmitExtractPtr(asm, jit.X7, jit.X6)
 	asm.LDR(jit.X7, jit.X7, vmClosureOffProto)
@@ -818,9 +817,11 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	asm.LDR(jit.X16, jit.X7, funcProtoOffTier2NumericEntryPtr)
 	asm.CBZ(jit.X16, fallbackLabel)
 
-	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
-	asm.CMPimm(jit.X8, maxNativeCallDepth)
-	asm.BCond(jit.CondGE, fallbackLabel)
+	if !leafCallee {
+		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.CMPimm(jit.X8, maxNativeCallDepth)
+		asm.BCond(jit.CondGE, fallbackLabel)
+	}
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 	asm.LDR(jit.X8, jit.X7, funcProtoOffMaxStack)
@@ -836,10 +837,8 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	asm.CMPreg(jit.X8, jit.X9)
 	asm.BCond(jit.CondHI, fallbackLabel)
 
-	asm.LDR(jit.X8, jit.X7, funcProtoOffCallCount)
-	asm.ADDimm(jit.X8, jit.X8, 1)
-	asm.STR(jit.X8, jit.X7, funcProtoOffCallCount)
-
+	// The raw peer path only exists after the callee has published a Tier 2
+	// numeric entry, so this hot call no longer needs to feed tiering counters.
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
 	} else {
@@ -848,29 +847,28 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	}
 	asm.LDR(mRegConsts, jit.X7, funcProtoOffConstants)
 
-	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
-	asm.ADDimm(jit.X8, jit.X8, 1)
-	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	if !leafCallee {
+		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.ADDimm(jit.X8, jit.X8, 1)
+		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	}
 	asm.BLR(jit.X16)
-	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
-	asm.SUBimm(jit.X8, jit.X8, 1)
-	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	if !leafCallee {
+		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.SUBimm(jit.X8, jit.X8, 1)
+		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	}
 
 	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X8, exitLabel)
 
-	boxedResultLabel := ec.uniqueLabel("t2rawpeer_boxed_result")
-	rawResultLabel := ec.uniqueLabel("t2rawpeer_raw_result")
-	asm.LSRimm(jit.X10, jit.X0, 48)
-	asm.MOVimm16(jit.X9, jit.NB_TagIntShr48)
-	asm.CMPreg(jit.X10, jit.X9)
-	asm.BCond(jit.CondEQ, boxedResultLabel)
-	asm.B(rawResultLabel)
-	asm.Label(boxedResultLabel)
-	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
-	asm.Label(rawResultLabel)
-
-	ec.emitRestoreRawPeerCallerState()
+	// Numeric entries return raw int64 in X0 on ExitNormal. Boxed fallback
+	// results are handled by emitRawIntPeerCallExitResume.
+	if leafCallee {
+		ec.emitRestoreRawPeerLeafCallerRegs(calleeBaseOff)
+	} else {
+		ec.emitRestoreRawPeerCallerState()
+	}
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 	ec.emitUnboxRawIntRegs(preRawIntRegs)
@@ -880,8 +878,18 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	asm.B(doneLabel)
 
 	asm.Label(exitLabel)
+	if leafCallee {
+		ec.emitRestoreRawPeerLeafCallerRegs(calleeBaseOff)
+	} else {
+		ec.emitRestoreRawPeerCallerState()
+	}
+	asm.B(materializeLabel)
+
 	asm.Label(fallbackLabel)
-	ec.emitRestoreRawPeerCallerState()
+	if !leafCallee {
+		ec.emitRestoreRawPeerCallerState()
+	}
+	asm.Label(materializeLabel)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
 	ec.emitMaterializeRawIntPeerCallFrame(funcSlot, nArgs)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
@@ -889,6 +897,21 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	ec.rawIntRegs = postRawIntRegs
 
 	asm.Label(doneLabel)
+	return true
+}
+
+func rawIntPeerLeafCallee(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	// Leaf raw-int kernels cannot recursively grow the native BLR chain. They
+	// still use one numeric entry frame, but repeated loop calls do not stack,
+	// so the per-call NativeCallDepth load/store traffic is unnecessary.
+	for _, inst := range proto.Code {
+		if vm.DecodeOp(inst) == vm.OP_CALL {
+			return false
+		}
+	}
 	return true
 }
 
@@ -936,6 +959,17 @@ func (ec *emitContext) emitRestoreRawPeerCallerState() {
 	asm.LDR(mRegConsts, jit.SP, rawPeerConstsOff)
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
+}
+
+func (ec *emitContext) emitRestoreRawPeerLeafCallerRegs(calleeBaseOff int) {
+	asm := ec.asm
+	if calleeBaseOff <= 4095 {
+		asm.SUBimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
+		asm.SUBreg(mRegRegs, mRegRegs, jit.X8)
+	}
+	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants)
 }
 
 func (ec *emitContext) emitMaterializeRawIntPeerCallFrame(funcSlot, nArgs int) {
@@ -1315,42 +1349,17 @@ func (ec *emitContext) isNumericStaticSelfCall(instr *Instr) bool {
 }
 
 // emitNumericArgsInRegs (R124) materializes raw int64 args into X0..X(N-1)
-// ahead of a BL t2_numeric_self_entry_N. Handles aliasing between arg
-// sources and ABI registers.
+// ahead of a BL t2_numeric_self_entry_N. Allocated SSA GPRs are X20-X23/X28,
+// so using the destination ABI register as the load/unbox scratch cannot
+// clobber another live raw argument source.
 func (ec *emitContext) emitNumericArgsInRegs(instr *Instr, nParams int) {
 	asm := ec.asm
-	if nParams == 1 {
-		src0 := ec.resolveRawInt(instr.Args[1].ID, jit.X0)
-		if src0 != jit.X0 {
-			asm.MOVreg(jit.X0, src0)
-		}
-		return
-	}
-	if nParams == 2 {
-		src0 := ec.resolveRawInt(instr.Args[1].ID, jit.X2)
-		if src0 != jit.X2 {
-			asm.MOVreg(jit.X2, src0)
-		}
-		src1 := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
-		if src1 != jit.X3 {
-			asm.MOVreg(jit.X3, src1)
-		}
-		asm.MOVreg(jit.X0, jit.X2)
-		asm.MOVreg(jit.X1, jit.X3)
-		return
-	}
-	// nParams 3/4: conservative via X2/X3/X4/X5 scratch.
-	scratchRegs := []jit.Reg{jit.X2, jit.X3, jit.X4, jit.X5}
-	srcRegs := make([]jit.Reg, nParams)
-	for i := 0; i < nParams; i++ {
-		srcRegs[i] = ec.resolveRawInt(instr.Args[1+i].ID, scratchRegs[i])
-		if srcRegs[i] != scratchRegs[i] {
-			asm.MOVreg(scratchRegs[i], srcRegs[i])
-		}
-	}
 	for i := 0; i < nParams; i++ {
 		dst := jit.Reg(int(jit.X0) + i)
-		asm.MOVreg(dst, scratchRegs[i])
+		src := ec.resolveRawInt(instr.Args[1+i].ID, dst)
+		if src != dst {
+			asm.MOVreg(dst, src)
+		}
 	}
 }
 

@@ -497,6 +497,9 @@ func caller(n) {
 		rawPeerShims++
 		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
 			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isSTRRegToSP(scanWord, mRegRegs) || isSTRRegToSP(scanWord, mRegConsts) {
+				t.Fatalf("leaf raw peer-call shim at %#x saves caller context to stack before BLR at %#x", pc, scan)
+			}
 			if isSTRToMRegRegs(scanWord) {
 				t.Fatalf("raw peer-call shim at %#x boxes/stores args to VM window before BLR at %#x", pc, scan)
 			}
