@@ -762,13 +762,18 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	}
 
 	// Kind-specialized dispatch: when Aux2 carries feedback, emit a kind
-	// guard (3 insns) instead of the 4-way cascade (8 insns). When the
-	// same (table, kind) pair has already been verified earlier in this
-	// block, skip the guard entirely — emit only the direct jump.
+	// guard instead of the 4-way cascade. When the same (table, kind) pair
+	// has already been verified earlier in this block, skip the guard
+	// entirely and omit the mixed fallback that the guard cannot reach.
 	mixedArrayLabel := ec.uniqueLabel("settable_mixedarr")
 	knownSetKind := int(instr.Aux2) // 0=unknown, 1..4=known FBKind
-	if knownSetKind >= 1 && knownSetKind <= 4 {
-		expectedKind := uint16(knownSetKind - 1) // convert FBKind to AK constant
+	expectedKind, hasKnownSetKind := fbKindToAK(instr.Aux2)
+	kindAlreadyVerified := hasKnownSetKind && ec.kindVerified[tblValueID] == uint16(knownSetKind)
+	emitMixedArrayPath := !hasKnownSetKind || expectedKind == jit.AKMixed || !kindAlreadyVerified
+	emitIntArrayPath := !hasKnownSetKind || expectedKind == jit.AKInt
+	emitFloatArrayPath := !hasKnownSetKind || expectedKind == jit.AKFloat
+	emitBoolArrayPath := !hasKnownSetKind || expectedKind == jit.AKBool
+	if hasKnownSetKind {
 		if ec.kindVerified[tblValueID] != uint16(knownSetKind) {
 			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
 			asm.CMPimm(jit.X2, expectedKind)
@@ -810,196 +815,204 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.CBNZ(jit.X2, deoptLabel) // not Mixed(0) -> deopt
 	}
 
-	// --- ArrayMixed fast path ---
-	asm.Label(mixedArrayLabel)
-	mixedStoreLabel := ec.uniqueLabel("settable_mixed_store")
-	mixedAppendLabel := ec.uniqueLabel("settable_mixed_append")
-	emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffArrayLen, mixedAppendLabel, deoptLabel)
-	asm.Label(mixedStoreLabel)
-	// Load value to store into X4.
-	valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-	if valReg != jit.X4 {
-		asm.MOVreg(jit.X4, valReg)
+	if emitMixedArrayPath {
+		// --- ArrayMixed fast path ---
+		asm.Label(mixedArrayLabel)
+		mixedStoreLabel := ec.uniqueLabel("settable_mixed_store")
+		mixedAppendLabel := ec.uniqueLabel("settable_mixed_append")
+		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffArrayLen, mixedAppendLabel, deoptLabel)
+		asm.Label(mixedStoreLabel)
+		// Load value to store into X4.
+		valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+		if valReg != jit.X4 {
+			asm.MOVreg(jit.X4, valReg)
+		}
+		asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // array data pointer
+		asm.STRreg(jit.X4, jit.X2, jit.X1)         // array[key] = value
+		// Set keysDirty flag (elided if already set in this block).
+		if !ec.keysDirtyWritten[tblValueID] {
+			asm.MOVimm16(jit.X5, 1)
+			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		}
+		asm.B(doneLabel)
+		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffArrayLen, jit.TableOffArrayCap, mixedAppendLabel, deoptLabel, mixedStoreLabel)
 	}
-	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // array data pointer
-	asm.STRreg(jit.X4, jit.X2, jit.X1)         // array[key] = value
-	// Set keysDirty flag (elided if already set in this block).
-	if !ec.keysDirtyWritten[tblValueID] {
-		asm.MOVimm16(jit.X5, 1)
-		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-	}
-	asm.B(doneLabel)
-	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffArrayLen, jit.TableOffArrayCap, mixedAppendLabel, deoptLabel, mixedStoreLabel)
 
 	// --- ArrayInt fast path ---
-	asm.Label(intArrayLabel)
+	if emitIntArrayPath {
+		asm.Label(intArrayLabel)
 
-	if val, ok := ec.constInts[instr.Args[2].ID]; ok {
-		// Constant int bypass: load immediate, skip tag check and unbox.
-		intStoreLabel := ec.uniqueLabel("settable_int_store")
-		intAppendLabel := ec.uniqueLabel("settable_int_append")
-		asm.LoadImm64(jit.X4, val)
-		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
-		asm.Label(intStoreLabel)
-		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
-		asm.STRreg(jit.X4, jit.X2, jit.X1)
-		if !ec.keysDirtyWritten[tblValueID] {
-			asm.MOVimm16(jit.X5, 1)
-			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		if val, ok := ec.constInts[instr.Args[2].ID]; ok {
+			// Constant int bypass: load immediate, skip tag check and unbox.
+			intStoreLabel := ec.uniqueLabel("settable_int_store")
+			intAppendLabel := ec.uniqueLabel("settable_int_append")
+			asm.LoadImm64(jit.X4, val)
+			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
+			asm.Label(intStoreLabel)
+			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
+			asm.STRreg(jit.X4, jit.X2, jit.X1)
+			if !ec.keysDirtyWritten[tblValueID] {
+				asm.MOVimm16(jit.X5, 1)
+				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+			}
+			asm.B(doneLabel)
+			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+		} else if ec.hasReg(instr.Args[2].ID) && ec.rawIntRegs[instr.Args[2].ID] {
+			// Raw int register bypass: value already unboxed, skip tag check.
+			intStoreLabel := ec.uniqueLabel("settable_int_store")
+			intAppendLabel := ec.uniqueLabel("settable_int_append")
+			reg := ec.physReg(instr.Args[2].ID)
+			if reg != jit.X4 {
+				asm.MOVreg(jit.X4, reg)
+			}
+			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
+			asm.Label(intStoreLabel)
+			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
+			asm.STRreg(jit.X4, jit.X2, jit.X1)
+			if !ec.keysDirtyWritten[tblValueID] {
+				asm.MOVimm16(jit.X5, 1)
+				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+			}
+			asm.B(doneLabel)
+			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+		} else if ec.irTypes[instr.Args[2].ID] == TypeInt {
+			// Known-int value: unbox directly and skip the redundant tag check.
+			intStoreLabel := ec.uniqueLabel("settable_int_store")
+			intAppendLabel := ec.uniqueLabel("settable_int_append")
+			valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+			if valReg2 != jit.X4 {
+				asm.MOVreg(jit.X4, valReg2)
+			}
+			asm.SBFX(jit.X4, jit.X4, 0, 48)
+			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
+			asm.Label(intStoreLabel)
+			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
+			asm.STRreg(jit.X4, jit.X2, jit.X1)
+			if !ec.keysDirtyWritten[tblValueID] {
+				asm.MOVimm16(jit.X5, 1)
+				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+			}
+			asm.B(doneLabel)
+			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+		} else {
+			// Load value to store and check it's an integer.
+			intStoreLabel := ec.uniqueLabel("settable_int_store")
+			intAppendLabel := ec.uniqueLabel("settable_int_append")
+			valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+			if valReg2 != jit.X4 {
+				asm.MOVreg(jit.X4, valReg2)
+			}
+			asm.LSRimm(jit.X5, jit.X4, 48)
+			asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
+			asm.CMPreg(jit.X5, jit.X6)
+			asm.BCond(jit.CondNE, deoptLabel) // value not int -> deopt
+			// Unbox int64 from NaN-boxed value.
+			asm.SBFX(jit.X4, jit.X4, 0, 48)
+			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
+			asm.Label(intStoreLabel)
+			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
+			asm.STRreg(jit.X4, jit.X2, jit.X1)            // intArray[key] = int64
+			if !ec.keysDirtyWritten[tblValueID] {
+				asm.MOVimm16(jit.X5, 1)
+				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+			}
+			asm.B(doneLabel)
+			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
 		}
-		asm.B(doneLabel)
-		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-	} else if ec.hasReg(instr.Args[2].ID) && ec.rawIntRegs[instr.Args[2].ID] {
-		// Raw int register bypass: value already unboxed, skip tag check.
-		intStoreLabel := ec.uniqueLabel("settable_int_store")
-		intAppendLabel := ec.uniqueLabel("settable_int_append")
-		reg := ec.physReg(instr.Args[2].ID)
-		if reg != jit.X4 {
-			asm.MOVreg(jit.X4, reg)
-		}
-		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
-		asm.Label(intStoreLabel)
-		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
-		asm.STRreg(jit.X4, jit.X2, jit.X1)
-		if !ec.keysDirtyWritten[tblValueID] {
-			asm.MOVimm16(jit.X5, 1)
-			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-		}
-		asm.B(doneLabel)
-		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-	} else if ec.irTypes[instr.Args[2].ID] == TypeInt {
-		// Known-int value: unbox directly and skip the redundant tag check.
-		intStoreLabel := ec.uniqueLabel("settable_int_store")
-		intAppendLabel := ec.uniqueLabel("settable_int_append")
-		valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-		if valReg2 != jit.X4 {
-			asm.MOVreg(jit.X4, valReg2)
-		}
-		asm.SBFX(jit.X4, jit.X4, 0, 48)
-		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
-		asm.Label(intStoreLabel)
-		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
-		asm.STRreg(jit.X4, jit.X2, jit.X1)
-		if !ec.keysDirtyWritten[tblValueID] {
-			asm.MOVimm16(jit.X5, 1)
-			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-		}
-		asm.B(doneLabel)
-		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-	} else {
-		// Load value to store and check it's an integer.
-		intStoreLabel := ec.uniqueLabel("settable_int_store")
-		intAppendLabel := ec.uniqueLabel("settable_int_append")
-		valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-		if valReg2 != jit.X4 {
-			asm.MOVreg(jit.X4, valReg2)
-		}
-		asm.LSRimm(jit.X5, jit.X4, 48)
-		asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
-		asm.CMPreg(jit.X5, jit.X6)
-		asm.BCond(jit.CondNE, deoptLabel) // value not int -> deopt
-		// Unbox int64 from NaN-boxed value.
-		asm.SBFX(jit.X4, jit.X4, 0, 48)
-		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
-		asm.Label(intStoreLabel)
-		asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
-		asm.STRreg(jit.X4, jit.X2, jit.X1)            // intArray[key] = int64
-		if !ec.keysDirtyWritten[tblValueID] {
-			asm.MOVimm16(jit.X5, 1)
-			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-		}
-		asm.B(doneLabel)
-		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
 	}
 
-	// --- ArrayFloat fast path ---
-	asm.Label(floatArrayLabel)
-	// Load value to store.
-	floatStoreLabel := ec.uniqueLabel("settable_float_store")
-	floatAppendLabel := ec.uniqueLabel("settable_float_append")
-	valRegFloat := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-	if valRegFloat != jit.X4 {
-		asm.MOVreg(jit.X4, valRegFloat)
-	}
-	if ec.irTypes[instr.Args[2].ID] != TypeFloat {
-		// Check value is a float (NOT tagged — bits 50-62 NOT all set).
-		// Tagged values have (val >> 50) == 0x3FFF. Floats don't.
-		jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
-		asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
-	}
-	emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, deoptLabel)
-	asm.Label(floatStoreLabel)
-	// Float64 bits ARE the NaN-boxed representation — store directly.
-	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
-	asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
-	// Set keysDirty flag (elided if already set in this block).
-	if !ec.keysDirtyWritten[tblValueID] {
-		asm.MOVimm16(jit.X5, 1)
-		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-	}
-	asm.B(doneLabel)
-	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, deoptLabel, floatStoreLabel)
-
-	// --- ArrayBool fast path ---
-	asm.Label(boolArrayLabel)
-
-	// Constant bool bypass: skip value load, tag check, and payload extraction.
-	if boolVal, ok := ec.constBools[instr.Args[2].ID]; ok {
-		// false(0)→byte 1, true(1)→byte 2
-		boolStoreLabel := ec.uniqueLabel("settable_bool_store")
-		boolAppendLabel := ec.uniqueLabel("settable_bool_append")
-		byteVal := uint16(boolVal + 1)
-		asm.MOVimm16(jit.X4, byteVal)
-		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, deoptLabel)
-		asm.Label(boolStoreLabel)
-		asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
-		asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
-		if !ec.keysDirtyWritten[tblValueID] {
-			asm.MOVimm16(jit.X5, 1)
-			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-		}
-		asm.B(doneLabel)
-		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
-	} else {
+	if emitFloatArrayPath {
+		// --- ArrayFloat fast path ---
+		asm.Label(floatArrayLabel)
 		// Load value to store.
-		boolStoreLabel := ec.uniqueLabel("settable_bool_store")
-		boolAppendLabel := ec.uniqueLabel("settable_bool_append")
-		valRegBool := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-		if valRegBool != jit.X4 {
-			asm.MOVreg(jit.X4, valRegBool)
+		floatStoreLabel := ec.uniqueLabel("settable_float_store")
+		floatAppendLabel := ec.uniqueLabel("settable_float_append")
+		valRegFloat := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+		if valRegFloat != jit.X4 {
+			asm.MOVreg(jit.X4, valRegFloat)
 		}
-		// Check value type: must be bool (tag=0xFFFD) or nil (0xFFFC).
-		asm.LSRimm(jit.X5, jit.X4, 48)
-		asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
-		asm.CMPreg(jit.X5, jit.X6)
-		boolOkLabel := ec.uniqueLabel("settable_bool_isbool")
-		asm.BCond(jit.CondEQ, boolOkLabel)
-		// Check if nil.
-		asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
-		asm.CMPreg(jit.X5, jit.X6)
-		asm.BCond(jit.CondNE, deoptLabel) // not bool, not nil → deopt
-		// Nil → byte 0.
-		asm.MOVimm16(jit.X4, 0)
-		setByteLabel := ec.uniqueLabel("settable_bool_store")
-		asm.B(setByteLabel)
-		asm.Label(boolOkLabel)
-		// Bool: extract payload bit 0. false=0xFFFD000000000000 (payload=0) → byte 1
-		//                                true=0xFFFD000000000001 (payload=1) → byte 2
-		// Conversion: byte = payload + 1
-		asm.LoadImm64(jit.X5, 1)
-		asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
-		asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
-		asm.Label(setByteLabel)
-		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, deoptLabel)
-		asm.Label(boolStoreLabel)
-		asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
-		asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
+		if ec.irTypes[instr.Args[2].ID] != TypeFloat {
+			// Check value is a float (NOT tagged — bits 50-62 NOT all set).
+			// Tagged values have (val >> 50) == 0x3FFF. Floats don't.
+			jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
+			asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
+		}
+		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, deoptLabel)
+		asm.Label(floatStoreLabel)
+		// Float64 bits ARE the NaN-boxed representation — store directly.
+		asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
+		asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
+		// Set keysDirty flag (elided if already set in this block).
 		if !ec.keysDirtyWritten[tblValueID] {
 			asm.MOVimm16(jit.X5, 1)
 			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 		}
 		asm.B(doneLabel)
-		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
+		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, deoptLabel, floatStoreLabel)
+	}
+
+	if emitBoolArrayPath {
+		// --- ArrayBool fast path ---
+		asm.Label(boolArrayLabel)
+
+		// Constant bool bypass: skip value load, tag check, and payload extraction.
+		if boolVal, ok := ec.constBools[instr.Args[2].ID]; ok {
+			// false(0)→byte 1, true(1)→byte 2
+			boolStoreLabel := ec.uniqueLabel("settable_bool_store")
+			boolAppendLabel := ec.uniqueLabel("settable_bool_append")
+			byteVal := uint16(boolVal + 1)
+			asm.MOVimm16(jit.X4, byteVal)
+			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, deoptLabel)
+			asm.Label(boolStoreLabel)
+			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
+			asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
+			if !ec.keysDirtyWritten[tblValueID] {
+				asm.MOVimm16(jit.X5, 1)
+				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+			}
+			asm.B(doneLabel)
+			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
+		} else {
+			// Load value to store.
+			boolStoreLabel := ec.uniqueLabel("settable_bool_store")
+			boolAppendLabel := ec.uniqueLabel("settable_bool_append")
+			valRegBool := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+			if valRegBool != jit.X4 {
+				asm.MOVreg(jit.X4, valRegBool)
+			}
+			// Check value type: must be bool (tag=0xFFFD) or nil (0xFFFC).
+			asm.LSRimm(jit.X5, jit.X4, 48)
+			asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
+			asm.CMPreg(jit.X5, jit.X6)
+			boolOkLabel := ec.uniqueLabel("settable_bool_isbool")
+			asm.BCond(jit.CondEQ, boolOkLabel)
+			// Check if nil.
+			asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
+			asm.CMPreg(jit.X5, jit.X6)
+			asm.BCond(jit.CondNE, deoptLabel) // not bool, not nil → deopt
+			// Nil → byte 0.
+			asm.MOVimm16(jit.X4, 0)
+			setByteLabel := ec.uniqueLabel("settable_bool_store")
+			asm.B(setByteLabel)
+			asm.Label(boolOkLabel)
+			// Bool: extract payload bit 0. false=0xFFFD000000000000 (payload=0) → byte 1
+			//                                true=0xFFFD000000000001 (payload=1) → byte 2
+			// Conversion: byte = payload + 1
+			asm.LoadImm64(jit.X5, 1)
+			asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
+			asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
+			asm.Label(setByteLabel)
+			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, deoptLabel)
+			asm.Label(boolStoreLabel)
+			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
+			asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
+			if !ec.keysDirtyWritten[tblValueID] {
+				asm.MOVimm16(jit.X5, 1)
+				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+			}
+			asm.B(doneLabel)
+			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
+		}
 	}
 
 	// Deopt: fall back to exit-resume.
