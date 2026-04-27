@@ -33,6 +33,14 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 
 	li := computeLoopInfo(fn)
 	crossBlockLive := computeCrossBlockLive(fn)
+	defs := make(map[int]*Instr)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !instr.Op.IsTerminator() {
+				defs[instr.ID] = instr
+			}
+		}
+	}
 	var headerRegs map[int]map[int]loopRegEntry
 	var headerFPRegs map[int]map[int]loopFPRegEntry
 	var safeHdrRegs map[int]map[int]loopRegEntry
@@ -41,6 +49,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	var fpPhiOnlyArgs loopPhiArgSet
 	exitBoxPhis := make(map[int]bool)
 	exitBoxFPPhis := make(map[int]bool)
+	exitStorePhis := make(map[int]bool)
 	if li.hasLoops() {
 		headerRegs = li.computeHeaderExitRegs(fn, alloc)
 		headerFPRegs = li.computeHeaderExitFPRegs(fn, alloc)
@@ -104,6 +113,53 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 				}
 				if !clobbered {
 					exitBoxPhis[phiID] = true
+				}
+			}
+		}
+
+		for headerID, phiIDs := range li.loopPhis {
+			hdrRegs := headerRegs[headerID]
+			bodyBlocks := li.headerBlocks[headerID]
+			if loopBodyHasDirectDeopt(fn, bodyBlocks) {
+				continue
+			}
+			for _, phiID := range phiIDs {
+				if !crossBlockLive[phiID] {
+					continue
+				}
+				phi := defs[phiID]
+				if phi == nil || phi.Type == TypeInt {
+					continue
+				}
+				pr, ok := alloc.ValueRegs[phiID]
+				if !ok || pr.IsFloat {
+					continue
+				}
+				entry, inRegs := hdrRegs[pr.Reg]
+				if !inRegs || entry.ValueID != phiID || entry.IsRawInt {
+					continue
+				}
+				clobbered := false
+				for _, block := range fn.Blocks {
+					if block.ID == headerID || !bodyBlocks[block.ID] {
+						continue
+					}
+					for _, instr := range block.Instrs {
+						if instr.Op.IsTerminator() {
+							continue
+						}
+						instrPR, ok := alloc.ValueRegs[instr.ID]
+						if ok && !instrPR.IsFloat && instrPR.Reg == pr.Reg {
+							clobbered = true
+							break
+						}
+					}
+					if clobbered {
+						break
+					}
+				}
+				if !clobbered {
+					exitStorePhis[phiID] = true
 				}
 			}
 		}
@@ -202,6 +258,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		loopFPPhiOnlyArgs: fpPhiOnlyArgs,
 		loopExitBoxPhis:   exitBoxPhis,
 		loopExitBoxFPPhis: exitBoxFPPhis,
+		loopExitStorePhis: exitStorePhis,
 		constInts:         constInts,
 		constBools:        constBools,
 		irTypes:           irTypes,
@@ -318,6 +375,35 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		ExitSites:          buildExitSiteMeta(fn),
 		ExitResumeCheck:    ec.exitResumeCheck,
 	}, nil
+}
+
+func loopBodyHasDirectDeopt(fn *Function, bodyBlocks map[int]bool) bool {
+	for _, block := range fn.Blocks {
+		if !bodyBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instrMayDirectDeoptWithoutFullFlush(instr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func instrMayDirectDeoptWithoutFullFlush(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpGuardType, OpNumToFloat, OpDivIntExact,
+		OpMatrixGetF, OpMatrixSetF, OpMatrixFlat, OpMatrixStride:
+		return true
+	case OpGetField:
+		return instr.Type == TypeFloat
+	default:
+		return false
+	}
 }
 
 // emitContext holds transient state during code generation.
@@ -446,6 +532,10 @@ type emitContext struct {
 	loopExitBoxPhis map[int]bool
 	// loopExitBoxFPPhis is the FPR equivalent for raw-float header phis.
 	loopExitBoxFPPhis map[int]bool
+	// loopExitStorePhis is the NaN-boxed GPR equivalent: header phis whose
+	// register already holds the boxed runtime Value can defer memory write-
+	// through until leaving the loop.
+	loopExitStorePhis map[int]bool
 
 	// currentBlockID is the ID of the block currently being emitted.
 	currentBlockID int

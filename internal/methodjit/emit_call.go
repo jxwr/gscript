@@ -28,6 +28,11 @@ func emitCheckIsInt(asm *jit.Assembler, valReg, scratch jit.Reg) {
 	asm.CMPreg(scratch, jit.X3)              // EQ = int, NE = not int
 }
 
+func emitCheckIsIntWithTag(asm *jit.Assembler, valReg, scratch, tagReg jit.Reg) {
+	asm.LSRimm(scratch, valReg, 48)
+	asm.CMPreg(scratch, tagReg)
+}
+
 // emitDeopt emits ARM64 code that bails out to the interpreter.
 // Sets ExecContext.ExitCode = ExitDeopt (2) and jumps to the deopt epilogue.
 // R140: also writes instr.ID to ExecContext.DeoptInstrID so that post-
@@ -473,14 +478,15 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	}
 
 	done := ec.uniqueLabel("arith_done")
+	asm.MOVimm16(jit.X3, jit.NB_TagIntShr48)
 
 	// Check if LHS is int.
-	emitCheckIsInt(asm, jit.X0, jit.X2)
+	emitCheckIsIntWithTag(asm, jit.X0, jit.X2, jit.X3)
 	lhsNotInt := ec.uniqueLabel("arith_lhs_not_int")
 	asm.BCond(jit.CondNE, lhsNotInt)
 
 	// LHS is int. Check RHS.
-	emitCheckIsInt(asm, jit.X1, jit.X2)
+	emitCheckIsIntWithTag(asm, jit.X1, jit.X2, jit.X3)
 	rhsNotInt := ec.uniqueLabel("arith_rhs_not_int")
 	asm.BCond(jit.CondNE, rhsNotInt)
 
@@ -522,7 +528,7 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	asm.FMOVtoFP(jit.D0, jit.X0) // D0 = lhs as float
 
 	// Check if RHS is int.
-	emitCheckIsInt(asm, jit.X1, jit.X2)
+	emitCheckIsIntWithTag(asm, jit.X1, jit.X2, jit.X3)
 	bothFloat := ec.uniqueLabel("arith_both_float")
 	asm.BCond(jit.CondNE, bothFloat)
 

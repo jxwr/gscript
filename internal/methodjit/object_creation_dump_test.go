@@ -67,9 +67,12 @@ func TestObjectCreationDump(t *testing.T) {
 	//
 	// NumToFloat: transform_chain's mixed numeric object fields now widen
 	// dynamic int/float loads once and keep the arithmetic in raw FPR form.
+	//
+	// FloatBinOpTagReuse: generic boxed arithmetic loads the int tag once per
+	// op and reuses it across lhs/rhs checks, trimming MOV-immediate traffic.
 	baselines := []baseline{
-		{"create_and_sum", 463, 72},  // R161: was 1277/598
-		{"transform_chain", 536, 82}, // R161: was 1701/816
+		{"create_and_sum", 447, 72},  // R161: was 1277/598
+		{"transform_chain", 520, 82}, // R161: was 1701/816
 		{"new_vec3", 228, 135},       // unchanged EA shape; codegen bookkeeping moved
 	}
 
