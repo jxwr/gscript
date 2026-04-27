@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="64-the-coroutine-stayed-on-the-stack">The Coroutine Stayed On The Stack</a>
+  <p><code>coroutine_bench</code> was dominated by runtime handoff cost, not Tier 2. Long-lived coroutines now keep their child VM frame paused at <code>coroutine.yield</code>, write resume values back into the saved yield result slots, and continue <code>run()</code> without a goroutine/channel ping-pong. After hardening cached yield, nested resume, <code>Value.Ptr()</code>, and child VM cleanup semantics, the focused guard moved from about 1.6s to 0.03s.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="63-the-registers-were-there">The Registers Were There</a>
   <p>After scalar promotion, <code>nbody.advance</code> still had five hot float spill slots. Tier 2 now allocates from <code>D4-D11,D16-D23</code> and keeps promoted float phis resident, while field access code reuses existing <code>TypeTable</code> proofs instead of repeating table checks. The production dump moved from five spills to zero, and the focused guard moved <code>nbody</code> from about 0.077s to 0.064s on the merge machine.</p>
 </div>
