@@ -40,7 +40,9 @@ func emitCheckIsIntWithTag(asm *jit.Assembler, valReg, scratch, tagReg jit.Reg) 
 // specific guard fired without re-running the diag disassembler.
 func (ec *emitContext) emitDeopt(instr *Instr) {
 	asm := ec.asm
-	ec.emitDirectDeoptFlush()
+	if ec.numericMode {
+		ec.emitStoreAllActiveRegs()
+	}
 	if instr != nil {
 		asm.LoadImm64(jit.X0, int64(instr.ID))
 		asm.STR(jit.X0, mRegCtx, execCtxOffDeoptInstrID)
@@ -52,18 +54,6 @@ func (ec *emitContext) emitDeopt(instr *Instr) {
 		return
 	}
 	asm.B("deopt_epilogue")
-}
-
-// emitDirectDeoptFlush materializes the VM register file before a direct
-// deopt transfers control back to the interpreter. Unlike exit-resume paths,
-// direct deopts do not have a continuation label that can repair register
-// state after Go returns, so every active register-resident value must be
-// visible in its home slot before the deopt epilogue.
-func (ec *emitContext) emitDirectDeoptFlush() {
-	ec.emitStoreAllActiveRegs()
-	if ec.inLoopBlock() {
-		ec.emitLoopExitBoxing(-1)
-	}
 }
 
 // emitGuardType emits a native type check for OpGuardType.

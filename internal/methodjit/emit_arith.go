@@ -373,7 +373,8 @@ func (ec *emitContext) emitIntModX0X1(instr *Instr) {
 }
 
 func (ec *emitContext) emitIntModZeroDeopt() {
-	ec.emitDirectDeoptFlush()
+	ec.emitStoreAllActiveRegs()
+	ec.emitLoopExitBoxing(-1)
 	ec.asm.LoadImm64(jit.X0, ExitDeopt)
 	ec.asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
 	if ec.numericMode {
@@ -456,7 +457,10 @@ func (ec *emitContext) emitInt48OverflowCheck(result jit.Reg, instr *Instr) {
 	// This ensures the interpreter sees correct state when it re-runs.
 	// Without this, loopExitBoxPhis values live only in registers and the
 	// interpreter would find stale memory (e.g., fibonacci_iterative bug).
-	ec.emitDirectDeoptFlush()
+	ec.emitStoreAllActiveRegs()
+	// Deopt may happen anywhere inside the loop nest; box ALL deferred
+	// phis to keep the interpreter's view of memory consistent.
+	ec.emitLoopExitBoxing(-1)
 
 	// Overflow: deopt to interpreter.
 	asm.LoadImm64(jit.X0, ExitDeopt)

@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"strings"
 	"testing"
-	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -75,96 +74,6 @@ result := fib_iter(70)
 		t.Fatalf("boxed loop phi backedge Jump emitted %d store(s), want deferred exit-only stores\nIR:\n%s",
 			stores, art.IRAfter)
 	}
-}
-
-func TestLoopExitStorePhis_AllowsGuardTypeAndNumToFloatLoops(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		op   Op
-		typ  Type
-		aux  int64
-	}{
-		{name: "guard_type", op: OpGuardType, typ: TypeInt, aux: int64(TypeInt)},
-		{name: "num_to_float", op: OpNumToFloat, typ: TypeFloat},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fn, backedgeJumpID := buildLoopExitStoreDirectDeoptIR(tc.op, tc.typ, tc.aux)
-			alloc := AllocateRegisters(fn)
-			cf, err := Compile(fn, alloc)
-			if err != nil {
-				t.Fatalf("Compile: %v\nIR:\n%s", err, Print(fn))
-			}
-			defer cf.Code.Free()
-
-			code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
-			var jumpRange *InstrCodeRange
-			for i := range cf.InstrCodeRanges {
-				r := &cf.InstrCodeRanges[i]
-				if r.InstrID == backedgeJumpID {
-					jumpRange = r
-					break
-				}
-			}
-			if jumpRange == nil {
-				t.Fatalf("missing backedge Jump code range; ranges=%v\nIR:\n%s", cf.InstrCodeRanges, Print(fn))
-			}
-			if stores := countStoresInCodeRange(code, jumpRange.CodeStart, jumpRange.CodeEnd); stores != 0 {
-				t.Fatalf("%s backedge Jump emitted %d store(s), want exit-only phi stores with direct-deopt flush\nIR:\n%s",
-					tc.name, stores, Print(fn))
-			}
-		})
-	}
-}
-
-func buildLoopExitStoreDirectDeoptIR(directOp Op, directType Type, directAux int64) (*Function, int) {
-	fn := &Function{
-		Proto:     &vm.FuncProto{Name: "loop_direct_deopt", NumParams: 2, MaxStack: 2},
-		NumRegs:   2,
-		Int48Safe: make(map[int]bool),
-	}
-	b0 := &Block{ID: 0}
-	b1 := &Block{ID: 1}
-	b2 := &Block{ID: 2}
-	b3 := &Block{ID: 3}
-	b0.Succs = []*Block{b1}
-	b1.Preds = []*Block{b0, b2}
-	b1.Succs = []*Block{b2, b3}
-	b2.Preds = []*Block{b1}
-	b2.Succs = []*Block{b1}
-	b3.Preds = []*Block{b1}
-
-	cKeep := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: b0}
-	cZero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: b0}
-	cOne := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b0}
-	limit := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b0}
-	entryJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0}
-	b0.Instrs = []*Instr{cKeep, cZero, cOne, limit, entryJump}
-
-	keep := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeBool, Block: b1}
-	i := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: b1}
-	cmp := &Instr{ID: fn.newValueID(), Op: OpLtInt, Type: TypeBool,
-		Args: []*Value{i.Value(), limit.Value()}, Block: b1}
-	branch := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown,
-		Args: []*Value{cmp.Value()}, Block: b1}
-
-	probe := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Aux: 1, Block: b2}
-	direct := &Instr{ID: fn.newValueID(), Op: directOp, Type: directType, Aux: directAux,
-		Args: []*Value{probe.Value()}, Block: b2}
-	inc := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
-		Args: []*Value{i.Value(), cOne.Value()}, Block: b2}
-	backedgeJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2}
-	b2.Instrs = []*Instr{probe, direct, inc, backedgeJump}
-
-	keep.Args = []*Value{cKeep.Value(), keep.Value()}
-	i.Args = []*Value{cZero.Value(), inc.Value()}
-	b1.Instrs = []*Instr{keep, i, cmp, branch}
-	b3.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown,
-		Args: []*Value{keep.Value()}, Block: b3}}
-
-	fn.Int48Safe[inc.ID] = true
-	fn.Entry = b0
-	fn.Blocks = []*Block{b0, b1, b2, b3}
-	return fn, backedgeJump.ID
 }
 
 func countStoresInCodeRange(code []byte, start, end int) int {
