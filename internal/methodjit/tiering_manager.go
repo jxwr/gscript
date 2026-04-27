@@ -1978,17 +1978,9 @@ func firstSelfRecursiveTableMutationInLoop(fn *Function) (Op, bool) {
 	if !irHasSelfCall(fn) {
 		return OpNop, false
 	}
-	li := computeLoopInfo(fn)
-	for _, block := range fn.Blocks {
-		if !li.loopBlocks[block.ID] {
-			continue
-		}
-		for _, instr := range block.Instrs {
-			switch instr.Op {
-			case OpSetTable, OpSetField, OpAppend, OpSetList:
-				return instr.Op, true
-			}
-		}
+	summary := analyzeLoopTableMutationRecovery(fn)
+	if site, ok := summary.firstUnadmitted(); ok {
+		return site.Op, true
 	}
 	return OpNop, false
 }
