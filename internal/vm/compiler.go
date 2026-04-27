@@ -99,7 +99,7 @@ func (c *compiler) allocRegs(n int) int {
 	return base
 }
 
-func (c *compiler) freeReg()      { c.nextReg-- }
+func (c *compiler) freeReg()       { c.nextReg-- }
 func (c *compiler) freeRegs(n int) { c.nextReg -= n }
 
 // --------------------------------------------------------------------
@@ -197,8 +197,8 @@ func (c *compiler) addConst(v runtime.Value) int {
 }
 
 func (c *compiler) stringConst(s string) int { return c.addConst(runtime.StringValue(s)) }
-func (c *compiler) intConst(i int64) int      { return c.addConst(runtime.IntValue(i)) }
-func (c *compiler) floatConst(f float64) int  { return c.addConst(runtime.FloatValue(f)) }
+func (c *compiler) intConst(i int64) int     { return c.addConst(runtime.IntValue(i)) }
+func (c *compiler) floatConst(f float64) int { return c.addConst(runtime.FloatValue(f)) }
 
 // --------------------------------------------------------------------
 // Code emission
@@ -2069,10 +2069,7 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 	for _, f := range e.Fields {
 		if f.Key == nil {
 			arrayCount++
-		} else {
-			if _, ok := f.Value.(*ast.NilLit); ok {
-				continue
-			}
+		} else if !isNilLiteral(f.Value) {
 			hashCount++
 		}
 	}
@@ -2109,7 +2106,7 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 					}
 					arrayIdx++
 					pendingArrayCount++
-					batchNum := (arrayIdx - pendingArrayCount) / 50 + 1
+					batchNum := (arrayIdx-pendingArrayCount)/50 + 1
 					c.emitABC(OP_SETLIST, dest, 0, batchNum, line)
 					c.nextReg = pendingArrayBase
 					pendingArrayCount = 0
@@ -2121,7 +2118,7 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 					}
 					arrayIdx++
 					pendingArrayCount++
-					batchNum := (arrayIdx - pendingArrayCount) / 50 + 1
+					batchNum := (arrayIdx-pendingArrayCount)/50 + 1
 					c.emitABC(OP_SETLIST, dest, 0, batchNum, line)
 					c.nextReg = pendingArrayBase
 					pendingArrayCount = 0
@@ -2131,7 +2128,7 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 					c.emitABC(OP_VARARG, valueReg, 0, 0, line)
 					arrayIdx++
 					pendingArrayCount++
-					batchNum := (arrayIdx - pendingArrayCount) / 50 + 1
+					batchNum := (arrayIdx-pendingArrayCount)/50 + 1
 					c.emitABC(OP_SETLIST, dest, 0, batchNum, line)
 					c.nextReg = pendingArrayBase
 					pendingArrayCount = 0
@@ -2161,6 +2158,9 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 
 			// Key-value field
 			if strKey, ok := f.Key.(*ast.StringLit); ok {
+				if isNilLiteral(f.Value) {
+					continue
+				}
 				fieldK := c.stringConst(strKey.Value)
 				valReg := c.allocReg()
 				if err := c.compileExprTo(f.Value, valReg); err != nil {
@@ -2169,6 +2169,9 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 				c.emitABC(OP_SETFIELD, dest, fieldK, valReg, line)
 				c.freeReg()
 			} else if identKey, ok := f.Key.(*ast.IdentExpr); ok {
+				if isNilLiteral(f.Value) {
+					continue
+				}
 				fieldK := c.stringConst(identKey.Name)
 				valReg := c.allocReg()
 				if err := c.compileExprTo(f.Value, valReg); err != nil {
@@ -2199,6 +2202,11 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 	}
 
 	return nil
+}
+
+func isNilLiteral(e ast.Expr) bool {
+	_, ok := e.(*ast.NilLit)
+	return ok
 }
 
 // ---- Function literal ----

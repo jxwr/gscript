@@ -575,15 +575,86 @@ func TestTableLiteralNilFieldsDoNotInflateHashHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile error: %v", err)
 	}
+	newTables := 0
+	setFields := 0
 	for _, inst := range proto.Code {
-		if DecodeOp(inst) == OP_NEWTABLE {
+		switch DecodeOp(inst) {
+		case OP_NEWTABLE:
+			newTables++
 			if got := DecodeC(inst); got != 1 {
 				t.Fatalf("NEWTABLE hash hint = %d, want 1", got)
 			}
-			return
+		case OP_SETFIELD:
+			setFields++
 		}
 	}
-	t.Fatal("NEWTABLE not found")
+	if newTables != 1 {
+		t.Fatalf("NEWTABLE count = %d, want 1", newTables)
+	}
+	if setFields != 1 {
+		t.Fatalf("SETFIELD count = %d, want 1", setFields)
+	}
+}
+
+func TestTableLiteralNilStringFieldsAreOmitted(t *testing.T) {
+	src := `t := {left: nil, right: nil}`
+	tokens, err := lexer.New(src).Tokenize()
+	if err != nil {
+		t.Fatalf("lexer error: %v", err)
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	proto, err := Compile(prog)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	newTables := 0
+	setFields := 0
+	for _, inst := range proto.Code {
+		switch DecodeOp(inst) {
+		case OP_NEWTABLE:
+			newTables++
+			if DecodeC(inst) != 0 {
+				t.Fatalf("nil-only keyed literal hash hint = %d, want 0", DecodeC(inst))
+			}
+		case OP_SETFIELD:
+			setFields++
+		}
+	}
+	if newTables != 1 {
+		t.Fatalf("NEWTABLE count = %d, want 1", newTables)
+	}
+	if setFields != 0 {
+		t.Fatalf("SETFIELD count = %d, want 0", setFields)
+	}
+
+	g := compileAndRun(t, src)
+	tbl := g["t"].Table()
+	if tbl.SkeysLen() != 0 {
+		t.Fatalf("nil-only keyed literal stored %d string fields, want 0", tbl.SkeysLen())
+	}
+	if !tbl.RawGetString("left").IsNil() || !tbl.RawGetString("right").IsNil() {
+		t.Fatalf("omitted nil fields should still read back as nil")
+	}
+}
+
+func TestTableLiteralComputedNilKeyStillEvaluatesKey(t *testing.T) {
+	g := compileAndRun(t, `
+		called := 0
+		func key() {
+			called = called + 1
+			return "gone"
+		}
+		t := {[key()]: nil}
+	`)
+	expectGlobalInt(t, g, "called", 1)
+	tbl := g["t"].Table()
+	if tbl.SkeysLen() != 0 {
+		t.Fatalf("computed nil field stored %d string fields, want 0", tbl.SkeysLen())
+	}
 }
 
 func TestTableFieldAccess(t *testing.T) {
