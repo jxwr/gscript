@@ -1358,8 +1358,19 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 				"exit_code":      ctx.ExitCode,
 				"deopt_instr_id": ctx.DeoptInstrID,
 				"resume_pass":    ctx.ResumeNumericPass,
+				"resume_pc":      ctx.ExitResumePC,
 			})
 			tm.disableTier2AfterRuntimeDeopt(proto, "tier2: runtime deopt")
+			if ctx.ExitResumePC > 0 && tm.callVM != nil {
+				resumePC := int(ctx.ExitResumePC)
+				ctx.ExitResumePC = 0
+				tm.traceEvent("fallback", "tier0", proto, map[string]any{
+					"reason": "tier2_precise_deopt",
+					"target": "interpreter",
+					"pc":     resumePC,
+				})
+				return tm.callVM.ResumeFromPC(resumePC)
+			}
 			tm.traceEvent("fallback", "tier0", proto, map[string]any{
 				"reason": "tier2_runtime_deopt",
 				"target": "interpreter",

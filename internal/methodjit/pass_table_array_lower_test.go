@@ -236,6 +236,35 @@ func TestTableArrayLower_LoadElimInvalidatesFactsAcrossTableMutation(t *testing.
 	}
 }
 
+func TestTableArrayLower_SetTableBeforeSameTableReadStillLowers(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_set_before_read"}, NumRegs: 4}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	writeKey := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	readKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), writeKey.Value(), val.Value()}, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), readKey.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, writeKey, readKey, val, set, get, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := countOps(out)
+	if counts[OpTableArrayLoad] != 1 || counts[OpGetTable] != 0 {
+		t.Fatalf("SetTable-before-read should still use typed TableArrayLoad, counts=%v\n%s", counts, Print(out))
+	}
+	if counts[OpSetTable] != 1 {
+		t.Fatalf("SetTable should remain, counts=%v\n%s", counts, Print(out))
+	}
+}
+
 func TestTableArrayLower_TableArrayLoadKeepsNonNegativeKeyFact(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_nonneg_key"}, NumRegs: 2}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}

@@ -56,6 +56,20 @@ func (ec *emitContext) emitDeopt(instr *Instr) {
 	asm.B("deopt_epilogue")
 }
 
+// emitPreciseDeopt flushes the current Tier 2 frame and asks the VM to resume
+// the interpreter at instr.SourcePC. It is used by guards that can fire after a
+// side effect has already executed in the same frame.
+func (ec *emitContext) emitPreciseDeopt(instr *Instr) {
+	if instr == nil || !instr.HasSource || instr.SourcePC < 0 {
+		ec.emitDeopt(instr)
+		return
+	}
+	ec.emitStoreAllActiveRegs()
+	ec.asm.LoadImm64(jit.X0, int64(instr.SourcePC))
+	ec.asm.STR(jit.X0, mRegCtx, execCtxOffExitResumePC)
+	ec.emitDeopt(instr)
+}
+
 // emitGuardType emits a native type check for OpGuardType.
 // On success, passes the value through. On failure, deopts.
 func (ec *emitContext) emitGuardType(instr *Instr) {

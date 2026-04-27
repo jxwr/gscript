@@ -116,7 +116,7 @@ func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	ec.emitDeopt(instr)
+	ec.emitPreciseDeopt(instr)
 	asm.Label(doneLabel)
 }
 
@@ -263,8 +263,168 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	ec.emitDeopt(instr)
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
+	if ec.emitTableArrayLoadExit(instr) {
+		typeDeoptLabel := ec.uniqueLabel("tarr_load_exit_type_deopt")
+		ec.emitCheckTableArrayLoadExitResult(instr, typeDeoptLabel)
+		ec.emitUnboxRawIntRegs(savedRawIntRegs)
+		ec.rawIntRegs = savedRawIntRegs
+		asm.B(doneLabel)
+		asm.Label(typeDeoptLabel)
+		ec.emitPreciseDeopt(instr)
+	}
 	asm.Label(doneLabel)
+}
+
+func tableArrayLoadTableValue(instr *Instr) (*Value, bool) {
+	if instr == nil || len(instr.Args) < 1 || instr.Args[0] == nil {
+		return nil, false
+	}
+	data := instr.Args[0].Def
+	if data == nil || data.Op != OpTableArrayData || len(data.Args) < 1 || data.Args[0] == nil {
+		return nil, false
+	}
+	header := data.Args[0].Def
+	if header == nil || header.Op != OpTableArrayHeader || len(header.Args) < 1 || header.Args[0] == nil {
+		return nil, false
+	}
+	return header.Args[0], true
+}
+
+func (ec *emitContext) emitCheckTableArrayLoadExitResult(instr *Instr, deoptLabel string) {
+	if instr == nil {
+		return
+	}
+	asm := ec.asm
+	switch instr.Aux {
+	case int64(vm.FBKindMixed):
+		switch instr.Type {
+		case TypeInt:
+			asm.LSRimm(jit.X2, jit.X0, 48)
+			asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+			asm.CMPreg(jit.X2, jit.X3)
+			asm.BCond(jit.CondNE, deoptLabel)
+		case TypeFloat:
+			jit.EmitIsTagged(asm, jit.X0, jit.X2)
+			asm.BCond(jit.CondEQ, deoptLabel)
+		case TypeTable:
+			jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+		}
+	case int64(vm.FBKindInt):
+		if instr.Type == TypeInt {
+			asm.LSRimm(jit.X2, jit.X0, 48)
+			asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+			asm.CMPreg(jit.X2, jit.X3)
+			asm.BCond(jit.CondNE, deoptLabel)
+		}
+	case int64(vm.FBKindFloat):
+		if instr.Type == TypeFloat {
+			jit.EmitIsTagged(asm, jit.X0, jit.X2)
+			asm.BCond(jit.CondEQ, deoptLabel)
+		}
+	}
+}
+
+// emitTableArrayLoadExit handles a typed-array load miss by executing the
+// original dynamic GetTable operation in Go and resuming after this IR
+// instruction. The receiver is recovered from data -> header -> table metadata,
+// so the hot TableArrayLoad operand list stays data/len/key only.
+func (ec *emitContext) emitTableArrayLoadExit(instr *Instr) bool {
+	asm := ec.asm
+
+	resultSlot, hasResultSlot := ec.slotMap[instr.ID]
+	tableValue, hasTableValue := tableArrayLoadTableValue(instr)
+	if !hasResultSlot || !hasTableValue || len(instr.Args) < 3 || instr.Args[2] == nil {
+		ec.emitPreciseDeopt(instr)
+		return false
+	}
+
+	tblReg := ec.resolveValueNB(tableValue.ID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	tblSlot, hasTblSlot := ec.slotMap[tableValue.ID]
+	if !hasTblSlot {
+		ec.emitPreciseDeopt(instr)
+		return false
+	}
+	asm.STR(jit.X0, mRegRegs, slotOffset(tblSlot))
+
+	keyValue := instr.Args[2]
+	keyReg := ec.resolveValueNB(keyValue.ID, jit.X0)
+	if keyReg != jit.X0 {
+		asm.MOVreg(jit.X0, keyReg)
+	}
+	keySlot, hasKeySlot := ec.slotMap[keyValue.ID]
+	if !hasKeySlot {
+		ec.emitPreciseDeopt(instr)
+		return false
+	}
+	asm.STR(jit.X0, mRegRegs, slotOffset(keySlot))
+
+	ec.recordTableArrayLoadExitResumeCheckSite(instr, resultSlot)
+	ec.emitStoreAllActiveRegs()
+
+	asm.LoadImm64(jit.X0, int64(TableOpGetTable))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableOp)
+	asm.LoadImm64(jit.X0, int64(tblSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableSlot)
+	asm.LoadImm64(jit.X0, int64(keySlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableKeySlot)
+	asm.LoadImm64(jit.X0, int64(resultSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux)
+	asm.LoadImm64(jit.X0, int64(instr.ID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
+
+	ec.emitSetResumeNumericPass()
+	asm.LoadImm64(jit.X0, ExitTableExit)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+
+	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
+	asm.Label(continueLabel)
+	ec.emitReloadAllActiveRegs()
+	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
+
+	ec.callExitIDs = append(ec.callExitIDs, instr.ID)
+	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
+		instrID:       instr.ID,
+		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
+	})
+	return true
+}
+
+func (ec *emitContext) recordTableArrayLoadExitResumeCheckSite(instr *Instr, resultSlot int) {
+	if ec.exitResumeCheck == nil || instr == nil {
+		return
+	}
+	gprLive := ec.activeRegs
+	fprLive := ec.activeFPRegs
+	if gprLive[instr.ID] {
+		gprLive = make(map[int]bool, len(ec.activeRegs))
+		for valueID, live := range ec.activeRegs {
+			if valueID != instr.ID {
+				gprLive[valueID] = live
+			}
+		}
+	}
+	if fprLive[instr.ID] {
+		fprLive = make(map[int]bool, len(ec.activeFPRegs))
+		for valueID, live := range ec.activeFPRegs {
+			if valueID != instr.ID {
+				fprLive[valueID] = live
+			}
+		}
+	}
+	ec.recordExitResumeCheckSiteWithLive(instr, ExitTableExit, ec.exitResumeCheckLiveSlots(gprLive, fprLive), []int{resultSlot}, exitResumeCheckOptions{RequireTableInputs: true})
 }
 
 func (ec *emitContext) intNonNegative(id int) bool {

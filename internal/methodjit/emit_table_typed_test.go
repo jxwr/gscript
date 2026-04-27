@@ -7,7 +7,12 @@
 
 package methodjit
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
+)
 
 func TestTier2_GetTableArrayBool(t *testing.T) {
 	src := `
@@ -164,4 +169,126 @@ mixed_append(50)
 result := mixed_append(50)
 `
 	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_TableArrayLoadExitDoesNotReplayPriorSetTable(t *testing.T) {
+	src := `
+func bump_then_read(arr, key) {
+    arr[1] = arr[1] + 1
+    return arr[key]
+}
+`
+	top := compileTop(t, src)
+	fnProto := findProtoByName(top, "bump_then_read")
+	if fnProto == nil {
+		t.Fatal("bump_then_read proto not found")
+	}
+	seedIntTableFeedback(fnProto)
+
+	globals := make(map[string]runtime.Value)
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top-level error: %v", err)
+	}
+	fnVal := v.GetGlobal("bump_then_read")
+	if fnVal.IsNil() {
+		t.Fatal("function bump_then_read not found")
+	}
+
+	tbl := runtime.NewTable()
+	tbl.RawSetInt(1, runtime.IntValue(10))
+	tbl.RawSetInt(-1, runtime.IntValue(20))
+	for i := 0; i < 8; i++ {
+		if _, err := v.CallValue(fnVal, []runtime.Value{runtime.TableValue(tbl), runtime.IntValue(1)}); err != nil {
+			t.Fatalf("warm CallValue: %v", err)
+		}
+	}
+
+	fn := BuildGraph(fnProto)
+	var err error
+	fn, _, err = RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	if got := countOps(fn)[OpTableArrayLoad]; got == 0 {
+		t.Fatalf("SetTable-before-read should keep typed TableArrayLoad lowering:\n%s", Print(fn))
+	}
+
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+	cf.CallVM = v
+	cf.DeoptFunc = func(args []runtime.Value) ([]runtime.Value, error) {
+		return v.CallValue(fnVal, args)
+	}
+
+	before := tbl.RawGetInt(1).Int()
+	got, err := cf.Execute([]runtime.Value{runtime.TableValue(tbl), runtime.IntValue(-1)})
+	if err != nil {
+		t.Fatalf("Tier2 Execute: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 20 {
+		t.Fatalf("Tier2 Execute result = %v, want 20", got)
+	}
+	after := tbl.RawGetInt(1).Int()
+	if delta := after - before; delta != 1 {
+		t.Fatalf("table write replayed across TableArrayLoad exit: delta=%d, want 1", delta)
+	}
+}
+
+func TestTier2_TableArrayLoadPreciseDeoptDoesNotReplayPriorSetTable(t *testing.T) {
+	src := `
+func bump_then_read(arr, key) {
+    arr[1] = arr[1] + 1
+    return arr[key]
+}
+
+arr := {10, 20}
+for i := 1; i <= 40; i++ {
+    bump_then_read(arr, 1)
+}
+before := arr[1]
+miss := bump_then_read(arr, 99)
+after := arr[1]
+result := after - before
+`
+	proto := compileTop(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 1 {
+		t.Fatalf("result = %v, want 1", result)
+	}
+	miss := v.GetGlobal("miss")
+	if !miss.IsNil() {
+		t.Fatalf("miss = %v, want nil", miss)
+	}
+}
+
+func seedIntTableFeedback(proto *vm.FuncProto) {
+	fb := proto.EnsureFeedback()
+	for pc, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_GETTABLE:
+			fb[pc].Left = vm.FBTable
+			fb[pc].Right = vm.FBInt
+			fb[pc].Result = vm.FBInt
+			fb[pc].Kind = vm.FBKindInt
+		case vm.OP_SETTABLE:
+			fb[pc].Left = vm.FBTable
+			fb[pc].Right = vm.FBInt
+			fb[pc].Result = vm.FBInt
+			fb[pc].Kind = vm.FBKindInt
+		}
+	}
 }

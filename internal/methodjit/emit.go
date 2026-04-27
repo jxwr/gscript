@@ -141,9 +141,10 @@ type ExecContext struct {
 	// Pointer is set by executeTier2 to &CompiledFunction.CallCache[0].
 	Tier2CallCache uintptr
 
-	// ExitResumePC is the bytecode PC of the int-spec overflow instruction.
-	// Set by emitIntSpecDeopt so that Execute can resume the interpreter at the
-	// exact guard PC instead of restarting at pc=0 (which replays side effects).
+	// ExitResumePC is the bytecode PC of a precise interpreter continuation.
+	// Tier 1 int-spec overflow and selected Tier 2 guards set it so Execute can
+	// resume at the exact guard PC instead of restarting at pc=0, which would
+	// replay earlier side effects.
 	ExitResumePC int64
 
 	// DeoptInstrID is written by emitDeopt (and related deopt exits) with the
