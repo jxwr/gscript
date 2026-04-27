@@ -114,8 +114,10 @@ func promoteLoopPairs(fn *Function, li *loopInfo, hdr *Block, ph *Block) {
 		return
 	}
 
-	// Single exit block, no critical edge.
+	// Single exit block. If that block also has outside predecessors, split the
+	// single loop-exit edge so promoted stores have a dedicated landing block.
 	var exitBlock *Block
+	var exitPreds []*Block
 	for _, b := range bodyList {
 		for _, s := range b.Succs {
 			if bodyBlocks[s.ID] {
@@ -126,15 +128,21 @@ func promoteLoopPairs(fn *Function, li *loopInfo, hdr *Block, ph *Block) {
 			} else if exitBlock != s {
 				return
 			}
+			exitPreds = append(exitPreds, b)
 		}
 	}
 	if exitBlock == nil {
 		return
 	}
+	if len(exitPreds) == 0 {
+		return
+	}
+	outsideExitPreds := 0
 	for _, p := range exitBlock.Preds {
-		if !bodyBlocks[p.ID] {
-			return
+		if bodyBlocks[p.ID] {
+			continue
 		}
+		outsideExitPreds++
 	}
 
 	// Deterministic pair iteration: sort by (objID, fieldAux).
@@ -153,6 +161,7 @@ func promoteLoopPairs(fn *Function, li *loopInfo, hdr *Block, ph *Block) {
 		}
 	}
 
+	promotable := make([]*pairInfo, 0, len(ordered))
 	for _, p := range ordered {
 		if len(p.sets) != 1 || len(p.gets) == 0 {
 			continue
@@ -166,7 +175,22 @@ func promoteLoopPairs(fn *Function, li *loopInfo, hdr *Block, ph *Block) {
 		if !isInvariantObj(bodyBlocks, p.gets[0]) {
 			continue
 		}
-		promoteOnePair(fn, hdr, ph, exitBlock, p)
+		promotable = append(promotable, p)
+	}
+	if len(promotable) == 0 {
+		return
+	}
+
+	storeBlock := exitBlock
+	if outsideExitPreds > 0 {
+		if len(exitPreds) != 1 {
+			return
+		}
+		storeBlock = splitScalarPromotionExitEdge(fn, exitPreds[0], exitBlock)
+	}
+
+	for _, p := range promotable {
+		promoteOnePair(fn, hdr, ph, storeBlock, p)
 	}
 }
 
@@ -191,7 +215,7 @@ func promoteOnePair(fn *Function, hdr, ph, exitBlock *Block, p *pairInfo) {
 	// 1. Pre-header init load before ph's terminator.
 	initLoad := &Instr{
 		ID: fn.newValueID(), Op: OpGetField, Type: TypeFloat,
-		Args: []*Value{objVal}, Aux: fieldAux, Block: ph,
+		Args: []*Value{objVal}, Aux: fieldAux, Aux2: p.gets[0].Aux2, Block: ph,
 	}
 	insertBeforeTerminator(ph, initLoad)
 
@@ -216,9 +240,13 @@ func promoteOnePair(fn *Function, hdr, ph, exitBlock *Block, p *pairInfo) {
 	removeInstr(storeInstr.Block, storeInstr)
 
 	// 5. Insert exit-block SetField(obj, field, phi) after any phis.
+	storeAux2 := storeInstr.Aux2
+	if storeAux2 == 0 {
+		storeAux2 = p.gets[0].Aux2
+	}
 	exitStore := &Instr{
 		ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
-		Args: []*Value{objVal, phi.Value()}, Aux: fieldAux, Block: exitBlock,
+		Args: []*Value{objVal, phi.Value()}, Aux: fieldAux, Aux2: storeAux2, Block: exitBlock,
 	}
 	insertAtTopAfterPhis(exitBlock, exitStore)
 }
@@ -248,6 +276,37 @@ func insertAtTopAfterPhis(b *Block, instr *Instr) {
 	b.Instrs = append(b.Instrs, nil)
 	copy(b.Instrs[idx+1:], b.Instrs[idx:])
 	b.Instrs[idx] = instr
+}
+
+func splitScalarPromotionExitEdge(fn *Function, pred, exitBlock *Block) *Block {
+	split := &Block{
+		ID:    nextBlockID(fn),
+		Preds: []*Block{pred},
+		Succs: []*Block{exitBlock},
+		defs:  make(map[int]*Value),
+	}
+	jump := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpJump,
+		Type:  TypeUnknown,
+		Block: split,
+		Aux:   int64(exitBlock.ID),
+	}
+	split.Instrs = []*Instr{jump}
+
+	retargetTerminator(pred, exitBlock.ID, split.ID)
+	for i, s := range pred.Succs {
+		if s == exitBlock {
+			pred.Succs[i] = split
+		}
+	}
+	for i, p := range exitBlock.Preds {
+		if p == pred {
+			exitBlock.Preds[i] = split
+		}
+	}
+	insertBlockBefore(fn, split, exitBlock)
+	return split
 }
 
 // removeInstr removes instr from b.Instrs by pointer identity.

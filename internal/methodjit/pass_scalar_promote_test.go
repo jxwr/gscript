@@ -52,12 +52,12 @@ func buildPromoteFixture(t *testing.T) (*Function, *Block, *Block, *Block, *Bloc
 	// b2: bi_vx = GetField(bi, 7); delta = ConstFloat 0; new_vx = SubFloat(bi_vx, delta);
 	//     SetField(bi, 7, new_vx); iphi_next = AddInt(iphi, one); jump b1
 	biVx := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeFloat, Block: b2,
-		Args: []*Value{bi.Value()}, Aux: 7}
+		Args: []*Value{bi.Value()}, Aux: 7, Aux2: 111}
 	delta := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b2, Aux: 0}
 	newVx := &Instr{ID: fn.newValueID(), Op: OpSubFloat, Type: TypeFloat, Block: b2,
 		Args: []*Value{biVx.Value(), delta.Value()}}
 	setF := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown, Block: b2,
-		Args: []*Value{bi.Value(), newVx.Value()}, Aux: 7}
+		Args: []*Value{bi.Value(), newVx.Value()}, Aux: 7, Aux2: 222}
 	iphiNext := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Block: b2,
 		Args: []*Value{iphi.Value(), one.Value()}}
 	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
@@ -160,6 +160,16 @@ func TestScalarPromotion_FloatField_HoistsAcrossBackEdge(t *testing.T) {
 	if n := countOpInBlock(ph, OpGetField, &field7); n != 1 {
 		t.Fatalf("pre-header has %d OpGetField(bi,7); expected 1", n)
 	}
+	var initGet *Instr
+	for _, instr := range ph.Instrs {
+		if instr.Op == OpGetField && instr.Aux == 7 {
+			initGet = instr
+			break
+		}
+	}
+	if initGet == nil || initGet.Aux2 != 111 {
+		t.Fatalf("pre-header GetField did not preserve Aux2=111: %+v", initGet)
+	}
 
 	// Exit block (b3) should have a new SetField(bi, 7, phi) at the
 	// top (before the return terminator). Its Args[1] must reference
@@ -176,6 +186,9 @@ func TestScalarPromotion_FloatField_HoistsAcrossBackEdge(t *testing.T) {
 	}
 	if exitSet == nil {
 		t.Fatalf("exit SetField not found")
+	}
+	if exitSet.Aux2 != 222 {
+		t.Fatalf("exit SetField did not preserve Aux2=222: %+v", exitSet)
 	}
 	if len(exitSet.Args) < 2 || exitSet.Args[1] == nil || exitSet.Args[1].ID != floatPhi.ID {
 		t.Fatalf("exit SetField Args[1] should reference the new phi v%d, got %+v",
@@ -196,6 +209,73 @@ func TestScalarPromotion_FloatField_HoistsAcrossBackEdge(t *testing.T) {
 	if len(sub.Args) < 1 || sub.Args[0] == nil || sub.Args[0].ID != floatPhi.ID {
 		t.Fatalf("OpSubFloat Args[0] should reference phi v%d, got %+v",
 			floatPhi.ID, sub.Args)
+	}
+}
+
+func TestScalarPromotion_SplitsCriticalExitEdge(t *testing.T) {
+	fn, b0, b1, b2, b3 := buildPromoteFixture(t)
+
+	// Make the loop exit block also reachable from outside the loop, matching
+	// nbody's inner-loop exit into the outer-loop header.
+	startCond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b0, Aux: 1}
+	branch := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b0,
+		Args: []*Value{startCond.Value()}, Aux: int64(b1.ID), Aux2: int64(b3.ID)}
+	b0.Instrs = append(b0.Instrs[:len(b0.Instrs)-1], startCond, branch)
+	b0.Succs = []*Block{b1, b3}
+	b3.Preds = append(b3.Preds, b0)
+	assertValidates(t, fn, "critical-exit input")
+
+	if _, err := LICMPass(fn); err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+
+	preBlocks := len(fn.Blocks)
+	if _, err := ScalarPromotionPass(fn); err != nil {
+		t.Fatalf("ScalarPromotionPass: %v", err)
+	}
+	assertValidates(t, fn, "after ScalarPromotion")
+	if len(fn.Blocks) != preBlocks+1 {
+		t.Fatalf("expected one split exit block, blocks before=%d after=%d\n%s", preBlocks, len(fn.Blocks), Print(fn))
+	}
+
+	field7 := int64(7)
+	if n := countOpInBlock(b2, OpGetField, &field7); n != 0 {
+		t.Fatalf("body still has %d OpGetField(bi,7); expected 0", n)
+	}
+	if n := countOpInBlock(b2, OpSetField, &field7); n != 0 {
+		t.Fatalf("body still has %d OpSetField(bi,7); expected 0", n)
+	}
+	if n := countOpInBlock(b3, OpSetField, &field7); n != 0 {
+		t.Fatalf("original exit block should not receive split-edge stores, got %d\n%s", n, Print(fn))
+	}
+
+	var split *Block
+	for _, pred := range b3.Preds {
+		if pred != b0 {
+			split = pred
+			break
+		}
+	}
+	if split == nil {
+		t.Fatalf("split exit block not found in exit preds: %+v", b3.Preds)
+	}
+	if n := countOpInBlock(split, OpSetField, &field7); n != 1 {
+		t.Fatalf("split exit block has %d OpSetField(bi,7); expected 1\n%s", n, Print(fn))
+	}
+	var splitSet *Instr
+	for _, instr := range split.Instrs {
+		if instr.Op == OpSetField && instr.Aux == 7 {
+			splitSet = instr
+			break
+		}
+	}
+	if splitSet == nil || splitSet.Aux2 != 222 {
+		t.Fatalf("split SetField did not preserve Aux2=222: %+v", splitSet)
+	}
+	last := split.Instrs[len(split.Instrs)-1]
+	if last.Op != OpJump || last.Aux != int64(b3.ID) {
+		t.Fatalf("split exit block should jump to original exit, got %s Aux=%d", last.Op, last.Aux)
 	}
 }
 

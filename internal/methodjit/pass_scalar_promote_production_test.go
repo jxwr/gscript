@@ -1,15 +1,10 @@
 //go:build darwin && arm64
 
-// pass_scalar_promote_production_test.go is an observe-only diagnostic that
-// runs LoopScalarPromotionPass through the production pipeline on nbody's
-// advance() and logs the unpromoted (GetField+SetField) pair count plus the
-// number of TypeFloat phis inserted by the pass. It is kept as a template
-// for real-pipeline pass verification (the rule from R31/R32/R33). It does
-// NOT assert pass/fail because R33 proved the plan's premise was incomplete
-// — see opt/premise_error.md: even with a correct float gate, the pass bails
-// earlier on exit-block-preds and isInvariantObj, so the unpromoted count
-// stays at 9 and float-phi count at 0. Once the upstream gates are relaxed,
-// flip this test to assert unpromoted ≤ 6 and floatPhis ≥ 3.
+// pass_scalar_promote_production_test.go runs LoopScalarPromotionPass through
+// the production pipeline on nbody's advance() and asserts the real nbody
+// shape gets promoted. R33 left this observe-only because the pass bailed on
+// the inner-loop exit edge; it is now a regression test for that production
+// path instead of a synthetic-IR-only check.
 
 package methodjit
 
@@ -135,5 +130,7 @@ for iter := 1; iter <= 10; iter++ {
 	for _, s := range surviving {
 		t.Logf("  surviving: %s", s)
 	}
-	t.Skip("observe-only; see opt/premise_error.md (R33) — pass bails on exit-block-preds before classification, so unpromoted/floatPhi counts do not reflect the gate-fix hypothesis")
+	if unpromoted > 6 || floatPhis < 3 {
+		t.Fatalf("scalar promotion did not fire on production nbody shape: unpromoted=%d floatPhis=%d", unpromoted, floatPhis)
+	}
 }
