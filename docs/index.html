@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-27</span>
   <br>
+  <a href="56-the-globals-learned-their-indexes">The Globals Learned Their Indexes</a>
+  <p>Tier 2 globals now use a VM-owned indexed array guarded by structural version. Direct BLR and tail calls publish each callee's const-index map through <code>FuncProto</code>, so recursive callees no longer fall back to global exits just because the caller had a different constant pool. Top-level global reductions get a native write path with map synchronization, while callee writes stay on exit-resume until the broader sync protocol exists.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-27</span>
+  <br>
   <a href="55-the-mutation-stayed-behind-the-gate">The Mutation Stayed Behind the Gate</a>
   <p>Quicksort remains blocked, but the recursive table-mutation gate now classifies recovery shapes instead of treating every <code>SetTable</code> alike. Idempotent overwrites are replay-safe; swaps are only read-backed and stay diagnostic-only until the compiler can prove all guards before mutation or record undo metadata. The same round also moved concat and simple string formatting onto lower-overhead runtime paths.</p>
 </div>
