@@ -11,6 +11,8 @@
 
 package runtime
 
+import "unsafe"
+
 // tableSlabSize: Tables per backing block. A block of 1024 Tables at
 // ~240 B/each ≈ 240 KB of Go heap per refill. Enough to amortize the
 // mallocgc cost across ~1000 NEWTABLEs.
@@ -57,4 +59,22 @@ func (h *Heap) AllocTable() *Table {
 		h.tableSlab.refill()
 	}
 	return h.tableSlab.allocTable()
+}
+
+// AllocTableWithSvals returns a fresh table and an empty, arena-backed svals
+// slice with the requested capacity. This keeps the common object-literal path
+// to one heap lock instead of separately locking for the Table and svals.
+func (h *Heap) AllocTableWithSvals(capacity int) (*Table, []Value) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.tableSlab.backing == nil {
+		h.tableSlab.refill()
+	}
+	t := h.tableSlab.allocTable()
+	if capacity <= 0 {
+		return t, nil
+	}
+	bytes := capacity * int(unsafe.Sizeof(Value(0)))
+	p := h.allocBytesLocked(bytes)
+	return t, unsafe.Slice((*Value)(p), capacity)[:0]
 }

@@ -106,6 +106,12 @@ func NewTableSized(arrayHint, hashHint int) *Table {
 // the historical length-1 sentinel allocation; typed arrays start at length 0 so
 // key 0 can use the native append path.
 func NewTableSizedKind(arrayHint, hashHint int, kind ArrayKind) *Table {
+	if arrayHint == 0 && hashHint > 0 && hashHint <= smallFieldCap && kind == ArrayMixed {
+		t, svals := DefaultHeap.AllocTableWithSvals(hashHint)
+		t.keysDirty = true
+		t.svals = svals
+		return t
+	}
 	t := DefaultHeap.AllocTable()
 	t.keysDirty = true
 	if arrayHint > 0 {

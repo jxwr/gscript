@@ -194,7 +194,7 @@ func gcLogGrow(p unsafe.Pointer) {
 // CheckGC runs deferred GC compaction if needed. Must be called at a VM safe
 // point where all recent allocations have been stored into registers/globals.
 func CheckGC() {
-	if atomic.CompareAndSwapInt32(&gcNeedsCompact, 1, 0) {
+	if atomic.LoadInt32(&gcNeedsCompact) != 0 && atomic.CompareAndSwapInt32(&gcNeedsCompact, 1, 0) {
 		gcCompact()
 	}
 }
