@@ -111,6 +111,20 @@ func compareVMvsJIT(t *testing.T, src, globalName string) {
 	assertValueEq(t, globalName, jitResult, vmResult)
 }
 
+func runTier1ProgramForTest(t *testing.T, src string) (*vm.VM, *vm.FuncProto) {
+	t.Helper()
+	proto := compileTop(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	engine := NewBaselineJITEngine()
+	v.SetMethodJIT(engine)
+	if _, err := v.Execute(proto); err != nil {
+		v.Close()
+		t.Fatalf("JIT runtime error: %v", err)
+	}
+	return v, proto
+}
+
 // ---------------------------------------------------------------------------
 // 1. Constants: LOADINT, LOADK, LOADBOOL, LOADNIL
 // ---------------------------------------------------------------------------
@@ -790,6 +804,106 @@ func make_pair(a, b) {
 result := 0
 for i := 1; i <= 200; i++ { result = make_pair(i, i * 2) }
 `, "result")
+}
+
+func TestTier1_NativeCall_BLRReplaySideEffectBeforeNewTable(t *testing.T) {
+	src := `
+func bump_array_then_newtable(t) {
+    t[0] = t[0] + 1
+    tmp := {}
+    return t[0]
+}
+bag := {}
+bag[0] = 0
+for i := 1; i <= 200; i++ {
+    result = bump_array_then_newtable(bag)
+}
+result = bag[0]
+`
+	vmGlobals := runVMFull(t, src)
+	want := vmGlobals["result"]
+	if !want.IsInt() || want.Int() != 200 {
+		t.Fatalf("VM sanity result = %v (%s), want int 200", want, want.TypeName())
+	}
+
+	v, proto := runTier1ProgramForTest(t, src)
+	defer v.Close()
+	got := v.GetGlobal("result")
+	assertValueEq(t, "result", got, want)
+
+	callee := findProtoByName(proto, "bump_array_then_newtable")
+	if callee == nil {
+		t.Fatal("bump_array_then_newtable proto not found")
+	}
+	if callee.CompiledCodePtr == 0 {
+		t.Fatal("unsafe callee was not compiled for normal Tier1 entry")
+	}
+	if callee.DirectEntryPtr != 0 {
+		t.Fatalf("unsafe callee DirectEntryPtr=%#x, want 0", callee.DirectEntryPtr)
+	}
+}
+
+func TestTier1_NativeCall_BLRReplayFieldSideEffectBeforeNewTable(t *testing.T) {
+	src := `
+func bump_field_then_newtable(t) {
+    t.count = t.count + 1
+    tmp := {}
+    return t.count
+}
+bag := {count: 0}
+for i := 1; i <= 200; i++ {
+    result = bump_field_then_newtable(bag)
+}
+result = bag.count
+`
+	vmGlobals := runVMFull(t, src)
+	want := vmGlobals["result"]
+	if !want.IsInt() || want.Int() != 200 {
+		t.Fatalf("VM sanity result = %v (%s), want int 200", want, want.TypeName())
+	}
+
+	v, proto := runTier1ProgramForTest(t, src)
+	defer v.Close()
+	got := v.GetGlobal("result")
+	assertValueEq(t, "result", got, want)
+
+	callee := findProtoByName(proto, "bump_field_then_newtable")
+	if callee == nil {
+		t.Fatal("bump_field_then_newtable proto not found")
+	}
+	if callee.CompiledCodePtr == 0 {
+		t.Fatal("unsafe field callee was not compiled for normal Tier1 entry")
+	}
+	if callee.DirectEntryPtr != 0 {
+		t.Fatalf("unsafe field callee DirectEntryPtr=%#x, want 0", callee.DirectEntryPtr)
+	}
+}
+
+func TestTier1_NativeCall_PureCalleeKeepsDirectBLR(t *testing.T) {
+	src := `
+func pure_sum(a, b, c) {
+    return a + b + c
+}
+result := 0
+for i := 1; i <= 200; i++ {
+    result = pure_sum(i, i * 2, 3)
+}
+`
+	vmGlobals := runVMFull(t, src)
+	v, proto := runTier1ProgramForTest(t, src)
+	defer v.Close()
+	assertValueEq(t, "result", v.GetGlobal("result"), vmGlobals["result"])
+
+	callee := findProtoByName(proto, "pure_sum")
+	if callee == nil {
+		t.Fatal("pure_sum proto not found")
+	}
+	if callee.CompiledCodePtr == 0 {
+		t.Fatal("pure callee was not compiled")
+	}
+	if callee.DirectEntryPtr == 0 {
+		t.Fatal("pure callee DirectEntryPtr is 0; direct BLR was disabled too broadly")
+	}
 }
 
 // TestTier1_NativeCall_DeepRecursionWithOpExit verifies recursive native calls

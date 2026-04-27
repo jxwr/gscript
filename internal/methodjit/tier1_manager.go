@@ -178,13 +178,75 @@ func (e *BaselineJITEngine) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 	e.compiled[proto] = bf
 	proto.CompiledCodePtr = uintptr(bf.Code.Ptr())
-	if bf.DirectEntryOffset >= 0 {
+	if bf.DirectEntryOffset >= 0 && nativeBLRReplaySafe(proto) {
 		proto.DirectEntryPtr = uintptr(bf.Code.Ptr()) + uintptr(bf.DirectEntryOffset)
+	} else {
+		proto.DirectEntryPtr = 0
 	}
 	if len(bf.GlobalValCache) > 0 {
 		proto.GlobalValCachePtr = uintptr(unsafe.Pointer(&bf.GlobalValCache[0]))
 	}
 	return bf
+}
+
+// nativeBLRReplaySafe reports whether a Tier 1 direct-entry caller may safely
+// jump into proto. A direct BLR callee that exits after native partial execution
+// is currently recovered by re-executing the callee from pc=0. That is only safe
+// if no visible native side effect can have happened before the exit.
+//
+// This is intentionally conservative and local: it keeps pure callees on BLR,
+// while withholding DirectEntryPtr for callees that perform native-visible
+// mutations before any later operation that can exit to Go.
+func nativeBLRReplaySafe(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return true
+	}
+	seenSideEffect := false
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		if seenSideEffect && tier1OpMayExit(op) {
+			return false
+		}
+		if tier1OpHasNativeVisibleSideEffect(op) {
+			seenSideEffect = true
+		}
+	}
+	return true
+}
+
+func tier1OpHasNativeVisibleSideEffect(op vm.Opcode) bool {
+	switch op {
+	case vm.OP_SETTABLE, vm.OP_SETFIELD, vm.OP_SETUPVAL:
+		return true
+	default:
+		return false
+	}
+}
+
+func tier1OpMayExit(op vm.Opcode) bool {
+	switch op {
+	case vm.OP_GETGLOBAL, vm.OP_SETGLOBAL,
+		vm.OP_NEWTABLE,
+		vm.OP_GETTABLE, vm.OP_SETTABLE,
+		vm.OP_GETFIELD, vm.OP_SETFIELD,
+		vm.OP_SETLIST, vm.OP_APPEND,
+		vm.OP_CONCAT, vm.OP_LEN, vm.OP_POW,
+		vm.OP_CLOSURE, vm.OP_CLOSE,
+		vm.OP_GETUPVAL, vm.OP_SETUPVAL,
+		vm.OP_SELF, vm.OP_VARARG,
+		vm.OP_TFORCALL,
+		vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV,
+		vm.OP_CALL:
+		return true
+	case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD:
+		// Int-specialized variants can deopt at runtime.
+		return true
+	case vm.OP_LT, vm.OP_LE:
+		// Generic string comparisons use exit-resume.
+		return true
+	default:
+		return false
+	}
 }
 
 // Execute runs a baseline-compiled function using the VM's register file.
