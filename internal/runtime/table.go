@@ -309,12 +309,16 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 		t.mu.Lock()
 		defer t.mu.Unlock()
 	}
+	valIsNil := val.IsNil()
+	if valIsNil && t.shapeID == 0 && len(t.skeys) == 0 && t.smap == nil {
+		return
+	}
 	t.keysDirty = true
 
 	// ShapeID-based cache: if shape matches, the field index is valid
 	idx := cache.FieldIdx
 	if t.shapeID != 0 && cache.ShapeID == t.shapeID && idx >= 0 && idx < len(t.svals) {
-		if val.IsNil() {
+		if valIsNil {
 			t.deleteSmallStringField(idx)
 			cache.FieldIdx = 0 // reset cache
 			cache.ShapeID = 0
@@ -324,7 +328,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 		return
 	}
 
-	if !val.IsNil() &&
+	if !valIsNil &&
 		t.smap == nil &&
 		cache.AppendShapeID == t.shapeID &&
 		idx == len(t.svals) &&
@@ -344,7 +348,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	// Fall back to normal path
 	for i, k := range t.skeys {
 		if k == key {
-			if val.IsNil() {
+			if valIsNil {
 				t.deleteSmallStringField(i)
 			} else {
 				t.svals[i] = val
@@ -356,7 +360,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	}
 
 	if t.smap != nil {
-		if val.IsNil() {
+		if valIsNil {
 			delete(t.smap, key)
 		} else {
 			t.smap[key] = val
@@ -364,7 +368,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 		return
 	}
 
-	if !val.IsNil() {
+	if !valIsNil {
 		if len(t.skeys) < smallFieldCap {
 			preShapeID := t.shapeID
 			idx := len(t.svals)

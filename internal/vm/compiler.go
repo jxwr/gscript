@@ -2070,6 +2070,9 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 		if f.Key == nil {
 			arrayCount++
 		} else {
+			if _, ok := f.Value.(*ast.NilLit); ok {
+				continue
+			}
 			hashCount++
 		}
 	}

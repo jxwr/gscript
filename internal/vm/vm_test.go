@@ -562,6 +562,30 @@ func TestTableHashConstruction(t *testing.T) {
 	expectGlobalInt(t, g, "result", 30)
 }
 
+func TestTableLiteralNilFieldsDoNotInflateHashHint(t *testing.T) {
+	tokens, err := lexer.New(`t := {left: nil, right: nil, value: 1}`).Tokenize()
+	if err != nil {
+		t.Fatalf("lexer error: %v", err)
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	proto, err := Compile(prog)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	for _, inst := range proto.Code {
+		if DecodeOp(inst) == OP_NEWTABLE {
+			if got := DecodeC(inst); got != 1 {
+				t.Fatalf("NEWTABLE hash hint = %d, want 1", got)
+			}
+			return
+		}
+	}
+	t.Fatal("NEWTABLE not found")
+}
+
 func TestTableFieldAccess(t *testing.T) {
 	g := compileAndRun(t, `
 		t := {}
