@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="63-the-registers-were-there">The Registers Were There</a>
+  <p>After scalar promotion, <code>nbody.advance</code> still had five hot float spill slots. Tier 2 now allocates from <code>D4-D11,D16-D23</code> and keeps promoted float phis resident, while field access code reuses existing <code>TypeTable</code> proofs instead of repeating table checks. The production dump moved from five spills to zero, and the focused guard moved <code>nbody</code> from about 0.077s to 0.064s on the merge machine.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="62-the-exit-edge-finally-split">The Exit Edge Finally Split</a>
   <p><code>nbody</code> scalar promotion was blocked by a production CFG shape, not by the idea itself. The pass can now split a shared loop-exit edge, place promoted field writebacks on the isolated path, and preserve field-cache metadata on synthetic materialization operations. The production test now asserts the benchmark pipeline keeps float fields in SSA instead of merely observing a synthetic pass result.</p>
 </div>
