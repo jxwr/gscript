@@ -101,6 +101,49 @@ func TestTableArrayLower_LICMHoistsHeaderLenData(t *testing.T) {
 	}
 }
 
+func TestTableArrayLower_TableArrayLoadKeepsNonNegativeKeyFact(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_nonneg_key"}, NumRegs: 2}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, get, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fn.IntNonNegative[key.ID] {
+		t.Fatalf("constant table key should be marked non-negative before lowering")
+	}
+	fn, err = TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var load *Instr
+	for _, instr := range b.Instrs {
+		if instr.Op == OpTableArrayLoad {
+			load = instr
+			break
+		}
+	}
+	if load == nil {
+		t.Fatalf("expected lowered TableArrayLoad:\n%s", Print(fn))
+	}
+	if len(load.Args) < 3 || load.Args[2].ID != key.ID {
+		t.Fatalf("lowered TableArrayLoad should retain original key argument:\n%s", Print(fn))
+	}
+	if !fn.IntNonNegative[load.Args[2].ID] {
+		t.Fatalf("lowered TableArrayLoad key should retain non-negative fact")
+	}
+}
+
 func countOps(fn *Function) map[Op]int {
 	counts := make(map[Op]int)
 	for _, b := range fn.Blocks {

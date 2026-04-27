@@ -195,7 +195,7 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 		asm.BCond(jit.CondNE, deoptLabel)
 		asm.SBFX(jit.X1, jit.X1, 0, 48)
 	}
-	if kv, isConst := ec.constInts[keyID]; !isConst || kv < 0 {
+	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
@@ -265,6 +265,13 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	asm.Label(deoptLabel)
 	ec.emitDeopt(instr)
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) intNonNegative(id int) bool {
+	if ec.fn == nil || ec.fn.IntNonNegative == nil {
+		return false
+	}
+	return ec.fn.IntNonNegative[id]
 }
 
 // emitNewTableExit emits a table-exit for OpNewTable. Table allocation is

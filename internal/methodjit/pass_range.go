@@ -20,7 +20,7 @@
 //     Constants seed their own range. AddInt/SubInt/MulInt/NegInt/ModInt
 //     propagate using saturating arithmetic. Phi nodes join (min-of-mins,
 //     max-of-maxes). All other ops are "top" (unbounded).
-//   Phase C: Populate fn.Int48Safe with IDs whose range fits in int48.
+//   Phase C: Populate fn.Int48Safe and sign facts from the final ranges.
 
 package methodjit
 
@@ -52,6 +52,10 @@ func pointRange(v int64) intRange {
 
 func (r intRange) fitsInt48() bool {
 	return r.known && r.min >= MinInt48 && r.max <= MaxInt48
+}
+
+func (r intRange) nonNegative() bool {
+	return r.known && r.min >= 0
 }
 
 // rangeEqual reports whether two ranges are exactly the same (including
@@ -322,6 +326,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	markConvergingInductionSafe(fn, safe)
 	fn.Int48Safe = safe
 	fn.IntRanges = ranges
+	fn.IntNonNegative = collectIntNonNegativeFacts(fn, ranges)
 	populateIntModFacts(fn, ranges)
 	return fn, nil
 }
@@ -422,6 +427,21 @@ func argRange(v *Value, ranges map[int]intRange) intRange {
 		return r
 	}
 	return topRange()
+}
+
+func collectIntNonNegativeFacts(fn *Function, ranges map[int]intRange) map[int]bool {
+	facts := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !instr.Type.isIntegerLike() {
+				continue
+			}
+			if r, ok := ranges[instr.ID]; ok && r.nonNegative() {
+				facts[instr.ID] = true
+			}
+		}
+	}
+	return facts
 }
 
 func populateIntModFacts(fn *Function, baseRanges map[int]intRange) {

@@ -244,6 +244,151 @@ func TestRangePass_Propagation(t *testing.T) {
 	}
 }
 
+func TestRangePass_IntNonNegativeMarksConstantsAndRanges(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "nonneg_facts"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	negConst := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: -1, Block: b}
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: b}
+	two := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 2, Block: b}
+	three := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 3, Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{two.Value(), three.Value()}, Block: b}
+	neg := &Instr{ID: fn.newValueID(), Op: OpNegInt, Type: TypeInt,
+		Args: []*Value{three.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add.Value()}, Block: b}
+	b.Instrs = []*Instr{negConst, zero, two, three, add, neg, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+	for _, instr := range []*Instr{zero, two, three, add} {
+		if !result.IntNonNegative[instr.ID] {
+			t.Fatalf("v%d %s should be marked non-negative\nfacts=%v", instr.ID, instr.Op, result.IntNonNegative)
+		}
+	}
+	for _, instr := range []*Instr{negConst, neg} {
+		if result.IntNonNegative[instr.ID] {
+			t.Fatalf("v%d %s should not be marked non-negative\nfacts=%v", instr.ID, instr.Op, result.IntNonNegative)
+		}
+	}
+}
+
+func TestRangePass_IntNonNegativeDynamicBoundPositiveInduction(t *testing.T) {
+	fn := runRangeAnalysisForSource(t, `
+func f(n) {
+    i := 0
+    total := 0
+    for i < n {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+`)
+
+	li := computeLoopInfo(fn)
+	for _, header := range fn.Blocks {
+		if !li.loopHeaders[header.ID] {
+			continue
+		}
+		for _, phi := range header.Instrs {
+			if phi.Op != OpPhi {
+				break
+			}
+			ind, ok := analyzeForwardInduction(phi, li)
+			if !ok || ind.step <= 0 {
+				continue
+			}
+			if fn.IntNonNegative[phi.ID] && fn.IntNonNegative[ind.update.ID] {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected dynamic-bound positive induction phi/update to be non-negative\nIR:\n%s\nfacts=%v",
+		Print(fn), fn.IntNonNegative)
+}
+
+func TestRangePass_IntNonNegativeRejectsNegativeStartAndDecrement(t *testing.T) {
+	for _, src := range []string{
+		`
+func f(n) {
+    i := -1
+    for i < n {
+        i = i + 1
+    }
+    return i
+}
+`,
+		`
+func f(n) {
+    i := 5
+    for n < i {
+        i = i - 1
+    }
+    return i
+}
+`,
+	} {
+		fn := runRangeAnalysisForSource(t, src)
+		li := computeLoopInfo(fn)
+		for _, header := range fn.Blocks {
+			if !li.loopHeaders[header.ID] {
+				continue
+			}
+			for _, phi := range header.Instrs {
+				if phi.Op != OpPhi {
+					break
+				}
+				update, ok := loopPhiBackedgeValue(phi, li.headerBlocks[header.ID])
+				if !ok {
+					continue
+				}
+				if fn.IntNonNegative[phi.ID] && fn.IntNonNegative[update.ID] {
+					t.Fatalf("unexpected non-negative loop phi/update for negative/decrementing case\nIR:\n%s\nfacts=%v",
+						Print(fn), fn.IntNonNegative)
+				}
+			}
+		}
+	}
+}
+
+func runRangeAnalysisForSource(t *testing.T, src string) *Function {
+	t.Helper()
+	proto := compile(t, src)
+	fn := BuildGraph(proto)
+	if errs := Validate(fn); len(errs) > 0 {
+		t.Fatalf("validate: %v", errs[0])
+	}
+	var err error
+	fn, err = SimplifyPhisPass(fn)
+	if err != nil {
+		t.Fatalf("SimplifyPhisPass: %v", err)
+	}
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass: %v", err)
+	}
+	fn, err = ConstPropPass(fn)
+	if err != nil {
+		t.Fatalf("ConstPropPass: %v", err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+	fn, err = RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+	return fn
+}
+
 // TestRangePass_Integration compiles a real nested-loop function and
 // confirms that arithmetic purely on loop counters (not accumulating across
 // iterations) is marked Int48Safe after TypeSpec + RangeAnalysis.

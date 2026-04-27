@@ -45,6 +45,11 @@ type Function struct {
 	// arithmetic recurrences such as multiplicative LCGs.
 	IntRanges map[int]intRange
 
+	// IntNonNegative is the set of integer SSA value IDs whose runtime result is
+	// provably >= 0. Populated by RangeAnalysisPass for consumers that only need
+	// a sign fact and must not reuse Int48Safe's overflow-specific meaning.
+	IntNonNegative map[int]bool
+
 	// Globals, if non-nil, maps global function names to their protos.
 	// Used by the IR interpreter to resolve residual cross-function calls
 	// (e.g., those left after bounded recursive inlining). Populated by
