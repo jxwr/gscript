@@ -44,6 +44,7 @@ type VM struct {
 	argBuf            [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf            [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
 	currentCoroutine  *VMCoroutine      // coroutine currently running on this VM, if any
+	coroutineStats    *coroutineStats
 }
 
 // SetMethodJIT sets the Method JIT engine for this VM.
@@ -457,6 +458,7 @@ func newChildVM(parent *VM, co *VMCoroutine) *VM {
 		noGlobalLock:     false, // shared globals, must lock
 		stringMeta:       parent.stringMeta,
 		currentCoroutine: co,
+		coroutineStats:   parent.coroutineStats,
 	}
 	child.setGlobalOverride("coroutine", runtime.TableValue(child.newCoroutineLib()))
 	runtime.RegisterVM(child)
@@ -482,15 +484,16 @@ func newIsolatedChildVM(parent *VM) *VM {
 	}
 
 	child := &VM{
-		regs:         runtime.MakeNilSlice(1024),
-		frames:       make([]CallFrame, initialCallFrameCapacity),
-		globals:      childGlobals,
-		globalArray:  ga,
-		globalIndex:  gi,
-		globalVer:    parent.globalVer,
-		globalsMu:    &sync.RWMutex{},
-		noGlobalLock: true, // own copy, fully lock-free
-		stringMeta:   parent.stringMeta,
+		regs:           runtime.MakeNilSlice(1024),
+		frames:         make([]CallFrame, initialCallFrameCapacity),
+		globals:        childGlobals,
+		globalArray:    ga,
+		globalIndex:    gi,
+		globalVer:      parent.globalVer,
+		globalsMu:      &sync.RWMutex{},
+		noGlobalLock:   true, // own copy, fully lock-free
+		stringMeta:     parent.stringMeta,
+		coroutineStats: parent.coroutineStats,
 	}
 	child.RegisterCoroutineLib()
 	runtime.RegisterVM(child)

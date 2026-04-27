@@ -26,12 +26,13 @@ type jitStatsReporter interface {
 }
 
 type jitCLIOptions struct {
-	TimelinePath      string
-	TimelineFormat    string
-	WarmDumpDir       string
-	WarmDumpProto     string
-	ShowExitStats     bool
-	ShowExitStatsJSON bool
+	TimelinePath       string
+	TimelineFormat     string
+	WarmDumpDir        string
+	WarmDumpProto      string
+	ShowExitStats      bool
+	ShowExitStatsJSON  bool
+	ShowCoroutineStats bool
 }
 
 type jitWarmDumpController interface {
@@ -61,6 +62,7 @@ func main() {
 	jitDumpProto := flag.String("jit-dump-proto", "", "limit -jit-dump-warm to a proto name")
 	exitStats := flag.Bool("exit-stats", false, "print Tier 2 exit/deopt profile after execution")
 	exitStatsJSON := flag.Bool("exit-stats-json", false, "print Tier 2 exit/deopt profile as JSON after execution")
+	coroutineStats := flag.Bool("coroutine-stats", false, "print VM coroutine runtime statistics after execution")
 	flag.Parse()
 
 	if *cpuprofile != "" {
@@ -141,12 +143,13 @@ func main() {
 
 	if *useVM {
 		if err := runFileVM(interp, filename, *useJIT, *jitStats, jitCLIOptions{
-			TimelinePath:      *jitTimeline,
-			TimelineFormat:    *jitTimelineFormat,
-			WarmDumpDir:       *jitDumpWarm,
-			WarmDumpProto:     *jitDumpProto,
-			ShowExitStats:     *exitStats,
-			ShowExitStatsJSON: *exitStatsJSON,
+			TimelinePath:       *jitTimeline,
+			TimelineFormat:     *jitTimelineFormat,
+			WarmDumpDir:        *jitDumpWarm,
+			WarmDumpProto:      *jitDumpProto,
+			ShowExitStats:      *exitStats,
+			ShowExitStatsJSON:  *exitStatsJSON,
+			ShowCoroutineStats: *coroutineStats,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
 			os.Exit(1)
@@ -205,6 +208,9 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 	globals := interp.ExportGlobals()
 	bvm := bytecodevm.New(globals)
 	bvm.SetStringMeta(interp.StringMeta())
+	if jitOpts.ShowCoroutineStats {
+		bvm.EnableCoroutineStats()
+	}
 	var reporter jitStatsReporter
 	if !jit && jitOpts.TimelinePath != "" {
 		return fmt.Errorf("JIT timeline requires JIT to be enabled")
@@ -261,6 +267,9 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 			fmt.Fprintln(os.Stderr, `{"error":"JIT disabled or unavailable on this platform"}`)
 		}
 	}
+	if jitOpts.ShowCoroutineStats {
+		printCoroutineStats(os.Stderr, bvm.CoroutineStats())
+	}
 	if err != nil {
 		if dumpErr != nil {
 			return fmt.Errorf("%w; warm dump failed: %v", err, dumpErr)
@@ -283,6 +292,19 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 		return statsErr
 	}
 	return nil
+}
+
+func printCoroutineStats(w *os.File, stats bytecodevm.CoroutineStatsSnapshot) {
+	fmt.Fprintln(w, "Coroutine Statistics:")
+	fmt.Fprintf(w, "  created: %d\n", stats.Created)
+	fmt.Fprintf(w, "  wrapped: %d\n", stats.Wrapped)
+	fmt.Fprintf(w, "  resumes: %d\n", stats.ResumeCalls)
+	fmt.Fprintf(w, "  yields: %d\n", stats.YieldCalls)
+	fmt.Fprintf(w, "  leaf fast path: %d\n", stats.LeafFastPath)
+	fmt.Fprintf(w, "  leaf fallbacks: %d\n", stats.LeafFallbacks)
+	fmt.Fprintf(w, "  goroutine starts: %d\n", stats.GoroutineStarts)
+	fmt.Fprintf(w, "  completed: %d\n", stats.Completed)
+	fmt.Fprintf(w, "  resume errors: %d\n", stats.ResumeErrors)
 }
 
 func runREPL(interp *runtime.Interpreter) {

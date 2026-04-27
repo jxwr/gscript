@@ -131,6 +131,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 				return nil, fmt.Errorf("coroutine.create expects a GScript function, got Go function")
 			}
 			co := NewVMCoroutine(cl)
+			vm.recordCoroutineCreated(false)
 			return []rt.Value{rt.AnyCoroutineValue(co)}, nil
 		},
 	}))
@@ -158,6 +159,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			if co == nil {
 				return nil, fmt.Errorf("cannot yield from outside a coroutine")
 			}
+			vm.recordCoroutineYield()
 			// Send yielded values to the resume caller
 			co.yieldCh <- vmYieldResult{values: args}
 			// Block until resumed — the resume caller will send args
@@ -201,6 +203,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 				return nil, fmt.Errorf("coroutine.wrap expects a GScript function")
 			}
 			co := NewVMCoroutine(cl)
+			vm.recordCoroutineCreated(true)
 			dead := false
 			wrapper := &rt.GoFunction{
 				Name: "wrapped_coroutine",
@@ -238,10 +241,13 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 // resumeCoroutine resumes a suspended VM coroutine.
 func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, error) {
+	vm.recordCoroutineResume()
 	if co.status == VMCoroutineDead {
+		vm.recordCoroutineResumeError()
 		return []rt.Value{rt.BoolValue(false), rt.StringValue("cannot resume dead coroutine")}, nil
 	}
 	if co.status == VMCoroutineRunning {
+		vm.recordCoroutineResumeError()
 		return []rt.Value{rt.BoolValue(false), rt.StringValue("cannot resume running coroutine")}, nil
 	}
 
@@ -249,8 +255,10 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 
 	if !co.started && co.leafNoCall {
 		co.started = true
+		vm.recordCoroutineLeafFastPath()
 		results, err, ok := vm.callLeafCoroutine(co, args)
 		if !ok {
+			vm.recordCoroutineLeafFallback()
 			coVM := newChildVM(vm, co)
 			results, err = coVM.call(co.closure, args, 0, 0)
 		}
@@ -258,6 +266,7 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 			results = []rt.Value{}
 		}
 		co.status = VMCoroutineDead
+		vm.recordCoroutineCompleted()
 		if err != nil {
 			return co.resumeResults(false, []rt.Value{rt.StringValue(err.Error())}), nil
 		}
@@ -266,6 +275,7 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 
 	if !co.started {
 		co.started = true
+		vm.recordCoroutineGoroutineStart()
 		// Launch a new goroutine with its own VM sharing globals.
 		go func() {
 			setCurrentVMCoroutine(co)
@@ -293,6 +303,7 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 
 	if result.done || result.err != nil {
 		co.status = VMCoroutineDead
+		vm.recordCoroutineCompleted()
 	} else {
 		co.status = VMCoroutineSuspended
 	}
