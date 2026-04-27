@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="61-the-upvalue-was-not-an-exit">The Upvalue Was Not An Exit</a>
+  <p><code>closure_bench</code> was not waiting for Tier 2. Its hot accumulator closure was stuck behind an over-broad Tier 1 direct-entry replay-safety gate. Valid <code>GETUPVAL</code> and <code>SETUPVAL</code> slots cannot exit, so they no longer block native BLR direct entry after a side effect; callees that perform a real exit-capable operation after the upvalue mutation remain gated. The accumulator section dropped from about 0.050s to 0.008s, and the full benchmark returned to the 0.028s baseline.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="60-the-load-that-did-not-replay-the-write">The Load That Did Not Replay The Write</a>
   <p>Typed table-array loads can now miss without replaying earlier writes. The cold path reconstructs the original <code>GetTable</code> from <code>data -&gt; header -&gt; table</code>, executes it through <code>TableOpGetTable</code>, and resumes after the lowered load. Remaining representation mismatches use precise interpreter resume at the source PC, while the exit-resume checker treats the load result as an output rather than a pre-exit live input. This is replay infrastructure, not a headline speedup, but it lets future table optimizations avoid a coarse mutation veto.</p>
 </div>
