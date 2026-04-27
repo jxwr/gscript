@@ -53,6 +53,22 @@ for i := 1; i <= 200; i++ { result = f() }
 `, "result")
 }
 
+func TestTier1_NativeGetFieldEmptyShapeMissReturnsNil(t *testing.T) {
+	compareVMvsJIT(t, `
+func f(t) {
+    if t.left == nil { return 1 }
+    return 2
+}
+full := {left: 99}
+empty := {}
+result := 0
+for i := 1; i <= 200; i++ {
+    result = result + f(full)
+    result = result + f(empty)
+}
+`, "result")
+}
+
 func TestTier1_NativeSetFieldThenGet(t *testing.T) {
 	compareVMvsJIT(t, `
 func f() {

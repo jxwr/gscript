@@ -48,6 +48,7 @@ const (
 	TableOffSkeysLen  = 48  // skeys.len
 	TableOffSvals     = 64  // []Value slice header
 	TableOffSvalsLen  = 72  // svals slice len field
+	TableOffSmap      = 88  // map[string]Value
 	TableOffHash      = 96  // map[Value]Value
 	TableOffMetatable = 104 // *Table
 	TableOffKeysDirty = 136 // bool (1 byte) — must set true on append
@@ -155,6 +156,9 @@ func init() {
 	imapOff, hashOff := runtime.TableMapOffsets()
 	if imapOff != TableOffImap {
 		panic("jit: Table.imap offset mismatch: expected " + itoa(TableOffImap) + ", got " + itoa(int(imapOff)))
+	}
+	if smapOff := runtime.TableStringMapOffset(); smapOff != TableOffSmap {
+		panic("jit: Table.smap offset mismatch: expected " + itoa(TableOffSmap) + ", got " + itoa(int(smapOff)))
 	}
 	if hashOff != TableOffHash {
 		panic("jit: Table.hash offset mismatch: expected " + itoa(TableOffHash) + ", got " + itoa(int(hashOff)))

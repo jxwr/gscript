@@ -87,6 +87,7 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 
 	slowLabel := nextLabel("getfield_slow")
 	doneLabel := nextLabel("getfield_done")
+	emptyMissLabel := nextLabel("getfield_empty_miss")
 
 	// Load FieldCache pointer from ExecContext.
 	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineFieldCache)
@@ -124,7 +125,7 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 	// Shape guard: table.shapeID must match cached shapeID.
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID) // X1 = table.shapeID
 	asm.CMPreg(jit.X1, jit.X2)                    // compare with cached shapeID
-	asm.BCond(jit.CondNE, slowLabel)
+	asm.BCond(jit.CondNE, emptyMissLabel)
 
 	// Bounds check: fieldIdx < len(svals)
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvalsLen) // X1 = svals.len
@@ -146,7 +147,21 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 	storeSlot(asm, a, jit.X0)
 	asm.B(doneLabel)
 
-	// Slow path: exit-resume.
+	// Empty shape-less tables cannot contain any string field. This catches
+	// leaf objects built from nil fields without bouncing through Go.
+	asm.Label(emptyMissLabel)
+	asm.CBNZ(jit.X1, slowLabel) // non-empty shape mismatch
+	asm.LDR(jit.X4, jit.X0, jit.TableOffMetatable)
+	asm.CBNZ(jit.X4, slowLabel) // __index may synthesize a missing field
+	asm.LDR(jit.X4, jit.X0, jit.TableOffSvalsLen)
+	asm.CBNZ(jit.X4, slowLabel) // shape-less but not empty
+	asm.LDR(jit.X4, jit.X0, jit.TableOffSmap)
+	asm.CBNZ(jit.X4, slowLabel) // large string-key table
+	jit.EmitBoxNil(asm, jit.X0)
+	emitBaselineFeedbackResult(asm, pc, 7, "getfield_empty")
+	storeSlot(asm, a, jit.X0)
+	asm.B(doneLabel)
+
 	asm.Label(slowLabel)
 	emitBaselineOpExitCommon(asm, vm.OP_GETFIELD, pc, a, b, c)
 

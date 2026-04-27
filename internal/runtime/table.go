@@ -699,6 +699,12 @@ func TableMapOffsets() (imap, hash uintptr) {
 	return unsafe.Offsetof(t.imap), unsafe.Offsetof(t.hash)
 }
 
+// TableStringMapOffset returns the byte offset of the large string-key map.
+func TableStringMapOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.smap)
+}
+
 // TableTypedArrayCapOffsets returns byte offsets of typed-array cap fields for JIT verification.
 func TableTypedArrayCapOffsets() (intArrayCap, floatArrayCap, boolArrayCap uintptr) {
 	var t Table
