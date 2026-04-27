@@ -3,7 +3,6 @@ package vm
 import (
 	"fmt"
 	"math"
-	"strings"
 	"sync"
 	"unsafe"
 
@@ -1114,11 +1113,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			a := DecodeA(inst)
 			b := DecodeB(inst)
 			c := DecodeC(inst)
-			var sb strings.Builder
-			for i := b; i <= c; i++ {
-				sb.WriteString(vm.regs[base+i].String())
-			}
-			vm.regs[base+a] = runtime.StringValue(sb.String())
+			vm.regs[base+a] = runtime.ConcatValues(vm.regs[base+b : base+c+1])
 
 		// ---- Comparison ----
 		case OP_EQ:

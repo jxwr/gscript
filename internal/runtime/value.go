@@ -64,24 +64,24 @@ const (
 	canonicalNaN uint64 = 0x7FF8000000000000
 
 	// Int48 range limits.
-	maxInt48 int64 = (1 << 47) - 1  //  140_737_488_355_327
-	minInt48 int64 = -(1 << 47)     // -140_737_488_355_328
+	maxInt48 int64 = (1 << 47) - 1 //  140_737_488_355_327
+	minInt48 int64 = -(1 << 47)    // -140_737_488_355_328
 
 	// Pointer sub-type bits (stored in bits 44-47 of the pointer payload).
 	// macOS ARM64 pointers use ~41 bits, so bits 44-47 are free.
-	ptrSubShift              = 44
-	ptrSubMask        uint64 = 0xF << ptrSubShift          // bits 44-47
-	ptrAddrMask       uint64 = (1 << ptrSubShift) - 1      // bits 0-43
+	ptrSubShift        = 44
+	ptrSubMask  uint64 = 0xF << ptrSubShift     // bits 44-47
+	ptrAddrMask uint64 = (1 << ptrSubShift) - 1 // bits 0-43
 
 	ptrSubTable       uint64 = 0 << ptrSubShift
 	ptrSubString      uint64 = 1 << ptrSubShift
-	ptrSubClosure     uint64 = 2 << ptrSubShift  // *runtime.Closure
-	ptrSubGoFunction  uint64 = 3 << ptrSubShift  // *GoFunction
-	ptrSubCoroutine   uint64 = 4 << ptrSubShift  // *Coroutine
+	ptrSubClosure     uint64 = 2 << ptrSubShift // *runtime.Closure
+	ptrSubGoFunction  uint64 = 3 << ptrSubShift // *GoFunction
+	ptrSubCoroutine   uint64 = 4 << ptrSubShift // *Coroutine
 	ptrSubChannel     uint64 = 5 << ptrSubShift
-	ptrSubAnyFunction uint64 = 6 << ptrSubShift  // interface-based function (needs ifaceRoots)
-	ptrSubAnyCoro     uint64 = 7 << ptrSubShift  // interface-based coroutine (needs ifaceRoots)
-	ptrSubVMClosure   uint64 = 8 << ptrSubShift  // *vm.Closure (direct pointer, fast OP_CALL path)
+	ptrSubAnyFunction uint64 = 6 << ptrSubShift // interface-based function (needs ifaceRoots)
+	ptrSubAnyCoro     uint64 = 7 << ptrSubShift // interface-based coroutine (needs ifaceRoots)
+	ptrSubVMClosure   uint64 = 8 << ptrSubShift // *vm.Closure (direct pointer, fast OP_CALL path)
 )
 
 // Value is a NaN-boxed 8-byte representation of all GScript values.
@@ -121,15 +121,15 @@ const (
 )
 
 var (
-	gcLog     gcRootLog
+	gcLog gcRootLog
 	// Separate locked map for interface-based values that need lookupIface.
 	// Only used by AnyFunction/AnyCoroutine (cold path).
-	ifaceMu   sync.Mutex
+	ifaceMu    sync.Mutex
 	ifaceRoots = make(map[uintptr]any, 64)
 
 	// activeVMs tracks all live VMs for GC root scanning.
-	activeVMsMu sync.Mutex
-	activeVMs   []GCRootScanner
+	activeVMsMu   sync.Mutex
+	activeVMs     []GCRootScanner
 	activeVMCount int32 // atomic count for fast check in keepAlive
 
 	// gcCompacting prevents re-entrant compaction.
@@ -414,6 +414,51 @@ func StringValue(s string) Value {
 	p := unsafe.Pointer(sp)
 	keepAlive(p, sp)
 	return Value(tagPtr | ptrSubString | (uint64(uintptr(p)) & ptrAddrMask))
+}
+
+// ConcatValues joins VM/JIT concat operands with one exact-size builder growth.
+// The common binary path avoids the temporary operand slice used below.
+func ConcatValues(values []Value) Value {
+	switch len(values) {
+	case 0:
+		return StringValue("")
+	case 1:
+		return StringValue(values[0].String())
+	case 2:
+		left := concatString(values[0])
+		right := concatString(values[1])
+		var b strings.Builder
+		b.Grow(len(left) + len(right))
+		b.WriteString(left)
+		b.WriteString(right)
+		return StringValue(b.String())
+	}
+
+	var local [8]string
+	parts := local[:0]
+	if len(values) > len(local) {
+		parts = make([]string, 0, len(values))
+	}
+	total := 0
+	for _, v := range values {
+		s := concatString(v)
+		total += len(s)
+		parts = append(parts, s)
+	}
+
+	var b strings.Builder
+	b.Grow(total)
+	for _, s := range parts {
+		b.WriteString(s)
+	}
+	return StringValue(b.String())
+}
+
+func concatString(v Value) string {
+	if v.IsString() {
+		return v.Str()
+	}
+	return v.String()
 }
 
 func TableValue(t *Table) Value {

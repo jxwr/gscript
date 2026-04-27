@@ -10,7 +10,6 @@ package methodjit
 
 import (
 	"fmt"
-	"strings"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -402,11 +401,7 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 		tempBase := arg1
 		nArgs := arg2
 		if slot < len(regs) && tempBase >= 0 && nArgs >= 0 && tempBase+nArgs <= len(regs) {
-			var sb strings.Builder
-			for i := 0; i < nArgs; i++ {
-				sb.WriteString(regs[tempBase+i].String())
-			}
-			regs[slot] = runtime.StringValue(sb.String())
+			regs[slot] = runtime.ConcatValues(regs[tempBase : tempBase+nArgs])
 		}
 
 	case OpLen:

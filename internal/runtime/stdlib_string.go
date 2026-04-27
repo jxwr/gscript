@@ -421,30 +421,42 @@ func buildStringLib() *Table {
 			switch spec {
 			case 'd', 'i', 'u':
 				n := toInt(arg)
-				goFmt := strings.Replace(fmtSpec, string(spec), "d", 1)
-				buf.WriteString(fmt.Sprintf(goFmt, n))
+				if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
+					goFmt := strings.Replace(fmtSpec, string(spec), "d", 1)
+					buf.WriteString(fmt.Sprintf(goFmt, n))
+				}
 			case 'f', 'e', 'E', 'g', 'G':
 				f := toFloat(arg)
 				buf.WriteString(fmt.Sprintf(fmtSpec, f))
 			case 'x':
 				n := toInt(arg)
-				goFmt := strings.Replace(fmtSpec, "x", "x", 1)
-				buf.WriteString(fmt.Sprintf(goFmt, n))
+				if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
+					goFmt := strings.Replace(fmtSpec, "x", "x", 1)
+					buf.WriteString(fmt.Sprintf(goFmt, n))
+				}
 			case 'X':
 				n := toInt(arg)
-				goFmt := strings.Replace(fmtSpec, "X", "X", 1)
-				buf.WriteString(fmt.Sprintf(goFmt, n))
+				if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
+					goFmt := strings.Replace(fmtSpec, "X", "X", 1)
+					buf.WriteString(fmt.Sprintf(goFmt, n))
+				}
 			case 'o':
 				n := toInt(arg)
-				goFmt := strings.Replace(fmtSpec, "o", "o", 1)
-				buf.WriteString(fmt.Sprintf(goFmt, n))
+				if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
+					goFmt := strings.Replace(fmtSpec, "o", "o", 1)
+					buf.WriteString(fmt.Sprintf(goFmt, n))
+				}
 			case 'c':
 				n := toInt(arg)
 				buf.WriteRune(rune(n))
 			case 's':
 				s := arg.String()
-				goFmt := strings.Replace(fmtSpec, "s", "s", 1)
-				buf.WriteString(fmt.Sprintf(goFmt, s))
+				if fmtSpec == "%s" {
+					buf.WriteString(s)
+				} else {
+					goFmt := strings.Replace(fmtSpec, "s", "s", 1)
+					buf.WriteString(fmt.Sprintf(goFmt, s))
+				}
 			case 'q':
 				// Quoted string
 				s := arg.String()
@@ -684,6 +696,59 @@ func buildStringLib() *Table {
 	})
 
 	return t
+}
+
+func writeFastIntegerFormat(buf *strings.Builder, fmtSpec string, spec byte, n int64) bool {
+	if len(fmtSpec) < 2 || fmtSpec[0] != '%' || fmtSpec[len(fmtSpec)-1] != spec {
+		return false
+	}
+	pos := 1
+	pad := byte(' ')
+	if pos < len(fmtSpec)-1 && fmtSpec[pos] == '0' {
+		pad = '0'
+		pos++
+	}
+	width := 0
+	for pos < len(fmtSpec)-1 && fmtSpec[pos] >= '0' && fmtSpec[pos] <= '9' {
+		width = width*10 + int(fmtSpec[pos]-'0')
+		pos++
+	}
+	if pos != len(fmtSpec)-1 {
+		return false
+	}
+
+	var s string
+	switch spec {
+	case 'd', 'i', 'u':
+		s = strconv.FormatInt(n, 10)
+	case 'x':
+		s = strconv.FormatInt(n, 16)
+	case 'X':
+		s = strings.ToUpper(strconv.FormatInt(n, 16))
+	case 'o':
+		s = strconv.FormatInt(n, 8)
+	default:
+		return false
+	}
+
+	if width <= len(s) {
+		buf.WriteString(s)
+		return true
+	}
+	padCount := width - len(s)
+	if pad == '0' && len(s) > 0 && s[0] == '-' {
+		buf.WriteByte('-')
+		for i := 0; i < padCount; i++ {
+			buf.WriteByte('0')
+		}
+		buf.WriteString(s[1:])
+		return true
+	}
+	for i := 0; i < padCount; i++ {
+		buf.WriteByte(pad)
+	}
+	buf.WriteString(s)
+	return true
 }
 
 // toInt converts a Value to int64. Handles ints, floats, and string-to-number coercion.

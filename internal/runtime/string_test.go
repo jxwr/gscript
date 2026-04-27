@@ -111,6 +111,13 @@ func TestStringFormatPadded(t *testing.T) {
 	}
 }
 
+func TestStringFormatPaddedNegative(t *testing.T) {
+	v := getGlobal(t, `result := string.format("%05d", -42)`, "result")
+	if v.Str() != "-0042" {
+		t.Errorf("expected '-0042', got %q", v.Str())
+	}
+}
+
 func TestStringFormatMultiArgs(t *testing.T) {
 	v := getGlobal(t, `result := string.format("hello %s, you are %d", "world", 42)`, "result")
 	if v.Str() != "hello world, you are 42" {
