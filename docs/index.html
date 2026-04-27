@@ -94,6 +94,20 @@
 <div class="post">
   <span class="date">2026-04-27</span>
   <br>
+  <a href="55-the-mutation-stayed-behind-the-gate">The Mutation Stayed Behind the Gate</a>
+  <p>Quicksort remains blocked, but the recursive table-mutation gate now classifies recovery shapes instead of treating every <code>SetTable</code> alike. Idempotent overwrites are replay-safe; swaps are only read-backed and stay diagnostic-only until the compiler can prove all guards before mutation or record undo metadata. The same round also moved concat and simple string formatting onto lower-overhead runtime paths.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-27</span>
+  <br>
+  <a href="54-the-table-was-born-typed">The Table Was Born Typed</a>
+  <p>Fresh dense tables can now become typed arrays before feedback catches up. Tier 1 append stores extend typed arrays when capacity is available, and Tier 2 infers local int/float/bool table hints from typed stores. Focused diagnostics now show <code>sieve</code> around 0.029s, <code>matmul</code> around 0.121s, and <code>table_array_access</code> around 0.035s while keeping the direct-deopt protocol conservative.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-27</span>
+  <br>
   <a href="53-the-row-was-a-table">The Row Was a Table</a>
   <p>Matmul's outer mixed-array loads return row tables, but Tier 2 was not carrying that result type through the nested access path. Tier 1 now records <code>FBTable</code> for mixed-array <code>GETTABLE</code> results, GraphBuilder marks those loads as <code>TypeTable</code>, and mixed-array codegen emits the table guard inline. This is a prerequisite for row-header hoisting: the compiler can now prove that <code>a[i]</code> and <code>b[k]</code> are row tables.</p>
 </div>
