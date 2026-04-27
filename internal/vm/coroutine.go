@@ -25,6 +25,12 @@ type vmYieldResult struct {
 
 var errCoroutineYield = errors.New("coroutine yield")
 
+const (
+	coroutineResumeName      = "coroutine.resume"
+	coroutineYieldName       = "coroutine.yield"
+	coroutineIsYieldableName = "coroutine.isyieldable"
+)
+
 // VMCoroutine holds the state of a VM-based coroutine. Long-lived coroutines
 // keep a child VM paused at the bytecode immediately after coroutine.yield.
 type VMCoroutine struct {
@@ -106,7 +112,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 	// coroutine.resume(co, args...) -> ok, values...
 	resumeFn := &rt.GoFunction{
-		Name: "coroutine.resume",
+		Name: coroutineResumeName,
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			if len(args) < 1 || !args[0].IsCoroutine() {
 				return nil, fmt.Errorf("coroutine.resume expects a coroutine")
@@ -123,7 +129,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 	// coroutine.yield(values...) -> resume args
 	yieldFn := &rt.GoFunction{
-		Name: "coroutine.yield",
+		Name: coroutineYieldName,
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			return vm.yieldCoroutine(args)
 		},
@@ -148,7 +154,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 	// coroutine.isyieldable() -> bool
 	coLib.RawSet(rt.StringValue("isyieldable"), rt.FunctionValue(&rt.GoFunction{
-		Name: "coroutine.isyieldable",
+		Name: coroutineIsYieldableName,
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			return []rt.Value{rt.BoolValue(vm.activeCoroutine() != nil)}, nil
 		},
@@ -230,6 +236,7 @@ func (vm *VM) resumeCoroutineRaw(co *VMCoroutine, args []rt.Value) (bool, []rt.V
 		if !ok {
 			vm.recordCoroutineLeafFallback()
 			coVM := newChildVM(vm, co)
+			defer coVM.Close()
 			results, err = coVM.call(co.closure, args, 0, 0)
 		}
 		if results == nil {
@@ -271,10 +278,7 @@ func (vm *VM) finishCoroutineRun(co *VMCoroutine, results []rt.Value, err error)
 	if results == nil {
 		results = []rt.Value{}
 	}
-	if co.vm != nil {
-		co.vm.frameCount = 0
-		co.vm.top = 0
-	}
+	co.releaseVM()
 	if err != nil {
 		co.status = VMCoroutineDead
 		vm.recordCoroutineCompleted()
@@ -283,6 +287,16 @@ func (vm *VM) finishCoroutineRun(co *VMCoroutine, results []rt.Value, err error)
 	co.status = VMCoroutineDead
 	vm.recordCoroutineCompleted()
 	return true, results, nil
+}
+
+func (co *VMCoroutine) releaseVM() {
+	if co.vm == nil {
+		return
+	}
+	co.vm.frameCount = 0
+	co.vm.top = 0
+	co.vm.Close()
+	co.vm = nil
 }
 
 func (vm *VM) yieldCoroutine(args []rt.Value) ([]rt.Value, error) {

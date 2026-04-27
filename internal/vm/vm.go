@@ -1809,7 +1809,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 }
 
 func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int) (bool, error) {
-	if gf == vm.coroutineResumeFn {
+	if gf == vm.coroutineResumeFn || gf.Name == coroutineResumeName {
 		if nArgs < 1 || !vm.regs[base+a+1].IsCoroutine() {
 			return true, fmt.Errorf("coroutine.resume expects a coroutine")
 		}
@@ -1830,7 +1830,7 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 		return true, nil
 	}
 
-	if gf == vm.coroutineYieldFn {
+	if gf == vm.coroutineYieldFn || gf.Name == coroutineYieldName {
 		var args []runtime.Value
 		if nArgs > 0 {
 			start := base + a + 1
@@ -1848,6 +1848,11 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 			return true, err
 		}
 		vm.writeCallResults(base+a, c, results)
+		return true, nil
+	}
+
+	if gf.Name == coroutineIsYieldableName {
+		vm.writeCallResults(base+a, c, []runtime.Value{runtime.BoolValue(vm.activeCoroutine() != nil)})
 		return true, nil
 	}
 

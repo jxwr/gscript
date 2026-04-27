@@ -536,14 +536,14 @@ func AnyCoroutineValue(c any) Value {
 	return Value(tagPtr | ptrSubAnyCoro | (uint64(uintptr(p)) & ptrAddrMask))
 }
 
-// VMCoroutineValue stores a VM-owned coroutine pointer without registering an
-// interface lookup entry. The VM recovers this value through
-// AnyCoroutinePointer on hot resume/status paths.
+// VMCoroutineValue stores a VM-owned coroutine pointer. Hot VM paths recover
+// the raw pointer through AnyCoroutinePointer, while Ptr still works for callers
+// that use the public Value API.
 func VMCoroutineValue(p unsafe.Pointer, c any) Value {
 	if p == nil {
 		return Value(valNil)
 	}
-	keepAlive(p, c)
+	keepAliveIface(p, c)
 	return Value(tagPtr | ptrSubAnyCoro | (uint64(uintptr(p)) & ptrAddrMask))
 }
 

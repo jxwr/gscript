@@ -1254,6 +1254,105 @@ ok2, v2 := coroutine.resume(co, 20)
 	expectGlobalInt(t, g, "v2", 42)
 }
 
+func TestVMCoroutineCachedYieldUsesRunningVM(t *testing.T) {
+	g := compileAndRun(t, `
+yfn := coroutine.yield
+is_yieldable := coroutine.isyieldable
+
+co := coroutine.create(func() {
+	before := is_yieldable()
+	x := yfn(7)
+	after := is_yieldable()
+	return x + 1, before, after
+})
+
+outside := is_yieldable()
+ok1, v1 := coroutine.resume(co)
+ok2, v2, before, after := coroutine.resume(co, 10)
+`)
+	expectGlobalBool(t, g, "outside", false)
+	expectGlobalBool(t, g, "ok1", true)
+	expectGlobalInt(t, g, "v1", 7)
+	expectGlobalBool(t, g, "ok2", true)
+	expectGlobalInt(t, g, "v2", 11)
+	expectGlobalBool(t, g, "before", true)
+	expectGlobalBool(t, g, "after", true)
+}
+
+func TestVMCoroutineNestedResumeStaysInCaller(t *testing.T) {
+	g := compileAndRun(t, `
+outer := coroutine.create(func() {
+	inner := coroutine.create(func() {
+		x := coroutine.yield("inner-yield")
+		return x .. "-inner-return"
+	})
+
+	ok_inner1, v_inner1 := coroutine.resume(inner)
+	pass := coroutine.yield(v_inner1)
+	ok_inner2, v_inner2 := coroutine.resume(inner, pass)
+	return v_inner2
+})
+
+ok1, v1 := coroutine.resume(outer)
+s1 := coroutine.status(outer)
+ok2, v2 := coroutine.resume(outer, "resume")
+s2 := coroutine.status(outer)
+`)
+	expectGlobalBool(t, g, "ok1", true)
+	expectGlobalString(t, g, "v1", "inner-yield")
+	expectGlobalString(t, g, "s1", "suspended")
+	expectGlobalBool(t, g, "ok2", true)
+	expectGlobalString(t, g, "v2", "resume-inner-return")
+	expectGlobalString(t, g, "s2", "dead")
+}
+
+func TestVMCoroutineValuePtrCompatibility(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {})
+`)
+	if _, ok := g["co"].Ptr().(*VMCoroutine); !ok {
+		t.Fatalf("coroutine Value.Ptr() = %T, want *VMCoroutine", g["co"].Ptr())
+	}
+}
+
+func TestVMCoroutineYieldReceivesMultipleResumeValues(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {
+	a, b, c := coroutine.yield("ready")
+	return a + b + c
+})
+ok1, v1 := coroutine.resume(co)
+ok2, v2 := coroutine.resume(co, 1, 2, 3)
+`)
+	expectGlobalBool(t, g, "ok1", true)
+	expectGlobalString(t, g, "v1", "ready")
+	expectGlobalBool(t, g, "ok2", true)
+	expectGlobalInt(t, g, "v2", 6)
+}
+
+func TestVMCoroutineErrorAfterYieldMarksDead(t *testing.T) {
+	g := compileAndRun(t, `
+co := coroutine.create(func() {
+	coroutine.yield(1)
+	x := 1
+	return x()
+})
+ok1, v1 := coroutine.resume(co)
+ok2, msg := coroutine.resume(co)
+status := coroutine.status(co)
+ok3, msg2 := coroutine.resume(co)
+`)
+	expectGlobalBool(t, g, "ok1", true)
+	expectGlobalInt(t, g, "v1", 1)
+	expectGlobalBool(t, g, "ok2", false)
+	if msg := g["msg"].String(); !strings.Contains(msg, "attempt to call a number value") {
+		t.Fatalf("unexpected coroutine error: %q", msg)
+	}
+	expectGlobalString(t, g, "status", "dead")
+	expectGlobalBool(t, g, "ok3", false)
+	expectGlobalString(t, g, "msg2", "cannot resume dead coroutine")
+}
+
 // Test 15: Type function reports "coroutine"
 func TestVMCoroutineType(t *testing.T) {
 	g := compileAndRun(t, `
