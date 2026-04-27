@@ -37,8 +37,10 @@ type VMCoroutine struct {
 	leafNoCall bool
 	resultBuf  [8]rt.Value
 
-	resumeCh chan []rt.Value    // caller -> coroutine
-	yieldCh  chan vmYieldResult // coroutine -> caller
+	resumeArgs  []rt.Value
+	yieldResult vmYieldResult
+	resumeCh    chan struct{} // caller -> coroutine
+	yieldCh     chan struct{} // coroutine -> caller
 }
 
 // NewVMCoroutine creates a new VM coroutine wrapping the given closure.
@@ -47,8 +49,8 @@ func NewVMCoroutine(cl *Closure) *VMCoroutine {
 		status:     VMCoroutineSuspended,
 		closure:    cl,
 		leafNoCall: cl != nil && cl.Proto != nil && protoHasNoCalls(cl.Proto),
-		resumeCh:   make(chan []rt.Value, 1),
-		yieldCh:    make(chan vmYieldResult, 1),
+		resumeCh:   make(chan struct{}),
+		yieldCh:    make(chan struct{}),
 	}
 }
 
@@ -137,7 +139,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 	}))
 
 	// coroutine.resume(co, args...) -> ok, values...
-	coLib.RawSet(rt.StringValue("resume"), rt.FunctionValue(&rt.GoFunction{
+	resumeFn := &rt.GoFunction{
 		Name: "coroutine.resume",
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			if len(args) < 1 || !args[0].IsCoroutine() {
@@ -149,24 +151,19 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			}
 			return vm.resumeCoroutine(co, args[1:])
 		},
-	}))
+	}
+	vm.coroutineResumeFn = resumeFn
+	coLib.RawSet(rt.StringValue("resume"), rt.FunctionValue(resumeFn))
 
 	// coroutine.yield(values...) -> resume args
-	coLib.RawSet(rt.StringValue("yield"), rt.FunctionValue(&rt.GoFunction{
+	yieldFn := &rt.GoFunction{
 		Name: "coroutine.yield",
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
-			co := vm.activeCoroutine()
-			if co == nil {
-				return nil, fmt.Errorf("cannot yield from outside a coroutine")
-			}
-			vm.recordCoroutineYield()
-			// Send yielded values to the resume caller
-			co.yieldCh <- vmYieldResult{values: args}
-			// Block until resumed — the resume caller will send args
-			resumeVals := <-co.resumeCh
-			return resumeVals, nil
+			return vm.yieldCoroutine(args)
 		},
-	}))
+	}
+	vm.coroutineYieldFn = yieldFn
+	coLib.RawSet(rt.StringValue("yield"), rt.FunctionValue(yieldFn))
 
 	// coroutine.status(co) -> string
 	coLib.RawSet(rt.StringValue("status"), rt.FunctionValue(&rt.GoFunction{
@@ -211,21 +208,20 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 					if dead {
 						return nil, fmt.Errorf("cannot resume dead coroutine")
 					}
-					results, err := vm.resumeCoroutine(co, wargs)
+					ok, values, err := vm.resumeCoroutineRaw(co, wargs)
 					if err != nil {
 						return nil, err
 					}
-					// results[0] is ok bool
-					if len(results) > 0 && !results[0].IsNil() && !results[0].Bool() {
+					if !ok {
 						dead = true
-						if len(results) > 1 {
-							return nil, fmt.Errorf("%s", results[1].String())
+						if len(values) > 0 {
+							return nil, fmt.Errorf("%s", values[0].String())
 						}
 						return nil, fmt.Errorf("cannot resume dead coroutine")
 					}
-					// Return values after the ok bool; return nil if none (signals end of iteration)
-					if len(results) > 1 {
-						return results[1:], nil
+					// Return yielded values; return nil if none (signals end of iteration).
+					if len(values) > 0 {
+						return values, nil
 					}
 					// Coroutine returned without values — mark as done, return nil for for-range
 					dead = true
@@ -241,14 +237,22 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 // resumeCoroutine resumes a suspended VM coroutine.
 func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, error) {
+	ok, values, err := vm.resumeCoroutineRaw(co, args)
+	if err != nil {
+		return nil, err
+	}
+	return co.resumeResults(ok, values), nil
+}
+
+func (vm *VM) resumeCoroutineRaw(co *VMCoroutine, args []rt.Value) (bool, []rt.Value, error) {
 	vm.recordCoroutineResume()
 	if co.status == VMCoroutineDead {
 		vm.recordCoroutineResumeError()
-		return []rt.Value{rt.BoolValue(false), rt.StringValue("cannot resume dead coroutine")}, nil
+		return false, []rt.Value{rt.StringValue("cannot resume dead coroutine")}, nil
 	}
 	if co.status == VMCoroutineRunning {
 		vm.recordCoroutineResumeError()
-		return []rt.Value{rt.BoolValue(false), rt.StringValue("cannot resume running coroutine")}, nil
+		return false, []rt.Value{rt.StringValue("cannot resume running coroutine")}, nil
 	}
 
 	co.status = VMCoroutineRunning
@@ -268,9 +272,9 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 		co.status = VMCoroutineDead
 		vm.recordCoroutineCompleted()
 		if err != nil {
-			return co.resumeResults(false, []rt.Value{rt.StringValue(err.Error())}), nil
+			return false, []rt.Value{rt.StringValue(err.Error())}, nil
 		}
-		return co.resumeResults(true, results), nil
+		return true, results, nil
 	}
 
 	if !co.started {
@@ -284,22 +288,28 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 			coVM := newChildVM(vm, co)
 
 			// Wait for initial args from the first resume.
-			initArgs := <-co.resumeCh
+			<-co.resumeCh
+			initArgs := co.resumeArgs
+			co.resumeArgs = nil
 
 			// Execute the closure.
 			results, err := coVM.call(co.closure, initArgs, 0, 0)
 			if results == nil {
 				results = []rt.Value{}
 			}
-			co.yieldCh <- vmYieldResult{values: results, err: err, done: true}
+			co.yieldResult = vmYieldResult{values: results, err: err, done: true}
+			co.yieldCh <- struct{}{}
 		}()
 	}
 
 	// Send args to the coroutine goroutine.
-	co.resumeCh <- args
+	co.resumeArgs = args
+	co.resumeCh <- struct{}{}
 
 	// Wait for yield or completion.
-	result := <-co.yieldCh
+	<-co.yieldCh
+	result := co.yieldResult
+	co.yieldResult = vmYieldResult{}
 
 	if result.done || result.err != nil {
 		co.status = VMCoroutineDead
@@ -309,10 +319,24 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 	}
 
 	if result.err != nil {
-		return co.resumeResults(false, []rt.Value{rt.StringValue(result.err.Error())}), nil
+		return false, []rt.Value{rt.StringValue(result.err.Error())}, nil
 	}
 
-	return co.resumeResults(true, result.values), nil
+	return true, result.values, nil
+}
+
+func (vm *VM) yieldCoroutine(args []rt.Value) ([]rt.Value, error) {
+	co := vm.activeCoroutine()
+	if co == nil {
+		return nil, fmt.Errorf("cannot yield from outside a coroutine")
+	}
+	vm.recordCoroutineYield()
+	co.yieldResult = vmYieldResult{values: args}
+	co.yieldCh <- struct{}{}
+	<-co.resumeCh
+	resumeVals := co.resumeArgs
+	co.resumeArgs = nil
+	return resumeVals, nil
 }
 
 func protoHasNoCalls(proto *FuncProto) bool {

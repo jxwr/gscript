@@ -45,6 +45,8 @@ type VM struct {
 	retBuf            [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
 	currentCoroutine  *VMCoroutine      // coroutine currently running on this VM, if any
 	coroutineStats    *coroutineStats
+	coroutineResumeFn *runtime.GoFunction
+	coroutineYieldFn  *runtime.GoFunction
 }
 
 // SetMethodJIT sets the Method JIT engine for this VM.
@@ -1414,6 +1416,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			// ---- Fast path: GoFunction (direct call, skip callValue) ----
 			if fnVal.IsFunction() {
 				if gf := fnVal.GoFunction(); gf != nil {
+					if handled, err := vm.tryFastCoroutineCall(gf, base, a, nArgs, c); handled {
+						if err != nil {
+							return nil, wrapLineErr(frame, err)
+						}
+						break
+					}
 					var args []runtime.Value
 					if nArgs <= len(vm.argBuf) {
 						args = vm.argBuf[:nArgs]
@@ -1787,6 +1795,85 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 
 		default:
 			return nil, fmt.Errorf("unhandled opcode %d (%s)", op, OpName(op))
+		}
+	}
+}
+
+func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int) (bool, error) {
+	if gf == vm.coroutineResumeFn {
+		if nArgs < 1 || !vm.regs[base+a+1].IsCoroutine() {
+			return true, fmt.Errorf("coroutine.resume expects a coroutine")
+		}
+		co, ok := vm.regs[base+a+1].Ptr().(*VMCoroutine)
+		if !ok {
+			return true, fmt.Errorf("coroutine.resume expects a VM coroutine")
+		}
+		var args []runtime.Value
+		if nArgs > 1 {
+			start := base + a + 2
+			args = vm.regs[start : start+nArgs-1]
+		}
+		okResult, values, err := vm.resumeCoroutineRaw(co, args)
+		if err != nil {
+			return true, err
+		}
+		vm.writeCoroutineResumeResults(base+a, c, okResult, values)
+		return true, nil
+	}
+
+	if gf == vm.coroutineYieldFn {
+		var args []runtime.Value
+		if nArgs > 0 {
+			start := base + a + 1
+			args = vm.regs[start : start+nArgs]
+		}
+		results, err := vm.yieldCoroutine(args)
+		if err != nil {
+			return true, err
+		}
+		vm.writeCallResults(base+a, c, results)
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (vm *VM) writeCoroutineResumeResults(dst, c int, ok bool, values []runtime.Value) {
+	if c == 0 {
+		vm.regs[dst] = runtime.BoolValue(ok)
+		for i, r := range values {
+			vm.regs[dst+1+i] = r
+		}
+		vm.top = dst + 1 + len(values)
+		return
+	}
+	nr := c - 1
+	for i := 0; i < nr; i++ {
+		switch {
+		case i == 0:
+			vm.regs[dst] = runtime.BoolValue(ok)
+		case i-1 < len(values):
+			vm.regs[dst+i] = values[i-1]
+		default:
+			vm.regs[dst+i] = runtime.NilValue()
+		}
+	}
+}
+
+func (vm *VM) writeCallResults(dst, c int, results []runtime.Value) {
+	if c == 0 {
+		for i, r := range results {
+			vm.regs[dst+i] = r
+		}
+		vm.top = dst + len(results)
+		return
+	}
+	nr := c - 1
+	for i := 0; i < nr; i++ {
+		if i < len(results) {
+			vm.regs[dst+i] = results[i]
+		} else {
+			vm.regs[dst+i] = runtime.NilValue()
 		}
 	}
 }
