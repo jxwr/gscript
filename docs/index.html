@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="62-the-exit-edge-finally-split">The Exit Edge Finally Split</a>
+  <p><code>nbody</code> scalar promotion was blocked by a production CFG shape, not by the idea itself. The pass can now split a shared loop-exit edge, place promoted field writebacks on the isolated path, and preserve field-cache metadata on synthetic materialization operations. The production test now asserts the benchmark pipeline keeps float fields in SSA instead of merely observing a synthetic pass result.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="61-the-upvalue-was-not-an-exit">The Upvalue Was Not An Exit</a>
   <p><code>closure_bench</code> was not waiting for Tier 2. Its hot accumulator closure was stuck behind an over-broad Tier 1 direct-entry replay-safety gate. Valid <code>GETUPVAL</code> and <code>SETUPVAL</code> slots cannot exit, so they no longer block native BLR direct entry after a side effect; callees that perform a real exit-capable operation after the upvalue mutation remain gated. The accumulator section dropped from about 0.050s to 0.008s, and the full benchmark returned to the 0.028s baseline.</p>
 </div>
