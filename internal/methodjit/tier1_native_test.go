@@ -253,6 +253,72 @@ for i := 1; i <= 10; i++ { result = counter() }
 `, "result")
 }
 
+func TestTier1_NativeCall_MutableUpvalueCalleeKeepsDirectBLR(t *testing.T) {
+	src := `
+func make_counter() {
+    count := 0
+    func inc() {
+        count = count + 1
+        return count
+    }
+    return inc
+}
+counter := make_counter()
+result := 0
+for i := 1; i <= 200; i++ {
+    result = result + counter()
+}
+`
+	vmGlobals := runVMFull(t, src)
+	v, proto := runTier1ProgramForTest(t, src)
+	defer v.Close()
+	assertValueEq(t, "result", v.GetGlobal("result"), vmGlobals["result"])
+
+	inc := findProtoByName(proto, "inc")
+	if inc == nil {
+		t.Fatal("inc proto not found")
+	}
+	if inc.CompiledCodePtr == 0 {
+		t.Fatal("mutable upvalue callee was not compiled")
+	}
+	if inc.DirectEntryPtr == 0 {
+		t.Fatal("mutable upvalue callee DirectEntryPtr is 0; direct BLR was disabled too broadly")
+	}
+}
+
+func TestTier1_NativeCall_UpvalueSideEffectBeforeExitStillGated(t *testing.T) {
+	src := `
+func make_counter() {
+    count := 0
+    func inc() {
+        count = count + 1
+        tmp := {}
+        return count
+    }
+    return inc
+}
+counter := make_counter()
+for i := 1; i <= 200; i++ {
+    result = counter()
+}
+`
+	vmGlobals := runVMFull(t, src)
+	v, proto := runTier1ProgramForTest(t, src)
+	defer v.Close()
+	assertValueEq(t, "result", v.GetGlobal("result"), vmGlobals["result"])
+
+	inc := findProtoByName(proto, "inc")
+	if inc == nil {
+		t.Fatal("inc proto not found")
+	}
+	if inc.CompiledCodePtr == 0 {
+		t.Fatal("upvalue callee was not compiled")
+	}
+	if inc.DirectEntryPtr != 0 {
+		t.Fatalf("unsafe upvalue callee DirectEntryPtr=%#x, want 0", inc.DirectEntryPtr)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Combined operations (end-to-end)
 // ---------------------------------------------------------------------------

@@ -204,7 +204,7 @@ func nativeBLRReplaySafe(proto *vm.FuncProto) bool {
 	seenSideEffect := false
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
-		if seenSideEffect && tier1OpMayExit(op) {
+		if seenSideEffect && tier1OpMayExitAfterNativeSideEffect(proto, inst) {
 			return false
 		}
 		if tier1OpHasNativeVisibleSideEffect(op) {
@@ -221,6 +221,27 @@ func tier1OpHasNativeVisibleSideEffect(op vm.Opcode) bool {
 	default:
 		return false
 	}
+}
+
+func tier1OpMayExitAfterNativeSideEffect(proto *vm.FuncProto, inst uint32) bool {
+	op := vm.DecodeOp(inst)
+	switch op {
+	case vm.OP_GETUPVAL, vm.OP_SETUPVAL:
+		// Closures created by OP_CLOSURE allocate exactly proto.Upvalues and
+		// populate each entry. For those statically-valid slots, native upvalue
+		// loads/stores cannot take the slow exit after an earlier side effect.
+		return !tier1UpvalueAccessStaticallyValid(proto, inst)
+	default:
+		return tier1OpMayExit(op)
+	}
+}
+
+func tier1UpvalueAccessStaticallyValid(proto *vm.FuncProto, inst uint32) bool {
+	if proto == nil {
+		return false
+	}
+	b := vm.DecodeB(inst)
+	return b >= 0 && b < len(proto.Upvalues)
 }
 
 func tier1OpMayExit(op vm.Opcode) bool {
