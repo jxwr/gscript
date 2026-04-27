@@ -93,7 +93,14 @@ const (
 	OpNewTable // Aux = array hint, Aux2 = hash hint
 	OpGetTable // Args[0][Args[1]]
 	OpSetTable // Args[0][Args[1]] = Args[2]
-	OpGetField // Args[0].field; Aux = constant pool index for field name
+	// Typed table array load split. Lowered from monomorphic-kind
+	// OpGetTable so table/kind/header/data facts can be CSE'd and hoisted.
+	// Aux carries vm.FBKind*.
+	OpTableArrayHeader // Args[0] = table; verifies table/metatable/kind, returns raw *Table
+	OpTableArrayLen    // Args[0] = header; loads active array len
+	OpTableArrayData   // Args[0] = header; loads active array data pointer
+	OpTableArrayLoad   // Args = [data, len, key]; loads element, bounds-checks key
+	OpGetField         // Args[0].field; Aux = constant pool index for field name
 	// OpGetFieldNumToFloat fuses Args[0].field with numeric widening.
 	// It preserves NumToFloat semantics: int and float fields become raw
 	// float64, while non-numeric fields deopt.
@@ -215,6 +222,10 @@ var opNames = [...]string{
 	OpNewTable:           "NewTable",
 	OpGetTable:           "GetTable",
 	OpSetTable:           "SetTable",
+	OpTableArrayHeader:   "TableArrayHeader",
+	OpTableArrayLen:      "TableArrayLen",
+	OpTableArrayData:     "TableArrayData",
+	OpTableArrayLoad:     "TableArrayLoad",
 	OpGetField:           "GetField",
 	OpGetFieldNumToFloat: "GetFieldNumToFloat",
 	OpSetField:           "SetField",

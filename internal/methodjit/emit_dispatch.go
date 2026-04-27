@@ -185,6 +185,14 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitSetTableNative(instr)
 		// Dynamic key writes can add new string keys, changing table shape.
 		ec.shapeVerified = make(map[int]uint32)
+	case OpTableArrayHeader:
+		ec.emitTableArrayHeader(instr)
+	case OpTableArrayLen:
+		ec.emitTableArrayLen(instr)
+	case OpTableArrayData:
+		ec.emitTableArrayData(instr)
+	case OpTableArrayLoad:
+		ec.emitTableArrayLoad(instr)
 	case OpGetField:
 		ec.emitGetField(instr)
 	case OpGetFieldNumToFloat:

@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/vm"
 )
 
 // emitTypedArraySetBoundsOrAppendCheck accepts either an in-bounds typed-array
@@ -40,6 +41,230 @@ func emitTypedArraySetAppendPath(asm *jit.Assembler, tableReg, keyReg, scratchRe
 	asm.ADDimm(scratchReg, keyReg, 1)
 	asm.STR(scratchReg, tableReg, lenOff)
 	asm.B(storeLabel)
+}
+
+func fbKindToAK(kind int64) (uint16, bool) {
+	switch kind {
+	case int64(vm.FBKindMixed):
+		return jit.AKMixed, true
+	case int64(vm.FBKindInt):
+		return jit.AKInt, true
+	case int64(vm.FBKindFloat):
+		return jit.AKFloat, true
+	case int64(vm.FBKindBool):
+		return jit.AKBool, true
+	default:
+		return 0, false
+	}
+}
+
+func tableArrayOffsets(kind int64) (dataOff, lenOff int, ok bool) {
+	switch kind {
+	case int64(vm.FBKindMixed):
+		return jit.TableOffArray, jit.TableOffArrayLen, true
+	case int64(vm.FBKindInt):
+		return jit.TableOffIntArray, jit.TableOffIntArrayLen, true
+	case int64(vm.FBKindFloat):
+		return jit.TableOffFloatArray, jit.TableOffFloatArrayLen, true
+	case int64(vm.FBKindBool):
+		return jit.TableOffBoolArray, jit.TableOffBoolArrayLen, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("tarr_header_deopt")
+	doneLabel := ec.uniqueLabel("tarr_header_done")
+
+	expectedKind, ok := fbKindToAK(instr.Aux)
+	if !ok {
+		ec.emitDeopt(instr)
+		return
+	}
+
+	tblID := instr.Args[0].ID
+	tblReg := ec.resolveValueNB(tblID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	if ec.tableVerified[tblID] {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else if ec.irTypes[tblID] == TypeTable {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X1, deoptLabel)
+		ec.tableVerified[tblID] = true
+	} else {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X1, deoptLabel)
+		ec.tableVerified[tblID] = true
+	}
+	asm.LDRB(jit.X1, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X1, expectedKind)
+	asm.BCond(jit.CondNE, deoptLabel)
+	ec.kindVerified[tblID] = uint16(instr.Aux)
+	ec.storeRawInt(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitTableArrayLen(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	_, lenOff, ok := tableArrayOffsets(instr.Aux)
+	if !ok {
+		ec.emitDeopt(instr)
+		return
+	}
+	hdr := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+	if hdr != jit.X0 {
+		ec.asm.MOVreg(jit.X0, hdr)
+	}
+	ec.asm.LDR(jit.X0, jit.X0, lenOff)
+	ec.storeRawInt(jit.X0, instr.ID)
+}
+
+func (ec *emitContext) emitTableArrayData(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	dataOff, _, ok := tableArrayOffsets(instr.Aux)
+	if !ok {
+		ec.emitDeopt(instr)
+		return
+	}
+	hdr := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+	if hdr != jit.X0 {
+		ec.asm.MOVreg(jit.X0, hdr)
+	}
+	ec.asm.LDR(jit.X0, jit.X0, dataOff)
+	ec.storeRawInt(jit.X0, instr.ID)
+}
+
+func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
+	if len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("tarr_load_deopt")
+	doneLabel := ec.uniqueLabel("tarr_load_done")
+
+	dataReg := ec.resolveRawInt(instr.Args[0].ID, jit.X2)
+	if dataReg != jit.X2 {
+		asm.MOVreg(jit.X2, dataReg)
+	}
+	lenReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
+	if lenReg != jit.X3 {
+		asm.MOVreg(jit.X3, lenReg)
+	}
+	keyID := instr.Args[2].ID
+	if kv, isConst := ec.constInts[keyID]; isConst {
+		asm.LoadImm64(jit.X1, kv)
+	} else if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
+		reg := ec.physReg(keyID)
+		if reg != jit.X1 {
+			asm.MOVreg(jit.X1, reg)
+		}
+	} else if ec.irTypes[keyID] == TypeInt {
+		keyReg := ec.resolveValueNB(keyID, jit.X1)
+		if keyReg != jit.X1 {
+			asm.MOVreg(jit.X1, keyReg)
+		}
+		asm.SBFX(jit.X1, jit.X1, 0, 48)
+	} else {
+		keyReg := ec.resolveValueNB(keyID, jit.X1)
+		if keyReg != jit.X1 {
+			asm.MOVreg(jit.X1, keyReg)
+		}
+		asm.LSRimm(jit.X4, jit.X1, 48)
+		asm.MOVimm16(jit.X5, uint16(jit.NB_TagIntShr48))
+		asm.CMPreg(jit.X4, jit.X5)
+		asm.BCond(jit.CondNE, deoptLabel)
+		asm.SBFX(jit.X1, jit.X1, 0, 48)
+	}
+	if kv, isConst := ec.constInts[keyID]; !isConst || kv < 0 {
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
+	asm.CMPreg(jit.X1, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+
+	switch instr.Aux {
+	case int64(vm.FBKindMixed):
+		asm.LDRreg(jit.X0, jit.X2, jit.X1)
+		switch instr.Type {
+		case TypeInt:
+			asm.LSRimm(jit.X2, jit.X0, 48)
+			asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+			asm.CMPreg(jit.X2, jit.X3)
+			asm.BCond(jit.CondNE, deoptLabel)
+			asm.SBFX(jit.X0, jit.X0, 0, 48)
+			ec.storeRawInt(jit.X0, instr.ID)
+		case TypeFloat:
+			jit.EmitIsTagged(asm, jit.X0, jit.X2)
+			asm.BCond(jit.CondEQ, deoptLabel)
+			asm.FMOVtoFP(jit.D0, jit.X0)
+			ec.storeRawFloat(jit.D0, instr.ID)
+		case TypeTable:
+			jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+			ec.storeResultNB(jit.X0, instr.ID)
+		default:
+			ec.storeResultNB(jit.X0, instr.ID)
+		}
+	case int64(vm.FBKindInt):
+		asm.LDRreg(jit.X0, jit.X2, jit.X1)
+		if instr.Type == TypeInt {
+			ec.storeRawInt(jit.X0, instr.ID)
+		} else {
+			jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+			ec.storeResultNB(jit.X0, instr.ID)
+		}
+	case int64(vm.FBKindFloat):
+		asm.LDRreg(jit.X0, jit.X2, jit.X1)
+		if instr.Type == TypeFloat {
+			asm.FMOVtoFP(jit.D0, jit.X0)
+			ec.storeRawFloat(jit.D0, instr.ID)
+		} else {
+			ec.storeResultNB(jit.X0, instr.ID)
+		}
+	case int64(vm.FBKindBool):
+		asm.LDRBreg(jit.X3, jit.X2, jit.X1)
+		nilLabel := ec.uniqueLabel("tarr_bool_nil")
+		falseLabel := ec.uniqueLabel("tarr_bool_false")
+		asm.CBZ(jit.X3, nilLabel)
+		asm.CMPimm(jit.X3, 1)
+		asm.BCond(jit.CondEQ, falseLabel)
+		asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1))
+		ec.storeResultNB(jit.X0, instr.ID)
+		asm.B(doneLabel)
+		asm.Label(falseLabel)
+		asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
+		ec.storeResultNB(jit.X0, instr.ID)
+		asm.B(doneLabel)
+		asm.Label(nilLabel)
+		asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
+		ec.storeResultNB(jit.X0, instr.ID)
+	default:
+		ec.emitDeopt(instr)
+	}
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
 }
 
 // emitNewTableExit emits a table-exit for OpNewTable. Table allocation is

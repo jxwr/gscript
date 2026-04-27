@@ -46,6 +46,16 @@ type tableKey struct {
 	keyID int
 }
 
+type tableArrayHeaderKey struct {
+	objID int
+	kind  int64
+}
+
+type tableArrayDerivedKey struct {
+	headerID int
+	kind     int64
+}
+
 // guardKey identifies a specific type guard: the SSA value ID of the
 // guarded operand plus the guard type (stored in Aux).
 type guardKey struct {
@@ -72,6 +82,9 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 		globalAvail := make(map[int64]int)     // globals[idx] → SSA value ID
 		matrixFlatAvail := make(map[int]int)   // MatrixFlat(arg_id) → SSA value ID
 		matrixStrideAvail := make(map[int]int) // MatrixStride(arg_id) → SSA value ID
+		tableHeaderAvail := make(map[tableArrayHeaderKey]int)
+		tableLenAvail := make(map[tableArrayDerivedKey]int)
+		tableDataAvail := make(map[tableArrayDerivedKey]int)
 		// R93: store-to-load forwarding for dynamic-key table access.
 		// After SetTable(t, k, v), map (t.ID, k.ID) → v.ID so a
 		// subsequent GetTable(t, k) uses v directly.
@@ -116,6 +129,48 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 						"reused earlier MatrixStride result")
 				} else {
 					matrixStrideAvail[instr.Args[0].ID] = instr.ID
+				}
+
+			case OpTableArrayHeader:
+				if len(instr.Args) < 1 {
+					continue
+				}
+				key := tableArrayHeaderKey{objID: instr.Args[0].ID, kind: instr.Aux}
+				if origID, ok := tableHeaderAvail[key]; ok {
+					origInstr := instrByID[origID]
+					replaceAllUses(fn, instr.ID, origInstr)
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+						"reused earlier TableArrayHeader result")
+				} else {
+					tableHeaderAvail[key] = instr.ID
+				}
+
+			case OpTableArrayLen:
+				if len(instr.Args) < 1 {
+					continue
+				}
+				key := tableArrayDerivedKey{headerID: instr.Args[0].ID, kind: instr.Aux}
+				if origID, ok := tableLenAvail[key]; ok {
+					origInstr := instrByID[origID]
+					replaceAllUses(fn, instr.ID, origInstr)
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+						"reused earlier TableArrayLen result")
+				} else {
+					tableLenAvail[key] = instr.ID
+				}
+
+			case OpTableArrayData:
+				if len(instr.Args) < 1 {
+					continue
+				}
+				key := tableArrayDerivedKey{headerID: instr.Args[0].ID, kind: instr.Aux}
+				if origID, ok := tableDataAvail[key]; ok {
+					origInstr := instrByID[origID]
+					replaceAllUses(fn, instr.ID, origInstr)
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+						"reused earlier TableArrayData result")
+				} else {
+					tableDataAvail[key] = instr.ID
 				}
 
 			case OpSetGlobal:
@@ -234,7 +289,8 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 			case OpCall, OpSelf:
 				// Conservative: a call could mutate any table or change types.
 				if len(available) > 0 || len(guardAvail) > 0 || len(globalAvail) > 0 ||
-					len(matrixFlatAvail) > 0 || len(matrixStrideAvail) > 0 || len(tableAvail) > 0 {
+					len(matrixFlatAvail) > 0 || len(matrixStrideAvail) > 0 || len(tableAvail) > 0 ||
+					len(tableHeaderAvail) > 0 || len(tableLenAvail) > 0 || len(tableDataAvail) > 0 {
 					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
 						"call invalidated available load/guard facts")
 				}
@@ -243,6 +299,9 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				globalAvail = make(map[int64]int)
 				matrixFlatAvail = make(map[int]int)
 				matrixStrideAvail = make(map[int]int)
+				tableHeaderAvail = make(map[tableArrayHeaderKey]int)
+				tableLenAvail = make(map[tableArrayDerivedKey]int)
+				tableDataAvail = make(map[tableArrayDerivedKey]int)
 				tableAvail = make(map[tableKey]int)
 			}
 		}

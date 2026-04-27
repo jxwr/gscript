@@ -527,6 +527,39 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			tbl.Table().RawSet(key, val)
 		}
 
+	case OpTableArrayHeader:
+		tbl := s.val(instr.Args[0])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableArrayHeader: arg 0 not a table")
+		}
+		ak, ok := fbKindToRuntimeArrayKind(instr.Aux)
+		if !ok || tbl.Table().GetArrayKind() != ak {
+			return nil, false, fmt.Errorf("OpTableArrayHeader: array kind mismatch")
+		}
+		s.values[instr.ID] = tbl
+
+	case OpTableArrayLen:
+		tbl := s.val(instr.Args[0])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableArrayLen: arg 0 not a table")
+		}
+		s.values[instr.ID] = runtime.IntValue(int64(tbl.Table().Len()))
+
+	case OpTableArrayData:
+		tbl := s.val(instr.Args[0])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableArrayData: arg 0 not a table")
+		}
+		s.values[instr.ID] = tbl
+
+	case OpTableArrayLoad:
+		tbl := s.val(instr.Args[0])
+		key := s.val(instr.Args[2])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableArrayLoad: arg 0 not a table")
+		}
+		s.values[instr.ID] = tbl.Table().RawGetInt(key.Int())
+
 	case OpGetField:
 		tbl := s.val(instr.Args[0])
 		idx := int(instr.Aux)

@@ -1,0 +1,124 @@
+package methodjit
+
+import (
+	"testing"
+
+	"github.com/gscript/gscript/internal/vm"
+)
+
+func TestTableArrayLower_LoadElimSharesHeaderLenData(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_cse"}, NumRegs: 3}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	k1 := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	k2 := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	g1 := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), k1.Value()}, Block: b}
+	g2 := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), k2.Value()}, Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{g1.Value(), g2.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, k1, k2, g1, g2, add, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts := countOps(fn)
+	if counts[OpTableArrayHeader] != 1 || counts[OpTableArrayLen] != 1 || counts[OpTableArrayData] != 1 {
+		t.Fatalf("expected shared header/len/data after CSE, counts=%v\n%s", counts, Print(fn))
+	}
+	if counts[OpTableArrayLoad] != 2 {
+		t.Fatalf("expected two loads, got %d\n%s", counts[OpTableArrayLoad], Print(fn))
+	}
+}
+
+func TestTableArrayLower_LICMHoistsHeaderLenData(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_licm"}, NumRegs: 2}
+	entry, header, body, exit := buildSimpleLoop(fn)
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	j0 := &Instr{ID: fn.newValueID(), Op: OpJump, Block: entry}
+	entry.Instrs = []*Instr{tbl, seed, j0}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: header}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Args: []*Value{cond.Value()}, Block: header}
+	header.Instrs = []*Instr{phi, cond, br}
+
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), phi.Value()}, Block: body}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: body}
+	next := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{phi.Value(), one.Value()}, Block: body}
+	jb := &Instr{ID: fn.newValueID(), Op: OpJump, Block: body}
+	body.Instrs = []*Instr{get, one, next, jb}
+	phi.Args = []*Value{seed.Value(), next.Value()}
+
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: exit}
+	exit.Instrs = []*Instr{ret}
+	assertValidates(t, fn, "input")
+
+	var err error
+	fn, err = TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = LICMPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if blockHasOp(body, OpTableArrayHeader) || blockHasOp(body, OpTableArrayLen) || blockHasOp(body, OpTableArrayData) {
+		t.Fatalf("header/len/data should have been hoisted out of loop body:\n%s", Print(fn))
+	}
+	if !blockHasOp(header.Preds[0], OpTableArrayHeader) ||
+		!blockHasOp(header.Preds[0], OpTableArrayLen) ||
+		!blockHasOp(header.Preds[0], OpTableArrayData) {
+		t.Fatalf("preheader should contain hoisted table array facts:\n%s", Print(fn))
+	}
+}
+
+func countOps(fn *Function) map[Op]int {
+	counts := make(map[Op]int)
+	for _, b := range fn.Blocks {
+		for _, instr := range b.Instrs {
+			counts[instr.Op]++
+		}
+	}
+	return counts
+}
+
+func blockHasOp(b *Block, op Op) bool {
+	if b == nil {
+		return false
+	}
+	for _, instr := range b.Instrs {
+		if instr.Op == op {
+			return true
+		}
+	}
+	return false
+}

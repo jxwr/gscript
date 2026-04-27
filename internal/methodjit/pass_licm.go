@@ -278,6 +278,24 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					}
 				}
 			}
+			// Typed array header guards are equivalent to GetTable's table
+			// identity/kind guard: hoist only when no call or same-table write
+			// inside the loop can change metatable/kind/data semantics before
+			// the original access point.
+			if instr.Op == OpTableArrayHeader {
+				if hasLoopCall {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"loop contains a call that may mutate tables")
+					continue
+				}
+				if len(instr.Args) >= 1 {
+					if setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
+						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+							"table is written inside the loop")
+						continue
+					}
+				}
+			}
 			// GetGlobal: require no in-loop SetGlobal on same name and no calls.
 			if instr.Op == OpGetGlobal {
 				if hasLoopCall {
@@ -618,6 +636,11 @@ func canHoistOp(op Op) bool {
 		// m (hasLoopCall) — LICM already enforces that for GetField/
 		// GetTable, and the same guard applies here.
 		return true
+	case OpTableArrayHeader, OpTableArrayLen, OpTableArrayData:
+		// Header has a guard, but is loop-invariant under the same alias
+		// conditions as GetTable. Len/data are pure loads from that verified
+		// header and can follow it into the preheader.
+		return true
 	case OpMatrixRowPtr:
 		// R46: row-pointer arithmetic is pure. Hoists when all 3 inputs
 		// (flat, stride, i) are loop-invariant. In matmul's inner k-loop
@@ -633,7 +656,9 @@ func isInterestingLICMMiss(op Op) bool {
 		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
-		OpMatrixFlat, OpMatrixStride, OpMatrixRowPtr, OpSqrt, OpNumToFloat:
+		OpMatrixFlat, OpMatrixStride, OpMatrixRowPtr,
+		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData,
+		OpSqrt, OpNumToFloat:
 		return true
 	default:
 		return false
