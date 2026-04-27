@@ -9,7 +9,6 @@ package methodjit
 import (
 	"fmt"
 	"math"
-	"strings"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -23,17 +22,12 @@ func (e *BaselineJITEngine) handleConcat(ctx *ExecContext, regs []runtime.Value,
 	c := int(ctx.BaselineC) // end register
 
 	absA := base + a
-	if absA >= len(regs) {
+	start := base + b
+	end := base + c + 1
+	if absA >= len(regs) || start < 0 || end < start || end > len(regs) {
 		return nil
 	}
-	var sb strings.Builder
-	for i := b; i <= c; i++ {
-		absI := base + i
-		if absI < len(regs) {
-			sb.WriteString(regs[absI].String())
-		}
-	}
-	regs[absA] = runtime.StringValue(sb.String())
+	regs[absA] = runtime.ConcatValues(regs[start:end])
 	return nil
 }
 

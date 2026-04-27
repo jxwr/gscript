@@ -548,17 +548,17 @@ func emitBaselineLT(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 
 	doneLabel := nextLabel("lt_done")
 	floatLabel := nextLabel("lt_float")
+	stringLabel := nextLabel("lt_string")
 	slowLabel := nextLabel("lt_slow")
 	skipLabel := pcLabel(pc + 2) // skip next instruction
 
-	// String/pointer fast exit: if either operand has the pointer tag
-	// (0xFFFF), the FCMP float fallback would treat the raw pointer bits as
-	// a float and produce wrong results (FCMP of a NaN-boxed ptr is
-	// "unordered", never LT). Exit to Go so Value.LessThan handles it.
+	// Pointer values cannot fall through to FCMP: NaN-boxed pointer bits are
+	// unordered as floats. Strings are common enough to compare natively; other
+	// pointer types still exit to Go for the semantic error path.
 	asm.LSRimm(jit.X2, jit.X0, 48)
 	asm.MOVimm16(jit.X3, uint16(jit.NB_TagPtrShr48)) // 0xFFFF
 	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondEQ, slowLabel)
+	asm.BCond(jit.CondEQ, stringLabel)
 	asm.LSRimm(jit.X2, jit.X1, 48)
 	asm.CMPreg(jit.X2, jit.X3) // X3 still 0xFFFF
 	asm.BCond(jit.CondEQ, slowLabel)
@@ -601,6 +601,16 @@ func emitBaselineLT(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	}
 	asm.B(doneLabel)
 
+	// String fast path: both operands must be string values. Mixed pointer
+	// types exit so Value.LessThan can preserve the VM's error behavior.
+	asm.Label(stringLabel)
+	jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, slowLabel)
+	jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, slowLabel)
+	stringTrueLabel := nextLabel("lt_string_true")
+	stringFalseLabel := nextLabel("lt_string_false")
+	emitBaselineStringCmp(asm, jit.CondLT, stringTrueLabel, stringFalseLabel)
+	emitBaselineCmpBoolBranch(asm, a, stringTrueLabel, stringFalseLabel, skipLabel, doneLabel)
+
 	// Slow path: exit to Go; the handler computes LT via Value.LessThan
 	// and overrides BaselinePC to pc+1 (no skip) or pc+2 (skip) as needed.
 	asm.Label(slowLabel)
@@ -620,14 +630,15 @@ func emitBaselineLE(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 
 	doneLabel := nextLabel("le_done")
 	floatLabel := nextLabel("le_float")
+	stringLabel := nextLabel("le_string")
 	slowLabel := nextLabel("le_slow")
 	skipLabel := pcLabel(pc + 2) // skip next instruction
 
-	// String/pointer fast exit: see emitBaselineLT for rationale.
+	// Pointer values cannot fall through to FCMP; strings get a native path.
 	asm.LSRimm(jit.X2, jit.X0, 48)
 	asm.MOVimm16(jit.X3, uint16(jit.NB_TagPtrShr48)) // 0xFFFF
 	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondEQ, slowLabel)
+	asm.BCond(jit.CondEQ, stringLabel)
 	asm.LSRimm(jit.X2, jit.X1, 48)
 	asm.CMPreg(jit.X2, jit.X3) // X3 still 0xFFFF
 	asm.BCond(jit.CondEQ, slowLabel)
@@ -669,12 +680,82 @@ func emitBaselineLE(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	}
 	asm.B(doneLabel)
 
+	// String fast path: both operands must be string values. Mixed pointer
+	// types exit so Value.LessThan can preserve the VM's error behavior.
+	asm.Label(stringLabel)
+	jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, slowLabel)
+	jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, slowLabel)
+	stringTrueLabel := nextLabel("le_string_true")
+	stringFalseLabel := nextLabel("le_string_false")
+	emitBaselineStringCmp(asm, jit.CondLE, stringTrueLabel, stringFalseLabel)
+	emitBaselineCmpBoolBranch(asm, a, stringTrueLabel, stringFalseLabel, skipLabel, doneLabel)
+
 	// Slow path: exit to Go; the handler computes LE via Value.LessThan
 	// and overrides BaselinePC to pc+1 or pc+2 as needed.
 	asm.Label(slowLabel)
 	emitBaselineOpExitCommon(asm, vm.OP_LE, pc, a, bidx, cidx)
 
 	asm.Label(doneLabel)
+}
+
+func emitBaselineCmpBoolBranch(asm *jit.Assembler, a int, trueLabel, falseLabel, skipLabel, doneLabel string) {
+	asm.Label(trueLabel)
+	if a == 0 {
+		asm.B(skipLabel)
+	} else {
+		asm.B(doneLabel)
+	}
+
+	asm.Label(falseLabel)
+	if a != 0 {
+		asm.B(skipLabel)
+	} else {
+		asm.B(doneLabel)
+	}
+}
+
+// emitBaselineStringCmp compares two NaN-boxed string values in X0 and X1.
+// Both operands must already be checked as strings. It branches to trueLabel
+// when X0 < X1 (or <= for CondLE), otherwise falseLabel.
+func emitBaselineStringCmp(asm *jit.Assembler, cond jit.Cond, trueLabel, falseLabel string) {
+	loopLabel := nextLabel("str_cmp_loop")
+	prefixLabel := nextLabel("str_cmp_prefix")
+
+	// Strip NaN-boxing tag/subtype bits and recover *string pointers.
+	asm.LSLimm(jit.X2, jit.X0, 20)
+	asm.LSRimm(jit.X2, jit.X2, 20)
+	asm.LSLimm(jit.X3, jit.X1, 20)
+	asm.LSRimm(jit.X3, jit.X3, 20)
+
+	// Go string header: data pointer at +0, length at +8.
+	asm.LDR(jit.X4, jit.X2, 0)
+	asm.LDR(jit.X5, jit.X2, 8)
+	asm.LDR(jit.X6, jit.X3, 0)
+	asm.LDR(jit.X7, jit.X3, 8)
+	asm.MOVimm16(jit.X8, 0)
+
+	asm.Label(loopLabel)
+	asm.CMPreg(jit.X8, jit.X5)
+	asm.BCond(jit.CondHS, prefixLabel)
+	asm.CMPreg(jit.X8, jit.X7)
+	asm.BCond(jit.CondHS, prefixLabel)
+
+	asm.LDRBreg(jit.X9, jit.X4, jit.X8)
+	asm.LDRBreg(jit.X10, jit.X6, jit.X8)
+	asm.CMPreg(jit.X9, jit.X10)
+	asm.BCond(jit.CondLO, trueLabel)
+	asm.BCond(jit.CondHI, falseLabel)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.B(loopLabel)
+
+	asm.Label(prefixLabel)
+	asm.CMPreg(jit.X5, jit.X7)
+	if cond == jit.CondLE {
+		asm.BCond(jit.CondLS, trueLabel)
+	} else {
+		asm.BCond(jit.CondLO, trueLabel)
+	}
+	asm.B(falseLabel)
 }
 
 // ---------------------------------------------------------------------------
