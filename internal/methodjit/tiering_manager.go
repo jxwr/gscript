@@ -397,8 +397,7 @@ func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction
 	// Update DirectEntryPtr so native BLR callers jump to Tier 2's direct entry.
 	if cf != nil && cf.DirectEntryOffset > 0 {
 		entry := uintptr(cf.Code.Ptr()) + uintptr(cf.DirectEntryOffset)
-		proto.DirectEntryPtr = entry
-		proto.Tier2DirectEntryPtr = entry
+		setFuncProtoTier2DirectEntries(proto, entry, entry)
 	}
 	if cf != nil && cf.NumericEntryOffset > 0 {
 		proto.Tier2NumericEntryPtr = uintptr(cf.Code.Ptr()) + uintptr(cf.NumericEntryOffset)
@@ -1479,9 +1478,7 @@ func (tm *TieringManager) disableTier2AfterRuntimeDeopt(proto *vm.FuncProto, rea
 	tm.tier2FailReason[proto] = reason
 	delete(tm.tier2Compiled, proto)
 	proto.Tier2Promoted = false
-	proto.DirectEntryPtr = 0
-	proto.Tier2DirectEntryPtr = 0
-	proto.Tier2NumericEntryPtr = 0
+	clearFuncProtoDirectEntries(proto)
 	proto.Tier2GlobalCachePtr = 0
 	proto.Tier2GlobalCacheGenPtr = 0
 	proto.Tier2GlobalIndexPtr = 0

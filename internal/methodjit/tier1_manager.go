@@ -179,9 +179,9 @@ func (e *BaselineJITEngine) TryCompile(proto *vm.FuncProto) interface{} {
 	e.compiled[proto] = bf
 	proto.CompiledCodePtr = uintptr(bf.Code.Ptr())
 	if bf.DirectEntryOffset >= 0 && nativeBLRReplaySafe(proto) {
-		proto.DirectEntryPtr = uintptr(bf.Code.Ptr()) + uintptr(bf.DirectEntryOffset)
+		setFuncProtoDirectEntry(proto, uintptr(bf.Code.Ptr())+uintptr(bf.DirectEntryOffset))
 	} else {
-		proto.DirectEntryPtr = 0
+		setFuncProtoDirectEntry(proto, 0)
 	}
 	if len(bf.GlobalValCache) > 0 {
 		proto.GlobalValCachePtr = uintptr(unsafe.Pointer(&bf.GlobalValCache[0]))
@@ -514,9 +514,7 @@ func (e *BaselineJITEngine) EvictCompiled(proto *vm.FuncProto) {
 	}
 	delete(e.failed, proto)
 	proto.CompiledCodePtr = 0
-	proto.DirectEntryPtr = 0
-	proto.Tier2DirectEntryPtr = 0
-	proto.Tier2NumericEntryPtr = 0
+	clearFuncProtoDirectEntries(proto)
 	proto.Tier2GlobalCachePtr = 0
 	proto.Tier2GlobalCacheGenPtr = 0
 	proto.Tier2GlobalIndexPtr = 0

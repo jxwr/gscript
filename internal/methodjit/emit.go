@@ -333,14 +333,14 @@ type CompiledFunction struct {
 	NativeSetGlobals map[int]bool
 
 	// CallCache (R108) is a per-OpCall-site monomorphic IC.
-	// Layout: 2 × uint64 per call site.
-	//   [2*i]   = cached boxed closure value (NaN-boxed 0xFFFF...)
-	//   [2*i+1] = cached direct-entry address (uintptr)
-	// Hits re-derive the raw closure/proto from the current boxed value and
-	// refresh the cached direct-entry address from DirectEntryPtr, then
-	// Tier2DirectEntryPtr. That is the KeepCachedDirectEntry protocol: a
-	// generic DirectEntryPtr clear must not evict Tier 2 callers while the
-	// Tier 2 direct entry remains published.
+	// Layout: 4 × uint64 per call site.
+	//   [4*i]   = cached boxed closure value (NaN-boxed 0xFFFF...)
+	//   [4*i+1] = cached direct-entry address (uintptr)
+	//   [4*i+2] = cached *vm.FuncProto
+	//   [4*i+3] = cached direct-entry version
+	// Hits validate FuncProto.DirectEntryVersion before reusing the cached
+	// entry. Version changes refresh from DirectEntryPtr, then
+	// Tier2DirectEntryPtr, preserving fallback when both entries are cleared.
 	CallCache []uint64
 
 	// NewTableCaches is indexed by IR instruction ID. Hinted dense table

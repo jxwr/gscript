@@ -11,7 +11,8 @@
 //   1. Store function value and arguments to the VM register file
 //   2. Spill ALL live SSA registers (GPR + FPR) to their home slots
 //   3. Type check: is the function a compiled VMClosure?
-//   4. Load DirectEntryPtr; if zero (uncompiled), fall to slow path
+//   4. Resolve a direct entry; if no DirectEntryPtr/Tier2DirectEntryPtr is
+//      published, fall to slow path
 //   5. Bounds check: callee register window fits in register file
 //   6. Increment callee's CallCount (for tiering)
 //   7. Save caller state on native stack (X26, X27, FP, LR, CallMode, etc.)
@@ -123,11 +124,11 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Load function value from regs[funcSlot].
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 
-	// --- R108: Monomorphic call IC fast path ---
-	// Allocate this call site's cache slot (2 × uint64).
+	// --- Monomorphic call IC fast path ---
+	// Allocate this call site's cache slot (4 × uint64).
 	icIdx := ec.nextCallCacheIndex
 	ec.nextCallCacheIndex++
-	cacheOff := icIdx * 16 // 2 uint64 per slot
+	cacheOff := icIdx * 32 // 4 uint64 per slot
 	icHitLabel := ec.uniqueLabel("t2call_ic_hit")
 	icDoneLabel := ec.uniqueLabel("t2call_ic_done")
 
@@ -163,33 +164,42 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.Label(missHaveEntryLabel)
 	asm.CBZ(jit.X2, slowLabel) // not compiled -> slow
 
-	// R108: update IC cache with the boxed closure value (reload from
-	// memory since X0 now holds the raw ptr) and the direct entry addr.
+	// Update IC cache with the boxed closure value (reload from
+	// memory since X0 now holds the raw ptr), direct entry, proto, and entry
+	// publication version.
 	asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot)) // re-load boxed value
 	asm.STR(jit.X4, jit.X3, cacheOff)               // cache[0] = boxed value
 	asm.STR(jit.X2, jit.X3, cacheOff+8)             // cache[1] = direct entry
+	asm.STR(jit.X1, jit.X3, cacheOff+16)            // cache[2] = *FuncProto
+	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryVersion)
+	asm.STR(jit.X4, jit.X3, cacheOff+24) // cache[3] = entry version
 	asm.B(icDoneLabel)
 
-	// --- IC Hit: re-derive X0=*Closure and X1=*Proto, then refresh entry. ---
+	// --- IC Hit: validate direct-entry version, refreshing entry on change. ---
 	// X0 still holds the boxed closure value (matched cache).
 	asm.Label(icHitLabel)
-	asm.LDR(jit.X2, jit.X3, cacheOff+8)        // X2 = cached direct entry
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)    // X0 = *Closure
-	asm.LDR(jit.X1, jit.X0, vmClosureOffProto) // X1 = *Proto
+	asm.LDR(jit.X2, jit.X3, cacheOff+8)  // X2 = cached direct entry
+	asm.LDR(jit.X1, jit.X3, cacheOff+16) // X1 = cached *Proto
+	asm.LDR(jit.X4, jit.X3, cacheOff+24) // X4 = cached entry version
+	asm.LDR(jit.X5, jit.X1, funcProtoOffDirectEntryVersion)
+	icVersionOKLabel := ec.uniqueLabel("t2call_ic_version_ok")
+	asm.CMPreg(jit.X4, jit.X5)
+	asm.BCond(jit.CondEQ, icVersionOKLabel)
 	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
-	icRefreshLabel := ec.uniqueLabel("t2call_ic_refresh")
-	asm.CBNZ(jit.X4, icRefreshLabel)
+	icHaveEntryLabel := ec.uniqueLabel("t2call_ic_have_entry")
+	asm.CBNZ(jit.X4, icHaveEntryLabel)
 	asm.LDR(jit.X4, jit.X1, funcProtoOffTier2DirectEntryPtr)
 	// DirectEntryPtr can be cleared when a baseline/native caller disables
 	// generic BLR after an exit. Tier 2 ICs may still use the separate Tier 2
 	// entry while it is published, but must not keep a stale entry after both
 	// published entry pointers have been cleared.
 	asm.CBZ(jit.X4, slowLabel)
-	asm.Label(icRefreshLabel)
-	asm.CMPreg(jit.X2, jit.X4)
-	asm.BCond(jit.CondEQ, icDoneLabel)
+	asm.Label(icHaveEntryLabel)
 	asm.MOVreg(jit.X2, jit.X4)
 	asm.STR(jit.X2, jit.X3, cacheOff+8)
+	asm.STR(jit.X5, jit.X3, cacheOff+24)
+	asm.Label(icVersionOKLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0) // X0 = *Closure
 
 	asm.Label(icDoneLabel)
 
@@ -1141,7 +1151,7 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 
 	icIdx := ec.nextCallCacheIndex
 	ec.nextCallCacheIndex++
-	cacheOff := icIdx * 16
+	cacheOff := icIdx * 32
 	icHitLabel := ec.uniqueLabel("t2tail_ic_hit")
 	icDoneLabel := ec.uniqueLabel("t2tail_ic_done")
 
@@ -1173,27 +1183,35 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	asm.Label(tailMissHaveEntryLabel)
 	asm.CBZ(jit.X2, slowLabel)
 
-	// R108 cache update on successful miss path.
+	// Cache update on successful miss path.
 	asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot))
 	asm.STR(jit.X4, jit.X3, cacheOff)
 	asm.STR(jit.X2, jit.X3, cacheOff+8)
+	asm.STR(jit.X1, jit.X3, cacheOff+16)
+	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryVersion)
+	asm.STR(jit.X4, jit.X3, cacheOff+24)
 	asm.B(icDoneLabel)
 
-	// --- IC Hit: re-derive X0=*Closure and X1=*Proto, then refresh entry. ---
+	// --- IC Hit: validate direct-entry version, refreshing entry on change. ---
 	asm.Label(icHitLabel)
 	asm.LDR(jit.X2, jit.X3, cacheOff+8)
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
+	asm.LDR(jit.X1, jit.X3, cacheOff+16)
+	asm.LDR(jit.X4, jit.X3, cacheOff+24)
+	asm.LDR(jit.X5, jit.X1, funcProtoOffDirectEntryVersion)
+	tailICVersionOKLabel := ec.uniqueLabel("t2tail_ic_version_ok")
+	asm.CMPreg(jit.X4, jit.X5)
+	asm.BCond(jit.CondEQ, tailICVersionOKLabel)
 	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
-	tailICRefreshLabel := ec.uniqueLabel("t2tail_ic_refresh")
-	asm.CBNZ(jit.X4, tailICRefreshLabel)
+	tailICHaveEntryLabel := ec.uniqueLabel("t2tail_ic_have_entry")
+	asm.CBNZ(jit.X4, tailICHaveEntryLabel)
 	asm.LDR(jit.X4, jit.X1, funcProtoOffTier2DirectEntryPtr)
 	asm.CBZ(jit.X4, slowLabel)
-	asm.Label(tailICRefreshLabel)
-	asm.CMPreg(jit.X2, jit.X4)
-	asm.BCond(jit.CondEQ, icDoneLabel)
+	asm.Label(tailICHaveEntryLabel)
 	asm.MOVreg(jit.X2, jit.X4)
 	asm.STR(jit.X2, jit.X3, cacheOff+8)
+	asm.STR(jit.X5, jit.X3, cacheOff+24)
+	asm.Label(tailICVersionOKLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 
 	asm.Label(icDoneLabel)
 

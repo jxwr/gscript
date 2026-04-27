@@ -359,10 +359,10 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	}
 	nativeSetGlobals := collectNativeSetGlobals(fn)
 
-	// R108/R151: allocate per-OpCall monomorphic IC cache (2 uint64 per site).
+	// R108/R151: allocate per-OpCall monomorphic IC cache (4 uint64 per site).
 	var callCache []uint64
 	if ec.nextCallCacheIndex > 0 {
-		callCache = make([]uint64, 2*ec.nextCallCacheIndex)
+		callCache = make([]uint64, 4*ec.nextCallCacheIndex)
 	}
 
 	return &CompiledFunction{
@@ -627,8 +627,9 @@ type emitContext struct {
 	globalCacheConsts    []int
 
 	// nextCallCacheIndex (R108) assigns a unique IC slot to each OpCall
-	// in the compiled function. 2 uint64 per slot (closure value +
-	// direct-entry addr). Incremented in emitCallNative.
+	// in the compiled function. 4 uint64 per slot (closure value,
+	// direct-entry addr, proto ptr, direct-entry version). Incremented in
+	// emitCallNative.
 	nextCallCacheIndex int
 
 	// scratchFPRCache maps value ID -> scratch FPR (D0-D3) currently holding

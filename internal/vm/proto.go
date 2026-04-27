@@ -34,6 +34,7 @@ type FuncProto struct {
 	CompiledCodePtr        uintptr                   // pointer to baseline JIT compiled code (set after CompileBaseline)
 	DirectEntryPtr         uintptr                   // pointer to direct entry point for native BLR calls
 	Tier2DirectEntryPtr    uintptr                   // pointer to Tier 2 direct entry for Method JIT call IC refresh
+	DirectEntryVersion     uint64                    // increments when DirectEntryPtr/Tier2DirectEntryPtr publication changes
 	Tier2NumericEntryPtr   uintptr                   // pointer to Tier 2 raw-int numeric entry for guarded peer calls
 	GlobalValCachePtr      uintptr                   // pointer to BaselineFunc.GlobalValCache[0] (for BLR callee GETGLOBAL)
 	GlobalValCacheGen      uint64                    // BaselineFunc.CachedGlobalGen (for BLR callee generation check)

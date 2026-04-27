@@ -647,7 +647,7 @@ func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtim
 
 	// Disable BLR for this callee — it has exit-resume ops that make BLR counterproductive.
 	// Future calls will see DirectEntryPtr==0 and go straight to slow path.
-	calleeProto.DirectEntryPtr = 0
+	setFuncProtoDirectEntry(calleeProto, 0)
 	e.clearBaselineCallCachesForProto(calleeProto)
 
 	calleeBF, ok := e.compiled[calleeProto]
