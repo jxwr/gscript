@@ -55,6 +55,7 @@ var (
 	funcProtoOffTier2GlobalCacheGenPtr int // vm.FuncProto.Tier2GlobalCacheGenPtr offset
 	funcProtoOffTier2GlobalIndexPtr    int // vm.FuncProto.Tier2GlobalIndexPtr offset
 	funcProtoOffCallCount              int // vm.FuncProto.CallCount offset
+	funcProtoOffTier2Promoted          int // vm.FuncProto.Tier2Promoted offset
 )
 
 func init() {
@@ -78,12 +79,22 @@ func init() {
 	funcProtoOffTier2GlobalCacheGenPtr = int(unsafe.Offsetof(proto.Tier2GlobalCacheGenPtr))
 	funcProtoOffTier2GlobalIndexPtr = int(unsafe.Offsetof(proto.Tier2GlobalIndexPtr))
 	funcProtoOffCallCount = int(unsafe.Offsetof(proto.CallCount))
+	funcProtoOffTier2Promoted = int(unsafe.Offsetof(proto.Tier2Promoted))
 }
 
 // NaN-boxing pointer sub-type constants for ARM64 type checks.
 const (
 	nbPtrSubShift     = 44
 	nbPtrSubVMClosure = 8 // ptrSubVMClosure = 8 << 44
+)
+
+const (
+	baselineCallCacheStride      = 4
+	baselineCallCacheBoxedOff    = 0
+	baselineCallCacheEntryOff    = 8
+	baselineCallCacheProtoOff    = 16
+	baselineCallCacheVersionOff  = 24
+	baselineCallCacheStrideBytes = baselineCallCacheStride * 8
 )
 
 // mRegSelfClosure caches the NaN-boxed closure value of the current function
@@ -144,15 +155,17 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	useCallIC := !isBaselineStaticSelfCall(callerProto, pc, a)
 	callICHitLabel := ""
 	callICDoneLabel := ""
-	callICOff := pc * 32 // 4 uint64 entries per bytecode PC
+	callICOff := pc * baselineCallCacheStrideBytes
 	if useCallIC {
 		// Monomorphic CALL IC for stable non-self closures. This keeps mutual
-		// and cross-recursive calls on the direct-entry path without repeating
-		// the closure tag/proto/direct-entry lookup sequence at every call site.
+		// and cross-recursive calls on the direct-entry path. Hits still validate
+		// FuncProto.DirectEntryVersion, and promoted Tier 2 callees fall back
+		// through VM dispatch because baseline native-call exits use the Tier 1
+		// exit protocol.
 		callICHitLabel = nextLabel("call_ic_hit")
 		callICDoneLabel = nextLabel("call_ic_done")
 		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineCallCache)
-		asm.LDR(jit.X4, jit.X3, callICOff) // cached boxed closure
+		asm.LDR(jit.X4, jit.X3, callICOff+baselineCallCacheBoxedOff) // cached boxed closure
 		asm.CMPreg(jit.X0, jit.X4)
 		asm.BCond(jit.CondEQ, callICHitLabel)
 	}
@@ -196,23 +209,39 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	// Normal path: callee is a different function.
 	// X0 = *vm.Closure, X1 = *FuncProto, X2 = DirectEntryPtr (loaded below)
 	// -----------------------------------------------------------------------
+	asm.LDRB(jit.X2, jit.X1, funcProtoOffTier2Promoted)
+	asm.CBNZ(jit.X2, slowLabel) // Tier 2 direct entries use a different exit protocol.
 	asm.LDR(jit.X2, jit.X1, funcProtoOffDirectEntryPtr)
 	asm.CBZ(jit.X2, slowLabel) // not compiled -> slow
 	if useCallIC {
 		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineCallCache)
 		loadSlot(asm, jit.X4, a)
-		asm.STR(jit.X4, jit.X3, callICOff)    // boxed closure
-		asm.STR(jit.X2, jit.X3, callICOff+8)  // direct entry
-		asm.STR(jit.X0, jit.X3, callICOff+16) // *vm.Closure
-		asm.STR(jit.X1, jit.X3, callICOff+24) // *vm.FuncProto
+		asm.STR(jit.X4, jit.X3, callICOff+baselineCallCacheBoxedOff) // boxed closure
+		asm.STR(jit.X2, jit.X3, callICOff+baselineCallCacheEntryOff) // direct entry
+		asm.STR(jit.X1, jit.X3, callICOff+baselineCallCacheProtoOff) // *vm.FuncProto
+		asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryVersion)
+		asm.STR(jit.X4, jit.X3, callICOff+baselineCallCacheVersionOff) // entry version
 		asm.B(callICDoneLabel)
 
 		asm.Label(callICHitLabel)
-		asm.LDR(jit.X1, jit.X3, callICOff+24) // cached *FuncProto
-		asm.LDR(jit.X2, jit.X3, callICOff+8)  // cached DirectEntryPtr
+		asm.LDR(jit.X1, jit.X3, callICOff+baselineCallCacheProtoOff)   // cached *FuncProto
+		asm.LDR(jit.X2, jit.X3, callICOff+baselineCallCacheEntryOff)   // cached DirectEntryPtr
+		asm.LDR(jit.X4, jit.X3, callICOff+baselineCallCacheVersionOff) // cached DirectEntryVersion
+		asm.LDR(jit.X5, jit.X1, funcProtoOffDirectEntryVersion)
+		callICVersionOKLabel := nextLabel("call_ic_version_ok")
+		asm.CMPreg(jit.X4, jit.X5)
+		asm.BCond(jit.CondEQ, callICVersionOKLabel)
+		asm.LDRB(jit.X4, jit.X1, funcProtoOffTier2Promoted)
+		asm.CBNZ(jit.X4, slowLabel)
+		asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
+		asm.CBZ(jit.X4, slowLabel)
+		asm.MOVreg(jit.X2, jit.X4)
+		asm.STR(jit.X2, jit.X3, callICOff+baselineCallCacheEntryOff)
+		asm.STR(jit.X5, jit.X3, callICOff+baselineCallCacheVersionOff)
+		asm.Label(callICVersionOKLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0) // X0 = *vm.Closure
 
 		asm.Label(callICDoneLabel)
-		asm.LDR(jit.X0, jit.X3, callICOff+16) // cached *vm.Closure
 	}
 
 	// Bounds check: verify callee's register window fits in the register file.

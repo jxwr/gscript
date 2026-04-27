@@ -3,7 +3,9 @@
 package methodjit
 
 import (
+	"os"
 	"testing"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -41,6 +43,111 @@ func inc(n) {
 	if inc.DirectEntryPtr != 0 || inc.Tier2DirectEntryPtr != 0 {
 		t.Fatalf("runtime disable left entries published: direct=%#x tier2=%#x",
 			inc.DirectEntryPtr, inc.Tier2DirectEntryPtr)
+	}
+}
+
+func TestTier1CallICDispatchesThroughTier2AfterDirectEntryVersionChange(t *testing.T) {
+	src := `
+func inc(n) {
+    return n + 1
+}
+func caller(f, n) {
+    return f(n) + 1
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	inc := findProtoByName(top, "inc")
+	caller := findProtoByName(top, "caller")
+	if inc == nil || caller == nil {
+		t.Fatalf("missing protos: inc=%v caller=%v", inc != nil, caller != nil)
+	}
+
+	fnInc := v.GetGlobal("inc")
+	fnCaller := v.GetGlobal("caller")
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+
+	for i := 0; i < 3; i++ {
+		results, err := v.CallValue(fnCaller, []runtime.Value{fnInc, runtime.IntValue(40)})
+		if err != nil {
+			t.Fatalf("warm CallValue(caller) #%d: %v", i+1, err)
+		}
+		if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 42 {
+			t.Fatalf("warm caller result=%v, want int 42", results)
+		}
+	}
+
+	tier1 := tm.tier1
+	callerBF := tier1.compiled[caller]
+	if callerBF == nil {
+		t.Fatal("caller was not compiled at Tier 1")
+	}
+	incPtr := uint64(uintptr(unsafe.Pointer(inc)))
+	cachedEntry := uint64(0)
+	for i := 0; i+baselineCallCacheStride-1 < len(callerBF.CallCache); i += baselineCallCacheStride {
+		if callerBF.CallCache[i+baselineCallCacheProtoOff/8] == incPtr {
+			cachedEntry = callerBF.CallCache[i+baselineCallCacheEntryOff/8]
+			break
+		}
+	}
+	if cachedEntry == 0 {
+		t.Fatal("caller Tier 1 call IC did not cache inc")
+	}
+	if uintptr(cachedEntry) != inc.DirectEntryPtr {
+		t.Fatalf("cached baseline entry=%#x, inc DirectEntryPtr=%#x", cachedEntry, inc.DirectEntryPtr)
+	}
+
+	if err := tm.CompileTier2(inc); err != nil {
+		t.Fatalf("CompileTier2(inc): %v", err)
+	}
+	if uintptr(cachedEntry) == inc.DirectEntryPtr {
+		t.Fatalf("Tier 2 promotion did not publish a new direct entry: %#x", inc.DirectEntryPtr)
+	}
+
+	inc.EnteredTier2 = 0
+	results, err := v.CallValue(fnCaller, []runtime.Value{fnInc, runtime.IntValue(40)})
+	if err != nil {
+		t.Fatalf("CallValue(caller): %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 42 {
+		t.Fatalf("caller result=%v, want int 42", results)
+	}
+	if inc.EnteredTier2 == 0 {
+		t.Fatalf("Tier 1 call IC reused stale baseline direct entry %#x after version change", cachedEntry)
+	}
+}
+
+func TestTier1CallICNoFilterClosureBenchDoesNotCrash(t *testing.T) {
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+
+	src, err := os.ReadFile("../../benchmarks/suite/closure_bench.gs")
+	if err != nil {
+		t.Fatalf("read closure_bench.gs: %v", err)
+	}
+	top := compileProto(t, string(src))
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute closure_bench with no-filter JIT: %v", err)
+	}
+	mapArray := findProtoByName(top, "map_array")
+	if mapArray == nil {
+		t.Fatal("map_array proto not found")
+	}
+	if !mapArray.Tier2Promoted || mapArray.EnteredTier2 == 0 {
+		t.Fatalf("map_array did not exercise Tier 2 direct-entry version path: promoted=%v entered=%d",
+			mapArray.Tier2Promoted, mapArray.EnteredTier2)
 	}
 }
 

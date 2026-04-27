@@ -549,12 +549,11 @@ func (e *BaselineJITEngine) clearBaselineCallCachesForProto(proto *vm.FuncProto)
 	protoPtr := uint64(uintptr(unsafe.Pointer(proto)))
 	for _, bf := range e.compiled {
 		cache := bf.CallCache
-		for i := 0; i+3 < len(cache); i += 4 {
-			if cache[i+3] == protoPtr {
-				cache[i] = 0
-				cache[i+1] = 0
-				cache[i+2] = 0
-				cache[i+3] = 0
+		for i := 0; i+baselineCallCacheStride-1 < len(cache); i += baselineCallCacheStride {
+			if cache[i+baselineCallCacheProtoOff/8] == protoPtr {
+				for j := 0; j < baselineCallCacheStride; j++ {
+					cache[i+j] = 0
+				}
 			}
 		}
 	}

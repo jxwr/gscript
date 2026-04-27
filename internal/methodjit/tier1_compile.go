@@ -34,7 +34,7 @@ type BaselineFunc struct {
 	Labels            map[int]int    // bytecodePC -> code offset (for resume after exit)
 	HasFieldOps       bool           // true if proto has GETFIELD/SETFIELD (skip syncFieldCache otherwise)
 	GlobalValCache    []uint64       // per-PC NaN-boxed global value cache (0 = not cached)
-	CallCache         []uint64       // per-PC CALL IC: boxed closure, direct entry, closure ptr, proto ptr
+	CallCache         []uint64       // per-PC CALL IC: boxed closure, direct entry, proto ptr, entry version
 	CachedGlobalGen   uint64         // engine.globalCacheGen at time of last cache population
 	DirectEntryOffset int            // byte offset of the direct entry point (for native BLR calls)
 }
@@ -373,7 +373,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 	}
 	var callCache []uint64
 	if hasCall {
-		callCache = make([]uint64, len(code)*4)
+		callCache = make([]uint64, len(code)*baselineCallCacheStride)
 	}
 
 	// Get the direct entry offset for native BLR calls.

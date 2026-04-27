@@ -171,6 +171,9 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 			if calleeProto.JITDisabled {
 				goto slowPath
 			}
+			if calleeProto.Tier2Promoted {
+				goto slowPath
+			}
 			// If the TieringManager has set a tier-up threshold and the callee
 			// has EXACTLY reached it, fall to slow path ONCE so the VM's
 			// TryCompile can trigger Tier 2 compilation. Using == instead of
