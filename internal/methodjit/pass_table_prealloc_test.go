@@ -37,6 +37,41 @@ func TestTablePreallocHintPassCarriesFloatKind(t *testing.T) {
 	}
 }
 
+func TestTablePreallocHintPassInfersLocalTypedArrayWithoutFeedback(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_local_int"}, NumRegs: 3}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{tbl.Value(), key.Value(), val.Value()}, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny,
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, val, set, get}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	newTable := got.Entry.Instrs[0]
+	if newTable.Aux != tier2FeedbackArrayHint {
+		t.Fatalf("array hint = %d, want %d", newTable.Aux, tier2FeedbackArrayHint)
+	}
+	_, kind := unpackNewTableAux2(newTable.Aux2)
+	if kind != runtime.ArrayInt {
+		t.Fatalf("array kind = %d, want %d", kind, runtime.ArrayInt)
+	}
+	if set.Aux2 != int64(vm.FBKindInt) {
+		t.Fatalf("set Aux2 = %d, want FBKindInt", set.Aux2)
+	}
+	if get.Aux2 != int64(vm.FBKindInt) {
+		t.Fatalf("get Aux2 = %d, want FBKindInt", get.Aux2)
+	}
+}
+
 func TestTablePreallocHintPassUsesObservedMaxIntKeyAndCarriesKind(t *testing.T) {
 	proto := &vm.FuncProto{
 		Name:             "prealloc_bool_range",

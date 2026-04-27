@@ -382,6 +382,14 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("TablePreallocHint: %w", err)
 	}
 
+	// TablePrealloc can infer local dense array kinds from typed stores even
+	// when bytecode feedback is still empty. Re-run typespec so GetTable users
+	// see those newly annotated Aux2 kind facts.
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TypeSpecialize (post-table-prealloc): %w", err)
+	}
+
 	fn, err = LoadEliminationPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("LoadElimination: %w", err)

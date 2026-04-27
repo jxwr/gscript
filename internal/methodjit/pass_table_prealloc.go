@@ -32,10 +32,10 @@ func (h *tablePreallocHint) observeIntKeyFeedback(feedback vm.TableKeyFeedback) 
 }
 
 // TablePreallocHintPass annotates empty table allocations that feed observed
-// integer-key stores. The hints are consumed by the existing NewTable exit
-// path, so allocation remains in Go while Tier 2 can use pre-sized and, when
-// feedback is monomorphic scalar, typed-array append stores until capacity is
-// exhausted.
+// integer-key stores. Feedback is preferred, but local IR value types can also
+// seed dense typed tables before feedback is available. The hints are consumed
+// by the existing NewTable exit path, so allocation remains in Go while Tier 2
+// can use pre-sized and typed-array append stores until capacity is exhausted.
 func TablePreallocHintPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
@@ -47,11 +47,15 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			if instr == nil || instr.Op != OpSetTable || len(instr.Args) == 0 {
 				continue
 			}
-			if instr.Aux2 == 0 || instr.Aux2 == int64(vm.FBKindPolymorphic) {
+			if instr.Aux2 == int64(vm.FBKindPolymorphic) {
 				continue
 			}
 			tbl := instr.Args[0]
 			if tbl == nil || tbl.Def == nil || tbl.Def.Op != OpNewTable {
+				continue
+			}
+			kind, hasKind := setTableArrayKindHint(instr)
+			if !hasKind && instr.Aux2 == 0 {
 				continue
 			}
 			hint := candidates[tbl.Def.ID]
@@ -63,7 +67,7 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			if fn.Proto != nil && fn.Proto.TableKeyFeedback != nil && instr.HasSource && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.TableKeyFeedback) {
 				hint.observeIntKeyFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC])
 			}
-			if kind, ok := setTableArrayKindHint(instr); ok {
+			if hasKind {
 				if hint.kind == runtime.ArrayMixed {
 					hint.kind = kind
 				} else if hint.kind != kind {
@@ -93,7 +97,42 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			}
 		}
 	}
+	annotateLocalTableArrayKinds(fn, candidates)
 	return fn, nil
+}
+
+func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePreallocHint) {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || (instr.Op != OpGetTable && instr.Op != OpSetTable) || instr.Aux2 != 0 || len(instr.Args) == 0 {
+				continue
+			}
+			tbl := instr.Args[0]
+			if tbl == nil || tbl.Def == nil {
+				continue
+			}
+			hint, ok := candidates[tbl.Def.ID]
+			if !ok || hint.mixed || hint.kind == runtime.ArrayMixed {
+				continue
+			}
+			if fbKind, ok := arrayKindToFBKind(hint.kind); ok {
+				instr.Aux2 = int64(fbKind)
+			}
+		}
+	}
+}
+
+func arrayKindToFBKind(kind runtime.ArrayKind) (uint8, bool) {
+	switch kind {
+	case runtime.ArrayInt:
+		return vm.FBKindInt, true
+	case runtime.ArrayFloat:
+		return vm.FBKindFloat, true
+	case runtime.ArrayBool:
+		return vm.FBKindBool, true
+	default:
+		return 0, false
+	}
 }
 
 func setTableArrayKindHint(instr *Instr) (runtime.ArrayKind, bool) {
