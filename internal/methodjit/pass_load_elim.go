@@ -18,6 +18,9 @@
 // Invalidation rules:
 //   - OpSetField on the same (obj, field) kills the previous entry,
 //     then records the stored value for forwarding.
+//   - OpSetTable / OpAppend / OpSetList on an object kill typed table-array
+//     header/len/data facts for that object, because the array kind, length,
+//     or backing data pointer may change.
 //   - OpCall / OpSelf conservatively clear the entire available map
 //     and the guard available map, because a call could mutate any table
 //     or change runtime types.
@@ -285,6 +288,24 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				tableAvail[key] = instr.Args[2].ID
 				functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
 					"recorded SetTable value for forwarding")
+				if invalidateTableArrayFactsForObject(tableHeaderAvail, tableLenAvail, tableDataAvail, objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"table mutation invalidated typed array facts")
+				}
+
+			case OpAppend, OpSetList:
+				if len(instr.Args) < 1 {
+					continue
+				}
+				objID := instr.Args[0].ID
+				if invalidateDynamicTableCacheForObject(tableAvail, objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"array mutation invalidated dynamic-key table cache")
+				}
+				if invalidateTableArrayFactsForObject(tableHeaderAvail, tableLenAvail, tableDataAvail, objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"array mutation invalidated typed array facts")
+				}
 
 			case OpCall, OpSelf:
 				// Conservative: a call could mutate any table or change types.
@@ -308,6 +329,50 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 	}
 
 	return fn, nil
+}
+
+func invalidateDynamicTableCacheForObject(tableAvail map[tableKey]int, objID int) bool {
+	changed := false
+	for k := range tableAvail {
+		if k.objID == objID {
+			delete(tableAvail, k)
+			changed = true
+		}
+	}
+	return changed
+}
+
+func invalidateTableArrayFactsForObject(
+	headerAvail map[tableArrayHeaderKey]int,
+	lenAvail map[tableArrayDerivedKey]int,
+	dataAvail map[tableArrayDerivedKey]int,
+	objID int,
+) bool {
+	var killedHeaders []int
+	for k, id := range headerAvail {
+		if k.objID == objID {
+			delete(headerAvail, k)
+			killedHeaders = append(killedHeaders, id)
+		}
+	}
+	if len(killedHeaders) == 0 {
+		return false
+	}
+
+	changed := true
+	for _, headerID := range killedHeaders {
+		for k := range lenAvail {
+			if k.headerID == headerID {
+				delete(lenAvail, k)
+			}
+		}
+		for k := range dataAvail {
+			if k.headerID == headerID {
+				delete(dataAvail, k)
+			}
+		}
+	}
+	return changed
 }
 
 func guardProvenByProducer(v *Value, guardType Type) bool {

@@ -274,7 +274,8 @@ type Tier2PipelineOpts struct {
 // RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
 //
 //	TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp →
-//	LoadElim → DCE → RangeAnalysis → OverflowBoxing → LICM
+//	LoadElim → DCE → RangeAnalysis → OverflowBoxing → LICM →
+//	FieldNumToFloatFusion → LoadElim → DCE
 //
 // Returns the optimized function, any intrinsic rewrite notes (non-nil means
 // the function uses intrinsics that Tier 1 would execute differently), and an
@@ -493,6 +494,20 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	// LICM can co-locate equivalent facts that originated in different loop
+	// blocks. Re-run block-local CSE now that those facts share a preheader,
+	// then sweep dead duplicates before register allocation.
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("LoadElimination (post-LICM): %w", err)
+	}
+	attachRemarks(fn, opts)
+
+	fn, err = DCEPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("DCE (post-LICM LoadElim): %w", err)
+	}
+
 	fn, err = ScalarPromotionPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ScalarPromotion: %w", err)
@@ -541,6 +556,8 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("TableArrayLower", TableArrayLowerPass)
 	pipe.Add("LICM", LICMPass)
 	pipe.Add("FieldNumToFloatFusion", FieldNumToFloatFusionPass)
+	pipe.Add("LoadEliminationPostLICM", LoadEliminationPass)
+	pipe.Add("DCEPostLICM", DCEPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	return pipe
 }

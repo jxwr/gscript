@@ -101,6 +101,141 @@ func TestTableArrayLower_LICMHoistsHeaderLenData(t *testing.T) {
 	}
 }
 
+func TestTableArrayLower_PostLICMCSESharesCrossBlockHoistedFacts(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_post_licm_cse"}, NumRegs: 3}
+	entry := newBlock(0)
+	header := newBlock(1)
+	bodyA := newBlock(2)
+	bodyB := newBlock(3)
+	exit := newBlock(4)
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, header, bodyA, bodyB, exit}
+
+	entry.Succs = []*Block{header}
+	header.Preds = []*Block{entry, bodyB}
+	header.Succs = []*Block{bodyA, exit}
+	bodyA.Preds = []*Block{header}
+	bodyA.Succs = []*Block{bodyB}
+	bodyB.Preds = []*Block{bodyA}
+	bodyB.Succs = []*Block{header}
+	exit.Preds = []*Block{header}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	seedI := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	seedAcc := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	entryJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: entry, Aux: int64(header.ID)}
+	entry.Instrs = []*Instr{tbl, seedI, seedAcc, entryJump}
+
+	iPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	accPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: header}
+	headerBranch := &Instr{ID: fn.newValueID(), Op: OpBranch, Args: []*Value{cond.Value()}, Block: header, Aux: int64(bodyA.ID), Aux2: int64(exit.ID)}
+	header.Instrs = []*Instr{iPhi, accPhi, cond, headerBranch}
+
+	getA := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), iPhi.Value()}, Block: bodyA}
+	bodyAJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: bodyA, Aux: int64(bodyB.ID)}
+	bodyA.Instrs = []*Instr{getA, bodyAJump}
+
+	getB := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), iPhi.Value()}, Block: bodyB}
+	pair := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{getA.Value(), getB.Value()}, Block: bodyB}
+	accNext := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{accPhi.Value(), pair.Value()}, Block: bodyB}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: bodyB}
+	iNext := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{iPhi.Value(), one.Value()}, Block: bodyB}
+	bodyBJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: bodyB, Aux: int64(header.ID)}
+	bodyB.Instrs = []*Instr{getB, pair, accNext, one, iNext, bodyBJump}
+	iPhi.Args = []*Value{seedI.Value(), iNext.Value()}
+	accPhi.Args = []*Value{seedAcc.Value(), accNext.Value()}
+
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{accPhi.Value()}, Block: exit}
+	exit.Instrs = []*Instr{ret}
+	assertValidates(t, fn, "input")
+
+	var err error
+	fn, err = TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = LICMPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	preheader := header.Preds[0]
+	if got := countBlockOps(preheader, OpTableArrayHeader); got != 2 {
+		t.Fatalf("expected LICM to co-locate two cross-block headers before post-LICM CSE, got %d:\n%s", got, Print(fn))
+	}
+
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts := countOps(fn)
+	if counts[OpTableArrayHeader] != 1 || counts[OpTableArrayLen] != 1 || counts[OpTableArrayData] != 1 {
+		t.Fatalf("expected post-LICM CSE to share hoisted header/len/data, counts=%v\n%s", counts, Print(fn))
+	}
+	if counts[OpTableArrayLoad] != 2 {
+		t.Fatalf("expected two table array element loads to remain, got %d\n%s", counts[OpTableArrayLoad], Print(fn))
+	}
+	assertValidates(t, fn, "after post-LICM CSE")
+}
+
+func TestTableArrayLower_LoadElimInvalidatesFactsAcrossTableMutation(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_mutation_invalidates_cse"}, NumRegs: 4}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	k1 := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	k2 := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 42, Block: b}
+	g1 := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), k1.Value()}, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Args: []*Value{tbl.Value(), k1.Value(), val.Value()}, Block: b}
+	g2 := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), k2.Value()}, Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{g1.Value(), g2.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, k1, k2, val, g1, set, g2, add, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts := countOps(fn)
+	if counts[OpTableArrayHeader] != 2 || counts[OpTableArrayLen] != 2 || counts[OpTableArrayData] != 2 {
+		t.Fatalf("table mutation should invalidate earlier typed array facts, counts=%v\n%s", counts, Print(fn))
+	}
+}
+
 func TestTableArrayLower_TableArrayLoadKeepsNonNegativeKeyFact(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_nonneg_key"}, NumRegs: 2}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}
@@ -164,4 +299,17 @@ func blockHasOp(b *Block, op Op) bool {
 		}
 	}
 	return false
+}
+
+func countBlockOps(b *Block, op Op) int {
+	if b == nil {
+		return 0
+	}
+	count := 0
+	for _, instr := range b.Instrs {
+		if instr.Op == op {
+			count++
+		}
+	}
+	return count
 }
