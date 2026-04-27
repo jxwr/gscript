@@ -242,6 +242,9 @@ func (ts *typeSpecializer) inferPhiType(instr *Instr) Type {
 	for _, arg := range instr.Args {
 		at := ts.argType(arg)
 		if at == TypeUnknown {
+			if typeSpecArgIsDynamicallyUnknown(arg) {
+				return TypeUnknown
+			}
 			continue // skip unresolved args (will resolve on next iteration)
 		}
 		if result == TypeUnknown {
@@ -256,6 +259,18 @@ func (ts *typeSpecializer) inferPhiType(instr *Instr) Type {
 		}
 	}
 	return result
+}
+
+func typeSpecArgIsDynamicallyUnknown(v *Value) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	switch v.Def.Op {
+	case OpCall:
+		return true
+	default:
+		return false
+	}
 }
 
 // argType returns the inferred type of a Value from the type map.

@@ -611,6 +611,45 @@ result := fib_iter(70)
 	// The key check is that VM and JIT produce the same result.
 }
 
+func TestTier2_FibIterativeBenchDriverPromotes(t *testing.T) {
+	src := `
+func fib_iter(n) {
+    a := 0
+    b := 1
+    for i := 0; i < n; i++ {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+func bench_fib_iter(n, reps) {
+    result := 0
+    for r := 1; r <= reps; r++ {
+        result = fib_iter(n)
+    }
+    return result
+}
+result := bench_fib_iter(30, 20)
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("JIT execute error: %v", err)
+	}
+	if got := v.GetGlobal("result"); !got.IsInt() || got.Int() != 832040 {
+		t.Fatalf("result=%v, want int 832040", got)
+	}
+	if !containsString(tm.Tier2Entered(), "bench_fib_iter") {
+		t.Fatalf("expected bench_fib_iter to enter Tier2, entered=%v failed=%v",
+			tm.Tier2Entered(), tm.Tier2Failed())
+	}
+}
+
 func TestTier2_OverflowBoxedValueComparesAsNumber(t *testing.T) {
 	src := `
 func overflow_cmp() {

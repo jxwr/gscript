@@ -289,22 +289,34 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// Assign home slots for all SSA values.
 	ec.assignSlots()
 
+	shiftAddVersion, hasShiftAddVersion := detectShiftAddOverflowVersion(fn)
+	ec.skipStandardDirectEntry = hasShiftAddVersion
+
 	// Emit prologue.
 	ec.emitPrologue()
 
-	// Emit each basic block.
-	for _, block := range fn.Blocks {
-		ec.emitBlock(block)
+	if hasShiftAddVersion {
+		ec.emitShiftAddOverflowVersion(shiftAddVersion)
+	} else {
+		// Emit each basic block.
+		for _, block := range fn.Blocks {
+			ec.emitBlock(block)
+		}
 	}
 
 	// Emit epilogue.
 	ec.emitEpilogue()
+	if hasShiftAddVersion {
+		ec.emitShiftAddOverflowVersionDirect(shiftAddVersion)
+	}
 
 	// R129: emit pass-2 (numeric variant) body BEFORE deferredResumes so
 	// pass-2's deopts/call-exits append to the same deferredResumes
 	// list. emitDeferredResumes then emits both passes' resume entries
 	// with properly-disambiguated labels (numericPass flag on each).
-	ec.emitNumericBody()
+	if !hasShiftAddVersion {
+		ec.emitNumericBody()
+	}
 
 	// Emit deferred resume entry points (after epilogue so they're separate
 	// function entry points with their own prologue).
@@ -656,6 +668,10 @@ type emitContext struct {
 	// newTableCaches is owned by the eventual CompiledFunction but allocated
 	// before emission so native NewTable fast paths can embed its backing address.
 	newTableCaches []newTableCacheEntry
+
+	// skipStandardDirectEntry lets a custom leaf emitter publish its own
+	// t2_direct_entry without colliding with the standard full-frame entry.
+	skipStandardDirectEntry bool
 
 	// numericParamCount (R124) is set at emitContext construction when
 	// the proto qualifies (qualifyForNumeric). Non-zero → Compile emits
@@ -1011,33 +1027,35 @@ func (ec *emitContext) emitEpilogue() {
 	// Return.
 	asm.RET()
 
-	// --- Direct entry point for BLR callers (Tier 1 native call) ---
-	// Uses the FULL frame (same as normal entry) because Tier 2 may use
-	// callee-saved GPRs (X20-X23) for register allocation. The Tier 1
-	// caller expects callee-saved registers to be preserved across BLR.
-	// Caller has set: X0=ctx, ctx.Regs=callee regs base,
-	// ctx.Constants=callee constants, CallMode=1.
-	asm.Label("t2_direct_entry")
-	// R146: mark native entry (BLR-from-Tier-1 path).
-	ec.emitTier2EntryMark()
-	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
-	asm.STP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.X29, jit.SP, 0)
-	asm.STP(jit.X19, jit.X20, jit.SP, 16)
-	asm.STP(jit.X21, jit.X22, jit.SP, 32)
-	asm.STP(jit.X23, jit.X24, jit.SP, 48)
-	asm.STP(jit.X25, jit.X26, jit.SP, 64)
-	asm.STP(jit.X27, jit.X28, jit.SP, 80)
-	if ec.useFPR {
-		asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+	if !ec.skipStandardDirectEntry {
+		// --- Direct entry point for BLR callers (Tier 1 native call) ---
+		// Uses the FULL frame (same as normal entry) because Tier 2 may use
+		// callee-saved GPRs (X20-X23) for register allocation. The Tier 1
+		// caller expects callee-saved registers to be preserved across BLR.
+		// Caller has set: X0=ctx, ctx.Regs=callee regs base,
+		// ctx.Constants=callee constants, CallMode=1.
+		asm.Label("t2_direct_entry")
+		// R146: mark native entry (BLR-from-Tier-1 path).
+		ec.emitTier2EntryMark()
+		asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+		asm.STP(jit.X29, jit.X30, jit.SP, 0)
+		asm.ADDimm(jit.X29, jit.SP, 0)
+		asm.STP(jit.X19, jit.X20, jit.SP, 16)
+		asm.STP(jit.X21, jit.X22, jit.SP, 32)
+		asm.STP(jit.X23, jit.X24, jit.SP, 48)
+		asm.STP(jit.X25, jit.X26, jit.SP, 64)
+		asm.STP(jit.X27, jit.X28, jit.SP, 80)
+		if ec.useFPR {
+			asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+		}
+		asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
+		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
+		asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
+		asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24
+		asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25
+		asm.B(ec.entryBlockLabel())
 	}
-	asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
-	asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
-	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
-	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24
-	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25
-	asm.B(ec.entryBlockLabel())
 
 	// --- Self-call entry point (R40) ---
 	// Only emitted when the function has self-calls AND the Tier 2 emit

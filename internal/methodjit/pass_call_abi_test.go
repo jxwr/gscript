@@ -84,6 +84,50 @@ result := inc(41)`
 	}
 }
 
+func TestCallABIAnnotate_FibOverflowVersionUsesBoxedReturn(t *testing.T) {
+	src := `func fib_iter(n) {
+	a := 0
+	b := 1
+	for i := 0; i < n; i++ {
+		t := a + b
+		a = b
+		b = t
+	}
+	return a
+}
+func bench(n, reps) {
+	result := 0
+	for r := 1; r <= reps; r++ {
+		result = fib_iter(n)
+	}
+	return result
+}`
+	top := compileTop(t, src)
+	fib := findProtoByName(top, "fib_iter")
+	bench := findProtoByName(top, "bench")
+	if fib == nil || bench == nil {
+		t.Fatalf("missing protos: fib=%v bench=%v", fib != nil, bench != nil)
+	}
+
+	globals := map[string]*vm.FuncProto{"fib_iter": fib}
+	fn := BuildGraph(bench)
+	fn, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals: globals,
+		InlineMaxSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(bench): %v", err)
+	}
+
+	call := singleCallTo(t, fn, "fib_iter", globals)
+	if _, ok := fn.CallABIs[call.ID]; ok {
+		t.Fatalf("overflow-versioned fib call must not use raw-int CallABI\nIR:\n%s", Print(fn))
+	}
+	if call.Type == TypeInt {
+		t.Fatalf("overflow-versioned fib call Type=%s, want boxed/any", call.Type)
+	}
+}
+
 func TestCallABIAnnotate_NegativeCases(t *testing.T) {
 	tests := []struct {
 		name   string

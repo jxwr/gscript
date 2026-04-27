@@ -27,7 +27,8 @@ import (
 
 // TestTier2_IntOverflow_Loop_Matches_VM is the canonical R77 failing
 // test. Under current gscript, this test FAILS:
-//   JIT overflow arithmetic in a main-loop diverges from VM.
+//
+//	JIT overflow arithmetic in a main-loop diverges from VM.
 //
 // The trailing `_ = string.format(...)` call ensures profile.CallCount > 0
 // which triggers R72's main-promote clause in shouldPromoteTier2 → main
@@ -161,6 +162,66 @@ for i := 1; i <= 2000; i++ {
     x = x + 100000000000
 }
 result := x
+`
+	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_FibOverflow_FinalBOverflowKeepsReturnType(t *testing.T) {
+	src := `
+func fib_iter(n) {
+    a := 0
+    b := 1
+    for i := 0; i < n; i++ {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+for warm := 1; warm <= 15; warm++ {
+    fib_iter(10)
+}
+result := fib_iter(69)
+`
+	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_FibOverflow_SmallTripCounts(t *testing.T) {
+	src := `
+func fib_iter(n) {
+    a := 0
+    b := 1
+    for i := 0; i < n; i++ {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+for warm := 1; warm <= 15; warm++ {
+    fib_iter(10)
+}
+result := fib_iter(0) + fib_iter(1) + fib_iter(2) + fib_iter(3) + fib_iter(4) + fib_iter(5) + fib_iter(6) + fib_iter(7) + fib_iter(8) + fib_iter(9) + fib_iter(10)
+`
+	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_FibOverflow_ReturnsOverflowedValue(t *testing.T) {
+	src := `
+func fib_iter(n) {
+    a := 0
+    b := 1
+    for i := 0; i < n; i++ {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+for warm := 1; warm <= 15; warm++ {
+    fib_iter(10)
+}
+result := fib_iter(70)
 `
 	compareTier2Result(t, src, "result")
 }

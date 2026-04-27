@@ -30,13 +30,14 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 	}
 
 	tails := callABITailCalls(fn)
+	shiftAddOverflowVersions := make(map[*vm.FuncProto]bool)
 	descs := make(map[int]CallABIDescriptor)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr.Op != OpCall {
 				continue
 			}
-			desc, reason := callABIDescriptorFor(fn, instr, globals, tails)
+			desc, reason := callABIDescriptorFor(fn, instr, globals, tails, shiftAddOverflowVersions)
 			if desc.Callee == nil {
 				functionRemarks(fn).Add("CallABI", "missed", block.ID, instr.ID, instr.Op, reason)
 				continue
@@ -53,7 +54,7 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 	return fn
 }
 
-func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, tails map[int]bool) (CallABIDescriptor, string) {
+func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, tails map[int]bool, shiftAddOverflowVersions map[*vm.FuncProto]bool) (CallABIDescriptor, string) {
 	if instr == nil || instr.Op != OpCall {
 		return CallABIDescriptor{}, "not a call"
 	}
@@ -76,6 +77,9 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 			return CallABIDescriptor{}, "callee raw-int ABI rejected: " + abi.RejectWhy
 		}
 		return CallABIDescriptor{}, "callee is not raw-int ABI eligible"
+	}
+	if callABICalleeHasShiftAddOverflowVersion(callee, shiftAddOverflowVersions) {
+		return CallABIDescriptor{}, "callee may promote raw-int recurrence on overflow"
 	}
 	numArgs := len(instr.Args) - 1
 	if numArgs != callee.NumParams || len(abi.Params) != numArgs {
@@ -121,6 +125,44 @@ func callABIHasExactFixedShape(fn *Function, instr *Instr) bool {
 
 func callABIValueIsInt(v *Value) bool {
 	return v != nil && v.Def != nil && v.Def.Type == TypeInt
+}
+
+func callABICalleeHasShiftAddOverflowVersion(callee *vm.FuncProto, memo map[*vm.FuncProto]bool) bool {
+	if callee == nil {
+		return false
+	}
+	if memo != nil {
+		if cached, ok := memo[callee]; ok {
+			return cached
+		}
+	}
+	setResult := func(result bool) bool {
+		if memo != nil {
+			memo[callee] = result
+		}
+		return result
+	}
+	fn := BuildGraph(callee)
+	if fn == nil || fn.Entry == nil || fn.Unpromotable {
+		return setResult(false)
+	}
+	passes := []PassFunc{
+		SimplifyPhisPass,
+		TypeSpecializePass,
+		ConstPropPass,
+		DCEPass,
+		RangeAnalysisPass,
+		OverflowBoxingPass,
+	}
+	var err error
+	for _, pass := range passes {
+		fn, err = pass(fn)
+		if err != nil {
+			return setResult(false)
+		}
+	}
+	_, ok := detectShiftAddOverflowVersion(fn)
+	return setResult(ok)
 }
 
 func callABITailCalls(fn *Function) map[int]bool {

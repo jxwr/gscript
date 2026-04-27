@@ -82,6 +82,49 @@ func f(n) {
 	}
 }
 
+func TestOverflowBoxing_DetectsShiftAddOverflowVersion(t *testing.T) {
+	fn := runOverflowBoxingPipelineForTest(t, `
+func fib_iter(n) {
+    a := 0
+    b := 1
+    for i := 0; i < n; i++ {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+`)
+
+	spec, ok := detectShiftAddOverflowVersion(fn)
+	if !ok {
+		t.Fatalf("expected shift-add overflow version for fib-style recurrence\nIR:\n%s", Print(fn))
+	}
+	if spec.add == nil || spec.add.Op != OpAdd {
+		t.Fatalf("versioned recurrence should still have boxed Add IR before codegen\nIR:\n%s", Print(fn))
+	}
+	if spec.leftPhi == nil || spec.rightPhi == nil || spec.leftPhi == spec.rightPhi {
+		t.Fatalf("expected distinct shift-add phis, got left=%v right=%v\nIR:\n%s",
+			spec.leftPhi, spec.rightPhi, Print(fn))
+	}
+}
+
+func TestOverflowBoxing_ShiftAddVersionRejectsLCG(t *testing.T) {
+	fn := runOverflowBoxingPipelineForTest(t, `
+func f(seed) {
+    x := seed
+    for i := 1; i <= 10; i++ {
+        x = (x * 1103515245 + 12345) % 2147483648
+    }
+    return x
+}
+`)
+
+	if _, ok := detectShiftAddOverflowVersion(fn); ok {
+		t.Fatalf("LCG recurrence must not use shift-add overflow versioning\nIR:\n%s", Print(fn))
+	}
+}
+
 func TestOverflowBoxing_BoxesMultiplicativeModuloRecurrence(t *testing.T) {
 	fn := runOverflowBoxingPipelineForTest(t, `
 func f(seed) {

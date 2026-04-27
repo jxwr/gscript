@@ -196,7 +196,11 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// shouldPromoteTier2 considers loops, arithmetic density, call patterns, and
 	// table ops. Functions with loops + calls + arithmetic are promoted at
 	// threshold=2 — compileTier2 will try inlining and reject if calls remain.
-	if !shouldPromoteTier2(proto, profile, proto.CallCount) {
+	promoteTier2 := shouldPromoteTier2(proto, profile, proto.CallCount)
+	if !promoteTier2 && tm.shouldPromoteNativeLoopDriver(proto, profile) {
+		promoteTier2 = true
+	}
+	if !promoteTier2 {
 		// Not ready for Tier 2: use Tier 1, but enable OSR for loop-heavy
 		// functions so they can be upgraded mid-execution if they run hot.
 		tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
@@ -639,6 +643,19 @@ func findGetGlobalCallee(proto *vm.FuncProto, callPC, targetReg int, globals map
 		}
 	}
 	return nil, false
+}
+
+func (tm *TieringManager) shouldPromoteNativeLoopDriver(proto *vm.FuncProto, profile FuncProfile) bool {
+	if tm == nil || proto == nil || proto.CallCount != 1 {
+		return false
+	}
+	if !profile.HasLoop || profile.LoopDepth != 1 {
+		return false
+	}
+	if profile.HasClosure || profile.HasUpval || profile.HasVararg {
+		return false
+	}
+	return canPromoteWithNativeLoopCalls(proto, tm.buildLoopCallGlobals(proto))
 }
 
 // buildInlineGlobals extracts global function protos from the VM's globals.
