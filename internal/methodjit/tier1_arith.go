@@ -589,8 +589,19 @@ func emitBaselineLT(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 
 	// Float fallback
 	asm.Label(floatLabel)
+	ltGenericFloatLabel := nextLabel("lt_generic_float")
+	ltCompareFloatLabel := nextLabel("lt_compare_float")
+	jit.EmitIsTagged(asm, jit.X0, jit.X4)
+	asm.BCond(jit.CondEQ, ltGenericFloatLabel)
+	jit.EmitIsTagged(asm, jit.X1, jit.X4)
+	asm.BCond(jit.CondEQ, ltGenericFloatLabel)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+	asm.FMOVtoFP(jit.D1, jit.X1)
+	asm.B(ltCompareFloatLabel)
+	asm.Label(ltGenericFloatLabel)
 	emitToFloat(asm, jit.D0, jit.X0, jit.X4, jit.X5)
 	emitToFloat(asm, jit.D1, jit.X1, jit.X4, jit.X5)
+	asm.Label(ltCompareFloatLabel)
 	asm.FCMPd(jit.D0, jit.D1)
 
 	if a != 0 {
@@ -669,8 +680,19 @@ func emitBaselineLE(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 
 	// Float fallback
 	asm.Label(floatLabel)
+	leGenericFloatLabel := nextLabel("le_generic_float")
+	leCompareFloatLabel := nextLabel("le_compare_float")
+	jit.EmitIsTagged(asm, jit.X0, jit.X4)
+	asm.BCond(jit.CondEQ, leGenericFloatLabel)
+	jit.EmitIsTagged(asm, jit.X1, jit.X4)
+	asm.BCond(jit.CondEQ, leGenericFloatLabel)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+	asm.FMOVtoFP(jit.D1, jit.X1)
+	asm.B(leCompareFloatLabel)
+	asm.Label(leGenericFloatLabel)
 	emitToFloat(asm, jit.D0, jit.X0, jit.X4, jit.X5)
 	emitToFloat(asm, jit.D1, jit.X1, jit.X4, jit.X5)
+	asm.Label(leCompareFloatLabel)
 	asm.FCMPd(jit.D0, jit.D1)
 
 	if a != 0 {

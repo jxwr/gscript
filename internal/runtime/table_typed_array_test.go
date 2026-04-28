@@ -97,6 +97,29 @@ func TestArrayKindDemotionIntToMixed(t *testing.T) {
 	}
 }
 
+func TestArrayKindDemotionPreservesTypedCapacityHint(t *testing.T) {
+	const hint = 64
+	tbl := NewTableSizedKind(hint, 0, ArrayInt)
+	if tbl.arrayKind != ArrayInt {
+		t.Fatalf("arrayKind = %d, want %d", tbl.arrayKind, ArrayInt)
+	}
+	if got := cap(tbl.intArray); got < hint+1 {
+		t.Fatalf("intArray cap = %d, want at least %d", got, hint+1)
+	}
+
+	tbl.RawSetInt(1, FloatValue(1.5))
+	if tbl.arrayKind != ArrayMixed {
+		t.Fatalf("arrayKind after incompatible write = %d, want %d", tbl.arrayKind, ArrayMixed)
+	}
+	if got := cap(tbl.array); got < hint+1 {
+		t.Fatalf("mixed array cap after demotion = %d, want at least %d", got, hint+1)
+	}
+	got := tbl.RawGetInt(1)
+	if !got.IsFloat() || got.Float() != 1.5 {
+		t.Fatalf("RawGetInt(1) after demotion = %v, want FloatValue(1.5)", got)
+	}
+}
+
 func TestArrayKindDemotionFloatToMixed(t *testing.T) {
 	tbl := NewTable()
 	tbl.RawSetInt(1, FloatValue(1.5))

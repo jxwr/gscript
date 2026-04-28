@@ -66,21 +66,21 @@ func (t *Table) demoteToMixed() {
 	switch t.arrayKind {
 	case ArrayInt:
 		n := len(t.intArray)
-		t.array = DefaultHeap.AllocValues(n, n)
+		t.array = DefaultHeap.AllocValues(n, cap(t.intArray))
 		for i := 0; i < n; i++ {
 			t.array[i] = IntValue(t.intArray[i])
 		}
 		t.intArray = nil
 	case ArrayFloat:
 		n := len(t.floatArray)
-		t.array = DefaultHeap.AllocValues(n, n)
+		t.array = DefaultHeap.AllocValues(n, cap(t.floatArray))
 		for i := 0; i < n; i++ {
 			t.array[i] = FloatValue(t.floatArray[i])
 		}
 		t.floatArray = nil
 	case ArrayBool:
 		n := len(t.boolArray)
-		t.array = DefaultHeap.AllocValues(n, n)
+		t.array = DefaultHeap.AllocValues(n, cap(t.boolArray))
 		for i := 0; i < n; i++ {
 			switch t.boolArray[i] {
 			case 0: // nil/unset
