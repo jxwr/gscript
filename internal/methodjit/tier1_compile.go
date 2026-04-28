@@ -35,8 +35,9 @@ type BaselineFunc struct {
 	HasFieldOps       bool           // true if proto has GETFIELD/SETFIELD (skip syncFieldCache otherwise)
 	GlobalValCache    []uint64       // per-PC NaN-boxed global value cache (0 = not cached)
 	CallCache         []uint64       // per-PC CALL IC: boxed closure, direct entry, proto ptr, entry version
-	CachedGlobalGen   uint64         // engine.globalCacheGen at time of last cache population
-	DirectEntryOffset int            // byte offset of the direct entry point (for native BLR calls)
+	NewTableCaches    []newTableCacheEntry
+	CachedGlobalGen   uint64 // engine.globalCacheGen at time of last cache population
+	DirectEntryOffset int    // byte offset of the direct entry point (for native BLR calls)
 }
 
 // Baseline frame size: save FP/LR + callee-saved GPRs (X19-X28) = 12 regs = 96 bytes.
@@ -59,6 +60,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 
 	// Track which PCs need resume stubs (for op-exit resume).
 	var resumePCs []int
+	newTableCaches := baselineNewTableCacheSlotsForProto(proto)
 
 	// Emit prologue.
 	emitBaselinePrologue(asm)
@@ -221,7 +223,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineOpExitABx(asm, inst, pc, vm.OP_SETGLOBAL)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_NEWTABLE:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_NEWTABLE)
+			emitBaselineNewTable(asm, inst, pc, newTableCaches)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_NEWOBJECT2:
 			emitBaselineOpExit(asm, inst, pc, vm.OP_NEWOBJECT2)
@@ -389,6 +391,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		HasFieldOps:       hasFieldOps,
 		GlobalValCache:    globalValCache,
 		CallCache:         callCache,
+		NewTableCaches:    newTableCaches,
 		DirectEntryOffset: directEntryOff,
 	}, nil
 }

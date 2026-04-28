@@ -42,6 +42,9 @@ func TestNewTableCacheRefillsDenseTypedSite(t *testing.T) {
 	if len(entry.Values) != wantCached {
 		t.Fatalf("cached values = %d, want %d", len(entry.Values), wantCached)
 	}
+	if len(entry.Roots) != wantCached {
+		t.Fatalf("cached roots = %d, want %d", len(entry.Roots), wantCached)
+	}
 	if entry.Pos != 0 {
 		t.Fatalf("cache pos = %d, want 0 after refill", entry.Pos)
 	}
@@ -50,11 +53,69 @@ func TestNewTableCacheRefillsDenseTypedSite(t *testing.T) {
 		if cached == nil {
 			t.Fatal("cached value is not a table")
 		}
+		if entry.Roots[0] != cached {
+			t.Fatalf("cached root = %p, want cached table %p", entry.Roots[0], cached)
+		}
 		if cached == tbl {
 			t.Fatal("current allocation was also stored in cache")
 		}
 		if got := cached.GetArrayKind(); got != runtime.ArrayFloat {
 			t.Fatalf("cached kind = %d, want %d", got, runtime.ArrayFloat)
+		}
+	}
+}
+
+func TestNewTableCacheRefillsEmptyMixedSite(t *testing.T) {
+	cf := &CompiledFunction{NewTableCaches: make([]newTableCacheEntry, 4)}
+	ctx := &ExecContext{
+		TableOp:     TableOpNewTable,
+		TableSlot:   0,
+		TableAux:    0,
+		TableAux2:   packNewTableAux2(0, runtime.ArrayMixed),
+		TableExitID: 2,
+	}
+	regs := []runtime.Value{runtime.NilValue()}
+
+	if err := cf.executeTableExit(ctx, regs); err != nil {
+		t.Fatalf("executeTableExit: %v", err)
+	}
+
+	tbl := regs[0].Table()
+	if tbl == nil {
+		t.Fatal("NewTable exit did not write a table")
+	}
+	if got := tbl.GetArrayKind(); got != runtime.ArrayMixed {
+		t.Fatalf("allocated kind = %d, want %d", got, runtime.ArrayMixed)
+	}
+
+	entry := cf.NewTableCaches[2]
+	wantCached := newTableCacheBatchSize(&Instr{
+		Op:   OpNewTable,
+		Aux:  0,
+		Aux2: packNewTableAux2(0, runtime.ArrayMixed),
+	}) - 1
+	if len(entry.Values) != wantCached {
+		t.Fatalf("cached values = %d, want %d", len(entry.Values), wantCached)
+	}
+	if len(entry.Roots) != wantCached {
+		t.Fatalf("cached roots = %d, want %d", len(entry.Roots), wantCached)
+	}
+	if entry.Pos != 0 {
+		t.Fatalf("cache pos = %d, want 0 after refill", entry.Pos)
+	}
+	if len(entry.Values) > 0 {
+		cached := entry.Values[0].Table()
+		if cached == nil {
+			t.Fatal("cached value is not a table")
+		}
+		if entry.Roots[0] != cached {
+			t.Fatalf("cached root = %p, want cached table %p", entry.Roots[0], cached)
+		}
+		if cached == tbl {
+			t.Fatal("current allocation was also stored in cache")
+		}
+		if got := cached.GetArrayKind(); got != runtime.ArrayMixed {
+			t.Fatalf("cached kind = %d, want %d", got, runtime.ArrayMixed)
 		}
 	}
 }

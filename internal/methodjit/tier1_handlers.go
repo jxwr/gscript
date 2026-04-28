@@ -25,7 +25,7 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	case vm.OP_SETGLOBAL:
 		return e.handleSetGlobal(ctx, regs, base, proto)
 	case vm.OP_NEWTABLE:
-		return e.handleNewTable(ctx, regs, base, proto)
+		return e.handleNewTable(ctx, regs, base, proto, bf)
 	case vm.OP_NEWOBJECT2:
 		return e.handleNewObject2(ctx, regs, base, proto)
 	case vm.OP_GETTABLE:
@@ -408,12 +408,18 @@ func (e *BaselineJITEngine) handleSetGlobal(ctx *ExecContext, regs []runtime.Val
 }
 
 // handleNewTable handles OP_NEWTABLE exit.
-func (e *BaselineJITEngine) handleNewTable(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+func (e *BaselineJITEngine) handleNewTable(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, bf *BaselineFunc) error {
 	a := int(ctx.BaselineA)
 	b := int(ctx.BaselineB) // array hint
 	c := int(ctx.BaselineC) // hash hint
 	absSlot := base + a
-	tbl := runtime.NewTableSized(b, c)
+	pc := int(ctx.BaselinePC) - 1
+	var tbl *runtime.Table
+	if bf != nil {
+		tbl = allocateNewTableWithCache(bf.NewTableCaches, pc, b, c, runtime.ArrayMixed)
+	} else {
+		tbl = runtime.NewTableSized(b, c)
+	}
 	if absSlot < len(regs) {
 		regs[absSlot] = runtime.TableValue(tbl)
 	}

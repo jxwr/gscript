@@ -273,7 +273,7 @@ for i := 1; i <= 5; i++ {
 	}
 }
 
-func TestTieringManager_StayTier0DisablesRepeatedCompileChecks(t *testing.T) {
+func TestTieringManager_StayTier0DisablesMixedRecursiveBuilder(t *testing.T) {
 	src := `
 func makeTree(depth) {
     if depth == 0 {
@@ -318,10 +318,10 @@ for i := 1; i <= 20; i++ {
 		t.Fatal("makeTree proto not found")
 	}
 	if !makeTreeProto.JITDisabled {
-		t.Fatal("makeTree should cache the stay-tier0 decision in JITDisabled")
+		t.Fatal("mixed makeTree should stay Tier 0 while NEWOBJECT2 remains an op-exit")
 	}
 	if makeTreeProto.CompiledCodePtr != 0 || makeTreeProto.DirectEntryPtr != 0 {
-		t.Fatalf("makeTree compiled despite stay-tier0: compiled=%#x direct=%#x",
+		t.Fatalf("mixed makeTree compiled despite stay-tier0: compiled=%#x direct=%#x",
 			makeTreeProto.CompiledCodePtr, makeTreeProto.DirectEntryPtr)
 	}
 
@@ -378,6 +378,64 @@ for i := 1; i <= 20; i++ {
 	}
 	if !canPromoteWithNativeLoopCalls(proto, tm.buildLoopCallGlobals(proto)) {
 		t.Fatal("helper loop call should remain eligible for native loop-call promotion")
+	}
+}
+
+func TestTieringManager_EmptyNewTableRecursiveBuilderEntersTier1(t *testing.T) {
+	src := `
+func makeLeaf(depth) {
+    if depth == 0 {
+        return {}
+    }
+    return makeLeaf(depth - 1)
+}
+
+result := 0
+for i := 1; i <= 20; i++ {
+    t := makeLeaf(4)
+    if t.left == nil {
+        result = result + 1
+    }
+}
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 20 {
+		t.Fatalf("result = %v, want 20", result)
+	}
+
+	leafProto := findProtoByName(proto, "makeLeaf")
+	if leafProto == nil {
+		t.Fatal("makeLeaf proto not found")
+	}
+	if leafProto.JITDisabled {
+		t.Fatal("empty-NEWTABLE-only recursive builder should enter Tier 1")
+	}
+	if leafProto.CompiledCodePtr == 0 {
+		t.Fatalf("makeLeaf did not compile: compiled=%#x direct=%#x",
+			leafProto.CompiledCodePtr, leafProto.DirectEntryPtr)
+	}
+	bf := tm.tier1.compiled[leafProto]
+	if bf == nil || len(bf.NewTableCaches) == 0 {
+		t.Fatal("makeLeaf did not receive a baseline NEWTABLE cache")
+	}
+	var consumed bool
+	for _, entry := range bf.NewTableCaches {
+		if entry.Pos > 0 {
+			consumed = true
+			break
+		}
+	}
+	if !consumed {
+		t.Fatalf("makeLeaf baseline NEWTABLE cache was not consumed: %#v", bf.NewTableCaches)
 	}
 }
 

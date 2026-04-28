@@ -15,6 +15,7 @@ const (
 
 type newTableCacheEntry struct {
 	Values []runtime.Value
+	Roots  []*runtime.Table
 	Pos    int64
 }
 
@@ -48,6 +49,9 @@ func newTableCacheBatchSize(instr *Instr) int {
 }
 
 func newTableCacheBatchSizeForHints(arrayHint int64, hashHint int, kind runtime.ArrayKind) int {
+	if arrayHint == 0 && hashHint == 0 && kind == runtime.ArrayMixed {
+		return 64
+	}
 	if arrayHint <= 0 || hashHint != 0 || kind == runtime.ArrayMixed || arrayHint > tier2NewTableCacheMaxArrayHint {
 		return 0
 	}
@@ -85,17 +89,25 @@ func newTableExitReason(instr *Instr) string {
 }
 
 func (cf *CompiledFunction) allocateNewTableForExit(instrID int, arrayHint, hashHint int, kind runtime.ArrayKind) *runtime.Table {
+	if cf == nil {
+		return runtime.NewTableSizedKind(arrayHint, hashHint, kind)
+	}
+	return allocateNewTableWithCache(cf.NewTableCaches, instrID, arrayHint, hashHint, kind)
+}
+
+func allocateNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind) *runtime.Table {
 	tbl := runtime.NewTableSizedKind(arrayHint, hashHint, kind)
-	if cf == nil || instrID < 0 || instrID >= len(cf.NewTableCaches) {
+	if instrID < 0 || instrID >= len(caches) {
 		return tbl
 	}
-	entry := &cf.NewTableCaches[instrID]
+	entry := &caches[instrID]
 	if entry.Pos < int64(len(entry.Values)) {
 		return tbl
 	}
 	batch := newTableCacheBatchSizeForHints(int64(arrayHint), hashHint, kind)
 	if batch <= 1 {
 		entry.Values = nil
+		entry.Roots = nil
 		entry.Pos = 0
 		return tbl
 	}
@@ -105,8 +117,15 @@ func (cf *CompiledFunction) allocateNewTableForExit(instrID int, arrayHint, hash
 	} else {
 		entry.Values = entry.Values[:keep]
 	}
+	if cap(entry.Roots) < keep {
+		entry.Roots = make([]*runtime.Table, keep)
+	} else {
+		entry.Roots = entry.Roots[:keep]
+	}
 	for i := range entry.Values {
-		entry.Values[i] = runtime.TableValue(runtime.NewTableSizedKind(arrayHint, hashHint, kind))
+		t := runtime.NewTableSizedKind(arrayHint, hashHint, kind)
+		entry.Roots[i] = t
+		entry.Values[i] = runtime.TableValue(t)
 	}
 	entry.Pos = 0
 	return tbl

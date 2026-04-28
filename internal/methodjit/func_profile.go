@@ -21,17 +21,18 @@ import (
 // FuncProfile captures the static characteristics of a function's bytecodes.
 // Computed once per function prototype and cached by the TieringManager.
 type FuncProfile struct {
-	HasLoop       bool // contains FORPREP/FORLOOP or backward JMP
-	LoopDepth     int  // maximum nesting depth of loops
-	BytecodeCount int  // total number of bytecodes
-	ArithCount    int  // ADD/SUB/MUL/DIV/MOD/UNM count
-	CallCount     int  // OP_CALL count (static, not runtime)
-	TableOpCount  int  // GETTABLE/SETTABLE/GETFIELD/SETFIELD count
-	NewTableCount int  // OP_NEWTABLE count (allocation pressure signal)
-	HasClosure    bool // contains OP_CLOSURE
-	HasUpval      bool // contains OP_GETUPVAL or OP_SETUPVAL
-	HasVararg     bool // contains OP_VARARG
-	HasGlobal     bool // contains OP_GETGLOBAL or OP_SETGLOBAL
+	HasLoop            bool // contains FORPREP/FORLOOP or backward JMP
+	LoopDepth          int  // maximum nesting depth of loops
+	BytecodeCount      int  // total number of bytecodes
+	ArithCount         int  // ADD/SUB/MUL/DIV/MOD/UNM count
+	CallCount          int  // OP_CALL count (static, not runtime)
+	TableOpCount       int  // GETTABLE/SETTABLE/GETFIELD/SETFIELD count
+	NewTableCount      int  // OP_NEWTABLE/OP_NEWOBJECT2 count (allocation pressure signal)
+	EmptyNewTableCount int  // OP_NEWTABLE array=0 hash=0 count (native-cacheable leaf allocation)
+	HasClosure         bool // contains OP_CLOSURE
+	HasUpval           bool // contains OP_GETUPVAL or OP_SETUPVAL
+	HasVararg          bool // contains OP_VARARG
+	HasGlobal          bool // contains OP_GETGLOBAL or OP_SETGLOBAL
 }
 
 // hasTailCall returns true when the bytecode has an OP_CALL immediately
@@ -121,6 +122,9 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 
 		case vm.OP_NEWTABLE:
 			p.NewTableCount++
+			if vm.DecodeB(inst) == 0 && vm.DecodeC(inst) == 0 {
+				p.EmptyNewTableCount++
+			}
 		case vm.OP_NEWOBJECT2:
 			p.NewTableCount++
 			p.TableOpCount += 2
@@ -167,22 +171,18 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 
 // shouldStayTier0 decides whether a function is better off interpreted
 // than baseline-compiled. The baseline JIT's exit-resume path for
-// NEWTABLE (and other non-native ops) costs ~100–200ns per exit. For
-// tiny recursive allocation builders — the canonical case is
-// binary_trees.gs's `makeTree` (21 bytecodes, 2 NEWTABLEs, 4 SETFIELDs,
-// 2 CALLs) — this overhead is measurable: Tier 1 runs ~25% slower than
-// the interpreter on this shape.
+// non-native allocation ops costs ~100–200ns per exit. Tiny recursive
+// allocation builders can be slower in Tier 1 when every allocation
+// leaves native code.
 //
-// Gate: small (≤ 25 bytecodes) + allocates (NewTableCount > 0) + no
-// loops + has calls. The "has calls" clause matters: Round 6 tried
-// adding a leaf-allocator variant (≤10 BC, no calls, e.g. new_point)
-// and it was a null result because the caller's native-BLR fast
-// path falls to slow-path exit when the callee isn't Tier 1
-// compiled, eating any savings from skipping exit-resume inside the
-// callee.
+// Empty NEWTABLE sites are excluded from this gate only when every
+// allocation in the function is an empty NEWTABLE. Mixed constructors such
+// as binary_trees.makeTree still contain residual NEWOBJECT2 exits; putting
+// them in Tier 1 clears direct-entry recursion and is slower than Tier 0
+// until fixed-shape object construction is native too.
 func shouldStayTier0(profile FuncProfile) bool {
 	return profile.BytecodeCount <= 25 &&
-		profile.NewTableCount > 0 &&
+		profile.NewTableCount > profile.EmptyNewTableCount &&
 		!profile.HasLoop &&
 		profile.CallCount > 0
 }
