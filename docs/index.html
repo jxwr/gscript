@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="66-the-callee-kept-running">The Callee Kept Running</a>
+  <p>Replay safety and resume safety are now separate native-call contracts. <code>DirectEntryPtr</code> stays reserved for callers that can replay a failed call, while <code>Tier2DirectEntryPtr</code> lets Tier 2 callers report a callee-native exit, run the callee's own fallback, and resume the caller at the call continuation. The protocol restored <code>nbody</code> from the replay-gate regression back to about 0.066s without reopening the side-effect duplication bug.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="65-the-call-could-not-be-replayed">The Call Could Not Be Replayed</a>
   <p>Tier 2 direct BLR entries are now published only when caller-boundary replay is safe. A native caller cannot resume a callee at the callee's own exit point; replaying the whole call after a visible side effect duplicates program state. The new replay-safety analysis keeps unsafe side-effect-then-exit functions callable through the normal TieringManager path, while preserving raw recursive wins such as <code>ackermann</code>.</p>
 </div>
