@@ -431,6 +431,7 @@ func (ec *emitContext) emitDeferredResumes() {
 		ec.asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants)
 		ec.asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))
 		ec.asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))
+		ec.emitSetRawSelfRegsEndFromMRegRegs()
 
 		// Jump to the continue label in the main code body.
 		ec.asm.B(dr.continueLabel)

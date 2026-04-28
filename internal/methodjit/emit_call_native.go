@@ -44,9 +44,9 @@ const (
 	maxNativeCallDepth = 128
 
 	// Raw-int self calls use an args-only caller shim plus a 16-byte numeric
-	// callee frame, much smaller than the boxed direct-entry frame. Keep this
-	// separate so Ackermann-style raw recursion does not bounce through
-	// ExitCallExit at the generic boxed-call depth boundary.
+	// callee frame, much smaller than the boxed direct-entry frame. Multi-arg
+	// raw self calls bound native recursion with RawSelfRegsEnd, so they do
+	// not need per-call NativeCallDepth traffic.
 	maxRawSelfCallDepth = 512
 
 	// Raw-int self BL remains behind a kill switch, but the v1 entry,
@@ -682,19 +682,26 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	ec.emitSaveRawSelfLiveSpills(rawLiveSpills)
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
-
-	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
-	asm.CMPimm(jit.X7, maxRawSelfCallDepth)
-	asm.BCond(jit.CondGE, preCallSlowLabel)
-
 	calleeFrameBytes := ec.nextSlot * jit.ValueSize
+	useRawSelfRegsBudget := nParams >= 2
+
+	if !useRawSelfRegsBudget {
+		asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+		asm.CMPimm(jit.X7, maxRawSelfCallDepth)
+		asm.BCond(jit.CondGE, preCallSlowLabel)
+	}
+
 	if calleeBaseOff+calleeFrameBytes <= 4095 {
 		asm.ADDimm(jit.X8, mRegRegs, uint16(calleeBaseOff+calleeFrameBytes))
 	} else {
 		asm.LoadImm64(jit.X8, int64(calleeBaseOff+calleeFrameBytes))
 		asm.ADDreg(jit.X8, mRegRegs, jit.X8)
 	}
-	asm.LDR(jit.X9, mRegCtx, execCtxOffRegsEnd)
+	if useRawSelfRegsBudget {
+		asm.LDR(jit.X9, mRegCtx, execCtxOffRawSelfRegsEnd)
+	} else {
+		asm.LDR(jit.X9, mRegCtx, execCtxOffRegsEnd)
+	}
 	asm.CMPreg(jit.X8, jit.X9)
 	asm.BCond(jit.CondHI, preCallSlowLabel)
 
@@ -705,14 +712,18 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 		asm.ADDreg(mRegRegs, mRegRegs, jit.X8)
 	}
 
-	asm.ADDimm(jit.X7, jit.X7, 1)
-	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	if !useRawSelfRegsBudget {
+		asm.ADDimm(jit.X7, jit.X7, 1)
+		asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	}
 
 	asm.BL(fmt.Sprintf("t2_numeric_self_entry_%d", nParams))
 
-	asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
-	asm.SUBimm(jit.X7, jit.X7, 1)
-	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	if !useRawSelfRegsBudget {
+		asm.LDR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+		asm.SUBimm(jit.X7, jit.X7, 1)
+		asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
+	}
 
 	asm.CBNZ(jit.X16, exitLabel)
 
@@ -1011,6 +1022,9 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
 		asm.ADDimm(jit.X8, jit.X8, 1)
 		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		if callee.NumParams >= 2 {
+			ec.emitSetRawSelfRegsEnd(mRegRegs, callee.MaxStack, jit.X8, jit.X9)
+		}
 	}
 	asm.BLR(jit.X16)
 	if !leafCallee {

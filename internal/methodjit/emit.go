@@ -104,6 +104,11 @@ type ExecContext struct {
 	// Used by native BLR to detect when the callee's register window would
 	// exceed the allocated register file, falling to slow path instead.
 	RegsEnd uintptr
+	// RawSelfRegsEnd is a per-entry cap for raw-int self recursion. It is no
+	// greater than RegsEnd, but may be lower so raw self calls can bound native
+	// stack growth through the existing register-window check without touching
+	// NativeCallDepth on every recursive call.
+	RawSelfRegsEnd uintptr
 	// RegsBase is the pointer to regs[0] (start of the register file).
 	// Used together with TopPtr for C=0/B=0 variable-arg/variable-return calls.
 	RegsBase uintptr
@@ -247,6 +252,7 @@ var (
 	execCtxOffNativeCalleeClosurePtr = int(unsafe.Offsetof(ExecContext{}.NativeCalleeClosurePtr))
 	execCtxOffNativeCalleeTier2Only  = int(unsafe.Offsetof(ExecContext{}.NativeCalleeTier2Only))
 	execCtxOffRegsEnd                = int(unsafe.Offsetof(ExecContext{}.RegsEnd))
+	execCtxOffRawSelfRegsEnd         = int(unsafe.Offsetof(ExecContext{}.RawSelfRegsEnd))
 	execCtxOffRegsBase               = int(unsafe.Offsetof(ExecContext{}.RegsBase))
 	execCtxOffTopPtr                 = int(unsafe.Offsetof(ExecContext{}.TopPtr))
 	execCtxOffNativeCallDepth        = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))

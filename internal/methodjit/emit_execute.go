@@ -46,6 +46,9 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 	// Set up ExecContext.
 	var ctx ExecContext
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[0]))
+	ctx.RegsBase = ctx.Regs
+	ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
+	ctx.RawSelfRegsEnd = rawSelfRegsEnd(ctx.Regs, ctx.RegsEnd, cf.numRegs)
 	if cf.Proto != nil && len(cf.Proto.Constants) > 0 {
 		ctx.Constants = uintptr(unsafe.Pointer(&cf.Proto.Constants[0]))
 	}
@@ -192,6 +195,17 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 			return nil, fmt.Errorf("methodjit: unknown exit code %d", ctx.ExitCode)
 		}
 	}
+}
+
+func rawSelfRegsEnd(basePtr, regsEnd uintptr, numRegs int) uintptr {
+	if basePtr == 0 || regsEnd == 0 || numRegs <= 0 {
+		return regsEnd
+	}
+	budgetEnd := basePtr + uintptr(numRegs*(maxRawSelfCallDepth+1)*jit.ValueSize)
+	if budgetEnd < regsEnd {
+		return budgetEnd
+	}
+	return regsEnd
 }
 
 // executeCallExit handles a call-exit by executing the call via the VM.

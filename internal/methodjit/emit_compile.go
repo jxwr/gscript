@@ -993,6 +993,38 @@ func (ec *emitContext) emitTier2EntryMark() {
 	asm.STRB(jit.X17, jit.X16, 0)
 }
 
+func (ec *emitContext) emitSetRawSelfRegsEndFromMRegRegs() {
+	if ec.numericParamCount < 2 {
+		return
+	}
+	ec.emitSetRawSelfRegsEnd(mRegRegs, ec.nextSlot, jit.X16, jit.X17)
+}
+
+func (ec *emitContext) emitSetRawSelfRegsEnd(baseReg jit.Reg, numRegs int, scratchActual, scratchBudget jit.Reg) {
+	if numRegs <= 0 {
+		return
+	}
+	asm := ec.asm
+	useActualLabel := ec.uniqueLabel("rawself_regsend_actual")
+	doneLabel := ec.uniqueLabel("rawself_regsend_done")
+	budgetBytes := numRegs * (maxRawSelfCallDepth + 1) * jit.ValueSize
+
+	asm.LDR(scratchActual, mRegCtx, execCtxOffRegsEnd)
+	if budgetBytes <= 4095 {
+		asm.ADDimm(scratchBudget, baseReg, uint16(budgetBytes))
+	} else {
+		asm.LoadImm64(scratchBudget, int64(budgetBytes))
+		asm.ADDreg(scratchBudget, baseReg, scratchBudget)
+	}
+	asm.CMPreg(scratchBudget, scratchActual)
+	asm.BCond(jit.CondHI, useActualLabel)
+	asm.STR(scratchBudget, mRegCtx, execCtxOffRawSelfRegsEnd)
+	asm.B(doneLabel)
+	asm.Label(useActualLabel)
+	asm.STR(scratchActual, mRegCtx, execCtxOffRawSelfRegsEnd)
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitPrologue() {
 	asm := ec.asm
 
@@ -1024,6 +1056,7 @@ func (ec *emitContext) emitPrologue() {
 	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
 	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24 = 0xFFFE000000000000
 	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25 = 0xFFFD000000000000
+	ec.emitSetRawSelfRegsEndFromMRegRegs()
 	if ec.fn != nil && ec.fn.Entry != nil && len(ec.fn.Blocks) > 0 && ec.fn.Blocks[0] != ec.fn.Entry {
 		asm.B(ec.entryBlockLabel())
 	}
@@ -1086,6 +1119,7 @@ func (ec *emitContext) emitEpilogue() {
 		asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
 		asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24
 		asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25
+		ec.emitSetRawSelfRegsEndFromMRegRegs()
 		asm.B(ec.entryBlockLabel())
 	}
 

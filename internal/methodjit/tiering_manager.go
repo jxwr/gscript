@@ -1265,6 +1265,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
 	ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
 	ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
+	ctx.RawSelfRegsEnd = rawSelfRegsEnd(ctx.Regs, ctx.RegsEnd, cf.numRegs)
 	if len(proto.Constants) > 0 {
 		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
 	}
@@ -1312,6 +1313,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 		ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
 		ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
 		ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
+		ctx.RawSelfRegsEnd = rawSelfRegsEnd(ctx.Regs, ctx.RegsEnd, cf.numRegs)
 		if cl := tm.callVM.CurrentClosure(); cl != nil {
 			ctx.BaselineClosurePtr = uintptr(unsafe.Pointer(cl))
 		}

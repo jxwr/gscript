@@ -439,6 +439,72 @@ func TestRawIntSelfABI_FastPathUsesRegisterStatus(t *testing.T) {
 	}
 }
 
+func TestRawIntSelfABI_FastPathAvoidsNativeCallDepthTraffic(t *testing.T) {
+	src := `func ack(m, n) {
+	if m == 0 { return n + 1 }
+	if n == 0 { return ack(m - 1, 1) }
+	return ack(m - 1, ack(m, n - 1))
+}`
+	top := compileTop(t, src)
+	ack := findProtoByName(top, "ack")
+	if ack == nil {
+		t.Fatal("function \"ack\" not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(ack); err != nil {
+		t.Fatalf("CompileTier2(ack): %v", err)
+	}
+	cf := tm.tier2Compiled[ack]
+	if cf == nil {
+		t.Fatal("ack did not compile to Tier 2")
+	}
+
+	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+	rawSelfShims := 0
+	for pc := 0; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		if _, ok := rawSelfFrameAllocSize(word, 2); !ok {
+			continue
+		}
+
+		blOff := -1
+		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isCtxNativeCallDepthAccess(scanWord) {
+				t.Fatalf("raw self-call shim at %#x touches ctx.NativeCallDepth before BL at %#x", pc, scan)
+			}
+			if isBL(scanWord) {
+				blOff = scan
+				break
+			}
+			if isUnconditionalB(scanWord) || scan-pc > 240 {
+				break
+			}
+		}
+		if blOff < 0 {
+			continue
+		}
+
+		rawSelfShims++
+		for scan := blOff + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isCtxNativeCallDepthAccess(scanWord) {
+				t.Fatalf("raw self-call success path at %#x touches ctx.NativeCallDepth after BL at %#x", pc, scan)
+			}
+			if isUnconditionalB(scanWord) {
+				break
+			}
+			if scan-blOff > 280 {
+				t.Fatalf("raw self-call shim at %#x did not reach success branch within expected window", pc)
+			}
+		}
+	}
+	if rawSelfShims == 0 {
+		t.Fatal("expected at least one raw self-call shim")
+	}
+}
+
 func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -975,6 +1041,14 @@ func isCtxFieldAccess(word uint32, off int) bool {
 		return false
 	}
 	return ((word >> 10) & 0xFFF) == uint32(off>>3)
+}
+
+func isCtxNativeCallDepthAccess(word uint32) bool {
+	if word&0xFFC003E0 != 0xF9400000|uint32(mRegCtx)<<5 &&
+		word&0xFFC003E0 != 0xF9000000|uint32(mRegCtx)<<5 {
+		return false
+	}
+	return ((word >> 10) & 0xFFF) == uint32(execCtxOffNativeCallDepth>>3)
 }
 
 func assertThinFramePrologue(t *testing.T, code []byte, off int, label string) {
