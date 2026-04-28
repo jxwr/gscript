@@ -39,7 +39,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	for k := range ec.scratchFPRCache {
 		delete(ec.scratchFPRCache, k)
 	}
-	if !fieldOpPreservesSvalsCache(instr.Op) {
+	if !instrPreservesFieldSvalsCache(instr) {
 		ec.invalidateFieldSvalsCache()
 	}
 	// Reset fused compare state if this is NOT a Branch that should consume
@@ -262,9 +262,20 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	}
 }
 
-func fieldOpPreservesSvalsCache(op Op) bool {
-	switch op {
+func instrPreservesFieldSvalsCache(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
 	case OpGetField, OpGetFieldNumToFloat, OpSetField:
+		return true
+	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA:
+		return instr.Type == TypeFloat
+	case OpLtFloat, OpLeFloat:
+		return true
+	case OpNumToFloat, OpGuardType:
+		// These paths use X0/X2/X3 and FPR temporaries on the fast path.
+		// Failure exits through deopt rather than resuming after the guard.
 		return true
 	default:
 		return false

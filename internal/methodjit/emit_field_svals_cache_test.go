@@ -50,6 +50,47 @@ func TestEmitFieldSvalsCache_ReusesSvalsForConsecutiveFields(t *testing.T) {
 	}
 }
 
+func TestEmitFieldSvalsCache_SurvivesTypedFloatArithmetic(t *testing.T) {
+	fn := &Function{NumRegs: 1}
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Block: b0, Aux: 0}
+	gf1 := &Instr{
+		ID: fn.newValueID(), Op: OpGetField, Type: TypeFloat, Block: b0,
+		Args: []*Value{tbl.Value()}, Aux: 1, Aux2: packedFieldCache(7, 0),
+	}
+	gf2 := &Instr{
+		ID: fn.newValueID(), Op: OpGetField, Type: TypeFloat, Block: b0,
+		Args: []*Value{tbl.Value()}, Aux: 2, Aux2: packedFieldCache(7, 1),
+	}
+	sum := &Instr{
+		ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Block: b0,
+		Args: []*Value{gf1.Value(), gf2.Value()},
+	}
+	gf3 := &Instr{
+		ID: fn.newValueID(), Op: OpGetField, Type: TypeFloat, Block: b0,
+		Args: []*Value{tbl.Value()}, Aux: 3, Aux2: packedFieldCache(7, 2),
+	}
+	ret := &Instr{
+		ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b0,
+		Args: []*Value{sum.Value(), gf3.Value()},
+	}
+	b0.Instrs = []*Instr{tbl, gf1, gf2, sum, gf3, ret}
+
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	if loads := countLoadsForIRInstr(cf, gf3.ID); loads != 1 {
+		t.Fatalf("GetField after typed FP arithmetic emitted %d load(s), want only the field load", loads)
+	}
+}
+
 func TestEmitSetField_StoresFPRResidentFloatDirectly(t *testing.T) {
 	fn := &Function{NumRegs: 1}
 	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
