@@ -69,6 +69,78 @@ func TestLoadElimination_BasicRedundant(t *testing.T) {
 	}
 }
 
+func TestLoadElimination_PureTypedNumericCSE(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "pure_numeric_cse"},
+		NumRegs: 2,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	x := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	y := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	add1 := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{x.Value(), y.Value()}, Block: b}
+	add2 := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{x.Value(), y.Value()}, Block: b}
+	mul := &Instr{ID: fn.newValueID(), Op: OpMulInt, Type: TypeInt,
+		Args: []*Value{add2.Value(), y.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{mul.Value()}, Block: b}
+
+	b.Instrs = []*Instr{x, y, add1, add2, mul, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+
+	if mul.Args[0].ID != add1.ID {
+		t.Fatalf("expected MulInt to reuse first AddInt v%d, got v%d", add1.ID, mul.Args[0].ID)
+	}
+
+	result, err = DCEPass(result)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+	if got := countOp(result, OpAddInt); got != 1 {
+		t.Fatalf("expected one AddInt after pure numeric CSE + DCE, got %d\n%s", got, Print(result))
+	}
+}
+
+func TestLoadElimination_PureTypedNumericCSENotAcrossSideEffect(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "pure_numeric_cse_side_effect"},
+		NumRegs: 2,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	x := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	y := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	add1 := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{x.Value(), y.Value()}, Block: b}
+	setGlobal := &Instr{ID: fn.newValueID(), Op: OpSetGlobal, Type: TypeUnknown,
+		Args: []*Value{add1.Value()}, Aux: 0, Block: b}
+	add2 := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{x.Value(), y.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add2.Value()}, Block: b}
+
+	b.Instrs = []*Instr{x, y, add1, setGlobal, add2, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+	if ret.Args[0].ID != add2.ID {
+		t.Fatalf("expected Return to keep second AddInt v%d across SetGlobal, got v%d", add2.ID, ret.Args[0].ID)
+	}
+	if got := countOp(result, OpAddInt); got != 2 {
+		t.Fatalf("expected both AddInt ops to remain before DCE, got %d\n%s", got, Print(result))
+	}
+}
+
 // TestLoadElimination_DifferentFields verifies that two GetField ops on the
 // same object but DIFFERENT fields are both preserved (no elimination).
 func TestLoadElimination_DifferentFields(t *testing.T) {

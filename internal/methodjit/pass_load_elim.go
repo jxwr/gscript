@@ -59,6 +59,15 @@ type tableArrayDerivedKey struct {
 	kind     int64
 }
 
+type pureCSEKey struct {
+	op   Op
+	typ  Type
+	aux  int64
+	aux2 int64
+	args [4]int
+	narg int
+}
+
 // guardKey identifies a specific type guard: the SSA value ID of the
 // guarded operand plus the guard type (stored in Aux).
 type guardKey struct {
@@ -88,6 +97,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 		tableHeaderAvail := make(map[tableArrayHeaderKey]int)
 		tableLenAvail := make(map[tableArrayDerivedKey]int)
 		tableDataAvail := make(map[tableArrayDerivedKey]int)
+		pureAvail := make(map[pureCSEKey]int)
 		// R93: store-to-load forwarding for dynamic-key table access.
 		// After SetTable(t, k, v), map (t.ID, k.ID) → v.ID so a
 		// subsequent GetTable(t, k) uses v directly.
@@ -95,6 +105,23 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 
 		for _, instr := range block.Instrs {
 			switch instr.Op {
+			case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
+				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+				OpNumToFloat, OpSqrt, OpFMA,
+				OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat:
+				if key, ok := pureTypedCSEKey(instr); ok {
+					if origID, ok := pureAvail[key]; ok {
+						origInstr := instrByID[origID]
+						if origInstr != nil {
+							replaceAllUses(fn, instr.ID, origInstr)
+							functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+								"reused earlier pure typed numeric result")
+						}
+					} else {
+						pureAvail[key] = instr.ID
+					}
+				}
+
 			case OpGetGlobal:
 				// R53: globals are read-only for the body of a function in
 				// nearly all GScript code. Two reads of globals[i] in the
@@ -325,6 +352,10 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				tableDataAvail = make(map[tableArrayDerivedKey]int)
 				tableAvail = make(map[tableKey]int)
 			}
+
+			if loadElimKillsPureCSE(instr) {
+				pureAvail = make(map[pureCSEKey]int)
+			}
 		}
 	}
 
@@ -373,6 +404,37 @@ func invalidateTableArrayFactsForObject(
 		}
 	}
 	return changed
+}
+
+func pureTypedCSEKey(instr *Instr) (pureCSEKey, bool) {
+	if instr == nil || len(instr.Args) > 4 {
+		return pureCSEKey{}, false
+	}
+	key := pureCSEKey{
+		op:   instr.Op,
+		typ:  instr.Type,
+		aux:  instr.Aux,
+		aux2: instr.Aux2,
+		narg: len(instr.Args),
+	}
+	for i, arg := range instr.Args {
+		if arg == nil {
+			return pureCSEKey{}, false
+		}
+		key.args[i] = arg.ID
+	}
+	return key, true
+}
+
+func loadElimKillsPureCSE(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpJump, OpBranch, OpReturn:
+		return false
+	}
+	return hasSideEffect(instr)
 }
 
 func guardProvenByProducer(v *Value, guardType Type) bool {
