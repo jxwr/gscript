@@ -16,6 +16,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/gscript/gscript/internal/jit"
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -44,7 +45,7 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 		}
 	}
 
-	results, err := tm.callVM.CallValue(fnVal, callArgs)
+	results, err := tm.callValueForTier2Exit(fnVal, callArgs, proto)
 	if err != nil {
 		return err
 	}
@@ -68,6 +69,272 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 	}
 
 	return nil
+}
+
+func (tm *TieringManager) callValueForTier2Exit(fnVal runtime.Value, args []runtime.Value, callerProto *vm.FuncProto) ([]runtime.Value, error) {
+	if !tm.shouldSuppressUnsafeSelfTier2Reentry(fnVal, callerProto) {
+		return tm.callVM.CallValue(fnVal, args)
+	}
+
+	// DirectEntrySafe=false means native callers may not safely recurse into
+	// this Tier 2 body. A self call-exit that goes through VM.CallValue would
+	// otherwise re-enter the same Tier 2 function through the normal VM JIT
+	// dispatch path, recreating the native stack nesting the direct-entry gate
+	// was meant to avoid.
+	oldDisabled := callerProto.JITDisabled
+	callerProto.JITDisabled = true
+	defer func() {
+		callerProto.JITDisabled = oldDisabled
+	}()
+	return tm.callVM.CallValue(fnVal, args)
+}
+
+func (tm *TieringManager) shouldSuppressUnsafeSelfTier2Reentry(fnVal runtime.Value, callerProto *vm.FuncProto) bool {
+	if tm == nil || callerProto == nil {
+		return false
+	}
+	cl, ok := fnVal.Ptr().(*vm.Closure)
+	if !ok || cl == nil || cl.Proto != callerProto {
+		return false
+	}
+	cf := tm.tier2Compiled[callerProto]
+	return cf != nil && !cf.DirectEntrySafe
+}
+
+func (tm *TieringManager) executeNativeCallExit(ctx *ExecContext, callerCF *CompiledFunction, regs []runtime.Value, callerBase int, callerProto *vm.FuncProto) ([]runtime.Value, error) {
+	if tm.callVM == nil {
+		return regs, fmt.Errorf("no callVM set for native-call-exit")
+	}
+	calleeProto, calleeCF, calleeBase, err := tm.nativeExitCallee(ctx, regs, callerBase)
+	if err != nil {
+		return regs, err
+	}
+
+	if !calleeCF.DirectEntrySafe {
+		setFuncProtoTier2DirectEntries(calleeProto, 0, 0)
+	}
+
+	result, err := tm.resumeNativeTier2CalleeExit(ctx, calleeCF, regs, calleeBase, calleeProto)
+	if err != nil {
+		return regs, err
+	}
+	tm.setTier2ResumeContext(ctx, callerCF, callerProto, callerBase)
+	regs = tm.callVM.Regs()
+	absSlot := callerBase + int(ctx.CallSlot)
+	nRets := int(ctx.CallNRets)
+	if nRets <= 0 {
+		nRets = 1
+	}
+	for i := 0; i < nRets; i++ {
+		idx := absSlot + i
+		if idx >= 0 && idx < len(regs) {
+			if i == 0 {
+				regs[idx] = result
+			} else {
+				regs[idx] = runtime.NilValue()
+			}
+		}
+	}
+	return regs, nil
+}
+
+func (tm *TieringManager) setTier2ResumeContext(ctx *ExecContext, cf *CompiledFunction, proto *vm.FuncProto, base int) {
+	if ctx == nil || tm.callVM == nil {
+		return
+	}
+	regs := tm.callVM.Regs()
+	if base >= 0 && base < len(regs) {
+		ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
+		ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
+		ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
+	}
+	if proto != nil && len(proto.Constants) > 0 {
+		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
+	} else {
+		ctx.Constants = 0
+	}
+	if cf != nil && len(cf.GlobalCache) > 0 {
+		ctx.Tier2GlobalCache = uintptr(unsafe.Pointer(&cf.GlobalCache[0]))
+		ctx.Tier2GlobalCacheGen = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))
+	} else {
+		ctx.Tier2GlobalCache = 0
+		ctx.Tier2GlobalCacheGen = 0
+	}
+	ctx.Tier2GlobalGenPtr = uintptr(unsafe.Pointer(&tm.tier1.globalCacheGen))
+	if proto != nil && cf != nil {
+		if arrayPtr, verPtr, ver, ok := tm.prepareTier2GlobalIndexes(proto, cf); ok {
+			ctx.Tier2GlobalIndex = proto.Tier2GlobalIndexPtr
+			ctx.Tier2GlobalArray = arrayPtr
+			ctx.Tier2GlobalVerPtr = uintptr(unsafe.Pointer(verPtr))
+			ctx.Tier2GlobalVer = uint64(ver)
+		} else {
+			ctx.Tier2GlobalIndex = 0
+			ctx.Tier2GlobalArray = 0
+			ctx.Tier2GlobalVerPtr = 0
+			ctx.Tier2GlobalVer = 0
+		}
+	}
+	if cf != nil && len(cf.CallCache) > 0 {
+		ctx.Tier2CallCache = uintptr(unsafe.Pointer(&cf.CallCache[0]))
+	} else {
+		ctx.Tier2CallCache = 0
+	}
+	if cl := tm.callVM.CurrentClosure(); cl != nil {
+		ctx.BaselineClosurePtr = uintptr(unsafe.Pointer(cl))
+	}
+}
+
+func (tm *TieringManager) nativeExitCallee(ctx *ExecContext, regs []runtime.Value, callerBase int) (*vm.FuncProto, *CompiledFunction, int, error) {
+	calleeBase := callerBase + int(ctx.NativeCalleeBaseOff)/jit.ValueSize
+	callSlot := callerBase + int(ctx.CallSlot)
+	if callSlot < 0 || callSlot >= len(regs) {
+		return nil, nil, 0, fmt.Errorf("native-call-exit: call slot %d out of range", callSlot)
+	}
+	fnVal := regs[callSlot]
+	cl, ok := fnVal.Ptr().(*vm.Closure)
+	if !ok || cl == nil || cl.Proto == nil {
+		return nil, nil, 0, fmt.Errorf("native-call-exit: call slot %d is not a VM closure", callSlot)
+	}
+	if ctx.NativeCalleeClosurePtr != 0 && uintptr(unsafe.Pointer(cl)) != ctx.NativeCalleeClosurePtr {
+		return nil, nil, 0, fmt.Errorf("native-call-exit: callee closure changed")
+	}
+	calleeCF := tm.tier2Compiled[cl.Proto]
+	if calleeCF == nil {
+		return nil, nil, 0, fmt.Errorf("native-call-exit: callee %q is not compiled at Tier 2", cl.Proto.Name)
+	}
+	return cl.Proto, calleeCF, calleeBase, nil
+}
+
+func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) (runtime.Value, error) {
+	codePtr := uintptr(0)
+	switch ctx.NativeCalleeExitCode {
+	case ExitTableExit:
+		if err := tm.executeTableExit(ctx, regs, base, proto, cf); err != nil {
+			return runtime.NilValue(), fmt.Errorf("callee table-exit: %w", err)
+		}
+		resumeOff, ok := cf.resumeOffset(int(ctx.TableExitID), ctx.NativeCalleeResumePass != 0)
+		if !ok {
+			return runtime.NilValue(), fmt.Errorf("callee table-exit: no resume for %d", ctx.TableExitID)
+		}
+		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+	case ExitGlobalExit:
+		if err := tm.executeGlobalExit(ctx, regs, base, proto, cf); err != nil {
+			return runtime.NilValue(), fmt.Errorf("callee global-exit: %w", err)
+		}
+		resumeOff, ok := cf.resumeOffset(int(ctx.GlobalExitID), ctx.NativeCalleeResumePass != 0)
+		if !ok {
+			return runtime.NilValue(), fmt.Errorf("callee global-exit: no resume for %d", ctx.GlobalExitID)
+		}
+		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+	case ExitOpExit:
+		if err := tm.executeOpExit(ctx, regs, base, proto); err != nil {
+			return runtime.NilValue(), fmt.Errorf("callee op-exit: %w", err)
+		}
+		resumeOff, ok := cf.resumeOffset(int(ctx.OpExitID), ctx.NativeCalleeResumePass != 0)
+		if !ok {
+			return runtime.NilValue(), fmt.Errorf("callee op-exit: no resume for %d", ctx.OpExitID)
+		}
+		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+	case ExitCallExit:
+		if err := tm.executeCallExit(ctx, regs, base, proto); err != nil {
+			return runtime.NilValue(), fmt.Errorf("callee call-exit: %w", err)
+		}
+		resumeOff, ok := cf.resumeOffset(int(ctx.CallID), ctx.NativeCalleeResumePass != 0)
+		if !ok {
+			return runtime.NilValue(), fmt.Errorf("callee call-exit: no resume for %d", ctx.CallID)
+		}
+		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+	case ExitDeopt:
+		tm.disableTier2AfterRuntimeDeopt(proto, "tier2 native callee deopt")
+		if ctx.NativeCalleeResumePC > 0 {
+			if !tm.callVM.PushFrame(ptrToVMClosure(ctx.NativeCalleeClosurePtr), base) {
+				return runtime.NilValue(), fmt.Errorf("native-call-exit: stack overflow")
+			}
+			results, err := tm.callVM.ResumeFromPC(int(ctx.NativeCalleeResumePC))
+			tm.callVM.PopFrame()
+			if err != nil {
+				return runtime.NilValue(), err
+			}
+			if len(results) > 0 {
+				return results[0], nil
+			}
+			return runtime.NilValue(), nil
+		}
+		return runtime.NilValue(), fmt.Errorf("callee deopt")
+	default:
+		return runtime.NilValue(), fmt.Errorf("unknown callee exit code %d", ctx.NativeCalleeExitCode)
+	}
+
+	currentRegs := tm.callVM.Regs()
+	tm.setTier2ResumeContext(ctx, cf, proto, base)
+	ctx.BaselineClosurePtr = ctx.NativeCalleeClosurePtr
+	ctx.CallMode = 1
+	ctx.ExitCode = 0
+	ctx.ResumeNumericPass = 0
+
+	for {
+		jit.CallJIT(codePtr, uintptr(unsafe.Pointer(ctx)))
+		switch ctx.ExitCode {
+		case ExitNormal:
+			return runtime.Value(ctx.BaselineReturnValue), nil
+		case ExitTableExit:
+			if err := tm.executeTableExit(ctx, currentRegs, base, proto, cf); err != nil {
+				return runtime.NilValue(), fmt.Errorf("callee table-exit: %w", err)
+			}
+			currentRegs = tm.callVM.Regs()
+			resumeOff, ok := cf.resumeOffset(int(ctx.TableExitID), ctx.ResumeNumericPass != 0)
+			if !ok {
+				return runtime.NilValue(), fmt.Errorf("callee table-exit: no resume for %d", ctx.TableExitID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
+		case ExitGlobalExit:
+			if err := tm.executeGlobalExit(ctx, currentRegs, base, proto, cf); err != nil {
+				return runtime.NilValue(), fmt.Errorf("callee global-exit: %w", err)
+			}
+			currentRegs = tm.callVM.Regs()
+			resumeOff, ok := cf.resumeOffset(int(ctx.GlobalExitID), ctx.ResumeNumericPass != 0)
+			if !ok {
+				return runtime.NilValue(), fmt.Errorf("callee global-exit: no resume for %d", ctx.GlobalExitID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
+		case ExitOpExit:
+			if err := tm.executeOpExit(ctx, currentRegs, base, proto); err != nil {
+				return runtime.NilValue(), fmt.Errorf("callee op-exit: %w", err)
+			}
+			currentRegs = tm.callVM.Regs()
+			resumeOff, ok := cf.resumeOffset(int(ctx.OpExitID), ctx.ResumeNumericPass != 0)
+			if !ok {
+				return runtime.NilValue(), fmt.Errorf("callee op-exit: no resume for %d", ctx.OpExitID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
+		case ExitCallExit:
+			if err := tm.executeCallExit(ctx, currentRegs, base, proto); err != nil {
+				return runtime.NilValue(), fmt.Errorf("callee call-exit: %w", err)
+			}
+			currentRegs = tm.callVM.Regs()
+			resumeOff, ok := cf.resumeOffset(int(ctx.CallID), ctx.ResumeNumericPass != 0)
+			if !ok {
+				return runtime.NilValue(), fmt.Errorf("callee call-exit: no resume for %d", ctx.CallID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
+		case ExitDeopt:
+			tm.disableTier2AfterRuntimeDeopt(proto, "tier2 native callee deopt")
+			return runtime.NilValue(), fmt.Errorf("callee deopt")
+		default:
+			return runtime.NilValue(), fmt.Errorf("unknown callee exit code %d", ctx.ExitCode)
+		}
+		ctx.Regs = uintptr(unsafe.Pointer(&currentRegs[base]))
+		ctx.RegsBase = uintptr(unsafe.Pointer(&currentRegs[0]))
+		ctx.RegsEnd = ctx.RegsBase + uintptr(len(currentRegs)*jit.ValueSize)
+	}
 }
 
 // executeGlobalExit handles a global-exit in the TieringManager's Tier 2 path.

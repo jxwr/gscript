@@ -94,9 +94,12 @@ type ExecContext struct {
 	NativeCallA            int64   // caller's A field (destination slot)
 	NativeCallB            int64   // caller's B field (arg count)
 	NativeCallC            int64   // caller's C field (return count)
+	NativeCalleeExitCode   int64   // callee's original exit code before caller rewrites ExitCode
+	NativeCalleeResumePass int64   // callee's ResumeNumericPass before caller rewrites it
 	NativeCalleeBaseOff    int64   // callee base offset from caller regs (MaxStack*8)
 	NativeCalleeResumePC   int64   // callee's resume PC (saved before caller restores its own BaselinePC)
 	NativeCalleeClosurePtr uintptr // callee's closure pointer (saved before caller restores its own ClosurePtr)
+	NativeCalleeTier2Only  int64   // non-zero when caller used Tier2DirectEntryPtr because DirectEntryPtr was cleared
 	// Register file bounds: pointer one past the last valid register slot.
 	// Used by native BLR to detect when the callee's register window would
 	// exceed the allocated register file, falling to slow path instead.
@@ -237,9 +240,12 @@ var (
 	execCtxOffNativeCallA            = int(unsafe.Offsetof(ExecContext{}.NativeCallA))
 	execCtxOffNativeCallB            = int(unsafe.Offsetof(ExecContext{}.NativeCallB))
 	execCtxOffNativeCallC            = int(unsafe.Offsetof(ExecContext{}.NativeCallC))
+	execCtxOffNativeCalleeExitCode   = int(unsafe.Offsetof(ExecContext{}.NativeCalleeExitCode))
+	execCtxOffNativeCalleeResumePass = int(unsafe.Offsetof(ExecContext{}.NativeCalleeResumePass))
 	execCtxOffNativeCalleeBaseOff    = int(unsafe.Offsetof(ExecContext{}.NativeCalleeBaseOff))
 	execCtxOffNativeCalleeResumePC   = int(unsafe.Offsetof(ExecContext{}.NativeCalleeResumePC))
 	execCtxOffNativeCalleeClosurePtr = int(unsafe.Offsetof(ExecContext{}.NativeCalleeClosurePtr))
+	execCtxOffNativeCalleeTier2Only  = int(unsafe.Offsetof(ExecContext{}.NativeCalleeTier2Only))
 	execCtxOffRegsEnd                = int(unsafe.Offsetof(ExecContext{}.RegsEnd))
 	execCtxOffRegsBase               = int(unsafe.Offsetof(ExecContext{}.RegsBase))
 	execCtxOffTopPtr                 = int(unsafe.Offsetof(ExecContext{}.TopPtr))
@@ -288,6 +294,12 @@ type CompiledFunction struct {
 	// visible side effect. In that case Tier 2 stays callable through the
 	// execute loop, but direct BLR entries are not published.
 	DirectEntrySafe bool
+
+	// Tier2DirectEntrySafe is true when Tier 2 native callers can recover by
+	// resuming this callee after mid-execution exits. It is less restrictive
+	// than replay safety, but still excludes callees that mutate VM context
+	// state which the caller may have cached.
+	Tier2DirectEntrySafe bool
 
 	// NumericParamCount (R124) is the number of int params the numeric
 	// entry (t2_numeric_self_entry_N) takes (1-4). Zero if no numeric

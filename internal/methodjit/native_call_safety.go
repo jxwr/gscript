@@ -60,6 +60,29 @@ func tier2NativeCallReplaySafe(fn *Function) bool {
 	return true
 }
 
+// tier2NativeCallCalleeResumeSafe reports whether Tier 2 callers may use the
+// native callee-resume protocol for fn. Heap/table mutations are safe because
+// the caller resumes the callee instead of replaying it. Mutations to VM
+// execution context remain gated: the caller may still hold global/upvalue or
+// concurrency context bindings from before the native call.
+func tier2NativeCallCalleeResumeSafe(fn *Function) bool {
+	if fn == nil {
+		return true
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpSetGlobal, OpSetUpval, OpClose, OpGo, OpSend, OpRecv:
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func tier2InstrHasNativeVisibleSideEffect(instr *Instr) bool {
 	if instr == nil {
 		return false

@@ -203,6 +203,17 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	asm.Label(icDoneLabel)
 
+	tier2OnlyLabel := ec.uniqueLabel("t2call_tier2_only")
+	tier2OnlyDoneLabel := ec.uniqueLabel("t2call_tier2_only_done")
+	asm.LDR(jit.X6, jit.X1, funcProtoOffDirectEntryPtr)
+	asm.CBZ(jit.X6, tier2OnlyLabel)
+	asm.MOVimm16(jit.X6, 0)
+	asm.B(tier2OnlyDoneLabel)
+	asm.Label(tier2OnlyLabel)
+	asm.MOVimm16(jit.X6, 1)
+	asm.Label(tier2OnlyDoneLabel)
+	asm.STR(jit.X6, mRegCtx, execCtxOffNativeCalleeTier2Only)
+
 	// Step 5: Bounds check: callee register window fits in register file.
 	asm.LDR(jit.X3, jit.X1, funcProtoOffMaxStack) // X3 = calleeMaxStack (int)
 	asm.LSLimm(jit.X3, jit.X3, 3)                 // X3 = calleeMaxStack * 8
@@ -226,12 +237,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
 	asm.BCond(jit.CondEQ, slowLabel)
 
-	// Step 7: Save caller state on stack (80 bytes, 16-byte aligned).
+	// Step 7: Save caller state on stack (96 bytes, 16-byte aligned).
 	// R111: for a static self-call, GlobalCache is invariant
 	// (same proto → same GlobalCache), so skip saving that field.
 	// CallMode cannot be skipped: top-level Tier 2 enters with CallMode=0,
 	// while a BL/BLR callee must return through the direct epilogue.
-	asm.SUBimm(jit.SP, jit.SP, 80)
+	asm.SUBimm(jit.SP, jit.SP, 96)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
 	staticSelf := ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls && ec.isStaticSelfCall(instr)
@@ -250,6 +261,10 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
 		asm.STR(jit.X3, jit.SP, 72)
 	}
+	// Keep the callee closure pointer for ExitNativeCallExit. If the callee
+	// returns through an exit-resume path, caller state is restored before Go
+	// sees the exit, so the raw closure pointer must survive independently.
+	asm.STR(jit.X0, jit.SP, 80)
 
 	// Step 8: Copy args to callee register window.
 	for i := 0; i < nArgs; i++ {
@@ -333,6 +348,16 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.SUBimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
+	// Snapshot callee exit metadata before restoring the caller frame.
+	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeExitCode)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffResumeNumericPass)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeResumePass)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffExitResumePC)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeResumePC)
+	asm.LDR(jit.X3, jit.SP, 80)
+	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeClosurePtr)
+
 	// Step 10: Restore caller state.
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 32)
@@ -350,7 +375,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
 	}
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.SP, jit.SP, 80)
+	asm.ADDimm(jit.SP, jit.SP, 96)
 
 	// Restore ctx pointers.
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
@@ -383,10 +408,17 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.B(doneLabel)
 
 	// --- Callee exited mid-execution (deopt/op-exit within callee) ---
-	// Both callee-exit and slow-path share a single exit-resume sequence.
-	// R143 restore pre-post-BL rawIntRegs so emitStoreAllActiveRegs
-	// correctly boxes values that WERE raw before the post-BL reload.
+	// Return to Go with enough metadata to resume the callee's own
+	// exit-resume loop. This avoids replaying the call from the beginning
+	// after the callee may already have mutated visible state.
 	asm.Label(exitHandleLabel)
+	asm.LDR(jit.X0, mRegCtx, execCtxOffNativeCalleeTier2Only)
+	asm.CBZ(jit.X0, slowLabel)
+	ec.rawIntRegs = savedRawIntRegs
+	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
+
+	// Slow path: no native entry was taken, so the normal caller-side
+	// call-exit fallback executes the call exactly once through the VM.
 	asm.Label(slowLabel)
 	ec.rawIntRegs = savedRawIntRegs
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
@@ -395,6 +427,33 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// --- Done: merge point for native and slow paths ---
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitNativeCallExit(instr *Instr, funcSlot, nArgs, nRets, calleeBaseOff int) {
+	asm := ec.asm
+
+	asm.LoadImm64(jit.X0, int64(funcSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
+	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallA)
+	asm.LoadImm64(jit.X0, int64(nArgs))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallNArgs)
+	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallB)
+	asm.LoadImm64(jit.X0, int64(nRets))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallNRets)
+	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallC)
+	asm.LoadImm64(jit.X0, int64(instr.ID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
+	asm.LoadImm64(jit.X0, int64(calleeBaseOff))
+	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCalleeBaseOff)
+
+	ec.emitSetResumeNumericPass()
+	asm.LoadImm64(jit.X0, ExitNativeCallExit)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
 }
 
 // emitCallNativeStaticSelfFast emits the boxed-value self-call path for a

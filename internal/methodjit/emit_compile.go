@@ -232,6 +232,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// instead of CMP + CSET + ORR + TBNZ (saves 3 instructions).
 	fusedCmps := computeFusedComparisons(fn)
 	nativeCallReplaySafe := tier2NativeCallReplaySafe(fn)
+	nativeCallCalleeResumeSafe := tier2NativeCallCalleeResumeSafe(fn)
 
 	ec := &emitContext{
 		fn:                   fn,
@@ -380,23 +381,24 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	}
 
 	return &CompiledFunction{
-		Code:               cb,
-		Proto:              fn.Proto,
-		NumSpills:          alloc.NumSpillSlots,
-		numRegs:            ec.nextSlot,
-		ResumeAddrs:        resumeAddrs,
-		NumericResumeAddrs: numericResumeAddrs,
-		DirectEntryOffset:  directEntryOff,
-		DirectEntrySafe:    nativeCallReplaySafe,
-		NumericEntryOffset: numericEntryOff,
-		GlobalCache:        globalCache,
-		GlobalCacheConsts:  ec.globalCacheConsts,
-		NativeSetGlobals:   nativeSetGlobals,
-		CallCache:          callCache,
-		NewTableCaches:     ec.newTableCaches,
-		InstrCodeRanges:    ec.instrCodeRanges,
-		ExitSites:          buildExitSiteMeta(fn),
-		ExitResumeCheck:    ec.exitResumeCheck,
+		Code:                 cb,
+		Proto:                fn.Proto,
+		NumSpills:            alloc.NumSpillSlots,
+		numRegs:              ec.nextSlot,
+		ResumeAddrs:          resumeAddrs,
+		NumericResumeAddrs:   numericResumeAddrs,
+		DirectEntryOffset:    directEntryOff,
+		DirectEntrySafe:      nativeCallReplaySafe,
+		Tier2DirectEntrySafe: nativeCallCalleeResumeSafe,
+		NumericEntryOffset:   numericEntryOff,
+		GlobalCache:          globalCache,
+		GlobalCacheConsts:    ec.globalCacheConsts,
+		NativeSetGlobals:     nativeSetGlobals,
+		CallCache:            callCache,
+		NewTableCaches:       ec.newTableCaches,
+		InstrCodeRanges:      ec.instrCodeRanges,
+		ExitSites:            buildExitSiteMeta(fn),
+		ExitResumeCheck:      ec.exitResumeCheck,
 	}, nil
 }
 

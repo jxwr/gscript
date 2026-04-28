@@ -398,11 +398,16 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction) {
 	proto.Tier2Promoted = true
 
-	// Update DirectEntryPtr so native BLR callers jump to Tier 2's direct
-	// entry only when a callee exit cannot force replay of visible work.
-	if cf != nil && cf.DirectEntryOffset > 0 && cf.DirectEntrySafe {
+	// Publish the generic DirectEntryPtr only when legacy native callers can
+	// recover by replaying the call. Tier 2 callers have an ExitNativeCallExit
+	// resume loop, so they may use the separate Tier2DirectEntryPtr even when
+	// replay from pc=0 would be unsafe.
+	if cf != nil && cf.DirectEntryOffset > 0 && cf.Tier2DirectEntrySafe && cf.DirectEntrySafe {
 		entry := uintptr(cf.Code.Ptr()) + uintptr(cf.DirectEntryOffset)
 		setFuncProtoTier2DirectEntries(proto, entry, entry)
+	} else if cf != nil && cf.DirectEntryOffset > 0 && cf.Tier2DirectEntrySafe {
+		entry := uintptr(cf.Code.Ptr()) + uintptr(cf.DirectEntryOffset)
+		setFuncProtoTier2DirectEntries(proto, 0, entry)
 	} else {
 		setFuncProtoTier2DirectEntries(proto, 0, 0)
 	}
@@ -1404,6 +1409,23 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 			ctx.ResumeNumericPass = 0
 			continue
 
+		case ExitNativeCallExit:
+			var err error
+			regs, err = tm.executeNativeCallExit(ctx, cf, regs, base, proto)
+			if err != nil {
+				return nil, fmt.Errorf("tier2: native-call-exit: %w", err)
+			}
+			resyncRegs()
+			callID := int(ctx.CallID)
+			resumeOff, ok := cf.resumeOffset(callID, ctx.ResumeNumericPass != 0)
+			if !ok {
+				return nil, fmt.Errorf("tier2: no resume for native call %d", callID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
+			continue
+
 		case ExitGlobalExit:
 			site := cf.exitResumeCheckSite(ctx)
 			before, err := exitCheck.checkBefore(ctx, site, regs, base, protoNameForCheck(proto))
@@ -2211,7 +2233,8 @@ func tier2LoopCallCalleeIsNativeCandidate(callee *vm.FuncProto, globals map[stri
 }
 
 func tier2LoopCallCalleeHasTier2DirectEntry(callee *vm.FuncProto) bool {
-	return callee != nil && callee.Tier2Promoted && callee.DirectEntryPtr != 0
+	return callee != nil && callee.Tier2Promoted &&
+		(callee.DirectEntryPtr != 0 || callee.Tier2DirectEntryPtr != 0)
 }
 
 func tier2LoopCallCalleeCanTierUp(callee *vm.FuncProto, globals map[string]*vm.FuncProto) bool {

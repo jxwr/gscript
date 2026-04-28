@@ -432,8 +432,8 @@ func caller(f, t) {
 	if err := tm.CompileTier2(callee); err != nil {
 		t.Fatalf("CompileTier2(callee): %v", err)
 	}
-	if callee.DirectEntryPtr != 0 || callee.Tier2DirectEntryPtr != 0 {
-		t.Fatalf("unsafe callee direct entries published: direct=%#x tier2=%#x",
+	if callee.DirectEntryPtr != 0 || callee.Tier2DirectEntryPtr == 0 {
+		t.Fatalf("unsafe callee entries published incorrectly: direct=%#x tier2=%#x",
 			callee.DirectEntryPtr, callee.Tier2DirectEntryPtr)
 	}
 	if err := tm.CompileTier2(caller); err != nil {
@@ -493,8 +493,8 @@ func rec_bump_then_exit(t, n) {
 	if err := tm.CompileTier2(rec); err != nil {
 		t.Fatalf("CompileTier2(rec): %v", err)
 	}
-	if rec.DirectEntryPtr != 0 || rec.Tier2DirectEntryPtr != 0 {
-		t.Fatalf("unsafe recursive direct entries published: direct=%#x tier2=%#x",
+	if rec.DirectEntryPtr != 0 || rec.Tier2DirectEntryPtr == 0 {
+		t.Fatalf("unsafe recursive entries published incorrectly: direct=%#x tier2=%#x",
 			rec.DirectEntryPtr, rec.Tier2DirectEntryPtr)
 	}
 
