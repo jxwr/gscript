@@ -268,44 +268,106 @@ type FieldCacheEntry struct {
 // object-literal allocation path can skip per-instance shape transitions
 // without growing every table.
 type SmallTableCtor2 struct {
-	Key1  string
-	Key2  string
+	Key1 string
+	Key2 string
+
 	Shape *Shape
+
+	shapeID   uint32
+	fieldKeys []string
+	single1   smallCtorShape
+	single2   smallCtorShape
+}
+
+type smallCtorShape struct {
+	shape     *Shape
+	shapeID   uint32
+	fieldKeys []string
+}
+
+func newSmallCtorShape(shape *Shape) smallCtorShape {
+	if shape == nil {
+		return smallCtorShape{}
+	}
+	return smallCtorShape{
+		shape:     shape,
+		shapeID:   shape.ID,
+		fieldKeys: shape.FieldKeys,
+	}
 }
 
 func NewSmallTableCtor2(key1, key2 string) SmallTableCtor2 {
 	ctor := SmallTableCtor2{Key1: key1, Key2: key2}
+	ctor.single1 = newSmallCtorShape(getOrCreateSingleFieldShape(key1))
+	ctor.single2 = newSmallCtorShape(getOrCreateSingleFieldShape(key2))
 	if key1 != key2 {
 		ctor.Shape = GetShape([]string{key1, key2})
+		ctor.shapeID = ctor.Shape.ID
+		ctor.fieldKeys = ctor.Shape.FieldKeys
 	}
 	return ctor
 }
 
 // NewTableFromCtor2 constructs a small two-field string table in one pass.
-// If either value is nil, it falls back to normal RawSetString semantics so a
-// runtime nil omits that field just like sequential SETFIELD bytecode.
+// Runtime nil values omit their fields just like sequential SETFIELD bytecode.
 func NewTableFromCtor2(ctor *SmallTableCtor2, val1, val2 Value) *Table {
-	if ctor == nil || ctor.Key1 == ctor.Key2 || val1.IsNil() || val2.IsNil() {
-		t := NewTableSized(0, 2)
-		if ctor != nil {
-			t.RawSetString(ctor.Key1, val1)
-			t.RawSetString(ctor.Key2, val2)
+	if ctor != nil {
+		shape := ctor.Shape
+		if shape != nil && !val1.IsNil() && !val2.IsNil() {
+			t, svals := DefaultHeap.AllocTableWithSvals2()
+			t.keysDirty = true
+			t.svals = svals
+			t.svals[0] = val1
+			t.svals[1] = val2
+			t.shape = shape
+			t.shapeID = ctor.shapeID
+			t.skeys = ctor.fieldKeys
+			return t
 		}
-		return t
 	}
-	shape := ctor.Shape
-	if shape == nil {
+	return newTableFromCtor2Fallback(ctor, val1, val2)
+}
+
+func newTableFromCtor2Fallback(ctor *SmallTableCtor2, val1, val2 Value) *Table {
+	if ctor == nil {
+		return NewTableSized(0, 2)
+	}
+	if ctor.Key1 == ctor.Key2 || ctor.Shape == nil {
 		t := NewTableSized(0, 2)
 		t.RawSetString(ctor.Key1, val1)
 		t.RawSetString(ctor.Key2, val2)
 		return t
 	}
-	t, svals := DefaultHeap.AllocTableWithSvals(2)
+
+	val1Nil := val1.IsNil()
+	val2Nil := val2.IsNil()
+	if val1Nil {
+		if val2Nil {
+			return NewTableSized(0, 0)
+		}
+		return newTableFromCtorShape1(ctor.single2, val2)
+	}
+	if val2Nil {
+		return newTableFromCtorShape1(ctor.single1, val1)
+	}
+
+	t := NewTableSized(0, 2)
+	t.RawSetString(ctor.Key1, val1)
+	t.RawSetString(ctor.Key2, val2)
+	return t
+}
+
+func newTableFromCtorShape1(shape smallCtorShape, val Value) *Table {
+	if shape.shape == nil {
+		return NewTableSized(0, 0)
+	}
+	t, svals := DefaultHeap.AllocTableWithSvals1()
 	t.keysDirty = true
-	t.svals = svals[:2]
-	t.svals[0] = val1
-	t.svals[1] = val2
-	t.applyShape(shape)
+	t.svals = svals
+	t.svals[0] = val
+	t.shape = shape.shape
+	t.shapeID = shape.shapeID
+	t.skeys = shape.fieldKeys
 	return t
 }
 

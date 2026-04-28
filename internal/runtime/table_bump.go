@@ -202,3 +202,30 @@ func (h *Heap) AllocTableWithSvals(capacity int) (*Table, []Value) {
 	p := h.allocBytesLocked(bytes)
 	return t, unsafe.Slice((*Value)(p), capacity)[:0]
 }
+
+// AllocTableWithSvals1 returns a fresh table and a one-slot svals slice. It is
+// the fixed-shape object constructor hot path, avoiding the generic size-class
+// lookup used by AllocTableWithSvals.
+func (h *Heap) AllocTableWithSvals1() (*Table, []Value) {
+	h.mu.Lock()
+	if h.tableSlab.backing == nil {
+		h.tableSlab.refill(h)
+	}
+	t := h.tableSlab.allocTable(h)
+	p := h.arenas[0].Alloc()
+	h.mu.Unlock()
+	return t, unsafe.Slice((*Value)(p), 1)
+}
+
+// AllocTableWithSvals2 returns a fresh table and a two-slot svals slice for
+// static two-field object literals.
+func (h *Heap) AllocTableWithSvals2() (*Table, []Value) {
+	h.mu.Lock()
+	if h.tableSlab.backing == nil {
+		h.tableSlab.refill(h)
+	}
+	t := h.tableSlab.allocTable(h)
+	p := h.arenas[0].Alloc()
+	h.mu.Unlock()
+	return t, unsafe.Slice((*Value)(p), 2)
+}

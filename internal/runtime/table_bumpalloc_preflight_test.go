@@ -136,6 +136,59 @@ func TestNewTableFromCtor2PopulatesSmallFields(t *testing.T) {
 	}
 }
 
+func TestNewTableFromCtor2OmitsRuntimeNilFields(t *testing.T) {
+	ctor := NewSmallTableCtor2("left", "right")
+
+	leftOnly := NewTableFromCtor2(&ctor, IntValue(11), NilValue())
+	if got := leftOnly.RawGetString("left"); !got.IsInt() || got.Int() != 11 {
+		t.Fatalf("left-only left = %v, want 11", got)
+	}
+	if got := leftOnly.RawGetString("right"); !got.IsNil() {
+		t.Fatalf("left-only right = %v, want nil", got)
+	}
+	if len(leftOnly.skeys) != 1 || leftOnly.skeys[0] != "left" || len(leftOnly.svals) != 1 {
+		t.Fatalf("left-only storage skeys=%v svals=%d, want one left field", leftOnly.skeys, len(leftOnly.svals))
+	}
+	if leftOnly.smap != nil {
+		t.Fatal("left-only constructor should remain in small-field storage")
+	}
+
+	rightOnly := NewTableFromCtor2(&ctor, NilValue(), IntValue(22))
+	if got := rightOnly.RawGetString("left"); !got.IsNil() {
+		t.Fatalf("right-only left = %v, want nil", got)
+	}
+	if got := rightOnly.RawGetString("right"); !got.IsInt() || got.Int() != 22 {
+		t.Fatalf("right-only right = %v, want 22", got)
+	}
+	if len(rightOnly.skeys) != 1 || rightOnly.skeys[0] != "right" || len(rightOnly.svals) != 1 {
+		t.Fatalf("right-only storage skeys=%v svals=%d, want one right field", rightOnly.skeys, len(rightOnly.svals))
+	}
+	if rightOnly.smap != nil {
+		t.Fatal("right-only constructor should remain in small-field storage")
+	}
+
+	empty := NewTableFromCtor2(&ctor, NilValue(), NilValue())
+	if len(empty.skeys) != 0 || len(empty.svals) != 0 || empty.smap != nil {
+		t.Fatalf("empty storage skeys=%v svals=%d smap=%v, want empty small storage", empty.skeys, len(empty.svals), empty.smap)
+	}
+}
+
+func TestNewTableFromCtor2DuplicateKeyKeepsSequentialSemantics(t *testing.T) {
+	ctor := NewSmallTableCtor2("same", "same")
+	tbl := NewTableFromCtor2(&ctor, IntValue(11), IntValue(22))
+	if got := tbl.RawGetString("same"); !got.IsInt() || got.Int() != 22 {
+		t.Fatalf("duplicate key value = %v, want second value 22", got)
+	}
+
+	deleted := NewTableFromCtor2(&ctor, IntValue(11), NilValue())
+	if got := deleted.RawGetString("same"); !got.IsNil() {
+		t.Fatalf("duplicate key deleted value = %v, want nil", got)
+	}
+	if _, _, ok := deleted.Next(NilValue()); ok {
+		t.Fatal("duplicate key nil overwrite should leave an empty table")
+	}
+}
+
 func TestTableValueUsesCurrentSlabRoot(t *testing.T) {
 	oldHeap := DefaultHeap
 	DefaultHeap = NewHeap()
