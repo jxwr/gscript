@@ -12,6 +12,7 @@ package runtime
 import (
 	stdruntime "runtime"
 	"testing"
+	"unsafe"
 )
 
 // benchBumpSlab is a minimal bump allocator modeling the R8 plan.
@@ -77,6 +78,94 @@ func TestNewTableFromCtor2PopulatesSmallFields(t *testing.T) {
 	if tbl.smap != nil {
 		t.Fatal("two-field constructor should remain in small-field storage")
 	}
+}
+
+func TestTableValueUsesCurrentSlabRoot(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	before := GCRootLogSize()
+	values := make([]Value, 0, 16)
+	for i := 0; i < 16; i++ {
+		values = append(values, TableValue(NewTable()))
+	}
+	after := GCRootLogSize()
+	if delta := after - before; delta != 1 {
+		t.Fatalf("root log grew by %d entries, want exactly one slab root", delta)
+	}
+	stdruntime.KeepAlive(values)
+}
+
+func TestScanValueRootsVisitsTableSlabRoot(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	first := NewTable()
+	_ = TableValue(first)
+	second := NewTable()
+	v := TableValue(second)
+
+	root := tableSlabRootForPointer(unsafe.Pointer(second))
+	if root == nil {
+		t.Fatal("second table did not resolve to a slab root")
+	}
+	if root == unsafe.Pointer(second) {
+		t.Fatal("test expected second table to be an interior slab pointer")
+	}
+
+	visited := make(map[uintptr]struct{})
+	ScanValueRoots(v, func(p unsafe.Pointer) {
+		visited[uintptr(p)] = struct{}{}
+	}, make(map[uintptr]struct{}))
+
+	if _, ok := visited[uintptr(unsafe.Pointer(second))]; !ok {
+		t.Fatal("ScanValueRoots did not visit the table pointer")
+	}
+	if _, ok := visited[uintptr(root)]; !ok {
+		t.Fatal("ScanValueRoots did not visit the table slab root")
+	}
+	stdruntime.KeepAlive(first)
+	stdruntime.KeepAlive(second)
+}
+
+func TestCurrentTableSlabRootIsVisitedForCompaction(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	tbl := NewTable()
+	root := tableSlabRootForPointer(unsafe.Pointer(tbl))
+	if root == nil {
+		t.Fatal("table did not resolve to a slab root")
+	}
+
+	visited := make(map[uintptr]struct{})
+	visitCurrentTableSlabRoot(func(p unsafe.Pointer) {
+		visited[uintptr(p)] = struct{}{}
+	})
+	if _, ok := visited[uintptr(root)]; !ok {
+		t.Fatal("current table slab root was not visited")
+	}
+	stdruntime.KeepAlive(tbl)
+}
+
+func TestTableValueFallbackRootsNonSlabTable(t *testing.T) {
+	tbl := &Table{keysDirty: true}
+	before := GCRootLogSize()
+	_ = TableValue(tbl)
+	after := GCRootLogSize()
+	if delta := after - before; delta != 1 {
+		t.Fatalf("non-slab table root log delta = %d, want 1", delta)
+	}
+	stdruntime.KeepAlive(tbl)
 }
 
 func TestTableSlabOldBackingSurvivesViaInteriorPointer(t *testing.T) {

@@ -233,6 +233,7 @@ func gcCompact() {
 	for _, vm := range vms {
 		vm.ScanGCRoots(visitor)
 	}
+	visitCurrentTableSlabRoot(visitor)
 
 	// Compact: copy only live entries into a fresh log.
 	// We allocate a new entries slice and atomically swap.
@@ -289,18 +290,24 @@ func ScanValueRoots(v Value, visitor func(unsafe.Pointer), seen map[uintptr]stru
 	}
 	addr := uintptr(p)
 
-	// Register this pointer
-	visitor(p)
-
-	// If table, recurse into contents (avoid revisiting)
 	sub := bits & ptrSubMask
 	if sub == ptrSubTable {
+		visitTableRoot(p, visitor)
 		if _, already := seen[addr]; already {
 			return
 		}
 		seen[addr] = struct{}{}
 		t := (*Table)(p)
 		scanTableRoots(t, visitor, seen)
+		return
+	}
+	visitor(p)
+}
+
+func visitTableRoot(p unsafe.Pointer, visitor func(unsafe.Pointer)) {
+	visitor(p)
+	if root := tableSlabRootForPointer(p); root != nil && root != p {
+		visitor(root)
 	}
 }
 
@@ -341,7 +348,7 @@ func scanTableRoots(t *Table, visitor func(unsafe.Pointer), seen map[uintptr]str
 		addr := uintptr(mp)
 		if _, already := seen[addr]; !already {
 			seen[addr] = struct{}{}
-			visitor(mp)
+			visitTableRoot(mp, visitor)
 			scanTableRoots(t.metatable, visitor, seen)
 		}
 	}
@@ -466,7 +473,9 @@ func TableValue(t *Table) Value {
 		return Value(valNil)
 	}
 	p := unsafe.Pointer(t)
-	keepAlive(p, t)
+	if DefaultHeap == nil || !DefaultHeap.tablePointerInCurrentSlab(uintptr(p)) {
+		keepAlive(p, t)
+	}
 	return Value(tagPtr | ptrSubTable | (uint64(uintptr(p)) & ptrAddrMask))
 }
 

@@ -128,11 +128,13 @@ func (a *Arena) Free() {
 // Allocations up to 8192 bytes use the appropriate size-class arena.
 // Larger allocations get their own dedicated mmap page.
 type Heap struct {
-	mu         sync.Mutex
-	arenas     [numSizeClasses]*Arena
-	overPages  [][]byte // dedicated mmap pages for oversized allocations
-	tableSlab  tableSlab
-	stringSlab stringSlab
+	mu             sync.Mutex
+	arenas         [numSizeClasses]*Arena
+	overPages      [][]byte // dedicated mmap pages for oversized allocations
+	tableSlab      tableSlab
+	tableSlabStart uintptr
+	tableSlabEnd   uintptr
+	stringSlab     stringSlab
 }
 
 // NewHeap creates a Heap with one Arena per size class.
