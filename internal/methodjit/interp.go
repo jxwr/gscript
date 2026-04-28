@@ -698,7 +698,7 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		protoIdx := int(instr.Aux)
 		if protoIdx >= 0 && protoIdx < len(s.fn.Proto.Protos) {
 			childProto := s.fn.Proto.Protos[protoIdx]
-			cl := &vm.Closure{Proto: childProto}
+			cl := vm.NewClosure(childProto)
 			s.values[instr.ID] = runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
 		} else {
 			s.values[instr.ID] = runtime.NilValue()

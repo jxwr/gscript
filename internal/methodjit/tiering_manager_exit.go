@@ -641,10 +641,7 @@ func (tm *TieringManager) executeClosureOpExit(ctx *ExecContext, regs []runtime.
 	}
 	subProto := proto.Protos[bx]
 
-	cl := &vm.Closure{
-		Proto:    subProto,
-		Upvalues: make([]*vm.Upvalue, len(subProto.Upvalues)),
-	}
+	cl := vm.NewClosure(subProto)
 
 	// Get the parent closure for non-InStack upvalues.
 	var parentCl *vm.Closure

@@ -38,3 +38,37 @@ func TestClosureFromValueRejectsGoFunction(t *testing.T) {
 		t.Fatalf("closureFromValue accepted GoFunction: %p", got)
 	}
 }
+
+func TestNewClosureUsesInlineStorageForOneUpvalue(t *testing.T) {
+	proto := &FuncProto{
+		Name:     "one",
+		Upvalues: []UpvalDesc{{Name: "x", InStack: true}},
+	}
+	cl := NewClosure(proto)
+	if cl.Proto != proto {
+		t.Fatalf("Proto=%p, want %p", cl.Proto, proto)
+	}
+	if len(cl.Upvalues) != 1 {
+		t.Fatalf("len(Upvalues)=%d, want 1", len(cl.Upvalues))
+	}
+	if &cl.Upvalues[0] != &cl.inlineUpvalue[0] {
+		t.Fatal("one-upvalue closure should use inline storage")
+	}
+}
+
+func TestNewClosureAllocatesSliceForMultipleUpvalues(t *testing.T) {
+	proto := &FuncProto{
+		Name: "two",
+		Upvalues: []UpvalDesc{
+			{Name: "x", InStack: true},
+			{Name: "y", InStack: true},
+		},
+	}
+	cl := NewClosure(proto)
+	if len(cl.Upvalues) != 2 {
+		t.Fatalf("len(Upvalues)=%d, want 2", len(cl.Upvalues))
+	}
+	if &cl.Upvalues[0] == &cl.inlineUpvalue[0] {
+		t.Fatal("multi-upvalue closure should not use one-slot inline storage")
+	}
+}

@@ -57,7 +57,7 @@ func (s *interpState) callViaVM(fnVal runtime.Value, args []runtime.Value) (runt
 			if p == nil {
 				continue
 			}
-			cl := &vm.Closure{Proto: p}
+			cl := vm.NewClosure(p)
 			v.SetGlobal(name, runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl))
 		}
 	}
@@ -82,13 +82,13 @@ func (s *interpState) getGlobal(name string) runtime.Value {
 	// If the name matches the function being interpreted, return a closure
 	// wrapping the current proto so self-recursive calls work.
 	if name == s.fn.Proto.Name {
-		cl := &vm.Closure{Proto: s.fn.Proto}
+		cl := vm.NewClosure(s.fn.Proto)
 		return runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
 	}
 	// Consult the inline pass's globals table if available.
 	if s.fn.Globals != nil {
 		if p, ok := s.fn.Globals[name]; ok && p != nil {
-			cl := &vm.Closure{Proto: p}
+			cl := vm.NewClosure(p)
 			return runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
 		}
 	}

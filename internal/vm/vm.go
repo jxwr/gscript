@@ -1573,10 +1573,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			a := DecodeA(inst)
 			bx := DecodeBx(inst)
 			subProto := frame.closure.Proto.Protos[bx]
-			cl := &Closure{
-				Proto:    subProto,
-				Upvalues: make([]*Upvalue, len(subProto.Upvalues)),
-			}
+			cl := NewClosure(subProto)
 			for i, desc := range subProto.Upvalues {
 				if desc.InStack {
 					cl.Upvalues[i] = vm.findOrCreateUpvalue(base + desc.Index)
@@ -2233,6 +2230,9 @@ func (vm *VM) findOrCreateUpvalue(regIdx int) *Upvalue {
 }
 
 func (vm *VM) closeUpvalues(fromReg int) {
+	if len(vm.openUpvals) == 0 {
+		return
+	}
 	kept := vm.openUpvals[:0]
 	for _, uv := range vm.openUpvals {
 		if uv.regIdx >= fromReg {

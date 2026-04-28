@@ -68,8 +68,27 @@ type UpvalDesc struct {
 
 // Closure is a bytecode closure: a FuncProto paired with captured upvalues.
 type Closure struct {
-	Proto    *FuncProto
-	Upvalues []*Upvalue
+	Proto         *FuncProto
+	Upvalues      []*Upvalue
+	inlineUpvalue [1]*Upvalue
+}
+
+// NewClosure creates a closure and avoids a second heap allocation for the
+// common one-upvalue case by backing the Upvalues slice with the closure.
+func NewClosure(proto *FuncProto) *Closure {
+	cl := &Closure{Proto: proto}
+	if proto == nil {
+		return cl
+	}
+	switch n := len(proto.Upvalues); n {
+	case 0:
+		return cl
+	case 1:
+		cl.Upvalues = cl.inlineUpvalue[:1]
+	default:
+		cl.Upvalues = make([]*Upvalue, n)
+	}
+	return cl
 }
 
 // Upvalue is a mutable reference to a value.

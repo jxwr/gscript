@@ -61,10 +61,7 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 		return fmt.Errorf("closure proto index %d out of range", bx)
 	}
 	subProto := proto.Protos[bx]
-	cl := &vm.Closure{
-		Proto:    subProto,
-		Upvalues: make([]*vm.Upvalue, len(subProto.Upvalues)),
-	}
+	cl := vm.NewClosure(subProto)
 	// Capture upvalues.
 	var parentCl *vm.Closure
 	if e.callVM != nil {
