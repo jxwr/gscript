@@ -274,8 +274,9 @@ type Tier2PipelineOpts struct {
 // RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
 //
 //	TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp →
-//	LoadElim → DCE → RangeAnalysis → OverflowBoxing → LICM →
-//	FieldNumToFloatFusion → LoadElim → DCE
+//	LoadElim → EscapeAnalysis → DCE → PostRewriteTypeSpec →
+//	RangeAnalysis → OverflowBoxing → LICM → FieldNumToFloatFusion →
+//	LoadElim → DCE
 //
 // Returns the optimized function, any intrinsic rewrite notes (non-nil means
 // the function uses intrinsics that Tier 1 would execute differently), and an
@@ -424,6 +425,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("DCE: %w", err)
 	}
 
+	fn, err = runPostRewriteTypeSpecialize(fn, opts, "post-escape")
+	if err != nil {
+		return nil, nil, err
+	}
+
 	fn, err = RangeAnalysisPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("RangeAnalysis: %w", err)
@@ -514,6 +520,20 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 
 	return fn, intrinsicNotes, nil
+}
+
+func runPostRewriteTypeSpecialize(fn *Function, opts *Tier2PipelineOpts, stage string) (*Function, error) {
+	if !typeSpecializeCouldChange(fn) {
+		return fn, nil
+	}
+	functionRemarks(fn).Add("TypeSpec", "changed", 0, 0, OpNop,
+		"reran after "+stage+" rewrite exposed typed SSA values")
+	out, err := TypeSpecializePass(fn)
+	if err != nil {
+		return nil, fmt.Errorf("TypeSpecialize (%s): %w", stage, err)
+	}
+	attachRemarks(out, opts)
+	return out, nil
 }
 
 func attachRemarks(fn *Function, opts *Tier2PipelineOpts) {

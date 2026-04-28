@@ -297,9 +297,10 @@ result := create_and_sum(10)
 	compareTier2Result(t, src, "result")
 }
 
-// TestR161_VirtualPhi_PostPipelineIR — confirms that after the
-// full Tier 2 pipeline, create_and_sum has ZERO NewTable, ZERO
-// GetField, ZERO SetField in any block. Regression gate for EA.
+// TestR161_VirtualPhi_PostPipelineIR confirms that after the full Tier 2
+// pipeline, create_and_sum has ZERO NewTable, ZERO GetField, ZERO SetField in
+// any block. It also verifies the post-escape TypeSpecialize pass sees the
+// newly materialized float field Phis and rewrites their downstream arithmetic.
 func TestR161_VirtualPhi_PostPipelineIR(t *testing.T) {
 	src := `
 func new_vec3(x, y, z) {
@@ -349,6 +350,8 @@ result := create_and_sum(10)
 	}
 
 	nt, gf, sf := 0, 0, 0
+	genericNumeric := 0
+	floatNumeric := 0
 	for _, block := range fn.Blocks {
 		for _, ins := range block.Instrs {
 			switch ins.Op {
@@ -358,12 +361,88 @@ result := create_and_sum(10)
 				gf++
 			case OpSetField:
 				sf++
+			case OpAdd, OpSub, OpMul, OpDiv:
+				genericNumeric++
+			case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat:
+				floatNumeric++
 			}
 		}
 	}
 	if nt != 0 || gf != 0 || sf != 0 {
 		t.Logf("IR:\n%s", Print(fn))
 		t.Errorf("expected all table ops eliminated; got NewTable=%d GetField=%d SetField=%d", nt, gf, sf)
+	}
+	if genericNumeric != 0 {
+		t.Logf("IR:\n%s", Print(fn))
+		t.Errorf("expected post-escape TypeSpecialize to eliminate generic float arithmetic, got %d generic numeric ops", genericNumeric)
+	}
+	if floatNumeric == 0 {
+		t.Logf("IR:\n%s", Print(fn))
+		t.Errorf("expected specialized float arithmetic after virtual field rewrite")
+	}
+}
+
+func TestPipeline_PostRewriteTypeSpecSpecializesVirtualFieldMath(t *testing.T) {
+	src := `
+func new_point(x, y) {
+    return {x: x, y: y}
+}
+func distance_sum(n) {
+    total := 0.0
+    p := new_point(0.0, 0.0)
+    for i := 1; i <= n; i++ {
+        q := new_point(1.0 * i, 2.0 * i)
+        dx := p.x - q.x
+        dy := p.y - q.y
+        total = total + dx * dx + dy * dy
+        p = new_point(p.x + 0.1, p.y + 0.2)
+    }
+    return total
+}
+result := distance_sum(10)
+`
+	top := compileProto(t, src)
+	globals := map[string]*vm.FuncProto{}
+	var collect func(*vm.FuncProto)
+	collect = func(p *vm.FuncProto) {
+		if p.Name != "" {
+			globals[p.Name] = p
+		}
+		for _, sub := range p.Protos {
+			collect(sub)
+		}
+	}
+	collect(top)
+
+	proto := findProtoByName(top, "distance_sum")
+	if proto == nil {
+		t.Fatal("distance_sum missing")
+	}
+	proto.EnsureFeedback()
+	fn := BuildGraph(proto)
+	fn, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals: globals,
+		InlineMaxSize: 500,
+	})
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+
+	var generic []string
+	sawFloatMath := false
+	for _, block := range fn.Blocks {
+		for _, ins := range block.Instrs {
+			switch ins.Op {
+			case OpAdd, OpSub, OpMul:
+				generic = append(generic, ins.Op.String())
+			case OpAddFloat, OpSubFloat, OpMulFloat, OpFMA:
+				sawFloatMath = true
+			}
+		}
+	}
+	if len(generic) > 0 || !sawFloatMath {
+		t.Fatalf("expected post-rewrite virtual field math to specialize to float ops, generic=%s sawFloatMath=%v\nIR:\n%s",
+			strings.Join(generic, ","), sawFloatMath, Print(fn))
 	}
 }
 

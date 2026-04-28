@@ -98,6 +98,95 @@ func TypeSpecializePass(fn *Function) (*Function, error) {
 	return fn, nil
 }
 
+// typeSpecializeCouldChange reports whether a later TypeSpecializePass has
+// visible work left after another pass rewrote the graph. It is intentionally
+// based on the current SSA type lattice rather than on the producer pass:
+// escape analysis, load forwarding, scalar promotion, or future rewrites can
+// all expose typed operands to still-generic operations.
+func typeSpecializeCouldChange(fn *Function) bool {
+	if fn == nil {
+		return false
+	}
+
+	ts := &typeSpecializer{
+		types: make(map[int]Type),
+	}
+	ts.runTypePropagation(fn)
+
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op == OpNop {
+				continue
+			}
+			if t, ok := ts.types[instr.ID]; ok && t != TypeUnknown && instr.Type != t {
+				return true
+			}
+			if ts.wouldSpecialize(instr) {
+				return true
+			}
+			if ts.wouldInsertNumToFloat(instr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (ts *typeSpecializer) wouldSpecialize(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	if len(instr.Args) < 2 {
+		if instr.Op != OpUnm || len(instr.Args) != 1 {
+			return false
+		}
+		at := ts.argType(instr.Args[0])
+		return at == TypeInt || at == TypeFloat
+	}
+
+	lt := ts.argType(instr.Args[0])
+	rt := ts.argType(instr.Args[1])
+	bothInt := lt == TypeInt && rt == TypeInt
+	bothNumeric := (lt == TypeInt || lt == TypeFloat) && (rt == TypeInt || rt == TypeFloat)
+	hasFloat := lt == TypeFloat || rt == TypeFloat
+
+	switch instr.Op {
+	case OpAdd, OpSub, OpMul:
+		return bothInt || (bothNumeric && hasFloat)
+	case OpMod, OpEq:
+		return bothInt
+	case OpDiv:
+		return bothNumeric
+	case OpLt, OpLe:
+		return bothInt || (bothNumeric && hasFloat)
+	default:
+		return false
+	}
+}
+
+func (ts *typeSpecializer) wouldInsertNumToFloat(instr *Instr) bool {
+	if instr == nil || !shouldInsertNumToFloat(instr.Op) || len(instr.Args) < 2 {
+		return false
+	}
+	for argIdx := 0; argIdx < 2; argIdx++ {
+		arg := instr.Args[argIdx]
+		other := instr.Args[1-argIdx]
+		if arg == nil || other == nil {
+			continue
+		}
+		if ts.argType(other) != TypeFloat ||
+			!isUnknownNumericCandidate(ts.argType(arg)) ||
+			!canSpeculateNumToFloatArg(arg) {
+			continue
+		}
+		if arg.Def != nil && arg.Def.Op == OpNumToFloat {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func isGenericSpecializableOp(op Op) bool {
 	switch op {
 	case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm, OpEq, OpLt, OpLe:

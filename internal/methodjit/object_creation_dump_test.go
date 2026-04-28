@@ -70,9 +70,14 @@ func TestObjectCreationDump(t *testing.T) {
 	//
 	// FloatBinOpTagReuse: generic boxed arithmetic loads the int tag once per
 	// op and reuses it across lhs/rhs checks, trimming MOV-immediate traffic.
+	//
+	// PostEscapeTypeSpec: reruns TypeSpecialize after escape analysis has
+	// replaced virtual table fields with scalar Phis. create_and_sum and
+	// transform_chain now lower their post-EA field math to raw float ops
+	// before codegen instead of retaining generic boxed numeric slow paths.
 	baselines := []baseline{
-		{"create_and_sum", 447, 72},  // R161: was 1277/598
-		{"transform_chain", 520, 82}, // R161: was 1701/816
+		{"create_and_sum", 171, 69},  // R161: was 1277/598
+		{"transform_chain", 193, 73}, // R161: was 1701/816
 		{"new_vec3", 228, 135},       // unchanged EA shape; codegen bookkeeping moved
 	}
 
