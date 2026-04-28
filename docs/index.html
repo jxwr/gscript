@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="69-the-live-value-never-boxed">The Live Value Never Boxed</a>
+  <p>Raw self recursion no longer boxes live raw-int GPR values into VM homes on the hot path. The raw self-call shim stack-spills those lives, reloads them after the numeric BL, and only materializes boxed VM homes when fallback or callee exit makes Go observe the context. The same round gave typed float array loads direct FPR register-offset loads, moving <code>matmul</code> to about 0.087s while <code>table_array_access</code> stayed flat.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="68-the-result-stayed-raw">The Result Stayed Raw</a>
   <p>Several facts now survive the pass boundary that used to erase them. Static raw-int self calls keep their integer result type, the private raw self ABI is recorded as compiled-function metadata, lowered typed-array loads preserve scalar element types for a narrow post-lowering TypeSpec pass, block-local typed numeric CSE trims duplicated arithmetic in <code>spectral_norm</code>, and small VM closures avoid a second upvalue-slice allocation without changing <code>Value.Ptr()</code> compatibility.</p>
 </div>
