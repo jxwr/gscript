@@ -321,6 +321,42 @@ func TestAnalyzeSpecializedABI_RawIntNumericSelfRecursiveShapes(t *testing.T) {
 	}
 }
 
+func TestAnalyzeRawIntSelfABI_Metadata(t *testing.T) {
+	top := compileTop(t, `func mix(a, b, c) {
+	if a == 0 { return b + c }
+	return mix(a - 1, b + 1, c + 2)
+}`)
+	proto := findProtoByName(top, "mix")
+	if proto == nil {
+		t.Fatal("function \"mix\" not found")
+	}
+
+	abi := AnalyzeRawIntSelfABI(proto)
+	if !abi.Eligible {
+		t.Fatalf("expected raw-int self ABI metadata, rejected: %s", abi.RejectWhy)
+	}
+	if abi.NumParams != 3 {
+		t.Fatalf("NumParams=%d, want 3", abi.NumParams)
+	}
+	if abi.Return != SpecializedABIReturnRawInt {
+		t.Fatalf("Return=%d, want raw int", abi.Return)
+	}
+	for i, slot := range abi.ParamSlots {
+		if slot != i {
+			t.Fatalf("ParamSlots[%d]=%d, want %d", i, slot, i)
+		}
+	}
+
+	nonSelf := findProtoByName(compileTop(t, `func g(n) { return n + 1 }
+func f(n) { return g(n) }`), "f")
+	if nonSelf == nil {
+		t.Fatal("function \"f\" not found")
+	}
+	if got := AnalyzeRawIntSelfABI(nonSelf); got.Eligible {
+		t.Fatalf("non-self call should not get raw-int self ABI metadata: %+v", got)
+	}
+}
+
 func BenchmarkSpecializedABIRawIntEligibilitySmoke(b *testing.B) {
 	cases := []struct {
 		name      string

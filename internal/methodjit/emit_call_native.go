@@ -635,17 +635,17 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	// stay within one proto/closure/constant domain. The callee base is always
 	// caller base + calleeBaseOff, so the successful and callee-exit paths
 	// restore mRegRegs with offset arithmetic instead of saving it in the shim
-	// frame. Before any fallback to Go, the caller base is written back into
-	// ctx.Regs so resume handlers still see the boxed VM ABI state. The boxed
-	// function operand needed by VM fallback is rebuilt from BaselineClosurePtr;
-	// static self recursion cannot change closure identity while this native
-	// frame is executing. Numeric entries return through num_epilogue and do
-	// not branch on CallMode, so raw self calls leave ctx.CallMode unchanged.
+	// frame. Successful raw calls keep ctx.Regs lazy; numeric exit epilogues and
+	// raw-call fallback paths publish the current base before Go observes the
+	// context. The boxed function operand needed by VM fallback is rebuilt from
+	// BaselineClosurePtr; static self recursion cannot change closure identity
+	// while this native frame is executing. Numeric entries return through
+	// num_epilogue and do not branch on CallMode, so raw self calls leave
+	// ctx.CallMode unchanged.
 	rawFrameSize := rawSelfFrameSizeFor(nParams)
-	asm.SUBimm(jit.SP, jit.SP, uint16(rawFrameSize))
 
 	ec.emitNumericArgsInRegs(instr, nParams)
-	ec.emitSaveRawSelfFallbackArgs(nParams)
+	ec.emitAllocAndSaveRawSelfFallbackArgs(nParams, rawFrameSize)
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 
@@ -683,7 +683,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.LDR(jit.X7, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X7, exitLabel)
 
-	ec.emitRestoreRawSelfCallerStateFromCalleeBase(calleeBaseOff)
+	ec.emitRestoreRawSelfCallerRegsFromCalleeBase(calleeBaseOff)
 	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 	ec.emitUnboxRawIntRegs(preRawIntRegs)
@@ -709,12 +709,23 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
-func (ec *emitContext) emitSaveRawSelfFallbackArgs(nParams int) {
+func (ec *emitContext) emitRestoreRawSelfCallerRegsFromCalleeBase(calleeBaseOff int) {
 	asm := ec.asm
-	if nParams >= 2 {
-		asm.STP(jit.X0, jit.X1, jit.SP, rawSelfArgsOff)
+	if calleeBaseOff <= 4095 {
+		asm.SUBimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
 	} else {
-		asm.STR(jit.X0, jit.SP, rawSelfArgsOff)
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
+		asm.SUBreg(mRegRegs, mRegRegs, jit.X8)
+	}
+}
+
+func (ec *emitContext) emitAllocAndSaveRawSelfFallbackArgs(nParams, rawFrameSize int) {
+	asm := ec.asm
+	switch {
+	case nParams >= 2:
+		asm.STPpre(jit.X0, jit.X1, jit.SP, -rawFrameSize)
+	default:
+		asm.STRpre(jit.X0, jit.SP, -rawFrameSize)
 	}
 	if nParams >= 4 {
 		asm.STP(jit.X2, jit.X3, jit.SP, rawSelfArgsOff+2*jit.ValueSize)
@@ -724,13 +735,7 @@ func (ec *emitContext) emitSaveRawSelfFallbackArgs(nParams int) {
 }
 
 func (ec *emitContext) emitRestoreRawSelfCallerStateFromCalleeBase(calleeBaseOff int) {
-	asm := ec.asm
-	if calleeBaseOff <= 4095 {
-		asm.SUBimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
-	} else {
-		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
-		asm.SUBreg(mRegRegs, mRegRegs, jit.X8)
-	}
+	ec.emitRestoreRawSelfCallerRegsFromCalleeBase(calleeBaseOff)
 	ec.emitPublishRawSelfCallerState()
 }
 
@@ -1389,10 +1394,14 @@ func (ec *emitContext) isNumericStaticSelfCall(instr *Instr) bool {
 	if !ec.isStaticSelfCall(instr) {
 		return false
 	}
-	ok, numParams := qualifyForNumeric(ec.fn.Proto)
-	if !ok {
+	abi := ec.rawIntSelfABI
+	if !abi.Eligible {
+		abi = AnalyzeRawIntSelfABI(ec.fn.Proto)
+	}
+	if !abi.Eligible {
 		return false
 	}
+	numParams := abi.NumParams
 	if len(instr.Args) != 1+numParams {
 		return false
 	}
@@ -1429,11 +1438,11 @@ func (ec *emitContext) emitNumericArgsInRegs(instr *Instr, nParams int) {
 // compiler, tests, and future metadata all use the same structural contract.
 // Returns (ok, numParams). When ok is true, numParams is in [1, 4].
 func qualifyForNumeric(proto *vm.FuncProto) (bool, int) {
-	abi := AnalyzeSpecializedABI(proto)
-	if !abi.Eligible || abi.Kind != SpecializedABIRawInt {
+	abi := AnalyzeRawIntSelfABI(proto)
+	if !abi.Eligible {
 		return false, 0
 	}
-	return true, proto.NumParams
+	return true, abi.NumParams
 }
 
 // isStaticSelfCall (R110) returns true when OpCall's function argument is

@@ -308,6 +308,11 @@ type CompiledFunction struct {
 	// BL is compile-time PC-relative.
 	NumericParamCount int
 
+	// RawIntSelfABI records the exact private raw-int self-recursive entry
+	// contract emitted for this function. Eligible=false means only the boxed
+	// VM ABI is available.
+	RawIntSelfABI RawIntSelfABI
+
 	// NumericEntryOffset is the byte offset of t2_numeric_self_entry_N when
 	// NumericParamCount is non-zero. It is diagnostic metadata for tests and
 	// disassembly; raw callers branch to the label directly at codegen time.

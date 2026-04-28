@@ -231,6 +231,7 @@ func TestRawIntSelfABI_NumericEntryUsesThinFrame(t *testing.T) {
 	if cf.NumericParamCount != 2 {
 		t.Fatalf("NumericParamCount=%d, want 2", cf.NumericParamCount)
 	}
+	assertCompiledRawIntSelfABI(t, cf.RawIntSelfABI, 2)
 	if cf.NumericEntryOffset <= 0 {
 		t.Fatalf("NumericEntryOffset=%d, want positive offset", cf.NumericEntryOffset)
 	}
@@ -250,6 +251,72 @@ func TestRawIntSelfABI_NumericEntryUsesThinFrame(t *testing.T) {
 	for _, resumeOff := range cf.NumericResumeAddrs {
 		assertThinFramePrologue(t, code, resumeOff, "numeric resume")
 		break
+	}
+}
+
+func TestRawIntSelfABI_FastPathKeepsCtxRegsLazyOnSuccess(t *testing.T) {
+	src := `func fib(n) {
+	if n < 2 { return n }
+	left := fib(n - 1)
+	right := fib(n - 2)
+	return left + right
+}`
+	top := compileTop(t, src)
+	fib := findProtoByName(top, "fib")
+	if fib == nil {
+		t.Fatal("function \"fib\" not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(fib); err != nil {
+		t.Fatalf("CompileTier2(fib): %v", err)
+	}
+	cf := tm.tier2Compiled[fib]
+	if cf == nil {
+		t.Fatal("fib did not compile to Tier 2")
+	}
+	assertCompiledRawIntSelfABI(t, cf.RawIntSelfABI, 1)
+
+	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+	frameSize := rawSelfFrameSizeFor(1)
+	rawSelfShims := 0
+	for pc := 0; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		if !isRawSelfFrameAlloc(word, frameSize) {
+			continue
+		}
+
+		blOff := -1
+		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isBL(scanWord) {
+				blOff = scan
+				break
+			}
+			if isUnconditionalB(scanWord) || scan-pc > 200 {
+				break
+			}
+		}
+		if blOff < 0 {
+			continue
+		}
+
+		rawSelfShims++
+		for scan := blOff + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isSTRMRegRegsToCtxRegs(scanWord) {
+				t.Fatalf("raw self-call success path at %#x eagerly publishes ctx.Regs at %#x", pc, scan)
+			}
+			if isUnconditionalB(scanWord) {
+				break
+			}
+			if scan-blOff > 260 {
+				t.Fatalf("raw self-call shim at %#x did not reach success branch within expected window", pc)
+			}
+		}
+	}
+	if rawSelfShims == 0 {
+		t.Fatal("expected at least one raw self-call shim")
 	}
 }
 
@@ -278,7 +345,7 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 	rawSelfShims := 0
 	for pc := 0; pc+4 <= len(code); pc += 4 {
 		word := binary.LittleEndian.Uint32(code[pc : pc+4])
-		if !isSubSPImm(word, rawSelfFrameSizeFor(2)) {
+		if !isRawSelfFrameAlloc(word, rawSelfFrameSizeFor(2)) {
 			continue
 		}
 		sawBL := false
@@ -378,13 +445,16 @@ func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 			rawSelfShims := 0
 			for pc := 0; pc+4 <= len(code); pc += 4 {
 				word := binary.LittleEndian.Uint32(code[pc : pc+4])
-				if !isSubSPImm(word, frameSize) {
+				if !isRawSelfFrameAlloc(word, frameSize) {
 					continue
 				}
 
 				sawBL := false
 				sawCallerBaseSave := false
 				argSaveInsns := 0
+				if isRawSelfArgPreSave(word, frameSize) {
+					argSaveInsns++
+				}
 				for scan := pc + 4; scan+4 <= len(code); scan += 4 {
 					scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
 					if isSTPToSPPair(scanWord, mRegRegs, jit.X0) {
@@ -599,6 +669,30 @@ func isSubSPImm(word uint32, imm int) bool {
 	return word == 0xD10003FF|encodedImm
 }
 
+func isRawSelfFrameAlloc(word uint32, frameSize int) bool {
+	return isSubSPImm(word, frameSize) || isRawSelfArgPreSave(word, frameSize)
+}
+
+func isRawSelfArgPreSave(word uint32, frameSize int) bool {
+	return isSTRPreToSP(word, jit.X0, -frameSize) || isSTPPreToSPPair(word, jit.X0, jit.X1, -frameSize)
+}
+
+func isSTRPreToSP(word uint32, rt jit.Reg, imm int) bool {
+	if imm < -256 || imm > 255 {
+		return false
+	}
+	imm9 := uint32(imm) & 0x1FF
+	return word == 0xF8000C00|imm9<<12|uint32(jit.SP)<<5|uint32(rt)
+}
+
+func isSTPPreToSPPair(word uint32, rt1, rt2 jit.Reg, offset int) bool {
+	if offset < -512 || offset > 504 || offset%8 != 0 {
+		return false
+	}
+	simm7 := uint32(offset>>3) & 0x7F
+	return word == 0xA9800000|simm7<<15|uint32(rt2)<<10|uint32(jit.SP)<<5|uint32(rt1)
+}
+
 func isGPRPairStoreToSP(word uint32) bool {
 	return word&0xFFC00000 == 0xA9000000 && ((word>>5)&0x1F) == 31
 }
@@ -614,6 +708,11 @@ func isLDRCtxRegsToMRegRegs(word uint32) bool {
 
 func isSTRToMRegRegs(word uint32) bool {
 	return word&0xFFC003E0 == 0xF9000000|uint32(mRegRegs)<<5
+}
+
+func isSTRMRegRegsToCtxRegs(word uint32) bool {
+	pimm := uint32(execCtxOffRegs >> 3)
+	return word == 0xF9000000|((pimm&0xFFF)<<10)|uint32(mRegCtx)<<5|uint32(mRegRegs)
 }
 
 func isSTPToSPPair(word uint32, rt1, rt2 jit.Reg) bool {
@@ -741,5 +840,26 @@ func assertRawIntSelfResultsEqual(t *testing.T, label string, got, want []runtim
 	}
 	for i := range got {
 		assertValuesEqual(t, label, got[i], want[i])
+	}
+}
+
+func assertCompiledRawIntSelfABI(t *testing.T, abi RawIntSelfABI, wantParams int) {
+	t.Helper()
+	if !abi.Eligible {
+		t.Fatalf("compiled raw-int self ABI ineligible: %s", abi.RejectWhy)
+	}
+	if abi.NumParams != wantParams {
+		t.Fatalf("compiled raw-int self ABI NumParams=%d, want %d", abi.NumParams, wantParams)
+	}
+	if abi.Return != SpecializedABIReturnRawInt {
+		t.Fatalf("compiled raw-int self ABI Return=%d, want %d", abi.Return, SpecializedABIReturnRawInt)
+	}
+	if len(abi.ParamSlots) != wantParams {
+		t.Fatalf("compiled raw-int self ABI ParamSlots=%v, want %d slots", abi.ParamSlots, wantParams)
+	}
+	for i, slot := range abi.ParamSlots {
+		if slot != i {
+			t.Fatalf("compiled raw-int self ABI ParamSlots[%d]=%d, want %d", i, slot, i)
+		}
 	}
 }

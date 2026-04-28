@@ -43,6 +43,17 @@ type SpecializedABI struct {
 	RejectWhy string
 }
 
+// RawIntSelfABI is the compact codegen contract for the private numeric
+// self-recursive entry. It is derived from SpecializedABI but keeps only the
+// facts emission and compiled-function metadata need.
+type RawIntSelfABI struct {
+	Eligible   bool
+	NumParams  int
+	ParamSlots []int
+	Return     SpecializedABIReturnRep
+	RejectWhy  string
+}
+
 type specializedSlotRep uint8
 
 const (
@@ -199,6 +210,26 @@ func AnalyzeSpecializedABI(proto *vm.FuncProto) SpecializedABI {
 		Params:   paramReps,
 		Return:   SpecializedABIReturnRawInt,
 		Eligible: true,
+	}
+}
+
+func AnalyzeRawIntSelfABI(proto *vm.FuncProto) RawIntSelfABI {
+	abi := AnalyzeSpecializedABI(proto)
+	if !abi.Eligible || abi.Kind != SpecializedABIRawInt || abi.Return != SpecializedABIReturnRawInt {
+		return RawIntSelfABI{
+			Return:    abi.Return,
+			RejectWhy: abi.RejectWhy,
+		}
+	}
+	paramSlots := make([]int, proto.NumParams)
+	for i := range paramSlots {
+		paramSlots[i] = i
+	}
+	return RawIntSelfABI{
+		Eligible:   true,
+		NumParams:  proto.NumParams,
+		ParamSlots: paramSlots,
+		Return:     SpecializedABIReturnRawInt,
 	}
 }
 

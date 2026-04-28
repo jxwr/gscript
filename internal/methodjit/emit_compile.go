@@ -233,6 +233,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	fusedCmps := computeFusedComparisons(fn)
 	nativeCallReplaySafe := tier2NativeCallReplaySafe(fn)
 	nativeCallCalleeResumeSafe := tier2NativeCallCalleeResumeSafe(fn)
+	rawIntSelfABI := AnalyzeRawIntSelfABI(fn.Proto)
 
 	ec := &emitContext{
 		fn:                   fn,
@@ -274,6 +275,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		newTableCaches:       newTableCacheSlotsForFunction(fn),
 		instrCodeRanges:      make([]InstrCodeRange, 0, fn.nextID),
 		nativeCallReplaySafe: nativeCallReplaySafe,
+		rawIntSelfABI:        rawIntSelfABI,
 	}
 	if exitResumeCheckEnabled() {
 		ec.exitResumeCheck = newExitResumeCheckMetadata()
@@ -281,10 +283,10 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	// R124/R126: numeric entry is emitted as pass-2 body inside this
 	// Compile when the proto qualifies. numericParamCount tells the
 	// post-epilogue dispatcher whether to run pass 2.
-	if ok, np := qualifyForNumeric(fn.Proto); ok {
-		ec.numericParamCount = np
-		ec.numericParamSlots = make(map[int]bool, np)
-		for i := 0; i < np; i++ {
+	if rawIntSelfABI.Eligible {
+		ec.numericParamCount = rawIntSelfABI.NumParams
+		ec.numericParamSlots = make(map[int]bool, rawIntSelfABI.NumParams)
+		for i := 0; i < rawIntSelfABI.NumParams; i++ {
 			ec.numericParamSlots[i] = true
 		}
 	}
@@ -390,6 +392,8 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		DirectEntryOffset:    directEntryOff,
 		DirectEntrySafe:      nativeCallReplaySafe,
 		Tier2DirectEntrySafe: nativeCallCalleeResumeSafe,
+		NumericParamCount:    rawIntSelfABI.NumParams,
+		RawIntSelfABI:        rawIntSelfABI,
 		NumericEntryOffset:   numericEntryOff,
 		GlobalCache:          globalCache,
 		GlobalCacheConsts:    ec.globalCacheConsts,
@@ -688,6 +692,11 @@ type emitContext struct {
 	// nativeCallReplaySafe is false when direct/native callers must not enter
 	// this function because a callee exit would replay visible side effects.
 	nativeCallReplaySafe bool
+
+	// rawIntSelfABI is the explicit private numeric self-recursive entry
+	// descriptor for this compile. It is the source of truth for raw self
+	// call emission during pass 2.
+	rawIntSelfABI RawIntSelfABI
 
 	// numericParamCount (R124) is set at emitContext construction when
 	// the proto qualifies (qualifyForNumeric). Non-zero → Compile emits
@@ -1146,6 +1155,7 @@ func (ec *emitContext) emitEpilogue() {
 		asm.RET()
 
 		asm.Label("num_deopt_epilogue")
+		asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 		asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 		asm.ADDimm(jit.SP, jit.SP, uint16(numericSelfEntryFrameSize))
 		asm.RET()
