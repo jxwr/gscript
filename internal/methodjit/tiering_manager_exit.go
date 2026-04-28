@@ -93,7 +93,7 @@ func (tm *TieringManager) shouldSuppressUnsafeSelfTier2Reentry(fnVal runtime.Val
 	if tm == nil || callerProto == nil {
 		return false
 	}
-	cl, ok := fnVal.Ptr().(*vm.Closure)
+	cl, ok := vmClosureFromValue(fnVal)
 	if !ok || cl == nil || cl.Proto != callerProto {
 		return false
 	}
@@ -191,7 +191,7 @@ func (tm *TieringManager) nativeExitCallee(ctx *ExecContext, regs []runtime.Valu
 		return nil, nil, 0, fmt.Errorf("native-call-exit: call slot %d out of range", callSlot)
 	}
 	fnVal := regs[callSlot]
-	cl, ok := fnVal.Ptr().(*vm.Closure)
+	cl, ok := vmClosureFromValue(fnVal)
 	if !ok || cl == nil || cl.Proto == nil {
 		return nil, nil, 0, fmt.Errorf("native-call-exit: call slot %d is not a VM closure", callSlot)
 	}

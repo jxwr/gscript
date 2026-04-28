@@ -515,6 +515,20 @@ func VMClosureFunctionValue(p unsafe.Pointer, f interface{}) Value {
 	return Value(tagPtr | ptrSubVMClosure | (uint64(uintptr(p)) & ptrAddrMask))
 }
 
+// VMClosurePointer returns the raw pointer stored by VMClosureFunctionValue.
+//
+// The runtime package cannot name internal/vm.Closure without creating an
+// import cycle, so VM/JIT callers cast the returned pointer in their package.
+// VMClosureFunctionValue records the original interface via keepAliveIface,
+// so this accessor has the same lifetime assumptions as Ptr() while avoiding
+// the ifaceRoots mutex and interface reconstruction on hot VM closure paths.
+func (v Value) VMClosurePointer() unsafe.Pointer {
+	if uint64(v)&tagMask != tagPtr || v.ptrSubType() != ptrSubVMClosure {
+		return nil
+	}
+	return v.ptrPayload()
+}
+
 func CoroutineValue(c *Coroutine) Value {
 	if c == nil {
 		return Value(valNil)

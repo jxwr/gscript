@@ -677,11 +677,7 @@ func (tm *TieringManager) buildInlineGlobals() map[string]*vm.FuncProto {
 		if !val.IsFunction() {
 			continue
 		}
-		ptr := val.Ptr()
-		if ptr == nil {
-			continue
-		}
-		if cl, ok := ptr.(*vm.Closure); ok && cl != nil && cl.Proto != nil {
+		if cl, ok := vmClosureFromValue(val); ok && cl != nil && cl.Proto != nil {
 			globals[name] = cl.Proto
 		}
 	}

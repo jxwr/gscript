@@ -1335,7 +1335,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			}
 
 			// ---- Fast path: VM Closure (inline call) ----
-			if cl, ok := fnVal.Ptr().(*Closure); ok {
+			if cl, ok := closureFromValue(fnVal); ok {
 				proto := cl.Proto
 
 				// Compute new base: after current frame's registers
@@ -1751,7 +1751,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			}
 			go func(fn runtime.Value, goArgs []runtime.Value) {
 				goVM := newIsolatedChildVM(vm)
-				if cl, ok := fn.Ptr().(*Closure); ok {
+				if cl, ok := closureFromValue(fn); ok {
 					goVM.call(cl, goArgs, 0, 0)
 				} else if gf := fn.GoFunction(); gf != nil {
 					gf.Fn(goArgs)
@@ -1922,7 +1922,7 @@ func (vm *VM) writeCallResults(dst, c int, results []runtime.Value) {
 // callValue dispatches a function call (supports Closure, GoFunction, and __call metamethod).
 func (vm *VM) callValue(fnVal runtime.Value, args []runtime.Value) ([]runtime.Value, error) {
 	if fnVal.IsFunction() {
-		if cl, ok := fnVal.Ptr().(*Closure); ok {
+		if cl, ok := closureFromValue(fnVal); ok {
 			newBase := vm.top
 			if vm.frameCount > 0 {
 				curFrame := &vm.frames[vm.frameCount-1]

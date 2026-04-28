@@ -98,7 +98,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			if len(args) < 1 || !args[0].IsFunction() {
 				return nil, fmt.Errorf("coroutine.create expects a function")
 			}
-			cl, ok := args[0].Ptr().(*Closure)
+			cl, ok := closureFromValue(args[0])
 			if !ok {
 				// Also accept GoFunctions — wrap in a tiny VM closure is not possible,
 				// but we can use the GoFunction approach.
@@ -167,7 +167,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			if len(args) < 1 || !args[0].IsFunction() {
 				return nil, fmt.Errorf("coroutine.wrap expects a function")
 			}
-			cl, ok := args[0].Ptr().(*Closure)
+			cl, ok := closureFromValue(args[0])
 			if !ok {
 				return nil, fmt.Errorf("coroutine.wrap expects a GScript function")
 			}

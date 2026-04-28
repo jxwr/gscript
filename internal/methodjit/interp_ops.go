@@ -25,18 +25,16 @@ func (s *interpState) execCall(instr *Instr) (runtime.Value, error) {
 
 	// Check if this is a self-recursive call.
 	if fnVal.IsFunction() {
-		if ptr := fnVal.Ptr(); ptr != nil {
-			if cl, ok := ptr.(*vm.Closure); ok && cl.Proto == s.fn.Proto {
-				// Self-recursive call: interpret recursively with the same IR.
-				results, err := interpretImpl(s.fn, callArgs, s.depth+1)
-				if err != nil {
-					return runtime.NilValue(), err
-				}
-				if len(results) > 0 {
-					return results[0], nil
-				}
-				return runtime.NilValue(), nil
+		if cl, ok := vmClosureFromValue(fnVal); ok && cl.Proto == s.fn.Proto {
+			// Self-recursive call: interpret recursively with the same IR.
+			results, err := interpretImpl(s.fn, callArgs, s.depth+1)
+			if err != nil {
+				return runtime.NilValue(), err
 			}
+			if len(results) > 0 {
+				return results[0], nil
+			}
+			return runtime.NilValue(), nil
 		}
 	}
 

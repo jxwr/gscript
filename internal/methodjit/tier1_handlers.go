@@ -166,7 +166,7 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 	// Fast path: GScript closure with compiled proto. Avoids heap-allocating
 	// callArgs and bypasses CallValue → callValue → call dispatch.
 	if fnVal.IsFunction() {
-		if cl, ok := fnVal.Ptr().(*vm.Closure); ok && !cl.Proto.IsVarArg {
+		if cl, ok := vmClosureFromValue(fnVal); ok && !cl.Proto.IsVarArg {
 			calleeProto := cl.Proto
 			if calleeProto.JITDisabled {
 				goto slowPath
@@ -642,7 +642,7 @@ func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtim
 	if !fnVal.IsFunction() {
 		return runtime.NilValue(), fmt.Errorf("native-call-exit: regs[%d] is not a function", absCallA)
 	}
-	cl, ok := fnVal.Ptr().(*vm.Closure)
+	cl, ok := vmClosureFromValue(fnVal)
 	if !ok {
 		return runtime.NilValue(), fmt.Errorf("native-call-exit: regs[%d] is not a vm.Closure", absCallA)
 	}
