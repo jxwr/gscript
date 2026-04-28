@@ -9,6 +9,7 @@ package methodjit
 
 import (
 	"fmt"
+	"sort"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -37,6 +38,13 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 
 	li := computeLoopInfo(fn)
 	crossBlockLive := computeCrossBlockLive(fn)
+	blockLiveIn, blockLiveOut := computeBlockLiveness(fn)
+	instrLiveAfter := computeInstrLiveAfter(fn, blockLiveOut)
+	rawIntBlockCarry := enableSinglePredRawIntCarry(fn)
+	rawIntCarryNoStore := map[int]bool(nil)
+	if rawIntBlockCarry {
+		rawIntCarryNoStore = computeSinglePredRawIntStoreElision(fn, alloc, blockLiveIn)
+	}
 	defs := make(map[int]*Instr)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -253,6 +261,12 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		blockOutTables:       make(map[int]map[int]bool),
 		blockOutKinds:        make(map[int]map[int]uint16),
 		blockOutKeysDirty:    make(map[int]map[int]bool),
+		blockOutRawIntRegs:   make(map[int]map[int]loopRegEntry),
+		blockLiveIn:          blockLiveIn,
+		blockLiveOut:         blockLiveOut,
+		instrLiveAfter:       instrLiveAfter,
+		rawIntBlockCarry:     rawIntBlockCarry,
+		rawIntCarryNoStore:   rawIntCarryNoStore,
 		crossBlockLive:       crossBlockLive,
 		globalCacheConsts:    make([]int, 0),
 		useFPR:               hasFPR,
@@ -577,6 +591,26 @@ type emitContext struct {
 
 	// blockOutKeysDirty saves the keysDirtyWritten state at end of block.
 	blockOutKeysDirty map[int]map[int]bool
+
+	// blockOutRawIntRegs saves the raw-int GPR state at end of block, keyed
+	// by block ID then physical register. Single-predecessor successors can
+	// activate these values when liveness says they are live-in.
+	blockOutRawIntRegs map[int]map[int]loopRegEntry
+
+	// blockLiveIn is block-level SSA liveness used to bound raw-int carry.
+	blockLiveIn map[int]map[int]bool
+
+	// blockLiveOut and instrLiveAfter bound call spills and active-state
+	// lifetime for values carried across block boundaries.
+	blockLiveOut   map[int]map[int]bool
+	instrLiveAfter map[int]map[int]bool
+
+	rawIntBlockCarry bool
+
+	// rawIntCarryNoStore marks raw-int values whose cross-block uses are
+	// covered by immediate single-predecessor carry. Their boxed SSA homes are
+	// materialized only on deopt/fallback while live.
+	rawIntCarryNoStore map[int]bool
 
 	// activeFPRegs tracks which value IDs have their FPR allocation active
 	// in the current block. Mirrors activeRegs for FPR-allocated values.
@@ -1291,6 +1325,9 @@ func (ec *emitContext) emitBlock(block *Block) {
 			}
 		}
 	}
+	if ec.rawIntBlockCarry && !isHeader && len(block.Preds) == 1 {
+		ec.seedSinglePredRawIntRegs(block)
+	}
 
 	// Phi values are active at block entry (their registers were loaded
 	// by emitPhiMoves from the predecessor). When a phi's register
@@ -1320,6 +1357,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 
 	for _, instr := range block.Instrs {
 		ec.emitInstr(instr, block)
+		ec.deactivateDeadAfter(instr)
 	}
 
 	// Save outgoing shape/table state for single-predecessor propagation.
@@ -1343,6 +1381,70 @@ func (ec *emitContext) emitBlock(block *Block) {
 		outKD[k] = v
 	}
 	ec.blockOutKeysDirty[block.ID] = outKD
+
+	outRaw := make(map[int]loopRegEntry)
+	for valueID := range ec.activeRegs {
+		if !ec.rawIntRegs[valueID] {
+			continue
+		}
+		pr, ok := ec.alloc.ValueRegs[valueID]
+		if !ok || pr.IsFloat {
+			continue
+		}
+		outRaw[pr.Reg] = loopRegEntry{ValueID: valueID, IsRawInt: true}
+	}
+	ec.blockOutRawIntRegs[block.ID] = outRaw
+}
+
+func (ec *emitContext) seedSinglePredRawIntRegs(block *Block) {
+	if ec == nil || block == nil || len(block.Preds) != 1 {
+		return
+	}
+	predID := block.Preds[0].ID
+	predOut := ec.blockOutRawIntRegs[predID]
+	if len(predOut) == 0 {
+		return
+	}
+	liveIn := ec.blockLiveIn[block.ID]
+	if len(liveIn) == 0 {
+		return
+	}
+	regs := make([]int, 0, len(predOut))
+	for reg := range predOut {
+		regs = append(regs, reg)
+	}
+	sort.Ints(regs)
+	for _, reg := range regs {
+		entry := predOut[reg]
+		if !entry.IsRawInt || !liveIn[entry.ValueID] {
+			continue
+		}
+		pr, ok := ec.alloc.ValueRegs[entry.ValueID]
+		if !ok || pr.IsFloat || pr.Reg != reg {
+			continue
+		}
+		ec.invalidateReg(reg, entry.ValueID)
+		ec.activeRegs[entry.ValueID] = true
+		ec.rawIntRegs[entry.ValueID] = true
+	}
+}
+
+func (ec *emitContext) deactivateDeadAfter(instr *Instr) {
+	if ec == nil || instr == nil {
+		return
+	}
+	liveAfter := ec.instrLiveAfter[instr.ID]
+	for valueID := range ec.activeRegs {
+		if !liveAfter[valueID] {
+			delete(ec.activeRegs, valueID)
+			delete(ec.rawIntRegs, valueID)
+		}
+	}
+	for valueID := range ec.activeFPRegs {
+		if !liveAfter[valueID] {
+			delete(ec.activeFPRegs, valueID)
+		}
+	}
 }
 
 // merge helpers moved to emit_merge.go (R96, file-size hygiene).

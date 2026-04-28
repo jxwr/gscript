@@ -16,6 +16,8 @@
 
 package methodjit
 
+import "sort"
+
 // Allocatable GPR pool: X20, X21, X22, X23, X28.
 // X19 is reserved for the ExecContext pointer (emit.go pinned register).
 // X28 was previously reserved for trace JIT self-call overflow, but
@@ -54,6 +56,9 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 	}
 
 	lastUse := computeLastUse(fn)
+	valueDefs := computeValueDefs(fn)
+	blockLiveIn, _ := computeBlockLiveness(fn)
+	rawIntBlockCarry := enableSinglePredRawIntCarry(fn)
 
 	// Compute loop info so that non-header loop blocks can reserve their
 	// innermost header's phi registers. Without this, the forward-walk
@@ -222,12 +227,19 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		}
 	}
 
+	// Raw-int single-predecessor carry: after a block is allocated, remember
+	// its final GPR contents. A successor with exactly one predecessor can pin
+	// raw-int values that are live into that successor so local allocation does
+	// not reuse their physical registers before emission can read them.
+	blockOutGPRs := make(map[int]map[int]PhysReg, len(fn.Blocks))
+
 	for _, block := range fn.Blocks {
 		// After allocating a pre-header block, collect FPR assignments
 		// for invariant candidates from alloc.ValueRegs (set naturally by
 		// the pre-header's allocateBlock). This avoids pre-allocating FPRs
 		// that allocateBlock would overwrite.
 		var carried map[int]PhysReg
+		var temporaryCarried map[int]bool
 		if li.loopBlocks[block.ID] && !li.loopHeaders[block.ID] {
 			if innerHeader, ok := li.blockInnerHeader[block.ID]; ok {
 				// Phi carry: only for tight-body headers (existing logic).
@@ -261,7 +273,41 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 				}
 			}
 		}
-		allocateBlock(block, alloc, lastUse, carried)
+		if rawIntBlockCarry && len(block.Preds) == 1 && !li.loopHeaders[block.ID] {
+			predID := block.Preds[0].ID
+			if predOut := blockOutGPRs[predID]; len(predOut) > 0 {
+				liveIn := blockLiveIn[block.ID]
+				ids := make([]int, 0, len(predOut))
+				for valueID := range predOut {
+					ids = append(ids, valueID)
+				}
+				sort.Ints(ids)
+				for _, valueID := range ids {
+					if !liveIn[valueID] || !isRawIntCarryValue(valueDefs[valueID]) {
+						continue
+					}
+					pr := predOut[valueID]
+					if pr.IsFloat {
+						continue
+					}
+					if canonical, ok := alloc.ValueRegs[valueID]; !ok || canonical != pr {
+						continue
+					}
+					if carriedRegTaken(carried, pr) {
+						continue
+					}
+					if carried == nil {
+						carried = make(map[int]PhysReg)
+					}
+					carried[valueID] = pr
+					if temporaryCarried == nil {
+						temporaryCarried = make(map[int]bool)
+					}
+					temporaryCarried[valueID] = true
+				}
+			}
+		}
+		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried)
 
 		// After allocating a pre-header, collect the natural FPR assignments
 		// for the top-N invariant candidates. These will be carried into
@@ -283,6 +329,56 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 	}
 
 	return alloc
+}
+
+func carriedRegTaken(carried map[int]PhysReg, pr PhysReg) bool {
+	for _, existing := range carried {
+		if existing.IsFloat == pr.IsFloat && existing.Reg == pr.Reg {
+			return true
+		}
+	}
+	return false
+}
+
+func enableSinglePredRawIntCarry(fn *Function) bool {
+	if fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall && instr.Type == TypeInt {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func computeValueDefs(fn *Function) map[int]*Instr {
+	defs := make(map[int]*Instr)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !instr.Op.IsTerminator() {
+				defs[instr.ID] = instr
+			}
+		}
+	}
+	return defs
+}
+
+func isRawIntCarryValue(instr *Instr) bool {
+	if instr == nil || instr.Type != TypeInt {
+		return false
+	}
+	if isRawIntOp(instr.Op) {
+		return true
+	}
+	switch instr.Op {
+	case OpConstInt, OpLoadSlot, OpGuardType, OpCall, OpPhi:
+		return true
+	default:
+		return false
+	}
 }
 
 // findBlockByID looks up a block by its ID. Returns nil if not found.
@@ -400,6 +496,10 @@ func (rs *regState) pin(valueID int) {
 	rs.removeLRU(valueID)
 }
 
+func (rs *regState) unpin(valueID int) {
+	delete(rs.pinned, valueID)
+}
+
 // findFree returns a free register, or -1 if all are occupied.
 func (rs *regState) findFree() int {
 	for _, r := range rs.pool {
@@ -478,7 +578,7 @@ func (rs *regState) removeLRU(valueID int) {
 // WITHOUT calling freeDeadValues between them. This ensures that each phi
 // gets a distinct register. After all phis are allocated, we process non-phi
 // instructions normally.
-func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carried map[int]PhysReg) {
+func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carried map[int]PhysReg, temporaryCarried map[int]bool) map[int]PhysReg {
 	gprs := newRegState(allocatableGPRs[:], false)
 	fprs := newRegState(allocatableFPRs[:], true)
 
@@ -501,8 +601,10 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 			continue
 		}
 		// Pin FIRST so that the subsequent assign's touchLRU is a no-op.
-		// Pinned phis are never eviction candidates: a body instruction
-		// cannot take this register and clobber the loop-carried value.
+		// Pinned values are never eviction candidates while live: a body
+		// instruction cannot take this register and clobber the carried value.
+		// Single-predecessor carries are unpinned at their last use below;
+		// loop/header carries remain pinned for the full block.
 		rs.pin(valID)
 		rs.assign(valID, pr.Reg)
 		carriedIDs[valID] = true
@@ -578,6 +680,7 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 				fprs.touchLRU(arg.ID)
 			}
 		}
+		freeTemporaryCarriedInputs(instr, gprs, fprs, lastUse, temporaryCarried)
 
 		// Determine which pool to use based on the instruction's result type.
 		wantFloat := needsFloatReg(instr)
@@ -625,12 +728,29 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 		// Free registers for values that die at this instruction.
 		// A value dies at its last use; we free it after the instruction
 		// that uses it last, since the output was already allocated above.
-		freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse)
+		freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse, temporaryCarried)
+	}
+	return gprs.snapshot(false)
+}
+
+func freeTemporaryCarriedInputs(instr *Instr, gprs, fprs *regState, lastUse map[int]int, temporaryCarried map[int]bool) {
+	if len(temporaryCarried) == 0 {
+		return
+	}
+	for _, arg := range instr.Args {
+		if arg == nil || !temporaryCarried[arg.ID] || lastUse[arg.ID] != instr.ID {
+			continue
+		}
+		gprs.unpin(arg.ID)
+		fprs.unpin(arg.ID)
+		gprs.free(arg.ID)
+		fprs.free(arg.ID)
+		delete(temporaryCarried, arg.ID)
 	}
 }
 
 // freeDeadValues frees registers for values whose last use is at instrIdx.
-func freeDeadValues(block *Block, instrIdx int, alloc *RegAllocation, gprs, fprs *regState, lastUse map[int]int) {
+func freeDeadValues(block *Block, instrIdx int, alloc *RegAllocation, gprs, fprs *regState, lastUse map[int]int, temporaryCarried map[int]bool) {
 	instr := block.Instrs[instrIdx]
 	// Check all input args -- if this instruction is their last use, free them.
 	for _, arg := range instr.Args {
@@ -639,6 +759,11 @@ func freeDeadValues(block *Block, instrIdx int, alloc *RegAllocation, gprs, fprs
 			continue
 		}
 		if lu == instr.ID {
+			if temporaryCarried[arg.ID] {
+				gprs.unpin(arg.ID)
+				fprs.unpin(arg.ID)
+				delete(temporaryCarried, arg.ID)
+			}
 			gprs.free(arg.ID)
 			fprs.free(arg.ID)
 		}
@@ -682,4 +807,212 @@ func computeLastUse(fn *Function) map[int]int {
 		}
 	}
 	return lastUse
+}
+
+func (rs *regState) snapshot(isFloat bool) map[int]PhysReg {
+	out := make(map[int]PhysReg, len(rs.idToReg))
+	for valueID, reg := range rs.idToReg {
+		out[valueID] = PhysReg{Reg: reg, IsFloat: isFloat}
+	}
+	return out
+}
+
+func computeBlockLiveness(fn *Function) (map[int]map[int]bool, map[int]map[int]bool) {
+	use := make(map[int]map[int]bool, len(fn.Blocks))
+	def := make(map[int]map[int]bool, len(fn.Blocks))
+
+	for _, block := range fn.Blocks {
+		useSet := make(map[int]bool)
+		defSet := make(map[int]bool)
+		definedSoFar := make(map[int]bool)
+		for _, instr := range block.Instrs {
+			if instr.Op == OpPhi {
+				defSet[instr.ID] = true
+				definedSoFar[instr.ID] = true
+			}
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op == OpPhi {
+				continue
+			}
+			for _, arg := range instr.Args {
+				if arg != nil && !definedSoFar[arg.ID] {
+					useSet[arg.ID] = true
+				}
+			}
+			if !instr.Op.IsTerminator() {
+				defSet[instr.ID] = true
+				definedSoFar[instr.ID] = true
+			}
+		}
+		use[block.ID] = useSet
+		def[block.ID] = defSet
+	}
+
+	liveIn := make(map[int]map[int]bool, len(fn.Blocks))
+	liveOut := make(map[int]map[int]bool, len(fn.Blocks))
+	for _, block := range fn.Blocks {
+		liveIn[block.ID] = make(map[int]bool)
+		liveOut[block.ID] = make(map[int]bool)
+	}
+
+	changed := true
+	for changed {
+		changed = false
+		for i := len(fn.Blocks) - 1; i >= 0; i-- {
+			block := fn.Blocks[i]
+			nextOut := make(map[int]bool)
+			for _, succ := range block.Succs {
+				for valueID := range liveIn[succ.ID] {
+					nextOut[valueID] = true
+				}
+				predIdx := -1
+				for i, pred := range succ.Preds {
+					if pred == block {
+						predIdx = i
+						break
+					}
+				}
+				if predIdx >= 0 {
+					for _, instr := range succ.Instrs {
+						if instr.Op != OpPhi {
+							break
+						}
+						if predIdx < len(instr.Args) && instr.Args[predIdx] != nil {
+							nextOut[instr.Args[predIdx].ID] = true
+						}
+					}
+				}
+			}
+
+			nextIn := make(map[int]bool, len(use[block.ID])+len(nextOut))
+			for valueID := range use[block.ID] {
+				nextIn[valueID] = true
+			}
+			for valueID := range nextOut {
+				if !def[block.ID][valueID] {
+					nextIn[valueID] = true
+				}
+			}
+
+			if !sameBoolSet(liveOut[block.ID], nextOut) {
+				liveOut[block.ID] = nextOut
+				changed = true
+			}
+			if !sameBoolSet(liveIn[block.ID], nextIn) {
+				liveIn[block.ID] = nextIn
+				changed = true
+			}
+		}
+	}
+
+	return liveIn, liveOut
+}
+
+func computeInstrLiveAfter(fn *Function, blockLiveOut map[int]map[int]bool) map[int]map[int]bool {
+	liveAfter := make(map[int]map[int]bool)
+	for _, block := range fn.Blocks {
+		live := cloneIntBoolSet(blockLiveOut[block.ID])
+		for i := len(block.Instrs) - 1; i >= 0; i-- {
+			instr := block.Instrs[i]
+			liveAfter[instr.ID] = cloneIntBoolSet(live)
+			if instr.Op != OpPhi && !instr.Op.IsTerminator() {
+				delete(live, instr.ID)
+			}
+			if instr.Op != OpPhi {
+				for _, arg := range instr.Args {
+					if arg != nil {
+						live[arg.ID] = true
+					}
+				}
+			}
+		}
+	}
+	return liveAfter
+}
+
+func computeSinglePredRawIntStoreElision(fn *Function, alloc *RegAllocation, blockLiveIn map[int]map[int]bool) map[int]bool {
+	defs := computeValueDefs(fn)
+	defBlock := make(map[int]int, len(defs))
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !instr.Op.IsTerminator() {
+				defBlock[instr.ID] = block.ID
+			}
+		}
+	}
+
+	result := make(map[int]bool)
+	for valueID, def := range defs {
+		if !isRawIntCarryValue(def) {
+			continue
+		}
+		pr, ok := alloc.ValueRegs[valueID]
+		if !ok || pr.IsFloat {
+			continue
+		}
+		db, ok := defBlock[valueID]
+		if !ok {
+			continue
+		}
+		hasCrossUse := false
+		eligible := true
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr.Op == OpPhi {
+					for _, arg := range instr.Args {
+						if arg != nil && arg.ID == valueID {
+							hasCrossUse = true
+							eligible = false
+							break
+						}
+					}
+					if !eligible {
+						break
+					}
+					continue
+				}
+				for _, arg := range instr.Args {
+					if arg == nil || arg.ID != valueID || block.ID == db {
+						continue
+					}
+					hasCrossUse = true
+					if len(block.Preds) != 1 || block.Preds[0].ID != db || !blockLiveIn[block.ID][valueID] {
+						eligible = false
+						break
+					}
+				}
+				if !eligible {
+					break
+				}
+			}
+			if !eligible {
+				break
+			}
+		}
+		if hasCrossUse && eligible {
+			result[valueID] = true
+		}
+	}
+	return result
+}
+
+func cloneIntBoolSet(in map[int]bool) map[int]bool {
+	out := make(map[int]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func sameBoolSet(a, b map[int]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		if b[k] != av {
+			return false
+		}
+	}
+	return true
 }

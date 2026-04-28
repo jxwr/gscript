@@ -231,7 +231,7 @@ func (ec *emitContext) storeRawInt(srcReg jit.Reg, valueID int) {
 		// Cross-block: write NaN-boxed to memory (box then store).
 		// Skip if the value is only used as a phi arg to a loop header
 		// (the phi move reads from the register via emitPhiMoveRawInt).
-		if ec.crossBlockLive[valueID] && !ec.loopPhiOnlyArgs[valueID] {
+		if ec.crossBlockLive[valueID] && !ec.loopPhiOnlyArgs[valueID] && !ec.rawIntCarryNoStore[valueID] {
 			jit.EmitBoxIntFast(ec.asm, jit.X0, dstReg, mRegTagInt)
 			ec.storeValue(jit.X0, valueID)
 		}
@@ -409,7 +409,7 @@ func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 		if argReg != reg {
 			ec.asm.MOVreg(reg, argReg)
 		}
-		if ec.crossBlockLive[instr.ID] && !ec.loopPhiOnlyArgs[instr.ID] {
+		if ec.crossBlockLive[instr.ID] && !ec.loopPhiOnlyArgs[instr.ID] && !ec.rawIntCarryNoStore[instr.ID] {
 			jit.EmitBoxIntFast(ec.asm, jit.X4, reg, mRegTagInt)
 			ec.storeValue(jit.X4, instr.ID)
 		}

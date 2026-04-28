@@ -20,6 +20,59 @@ import (
 	"testing"
 )
 
+func TestRegallocCarriesRawIntIntoSinglePredBlock(t *testing.T) {
+	fn := &Function{NumRegs: 1}
+
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	b1 := &Block{ID: 1, defs: make(map[int]*Value)}
+	b2 := &Block{ID: 2, defs: make(map[int]*Value)}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2}
+
+	b0.Succs = []*Block{b1, b2}
+	b1.Preds = []*Block{b0}
+	b2.Preds = []*Block{b0}
+
+	vN := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 42}
+	vCond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b0, Aux: 1}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b0,
+		Args: []*Value{vCond.Value()},
+		Aux:  int64(b1.ID), Aux2: int64(b2.ID)}
+	b0.Instrs = []*Instr{vN, vCond, b0Term}
+
+	vDummyFn := &Instr{ID: fn.newValueID(), Op: OpConstNil, Type: TypeUnknown, Block: b1}
+	vDummyCall := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeInt, Block: b1,
+		Args: []*Value{vDummyFn.Value(), vN.Value()}}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b1,
+		Args: []*Value{vN.Value()}}
+	b1.Instrs = []*Instr{vDummyFn, vDummyCall, b1Term}
+
+	vOne := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b2, Aux: 1}
+	vSub := &Instr{ID: fn.newValueID(), Op: OpSubInt, Type: TypeInt, Block: b2,
+		Args: []*Value{vN.Value(), vOne.Value()}}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b2,
+		Args: []*Value{vSub.Value()}}
+	b2.Instrs = []*Instr{vOne, vSub, b2Term}
+
+	alloc := AllocateRegisters(fn)
+	nReg, ok := alloc.ValueRegs[vN.ID]
+	if !ok || nReg.IsFloat {
+		t.Fatalf("carried raw int v%d has no GPR assignment: %+v", vN.ID, alloc.ValueRegs[vN.ID])
+	}
+	oneReg, ok := alloc.ValueRegs[vOne.ID]
+	if !ok || oneReg.IsFloat {
+		t.Fatalf("successor const v%d has no GPR assignment: %+v", vOne.ID, alloc.ValueRegs[vOne.ID])
+	}
+	if oneReg.Reg == nReg.Reg {
+		t.Fatalf("single-predecessor successor reused X%d for v%d before using live-in raw int v%d",
+			nReg.Reg, vOne.ID, vN.ID)
+	}
+	subReg, ok := alloc.ValueRegs[vSub.ID]
+	if !ok || subReg.IsFloat {
+		t.Fatalf("successor sub v%d has no GPR assignment: %+v", vSub.ID, alloc.ValueRegs[vSub.ID])
+	}
+}
+
 // TestRegallocCarriesLoopHeaderPhis_Synthetic constructs a minimal loop IR by
 // hand and asserts that the body block's MulFloat result is NOT placed in the
 // same FPR as the header's float phi.

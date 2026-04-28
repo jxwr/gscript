@@ -1682,16 +1682,23 @@ func (ec *emitContext) computeLiveAcrossCall(callInstr *Instr) (gprLive map[int]
 		}
 	}
 
-	// Check GPRs: is the active value used after the call or cross-block live?
+	liveOut := map[int]bool(nil)
+	if callInstr.Block != nil {
+		liveOut = ec.blockLiveOut[callInstr.Block.ID]
+	}
+
+	// Check GPRs: is the active value used after the call or live out of
+	// this block? blockLiveOut is point-bounded; crossBlockLive is too broad
+	// for values carried into this block and already consumed before the call.
 	for valueID := range ec.activeRegs {
-		if usedAfter[valueID] || ec.crossBlockLive[valueID] {
+		if usedAfter[valueID] || liveOut[valueID] {
 			gprLive[valueID] = true
 		}
 	}
 
 	// Check FPRs: same criterion.
 	for valueID := range ec.activeFPRegs {
-		if usedAfter[valueID] || ec.crossBlockLive[valueID] {
+		if usedAfter[valueID] || liveOut[valueID] {
 			fprLive[valueID] = true
 		}
 	}
