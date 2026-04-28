@@ -171,6 +171,104 @@ result := mixed_append(50)
 	compareTier2Result(t, src, "result")
 }
 
+func TestTier2_SetTableArrayIntSparseWithinCapacityStaysNative(t *testing.T) {
+	src := `
+func fill(n) {
+    arr := {}
+    for i := 1; i <= n; i++ {
+        arr[i] = i
+    }
+    return arr[1] + arr[n]
+}
+`
+	top := compileTop(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("fill")
+	if fnVal.IsNil() {
+		t.Fatal("fill function not found")
+	}
+	if _, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(16)}); err != nil {
+		t.Fatalf("warm fill: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	fnProto := findProtoByName(top, "fill")
+	if fnProto == nil {
+		t.Fatal("fill proto not found")
+	}
+	if err := tm.CompileTier2(fnProto); err != nil {
+		t.Fatalf("CompileTier2(fill): %v", err)
+	}
+	got, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(16)})
+	if err != nil {
+		t.Fatalf("Tier2 fill: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 17 {
+		t.Fatalf("fill result = %v, want 17", got)
+	}
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "fill" && site.ExitName == "ExitTableExit" && site.Reason == "SetTable" {
+			t.Fatalf("capacity-present typed sparse store should stay native, saw exit site %#v", site)
+		}
+	}
+}
+
+func TestTier2_SetTableArrayBoolNilSparseFallsBack(t *testing.T) {
+	src := `
+func clear_sparse(v) {
+    arr := {}
+    for i := 1; i <= 16; i++ {
+        arr[i] = true
+    }
+    arr[20] = v
+    return arr[1]
+}
+`
+	top := compileTop(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("clear_sparse")
+	if fnVal.IsNil() {
+		t.Fatal("clear_sparse function not found")
+	}
+	if _, err := v.CallValue(fnVal, []runtime.Value{runtime.NilValue()}); err != nil {
+		t.Fatalf("warm clear_sparse: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	fnProto := findProtoByName(top, "clear_sparse")
+	if fnProto == nil {
+		t.Fatal("clear_sparse proto not found")
+	}
+	if err := tm.CompileTier2(fnProto); err != nil {
+		t.Fatalf("CompileTier2(clear_sparse): %v", err)
+	}
+	got, err := v.CallValue(fnVal, []runtime.Value{runtime.NilValue()})
+	if err != nil {
+		t.Fatalf("Tier2 clear_sparse: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsBool() || !got[0].Bool() {
+		t.Fatalf("clear_sparse result = %v, want true", got)
+	}
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "clear_sparse" && site.ExitName == "ExitTableExit" && site.Reason == "SetTable" {
+			return
+		}
+	}
+	t.Fatalf("nil sparse bool write should fall back through SetTable, sites=%#v", tm.ExitStats().Sites)
+}
+
 func TestTier2_TableArrayLoadExitDoesNotReplayPriorSetTable(t *testing.T) {
 	src := `
 func bump_then_read(arr, key) {

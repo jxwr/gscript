@@ -24,11 +24,15 @@ func (h *tablePreallocHint) observeArrayHint(hint int64) {
 	}
 }
 
-func (h *tablePreallocHint) observeIntKeyFeedback(feedback vm.TableKeyFeedback) {
+func (h *tablePreallocHint) observeIntKeyFeedback(feedback vm.TableKeyFeedback, allowLargeLoopHeadroom bool) {
 	if !feedback.HasIntKey {
 		return
 	}
-	h.observeArrayHint(int64(feedback.MaxIntKey) + 1)
+	needed := int64(feedback.MaxIntKey) + 1
+	if allowLargeLoopHeadroom && needed >= tier2FeedbackOuterLoopArrayHint {
+		needed *= 2
+	}
+	h.observeArrayHint(needed)
 }
 
 // TablePreallocHintPass annotates empty table allocations that feed observed
@@ -63,12 +67,14 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			}
 			hint := candidates[tblDef.ID]
 			arrayHint := int64(tier2FeedbackArrayHint)
+			largeLoopBuilder := false
 			if li != nil && tblDef.Block != nil && li.loopBlocks[block.ID] && !li.loopBlocks[tblDef.Block.ID] {
 				arrayHint = tier2FeedbackOuterLoopArrayHint
+				largeLoopBuilder = true
 			}
 			hint.observeArrayHint(arrayHint)
 			if fn.Proto != nil && fn.Proto.TableKeyFeedback != nil && instr.HasSource && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.TableKeyFeedback) {
-				hint.observeIntKeyFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC])
+				hint.observeIntKeyFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC], largeLoopBuilder)
 			}
 			if hasMixedValue {
 				hint.mixed = true

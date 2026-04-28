@@ -14,15 +14,36 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
+const tier2SparseArrayMax = 1024 // must match runtime.sparseArrayMax
+
 // emitTypedArraySetBoundsOrAppendCheck accepts either an in-bounds typed-array
 // store or a capacity-only append at key == len. The hot in-bounds case falls
 // through to the caller's store block; append is emitted out-of-line by
 // emitTypedArraySetAppendPath.
 func emitTypedArraySetBoundsOrAppendCheck(asm *jit.Assembler, tableReg, keyReg, lenReg jit.Reg, lenOff int, appendLabel, deoptLabel string) {
+	emitTypedArraySetBoundsAppendOrSparseCheck(asm, tableReg, keyReg, lenReg, lenOff, appendLabel, "", deoptLabel)
+}
+
+// emitTypedArraySetBoundsAppendOrSparseCheck is the Tier 2 variant that can
+// route key > len to a typed sparse-grow path when the backing has capacity.
+func emitTypedArraySetBoundsAppendOrSparseCheck(asm *jit.Assembler, tableReg, keyReg, lenReg jit.Reg, lenOff int, appendLabel, sparseLabel, deoptLabel string) {
 	asm.LDR(lenReg, tableReg, lenOff)
 	asm.CMPreg(keyReg, lenReg)
 	asm.BCond(jit.CondEQ, appendLabel)
-	asm.BCond(jit.CondGT, deoptLabel)
+	if sparseLabel != "" {
+		asm.BCond(jit.CondGT, sparseLabel)
+	} else {
+		asm.BCond(jit.CondGT, deoptLabel)
+	}
+}
+
+// emitTypedArraySetBoundsOnlyCheck accepts only in-bounds stores. It is used
+// for nil bool-array writes because RawSetInt clears existing bool slots but
+// does not grow typed arrays for nil sparse/append writes.
+func emitTypedArraySetBoundsOnlyCheck(asm *jit.Assembler, tableReg, keyReg, lenReg jit.Reg, lenOff int, deoptLabel string) {
+	asm.LDR(lenReg, tableReg, lenOff)
+	asm.CMPreg(keyReg, lenReg)
+	asm.BCond(jit.CondGE, deoptLabel)
 }
 
 // emitTypedArraySetAppendPath extends the typed array length for key == len
@@ -31,6 +52,25 @@ func emitTypedArraySetBoundsOrAppendCheck(asm *jit.Assembler, tableReg, keyReg, 
 // semantics.
 func emitTypedArraySetAppendPath(asm *jit.Assembler, tableReg, keyReg, scratchReg jit.Reg, lenOff, capOff int, appendLabel, deoptLabel, storeLabel string) {
 	asm.Label(appendLabel)
+	asm.LDR(scratchReg, tableReg, jit.TableOffImap)
+	asm.CBNZ(scratchReg, deoptLabel)
+	asm.LDR(scratchReg, tableReg, jit.TableOffHash)
+	asm.CBNZ(scratchReg, deoptLabel)
+	asm.LDR(scratchReg, tableReg, capOff)
+	asm.CMPreg(keyReg, scratchReg)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.ADDimm(scratchReg, keyReg, 1)
+	asm.STR(scratchReg, tableReg, lenOff)
+	asm.B(storeLabel)
+}
+
+// emitTypedArraySetSparsePath handles key > len when the typed backing already
+// has capacity. This mirrors RawSetInt's typed sparse-expansion path and stays
+// conservative by requiring empty imap/hash because it does not run absorbKeys.
+func emitTypedArraySetSparsePath(asm *jit.Assembler, tableReg, keyReg, scratchReg jit.Reg, lenOff, capOff int, sparseLabel, deoptLabel, storeLabel string) {
+	asm.Label(sparseLabel)
+	asm.CMPimm(keyReg, tier2SparseArrayMax)
+	asm.BCond(jit.CondGE, deoptLabel)
 	asm.LDR(scratchReg, tableReg, jit.TableOffImap)
 	asm.CBNZ(scratchReg, deoptLabel)
 	asm.LDR(scratchReg, tableReg, jit.TableOffHash)
@@ -1016,8 +1056,9 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			// Constant int bypass: load immediate, skip tag check and unbox.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
 			intAppendLabel := ec.uniqueLabel("settable_int_append")
+			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
 			asm.LoadImm64(jit.X4, val)
-			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
+			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 			asm.STRreg(jit.X4, jit.X2, jit.X1)
@@ -1027,15 +1068,17 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			}
 			asm.B(doneLabel)
 			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
 		} else if ec.hasReg(instr.Args[2].ID) && ec.rawIntRegs[instr.Args[2].ID] {
 			// Raw int register bypass: value already unboxed, skip tag check.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
 			intAppendLabel := ec.uniqueLabel("settable_int_append")
+			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
 			reg := ec.physReg(instr.Args[2].ID)
 			if reg != jit.X4 {
 				asm.MOVreg(jit.X4, reg)
 			}
-			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
+			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 			asm.STRreg(jit.X4, jit.X2, jit.X1)
@@ -1045,16 +1088,18 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			}
 			asm.B(doneLabel)
 			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
 		} else if ec.irTypes[instr.Args[2].ID] == TypeInt {
 			// Known-int value: unbox directly and skip the redundant tag check.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
 			intAppendLabel := ec.uniqueLabel("settable_int_append")
+			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
 			valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
 			if valReg2 != jit.X4 {
 				asm.MOVreg(jit.X4, valReg2)
 			}
 			asm.SBFX(jit.X4, jit.X4, 0, 48)
-			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
+			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 			asm.STRreg(jit.X4, jit.X2, jit.X1)
@@ -1064,10 +1109,12 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			}
 			asm.B(doneLabel)
 			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
 		} else {
 			// Load value to store and check it's an integer.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
 			intAppendLabel := ec.uniqueLabel("settable_int_append")
+			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
 			valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
 			if valReg2 != jit.X4 {
 				asm.MOVreg(jit.X4, valReg2)
@@ -1078,7 +1125,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.BCond(jit.CondNE, deoptLabel) // value not int -> deopt
 			// Unbox int64 from NaN-boxed value.
 			asm.SBFX(jit.X4, jit.X4, 0, 48)
-			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, deoptLabel)
+			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
 			asm.STRreg(jit.X4, jit.X2, jit.X1)            // intArray[key] = int64
@@ -1088,6 +1135,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			}
 			asm.B(doneLabel)
 			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
 		}
 	}
 
@@ -1097,6 +1145,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		// Load value to store.
 		floatStoreLabel := ec.uniqueLabel("settable_float_store")
 		floatAppendLabel := ec.uniqueLabel("settable_float_append")
+		floatSparseLabel := ec.uniqueLabel("settable_float_sparse")
 		valRegFloat := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
 		if valRegFloat != jit.X4 {
 			asm.MOVreg(jit.X4, valRegFloat)
@@ -1107,7 +1156,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
 			asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
 		}
-		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, deoptLabel)
+		emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, floatSparseLabel, deoptLabel)
 		asm.Label(floatStoreLabel)
 		// Float64 bits ARE the NaN-boxed representation — store directly.
 		asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
@@ -1119,6 +1168,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		}
 		asm.B(doneLabel)
 		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, deoptLabel, floatStoreLabel)
+		emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatSparseLabel, deoptLabel, floatStoreLabel)
 	}
 
 	if emitBoolArrayPath {
@@ -1130,9 +1180,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			// false(0)→byte 1, true(1)→byte 2
 			boolStoreLabel := ec.uniqueLabel("settable_bool_store")
 			boolAppendLabel := ec.uniqueLabel("settable_bool_append")
+			boolSparseLabel := ec.uniqueLabel("settable_bool_sparse")
 			byteVal := uint16(boolVal + 1)
 			asm.MOVimm16(jit.X4, byteVal)
-			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, deoptLabel)
+			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
 			asm.Label(boolStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
 			asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
@@ -1142,10 +1193,12 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			}
 			asm.B(doneLabel)
 			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
+			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolSparseLabel, deoptLabel, boolStoreLabel)
 		} else {
 			// Load value to store.
 			boolStoreLabel := ec.uniqueLabel("settable_bool_store")
 			boolAppendLabel := ec.uniqueLabel("settable_bool_append")
+			boolSparseLabel := ec.uniqueLabel("settable_bool_sparse")
 			valRegBool := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
 			if valRegBool != jit.X4 {
 				asm.MOVreg(jit.X4, valRegBool)
@@ -1160,10 +1213,11 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
 			asm.CMPreg(jit.X5, jit.X6)
 			asm.BCond(jit.CondNE, deoptLabel) // not bool, not nil → deopt
-			// Nil → byte 0.
+			// Nil clears an existing bool slot only. Appending/sparse-growing
+			// nil must deopt so RawSetInt can preserve table length semantics.
 			asm.MOVimm16(jit.X4, 0)
-			setByteLabel := ec.uniqueLabel("settable_bool_store")
-			asm.B(setByteLabel)
+			emitTypedArraySetBoundsOnlyCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, deoptLabel)
+			asm.B(boolStoreLabel)
 			asm.Label(boolOkLabel)
 			// Bool: extract payload bit 0. false=0xFFFD000000000000 (payload=0) → byte 1
 			//                                true=0xFFFD000000000001 (payload=1) → byte 2
@@ -1171,8 +1225,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.LoadImm64(jit.X5, 1)
 			asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
 			asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
-			asm.Label(setByteLabel)
-			emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, deoptLabel)
+			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
 			asm.Label(boolStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
 			asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
@@ -1182,6 +1235,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			}
 			asm.B(doneLabel)
 			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
+			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolSparseLabel, deoptLabel, boolStoreLabel)
 		}
 	}
 

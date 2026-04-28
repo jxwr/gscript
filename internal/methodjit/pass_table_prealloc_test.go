@@ -136,6 +136,54 @@ func TestTablePreallocHintPassUsesObservedMaxIntKeyAndCarriesKind(t *testing.T) 
 	}
 }
 
+func TestTablePreallocHintPassAddsHeadroomForLargeOuterLoopFeedback(t *testing.T) {
+	const sourcePC = 2
+	observedMax := int64(tier2FeedbackOuterLoopArrayHint + 8191)
+	proto := &vm.FuncProto{
+		Name:             "prealloc_large_loop",
+		Code:             make([]uint32, 4),
+		TableKeyFeedback: vm.NewTableKeyFeedbackVector(4),
+	}
+	proto.TableKeyFeedback[sourcePC].ObserveIntKey(runtime.IntValue(observedMax))
+
+	fn := &Function{Proto: proto, NumRegs: 3}
+	entry, header, body, exit := buildSimpleLoop(fn)
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: entry}
+	entryJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: entry, Aux: int64(header.ID)}
+	entry.Instrs = []*Instr{tbl, entryJump}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: header, Aux: 1}
+	headerBranch := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Block: header, Aux: int64(body.ID), Aux2: int64(exit.ID)}
+	header.Instrs = []*Instr{phi, cond, headerBranch}
+
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: body}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: body}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{tbl.Value(), key.Value(), val.Value()}, Aux2: int64(vm.FBKindInt),
+		Block: body, HasSource: true, SourcePC: sourcePC}
+	bodyJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: body, Aux: int64(header.ID)}
+	body.Instrs = []*Instr{key, val, set, bodyJump}
+
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: exit, Args: []*Value{tbl.Value()}}
+	exit.Instrs = []*Instr{ret}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	newTable := got.Entry.Instrs[0]
+	want := (observedMax + 1) * 2
+	if newTable.Aux != want {
+		t.Fatalf("array hint = %d, want %d", newTable.Aux, want)
+	}
+	_, kind := unpackNewTableAux2(newTable.Aux2)
+	if kind != runtime.ArrayInt {
+		t.Fatalf("array kind = %d, want %d", kind, runtime.ArrayInt)
+	}
+}
+
 func TestTablePreallocHintPassKeepsMixedForTableValues(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_mixed"}, NumRegs: 3}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}
