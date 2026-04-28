@@ -280,24 +280,30 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 
 	asm := ec.asm
 	tblValueID := instr.Args[0].ID
+	valueID := instr.Args[1].ID
 
 	deoptLabel := ec.uniqueLabel("setfield_deopt")
-	// Load value to store into X3 first (before we use X0 for the table).
-	valReg := ec.resolveValueNB(instr.Args[1].ID, jit.X3)
-	if valReg != jit.X3 {
-		asm.MOVreg(jit.X3, valReg)
+	valStore := ec.prepareFieldStoreValue(valueID)
+	if !valStore.isFPR {
+		// Load boxed values into X3 first, before table preparation uses
+		// X0-X2. X3 is scratch but not touched by emitPrepareFieldTablePtr.
+		valReg := ec.resolveValueNB(valueID, jit.X3)
+		if valReg != jit.X3 {
+			asm.MOVreg(jit.X3, valReg)
+		}
+		valStore.gpr = jit.X3
 	}
 
 	if ec.hasFieldSvalsCache(tblValueID, shapeID) {
-		asm.STR(jit.X3, jit.X1, fieldIdx*jit.ValueSize)
+		ec.emitPreparedFieldStore(valStore, fieldIdx)
 		return
 	}
 
 	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
 
 	// Direct field store: svals[fieldIndex] = value.
-	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)      // X1 = svals data pointer
-	asm.STR(jit.X3, jit.X1, fieldIdx*jit.ValueSize) // svals[fieldIndex] = value
+	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
+	ec.emitPreparedFieldStore(valStore, fieldIdx)
 	if shapeWasVerified {
 		ec.rememberFieldSvalsCache(tblValueID, shapeID)
 		return
@@ -320,6 +326,27 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	ec.rawIntRegs = savedRawIntRegs
 
 	asm.Label(doneLabel)
+}
+
+type fieldStoreValue struct {
+	isFPR bool
+	fpr   jit.FReg
+	gpr   jit.Reg
+}
+
+func (ec *emitContext) prepareFieldStoreValue(valueID int) fieldStoreValue {
+	if ec.hasFPReg(valueID) {
+		return fieldStoreValue{isFPR: true, fpr: ec.physFPReg(valueID)}
+	}
+	return fieldStoreValue{gpr: jit.X3}
+}
+
+func (ec *emitContext) emitPreparedFieldStore(val fieldStoreValue, fieldIdx int) {
+	if val.isFPR {
+		ec.asm.FSTRd(val.fpr, jit.X1, fieldIdx*jit.ValueSize)
+		return
+	}
+	ec.asm.STR(val.gpr, jit.X1, fieldIdx*jit.ValueSize)
 }
 
 // emitGetFieldExit emits a table-exit for OpGetField when no inline cache
