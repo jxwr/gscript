@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="67-the-closure-was-already-a-pointer">The Closure Was Already a Pointer</a>
+  <p>VM closure calls no longer pay the generic <code>Ptr()</code>/interface lookup toll on the hot path. <code>Value.VMClosurePointer()</code> decodes closure-tagged values directly while preserving the legacy fallback, and the VM plus method JIT call paths now share that fast extraction. The focused guard moved <code>binary_trees</code> default JIT from about 0.888s to 0.745s and trimmed <code>closure_bench</code> without disturbing <code>nbody</code>.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="66-the-callee-kept-running">The Callee Kept Running</a>
   <p>Replay safety and resume safety are now separate native-call contracts. <code>DirectEntryPtr</code> stays reserved for callers that can replay a failed call, while <code>Tier2DirectEntryPtr</code> lets Tier 2 callers report a callee-native exit, run the callee's own fallback, and resume the caller at the call continuation. The protocol restored <code>nbody</code> from the replay-gate regression back to about 0.066s without reopening the side-effect duplication bug.</p>
 </div>
