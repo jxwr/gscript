@@ -150,8 +150,9 @@ func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
 	asm := ec.asm
 
 	if ec.numericMode && ec.isSelfGlobal(instr) {
-		ec.emitBoxCurrentClosure(jit.X0, jit.X1)
-		ec.storeResultNB(jit.X0, instr.ID)
+		// In the private raw-int numeric self ABI, static self calls do not
+		// consume the boxed function value on the success path. Fallback
+		// materializes the call frame from BaselineClosurePtr instead.
 		return
 	}
 
