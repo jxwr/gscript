@@ -46,6 +46,68 @@ func TestTableArrayLower_LoadElimSharesHeaderLenData(t *testing.T) {
 	}
 }
 
+func TestTableArrayLower_SetsScalarElementTypeFromKind(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_scalar_type"}, NumRegs: 2}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny, Aux2: int64(vm.FBKindFloat),
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, get, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var load *Instr
+	for _, instr := range out.Entry.Instrs {
+		if instr.Op == OpTableArrayLoad {
+			load = instr
+			break
+		}
+	}
+	if load == nil {
+		t.Fatalf("expected lowered TableArrayLoad:\n%s", Print(out))
+	}
+	if load.Type != TypeFloat {
+		t.Fatalf("lowered float-array load Type=%s, want float:\n%s", load.Type, Print(out))
+	}
+}
+
+func TestTableArrayLower_PreservesMixedArrayFeedbackResultType(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_mixed_result_type"}, NumRegs: 2}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeTable, Aux2: int64(vm.FBKindMixed),
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, get, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var load *Instr
+	for _, instr := range out.Entry.Instrs {
+		if instr.Op == OpTableArrayLoad {
+			load = instr
+			break
+		}
+	}
+	if load == nil {
+		t.Fatalf("expected lowered TableArrayLoad:\n%s", Print(out))
+	}
+	if load.Type != TypeTable {
+		t.Fatalf("mixed-array row load Type=%s, want preserved table:\n%s", load.Type, Print(out))
+	}
+}
+
 func TestTableArrayLower_LICMHoistsHeaderLenData(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_licm"}, NumRegs: 2}
 	entry, header, body, exit := buildSimpleLoop(fn)

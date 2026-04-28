@@ -52,6 +52,9 @@ func TableArrayLowerPass(fn *Function) (*Function, error) {
 			instr.Args = []*Value{data.Value(), length.Value(), key}
 			instr.Aux = kind
 			instr.Aux2 = 0
+			if typ, ok := tableArrayKindElementType(kind); ok {
+				instr.Type = typ
+			}
 			newInstrs = append(newInstrs, instr)
 			functionRemarks(fn).Add("TableArrayLower", "changed", block.ID, instr.ID, instr.Op,
 				"split monomorphic GetTable into typed array header/data/load")
@@ -67,6 +70,19 @@ func tableArrayLowerableKind(kind int64) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func tableArrayKindElementType(kind int64) (Type, bool) {
+	switch kind {
+	case int64(vm.FBKindInt):
+		return TypeInt, true
+	case int64(vm.FBKindFloat):
+		return TypeFloat, true
+	case int64(vm.FBKindBool):
+		return TypeBool, true
+	default:
+		return TypeUnknown, false
 	}
 }
 

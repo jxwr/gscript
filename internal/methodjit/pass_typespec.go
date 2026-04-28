@@ -10,8 +10,6 @@
 
 package methodjit
 
-import "github.com/gscript/gscript/internal/vm"
-
 // TypeSpecializePass performs forward type propagation and replaces generic
 // arithmetic/comparison ops with type-specialized variants when operand types
 // are known.
@@ -130,6 +128,79 @@ func typeSpecializeCouldChange(fn *Function) bool {
 		}
 	}
 	return false
+}
+
+// TableArrayLoadTypeSpecializePass reruns the type-propagation/specialization
+// subset needed after TableArrayLower moves kind feedback from OpGetTable.Aux2
+// to OpTableArrayLoad.Aux. It deliberately does not run the full TypeSpec guard
+// insertion pipeline here: this point is after OverflowBoxing, so unrelated
+// generic arithmetic may intentionally remain boxed.
+func TableArrayLoadTypeSpecializePass(fn *Function) (*Function, error) {
+	if fn == nil {
+		return fn, nil
+	}
+	affected := tableArrayLoadTypeAffectedValues(fn)
+	if len(affected) == 0 {
+		return fn, nil
+	}
+
+	ts := &typeSpecializer{
+		types: make(map[int]Type),
+	}
+	ts.runTypePropagation(fn)
+
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || !affected[instr.ID] {
+				continue
+			}
+			beforeOp := instr.Op
+			beforeType := instr.Type
+			ts.specialize(instr)
+			if beforeOp != instr.Op {
+				functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
+					"specialized "+beforeOp.String()+" to "+instr.Op.String()+" after table-array lowering")
+			}
+			if t, ok := ts.types[instr.ID]; ok && t != TypeUnknown && instr.Type != t {
+				instr.Type = t
+			}
+			if beforeType != instr.Type && beforeOp == instr.Op {
+				functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
+					"inferred result type "+instr.Type.String()+" after table-array lowering")
+			}
+		}
+	}
+	return fn, nil
+}
+
+func tableArrayLoadTypeAffectedValues(fn *Function) map[int]bool {
+	affected := make(map[int]bool)
+	changed := true
+	for changed {
+		changed = false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr == nil || instr.Op == OpNop || affected[instr.ID] {
+					continue
+				}
+				if instr.Op == OpTableArrayLoad {
+					if _, ok := tableArrayKindElementType(instr.Aux); ok {
+						affected[instr.ID] = true
+						changed = true
+					}
+					continue
+				}
+				for _, arg := range instr.Args {
+					if arg != nil && affected[arg.ID] {
+						affected[instr.ID] = true
+						changed = true
+						break
+					}
+				}
+			}
+		}
+	}
+	return affected
 }
 
 func (ts *typeSpecializer) wouldSpecialize(instr *Instr) bool {
@@ -281,18 +352,18 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 	case OpClosure:
 		return TypeFunction
 
-	// GetTable with monomorphic Kind feedback (Aux2) returns a typed element.
+	// Typed table loads with monomorphic Kind feedback return a typed element.
 	// The runtime kind guard at emit_table_array.go:150 deopts on mismatch,
-	// so FBKindInt/Float/Bool → TypeInt/Float/Bool is sound. FBKindMixed stays
-	// unknown because the mixed array can hold any value type.
-	case OpGetTable:
-		switch instr.Aux2 {
-		case int64(vm.FBKindInt):
-			return TypeInt
-		case int64(vm.FBKindFloat):
-			return TypeFloat
-		case int64(vm.FBKindBool):
-			return TypeBool
+	// so FBKindInt/Float/Bool -> TypeInt/Float/Bool is sound. FBKindMixed
+	// stays unknown because the mixed array can hold any value type. After
+	// TableArrayLower, the same kind lives in OpTableArrayLoad.Aux.
+	case OpGetTable, OpTableArrayLoad:
+		kind := instr.Aux2
+		if instr.Op == OpTableArrayLoad {
+			kind = instr.Aux
+		}
+		if typ, ok := tableArrayKindElementType(kind); ok {
+			return typ
 		}
 		return TypeUnknown
 
