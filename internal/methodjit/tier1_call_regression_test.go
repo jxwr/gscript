@@ -10,6 +10,8 @@ import (
 	"os"
 	"testing"
 	"unsafe"
+
+	"github.com/gscript/gscript/internal/vm"
 )
 
 // TestSelfCall_ConstantsStrMoved verifies that the R28 Task 1 optimization
@@ -65,7 +67,7 @@ func TestSelfCall_ConstantsStrMoved(t *testing.T) {
 
 	// B (unconditional branch) opcode: bits[31:26] = 000101 → mask 0xFC000000, val 0x14000000.
 	const bMask = uint32(0xFC000000)
-	const bVal  = uint32(0x14000000)
+	const bVal = uint32(0x14000000)
 
 	// Count occurrences of the pattern:
 	//   insn[i]   == STR X27, [X19, #8]
@@ -106,5 +108,65 @@ func TestSelfCall_ConstantsStrMoved(t *testing.T) {
 			wantRestoreSTRs, normalCallRestoreSTRs)
 	} else {
 		t.Logf("STR X27,[X19,#8] in normal-call restore block: %d/%d ✓", normalCallRestoreSTRs, wantRestoreSTRs)
+	}
+}
+
+func TestSelfTailNoReturn_EligibilityQuicksortSecondCallOnly(t *testing.T) {
+	top := compileTop(t, `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            t := arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+            i = i + 1
+        }
+    }
+    t := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = t
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+`)
+	qs := findProtoByName(top, "quicksort")
+	if qs == nil {
+		t.Fatal("quicksort proto not found")
+	}
+	eligible := 0
+	for pc, inst := range qs.Code {
+		if vm.DecodeOp(inst) == vm.OP_CALL && isBaselineStaticSelfTailNoReturnCall(qs, inst, pc) {
+			eligible++
+		}
+	}
+	if eligible != 1 {
+		t.Fatalf("eligible self tail no-return calls = %d, want exactly quicksort's second recursive call", eligible)
+	}
+}
+
+func TestSelfTailNoReturn_RejectsClosureState(t *testing.T) {
+	top := compileTop(t, `
+func outer() {
+    x := 0
+    func f(n) {
+        if n <= 0 { return }
+        x = x + 1
+        f(n - 1)
+    }
+    f(3)
+    return x
+}
+`)
+	f := findProtoByName(top, "f")
+	if f == nil {
+		t.Fatal("f proto not found")
+	}
+	for pc, inst := range f.Code {
+		if vm.DecodeOp(inst) == vm.OP_CALL && isBaselineStaticSelfTailNoReturnCall(f, inst, pc) {
+			t.Fatalf("capturing self tail call at pc %d was incorrectly eligible", pc)
+		}
 	}
 }

@@ -132,6 +132,8 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	doneLabel := nextLabel("call_done")
 	exitHandleLabel := nextLabel("call_callee_exited")
 
+	emitBaselineSelfTailNoReturnFastPath(asm, inst, pc, callerProto, slowLabel)
+
 	// Precompute callee base offset (bytes) from caller's register base.
 	maxStack := callerProto.MaxStack
 	calleeBaseOff := maxStack * 8
@@ -533,6 +535,78 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	emitBaselineOpExitCommon(asm, vm.OP_CALL, pc, a, b, c)
 
 	asm.Label(doneLabel)
+}
+
+func emitBaselineSelfTailNoReturnFastPath(asm *jit.Assembler, inst uint32, pc int, callerProto *vm.FuncProto, slowLabel string) bool {
+	if !isBaselineStaticSelfTailNoReturnCall(callerProto, inst, pc) {
+		return false
+	}
+	a := vm.DecodeA(inst)
+	nArgs := vm.DecodeB(inst) - 1
+	fallthroughLabel := nextLabel("self_tail_fallthrough")
+
+	loadSlot(asm, jit.X0, a)
+	asm.CMPreg(jit.X0, mRegSelfClosure)
+	asm.BCond(jit.CondNE, fallthroughLabel)
+
+	// Preserve the existing tiering trigger: the threshold call exits through
+	// Go so the TieringManager can attempt promotion. Calls above/below the
+	// threshold stay in-frame and avoid the native-call stack entirely.
+	asm.LoadImm64(jit.X1, int64(uintptr(unsafe.Pointer(callerProto))))
+	asm.LDR(jit.X3, jit.X1, funcProtoOffCallCount)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, jit.X1, funcProtoOffCallCount)
+	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
+	asm.BCond(jit.CondEQ, slowLabel)
+
+	scratch := []jit.Reg{jit.X4, jit.X5, jit.X6, jit.X7}
+	for i := 0; i < nArgs; i++ {
+		loadSlot(asm, scratch[i], a+1+i)
+	}
+	for i := 0; i < nArgs; i++ {
+		storeSlot(asm, i, scratch[i])
+	}
+	asm.B(pcLabel(0))
+
+	asm.Label(fallthroughLabel)
+	return true
+}
+
+func isBaselineStaticSelfTailNoReturnCall(proto *vm.FuncProto, inst uint32, pc int) bool {
+	if proto == nil || proto.IsVarArg || !baselineSelfTailNoReturnSafe(proto) {
+		return false
+	}
+	a := vm.DecodeA(inst)
+	b := vm.DecodeB(inst)
+	c := vm.DecodeC(inst)
+	if b == 0 || c != 1 {
+		return false
+	}
+	nArgs := b - 1
+	if nArgs != proto.NumParams || nArgs > 4 {
+		return false
+	}
+	if pc+1 >= len(proto.Code) {
+		return false
+	}
+	next := proto.Code[pc+1]
+	if vm.DecodeOp(next) != vm.OP_RETURN || vm.DecodeB(next) != 1 {
+		return false
+	}
+	return isBaselineStaticSelfCall(proto, pc, a)
+}
+
+func baselineSelfTailNoReturnSafe(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	for _, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_CLOSURE, vm.OP_CLOSE, vm.OP_GETUPVAL, vm.OP_SETUPVAL, vm.OP_VARARG:
+			return false
+		}
+	}
+	return true
 }
 
 // emitDirectEntryPrologue emits the lightweight direct entry point for native BLR

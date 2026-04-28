@@ -599,6 +599,42 @@ result := f(10)
 `, "result")
 }
 
+func TestTier1_SelfTailNoReturn_QuicksortDescending(t *testing.T) {
+	// The second quicksort call is a no-return self tail call. Descending input
+	// makes that right-side tail path hot while still exercising table swaps.
+	compareVMvsJIT(t, `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            t := arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+            i = i + 1
+        }
+    }
+    t := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = t
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+
+N := 200
+arr := {}
+for i := 1; i <= N; i++ {
+    arr[i] = N + 1 - i
+}
+quicksort(arr, 1, N)
+result := true
+for i := 1; i < N; i++ {
+    if arr[i] > arr[i + 1] { result = false }
+}
+`, "result")
+}
+
 // ---------------------------------------------------------------------------
 // Self-call lightweight save/restore (register pass optimization)
 // ---------------------------------------------------------------------------
