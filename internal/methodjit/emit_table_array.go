@@ -273,11 +273,11 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 			ec.storeResultNB(jit.X0, instr.ID)
 		}
 	case int64(vm.FBKindFloat):
-		asm.LDRreg(jit.X0, jit.X2, jit.X1)
 		if instr.Type == TypeFloat {
-			asm.FMOVtoFP(jit.D0, jit.X0)
+			asm.FLDRdReg(jit.D0, jit.X2, jit.X1)
 			ec.storeRawFloat(jit.D0, instr.ID)
 		} else {
+			asm.LDRreg(jit.X0, jit.X2, jit.X1)
 			ec.storeResultNB(jit.X0, instr.ID)
 		}
 	case int64(vm.FBKindBool):
@@ -731,11 +731,11 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondGE, deoptLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
-	asm.LDRreg(jit.X0, jit.X2, jit.X1)              // raw float64 bits = floatArray[key]
 	if instr.Type == TypeFloat {
-		asm.FMOVtoFP(jit.D0, jit.X0)
+		asm.FLDRdReg(jit.D0, jit.X2, jit.X1) // raw float64 = floatArray[key]
 		ec.storeRawFloat(jit.D0, instr.ID)
 	} else {
+		asm.LDRreg(jit.X0, jit.X2, jit.X1) // raw float64 bits = floatArray[key]
 		// Float64 bits ARE the NaN-boxed value — no conversion needed!
 		ec.storeResultNB(jit.X0, instr.ID)
 	}
@@ -1146,25 +1146,35 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		floatStoreLabel := ec.uniqueLabel("settable_float_store")
 		floatAppendLabel := ec.uniqueLabel("settable_float_append")
 		floatSparseLabel := ec.uniqueLabel("settable_float_sparse")
-		valRegFloat := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-		if valRegFloat != jit.X4 {
-			asm.MOVreg(jit.X4, valRegFloat)
-		}
-		if ec.irTypes[instr.Args[2].ID] != TypeFloat {
-			// Check value is a float (NOT tagged — bits 50-62 NOT all set).
-			// Tagged values have (val >> 50) == 0x3FFF. Floats don't.
-			jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
-			asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
+		valueID := instr.Args[2].ID
+		valueIsTypedFloat := ec.irTypes[valueID] == TypeFloat
+		valueHasRawFPR := valueIsTypedFloat && ec.hasFPReg(valueID)
+		if !valueHasRawFPR {
+			valRegFloat := ec.resolveValueNB(valueID, jit.X4)
+			if valRegFloat != jit.X4 {
+				asm.MOVreg(jit.X4, valRegFloat)
+			}
+			if !valueIsTypedFloat {
+				// Check value is a float (NOT tagged — bits 50-62 NOT all set).
+				// Tagged values have (val >> 50) == 0x3FFF. Floats don't.
+				jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
+				asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
+			}
 		}
 		emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, floatSparseLabel, deoptLabel)
 		asm.Label(floatStoreLabel)
 		// Float64 bits ARE the NaN-boxed representation — store directly.
 		asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
-		asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
-		// Set keysDirty flag (elided if already set in this block).
+		// Set keysDirty while X0 still holds the table pointer.
 		if !ec.keysDirtyWritten[tblValueID] {
 			asm.MOVimm16(jit.X5, 1)
 			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		}
+		if valueHasRawFPR {
+			valFPR := ec.resolveRawFloat(valueID, jit.D0)
+			asm.FSTRdReg(valFPR, jit.X2, jit.X1) // floatArray[key] = float64
+		} else {
+			asm.STRreg(jit.X4, jit.X2, jit.X1) // floatArray[key] = float64 bits
 		}
 		asm.B(doneLabel)
 		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, deoptLabel, floatStoreLabel)

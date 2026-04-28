@@ -390,6 +390,26 @@ func TestFSTRd(t *testing.T) {
 	}
 }
 
+func TestFLDRdReg(t *testing.T) {
+	a := NewAssembler()
+	a.FLDRdReg(D0, X2, X1) // LDR D0, [X2, X1, LSL #3]
+	got := getInst(a, 0)
+	// 0xFC607800 | (1<<16) | (2<<5) | 0 = 0xFC617840
+	if got != 0xFC617840 {
+		t.Fatalf("FLDRdReg: got 0x%08X, want 0xFC617840", got)
+	}
+}
+
+func TestFSTRdReg(t *testing.T) {
+	a := NewAssembler()
+	a.FSTRdReg(D0, X2, X1) // STR D0, [X2, X1, LSL #3]
+	got := getInst(a, 0)
+	// 0xFC207800 | (1<<16) | (2<<5) | 0 = 0xFC217840
+	if got != 0xFC217840 {
+		t.Fatalf("FSTRdReg: got 0x%08X, want 0xFC217840", got)
+	}
+}
+
 func TestCSET(t *testing.T) {
 	a := NewAssembler()
 	a.CSET(X0, CondEQ) // CSET X0, EQ = CSINC X0, XZR, XZR, NE

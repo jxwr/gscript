@@ -97,6 +97,18 @@ func (a *Assembler) FSTRd(rt FReg, rn Reg, offset int) {
 	a.emit(0xFD000000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
 }
 
+// FLDRdReg: Dt = [Xn + Xm, LSL #3] (64-bit FP load, register offset)
+func (a *Assembler) FLDRdReg(rt FReg, rn, rm Reg) {
+	// LDR Dt, [Xn, Xm, LSL #3]: 11|11|1|10|01|1|Rm|011|1|10|Rn|Rt
+	a.emit(0xFC607800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
+}
+
+// FSTRdReg: [Xn + Xm, LSL #3] = Dt (64-bit FP store, register offset)
+func (a *Assembler) FSTRdReg(rt FReg, rn, rm Reg) {
+	// STR Dt, [Xn, Xm, LSL #3]: 11|11|1|10|00|1|Rm|011|1|10|Rn|Rt
+	a.emit(0xFC207800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
+}
+
 // FNEGd: Dd = -Dn (negate, double)
 // ARM64 encoding: 0|00|11110|01|1|00001|10000|Rn|Rd
 func (a *Assembler) FNEGd(dst, src FReg) { a.emit(0x1E614000 | uint32(src)<<5 | uint32(dst)) }

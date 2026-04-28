@@ -8,7 +8,11 @@
 package methodjit
 
 import (
+	"encoding/binary"
+	"strings"
 	"testing"
+
+	"golang.org/x/arch/arm64/arm64asm"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -152,6 +156,46 @@ for iter := 1; iter <= 5; iter++ {
 }
 `
 	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_TableArrayLoadFloatUsesDirectFPLoad(t *testing.T) {
+	src := `
+func sum_floats(arr, n) {
+    total := 0.0
+    for i := 0; i < n; i++ {
+        total = total + arr[i]
+    }
+    return total
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "sum_floats")
+	if proto == nil {
+		t.Fatal("sum_floats proto not found")
+	}
+	seedFloatTableFeedback(proto)
+
+	art, err := NewTieringManager().CompileForDiagnostics(proto)
+	if err != nil {
+		t.Fatalf("CompileForDiagnostics(sum_floats): %v", err)
+	}
+	if !strings.Contains(art.IRAfter, "TableArrayLoad") {
+		t.Fatalf("expected typed table-array lowering:\n%s", art.IRAfter)
+	}
+
+	foundFloatLoad := false
+	for _, entry := range art.SourceMap {
+		if entry.IROp != "TableArrayLoad" || entry.IRType != "float" || entry.CodeStart < 0 || entry.CodeEnd <= entry.CodeStart {
+			continue
+		}
+		if rangeHasDirectFPLoad(art.CompiledCode, entry.CodeStart, entry.CodeEnd) {
+			foundFloatLoad = true
+			break
+		}
+	}
+	if !foundFloatLoad {
+		t.Fatalf("float TableArrayLoad did not emit direct FP register-offset load")
+	}
 }
 
 func TestTier2_SetTableArrayMixedAppend(t *testing.T) {
@@ -389,4 +433,42 @@ func seedIntTableFeedback(proto *vm.FuncProto) {
 			fb[pc].Kind = vm.FBKindInt
 		}
 	}
+}
+
+func seedFloatTableFeedback(proto *vm.FuncProto) {
+	fb := proto.EnsureFeedback()
+	for pc, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_GETTABLE:
+			fb[pc].Left = vm.FBTable
+			fb[pc].Right = vm.FBInt
+			fb[pc].Result = vm.FBFloat
+			fb[pc].Kind = vm.FBKindFloat
+		case vm.OP_SETTABLE:
+			fb[pc].Left = vm.FBTable
+			fb[pc].Right = vm.FBInt
+			fb[pc].Result = vm.FBFloat
+			fb[pc].Kind = vm.FBKindFloat
+		}
+	}
+}
+
+func rangeHasDirectFPLoad(code []byte, start, end int) bool {
+	if start < 0 || end > len(code) || start >= end {
+		return false
+	}
+	for off := start; off+4 <= end; off += 4 {
+		word := binary.LittleEndian.Uint32(code[off : off+4])
+		var buf [4]byte
+		binary.LittleEndian.PutUint32(buf[:], word)
+		inst, err := arm64asm.Decode(buf[:])
+		if err != nil {
+			continue
+		}
+		text := inst.String()
+		if strings.HasPrefix(text, "LDR D") && strings.Contains(text, "LSL #3") {
+			return true
+		}
+	}
+	return false
 }
