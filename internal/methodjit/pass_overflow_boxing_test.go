@@ -107,6 +107,13 @@ func fib_iter(n) {
 		t.Fatalf("expected distinct shift-add phis, got left=%v right=%v\nIR:\n%s",
 			spec.leftPhi, spec.rightPhi, Print(fn))
 	}
+	if !spec.hasCheckFreePrefix {
+		t.Fatalf("expected shift-add recurrence to expose an overflow-check-free prefix\nIR:\n%s", Print(fn))
+	}
+	if spec.safeLastCounter != 67 || spec.firstOverflowCounter != 68 {
+		t.Fatalf("unexpected check-free prefix: safeLastCounter=%d firstOverflowCounter=%d, want 67/68",
+			spec.safeLastCounter, spec.firstOverflowCounter)
+	}
 }
 
 func TestOverflowBoxing_ShiftAddVersionRejectsLCG(t *testing.T) {

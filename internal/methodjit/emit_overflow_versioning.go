@@ -38,54 +38,78 @@ func (ec *emitContext) emitShiftAddOverflowVersion(spec *shiftAddOverflowVersion
 	asm.LoadImm64(counterReg, spec.counterInitConst)
 
 	rawLoop := ec.uniqueLabel("ov_shiftadd_raw_loop")
+	rawShortLoop := ec.uniqueLabel("ov_shiftadd_raw_short_loop")
+	rawLongLoop := ec.uniqueLabel("ov_shiftadd_raw_long_loop")
 	rawExit := ec.uniqueLabel("ov_shiftadd_raw_exit")
 	overflow := ec.uniqueLabel("ov_shiftadd_overflow")
+	knownOverflow := ec.uniqueLabel("ov_shiftadd_known_overflow")
 	floatLoop := ec.uniqueLabel("ov_shiftadd_float_loop")
 	floatBody := ec.uniqueLabel("ov_shiftadd_float_body")
 	floatExit := ec.uniqueLabel("ov_shiftadd_float_exit")
 	overflowIntExit := ec.uniqueLabel("ov_shiftadd_overflow_int_exit")
 
-	asm.Label(rawLoop)
-	asm.ADDimm(counterReg, counterReg, uint16(spec.step))
-	asm.CMPreg(counterReg, boundReg)
-	if spec.cond.Op == OpLtInt {
-		asm.BCond(jit.CondGE, rawExit)
-	} else {
-		asm.BCond(jit.CondGT, rawExit)
-	}
+	if spec.hasCheckFreePrefix {
+		asm.CMPimm(boundReg, uint16(shiftAddSafeBoundForCond(spec)))
+		asm.BCond(jit.CondLE, rawShortLoop)
 
-	addStart := len(asm.Code())
-	asm.ADDreg(sumReg, leftReg, rightReg)
-	asm.SBFX(jit.X0, sumReg, 0, 48)
-	asm.CMPreg(jit.X0, sumReg)
-	ec.recordCustomInstrRange(spec.add, spec.body, addStart, len(asm.Code()), "normal")
-	asm.BCond(jit.CondNE, overflow)
-	asm.MOVreg(leftReg, rightReg)
-	asm.MOVreg(rightReg, sumReg)
-	jumpStart := len(asm.Code())
-	asm.B(rawLoop)
-	ec.recordCustomInstrRange(blockTerminator(spec.body), spec.body, jumpStart, len(asm.Code()), "normal")
+		asm.Label(rawLongLoop)
+		asm.ADDimm(counterReg, counterReg, uint16(spec.step))
+		asm.CMPimm(counterReg, uint16(spec.safeLastCounter))
+		asm.BCond(jit.CondGT, knownOverflow)
+		addStart := len(asm.Code())
+		asm.ADDreg(sumReg, leftReg, rightReg)
+		ec.recordCustomInstrRange(spec.add, spec.body, addStart, len(asm.Code()), "normal")
+		asm.MOVreg(leftReg, rightReg)
+		asm.MOVreg(rightReg, sumReg)
+		jumpStart := len(asm.Code())
+		asm.B(rawLongLoop)
+		ec.recordCustomInstrRange(blockTerminator(spec.body), spec.body, jumpStart, len(asm.Code()), "normal")
+
+		asm.Label(rawShortLoop)
+		asm.ADDimm(counterReg, counterReg, uint16(spec.step))
+		asm.CMPreg(counterReg, boundReg)
+		emitShiftAddLoopExitBranch(asm, spec.cond.Op, rawExit)
+		addStart = len(asm.Code())
+		asm.ADDreg(sumReg, leftReg, rightReg)
+		ec.recordCustomInstrRange(spec.add, spec.body, addStart, len(asm.Code()), "normal")
+		asm.MOVreg(leftReg, rightReg)
+		asm.MOVreg(rightReg, sumReg)
+		jumpStart = len(asm.Code())
+		asm.B(rawShortLoop)
+		ec.recordCustomInstrRange(blockTerminator(spec.body), spec.body, jumpStart, len(asm.Code()), "normal")
+
+		asm.Label(knownOverflow)
+		asm.ADDreg(sumReg, leftReg, rightReg)
+	} else {
+		asm.Label(rawLoop)
+		asm.ADDimm(counterReg, counterReg, uint16(spec.step))
+		asm.CMPreg(counterReg, boundReg)
+		emitShiftAddLoopExitBranch(asm, spec.cond.Op, rawExit)
+		addStart := len(asm.Code())
+		asm.ADDreg(sumReg, leftReg, rightReg)
+		asm.SBFX(jit.X0, sumReg, 0, 48)
+		asm.CMPreg(jit.X0, sumReg)
+		ec.recordCustomInstrRange(spec.add, spec.body, addStart, len(asm.Code()), "normal")
+		asm.BCond(jit.CondNE, overflow)
+		asm.MOVreg(leftReg, rightReg)
+		asm.MOVreg(rightReg, sumReg)
+		jumpStart := len(asm.Code())
+		asm.B(rawLoop)
+		ec.recordCustomInstrRange(blockTerminator(spec.body), spec.body, jumpStart, len(asm.Code()), "normal")
+	}
 
 	asm.Label(overflow)
 	asm.SCVTF(jit.D1, sumReg)
 	asm.ADDimm(counterReg, counterReg, uint16(spec.step))
 	asm.CMPreg(counterReg, boundReg)
-	if spec.cond.Op == OpLtInt {
-		asm.BCond(jit.CondGE, overflowIntExit)
-	} else {
-		asm.BCond(jit.CondGT, overflowIntExit)
-	}
+	emitShiftAddLoopExitBranch(asm, spec.cond.Op, overflowIntExit)
 	asm.SCVTF(jit.D0, rightReg)
 	asm.B(floatBody)
 
 	asm.Label(floatLoop)
 	asm.ADDimm(counterReg, counterReg, uint16(spec.step))
 	asm.CMPreg(counterReg, boundReg)
-	if spec.cond.Op == OpLtInt {
-		asm.BCond(jit.CondGE, floatExit)
-	} else {
-		asm.BCond(jit.CondGT, floatExit)
-	}
+	emitShiftAddLoopExitBranch(asm, spec.cond.Op, floatExit)
 	asm.Label(floatBody)
 	asm.FADDd(jit.D2, jit.D0, jit.D1)
 	asm.FMOVd(jit.D0, jit.D1)
@@ -156,49 +180,66 @@ func (ec *emitContext) emitShiftAddOverflowVersionDirect(spec *shiftAddOverflowV
 	asm.LoadImm64(counterReg, spec.counterInitConst)
 
 	rawLoop := ec.uniqueLabel("ov_shiftadd_direct_raw_loop")
+	rawShortLoop := ec.uniqueLabel("ov_shiftadd_direct_raw_short_loop")
+	rawLongLoop := ec.uniqueLabel("ov_shiftadd_direct_raw_long_loop")
 	rawExit := ec.uniqueLabel("ov_shiftadd_direct_raw_exit")
 	overflow := ec.uniqueLabel("ov_shiftadd_direct_overflow")
+	knownOverflow := ec.uniqueLabel("ov_shiftadd_direct_known_overflow")
 	floatLoop := ec.uniqueLabel("ov_shiftadd_direct_float_loop")
 	floatBody := ec.uniqueLabel("ov_shiftadd_direct_float_body")
 	floatExit := ec.uniqueLabel("ov_shiftadd_direct_float_exit")
 	overflowIntExit := ec.uniqueLabel("ov_shiftadd_direct_overflow_int_exit")
 
-	asm.Label(rawLoop)
-	asm.ADDimm(counterReg, counterReg, uint16(spec.step))
-	asm.CMPreg(counterReg, boundReg)
-	if spec.cond.Op == OpLtInt {
-		asm.BCond(jit.CondGE, rawExit)
+	if spec.hasCheckFreePrefix {
+		asm.CMPimm(boundReg, uint16(shiftAddSafeBoundForCond(spec)))
+		asm.BCond(jit.CondLE, rawShortLoop)
+
+		asm.Label(rawLongLoop)
+		asm.ADDimm(counterReg, counterReg, uint16(spec.step))
+		asm.CMPimm(counterReg, uint16(spec.safeLastCounter))
+		asm.BCond(jit.CondGT, knownOverflow)
+		asm.ADDreg(sumReg, leftReg, rightReg)
+		asm.MOVreg(leftReg, rightReg)
+		asm.MOVreg(rightReg, sumReg)
+		asm.B(rawLongLoop)
+
+		asm.Label(rawShortLoop)
+		asm.ADDimm(counterReg, counterReg, uint16(spec.step))
+		asm.CMPreg(counterReg, boundReg)
+		emitShiftAddLoopExitBranch(asm, spec.cond.Op, rawExit)
+		asm.ADDreg(sumReg, leftReg, rightReg)
+		asm.MOVreg(leftReg, rightReg)
+		asm.MOVreg(rightReg, sumReg)
+		asm.B(rawShortLoop)
+
+		asm.Label(knownOverflow)
+		asm.ADDreg(sumReg, leftReg, rightReg)
 	} else {
-		asm.BCond(jit.CondGT, rawExit)
+		asm.Label(rawLoop)
+		asm.ADDimm(counterReg, counterReg, uint16(spec.step))
+		asm.CMPreg(counterReg, boundReg)
+		emitShiftAddLoopExitBranch(asm, spec.cond.Op, rawExit)
+		asm.ADDreg(sumReg, leftReg, rightReg)
+		asm.SBFX(jit.X0, sumReg, 0, 48)
+		asm.CMPreg(jit.X0, sumReg)
+		asm.BCond(jit.CondNE, overflow)
+		asm.MOVreg(leftReg, rightReg)
+		asm.MOVreg(rightReg, sumReg)
+		asm.B(rawLoop)
 	}
-	asm.ADDreg(sumReg, leftReg, rightReg)
-	asm.SBFX(jit.X0, sumReg, 0, 48)
-	asm.CMPreg(jit.X0, sumReg)
-	asm.BCond(jit.CondNE, overflow)
-	asm.MOVreg(leftReg, rightReg)
-	asm.MOVreg(rightReg, sumReg)
-	asm.B(rawLoop)
 
 	asm.Label(overflow)
 	asm.SCVTF(jit.D1, sumReg)
 	asm.ADDimm(counterReg, counterReg, uint16(spec.step))
 	asm.CMPreg(counterReg, boundReg)
-	if spec.cond.Op == OpLtInt {
-		asm.BCond(jit.CondGE, overflowIntExit)
-	} else {
-		asm.BCond(jit.CondGT, overflowIntExit)
-	}
+	emitShiftAddLoopExitBranch(asm, spec.cond.Op, overflowIntExit)
 	asm.SCVTF(jit.D0, rightReg)
 	asm.B(floatBody)
 
 	asm.Label(floatLoop)
 	asm.ADDimm(counterReg, counterReg, uint16(spec.step))
 	asm.CMPreg(counterReg, boundReg)
-	if spec.cond.Op == OpLtInt {
-		asm.BCond(jit.CondGE, floatExit)
-	} else {
-		asm.BCond(jit.CondGT, floatExit)
-	}
+	emitShiftAddLoopExitBranch(asm, spec.cond.Op, floatExit)
 	asm.Label(floatBody)
 	asm.FADDd(jit.D2, jit.D0, jit.D1)
 	asm.FMOVd(jit.D0, jit.D1)
@@ -224,6 +265,21 @@ func (ec *emitContext) emitDirectLeafReturn(regsReg, ctxReg jit.Reg) {
 	ec.asm.MOVimm16(jit.X1, 0)
 	ec.asm.STR(jit.X1, ctxReg, execCtxOffExitCode)
 	ec.asm.RET()
+}
+
+func emitShiftAddLoopExitBranch(asm *jit.Assembler, cond Op, exitLabel string) {
+	if cond == OpLtInt {
+		asm.BCond(jit.CondGE, exitLabel)
+		return
+	}
+	asm.BCond(jit.CondGT, exitLabel)
+}
+
+func shiftAddSafeBoundForCond(spec *shiftAddOverflowVersion) int64 {
+	if spec.cond.Op == OpLtInt {
+		return spec.firstOverflowCounter
+	}
+	return spec.safeLastCounter
 }
 
 func (ec *emitContext) recordCustomInstrRange(instr *Instr, block *Block, start, end int, pass string) {

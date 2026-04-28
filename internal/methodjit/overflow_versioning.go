@@ -33,6 +33,10 @@ type shiftAddOverflowVersion struct {
 	counterInitConst int64
 	boundParamSlot   int
 	boundAdjust      int64
+
+	hasCheckFreePrefix   bool
+	safeLastCounter      int64
+	firstOverflowCounter int64
 }
 
 func detectShiftAddOverflowVersion(fn *Function) (*shiftAddOverflowVersion, bool) {
@@ -130,29 +134,64 @@ func detectShiftAddOverflowVersionAt(fn *Function, li *loopInfo, header *Block) 
 		return nil, false
 	}
 
+	hasCheckFreePrefix, safeLastCounter, firstOverflowCounter :=
+		shiftAddCheckFreePrefix(leftInitConst, rightInitConst, counterInitConst, step)
+
 	return &shiftAddOverflowVersion{
-		entry:            entry,
-		header:           header,
-		body:             body,
-		exit:             exit,
-		leftPhi:          leftPhi,
-		rightPhi:         rightPhi,
-		add:              add,
-		ret:              ret,
-		counterPhi:       counterPhi,
-		counterAdd:       counterAdd,
-		cond:             cond,
-		leftInit:         leftInit,
-		rightInit:        rightInit,
-		counterInit:      counterInit,
-		bound:            bound,
-		step:             step,
-		leftInitConst:    leftInitConst,
-		rightInitConst:   rightInitConst,
-		counterInitConst: counterInitConst,
-		boundParamSlot:   boundSlot,
-		boundAdjust:      boundAdjust,
+		entry:                entry,
+		header:               header,
+		body:                 body,
+		exit:                 exit,
+		leftPhi:              leftPhi,
+		rightPhi:             rightPhi,
+		add:                  add,
+		ret:                  ret,
+		counterPhi:           counterPhi,
+		counterAdd:           counterAdd,
+		cond:                 cond,
+		leftInit:             leftInit,
+		rightInit:            rightInit,
+		counterInit:          counterInit,
+		bound:                bound,
+		step:                 step,
+		leftInitConst:        leftInitConst,
+		rightInitConst:       rightInitConst,
+		counterInitConst:     counterInitConst,
+		boundParamSlot:       boundSlot,
+		boundAdjust:          boundAdjust,
+		hasCheckFreePrefix:   hasCheckFreePrefix,
+		safeLastCounter:      safeLastCounter,
+		firstOverflowCounter: firstOverflowCounter,
 	}, true
+}
+
+func shiftAddCheckFreePrefix(left, right, counterInit, step int64) (bool, int64, int64) {
+	if step <= 0 {
+		return false, 0, 0
+	}
+	if !fitsSignedInt48(left) || !fitsSignedInt48(right) {
+		return false, 0, 0
+	}
+	counter := counterInit
+	for trips := int64(0); trips < 4096; trips++ {
+		nextCounter := counter + step
+		sum := left + right
+		if !fitsSignedInt48(sum) {
+			safeLastCounter := counter
+			firstOverflowCounter := nextCounter
+			if safeLastCounter < 0 || safeLastCounter > 4095 ||
+				firstOverflowCounter < 0 || firstOverflowCounter > 4095 {
+				return false, 0, 0
+			}
+			return true, safeLastCounter, firstOverflowCounter
+		}
+		left, right, counter = right, sum, nextCounter
+	}
+	return false, 0, 0
+}
+
+func fitsSignedInt48(v int64) bool {
+	return v >= MinInt48 && v <= MaxInt48
 }
 
 func branchLoopBodyAndExit(li *loopInfo, header *Block, branch *Instr) (*Block, *Block, bool) {
