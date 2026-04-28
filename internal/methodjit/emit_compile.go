@@ -552,6 +552,13 @@ type emitContext struct {
 	// Populated by emitMatrixGetF/emitMatrixSetF (R44).
 	dmVerified map[int]bool
 
+	// fieldSvalsCache tracks X1 when it is known to hold Table.svals data for
+	// a verified (table SSA value, shape) pair. It is scoped to consecutive
+	// field ops in one emitted block because X1 is scratch everywhere else.
+	fieldSvalsCacheValid   bool
+	fieldSvalsCacheTableID int
+	fieldSvalsCacheShapeID uint32
+
 	// blockOutShapes saves the shapeVerified state at the END of each emitted block.
 	// Used to seed single-predecessor blocks with their predecessor's verified shapes.
 	blockOutShapes map[int]map[int]uint32
@@ -871,6 +878,9 @@ func (ec *emitContext) emitNumericBody() {
 	prevKindVerified := ec.kindVerified
 	prevKeysDirtyWritten := ec.keysDirtyWritten
 	prevDMVerified := ec.dmVerified
+	prevFieldSvalsCacheValid := ec.fieldSvalsCacheValid
+	prevFieldSvalsCacheTableID := ec.fieldSvalsCacheTableID
+	prevFieldSvalsCacheShapeID := ec.fieldSvalsCacheShapeID
 	ec.numericMode = true
 	entryLabel, ok := ec.entryBlockLabelOK()
 	if !ok {
@@ -893,6 +903,7 @@ func (ec *emitContext) emitNumericBody() {
 	ec.kindVerified = make(map[int]uint16)
 	ec.keysDirtyWritten = make(map[int]bool)
 	ec.dmVerified = make(map[int]bool)
+	ec.invalidateFieldSvalsCache()
 	for _, block := range ec.fn.Blocks {
 		ec.emitBlock(block)
 	}
@@ -905,6 +916,9 @@ func (ec *emitContext) emitNumericBody() {
 	ec.kindVerified = prevKindVerified
 	ec.keysDirtyWritten = prevKeysDirtyWritten
 	ec.dmVerified = prevDMVerified
+	ec.fieldSvalsCacheValid = prevFieldSvalsCacheValid
+	ec.fieldSvalsCacheTableID = prevFieldSvalsCacheTableID
+	ec.fieldSvalsCacheShapeID = prevFieldSvalsCacheShapeID
 }
 
 // blockLabelFor returns the label for block b in the given emit pass.
@@ -1205,6 +1219,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 	// body is one block) and complicates merge semantics; conservatively
 	// reset.
 	ec.dmVerified = make(map[int]bool)
+	ec.invalidateFieldSvalsCache()
 
 	if isLoopBlock && !isHeader && ec.safeHeaderRegs != nil {
 		// Non-header loop block: activate SAFE registers from the innermost

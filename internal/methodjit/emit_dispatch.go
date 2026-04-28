@@ -39,6 +39,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	for k := range ec.scratchFPRCache {
 		delete(ec.scratchFPRCache, k)
 	}
+	if !fieldOpPreservesSvalsCache(instr.Op) {
+		ec.invalidateFieldSvalsCache()
+	}
 	// Reset fused compare state if this is NOT a Branch that should consume
 	// the fused comparison. A fused comparison sets fusedActive, and only
 	// the immediately-following Branch should see it. If any other instruction
@@ -254,6 +257,15 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 			CodeEnd:   codeEnd,
 			Pass:      pass,
 		})
+	}
+}
+
+func fieldOpPreservesSvalsCache(op Op) bool {
+	switch op {
+	case OpGetField, OpGetFieldNumToFloat, OpSetField:
+		return true
+	default:
+		return false
 	}
 }
 

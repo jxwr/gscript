@@ -12,6 +12,28 @@ import (
 	"github.com/gscript/gscript/internal/jit"
 )
 
+func (ec *emitContext) hasFieldSvalsCache(tblValueID int, shapeID uint32) bool {
+	return ec.fieldSvalsCacheValid &&
+		ec.fieldSvalsCacheTableID == tblValueID &&
+		ec.fieldSvalsCacheShapeID == shapeID
+}
+
+func (ec *emitContext) rememberFieldSvalsCache(tblValueID int, shapeID uint32) {
+	if shapeID == 0 {
+		ec.invalidateFieldSvalsCache()
+		return
+	}
+	ec.fieldSvalsCacheValid = true
+	ec.fieldSvalsCacheTableID = tblValueID
+	ec.fieldSvalsCacheShapeID = shapeID
+}
+
+func (ec *emitContext) invalidateFieldSvalsCache() {
+	ec.fieldSvalsCacheValid = false
+	ec.fieldSvalsCacheTableID = 0
+	ec.fieldSvalsCacheShapeID = 0
+}
+
 // emitPrepareFieldTablePtr leaves the raw *Table pointer in X0 and returns
 // true when the field shape was already verified in this block. TypeTable
 // producers, such as TableArrayLoad, have already proved the NaN-boxed value is
@@ -59,6 +81,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 
 	// No field cache or invalid: use table-exit fallback.
 	if shapeID == 0 || instr.Aux2 == 0 {
+		ec.invalidateFieldSvalsCache()
 		ec.emitGetFieldExit(instr)
 		return
 	}
@@ -69,9 +92,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	typeDeoptLabel := ec.uniqueLabel("getfield_type_deopt")
 	doneLabel := ec.uniqueLabel("getfield_done")
 	deoptLabel := ec.uniqueLabel("getfield_deopt")
-	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
-	if shapeWasVerified {
-		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
+	if ec.hasFieldSvalsCache(tblValueID, shapeID) {
 		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
 		if instr.Type == TypeFloat {
 			ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
@@ -85,12 +106,31 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 		return
 	}
 
+	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
+	if shapeWasVerified {
+		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
+		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
+		if instr.Type == TypeFloat {
+			ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+			ec.rememberFieldSvalsCache(tblValueID, shapeID)
+			asm.B(doneLabel)
+			asm.Label(typeDeoptLabel)
+			ec.emitDeopt(instr)
+			asm.Label(doneLabel)
+			return
+		}
+		ec.emitStoreTypedFieldLoad(instr, jit.X0, "")
+		ec.rememberFieldSvalsCache(tblValueID, shapeID)
+		return
+	}
+
 	// Direct field access: svals[fieldIndex].
 	// svals is a Go slice: first 8 bytes = data pointer.
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)      // X1 = svals data pointer
 	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize) // X0 = svals[fieldIndex]
 
 	ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+	ec.invalidateFieldSvalsCache()
 
 	// Skip the deopt fallback.
 	asm.B(doneLabel)
@@ -121,6 +161,7 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	// No field cache or invalid: use table-exit fallback. The resume path
 	// applies the same int-or-float conversion as the inline fast path.
 	if shapeID == 0 || instr.Aux2 == 0 {
+		ec.invalidateFieldSvalsCache()
 		ec.emitGetFieldExit(instr)
 		return
 	}
@@ -130,12 +171,22 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	typeDeoptLabel := ec.uniqueLabel("getfield_num_deopt")
 	doneLabel := ec.uniqueLabel("getfield_num_done")
 	deoptLabel := ec.uniqueLabel("getfield_num_shape_deopt")
+	if ec.hasFieldSvalsCache(tblValueID, shapeID) {
+		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
+		ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
+		asm.B(doneLabel)
+		asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+		asm.Label(doneLabel)
+		return
+	}
 
 	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
 	if shapeWasVerified {
 		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
 		ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
+		ec.rememberFieldSvalsCache(tblValueID, shapeID)
 		asm.B(doneLabel)
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
@@ -146,6 +197,7 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
 	ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
+	ec.invalidateFieldSvalsCache()
 
 	asm.B(doneLabel)
 
@@ -221,6 +273,7 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 
 	// No field cache or invalid: use table-exit fallback.
 	if shapeID == 0 || instr.Aux2 == 0 {
+		ec.invalidateFieldSvalsCache()
 		ec.emitSetFieldExit(instr)
 		return
 	}
@@ -235,14 +288,21 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 		asm.MOVreg(jit.X3, valReg)
 	}
 
+	if ec.hasFieldSvalsCache(tblValueID, shapeID) {
+		asm.STR(jit.X3, jit.X1, fieldIdx*jit.ValueSize)
+		return
+	}
+
 	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
 
 	// Direct field store: svals[fieldIndex] = value.
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)      // X1 = svals data pointer
 	asm.STR(jit.X3, jit.X1, fieldIdx*jit.ValueSize) // svals[fieldIndex] = value
 	if shapeWasVerified {
+		ec.rememberFieldSvalsCache(tblValueID, shapeID)
 		return
 	}
+	ec.invalidateFieldSvalsCache()
 
 	// Skip the deopt fallback.
 	doneLabel := ec.uniqueLabel("setfield_done")
