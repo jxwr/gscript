@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="70-the-fast-paths-got-smaller">The Fast Paths Got Smaller</a>
+  <p>This round shrank several method-JIT success paths without changing the recovery contracts: numeric raw calls return status in <code>X16</code>, FPR-resident field stores use direct <code>FSTR</code>, matmul gets same-block nested float table-load fusion, no-return self tail calls loop in Tier 1, and static two-field object literals construct their final shape directly. The combined guard kept regressions at zero while moving <code>sort</code>, <code>matmul</code>, <code>binary_trees</code>, and recursive numeric calls forward.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="69-the-live-value-never-boxed">The Live Value Never Boxed</a>
   <p>Raw self recursion no longer boxes live raw-int GPR values into VM homes on the hot path. The raw self-call shim stack-spills those lives, reloads them after the numeric BL, and only materializes boxed VM homes when fallback or callee exit makes Go observe the context. The same round gave typed float array loads direct FPR register-offset loads, moving <code>matmul</code> to about 0.087s while <code>table_array_access</code> stayed flat.</p>
 </div>
