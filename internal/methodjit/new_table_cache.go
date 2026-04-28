@@ -11,6 +11,7 @@ import (
 
 const (
 	tier2NewTableCacheMaxArrayHint = tier2FeedbackOuterLoopArrayHint
+	newObject2CacheBatch           = 32
 )
 
 type newTableCacheEntry struct {

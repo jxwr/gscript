@@ -27,7 +27,7 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	case vm.OP_NEWTABLE:
 		return e.handleNewTable(ctx, regs, base, proto, bf)
 	case vm.OP_NEWOBJECT2:
-		return e.handleNewObject2(ctx, regs, base, proto)
+		return e.handleNewObject2(ctx, regs, base, proto, bf)
 	case vm.OP_GETTABLE:
 		return e.handleGetTable(ctx, regs, base, proto)
 	case vm.OP_SETTABLE:
@@ -71,7 +71,7 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	}
 }
 
-func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, bf *BaselineFunc) error {
 	a := int(ctx.BaselineA)
 	b := int(ctx.BaselineB)
 	c := int(ctx.BaselineC)
@@ -84,7 +84,9 @@ func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Va
 		return nil
 	}
 	ctor := &proto.TableCtors2[b].Runtime
-	regs[absA] = runtime.TableValue(runtime.NewTableFromCtor2(ctor, regs[base+c], regs[base+c+1]))
+	tbl := runtime.NewTableFromCtor2(ctor, regs[base+c], regs[base+c+1])
+	fillBaselineNewObject2Cache(bf, int(ctx.BaselinePC)-1, ctor)
+	regs[absA] = runtime.TableValue(tbl)
 	return nil
 }
 

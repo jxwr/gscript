@@ -226,7 +226,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineNewTable(asm, inst, pc, newTableCaches)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_NEWOBJECT2:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_NEWOBJECT2)
+			emitBaselineNewObject2(asm, inst, pc, proto, newTableCaches)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETTABLE:
 			emitBaselineGetTable(asm, inst, pc)

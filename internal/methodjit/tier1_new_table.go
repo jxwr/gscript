@@ -15,14 +15,33 @@ func baselineNewTableCacheSlotsForProto(proto *vm.FuncProto) []newTableCacheEntr
 		return nil
 	}
 	for _, inst := range proto.Code {
-		if vm.DecodeOp(inst) != vm.OP_NEWTABLE {
-			continue
-		}
-		if baselineNewTableCacheBatchSize(inst) > 1 {
-			return make([]newTableCacheEntry, len(proto.Code))
+		switch vm.DecodeOp(inst) {
+		case vm.OP_NEWTABLE:
+			if baselineNewTableCacheBatchSize(inst) > 1 {
+				return make([]newTableCacheEntry, len(proto.Code))
+			}
+		case vm.OP_NEWOBJECT2:
+			if baselineNewObject2Cacheable(proto, inst) {
+				return make([]newTableCacheEntry, len(proto.Code))
+			}
 		}
 	}
 	return nil
+}
+
+func baselineNewObject2Cacheable(proto *vm.FuncProto, inst uint32) bool {
+	if proto == nil || vm.DecodeOp(inst) != vm.OP_NEWOBJECT2 {
+		return false
+	}
+	ctorIdx := vm.DecodeB(inst)
+	if ctorIdx < 0 || ctorIdx >= len(proto.TableCtors2) {
+		return false
+	}
+	return cacheableSmallCtor2(&proto.TableCtors2[ctorIdx].Runtime)
+}
+
+func cacheableSmallCtor2(ctor *runtime.SmallTableCtor2) bool {
+	return ctor != nil && ctor.Key1 != ctor.Key2 && ctor.Shape != nil
 }
 
 func baselineNewTableCacheBatchSize(inst uint32) int {

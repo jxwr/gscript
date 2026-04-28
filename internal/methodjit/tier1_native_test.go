@@ -69,6 +69,72 @@ for i := 1; i <= 200; i++ {
 `, "result")
 }
 
+func TestTier1_NativeNewObject2FastPath(t *testing.T) {
+	src := `
+func pair(a, b) {
+    return {left: a, right: b}
+}
+
+result := 0
+for i := 1; i <= 200; i++ {
+    t := pair(i, i + 1)
+    result = result + t.left + t.right
+}
+
+nilpair := pair(nil, 7)
+if nilpair.left == nil {
+    result = result + nilpair.right
+}
+`
+	proto := compileTop(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	engine := NewBaselineJITEngine()
+	v.SetMethodJIT(engine)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("JIT runtime error: %v", err)
+	}
+
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 40407 {
+		t.Fatalf("result = %v, want 40407", result)
+	}
+
+	pairProto := findProtoByName(proto, "pair")
+	if pairProto == nil {
+		t.Fatal("pair proto not found")
+	}
+	bf := engine.compiled[pairProto]
+	if bf == nil {
+		t.Fatal("pair was not baseline compiled")
+	}
+
+	newObjectPC := -1
+	for pc, inst := range pairProto.Code {
+		if vm.DecodeOp(inst) == vm.OP_NEWOBJECT2 {
+			newObjectPC = pc
+			if !baselineNewObject2Cacheable(pairProto, inst) {
+				t.Fatalf("NEWOBJECT2 at pc %d was not cacheable", pc)
+			}
+			break
+		}
+	}
+	if newObjectPC < 0 {
+		t.Fatal("pair did not compile to OP_NEWOBJECT2")
+	}
+	if len(bf.NewTableCaches) == 0 {
+		t.Fatal("baseline NEWOBJECT2 cache slots were not allocated")
+	}
+	entry := bf.NewTableCaches[newObjectPC]
+	if len(entry.Values) == 0 || len(entry.Roots) == 0 {
+		t.Fatalf("NEWOBJECT2 cache was not populated: values=%d roots=%d", len(entry.Values), len(entry.Roots))
+	}
+	if entry.Pos <= 0 {
+		t.Fatalf("NEWOBJECT2 cache was populated but never consumed: pos=%d", entry.Pos)
+	}
+}
+
 func TestTier1_NativeSetFieldThenGet(t *testing.T) {
 	compareVMvsJIT(t, `
 func f() {
