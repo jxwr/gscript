@@ -278,11 +278,10 @@ func TestRawIntSelfABI_FastPathKeepsCtxRegsLazyOnSuccess(t *testing.T) {
 	assertCompiledRawIntSelfABI(t, cf.RawIntSelfABI, 1)
 
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
-	frameSize := rawSelfFrameSizeFor(1)
 	rawSelfShims := 0
 	for pc := 0; pc+4 <= len(code); pc += 4 {
 		word := binary.LittleEndian.Uint32(code[pc : pc+4])
-		if !isRawSelfFrameAlloc(word, frameSize) {
+		if _, ok := rawSelfFrameAllocSize(word, 1); !ok {
 			continue
 		}
 
@@ -345,7 +344,7 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 	rawSelfShims := 0
 	for pc := 0; pc+4 <= len(code); pc += 4 {
 		word := binary.LittleEndian.Uint32(code[pc : pc+4])
-		if !isRawSelfFrameAlloc(word, rawSelfFrameSizeFor(2)) {
+		if _, ok := rawSelfFrameAllocSize(word, 2); !ok {
 			continue
 		}
 		sawBL := false
@@ -441,11 +440,11 @@ func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 			}
 
 			code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
-			frameSize := rawSelfFrameSizeFor(tt.wantParams)
 			rawSelfShims := 0
 			for pc := 0; pc+4 <= len(code); pc += 4 {
 				word := binary.LittleEndian.Uint32(code[pc : pc+4])
-				if !isRawSelfFrameAlloc(word, frameSize) {
+				frameSize, ok := rawSelfFrameAllocSize(word, tt.wantParams)
+				if !ok {
 					continue
 				}
 
@@ -492,6 +491,77 @@ func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 				t.Fatal("expected at least one args-only raw self-call shim")
 			}
 		})
+	}
+}
+
+func TestRawIntSelfABI_RawLiveSpillFallbackMaterializesHomes(t *testing.T) {
+	src := `func carrydown(n, acc) {
+	if n == 0 { return acc }
+	carry := acc + 3
+	r := carrydown(n - 1, acc + 1)
+	return r + carry
+}`
+	top := compileTop(t, src)
+	carrydown := findProtoByName(top, "carrydown")
+	if carrydown == nil {
+		t.Fatal("function \"carrydown\" not found")
+	}
+	assertRawIntSpecializedABI(t, AnalyzeSpecializedABI(carrydown), 2)
+
+	args := []runtime.Value{runtime.IntValue(maxRawSelfCallDepth + 8), runtime.IntValue(5)}
+	vmResults := runVMByName(t, src, "carrydown", args)
+	jitResults, entered := runForcedTier2ByName(t, top, "carrydown", []string{"carrydown"}, args)
+	assertRawIntSelfResultsEqual(t, "carrydown", jitResults, vmResults)
+	if entered["carrydown"] == 0 {
+		t.Fatal("carrydown did not enter Tier 2")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(carrydown); err != nil {
+		t.Fatalf("CompileTier2(carrydown): %v", err)
+	}
+	cf := tm.tier2Compiled[carrydown]
+	if cf == nil {
+		t.Fatal("carrydown did not compile to Tier 2")
+	}
+	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+
+	foundRawLiveShim := false
+	for pc := 0; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		frameBytes, ok := rawSelfFrameAllocSize(word, 2)
+		if !ok || frameBytes <= rawSelfFrameSizeFor(2) {
+			continue
+		}
+		sawBL := false
+		sawRawLiveStore := false
+		sawVMHomeStore := false
+		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isSTRAllocGPRToSP(scanWord) {
+				sawRawLiveStore = true
+			}
+			if isSTRToMRegRegs(scanWord) {
+				sawVMHomeStore = true
+			}
+			if isBL(scanWord) {
+				sawBL = true
+				break
+			}
+			if isUnconditionalB(scanWord) || scan-pc > 240 {
+				break
+			}
+		}
+		if sawBL && sawRawLiveStore {
+			if sawVMHomeStore {
+				t.Fatalf("raw self-call shim at %#x boxed live raw values to VM homes before the hot BL", pc)
+			}
+			foundRawLiveShim = true
+			break
+		}
+	}
+	if !foundRawLiveShim {
+		t.Fatal("expected a raw self-call shim with stack-spilled live raw values")
 	}
 }
 
@@ -669,6 +739,40 @@ func isSubSPImm(word uint32, imm int) bool {
 	return word == 0xD10003FF|encodedImm
 }
 
+func subSPImm(word uint32) (int, bool) {
+	const immMask = uint32(0xFFF << 10)
+	if word&^immMask != 0xD10003FF {
+		return 0, false
+	}
+	return int((word >> 10) & 0xFFF), true
+}
+
+func rawSelfFrameAllocSize(word uint32, nParams int) (int, bool) {
+	var size int
+	var ok bool
+	if size, ok = subSPImm(word); !ok {
+		if size, ok = rawSelfPreSaveFrameSize(word); !ok {
+			return 0, false
+		}
+	}
+	if size%16 != 0 {
+		return 0, false
+	}
+	minFrame := rawSelfFrameSizeFor(nParams)
+	maxFrame := rawSelfFrameSizeForLive(nParams, len(allocatableGPRs))
+	if size < minFrame || size > maxFrame {
+		return 0, false
+	}
+	return size, true
+}
+
+func rawSelfPreSaveFrameSize(word uint32) (int, bool) {
+	if size, ok := strPreToSPFrameSize(word, jit.X0); ok {
+		return size, true
+	}
+	return stpPreToSPFrameSize(word, jit.X0, jit.X1)
+}
+
 func isRawSelfFrameAlloc(word uint32, frameSize int) bool {
 	return isSubSPImm(word, frameSize) || isRawSelfArgPreSave(word, frameSize)
 }
@@ -685,12 +789,45 @@ func isSTRPreToSP(word uint32, rt jit.Reg, imm int) bool {
 	return word == 0xF8000C00|imm9<<12|uint32(jit.SP)<<5|uint32(rt)
 }
 
+func strPreToSPFrameSize(word uint32, rt jit.Reg) (int, bool) {
+	immMask := uint32(0x1FF << 12)
+	base := uint32(0xF8000C00) | uint32(jit.SP)<<5 | uint32(rt)
+	if word&^immMask != base {
+		return 0, false
+	}
+	imm := int((word >> 12) & 0x1FF)
+	if imm&0x100 != 0 {
+		imm -= 0x200
+	}
+	if imm >= 0 {
+		return 0, false
+	}
+	return -imm, true
+}
+
 func isSTPPreToSPPair(word uint32, rt1, rt2 jit.Reg, offset int) bool {
 	if offset < -512 || offset > 504 || offset%8 != 0 {
 		return false
 	}
 	simm7 := uint32(offset>>3) & 0x7F
 	return word == 0xA9800000|simm7<<15|uint32(rt2)<<10|uint32(jit.SP)<<5|uint32(rt1)
+}
+
+func stpPreToSPFrameSize(word uint32, rt1, rt2 jit.Reg) (int, bool) {
+	immMask := uint32(0x7F << 15)
+	base := uint32(0xA9800000) | uint32(rt2)<<10 | uint32(jit.SP)<<5 | uint32(rt1)
+	if word&^immMask != base {
+		return 0, false
+	}
+	imm := int((word >> 15) & 0x7F)
+	if imm&0x40 != 0 {
+		imm -= 0x80
+	}
+	offset := imm * 8
+	if offset >= 0 {
+		return 0, false
+	}
+	return -offset, true
 }
 
 func isGPRPairStoreToSP(word uint32) bool {
@@ -736,6 +873,19 @@ func isSTRRegToSP(word uint32, reg jit.Reg) bool {
 	return word&0xFFC00000 == 0xF9000000 &&
 		(word>>5)&0x1F == uint32(jit.SP) &&
 		word&0x1F == uint32(reg)
+}
+
+func isSTRAllocGPRToSP(word uint32) bool {
+	if word&0xFFC00000 != 0xF9000000 || (word>>5)&0x1F != uint32(jit.SP) {
+		return false
+	}
+	rt := int(word & 0x1F)
+	for _, reg := range allocatableGPRs {
+		if rt == reg {
+			return true
+		}
+	}
+	return false
 }
 
 func isCtxCallModeAccess(word uint32) bool {

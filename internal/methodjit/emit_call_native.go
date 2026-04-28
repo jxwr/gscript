@@ -29,6 +29,7 @@ package methodjit
 
 import (
 	"fmt"
+	"sort"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -65,8 +66,24 @@ const (
 )
 
 func rawSelfFrameSizeFor(nParams int) int {
+	return rawSelfFrameSizeForLive(nParams, 0)
+}
+
+func rawSelfFrameSizeForLive(nParams, nLiveRaw int) int {
+	size := rawSelfLiveSpillsOff(nParams) + nLiveRaw*jit.ValueSize
+	return (size + 15) &^ 15
+}
+
+func rawSelfLiveSpillsOff(nParams int) int {
 	size := nParams * jit.ValueSize
 	return (size + 15) &^ 15
+}
+
+type rawSelfLiveSpill struct {
+	valueID  int
+	reg      jit.Reg
+	slot     int
+	stackOff int
 }
 
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
@@ -617,9 +634,6 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	}
 
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
-	if len(liveGPRs) > 0 || len(liveFPRs) > 0 {
-		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
-	}
 
 	preCallSlowLabel := ec.uniqueLabel("t2rawself_slow")
 	exitLabel := ec.uniqueLabel("t2rawself_exit")
@@ -627,25 +641,44 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	doneLabel := ec.uniqueLabel("t2rawself_done")
 
 	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	rawLiveSpills := ec.rawSelfLiveSpills(liveGPRs, nParams)
+	boxedLiveGPRs := liveGPRs
+	if len(rawLiveSpills) > 0 {
+		boxedLiveGPRs = cloneBoolMap(liveGPRs)
+		for _, spill := range rawLiveSpills {
+			delete(boxedLiveGPRs, spill.valueID)
+		}
+	}
+	boxedRawReloads := make(map[int]bool)
+	for valueID := range boxedLiveGPRs {
+		if preRawIntRegs[valueID] {
+			boxedRawReloads[valueID] = true
+		}
+	}
+	if len(boxedLiveGPRs) > 0 || len(liveFPRs) > 0 {
+		ec.emitSpillSelectiveForCall(boxedLiveGPRs, liveFPRs)
+	}
 
 	// Raw-call frame:
-	//   0..31    raw int args X0..X3, truncated to actual fixed arity
+	//   0..N      raw int args X0..X3, truncated to actual fixed arity
+	//   N..       raw live GPR spills that survive the BL on the success path
 	//
 	// The caller's own entry frame already owns FP/LR, and raw-int self calls
 	// stay within one proto/closure/constant domain. The callee base is always
 	// caller base + calleeBaseOff, so the successful and callee-exit paths
 	// restore mRegRegs with offset arithmetic instead of saving it in the shim
 	// frame. Successful raw calls keep ctx.Regs lazy; numeric exit epilogues and
-	// raw-call fallback paths publish the current base before Go observes the
-	// context. The boxed function operand needed by VM fallback is rebuilt from
-	// BaselineClosurePtr; static self recursion cannot change closure identity
-	// while this native frame is executing. Numeric entries return through
-	// num_epilogue and do not branch on CallMode, so raw self calls leave
-	// ctx.CallMode unchanged.
-	rawFrameSize := rawSelfFrameSizeFor(nParams)
+	// raw-call fallback paths publish the current base and materialize raw live
+	// spills into boxed VM homes before Go observes the context. The boxed
+	// function operand needed by VM fallback is rebuilt from BaselineClosurePtr;
+	// static self recursion cannot change closure identity while this native
+	// frame is executing. Numeric entries return through num_epilogue and do
+	// not branch on CallMode, so raw self calls leave ctx.CallMode unchanged.
+	rawFrameSize := rawSelfFrameSizeForLive(nParams, len(rawLiveSpills))
 
 	ec.emitNumericArgsInRegs(instr, nParams)
 	ec.emitAllocAndSaveRawSelfFallbackArgs(nParams, rawFrameSize)
+	ec.emitSaveRawSelfLiveSpills(rawLiveSpills)
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 
@@ -684,9 +717,10 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.CBNZ(jit.X7, exitLabel)
 
 	ec.emitRestoreRawSelfCallerRegsFromCalleeBase(calleeBaseOff)
+	ec.emitReloadRawSelfLiveSpills(rawLiveSpills)
 	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
-	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
-	ec.emitUnboxRawIntRegs(preRawIntRegs)
+	ec.emitReloadSelectiveForCall(boxedLiveGPRs, liveFPRs)
+	ec.emitUnboxRawIntRegs(boxedRawReloads)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
 	ec.storeRawInt(jit.X0, instr.ID)
 	postRawIntRegs := cloneBoolMap(ec.rawIntRegs)
@@ -701,12 +735,53 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 
 	asm.Label(fallbackLabel)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitMaterializeRawSelfLiveSpills(rawLiveSpills)
 	ec.emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlot, nArgs, rawSelfArgsOff)
 	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
 	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs, liveGPRs, liveFPRs)
 	ec.rawIntRegs = postRawIntRegs
 
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) rawSelfLiveSpills(gprLive map[int]bool, nParams int) []rawSelfLiveSpill {
+	if len(gprLive) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(gprLive))
+	for valueID := range gprLive {
+		if !ec.rawIntRegs[valueID] {
+			continue
+		}
+		pr, ok := ec.alloc.ValueRegs[valueID]
+		if !ok || pr.IsFloat {
+			continue
+		}
+		if _, active := ec.activeRegs[valueID]; !active {
+			continue
+		}
+		if _, ok := ec.slotMap[valueID]; !ok {
+			continue
+		}
+		ids = append(ids, valueID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Ints(ids)
+	spills := make([]rawSelfLiveSpill, 0, len(ids))
+	stackOff := rawSelfLiveSpillsOff(nParams)
+	for _, valueID := range ids {
+		pr := ec.alloc.ValueRegs[valueID]
+		spills = append(spills, rawSelfLiveSpill{
+			valueID:  valueID,
+			reg:      jit.Reg(pr.Reg),
+			slot:     ec.slotMap[valueID],
+			stackOff: stackOff,
+		})
+		stackOff += jit.ValueSize
+	}
+	return spills
 }
 
 func (ec *emitContext) emitRestoreRawSelfCallerRegsFromCalleeBase(calleeBaseOff int) {
@@ -731,6 +806,27 @@ func (ec *emitContext) emitAllocAndSaveRawSelfFallbackArgs(nParams, rawFrameSize
 		asm.STP(jit.X2, jit.X3, jit.SP, rawSelfArgsOff+2*jit.ValueSize)
 	} else if nParams >= 3 {
 		asm.STR(jit.X2, jit.SP, rawSelfArgsOff+2*jit.ValueSize)
+	}
+}
+
+func (ec *emitContext) emitSaveRawSelfLiveSpills(spills []rawSelfLiveSpill) {
+	for _, spill := range spills {
+		ec.asm.STR(spill.reg, jit.SP, spill.stackOff)
+	}
+}
+
+func (ec *emitContext) emitReloadRawSelfLiveSpills(spills []rawSelfLiveSpill) {
+	for _, spill := range spills {
+		ec.asm.LDR(spill.reg, jit.SP, spill.stackOff)
+	}
+}
+
+func (ec *emitContext) emitMaterializeRawSelfLiveSpills(spills []rawSelfLiveSpill) {
+	for _, spill := range spills {
+		ec.asm.LDR(jit.X0, jit.SP, spill.stackOff)
+		jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
+		ec.asm.STR(jit.X0, mRegRegs, slotOffset(spill.slot))
+		ec.emitExitResumeCheckShadowStoreGPR(spill.slot, jit.X0)
 	}
 }
 
