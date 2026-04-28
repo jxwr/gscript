@@ -25,9 +25,6 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 	}
 	globals := callABIMergeGlobals(config.Globals, callABIStableGlobals(fn.Proto))
 	fn.CallABIs = nil
-	if len(globals) == 0 {
-		return fn
-	}
 
 	tails := callABITailCalls(fn)
 	shiftAddOverflowVersions := make(map[*vm.FuncProto]bool)
@@ -35,6 +32,14 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr.Op != OpCall {
+				continue
+			}
+			if callABIAnnotateRawIntSelfResult(fn, instr, tails) {
+				functionRemarks(fn).Add("CallABI", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("annotated raw-int self call result for %s", fn.Proto.Name))
+				continue
+			}
+			if len(globals) == 0 {
 				continue
 			}
 			desc, reason := callABIDescriptorFor(fn, instr, globals, tails, shiftAddOverflowVersions)
@@ -52,6 +57,30 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 		fn.CallABIs = descs
 	}
 	return fn
+}
+
+func callABIAnnotateRawIntSelfResult(fn *Function, instr *Instr, tails map[int]bool) bool {
+	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpCall {
+		return false
+	}
+	if tails[instr.ID] || !callABIHasExactFixedShape(fn, instr) || !callABIIsStaticSelfCall(fn, instr) {
+		return false
+	}
+	abi := AnalyzeSpecializedABI(fn.Proto)
+	if !abi.Eligible || abi.Kind != SpecializedABIRawInt || abi.Return != SpecializedABIReturnRawInt {
+		return false
+	}
+	numArgs := len(instr.Args) - 1
+	if numArgs != fn.Proto.NumParams || len(abi.Params) != numArgs {
+		return false
+	}
+	for i := 0; i < numArgs; i++ {
+		if abi.Params[i] != SpecializedABIParamRawInt || !callABIValueIsInt(instr.Args[1+i]) {
+			return false
+		}
+	}
+	instr.Type = TypeInt
+	return true
 }
 
 func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, tails map[int]bool, shiftAddOverflowVersions map[*vm.FuncProto]bool) (CallABIDescriptor, string) {
@@ -125,6 +154,22 @@ func callABIHasExactFixedShape(fn *Function, instr *Instr) bool {
 
 func callABIValueIsInt(v *Value) bool {
 	return v != nil && v.Def != nil && v.Def.Type == TypeInt
+}
+
+func callABIIsStaticSelfCall(fn *Function, instr *Instr) bool {
+	if fn == nil || fn.Proto == nil || instr == nil || len(instr.Args) == 0 {
+		return false
+	}
+	fnArg := instr.Args[0]
+	if fnArg == nil || fnArg.Def == nil || fnArg.Def.Op != OpGetGlobal {
+		return false
+	}
+	constIdx := int(fnArg.Def.Aux)
+	if constIdx < 0 || constIdx >= len(fn.Proto.Constants) {
+		return false
+	}
+	kv := fn.Proto.Constants[constIdx]
+	return kv.IsString() && kv.Str() == fn.Proto.Name
 }
 
 func callABICalleeHasShiftAddOverflowVersion(callee *vm.FuncProto, memo map[*vm.FuncProto]bool) bool {

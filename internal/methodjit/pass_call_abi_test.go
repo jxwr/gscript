@@ -128,6 +128,47 @@ func bench(n, reps) {
 	}
 }
 
+func TestCallABIAnnotate_RawIntSelfCallResultsAreTyped(t *testing.T) {
+	src := `func fib(n) {
+	if n < 2 { return n }
+	return fib(n - 1) + fib(n - 2)
+}`
+	top := compileTop(t, src)
+	fib := findProtoByName(top, "fib")
+	if fib == nil {
+		t.Fatal("fib proto not found")
+	}
+	assertRawIntSpecializedABI(t, AnalyzeSpecializedABI(fib), 1)
+
+	fn := BuildGraph(fib)
+	fn, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(fib): %v", err)
+	}
+
+	var selfCalls int
+	var rawAdd bool
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall {
+				selfCalls++
+				if instr.Type != TypeInt {
+					t.Fatalf("self call v%d Type=%s, want int\nIR:\n%s", instr.ID, instr.Type, Print(fn))
+				}
+			}
+			if instr.Op == OpAddInt {
+				rawAdd = true
+			}
+		}
+	}
+	if selfCalls != 2 {
+		t.Fatalf("self call count=%d, want 2\nIR:\n%s", selfCalls, Print(fn))
+	}
+	if !rawAdd {
+		t.Fatalf("recursive results should feed raw OpAddInt\nIR:\n%s", Print(fn))
+	}
+}
+
 func TestCallABIAnnotate_NegativeCases(t *testing.T) {
 	tests := []struct {
 		name   string
