@@ -945,6 +945,33 @@ result := arr[1] + arr[10] + arr[20]
 `, "result")
 }
 
+func TestTier1_TypedArrayAppendKeepsPairsDirty(t *testing.T) {
+	compareVMvsJIT(t, `
+func set_slot(arr, k, v) {
+    arr[k] = v
+    return arr[k]
+}
+
+arr := {}
+for i := 1; i <= 20; i++ { arr[i] = i }
+
+pre := 0
+for k, v := range pairs(arr) { pre = pre + 1 }
+
+for i := 1; i <= 200; i++ { set_slot(arr, 1, i) }
+
+mid := 0
+for k, v := range pairs(arr) { mid = mid + 1 }
+
+set_slot(arr, 21, 21)
+
+post := 0
+for k, v := range pairs(arr) { post = post + 1 }
+
+result := pre * 10000 + mid * 100 + post
+`, "result")
+}
+
 // TestTier1_NativeCall_TwoRecursiveCalls verifies double recursion with table ops.
 func TestTier1_NativeCall_TwoRecursiveCalls(t *testing.T) {
 	compareVMvsJIT(t, `

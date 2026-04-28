@@ -51,6 +51,14 @@ func emitTypedArraySetBoundsOnlyCheck(asm *jit.Assembler, tableReg, keyReg, lenR
 // nil so skipping RawSetInt.absorbKeys cannot change later length/iteration
 // semantics.
 func emitTypedArraySetAppendPath(asm *jit.Assembler, tableReg, keyReg, scratchReg jit.Reg, lenOff, capOff int, appendLabel, deoptLabel, storeLabel string) {
+	emitTypedArraySetAppendPathMaybeDirty(asm, tableReg, keyReg, scratchReg, lenOff, capOff, appendLabel, deoptLabel, storeLabel, false)
+}
+
+func emitTypedArraySetAppendPathDirty(asm *jit.Assembler, tableReg, keyReg, scratchReg jit.Reg, lenOff, capOff int, appendLabel, deoptLabel, storeLabel string) {
+	emitTypedArraySetAppendPathMaybeDirty(asm, tableReg, keyReg, scratchReg, lenOff, capOff, appendLabel, deoptLabel, storeLabel, true)
+}
+
+func emitTypedArraySetAppendPathMaybeDirty(asm *jit.Assembler, tableReg, keyReg, scratchReg jit.Reg, lenOff, capOff int, appendLabel, deoptLabel, storeLabel string, markKeysDirty bool) {
 	asm.Label(appendLabel)
 	asm.LDR(scratchReg, tableReg, jit.TableOffImap)
 	asm.CBNZ(scratchReg, deoptLabel)
@@ -60,6 +68,10 @@ func emitTypedArraySetAppendPath(asm *jit.Assembler, tableReg, keyReg, scratchRe
 	asm.CMPreg(keyReg, scratchReg)
 	asm.BCond(jit.CondGE, deoptLabel)
 	asm.ADDimm(scratchReg, keyReg, 1)
+	if markKeysDirty {
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, tableReg, jit.TableOffKeysDirty)
+	}
 	asm.STR(scratchReg, tableReg, lenOff)
 	asm.B(storeLabel)
 }
@@ -68,6 +80,14 @@ func emitTypedArraySetAppendPath(asm *jit.Assembler, tableReg, keyReg, scratchRe
 // has capacity. This mirrors RawSetInt's typed sparse-expansion path and stays
 // conservative by requiring empty imap/hash because it does not run absorbKeys.
 func emitTypedArraySetSparsePath(asm *jit.Assembler, tableReg, keyReg, scratchReg jit.Reg, lenOff, capOff int, sparseLabel, deoptLabel, storeLabel string) {
+	emitTypedArraySetSparsePathMaybeDirty(asm, tableReg, keyReg, scratchReg, lenOff, capOff, sparseLabel, deoptLabel, storeLabel, false)
+}
+
+func emitTypedArraySetSparsePathDirty(asm *jit.Assembler, tableReg, keyReg, scratchReg jit.Reg, lenOff, capOff int, sparseLabel, deoptLabel, storeLabel string) {
+	emitTypedArraySetSparsePathMaybeDirty(asm, tableReg, keyReg, scratchReg, lenOff, capOff, sparseLabel, deoptLabel, storeLabel, true)
+}
+
+func emitTypedArraySetSparsePathMaybeDirty(asm *jit.Assembler, tableReg, keyReg, scratchReg jit.Reg, lenOff, capOff int, sparseLabel, deoptLabel, storeLabel string, markKeysDirty bool) {
 	asm.Label(sparseLabel)
 	asm.CMPimm(keyReg, tier2SparseArrayMax)
 	asm.BCond(jit.CondGE, deoptLabel)
@@ -79,6 +99,10 @@ func emitTypedArraySetSparsePath(asm *jit.Assembler, tableReg, keyReg, scratchRe
 	asm.CMPreg(keyReg, scratchReg)
 	asm.BCond(jit.CondGE, deoptLabel)
 	asm.ADDimm(scratchReg, keyReg, 1)
+	if markKeysDirty {
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, tableReg, jit.TableOffKeysDirty)
+	}
 	asm.STR(scratchReg, tableReg, lenOff)
 	asm.B(storeLabel)
 }
@@ -1094,6 +1118,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	emitIntArrayPath := !hasKnownSetKind || expectedKind == jit.AKInt
 	emitFloatArrayPath := !hasKnownSetKind || expectedKind == jit.AKFloat
 	emitBoolArrayPath := !hasKnownSetKind || expectedKind == jit.AKBool
+	fastPathAlwaysWritesKeysDirty := !emitIntArrayPath && !emitFloatArrayPath
 	if hasKnownSetKind {
 		if ec.kindVerified[tblValueID] != uint16(knownSetKind) {
 			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
@@ -1173,13 +1198,9 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 			asm.STRreg(jit.X4, jit.X2, jit.X1)
-			if !ec.keysDirtyWritten[tblValueID] {
-				asm.MOVimm16(jit.X5, 1)
-				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-			}
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
 		} else if ec.hasReg(instr.Args[2].ID) && ec.rawIntRegs[instr.Args[2].ID] {
 			// Raw int register bypass: value already unboxed, skip tag check.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
@@ -1193,13 +1214,9 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 			asm.STRreg(jit.X4, jit.X2, jit.X1)
-			if !ec.keysDirtyWritten[tblValueID] {
-				asm.MOVimm16(jit.X5, 1)
-				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-			}
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
 		} else if ec.irTypes[instr.Args[2].ID] == TypeInt {
 			// Known-int value: unbox directly and skip the redundant tag check.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
@@ -1214,13 +1231,9 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 			asm.STRreg(jit.X4, jit.X2, jit.X1)
-			if !ec.keysDirtyWritten[tblValueID] {
-				asm.MOVimm16(jit.X5, 1)
-				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-			}
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
 		} else {
 			// Load value to store and check it's an integer.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
@@ -1240,13 +1253,9 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
 			asm.STRreg(jit.X4, jit.X2, jit.X1)            // intArray[key] = int64
-			if !ec.keysDirtyWritten[tblValueID] {
-				asm.MOVimm16(jit.X5, 1)
-				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-			}
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
 		}
 	}
 
@@ -1276,11 +1285,6 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.Label(floatStoreLabel)
 		// Float64 bits ARE the NaN-boxed representation — store directly.
 		asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
-		// Set keysDirty while X0 still holds the table pointer.
-		if !ec.keysDirtyWritten[tblValueID] {
-			asm.MOVimm16(jit.X5, 1)
-			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-		}
 		if valueHasRawFPR {
 			valFPR := ec.resolveRawFloat(valueID, jit.D0)
 			asm.FSTRdReg(valFPR, jit.X2, jit.X1) // floatArray[key] = float64
@@ -1288,8 +1292,8 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.STRreg(jit.X4, jit.X2, jit.X1) // floatArray[key] = float64 bits
 		}
 		asm.B(doneLabel)
-		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, deoptLabel, floatStoreLabel)
-		emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatSparseLabel, deoptLabel, floatStoreLabel)
+		emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, deoptLabel, floatStoreLabel)
+		emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatSparseLabel, deoptLabel, floatStoreLabel)
 	}
 
 	if emitBoolArrayPath {
@@ -1380,10 +1384,14 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	// subsequent ops re-verify.
 	delete(ec.tableVerified, tblValueID)
 	delete(ec.kindVerified, tblValueID)
-	// keysDirty is idempotent: after any SetTable (fast or slow), the
-	// flag is 1. Record that so subsequent SetTables in this block
-	// can elide the MOVimm16+STRB.
-	ec.keysDirtyWritten[tblValueID] = true
+	// keysDirty is idempotent. Record only when every native path writes it;
+	// typed int/float in-bounds overwrites intentionally skip it because they
+	// do not change the table's key set.
+	if fastPathAlwaysWritesKeysDirty {
+		ec.keysDirtyWritten[tblValueID] = true
+	} else {
+		delete(ec.keysDirtyWritten, tblValueID)
+	}
 }
 
 // emitSetTableExit emits a table-exit for OpSetTable (dynamic key access).

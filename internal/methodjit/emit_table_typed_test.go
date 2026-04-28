@@ -306,6 +306,37 @@ result := mixed_append(50)
 	compareTier2Result(t, src, "result")
 }
 
+func TestTier2_TypedArrayAppendKeepsPairsDirty(t *testing.T) {
+	src := `
+func mutate(arr, n, k) {
+    for i := 1; i <= n; i++ {
+        arr[1] = i
+    }
+    arr[k] = k
+    return arr[k]
+}
+
+arr := {}
+for i := 1; i <= 20; i++ { arr[i] = i }
+
+pre := 0
+for k, v := range pairs(arr) { pre = pre + 1 }
+
+for r := 1; r <= 5; r++ { mutate(arr, 100, 20) }
+
+mid := 0
+for k, v := range pairs(arr) { mid = mid + 1 }
+
+mutate(arr, 100, 21)
+
+post := 0
+for k, v := range pairs(arr) { post = post + 1 }
+
+result := pre * 10000 + mid * 100 + post
+`
+	compareTier2Result(t, src, "result")
+}
+
 func TestTier2_SetTableArrayIntSparseWithinCapacityStaysNative(t *testing.T) {
 	src := `
 func fill(n) {

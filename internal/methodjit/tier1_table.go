@@ -453,12 +453,10 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Unbox int64 from NaN-boxed value.
 	asm.SBFX(jit.X4, jit.X4, 0, 48) // X4 = raw int64
 	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
-	asm.STRreg(jit.X4, jit.X2, jit.X1) // intArray[key] = int64
-	asm.MOVimm16(jit.X5, 1)
-	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	asm.STRreg(jit.X4, jit.X2, jit.X1)              // intArray[key] = int64
 	emitBaselineFeedbackKind(asm, pc, 2, "set_int") // FBKindInt=2
 	asm.B(doneLabel)
-	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, slowLabel, intStoreLabel)
+	emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, slowLabel, intStoreLabel)
 
 	// --- ArrayFloat fast path ---
 	asm.Label(floatArrayLabel)
@@ -472,14 +470,11 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
 	asm.BCond(jit.CondEQ, slowLabel)      // tagged → slow (not a float)
 	// Float64 bits ARE the NaN-boxed representation — store directly.
-	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
-	asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
-	// Set keysDirty flag.
-	asm.MOVimm16(jit.X5, 1)
-	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray)   // floatArray data pointer
+	asm.STRreg(jit.X4, jit.X2, jit.X1)                // floatArray[key] = float64
 	emitBaselineFeedbackKind(asm, pc, 3, "set_float") // FBKindFloat=3
 	asm.B(doneLabel)
-	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, slowLabel, floatStoreLabel)
+	emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, slowLabel, floatStoreLabel)
 
 	// --- ArrayBool fast path ---
 	asm.Label(boolArrayLabel)
