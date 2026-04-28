@@ -132,6 +132,7 @@ type Heap struct {
 	arenas         [numSizeClasses]*Arena
 	overPages      [][]byte // dedicated mmap pages for oversized allocations
 	tableSlab      tableSlab
+	tableSlabNext  uintptr
 	tableSlabStart uintptr
 	tableSlabEnd   uintptr
 	stringSlab     stringSlab

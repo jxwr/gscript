@@ -11,6 +11,7 @@ package runtime
 
 import (
 	stdruntime "runtime"
+	"sync"
 	"testing"
 	"unsafe"
 )
@@ -60,6 +61,61 @@ func BenchmarkNewTableSizedCurrent(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = NewTableSized(0, 0)
+	}
+}
+
+func TestNewEmptyTableStartsWithCleanKeys(t *testing.T) {
+	tbl := NewTableSized(0, 0)
+	if tbl.keysDirty {
+		t.Fatal("fresh empty table should not require an iteration-key rebuild")
+	}
+	if key, val, ok := tbl.Next(NilValue()); ok || !key.IsNil() || !val.IsNil() {
+		t.Fatalf("empty Next = (%v, %v, %v), want nil nil false", key, val, ok)
+	}
+
+	tbl.RawSetString("x", IntValue(42))
+	if !tbl.keysDirty {
+		t.Fatal("string mutation did not dirty iteration keys")
+	}
+	key, val, ok := tbl.Next(NilValue())
+	if !ok || !key.IsString() || key.Str() != "x" || !val.IsInt() || val.Int() != 42 {
+		t.Fatalf("mutated Next = (%v, %v, %v), want x 42 true", key, val, ok)
+	}
+}
+
+func TestAllocTableFastPathConcurrentUnique(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	const goroutines = 8
+	const perG = tableSlabSize * 2
+	ptrs := make(chan uintptr, goroutines*perG)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perG; i++ {
+				tbl := NewTableSized(0, 0)
+				if tbl.keysDirty {
+					t.Errorf("fresh empty table keysDirty = true")
+				}
+				ptrs <- uintptr(unsafe.Pointer(tbl))
+			}
+		}()
+	}
+	wg.Wait()
+	close(ptrs)
+
+	seen := make(map[uintptr]struct{}, goroutines*perG)
+	for p := range ptrs {
+		if _, ok := seen[p]; ok {
+			t.Fatalf("duplicate table pointer allocated: %#x", p)
+		}
+		seen[p] = struct{}{}
 	}
 }
 

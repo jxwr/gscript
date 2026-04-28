@@ -6,8 +6,8 @@
 // that Go GC treats correctly (whole backing stays live while any
 // interior pointer is reachable).
 //
-// tableSlab itself is not thread-safe. Heap serializes public allocation
-// entry points before calling into it.
+// Hot allocations reserve slots through an atomic cursor. Refills are still
+// serialized by Heap before publishing a new backing.
 
 package runtime
 
@@ -25,14 +25,14 @@ import (
 // slab-range metadata without changing individual table identity.
 const tableSlabSize = 8192
 
-// tableSlab is a bump allocator for *Table. Holds a current backing
-// []Table and an index pointing at the next free slot. On exhaustion,
-// allocates a fresh backing. Old backings stay alive exactly while an
-// interior *Table pointer from that backing is reachable; Go's GC tracks
-// those interior pointers, so the slab must not retain every old backing.
+// tableSlab is a bump allocator for *Table. Holds the current backing []Table;
+// the next free slot is published in Heap.tableSlabNext so readers can reserve
+// without taking the heap lock. On exhaustion, refill allocates a fresh backing.
+// Old backings stay alive exactly while an interior *Table pointer from that
+// backing is reachable; Go's GC tracks those interior pointers, so the slab
+// must not retain every old backing.
 type tableSlab struct {
 	backing []Table
-	idx     int
 }
 
 type tableSlabRange struct {
@@ -46,20 +46,23 @@ var tableSlabRanges struct {
 }
 
 // allocTable returns a zero-initialized *Table pointing into the current
-// backing. On overflow, allocates a fresh backing before handing out a slot.
+// backing. It is called with the heap lock held and may refill the slab before
+// handing out a slot.
 func (s *tableSlab) allocTable(h *Heap) *Table {
-	if s.idx >= len(s.backing) {
+	for {
+		if t := h.tryAllocTableFast(); t != nil {
+			return t
+		}
 		s.refill(h)
 	}
-	t := &s.backing[s.idx]
-	s.idx++
-	return t
 }
 
 func (s *tableSlab) refill(h *Heap) {
+	if h != nil {
+		atomic.StoreUintptr(&h.tableSlabNext, 0)
+	}
 	next := make([]Table, tableSlabSize)
 	s.backing = next
-	s.idx = 0
 	if h != nil {
 		h.publishTableSlab(next)
 	}
@@ -67,6 +70,7 @@ func (s *tableSlab) refill(h *Heap) {
 
 func (h *Heap) publishTableSlab(backing []Table) {
 	if len(backing) == 0 {
+		atomic.StoreUintptr(&h.tableSlabNext, 0)
 		atomic.StoreUintptr(&h.tableSlabStart, 0)
 		atomic.StoreUintptr(&h.tableSlabEnd, 0)
 		return
@@ -77,9 +81,11 @@ func (h *Heap) publishTableSlab(backing []Table) {
 	registerTableSlabRange(start, end)
 	keepAlive(root, nil)
 
+	atomic.StoreUintptr(&h.tableSlabNext, 0)
 	atomic.StoreUintptr(&h.tableSlabStart, 0)
 	atomic.StoreUintptr(&h.tableSlabEnd, end)
 	atomic.StoreUintptr(&h.tableSlabStart, start)
+	atomic.StoreUintptr(&h.tableSlabNext, start)
 }
 
 func registerTableSlabRange(start, end uintptr) {
@@ -145,14 +151,40 @@ func (h *Heap) tablePointerInCurrentSlab(addr uintptr) bool {
 	return addr < end
 }
 
+const tableSlabElemSize = uintptr(unsafe.Sizeof(Table{}))
+
+// tryAllocTableFast reserves a slot by absolute address. The backing []Table is
+// kept alive by tableSlab.backing and the slab root log, but checkptr cannot
+// track pointer provenance through the atomic address cursor.
+//
+//go:nocheckptr
+func (h *Heap) tryAllocTableFast() *Table {
+	if h == nil {
+		return nil
+	}
+	for {
+		next := atomic.LoadUintptr(&h.tableSlabNext)
+		if next == 0 {
+			return nil
+		}
+		end := atomic.LoadUintptr(&h.tableSlabEnd)
+		if end == 0 || next > end-tableSlabElemSize {
+			return nil
+		}
+		if atomic.CompareAndSwapUintptr(&h.tableSlabNext, next, next+tableSlabElemSize) {
+			return (*Table)(unsafe.Pointer(next))
+		}
+	}
+}
+
 // AllocTable returns a fresh, zero-initialized *Table from the bump slab.
 // Caller is responsible for any field initialization beyond the zero value.
 func (h *Heap) AllocTable() *Table {
+	if t := h.tryAllocTableFast(); t != nil {
+		return t
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.tableSlab.backing == nil {
-		h.tableSlab.refill(h)
-	}
 	return h.tableSlab.allocTable(h)
 }
 
@@ -162,9 +194,6 @@ func (h *Heap) AllocTable() *Table {
 func (h *Heap) AllocTableWithSvals(capacity int) (*Table, []Value) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.tableSlab.backing == nil {
-		h.tableSlab.refill(h)
-	}
 	t := h.tableSlab.allocTable(h)
 	if capacity <= 0 {
 		return t, nil

@@ -91,11 +91,22 @@ func cleanHashKey(key Value) Value {
 
 // NewTable creates a new empty table (non-concurrent by default).
 func NewTable() *Table {
-	return DefaultHeap.AllocTable()
+	return NewEmptyTable()
+}
+
+// NewEmptyTable creates an empty table with a clean iteration-key cache.
+// Mutating operations mark keysDirty before adding or removing entries, so a
+// fresh table does not need an initial rebuild for pairs/Next semantics.
+func NewEmptyTable() *Table {
+	t := DefaultHeap.AllocTable()
+	return t
 }
 
 // NewTableSized creates a table with pre-allocated capacity hints.
 func NewTableSized(arrayHint, hashHint int) *Table {
+	if arrayHint == 0 && hashHint == 0 {
+		return NewEmptyTable()
+	}
 	return NewTableSizedKind(arrayHint, hashHint, ArrayMixed)
 }
 
@@ -104,6 +115,9 @@ func NewTableSized(arrayHint, hashHint int) *Table {
 // the historical length-1 sentinel allocation; typed arrays start at length 0 so
 // key 0 can use the native append path.
 func NewTableSizedKind(arrayHint, hashHint int, kind ArrayKind) *Table {
+	if arrayHint == 0 && hashHint == 0 {
+		return NewEmptyTable()
+	}
 	if arrayHint == 0 && hashHint > 0 && hashHint <= smallFieldCap && kind == ArrayMixed {
 		t, svals := DefaultHeap.AllocTableWithSvals(hashHint)
 		t.svals = svals
