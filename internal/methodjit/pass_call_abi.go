@@ -66,16 +66,16 @@ func callABIAnnotateRawIntSelfResult(fn *Function, instr *Instr, tails map[int]b
 	if tails[instr.ID] || !callABIHasExactFixedShape(fn, instr) || !callABIIsStaticSelfCall(fn, instr) {
 		return false
 	}
-	abi := AnalyzeSpecializedABI(fn.Proto)
-	if !abi.Eligible || abi.Kind != SpecializedABIRawInt || abi.Return != SpecializedABIReturnRawInt {
+	abi := AnalyzeRawIntSelfABI(fn.Proto)
+	if !abi.Eligible || abi.Return != SpecializedABIReturnRawInt {
 		return false
 	}
 	numArgs := len(instr.Args) - 1
-	if numArgs != fn.Proto.NumParams || len(abi.Params) != numArgs {
+	if numArgs != abi.NumParams {
 		return false
 	}
 	for i := 0; i < numArgs; i++ {
-		if abi.Params[i] != SpecializedABIParamRawInt || !callABIValueIsInt(instr.Args[1+i]) {
+		if !callABIValueIsInt(instr.Args[1+i]) {
 			return false
 		}
 	}
@@ -98,25 +98,32 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 		return CallABIDescriptor{}, "callee is not statically resolved from stable globals"
 	}
 	if fn != nil && callee == fn.Proto {
-		return CallABIDescriptor{}, "self call is not annotated by the MVP"
+		return CallABIDescriptor{}, "self call uses separate raw-int result annotation"
 	}
 	abi := AnalyzeSpecializedABI(callee)
+	crossRecursiveNumeric := false
 	if !abi.Eligible || abi.Kind != SpecializedABIRawInt || abi.Return != SpecializedABIReturnRawInt {
-		if abi.RejectWhy != "" {
+		crossRecursiveNumeric = qualifiesForNumericCrossRecursiveCandidate(callee)
+		if !crossRecursiveNumeric && abi.RejectWhy != "" {
 			return CallABIDescriptor{}, "callee raw-int ABI rejected: " + abi.RejectWhy
 		}
-		return CallABIDescriptor{}, "callee is not raw-int ABI eligible"
+		if !crossRecursiveNumeric {
+			return CallABIDescriptor{}, "callee is not raw-int ABI eligible"
+		}
 	}
 	if callABICalleeHasShiftAddOverflowVersion(callee, shiftAddOverflowVersions) {
 		return CallABIDescriptor{}, "callee may promote raw-int recurrence on overflow"
 	}
 	numArgs := len(instr.Args) - 1
-	if numArgs != callee.NumParams || len(abi.Params) != numArgs {
+	if numArgs != callee.NumParams {
+		return CallABIDescriptor{}, "argument count does not match callee ABI"
+	}
+	if !crossRecursiveNumeric && len(abi.Params) != numArgs {
 		return CallABIDescriptor{}, "argument count does not match callee ABI"
 	}
 	rawParams := make([]bool, numArgs)
 	for i := 0; i < numArgs; i++ {
-		if abi.Params[i] != SpecializedABIParamRawInt {
+		if !crossRecursiveNumeric && abi.Params[i] != SpecializedABIParamRawInt {
 			return CallABIDescriptor{}, "callee has non-raw-int ABI parameter"
 		}
 		if !callABIValueIsInt(instr.Args[1+i]) {

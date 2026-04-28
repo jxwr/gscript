@@ -169,6 +169,51 @@ func TestCallABIAnnotate_RawIntSelfCallResultsAreTyped(t *testing.T) {
 	}
 }
 
+func TestCallABIAnnotate_CrossRecursivePeerCallGetsDescriptor(t *testing.T) {
+	src := `func F(n) {
+	if n == 0 { return 1 }
+	return n - M(F(n - 1))
+}
+func M(n) {
+	if n == 0 { return 0 }
+	return n - F(M(n - 1))
+}`
+	top := compileTop(t, src)
+	f := findProtoByName(top, "F")
+	m := findProtoByName(top, "M")
+	if f == nil || m == nil {
+		t.Fatalf("missing protos: F=%v M=%v", f != nil, m != nil)
+	}
+	if !qualifiesForNumericCrossRecursiveCandidate(f) || !qualifiesForNumericCrossRecursiveCandidate(m) {
+		t.Fatalf("expected F/M to qualify as numeric cross-recursive candidates")
+	}
+
+	globals := map[string]*vm.FuncProto{"F": f, "M": m}
+	fn := BuildGraph(f)
+	var err error
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass: %v", err)
+	}
+	fn = AnnotateCallABIs(fn, CallABIAnnotationConfig{Globals: globals})
+
+	selfCall := singleCallTo(t, fn, "F", globals)
+	if selfCall.Type != TypeInt {
+		t.Fatalf("self call Type=%s, want int\nIR:\n%s", selfCall.Type, Print(fn))
+	}
+	peerCall := singleCallTo(t, fn, "M", globals)
+	desc, ok := fn.CallABIs[peerCall.ID]
+	if !ok {
+		t.Fatalf("peer call %d missing raw-int CallABI descriptor\nIR:\n%s", peerCall.ID, Print(fn))
+	}
+	if peerCall.Type != TypeInt {
+		t.Fatalf("peer call Type=%s, want int\nIR:\n%s", peerCall.Type, Print(fn))
+	}
+	if desc.Callee != m || desc.NumArgs != 1 || desc.NumRets != 1 || !desc.RawIntReturn || len(desc.RawIntParams) != 1 || !desc.RawIntParams[0] {
+		t.Fatalf("unexpected cross-recursive descriptor: %+v", desc)
+	}
+}
+
 func TestCallABIAnnotate_NegativeCases(t *testing.T) {
 	tests := []struct {
 		name   string

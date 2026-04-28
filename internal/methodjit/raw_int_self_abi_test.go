@@ -791,6 +791,133 @@ func caller(n) {
 	}
 }
 
+func TestRawIntPeerABI_CrossRecursiveNumericBodyLateBindsPeerEntry(t *testing.T) {
+	src := `func F(n) {
+	if n == 0 { return 1 }
+	return n - M(F(n - 1))
+}
+func M(n) {
+	if n == 0 { return 0 }
+	return n - F(M(n - 1))
+}`
+	top := compileTop(t, src)
+	f := findProtoByName(top, "F")
+	m := findProtoByName(top, "M")
+	if f == nil || m == nil {
+		t.Fatalf("missing protos: F=%v M=%v", f != nil, m != nil)
+	}
+	if m.Tier2NumericEntryPtr != 0 {
+		t.Fatalf("test setup expected unpublished M numeric entry, got %#x", m.Tier2NumericEntryPtr)
+	}
+	assertCompiledRawIntSelfABI(t, AnalyzeRawIntSelfABI(f), 1)
+	assertCompiledRawIntSelfABI(t, AnalyzeRawIntSelfABI(m), 1)
+
+	fn := BuildGraph(f)
+	fn, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals: map[string]*vm.FuncProto{"F": f, "M": m},
+		InlineMaxSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(F): %v", err)
+	}
+	if fn.CallABIs == nil {
+		t.Fatalf("F pipeline did not annotate raw peer calls\nIR:\n%s", Print(fn))
+	}
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile(F): %v", err)
+	}
+	defer cf.Code.Free()
+	if cf.NumericEntryOffset <= 0 {
+		t.Fatalf("F did not emit a numeric entry")
+	}
+
+	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+	rawPeerShims := 0
+	for pc := 0; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		if !isSubSPImm(word, rawPeerFrameSize) {
+			continue
+		}
+		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isBLR(scanWord) {
+				rawPeerShims++
+				break
+			}
+			if scan-pc > 260 {
+				break
+			}
+		}
+	}
+	if rawPeerShims == 0 {
+		t.Fatal("expected numeric cross-recursive body to emit a runtime-guarded raw peer-call shim")
+	}
+}
+
+func TestRawIntPeerABI_CrossRecursiveExecution(t *testing.T) {
+	src := `func F(n) {
+	if n == 0 { return 1 }
+	return n - M(F(n - 1))
+}
+func M(n) {
+	if n == 0 { return 0 }
+	return n - F(M(n - 1))
+}`
+	top := compileTop(t, src)
+	f := findProtoByName(top, "F")
+	m := findProtoByName(top, "M")
+	if f == nil || m == nil {
+		t.Fatalf("missing protos: F=%v M=%v", f != nil, m != nil)
+	}
+	assertCompiledRawIntSelfABI(t, AnalyzeRawIntSelfABI(f), 1)
+	assertCompiledRawIntSelfABI(t, AnalyzeRawIntSelfABI(m), 1)
+
+	args := []runtime.Value{runtime.IntValue(16)}
+	vmResults := runVMByName(t, src, "F", args)
+	jitResults, entered := runForcedTier2ByName(t, top, "F", []string{"F", "M"}, args)
+	assertRawIntSelfResultsEqual(t, "F", jitResults, vmResults)
+	if entered["F"] == 0 || entered["M"] == 0 {
+		t.Fatalf("expected F and M to enter Tier 2, entered=%v", entered)
+	}
+}
+
+func TestRawIntPeerABI_CrossRecursiveSelfFallbackUsesPeerClosure(t *testing.T) {
+	src := `func F(n) {
+	if n == 0 { return 0 }
+	if n < 0 {
+		x := F(n + 1)
+		return x + 0
+	}
+	y := M(n)
+	return y + 0
+}
+func M(n) {
+	if n == 0 { return 0 }
+	if n < 0 {
+		x := F(n + 1)
+		return x + 0
+	}
+	return M(n - 1) + 1
+}`
+	top := compileTop(t, src)
+	f := findProtoByName(top, "F")
+	m := findProtoByName(top, "M")
+	if f == nil || m == nil {
+		t.Fatalf("missing protos: F=%v M=%v", f != nil, m != nil)
+	}
+	assertCompiledRawIntSelfABI(t, AnalyzeRawIntSelfABI(f), 1)
+	assertCompiledRawIntSelfABI(t, AnalyzeRawIntSelfABI(m), 1)
+
+	args := []runtime.Value{runtime.IntValue(maxRawSelfCallDepth + 8)}
+	vmResults := runVMByName(t, src, "F", args)
+	jitResults, entered := runForcedTier2ByName(t, top, "F", []string{"F", "M"}, args)
+	assertRawIntSelfResultsEqual(t, "F", jitResults, vmResults)
+	if entered["F"] == 0 || entered["M"] == 0 {
+		t.Fatalf("expected F and M to enter Tier 2, entered=%v", entered)
+	}
+}
+
 func TestRawIntSelfABI_NonEligibleStaysBoxed(t *testing.T) {
 	tests := []struct {
 		name    string

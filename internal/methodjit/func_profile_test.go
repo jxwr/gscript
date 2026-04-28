@@ -429,10 +429,8 @@ func ack(m, n) {
 }
 
 func TestShouldPromoteTier2_MutualNumericUsesTier2EntryProtocol(t *testing.T) {
-	// Cross-recursive numeric functions still call through the boxed ABI, but
-	// Tier 2 has a separate direct entry pointer for peer-call ICs. That makes
-	// promotion profitable again while the raw-int peer-call ABI is still future
-	// work.
+	// Cross-recursive numeric functions publish a numeric Tier 2 entry and can
+	// late-bind peer raw-int calls once the target entry is installed.
 	src := `
 func F(n) {
     if n == 0 { return 1 }
@@ -545,9 +543,8 @@ result = sum(100)
 }
 
 // TestTieringManager_SmartPromotion_GCDStaysTier1 verifies gcd-shaped raw-int
-// while kernels stay on the Tier 1 boxed-call path. Tier 2 can compile this
-// body, but repeated cross-function calls pay the full Tier 2 direct-entry ABI;
-// Tier 1 BLR is faster until a cross-proto raw-int call ABI exists.
+// while kernels stay on the Tier 1 boxed-call path. This body is not recursive,
+// so the recursive raw-int entry/peer-call ABI does not apply.
 func TestTieringManager_SmartPromotion_GCDStaysTier1(t *testing.T) {
 	src := `
 func gcd(a, b) {

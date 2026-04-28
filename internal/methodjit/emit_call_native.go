@@ -58,11 +58,12 @@ const (
 const (
 	rawSelfArgsOff = 0
 
-	rawPeerFrameSize = 64
-	rawPeerRegsOff   = 0
-	rawPeerConstsOff = 8
-	rawPeerFuncOff   = 16
-	rawPeerArgsOff   = 24
+	rawPeerFrameSize  = 64
+	rawPeerRegsOff    = 0
+	rawPeerConstsOff  = 8
+	rawPeerFuncOff    = 16
+	rawPeerArgsOff    = 24
+	rawPeerClosureOff = 56
 )
 
 func rawSelfFrameSizeFor(nParams int) int {
@@ -960,6 +961,8 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	if !leafCallee {
 		asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
 		asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+		asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
+		asm.STR(jit.X8, jit.SP, rawPeerClosureOff)
 	}
 
 	fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X6)
@@ -981,6 +984,9 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	asm.CMPreg(jit.X7, jit.X8)
 	asm.BCond(jit.CondNE, fallbackLabel)
 	jit.EmitExtractPtr(asm, jit.X7, jit.X6)
+	if !leafCallee {
+		asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+	}
 	asm.LDR(jit.X7, jit.X7, vmClosureOffProto)
 	asm.LoadImm64(jit.X8, int64(uintptr(unsafe.Pointer(callee))))
 	asm.CMPreg(jit.X7, jit.X8)
@@ -1089,7 +1095,10 @@ func rawIntPeerLeafCallee(proto *vm.FuncProto) bool {
 }
 
 func (ec *emitContext) rawIntPeerCallee(instr *Instr) *vm.FuncProto {
-	if instr == nil || ec.fn == nil || !ec.inLoopBlock() || instr.Type != TypeInt {
+	if instr == nil || ec.fn == nil || instr.Type != TypeInt {
+		return nil
+	}
+	if !ec.inLoopBlock() && !(ec.numericMode && ec.rawIntSelfABI.Eligible) {
 		return nil
 	}
 	if ec.tailCallInstrs[instr.ID] || ec.isStaticSelfCall(instr) {
@@ -1103,9 +1112,6 @@ func (ec *emitContext) rawIntPeerCallee(instr *Instr) *vm.FuncProto {
 		return nil
 	}
 	callee := desc.Callee
-	if callee.Tier2NumericEntryPtr == 0 {
-		return nil
-	}
 	ok, numParams := qualifyForNumeric(callee)
 	if !ok || desc.NumArgs != numParams || len(desc.RawIntParams) != numParams || len(instr.Args) != 1+numParams {
 		return nil
@@ -1130,8 +1136,10 @@ func (ec *emitContext) emitRestoreRawPeerCallerState() {
 	asm := ec.asm
 	asm.LDR(mRegRegs, jit.SP, rawPeerRegsOff)
 	asm.LDR(mRegConsts, jit.SP, rawPeerConstsOff)
+	asm.LDR(jit.X8, jit.SP, rawPeerClosureOff)
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
+	asm.STR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
 }
 
 func (ec *emitContext) emitRestoreRawPeerLeafCallerRegs(calleeBaseOff int) {

@@ -44,8 +44,9 @@ type SpecializedABI struct {
 }
 
 // RawIntSelfABI is the compact codegen contract for the private numeric
-// self-recursive entry. It is derived from SpecializedABI but keeps only the
-// facts emission and compiled-function metadata need.
+// recursive entry. It started as the self-recursive entry descriptor and still
+// carries that name for compatibility, but it also covers structurally pure
+// numeric self+peer recursion accepted by qualifiesForNumericCrossRecursiveCandidate.
 type RawIntSelfABI struct {
 	Eligible   bool
 	NumParams  int
@@ -216,6 +217,18 @@ func AnalyzeSpecializedABI(proto *vm.FuncProto) SpecializedABI {
 func AnalyzeRawIntSelfABI(proto *vm.FuncProto) RawIntSelfABI {
 	abi := AnalyzeSpecializedABI(proto)
 	if !abi.Eligible || abi.Kind != SpecializedABIRawInt || abi.Return != SpecializedABIReturnRawInt {
+		if qualifiesForNumericCrossRecursiveCandidate(proto) {
+			paramSlots := make([]int, proto.NumParams)
+			for i := range paramSlots {
+				paramSlots[i] = i
+			}
+			return RawIntSelfABI{
+				Eligible:   true,
+				NumParams:  proto.NumParams,
+				ParamSlots: paramSlots,
+				Return:     SpecializedABIReturnRawInt,
+			}
+		}
 		return RawIntSelfABI{
 			Return:    abi.Return,
 			RejectWhy: abi.RejectWhy,

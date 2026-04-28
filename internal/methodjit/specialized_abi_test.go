@@ -156,6 +156,10 @@ func M(n) {
 		if abi := AnalyzeSpecializedABI(proto); abi.Eligible {
 			t.Fatalf("%s must not be accepted by self-only raw ABI analysis: %+v", name, abi)
 		}
+		raw := AnalyzeRawIntSelfABI(proto)
+		if !raw.Eligible || raw.NumParams != 1 || raw.Return != SpecializedABIReturnRawInt {
+			t.Fatalf("%s should publish a raw numeric recursive ABI, got %+v", name, raw)
+		}
 	}
 
 	wrapper := findProtoByName(compileTop(t, `func g(n) { return n + 1 }
