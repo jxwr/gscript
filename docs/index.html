@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="68-the-result-stayed-raw">The Result Stayed Raw</a>
+  <p>Several facts now survive the pass boundary that used to erase them. Static raw-int self calls keep their integer result type, the private raw self ABI is recorded as compiled-function metadata, lowered typed-array loads preserve scalar element types for a narrow post-lowering TypeSpec pass, block-local typed numeric CSE trims duplicated arithmetic in <code>spectral_norm</code>, and small VM closures avoid a second upvalue-slice allocation without changing <code>Value.Ptr()</code> compatibility.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="67-the-closure-was-already-a-pointer">The Closure Was Already a Pointer</a>
   <p>VM closure calls no longer pay the generic <code>Ptr()</code>/interface lookup toll on the hot path. <code>Value.VMClosurePointer()</code> decodes closure-tagged values directly while preserving the legacy fallback, and the VM plus method JIT call paths now share that fast extraction. The focused guard moved <code>binary_trees</code> default JIT from about 0.888s to 0.745s and trimmed <code>closure_bench</code> without disturbing <code>nbody</code>.</p>
 </div>
