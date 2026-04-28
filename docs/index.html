@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-28</span>
   <br>
+  <a href="71-the-pause-was-not-the-problem">The Pause Was Not The Problem</a>
+  <p><code>binary_trees</code> made the memory wall visible: turning off Go collection did not improve the benchmark, but the allocation profile showed about 1.75GB of table allocation, root-log compaction, and root scanning. This round also added production loop-pressure diagnostics, bounded multi-argument raw self recursion with <code>RawSelfRegsEnd</code>, removed a redundant row-table nil check, and reduced sort fallback churn. The next object work is allocator and lifetime architecture, not just smaller ARM64 snippets.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-28</span>
+  <br>
   <a href="70-the-fast-paths-got-smaller">The Fast Paths Got Smaller</a>
   <p>This round shrank several method-JIT success paths without changing the recovery contracts: numeric raw calls return status in <code>X16</code>, FPR-resident field stores use direct <code>FSTR</code>, matmul gets same-block nested float table-load fusion, no-return self tail calls loop in Tier 1, and static two-field object literals construct their final shape directly. The combined guard kept regressions at zero while moving <code>sort</code>, <code>matmul</code>, <code>binary_trees</code>, and recursive numeric calls forward.</p>
 </div>
