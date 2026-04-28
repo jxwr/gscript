@@ -10,6 +10,7 @@
 package runtime
 
 import (
+	stdruntime "runtime"
 	"testing"
 )
 
@@ -76,6 +77,24 @@ func TestNewTableFromCtor2PopulatesSmallFields(t *testing.T) {
 	if tbl.smap != nil {
 		t.Fatal("two-field constructor should remain in small-field storage")
 	}
+}
+
+func TestTableSlabOldBackingSurvivesViaInteriorPointer(t *testing.T) {
+	h := NewHeap()
+	first := h.AllocTable()
+	first.keysDirty = true
+	first.shapeID = 12345
+
+	for i := 0; i < tableSlabSize*3; i++ {
+		_ = h.AllocTable()
+	}
+
+	stdruntime.GC()
+
+	if !first.keysDirty || first.shapeID != 12345 {
+		t.Fatalf("old slab table lost state after GC: keysDirty=%v shapeID=%d", first.keysDirty, first.shapeID)
+	}
+	stdruntime.KeepAlive(first)
 }
 
 // BenchmarkNewTableBumpSlab measures the bump-alloc path.

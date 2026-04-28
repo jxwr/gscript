@@ -20,16 +20,12 @@ const tableSlabSize = 1024
 
 // tableSlab is a bump allocator for *Table. Holds a current backing
 // []Table and an index pointing at the next free slot. On exhaustion,
-// allocates a fresh backing; old backings stay alive via the interior
-// *Table pointers handed out from them (GC tracks those).
+// allocates a fresh backing. Old backings stay alive exactly while an
+// interior *Table pointer from that backing is reachable; Go's GC tracks
+// those interior pointers, so the slab must not retain every old backing.
 type tableSlab struct {
 	backing []Table
 	idx     int
-	// retained prevents the GC from collecting backings whose *Table
-	// pointers are all still live (they won't be collected regardless),
-	// and also keeps the Heap a stable root for backings while the Heap
-	// exists. Redundant but explicit about intent.
-	retained []*[]Table
 }
 
 // allocTable returns a zero-initialized *Table pointing into the current
@@ -45,7 +41,6 @@ func (s *tableSlab) allocTable() *Table {
 
 func (s *tableSlab) refill() {
 	next := make([]Table, tableSlabSize)
-	s.retained = append(s.retained, &s.backing)
 	s.backing = next
 	s.idx = 0
 }
