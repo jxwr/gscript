@@ -134,6 +134,25 @@ func TestNewTableFromCtor2PopulatesSmallFields(t *testing.T) {
 	if tbl.smap != nil {
 		t.Fatal("two-field constructor should remain in small-field storage")
 	}
+	if tbl.keysDirty {
+		t.Fatal("two-field constructor should defer iteration-key rebuild until Next")
+	}
+	seen := make(map[string]int64, 2)
+	key := NilValue()
+	for {
+		k, v, ok := tbl.Next(key)
+		if !ok {
+			break
+		}
+		if !k.IsString() || !v.IsInt() {
+			t.Fatalf("Next returned (%v, %v), want string/int", k, v)
+		}
+		seen[k.Str()] = v.Int()
+		key = k
+	}
+	if len(seen) != 2 || seen["left"] != 11 || seen["right"] != 22 {
+		t.Fatalf("Next fields = %v, want left=11 right=22", seen)
+	}
 }
 
 func TestNewTableFromCtor2OmitsRuntimeNilFields(t *testing.T) {

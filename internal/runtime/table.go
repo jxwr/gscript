@@ -315,7 +315,6 @@ func NewTableFromCtor2(ctor *SmallTableCtor2, val1, val2 Value) *Table {
 		shape := ctor.Shape
 		if shape != nil && !val1.IsNil() && !val2.IsNil() {
 			t, svals := DefaultHeap.AllocTableWithSvals2()
-			t.keysDirty = true
 			t.svals = svals
 			t.svals[0] = val1
 			t.svals[1] = val2
@@ -362,7 +361,6 @@ func newTableFromCtorShape1(shape smallCtorShape, val Value) *Table {
 		return NewTableSized(0, 0)
 	}
 	t, svals := DefaultHeap.AllocTableWithSvals1()
-	t.keysDirty = true
 	t.svals = svals
 	t.svals[0] = val
 	t.shape = shape.shape
@@ -769,13 +767,65 @@ func (t *Table) rebuildKeys() {
 	t.keysDirty = false
 }
 
+func (t *Table) needsKeyRebuild() bool {
+	if t.keysDirty {
+		return true
+	}
+	if len(t.keys) != 0 {
+		return false
+	}
+	switch t.arrayKind {
+	case ArrayInt:
+		if len(t.intArray) > 1 {
+			return true
+		}
+	case ArrayFloat:
+		if len(t.floatArray) > 1 {
+			return true
+		}
+	case ArrayBool:
+		for _, b := range t.boolArray {
+			if b != 0 {
+				return true
+			}
+		}
+	default:
+		for _, v := range t.array {
+			if !v.IsNil() {
+				return true
+			}
+		}
+	}
+	for _, v := range t.imap {
+		if !v.IsNil() {
+			return true
+		}
+	}
+	for _, v := range t.svals {
+		if !v.IsNil() {
+			return true
+		}
+	}
+	for _, v := range t.smap {
+		if !v.IsNil() {
+			return true
+		}
+	}
+	for _, v := range t.hash {
+		if !v.IsNil() {
+			return true
+		}
+	}
+	return false
+}
+
 // Next returns the next key/value pair after the given key.
 func (t *Table) Next(key Value) (Value, Value, bool) {
 	if t.mu != nil {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
 	}
-	if t.keysDirty {
+	if t.needsKeyRebuild() {
 		t.rebuildKeys()
 	}
 	if len(t.keys) == 0 {
