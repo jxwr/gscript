@@ -464,6 +464,31 @@ func TestRecursion(t *testing.T) {
 	expectGlobalInt(t, g, "result", 55)
 }
 
+func TestFixedAritySelfRecursion(t *testing.T) {
+	g := compileAndRun(t, `
+		func count(n, acc) {
+			if n == 0 { return acc }
+			return count(n - 1, acc + 1)
+		}
+		result := count(25, 0)
+	`)
+	expectGlobalInt(t, g, "result", 25)
+}
+
+func TestSelfRecursionGlobalRebindFallsBack(t *testing.T) {
+	g := compileAndRun(t, `
+		func f(n) {
+			if n == 0 { return 1 }
+			if n == 2 {
+				f = func(x) { return 100 }
+			}
+			return f(n - 1) + 1
+		}
+		result := f(3)
+	`)
+	expectGlobalInt(t, g, "result", 102)
+}
+
 func TestMultipleReturns(t *testing.T) {
 	g := compileAndRun(t, `
 		func swap(a, b) {

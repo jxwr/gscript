@@ -1347,6 +1347,61 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				fb.Left.Observe(fnVal.Type())
 			}
 
+			// Fixed-arity self recursion is common in Tier0-only table walkers
+			// such as tree constructors/traversals. When the global lookup still
+			// resolved to the active closure, enter the next VM frame directly
+			// without the generic closure dispatch, vararg setup, or JIT probe.
+			if b != 0 {
+				proto := frame.closure.Proto
+				if !proto.IsVarArg && nArgs == proto.NumParams && (vm.methodJIT == nil || proto.JITDisabled) {
+					if p := fnVal.VMClosurePointer(); p == unsafe.Pointer(frame.closure) {
+						newBase := base + proto.MaxStack
+						if vm.top > newBase {
+							newBase = vm.top
+						}
+						needed := newBase + proto.MaxStack + 1
+						if needed > len(vm.regs) {
+							newRegs := runtime.MakeNilSlice(needed * 2)
+							copy(newRegs, vm.regs)
+							vm.regs = newRegs
+						}
+
+						srcStart := base + a + 1
+						switch nArgs {
+						case 0:
+						case 1:
+							vm.regs[newBase] = vm.regs[srcStart]
+						case 2:
+							vm.regs[newBase] = vm.regs[srcStart]
+							vm.regs[newBase+1] = vm.regs[srcStart+1]
+						default:
+							for i := 0; i < nArgs; i++ {
+								vm.regs[newBase+i] = vm.regs[srcStart+i]
+							}
+						}
+
+						if !vm.ensureFrameSlot() {
+							return nil, fmt.Errorf("stack overflow (max call depth %d)", maxCallDepth)
+						}
+						newFrame := &vm.frames[vm.frameCount]
+						newFrame.closure = frame.closure
+						newFrame.pc = 0
+						newFrame.base = newBase
+						newFrame.numResults = 0
+						newFrame.varargs = nil
+						newFrame.resultBase = base + a
+						newFrame.resultCount = c
+						vm.frameCount++
+
+						frame = newFrame
+						code = proto.Code
+						constants = proto.Constants
+						base = newBase
+						continue
+					}
+				}
+			}
+
 			// ---- Fast path: VM Closure (inline call) ----
 			if cl, ok := closureFromValue(fnVal); ok {
 				proto := cl.Proto
