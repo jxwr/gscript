@@ -187,6 +187,26 @@ func shouldStayTier0(profile FuncProfile) bool {
 		profile.CallCount > 0
 }
 
+// shouldStayTier0RecursiveTableWalker catches the non-numeric sibling of the
+// raw-int recursion fast path: a tiny self-recursive function that walks table
+// fields. Tier 1 pays native-call/frame overhead on every recursive edge, while
+// Tier 2 does not yet have a typed table-pointer recursive ABI for this shape.
+func shouldStayTier0RecursiveTableWalker(proto *vm.FuncProto, profile FuncProfile) bool {
+	if proto == nil || profile.BytecodeCount > 25 || profile.HasLoop || profile.CallCount == 0 {
+		return false
+	}
+	if profile.TableOpCount == 0 || profile.NewTableCount != 0 {
+		return false
+	}
+	if !staticallyCallsOnlySelf(proto) {
+		return false
+	}
+	if ok, _ := qualifyForNumeric(proto); ok {
+		return false
+	}
+	return true
+}
+
 // shouldPromoteTier2 decides whether a function should be promoted to Tier 2
 // based on its static profile and runtime call count.
 func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCount int) bool {

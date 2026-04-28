@@ -282,12 +282,14 @@ func makeTree(depth) {
     return {left: makeTree(depth - 1), right: makeTree(depth - 1)}
 }
 
+func checkTree(node) {
+    if node.left == nil { return 1 }
+    return 1 + checkTree(node.left) + checkTree(node.right)
+}
+
 result := 0
 for i := 1; i <= 20; i++ {
-    t := makeTree(4)
-    if t.left != nil {
-        result = result + 1
-    }
+    result = result + checkTree(makeTree(4))
 }
 `
 	proto := compileProto(t, src)
@@ -300,8 +302,15 @@ for i := 1; i <= 20; i++ {
 	}
 
 	result := v.GetGlobal("result")
-	if !result.IsInt() || result.Int() != 20 {
-		t.Fatalf("result = %v, want 20", result)
+	if !result.IsInt() || result.Int() != 620 {
+		t.Fatalf("result = %v, want 620", result)
+	}
+	if !proto.JITDisabled {
+		t.Fatal("<main> driver should stay interpreted when its hot loop calls a stable tier0-only callee")
+	}
+	if proto.CompiledCodePtr != 0 || proto.DirectEntryPtr != 0 {
+		t.Fatalf("<main> driver compiled despite tier0-only loop callee: compiled=%#x direct=%#x",
+			proto.CompiledCodePtr, proto.DirectEntryPtr)
 	}
 
 	makeTreeProto := findProtoByName(proto, "makeTree")
@@ -314,6 +323,61 @@ for i := 1; i <= 20; i++ {
 	if makeTreeProto.CompiledCodePtr != 0 || makeTreeProto.DirectEntryPtr != 0 {
 		t.Fatalf("makeTree compiled despite stay-tier0: compiled=%#x direct=%#x",
 			makeTreeProto.CompiledCodePtr, makeTreeProto.DirectEntryPtr)
+	}
+
+	checkTreeProto := findProtoByName(proto, "checkTree")
+	if checkTreeProto == nil {
+		t.Fatal("checkTree proto not found")
+	}
+	if !checkTreeProto.JITDisabled {
+		t.Fatal("checkTree should stay tier0 as a small non-numeric recursive table walker")
+	}
+	if checkTreeProto.CompiledCodePtr != 0 || checkTreeProto.DirectEntryPtr != 0 {
+		t.Fatalf("checkTree compiled despite recursive table-walker stay-tier0: compiled=%#x direct=%#x",
+			checkTreeProto.CompiledCodePtr, checkTreeProto.DirectEntryPtr)
+	}
+}
+
+func TestTieringManager_Tier0LoopCalleeGuardRequiresLoopCall(t *testing.T) {
+	src := `
+func makeTree(depth) {
+    if depth == 0 {
+        return {left: nil, right: nil}
+    }
+    return {left: makeTree(depth - 1), right: makeTree(depth - 1)}
+}
+
+tree := makeTree(4)
+result := 0
+for i := 1; i <= 20; i++ {
+    result = result + i
+}
+`
+	proto := compileProto(t, src)
+	tm := NewTieringManager()
+	profile := tm.getProfile(proto)
+	if callee, ok := tm.tier0OnlyLoopCallee(proto, profile); ok {
+		t.Fatalf("guard should ignore tier0-only callees outside hot loops, got %s", callee.Name)
+	}
+}
+
+func TestTieringManager_Tier0LoopCalleeGuardAllowsNativeLoopCallee(t *testing.T) {
+	src := `
+func helper(x) { return x + 1 }
+
+result := 0
+for i := 1; i <= 20; i++ {
+    result = result + helper(i)
+}
+`
+	proto := compileProto(t, src)
+	tm := NewTieringManager()
+	profile := tm.getProfile(proto)
+	if callee, ok := tm.tier0OnlyLoopCallee(proto, profile); ok {
+		t.Fatalf("guard should not block native-safe helper loop calls, got %s", callee.Name)
+	}
+	if !canPromoteWithNativeLoopCalls(proto, tm.buildLoopCallGlobals(proto)) {
+		t.Fatal("helper loop call should remain eligible for native loop-call promotion")
 	}
 }
 

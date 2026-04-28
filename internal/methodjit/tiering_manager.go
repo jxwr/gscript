@@ -192,6 +192,46 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 
+	if shouldStayTier0RecursiveTableWalker(proto, profile) {
+		proto.JITDisabled = true
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "stay_tier0_recursive_table_walker",
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "stay_tier0_recursive_table_walker",
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "jit_disabled",
+			"target": "interpreter",
+		})
+		return nil
+	}
+
+	if callee, ok := tm.tier0OnlyLoopCallee(proto, profile); ok {
+		proto.JITDisabled = true
+		calleeName := "<anonymous>"
+		if callee.Name != "" {
+			calleeName = callee.Name
+		}
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":      "tier1_driver_tier0_loop_callee",
+			"call_count":  proto.CallCount,
+			"callee":      calleeName,
+			"callee_addr": fmt.Sprintf("%p", callee),
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "tier1_driver_tier0_loop_callee",
+			"callee": calleeName,
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "driver_tier0_loop_callee",
+			"target": "interpreter",
+			"callee": calleeName,
+		})
+		return nil
+	}
+
 	// Use smart tiering to decide if this function should be promoted to Tier 2.
 	// shouldPromoteTier2 considers loops, arithmetic density, call patterns, and
 	// table ops. Functions with loops + calls + arithmetic are promoted at
@@ -664,6 +704,46 @@ func (tm *TieringManager) shouldPromoteNativeLoopDriver(proto *vm.FuncProto, pro
 		return false
 	}
 	return canPromoteWithNativeLoopCalls(proto, tm.buildLoopCallGlobals(proto))
+}
+
+// tier0OnlyLoopCallee reports stable loop callees that are deliberately kept
+// in the interpreter. Compiling the driver around that callee creates a mixed
+// Tier1/Tier0 path: every hot call exits Tier1, re-enters the VM, and then
+// immediately declines to compile the callee. For driver loops this can be
+// slower than keeping the whole driver interpreted.
+func (tm *TieringManager) tier0OnlyLoopCallee(proto *vm.FuncProto, profile FuncProfile) (*vm.FuncProto, bool) {
+	if tm == nil || proto == nil || !profile.HasLoop || profile.CallCount == 0 || !hasStaticCallInLoop(proto) {
+		return nil, false
+	}
+	globals := tm.buildLoopCallGlobals(proto)
+	if len(globals) == 0 {
+		return nil, false
+	}
+	inLoop := staticLoopPCs(proto)
+	for pc, inst := range proto.Code {
+		if !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
+		if !ok || callee == nil {
+			continue
+		}
+		if tm.isTier0OnlyCallee(callee) {
+			return callee, true
+		}
+	}
+	return nil, false
+}
+
+func (tm *TieringManager) isTier0OnlyCallee(callee *vm.FuncProto) bool {
+	if callee == nil {
+		return false
+	}
+	if callee.JITDisabled {
+		return true
+	}
+	profile := tm.getProfile(callee)
+	return shouldStayTier0(profile) || shouldStayTier0RecursiveTableWalker(callee, profile)
 }
 
 // buildInlineGlobals extracts global function protos from the VM's globals.
@@ -1687,20 +1767,7 @@ func hasStaticCallInLoop(proto *vm.FuncProto) bool {
 	if proto == nil || len(proto.Code) == 0 {
 		return false
 	}
-	inLoop := make([]bool, len(proto.Code))
-	for pc, inst := range proto.Code {
-		op := vm.DecodeOp(inst)
-		if op != vm.OP_FORLOOP && op != vm.OP_JMP {
-			continue
-		}
-		target := pc + 1 + vm.DecodesBx(inst)
-		if target < 0 || target > pc {
-			continue
-		}
-		for i := target; i <= pc && i < len(inLoop); i++ {
-			inLoop[i] = true
-		}
-	}
+	inLoop := staticLoopPCs(proto)
 	for pc, inst := range proto.Code {
 		if inLoop[pc] && vm.DecodeOp(inst) == vm.OP_CALL {
 			return true
@@ -1713,6 +1780,25 @@ func canPromoteWithNativeLoopCalls(proto *vm.FuncProto, globals map[string]*vm.F
 	if proto == nil || len(globals) == 0 {
 		return false
 	}
+	inLoop := staticLoopPCs(proto)
+	sawCall := false
+	for pc, inst := range proto.Code {
+		if !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		sawCall = true
+		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
+		if !ok || !tier2LoopCallCalleeIsNativeCandidate(callee, globals) {
+			return false
+		}
+	}
+	return sawCall
+}
+
+func staticLoopPCs(proto *vm.FuncProto) []bool {
+	if proto == nil || len(proto.Code) == 0 {
+		return nil
+	}
 	inLoop := make([]bool, len(proto.Code))
 	for pc, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
@@ -1727,18 +1813,7 @@ func canPromoteWithNativeLoopCalls(proto *vm.FuncProto, globals map[string]*vm.F
 			inLoop[i] = true
 		}
 	}
-	sawCall := false
-	for pc, inst := range proto.Code {
-		if !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_CALL {
-			continue
-		}
-		sawCall = true
-		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
-		if !ok || !tier2LoopCallCalleeIsNativeCandidate(callee, globals) {
-			return false
-		}
-	}
-	return sawCall
+	return inLoop
 }
 
 func hasNonNativeCallInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
