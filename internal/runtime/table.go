@@ -91,9 +91,7 @@ func cleanHashKey(key Value) Value {
 
 // NewTable creates a new empty table (non-concurrent by default).
 func NewTable() *Table {
-	t := DefaultHeap.AllocTable()
-	t.keysDirty = true
-	return t
+	return DefaultHeap.AllocTable()
 }
 
 // NewTableSized creates a table with pre-allocated capacity hints.
@@ -108,12 +106,10 @@ func NewTableSized(arrayHint, hashHint int) *Table {
 func NewTableSizedKind(arrayHint, hashHint int, kind ArrayKind) *Table {
 	if arrayHint == 0 && hashHint > 0 && hashHint <= smallFieldCap && kind == ArrayMixed {
 		t, svals := DefaultHeap.AllocTableWithSvals(hashHint)
-		t.keysDirty = true
 		t.svals = svals
 		return t
 	}
 	t := DefaultHeap.AllocTable()
-	t.keysDirty = true
 	if arrayHint > 0 {
 		capHint := arrayHint + 1
 		switch kind {
@@ -557,6 +553,9 @@ func (t *Table) RawSetString(key string, val Value) {
 	if t.mu != nil {
 		t.mu.Lock()
 		defer t.mu.Unlock()
+	}
+	if val.IsNil() && t.shapeID == 0 && len(t.skeys) == 0 && t.smap == nil {
+		return
 	}
 	t.keysDirty = true
 

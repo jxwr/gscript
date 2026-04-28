@@ -20,6 +20,36 @@ func TestTableEmptyCreation(t *testing.T) {
 	}
 }
 
+func TestNewEmptyTableStartsWithCleanIterationKeys(t *testing.T) {
+	tbl := NewTableSized(0, 0)
+	if tbl.keysDirty {
+		t.Fatal("new empty table should not require iteration-key rebuild")
+	}
+	if k, v, ok := tbl.Next(NilValue()); ok || !k.IsNil() || !v.IsNil() {
+		t.Fatalf("empty Next = (%v, %v, %v), want nil, nil, false", k, v, ok)
+	}
+	if tbl.keysDirty {
+		t.Fatal("empty Next should keep iteration keys clean")
+	}
+
+	tbl.RawSetString("missing", NilValue())
+	if tbl.keysDirty {
+		t.Fatal("nil write to absent string key should not dirty an empty table")
+	}
+
+	tbl.RawSetString("x", IntValue(1))
+	if !tbl.keysDirty {
+		t.Fatal("real string-key insert should dirty iteration keys")
+	}
+	k, v, ok := tbl.Next(NilValue())
+	if !ok || !k.IsString() || k.Str() != "x" || !v.IsInt() || v.Int() != 1 {
+		t.Fatalf("first Next = (%v, %v, %v), want x, 1, true", k, v, ok)
+	}
+	if tbl.keysDirty {
+		t.Fatal("Next should rebuild and clean iteration keys after insert")
+	}
+}
+
 func TestTableSingleElement(t *testing.T) {
 	v := getGlobal(t, `
 		t := {42}

@@ -18,10 +18,12 @@ import (
 	"unsafe"
 )
 
-// tableSlabSize: Tables per backing block. A block of 1024 Tables at
-// ~240 B/each ≈ 240 KB of Go heap per refill. Enough to amortize the
-// mallocgc cost across ~1000 NEWTABLEs.
-const tableSlabSize = 1024
+// tableSlabSize: Tables per backing block. A block of 8192 Tables at
+// ~240 B/each is roughly 2 MB of Go heap per refill. Allocation-heavy
+// workloads such as tree construction create millions of short-lived tables;
+// using page-scale slabs amortizes Go heap object setup, root-log entries, and
+// slab-range metadata without changing individual table identity.
+const tableSlabSize = 8192
 
 // tableSlab is a bump allocator for *Table. Holds a current backing
 // []Table and an index pointing at the next free slot. On exhaustion,
