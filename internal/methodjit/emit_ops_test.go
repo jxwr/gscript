@@ -10,6 +10,7 @@ package methodjit
 import (
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -139,6 +140,7 @@ func TestEmit_ModIntSignMatchesVM(t *testing.T) {
 		args []runtime.Value
 	}{
 		{name: "negative dividend", src: `func f(a) { return a % 3 }`, args: []runtime.Value{runtime.IntValue(-5)}},
+		{name: "negative dividend pow2", src: `func f(a) { return a % 8 }`, args: []runtime.Value{runtime.IntValue(-5)}},
 		{name: "negative divisor", src: `func f(a) { return a % -3 }`, args: []runtime.Value{runtime.IntValue(5)}},
 		{name: "both negative", src: `func f(a) { return a % -3 }`, args: []runtime.Value{runtime.IntValue(-5)}},
 		{name: "param divisor", src: `func f(b) { return -5 % b }`, args: []runtime.Value{runtime.IntValue(3)}},
@@ -176,6 +178,60 @@ func TestEmit_ModIntSignMatchesVM(t *testing.T) {
 			t.Fatalf("%s: empty result for args=%v: JIT=%v VM=%v", tc.name, tc.args, result, vmResult)
 		}
 		assertValuesEqual(t, fmt.Sprintf("%s f(%v)", tc.name, tc.args), result[0], vmResult[0])
+	}
+}
+
+func TestEmit_ModIntPositivePowerOfTwoUsesBitfield(t *testing.T) {
+	src := `func f(n) {
+		if n < 0 { return -1 }
+		return n % 8
+	}`
+	proto := compileFunction(t, src)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+
+	foundModInt := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpModInt {
+				continue
+			}
+			foundModInt = true
+			if !fn.IntModNoSignAdjust[instr.ID] {
+				t.Fatalf("ModInt v%d should have no-sign-adjust fact\nIR:\n%s", instr.ID, Print(fn))
+			}
+		}
+	}
+	if !foundModInt {
+		t.Fatalf("expected ModInt in optimized IR:\n%s", Print(fn))
+	}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	result, err := cf.Execute([]runtime.Value{runtime.IntValue(12345)})
+	if err != nil {
+		t.Fatalf("Execute positive arg: %v", err)
+	}
+	vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(12345)})
+	if len(result) == 0 || len(vmResult) == 0 {
+		t.Fatalf("empty result: JIT=%v VM=%v", result, vmResult)
+	}
+	assertValuesEqual(t, "f(12345)", result[0], vmResult[0])
+
+	code := make([]byte, cf.Code.Size())
+	copy(code, unsafeCodeSlice(cf))
+	asm := disasmARM64(code)
+	if strings.Contains(asm, "SDIV") || strings.Contains(asm, "MSUB") {
+		t.Fatalf("positive power-of-two modulo should not emit divide sequence:\n%s", asm)
+	}
+	if !strings.Contains(asm, "UBFX") && !strings.Contains(asm, "UBFM") {
+		t.Fatalf("positive power-of-two modulo should emit bitfield extract:\n%s", asm)
 	}
 }
 

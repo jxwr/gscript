@@ -185,6 +185,19 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 		}
 	}
 
+	if op == intBinMod {
+		if width, ok := ec.constPositivePow2ModWidth(instr); ok {
+			if width == 0 {
+				ec.asm.LoadImm64(dst, 0)
+			} else {
+				lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+				ec.asm.UBFX(dst, lhs, 0, width)
+			}
+			ec.storeRawInt(dst, instr.ID)
+			return
+		}
+	}
+
 	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
 	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
 	if op == intBinMod {
@@ -327,6 +340,31 @@ func exactPow2DivisorShift(divisor int64) (uint8, bool, bool) {
 		shift++
 	}
 	return shift, negative, true
+}
+
+func (ec *emitContext) constPositivePow2ModWidth(instr *Instr) (uint8, bool) {
+	if instr == nil || len(instr.Args) < 2 {
+		return 0, false
+	}
+	divisor, ok := ec.constInts[instr.Args[1].ID]
+	if !ok || divisor <= 0 || divisor&(divisor-1) != 0 {
+		return 0, false
+	}
+	width := uint8(0)
+	for v := divisor; v > 1; v >>= 1 {
+		width++
+	}
+	if width == 0 {
+		return 0, true
+	}
+	lhs := instr.Args[0]
+	if lhs == nil {
+		return 0, false
+	}
+	if ec.intNonNegative(lhs.ID) || ec.intModNoSignAdjust(instr.ID) {
+		return width, true
+	}
+	return 0, false
 }
 
 // emitIntModX0X1 computes X0 = X0 % X1 for raw signed integers using VM
