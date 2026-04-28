@@ -83,6 +83,7 @@ const (
 	OpEqInt
 	OpLtInt
 	OpLeInt
+	OpModZeroInt // Args[0] % Aux == 0 for non-zero constant integer Aux
 	OpLtFloat
 	OpLeFloat
 
@@ -221,6 +222,7 @@ var opNames = [...]string{
 	OpEqInt:                "EqInt",
 	OpLtInt:                "LtInt",
 	OpLeInt:                "LeInt",
+	OpModZeroInt:           "ModZeroInt",
 	OpLtFloat:              "LtFloat",
 	OpLeFloat:              "LeFloat",
 	OpConcat:               "Concat",

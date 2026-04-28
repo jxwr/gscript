@@ -617,7 +617,7 @@ func canHoistOp(op Op) bool {
 	case OpAddInt, OpSubInt, OpMulInt, OpDivIntExact, OpNegInt:
 		// Caller must also check fn.Int48Safe.
 		return true
-	case OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat, OpNot:
+	case OpLtInt, OpLeInt, OpEqInt, OpModZeroInt, OpLtFloat, OpLeFloat, OpNot:
 		return true
 	case OpGuardType:
 		// Pure type check; deopt metadata has no PC-dependent state,

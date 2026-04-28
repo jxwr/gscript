@@ -235,6 +235,47 @@ func TestEmit_ModIntPositivePowerOfTwoUsesBitfield(t *testing.T) {
 	}
 }
 
+func TestEmit_ModZeroIntPowerOfTwoUsesBitTest(t *testing.T) {
+	src := `func f(n) {
+		if n % 8 == 0 { return 1 }
+		return 0
+	}`
+	proto := compileFunction(t, src)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+
+	if countOpHelper(fn, OpModZeroInt) != 1 || countOpHelper(fn, OpModInt) != 0 {
+		t.Fatalf("expected ModInt zero-compare rewrite:\n%s", Print(fn))
+	}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, arg := range []int64{-16, -15, 0, 24} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(arg)})
+		if err != nil {
+			t.Fatalf("Execute f(%d): %v", arg, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(arg)})
+		if len(result) == 0 || len(vmResult) == 0 {
+			t.Fatalf("empty result for f(%d): JIT=%v VM=%v", arg, result, vmResult)
+		}
+		assertValuesEqual(t, fmt.Sprintf("f(%d)", arg), result[0], vmResult[0])
+	}
+
+	code := make([]byte, cf.Code.Size())
+	copy(code, unsafeCodeSlice(cf))
+	asm := disasmARM64(code)
+	if strings.Contains(asm, "SDIV") || strings.Contains(asm, "MSUB") {
+		t.Fatalf("power-of-two modulo-zero compare should not emit divide sequence:\n%s", asm)
+	}
+}
+
 // TestEmit_Div_Exact: 10 / 2 = 5.0 (float, not int).
 func TestEmit_Div_Exact(t *testing.T) {
 	src := `func f(a, b) { return a / b }`

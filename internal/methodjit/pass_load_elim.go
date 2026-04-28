@@ -108,7 +108,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 			case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 				OpNumToFloat, OpSqrt, OpFMA,
-				OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat:
+				OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat:
 				if key, ok := pureTypedCSEKey(instr); ok {
 					if origID, ok := pureAvail[key]; ok {
 						origInstr := instrByID[origID]
@@ -454,7 +454,7 @@ func guardProvenByProducer(v *Value, guardType Type) bool {
 		}
 	case TypeBool:
 		switch v.Def.Op {
-		case OpConstBool, OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat, OpEq, OpLt, OpLe, OpNot:
+		case OpConstBool, OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat, OpEq, OpLt, OpLe, OpNot:
 			return true
 		}
 	case TypeNil:

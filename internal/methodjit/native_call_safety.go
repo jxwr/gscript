@@ -155,6 +155,8 @@ func tier2OpMayExitForNativeReplay(instr *Instr) bool {
 		return true
 	case OpModInt:
 		return true
+	case OpModZeroInt:
+		return true
 	default:
 		return false
 	}

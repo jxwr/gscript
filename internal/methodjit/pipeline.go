@@ -445,6 +445,21 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("IntExactDivision: %w", err)
 	}
 
+	fn, err = RangeAnalysisPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("RangeAnalysis (post-IntExactDivision): %w", err)
+	}
+
+	fn, err = ModZeroComparePass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ModZeroCompare: %w", err)
+	}
+
+	fn, err = DCEPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("DCE (post-ModZeroCompare): %w", err)
+	}
+
 	fn, err = TableArrayLowerPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("TableArrayLower: %w", err)
@@ -585,6 +600,9 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("RangeAnalysis", RangeAnalysisPass)
 	pipe.Add("OverflowBoxing", OverflowBoxingPass)
 	pipe.Add("IntExactDivision", IntExactDivisionPass)
+	pipe.Add("RangeAnalysisPostIntExact", RangeAnalysisPass)
+	pipe.Add("ModZeroCompare", ModZeroComparePass)
+	pipe.Add("DCEPostModZeroCompare", DCEPass)
 	pipe.Add("TableArrayLower", TableArrayLowerPass)
 	pipe.Add("TableArrayLoadTypeSpecialize", TableArrayLoadTypeSpecializePass)
 	pipe.Add("TableArrayNestedLoad", TableArrayNestedLoadPass)

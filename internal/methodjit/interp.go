@@ -488,6 +488,20 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
 		s.values[instr.ID] = runtime.BoolValue(a.Int() <= b.Int())
 
+	case OpModZeroInt:
+		a := s.val(instr.Args[0])
+		divisor := instr.Aux
+		if divisor == 0 {
+			return nil, false, fmt.Errorf("IR interpreter: modulo by zero")
+		}
+		if a.IsInt() {
+			s.values[instr.ID] = runtime.BoolValue(a.Int()%divisor == 0)
+		} else if a.IsNumber() {
+			s.values[instr.ID] = runtime.BoolValue(math.Mod(a.Number(), float64(divisor)) == 0)
+		} else {
+			return nil, false, fmt.Errorf("IR interpreter: cannot mod %s and int", a.TypeName())
+		}
+
 	case OpLtFloat:
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
 		s.values[instr.ID] = runtime.BoolValue(a.Number() < b.Number())

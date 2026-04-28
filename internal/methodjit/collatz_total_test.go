@@ -81,7 +81,10 @@ func TestTier2CollatzTotalNarrowsExactDivRecurrenceToInt(t *testing.T) {
 	if !strings.Contains(ir, "DivIntExact") {
 		t.Fatalf("expected exact integer division narrowing, IR:\n%s", ir)
 	}
-	for _, op := range []Op{OpDivFloat, OpAddFloat, OpMulFloat, OpMod} {
+	if !strings.Contains(ir, "ModZeroInt") {
+		t.Fatalf("expected modulo-zero comparison rewrite, IR:\n%s", ir)
+	}
+	for _, op := range []Op{OpDivFloat, OpAddFloat, OpMulFloat, OpMod, OpModInt} {
 		if countOpHelper(fn, op) != 0 {
 			t.Fatalf("expected collatz recurrence to avoid %s after narrowing, IR:\n%s", op, ir)
 		}

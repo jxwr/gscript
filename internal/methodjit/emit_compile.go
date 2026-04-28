@@ -809,7 +809,7 @@ func computeTailCalls(fn *Function) map[int]bool {
 // with an immediately-following Branch (emit CMP/FCMP + B.cc).
 func isFusableComparison(op Op) bool {
 	switch op {
-	case OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat:
+	case OpLtInt, OpLeInt, OpEqInt, OpModZeroInt, OpLtFloat, OpLeFloat:
 		return true
 	}
 	return false

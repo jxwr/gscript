@@ -545,3 +545,81 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 	// Store NaN-boxed bool result to register or memory.
 	ec.storeResultNB(jit.X0, instr.ID)
 }
+
+func (ec *emitContext) emitModZeroInt(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	divisor := instr.Aux
+	if divisor == 0 {
+		ec.emitDeopt(instr)
+		return
+	}
+
+	ec.emitModZeroIntFlags(instr, divisor)
+
+	if ec.fusedCmps[instr.ID] {
+		ec.fusedCond = jit.CondEQ
+		ec.fusedActive = true
+		return
+	}
+
+	ec.asm.CSET(jit.X0, jit.CondEQ)
+	ec.asm.ORRreg(jit.X0, jit.X0, mRegTagBool)
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+func (ec *emitContext) emitModZeroIntFlags(instr *Instr, divisor int64) {
+	lhs := ec.resolveModZeroIntLHS(instr)
+	absDivisor := absDivisorUint64(divisor)
+	if absDivisor == 1 {
+		ec.asm.CMPimm(jit.XZR, 0)
+		return
+	}
+
+	if absDivisor != 0 && absDivisor&(absDivisor-1) == 0 {
+		mask := absDivisor - 1
+		maskReg := jit.X1
+		if lhs == maskReg {
+			maskReg = jit.X2
+		}
+		ec.asm.LoadImm64(maskReg, int64(mask))
+		ec.asm.ANDreg(jit.X0, lhs, maskReg)
+		ec.asm.CMPimm(jit.X0, 0)
+		return
+	}
+
+	if lhs != jit.X0 {
+		ec.asm.MOVreg(jit.X0, lhs)
+	}
+	ec.asm.LoadImm64(jit.X1, divisor)
+	ec.asm.SDIV(jit.X2, jit.X0, jit.X1)
+	ec.asm.MSUB(jit.X0, jit.X2, jit.X1, jit.X0)
+	ec.asm.CMPimm(jit.X0, 0)
+}
+
+func (ec *emitContext) resolveModZeroIntLHS(instr *Instr) jit.Reg {
+	arg := instr.Args[0]
+	if arg != nil && arg.Def != nil && arg.Def.Type == TypeInt {
+		return ec.resolveRawInt(arg.ID, jit.X0)
+	}
+
+	src := ec.resolveValueNB(arg.ID, jit.X0)
+	if src != jit.X0 {
+		ec.asm.MOVreg(jit.X0, src)
+	}
+	emitCheckIsInt(ec.asm, jit.X0, jit.X2)
+	okLabel := ec.uniqueLabel("modzero_int_ok")
+	ec.asm.BCond(jit.CondEQ, okLabel)
+	ec.emitDeopt(instr)
+	ec.asm.Label(okLabel)
+	jit.EmitUnboxInt(ec.asm, jit.X0, jit.X0)
+	return jit.X0
+}
+
+func absDivisorUint64(v int64) uint64 {
+	if v >= 0 {
+		return uint64(v)
+	}
+	return uint64(^v) + 1
+}

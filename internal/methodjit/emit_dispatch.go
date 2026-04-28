@@ -147,6 +147,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitIntCmp(instr, jit.CondLE)
 	case OpEqInt:
 		ec.emitIntCmp(instr, jit.CondEQ)
+	case OpModZeroInt:
+		ec.emitModZeroInt(instr)
 
 	// --- Float comparison ---
 	case OpLtFloat:
