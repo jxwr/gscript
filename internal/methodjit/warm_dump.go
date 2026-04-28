@@ -44,6 +44,7 @@ type WarmDumpRecord struct {
 	IntrinsicNotes      []string
 	OptimizationRemarks []OptimizationRemark
 	RegAllocMap         string
+	LoopDiagnostics     []LoopDiagnostic
 	CompiledCode        []byte
 	InsnCount           int
 	InsnHistogram       map[string]int
@@ -75,6 +76,7 @@ type warmDumpProtoManifest struct {
 	DirectEntryOff      int                  `json:"direct_entry_offset,omitempty"`
 	NumSpills           int                  `json:"num_spills,omitempty"`
 	OptimizationRemarks []OptimizationRemark `json:"optimization_remarks,omitempty"`
+	LoopDiagnostics     []LoopDiagnostic     `json:"loop_diagnostics,omitempty"`
 	Feedback            warmFeedbackSummary  `json:"feedback"`
 	Files               map[string]string    `json:"files,omitempty"`
 }
@@ -152,6 +154,8 @@ func (s *WarmDumpSession) record(proto *vm.FuncProto, trace *Tier2Trace, cf *Com
 		OptimizationRemarks: append([]OptimizationRemark(nil),
 			trace.OptimizationRemarks...),
 		RegAllocMap: trace.RegAllocMap,
+		LoopDiagnostics: append([]LoopDiagnostic(nil),
+			trace.LoopDiagnostics...),
 	}
 	if compileErr != nil {
 		rec.CompileErr = compileErr.Error()
@@ -231,6 +235,13 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 				}
 				files["regalloc"] = name
 			}
+			if len(rec.LoopDiagnostics) > 0 {
+				name := base + ".loops.txt"
+				if err := os.WriteFile(filepath.Join(s.dir, name), []byte(FormatLoopDiagnostics(rec.LoopDiagnostics)), 0o644); err != nil {
+					return fmt.Errorf("write loop diagnostics for %s: %w", proto.Name, err)
+				}
+				files["loops"] = name
+			}
 			if len(rec.IntrinsicNotes) > 0 {
 				name := base + ".intrinsics.txt"
 				body := strings.Join(rec.IntrinsicNotes, "\n") + "\n"
@@ -282,6 +293,7 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 			protoManifest.DirectEntryOff = rec.DirectEntryOff
 			protoManifest.NumSpills = rec.NumSpills
 			protoManifest.OptimizationRemarks = append([]OptimizationRemark(nil), rec.OptimizationRemarks...)
+			protoManifest.LoopDiagnostics = append([]LoopDiagnostic(nil), rec.LoopDiagnostics...)
 		}
 
 		statusName := base + ".status.json"

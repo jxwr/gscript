@@ -42,6 +42,7 @@ type Tier2Trace struct {
 	OptimizationRemarks []OptimizationRemark
 	RegAllocMap         string
 	SourceMap           []IRASMMapEntry
+	LoopDiagnostics     []LoopDiagnostic
 }
 
 // DiagArtifact is the full diagnostic payload for one Tier 2 compile.
@@ -57,6 +58,7 @@ type DiagArtifact struct {
 	OptimizationRemarks []OptimizationRemark
 	RegAllocMap         string
 	SourceMap           []IRASMMapEntry
+	LoopDiagnostics     []LoopDiagnostic
 	CompiledCode        []byte         // copy of cf.Code bytes
 	InsnCount           int            // total ARM64 instructions
 	InsnHistogram       map[string]int // class -> count
@@ -90,6 +92,7 @@ func (tm *TieringManager) CompileForDiagnostics(proto *vm.FuncProto) (*DiagArtif
 		OptimizationRemarks: trace.OptimizationRemarks,
 		RegAllocMap:         trace.RegAllocMap,
 		SourceMap:           trace.SourceMap,
+		LoopDiagnostics:     trace.LoopDiagnostics,
 		CompileErr:          err,
 	}
 

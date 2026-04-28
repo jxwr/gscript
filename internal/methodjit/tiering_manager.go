@@ -1211,6 +1211,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	alloc := AllocateRegisters(fn)
 	if trace != nil {
 		trace.RegAllocMap = formatRegAlloc(alloc)
+		trace.LoopDiagnostics = BuildLoopDiagnostics(fn, alloc)
 	}
 
 	cf, err := Compile(fn, alloc)

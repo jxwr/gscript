@@ -57,6 +57,7 @@ b := sum(20)
 		"sum.ir.before.txt",
 		"sum.ir.after.txt",
 		"sum.regalloc.txt",
+		"sum.loops.txt",
 		"sum.bin",
 		"sum.asm.txt",
 	}
@@ -86,5 +87,8 @@ b := sum(20)
 	}
 	if got.InsnCount == 0 || got.CodeBytes == 0 {
 		t.Fatalf("missing code stats: insns=%d bytes=%d", got.InsnCount, got.CodeBytes)
+	}
+	if len(got.LoopDiagnostics) == 0 || got.Files["loops"] == "" {
+		t.Fatalf("loop diagnostics missing: %+v", got.LoopDiagnostics)
 	}
 }
