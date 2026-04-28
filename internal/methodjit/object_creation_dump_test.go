@@ -79,10 +79,13 @@ func TestObjectCreationDump(t *testing.T) {
 	// SinglePredRawIntCarry: instruction-liveness cleanup drops dead active
 	// raw-int values before exit bookkeeping, trimming new_vec3's prologue/
 	// fallback memory traffic without changing escape behavior.
+	//
+	// TypedTableABI: table exits now record SourcePC so resume can warm the
+	// correct per-PC field cache for dynamic Tier2 field-cache probes.
 	baselines := []baseline{
 		{"create_and_sum", 171, 69},  // R161: was 1277/598
 		{"transform_chain", 193, 73}, // R161: was 1701/816
-		{"new_vec3", 222, 129},       // unchanged EA shape; codegen bookkeeping moved
+		{"new_vec3", 228, 132},       // unchanged EA shape; table-exit metadata grew
 	}
 
 	// Load benchmark source.

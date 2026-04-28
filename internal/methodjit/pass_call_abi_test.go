@@ -169,6 +169,68 @@ func TestCallABIAnnotate_RawIntSelfCallResultsAreTyped(t *testing.T) {
 	}
 }
 
+func TestCallABIAnnotate_TypedSelfCallResultsAreTyped(t *testing.T) {
+	src := `func makeTree(depth) {
+	if depth == 0 {
+		return {left: nil, right: nil}
+	}
+	return {left: makeTree(depth - 1), right: makeTree(depth - 1)}
+}
+func checkTree(node) {
+	if node.left == nil { return 1 }
+	return 1 + checkTree(node.left) + checkTree(node.right)
+}`
+	top := compileTop(t, src)
+	makeTree := findProtoByName(top, "makeTree")
+	checkTree := findProtoByName(top, "checkTree")
+	if makeTree == nil || checkTree == nil {
+		t.Fatalf("missing protos: makeTree=%v checkTree=%v", makeTree != nil, checkTree != nil)
+	}
+	checkTree.EnsureFeedback()
+	checkTree.Feedback[8].Result = vm.FBTable
+	checkTree.Feedback[12].Result = vm.FBTable
+
+	makeFn := BuildGraph(makeTree)
+	makeFn, _, err := RunTier2Pipeline(makeFn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(makeTree): %v", err)
+	}
+	var makeCalls int
+	for _, block := range makeFn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall {
+				makeCalls++
+				if instr.Type != TypeTable {
+					t.Fatalf("makeTree self call Type=%s, want table\nIR:\n%s", instr.Type, Print(makeFn))
+				}
+			}
+		}
+	}
+	if makeCalls != 2 {
+		t.Fatalf("makeTree self calls=%d want 2\nIR:\n%s", makeCalls, Print(makeFn))
+	}
+
+	checkFn := BuildGraph(checkTree)
+	checkFn, _, err = RunTier2Pipeline(checkFn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(checkTree): %v", err)
+	}
+	var checkCalls int
+	for _, block := range checkFn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall {
+				checkCalls++
+				if instr.Type != TypeInt {
+					t.Fatalf("checkTree self call Type=%s, want int\nIR:\n%s", instr.Type, Print(checkFn))
+				}
+			}
+		}
+	}
+	if checkCalls != 2 {
+		t.Fatalf("checkTree self calls=%d want 2\nIR:\n%s", checkCalls, Print(checkFn))
+	}
+}
+
 func TestCallABIAnnotate_CrossRecursivePeerCallGetsDescriptor(t *testing.T) {
 	src := `func F(n) {
 	if n == 0 { return 1 }

@@ -702,6 +702,34 @@ func f(t) {
 		}
 	})
 
+	t.Run("Eq_nil_skips_feedback_operand_guard", func(t *testing.T) {
+		proto := compile(t, `
+func f(t) {
+	if t.left == nil {
+		return 1
+	}
+	return 2
+}
+`)
+		getPC := findPC(t, proto, vm.OP_GETFIELD)
+		eqPC := findPC(t, proto, vm.OP_EQ)
+		proto.EnsureFeedback()
+		proto.Feedback[getPC] = vm.TypeFeedback{Result: vm.FBTable}
+		proto.Feedback[eqPC] = vm.TypeFeedback{Left: vm.FBTable, Right: vm.FBAny}
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		for _, blk := range fn.Blocks {
+			for _, instr := range blk.Instrs {
+				if instr.Op == OpGuardType {
+					t.Fatalf("nil equality inserted speculative guard %s\nIR:\n%s", instr.Type, ir)
+				}
+			}
+		}
+	})
+
 	t.Run("no_feedback_vector_no_guard", func(t *testing.T) {
 		// Without calling EnsureFeedback, proto.Feedback is nil.
 		// The graph builder should not panic and should not insert guards.

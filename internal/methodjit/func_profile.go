@@ -279,6 +279,10 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		if qualifiesForNumericCrossRecursiveCandidate(proto) {
 			return runtimeCallCount >= 2
 		}
+		// Typed table self-recursive protos can be explicitly compiled to Tier 2,
+		// but their first implementation still materializes the boxed VM frame on
+		// each recursive edge. Keep automatic promotion closed until the typed
+		// success path becomes register-only or benchmark evidence shows a win.
 		// Other non-loop call functions stay at Tier 1 for now. Tier 1's
 		// native BLR handles calls efficiently; without a raw-int contract,
 		// Tier 2 usually does not recover enough call overhead to justify

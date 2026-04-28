@@ -39,6 +39,11 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 					fmt.Sprintf("annotated raw-int self call result for %s", fn.Proto.Name))
 				continue
 			}
+			if callABIAnnotateTypedSelfResult(fn, instr, tails) {
+				functionRemarks(fn).Add("CallABI", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("annotated typed self call result for %s", fn.Proto.Name))
+				continue
+			}
 			if len(globals) == 0 {
 				continue
 			}
@@ -80,6 +85,46 @@ func callABIAnnotateRawIntSelfResult(fn *Function, instr *Instr, tails map[int]b
 		}
 	}
 	instr.Type = TypeInt
+	return true
+}
+
+func callABIAnnotateTypedSelfResult(fn *Function, instr *Instr, tails map[int]bool) bool {
+	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpCall {
+		return false
+	}
+	if tails[instr.ID] || !callABIHasExactFixedShape(fn, instr) || !callABIIsStaticSelfCall(fn, instr) {
+		return false
+	}
+	abi := AnalyzeTypedSelfABI(fn.Proto)
+	if !abi.Eligible {
+		return false
+	}
+	numArgs := len(instr.Args) - 1
+	if numArgs != abi.NumParams || len(abi.Params) != numArgs {
+		return false
+	}
+	for i := 0; i < numArgs; i++ {
+		switch abi.Params[i] {
+		case SpecializedABIParamRawInt:
+			if !callABIValueIsInt(instr.Args[1+i]) {
+				return false
+			}
+		case SpecializedABIParamRawTablePtr:
+			if !callABIValueCanBeTable(instr.Args[1+i]) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	switch abi.Return {
+	case SpecializedABIReturnRawInt:
+		instr.Type = TypeInt
+	case SpecializedABIReturnRawTablePtr:
+		instr.Type = TypeTable
+	default:
+		return false
+	}
 	return true
 }
 
@@ -161,6 +206,14 @@ func callABIHasExactFixedShape(fn *Function, instr *Instr) bool {
 
 func callABIValueIsInt(v *Value) bool {
 	return v != nil && v.Def != nil && v.Def.Type == TypeInt
+}
+
+func callABIValueIsTable(v *Value) bool {
+	return v != nil && v.Def != nil && v.Def.Type == TypeTable
+}
+
+func callABIValueCanBeTable(v *Value) bool {
+	return v != nil && v.Def != nil && (v.Def.Type == TypeTable || v.Def.Type == TypeAny || v.Def.Type == TypeUnknown)
 }
 
 func callABIIsStaticSelfCall(fn *Function, instr *Instr) bool {

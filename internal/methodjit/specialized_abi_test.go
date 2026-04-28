@@ -192,6 +192,51 @@ func TestAnalyzeSpecializedABI_NilAndManualProto(t *testing.T) {
 	}
 }
 
+func TestAnalyzeTypedSelfABI_TableShapes(t *testing.T) {
+	top := compileTop(t, `func makeTree(depth) {
+	if depth == 0 {
+		return {left: nil, right: nil}
+	}
+	return {left: makeTree(depth - 1), right: makeTree(depth - 1)}
+}
+func checkTree(node) {
+	if node.left == nil { return 1 }
+	return 1 + checkTree(node.left) + checkTree(node.right)
+}`)
+	makeTree := findProtoByName(top, "makeTree")
+	checkTree := findProtoByName(top, "checkTree")
+	if makeTree == nil || checkTree == nil {
+		t.Fatalf("missing protos: makeTree=%v checkTree=%v", makeTree != nil, checkTree != nil)
+	}
+	// checkTree needs the normal feedback fact that the recursive left/right
+	// fields are tables. The entry leaf-test field remains any/nil.
+	checkTree.EnsureFeedback()
+	checkTree.Feedback[8].Result = vm.FBTable
+	checkTree.Feedback[12].Result = vm.FBTable
+
+	makeABI := AnalyzeTypedSelfABI(makeTree)
+	if !makeABI.Eligible {
+		t.Fatalf("makeTree typed ABI rejected: %s", makeABI.RejectWhy)
+	}
+	if makeABI.NumParams != 1 || len(makeABI.Params) != 1 || makeABI.Params[0] != SpecializedABIParamRawInt {
+		t.Fatalf("makeTree params=%+v", makeABI)
+	}
+	if makeABI.Return != SpecializedABIReturnRawTablePtr {
+		t.Fatalf("makeTree return=%d want raw table", makeABI.Return)
+	}
+
+	checkABI := AnalyzeTypedSelfABI(checkTree)
+	if !checkABI.Eligible {
+		t.Fatalf("checkTree typed ABI rejected: %s", checkABI.RejectWhy)
+	}
+	if checkABI.NumParams != 1 || len(checkABI.Params) != 1 || checkABI.Params[0] != SpecializedABIParamRawTablePtr {
+		t.Fatalf("checkTree params=%+v", checkABI)
+	}
+	if checkABI.Return != SpecializedABIReturnRawInt {
+		t.Fatalf("checkTree return=%d want raw int", checkABI.Return)
+	}
+}
+
 func TestAnalyzeSpecializedABI_RejectsUnsupportedABIShape(t *testing.T) {
 	base := func() *vm.FuncProto {
 		return &vm.FuncProto{

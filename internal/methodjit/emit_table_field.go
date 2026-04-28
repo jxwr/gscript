@@ -81,6 +81,9 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 
 	// No field cache or invalid: use table-exit fallback.
 	if shapeID == 0 || instr.Aux2 == 0 {
+		if ec.emitGetFieldDynamicCache(instr) {
+			return
+		}
 		ec.invalidateFieldSvalsCache()
 		ec.emitGetFieldExit(instr)
 		return
@@ -152,6 +155,66 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	}
 
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitGetFieldDynamicCache(instr *Instr) bool {
+	if instr == nil || instr.SourcePC < 0 || len(instr.Args) == 0 {
+		return false
+	}
+	asm := ec.asm
+	tblValueID := instr.Args[0].ID
+	typeDeoptLabel := ec.uniqueLabel("getfield_dyn_type_deopt")
+	deoptLabel := ec.uniqueLabel("getfield_dyn_deopt")
+	doneLabel := ec.uniqueLabel("getfield_dyn_done")
+
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineFieldCache)
+	asm.CBZ(jit.X3, deoptLabel)
+	entryOff := instr.SourcePC * jit.FieldCacheEntrySize
+	if entryOff <= 4095 {
+		asm.ADDimm(jit.X3, jit.X3, uint16(entryOff))
+	} else {
+		asm.LoadImm64(jit.X4, int64(entryOff))
+		asm.ADDreg(jit.X3, jit.X3, jit.X4)
+	}
+	asm.LDRW(jit.X5, jit.X3, jit.FieldCacheEntryOffShapeID)
+	asm.CBZ(jit.X5, deoptLabel)
+	asm.LDR(jit.X4, jit.X3, jit.FieldCacheEntryOffFieldIdx)
+	asm.CMPimm(jit.X4, 0)
+	asm.BCond(jit.CondLT, deoptLabel)
+
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	if ec.irTypes[tblValueID] != TypeTable {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+	}
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, deoptLabel)
+	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+	asm.CMPreg(jit.X1, jit.X5)
+	asm.BCond(jit.CondNE, deoptLabel)
+	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
+	asm.LDRreg(jit.X0, jit.X1, jit.X4)
+	ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+	for k, v := range ec.rawIntRegs {
+		savedRawIntRegs[k] = v
+	}
+	ec.emitGetFieldExit(instr)
+	ec.emitUnboxRawIntRegs(savedRawIntRegs)
+	ec.rawIntRegs = savedRawIntRegs
+
+	if instr.Type == TypeFloat {
+		asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+	}
+
+	asm.Label(doneLabel)
+	return true
 }
 
 func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
@@ -394,6 +457,8 @@ func (ec *emitContext) emitGetFieldExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux)
 	asm.LoadImm64(jit.X0, int64(resultSlot))
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux2)
+	asm.LoadImm64(jit.X0, int64(instr.SourcePC))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableKeySlot)
 	asm.LoadImm64(jit.X0, int64(instr.ID))
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 
@@ -493,6 +558,8 @@ func (ec *emitContext) emitSetFieldExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux)
 	asm.LoadImm64(jit.X0, int64(valSlot))
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableValSlot)
+	asm.LoadImm64(jit.X0, int64(instr.SourcePC))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableKeySlot)
 	asm.LoadImm64(jit.X0, int64(instr.ID))
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 

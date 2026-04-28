@@ -715,6 +715,11 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 	if cond == jit.CondEQ {
 		asm.CMPreg(jit.X0, jit.X1)
 		asm.BCond(jit.CondEQ, trueLabel)
+		asm.LoadImm64(jit.X2, nb64(jit.NB_ValNil))
+		asm.CMPreg(jit.X0, jit.X2)
+		asm.BCond(jit.CondEQ, falseLabel)
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondEQ, falseLabel)
 	}
 
 	emitCheckIsInt(asm, jit.X0, jit.X2)

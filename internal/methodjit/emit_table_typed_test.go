@@ -595,6 +595,50 @@ func seedNestedTableFloatFeedback(proto *vm.FuncProto) {
 	}
 }
 
+func TestTier2_GetFieldDynamicCacheWarmsWithoutRecompile(t *testing.T) {
+	src := `
+func readRight(t) {
+    return t.right
+}
+
+obj := {left: 1, right: 42}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	readRight := findProtoByName(top, "readRight")
+	if readRight == nil {
+		t.Fatal("readRight proto not found")
+	}
+	fn := v.GetGlobal("readRight")
+	obj := v.GetGlobal("obj")
+	if fn.IsNil() || !obj.IsTable() {
+		t.Fatalf("missing globals: readRight=%v obj=%v", fn, obj)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(readRight); err != nil {
+		t.Fatalf("CompileTier2(readRight): %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		got, err := v.CallValue(fn, []runtime.Value{obj})
+		if err != nil {
+			t.Fatalf("CallValue #%d: %v", i+1, err)
+		}
+		if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 42 {
+			t.Fatalf("CallValue #%d got %v, want int 42", i+1, got)
+		}
+	}
+	if exits := tm.ExitStats().ByExitCode["ExitTableExit"]; exits != 1 {
+		t.Fatalf("dynamic field cache exits=%d, want exactly first-call miss", exits)
+	}
+}
+
 func isARM64CBZ(insn uint32) bool {
 	return insn&0x7E000000 == 0x34000000 && insn&0x01000000 == 0
 }

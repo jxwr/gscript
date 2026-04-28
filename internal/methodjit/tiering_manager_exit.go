@@ -153,6 +153,7 @@ func (tm *TieringManager) setTier2ResumeContext(ctx *ExecContext, cf *CompiledFu
 	} else {
 		ctx.Constants = 0
 	}
+	tm.setTier2FieldCacheContext(ctx, proto)
 	if cf != nil && len(cf.GlobalCache) > 0 {
 		ctx.Tier2GlobalCache = uintptr(unsafe.Pointer(&cf.GlobalCache[0]))
 		ctx.Tier2GlobalCacheGen = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))
@@ -326,6 +327,13 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
 		case ExitDeopt:
+			tm.traceEvent("native_callee_deopt", "tier2", proto, map[string]any{
+				"deopt_instr_id": ctx.DeoptInstrID,
+				"resume_pc":      ctx.ExitResumePC,
+				"call_id":        ctx.CallID,
+				"table_exit_id":  ctx.TableExitID,
+				"op_exit_id":     ctx.OpExitID,
+			})
 			tm.disableTier2AfterRuntimeDeopt(proto, "tier2 native callee deopt")
 			return runtime.NilValue(), fmt.Errorf("callee deopt")
 		default:
@@ -334,6 +342,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		ctx.Regs = uintptr(unsafe.Pointer(&currentRegs[base]))
 		ctx.RegsBase = uintptr(unsafe.Pointer(&currentRegs[0]))
 		ctx.RegsEnd = ctx.RegsBase + uintptr(len(currentRegs)*jit.ValueSize)
+		tm.setTier2FieldCacheContext(ctx, proto)
 	}
 }
 
@@ -430,7 +439,14 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 			tblVal := regs[absTable]
 			fieldName := proto.Constants[constIdx].Str()
 			if tblVal.IsTable() {
-				result := tblVal.Table().RawGetString(fieldName)
+				var result runtime.Value
+				pc := int(ctx.TableKeySlot)
+				if pc >= 0 && pc < len(proto.Code) && vm.DecodeOp(proto.Code[pc]) == vm.OP_GETFIELD {
+					ensureFieldCache(proto)
+					result = tblVal.Table().RawGetStringCached(fieldName, &proto.FieldCache[pc])
+				} else {
+					result = tblVal.Table().RawGetString(fieldName)
+				}
 				if absResult < len(regs) {
 					regs[absResult] = result
 				}
@@ -448,7 +464,13 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 			fieldName := proto.Constants[constIdx].Str()
 			valVal := regs[absVal]
 			if tblVal.IsTable() {
-				tblVal.Table().RawSetString(fieldName, valVal)
+				pc := int(ctx.TableKeySlot)
+				if pc >= 0 && pc < len(proto.Code) && vm.DecodeOp(proto.Code[pc]) == vm.OP_SETFIELD {
+					ensureFieldCache(proto)
+					tblVal.Table().RawSetStringCached(fieldName, valVal, &proto.FieldCache[pc])
+				} else {
+					tblVal.Table().RawSetString(fieldName, valVal)
+				}
 			}
 		}
 

@@ -428,6 +428,32 @@ func ack(m, n) {
 	}
 }
 
+func TestShouldPromoteTier2_TypedTableSelfNotAutomaticYet(t *testing.T) {
+	// The typed table self ABI is available for explicit Tier 2 compilation,
+	// but the first implementation still pays boxed frame materialization on
+	// every recursive edge. Automatic promotion stays closed to avoid making
+	// binary_trees.checkTree slower than the Tier 1/VM path by default.
+	src := `
+func checkTree(node) {
+	if node.left == nil { return 1 }
+	return 1 + checkTree(node.left) + checkTree(node.right)
+}
+`
+	proto := compileProto(t, src)
+	checkProto := proto.Protos[0]
+	checkProto.EnsureFeedback()
+	checkProto.Feedback[1].Result = vm.FBTable
+	checkProto.Feedback[5].Result = vm.FBTable
+	p := analyzeFuncProfile(checkProto)
+
+	if abi := AnalyzeTypedSelfABI(checkProto); !abi.Eligible {
+		t.Fatalf("expected typed table self ABI candidate, got %s", abi.RejectWhy)
+	}
+	if shouldPromoteTier2(checkProto, p, 2) {
+		t.Error("typed table self ABI should not auto-promote before register-only recursive calls")
+	}
+}
+
 func TestShouldPromoteTier2_MutualNumericUsesTier2EntryProtocol(t *testing.T) {
 	// Cross-recursive numeric functions publish a numeric Tier 2 entry and can
 	// late-bind peer raw-int calls once the target entry is installed.

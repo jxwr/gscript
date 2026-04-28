@@ -57,6 +57,10 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 	// Both use a full 128B frame, but the direct epilogue returns to the BLR caller
 	// while the normal epilogue returns to the callJIT trampoline.
 	ec.asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
+	if ec.typedSelfABI.Eligible {
+		ec.asm.CMPimm(jit.X1, callModeTypedSelf)
+		ec.asm.BCond(jit.CondEQ, "t2_typed_self_epilogue")
+	}
 	ec.asm.CBNZ(jit.X1, "t2_direct_epilogue")
 	ec.asm.B("epilogue")
 }

@@ -434,13 +434,16 @@ func (b *graphBuilder) emitBlocks() {
 				// deopts on type mismatch (rare after mono-typed feedback).
 				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
 					fb := b.proto.Feedback[pc]
-					if lhsType, ok := feedbackToIRType(fb.Left); ok {
-						g := b.emit(block, OpGuardType, lhsType, []*Value{lhs}, int64(lhsType), 0)
-						lhs = g.Value()
-					}
-					if rhsType, ok := feedbackToIRType(fb.Right); ok {
-						g := b.emit(block, OpGuardType, rhsType, []*Value{rhs}, int64(rhsType), 0)
-						rhs = g.Value()
+					guardFeedbackOperands := op != vm.OP_EQ || (!graphValueIsConstNil(lhs) && !graphValueIsConstNil(rhs))
+					if guardFeedbackOperands {
+						if lhsType, ok := feedbackToIRType(fb.Left); ok {
+							g := b.emit(block, OpGuardType, lhsType, []*Value{lhs}, int64(lhsType), 0)
+							lhs = g.Value()
+						}
+						if rhsType, ok := feedbackToIRType(fb.Right); ok {
+							g := b.emit(block, OpGuardType, rhsType, []*Value{rhs}, int64(rhsType), 0)
+							rhs = g.Value()
+						}
 					}
 				}
 
@@ -672,7 +675,10 @@ func (b *graphBuilder) emitBlocks() {
 				result := instr.Value()
 				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
 					fb := b.proto.Feedback[pc]
-					if irType, ok := feedbackToIRType(fb.Result); ok && resultType != irType && !getTableKindImpliesType(kindAux2, irType) {
+					if irType, ok := feedbackToIRType(fb.Result); ok &&
+						resultType != irType &&
+						!getTableKindImpliesType(kindAux2, irType) &&
+						!bytecodeSlotFeedsNilEq(b.proto, pc, a) {
 						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
 						result = guard.Value()
 					}
@@ -713,7 +719,7 @@ func (b *graphBuilder) emitBlocks() {
 				instr := b.emit(block, OpGetField, TypeAny, []*Value{tbl}, int64(c), aux2)
 				result := instr.Value()
 				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
-					if irType, ok := feedbackToIRType(b.proto.Feedback[pc].Result); ok {
+					if irType, ok := feedbackToIRType(b.proto.Feedback[pc].Result); ok && !bytecodeSlotFeedsNilEq(b.proto, pc, a) {
 						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
 						result = guard.Value()
 					}
@@ -997,6 +1003,51 @@ func feedbackToIRType(fb vm.FeedbackType) (Type, bool) {
 	default:
 		return TypeAny, false
 	}
+}
+
+func graphValueIsConstNil(v *Value) bool {
+	return v != nil && v.Def != nil && v.Def.Op == OpConstNil
+}
+
+func bytecodeSlotFeedsNilEq(proto *vm.FuncProto, pc, slot int) bool {
+	if proto == nil || slot < 0 {
+		return false
+	}
+	nilSlots := make(map[int]bool)
+	for scanPC := pc + 1; scanPC < len(proto.Code) && scanPC <= pc+3; scanPC++ {
+		inst := proto.Code[scanPC]
+		switch vm.DecodeOp(inst) {
+		case vm.OP_LOADNIL:
+			a := vm.DecodeA(inst)
+			b := vm.DecodeB(inst)
+			if slot >= a && slot <= a+b {
+				return false
+			}
+			for r := a; r <= a+b; r++ {
+				nilSlots[r] = true
+			}
+		case vm.OP_EQ:
+			b := vm.DecodeB(inst)
+			c := vm.DecodeC(inst)
+			return (bytecodeRKIsSlot(b, slot) && bytecodeRKIsKnownNil(proto, c, nilSlots)) ||
+				(bytecodeRKIsSlot(c, slot) && bytecodeRKIsKnownNil(proto, b, nilSlots))
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func bytecodeRKIsSlot(rk, slot int) bool {
+	return rk < vm.RKBit && rk == slot
+}
+
+func bytecodeRKIsKnownNil(proto *vm.FuncProto, rk int, nilSlots map[int]bool) bool {
+	if rk >= vm.RKBit {
+		idx := rk - vm.RKBit
+		return proto != nil && idx >= 0 && idx < len(proto.Constants) && proto.Constants[idx].IsNil()
+	}
+	return nilSlots[rk]
 }
 
 func getTableKindImpliesType(kindAux2 int64, typ Type) bool {

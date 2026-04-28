@@ -1318,9 +1318,19 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	return cf, nil
 }
 
+func (tm *TieringManager) setTier2FieldCacheContext(ctx *ExecContext, proto *vm.FuncProto) {
+	if ctx == nil {
+		return
+	}
+	if proto == nil || proto.FieldCache == nil || len(proto.FieldCache) == 0 {
+		ctx.BaselineFieldCache = 0
+		return
+	}
+	ctx.BaselineFieldCache = uintptr(unsafe.Pointer(&proto.FieldCache[0]))
+}
+
 // executeTier2 runs a Tier 2 compiled function using the VM's register file.
 // This is the Tier 2 execute loop, handling exit codes and resuming JIT code.
-
 func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
 	if tm.callVM != nil {
 		regs = tm.ensureTier2RegisterBudget(cf, regs, base, proto)
@@ -1349,6 +1359,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 	if len(proto.Constants) > 0 {
 		ctx.Constants = uintptr(unsafe.Pointer(&proto.Constants[0]))
 	}
+	tm.setTier2FieldCacheContext(ctx, proto)
 	if tm.callVM != nil {
 		ctx.TopPtr = uintptr(unsafe.Pointer(tm.callVM.TopPtr()))
 		if cl := tm.callVM.CurrentClosure(); cl != nil {
@@ -1394,6 +1405,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 		ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
 		ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
 		ctx.RawSelfRegsEnd = rawSelfRegsEnd(ctx.Regs, ctx.RegsEnd, cf.numRegs)
+		tm.setTier2FieldCacheContext(ctx, proto)
 		if cl := tm.callVM.CurrentClosure(); cl != nil {
 			ctx.BaselineClosurePtr = uintptr(unsafe.Pointer(cl))
 		}

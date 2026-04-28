@@ -324,6 +324,16 @@ type CompiledFunction struct {
 	// disassembly; raw callers branch to the label directly at codegen time.
 	NumericEntryOffset int
 
+	// TypedSelfABI records the private typed self-recursive entry contract.
+	// Eligible=false means only the boxed VM ABI and, if applicable, raw-int
+	// numeric ABI are available.
+	TypedSelfABI TypedSelfABI
+
+	// TypedEntryOffset is the byte offset of t2_typed_self_entry when the
+	// typed self ABI is emitted. The entry is private to this code block:
+	// callers branch to the label directly after runtime type guards.
+	TypedEntryOffset int
+
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
 	// It runs the function via the VM interpreter. Set by the caller
 	// (e.g., test harness or tiering engine) to provide VM fallback.

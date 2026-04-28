@@ -1079,6 +1079,164 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	return true
 }
 
+func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
+	if !ec.isTypedStaticSelfCall(instr) {
+		return false
+	}
+
+	asm := ec.asm
+	funcSlot := int(instr.Aux)
+	nArgs := len(instr.Args) - 1
+	nRets := 1
+	if instr.Aux2 >= 2 {
+		nRets = int(instr.Aux2) - 1
+	}
+	abi := ec.typedSelfABI
+	if nRets != 1 || nArgs != abi.NumParams || len(abi.Params) != nArgs {
+		return false
+	}
+
+	// Materialize the boxed VM call frame first. It feeds the fallback path
+	// and keeps exit-resume metadata exact even though the hot path passes raw
+	// ints/table pointers in registers.
+	if len(instr.Args) > 0 {
+		fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		if fnReg != jit.X0 {
+			asm.MOVreg(jit.X0, fnReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	}
+	for i := 1; i < len(instr.Args); i++ {
+		argReg := ec.resolveValueNB(instr.Args[i].ID, jit.X0)
+		if argReg != jit.X0 {
+			asm.MOVreg(jit.X0, argReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
+	}
+
+	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
+	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
+
+	exitHandleLabel := ec.uniqueLabel("t2typedself_exit")
+	fallbackLabel := ec.uniqueLabel("t2typedself_fallback")
+	doneLabel := ec.uniqueLabel("t2typedself_done")
+
+	calleeBaseOff := ec.nextSlot * jit.ValueSize
+	calleeFrameBytes := ec.nextSlot * jit.ValueSize
+	if calleeBaseOff+calleeFrameBytes <= 4095 {
+		asm.ADDimm(jit.X8, mRegRegs, uint16(calleeBaseOff+calleeFrameBytes))
+	} else {
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff+calleeFrameBytes))
+		asm.ADDreg(jit.X8, mRegRegs, jit.X8)
+	}
+	asm.LDR(jit.X9, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X8, jit.X9)
+	asm.BCond(jit.CondHI, fallbackLabel)
+
+	ec.emitTypedSelfArgsInRegs(instr, abi, fallbackLabel)
+
+	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	asm.CMPimm(jit.X8, maxNativeCallDepth)
+	asm.BCond(jit.CondGE, fallbackLabel)
+
+	asm.SUBimm(jit.SP, jit.SP, 16)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffCallMode)
+	asm.STR(jit.X8, jit.SP, 0)
+	asm.MOVimm16(jit.X8, callModeTypedSelf)
+	asm.STR(jit.X8, mRegCtx, execCtxOffCallMode)
+
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
+		asm.ADDreg(mRegRegs, mRegRegs, jit.X8)
+	}
+
+	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+
+	asm.BL("t2_typed_self_entry")
+
+	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	asm.SUBimm(jit.X8, jit.X8, 1)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+
+	if calleeBaseOff <= 4095 {
+		asm.SUBimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
+		asm.SUBreg(mRegRegs, mRegRegs, jit.X8)
+	}
+	asm.LDR(jit.X8, jit.SP, 0)
+	asm.STR(jit.X8, mRegCtx, execCtxOffCallMode)
+	asm.ADDimm(jit.SP, jit.SP, 16)
+
+	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
+	asm.CBNZ(jit.X8, exitHandleLabel)
+
+	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+	ec.emitUnboxRawIntRegs(preRawIntRegs)
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	switch abi.Return {
+	case SpecializedABIReturnRawInt:
+		ec.storeRawInt(jit.X0, instr.ID)
+	case SpecializedABIReturnRawTablePtr:
+		emitBoxTablePtr(asm, jit.X0, jit.X0, jit.X1)
+		ec.storeResultNB(jit.X0, instr.ID)
+	default:
+		asm.B(fallbackLabel)
+	}
+	postSuccessRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	asm.B(doneLabel)
+
+	asm.Label(exitHandleLabel)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeExitCode)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffResumeNumericPass)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeResumePass)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffExitResumePC)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeResumePC)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeClosurePtr)
+	asm.MOVimm16(jit.X8, 1)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeTier2Only)
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
+
+	asm.Label(fallbackLabel)
+	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
+	ec.emitUnboxRawIntRegs(postSuccessRawIntRegs)
+	ec.rawIntRegs = postSuccessRawIntRegs
+
+	asm.Label(doneLabel)
+	return true
+}
+
+func (ec *emitContext) emitTypedSelfArgsInRegs(instr *Instr, abi TypedSelfABI, fallbackLabel string) {
+	asm := ec.asm
+	for i, rep := range abi.Params {
+		dst := jit.Reg(int(jit.X0) + i)
+		arg := instr.Args[1+i]
+		switch rep {
+		case SpecializedABIParamRawInt:
+			src := ec.resolveRawInt(arg.ID, dst)
+			if src != dst {
+				asm.MOVreg(dst, src)
+			}
+		case SpecializedABIParamRawTablePtr:
+			src := ec.resolveValueNB(arg.ID, dst)
+			if src != dst {
+				asm.MOVreg(dst, src)
+			}
+			jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
+			jit.EmitExtractPtr(asm, dst, dst)
+		}
+	}
+}
+
 func rawIntPeerLeafCallee(proto *vm.FuncProto) bool {
 	if proto == nil {
 		return false
@@ -1236,6 +1394,7 @@ func (ec *emitContext) emitOpCall(instr *Instr) {
 	} else if !ec.tailCallInstrs[instr.ID] && ec.isNumericStaticSelfCall(instr) {
 		ec.emitCallNativeRawIntSelf(instr)
 	} else if ec.emitCallNativeRawIntPeerIfEligible(instr) {
+	} else if ec.emitCallNativeTypedSelfIfEligible(instr) {
 	} else if ec.tailCallInstrs[instr.ID] && ec.isStaticSelfCall(instr) {
 		ec.emitStaticSelfTailLoop(instr)
 	} else if ec.isStaticSelfCall(instr) {
@@ -1533,6 +1692,49 @@ func (ec *emitContext) isNumericStaticSelfCall(instr *Instr) bool {
 		return false
 	}
 	return true
+}
+
+func (ec *emitContext) isTypedStaticSelfCall(instr *Instr) bool {
+	if ec.numericMode || !ec.isStaticSelfCall(instr) {
+		return false
+	}
+	abi := ec.typedSelfABI
+	if !abi.Eligible {
+		return false
+	}
+	if len(instr.Args) != 1+abi.NumParams || len(abi.Params) != abi.NumParams {
+		return false
+	}
+	if ec.tailCallInstrs[instr.ID] {
+		return false
+	}
+	for i, rep := range abi.Params {
+		argID := instr.Args[1+i].ID
+		switch rep {
+		case SpecializedABIParamRawInt:
+			if ec.hasReg(argID) && ec.rawIntRegs[argID] {
+				continue
+			}
+			if ec.irTypes[argID] == TypeInt {
+				continue
+			}
+			return false
+		case SpecializedABIParamRawTablePtr:
+			if ec.irTypes[argID] != TypeTable && ec.irTypes[argID] != TypeAny && ec.irTypes[argID] != TypeUnknown {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	switch abi.Return {
+	case SpecializedABIReturnRawInt:
+		return instr.Type == TypeInt
+	case SpecializedABIReturnRawTablePtr:
+		return instr.Type == TypeTable
+	default:
+		return false
+	}
 }
 
 // emitNumericArgsInRegs (R124) materializes raw int64 args into X0..X(N-1)

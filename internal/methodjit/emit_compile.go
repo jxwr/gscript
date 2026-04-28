@@ -242,6 +242,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	nativeCallReplaySafe := tier2NativeCallReplaySafe(fn)
 	nativeCallCalleeResumeSafe := tier2NativeCallCalleeResumeSafe(fn)
 	rawIntSelfABI := AnalyzeRawIntSelfABI(fn.Proto)
+	typedSelfABI := AnalyzeTypedSelfABI(fn.Proto)
 
 	ec := &emitContext{
 		fn:                   fn,
@@ -290,6 +291,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		instrCodeRanges:      make([]InstrCodeRange, 0, fn.nextID),
 		nativeCallReplaySafe: nativeCallReplaySafe,
 		rawIntSelfABI:        rawIntSelfABI,
+		typedSelfABI:         typedSelfABI,
 	}
 	if exitResumeCheckEnabled() {
 		ec.exitResumeCheck = newExitResumeCheckMetadata()
@@ -382,6 +384,12 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 			numericEntryOff = off
 		}
 	}
+	typedEntryOff := 0
+	if typedSelfABI.Eligible {
+		if off := ec.asm.LabelOffset("t2_typed_self_entry"); off >= 0 {
+			typedEntryOff = off
+		}
+	}
 
 	// Allocate per-GetGlobal value cache if any GetGlobal instructions exist.
 	var globalCache []uint64
@@ -409,6 +417,8 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		NumericParamCount:    rawIntSelfABI.NumParams,
 		RawIntSelfABI:        rawIntSelfABI,
 		NumericEntryOffset:   numericEntryOff,
+		TypedSelfABI:         typedSelfABI,
+		TypedEntryOffset:     typedEntryOff,
 		GlobalCache:          globalCache,
 		GlobalCacheConsts:    ec.globalCacheConsts,
 		NativeSetGlobals:     nativeSetGlobals,
@@ -732,6 +742,10 @@ type emitContext struct {
 	// call emission during pass 2.
 	rawIntSelfABI RawIntSelfABI
 
+	// typedSelfABI describes the private typed self-recursive entry for
+	// recursive table/int kernels that are not pure raw-int numeric kernels.
+	typedSelfABI TypedSelfABI
+
 	// numericParamCount (R124) is set at emitContext construction when
 	// the proto qualifies (qualifyForNumeric). Non-zero → Compile emits
 	// an additional numeric body (pass 2) with the entry label
@@ -999,6 +1013,11 @@ func callExitResumeLabelForPass(instrID int, numericMode bool) string {
 // frameSize is the stack frame size for callee-saved registers.
 const frameSize = 128
 
+const (
+	callModeDirect    = 1
+	callModeTypedSelf = 2
+)
+
 // numericSelfEntryFrameSize is the thin raw-int self-recursive frame. Raw
 // callers preserve their own live allocated registers, so the numeric entry
 // only needs FP/LR for the native BL/RET chain.
@@ -1057,6 +1076,88 @@ func (ec *emitContext) emitSetRawSelfRegsEnd(baseReg jit.Reg, numRegs int, scrat
 	asm.Label(useActualLabel)
 	asm.STR(scratchActual, mRegCtx, execCtxOffRawSelfRegsEnd)
 	asm.Label(doneLabel)
+}
+
+func emitBoxTablePtr(asm *jit.Assembler, dst, ptr, scratch jit.Reg) {
+	asm.UBFX(dst, ptr, 0, 44)
+	asm.LoadImm64(scratch, nb64(jit.NB_TagPtr))
+	asm.ORRreg(dst, dst, scratch)
+}
+
+func (ec *emitContext) emitTypedSelfEntry() {
+	asm := ec.asm
+	asm.Label("t2_typed_self_entry")
+	ec.emitTier2EntryMark()
+	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+	asm.STP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.X29, jit.SP, 0)
+	asm.STP(jit.X19, jit.X20, jit.SP, 16)
+	asm.STP(jit.X21, jit.X22, jit.SP, 32)
+	asm.STP(jit.X23, jit.X24, jit.SP, 48)
+	asm.STP(jit.X25, jit.X26, jit.SP, 64)
+	asm.STP(jit.X27, jit.X28, jit.SP, 80)
+	if ec.useFPR {
+		asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+	}
+
+	for i, rep := range ec.typedSelfABI.Params {
+		src := jit.Reg(int(jit.X0) + i)
+		switch rep {
+		case SpecializedABIParamRawInt:
+			jit.EmitBoxIntFast(asm, jit.X16, src, mRegTagInt)
+			asm.STR(jit.X16, mRegRegs, slotOffset(i))
+		case SpecializedABIParamRawTablePtr:
+			emitBoxTablePtr(asm, jit.X16, src, jit.X17)
+			asm.STR(jit.X16, mRegRegs, slotOffset(i))
+		}
+	}
+	asm.B(ec.entryBlockLabel())
+}
+
+func (ec *emitContext) emitTypedSelfReturnEpilogue() {
+	asm := ec.asm
+	asm.Label("t2_typed_self_epilogue")
+	failLabel := ec.uniqueLabel("typed_self_return_fail")
+	doneLabel := ec.uniqueLabel("typed_self_return_done")
+
+	switch ec.typedSelfABI.Return {
+	case SpecializedABIReturnRawInt:
+		emitCheckIsInt(asm, jit.X0, jit.X1)
+		asm.BCond(jit.CondNE, failLabel)
+		jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	case SpecializedABIReturnRawTablePtr:
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, failLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	default:
+		asm.B(failLabel)
+	}
+	asm.MOVimm16(jit.X16, 0)
+	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+	asm.B(doneLabel)
+
+	asm.Label(failLabel)
+	asm.LoadImm64(jit.X16, ExitDeopt)
+	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+
+	asm.Label(doneLabel)
+	ec.emitFullFrameRestoreAndReturn()
+}
+
+func (ec *emitContext) emitFullFrameRestoreAndReturn() {
+	asm := ec.asm
+	if ec.useFPR {
+		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+	}
+	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+	asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+	asm.LDP(jit.X21, jit.X22, jit.SP, 32)
+	asm.LDP(jit.X19, jit.X20, jit.SP, 16)
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+	asm.RET()
 }
 
 func (ec *emitContext) emitPrologue() {
@@ -1192,6 +1293,10 @@ func (ec *emitContext) emitEpilogue() {
 		asm.B(ec.entryBlockLabel())
 	}
 
+	if ec.typedSelfABI.Eligible {
+		ec.emitTypedSelfEntry()
+	}
+
 	// R129: numeric entry + pass-2 body are emitted AFTER epilogue +
 	// deferredResumes via emitNumericBody() (called from Compile).
 
@@ -1213,6 +1318,10 @@ func (ec *emitContext) emitEpilogue() {
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.RET()
+
+	if ec.typedSelfABI.Eligible {
+		ec.emitTypedSelfReturnEpilogue()
+	}
 
 	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil {
 		asm.Label("num_epilogue")
