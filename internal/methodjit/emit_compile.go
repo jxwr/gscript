@@ -1149,12 +1149,12 @@ func (ec *emitContext) emitEpilogue() {
 	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil {
 		asm.Label("num_epilogue")
 		asm.MOVimm16(jit.X16, 0)
-		asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
 		asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 		asm.ADDimm(jit.SP, jit.SP, uint16(numericSelfEntryFrameSize))
 		asm.RET()
 
 		asm.Label("num_deopt_epilogue")
+		asm.LDR(jit.X16, mRegCtx, execCtxOffExitCode)
 		asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 		asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 		asm.ADDimm(jit.SP, jit.SP, uint16(numericSelfEntryFrameSize))

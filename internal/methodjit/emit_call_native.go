@@ -672,8 +672,9 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	// spills into boxed VM homes before Go observes the context. The boxed
 	// function operand needed by VM fallback is rebuilt from BaselineClosurePtr;
 	// static self recursion cannot change closure identity while this native
-	// frame is executing. Numeric entries return through num_epilogue and do
-	// not branch on CallMode, so raw self calls leave ctx.CallMode unchanged.
+	// frame is executing. Numeric entries return a status in X16 (0 = success,
+	// non-zero = ctx.ExitCode), so raw self calls leave ctx.CallMode unchanged
+	// and avoid the per-call ExitCode load on success.
 	rawFrameSize := rawSelfFrameSizeForLive(nParams, len(rawLiveSpills))
 
 	ec.emitNumericArgsInRegs(instr, nParams)
@@ -713,8 +714,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.SUBimm(jit.X7, jit.X7, 1)
 	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCallDepth)
 
-	asm.LDR(jit.X7, mRegCtx, execCtxOffExitCode)
-	asm.CBNZ(jit.X7, exitLabel)
+	asm.CBNZ(jit.X16, exitLabel)
 
 	ec.emitRestoreRawSelfCallerRegsFromCalleeBase(calleeBaseOff)
 	ec.emitReloadRawSelfLiveSpills(rawLiveSpills)
@@ -1019,8 +1019,7 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
 	}
 
-	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
-	asm.CBNZ(jit.X8, exitLabel)
+	asm.CBNZ(jit.X16, exitLabel)
 
 	// Numeric entries return raw int64 in X0 on ExitNormal. Boxed fallback
 	// results are handled by emitRawIntPeerCallExitResume.

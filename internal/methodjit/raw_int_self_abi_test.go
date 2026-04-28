@@ -370,6 +370,75 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 	}
 }
 
+func TestRawIntSelfABI_FastPathUsesRegisterStatus(t *testing.T) {
+	src := `func fib(n) {
+	if n < 2 { return n }
+	return fib(n - 1) + fib(n - 2)
+}`
+	top := compileTop(t, src)
+	fib := findProtoByName(top, "fib")
+	if fib == nil {
+		t.Fatal("function \"fib\" not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(fib); err != nil {
+		t.Fatalf("CompileTier2(fib): %v", err)
+	}
+	cf := tm.tier2Compiled[fib]
+	if cf == nil {
+		t.Fatal("fib did not compile to Tier 2")
+	}
+
+	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+	rawSelfShims := 0
+	for pc := 0; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		if _, ok := rawSelfFrameAllocSize(word, 1); !ok {
+			continue
+		}
+
+		blOff := -1
+		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isBL(scanWord) {
+				blOff = scan
+				break
+			}
+			if isUnconditionalB(scanWord) || scan-pc > 220 {
+				break
+			}
+		}
+		if blOff < 0 {
+			continue
+		}
+		rawSelfShims++
+
+		sawX16StatusBranch := false
+		for scan := blOff + 4; scan+4 <= len(code); scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isCtxExitCodeAccess(scanWord) {
+				t.Fatalf("raw self-call shim at %#x reloads ctx.ExitCode after BL at %#x", pc, scan)
+			}
+			if isCBNZX16(scanWord) {
+				sawX16StatusBranch = true
+			}
+			if isUnconditionalB(scanWord) {
+				break
+			}
+			if scan-blOff > 260 {
+				t.Fatalf("raw self-call shim at %#x did not reach success branch within expected window", pc)
+			}
+		}
+		if !sawX16StatusBranch {
+			t.Fatalf("raw self-call shim at %#x did not branch on X16 numeric status after BL", pc)
+		}
+	}
+	if rawSelfShims == 0 {
+		t.Fatal("expected at least one raw self-call shim")
+	}
+}
+
 func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -731,6 +800,10 @@ func isBLR(word uint32) bool {
 	return word&0xFFFFFC1F == 0xD63F0000
 }
 
+func isCBNZX16(word uint32) bool {
+	return word&0xFF00001F == 0xB5000000|uint32(jit.X16)
+}
+
 func isSubSPImm(word uint32, imm int) bool {
 	if imm < 0 || imm > 4095 {
 		return false
@@ -889,11 +962,19 @@ func isSTRAllocGPRToSP(word uint32) bool {
 }
 
 func isCtxCallModeAccess(word uint32) bool {
+	return isCtxFieldAccess(word, execCtxOffCallMode)
+}
+
+func isCtxExitCodeAccess(word uint32) bool {
+	return isCtxFieldAccess(word, execCtxOffExitCode)
+}
+
+func isCtxFieldAccess(word uint32, off int) bool {
 	if word&0xFFC003E0 != 0xF9400000|uint32(mRegCtx)<<5 &&
 		word&0xFFC003E0 != 0xF9000000|uint32(mRegCtx)<<5 {
 		return false
 	}
-	return ((word >> 10) & 0xFFF) == uint32(execCtxOffCallMode>>3)
+	return ((word >> 10) & 0xFFF) == uint32(off>>3)
 }
 
 func assertThinFramePrologue(t *testing.T, code []byte, off int, label string) {
