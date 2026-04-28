@@ -21,6 +21,7 @@ type FuncProto struct {
 	MaxStack               int                       // maximum number of registers used
 	Code                   []uint32                  // bytecode instructions
 	Constants              []runtime.Value           // constant pool
+	TableCtors2            []TableCtor2              // static two-field table constructors
 	Upvalues               []UpvalDesc               // upvalue descriptors
 	Protos                 []*FuncProto              // nested function prototypes
 	LineInfo               []int                     // source line for each instruction (debug)
@@ -44,6 +45,13 @@ type FuncProto struct {
 	Tier2Promoted          bool                      // set true when TieringManager compiles this proto at Tier 2
 	NeedsTier2             bool                      // set true when Tier 2 applied ops (e.g., intrinsics) that Tier 1 would execute differently
 	EnteredTier2           byte                      // R146: set to 1 by Tier 2 native prologue on first entry — observable signal that native code actually ran (not just compiled)
+}
+
+// TableCtor2 describes a static two-string-field table constructor.
+type TableCtor2 struct {
+	Key1Const int
+	Key2Const int
+	Runtime   runtime.SmallTableCtor2
 }
 
 // EnsureFeedback lazily initializes the type feedback vector for this function.

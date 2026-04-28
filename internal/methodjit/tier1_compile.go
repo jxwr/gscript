@@ -223,6 +223,9 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		case vm.OP_NEWTABLE:
 			emitBaselineOpExit(asm, inst, pc, vm.OP_NEWTABLE)
 			resumePCs = append(resumePCs, pc+1)
+		case vm.OP_NEWOBJECT2:
+			emitBaselineOpExit(asm, inst, pc, vm.OP_NEWOBJECT2)
+			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETTABLE:
 			emitBaselineGetTable(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1) // slow path may exit

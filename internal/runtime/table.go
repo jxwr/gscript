@@ -253,6 +253,52 @@ type FieldCacheEntry struct {
 	AppendShape   *Shape // result shape for constructor-style SETFIELD
 }
 
+// SmallTableCtor2 caches the final shape for a static two-string-field table
+// constructor. It is stored on bytecode prototypes, not on Table, so the common
+// object-literal allocation path can skip per-instance shape transitions
+// without growing every table.
+type SmallTableCtor2 struct {
+	Key1  string
+	Key2  string
+	Shape *Shape
+}
+
+func NewSmallTableCtor2(key1, key2 string) SmallTableCtor2 {
+	ctor := SmallTableCtor2{Key1: key1, Key2: key2}
+	if key1 != key2 {
+		ctor.Shape = GetShape([]string{key1, key2})
+	}
+	return ctor
+}
+
+// NewTableFromCtor2 constructs a small two-field string table in one pass.
+// If either value is nil, it falls back to normal RawSetString semantics so a
+// runtime nil omits that field just like sequential SETFIELD bytecode.
+func NewTableFromCtor2(ctor *SmallTableCtor2, val1, val2 Value) *Table {
+	if ctor == nil || ctor.Key1 == ctor.Key2 || val1.IsNil() || val2.IsNil() {
+		t := NewTableSized(0, 2)
+		if ctor != nil {
+			t.RawSetString(ctor.Key1, val1)
+			t.RawSetString(ctor.Key2, val2)
+		}
+		return t
+	}
+	shape := ctor.Shape
+	if shape == nil {
+		t := NewTableSized(0, 2)
+		t.RawSetString(ctor.Key1, val1)
+		t.RawSetString(ctor.Key2, val2)
+		return t
+	}
+	t, svals := DefaultHeap.AllocTableWithSvals(2)
+	t.keysDirty = true
+	t.svals = svals[:2]
+	t.svals[0] = val1
+	t.svals[1] = val2
+	t.applyShape(shape)
+	return t
+}
+
 // RawGetString retrieves a value by string key (fast path, no Value boxing).
 func (t *Table) RawGetString(key string) Value {
 	if t.mu != nil {

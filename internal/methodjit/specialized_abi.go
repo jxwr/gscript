@@ -190,7 +190,7 @@ func AnalyzeSpecializedABI(proto *vm.FuncProto) SpecializedABI {
 			default:
 				return specializedABIReject("non-single return")
 			}
-		case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_GETUPVAL, vm.OP_NEWTABLE,
+		case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2,
 			vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD,
 			vm.OP_SETLIST, vm.OP_APPEND, vm.OP_NOT, vm.OP_LEN, vm.OP_CONCAT,
 			vm.OP_POW, vm.OP_CLOSURE, vm.OP_FORPREP, vm.OP_FORLOOP,

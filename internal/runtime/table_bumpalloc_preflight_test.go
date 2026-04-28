@@ -61,6 +61,23 @@ func BenchmarkNewTableSizedCurrent(b *testing.B) {
 	}
 }
 
+func TestNewTableFromCtor2PopulatesSmallFields(t *testing.T) {
+	ctor := NewSmallTableCtor2("left", "right")
+	tbl := NewTableFromCtor2(&ctor, IntValue(11), IntValue(22))
+	if len(tbl.svals) != 2 || cap(tbl.svals) != 2 {
+		t.Fatalf("svals len/cap = %d/%d, want 2/2", len(tbl.svals), cap(tbl.svals))
+	}
+	if got := tbl.RawGetString("left"); !got.IsInt() || got.Int() != 11 {
+		t.Fatalf("left = %v, want 11", got)
+	}
+	if got := tbl.RawGetString("right"); !got.IsInt() || got.Int() != 22 {
+		t.Fatalf("right = %v, want 22", got)
+	}
+	if tbl.smap != nil {
+		t.Fatal("two-field constructor should remain in small-field storage")
+	}
+}
+
 // BenchmarkNewTableBumpSlab measures the bump-alloc path.
 func BenchmarkNewTableBumpSlab(b *testing.B) {
 	// Slab sized to avoid full reset most of the time under b.N.

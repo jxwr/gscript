@@ -635,6 +635,21 @@ func (b *graphBuilder) emitBlocks() {
 				instr := b.emit(block, OpNewTable, TypeTable, nil, int64(bOp), int64(c))
 				b.writeVariable(a, block, instr.Value())
 
+			case vm.OP_NEWOBJECT2:
+				a := vm.DecodeA(inst)
+				ctorIdx := vm.DecodeB(inst)
+				valueBase := vm.DecodeC(inst)
+				newTable := b.emit(block, OpNewTable, TypeTable, nil, 0, 2)
+				tbl := newTable.Value()
+				b.writeVariable(a, block, tbl)
+				if ctorIdx >= 0 && ctorIdx < len(b.proto.TableCtors2) {
+					ctor := b.proto.TableCtors2[ctorIdx]
+					val1 := b.readVariable(valueBase, block)
+					val2 := b.readVariable(valueBase+1, block)
+					b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val1}, int64(ctor.Key1Const), 0)
+					b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val2}, int64(ctor.Key2Const), 0)
+				}
+
 			case vm.OP_GETTABLE:
 				a := vm.DecodeA(inst)
 				bOp := vm.DecodeB(inst)

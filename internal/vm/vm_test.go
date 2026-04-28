@@ -562,6 +562,53 @@ func TestTableHashConstruction(t *testing.T) {
 	expectGlobalInt(t, g, "result", 30)
 }
 
+func TestTwoFieldTableLiteralUsesConstructorOpcode(t *testing.T) {
+	tokens, err := lexer.New(`t := {x: 10, y: 20}`).Tokenize()
+	if err != nil {
+		t.Fatalf("lexer error: %v", err)
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	proto, err := Compile(prog)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	ctors := 0
+	setFields := 0
+	for _, inst := range proto.Code {
+		switch DecodeOp(inst) {
+		case OP_NEWOBJECT2:
+			ctors++
+		case OP_SETFIELD:
+			setFields++
+		}
+	}
+	if ctors != 1 {
+		t.Fatalf("NEWOBJECT2 count = %d, want 1", ctors)
+	}
+	if setFields != 0 {
+		t.Fatalf("SETFIELD count = %d, want 0", setFields)
+	}
+}
+
+func TestTwoFieldTableLiteralRuntimeNilFallsBackToSetFieldSemantics(t *testing.T) {
+	g := compileAndRun(t, `
+		func maybeNil() { return nil }
+		t := {x: maybeNil(), y: 20}
+		result := t.y
+	`)
+	expectGlobalInt(t, g, "result", 20)
+	tbl := g["t"].Table()
+	if tbl.SkeysLen() != 1 {
+		t.Fatalf("runtime nil constructor stored %d string fields, want 1", tbl.SkeysLen())
+	}
+	if !tbl.RawGetString("x").IsNil() {
+		t.Fatalf("runtime nil field should read back as nil")
+	}
+}
+
 func TestTableLiteralNilFieldsDoNotInflateHashHint(t *testing.T) {
 	tokens, err := lexer.New(`t := {left: nil, right: nil, value: 1}`).Tokenize()
 	if err != nil {

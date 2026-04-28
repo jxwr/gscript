@@ -121,6 +121,9 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 
 		case vm.OP_NEWTABLE:
 			p.NewTableCount++
+		case vm.OP_NEWOBJECT2:
+			p.NewTableCount++
+			p.TableOpCount += 2
 
 		// Loop indicators
 		case vm.OP_FORPREP:

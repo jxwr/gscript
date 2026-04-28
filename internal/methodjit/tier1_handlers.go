@@ -26,6 +26,8 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 		return e.handleSetGlobal(ctx, regs, base, proto)
 	case vm.OP_NEWTABLE:
 		return e.handleNewTable(ctx, regs, base, proto)
+	case vm.OP_NEWOBJECT2:
+		return e.handleNewObject2(ctx, regs, base, proto)
 	case vm.OP_GETTABLE:
 		return e.handleGetTable(ctx, regs, base, proto)
 	case vm.OP_SETTABLE:
@@ -67,6 +69,23 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	default:
 		return fmt.Errorf("unhandled baseline op-exit: %s (%d)", vm.OpName(opCode), opCode)
 	}
+}
+
+func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+	a := int(ctx.BaselineA)
+	b := int(ctx.BaselineB)
+	c := int(ctx.BaselineC)
+	absA := base + a
+	if absA >= len(regs) {
+		return nil
+	}
+	if b < 0 || b >= len(proto.TableCtors2) || base+c+1 >= len(regs) {
+		regs[absA] = runtime.TableValue(runtime.NewTableSized(0, 2))
+		return nil
+	}
+	ctor := &proto.TableCtors2[b].Runtime
+	regs[absA] = runtime.TableValue(runtime.NewTableFromCtor2(ctor, regs[base+c], regs[base+c+1]))
+	return nil
 }
 
 // resolveCmpRK resolves a comparison operand (RK). For registers, base+idx;

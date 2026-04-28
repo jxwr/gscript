@@ -18,13 +18,14 @@ const (
 	OP_SETUPVAL  // A B     : Upvalues[B] = R(A)
 
 	// Table Operations
-	OP_NEWTABLE // A B C   : R(A) = new table (B=array hint, C=hash hint)
-	OP_GETTABLE // A B C   : R(A) = R(B)[RK(C)]
-	OP_SETTABLE // A B C   : R(A)[RK(B)] = RK(C)
-	OP_GETFIELD // A B Bx  : R(A) = R(B).Constants[Bx]  (optimized string field)
-	OP_SETFIELD // A Bx C  : R(A).Constants[Bx] = RK(C)
-	OP_SETLIST  // A B C   : R(A)[(C-1)*50+1..] = R(A+1)..R(A+B) (array init)
-	OP_APPEND   // A B     : table.insert(R(A), R(B)) — for array-style table init
+	OP_NEWTABLE   // A B C   : R(A) = new table (B=array hint, C=hash hint)
+	OP_NEWOBJECT2 // A B C : R(A) = two-field string table, ctor=B, values R(C),R(C+1)
+	OP_GETTABLE   // A B C   : R(A) = R(B)[RK(C)]
+	OP_SETTABLE   // A B C   : R(A)[RK(B)] = RK(C)
+	OP_GETFIELD   // A B Bx  : R(A) = R(B).Constants[Bx]  (optimized string field)
+	OP_SETFIELD   // A Bx C  : R(A).Constants[Bx] = RK(C)
+	OP_SETLIST    // A B C   : R(A)[(C-1)*50+1..] = R(A+1)..R(A+B) (array init)
+	OP_APPEND     // A B     : table.insert(R(A), R(B)) — for array-style table init
 
 	// Arithmetic
 	OP_ADD    // A B C : R(A) = RK(B) + RK(C)
@@ -51,8 +52,8 @@ const (
 	OP_JMP // sBx : PC += sBx
 
 	// Calls & Returns
-	OP_CALL    // A B C : R(A)..R(A+C-2) = R(A)(R(A+1)..R(A+B-1)); B=0 use top; C=0 return all
-	OP_RETURN  // A B   : return R(A)..R(A+B-2); B=0 return to top; B=1 return nothing
+	OP_CALL   // A B C : R(A)..R(A+C-2) = R(A)(R(A+1)..R(A+B-1)); B=0 use top; C=0 return all
+	OP_RETURN // A B   : return R(A)..R(A+B-2); B=0 return to top; B=1 return nothing
 
 	// Closure & Upvalue
 	OP_CLOSURE // A Bx : R(A) = closure(Protos[Bx])
@@ -163,52 +164,53 @@ func ConstToRK(idx int) int {
 
 // Opcode names for debugging.
 var opNames = [...]string{
-	OP_LOADNIL:  "LOADNIL",
-	OP_LOADBOOL: "LOADBOOL",
-	OP_LOADINT:  "LOADINT",
-	OP_LOADK:    "LOADK",
-	OP_MOVE:     "MOVE",
-	OP_GETGLOBAL: "GETGLOBAL",
-	OP_SETGLOBAL: "SETGLOBAL",
-	OP_GETUPVAL: "GETUPVAL",
-	OP_SETUPVAL: "SETUPVAL",
-	OP_NEWTABLE: "NEWTABLE",
-	OP_GETTABLE: "GETTABLE",
-	OP_SETTABLE: "SETTABLE",
-	OP_GETFIELD: "GETFIELD",
-	OP_SETFIELD: "SETFIELD",
-	OP_SETLIST:  "SETLIST",
-	OP_APPEND:   "APPEND",
-	OP_ADD:      "ADD",
-	OP_SUB:      "SUB",
-	OP_MUL:      "MUL",
-	OP_DIV:      "DIV",
-	OP_MOD:      "MOD",
-	OP_POW:      "POW",
-	OP_UNM:      "UNM",
-	OP_NOT:      "NOT",
-	OP_LEN:      "LEN",
-	OP_CONCAT:   "CONCAT",
-	OP_EQ:       "EQ",
-	OP_LT:       "LT",
-	OP_LE:       "LE",
-	OP_TEST:     "TEST",
-	OP_TESTSET:  "TESTSET",
-	OP_JMP:      "JMP",
-	OP_CALL:     "CALL",
-	OP_RETURN:   "RETURN",
-	OP_CLOSURE:  "CLOSURE",
-	OP_CLOSE:    "CLOSE",
-	OP_FORPREP:  "FORPREP",
-	OP_FORLOOP:  "FORLOOP",
-	OP_TFORCALL: "TFORCALL",
-	OP_TFORLOOP: "TFORLOOP",
-	OP_VARARG:   "VARARG",
-	OP_SELF:     "SELF",
-	OP_GO:       "GO",
-	OP_MAKECHAN: "MAKECHAN",
-	OP_SEND:     "SEND",
-	OP_RECV:     "RECV",
+	OP_LOADNIL:    "LOADNIL",
+	OP_LOADBOOL:   "LOADBOOL",
+	OP_LOADINT:    "LOADINT",
+	OP_LOADK:      "LOADK",
+	OP_MOVE:       "MOVE",
+	OP_GETGLOBAL:  "GETGLOBAL",
+	OP_SETGLOBAL:  "SETGLOBAL",
+	OP_GETUPVAL:   "GETUPVAL",
+	OP_SETUPVAL:   "SETUPVAL",
+	OP_NEWTABLE:   "NEWTABLE",
+	OP_NEWOBJECT2: "NEWOBJECT2",
+	OP_GETTABLE:   "GETTABLE",
+	OP_SETTABLE:   "SETTABLE",
+	OP_GETFIELD:   "GETFIELD",
+	OP_SETFIELD:   "SETFIELD",
+	OP_SETLIST:    "SETLIST",
+	OP_APPEND:     "APPEND",
+	OP_ADD:        "ADD",
+	OP_SUB:        "SUB",
+	OP_MUL:        "MUL",
+	OP_DIV:        "DIV",
+	OP_MOD:        "MOD",
+	OP_POW:        "POW",
+	OP_UNM:        "UNM",
+	OP_NOT:        "NOT",
+	OP_LEN:        "LEN",
+	OP_CONCAT:     "CONCAT",
+	OP_EQ:         "EQ",
+	OP_LT:         "LT",
+	OP_LE:         "LE",
+	OP_TEST:       "TEST",
+	OP_TESTSET:    "TESTSET",
+	OP_JMP:        "JMP",
+	OP_CALL:       "CALL",
+	OP_RETURN:     "RETURN",
+	OP_CLOSURE:    "CLOSURE",
+	OP_CLOSE:      "CLOSE",
+	OP_FORPREP:    "FORPREP",
+	OP_FORLOOP:    "FORLOOP",
+	OP_TFORCALL:   "TFORCALL",
+	OP_TFORLOOP:   "TFORLOOP",
+	OP_VARARG:     "VARARG",
+	OP_SELF:       "SELF",
+	OP_GO:         "GO",
+	OP_MAKECHAN:   "MAKECHAN",
+	OP_SEND:       "SEND",
+	OP_RECV:       "RECV",
 }
 
 // OpName returns the name of an opcode.

@@ -2061,8 +2061,17 @@ func (c *compiler) compileFieldExpr(e *ast.FieldExpr, dest int) error {
 
 // ---- Table construction ----
 
+type staticStringField struct {
+	key      string
+	keyConst int
+	value    ast.Expr
+}
+
 func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 	line := e.P.Line
+	if ok, err := c.compileTwoFieldTableLitExpr(e, dest, line); ok || err != nil {
+		return err
+	}
 
 	arrayCount := 0
 	hashCount := 0
@@ -2204,6 +2213,79 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 	return nil
 }
 
+func (c *compiler) compileTwoFieldTableLitExpr(e *ast.TableLitExpr, dest int, line int) (bool, error) {
+	fields := make([]staticStringField, 0, 2)
+	for _, f := range e.Fields {
+		if f.Key == nil {
+			return false, nil
+		}
+		if isNilLiteral(f.Value) {
+			continue
+		}
+		key, ok := staticStringFieldName(f.Key)
+		if !ok {
+			return false, nil
+		}
+		fields = append(fields, staticStringField{
+			key:      key,
+			keyConst: c.stringConst(key),
+			value:    f.Value,
+		})
+		if len(fields) > 2 {
+			return false, nil
+		}
+	}
+	if len(fields) != 2 || fields[0].key == fields[1].key {
+		return false, nil
+	}
+	ctor := c.addTableCtor2(fields[0].keyConst, fields[1].keyConst, fields[0].key, fields[1].key)
+	if ctor < 0 || ctor > 255 {
+		return false, nil
+	}
+
+	valueBase := c.nextReg
+	val1 := c.allocReg()
+	val2 := c.allocReg()
+	if err := c.compileExprTo(fields[0].value, val1); err != nil {
+		return true, err
+	}
+	if err := c.compileExprTo(fields[1].value, val2); err != nil {
+		return true, err
+	}
+	c.emitABC(OP_NEWOBJECT2, dest, ctor, valueBase, line)
+	c.nextReg = valueBase
+	return true, nil
+}
+
+func staticStringFieldName(key ast.Expr) (string, bool) {
+	switch k := key.(type) {
+	case *ast.StringLit:
+		return k.Value, true
+	case *ast.IdentExpr:
+		return k.Name, true
+	default:
+		return "", false
+	}
+}
+
+func (c *compiler) addTableCtor2(key1Const, key2Const int, key1, key2 string) int {
+	for i := range c.proto.TableCtors2 {
+		ctor := &c.proto.TableCtors2[i]
+		if ctor.Key1Const == key1Const && ctor.Key2Const == key2Const {
+			return i
+		}
+	}
+	if len(c.proto.TableCtors2) >= 256 {
+		return -1
+	}
+	c.proto.TableCtors2 = append(c.proto.TableCtors2, TableCtor2{
+		Key1Const: key1Const,
+		Key2Const: key2Const,
+		Runtime:   runtime.NewSmallTableCtor2(key1, key2),
+	})
+	return len(c.proto.TableCtors2) - 1
+}
+
 func isNilLiteral(e ast.Expr) bool {
 	_, ok := e.(*ast.NilLit)
 	return ok
@@ -2332,6 +2414,8 @@ func Disassemble(proto *FuncProto) string {
 			desc = fmt.Sprintf("SETUPVAL   R%d U%d", a, b)
 		case OP_NEWTABLE:
 			desc = fmt.Sprintf("NEWTABLE   R%d array=%d hash=%d", a, b, cc)
+		case OP_NEWOBJECT2:
+			desc = fmt.Sprintf("NEWOBJECT2 R%d ctor=%d values=R%d,R%d", a, b, cc, cc+1)
 		case OP_GETTABLE:
 			desc = fmt.Sprintf("GETTABLE   R%d R%d R%d", a, b, cc)
 		case OP_SETTABLE:

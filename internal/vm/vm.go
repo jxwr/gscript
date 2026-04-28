@@ -819,6 +819,19 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			c := DecodeC(inst) // hash hint
 			vm.regs[base+a] = runtime.TableValue(runtime.NewTableSized(b, c))
 
+		case OP_NEWOBJECT2:
+			a := DecodeA(inst)
+			b := DecodeB(inst) // table ctor index
+			c := DecodeC(inst) // first value register
+			if b >= 0 && b < len(frame.closure.Proto.TableCtors2) {
+				ctor := &frame.closure.Proto.TableCtors2[b].Runtime
+				val1 := vm.regs[base+c]
+				val2 := vm.regs[base+c+1]
+				vm.regs[base+a] = runtime.TableValue(runtime.NewTableFromCtor2(ctor, val1, val2))
+			} else {
+				vm.regs[base+a] = runtime.TableValue(runtime.NewTableSized(0, 2))
+			}
+
 		case OP_GETTABLE:
 			a := DecodeA(inst)
 			b := DecodeB(inst)
