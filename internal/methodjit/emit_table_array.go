@@ -136,7 +136,9 @@ func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	} else if ec.irTypes[tblID] == TypeTable {
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-		asm.CBZ(jit.X0, deoptLabel)
+		// TypeTable producers/guards already exclude nil. Keep the dynamic
+		// metatable and array-kind checks, but avoid repeating the nil check
+		// for row tables loaded from mixed table arrays.
 		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
 		asm.CBNZ(jit.X1, deoptLabel)
 		ec.tableVerified[tblID] = true

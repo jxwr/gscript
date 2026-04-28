@@ -224,6 +224,71 @@ func sum_floats(arr, n) {
 	}
 }
 
+func TestTier2_TableArrayHeaderKnownTableSkipsNilCheck(t *testing.T) {
+	src := `
+func read_row(rows, i, j) {
+    row := rows[i]
+    return row[j] + row[j + 1]
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "read_row")
+	if proto == nil {
+		t.Fatal("read_row proto not found")
+	}
+	seedNestedTableFloatFeedback(proto)
+
+	fn := BuildGraph(proto)
+	var err error
+	fn, _, err = RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(read_row): %v", err)
+	}
+
+	var headerID int
+	foundHeader := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpTableArrayHeader || len(instr.Args) < 1 || instr.Args[0] == nil || instr.Args[0].Def == nil {
+				continue
+			}
+			load := instr.Args[0].Def
+			if load.Op == OpTableArrayLoad && load.Type == TypeTable {
+				headerID = instr.ID
+				foundHeader = true
+				break
+			}
+		}
+		if foundHeader {
+			break
+		}
+	}
+	if !foundHeader {
+		t.Fatalf("expected nested TableArrayHeader fed by TableArrayLoad : table:\n%s", Print(fn))
+	}
+
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile(read_row): %v", err)
+	}
+	defer cf.Code.Free()
+
+	foundRange := false
+	for _, r := range cf.InstrCodeRanges {
+		if r.InstrID == headerID && r.Pass == "normal" && r.CodeEnd > r.CodeStart {
+			foundRange = true
+			break
+		}
+	}
+	if !foundRange {
+		t.Fatalf("compiled header v%d has no normal code range", headerID)
+	}
+	if got := countMatchingIRInstr(cf, headerID, isARM64CBZ); got != 0 {
+		t.Fatalf("known-table TableArrayHeader emitted %d CBZ nil check(s), want 0", got)
+	}
+}
+
 func TestTier2_SetTableArrayMixedAppend(t *testing.T) {
 	src := `
 func mixed_append(n) {
@@ -477,6 +542,30 @@ func seedFloatTableFeedback(proto *vm.FuncProto) {
 			fb[pc].Kind = vm.FBKindFloat
 		}
 	}
+}
+
+func seedNestedTableFloatFeedback(proto *vm.FuncProto) {
+	fb := proto.EnsureFeedback()
+	getIndex := 0
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_GETTABLE {
+			continue
+		}
+		fb[pc].Left = vm.FBTable
+		fb[pc].Right = vm.FBInt
+		if getIndex == 0 {
+			fb[pc].Result = vm.FBTable
+			fb[pc].Kind = vm.FBKindMixed
+		} else {
+			fb[pc].Result = vm.FBFloat
+			fb[pc].Kind = vm.FBKindFloat
+		}
+		getIndex++
+	}
+}
+
+func isARM64CBZ(insn uint32) bool {
+	return insn&0x7E000000 == 0x34000000 && insn&0x01000000 == 0
 }
 
 func rangeHasDirectFPLoad(code []byte, start, end int) bool {
