@@ -87,6 +87,32 @@ for iter := 1; iter <= 5; iter++ {
 	compareTier2Result(t, src, "result")
 }
 
+func TestTier2_TableArrayNestedFloatLoad(t *testing.T) {
+	src := `
+func nested_sum(rows, n) {
+    total := 0.0
+    for i := 0; i < n; i++ {
+        total = total + rows[i][1]
+    }
+    return total
+}
+
+rows := {}
+for i := 0; i < 8; i++ {
+    row := {}
+    row[0] = i * 1.0
+    row[1] = i * 2.0 + 0.5
+    rows[i] = row
+}
+
+result := 0.0
+for iter := 0; iter < 40; iter++ {
+    result = nested_sum(rows, 8)
+}
+`
+	compareTier2Result(t, src, "result")
+}
+
 // TestKindSpecialize_IntArray tests kind-specialized GetTable on ArrayInt.
 func TestKindSpecialize_IntArray(t *testing.T) {
 	src := `

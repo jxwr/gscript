@@ -456,6 +456,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = TableArrayNestedLoadPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TableArrayNestedLoad: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	// R45: lower OpMatrixGetF/SetF into OpMatrixFlat + OpMatrixStride +
 	// OpMatrixLoadFAt/StoreFAt so LICM can hoist the Flat/Stride ops
 	// out of inner loops where m is invariant.
@@ -581,6 +587,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("IntExactDivision", IntExactDivisionPass)
 	pipe.Add("TableArrayLower", TableArrayLowerPass)
 	pipe.Add("TableArrayLoadTypeSpecialize", TableArrayLoadTypeSpecializePass)
+	pipe.Add("TableArrayNestedLoad", TableArrayNestedLoadPass)
 	pipe.Add("LICM", LICMPass)
 	pipe.Add("FieldNumToFloatFusion", FieldNumToFloatFusionPass)
 	pipe.Add("LoadEliminationPostLICM", LoadEliminationPass)

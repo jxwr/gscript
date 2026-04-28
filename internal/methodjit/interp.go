@@ -560,6 +560,23 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = tbl.Table().RawGetInt(key.Int())
 
+	case OpTableArrayNestedLoad:
+		outer := s.val(instr.Args[0])
+		outerKey := s.val(instr.Args[2])
+		innerKey := s.val(instr.Args[3])
+		if !outer.IsTable() {
+			return nil, false, fmt.Errorf("OpTableArrayNestedLoad: arg 0 not a table")
+		}
+		row := outer.Table().RawGetInt(outerKey.Int())
+		if !row.IsTable() {
+			return nil, false, fmt.Errorf("OpTableArrayNestedLoad: row is not a table")
+		}
+		ak, ok := fbKindToRuntimeArrayKind(instr.Aux)
+		if !ok || row.Table().GetArrayKind() != ak {
+			return nil, false, fmt.Errorf("OpTableArrayNestedLoad: row array kind mismatch")
+		}
+		s.values[instr.ID] = row.Table().RawGetInt(innerKey.Int())
+
 	case OpGetField:
 		tbl := s.val(instr.Args[0])
 		idx := int(instr.Aux)

@@ -196,6 +196,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitTableArrayData(instr)
 	case OpTableArrayLoad:
 		ec.emitTableArrayLoad(instr)
+	case OpTableArrayNestedLoad:
+		ec.emitTableArrayNestedLoad(instr)
 	case OpGetField:
 		ec.emitGetField(instr)
 	case OpGetFieldNumToFloat:

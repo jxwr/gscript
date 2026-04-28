@@ -370,6 +370,146 @@ func TestTableArrayLower_TableArrayLoadKeepsNonNegativeKeyFact(t *testing.T) {
 	}
 }
 
+func TestTableArrayNestedLoad_FusesSameBlockMixedRowFloat(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_nested_load"}, NumRegs: 4}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	rows := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	outerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	innerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	outerHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{rows.Value()}, Block: b}
+	outerLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerHeader.Value()}, Block: b}
+	outerData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerHeader.Value()}, Block: b}
+	row := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeTable, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerData.Value(), outerLen.Value(), outerKey.Value()}, Block: b}
+	rowHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{row.Value()}, Block: b}
+	rowLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{rowHeader.Value()}, Block: b}
+	rowData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{rowHeader.Value()}, Block: b}
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeFloat, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{rowData.Value(), rowLen.Value(), innerKey.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{load.Value()}, Block: b}
+	b.Instrs = []*Instr{rows, outerKey, innerKey, outerHeader, outerLen, outerData, row, rowHeader, rowLen, rowData, load, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = TableArrayNestedLoadPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts := countOps(fn)
+	if counts[OpTableArrayNestedLoad] != 1 {
+		t.Fatalf("expected one nested load, counts=%v\n%s", counts, Print(fn))
+	}
+	if counts[OpTableArrayLoad] != 0 {
+		t.Fatalf("same-block row load chain should be removed, counts=%v\n%s", counts, Print(fn))
+	}
+	if counts[OpTableArrayHeader] != 1 || counts[OpTableArrayLen] != 1 || counts[OpTableArrayData] != 1 {
+		t.Fatalf("outer table facts should remain and row facts should be fused, counts=%v\n%s", counts, Print(fn))
+	}
+}
+
+func TestTableArrayNestedLoad_DoesNotFuseCrossBlockRowResidency(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_nested_cross_block"}, NumRegs: 4}
+	entry := newBlock(0)
+	body := newBlock(1)
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, body}
+	entry.Succs = []*Block{body}
+	body.Preds = []*Block{entry}
+
+	rows := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	outerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: entry}
+	outerHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{rows.Value()}, Block: entry}
+	outerLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerHeader.Value()}, Block: entry}
+	outerData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerHeader.Value()}, Block: entry}
+	row := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeTable, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerData.Value(), outerLen.Value(), outerKey.Value()}, Block: entry}
+	jump := &Instr{ID: fn.newValueID(), Op: OpJump, Aux: int64(body.ID), Block: entry}
+	entry.Instrs = []*Instr{rows, outerKey, outerHeader, outerLen, outerData, row, jump}
+
+	innerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: body}
+	rowHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{row.Value()}, Block: body}
+	rowLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{rowHeader.Value()}, Block: body}
+	rowData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{rowHeader.Value()}, Block: body}
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeFloat, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{rowData.Value(), rowLen.Value(), innerKey.Value()}, Block: body}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{load.Value()}, Block: body}
+	body.Instrs = []*Instr{innerKey, rowHeader, rowLen, rowData, load, ret}
+
+	var err error
+	fn, err = TableArrayNestedLoadPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := countOps(fn)
+	if counts[OpTableArrayNestedLoad] != 0 {
+		t.Fatalf("cross-block row load should stay materialized, counts=%v\n%s", counts, Print(fn))
+	}
+	if counts[OpTableArrayLoad] != 2 {
+		t.Fatalf("expected existing row and element loads to remain, counts=%v\n%s", counts, Print(fn))
+	}
+}
+
+func TestTableArrayNestedLoad_DoesNotFuseAcrossSideEffect(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_nested_side_effect"}, NumRegs: 5}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	rows := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	outerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	innerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	fnVal := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFunction, Aux: 3, Block: b}
+	outerHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{rows.Value()}, Block: b}
+	outerLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerHeader.Value()}, Block: b}
+	outerData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerHeader.Value()}, Block: b}
+	row := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeTable, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerData.Value(), outerLen.Value(), outerKey.Value()}, Block: b}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeUnknown, Args: []*Value{fnVal.Value()}, Block: b}
+	rowHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{row.Value()}, Block: b}
+	rowLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{rowHeader.Value()}, Block: b}
+	rowData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{rowHeader.Value()}, Block: b}
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeFloat, Aux: int64(vm.FBKindFloat),
+		Args: []*Value{rowData.Value(), rowLen.Value(), innerKey.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{load.Value(), call.Value()}, Block: b}
+	b.Instrs = []*Instr{rows, outerKey, innerKey, fnVal, outerHeader, outerLen, outerData, row, call, rowHeader, rowLen, rowData, load, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = TableArrayNestedLoadPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := countOps(fn)
+	if counts[OpTableArrayNestedLoad] != 0 {
+		t.Fatalf("side-effect span should not fuse, counts=%v\n%s", counts, Print(fn))
+	}
+	if counts[OpTableArrayLoad] != 2 {
+		t.Fatalf("expected existing row and element loads to remain, counts=%v\n%s", counts, Print(fn))
+	}
+}
+
 func countOps(fn *Function) map[Op]int {
 	counts := make(map[Op]int)
 	for _, b := range fn.Blocks {

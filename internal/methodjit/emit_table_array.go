@@ -319,6 +319,115 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
+	if len(instr.Args) < 4 {
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("tarr_nested_deopt")
+	doneLabel := ec.uniqueLabel("tarr_nested_done")
+
+	rowDataOff, rowLenOff, ok := tableArrayOffsets(instr.Aux)
+	if !ok || instr.Aux != int64(vm.FBKindFloat) || instr.Type != TypeFloat {
+		ec.emitDeopt(instr)
+		return
+	}
+	expectedRowKind, ok := fbKindToAK(instr.Aux)
+	if !ok {
+		ec.emitDeopt(instr)
+		return
+	}
+
+	outerDataReg := ec.resolveRawInt(instr.Args[0].ID, jit.X2)
+	if outerDataReg != jit.X2 {
+		asm.MOVreg(jit.X2, outerDataReg)
+	}
+	outerLenReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
+	if outerLenReg != jit.X3 {
+		asm.MOVreg(jit.X3, outerLenReg)
+	}
+	if !ec.emitTableArrayKeyToReg(instr.Args[2], deoptLabel) {
+		ec.emitDeopt(instr)
+		return
+	}
+	outerKeyID := instr.Args[2].ID
+	if kv, isConst := ec.constInts[outerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(outerKeyID) {
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
+	asm.CMPreg(jit.X1, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+
+	asm.LDRreg(jit.X0, jit.X2, jit.X1)
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, deoptLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffMetatable)
+	asm.CBNZ(jit.X2, deoptLabel)
+	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, expectedRowKind)
+	asm.BCond(jit.CondNE, deoptLabel)
+	asm.LDR(jit.X3, jit.X0, rowLenOff)
+	asm.LDR(jit.X2, jit.X0, rowDataOff)
+
+	if !ec.emitTableArrayKeyToReg(instr.Args[3], deoptLabel) {
+		ec.emitDeopt(instr)
+		return
+	}
+	innerKeyID := instr.Args[3].ID
+	if kv, isConst := ec.constInts[innerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(innerKeyID) {
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
+	asm.CMPreg(jit.X1, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.LDRreg(jit.X0, jit.X2, jit.X1)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+	ec.storeRawFloat(jit.D0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitTableArrayKeyToReg(key *Value, deoptLabel string) bool {
+	if key == nil {
+		return false
+	}
+	asm := ec.asm
+	keyID := key.ID
+	if kv, isConst := ec.constInts[keyID]; isConst {
+		asm.LoadImm64(jit.X1, kv)
+		return true
+	}
+	if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
+		reg := ec.physReg(keyID)
+		if reg != jit.X1 {
+			asm.MOVreg(jit.X1, reg)
+		}
+		return true
+	}
+	if ec.irTypes[keyID] == TypeInt {
+		keyReg := ec.resolveValueNB(keyID, jit.X1)
+		if keyReg != jit.X1 {
+			asm.MOVreg(jit.X1, keyReg)
+		}
+		asm.SBFX(jit.X1, jit.X1, 0, 48)
+		return true
+	}
+	keyReg := ec.resolveValueNB(keyID, jit.X1)
+	if keyReg != jit.X1 {
+		asm.MOVreg(jit.X1, keyReg)
+	}
+	asm.LSRimm(jit.X4, jit.X1, 48)
+	asm.MOVimm16(jit.X5, uint16(jit.NB_TagIntShr48))
+	asm.CMPreg(jit.X4, jit.X5)
+	asm.BCond(jit.CondNE, deoptLabel)
+	asm.SBFX(jit.X1, jit.X1, 0, 48)
+	return true
+}
+
 func tableArrayLoadTableValue(instr *Instr) (*Value, bool) {
 	if instr == nil || len(instr.Args) < 1 || instr.Args[0] == nil {
 		return nil, false

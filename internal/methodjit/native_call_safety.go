@@ -137,7 +137,7 @@ func tier2OpMayExitForNativeReplay(instr *Instr) bool {
 	case OpCall, OpSelf,
 		OpNewTable,
 		OpGetTable, OpSetTable,
-		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad,
+		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableArrayNestedLoad,
 		OpGetField, OpGetFieldNumToFloat, OpSetField,
 		OpSetList, OpAppend,
 		OpGetGlobal, OpSetGlobal,
