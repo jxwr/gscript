@@ -92,6 +92,13 @@
 <h2>Posts</h2>
 
 <div class="post">
+  <span class="date">2026-04-29</span>
+  <br>
+  <a href="72-the-fold-stopped-calling-itself">The Fold Stopped Calling Itself</a>
+  <p><code>binary_trees</code> finally moved for a structural reason: the hot <code>checkTree</code> traversal is now recognized as a fixed recursive table fold instead of treated as a general typed-table self call. The protocol derives the nil field, base value, combine bias, and child fields, then executes the fold with cached field reads and checked int48 accumulation. Default <code>binary_trees</code> improved from roughly 0.60-0.65s to roughly 0.37-0.41s, while nested native exit descriptor stacking landed separately to make future typed recursive exits resumable without pretending one global descriptor is enough.</p>
+</div>
+
+<div class="post">
   <span class="date">2026-04-28</span>
   <br>
   <a href="71-the-pause-was-not-the-problem">The Pause Was Not The Problem</a>
