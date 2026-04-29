@@ -294,6 +294,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 
 	// Tier 2 already failed? Use Tier 1.
 	if tm.tier2Failed[proto] {
+		tm.disableTier1FeedbackAfterTier2Failure(proto)
 		tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
 		t1 := tm.tier1.TryCompile(proto)
 		tm.traceTier1CompileResult(proto, tier1AlreadyCompiled, t1, "tier2_failed")
@@ -323,6 +324,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
 		tm.tier2Failed[proto] = true
+		tm.disableTier1FeedbackAfterTier2Failure(proto)
 		tm.traceEvent("fallback", "tier1", proto, map[string]any{
 			"reason": err.Error(),
 			"target": "tier1",
@@ -434,6 +436,7 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 		// Tier 2 compilation failed. Disable OSR for this function and
 		// re-run at Tier 1 from the start with OSR disabled.
 		tm.tier2Failed[proto] = true
+		tm.disableTier1FeedbackAfterTier2Failure(proto)
 		tm.tier1.SetOSRCounter(proto, -1) // disable OSR
 		tm.traceEvent("fallback", "tier1", proto, map[string]any{
 			"reason": err.Error(),
@@ -452,6 +455,14 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 
 	// Re-enter the function from the start at Tier 2.
 	return tm.executeTier2(t2, regs, base, proto)
+}
+
+func (tm *TieringManager) disableTier1FeedbackAfterTier2Failure(proto *vm.FuncProto) {
+	if proto == nil || IsFeedbackCollectionDisabled(proto) {
+		return
+	}
+	tm.tier1.DisableFeedbackCollection(proto)
+	tm.tier1.EvictCompiled(proto)
 }
 
 func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction) {

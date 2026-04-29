@@ -49,6 +49,7 @@ func escapeToHeap(x interface{}) {
 // before running computeKnownIntSlots. Global because BaselineFunc is
 // compiled via a package-level function (CompileBaseline), not a method.
 var protoIntSpecDisabled = make(map[*vm.FuncProto]bool)
+var protoFeedbackCollectionDisabled = make(map[*vm.FuncProto]bool)
 
 // DisableIntSpec marks a proto as ineligible for int-spec. Subsequent
 // (re-)compilations use only the generic polymorphic templates.
@@ -61,10 +62,19 @@ func IsIntSpecDisabled(proto *vm.FuncProto) bool {
 	return protoIntSpecDisabled[proto]
 }
 
+// IsFeedbackCollectionDisabled reports whether Tier 1 should omit type/kind
+// feedback instrumentation for a proto. This is only used after Tier 2 has
+// permanently failed for that proto, so the collected feedback has no remaining
+// optimizing consumer.
+func IsFeedbackCollectionDisabled(proto *vm.FuncProto) bool {
+	return protoFeedbackCollectionDisabled[proto]
+}
+
 // BaselineJITEngine implements vm.MethodJITEngine for the Tier 1 baseline compiler.
 type BaselineJITEngine struct {
 	compiled       map[*vm.FuncProto]*BaselineFunc
 	failed         map[*vm.FuncProto]bool
+	feedbackOff    map[*vm.FuncProto]bool
 	callVM         *vm.VM
 	ctxPool        []*ExecContext // pre-allocated ExecContext pool (acts as stack for recursive calls)
 	ctxTop         int            // next free index in ctxPool
@@ -97,6 +107,7 @@ func NewBaselineJITEngine() *BaselineJITEngine {
 	e := &BaselineJITEngine{
 		compiled:    make(map[*vm.FuncProto]*BaselineFunc),
 		failed:      make(map[*vm.FuncProto]bool),
+		feedbackOff: make(map[*vm.FuncProto]bool),
 		osrCounters: make(map[*vm.FuncProto]int64),
 	}
 	// Pre-allocate pool of ExecContexts (heap-allocated, safe for uintptr).
@@ -377,7 +388,7 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 	}
 
 	// Set up FeedbackPtr for Tier 1 type feedback collection.
-	if proto.Feedback != nil && len(proto.Feedback) > 0 {
+	if !e.feedbackOff[proto] && proto.Feedback != nil && len(proto.Feedback) > 0 {
 		ctx.BaselineFeedbackPtr = uintptr(unsafe.Pointer(&proto.Feedback[0]))
 	} else {
 		ctx.BaselineFeedbackPtr = 0
@@ -514,6 +525,16 @@ var errIntSpecDeopt = fmt.Errorf("baseline: int-spec deopt")
 // iterations, triggering Tier 2 compilation.
 func (e *BaselineJITEngine) SetOSRCounter(proto *vm.FuncProto, counter int64) {
 	e.osrCounters[proto] = counter
+}
+
+// DisableFeedbackCollection stops Tier 1 native feedback writes for protos that
+// will no longer attempt Tier 2 promotion. Field/global/call caches remain live;
+// this only disables type/kind profiling writes through ExecContext.
+func (e *BaselineJITEngine) DisableFeedbackCollection(proto *vm.FuncProto) {
+	if proto != nil {
+		e.feedbackOff[proto] = true
+		protoFeedbackCollectionDisabled[proto] = true
+	}
 }
 
 // CompiledCount returns the number of compiled functions.

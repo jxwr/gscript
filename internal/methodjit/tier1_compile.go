@@ -102,6 +102,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 	}
 
 	// Walk bytecodes linearly.
+	feedbackEnabled := !IsFeedbackCollectionDisabled(proto)
 	for pc := 0; pc < len(code); pc++ {
 		// Label for this PC (used as jump target within JIT code).
 		// Skip pc==0 when we already labeled it for the int-spec guard.
@@ -229,16 +230,16 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineNewObject2(asm, inst, pc, proto, newTableCaches)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETTABLE:
-			emitBaselineGetTable(asm, inst, pc)
+			emitBaselineGetTable(asm, inst, pc, feedbackEnabled)
 			resumePCs = append(resumePCs, pc+1) // slow path may exit
 		case vm.OP_SETTABLE:
-			emitBaselineSetTable(asm, inst, pc)
+			emitBaselineSetTable(asm, inst, pc, feedbackEnabled)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETFIELD:
-			emitBaselineGetField(asm, inst, pc)
+			emitBaselineGetField(asm, inst, pc, feedbackEnabled)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_SETFIELD:
-			emitBaselineSetField(asm, inst, pc)
+			emitBaselineSetField(asm, inst, pc, feedbackEnabled)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_SETLIST:
 			emitBaselineOpExit(asm, inst, pc, vm.OP_SETLIST)

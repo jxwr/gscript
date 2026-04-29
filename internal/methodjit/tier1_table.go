@@ -80,7 +80,7 @@ func emitBaselineGetGlobal(asm *jit.Assembler, inst uint32, pc int) {
 // emitBaselineGetField emits native ARM64 for OP_GETFIELD: R(A) = R(B).field[C]
 // Uses runtime inline cache from proto.FieldCache[pc].
 // Falls back to exit-resume if cache miss or non-table.
-func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
+func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabled bool) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
 	c := vm.DecodeC(inst) // constant index for field name
@@ -141,7 +141,9 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 	// Keep type feedback current on the field-cache fast path. The slow path
 	// updates feedback in Go; without this, a site can stay stuck on the first
 	// cached value's type even after later cache hits observe a different type.
-	emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "getfield")
+	if feedbackEnabled {
+		emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "getfield")
+	}
 
 	// Store result to R(A).
 	storeSlot(asm, a, jit.X0)
@@ -158,7 +160,9 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X4, jit.X0, jit.TableOffSmap)
 	asm.CBNZ(jit.X4, slowLabel) // large string-key table
 	jit.EmitBoxNil(asm, jit.X0)
-	emitBaselineFeedbackResult(asm, pc, 7, "getfield_empty")
+	if feedbackEnabled {
+		emitBaselineFeedbackResult(asm, pc, 7, "getfield_empty")
+	}
 	storeSlot(asm, a, jit.X0)
 	asm.B(doneLabel)
 
@@ -170,7 +174,7 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int) {
 
 // emitBaselineSetField emits native ARM64 for OP_SETFIELD: R(A).field[B] = RK(C)
 // Uses runtime inline cache from proto.FieldCache[pc].
-func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int) {
+func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabled bool) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst) // constant index for field name
 	c := vm.DecodeC(inst) // RK(C) = value
@@ -222,7 +226,9 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int) {
 	loadRK(asm, jit.X4, c) // X4 = value
 
 	// Mirror the interpreter/slow-path SETFIELD feedback for cache hits too.
-	emitBaselineFeedbackResultFromValue(asm, pc, jit.X4, "setfield")
+	if feedbackEnabled {
+		emitBaselineFeedbackResultFromValue(asm, pc, jit.X4, "setfield")
+	}
 
 	// Direct field store: svals[fieldIdx] = value.
 	// STRreg uses [Xn + Xm, LSL #3] which already scales by 8 (= ValueSize),
@@ -243,7 +249,7 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int) {
 // Fast path for integer keys with array bounds check.
 // Supports ArrayMixed ([]Value), ArrayInt ([]int64), ArrayFloat ([]float64),
 // and ArrayBool ([]byte) array kinds.
-func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
+func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabled bool) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
 	cidx := vm.DecodeC(inst)
@@ -299,8 +305,10 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)         // X0 = array[key] (NaN-boxed Value)
 	storeSlot(asm, a, jit.X0)
-	emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "mixed") // includes FBTable for table-of-tables rows
-	emitBaselineFeedbackKind(asm, pc, 1, "mixed")                 // FBKindMixed=1
+	if feedbackEnabled {
+		emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "mixed") // includes FBTable for table-of-tables rows
+		emitBaselineFeedbackKind(asm, pc, 1, "mixed")                 // FBKindMixed=1
+	}
 	asm.B(doneLabel)
 
 	// --- ArrayInt fast path ---
@@ -313,8 +321,10 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// NaN-box the int64: UBFX + ORR with pinned tag register.
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
 	storeSlot(asm, a, jit.X0)
-	emitBaselineFeedbackResult(asm, pc, 1, "int") // FBInt=1
-	emitBaselineFeedbackKind(asm, pc, 2, "int")   // FBKindInt=2
+	if feedbackEnabled {
+		emitBaselineFeedbackResult(asm, pc, 1, "int") // FBInt=1
+		emitBaselineFeedbackKind(asm, pc, 2, "int")   // FBKindInt=2
+	}
 	asm.B(doneLabel)
 
 	// --- ArrayFloat fast path ---
@@ -326,8 +336,10 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDRreg(jit.X0, jit.X2, jit.X1)              // X0 = raw float64 bits = floatArray[key]
 	// Float64 bits ARE the NaN-boxed value — no conversion needed!
 	storeSlot(asm, a, jit.X0)
-	emitBaselineFeedbackResult(asm, pc, 2, "float") // FBFloat=2
-	emitBaselineFeedbackKind(asm, pc, 3, "float")   // FBKindFloat=3
+	if feedbackEnabled {
+		emitBaselineFeedbackResult(asm, pc, 2, "float") // FBFloat=2
+		emitBaselineFeedbackKind(asm, pc, 3, "float")   // FBKindFloat=3
+	}
 	asm.B(doneLabel)
 
 	// --- ArrayBool fast path ---
@@ -346,22 +358,28 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// byte == 2 → true: NaN-boxed true = 0xFFFD000000000001
 	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1))
 	storeSlot(asm, a, jit.X0)
-	emitBaselineFeedbackResult(asm, pc, 4, "bool_true") // FBBool=4
-	emitBaselineFeedbackKind(asm, pc, 4, "bool_true")   // FBKindBool=4
+	if feedbackEnabled {
+		emitBaselineFeedbackResult(asm, pc, 4, "bool_true") // FBBool=4
+		emitBaselineFeedbackKind(asm, pc, 4, "bool_true")   // FBKindBool=4
+	}
 	asm.B(doneLabel)
 	asm.Label(boolFalseLabel)
 	// NaN-boxed false = 0xFFFD000000000000
 	asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
 	storeSlot(asm, a, jit.X0)
-	emitBaselineFeedbackResult(asm, pc, 4, "bool_false") // FBBool=4
-	emitBaselineFeedbackKind(asm, pc, 4, "bool_false")   // FBKindBool=4
+	if feedbackEnabled {
+		emitBaselineFeedbackResult(asm, pc, 4, "bool_false") // FBBool=4
+		emitBaselineFeedbackKind(asm, pc, 4, "bool_false")   // FBKindBool=4
+	}
 	asm.B(doneLabel)
 	asm.Label(boolNilLabel)
 	// NaN-boxed nil = 0xFFFC000000000000
 	asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
 	storeSlot(asm, a, jit.X0)
-	emitBaselineFeedbackResult(asm, pc, 7, "bool_nil") // FBAny=7 for nil
-	emitBaselineFeedbackKind(asm, pc, 4, "bool_nil")   // FBKindBool=4 (still a bool array)
+	if feedbackEnabled {
+		emitBaselineFeedbackResult(asm, pc, 7, "bool_nil") // FBAny=7 for nil
+		emitBaselineFeedbackKind(asm, pc, 4, "bool_nil")   // FBKindBool=4 (still a bool array)
+	}
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.
@@ -375,7 +393,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int) {
 // Fast path for integer keys with array bounds check.
 // Supports ArrayMixed ([]Value), ArrayInt ([]int64), ArrayFloat ([]float64),
 // and ArrayBool ([]byte) array kinds.
-func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
+func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabled bool) {
 	a := vm.DecodeA(inst)
 	bidx := vm.DecodeB(inst) // RK(B) = key
 	cidx := vm.DecodeC(inst) // RK(C) = value
@@ -434,7 +452,9 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.STRreg(jit.X4, jit.X2, jit.X1) // array[key] = value
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-	emitBaselineFeedbackKind(asm, pc, 1, "set_mixed") // FBKindMixed=1
+	if feedbackEnabled {
+		emitBaselineFeedbackKind(asm, pc, 1, "set_mixed") // FBKindMixed=1
+	}
 	asm.B(doneLabel)
 	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffArrayLen, jit.TableOffArrayCap, mixedAppendLabel, slowLabel, mixedStoreLabel)
 
@@ -453,8 +473,10 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Unbox int64 from NaN-boxed value.
 	asm.SBFX(jit.X4, jit.X4, 0, 48) // X4 = raw int64
 	asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
-	asm.STRreg(jit.X4, jit.X2, jit.X1)              // intArray[key] = int64
-	emitBaselineFeedbackKind(asm, pc, 2, "set_int") // FBKindInt=2
+	asm.STRreg(jit.X4, jit.X2, jit.X1) // intArray[key] = int64
+	if feedbackEnabled {
+		emitBaselineFeedbackKind(asm, pc, 2, "set_int") // FBKindInt=2
+	}
 	asm.B(doneLabel)
 	emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, slowLabel, intStoreLabel)
 
@@ -470,9 +492,11 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
 	asm.BCond(jit.CondEQ, slowLabel)      // tagged → slow (not a float)
 	// Float64 bits ARE the NaN-boxed representation — store directly.
-	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray)   // floatArray data pointer
-	asm.STRreg(jit.X4, jit.X2, jit.X1)                // floatArray[key] = float64
-	emitBaselineFeedbackKind(asm, pc, 3, "set_float") // FBKindFloat=3
+	asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
+	asm.STRreg(jit.X4, jit.X2, jit.X1)              // floatArray[key] = float64
+	if feedbackEnabled {
+		emitBaselineFeedbackKind(asm, pc, 3, "set_float") // FBKindFloat=3
+	}
 	asm.B(doneLabel)
 	emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, slowLabel, floatStoreLabel)
 
@@ -511,7 +535,9 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	// Set keysDirty flag.
 	asm.MOVimm16(jit.X5, 1)
 	asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-	emitBaselineFeedbackKind(asm, pc, 4, "set_bool") // FBKindBool=4
+	if feedbackEnabled {
+		emitBaselineFeedbackKind(asm, pc, 4, "set_bool") // FBKindBool=4
+	}
 	asm.B(doneLabel)
 	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, slowLabel, boolStoreLabel)
 

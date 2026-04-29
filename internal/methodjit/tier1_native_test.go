@@ -42,6 +42,36 @@ for i := 1; i <= 200; i++ { result = f() }
 `, "result")
 }
 
+func TestTier1_DisabledFeedbackOmitsTableInstrumentation(t *testing.T) {
+	src := `
+func f(arr, i, v) {
+    x := arr[i]
+    arr[i] = v
+    return x
+}
+`
+	withFeedback := compileFunction(t, src)
+	enabledBF, err := CompileBaseline(withFeedback)
+	if err != nil {
+		t.Fatalf("CompileBaseline(with feedback): %v", err)
+	}
+	defer enabledBF.Code.Free()
+
+	withoutFeedback := compileFunction(t, src)
+	protoFeedbackCollectionDisabled[withoutFeedback] = true
+	defer delete(protoFeedbackCollectionDisabled, withoutFeedback)
+	disabledBF, err := CompileBaseline(withoutFeedback)
+	if err != nil {
+		t.Fatalf("CompileBaseline(without feedback): %v", err)
+	}
+	defer disabledBF.Code.Free()
+
+	if disabledBF.Code.Size() >= enabledBF.Code.Size() {
+		t.Fatalf("disabled feedback code size = %d, want less than enabled size %d",
+			disabledBF.Code.Size(), enabledBF.Code.Size())
+	}
+}
+
 func TestTier1_NativeGetFieldMultiple(t *testing.T) {
 	compareVMvsJIT(t, `
 func f() {
