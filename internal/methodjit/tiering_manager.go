@@ -1626,15 +1626,27 @@ func (tm *TieringManager) ensureTier2RegisterBudget(cf *CompiledFunction, regs [
 	if cf == nil || proto == nil || tm.callVM == nil {
 		return regs
 	}
-	if cf.NumericParamCount <= 0 || !proto.HasSelfCalls || cf.numRegs <= 0 {
+	if cf.numRegs <= 0 {
 		return regs
 	}
 
-	// Raw-int self recursion advances mRegRegs in native code instead of
-	// pushing VM frames. Pre-grow the shared VM register file to cover the
-	// native recursion budget; otherwise the hot self-call path repeatedly
-	// falls through ExitCallExit solely to let the VM grow this slice.
-	needed := base + cf.numRegs*(maxRawSelfCallDepth+2) + 1
+	depthBudget := 0
+	if cf.NumericParamCount > 0 && proto.HasSelfCalls {
+		depthBudget = maxRawSelfCallDepth + 2
+	} else if cf.TypedSelfABI.Eligible {
+		depthBudget = maxNativeCallDepth + 2
+	}
+	if depthBudget == 0 {
+		return regs
+	}
+
+	// Raw and typed self recursion advance mRegRegs in native code instead
+	// of pushing VM frames. Pre-grow the shared VM register file to cover the
+	// bounded native recursion budget; otherwise the hot self-call path
+	// repeatedly falls through ExitCallExit solely to let the VM grow this
+	// slice. Typed entries still publish parameter homes so callee exits have
+	// a complete VM frame inside the pre-grown window.
+	needed := base + cf.numRegs*depthBudget + 1
 	if needed <= len(regs) {
 		return regs
 	}

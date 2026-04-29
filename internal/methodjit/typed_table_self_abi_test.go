@@ -184,6 +184,29 @@ func TestTypedTableSelfABI_TypedEntryPublishesParamHomeForExits(t *testing.T) {
 	}
 }
 
+func TestTypedTableSelfABI_EnsureRegisterBudgetPregrowsTypedFrames(t *testing.T) {
+	cf := compileCheckTreeTypedSelf(t)
+	if !cf.TypedSelfABI.Eligible {
+		t.Fatalf("checkTree typed ABI rejected: %s", cf.TypedSelfABI.RejectWhy)
+	}
+	if cf.numRegs <= 0 {
+		t.Fatalf("compiled numRegs=%d, want positive", cf.numRegs)
+	}
+
+	tm := NewTieringManager()
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	v.SetMethodJIT(tm)
+
+	const base = 3
+	regs := runtime.MakeNilSlice(base + cf.numRegs)
+	grown := tm.ensureTier2RegisterBudget(cf, regs, base, cf.Proto)
+	want := base + cf.numRegs*(maxNativeCallDepth+2) + 1
+	if len(grown) < want {
+		t.Fatalf("typed self register budget len=%d, want at least %d", len(grown), want)
+	}
+}
+
 func TestTypedTableSelfABI_TypedSelfCallSavesArgsOnStackBeforeBL(t *testing.T) {
 	cf := compileCheckTreeTypedSelf(t)
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
