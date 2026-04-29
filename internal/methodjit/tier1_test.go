@@ -668,6 +668,19 @@ for i := 1; i <= 200; i++ { result = add10(i) }
 `, "result")
 }
 
+func TestTier1_FastCall_FreshClosureSameProto(t *testing.T) {
+	compareVMvsJIT(t, `
+func make_adder(x) {
+    return func(y) { return x + y }
+}
+result := 0
+for i := 1; i <= 200; i++ {
+    add5 := make_adder(5)
+    result = result + add5(i)
+}
+`, "result")
+}
+
 // TestTier1_FastCall_GoFunction verifies that GoFunction calls fall back to
 // the generic path correctly (e.g., math.sqrt, print).
 func TestTier1_FastCall_GoFunction(t *testing.T) {
