@@ -247,55 +247,57 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	typedSelfABI := AnalyzeTypedSelfABI(fn.Proto)
 
 	ec := &emitContext{
-		fn:                   fn,
-		alloc:                alloc,
-		asm:                  jit.NewAssembler(),
-		slotMap:              make(map[int]int),
-		nextSlot:             fn.NumRegs,
-		activeRegs:           make(map[int]bool),
-		rawIntRegs:           make(map[int]bool),
-		activeFPRegs:         make(map[int]bool),
-		shapeVerified:        make(map[int]uint32),
-		tableVerified:        make(map[int]bool),
-		kindVerified:         make(map[int]uint16),
-		keysDirtyWritten:     make(map[int]bool),
-		dmVerified:           make(map[int]bool),
-		blockOutShapes:       make(map[int]map[int]uint32),
-		blockOutTables:       make(map[int]map[int]bool),
-		blockOutKinds:        make(map[int]map[int]uint16),
-		blockOutKeysDirty:    make(map[int]map[int]bool),
-		blockOutRawIntRegs:   make(map[int]map[int]loopRegEntry),
-		blockLiveIn:          blockLiveIn,
-		blockLiveOut:         blockLiveOut,
-		instrLiveAfter:       instrLiveAfter,
-		rawIntBlockCarry:     rawIntBlockCarry,
-		rawIntCarryNoStore:   rawIntCarryNoStore,
-		crossBlockLive:       crossBlockLive,
-		globalCacheConsts:    make([]int, 0),
-		useFPR:               hasFPR,
-		loop:                 li,
-		loopHeaderRegs:       headerRegs,
-		loopHeaderFPRegs:     headerFPRegs,
-		safeHeaderRegs:       safeHdrRegs,
-		safeHeaderFPRegs:     safeHdrFPRegs,
-		loopInvariantGPRs:    loopInvariantGPRs,
-		loopPhiOnlyArgs:      phiOnlyArgs,
-		loopFPPhiOnlyArgs:    fpPhiOnlyArgs,
-		loopExitBoxPhis:      exitBoxPhis,
-		loopExitBoxFPPhis:    exitBoxFPPhis,
-		loopExitStorePhis:    exitStorePhis,
-		constInts:            constInts,
-		constBools:           constBools,
-		irTypes:              irTypes,
-		scratchFPRCache:      make(map[int]jit.FReg),
-		fusedCmps:            fusedCmps,
-		tailCallInstrs:       computeTailCalls(fn),
-		newTableCaches:       newTableCacheSlotsForFunction(fn),
-		instrCodeRanges:      make([]InstrCodeRange, 0, fn.nextID),
-		nativeCallReplaySafe: nativeCallReplaySafe,
-		rawIntSelfABI:        rawIntSelfABI,
-		typedSelfABI:         typedSelfABI,
-		entryShapeGuards:     fn.FixedShapeEntryGuards,
+		fn:                        fn,
+		alloc:                     alloc,
+		asm:                       jit.NewAssembler(),
+		slotMap:                   make(map[int]int),
+		nextSlot:                  fn.NumRegs,
+		activeRegs:                make(map[int]bool),
+		rawIntRegs:                make(map[int]bool),
+		activeFPRegs:              make(map[int]bool),
+		shapeVerified:             make(map[int]uint32),
+		tableVerified:             make(map[int]bool),
+		kindVerified:              make(map[int]uint16),
+		keysDirtyWritten:          make(map[int]bool),
+		localNewTablesNoMetatable: functionHasNoTableMetatableMutationSurface(fn),
+		tableArrayBoundedKeys:     make(map[tableArrayBoundKey]bool),
+		dmVerified:                make(map[int]bool),
+		blockOutShapes:            make(map[int]map[int]uint32),
+		blockOutTables:            make(map[int]map[int]bool),
+		blockOutKinds:             make(map[int]map[int]uint16),
+		blockOutKeysDirty:         make(map[int]map[int]bool),
+		blockOutRawIntRegs:        make(map[int]map[int]loopRegEntry),
+		blockLiveIn:               blockLiveIn,
+		blockLiveOut:              blockLiveOut,
+		instrLiveAfter:            instrLiveAfter,
+		rawIntBlockCarry:          rawIntBlockCarry,
+		rawIntCarryNoStore:        rawIntCarryNoStore,
+		crossBlockLive:            crossBlockLive,
+		globalCacheConsts:         make([]int, 0),
+		useFPR:                    hasFPR,
+		loop:                      li,
+		loopHeaderRegs:            headerRegs,
+		loopHeaderFPRegs:          headerFPRegs,
+		safeHeaderRegs:            safeHdrRegs,
+		safeHeaderFPRegs:          safeHdrFPRegs,
+		loopInvariantGPRs:         loopInvariantGPRs,
+		loopPhiOnlyArgs:           phiOnlyArgs,
+		loopFPPhiOnlyArgs:         fpPhiOnlyArgs,
+		loopExitBoxPhis:           exitBoxPhis,
+		loopExitBoxFPPhis:         exitBoxFPPhis,
+		loopExitStorePhis:         exitStorePhis,
+		constInts:                 constInts,
+		constBools:                constBools,
+		irTypes:                   irTypes,
+		scratchFPRCache:           make(map[int]jit.FReg),
+		fusedCmps:                 fusedCmps,
+		tailCallInstrs:            computeTailCalls(fn),
+		newTableCaches:            newTableCacheSlotsForFunction(fn),
+		instrCodeRanges:           make([]InstrCodeRange, 0, fn.nextID),
+		nativeCallReplaySafe:      nativeCallReplaySafe,
+		rawIntSelfABI:             rawIntSelfABI,
+		typedSelfABI:              typedSelfABI,
+		entryShapeGuards:          fn.FixedShapeEntryGuards,
 	}
 	if exitResumeCheckEnabled() {
 		ec.exitResumeCheck = newExitResumeCheckMetadata()
@@ -565,6 +567,10 @@ type emitContext struct {
 	// calls (same as tableVerified).
 	keysDirtyWritten map[int]bool
 
+	// localNewTablesNoMetatable is true when this function has no call/op-exit
+	// surface that can install a metatable on tables allocated by OpNewTable.
+	localNewTablesNoMetatable bool
+
 	// kindVerified tracks table SSA value IDs whose ArrayKind has been
 	// guard-checked in the current block. Maps table value ID -> the
 	// AKKind constant (jit.AKMixed/AKInt/AKFloat/AKBool) last verified.
@@ -605,6 +611,13 @@ type emitContext struct {
 
 	// blockOutKeysDirty saves the keysDirtyWritten state at end of block.
 	blockOutKeysDirty map[int]map[int]bool
+
+	// tableArrayBoundedKeys tracks instruction-local (table, key) pairs whose
+	// immediately preceding TableArrayLoad has a live native-success flag in
+	// X17. The flag is set on the native load success path and cleared on the
+	// exit-resume path, so a following SetTable can branch around its redundant
+	// bounds check without assuming the load succeeded after resume.
+	tableArrayBoundedKeys map[tableArrayBoundKey]bool
 
 	// blockOutRawIntRegs saves the raw-int GPR state at end of block, keyed
 	// by block ID then physical register. Single-predecessor successors can
@@ -948,6 +961,7 @@ func (ec *emitContext) emitNumericBody() {
 	prevTableVerified := ec.tableVerified
 	prevKindVerified := ec.kindVerified
 	prevKeysDirtyWritten := ec.keysDirtyWritten
+	prevTableArrayBoundedKeys := ec.tableArrayBoundedKeys
 	prevDMVerified := ec.dmVerified
 	prevFieldSvalsCacheValid := ec.fieldSvalsCacheValid
 	prevFieldSvalsCacheTableID := ec.fieldSvalsCacheTableID
@@ -969,6 +983,7 @@ func (ec *emitContext) emitNumericBody() {
 	ec.activeRegs = make(map[int]bool)
 	ec.rawIntRegs = make(map[int]bool)
 	ec.activeFPRegs = make(map[int]bool)
+	ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool)
 	ec.shapeVerified = make(map[int]uint32)
 	ec.tableVerified = make(map[int]bool)
 	ec.kindVerified = make(map[int]uint16)
@@ -986,6 +1001,7 @@ func (ec *emitContext) emitNumericBody() {
 	ec.tableVerified = prevTableVerified
 	ec.kindVerified = prevKindVerified
 	ec.keysDirtyWritten = prevKeysDirtyWritten
+	ec.tableArrayBoundedKeys = prevTableArrayBoundedKeys
 	ec.dmVerified = prevDMVerified
 	ec.fieldSvalsCacheValid = prevFieldSvalsCacheValid
 	ec.fieldSvalsCacheTableID = prevFieldSvalsCacheTableID
@@ -1559,6 +1575,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 		ec.kindVerified = make(map[int]uint16)
 		ec.keysDirtyWritten = make(map[int]bool)
 	}
+	ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool)
 	ec.seedEntryShapeGuardState(block)
 	// R44: reset DenseMatrix verification at every block boundary. Cross-
 	// block propagation isn't critical for matmul's inner-k loop (k-loop

@@ -174,12 +174,15 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	// --- Call: native BLR with spill/reload, slow path falls to exit-resume ---
 	case OpCall:
 		ec.emitOpCall(instr)
+		ec.clearTableArrayBoundedKeys()
 
 	// --- Global-exit: load globals via VM and resume JIT ---
 	case OpGetGlobal:
 		ec.emitGetGlobalNative(instr)
+		ec.clearTableArrayBoundedKeys()
 	case OpSetGlobal:
 		ec.emitSetGlobalNative(instr)
+		ec.clearTableArrayBoundedKeys()
 
 	// --- Table operations ---
 	case OpNewTable:
@@ -190,6 +193,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitGetTableNative(instr)
 	case OpSetTable:
 		ec.emitSetTableNative(instr)
+		ec.clearTableArrayBoundedKeys()
 		// Dynamic key writes can add new string keys, changing table shape.
 		ec.shapeVerified = make(map[int]uint32)
 	case OpTableArrayHeader:
@@ -208,6 +212,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitGetFieldNumToFloat(instr)
 	case OpSetField:
 		ec.emitSetField(instr)
+		ec.clearTableArrayBoundedKeys()
 
 	// --- Guards ---
 	case OpGuardType:
@@ -228,11 +233,13 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.tableVerified = make(map[int]bool)
 		ec.kindVerified = make(map[int]uint16)
 		ec.keysDirtyWritten = make(map[int]bool)
+		ec.clearTableArrayBoundedKeys()
 		ec.dmVerified = make(map[int]bool)
 
 	// --- Op-exit: unsupported ops exit to Go, execute there, resume JIT ---
 	case OpConcat:
 		ec.emitConcatExit(instr)
+		ec.clearTableArrayBoundedKeys()
 
 	case OpGetUpval, OpSetUpval,
 		OpAppend,
@@ -244,8 +251,10 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		OpGo, OpMakeChan, OpSend, OpRecv,
 		OpGuardNonNil:
 		ec.emitOpExit(instr)
+		ec.clearTableArrayBoundedKeys()
 	case OpLen:
 		ec.emitLenNative(instr)
+		ec.clearTableArrayBoundedKeys()
 
 	default:
 		ec.asm.NOP() // truly unknown op placeholder
@@ -263,6 +272,33 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 			CodeEnd:   codeEnd,
 			Pass:      pass,
 		})
+	}
+	if !instrPreservesTableArrayBoundedKeys(instr) {
+		ec.clearTableArrayBoundedKeys()
+	}
+}
+
+func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpConstInt, OpConstFloat, OpConstBool, OpConstNil, OpConstString,
+		OpLoadSlot, OpStoreSlot,
+		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm, OpNot,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+		OpSqrt, OpFMA,
+		OpEq, OpLt, OpLe,
+		OpEqInt, OpLtInt, OpLeInt, OpModZeroInt,
+		OpLtFloat, OpLeFloat,
+		OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
+		OpNumToFloat, OpGuardType, OpGuardTruthy,
+		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad,
+		OpNop:
+		return true
+	default:
+		return false
 	}
 }
 

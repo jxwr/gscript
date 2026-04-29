@@ -579,6 +579,122 @@ result := after - before
 	}
 }
 
+func TestTier2_TableArrayLoadFailThenSetKeepsSetBoundsCheck(t *testing.T) {
+	src := `
+func read_then_set(arr, key, val) {
+    old := arr[key]
+    arr[key] = val
+    return old
+}
+`
+	top := compileTop(t, src)
+	fnProto := findProtoByName(top, "read_then_set")
+	if fnProto == nil {
+		t.Fatal("read_then_set proto not found")
+	}
+	seedIntTableFeedback(fnProto)
+
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("read_then_set")
+	if fnVal.IsNil() {
+		t.Fatal("read_then_set function not found")
+	}
+
+	tbl := runtime.NewTable()
+	tbl.RawSetInt(1, runtime.IntValue(10))
+	tbl.RawSetInt(2000, runtime.IntValue(20))
+	for i := 0; i < 8; i++ {
+		if _, err := v.CallValue(fnVal, []runtime.Value{runtime.TableValue(tbl), runtime.IntValue(1), runtime.IntValue(11)}); err != nil {
+			t.Fatalf("warm CallValue: %v", err)
+		}
+	}
+
+	fn := BuildGraph(fnProto)
+	var err error
+	fn, _, err = RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	if got := countOps(fn)[OpTableArrayLoad]; got == 0 {
+		t.Fatalf("expected typed TableArrayLoad lowering:\n%s", Print(fn))
+	}
+
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+	cf.CallVM = v
+	cf.DeoptFunc = func(args []runtime.Value) ([]runtime.Value, error) {
+		return v.CallValue(fnVal, args)
+	}
+
+	got, err := cf.Execute([]runtime.Value{runtime.TableValue(tbl), runtime.IntValue(2000), runtime.IntValue(77)})
+	if err != nil {
+		t.Fatalf("Tier2 Execute: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 20 {
+		t.Fatalf("read_then_set result = %v, want old value 20", got)
+	}
+	if got := tbl.RawGetInt(2000); !got.IsInt() || got.Int() != 77 {
+		t.Fatalf("sparse set after failed load = %v, want 77", got)
+	}
+}
+
+func TestTier2_TableArrayLoadSuccessFactFeedsNextSetBoundsGuard(t *testing.T) {
+	src := `
+func read_then_set(arr, key, val) {
+    old := arr[key]
+    arr[key] = val
+    return old
+}
+`
+	top := compileTop(t, src)
+	fnProto := findProtoByName(top, "read_then_set")
+	if fnProto == nil {
+		t.Fatal("read_then_set proto not found")
+	}
+	seedIntTableFeedback(fnProto)
+
+	fn := BuildGraph(fnProto)
+	var err error
+	fn, _, err = RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	var setID int
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpSetTable {
+				setID = instr.ID
+				break
+			}
+		}
+		if setID != 0 {
+			break
+		}
+	}
+	if setID == 0 {
+		t.Fatalf("expected SetTable after lowering:\n%s", Print(fn))
+	}
+
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+	if got := countMatchingIRInstr(cf, setID, isARM64CBNZX17); got == 0 {
+		t.Fatalf("SetTable did not consume TableArrayLoad success bounds fact")
+	}
+}
+
 func seedIntTableFeedback(proto *vm.FuncProto) {
 	fb := proto.EnsureFeedback()
 	for pc, inst := range proto.Code {
@@ -701,4 +817,14 @@ func rangeHasDirectFPLoad(code []byte, start, end int) bool {
 		}
 	}
 	return false
+}
+
+func isARM64CBNZX17(insn uint32) bool {
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], insn)
+	inst, err := arm64asm.Decode(buf[:])
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(inst.String(), "CBNZ X17")
 }

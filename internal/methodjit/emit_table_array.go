@@ -11,10 +11,16 @@ import (
 	"fmt"
 
 	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
 const tier2SparseArrayMax = 1024 // must match runtime.sparseArrayMax
+
+type tableArrayBoundKey struct {
+	tableID int
+	keyID   int
+}
 
 // emitTypedArraySetBoundsOrAppendCheck accepts either an in-bounds typed-array
 // store or a capacity-only append at key == len. The hot in-bounds case falls
@@ -44,6 +50,12 @@ func emitTypedArraySetBoundsOnlyCheck(asm *jit.Assembler, tableReg, keyReg, lenR
 	asm.LDR(lenReg, tableReg, lenOff)
 	asm.CMPreg(keyReg, lenReg)
 	asm.BCond(jit.CondGE, deoptLabel)
+}
+
+func emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm *jit.Assembler, enabled bool, storeLabel string) {
+	if enabled {
+		asm.CBNZ(jit.X17, storeLabel)
+	}
 }
 
 // emitTypedArraySetAppendPath extends the typed array length for key == len
@@ -158,6 +170,9 @@ func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
 	}
 	if ec.tableVerified[tblID] {
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else if ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		ec.tableVerified[tblID] = true
 	} else if ec.irTypes[tblID] == TypeTable {
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 		// TypeTable producers/guards already exclude nil. Keep the dynamic
@@ -174,9 +189,14 @@ func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
 		asm.CBNZ(jit.X1, deoptLabel)
 		ec.tableVerified[tblID] = true
 	}
-	asm.LDRB(jit.X1, jit.X0, jit.TableOffArrayKind)
-	asm.CMPimm(jit.X1, expectedKind)
-	asm.BCond(jit.CondNE, deoptLabel)
+	if fbKind, ok := ec.localNewTableFBKind(instr.Args[0]); ok && fbKind == uint16(instr.Aux) {
+		ec.kindVerified[tblID] = fbKind
+	}
+	if ec.kindVerified[tblID] != uint16(instr.Aux) {
+		asm.LDRB(jit.X1, jit.X0, jit.TableOffArrayKind)
+		asm.CMPimm(jit.X1, expectedKind)
+		asm.BCond(jit.CondNE, deoptLabel)
+	}
 	ec.kindVerified[tblID] = uint16(instr.Aux)
 	ec.storeRawInt(jit.X0, instr.ID)
 	asm.B(doneLabel)
@@ -226,6 +246,7 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	}
 	asm := ec.asm
 	deoptLabel := ec.uniqueLabel("tarr_load_deopt")
+	successLabel := ec.uniqueLabel("tarr_load_success")
 	doneLabel := ec.uniqueLabel("tarr_load_done")
 
 	dataReg := ec.resolveRawInt(instr.Args[0].ID, jit.X2)
@@ -319,17 +340,21 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 		asm.BCond(jit.CondEQ, falseLabel)
 		asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool|1))
 		ec.storeResultNB(jit.X0, instr.ID)
-		asm.B(doneLabel)
+		asm.B(successLabel)
 		asm.Label(falseLabel)
 		asm.LoadImm64(jit.X0, nb64(jit.NB_TagBool))
 		ec.storeResultNB(jit.X0, instr.ID)
-		asm.B(doneLabel)
+		asm.B(successLabel)
 		asm.Label(nilLabel)
 		asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
 		ec.storeResultNB(jit.X0, instr.ID)
 	default:
 		ec.emitDeopt(instr)
 	}
+	asm.B(successLabel)
+
+	asm.Label(successLabel)
+	ec.recordTableArrayBoundedKey(instr)
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
@@ -342,6 +367,7 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 		ec.emitCheckTableArrayLoadExitResult(instr, typeDeoptLabel)
 		ec.emitUnboxRawIntRegs(savedRawIntRegs)
 		ec.rawIntRegs = savedRawIntRegs
+		asm.MOVimm16(jit.X17, 0)
 		asm.B(doneLabel)
 		asm.Label(typeDeoptLabel)
 		ec.emitPreciseDeopt(instr)
@@ -663,6 +689,94 @@ func (ec *emitContext) intNonNegative(id int) bool {
 	return ec.fn.IntNonNegative[id]
 }
 
+func (ec *emitContext) recordTableArrayBoundedKey(instr *Instr) {
+	if ec == nil || instr == nil || len(instr.Args) < 3 || instr.Args[2] == nil {
+		return
+	}
+	tableValue, ok := tableArrayLoadTableValue(instr)
+	if !ok || tableValue == nil {
+		return
+	}
+	ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool, 1)
+	ec.asm.MOVimm16(jit.X17, 1)
+	ec.tableArrayBoundedKeys[tableArrayBoundKey{tableID: tableValue.ID, keyID: instr.Args[2].ID}] = true
+}
+
+func (ec *emitContext) tableArrayKeyBounded(tableID, keyID int) bool {
+	if ec == nil || ec.tableArrayBoundedKeys == nil {
+		return false
+	}
+	return ec.tableArrayBoundedKeys[tableArrayBoundKey{tableID: tableID, keyID: keyID}]
+}
+
+func (ec *emitContext) clearTableArrayBoundedKeys() {
+	if ec != nil && len(ec.tableArrayBoundedKeys) > 0 {
+		ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool)
+	}
+}
+
+func (ec *emitContext) isLocalNewTableWithoutMetatable(v *Value) bool {
+	return ec != nil && ec.localNewTablesNoMetatable && v != nil && v.Def != nil && v.Def.Op == OpNewTable
+}
+
+func (ec *emitContext) localNewTableFBKind(v *Value) (uint16, bool) {
+	if !ec.isLocalNewTableWithoutMetatable(v) {
+		return 0, false
+	}
+	_, kind := unpackNewTableAux2(v.Def.Aux2)
+	switch kind {
+	case runtime.ArrayMixed:
+		return uint16(vm.FBKindMixed), true
+	case runtime.ArrayInt:
+		return uint16(vm.FBKindInt), true
+	case runtime.ArrayFloat:
+		return uint16(vm.FBKindFloat), true
+	case runtime.ArrayBool:
+		return uint16(vm.FBKindBool), true
+	default:
+		return 0, false
+	}
+}
+
+func functionHasNoTableMetatableMutationSurface(fn *Function) bool {
+	if fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpCall, OpSelf, OpSetGlobal, OpSetUpval, OpAppend, OpSetList,
+				OpConcat, OpPow, OpClosure, OpClose, OpTForCall, OpTForLoop,
+				OpVararg, OpTestSet, OpGo, OpMakeChan, OpSend, OpRecv:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (ec *emitContext) setTablePreservesLocalArrayFacts(instr *Instr) bool {
+	if ec == nil || instr == nil || len(instr.Args) < 3 || instr.Args[0] == nil || !ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
+		return false
+	}
+	switch instr.Aux2 {
+	case int64(vm.FBKindMixed):
+		return true
+	case int64(vm.FBKindInt):
+		valueID := instr.Args[2].ID
+		_, isConst := ec.constInts[valueID]
+		return isConst || (ec.hasReg(valueID) && ec.rawIntRegs[valueID]) || ec.irTypes[valueID] == TypeInt
+	case int64(vm.FBKindFloat):
+		return ec.irTypes[instr.Args[2].ID] == TypeFloat
+	case int64(vm.FBKindBool):
+		valueID := instr.Args[2].ID
+		_, isConst := ec.constBools[valueID]
+		return isConst || ec.irTypes[valueID] == TypeBool || ec.irTypes[valueID] == TypeUnknown && instr.Args[2].Def != nil && instr.Args[2].Def.Op == OpConstNil
+	default:
+		return false
+	}
+}
+
 // emitNewTableExit emits a table-exit for OpNewTable. Table allocation is
 // complex (Go heap, slice allocation), so always exits to Go.
 //
@@ -762,6 +876,9 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 		// Table already validated in this block — skip type/nil/metatable checks.
 		// Just extract the raw pointer.
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else if ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		ec.tableVerified[tblValueID] = true
 	} else if ec.irTypes[tblValueID] == TypeTable {
 		// The producer already guards/proves table-ness. Re-check the dynamic
 		// metatable because table identity can still carry metamethods.
@@ -829,6 +946,9 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	knownGetKind := int(instr.Aux2) // 0=unknown, 1..4=known FBKind
 	if knownGetKind >= 1 && knownGetKind <= 4 {
 		expectedKind := uint16(knownGetKind - 1) // convert FBKind to AK constant
+		if fbKind, ok := ec.localNewTableFBKind(instr.Args[0]); ok && fbKind == uint16(knownGetKind) {
+			ec.kindVerified[tblValueID] = uint16(knownGetKind)
+		}
 		if ec.kindVerified[tblValueID] != uint16(knownGetKind) {
 			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
 			asm.CMPimm(jit.X2, expectedKind)
@@ -1102,6 +1222,9 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		// Table already validated in this block — skip type/nil/metatable checks.
 		// Just extract the raw pointer.
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else if ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		ec.tableVerified[tblValueID] = true
 	} else if ec.irTypes[tblValueID] == TypeTable {
 		// The producer already guards/proves table-ness. Re-check the dynamic
 		// metatable because table identity can still carry metamethods.
@@ -1159,6 +1282,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
+	keyBoundsAlreadyChecked := ec.tableArrayKeyBounded(tblValueID, keyID)
 
 	// Mixed array stores of table rows are the construction side of ordinary
 	// table-of-float-row matrices. Route them through RawSetInt so the runtime
@@ -1195,6 +1319,9 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	emitBoolArrayPath := !hasKnownSetKind || expectedKind == jit.AKBool
 	fastPathAlwaysWritesKeysDirty := !emitIntArrayPath && !emitFloatArrayPath
 	if hasKnownSetKind {
+		if fbKind, ok := ec.localNewTableFBKind(instr.Args[0]); ok && fbKind == uint16(knownSetKind) {
+			ec.kindVerified[tblValueID] = uint16(knownSetKind)
+		}
 		if ec.kindVerified[tblValueID] != uint16(knownSetKind) {
 			asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
 			asm.CMPimm(jit.X2, expectedKind)
@@ -1241,6 +1368,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.Label(mixedArrayLabel)
 		mixedStoreLabel := ec.uniqueLabel("settable_mixed_store")
 		mixedAppendLabel := ec.uniqueLabel("settable_mixed_append")
+		emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, mixedStoreLabel)
 		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffArrayLen, mixedAppendLabel, deoptLabel)
 		asm.Label(mixedStoreLabel)
 		// Load value to store into X4.
@@ -1269,6 +1397,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			intAppendLabel := ec.uniqueLabel("settable_int_append")
 			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
 			asm.LoadImm64(jit.X4, val)
+			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, intStoreLabel)
 			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
@@ -1285,6 +1414,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			if reg != jit.X4 {
 				asm.MOVreg(jit.X4, reg)
 			}
+			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, intStoreLabel)
 			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
@@ -1302,6 +1432,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 				asm.MOVreg(jit.X4, valReg2)
 			}
 			asm.SBFX(jit.X4, jit.X4, 0, 48)
+			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, intStoreLabel)
 			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
@@ -1324,6 +1455,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.BCond(jit.CondNE, deoptLabel) // value not int -> deopt
 			// Unbox int64 from NaN-boxed value.
 			asm.SBFX(jit.X4, jit.X4, 0, 48)
+			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, intStoreLabel)
 			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
@@ -1356,6 +1488,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 				asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
 			}
 		}
+		emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, floatStoreLabel)
 		emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, floatSparseLabel, deoptLabel)
 		asm.Label(floatStoreLabel)
 		// Float64 bits ARE the NaN-boxed representation — store directly.
@@ -1383,6 +1516,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			boolSparseLabel := ec.uniqueLabel("settable_bool_sparse")
 			byteVal := uint16(boolVal + 1)
 			asm.MOVimm16(jit.X4, byteVal)
+			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, boolStoreLabel)
 			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
 			asm.Label(boolStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
@@ -1416,6 +1550,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			// Nil clears an existing bool slot only. Appending/sparse-growing
 			// nil must deopt so RawSetInt can preserve table length semantics.
 			asm.MOVimm16(jit.X4, 0)
+			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, boolStoreLabel)
 			emitTypedArraySetBoundsOnlyCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, deoptLabel)
 			asm.B(boolStoreLabel)
 			asm.Label(boolOkLabel)
@@ -1425,6 +1560,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.LoadImm64(jit.X5, 1)
 			asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
 			asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
+			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, boolStoreLabel)
 			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
 			asm.Label(boolStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
@@ -1453,12 +1589,20 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	ec.rawIntRegs = savedRawIntRegs
 
 	asm.Label(doneLabel)
-	// The interpreter may have modified the table during exit-resume
-	// (e.g., set a metatable via __newindex, or demote the typed array
-	// via a type-mismatched assignment). Invalidate both caches so
-	// subsequent ops re-verify.
-	delete(ec.tableVerified, tblValueID)
-	delete(ec.kindVerified, tblValueID)
+	// Runtime exit-resume can invoke metamethods or demote unknown tables, so
+	// most writes invalidate table/kind facts. A local NewTable in a function
+	// with no metatable mutation surface keeps its facts only when the store
+	// value is proven compatible with the typed backing, so even a slow-path
+	// sparse/append store cannot demote the array kind.
+	if ec.setTablePreservesLocalArrayFacts(instr) {
+		ec.tableVerified[tblValueID] = true
+		if hasKnownSetKind {
+			ec.kindVerified[tblValueID] = uint16(knownSetKind)
+		}
+	} else {
+		delete(ec.tableVerified, tblValueID)
+		delete(ec.kindVerified, tblValueID)
+	}
 	// keysDirty is idempotent. Record only when every native path writes it;
 	// typed int/float in-bounds overwrites intentionally skip it because they
 	// do not change the table's key set.
