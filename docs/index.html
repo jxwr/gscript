@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-30</span>
   <br>
+  <a href="74-the-recursive-call-became-a-recurrence">The Recursive Call Became A Recurrence</a>
+  <p><code>fib</code> stopped paying for an exponential recursive call tree when the bytecode already described a fixed additive recurrence. Tier 2 now recognizes narrow single-argument integer self recurrences, executes them bottom-up with checked int48 arithmetic, and guards the dynamic self global before folding so rebinding semantics stay intact. The focused guard moved <code>fib</code> and <code>fib_recursive</code> below the benchmark's millisecond display precision while keeping <code>ackermann</code>, <code>mutual_recursion</code>, and <code>binary_trees</code> flat.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-30</span>
+  <br>
   <a href="73-the-rows-became-one-matrix">The Rows Became One Matrix</a>
   <p><code>matmul</code> stopped paying for row-table indirection in the hot loop. Ordinary sequential table-of-float-row construction now auto-adopts into a DenseMatrix backing, and <code>TableArrayNestedLoad</code> can read directly from <code>dmFlat + i*stride + j</code> before falling back to the normal checked row-table path. The focused guard moved default JIT <code>matmul</code> from about 0.123s to about 0.039-0.040s, with LuaJIT at about 0.022s. A follow-up metadata shrink kept the win while bringing table-heavy benchmarks such as <code>binary_trees</code> back to their expected range.</p>
 </div>
