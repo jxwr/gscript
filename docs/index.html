@@ -92,6 +92,13 @@
 <h2>Posts</h2>
 
 <div class="post">
+  <span class="date">2026-04-30</span>
+  <br>
+  <a href="73-the-rows-became-one-matrix">The Rows Became One Matrix</a>
+  <p><code>matmul</code> stopped paying for row-table indirection in the hot loop. Ordinary sequential table-of-float-row construction now auto-adopts into a DenseMatrix backing, and <code>TableArrayNestedLoad</code> can read directly from <code>dmFlat + i*stride + j</code> before falling back to the normal checked row-table path. The focused guard moved default JIT <code>matmul</code> from about 0.123s to about 0.039-0.040s, with LuaJIT at about 0.022s. A follow-up metadata shrink kept the win while bringing table-heavy benchmarks such as <code>binary_trees</code> back to their expected range.</p>
+</div>
+
+<div class="post">
   <span class="date">2026-04-29</span>
   <br>
   <a href="72-the-fold-stopped-calling-itself">The Fold Stopped Calling Itself</a>
