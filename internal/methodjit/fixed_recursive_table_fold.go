@@ -278,6 +278,10 @@ func (tm *TieringManager) executeFixedRecursiveTableFold(cf *CompiledFunction, r
 	if base < 0 || base >= len(regs) {
 		return nil, fmt.Errorf("tier2: fixed recursive table fold base %d outside regs len %d", base, len(regs))
 	}
+	if !tm.fixedRecursiveSelfGlobalMatches(proto) {
+		tm.disableTier2AfterRuntimeDeopt(proto, "tier2: fixed recursive table fold self global changed")
+		return nil, fmt.Errorf("tier2: fixed recursive table fold self global changed")
+	}
 	proto.EnteredTier2 = 1
 	n, ok := cf.FixedRecursiveTableFold.fold(regs[base])
 	if !ok {
@@ -287,6 +291,14 @@ func (tm *TieringManager) executeFixedRecursiveTableFold(cf *CompiledFunction, r
 	result := runtime.IntValue(n)
 	regs[base] = result
 	return runtime.ReuseValueSlice1(retBuf, result), nil
+}
+
+func (tm *TieringManager) fixedRecursiveSelfGlobalMatches(proto *vm.FuncProto) bool {
+	if tm == nil || tm.callVM == nil || proto == nil || proto.Name == "" {
+		return false
+	}
+	cl, ok := vmClosureFromValue(tm.callVM.GetGlobal(proto.Name))
+	return ok && cl != nil && cl.Proto == proto
 }
 
 func (p *fixedRecursiveTableFoldProtocol) fold(v runtime.Value) (int64, bool) {

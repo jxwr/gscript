@@ -358,6 +358,11 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 
 	// Attempt Tier 2 compilation.
+	if t2, ok := tm.compileFixedRecursiveIntFoldTier2(proto); ok {
+		tm.tier2Compiled[proto] = t2
+		tm.installTier2(proto, t2)
+		return t2
+	}
 	if t2, ok := tm.compileFixedRecursiveTableFoldTier2(proto); ok {
 		tm.tier2Compiled[proto] = t2
 		tm.installTier2(proto, t2)
@@ -1447,6 +1452,9 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 }
 
 func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
+	if cf != nil && cf.FixedRecursiveIntFold != nil {
+		return tm.executeFixedRecursiveIntFold(cf, regs, base, proto, retBuf)
+	}
 	if cf != nil && cf.FixedRecursiveTableFold != nil {
 		return tm.executeFixedRecursiveTableFold(cf, regs, base, proto, retBuf)
 	}

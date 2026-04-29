@@ -108,6 +108,57 @@ root := makePair(4)
 	}
 }
 
+func TestFixedRecursiveTableFoldFallsBackWhenSelfGlobalChanges(t *testing.T) {
+	src := `
+func makePair(depth) {
+	if depth == 0 {
+		return {first: nil, second: nil}
+	}
+	return {first: makePair(depth - 1), second: makePair(depth - 1)}
+}
+
+func countPair(node) {
+	if node.first == nil { return 7 }
+	return 3 + countPair(node.first) + countPair(node.second)
+}
+
+func replacement(node) {
+	return 100
+}
+
+root := makePair(2)
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	oldCountPair := v.GetGlobal("countPair")
+	root := v.GetGlobal("root")
+	for i := 0; i < 3; i++ {
+		if _, err := v.CallValue(oldCountPair, []runtime.Value{root}); err != nil {
+			t.Fatalf("warm countPair %d: %v", i, err)
+		}
+	}
+	countPair := findProtoByName(top, "countPair")
+	if cf := tm.tier2Compiled[countPair]; cf == nil || cf.FixedRecursiveTableFold == nil {
+		t.Fatalf("countPair did not compile to fixed recursive table fold; cf=%#v", cf)
+	}
+
+	v.SetGlobal("countPair", v.GetGlobal("replacement"))
+	got, err := v.CallValue(oldCountPair, []runtime.Value{root})
+	if err != nil {
+		t.Fatalf("old countPair after rebind: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 203 {
+		t.Fatalf("old countPair after rebind = %v, want 203 from dynamic global calls", got)
+	}
+}
+
 func TestFixedRecursiveTableFoldOverInt48FallsBack(t *testing.T) {
 	leaf := runtime.NewTable()
 	leaf.RawSetString("mark", runtime.NilValue())

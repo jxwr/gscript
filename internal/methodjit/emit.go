@@ -388,6 +388,10 @@ type CompiledFunction struct {
 	// self-recursive field children.
 	FixedRecursiveTableFold *fixedRecursiveTableFoldProtocol
 
+	// FixedRecursiveIntFold is a whole-call Tier 2 protocol for fixed-step
+	// integer self-recursive additive recurrences such as fib(n-1)+fib(n-2).
+	FixedRecursiveIntFold *fixedRecursiveIntFoldProtocol
+
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
 	// It runs the function via the VM interpreter. Set by the caller
 	// (e.g., test harness or tiering engine) to provide VM fallback.
