@@ -513,6 +513,9 @@ func assignLoopTableArrayInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAll
 						recordTableArrayInvariantCandidate(instr.Args[0], body, headerID, defs, defBlocks, dom, useCounts)
 						recordTableArrayInvariantCandidate(instr.Args[1], body, headerID, defs, defBlocks, dom, useCounts)
 					}
+					if len(instr.Args) >= 3 {
+						recordTableArrayInvariantCandidate(instr.Args[2], body, headerID, defs, defBlocks, dom, useCounts)
+					}
 				}
 			}
 		}

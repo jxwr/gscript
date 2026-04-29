@@ -121,6 +121,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 	}
+	t.maybeClearDenseParentForWrite(key, val)
 	t.keysDirty = true
 
 	arrLen := int64(t.typedArrayLen())
@@ -196,6 +197,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				}
 			}
 			t.array[key] = val
+			t.observeDenseMatrixRowStore(key, val)
 			return
 		}
 	}
@@ -320,6 +322,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				}
 			}
 			arenaAppendValue(DefaultHeap, &t.array, val)
+			t.observeDenseMatrixRowStore(key, val)
 			t.absorbKeys()
 			return
 		}
@@ -440,6 +443,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			}
 		}
 		t.array[key] = val
+		t.observeDenseMatrixRowStore(key, val)
 		t.absorbKeys()
 		return
 	}
@@ -458,6 +462,9 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			delete(t.imap, key)
 		}
 	} else {
+		if t.dmStride > 0 {
+			t.clearDenseMatrixMeta()
+		}
 		if t.imap == nil {
 			t.imap = make(map[int64]Value)
 		}

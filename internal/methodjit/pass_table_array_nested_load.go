@@ -55,8 +55,13 @@ func TableArrayNestedLoadPass(fn *Function) (*Function, error) {
 				continue
 			}
 
+			outerTable, ok := tableArrayHeaderTableValue(rowLoad.Args[0])
+			if !ok {
+				continue
+			}
+
 			instr.Op = OpTableArrayNestedLoad
-			instr.Args = []*Value{rowLoad.Args[0], rowLoad.Args[1], rowLoad.Args[2], instr.Args[2]}
+			instr.Args = []*Value{outerTable, rowLoad.Args[0], rowLoad.Args[1], rowLoad.Args[2], instr.Args[2]}
 			instr.Aux2 = 0
 			instr.copySourceFrom(rowLoad)
 			functionRemarks(fn).Add("TableArrayNestedLoad", "changed", block.ID, instr.ID, instr.Op,
@@ -92,4 +97,15 @@ func tableArrayNestedLoadSafeSpan(block *Block, rowLoad, finalLoad *Instr) bool 
 		}
 	}
 	return true
+}
+
+func tableArrayHeaderTableValue(v *Value) (*Value, bool) {
+	if v == nil || v.Def == nil || v.Def.Op != OpTableArrayData || len(v.Def.Args) < 1 || v.Def.Args[0] == nil {
+		return nil, false
+	}
+	header := v.Def.Args[0].Def
+	if header == nil || header.Op != OpTableArrayHeader || len(header.Args) < 1 || header.Args[0] == nil {
+		return nil, false
+	}
+	return header.Args[0], true
 }

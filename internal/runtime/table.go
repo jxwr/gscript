@@ -51,18 +51,22 @@ type Table struct {
 	// Kept in sync with shapeID by applyShape / clearShape.
 	shape *Shape
 
-	// DenseMatrix descriptor (R43 Phase 2). When dmStride > 0, this
-	// Table is a DenseMatrix outer whose rows share the backing at
-	// dmFlat. The JIT fast path for `matrix.getf(m, i, j)` loads
-	// `*((*float64)(dmFlat) + i*dmStride + j)` in 3 ARM64 insns.
-	// dmFlat keeps the backing alive via a Go-managed reference
-	// through the row tables; this field aliases the same memory.
+	// DenseMatrix descriptor. When dmStride > 0, this Table is a DenseMatrix
+	// outer whose rows share the backing at dmFlat. The JIT fast path for
+	// nested float loads reads *((*float64)(dmFlat) + i*dmStride + j).
+	// dmBacking keeps auto-densified row-store backing alive; matrix.dense
+	// also keeps it alive through row slices.
 	dmFlat   unsafe.Pointer
 	dmStride int32
 
 	// arrayHint carries large array capacity hints until the first typed-array
 	// promotion. Keep this after all JIT-verified fields.
 	arrayHint int
+	// dmBacking is intentionally after JIT-verified fields so existing offsets
+	// stay stable. It is used only by runtime auto-densification of nested
+	// float rows built through ordinary table syntax.
+	dmBacking []float64
+	dmParent  *Table
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.

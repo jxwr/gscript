@@ -587,8 +587,14 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 
 	case OpTableArrayNestedLoad:
 		outer := s.val(instr.Args[0])
-		outerKey := s.val(instr.Args[2])
-		innerKey := s.val(instr.Args[3])
+		outerKeyArg := 2
+		innerKeyArg := 3
+		if len(instr.Args) >= 5 {
+			outerKeyArg = 3
+			innerKeyArg = 4
+		}
+		outerKey := s.val(instr.Args[outerKeyArg])
+		innerKey := s.val(instr.Args[innerKeyArg])
 		if !outer.IsTable() {
 			return nil, false, fmt.Errorf("OpTableArrayNestedLoad: arg 0 not a table")
 		}

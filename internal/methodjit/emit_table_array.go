@@ -350,12 +350,13 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 }
 
 func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
-	if len(instr.Args) < 4 {
+	if len(instr.Args) < 5 {
 		return
 	}
 	asm := ec.asm
 	deoptLabel := ec.uniqueLabel("tarr_nested_deopt")
 	doneLabel := ec.uniqueLabel("tarr_nested_done")
+	normalLabel := ec.uniqueLabel("tarr_nested_normal")
 
 	rowDataOff, rowLenOff, ok := tableArrayOffsets(instr.Aux)
 	if !ok || instr.Aux != int64(vm.FBKindFloat) || instr.Type != TypeFloat {
@@ -368,19 +369,65 @@ func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 		return
 	}
 
-	outerDataReg := ec.resolveRawInt(instr.Args[0].ID, jit.X2)
-	if outerDataReg != jit.X2 {
-		asm.MOVreg(jit.X2, outerDataReg)
+	outerTblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if outerTblReg != jit.X0 {
+		asm.MOVreg(jit.X0, outerTblReg)
 	}
-	outerLenReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
-	if outerLenReg != jit.X3 {
-		asm.MOVreg(jit.X3, outerLenReg)
-	}
-	if !ec.emitTableArrayKeyToReg(instr.Args[2], deoptLabel) {
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.LDRW(jit.X6, jit.X0, jit.TableOffDMStride)
+	asm.CBZ(jit.X6, normalLabel)
+	if !ec.emitTableArrayKeyToReg(instr.Args[3], deoptLabel) {
 		ec.emitDeopt(instr)
 		return
 	}
-	outerKeyID := instr.Args[2].ID
+	outerKeyID := instr.Args[3].ID
+	if kv, isConst := ec.constInts[outerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(outerKeyID) {
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
+	asm.MOVreg(jit.X2, jit.X1)
+	outerLenReg := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
+	if outerLenReg != jit.X3 {
+		asm.MOVreg(jit.X3, outerLenReg)
+	}
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+	if !ec.emitTableArrayKeyToReg(instr.Args[4], deoptLabel) {
+		ec.emitDeopt(instr)
+		return
+	}
+	innerKeyID := instr.Args[4].ID
+	if kv, isConst := ec.constInts[innerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(innerKeyID) {
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
+	asm.CMPreg(jit.X1, jit.X6)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.MUL(jit.X4, jit.X2, jit.X6)
+	asm.ADDreg(jit.X4, jit.X4, jit.X1)
+	asm.LDR(jit.X5, jit.X0, jit.TableOffDMFlat)
+	dstF := jit.D0
+	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+		dstF = jit.FReg(pr.Reg)
+	}
+	asm.FLDRdReg(dstF, jit.X5, jit.X4)
+	ec.storeRawFloat(dstF, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(normalLabel)
+	outerDataReg := ec.resolveRawInt(instr.Args[1].ID, jit.X2)
+	if outerDataReg != jit.X2 {
+		asm.MOVreg(jit.X2, outerDataReg)
+	}
+	outerLenReg = ec.resolveRawInt(instr.Args[2].ID, jit.X3)
+	if outerLenReg != jit.X3 {
+		asm.MOVreg(jit.X3, outerLenReg)
+	}
+	if !ec.emitTableArrayKeyToReg(instr.Args[3], deoptLabel) {
+		ec.emitDeopt(instr)
+		return
+	}
+	outerKeyID = instr.Args[3].ID
 	if kv, isConst := ec.constInts[outerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(outerKeyID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
@@ -400,18 +447,18 @@ func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 	asm.LDR(jit.X3, jit.X0, rowLenOff)
 	asm.LDR(jit.X2, jit.X0, rowDataOff)
 
-	if !ec.emitTableArrayKeyToReg(instr.Args[3], deoptLabel) {
+	if !ec.emitTableArrayKeyToReg(instr.Args[4], deoptLabel) {
 		ec.emitDeopt(instr)
 		return
 	}
-	innerKeyID := instr.Args[3].ID
+	innerKeyID = instr.Args[4].ID
 	if kv, isConst := ec.constInts[innerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(innerKeyID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
 	asm.CMPreg(jit.X1, jit.X3)
 	asm.BCond(jit.CondGE, deoptLabel)
-	dstF := jit.D0
+	dstF = jit.D0
 	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
 		dstF = jit.FReg(pr.Reg)
 	}
@@ -1111,6 +1158,27 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
+	}
+
+	// Mixed array stores of table rows are the construction side of ordinary
+	// table-of-float-row matrices. Route them through RawSetInt so the runtime
+	// can attach DenseMatrix metadata for later nested loads. This is cold for
+	// matmul relative to the O(n^3) read loop and avoids duplicating the row
+	// adoption protocol in generated code.
+	if instr.Aux2 == int64(vm.FBKindMixed) && ec.irTypes[instr.Args[2].ID] == TypeTable {
+		asm.Label(deoptLabel)
+		savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
+		for k, v := range ec.rawIntRegs {
+			savedRawIntRegs[k] = v
+		}
+		ec.emitSetTableExit(instr)
+		ec.emitUnboxRawIntRegs(savedRawIntRegs)
+		ec.rawIntRegs = savedRawIntRegs
+		asm.Label(doneLabel)
+		delete(ec.tableVerified, tblValueID)
+		delete(ec.kindVerified, tblValueID)
+		delete(ec.keysDirtyWritten, tblValueID)
+		return
 	}
 
 	// Kind-specialized dispatch: when Aux2 carries feedback, emit a kind

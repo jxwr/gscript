@@ -115,3 +115,108 @@ func TestDenseMatrix_DegenerateDims(t *testing.T) {
 		}
 	}
 }
+
+func TestDenseMatrix_AutoAdoptsOrdinaryFloatRows(t *testing.T) {
+	const cols = autoDenseMatrixMinStride
+	m := NewTableSizedKind(4, 0, ArrayMixed)
+	for i := 0; i < 3; i++ {
+		row := NewTableSizedKind(cols, 0, ArrayFloat)
+		for j := 0; j < cols; j++ {
+			row.RawSetInt(int64(j), FloatValue(float64(i*10+j)))
+		}
+		m.RawSetInt(int64(i), TableValue(row))
+	}
+	if m.dmStride != cols || m.dmFlat == nil {
+		t.Fatalf("auto dense metadata stride=%d flat=%v, want stride=%d", m.dmStride, m.dmFlat, cols)
+	}
+	if !DenseMatrixRowsShareBacking(m) {
+		t.Fatalf("auto-adopted rows should share backing")
+	}
+	row1 := m.RawGetInt(1).Table()
+	row1.RawSetInt(2, FloatValue(42))
+	if got := m.dmBacking[1*cols+2]; got != 42 {
+		t.Fatalf("in-bounds row write did not update dense backing: got %v", got)
+	}
+}
+
+func TestDenseMatrix_AutoAdoptInvalidatesOnRowGrowth(t *testing.T) {
+	const cols = autoDenseMatrixMinStride
+	m := NewTableSizedKind(2, 0, ArrayMixed)
+	row := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
+		row.RawSetInt(int64(j), FloatValue(float64(j)))
+	}
+	m.RawSetInt(0, TableValue(row))
+	if m.dmStride == 0 {
+		t.Fatal("expected auto dense metadata")
+	}
+	row.RawSetInt(cols, FloatValue(3))
+	if m.dmStride != 0 || m.dmFlat != nil {
+		t.Fatalf("row growth should invalidate parent dense metadata, stride=%d flat=%v", m.dmStride, m.dmFlat)
+	}
+}
+
+func TestDenseMatrix_AutoAdoptInvalidatesOnRowDemotion(t *testing.T) {
+	const cols = autoDenseMatrixMinStride
+	m := NewTableSizedKind(2, 0, ArrayMixed)
+	row := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
+		row.RawSetInt(int64(j), FloatValue(float64(j)))
+	}
+	m.RawSetInt(0, TableValue(row))
+	if m.dmStride == 0 {
+		t.Fatal("expected auto dense metadata")
+	}
+	row.RawSetInt(3, StringValue("not-float"))
+	if m.dmStride != 0 || m.dmFlat != nil {
+		t.Fatalf("row demotion should invalidate parent dense metadata, stride=%d flat=%v", m.dmStride, m.dmFlat)
+	}
+}
+
+func TestDenseMatrix_AutoAdoptInvalidatesOnIncompatibleRowReplacement(t *testing.T) {
+	const cols = autoDenseMatrixMinStride
+	m := NewTableSizedKind(2, 0, ArrayMixed)
+	row := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
+		row.RawSetInt(int64(j), FloatValue(float64(j)))
+	}
+	m.RawSetInt(0, TableValue(row))
+	if m.dmStride == 0 {
+		t.Fatal("expected auto dense metadata")
+	}
+	replacement := NewTableSizedKind(cols-1, 0, ArrayFloat)
+	for j := 0; j < cols-1; j++ {
+		replacement.RawSetInt(int64(j), FloatValue(float64(j)))
+	}
+	m.RawSetInt(0, TableValue(replacement))
+	if m.dmStride != 0 || m.dmFlat != nil {
+		t.Fatalf("incompatible row replacement should invalidate dense metadata, stride=%d flat=%v", m.dmStride, m.dmFlat)
+	}
+}
+
+func TestDenseMatrix_AutoAdoptRejectsSparseOuterRows(t *testing.T) {
+	const cols = autoDenseMatrixMinStride
+	m := NewTableSizedKind(4, 0, ArrayMixed)
+	row := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
+		row.RawSetInt(int64(j), FloatValue(float64(j)))
+	}
+	m.RawSetInt(2, TableValue(row))
+	if m.dmStride != 0 || m.dmFlat != nil {
+		t.Fatalf("sparse row store should not enable dense metadata, stride=%d flat=%v", m.dmStride, m.dmFlat)
+	}
+
+	first := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
+		first.RawSetInt(int64(j), FloatValue(float64(j)))
+	}
+	m2 := NewTableSizedKind(4, 0, ArrayMixed)
+	m2.RawSetInt(0, TableValue(first))
+	if m2.dmStride == 0 {
+		t.Fatal("expected sequential first row to enable dense metadata")
+	}
+	m2.RawSetInt(2, TableValue(row))
+	if m2.dmStride != 0 || m2.dmFlat != nil {
+		t.Fatalf("sparse extension should invalidate dense metadata, stride=%d flat=%v", m2.dmStride, m2.dmFlat)
+	}
+}

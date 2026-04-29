@@ -16,29 +16,132 @@
 // flat backing fits in fewer cache lines; the JIT-emitted ArrayFloat
 // load lands on the shared storage.
 //
-// Phase 2 (future rounds) can add a fast path: detect the
-// DenseMatrixBuilt flag on the outer Table and compile a single-load
-// shortcut for t[i][j] that skips the row indirection. That's the
-// 3.8× microbench upper bound.
+// The method JIT can detect dmStride on the outer Table and compile a
+// direct t[i][j] load from dmFlat, skipping row-wrapper verification.
 
 package runtime
 
 import "unsafe"
 
+const autoDenseMatrixMinStride = 16
+
 // uintptrOf is a tiny helper for test memory-adjacency checks.
 func uintptrOf(p *float64) uintptr { return uintptr(unsafe.Pointer(p)) }
 
 // SetDenseMatrixMeta stamps (flatPtr, stride) on the outer Table so
-// the R43 Phase 2 JIT intrinsic `matrix.getf(m, i, j)` can skip
-// the row-wrapper indirection. Set at construction; reset if the user
-// later replaces a row (rare; we conservatively do NOT invalidate
-// automatically — Phase 2 emit does a dmStride != 0 guard per call).
+// the method JIT can skip row-wrapper indirection for nested float loads.
 func (t *Table) setDenseMatrixMeta(flat []float64, stride int) {
 	if len(flat) == 0 || stride <= 0 {
 		return
 	}
+	t.dmBacking = flat
 	t.dmFlat = unsafe.Pointer(&flat[0])
 	t.dmStride = int32(stride)
+}
+
+func (t *Table) clearDenseMatrixMeta() {
+	t.dmFlat = nil
+	t.dmStride = 0
+	t.dmBacking = nil
+}
+
+func (t *Table) maybeClearDenseParentForWrite(key int64, val Value) {
+	parent := t.dmParent
+	if parent == nil {
+		return
+	}
+	if t.arrayKind == ArrayFloat && key >= 0 && key < int64(len(t.floatArray)) && val.Type() == TypeFloat {
+		return
+	}
+	t.dmParent = nil
+	parent.clearDenseMatrixMeta()
+}
+
+// observeDenseMatrixRowStore keeps ordinary table-of-float-rows layouts
+// compatible with DenseMatrix fast paths. It is called after ArrayMixed integer
+// stores. Compatible row tables are rebound to slices of one contiguous backing,
+// so later in-bounds row writes update the same memory read by dmFlat.
+func (t *Table) observeDenseMatrixRowStore(key int64, val Value) {
+	if key < 0 || t.arrayKind != ArrayMixed || t.metatable != nil || t.hash != nil || t.imap != nil {
+		if t.dmStride > 0 {
+			t.clearDenseMatrixMeta()
+		}
+		return
+	}
+	row := val.Table()
+	if row == nil || row.arrayKind != ArrayFloat || row.metatable != nil || row.hash != nil || row.imap != nil || len(row.floatArray) < autoDenseMatrixMinStride {
+		if t.dmStride > 0 {
+			t.clearDenseMatrixMeta()
+		}
+		return
+	}
+	stride := len(row.floatArray)
+	if t.dmStride != 0 && int(t.dmStride) != stride {
+		t.clearDenseMatrixMeta()
+		return
+	}
+	src := row.floatArray
+	if t.dmStride == 0 {
+		if key != 0 || len(t.array) != 1 {
+			return
+		}
+		rowsCap := typedArrayCapFor(int(key) + 1)
+		t.dmBacking = make([]float64, (int(key)+1)*stride, rowsCap*stride)
+		t.dmStride = int32(stride)
+		t.dmFlat = unsafe.Pointer(&t.dmBacking[0])
+	} else {
+		oldRows := len(t.dmBacking) / stride
+		if int(key) > oldRows || (int(key) == oldRows && len(t.array) != oldRows+1) {
+			t.clearDenseMatrixMeta()
+			return
+		}
+		t.ensureDenseMatrixRows(int(key) + 1)
+	}
+
+	start := int(key) * stride
+	copy(t.dmBacking[start:start+stride], src)
+	row.floatArray = t.dmBacking[start : start+stride : start+stride]
+	if row.dmParent != nil && row.dmParent != t {
+		row.dmParent.clearDenseMatrixMeta()
+	}
+	row.dmParent = t
+}
+
+func (t *Table) ensureDenseMatrixRows(rows int) {
+	stride := int(t.dmStride)
+	if stride <= 0 {
+		return
+	}
+	need := rows * stride
+	if len(t.dmBacking) >= need {
+		return
+	}
+	if cap(t.dmBacking) < need {
+		nextRows := growTypedArrayCap(cap(t.dmBacking)/stride, rows)
+		next := make([]float64, need, nextRows*stride)
+		copy(next, t.dmBacking)
+		t.dmBacking = next
+		t.rebindDenseMatrixRows()
+	} else {
+		t.dmBacking = t.dmBacking[:need]
+	}
+	t.dmFlat = unsafe.Pointer(&t.dmBacking[0])
+}
+
+func (t *Table) rebindDenseMatrixRows() {
+	stride := int(t.dmStride)
+	if stride <= 0 {
+		return
+	}
+	maxRows := len(t.dmBacking) / stride
+	for i := 0; i < len(t.array) && i < maxRows; i++ {
+		row := t.array[i].Table()
+		if row == nil || row.arrayKind != ArrayFloat || len(row.floatArray) != stride {
+			continue
+		}
+		start := i * stride
+		row.floatArray = t.dmBacking[start : start+stride : start+stride]
+	}
 }
 
 // NewDenseMatrix allocates a rows×cols float64 matrix stored as

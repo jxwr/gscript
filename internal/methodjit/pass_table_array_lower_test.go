@@ -411,6 +411,20 @@ func TestTableArrayNestedLoad_FusesSameBlockMixedRowFloat(t *testing.T) {
 	if counts[OpTableArrayNestedLoad] != 1 {
 		t.Fatalf("expected one nested load, counts=%v\n%s", counts, Print(fn))
 	}
+	var nested *Instr
+	for _, instr := range fn.Blocks[0].Instrs {
+		if instr.Op == OpTableArrayNestedLoad {
+			nested = instr
+			break
+		}
+	}
+	if nested == nil || len(nested.Args) != 5 {
+		t.Fatalf("nested load should carry outer table, row data, row len, outer key, inner key:\n%s", Print(fn))
+	}
+	if nested.Args[0].ID != rows.ID || nested.Args[1].ID != outerData.ID || nested.Args[2].ID != outerLen.ID ||
+		nested.Args[3].ID != outerKey.ID || nested.Args[4].ID != innerKey.ID {
+		t.Fatalf("unexpected nested load args: %#v\n%s", nested.Args, Print(fn))
+	}
 	if counts[OpTableArrayLoad] != 0 {
 		t.Fatalf("same-block row load chain should be removed, counts=%v\n%s", counts, Print(fn))
 	}
