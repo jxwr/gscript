@@ -108,6 +108,42 @@ func TestLoadElimination_PureTypedNumericCSE(t *testing.T) {
 	}
 }
 
+func TestLoadElimination_RemovesRedundantNumToFloatOfFloat(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "redundant_num_to_float"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	x := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFloat, Aux: 0, Block: b}
+	conv := &Instr{ID: fn.newValueID(), Op: OpNumToFloat, Type: TypeFloat,
+		Args: []*Value{x.Value()}, Block: b}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Aux: 1, Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat,
+		Args: []*Value{conv.Value(), one.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add.Value()}, Block: b}
+
+	b.Instrs = []*Instr{x, conv, one, add, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+	if add.Args[0].ID != x.ID {
+		t.Fatalf("expected AddFloat to use original float v%d, got v%d", x.ID, add.Args[0].ID)
+	}
+
+	result, err = DCEPass(result)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+	if got := countOp(result, OpNumToFloat); got != 0 {
+		t.Fatalf("expected redundant NumToFloat to be removed, got %d\n%s", got, Print(result))
+	}
+}
+
 func TestLoadElimination_PureTypedNumericCSENotAcrossSideEffect(t *testing.T) {
 	fn := &Function{
 		Proto:   &vm.FuncProto{Name: "pure_numeric_cse_side_effect"},

@@ -109,6 +109,17 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 				OpNumToFloat, OpSqrt, OpFMA,
 				OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat:
+				if instr.Op == OpNumToFloat && redundantNumToFloatArg(instr) {
+					replaceAllUses(fn, instr.ID, instr.Args[0].Def)
+					instr.Op = OpNop
+					instr.Args = nil
+					instr.Aux = 0
+					instr.Aux2 = 0
+					instr.Type = TypeUnknown
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, OpNumToFloat,
+						"removed numeric-to-float conversion of statically-float value")
+					continue
+				}
 				if key, ok := pureTypedCSEKey(instr); ok {
 					if origID, ok := pureAvail[key]; ok {
 						origInstr := instrByID[origID]
@@ -435,6 +446,15 @@ func loadElimKillsPureCSE(instr *Instr) bool {
 		return false
 	}
 	return hasSideEffect(instr)
+}
+
+func redundantNumToFloatArg(instr *Instr) bool {
+	return instr != nil &&
+		instr.Op == OpNumToFloat &&
+		len(instr.Args) == 1 &&
+		instr.Args[0] != nil &&
+		instr.Args[0].Def != nil &&
+		instr.Args[0].Def.Type == TypeFloat
 }
 
 func guardProvenByProducer(v *Value, guardType Type) bool {

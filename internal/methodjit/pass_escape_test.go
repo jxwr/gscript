@@ -430,6 +430,7 @@ result := distance_sum(10)
 
 	var generic []string
 	sawFloatMath := false
+	numToFloat := 0
 	for _, block := range fn.Blocks {
 		for _, ins := range block.Instrs {
 			switch ins.Op {
@@ -437,6 +438,8 @@ result := distance_sum(10)
 				generic = append(generic, ins.Op.String())
 			case OpAddFloat, OpSubFloat, OpMulFloat, OpFMA:
 				sawFloatMath = true
+			case OpNumToFloat:
+				numToFloat++
 			}
 		}
 	}
@@ -444,6 +447,26 @@ result := distance_sum(10)
 		t.Fatalf("expected post-rewrite virtual field math to specialize to float ops, generic=%s sawFloatMath=%v\nIR:\n%s",
 			strings.Join(generic, ","), sawFloatMath, Print(fn))
 	}
+	if numToFloat != 0 {
+		t.Fatalf("expected redundant NumToFloat to be eliminated after virtual field rewrite, got %d\nIR:\n%s",
+			numToFloat, Print(fn))
+	}
+
+	fn.CarryPreheaderInvariants = true
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+	result, err := cf.Execute([]runtime.Value{runtime.IntValue(25)})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	vmResult := runVMByName(t, src, "distance_sum", []runtime.Value{runtime.IntValue(25)})
+	if len(result) == 0 || len(vmResult) == 0 {
+		t.Fatalf("empty result: JIT=%v VM=%v", result, vmResult)
+	}
+	assertValuesEqual(t, "distance_sum(25)", result[0], vmResult[0])
 }
 
 func TestR161_VirtualPhi_FieldPhiUsesStoredValueType(t *testing.T) {
