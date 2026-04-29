@@ -769,7 +769,7 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 
 	// Check key >= 0 (shared by all paths). R97: skip when key is a
 	// ConstInt with a non-negative compile-time value.
-	if kv, isConst := ec.constInts[keyID]; !isConst || kv < 0 {
+	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
@@ -1108,7 +1108,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 
 	// Check key >= 0 (shared by all paths). R97: skip when key is a
 	// ConstInt with a non-negative compile-time value.
-	if kv, isConst := ec.constInts[keyID]; !isConst || kv < 0 {
+	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
 	}

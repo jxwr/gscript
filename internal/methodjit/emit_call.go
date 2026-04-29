@@ -489,6 +489,13 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 		return
 	}
 
+	if op != intBinMod {
+		if imm, constOnLeft, ok := ec.genericIntConstOperand(instr); ok {
+			ec.emitFloatBinOpIntConst(instr, op, imm, constOnLeft)
+			return
+		}
+	}
+
 	// Load both operands as NaN-boxed for type dispatch.
 	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	if lhsReg != jit.X0 {
@@ -590,6 +597,119 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	asm.Label(done)
 	// Store NaN-boxed result (int or float).
 	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+func (ec *emitContext) genericIntConstOperand(instr *Instr) (imm int64, constOnLeft bool, ok bool) {
+	if instr == nil || len(instr.Args) < 2 {
+		return 0, false, false
+	}
+	if instr.Args[0] == nil || instr.Args[1] == nil {
+		return 0, false, false
+	}
+	if v, isConst := ec.constInts[instr.Args[0].ID]; isConst {
+		return v, true, true
+	}
+	if v, isConst := ec.constInts[instr.Args[1].ID]; isConst {
+		return v, false, true
+	}
+	return 0, false, false
+}
+
+func (ec *emitContext) emitFloatBinOpIntConst(instr *Instr, op intBinOp, imm int64, constOnLeft bool) {
+	asm := ec.asm
+	var valueArg *Value
+	if constOnLeft {
+		valueArg = instr.Args[1]
+	} else {
+		valueArg = instr.Args[0]
+	}
+	if valueArg == nil {
+		return
+	}
+
+	valueReg := ec.resolveValueNB(valueArg.ID, jit.X0)
+	if valueReg != jit.X0 {
+		asm.MOVreg(jit.X0, valueReg)
+	}
+
+	done := ec.uniqueLabel("arith_const_done")
+	floatPath := ec.uniqueLabel("arith_const_float")
+	overflow := ec.uniqueLabel("arith_const_overflow")
+
+	asm.MOVimm16(jit.X3, jit.NB_TagIntShr48)
+	emitCheckIsIntWithTag(asm, jit.X0, jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, floatPath)
+
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	ec.emitIntConstArithmetic(op, imm, constOnLeft)
+	if instr.Aux2 == 0 && !ec.int48Safe(instr.ID) {
+		asm.SBFX(jit.X2, jit.X0, 0, 48)
+		asm.CMPreg(jit.X2, jit.X0)
+		asm.BCond(jit.CondNE, overflow)
+	}
+	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+	asm.B(done)
+
+	asm.Label(overflow)
+	asm.SCVTF(jit.D0, jit.X0)
+	asm.FMOVtoGP(jit.X0, jit.D0)
+	asm.B(done)
+
+	asm.Label(floatPath)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+	asm.LoadImm64(jit.X1, imm)
+	asm.SCVTF(jit.D1, jit.X1)
+	if constOnLeft {
+		switch op {
+		case intBinAdd:
+			asm.FADDd(jit.D0, jit.D1, jit.D0)
+		case intBinSub:
+			asm.FSUBd(jit.D0, jit.D1, jit.D0)
+		case intBinMul:
+			asm.FMULd(jit.D0, jit.D1, jit.D0)
+		}
+	} else {
+		switch op {
+		case intBinAdd:
+			asm.FADDd(jit.D0, jit.D0, jit.D1)
+		case intBinSub:
+			asm.FSUBd(jit.D0, jit.D0, jit.D1)
+		case intBinMul:
+			asm.FMULd(jit.D0, jit.D0, jit.D1)
+		}
+	}
+	asm.FMOVtoGP(jit.X0, jit.D0)
+
+	asm.Label(done)
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+func (ec *emitContext) emitIntConstArithmetic(op intBinOp, imm int64, constOnLeft bool) {
+	asm := ec.asm
+	switch op {
+	case intBinAdd:
+		if imm >= 0 && imm <= 4095 {
+			asm.ADDimm(jit.X0, jit.X0, uint16(imm))
+			return
+		}
+		asm.LoadImm64(jit.X1, imm)
+		asm.ADDreg(jit.X0, jit.X0, jit.X1)
+	case intBinSub:
+		if constOnLeft {
+			asm.LoadImm64(jit.X1, imm)
+			asm.SUBreg(jit.X0, jit.X1, jit.X0)
+			return
+		}
+		if imm >= 0 && imm <= 4095 {
+			asm.SUBimm(jit.X0, jit.X0, uint16(imm))
+			return
+		}
+		asm.LoadImm64(jit.X1, imm)
+		asm.SUBreg(jit.X0, jit.X0, jit.X1)
+	case intBinMul:
+		asm.LoadImm64(jit.X1, imm)
+		asm.MUL(jit.X0, jit.X0, jit.X1)
+	}
 }
 
 // emitFloatMod computes D0 = D0 % D1 using Lua-style modulo semantics:
