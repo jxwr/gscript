@@ -398,6 +398,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("TypeSpecialize (post-table-prealloc): %w", err)
 	}
 
+	fn, err = FixedShapeTableFactsPass(globals)(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FixedShapeTableFacts: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = LoadEliminationPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("LoadElimination: %w", err)

@@ -63,6 +63,14 @@ type Function struct {
 	// cross-proto raw-int call path; OpCall.Type alone is not authoritative.
 	CallABIs map[int]CallABIDescriptor
 
+	// FixedShapeTables records SSA table values whose field layout is known
+	// without consulting the runtime field cache. The initial producer is a
+	// static table constructor or a call to a function whose every return path
+	// creates the same fixed-shape table. Consumers may use this as a guarded
+	// shape fact; it is not an aliasing proof and must not remove runtime shape
+	// checks by itself.
+	FixedShapeTables map[int]FixedShapeTableFact
+
 	// Unpromotable, when true, signals that this function cannot be safely
 	// compiled at Tier 2 because BuildGraph encountered bytecode patterns
 	// it does not model. Set by the graph builder and checked by
