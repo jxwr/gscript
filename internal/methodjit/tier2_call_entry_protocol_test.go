@@ -511,6 +511,113 @@ func rec_bump_then_exit(t, n) {
 	}
 }
 
+func TestTier2FixedShapeEntryGuardMismatchFallsBackFromNormalEntry(t *testing.T) {
+	src := `
+func makePair(x, y) {
+    return {left: x, right: y}
+}
+func walk(pair) {
+    return pair.left - pair.right
+}
+func driver() {
+    return walk(makePair(10, 20))
+}
+result := driver()
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	walk := findProtoByName(top, "walk")
+	if walk == nil {
+		t.Fatal("walk proto not found")
+	}
+	fnWalk := v.GetGlobal("walk")
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(walk); err != nil {
+		t.Fatalf("CompileTier2(walk): %v", err)
+	}
+
+	reversed := runtime.NewTable()
+	reversed.RawSetString("right", runtime.IntValue(20))
+	reversed.RawSetString("left", runtime.IntValue(10))
+	if reversed.ShapeID() == runtime.GetShapeID([]string{"left", "right"}) {
+		t.Fatal("test table unexpectedly has the guarded shape")
+	}
+
+	results, err := v.CallValue(fnWalk, []runtime.Value{runtime.TableValue(reversed)})
+	if err != nil {
+		t.Fatalf("CallValue(walk mismatched shape): %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != -10 {
+		t.Fatalf("walk(reversed)=%v, want int -10", results)
+	}
+	if got := tm.ExitStats().ByExitCode["ExitDeopt"]; got == 0 {
+		t.Fatal("fixed-shape entry mismatch did not trip the Tier 2 entry guard")
+	}
+}
+
+func TestTier2FixedShapeEntryGuardMismatchFallsBackFromNativeCaller(t *testing.T) {
+	src := `
+func makePair(x, y) {
+    return {left: x, right: y}
+}
+func walk(pair) {
+    return pair.left - pair.right
+}
+func callWalk(f, pair) {
+    return f(pair)
+}
+func driver() {
+    return walk(makePair(10, 20))
+}
+result := driver()
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	walk := findProtoByName(top, "walk")
+	callWalk := findProtoByName(top, "callWalk")
+	if walk == nil || callWalk == nil {
+		t.Fatalf("missing protos: walk=%v callWalk=%v", walk != nil, callWalk != nil)
+	}
+	fnWalk := v.GetGlobal("walk")
+	fnCallWalk := v.GetGlobal("callWalk")
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(walk); err != nil {
+		t.Fatalf("CompileTier2(walk): %v", err)
+	}
+	if err := tm.CompileTier2(callWalk); err != nil {
+		t.Fatalf("CompileTier2(callWalk): %v", err)
+	}
+
+	reversed := runtime.NewTable()
+	reversed.RawSetString("right", runtime.IntValue(20))
+	reversed.RawSetString("left", runtime.IntValue(10))
+
+	results, err := v.CallValue(fnCallWalk, []runtime.Value{fnWalk, runtime.TableValue(reversed)})
+	if err != nil {
+		t.Fatalf("CallValue(callWalk mismatched shape): %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != -10 {
+		t.Fatalf("callWalk(walk, reversed)=%v, want int -10", results)
+	}
+	if got := tm.ExitStats().ByExitCode["ExitCallExit"]; got == 0 {
+		t.Fatal("native caller did not materialize the boxed fallback call frame")
+	}
+}
+
 func TestTier2GlobalCacheInvalidatesByName(t *testing.T) {
 	tm := NewTieringManager()
 	proto := &vm.FuncProto{

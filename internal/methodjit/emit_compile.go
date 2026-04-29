@@ -295,6 +295,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		nativeCallReplaySafe: nativeCallReplaySafe,
 		rawIntSelfABI:        rawIntSelfABI,
 		typedSelfABI:         typedSelfABI,
+		entryShapeGuards:     fn.FixedShapeEntryGuards,
 	}
 	if exitResumeCheckEnabled() {
 		ec.exitResumeCheck = newExitResumeCheckMetadata()
@@ -754,6 +755,11 @@ type emitContext struct {
 	// recursive table/int kernels that are not pure raw-int numeric kernels.
 	typedSelfABI TypedSelfABI
 
+	// entryShapeGuards are callee-entry table shape guards keyed by parameter
+	// index. Every path that reaches the optimized body must either execute
+	// these guards or fall back to the boxed VM call path first.
+	entryShapeGuards map[int]FixedShapeTableFact
+
 	// numericParamCount (R124) is set at emitContext construction when
 	// the proto qualifies (qualifyForNumeric). Non-zero → Compile emits
 	// an additional numeric body (pass 2) with the entry label
@@ -1086,6 +1092,62 @@ func (ec *emitContext) emitSetRawSelfRegsEnd(baseReg jit.Reg, numRegs int, scrat
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) hasEntryShapeGuards() bool {
+	return ec != nil && len(ec.entryShapeGuards) > 0
+}
+
+func (ec *emitContext) emitBoxedEntryShapeGuards() {
+	if !ec.hasEntryShapeGuards() {
+		return
+	}
+	params := make([]int, 0, len(ec.entryShapeGuards))
+	for paramIdx, fact := range ec.entryShapeGuards {
+		if fact.ShapeID != 0 {
+			params = append(params, paramIdx)
+		}
+	}
+	if len(params) == 0 {
+		return
+	}
+	sort.Ints(params)
+	failLabel := ec.uniqueLabel("entry_shape_deopt")
+	doneLabel := ec.uniqueLabel("entry_shape_done")
+	for _, paramIdx := range params {
+		fact := ec.entryShapeGuards[paramIdx]
+		ec.asm.LDR(jit.X0, mRegRegs, slotOffset(paramIdx))
+		jit.EmitCheckIsTableFull(ec.asm, jit.X0, jit.X16, jit.X17, failLabel)
+		jit.EmitExtractPtr(ec.asm, jit.X0, jit.X0)
+		ec.asm.CBZ(jit.X0, failLabel)
+		ec.asm.LDRW(jit.X16, jit.X0, jit.TableOffShapeID)
+		ec.asm.LoadImm64(jit.X17, int64(fact.ShapeID))
+		ec.asm.CMPreg(jit.X16, jit.X17)
+		ec.asm.BCond(jit.CondNE, failLabel)
+	}
+	ec.asm.B(doneLabel)
+	ec.asm.Label(failLabel)
+	ec.emitDeopt(nil)
+	ec.asm.Label(doneLabel)
+}
+
+func (ec *emitContext) seedEntryShapeGuardState(block *Block) {
+	if !ec.hasEntryShapeGuards() || ec.fn == nil || block == nil || block != ec.fn.Entry {
+		return
+	}
+	if len(block.Preds) != 0 {
+		return
+	}
+	for _, instr := range block.Instrs {
+		if instr.Op != OpLoadSlot {
+			continue
+		}
+		fact, ok := ec.entryShapeGuards[int(instr.Aux)]
+		if !ok || fact.ShapeID == 0 {
+			continue
+		}
+		ec.shapeVerified[instr.ID] = fact.ShapeID
+	}
+}
+
 func emitBoxTablePtr(asm *jit.Assembler, dst, ptr, scratch jit.Reg) {
 	asm.UBFX(dst, ptr, 0, 44)
 	asm.LoadImm64(scratch, nb64(jit.NB_TagPtr))
@@ -1279,6 +1341,7 @@ func (ec *emitContext) emitPrologue() {
 	asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24 = 0xFFFE000000000000
 	asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25 = 0xFFFD000000000000
 	ec.emitSetRawSelfRegsEndFromMRegRegs()
+	ec.emitBoxedEntryShapeGuards()
 	if ec.fn != nil && ec.fn.Entry != nil && len(ec.fn.Blocks) > 0 && ec.fn.Blocks[0] != ec.fn.Entry {
 		asm.B(ec.entryBlockLabel())
 	}
@@ -1342,6 +1405,7 @@ func (ec *emitContext) emitEpilogue() {
 		asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24
 		asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25
 		ec.emitSetRawSelfRegsEndFromMRegRegs()
+		ec.emitBoxedEntryShapeGuards()
 		asm.B(ec.entryBlockLabel())
 	}
 
@@ -1377,6 +1441,7 @@ func (ec *emitContext) emitEpilogue() {
 		}
 		// Skip MOVreg mRegCtx, X0  (mRegCtx unchanged in self-call)
 		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
+		ec.emitBoxedEntryShapeGuards()
 		asm.B(ec.entryBlockLabel())
 	}
 
@@ -1494,6 +1559,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 		ec.kindVerified = make(map[int]uint16)
 		ec.keysDirtyWritten = make(map[int]bool)
 	}
+	ec.seedEntryShapeGuardState(block)
 	// R44: reset DenseMatrix verification at every block boundary. Cross-
 	// block propagation isn't critical for matmul's inner-k loop (k-loop
 	// body is one block) and complicates merge semantics; conservatively

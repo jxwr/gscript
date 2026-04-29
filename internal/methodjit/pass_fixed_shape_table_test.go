@@ -326,3 +326,56 @@ result := driver()
 		t.Fatalf("callee did not retain guarded argument fact metadata: %#v", out.FixedShapeArgFacts)
 	}
 }
+
+func TestFixedShapeTableFactsPass_EntryGuardedArgumentFactRecordsGuardMetadata(t *testing.T) {
+	top := compileProto(t, `
+func makePair(x, y) {
+    return {left: x, right: y}
+}
+func walk(pair) {
+    return pair.left - pair.right
+}
+func driver() {
+    return walk(makePair(10, 20))
+}
+result := driver()
+`)
+	makePair := findProtoByName(top, "makePair")
+	walk := findProtoByName(top, "walk")
+	driver := findProtoByName(top, "driver")
+	if makePair == nil || walk == nil || driver == nil {
+		t.Fatalf("expected makePair, walk, and driver protos, got makePair=%v walk=%v driver=%v",
+			makePair != nil, walk != nil, driver != nil)
+	}
+	globals := map[string]*vm.FuncProto{
+		"makePair": makePair,
+		"walk":     walk,
+		"driver":   driver,
+	}
+	argFacts := inferGuardedFixedShapeArgFactsForProto(walk, globals)
+	if len(argFacts) != 1 {
+		t.Fatalf("expected one guarded arg fact for walk(pair), got %#v", argFacts)
+	}
+
+	fn := BuildGraph(walk)
+	out, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals:         globals,
+		InlineMaxSize:         1,
+		FixedShapeArgFacts:    argFacts,
+		FixedShapeEntryGuards: true,
+	})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(walk): %v", err)
+	}
+
+	fact, ok := out.FixedShapeEntryGuards[0]
+	if !ok {
+		t.Fatalf("callee did not record fixed-shape entry guard metadata: %#v", out.FixedShapeEntryGuards)
+	}
+	if !fact.Guarded || !fact.EntryGuarded || fact.ShapeID == 0 || len(fact.FieldFacts) != 0 {
+		t.Fatalf("unexpected entry guard fact: %#v", fact)
+	}
+	if got := out.FixedShapeArgFacts[0]; !got.EntryGuarded || got.ShapeID != fact.ShapeID {
+		t.Fatalf("arg fact did not retain entry-guard strength: %#v vs %#v", got, fact)
+	}
+}

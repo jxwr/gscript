@@ -1235,6 +1235,12 @@ func (ec *emitContext) emitTypedSelfArgsInRegsAndSave(instr *Instr, abi TypedSel
 			asm.STR(dst, jit.SP, typedSelfArgsOff+i*jit.ValueSize)
 			jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
 			jit.EmitExtractPtr(asm, dst, dst)
+			if fact, ok := ec.entryShapeGuards[i]; ok && fact.ShapeID != 0 {
+				asm.LDRW(jit.X6, dst, jit.TableOffShapeID)
+				asm.LoadImm64(jit.X7, int64(fact.ShapeID))
+				asm.CMPreg(jit.X6, jit.X7)
+				asm.BCond(jit.CondNE, fallbackLabel)
+			}
 		}
 	}
 }
@@ -1410,7 +1416,7 @@ func (ec *emitContext) emitOpCall(instr *Instr) {
 		ec.emitCallNativeRawIntSelf(instr)
 	} else if ec.emitCallNativeRawIntPeerIfEligible(instr) {
 	} else if ec.emitCallNativeTypedSelfIfEligible(instr) {
-	} else if ec.tailCallInstrs[instr.ID] && ec.isStaticSelfCall(instr) {
+	} else if ec.tailCallInstrs[instr.ID] && ec.isStaticSelfCall(instr) && !ec.hasEntryShapeGuards() {
 		ec.emitStaticSelfTailLoop(instr)
 	} else if ec.isStaticSelfCall(instr) {
 		ec.emitCallNativeStaticSelfFast(instr)

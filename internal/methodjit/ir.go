@@ -84,6 +84,11 @@ type Function struct {
 	// constructors into OpNewFixedTable for native codegen.
 	FixedTableConstructors map[int]FixedTableConstructorFact
 
+	// FixedShapeEntryGuards records parameter shape guards that codegen must
+	// execute before entering the optimized body. Once these guards have run,
+	// matching FixedShapeArgFacts are safe as callee-local shape facts.
+	FixedShapeEntryGuards map[int]FixedShapeTableFact
+
 	// Unpromotable, when true, signals that this function cannot be safely
 	// compiled at Tier 2 because BuildGraph encountered bytecode patterns
 	// it does not model. Set by the graph builder and checked by

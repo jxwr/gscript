@@ -1303,10 +1303,11 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		}
 	}
 	opts := &Tier2PipelineOpts{
-		InlineGlobals:      inlineGlobals,
-		InlineMaxSize:      inlineMaxCalleeSize,
-		FixedShapeArgFacts: inferGuardedFixedShapeArgFactsForProto(proto, loopCallGlobals),
-		Remarks:            remarks,
+		InlineGlobals:         inlineGlobals,
+		InlineMaxSize:         inlineMaxCalleeSize,
+		FixedShapeArgFacts:    inferGuardedFixedShapeArgFactsForProto(proto, loopCallGlobals),
+		FixedShapeEntryGuards: true,
+		Remarks:               remarks,
 	}
 	fn, intrinsicNotes, err := RunTier2Pipeline(fn, opts)
 	if err != nil {

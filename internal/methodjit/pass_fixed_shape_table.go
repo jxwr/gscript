@@ -17,6 +17,7 @@ type FixedShapeTableFact struct {
 	FieldValueIDs map[string]int
 	FieldFacts    map[string]FixedShapeFieldFact
 	Guarded       bool
+	EntryGuarded  bool
 }
 
 type FixedShapeFieldKind uint8
@@ -69,11 +70,13 @@ func (f FixedShapeTableFact) sameShape(other FixedShapeTableFact) bool {
 }
 
 // FixedShapeTableFactsConfig supplies facts that are safe to consume in the
-// current function. ArgFacts are guarded callsite facts for callee parameters;
-// they must not be used for unconditional value forwarding.
+// current function. ArgFacts are guarded callsite facts for callee parameters.
+// EntryGuardedArgs asks codegen to validate those shapes before the optimized
+// body so the guarded facts can be consumed as callee-local shape facts.
 type FixedShapeTableFactsConfig struct {
-	Globals  map[string]*vm.FuncProto
-	ArgFacts map[int]FixedShapeTableFact
+	Globals          map[string]*vm.FuncProto
+	ArgFacts         map[int]FixedShapeTableFact
+	EntryGuardedArgs bool
 }
 
 // FixedShapeTableFactsPass records fixed-shape table facts and uses
@@ -94,6 +97,9 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 			facts = make(map[int]FixedShapeTableFact)
 		}
 		seedGuardedFixedShapeArgFacts(fn, facts, config.ArgFacts)
+		if config.EntryGuardedArgs {
+			markEntryGuardedFixedShapeArgFacts(fn, facts, fn.FixedShapeArgFacts)
+		}
 
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
@@ -147,6 +153,33 @@ func seedGuardedFixedShapeArgFacts(fn *Function, facts map[int]FixedShapeTableFa
 			fn.FixedShapeArgFacts[int(instr.Aux)] = fact
 			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
 				fmt.Sprintf("parameter %d carries guarded fixed table shape %v", instr.Aux, fact.FieldNames))
+		}
+	}
+}
+
+func markEntryGuardedFixedShapeArgFacts(fn *Function, facts map[int]FixedShapeTableFact, argFacts map[int]FixedShapeTableFact) {
+	if fn == nil || fn.Proto == nil || len(argFacts) == 0 {
+		return
+	}
+	for paramIdx, fact := range argFacts {
+		if paramIdx < 0 || paramIdx >= fn.Proto.NumParams || fact.ShapeID == 0 || len(fact.FieldNames) == 0 {
+			continue
+		}
+		fact.EntryGuarded = true
+		if fn.FixedShapeEntryGuards == nil {
+			fn.FixedShapeEntryGuards = make(map[int]FixedShapeTableFact)
+		}
+		fn.FixedShapeEntryGuards[paramIdx] = fact
+		if fn.FixedShapeArgFacts == nil {
+			fn.FixedShapeArgFacts = make(map[int]FixedShapeTableFact)
+		}
+		fn.FixedShapeArgFacts[paramIdx] = fact
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr.Op == OpLoadSlot && int(instr.Aux) == paramIdx {
+					facts[instr.ID] = fact
+				}
+			}
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/gscript/gscript/internal/jit"
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -241,6 +242,39 @@ func TestTypedTableSelfABI_TypedSelfCallSavesArgsOnStackBeforeBL(t *testing.T) {
 	}
 }
 
+func TestTypedTableSelfABI_TypedSelfCallGuardsEntryShapeBeforeBL(t *testing.T) {
+	cf := compileIDNodeTypedSelfWithEntryGuard(t)
+	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
+
+	selfBLs := 0
+	for pc := 0; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		target, ok := blTargetOffset(word, pc)
+		if !ok || target != cf.TypedEntryOffset {
+			continue
+		}
+		selfBLs++
+		sawShapeGuard := false
+		start := pc - 180
+		if start < 0 {
+			start = 0
+		}
+		for scan := start; scan < pc; scan += 4 {
+			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
+			if isLDRWTableShapeID(scanWord) {
+				sawShapeGuard = true
+				break
+			}
+		}
+		if !sawShapeGuard {
+			t.Fatalf("typed self-call BL at %#x did not guard the table parameter shape before entry", pc)
+		}
+	}
+	if selfBLs == 0 {
+		t.Fatal("expected at least one typed self-call BL")
+	}
+}
+
 func BenchmarkTypedTableSelfABI_CheckTreeForcedTier2CallValueSteady(b *testing.B) {
 	benchTypedTableSelfCheckTree(b, false)
 }
@@ -389,6 +423,61 @@ root := makeTree(3)
 	return cf
 }
 
+func compileIDNodeTypedSelfWithEntryGuard(t *testing.T) *CompiledFunction {
+	t.Helper()
+	src := `
+func makePair(x, y) {
+    return {left: x, right: y}
+}
+
+func idNode(node, depth) {
+    tmp := node.left
+    if depth == 0 {
+        return node
+    }
+    child := idNode(node, depth - 1)
+    if depth < 0 {
+        return node
+    }
+    return child
+}
+
+func driver() {
+    return idNode(makePair(1, 2), 2)
+}
+
+result := driver()
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	idNode := findProtoByName(top, "idNode")
+	if idNode == nil {
+		t.Fatal("idNode proto not found")
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(idNode); err != nil {
+		t.Fatalf("CompileTier2(idNode): %v", err)
+	}
+	cf := tm.tier2Compiled[idNode]
+	if cf == nil {
+		t.Fatal("missing Tier 2 compiled idNode")
+	}
+	if !cf.TypedSelfABI.Eligible {
+		t.Fatalf("idNode typed ABI rejected: %s", cf.TypedSelfABI.RejectWhy)
+	}
+	if cf.TypedEntryOffset == 0 {
+		t.Fatal("idNode compiled without typed self entry")
+	}
+	return cf
+}
+
 func isSTRToMRegRegsSlot(word uint32, slot int) bool {
 	if slot < 0 || slot > 4095 {
 		return false
@@ -406,4 +495,9 @@ func blTargetOffset(word uint32, pc int) (int, bool) {
 		imm |= ^int32(0x03FFFFFF)
 	}
 	return pc + int(imm)*4, true
+}
+
+func isLDRWTableShapeID(word uint32) bool {
+	return word&0xFFC00000 == 0xB9400000 &&
+		((word>>10)&0xFFF) == uint32(jit.TableOffShapeID/4)
 }
