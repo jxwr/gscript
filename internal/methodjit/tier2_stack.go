@@ -19,3 +19,18 @@ func ensureTier2NativeStack() {
 	}
 	runtime.KeepAlive(&pad)
 }
+
+// ensureTypedSelfTier2NativeStack reserves only the typed-self ABI's native
+// frame budget. Typed-self candidates contain self calls only, use a full
+// 128-byte callee frame plus a small caller shim, and are bounded by
+// maxNativeCallDepth/register-window checks before falling back to Go.
+//
+//go:noinline
+func ensureTypedSelfTier2NativeStack() {
+	var pad [32 << 10]byte
+	for i := 0; i < len(pad); i += 4096 {
+		pad[i] = byte(i)
+		tier2StackReserveSink ^= pad[i]
+	}
+	runtime.KeepAlive(&pad)
+}

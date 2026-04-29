@@ -11,6 +11,7 @@
 package methodjit
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -20,6 +21,13 @@ import (
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
+
+// errNestedNativeCallExit is a known bridge limitation: the current
+// ExitNativeCallExit descriptor represents one suspended native callee. Nested
+// typed-self exits need a descriptor stack to resume fully in Tier 2, so the VM
+// falls through to the interpreter. Keep this sentinel allocation-free; the
+// fallback path can hit it once per recursive leaf.
+var errNestedNativeCallExit = errors.New("tier2: nested native-call-exit")
 
 // executeCallExit handles a call-exit in the TieringManager's Tier 2 path.
 func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
@@ -262,6 +270,8 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			return runtime.NilValue(), nil
 		}
 		return runtime.NilValue(), fmt.Errorf("callee deopt")
+	case ExitNativeCallExit:
+		return runtime.NilValue(), errNestedNativeCallExit
 	default:
 		return runtime.NilValue(), fmt.Errorf("unknown callee exit code %d", ctx.NativeCalleeExitCode)
 	}

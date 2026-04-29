@@ -1498,7 +1498,11 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
-	ensureTier2NativeStack()
+	if cf.TypedSelfABI.Eligible {
+		ensureTypedSelfTier2NativeStack()
+	} else {
+		ensureTier2NativeStack()
+	}
 	if tm.timeline != nil {
 		tm.traceEvent("tier2_entered", "tier2", proto, map[string]any{
 			"base":       base,
@@ -1616,6 +1620,11 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			var err error
 			regs, err = tm.executeNativeCallExit(ctx, cf, regs, base, proto)
 			if err != nil {
+				if err == errNestedNativeCallExit {
+					// Known fallback: avoid wrapping with fmt.Errorf on the
+					// hot recursive leaf path.
+					return nil, err
+				}
 				return nil, fmt.Errorf("tier2: native-call-exit: %w", err)
 			}
 			resyncRegs()
