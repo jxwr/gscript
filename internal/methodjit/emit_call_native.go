@@ -377,6 +377,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 
 	// Snapshot callee exit metadata before restoring the caller frame.
+	ec.emitPushNativeCallExitFrameIfNested(jit.X3, jit.X4, jit.X5, jit.X6)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeExitCode)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffResumeNumericPass)
@@ -460,6 +461,8 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 func (ec *emitContext) emitNativeCallExit(instr *Instr, funcSlot, nArgs, nRets, calleeBaseOff int) {
 	asm := ec.asm
 
+	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallerClosurePtr)
 	asm.LoadImm64(jit.X0, int64(funcSlot))
 	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
 	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallA)
@@ -1188,6 +1191,7 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	asm.B(doneLabel)
 
 	asm.Label(exitHandleLabel)
+	ec.emitPushNativeCallExitFrameIfNested(jit.X8, jit.X9, jit.X10, jit.X11)
 	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeExitCode)
 	asm.LDR(jit.X8, mRegCtx, execCtxOffResumeNumericPass)
@@ -1213,6 +1217,61 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 
 	asm.Label(doneLabel)
 	return true
+}
+
+func (ec *emitContext) emitPushNativeCallExitFrameIfNested(tmpExit, tmpDepth, tmpFrame, tmpVal jit.Reg) {
+	asm := ec.asm
+	doneLabel := ec.uniqueLabel("native_exit_stack_done")
+	overflowLabel := ec.uniqueLabel("native_exit_stack_overflow")
+
+	asm.LDR(tmpExit, mRegCtx, execCtxOffExitCode)
+	asm.CMPimm(tmpExit, ExitNativeCallExit)
+	asm.BCond(jit.CondNE, doneLabel)
+
+	asm.LDR(tmpDepth, mRegCtx, execCtxOffNativeCallExitStackDepth)
+	asm.CMPimm(tmpDepth, maxNativeCallExitStackDepth)
+	asm.BCond(jit.CondGE, overflowLabel)
+
+	asm.LoadImm64(tmpFrame, int64(nativeCallExitFrameSize))
+	asm.MUL(tmpFrame, tmpDepth, tmpFrame)
+	if execCtxOffNativeCallExitStack <= 4095 {
+		asm.ADDimm(tmpFrame, tmpFrame, uint16(execCtxOffNativeCallExitStack))
+	} else {
+		asm.LoadImm64(tmpVal, int64(execCtxOffNativeCallExitStack))
+		asm.ADDreg(tmpFrame, tmpFrame, tmpVal)
+	}
+	asm.ADDreg(tmpFrame, mRegCtx, tmpFrame)
+
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffCallSlot, nativeCallExitFrameOffCallSlot)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffCallNArgs, nativeCallExitFrameOffCallNArgs)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffCallNRets, nativeCallExitFrameOffCallNRets)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffCallID, nativeCallExitFrameOffCallID)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCallA, nativeCallExitFrameOffNativeCallA)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCallB, nativeCallExitFrameOffNativeCallB)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCallC, nativeCallExitFrameOffNativeCallC)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCalleeExitCode, nativeCallExitFrameOffNativeCalleeExitCode)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCalleeResumePass, nativeCallExitFrameOffNativeCalleeResumePass)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCalleeBaseOff, nativeCallExitFrameOffNativeCalleeBaseOff)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCalleeResumePC, nativeCallExitFrameOffNativeCalleeResumePC)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCalleeClosurePtr, nativeCallExitFrameOffNativeCalleeClosurePtr)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCalleeTier2Only, nativeCallExitFrameOffNativeCalleeTier2Only)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffNativeCallerClosurePtr, nativeCallExitFrameOffNativeCallerClosurePtr)
+	ec.emitStoreNativeCallExitFrameField(tmpFrame, tmpVal, execCtxOffResumeNumericPass, nativeCallExitFrameOffResumeNumericPass)
+
+	asm.ADDimm(tmpDepth, tmpDepth, 1)
+	asm.STR(tmpDepth, mRegCtx, execCtxOffNativeCallExitStackDepth)
+	asm.B(doneLabel)
+
+	asm.Label(overflowLabel)
+	asm.MOVimm16(tmpVal, 1)
+	asm.STR(tmpVal, mRegCtx, execCtxOffNativeCallExitStackOverflow)
+
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitStoreNativeCallExitFrameField(frameReg, tmpReg jit.Reg, ctxOff, frameOff int) {
+	ec.asm.LDR(tmpReg, mRegCtx, ctxOff)
+	ec.asm.STR(tmpReg, frameReg, frameOff)
 }
 
 func (ec *emitContext) emitTypedSelfArgsInRegsAndSave(instr *Instr, abi TypedSelfABI, fallbackLabel string) {

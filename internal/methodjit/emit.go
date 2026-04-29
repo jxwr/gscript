@@ -100,6 +100,14 @@ type ExecContext struct {
 	NativeCalleeResumePC   int64   // callee's resume PC (saved before caller restores its own BaselinePC)
 	NativeCalleeClosurePtr uintptr // callee's closure pointer (saved before caller restores its own ClosurePtr)
 	NativeCalleeTier2Only  int64   // non-zero when caller used Tier2DirectEntryPtr because DirectEntryPtr was cleared
+	NativeCallerClosurePtr uintptr // caller closure pointer for resuming after a native-call-exit
+	// NativeCallExitStack preserves suspended native-call-exit descriptors
+	// when native callers wrap an already-suspended native callee. The current
+	// descriptor remains in the scalar Call*/NativeCallee* fields; older inner
+	// descriptors are pushed here and restored by the Go-side resume loop.
+	NativeCallExitStackDepth    int64
+	NativeCallExitStackOverflow int64
+	NativeCallExitStack         [maxNativeCallExitStackDepth]NativeCallExitFrame
 	// Register file bounds: pointer one past the last valid register slot.
 	// Used by native BLR to detect when the callee's register window would
 	// exceed the allocated register file, falling to slow path instead.
@@ -174,6 +182,26 @@ type ExecContext struct {
 	ExitResumeCheckShadow uintptr
 }
 
+const maxNativeCallExitStackDepth = maxNativeCallDepth
+
+type NativeCallExitFrame struct {
+	CallSlot               int64
+	CallNArgs              int64
+	CallNRets              int64
+	CallID                 int64
+	NativeCallA            int64
+	NativeCallB            int64
+	NativeCallC            int64
+	NativeCalleeExitCode   int64
+	NativeCalleeResumePass int64
+	NativeCalleeBaseOff    int64
+	NativeCalleeResumePC   int64
+	NativeCalleeClosurePtr uintptr
+	NativeCalleeTier2Only  int64
+	NativeCallerClosurePtr uintptr
+	ResumeNumericPass      int64
+}
+
 // ExitCode constants.
 const (
 	ExitNormal         = 0 // normal return
@@ -243,21 +271,41 @@ var (
 	// Native call mode offset
 	execCtxOffCallMode = int(unsafe.Offsetof(ExecContext{}.CallMode))
 	// Native call exit offsets
-	execCtxOffNativeCallA            = int(unsafe.Offsetof(ExecContext{}.NativeCallA))
-	execCtxOffNativeCallB            = int(unsafe.Offsetof(ExecContext{}.NativeCallB))
-	execCtxOffNativeCallC            = int(unsafe.Offsetof(ExecContext{}.NativeCallC))
-	execCtxOffNativeCalleeExitCode   = int(unsafe.Offsetof(ExecContext{}.NativeCalleeExitCode))
-	execCtxOffNativeCalleeResumePass = int(unsafe.Offsetof(ExecContext{}.NativeCalleeResumePass))
-	execCtxOffNativeCalleeBaseOff    = int(unsafe.Offsetof(ExecContext{}.NativeCalleeBaseOff))
-	execCtxOffNativeCalleeResumePC   = int(unsafe.Offsetof(ExecContext{}.NativeCalleeResumePC))
-	execCtxOffNativeCalleeClosurePtr = int(unsafe.Offsetof(ExecContext{}.NativeCalleeClosurePtr))
-	execCtxOffNativeCalleeTier2Only  = int(unsafe.Offsetof(ExecContext{}.NativeCalleeTier2Only))
-	execCtxOffRegsEnd                = int(unsafe.Offsetof(ExecContext{}.RegsEnd))
-	execCtxOffRawSelfRegsEnd         = int(unsafe.Offsetof(ExecContext{}.RawSelfRegsEnd))
-	execCtxOffRegsBase               = int(unsafe.Offsetof(ExecContext{}.RegsBase))
-	execCtxOffTopPtr                 = int(unsafe.Offsetof(ExecContext{}.TopPtr))
-	execCtxOffNativeCallDepth        = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))
-	execCtxOffOSRCounter             = int(unsafe.Offsetof(ExecContext{}.OSRCounter))
+	execCtxOffNativeCallA                        = int(unsafe.Offsetof(ExecContext{}.NativeCallA))
+	execCtxOffNativeCallB                        = int(unsafe.Offsetof(ExecContext{}.NativeCallB))
+	execCtxOffNativeCallC                        = int(unsafe.Offsetof(ExecContext{}.NativeCallC))
+	execCtxOffNativeCalleeExitCode               = int(unsafe.Offsetof(ExecContext{}.NativeCalleeExitCode))
+	execCtxOffNativeCalleeResumePass             = int(unsafe.Offsetof(ExecContext{}.NativeCalleeResumePass))
+	execCtxOffNativeCalleeBaseOff                = int(unsafe.Offsetof(ExecContext{}.NativeCalleeBaseOff))
+	execCtxOffNativeCalleeResumePC               = int(unsafe.Offsetof(ExecContext{}.NativeCalleeResumePC))
+	execCtxOffNativeCalleeClosurePtr             = int(unsafe.Offsetof(ExecContext{}.NativeCalleeClosurePtr))
+	execCtxOffNativeCalleeTier2Only              = int(unsafe.Offsetof(ExecContext{}.NativeCalleeTier2Only))
+	execCtxOffNativeCallerClosurePtr             = int(unsafe.Offsetof(ExecContext{}.NativeCallerClosurePtr))
+	execCtxOffNativeCallExitStackDepth           = int(unsafe.Offsetof(ExecContext{}.NativeCallExitStackDepth))
+	execCtxOffNativeCallExitStackOverflow        = int(unsafe.Offsetof(ExecContext{}.NativeCallExitStackOverflow))
+	execCtxOffNativeCallExitStack                = int(unsafe.Offsetof(ExecContext{}.NativeCallExitStack))
+	nativeCallExitFrameSize                      = int(unsafe.Sizeof(NativeCallExitFrame{}))
+	nativeCallExitFrameOffCallSlot               = int(unsafe.Offsetof(NativeCallExitFrame{}.CallSlot))
+	nativeCallExitFrameOffCallNArgs              = int(unsafe.Offsetof(NativeCallExitFrame{}.CallNArgs))
+	nativeCallExitFrameOffCallNRets              = int(unsafe.Offsetof(NativeCallExitFrame{}.CallNRets))
+	nativeCallExitFrameOffCallID                 = int(unsafe.Offsetof(NativeCallExitFrame{}.CallID))
+	nativeCallExitFrameOffNativeCallA            = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCallA))
+	nativeCallExitFrameOffNativeCallB            = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCallB))
+	nativeCallExitFrameOffNativeCallC            = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCallC))
+	nativeCallExitFrameOffNativeCalleeExitCode   = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCalleeExitCode))
+	nativeCallExitFrameOffNativeCalleeResumePass = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCalleeResumePass))
+	nativeCallExitFrameOffNativeCalleeBaseOff    = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCalleeBaseOff))
+	nativeCallExitFrameOffNativeCalleeResumePC   = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCalleeResumePC))
+	nativeCallExitFrameOffNativeCalleeClosurePtr = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCalleeClosurePtr))
+	nativeCallExitFrameOffNativeCalleeTier2Only  = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCalleeTier2Only))
+	nativeCallExitFrameOffNativeCallerClosurePtr = int(unsafe.Offsetof(NativeCallExitFrame{}.NativeCallerClosurePtr))
+	nativeCallExitFrameOffResumeNumericPass      = int(unsafe.Offsetof(NativeCallExitFrame{}.ResumeNumericPass))
+	execCtxOffRegsEnd                            = int(unsafe.Offsetof(ExecContext{}.RegsEnd))
+	execCtxOffRawSelfRegsEnd                     = int(unsafe.Offsetof(ExecContext{}.RawSelfRegsEnd))
+	execCtxOffRegsBase                           = int(unsafe.Offsetof(ExecContext{}.RegsBase))
+	execCtxOffTopPtr                             = int(unsafe.Offsetof(ExecContext{}.TopPtr))
+	execCtxOffNativeCallDepth                    = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))
+	execCtxOffOSRCounter                         = int(unsafe.Offsetof(ExecContext{}.OSRCounter))
 	// Tier 2 global cache offsets
 	execCtxOffTier2GlobalCache      = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCache))
 	execCtxOffTier2GlobalCacheGen   = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCacheGen))

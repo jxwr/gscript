@@ -162,6 +162,77 @@ root := makeTree(5)
 	}
 }
 
+func TestTypedTableSelfABI_NestedShapeMissUsesNativeExitStack(t *testing.T) {
+	src := `
+func makeTree(depth) {
+    if depth == 0 {
+        return {leaf: 1}
+    }
+    return {left: makeTree(depth - 1), right: makeTree(depth - 1)}
+}
+
+func checkTree(node) {
+    if node.left == nil {
+        return 1
+    }
+    return 1 + checkTree(node.left) + checkTree(node.right)
+}
+
+root := makeTree(4)
+`
+	const want = 31
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	checkTree := findProtoByName(top, "checkTree")
+	if checkTree == nil {
+		t.Fatal("checkTree proto not found")
+	}
+	fn := v.GetGlobal("checkTree")
+	root := v.GetGlobal("root")
+	cl, ok := vmClosureFromValue(fn)
+	if !ok || cl == nil {
+		t.Fatalf("checkTree global is not a closure: %v", fn)
+	}
+	warm, err := v.CallValue(fn, []runtime.Value{root})
+	if err != nil {
+		t.Fatalf("warm checkTree: %v", err)
+	}
+	if len(warm) != 1 || !warm[0].IsInt() || warm[0].Int() != want {
+		t.Fatalf("warm checkTree(root)=%v, want int %d", warm, want)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(checkTree); err != nil {
+		t.Fatalf("CompileTier2(checkTree): %v", err)
+	}
+	cf := tm.tier2Compiled[checkTree]
+	if cf == nil || !cf.TypedSelfABI.Eligible {
+		t.Fatalf("compiled checkTree missing typed ABI: cf=%v", cf)
+	}
+
+	checkTree.FieldCache = nil
+	regs := v.EnsureRegs(cf.numRegs + 1)
+	regs[0] = root
+	if !v.PushFrame(cl, 0) {
+		t.Fatal("PushFrame(checkTree) failed")
+	}
+	got, err := tm.executeTier2(cf, regs, 0, checkTree)
+	v.PopFrame()
+	if err != nil {
+		t.Fatalf("direct Tier2 checkTree: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != want {
+		t.Fatalf("direct Tier2 checkTree(root)=%v, want int %d", got, want)
+	}
+}
+
 func TestTypedTableSelfABI_TypedEntryPublishesParamHomeForExits(t *testing.T) {
 	cf := compileCheckTreeTypedSelf(t)
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())

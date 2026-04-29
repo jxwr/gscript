@@ -113,6 +113,8 @@ func (tm *TieringManager) executeNativeCallExit(ctx *ExecContext, callerCF *Comp
 	if tm.callVM == nil {
 		return regs, fmt.Errorf("no callVM set for native-call-exit")
 	}
+	callerFrame := snapshotNativeCallExitFrame(ctx)
+	callerClosurePtr := callerFrame.NativeCallerClosurePtr
 	calleeProto, calleeCF, calleeBase, err := tm.nativeExitCallee(ctx, regs, callerBase)
 	if err != nil {
 		return regs, err
@@ -126,7 +128,11 @@ func (tm *TieringManager) executeNativeCallExit(ctx *ExecContext, callerCF *Comp
 	if err != nil {
 		return regs, err
 	}
+	restoreNativeCallExitFrame(ctx, callerFrame)
 	tm.setTier2ResumeContext(ctx, callerCF, callerProto, callerBase)
+	if callerClosurePtr != 0 {
+		ctx.BaselineClosurePtr = callerClosurePtr
+	}
 	regs = tm.callVM.Regs()
 	absSlot := callerBase + int(ctx.CallSlot)
 	nRets := int(ctx.CallNRets)
@@ -144,6 +150,61 @@ func (tm *TieringManager) executeNativeCallExit(ctx *ExecContext, callerCF *Comp
 		}
 	}
 	return regs, nil
+}
+
+func snapshotNativeCallExitFrame(ctx *ExecContext) NativeCallExitFrame {
+	if ctx == nil {
+		return NativeCallExitFrame{}
+	}
+	return NativeCallExitFrame{
+		CallSlot:               ctx.CallSlot,
+		CallNArgs:              ctx.CallNArgs,
+		CallNRets:              ctx.CallNRets,
+		CallID:                 ctx.CallID,
+		NativeCallA:            ctx.NativeCallA,
+		NativeCallB:            ctx.NativeCallB,
+		NativeCallC:            ctx.NativeCallC,
+		NativeCalleeExitCode:   ctx.NativeCalleeExitCode,
+		NativeCalleeResumePass: ctx.NativeCalleeResumePass,
+		NativeCalleeBaseOff:    ctx.NativeCalleeBaseOff,
+		NativeCalleeResumePC:   ctx.NativeCalleeResumePC,
+		NativeCalleeClosurePtr: ctx.NativeCalleeClosurePtr,
+		NativeCalleeTier2Only:  ctx.NativeCalleeTier2Only,
+		NativeCallerClosurePtr: ctx.NativeCallerClosurePtr,
+		ResumeNumericPass:      ctx.ResumeNumericPass,
+	}
+}
+
+func restoreNativeCallExitFrame(ctx *ExecContext, frame NativeCallExitFrame) {
+	if ctx == nil {
+		return
+	}
+	ctx.CallSlot = frame.CallSlot
+	ctx.CallNArgs = frame.CallNArgs
+	ctx.CallNRets = frame.CallNRets
+	ctx.CallID = frame.CallID
+	ctx.NativeCallA = frame.NativeCallA
+	ctx.NativeCallB = frame.NativeCallB
+	ctx.NativeCallC = frame.NativeCallC
+	ctx.NativeCalleeExitCode = frame.NativeCalleeExitCode
+	ctx.NativeCalleeResumePass = frame.NativeCalleeResumePass
+	ctx.NativeCalleeBaseOff = frame.NativeCalleeBaseOff
+	ctx.NativeCalleeResumePC = frame.NativeCalleeResumePC
+	ctx.NativeCalleeClosurePtr = frame.NativeCalleeClosurePtr
+	ctx.NativeCalleeTier2Only = frame.NativeCalleeTier2Only
+	ctx.NativeCallerClosurePtr = frame.NativeCallerClosurePtr
+	ctx.ResumeNumericPass = frame.ResumeNumericPass
+}
+
+func popNativeCallExitFrame(ctx *ExecContext) bool {
+	if ctx == nil || ctx.NativeCallExitStackDepth <= 0 {
+		return false
+	}
+	ctx.NativeCallExitStackDepth--
+	frame := ctx.NativeCallExitStack[ctx.NativeCallExitStackDepth]
+	restoreNativeCallExitFrame(ctx, frame)
+	ctx.NativeCallExitStack[ctx.NativeCallExitStackDepth] = NativeCallExitFrame{}
+	return true
 }
 
 func (tm *TieringManager) setTier2ResumeContext(ctx *ExecContext, cf *CompiledFunction, proto *vm.FuncProto, base int) {
@@ -216,6 +277,7 @@ func (tm *TieringManager) nativeExitCallee(ctx *ExecContext, regs []runtime.Valu
 
 func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) (runtime.Value, error) {
 	codePtr := uintptr(0)
+	resumeClosurePtr := ctx.NativeCalleeClosurePtr
 	switch ctx.NativeCalleeExitCode {
 	case ExitTableExit:
 		if err := tm.executeTableExit(ctx, regs, base, proto, cf); err != nil {
@@ -271,14 +333,29 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		}
 		return runtime.NilValue(), fmt.Errorf("callee deopt")
 	case ExitNativeCallExit:
-		return runtime.NilValue(), errNestedNativeCallExit
+		if ctx.NativeCallExitStackOverflow != 0 || !popNativeCallExitFrame(ctx) {
+			return runtime.NilValue(), errNestedNativeCallExit
+		}
+		var err error
+		regs, err = tm.executeNativeCallExit(ctx, cf, regs, base, proto)
+		if err != nil {
+			return runtime.NilValue(), err
+		}
+		resumeOff, ok := cf.resumeOffset(int(ctx.CallID), ctx.ResumeNumericPass != 0)
+		if !ok {
+			return runtime.NilValue(), fmt.Errorf("callee native-call-exit: no resume for %d", ctx.CallID)
+		}
+		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+		resumeClosurePtr = ctx.NativeCallerClosurePtr
 	default:
 		return runtime.NilValue(), fmt.Errorf("unknown callee exit code %d", ctx.NativeCalleeExitCode)
 	}
 
 	currentRegs := tm.callVM.Regs()
 	tm.setTier2ResumeContext(ctx, cf, proto, base)
-	ctx.BaselineClosurePtr = ctx.NativeCalleeClosurePtr
+	if resumeClosurePtr != 0 {
+		ctx.BaselineClosurePtr = resumeClosurePtr
+	}
 	ctx.CallMode = 1
 	ctx.ExitCode = 0
 	ctx.ResumeNumericPass = 0
@@ -332,6 +409,19 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			resumeOff, ok := cf.resumeOffset(int(ctx.CallID), ctx.ResumeNumericPass != 0)
 			if !ok {
 				return runtime.NilValue(), fmt.Errorf("callee call-exit: no resume for %d", ctx.CallID)
+			}
+			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+			ctx.ExitCode = 0
+			ctx.ResumeNumericPass = 0
+		case ExitNativeCallExit:
+			var err error
+			currentRegs, err = tm.executeNativeCallExit(ctx, cf, currentRegs, base, proto)
+			if err != nil {
+				return runtime.NilValue(), fmt.Errorf("callee native-call-exit: %w", err)
+			}
+			resumeOff, ok := cf.resumeOffset(int(ctx.CallID), ctx.ResumeNumericPass != 0)
+			if !ok {
+				return runtime.NilValue(), fmt.Errorf("callee native-call-exit: no resume for %d", ctx.CallID)
 			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
