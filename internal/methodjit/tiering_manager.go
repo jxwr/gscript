@@ -274,23 +274,35 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// table ops. Functions with loops + calls + arithmetic are promoted at
 	// threshold=2 — compileTier2 will try inlining and reject if calls remain.
 	promoteTier2 := shouldPromoteTier2(proto, profile, proto.CallCount)
+	suppressedRecursivePartition := tm.shouldSuppressRecursivePartitionTableMutationTier2(proto, profile)
 	if promoteTier2 && tm.shouldSuppressLoopCallTier2(proto, profile) {
 		promoteTier2 = false
 	}
-	if promoteTier2 && tm.shouldSuppressMainLoopCallTier2(proto, profile) {
+	if promoteTier2 && suppressedRecursivePartition {
 		promoteTier2 = false
 	}
-	if !promoteTier2 && tm.shouldPromoteNativeLoopDriver(proto, profile) {
+	if !promoteTier2 && !suppressedRecursivePartition && tm.shouldPromoteNativeLoopDriver(proto, profile) {
 		promoteTier2 = true
 	}
 	if !promoteTier2 {
 		// Not ready for Tier 2: use Tier 1, but enable OSR for loop-heavy
 		// functions so they can be upgraded mid-execution if they run hot.
+		if suppressedRecursivePartition {
+			tm.disableTier1FeedbackForNoTier2(proto)
+			if proto.CallCount <= tmDefaultTier2Threshold {
+				proto.CallCount = tmDefaultTier2Threshold + 1
+			}
+			tm.tier1.SetOSRCounter(proto, -1)
+			tm.traceEvent("tier2_skip", "tier2", proto, map[string]any{
+				"reason": "recursive_partition_table_mutation",
+				"target": "tier1",
+			})
+		}
 		tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
 		t1 := tm.tier1.TryCompile(proto)
 		tm.traceTier1CompileResult(proto, tier1AlreadyCompiled, t1, "not_ready_for_tier2")
 		// Ensure feedback is initialized for Tier 1 type collection.
-		if t1 != nil && proto.Feedback == nil {
+		if t1 != nil && proto.Feedback == nil && !IsFeedbackCollectionDisabled(proto) {
 			proto.EnsureFeedback()
 		}
 		// R162 widened OSR to LoopDepth >= 1 for clean post-pipeline bodies.
@@ -300,7 +312,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		// cannot replay table mutations from single-loop drivers. No-filter
 		// may bypass the performance-only call-in-loop prefilter, but it must
 		// not bypass restart-safety: replayed side effects are correctness bugs.
-		if profile.HasLoop && profile.LoopDepth >= 1 && !tm.tier2Failed[proto] &&
+		if profile.HasLoop && profile.LoopDepth >= 1 && !suppressedRecursivePartition && !tm.tier2Failed[proto] &&
 			(profile.LoopDepth >= 2 || tm.isOSRRestartSafe(proto, profile)) &&
 			(tm.envTier2NoFilter || !tm.osrWouldHitCallInLoopGate(proto, profile)) {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
@@ -318,7 +330,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 
 	// Tier 2 already failed? Use Tier 1.
 	if tm.tier2Failed[proto] {
-		tm.disableTier1FeedbackAfterTier2Failure(proto)
+		tm.disableTier1FeedbackForNoTier2(proto)
 		tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
 		t1 := tm.tier1.TryCompile(proto)
 		tm.traceTier1CompileResult(proto, tier1AlreadyCompiled, t1, "tier2_failed")
@@ -348,7 +360,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
 		tm.tier2Failed[proto] = true
-		tm.disableTier1FeedbackAfterTier2Failure(proto)
+		tm.disableTier1FeedbackForNoTier2(proto)
 		tm.traceEvent("fallback", "tier1", proto, map[string]any{
 			"reason": err.Error(),
 			"target": "tier1",
@@ -460,7 +472,7 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 		// Tier 2 compilation failed. Disable OSR for this function and
 		// re-run at Tier 1 from the start with OSR disabled.
 		tm.tier2Failed[proto] = true
-		tm.disableTier1FeedbackAfterTier2Failure(proto)
+		tm.disableTier1FeedbackForNoTier2(proto)
 		tm.tier1.SetOSRCounter(proto, -1) // disable OSR
 		tm.traceEvent("fallback", "tier1", proto, map[string]any{
 			"reason": err.Error(),
@@ -481,7 +493,7 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 	return tm.executeTier2(t2, regs, base, proto)
 }
 
-func (tm *TieringManager) disableTier1FeedbackAfterTier2Failure(proto *vm.FuncProto) {
+func (tm *TieringManager) disableTier1FeedbackForNoTier2(proto *vm.FuncProto) {
 	if proto == nil || IsFeedbackCollectionDisabled(proto) {
 		return
 	}
@@ -776,6 +788,13 @@ func (tm *TieringManager) shouldSuppressLoopCallTier2(proto *vm.FuncProto, profi
 	}
 	globals := tm.buildLoopCallGlobals(proto)
 	return !canPromoteWithInlining(proto, globals) && !canPromoteWithNativeLoopCalls(proto, globals)
+}
+
+func (tm *TieringManager) shouldSuppressRecursivePartitionTableMutationTier2(proto *vm.FuncProto, profile FuncProfile) bool {
+	if tm == nil || tm.envTier2NoFilter || proto == nil || profile.LoopDepth == 0 {
+		return false
+	}
+	return hasStaticSelfRecursivePartitionSetTableLoop(proto)
 }
 
 // tier0OnlyLoopCallee reports stable loop callees that are deliberately kept
@@ -2322,12 +2341,8 @@ func firstSelfRecursiveTableMutationInLoop(fn *Function) (Op, bool) {
 }
 
 func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
-	// Keep recursive partition-style loops at Tier 1: sort/quicksort can enter
-	// much slower recursive Tier 2 behavior even when individual table stores
-	// are typed. firstSelfRecursiveTableMutationInLoop enforces the same rule as
-	// a hard no-filter safety gate before the broader performance filters below.
 	if irHasSelfCall(fn) {
-		return false
+		return loopTableMutationRecoveryAdmitsInstr(fn, instr)
 	}
 	// Aux2 carries monomorphic array-kind feedback from Tier 1. Only typed
 	// arrays get the Tier 2 append/write fast path; Mixed stores remain too
@@ -2339,6 +2354,25 @@ func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
 	default:
 		return isScalarArraySetTable(instr)
 	}
+}
+
+func hasStaticSelfRecursivePartitionSetTableLoop(proto *vm.FuncProto) bool {
+	if proto == nil || !staticallyCallsOnlySelf(proto) {
+		return false
+	}
+	inLoop := staticLoopPCs(proto)
+	setTablesByTableReg := make(map[int]int)
+	for pc, inst := range proto.Code {
+		if pc >= len(inLoop) || !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_SETTABLE {
+			continue
+		}
+		tableReg := vm.DecodeA(inst)
+		setTablesByTableReg[tableReg]++
+		if setTablesByTableReg[tableReg] >= 2 {
+			return true
+		}
+	}
+	return false
 }
 
 func isScalarArraySetTable(instr *Instr) bool {

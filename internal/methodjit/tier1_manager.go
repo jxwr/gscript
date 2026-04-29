@@ -63,8 +63,9 @@ func IsIntSpecDisabled(proto *vm.FuncProto) bool {
 }
 
 // IsFeedbackCollectionDisabled reports whether Tier 1 should omit type/kind
-// feedback instrumentation for a proto. This is only used after Tier 2 has
-// permanently failed for that proto, so the collected feedback has no remaining
+// feedback instrumentation for a proto. This is used after Tier 2 has
+// permanently failed or a cheap static gate proves Tier 2 should not be
+// attempted for that proto, so the collected feedback has no remaining
 // optimizing consumer.
 func IsFeedbackCollectionDisabled(proto *vm.FuncProto) bool {
 	return protoFeedbackCollectionDisabled[proto]

@@ -112,6 +112,79 @@ func touch(arr, n) {
 	}
 }
 
+func TestTier2LoopGateAllowsDefaultSelfRecursiveIdempotentTableOverwrite(t *testing.T) {
+	top := compileTop(t, `
+func touch(arr, n) {
+    if n <= 0 { return }
+    for i := 1; i <= n; i++ {
+        arr[i] = arr[i]
+    }
+    touch(arr, n - 1)
+}
+`)
+	touch := findProtoByName(top, "touch")
+	if touch == nil {
+		t.Fatal("touch proto not found")
+	}
+	if hasStaticSelfRecursivePartitionSetTableLoop(touch) {
+		t.Fatal("idempotent recursive overwrite should not match partition-style SetTable loop")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(touch); err != nil {
+		t.Fatalf("CompileTier2(touch) failed: %v", err)
+	}
+}
+
+func TestTryCompileSuppressesRecursivePartitionTableMutationTier2Attempt(t *testing.T) {
+	top := compileTop(t, `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            t := arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+            i = i + 1
+        }
+    }
+    t := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = t
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+`)
+	qs := findProtoByName(top, "quicksort")
+	if qs == nil {
+		t.Fatal("quicksort proto not found")
+	}
+	if !hasStaticSelfRecursivePartitionSetTableLoop(qs) {
+		t.Fatal("quicksort should match partition-style SetTable loop prefilter")
+	}
+
+	tm := NewTieringManager()
+	qs.CallCount = BaselineCompileThreshold
+	compiled := tm.TryCompile(qs)
+	if compiled == nil {
+		t.Fatal("TryCompile(quicksort) returned nil; want Tier1 fallback")
+	}
+	if tm.Tier2Attempted() != 0 {
+		t.Fatalf("quicksort should avoid futile Tier2 attempt, got %d attempts", tm.Tier2Attempted())
+	}
+	if tm.tier2Failed[qs] {
+		t.Fatal("suppressed quicksort should not be recorded as a Tier2 failure")
+	}
+	if !IsFeedbackCollectionDisabled(qs) {
+		t.Fatal("suppressed quicksort should recompile Tier1 without feedback writes")
+	}
+	if qs.CallCount <= tmDefaultTier2Threshold {
+		t.Fatalf("suppressed quicksort CallCount=%d, want past Tier2 threshold", qs.CallCount)
+	}
+}
+
 func TestTier2ExitStormGateAllowsNoFilterKnownFloatModLoop(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 

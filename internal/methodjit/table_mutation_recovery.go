@@ -51,6 +51,19 @@ func tableMutationRecoveryClassAdmitted(c tableMutationRecoveryClass) bool {
 	return c == tableMutationRecoverIdempotentOverwrite
 }
 
+func loopTableMutationRecoveryAdmitsInstr(fn *Function, instr *Instr) bool {
+	if fn == nil || instr == nil {
+		return false
+	}
+	summary := analyzeLoopTableMutationRecovery(fn)
+	for _, site := range summary.Sites {
+		if site.InstrID == instr.ID {
+			return tableMutationRecoveryClassAdmitted(site.RecoveryClass)
+		}
+	}
+	return false
+}
+
 type tableAccessKey struct {
 	tableID int
 	keyID   int
