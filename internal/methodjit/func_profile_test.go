@@ -307,6 +307,39 @@ func sum(n) {
 	}
 }
 
+func TestShouldStayTier0CoroutineRuntime(t *testing.T) {
+	src := `
+func driver(co, n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        ok, value := coroutine.resume(co)
+        total = total + value
+    }
+    return total
+}
+
+func string_literal_only() {
+    print("coroutine")
+}
+`
+	proto := compileProto(t, src)
+	driver := findProtoByName(proto, "driver")
+	if driver == nil {
+		t.Fatal("driver proto not found")
+	}
+	if !shouldStayTier0CoroutineRuntime(driver, analyzeFuncProfile(driver)) {
+		t.Fatal("coroutine stdlib driver should stay on the VM path")
+	}
+
+	plain := findProtoByName(proto, "string_literal_only")
+	if plain == nil {
+		t.Fatal("string_literal_only proto not found")
+	}
+	if shouldStayTier0CoroutineRuntime(plain, analyzeFuncProfile(plain)) {
+		t.Fatal("plain string constants should not trigger the coroutine VM gate")
+	}
+}
+
 func TestAnalyzeFuncProfile_WhileLoop(t *testing.T) {
 	// gcd uses a while-style loop (backward JMP).
 	src := `

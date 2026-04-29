@@ -207,6 +207,30 @@ func shouldStayTier0RecursiveTableWalker(proto *vm.FuncProto, profile FuncProfil
 	return true
 }
 
+// shouldStayTier0CoroutineRuntime keeps coroutine stdlib users on the VM path.
+// The interpreter has VM-native fast paths for coroutine.resume/yield/wrap,
+// while Tier 1 treats those calls as generic GoFunction exits and adds overhead
+// without opening a Tier 2 path.
+func shouldStayTier0CoroutineRuntime(proto *vm.FuncProto, profile FuncProfile) bool {
+	if proto == nil || profile.CallCount == 0 {
+		return false
+	}
+	for _, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_GETGLOBAL {
+			continue
+		}
+		bx := vm.DecodeBx(inst)
+		if bx < 0 || bx >= len(proto.Constants) {
+			continue
+		}
+		c := proto.Constants[bx]
+		if c.IsString() && c.Str() == "coroutine" {
+			return true
+		}
+	}
+	return false
+}
+
 // shouldPromoteTier2 decides whether a function should be promoted to Tier 2
 // based on its static profile and runtime call count.
 func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCount int) bool {

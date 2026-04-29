@@ -172,6 +172,22 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// Get the function profile (cached after first computation).
 	profile := tm.getProfile(proto)
 
+	if shouldStayTier0CoroutineRuntime(proto, profile) {
+		proto.JITDisabled = true
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "stay_tier0_coroutine_runtime",
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "stay_tier0_coroutine_runtime",
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "coroutine_runtime",
+			"target": "interpreter",
+		})
+		return nil
+	}
+
 	// Some function shapes are worse off compiled: tiny recursive
 	// table-allocation builders pay more in Tier 1 exit-resume
 	// overhead than they save in native templates. See
