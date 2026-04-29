@@ -933,7 +933,6 @@ func (c *compiler) compileGoCallExpr(call *ast.CallExpr, line int) error {
 
 func (c *compiler) compileGoMethodCallExpr(call *ast.MethodCallExpr, line int) error {
 	base := c.nextReg
-	// OP_SELF: R(A+1) = R(B); R(A) = R(B)[method]
 	selfReg := c.allocReg()
 	c.allocReg() // reserve selfReg+1 for receiver
 
@@ -941,8 +940,7 @@ func (c *compiler) compileGoMethodCallExpr(call *ast.MethodCallExpr, line int) e
 	if err := c.compileExprTo(call.Object, objReg); err != nil {
 		return err
 	}
-	methodK := c.stringConst(call.Method)
-	c.emitABC(OP_SELF, selfReg, objReg, methodK|RKBit, line)
+	c.emitMethodLookup(selfReg, objReg, c.stringConst(call.Method), line)
 
 	nArgs := len(call.Args)
 	for _, arg := range call.Args {
@@ -1954,15 +1952,7 @@ func (c *compiler) compileMethodCallExprMulti(call *ast.MethodCallExpr, dest int
 		return err
 	}
 
-	// OP_SELF A B C: R(A+1) = R(B); R(A) = R(B)[RK(C)]
-	// Since C goes through rk() and we can't encode RK constants in 8 bits,
-	// load the method name string into a register.
-	methodK := c.stringConst(call.Method)
-	methodReg := c.allocReg()
-	c.emitABx(OP_LOADK, methodReg, methodK, line)
-	c.emitABC(OP_SELF, selfReg, objReg, methodReg, line)
-
-	c.freeReg() // methodReg
+	c.emitMethodLookup(selfReg, objReg, c.stringConst(call.Method), line)
 	c.freeReg() // objReg
 
 	nArgs := len(call.Args)
@@ -2016,6 +2006,22 @@ func (c *compiler) compileMethodCallExprMulti(call *ast.MethodCallExpr, dest int
 		}
 	}
 	return nil
+}
+
+func (c *compiler) emitMethodLookup(selfReg, objReg, methodK, line int) {
+	// OP_SELF's C operand is only 8 bits in ABC encoding, so RK constants
+	// cannot be represented there. For encodable method constants, use
+	// MOVE+GETFIELD so method calls share the field inline-cache path.
+	if methodK <= 0xFF {
+		c.emitABC(OP_MOVE, selfReg+1, objReg, 0, line)
+		c.emitABC(OP_GETFIELD, selfReg, objReg, methodK, line)
+		return
+	}
+
+	methodReg := c.allocReg()
+	c.emitABx(OP_LOADK, methodReg, methodK, line)
+	c.emitABC(OP_SELF, selfReg, objReg, methodReg, line)
+	c.freeReg() // methodReg
 }
 
 // ---- Index / Field expressions ----
