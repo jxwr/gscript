@@ -71,11 +71,11 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 		if desc.InStack {
 			absIdx := base + desc.Index
 			if absIdx < len(regs) {
-				uv := vm.NewOpenUpvalue(&regs[absIdx], absIdx)
 				if e.callVM != nil {
-					uv = e.callVM.FindOrCreateUpvalue(absIdx)
+					cl.Upvalues[i] = e.callVM.FindOrCreateUpvalue(absIdx)
+				} else {
+					cl.Upvalues[i] = vm.NewOpenUpvalue(&regs[absIdx], absIdx)
 				}
-				cl.Upvalues[i] = uv
 			}
 		} else {
 			// Parent upvalue: copy from the parent closure's upvalue list.

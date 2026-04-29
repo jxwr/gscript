@@ -353,6 +353,49 @@ for i := 1; i <= 10; i++ {
 	}
 }
 
+func TestLoopCallPrefilterSuppressesDynamicClosureParam(t *testing.T) {
+	src := `
+func map_array(a, f) {
+    result := {}
+    n := #a
+    for i := 1; i <= n; i++ {
+        result[i] = f(a[i])
+    }
+    return result
+}
+`
+	top := compileProto(t, src)
+	mapArray := findProtoByName(top, "map_array")
+	if mapArray == nil {
+		t.Fatal("map_array proto not found")
+	}
+	tm := NewTieringManager()
+	profile := tm.getProfile(mapArray)
+	if !shouldPromoteTier2(mapArray, profile, 3) {
+		t.Fatal("dynamic closure-call loop should reach the old Tier2 candidate threshold")
+	}
+	if !tm.shouldSuppressLoopCallTier2(mapArray, profile) {
+		t.Fatal("dynamic closure-call loop should be suppressed before a futile Tier2 attempt")
+	}
+
+	mapArray.CallCount = 3
+	if compiled := tm.TryCompile(mapArray); compiled == nil {
+		t.Fatal("expected suppressed map_array to fall back to Tier1")
+	}
+	if tm.Tier2Attempted() != 0 {
+		t.Fatalf("expected no Tier2 attempt for suppressed map_array, got %d", tm.Tier2Attempted())
+	}
+	if tm.tier2Failed[mapArray] {
+		t.Fatal("suppressed map_array should not be recorded as a Tier2 failure")
+	}
+
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+	tm = NewTieringManager()
+	if tm.shouldSuppressLoopCallTier2(mapArray, profile) {
+		t.Fatal("no-filter diagnostics should bypass the dynamic loop-call prefilter")
+	}
+}
+
 func TestShouldStayTier1ForBoxedRawIntKernel(t *testing.T) {
 	src := `
 func gcd(a, b) {
