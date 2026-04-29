@@ -823,7 +823,7 @@ func computeTailCalls(fn *Function) map[int]bool {
 // with an immediately-following Branch (emit CMP/FCMP + B.cc).
 func isFusableComparison(op Op) bool {
 	switch op {
-	case OpLtInt, OpLeInt, OpEqInt, OpModZeroInt, OpLtFloat, OpLeFloat:
+	case OpEq, OpLtInt, OpLeInt, OpEqInt, OpModZeroInt, OpLtFloat, OpLeFloat:
 		return true
 	}
 	return false
@@ -1084,9 +1084,55 @@ func emitBoxTablePtr(asm *jit.Assembler, dst, ptr, scratch jit.Reg) {
 	asm.ORRreg(dst, dst, scratch)
 }
 
+func (ec *emitContext) typedSelfAfterParamsLabel() string {
+	return "t2_typed_self_after_params"
+}
+
+func (ec *emitContext) typedSelfEntryParamLoads(block *Block) map[int]bool {
+	if ec == nil || ec.numericMode || !ec.typedSelfABI.Eligible || ec.fn == nil || block == nil || block != ec.fn.Entry {
+		return nil
+	}
+	remaining := make(map[int]bool, ec.typedSelfABI.NumParams)
+	for i := 0; i < ec.typedSelfABI.NumParams; i++ {
+		remaining[i] = true
+	}
+	if len(remaining) == 0 {
+		return nil
+	}
+	pending := make(map[int]bool, len(remaining))
+	for _, instr := range block.Instrs {
+		if instr.Op != OpLoadSlot {
+			break
+		}
+		slot := int(instr.Aux)
+		if !remaining[slot] {
+			return nil
+		}
+		pending[slot] = true
+		delete(remaining, slot)
+		if len(remaining) == 0 {
+			return pending
+		}
+	}
+	return nil
+}
+
+func (ec *emitContext) entryParamLoad(slot int) (*Instr, bool) {
+	if ec == nil || ec.fn == nil || ec.fn.Entry == nil {
+		return nil, false
+	}
+	for _, instr := range ec.fn.Entry.Instrs {
+		if instr.Op == OpLoadSlot && int(instr.Aux) == slot {
+			return instr, true
+		}
+	}
+	return nil, false
+}
+
 func (ec *emitContext) emitTypedSelfEntry() {
 	asm := ec.asm
 	asm.Label("t2_typed_self_entry")
+	entryParamLoads := ec.typedSelfEntryParamLoads(ec.fn.Entry)
 	ec.emitTier2EntryMark()
 	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
@@ -1103,16 +1149,49 @@ func (ec *emitContext) emitTypedSelfEntry() {
 
 	for i, rep := range ec.typedSelfABI.Params {
 		src := jit.Reg(int(jit.X0) + i)
+		load, hasLoad := ec.entryParamLoad(i)
+		hasLoad = hasLoad && entryParamLoads != nil && entryParamLoads[i]
 		switch rep {
 		case SpecializedABIParamRawInt:
 			jit.EmitBoxIntFast(asm, jit.X16, src, mRegTagInt)
 			asm.STR(jit.X16, mRegRegs, slotOffset(i))
+			if hasLoad {
+				if pr, ok := ec.alloc.ValueRegs[load.ID]; ok && !pr.IsFloat {
+					dst := jit.Reg(pr.Reg)
+					if load.Type == TypeInt {
+						if src != dst {
+							asm.MOVreg(dst, src)
+						}
+					} else if dst != jit.X16 {
+						asm.MOVreg(dst, jit.X16)
+					}
+				}
+			}
 		case SpecializedABIParamRawTablePtr:
 			emitBoxTablePtr(asm, jit.X16, src, jit.X17)
 			asm.STR(jit.X16, mRegRegs, slotOffset(i))
+			if hasLoad {
+				if pr, ok := ec.alloc.ValueRegs[load.ID]; ok && !pr.IsFloat {
+					dst := jit.Reg(pr.Reg)
+					if dst != jit.X16 {
+						asm.MOVreg(dst, jit.X16)
+					}
+				}
+			}
 		}
 	}
-	asm.B(ec.entryBlockLabel())
+	if entryParamLoads != nil {
+		asm.B(ec.typedSelfAfterParamsLabel())
+	} else {
+		asm.B(ec.entryBlockLabel())
+	}
+}
+
+func (ec *emitContext) emitTypedSelfRawIntReturnEpilogue() {
+	ec.asm.Label("t2_typed_self_raw_int_epilogue")
+	ec.asm.MOVimm16(jit.X16, 0)
+	ec.asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+	ec.emitFullFrameRestoreAndReturn()
 }
 
 func (ec *emitContext) emitTypedSelfReturnEpilogue() {
@@ -1293,10 +1372,6 @@ func (ec *emitContext) emitEpilogue() {
 		asm.B(ec.entryBlockLabel())
 	}
 
-	if ec.typedSelfABI.Eligible {
-		ec.emitTypedSelfEntry()
-	}
-
 	// R129: numeric entry + pass-2 body are emitted AFTER epilogue +
 	// deferredResumes via emitNumericBody() (called from Compile).
 
@@ -1320,7 +1395,11 @@ func (ec *emitContext) emitEpilogue() {
 	asm.RET()
 
 	if ec.typedSelfABI.Eligible {
+		if ec.typedSelfABI.Return == SpecializedABIReturnRawInt {
+			ec.emitTypedSelfRawIntReturnEpilogue()
+		}
 		ec.emitTypedSelfReturnEpilogue()
+		ec.emitTypedSelfEntry()
 	}
 
 	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil {
@@ -1343,6 +1422,12 @@ func (ec *emitContext) emitEpilogue() {
 func (ec *emitContext) emitBlock(block *Block) {
 	ec.asm.Label(ec.blockLabelFor(block))
 	ec.currentBlockID = block.ID
+	typedParamLoads := ec.typedSelfEntryParamLoads(block)
+	typedParamLabelEmitted := false
+	if typedParamLoads != nil && len(typedParamLoads) == 0 {
+		ec.asm.Label(ec.typedSelfAfterParamsLabel())
+		typedParamLabelEmitted = true
+	}
 
 	isLoopBlock := ec.loop != nil && ec.loop.loopBlocks[block.ID]
 	isHeader := ec.loop != nil && ec.loop.loopHeaders[block.ID]
@@ -1467,6 +1552,13 @@ func (ec *emitContext) emitBlock(block *Block) {
 	for _, instr := range block.Instrs {
 		ec.emitInstr(instr, block)
 		ec.deactivateDeadAfter(instr)
+		if typedParamLoads != nil && !typedParamLabelEmitted && instr.Op == OpLoadSlot {
+			delete(typedParamLoads, int(instr.Aux))
+			if len(typedParamLoads) == 0 {
+				ec.asm.Label(ec.typedSelfAfterParamsLabel())
+				typedParamLabelEmitted = true
+			}
+		}
 	}
 
 	// Save outgoing shape/table state for single-predecessor propagation.

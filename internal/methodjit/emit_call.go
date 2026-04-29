@@ -695,6 +695,9 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 	if len(instr.Args) < 2 {
 		return
 	}
+	if cond == jit.CondEQ && ec.emitEqNilFastPath(instr) {
+		return
+	}
 	asm := ec.asm
 
 	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
@@ -797,6 +800,48 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 	ec.emitOpExit(instr)
 
 	asm.Label(fastDoneLabel)
+}
+
+func (ec *emitContext) emitEqNilFastPath(instr *Instr) bool {
+	lhsNil := valueIsConstNil(instr.Args[0])
+	rhsNil := valueIsConstNil(instr.Args[1])
+	if !lhsNil && !rhsNil {
+		return false
+	}
+
+	asm := ec.asm
+	if lhsNil && rhsNil {
+		asm.MOVreg(jit.X0, mRegTagBool)
+		asm.ADDimm(jit.X0, jit.X0, 1)
+		ec.storeResultNB(jit.X0, instr.ID)
+		return true
+	}
+
+	arg := instr.Args[0]
+	if lhsNil {
+		arg = instr.Args[1]
+	}
+	valReg := ec.resolveValueNB(arg.ID, jit.X0)
+	if valReg != jit.X0 {
+		asm.MOVreg(jit.X0, valReg)
+	}
+	asm.LoadImm64(jit.X1, nb64(jit.NB_ValNil))
+	asm.CMPreg(jit.X0, jit.X1)
+
+	if ec.fusedCmps[instr.ID] {
+		ec.fusedCond = jit.CondEQ
+		ec.fusedActive = true
+		return true
+	}
+
+	asm.CSET(jit.X0, jit.CondEQ)
+	asm.ORRreg(jit.X0, jit.X0, mRegTagBool)
+	ec.storeResultNB(jit.X0, instr.ID)
+	return true
+}
+
+func valueIsConstNil(v *Value) bool {
+	return v != nil && v.Def != nil && v.Def.Op == OpConstNil
 }
 
 // emitStringCmpFast compares two NaN-boxed string values in X0 and X1.

@@ -24,6 +24,22 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 		return
 	}
 
+	if ec.typedSelfABI.Eligible &&
+		ec.typedSelfABI.Return == SpecializedABIReturnRawInt &&
+		len(instr.Args) > 0 &&
+		ec.irTypes[instr.Args[0].ID] == TypeInt {
+		genericReturnLabel := ec.uniqueLabel("typed_self_generic_return")
+		ec.asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
+		ec.asm.CMPimm(jit.X1, callModeTypedSelf)
+		ec.asm.BCond(jit.CondNE, genericReturnLabel)
+		src := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+		if src != jit.X0 {
+			ec.asm.MOVreg(jit.X0, src)
+		}
+		ec.asm.B("t2_typed_self_raw_int_epilogue")
+		ec.asm.Label(genericReturnLabel)
+	}
+
 	if len(instr.Args) > 0 {
 		valID := instr.Args[0].ID
 		// If the return value is a raw float in FPR, move bits to GPR.

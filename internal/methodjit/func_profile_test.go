@@ -430,9 +430,9 @@ func ack(m, n) {
 
 func TestShouldPromoteTier2_TypedTableSelfNotAutomaticYet(t *testing.T) {
 	// The typed table self ABI is available for explicit Tier 2 compilation,
-	// but the first implementation still pays boxed frame materialization on
-	// every recursive edge. Automatic promotion stays closed to avoid making
-	// binary_trees.checkTree slower than the Tier 1/VM path by default.
+	// but the private entry still shares the boxed exit contract. Automatic
+	// promotion stays closed to avoid making binary_trees.checkTree slower
+	// than the Tier 1/VM path by default.
 	src := `
 func checkTree(node) {
 	if node.left == nil { return 1 }
@@ -450,7 +450,7 @@ func checkTree(node) {
 		t.Fatalf("expected typed table self ABI candidate, got %s", abi.RejectWhy)
 	}
 	if shouldPromoteTier2(checkProto, p, 2) {
-		t.Error("typed table self ABI should not auto-promote before register-only recursive calls")
+		t.Error("typed table self ABI should not auto-promote before a thin exit-safe frame")
 	}
 }
 
