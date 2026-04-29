@@ -9,11 +9,32 @@ import (
 
 // FixedShapeTableFact describes a table SSA value whose hidden-class shape is
 // statically known. FieldValueIDs is populated only for constructors in the
-// current Function; call-return facts intentionally leave values unknown.
+// current Function; call-return facts expose only stable FieldFacts that can be
+// interpreted in the caller.
 type FixedShapeTableFact struct {
 	ShapeID       uint32
 	FieldNames    []string
 	FieldValueIDs map[string]int
+	FieldFacts    map[string]FixedShapeFieldFact
+}
+
+type FixedShapeFieldKind uint8
+
+const (
+	FixedShapeFieldUnknown FixedShapeFieldKind = iota
+	FixedShapeFieldNil
+	FixedShapeFieldParam
+)
+
+// FixedShapeFieldFact is the caller-safe state for one fixed-shape field.
+// MaybeNil covers empty-shape return paths where a missing field reads as nil.
+// MaybeMaterialized marks paths where the field value still comes from a real
+// runtime value, so consumers must not replace the read with nil.
+type FixedShapeFieldFact struct {
+	Kind              FixedShapeFieldKind
+	ParamIndex        int
+	MaybeNil          bool
+	MaybeMaterialized bool
 }
 
 func (f FixedShapeTableFact) fieldIndex(name string) (int, bool) {
@@ -77,6 +98,7 @@ func FixedShapeTableFactsPass(globals map[string]*vm.FuncProto) PassFunc {
 		}
 		fn.FixedShapeTables = facts
 		annotateFixedShapeGetFields(fn, facts)
+		forwardFixedShapeGetFields(fn, facts)
 		return fn, nil
 	}
 }
@@ -92,9 +114,12 @@ func AnalyzeFixedShapeReturnFact(proto *vm.FuncProto) (FixedShapeTableFact, bool
 		return FixedShapeTableFact{}, false
 	}
 	facts := inferLocalFixedShapeTables(fn)
+	instrByID := fixedShapeInstrByID(fn)
 	var out FixedShapeTableFact
+	var fieldAgg map[string]fixedShapeFieldAccumulator
 	seenReturn := false
 	seenEmpty := false
+	emptyReturnCount := 0
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr.Op != OpReturn {
@@ -109,11 +134,31 @@ func AnalyzeFixedShapeReturnFact(proto *vm.FuncProto) (FixedShapeTableFact, bool
 			}
 			if len(fact.FieldNames) == 0 {
 				seenEmpty = true
+				emptyReturnCount++
 				seenReturn = true
+				if fieldAgg != nil {
+					for _, name := range out.FieldNames {
+						fieldAgg[name] = mergeFixedShapeField(fieldAgg[name], FixedShapeFieldFact{
+							Kind:     FixedShapeFieldNil,
+							MaybeNil: true,
+						})
+					}
+				}
 				continue
 			}
 			if !seenReturn {
 				out = withoutFieldValues(fact)
+				fieldAgg = make(map[string]fixedShapeFieldAccumulator, len(out.FieldNames))
+				for _, name := range out.FieldNames {
+					for i := 0; i < emptyReturnCount; i++ {
+						fieldAgg[name] = mergeFixedShapeField(fieldAgg[name], FixedShapeFieldFact{
+							Kind:     FixedShapeFieldNil,
+							MaybeNil: true,
+						})
+					}
+					fieldAgg[name] = mergeFixedShapeField(fieldAgg[name],
+						classifyReturnedField(fn, instrByID, fact, name))
+				}
 				seenReturn = true
 				continue
 			}
@@ -122,6 +167,19 @@ func AnalyzeFixedShapeReturnFact(proto *vm.FuncProto) (FixedShapeTableFact, bool
 			}
 			if len(out.FieldNames) == 0 {
 				out = withoutFieldValues(fact)
+				fieldAgg = make(map[string]fixedShapeFieldAccumulator, len(out.FieldNames))
+			}
+			for _, name := range out.FieldNames {
+				if !fieldAgg[name].seen {
+					for i := 0; i < emptyReturnCount; i++ {
+						fieldAgg[name] = mergeFixedShapeField(fieldAgg[name], FixedShapeFieldFact{
+							Kind:     FixedShapeFieldNil,
+							MaybeNil: true,
+						})
+					}
+				}
+				fieldAgg[name] = mergeFixedShapeField(fieldAgg[name],
+					classifyReturnedField(fn, instrByID, fact, name))
 			}
 		}
 	}
@@ -131,6 +189,12 @@ func AnalyzeFixedShapeReturnFact(proto *vm.FuncProto) (FixedShapeTableFact, bool
 	if seenEmpty {
 		out.ShapeID = 0
 	}
+	if len(fieldAgg) > 0 {
+		out.FieldFacts = make(map[string]FixedShapeFieldFact, len(fieldAgg))
+		for _, name := range out.FieldNames {
+			out.FieldFacts[name] = fieldAgg[name].finish()
+		}
+	}
 	return out, true
 }
 
@@ -139,6 +203,69 @@ func withoutFieldValues(fact FixedShapeTableFact) FixedShapeTableFact {
 		ShapeID:    fact.ShapeID,
 		FieldNames: append([]string(nil), fact.FieldNames...),
 	}
+}
+
+type fixedShapeFieldAccumulator struct {
+	seen              bool
+	kind              FixedShapeFieldKind
+	paramIndex        int
+	maybeNil          bool
+	maybeMaterialized bool
+}
+
+func mergeFixedShapeField(acc fixedShapeFieldAccumulator, next FixedShapeFieldFact) fixedShapeFieldAccumulator {
+	if !acc.seen {
+		return fixedShapeFieldAccumulator{
+			seen:              true,
+			kind:              next.Kind,
+			paramIndex:        next.ParamIndex,
+			maybeNil:          next.MaybeNil,
+			maybeMaterialized: next.MaybeMaterialized,
+		}
+	}
+	if acc.kind != next.Kind || (acc.kind == FixedShapeFieldParam && acc.paramIndex != next.ParamIndex) {
+		acc.kind = FixedShapeFieldUnknown
+		acc.paramIndex = 0
+	}
+	acc.maybeNil = acc.maybeNil || next.MaybeNil
+	acc.maybeMaterialized = acc.maybeMaterialized || next.MaybeMaterialized
+	return acc
+}
+
+func (acc fixedShapeFieldAccumulator) finish() FixedShapeFieldFact {
+	if !acc.seen {
+		return FixedShapeFieldFact{Kind: FixedShapeFieldUnknown, MaybeMaterialized: true}
+	}
+	return FixedShapeFieldFact{
+		Kind:              acc.kind,
+		ParamIndex:        acc.paramIndex,
+		MaybeNil:          acc.maybeNil,
+		MaybeMaterialized: acc.maybeMaterialized,
+	}
+}
+
+func classifyReturnedField(fn *Function, instrByID map[int]*Instr, fact FixedShapeTableFact, name string) FixedShapeFieldFact {
+	valueID, ok := fact.FieldValueIDs[name]
+	if !ok {
+		return FixedShapeFieldFact{Kind: FixedShapeFieldNil, MaybeNil: true}
+	}
+	def := instrByID[valueID]
+	if def == nil {
+		return FixedShapeFieldFact{Kind: FixedShapeFieldUnknown, MaybeMaterialized: true}
+	}
+	switch def.Op {
+	case OpConstNil:
+		return FixedShapeFieldFact{Kind: FixedShapeFieldNil, MaybeNil: true}
+	case OpLoadSlot:
+		if fn != nil && fn.Proto != nil && def.Aux >= 0 && int(def.Aux) < fn.Proto.NumParams {
+			return FixedShapeFieldFact{
+				Kind:              FixedShapeFieldParam,
+				ParamIndex:        int(def.Aux),
+				MaybeMaterialized: true,
+			}
+		}
+	}
+	return FixedShapeFieldFact{Kind: FixedShapeFieldUnknown, MaybeMaterialized: true}
 }
 
 func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
@@ -221,6 +348,140 @@ func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact
 				fmt.Sprintf("prefilled fixed-shape field cache for %q", name))
 		}
 	}
+}
+
+func forwardFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact) {
+	if len(facts) == 0 {
+		return
+	}
+	instrByID := fixedShapeInstrByID(fn)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGetField || len(instr.Args) == 0 || instr.Args[0] == nil {
+				continue
+			}
+			fact, ok := facts[instr.Args[0].ID]
+			if !ok || (len(fact.FieldFacts) == 0 && len(fact.FieldNames) != 0) {
+				continue
+			}
+			name := fieldNameFromAux(fn, instr.Aux)
+			if name == "" {
+				continue
+			}
+			if len(fact.FieldNames) == 0 {
+				if !fixedShapeReadForwardSafe(block, instr) {
+					continue
+				}
+				instr.Op = OpConstNil
+				instr.Type = TypeNil
+				instr.Args = nil
+				instr.Aux = 0
+				instr.Aux2 = 0
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, OpGetField,
+					fmt.Sprintf("forwarded empty fixed-shape field %q to nil", name))
+				continue
+			}
+			fieldFact, ok := fact.FieldFacts[name]
+			if !ok {
+				continue
+			}
+			switch fieldFact.Kind {
+			case FixedShapeFieldNil:
+				if fieldFact.MaybeMaterialized {
+					continue
+				}
+				if !fixedShapeReadForwardSafe(block, instr) {
+					continue
+				}
+				instr.Op = OpConstNil
+				instr.Type = TypeNil
+				instr.Args = nil
+				instr.Aux = 0
+				instr.Aux2 = 0
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, OpGetField,
+					fmt.Sprintf("forwarded fixed-shape field %q to nil", name))
+			case FixedShapeFieldParam:
+				if fieldFact.MaybeNil || fieldFact.ParamIndex < 0 {
+					continue
+				}
+				if !fixedShapeReadForwardSafe(block, instr) {
+					continue
+				}
+				call := instrByID[instr.Args[0].ID]
+				if call == nil || call.Op != OpCall || len(call.Args) <= 1+fieldFact.ParamIndex {
+					continue
+				}
+				actual := call.Args[1+fieldFact.ParamIndex]
+				if actual == nil || actual.Def == nil {
+					continue
+				}
+				replaceAllUses(fn, instr.ID, actual.Def)
+				instr.Op = OpNop
+				instr.Args = nil
+				instr.Aux = 0
+				instr.Aux2 = 0
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, OpGetField,
+					fmt.Sprintf("forwarded fixed-shape field %q to call arg %d", name, fieldFact.ParamIndex))
+			}
+		}
+	}
+}
+
+func fixedShapeReadForwardSafe(block *Block, get *Instr) bool {
+	if block == nil || get == nil || get.Op != OpGetField || len(get.Args) == 0 || get.Args[0] == nil {
+		return false
+	}
+	objID := get.Args[0].ID
+	def := get.Args[0].Def
+	if def == nil || def.Op != OpCall || def.Block != block {
+		return false
+	}
+	defIdx := -1
+	getIdx := -1
+	for i, instr := range block.Instrs {
+		if instr == def {
+			defIdx = i
+		}
+		if instr == get {
+			getIdx = i
+		}
+	}
+	if defIdx < 0 || getIdx <= defIdx {
+		return false
+	}
+	for _, instr := range block.Instrs[defIdx+1 : getIdx] {
+		if instr == nil {
+			continue
+		}
+		for argIdx, arg := range instr.Args {
+			if arg == nil || arg.ID != objID {
+				continue
+			}
+			switch instr.Op {
+			case OpGetField:
+				if argIdx == 0 {
+					continue
+				}
+			case OpStoreSlot:
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func fixedShapeInstrByID(fn *Function) map[int]*Instr {
+	out := make(map[int]*Instr)
+	if fn == nil {
+		return out
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			out[instr.ID] = instr
+		}
+	}
+	return out
 }
 
 func fixedShapeContainsString(values []string, want string) bool {
