@@ -76,10 +76,10 @@ type Function struct {
 	Unpromotable bool
 
 	// CarryPreheaderInvariants, when true, enables the register allocator
-	// to pin LICM-hoisted loop-invariant float values (defined in a
-	// pre-header block) into FPRs across loop-body blocks. This avoids
-	// per-iteration memory reloads for invariant constants. Set to true
-	// by compileTier2 after LICM runs. Defaults to false (Go zero value).
+	// to pin selected loop-invariant values across loop-body blocks. Today
+	// this covers LICM-hoisted float values in FPRs and typed-array len/data
+	// facts in GPRs. Set to true by compileTier2 after LICM runs. Defaults
+	// to false (Go zero value).
 	CarryPreheaderInvariants bool
 
 	// Remarks is an optional diagnostic sink for optimization decisions.

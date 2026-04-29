@@ -358,6 +358,98 @@ func TestRegalloc_PreheaderInvariantPinned(t *testing.T) {
 	}
 }
 
+func TestRegalloc_TableArrayLenDataInvariantGPRPinned(t *testing.T) {
+	fn := &Function{NumRegs: 3, CarryPreheaderInvariants: true}
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	preheader := &Block{ID: 1, defs: make(map[int]*Value)}
+	header := &Block{ID: 2, defs: make(map[int]*Value)}
+	body := &Block{ID: 3, defs: make(map[int]*Value)}
+	exit := &Block{ID: 4, defs: make(map[int]*Value)}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, preheader, header, body, exit}
+
+	entry.Succs = []*Block{preheader}
+	preheader.Preds = []*Block{entry}
+	preheader.Succs = []*Block{header}
+	header.Preds = []*Block{preheader, body}
+	header.Succs = []*Block{body, exit}
+	body.Preds = []*Block{header}
+	body.Succs = []*Block{header}
+	exit.Preds = []*Block{header}
+
+	entry.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpJump, Block: entry, Aux: int64(preheader.ID)}}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: preheader}
+	arrHdr := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Args: []*Value{tbl.Value()}, Block: preheader}
+	arrLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Args: []*Value{arrHdr.Value()}, Block: preheader}
+	arrData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Args: []*Value{arrHdr.Value()}, Block: preheader}
+	seedI := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: -1, Block: preheader}
+	seedS := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: preheader}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: preheader}
+	bound := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 9, Block: preheader}
+	preJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: preheader, Aux: int64(header.ID)}
+	preheader.Instrs = []*Instr{tbl, arrHdr, arrLen, arrData, seedI, seedS, one, bound, preJump}
+
+	iPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	sPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	iNext := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{iPhi.Value(), one.Value()}, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpLeInt, Type: TypeBool, Args: []*Value{iNext.Value(), bound.Value()}, Block: header}
+	headerBranch := &Instr{ID: fn.newValueID(), Op: OpBranch, Args: []*Value{cond.Value()}, Block: header, Aux: int64(body.ID), Aux2: int64(exit.ID)}
+	header.Instrs = []*Instr{iPhi, sPhi, iNext, cond, headerBranch}
+
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeInt, Args: []*Value{arrData.Value(), arrLen.Value(), iNext.Value()}, Block: body}
+	sNext := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{sPhi.Value(), load.Value()}, Block: body}
+	bodyJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: body, Aux: int64(header.ID)}
+	body.Instrs = []*Instr{load, sNext, bodyJump}
+
+	iPhi.Args = []*Value{seedI.Value(), iNext.Value()}
+	sPhi.Args = []*Value{seedS.Value(), sNext.Value()}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{sPhi.Value()}, Block: exit}}
+
+	alloc := AllocateRegisters(fn)
+	invariants := alloc.LoopInvariantGPRs[header.ID]
+	if len(invariants) != 2 {
+		t.Fatalf("expected len/data invariants to be pinned for loop header, got %v", invariants)
+	}
+	for _, instr := range []*Instr{arrLen, arrData} {
+		pr, ok := invariants[instr.ID]
+		if !ok {
+			t.Fatalf("%s v%d was not pinned; invariants=%v", instr.Op, instr.ID, invariants)
+		}
+		if pr.IsFloat {
+			t.Fatalf("%s v%d pinned to FPR, want GPR", instr.Op, instr.ID)
+		}
+	}
+
+	li := computeLoopInfo(fn)
+	safe := computeSafeLoopInvariantGPRs(fn, li, alloc)
+	if !safe[header.ID][arrLen.ID].IsRawInt {
+		t.Fatalf("TableArrayLen v%d should activate as raw int", arrLen.ID)
+	}
+	if safe[header.ID][arrData.ID].IsRawInt {
+		t.Fatalf("TableArrayData v%d should activate as pointer-like GPR, not raw int", arrData.ID)
+	}
+	for _, block := range fn.Blocks {
+		if !li.headerBlocks[header.ID][block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op.IsTerminator() || instr.ID == arrLen.ID || instr.ID == arrData.ID {
+				continue
+			}
+			pr, ok := alloc.ValueRegs[instr.ID]
+			if !ok || pr.IsFloat {
+				continue
+			}
+			for invID, invPR := range invariants {
+				if pr.Reg == invPR.Reg {
+					t.Fatalf("loop B%d v%d %s clobbers pinned invariant v%d in X%d", block.ID, instr.ID, instr.Op, invID, pr.Reg)
+				}
+			}
+		}
+	}
+}
+
 // TestRegalloc_InvariantBudgetRespected constructs a pre-header with 7
 // ConstFloat definitions (more than the FPR budget allows) and verifies
 // that the budget limits pinning. Pinned invariants are protected: no body

@@ -458,6 +458,114 @@ func computeSafeHeaderFPRegs(fn *Function, li *loopInfo, alloc *RegAllocation,
 	return safe
 }
 
+func computeSafeLoopInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAllocation) map[int]map[int]loopRegEntry {
+	if fn == nil || li == nil || alloc == nil || len(alloc.LoopInvariantGPRs) == 0 {
+		return nil
+	}
+	safe := make(map[int]map[int]loopRegEntry)
+	fusedCmps := computeFusedComparisons(fn)
+	for headerID, values := range alloc.LoopInvariantGPRs {
+		bodyBlocks := li.headerBlocks[headerID]
+		if bodyBlocks == nil {
+			continue
+		}
+		for valueID, pr := range values {
+			if pr.IsFloat {
+				continue
+			}
+			clobbered := false
+			for _, block := range fn.Blocks {
+				if !bodyBlocks[block.ID] {
+					continue
+				}
+				for _, instr := range block.Instrs {
+					if instr.ID == valueID || instr.Op.IsTerminator() {
+						continue
+					}
+					if fusedCmps[instr.ID] {
+						continue
+					}
+					instrPR, ok := alloc.ValueRegs[instr.ID]
+					if ok && !instrPR.IsFloat && instrPR.Reg == pr.Reg {
+						clobbered = true
+						break
+					}
+				}
+				if clobbered {
+					break
+				}
+			}
+			if clobbered {
+				continue
+			}
+			if safe[headerID] == nil {
+				safe[headerID] = make(map[int]loopRegEntry)
+			}
+			safe[headerID][valueID] = loopRegEntry{ValueID: valueID, IsRawInt: isLoopInvariantRawInt(fn, valueID)}
+		}
+	}
+	if len(safe) == 0 {
+		return nil
+	}
+	return safe
+}
+
+func isLoopInvariantRawInt(fn *Function, valueID int) bool {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.ID != valueID {
+				continue
+			}
+			return instr.Op != OpTableArrayData
+		}
+	}
+	return true
+}
+
+func (ec *emitContext) activateLoopInvariantGPRs(blockID int) {
+	if ec == nil || ec.loop == nil {
+		return
+	}
+	usedRegs := make(map[int]bool)
+	for valueID := range ec.activeRegs {
+		if pr, ok := ec.alloc.ValueRegs[valueID]; ok && !pr.IsFloat {
+			usedRegs[pr.Reg] = true
+		}
+	}
+	for _, headerID := range sortedLoopHeaders(ec.loop) {
+		values := ec.loopInvariantGPRs[headerID]
+		body := ec.loop.headerBlocks[headerID]
+		if body == nil || !body[blockID] {
+			continue
+		}
+		for _, valueID := range sortedLoopRegEntryIDs(values) {
+			entry := values[valueID]
+			pr, ok := ec.alloc.ValueRegs[entry.ValueID]
+			if !ok || pr.IsFloat || usedRegs[pr.Reg] {
+				continue
+			}
+			usedRegs[pr.Reg] = true
+			ec.activeRegs[entry.ValueID] = true
+			if entry.IsRawInt {
+				ec.rawIntRegs[entry.ValueID] = true
+			}
+		}
+	}
+}
+
+func sortedLoopRegEntryIDs(m map[int]loopRegEntry) []int {
+	ids := make([]int, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	for i := 1; i < len(ids); i++ {
+		for j := i; j > 0 && ids[j-1] > ids[j]; j-- {
+			ids[j-1], ids[j] = ids[j], ids[j-1]
+		}
+	}
+	return ids
+}
+
 // isRawIntOp returns true if the op produces a raw int64 result
 // (stored via storeRawInt rather than storeResultNB).
 func isRawIntOp(op Op) bool {

@@ -44,6 +44,11 @@ type RegAllocation struct {
 	SpillSlots map[int]int
 	// NumSpillSlots is the total number of spill slots needed.
 	NumSpillSlots int
+	// LoopInvariantGPRs maps loop header block ID -> SSA value ID -> physical
+	// GPR for selected loop-invariant values that should stay resident across
+	// that loop. It is intentionally narrow today: table-array len/data facts
+	// only.
+	LoopInvariantGPRs map[int]map[int]PhysReg
 }
 
 // AllocateRegisters performs register allocation on a Function.
@@ -86,6 +91,10 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 	// via natural order". This pre-pass is phi-only and deterministic.
 	for hid := range tightHeaders {
 		preAllocateHeaderPhis(findBlockByID(fn, hid), alloc)
+	}
+
+	if fn.CarryPreheaderInvariants {
+		alloc.LoopInvariantGPRs = assignLoopTableArrayInvariantGPRs(fn, li, alloc)
 	}
 
 	// Invariant carry: identify LICM-hoisted loop-invariant float values
@@ -244,7 +253,9 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 			if innerHeader, ok := li.blockInnerHeader[block.ID]; ok {
 				// Phi carry: only for tight-body headers (existing logic).
 				if tightHeaders[innerHeader] {
-					carried = make(map[int]PhysReg)
+					if carried == nil {
+						carried = make(map[int]PhysReg)
+					}
 					for _, phiID := range li.loopPhis[innerHeader] {
 						if pr, ok := alloc.ValueRegs[phiID]; ok {
 							carried[phiID] = pr
@@ -306,6 +317,9 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 					temporaryCarried[valueID] = true
 				}
 			}
+		}
+		if li.loopBlocks[block.ID] && len(alloc.LoopInvariantGPRs) > 0 {
+			carried = addLoopInvariantGPRCarry(block, li, alloc, carried)
 		}
 		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried)
 
@@ -459,6 +473,243 @@ func collectLoopBoundGPRs(hdr *Block, alloc *RegAllocation) []int {
 	return bounds
 }
 
+func assignLoopTableArrayInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAllocation) map[int]map[int]PhysReg {
+	if fn == nil || li == nil || !li.hasLoops() || alloc == nil {
+		return nil
+	}
+	defs := make(map[int]*Instr)
+	defBlocks := make(map[int]int)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op.IsTerminator() {
+				continue
+			}
+			defs[instr.ID] = instr
+			defBlocks[instr.ID] = block.ID
+		}
+	}
+	dom := computeDominators(fn)
+	headers := sortedLoopHeaders(li)
+	out := make(map[int]map[int]PhysReg)
+	for _, headerID := range headers {
+		body := li.headerBlocks[headerID]
+		if body == nil {
+			continue
+		}
+		useCounts := make(map[int]int)
+		for _, block := range fn.Blocks {
+			if !body[block.ID] {
+				continue
+			}
+			for _, instr := range block.Instrs {
+				switch instr.Op {
+				case OpTableArrayLoad:
+					if len(instr.Args) >= 2 {
+						recordTableArrayInvariantCandidate(instr.Args[0], body, headerID, defs, defBlocks, dom, useCounts)
+						recordTableArrayInvariantCandidate(instr.Args[1], body, headerID, defs, defBlocks, dom, useCounts)
+					}
+				case OpTableArrayNestedLoad:
+					if len(instr.Args) >= 2 {
+						recordTableArrayInvariantCandidate(instr.Args[0], body, headerID, defs, defBlocks, dom, useCounts)
+						recordTableArrayInvariantCandidate(instr.Args[1], body, headerID, defs, defBlocks, dom, useCounts)
+					}
+				}
+			}
+		}
+		if len(useCounts) == 0 {
+			continue
+		}
+
+		candidates := make([]int, 0, len(useCounts))
+		for id := range useCounts {
+			candidates = append(candidates, id)
+		}
+		sortTableArrayInvariantCandidates(candidates, useCounts, defs)
+
+		usedRegs := make(map[int]bool)
+		for _, phiID := range li.loopPhis[headerID] {
+			if pr, ok := alloc.ValueRegs[phiID]; ok && !pr.IsFloat {
+				usedRegs[pr.Reg] = true
+			}
+		}
+
+		const maxTableArrayGPRInvariants = 2
+		for _, id := range candidates {
+			if len(out[headerID]) >= maxTableArrayGPRInvariants {
+				break
+			}
+			var pr PhysReg
+			if existing, ok := alloc.ValueRegs[id]; ok && !existing.IsFloat && !usedRegs[existing.Reg] {
+				pr = existing
+			} else {
+				reg, ok := firstFreeGPR(usedRegs)
+				if !ok {
+					break
+				}
+				pr = PhysReg{Reg: reg, IsFloat: false}
+				alloc.ValueRegs[id] = pr
+			}
+			usedRegs[pr.Reg] = true
+			if out[headerID] == nil {
+				out[headerID] = make(map[int]PhysReg)
+			}
+			out[headerID][id] = pr
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func recordTableArrayInvariantCandidate(v *Value, body map[int]bool, headerID int, defs map[int]*Instr, defBlocks map[int]int, dom *domInfo, useCounts map[int]int) {
+	if v == nil || dom == nil {
+		return
+	}
+	def := defs[v.ID]
+	if def == nil || !isTableArrayGPRInvariant(def) {
+		return
+	}
+	defBlock, ok := defBlocks[v.ID]
+	if !ok || body[defBlock] || !dom.dominates(defBlock, headerID) {
+		return
+	}
+	useCounts[v.ID]++
+}
+
+func isTableArrayGPRInvariant(instr *Instr) bool {
+	if instr == nil || instr.Type != TypeInt {
+		return false
+	}
+	switch instr.Op {
+	case OpTableArrayLen, OpTableArrayData:
+		return true
+	default:
+		return false
+	}
+}
+
+func sortTableArrayInvariantCandidates(ids []int, useCounts map[int]int, defs map[int]*Instr) {
+	for i := 1; i < len(ids); i++ {
+		for j := i; j > 0; j-- {
+			a, b := ids[j-1], ids[j]
+			if tableArrayInvariantLess(b, a, useCounts, defs) {
+				ids[j-1], ids[j] = ids[j], ids[j-1]
+			} else {
+				break
+			}
+		}
+	}
+}
+
+func tableArrayInvariantLess(a, b int, useCounts map[int]int, defs map[int]*Instr) bool {
+	if useCounts[a] != useCounts[b] {
+		return useCounts[a] > useCounts[b]
+	}
+	ra := tableArrayInvariantRank(defs[a])
+	rb := tableArrayInvariantRank(defs[b])
+	if ra != rb {
+		return ra < rb
+	}
+	return a < b
+}
+
+func tableArrayInvariantRank(instr *Instr) int {
+	if instr != nil && instr.Op == OpTableArrayData {
+		return 0
+	}
+	return 1
+}
+
+func firstFreeGPR(used map[int]bool) (int, bool) {
+	for _, reg := range allocatableGPRs {
+		if !used[reg] {
+			return reg, true
+		}
+	}
+	return 0, false
+}
+
+func sortedLoopHeaders(li *loopInfo) []int {
+	headers := make([]int, 0, len(li.loopHeaders))
+	for id := range li.loopHeaders {
+		headers = append(headers, id)
+	}
+	for i := 1; i < len(headers); i++ {
+		for j := i; j > 0 && headers[j-1] > headers[j]; j-- {
+			headers[j-1], headers[j] = headers[j], headers[j-1]
+		}
+	}
+	return headers
+}
+
+func addLoopInvariantGPRCarry(block *Block, li *loopInfo, alloc *RegAllocation, carried map[int]PhysReg) map[int]PhysReg {
+	if block == nil || li == nil || alloc == nil || len(alloc.LoopInvariantGPRs) == 0 {
+		return carried
+	}
+	usedRegs := make(map[int]bool)
+	for _, pr := range carried {
+		if !pr.IsFloat {
+			usedRegs[pr.Reg] = true
+		}
+	}
+	for _, headerID := range sortedLoopHeaders(li) {
+		body := li.headerBlocks[headerID]
+		if body == nil || !body[block.ID] {
+			continue
+		}
+		ids := sortedInvariantIDs(alloc.LoopInvariantGPRs[headerID])
+		for _, id := range ids {
+			pr := alloc.LoopInvariantGPRs[headerID][id]
+			if pr.IsFloat || usedRegs[pr.Reg] {
+				continue
+			}
+			if carried == nil {
+				carried = make(map[int]PhysReg)
+			}
+			carried[id] = pr
+			usedRegs[pr.Reg] = true
+		}
+	}
+	return carried
+}
+
+func isLoopInvariantGPRValue(alloc *RegAllocation, valueID int) bool {
+	if alloc == nil {
+		return false
+	}
+	for _, values := range alloc.LoopInvariantGPRs {
+		if _, ok := values[valueID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func updateLoopInvariantGPRReg(alloc *RegAllocation, valueID int, pr PhysReg) {
+	if alloc == nil || pr.IsFloat {
+		return
+	}
+	for _, values := range alloc.LoopInvariantGPRs {
+		if _, ok := values[valueID]; ok {
+			values[valueID] = pr
+		}
+	}
+}
+
+func sortedInvariantIDs(m map[int]PhysReg) []int {
+	ids := make([]int, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	for i := 1; i < len(ids); i++ {
+		for j := i; j > 0 && ids[j-1] > ids[j]; j-- {
+			ids[j-1], ids[j] = ids[j], ids[j-1]
+		}
+	}
+	return ids
+}
+
 // regState tracks the current state of a register pool (GPR or FPR).
 type regState struct {
 	pool    []int       // allocatable register numbers
@@ -515,6 +766,17 @@ func (rs *regState) assign(valueID, r int) {
 	rs.regToID[r] = valueID
 	rs.idToReg[valueID] = r
 	rs.touchLRU(valueID)
+}
+
+func (rs *regState) assignPreferred(valueID, reg int) bool {
+	if _, ok := rs.regToID[reg]; !ok {
+		return false
+	}
+	if existingID := rs.regToID[reg]; existingID >= 0 && existingID != valueID {
+		return false
+	}
+	rs.assign(valueID, reg)
+	return true
 }
 
 // free releases the register held by valueID. Pinned values are immune:
@@ -691,11 +953,27 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 			rs = gprs
 		}
 
+		if pr, ok := alloc.ValueRegs[instr.ID]; ok && pr.IsFloat == wantFloat {
+			if rs.assignPreferred(instr.ID, pr.Reg) {
+				if !wantFloat && isLoopInvariantGPRValue(alloc, instr.ID) {
+					updateLoopInvariantGPRReg(alloc, instr.ID, pr)
+					rs.pin(instr.ID)
+				}
+				freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse, temporaryCarried)
+				continue
+			}
+		}
+
 		// Try to allocate a free register.
 		r := rs.findFree()
 		if r >= 0 {
 			rs.assign(instr.ID, r)
-			alloc.ValueRegs[instr.ID] = PhysReg{Reg: r, IsFloat: wantFloat}
+			pr := PhysReg{Reg: r, IsFloat: wantFloat}
+			alloc.ValueRegs[instr.ID] = pr
+			if !wantFloat && isLoopInvariantGPRValue(alloc, instr.ID) {
+				updateLoopInvariantGPRReg(alloc, instr.ID, pr)
+				rs.pin(instr.ID)
+			}
 		} else {
 			// All registers full -- spill the LRU value.
 			r, evictedID := rs.evictLRU()
@@ -722,7 +1000,12 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 
 			// Assign the freed register to the new value.
 			rs.assign(instr.ID, r)
-			alloc.ValueRegs[instr.ID] = PhysReg{Reg: r, IsFloat: wantFloat}
+			pr := PhysReg{Reg: r, IsFloat: wantFloat}
+			alloc.ValueRegs[instr.ID] = pr
+			if !wantFloat && isLoopInvariantGPRValue(alloc, instr.ID) {
+				updateLoopInvariantGPRReg(alloc, instr.ID, pr)
+				rs.pin(instr.ID)
+			}
 		}
 
 		// Free registers for values that die at this instruction.
