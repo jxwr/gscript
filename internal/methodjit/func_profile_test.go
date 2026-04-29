@@ -586,11 +586,10 @@ func ack(m, n) {
 	}
 }
 
-func TestShouldPromoteTier2_TypedTableSelfNotAutomaticYet(t *testing.T) {
-	// The typed table self ABI is available for explicit Tier 2 compilation,
-	// but the private entry still shares the boxed exit contract. Automatic
-	// promotion stays closed to avoid making binary_trees.checkTree slower
-	// than the Tier 1/VM path by default.
+func TestShouldPromoteTier2_FixedRecursiveTableFoldPromotes(t *testing.T) {
+	// The general typed table self ABI stays closed for default admission, but
+	// the exact binary_trees-style fixed walker now has a whole-call protocol
+	// that avoids recursive boxed/Tier2 frame entry.
 	src := `
 func checkTree(node) {
 	if node.left == nil { return 1 }
@@ -607,8 +606,36 @@ func checkTree(node) {
 	if abi := AnalyzeTypedSelfABI(checkProto); !abi.Eligible {
 		t.Fatalf("expected typed table self ABI candidate, got %s", abi.RejectWhy)
 	}
-	if shouldPromoteTier2(checkProto, p, 2) {
-		t.Error("typed table self ABI should not auto-promote before a thin exit-safe frame")
+	if !qualifiesForFixedRecursiveTableFold(checkProto) {
+		t.Fatal("expected fixed recursive table fold protocol candidate")
+	}
+	if !shouldPromoteTier2(checkProto, p, 2) {
+		t.Error("fixed recursive table fold protocol should auto-promote once hot")
+	}
+}
+
+func TestShouldPromoteTier2_TypedTableSelfNonFoldStaysClosed(t *testing.T) {
+	src := `
+func walk(node) {
+	if node.left == nil { return 1 }
+	return walk(node.left) - walk(node.right)
+}
+`
+	proto := compileProto(t, src)
+	walkProto := proto.Protos[0]
+	walkProto.EnsureFeedback()
+	walkProto.Feedback[1].Result = vm.FBTable
+	walkProto.Feedback[5].Result = vm.FBTable
+	p := analyzeFuncProfile(walkProto)
+
+	if abi := AnalyzeTypedSelfABI(walkProto); !abi.Eligible {
+		t.Fatalf("expected typed table self ABI candidate, got %s", abi.RejectWhy)
+	}
+	if qualifiesForFixedRecursiveTableFold(walkProto) {
+		t.Fatal("subtractive table recursion should not qualify for the fixed fold protocol")
+	}
+	if shouldPromoteTier2(walkProto, p, 2) {
+		t.Error("general typed table self recursion should stay closed without the fixed fold protocol")
 	}
 }
 

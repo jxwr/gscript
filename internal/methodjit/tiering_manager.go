@@ -214,7 +214,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// table-allocation builders pay more in Tier 1 exit-resume
 	// overhead than they save in native templates. See
 	// shouldStayTier0 in func_profile.go for the heuristic.
-	if shouldStayTier0(profile) {
+	if shouldStayTier0ForProto(proto, profile) {
 		proto.JITDisabled = true
 		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
 			"reason":     "stay_tier0_profile",
@@ -358,6 +358,11 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 
 	// Attempt Tier 2 compilation.
+	if t2, ok := tm.compileFixedRecursiveTableFoldTier2(proto); ok {
+		tm.tier2Compiled[proto] = t2
+		tm.installTier2(proto, t2)
+		return t2
+	}
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
 		tm.tier2Failed[proto] = true
@@ -843,7 +848,7 @@ func (tm *TieringManager) isTier0OnlyCallee(callee *vm.FuncProto) bool {
 		return true
 	}
 	profile := tm.getProfile(callee)
-	return shouldStayTier0(profile) || shouldStayTier0RecursiveTableWalker(callee, profile)
+	return shouldStayTier0ForProto(callee, profile) || shouldStayTier0RecursiveTableWalker(callee, profile)
 }
 
 // buildInlineGlobals extracts global function protos from the VM's globals.
@@ -1442,6 +1447,9 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 }
 
 func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
+	if cf != nil && cf.FixedRecursiveTableFold != nil {
+		return tm.executeFixedRecursiveTableFold(cf, regs, base, proto, retBuf)
+	}
 	if tm.callVM != nil {
 		regs = tm.ensureTier2RegisterBudget(cf, regs, base, proto)
 	}

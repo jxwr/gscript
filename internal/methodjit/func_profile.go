@@ -180,11 +180,15 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 // as binary_trees.makeTree still contain residual NEWOBJECT2 exits; putting
 // them in Tier 1 clears direct-entry recursion and is slower than Tier 0
 // until fixed-shape object construction is native too.
-func shouldStayTier0(profile FuncProfile) bool {
+func shouldStayTier0ForProto(proto *vm.FuncProto, profile FuncProfile) bool {
 	return profile.BytecodeCount <= 25 &&
 		profile.NewTableCount > profile.EmptyNewTableCount &&
 		!profile.HasLoop &&
 		profile.CallCount > 0
+}
+
+func shouldStayTier0(profile FuncProfile) bool {
+	return shouldStayTier0ForProto(nil, profile)
 }
 
 // shouldStayTier0RecursiveTableWalker catches the non-numeric sibling of the
@@ -202,6 +206,9 @@ func shouldStayTier0RecursiveTableWalker(proto *vm.FuncProto, profile FuncProfil
 		return false
 	}
 	if ok, _ := qualifyForNumeric(proto); ok {
+		return false
+	}
+	if qualifiesForFixedRecursiveTableFold(proto) {
 		return false
 	}
 	return true
@@ -301,6 +308,9 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		// 2 call ICs stable even when DirectEntryPtr is cleared for baseline
 		// callers after a runtime deopt, avoiding the old ExitCallExit storm.
 		if qualifiesForNumericCrossRecursiveCandidate(proto) {
+			return runtimeCallCount >= 2
+		}
+		if qualifiesForFixedRecursiveTableFold(proto) {
 			return runtimeCallCount >= 2
 		}
 		// Typed table self-recursive protos can be explicitly compiled to Tier 2,

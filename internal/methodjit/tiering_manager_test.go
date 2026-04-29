@@ -362,12 +362,11 @@ for i := 1; i <= 20; i++ {
 	if checkTreeProto == nil {
 		t.Fatal("checkTree proto not found")
 	}
-	if !checkTreeProto.JITDisabled {
-		t.Fatal("checkTree should stay tier0 as a small non-numeric recursive table walker")
+	if checkTreeProto.JITDisabled {
+		t.Fatal("checkTree should not stay tier0 once the fixed recursive table fold protocol applies")
 	}
-	if checkTreeProto.CompiledCodePtr != 0 || checkTreeProto.DirectEntryPtr != 0 {
-		t.Fatalf("checkTree compiled despite recursive table-walker stay-tier0: compiled=%#x direct=%#x",
-			checkTreeProto.CompiledCodePtr, checkTreeProto.DirectEntryPtr)
+	if checkTreeProto.EnteredTier2 == 0 {
+		t.Fatal("checkTree should enter the fixed recursive table fold Tier 2 protocol")
 	}
 }
 
