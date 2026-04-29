@@ -300,8 +300,12 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 		}
 	case int64(vm.FBKindFloat):
 		if instr.Type == TypeFloat {
-			asm.FLDRdReg(jit.D0, jit.X2, jit.X1)
-			ec.storeRawFloat(jit.D0, instr.ID)
+			dstF := jit.D0
+			if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+				dstF = jit.FReg(pr.Reg)
+			}
+			asm.FLDRdReg(dstF, jit.X2, jit.X1)
+			ec.storeRawFloat(dstF, instr.ID)
 		} else {
 			asm.LDRreg(jit.X0, jit.X2, jit.X1)
 			ec.storeResultNB(jit.X0, instr.ID)
@@ -407,9 +411,12 @@ func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 	}
 	asm.CMPreg(jit.X1, jit.X3)
 	asm.BCond(jit.CondGE, deoptLabel)
-	asm.LDRreg(jit.X0, jit.X2, jit.X1)
-	asm.FMOVtoFP(jit.D0, jit.X0)
-	ec.storeRawFloat(jit.D0, instr.ID)
+	dstF := jit.D0
+	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+		dstF = jit.FReg(pr.Reg)
+	}
+	asm.FLDRdReg(dstF, jit.X2, jit.X1)
+	ec.storeRawFloat(dstF, instr.ID)
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)

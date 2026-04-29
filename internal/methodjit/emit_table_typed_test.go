@@ -224,6 +224,46 @@ func sum_floats(arr, n) {
 	}
 }
 
+func TestTier2_TableArrayNestedLoadFloatUsesDirectFPLoad(t *testing.T) {
+	src := `
+func nested_sum(rows, n) {
+    total := 0.0
+    for i := 0; i < n; i++ {
+        total = total + rows[i][1]
+    }
+    return total
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "nested_sum")
+	if proto == nil {
+		t.Fatal("nested_sum proto not found")
+	}
+	seedNestedTableFloatFeedback(proto)
+
+	art, err := NewTieringManager().CompileForDiagnostics(proto)
+	if err != nil {
+		t.Fatalf("CompileForDiagnostics(nested_sum): %v", err)
+	}
+	if !strings.Contains(art.IRAfter, "TableNestedLoad") {
+		t.Fatalf("expected nested typed table-array lowering:\n%s", art.IRAfter)
+	}
+
+	foundFloatLoad := false
+	for _, entry := range art.SourceMap {
+		if entry.IROp != "TableNestedLoad" || entry.IRType != "float" || entry.CodeStart < 0 || entry.CodeEnd <= entry.CodeStart {
+			continue
+		}
+		if rangeHasDirectFPLoad(art.CompiledCode, entry.CodeStart, entry.CodeEnd) {
+			foundFloatLoad = true
+			break
+		}
+	}
+	if !foundFloatLoad {
+		t.Fatalf("float TableNestedLoad did not emit direct FP register-offset load")
+	}
+}
+
 func TestTier2_TableArrayHeaderKnownTableSkipsNilCheck(t *testing.T) {
 	src := `
 func read_row(rows, i, j) {
