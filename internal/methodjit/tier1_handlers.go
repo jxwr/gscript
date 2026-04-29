@@ -80,13 +80,13 @@ func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Va
 		return nil
 	}
 	if b < 0 || b >= len(proto.TableCtors2) || base+c+1 >= len(regs) {
-		regs[absA] = runtime.TableValue(runtime.NewTableSized(0, 2))
+		regs[absA] = runtime.FreshTableValue(runtime.NewTableSized(0, 2))
 		return nil
 	}
 	ctor := &proto.TableCtors2[b].Runtime
 	tbl := runtime.NewTableFromCtor2(ctor, regs[base+c], regs[base+c+1])
 	fillBaselineNewObject2Cache(bf, int(ctx.BaselinePC)-1, ctor)
-	regs[absA] = runtime.TableValue(tbl)
+	regs[absA] = runtime.FreshTableValue(tbl)
 	return nil
 }
 
@@ -423,7 +423,7 @@ func (e *BaselineJITEngine) handleNewTable(ctx *ExecContext, regs []runtime.Valu
 		tbl = runtime.NewTableSized(b, c)
 	}
 	if absSlot < len(regs) {
-		regs[absSlot] = runtime.TableValue(tbl)
+		regs[absSlot] = runtime.FreshTableValue(tbl)
 	}
 	return nil
 }

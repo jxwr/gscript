@@ -227,6 +227,53 @@ func TestTableValueUsesCurrentSlabRoot(t *testing.T) {
 	stdruntime.KeepAlive(values)
 }
 
+func TestFreshTableValueDoesNotGrowRootLogForHeapTable(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	tbl := NewTable()
+	before := GCRootLogSize()
+	v := FreshTableValue(tbl)
+	after := GCRootLogSize()
+	if delta := after - before; delta != 0 {
+		t.Fatalf("fresh table value root log delta = %d, want 0", delta)
+	}
+	if !v.IsTable() || v.Table() != tbl {
+		t.Fatal("fresh table value did not round-trip table pointer")
+	}
+	stdruntime.KeepAlive(tbl)
+}
+
+func TestFreshTableValueScansTableSlabRoot(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	tbl := NewTable()
+	v := FreshTableValue(tbl)
+	root := tableSlabRootForPointer(unsafe.Pointer(tbl))
+	if root == nil {
+		t.Fatal("fresh table did not resolve to a slab root")
+	}
+
+	visited := make(map[uintptr]struct{})
+	ScanValueRoots(v, func(p unsafe.Pointer) {
+		visited[uintptr(p)] = struct{}{}
+	}, make(map[uintptr]struct{}))
+	if _, ok := visited[uintptr(unsafe.Pointer(tbl))]; !ok {
+		t.Fatal("ScanValueRoots did not visit fresh table pointer")
+	}
+	if _, ok := visited[uintptr(root)]; !ok {
+		t.Fatal("ScanValueRoots did not visit fresh table slab root")
+	}
+	stdruntime.KeepAlive(tbl)
+}
+
 func TestScanValueRootsVisitsTableSlabRoot(t *testing.T) {
 	oldHeap := DefaultHeap
 	DefaultHeap = NewHeap()

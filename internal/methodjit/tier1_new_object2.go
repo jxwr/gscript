@@ -87,7 +87,7 @@ func fillBaselineNewObject2Cache(bf *BaselineFunc, pc int, ctor *runtime.SmallTa
 	for i := range entry.Values {
 		tbl := runtime.NewTableFromCtor2(ctor, seed, seed)
 		entry.Roots[i] = tbl
-		entry.Values[i] = runtime.TableValue(tbl)
+		entry.Values[i] = runtime.FreshTableValue(tbl)
 	}
 	entry.Pos = 0
 }

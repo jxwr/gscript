@@ -479,6 +479,17 @@ func TableValue(t *Table) Value {
 	return Value(tagPtr | ptrSubTable | (uint64(uintptr(p)) & ptrAddrMask))
 }
 
+// FreshTableValue boxes a table that was just allocated by DefaultHeap.
+// The table slab root is already kept alive when the slab is published, so
+// fresh allocation sites can avoid the generic TableValue root-log check.
+func FreshTableValue(t *Table) Value {
+	if t == nil {
+		return Value(valNil)
+	}
+	p := unsafe.Pointer(t)
+	return Value(tagPtr | ptrSubTable | (uint64(uintptr(p)) & ptrAddrMask))
+}
+
 // iface is the memory layout of a Go interface{}/any value.
 type iface struct {
 	typ  unsafe.Pointer

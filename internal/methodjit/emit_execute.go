@@ -317,7 +317,7 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 		tbl := cf.allocateNewTableForExit(int(ctx.TableExitID), arrayHint, hashHint, arrayKind)
 		resultSlot := int(ctx.TableSlot)
 		if resultSlot < len(regs) {
-			regs[resultSlot] = runtime.TableValue(tbl)
+			regs[resultSlot] = runtime.FreshTableValue(tbl)
 		}
 
 	case TableOpGetTable:

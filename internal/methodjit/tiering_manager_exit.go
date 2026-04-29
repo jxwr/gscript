@@ -398,7 +398,7 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 		tbl := cf.allocateNewTableForExit(int(ctx.TableExitID), arrayHint, hashHint, arrayKind)
 		absSlot := base + int(ctx.TableSlot)
 		if absSlot < len(regs) {
-			regs[absSlot] = runtime.TableValue(tbl)
+			regs[absSlot] = runtime.FreshTableValue(tbl)
 		}
 
 	case TableOpGetTable:
