@@ -24,6 +24,10 @@ type MethodJITEngine interface {
 	SetCallVM(v *VM) // sets the VM for call-exit/global-exit
 }
 
+type methodJITEngineWithResultBuffer interface {
+	ExecuteWithResultBuffer(compiled interface{}, regs []runtime.Value, base int, proto *FuncProto, retBuf []runtime.Value) ([]runtime.Value, error)
+}
+
 // VM is the bytecode virtual machine.
 type VM struct {
 	regs              []runtime.Value          // register file (shared across frames via base offset)
@@ -549,6 +553,13 @@ func (vm *VM) CallValue(fn runtime.Value, args []runtime.Value) ([]runtime.Value
 	return vm.callValue(fn, args)
 }
 
+func (vm *VM) executeMethodJIT(compiled interface{}, regs []runtime.Value, base int, proto *FuncProto) ([]runtime.Value, error) {
+	if exec, ok := vm.methodJIT.(methodJITEngineWithResultBuffer); ok {
+		return exec.ExecuteWithResultBuffer(compiled, regs, base, proto, vm.retBuf[:0])
+	}
+	return vm.methodJIT.Execute(compiled, regs, base, proto)
+}
+
 // call pushes a new call frame and executes.
 func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) ([]runtime.Value, error) {
 	// GC safe point at function entry: all caller's register writes are complete.
@@ -594,7 +605,7 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	if vm.methodJIT != nil && !proto.IsVarArg && !proto.JITDisabled {
 		proto.CallCount++
 		if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
-			results, err := vm.methodJIT.Execute(compiled, vm.regs, base, proto)
+			results, err := vm.executeMethodJIT(compiled, vm.regs, base, proto)
 			if err == nil {
 				vm.closeUpvalues(base)
 				vm.frameCount--
@@ -1466,7 +1477,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				if vm.methodJIT != nil && !proto.IsVarArg && !proto.JITDisabled {
 					proto.CallCount++
 					if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
-						results, err := vm.methodJIT.Execute(compiled, vm.regs, newBase, proto)
+						results, err := vm.executeMethodJIT(compiled, vm.regs, newBase, proto)
 						if err == nil {
 							vm.closeUpvalues(newBase)
 							vm.frameCount--

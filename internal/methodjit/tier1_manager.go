@@ -285,7 +285,11 @@ func tier1OpMayExit(op vm.Opcode) bool {
 // Execute runs a baseline-compiled function using the VM's register file.
 // Arguments are already in regs[base..base+numParams-1].
 func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
-	results, err := e.executeInner(compiled, regs, base, proto)
+	return e.ExecuteWithResultBuffer(compiled, regs, base, proto, nil)
+}
+
+func (e *BaselineJITEngine) ExecuteWithResultBuffer(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
+	results, err := e.executeInner(compiled, regs, base, proto, retBuf)
 	if err == errIntSpecDeopt {
 		DisableIntSpec(proto)
 		e.EvictCompiled(proto)
@@ -305,14 +309,14 @@ func (e *BaselineJITEngine) Execute(compiled interface{}, regs []runtime.Value, 
 		if recompiled == nil {
 			return nil, fmt.Errorf("baseline: int-spec deopt recompile failed")
 		}
-		return e.executeInner(recompiled, regs, base, proto)
+		return e.executeInner(recompiled, regs, base, proto, retBuf)
 	}
 	return results, err
 }
 
 // executeInner is the raw JIT entry loop. Execute wraps it to handle
 // int-spec deopt fallback.
-func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
+func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
 	bf := compiled.(*BaselineFunc)
 
 	// Ensure register space.
@@ -423,7 +427,7 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 			// Normal return: result is in ctx.BaselineReturnValue (not slot 0,
 			// because RETURN must not clobber register slots that upvalues point to).
 			result := runtime.Value(ctx.BaselineReturnValue)
-			return []runtime.Value{result}, nil
+			return runtime.ReuseValueSlice1(retBuf, result), nil
 
 		case ExitBaselineOpExit:
 			// Baseline op-exit: handle operation via Go, then resume.

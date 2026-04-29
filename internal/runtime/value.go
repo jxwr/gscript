@@ -1186,3 +1186,15 @@ func MakeNilSliceCap(n, cap int) []Value {
 	}
 	return s
 }
+
+// ReuseValueSlice1 returns a one-element Value slice backed by buf when
+// possible. It is used by VM/JIT return paths where the caller immediately
+// consumes or owns the reusable result buffer.
+func ReuseValueSlice1(buf []Value, v Value) []Value {
+	if cap(buf) > 0 {
+		buf = buf[:1]
+		buf[0] = v
+		return buf
+	}
+	return []Value{v}
+}

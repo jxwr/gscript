@@ -182,6 +182,39 @@ result := add(3, 4)
 	}
 }
 
+func TestTieringManager_ExecuteTier2UsesResultBuffer(t *testing.T) {
+	top := compileProto(t, `func f() { return 42 }`)
+	fn := findProtoByName(top, "f")
+	if fn == nil {
+		t.Fatal("function f not found")
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(fn); err != nil {
+		t.Fatalf("CompileTier2(f): %v", err)
+	}
+	cf := tm.tier2Compiled[fn]
+	if cf == nil {
+		t.Fatal("compiled Tier2 function missing")
+	}
+
+	regs := runtime.MakeNilSlice(cf.numRegs + 1)
+	var storage [1]runtime.Value
+	results, err := tm.executeTier2WithResultBuffer(cf, regs, 0, fn, storage[:0])
+	if err != nil {
+		t.Fatalf("executeTier2WithResultBuffer: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results)=%d, want 1", len(results))
+	}
+	if &results[0] != &storage[0] {
+		t.Fatal("Tier2 return did not use caller result buffer")
+	}
+	if !results[0].IsInt() || results[0].Int() != 42 {
+		t.Fatalf("results=%v, want int 42", results)
+	}
+}
+
 // TestTieringManager_AutoPromotion verifies that functions called enough times
 // through the VM path (not BLR) get automatically promoted.
 // With tmDefaultTier2Threshold=2, the second VM-path call triggers Tier 2.

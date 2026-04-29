@@ -94,6 +94,7 @@ type TieringManager struct {
 	tier2Attempts   int                      // total Tier 2 compilation attempts
 	exitStats       exitStatsCollector
 	callVM          *vm.VM
+	retBuf          [8]runtime.Value
 	tier2Threshold  int                           // configurable threshold for testing (legacy fallback)
 	profileCache    map[*vm.FuncProto]FuncProfile // cached function profiles
 
@@ -425,11 +426,15 @@ func (tm *TieringManager) osrWouldHitCallInLoopGate(proto *vm.FuncProto, profile
 // compiled type. Handles OSR: if Tier 1 exits with an OSR request, compiles
 // Tier 2 and re-enters the function from the start at Tier 2 speed.
 func (tm *TieringManager) Execute(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
+	return tm.ExecuteWithResultBuffer(compiled, regs, base, proto, tm.retBuf[:0])
+}
+
+func (tm *TieringManager) ExecuteWithResultBuffer(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
 	switch c := compiled.(type) {
 	case *BaselineFunc:
-		results, err := tm.tier1.Execute(c, regs, base, proto)
+		results, err := tm.tier1.ExecuteWithResultBuffer(c, regs, base, proto, retBuf)
 		if err == errOSRRequested {
-			return tm.handleOSR(regs, base, proto)
+			return tm.handleOSRWithResultBuffer(regs, base, proto, retBuf)
 		}
 		if err != nil {
 			tm.traceEvent("fallback", "tier0", proto, map[string]any{
@@ -440,7 +445,7 @@ func (tm *TieringManager) Execute(compiled interface{}, regs []runtime.Value, ba
 		// errIntSpecDeopt is handled internally by tier1.Execute.
 		return results, err
 	case *CompiledFunction:
-		return tm.executeTier2(c, regs, base, proto)
+		return tm.executeTier2WithResultBuffer(c, regs, base, proto, retBuf)
 	default:
 		return nil, fmt.Errorf("tiering: unknown compiled type %T", compiled)
 	}
@@ -452,6 +457,10 @@ func (tm *TieringManager) Execute(compiled interface{}, regs []runtime.Value, ba
 // the entire function at Tier 2. The restart overhead is negligible compared to
 // long-running loops (e.g., mandelbrot(1000) with 1M iterations).
 func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
+	return tm.handleOSRWithResultBuffer(regs, base, proto, tm.retBuf[:0])
+}
+
+func (tm *TieringManager) handleOSRWithResultBuffer(regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
 	tm.traceEvent("osr_fired", "tier1", proto, map[string]any{
 		"base": base,
 	})
@@ -482,7 +491,7 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 		if t1 == nil {
 			return nil, fmt.Errorf("tiering: OSR fallback failed: no Tier 1 code")
 		}
-		return tm.tier1.Execute(t1, regs, base, proto)
+		return tm.tier1.ExecuteWithResultBuffer(t1, regs, base, proto, retBuf)
 	}
 
 	// Cache the Tier 2 compilation for future calls.
@@ -490,7 +499,7 @@ func (tm *TieringManager) handleOSR(regs []runtime.Value, base int, proto *vm.Fu
 	tm.installTier2(proto, t2)
 
 	// Re-enter the function from the start at Tier 2.
-	return tm.executeTier2(t2, regs, base, proto)
+	return tm.executeTier2WithResultBuffer(t2, regs, base, proto, retBuf)
 }
 
 func (tm *TieringManager) disableTier1FeedbackForNoTier2(proto *vm.FuncProto) {
@@ -1428,6 +1437,10 @@ func (tm *TieringManager) setTier2FieldCacheContext(ctx *ExecContext, proto *vm.
 // executeTier2 runs a Tier 2 compiled function using the VM's register file.
 // This is the Tier 2 execute loop, handling exit codes and resuming JIT code.
 func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
+	return tm.executeTier2WithResultBuffer(cf, regs, base, proto, tm.retBuf[:0])
+}
+
+func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
 	if tm.callVM != nil {
 		regs = tm.ensureTier2RegisterBudget(cf, regs, base, proto)
 	}
@@ -1536,7 +1549,7 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 		case ExitNormal:
 			// Tier 2 return: result in regs[base] (slot 0 relative to base).
 			result := regs[base]
-			return []runtime.Value{result}, nil
+			return runtime.ReuseValueSlice1(retBuf, result), nil
 
 		case ExitDeopt:
 			if tm.envR154Trace && tm.r154DeoptPrints < 20 {
