@@ -1649,7 +1649,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					cl.Upvalues[i] = frame.closure.Upvalues[desc.Index]
 				}
 			}
-			vm.regs[base+a] = runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
+			vm.regs[base+a] = runtime.VMClosureFastValue(unsafe.Pointer(cl))
 
 		case OP_CLOSE:
 			a := DecodeA(inst)

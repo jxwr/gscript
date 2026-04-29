@@ -19,6 +19,14 @@ func newVMClosureProbeValue() (Value, uintptr) {
 	return VMClosureFunctionValue(unsafe.Pointer(obj), obj), uintptr(unsafe.Pointer(obj))
 }
 
+func newVMClosureFastProbeValue() (Value, uintptr) {
+	obj := &vmClosurePointerProbe{
+		marker: 99,
+		next:   &vmClosurePointerProbe{marker: 11},
+	}
+	return VMClosureFastValue(unsafe.Pointer(obj)), uintptr(unsafe.Pointer(obj))
+}
+
 func TestVMClosurePointerKeepsOriginalInterfaceAlive(t *testing.T) {
 	v, wantAddr := newVMClosureProbeValue()
 
@@ -41,6 +49,26 @@ func TestVMClosurePointerKeepsOriginalInterfaceAlive(t *testing.T) {
 	ptr, ok := v.Ptr().(*vmClosurePointerProbe)
 	if !ok || uintptr(unsafe.Pointer(ptr)) != wantAddr {
 		t.Fatalf("Ptr() = %T %p, want *vmClosurePointerProbe %#x", v.Ptr(), ptr, wantAddr)
+	}
+}
+
+func TestVMClosureFastValueKeepsPointerAlive(t *testing.T) {
+	v, wantAddr := newVMClosureFastProbeValue()
+
+	for i := 0; i < 3; i++ {
+		goruntime.GC()
+	}
+
+	p := v.VMClosurePointer()
+	if p == nil {
+		t.Fatal("VMClosurePointer returned nil for a fast VM closure value")
+	}
+	if gotAddr := uintptr(p); gotAddr != wantAddr {
+		t.Fatalf("VMClosurePointer = %#x, want %#x", gotAddr, wantAddr)
+	}
+	got := (*vmClosurePointerProbe)(p)
+	if got.marker != 99 || got.next == nil || got.next.marker != 11 {
+		t.Fatalf("VMClosurePointer object = %#v", got)
 	}
 }
 

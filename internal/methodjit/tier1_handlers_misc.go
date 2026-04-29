@@ -88,7 +88,7 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 	}
 	absA := base + a
 	if absA < len(regs) {
-		regs[absA] = runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
+		regs[absA] = runtime.VMClosureFastValue(unsafe.Pointer(cl))
 	}
 	return nil
 }

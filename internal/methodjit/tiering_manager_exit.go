@@ -693,7 +693,7 @@ func (tm *TieringManager) executeClosureOpExit(ctx *ExecContext, regs []runtime.
 	}
 
 	if absSlot < len(regs) {
-		regs[absSlot] = runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
+		regs[absSlot] = runtime.VMClosureFastValue(unsafe.Pointer(cl))
 	}
 	return nil
 }
