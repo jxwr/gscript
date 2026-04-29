@@ -145,6 +145,42 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 	}
 }
 
+// emitGuardIntRange emits a signed raw-int range check for OpGuardIntRange.
+// On success it passes the raw int through; on failure it deopts before the
+// optimized body observes the speculative range fact.
+func (ec *emitContext) emitGuardIntRange(instr *Instr) {
+	if len(instr.Args) == 0 {
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("guard_int_range_deopt")
+	doneLabel := ec.uniqueLabel("guard_int_range_done")
+
+	src := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+	if src != jit.X0 {
+		asm.MOVreg(jit.X0, src)
+	}
+	emitCmpInt64(asm, jit.X0, instr.Aux, jit.X2)
+	asm.BCond(jit.CondLT, deoptLabel)
+	emitCmpInt64(asm, jit.X0, instr.Aux2, jit.X2)
+	asm.BCond(jit.CondGT, deoptLabel)
+
+	ec.storeRawInt(jit.X0, instr.ID)
+	asm.B(doneLabel)
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
+func emitCmpInt64(asm *jit.Assembler, rn jit.Reg, imm int64, scratch jit.Reg) {
+	if imm >= 0 && imm <= 0xfff {
+		asm.CMPimm(rn, uint16(imm))
+		return
+	}
+	asm.LoadImm64(scratch, imm)
+	asm.CMPreg(rn, scratch)
+}
+
 // emitNumToFloat emits a numeric widening check/conversion. It accepts either
 // NaN-boxed int or NaN-boxed float and stores a raw float result for the
 // downstream FPR pipeline. Non-numeric values deopt.

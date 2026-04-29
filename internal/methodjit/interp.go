@@ -714,6 +714,17 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 	case OpGuardType:
 		s.values[instr.ID] = s.val(instr.Args[0])
 
+	case OpGuardIntRange:
+		a := s.val(instr.Args[0])
+		if !a.IsInt() {
+			return nil, false, fmt.Errorf("IR interpreter: GuardIntRange on %s", a.TypeName())
+		}
+		n := a.Int()
+		if n < instr.Aux || n > instr.Aux2 {
+			return nil, false, fmt.Errorf("IR interpreter: GuardIntRange failed")
+		}
+		s.values[instr.ID] = a
+
 	case OpGuardNonNil:
 		s.values[instr.ID] = s.val(instr.Args[0])
 

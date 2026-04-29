@@ -349,7 +349,7 @@ func valueIsIntegerSeed(v *Value) bool {
 	if v == nil || v.Def == nil {
 		return false
 	}
-	return v.Def.Type == TypeInt || v.Def.Op == OpConstInt || v.Def.Op == OpGuardType && Type(v.Def.Aux) == TypeInt
+	return v.Def.Type == TypeInt || v.Def.Op == OpConstInt || v.Def.Op == OpGuardType && Type(v.Def.Aux) == TypeInt || v.Def.Op == OpGuardIntRange
 }
 
 func shiftAddBoundParamAdjust(v *Value) (slot int, adjust int64, ok bool) {
@@ -386,6 +386,9 @@ func guardedLoadSlot(v *Value) (int, bool) {
 		return 0, false
 	}
 	if v.Def.Op == OpGuardType && Type(v.Def.Aux) == TypeInt && len(v.Def.Args) > 0 {
+		v = v.Def.Args[0]
+	}
+	if v != nil && v.Def != nil && v.Def.Op == OpGuardIntRange && len(v.Def.Args) > 0 {
 		v = v.Def.Args[0]
 	}
 	if v == nil || v.Def == nil || v.Def.Op != OpLoadSlot {

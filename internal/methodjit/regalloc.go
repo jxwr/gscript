@@ -388,7 +388,7 @@ func isRawIntCarryValue(instr *Instr) bool {
 		return true
 	}
 	switch instr.Op {
-	case OpConstInt, OpLoadSlot, OpGuardType, OpCall, OpPhi:
+	case OpConstInt, OpLoadSlot, OpGuardType, OpGuardIntRange, OpCall, OpPhi:
 		return true
 	default:
 		return false

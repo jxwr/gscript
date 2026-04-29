@@ -135,7 +135,8 @@ const (
 	OpNumToFloat // NaN-boxed int/float → raw float64; deopt if non-number
 
 	// Guards (speculative; deopt on failure)
-	OpGuardType // Args[0] must have type Aux; deopt if not
+	OpGuardType     // Args[0] must have type Aux; deopt if not
+	OpGuardIntRange // Args[0] must be int in [Aux, Aux2]; deopt if not
 	OpGuardNonNil
 	OpGuardTruthy
 
@@ -254,6 +255,7 @@ var opNames = [...]string{
 	OpUnboxFloat:           "UnboxFloat",
 	OpNumToFloat:           "NumToFloat",
 	OpGuardType:            "GuardType",
+	OpGuardIntRange:        "GuardIntRange",
 	OpGuardNonNil:          "GuardNonNil",
 	OpGuardTruthy:          "GuardTruthy",
 	OpJump:                 "Jump",

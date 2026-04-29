@@ -272,7 +272,7 @@ func componentHasObservableUse(component map[int]bool, uses map[int][]*Instr) bo
 func isExactDivAllowedExternalUse(op Op) bool {
 	switch op {
 	case OpEq, OpLt, OpLe, OpEqInt, OpLtInt, OpLeInt,
-		OpGuardType, OpBranch:
+		OpGuardType, OpGuardIntRange, OpBranch:
 		return true
 	default:
 		return false
@@ -321,7 +321,7 @@ func solveIntNarrowableValues(fn *Function, provenDiv, candidates map[int]bool) 
 
 func mayBeIntNarrowed(instr *Instr, provenDiv map[int]bool) bool {
 	switch instr.Op {
-	case OpConstInt, OpGuardType, OpUnboxInt:
+	case OpConstInt, OpGuardType, OpGuardIntRange, OpUnboxInt:
 		return instr.Op != OpGuardType || instr.Type == TypeInt || instr.Aux == int64(TypeInt)
 	case OpPhi:
 		return instr.Type == TypeInt || instr.Type == TypeFloat || instr.Type == TypeAny || instr.Type == TypeUnknown
@@ -340,7 +340,7 @@ func intNarrowConstraintsHold(instr *Instr, possible map[int]bool, provenDiv map
 	switch instr.Op {
 	case OpConstInt:
 		return true
-	case OpGuardType:
+	case OpGuardType, OpGuardIntRange:
 		return instr.Type == TypeInt || instr.Aux == int64(TypeInt)
 	case OpUnboxInt:
 		return true

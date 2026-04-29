@@ -277,7 +277,7 @@ type Tier2PipelineOpts struct {
 //
 //	TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp →
 //	LoadElim → EscapeAnalysis → DCE → PostRewriteTypeSpec →
-//	RangeAnalysis → OverflowBoxing → LICM → FieldNumToFloatFusion →
+//	LoopBoundRangeGuard → RangeAnalysis → OverflowBoxing → FloatStrengthReduction → LICM → FieldNumToFloatFusion →
 //	LoadElim → DCE
 //
 // Returns the optimized function, any intrinsic rewrite notes (non-nil means
@@ -448,6 +448,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, err
 	}
 
+	fn, err = LoopBoundRangeGuardPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("LoopBoundRangeGuard: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = RangeAnalysisPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("RangeAnalysis: %w", err)
@@ -532,6 +538,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("FMAFusion: %w", err)
 	}
+
+	fn, err = FloatStrengthReductionPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FloatStrengthReduction: %w", err)
+	}
+	attachRemarks(fn, opts)
 
 	fn, err = LICMPass(fn)
 	if err != nil {
@@ -626,6 +638,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("ConstProp", ConstPropPass)
 	pipe.Add("LoadElimination", LoadEliminationPass)
 	pipe.Add("DCE", DCEPass)
+	pipe.Add("LoopBoundRangeGuard", LoopBoundRangeGuardPass)
 	pipe.Add("RangeAnalysis", RangeAnalysisPass)
 	pipe.Add("OverflowBoxing", OverflowBoxingPass)
 	pipe.Add("IntExactDivision", IntExactDivisionPass)
@@ -635,6 +648,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("TableArrayLower", TableArrayLowerPass)
 	pipe.Add("TableArrayLoadTypeSpecialize", TableArrayLoadTypeSpecializePass)
 	pipe.Add("TableArrayNestedLoad", TableArrayNestedLoadPass)
+	pipe.Add("FloatStrengthReduction", FloatStrengthReductionPass)
 	pipe.Add("LICM", LICMPass)
 	pipe.Add("FieldNumToFloatFusion", FieldNumToFloatFusionPass)
 	pipe.Add("LoadEliminationPostLICM", LoadEliminationPass)

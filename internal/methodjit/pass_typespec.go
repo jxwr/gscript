@@ -343,6 +343,8 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 	// Guards: the guarded type is stored in Aux.
 	case OpGuardType:
 		return Type(instr.Aux)
+	case OpGuardIntRange:
+		return TypeInt
 	case OpGetFieldNumToFloat:
 		return TypeFloat
 
@@ -1010,6 +1012,8 @@ func (ts *typeSpecializer) isKnownIntValue(v *Value) bool {
 		return true
 	case OpGuardType:
 		return Type(v.Def.Aux) == TypeInt
+	case OpGuardIntRange:
+		return true
 	default:
 		return false
 	}

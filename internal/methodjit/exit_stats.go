@@ -66,6 +66,8 @@ func buildExitSiteMeta(fn *Function) map[int]ExitSiteMeta {
 			reason := instr.Op.String()
 			if instr.Op == OpGuardType {
 				reason = fmt.Sprintf("GuardType(%s)", Type(instr.Aux))
+			} else if instr.Op == OpGuardIntRange {
+				reason = fmt.Sprintf("GuardIntRange(%d..%d)", instr.Aux, instr.Aux2)
 			} else if instr.Op == OpNewTable {
 				reason = newTableExitReason(instr)
 			} else if instr.Op == OpNewFixedTable {

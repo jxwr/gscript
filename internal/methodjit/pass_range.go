@@ -85,6 +85,23 @@ func joinRange(a, b intRange) intRange {
 	return out
 }
 
+func intersectRange(a, b intRange) intRange {
+	if !a.known || !b.known {
+		return topRange()
+	}
+	out := intRange{known: true, min: a.min, max: a.max}
+	if b.min > out.min {
+		out.min = b.min
+	}
+	if b.max < out.max {
+		out.max = b.max
+	}
+	if out.min > out.max {
+		return topRange()
+	}
+	return out
+}
+
 // --- Saturating arithmetic helpers ---
 
 func satAdd(a, b int64) int64 {
@@ -413,6 +430,17 @@ func computeRange(instr *Instr, ranges map[int]intRange) intRange {
 			return topRange()
 		}
 		return argRange(instr.Args[0], ranges)
+
+	case OpGuardIntRange:
+		if len(instr.Args) < 1 || instr.Aux > instr.Aux2 {
+			return topRange()
+		}
+		arg := argRange(instr.Args[0], ranges)
+		guard := intRange{min: instr.Aux, max: instr.Aux2, known: true}
+		if !arg.known {
+			return guard
+		}
+		return intersectRange(arg, guard)
 	}
 	return topRange()
 }
@@ -551,6 +579,16 @@ func computeRangeInEnv(instr *Instr, env, baseRanges map[int]intRange) intRange 
 			return topRange()
 		}
 		return negRange(argRangeInEnv(instr.Args[0], env, baseRanges))
+	case OpGuardIntRange:
+		if len(instr.Args) < 1 || instr.Aux > instr.Aux2 {
+			return topRange()
+		}
+		arg := argRangeInEnv(instr.Args[0], env, baseRanges)
+		guard := intRange{min: instr.Aux, max: instr.Aux2, known: true}
+		if !arg.known {
+			return guard
+		}
+		return intersectRange(arg, guard)
 	case OpPhi:
 		if r, ok := baseRanges[instr.ID]; ok && r.known {
 			return r
@@ -844,11 +882,12 @@ func constIntFromValue(v *Value) (int64, bool) {
 //	  cond = f(i) <= bound
 //	  Branch cond -> body, exit
 //
-// When init is non-negative, step is a positive constant, bound is an int48
-// runtime value, and f(i) gives an upper bound for i on the true branch, every
-// value carried back to the header is bounded by true-branch-max(i)+step. This
-// covers trial-division loops like `i = 5; while i*i <= n { ...; i += 6 }`
-// without naming the benchmark or the callee.
+// When init fits int48, step is a positive constant, bound is an int48 runtime
+// value, and f(i) gives an upper bound for i on the true branch, every value
+// carried back to the header is bounded by [init, true-branch-max(i)+step].
+// This covers both while-style loops like `i = 5; while i*i <= n { ...; i += 6 }`
+// and the graph builder's pre-increment for-loop shape where `for i := 0`
+// becomes phi init -1 with the guarded value represented as phi+1.
 func seedGuardedForwardInductionRanges(fn *Function, ranges map[int]intRange) {
 	li := computeLoopInfo(fn)
 	if !li.hasLoops() {
@@ -871,7 +910,7 @@ func seedGuardedForwardInductionRanges(fn *Function, ranges map[int]intRange) {
 				continue
 			}
 			ind, ok := analyzeForwardInduction(phi, li)
-			if !ok || ind.init.min < 0 {
+			if !ok || !ind.init.fitsInt48() {
 				continue
 			}
 			trueMax, ok := guardedUpperBound(cond, phi, ranges)
@@ -1031,6 +1070,33 @@ func valueIntUpperBound(v *Value, ranges map[int]intRange) (int64, bool) {
 	if c, ok := constIntFromValue(v); ok {
 		return c, true
 	}
+	switch v.Def.Op {
+	case OpGuardIntRange:
+		return v.Def.Aux2, true
+	case OpAdd, OpAddInt:
+		if len(v.Def.Args) < 2 {
+			return 0, false
+		}
+		if c, ok := constIntFromValue(v.Def.Args[1]); ok {
+			if upper, ok := valueIntUpperBound(v.Def.Args[0], ranges); ok {
+				return satAdd(upper, c), true
+			}
+		}
+		if c, ok := constIntFromValue(v.Def.Args[0]); ok {
+			if upper, ok := valueIntUpperBound(v.Def.Args[1], ranges); ok {
+				return satAdd(upper, c), true
+			}
+		}
+	case OpSub, OpSubInt:
+		if len(v.Def.Args) < 2 {
+			return 0, false
+		}
+		if c, ok := constIntFromValue(v.Def.Args[1]); ok {
+			if upper, ok := valueIntUpperBound(v.Def.Args[0], ranges); ok {
+				return satSub(upper, c), true
+			}
+		}
+	}
 	if isInt48RuntimeValue(v.Def) {
 		return MaxInt48, true
 	}
@@ -1116,7 +1182,7 @@ func isInt48RuntimeValue(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpConstInt, OpGuardType, OpLoadSlot, OpUnboxInt:
+	case OpConstInt, OpGuardType, OpGuardIntRange, OpLoadSlot, OpUnboxInt:
 		return true
 	default:
 		return false

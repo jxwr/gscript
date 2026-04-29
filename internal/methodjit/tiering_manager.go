@@ -2099,6 +2099,9 @@ func tier2ValueIsNativeNumeric(v *Value, seen map[int]bool) bool {
 	case OpGuardType:
 		t := Type(v.Def.Aux)
 		return t == TypeInt || t == TypeFloat
+	case OpGuardIntRange:
+		return v.Def.Type == TypeInt && len(v.Def.Args) == 1 &&
+			tier2ValueIsNativeNumeric(v.Def.Args[0], seen)
 	case OpPhi:
 		return tier2AllValuesNativeNumeric(v.Def.Args, seen)
 	case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
@@ -2155,6 +2158,9 @@ func tier2ValueIsAdditiveIntLike(v *Value, seen map[int]bool) bool {
 	case OpConstInt, OpUnboxInt:
 		return true
 	case OpGuardType:
+		return v.Def.Type == TypeInt && len(v.Def.Args) == 1 &&
+			tier2ValueIsAdditiveIntLike(v.Def.Args[0], seen)
+	case OpGuardIntRange:
 		return v.Def.Type == TypeInt && len(v.Def.Args) == 1 &&
 			tier2ValueIsAdditiveIntLike(v.Def.Args[0], seen)
 	case OpPhi:

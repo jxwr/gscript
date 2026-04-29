@@ -619,8 +619,8 @@ func canHoistOp(op Op) bool {
 		return true
 	case OpLtInt, OpLeInt, OpEqInt, OpModZeroInt, OpLtFloat, OpLeFloat, OpNot:
 		return true
-	case OpGuardType:
-		// Pure type check; deopt metadata has no PC-dependent state,
+	case OpGuardType, OpGuardIntRange:
+		// Pure guards; deopt metadata has no PC-dependent state,
 		// so hoisting is safe when the guarded value is invariant.
 		return true
 	case OpNumToFloat:

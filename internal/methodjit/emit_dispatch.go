@@ -217,6 +217,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	// --- Guards ---
 	case OpGuardType:
 		ec.emitGuardType(instr)
+	case OpGuardIntRange:
+		ec.emitGuardIntRange(instr)
 	case OpNumToFloat:
 		ec.emitNumToFloat(instr)
 	case OpGuardTruthy:
@@ -293,7 +295,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpEqInt, OpLtInt, OpLeInt, OpModZeroInt,
 		OpLtFloat, OpLeFloat,
 		OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
-		OpNumToFloat, OpGuardType, OpGuardTruthy,
+		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardTruthy,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad,
 		OpNop:
 		return true
@@ -313,7 +315,7 @@ func instrPreservesFieldSvalsCache(instr *Instr) bool {
 		return instr.Type == TypeFloat
 	case OpLtFloat, OpLeFloat:
 		return true
-	case OpNumToFloat, OpGuardType:
+	case OpNumToFloat, OpGuardType, OpGuardIntRange:
 		// These paths use X0/X2/X3 and FPR temporaries on the fast path.
 		// Failure exits through deopt rather than resuming after the guard.
 		return true
