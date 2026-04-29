@@ -515,3 +515,50 @@ func TestTablePreallocHintPassLoopLocalTableKeepsSmallHint(t *testing.T) {
 		t.Fatalf("loop-local typed kind = %d, want %d", kind, runtime.ArrayInt)
 	}
 }
+
+func TestTablePreallocHintPassPolymorphicFeedbackForcesMixedPrealloc(t *testing.T) {
+	fn := &Function{
+		Proto: &vm.FuncProto{
+			Name:             "prealloc_poly_kind",
+			Feedback:         make([]vm.TypeFeedback, 3),
+			TableKeyFeedback: make([]vm.TableKeyFeedback, 3),
+		},
+		NumRegs: 3,
+	}
+	fn.Proto.Feedback[2].Kind = vm.FBKindPolymorphic
+	fn.Proto.TableKeyFeedback[2] = vm.TableKeyFeedback{HasIntKey: true, MaxIntKey: 49999}
+
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	set := &Instr{
+		ID:        fn.newValueID(),
+		Op:        OpSetTable,
+		Type:      TypeUnknown,
+		Args:      []*Value{tbl.Value(), key.Value(), val.Value()},
+		Block:     b,
+		HasSource: true,
+		SourcePC:  2,
+	}
+	b.Instrs = []*Instr{tbl, key, val, set}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	newTable := got.Entry.Instrs[0]
+	if newTable.Aux != 50000 {
+		t.Fatalf("array hint = %d, want 50000", newTable.Aux)
+	}
+	_, kind := unpackNewTableAux2(newTable.Aux2)
+	if kind != runtime.ArrayMixed {
+		t.Fatalf("array kind = %d, want mixed", kind)
+	}
+	if set.Aux2 != 0 {
+		t.Fatalf("set Aux2 = %d, want 0 for polymorphic feedback", set.Aux2)
+	}
+}

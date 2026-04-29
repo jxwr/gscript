@@ -53,17 +53,18 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			if instr == nil || instr.Op != OpSetTable || len(instr.Args) == 0 {
 				continue
 			}
-			if instr.Aux2 == int64(vm.FBKindPolymorphic) {
-				continue
-			}
+			forceMixed := setTableHasPolymorphicKindFeedback(fn, instr)
 			tbl := instr.Args[0]
 			tblDef, globalBacked := tablePreallocTableDef(tbl, defs, globalNewTables)
 			if tblDef == nil || tblDef.Op != OpNewTable {
 				continue
 			}
-			kind, hasKind := setTableArrayKindHint(instr, defs)
+			kind, hasKind := runtime.ArrayMixed, false
+			if !forceMixed {
+				kind, hasKind = setTableArrayKindHint(instr, defs)
+			}
 			hasMixedValue := setTableMixedArrayValueHint(instr, defs)
-			if !hasKind && instr.Aux2 == 0 && !hasMixedValue {
+			if !forceMixed && !hasKind && instr.Aux2 == 0 && !hasMixedValue {
 				continue
 			}
 			hint := candidates[tblDef.ID]
@@ -79,7 +80,7 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			if fn.Proto != nil && fn.Proto.TableKeyFeedback != nil && instr.HasSource && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.TableKeyFeedback) {
 				hint.observeIntKeyFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC], largeLoopBuilder)
 			}
-			if hasMixedValue {
+			if forceMixed || hasMixedValue {
 				hint.mixed = true
 			}
 			if hasKind {
@@ -207,6 +208,22 @@ func tablePreallocValueDef(v *Value, defs map[int]*Instr) *Instr {
 		return v.Def
 	}
 	return defs[v.ID]
+}
+
+func setTableHasPolymorphicKindFeedback(fn *Function, instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	if instr.Aux2 == int64(vm.FBKindPolymorphic) {
+		return true
+	}
+	if fn == nil || fn.Proto == nil || fn.Proto.Feedback == nil || !instr.HasSource {
+		return false
+	}
+	if instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.Feedback) {
+		return false
+	}
+	return fn.Proto.Feedback[instr.SourcePC].Kind == vm.FBKindPolymorphic
 }
 
 func arrayKindToFBKind(kind runtime.ArrayKind) (uint8, bool) {
