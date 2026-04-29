@@ -133,10 +133,13 @@ func visitCurrentTableSlabRoot(visitor func(unsafe.Pointer)) {
 		return
 	}
 	start := atomic.LoadUintptr(&DefaultHeap.tableSlabStart)
-	if start == 0 {
-		return
+	if start != 0 {
+		visitor(unsafe.Pointer(start))
 	}
-	visitor(unsafe.Pointer(start))
+	start = atomic.LoadUintptr(&DefaultHeap.tableSvalsSlabStart)
+	if start != 0 {
+		visitor(unsafe.Pointer(start))
+	}
 }
 
 func (h *Heap) tablePointerInCurrentSlab(addr uintptr) bool {
@@ -144,14 +147,111 @@ func (h *Heap) tablePointerInCurrentSlab(addr uintptr) bool {
 		return false
 	}
 	start := atomic.LoadUintptr(&h.tableSlabStart)
-	if start == 0 || addr < start {
-		return false
+	if start != 0 && addr >= start {
+		end := atomic.LoadUintptr(&h.tableSlabEnd)
+		if addr < end {
+			return true
+		}
 	}
-	end := atomic.LoadUintptr(&h.tableSlabEnd)
-	return addr < end
+	start = atomic.LoadUintptr(&h.tableSvalsSlabStart)
+	if start != 0 && addr >= start {
+		end := atomic.LoadUintptr(&h.tableSvalsSlabEnd)
+		return addr < end
+	}
+	return false
 }
 
 const tableSlabElemSize = uintptr(unsafe.Sizeof(Table{}))
+
+const tableSvalsSlabSize = 8192
+
+// tableSvalsSlot is a fresh-allocation layout for fixed small-field table
+// constructors. The Table remains a normal Go-visible *Table, while its first
+// one or two svals live in the same backing object. Slots are bump-only and
+// never recycled, so no live table can observe another table's old contents.
+type tableSvalsSlot struct {
+	table Table
+	svals [2]Value
+}
+
+type tableSvalsSlab struct {
+	backing []tableSvalsSlot
+}
+
+const tableSvalsSlotSize = uintptr(unsafe.Sizeof(tableSvalsSlot{}))
+
+func (s *tableSvalsSlab) allocSlot(h *Heap) *tableSvalsSlot {
+	for {
+		if slot := h.tryAllocTableSvalsFast(); slot != nil {
+			return slot
+		}
+		s.refill(h)
+	}
+}
+
+func (s *tableSvalsSlab) refill(h *Heap) {
+	if h != nil {
+		atomic.StoreUintptr(&h.tableSvalsSlabNext, 0)
+	}
+	next := make([]tableSvalsSlot, tableSvalsSlabSize)
+	s.backing = next
+	if h != nil {
+		h.publishTableSvalsSlab(next)
+	}
+}
+
+func (h *Heap) publishTableSvalsSlab(backing []tableSvalsSlot) {
+	if len(backing) == 0 {
+		atomic.StoreUintptr(&h.tableSvalsSlabNext, 0)
+		atomic.StoreUintptr(&h.tableSvalsSlabStart, 0)
+		atomic.StoreUintptr(&h.tableSvalsSlabEnd, 0)
+		return
+	}
+	root := unsafe.Pointer(&backing[0])
+	start := uintptr(root)
+	end := start + uintptr(len(backing))*tableSvalsSlotSize
+	registerTableSlabRange(start, end)
+	keepAlive(root, nil)
+
+	atomic.StoreUintptr(&h.tableSvalsSlabNext, 0)
+	atomic.StoreUintptr(&h.tableSvalsSlabStart, 0)
+	atomic.StoreUintptr(&h.tableSvalsSlabEnd, end)
+	atomic.StoreUintptr(&h.tableSvalsSlabStart, start)
+	atomic.StoreUintptr(&h.tableSvalsSlabNext, start)
+}
+
+// tryAllocTableSvalsFast reserves a fresh Table+svals slot by absolute
+// address. The slot is never reused, so the zero-filled backing from make is
+// sufficient for a clean Table and empty inline Value storage.
+//
+//go:nocheckptr
+func (h *Heap) tryAllocTableSvalsFast() *tableSvalsSlot {
+	if h == nil {
+		return nil
+	}
+	for {
+		next := atomic.LoadUintptr(&h.tableSvalsSlabNext)
+		if next == 0 {
+			return nil
+		}
+		end := atomic.LoadUintptr(&h.tableSvalsSlabEnd)
+		if end == 0 || next > end-tableSvalsSlotSize {
+			return nil
+		}
+		if atomic.CompareAndSwapUintptr(&h.tableSvalsSlabNext, next, next+tableSvalsSlotSize) {
+			return (*tableSvalsSlot)(unsafe.Pointer(next))
+		}
+	}
+}
+
+func (h *Heap) allocTableSvalsSlot() *tableSvalsSlot {
+	if slot := h.tryAllocTableSvalsFast(); slot != nil {
+		return slot
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.tableSvalsSlab.allocSlot(h)
+}
 
 // tryAllocTableFast reserves a slot by absolute address. The backing []Table is
 // kept alive by tableSlab.backing and the slab root log, but checkptr cannot
@@ -188,10 +288,18 @@ func (h *Heap) AllocTable() *Table {
 	return h.tableSlab.allocTable(h)
 }
 
-// AllocTableWithSvals returns a fresh table and an empty, arena-backed svals
-// slice with the requested capacity. This keeps the common object-literal path
-// to one heap lock instead of separately locking for the Table and svals.
+// AllocTableWithSvals returns a fresh table and an empty svals slice with the
+// requested capacity. One- and two-slot constructors use the inline-svals slab;
+// larger constructors keep using the arena-backed Value storage.
 func (h *Heap) AllocTableWithSvals(capacity int) (*Table, []Value) {
+	if capacity == 1 || capacity == 2 {
+		slot := h.allocTableSvalsSlot()
+		t := &slot.table
+		if capacity == 1 {
+			return t, slot.svals[:0:1]
+		}
+		return t, slot.svals[:0:2]
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	t := h.tableSlab.allocTable(h)
@@ -207,25 +315,13 @@ func (h *Heap) AllocTableWithSvals(capacity int) (*Table, []Value) {
 // the fixed-shape object constructor hot path, avoiding the generic size-class
 // lookup used by AllocTableWithSvals.
 func (h *Heap) AllocTableWithSvals1() (*Table, []Value) {
-	h.mu.Lock()
-	if h.tableSlab.backing == nil {
-		h.tableSlab.refill(h)
-	}
-	t := h.tableSlab.allocTable(h)
-	p := h.arenas[0].Alloc()
-	h.mu.Unlock()
-	return t, unsafe.Slice((*Value)(p), 1)
+	slot := h.allocTableSvalsSlot()
+	return &slot.table, slot.svals[:1:1]
 }
 
 // AllocTableWithSvals2 returns a fresh table and a two-slot svals slice for
 // static two-field object literals.
 func (h *Heap) AllocTableWithSvals2() (*Table, []Value) {
-	h.mu.Lock()
-	if h.tableSlab.backing == nil {
-		h.tableSlab.refill(h)
-	}
-	t := h.tableSlab.allocTable(h)
-	p := h.arenas[0].Alloc()
-	h.mu.Unlock()
-	return t, unsafe.Slice((*Value)(p), 2)
+	slot := h.allocTableSvalsSlot()
+	return &slot.table, slot.svals[:2:2]
 }

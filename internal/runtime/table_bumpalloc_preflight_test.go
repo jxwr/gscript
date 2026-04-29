@@ -155,6 +155,75 @@ func TestNewTableFromCtor2PopulatesSmallFields(t *testing.T) {
 	}
 }
 
+func TestNewTableFromCtor2InlineSvalsRootScans(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	ctor := NewSmallTableCtor2("left", "right")
+	tbl := NewTableFromCtor2(&ctor, IntValue(11), IntValue(22))
+	root := tableSlabRootForPointer(unsafe.Pointer(tbl))
+	if root == nil {
+		t.Fatal("ctor2 table did not resolve to a slab root")
+	}
+
+	v := FreshTableValue(tbl)
+	visited := make(map[uintptr]struct{})
+	ScanValueRoots(v, func(p unsafe.Pointer) {
+		visited[uintptr(p)] = struct{}{}
+	}, make(map[uintptr]struct{}))
+	if _, ok := visited[uintptr(unsafe.Pointer(tbl))]; !ok {
+		t.Fatal("ScanValueRoots did not visit ctor2 table pointer")
+	}
+	if _, ok := visited[uintptr(root)]; !ok {
+		t.Fatal("ScanValueRoots did not visit ctor2 table slab root")
+	}
+	stdruntime.KeepAlive(tbl)
+}
+
+func TestTableValueSkipsRootLogForCurrentInlineSvalsSlab(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	ctor := NewSmallTableCtor2("left", "right")
+	tbl := NewTableFromCtor2(&ctor, IntValue(11), IntValue(22))
+	before := GCRootLogSize()
+	v := TableValue(tbl)
+	after := GCRootLogSize()
+	if after != before {
+		t.Fatalf("TableValue grew root log by %d for current inline-svals slab table, want 0", after-before)
+	}
+	stdruntime.KeepAlive(v)
+	stdruntime.KeepAlive(tbl)
+}
+
+func TestNewTableFromCtor2InlineSvalsCanGrow(t *testing.T) {
+	ctor := NewSmallTableCtor2("left", "right")
+	tbl := NewTableFromCtor2(&ctor, IntValue(11), IntValue(22))
+	if cap(tbl.svals) != 2 {
+		t.Fatalf("ctor2 svals cap = %d, want 2", cap(tbl.svals))
+	}
+
+	tbl.RawSetString("extra", IntValue(33))
+	if got := tbl.RawGetString("left"); !got.IsInt() || got.Int() != 11 {
+		t.Fatalf("left after grow = %v, want 11", got)
+	}
+	if got := tbl.RawGetString("right"); !got.IsInt() || got.Int() != 22 {
+		t.Fatalf("right after grow = %v, want 22", got)
+	}
+	if got := tbl.RawGetString("extra"); !got.IsInt() || got.Int() != 33 {
+		t.Fatalf("extra after grow = %v, want 33", got)
+	}
+	if len(tbl.svals) != 3 {
+		t.Fatalf("svals len after grow = %d, want 3", len(tbl.svals))
+	}
+}
+
 func TestNewTableFromCtor2OmitsRuntimeNilFields(t *testing.T) {
 	ctor := NewSmallTableCtor2("left", "right")
 
