@@ -2,7 +2,10 @@
 
 package runtime
 
-import "testing"
+import (
+	stdruntime "runtime"
+	"testing"
+)
 
 func TestNewDenseMatrix_Basic(t *testing.T) {
 	m := NewDenseMatrix(3, 4)
@@ -134,7 +137,7 @@ func TestDenseMatrix_AutoAdoptsOrdinaryFloatRows(t *testing.T) {
 	}
 	row1 := m.RawGetInt(1).Table()
 	row1.RawSetInt(2, FloatValue(42))
-	if got := m.dmBacking[1*cols+2]; got != 42 {
+	if got := m.dmMeta.backing[1*cols+2]; got != 42 {
 		t.Fatalf("in-bounds row write did not update dense backing: got %v", got)
 	}
 }
@@ -173,7 +176,7 @@ func TestDenseMatrix_AutoAdoptInvalidatesOnRowDemotion(t *testing.T) {
 	}
 }
 
-func TestDenseMatrix_AutoAdoptInvalidatesOnIncompatibleRowReplacement(t *testing.T) {
+func TestDenseMatrix_AutoAdoptInvalidatesOnRowReplacement(t *testing.T) {
 	const cols = autoDenseMatrixMinStride
 	m := NewTableSizedKind(2, 0, ArrayMixed)
 	row := NewTableSizedKind(cols, 0, ArrayFloat)
@@ -184,14 +187,55 @@ func TestDenseMatrix_AutoAdoptInvalidatesOnIncompatibleRowReplacement(t *testing
 	if m.dmStride == 0 {
 		t.Fatal("expected auto dense metadata")
 	}
-	replacement := NewTableSizedKind(cols-1, 0, ArrayFloat)
-	for j := 0; j < cols-1; j++ {
+	replacement := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
 		replacement.RawSetInt(int64(j), FloatValue(float64(j)))
 	}
 	m.RawSetInt(0, TableValue(replacement))
 	if m.dmStride != 0 || m.dmFlat != nil {
-		t.Fatalf("incompatible row replacement should invalidate dense metadata, stride=%d flat=%v", m.dmStride, m.dmFlat)
+		t.Fatalf("row replacement should invalidate dense metadata, stride=%d flat=%v", m.dmStride, m.dmFlat)
 	}
+}
+
+func TestDenseMatrix_NewDenseMatrixInvalidatesOnRowGrowth(t *testing.T) {
+	const cols = autoDenseMatrixMinStride
+	m := NewDenseMatrix(2, cols)
+	if m.dmStride != cols || m.dmFlat == nil {
+		t.Fatalf("NewDenseMatrix dense metadata stride=%d flat=%v, want stride=%d", m.dmStride, m.dmFlat, cols)
+	}
+	row := m.RawGetInt(0).Table()
+	row.RawSetInt(cols, FloatValue(1))
+	if m.dmStride != 0 || m.dmFlat != nil {
+		t.Fatalf("NewDenseMatrix row growth should invalidate dense metadata, stride=%d flat=%v", m.dmStride, m.dmFlat)
+	}
+}
+
+func TestDenseMatrix_AutoAdoptBackingSurvivesGC(t *testing.T) {
+	const cols = autoDenseMatrixMinStride
+	m := NewTableSizedKind(4, 0, ArrayMixed)
+	for i := 0; i < 3; i++ {
+		row := NewTableSizedKind(cols, 0, ArrayFloat)
+		for j := 0; j < cols; j++ {
+			row.RawSetInt(int64(j), FloatValue(float64(i*cols+j)))
+		}
+		m.RawSetInt(int64(i), TableValue(row))
+	}
+	if m.dmStride != cols || m.dmFlat == nil {
+		t.Fatalf("auto dense metadata stride=%d flat=%v, want stride=%d", m.dmStride, m.dmFlat, cols)
+	}
+
+	stdruntime.GC()
+	for i := 0; i < 256; i++ {
+		_ = make([]float64, cols*8)
+	}
+	stdruntime.GC()
+
+	row := m.RawGetInt(2).Table()
+	row.RawSetInt(5, FloatValue(1234))
+	if got := m.dmMeta.backing[2*cols+5]; got != 1234 {
+		t.Fatalf("dense backing not visible after GC: got %v", got)
+	}
+	stdruntime.KeepAlive(m)
 }
 
 func TestDenseMatrix_AutoAdoptRejectsSparseOuterRows(t *testing.T) {

@@ -197,7 +197,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				}
 			}
 			t.array[key] = val
-			t.observeDenseMatrixRowStore(key, val)
+			t.observeDenseMatrixRowStore(key, val, arrLen)
 			return
 		}
 	}
@@ -322,7 +322,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 				}
 			}
 			arenaAppendValue(DefaultHeap, &t.array, val)
-			t.observeDenseMatrixRowStore(key, val)
+			t.observeDenseMatrixRowStore(key, val, arrLen)
 			t.absorbKeys()
 			return
 		}
@@ -443,7 +443,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 			}
 		}
 		t.array[key] = val
-		t.observeDenseMatrixRowStore(key, val)
+		t.observeDenseMatrixRowStore(key, val, arrLen)
 		t.absorbKeys()
 		return
 	}

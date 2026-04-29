@@ -54,19 +54,18 @@ type Table struct {
 	// DenseMatrix descriptor. When dmStride > 0, this Table is a DenseMatrix
 	// outer whose rows share the backing at dmFlat. The JIT fast path for
 	// nested float loads reads *((*float64)(dmFlat) + i*dmStride + j).
-	// dmBacking keeps auto-densified row-store backing alive; matrix.dense
-	// also keeps it alive through row slices.
+	// Backing storage is kept alive by dmMeta and by row floatArray slices;
+	// dmFlat is only the JIT load address.
 	dmFlat   unsafe.Pointer
 	dmStride int32
 
 	// arrayHint carries large array capacity hints until the first typed-array
 	// promotion. Keep this after all JIT-verified fields.
 	arrayHint int
-	// dmBacking is intentionally after JIT-verified fields so existing offsets
-	// stay stable. It is used only by runtime auto-densification of nested
-	// float rows built through ordinary table syntax.
-	dmBacking []float64
-	dmParent  *Table
+	// dmMeta is a cold DenseMatrix side pointer. DenseMatrix outers and adopted
+	// rows share one metadata object so every Table pays one pointer, not a
+	// backing slice header plus parent pointer.
+	dmMeta *denseMatrixMeta
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.

@@ -25,6 +25,11 @@ import "unsafe"
 
 const autoDenseMatrixMinStride = 16
 
+type denseMatrixMeta struct {
+	backing []float64
+	parent  *Table
+}
+
 // uintptrOf is a tiny helper for test memory-adjacency checks.
 func uintptrOf(p *float64) uintptr { return uintptr(unsafe.Pointer(p)) }
 
@@ -34,7 +39,7 @@ func (t *Table) setDenseMatrixMeta(flat []float64, stride int) {
 	if len(flat) == 0 || stride <= 0 {
 		return
 	}
-	t.dmBacking = flat
+	t.dmMeta = &denseMatrixMeta{backing: flat, parent: t}
 	t.dmFlat = unsafe.Pointer(&flat[0])
 	t.dmStride = int32(stride)
 }
@@ -42,18 +47,27 @@ func (t *Table) setDenseMatrixMeta(flat []float64, stride int) {
 func (t *Table) clearDenseMatrixMeta() {
 	t.dmFlat = nil
 	t.dmStride = 0
-	t.dmBacking = nil
+	t.dmMeta = nil
 }
 
 func (t *Table) maybeClearDenseParentForWrite(key int64, val Value) {
-	parent := t.dmParent
-	if parent == nil {
+	meta := t.dmMeta
+	if meta == nil || meta.parent == nil || meta.parent == t {
 		return
 	}
-	if t.arrayKind == ArrayFloat && key >= 0 && key < int64(len(t.floatArray)) && val.Type() == TypeFloat {
+	parent := meta.parent
+	if parent.dmMeta != meta || parent.dmStride <= 0 {
+		t.dmMeta = nil
 		return
 	}
-	t.dmParent = nil
+	if t.arrayKind == ArrayFloat &&
+		int(parent.dmStride) == len(t.floatArray) &&
+		key >= 0 &&
+		key < int64(len(t.floatArray)) &&
+		val.Type() == TypeFloat {
+		return
+	}
+	t.dmMeta = nil
 	parent.clearDenseMatrixMeta()
 }
 
@@ -61,7 +75,7 @@ func (t *Table) maybeClearDenseParentForWrite(key int64, val Value) {
 // compatible with DenseMatrix fast paths. It is called after ArrayMixed integer
 // stores. Compatible row tables are rebound to slices of one contiguous backing,
 // so later in-bounds row writes update the same memory read by dmFlat.
-func (t *Table) observeDenseMatrixRowStore(key int64, val Value) {
+func (t *Table) observeDenseMatrixRowStore(key int64, val Value, oldLen int64) {
 	if key < 0 || t.arrayKind != ArrayMixed || t.metatable != nil || t.hash != nil || t.imap != nil {
 		if t.dmStride > 0 {
 			t.clearDenseMatrixMeta()
@@ -75,6 +89,10 @@ func (t *Table) observeDenseMatrixRowStore(key int64, val Value) {
 		}
 		return
 	}
+	if t.dmStride > 0 && key != oldLen {
+		t.clearDenseMatrixMeta()
+		return
+	}
 	stride := len(row.floatArray)
 	if t.dmStride != 0 && int(t.dmStride) != stride {
 		t.clearDenseMatrixMeta()
@@ -86,61 +104,68 @@ func (t *Table) observeDenseMatrixRowStore(key int64, val Value) {
 			return
 		}
 		rowsCap := typedArrayCapFor(int(key) + 1)
-		t.dmBacking = make([]float64, (int(key)+1)*stride, rowsCap*stride)
-		t.dmStride = int32(stride)
-		t.dmFlat = unsafe.Pointer(&t.dmBacking[0])
+		backing := make([]float64, (int(key)+1)*stride, rowsCap*stride)
+		t.setDenseMatrixMeta(backing, stride)
 	} else {
-		oldRows := len(t.dmBacking) / stride
+		if t.dmMeta == nil {
+			t.clearDenseMatrixMeta()
+			return
+		}
+		oldRows := int(oldLen)
 		if int(key) > oldRows || (int(key) == oldRows && len(t.array) != oldRows+1) {
 			t.clearDenseMatrixMeta()
 			return
 		}
 		t.ensureDenseMatrixRows(int(key) + 1)
 	}
+	if t.dmMeta == nil {
+		return
+	}
 
 	start := int(key) * stride
-	copy(t.dmBacking[start:start+stride], src)
-	row.floatArray = t.dmBacking[start : start+stride : start+stride]
-	if row.dmParent != nil && row.dmParent != t {
-		row.dmParent.clearDenseMatrixMeta()
+	copy(t.dmMeta.backing[start:start+stride], src)
+	row.floatArray = t.dmMeta.backing[start : start+stride : start+stride]
+	if row.dmMeta != nil && row.dmMeta.parent != nil && row.dmMeta.parent != t {
+		row.dmMeta.parent.clearDenseMatrixMeta()
 	}
-	row.dmParent = t
+	row.dmMeta = t.dmMeta
 }
 
 func (t *Table) ensureDenseMatrixRows(rows int) {
 	stride := int(t.dmStride)
-	if stride <= 0 {
+	if stride <= 0 || t.dmMeta == nil {
 		return
 	}
 	need := rows * stride
-	if len(t.dmBacking) >= need {
+	if len(t.dmMeta.backing) >= need {
 		return
 	}
-	if cap(t.dmBacking) < need {
-		nextRows := growTypedArrayCap(cap(t.dmBacking)/stride, rows)
+	if cap(t.dmMeta.backing) < need {
+		nextRows := growTypedArrayCap(cap(t.dmMeta.backing)/stride, rows)
 		next := make([]float64, need, nextRows*stride)
-		copy(next, t.dmBacking)
-		t.dmBacking = next
+		copy(next, t.dmMeta.backing)
+		t.dmMeta.backing = next
 		t.rebindDenseMatrixRows()
 	} else {
-		t.dmBacking = t.dmBacking[:need]
+		t.dmMeta.backing = t.dmMeta.backing[:need]
 	}
-	t.dmFlat = unsafe.Pointer(&t.dmBacking[0])
+	t.dmFlat = unsafe.Pointer(&t.dmMeta.backing[0])
 }
 
 func (t *Table) rebindDenseMatrixRows() {
 	stride := int(t.dmStride)
-	if stride <= 0 {
+	if stride <= 0 || t.dmMeta == nil {
 		return
 	}
-	maxRows := len(t.dmBacking) / stride
+	maxRows := len(t.dmMeta.backing) / stride
 	for i := 0; i < len(t.array) && i < maxRows; i++ {
 		row := t.array[i].Table()
 		if row == nil || row.arrayKind != ArrayFloat || len(row.floatArray) != stride {
 			continue
 		}
 		start := i * stride
-		row.floatArray = t.dmBacking[start : start+stride : start+stride]
+		row.floatArray = t.dmMeta.backing[start : start+stride : start+stride]
+		row.dmMeta = t.dmMeta
 	}
 }
 
@@ -175,6 +200,7 @@ func NewDenseMatrix(rows, cols int) *Table {
 		row.floatArray = backing[start:end:end]
 		row.keysDirty = true
 		outer.array[i] = TableValue(row)
+		row.dmMeta = outer.dmMeta
 	}
 	return outer
 }
