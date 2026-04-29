@@ -66,6 +66,11 @@ const (
 	rawPeerClosureOff = 56
 )
 
+const (
+	typedSelfSavedCallModeOff = 0
+	typedSelfArgsOff          = 8
+)
+
 func rawSelfFrameSizeFor(nParams int) int {
 	return rawSelfFrameSizeForLive(nParams, 0)
 }
@@ -77,6 +82,11 @@ func rawSelfFrameSizeForLive(nParams, nLiveRaw int) int {
 
 func rawSelfLiveSpillsOff(nParams int) int {
 	size := nParams * jit.ValueSize
+	return (size + 15) &^ 15
+}
+
+func typedSelfFrameSizeFor(nArgs int) int {
+	size := typedSelfArgsOff + nArgs*jit.ValueSize
 	return (size + 15) &^ 15
 }
 
@@ -1096,24 +1106,6 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 		return false
 	}
 
-	// Materialize the boxed VM call frame first. It feeds the fallback path
-	// and keeps exit-resume metadata exact even though the hot path passes raw
-	// ints/table pointers in registers.
-	if len(instr.Args) > 0 {
-		fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-		if fnReg != jit.X0 {
-			asm.MOVreg(jit.X0, fnReg)
-		}
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
-	}
-	for i := 1; i < len(instr.Args); i++ {
-		argReg := ec.resolveValueNB(instr.Args[i].ID, jit.X0)
-		if argReg != jit.X0 {
-			asm.MOVreg(jit.X0, argReg)
-		}
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
-	}
-
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
 	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
 	ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
@@ -1121,6 +1113,15 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	exitHandleLabel := ec.uniqueLabel("t2typedself_exit")
 	fallbackLabel := ec.uniqueLabel("t2typedself_fallback")
 	doneLabel := ec.uniqueLabel("t2typedself_done")
+	frameSize := typedSelfFrameSizeFor(nArgs)
+
+	// Keep only the data needed to reconstruct the public VM call frame on
+	// fallback/exit. The success path passes typed args in X0..X3 and avoids
+	// writing regs[funcSlot..] before the recursive BL.
+	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+	asm.LDR(jit.X8, mRegCtx, execCtxOffCallMode)
+	asm.STR(jit.X8, jit.SP, typedSelfSavedCallModeOff)
+	ec.emitTypedSelfArgsInRegsAndSave(instr, abi, fallbackLabel)
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 	calleeFrameBytes := ec.nextSlot * jit.ValueSize
@@ -1134,15 +1135,10 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	asm.CMPreg(jit.X8, jit.X9)
 	asm.BCond(jit.CondHI, fallbackLabel)
 
-	ec.emitTypedSelfArgsInRegs(instr, abi, fallbackLabel)
-
 	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
 	asm.CMPimm(jit.X8, maxNativeCallDepth)
 	asm.BCond(jit.CondGE, fallbackLabel)
 
-	asm.SUBimm(jit.SP, jit.SP, 16)
-	asm.LDR(jit.X8, mRegCtx, execCtxOffCallMode)
-	asm.STR(jit.X8, jit.SP, 0)
 	asm.MOVimm16(jit.X8, callModeTypedSelf)
 	asm.STR(jit.X8, mRegCtx, execCtxOffCallMode)
 
@@ -1169,13 +1165,13 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
 		asm.SUBreg(mRegRegs, mRegRegs, jit.X8)
 	}
-	asm.LDR(jit.X8, jit.SP, 0)
+	asm.LDR(jit.X8, jit.SP, typedSelfSavedCallModeOff)
 	asm.STR(jit.X8, mRegCtx, execCtxOffCallMode)
-	asm.ADDimm(jit.SP, jit.SP, 16)
 
 	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X8, exitHandleLabel)
 
+	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 	ec.emitUnboxRawIntRegs(preRawIntRegs)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
@@ -1203,10 +1199,14 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	asm.MOVimm16(jit.X8, 1)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeTier2Only)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitMaterializeTypedSelfCallFrameFromStack(funcSlot, nArgs, abi)
+	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
 
 	asm.Label(fallbackLabel)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitMaterializeTypedSelfCallFrameFromStack(funcSlot, nArgs, abi)
+	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
 	ec.emitUnboxRawIntRegs(postSuccessRawIntRegs)
 	ec.rawIntRegs = postSuccessRawIntRegs
@@ -1215,7 +1215,7 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	return true
 }
 
-func (ec *emitContext) emitTypedSelfArgsInRegs(instr *Instr, abi TypedSelfABI, fallbackLabel string) {
+func (ec *emitContext) emitTypedSelfArgsInRegsAndSave(instr *Instr, abi TypedSelfABI, fallbackLabel string) {
 	asm := ec.asm
 	for i, rep := range abi.Params {
 		dst := jit.Reg(int(jit.X0) + i)
@@ -1226,14 +1226,29 @@ func (ec *emitContext) emitTypedSelfArgsInRegs(instr *Instr, abi TypedSelfABI, f
 			if src != dst {
 				asm.MOVreg(dst, src)
 			}
+			asm.STR(dst, jit.SP, typedSelfArgsOff+i*jit.ValueSize)
 		case SpecializedABIParamRawTablePtr:
 			src := ec.resolveValueNB(arg.ID, dst)
 			if src != dst {
 				asm.MOVreg(dst, src)
 			}
+			asm.STR(dst, jit.SP, typedSelfArgsOff+i*jit.ValueSize)
 			jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
 			jit.EmitExtractPtr(asm, dst, dst)
 		}
+	}
+}
+
+func (ec *emitContext) emitMaterializeTypedSelfCallFrameFromStack(funcSlot, nArgs int, abi TypedSelfABI) {
+	asm := ec.asm
+	ec.emitBoxCurrentClosure(jit.X0, jit.X1)
+	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	for i := 0; i < nArgs; i++ {
+		asm.LDR(jit.X0, jit.SP, typedSelfArgsOff+i*jit.ValueSize)
+		if i < len(abi.Params) && abi.Params[i] == SpecializedABIParamRawInt {
+			jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+1+i))
 	}
 }
 
