@@ -72,6 +72,123 @@ func TestTablePreallocHintPassInfersLocalTypedArrayWithoutFeedback(t *testing.T)
 	}
 }
 
+func TestTablePreallocHintPassFollowsSingleGlobalNewTable(t *testing.T) {
+	const globalSlot int64 = 8
+	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_global_float"}, NumRegs: 3}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	storeGlobal := &Instr{ID: fn.newValueID(), Op: OpSetGlobal, Type: TypeUnknown,
+		Args: []*Value{tbl.Value()}, Aux: globalSlot, Block: b}
+	globalTbl := &Instr{ID: fn.newValueID(), Op: OpGetGlobal, Type: TypeAny, Aux: globalSlot, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Aux: 0, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{globalTbl.Value(), key.Value(), val.Value()}, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny,
+		Args: []*Value{globalTbl.Value(), key.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, storeGlobal, globalTbl, key, val, set, get}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	newTable := got.Entry.Instrs[0]
+	if newTable.Aux != tier2FeedbackArrayHint {
+		t.Fatalf("array hint = %d, want %d", newTable.Aux, tier2FeedbackArrayHint)
+	}
+	_, kind := unpackNewTableAux2(newTable.Aux2)
+	if kind != runtime.ArrayFloat {
+		t.Fatalf("array kind = %d, want %d", kind, runtime.ArrayFloat)
+	}
+	if set.Aux2 != int64(vm.FBKindFloat) {
+		t.Fatalf("set Aux2 = %d, want FBKindFloat", set.Aux2)
+	}
+	if get.Aux2 != int64(vm.FBKindFloat) {
+		t.Fatalf("get Aux2 = %d, want FBKindFloat", get.Aux2)
+	}
+}
+
+func TestTablePreallocHintPassKeepsGlobalLoopDefaultSmallWithoutFeedback(t *testing.T) {
+	const globalSlot int64 = 8
+	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_global_loop_float"}, NumRegs: 3}
+	entry, header, body, exit := buildSimpleLoop(fn)
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: entry}
+	storeGlobal := &Instr{ID: fn.newValueID(), Op: OpSetGlobal, Type: TypeUnknown,
+		Args: []*Value{tbl.Value()}, Aux: globalSlot, Block: entry}
+	entryJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: entry, Aux: int64(header.ID)}
+	entry.Instrs = []*Instr{tbl, storeGlobal, entryJump}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: header}
+	headerBranch := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown,
+		Args: []*Value{cond.Value()}, Block: header, Aux: int64(body.ID), Aux2: int64(exit.ID)}
+	header.Instrs = []*Instr{phi, cond, headerBranch}
+
+	globalTbl := &Instr{ID: fn.newValueID(), Op: OpGetGlobal, Type: TypeAny, Aux: globalSlot, Block: body}
+	val := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Aux: 0, Block: body}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{globalTbl.Value(), phi.Value(), val.Value()}, Block: body}
+	bodyJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: body, Aux: int64(header.ID)}
+	body.Instrs = []*Instr{globalTbl, val, set, bodyJump}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: exit}}
+	phi.Args = []*Value{val.Value(), val.Value()}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	newTable := got.Entry.Instrs[0]
+	if newTable.Aux != tier2FeedbackArrayHint {
+		t.Fatalf("array hint = %d, want small default %d", newTable.Aux, tier2FeedbackArrayHint)
+	}
+	_, kind := unpackNewTableAux2(newTable.Aux2)
+	if kind != runtime.ArrayFloat {
+		t.Fatalf("array kind = %d, want %d", kind, runtime.ArrayFloat)
+	}
+	if set.Aux2 != int64(vm.FBKindFloat) {
+		t.Fatalf("set Aux2 = %d, want FBKindFloat", set.Aux2)
+	}
+}
+
+func TestTablePreallocHintPassDoesNotFollowAmbiguousGlobalNewTable(t *testing.T) {
+	const globalSlot int64 = 8
+	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_global_ambiguous"}, NumRegs: 3}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	first := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	storeFirst := &Instr{ID: fn.newValueID(), Op: OpSetGlobal, Type: TypeUnknown,
+		Args: []*Value{first.Value()}, Aux: globalSlot, Block: b}
+	second := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	storeSecond := &Instr{ID: fn.newValueID(), Op: OpSetGlobal, Type: TypeUnknown,
+		Args: []*Value{second.Value()}, Aux: globalSlot, Block: b}
+	globalTbl := &Instr{ID: fn.newValueID(), Op: OpGetGlobal, Type: TypeAny, Aux: globalSlot, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Aux: 0, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{globalTbl.Value(), key.Value(), val.Value()}, Block: b}
+	b.Instrs = []*Instr{first, storeFirst, second, storeSecond, globalTbl, key, val, set}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	if got.Entry.Instrs[0].Aux != 0 {
+		t.Fatalf("first table array hint = %d, want 0", got.Entry.Instrs[0].Aux)
+	}
+	if got.Entry.Instrs[2].Aux != 0 {
+		t.Fatalf("second table array hint = %d, want 0", got.Entry.Instrs[2].Aux)
+	}
+	if set.Aux2 != 0 {
+		t.Fatalf("set Aux2 = %d, want 0", set.Aux2)
+	}
+}
+
 func TestTablePreallocHintPassRecoversDefsByValueID(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_missing_defs"}, NumRegs: 3}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}

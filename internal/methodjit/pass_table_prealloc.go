@@ -46,6 +46,7 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 	}
 	li := computeLoopInfo(fn)
 	defs := tablePreallocDefs(fn)
+	globalNewTables := tablePreallocGlobalNewTables(fn, defs)
 	candidates := make(map[int]tablePreallocHint)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -56,7 +57,7 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 				continue
 			}
 			tbl := instr.Args[0]
-			tblDef := tablePreallocValueDef(tbl, defs)
+			tblDef, globalBacked := tablePreallocTableDef(tbl, defs, globalNewTables)
 			if tblDef == nil || tblDef.Op != OpNewTable {
 				continue
 			}
@@ -69,7 +70,9 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			arrayHint := int64(tier2FeedbackArrayHint)
 			largeLoopBuilder := false
 			if li != nil && tblDef.Block != nil && li.loopBlocks[block.ID] && !li.loopBlocks[tblDef.Block.ID] {
-				arrayHint = tier2FeedbackOuterLoopArrayHint
+				if !globalBacked {
+					arrayHint = tier2FeedbackOuterLoopArrayHint
+				}
 				largeLoopBuilder = true
 			}
 			hint.observeArrayHint(arrayHint)
@@ -109,11 +112,11 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			}
 		}
 	}
-	annotateLocalTableArrayKinds(fn, candidates)
+	annotateLocalTableArrayKinds(fn, candidates, globalNewTables)
 	return fn, nil
 }
 
-func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePreallocHint) {
+func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePreallocHint, globalNewTables map[int64]*Instr) {
 	defs := tablePreallocDefs(fn)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -121,7 +124,7 @@ func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePrealloc
 				continue
 			}
 			tbl := instr.Args[0]
-			tblDef := tablePreallocValueDef(tbl, defs)
+			tblDef, _ := tablePreallocTableDef(tbl, defs, globalNewTables)
 			if tblDef == nil {
 				continue
 			}
@@ -134,6 +137,51 @@ func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePrealloc
 			}
 		}
 	}
+}
+
+func tablePreallocGlobalNewTables(fn *Function, defs map[int]*Instr) map[int64]*Instr {
+	if fn == nil {
+		return nil
+	}
+	type globalTableCandidate struct {
+		tbl       *Instr
+		ambiguous bool
+	}
+	candidates := make(map[int64]globalTableCandidate)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpSetGlobal || len(instr.Args) == 0 {
+				continue
+			}
+			global := instr.Aux
+			valDef := tablePreallocValueDef(instr.Args[0], defs)
+			prev, seen := candidates[global]
+			if valDef == nil || valDef.Op != OpNewTable {
+				candidates[global] = globalTableCandidate{ambiguous: true}
+				continue
+			}
+			if seen && (prev.ambiguous || prev.tbl == nil || prev.tbl.ID != valDef.ID) {
+				candidates[global] = globalTableCandidate{ambiguous: true}
+				continue
+			}
+			candidates[global] = globalTableCandidate{tbl: valDef}
+		}
+	}
+	out := make(map[int64]*Instr)
+	for global, candidate := range candidates {
+		if !candidate.ambiguous && candidate.tbl != nil {
+			out[global] = candidate.tbl
+		}
+	}
+	return out
+}
+
+func tablePreallocTableDef(v *Value, defs map[int]*Instr, globalNewTables map[int64]*Instr) (*Instr, bool) {
+	def := tablePreallocValueDef(v, defs)
+	if def == nil || def.Op != OpGetGlobal {
+		return def, false
+	}
+	return globalNewTables[def.Aux], true
 }
 
 func tablePreallocDefs(fn *Function) map[int]*Instr {
