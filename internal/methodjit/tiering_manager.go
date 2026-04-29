@@ -253,6 +253,9 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// table ops. Functions with loops + calls + arithmetic are promoted at
 	// threshold=2 — compileTier2 will try inlining and reject if calls remain.
 	promoteTier2 := shouldPromoteTier2(proto, profile, proto.CallCount)
+	if promoteTier2 && tm.shouldSuppressMainLoopCallTier2(proto, profile) {
+		promoteTier2 = false
+	}
 	if !promoteTier2 && tm.shouldPromoteNativeLoopDriver(proto, profile) {
 		promoteTier2 = true
 	}
@@ -720,6 +723,17 @@ func (tm *TieringManager) shouldPromoteNativeLoopDriver(proto *vm.FuncProto, pro
 		return false
 	}
 	return canPromoteWithNativeLoopCalls(proto, tm.buildLoopCallGlobals(proto))
+}
+
+func (tm *TieringManager) shouldSuppressMainLoopCallTier2(proto *vm.FuncProto, profile FuncProfile) bool {
+	if tm == nil || tm.envTier2NoFilter || proto == nil || proto.Name != "<main>" {
+		return false
+	}
+	if !profile.HasLoop || profile.LoopDepth >= 2 || profile.CallCount == 0 || !hasStaticCallInLoop(proto) {
+		return false
+	}
+	globals := tm.buildLoopCallGlobals(proto)
+	return !canPromoteWithInlining(proto, globals) && !canPromoteWithNativeLoopCalls(proto, globals)
 }
 
 // tier0OnlyLoopCallee reports stable loop callees that are deliberately kept

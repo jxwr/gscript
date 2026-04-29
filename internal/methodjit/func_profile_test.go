@@ -271,6 +271,88 @@ result := 1
 	}
 }
 
+func TestMainLoopCallPrefilterKeepsQuicksortDriverTier1(t *testing.T) {
+	src := `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            t := arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+            i = i + 1
+        }
+    }
+    t := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = t
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+
+func make_random_array(n, seed) {
+    arr := {}
+    x := seed
+    for i := 1; i <= n; i++ {
+        x = (x * 1103515245 + 12345) % 2147483648
+        arr[i] = x
+    }
+    return arr
+}
+
+N := 20
+for rep := 1; rep <= 2; rep++ {
+    arr := make_random_array(N, rep * 42)
+    quicksort(arr, 1, N)
+}
+result := 1
+`
+	top := compileProto(t, src)
+	tm := NewTieringManager()
+	profile := tm.getProfile(top)
+	if !shouldPromoteTier2(top, profile, top.CallCount) {
+		t.Fatal("<main> driver clause should still identify this as a Tier2 candidate")
+	}
+	if !tm.shouldSuppressMainLoopCallTier2(top, profile) {
+		t.Fatal("quicksort driver loop should be suppressed before a futile Tier2 attempt")
+	}
+	top.CallCount = BaselineCompileThreshold
+	if compiled := tm.TryCompile(top); compiled == nil {
+		t.Fatal("expected suppressed <main> to fall back to Tier1")
+	}
+	if tm.Tier2Attempted() != 0 {
+		t.Fatalf("expected no Tier2 attempt for suppressed <main>, got %d", tm.Tier2Attempted())
+	}
+	if tm.tier2Failed[top] {
+		t.Fatal("suppressed <main> should not be recorded as a Tier2 failure")
+	}
+}
+
+func TestMainLoopCallPrefilterAllowsNativeHelperAndNoFilter(t *testing.T) {
+	src := `
+func helper(x) { return x + 1 }
+
+sum := 0
+for i := 1; i <= 10; i++ {
+    sum = sum + helper(i)
+}
+`
+	top := compileProto(t, src)
+	tm := NewTieringManager()
+	profile := tm.getProfile(top)
+	if tm.shouldSuppressMainLoopCallTier2(top, profile) {
+		t.Fatal("native-safe helper loop should remain eligible for Tier2")
+	}
+
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+	tm = NewTieringManager()
+	if tm.shouldSuppressMainLoopCallTier2(top, profile) {
+		t.Fatal("no-filter diagnostics should bypass the main-loop prefilter")
+	}
+}
+
 func TestShouldStayTier1ForBoxedRawIntKernel(t *testing.T) {
 	src := `
 func gcd(a, b) {
