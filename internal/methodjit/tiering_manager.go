@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -51,6 +52,26 @@ import (
 // partial inlining from regressing: if full inline fails, main stays
 // at Tier 1 as before, so the bump is safe-by-construction.
 const inlineMaxCalleeSize = 500
+
+var tier2ExecContextPool = sync.Pool{
+	New: func() any {
+		return new(ExecContext)
+	},
+}
+
+func getTier2ExecContext() *ExecContext {
+	ctx := tier2ExecContextPool.Get().(*ExecContext)
+	*ctx = ExecContext{}
+	return ctx
+}
+
+func putTier2ExecContext(ctx *ExecContext) {
+	if ctx == nil {
+		return
+	}
+	*ctx = ExecContext{}
+	tier2ExecContextPool.Put(ctx)
+}
 
 // tmDefaultTier2Threshold is the BLR tier-up threshold. Controls when Tier 1's
 // BLR call path falls to slow path to give TieringManager.TryCompile a chance
@@ -1391,8 +1412,8 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 	}
 
 	// Set up ExecContext.
-	ctx := new(ExecContext)
-	escapeToHeap(ctx)
+	ctx := getTier2ExecContext()
+	defer putTier2ExecContext(ctx)
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
 	ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
 	ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
@@ -1430,11 +1451,13 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
 	ensureTier2NativeStack()
-	tm.traceEvent("tier2_entered", "tier2", proto, map[string]any{
-		"base":       base,
-		"num_regs":   cf.numRegs,
-		"code_bytes": cf.Code.Size(),
-	})
+	if tm.timeline != nil {
+		tm.traceEvent("tier2_entered", "tier2", proto, map[string]any{
+			"base":       base,
+			"num_regs":   cf.numRegs,
+			"code_bytes": cf.Code.Size(),
+		})
+	}
 
 	// resyncRegs re-reads the VM's register file after exits.
 	resyncRegs := func() {
@@ -2222,18 +2245,29 @@ func (tm *TieringManager) prepareTier2GlobalIndexes(proto *vm.FuncProto, cf *Com
 	if proto != nil {
 		proto.Tier2GlobalIndexPtr = 0
 	}
-	if cf != nil {
-		cf.GlobalIndexByConst = nil
-	}
 	if tm == nil || tm.callVM == nil || proto == nil || cf == nil || len(proto.Constants) == 0 || !protoSupportsIndexedGlobalProtocol(proto) {
+		if cf != nil {
+			cf.GlobalIndexByConst = nil
+		}
 		return 0, nil, 0, false
 	}
 	globalConsts := collectCompiledGlobalConsts(cf)
 	if len(globalConsts) == 0 {
+		cf.GlobalIndexByConst = nil
 		return 0, nil, 0, false
+	}
+	if len(cf.GlobalIndexByConst) == len(proto.Constants) {
+		proto.Tier2GlobalIndexPtr = uintptr(unsafe.Pointer(&cf.GlobalIndexByConst[0]))
+		arrayPtr, verPtr, ver, ok := tm.callVM.Tier2GlobalArrayState()
+		if ok {
+			return arrayPtr, verPtr, ver, true
+		}
+		cf.GlobalIndexByConst = nil
+		proto.Tier2GlobalIndexPtr = 0
 	}
 	indices, arrayPtr, verPtr, ver, ok := tm.callVM.PrepareTier2GlobalArray(proto.Constants, globalConsts)
 	if !ok {
+		cf.GlobalIndexByConst = nil
 		return 0, nil, 0, false
 	}
 	cf.GlobalIndexByConst = indices

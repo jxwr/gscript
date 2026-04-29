@@ -4,6 +4,7 @@ package methodjit
 
 import (
 	"encoding/binary"
+	"strconv"
 	"testing"
 	"unsafe"
 
@@ -238,6 +239,107 @@ func TestTypedTableSelfABI_TypedSelfCallSavesArgsOnStackBeforeBL(t *testing.T) {
 	if selfBLs == 0 {
 		t.Fatal("expected at least one typed self-call BL")
 	}
+}
+
+func BenchmarkTypedTableSelfABI_CheckTreeForcedTier2CallValueSteady(b *testing.B) {
+	benchTypedTableSelfCheckTree(b, false)
+}
+
+func BenchmarkTypedTableSelfABI_CheckTreeForcedTier2ColdFieldExit(b *testing.B) {
+	benchTypedTableSelfCheckTree(b, true)
+}
+
+func benchTypedTableSelfCheckTree(b *testing.B, coldFieldCache bool) {
+	b.Helper()
+	top := compileTopB(b, typedTableSelfCheckTreeSource(8))
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		b.Fatalf("execute top: %v", err)
+	}
+
+	checkTree := findProtoByName(top, "checkTree")
+	if checkTree == nil {
+		b.Fatal("checkTree proto not found")
+	}
+	fn := v.GetGlobal("checkTree")
+	root := v.GetGlobal("root")
+	if fn.IsNil() || root.IsNil() {
+		b.Fatalf("missing globals: checkTree=%v root=%v", fn, root)
+	}
+	const want = 511
+	for i := 0; i < 3; i++ {
+		results, err := v.CallValue(fn, []runtime.Value{root})
+		if err != nil {
+			b.Fatalf("warm checkTree: %v", err)
+		}
+		if len(results) != 1 || !results[0].IsInt() || results[0].Int() != want {
+			b.Fatalf("warm checkTree(root)=%v, want int %d", results, want)
+		}
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(checkTree); err != nil {
+		b.Fatalf("CompileTier2(checkTree): %v", err)
+	}
+	cf := tm.tier2Compiled[checkTree]
+	if cf == nil || !cf.TypedSelfABI.Eligible {
+		b.Fatalf("compiled checkTree missing typed ABI: cf=%v", cf)
+	}
+
+	args := []runtime.Value{root}
+	for i := 0; i < 10; i++ {
+		if coldFieldCache {
+			checkTree.FieldCache = nil
+		}
+		results, err := v.CallValue(fn, args)
+		if err != nil {
+			b.Fatalf("warm Tier2 checkTree: %v", err)
+		}
+		if len(results) != 1 || !results[0].IsInt() || results[0].Int() != want {
+			b.Fatalf("warm Tier2 checkTree(root)=%v, want int %d", results, want)
+		}
+	}
+	if checkTree.EnteredTier2 == 0 {
+		b.Fatal("forced Tier 2 checkTree was compiled but never entered")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if coldFieldCache {
+			checkTree.FieldCache = nil
+		}
+		results, err := v.CallValue(fn, args)
+		if err != nil {
+			b.Fatalf("Tier2 checkTree: %v", err)
+		}
+		if len(results) != 1 || !results[0].IsInt() || results[0].Int() != want {
+			b.Fatalf("Tier2 checkTree(root)=%v, want int %d", results, want)
+		}
+	}
+}
+
+func typedTableSelfCheckTreeSource(depth int) string {
+	return `
+func makeTree(depth) {
+    if depth == 0 {
+        return {left: nil, right: nil}
+    }
+    return {left: makeTree(depth - 1), right: makeTree(depth - 1)}
+}
+
+func checkTree(node) {
+    if node.left == nil {
+        return 1
+    }
+    return 1 + checkTree(node.left) + checkTree(node.right)
+}
+
+root := makeTree(` + strconv.Itoa(depth) + `)
+`
 }
 
 func compileCheckTreeTypedSelf(t *testing.T) *CompiledFunction {

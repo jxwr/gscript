@@ -251,6 +251,18 @@ func (vm *VM) PrepareTier2GlobalArray(constants []runtime.Value, usedConsts map[
 	return indices, uintptr(unsafe.Pointer(&vm.globalArray[0])), &vm.globalVer, vm.globalVer, true
 }
 
+// Tier2GlobalArrayState returns the current indexed-global backing pointer and
+// version state for a previously prepared Tier 2 global index map.
+func (vm *VM) Tier2GlobalArrayState() (uintptr, *uint32, uint32, bool) {
+	if vm == nil || !vm.noGlobalLock || vm.globalOverrides != nil {
+		return 0, nil, 0, false
+	}
+	if len(vm.globalArray) == 0 {
+		return 0, &vm.globalVer, vm.globalVer, true
+	}
+	return uintptr(unsafe.Pointer(&vm.globalArray[0])), &vm.globalVer, vm.globalVer, true
+}
+
 // SyncTier2GlobalMap mirrors indexed global values back into the legacy globals
 // map for names written natively by Tier 2. VM.GetGlobal reads globalArray, but
 // the map is still part of the VM's public interop surface.
