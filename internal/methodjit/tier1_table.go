@@ -522,13 +522,28 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int) {
 	asm.Label(doneLabel)
 }
 
-// emitBaselineLen emits ARM64 for OP_LEN: R(A) = #R(B)
-// Table.Length() requires a backwards scan for trailing nils which is not
-// efficient in JIT code. Always falls back to exit-resume for correctness.
+// emitBaselineLen emits ARM64 for OP_LEN: R(A) = #R(B).
+// String length is a fixed header load and can stay native. Table length still
+// falls back because mixed/bool arrays require the runtime's trailing-nil scan
+// and tables may define __len.
 func emitBaselineLen(asm *jit.Assembler, inst uint32, pc int) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
+
+	slowLabel := nextLabel("len_slow")
+	doneLabel := nextLabel("len_done")
+
+	loadSlot(asm, jit.X0, b)
+	jit.EmitCheckIsString(asm, jit.X0, jit.X1, jit.X2, slowLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.LDR(jit.X1, jit.X0, 8) // Go string header length.
+	jit.EmitBoxIntFast(asm, jit.X0, jit.X1, mRegTagInt)
+	storeSlot(asm, a, jit.X0)
+	asm.B(doneLabel)
+
+	asm.Label(slowLabel)
 	emitBaselineOpExitCommon(asm, vm.OP_LEN, pc, a, b, 0)
+	asm.Label(doneLabel)
 }
 
 // emitBaselineSelf emits native ARM64 for OP_SELF: R(A+1) = R(B); R(A) = R(B)[RK(C)]

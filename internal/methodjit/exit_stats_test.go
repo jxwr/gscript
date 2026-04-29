@@ -13,8 +13,8 @@ import (
 
 func TestExitStatsRecordsRealTier2OpExit(t *testing.T) {
 	src := `
-func strlen(s) {
-    return #s
+func bool_len(t) {
+    return #t
 }
 `
 	top := compileProto(t, src)
@@ -28,21 +28,23 @@ func strlen(s) {
 	tm := NewTieringManager()
 	v.SetMethodJIT(tm)
 
-	strlenProto := findProtoByName(top, "strlen")
-	if strlenProto == nil {
-		t.Fatal("strlen proto not found")
+	boolLenProto := findProtoByName(top, "bool_len")
+	if boolLenProto == nil {
+		t.Fatal("bool_len proto not found")
 	}
-	if err := tm.CompileTier2(strlenProto); err != nil {
-		t.Fatalf("CompileTier2(strlen): %v", err)
+	if err := tm.CompileTier2(boolLenProto); err != nil {
+		t.Fatalf("CompileTier2(bool_len): %v", err)
 	}
 
-	fn := v.GetGlobal("strlen")
-	results, err := v.CallValue(fn, []runtime.Value{runtime.StringValue("abcd")})
+	tbl := runtime.NewTable()
+	tbl.RawSetInt(1, runtime.BoolValue(true))
+	fn := v.GetGlobal("bool_len")
+	results, err := v.CallValue(fn, []runtime.Value{runtime.TableValue(tbl)})
 	if err != nil {
-		t.Fatalf("CallValue(strlen): %v", err)
+		t.Fatalf("CallValue(bool_len): %v", err)
 	}
-	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 4 {
-		t.Fatalf("strlen result=%v, want 4", results)
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 1 {
+		t.Fatalf("bool_len result=%v, want 1", results)
 	}
 
 	snap := tm.ExitStats()
@@ -54,18 +56,18 @@ func strlen(s) {
 	}
 	var found bool
 	for _, site := range snap.Sites {
-		if site.Proto == "strlen" && site.ExitName == "ExitOpExit" && site.Reason == "Len" {
+		if site.Proto == "bool_len" && site.ExitName == "ExitOpExit" && site.Reason == "Len" {
 			found = true
 			if site.Count != 1 {
-				t.Fatalf("strlen Len count=%d, want 1", site.Count)
+				t.Fatalf("bool_len Len count=%d, want 1", site.Count)
 			}
 			if site.PC < 0 {
-				t.Fatalf("strlen Len pc=%d, want source PC", site.PC)
+				t.Fatalf("bool_len Len pc=%d, want source PC", site.PC)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("missing strlen Len op-exit site in %#v", snap.Sites)
+		t.Fatalf("missing bool_len Len op-exit site in %#v", snap.Sites)
 	}
 }
 

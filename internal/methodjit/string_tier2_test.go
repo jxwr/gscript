@@ -168,3 +168,22 @@ func cmp(a, b) {
 		}
 	}
 }
+
+func TestTier2_StringLenFastPath_NoOpExit(t *testing.T) {
+	src := `
+func strlen_sum(a, b) {
+    return #a + #b
+}
+`
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "strlen_sum", []runtime.Value{
+		runtime.StringValue("alpha"),
+		runtime.StringValue("watermelon"),
+	}, true)
+	got := requireOneInt(t, "strlen_sum", gotValues)
+	if got != int64(len("alpha")+len("watermelon")) {
+		t.Fatalf("strlen_sum=%d, want %d", got, len("alpha")+len("watermelon"))
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+		t.Fatalf("string length should stay native, ExitOpExit=%d", exits)
+	}
+}

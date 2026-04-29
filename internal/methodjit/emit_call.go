@@ -362,11 +362,19 @@ func (ec *emitContext) emitLenNative(instr *Instr) {
 	intLabel := ec.uniqueLabel("len_int")
 	floatLabel := ec.uniqueLabel("len_float")
 	boxLabel := ec.uniqueLabel("len_box_result")
+	notStringLabel := ec.uniqueLabel("len_not_string")
 
 	src := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	if src != jit.X0 {
 		asm.MOVreg(jit.X0, src)
 	}
+
+	jit.EmitCheckIsString(asm, jit.X0, jit.X1, jit.X2, notStringLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.LDR(jit.X1, jit.X0, 8) // Go string header length.
+	asm.B(boxLabel)
+
+	asm.Label(notStringLabel)
 	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, slowLabel)
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	asm.CBZ(jit.X0, slowLabel)
