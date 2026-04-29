@@ -71,6 +71,12 @@ type Function struct {
 	// checks by itself.
 	FixedShapeTables map[int]FixedShapeTableFact
 
+	// FixedShapeArgFacts records guarded fixed-shape facts keyed by parameter
+	// index. These facts come from callsites, not from the callee body, so
+	// consumers may use them only through runtime guards such as field-cache
+	// shape checks.
+	FixedShapeArgFacts map[int]FixedShapeTableFact
+
 	// Unpromotable, when true, signals that this function cannot be safely
 	// compiled at Tier 2 because BuildGraph encountered bytecode patterns
 	// it does not model. Set by the graph builder and checked by

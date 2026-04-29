@@ -16,6 +16,7 @@ type FixedShapeTableFact struct {
 	FieldNames    []string
 	FieldValueIDs map[string]int
 	FieldFacts    map[string]FixedShapeFieldFact
+	Guarded       bool
 }
 
 type FixedShapeFieldKind uint8
@@ -58,10 +59,23 @@ func (f FixedShapeTableFact) sameShape(other FixedShapeTableFact) bool {
 	return true
 }
 
+// FixedShapeTableFactsConfig supplies facts that are safe to consume in the
+// current function. ArgFacts are guarded callsite facts for callee parameters;
+// they must not be used for unconditional value forwarding.
+type FixedShapeTableFactsConfig struct {
+	Globals  map[string]*vm.FuncProto
+	ArgFacts map[int]FixedShapeTableFact
+}
+
 // FixedShapeTableFactsPass records fixed-shape table facts and uses
 // interprocedural return facts from stable global callees to prefill GetField
 // shape-cache metadata. It deliberately leaves runtime shape guards intact.
 func FixedShapeTableFactsPass(globals map[string]*vm.FuncProto) PassFunc {
+	return FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{Globals: globals})
+}
+
+// FixedShapeTableFactsPassWith is the configurable fixed-shape pass entry.
+func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 	return func(fn *Function) (*Function, error) {
 		if fn == nil || len(fn.Blocks) == 0 {
 			return fn, nil
@@ -70,13 +84,14 @@ func FixedShapeTableFactsPass(globals map[string]*vm.FuncProto) PassFunc {
 		if len(facts) == 0 {
 			facts = make(map[int]FixedShapeTableFact)
 		}
+		seedGuardedFixedShapeArgFacts(fn, facts, config.ArgFacts)
 
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
 				if instr.Op != OpCall {
 					continue
 				}
-				_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+				_, callee := resolveCallee(instr, fn, InlineConfig{Globals: config.Globals})
 				if callee == nil {
 					continue
 				}
@@ -101,6 +116,155 @@ func FixedShapeTableFactsPass(globals map[string]*vm.FuncProto) PassFunc {
 		forwardFixedShapeGetFields(fn, facts)
 		return fn, nil
 	}
+}
+
+func seedGuardedFixedShapeArgFacts(fn *Function, facts map[int]FixedShapeTableFact, argFacts map[int]FixedShapeTableFact) {
+	if fn == nil || fn.Proto == nil || len(argFacts) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpLoadSlot || instr.Aux < 0 || int(instr.Aux) >= fn.Proto.NumParams {
+				continue
+			}
+			fact, ok := guardedFixedShapeArgFact(argFacts[int(instr.Aux)])
+			if !ok {
+				continue
+			}
+			facts[instr.ID] = fact
+			if fn.FixedShapeArgFacts == nil {
+				fn.FixedShapeArgFacts = make(map[int]FixedShapeTableFact)
+			}
+			fn.FixedShapeArgFacts[int(instr.Aux)] = fact
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("parameter %d carries guarded fixed table shape %v", instr.Aux, fact.FieldNames))
+		}
+	}
+}
+
+func guardedFixedShapeArgFact(fact FixedShapeTableFact) (FixedShapeTableFact, bool) {
+	if fact.ShapeID == 0 || len(fact.FieldNames) == 0 {
+		return FixedShapeTableFact{}, false
+	}
+	return FixedShapeTableFact{
+		ShapeID:    fact.ShapeID,
+		FieldNames: append([]string(nil), fact.FieldNames...),
+		Guarded:    true,
+	}, true
+}
+
+func inferGuardedFixedShapeArgFactsForProto(target *vm.FuncProto, globals map[string]*vm.FuncProto) map[int]FixedShapeTableFact {
+	if target == nil || len(globals) == 0 {
+		return nil
+	}
+	type argFactState struct {
+		fact     FixedShapeTableFact
+		seen     bool
+		conflict bool
+	}
+	states := make(map[int]argFactState)
+	seenCallsite := false
+	for _, caller := range uniqueFuncProtos(globals) {
+		if caller == nil {
+			continue
+		}
+		fn := BuildGraph(caller)
+		if fn == nil || fn.Unpromotable {
+			continue
+		}
+		facts := inferFixedShapeValuesForArgs(fn, globals)
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr.Op != OpCall {
+					continue
+				}
+				_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+				if callee != target {
+					continue
+				}
+				seenCallsite = true
+				for i := 1; i < len(instr.Args) && i <= target.NumParams; i++ {
+					arg := instr.Args[i]
+					if arg == nil {
+						continue
+					}
+					fact, ok := facts[arg.ID]
+					if !ok {
+						continue
+					}
+					guarded, ok := guardedFixedShapeArgFact(fact)
+					if !ok {
+						continue
+					}
+					paramIdx := i - 1
+					state := states[paramIdx]
+					if !state.seen {
+						state.fact = guarded
+						state.seen = true
+						states[paramIdx] = state
+						continue
+					}
+					if !state.fact.sameShape(guarded) || state.fact.ShapeID != guarded.ShapeID {
+						state.conflict = true
+						states[paramIdx] = state
+					}
+				}
+			}
+		}
+	}
+	if !seenCallsite || len(states) == 0 {
+		return nil
+	}
+	out := make(map[int]FixedShapeTableFact, len(states))
+	for idx, state := range states {
+		if state.seen && !state.conflict {
+			out[idx] = state.fact
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func inferFixedShapeValuesForArgs(fn *Function, globals map[string]*vm.FuncProto) map[int]FixedShapeTableFact {
+	facts := inferLocalFixedShapeTables(fn)
+	if len(facts) == 0 {
+		facts = make(map[int]FixedShapeTableFact)
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpCall {
+				continue
+			}
+			_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+			if callee == nil {
+				continue
+			}
+			fact, ok := AnalyzeFixedShapeReturnFact(callee)
+			if !ok {
+				continue
+			}
+			facts[instr.ID] = fact
+		}
+	}
+	if len(facts) == 0 {
+		return nil
+	}
+	return facts
+}
+
+func uniqueFuncProtos(globals map[string]*vm.FuncProto) []*vm.FuncProto {
+	seen := make(map[*vm.FuncProto]bool, len(globals))
+	out := make([]*vm.FuncProto, 0, len(globals))
+	for _, proto := range globals {
+		if proto == nil || seen[proto] {
+			continue
+		}
+		seen[proto] = true
+		out = append(out, proto)
+	}
+	return out
 }
 
 // AnalyzeFixedShapeReturnFact reports whether every non-empty return in proto
@@ -362,6 +526,9 @@ func forwardFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact)
 			}
 			fact, ok := facts[instr.Args[0].ID]
 			if !ok || (len(fact.FieldFacts) == 0 && len(fact.FieldNames) != 0) {
+				continue
+			}
+			if fact.Guarded {
 				continue
 			}
 			name := fieldNameFromAux(fn, instr.Aux)

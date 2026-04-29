@@ -263,3 +263,66 @@ result := usePair()
 		}
 	}
 }
+
+func TestFixedShapeTableFactsPass_SeedsGuardedArgumentFactInCallee(t *testing.T) {
+	top := compileProto(t, `
+func makePair(x, y) {
+    return {left: x, right: y}
+}
+func walk(pair) {
+    return pair.left + pair.right
+}
+func driver() {
+    return walk(makePair(10, 20))
+}
+result := driver()
+`)
+	makePair := findProtoByName(top, "makePair")
+	walk := findProtoByName(top, "walk")
+	driver := findProtoByName(top, "driver")
+	if makePair == nil || walk == nil || driver == nil {
+		t.Fatalf("expected makePair, walk, and driver protos, got makePair=%v walk=%v driver=%v",
+			makePair != nil, walk != nil, driver != nil)
+	}
+	globals := map[string]*vm.FuncProto{
+		"makePair": makePair,
+		"walk":     walk,
+		"driver":   driver,
+	}
+	argFacts := inferGuardedFixedShapeArgFactsForProto(walk, globals)
+	if len(argFacts) != 1 {
+		t.Fatalf("expected one guarded arg fact for walk(pair), got %#v", argFacts)
+	}
+	if fact := argFacts[0]; !fact.Guarded || fact.ShapeID == 0 || len(fact.FieldFacts) != 0 {
+		t.Fatalf("unexpected guarded arg fact: %#v", fact)
+	}
+
+	fn := BuildGraph(walk)
+	out, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals:      globals,
+		InlineMaxSize:      1,
+		FixedShapeArgFacts: argFacts,
+	})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(walk): %v", err)
+	}
+
+	annotated := 0
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGetField {
+				continue
+			}
+			if instr.Aux2 == 0 {
+				t.Fatalf("callee GetField was not annotated with guarded argument shape\nIR:\n%s", Print(out))
+			}
+			annotated++
+		}
+	}
+	if annotated != 2 {
+		t.Fatalf("expected two annotated callee field reads, got %d\nIR:\n%s", annotated, Print(out))
+	}
+	if out.FixedShapeArgFacts == nil || !out.FixedShapeArgFacts[0].Guarded {
+		t.Fatalf("callee did not retain guarded argument fact metadata: %#v", out.FixedShapeArgFacts)
+	}
+}

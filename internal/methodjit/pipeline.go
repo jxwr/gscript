@@ -266,9 +266,10 @@ func lineDiff(a, b []string) string {
 // Tier2PipelineOpts configures the production Tier 2 optimization pipeline.
 // A nil *Tier2PipelineOpts uses defaults (MaxSize 40, no globals).
 type Tier2PipelineOpts struct {
-	InlineGlobals map[string]*vm.FuncProto // global function protos for inlining
-	InlineMaxSize int                      // max callee bytecode count; 0 → 40
-	Remarks       *OptimizationRemarks     // optional structured optimization diagnostics
+	InlineGlobals      map[string]*vm.FuncProto    // global function protos for inlining
+	InlineMaxSize      int                         // max callee bytecode count; 0 → 40
+	FixedShapeArgFacts map[int]FixedShapeTableFact // guarded fixed-shape facts for callee params
+	Remarks            *OptimizationRemarks        // optional structured optimization diagnostics
 }
 
 // RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
@@ -398,7 +399,10 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("TypeSpecialize (post-table-prealloc): %w", err)
 	}
 
-	fn, err = FixedShapeTableFactsPass(globals)(fn)
+	fn, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		Globals:  globals,
+		ArgFacts: optsFixedShapeArgFacts(opts),
+	})(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("FixedShapeTableFacts: %w", err)
 	}
@@ -553,6 +557,13 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 
 	return fn, intrinsicNotes, nil
+}
+
+func optsFixedShapeArgFacts(opts *Tier2PipelineOpts) map[int]FixedShapeTableFact {
+	if opts == nil {
+		return nil
+	}
+	return opts.FixedShapeArgFacts
 }
 
 func runPostRewriteTypeSpecialize(fn *Function, opts *Tier2PipelineOpts, stage string) (*Function, error) {
