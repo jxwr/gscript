@@ -112,7 +112,7 @@ func tier2ValueIsLocalTableAllocation(v *Value, seen map[int]bool) bool {
 	}
 	seen[v.ID] = true
 	switch v.Def.Op {
-	case OpNewTable:
+	case OpNewTable, OpNewFixedTable:
 		return true
 	case OpPhi:
 		if len(v.Def.Args) == 0 {
@@ -135,7 +135,7 @@ func tier2OpMayExitForNativeReplay(instr *Instr) bool {
 	}
 	switch instr.Op {
 	case OpCall, OpSelf,
-		OpNewTable,
+		OpNewTable, OpNewFixedTable,
 		OpGetTable, OpSetTable,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableArrayNestedLoad,
 		OpGetField, OpGetFieldNumToFloat, OpSetField,

@@ -347,7 +347,7 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 		return TypeFloat
 
 	// Table/closure/call produce dynamic types.
-	case OpNewTable:
+	case OpNewTable, OpNewFixedTable:
 		return TypeTable
 	case OpClosure:
 		return TypeFunction

@@ -425,6 +425,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("EscapeAnalysis: %w", err)
 	}
 
+	fn, err = FixedTableConstructorLoweringPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FixedTableConstructorLowering: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = RedundantGuardEliminationPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("RedundantGuardElimination: %w", err)

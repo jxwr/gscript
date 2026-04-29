@@ -524,6 +524,17 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		hashHint, arrayKind := unpackNewTableAux2(instr.Aux2)
 		s.values[instr.ID] = runtime.FreshTableValue(runtime.NewTableSizedKind(arrHint, hashHint, arrayKind))
 
+	case OpNewFixedTable:
+		if instr.Aux2 != 2 || len(instr.Args) != 2 {
+			return nil, false, fmt.Errorf("OpNewFixedTable: unsupported field count %d", instr.Aux2)
+		}
+		ctorIdx := int(instr.Aux)
+		if ctorIdx < 0 || s.fn == nil || s.fn.Proto == nil || ctorIdx >= len(s.fn.Proto.TableCtors2) {
+			return nil, false, fmt.Errorf("OpNewFixedTable: invalid ctor index %d", ctorIdx)
+		}
+		ctor := &s.fn.Proto.TableCtors2[ctorIdx].Runtime
+		s.values[instr.ID] = runtime.TableValue(runtime.NewTableFromCtor2(ctor, s.val(instr.Args[0]), s.val(instr.Args[1])))
+
 	case OpGetTable:
 		tbl := s.val(instr.Args[0])
 		key := s.val(instr.Args[1])

@@ -647,6 +647,13 @@ func (b *graphBuilder) emitBlocks() {
 				b.writeVariable(a, block, tbl)
 				if ctorIdx >= 0 && ctorIdx < len(b.proto.TableCtors2) {
 					ctor := b.proto.TableCtors2[ctorIdx]
+					if b.fn.FixedTableConstructors == nil {
+						b.fn.FixedTableConstructors = make(map[int]FixedTableConstructorFact)
+					}
+					b.fn.FixedTableConstructors[newTable.ID] = FixedTableConstructorFact{
+						Ctor2Index: ctorIdx,
+						FieldNames: []string{ctor.Runtime.Key1, ctor.Runtime.Key2},
+					}
 					val1 := b.readVariable(valueBase, block)
 					val2 := b.readVariable(valueBase+1, block)
 					b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val1}, int64(ctor.Key1Const), 0)

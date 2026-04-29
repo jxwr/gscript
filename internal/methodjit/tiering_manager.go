@@ -673,7 +673,7 @@ func hasRestartVisibleSideEffect(fn *Function) bool {
 			case OpCall,
 				OpSetGlobal,
 				OpSetTable, OpSetField,
-				OpNewTable, OpSetList, OpAppend,
+				OpNewTable, OpNewFixedTable, OpSetList, OpAppend,
 				OpSelf,
 				OpSetUpval,
 				OpGo, OpMakeChan, OpSend, OpRecv,
@@ -2197,7 +2197,7 @@ func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, 
 				}
 				return instr.Op, true
 			case OpSelf,
-				OpNewTable,
+				OpNewTable, OpNewFixedTable,
 				OpGetTable, OpSetTable,
 				OpConcat, OpAppend, OpSetList,
 				OpGetUpval, OpSetUpval,
@@ -2227,7 +2227,7 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				}
 				return instr.Op, true
 			case OpSelf,
-				OpNewTable,
+				OpNewTable, OpNewFixedTable,
 				OpConcat, OpAppend, OpSetList,
 				OpGetUpval, OpSetUpval,
 				OpGo, OpMakeChan, OpSend, OpRecv,

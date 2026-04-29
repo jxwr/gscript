@@ -38,6 +38,15 @@ type FixedShapeFieldFact struct {
 	MaybeMaterialized bool
 }
 
+// FixedTableConstructorFact describes a bytecode-level fixed-field table
+// constructor that is still represented as OpNewTable plus OpSetField stores in
+// early IR. Ctor2Index indexes FuncProto.TableCtors2 for the current two-field
+// constructor form.
+type FixedTableConstructorFact struct {
+	Ctor2Index int
+	FieldNames []string
+}
+
 func (f FixedShapeTableFact) fieldIndex(name string) (int, bool) {
 	for i, field := range f.FieldNames {
 		if field == name {
@@ -447,6 +456,11 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 				allocFields[instr.ID] = nil
 				allocValues[instr.ID] = make(map[string]int)
 				out[instr.ID] = FixedShapeTableFact{}
+			case OpNewFixedTable:
+				fact, ok := fixedShapeFactForFixedConstructor(fn, instr)
+				if ok {
+					out[instr.ID] = fact
+				}
 			case OpSetField:
 				if len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil {
 					continue
@@ -484,6 +498,32 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 		return nil
 	}
 	return out
+}
+
+func fixedShapeFactForFixedConstructor(fn *Function, instr *Instr) (FixedShapeTableFact, bool) {
+	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpNewFixedTable {
+		return FixedShapeTableFact{}, false
+	}
+	if instr.Aux2 != 2 || len(instr.Args) != 2 {
+		return FixedShapeTableFact{}, false
+	}
+	ctorIdx := int(instr.Aux)
+	if ctorIdx < 0 || ctorIdx >= len(fn.Proto.TableCtors2) {
+		return FixedShapeTableFact{}, false
+	}
+	ctor := fn.Proto.TableCtors2[ctorIdx].Runtime
+	if ctor.Key1 == ctor.Key2 {
+		return FixedShapeTableFact{}, false
+	}
+	fields := []string{ctor.Key1, ctor.Key2}
+	return FixedShapeTableFact{
+		ShapeID:    runtime.GetShapeID(fields),
+		FieldNames: fields,
+		FieldValueIDs: map[string]int{
+			ctor.Key1: instr.Args[0].ID,
+			ctor.Key2: instr.Args[1].ID,
+		},
+	}, true
 }
 
 func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact) {

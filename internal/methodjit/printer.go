@@ -108,6 +108,12 @@ func printInstr(sb *strings.Builder, i *Instr) {
 		if i.Op == OpSetField && len(i.Args) > 1 {
 			fmt.Fprintf(sb, " = v%d", i.Args[1].ID)
 		}
+	case OpNewFixedTable:
+		args := make([]string, len(i.Args))
+		for j, a := range i.Args {
+			args[j] = fmt.Sprintf("v%d", a.ID)
+		}
+		fmt.Fprintf(sb, "ctor[%d]/%d(%s)", i.Aux, i.Aux2, strings.Join(args, ", "))
 	case OpGuardType:
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d is %s", i.Args[0].ID, Type(i.Aux).String())

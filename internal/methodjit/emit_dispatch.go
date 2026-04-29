@@ -184,6 +184,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	// --- Table operations ---
 	case OpNewTable:
 		ec.emitNewTableExit(instr)
+	case OpNewFixedTable:
+		ec.emitNewFixedTable(instr)
 	case OpGetTable:
 		ec.emitGetTableNative(instr)
 	case OpSetTable:

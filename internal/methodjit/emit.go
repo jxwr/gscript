@@ -54,8 +54,8 @@ type ExecContext struct {
 	GlobalSlot   int64   // VM register slot for global-exit result
 	GlobalConst  int64   // constant pool index for global name (global-exit)
 	GlobalExitID int64   // instruction ID for resolving global-exit resume address
-	// Table-exit fields (ExitCode=5): for OpNewTable, OpGetTable, OpSetTable
-	TableOp      int64 // 0=NewTable, 1=GetTable, 2=SetTable, 3=GetField(deopt), 4=SetField(deopt)
+	// Table-exit fields (ExitCode=5): for OpNewTable, OpNewFixedTable, OpGetTable, OpSetTable
+	TableOp      int64 // 0=NewTable, 1=GetTable, 2=SetTable, 3=GetField, 4=SetField, 5=NewFixedTable2
 	TableSlot    int64 // VM register slot for the table (or result slot for NewTable)
 	TableKeySlot int64 // VM register slot for the key (GetTable/SetTable)
 	TableValSlot int64 // VM register slot for the value (SetTable)
@@ -189,11 +189,12 @@ const (
 
 // TableOp constants (stored in ExecContext.TableOp).
 const (
-	TableOpNewTable = 0
-	TableOpGetTable = 1
-	TableOpSetTable = 2
-	TableOpGetField = 3 // deopt fallback for GetField (no field cache)
-	TableOpSetField = 4 // deopt fallback for SetField (no field cache)
+	TableOpNewTable       = 0
+	TableOpGetTable       = 1
+	TableOpSetTable       = 2
+	TableOpGetField       = 3 // deopt fallback for GetField (no field cache)
+	TableOpSetField       = 4 // deopt fallback for SetField (no field cache)
+	TableOpNewFixedTable2 = 5
 )
 
 // ExecContext field offsets (must match struct layout above).

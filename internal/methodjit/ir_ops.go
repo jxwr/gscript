@@ -92,6 +92,10 @@ const (
 
 	// Table operations
 	OpNewTable // Aux = array hint, Aux2 = hash hint
+	// OpNewFixedTable constructs a fixed string-field table from Args.
+	// Aux = table-constructor index, Aux2 = field count. Today codegen
+	// supports the generic two-field constructor shape carried by OP_NEWOBJECT2.
+	OpNewFixedTable
 	OpGetTable // Args[0][Args[1]]
 	OpSetTable // Args[0][Args[1]] = Args[2]
 	// Typed table array load split. Lowered from monomorphic-kind
@@ -227,6 +231,7 @@ var opNames = [...]string{
 	OpLeFloat:              "LeFloat",
 	OpConcat:               "Concat",
 	OpNewTable:             "NewTable",
+	OpNewFixedTable:        "NewFixedTable",
 	OpGetTable:             "GetTable",
 	OpSetTable:             "SetTable",
 	OpTableArrayHeader:     "TableArrayHeader",

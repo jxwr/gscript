@@ -401,6 +401,20 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 			regs[absSlot] = runtime.FreshTableValue(tbl)
 		}
 
+	case TableOpNewFixedTable2:
+		ctorIdx := int(ctx.TableAux)
+		absSlot := base + int(ctx.TableSlot)
+		absVal1 := base + int(ctx.TableKeySlot)
+		absVal2 := base + int(ctx.TableValSlot)
+		if proto != nil && ctorIdx >= 0 && ctorIdx < len(proto.TableCtors2) &&
+			absVal1 >= 0 && absVal1 < len(regs) &&
+			absVal2 >= 0 && absVal2 < len(regs) &&
+			absSlot >= 0 && absSlot < len(regs) {
+			ctor := &proto.TableCtors2[ctorIdx].Runtime
+			tbl := cf.allocateFixedTable2ForExit(int(ctx.TableExitID), ctor, regs[absVal1], regs[absVal2])
+			regs[absSlot] = runtime.FreshTableValue(tbl)
+		}
+
 	case TableOpGetTable:
 		absTable := base + int(ctx.TableSlot)
 		absKey := base + int(ctx.TableKeySlot)

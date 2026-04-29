@@ -68,6 +68,8 @@ func buildExitSiteMeta(fn *Function) map[int]ExitSiteMeta {
 				reason = fmt.Sprintf("GuardType(%s)", Type(instr.Aux))
 			} else if instr.Op == OpNewTable {
 				reason = newTableExitReason(instr)
+			} else if instr.Op == OpNewFixedTable {
+				reason = fmt.Sprintf("NewFixedTable(fields=%d,ctor=%d)", instr.Aux2, instr.Aux)
 			}
 			pc := -1
 			if instr.HasSource {
@@ -279,6 +281,8 @@ func tableOpName(op int) string {
 		return "GetField"
 	case TableOpSetField:
 		return "SetField"
+	case TableOpNewFixedTable2:
+		return "NewFixedTable2"
 	default:
 		return fmt.Sprintf("TableOp%d", op)
 	}

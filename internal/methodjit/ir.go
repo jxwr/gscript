@@ -77,6 +77,13 @@ type Function struct {
 	// shape checks.
 	FixedShapeArgFacts map[int]FixedShapeTableFact
 
+	// FixedTableConstructors records OpNewTable values that came from a
+	// bytecode-level fixed string-field table constructor. The graph builder
+	// keeps the constructor expanded as NewTable+SetField so scalar replacement
+	// can still see ordinary field stores; late lowering may combine surviving
+	// constructors into OpNewFixedTable for native codegen.
+	FixedTableConstructors map[int]FixedTableConstructorFact
+
 	// Unpromotable, when true, signals that this function cannot be safely
 	// compiled at Tier 2 because BuildGraph encountered bytecode patterns
 	// it does not model. Set by the graph builder and checked by

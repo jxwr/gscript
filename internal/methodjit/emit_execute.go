@@ -320,6 +320,20 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 			regs[resultSlot] = runtime.FreshTableValue(tbl)
 		}
 
+	case TableOpNewFixedTable2:
+		ctorIdx := int(ctx.TableAux)
+		resultSlot := int(ctx.TableSlot)
+		val1Slot := int(ctx.TableKeySlot)
+		val2Slot := int(ctx.TableValSlot)
+		if cf.Proto != nil && ctorIdx >= 0 && ctorIdx < len(cf.Proto.TableCtors2) &&
+			val1Slot >= 0 && val1Slot < len(regs) &&
+			val2Slot >= 0 && val2Slot < len(regs) &&
+			resultSlot >= 0 && resultSlot < len(regs) {
+			ctor := &cf.Proto.TableCtors2[ctorIdx].Runtime
+			tbl := cf.allocateFixedTable2ForExit(int(ctx.TableExitID), ctor, regs[val1Slot], regs[val2Slot])
+			regs[resultSlot] = runtime.FreshTableValue(tbl)
+		}
+
 	case TableOpGetTable:
 		// R(result) = R(table)[R(key)]
 		tableSlot := int(ctx.TableSlot)

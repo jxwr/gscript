@@ -462,7 +462,7 @@ func guardProvenByProducer(v *Value, guardType Type) bool {
 	case TypeString:
 		return v.Def.Op == OpConstString
 	case TypeTable:
-		return v.Def.Op == OpNewTable
+		return v.Def.Op == OpNewTable || v.Def.Op == OpNewFixedTable
 	case TypeFunction:
 		return v.Def.Op == OpClosure
 	}
