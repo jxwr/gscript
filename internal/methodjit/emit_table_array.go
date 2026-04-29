@@ -1285,11 +1285,13 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	keyBoundsAlreadyChecked := ec.tableArrayKeyBounded(tblValueID, keyID)
 
 	// Mixed array stores of table rows are the construction side of ordinary
-	// table-of-float-row matrices. Route them through RawSetInt so the runtime
-	// can attach DenseMatrix metadata for later nested loads. This is cold for
-	// matmul relative to the O(n^3) read loop and avoids duplicating the row
-	// adoption protocol in generated code.
+	// table-of-float-row matrices. First/complex stores still route through
+	// RawSetInt so the runtime owns allocation and invalidation semantics. Once
+	// a DenseMatrix backing exists, the safe sequential append case can stay
+	// native: copy the row into the existing flat backing and rebind the row
+	// wrapper to that slice.
 	if instr.Aux2 == int64(vm.FBKindMixed) && ec.irTypes[instr.Args[2].ID] == TypeTable {
+		ec.emitDenseMatrixRowAppendFastPath(instr, deoptLabel, doneLabel)
 		asm.Label(deoptLabel)
 		savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
 		for k, v := range ec.rawIntRegs {
@@ -1611,6 +1613,106 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	} else {
 		delete(ec.keysDirtyWritten, tblValueID)
 	}
+}
+
+func (ec *emitContext) emitDenseMatrixRowAppendFastPath(instr *Instr, missLabel, doneLabel string) {
+	if len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+
+	valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+	if valReg != jit.X4 {
+		asm.MOVreg(jit.X4, valReg)
+	}
+	jit.EmitCheckIsTableFull(asm, jit.X4, jit.X8, jit.X9, missLabel)
+	jit.EmitExtractPtr(asm, jit.X7, jit.X4) // X7 = row *Table
+	asm.CBZ(jit.X7, missLabel)
+
+	// Outer table: only the exact RawSetInt-compatible append shape.
+	asm.LDRB(jit.X8, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X8, jit.AKMixed)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X8, jit.X0, jit.TableOffImap)
+	asm.CBNZ(jit.X8, missLabel)
+	asm.LDR(jit.X8, jit.X0, jit.TableOffHash)
+	asm.CBNZ(jit.X8, missLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArrayLen)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, missLabel) // replacements must invalidate via RawSetInt
+	asm.LDR(jit.X3, jit.X0, jit.TableOffArrayCap)
+	asm.CMPreg(jit.X1, jit.X3)
+	asm.BCond(jit.CondGE, missLabel)
+
+	asm.LDRW(jit.X6, jit.X0, jit.TableOffDMStride)
+	asm.CBZ(jit.X6, missLabel)
+	asm.CMPimm(jit.X6, uint16(runtime.AutoDenseMatrixMinStride))
+	asm.BCond(jit.CondLT, missLabel)
+	asm.LDR(jit.X5, jit.X0, jit.TableOffDMFlat)
+	asm.CBZ(jit.X5, missLabel)
+	asm.LDR(jit.X9, jit.X0, jit.TableOffDMMeta)
+	asm.CBZ(jit.X9, missLabel)
+	asm.LDR(jit.X8, jit.X9, jit.DenseMatrixMetaOffParent)
+	asm.CMPreg(jit.X8, jit.X0)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X8, jit.X9, jit.DenseMatrixMetaOffBackingData)
+	asm.CMPreg(jit.X8, jit.X5)
+	asm.BCond(jit.CondNE, missLabel)
+
+	// Row table: unattached ArrayFloat row with the same stride and no maps.
+	asm.LDR(jit.X8, jit.X7, jit.TableOffMetatable)
+	asm.CBNZ(jit.X8, missLabel)
+	asm.LDR(jit.X8, jit.X7, jit.TableOffImap)
+	asm.CBNZ(jit.X8, missLabel)
+	asm.LDR(jit.X8, jit.X7, jit.TableOffHash)
+	asm.CBNZ(jit.X8, missLabel)
+	asm.LDR(jit.X8, jit.X7, jit.TableOffDMMeta)
+	asm.CBNZ(jit.X8, missLabel)
+	asm.LDRB(jit.X8, jit.X7, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X8, jit.AKFloat)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X8, jit.X7, jit.TableOffFloatArrayLen)
+	asm.CMPreg(jit.X8, jit.X6)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X10, jit.X7, jit.TableOffFloatArray)
+	asm.CBZ(jit.X10, missLabel)
+
+	// Dense backing must already have enough capacity. Growth remains in Go.
+	asm.ADDimm(jit.X8, jit.X1, 1) // row count after append
+	asm.MUL(jit.X8, jit.X8, jit.X6)
+	asm.LDR(jit.X12, jit.X9, jit.DenseMatrixMetaOffBackingCap)
+	asm.CMPreg(jit.X8, jit.X12)
+	asm.BCond(jit.CondGT, missLabel)
+
+	// All checks are complete; from here to doneLabel is mutation-only.
+	asm.STR(jit.X8, jit.X9, jit.DenseMatrixMetaOffBackingLen)
+	asm.ADDimm(jit.X2, jit.X1, 1)
+	asm.STR(jit.X2, jit.X0, jit.TableOffArrayLen)
+	asm.MOVimm16(jit.X12, 1)
+	asm.STRB(jit.X12, jit.X0, jit.TableOffKeysDirty)
+	asm.LDR(jit.X12, jit.X0, jit.TableOffArray)
+	asm.STRreg(jit.X4, jit.X12, jit.X1)
+
+	asm.MUL(jit.X11, jit.X1, jit.X6)
+	asm.LSLimm(jit.X11, jit.X11, 3)
+	asm.ADDreg(jit.X11, jit.X5, jit.X11) // destination row base
+	asm.MOVimm16(jit.X12, 0)
+	copyLoop := ec.uniqueLabel("settable_dense_row_copy")
+	copyDone := ec.uniqueLabel("settable_dense_row_copy_done")
+	asm.Label(copyLoop)
+	asm.CMPreg(jit.X12, jit.X6)
+	asm.BCond(jit.CondGE, copyDone)
+	asm.LDRreg(jit.X13, jit.X10, jit.X12)
+	asm.STRreg(jit.X13, jit.X11, jit.X12)
+	asm.ADDimm(jit.X12, jit.X12, 1)
+	asm.B(copyLoop)
+	asm.Label(copyDone)
+
+	asm.STR(jit.X11, jit.X7, jit.TableOffFloatArray)
+	asm.STR(jit.X6, jit.X7, jit.TableOffFloatArrayLen)
+	asm.STR(jit.X6, jit.X7, jit.TableOffFloatArrayCap)
+	asm.STR(jit.X9, jit.X7, jit.TableOffDMMeta)
+	asm.B(doneLabel)
 }
 
 // emitSetTableExit emits a table-exit for OpSetTable (dynamic key access).

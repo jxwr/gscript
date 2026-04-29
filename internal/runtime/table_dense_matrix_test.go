@@ -197,6 +197,60 @@ func TestDenseMatrix_AutoAdoptInvalidatesOnRowReplacement(t *testing.T) {
 	}
 }
 
+func TestDenseMatrix_AutoAdoptSameStrideReplacementFallsBackToOrdinaryRows(t *testing.T) {
+	const cols = autoDenseMatrixMinStride
+	m := NewTableSizedKind(3, 0, ArrayMixed)
+	old := NewTableSizedKind(cols, 0, ArrayFloat)
+	next := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
+		old.RawSetInt(int64(j), FloatValue(float64(j)))
+		next.RawSetInt(int64(j), FloatValue(float64(100+j)))
+	}
+	m.RawSetInt(0, TableValue(old))
+	m.RawSetInt(1, TableValue(next))
+	if m.dmStride == 0 {
+		t.Fatal("expected auto dense metadata")
+	}
+
+	replacement := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
+		replacement.RawSetInt(int64(j), FloatValue(float64(200+j)))
+	}
+	m.RawSetInt(0, TableValue(replacement))
+	if m.dmStride != 0 || m.dmFlat != nil {
+		t.Fatalf("same-stride replacement should invalidate dense metadata, stride=%d flat=%v", m.dmStride, m.dmFlat)
+	}
+	old.RawSetInt(1, FloatValue(999))
+	if got := m.RawGetInt(0).Table().RawGetInt(1).Float(); got != 201 {
+		t.Fatalf("replacement row was affected by old adopted row write: got %v, want 201", got)
+	}
+}
+
+func TestDenseMatrix_AutoAdoptInvalidatesOnIncompatibleRowStore(t *testing.T) {
+	const cols = autoDenseMatrixMinStride
+	m := NewTableSizedKind(3, 0, ArrayMixed)
+	row := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
+		row.RawSetInt(int64(j), FloatValue(float64(j)))
+	}
+	m.RawSetInt(0, TableValue(row))
+	if m.dmStride == 0 {
+		t.Fatal("expected auto dense metadata")
+	}
+
+	shortRow := NewTableSizedKind(cols-1, 0, ArrayFloat)
+	for j := 0; j < cols-1; j++ {
+		shortRow.RawSetInt(int64(j), FloatValue(float64(j)))
+	}
+	m.RawSetInt(1, TableValue(shortRow))
+	if m.dmStride != 0 || m.dmFlat != nil {
+		t.Fatalf("incompatible row store should invalidate dense metadata, stride=%d flat=%v", m.dmStride, m.dmFlat)
+	}
+	if got := m.RawGetInt(1).Table(); got != shortRow {
+		t.Fatalf("incompatible row store did not preserve ordinary table store")
+	}
+}
+
 func TestDenseMatrix_NewDenseMatrixInvalidatesOnRowGrowth(t *testing.T) {
 	const cols = autoDenseMatrixMinStride
 	m := NewDenseMatrix(2, cols)

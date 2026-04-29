@@ -917,6 +917,17 @@ func TableDMStrideOffset() uintptr {
 	return unsafe.Offsetof(t.dmStride)
 }
 
+func TableDMMetaOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.dmMeta)
+}
+
+func DenseMatrixMetaOffsets() (backingData, backingLen, backingCap, parent uintptr) {
+	var m denseMatrixMeta
+	backing := unsafe.Offsetof(m.backing)
+	return backing, backing + 8, backing + 16, unsafe.Offsetof(m.parent)
+}
+
 // DMStride returns the DenseMatrix stride; 0 for non-DenseMatrix tables.
 // Used by tests and feedback-driven intrinsic gating.
 func (t *Table) DMStride() int32 { return t.dmStride }

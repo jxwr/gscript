@@ -113,6 +113,63 @@ for iter := 0; iter < 40; iter++ {
 	compareTier2Result(t, src, "result")
 }
 
+func TestTier2_DenseMatrixRowAppendFastPathReducesSetTableExits(t *testing.T) {
+	src := `
+func build(n) {
+    m := {}
+    for i := 0; i < n; i++ {
+        row := {}
+        for j := 0; j < 16; j++ {
+            row[j] = i * 100.0 + j
+        }
+        m[i] = row
+    }
+    return m[n - 1][3]
+}
+`
+	top := compileTop(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("build")
+	if fnVal.IsNil() {
+		t.Fatal("build function not found")
+	}
+	if _, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(20)}); err != nil {
+		t.Fatalf("warm build: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	fnProto := findProtoByName(top, "build")
+	if fnProto == nil {
+		t.Fatal("build proto not found")
+	}
+	if err := tm.CompileTier2(fnProto); err != nil {
+		t.Fatalf("CompileTier2(build): %v", err)
+	}
+	got, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(20)})
+	if err != nil {
+		t.Fatalf("Tier2 build: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsFloat() || got[0].Float() != 1903 {
+		t.Fatalf("build result = %v, want float 1903", got)
+	}
+
+	var setTableExits uint64
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "build" && site.ExitName == "ExitTableExit" && site.Reason == "SetTable" {
+			setTableExits += site.Count
+		}
+	}
+	if setTableExits >= 20 {
+		t.Fatalf("dense row appends should not exit per row, SetTable exits=%d sites=%#v", setTableExits, tm.ExitStats().Sites)
+	}
+}
+
 // TestKindSpecialize_IntArray tests kind-specialized GetTable on ArrayInt.
 func TestKindSpecialize_IntArray(t *testing.T) {
 	src := `

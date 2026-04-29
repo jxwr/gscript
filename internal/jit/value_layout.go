@@ -74,6 +74,14 @@ const (
 	// R43 Phase 2 DenseMatrix descriptor fields.
 	TableOffDMFlat   = 224 // unsafe.Pointer — flat backing head
 	TableOffDMStride = 232 // int32 — row stride (columns)
+	TableOffDMMeta   = 248 // *denseMatrixMeta — cold side metadata
+
+	// denseMatrixMeta layout. The JIT only uses this for the native
+	// row-store adoption path after runtime has allocated the backing.
+	DenseMatrixMetaOffBackingData = 0
+	DenseMatrixMetaOffBackingLen  = 8
+	DenseMatrixMetaOffBackingCap  = 16
+	DenseMatrixMetaOffParent      = 24
 )
 
 // Legacy compatibility alias for codegen transition.
@@ -192,6 +200,22 @@ func init() {
 	}
 	if off := runtime.TableDMStrideOffset(); off != TableOffDMStride {
 		panic("jit: Table.dmStride offset mismatch: expected " + itoa(TableOffDMStride) + ", got " + itoa(int(off)))
+	}
+	if off := runtime.TableDMMetaOffset(); off != TableOffDMMeta {
+		panic("jit: Table.dmMeta offset mismatch: expected " + itoa(TableOffDMMeta) + ", got " + itoa(int(off)))
+	}
+	dmDataOff, dmLenOff, dmCapOff, dmParentOff := runtime.DenseMatrixMetaOffsets()
+	if dmDataOff != DenseMatrixMetaOffBackingData {
+		panic("jit: denseMatrixMeta.backing data offset mismatch")
+	}
+	if dmLenOff != DenseMatrixMetaOffBackingLen {
+		panic("jit: denseMatrixMeta.backing len offset mismatch")
+	}
+	if dmCapOff != DenseMatrixMetaOffBackingCap {
+		panic("jit: denseMatrixMeta.backing cap offset mismatch")
+	}
+	if dmParentOff != DenseMatrixMetaOffParent {
+		panic("jit: denseMatrixMeta.parent offset mismatch")
 	}
 
 	// Verify ArrayKind constants

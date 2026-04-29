@@ -25,6 +25,10 @@ import "unsafe"
 
 const autoDenseMatrixMinStride = 16
 
+// AutoDenseMatrixMinStride is the public mirror of the runtime auto-adoption
+// gate used by method-JIT guards.
+const AutoDenseMatrixMinStride = autoDenseMatrixMinStride
+
 type denseMatrixMeta struct {
 	backing []float64
 	parent  *Table
