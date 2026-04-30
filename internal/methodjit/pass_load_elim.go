@@ -94,9 +94,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 		globalAvail := make(map[int64]int)     // globals[idx] → SSA value ID
 		matrixFlatAvail := make(map[int]int)   // MatrixFlat(arg_id) → SSA value ID
 		matrixStrideAvail := make(map[int]int) // MatrixStride(arg_id) → SSA value ID
-		tableHeaderAvail := make(map[tableArrayHeaderKey]int)
-		tableLenAvail := make(map[tableArrayDerivedKey]int)
-		tableDataAvail := make(map[tableArrayDerivedKey]int)
+		tableArrayFacts := newTableArrayFactSet()
 		pureAvail := make(map[pureCSEKey]int)
 		// R93: store-to-load forwarding for dynamic-key table access.
 		// After SetTable(t, k, v), map (t.ID, k.ID) → v.ID so a
@@ -173,45 +171,33 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				}
 
 			case OpTableArrayHeader:
-				if len(instr.Args) < 1 {
-					continue
-				}
-				key := tableArrayHeaderKey{objID: instr.Args[0].ID, kind: instr.Aux}
-				if origID, ok := tableHeaderAvail[key]; ok {
-					origInstr := instrByID[origID]
+				if orig := tableArrayFacts.LookupHeader(instr); orig != nil {
+					origInstr := orig.Def
 					replaceAllUses(fn, instr.ID, origInstr)
 					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
 						"reused earlier TableArrayHeader result")
 				} else {
-					tableHeaderAvail[key] = instr.ID
+					tableArrayFacts.RecordHeader(instr)
 				}
 
 			case OpTableArrayLen:
-				if len(instr.Args) < 1 {
-					continue
-				}
-				key := tableArrayDerivedKey{headerID: instr.Args[0].ID, kind: instr.Aux}
-				if origID, ok := tableLenAvail[key]; ok {
-					origInstr := instrByID[origID]
+				if orig := tableArrayFacts.LookupLen(instr); orig != nil {
+					origInstr := orig.Def
 					replaceAllUses(fn, instr.ID, origInstr)
 					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
 						"reused earlier TableArrayLen result")
 				} else {
-					tableLenAvail[key] = instr.ID
+					tableArrayFacts.RecordLen(instr)
 				}
 
 			case OpTableArrayData:
-				if len(instr.Args) < 1 {
-					continue
-				}
-				key := tableArrayDerivedKey{headerID: instr.Args[0].ID, kind: instr.Aux}
-				if origID, ok := tableDataAvail[key]; ok {
-					origInstr := instrByID[origID]
+				if orig := tableArrayFacts.LookupData(instr); orig != nil {
+					origInstr := orig.Def
 					replaceAllUses(fn, instr.ID, origInstr)
 					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
 						"reused earlier TableArrayData result")
 				} else {
-					tableDataAvail[key] = instr.ID
+					tableArrayFacts.RecordData(instr)
 				}
 
 			case OpSetGlobal:
@@ -326,7 +312,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				tableAvail[key] = instr.Args[2].ID
 				functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
 					"recorded SetTable value for forwarding")
-				if invalidateTableArrayFactsForObject(tableHeaderAvail, tableLenAvail, tableDataAvail, objID) {
+				if tableArrayFacts.InvalidateTable(objID) {
 					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
 						"table mutation invalidated typed array facts")
 				}
@@ -353,7 +339,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
 						"array mutation invalidated dynamic-key table cache")
 				}
-				if invalidateTableArrayFactsForObject(tableHeaderAvail, tableLenAvail, tableDataAvail, objID) {
+				if tableArrayFacts.InvalidateTable(objID) {
 					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
 						"array mutation invalidated typed array facts")
 				}
@@ -362,7 +348,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				// Conservative: a call could mutate any table or change types.
 				if len(available) > 0 || len(guardAvail) > 0 || len(globalAvail) > 0 ||
 					len(matrixFlatAvail) > 0 || len(matrixStrideAvail) > 0 || len(tableAvail) > 0 ||
-					len(tableHeaderAvail) > 0 || len(tableLenAvail) > 0 || len(tableDataAvail) > 0 {
+					!tableArrayFacts.Empty() {
 					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
 						"call invalidated available load/guard facts")
 				}
@@ -371,9 +357,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				globalAvail = make(map[int64]int)
 				matrixFlatAvail = make(map[int]int)
 				matrixStrideAvail = make(map[int]int)
-				tableHeaderAvail = make(map[tableArrayHeaderKey]int)
-				tableLenAvail = make(map[tableArrayDerivedKey]int)
-				tableDataAvail = make(map[tableArrayDerivedKey]int)
+				tableArrayFacts.Reset()
 				tableAvail = make(map[tableKey]int)
 			}
 
@@ -392,39 +376,6 @@ func invalidateDynamicTableCacheForObject(tableAvail map[tableKey]int, objID int
 		if k.objID == objID {
 			delete(tableAvail, k)
 			changed = true
-		}
-	}
-	return changed
-}
-
-func invalidateTableArrayFactsForObject(
-	headerAvail map[tableArrayHeaderKey]int,
-	lenAvail map[tableArrayDerivedKey]int,
-	dataAvail map[tableArrayDerivedKey]int,
-	objID int,
-) bool {
-	var killedHeaders []int
-	for k, id := range headerAvail {
-		if k.objID == objID {
-			delete(headerAvail, k)
-			killedHeaders = append(killedHeaders, id)
-		}
-	}
-	if len(killedHeaders) == 0 {
-		return false
-	}
-
-	changed := true
-	for _, headerID := range killedHeaders {
-		for k := range lenAvail {
-			if k.headerID == headerID {
-				delete(lenAvail, k)
-			}
-		}
-		for k := range dataAvail {
-			if k.headerID == headerID {
-				delete(dataAvail, k)
-			}
 		}
 	}
 	return changed

@@ -298,6 +298,74 @@ func TestTableArrayLower_LoadElimInvalidatesFactsAcrossTableMutation(t *testing.
 	}
 }
 
+func TestTableArrayFactProtocol_CheckedStorePreservesAppendInvalidates(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_fact_protocol"}, NumRegs: 4}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	header1 := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value()}, Block: b}
+	len1 := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{header1.Value()}, Block: b}
+	data1 := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{header1.Value()}, Block: b}
+	store := &Instr{ID: fn.newValueID(), Op: OpTableArrayStore, Aux: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), data1.Value(), len1.Value(), key.Value(), val.Value()}, Block: b}
+	header2 := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value()}, Block: b}
+	len2 := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{header2.Value()}, Block: b}
+	data2 := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{header2.Value()}, Block: b}
+	loadAfterStore := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{data2.Value(), len2.Value(), key.Value()}, Block: b}
+	appendInstr := &Instr{ID: fn.newValueID(), Op: OpAppend, Args: []*Value{tbl.Value(), val.Value()}, Block: b}
+	header3 := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value()}, Block: b}
+	len3 := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{header3.Value()}, Block: b}
+	data3 := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{header3.Value()}, Block: b}
+	loadAfterAppend := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{data3.Value(), len3.Value(), key.Value()}, Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{loadAfterStore.Value(), loadAfterAppend.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add.Value()}, Block: b}
+	b.Instrs = []*Instr{
+		tbl, key, val,
+		header1, len1, data1, store,
+		header2, len2, data2, loadAfterStore,
+		appendInstr,
+		header3, len3, data3, loadAfterAppend,
+		add, ret,
+	}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+	assertValidates(t, fn, "input")
+
+	var err error
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts := countOps(fn)
+	if counts[OpTableArrayHeader] != 2 || counts[OpTableArrayLen] != 2 || counts[OpTableArrayData] != 2 {
+		t.Fatalf("checked store should preserve facts, append should invalidate them, counts=%v\n%s", counts, Print(fn))
+	}
+	if len(loadAfterStore.Args) < 2 || loadAfterStore.Args[0].ID != data1.ID || loadAfterStore.Args[1].ID != len1.ID {
+		t.Fatalf("load after checked store should reuse pre-store data/len facts:\n%s", Print(fn))
+	}
+	if len(loadAfterAppend.Args) < 2 || loadAfterAppend.Args[0].ID != data3.ID || loadAfterAppend.Args[1].ID != len3.ID {
+		t.Fatalf("load after append must keep fresh post-append data/len facts:\n%s", Print(fn))
+	}
+}
+
 func TestTableArrayStoreLower_ReusesFactsForSwapStores(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_swap_store_lower"}, NumRegs: 5}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}
