@@ -262,16 +262,16 @@ result := 1
 `
 	top := compileProto(t, src)
 	globals := buildProtoStableGlobals(top)
-	if canPromoteWithNativeLoopCalls(top, globals) {
-		t.Fatal("quicksort driver loop should remain blocked by the native-call gate")
+	if !canPromoteWithNativeLoopCalls(top, globals) {
+		t.Fatal("quicksort driver loop should be eligible for native Tier2 loop calls")
 	}
 	tm := NewTieringManager()
-	if _, err := tm.CompileForDiagnostics(top); err == nil {
-		t.Fatal("expected <main> Tier2 compile to remain blocked")
+	if _, err := tm.CompileForDiagnostics(top); err != nil {
+		t.Fatalf("expected <main> Tier2 compile to succeed with native quicksort loop calls: %v", err)
 	}
 }
 
-func TestMainLoopCallPrefilterKeepsQuicksortDriverTier1(t *testing.T) {
+func TestMainLoopCallPrefilterAllowsQuicksortDriverTier2(t *testing.T) {
 	src := `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }
@@ -315,18 +315,18 @@ result := 1
 	if !shouldPromoteTier2(top, profile, top.CallCount) {
 		t.Fatal("<main> driver clause should still identify this as a Tier2 candidate")
 	}
-	if !tm.shouldSuppressMainLoopCallTier2(top, profile) {
-		t.Fatal("quicksort driver loop should be suppressed before a futile Tier2 attempt")
+	if tm.shouldSuppressMainLoopCallTier2(top, profile) {
+		t.Fatal("quicksort driver loop should not be suppressed now that recursive native calls are resume-safe")
 	}
 	top.CallCount = BaselineCompileThreshold
 	if compiled := tm.TryCompile(top); compiled == nil {
-		t.Fatal("expected suppressed <main> to fall back to Tier1")
+		t.Fatal("expected <main> to compile")
 	}
-	if tm.Tier2Attempted() != 0 {
-		t.Fatalf("expected no Tier2 attempt for suppressed <main>, got %d", tm.Tier2Attempted())
+	if tm.Tier2Attempted() != 1 {
+		t.Fatalf("expected one Tier2 attempt for <main>, got %d", tm.Tier2Attempted())
 	}
 	if tm.tier2Failed[top] {
-		t.Fatal("suppressed <main> should not be recorded as a Tier2 failure")
+		t.Fatal("<main> should not be recorded as a Tier2 failure")
 	}
 }
 

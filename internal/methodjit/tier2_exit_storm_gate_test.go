@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestTier2ExitStormGateBlocksNoFilterRecursiveTableMutation(t *testing.T) {
+func TestTier2ExitStormGateAllowsNoFilterReadBackedRecursiveTableMutation(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 
 	top := compileTop(t, `
@@ -34,19 +34,15 @@ func quicksort(arr, lo, hi) {
 	}
 
 	tm := NewTieringManager()
-	err := tm.CompileTier2(qs)
-	if err == nil {
-		t.Fatal("CompileTier2(quicksort) succeeded; want exit-storm gate failure")
+	if err := tm.CompileTier2(qs); err != nil {
+		t.Fatalf("CompileTier2(quicksort) failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "self-recursive loop has residual table mutation") {
-		t.Fatalf("CompileTier2(quicksort) error = %q, want self-recursive table mutation gate", err)
-	}
-	if qs.Tier2Promoted || qs.DirectEntryPtr != 0 {
-		t.Fatalf("quicksort promoted despite hard gate: promoted=%v direct=%#x", qs.Tier2Promoted, qs.DirectEntryPtr)
+	if !qs.Tier2Promoted || qs.Tier2DirectEntryPtr == 0 {
+		t.Fatalf("quicksort did not install Tier2-only direct entry: promoted=%v tier2Direct=%#x", qs.Tier2Promoted, qs.Tier2DirectEntryPtr)
 	}
 }
 
-func TestTableMutationRecoveryClassifiesQuicksortSwapAsDiagnosticOnly(t *testing.T) {
+func TestTableMutationRecoveryAdmitsQuicksortReadBackedSwap(t *testing.T) {
 	top := compileTop(t, `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }
@@ -77,16 +73,15 @@ func quicksort(arr, lo, hi) {
 	if len(summary.Sites) == 0 {
 		t.Fatal("expected quicksort table mutation recovery sites")
 	}
-	site, ok := summary.firstUnadmitted()
-	if !ok {
-		t.Fatal("quicksort swap mutations should remain diagnostic-only, not admitted")
+	if site, ok := summary.firstUnadmitted(); ok {
+		t.Fatalf("quicksort swap mutation should be admitted, first unadmitted=%+v", site)
 	}
-	if site.Op != OpSetTable {
-		t.Fatalf("first unadmitted op = %s, want SetTable", site.Op)
+	for _, site := range summary.Sites {
+		if site.Op == OpSetTable && site.RecoveryClass == tableMutationRecoverReadBackedOverwrite {
+			return
+		}
 	}
-	if site.RecoveryClass != tableMutationRecoverReadBackedOverwrite {
-		t.Fatalf("quicksort recovery class = %s, want read-backed-overwrite", site.RecoveryClass)
-	}
+	t.Fatalf("quicksort recovery sites did not include a read-backed SetTable: %+v", summary.Sites)
 }
 
 func TestTier2ExitStormGateAllowsNoFilterSelfRecursiveIdempotentTableOverwrite(t *testing.T) {
@@ -136,7 +131,7 @@ func touch(arr, n) {
 	}
 }
 
-func TestTryCompileSuppressesRecursivePartitionTableMutationTier2Attempt(t *testing.T) {
+func TestTryCompilePromotesRecursivePartitionTableMutationTier2(t *testing.T) {
 	top := compileTop(t, `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }
@@ -166,22 +161,19 @@ func quicksort(arr, lo, hi) {
 	}
 
 	tm := NewTieringManager()
-	qs.CallCount = BaselineCompileThreshold
+	qs.CallCount = tmDefaultTier2Threshold
 	compiled := tm.TryCompile(qs)
 	if compiled == nil {
-		t.Fatal("TryCompile(quicksort) returned nil; want Tier1 fallback")
-	}
-	if tm.Tier2Attempted() != 0 {
-		t.Fatalf("quicksort should avoid futile Tier2 attempt, got %d attempts", tm.Tier2Attempted())
+		t.Fatal("TryCompile(quicksort) returned nil; want Tier2 compile")
 	}
 	if tm.tier2Failed[qs] {
-		t.Fatal("suppressed quicksort should not be recorded as a Tier2 failure")
+		t.Fatal("quicksort should not be recorded as a Tier2 failure")
 	}
-	if !IsFeedbackCollectionDisabled(qs) {
-		t.Fatal("suppressed quicksort should recompile Tier1 without feedback writes")
+	if tm.Tier2Attempted() != 1 {
+		t.Fatalf("quicksort should attempt Tier2 once, got %d attempts", tm.Tier2Attempted())
 	}
-	if qs.CallCount <= tmDefaultTier2Threshold {
-		t.Fatalf("suppressed quicksort CallCount=%d, want past Tier2 threshold", qs.CallCount)
+	if !qs.Tier2Promoted || qs.Tier2DirectEntryPtr == 0 {
+		t.Fatalf("quicksort did not install Tier2-only direct entry: promoted=%v tier2Direct=%#x", qs.Tier2Promoted, qs.Tier2DirectEntryPtr)
 	}
 }
 

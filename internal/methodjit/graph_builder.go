@@ -685,6 +685,7 @@ func (b *graphBuilder) emitBlocks() {
 					if irType, ok := feedbackToIRType(fb.Result); ok &&
 						resultType != irType &&
 						!getTableKindImpliesType(kindAux2, irType) &&
+						!getTableKindForbidsResultGuard(kindAux2, irType) &&
 						!bytecodeSlotFeedsNilEq(b.proto, pc, a) {
 						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
 						result = guard.Value()
@@ -1068,4 +1069,11 @@ func getTableKindImpliesType(kindAux2 int64, typ Type) bool {
 	default:
 		return false
 	}
+}
+
+func getTableKindForbidsResultGuard(kindAux2 int64, typ Type) bool {
+	if kindAux2 != int64(vm.FBKindMixed) {
+		return false
+	}
+	return typ == TypeInt || typ == TypeFloat || typ == TypeBool
 }

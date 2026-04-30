@@ -43,12 +43,12 @@ func (s tableMutationRecoverySummary) firstUnadmitted() (tableMutationRecoverySi
 }
 
 func tableMutationRecoveryClassAdmitted(c tableMutationRecoveryClass) bool {
-	// Only idempotent overwrites are admitted today. A read-backed overwrite
-	// proves the key existed earlier on this path, but replaying it after a
-	// restart can still change table contents (for example swaps), so it remains
-	// diagnostic-only until the runtime has undo or all-guards-before-store
-	// metadata.
-	return c == tableMutationRecoverIdempotentOverwrite
+	// Read-backed overwrites are safe for normal entry-compiled Tier 2: the
+	// table-exit and call-exit paths resume at the precise continuation instead
+	// of restarting the function and replaying prior stores. Restart-style OSR
+	// remains separately blocked for any residual SetTable by
+	// hasRestartVisibleSideEffect.
+	return c == tableMutationRecoverIdempotentOverwrite || c == tableMutationRecoverReadBackedOverwrite
 }
 
 func loopTableMutationRecoveryAdmitsInstr(fn *Function, instr *Instr) bool {
@@ -87,7 +87,7 @@ func analyzeLoopTableMutationRecovery(fn *Function) tableMutationRecoverySummary
 		witnesses := make(map[tableAccessKey]tableReadWitness)
 		for _, instr := range block.Instrs {
 			switch instr.Op {
-			case OpGetTable:
+			case OpGetTable, OpTableArrayLoad:
 				if key, ok := tableAccessKeyFor(instr); ok {
 					witnesses[key] = tableReadWitness{valueID: instr.ID}
 				}
@@ -159,7 +159,30 @@ func tableAccessKeyFor(instr *Instr) (tableAccessKey, bool) {
 	if instr == nil || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil {
 		return tableAccessKey{}, false
 	}
+	if instr.Op == OpTableArrayLoad {
+		return tableArrayLoadAccessKey(instr)
+	}
 	return tableAccessKey{tableID: instr.Args[0].ID, keyID: instr.Args[1].ID}, true
+}
+
+func tableArrayLoadAccessKey(instr *Instr) (tableAccessKey, bool) {
+	if instr == nil || instr.Op != OpTableArrayLoad || len(instr.Args) < 3 {
+		return tableAccessKey{}, false
+	}
+	data := instr.Args[0]
+	key := instr.Args[2]
+	if data == nil || data.Def == nil || data.Def.Op != OpTableArrayData || len(data.Def.Args) < 1 {
+		return tableAccessKey{}, false
+	}
+	headerVal := data.Def.Args[0]
+	if headerVal == nil || headerVal.Def == nil || headerVal.Def.Op != OpTableArrayHeader || len(headerVal.Def.Args) < 1 {
+		return tableAccessKey{}, false
+	}
+	table := headerVal.Def.Args[0]
+	if table == nil || key == nil {
+		return tableAccessKey{}, false
+	}
+	return tableAccessKey{tableID: table.ID, keyID: key.ID}, true
 }
 
 func clearTableWitnesses(witnesses map[tableAccessKey]tableReadWitness, tableID int) {

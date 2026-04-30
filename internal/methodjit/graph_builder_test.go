@@ -607,6 +607,26 @@ func f(t) {
 		}
 	})
 
+	t.Run("GetTable_FBFloat_with_FBKindMixed_skips_numeric_guard", func(t *testing.T) {
+		proto := compile(t, `
+func f(t) {
+	return t[1]
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETTABLE)
+		proto.EnsureFeedback()
+		proto.Feedback[pc] = vm.TypeFeedback{Result: vm.FBFloat, Kind: vm.FBKindMixed}
+
+		fn := BuildGraph(proto)
+		ir := Print(fn)
+		t.Logf("IR:\n%s", ir)
+
+		guard := findGuardAfterOp(fn, OpGetTable)
+		if guard != nil {
+			t.Fatalf("expected mixed-array numeric GetTable to skip brittle result guard, got Type=%v", guard.Type)
+		}
+	})
+
 	t.Run("GetTable_FBTable_with_FBKindMixed_marks_result_table", func(t *testing.T) {
 		proto := compile(t, `
 func f(t) {

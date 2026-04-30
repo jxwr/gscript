@@ -813,7 +813,7 @@ func (tm *TieringManager) shouldSuppressRecursivePartitionTableMutationTier2(pro
 	if tm == nil || tm.envTier2NoFilter || proto == nil || profile.LoopDepth == 0 {
 		return false
 	}
-	return hasStaticSelfRecursivePartitionSetTableLoop(proto)
+	return false
 }
 
 // tier0OnlyLoopCallee reports stable loop callees that are deliberately kept

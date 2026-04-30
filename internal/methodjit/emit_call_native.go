@@ -1467,7 +1467,7 @@ func (ec *emitContext) emitRawIntPeerCallExitResume(instr *Instr, funcSlot, nArg
 // Extracted from emit_dispatch.go to keep that file under rule 13's
 // 1000-line cap.
 func (ec *emitContext) emitOpCall(instr *Instr) {
-	if ec.isStaticSelfCall(instr) && !ec.nativeCallReplaySafe {
+	if ec.isStaticSelfCall(instr) && !ec.nativeCallReplaySafe && !ec.nativeCallCalleeResumeSafe {
 		ec.emitCallExit(instr)
 	} else if ec.numericMode && ec.tailCallInstrs[instr.ID] && ec.isNumericStaticSelfCall(instr) {
 		ec.emitCallNativeNumericTail(instr)
