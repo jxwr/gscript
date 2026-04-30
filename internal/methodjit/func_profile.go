@@ -291,6 +291,9 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	// it for a single static call site.
 	//
 	if profile.CallCount > 0 && !profile.HasLoop {
+		if qualifiesForFixedRecursiveTableBuilder(proto) {
+			return runtimeCallCount >= 1
+		}
 		// proto.HasSelfCalls is only set during compileTier2Pipeline, so
 		// at promotion time it's still false — detect recursion by
 		// bytecode scan instead.

@@ -350,12 +350,11 @@ for i := 1; i <= 20; i++ {
 	if makeTreeProto == nil {
 		t.Fatal("makeTree proto not found")
 	}
-	if !makeTreeProto.JITDisabled {
-		t.Fatal("mixed makeTree should stay Tier 0 while NEWOBJECT2 remains an op-exit")
+	if makeTreeProto.JITDisabled {
+		t.Fatal("makeTree should not stay Tier 0 once the fixed recursive table builder protocol applies")
 	}
-	if makeTreeProto.CompiledCodePtr != 0 || makeTreeProto.DirectEntryPtr != 0 {
-		t.Fatalf("mixed makeTree compiled despite stay-tier0: compiled=%#x direct=%#x",
-			makeTreeProto.CompiledCodePtr, makeTreeProto.DirectEntryPtr)
+	if makeTreeProto.EnteredTier2 == 0 {
+		t.Fatal("makeTree should enter the fixed recursive table builder Tier 2 protocol")
 	}
 
 	checkTreeProto := findProtoByName(proto, "checkTree")

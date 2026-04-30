@@ -194,6 +194,14 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// Get the function profile (cached after first computation).
 	profile := tm.getProfile(proto)
 
+	if !tm.tier2Failed[proto] {
+		if t2, ok := tm.compileFixedRecursiveTableBuilderTier2(proto); ok {
+			tm.tier2Compiled[proto] = t2
+			tm.installTier2(proto, t2)
+			return t2
+		}
+	}
+
 	if shouldStayTier0CoroutineRuntime(proto, profile) {
 		proto.JITDisabled = true
 		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
@@ -1454,6 +1462,9 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
 	if cf != nil && cf.FixedRecursiveIntFold != nil {
 		return tm.executeFixedRecursiveIntFold(cf, regs, base, proto, retBuf)
+	}
+	if cf != nil && cf.FixedRecursiveTableBuilder != nil {
+		return tm.executeFixedRecursiveTableBuilder(cf, regs, base, proto, retBuf)
 	}
 	if cf != nil && cf.FixedRecursiveTableFold != nil {
 		return tm.executeFixedRecursiveTableFold(cf, regs, base, proto, retBuf)

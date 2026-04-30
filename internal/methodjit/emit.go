@@ -388,6 +388,10 @@ type CompiledFunction struct {
 	// self-recursive field children.
 	FixedRecursiveTableFold *fixedRecursiveTableFoldProtocol
 
+	// FixedRecursiveTableBuilder is a whole-call Tier 2 protocol for exact
+	// recursive binary table builders like makeTree(depth).
+	FixedRecursiveTableBuilder *fixedRecursiveTableBuilderProtocol
+
 	// FixedRecursiveIntFold is a whole-call Tier 2 protocol for fixed-step
 	// integer self-recursive additive recurrences such as fib(n-1)+fib(n-2).
 	FixedRecursiveIntFold *fixedRecursiveIntFoldProtocol
