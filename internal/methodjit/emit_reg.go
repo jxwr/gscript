@@ -6,8 +6,9 @@
 // memory load/store on every instruction.
 //
 // Raw int mode: type-specialized int operations (OpAddInt, OpSubInt, etc.) keep
-// values as raw int64 in GPRs, with NO NaN-boxing. A GPR-resident value is either
-// NaN-boxed (for generic ops) or raw int (tracked by rawIntRegs).
+// values as raw int64 in GPRs, with NO NaN-boxing. A GPR-resident value is
+// NaN-boxed (for generic ops), raw int (tracked by rawIntRegs), or raw
+// *runtime.Table pointer (tracked by rawTablePtrRegs).
 //
 // Raw float mode: type-specialized float operations (OpAddFloat, OpSubFloat, etc.)
 // keep values as raw float64 in FPRs. This avoids FMOVtoFP/FMOVtoGP
@@ -146,6 +147,15 @@ func (ec *emitContext) resolveValueNB(valueID int, scratchReg jit.Reg) jit.Reg {
 		return scratchReg
 	}
 	if ec.hasReg(valueID) {
+		if ec.rawTablePtrRegs[valueID] {
+			reg := ec.physReg(valueID)
+			tmp := jit.X17
+			if scratchReg == tmp {
+				tmp = jit.X16
+			}
+			emitBoxTablePtr(ec.asm, scratchReg, reg, tmp)
+			return scratchReg
+		}
 		if ec.rawIntRegs[valueID] {
 			// Raw int in register: box into scratch before returning.
 			reg := ec.physReg(valueID)
@@ -180,6 +190,8 @@ func (ec *emitContext) storeResultNB(srcReg jit.Reg, valueID int) {
 	if ok && !pr.IsFloat {
 		// Invalidate any other value that was previously in this register.
 		ec.invalidateReg(pr.Reg, valueID)
+		delete(ec.rawIntRegs, valueID)
+		delete(ec.rawTablePtrRegs, valueID)
 		// Store to allocated register and activate it.
 		ec.activeRegs[valueID] = true
 		dstReg := jit.Reg(pr.Reg)
@@ -212,6 +224,22 @@ func (ec *emitContext) resolveRawInt(valueID int, scratch jit.Reg) jit.Reg {
 	return ec.resolveValueUnboxedInt(valueID, scratch)
 }
 
+// resolveRawTablePtr returns a GPR holding a raw *runtime.Table pointer for a
+// value produced by the typed table-pointer path. If the value was reloaded
+// from its home slot after exit-resume, the slot contains a boxed table Value
+// and this helper extracts the pointer back into scratch.
+func (ec *emitContext) resolveRawTablePtr(valueID int, scratch jit.Reg) jit.Reg {
+	if ec.hasReg(valueID) && ec.rawTablePtrRegs[valueID] {
+		return ec.physReg(valueID)
+	}
+	src := ec.resolveValueNB(valueID, scratch)
+	if src != scratch {
+		ec.asm.MOVreg(scratch, src)
+	}
+	jit.EmitExtractPtr(ec.asm, scratch, scratch)
+	return scratch
+}
+
 // storeRawInt stores a raw int64 result to the allocated register (if any)
 // and marks it as containing a raw int (not NaN-boxed).
 // For cross-block values, writes NaN-boxed to memory.
@@ -224,6 +252,7 @@ func (ec *emitContext) storeRawInt(srcReg jit.Reg, valueID int) {
 		ec.invalidateReg(pr.Reg, valueID)
 		ec.activeRegs[valueID] = true
 		ec.rawIntRegs[valueID] = true
+		delete(ec.rawTablePtrRegs, valueID)
 		dstReg := jit.Reg(pr.Reg)
 		if srcReg != dstReg {
 			ec.asm.MOVreg(dstReg, srcReg)
@@ -239,6 +268,30 @@ func (ec *emitContext) storeRawInt(srcReg jit.Reg, valueID int) {
 	}
 	// No register: box and store to memory
 	jit.EmitBoxIntFast(ec.asm, jit.X0, srcReg, mRegTagInt)
+	ec.storeValue(jit.X0, valueID)
+}
+
+// storeRawTablePtr stores a raw *runtime.Table pointer in the allocated GPR
+// and records that representation explicitly. Any memory home slot receives a
+// boxed table Value, never a pointer disguised as an integer.
+func (ec *emitContext) storeRawTablePtr(srcReg jit.Reg, valueID int) {
+	pr, ok := ec.alloc.ValueRegs[valueID]
+	if ok && !pr.IsFloat {
+		ec.invalidateReg(pr.Reg, valueID)
+		ec.activeRegs[valueID] = true
+		ec.rawTablePtrRegs[valueID] = true
+		delete(ec.rawIntRegs, valueID)
+		dstReg := jit.Reg(pr.Reg)
+		if srcReg != dstReg {
+			ec.asm.MOVreg(dstReg, srcReg)
+		}
+		if ec.crossBlockLive[valueID] && !ec.loopPhiOnlyArgs[valueID] && !ec.rawIntCarryNoStore[valueID] {
+			emitBoxTablePtr(ec.asm, jit.X0, dstReg, jit.X17)
+			ec.storeValue(jit.X0, valueID)
+		}
+		return
+	}
+	emitBoxTablePtr(ec.asm, jit.X0, srcReg, jit.X17)
 	ec.storeValue(jit.X0, valueID)
 }
 
@@ -260,6 +313,7 @@ func (ec *emitContext) invalidateReg(reg int, newValueID int) {
 		if pr, ok := ec.alloc.ValueRegs[valID]; ok && pr.Reg == reg && !pr.IsFloat {
 			delete(ec.activeRegs, valID)
 			delete(ec.rawIntRegs, valID)
+			delete(ec.rawTablePtrRegs, valID)
 		}
 	}
 }
@@ -413,6 +467,7 @@ func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 		argReg := jit.Reg(int(jit.X0) + slot)
 		ec.activeRegs[instr.ID] = true
 		ec.rawIntRegs[instr.ID] = true
+		delete(ec.rawTablePtrRegs, instr.ID)
 		if argReg != reg {
 			ec.asm.MOVreg(reg, argReg)
 		}
@@ -432,7 +487,9 @@ func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 		jit.EmitUnboxInt(ec.asm, reg, reg)
 		ec.activeRegs[instr.ID] = true
 		ec.rawIntRegs[instr.ID] = true
+		delete(ec.rawTablePtrRegs, instr.ID)
 	} else {
 		ec.activeRegs[instr.ID] = true
+		delete(ec.rawTablePtrRegs, instr.ID)
 	}
 }

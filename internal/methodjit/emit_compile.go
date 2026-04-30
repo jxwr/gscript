@@ -256,6 +256,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		nextSlot:                   fn.NumRegs,
 		activeRegs:                 make(map[int]bool),
 		rawIntRegs:                 make(map[int]bool),
+		rawTablePtrRegs:            make(map[int]bool),
 		activeFPRegs:               make(map[int]bool),
 		shapeVerified:              make(map[int]uint32),
 		tableVerified:              make(map[int]bool),
@@ -551,6 +552,11 @@ type emitContext struct {
 	// in their allocated register. Set by emitRawIntBinOp, read by resolveRawInt.
 	// Reset at block boundaries (raw state doesn't carry across blocks).
 	rawIntRegs map[int]bool
+
+	// rawTablePtrRegs tracks value IDs whose allocated GPR holds a raw
+	// *runtime.Table pointer. Home slots always hold a boxed table Value so
+	// exit-resume and GC-visible VM state never see raw pointers.
+	rawTablePtrRegs map[int]bool
 
 	// shapeVerified tracks table SSA value IDs whose shape has been verified
 	// in the current block. Maps table value ID -> verified shapeID.
@@ -1539,6 +1545,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 	// Reset active register set for this block.
 	ec.activeRegs = make(map[int]bool)
 	ec.rawIntRegs = make(map[int]bool)
+	ec.rawTablePtrRegs = make(map[int]bool)
 	ec.activeFPRegs = make(map[int]bool)
 	// Seed shape/table verification from the sole predecessor's outgoing state.
 	// Only safe when the block has exactly one predecessor — at merge points
@@ -1610,6 +1617,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 					ec.activeRegs[entry.ValueID] = true
 					if entry.IsRawInt {
 						ec.rawIntRegs[entry.ValueID] = true
+						delete(ec.rawTablePtrRegs, entry.ValueID)
 					}
 				}
 			}
@@ -1656,6 +1664,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 				// both the initial entry (unboxing) and back-edge (raw transfer).
 				if isHeader && instr.Type == TypeInt {
 					ec.rawIntRegs[instr.ID] = true
+					delete(ec.rawTablePtrRegs, instr.ID)
 				}
 			}
 		}
@@ -1751,6 +1760,7 @@ func (ec *emitContext) deactivateDeadAfter(instr *Instr) {
 		if !liveAfter[valueID] {
 			delete(ec.activeRegs, valueID)
 			delete(ec.rawIntRegs, valueID)
+			delete(ec.rawTablePtrRegs, valueID)
 		}
 	}
 	for valueID := range ec.activeFPRegs {

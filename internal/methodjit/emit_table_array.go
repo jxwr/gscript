@@ -212,7 +212,7 @@ func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
 		asm.BCond(jit.CondNE, deoptLabel)
 	}
 	ec.kindVerified[tblID] = uint16(instr.Aux)
-	ec.storeRawInt(jit.X0, instr.ID)
+	ec.storeRawTablePtr(jit.X0, instr.ID)
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
@@ -229,7 +229,7 @@ func (ec *emitContext) emitTableArrayLen(instr *Instr) {
 		ec.emitDeopt(instr)
 		return
 	}
-	hdr := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+	hdr := ec.resolveRawTablePtr(instr.Args[0].ID, jit.X0)
 	if hdr != jit.X0 {
 		ec.asm.MOVreg(jit.X0, hdr)
 	}
@@ -246,7 +246,7 @@ func (ec *emitContext) emitTableArrayData(instr *Instr) {
 		ec.emitDeopt(instr)
 		return
 	}
-	hdr := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+	hdr := ec.resolveRawTablePtr(instr.Args[0].ID, jit.X0)
 	if hdr != jit.X0 {
 		ec.asm.MOVreg(jit.X0, hdr)
 	}

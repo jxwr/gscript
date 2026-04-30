@@ -461,8 +461,13 @@ func (ec *emitContext) emitStoreAllActiveRegs() {
 			continue
 		}
 		reg := jit.Reg(pr.Reg)
-		// If the register holds a raw int, box it before storing.
-		if ec.rawIntRegs[valueID] {
+		// If the register holds a raw table pointer or raw int, box it before
+		// storing so home slots stay normal runtime.Values across exits.
+		if ec.rawTablePtrRegs[valueID] {
+			emitBoxTablePtr(ec.asm, jit.X0, reg, jit.X17)
+			ec.asm.STR(jit.X0, mRegRegs, slotOffset(slot))
+			ec.emitExitResumeCheckShadowStoreGPR(slot, jit.X0)
+		} else if ec.rawIntRegs[valueID] {
 			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
 			ec.asm.STR(jit.X0, mRegRegs, slotOffset(slot))
 			ec.emitExitResumeCheckShadowStoreGPR(slot, jit.X0)
@@ -521,8 +526,11 @@ func (ec *emitContext) emitReloadAllActiveRegs() {
 		}
 		reg := jit.Reg(pr.Reg)
 		ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
-		// After reload, registers hold NaN-boxed values (not raw).
-		// Clear raw int tracking for this value.
+		if ec.rawTablePtrRegs[valueID] {
+			jit.EmitExtractPtr(ec.asm, reg, reg)
+			continue
+		}
+		// After reload, registers hold NaN-boxed values (not raw ints).
 		delete(ec.rawIntRegs, valueID)
 	}
 	for valueID := range ec.activeFPRegs {

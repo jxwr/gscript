@@ -636,6 +636,75 @@ result := after - before
 	}
 }
 
+func TestTier2_TableArrayPointerTempsSurviveExitResume(t *testing.T) {
+	src := `
+func miss_then_sum(arr, missKey) {
+    miss := arr[missKey]
+    first := arr[1]
+    second := arr[2]
+    if miss == nil {
+        return first + second
+    }
+    return first + second + miss
+}
+`
+	top := compileTop(t, src)
+	fnProto := findProtoByName(top, "miss_then_sum")
+	if fnProto == nil {
+		t.Fatal("miss_then_sum proto not found")
+	}
+	seedIntTableFeedback(fnProto)
+
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("miss_then_sum")
+	if fnVal.IsNil() {
+		t.Fatal("function miss_then_sum not found")
+	}
+
+	tbl := runtime.NewTable()
+	tbl.RawSetInt(1, runtime.IntValue(10))
+	tbl.RawSetInt(2, runtime.IntValue(32))
+	for i := 0; i < 8; i++ {
+		if _, err := v.CallValue(fnVal, []runtime.Value{runtime.TableValue(tbl), runtime.IntValue(1)}); err != nil {
+			t.Fatalf("warm CallValue: %v", err)
+		}
+	}
+
+	fn := BuildGraph(fnProto)
+	var err error
+	fn, _, err = RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	if got := countOps(fn)[OpTableArrayLoad]; got < 3 {
+		t.Fatalf("expected typed table-array loads, got %d\n%s", got, Print(fn))
+	}
+
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+	cf.CallVM = v
+	cf.DeoptFunc = func(args []runtime.Value) ([]runtime.Value, error) {
+		return v.CallValue(fnVal, args)
+	}
+
+	got, err := cf.Execute([]runtime.Value{runtime.TableValue(tbl), runtime.IntValue(99)})
+	if err != nil {
+		t.Fatalf("Tier2 Execute: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 42 {
+		t.Fatalf("miss_then_sum result = %v, want 42", got)
+	}
+}
+
 func TestTier2_TableArrayLoadFailThenSetKeepsSetBoundsCheck(t *testing.T) {
 	src := `
 func read_then_set(arr, key, val) {

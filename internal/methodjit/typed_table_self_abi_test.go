@@ -452,6 +452,62 @@ func TestTypedTableSelfABI_TypedSelfCallGuardsEntryShapeBeforeBL(t *testing.T) {
 	}
 }
 
+func TestTypedTableSelfABI_RejectsUnknownRecursiveTableArg(t *testing.T) {
+	src := `
+func walk(node) {
+    if node.left == nil {
+        return 1
+    }
+    child := node.payload
+    r := walk(child)
+    return r + 0
+}
+
+goodLeaf := {left: nil, payload: nil}
+goodRoot := {left: 1, payload: goodLeaf}
+badRoot := {left: 1, payload: 123}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	walk := findProtoByName(top, "walk")
+	if walk == nil {
+		t.Fatal("walk proto not found")
+	}
+	fn := v.GetGlobal("walk")
+	goodRoot := v.GetGlobal("goodRoot")
+	badRoot := v.GetGlobal("badRoot")
+	if _, err := v.CallValue(fn, []runtime.Value{goodRoot}); err != nil {
+		t.Fatalf("warm walk(goodRoot): %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(walk); err != nil {
+		t.Fatalf("CompileTier2(walk): %v", err)
+	}
+	cf := tm.tier2Compiled[walk]
+	if cf == nil {
+		t.Fatal("compiled walk missing Tier 2 function")
+	}
+	if cf.TypedSelfABI.Eligible {
+		t.Fatalf("unknown recursive table arg must not get typed ABI: %+v", cf.TypedSelfABI)
+	}
+
+	got, err := v.CallValue(fn, []runtime.Value{badRoot})
+	if err != nil {
+		t.Fatalf("walk(badRoot): %v", err)
+	}
+	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 1 {
+		t.Fatalf("walk(badRoot) = %v, want 1", got)
+	}
+}
+
 func BenchmarkTypedTableSelfABI_CheckTreeForcedTier2CallValueSteady(b *testing.B) {
 	benchTypedTableSelfCheckTree(b, false)
 }
