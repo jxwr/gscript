@@ -300,8 +300,10 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
-	asm.CMPreg(jit.X1, jit.X3)
-	asm.BCond(jit.CondGE, deoptLabel)
+	if !ec.tableArrayUpperBoundSafe(instr.ID) {
+		asm.CMPreg(jit.X1, jit.X3)
+		asm.BCond(jit.CondGE, deoptLabel)
+	}
 
 	switch instr.Aux {
 	case int64(vm.FBKindMixed):
@@ -828,6 +830,13 @@ func (ec *emitContext) intNonNegative(id int) bool {
 		return false
 	}
 	return ec.fn.IntNonNegative[id]
+}
+
+func (ec *emitContext) tableArrayUpperBoundSafe(id int) bool {
+	if ec.fn == nil || ec.fn.TableArrayUpperBoundSafe == nil {
+		return false
+	}
+	return ec.fn.TableArrayUpperBoundSafe[id]
 }
 
 func (ec *emitContext) recordTableArrayBoundedKey(instr *Instr) {

@@ -50,6 +50,13 @@ type Function struct {
 	// a sign fact and must not reuse Int48Safe's overflow-specific meaning.
 	IntNonNegative map[int]bool
 
+	// TableArrayUpperBoundSafe is the set of OpTableArrayLoad instruction IDs
+	// whose key < len check is already guaranteed by the enclosing loop header
+	// branch. Populated by TableArrayBoundsCheckHoistPass after LICM has exposed
+	// invariant table-array len values. The emitter still performs key type and
+	// non-negative checks unless separate facts prove those safe.
+	TableArrayUpperBoundSafe map[int]bool
+
 	// Globals, if non-nil, maps global function names to their protos.
 	// Used by the IR interpreter to resolve residual cross-function calls
 	// (e.g., those left after bounded recursive inlining). Populated by

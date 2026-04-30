@@ -598,6 +598,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("DCE (post-UnrollAndJam): %w", err)
 	}
 
+	fn, err = TableArrayBoundsCheckHoistPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TableArrayBoundsCheckHoist: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = ScalarPromotionPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ScalarPromotion: %w", err)
@@ -689,6 +695,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("DCEPostLICM", DCEPass)
 	pipe.Add("UnrollAndJam", UnrollAndJamPass)
 	pipe.Add("DCEPostUnrollAndJam", DCEPass)
+	pipe.Add("TableArrayBoundsCheckHoist", TableArrayBoundsCheckHoistPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	return pipe
 }
