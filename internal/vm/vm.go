@@ -1443,6 +1443,15 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 
 			// ---- Fast path: VM Closure (inline call) ----
 			if cl, ok := closureFromValue(fnVal); ok {
+				if b != 0 && nArgs == 1 {
+					handled, err := vm.tryRecursiveTableBuildFoldRegion(frame, base, cl, a, nArgs, c)
+					if handled {
+						if err != nil {
+							return nil, wrapLineErr(frame, err)
+						}
+						break
+					}
+				}
 				if b != 0 && wholeCallKernelArity(nArgs) {
 					args := vm.regs[base+a+1 : base+a+1+nArgs]
 					handled, err := vm.tryValueWholeCallKernel(cl, args, c, base+a)
@@ -2058,7 +2067,7 @@ func (vm *VM) callValue(fnVal runtime.Value, args []runtime.Value) ([]runtime.Va
 	if fnVal.IsFunction() {
 		if cl, ok := closureFromValue(fnVal); ok {
 			if wholeCallKernelArity(len(args)) {
-				if handled, results, err := vm.tryRunValueWholeCallKernel(cl, args); handled {
+				if handled, results, err := vm.tryRunNonRecursiveTableValueWholeCallKernel(cl, args); handled {
 					return results, err
 				}
 				if handled, err := vm.tryRunWholeCallKernel(cl, args); handled {

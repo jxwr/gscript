@@ -18,6 +18,13 @@ func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, 
 }
 
 func (vm *VM) tryRunValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if handled, results, err := vm.tryRunRecursiveTableValueKernel(cl, args); handled || err != nil {
+		return handled, results, err
+	}
+	return vm.tryRunNonRecursiveTableValueWholeCallKernel(cl, args)
+}
+
+func (vm *VM) tryRunNonRecursiveTableValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
 	if handled, results, err := vm.tryRunFannkuchReduxWholeCallKernel(cl, args); handled || err != nil {
 		return handled, results, err
 	}

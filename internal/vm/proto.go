@@ -13,39 +13,40 @@ type globalCacheEntry struct {
 // FuncProto is the bytecode function prototype.
 // It contains the compiled instructions, constants, and metadata for a function.
 type FuncProto struct {
-	Name                   string                    // function name (for debugging)
-	Source                 string                    // source file
-	LineDefined            int                       // line where the function is defined
-	NumParams              int                       // number of fixed parameters
-	IsVarArg               bool                      // whether the function accepts varargs
-	MaxStack               int                       // maximum number of registers used
-	Code                   []uint32                  // bytecode instructions
-	Constants              []runtime.Value           // constant pool
-	TableCtors2            []TableCtor2              // static two-field table constructors
-	Upvalues               []UpvalDesc               // upvalue descriptors
-	Protos                 []*FuncProto              // nested function prototypes
-	LineInfo               []int                     // source line for each instruction (debug)
-	GlobalCache            []globalCacheEntry        // lazily-initialized cache indexed by constant pool index
-	FieldCache             []runtime.FieldCacheEntry // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
-	NBodyAdvanceKernel     *nbodyAdvanceKernelCache  // guarded whole-call record kernel cache, nil until first probe
-	HasSelfCalls           bool                      // true if function has recursive calls to itself (set during JIT compilation)
-	CallCount              int                       // JIT call count (avoids map lookup in VM hot path)
-	JITDisabled            bool                      // true when the method JIT made a permanent per-proto stay-interpreted decision
-	Feedback               FeedbackVector            // lazily-initialized per-PC type feedback for Method JIT
-	TableKeyFeedback       TableKeyFeedbackVector    // lazily-initialized per-PC table int-key range feedback
-	CompiledCodePtr        uintptr                   // pointer to baseline JIT compiled code (set after CompileBaseline)
-	DirectEntryPtr         uintptr                   // pointer to direct entry point for native BLR calls
-	Tier2DirectEntryPtr    uintptr                   // pointer to Tier 2 direct entry for Method JIT call IC refresh
-	DirectEntryVersion     uint64                    // increments when DirectEntryPtr/Tier2DirectEntryPtr publication changes
-	Tier2NumericEntryPtr   uintptr                   // pointer to Tier 2 raw-int numeric entry for guarded peer calls
-	GlobalValCachePtr      uintptr                   // pointer to BaselineFunc.GlobalValCache[0] (for BLR callee GETGLOBAL)
-	GlobalValCacheGen      uint64                    // BaselineFunc.CachedGlobalGen (for BLR callee generation check)
-	Tier2GlobalCachePtr    uintptr                   // pointer to CompiledFunction.GlobalCache[0] (for Tier 2 BLR callees)
-	Tier2GlobalCacheGenPtr uintptr                   // pointer to CompiledFunction.GlobalCacheGen (for Tier 2 BLR callees)
-	Tier2GlobalIndexPtr    uintptr                   // pointer to CompiledFunction.GlobalIndexByConst[0] (for Tier 2 indexed globals)
-	Tier2Promoted          bool                      // set true when TieringManager compiles this proto at Tier 2
-	NeedsTier2             bool                      // set true when Tier 2 applied ops (e.g., intrinsics) that Tier 1 would execute differently
-	EnteredTier2           byte                      // R146: set to 1 by Tier 2 native prologue on first entry — observable signal that native code actually ran (not just compiled)
+	Name                   string                     // function name (for debugging)
+	Source                 string                     // source file
+	LineDefined            int                        // line where the function is defined
+	NumParams              int                        // number of fixed parameters
+	IsVarArg               bool                       // whether the function accepts varargs
+	MaxStack               int                        // maximum number of registers used
+	Code                   []uint32                   // bytecode instructions
+	Constants              []runtime.Value            // constant pool
+	TableCtors2            []TableCtor2               // static two-field table constructors
+	Upvalues               []UpvalDesc                // upvalue descriptors
+	Protos                 []*FuncProto               // nested function prototypes
+	LineInfo               []int                      // source line for each instruction (debug)
+	GlobalCache            []globalCacheEntry         // lazily-initialized cache indexed by constant pool index
+	FieldCache             []runtime.FieldCacheEntry  // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
+	NBodyAdvanceKernel     *nbodyAdvanceKernelCache   // guarded whole-call record kernel cache, nil until first probe
+	RecursiveTableKernel   *recursiveTableKernelCache // guarded whole-call lazy recursive table builder/fold cache, nil until first probe
+	HasSelfCalls           bool                       // true if function has recursive calls to itself (set during JIT compilation)
+	CallCount              int                        // JIT call count (avoids map lookup in VM hot path)
+	JITDisabled            bool                       // true when the method JIT made a permanent per-proto stay-interpreted decision
+	Feedback               FeedbackVector             // lazily-initialized per-PC type feedback for Method JIT
+	TableKeyFeedback       TableKeyFeedbackVector     // lazily-initialized per-PC table int-key range feedback
+	CompiledCodePtr        uintptr                    // pointer to baseline JIT compiled code (set after CompileBaseline)
+	DirectEntryPtr         uintptr                    // pointer to direct entry point for native BLR calls
+	Tier2DirectEntryPtr    uintptr                    // pointer to Tier 2 direct entry for Method JIT call IC refresh
+	DirectEntryVersion     uint64                     // increments when DirectEntryPtr/Tier2DirectEntryPtr publication changes
+	Tier2NumericEntryPtr   uintptr                    // pointer to Tier 2 raw-int numeric entry for guarded peer calls
+	GlobalValCachePtr      uintptr                    // pointer to BaselineFunc.GlobalValCache[0] (for BLR callee GETGLOBAL)
+	GlobalValCacheGen      uint64                     // BaselineFunc.CachedGlobalGen (for BLR callee generation check)
+	Tier2GlobalCachePtr    uintptr                    // pointer to CompiledFunction.GlobalCache[0] (for Tier 2 BLR callees)
+	Tier2GlobalCacheGenPtr uintptr                    // pointer to CompiledFunction.GlobalCacheGen (for Tier 2 BLR callees)
+	Tier2GlobalIndexPtr    uintptr                    // pointer to CompiledFunction.GlobalIndexByConst[0] (for Tier 2 indexed globals)
+	Tier2Promoted          bool                       // set true when TieringManager compiles this proto at Tier 2
+	NeedsTier2             bool                       // set true when Tier 2 applied ops (e.g., intrinsics) that Tier 1 would execute differently
+	EnteredTier2           byte                       // R146: set to 1 by Tier 2 native prologue on first entry — observable signal that native code actually ran (not just compiled)
 }
 
 // TableCtor2 describes a static two-string-field table constructor.
