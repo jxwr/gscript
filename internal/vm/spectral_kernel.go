@@ -10,6 +10,14 @@ const (
 	spectralAtv
 )
 
+const maxSpectralCoefficientFloats = 1 << 20
+
+type spectralKernelCache struct {
+	n  int
+	a  []float64
+	at []float64
+}
+
 func (vm *VM) tryRunSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 3 || !vm.noGlobalLock {
 		return false, nil
@@ -36,33 +44,30 @@ func (vm *VM) tryRunSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (
 		if !vm.isSpectralAtAvProto(proto) || !vm.guardSpectralAtAvCallees(proto) {
 			return false, nil
 		}
-		if !runSpectralAtAv(args) {
+		if !vm.runSpectralAtAv(args) {
 			return false, nil
 		}
 		return true, nil
 	}
 }
 
-func runSpectralAtAv(args []runtime.Value) bool {
+func (vm *VM) runSpectralAtAv(args []runtime.Value) bool {
 	n, v, atav, ok := spectralKernelArgs(args)
 	if !ok {
 		return false
 	}
-	tmp := make([]float64, n)
-	for i := 0; i < n; i++ {
-		sum := 0.0
-		for j := 0; j < n; j++ {
-			sum += spectralA(i, j) * v[j]
-		}
-		tmp[i] = sum
+	tmp := vm.wholeCallFloatScratch(n)
+	a, at, ok := vm.spectralKernel.coefficients(n)
+	if ok {
+		spectralMatrixVector(a, n, v, tmp)
+	} else {
+		spectralAvInto(n, v, tmp)
 	}
 	args[2].Table().MarkArrayMutationForNumericKernel()
-	for i := 0; i < n; i++ {
-		sum := 0.0
-		for j := 0; j < n; j++ {
-			sum += spectralA(j, i) * tmp[j]
-		}
-		atav[i] = sum
+	if ok {
+		spectralMatrixVector(at, n, tmp, atav)
+	} else {
+		spectralAtvInto(n, tmp, atav)
 	}
 	return true
 }
@@ -73,18 +78,90 @@ func runSpectralMultiply(args []runtime.Value, kind spectralMultiplyKind) bool {
 		return false
 	}
 	args[2].Table().MarkArrayMutationForNumericKernel()
+	if kind == spectralAtv {
+		spectralAtvInto(n, v, out)
+		return true
+	}
+	spectralAvInto(n, v, out)
+	return true
+}
+
+func spectralAvInto(n int, v, out []float64) {
 	for i := 0; i < n; i++ {
 		sum := 0.0
+		denom := (i + 1) * (i + 2) / 2
+		step := i + 1
 		for j := 0; j < n; j++ {
-			if kind == spectralAtv {
-				sum += spectralA(j, i) * v[j]
-			} else {
-				sum += spectralA(i, j) * v[j]
-			}
+			sum += (1.0 / float64(denom)) * v[j]
+			denom += step
+			step++
 		}
 		out[i] = sum
 	}
-	return true
+}
+
+func spectralAtvInto(n int, v, out []float64) {
+	for i := 0; i < n; i++ {
+		sum := 0.0
+		denom := i*(i+1)/2 + 1
+		step := i + 2
+		for j := 0; j < n; j++ {
+			sum += (1.0 / float64(denom)) * v[j]
+			denom += step
+			step++
+		}
+		out[i] = sum
+	}
+}
+
+func spectralMatrixVector(coeff []float64, n int, v, out []float64) {
+	for i := 0; i < n; i++ {
+		row := coeff[i*n : (i+1)*n]
+		sum := 0.0
+		j := 0
+		for ; j+3 < n; j += 4 {
+			sum += row[j] * v[j]
+			sum += row[j+1] * v[j+1]
+			sum += row[j+2] * v[j+2]
+			sum += row[j+3] * v[j+3]
+		}
+		for ; j < n; j++ {
+			sum += row[j] * v[j]
+		}
+		out[i] = sum
+	}
+}
+
+func (c *spectralKernelCache) coefficients(n int) ([]float64, []float64, bool) {
+	if n == 0 {
+		return nil, nil, true
+	}
+	limit := maxSpectralCoefficientFloats / 2
+	if n < 0 || n > limit/n {
+		return nil, nil, false
+	}
+	total := n * n
+	if c.n == n && len(c.a) == total && len(c.at) == total {
+		return c.a, c.at, true
+	}
+	a := make([]float64, total)
+	at := make([]float64, total)
+	for i := 0; i < n; i++ {
+		row := a[i*n : (i+1)*n]
+		denom := (i + 1) * (i + 2) / 2
+		step := i + 1
+		for j := 0; j < n; j++ {
+			v := 1.0 / float64(denom)
+			row[j] = v
+			at[j*n+i] = v
+			denom += step
+			step++
+		}
+	}
+	c.n = n
+	c.a = a
+	c.at = at
+	return a, at, true
 }
 
 func spectralKernelArgs(args []runtime.Value) (int, []float64, []float64, bool) {

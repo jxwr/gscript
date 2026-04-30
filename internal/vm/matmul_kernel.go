@@ -33,7 +33,7 @@ func (vm *VM) tryRunMatmulWholeCallKernel(cl *Closure, args []runtime.Value) (bo
 		return false, nil, nil
 	}
 
-	bTransposed := make([]float64, n*n)
+	bTransposed := vm.wholeCallFloatScratch(n * n)
 	for j := 0; j < n; j++ {
 		col := bTransposed[j*n : (j+1)*n]
 		for k := 0; k < n; k++ {

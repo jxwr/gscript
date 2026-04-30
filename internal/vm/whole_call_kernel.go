@@ -2,6 +2,8 @@ package vm
 
 import "github.com/gscript/gscript/internal/runtime"
 
+const maxWholeCallFloatScratch = 1 << 20
+
 func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, dst int) (bool, error) {
 	handled, results, err := vm.tryRunValueWholeCallKernel(cl, args)
 	if !handled || err != nil {
@@ -53,4 +55,17 @@ func (vm *VM) writeNoResults(dst, c int) {
 	for i := 0; i < c-1; i++ {
 		vm.regs[dst+i] = runtime.NilValue()
 	}
+}
+
+func (vm *VM) wholeCallFloatScratch(n int) []float64 {
+	if n <= 0 {
+		return nil
+	}
+	if n > maxWholeCallFloatScratch {
+		return make([]float64, n)
+	}
+	if cap(vm.wholeCallFloatBuf) < n {
+		vm.wholeCallFloatBuf = make([]float64, n)
+	}
+	return vm.wholeCallFloatBuf[:n]
 }

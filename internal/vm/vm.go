@@ -47,7 +47,9 @@ type VM struct {
 	methodJIT         MethodJITEngine
 	argBuf            [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf            [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
-	currentCoroutine  *VMCoroutine      // coroutine currently running on this VM, if any
+	wholeCallFloatBuf []float64         // reusable non-pointer scratch for guarded whole-call kernels
+	spectralKernel    spectralKernelCache
+	currentCoroutine  *VMCoroutine // coroutine currently running on this VM, if any
 	coroutineStats    *coroutineStats
 	coroutineResumeFn *runtime.GoFunction
 	coroutineYieldFn  *runtime.GoFunction

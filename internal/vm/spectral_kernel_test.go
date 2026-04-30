@@ -118,6 +118,29 @@ func TestSpectralKernelWholeAtAvCorrectness(t *testing.T) {
 	}
 }
 
+func TestSpectralCoefficientCacheMatchesAAndBoundsLargeN(t *testing.T) {
+	var cache spectralKernelCache
+	a, at, ok := cache.coefficients(4)
+	if !ok {
+		t.Fatal("small spectral coefficient cache rejected")
+	}
+	for i := 0; i < 4; i++ {
+		for j := 0; j < 4; j++ {
+			want := spectralA(i, j)
+			if got := a[i*4+j]; got != want {
+				t.Fatalf("a[%d,%d] = %.17g, want %.17g", i, j, got, want)
+			}
+			if got := at[j*4+i]; got != want {
+				t.Fatalf("at[%d,%d] = %.17g, want %.17g", j, i, got, want)
+			}
+		}
+	}
+
+	if _, _, ok := cache.coefficients(maxSpectralCoefficientFloats); ok {
+		t.Fatal("oversized spectral coefficient cache should fall back")
+	}
+}
+
 func TestSpectralKernelFallsBackWhenCoefficientFunctionRebound(t *testing.T) {
 	globals := compileAndRun(t, `
 		func A(i, j) {
