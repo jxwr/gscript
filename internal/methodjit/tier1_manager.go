@@ -398,6 +398,11 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 	} else {
 		ctx.BaselineFeedbackPtr = 0
 	}
+	if !e.feedbackOff[proto] && proto.TableKeyFeedback != nil && len(proto.TableKeyFeedback) > 0 {
+		ctx.BaselineTableKeyFeedbackPtr = uintptr(unsafe.Pointer(&proto.TableKeyFeedback[0]))
+	} else {
+		ctx.BaselineTableKeyFeedbackPtr = 0
+	}
 
 	// Set RegsEnd for native BLR bounds checking.
 	ctx.RegsEnd = uintptr(unsafe.Pointer(&regs[0])) + uintptr(len(regs)*8)

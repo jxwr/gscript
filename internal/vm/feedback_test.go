@@ -298,6 +298,22 @@ func TestTableKeyFeedback_ObserveIntKey(t *testing.T) {
 	}
 }
 
+func TestTableKeyFeedback_ObserveDenseMatrix(t *testing.T) {
+	var tk TableKeyFeedback
+	ordinary := runtime.NewTable()
+	dense := runtime.NewDenseMatrix(2, runtime.AutoDenseMatrixMinStride)
+
+	tk.ObserveDenseMatrix(dense)
+	tk.ObserveDenseMatrix(dense)
+	if tk.DenseMatrix != FBDenseMatrixYes {
+		t.Fatalf("dense feedback = %d, want yes", tk.DenseMatrix)
+	}
+	tk.ObserveDenseMatrix(ordinary)
+	if tk.DenseMatrix != FBDenseMatrixPolymorphic {
+		t.Fatalf("mixed dense feedback = %d, want polymorphic", tk.DenseMatrix)
+	}
+}
+
 func TestFeedback_TableIntKeyRange(t *testing.T) {
 	proto := compileFeedback(t, `
 		t := {}

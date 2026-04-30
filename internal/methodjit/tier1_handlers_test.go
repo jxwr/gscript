@@ -146,3 +146,30 @@ func TestHandleLen_RecordsFeedback(t *testing.T) {
 		t.Fatalf("expected FBInt feedback at PC 0, got %d", proto.Feedback[0].Result)
 	}
 }
+
+func TestHandleGetTable_RecordsDenseMatrixFeedback(t *testing.T) {
+	proto := &vm.FuncProto{
+		Code:      []uint32{vm.EncodeABC(vm.OP_GETTABLE, 0, 1, vm.RKBit+0)},
+		Constants: []runtime.Value{runtime.IntValue(0)},
+		MaxStack:  4,
+	}
+	proto.EnsureFeedback()
+
+	tbl := runtime.NewDenseMatrix(2, runtime.AutoDenseMatrixMinStride)
+	regs := make([]runtime.Value, 4)
+	regs[1] = runtime.TableValue(tbl)
+	ctx := &ExecContext{
+		BaselineA:  0,
+		BaselineB:  1,
+		BaselineC:  int64(vm.RKBit + 0),
+		BaselinePC: 1,
+	}
+
+	engine := &BaselineJITEngine{}
+	if err := engine.handleGetTable(ctx, regs, 0, proto); err != nil {
+		t.Fatalf("handleGetTable returned error: %v", err)
+	}
+	if got := proto.TableKeyFeedback[0].DenseMatrix; got != vm.FBDenseMatrixYes {
+		t.Fatalf("dense matrix feedback = %d, want yes", got)
+	}
+}

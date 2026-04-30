@@ -142,6 +142,24 @@ func TestDenseMatrix_AutoAdoptsOrdinaryFloatRows(t *testing.T) {
 	}
 }
 
+func TestDenseMatrix_AutoAdoptUsesOuterArrayCapacityHeadroom(t *testing.T) {
+	const rows = 64
+	const cols = autoDenseMatrixMinStride
+	m := NewTableSizedKind(rows, 0, ArrayMixed)
+	row := NewTableSizedKind(cols, 0, ArrayFloat)
+	for j := 0; j < cols; j++ {
+		row.RawSetInt(int64(j), FloatValue(float64(j)))
+	}
+	m.RawSetInt(0, TableValue(row))
+
+	if m.dmStride != cols || m.dmMeta == nil {
+		t.Fatalf("auto dense metadata stride=%d meta=%v, want stride=%d", m.dmStride, m.dmMeta, cols)
+	}
+	if got, want := cap(m.dmMeta.backing), rows*cols; got < want {
+		t.Fatalf("auto dense backing cap = %d, want at least %d", got, want)
+	}
+}
+
 func TestDenseMatrix_AutoAdoptInvalidatesOnRowGrowth(t *testing.T) {
 	const cols = autoDenseMatrixMinStride
 	m := NewTableSizedKind(2, 0, ArrayMixed)

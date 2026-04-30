@@ -463,7 +463,9 @@ func (e *BaselineJITEngine) handleGetTable(ctx *ExecContext, regs []runtime.Valu
 				// Record array kind for table-access specialization.
 				proto.Feedback[pc].ObserveKind(uint8(tbl.GetArrayKind()))
 				if proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) {
-					proto.TableKeyFeedback[pc].ObserveIntKey(key)
+					tkf := &proto.TableKeyFeedback[pc]
+					tkf.ObserveIntKey(key)
+					tkf.ObserveDenseMatrix(tbl)
 				}
 			}
 		}

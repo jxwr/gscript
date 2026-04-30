@@ -188,9 +188,22 @@ func f(n) {
 func TestNewTableExitReasonCarriesPreallocAndCacheMetadata(t *testing.T) {
 	instr := &Instr{Op: OpNewTable, Aux: 1024, Aux2: packNewTableAux2(0, runtime.ArrayFloat)}
 	reason := newTableExitReason(instr)
-	for _, want := range []string{"NewTable(", "array=1024", "hash=0", "kind=float", "cache_batch=32"} {
+	for _, want := range []string{"NewTable(", "array=1024", "hash=0", "kind=float", "cache_batch=127"} {
 		if !strings.Contains(reason, want) {
 			t.Fatalf("reason %q missing %q", reason, want)
 		}
+	}
+}
+
+func TestNewTableCacheBatchScalesByPayloadBudget(t *testing.T) {
+	if got := newTableCacheBatchSizeForHints(1024, 0, runtime.ArrayFloat); got <= 32 {
+		t.Fatalf("float row cache batch = %d, want larger than old fixed batch", got)
+	}
+	if got := newTableCacheBatchSizeForHints(tier2NewTableCacheMaxArrayHint, 0, runtime.ArrayFloat); got != 0 {
+		t.Fatalf("large typed table cache batch = %d, want disabled under byte budget", got)
+	}
+	if got := newTableCacheBatchSizeForHints(4096, 0, runtime.ArrayBool); got <= newTableCacheBatchSizeForHints(4096, 0, runtime.ArrayFloat) {
+		t.Fatalf("bool batch should exceed float batch for same hint, got bool=%d float=%d",
+			got, newTableCacheBatchSizeForHints(4096, 0, runtime.ArrayFloat))
 	}
 }

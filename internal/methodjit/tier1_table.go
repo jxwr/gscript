@@ -303,7 +303,10 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	asm.CMPreg(jit.X1, jit.X2)
 	asm.BCond(jit.CondGE, slowLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // X2 = array data pointer
-	asm.LDRreg(jit.X0, jit.X2, jit.X1)         // X0 = array[key] (NaN-boxed Value)
+	if feedbackEnabled {
+		emitBaselineFeedbackDenseMatrix(asm, pc, jit.X0, "mixed")
+	}
+	asm.LDRreg(jit.X0, jit.X2, jit.X1) // X0 = array[key] (NaN-boxed Value)
 	storeSlot(asm, a, jit.X0)
 	if feedbackEnabled {
 		emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "mixed") // includes FBTable for table-of-tables rows
@@ -786,6 +789,54 @@ func emitBaselineFeedbackFixedAt(asm *jit.Assembler, pc int, fieldOff int, expec
 		asm.Label(fbSetLabel)
 		asm.MOVimm16(jit.X6, expectedFB)
 		asm.STRB(jit.X6, jit.X5, 0)
+	}
+	asm.Label(fbSkipLabel)
+}
+
+// emitBaselineFeedbackDenseMatrix records whether a GETTABLE receiver had a
+// DenseMatrix descriptor. It mirrors TableKeyFeedback.ObserveDenseMatrix using
+// only scratch registers X5-X7 and leaves tblPtrReg untouched.
+func emitBaselineFeedbackDenseMatrix(asm *jit.Assembler, pc int, tblPtrReg jit.Reg, suffix string) {
+	fbSkipLabel := nextLabel("fb_dm_skip_" + suffix)
+	fbSetLabel := nextLabel("fb_dm_set_" + suffix)
+	fbObservedLabel := nextLabel("fb_dm_observed_" + suffix)
+
+	asm.LDR(jit.X5, mRegCtx, execCtxOffBaselineTableKeyFeedbackPtr)
+	asm.CBZ(jit.X5, fbSkipLabel)
+
+	asm.MOVimm16(jit.X7, uint16(vm.FBDenseMatrixNo))
+	asm.LDRW(jit.X6, tblPtrReg, jit.TableOffDMStride)
+	asm.CBZ(jit.X6, fbObservedLabel)
+	asm.MOVimm16(jit.X7, uint16(vm.FBDenseMatrixYes))
+	asm.Label(fbObservedLabel)
+
+	fbOff := pc*tableKeyFeedbackSize + tableKeyFeedbackDenseMatrixOff
+	if fbOff < 4096 {
+		asm.LDRB(jit.X6, jit.X5, fbOff)
+		asm.CMPreg(jit.X6, jit.X7)
+		asm.BCond(jit.CondEQ, fbSkipLabel)
+		asm.CMPimm(jit.X6, uint16(vm.FBDenseMatrixPolymorphic))
+		asm.BCond(jit.CondEQ, fbSkipLabel)
+		asm.CBZ(jit.X6, fbSetLabel)
+		asm.MOVimm16(jit.X6, uint16(vm.FBDenseMatrixPolymorphic))
+		asm.STRB(jit.X6, jit.X5, fbOff)
+		asm.B(fbSkipLabel)
+		asm.Label(fbSetLabel)
+		asm.STRB(jit.X7, jit.X5, fbOff)
+	} else {
+		asm.LoadImm64(jit.X6, int64(fbOff))
+		asm.ADDreg(jit.X5, jit.X5, jit.X6)
+		asm.LDRB(jit.X6, jit.X5, 0)
+		asm.CMPreg(jit.X6, jit.X7)
+		asm.BCond(jit.CondEQ, fbSkipLabel)
+		asm.CMPimm(jit.X6, uint16(vm.FBDenseMatrixPolymorphic))
+		asm.BCond(jit.CondEQ, fbSkipLabel)
+		asm.CBZ(jit.X6, fbSetLabel)
+		asm.MOVimm16(jit.X6, uint16(vm.FBDenseMatrixPolymorphic))
+		asm.STRB(jit.X6, jit.X5, 0)
+		asm.B(fbSkipLabel)
+		asm.Label(fbSetLabel)
+		asm.STRB(jit.X7, jit.X5, 0)
 	}
 	asm.Label(fbSkipLabel)
 }

@@ -76,14 +76,15 @@ type ExecContext struct {
 	BaselineB  int64 // decoded B field (or Bx for ABx format)
 	BaselineC  int64 // decoded C field
 	// Baseline JIT native table access support
-	BaselineFieldCache      uintptr // pointer to proto.FieldCache[0] (nil if not yet allocated)
-	BaselineClosurePtr      uintptr // pointer to *vm.Closure (for GETUPVAL/SETUPVAL)
-	BaselineReturnValue     uint64  // NaN-boxed return value (set by RETURN, read by Execute)
-	BaselineGlobalCache     uintptr // pointer to BaselineFunc.GlobalValCache[0] (for native GETGLOBAL)
-	BaselineGlobalGenPtr    uintptr // pointer to engine.globalCacheGen (for version check)
-	BaselineGlobalCachedGen uint64  // engine.globalCacheGen at time bf's cache was populated
-	BaselineCallCache       uintptr // pointer to BaselineFunc.CallCache[0] (for native CALL)
-	BaselineFeedbackPtr     uintptr // pointer to proto.Feedback[0] (for Tier 1 type feedback collection)
+	BaselineFieldCache          uintptr // pointer to proto.FieldCache[0] (nil if not yet allocated)
+	BaselineClosurePtr          uintptr // pointer to *vm.Closure (for GETUPVAL/SETUPVAL)
+	BaselineReturnValue         uint64  // NaN-boxed return value (set by RETURN, read by Execute)
+	BaselineGlobalCache         uintptr // pointer to BaselineFunc.GlobalValCache[0] (for native GETGLOBAL)
+	BaselineGlobalGenPtr        uintptr // pointer to engine.globalCacheGen (for version check)
+	BaselineGlobalCachedGen     uint64  // engine.globalCacheGen at time bf's cache was populated
+	BaselineCallCache           uintptr // pointer to BaselineFunc.CallCache[0] (for native CALL)
+	BaselineFeedbackPtr         uintptr // pointer to proto.Feedback[0] (for Tier 1 type feedback collection)
+	BaselineTableKeyFeedbackPtr uintptr // pointer to proto.TableKeyFeedback[0] (for Tier 1 table-shape feedback)
 	// Caller context fields: used for JIT-to-JIT calls to save/restore caller state.
 	CallerRegs      uintptr // caller's VM register base pointer (saved before callee entry)
 	CallerConstants uintptr // caller's constants pointer (saved before callee entry)
@@ -252,19 +253,20 @@ var (
 	execCtxOffOpExitAux    = int(unsafe.Offsetof(ExecContext{}.OpExitAux))
 	execCtxOffOpExitID     = int(unsafe.Offsetof(ExecContext{}.OpExitID))
 	// Baseline JIT fields
-	execCtxOffBaselineOp              = int(unsafe.Offsetof(ExecContext{}.BaselineOp))
-	execCtxOffBaselinePC              = int(unsafe.Offsetof(ExecContext{}.BaselinePC))
-	execCtxOffBaselineA               = int(unsafe.Offsetof(ExecContext{}.BaselineA))
-	execCtxOffBaselineB               = int(unsafe.Offsetof(ExecContext{}.BaselineB))
-	execCtxOffBaselineC               = int(unsafe.Offsetof(ExecContext{}.BaselineC))
-	execCtxOffBaselineFieldCache      = int(unsafe.Offsetof(ExecContext{}.BaselineFieldCache))
-	execCtxOffBaselineClosurePtr      = int(unsafe.Offsetof(ExecContext{}.BaselineClosurePtr))
-	execCtxOffBaselineReturnValue     = int(unsafe.Offsetof(ExecContext{}.BaselineReturnValue))
-	execCtxOffBaselineGlobalCache     = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalCache))
-	execCtxOffBaselineGlobalGenPtr    = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalGenPtr))
-	execCtxOffBaselineGlobalCachedGen = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalCachedGen))
-	execCtxOffBaselineCallCache       = int(unsafe.Offsetof(ExecContext{}.BaselineCallCache))
-	execCtxOffBaselineFeedbackPtr     = int(unsafe.Offsetof(ExecContext{}.BaselineFeedbackPtr))
+	execCtxOffBaselineOp                  = int(unsafe.Offsetof(ExecContext{}.BaselineOp))
+	execCtxOffBaselinePC                  = int(unsafe.Offsetof(ExecContext{}.BaselinePC))
+	execCtxOffBaselineA                   = int(unsafe.Offsetof(ExecContext{}.BaselineA))
+	execCtxOffBaselineB                   = int(unsafe.Offsetof(ExecContext{}.BaselineB))
+	execCtxOffBaselineC                   = int(unsafe.Offsetof(ExecContext{}.BaselineC))
+	execCtxOffBaselineFieldCache          = int(unsafe.Offsetof(ExecContext{}.BaselineFieldCache))
+	execCtxOffBaselineClosurePtr          = int(unsafe.Offsetof(ExecContext{}.BaselineClosurePtr))
+	execCtxOffBaselineReturnValue         = int(unsafe.Offsetof(ExecContext{}.BaselineReturnValue))
+	execCtxOffBaselineGlobalCache         = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalCache))
+	execCtxOffBaselineGlobalGenPtr        = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalGenPtr))
+	execCtxOffBaselineGlobalCachedGen     = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalCachedGen))
+	execCtxOffBaselineCallCache           = int(unsafe.Offsetof(ExecContext{}.BaselineCallCache))
+	execCtxOffBaselineFeedbackPtr         = int(unsafe.Offsetof(ExecContext{}.BaselineFeedbackPtr))
+	execCtxOffBaselineTableKeyFeedbackPtr = int(unsafe.Offsetof(ExecContext{}.BaselineTableKeyFeedbackPtr))
 	// Caller context offsets
 	execCtxOffCallerRegs      = int(unsafe.Offsetof(ExecContext{}.CallerRegs))
 	execCtxOffCallerConstants = int(unsafe.Offsetof(ExecContext{}.CallerConstants))
@@ -320,6 +322,11 @@ var (
 	execCtxOffDeoptInstrID          = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
 	execCtxOffResumeNumericPass     = int(unsafe.Offsetof(ExecContext{}.ResumeNumericPass))
 	execCtxOffExitResumeCheckShadow = int(unsafe.Offsetof(ExecContext{}.ExitResumeCheckShadow))
+)
+
+var (
+	tableKeyFeedbackSize           = int(unsafe.Sizeof(vm.TableKeyFeedback{}))
+	tableKeyFeedbackDenseMatrixOff = int(unsafe.Offsetof(vm.TableKeyFeedback{}.DenseMatrix))
 )
 
 // CompiledFunction holds the generated native code for a function.

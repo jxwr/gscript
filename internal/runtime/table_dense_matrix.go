@@ -24,6 +24,7 @@ package runtime
 import "unsafe"
 
 const autoDenseMatrixMinStride = 16
+const autoDenseMatrixInitialBackingBytes = 2 << 20
 
 // AutoDenseMatrixMinStride is the public mirror of the runtime auto-adoption
 // gate used by method-JIT guards.
@@ -107,7 +108,7 @@ func (t *Table) observeDenseMatrixRowStore(key int64, val Value, oldLen int64) {
 		if key != 0 || len(t.array) != 1 {
 			return
 		}
-		rowsCap := typedArrayCapFor(int(key) + 1)
+		rowsCap := t.autoDenseMatrixInitialRowsCap(int(key)+1, stride)
 		backing := make([]float64, (int(key)+1)*stride, rowsCap*stride)
 		t.setDenseMatrixMeta(backing, stride)
 	} else {
@@ -133,6 +134,28 @@ func (t *Table) observeDenseMatrixRowStore(key int64, val Value, oldLen int64) {
 		row.dmMeta.parent.clearDenseMatrixMeta()
 	}
 	row.dmMeta = t.dmMeta
+}
+
+func (t *Table) autoDenseMatrixInitialRowsCap(rows, stride int) int {
+	rowsCap := typedArrayCapFor(rows)
+	if t == nil || stride <= 0 {
+		return rowsCap
+	}
+	outerCap := cap(t.array)
+	if outerCap <= rowsCap {
+		return rowsCap
+	}
+	maxByBytes := autoDenseMatrixInitialBackingBytes / (stride * 8)
+	if maxByBytes < rowsCap {
+		maxByBytes = rowsCap
+	}
+	if outerCap > maxByBytes {
+		outerCap = maxByBytes
+	}
+	if outerCap > rowsCap {
+		rowsCap = outerCap
+	}
+	return rowsCap
 }
 
 func (t *Table) ensureDenseMatrixRows(rows int) {

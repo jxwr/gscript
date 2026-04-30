@@ -876,7 +876,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						fb.Right.Observe(key.Type())
 						fb.Result.Observe(vm.regs[base+a].Type())
 						if frame.closure.Proto.TableKeyFeedback != nil {
-							frame.closure.Proto.TableKeyFeedback[frame.pc-1].ObserveIntKey(key)
+							tkf := &frame.closure.Proto.TableKeyFeedback[frame.pc-1]
+							tkf.ObserveIntKey(key)
+							tkf.ObserveDenseMatrix(tbl)
 						}
 					}
 					break
@@ -893,7 +895,11 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				fb.Right.Observe(key.Type())
 				fb.Result.Observe(val.Type())
 				if frame.closure.Proto.TableKeyFeedback != nil {
-					frame.closure.Proto.TableKeyFeedback[frame.pc-1].ObserveIntKey(key)
+					tkf := &frame.closure.Proto.TableKeyFeedback[frame.pc-1]
+					tkf.ObserveIntKey(key)
+					if tableVal.IsTable() {
+						tkf.ObserveDenseMatrix(tableVal.Table())
+					}
 				}
 			}
 

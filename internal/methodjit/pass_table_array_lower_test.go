@@ -433,6 +433,51 @@ func TestTableArrayNestedLoad_FusesSameBlockMixedRowFloat(t *testing.T) {
 	}
 }
 
+func TestDenseMatrixNestedLoadLowerUsesDenseFeedback(t *testing.T) {
+	fn := &Function{
+		Proto: &vm.FuncProto{
+			Name:             "dense_matrix_nested_load_lower",
+			Code:             make([]uint32, 4),
+			TableKeyFeedback: vm.NewTableKeyFeedbackVector(4),
+		},
+		NumRegs: 4,
+	}
+	fn.Proto.TableKeyFeedback[2].DenseMatrix = vm.FBDenseMatrixYes
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	rows := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	outerData := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	outerLen := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	outerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 3, Block: b}
+	innerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 4, Block: b}
+	load := &Instr{
+		ID:        fn.newValueID(),
+		Op:        OpTableArrayNestedLoad,
+		Type:      TypeFloat,
+		Aux:       int64(vm.FBKindFloat),
+		Args:      []*Value{rows.Value(), outerData.Value(), outerLen.Value(), outerKey.Value(), innerKey.Value()},
+		Block:     b,
+		HasSource: true,
+		SourcePC:  2,
+	}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{load.Value()}, Block: b}
+	b.Instrs = []*Instr{rows, outerData, outerLen, outerKey, innerKey, load, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = DenseMatrixNestedLoadLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := countOps(fn)
+	if counts[OpMatrixFlat] != 1 || counts[OpMatrixStride] != 1 || counts[OpMatrixLoadFAt] != 1 {
+		t.Fatalf("expected dense nested load lowering, counts=%v\n%s", counts, Print(fn))
+	}
+	if counts[OpTableArrayNestedLoad] != 0 {
+		t.Fatalf("nested load should be replaced, counts=%v\n%s", counts, Print(fn))
+	}
+}
+
 func TestTableArrayNestedLoad_DoesNotFuseCrossBlockRowResidency(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_nested_cross_block"}, NumRegs: 4}
 	entry := newBlock(0)

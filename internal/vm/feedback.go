@@ -69,6 +69,14 @@ const (
 	FBKindPolymorphic uint8 = 0xFF
 )
 
+// DenseMatrix feedback encoding for TableKeyFeedback.DenseMatrix.
+const (
+	FBDenseMatrixUnobserved  uint8 = 0
+	FBDenseMatrixNo          uint8 = 1
+	FBDenseMatrixYes         uint8 = 2
+	FBDenseMatrixPolymorphic uint8 = 0xFF
+)
+
 // TypeFeedback records observed types for one bytecode instruction.
 // For arithmetic/comparison: Left = B operand, Right = C operand, Result = A destination.
 // For table access: Left = table type, Right = key type, Result = value type.
@@ -84,8 +92,9 @@ type TypeFeedback struct {
 // It intentionally lives outside TypeFeedback so the 4-byte type/kind feedback
 // stays compact for the hot arithmetic and guard-specialization path.
 type TableKeyFeedback struct {
-	MaxIntKey uint32
-	HasIntKey bool
+	MaxIntKey   uint32
+	HasIntKey   bool
+	DenseMatrix uint8
 }
 
 // ObserveKind records an array kind observation. Monotonic like Observe:
@@ -120,6 +129,26 @@ func (tk *TableKeyFeedback) ObserveIntKey(key runtime.Value) {
 	if !tk.HasIntKey || u > tk.MaxIntKey {
 		tk.MaxIntKey = u
 		tk.HasIntKey = true
+	}
+}
+
+// ObserveDenseMatrix records whether a table access receiver is a DenseMatrix.
+// It stays monomorphic only while every observed receiver agrees.
+func (tk *TableKeyFeedback) ObserveDenseMatrix(tbl *runtime.Table) {
+	observed := FBDenseMatrixNo
+	if tbl != nil && tbl.DMStride() > 0 {
+		observed = FBDenseMatrixYes
+	}
+	cur := tk.DenseMatrix
+	if cur == FBDenseMatrixPolymorphic {
+		return
+	}
+	if cur == FBDenseMatrixUnobserved {
+		tk.DenseMatrix = observed
+		return
+	}
+	if cur != observed {
+		tk.DenseMatrix = FBDenseMatrixPolymorphic
 	}
 }
 

@@ -13,6 +13,8 @@ import (
 const (
 	tier2NewTableCacheMaxArrayHint = tier2FeedbackOuterLoopArrayHint
 	newObject2CacheBatch           = 32
+	newTableCacheMaxBatch          = 128
+	newTableCacheTargetBytes       = 1 << 20
 )
 
 type newTableCacheEntry struct {
@@ -57,13 +59,22 @@ func newTableCacheBatchSizeForHints(arrayHint int64, hashHint int, kind runtime.
 	if arrayHint <= 0 || hashHint != 0 || kind == runtime.ArrayMixed || arrayHint > tier2NewTableCacheMaxArrayHint {
 		return 0
 	}
-	if arrayHint <= 1024 {
-		return 32
+	elemBytes := int64(8)
+	if kind == runtime.ArrayBool {
+		elemBytes = 1
 	}
-	if arrayHint <= 4096 {
-		return 8
+	bytesPerTable := (arrayHint + 1) * elemBytes
+	if bytesPerTable <= 0 {
+		return 0
 	}
-	return 4
+	batch := int(newTableCacheTargetBytes / bytesPerTable)
+	if batch > newTableCacheMaxBatch {
+		batch = newTableCacheMaxBatch
+	}
+	if batch <= 1 {
+		return 0
+	}
+	return batch
 }
 
 func fixedTableCtor2ForInstr(proto *vm.FuncProto, instr *Instr) (*runtime.SmallTableCtor2, bool) {

@@ -31,6 +31,8 @@
 
 package methodjit
 
+import "github.com/gscript/gscript/internal/vm"
+
 // MatrixLowerPass rewrites OpMatrixGetF / OpMatrixSetF into the split
 // form. Returns the modified function. Only walks existing
 // instructions; new instructions are appended via splice.
@@ -100,6 +102,59 @@ func MatrixLowerPass(fn *Function) (*Function, error) {
 		block.Instrs = newInstrs
 	}
 	return fn, nil
+}
+
+// DenseMatrixNestedLoadLowerPass rewrites feedback-proven DenseMatrix nested
+// table loads into the LICM-friendly matrix primitive sequence. The original
+// TableNestedLoad remains the default for ordinary table-of-rows sites.
+func DenseMatrixNestedLoadLowerPass(fn *Function) (*Function, error) {
+	if fn == nil {
+		return fn, nil
+	}
+	for _, block := range fn.Blocks {
+		needsRewrite := false
+		for _, instr := range block.Instrs {
+			if denseMatrixNestedLoadLowerable(fn, instr) {
+				needsRewrite = true
+				break
+			}
+		}
+		if !needsRewrite {
+			continue
+		}
+
+		newInstrs := make([]*Instr, 0, len(block.Instrs)+2*len(block.Instrs))
+		for _, instr := range block.Instrs {
+			if !denseMatrixNestedLoadLowerable(fn, instr) {
+				newInstrs = append(newInstrs, instr)
+				continue
+			}
+			m, i, j := instr.Args[0], instr.Args[3], instr.Args[4]
+			flat := emitIRInstr(fn, block, OpMatrixFlat, TypeInt, []*Value{m}, 0, 0)
+			stride := emitIRInstr(fn, block, OpMatrixStride, TypeInt, []*Value{m}, 0, 0)
+			flat.copySourceFrom(instr)
+			stride.copySourceFrom(instr)
+			newInstrs = append(newInstrs, flat, stride)
+			instr.Op = OpMatrixLoadFAt
+			instr.Args = []*Value{flat.Value(), stride.Value(), i, j}
+			instr.Aux = 0
+			instr.Aux2 = 0
+			newInstrs = append(newInstrs, instr)
+			functionRemarks(fn).Add("DenseMatrixNestedLoadLower", "changed", block.ID, instr.ID, instr.Op,
+				"lowered dense table nested load to MatrixLoadFAt")
+		}
+		block.Instrs = newInstrs
+	}
+	return fn, nil
+}
+
+func denseMatrixNestedLoadLowerable(fn *Function, instr *Instr) bool {
+	if fn == nil || fn.Proto == nil || fn.Proto.TableKeyFeedback == nil || instr == nil ||
+		instr.Op != OpTableArrayNestedLoad || instr.Type != TypeFloat || len(instr.Args) < 5 ||
+		!instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.TableKeyFeedback) {
+		return false
+	}
+	return fn.Proto.TableKeyFeedback[instr.SourcePC].DenseMatrix == vm.FBDenseMatrixYes
 }
 
 // emitIRInstr allocates a new *Instr with a fresh SSA id, sets its Block,
