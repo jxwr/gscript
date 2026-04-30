@@ -209,6 +209,21 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		})
 		return nil
 	}
+	if vm.IsSieveKernelProto(proto) {
+		proto.JITDisabled = true
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "whole_call_sieve_kernel",
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "whole_call_sieve_kernel",
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "whole_call_sieve_kernel",
+			"target": "interpreter",
+		})
+		return nil
+	}
 
 	if tm.hasLargeNBodyAdvanceDriverLoop(proto) {
 		proto.JITDisabled = true
@@ -1049,6 +1064,9 @@ func (tm *TieringManager) isTier0OnlyCallee(callee *vm.FuncProto) bool {
 		return false
 	}
 	if callee.JITDisabled {
+		return true
+	}
+	if vm.IsSieveKernelProto(callee) {
 		return true
 	}
 	profile := tm.getProfile(callee)

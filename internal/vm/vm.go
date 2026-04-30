@@ -1443,16 +1443,14 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			if cl, ok := closureFromValue(fnVal); ok {
 				if b != 0 && (nArgs == 1 || nArgs == 3) {
 					args := vm.regs[base+a+1 : base+a+1+nArgs]
-					if nArgs == 3 {
-						handled, err := vm.tryValueWholeCallKernel(cl, args, c, base+a)
-						if handled {
-							if err != nil {
-								return nil, wrapLineErr(frame, err)
-							}
-							break
+					handled, err := vm.tryValueWholeCallKernel(cl, args, c, base+a)
+					if handled {
+						if err != nil {
+							return nil, wrapLineErr(frame, err)
 						}
+						break
 					}
-					handled, err := vm.tryWholeCallKernel(cl, args, c, base+a)
+					handled, err = vm.tryWholeCallKernel(cl, args, c, base+a)
 					if handled {
 						if err != nil {
 							return nil, wrapLineErr(frame, err)

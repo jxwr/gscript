@@ -12,6 +12,9 @@ func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, 
 }
 
 func (vm *VM) tryRunValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if handled, results, err := vm.tryRunSieveWholeCallKernel(cl, args); handled || err != nil {
+		return handled, results, err
+	}
 	if handled, results, err := vm.tryRunMatmulWholeCallKernel(cl, args); handled || err != nil {
 		return handled, results, err
 	}
