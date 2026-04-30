@@ -1221,6 +1221,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				return nil, err
 			}
 			vm.regs[base+a] = r
+			if frame.closure.Proto.Feedback != nil {
+				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				fb.Result.Observe(r.Type())
+			}
 
 		case OP_CONCAT:
 			a := DecodeA(inst)

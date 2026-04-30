@@ -48,6 +48,12 @@ func (e *BaselineJITEngine) handleLen(ctx *ExecContext, regs []runtime.Value, ba
 	} else {
 		regs[absA] = runtime.IntValue(0)
 	}
+	if proto != nil && proto.Feedback != nil {
+		pc := int(ctx.BaselinePC) - 1
+		if pc >= 0 && pc < len(proto.Feedback) {
+			proto.Feedback[pc].Result.Observe(regs[absA].Type())
+		}
+	}
 	return nil
 }
 

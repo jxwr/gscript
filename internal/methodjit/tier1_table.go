@@ -565,6 +565,7 @@ func emitBaselineLen(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X1, jit.X0, 8) // Go string header length.
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X1, mRegTagInt)
 	storeSlot(asm, a, jit.X0)
+	emitBaselineFeedbackResult(asm, pc, 1, "len_string")
 	asm.B(doneLabel)
 
 	asm.Label(slowLabel)

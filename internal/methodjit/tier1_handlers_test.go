@@ -113,3 +113,36 @@ func TestHandleGetTable_RecordsFeedback(t *testing.T) {
 		t.Errorf("expected FBFloat feedback at PC 0, got %d", proto.Feedback[0].Result)
 	}
 }
+
+// TestHandleLen_RecordsFeedback verifies that OP_LEN exits record int result
+// feedback so Tier 2 can guard and specialize loop bounds fed by #table/#string.
+func TestHandleLen_RecordsFeedback(t *testing.T) {
+	proto := &vm.FuncProto{
+		Code:     []uint32{vm.EncodeABC(vm.OP_LEN, 0, 1, 0)},
+		MaxStack: 4,
+	}
+	proto.EnsureFeedback()
+
+	tbl := runtime.NewTable()
+	tbl.RawSetInt(1, runtime.IntValue(10))
+	tbl.RawSetInt(2, runtime.IntValue(20))
+
+	regs := make([]runtime.Value, 4)
+	regs[1] = runtime.TableValue(tbl)
+	ctx := &ExecContext{
+		BaselineA:  0,
+		BaselineB:  1,
+		BaselinePC: 1,
+	}
+
+	engine := &BaselineJITEngine{}
+	if err := engine.handleLen(ctx, regs, 0, proto); err != nil {
+		t.Fatalf("handleLen returned error: %v", err)
+	}
+	if !regs[0].IsInt() {
+		t.Fatalf("expected int result in R[0], got type %v", regs[0].Type())
+	}
+	if proto.Feedback[0].Result != vm.FBInt {
+		t.Fatalf("expected FBInt feedback at PC 0, got %d", proto.Feedback[0].Result)
+	}
+}

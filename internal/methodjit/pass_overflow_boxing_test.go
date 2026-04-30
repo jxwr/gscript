@@ -82,6 +82,52 @@ func f(n) {
 	}
 }
 
+func TestOverflowBoxing_KeepsPreincrementGuardedInductionRaw(t *testing.T) {
+	fn := runOverflowBoxingPipelineForTest(t, `
+func f(n) {
+    hits := 0
+    for i := 1; i <= n; i++ {
+        for j := i + 1; j <= n; j++ {
+            hits = hits + 1
+        }
+    }
+    return hits
+}
+`)
+
+	foundPreincrementGuard := false
+	for _, block := range fn.Blocks {
+		cond := loopHeaderBranchCond(block)
+		if cond == nil || len(cond.Args) == 0 {
+			continue
+		}
+		for _, phi := range block.Instrs {
+			if phi.Op != OpPhi {
+				break
+			}
+			for _, arg := range phi.Args {
+				if arg == nil || arg.Def == nil || len(arg.Def.Args) < 2 {
+					continue
+				}
+				selfUpdate := (arg.Def.Args[0] != nil && arg.Def.Args[0].ID == phi.ID) ||
+					(arg.Def.Args[1] != nil && arg.Def.Args[1].ID == phi.ID)
+				if !selfUpdate || cond.Args[0] == nil || cond.Args[0].ID != arg.Def.ID {
+					continue
+				}
+				switch arg.Def.Op {
+				case OpAddInt:
+					foundPreincrementGuard = true
+				case OpAdd:
+					t.Fatalf("preincrement-guarded induction was boxed\nIR:\n%s", Print(fn))
+				}
+			}
+		}
+	}
+	if !foundPreincrementGuard {
+		t.Fatalf("expected raw preincrement-guarded induction\nIR:\n%s", Print(fn))
+	}
+}
+
 func TestOverflowBoxing_DetectsShiftAddOverflowVersion(t *testing.T) {
 	fn := runOverflowBoxingPipelineForTest(t, `
 func fib_iter(n) {

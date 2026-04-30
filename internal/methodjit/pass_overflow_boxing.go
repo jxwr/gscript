@@ -192,11 +192,14 @@ func collectOverflowCheckedLinearInductionDeps(fn *Function) map[int]bool {
 			if phi.Op != OpPhi {
 				break
 			}
-			if !phi.Type.isIntegerLike() || !guardBoundsPhi(cond, phi) {
+			if !phi.Type.isIntegerLike() {
 				continue
 			}
 			update, init, ok := linearInductionUpdate(phi, li.headerBlocks[header.ID])
 			if !ok {
+				continue
+			}
+			if !guardBoundsLinearInduction(cond, phi, update) {
 				continue
 			}
 			step := linearInductionStepValue(update, phi.ID)
@@ -221,6 +224,21 @@ func guardBoundsPhi(cond *Instr, phi *Instr) bool {
 		return false
 	}
 	return cond.Args[0] != nil && cond.Args[0].ID == phi.ID
+}
+
+func guardBoundsLinearInduction(cond *Instr, phi *Instr, update *Instr) bool {
+	if guardBoundsPhi(cond, phi) {
+		return true
+	}
+	if cond == nil || update == nil || len(cond.Args) < 2 {
+		return false
+	}
+	switch cond.Op {
+	case OpLe, OpLeInt, OpLt, OpLtInt:
+	default:
+		return false
+	}
+	return cond.Args[0] != nil && cond.Args[0].ID == update.ID
 }
 
 func linearInductionUpdate(phi *Instr, body map[int]bool) (update *Instr, init *Value, ok bool) {

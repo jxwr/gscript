@@ -51,6 +51,54 @@ func TestTypeSpec_IntAdd(t *testing.T) {
 	}
 }
 
+func TestTypeSpec_LenFeedbackSpecializesLoopBound(t *testing.T) {
+	proto := compileFunction(t, `
+func f(t) {
+    n := #t
+    i := 0
+    return i <= n
+}
+`)
+	lenPC := -1
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) == vm.OP_LEN {
+			lenPC = pc
+			break
+		}
+	}
+	if lenPC < 0 {
+		t.Fatal("compiled function did not contain OP_LEN")
+	}
+	proto.EnsureFeedback()
+	proto.Feedback[lenPC].Result = vm.FBInt
+
+	fn := BuildGraph(proto)
+	out, _, err := RunTier2Pipeline(fn, nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+
+	hasLenIntGuard := false
+	hasLeInt := false
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpGuardType && instr.Aux == int64(TypeInt) && len(instr.Args) == 1 &&
+				instr.Args[0].Def != nil && instr.Args[0].Def.Op == OpLen {
+				hasLenIntGuard = true
+			}
+			if instr.Op == OpLeInt {
+				hasLeInt = true
+			}
+		}
+	}
+	if !hasLenIntGuard {
+		t.Fatal("expected OP_LEN feedback to produce an int GuardType")
+	}
+	if !hasLeInt {
+		t.Fatal("expected length-fed comparison to specialize to LeInt")
+	}
+}
+
 // TestTypeSpec_ForLoop verifies that a for-loop sum gets its arithmetic
 // and comparison specialized to int.
 func TestTypeSpec_ForLoop(t *testing.T) {

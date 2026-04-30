@@ -398,7 +398,14 @@ func (b *graphBuilder) emitBlocks() {
 				bOp := vm.DecodeB(inst)
 				val := b.readVariable(bOp, block)
 				instr := b.emit(block, OpLen, TypeAny, []*Value{val}, 0, 0)
-				b.writeVariable(a, block, instr.Value())
+				result := instr.Value()
+				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
+					if irType, ok := feedbackToIRType(b.proto.Feedback[pc].Result); ok {
+						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
+						result = guard.Value()
+					}
+				}
+				b.writeVariable(a, block, result)
 
 			case vm.OP_CONCAT:
 				a := vm.DecodeA(inst)
