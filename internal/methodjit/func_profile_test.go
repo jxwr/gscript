@@ -599,8 +599,8 @@ func checkTree(node) {
 	proto := compileProto(t, src)
 	checkProto := proto.Protos[0]
 	checkProto.EnsureFeedback()
-	checkProto.Feedback[1].Result = vm.FBTable
-	checkProto.Feedback[5].Result = vm.FBTable
+	checkProto.Feedback[8].Result = vm.FBTable
+	checkProto.Feedback[12].Result = vm.FBTable
 	p := analyzeFuncProfile(checkProto)
 
 	if abi := AnalyzeTypedSelfABI(checkProto); !abi.Eligible {
@@ -624,8 +624,8 @@ func walk(node) {
 	proto := compileProto(t, src)
 	walkProto := proto.Protos[0]
 	walkProto.EnsureFeedback()
-	walkProto.Feedback[1].Result = vm.FBTable
-	walkProto.Feedback[5].Result = vm.FBTable
+	walkProto.Feedback[7].Result = vm.FBTable
+	walkProto.Feedback[10].Result = vm.FBTable
 	p := analyzeFuncProfile(walkProto)
 
 	if abi := AnalyzeTypedSelfABI(walkProto); !abi.Eligible {

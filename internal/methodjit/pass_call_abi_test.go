@@ -282,7 +282,7 @@ func TestCallABIAnnotate_NegativeCases(t *testing.T) {
 		src    string
 		caller string
 		callee string
-		mutate func(*Instr)
+		mutate func(*Function, *Instr)
 	}{
 		{
 			name: "unresolved",
@@ -311,8 +311,26 @@ func caller(x) {
 }`,
 			caller: "caller",
 			callee: "inc",
-			mutate: func(call *Instr) {
+			mutate: func(_ *Function, call *Instr) {
 				call.Aux2 = 3
+			},
+		},
+		{
+			name: "variable result call",
+			src: `func inc(n) { return n + 1 }
+func caller(x) {
+	y := inc(x)
+	return y + 1
+}`,
+			caller: "caller",
+			callee: "inc",
+			mutate: func(fn *Function, call *Instr) {
+				call.Aux2 = 0
+				if !call.HasSource || call.SourcePC < 0 || call.SourcePC >= len(fn.Proto.Code) {
+					return
+				}
+				inst := fn.Proto.Code[call.SourcePC]
+				fn.Proto.Code[call.SourcePC] = vm.EncodeABC(vm.OP_CALL, vm.DecodeA(inst), vm.DecodeB(inst), 0)
 			},
 		},
 	}
@@ -341,7 +359,7 @@ func caller(x) {
 			}
 			call := firstCall(t, fn)
 			if tt.mutate != nil {
-				tt.mutate(call)
+				tt.mutate(fn, call)
 			}
 			fn = AnnotateCallABIs(fn, CallABIAnnotationConfig{Globals: globals})
 			if len(fn.CallABIs) != 0 {
@@ -351,6 +369,21 @@ func caller(x) {
 				t.Fatalf("negative call Type=%s, want non-int", call.Type)
 			}
 		})
+	}
+}
+
+func TestCallABIResultShapeHelpers_SplitIRAndExactSourceSemantics(t *testing.T) {
+	if got := callResultCountFromAux2(0); got != 1 {
+		t.Fatalf("IR synthetic result count for Aux2=0 = %d, want 1", got)
+	}
+	if got, ok := callExactFixedResultCountFromC(0); ok || got != 0 {
+		t.Fatalf("source CALL C=0 exact count = (%d,%v), want rejected", got, ok)
+	}
+	if got, ok := callExactFixedResultCountFromC(1); !ok || got != 0 {
+		t.Fatalf("source CALL C=1 exact count = (%d,%v), want zero results", got, ok)
+	}
+	if got, ok := callExactFixedResultCountFromC(2); !ok || got != 1 {
+		t.Fatalf("source CALL C=2 exact count = (%d,%v), want one result", got, ok)
 	}
 }
 

@@ -1299,6 +1299,9 @@ func (ec *emitContext) emitTypedSelfReturnEpilogue() {
 	doneLabel := ec.uniqueLabel("typed_self_return_done")
 
 	switch ec.typedSelfABI.Return {
+	case SpecializedABIReturnNone:
+		// Zero-result typed self calls return only status; X0 is ignored by
+		// the caller and CALL C=1 must not fabricate a result slot.
 	case SpecializedABIReturnRawInt:
 		emitCheckIsInt(asm, jit.X0, jit.X1)
 		asm.BCond(jit.CondNE, failLabel)

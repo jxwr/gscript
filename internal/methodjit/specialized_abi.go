@@ -2,7 +2,11 @@
 
 package methodjit
 
-import "github.com/gscript/gscript/internal/vm"
+import (
+	"fmt"
+
+	"github.com/gscript/gscript/internal/vm"
+)
 
 // SpecializedABIKind names the entry/return convention a function can use.
 // The analysis result is consumed by codegen to decide whether to emit and use
@@ -316,6 +320,7 @@ func AnalyzeTypedSelfABI(proto *vm.FuncProto) TypedSelfABI {
 	for pc, inst := range proto.Code {
 		if pc > 0 && branchTargets[pc] {
 			typedSelfResetSlots(slots, params)
+			typedSelfApplyBranchFacts(slots, typedSelfBranchFacts(proto, params, pc))
 		}
 
 		op := vm.DecodeOp(inst)
@@ -349,18 +354,41 @@ func AnalyzeTypedSelfABI(proto *vm.FuncProto) TypedSelfABI {
 		case vm.OP_NEWTABLE, vm.OP_NEWOBJECT2:
 			setSpecializedSlot(slots, a, specializedSlotRawTable)
 			usesTableABI = true
-		case vm.OP_GETFIELD, vm.OP_GETTABLE:
+		case vm.OP_GETFIELD:
 			if !typedSelfSlotIsTable(getSpecializedSlot(slots, b)) {
 				return typedSelfABIReject("non-table field receiver")
 			}
 			if typedSelfFeedbackResultIsTable(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawTable)
+			} else if typedSelfFeedbackResultIsInt(proto, pc) {
+				setSpecializedSlot(slots, a, specializedSlotRawInt)
 			} else {
 				setSpecializedSlot(slots, a, specializedSlotUnknown)
 			}
-		case vm.OP_SETFIELD, vm.OP_SETTABLE:
-			if len(slots) <= b || !typedSelfSlotIsTable(getSpecializedSlot(slots, b)) {
+		case vm.OP_GETTABLE:
+			if !typedSelfSlotIsTable(getSpecializedSlot(slots, b)) {
+				return typedSelfABIReject(fmt.Sprintf("non-table index receiver at pc %d", pc))
+			}
+			if !typedSelfRKIsInt(slots, proto, c) {
+				return typedSelfABIReject(fmt.Sprintf("non-int table index at pc %d", pc))
+			}
+			if typedSelfFeedbackResultIsTable(proto, pc) {
+				setSpecializedSlot(slots, a, specializedSlotRawTable)
+			} else if typedSelfFeedbackResultIsInt(proto, pc) {
+				setSpecializedSlot(slots, a, specializedSlotRawInt)
+			} else {
+				setSpecializedSlot(slots, a, specializedSlotUnknown)
+			}
+		case vm.OP_SETFIELD:
+			if len(slots) <= a || !typedSelfSlotIsTable(getSpecializedSlot(slots, a)) {
 				return typedSelfABIReject("non-table field store receiver")
+			}
+		case vm.OP_SETTABLE:
+			if len(slots) <= a || !typedSelfSlotIsTable(getSpecializedSlot(slots, a)) {
+				return typedSelfABIReject(fmt.Sprintf("non-table index store receiver at pc %d", pc))
+			}
+			if !typedSelfRKIsInt(slots, proto, b) {
+				return typedSelfABIReject(fmt.Sprintf("non-int table store index at pc %d", pc))
 			}
 		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD:
 			if !typedSelfRKIsInt(slots, proto, b) || !typedSelfRKIsInt(slots, proto, c) {
@@ -404,19 +432,27 @@ func AnalyzeTypedSelfABI(proto *vm.FuncProto) TypedSelfABI {
 					setSpecializedSlot(slots, a, specializedSlotUnknown)
 				}
 			case 1:
-				setSpecializedSlot(slots, a, specializedSlotUnknown)
+				// CALL C=1 has zero results and preserves R(A). Do not
+				// fabricate a raw result in the destination slot.
 			default:
 				return typedSelfABIReject("multiple call returns")
 			}
 		case vm.OP_RETURN:
-			if b != 2 {
+			var rep SpecializedABIReturnRep
+			switch b {
+			case 1:
+				rep = SpecializedABIReturnNone
+			case 2:
+				rep = typedSelfReturnRep(getSpecializedSlot(slots, a), returnRep)
+			default:
 				return typedSelfABIReject("non-single return")
 			}
-			rep := typedSelfReturnRep(getSpecializedSlot(slots, a), returnRep)
 			if rep == SpecializedABIReturnNone || rep == SpecializedABIReturnBoxed {
-				return typedSelfABIReject("unsupported return representation")
+				if rep != SpecializedABIReturnNone {
+					return typedSelfABIReject("unsupported return representation")
+				}
 			}
-			if returnRep != SpecializedABIReturnNone && returnRep != rep {
+			if sawReturn && returnRep != rep {
 				return typedSelfABIReject("inconsistent return representation")
 			}
 			if rep == SpecializedABIReturnRawTablePtr {
@@ -424,8 +460,26 @@ func AnalyzeTypedSelfABI(proto *vm.FuncProto) TypedSelfABI {
 			}
 			returnRep = rep
 			sawReturn = true
+		case vm.OP_FORPREP:
+			if !typedSelfSlotIsInt(getSpecializedSlot(slots, a)) ||
+				!typedSelfSlotIsInt(getSpecializedSlot(slots, a+1)) ||
+				!typedSelfSlotIsInt(getSpecializedSlot(slots, a+2)) {
+				return typedSelfABIReject("non-int for-loop control")
+			}
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		case vm.OP_FORLOOP:
+			if typedSelfForLoopControlProvenInt(proto, params, pc, a) {
+				typedSelfApplyStableForLoopFacts(proto, params, pc, a, slots)
+			}
+			if !typedSelfSlotIsInt(getSpecializedSlot(slots, a)) ||
+				!typedSelfSlotIsInt(getSpecializedSlot(slots, a+1)) ||
+				!typedSelfSlotIsInt(getSpecializedSlot(slots, a+2)) {
+				return typedSelfABIReject("non-int for-loop control")
+			}
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+			setSpecializedSlot(slots, a+3, specializedSlotRawInt)
 		case vm.OP_LOADBOOL, vm.OP_GETUPVAL, vm.OP_NOT, vm.OP_LEN, vm.OP_CONCAT,
-			vm.OP_DIV, vm.OP_POW, vm.OP_CLOSURE, vm.OP_FORPREP, vm.OP_FORLOOP,
+			vm.OP_DIV, vm.OP_POW, vm.OP_CLOSURE,
 			vm.OP_TFORCALL, vm.OP_TFORLOOP, vm.OP_VARARG, vm.OP_SELF,
 			vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV, vm.OP_APPEND, vm.OP_SETLIST:
 			return typedSelfABIReject("unsupported opcode")
@@ -647,12 +701,42 @@ func inferTypedSelfABIParams(proto *vm.FuncProto) ([]SpecializedABIParamRep, str
 					return nil, reason
 				}
 			}
-		case vm.OP_GETFIELD, vm.OP_GETTABLE, vm.OP_SETFIELD, vm.OP_SETTABLE:
+		case vm.OP_GETFIELD, vm.OP_GETTABLE:
 			if reason := setParam(b, SpecializedABIParamRawTablePtr); reason != "" {
 				return nil, reason
 			}
+			if op == vm.OP_GETTABLE && c < vm.RKBit {
+				if reason := setParam(c, SpecializedABIParamRawInt); reason != "" {
+					return nil, reason
+				}
+			}
 			if a >= 0 && a < len(origins) && (op == vm.OP_GETFIELD || op == vm.OP_GETTABLE) {
 				origins[a] = -1
+			}
+		case vm.OP_SETFIELD:
+			if reason := setParam(a, SpecializedABIParamRawTablePtr); reason != "" {
+				return nil, reason
+			}
+		case vm.OP_SETTABLE:
+			if reason := setParam(a, SpecializedABIParamRawTablePtr); reason != "" {
+				return nil, reason
+			}
+			if b < vm.RKBit {
+				if reason := setParam(b, SpecializedABIParamRawInt); reason != "" {
+					return nil, reason
+				}
+			}
+		case vm.OP_FORPREP, vm.OP_FORLOOP:
+			for slot := a; slot <= a+2; slot++ {
+				if reason := setParam(slot, SpecializedABIParamRawInt); reason != "" {
+					return nil, reason
+				}
+			}
+			if a >= 0 && a < len(origins) {
+				origins[a] = -1
+			}
+			if op == vm.OP_FORLOOP && a+3 >= 0 && a+3 < len(origins) {
+				origins[a+3] = -1
 			}
 		case vm.OP_LOADINT, vm.OP_LOADK, vm.OP_LOADNIL, vm.OP_LOADBOOL,
 			vm.OP_GETGLOBAL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2,
@@ -715,11 +799,386 @@ func typedSelfCompareOK(slots []specializedSlotRep, proto *vm.FuncProto, b, c in
 	if typedSelfRKIsNil(slots, proto, b) || typedSelfRKIsNil(slots, proto, c) {
 		return true
 	}
-	return false
+	// Comparisons do not create ABI-carried values. Unknown table contents may
+	// still be compared by the normal boxed/generic compare path as long as
+	// they are not later treated as raw int/table arguments.
+	return true
 }
 
 func typedSelfFeedbackResultIsTable(proto *vm.FuncProto, pc int) bool {
 	return proto != nil && proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) && proto.Feedback[pc].Result == vm.FBTable
+}
+
+func typedSelfFeedbackResultIsInt(proto *vm.FuncProto, pc int) bool {
+	return proto != nil && proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) && proto.Feedback[pc].Result == vm.FBInt
+}
+
+func typedSelfBranchFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int) map[int]specializedSlotRep {
+	if proto == nil || pc < 0 {
+		return nil
+	}
+	if typedSelfHasFallthroughPred(proto, pc) {
+		return nil
+	}
+	var facts map[int]specializedSlotRep
+	havePred := false
+	mergePredFacts := func(pred map[int]specializedSlotRep) {
+		if !havePred {
+			havePred = true
+			if len(pred) == 0 {
+				return
+			}
+			facts = make(map[int]specializedSlotRep, len(pred))
+			for slot, rep := range pred {
+				facts[slot] = rep
+			}
+			return
+		}
+		for slot, rep := range facts {
+			if predRep, ok := pred[slot]; !ok || predRep != rep {
+				delete(facts, slot)
+			}
+		}
+	}
+	for srcPC, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		switch op {
+		case vm.OP_JMP:
+			target := srcPC + 1 + vm.DecodesBx(inst)
+			if target == pc {
+				if slots, ok := typedSelfLoopFactSlotsAtPC(proto, params, srcPC); ok {
+					mergePredFacts(typedSelfSlotFacts(slots))
+				}
+			}
+			continue
+		case vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_TESTSET:
+			target := srcPC + 2
+			if target == pc {
+				if slots, ok := typedSelfLoopFactSlotsAtPC(proto, params, srcPC); ok {
+					mergePredFacts(typedSelfSlotFacts(slots))
+				}
+			}
+			continue
+		case vm.OP_FORLOOP:
+		default:
+			continue
+		}
+		bodyTarget := srcPC + 1 + vm.DecodesBx(inst)
+		exitTarget := srcPC + 1
+		if bodyTarget != pc && exitTarget != pc {
+			continue
+		}
+		a := vm.DecodeA(inst)
+		if typedSelfForLoopControlProvenInt(proto, params, srcPC, a) {
+			pred := make(map[int]specializedSlotRep)
+			addFact := func(slot int, rep specializedSlotRep) {
+				if slot >= 0 && slot < maxTrackedSlots {
+					pred[slot] = rep
+				}
+			}
+			preSlots, postSlots, ok := typedSelfForLoopStableSlots(proto, params, srcPC, a)
+			if ok {
+				for slot, pre := range preSlots {
+					if pre != postSlots[slot] {
+						continue
+					}
+					switch pre {
+					case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
+						specializedSlotSelfFunc, specializedSlotOtherFunc:
+						addFact(slot, pre)
+					}
+				}
+			}
+			addFact(a, specializedSlotRawInt)
+			if bodyTarget == pc {
+				addFact(a+3, specializedSlotRawInt)
+			}
+			mergePredFacts(pred)
+		}
+	}
+	if !havePred {
+		return nil
+	}
+	return facts
+}
+
+func typedSelfCollectSlotFacts(slots []specializedSlotRep, addFact func(int, specializedSlotRep)) {
+	for slot, rep := range slots {
+		switch rep {
+		case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
+			specializedSlotSelfFunc, specializedSlotOtherFunc:
+			addFact(slot, rep)
+		}
+	}
+}
+
+func typedSelfSlotFacts(slots []specializedSlotRep) map[int]specializedSlotRep {
+	facts := make(map[int]specializedSlotRep)
+	typedSelfCollectSlotFacts(slots, func(slot int, rep specializedSlotRep) {
+		facts[slot] = rep
+	})
+	return facts
+}
+
+func typedSelfHasFallthroughPred(proto *vm.FuncProto, pc int) bool {
+	if proto == nil || pc <= 0 || pc > len(proto.Code) {
+		return false
+	}
+	switch vm.DecodeOp(proto.Code[pc-1]) {
+	case vm.OP_JMP, vm.OP_RETURN, vm.OP_FORPREP, vm.OP_FORLOOP:
+		return false
+	default:
+		return true
+	}
+}
+
+func typedSelfApplyBranchFacts(slots []specializedSlotRep, facts map[int]specializedSlotRep) {
+	for slot, rep := range facts {
+		setSpecializedSlot(slots, slot, rep)
+	}
+}
+
+func typedSelfCallArgSlotMatches(proto *vm.FuncProto, callPC, argIndex int, param SpecializedABIParamRep) bool {
+	if proto == nil || callPC < 0 || callPC >= len(proto.Code) {
+		return false
+	}
+	inst := proto.Code[callPC]
+	if vm.DecodeOp(inst) != vm.OP_CALL {
+		return false
+	}
+	params, reason := inferTypedSelfABIParams(proto)
+	if reason != "" || argIndex < 0 || argIndex >= len(params) {
+		return false
+	}
+	callSlot := vm.DecodeA(inst)
+	argSlot := callSlot + 1 + argIndex
+	rep, ok := typedSelfSlotRepAtPC(proto, params, callPC, argSlot)
+	return ok && typedSelfSlotMatchesParam(rep, param)
+}
+
+func typedSelfSlotRepAtPC(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC, slot int) (specializedSlotRep, bool) {
+	slots, ok := typedSelfSlotsAtPC(proto, params, targetPC)
+	if !ok || slot < 0 || slot >= len(slots) {
+		return specializedSlotUnknown, false
+	}
+	return getSpecializedSlot(slots, slot), true
+}
+
+func typedSelfSlotsAtPC(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC int) ([]specializedSlotRep, bool) {
+	if proto == nil || targetPC < 0 || targetPC > len(proto.Code) {
+		return nil, false
+	}
+	slots := make([]specializedSlotRep, maxTrackedSlots)
+	typedSelfResetSlots(slots, params)
+	branchTargets := specializedABIBranchTargets(proto.Code)
+	for pc := 0; pc < targetPC; pc++ {
+		if pc > 0 && branchTargets[pc] {
+			typedSelfResetSlots(slots, params)
+			typedSelfApplyBranchFacts(slots, typedSelfBranchFacts(proto, params, pc))
+		}
+		if !typedSelfAdvanceSimpleSlotFact(proto, slots, pc) {
+			return nil, false
+		}
+	}
+	return slots, true
+}
+
+func typedSelfLoopFactSlotsAtPC(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC int) ([]specializedSlotRep, bool) {
+	if proto == nil || targetPC < 0 || targetPC > len(proto.Code) {
+		return nil, false
+	}
+	slots := make([]specializedSlotRep, maxTrackedSlots)
+	typedSelfResetSlots(slots, params)
+	branchTargets := specializedABIBranchTargets(proto.Code)
+	for pc := 0; pc < targetPC; pc++ {
+		if pc > 0 && branchTargets[pc] {
+			typedSelfResetSlots(slots, params)
+			typedSelfApplyBranchFacts(slots, typedSelfForLoopBranchFacts(proto, params, pc))
+		}
+		if !typedSelfAdvanceSimpleSlotFact(proto, slots, pc) {
+			return nil, false
+		}
+	}
+	return slots, true
+}
+
+func typedSelfForLoopBranchFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int) map[int]specializedSlotRep {
+	if proto == nil || pc < 0 {
+		return nil
+	}
+	var facts map[int]specializedSlotRep
+	addFact := func(slot int, rep specializedSlotRep) {
+		if slot < 0 || slot >= maxTrackedSlots {
+			return
+		}
+		if facts == nil {
+			facts = make(map[int]specializedSlotRep)
+		}
+		facts[slot] = rep
+	}
+	for srcPC, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_FORLOOP {
+			continue
+		}
+		bodyTarget := srcPC + 1 + vm.DecodesBx(inst)
+		exitTarget := srcPC + 1
+		if bodyTarget != pc && exitTarget != pc {
+			continue
+		}
+		a := vm.DecodeA(inst)
+		if !typedSelfForLoopControlProvenInt(proto, params, srcPC, a) {
+			continue
+		}
+		preSlots, postSlots, ok := typedSelfForLoopStableSlots(proto, params, srcPC, a)
+		if ok {
+			for slot, pre := range preSlots {
+				if pre == postSlots[slot] {
+					switch pre {
+					case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
+						specializedSlotSelfFunc, specializedSlotOtherFunc:
+						addFact(slot, pre)
+					}
+				}
+			}
+		}
+		addFact(a, specializedSlotRawInt)
+		if bodyTarget == pc {
+			addFact(a+3, specializedSlotRawInt)
+		}
+	}
+	return facts
+}
+
+func typedSelfForLoopStableSlots(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int) ([]specializedSlotRep, []specializedSlotRep, bool) {
+	if proto == nil || forLoopPC <= 0 {
+		return nil, nil, false
+	}
+	prepPC := -1
+	for pc := forLoopPC - 1; pc >= 0; pc-- {
+		if vm.DecodeOp(proto.Code[pc]) == vm.OP_FORPREP && vm.DecodeA(proto.Code[pc]) == a {
+			prepPC = pc
+			break
+		}
+	}
+	if prepPC < 0 {
+		return nil, nil, false
+	}
+	slots := make([]specializedSlotRep, maxTrackedSlots)
+	typedSelfResetSlots(slots, params)
+	for pc := 0; pc <= prepPC; pc++ {
+		if !typedSelfAdvanceSimpleSlotFact(proto, slots, pc) {
+			return nil, nil, false
+		}
+	}
+	preSlots := append([]specializedSlotRep(nil), slots...)
+	for pc := prepPC + 1; pc < forLoopPC; pc++ {
+		if !typedSelfAdvanceSimpleSlotFact(proto, slots, pc) {
+			return nil, nil, false
+		}
+	}
+	postSlots := append([]specializedSlotRep(nil), slots...)
+	return preSlots, postSlots, true
+}
+
+func typedSelfApplyStableForLoopFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, slots []specializedSlotRep) {
+	preSlots, postSlots, ok := typedSelfForLoopStableSlots(proto, params, forLoopPC, a)
+	if ok {
+		for slot, pre := range preSlots {
+			if pre != postSlots[slot] {
+				continue
+			}
+			switch pre {
+			case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
+				specializedSlotSelfFunc, specializedSlotOtherFunc:
+				setSpecializedSlot(slots, slot, pre)
+			}
+		}
+	}
+	setSpecializedSlot(slots, a, specializedSlotRawInt)
+	setSpecializedSlot(slots, a+1, specializedSlotRawInt)
+	setSpecializedSlot(slots, a+2, specializedSlotRawInt)
+}
+
+func typedSelfForLoopControlProvenInt(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int) bool {
+	if proto == nil || forLoopPC <= 0 {
+		return false
+	}
+	for pc := forLoopPC - 1; pc >= 0; pc-- {
+		inst := proto.Code[pc]
+		if vm.DecodeOp(inst) != vm.OP_FORPREP || vm.DecodeA(inst) != a {
+			continue
+		}
+		slots := make([]specializedSlotRep, maxTrackedSlots)
+		typedSelfResetSlots(slots, params)
+		for i := 0; i < pc; i++ {
+			if !typedSelfAdvanceSimpleSlotFact(proto, slots, i) {
+				return false
+			}
+		}
+		return typedSelfSlotIsInt(getSpecializedSlot(slots, a)) &&
+			typedSelfSlotIsInt(getSpecializedSlot(slots, a+1)) &&
+			typedSelfSlotIsInt(getSpecializedSlot(slots, a+2))
+	}
+	return false
+}
+
+func typedSelfAdvanceSimpleSlotFact(proto *vm.FuncProto, slots []specializedSlotRep, pc int) bool {
+	inst := proto.Code[pc]
+	op := vm.DecodeOp(inst)
+	a := vm.DecodeA(inst)
+	b := vm.DecodeB(inst)
+	c := vm.DecodeC(inst)
+	switch op {
+	case vm.OP_LOADINT:
+		setSpecializedSlot(slots, a, specializedSlotRawInt)
+	case vm.OP_LOADK:
+		if specializedABIConstIsInt(proto, vm.DecodeBx(inst)) {
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		} else {
+			setSpecializedSlot(slots, a, specializedSlotUnknown)
+		}
+	case vm.OP_MOVE:
+		setSpecializedSlot(slots, a, getSpecializedSlot(slots, b))
+	case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD:
+		if typedSelfRKIsInt(slots, proto, b) && typedSelfRKIsInt(slots, proto, c) {
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		} else {
+			setSpecializedSlot(slots, a, specializedSlotUnknown)
+		}
+	case vm.OP_GETTABLE, vm.OP_GETFIELD:
+		if typedSelfFeedbackResultIsInt(proto, pc) {
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		} else if typedSelfFeedbackResultIsTable(proto, pc) {
+			setSpecializedSlot(slots, a, specializedSlotRawTable)
+		} else {
+			setSpecializedSlot(slots, a, specializedSlotUnknown)
+		}
+	case vm.OP_NEWTABLE, vm.OP_NEWOBJECT2:
+		setSpecializedSlot(slots, a, specializedSlotRawTable)
+	case vm.OP_LOADNIL:
+		for slot := a; slot <= a+b && slot < len(slots); slot++ {
+			setSpecializedSlot(slots, slot, specializedSlotNil)
+		}
+	case vm.OP_GETGLOBAL:
+		if specializedABIConstString(proto, vm.DecodeBx(inst)) == proto.Name {
+			setSpecializedSlot(slots, a, specializedSlotSelfFunc)
+		} else {
+			setSpecializedSlot(slots, a, specializedSlotOtherFunc)
+		}
+	case vm.OP_FORPREP:
+		if typedSelfSlotIsInt(getSpecializedSlot(slots, a)) &&
+			typedSelfSlotIsInt(getSpecializedSlot(slots, a+1)) &&
+			typedSelfSlotIsInt(getSpecializedSlot(slots, a+2)) {
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		} else {
+			return false
+		}
+	case vm.OP_LE, vm.OP_LT, vm.OP_EQ, vm.OP_JMP, vm.OP_SETUPVAL, vm.OP_CLOSE,
+		vm.OP_SETTABLE, vm.OP_SETFIELD:
+	default:
+		setSpecializedSlot(slots, a, specializedSlotUnknown)
+	}
+	return true
 }
 
 func typedSelfSlotIsInt(rep specializedSlotRep) bool {
@@ -735,7 +1194,7 @@ func typedSelfSlotMatchesParam(rep specializedSlotRep, param SpecializedABIParam
 	case SpecializedABIParamRawInt:
 		return typedSelfSlotIsInt(rep)
 	case SpecializedABIParamRawTablePtr:
-		return typedSelfSlotIsTable(rep) || rep == specializedSlotUnknown
+		return typedSelfSlotIsTable(rep)
 	default:
 		return false
 	}
@@ -752,7 +1211,10 @@ func typedSelfReturnRep(slot specializedSlotRep, current SpecializedABIReturnRep
 	case specializedSlotSelfCallRawTable:
 		return SpecializedABIReturnRawTablePtr
 	case specializedSlotUnknown:
-		return current
+		if current != SpecializedABIReturnNone {
+			return current
+		}
+		return SpecializedABIReturnBoxed
 	default:
 		return SpecializedABIReturnBoxed
 	}

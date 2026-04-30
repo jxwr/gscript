@@ -60,10 +60,7 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 
 	funcSlot := int(instr.Aux)
 	nArgs := len(instr.Args) - 1
-	nRets := 1
-	if instr.Aux2 >= 2 {
-		nRets = int(instr.Aux2) - 1
-	}
+	nRets := callResultCountFromAux2(instr.Aux2)
 
 	// Store the function value to regs[funcSlot].
 	if len(instr.Args) > 0 {
@@ -127,6 +124,18 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 		continueLabel: continueLabel,
 		numericPass:   ec.numericMode,
 	})
+}
+
+func callResultCountFromAux2(aux2 int64) int {
+	switch {
+	case aux2 == 1:
+		return 0
+	case aux2 >= 2:
+		return int(aux2) - 1
+	default:
+		// The IR models variable-result CALL C=0 as one synthetic value.
+		return 1
+	}
 }
 
 // emitGetGlobalNative emits ARM64 code for OpGetGlobal with an inline value

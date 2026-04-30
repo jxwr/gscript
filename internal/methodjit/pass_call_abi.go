@@ -68,7 +68,7 @@ func callABIAnnotateRawIntSelfResult(fn *Function, instr *Instr, tails map[int]b
 	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpCall {
 		return false
 	}
-	if tails[instr.ID] || !callABIHasExactFixedShape(fn, instr) || !callABIIsStaticSelfCall(fn, instr) {
+	if tails[instr.ID] || !callABIHasExactResultShape(fn, instr, 1) || !callABIIsStaticSelfCall(fn, instr) {
 		return false
 	}
 	abi := AnalyzeRawIntSelfABI(fn.Proto)
@@ -92,11 +92,18 @@ func callABIAnnotateTypedSelfResult(fn *Function, instr *Instr, tails map[int]bo
 	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpCall {
 		return false
 	}
-	if tails[instr.ID] || !callABIHasExactFixedShape(fn, instr) || !callABIIsStaticSelfCall(fn, instr) {
+	if tails[instr.ID] || !callABIIsStaticSelfCall(fn, instr) {
 		return false
 	}
 	abi := AnalyzeTypedSelfABI(fn.Proto)
 	if !abi.Eligible {
+		return false
+	}
+	wantRets := 1
+	if abi.Return == SpecializedABIReturnNone {
+		wantRets = 0
+	}
+	if !callABIHasExactResultShape(fn, instr, wantRets) {
 		return false
 	}
 	numArgs := len(instr.Args) - 1
@@ -110,7 +117,8 @@ func callABIAnnotateTypedSelfResult(fn *Function, instr *Instr, tails map[int]bo
 				return false
 			}
 		case SpecializedABIParamRawTablePtr:
-			if !callABIValueCanBeTable(instr.Args[1+i]) {
+			if !callABIValueIsTable(instr.Args[1+i]) &&
+				!typedSelfCallArgSlotMatches(fn.Proto, instr.SourcePC, i, SpecializedABIParamRawTablePtr) {
 				return false
 			}
 		default:
@@ -122,6 +130,10 @@ func callABIAnnotateTypedSelfResult(fn *Function, instr *Instr, tails map[int]bo
 		instr.Type = TypeInt
 	case SpecializedABIReturnRawTablePtr:
 		instr.Type = TypeTable
+	case SpecializedABIReturnNone:
+		// CALL C=1 produces no value. Leave the synthetic SSA call value
+		// untyped; codegen only uses the side effect and must not consume a
+		// fabricated raw result.
 	default:
 		return false
 	}
@@ -135,7 +147,7 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 	if tails[instr.ID] {
 		return CallABIDescriptor{}, "tail call"
 	}
-	if !callABIHasExactFixedShape(fn, instr) {
+	if !callABIHasExactResultShape(fn, instr, 1) {
 		return CallABIDescriptor{}, "call does not have fixed arity and one exact result"
 	}
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
@@ -185,8 +197,14 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 	}, ""
 }
 
-func callABIHasExactFixedShape(fn *Function, instr *Instr) bool {
-	if fn == nil || fn.Proto == nil || instr == nil || len(instr.Args) == 0 || instr.Aux2 != 2 {
+func callABIHasExactResultShape(fn *Function, instr *Instr, wantRets int) bool {
+	if fn == nil || fn.Proto == nil || instr == nil || len(instr.Args) == 0 {
+		return false
+	}
+	if wantRets < 0 {
+		return false
+	}
+	if n, ok := callExactFixedResultCountFromC(instr.Aux2); !ok || n != wantRets {
 		return false
 	}
 	if !instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.Code) {
@@ -198,10 +216,26 @@ func callABIHasExactFixedShape(fn *Function, instr *Instr) bool {
 	}
 	b := vm.DecodeB(inst)
 	c := vm.DecodeC(inst)
-	if b == 0 || c != 2 {
+	if b == 0 {
+		return false
+	}
+	if n, ok := callExactFixedResultCountFromC(int64(c)); !ok || n != wantRets {
 		return false
 	}
 	return b-1 == len(instr.Args)-1
+}
+
+func callExactFixedResultCountFromC(c int64) (int, bool) {
+	switch {
+	case c == 0:
+		return 0, false
+	case c == 1:
+		return 0, true
+	case c >= 2:
+		return int(c) - 1, true
+	default:
+		return 0, false
+	}
 }
 
 func callABIValueIsInt(v *Value) bool {
@@ -210,10 +244,6 @@ func callABIValueIsInt(v *Value) bool {
 
 func callABIValueIsTable(v *Value) bool {
 	return v != nil && v.Def != nil && v.Def.Type == TypeTable
-}
-
-func callABIValueCanBeTable(v *Value) bool {
-	return v != nil && v.Def != nil && (v.Def.Type == TypeTable || v.Def.Type == TypeAny || v.Def.Type == TypeUnknown)
 }
 
 func callABIIsStaticSelfCall(fn *Function, instr *Instr) bool {

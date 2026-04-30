@@ -237,6 +237,133 @@ func checkTree(node) {
 	}
 }
 
+func TestAnalyzeTypedSelfABI_QuicksortZeroResult(t *testing.T) {
+	top := compileTop(t, `func quicksort(arr, lo, hi) {
+	if lo >= hi { return }
+	pivot := arr[hi]
+	i := lo
+	for j := lo; j < hi; j++ {
+		if arr[j] <= pivot {
+			t := arr[i]
+			arr[i] = arr[j]
+			arr[j] = t
+			i = i + 1
+		}
+	}
+	t := arr[i]
+	arr[i] = arr[hi]
+	arr[hi] = t
+	quicksort(arr, lo, i - 1)
+	quicksort(arr, i + 1, hi)
+}`)
+	qs := findProtoByName(top, "quicksort")
+	if qs == nil {
+		t.Fatal("quicksort proto not found")
+	}
+	qs.EnsureFeedback()
+	for _, pc := range []int{4, 13, 17, 19, 30, 32} {
+		qs.Feedback[pc].Result = vm.FBInt
+	}
+
+	abi := AnalyzeTypedSelfABI(qs)
+	if !abi.Eligible {
+		t.Fatalf("quicksort typed ABI rejected: %s", abi.RejectWhy)
+	}
+	if abi.Return != SpecializedABIReturnNone {
+		t.Fatalf("quicksort return=%d want none", abi.Return)
+	}
+	want := []SpecializedABIParamRep{
+		SpecializedABIParamRawTablePtr,
+		SpecializedABIParamRawInt,
+		SpecializedABIParamRawInt,
+	}
+	if len(abi.Params) != len(want) {
+		t.Fatalf("params=%v want %v", abi.Params, want)
+	}
+	for i := range want {
+		if abi.Params[i] != want[i] {
+			t.Fatalf("param %d=%d want %d; abi=%+v", i, abi.Params[i], want[i], abi)
+		}
+	}
+}
+
+func TestAnalyzeTypedSelfABI_RejectsUnknownRecursiveIntArg(t *testing.T) {
+	top := compileTop(t, `func f(arr, lo, hi) {
+	if lo >= hi { return }
+	next := arr[lo]
+	f(arr, next, hi)
+}`)
+	proto := findProtoByName(top, "f")
+	if proto == nil {
+		t.Fatal("f proto not found")
+	}
+	proto.EnsureFeedback()
+
+	abi := AnalyzeTypedSelfABI(proto)
+	if abi.Eligible {
+		t.Fatalf("unknown table-load result must not become raw int: %+v", abi)
+	}
+}
+
+func TestAnalyzeTypedSelfABI_RejectsUnknownRecursiveTableArg(t *testing.T) {
+	top := compileTop(t, `func walk(node) {
+	if node.left == nil { return }
+	child := node.left
+	walk(child)
+}`)
+	proto := findProtoByName(top, "walk")
+	if proto == nil {
+		t.Fatal("walk proto not found")
+	}
+	proto.EnsureFeedback()
+
+	abi := AnalyzeTypedSelfABI(proto)
+	if abi.Eligible {
+		t.Fatalf("unknown field result must not become raw table: %+v", abi)
+	}
+}
+
+func TestAnalyzeTypedSelfABI_RejectsConflictingJoinFacts(t *testing.T) {
+	top := compileTop(t, `func walk(node, n) {
+	if node.left == nil { return }
+	next := node
+	if n == 0 {
+		next = 1
+	}
+	walk(next, n - 1)
+}`)
+	proto := findProtoByName(top, "walk")
+	if proto == nil {
+		t.Fatal("walk proto not found")
+	}
+	proto.EnsureFeedback()
+	for pc := range proto.Feedback {
+		proto.Feedback[pc].Result = vm.FBTable
+	}
+
+	abi := AnalyzeTypedSelfABI(proto)
+	if abi.Eligible {
+		t.Fatalf("conflicting join facts must not prove raw table arg: %+v", abi)
+	}
+}
+
+func TestAnalyzeTypedSelfABI_RejectsMixedZeroAndValueReturns(t *testing.T) {
+	top := compileTop(t, `func f(node, n) {
+	if n == 0 { return }
+	if node.left == nil { return node }
+	f(node, n - 1)
+}`)
+	proto := findProtoByName(top, "f")
+	if proto == nil {
+		t.Fatal("f proto not found")
+	}
+
+	abi := AnalyzeTypedSelfABI(proto)
+	if abi.Eligible {
+		t.Fatalf("mixed zero/value returns must not get typed self ABI: %+v", abi)
+	}
+}
+
 func TestAnalyzeSpecializedABI_RejectsUnsupportedABIShape(t *testing.T) {
 	base := func() *vm.FuncProto {
 		return &vm.FuncProto{

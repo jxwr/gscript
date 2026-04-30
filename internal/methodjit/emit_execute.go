@@ -250,9 +250,6 @@ func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Val
 	// Place results back into the register file at regs[callSlot..callSlot+nRets-1].
 	// This follows Lua calling convention: results overwrite the function slot.
 	nr := nRets
-	if nr <= 0 {
-		nr = 1 // at minimum, 1 result
-	}
 	for i := 0; i < nr; i++ {
 		idx := callSlot + i
 		if idx < len(regs) {

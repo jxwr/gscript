@@ -44,6 +44,7 @@ root := makeTree(5)
 	if checkTree == nil {
 		t.Fatal("checkTree proto not found")
 	}
+	checkTree.EnsureFeedback()
 	fn := v.GetGlobal("checkTree")
 	root := v.GetGlobal("root")
 	if fn.IsNil() || root.IsNil() {
@@ -124,6 +125,7 @@ root := makeTree(5)
 	if checkTree == nil {
 		t.Fatal("checkTree proto not found")
 	}
+	checkTree.EnsureFeedback()
 	fn := v.GetGlobal("checkTree")
 	root := v.GetGlobal("root")
 	if fn.IsNil() || root.IsNil() {
@@ -193,6 +195,7 @@ root := makeTree(4)
 	if checkTree == nil {
 		t.Fatal("checkTree proto not found")
 	}
+	checkTree.EnsureFeedback()
 	fn := v.GetGlobal("checkTree")
 	root := v.GetGlobal("root")
 	cl, ok := vmClosureFromValue(fn)
@@ -230,6 +233,109 @@ root := makeTree(4)
 	}
 	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != want {
 		t.Fatalf("direct Tier2 checkTree(root)=%v, want int %d", got, want)
+	}
+}
+
+func TestTypedTableSelfABI_QuicksortZeroResultUsesNativeRecursiveCalls(t *testing.T) {
+	src := `
+func quicksort(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            t := arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+            i = i + 1
+        }
+    }
+    t := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = t
+    quicksort(arr, lo, i - 1)
+    quicksort(arr, i + 1, hi)
+}
+
+func make_random_array(n, seed) {
+    arr := {}
+    x := seed
+    for i := 1; i <= n; i++ {
+        x = (x * 1103515245 + 12345) % 2147483648
+        arr[i] = x
+    }
+    return arr
+}
+
+func is_sorted(arr, n) {
+    for i := 1; i < n; i++ {
+        if arr[i] > arr[i + 1] { return false }
+    }
+    return true
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	quicksort := findProtoByName(top, "quicksort")
+	if quicksort == nil {
+		t.Fatal("quicksort proto not found")
+	}
+	quicksort.EnsureFeedback()
+	qsFn := v.GetGlobal("quicksort")
+	makeFn := v.GetGlobal("make_random_array")
+	sortedFn := v.GetGlobal("is_sorted")
+	if qsFn.IsNil() || makeFn.IsNil() || sortedFn.IsNil() {
+		t.Fatalf("missing globals: quicksort=%v make=%v sorted=%v", qsFn, makeFn, sortedFn)
+	}
+
+	const n = int64(64)
+	warmArr, err := v.CallValue(makeFn, []runtime.Value{runtime.IntValue(n), runtime.IntValue(42)})
+	if err != nil || len(warmArr) != 1 {
+		t.Fatalf("make warm array: results=%v err=%v", warmArr, err)
+	}
+	if _, err := v.CallValue(qsFn, []runtime.Value{warmArr[0], runtime.IntValue(1), runtime.IntValue(n)}); err != nil {
+		t.Fatalf("warm quicksort: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(quicksort); err != nil {
+		t.Fatalf("CompileTier2(quicksort): %v", err)
+	}
+	cf := tm.tier2Compiled[quicksort]
+	if cf == nil || !cf.TypedSelfABI.Eligible {
+		t.Fatalf("compiled quicksort missing typed ABI: cf=%v", cf)
+	}
+	if cf.TypedSelfABI.Return != SpecializedABIReturnNone {
+		t.Fatalf("quicksort typed return=%d want none", cf.TypedSelfABI.Return)
+	}
+
+	arr, err := v.CallValue(makeFn, []runtime.Value{runtime.IntValue(n), runtime.IntValue(99)})
+	if err != nil || len(arr) != 1 {
+		t.Fatalf("make jit array: results=%v err=%v", arr, err)
+	}
+	quicksort.EnteredTier2 = 0
+	if _, err := v.CallValue(qsFn, []runtime.Value{arr[0], runtime.IntValue(1), runtime.IntValue(n)}); err != nil {
+		t.Fatalf("Tier2 quicksort: %v", err)
+	}
+	if quicksort.EnteredTier2 == 0 {
+		t.Fatal("quicksort did not enter Tier 2")
+	}
+	sorted, err := v.CallValue(sortedFn, []runtime.Value{arr[0], runtime.IntValue(n)})
+	if err != nil {
+		t.Fatalf("is_sorted: %v", err)
+	}
+	if len(sorted) != 1 || !sorted[0].IsBool() || !sorted[0].Bool() {
+		t.Fatalf("sorted=%v, want true", sorted)
+	}
+	if exits := tm.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
+		t.Fatalf("zero-result typed self recursion used boxed call exit %d times", exits)
 	}
 }
 
@@ -368,6 +474,7 @@ func benchTypedTableSelfCheckTree(b *testing.B, coldFieldCache bool) {
 	if checkTree == nil {
 		b.Fatal("checkTree proto not found")
 	}
+	checkTree.EnsureFeedback()
 	fn := v.GetGlobal("checkTree")
 	root := v.GetGlobal("root")
 	if fn.IsNil() || root.IsNil() {
@@ -477,6 +584,7 @@ root := makeTree(3)
 	if checkTree == nil {
 		t.Fatal("checkTree proto not found")
 	}
+	checkTree.EnsureFeedback()
 	fn := v.GetGlobal("checkTree")
 	root := v.GetGlobal("root")
 	if _, err := v.CallValue(fn, []runtime.Value{root}); err != nil {

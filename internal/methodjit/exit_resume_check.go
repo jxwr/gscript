@@ -108,7 +108,7 @@ type exitResumeCheckOptions struct {
 
 func callExitModifiedSlots(funcSlot, nRets int) []int {
 	if nRets <= 0 {
-		nRets = 1
+		return nil
 	}
 	out := make([]int, 0, nRets)
 	for i := 0; i < nRets; i++ {

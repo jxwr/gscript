@@ -106,10 +106,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	funcSlot := int(instr.Aux)
 	nArgs := len(instr.Args) - 1
-	nRets := 1
-	if instr.Aux2 >= 2 {
-		nRets = int(instr.Aux2) - 1
-	}
+	nRets := callResultCountFromAux2(instr.Aux2)
 
 	// Step 1: Store the function value and arguments to the VM register file.
 	// This must happen BEFORE spilling, since resolveValueNB may read from
@@ -502,10 +499,7 @@ func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
 	nArgs := len(instr.Args) - 1
-	nRets := 1
-	if instr.Aux2 >= 2 {
-		nRets = int(instr.Aux2) - 1
-	}
+	nRets := callResultCountFromAux2(instr.Aux2)
 
 	if len(instr.Args) > 0 {
 		fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
@@ -637,10 +631,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
 	nArgs := len(instr.Args) - 1
-	nRets := 1
-	if instr.Aux2 >= 2 {
-		nRets = int(instr.Aux2) - 1
-	}
+	nRets := callResultCountFromAux2(instr.Aux2)
 	nParams := ec.fn.Proto.NumParams
 	if nArgs != nParams || nParams < 1 || nParams > 4 {
 		ec.emitCallNativeStaticSelfFast(instr)
@@ -948,10 +939,7 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 		return false
 	}
 	nArgs := len(instr.Args) - 1
-	nRets := 1
-	if instr.Aux2 >= 2 {
-		nRets = int(instr.Aux2) - 1
-	}
+	nRets := callResultCountFromAux2(instr.Aux2)
 	if nRets != 1 || nArgs != callee.NumParams || nArgs < 1 || nArgs > 4 {
 		return false
 	}
@@ -1100,12 +1088,13 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
 	nArgs := len(instr.Args) - 1
-	nRets := 1
-	if instr.Aux2 >= 2 {
-		nRets = int(instr.Aux2) - 1
-	}
+	nRets := callResultCountFromAux2(instr.Aux2)
 	abi := ec.typedSelfABI
-	if nRets != 1 || nArgs != abi.NumParams || len(abi.Params) != nArgs {
+	wantRets := 1
+	if abi.Return == SpecializedABIReturnNone {
+		wantRets = 0
+	}
+	if nRets != wantRets || nArgs != abi.NumParams || len(abi.Params) != nArgs {
 		return false
 	}
 
@@ -1179,6 +1168,9 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	ec.emitUnboxRawIntRegs(preRawIntRegs)
 	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
 	switch abi.Return {
+	case SpecializedABIReturnNone:
+		// CALL C=1: recursive side effects are complete and no result slot is
+		// produced or consumed.
 	case SpecializedABIReturnRawInt:
 		ec.storeRawInt(jit.X0, instr.ID)
 	case SpecializedABIReturnRawTablePtr:
@@ -1573,10 +1565,7 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 
 	funcSlot := int(instr.Aux)
 	nArgs := len(instr.Args) - 1
-	nRets := 1
-	if instr.Aux2 >= 2 {
-		nRets = int(instr.Aux2) - 1
-	}
+	nRets := callResultCountFromAux2(instr.Aux2)
 
 	// Step 1: Store fn + args to regs (same as emitCallNative).
 	if len(instr.Args) > 0 {
@@ -1800,7 +1789,14 @@ func (ec *emitContext) isTypedStaticSelfCall(instr *Instr) bool {
 			}
 			return false
 		case SpecializedABIParamRawTablePtr:
-			if ec.irTypes[argID] != TypeTable && ec.irTypes[argID] != TypeAny && ec.irTypes[argID] != TypeUnknown {
+			if ec.irTypes[argID] == TypeTable {
+				continue
+			}
+			if (ec.irTypes[argID] == TypeAny || ec.irTypes[argID] == TypeUnknown) &&
+				typedSelfCallArgSlotMatches(ec.fn.Proto, instr.SourcePC, i, SpecializedABIParamRawTablePtr) {
+				continue
+			}
+			if ec.irTypes[argID] != TypeTable {
 				return false
 			}
 		default:
@@ -1808,6 +1804,8 @@ func (ec *emitContext) isTypedStaticSelfCall(instr *Instr) bool {
 		}
 	}
 	switch abi.Return {
+	case SpecializedABIReturnNone:
+		return callResultCountFromAux2(instr.Aux2) == 0
 	case SpecializedABIReturnRawInt:
 		return instr.Type == TypeInt
 	case SpecializedABIReturnRawTablePtr:

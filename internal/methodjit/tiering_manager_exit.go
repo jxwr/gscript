@@ -62,9 +62,6 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 	currentRegs := tm.callVM.Regs()
 
 	nr := nRets
-	if nr <= 0 {
-		nr = 1
-	}
 	for i := 0; i < nr; i++ {
 		idx := absSlot + i
 		if idx < len(currentRegs) {
@@ -136,9 +133,6 @@ func (tm *TieringManager) executeNativeCallExit(ctx *ExecContext, callerCF *Comp
 	regs = tm.callVM.Regs()
 	absSlot := callerBase + int(ctx.CallSlot)
 	nRets := int(ctx.CallNRets)
-	if nRets <= 0 {
-		nRets = 1
-	}
 	for i := 0; i < nRets; i++ {
 		idx := absSlot + i
 		if idx >= 0 && idx < len(regs) {
