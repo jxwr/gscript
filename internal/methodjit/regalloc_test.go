@@ -55,6 +55,33 @@ func f(n) {
 	assertValidRegisters(t, alloc)
 }
 
+func TestRegAlloc_LastUseEvictionKeepsRegisterAssignment(t *testing.T) {
+	fn := &Function{NumRegs: 2}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	a := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	bb := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 2, Block: b}
+	temp := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{a.Value(), bb.Value()}, Block: b}
+	c := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 3, Block: b}
+	d := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 4, Block: b}
+	e := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 5, Block: b}
+	f := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 6, Block: b}
+	useTemp := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{temp.Value(), c.Value()}, Block: b}
+	de := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{d.Value(), e.Value()}, Block: b}
+	out := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{useTemp.Value(), de.Value()}, Block: b}
+	out2 := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{out.Value(), f.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{out2.Value()}, Block: b}
+	b.Instrs = []*Instr{a, bb, temp, c, d, e, f, useTemp, de, out, out2, ret}
+
+	alloc := AllocateRegisters(fn)
+	if _, ok := alloc.ValueRegs[temp.ID]; !ok {
+		t.Fatalf("last-use eviction removed temp v%d register assignment; allocation=%s", temp.ID, formatRegAlloc(alloc))
+	}
+	assertValidRegisters(t, alloc)
+}
+
 // TestRegAlloc_ForLoop: loop with phis — phi values get registers.
 func TestRegAlloc_ForLoop(t *testing.T) {
 	proto := compileFunction(t, `

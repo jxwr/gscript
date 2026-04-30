@@ -304,6 +304,13 @@ func (ec *emitContext) resolveRawFloat(valueID int, scratch jit.FReg) jit.FReg {
 		ec.scratchFPRCache[valueID] = scratch
 		return scratch
 	}
+	if c, ok := ec.constInts[valueID]; ok {
+		ec.asm.LoadImm64(jit.X0, c)
+		ec.invalidateScratchFPR(scratch)
+		ec.asm.SCVTF(scratch, jit.X0)
+		ec.scratchFPRCache[valueID] = scratch
+		return scratch
+	}
 	// Check if the value is known to be int-typed from the IR. If so, we need
 	// to unbox the NaN-boxed int and convert via SCVTF, NOT FMOVtoFP (which
 	// would treat the NaN-boxing tag bits as float bits, producing NaN).

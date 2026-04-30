@@ -49,6 +49,10 @@ type RegAllocation struct {
 	// that loop. It is intentionally narrow today: table-array len/data facts
 	// only.
 	LoopInvariantGPRs map[int]map[int]PhysReg
+	// LoopInvariantFPRs maps loop header block ID -> SSA value ID -> physical
+	// FPR for selected LICM-hoisted float values that should stay resident
+	// across that loop.
+	LoopInvariantFPRs map[int]map[int]PhysReg
 }
 
 // AllocateRegisters performs register allocation on a Function.
@@ -95,145 +99,7 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 
 	if fn.CarryPreheaderInvariants {
 		alloc.LoopInvariantGPRs = assignLoopTableArrayInvariantGPRs(fn, li, alloc)
-	}
-
-	// Invariant carry: identify LICM-hoisted loop-invariant float values
-	// defined in pre-header blocks that should be pinned in FPRs across
-	// loop-body blocks. Unlike phi carry (which requires tight 2-block
-	// loops), invariant carry works for any loop with a pre-header.
-	//
-	// Phase 1 (pre-pass): identify candidate invariants per header,
-	// filter, rank, and budget-limit. No FPR assignments yet.
-	//
-	// Phase 2 (main loop): after a pre-header block is naturally allocated,
-	// collect the FPR assignments from alloc.ValueRegs for the top-N
-	// candidates. Store these as pinnedInvariants.
-	//
-	// Phase 3 (body blocks): merge pinnedInvariants into the carried map.
-
-	// invariantCandidates: headerID → ranked+budgeted list of value IDs
-	invariantCandidates := make(map[int][]int)
-	// preheaderToHeader: preheader block ID → header block ID
-	preheaderToHeader := make(map[int]int)
-	// pinnedInvariants: headerID → map[valueID]PhysReg (filled lazily)
-	pinnedInvariants := make(map[int]map[int]PhysReg)
-
-	if fn.CarryPreheaderInvariants {
-		preheaders := computeLoopPreheaders(fn, li)
-		allInvariants := collectPreheaderInvariants(fn, li, preheaders)
-
-		// Build blockByID for instruction lookups.
-		blockByID := make(map[int]*Block, len(fn.Blocks))
-		for _, b := range fn.Blocks {
-			blockByID[b.ID] = b
-		}
-
-		// Record reverse mapping: preheader block → header.
-		for headerID, phID := range preheaders {
-			preheaderToHeader[phID] = headerID
-		}
-
-		for headerID, invIDs := range allInvariants {
-			phBlock := blockByID[preheaders[headerID]]
-			if phBlock == nil {
-				continue
-			}
-
-			// Build value ID → *Instr map for pre-header defs.
-			phInstrs := make(map[int]*Instr, len(phBlock.Instrs))
-			for _, instr := range phBlock.Instrs {
-				if !instr.Op.IsTerminator() {
-					phInstrs[instr.ID] = instr
-				}
-			}
-
-			bodyBlocks := li.headerBlocks[headerID]
-
-			// Filter 1: only float-typed values.
-			// Filter 2: exclude values used OUTSIDE the loop body.
-			var candidates []int
-			for _, vid := range invIDs {
-				instr := phInstrs[vid]
-				if instr == nil || !needsFloatReg(instr) {
-					continue
-				}
-				usedOutside := false
-				for _, b := range fn.Blocks {
-					if bodyBlocks[b.ID] {
-						continue
-					}
-					if b.ID == preheaders[headerID] {
-						continue
-					}
-					for _, bi := range b.Instrs {
-						for _, a := range bi.Args {
-							if a != nil && a.ID == vid {
-								usedOutside = true
-								break
-							}
-						}
-						if usedOutside {
-							break
-						}
-					}
-					if usedOutside {
-						break
-					}
-				}
-				if usedOutside {
-					continue
-				}
-				candidates = append(candidates, vid)
-			}
-
-			if len(candidates) == 0 {
-				continue
-			}
-
-			// Rank by use-count inside the loop body (higher = better).
-			useCount := make(map[int]int, len(candidates))
-			for _, b := range fn.Blocks {
-				if !bodyBlocks[b.ID] {
-					continue
-				}
-				for _, bi := range b.Instrs {
-					for _, a := range bi.Args {
-						if a != nil {
-							useCount[a.ID]++
-						}
-					}
-				}
-			}
-			// Sort: descending use-count, tie-break ascending value ID.
-			for i := 1; i < len(candidates); i++ {
-				for j := i; j > 0; j-- {
-					a, b := candidates[j-1], candidates[j]
-					if useCount[a] < useCount[b] || (useCount[a] == useCount[b] && a > b) {
-						candidates[j-1], candidates[j] = candidates[j], candidates[j-1]
-					} else {
-						break
-					}
-				}
-			}
-
-			// Budget: available FPRs minus reserved temps minus float phis
-			// already pre-allocated for this header.
-			const reservedTemps = 3
-			floatPhiCount := 0
-			for _, phiID := range li.loopPhis[headerID] {
-				if pr, ok := alloc.ValueRegs[phiID]; ok && pr.IsFloat {
-					floatPhiCount++
-				}
-			}
-			budget := len(allocatableFPRs) - reservedTemps - floatPhiCount
-			if budget <= 0 {
-				continue
-			}
-			if len(candidates) > budget {
-				candidates = candidates[:budget]
-			}
-			invariantCandidates[headerID] = candidates
-		}
+		alloc.LoopInvariantFPRs = assignLoopFloatInvariantFPRs(fn, li, alloc)
 	}
 
 	// Raw-int single-predecessor carry: after a block is allocated, remember
@@ -272,16 +138,6 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 					}
 				}
 
-				// Invariant carry: works for any loop with a pre-header.
-				// Merge pinned invariant FPRs into the carried map.
-				if pinned, ok := pinnedInvariants[innerHeader]; ok {
-					if carried == nil {
-						carried = make(map[int]PhysReg, len(pinned))
-					}
-					for vid, pr := range pinned {
-						carried[vid] = pr
-					}
-				}
 			}
 		}
 		if rawIntBlockCarry && len(block.Preds) == 1 && !li.loopHeaders[block.ID] {
@@ -321,25 +177,10 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		if li.loopBlocks[block.ID] && len(alloc.LoopInvariantGPRs) > 0 {
 			carried = addLoopInvariantGPRCarry(block, li, alloc, carried)
 		}
-		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried)
-
-		// After allocating a pre-header, collect the natural FPR assignments
-		// for the top-N invariant candidates. These will be carried into
-		// the loop body blocks to prevent eviction.
-		if headerID, ok := preheaderToHeader[block.ID]; ok {
-			candidates := invariantCandidates[headerID]
-			if len(candidates) > 0 {
-				headerPinned := make(map[int]PhysReg, len(candidates))
-				for _, vid := range candidates {
-					if pr, ok := alloc.ValueRegs[vid]; ok && pr.IsFloat {
-						headerPinned[vid] = pr
-					}
-				}
-				if len(headerPinned) > 0 {
-					pinnedInvariants[headerID] = headerPinned
-				}
-			}
+		if li.loopBlocks[block.ID] && len(alloc.LoopInvariantFPRs) > 0 {
+			carried = addLoopInvariantFPRCarry(block, li, alloc, carried)
 		}
+		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried)
 	}
 
 	return alloc
@@ -624,8 +465,177 @@ func tableArrayInvariantRank(instr *Instr) int {
 	return 1
 }
 
+func assignLoopFloatInvariantFPRs(fn *Function, li *loopInfo, alloc *RegAllocation) map[int]map[int]PhysReg {
+	if fn == nil || li == nil || !li.hasLoops() || alloc == nil {
+		return nil
+	}
+	preheaders := computeLoopPreheaders(fn, li)
+	if len(preheaders) == 0 {
+		return nil
+	}
+	allInvariants := collectPreheaderInvariants(fn, li, preheaders)
+	if len(allInvariants) == 0 {
+		return nil
+	}
+
+	defs := make(map[int]*Instr)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op.IsTerminator() {
+				continue
+			}
+			defs[instr.ID] = instr
+		}
+	}
+
+	out := make(map[int]map[int]PhysReg)
+	for _, headerID := range sortedLoopHeaders(li) {
+		invIDs := allInvariants[headerID]
+		if len(invIDs) == 0 {
+			continue
+		}
+		bodyBlocks := li.headerBlocks[headerID]
+		preheaderID := preheaders[headerID]
+		if bodyBlocks == nil {
+			continue
+		}
+
+		useCounts := make(map[int]int)
+		candidateSet := make(map[int]bool)
+		for _, vid := range invIDs {
+			instr := defs[vid]
+			if instr == nil || !needsFloatReg(instr) {
+				continue
+			}
+			if preheaderInvariantUsedOutsideLoop(fn, vid, bodyBlocks, preheaderID) {
+				continue
+			}
+			candidateSet[vid] = true
+		}
+		if len(candidateSet) == 0 {
+			continue
+		}
+
+		for _, block := range fn.Blocks {
+			if !bodyBlocks[block.ID] {
+				continue
+			}
+			for _, instr := range block.Instrs {
+				if instr.Op == OpPhi {
+					continue
+				}
+				for _, arg := range instr.Args {
+					if arg != nil && candidateSet[arg.ID] {
+						useCounts[arg.ID]++
+					}
+				}
+			}
+		}
+
+		candidates := make([]int, 0, len(candidateSet))
+		for id := range candidateSet {
+			if useCounts[id] > 0 {
+				candidates = append(candidates, id)
+			}
+		}
+		if len(candidates) == 0 {
+			continue
+		}
+		sortFloatInvariantCandidates(candidates, useCounts)
+
+		usedRegs := loopFloatPhiRegsInBody(li, alloc, headerID, bodyBlocks)
+
+		const reservedTemps = 3
+		budget := len(allocatableFPRs) - reservedTemps - len(usedRegs)
+		if budget <= 0 {
+			continue
+		}
+		for _, id := range candidates {
+			if len(out[headerID]) >= budget {
+				break
+			}
+			var pr PhysReg
+			if existing, ok := alloc.ValueRegs[id]; ok && existing.IsFloat && !usedRegs[existing.Reg] {
+				pr = existing
+			} else {
+				reg, ok := firstFreeFPR(usedRegs)
+				if !ok {
+					break
+				}
+				pr = PhysReg{Reg: reg, IsFloat: true}
+				alloc.ValueRegs[id] = pr
+			}
+			usedRegs[pr.Reg] = true
+			if out[headerID] == nil {
+				out[headerID] = make(map[int]PhysReg)
+			}
+			out[headerID][id] = pr
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func preheaderInvariantUsedOutsideLoop(fn *Function, valueID int, bodyBlocks map[int]bool, preheaderID int) bool {
+	for _, block := range fn.Blocks {
+		if bodyBlocks[block.ID] || block.ID == preheaderID {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			for _, arg := range instr.Args {
+				if arg != nil && arg.ID == valueID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func sortFloatInvariantCandidates(ids []int, useCounts map[int]int) {
+	for i := 1; i < len(ids); i++ {
+		for j := i; j > 0; j-- {
+			a, b := ids[j-1], ids[j]
+			if useCounts[a] < useCounts[b] || (useCounts[a] == useCounts[b] && a > b) {
+				ids[j-1], ids[j] = ids[j], ids[j-1]
+			} else {
+				break
+			}
+		}
+	}
+}
+
+func loopFloatPhiRegsInBody(li *loopInfo, alloc *RegAllocation, headerID int, bodyBlocks map[int]bool) map[int]bool {
+	usedRegs := make(map[int]bool)
+	if li == nil || alloc == nil {
+		return usedRegs
+	}
+	for phiHeaderID, phiIDs := range li.loopPhis {
+		if phiHeaderID != headerID && !bodyBlocks[phiHeaderID] {
+			continue
+		}
+		for _, phiID := range phiIDs {
+			if pr, ok := alloc.ValueRegs[phiID]; ok && pr.IsFloat {
+				usedRegs[pr.Reg] = true
+			}
+		}
+	}
+	return usedRegs
+}
+
 func firstFreeGPR(used map[int]bool) (int, bool) {
 	for _, reg := range allocatableGPRs {
+		if !used[reg] {
+			return reg, true
+		}
+	}
+	return 0, false
+}
+
+func firstFreeFPR(used map[int]bool) (int, bool) {
+	for _, reg := range allocatableFPRs {
 		if !used[reg] {
 			return reg, true
 		}
@@ -689,11 +699,34 @@ func isLoopInvariantGPRValue(alloc *RegAllocation, valueID int) bool {
 	return false
 }
 
+func isLoopInvariantFPRValue(alloc *RegAllocation, valueID int) bool {
+	if alloc == nil {
+		return false
+	}
+	for _, values := range alloc.LoopInvariantFPRs {
+		if _, ok := values[valueID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func updateLoopInvariantGPRReg(alloc *RegAllocation, valueID int, pr PhysReg) {
 	if alloc == nil || pr.IsFloat {
 		return
 	}
 	for _, values := range alloc.LoopInvariantGPRs {
+		if _, ok := values[valueID]; ok {
+			values[valueID] = pr
+		}
+	}
+}
+
+func updateLoopInvariantFPRReg(alloc *RegAllocation, valueID int, pr PhysReg) {
+	if alloc == nil || !pr.IsFloat {
+		return
+	}
+	for _, values := range alloc.LoopInvariantFPRs {
 		if _, ok := values[valueID]; ok {
 			values[valueID] = pr
 		}
@@ -711,6 +744,37 @@ func sortedInvariantIDs(m map[int]PhysReg) []int {
 		}
 	}
 	return ids
+}
+
+func addLoopInvariantFPRCarry(block *Block, li *loopInfo, alloc *RegAllocation, carried map[int]PhysReg) map[int]PhysReg {
+	if block == nil || li == nil || alloc == nil || len(alloc.LoopInvariantFPRs) == 0 {
+		return carried
+	}
+	usedRegs := make(map[int]bool)
+	for _, pr := range carried {
+		if pr.IsFloat {
+			usedRegs[pr.Reg] = true
+		}
+	}
+	for _, headerID := range sortedLoopHeaders(li) {
+		body := li.headerBlocks[headerID]
+		if body == nil || !body[block.ID] {
+			continue
+		}
+		ids := sortedInvariantIDs(alloc.LoopInvariantFPRs[headerID])
+		for _, id := range ids {
+			pr := alloc.LoopInvariantFPRs[headerID][id]
+			if !pr.IsFloat || usedRegs[pr.Reg] {
+				continue
+			}
+			if carried == nil {
+				carried = make(map[int]PhysReg)
+			}
+			carried[id] = pr
+			usedRegs[pr.Reg] = true
+		}
+	}
+	return carried
 }
 
 // regState tracks the current state of a register pool (GPR or FPR).
@@ -848,10 +912,9 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 	fprs := newRegState(allocatableFPRs[:], true)
 
 	// Pre-populate regstate with loop-header phi assignments so that body
-	// SSA results don't reuse the phi's physical register. carriedIDs
-	// tracks which IDs were pre-populated so that eviction does NOT delete
-	// their global alloc.ValueRegs entry (that entry was set by the
-	// defining header's allocation and must remain authoritative).
+	// SSA results don't reuse the phi's physical register. carriedIDs tracks
+	// which IDs were pre-populated so local eviction does not invalidate the
+	// defining header/preheader's canonical assignment.
 	carriedIDs := make(map[int]bool, len(carried))
 	for valID, pr := range carried {
 		var rs *regState
@@ -962,6 +1025,10 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 					updateLoopInvariantGPRReg(alloc, instr.ID, pr)
 					rs.pin(instr.ID)
 				}
+				if wantFloat && isLoopInvariantFPRValue(alloc, instr.ID) {
+					updateLoopInvariantFPRReg(alloc, instr.ID, pr)
+					rs.pin(instr.ID)
+				}
 				freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse, temporaryCarried)
 				continue
 			}
@@ -975,6 +1042,10 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 			alloc.ValueRegs[instr.ID] = pr
 			if !wantFloat && isLoopInvariantGPRValue(alloc, instr.ID) {
 				updateLoopInvariantGPRReg(alloc, instr.ID, pr)
+				rs.pin(instr.ID)
+			}
+			if wantFloat && isLoopInvariantFPRValue(alloc, instr.ID) {
+				updateLoopInvariantFPRReg(alloc, instr.ID, pr)
 				rs.pin(instr.ID)
 			}
 		} else {
@@ -992,21 +1063,26 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 				alloc.SpillSlots[evictedID] = alloc.NumSpillSlots
 				alloc.NumSpillSlots++
 			}
-			// The evicted value loses its register -- BUT only delete the
-			// global assignment if this value was DEFINED in this block.
-			// Pre-populated loop-header phis have their canonical PhysReg
-			// set by the header's allocation; evicting locally doesn't
-			// invalidate the header's assignment.
-			if !carriedIDs[evictedID] {
+			// Normally an evicted value no longer has a valid block-local
+			// register assignment. One important exception is output allocation
+			// for an instruction that also consumes the evicted value at its
+			// final use: the emitter resolves inputs before writing the output,
+			// so keeping that assignment lets codegen use the register instead
+			// of a spill reload for this one instruction without exposing stale
+			// mappings to later uses.
+			if !carriedIDs[evictedID] && !isFinalInputUse(instr, evictedID, lastUse) {
 				delete(alloc.ValueRegs, evictedID)
 			}
-
 			// Assign the freed register to the new value.
 			rs.assign(instr.ID, r)
 			pr := PhysReg{Reg: r, IsFloat: wantFloat}
 			alloc.ValueRegs[instr.ID] = pr
 			if !wantFloat && isLoopInvariantGPRValue(alloc, instr.ID) {
 				updateLoopInvariantGPRReg(alloc, instr.ID, pr)
+				rs.pin(instr.ID)
+			}
+			if wantFloat && isLoopInvariantFPRValue(alloc, instr.ID) {
+				updateLoopInvariantFPRReg(alloc, instr.ID, pr)
 				rs.pin(instr.ID)
 			}
 		}
@@ -1017,6 +1093,18 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 		freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse, temporaryCarried)
 	}
 	return gprs.snapshot(false)
+}
+
+func isFinalInputUse(instr *Instr, valueID int, lastUse map[int]int) bool {
+	if instr == nil || lastUse[valueID] != instr.ID {
+		return false
+	}
+	for _, arg := range instr.Args {
+		if arg != nil && arg.ID == valueID {
+			return true
+		}
+	}
+	return false
 }
 
 func freeTemporaryCarriedInputs(instr *Instr, gprs, fprs *regState, lastUse map[int]int, temporaryCarried map[int]bool) {

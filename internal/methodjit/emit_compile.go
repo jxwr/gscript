@@ -58,6 +58,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	var safeHdrRegs map[int]map[int]loopRegEntry
 	var safeHdrFPRegs map[int]map[int]loopFPRegEntry
 	var loopInvariantGPRs map[int]map[int]loopRegEntry
+	var loopInvariantFPRs map[int]map[int]loopFPRegEntry
 	var phiOnlyArgs loopPhiArgSet
 	var fpPhiOnlyArgs loopPhiArgSet
 	exitBoxPhis := make(map[int]bool)
@@ -72,6 +73,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		safeHdrRegs = computeSafeHeaderRegs(fn, li, alloc, headerRegs)
 		safeHdrFPRegs = computeSafeHeaderFPRegs(fn, li, alloc, headerFPRegs)
 		loopInvariantGPRs = computeSafeLoopInvariantGPRs(fn, li, alloc)
+		loopInvariantFPRs = computeSafeLoopInvariantFPRs(fn, li, alloc)
 		phiOnlyArgs = computeLoopPhiArgs(fn, li, alloc, safeHdrRegs)
 		fpPhiOnlyArgs = computeLoopFPPhiArgs(fn, li, alloc, safeHdrFPRegs)
 
@@ -281,6 +283,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		safeHeaderRegs:             safeHdrRegs,
 		safeHeaderFPRegs:           safeHdrFPRegs,
 		loopInvariantGPRs:          loopInvariantGPRs,
+		loopInvariantFPRs:          loopInvariantFPRs,
 		loopPhiOnlyArgs:            phiOnlyArgs,
 		loopFPPhiOnlyArgs:          fpPhiOnlyArgs,
 		loopExitBoxPhis:            exitBoxPhis,
@@ -680,6 +683,10 @@ type emitContext struct {
 	// typed-array len/data facts) whose registers are pinned by regalloc and
 	// can be activated in every block of the owning loop.
 	loopInvariantGPRs map[int]map[int]loopRegEntry
+	// loopInvariantFPRs are selected loop-invariant float values whose
+	// registers are pinned by regalloc and can be activated in every block of
+	// the owning loop.
+	loopInvariantFPRs map[int]map[int]loopFPRegEntry
 
 	// loopPhiOnlyArgs is the set of value IDs that are ONLY used as phi args
 	// to loop header phis. storeRawInt skips write-through for these values
@@ -1620,6 +1627,9 @@ func (ec *emitContext) emitBlock(block *Block) {
 	}
 	if isLoopBlock && ec.loopInvariantGPRs != nil {
 		ec.activateLoopInvariantGPRs(block.ID)
+	}
+	if isLoopBlock && ec.loopInvariantFPRs != nil {
+		ec.activateLoopInvariantFPRs(block.ID)
 	}
 
 	// Phi values are active at block entry (their registers were loaded

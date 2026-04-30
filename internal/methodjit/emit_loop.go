@@ -510,6 +510,54 @@ func computeSafeLoopInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAllocati
 	return safe
 }
 
+func computeSafeLoopInvariantFPRs(fn *Function, li *loopInfo, alloc *RegAllocation) map[int]map[int]loopFPRegEntry {
+	if fn == nil || li == nil || alloc == nil || len(alloc.LoopInvariantFPRs) == 0 {
+		return nil
+	}
+	safe := make(map[int]map[int]loopFPRegEntry)
+	for headerID, values := range alloc.LoopInvariantFPRs {
+		bodyBlocks := li.headerBlocks[headerID]
+		if bodyBlocks == nil {
+			continue
+		}
+		for valueID, pr := range values {
+			if !pr.IsFloat {
+				continue
+			}
+			clobbered := false
+			for _, block := range fn.Blocks {
+				if !bodyBlocks[block.ID] {
+					continue
+				}
+				for _, instr := range block.Instrs {
+					if instr.ID == valueID || instr.Op.IsTerminator() {
+						continue
+					}
+					instrPR, ok := alloc.ValueRegs[instr.ID]
+					if ok && instrPR.IsFloat && instrPR.Reg == pr.Reg {
+						clobbered = true
+						break
+					}
+				}
+				if clobbered {
+					break
+				}
+			}
+			if clobbered {
+				continue
+			}
+			if safe[headerID] == nil {
+				safe[headerID] = make(map[int]loopFPRegEntry)
+			}
+			safe[headerID][valueID] = loopFPRegEntry{ValueID: valueID}
+		}
+	}
+	if len(safe) == 0 {
+		return nil
+	}
+	return safe
+}
+
 func isLoopInvariantRawInt(fn *Function, valueID int) bool {
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -553,7 +601,48 @@ func (ec *emitContext) activateLoopInvariantGPRs(blockID int) {
 	}
 }
 
+func (ec *emitContext) activateLoopInvariantFPRs(blockID int) {
+	if ec == nil || ec.loop == nil {
+		return
+	}
+	usedRegs := make(map[int]bool)
+	for valueID := range ec.activeFPRegs {
+		if pr, ok := ec.alloc.ValueRegs[valueID]; ok && pr.IsFloat {
+			usedRegs[pr.Reg] = true
+		}
+	}
+	for _, headerID := range sortedLoopHeaders(ec.loop) {
+		values := ec.loopInvariantFPRs[headerID]
+		body := ec.loop.headerBlocks[headerID]
+		if body == nil || !body[blockID] {
+			continue
+		}
+		for _, valueID := range sortedLoopFPRegEntryIDs(values) {
+			entry := values[valueID]
+			pr, ok := ec.alloc.ValueRegs[entry.ValueID]
+			if !ok || !pr.IsFloat || usedRegs[pr.Reg] {
+				continue
+			}
+			usedRegs[pr.Reg] = true
+			ec.activeFPRegs[entry.ValueID] = true
+		}
+	}
+}
+
 func sortedLoopRegEntryIDs(m map[int]loopRegEntry) []int {
+	ids := make([]int, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	for i := 1; i < len(ids); i++ {
+		for j := i; j > 0 && ids[j-1] > ids[j]; j-- {
+			ids[j-1], ids[j] = ids[j], ids[j-1]
+		}
+	}
+	return ids
+}
+
+func sortedLoopFPRegEntryIDs(m map[int]loopFPRegEntry) []int {
 	ids := make([]int, 0, len(m))
 	for id := range m {
 		ids = append(ids, id)

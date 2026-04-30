@@ -450,6 +450,99 @@ func TestRegalloc_TableArrayLenDataInvariantGPRPinned(t *testing.T) {
 	}
 }
 
+func TestRegalloc_PreheaderInvariantPinnedWhenBodyPrecedesPreheader(t *testing.T) {
+	fn := &Function{NumRegs: 2, CarryPreheaderInvariants: true}
+
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	preheader := &Block{ID: 1, defs: make(map[int]*Value)}
+	header := &Block{ID: 2, defs: make(map[int]*Value)}
+	body := &Block{ID: 3, defs: make(map[int]*Value)}
+	exit := &Block{ID: 4, defs: make(map[int]*Value)}
+	fn.Entry = entry
+	// Match the production LICM shape that exposed the bug: RPO can place the
+	// hot body before the preheader in fn.Blocks.
+	fn.Blocks = []*Block{entry, body, preheader, header, exit}
+
+	entry.Succs = []*Block{preheader}
+	preheader.Preds = []*Block{entry}
+	preheader.Succs = []*Block{header}
+	header.Preds = []*Block{preheader, body}
+	header.Succs = []*Block{body, exit}
+	body.Preds = []*Block{header}
+	body.Succs = []*Block{header}
+	exit.Preds = []*Block{header}
+
+	entry.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: entry, Aux: int64(preheader.ID)}}
+
+	k1 := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: preheader}
+	k2 := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: preheader}
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: preheader}
+	preheader.Instrs = []*Instr{
+		k1,
+		k2,
+		seed,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: preheader, Aux: int64(header.ID)},
+	}
+
+	acc := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: header, Aux: 1}
+	header.Instrs = []*Instr{
+		acc,
+		cond,
+		{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Block: header, Aux: int64(body.ID), Aux2: int64(exit.ID)},
+	}
+
+	mul := &Instr{ID: fn.newValueID(), Op: OpMulFloat, Type: TypeFloat, Args: []*Value{acc.Value(), k1.Value()}, Block: body}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Args: []*Value{mul.Value(), k2.Value()}, Block: body}
+	body.Instrs = []*Instr{
+		mul,
+		add,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: body, Aux: int64(header.ID)},
+	}
+	acc.Args = []*Value{seed.Value(), add.Value()}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Args: []*Value{acc.Value()}, Block: exit}}
+
+	alloc := AllocateRegisters(fn)
+	invariants := alloc.LoopInvariantFPRs[header.ID]
+	for _, inv := range []*Instr{k1, k2} {
+		pr, ok := invariants[inv.ID]
+		if !ok {
+			t.Fatalf("preheader invariant v%d was not pinned; invariants=%v", inv.ID, invariants)
+		}
+		if !pr.IsFloat {
+			t.Fatalf("preheader invariant v%d pinned to GPR X%d, want FPR", inv.ID, pr.Reg)
+		}
+	}
+
+	li := computeLoopInfo(fn)
+	safe := computeSafeLoopInvariantFPRs(fn, li, alloc)
+	for _, inv := range []*Instr{k1, k2} {
+		if _, ok := safe[header.ID][inv.ID]; !ok {
+			t.Fatalf("preheader invariant v%d was not safe to activate; safe=%v alloc=%v", inv.ID, safe[header.ID], alloc.ValueRegs)
+		}
+	}
+
+	accReg := alloc.ValueRegs[acc.ID]
+	for _, inv := range []*Instr{k1, k2} {
+		invReg := alloc.ValueRegs[inv.ID]
+		if invReg.Reg == accReg.Reg {
+			t.Fatalf("invariant v%d reused accumulator phi FPR D%d", inv.ID, invReg.Reg)
+		}
+	}
+	for _, op := range []*Instr{mul, add} {
+		opReg, ok := alloc.ValueRegs[op.ID]
+		if !ok || !opReg.IsFloat {
+			t.Fatalf("body op v%d has no FPR allocation: %v", op.ID, alloc.ValueRegs[op.ID])
+		}
+		for _, inv := range []*Instr{k1, k2} {
+			invReg := alloc.ValueRegs[inv.ID]
+			if opReg.Reg == invReg.Reg {
+				t.Fatalf("body op v%d clobbers invariant v%d in D%d", op.ID, inv.ID, opReg.Reg)
+			}
+		}
+	}
+}
+
 // TestRegalloc_InvariantBudgetRespected constructs a pre-header with 7
 // ConstFloat definitions (more than the FPR budget allows) and verifies
 // that the budget limits pinning. Pinned invariants are protected: no body

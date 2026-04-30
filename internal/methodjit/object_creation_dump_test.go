@@ -83,8 +83,8 @@ func TestObjectCreationDump(t *testing.T) {
 	// TypedTableABI: table exits now record SourcePC so resume can warm the
 	// correct per-PC field cache for dynamic Tier2 field-cache probes.
 	baselines := []baseline{
-		{"create_and_sum", 171, 69},  // R161: was 1277/598
-		{"transform_chain", 193, 73}, // R161: was 1701/816
+		{"create_and_sum", 165, 66},  // R161: was 1277/598
+		{"transform_chain", 178, 67}, // R161: was 1701/816
 		{"new_vec3", 228, 132},       // unchanged EA shape; table-exit metadata grew
 	}
 
