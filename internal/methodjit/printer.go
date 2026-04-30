@@ -120,7 +120,11 @@ func printInstr(sb *strings.Builder, i *Instr) {
 			if i.Aux == 2 {
 				val = "true"
 			}
-			fmt.Fprintf(sb, "v%d, v%d..v%d = %s", i.Args[0].ID, i.Args[1].ID, i.Args[2].ID, val)
+			if len(i.Args) >= 4 {
+				fmt.Fprintf(sb, "v%d, v%d..v%d step v%d = %s", i.Args[0].ID, i.Args[1].ID, i.Args[2].ID, i.Args[3].ID, val)
+			} else {
+				fmt.Fprintf(sb, "v%d, v%d..v%d = %s", i.Args[0].ID, i.Args[1].ID, i.Args[2].ID, val)
+			}
 		}
 	case OpGuardType:
 		if len(i.Args) > 0 {

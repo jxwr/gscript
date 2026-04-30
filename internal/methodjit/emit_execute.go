@@ -366,10 +366,11 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 		}
 
 	case TableOpBoolArrayFill:
-		// Fill R(table)[start..end] with a constant bool value.
+		// Fill R(table)[start..end] with a constant bool value, optionally by stride.
 		tableSlot := int(ctx.TableSlot)
 		startSlot := int(ctx.TableKeySlot)
 		endSlot := int(ctx.TableValSlot)
+		stepSlot := int(ctx.TableAux2)
 		if tableSlot < len(regs) && startSlot < len(regs) && endSlot < len(regs) {
 			tblVal := regs[tableSlot]
 			startVal := regs[startSlot]
@@ -378,9 +379,16 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 				val := runtime.BoolValue(ctx.TableAux != 0)
 				tbl := tblVal.Table()
 				start, end := startVal.Int(), endVal.Int()
-				for i := start; i <= end; i++ {
+				step := int64(1)
+				if stepSlot > 0 && stepSlot < len(regs) && regs[stepSlot].IsInt() {
+					step = regs[stepSlot].Int()
+				}
+				if step <= 0 {
+					break
+				}
+				for i := start; i <= end; i += step {
 					tbl.RawSetInt(i, val)
-					if i == end {
+					if i == end || i > end-step {
 						break
 					}
 				}

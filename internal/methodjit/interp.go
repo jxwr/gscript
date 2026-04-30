@@ -604,10 +604,21 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		if !start.IsInt() || !end.IsInt() {
 			return nil, false, fmt.Errorf("OpTableBoolArrayFill: bounds are not ints")
 		}
+		step := int64(1)
+		if len(instr.Args) >= 4 {
+			stepVal := s.val(instr.Args[3])
+			if !stepVal.IsInt() {
+				return nil, false, fmt.Errorf("OpTableBoolArrayFill: step is not int")
+			}
+			step = stepVal.Int()
+		}
+		if step <= 0 {
+			return nil, false, fmt.Errorf("OpTableBoolArrayFill: non-positive step")
+		}
 		val := runtime.BoolValue(instr.Aux == 2)
-		for i := start.Int(); i <= end.Int(); i++ {
+		for i := start.Int(); i <= end.Int(); i += step {
 			tbl.Table().RawSetInt(i, val)
-			if i == end.Int() {
+			if i == end.Int() || i > end.Int()-step {
 				break
 			}
 		}

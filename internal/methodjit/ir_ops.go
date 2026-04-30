@@ -109,9 +109,10 @@ const (
 	// Reuses previously verified typed-array facts, checks key/value before
 	// mutation, and precise-deopts on miss so the interpreter replays SETTABLE.
 	OpTableArrayStore
-	// Bulk bool-array fill. Args = [table, start, end], Aux = byte value
-	// (1=false, 2=true). It preserves RawSetInt sparse/append semantics for
-	// constant-bool contiguous initialization, with table-exit fallback.
+	// Bulk bool-array fill. Args = [table, start, end] for contiguous fills or
+	// [table, start, end, step] for bounded stride fills. Aux = byte value
+	// (1=false, 2=true). The stride form uses a guarded bool-array kernel and
+	// falls back through RawSetInt when array kind or bounds do not match.
 	OpTableBoolArrayFill
 	// Same-block nested row load:
 	// Args = [outerData, outerLen, outerKey, innerKey], Aux = inner row FBKind.

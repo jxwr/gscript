@@ -701,6 +701,8 @@ func (ec *emitContext) emitTableBoolArrayFill(instr *Instr) {
 	doneLabel := ec.uniqueLabel("boolfill_done")
 	storeLoopLabel := ec.uniqueLabel("boolfill_loop")
 	storeDoneLabel := ec.uniqueLabel("boolfill_store_done")
+	strideLoopLabel := ec.uniqueLabel("boolfill_stride_loop")
+	strideDoneLabel := ec.uniqueLabel("boolfill_stride_done")
 
 	tblValueID := instr.Args[0].ID
 	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
@@ -742,6 +744,52 @@ func (ec *emitContext) emitTableBoolArrayFill(instr *Instr) {
 		return
 	}
 	asm.MOVreg(jit.X3, jit.X1) // end
+	if len(instr.Args) >= 4 {
+		if !ec.emitTableArrayKeyToReg(instr.Args[3], fallbackLabel) {
+			ec.emitDeopt(instr)
+			return
+		}
+		asm.MOVreg(jit.X8, jit.X1) // positive stride
+		asm.MOVreg(jit.X1, jit.X7) // current index
+		asm.CMPreg(jit.X3, jit.X1)
+		asm.BCond(jit.CondLT, doneLabel)
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, fallbackLabel)
+		asm.CMPimm(jit.X8, 0)
+		asm.BCond(jit.CondLE, fallbackLabel)
+		asm.LDR(jit.X6, jit.X0, jit.TableOffBoolArrayLen)
+		asm.CMPreg(jit.X3, jit.X6)
+		asm.BCond(jit.CondGE, fallbackLabel)
+
+		asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray)
+		asm.MOVimm16(jit.X4, uint16(instr.Aux))
+		if instr.Aux2&boolFillFlagNoStrideOverflow != 0 {
+			asm.Label(strideLoopLabel)
+			asm.STRBreg(jit.X4, jit.X2, jit.X1)
+			asm.ADDreg(jit.X1, jit.X1, jit.X8)
+			asm.CMPreg(jit.X1, jit.X3)
+			asm.BCond(jit.CondGT, strideDoneLabel)
+			asm.STRBreg(jit.X4, jit.X2, jit.X1)
+			asm.ADDreg(jit.X1, jit.X1, jit.X8)
+			asm.CMPreg(jit.X1, jit.X3)
+			asm.BCond(jit.CondLE, strideLoopLabel)
+		} else {
+			asm.Label(strideLoopLabel)
+			asm.STRBreg(jit.X4, jit.X2, jit.X1)
+			asm.CMPreg(jit.X1, jit.X3)
+			asm.BCond(jit.CondEQ, strideDoneLabel)
+			asm.MOVreg(jit.X9, jit.X1)
+			asm.ADDreg(jit.X1, jit.X1, jit.X8)
+			asm.CMPreg(jit.X1, jit.X9)
+			asm.BCond(jit.CondLE, fallbackLabel)
+			asm.CMPreg(jit.X1, jit.X3)
+			asm.BCond(jit.CondLE, strideLoopLabel)
+		}
+		asm.Label(strideDoneLabel)
+		asm.MOVimm16(jit.X6, 1)
+		asm.STRB(jit.X6, jit.X0, jit.TableOffKeysDirty)
+		asm.B(doneLabel)
+	}
 	asm.MOVreg(jit.X1, jit.X7) // current index
 	asm.CMPreg(jit.X3, jit.X1)
 	asm.BCond(jit.CondLT, doneLabel)
@@ -779,7 +827,7 @@ func (ec *emitContext) emitTableBoolArrayFill(instr *Instr) {
 
 func (ec *emitContext) emitTableBoolArrayFillExit(instr *Instr) {
 	asm := ec.asm
-	for i := 0; i < 3 && i < len(instr.Args); i++ {
+	for i := 0; i < 4 && i < len(instr.Args); i++ {
 		arg := instr.Args[i]
 		if arg == nil {
 			continue
@@ -794,6 +842,7 @@ func (ec *emitContext) emitTableBoolArrayFillExit(instr *Instr) {
 	}
 
 	tblSlot, startSlot, endSlot := 0, 0, 0
+	stepSlot := 0
 	if len(instr.Args) > 0 {
 		if s, ok := ec.slotMap[instr.Args[0].ID]; ok {
 			tblSlot = s
@@ -807,6 +856,11 @@ func (ec *emitContext) emitTableBoolArrayFillExit(instr *Instr) {
 	if len(instr.Args) > 2 {
 		if s, ok := ec.slotMap[instr.Args[2].ID]; ok {
 			endSlot = s
+		}
+	}
+	if len(instr.Args) > 3 {
+		if s, ok := ec.slotMap[instr.Args[3].ID]; ok {
+			stepSlot = s
 		}
 	}
 
@@ -827,6 +881,8 @@ func (ec *emitContext) emitTableBoolArrayFillExit(instr *Instr) {
 	}
 	asm.LoadImm64(jit.X0, boolVal)
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux)
+	asm.LoadImm64(jit.X0, int64(stepSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux2)
 	asm.LoadImm64(jit.X0, int64(instr.ID))
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 
