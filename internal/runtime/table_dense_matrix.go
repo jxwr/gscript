@@ -232,6 +232,49 @@ func NewDenseMatrix(rows, cols int) *Table {
 	return outer
 }
 
+// DenseFloatMatrixForNumericKernel exposes a DenseMatrix flat backing to
+// guarded whole-call kernels. The view is valid only when ordinary t[i][j]
+// indexing for the requested rectangle is known to hit the dense backing
+// without metatable, lazy, or concurrent table behavior.
+func (t *Table) DenseFloatMatrixForNumericKernel(rows, cols int) ([]float64, int, bool) {
+	if rows < 0 || cols < 0 || t == nil || t.mu != nil || t.lazyTree != nil ||
+		t.metatable != nil || t.arrayKind != ArrayMixed {
+		return nil, 0, false
+	}
+	if rows == 0 || cols == 0 {
+		return nil, cols, true
+	}
+	stride := int(t.dmStride)
+	if stride < cols || t.dmMeta == nil || len(t.dmMeta.backing) < (rows-1)*stride+cols ||
+		len(t.array) < rows {
+		return nil, 0, false
+	}
+	return t.dmMeta.backing, stride, true
+}
+
+// PlainFloatMatrixRowsForNumericKernel exposes row slices for a guarded
+// table-of-float-rows matrix. It deliberately rejects any outer or row shape
+// that could require metamethods, lazy materialization, or table locks.
+func (t *Table) PlainFloatMatrixRowsForNumericKernel(rows, cols int) ([][]float64, bool) {
+	if rows < 0 || cols < 0 || t == nil || t.mu != nil || t.lazyTree != nil ||
+		t.metatable != nil || t.arrayKind != ArrayMixed || len(t.array) < rows {
+		return nil, false
+	}
+	out := make([][]float64, rows)
+	for i := 0; i < rows; i++ {
+		row := t.array[i].Table()
+		if row == nil {
+			return nil, false
+		}
+		vals, ok := row.PlainFloatArrayForNumericKernel(cols)
+		if !ok {
+			return nil, false
+		}
+		out[i] = vals
+	}
+	return out, true
+}
+
 // DenseMatrixBackingByRows is a test/debug helper that reconstructs
 // the logical flat backing of a DenseMatrix by concatenating row
 // contents. Uses only the public row iteration path so it works

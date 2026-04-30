@@ -194,6 +194,22 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// Get the function profile (cached after first computation).
 	profile := tm.getProfile(proto)
 
+	if vm.IsNestedMatmulKernelProto(proto) {
+		proto.JITDisabled = true
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "whole_call_matmul_kernel",
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "whole_call_matmul_kernel",
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "whole_call_matmul_kernel",
+			"target": "interpreter",
+		})
+		return nil
+	}
+
 	if !tm.tier2Failed[proto] {
 		if t2, ok := tm.compileFixedRecursiveTableBuilderTier2(proto); ok {
 			tm.tier2Compiled[proto] = t2

@@ -1443,7 +1443,14 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			if cl, ok := closureFromValue(fnVal); ok {
 				if b != 0 && nArgs == 3 {
 					args := vm.regs[base+a+1 : base+a+1+nArgs]
-					handled, err := vm.tryWholeCallKernel(cl, args, c, base+a)
+					handled, err := vm.tryValueWholeCallKernel(cl, args, c, base+a)
+					if handled {
+						if err != nil {
+							return nil, wrapLineErr(frame, err)
+						}
+						break
+					}
+					handled, err = vm.tryWholeCallKernel(cl, args, c, base+a)
 					if handled {
 						if err != nil {
 							return nil, wrapLineErr(frame, err)
@@ -2036,6 +2043,9 @@ func (vm *VM) writeCallResults(dst, c int, results []runtime.Value) {
 func (vm *VM) callValue(fnVal runtime.Value, args []runtime.Value) ([]runtime.Value, error) {
 	if fnVal.IsFunction() {
 		if cl, ok := closureFromValue(fnVal); ok {
+			if handled, results, err := vm.tryRunValueWholeCallKernel(cl, args); handled {
+				return results, err
+			}
 			if handled, err := vm.tryRunWholeCallKernel(cl, args); handled {
 				return nil, err
 			}

@@ -2,6 +2,22 @@ package vm
 
 import "github.com/gscript/gscript/internal/runtime"
 
+func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, dst int) (bool, error) {
+	handled, results, err := vm.tryRunValueWholeCallKernel(cl, args)
+	if !handled || err != nil {
+		return handled, err
+	}
+	vm.writeCallResults(dst, c, results)
+	return true, nil
+}
+
+func (vm *VM) tryRunValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if handled, results, err := vm.tryRunMatmulWholeCallKernel(cl, args); handled || err != nil {
+		return handled, results, err
+	}
+	return false, nil, nil
+}
+
 // tryWholeCallKernel executes a guarded whole-call numeric kernel and writes
 // the no-result call convention used by in-place kernels.
 func (vm *VM) tryWholeCallKernel(cl *Closure, args []runtime.Value, c int, dst int) (bool, error) {
