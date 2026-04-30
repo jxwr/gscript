@@ -27,6 +27,7 @@ type exitResumeLiveSlot struct {
 	RawInt      bool
 	RawFloat    bool
 	RawTablePtr bool
+	RawDataPtr  bool
 }
 
 type exitResumeCheckSite struct {
@@ -141,6 +142,7 @@ func (ec *emitContext) exitResumeCheckLiveSlots(gprLive, fprLive map[int]bool) [
 			Repr:        repr,
 			RawInt:      repr == valueReprRawInt,
 			RawTablePtr: repr == valueReprRawTablePtr,
+			RawDataPtr:  repr == valueReprRawDataPtr,
 		})
 		seen[valueID] = true
 	}

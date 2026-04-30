@@ -51,6 +51,9 @@ func (ec *emitContext) setValueRepr(valueID int, repr valueRepr) {
 	case valueReprRawTablePtr:
 		ec.rawTablePtrRegs[valueID] = true
 		delete(ec.rawIntRegs, valueID)
+	case valueReprRawDataPtr:
+		delete(ec.rawIntRegs, valueID)
+		delete(ec.rawTablePtrRegs, valueID)
 	default:
 		delete(ec.rawIntRegs, valueID)
 		delete(ec.rawTablePtrRegs, valueID)
@@ -136,6 +139,9 @@ func (ec *emitContext) emitStoreGPRValueAsBoxed(valueID int, reg jit.Reg, slot i
 		jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
 		ec.asm.STR(jit.X0, mRegRegs, slotOffset(slot))
 		ec.emitExitResumeCheckShadowStoreGPR(slot, jit.X0)
+	case valueReprRawDataPtr:
+		ec.asm.STR(reg, mRegRegs, slotOffset(slot))
+		ec.emitExitResumeCheckShadowStoreGPR(slot, reg)
 	default:
 		ec.asm.STR(reg, mRegRegs, slotOffset(slot))
 		ec.emitExitResumeCheckShadowStoreGPR(slot, reg)
@@ -153,6 +159,8 @@ func (ec *emitContext) emitReloadGPRValueFromBoxed(valueID int, reg jit.Reg, slo
 		// Reloaded homes are boxed. Raw-int callers that need convergence
 		// explicitly re-unbox via emitUnboxRawIntRegs with their saved state.
 		ec.clearValueRepr(valueID)
+	case valueReprRawDataPtr:
+		ec.setValueRepr(valueID, valueReprRawDataPtr)
 	default:
 		ec.setValueRepr(valueID, valueReprBoxed)
 	}

@@ -251,7 +251,7 @@ func (ec *emitContext) emitTableArrayData(instr *Instr) {
 		ec.asm.MOVreg(jit.X0, hdr)
 	}
 	ec.asm.LDR(jit.X0, jit.X0, dataOff)
-	ec.storeRawInt(jit.X0, instr.ID)
+	ec.storeRawDataPtr(jit.X0, instr.ID)
 }
 
 func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
@@ -263,7 +263,7 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	successLabel := ec.uniqueLabel("tarr_load_success")
 	doneLabel := ec.uniqueLabel("tarr_load_done")
 
-	dataReg := ec.resolveRawInt(instr.Args[0].ID, jit.X2)
+	dataReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X2)
 	if dataReg != jit.X2 {
 		asm.MOVreg(jit.X2, dataReg)
 	}
@@ -396,7 +396,7 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 	deoptLabel := ec.uniqueLabel("tarr_store_deopt")
 	doneLabel := ec.uniqueLabel("tarr_store_done")
 
-	dataReg := ec.resolveRawInt(instr.Args[1].ID, jit.X2)
+	dataReg := ec.resolveRawDataPtr(instr.Args[1].ID, jit.X2)
 	if dataReg != jit.X2 {
 		asm.MOVreg(jit.X2, dataReg)
 	}
@@ -742,7 +742,7 @@ func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(normalLabel)
-	outerDataReg := ec.resolveRawInt(instr.Args[1].ID, jit.X2)
+	outerDataReg := ec.resolveRawDataPtr(instr.Args[1].ID, jit.X2)
 	if outerDataReg != jit.X2 {
 		asm.MOVreg(jit.X2, outerDataReg)
 	}

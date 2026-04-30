@@ -239,6 +239,19 @@ func (ec *emitContext) resolveRawTablePtr(valueID int, scratch jit.Reg) jit.Reg 
 	return scratch
 }
 
+// resolveRawDataPtr returns a GPR holding a typed-array backing pointer.
+// These values are VM-internal native temps, not boxed runtime.Values.
+func (ec *emitContext) resolveRawDataPtr(valueID int, scratch jit.Reg) jit.Reg {
+	if ec.hasReg(valueID) {
+		switch ec.valueReprOf(valueID) {
+		case valueReprRawDataPtr, valueReprRawInt:
+			return ec.physReg(valueID)
+		}
+	}
+	ec.loadValue(scratch, valueID)
+	return scratch
+}
+
 // storeRawInt stores a raw int64 result to the allocated register (if any)
 // and marks it as containing a raw int (not NaN-boxed).
 // For cross-block values, writes NaN-boxed to memory.
@@ -290,6 +303,27 @@ func (ec *emitContext) storeRawTablePtr(srcReg jit.Reg, valueID int) {
 	}
 	emitBoxTablePtr(ec.asm, jit.X0, srcReg, jit.X17)
 	ec.storeValue(jit.X0, valueID)
+}
+
+// storeRawDataPtr stores a typed-array backing pointer. Its home slot contains
+// raw pointer bits for compiler temps; it must be resolved with
+// resolveRawDataPtr, not treated as a boxed value.
+func (ec *emitContext) storeRawDataPtr(srcReg jit.Reg, valueID int) {
+	pr, ok := ec.alloc.ValueRegs[valueID]
+	if ok && !pr.IsFloat {
+		ec.invalidateReg(pr.Reg, valueID)
+		ec.activeRegs[valueID] = true
+		ec.setValueRepr(valueID, valueReprRawDataPtr)
+		dstReg := jit.Reg(pr.Reg)
+		if srcReg != dstReg {
+			ec.asm.MOVreg(dstReg, srcReg)
+		}
+		if ec.crossBlockLive[valueID] && !ec.loopPhiOnlyArgs[valueID] && !ec.rawIntCarryNoStore[valueID] {
+			ec.storeValue(dstReg, valueID)
+		}
+		return
+	}
+	ec.storeValue(srcReg, valueID)
 }
 
 // inLoopBlock returns true if the current block being emitted is inside a loop.

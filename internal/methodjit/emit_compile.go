@@ -1623,6 +1623,9 @@ func (ec *emitContext) emitBlock(block *Block) {
 					if entry.IsRawInt {
 						ec.setValueRepr(entry.ValueID, valueReprRawInt)
 					}
+					if entry.IsRawDataPtr {
+						ec.setValueRepr(entry.ValueID, valueReprRawDataPtr)
+					}
 				}
 			}
 		}
@@ -1707,14 +1710,19 @@ func (ec *emitContext) emitBlock(block *Block) {
 
 	outRaw := make(map[int]loopRegEntry)
 	for valueID := range ec.activeRegs {
-		if ec.valueReprOf(valueID) != valueReprRawInt {
+		repr := ec.valueReprOf(valueID)
+		if repr != valueReprRawInt && repr != valueReprRawDataPtr {
 			continue
 		}
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || pr.IsFloat {
 			continue
 		}
-		outRaw[pr.Reg] = loopRegEntry{ValueID: valueID, IsRawInt: true}
+		outRaw[pr.Reg] = loopRegEntry{
+			ValueID:      valueID,
+			IsRawInt:     repr == valueReprRawInt,
+			IsRawDataPtr: repr == valueReprRawDataPtr,
+		}
 	}
 	ec.blockOutRawIntRegs[block.ID] = outRaw
 }
@@ -1739,7 +1747,7 @@ func (ec *emitContext) seedSinglePredRawIntRegs(block *Block) {
 	sort.Ints(regs)
 	for _, reg := range regs {
 		entry := predOut[reg]
-		if !entry.IsRawInt || !liveIn[entry.ValueID] {
+		if (!entry.IsRawInt && !entry.IsRawDataPtr) || !liveIn[entry.ValueID] {
 			continue
 		}
 		pr, ok := ec.alloc.ValueRegs[entry.ValueID]
@@ -1748,7 +1756,12 @@ func (ec *emitContext) seedSinglePredRawIntRegs(block *Block) {
 		}
 		ec.invalidateReg(reg, entry.ValueID)
 		ec.activeRegs[entry.ValueID] = true
-		ec.setValueRepr(entry.ValueID, valueReprRawInt)
+		if entry.IsRawInt {
+			ec.setValueRepr(entry.ValueID, valueReprRawInt)
+		}
+		if entry.IsRawDataPtr {
+			ec.setValueRepr(entry.ValueID, valueReprRawDataPtr)
+		}
 	}
 }
 

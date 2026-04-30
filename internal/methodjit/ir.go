@@ -78,6 +78,11 @@ type Function struct {
 	// of optimization, not as an error.
 	LoopTableArrayFacts map[int]LoopTableArrayFact
 
+	// TableArrayDataPtrs records typed table-array data pointer SSA values. The
+	// key is an OpTableArrayData value ID; consumers can resolve it as a raw
+	// backing-array pointer only while the matching header guard remains valid.
+	TableArrayDataPtrs map[int]TableArrayDataPtrFact
+
 	// Globals, if non-nil, maps global function names to their protos.
 	// Used by the IR interpreter to resolve residual cross-function calls
 	// (e.g., those left after bounded recursive inlining). Populated by
@@ -159,6 +164,17 @@ type CallABIDescriptor struct {
 // current proto when possible.
 type CallABIAnnotationConfig struct {
 	Globals map[string]*vm.FuncProto
+}
+
+// TableArrayDataPtrFact describes the guard-backed ABI contract for a typed
+// table-array backing pointer. HeaderID is the OpTableArrayHeader guard that
+// proved TableID is a table with the requested array kind and no metatable.
+// LenID is optional but present for the normal lowerer shape.
+type TableArrayDataPtrFact struct {
+	TableID  int
+	HeaderID int
+	LenID    int
+	Kind     int64
 }
 
 // newValueID allocates a unique ID for a new SSA value.

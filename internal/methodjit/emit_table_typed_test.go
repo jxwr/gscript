@@ -281,6 +281,39 @@ func sum_floats(arr, n) {
 	}
 }
 
+func TestTableArrayDataPtrFactPass_RecordsNumericArrayFacts(t *testing.T) {
+	src := `
+func sum_floats(arr, n) {
+    total := 0.0
+    for i := 0; i < n; i++ {
+        total = total + arr[i]
+    }
+    return total
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "sum_floats")
+	if proto == nil {
+		t.Fatal("sum_floats proto not found")
+	}
+	seedFloatTableFeedback(proto)
+
+	fn := BuildGraph(proto)
+	var err error
+	fn, _, err = RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(sum_floats): %v", err)
+	}
+	if len(fn.TableArrayDataPtrs) == 0 {
+		t.Fatalf("expected raw table-array data pointer facts:\n%s", Print(fn))
+	}
+	for dataID, fact := range fn.TableArrayDataPtrs {
+		if fact.Kind != int64(vm.FBKindFloat) || fact.LenID < 0 || fact.HeaderID < 0 || fact.TableID < 0 {
+			t.Fatalf("bad data pointer fact for v%d: %+v\n%s", dataID, fact, Print(fn))
+		}
+	}
+}
+
 func TestTier2_TableArrayNestedLoadFloatUsesDirectFPLoad(t *testing.T) {
 	src := `
 func nested_sum(rows, n) {
@@ -637,6 +670,7 @@ result := after - before
 }
 
 func TestTier2_TableArrayPointerTempsSurviveExitResume(t *testing.T) {
+	t.Setenv(exitResumeCheckEnv, "1")
 	src := `
 func miss_then_sum(arr, missKey) {
     miss := arr[missKey]
@@ -691,6 +725,9 @@ func miss_then_sum(arr, missKey) {
 		t.Fatalf("Compile: %v", err)
 	}
 	defer cf.Code.Free()
+	if !compiledFunctionHasRawDataPtrExitLiveSlot(cf) {
+		t.Fatalf("expected exit-resume metadata to track a raw table-array data pointer")
+	}
 	cf.CallVM = v
 	cf.DeoptFunc = func(args []runtime.Value) ([]runtime.Value, error) {
 		return v.CallValue(fnVal, args)
@@ -703,6 +740,23 @@ func miss_then_sum(arr, missKey) {
 	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 42 {
 		t.Fatalf("miss_then_sum result = %v, want 42", got)
 	}
+}
+
+func compiledFunctionHasRawDataPtrExitLiveSlot(cf *CompiledFunction) bool {
+	if cf == nil || cf.ExitResumeCheck == nil {
+		return false
+	}
+	for _, site := range cf.ExitResumeCheck.Sites {
+		if site.Key.ExitCode != ExitTableExit {
+			continue
+		}
+		for _, live := range site.LiveSlots {
+			if live.RawDataPtr {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestTier2_TableArrayLoadFailThenSetKeepsSetBoundsCheck(t *testing.T) {

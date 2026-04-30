@@ -533,8 +533,8 @@ func TestRegalloc_TableArrayLenDataInvariantGPRPinned(t *testing.T) {
 	if !safe[header.ID][arrLen.ID].IsRawInt {
 		t.Fatalf("TableArrayLen v%d should activate as raw int", arrLen.ID)
 	}
-	if safe[header.ID][arrData.ID].IsRawInt {
-		t.Fatalf("TableArrayData v%d should activate as pointer-like GPR, not raw int", arrData.ID)
+	if safe[header.ID][arrData.ID].IsRawInt || !safe[header.ID][arrData.ID].IsRawDataPtr {
+		t.Fatalf("TableArrayData v%d should activate as raw data pointer, not raw int", arrData.ID)
 	}
 	for _, block := range fn.Blocks {
 		if !li.headerBlocks[header.ID][block.ID] {

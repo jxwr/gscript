@@ -621,6 +621,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("ScalarPromotion: %w", err)
 	}
 
+	fn, err = TableArrayDataPtrFactPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TableArrayDataPtrFact: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	return fn, intrinsicNotes, nil
 }
 
@@ -711,5 +717,6 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("DCEPostUnrollAndJam", DCEPass)
 	pipe.Add("LoopRegionVersioning", LoopRegionVersioningPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
+	pipe.Add("TableArrayDataPtrFact", TableArrayDataPtrFactPass)
 	return pipe
 }
