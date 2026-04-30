@@ -40,6 +40,38 @@ result := local_name(100)
 	}
 }
 
+func TestSieveKernelRecognizerAllowsStackMetadataSlack(t *testing.T) {
+	proto, _ := compileSpectralKernelTestProgram(t, `
+func local_name(n) {
+    is_prime := {}
+    for i := 2; i <= n; i++ {
+        is_prime[i] = true
+    }
+    i := 2
+    for i * i <= n {
+        if is_prime[i] {
+            j := i * i
+            for j <= n {
+                is_prime[j] = false
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    count := 0
+    for i := 2; i <= n; i++ {
+        if is_prime[i] { count = count + 1 }
+    }
+    return count
+}
+`)
+	child := *proto.Protos[0]
+	child.MaxStack += 4
+	if !IsSieveKernelProto(&child) {
+		t.Fatal("sieve recognizer should ignore non-semantic MaxStack slack")
+	}
+}
+
 func TestSieveKernelWholeCallCorrectness(t *testing.T) {
 	proto, v := compileSpectralKernelTestProgram(t, `
 func sieve_like(n) {
