@@ -306,6 +306,9 @@ func (p *fixedRecursiveTableFoldProtocol) fold(v runtime.Value) (int64, bool) {
 	if t == nil {
 		return 0, false
 	}
+	if n, ok := p.foldLazy(t); ok {
+		return n, true
+	}
 	nilValue := t.RawGetStringCached(p.nilField, &p.nilCache)
 	if nilValue.IsNil() {
 		return p.baseValue, true
@@ -321,6 +324,31 @@ func (p *fixedRecursiveTableFoldProtocol) fold(v runtime.Value) (int64, bool) {
 		if !ok {
 			return 0, false
 		}
+	}
+	return total, true
+}
+
+func (p *fixedRecursiveTableFoldProtocol) foldLazy(t *runtime.Table) (int64, bool) {
+	depth, key1, key2, ok := t.LazyRecursiveTablePureInfo()
+	if !ok || depth < 0 || p.nilField != key1 || len(p.children) != 2 {
+		return 0, false
+	}
+	if p.children[0].field != key1 || p.children[1].field != key2 {
+		return 0, false
+	}
+	total := p.baseValue
+	for i := int64(0); i < depth; i++ {
+		next := p.combineBias
+		var ok bool
+		next, ok = fixedFoldCheckedAdd(next, total)
+		if !ok {
+			return 0, false
+		}
+		next, ok = fixedFoldCheckedAdd(next, total)
+		if !ok {
+			return 0, false
+		}
+		total = next
 	}
 	return total, true
 }

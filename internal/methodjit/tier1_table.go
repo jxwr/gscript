@@ -159,6 +159,8 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	asm.CBNZ(jit.X4, slowLabel) // shape-less but not empty
 	asm.LDR(jit.X4, jit.X0, jit.TableOffSmap)
 	asm.CBNZ(jit.X4, slowLabel) // large string-key table
+	asm.LDR(jit.X4, jit.X0, jit.TableOffLazyTree)
+	asm.CBNZ(jit.X4, slowLabel) // lazy fields must be resolved by runtime
 	jit.EmitBoxNil(asm, jit.X0)
 	if feedbackEnabled {
 		emitBaselineFeedbackResult(asm, pc, 7, "getfield_empty")

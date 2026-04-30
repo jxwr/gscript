@@ -552,7 +552,50 @@ func f() {
 }
 result := 0
 for i := 1; i <= 200; i++ { result = f() }
-`, "result")
+	`, "result")
+}
+
+func TestTier1_FieldCacheLazyRecursiveTableFallsBack(t *testing.T) {
+	proto := compileByName(t, `func getLeft(node) { return node.left }`, "getLeft")
+	pc := -1
+	for i, inst := range proto.Code {
+		if vm.DecodeOp(inst) == vm.OP_GETFIELD {
+			pc = i
+			break
+		}
+	}
+	if pc < 0 {
+		t.Fatal("GETFIELD not found")
+	}
+	ensureFieldCache(proto)
+	ctor := runtime.NewSmallTableCtor2("left", "right")
+	normal := runtime.NewTableFromCtor2NonNil(
+		&ctor,
+		runtime.FreshTableValue(runtime.NewEmptyTable()),
+		runtime.FreshTableValue(runtime.NewEmptyTable()),
+	)
+	if got := normal.RawGetStringCached("left", &proto.FieldCache[pc]); !got.IsTable() {
+		t.Fatalf("warm cache get = %v, want table", got)
+	}
+
+	bf, err := CompileBaseline(proto)
+	if err != nil {
+		t.Fatalf("CompileBaseline(getLeft): %v", err)
+	}
+	lazy := runtime.NewLazyRecursiveTable(&ctor, 1)
+	regs := make([]runtime.Value, proto.MaxStack+1)
+	regs[0] = runtime.FreshTableValue(lazy)
+	engine := NewBaselineJITEngine()
+	results, err := engine.Execute(bf, regs, 0, proto)
+	if err != nil {
+		t.Fatalf("Execute(getLeft): %v", err)
+	}
+	if len(results) != 1 || !results[0].IsTable() {
+		t.Fatalf("getLeft(lazy) = %v, want lazy child table", results)
+	}
+	if got2 := lazy.RawGetString("left"); !got2.IsTable() || got2.Table() != results[0].Table() {
+		t.Fatalf("lazy child identity mismatch: result=%v later=%v", results[0], got2)
+	}
 }
 
 // ---------------------------------------------------------------------------

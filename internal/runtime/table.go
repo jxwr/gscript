@@ -66,6 +66,11 @@ type Table struct {
 	// rows share one metadata object so every Table pays one pointer, not a
 	// backing slice header plus parent pointer.
 	dmMeta *denseMatrixMeta
+
+	// lazyTree is a semantics-preserving deferred representation for qualified
+	// fixed recursive two-field table builders. Generic table operations
+	// materialize it before mutation or iteration.
+	lazyTree *LazyRecursiveTable
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.
@@ -178,11 +183,77 @@ func (t *Table) RawGet(key Value) Value {
 	return NilValue()
 }
 
+func (t *Table) rawGetForNextLocked(key Value) Value {
+	if key.IsNil() {
+		return NilValue()
+	}
+	if key.Type() == TypeInt {
+		k := key.Int()
+		if t.lazyTree != nil {
+			return NilValue()
+		}
+		switch t.arrayKind {
+		case ArrayInt:
+			if k >= 0 && k < int64(len(t.intArray)) {
+				return IntValue(t.intArray[k])
+			}
+		case ArrayFloat:
+			if k >= 0 && k < int64(len(t.floatArray)) {
+				return FloatValue(t.floatArray[k])
+			}
+		case ArrayBool:
+			if k >= 0 && k < int64(len(t.boolArray)) {
+				b := t.boolArray[k]
+				if b == 0 {
+					return NilValue()
+				}
+				return BoolValue(b == 2)
+			}
+		default:
+			if k >= 0 && k < int64(len(t.array)) {
+				return t.array[k]
+			}
+		}
+		if t.imap != nil {
+			if v, ok := t.imap[k]; ok {
+				return v
+			}
+		}
+		return NilValue()
+	}
+	if key.Type() == TypeString {
+		k := key.Str()
+		if t.lazyTree != nil {
+			return t.lazyTree.get(t, k)
+		}
+		for i, field := range t.skeys {
+			if field == k {
+				return t.svals[i]
+			}
+		}
+		if t.smap != nil {
+			if v, ok := t.smap[k]; ok {
+				return v
+			}
+		}
+		return NilValue()
+	}
+	if t.hash != nil {
+		if val, ok := t.hash[cleanHashKey(key)]; ok {
+			return val
+		}
+	}
+	return NilValue()
+}
+
 // RawGetInt retrieves a value by integer key (fast path, no Value boxing).
 func (t *Table) RawGetInt(key int64) Value {
 	if t.mu != nil {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
+	}
+	if t.lazyTree != nil {
+		return NilValue()
 	}
 	switch t.arrayKind {
 	case ArrayInt:
@@ -391,8 +462,11 @@ func newTableFromCtorShape1(shape smallCtorShape, val Value) *Table {
 // RawGetString retrieves a value by string key (fast path, no Value boxing).
 func (t *Table) RawGetString(key string) Value {
 	if t.mu != nil {
-		t.mu.RLock()
-		defer t.mu.RUnlock()
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
+	if t.lazyTree != nil {
+		return t.lazyTree.get(t, key)
 	}
 	for i, k := range t.skeys {
 		if k == key {
@@ -413,8 +487,11 @@ func (t *Table) RawGetString(key string) Value {
 // Works across different tables sharing the same field layout.
 func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
 	if t.mu != nil {
-		t.mu.RLock()
-		defer t.mu.RUnlock()
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
+	if t.lazyTree != nil {
+		return t.lazyTree.get(t, key)
 	}
 	// ShapeID-based cache: if shape matches, the field index is valid
 	idx := cache.FieldIdx
@@ -443,6 +520,9 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	if t.mu != nil {
 		t.mu.Lock()
 		defer t.mu.Unlock()
+	}
+	if t.lazyTree != nil {
+		t.materializeLazyTreeLocked()
 	}
 	valIsNil := val.IsNil()
 	if valIsNil && t.shapeID == 0 && len(t.skeys) == 0 && t.smap == nil {
@@ -548,6 +628,9 @@ func (t *Table) RawSet(key, val Value) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 	}
+	if t.lazyTree != nil {
+		t.materializeLazyTreeLocked()
+	}
 	t.keysDirty = true
 	if t.hash == nil {
 		if val.IsNil() {
@@ -647,6 +730,9 @@ func (t *Table) RawSetString(key string, val Value) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 	}
+	if t.lazyTree != nil {
+		t.materializeLazyTreeLocked()
+	}
 	if val.IsNil() && t.shapeID == 0 && len(t.skeys) == 0 && t.smap == nil {
 		return
 	}
@@ -735,6 +821,9 @@ func (t *Table) Append(v Value) {
 
 // rebuildKeys rebuilds the ordered key list for iteration.
 func (t *Table) rebuildKeys() {
+	if t.lazyTree != nil {
+		t.materializeLazyTreeLocked()
+	}
 	t.keys = t.keys[:0]
 	// Note: typed int/float arrays start from index 1 because we can't
 	// distinguish a user-written 0 from the default zero value at index 0.
@@ -787,6 +876,9 @@ func (t *Table) rebuildKeys() {
 }
 
 func (t *Table) needsKeyRebuild() bool {
+	if t.lazyTree != nil {
+		return true
+	}
 	if t.keysDirty {
 		return true
 	}
@@ -841,8 +933,8 @@ func (t *Table) needsKeyRebuild() bool {
 // Next returns the next key/value pair after the given key.
 func (t *Table) Next(key Value) (Value, Value, bool) {
 	if t.mu != nil {
-		t.mu.RLock()
-		defer t.mu.RUnlock()
+		t.mu.Lock()
+		defer t.mu.Unlock()
 	}
 	if t.needsKeyRebuild() {
 		t.rebuildKeys()
@@ -852,13 +944,13 @@ func (t *Table) Next(key Value) (Value, Value, bool) {
 	}
 	if key.IsNil() {
 		k := t.keys[0]
-		return k, t.RawGet(k), true
+		return k, t.rawGetForNextLocked(k), true
 	}
 	for i, k := range t.keys {
 		if k.Equal(key) {
 			if i+1 < len(t.keys) {
 				nk := t.keys[i+1]
-				return nk, t.RawGet(nk), true
+				return nk, t.rawGetForNextLocked(nk), true
 			}
 			return NilValue(), NilValue(), false
 		}
@@ -905,6 +997,14 @@ func TableTypedArrayCapOffsets() (intArrayCap, floatArrayCap, boolArrayCap uintp
 func TableKeysDirtyOffset() uintptr {
 	var t Table
 	return unsafe.Offsetof(t.keysDirty)
+}
+
+// TableLazyTreeOffset returns the byte offset of the lazy recursive table side
+// pointer for JIT guards that must not treat lazy tables as empty shape-less
+// tables.
+func TableLazyTreeOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.lazyTree)
 }
 
 // ShapeID returns the table's shape identifier.

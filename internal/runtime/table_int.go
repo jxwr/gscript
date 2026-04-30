@@ -121,6 +121,9 @@ func (t *Table) RawSetInt(key int64, val Value) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 	}
+	if t.lazyTree != nil {
+		t.materializeLazyTreeLocked()
+	}
 	t.maybeClearDenseParentForWrite(key, val)
 	t.keysDirty = true
 

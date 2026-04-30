@@ -108,6 +108,59 @@ root := makePair(4)
 	}
 }
 
+func TestFixedRecursiveTableFoldConsumesLazyRecursiveTable(t *testing.T) {
+	ctor := runtime.NewSmallTableCtor2("first", "second")
+	root := runtime.NewLazyRecursiveTable(&ctor, 4)
+	protocol := &fixedRecursiveTableFoldProtocol{
+		nilField:    "first",
+		baseValue:   7,
+		combineBias: 3,
+		children: []fixedRecursiveTableFoldChild{
+			{field: "first"},
+			{field: "second"},
+		},
+	}
+	got, ok := protocol.fold(runtime.FreshTableValue(root))
+	if !ok {
+		t.Fatal("lazy recursive table fold did not match protocol")
+	}
+	if got != 157 {
+		t.Fatalf("lazy recursive table fold = %d, want 157", got)
+	}
+	if _, _, _, stillLazy := root.LazyRecursiveTableInfo(); !stillLazy {
+		t.Fatal("fold should consume lazy recursive table without materializing it")
+	}
+}
+
+func TestFixedRecursiveTableFoldObservesLazyChildMutation(t *testing.T) {
+	ctor := runtime.NewSmallTableCtor2("first", "second")
+	root := runtime.NewLazyRecursiveTable(&ctor, 2)
+	protocol := &fixedRecursiveTableFoldProtocol{
+		nilField:    "first",
+		baseValue:   7,
+		combineBias: 3,
+		children: []fixedRecursiveTableFoldChild{
+			{field: "first"},
+			{field: "second"},
+		},
+	}
+
+	child := root.RawGetString("first").Table()
+	if child == nil {
+		t.Fatal("lazy child missing")
+	}
+	child.RawSetString("first", runtime.NilValue())
+	child.RawSetString("second", runtime.NilValue())
+
+	got, ok := protocol.fold(runtime.FreshTableValue(root))
+	if !ok {
+		t.Fatal("fold should fall back to generic lazy child traversal")
+	}
+	if got != 27 {
+		t.Fatalf("fold after child mutation = %d, want 27", got)
+	}
+}
+
 func TestFixedRecursiveTableFoldFallsBackWhenSelfGlobalChanges(t *testing.T) {
 	src := `
 func makePair(depth) {

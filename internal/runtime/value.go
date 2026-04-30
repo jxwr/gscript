@@ -329,6 +329,11 @@ func scanTableRoots(t *Table, visitor func(unsafe.Pointer), seen map[uintptr]str
 			ScanValueRoots(v, visitor, seen)
 		}
 	}
+	if t.lazyTree != nil {
+		for _, v := range t.lazyTree.childValues {
+			ScanValueRoots(v, visitor, seen)
+		}
+	}
 	// String map values
 	for _, v := range t.smap {
 		ScanValueRoots(v, visitor, seen)

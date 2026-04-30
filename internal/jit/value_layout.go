@@ -75,6 +75,7 @@ const (
 	TableOffDMFlat   = 224 // unsafe.Pointer — flat backing head
 	TableOffDMStride = 232 // int32 — row stride (columns)
 	TableOffDMMeta   = 248 // *denseMatrixMeta — cold side metadata
+	TableOffLazyTree = 256 // *LazyRecursiveTable — deferred recursive table side pointer
 
 	// denseMatrixMeta layout. The JIT only uses this for the native
 	// row-store adoption path after runtime has allocated the backing.
@@ -203,6 +204,9 @@ func init() {
 	}
 	if off := runtime.TableDMMetaOffset(); off != TableOffDMMeta {
 		panic("jit: Table.dmMeta offset mismatch: expected " + itoa(TableOffDMMeta) + ", got " + itoa(int(off)))
+	}
+	if off := runtime.TableLazyTreeOffset(); off != TableOffLazyTree {
+		panic("jit: Table.lazyTree offset mismatch: expected " + itoa(TableOffLazyTree) + ", got " + itoa(int(off)))
 	}
 	dmDataOff, dmLenOff, dmCapOff, dmParentOff := runtime.DenseMatrixMetaOffsets()
 	if dmDataOff != DenseMatrixMetaOffBackingData {

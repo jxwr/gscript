@@ -150,10 +150,5 @@ func (tm *TieringManager) executeFixedRecursiveTableBuilder(cf *CompiledFunction
 }
 
 func (p *fixedRecursiveTableBuilderProtocol) build(depth int64) runtime.Value {
-	if depth == 0 {
-		return runtime.FreshTableValue(runtime.NewEmptyTable())
-	}
-	left := p.build(depth - 1)
-	right := p.build(depth - 1)
-	return runtime.FreshTableValue(runtime.NewTableFromCtor2NonNil(&p.ctor, left, right))
+	return runtime.FreshTableValue(runtime.NewLazyRecursiveTable(&p.ctor, depth))
 }
