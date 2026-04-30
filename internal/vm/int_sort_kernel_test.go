@@ -135,6 +135,40 @@ t3 := math.type(arr[3])
 	expectGlobalString(t, globals, "t3", "integer")
 }
 
+func TestIntSortKernelKeepsMixedDuplicateBoxPermutation(t *testing.T) {
+	globals := compileAndRun(t, `
+func q(arr, lo, hi) {
+    if lo >= hi { return }
+    pivot := arr[hi]
+    i := lo
+    for j := lo; j < hi; j++ {
+        if arr[j] <= pivot {
+            t := arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+            i = i + 1
+        }
+    }
+    t := arr[i]
+    arr[i] = arr[hi]
+    arr[hi] = t
+    q(arr, lo, i - 1)
+    q(arr, i + 1, hi)
+}
+arr := {}
+arr[1] = 1.0
+arr[2] = 0
+arr[3] = 1
+q(arr, 1, 3)
+t1 := math.type(arr[1])
+t2 := math.type(arr[2])
+t3 := math.type(arr[3])
+`)
+	expectGlobalString(t, globals, "t1", "integer")
+	expectGlobalString(t, globals, "t2", "float")
+	expectGlobalString(t, globals, "t3", "integer")
+}
+
 func TestIntSortKernelKeepsBaseCaseSemantics(t *testing.T) {
 	globals := compileAndRun(t, `
 func q(arr, lo, hi) {

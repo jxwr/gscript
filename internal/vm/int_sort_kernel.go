@@ -67,31 +67,34 @@ func runPartitionSort(values []int64) {
 		lo int
 		hi int
 	}
-	stack := []frame{{lo: 0, hi: len(values) - 1}}
+	var fixed [64]frame
+	stack := fixed[:1]
+	stack[0] = frame{lo: 0, hi: len(values) - 1}
 	for len(stack) > 0 {
 		n := len(stack) - 1
 		f := stack[n]
 		stack = stack[:n]
-		if f.lo >= f.hi {
-			continue
-		}
-		pivot := values[f.hi]
-		i := f.lo
-		for j := f.lo; j < f.hi; j++ {
-			if values[j] <= pivot {
-				values[i], values[j] = values[j], values[i]
-				i++
+		for f.lo < f.hi {
+			pivot := values[f.hi]
+			i := f.lo
+			for j := f.lo; j < f.hi; j++ {
+				if values[j] <= pivot {
+					if i != j {
+						values[i], values[j] = values[j], values[i]
+					}
+					i++
+				}
 			}
-		}
-		values[i], values[f.hi] = values[f.hi], values[i]
+			if i != f.hi {
+				values[i], values[f.hi] = values[f.hi], values[i]
+			}
 
-		// Source quicksort executes the left recursive call before the right.
-		// Push right first so the explicit stack preserves that order.
-		if i+1 < f.hi {
-			stack = append(stack, frame{lo: i + 1, hi: f.hi})
-		}
-		if f.lo < i-1 {
-			stack = append(stack, frame{lo: f.lo, hi: i - 1})
+			// Source quicksort executes the left recursive call before the right.
+			// Tail-run the left side and save only the right side.
+			if i+1 < f.hi {
+				stack = append(stack, frame{lo: i + 1, hi: f.hi})
+			}
+			f.hi = i - 1
 		}
 	}
 }
@@ -113,37 +116,60 @@ func runNumericValuePartitionSort(values []runtime.Value) {
 		lo int
 		hi int
 	}
-	stack := []frame{{lo: 0, hi: len(values) - 1}}
+	var fixed [64]frame
+	stack := fixed[:1]
+	stack[0] = frame{lo: 0, hi: len(values) - 1}
 	for len(stack) > 0 {
 		n := len(stack) - 1
 		f := stack[n]
 		stack = stack[:n]
-		if f.lo >= f.hi {
-			continue
-		}
-		pivot := values[f.hi]
-		i := f.lo
-		for j := f.lo; j < f.hi; j++ {
-			if numericKernelLE(values[j], pivot) {
-				values[i], values[j] = values[j], values[i]
-				i++
+		for f.lo < f.hi {
+			pivot := values[f.hi]
+			i := f.lo
+			if pivot.IsInt() {
+				pivotInt := pivot.Int()
+				for j := f.lo; j < f.hi; j++ {
+					if numericKernelLEIntPivot(values[j], pivotInt) {
+						if i != j {
+							values[i], values[j] = values[j], values[i]
+						}
+						i++
+					}
+				}
+			} else {
+				pivotFloat := pivot.Float()
+				for j := f.lo; j < f.hi; j++ {
+					if numericKernelLEFloatPivot(values[j], pivotFloat) {
+						if i != j {
+							values[i], values[j] = values[j], values[i]
+						}
+						i++
+					}
+				}
 			}
-		}
-		values[i], values[f.hi] = values[f.hi], values[i]
-		if i+1 < f.hi {
-			stack = append(stack, frame{lo: i + 1, hi: f.hi})
-		}
-		if f.lo < i-1 {
-			stack = append(stack, frame{lo: f.lo, hi: i - 1})
+			if i != f.hi {
+				values[i], values[f.hi] = values[f.hi], values[i]
+			}
+			if i+1 < f.hi {
+				stack = append(stack, frame{lo: i + 1, hi: f.hi})
+			}
+			f.hi = i - 1
 		}
 	}
 }
 
-func numericKernelLE(a, b runtime.Value) bool {
-	if a.IsInt() && b.IsInt() {
-		return a.Int() <= b.Int()
+func numericKernelLEIntPivot(a runtime.Value, pivot int64) bool {
+	if a.IsInt() {
+		return a.Int() <= pivot
 	}
-	return a.Number() <= b.Number()
+	return a.Float() <= float64(pivot)
+}
+
+func numericKernelLEFloatPivot(a runtime.Value, pivot float64) bool {
+	if a.IsInt() {
+		return float64(a.Int()) <= pivot
+	}
+	return a.Float() <= pivot
 }
 
 func isIntArrayPartitionSortProto(p *FuncProto) bool {
