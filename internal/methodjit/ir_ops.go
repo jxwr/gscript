@@ -105,6 +105,10 @@ const (
 	OpTableArrayLen    // Args[0] = header; loads active array len
 	OpTableArrayData   // Args[0] = header; loads active array data pointer
 	OpTableArrayLoad   // Args = [data, len, key]; loads element, bounds-checks key
+	// Checked typed array store. Args = [table, data, len, key, value].
+	// Reuses previously verified typed-array facts, checks key/value before
+	// mutation, and precise-deopts on miss so the interpreter replays SETTABLE.
+	OpTableArrayStore
 	// Same-block nested row load:
 	// Args = [outerData, outerLen, outerKey, innerKey], Aux = inner row FBKind.
 	// Loads a table row from a mixed outer array, verifies the row array kind,
@@ -239,6 +243,7 @@ var opNames = [...]string{
 	OpTableArrayLen:        "TableArrayLen",
 	OpTableArrayData:       "TableArrayData",
 	OpTableArrayLoad:       "TableArrayLoad",
+	OpTableArrayStore:      "TableArrayStore",
 	OpTableArrayNestedLoad: "TableNestedLoad",
 	OpGetField:             "GetField",
 	OpGetFieldNumToFloat:   "GetFieldNumToFloat",

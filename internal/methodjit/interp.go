@@ -585,6 +585,15 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = tbl.Table().RawGetInt(key.Int())
 
+	case OpTableArrayStore:
+		tbl := s.val(instr.Args[0])
+		key := s.val(instr.Args[3])
+		val := s.val(instr.Args[4])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableArrayStore: arg 0 not a table")
+		}
+		tbl.Table().RawSetInt(key.Int(), val)
+
 	case OpTableArrayNestedLoad:
 		outer := s.val(instr.Args[0])
 		outerKeyArg := 2

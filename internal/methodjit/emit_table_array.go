@@ -389,6 +389,133 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitTableArrayStore(instr *Instr) {
+	if len(instr.Args) < 5 {
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("tarr_store_deopt")
+	doneLabel := ec.uniqueLabel("tarr_store_done")
+
+	dataReg := ec.resolveRawInt(instr.Args[1].ID, jit.X2)
+	if dataReg != jit.X2 {
+		asm.MOVreg(jit.X2, dataReg)
+	}
+	lenReg := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
+	if lenReg != jit.X3 {
+		asm.MOVreg(jit.X3, lenReg)
+	}
+	if !ec.emitTableArrayKeyToReg(instr.Args[3], deoptLabel) {
+		ec.emitDeopt(instr)
+		return
+	}
+	keyID := instr.Args[3].ID
+	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) {
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
+	asm.CMPreg(jit.X1, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+
+	valueID := instr.Args[4].ID
+	switch instr.Aux {
+	case int64(vm.FBKindMixed):
+		valReg := ec.resolveValueNB(valueID, jit.X4)
+		if valReg != jit.X4 {
+			asm.MOVreg(jit.X4, valReg)
+		}
+		asm.STRreg(jit.X4, jit.X2, jit.X1)
+		tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+
+	case int64(vm.FBKindInt):
+		if val, ok := ec.constInts[valueID]; ok {
+			asm.LoadImm64(jit.X4, val)
+		} else if ec.hasReg(valueID) && ec.rawIntRegs[valueID] {
+			reg := ec.physReg(valueID)
+			if reg != jit.X4 {
+				asm.MOVreg(jit.X4, reg)
+			}
+		} else if ec.irTypes[valueID] == TypeInt {
+			valReg := ec.resolveValueNB(valueID, jit.X4)
+			if valReg != jit.X4 {
+				asm.MOVreg(jit.X4, valReg)
+			}
+			asm.SBFX(jit.X4, jit.X4, 0, 48)
+		} else {
+			valReg := ec.resolveValueNB(valueID, jit.X4)
+			if valReg != jit.X4 {
+				asm.MOVreg(jit.X4, valReg)
+			}
+			asm.LSRimm(jit.X5, jit.X4, 48)
+			asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
+			asm.CMPreg(jit.X5, jit.X6)
+			asm.BCond(jit.CondNE, deoptLabel)
+			asm.SBFX(jit.X4, jit.X4, 0, 48)
+		}
+		asm.STRreg(jit.X4, jit.X2, jit.X1)
+
+	case int64(vm.FBKindFloat):
+		if ec.irTypes[valueID] == TypeFloat && ec.hasFPReg(valueID) {
+			valFPR := ec.resolveRawFloat(valueID, jit.D0)
+			asm.FSTRdReg(valFPR, jit.X2, jit.X1)
+		} else {
+			valReg := ec.resolveValueNB(valueID, jit.X4)
+			if valReg != jit.X4 {
+				asm.MOVreg(jit.X4, valReg)
+			}
+			if ec.irTypes[valueID] != TypeFloat {
+				jit.EmitIsTagged(asm, jit.X4, jit.X5)
+				asm.BCond(jit.CondEQ, deoptLabel)
+			}
+			asm.STRreg(jit.X4, jit.X2, jit.X1)
+		}
+
+	case int64(vm.FBKindBool):
+		if boolVal, ok := ec.constBools[valueID]; ok {
+			asm.MOVimm16(jit.X4, uint16(boolVal+1))
+		} else {
+			valReg := ec.resolveValueNB(valueID, jit.X4)
+			if valReg != jit.X4 {
+				asm.MOVreg(jit.X4, valReg)
+			}
+			asm.LSRimm(jit.X5, jit.X4, 48)
+			asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
+			asm.CMPreg(jit.X5, jit.X6)
+			boolOK := ec.uniqueLabel("tarr_store_bool_ok")
+			asm.BCond(jit.CondEQ, boolOK)
+			asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
+			asm.CMPreg(jit.X5, jit.X6)
+			asm.BCond(jit.CondNE, deoptLabel)
+			asm.MOVimm16(jit.X4, 0)
+			boolStore := ec.uniqueLabel("tarr_store_bool_store")
+			asm.B(boolStore)
+			asm.Label(boolOK)
+			asm.LoadImm64(jit.X5, 1)
+			asm.ANDreg(jit.X4, jit.X4, jit.X5)
+			asm.ADDimm(jit.X4, jit.X4, 1)
+			asm.Label(boolStore)
+		}
+		asm.STRBreg(jit.X4, jit.X2, jit.X1)
+
+	default:
+		ec.emitDeopt(instr)
+		return
+	}
+
+	ec.recordTableArrayStoreBoundedKey(instr)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 	if len(instr.Args) < 5 {
 		return
@@ -714,6 +841,15 @@ func (ec *emitContext) recordTableArrayBoundedKey(instr *Instr) {
 	ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool, 1)
 	ec.asm.MOVimm16(jit.X17, 1)
 	ec.tableArrayBoundedKeys[tableArrayBoundKey{tableID: tableValue.ID, keyID: instr.Args[2].ID}] = true
+}
+
+func (ec *emitContext) recordTableArrayStoreBoundedKey(instr *Instr) {
+	if ec == nil || instr == nil || len(instr.Args) < 4 || instr.Args[0] == nil || instr.Args[3] == nil {
+		return
+	}
+	ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool, 1)
+	ec.asm.MOVimm16(jit.X17, 1)
+	ec.tableArrayBoundedKeys[tableArrayBoundKey{tableID: instr.Args[0].ID, keyID: instr.Args[3].ID}] = true
 }
 
 func (ec *emitContext) tableArrayKeyBounded(tableID, keyID int) bool {

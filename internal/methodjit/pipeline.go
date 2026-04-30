@@ -526,9 +526,15 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = TableArrayStoreLowerPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TableArrayStoreLower: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = DCEPass(fn)
 	if err != nil {
-		return nil, nil, fmt.Errorf("DCE (post-LoadElim2): %w", err)
+		return nil, nil, fmt.Errorf("DCE (post-TableArrayStoreLower): %w", err)
 	}
 
 	// R47: fuse OpAddFloat(x, OpMulFloat(y,z)) → OpFMA(y,z,x) so the
@@ -667,6 +673,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("DenseMatrixNestedLoadLower", DenseMatrixNestedLoadLowerPass)
 	pipe.Add("MatrixLower", MatrixLowerPass)
 	pipe.Add("LoadEliminationPostMatrixLower", LoadEliminationPass)
+	pipe.Add("TableArrayStoreLower", TableArrayStoreLowerPass)
 	pipe.Add("DCEPostMatrixLower", DCEPass)
 	pipe.Add("FMAFusion", FMAFusionPass)
 	pipe.Add("FloatStrengthReduction", FloatStrengthReductionPass)

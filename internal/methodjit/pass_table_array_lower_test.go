@@ -298,6 +298,111 @@ func TestTableArrayLower_LoadElimInvalidatesFactsAcrossTableMutation(t *testing.
 	}
 }
 
+func TestTableArrayStoreLower_ReusesFactsForSwapStores(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_swap_store_lower"}, NumRegs: 5}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	k1 := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	k2 := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	g1 := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), k1.Value()}, Block: b}
+	g2 := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), k2.Value()}, Block: b}
+	set1 := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), k1.Value(), g2.Value()}, Block: b}
+	set2 := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), k2.Value(), g1.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{g1.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, k1, k2, g1, g2, set1, set2, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = TableArrayStoreLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts := countOps(fn)
+	if counts[OpSetTable] != 0 || counts[OpTableArrayStore] != 2 {
+		t.Fatalf("expected both swap stores to lower, counts=%v\n%s", counts, Print(fn))
+	}
+	if counts[OpTableArrayHeader] != 1 || counts[OpTableArrayLen] != 1 || counts[OpTableArrayData] != 1 {
+		t.Fatalf("expected swap stores to share one typed array fact set, counts=%v\n%s", counts, Print(fn))
+	}
+}
+
+func TestTableArrayStoreLower_LICMHoistsFactsAcrossCheckedStore(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_store_licm"}, NumRegs: 3}
+	entry, header, body, exit := buildSimpleLoop(fn)
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	j0 := &Instr{ID: fn.newValueID(), Op: OpJump, Block: entry}
+	entry.Instrs = []*Instr{tbl, seed, j0}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: header}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Args: []*Value{cond.Value()}, Block: header}
+	header.Instrs = []*Instr{phi, cond, br}
+
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeInt, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), phi.Value()}, Block: body}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown, Aux2: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), phi.Value(), get.Value()}, Block: body}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: body}
+	next := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{phi.Value(), one.Value()}, Block: body}
+	jb := &Instr{ID: fn.newValueID(), Op: OpJump, Block: body}
+	body.Instrs = []*Instr{get, set, one, next, jb}
+	phi.Args = []*Value{seed.Value(), next.Value()}
+
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{seed.Value()}, Block: exit}
+	exit.Instrs = []*Instr{ret}
+	assertValidates(t, fn, "input")
+
+	var err error
+	fn, err = TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = TableArrayStoreLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = LICMPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if blockHasOp(body, OpTableArrayHeader) || blockHasOp(body, OpTableArrayLen) || blockHasOp(body, OpTableArrayData) {
+		t.Fatalf("checked typed store should not block hoisting array facts:\n%s", Print(fn))
+	}
+	if !blockHasOp(body, OpTableArrayStore) {
+		t.Fatalf("loop body should retain checked typed store:\n%s", Print(fn))
+	}
+}
+
 func TestTableArrayLower_SetTableBeforeSameTableReadStillLowers(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_set_before_read"}, NumRegs: 4}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}

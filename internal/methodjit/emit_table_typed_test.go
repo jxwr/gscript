@@ -725,20 +725,20 @@ func read_then_set(arr, key, val) {
 	if err != nil {
 		t.Fatalf("pipeline: %v", err)
 	}
-	var setID int
+	var storeID int
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if instr.Op == OpSetTable {
-				setID = instr.ID
+			if instr.Op == OpTableArrayStore {
+				storeID = instr.ID
 				break
 			}
 		}
-		if setID != 0 {
+		if storeID != 0 {
 			break
 		}
 	}
-	if setID == 0 {
-		t.Fatalf("expected SetTable after lowering:\n%s", Print(fn))
+	if storeID == 0 {
+		t.Fatalf("expected checked TableArrayStore after lowering:\n%s", Print(fn))
 	}
 
 	alloc := AllocateRegisters(fn)
@@ -747,8 +747,8 @@ func read_then_set(arr, key, val) {
 		t.Fatalf("Compile: %v", err)
 	}
 	defer cf.Code.Free()
-	if got := countMatchingIRInstr(cf, setID, isARM64CBZX17); got == 0 {
-		t.Fatalf("SetTable did not consume TableArrayLoad success bounds fact")
+	if got := countMatchingIRInstr(cf, storeID, isARM64CBZX17); got != 0 {
+		t.Fatalf("checked TableArrayStore should use its typed len operand instead of X17 success flag")
 	}
 }
 

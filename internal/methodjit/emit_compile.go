@@ -519,7 +519,7 @@ func instrMayDirectDeoptWithoutFullFlush(instr *Instr) bool {
 	case OpGuardType, OpGuardIntRange, OpNumToFloat, OpDivIntExact,
 		OpGetFieldNumToFloat,
 		OpMatrixGetF, OpMatrixSetF, OpMatrixFlat, OpMatrixStride,
-		OpTableArrayHeader, OpTableArrayLoad, OpTableArrayNestedLoad:
+		OpTableArrayHeader, OpTableArrayLoad, OpTableArrayStore, OpTableArrayNestedLoad:
 		return true
 	case OpGetField:
 		return instr.Type == TypeFloat

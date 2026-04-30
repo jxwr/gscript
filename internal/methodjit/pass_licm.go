@@ -170,8 +170,9 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 		}
 	}
 
-	// Collect in-loop field writes, global writes, and calls for alias analysis.
+	// Collect in-loop field/table writes, global writes, and calls for alias analysis.
 	setFields := make(map[loadKey]bool)
+	arrayElementWrites := make(map[loadKey]bool)
 	setGlobals := make(map[int64]bool) // Aux (constant pool index) of in-loop SetGlobal
 	hasLoopCall := false
 	for _, b := range bodyList {
@@ -186,6 +187,13 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				// Use fieldAux = -1 as sentinel for "any field on this obj".
 				if len(instr.Args) >= 1 {
 					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: -1}] = true
+				}
+			case OpTableArrayStore:
+				// Checked typed-array stores preserve table kind/len/data but
+				// still mutate elements, so invariant GetTable loads cannot
+				// move across them.
+				if len(instr.Args) >= 1 {
+					arrayElementWrites[loadKey{objID: instr.Args[0].ID, fieldAux: -1}] = true
 				}
 			case OpAppend:
 				// table.insert mutates the table's array part.
@@ -274,6 +282,11 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					if setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
 						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 							"table is written inside the loop")
+						continue
+					}
+					if arrayElementWrites[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
+						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+							"table elements are written inside the loop")
 						continue
 					}
 				}

@@ -331,6 +331,19 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 						"table mutation invalidated typed array facts")
 				}
 
+			case OpTableArrayStore:
+				if len(instr.Args) < 5 || instr.Args[0] == nil || instr.Args[3] == nil {
+					continue
+				}
+				objID := instr.Args[0].ID
+				if invalidateDynamicTableCacheForObject(tableAvail, objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"typed array store invalidated dynamic-key table cache")
+				}
+				tableAvail[tableKey{objID: objID, keyID: instr.Args[3].ID}] = instr.Args[4].ID
+				functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+					"recorded typed array store value for forwarding")
+
 			case OpAppend, OpSetList:
 				if len(instr.Args) < 1 {
 					continue
