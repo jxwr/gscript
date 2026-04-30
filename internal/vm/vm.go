@@ -1716,6 +1716,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		case OP_FORPREP:
 			a := DecodeA(inst)
 			sbx := DecodesBx(inst)
+			if handled, err := vm.tryPrimePredicateSumForLoopKernel(frame, base, code, constants, a, sbx); handled {
+				if err != nil {
+					return nil, wrapLineErr(frame, err)
+				}
+				break
+			}
 			if handled, err := vm.tryNBodyAdvanceForLoopKernel(frame, base, code, constants, a, sbx); handled {
 				if err != nil {
 					return nil, wrapLineErr(frame, err)

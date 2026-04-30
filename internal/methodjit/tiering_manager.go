@@ -241,6 +241,22 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 
+	if tm.hasPrimePredicateSumDriverLoop(proto) {
+		proto.JITDisabled = true
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "whole_call_prime_predicate_sum_loop",
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "whole_call_prime_predicate_sum_loop",
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "whole_call_prime_predicate_sum_loop",
+			"target": "interpreter",
+		})
+		return nil
+	}
+
 	if !tm.tier2Failed[proto] {
 		if t2, ok := tm.compileFixedRecursiveTableBuilderTier2(proto); ok {
 			tm.tier2Compiled[proto] = t2
@@ -917,6 +933,31 @@ func (tm *TieringManager) hasLargeNBodyAdvanceDriverLoop(proto *vm.FuncProto) bo
 			continue
 		}
 		if callee := globals[name]; vm.HasNBodyAdvanceWholeCallKernel(callee) {
+			return true
+		}
+	}
+	return false
+}
+
+func (tm *TieringManager) hasPrimePredicateSumDriverLoop(proto *vm.FuncProto) bool {
+	if tm == nil || proto == nil {
+		return false
+	}
+	globals := tm.buildLoopCallGlobals(proto)
+	if len(globals) == 0 {
+		return false
+	}
+	globalNums := stableNumericGlobals(proto)
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_FORPREP {
+			continue
+		}
+		a := vm.DecodeA(inst)
+		steps, ok := staticForTripCount(proto, globalNums, pc, a)
+		if !ok || steps < 1024 {
+			continue
+		}
+		if vm.IsPrimePredicateSumLoopAt(proto, pc, globals) {
 			return true
 		}
 	}
