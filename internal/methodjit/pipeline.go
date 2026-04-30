@@ -277,7 +277,8 @@ type Tier2PipelineOpts struct {
 //
 //	TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp →
 //	LoadElim → EscapeAnalysis → DCE → PostRewriteTypeSpec →
-//	LoopBoundRangeGuard → RangeAnalysis → OverflowBoxing → FloatStrengthReduction → LICM → FieldNumToFloatFusion →
+//	LoopBoundRangeGuard → RangeAnalysis → OverflowBoxing → UnrollAndJam → FMAFusion →
+//	FloatStrengthReduction → FMAFusion → LICM → FieldNumToFloatFusion →
 //	LoadElim → DCE
 //
 // Returns the optimized function, any intrinsic rewrite notes (non-nil means
@@ -551,6 +552,14 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	// FloatStrengthReduction can expose fresh MulFloat+AddFloat pairs from
+	// exact divisions by powers of two. Run FMA fusion again so those late
+	// multiply-adds are not left as separate FP instructions.
+	fn, err = FMAFusionPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FMAFusion (post-FloatStrengthReduction): %w", err)
+	}
+
 	fn, err = LICMPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("LICM: %w", err)
@@ -658,7 +667,10 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("MatrixLower", MatrixLowerPass)
 	pipe.Add("LoadEliminationPostMatrixLower", LoadEliminationPass)
 	pipe.Add("DCEPostMatrixLower", DCEPass)
+	pipe.Add("UnrollAndJam", UnrollAndJamPass)
+	pipe.Add("FMAFusion", FMAFusionPass)
 	pipe.Add("FloatStrengthReduction", FloatStrengthReductionPass)
+	pipe.Add("FMAFusionPostFloatStrengthReduction", FMAFusionPass)
 	pipe.Add("LICM", LICMPass)
 	pipe.Add("FieldNumToFloatFusion", FieldNumToFloatFusionPass)
 	pipe.Add("LoadEliminationPostLICM", LoadEliminationPass)

@@ -62,6 +62,37 @@ func TestFloatStrengthReduction_DoesNotRewriteNonPowerOfTwo(t *testing.T) {
 	}
 }
 
+func TestFloatStrengthReduction_ExposesFMA(t *testing.T) {
+	fn := &Function{}
+	b := &Block{ID: 0}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	x := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	y := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFloat, Aux: 1, Block: b}
+	two := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 2, Block: b}
+	div := &Instr{ID: fn.newValueID(), Op: OpDivFloat, Type: TypeFloat, Args: []*Value{x.Value(), two.Value()}, Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Args: []*Value{div.Value(), y.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add.Value()}, Block: b}
+	b.Instrs = []*Instr{x, y, two, div, add, ret}
+
+	if _, err := FloatStrengthReductionPass(fn); err != nil {
+		t.Fatalf("FloatStrengthReductionPass: %v", err)
+	}
+	if div.Op != OpMulFloat {
+		t.Fatalf("division was not rewritten:\n%s", Print(fn))
+	}
+	if _, err := FMAFusionPass(fn); err != nil {
+		t.Fatalf("FMAFusionPass: %v", err)
+	}
+	if add.Op != OpFMA {
+		t.Fatalf("post-strength-reduction add was not fused:\n%s", Print(fn))
+	}
+	if len(add.Args) != 3 || add.Args[0].ID != x.ID || add.Args[2].ID != y.ID {
+		t.Fatalf("fused FMA has wrong args: %#v", add.Args)
+	}
+}
+
 func instrIndex(block *Block, target *Instr) int {
 	for i, instr := range block.Instrs {
 		if instr == target {
