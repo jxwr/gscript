@@ -27,6 +27,14 @@ func (e *BaselineJITEngine) handleConcat(ctx *ExecContext, regs []runtime.Value,
 	if absA >= len(regs) || start < 0 || end < start || end > len(regs) {
 		return nil
 	}
+	if e.callVM != nil {
+		v, err := e.callVM.ConcatValues(regs[start:end])
+		if err != nil {
+			return err
+		}
+		regs[absA] = v
+		return nil
+	}
 	regs[absA] = runtime.ConcatValues(regs[start:end])
 	return nil
 }
@@ -44,7 +52,7 @@ func (e *BaselineJITEngine) handleLen(ctx *ExecContext, regs []runtime.Value, ba
 	if v.IsTable() {
 		regs[absA] = runtime.IntValue(int64(v.Table().Len()))
 	} else if v.IsString() {
-		regs[absA] = runtime.IntValue(int64(len(v.Str())))
+		regs[absA] = runtime.IntValue(int64(runtime.StringLen(v)))
 	} else {
 		regs[absA] = runtime.IntValue(0)
 	}

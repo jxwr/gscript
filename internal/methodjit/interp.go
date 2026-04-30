@@ -264,7 +264,7 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 	case OpLen:
 		a := s.val(instr.Args[0])
 		if a.IsString() {
-			s.values[instr.ID] = runtime.IntValue(int64(len(a.Str())))
+			s.values[instr.ID] = runtime.IntValue(int64(runtime.StringLen(a)))
 		} else if a.IsTable() {
 			s.values[instr.ID] = runtime.IntValue(int64(a.Table().Length()))
 		} else {

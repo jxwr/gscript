@@ -17,11 +17,11 @@ import (
 // Interpreter is the tree-walking evaluator for GScript programs.
 type Interpreter struct {
 	globals    *Environment
-	output     []string           // captured print output (for testing)
-	currentCo  *Coroutine         // non-nil when running inside a coroutine
-	modules    map[string]Value   // require() cache
-	stringMeta *Table             // metatable for string values (__index → string lib)
-	scriptDir  string             // directory of the main script (for require path resolution)
+	output     []string         // captured print output (for testing)
+	currentCo  *Coroutine       // non-nil when running inside a coroutine
+	modules    map[string]Value // require() cache
+	stringMeta *Table           // metatable for string values (__index → string lib)
+	scriptDir  string           // directory of the main script (for require path resolution)
 }
 
 // New creates a new Interpreter with built-in globals.
@@ -217,7 +217,7 @@ func (interp *Interpreter) registerBuiltins() {
 			a := args[0]
 			switch a.Type() {
 			case TypeString:
-				return []Value{IntValue(int64(len(a.Str())))}, nil
+				return []Value{IntValue(int64(StringLen(a)))}, nil
 			case TypeTable:
 				return []Value{IntValue(int64(a.Table().Length()))}, nil
 			default:
@@ -944,7 +944,7 @@ func (interp *Interpreter) execGo(s *ast.GoStmt, env *Environment) ([]Value, boo
 		}
 		go func() {
 			childInterp := &Interpreter{
-				globals:   interp.globals,
+				globals:    interp.globals,
 				stringMeta: interp.stringMeta,
 			}
 			childInterp.callFunction(fn, args)
@@ -964,7 +964,7 @@ func (interp *Interpreter) execGo(s *ast.GoStmt, env *Environment) ([]Value, boo
 		}
 		go func() {
 			childInterp := &Interpreter{
-				globals:   interp.globals,
+				globals:    interp.globals,
 				stringMeta: interp.stringMeta,
 			}
 			childInterp.callFunction(method, args)
@@ -1935,7 +1935,7 @@ func (interp *Interpreter) evalUnary(e *ast.UnaryExpr, env *Environment) (Value,
 		}
 		switch operand.Type() {
 		case TypeString:
-			return IntValue(int64(len(operand.Str()))), nil
+			return IntValue(int64(StringLen(operand))), nil
 		case TypeTable:
 			return IntValue(int64(operand.Table().Length())), nil
 		default:

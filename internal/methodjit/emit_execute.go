@@ -465,7 +465,7 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 			if v.IsTable() {
 				regs[slot] = runtime.IntValue(int64(v.Table().Len()))
 			} else if v.IsString() {
-				regs[slot] = runtime.IntValue(int64(len(v.Str())))
+				regs[slot] = runtime.IntValue(int64(runtime.StringLen(v)))
 			} else {
 				regs[slot] = runtime.IntValue(0)
 			}

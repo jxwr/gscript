@@ -82,6 +82,7 @@ const (
 	ptrSubAnyFunction uint64 = 6 << ptrSubShift // interface-based function (needs ifaceRoots)
 	ptrSubAnyCoro     uint64 = 7 << ptrSubShift // interface-based coroutine (needs ifaceRoots)
 	ptrSubVMClosure   uint64 = 8 << ptrSubShift // *vm.Closure (direct pointer, fast OP_CALL path)
+	ptrSubLazyString  uint64 = 9 << ptrSubShift // *lazyString
 )
 
 // Value is a NaN-boxed 8-byte representation of all GScript values.
@@ -301,6 +302,12 @@ func ScanValueRoots(v Value, visitor func(unsafe.Pointer), seen map[uintptr]stru
 		scanTableRoots(t, visitor, seen)
 		return
 	}
+	if sub == ptrSubLazyString {
+		visitor(p)
+		ls := (*lazyString)(p)
+		scanLazyStringRoots(ls, visitor, seen)
+		return
+	}
 	visitor(p)
 }
 
@@ -428,8 +435,134 @@ func StringValue(s string) Value {
 	return Value(tagPtr | ptrSubString | (uint64(uintptr(p)) & ptrAddrMask))
 }
 
-// ConcatValues joins VM/JIT concat operands with one exact-size builder growth.
-// The common binary path avoids the temporary operand slice used below.
+const lazyConcatThreshold = 64
+
+type lazyString struct {
+	leftString  string
+	leftLazy    *lazyString
+	rightString string
+	rightLazy   *lazyString
+	length      int
+}
+
+func LazyStringValue(left, right Value) Value {
+	if !canNativeConcat(left) || !canNativeConcat(right) {
+		return ConcatValues([]Value{left, right})
+	}
+	total := StringLen(left) + StringLen(right)
+	if total <= lazyConcatThreshold {
+		l, _ := ConcatOperandString(left)
+		r, _ := ConcatOperandString(right)
+		return StringValue(l + r)
+	}
+	ls := &lazyString{length: total}
+	setLazyPart(&ls.leftString, &ls.leftLazy, left)
+	setLazyPart(&ls.rightString, &ls.rightLazy, right)
+	p := unsafe.Pointer(ls)
+	keepAlive(p, ls)
+	return Value(tagPtr | ptrSubLazyString | (uint64(uintptr(p)) & ptrAddrMask))
+}
+
+func setLazyPart(dstString *string, dstLazy **lazyString, v Value) {
+	if lz := v.lazyString(); lz != nil {
+		*dstLazy = lz
+		return
+	}
+	s, _ := ConcatOperandString(v)
+	*dstString = s
+}
+
+func (v Value) lazyString() *lazyString {
+	if uint64(v)&tagMask != tagPtr || v.ptrSubType() != ptrSubLazyString {
+		return nil
+	}
+	p := v.ptrPayload()
+	if p == nil {
+		return nil
+	}
+	return (*lazyString)(p)
+}
+
+func scanLazyStringRoots(ls *lazyString, visitor func(unsafe.Pointer), seen map[uintptr]struct{}) {
+	if ls == nil {
+		return
+	}
+	if ls.leftLazy != nil {
+		p := unsafe.Pointer(ls.leftLazy)
+		addr := uintptr(p)
+		if _, ok := seen[addr]; !ok {
+			seen[addr] = struct{}{}
+			visitor(p)
+			scanLazyStringRoots(ls.leftLazy, visitor, seen)
+		}
+	}
+	if ls.rightLazy != nil {
+		p := unsafe.Pointer(ls.rightLazy)
+		addr := uintptr(p)
+		if _, ok := seen[addr]; !ok {
+			seen[addr] = struct{}{}
+			visitor(p)
+			scanLazyStringRoots(ls.rightLazy, visitor, seen)
+		}
+	}
+}
+
+func (ls *lazyString) materialize() string {
+	if ls == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(ls.length)
+	writeLazyStringTree(&b, ls)
+	return b.String()
+}
+
+func writeLazyStringTree(b *strings.Builder, ls *lazyString) {
+	if ls != nil {
+		writeLazyStringPart(b, ls.leftString, ls.leftLazy)
+		writeLazyStringPart(b, ls.rightString, ls.rightLazy)
+		return
+	}
+}
+
+func writeLazyStringPart(b *strings.Builder, s string, ls *lazyString) {
+	if ls != nil {
+		writeLazyStringTree(b, ls)
+		return
+	}
+	b.WriteString(s)
+}
+
+func canNativeConcat(v Value) bool {
+	return v.IsString() || v.IsNumber()
+}
+
+func ConcatOperandString(v Value) (string, bool) {
+	switch v.Type() {
+	case TypeString:
+		return v.Str(), true
+	case TypeInt:
+		return strconv.FormatInt(v.Int(), 10), true
+	case TypeFloat:
+		return strconv.FormatFloat(v.Float(), 'g', -1, 64), true
+	default:
+		return "", false
+	}
+}
+
+func StringLen(v Value) int {
+	if lz := v.lazyString(); lz != nil {
+		return lz.length
+	}
+	if v.IsString() {
+		return len(v.Str())
+	}
+	return 0
+}
+
+// ConcatValues joins concat operands. Binary string/number chains use an
+// immutable lazy node once the result is large enough; other cases keep the
+// exact-size materializing builder used by cold paths and tests.
 func ConcatValues(values []Value) Value {
 	switch len(values) {
 	case 0:
@@ -437,6 +570,9 @@ func ConcatValues(values []Value) Value {
 	case 1:
 		return StringValue(values[0].String())
 	case 2:
+		if canNativeConcat(values[0]) && canNativeConcat(values[1]) {
+			return LazyStringValue(values[0], values[1])
+		}
 		left := concatString(values[0])
 		right := concatString(values[1])
 		var b strings.Builder
@@ -786,7 +922,7 @@ func (v Value) Type() ValueType {
 		switch sub {
 		case ptrSubTable:
 			return TypeTable
-		case ptrSubString:
+		case ptrSubString, ptrSubLazyString:
 			return TypeString
 		case ptrSubClosure, ptrSubGoFunction, ptrSubAnyFunction, ptrSubVMClosure:
 			return TypeFunction
@@ -809,7 +945,11 @@ func (v Value) IsFloat() bool  { return uint64(v)&nanBits != nanBits }
 func (v Value) IsNumber() bool { return v.IsFloat() || v.IsInt() }
 
 func (v Value) IsString() bool {
-	return uint64(v)&tagMask == tagPtr && v.ptrSubType() == ptrSubString
+	if uint64(v)&tagMask != tagPtr {
+		return false
+	}
+	sub := v.ptrSubType()
+	return sub == ptrSubString || sub == ptrSubLazyString
 }
 
 func (v Value) IsTable() bool {
@@ -873,6 +1013,9 @@ func (v Value) Number() float64 {
 func (v Value) Str() string {
 	if !v.IsString() {
 		return ""
+	}
+	if lz := v.lazyString(); lz != nil {
+		return lz.materialize()
 	}
 	p := v.ptrPayload()
 	if p == nil {
@@ -956,6 +1099,8 @@ func (v Value) Ptr() any {
 		return (*Table)(p)
 	case ptrSubString:
 		return *(*string)(p)
+	case ptrSubLazyString:
+		return (*lazyString)(p).materialize()
 	case ptrSubClosure:
 		return (*Closure)(p)
 	case ptrSubGoFunction:

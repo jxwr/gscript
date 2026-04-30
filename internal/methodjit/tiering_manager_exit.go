@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -636,11 +635,15 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 		tempBase := absArg1
 		nArgs := int(ctx.OpExitArg2)
 		if absSlot < len(regs) && tempBase >= 0 && nArgs >= 0 && tempBase+nArgs <= len(regs) {
-			var sb strings.Builder
-			for i := 0; i < nArgs; i++ {
-				sb.WriteString(regs[tempBase+i].String())
+			if tm.callVM != nil {
+				v, err := tm.callVM.ConcatValues(regs[tempBase : tempBase+nArgs])
+				if err != nil {
+					return err
+				}
+				regs[absSlot] = v
+			} else {
+				regs[absSlot] = runtime.ConcatValues(regs[tempBase : tempBase+nArgs])
 			}
-			regs[absSlot] = runtime.StringValue(sb.String())
 		}
 
 	case OpLen:
@@ -649,7 +652,7 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 			if v.IsTable() {
 				regs[absSlot] = runtime.IntValue(int64(v.Table().Len()))
 			} else if v.IsString() {
-				regs[absSlot] = runtime.IntValue(int64(len(v.Str())))
+				regs[absSlot] = runtime.IntValue(int64(runtime.StringLen(v)))
 			} else {
 				regs[absSlot] = runtime.IntValue(0)
 			}

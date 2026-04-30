@@ -1236,7 +1236,11 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			a := DecodeA(inst)
 			b := DecodeB(inst)
 			c := DecodeC(inst)
-			vm.regs[base+a] = runtime.ConcatValues(vm.regs[base+b : base+c+1])
+			r, err := vm.ConcatValues(vm.regs[base+b : base+c+1])
+			if err != nil {
+				return nil, wrapLineErr(frame, err)
+			}
+			vm.regs[base+a] = r
 
 		// ---- Comparison ----
 		case OP_EQ:
@@ -2234,7 +2238,7 @@ func (vm *VM) unaryMinus(v runtime.Value) (runtime.Value, error) {
 
 func (vm *VM) length(v runtime.Value) (runtime.Value, error) {
 	if v.IsString() {
-		return runtime.IntValue(int64(len(v.Str()))), nil
+		return runtime.IntValue(int64(runtime.StringLen(v))), nil
 	}
 	if v.IsTable() {
 		mt := v.Table().GetMetatable()
@@ -2254,6 +2258,61 @@ func (vm *VM) length(v runtime.Value) (runtime.Value, error) {
 		return runtime.IntValue(int64(v.Table().Len())), nil
 	}
 	return runtime.NilValue(), fmt.Errorf("attempt to get length of a %s value", v.TypeName())
+}
+
+func (vm *VM) ConcatValues(values []runtime.Value) (runtime.Value, error) {
+	if len(values) == 0 {
+		return runtime.StringValue(""), nil
+	}
+	allNative := true
+	for _, v := range values {
+		if !(v.IsString() || v.IsNumber()) {
+			allNative = false
+			break
+		}
+	}
+	if allNative {
+		result := values[0]
+		if len(values) == 1 {
+			s, _ := runtime.ConcatOperandString(result)
+			return runtime.StringValue(s), nil
+		}
+		for i := 1; i < len(values); i++ {
+			result = runtime.LazyStringValue(result, values[i])
+		}
+		return result, nil
+	}
+
+	result := values[0]
+	for i := 1; i < len(values); i++ {
+		var err error
+		result, err = vm.concatPair(result, values[i])
+		if err != nil {
+			return runtime.NilValue(), err
+		}
+	}
+	return result, nil
+}
+
+func (vm *VM) concatPair(a, b runtime.Value) (runtime.Value, error) {
+	if (a.IsString() || a.IsNumber()) && (b.IsString() || b.IsNumber()) {
+		return runtime.LazyStringValue(a, b), nil
+	}
+	mm, err := vm.getMetamethod(a, b, "__concat")
+	if err == nil && !mm.IsNil() {
+		results, err := vm.callValue(mm, []runtime.Value{a, b})
+		if err != nil {
+			return runtime.NilValue(), err
+		}
+		if len(results) > 0 {
+			return results[0], nil
+		}
+		return runtime.NilValue(), nil
+	}
+	if !(a.IsString() || a.IsNumber()) {
+		return runtime.NilValue(), fmt.Errorf("attempt to concatenate a %s value", a.TypeName())
+	}
+	return runtime.NilValue(), fmt.Errorf("attempt to concatenate a %s value", b.TypeName())
 }
 
 func (vm *VM) getMetamethod(a, b runtime.Value, name string) (runtime.Value, error) {

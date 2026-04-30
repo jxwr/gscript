@@ -24,7 +24,7 @@ func buildStringLib() *Table {
 		if len(args) < 1 || !args[0].IsString() {
 			return nil, fmt.Errorf("bad argument #1 to 'string.len' (string expected)")
 		}
-		return []Value{IntValue(int64(len(args[0].Str())))}, nil
+		return []Value{IntValue(int64(StringLen(args[0])))}, nil
 	})
 
 	// string.sub(s, i [, j]) -> string
