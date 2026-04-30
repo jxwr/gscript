@@ -376,6 +376,11 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		tm.installTier2(proto, t2)
 		return t2
 	}
+	if t2, ok := tm.compileMutualRecursiveIntSCCTier2(proto); ok {
+		tm.tier2Compiled[proto] = t2
+		tm.installTier2(proto, t2)
+		return t2
+	}
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
 		tm.tier2Failed[proto] = true
@@ -1468,6 +1473,9 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 	}
 	if cf != nil && cf.FixedRecursiveTableFold != nil {
 		return tm.executeFixedRecursiveTableFold(cf, regs, base, proto, retBuf)
+	}
+	if cf != nil && cf.MutualRecursiveIntSCC != nil {
+		return tm.executeMutualRecursiveIntSCC(cf, regs, base, proto, retBuf)
 	}
 	if tm.callVM != nil {
 		regs = tm.ensureTier2RegisterBudget(cf, regs, base, proto)

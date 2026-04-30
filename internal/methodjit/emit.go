@@ -396,6 +396,12 @@ type CompiledFunction struct {
 	// integer self-recursive additive recurrences such as fib(n-1)+fib(n-2).
 	FixedRecursiveIntFold *fixedRecursiveIntFoldProtocol
 
+	// MutualRecursiveIntSCC is a whole-call Tier 2 protocol for small pure
+	// integer mutual-recursive SCCs. It memoizes bounded recurrence evaluation
+	// after guarding that all global function closures still match the analyzed
+	// SCC members.
+	MutualRecursiveIntSCC *mutualRecursiveIntSCCProtocol
+
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
 	// It runs the function via the VM interpreter. Set by the caller
 	// (e.g., test harness or tiering engine) to provide VM fallback.
