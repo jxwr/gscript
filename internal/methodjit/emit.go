@@ -224,6 +224,7 @@ const (
 	TableOpGetField       = 3 // deopt fallback for GetField (no field cache)
 	TableOpSetField       = 4 // deopt fallback for SetField (no field cache)
 	TableOpNewFixedTable2 = 5
+	TableOpBoolArrayFill  = 6
 )
 
 // ExecContext field offsets (must match struct layout above).

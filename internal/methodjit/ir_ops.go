@@ -109,6 +109,10 @@ const (
 	// Reuses previously verified typed-array facts, checks key/value before
 	// mutation, and precise-deopts on miss so the interpreter replays SETTABLE.
 	OpTableArrayStore
+	// Bulk bool-array fill. Args = [table, start, end], Aux = byte value
+	// (1=false, 2=true). It preserves RawSetInt sparse/append semantics for
+	// constant-bool contiguous initialization, with table-exit fallback.
+	OpTableBoolArrayFill
 	// Same-block nested row load:
 	// Args = [outerData, outerLen, outerKey, innerKey], Aux = inner row FBKind.
 	// Loads a table row from a mixed outer array, verifies the row array kind,
@@ -244,6 +248,7 @@ var opNames = [...]string{
 	OpTableArrayData:       "TableArrayData",
 	OpTableArrayLoad:       "TableArrayLoad",
 	OpTableArrayStore:      "TableArrayStore",
+	OpTableBoolArrayFill:   "TableBoolArrayFill",
 	OpTableArrayNestedLoad: "TableNestedLoad",
 	OpGetField:             "GetField",
 	OpGetFieldNumToFloat:   "GetFieldNumToFloat",

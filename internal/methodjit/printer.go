@@ -114,6 +114,14 @@ func printInstr(sb *strings.Builder, i *Instr) {
 			args[j] = fmt.Sprintf("v%d", a.ID)
 		}
 		fmt.Fprintf(sb, "ctor[%d]/%d(%s)", i.Aux, i.Aux2, strings.Join(args, ", "))
+	case OpTableBoolArrayFill:
+		if len(i.Args) >= 3 {
+			val := "false"
+			if i.Aux == 2 {
+				val = "true"
+			}
+			fmt.Fprintf(sb, "v%d, v%d..v%d = %s", i.Args[0].ID, i.Args[1].ID, i.Args[2].ID, val)
+		}
 	case OpGuardType:
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d is %s", i.Args[0].ID, Type(i.Aux).String())

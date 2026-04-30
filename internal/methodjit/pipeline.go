@@ -564,6 +564,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = BoolTableFillLoopPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("BoolTableFillLoop: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = FieldNumToFloatFusionPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("FieldNumToFloatFusion (post-LICM): %w", err)

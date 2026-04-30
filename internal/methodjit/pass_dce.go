@@ -63,7 +63,7 @@ func hasSideEffect(instr *Instr) bool {
 		return true
 
 	// Table mutations: observable.
-	case OpSetTable, OpTableArrayStore, OpSetField, OpSetList, OpAppend:
+	case OpSetTable, OpTableArrayStore, OpTableBoolArrayFill, OpSetField, OpSetList, OpAppend:
 		return true
 
 	// DenseMatrix writes: observable. Without this, DCE silently drops

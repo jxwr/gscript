@@ -518,6 +518,165 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitTableBoolArrayFill(instr *Instr) {
+	if len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+	fallbackLabel := ec.uniqueLabel("boolfill_fallback")
+	doneLabel := ec.uniqueLabel("boolfill_done")
+	storeLoopLabel := ec.uniqueLabel("boolfill_loop")
+	storeDoneLabel := ec.uniqueLabel("boolfill_store_done")
+
+	tblValueID := instr.Args[0].ID
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	if ec.tableVerified[tblValueID] || ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		ec.tableVerified[tblValueID] = true
+	} else if ec.irTypes[tblValueID] == TypeTable {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, fallbackLabel)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X1, fallbackLabel)
+		ec.tableVerified[tblValueID] = true
+	} else {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, fallbackLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, fallbackLabel)
+		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X1, fallbackLabel)
+		ec.tableVerified[tblValueID] = true
+	}
+	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKBool)
+	asm.BCond(jit.CondNE, fallbackLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffImap)
+	asm.CBNZ(jit.X2, fallbackLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffHash)
+	asm.CBNZ(jit.X2, fallbackLabel)
+
+	if !ec.emitTableArrayKeyToReg(instr.Args[1], fallbackLabel) {
+		ec.emitDeopt(instr)
+		return
+	}
+	asm.MOVreg(jit.X7, jit.X1) // start
+	if !ec.emitTableArrayKeyToReg(instr.Args[2], fallbackLabel) {
+		ec.emitDeopt(instr)
+		return
+	}
+	asm.MOVreg(jit.X3, jit.X1) // end
+	asm.MOVreg(jit.X1, jit.X7) // current index
+	asm.CMPreg(jit.X3, jit.X1)
+	asm.BCond(jit.CondLT, doneLabel)
+	asm.CMPimm(jit.X1, 0)
+	asm.BCond(jit.CondLT, fallbackLabel)
+	asm.ADDimm(jit.X5, jit.X3, 1) // needed len
+	asm.CMPreg(jit.X5, jit.X3)
+	asm.BCond(jit.CondLE, fallbackLabel)
+	asm.LDR(jit.X6, jit.X0, jit.TableOffBoolArrayCap)
+	asm.CMPreg(jit.X5, jit.X6)
+	asm.BCond(jit.CondGT, fallbackLabel)
+
+	asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray)
+	asm.MOVimm16(jit.X4, uint16(instr.Aux))
+	asm.Label(storeLoopLabel)
+	asm.STRBreg(jit.X4, jit.X2, jit.X1)
+	asm.CMPreg(jit.X1, jit.X3)
+	asm.BCond(jit.CondEQ, storeDoneLabel)
+	asm.ADDimm(jit.X1, jit.X1, 1)
+	asm.B(storeLoopLabel)
+
+	asm.Label(storeDoneLabel)
+	asm.MOVimm16(jit.X6, 1)
+	asm.STRB(jit.X6, jit.X0, jit.TableOffKeysDirty)
+	asm.LDR(jit.X6, jit.X0, jit.TableOffBoolArrayLen)
+	asm.CMPreg(jit.X6, jit.X5)
+	asm.BCond(jit.CondGE, doneLabel)
+	asm.STR(jit.X5, jit.X0, jit.TableOffBoolArrayLen)
+	asm.B(doneLabel)
+
+	asm.Label(fallbackLabel)
+	ec.emitTableBoolArrayFillExit(instr)
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitTableBoolArrayFillExit(instr *Instr) {
+	asm := ec.asm
+	for i := 0; i < 3 && i < len(instr.Args); i++ {
+		arg := instr.Args[i]
+		if arg == nil {
+			continue
+		}
+		reg := ec.resolveValueNB(arg.ID, jit.X0)
+		if reg != jit.X0 {
+			asm.MOVreg(jit.X0, reg)
+		}
+		if s, ok := ec.slotMap[arg.ID]; ok {
+			asm.STR(jit.X0, mRegRegs, slotOffset(s))
+		}
+	}
+
+	tblSlot, startSlot, endSlot := 0, 0, 0
+	if len(instr.Args) > 0 {
+		if s, ok := ec.slotMap[instr.Args[0].ID]; ok {
+			tblSlot = s
+		}
+	}
+	if len(instr.Args) > 1 {
+		if s, ok := ec.slotMap[instr.Args[1].ID]; ok {
+			startSlot = s
+		}
+	}
+	if len(instr.Args) > 2 {
+		if s, ok := ec.slotMap[instr.Args[2].ID]; ok {
+			endSlot = s
+		}
+	}
+
+	ec.recordExitResumeCheckSite(instr, ExitTableExit, nil, exitResumeCheckOptions{RequireTableInputs: true})
+	ec.emitStoreAllActiveRegs()
+
+	asm.LoadImm64(jit.X0, int64(TableOpBoolArrayFill))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableOp)
+	asm.LoadImm64(jit.X0, int64(tblSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableSlot)
+	asm.LoadImm64(jit.X0, int64(startSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableKeySlot)
+	asm.LoadImm64(jit.X0, int64(endSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableValSlot)
+	boolVal := int64(0)
+	if instr.Aux == 2 {
+		boolVal = 1
+	}
+	asm.LoadImm64(jit.X0, boolVal)
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux)
+	asm.LoadImm64(jit.X0, int64(instr.ID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
+
+	ec.emitSetResumeNumericPass()
+	asm.LoadImm64(jit.X0, ExitTableExit)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+
+	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
+	asm.Label(continueLabel)
+	ec.emitReloadAllActiveRegs()
+
+	ec.callExitIDs = append(ec.callExitIDs, instr.ID)
+	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
+		instrID:       instr.ID,
+		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
+	})
+}
+
 func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 	if len(instr.Args) < 5 {
 		return

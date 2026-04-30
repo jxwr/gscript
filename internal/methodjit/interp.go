@@ -594,6 +594,24 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		tbl.Table().RawSetInt(key.Int(), val)
 
+	case OpTableBoolArrayFill:
+		tbl := s.val(instr.Args[0])
+		start := s.val(instr.Args[1])
+		end := s.val(instr.Args[2])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableBoolArrayFill: arg 0 not a table")
+		}
+		if !start.IsInt() || !end.IsInt() {
+			return nil, false, fmt.Errorf("OpTableBoolArrayFill: bounds are not ints")
+		}
+		val := runtime.BoolValue(instr.Aux == 2)
+		for i := start.Int(); i <= end.Int(); i++ {
+			tbl.Table().RawSetInt(i, val)
+			if i == end.Int() {
+				break
+			}
+		}
+
 	case OpTableArrayNestedLoad:
 		outer := s.val(instr.Args[0])
 		outerKeyArg := 2

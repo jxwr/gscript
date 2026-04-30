@@ -206,6 +206,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitTableArrayLoad(instr)
 	case OpTableArrayStore:
 		ec.emitTableArrayStore(instr)
+	case OpTableBoolArrayFill:
+		ec.emitTableBoolArrayFill(instr)
+		ec.clearTableArrayBoundedKeys()
 	case OpTableArrayNestedLoad:
 		ec.emitTableArrayNestedLoad(instr)
 	case OpGetField:
