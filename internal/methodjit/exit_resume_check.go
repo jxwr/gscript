@@ -21,10 +21,12 @@ type exitResumeCheckKey struct {
 }
 
 type exitResumeLiveSlot struct {
-	ValueID  int
-	Slot     int
-	RawInt   bool
-	RawFloat bool
+	ValueID     int
+	Slot        int
+	Repr        valueRepr
+	RawInt      bool
+	RawFloat    bool
+	RawTablePtr bool
 }
 
 type exitResumeCheckSite struct {
@@ -132,10 +134,13 @@ func (ec *emitContext) exitResumeCheckLiveSlots(gprLive, fprLive map[int]bool) [
 		if !ok {
 			continue
 		}
+		repr := ec.valueReprOf(valueID)
 		live = append(live, exitResumeLiveSlot{
-			ValueID: valueID,
-			Slot:    slot,
-			RawInt:  ec.rawIntRegs[valueID],
+			ValueID:     valueID,
+			Slot:        slot,
+			Repr:        repr,
+			RawInt:      repr == valueReprRawInt,
+			RawTablePtr: repr == valueReprRawTablePtr,
 		})
 		seen[valueID] = true
 	}
@@ -154,6 +159,7 @@ func (ec *emitContext) exitResumeCheckLiveSlots(gprLive, fprLive map[int]bool) [
 		live = append(live, exitResumeLiveSlot{
 			ValueID:  valueID,
 			Slot:     slot,
+			Repr:     valueReprRawFloat,
 			RawFloat: true,
 		})
 	}
@@ -208,6 +214,10 @@ func (s *exitResumeCheckState) checkBefore(ctx *ExecContext, site *exitResumeChe
 		}
 		if live.RawFloat && !home.IsFloat() {
 			return nil, fmt.Errorf("exit-resume-check: %s instr=%d value=%d slot=%d raw-float materialized as non-float %016x",
+				protoName, site.Key.InstrID, live.ValueID, live.Slot, uint64(home))
+		}
+		if live.RawTablePtr && !home.IsTable() {
+			return nil, fmt.Errorf("exit-resume-check: %s instr=%d value=%d slot=%d raw-table-ptr materialized as non-table %016x",
 				protoName, site.Key.InstrID, live.ValueID, live.Slot, uint64(home))
 		}
 		before[live.Slot] = home

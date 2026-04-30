@@ -2001,18 +2001,7 @@ func (ec *emitContext) emitSpillSelectiveForCall(gprLive, fprLive map[int]bool) 
 			continue
 		}
 		reg := jit.Reg(pr.Reg)
-		if ec.rawTablePtrRegs[valueID] {
-			emitBoxTablePtr(ec.asm, jit.X0, reg, jit.X17)
-			ec.asm.STR(jit.X0, mRegRegs, slotOffset(slot))
-			ec.emitExitResumeCheckShadowStoreGPR(slot, jit.X0)
-		} else if ec.rawIntRegs[valueID] {
-			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
-			ec.asm.STR(jit.X0, mRegRegs, slotOffset(slot))
-			ec.emitExitResumeCheckShadowStoreGPR(slot, jit.X0)
-		} else {
-			ec.asm.STR(reg, mRegRegs, slotOffset(slot))
-			ec.emitExitResumeCheckShadowStoreGPR(slot, reg)
-		}
+		ec.emitStoreGPRValueAsBoxed(valueID, reg, slot)
 	}
 
 	for valueID := range fprLive {
@@ -2045,12 +2034,7 @@ func (ec *emitContext) emitReloadSelectiveForCall(gprLive, fprLive map[int]bool)
 			continue
 		}
 		reg := jit.Reg(pr.Reg)
-		ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
-		if ec.rawTablePtrRegs[valueID] {
-			jit.EmitExtractPtr(ec.asm, reg, reg)
-			continue
-		}
-		delete(ec.rawIntRegs, valueID)
+		ec.emitReloadGPRValueFromBoxed(valueID, reg, slot)
 	}
 
 	for valueID := range fprLive {

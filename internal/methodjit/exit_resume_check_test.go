@@ -85,6 +85,42 @@ func f() {
 	})
 }
 
+func TestExitResumeCheck_NativeCallSpillsRawIntAndRawFloat(t *testing.T) {
+	withExitResumeCheck(t, func() {
+		src := `
+func id(x) {
+    return x
+}
+func f(n) {
+    a := 40 + 2
+    b := 1.25 + 2.5
+    c := id(n)
+    return a + c + b
+}
+`
+		top := compileTop(t, src)
+		assertExitResumeCheckSite(t, top, "f", func(site *exitResumeCheckSite) bool {
+			if site.Key.ExitCode != ExitCallExit {
+				return false
+			}
+			hasRawInt := false
+			hasRawFloat := false
+			for _, live := range site.LiveSlots {
+				hasRawInt = hasRawInt || live.RawInt
+				hasRawFloat = hasRawFloat || live.RawFloat
+			}
+			return hasRawInt && hasRawFloat
+		})
+		args := []runtime.Value{runtime.IntValue(5)}
+		vmResults := runVMByName(t, src, "f", args)
+		jitResults, entered := runForcedTier2ByName(t, top, "f", []string{"id", "f"}, args)
+		assertRawIntSelfResultsEqual(t, "f", jitResults, vmResults)
+		if entered["f"] == 0 {
+			t.Fatalf("f did not enter Tier 2")
+		}
+	})
+}
+
 func TestExitResumeCheck_CacheableLoopNewTableMarksResultSlot(t *testing.T) {
 	withExitResumeCheck(t, func() {
 		src := `

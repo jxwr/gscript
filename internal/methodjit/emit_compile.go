@@ -255,6 +255,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		slotMap:                    make(map[int]int),
 		nextSlot:                   fn.NumRegs,
 		activeRegs:                 make(map[int]bool),
+		valueReprs:                 make(map[int]valueRepr),
 		rawIntRegs:                 make(map[int]bool),
 		rawTablePtrRegs:            make(map[int]bool),
 		activeFPRegs:               make(map[int]bool),
@@ -548,14 +549,20 @@ type emitContext struct {
 	// Values only used within their defining block skip the memory write.
 	crossBlockLive map[int]bool
 
+	// valueReprs is the explicit representation lattice for active allocated
+	// registers. Boxed is the default absence value. rawIntRegs and
+	// rawTablePtrRegs remain compatibility mirrors while older emit paths are
+	// migrated to valueReprs.
+	valueReprs map[int]valueRepr
+
 	// rawIntRegs tracks which value IDs have RAW int64 (not NaN-boxed) content
-	// in their allocated register. Set by emitRawIntBinOp, read by resolveRawInt.
-	// Reset at block boundaries (raw state doesn't carry across blocks).
+	// in their allocated register. Compatibility mirror for valueReprs.
 	rawIntRegs map[int]bool
 
 	// rawTablePtrRegs tracks value IDs whose allocated GPR holds a raw
 	// *runtime.Table pointer. Home slots always hold a boxed table Value so
 	// exit-resume and GC-visible VM state never see raw pointers.
+	// Compatibility mirror for valueReprs.
 	rawTablePtrRegs map[int]bool
 
 	// shapeVerified tracks table SSA value IDs whose shape has been verified
@@ -973,7 +980,9 @@ func (ec *emitContext) emitNumericBody() {
 	asm := ec.asm
 	prevNumericMode := ec.numericMode
 	prevActiveRegs := ec.activeRegs
+	prevValueReprs := ec.valueReprs
 	prevRawIntRegs := ec.rawIntRegs
+	prevRawTablePtrRegs := ec.rawTablePtrRegs
 	prevActiveFPRegs := ec.activeFPRegs
 	prevShapeVerified := ec.shapeVerified
 	prevTableVerified := ec.tableVerified
@@ -999,7 +1008,7 @@ func (ec *emitContext) emitNumericBody() {
 	asm.B(entryLabel)
 
 	ec.activeRegs = make(map[int]bool)
-	ec.rawIntRegs = make(map[int]bool)
+	ec.resetValueReprs()
 	ec.activeFPRegs = make(map[int]bool)
 	ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool)
 	ec.shapeVerified = make(map[int]uint32)
@@ -1013,7 +1022,9 @@ func (ec *emitContext) emitNumericBody() {
 	}
 	ec.numericMode = prevNumericMode
 	ec.activeRegs = prevActiveRegs
+	ec.valueReprs = prevValueReprs
 	ec.rawIntRegs = prevRawIntRegs
+	ec.rawTablePtrRegs = prevRawTablePtrRegs
 	ec.activeFPRegs = prevActiveFPRegs
 	ec.shapeVerified = prevShapeVerified
 	ec.tableVerified = prevTableVerified
@@ -1544,8 +1555,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 
 	// Reset active register set for this block.
 	ec.activeRegs = make(map[int]bool)
-	ec.rawIntRegs = make(map[int]bool)
-	ec.rawTablePtrRegs = make(map[int]bool)
+	ec.resetValueReprs()
 	ec.activeFPRegs = make(map[int]bool)
 	// Seed shape/table verification from the sole predecessor's outgoing state.
 	// Only safe when the block has exactly one predecessor — at merge points
@@ -1616,8 +1626,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 				for _, entry := range hdrRegs {
 					ec.activeRegs[entry.ValueID] = true
 					if entry.IsRawInt {
-						ec.rawIntRegs[entry.ValueID] = true
-						delete(ec.rawTablePtrRegs, entry.ValueID)
+						ec.setValueRepr(entry.ValueID, valueReprRawInt)
 					}
 				}
 			}
@@ -1663,8 +1672,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 				// emitPhiMoves delivers raw ints to loop header phis from
 				// both the initial entry (unboxing) and back-edge (raw transfer).
 				if isHeader && instr.Type == TypeInt {
-					ec.rawIntRegs[instr.ID] = true
-					delete(ec.rawTablePtrRegs, instr.ID)
+					ec.setValueRepr(instr.ID, valueReprRawInt)
 				}
 			}
 		}
@@ -1747,7 +1755,7 @@ func (ec *emitContext) seedSinglePredRawIntRegs(block *Block) {
 		}
 		ec.invalidateReg(reg, entry.ValueID)
 		ec.activeRegs[entry.ValueID] = true
-		ec.rawIntRegs[entry.ValueID] = true
+		ec.setValueRepr(entry.ValueID, valueReprRawInt)
 	}
 }
 
@@ -1759,13 +1767,13 @@ func (ec *emitContext) deactivateDeadAfter(instr *Instr) {
 	for valueID := range ec.activeRegs {
 		if !liveAfter[valueID] {
 			delete(ec.activeRegs, valueID)
-			delete(ec.rawIntRegs, valueID)
-			delete(ec.rawTablePtrRegs, valueID)
+			ec.clearValueRepr(valueID)
 		}
 	}
 	for valueID := range ec.activeFPRegs {
 		if !liveAfter[valueID] {
 			delete(ec.activeFPRegs, valueID)
+			ec.clearValueRepr(valueID)
 		}
 	}
 }
