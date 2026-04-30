@@ -121,6 +121,68 @@ func TestNewTableCacheRefillsEmptyMixedSite(t *testing.T) {
 	}
 }
 
+func TestFixedTable2CacheRefillsEmptyNilLane(t *testing.T) {
+	proto := compileFunction(t, `func f(a, b) { return {foo: a, bar: b} }`)
+	if len(proto.TableCtors2) != 1 {
+		t.Fatalf("table ctors = %d, want 1", len(proto.TableCtors2))
+	}
+	ctor := &proto.TableCtors2[0].Runtime
+	cf := &CompiledFunction{
+		Proto:          proto,
+		NewTableCaches: make([]newTableCacheEntry, 4),
+	}
+	ctx := &ExecContext{
+		TableOp:      TableOpNewFixedTable2,
+		TableSlot:    0,
+		TableKeySlot: 1,
+		TableValSlot: 2,
+		TableAux:     0,
+		TableExitID:  2,
+	}
+	regs := []runtime.Value{runtime.NilValue(), runtime.NilValue(), runtime.NilValue()}
+
+	if err := cf.executeTableExit(ctx, regs); err != nil {
+		t.Fatalf("executeTableExit: %v", err)
+	}
+	if !cacheableSmallCtor2(ctor) {
+		t.Fatal("test constructor should be cacheable")
+	}
+	tbl := regs[0].Table()
+	if tbl == nil {
+		t.Fatal("NewFixedTable exit did not write a table")
+	}
+	if got := tbl.SkeysLen(); got != 0 {
+		t.Fatalf("nil,nil constructor skeys=%d, want 0", got)
+	}
+
+	entry := cf.NewTableCaches[2]
+	if len(entry.EmptyValues) != newObject2CacheBatch-1 {
+		t.Fatalf("empty cached values = %d, want %d", len(entry.EmptyValues), newObject2CacheBatch-1)
+	}
+	if len(entry.EmptyRoots) == 0 || len(entry.EmptyRoots) >= len(entry.EmptyValues) {
+		t.Fatalf("empty compact roots = %d, want between 1 and %d", len(entry.EmptyRoots), len(entry.EmptyValues)-1)
+	}
+	if len(entry.Values) != 0 || len(entry.Roots) != 0 {
+		t.Fatalf("nil,nil constructor should not refill full lane: values=%d roots=%d", len(entry.Values), len(entry.Roots))
+	}
+	if entry.EmptyPos != 0 {
+		t.Fatalf("empty cache pos = %d, want 0 after refill", entry.EmptyPos)
+	}
+	cached := entry.EmptyValues[0].Table()
+	if cached == nil {
+		t.Fatal("cached empty value is not a table")
+	}
+	if got := cached.SkeysLen(); got != 0 {
+		t.Fatalf("cached nil,nil constructor skeys=%d, want 0", got)
+	}
+	if wantRoot := runtime.TableGCRoot(cached); entry.EmptyRoots[0] != wantRoot {
+		t.Fatalf("cached empty root = %p, want slab root %p", entry.EmptyRoots[0], wantRoot)
+	}
+	if cached == tbl {
+		t.Fatal("current empty allocation was also stored in cache")
+	}
+}
+
 func TestNewTableCacheFastPathPopsDuringNativeExecution(t *testing.T) {
 	src := `
 func f(n) {

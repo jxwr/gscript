@@ -164,6 +164,56 @@ func TestEmitNewFixedTable2CacheFastPath(t *testing.T) {
 	}
 }
 
+func TestEmitNewFixedTable2EmptyCacheFastPath(t *testing.T) {
+	proto := compileFunction(t, `func f(a, b) { return {foo: a, bar: b} }`)
+	fn := BuildGraph(proto)
+	out, err := FixedTableConstructorLoweringPass(fn)
+	if err != nil {
+		t.Fatalf("FixedTableConstructorLoweringPass: %v", err)
+	}
+	out, err = DCEPass(out)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+
+	newFixedID := -1
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpNewFixedTable {
+				newFixedID = instr.ID
+			}
+		}
+	}
+	if newFixedID < 0 {
+		t.Fatalf("missing OpNewFixedTable\nIR:\n%s", Print(out))
+	}
+
+	cf, err := Compile(out, AllocateRegisters(out))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	args := []runtime.Value{runtime.NilValue(), runtime.NilValue()}
+	result, err := cf.Execute(args)
+	if err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	assertPairTable(t, result, runtime.NilValue(), runtime.NilValue(), 0)
+	if entry := cf.NewTableCaches[newFixedID]; len(entry.EmptyValues) == 0 || entry.EmptyPos != 0 {
+		t.Fatalf("first miss did not refill empty fixed table cache: %#v", entry)
+	}
+
+	result, err = cf.Execute(args)
+	if err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	assertPairTable(t, result, runtime.NilValue(), runtime.NilValue(), 0)
+	if entry := cf.NewTableCaches[newFixedID]; entry.EmptyPos != 1 {
+		t.Fatalf("empty cache fast path did not pop one table: %#v", entry)
+	}
+}
+
 func assertPairTable(t *testing.T, result []runtime.Value, foo, bar runtime.Value, wantSkeys int) {
 	t.Helper()
 	if len(result) != 1 || !result[0].IsTable() {

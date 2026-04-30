@@ -50,7 +50,9 @@ func (ec *emitContext) emitNewFixedTable2CacheFastPath(instr *Instr, doneLabel, 
 	}
 	asm.LoadImm64(jit.X7, nb64(jit.NB_ValNil))
 	asm.CMPreg(jit.X5, jit.X7)
-	asm.BCond(jit.CondEQ, missLabel)
+	val1NilLabel := ec.uniqueLabel("newfixed_val1_nil")
+	emptyLabel := ec.uniqueLabel("newfixed_empty")
+	asm.BCond(jit.CondEQ, val1NilLabel)
 	asm.CMPreg(jit.X6, jit.X7)
 	asm.BCond(jit.CondEQ, missLabel)
 
@@ -80,6 +82,33 @@ func (ec *emitContext) emitNewFixedTable2CacheFastPath(instr *Instr, doneLabel, 
 	asm.LDR(jit.X2, jit.X1, jit.TableOffSvals)
 	asm.STR(jit.X5, jit.X2, 0)
 	asm.STR(jit.X6, jit.X2, jit.ValueSize)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(val1NilLabel)
+	asm.CMPreg(jit.X6, jit.X7)
+	asm.BCond(jit.CondEQ, emptyLabel)
+	asm.B(missLabel)
+
+	asm.Label(emptyLabel)
+	asm.LoadImm64(jit.X2, int64(cacheBase))
+	if entryOff > 0 {
+		if entryOff <= 4095 {
+			asm.ADDimm(jit.X2, jit.X2, uint16(entryOff))
+		} else {
+			asm.LoadImm64(jit.X3, int64(entryOff))
+			asm.ADDreg(jit.X2, jit.X2, jit.X3)
+		}
+	}
+	asm.LDR(jit.X0, jit.X2, newTableCacheEntryEmptyValuesOff)
+	asm.CBZ(jit.X0, missLabel)
+	asm.LDR(jit.X3, jit.X2, newTableCacheEntryEmptyPosOff)
+	asm.LDR(jit.X4, jit.X2, newTableCacheEntryEmptyLenOff)
+	asm.CMPreg(jit.X3, jit.X4)
+	asm.BCond(jit.CondGE, missLabel)
+	asm.LDRreg(jit.X0, jit.X0, jit.X3)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, jit.X2, newTableCacheEntryEmptyPosOff)
 	ec.storeResultNB(jit.X0, instr.ID)
 	asm.B(doneLabel)
 	return true

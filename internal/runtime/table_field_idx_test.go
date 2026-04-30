@@ -220,6 +220,26 @@ func TestFieldCacheCachedConstructorAppendAcrossTables(t *testing.T) {
 	}
 }
 
+func TestNewTableFromCtor2NonNilMatchesCtorShape(t *testing.T) {
+	ctor := NewSmallTableCtor2("left", "right")
+	left := TableValue(NewEmptyTable())
+	right := TableValue(NewEmptyTable())
+
+	tbl := NewTableFromCtor2NonNil(&ctor, left, right)
+	if got := tbl.RawGetString("left"); got != left {
+		t.Fatalf("left = %v, want %v", got, left)
+	}
+	if got := tbl.RawGetString("right"); got != right {
+		t.Fatalf("right = %v, want %v", got, right)
+	}
+	if tbl.ShapeID() == 0 || tbl.ShapeID() != ctor.Shape.ID {
+		t.Fatalf("shapeID = %d, want ctor shape %d", tbl.ShapeID(), ctor.Shape.ID)
+	}
+	if got := tbl.SkeysLen(); got != 2 {
+		t.Fatalf("skeys=%d, want 2", got)
+	}
+}
+
 func TestFieldCacheSharedShapeDeleteDoesNotMutatePeerKeys(t *testing.T) {
 	t1 := NewTable()
 	t1.RawSetString("x", IntValue(1))

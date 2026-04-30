@@ -155,5 +155,5 @@ func (p *fixedRecursiveTableBuilderProtocol) build(depth int64) runtime.Value {
 	}
 	left := p.build(depth - 1)
 	right := p.build(depth - 1)
-	return runtime.FreshTableValue(runtime.NewTableFromCtor2(&p.ctor, left, right))
+	return runtime.FreshTableValue(runtime.NewTableFromCtor2NonNil(&p.ctor, left, right))
 }

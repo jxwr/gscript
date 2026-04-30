@@ -317,17 +317,33 @@ func NewTableFromCtor2(ctor *SmallTableCtor2, val1, val2 Value) *Table {
 	if ctor != nil {
 		shape := ctor.Shape
 		if shape != nil && !val1.IsNil() && !val2.IsNil() {
-			t, svals := DefaultHeap.AllocTableWithSvals2()
-			t.svals = svals
-			t.svals[0] = val1
-			t.svals[1] = val2
-			t.shape = shape
-			t.shapeID = ctor.shapeID
-			t.skeys = ctor.fieldKeys
-			return t
+			return newTableFromCtor2Shape(ctor, shape, val1, val2)
 		}
 	}
 	return newTableFromCtor2Fallback(ctor, val1, val2)
+}
+
+// NewTableFromCtor2NonNil constructs a cacheable two-field string table when
+// the caller has already proven both values are non-nil. It is equivalent to
+// NewTableFromCtor2 for valid cacheable constructors and non-nil values, but
+// avoids the generic nil/duplicate-key fallback checks in native constructor
+// protocols.
+func NewTableFromCtor2NonNil(ctor *SmallTableCtor2, val1, val2 Value) *Table {
+	if ctor == nil || ctor.Shape == nil || val1.IsNil() || val2.IsNil() {
+		return NewTableFromCtor2(ctor, val1, val2)
+	}
+	return newTableFromCtor2Shape(ctor, ctor.Shape, val1, val2)
+}
+
+func newTableFromCtor2Shape(ctor *SmallTableCtor2, shape *Shape, val1, val2 Value) *Table {
+	t, svals := DefaultHeap.AllocTableWithSvals2()
+	t.svals = svals
+	t.svals[0] = val1
+	t.svals[1] = val2
+	t.shape = shape
+	t.shapeID = ctor.shapeID
+	t.skeys = ctor.fieldKeys
+	return t
 }
 
 func newTableFromCtor2Fallback(ctor *SmallTableCtor2, val1, val2 Value) *Table {

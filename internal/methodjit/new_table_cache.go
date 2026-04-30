@@ -12,22 +12,28 @@ import (
 
 const (
 	tier2NewTableCacheMaxArrayHint = tier2FeedbackOuterLoopArrayHint
-	newObject2CacheBatch           = 32
+	newObject2CacheBatch           = 128
 	newTableCacheMaxBatch          = 128
 	newTableCacheTargetBytes       = 1 << 20
 )
 
 type newTableCacheEntry struct {
-	Values []runtime.Value
-	Roots  []unsafe.Pointer
-	Pos    int64
+	Values      []runtime.Value
+	Roots       []unsafe.Pointer
+	Pos         int64
+	EmptyValues []runtime.Value
+	EmptyRoots  []unsafe.Pointer
+	EmptyPos    int64
 }
 
 var (
-	newTableCacheEntrySize      = int(unsafe.Sizeof(newTableCacheEntry{}))
-	newTableCacheEntryValuesOff = int(unsafe.Offsetof(newTableCacheEntry{}.Values))
-	newTableCacheEntryLenOff    = newTableCacheEntryValuesOff + int(unsafe.Sizeof(uintptr(0)))
-	newTableCacheEntryPosOff    = int(unsafe.Offsetof(newTableCacheEntry{}.Pos))
+	newTableCacheEntrySize           = int(unsafe.Sizeof(newTableCacheEntry{}))
+	newTableCacheEntryValuesOff      = int(unsafe.Offsetof(newTableCacheEntry{}.Values))
+	newTableCacheEntryLenOff         = newTableCacheEntryValuesOff + int(unsafe.Sizeof(uintptr(0)))
+	newTableCacheEntryPosOff         = int(unsafe.Offsetof(newTableCacheEntry{}.Pos))
+	newTableCacheEntryEmptyValuesOff = int(unsafe.Offsetof(newTableCacheEntry{}.EmptyValues))
+	newTableCacheEntryEmptyLenOff    = newTableCacheEntryEmptyValuesOff + int(unsafe.Sizeof(uintptr(0)))
+	newTableCacheEntryEmptyPosOff    = int(unsafe.Offsetof(newTableCacheEntry{}.EmptyPos))
 )
 
 func newTableCacheSlotsForFunction(fn *Function) []newTableCacheEntry {
@@ -168,10 +174,19 @@ func allocateNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHi
 }
 
 func allocateFixedTable2WithCache(caches []newTableCacheEntry, instrID int, ctor *runtime.SmallTableCtor2, val1, val2 runtime.Value) *runtime.Table {
-	tbl := runtime.NewTableFromCtor2(ctor, val1, val2)
-	if !cacheableSmallCtor2(ctor) || val1.IsNil() || val2.IsNil() || instrID < 0 || instrID >= len(caches) {
-		return tbl
+	if cacheableSmallCtor2(ctor) && instrID >= 0 && instrID < len(caches) {
+		if val1.IsNil() && val2.IsNil() {
+			return allocateFixedTable2EmptyWithCache(caches, instrID)
+		}
+		if !val1.IsNil() && !val2.IsNil() {
+			return allocateFixedTable2FullWithCache(caches, instrID, ctor, val1, val2)
+		}
 	}
+	return runtime.NewTableFromCtor2(ctor, val1, val2)
+}
+
+func allocateFixedTable2FullWithCache(caches []newTableCacheEntry, instrID int, ctor *runtime.SmallTableCtor2, val1, val2 runtime.Value) *runtime.Table {
+	tbl := runtime.NewTableFromCtor2NonNil(ctor, val1, val2)
 	entry := &caches[instrID]
 	if entry.Pos < int64(len(entry.Values)) {
 		return tbl
@@ -189,7 +204,7 @@ func allocateFixedTable2WithCache(caches []newTableCacheEntry, instrID int, ctor
 	}
 	seed := runtime.IntValue(0)
 	for i := range entry.Values {
-		t := runtime.NewTableFromCtor2(ctor, seed, seed)
+		t := runtime.NewTableFromCtor2NonNil(ctor, seed, seed)
 		entry.addRoot(t)
 		entry.Values[i] = runtime.FreshTableValue(t)
 	}
@@ -197,15 +212,49 @@ func allocateFixedTable2WithCache(caches []newTableCacheEntry, instrID int, ctor
 	return tbl
 }
 
+func allocateFixedTable2EmptyWithCache(caches []newTableCacheEntry, instrID int) *runtime.Table {
+	tbl := runtime.NewTableSized(0, 0)
+	entry := &caches[instrID]
+	if entry.EmptyPos < int64(len(entry.EmptyValues)) {
+		return tbl
+	}
+	keep := newObject2CacheBatch - 1
+	if cap(entry.EmptyValues) < keep {
+		entry.EmptyValues = make([]runtime.Value, keep)
+	} else {
+		entry.EmptyValues = entry.EmptyValues[:keep]
+	}
+	if entry.EmptyRoots == nil {
+		entry.EmptyRoots = make([]unsafe.Pointer, 0, 4)
+	} else {
+		entry.EmptyRoots = entry.EmptyRoots[:0]
+	}
+	for i := range entry.EmptyValues {
+		t := runtime.NewTableSized(0, 0)
+		entry.addEmptyRoot(t)
+		entry.EmptyValues[i] = runtime.FreshTableValue(t)
+	}
+	entry.EmptyPos = 0
+	return tbl
+}
+
 func (entry *newTableCacheEntry) addRoot(t *runtime.Table) {
+	entry.addRootTo(t, &entry.Roots)
+}
+
+func (entry *newTableCacheEntry) addEmptyRoot(t *runtime.Table) {
+	entry.addRootTo(t, &entry.EmptyRoots)
+}
+
+func (entry *newTableCacheEntry) addRootTo(t *runtime.Table, roots *[]unsafe.Pointer) {
 	root := runtime.TableGCRoot(t)
 	if root == nil {
 		return
 	}
-	for _, existing := range entry.Roots {
+	for _, existing := range *roots {
 		if existing == root {
 			return
 		}
 	}
-	entry.Roots = append(entry.Roots, root)
+	*roots = append(*roots, root)
 }

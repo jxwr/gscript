@@ -84,8 +84,10 @@ func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Va
 		return nil
 	}
 	ctor := &proto.TableCtors2[b].Runtime
-	tbl := runtime.NewTableFromCtor2(ctor, regs[base+c], regs[base+c+1])
-	fillBaselineNewObject2Cache(bf, int(ctx.BaselinePC)-1, ctor)
+	val1 := regs[base+c]
+	val2 := regs[base+c+1]
+	tbl := runtime.NewTableFromCtor2(ctor, val1, val2)
+	fillBaselineNewObject2Cache(bf, int(ctx.BaselinePC)-1, ctor, val1, val2)
 	regs[absA] = runtime.FreshTableValue(tbl)
 	return nil
 }
