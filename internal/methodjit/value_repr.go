@@ -69,19 +69,8 @@ func (ec *emitContext) valueReprOf(valueID int) valueRepr {
 	if ec == nil {
 		return valueReprBoxed
 	}
-	if ec.rawTablePtrRegs[valueID] {
-		return valueReprRawTablePtr
-	}
-	if ec.rawIntRegs[valueID] {
-		return valueReprRawInt
-	}
-	if ec.activeFPRegs[valueID] {
-		return valueReprRawFloat
-	}
 	if repr, ok := ec.valueReprs[valueID]; ok {
-		if repr == valueReprRawDataPtr {
-			return repr
-		}
+		return repr
 	}
 	return valueReprBoxed
 }
@@ -92,12 +81,49 @@ func (ec *emitContext) resetValueReprs() {
 	ec.rawTablePtrRegs = make(map[int]bool)
 }
 
-func cloneValueReprMap(src map[int]valueRepr) map[int]valueRepr {
-	dst := make(map[int]valueRepr, len(src))
-	for k, v := range src {
-		dst[k] = v
+// valueReprSnapshot is the compile-time representation state captured before
+// emitting an alternate control-flow path. Restoring it rebuilds the legacy
+// raw-int/raw-table mirrors from the lattice instead of making those mirrors
+// an independent source of truth.
+type valueReprSnapshot map[int]valueRepr
+
+func (ec *emitContext) snapshotValueReprs() valueReprSnapshot {
+	if ec == nil || len(ec.valueReprs) == 0 {
+		return valueReprSnapshot{}
 	}
-	return dst
+	snap := make(valueReprSnapshot, len(ec.valueReprs))
+	for valueID, repr := range ec.valueReprs {
+		if repr != valueReprBoxed {
+			snap[valueID] = repr
+		}
+	}
+	return snap
+}
+
+func (ec *emitContext) restoreValueReprSnapshot(snap valueReprSnapshot) {
+	ec.valueReprs = make(map[int]valueRepr, len(snap))
+	ec.rawIntRegs = make(map[int]bool)
+	ec.rawTablePtrRegs = make(map[int]bool)
+	for valueID, repr := range snap {
+		ec.setValueRepr(valueID, repr)
+	}
+}
+
+func (snap valueReprSnapshot) has(valueID int, repr valueRepr) bool {
+	return snap[valueID] == repr
+}
+
+func (snap valueReprSnapshot) rawIntSubset(values map[int]bool) valueReprSnapshot {
+	if len(snap) == 0 || len(values) == 0 {
+		return valueReprSnapshot{}
+	}
+	out := make(valueReprSnapshot)
+	for valueID := range values {
+		if snap.has(valueID, valueReprRawInt) {
+			out[valueID] = valueReprRawInt
+		}
+	}
+	return out
 }
 
 func (ec *emitContext) emitStoreGPRValueAsBoxed(valueID int, reg jit.Reg, slot int) {

@@ -595,7 +595,7 @@ func (ec *emitContext) activateLoopInvariantGPRs(blockID int) {
 			usedRegs[pr.Reg] = true
 			ec.activeRegs[entry.ValueID] = true
 			if entry.IsRawInt {
-				ec.rawIntRegs[entry.ValueID] = true
+				ec.setValueRepr(entry.ValueID, valueReprRawInt)
 			}
 		}
 	}
@@ -625,6 +625,7 @@ func (ec *emitContext) activateLoopInvariantFPRs(blockID int) {
 			}
 			usedRegs[pr.Reg] = true
 			ec.activeFPRegs[entry.ValueID] = true
+			ec.setValueRepr(entry.ValueID, valueReprRawFloat)
 		}
 	}
 }
@@ -650,6 +651,7 @@ func (ec *emitContext) activateLoopHeaderFPRs(blockID int) {
 				continue
 			}
 			ec.activeFPRegs[entry.ValueID] = true
+			ec.setValueRepr(entry.ValueID, valueReprRawFloat)
 		}
 	}
 }

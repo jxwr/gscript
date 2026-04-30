@@ -140,14 +140,10 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 
 	// Deopt fallback: use table-exit to perform the field access in Go.
 	asm.Label(deoptLabel)
-	// Save rawIntRegs before deopt path emission (see emitGetTableNative).
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitGetFieldExit(instr)
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	if instr.Type == TypeFloat {
 		asm.Label(typeDeoptLabel)
@@ -200,13 +196,10 @@ func (ec *emitContext) emitGetFieldDynamicCache(instr *Instr) bool {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitGetFieldExit(instr)
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	if instr.Type == TypeFloat {
 		asm.Label(typeDeoptLabel)
@@ -265,13 +258,10 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitGetFieldExit(instr)
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 	asm.B(doneLabel)
 
 	asm.Label(typeDeoptLabel)
@@ -379,14 +369,10 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 
 	// Deopt fallback: use table-exit.
 	asm.Label(deoptLabel)
-	// Save rawIntRegs before deopt path emission (see emitGetTableNative).
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitSetFieldExit(instr)
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	asm.Label(doneLabel)
 }

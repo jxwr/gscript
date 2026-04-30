@@ -457,6 +457,7 @@ func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 		fpr := jit.FReg(pr.Reg)
 		ec.asm.FLDRd(fpr, mRegRegs, slotOffset(slot))
 		ec.activeFPRegs[instr.ID] = true
+		ec.setValueRepr(instr.ID, valueReprRawFloat)
 		return
 	}
 

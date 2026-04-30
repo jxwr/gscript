@@ -41,7 +41,7 @@ func TestValueReprMirrorsLegacyMaps(t *testing.T) {
 	}
 }
 
-func TestValueReprLegacyDirectWritesRemainAuthoritative(t *testing.T) {
+func TestValueReprLatticeIsAuthoritativeOverLegacyMirrors(t *testing.T) {
 	ec := &emitContext{
 		valueReprs:      make(map[int]valueRepr),
 		rawIntRegs:      make(map[int]bool),
@@ -51,18 +51,49 @@ func TestValueReprLegacyDirectWritesRemainAuthoritative(t *testing.T) {
 
 	ec.setValueRepr(2, valueReprRawInt)
 	delete(ec.rawIntRegs, 2)
-	if got := ec.valueReprOf(2); got != valueReprBoxed {
-		t.Fatalf("legacy raw-int delete repr=%s, want boxed", got)
+	if got := ec.valueReprOf(2); got != valueReprRawInt {
+		t.Fatalf("legacy raw-int mirror delete repr=%s, want raw-int", got)
 	}
 
 	ec.rawTablePtrRegs[3] = true
-	if got := ec.valueReprOf(3); got != valueReprRawTablePtr {
-		t.Fatalf("legacy raw-table write repr=%s", got)
+	if got := ec.valueReprOf(3); got != valueReprBoxed {
+		t.Fatalf("legacy raw-table mirror write repr=%s, want boxed", got)
 	}
 
-	ec.activeFPRegs[4] = true
+	ec.setValueRepr(4, valueReprRawFloat)
 	if got := ec.valueReprOf(4); got != valueReprRawFloat {
-		t.Fatalf("active FPR repr=%s", got)
+		t.Fatalf("raw-float lattice repr=%s", got)
+	}
+}
+
+func TestValueReprSnapshotRestoresMirrors(t *testing.T) {
+	ec := &emitContext{
+		valueReprs:      make(map[int]valueRepr),
+		rawIntRegs:      make(map[int]bool),
+		rawTablePtrRegs: make(map[int]bool),
+		activeFPRegs:    make(map[int]bool),
+	}
+	ec.setValueRepr(1, valueReprRawInt)
+	ec.setValueRepr(2, valueReprRawTablePtr)
+	ec.setValueRepr(3, valueReprRawFloat)
+	snap := ec.snapshotValueReprs()
+
+	ec.setValueRepr(1, valueReprBoxed)
+	ec.setValueRepr(2, valueReprRawInt)
+	ec.setValueRepr(4, valueReprRawTablePtr)
+	ec.restoreValueReprSnapshot(snap)
+
+	if got := ec.valueReprOf(1); got != valueReprRawInt || !ec.rawIntRegs[1] {
+		t.Fatalf("raw-int restore repr=%s mirror=%v", got, ec.rawIntRegs[1])
+	}
+	if got := ec.valueReprOf(2); got != valueReprRawTablePtr || !ec.rawTablePtrRegs[2] {
+		t.Fatalf("raw-table restore repr=%s mirror=%v", got, ec.rawTablePtrRegs[2])
+	}
+	if got := ec.valueReprOf(3); got != valueReprRawFloat {
+		t.Fatalf("raw-float restore repr=%s", got)
+	}
+	if got := ec.valueReprOf(4); got != valueReprBoxed || ec.rawTablePtrRegs[4] {
+		t.Fatalf("stale value restore repr=%s mirror=%v", got, ec.rawTablePtrRegs[4])
 	}
 }
 

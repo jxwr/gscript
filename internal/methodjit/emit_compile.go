@@ -551,8 +551,7 @@ type emitContext struct {
 
 	// valueReprs is the explicit representation lattice for active allocated
 	// registers. Boxed is the default absence value. rawIntRegs and
-	// rawTablePtrRegs remain compatibility mirrors while older emit paths are
-	// migrated to valueReprs.
+	// rawTablePtrRegs remain compatibility mirrors rebuilt from valueReprs.
 	valueReprs map[int]valueRepr
 
 	// rawIntRegs tracks which value IDs have RAW int64 (not NaN-boxed) content
@@ -980,9 +979,7 @@ func (ec *emitContext) emitNumericBody() {
 	asm := ec.asm
 	prevNumericMode := ec.numericMode
 	prevActiveRegs := ec.activeRegs
-	prevValueReprs := ec.valueReprs
-	prevRawIntRegs := ec.rawIntRegs
-	prevRawTablePtrRegs := ec.rawTablePtrRegs
+	prevReprs := ec.snapshotValueReprs()
 	prevActiveFPRegs := ec.activeFPRegs
 	prevShapeVerified := ec.shapeVerified
 	prevTableVerified := ec.tableVerified
@@ -1022,9 +1019,7 @@ func (ec *emitContext) emitNumericBody() {
 	}
 	ec.numericMode = prevNumericMode
 	ec.activeRegs = prevActiveRegs
-	ec.valueReprs = prevValueReprs
-	ec.rawIntRegs = prevRawIntRegs
-	ec.rawTablePtrRegs = prevRawTablePtrRegs
+	ec.restoreValueReprSnapshot(prevReprs)
 	ec.activeFPRegs = prevActiveFPRegs
 	ec.shapeVerified = prevShapeVerified
 	ec.tableVerified = prevTableVerified
@@ -1661,6 +1656,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 				// FPR phi: activated by emitPhiMoves which delivers raw float.
 				ec.invalidateFPReg(pr.Reg, instr.ID)
 				ec.activeFPRegs[instr.ID] = true
+				ec.setValueRepr(instr.ID, valueReprRawFloat)
 			} else {
 				// Invalidate any header reg value that shares this register.
 				ec.invalidateReg(pr.Reg, instr.ID)
@@ -1711,7 +1707,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 
 	outRaw := make(map[int]loopRegEntry)
 	for valueID := range ec.activeRegs {
-		if !ec.rawIntRegs[valueID] {
+		if ec.valueReprOf(valueID) != valueReprRawInt {
 			continue
 		}
 		pr, ok := ec.alloc.ValueRegs[valueID]

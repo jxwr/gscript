@@ -221,20 +221,13 @@ func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
 	asm.LoadImm64(jit.X0, int64(cacheIdx))
 	asm.STR(jit.X0, mRegCtx, execCtxOffGlobalCacheIdx)
 
-	// Save rawIntRegs before slow path emission — emitGlobalExitInner calls
-	// emitReloadAllActiveRegs which clears rawIntRegs entries. The slow path
-	// code is correct (after Go execution, values ARE NaN-boxed), but the
-	// build-time state must be preserved for subsequent fast-path instructions.
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	// Save the representation lattice before slow path emission. The resume
+	// path reloads from boxed VM homes, then we re-establish the same raw
+	// register protocol expected by the fast-path continuation.
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitGlobalExitInner(instr)
-	// The slow path reloads active registers from memory, where raw-int
-	// values are stored boxed. Rebuild the raw register state before
-	// merging back into the fast path.
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	asm.Label(doneLabel)
 }
@@ -533,9 +526,9 @@ func (ec *emitContext) emitReloadAllActiveRegs() {
 // path leaves registers in raw-int form but the slow path (exit-resume)
 // reloads them as NaN-boxed. Both paths must converge with the same register
 // state, so the slow path unboxes to match the fast path's raw-int convention.
-func (ec *emitContext) emitUnboxRawIntRegs(rawRegs map[int]bool) {
-	for valueID, isRaw := range rawRegs {
-		if !isRaw {
+func (ec *emitContext) emitUnboxRawIntRegs(reprs valueReprSnapshot) {
+	for valueID, repr := range reprs {
+		if repr != valueReprRawInt {
 			continue
 		}
 		pr, ok := ec.alloc.ValueRegs[valueID]

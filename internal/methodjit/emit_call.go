@@ -84,7 +84,7 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 	// int to the guard's destination register, mark it raw.
 	if ec.numericMode && Type(instr.Aux) == TypeInt {
 		argID := instr.Args[0].ID
-		if ec.rawIntRegs[argID] {
+		if ec.valueReprOf(argID) == valueReprRawInt {
 			src := ec.resolveRawInt(argID, jit.X0)
 			ec.storeRawInt(src, instr.ID)
 			return
@@ -195,7 +195,7 @@ func (ec *emitContext) emitNumToFloat(instr *Instr) {
 		ec.storeRawFloat(ec.physFPReg(argID), instr.ID)
 		return
 	}
-	if ec.hasReg(argID) && ec.rawIntRegs[argID] {
+	if ec.hasReg(argID) && ec.valueReprOf(argID) == valueReprRawInt {
 		asm.SCVTF(jit.D0, ec.physReg(argID))
 		ec.storeRawFloat(jit.D0, instr.ID)
 		return

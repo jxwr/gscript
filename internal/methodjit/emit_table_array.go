@@ -274,7 +274,7 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	keyID := instr.Args[2].ID
 	if kv, isConst := ec.constInts[keyID]; isConst {
 		asm.LoadImm64(jit.X1, kv)
-	} else if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
+	} else if ec.hasReg(keyID) && ec.valueReprOf(keyID) == valueReprRawInt {
 		reg := ec.physReg(keyID)
 		if reg != jit.X1 {
 			asm.MOVreg(jit.X1, reg)
@@ -374,15 +374,12 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	if ec.emitTableArrayLoadExit(instr) {
 		typeDeoptLabel := ec.uniqueLabel("tarr_load_exit_type_deopt")
 		ec.emitCheckTableArrayLoadExitResult(instr, typeDeoptLabel)
-		ec.emitUnboxRawIntRegs(savedRawIntRegs)
-		ec.rawIntRegs = savedRawIntRegs
+		ec.emitUnboxRawIntRegs(savedReprs)
+		ec.restoreValueReprSnapshot(savedReprs)
 		asm.MOVimm16(jit.X17, 0)
 		asm.B(doneLabel)
 		asm.Label(typeDeoptLabel)
@@ -440,7 +437,7 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 	case int64(vm.FBKindInt):
 		if val, ok := ec.constInts[valueID]; ok {
 			asm.LoadImm64(jit.X4, val)
-		} else if ec.hasReg(valueID) && ec.rawIntRegs[valueID] {
+		} else if ec.hasReg(valueID) && ec.valueReprOf(valueID) == valueReprRawInt {
 			reg := ec.physReg(valueID)
 			if reg != jit.X4 {
 				asm.MOVreg(jit.X4, reg)
@@ -811,7 +808,7 @@ func (ec *emitContext) emitTableArrayKeyToReg(key *Value, deoptLabel string) boo
 		asm.LoadImm64(jit.X1, kv)
 		return true
 	}
-	if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
+	if ec.hasReg(keyID) && ec.valueReprOf(keyID) == valueReprRawInt {
 		reg := ec.physReg(keyID)
 		if reg != jit.X1 {
 			asm.MOVreg(jit.X1, reg)
@@ -1085,7 +1082,7 @@ func (ec *emitContext) setTablePreservesLocalArrayFacts(instr *Instr) bool {
 	case int64(vm.FBKindInt):
 		valueID := instr.Args[2].ID
 		_, isConst := ec.constInts[valueID]
-		return isConst || (ec.hasReg(valueID) && ec.rawIntRegs[valueID]) || ec.irTypes[valueID] == TypeInt
+		return isConst || (ec.hasReg(valueID) && ec.valueReprOf(valueID) == valueReprRawInt) || ec.irTypes[valueID] == TypeInt
 	case int64(vm.FBKindFloat):
 		return ec.irTypes[instr.Args[2].ID] == TypeFloat
 	case int64(vm.FBKindBool):
@@ -1224,8 +1221,8 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 		// R98: const int key — load the immediate directly, bypass reg
 		// resolution, tag check, and unbox.
 		asm.LoadImm64(jit.X1, kv)
-	} else if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
-		// Fast path 1: key is raw int in a register (rawIntRegs).
+	} else if ec.hasReg(keyID) && ec.valueReprOf(keyID) == valueReprRawInt {
+		// Fast path 1: key is raw int in a register.
 		reg := ec.physReg(keyID)
 		if reg != jit.X1 {
 			asm.MOVreg(jit.X1, reg)
@@ -1400,20 +1397,10 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 
 	// Deopt: fall back to exit-resume.
 	asm.Label(deoptLabel)
-	// Save rawIntRegs before deopt path emission — emitGetTableExit calls
-	// emitReloadAllActiveRegs which clears rawIntRegs entries. We need to
-	// restore them AND emit unbox instructions on the slow path so that
-	// registers are in raw-int form (matching the fast path) when execution
-	// reaches doneLabel.
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitGetTableExit(instr)
-	// After the exit-resume reload, registers hold NaN-boxed values.
-	// Unbox any that were raw-int so both paths converge with raw ints.
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	asm.Label(doneLabel)
 }
@@ -1569,8 +1556,8 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	if kv, isConst := ec.constInts[keyID]; isConst {
 		// R98: const int key — direct immediate load.
 		asm.LoadImm64(jit.X1, kv)
-	} else if ec.hasReg(keyID) && ec.rawIntRegs[keyID] {
-		// Fast path 1: key is raw int in a register (rawIntRegs).
+	} else if ec.hasReg(keyID) && ec.valueReprOf(keyID) == valueReprRawInt {
+		// Fast path 1: key is raw int in a register.
 		reg := ec.physReg(keyID)
 		if reg != jit.X1 {
 			asm.MOVreg(jit.X1, reg)
@@ -1613,13 +1600,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	if instr.Aux2 == int64(vm.FBKindMixed) && ec.irTypes[instr.Args[2].ID] == TypeTable {
 		ec.emitDenseMatrixRowAppendFastPath(instr, deoptLabel, doneLabel)
 		asm.Label(deoptLabel)
-		savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-		for k, v := range ec.rawIntRegs {
-			savedRawIntRegs[k] = v
-		}
+		savedReprs := ec.snapshotValueReprs()
 		ec.emitSetTableExit(instr)
-		ec.emitUnboxRawIntRegs(savedRawIntRegs)
-		ec.rawIntRegs = savedRawIntRegs
+		ec.emitUnboxRawIntRegs(savedReprs)
+		ec.restoreValueReprSnapshot(savedReprs)
 		asm.Label(doneLabel)
 		delete(ec.tableVerified, tblValueID)
 		delete(ec.kindVerified, tblValueID)
@@ -1729,7 +1713,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 				emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
 				emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
 			}
-		} else if ec.hasReg(instr.Args[2].ID) && ec.rawIntRegs[instr.Args[2].ID] {
+		} else if ec.hasReg(instr.Args[2].ID) && ec.valueReprOf(instr.Args[2].ID) == valueReprRawInt {
 			// Raw int register bypass: value already unboxed, skip tag check.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
 			intAppendLabel := ec.uniqueLabel("settable_int_append")
@@ -1906,16 +1890,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 
 	// Deopt: fall back to exit-resume.
 	asm.Label(deoptLabel)
-	// Save rawIntRegs before deopt path emission (see emitGetTableNative).
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitSetTableExit(instr)
-	// After the exit-resume reload, registers hold NaN-boxed values.
-	// Unbox any that were raw-int so both paths converge with raw ints.
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	asm.Label(doneLabel)
 	// Runtime exit-resume can invoke metamethods or demote unknown tables, so

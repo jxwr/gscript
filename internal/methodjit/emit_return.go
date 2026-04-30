@@ -48,7 +48,7 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 			fpr := ec.physFPReg(valID)
 			ec.asm.FMOVtoGP(jit.X0, fpr)
 			ec.asm.STR(jit.X0, mRegRegs, 0)
-		} else if ec.hasReg(valID) && ec.rawIntRegs[valID] {
+		} else if ec.hasReg(valID) && ec.valueReprOf(valID) == valueReprRawInt {
 			// Raw int in register: box it first.
 			reg := ec.physReg(valID)
 			jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)

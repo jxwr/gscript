@@ -85,6 +85,39 @@ func f() {
 	})
 }
 
+func TestExitResumeCheck_TableArrayPointerFallbackResume(t *testing.T) {
+	withExitResumeCheck(t, func() {
+		src := `
+func f(arr, missKey) {
+    miss := arr[missKey]
+    first := arr[1]
+    second := arr[2]
+    if miss == nil {
+        return first + second
+    }
+    return first + second + miss
+}
+`
+		top := compileTop(t, src)
+		proto := findProtoByName(top, "f")
+		if proto == nil {
+			t.Fatal("function \"f\" not found")
+		}
+		seedIntTableFeedback(proto)
+
+		tbl := runtime.NewTable()
+		tbl.RawSetInt(1, runtime.IntValue(10))
+		tbl.RawSetInt(2, runtime.IntValue(32))
+		args := []runtime.Value{runtime.TableValue(tbl), runtime.IntValue(99)}
+		vmResults := runVMByName(t, src, "f", args)
+		jitResults, entered := runForcedTier2ByName(t, top, "f", []string{"f"}, args)
+		assertRawIntSelfResultsEqual(t, "f", jitResults, vmResults)
+		if entered["f"] == 0 {
+			t.Fatalf("f did not enter Tier 2")
+		}
+	})
+}
+
 func TestExitResumeCheck_NativeCallSpillsRawIntAndRawFloat(t *testing.T) {
 	withExitResumeCheck(t, func() {
 		src := `

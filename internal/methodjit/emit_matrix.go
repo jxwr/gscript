@@ -89,13 +89,10 @@ func (ec *emitContext) emitMatrixGetF(instr *Instr) {
 
 	// Deopt fallback.
 	asm.Label(deoptLabel)
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitDeopt(instr)
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	asm.Label(doneLabel)
 }
@@ -137,13 +134,10 @@ func (ec *emitContext) emitMatrixFlat(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitDeopt(instr)
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	asm.Label(doneLabel)
 }
@@ -181,13 +175,10 @@ func (ec *emitContext) emitMatrixStride(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitDeopt(instr)
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	asm.Label(doneLabel)
 }
@@ -389,13 +380,10 @@ func (ec *emitContext) emitMatrixSetF(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 	ec.emitDeopt(instr)
-	ec.emitUnboxRawIntRegs(savedRawIntRegs)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
 
 	asm.Label(doneLabel)
 }

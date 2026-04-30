@@ -597,7 +597,7 @@ func (ec *emitContext) emitSingleGPRPhiMove(m *gprPhiMove) {
 	srcHasReg := ec.hasReg(m.srcArg.ID)
 
 	var srcVal jit.Reg
-	if srcHasReg && ec.rawIntRegs[m.srcArg.ID] {
+	if srcHasReg && ec.valueReprOf(m.srcArg.ID) == valueReprRawInt {
 		reg := ec.physReg(m.srcArg.ID)
 		jit.EmitBoxIntFast(ec.asm, jit.X0, reg, mRegTagInt)
 		srcVal = jit.X0
@@ -637,7 +637,7 @@ func (ec *emitContext) emitGPRPhiMoveFromScratch(m *gprPhiMove) {
 	if m.isRawInt {
 		dstReg := jit.Reg(m.dstPR.Reg)
 		// Source was in a GPR, now saved to X0.
-		if ec.rawIntRegs[m.srcArg.ID] {
+		if ec.valueReprOf(m.srcArg.ID) == valueReprRawInt {
 			// Was raw int: X0 has raw int bits, transfer directly.
 			if dstReg != jit.X0 {
 				ec.asm.MOVreg(dstReg, jit.X0)
@@ -659,7 +659,7 @@ func (ec *emitContext) emitGPRPhiMoveFromScratch(m *gprPhiMove) {
 
 	// NaN-boxed path: source value is in X0. For raw-int sources saved while
 	// breaking a cycle, X0 holds raw bits and must be boxed before transfer.
-	if ec.rawIntRegs[m.srcArg.ID] {
+	if ec.valueReprOf(m.srcArg.ID) == valueReprRawInt {
 		jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
 	}
 	if m.hasDstGPR {
@@ -690,7 +690,7 @@ func (ec *emitContext) emitGPRPhiRegTransferOnly(m *gprPhiMove) {
 
 	if m.isRawInt {
 		srcHasReg := ec.hasReg(m.srcArg.ID)
-		if srcHasReg && ec.rawIntRegs[m.srcArg.ID] {
+		if srcHasReg && ec.valueReprOf(m.srcArg.ID) == valueReprRawInt {
 			srcReg := ec.physReg(m.srcArg.ID)
 			if srcReg != dstReg {
 				ec.asm.MOVreg(dstReg, srcReg)
@@ -706,7 +706,7 @@ func (ec *emitContext) emitGPRPhiRegTransferOnly(m *gprPhiMove) {
 
 	// NaN-boxed path: register transfer only.
 	srcHasReg := ec.hasReg(m.srcArg.ID)
-	if srcHasReg && ec.rawIntRegs[m.srcArg.ID] {
+	if srcHasReg && ec.valueReprOf(m.srcArg.ID) == valueReprRawInt {
 		// Raw int in register: box to dstReg (use dstReg as temp, skip X0).
 		reg := ec.physReg(m.srcArg.ID)
 		jit.EmitBoxIntFast(ec.asm, dstReg, reg, mRegTagInt)
@@ -882,7 +882,7 @@ func (ec *emitContext) emitPhiMoveRawFloat(srcArg *Value, phiInstr *Instr, dstPR
 		if srcFPR != dstFPR {
 			ec.asm.FMOVd(dstFPR, srcFPR)
 		}
-	} else if ec.hasReg(srcArg.ID) && ec.rawIntRegs[srcArg.ID] {
+	} else if ec.hasReg(srcArg.ID) && ec.valueReprOf(srcArg.ID) == valueReprRawInt {
 		// Source is a raw int in a GPR, but the destination phi is float.
 		// Convert numerically; moving raw/boxed bits into an FPR would create
 		// a bogus double and can make mixed int/float loop phis non-terminating.
@@ -921,7 +921,7 @@ func (ec *emitContext) emitPhiMoveRawInt(srcArg *Value, phiInstr *Instr, dstPR P
 	dstReg := jit.Reg(dstPR.Reg)
 	srcHasReg := ec.hasReg(srcArg.ID)
 
-	if srcHasReg && ec.rawIntRegs[srcArg.ID] {
+	if srcHasReg && ec.valueReprOf(srcArg.ID) == valueReprRawInt {
 		// Source is raw int in register: transfer directly.
 		srcReg := ec.physReg(srcArg.ID)
 		if srcReg != dstReg {

@@ -400,13 +400,10 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X3, exitHandleLabel)
 
-	// R143: save rawIntRegs BEFORE the post-BL emit — emitReloadSelectiveForCall
-	// clears entries, which would leak into the mutually-exclusive exit-
-	// handler compile below (emitStoreAllActiveRegs sees wrong state).
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	// R143: save representation state BEFORE the post-BL emit. Reloading
+	// selective values normalizes boxed homes, and the mutually-exclusive
+	// exit/fallback emit paths must still see the pre-call representation.
+	savedReprs := ec.snapshotValueReprs()
 
 	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
 	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
@@ -415,10 +412,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 	ec.storeResultNB(jit.X0, instr.ID)
-	postSuccessRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		postSuccessRawIntRegs[k] = v
-	}
+	postSuccessReprs := ec.snapshotValueReprs()
 
 	asm.B(doneLabel)
 
@@ -428,16 +422,16 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// after the callee may already have mutated visible state.
 	asm.Label(exitHandleLabel)
 	ec.emitRequireNativeCalleeTier2Only(slowLabel)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.restoreValueReprSnapshot(savedReprs)
 	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
 
 	// Slow path: no native entry was taken, so the normal caller-side
 	// call-exit fallback executes the call exactly once through the VM.
 	asm.Label(slowLabel)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.restoreValueReprSnapshot(savedReprs)
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
-	ec.emitUnboxRawIntRegs(postSuccessRawIntRegs)
-	ec.rawIntRegs = postSuccessRawIntRegs
+	ec.emitUnboxRawIntRegs(postSuccessReprs)
+	ec.restoreValueReprSnapshot(postSuccessReprs)
 
 	// --- Done: merge point for native and slow paths ---
 	asm.Label(doneLabel)
@@ -524,10 +518,7 @@ func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
 	doneLabel := ec.uniqueLabel("t2self_done")
 	exitHandleLabel := ec.uniqueLabel("t2self_callee_exit")
 
-	savedRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		savedRawIntRegs[k] = v
-	}
+	savedReprs := ec.snapshotValueReprs()
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 
@@ -602,18 +593,15 @@ func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
 
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 	ec.storeResultNB(jit.X0, instr.ID)
-	postSuccessRawIntRegs := make(map[int]bool, len(ec.rawIntRegs))
-	for k, v := range ec.rawIntRegs {
-		postSuccessRawIntRegs[k] = v
-	}
+	postSuccessReprs := ec.snapshotValueReprs()
 	asm.B(doneLabel)
 
 	asm.Label(exitHandleLabel)
 	asm.Label(slowLabel)
-	ec.rawIntRegs = savedRawIntRegs
+	ec.restoreValueReprSnapshot(savedReprs)
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
-	ec.emitUnboxRawIntRegs(postSuccessRawIntRegs)
-	ec.rawIntRegs = postSuccessRawIntRegs
+	ec.emitUnboxRawIntRegs(postSuccessReprs)
+	ec.restoreValueReprSnapshot(postSuccessReprs)
 
 	asm.Label(doneLabel)
 }
@@ -646,7 +634,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	fallbackLabel := ec.uniqueLabel("t2rawself_fallback")
 	doneLabel := ec.uniqueLabel("t2rawself_done")
 
-	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	preReprs := ec.snapshotValueReprs()
 	rawLiveSpills := ec.rawSelfLiveSpills(liveGPRs, nParams)
 	boxedLiveGPRs := liveGPRs
 	if len(rawLiveSpills) > 0 {
@@ -655,12 +643,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 			delete(boxedLiveGPRs, spill.valueID)
 		}
 	}
-	boxedRawReloads := make(map[int]bool)
-	for valueID := range boxedLiveGPRs {
-		if preRawIntRegs[valueID] {
-			boxedRawReloads[valueID] = true
-		}
-	}
+	boxedRawReloads := preReprs.rawIntSubset(boxedLiveGPRs)
 	if len(boxedLiveGPRs) > 0 || len(liveFPRs) > 0 {
 		ec.emitSpillSelectiveForCall(boxedLiveGPRs, liveFPRs)
 	}
@@ -738,9 +721,9 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
 	ec.emitReloadSelectiveForCall(boxedLiveGPRs, liveFPRs)
 	ec.emitUnboxRawIntRegs(boxedRawReloads)
-	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.restoreValueReprSnapshot(preReprs)
 	ec.storeRawInt(jit.X0, instr.ID)
-	postRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	postReprs := ec.snapshotValueReprs()
 	asm.B(doneLabel)
 
 	asm.Label(exitLabel)
@@ -751,12 +734,12 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	ec.emitPublishRawSelfCallerState()
 
 	asm.Label(fallbackLabel)
-	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeRawSelfLiveSpills(rawLiveSpills)
 	ec.emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlot, nArgs, rawSelfArgsOff)
 	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
-	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs, liveGPRs, liveFPRs)
-	ec.rawIntRegs = postRawIntRegs
+	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preReprs, liveGPRs, liveFPRs)
+	ec.restoreValueReprSnapshot(postReprs)
 
 	asm.Label(doneLabel)
 }
@@ -767,7 +750,7 @@ func (ec *emitContext) rawSelfLiveSpills(gprLive map[int]bool, nParams int) []ra
 	}
 	ids := make([]int, 0, len(gprLive))
 	for valueID := range gprLive {
-		if !ec.rawIntRegs[valueID] {
+		if ec.valueReprOf(valueID) != valueReprRawInt {
 			continue
 		}
 		pr, ok := ec.alloc.ValueRegs[valueID]
@@ -874,7 +857,7 @@ func (ec *emitContext) emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlo
 	}
 }
 
-func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArgs, nRets int, preRawIntRegs, liveGPRs, liveFPRs map[int]bool) {
+func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArgs, nRets int, preReprs valueReprSnapshot, liveGPRs, liveFPRs map[int]bool) {
 	asm := ec.asm
 
 	ec.recordExitResumeCheckSiteWithLive(
@@ -907,8 +890,8 @@ func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArg
 	asm.Label(continueLabel)
 
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
-	ec.emitUnboxRawIntRegs(preRawIntRegs)
-	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitUnboxRawIntRegs(preReprs)
+	ec.restoreValueReprSnapshot(preReprs)
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 	resultIntLabel := ec.uniqueLabel("t2rawself_result_int")
 	asm.LSRimm(jit.X1, jit.X0, 48)
@@ -956,7 +939,7 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	exitLabel := ec.uniqueLabel("t2rawpeer_exit")
 	materializeLabel := ec.uniqueLabel("t2rawpeer_materialize")
 	doneLabel := ec.uniqueLabel("t2rawpeer_done")
-	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	preReprs := ec.snapshotValueReprs()
 	leafCallee := rawIntPeerLeafCallee(callee)
 
 	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
@@ -1052,10 +1035,10 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	}
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
-	ec.emitUnboxRawIntRegs(preRawIntRegs)
-	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitUnboxRawIntRegs(preReprs)
+	ec.restoreValueReprSnapshot(preReprs)
 	ec.storeRawInt(jit.X0, instr.ID)
-	postRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	postReprs := ec.snapshotValueReprs()
 	asm.B(doneLabel)
 
 	asm.Label(exitLabel)
@@ -1071,11 +1054,11 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 		ec.emitRestoreRawPeerCallerState()
 	}
 	asm.Label(materializeLabel)
-	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeRawIntPeerCallFrame(funcSlot, nArgs)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
-	ec.emitRawIntPeerCallExitResume(instr, funcSlot, nArgs, nRets, preRawIntRegs, liveGPRs, liveFPRs)
-	ec.rawIntRegs = postRawIntRegs
+	ec.emitRawIntPeerCallExitResume(instr, funcSlot, nArgs, nRets, preReprs, liveGPRs, liveFPRs)
+	ec.restoreValueReprSnapshot(postReprs)
 
 	asm.Label(doneLabel)
 	return true
@@ -1100,7 +1083,7 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	}
 
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
-	preRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	preReprs := ec.snapshotValueReprs()
 	ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
 
 	exitHandleLabel := ec.uniqueLabel("t2typedself_exit")
@@ -1166,8 +1149,8 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
-	ec.emitUnboxRawIntRegs(preRawIntRegs)
-	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitUnboxRawIntRegs(preReprs)
+	ec.restoreValueReprSnapshot(preReprs)
 	switch abi.Return {
 	case SpecializedABIReturnNone:
 		// CALL C=1: recursive side effects are complete and no result slot is
@@ -1180,7 +1163,7 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	default:
 		asm.B(fallbackLabel)
 	}
-	postSuccessRawIntRegs := cloneBoolMap(ec.rawIntRegs)
+	postSuccessReprs := ec.snapshotValueReprs()
 	asm.B(doneLabel)
 
 	asm.Label(exitHandleLabel)
@@ -1195,18 +1178,18 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeClosurePtr)
 	asm.MOVimm16(jit.X8, 1)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeTier2Only)
-	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeTypedSelfCallFrameFromStack(funcSlot, nArgs, abi)
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
 
 	asm.Label(fallbackLabel)
-	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeTypedSelfCallFrameFromStack(funcSlot, nArgs, abi)
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
-	ec.emitUnboxRawIntRegs(postSuccessRawIntRegs)
-	ec.rawIntRegs = postSuccessRawIntRegs
+	ec.emitUnboxRawIntRegs(postSuccessReprs)
+	ec.restoreValueReprSnapshot(postSuccessReprs)
 
 	asm.Label(doneLabel)
 	return true
@@ -1352,7 +1335,7 @@ func (ec *emitContext) rawIntPeerCallee(instr *Instr) *vm.FuncProto {
 			return nil
 		}
 		argID := instr.Args[1+i].ID
-		if ec.hasReg(argID) && ec.rawIntRegs[argID] {
+		if ec.hasReg(argID) && ec.valueReprOf(argID) == valueReprRawInt {
 			continue
 		}
 		if ec.irTypes[argID] == TypeInt {
@@ -1395,7 +1378,7 @@ func (ec *emitContext) emitMaterializeRawIntPeerCallFrame(funcSlot, nArgs int) {
 	}
 }
 
-func (ec *emitContext) emitRawIntPeerCallExitResume(instr *Instr, funcSlot, nArgs, nRets int, preRawIntRegs, liveGPRs, liveFPRs map[int]bool) {
+func (ec *emitContext) emitRawIntPeerCallExitResume(instr *Instr, funcSlot, nArgs, nRets int, preReprs valueReprSnapshot, liveGPRs, liveFPRs map[int]bool) {
 	asm := ec.asm
 
 	ec.recordExitResumeCheckSiteWithLive(
@@ -1428,8 +1411,8 @@ func (ec *emitContext) emitRawIntPeerCallExitResume(instr *Instr, funcSlot, nArg
 	asm.Label(continueLabel)
 
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
-	ec.emitUnboxRawIntRegs(preRawIntRegs)
-	ec.rawIntRegs = cloneBoolMap(preRawIntRegs)
+	ec.emitUnboxRawIntRegs(preReprs)
+	ec.restoreValueReprSnapshot(preReprs)
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 	resultIntLabel := ec.uniqueLabel("t2rawpeer_result_int")
 	asm.LSRimm(jit.X1, jit.X0, 48)
@@ -1753,7 +1736,7 @@ func (ec *emitContext) isNumericStaticSelfCall(instr *Instr) bool {
 	}
 	for i := 0; i < numParams; i++ {
 		argID := instr.Args[1+i].ID
-		if ec.hasReg(argID) && ec.rawIntRegs[argID] {
+		if ec.hasReg(argID) && ec.valueReprOf(argID) == valueReprRawInt {
 			continue
 		}
 		if ec.irTypes[argID] == TypeInt {
@@ -1782,7 +1765,7 @@ func (ec *emitContext) isTypedStaticSelfCall(instr *Instr) bool {
 		argID := instr.Args[1+i].ID
 		switch rep {
 		case SpecializedABIParamRawInt:
-			if ec.hasReg(argID) && ec.rawIntRegs[argID] {
+			if ec.hasReg(argID) && ec.valueReprOf(argID) == valueReprRawInt {
 				continue
 			}
 			if ec.irTypes[argID] == TypeInt {
