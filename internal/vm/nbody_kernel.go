@@ -29,6 +29,12 @@ type nbodyRecord struct {
 	mass       float64
 }
 
+type nbodyAdvanceDriverLoopShape struct {
+	loopPC   int
+	fnConst  int
+	argConst int
+}
+
 func (vm *VM) tryRunNBodyAdvanceKernel(cl *Closure, args []runtime.Value) (bool, error) {
 	if vm.methodJIT != nil {
 		return false, nil
@@ -157,27 +163,8 @@ func (vm *VM) tryNBodyAdvanceForLoopKernel(frame *CallFrame, base int, code []ui
 		return false, nil
 	}
 	forprepPC := frame.pc - 1
-	loopPC := frame.pc + sbx
-	if forprepPC < 0 || loopPC < 0 || loopPC >= len(code) || forprepPC+3 >= len(code) {
-		return false, nil
-	}
-	if DecodeOp(code[loopPC]) != OP_FORLOOP || DecodeA(code[loopPC]) != a || DecodesBx(code[loopPC]) != -4 {
-		return false, nil
-	}
-	getFn := code[forprepPC+1]
-	getArg := code[forprepPC+2]
-	call := code[forprepPC+3]
-	if DecodeOp(getFn) != OP_GETGLOBAL || DecodeOp(getArg) != OP_GETGLOBAL || DecodeOp(call) != OP_CALL {
-		return false, nil
-	}
-	fnSlot := DecodeA(getFn)
-	argSlot := DecodeA(getArg)
-	if DecodeA(call) != fnSlot || DecodeB(call) != 2 || DecodeC(call) != 1 || argSlot != fnSlot+1 {
-		return false, nil
-	}
-	fnConst := DecodeBx(getFn)
-	argConst := DecodeBx(getArg)
-	if fnConst >= len(constants) || argConst >= len(constants) || !constants[fnConst].IsString() || !constants[argConst].IsString() {
+	shape, ok := matchNBodyAdvanceDriverLoopShape(code, constants, forprepPC, a, sbx)
+	if !ok {
 		return false, nil
 	}
 	initV := vm.regs[base+a]
@@ -195,7 +182,7 @@ func (vm *VM) tryNBodyAdvanceForLoopKernel(frame *CallFrame, base int, code []ui
 	if steps < 1024 {
 		return false, nil
 	}
-	fnVal, ok := vm.globalValue(constants[fnConst].Str())
+	fnVal, ok := vm.globalValue(constants[shape.fnConst].Str())
 	if !ok {
 		return false, nil
 	}
@@ -203,7 +190,7 @@ func (vm *VM) tryNBodyAdvanceForLoopKernel(frame *CallFrame, base int, code []ui
 	if !ok || !HasNBodyAdvanceWholeCallKernel(cl.Proto) {
 		return false, nil
 	}
-	argVal, ok := vm.globalValue(constants[argConst].Str())
+	argVal, ok := vm.globalValue(constants[shape.argConst].Str())
 	if !ok || !argVal.IsNumber() {
 		return false, nil
 	}
@@ -213,8 +200,42 @@ func (vm *VM) tryNBodyAdvanceForLoopKernel(frame *CallFrame, base int, code []ui
 	}
 	vm.regs[base+a] = limitV
 	vm.regs[base+a+3] = limitV
-	frame.pc = loopPC + 1
+	frame.pc = shape.loopPC + 1
 	return true, nil
+}
+
+func matchNBodyAdvanceDriverLoopShape(code []uint32, constants []runtime.Value, forprepPC int, a int, sbx int) (nbodyAdvanceDriverLoopShape, bool) {
+	var shape nbodyAdvanceDriverLoopShape
+	bodyPC := forprepPC + 1
+	loopPC := bodyPC + sbx
+	if forprepPC < 0 || bodyPC < 0 || loopPC < 0 || loopPC >= len(code) || loopPC-bodyPC != 3 {
+		return shape, false
+	}
+	loop := code[loopPC]
+	if DecodeOp(loop) != OP_FORLOOP || DecodeA(loop) != a || loopPC+1+DecodesBx(loop) != bodyPC {
+		return shape, false
+	}
+	getFn := code[bodyPC]
+	getArg := code[bodyPC+1]
+	call := code[bodyPC+2]
+	if DecodeOp(getFn) != OP_GETGLOBAL || DecodeOp(getArg) != OP_GETGLOBAL || DecodeOp(call) != OP_CALL {
+		return shape, false
+	}
+	fnSlot := DecodeA(getFn)
+	argSlot := DecodeA(getArg)
+	if DecodeA(call) != fnSlot || DecodeB(call) != 2 || DecodeC(call) != 1 || argSlot != fnSlot+1 {
+		return shape, false
+	}
+	fnConst := DecodeBx(getFn)
+	argConst := DecodeBx(getArg)
+	if !stringConst(constants, fnConst) || !stringConst(constants, argConst) {
+		return shape, false
+	}
+	return nbodyAdvanceDriverLoopShape{
+		loopPC:   loopPC,
+		fnConst:  fnConst,
+		argConst: argConst,
+	}, true
 }
 
 func nbodyFieldIndexesForShape(proto *FuncProto, t *runtime.Table) ([nbodyFieldCount]int, bool) {
@@ -367,4 +388,43 @@ func isNBodyAdvanceProto(p *FuncProto) bool {
 // keep driver loops on the VM route where the whole-call kernel can fire.
 func HasNBodyAdvanceWholeCallKernel(p *FuncProto) bool {
 	return isNBodyAdvanceProto(p)
+}
+
+// HasNBodyAdvanceDriverLoopKernel reports whether p contains a structural
+// driver loop that repeatedly calls an nbody advance(dt)-style whole-call
+// kernel candidate.
+func HasNBodyAdvanceDriverLoopKernel(p *FuncProto, globals map[string]*FuncProto) bool {
+	if p == nil {
+		return false
+	}
+	for pc, inst := range p.Code {
+		if DecodeOp(inst) != OP_FORPREP {
+			continue
+		}
+		if IsNBodyAdvanceDriverLoopAt(p, pc, globals) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsNBodyAdvanceDriverLoopAt checks one FORPREP site for the guarded
+// advance(dt) call-loop shape. Runtime admission still checks trip count,
+// current globals, and argument/table guards before executing the kernel.
+func IsNBodyAdvanceDriverLoopAt(p *FuncProto, forprepPC int, globals map[string]*FuncProto) bool {
+	if p == nil || len(globals) == 0 || forprepPC < 0 || forprepPC >= len(p.Code) {
+		return false
+	}
+	inst := p.Code[forprepPC]
+	if DecodeOp(inst) != OP_FORPREP {
+		return false
+	}
+	shape, ok := matchNBodyAdvanceDriverLoopShape(p.Code, p.Constants, forprepPC, DecodeA(inst), DecodesBx(inst))
+	if !ok {
+		return false
+	}
+	if shape.fnConst < 0 || shape.fnConst >= len(p.Constants) || !p.Constants[shape.fnConst].IsString() {
+		return false
+	}
+	return HasNBodyAdvanceWholeCallKernel(globals[p.Constants[shape.fnConst].Str()])
 }

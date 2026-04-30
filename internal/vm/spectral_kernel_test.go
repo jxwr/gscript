@@ -70,7 +70,7 @@ func TestSpectralKernelRecognizesStructuralProtos(t *testing.T) {
 	if got := classifySpectralMultiplyProto(proto.Protos[2]); got != spectralAtv {
 		t.Fatalf("multiplyAtv classified as %v", got)
 	}
-	if !vm.isSpectralAtAvProto(proto.Protos[3]) {
+	if !isSpectralAtAvProto(proto.Protos[3]) {
 		t.Fatal("multiplyAtAv proto not recognized")
 	}
 }

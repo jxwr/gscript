@@ -908,31 +908,7 @@ func (tm *TieringManager) hasLargeNBodyAdvanceDriverLoop(proto *vm.FuncProto) bo
 		if !ok || steps < 1024 {
 			continue
 		}
-		if pc+4 >= len(proto.Code) {
-			continue
-		}
-		getFn := proto.Code[pc+1]
-		getArg := proto.Code[pc+2]
-		call := proto.Code[pc+3]
-		loop := proto.Code[pc+4]
-		if vm.DecodeOp(getFn) != vm.OP_GETGLOBAL ||
-			vm.DecodeOp(getArg) != vm.OP_GETGLOBAL ||
-			vm.DecodeOp(call) != vm.OP_CALL ||
-			vm.DecodeOp(loop) != vm.OP_FORLOOP ||
-			vm.DecodeA(loop) != a ||
-			vm.DecodesBx(loop) != -4 {
-			continue
-		}
-		fnSlot := vm.DecodeA(getFn)
-		argSlot := vm.DecodeA(getArg)
-		if vm.DecodeA(call) != fnSlot || vm.DecodeB(call) != 2 || vm.DecodeC(call) != 1 || argSlot != fnSlot+1 {
-			continue
-		}
-		name := protoConstString(proto, vm.DecodeBx(getFn))
-		if name == "" {
-			continue
-		}
-		if callee := globals[name]; vm.HasNBodyAdvanceWholeCallKernel(callee) {
+		if vm.IsNBodyAdvanceDriverLoopAt(proto, pc, globals) {
 			return true
 		}
 	}

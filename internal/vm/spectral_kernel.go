@@ -45,7 +45,7 @@ func (vm *VM) tryRunSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (
 		}
 		return true, nil
 	default:
-		if !vm.isSpectralAtAvProto(proto) || !vm.guardSpectralAtAvCallees(proto) {
+		if !isSpectralAtAvProto(proto) || !vm.guardSpectralAtAvCallees(proto) {
 			return false, nil
 		}
 		if !vm.runSpectralAtAv(args) {
@@ -393,7 +393,7 @@ func classifySpectralMultiplyProto(p *FuncProto) spectralMultiplyKind {
 	return spectralNotMultiply
 }
 
-func (vm *VM) isSpectralAtAvProto(p *FuncProto) bool {
+func isSpectralAtAvProto(p *FuncProto) bool {
 	if p == nil || p.NumParams != 3 || p.IsVarArg || len(p.Constants) < 3 ||
 		!numberConst(p.Constants[0], 0.0) || !p.Constants[1].IsString() || !p.Constants[2].IsString() {
 		return false
@@ -424,20 +424,4 @@ func (vm *VM) isSpectralAtAvProto(p *FuncProto) bool {
 		EncodeABC(OP_CALL, 7, 4, 1),
 		EncodeABC(OP_RETURN, 0, 1, 0),
 	})
-}
-
-func codeEquals(got, want []uint32) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func numberConst(v runtime.Value, want float64) bool {
-	return v.IsNumber() && v.Number() == want
 }

@@ -198,16 +198,6 @@ func matchPrimePredicateSumForLoopShape(code []uint32, constants []runtime.Value
 	}, true
 }
 
-func addOperandsMatch(inst uint32, left int, right int) bool {
-	b := DecodeB(inst)
-	c := DecodeC(inst)
-	return (b == left && c == right) || (b == right && c == left)
-}
-
-func stringConst(constants []runtime.Value, idx int) bool {
-	return idx >= 0 && idx < len(constants) && constants[idx].IsString()
-}
-
 // IsTrialDivisionPrimePredicateProto recognizes the bytecode shape for the
 // single-argument trial-division predicate that returns only booleans.
 func IsTrialDivisionPrimePredicateProto(p *FuncProto) bool {

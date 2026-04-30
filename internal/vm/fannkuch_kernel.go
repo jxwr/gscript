@@ -4,7 +4,7 @@ import "github.com/gscript/gscript/internal/runtime"
 
 var fannkuchReduxResultCtor = runtime.NewSmallTableCtor2("maxFlips", "checksum")
 
-// Encoded bytecode for benchmarks/suite/fannkuch.gs' fannkuch function.
+// Encoded bytecode for the structural fannkuch-redux implementation shape.
 var fannkuchReduxCode = [...]uint32{
 	265, 521, 777, 2147484674, 1284, 2147485186, 2147812389, 460804,
 	461060, 134808076, 460804, 461060, 134808332, 2146960422, 2147419906, 2147420162,
