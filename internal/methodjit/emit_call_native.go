@@ -228,17 +228,6 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	asm.Label(icDoneLabel)
 
-	tier2OnlyLabel := ec.uniqueLabel("t2call_tier2_only")
-	tier2OnlyDoneLabel := ec.uniqueLabel("t2call_tier2_only_done")
-	asm.LDR(jit.X6, jit.X1, funcProtoOffDirectEntryPtr)
-	asm.CBZ(jit.X6, tier2OnlyLabel)
-	asm.MOVimm16(jit.X6, 0)
-	asm.B(tier2OnlyDoneLabel)
-	asm.Label(tier2OnlyLabel)
-	asm.MOVimm16(jit.X6, 1)
-	asm.Label(tier2OnlyDoneLabel)
-	asm.STR(jit.X6, mRegCtx, execCtxOffNativeCalleeTier2Only)
-
 	// Step 5: Bounds check: callee register window fits in register file.
 	asm.LDR(jit.X3, jit.X1, funcProtoOffMaxStack) // X3 = calleeMaxStack (int)
 	asm.LSLimm(jit.X3, jit.X3, 3)                 // X3 = calleeMaxStack * 8
@@ -438,8 +427,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// exit-resume loop. This avoids replaying the call from the beginning
 	// after the callee may already have mutated visible state.
 	asm.Label(exitHandleLabel)
-	asm.LDR(jit.X0, mRegCtx, execCtxOffNativeCalleeTier2Only)
-	asm.CBZ(jit.X0, slowLabel)
+	ec.emitRequireNativeCalleeTier2Only(slowLabel)
 	ec.rawIntRegs = savedRawIntRegs
 	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
 
@@ -453,6 +441,19 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// --- Done: merge point for native and slow paths ---
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitRequireNativeCalleeTier2Only(slowLabel string) {
+	asm := ec.asm
+	// This predicate is only needed after a callee exit. Keeping it out of
+	// the successful call path avoids per-call DirectEntryPtr traffic.
+	asm.LDR(jit.X0, mRegCtx, execCtxOffNativeCalleeClosurePtr)
+	asm.CBZ(jit.X0, slowLabel)
+	asm.LDR(jit.X0, jit.X0, vmClosureOffProto)
+	asm.LDR(jit.X0, jit.X0, funcProtoOffDirectEntryPtr)
+	asm.CBNZ(jit.X0, slowLabel)
+	asm.MOVimm16(jit.X0, 1)
+	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCalleeTier2Only)
 }
 
 func (ec *emitContext) emitNativeCallExit(instr *Instr, funcSlot, nArgs, nRets, calleeBaseOff int) {
