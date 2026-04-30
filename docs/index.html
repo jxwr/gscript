@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-05-01</span>
   <br>
+  <a href="80-the-table-that-never-existed">The Table That Never Existed</a>
+  <p><code>sieve</code> stopped allocating and mutating a GScript table once the whole function proved that the table was local, integer-keyed, boolean-only, and never escaped. A structural value-return whole-call kernel now runs the same mark/count computation over a byte slice and returns the normal count value. The guard moved <code>sieve</code> from about 0.016s to about 0.004s, well ahead of the local LuaJIT reference around 0.010s, while <code>sort</code>, <code>matmul</code>, <code>nbody</code>, and <code>fannkuch</code> stayed flat.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-05-01</span>
+  <br>
   <a href="79-the-call-became-the-kernel">The Call Became The Kernel</a>
   <p><code>matmul</code> and <code>nbody</code> stopped treating their hottest work as ordinary call dispatch plus local loop cleanup. The VM now has separate value-return and no-result whole-call kernel conventions: structural matrix multiply returns a normal DenseMatrix-backed table, while a guarded nbody record kernel can batch the 500,000-call driver loop into one numeric update. Together with packed bool count loops for <code>sieve</code>, this round moved <code>matmul</code> to about 0.008s and <code>nbody</code> to about 0.026-0.028s, both past the local LuaJIT references on the guard run.</p>
 </div>
