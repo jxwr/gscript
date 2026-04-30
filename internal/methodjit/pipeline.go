@@ -604,9 +604,9 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("DCE (post-UnrollAndJam): %w", err)
 	}
 
-	fn, err = TableArrayBoundsCheckHoistPass(fn)
+	fn, err = LoopRegionVersioningPass(fn)
 	if err != nil {
-		return nil, nil, fmt.Errorf("TableArrayBoundsCheckHoist: %w", err)
+		return nil, nil, fmt.Errorf("LoopRegionVersioning: %w", err)
 	}
 	attachRemarks(fn, opts)
 
@@ -701,7 +701,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("DCEPostLICM", DCEPass)
 	pipe.Add("UnrollAndJam", UnrollAndJamPass)
 	pipe.Add("DCEPostUnrollAndJam", DCEPass)
-	pipe.Add("TableArrayBoundsCheckHoist", TableArrayBoundsCheckHoistPass)
+	pipe.Add("LoopRegionVersioning", LoopRegionVersioningPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	return pipe
 }

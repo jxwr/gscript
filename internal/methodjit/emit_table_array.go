@@ -416,8 +416,10 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
-	asm.CMPreg(jit.X1, jit.X3)
-	asm.BCond(jit.CondGE, deoptLabel)
+	if !ec.tableArrayUpperBoundSafe(instr.ID) {
+		asm.CMPreg(jit.X1, jit.X3)
+		asm.BCond(jit.CondGE, deoptLabel)
+	}
 
 	valueID := instr.Args[4].ID
 	switch instr.Aux {

@@ -14,6 +14,22 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
+// LoopTableArrayFact describes a table-array access admitted by loop-region
+// versioning. The preheader has already verified table/metatable/kind and
+// loaded stable len/data facts; an existing loop header branch proves the
+// access key is below that len on every continuing iteration.
+type LoopTableArrayFact struct {
+	HeaderBlockID    int
+	PreheaderBlockID int
+	TableID          int
+	TableHeaderID    int
+	LenID            int
+	DataID           int
+	KeyID            int
+	Kind             int64
+	AccessOp         Op
+}
+
 // Function is the complete IR for one compiled function.
 type Function struct {
 	Entry   *Block        // entry basic block
@@ -50,12 +66,17 @@ type Function struct {
 	// a sign fact and must not reuse Int48Safe's overflow-specific meaning.
 	IntNonNegative map[int]bool
 
-	// TableArrayUpperBoundSafe is the set of OpTableArrayLoad instruction IDs
-	// whose key < len check is already guaranteed by the enclosing loop header
-	// branch. Populated by TableArrayBoundsCheckHoistPass after LICM has exposed
-	// invariant table-array len values. The emitter still performs key type and
-	// non-negative checks unless separate facts prove those safe.
+	// TableArrayUpperBoundSafe is the set of table-array access instruction IDs
+	// whose key < len check is already guaranteed by an enclosing loop-region
+	// fact. The emitter still performs key type and non-negative checks unless
+	// separate facts prove those safe.
 	TableArrayUpperBoundSafe map[int]bool
+
+	// LoopTableArrayFacts records the table/len/data/key contract behind each
+	// TableArrayUpperBoundSafe access. It is diagnostic and a staging point for
+	// broader loop-region versioning; codegen treats missing entries as a lack
+	// of optimization, not as an error.
+	LoopTableArrayFacts map[int]LoopTableArrayFact
 
 	// Globals, if non-nil, maps global function names to their protos.
 	// Used by the IR interpreter to resolve residual cross-function calls
