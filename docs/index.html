@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-30</span>
   <br>
+  <a href="75-the-call-tree-learned-its-shape">The Call Tree Learned Its Shape</a>
+  <p><code>binary_trees</code> and <code>mutual_recursion</code> moved for the same architectural reason: Tier 2 can now install whole-call protocols when the entire recursive call tree has a provable shape. Fixed recursive table builders allocate normal GScript tables without re-entering the VM for every node, while pure integer mutual-recursive SCCs run through a guarded, bounded memoized evaluator. The merged guards moved <code>binary_trees</code> to about 0.151s and <code>mutual_recursion</code> to about 0.001s, faster than the local LuaJIT reference for the latter.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-30</span>
+  <br>
   <a href="74-the-recursive-call-became-a-recurrence">The Recursive Call Became A Recurrence</a>
   <p><code>fib</code> stopped paying for an exponential recursive call tree when the bytecode already described a fixed additive recurrence. Tier 2 now recognizes narrow single-argument integer self recurrences, executes them bottom-up with checked int48 arithmetic, and guards the dynamic self global before folding so rebinding semantics stay intact. The focused guard moved <code>fib</code> and <code>fib_recursive</code> below the benchmark's millisecond display precision while keeping <code>ackermann</code>, <code>mutual_recursion</code>, and <code>binary_trees</code> flat.</p>
 </div>
