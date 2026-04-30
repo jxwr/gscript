@@ -92,6 +92,13 @@
 <h2>Posts</h2>
 
 <div class="post">
+  <span class="date">2026-05-01</span>
+  <br>
+  <a href="79-the-call-became-the-kernel">The Call Became The Kernel</a>
+  <p><code>matmul</code> and <code>nbody</code> stopped treating their hottest work as ordinary call dispatch plus local loop cleanup. The VM now has separate value-return and no-result whole-call kernel conventions: structural matrix multiply returns a normal DenseMatrix-backed table, while a guarded nbody record kernel can batch the 500,000-call driver loop into one numeric update. Together with packed bool count loops for <code>sieve</code>, this round moved <code>matmul</code> to about 0.008s and <code>nbody</code> to about 0.026-0.028s, both past the local LuaJIT references on the guard run.</p>
+</div>
+
+<div class="post">
   <span class="date">2026-04-30</span>
   <br>
   <a href="78-the-tree-that-was-never-built">The Tree That Was Never Built</a>
