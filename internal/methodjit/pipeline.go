@@ -277,9 +277,9 @@ type Tier2PipelineOpts struct {
 //
 //	TypeSpec → Intrinsic → TypeSpec → Inline → TypeSpec → ConstProp →
 //	LoadElim → EscapeAnalysis → DCE → PostRewriteTypeSpec →
-//	LoopBoundRangeGuard → RangeAnalysis → OverflowBoxing → UnrollAndJam → FMAFusion →
+//	LoopBoundRangeGuard → RangeAnalysis → OverflowBoxing → FMAFusion →
 //	FloatStrengthReduction → FMAFusion → LICM → FieldNumToFloatFusion →
-//	LoadElim → DCE
+//	LoadElim → DCE → UnrollAndJam
 //
 // Returns the optimized function, any intrinsic rewrite notes (non-nil means
 // the function uses intrinsics that Tier 1 would execute differently), and an
@@ -531,14 +531,6 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("DCE (post-LoadElim2): %w", err)
 	}
 
-	// R62: UnrollAndJam scaffold (detection only; transform in future rounds).
-	// Runs before FMAFusion so that when the transform ships, the new split
-	// Phi accumulators are visible to FMA fusion.
-	fn, err = UnrollAndJamPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("UnrollAndJam: %w", err)
-	}
-
 	// R47: fuse OpAddFloat(x, OpMulFloat(y,z)) → OpFMA(y,z,x) so the
 	// emitter produces a single FMADDd instead of FMUL + FADD.
 	fn, err = FMAFusionPass(fn)
@@ -585,6 +577,15 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("DCE (post-LICM LoadElim): %w", err)
 	}
+
+	// 2-way unroll for narrow float reductions. Run after LICM and
+	// post-LICM cleanup so loop-invariant table/matrix facts have already left
+	// the body; this keeps the clone small and side-effect-free.
+	fn, err = UnrollAndJamPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("UnrollAndJam: %w", err)
+	}
+	attachRemarks(fn, opts)
 
 	fn, err = ScalarPromotionPass(fn)
 	if err != nil {
@@ -667,7 +668,6 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("MatrixLower", MatrixLowerPass)
 	pipe.Add("LoadEliminationPostMatrixLower", LoadEliminationPass)
 	pipe.Add("DCEPostMatrixLower", DCEPass)
-	pipe.Add("UnrollAndJam", UnrollAndJamPass)
 	pipe.Add("FMAFusion", FMAFusionPass)
 	pipe.Add("FloatStrengthReduction", FloatStrengthReductionPass)
 	pipe.Add("FMAFusionPostFloatStrengthReduction", FMAFusionPass)
@@ -675,6 +675,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("FieldNumToFloatFusion", FieldNumToFloatFusionPass)
 	pipe.Add("LoadEliminationPostLICM", LoadEliminationPass)
 	pipe.Add("DCEPostLICM", DCEPass)
+	pipe.Add("UnrollAndJam", UnrollAndJamPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	return pipe
 }

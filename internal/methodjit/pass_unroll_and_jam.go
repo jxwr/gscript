@@ -1,41 +1,30 @@
-// pass_unroll_and_jam.go — 2-way loop unroll-and-jam for float reductions.
+// pass_unroll_and_jam.go implements a narrow 2-way unroll for float reductions.
 //
-// Targets the canonical innermost-loop pattern:
-//   acc = Phi(0.0, new_acc)       // loop-carried float accumulator
-//   iv  = Phi(init, iv + step)     // integer induction variable
-//   ... body using iv ...
-//   new_acc = acc + Mul(X, Y)      // reduction update
+// It targets the canonical innermost-loop pattern:
+//   acc = Phi(0.0, new_acc)
+//   iv  = Phi(init, iv + step)
+//   new_acc = acc + Mul(X(iv), Y(iv))
 //
-// Transform: clone the body with iv_alt = iv + step, add acc2 = Phi(0.0, new_acc2),
-// step the IV by 2×step in the header, combine acc + acc2 at loop exit.
-//
-// Motivation (R47 + R60 measured): FMA fusion on a Phi accumulator serializes
-// the critical path (Phi→Mul→Add→Phi, ~4 cycles latency per iter). Splitting
-// the accumulator into two independent chains doubles ILP on M4's dual FMA
-// pipes; downstream FMAFusionPass can then fuse each partial sum freely
-// because neither chain's Phi is "alone" any more — both have independent
-// forward progress.
-//
-// Scope: R62 ships the scaffold + pattern detection + a dry-run report.
-// Later rounds add the actual transform + tail handler + pipeline wiring.
+// The transform clones the body once for iv+step, tightens the hot loop bound
+// to full pairs only, and emits a scalar tail for odd trip counts. This keeps
+// the original left-to-right reduction order while reducing hot back-edge
+// traffic after LICM has moved invariant table/matrix facts out of the body.
 
 package methodjit
 
-// UnrollAndJamPass detects float-reduction loops suitable for 2-way
-// unroll-and-jam and (eventually) transforms them. In R62's initial form,
-// it only identifies candidates and annotates them (no IR change) so the
-// pipeline can run the pass as a no-op. Transform is added incrementally.
+import "fmt"
+
+// UnrollAndJamPass keeps the historical pass name, but deliberately implements
+// a lower-risk single-accumulator unroll rather than split-accumulator
+// unroll-and-jam.
 func UnrollAndJamPass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.Blocks) == 0 {
 		return fn, nil
 	}
-
 	li := computeLoopInfo(fn)
 	if !li.hasLoops() {
 		return fn, nil
 	}
-
-	// For each loop header, check if it matches the float-reduction pattern.
 	for headerID := range li.loopHeaders {
 		header := findBlock(fn, headerID)
 		if header == nil {
@@ -45,36 +34,48 @@ func UnrollAndJamPass(fn *Function) (*Function, error) {
 		if cand == nil {
 			continue
 		}
-		_ = cand // R62: detection only; no transform yet.
+		if err := unrollFloatReductionLoop2(fn, cand); err != nil {
+			return nil, err
+		}
+		functionRemarks(fn).Add("UnrollAndJam", "changed", cand.header.ID, cand.updateInstr.ID, cand.updateInstr.Op,
+			"2-way unroll with scalar tail for float reduction loop")
+		return fn, nil
 	}
 	return fn, nil
 }
 
-// floatReductionCandidate holds the SSA shape of a candidate loop for
-// 2-way unroll-and-jam. All fields refer to the ORIGINAL IR; the transform
-// (later rounds) clones from these.
 type floatReductionCandidate struct {
-	header      *Block   // loop header block
-	bodyBlock   *Block   // the single block containing the reduction body
-	accPhi      *Instr   // OpPhi for the float accumulator, defined in header
-	ivPhi       *Instr   // OpPhi for the integer induction variable
-	stepInstr   *Instr   // the AddInt(ivPhi, ConstInt(step)) that advances iv
-	step        int64    // the step value (must be a ConstInt)
-	updateInstr *Instr   // the AddFloat(accPhi, MulFloat(...)) reduction update
-	mulInstr    *Instr   // the MulFloat feeding updateInstr
+	header      *Block
+	bodyBlock   *Block
+	accPhi      *Instr
+	ivPhi       *Instr
+	stepInstr   *Instr
+	stepValue   *Value
+	step        int64
+	limitValue  *Value
+	outsidePred *Block
+	exitBlock   *Block
+	updateInstr *Instr
+	mulInstr    *Instr
 }
 
-// detectFloatReductionLoop inspects a loop header and returns a candidate
-// if the loop matches the 2-way-unroll pattern; else nil.
 func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatReductionCandidate {
-	// 1. Find exactly one Phi of TypeFloat in the header.
+	bodyBlocks := li.headerBlocks[header.ID]
+	if bodyBlocks == nil {
+		return nil
+	}
+	inside, outside := loopPreds(li, header)
+	if len(inside) != 1 || len(outside) != 1 || len(header.Succs) != 2 {
+		return nil
+	}
+
 	var accPhi, ivPhi *Instr
-	floatPhiCount := 0
-	intPhiCount := 0
+	phiCount, floatPhiCount, intPhiCount := 0, 0, 0
 	for _, instr := range header.Instrs {
 		if instr.Op != OpPhi {
 			continue
 		}
+		phiCount++
 		switch instr.Type {
 		case TypeFloat:
 			accPhi = instr
@@ -84,21 +85,15 @@ func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatR
 			intPhiCount++
 		}
 	}
-	if floatPhiCount != 1 || intPhiCount < 1 || accPhi == nil || ivPhi == nil {
+	if phiCount != 2 || floatPhiCount != 1 || intPhiCount != 1 || accPhi == nil || ivPhi == nil {
 		return nil
 	}
 
-	// 2. The back-edge input of accPhi should be an AddFloat(accPhi, MulFloat(...))
-	//    defined in a block inside the loop body.
 	updateInstr := findAccumUpdate(accPhi)
-	if updateInstr == nil {
+	if updateInstr == nil || len(updateInstr.Args) != 2 {
 		return nil
 	}
-	// AddFloat(accPhi_ref, mulResult) or AddFloat(mulResult, accPhi_ref)
 	var mulArg *Value
-	if len(updateInstr.Args) != 2 {
-		return nil
-	}
 	if updateInstr.Args[0].ID == accPhi.ID {
 		mulArg = updateInstr.Args[1]
 	} else if updateInstr.Args[1].ID == accPhi.ID {
@@ -109,21 +104,30 @@ func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatR
 	if mulArg == nil || mulArg.Def == nil || mulArg.Def.Op != OpMulFloat {
 		return nil
 	}
-	mulInstr := mulArg.Def
 
-	// 3. Must be the only update to accPhi's back-edge (single body block).
 	bodyBlock := updateInstr.Block
-	if bodyBlock == nil {
+	if bodyBlock == nil || bodyBlock != inside[0] || !bodyBlocks[bodyBlock.ID] {
 		return nil
 	}
-	if !li.loopBlocks[bodyBlock.ID] {
+	if blockStartsWithPhi(header.Succs[1]) || !valueUsesLimitedToBlocks(fn, accPhi.ID, bodyBlock, header.Succs[1]) {
+		return nil
+	}
+	if len(bodyBlock.Preds) != 1 || bodyBlock.Preds[0] != header || len(bodyBlock.Succs) != 1 || bodyBlock.Succs[0] != header {
+		return nil
+	}
+	if !headerBodyBranchTargets(header, bodyBlock) {
 		return nil
 	}
 
-	// 4. IV step detection: find an AddInt(ivPhi, ConstInt) in the loop that
-	//    the ivPhi's back-edge input points to.
-	stepInstr, stepVal := findIntIVStep(fn, li, ivPhi)
-	if stepInstr == nil {
+	stepInstr, stepValue, stepVal := findIntIVStep(fn, li, ivPhi)
+	if stepInstr == nil || stepValue == nil || stepVal <= 0 {
+		return nil
+	}
+	limitValue := findLoopLimit(header, stepInstr)
+	if limitValue == nil {
+		return nil
+	}
+	if !bodyIsSafeForUnroll(bodyBlock) {
 		return nil
 	}
 
@@ -133,28 +137,19 @@ func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatR
 		accPhi:      accPhi,
 		ivPhi:       ivPhi,
 		stepInstr:   stepInstr,
+		stepValue:   stepValue,
 		step:        stepVal,
+		limitValue:  limitValue,
+		outsidePred: outside[0],
+		exitBlock:   header.Succs[1],
 		updateInstr: updateInstr,
-		mulInstr:    mulInstr,
+		mulInstr:    mulArg.Def,
 	}
 }
 
-// findAccumUpdate returns the AddFloat instruction that feeds the back-edge
-// input of phi (i.e. the instruction computing phi's next-iteration value).
-// Returns nil if not found or if the back-edge value isn't an AddFloat.
 func findAccumUpdate(phi *Instr) *Instr {
-	// Phi args are (preheader_val, back_edge_val) per the graph-builder
-	// convention. The back-edge is whichever arg is defined inside the loop.
-	// For simplicity: look for an AddFloat(phi, X) or AddFloat(X, phi) among
-	// phi's args.
 	for _, arg := range phi.Args {
-		if arg == nil || arg.Def == nil {
-			continue
-		}
-		if arg.Def.Op != OpAddFloat {
-			continue
-		}
-		if len(arg.Def.Args) != 2 {
+		if arg == nil || arg.Def == nil || arg.Def.Op != OpAddFloat || len(arg.Def.Args) != 2 {
 			continue
 		}
 		if arg.Def.Args[0].ID == phi.ID || arg.Def.Args[1].ID == phi.ID {
@@ -164,41 +159,27 @@ func findAccumUpdate(phi *Instr) *Instr {
 	return nil
 }
 
-// findIntIVStep returns the (AddInt, step_const) pair for a loop's IV phi.
-// The step must be a ConstInt; step value is returned.
-func findIntIVStep(fn *Function, li *loopInfo, ivPhi *Instr) (*Instr, int64) {
+func findIntIVStep(fn *Function, li *loopInfo, ivPhi *Instr) (*Instr, *Value, int64) {
 	for _, arg := range ivPhi.Args {
-		if arg == nil || arg.Def == nil {
+		if arg == nil || arg.Def == nil || arg.Def.Op != OpAddInt || len(arg.Def.Args) != 2 {
 			continue
 		}
-		def := arg.Def
-		if def.Op != OpAddInt {
-			continue
-		}
-		if len(def.Args) != 2 {
-			continue
-		}
-		// One arg should be ivPhi (or a value derived from ivPhi), the other
-		// should be a ConstInt.
 		var constArg *Instr
-		for _, a := range def.Args {
+		var constVal *Value
+		for _, a := range arg.Def.Args {
 			if a != nil && a.Def != nil && a.Def.Op == OpConstInt {
 				constArg = a.Def
+				constVal = a
 			}
 		}
-		if constArg == nil {
+		if constArg == nil || arg.Def.Block == nil || !li.loopBlocks[arg.Def.Block.ID] {
 			continue
 		}
-		// Must be defined inside the loop for this to be the IV step.
-		if def.Block == nil || !li.loopBlocks[def.Block.ID] {
-			continue
-		}
-		return def, constArg.Aux
+		return arg.Def, constVal, constArg.Aux
 	}
-	return nil, 0
+	return nil, nil, 0
 }
 
-// findBlock returns the *Block with the given ID, or nil if not found.
 func findBlock(fn *Function, id int) *Block {
 	for _, b := range fn.Blocks {
 		if b.ID == id {
@@ -206,4 +187,275 @@ func findBlock(fn *Function, id int) *Block {
 		}
 	}
 	return nil
+}
+
+func blockStartsWithPhi(block *Block) bool {
+	return block != nil && len(block.Instrs) > 0 && block.Instrs[0].Op == OpPhi
+}
+
+func valueUsesLimitedToBlocks(fn *Function, valueID int, allowed ...*Block) bool {
+	allowedSet := make(map[*Block]bool, len(allowed))
+	for _, block := range allowed {
+		if block != nil {
+			allowedSet[block] = true
+		}
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			for _, arg := range instr.Args {
+				if arg != nil && arg.ID == valueID && !allowedSet[block] {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func unrollFloatReductionLoop2(fn *Function, cand *floatReductionCandidate) error {
+	body, header, exit, preheader := cand.bodyBlock, cand.header, cand.exitBlock, cand.outsidePred
+	if body == nil || header == nil || exit == nil || preheader == nil || len(body.Instrs) == 0 {
+		return nil
+	}
+	term := body.Instrs[len(body.Instrs)-1]
+	if term.Op != OpJump {
+		return fmt.Errorf("unroll: body B%d terminator is %s, want Jump", body.ID, term.Op)
+	}
+	bodyPredIdx := predIndex(header, body)
+	if bodyPredIdx < 0 {
+		return fmt.Errorf("unroll: body B%d is not a predecessor of header B%d", body.ID, header.ID)
+	}
+
+	tailCheck := &Block{ID: nextBlockID(fn)}
+	tailBody := &Block{ID: tailCheck.ID + 1}
+	insertBlockAfter(fn, header, tailCheck)
+	insertBlockAfter(fn, tailCheck, tailBody)
+
+	pairLimit := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpSubInt,
+		Type:  TypeInt,
+		Args:  []*Value{cand.limitValue, cand.stepValue},
+		Block: preheader,
+	}
+	insertBeforeTerminator(preheader, pairLimit)
+
+	headerCmp := header.Instrs[len(header.Instrs)-2]
+	if headerCmp.Op != OpLeInt || len(headerCmp.Args) != 2 || headerCmp.Args[0].ID != cand.stepInstr.ID {
+		return fmt.Errorf("unroll: header B%d compare shape changed", header.ID)
+	}
+	headerCmp.Args[1] = pairLimit.Value()
+
+	originalBody := append([]*Instr(nil), body.Instrs[:len(body.Instrs)-1]...)
+	k2 := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpAddInt,
+		Type:  TypeInt,
+		Args:  []*Value{cand.stepInstr.Value(), cand.stepValue},
+		Block: body,
+	}
+	body.Instrs = append(body.Instrs[:len(body.Instrs)-1], k2)
+
+	remap := map[int]*Value{
+		cand.stepInstr.ID:   k2.Value(),
+		cand.accPhi.ID:      cand.updateInstr.Value(),
+		cand.updateInstr.ID: cand.updateInstr.Value(),
+	}
+	cloneUpdate, err := cloneBodyInstructions(fn, body, originalBody, remap, cand.updateInstr.ID)
+	if err != nil {
+		return err
+	}
+	body.Instrs = append(body.Instrs, cloneTerminator(fn, body, OpJump, nil, header, nil, term))
+	cand.accPhi.Args[bodyPredIdx] = cloneUpdate.Value()
+	cand.ivPhi.Args[bodyPredIdx] = k2.Value()
+
+	tailCond := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpLeInt,
+		Type:  TypeBool,
+		Args:  []*Value{cand.stepInstr.Value(), cand.limitValue},
+		Block: tailCheck,
+	}
+	tailBranch := cloneTerminator(fn, tailCheck, OpBranch, []*Value{tailCond.Value()}, tailBody, exit, nil)
+	tailCheck.Instrs = []*Instr{tailCond, tailBranch}
+	tailCheck.Preds = []*Block{header}
+	tailCheck.Succs = []*Block{tailBody, exit}
+
+	tailUpdate, err := cloneBodyInstructions(fn, tailBody, originalBody, map[int]*Value{}, cand.updateInstr.ID)
+	if err != nil {
+		return err
+	}
+	tailBody.Instrs = append(tailBody.Instrs, cloneTerminator(fn, tailBody, OpJump, nil, exit, nil, term))
+	tailBody.Preds = []*Block{tailCheck}
+	tailBody.Succs = []*Block{exit}
+
+	header.Succs[1] = tailCheck
+	headerTerm := header.Instrs[len(header.Instrs)-1]
+	headerTerm.Aux2 = int64(tailCheck.ID)
+	replacePred(exit, header, tailCheck)
+	exit.Preds = append(exit.Preds, tailBody)
+
+	exitAcc := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpPhi,
+		Type:  TypeFloat,
+		Args:  []*Value{cand.accPhi.Value(), tailUpdate.Value()},
+		Block: exit,
+	}
+	exit.Instrs = append([]*Instr{exitAcc}, exit.Instrs...)
+	replaceValueUsesInBlock(exit, cand.accPhi.ID, exitAcc.Value(), 1)
+	return nil
+}
+
+func cloneBodyInstructions(fn *Function, block *Block, instrs []*Instr, remap map[int]*Value, updateID int) (*Instr, error) {
+	var update *Instr
+	for _, instr := range instrs {
+		clone := cloneInstrWithRemap(fn, block, instr, remap)
+		block.Instrs = append(block.Instrs, clone)
+		remap[instr.ID] = clone.Value()
+		if instr.ID == updateID {
+			update = clone
+		}
+	}
+	if update == nil {
+		return nil, fmt.Errorf("unroll: cloned body B%d did not clone accumulator update v%d", block.ID, updateID)
+	}
+	return update, nil
+}
+
+func cloneInstrWithRemap(fn *Function, block *Block, instr *Instr, remap map[int]*Value) *Instr {
+	args := make([]*Value, len(instr.Args))
+	for i, arg := range instr.Args {
+		if arg == nil {
+			continue
+		}
+		if repl := remap[arg.ID]; repl != nil {
+			args[i] = repl
+		} else {
+			args[i] = arg
+		}
+	}
+	return &Instr{
+		ID:         fn.newValueID(),
+		Op:         instr.Op,
+		Type:       instr.Type,
+		Args:       args,
+		Aux:        instr.Aux,
+		Aux2:       instr.Aux2,
+		Block:      block,
+		HasSource:  instr.HasSource,
+		SourcePC:   instr.SourcePC,
+		SourceLine: instr.SourceLine,
+	}
+}
+
+func cloneTerminator(fn *Function, block *Block, op Op, args []*Value, succ0, succ1 *Block, src *Instr) *Instr {
+	instr := &Instr{ID: fn.newValueID(), Op: op, Type: TypeUnknown, Args: args, Block: block}
+	if succ0 != nil {
+		instr.Aux = int64(succ0.ID)
+	}
+	if succ1 != nil {
+		instr.Aux2 = int64(succ1.ID)
+	}
+	if src != nil {
+		instr.HasSource = src.HasSource
+		instr.SourcePC = src.SourcePC
+		instr.SourceLine = src.SourceLine
+	}
+	return instr
+}
+
+func insertBlockAfter(fn *Function, after *Block, inserted *Block) {
+	out := make([]*Block, 0, len(fn.Blocks)+1)
+	done := false
+	for _, b := range fn.Blocks {
+		out = append(out, b)
+		if b == after {
+			out = append(out, inserted)
+			done = true
+		}
+	}
+	if !done {
+		out = append(out, inserted)
+	}
+	fn.Blocks = out
+}
+
+func predIndex(block, pred *Block) int {
+	for i, p := range block.Preds {
+		if p == pred {
+			return i
+		}
+	}
+	return -1
+}
+
+func replacePred(block, oldPred, newPred *Block) {
+	for i, pred := range block.Preds {
+		if pred == oldPred {
+			block.Preds[i] = newPred
+			return
+		}
+	}
+}
+
+func replaceValueUsesInBlock(block *Block, oldID int, repl *Value, startInstr int) {
+	for i, instr := range block.Instrs {
+		if i < startInstr {
+			continue
+		}
+		for argIdx, arg := range instr.Args {
+			if arg != nil && arg.ID == oldID {
+				instr.Args[argIdx] = repl
+			}
+		}
+	}
+}
+
+func headerBodyBranchTargets(header, body *Block) bool {
+	if header == nil || body == nil || len(header.Succs) != 2 || len(header.Instrs) == 0 {
+		return false
+	}
+	term := header.Instrs[len(header.Instrs)-1]
+	return term.Op == OpBranch && header.Succs[0] == body
+}
+
+func findLoopLimit(header *Block, stepInstr *Instr) *Value {
+	if header == nil || stepInstr == nil || len(header.Instrs) == 0 {
+		return nil
+	}
+	term := header.Instrs[len(header.Instrs)-1]
+	if term.Op != OpBranch || len(term.Args) != 1 || term.Args[0] == nil || term.Args[0].Def == nil {
+		return nil
+	}
+	cmp := term.Args[0].Def
+	if cmp.Op != OpLeInt || len(cmp.Args) != 2 || cmp.Args[0] == nil || cmp.Args[0].ID != stepInstr.ID {
+		return nil
+	}
+	return cmp.Args[1]
+}
+
+func bodyIsSafeForUnroll(body *Block) bool {
+	if body == nil || len(body.Instrs) == 0 {
+		return false
+	}
+	for _, instr := range body.Instrs[:len(body.Instrs)-1] {
+		if !isUnrollCloneableOp(instr.Op) {
+			return false
+		}
+	}
+	return true
+}
+
+func isUnrollCloneableOp(op Op) bool {
+	switch op {
+	case OpConstInt, OpConstFloat, OpConstBool, OpConstNil, OpConstString,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt,
+		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardNonNil, OpGuardTruthy,
+		OpMatrixLoadFAt, OpMatrixLoadFRow, OpTableArrayLoad, OpTableArrayNestedLoad:
+		return true
+	default:
+		return false
+	}
 }
