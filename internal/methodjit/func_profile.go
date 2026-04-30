@@ -313,6 +313,9 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		if qualifiesForNumericCrossRecursiveCandidate(proto) {
 			return runtimeCallCount >= 2
 		}
+		if qualifiesForFixedRecursiveNestedIntFold(proto) {
+			return runtimeCallCount >= 2
+		}
 		if qualifiesForFixedRecursiveTableFold(proto) {
 			return runtimeCallCount >= 2
 		}

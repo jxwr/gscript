@@ -402,6 +402,10 @@ type CompiledFunction struct {
 	// SCC members.
 	MutualRecursiveIntSCC *mutualRecursiveIntSCCProtocol
 
+	// FixedRecursiveNestedIntFold is a whole-call Tier 2 protocol for nested
+	// two-argument integer self recurrences such as A(m, n).
+	FixedRecursiveNestedIntFold *fixedRecursiveNestedIntFoldProtocol
+
 	// DeoptFunc is called when the JIT bails out (ExitCode=ExitDeopt).
 	// It runs the function via the VM interpreter. Set by the caller
 	// (e.g., test harness or tiering engine) to provide VM fallback.
