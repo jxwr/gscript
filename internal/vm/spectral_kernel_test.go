@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"math"
 	"testing"
 
 	"github.com/gscript/gscript/internal/lexer"
@@ -138,6 +139,115 @@ func TestSpectralCoefficientCacheMatchesAAndBoundsLargeN(t *testing.T) {
 
 	if _, _, ok := cache.coefficients(maxSpectralCoefficientFloats); ok {
 		t.Fatal("oversized spectral coefficient cache should fall back")
+	}
+}
+
+func TestSpectralMatrixVectorNoAliasMatchesRowMajor(t *testing.T) {
+	var cache spectralKernelCache
+	const n = 7
+	a, _, ok := cache.coefficients(n)
+	if !ok {
+		t.Fatal("coefficient cache rejected small n")
+	}
+	v := []float64{1.0, -2.5, 3.25, 4.0, -5.5, 6.75, 0.5}
+	want := make([]float64, n)
+	got := make([]float64, n)
+	floatMatrixVectorRowMajor(a, n, v, want)
+	floatMatrixVectorNoAlias(a, n, v, got)
+	for i := range got {
+		if math.Float64bits(got[i]) != math.Float64bits(want[i]) {
+			t.Fatalf("row %d = %.17g, want %.17g", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSpectralMatrixVectorKeepsAliasOrder(t *testing.T) {
+	var cache spectralKernelCache
+	const n = 6
+	a, _, ok := cache.coefficients(n)
+	if !ok {
+		t.Fatal("coefficient cache rejected small n")
+	}
+	values := []float64{1.0, 2.0, -3.0, 4.5, -5.25, 6.75}
+	want := append([]float64(nil), values...)
+	got := append([]float64(nil), values...)
+	for i := 0; i < n; i++ {
+		row := a[i*n : (i+1)*n]
+		sum := 0.0
+		for j := 0; j < n; j++ {
+			sum += row[j] * want[j]
+		}
+		want[i] = sum
+	}
+	spectralMatrixVector(a, n, got, got)
+	for i := range got {
+		if math.Float64bits(got[i]) != math.Float64bits(want[i]) {
+			t.Fatalf("alias row %d = %.17g, want %.17g", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSpectralKernelCachedDirectMultiplyAliasCorrectness(t *testing.T) {
+	values := []float64{1.0, 2.0, -3.0, 4.5}
+	want := append([]float64(nil), values...)
+	for i := 0; i < len(want); i++ {
+		sum := 0.0
+		for j := 0; j < len(want); j++ {
+			sum += spectralA(i, j) * want[j]
+		}
+		want[i] = sum
+	}
+	globals := compileAndRun(t, `
+		func A(i, j) {
+			return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)
+		}
+		func multiplyAv(n, v, av) {
+			for i := 0; i < n; i++ {
+				sum := 0.0
+				for j := 0; j < n; j++ {
+					sum = sum + A(i, j) * v[j]
+				}
+				av[i] = sum
+			}
+		}
+		func multiplyAtv(n, v, atv) {
+			for i := 0; i < n; i++ {
+				sum := 0.0
+				for j := 0; j < n; j++ {
+					sum = sum + A(j, i) * v[j]
+				}
+				atv[i] = sum
+			}
+		}
+		func multiplyAtAv(n, v, atav) {
+			u := {}
+			for i := 0; i < n; i++ { u[i] = 0.0 }
+			multiplyAv(n, v, u)
+			multiplyAtv(n, u, atav)
+		}
+		warmV := {}
+		warmOut := {}
+		for i := 0; i < 4; i++ {
+			warmV[i] = 1.0
+			warmOut[i] = 0.0
+		}
+		multiplyAtAv(4, warmV, warmOut)
+		v := {}
+		v[0] = 1.0
+		v[1] = 2.0
+		v[2] = -3.0
+		v[3] = 4.5
+		multiplyAv(4, v, v)
+		r0 := v[0]
+		r1 := v[1]
+		r2 := v[2]
+		r3 := v[3]
+	`)
+	for i, name := range []string{"r0", "r1", "r2", "r3"} {
+		got := globals[name].Number()
+		if math.Float64bits(got) != math.Float64bits(want[i]) {
+			t.Fatalf("%s = %.17g, want %.17g", name, got, want[i])
+		}
 	}
 }
 

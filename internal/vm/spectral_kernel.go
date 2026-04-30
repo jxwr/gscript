@@ -1,6 +1,10 @@
 package vm
 
-import "github.com/gscript/gscript/internal/runtime"
+import (
+	"unsafe"
+
+	"github.com/gscript/gscript/internal/runtime"
+)
 
 type spectralMultiplyKind uint8
 
@@ -28,7 +32,7 @@ func (vm *VM) tryRunSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (
 		if !vm.guardSpectralMultiplyCallee(proto) {
 			return false, nil
 		}
-		if !runSpectralMultiply(args, spectralAv) {
+		if !vm.runSpectralMultiply(args, spectralAv) {
 			return false, nil
 		}
 		return true, nil
@@ -36,7 +40,7 @@ func (vm *VM) tryRunSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (
 		if !vm.guardSpectralMultiplyCallee(proto) {
 			return false, nil
 		}
-		if !runSpectralMultiply(args, spectralAtv) {
+		if !vm.runSpectralMultiply(args, spectralAtv) {
 			return false, nil
 		}
 		return true, nil
@@ -72,12 +76,21 @@ func (vm *VM) runSpectralAtAv(args []runtime.Value) bool {
 	return true
 }
 
-func runSpectralMultiply(args []runtime.Value, kind spectralMultiplyKind) bool {
+func (vm *VM) runSpectralMultiply(args []runtime.Value, kind spectralMultiplyKind) bool {
 	n, v, out, ok := spectralKernelArgs(args)
 	if !ok {
 		return false
 	}
 	args[2].Table().MarkArrayMutationForNumericKernel()
+	a, at, ok := vm.spectralKernel.cached(n)
+	if ok {
+		if kind == spectralAtv {
+			spectralMatrixVector(at, n, v, out)
+			return true
+		}
+		spectralMatrixVector(a, n, v, out)
+		return true
+	}
 	if kind == spectralAtv {
 		spectralAtvInto(n, v, out)
 		return true
@@ -115,6 +128,14 @@ func spectralAtvInto(n int, v, out []float64) {
 }
 
 func spectralMatrixVector(coeff []float64, n int, v, out []float64) {
+	if !floatSlicesOverlap(v[:n], out[:n]) {
+		floatMatrixVectorNoAlias(coeff, n, v, out)
+		return
+	}
+	floatMatrixVectorRowMajor(coeff, n, v, out)
+}
+
+func floatMatrixVectorRowMajor(coeff []float64, n int, v, out []float64) {
 	for i := 0; i < n; i++ {
 		row := coeff[i*n : (i+1)*n]
 		sum := 0.0
@@ -130,6 +151,60 @@ func spectralMatrixVector(coeff []float64, n int, v, out []float64) {
 		}
 		out[i] = sum
 	}
+}
+
+// floatMatrixVectorNoAlias computes four rows at a time, but each row's sum is
+// still accumulated in increasing j order to preserve the scalar result order.
+func floatMatrixVectorNoAlias(coeff []float64, n int, v, out []float64) {
+	i := 0
+	for ; i+3 < n; i += 4 {
+		row0 := coeff[i*n : (i+1)*n]
+		row1 := coeff[(i+1)*n : (i+2)*n]
+		row2 := coeff[(i+2)*n : (i+3)*n]
+		row3 := coeff[(i+3)*n : (i+4)*n]
+		sum0 := 0.0
+		sum1 := 0.0
+		sum2 := 0.0
+		sum3 := 0.0
+		for j := 0; j < n; j++ {
+			vj := v[j]
+			sum0 += row0[j] * vj
+			sum1 += row1[j] * vj
+			sum2 += row2[j] * vj
+			sum3 += row3[j] * vj
+		}
+		out[i] = sum0
+		out[i+1] = sum1
+		out[i+2] = sum2
+		out[i+3] = sum3
+	}
+	for ; i < n; i++ {
+		row := coeff[i*n : (i+1)*n]
+		sum := 0.0
+		j := 0
+		for ; j+3 < n; j += 4 {
+			sum += row[j] * v[j]
+			sum += row[j+1] * v[j+1]
+			sum += row[j+2] * v[j+2]
+			sum += row[j+3] * v[j+3]
+		}
+		for ; j < n; j++ {
+			sum += row[j] * v[j]
+		}
+		out[i] = sum
+	}
+}
+
+func floatSlicesOverlap(a, b []float64) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	a0 := &a[0]
+	aN := &a[len(a)-1]
+	b0 := &b[0]
+	bN := &b[len(b)-1]
+	return uintptr(unsafe.Pointer(a0)) <= uintptr(unsafe.Pointer(bN)) &&
+		uintptr(unsafe.Pointer(b0)) <= uintptr(unsafe.Pointer(aN))
 }
 
 func (c *spectralKernelCache) coefficients(n int) ([]float64, []float64, bool) {
@@ -162,6 +237,17 @@ func (c *spectralKernelCache) coefficients(n int) ([]float64, []float64, bool) {
 	c.a = a
 	c.at = at
 	return a, at, true
+}
+
+func (c *spectralKernelCache) cached(n int) ([]float64, []float64, bool) {
+	if n < 0 || c.n != n {
+		return nil, nil, false
+	}
+	total := n * n
+	if len(c.a) != total || len(c.at) != total {
+		return nil, nil, false
+	}
+	return c.a, c.at, true
 }
 
 func spectralKernelArgs(args []runtime.Value) (int, []float64, []float64, bool) {
