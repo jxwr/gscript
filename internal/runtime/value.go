@@ -490,6 +490,25 @@ func FreshTableValue(t *Table) Value {
 	return Value(tagPtr | ptrSubTable | (uint64(uintptr(p)) & ptrAddrMask))
 }
 
+// TableGCRoot returns the Go-visible pointer that keeps t alive while a
+// NaN-boxed Value hides the table pointer from the Go GC. Slab-backed tables
+// can share one root per slab; non-slab tables root themselves.
+func TableGCRoot(t *Table) unsafe.Pointer {
+	if t == nil {
+		return nil
+	}
+	p := unsafe.Pointer(t)
+	if DefaultHeap != nil {
+		if root := DefaultHeap.tableRootInCurrentSlab(uintptr(p)); root != nil {
+			return root
+		}
+	}
+	if root := tableSlabRootForPointer(p); root != nil {
+		return root
+	}
+	return p
+}
+
 // iface is the memory layout of a Go interface{}/any value.
 type iface struct {
 	typ  unsafe.Pointer

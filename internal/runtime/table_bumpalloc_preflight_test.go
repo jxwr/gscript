@@ -343,6 +343,30 @@ func TestFreshTableValueScansTableSlabRoot(t *testing.T) {
 	stdruntime.KeepAlive(tbl)
 }
 
+func TestTableGCRootReturnsSharedSlabRoot(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	first := NewTable()
+	second := NewTable()
+	firstRoot := TableGCRoot(first)
+	secondRoot := TableGCRoot(second)
+	if firstRoot == nil || secondRoot == nil {
+		t.Fatal("TableGCRoot returned nil for slab tables")
+	}
+	if firstRoot != secondRoot {
+		t.Fatalf("same-slab table roots differ: %p vs %p", firstRoot, secondRoot)
+	}
+	if want := tableSlabRootForPointer(unsafe.Pointer(first)); firstRoot != want {
+		t.Fatalf("TableGCRoot = %p, want slab root %p", firstRoot, want)
+	}
+	stdruntime.KeepAlive(first)
+	stdruntime.KeepAlive(second)
+}
+
 func TestScanValueRootsVisitsTableSlabRoot(t *testing.T) {
 	oldHeap := DefaultHeap
 	DefaultHeap = NewHeap()

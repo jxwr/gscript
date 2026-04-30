@@ -143,22 +143,28 @@ func visitCurrentTableSlabRoot(visitor func(unsafe.Pointer)) {
 }
 
 func (h *Heap) tablePointerInCurrentSlab(addr uintptr) bool {
+	return h.tableRootInCurrentSlab(addr) != nil
+}
+
+func (h *Heap) tableRootInCurrentSlab(addr uintptr) unsafe.Pointer {
 	if h == nil {
-		return false
+		return nil
 	}
 	start := atomic.LoadUintptr(&h.tableSlabStart)
 	if start != 0 && addr >= start {
 		end := atomic.LoadUintptr(&h.tableSlabEnd)
 		if addr < end {
-			return true
+			return unsafe.Pointer(start)
 		}
 	}
 	start = atomic.LoadUintptr(&h.tableSvalsSlabStart)
 	if start != 0 && addr >= start {
 		end := atomic.LoadUintptr(&h.tableSvalsSlabEnd)
-		return addr < end
+		if addr < end {
+			return unsafe.Pointer(start)
+		}
 	}
-	return false
+	return nil
 }
 
 const tableSlabElemSize = uintptr(unsafe.Sizeof(Table{}))

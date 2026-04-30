@@ -78,15 +78,15 @@ func fillBaselineNewObject2Cache(bf *BaselineFunc, pc int, ctor *runtime.SmallTa
 	} else {
 		entry.Values = entry.Values[:keep]
 	}
-	if cap(entry.Roots) < keep {
-		entry.Roots = make([]*runtime.Table, keep)
+	if entry.Roots == nil {
+		entry.Roots = make([]unsafe.Pointer, 0, 4)
 	} else {
-		entry.Roots = entry.Roots[:keep]
+		entry.Roots = entry.Roots[:0]
 	}
 	seed := runtime.IntValue(0)
 	for i := range entry.Values {
 		tbl := runtime.NewTableFromCtor2(ctor, seed, seed)
-		entry.Roots[i] = tbl
+		entry.addRoot(tbl)
 		entry.Values[i] = runtime.FreshTableValue(tbl)
 	}
 	entry.Pos = 0

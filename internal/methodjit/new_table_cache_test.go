@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 )
@@ -42,8 +43,8 @@ func TestNewTableCacheRefillsDenseTypedSite(t *testing.T) {
 	if len(entry.Values) != wantCached {
 		t.Fatalf("cached values = %d, want %d", len(entry.Values), wantCached)
 	}
-	if len(entry.Roots) != wantCached {
-		t.Fatalf("cached roots = %d, want %d", len(entry.Roots), wantCached)
+	if len(entry.Roots) == 0 || len(entry.Roots) >= wantCached {
+		t.Fatalf("cached compact roots = %d, want between 1 and %d", len(entry.Roots), wantCached-1)
 	}
 	if entry.Pos != 0 {
 		t.Fatalf("cache pos = %d, want 0 after refill", entry.Pos)
@@ -53,8 +54,8 @@ func TestNewTableCacheRefillsDenseTypedSite(t *testing.T) {
 		if cached == nil {
 			t.Fatal("cached value is not a table")
 		}
-		if entry.Roots[0] != cached {
-			t.Fatalf("cached root = %p, want cached table %p", entry.Roots[0], cached)
+		if wantRoot := runtime.TableGCRoot(cached); entry.Roots[0] != wantRoot {
+			t.Fatalf("cached root = %p, want slab root %p", entry.Roots[0], wantRoot)
 		}
 		if cached == tbl {
 			t.Fatal("current allocation was also stored in cache")
@@ -97,8 +98,8 @@ func TestNewTableCacheRefillsEmptyMixedSite(t *testing.T) {
 	if len(entry.Values) != wantCached {
 		t.Fatalf("cached values = %d, want %d", len(entry.Values), wantCached)
 	}
-	if len(entry.Roots) != wantCached {
-		t.Fatalf("cached roots = %d, want %d", len(entry.Roots), wantCached)
+	if len(entry.Roots) == 0 || len(entry.Roots) >= wantCached {
+		t.Fatalf("cached compact roots = %d, want between 1 and %d", len(entry.Roots), wantCached-1)
 	}
 	if entry.Pos != 0 {
 		t.Fatalf("cache pos = %d, want 0 after refill", entry.Pos)
@@ -108,8 +109,8 @@ func TestNewTableCacheRefillsEmptyMixedSite(t *testing.T) {
 		if cached == nil {
 			t.Fatal("cached value is not a table")
 		}
-		if entry.Roots[0] != cached {
-			t.Fatalf("cached root = %p, want cached table %p", entry.Roots[0], cached)
+		if wantRoot := runtime.TableGCRoot(cached); entry.Roots[0] != wantRoot {
+			t.Fatalf("cached root = %p, want slab root %p", entry.Roots[0], wantRoot)
 		}
 		if cached == tbl {
 			t.Fatal("current allocation was also stored in cache")
@@ -206,4 +207,74 @@ func TestNewTableCacheBatchScalesByPayloadBudget(t *testing.T) {
 		t.Fatalf("bool batch should exceed float batch for same hint, got bool=%d float=%d",
 			got, newTableCacheBatchSizeForHints(4096, 0, runtime.ArrayFloat))
 	}
+}
+
+func BenchmarkNewTableCacheRefillRoots(b *testing.B) {
+	const (
+		instrID   = 0
+		arrayHint = 1024
+		hashHint  = 0
+	)
+	b.Run("compact_slab_roots", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			caches := make([]newTableCacheEntry, 1)
+			_ = allocateNewTableWithCache(caches, instrID, arrayHint, hashHint, runtime.ArrayFloat)
+		}
+	})
+	b.Run("legacy_per_table_roots", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = legacyAllocateNewTableCacheForBenchmark(arrayHint, hashHint, runtime.ArrayFloat)
+		}
+	})
+}
+
+func BenchmarkNewTableCacheRootMetadata(b *testing.B) {
+	const keep = newObject2CacheBatch - 1
+	tables := make([]*runtime.Table, keep)
+	for i := range tables {
+		tables[i] = runtime.NewTable()
+	}
+	b.Run("compact_slab_roots", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			entry := newTableCacheEntry{Roots: make([]unsafe.Pointer, 0, 4)}
+			for _, tbl := range tables {
+				entry.addRoot(tbl)
+			}
+			benchmarkRootSink = entry.Roots
+		}
+	})
+	b.Run("legacy_per_table_roots", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			roots := make([]*runtime.Table, keep)
+			for j, tbl := range tables {
+				roots[j] = tbl
+			}
+			benchmarkRootSink = roots
+		}
+	})
+}
+
+var benchmarkRootSink any
+
+type legacyNewTableCacheEntryForBenchmark struct {
+	Values []runtime.Value
+	Roots  []*runtime.Table
+}
+
+func legacyAllocateNewTableCacheForBenchmark(arrayHint, hashHint int, kind runtime.ArrayKind) legacyNewTableCacheEntryForBenchmark {
+	keep := newTableCacheBatchSizeForHints(int64(arrayHint), hashHint, kind) - 1
+	entry := legacyNewTableCacheEntryForBenchmark{
+		Values: make([]runtime.Value, keep),
+		Roots:  make([]*runtime.Table, keep),
+	}
+	for i := range entry.Values {
+		t := runtime.NewTableSizedKind(arrayHint, hashHint, kind)
+		entry.Roots[i] = t
+		entry.Values[i] = runtime.FreshTableValue(t)
+	}
+	return entry
 }

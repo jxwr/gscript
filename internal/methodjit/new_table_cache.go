@@ -19,7 +19,7 @@ const (
 
 type newTableCacheEntry struct {
 	Values []runtime.Value
-	Roots  []*runtime.Table
+	Roots  []unsafe.Pointer
 	Pos    int64
 }
 
@@ -153,15 +153,15 @@ func allocateNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHi
 	} else {
 		entry.Values = entry.Values[:keep]
 	}
-	if cap(entry.Roots) < keep {
-		entry.Roots = make([]*runtime.Table, keep)
+	if entry.Roots == nil {
+		entry.Roots = make([]unsafe.Pointer, 0, 4)
 	} else {
-		entry.Roots = entry.Roots[:keep]
+		entry.Roots = entry.Roots[:0]
 	}
 	for i := range entry.Values {
 		t := runtime.NewTableSizedKind(arrayHint, hashHint, kind)
-		entry.Roots[i] = t
-		entry.Values[i] = runtime.TableValue(t)
+		entry.addRoot(t)
+		entry.Values[i] = runtime.FreshTableValue(t)
 	}
 	entry.Pos = 0
 	return tbl
@@ -182,17 +182,30 @@ func allocateFixedTable2WithCache(caches []newTableCacheEntry, instrID int, ctor
 	} else {
 		entry.Values = entry.Values[:keep]
 	}
-	if cap(entry.Roots) < keep {
-		entry.Roots = make([]*runtime.Table, keep)
+	if entry.Roots == nil {
+		entry.Roots = make([]unsafe.Pointer, 0, 4)
 	} else {
-		entry.Roots = entry.Roots[:keep]
+		entry.Roots = entry.Roots[:0]
 	}
 	seed := runtime.IntValue(0)
 	for i := range entry.Values {
 		t := runtime.NewTableFromCtor2(ctor, seed, seed)
-		entry.Roots[i] = t
-		entry.Values[i] = runtime.TableValue(t)
+		entry.addRoot(t)
+		entry.Values[i] = runtime.FreshTableValue(t)
 	}
 	entry.Pos = 0
 	return tbl
+}
+
+func (entry *newTableCacheEntry) addRoot(t *runtime.Table) {
+	root := runtime.TableGCRoot(t)
+	if root == nil {
+		return
+	}
+	for _, existing := range entry.Roots {
+		if existing == root {
+			return
+		}
+	}
+	entry.Roots = append(entry.Roots, root)
 }
