@@ -114,6 +114,10 @@ const (
 	// (1=false, 2=true). The stride form uses a guarded bool-array kernel and
 	// falls back through RawSetInt when array kind or bounds do not match.
 	OpTableBoolArrayFill
+	// Bulk bool-array truthy count. Args = [table, start, end]. Returns the
+	// number of true bool-array bytes in the inclusive range, with table-exit
+	// fallback to RawGetInt+Truthy when guards miss.
+	OpTableBoolArrayCount
 	// Guarded int-array prefix reversal. Args = [table, hi]. Returns true
 	// after reversing keys 1..hi in place on an int array, or false without
 	// mutation so control can branch to the original scalar loop fallback.
@@ -258,6 +262,7 @@ var opNames = [...]string{
 	OpTableArrayLoad:             "TableArrayLoad",
 	OpTableArrayStore:            "TableArrayStore",
 	OpTableBoolArrayFill:         "TableBoolArrayFill",
+	OpTableBoolArrayCount:        "TableBoolArrayCount",
 	OpTableIntArrayReversePrefix: "TableIntArrayReversePrefix",
 	OpTableIntArrayCopyPrefix:    "TableIntArrayCopyPrefix",
 	OpTableArrayNestedLoad:       "TableNestedLoad",

@@ -559,6 +559,81 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 			}
 		}
 
+	case TableOpBoolArrayFill:
+		absTable := base + int(ctx.TableSlot)
+		absStart := base + int(ctx.TableKeySlot)
+		absEnd := base + int(ctx.TableValSlot)
+		absStep := base + int(ctx.TableAux2)
+		if absTable < len(regs) && absStart < len(regs) && absEnd < len(regs) {
+			tblVal := regs[absTable]
+			startVal := regs[absStart]
+			endVal := regs[absEnd]
+			if tblVal.IsTable() && startVal.IsInt() && endVal.IsInt() {
+				val := runtime.BoolValue(ctx.TableAux != 0)
+				step := int64(1)
+				if absStep > 0 && absStep < len(regs) && regs[absStep].IsInt() {
+					step = regs[absStep].Int()
+				}
+				if step <= 0 {
+					break
+				}
+				tbl := tblVal.Table()
+				for i, end := startVal.Int(), endVal.Int(); i <= end; i += step {
+					tbl.RawSetInt(i, val)
+					if i == end || i > end-step {
+						break
+					}
+				}
+			}
+		}
+
+	case TableOpBoolArrayCount:
+		absTable := base + int(ctx.TableSlot)
+		absStart := base + int(ctx.TableKeySlot)
+		absEnd := base + int(ctx.TableValSlot)
+		absResult := base + int(ctx.TableAux)
+		if absTable >= 0 && absTable < len(regs) &&
+			absStart >= 0 && absStart < len(regs) &&
+			absEnd >= 0 && absEnd < len(regs) &&
+			absResult >= 0 && absResult < len(regs) {
+			tblVal := regs[absTable]
+			startVal := regs[absStart]
+			endVal := regs[absEnd]
+			if !startVal.IsInt() || !endVal.IsInt() {
+				return fmt.Errorf("boolcount table exit: bounds are not ints")
+			}
+			start, end := startVal.Int(), endVal.Int()
+			count := int64(0)
+			if start <= end && tblVal.IsTable() && !tblVal.Table().HasMetatable() {
+				tbl := tblVal.Table()
+				for i := start; i <= end; i++ {
+					if tbl.RawGetInt(i).Truthy() {
+						count++
+					}
+					if i == end {
+						break
+					}
+				}
+			} else if start <= end {
+				if tm.callVM == nil {
+					return fmt.Errorf("no callVM set for boolcount table-get exit")
+				}
+				for i := start; i <= end; i++ {
+					v, err := tm.callVM.TableGetForJIT(tblVal, runtime.IntValue(i))
+					if err != nil {
+						return err
+					}
+					if v.Truthy() {
+						count++
+					}
+					if i == end {
+						break
+					}
+				}
+			}
+			regs[absResult] = runtime.IntValue(count)
+		}
+
 	case TableOpGetField:
 		absTable := base + int(ctx.TableSlot)
 		constIdx := int(ctx.TableAux)

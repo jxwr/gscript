@@ -395,6 +395,30 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 			}
 		}
 
+	case TableOpBoolArrayCount:
+		tableSlot := int(ctx.TableSlot)
+		startSlot := int(ctx.TableKeySlot)
+		endSlot := int(ctx.TableValSlot)
+		resultSlot := int(ctx.TableAux)
+		if tableSlot < len(regs) && startSlot < len(regs) && endSlot < len(regs) && resultSlot < len(regs) {
+			tblVal := regs[tableSlot]
+			startVal := regs[startSlot]
+			endVal := regs[endSlot]
+			count := int64(0)
+			if tblVal.IsTable() && startVal.IsInt() && endVal.IsInt() {
+				tbl := tblVal.Table()
+				for i, end := startVal.Int(), endVal.Int(); i <= end; i++ {
+					if tbl.RawGetInt(i).Truthy() {
+						count++
+					}
+					if i == end {
+						break
+					}
+				}
+			}
+			regs[resultSlot] = runtime.IntValue(count)
+		}
+
 	case TableOpGetField:
 		// R(result) = R(table).Constants[constIdx]
 		tableSlot := int(ctx.TableSlot)

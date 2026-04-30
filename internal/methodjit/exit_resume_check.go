@@ -318,6 +318,25 @@ func (s *exitResumeCheckState) checkTableDescriptor(ctx *ExecContext, regs []run
 			return fmt.Errorf("exit-resume-check: %s instr=%d %w", protoName, instrID, err)
 		}
 		return checkRel(int(ctx.TableValSlot), "settable value")
+	case TableOpBoolArrayFill:
+		if err := checkRel(int(ctx.TableSlot), "boolfill table"); err != nil {
+			return fmt.Errorf("exit-resume-check: %s instr=%d %w", protoName, instrID, err)
+		}
+		if err := checkRel(int(ctx.TableKeySlot), "boolfill start"); err != nil {
+			return fmt.Errorf("exit-resume-check: %s instr=%d %w", protoName, instrID, err)
+		}
+		return checkRel(int(ctx.TableValSlot), "boolfill end")
+	case TableOpBoolArrayCount:
+		if err := checkRel(int(ctx.TableSlot), "boolcount table"); err != nil {
+			return fmt.Errorf("exit-resume-check: %s instr=%d %w", protoName, instrID, err)
+		}
+		if err := checkRel(int(ctx.TableKeySlot), "boolcount start"); err != nil {
+			return fmt.Errorf("exit-resume-check: %s instr=%d %w", protoName, instrID, err)
+		}
+		if err := checkRel(int(ctx.TableValSlot), "boolcount end"); err != nil {
+			return fmt.Errorf("exit-resume-check: %s instr=%d %w", protoName, instrID, err)
+		}
+		return checkRel(int(ctx.TableAux), "boolcount result")
 	case TableOpGetField:
 		if err := checkRel(int(ctx.TableSlot), "getfield table"); err != nil {
 			return fmt.Errorf("exit-resume-check: %s instr=%d %w", protoName, instrID, err)

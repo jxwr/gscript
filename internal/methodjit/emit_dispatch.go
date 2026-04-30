@@ -209,6 +209,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpTableBoolArrayFill:
 		ec.emitTableBoolArrayFill(instr)
 		ec.clearTableArrayBoundedKeys()
+	case OpTableBoolArrayCount:
+		ec.emitTableBoolArrayCount(instr)
 	case OpTableIntArrayReversePrefix:
 		ec.emitTableIntArrayReversePrefix(instr)
 		ec.clearTableArrayBoundedKeys()

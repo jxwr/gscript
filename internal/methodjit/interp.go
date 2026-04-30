@@ -623,6 +623,27 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			}
 		}
 
+	case OpTableBoolArrayCount:
+		tbl := s.val(instr.Args[0])
+		start := s.val(instr.Args[1])
+		end := s.val(instr.Args[2])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableBoolArrayCount: arg 0 not a table")
+		}
+		if !start.IsInt() || !end.IsInt() {
+			return nil, false, fmt.Errorf("OpTableBoolArrayCount: bounds are not ints")
+		}
+		count := int64(0)
+		for i := start.Int(); i <= end.Int(); i++ {
+			if tbl.Table().RawGetInt(i).Truthy() {
+				count++
+			}
+			if i == end.Int() {
+				break
+			}
+		}
+		s.values[instr.ID] = runtime.IntValue(count)
+
 	case OpTableIntArrayReversePrefix:
 		tbl := s.val(instr.Args[0])
 		hi := s.val(instr.Args[1])

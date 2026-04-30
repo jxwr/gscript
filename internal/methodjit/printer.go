@@ -126,6 +126,10 @@ func printInstr(sb *strings.Builder, i *Instr) {
 				fmt.Fprintf(sb, "v%d, v%d..v%d = %s", i.Args[0].ID, i.Args[1].ID, i.Args[2].ID, val)
 			}
 		}
+	case OpTableBoolArrayCount:
+		if len(i.Args) >= 3 {
+			fmt.Fprintf(sb, "v%d, v%d..v%d", i.Args[0].ID, i.Args[1].ID, i.Args[2].ID)
+		}
 	case OpGuardType:
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d is %s", i.Args[0].ID, Type(i.Aux).String())

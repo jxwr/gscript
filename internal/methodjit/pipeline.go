@@ -582,6 +582,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = BoolTableCountLoopPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("BoolTableCountLoop: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = FieldNumToFloatFusionPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("FieldNumToFloatFusion (post-LICM): %w", err)
@@ -722,6 +728,8 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("LICM", LICMPass)
 	pipe.Add("BoolTableFillLoop", BoolTableFillLoopPass)
 	pipe.Add("TableArrayStoreLoopVersion", TableArrayStoreLoopVersionPass)
+	pipe.Add("TableIntArrayKernel", TableIntArrayKernelPass)
+	pipe.Add("BoolTableCountLoop", BoolTableCountLoopPass)
 	pipe.Add("FieldNumToFloatFusion", FieldNumToFloatFusionPass)
 	pipe.Add("LoadEliminationPostLICM", LoadEliminationPass)
 	pipe.Add("DCEPostLICM", DCEPass)
