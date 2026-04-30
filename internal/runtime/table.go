@@ -1036,6 +1036,67 @@ func (t *Table) PlainFloatArrayForNumericKernel(n int) ([]float64, bool) {
 	return t.floatArray, true
 }
 
+// PlainArrayValuesForRecordKernel exposes the mixed array prefix for guarded
+// whole-call record kernels. It is intentionally narrow: callers may only use
+// it when ordinary table indexing for keys 1..n is known to hit a plain mixed
+// array without metamethod or concurrent-table fallback.
+func (t *Table) PlainArrayValuesForRecordKernel(n int) ([]Value, bool) {
+	if n < 0 || t == nil || t.mu != nil || t.lazyTree != nil || t.metatable != nil || t.arrayKind != ArrayMixed {
+		return nil, false
+	}
+	if len(t.array) <= n {
+		return nil, false
+	}
+	return t.array, true
+}
+
+// LoadFloatRecordForNumericKernel copies numeric string fields from a stable
+// small-field record into out. Int fields are accepted with normal numeric
+// widening; non-numeric fields make the guard fail.
+func (t *Table) LoadFloatRecordForNumericKernel(shapeID uint32, idxs []int, out []float64) bool {
+	if t == nil || t.mu != nil || t.lazyTree != nil || t.metatable != nil || t.shapeID == 0 || t.shapeID != shapeID {
+		return false
+	}
+	if len(idxs) > len(out) {
+		return false
+	}
+	for i, idx := range idxs {
+		if idx < 0 || idx >= len(t.svals) {
+			return false
+		}
+		v := t.svals[idx]
+		switch v.Type() {
+		case TypeFloat:
+			out[i] = v.Float()
+		case TypeInt:
+			out[i] = float64(v.Int())
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// StoreFloatRecordForNumericKernel writes float fields back to a stable
+// small-field record. Shape and table-kind guards are repeated so a stale
+// cached plan cannot write through a mutated table layout.
+func (t *Table) StoreFloatRecordForNumericKernel(shapeID uint32, idxs []int, vals []float64) bool {
+	if t == nil || t.mu != nil || t.lazyTree != nil || t.metatable != nil || t.shapeID == 0 || t.shapeID != shapeID {
+		return false
+	}
+	if len(idxs) > len(vals) {
+		return false
+	}
+	for i, idx := range idxs {
+		if idx < 0 || idx >= len(t.svals) {
+			return false
+		}
+		t.svals[idx] = FloatValue(vals[i])
+	}
+	t.keysDirty = true
+	return true
+}
+
 // MarkArrayMutationForNumericKernel mirrors RawSetInt's observable iteration
 // invalidation for guarded kernels that overwrite existing array slots.
 func (t *Table) MarkArrayMutationForNumericKernel() {

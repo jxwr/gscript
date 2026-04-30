@@ -210,6 +210,22 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 
+	if tm.hasLargeNBodyAdvanceDriverLoop(proto) {
+		proto.JITDisabled = true
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "large_whole_call_record_loop",
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "large_whole_call_record_loop",
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "large_whole_call_record_loop",
+			"target": "interpreter",
+		})
+		return nil
+	}
+
 	if !tm.tier2Failed[proto] {
 		if t2, ok := tm.compileFixedRecursiveTableBuilderTier2(proto); ok {
 			tm.tier2Compiled[proto] = t2
@@ -841,6 +857,155 @@ func (tm *TieringManager) shouldSuppressLoopCallTier2(proto *vm.FuncProto, profi
 	}
 	globals := tm.buildLoopCallGlobals(proto)
 	return !canPromoteWithInlining(proto, globals) && !canPromoteWithNativeLoopCalls(proto, globals)
+}
+
+func (tm *TieringManager) hasLargeNBodyAdvanceDriverLoop(proto *vm.FuncProto) bool {
+	if tm == nil || proto == nil {
+		return false
+	}
+	globals := tm.buildLoopCallGlobals(proto)
+	if len(globals) == 0 {
+		return false
+	}
+	globalNums := stableNumericGlobals(proto)
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_FORPREP {
+			continue
+		}
+		a := vm.DecodeA(inst)
+		steps, ok := staticForTripCount(proto, globalNums, pc, a)
+		if !ok || steps < 1024 {
+			continue
+		}
+		if pc+4 >= len(proto.Code) {
+			continue
+		}
+		getFn := proto.Code[pc+1]
+		getArg := proto.Code[pc+2]
+		call := proto.Code[pc+3]
+		loop := proto.Code[pc+4]
+		if vm.DecodeOp(getFn) != vm.OP_GETGLOBAL ||
+			vm.DecodeOp(getArg) != vm.OP_GETGLOBAL ||
+			vm.DecodeOp(call) != vm.OP_CALL ||
+			vm.DecodeOp(loop) != vm.OP_FORLOOP ||
+			vm.DecodeA(loop) != a ||
+			vm.DecodesBx(loop) != -4 {
+			continue
+		}
+		fnSlot := vm.DecodeA(getFn)
+		argSlot := vm.DecodeA(getArg)
+		if vm.DecodeA(call) != fnSlot || vm.DecodeB(call) != 2 || vm.DecodeC(call) != 1 || argSlot != fnSlot+1 {
+			continue
+		}
+		name := protoConstString(proto, vm.DecodeBx(getFn))
+		if name == "" {
+			continue
+		}
+		if callee := globals[name]; vm.HasNBodyAdvanceWholeCallKernel(callee) {
+			return true
+		}
+	}
+	return false
+}
+
+func stableNumericGlobals(proto *vm.FuncProto) map[string]int64 {
+	nums := make(map[string]int64)
+	regNums := make(map[int]int64)
+	invalid := make(map[string]bool)
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		switch op {
+		case vm.OP_LOADINT:
+			regNums[a] = int64(vm.DecodesBx(inst))
+		case vm.OP_LOADK:
+			bx := vm.DecodeBx(inst)
+			if bx >= 0 && bx < len(proto.Constants) {
+				if n, ok := staticIntConstant(proto.Constants[bx]); ok {
+					regNums[a] = n
+				} else {
+					delete(regNums, a)
+				}
+			} else {
+				delete(regNums, a)
+			}
+		case vm.OP_SETGLOBAL:
+			name := protoConstString(proto, vm.DecodeBx(inst))
+			if name == "" || invalid[name] {
+				continue
+			}
+			n, ok := regNums[a]
+			if !ok {
+				invalid[name] = true
+				delete(nums, name)
+				continue
+			}
+			if prev, exists := nums[name]; exists && prev != n {
+				invalid[name] = true
+				delete(nums, name)
+				continue
+			}
+			nums[name] = n
+		default:
+			delete(regNums, a)
+		}
+	}
+	return nums
+}
+
+func staticForTripCount(proto *vm.FuncProto, globalNums map[string]int64, pc, a int) (int64, bool) {
+	if pc < 3 {
+		return 0, false
+	}
+	init, ok := staticIntValueForReg(proto, globalNums, proto.Code[pc-3], a)
+	if !ok {
+		return 0, false
+	}
+	limit, ok := staticIntValueForReg(proto, globalNums, proto.Code[pc-2], a+1)
+	if !ok {
+		return 0, false
+	}
+	step, ok := staticIntValueForReg(proto, globalNums, proto.Code[pc-1], a+2)
+	if !ok || step <= 0 || init > limit {
+		return 0, false
+	}
+	return (limit-init)/step + 1, true
+}
+
+func staticIntValueForReg(proto *vm.FuncProto, globalNums map[string]int64, inst uint32, reg int) (int64, bool) {
+	if vm.DecodeA(inst) != reg {
+		return 0, false
+	}
+	switch vm.DecodeOp(inst) {
+	case vm.OP_LOADINT:
+		return int64(vm.DecodesBx(inst)), true
+	case vm.OP_LOADK:
+		bx := vm.DecodeBx(inst)
+		if bx >= 0 && bx < len(proto.Constants) {
+			return staticIntConstant(proto.Constants[bx])
+		}
+	case vm.OP_GETGLOBAL:
+		name := protoConstString(proto, vm.DecodeBx(inst))
+		if name != "" {
+			n, ok := globalNums[name]
+			return n, ok
+		}
+	}
+	return 0, false
+}
+
+func staticIntConstant(v runtime.Value) (int64, bool) {
+	if v.IsInt() {
+		return v.Int(), true
+	}
+	if v.IsFloat() {
+		f := v.Float()
+		i := int64(f)
+		if float64(i) == f {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func (tm *TieringManager) shouldSuppressRecursivePartitionTableMutationTier2(proto *vm.FuncProto, profile FuncProfile) bool {

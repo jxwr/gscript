@@ -1441,16 +1441,18 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 
 			// ---- Fast path: VM Closure (inline call) ----
 			if cl, ok := closureFromValue(fnVal); ok {
-				if b != 0 && nArgs == 3 {
+				if b != 0 && (nArgs == 1 || nArgs == 3) {
 					args := vm.regs[base+a+1 : base+a+1+nArgs]
-					handled, err := vm.tryValueWholeCallKernel(cl, args, c, base+a)
-					if handled {
-						if err != nil {
-							return nil, wrapLineErr(frame, err)
+					if nArgs == 3 {
+						handled, err := vm.tryValueWholeCallKernel(cl, args, c, base+a)
+						if handled {
+							if err != nil {
+								return nil, wrapLineErr(frame, err)
+							}
+							break
 						}
-						break
 					}
-					handled, err = vm.tryWholeCallKernel(cl, args, c, base+a)
+					handled, err := vm.tryWholeCallKernel(cl, args, c, base+a)
 					if handled {
 						if err != nil {
 							return nil, wrapLineErr(frame, err)
@@ -1714,6 +1716,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 		case OP_FORPREP:
 			a := DecodeA(inst)
 			sbx := DecodesBx(inst)
+			if handled, err := vm.tryNBodyAdvanceForLoopKernel(frame, base, code, constants, a, sbx); handled {
+				if err != nil {
+					return nil, wrapLineErr(frame, err)
+				}
+				break
+			}
 			initV := vm.regs[base+a]
 			stepV := vm.regs[base+a+2]
 			if initV.IsInt() && stepV.IsInt() {

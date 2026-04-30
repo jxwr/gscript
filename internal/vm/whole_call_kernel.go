@@ -33,6 +33,9 @@ func (vm *VM) tryRunWholeCallKernel(cl *Closure, args []runtime.Value) (bool, er
 	if handled, err := vm.tryRunSpectralWholeCallKernel(cl, args); handled || err != nil {
 		return handled, err
 	}
+	if handled, err := vm.tryRunNBodyAdvanceKernel(cl, args); handled || err != nil {
+		return handled, err
+	}
 	return false, nil
 }
 
