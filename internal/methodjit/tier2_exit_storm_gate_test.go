@@ -243,6 +243,59 @@ func make_values(n, seed) {
 	}
 }
 
+func TestTier2LoopGateAllowsCacheableNewTableBoolFillLoop(t *testing.T) {
+	src := `
+func alloc_bool_rows(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        row := {}
+        row[0] = true
+        if row[0] {
+            total = total + 1
+        }
+    }
+    return total
+}
+
+result := 0
+for r := 1; r <= 200; r++ {
+    result = alloc_bool_rows(50)
+}
+`
+	top := compileTop(t, src)
+	allocBoolRows := findProtoByName(top, "alloc_bool_rows")
+	if allocBoolRows == nil {
+		t.Fatal("alloc_bool_rows proto not found")
+	}
+
+	fn := BuildGraph(allocBoolRows)
+	optimized, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("pipeline alloc_bool_rows: %v", err)
+	}
+	var sawCacheableLoopNewTable bool
+	li := computeLoopInfo(optimized)
+	for _, block := range optimized.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op == OpNewTable && tier2NewTableLoopCandidateIsSafe(instr) {
+				sawCacheableLoopNewTable = true
+			}
+		}
+	}
+	if !sawCacheableLoopNewTable {
+		t.Fatalf("expected cacheable loop NewTable in optimized IR:\n%s", Print(optimized))
+	}
+
+	tm := NewTieringManager()
+	if err := tm.CompileTier2(allocBoolRows); err != nil {
+		t.Fatalf("CompileTier2(alloc_bool_rows) failed: %v", err)
+	}
+	compareTier2Result(t, src, "result")
+}
+
 func TestTier2ExitStormGateBlocksNoFilterUnknownGenericModLoop(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 

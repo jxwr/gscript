@@ -85,6 +85,56 @@ func f() {
 	})
 }
 
+func TestExitResumeCheck_CacheableLoopNewTableMarksResultSlot(t *testing.T) {
+	withExitResumeCheck(t, func() {
+		src := `
+func f(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        row := {}
+        row[0] = true
+        if row[0] {
+            total = total + 1
+        }
+    }
+    return total
+}
+`
+		top := compileTop(t, src)
+		proto := findProtoByName(top, "f")
+		if proto == nil {
+			t.Fatal("function \"f\" not found")
+		}
+		fn := BuildGraph(proto)
+		optimized, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+		if err != nil {
+			t.Fatalf("pipeline f: %v", err)
+		}
+		newTableIDs := make(map[int]bool)
+		for _, block := range optimized.Blocks {
+			for _, instr := range block.Instrs {
+				if instr.Op == OpNewTable && tier2NewTableLoopCandidateIsSafe(instr) {
+					newTableIDs[instr.ID] = true
+				}
+			}
+		}
+		if len(newTableIDs) == 0 {
+			t.Fatalf("expected a cacheable NewTable in optimized IR:\n%s", Print(optimized))
+		}
+		assertExitResumeCheckSite(t, top, "f", func(site *exitResumeCheckSite) bool {
+			return site.Key.ExitCode == ExitTableExit &&
+				newTableIDs[site.Key.InstrID] &&
+				len(site.ModifiedSlots) == 1
+		})
+		vmResults := runVMByName(t, src, "f", []runtime.Value{runtime.IntValue(40)})
+		jitResults, entered := runForcedTier2ByName(t, top, "f", []string{"f"}, []runtime.Value{runtime.IntValue(40)})
+		assertRawIntSelfResultsEqual(t, "f", jitResults, vmResults)
+		if entered["f"] == 0 {
+			t.Fatalf("f did not enter Tier 2")
+		}
+	})
+}
+
 func TestExitResumeCheck_RawIntSelfCallFallbackFrame(t *testing.T) {
 	withExitResumeCheck(t, func() {
 		src := `func grow(n, x) {

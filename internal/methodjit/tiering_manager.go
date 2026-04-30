@@ -2286,7 +2286,7 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				}
 				return instr.Op, true
 			case OpSelf,
-				OpNewTable, OpNewFixedTable,
+				OpNewFixedTable,
 				OpConcat, OpAppend, OpSetList,
 				OpGetUpval, OpSetUpval,
 				OpGo, OpMakeChan, OpSend, OpRecv,
@@ -2294,6 +2294,11 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				OpVararg,
 				OpLen, OpPow,
 				OpTForCall, OpTForLoop:
+				return instr.Op, true
+			case OpNewTable:
+				if tier2NewTableLoopCandidateIsSafe(instr) {
+					continue
+				}
 				return instr.Op, true
 			case OpSetTable:
 				if tier2SetTableLoopCandidateIsSafe(fn, instr) {
@@ -2331,6 +2336,15 @@ func hasReadWriteGlobalInSameLoop(fn *Function) bool {
 		}
 	}
 	return false
+}
+
+func tier2NewTableLoopCandidateIsSafe(instr *Instr) bool {
+	// Direct-entry Tier 2 can execute cache-backed NEWTABLE sites in loops:
+	// the hot path pops a fresh table from the compiled function cache, while
+	// cache misses use the precise table-exit continuation and mark the result
+	// slot as modified. Restart-style OSR still rejects OpNewTable via
+	// firstExitResumeInLoop/hasRestartVisibleSideEffect.
+	return newTableCacheBatchSize(instr) > 1
 }
 
 func collectCompiledGlobalConsts(cf *CompiledFunction) map[int]bool {
