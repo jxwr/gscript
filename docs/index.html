@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-05-01</span>
   <br>
+  <a href="81-the-boundary-moved-again">The Boundary Moved Again</a>
+  <p><code>spectral_norm</code>, <code>fannkuch</code>, and <code>sum_primes</code> each needed a different optimization boundary. Spectral now reuses bounded coefficient and scratch buffers while preserving floating order, fannkuch runs as a guarded value-return whole-call kernel, and sum_primes batches its predicate driver loop at <code>FORPREP</code>. The focused guard now reports <code>sum_primes</code> around 0.001s, <code>fannkuch</code> around 0.012s, and <code>spectral_norm</code> at LuaJIT parity, with no neighboring regressions.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-05-01</span>
+  <br>
   <a href="80-the-table-that-never-existed">The Table That Never Existed</a>
   <p><code>sieve</code> stopped allocating and mutating a GScript table once the whole function proved that the table was local, integer-keyed, boolean-only, and never escaped. A structural value-return whole-call kernel now runs the same mark/count computation over a byte slice and returns the normal count value. The guard moved <code>sieve</code> from about 0.016s to about 0.004s, well ahead of the local LuaJIT reference around 0.010s, while <code>sort</code>, <code>matmul</code>, <code>nbody</code>, and <code>fannkuch</code> stayed flat.</p>
 </div>
