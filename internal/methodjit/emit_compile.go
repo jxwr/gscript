@@ -1632,15 +1632,12 @@ func (ec *emitContext) emitBlock(block *Block) {
 			}
 		}
 	}
-	if isLoopBlock && !isHeader && ec.safeHeaderFPRegs != nil {
-		// Non-header loop block: activate SAFE FPR registers from innermost header.
-		if innerHeader, ok := ec.loop.blockInnerHeader[block.ID]; ok {
-			if hdrFPRegs, ok := ec.safeHeaderFPRegs[innerHeader]; ok {
-				for _, entry := range hdrFPRegs {
-					ec.activeFPRegs[entry.ValueID] = true
-				}
-			}
-		}
+	if isLoopBlock && ec.safeHeaderFPRegs != nil {
+		// Activate every safe enclosing loop-header FPR value whose register
+		// allocation is region-pinned across this block. This extends the old
+		// innermost-only model to nested numeric regions without assuming a
+		// global register allocator.
+		ec.activateLoopHeaderFPRs(block.ID)
 	}
 	if ec.rawIntBlockCarry && !isHeader && len(block.Preds) == 1 {
 		ec.seedSinglePredRawIntRegs(block)

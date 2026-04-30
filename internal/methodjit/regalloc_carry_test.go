@@ -232,6 +232,113 @@ func TestRegallocCarriesLoopHeaderPhis_Mandelbrot(t *testing.T) {
 	t.Logf("checked %d non-header loop-body blocks for FPR clashes", checkedBodies)
 }
 
+func TestRegalloc_NestedLoopHeaderFPRsPinnedAcrossRegion(t *testing.T) {
+	fn := &Function{NumRegs: 4}
+
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	outerHeader := &Block{ID: 1, defs: make(map[int]*Value)}
+	innerHeader := &Block{ID: 2, defs: make(map[int]*Value)}
+	innerBody := &Block{ID: 3, defs: make(map[int]*Value)}
+	outerLatch := &Block{ID: 4, defs: make(map[int]*Value)}
+	exit := &Block{ID: 5, defs: make(map[int]*Value)}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, outerHeader, innerHeader, innerBody, outerLatch, exit}
+
+	entry.Succs = []*Block{outerHeader}
+	outerHeader.Preds = []*Block{entry, outerLatch}
+	outerHeader.Succs = []*Block{innerHeader, exit}
+	innerHeader.Preds = []*Block{outerHeader, innerBody}
+	innerHeader.Succs = []*Block{innerBody, outerLatch}
+	innerBody.Preds = []*Block{innerHeader}
+	innerBody.Succs = []*Block{innerHeader}
+	outerLatch.Preds = []*Block{innerHeader}
+	outerLatch.Succs = []*Block{outerHeader}
+	exit.Preds = []*Block{outerHeader}
+
+	outerSeed := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: entry}
+	entry.Instrs = []*Instr{
+		outerSeed,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: entry, Aux: int64(outerHeader.ID)},
+	}
+
+	outerPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: outerHeader}
+	innerSeed := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: outerHeader}
+	outerCond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: outerHeader}
+	outerHeader.Instrs = []*Instr{
+		outerPhi,
+		innerSeed,
+		outerCond,
+		{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{outerCond.Value()}, Block: outerHeader, Aux: int64(innerHeader.ID), Aux2: int64(exit.ID)},
+	}
+
+	innerPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: innerHeader}
+	innerCond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: innerHeader}
+	innerHeader.Instrs = []*Instr{
+		innerPhi,
+		innerCond,
+		{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{innerCond.Value()}, Block: innerHeader, Aux: int64(innerBody.ID), Aux2: int64(outerLatch.ID)},
+	}
+
+	mul := &Instr{ID: fn.newValueID(), Op: OpMulFloat, Type: TypeFloat, Args: []*Value{outerPhi.Value(), innerPhi.Value()}, Block: innerBody}
+	innerNext := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Args: []*Value{mul.Value(), innerPhi.Value()}, Block: innerBody}
+	innerBody.Instrs = []*Instr{
+		mul,
+		innerNext,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: innerBody, Aux: int64(innerHeader.ID)},
+	}
+
+	outerNext := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Args: []*Value{outerPhi.Value(), innerPhi.Value()}, Block: outerLatch}
+	outerLatch.Instrs = []*Instr{
+		outerNext,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: outerLatch, Aux: int64(outerHeader.ID)},
+	}
+
+	outerPhi.Args = []*Value{outerSeed.Value(), outerNext.Value()}
+	innerPhi.Args = []*Value{innerSeed.Value(), innerNext.Value()}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Args: []*Value{outerPhi.Value()}, Block: exit}}
+
+	alloc := AllocateRegisters(fn)
+	outerReg, ok := alloc.ValueRegs[outerPhi.ID]
+	if !ok || !outerReg.IsFloat {
+		t.Fatalf("outer phi v%d not FPR-allocated: %+v", outerPhi.ID, alloc.ValueRegs[outerPhi.ID])
+	}
+	innerReg, ok := alloc.ValueRegs[innerPhi.ID]
+	if !ok || !innerReg.IsFloat {
+		t.Fatalf("inner phi v%d not FPR-allocated: %+v", innerPhi.ID, alloc.ValueRegs[innerPhi.ID])
+	}
+	if outerReg.Reg == innerReg.Reg {
+		t.Fatalf("nested loop phis share D%d: outer v%d inner v%d", outerReg.Reg, outerPhi.ID, innerPhi.ID)
+	}
+
+	li := computeLoopInfo(fn)
+	headerFPRegs := li.computeHeaderExitFPRegs(fn, alloc)
+	safe := computeSafeHeaderFPRegs(fn, li, alloc, headerFPRegs)
+	if _, ok := safe[outerHeader.ID][outerReg.Reg]; !ok {
+		t.Fatalf("outer phi D%d not safe across nested region; safe=%v alloc=%v", outerReg.Reg, safe[outerHeader.ID], alloc.ValueRegs)
+	}
+	if _, ok := safe[innerHeader.ID][innerReg.Reg]; !ok {
+		t.Fatalf("inner phi D%d not safe across inner region; safe=%v alloc=%v", innerReg.Reg, safe[innerHeader.ID], alloc.ValueRegs)
+	}
+
+	for _, block := range []*Block{innerHeader, innerBody, outerLatch} {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpPhi || instr.Op.IsTerminator() || instr.ID == outerPhi.ID || instr.ID == innerPhi.ID {
+				continue
+			}
+			pr, ok := alloc.ValueRegs[instr.ID]
+			if !ok || !pr.IsFloat {
+				continue
+			}
+			if pr.Reg == outerReg.Reg {
+				t.Fatalf("nested region op B%d v%d %s clobbers outer phi D%d", block.ID, instr.ID, instr.Op, pr.Reg)
+			}
+			if block == innerBody && pr.Reg == innerReg.Reg {
+				t.Fatalf("inner body op B%d v%d %s clobbers inner phi D%d", block.ID, instr.ID, instr.Op, pr.Reg)
+			}
+		}
+	}
+}
+
 // TestRegalloc_PreheaderInvariantPinned constructs a synthetic IR with a
 // pre-header containing two ConstFloat definitions, a loop header with a float
 // phi, and a body that uses both constants and the phi. With

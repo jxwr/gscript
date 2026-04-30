@@ -89,6 +89,12 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		}
 	}
 
+	// FPR loop phis have enough physical registers to support a safer region
+	// protocol than GPRs. Pre-allocate every loop-header float phi while
+	// reserving enclosing-header FPRs, so nested headers do not reuse an
+	// outer accumulator's register and force VM-frame writeback.
+	preAllocateLoopHeaderFPPhis(fn, li, alloc)
+
 	// Pre-pass: pre-allocate loop-header phi registers into alloc.ValueRegs
 	// for tight-body headers only. Block order is RPO but loop headers can
 	// follow their body in RPO, so we can't rely on "allocate headers first
@@ -139,6 +145,9 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 				}
 
 			}
+		}
+		if li.loopBlocks[block.ID] {
+			carried = addLoopHeaderFPRCarry(block, li, alloc, carried)
 		}
 		if rawIntBlockCarry && len(block.Preds) == 1 && !li.loopHeaders[block.ID] {
 			predID := block.Preds[0].ID
@@ -270,6 +279,13 @@ func preAllocateHeaderPhis(block *Block, alloc *RegAllocation) {
 		} else {
 			rs = gprs
 		}
+		if pr, ok := alloc.ValueRegs[instr.ID]; ok && pr.IsFloat == wantFloat && rs.regToID[pr.Reg] == -1 {
+			rs.assign(instr.ID, pr.Reg)
+			continue
+		}
+		if _, ok := alloc.SpillSlots[instr.ID]; ok {
+			continue
+		}
 		r := rs.findFree()
 		if r >= 0 {
 			rs.assign(instr.ID, r)
@@ -281,6 +297,95 @@ func preAllocateHeaderPhis(block *Block, alloc *RegAllocation) {
 			alloc.NumSpillSlots++
 		}
 	}
+}
+
+func preAllocateLoopHeaderFPPhis(fn *Function, li *loopInfo, alloc *RegAllocation) {
+	if fn == nil || li == nil || alloc == nil || !li.hasLoops() {
+		return
+	}
+	headers := sortedLoopHeadersByDepth(li)
+	for _, headerID := range headers {
+		block := findBlockByID(fn, headerID)
+		if block == nil {
+			continue
+		}
+		used := enclosingLoopFPRegs(headerID, li, alloc)
+		for _, instr := range block.Instrs {
+			if instr.Op != OpPhi {
+				break
+			}
+			if !needsFloatReg(instr) {
+				continue
+			}
+			if pr, ok := alloc.ValueRegs[instr.ID]; ok && pr.IsFloat && !used[pr.Reg] {
+				used[pr.Reg] = true
+				continue
+			}
+			reg, ok := firstFreeFPR(used)
+			if !ok {
+				if _, spilled := alloc.SpillSlots[instr.ID]; !spilled {
+					alloc.SpillSlots[instr.ID] = alloc.NumSpillSlots
+					alloc.NumSpillSlots++
+				}
+				delete(alloc.ValueRegs, instr.ID)
+				continue
+			}
+			alloc.ValueRegs[instr.ID] = PhysReg{Reg: reg, IsFloat: true}
+			used[reg] = true
+		}
+	}
+}
+
+func enclosingLoopFPRegs(headerID int, li *loopInfo, alloc *RegAllocation) map[int]bool {
+	used := make(map[int]bool)
+	for _, ancestorID := range enclosingLoopHeaders(headerID, li) {
+		for _, phiID := range li.loopPhis[ancestorID] {
+			if pr, ok := alloc.ValueRegs[phiID]; ok && pr.IsFloat {
+				used[pr.Reg] = true
+			}
+		}
+	}
+	return used
+}
+
+func enclosingLoopHeaders(headerID int, li *loopInfo) []int {
+	if li == nil {
+		return nil
+	}
+	nest := loopNest(li)
+	var headers []int
+	for cur := nest[headerID]; cur >= 0; cur = nest[cur] {
+		headers = append(headers, cur)
+	}
+	for i, j := 0, len(headers)-1; i < j; i, j = i+1, j-1 {
+		headers[i], headers[j] = headers[j], headers[i]
+	}
+	return headers
+}
+
+func sortedLoopHeadersByDepth(li *loopInfo) []int {
+	headers := sortedLoopHeaders(li)
+	depths := loopHeaderDepths(li)
+	sort.Slice(headers, func(i, j int) bool {
+		if depths[headers[i]] != depths[headers[j]] {
+			return depths[headers[i]] < depths[headers[j]]
+		}
+		return headers[i] < headers[j]
+	})
+	return headers
+}
+
+func loopHeaderDepths(li *loopInfo) map[int]int {
+	depths := make(map[int]int, len(li.loopHeaders))
+	nest := loopNest(li)
+	for headerID := range li.loopHeaders {
+		depth := 0
+		for cur := nest[headerID]; cur >= 0; cur = nest[cur] {
+			depth++
+		}
+		depths[headerID] = depth
+	}
+	return depths
 }
 
 // collectLoopBoundGPRs scans a loop header block for int comparison ops
@@ -771,6 +876,39 @@ func addLoopInvariantFPRCarry(block *Block, li *loopInfo, alloc *RegAllocation, 
 				carried = make(map[int]PhysReg)
 			}
 			carried[id] = pr
+			usedRegs[pr.Reg] = true
+		}
+	}
+	return carried
+}
+
+func addLoopHeaderFPRCarry(block *Block, li *loopInfo, alloc *RegAllocation, carried map[int]PhysReg) map[int]PhysReg {
+	if block == nil || li == nil || alloc == nil {
+		return carried
+	}
+	usedRegs := make(map[int]bool)
+	for _, pr := range carried {
+		if pr.IsFloat {
+			usedRegs[pr.Reg] = true
+		}
+	}
+	for _, headerID := range sortedLoopHeadersByDepth(li) {
+		if headerID == block.ID {
+			continue
+		}
+		body := li.headerBlocks[headerID]
+		if body == nil || !body[block.ID] {
+			continue
+		}
+		for _, phiID := range li.loopPhis[headerID] {
+			pr, ok := alloc.ValueRegs[phiID]
+			if !ok || !pr.IsFloat || usedRegs[pr.Reg] {
+				continue
+			}
+			if carried == nil {
+				carried = make(map[int]PhysReg)
+			}
+			carried[phiID] = pr
 			usedRegs[pr.Reg] = true
 		}
 	}

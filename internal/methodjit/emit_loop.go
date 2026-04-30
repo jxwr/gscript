@@ -629,6 +629,44 @@ func (ec *emitContext) activateLoopInvariantFPRs(blockID int) {
 	}
 }
 
+func (ec *emitContext) activateLoopHeaderFPRs(blockID int) {
+	if ec == nil || ec.loop == nil {
+		return
+	}
+	for _, headerID := range sortedLoopHeadersByDepth(ec.loop) {
+		if headerID == blockID {
+			continue
+		}
+		body := ec.loop.headerBlocks[headerID]
+		if body == nil || !body[blockID] {
+			continue
+		}
+		for _, entry := range ec.safeHeaderFPRegs[headerID] {
+			pr, ok := ec.alloc.ValueRegs[entry.ValueID]
+			if !ok || !pr.IsFloat {
+				continue
+			}
+			if ec.fprActiveRegisterTaken(pr.Reg, entry.ValueID) {
+				continue
+			}
+			ec.activeFPRegs[entry.ValueID] = true
+		}
+	}
+}
+
+func (ec *emitContext) fprActiveRegisterTaken(reg int, valueID int) bool {
+	for activeID := range ec.activeFPRegs {
+		if activeID == valueID {
+			continue
+		}
+		pr, ok := ec.alloc.ValueRegs[activeID]
+		if ok && pr.IsFloat && pr.Reg == reg {
+			return true
+		}
+	}
+	return false
+}
+
 func sortedLoopRegEntryIDs(m map[int]loopRegEntry) []int {
 	ids := make([]int, 0, len(m))
 	for id := range m {
