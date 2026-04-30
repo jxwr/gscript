@@ -623,6 +623,53 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			}
 		}
 
+	case OpTableIntArrayReversePrefix:
+		tbl := s.val(instr.Args[0])
+		hi := s.val(instr.Args[1])
+		if !tbl.IsTable() || !hi.IsInt() || tbl.Table().GetArrayKind() != runtime.ArrayInt {
+			s.values[instr.ID] = runtime.BoolValue(false)
+			break
+		}
+		k := hi.Int()
+		if k <= 1 {
+			s.values[instr.ID] = runtime.BoolValue(true)
+			break
+		}
+		if k > int64(tbl.Table().Len()) {
+			s.values[instr.ID] = runtime.BoolValue(false)
+			break
+		}
+		for lo := int64(1); lo < k; lo, k = lo+1, k-1 {
+			left := tbl.Table().RawGetInt(lo)
+			right := tbl.Table().RawGetInt(k)
+			tbl.Table().RawSetInt(lo, right)
+			tbl.Table().RawSetInt(k, left)
+		}
+		s.values[instr.ID] = runtime.BoolValue(true)
+
+	case OpTableIntArrayCopyPrefix:
+		dst := s.val(instr.Args[0])
+		src := s.val(instr.Args[1])
+		hi := s.val(instr.Args[2])
+		if !dst.IsTable() || !src.IsTable() || !hi.IsInt() ||
+			dst.Table().GetArrayKind() != runtime.ArrayInt || src.Table().GetArrayKind() != runtime.ArrayInt {
+			s.values[instr.ID] = runtime.BoolValue(false)
+			break
+		}
+		n := hi.Int()
+		if n <= 0 {
+			s.values[instr.ID] = runtime.BoolValue(true)
+			break
+		}
+		if n > int64(dst.Table().Len()) || n > int64(src.Table().Len()) {
+			s.values[instr.ID] = runtime.BoolValue(false)
+			break
+		}
+		for i := int64(1); i <= n; i++ {
+			dst.Table().RawSetInt(i, src.Table().RawGetInt(i))
+		}
+		s.values[instr.ID] = runtime.BoolValue(true)
+
 	case OpTableArrayNestedLoad:
 		outer := s.val(instr.Args[0])
 		outerKeyArg := 2

@@ -330,6 +330,34 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
 					"recorded typed array store value for forwarding")
 
+			case OpTableIntArrayReversePrefix:
+				if len(instr.Args) < 1 || instr.Args[0] == nil {
+					continue
+				}
+				objID := instr.Args[0].ID
+				if invalidateDynamicTableCacheForObject(tableAvail, objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"int-array prefix kernel invalidated dynamic-key table cache")
+				}
+				if tableArrayFacts.InvalidateTable(objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"int-array prefix kernel invalidated typed array facts")
+				}
+
+			case OpTableIntArrayCopyPrefix:
+				if len(instr.Args) < 1 || instr.Args[0] == nil {
+					continue
+				}
+				objID := instr.Args[0].ID
+				if invalidateDynamicTableCacheForObject(tableAvail, objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"int-array copy kernel invalidated dynamic-key table cache")
+				}
+				if tableArrayFacts.InvalidateTable(objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"int-array copy kernel invalidated typed array facts")
+				}
+
 			case OpAppend, OpSetList:
 				if len(instr.Args) < 1 {
 					continue

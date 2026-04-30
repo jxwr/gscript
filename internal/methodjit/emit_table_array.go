@@ -907,6 +907,178 @@ func (ec *emitContext) emitTableBoolArrayFillExit(instr *Instr) {
 	})
 }
 
+func (ec *emitContext) emitTableIntArrayReversePrefix(instr *Instr) {
+	if len(instr.Args) < 2 {
+		return
+	}
+	asm := ec.asm
+	failLabel := ec.uniqueLabel("tarr_reverse_prefix_fail")
+	successNoMutLabel := ec.uniqueLabel("tarr_reverse_prefix_success_nomut")
+	successMutLabel := ec.uniqueLabel("tarr_reverse_prefix_success_mut")
+	loopLabel := ec.uniqueLabel("tarr_reverse_prefix_loop")
+	doneLabel := ec.uniqueLabel("tarr_reverse_prefix_done")
+
+	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	ec.emitTableIntArrayKernelKeyToReg(instr.Args[1], jit.X1, failLabel)
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, failLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, failLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffMetatable)
+	asm.CBNZ(jit.X2, failLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffLazyTree)
+	asm.CBNZ(jit.X2, failLabel)
+	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKInt)
+	asm.BCond(jit.CondNE, failLabel)
+
+	asm.CMPimm(jit.X1, 1)
+	asm.BCond(jit.CondLE, successNoMutLabel)
+	asm.LDR(jit.X3, jit.X0, jit.TableOffIntArrayLen)
+	asm.CMPreg(jit.X1, jit.X3)
+	asm.BCond(jit.CondGE, failLabel)
+	asm.LDR(jit.X4, jit.X0, jit.TableOffIntArray)
+	asm.CBZ(jit.X4, failLabel)
+
+	asm.MOVimm16(jit.X5, 1)
+	asm.MOVreg(jit.X6, jit.X1)
+	asm.Label(loopLabel)
+	asm.CMPreg(jit.X5, jit.X6)
+	asm.BCond(jit.CondGE, successMutLabel)
+	asm.LDRreg(jit.X7, jit.X4, jit.X5)
+	asm.LDRreg(jit.X8, jit.X4, jit.X6)
+	asm.STRreg(jit.X8, jit.X4, jit.X5)
+	asm.STRreg(jit.X7, jit.X4, jit.X6)
+	asm.ADDimm(jit.X5, jit.X5, 1)
+	asm.SUBimm(jit.X6, jit.X6, 1)
+	asm.B(loopLabel)
+
+	asm.Label(successMutLabel)
+	asm.MOVimm16(jit.X7, 1)
+	asm.STRB(jit.X7, jit.X0, jit.TableOffKeysDirty)
+	asm.Label(successNoMutLabel)
+	asm.ADDimm(jit.X0, mRegTagBool, 1)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(failLabel)
+	asm.MOVreg(jit.X0, mRegTagBool)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitTableIntArrayCopyPrefix(instr *Instr) {
+	if len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+	failLabel := ec.uniqueLabel("tarr_copy_prefix_fail")
+	successNoMutLabel := ec.uniqueLabel("tarr_copy_prefix_success_nomut")
+	successMutLabel := ec.uniqueLabel("tarr_copy_prefix_success_mut")
+	loopLabel := ec.uniqueLabel("tarr_copy_prefix_loop")
+	doneLabel := ec.uniqueLabel("tarr_copy_prefix_done")
+
+	dstReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if dstReg != jit.X0 {
+		asm.MOVreg(jit.X0, dstReg)
+	}
+	srcReg := ec.resolveValueNB(instr.Args[1].ID, jit.X9)
+	if srcReg != jit.X9 {
+		asm.MOVreg(jit.X9, srcReg)
+	}
+	ec.emitTableIntArrayKernelKeyToReg(instr.Args[2], jit.X1, failLabel)
+
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, failLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, failLabel)
+	jit.EmitCheckIsTableFull(asm, jit.X9, jit.X2, jit.X3, failLabel)
+	jit.EmitExtractPtr(asm, jit.X9, jit.X9)
+	asm.CBZ(jit.X9, failLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffMetatable)
+	asm.CBNZ(jit.X2, failLabel)
+	asm.LDR(jit.X2, jit.X9, jit.TableOffMetatable)
+	asm.CBNZ(jit.X2, failLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffLazyTree)
+	asm.CBNZ(jit.X2, failLabel)
+	asm.LDR(jit.X2, jit.X9, jit.TableOffLazyTree)
+	asm.CBNZ(jit.X2, failLabel)
+	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKInt)
+	asm.BCond(jit.CondNE, failLabel)
+	asm.LDRB(jit.X2, jit.X9, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, jit.AKInt)
+	asm.BCond(jit.CondNE, failLabel)
+
+	asm.CMPimm(jit.X1, 0)
+	asm.BCond(jit.CondLE, successNoMutLabel)
+	asm.LDR(jit.X5, jit.X0, jit.TableOffIntArrayLen)
+	asm.CMPreg(jit.X1, jit.X5)
+	asm.BCond(jit.CondGE, failLabel)
+	asm.LDR(jit.X6, jit.X9, jit.TableOffIntArrayLen)
+	asm.CMPreg(jit.X1, jit.X6)
+	asm.BCond(jit.CondGE, failLabel)
+	asm.LDR(jit.X7, jit.X0, jit.TableOffIntArray)
+	asm.CBZ(jit.X7, failLabel)
+	asm.LDR(jit.X8, jit.X9, jit.TableOffIntArray)
+	asm.CBZ(jit.X8, failLabel)
+
+	asm.MOVimm16(jit.X4, 1)
+	asm.Label(loopLabel)
+	asm.CMPreg(jit.X4, jit.X1)
+	asm.BCond(jit.CondGT, successMutLabel)
+	asm.LDRreg(jit.X3, jit.X8, jit.X4)
+	asm.STRreg(jit.X3, jit.X7, jit.X4)
+	asm.ADDimm(jit.X4, jit.X4, 1)
+	asm.B(loopLabel)
+
+	asm.Label(successMutLabel)
+	asm.MOVimm16(jit.X3, 1)
+	asm.STRB(jit.X3, jit.X0, jit.TableOffKeysDirty)
+	asm.Label(successNoMutLabel)
+	asm.ADDimm(jit.X0, mRegTagBool, 1)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(failLabel)
+	asm.MOVreg(jit.X0, mRegTagBool)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitTableIntArrayKernelKeyToReg(key *Value, dst jit.Reg, failLabel string) {
+	if key == nil {
+		ec.asm.B(failLabel)
+		return
+	}
+	keyID := key.ID
+	if kv, ok := ec.constInts[keyID]; ok {
+		ec.asm.LoadImm64(dst, kv)
+	} else if ec.hasReg(keyID) && ec.valueReprOf(keyID) == valueReprRawInt {
+		reg := ec.physReg(keyID)
+		if reg != dst {
+			ec.asm.MOVreg(dst, reg)
+		}
+	} else if ec.irTypes[keyID] == TypeInt {
+		keyReg := ec.resolveValueNB(keyID, dst)
+		if keyReg != dst {
+			ec.asm.MOVreg(dst, keyReg)
+		}
+		ec.asm.SBFX(dst, dst, 0, 48)
+	} else {
+		keyReg := ec.resolveValueNB(keyID, dst)
+		if keyReg != dst {
+			ec.asm.MOVreg(dst, keyReg)
+		}
+		ec.asm.LSRimm(jit.X2, dst, 48)
+		ec.asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+		ec.asm.CMPreg(jit.X2, jit.X3)
+		ec.asm.BCond(jit.CondNE, failLabel)
+		ec.asm.SBFX(dst, dst, 0, 48)
+	}
+}
+
 func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 	if len(instr.Args) < 5 {
 		return

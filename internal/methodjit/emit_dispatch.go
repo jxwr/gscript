@@ -209,6 +209,12 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpTableBoolArrayFill:
 		ec.emitTableBoolArrayFill(instr)
 		ec.clearTableArrayBoundedKeys()
+	case OpTableIntArrayReversePrefix:
+		ec.emitTableIntArrayReversePrefix(instr)
+		ec.clearTableArrayBoundedKeys()
+	case OpTableIntArrayCopyPrefix:
+		ec.emitTableIntArrayCopyPrefix(instr)
+		ec.clearTableArrayBoundedKeys()
 	case OpTableArrayNestedLoad:
 		ec.emitTableArrayNestedLoad(instr)
 	case OpGetField:

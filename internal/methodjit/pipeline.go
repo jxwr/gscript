@@ -576,6 +576,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = TableIntArrayKernelPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TableIntArrayKernel: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = FieldNumToFloatFusionPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("FieldNumToFloatFusion (post-LICM): %w", err)

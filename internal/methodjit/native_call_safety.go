@@ -88,7 +88,7 @@ func tier2InstrHasNativeVisibleSideEffect(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpSetTable, OpTableArrayStore, OpTableBoolArrayFill, OpSetField, OpSetList, OpAppend:
+	case OpSetTable, OpTableArrayStore, OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix, OpSetField, OpSetList, OpAppend:
 		if len(instr.Args) == 0 {
 			return true
 		}
@@ -137,7 +137,7 @@ func tier2OpMayExitForNativeReplay(instr *Instr) bool {
 	case OpCall, OpSelf,
 		OpNewTable, OpNewFixedTable,
 		OpGetTable, OpSetTable,
-		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableArrayStore, OpTableBoolArrayFill, OpTableArrayNestedLoad,
+		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableArrayStore, OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix, OpTableArrayNestedLoad,
 		OpGetField, OpGetFieldNumToFloat, OpSetField,
 		OpSetList, OpAppend,
 		OpGetGlobal, OpSetGlobal,
