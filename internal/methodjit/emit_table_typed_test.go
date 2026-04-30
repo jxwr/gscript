@@ -747,7 +747,7 @@ func read_then_set(arr, key, val) {
 		t.Fatalf("Compile: %v", err)
 	}
 	defer cf.Code.Free()
-	if got := countMatchingIRInstr(cf, setID, isARM64CBNZX17); got == 0 {
+	if got := countMatchingIRInstr(cf, setID, isARM64CBZX17); got == 0 {
 		t.Fatalf("SetTable did not consume TableArrayLoad success bounds fact")
 	}
 }
@@ -876,12 +876,12 @@ func rangeHasDirectFPLoad(code []byte, start, end int) bool {
 	return false
 }
 
-func isARM64CBNZX17(insn uint32) bool {
+func isARM64CBZX17(insn uint32) bool {
 	var buf [4]byte
 	binary.LittleEndian.PutUint32(buf[:], insn)
 	inst, err := arm64asm.Decode(buf[:])
 	if err != nil {
 		return false
 	}
-	return strings.HasPrefix(inst.String(), "CBNZ X17")
+	return strings.HasPrefix(inst.String(), "CBZ X17")
 }

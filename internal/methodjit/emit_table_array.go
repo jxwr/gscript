@@ -52,10 +52,24 @@ func emitTypedArraySetBoundsOnlyCheck(asm *jit.Assembler, tableReg, keyReg, lenR
 	asm.BCond(jit.CondGE, deoptLabel)
 }
 
-func emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm *jit.Assembler, enabled bool, storeLabel string) {
-	if enabled {
-		asm.CBNZ(jit.X17, storeLabel)
+func emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm *jit.Assembler, priorLoadBounds bool, tableReg, keyReg, lenReg jit.Reg, lenOff int, appendLabel, sparseLabel, deoptLabel string) {
+	if priorLoadBounds {
+		asm.CBZ(jit.X17, deoptLabel)
+		return
 	}
+	emitTypedArraySetBoundsAppendOrSparseCheck(asm, tableReg, keyReg, lenReg, lenOff, appendLabel, sparseLabel, deoptLabel)
+}
+
+func emitTypedArraySetPriorLoadOrBoundsAppendCheck(asm *jit.Assembler, priorLoadBounds bool, tableReg, keyReg, lenReg jit.Reg, lenOff int, appendLabel, deoptLabel string) {
+	emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, priorLoadBounds, tableReg, keyReg, lenReg, lenOff, appendLabel, "", deoptLabel)
+}
+
+func emitTypedArraySetPriorLoadOrBoundsOnlyCheck(asm *jit.Assembler, priorLoadBounds bool, tableReg, keyReg, lenReg jit.Reg, lenOff int, deoptLabel string) {
+	if priorLoadBounds {
+		asm.CBZ(jit.X17, deoptLabel)
+		return
+	}
+	emitTypedArraySetBoundsOnlyCheck(asm, tableReg, keyReg, lenReg, lenOff, deoptLabel)
 }
 
 // emitTypedArraySetAppendPath extends the typed array length for key == len
@@ -1370,8 +1384,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 		asm.Label(mixedArrayLabel)
 		mixedStoreLabel := ec.uniqueLabel("settable_mixed_store")
 		mixedAppendLabel := ec.uniqueLabel("settable_mixed_append")
-		emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, mixedStoreLabel)
-		emitTypedArraySetBoundsOrAppendCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffArrayLen, mixedAppendLabel, deoptLabel)
+		emitTypedArraySetPriorLoadOrBoundsAppendCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffArrayLen, mixedAppendLabel, deoptLabel)
 		asm.Label(mixedStoreLabel)
 		// Load value to store into X4.
 		valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
@@ -1386,7 +1399,9 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 		}
 		asm.B(doneLabel)
-		emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffArrayLen, jit.TableOffArrayCap, mixedAppendLabel, deoptLabel, mixedStoreLabel)
+		if !keyBoundsAlreadyChecked {
+			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffArrayLen, jit.TableOffArrayCap, mixedAppendLabel, deoptLabel, mixedStoreLabel)
+		}
 	}
 
 	// --- ArrayInt fast path ---
@@ -1399,14 +1414,15 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			intAppendLabel := ec.uniqueLabel("settable_int_append")
 			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
 			asm.LoadImm64(jit.X4, val)
-			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, intStoreLabel)
-			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
+			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 			asm.STRreg(jit.X4, jit.X2, jit.X1)
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			if !keyBoundsAlreadyChecked {
+				emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+				emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			}
 		} else if ec.hasReg(instr.Args[2].ID) && ec.rawIntRegs[instr.Args[2].ID] {
 			// Raw int register bypass: value already unboxed, skip tag check.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
@@ -1416,14 +1432,15 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			if reg != jit.X4 {
 				asm.MOVreg(jit.X4, reg)
 			}
-			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, intStoreLabel)
-			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
+			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 			asm.STRreg(jit.X4, jit.X2, jit.X1)
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			if !keyBoundsAlreadyChecked {
+				emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+				emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			}
 		} else if ec.irTypes[instr.Args[2].ID] == TypeInt {
 			// Known-int value: unbox directly and skip the redundant tag check.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
@@ -1434,14 +1451,15 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 				asm.MOVreg(jit.X4, valReg2)
 			}
 			asm.SBFX(jit.X4, jit.X4, 0, 48)
-			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, intStoreLabel)
-			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
+			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
 			asm.STRreg(jit.X4, jit.X2, jit.X1)
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			if !keyBoundsAlreadyChecked {
+				emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+				emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			}
 		} else {
 			// Load value to store and check it's an integer.
 			intStoreLabel := ec.uniqueLabel("settable_int_store")
@@ -1457,14 +1475,15 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.BCond(jit.CondNE, deoptLabel) // value not int -> deopt
 			// Unbox int64 from NaN-boxed value.
 			asm.SBFX(jit.X4, jit.X4, 0, 48)
-			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, intStoreLabel)
-			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
+			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
 			asm.Label(intStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
 			asm.STRreg(jit.X4, jit.X2, jit.X1)            // intArray[key] = int64
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			if !keyBoundsAlreadyChecked {
+				emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
+				emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
+			}
 		}
 	}
 
@@ -1490,8 +1509,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 				asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
 			}
 		}
-		emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, floatStoreLabel)
-		emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, floatSparseLabel, deoptLabel)
+		emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, floatSparseLabel, deoptLabel)
 		asm.Label(floatStoreLabel)
 		// Float64 bits ARE the NaN-boxed representation — store directly.
 		asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
@@ -1502,8 +1520,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.STRreg(jit.X4, jit.X2, jit.X1) // floatArray[key] = float64 bits
 		}
 		asm.B(doneLabel)
-		emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, deoptLabel, floatStoreLabel)
-		emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatSparseLabel, deoptLabel, floatStoreLabel)
+		if !keyBoundsAlreadyChecked {
+			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, deoptLabel, floatStoreLabel)
+			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatSparseLabel, deoptLabel, floatStoreLabel)
+		}
 	}
 
 	if emitBoolArrayPath {
@@ -1518,8 +1538,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			boolSparseLabel := ec.uniqueLabel("settable_bool_sparse")
 			byteVal := uint16(boolVal + 1)
 			asm.MOVimm16(jit.X4, byteVal)
-			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, boolStoreLabel)
-			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
+			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
 			asm.Label(boolStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
 			asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
@@ -1528,8 +1547,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 			}
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
-			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolSparseLabel, deoptLabel, boolStoreLabel)
+			if !keyBoundsAlreadyChecked {
+				emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
+				emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolSparseLabel, deoptLabel, boolStoreLabel)
+			}
 		} else {
 			// Load value to store.
 			boolStoreLabel := ec.uniqueLabel("settable_bool_store")
@@ -1552,8 +1573,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			// Nil clears an existing bool slot only. Appending/sparse-growing
 			// nil must deopt so RawSetInt can preserve table length semantics.
 			asm.MOVimm16(jit.X4, 0)
-			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, boolStoreLabel)
-			emitTypedArraySetBoundsOnlyCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, deoptLabel)
+			emitTypedArraySetPriorLoadOrBoundsOnlyCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, deoptLabel)
 			asm.B(boolStoreLabel)
 			asm.Label(boolOkLabel)
 			// Bool: extract payload bit 0. false=0xFFFD000000000000 (payload=0) → byte 1
@@ -1562,8 +1582,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 			asm.LoadImm64(jit.X5, 1)
 			asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
 			asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
-			emitSkipBoundsOnSuccessfulPriorTableArrayLoad(asm, keyBoundsAlreadyChecked, boolStoreLabel)
-			emitTypedArraySetBoundsAppendOrSparseCheck(asm, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
+			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
 			asm.Label(boolStoreLabel)
 			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
 			asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
@@ -1572,8 +1591,10 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 			}
 			asm.B(doneLabel)
-			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
-			emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolSparseLabel, deoptLabel, boolStoreLabel)
+			if !keyBoundsAlreadyChecked {
+				emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
+				emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolSparseLabel, deoptLabel, boolStoreLabel)
+			}
 		}
 	}
 
