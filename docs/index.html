@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-30</span>
   <br>
+  <a href="76-the-nested-call-became-a-stack">The Nested Call Became A Stack</a>
+  <p><code>ackermann</code> was not a fixed additive recurrence and not just a raw-call overhead problem. Tier 2 now recognizes exact two-argument nested integer self recurrences, guards the dynamic self global, and evaluates the nested call tree with a bounded explicit continuation stack and checked int48 arithmetic. The focused guard moved <code>ackermann</code> from about 0.014s to about 0.006s, matching the local LuaJIT reference while keeping neighboring recursive benchmarks flat.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-30</span>
+  <br>
   <a href="75-the-call-tree-learned-its-shape">The Call Tree Learned Its Shape</a>
   <p><code>binary_trees</code> and <code>mutual_recursion</code> moved for the same architectural reason: Tier 2 can now install whole-call protocols when the entire recursive call tree has a provable shape. Fixed recursive table builders allocate normal GScript tables without re-entering the VM for every node, while pure integer mutual-recursive SCCs run through a guarded, bounded memoized evaluator. The merged guards moved <code>binary_trees</code> to about 0.151s and <code>mutual_recursion</code> to about 0.001s, faster than the local LuaJIT reference for the latter.</p>
 </div>
