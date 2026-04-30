@@ -17,6 +17,16 @@ import (
 
 const tier2SparseArrayMax = 1024 // must match runtime.sparseArrayMax
 
+const (
+	// tableArrayStoreFlagAllowGrow lets OpTableArrayStore use the same
+	// capacity-only append/sparse typed-array path as OpSetTable. Misses still
+	// precise-deopt unless tableArrayStoreFlagExitResumeOnMiss is also set.
+	tableArrayStoreFlagAllowGrow int64 = 1 << iota
+	// tableArrayStoreFlagExitResumeOnMiss is only safe when later code does
+	// not reuse stale table-array data/len facts after RawSetInt fallback.
+	tableArrayStoreFlagExitResumeOnMiss
+)
+
 type tableArrayBoundKey struct {
 	tableID int
 	keyID   int
@@ -161,6 +171,226 @@ func tableArrayOffsets(kind int64) (dataOff, lenOff int, ok bool) {
 	default:
 		return 0, 0, false
 	}
+}
+
+func tableArrayStoreOffsets(kind int64) (dataOff, lenOff, capOff int, ok bool) {
+	switch kind {
+	case int64(vm.FBKindMixed):
+		return jit.TableOffArray, jit.TableOffArrayLen, jit.TableOffArrayCap, true
+	case int64(vm.FBKindInt):
+		return jit.TableOffIntArray, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, true
+	case int64(vm.FBKindFloat):
+		return jit.TableOffFloatArray, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, true
+	case int64(vm.FBKindBool):
+		return jit.TableOffBoolArray, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, true
+	default:
+		return 0, 0, 0, false
+	}
+}
+
+type tableArrayRawStoreConfig struct {
+	labelPrefix             string
+	kind                    int64
+	valueID                 int
+	tableReg                jit.Reg
+	keyReg                  jit.Reg
+	dataReg                 jit.Reg
+	lenReg                  jit.Reg
+	missLabel               string
+	successLabel            string
+	loadDataFromTable       bool
+	priorLoadBounds         bool
+	upperBoundSafe          bool
+	keysDirtyAlreadyWritten bool
+	allowGrowWithinCapacity bool
+	fallthroughOnSuccess    bool
+}
+
+func (ec *emitContext) emitTableArrayRawStore(cfg tableArrayRawStoreConfig) bool {
+	if cfg.labelPrefix == "" {
+		cfg.labelPrefix = "tarr_raw_store"
+	}
+	dataOff, lenOff, capOff, ok := tableArrayStoreOffsets(cfg.kind)
+	if !ok {
+		return false
+	}
+
+	asm := ec.asm
+	storeLabel := ec.uniqueLabel(cfg.labelPrefix + "_store")
+	appendLabel := ec.uniqueLabel(cfg.labelPrefix + "_append")
+	sparseLabel := ec.uniqueLabel(cfg.labelPrefix + "_sparse")
+	allowGrow := cfg.allowGrowWithinCapacity && !cfg.priorLoadBounds && !cfg.upperBoundSafe
+	allowSparse := allowGrow && cfg.kind != int64(vm.FBKindMixed)
+
+	emitBounds := func(boundsOnly bool) {
+		switch {
+		case cfg.upperBoundSafe:
+			return
+		case cfg.priorLoadBounds:
+			asm.CBZ(jit.X17, cfg.missLabel)
+		case boundsOnly:
+			emitTypedArraySetBoundsOnlyCheck(asm, cfg.tableReg, cfg.keyReg, cfg.lenReg, lenOff, cfg.missLabel)
+		case allowGrow:
+			if allowSparse {
+				emitTypedArraySetBoundsAppendOrSparseCheck(asm, cfg.tableReg, cfg.keyReg, cfg.lenReg, lenOff, appendLabel, sparseLabel, cfg.missLabel)
+			} else {
+				emitTypedArraySetBoundsOrAppendCheck(asm, cfg.tableReg, cfg.keyReg, cfg.lenReg, lenOff, appendLabel, cfg.missLabel)
+			}
+		default:
+			asm.CMPreg(cfg.keyReg, cfg.lenReg)
+			asm.BCond(jit.CondGE, cfg.missLabel)
+		}
+	}
+
+	emitLoadData := func() {
+		if cfg.loadDataFromTable {
+			asm.LDR(cfg.dataReg, cfg.tableReg, dataOff)
+		}
+	}
+	emitKeysDirty := func() {
+		if cfg.keysDirtyAlreadyWritten {
+			return
+		}
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, cfg.tableReg, jit.TableOffKeysDirty)
+	}
+	emitSuccess := func() {
+		if !cfg.fallthroughOnSuccess {
+			asm.B(cfg.successLabel)
+		}
+	}
+	emitGrowPaths := func(markDirty bool) {
+		if !allowGrow {
+			return
+		}
+		if markDirty {
+			emitTypedArraySetAppendPathDirty(asm, cfg.tableReg, cfg.keyReg, jit.X6, lenOff, capOff, appendLabel, cfg.missLabel, storeLabel)
+			if allowSparse {
+				emitTypedArraySetSparsePathDirty(asm, cfg.tableReg, cfg.keyReg, jit.X6, lenOff, capOff, sparseLabel, cfg.missLabel, storeLabel)
+			}
+			return
+		}
+		emitTypedArraySetAppendPath(asm, cfg.tableReg, cfg.keyReg, jit.X6, lenOff, capOff, appendLabel, cfg.missLabel, storeLabel)
+		if allowSparse {
+			emitTypedArraySetSparsePath(asm, cfg.tableReg, cfg.keyReg, jit.X6, lenOff, capOff, sparseLabel, cfg.missLabel, storeLabel)
+		}
+	}
+
+	switch cfg.kind {
+	case int64(vm.FBKindMixed):
+		valReg := ec.resolveValueNB(cfg.valueID, jit.X4)
+		if valReg != jit.X4 {
+			asm.MOVreg(jit.X4, valReg)
+		}
+		emitBounds(false)
+		asm.Label(storeLabel)
+		emitLoadData()
+		asm.STRreg(jit.X4, cfg.dataReg, cfg.keyReg)
+		emitKeysDirty()
+		emitSuccess()
+		emitGrowPaths(false)
+
+	case int64(vm.FBKindInt):
+		if val, ok := ec.constInts[cfg.valueID]; ok {
+			asm.LoadImm64(jit.X4, val)
+		} else if ec.hasReg(cfg.valueID) && ec.valueReprOf(cfg.valueID) == valueReprRawInt {
+			reg := ec.physReg(cfg.valueID)
+			if reg != jit.X4 {
+				asm.MOVreg(jit.X4, reg)
+			}
+		} else if ec.irTypes[cfg.valueID] == TypeInt {
+			valReg := ec.resolveValueNB(cfg.valueID, jit.X4)
+			if valReg != jit.X4 {
+				asm.MOVreg(jit.X4, valReg)
+			}
+			asm.SBFX(jit.X4, jit.X4, 0, 48)
+		} else {
+			valReg := ec.resolveValueNB(cfg.valueID, jit.X4)
+			if valReg != jit.X4 {
+				asm.MOVreg(jit.X4, valReg)
+			}
+			asm.LSRimm(jit.X5, jit.X4, 48)
+			asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
+			asm.CMPreg(jit.X5, jit.X6)
+			asm.BCond(jit.CondNE, cfg.missLabel)
+			asm.SBFX(jit.X4, jit.X4, 0, 48)
+		}
+		emitBounds(false)
+		asm.Label(storeLabel)
+		emitLoadData()
+		asm.STRreg(jit.X4, cfg.dataReg, cfg.keyReg)
+		emitSuccess()
+		emitGrowPaths(true)
+
+	case int64(vm.FBKindFloat):
+		valueIsTypedFloat := ec.irTypes[cfg.valueID] == TypeFloat
+		valueHasRawFPR := valueIsTypedFloat && ec.hasFPReg(cfg.valueID)
+		if !valueHasRawFPR {
+			valReg := ec.resolveValueNB(cfg.valueID, jit.X4)
+			if valReg != jit.X4 {
+				asm.MOVreg(jit.X4, valReg)
+			}
+			if !valueIsTypedFloat {
+				jit.EmitIsTagged(asm, jit.X4, jit.X5)
+				asm.BCond(jit.CondEQ, cfg.missLabel)
+			}
+		}
+		emitBounds(false)
+		asm.Label(storeLabel)
+		emitLoadData()
+		if valueHasRawFPR {
+			valFPR := ec.resolveRawFloat(cfg.valueID, jit.D0)
+			asm.FSTRdReg(valFPR, cfg.dataReg, cfg.keyReg)
+		} else {
+			asm.STRreg(jit.X4, cfg.dataReg, cfg.keyReg)
+		}
+		emitSuccess()
+		emitGrowPaths(true)
+
+	case int64(vm.FBKindBool):
+		if boolVal, ok := ec.constBools[cfg.valueID]; ok {
+			asm.MOVimm16(jit.X4, uint16(boolVal+1))
+			emitBounds(false)
+			asm.Label(storeLabel)
+			emitLoadData()
+			asm.STRBreg(jit.X4, cfg.dataReg, cfg.keyReg)
+			emitKeysDirty()
+			emitSuccess()
+			emitGrowPaths(false)
+			return true
+		}
+
+		valReg := ec.resolveValueNB(cfg.valueID, jit.X4)
+		if valReg != jit.X4 {
+			asm.MOVreg(jit.X4, valReg)
+		}
+		asm.LSRimm(jit.X5, jit.X4, 48)
+		asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
+		asm.CMPreg(jit.X5, jit.X6)
+		boolOKLabel := ec.uniqueLabel(cfg.labelPrefix + "_bool_isbool")
+		asm.BCond(jit.CondEQ, boolOKLabel)
+		asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
+		asm.CMPreg(jit.X5, jit.X6)
+		asm.BCond(jit.CondNE, cfg.missLabel)
+		asm.MOVimm16(jit.X4, 0)
+		emitBounds(true)
+		asm.B(storeLabel)
+		asm.Label(boolOKLabel)
+		asm.LoadImm64(jit.X5, 1)
+		asm.ANDreg(jit.X4, jit.X4, jit.X5)
+		asm.ADDimm(jit.X4, jit.X4, 1)
+		emitBounds(false)
+		asm.Label(storeLabel)
+		emitLoadData()
+		asm.STRBreg(jit.X4, cfg.dataReg, cfg.keyReg)
+		emitKeysDirty()
+		emitSuccess()
+		emitGrowPaths(false)
+
+	default:
+		return false
+	}
+	return true
 }
 
 func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
@@ -393,8 +623,20 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 		return
 	}
 	asm := ec.asm
-	deoptLabel := ec.uniqueLabel("tarr_store_deopt")
+	missLabel := ec.uniqueLabel("tarr_store_miss")
+	successLabel := ec.uniqueLabel("tarr_store_success")
 	doneLabel := ec.uniqueLabel("tarr_store_done")
+
+	tblID := instr.Args[0].ID
+	allowGrow := instr.Aux2&tableArrayStoreFlagAllowGrow != 0
+	needsTablePtr := allowGrow || instr.Aux == int64(vm.FBKindMixed) || instr.Aux == int64(vm.FBKindBool)
+	if needsTablePtr {
+		tblReg := ec.resolveValueNB(tblID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	}
 
 	dataReg := ec.resolveRawDataPtr(instr.Args[1].ID, jit.X2)
 	if dataReg != jit.X2 {
@@ -404,116 +646,49 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 	if lenReg != jit.X3 {
 		asm.MOVreg(jit.X3, lenReg)
 	}
-	if !ec.emitTableArrayKeyToReg(instr.Args[3], deoptLabel) {
+	if !ec.emitTableArrayKeyToReg(instr.Args[3], missLabel) {
 		ec.emitDeopt(instr)
 		return
 	}
 	keyID := instr.Args[3].ID
 	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) {
 		asm.CMPimm(jit.X1, 0)
-		asm.BCond(jit.CondLT, deoptLabel)
-	}
-	if !ec.tableArrayUpperBoundSafe(instr.ID) {
-		asm.CMPreg(jit.X1, jit.X3)
-		asm.BCond(jit.CondGE, deoptLabel)
+		asm.BCond(jit.CondLT, missLabel)
 	}
 
-	valueID := instr.Args[4].ID
-	switch instr.Aux {
-	case int64(vm.FBKindMixed):
-		valReg := ec.resolveValueNB(valueID, jit.X4)
-		if valReg != jit.X4 {
-			asm.MOVreg(jit.X4, valReg)
-		}
-		asm.STRreg(jit.X4, jit.X2, jit.X1)
-		tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-		if tblReg != jit.X0 {
-			asm.MOVreg(jit.X0, tblReg)
-		}
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-		asm.MOVimm16(jit.X5, 1)
-		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-
-	case int64(vm.FBKindInt):
-		if val, ok := ec.constInts[valueID]; ok {
-			asm.LoadImm64(jit.X4, val)
-		} else if ec.hasReg(valueID) && ec.valueReprOf(valueID) == valueReprRawInt {
-			reg := ec.physReg(valueID)
-			if reg != jit.X4 {
-				asm.MOVreg(jit.X4, reg)
-			}
-		} else if ec.irTypes[valueID] == TypeInt {
-			valReg := ec.resolveValueNB(valueID, jit.X4)
-			if valReg != jit.X4 {
-				asm.MOVreg(jit.X4, valReg)
-			}
-			asm.SBFX(jit.X4, jit.X4, 0, 48)
-		} else {
-			valReg := ec.resolveValueNB(valueID, jit.X4)
-			if valReg != jit.X4 {
-				asm.MOVreg(jit.X4, valReg)
-			}
-			asm.LSRimm(jit.X5, jit.X4, 48)
-			asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
-			asm.CMPreg(jit.X5, jit.X6)
-			asm.BCond(jit.CondNE, deoptLabel)
-			asm.SBFX(jit.X4, jit.X4, 0, 48)
-		}
-		asm.STRreg(jit.X4, jit.X2, jit.X1)
-
-	case int64(vm.FBKindFloat):
-		if ec.irTypes[valueID] == TypeFloat && ec.hasFPReg(valueID) {
-			valFPR := ec.resolveRawFloat(valueID, jit.D0)
-			asm.FSTRdReg(valFPR, jit.X2, jit.X1)
-		} else {
-			valReg := ec.resolveValueNB(valueID, jit.X4)
-			if valReg != jit.X4 {
-				asm.MOVreg(jit.X4, valReg)
-			}
-			if ec.irTypes[valueID] != TypeFloat {
-				jit.EmitIsTagged(asm, jit.X4, jit.X5)
-				asm.BCond(jit.CondEQ, deoptLabel)
-			}
-			asm.STRreg(jit.X4, jit.X2, jit.X1)
-		}
-
-	case int64(vm.FBKindBool):
-		if boolVal, ok := ec.constBools[valueID]; ok {
-			asm.MOVimm16(jit.X4, uint16(boolVal+1))
-		} else {
-			valReg := ec.resolveValueNB(valueID, jit.X4)
-			if valReg != jit.X4 {
-				asm.MOVreg(jit.X4, valReg)
-			}
-			asm.LSRimm(jit.X5, jit.X4, 48)
-			asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
-			asm.CMPreg(jit.X5, jit.X6)
-			boolOK := ec.uniqueLabel("tarr_store_bool_ok")
-			asm.BCond(jit.CondEQ, boolOK)
-			asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
-			asm.CMPreg(jit.X5, jit.X6)
-			asm.BCond(jit.CondNE, deoptLabel)
-			asm.MOVimm16(jit.X4, 0)
-			boolStore := ec.uniqueLabel("tarr_store_bool_store")
-			asm.B(boolStore)
-			asm.Label(boolOK)
-			asm.LoadImm64(jit.X5, 1)
-			asm.ANDreg(jit.X4, jit.X4, jit.X5)
-			asm.ADDimm(jit.X4, jit.X4, 1)
-			asm.Label(boolStore)
-		}
-		asm.STRBreg(jit.X4, jit.X2, jit.X1)
-
-	default:
+	if !ec.emitTableArrayRawStore(tableArrayRawStoreConfig{
+		labelPrefix:             "tarr_store",
+		kind:                    instr.Aux,
+		valueID:                 instr.Args[4].ID,
+		tableReg:                jit.X0,
+		keyReg:                  jit.X1,
+		dataReg:                 jit.X2,
+		lenReg:                  jit.X3,
+		missLabel:               missLabel,
+		successLabel:            successLabel,
+		upperBoundSafe:          !allowGrow && ec.tableArrayUpperBoundSafe(instr.ID),
+		allowGrowWithinCapacity: allowGrow,
+		fallthroughOnSuccess:    !allowGrow,
+	}) {
 		ec.emitDeopt(instr)
 		return
 	}
 
+	asm.Label(successLabel)
 	ec.recordTableArrayStoreBoundedKey(instr)
 	asm.B(doneLabel)
 
-	asm.Label(deoptLabel)
-	ec.emitPreciseDeopt(instr)
+	asm.Label(missLabel)
+	if instr.Aux2&tableArrayStoreFlagExitResumeOnMiss != 0 {
+		savedReprs := ec.snapshotValueReprs()
+		ec.emitTableArrayStoreExit(instr)
+		ec.emitUnboxRawIntRegs(savedReprs)
+		ec.restoreValueReprSnapshot(savedReprs)
+		asm.MOVimm16(jit.X17, 0)
+		asm.B(doneLabel)
+	} else {
+		ec.emitPreciseDeopt(instr)
+	}
 	asm.Label(doneLabel)
 }
 
@@ -1672,219 +1847,92 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	if emitMixedArrayPath {
 		// --- ArrayMixed fast path ---
 		asm.Label(mixedArrayLabel)
-		mixedStoreLabel := ec.uniqueLabel("settable_mixed_store")
-		mixedAppendLabel := ec.uniqueLabel("settable_mixed_append")
-		emitTypedArraySetPriorLoadOrBoundsAppendCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffArrayLen, mixedAppendLabel, deoptLabel)
-		asm.Label(mixedStoreLabel)
-		// Load value to store into X4.
-		valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-		if valReg != jit.X4 {
-			asm.MOVreg(jit.X4, valReg)
-		}
-		asm.LDR(jit.X2, jit.X0, jit.TableOffArray) // array data pointer
-		asm.STRreg(jit.X4, jit.X2, jit.X1)         // array[key] = value
-		// Set keysDirty flag (elided if already set in this block).
-		if !ec.keysDirtyWritten[tblValueID] {
-			asm.MOVimm16(jit.X5, 1)
-			asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-		}
-		asm.B(doneLabel)
-		if !keyBoundsAlreadyChecked {
-			emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffArrayLen, jit.TableOffArrayCap, mixedAppendLabel, deoptLabel, mixedStoreLabel)
+		if !ec.emitTableArrayRawStore(tableArrayRawStoreConfig{
+			labelPrefix:             "settable_mixed",
+			kind:                    int64(vm.FBKindMixed),
+			valueID:                 instr.Args[2].ID,
+			tableReg:                jit.X0,
+			keyReg:                  jit.X1,
+			dataReg:                 jit.X2,
+			lenReg:                  jit.X2,
+			missLabel:               deoptLabel,
+			successLabel:            doneLabel,
+			loadDataFromTable:       true,
+			priorLoadBounds:         keyBoundsAlreadyChecked,
+			keysDirtyAlreadyWritten: ec.keysDirtyWritten[tblValueID],
+			allowGrowWithinCapacity: true,
+		}) {
+			ec.emitDeopt(instr)
+			return
 		}
 	}
 
 	// --- ArrayInt fast path ---
 	if emitIntArrayPath {
 		asm.Label(intArrayLabel)
-
-		if val, ok := ec.constInts[instr.Args[2].ID]; ok {
-			// Constant int bypass: load immediate, skip tag check and unbox.
-			intStoreLabel := ec.uniqueLabel("settable_int_store")
-			intAppendLabel := ec.uniqueLabel("settable_int_append")
-			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
-			asm.LoadImm64(jit.X4, val)
-			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
-			asm.Label(intStoreLabel)
-			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
-			asm.STRreg(jit.X4, jit.X2, jit.X1)
-			asm.B(doneLabel)
-			if !keyBoundsAlreadyChecked {
-				emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-				emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
-			}
-		} else if ec.hasReg(instr.Args[2].ID) && ec.valueReprOf(instr.Args[2].ID) == valueReprRawInt {
-			// Raw int register bypass: value already unboxed, skip tag check.
-			intStoreLabel := ec.uniqueLabel("settable_int_store")
-			intAppendLabel := ec.uniqueLabel("settable_int_append")
-			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
-			reg := ec.physReg(instr.Args[2].ID)
-			if reg != jit.X4 {
-				asm.MOVreg(jit.X4, reg)
-			}
-			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
-			asm.Label(intStoreLabel)
-			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
-			asm.STRreg(jit.X4, jit.X2, jit.X1)
-			asm.B(doneLabel)
-			if !keyBoundsAlreadyChecked {
-				emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-				emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
-			}
-		} else if ec.irTypes[instr.Args[2].ID] == TypeInt {
-			// Known-int value: unbox directly and skip the redundant tag check.
-			intStoreLabel := ec.uniqueLabel("settable_int_store")
-			intAppendLabel := ec.uniqueLabel("settable_int_append")
-			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
-			valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-			if valReg2 != jit.X4 {
-				asm.MOVreg(jit.X4, valReg2)
-			}
-			asm.SBFX(jit.X4, jit.X4, 0, 48)
-			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
-			asm.Label(intStoreLabel)
-			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray)
-			asm.STRreg(jit.X4, jit.X2, jit.X1)
-			asm.B(doneLabel)
-			if !keyBoundsAlreadyChecked {
-				emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-				emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
-			}
-		} else {
-			// Load value to store and check it's an integer.
-			intStoreLabel := ec.uniqueLabel("settable_int_store")
-			intAppendLabel := ec.uniqueLabel("settable_int_append")
-			intSparseLabel := ec.uniqueLabel("settable_int_sparse")
-			valReg2 := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-			if valReg2 != jit.X4 {
-				asm.MOVreg(jit.X4, valReg2)
-			}
-			asm.LSRimm(jit.X5, jit.X4, 48)
-			asm.MOVimm16(jit.X6, uint16(jit.NB_TagIntShr48))
-			asm.CMPreg(jit.X5, jit.X6)
-			asm.BCond(jit.CondNE, deoptLabel) // value not int -> deopt
-			// Unbox int64 from NaN-boxed value.
-			asm.SBFX(jit.X4, jit.X4, 0, 48)
-			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffIntArrayLen, intAppendLabel, intSparseLabel, deoptLabel)
-			asm.Label(intStoreLabel)
-			asm.LDR(jit.X2, jit.X0, jit.TableOffIntArray) // intArray data pointer
-			asm.STRreg(jit.X4, jit.X2, jit.X1)            // intArray[key] = int64
-			asm.B(doneLabel)
-			if !keyBoundsAlreadyChecked {
-				emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intAppendLabel, deoptLabel, intStoreLabel)
-				emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffIntArrayLen, jit.TableOffIntArrayCap, intSparseLabel, deoptLabel, intStoreLabel)
-			}
+		if !ec.emitTableArrayRawStore(tableArrayRawStoreConfig{
+			labelPrefix:             "settable_int",
+			kind:                    int64(vm.FBKindInt),
+			valueID:                 instr.Args[2].ID,
+			tableReg:                jit.X0,
+			keyReg:                  jit.X1,
+			dataReg:                 jit.X2,
+			lenReg:                  jit.X2,
+			missLabel:               deoptLabel,
+			successLabel:            doneLabel,
+			loadDataFromTable:       true,
+			priorLoadBounds:         keyBoundsAlreadyChecked,
+			keysDirtyAlreadyWritten: ec.keysDirtyWritten[tblValueID],
+			allowGrowWithinCapacity: true,
+		}) {
+			ec.emitDeopt(instr)
+			return
 		}
 	}
 
 	if emitFloatArrayPath {
 		// --- ArrayFloat fast path ---
 		asm.Label(floatArrayLabel)
-		// Load value to store.
-		floatStoreLabel := ec.uniqueLabel("settable_float_store")
-		floatAppendLabel := ec.uniqueLabel("settable_float_append")
-		floatSparseLabel := ec.uniqueLabel("settable_float_sparse")
-		valueID := instr.Args[2].ID
-		valueIsTypedFloat := ec.irTypes[valueID] == TypeFloat
-		valueHasRawFPR := valueIsTypedFloat && ec.hasFPReg(valueID)
-		if !valueHasRawFPR {
-			valRegFloat := ec.resolveValueNB(valueID, jit.X4)
-			if valRegFloat != jit.X4 {
-				asm.MOVreg(jit.X4, valRegFloat)
-			}
-			if !valueIsTypedFloat {
-				// Check value is a float (NOT tagged — bits 50-62 NOT all set).
-				// Tagged values have (val >> 50) == 0x3FFF. Floats don't.
-				jit.EmitIsTagged(asm, jit.X4, jit.X5) // sets flags: EQ = tagged, NE = float
-				asm.BCond(jit.CondEQ, deoptLabel)     // tagged (int/bool/nil/ptr) → deopt
-			}
-		}
-		emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffFloatArrayLen, floatAppendLabel, floatSparseLabel, deoptLabel)
-		asm.Label(floatStoreLabel)
-		// Float64 bits ARE the NaN-boxed representation — store directly.
-		asm.LDR(jit.X2, jit.X0, jit.TableOffFloatArray) // floatArray data pointer
-		if valueHasRawFPR {
-			valFPR := ec.resolveRawFloat(valueID, jit.D0)
-			asm.FSTRdReg(valFPR, jit.X2, jit.X1) // floatArray[key] = float64
-		} else {
-			asm.STRreg(jit.X4, jit.X2, jit.X1) // floatArray[key] = float64 bits
-		}
-		asm.B(doneLabel)
-		if !keyBoundsAlreadyChecked {
-			emitTypedArraySetAppendPathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatAppendLabel, deoptLabel, floatStoreLabel)
-			emitTypedArraySetSparsePathDirty(asm, jit.X0, jit.X1, jit.X6, jit.TableOffFloatArrayLen, jit.TableOffFloatArrayCap, floatSparseLabel, deoptLabel, floatStoreLabel)
+		if !ec.emitTableArrayRawStore(tableArrayRawStoreConfig{
+			labelPrefix:             "settable_float",
+			kind:                    int64(vm.FBKindFloat),
+			valueID:                 instr.Args[2].ID,
+			tableReg:                jit.X0,
+			keyReg:                  jit.X1,
+			dataReg:                 jit.X2,
+			lenReg:                  jit.X2,
+			missLabel:               deoptLabel,
+			successLabel:            doneLabel,
+			loadDataFromTable:       true,
+			priorLoadBounds:         keyBoundsAlreadyChecked,
+			keysDirtyAlreadyWritten: ec.keysDirtyWritten[tblValueID],
+			allowGrowWithinCapacity: true,
+		}) {
+			ec.emitDeopt(instr)
+			return
 		}
 	}
 
 	if emitBoolArrayPath {
 		// --- ArrayBool fast path ---
 		asm.Label(boolArrayLabel)
-
-		// Constant bool bypass: skip value load, tag check, and payload extraction.
-		if boolVal, ok := ec.constBools[instr.Args[2].ID]; ok {
-			// false(0)→byte 1, true(1)→byte 2
-			boolStoreLabel := ec.uniqueLabel("settable_bool_store")
-			boolAppendLabel := ec.uniqueLabel("settable_bool_append")
-			boolSparseLabel := ec.uniqueLabel("settable_bool_sparse")
-			byteVal := uint16(boolVal + 1)
-			asm.MOVimm16(jit.X4, byteVal)
-			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
-			asm.Label(boolStoreLabel)
-			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
-			asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
-			if !ec.keysDirtyWritten[tblValueID] {
-				asm.MOVimm16(jit.X5, 1)
-				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-			}
-			asm.B(doneLabel)
-			if !keyBoundsAlreadyChecked {
-				emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
-				emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolSparseLabel, deoptLabel, boolStoreLabel)
-			}
-		} else {
-			// Load value to store.
-			boolStoreLabel := ec.uniqueLabel("settable_bool_store")
-			boolAppendLabel := ec.uniqueLabel("settable_bool_append")
-			boolSparseLabel := ec.uniqueLabel("settable_bool_sparse")
-			valRegBool := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
-			if valRegBool != jit.X4 {
-				asm.MOVreg(jit.X4, valRegBool)
-			}
-			// Check value type: must be bool (tag=0xFFFD) or nil (0xFFFC).
-			asm.LSRimm(jit.X5, jit.X4, 48)
-			asm.MOVimm16(jit.X6, uint16(jit.NB_TagBoolShr48))
-			asm.CMPreg(jit.X5, jit.X6)
-			boolOkLabel := ec.uniqueLabel("settable_bool_isbool")
-			asm.BCond(jit.CondEQ, boolOkLabel)
-			// Check if nil.
-			asm.MOVimm16(jit.X6, uint16(jit.NB_TagNilShr48))
-			asm.CMPreg(jit.X5, jit.X6)
-			asm.BCond(jit.CondNE, deoptLabel) // not bool, not nil → deopt
-			// Nil clears an existing bool slot only. Appending/sparse-growing
-			// nil must deopt so RawSetInt can preserve table length semantics.
-			asm.MOVimm16(jit.X4, 0)
-			emitTypedArraySetPriorLoadOrBoundsOnlyCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, deoptLabel)
-			asm.B(boolStoreLabel)
-			asm.Label(boolOkLabel)
-			// Bool: extract payload bit 0. false=0xFFFD000000000000 (payload=0) → byte 1
-			//                                true=0xFFFD000000000001 (payload=1) → byte 2
-			// Conversion: byte = payload + 1
-			asm.LoadImm64(jit.X5, 1)
-			asm.ANDreg(jit.X4, jit.X4, jit.X5) // extract bit 0 (payload)
-			asm.ADDimm(jit.X4, jit.X4, 1)      // 0→1 (false), 1→2 (true)
-			emitTypedArraySetPriorLoadOrBoundsAppendSparseCheck(asm, keyBoundsAlreadyChecked, jit.X0, jit.X1, jit.X2, jit.TableOffBoolArrayLen, boolAppendLabel, boolSparseLabel, deoptLabel)
-			asm.Label(boolStoreLabel)
-			asm.LDR(jit.X2, jit.X0, jit.TableOffBoolArray) // boolArray data pointer
-			asm.STRBreg(jit.X4, jit.X2, jit.X1)            // boolArray[key] = byte
-			if !ec.keysDirtyWritten[tblValueID] {
-				asm.MOVimm16(jit.X5, 1)
-				asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
-			}
-			asm.B(doneLabel)
-			if !keyBoundsAlreadyChecked {
-				emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, deoptLabel, boolStoreLabel)
-				emitTypedArraySetSparsePath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolSparseLabel, deoptLabel, boolStoreLabel)
-			}
+		if !ec.emitTableArrayRawStore(tableArrayRawStoreConfig{
+			labelPrefix:             "settable_bool",
+			kind:                    int64(vm.FBKindBool),
+			valueID:                 instr.Args[2].ID,
+			tableReg:                jit.X0,
+			keyReg:                  jit.X1,
+			dataReg:                 jit.X2,
+			lenReg:                  jit.X2,
+			missLabel:               deoptLabel,
+			successLabel:            doneLabel,
+			loadDataFromTable:       true,
+			priorLoadBounds:         keyBoundsAlreadyChecked,
+			keysDirtyAlreadyWritten: ec.keysDirtyWritten[tblValueID],
+			allowGrowWithinCapacity: true,
+		}) {
+			ec.emitDeopt(instr)
+			return
 		}
 	}
 
@@ -2027,54 +2075,62 @@ func (ec *emitContext) emitDenseMatrixRowAppendFastPath(instr *Instr, missLabel,
 //   - Args[1] = key value
 //   - Args[2] = value to store
 func (ec *emitContext) emitSetTableExit(instr *Instr) {
+	ec.emitSetTableExitArgs(instr, 0, 1, 2)
+}
+
+func (ec *emitContext) emitTableArrayStoreExit(instr *Instr) {
+	ec.emitSetTableExitArgs(instr, 0, 3, 4)
+}
+
+func (ec *emitContext) emitSetTableExitArgs(instr *Instr, tableArg, keyArg, valueArg int) {
 	asm := ec.asm
 
 	// Store table arg to its home slot.
-	if len(instr.Args) > 0 {
-		tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if len(instr.Args) > tableArg && instr.Args[tableArg] != nil {
+		tblReg := ec.resolveValueNB(instr.Args[tableArg].ID, jit.X0)
 		if tblReg != jit.X0 {
 			asm.MOVreg(jit.X0, tblReg)
 		}
-		if s, ok := ec.slotMap[instr.Args[0].ID]; ok {
+		if s, ok := ec.slotMap[instr.Args[tableArg].ID]; ok {
 			asm.STR(jit.X0, mRegRegs, slotOffset(s))
 		}
 	}
 
 	// Store key arg to its home slot.
-	if len(instr.Args) > 1 {
-		keyReg := ec.resolveValueNB(instr.Args[1].ID, jit.X0)
+	if len(instr.Args) > keyArg && instr.Args[keyArg] != nil {
+		keyReg := ec.resolveValueNB(instr.Args[keyArg].ID, jit.X0)
 		if keyReg != jit.X0 {
 			asm.MOVreg(jit.X0, keyReg)
 		}
-		if s, ok := ec.slotMap[instr.Args[1].ID]; ok {
+		if s, ok := ec.slotMap[instr.Args[keyArg].ID]; ok {
 			asm.STR(jit.X0, mRegRegs, slotOffset(s))
 		}
 	}
 
 	// Store value arg to its home slot.
-	if len(instr.Args) > 2 {
-		valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X0)
+	if len(instr.Args) > valueArg && instr.Args[valueArg] != nil {
+		valReg := ec.resolveValueNB(instr.Args[valueArg].ID, jit.X0)
 		if valReg != jit.X0 {
 			asm.MOVreg(jit.X0, valReg)
 		}
-		if s, ok := ec.slotMap[instr.Args[2].ID]; ok {
+		if s, ok := ec.slotMap[instr.Args[valueArg].ID]; ok {
 			asm.STR(jit.X0, mRegRegs, slotOffset(s))
 		}
 	}
 
 	tblSlot, keySlot, valSlot := 0, 0, 0
-	if len(instr.Args) > 0 {
-		if s, ok := ec.slotMap[instr.Args[0].ID]; ok {
+	if len(instr.Args) > tableArg && instr.Args[tableArg] != nil {
+		if s, ok := ec.slotMap[instr.Args[tableArg].ID]; ok {
 			tblSlot = s
 		}
 	}
-	if len(instr.Args) > 1 {
-		if s, ok := ec.slotMap[instr.Args[1].ID]; ok {
+	if len(instr.Args) > keyArg && instr.Args[keyArg] != nil {
+		if s, ok := ec.slotMap[instr.Args[keyArg].ID]; ok {
 			keySlot = s
 		}
 	}
-	if len(instr.Args) > 2 {
-		if s, ok := ec.slotMap[instr.Args[2].ID]; ok {
+	if len(instr.Args) > valueArg && instr.Args[valueArg] != nil {
+		if s, ok := ec.slotMap[instr.Args[valueArg].ID]; ok {
 			valSlot = s
 		}
 	}
