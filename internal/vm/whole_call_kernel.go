@@ -4,6 +4,10 @@ import "github.com/gscript/gscript/internal/runtime"
 
 const maxWholeCallFloatScratch = 1 << 20
 
+func wholeCallKernelArity(n int) bool {
+	return n == 1 || n == 3
+}
+
 func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, dst int) (bool, error) {
 	handled, results, err := vm.tryRunValueWholeCallKernel(cl, args)
 	if !handled || err != nil {
@@ -14,6 +18,9 @@ func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, 
 }
 
 func (vm *VM) tryRunValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if handled, results, err := vm.tryRunFannkuchReduxWholeCallKernel(cl, args); handled || err != nil {
+		return handled, results, err
+	}
 	if handled, results, err := vm.tryRunSieveWholeCallKernel(cl, args); handled || err != nil {
 		return handled, results, err
 	}

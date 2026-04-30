@@ -1443,7 +1443,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 
 			// ---- Fast path: VM Closure (inline call) ----
 			if cl, ok := closureFromValue(fnVal); ok {
-				if b != 0 && (nArgs == 1 || nArgs == 3) {
+				if b != 0 && wholeCallKernelArity(nArgs) {
 					args := vm.regs[base+a+1 : base+a+1+nArgs]
 					handled, err := vm.tryValueWholeCallKernel(cl, args, c, base+a)
 					if handled {
@@ -2051,11 +2051,13 @@ func (vm *VM) writeCallResults(dst, c int, results []runtime.Value) {
 func (vm *VM) callValue(fnVal runtime.Value, args []runtime.Value) ([]runtime.Value, error) {
 	if fnVal.IsFunction() {
 		if cl, ok := closureFromValue(fnVal); ok {
-			if handled, results, err := vm.tryRunValueWholeCallKernel(cl, args); handled {
-				return results, err
-			}
-			if handled, err := vm.tryRunWholeCallKernel(cl, args); handled {
-				return nil, err
+			if wholeCallKernelArity(len(args)) {
+				if handled, results, err := vm.tryRunValueWholeCallKernel(cl, args); handled {
+					return results, err
+				}
+				if handled, err := vm.tryRunWholeCallKernel(cl, args); handled {
+					return nil, err
+				}
 			}
 			newBase := vm.top
 			if vm.frameCount > 0 {
