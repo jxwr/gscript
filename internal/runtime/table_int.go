@@ -110,6 +110,42 @@ func (t *Table) typedArrayLen() int {
 	}
 }
 
+// PlainIntArrayRegionForNumericKernel exposes an inclusive int-array region for
+// guarded whole-function kernels. It only succeeds when ordinary integer table
+// indexing for every key in [lo, hi] is known to hit the plain typed-array
+// backing without metatable fallback, table materialization, locking, or kind
+// conversion.
+func (t *Table) PlainIntArrayRegionForNumericKernel(lo, hi int) ([]int64, bool) {
+	if lo < 0 || hi < lo || t == nil || t.mu != nil || t.lazyTree != nil || t.metatable != nil || t.arrayKind != ArrayInt {
+		return nil, false
+	}
+	if hi >= len(t.intArray) {
+		return nil, false
+	}
+	return t.intArray[lo : hi+1], true
+}
+
+// PlainNumericValueArrayRegionForNumericKernel exposes an inclusive mixed-array
+// region for guarded whole-function numeric kernels. It only succeeds when
+// every ordinary integer lookup in [lo, hi] hits a present numeric Value in the
+// mixed array backing. Callers that mutate the returned slice must preserve
+// Value boxes exactly.
+func (t *Table) PlainNumericValueArrayRegionForNumericKernel(lo, hi int) ([]Value, bool) {
+	if lo < 0 || hi < lo || t == nil || t.mu != nil || t.lazyTree != nil || t.metatable != nil || t.arrayKind != ArrayMixed {
+		return nil, false
+	}
+	if hi >= len(t.array) {
+		return nil, false
+	}
+	region := t.array[lo : hi+1]
+	for _, v := range region {
+		if !v.IsNumber() {
+			return nil, false
+		}
+	}
+	return region, true
+}
+
 // valueToInt64 converts a Value to int64 for storage in intArray.
 func valueToInt64(val Value) int64 {
 	return val.Int()
