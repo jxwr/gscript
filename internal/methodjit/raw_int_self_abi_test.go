@@ -278,43 +278,22 @@ func TestRawIntSelfABI_FastPathKeepsCtxRegsLazyOnSuccess(t *testing.T) {
 	assertCompiledRawIntSelfABI(t, cf.RawIntSelfABI, 1)
 
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
-	rawSelfShims := 0
-	for pc := 0; pc+4 <= len(code); pc += 4 {
-		word := binary.LittleEndian.Uint32(code[pc : pc+4])
-		if _, ok := rawSelfFrameAllocSize(word, 1); !ok {
-			continue
-		}
-
-		blOff := -1
-		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
-			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
-			if isBL(scanWord) {
-				blOff = scan
-				break
-			}
-			if isUnconditionalB(scanWord) || scan-pc > 200 {
-				break
-			}
-		}
-		if blOff < 0 {
-			continue
-		}
-
-		rawSelfShims++
+	rawSelfShims := rawSelfNumericBLOffsets(code, cf.NumericEntryOffset)
+	for _, blOff := range rawSelfShims {
 		for scan := blOff + 4; scan+4 <= len(code); scan += 4 {
 			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
 			if isSTRMRegRegsToCtxRegs(scanWord) {
-				t.Fatalf("raw self-call success path at %#x eagerly publishes ctx.Regs at %#x", pc, scan)
+				t.Fatalf("raw self-call success path after BL %#x eagerly publishes ctx.Regs at %#x", blOff, scan)
 			}
 			if isUnconditionalB(scanWord) {
 				break
 			}
 			if scan-blOff > 260 {
-				t.Fatalf("raw self-call shim at %#x did not reach success branch within expected window", pc)
+				t.Fatalf("raw self-call shim after BL %#x did not reach success branch within expected window", blOff)
 			}
 		}
 	}
-	if rawSelfShims == 0 {
+	if len(rawSelfShims) == 0 {
 		t.Fatal("expected at least one raw self-call shim")
 	}
 }
@@ -341,31 +320,20 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 	}
 
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
-	rawSelfShims := 0
-	for pc := 0; pc+4 <= len(code); pc += 4 {
-		word := binary.LittleEndian.Uint32(code[pc : pc+4])
-		if _, ok := rawSelfFrameAllocSize(word, 2); !ok {
-			continue
+	rawSelfShims := rawSelfNumericBLOffsets(code, cf.NumericEntryOffset)
+	for _, blOff := range rawSelfShims {
+		start := blOff - 240
+		if start < 0 {
+			start = 0
 		}
-		sawBL := false
-		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+		for scan := start; scan < blOff; scan += 4 {
 			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
 			if isCtxCallModeAccess(scanWord) {
-				t.Fatalf("raw self-call shim at %#x touches ctx.CallMode before BL at %#x", pc, scan)
+				t.Fatalf("raw self-call shim before BL %#x touches ctx.CallMode at %#x", blOff, scan)
 			}
-			if isBL(scanWord) {
-				sawBL = true
-				break
-			}
-			if isUnconditionalB(scanWord) || scan-pc > 200 {
-				break
-			}
-		}
-		if sawBL {
-			rawSelfShims++
 		}
 	}
-	if rawSelfShims == 0 {
+	if len(rawSelfShims) == 0 {
 		t.Fatal("expected at least one raw self-call shim")
 	}
 }
@@ -391,34 +359,13 @@ func TestRawIntSelfABI_FastPathUsesRegisterStatus(t *testing.T) {
 	}
 
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
-	rawSelfShims := 0
-	for pc := 0; pc+4 <= len(code); pc += 4 {
-		word := binary.LittleEndian.Uint32(code[pc : pc+4])
-		if _, ok := rawSelfFrameAllocSize(word, 1); !ok {
-			continue
-		}
-
-		blOff := -1
-		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
-			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
-			if isBL(scanWord) {
-				blOff = scan
-				break
-			}
-			if isUnconditionalB(scanWord) || scan-pc > 220 {
-				break
-			}
-		}
-		if blOff < 0 {
-			continue
-		}
-		rawSelfShims++
-
+	rawSelfShims := rawSelfNumericBLOffsets(code, cf.NumericEntryOffset)
+	for _, blOff := range rawSelfShims {
 		sawX16StatusBranch := false
 		for scan := blOff + 4; scan+4 <= len(code); scan += 4 {
 			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
 			if isCtxExitCodeAccess(scanWord) {
-				t.Fatalf("raw self-call shim at %#x reloads ctx.ExitCode after BL at %#x", pc, scan)
+				t.Fatalf("raw self-call shim after BL %#x reloads ctx.ExitCode at %#x", blOff, scan)
 			}
 			if isCBNZX16(scanWord) {
 				sawX16StatusBranch = true
@@ -427,14 +374,14 @@ func TestRawIntSelfABI_FastPathUsesRegisterStatus(t *testing.T) {
 				break
 			}
 			if scan-blOff > 260 {
-				t.Fatalf("raw self-call shim at %#x did not reach success branch within expected window", pc)
+				t.Fatalf("raw self-call shim after BL %#x did not reach success branch within expected window", blOff)
 			}
 		}
 		if !sawX16StatusBranch {
-			t.Fatalf("raw self-call shim at %#x did not branch on X16 numeric status after BL", pc)
+			t.Fatalf("raw self-call shim after BL %#x did not branch on X16 numeric status", blOff)
 		}
 	}
-	if rawSelfShims == 0 {
+	if len(rawSelfShims) == 0 {
 		t.Fatal("expected at least one raw self-call shim")
 	}
 }
@@ -461,57 +408,42 @@ func TestRawIntSelfABI_FastPathAvoidsNativeCallDepthTraffic(t *testing.T) {
 	}
 
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
-	rawSelfShims := 0
-	for pc := 0; pc+4 <= len(code); pc += 4 {
-		word := binary.LittleEndian.Uint32(code[pc : pc+4])
-		if _, ok := rawSelfFrameAllocSize(word, 2); !ok {
-			continue
+	rawSelfShims := rawSelfNumericBLOffsets(code, cf.NumericEntryOffset)
+	for _, blOff := range rawSelfShims {
+		start := blOff - 260
+		if start < 0 {
+			start = 0
 		}
-
-		blOff := -1
-		for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+		for scan := start; scan < blOff; scan += 4 {
 			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
 			if isCtxNativeCallDepthAccess(scanWord) {
-				t.Fatalf("raw self-call shim at %#x touches ctx.NativeCallDepth before BL at %#x", pc, scan)
-			}
-			if isBL(scanWord) {
-				blOff = scan
-				break
-			}
-			if isUnconditionalB(scanWord) || scan-pc > 240 {
-				break
+				t.Fatalf("raw self-call shim before BL %#x touches ctx.NativeCallDepth at %#x", blOff, scan)
 			}
 		}
-		if blOff < 0 {
-			continue
-		}
-
-		rawSelfShims++
 		for scan := blOff + 4; scan+4 <= len(code); scan += 4 {
 			scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
 			if isCtxNativeCallDepthAccess(scanWord) {
-				t.Fatalf("raw self-call success path at %#x touches ctx.NativeCallDepth after BL at %#x", pc, scan)
+				t.Fatalf("raw self-call success path after BL %#x touches ctx.NativeCallDepth at %#x", blOff, scan)
 			}
 			if isUnconditionalB(scanWord) {
 				break
 			}
 			if scan-blOff > 280 {
-				t.Fatalf("raw self-call shim at %#x did not reach success branch within expected window", pc)
+				t.Fatalf("raw self-call shim after BL %#x did not reach success branch within expected window", blOff)
 			}
 		}
 	}
-	if rawSelfShims == 0 {
+	if len(rawSelfShims) == 0 {
 		t.Fatal("expected at least one raw self-call shim")
 	}
 }
 
-func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
+func TestRawIntSelfABI_FastPathKeepsRawArgsRegisterOnly(t *testing.T) {
 	tests := []struct {
-		name             string
-		src              string
-		fnName           string
-		wantParams       int
-		wantArgSaveInsns int
+		name       string
+		src        string
+		fnName     string
+		wantParams int
 	}{
 		{
 			name:       "fib one arg",
@@ -521,7 +453,6 @@ func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 	if n < 2 { return n }
 	return fib(n - 1) + fib(n - 2)
 }`,
-			wantArgSaveInsns: 1,
 		},
 		{
 			name:       "ack two args",
@@ -532,7 +463,6 @@ func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 	if n == 0 { return ack(m - 1, 1) }
 	return ack(m - 1, ack(m, n - 1))
 }`,
-			wantArgSaveInsns: 1,
 		},
 		{
 			name:       "sum3 three args",
@@ -542,7 +472,6 @@ func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 	if a == 0 { return b + c }
 	return sum3(a - 1, b + 1, c + 2) + c
 }`,
-			wantArgSaveInsns: 2,
 		},
 		{
 			name:       "mix4 four args",
@@ -552,7 +481,6 @@ func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 	if a == 0 { return b + c + d }
 	return mix4(a - 1, b + 1, c + 2, d + 3) + d
 }`,
-			wantArgSaveInsns: 2,
 		},
 	}
 
@@ -575,21 +503,15 @@ func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 			}
 
 			code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
-			rawSelfShims := 0
-			for pc := 0; pc+4 <= len(code); pc += 4 {
-				word := binary.LittleEndian.Uint32(code[pc : pc+4])
-				frameSize, ok := rawSelfFrameAllocSize(word, tt.wantParams)
-				if !ok {
-					continue
-				}
-
-				sawBL := false
+			rawSelfShims := rawSelfNumericBLOffsets(code, cf.NumericEntryOffset)
+			for _, blOff := range rawSelfShims {
 				sawCallerBaseSave := false
 				argSaveInsns := 0
-				if isRawSelfArgPreSave(word, frameSize) {
-					argSaveInsns++
+				start := blOff - 260
+				if start < 0 {
+					start = 0
 				}
-				for scan := pc + 4; scan+4 <= len(code); scan += 4 {
+				for scan := start; scan < blOff; scan += 4 {
 					scanWord := binary.LittleEndian.Uint32(code[scan : scan+4])
 					if isSTPToSPPair(scanWord, mRegRegs, jit.X0) {
 						sawCallerBaseSave = true
@@ -603,27 +525,16 @@ func TestRawIntSelfABI_FastPathUsesArgsOnlyFallbackFrame(t *testing.T) {
 					if isSTRArgToSP(scanWord) {
 						argSaveInsns++
 					}
-					if isBL(scanWord) {
-						sawBL = true
-						break
-					}
-					if isUnconditionalB(scanWord) || scan-pc > 200 {
-						break
-					}
 				}
-				if !sawBL {
-					continue
-				}
-				rawSelfShims++
 				if sawCallerBaseSave {
-					t.Fatalf("raw self-call shim at %#x still saves caller mRegRegs in the fallback arg frame", pc)
+					t.Fatalf("raw self-call shim before BL %#x still saves caller mRegRegs in the fallback arg frame", blOff)
 				}
-				if argSaveInsns != tt.wantArgSaveInsns {
-					t.Fatalf("raw self-call shim at %#x emitted %d arg-save insns, want %d", pc, argSaveInsns, tt.wantArgSaveInsns)
+				if argSaveInsns != 0 {
+					t.Fatalf("raw self-call shim before BL %#x emitted %d raw arg stack-save insns", blOff, argSaveInsns)
 				}
 			}
-			if rawSelfShims == 0 {
-				t.Fatal("expected at least one args-only raw self-call shim")
+			if len(rawSelfShims) == 0 {
+				t.Fatal("expected at least one register-only raw self-call shim")
 			}
 		})
 	}
@@ -987,6 +898,32 @@ func isUnconditionalB(word uint32) bool {
 
 func isBL(word uint32) bool {
 	return word&0xFC000000 == 0x94000000
+}
+
+func rawSelfNumericBLOffsets(code []byte, numericEntryOffset int) []int {
+	if numericEntryOffset <= 0 {
+		return nil
+	}
+	var out []int
+	for pc := 0; pc+4 <= len(code); pc += 4 {
+		word := binary.LittleEndian.Uint32(code[pc : pc+4])
+		target, ok := blTarget(word, pc)
+		if ok && target == numericEntryOffset {
+			out = append(out, pc)
+		}
+	}
+	return out
+}
+
+func blTarget(word uint32, pc int) (int, bool) {
+	if !isBL(word) {
+		return 0, false
+	}
+	imm := int32(word & 0x03ffffff)
+	if imm&(1<<25) != 0 {
+		imm |= ^int32(0x03ffffff)
+	}
+	return pc + int(imm<<2), true
 }
 
 func isBLR(word uint32) bool {

@@ -56,8 +56,6 @@ const (
 )
 
 const (
-	rawSelfArgsOff = 0
-
 	rawPeerFrameSize  = 64
 	rawPeerRegsOff    = 0
 	rawPeerConstsOff  = 8
@@ -81,8 +79,7 @@ func rawSelfFrameSizeForLive(nParams, nLiveRaw int) int {
 }
 
 func rawSelfLiveSpillsOff(nParams int) int {
-	size := nParams * jit.ValueSize
-	return (size + 15) &^ 15
+	return 0
 }
 
 func typedSelfFrameSizeFor(nArgs int) int {
@@ -649,8 +646,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	}
 
 	// Raw-call frame:
-	//   0..N      raw int args X0..X3, truncated to actual fixed arity
-	//   N..       raw live GPR spills that survive the BL on the success path
+	//   0..       raw live GPR spills that survive the BL on the success path
 	//
 	// The caller's own entry frame already owns FP/LR, and raw-int self calls
 	// stay within one proto/closure/constant domain. The callee base is always
@@ -658,8 +654,10 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	// restore mRegRegs with offset arithmetic instead of saving it in the shim
 	// frame. Successful raw calls keep ctx.Regs lazy; numeric exit epilogues and
 	// raw-call fallback paths publish the current base and materialize raw live
-	// spills into boxed VM homes before Go observes the context. The boxed
-	// function operand needed by VM fallback is rebuilt from BaselineClosurePtr;
+	// spills into boxed VM homes before Go observes the context. Pre-call
+	// fallback rebuilds args directly from X0..X3, while callee exits use the
+	// native-call-exit descriptor and no longer need saved raw args to replay
+	// the call. The boxed function operand is rebuilt from BaselineClosurePtr;
 	// static self recursion cannot change closure identity while this native
 	// frame is executing. Numeric entries return a status in X16 (0 = success,
 	// non-zero = ctx.ExitCode), so raw self calls leave ctx.CallMode unchanged
@@ -667,7 +665,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	rawFrameSize := rawSelfFrameSizeForLive(nParams, len(rawLiveSpills))
 
 	ec.emitNumericArgsInRegs(instr, nParams)
-	ec.emitAllocAndSaveRawSelfFallbackArgs(nParams, rawFrameSize)
+	ec.emitAllocRawSelfFrame(rawFrameSize)
 	ec.emitSaveRawSelfLiveSpills(rawLiveSpills)
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
@@ -718,7 +716,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 
 	ec.emitRestoreRawSelfCallerRegsFromCalleeBase(calleeBaseOff)
 	ec.emitReloadRawSelfLiveSpills(rawLiveSpills)
-	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
+	ec.emitFreeRawSelfFrame(rawFrameSize)
 	ec.emitReloadSelectiveForCall(boxedLiveGPRs, liveFPRs)
 	ec.emitUnboxRawIntRegs(boxedRawReloads)
 	ec.restoreValueReprSnapshot(preReprs)
@@ -727,8 +725,24 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(exitLabel)
-	ec.emitRestoreRawSelfCallerStateFromCalleeBase(calleeBaseOff)
-	asm.B(fallbackLabel)
+	ec.emitPushNativeCallExitFrameIfNested(jit.X7, jit.X8, jit.X9, jit.X10)
+	asm.LDR(jit.X7, mRegCtx, execCtxOffExitCode)
+	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCalleeExitCode)
+	asm.LDR(jit.X7, mRegCtx, execCtxOffResumeNumericPass)
+	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCalleeResumePass)
+	asm.LDR(jit.X7, mRegCtx, execCtxOffExitResumePC)
+	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCalleeResumePC)
+	asm.LDR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCalleeClosurePtr)
+	asm.MOVimm16(jit.X7, 1)
+	asm.STR(jit.X7, mRegCtx, execCtxOffNativeCalleeTier2Only)
+	ec.emitRestoreRawSelfCallerRegsFromCalleeBase(calleeBaseOff)
+	ec.emitPublishRawSelfCallerState()
+	ec.restoreValueReprSnapshot(preReprs)
+	ec.emitMaterializeRawSelfLiveSpills(rawLiveSpills)
+	ec.emitMaterializeRawIntSelfFunctionFromSelfClosure(funcSlot)
+	ec.emitFreeRawSelfFrame(rawFrameSize)
+	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
 
 	asm.Label(preCallSlowLabel)
 	ec.emitPublishRawSelfCallerState()
@@ -736,8 +750,8 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 	asm.Label(fallbackLabel)
 	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeRawSelfLiveSpills(rawLiveSpills)
-	ec.emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlot, nArgs, rawSelfArgsOff)
-	asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
+	ec.emitMaterializeRawIntSelfCallFrameFromArgRegs(funcSlot, nArgs)
+	ec.emitFreeRawSelfFrame(rawFrameSize)
 	ec.emitRawIntSelfCallExitResume(instr, funcSlot, nArgs, nRets, preReprs, liveGPRs, liveFPRs)
 	ec.restoreValueReprSnapshot(postReprs)
 
@@ -794,18 +808,15 @@ func (ec *emitContext) emitRestoreRawSelfCallerRegsFromCalleeBase(calleeBaseOff 
 	}
 }
 
-func (ec *emitContext) emitAllocAndSaveRawSelfFallbackArgs(nParams, rawFrameSize int) {
-	asm := ec.asm
-	switch {
-	case nParams >= 2:
-		asm.STPpre(jit.X0, jit.X1, jit.SP, -rawFrameSize)
-	default:
-		asm.STRpre(jit.X0, jit.SP, -rawFrameSize)
+func (ec *emitContext) emitAllocRawSelfFrame(rawFrameSize int) {
+	if rawFrameSize > 0 {
+		ec.asm.SUBimm(jit.SP, jit.SP, uint16(rawFrameSize))
 	}
-	if nParams >= 4 {
-		asm.STP(jit.X2, jit.X3, jit.SP, rawSelfArgsOff+2*jit.ValueSize)
-	} else if nParams >= 3 {
-		asm.STR(jit.X2, jit.SP, rawSelfArgsOff+2*jit.ValueSize)
+}
+
+func (ec *emitContext) emitFreeRawSelfFrame(rawFrameSize int) {
+	if rawFrameSize > 0 {
+		ec.asm.ADDimm(jit.SP, jit.SP, uint16(rawFrameSize))
 	}
 }
 
@@ -823,10 +834,10 @@ func (ec *emitContext) emitReloadRawSelfLiveSpills(spills []rawSelfLiveSpill) {
 
 func (ec *emitContext) emitMaterializeRawSelfLiveSpills(spills []rawSelfLiveSpill) {
 	for _, spill := range spills {
-		ec.asm.LDR(jit.X0, jit.SP, spill.stackOff)
-		jit.EmitBoxIntFast(ec.asm, jit.X0, jit.X0, mRegTagInt)
-		ec.asm.STR(jit.X0, mRegRegs, slotOffset(spill.slot))
-		ec.emitExitResumeCheckShadowStoreGPR(spill.slot, jit.X0)
+		ec.asm.LDR(jit.X10, jit.SP, spill.stackOff)
+		jit.EmitBoxIntFast(ec.asm, jit.X10, jit.X10, mRegTagInt)
+		ec.asm.STR(jit.X10, mRegRegs, slotOffset(spill.slot))
+		ec.emitExitResumeCheckShadowStoreGPR(spill.slot, jit.X10)
 	}
 }
 
@@ -846,14 +857,21 @@ func (ec *emitContext) emitBoxCurrentClosure(dst, scratch jit.Reg) {
 	ec.asm.ORRreg(dst, dst, scratch)
 }
 
-func (ec *emitContext) emitMaterializeRawIntSelfCallFrameFromSelfClosure(funcSlot, nArgs, rawArgOff int) {
+func (ec *emitContext) emitMaterializeRawIntSelfFunctionFromSelfClosure(funcSlot int) {
 	asm := ec.asm
-	ec.emitBoxCurrentClosure(jit.X0, jit.X1)
-	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	ec.emitBoxCurrentClosure(jit.X10, jit.X11)
+	asm.STR(jit.X10, mRegRegs, slotOffset(funcSlot))
+	ec.emitExitResumeCheckShadowStoreGPR(funcSlot, jit.X10)
+}
+
+func (ec *emitContext) emitMaterializeRawIntSelfCallFrameFromArgRegs(funcSlot, nArgs int) {
+	asm := ec.asm
+	ec.emitMaterializeRawIntSelfFunctionFromSelfClosure(funcSlot)
 	for i := 0; i < nArgs; i++ {
-		asm.LDR(jit.X0, jit.SP, rawArgOff+i*jit.ValueSize)
-		jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+1+i))
+		argReg := jit.Reg(int(jit.X0) + i)
+		jit.EmitBoxIntFast(asm, jit.X10, argReg, mRegTagInt)
+		asm.STR(jit.X10, mRegRegs, slotOffset(funcSlot+1+i))
+		ec.emitExitResumeCheckShadowStoreGPR(funcSlot+1+i, jit.X10)
 	}
 }
 
