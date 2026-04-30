@@ -49,6 +49,16 @@ func TestMUL(t *testing.T) {
 	}
 }
 
+func TestMADD(t *testing.T) {
+	a := NewAssembler()
+	a.MADD(X0, X1, X2, X3) // MADD X0, X1, X2, X3 = X1*X2 + X3
+	got := getInst(a, 0)
+	// 0x9B000000 | (2<<16) | (3<<10) | (1<<5) | 0 = 0x9B020C20
+	if got != 0x9B020C20 {
+		t.Fatalf("MADD: got 0x%08X, want 0x9B020C20", got)
+	}
+}
+
 func TestSDIV(t *testing.T) {
 	a := NewAssembler()
 	a.SDIV(X0, X1, X2)

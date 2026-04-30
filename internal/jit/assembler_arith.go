@@ -40,6 +40,12 @@ func (a *Assembler) MUL(rd, rn, rm Reg) {
 	a.emit(0x9B007C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
 }
 
+// MADD: Xd = Xn*Xm + Xa (64-bit)
+func (a *Assembler) MADD(rd, rn, rm, ra Reg) {
+	// 1|00|11011|000|Rm|0|Ra|Rn|Rd
+	a.emit(0x9B000000 | uint32(rm)<<16 | uint32(ra)<<10 | uint32(rn)<<5 | uint32(rd))
+}
+
 // SDIV: Xd = Xn / Xm (signed 64-bit)
 func (a *Assembler) SDIV(rd, rn, rm Reg) {
 	// 1|00|11010110|Rm|00001|1|Rn|Rd

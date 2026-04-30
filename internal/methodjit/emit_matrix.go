@@ -23,13 +23,14 @@ import (
 // emitMatrixGetF emits ARM64 code for OpMatrixGetF(m, i, j) → float.
 //
 // Layout:
-//   X0 = m (NaN-boxed Table)    → extract *Table
-//   X1 = dmStride (int32 load), guard != 0 else deopt
-//   X2 = i (raw int64)
-//   X3 = j (raw int64)
-//   X4 = i * stride + j
-//   X5 = dmFlat (unsafe.Pointer)
-//   D0 = *(float64*)(X5 + X4*8)
+//
+//	X0 = m (NaN-boxed Table)    → extract *Table
+//	X1 = dmStride (int32 load), guard != 0 else deopt
+//	X2 = i (raw int64)
+//	X3 = j (raw int64)
+//	X4 = i * stride + j
+//	X5 = dmFlat (unsafe.Pointer)
+//	D0 = *(float64*)(X5 + X4*8)
 func (ec *emitContext) emitMatrixGetF(instr *Instr) {
 	if len(instr.Args) < 3 {
 		return
@@ -74,8 +75,7 @@ func (ec *emitContext) emitMatrixGetF(instr *Instr) {
 	}
 
 	// X4 = i * stride + j  (stride is 32-bit; extend zero).
-	asm.MUL(jit.X4, jit.X2, jit.X1)
-	asm.ADDreg(jit.X4, jit.X4, jit.X3)
+	asm.MADD(jit.X4, jit.X2, jit.X1, jit.X3)
 
 	// X5 = dmFlat pointer.
 	asm.LDR(jit.X5, jit.X0, jit.TableOffDMFlat)
@@ -223,11 +223,9 @@ func (ec *emitContext) emitMatrixLoadFAt(instr *Instr) {
 		asm.MOVreg(jit.X3, jReg)
 	}
 	// X4 = i * stride + j
-	asm.MUL(jit.X4, jit.X2, jit.X1)
-	asm.ADDreg(jit.X4, jit.X4, jit.X3)
+	asm.MADD(jit.X4, jit.X2, jit.X1, jit.X3)
 	// X0 = flat[X4] (raw float64 bits)
 	asm.LDRreg(jit.X0, jit.X5, jit.X4)
-
 	// R64: prefer direct FPR transfer for float results. storeResultNB
 	// only populates GPR allocations; float SSA with FPR allocation
 	// falls through to a memory store there.
@@ -262,8 +260,7 @@ func (ec *emitContext) emitMatrixStoreFAt(instr *Instr) {
 	if jReg != jit.X3 {
 		asm.MOVreg(jit.X3, jReg)
 	}
-	asm.MUL(jit.X4, jit.X2, jit.X1)
-	asm.ADDreg(jit.X4, jit.X4, jit.X3)
+	asm.MADD(jit.X4, jit.X2, jit.X1, jit.X3)
 	vReg := ec.resolveValueNB(instr.Args[4].ID, jit.X6)
 	if vReg != jit.X6 {
 		asm.MOVreg(jit.X6, vReg)
@@ -381,8 +378,7 @@ func (ec *emitContext) emitMatrixSetF(instr *Instr) {
 		asm.MOVreg(jit.X3, jReg)
 	}
 
-	asm.MUL(jit.X4, jit.X2, jit.X1)
-	asm.ADDreg(jit.X4, jit.X4, jit.X3)
+	asm.MADD(jit.X4, jit.X2, jit.X1, jit.X3)
 
 	// Load value to store. Raw float bits (NaN-boxed float bits ARE IEEE floats).
 	vReg := ec.resolveValueNB(instr.Args[3].ID, jit.X6)
