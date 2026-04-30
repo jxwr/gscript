@@ -279,7 +279,7 @@ type Tier2PipelineOpts struct {
 //	LoadElim → EscapeAnalysis → DCE → PostRewriteTypeSpec →
 //	LoopBoundRangeGuard → RangeAnalysis → OverflowBoxing → FMAFusion →
 //	FloatStrengthReduction → FMAFusion → LICM → FieldNumToFloatFusion →
-//	LoadElim → DCE → UnrollAndJam
+//	LoadElim → DCE → UnrollAndJam → DCE
 //
 // Returns the optimized function, any intrinsic rewrite notes (non-nil means
 // the function uses intrinsics that Tier 1 would execute differently), and an
@@ -593,6 +593,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = DCEPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("DCE (post-UnrollAndJam): %w", err)
+	}
+
 	fn, err = ScalarPromotionPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ScalarPromotion: %w", err)
@@ -683,6 +688,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("LoadEliminationPostLICM", LoadEliminationPass)
 	pipe.Add("DCEPostLICM", DCEPass)
 	pipe.Add("UnrollAndJam", UnrollAndJamPass)
+	pipe.Add("DCEPostUnrollAndJam", DCEPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	return pipe
 }

@@ -1,22 +1,24 @@
-// pass_unroll_and_jam.go implements a narrow 2-way unroll for float reductions.
+// pass_unroll_and_jam.go implements a conservative 2-way unroll for numeric
+// float reductions.
 //
 // It targets the canonical innermost-loop pattern:
 //   acc = Phi(0.0, new_acc)
 //   iv  = Phi(init, iv + step)
-//   new_acc = acc + Mul(X(iv), Y(iv))
+//   new_acc = acc + Expr(iv)
 //
-// The transform clones the body once for iv+step, tightens the hot loop bound
-// to full pairs only, and emits a scalar tail for odd trip counts. This keeps
-// the original left-to-right reduction order while reducing hot back-edge
-// traffic after LICM has moved invariant table/matrix facts out of the body.
+// The transform clones the side-effect-free body once for iv+step, tightens the
+// hot loop bound to full pairs only, and emits a scalar tail for odd trip
+// counts. It also remaps companion float recurrences (for example a sign flip)
+// through the cloned iteration. This keeps the original left-to-right reduction
+// order while reducing hot back-edge traffic after LICM has moved invariant
+// table/matrix facts out of the body.
 
 package methodjit
 
 import "fmt"
 
 // UnrollAndJamPass keeps the historical pass name, but deliberately implements
-// a lower-risk single-accumulator unroll rather than split-accumulator
-// unroll-and-jam.
+// a lower-risk serial unroll rather than split-accumulator unroll-and-jam.
 func UnrollAndJamPass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.Blocks) == 0 {
 		return fn, nil
@@ -49,6 +51,7 @@ type floatReductionCandidate struct {
 	bodyBlock   *Block
 	accPhi      *Instr
 	ivPhi       *Instr
+	recurrences []*Instr
 	stepInstr   *Instr
 	stepValue   *Value
 	step        int64
@@ -56,7 +59,6 @@ type floatReductionCandidate struct {
 	outsidePred *Block
 	exitBlock   *Block
 	updateInstr *Instr
-	mulInstr    *Instr
 }
 
 func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatReductionCandidate {
@@ -69,8 +71,9 @@ func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatR
 		return nil
 	}
 
-	var accPhi, ivPhi *Instr
-	phiCount, floatPhiCount, intPhiCount := 0, 0, 0
+	var ivPhi *Instr
+	var floatPhis []*Instr
+	phiCount, intPhiCount := 0, 0
 	for _, instr := range header.Instrs {
 		if instr.Op != OpPhi {
 			continue
@@ -78,37 +81,40 @@ func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatR
 		phiCount++
 		switch instr.Type {
 		case TypeFloat:
-			accPhi = instr
-			floatPhiCount++
+			floatPhis = append(floatPhis, instr)
 		case TypeInt:
 			ivPhi = instr
 			intPhiCount++
+		default:
+			return nil
 		}
 	}
-	if phiCount != 2 || floatPhiCount != 1 || intPhiCount != 1 || accPhi == nil || ivPhi == nil {
+	if phiCount < 2 || len(floatPhis) == 0 || intPhiCount != 1 || ivPhi == nil {
 		return nil
 	}
 
-	updateInstr := findAccumUpdate(accPhi)
-	if updateInstr == nil || len(updateInstr.Args) != 2 {
-		return nil
+	var accPhi, updateInstr *Instr
+	var bodyBlock *Block
+	for _, phi := range floatPhis {
+		update := findAccumUpdate(phi)
+		if update == nil {
+			continue
+		}
+		if update.Block == nil || update.Block != inside[0] || !bodyBlocks[update.Block.ID] {
+			continue
+		}
+		if bodyBlock != nil && bodyBlock != update.Block {
+			continue
+		}
+		accPhi = phi
+		updateInstr = update
+		bodyBlock = update.Block
+		break
 	}
-	var mulArg *Value
-	if updateInstr.Args[0].ID == accPhi.ID {
-		mulArg = updateInstr.Args[1]
-	} else if updateInstr.Args[1].ID == accPhi.ID {
-		mulArg = updateInstr.Args[0]
-	} else {
-		return nil
-	}
-	if mulArg == nil || mulArg.Def == nil || mulArg.Def.Op != OpMulFloat {
+	if accPhi == nil || updateInstr == nil || bodyBlock == nil {
 		return nil
 	}
 
-	bodyBlock := updateInstr.Block
-	if bodyBlock == nil || bodyBlock != inside[0] || !bodyBlocks[bodyBlock.ID] {
-		return nil
-	}
 	if blockStartsWithPhi(header.Succs[1]) || !valueUsesLimitedToBlocks(fn, accPhi.ID, bodyBlock, header.Succs[1]) {
 		return nil
 	}
@@ -130,12 +136,17 @@ func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatR
 	if !bodyIsSafeForUnroll(bodyBlock) {
 		return nil
 	}
+	recurrences := collectFloatRecurrences(fn, header, bodyBlock, inside[0], accPhi)
+	if recurrences == nil {
+		return nil
+	}
 
 	return &floatReductionCandidate{
 		header:      header,
 		bodyBlock:   bodyBlock,
 		accPhi:      accPhi,
 		ivPhi:       ivPhi,
+		recurrences: recurrences,
 		stepInstr:   stepInstr,
 		stepValue:   stepValue,
 		step:        stepVal,
@@ -143,13 +154,15 @@ func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatR
 		outsidePred: outside[0],
 		exitBlock:   header.Succs[1],
 		updateInstr: updateInstr,
-		mulInstr:    mulArg.Def,
 	}
 }
 
 func findAccumUpdate(phi *Instr) *Instr {
 	for _, arg := range phi.Args {
-		if arg == nil || arg.Def == nil || arg.Def.Op != OpAddFloat || len(arg.Def.Args) != 2 {
+		if arg == nil || arg.Def == nil || len(arg.Def.Args) != 2 {
+			continue
+		}
+		if arg.Def.Op != OpAddFloat && arg.Def.Op != OpSubFloat {
 			continue
 		}
 		if arg.Def.Args[0].ID == phi.ID || arg.Def.Args[1].ID == phi.ID {
@@ -157,6 +170,32 @@ func findAccumUpdate(phi *Instr) *Instr {
 		}
 	}
 	return nil
+}
+
+func collectFloatRecurrences(fn *Function, header, body, insidePred *Block, accPhi *Instr) []*Instr {
+	recurrences := make([]*Instr, 0, 2)
+	for _, instr := range header.Instrs {
+		if instr.Op != OpPhi || instr.Type != TypeFloat || instr == accPhi {
+			continue
+		}
+		arg := phiArgForPred(instr, header, insidePred)
+		if arg == nil || arg.Def == nil || arg.Def.Block != body {
+			return nil
+		}
+		if !valueUsesLimitedToBlocks(fn, instr.ID, body, header) {
+			return nil
+		}
+		recurrences = append(recurrences, instr)
+	}
+	return recurrences
+}
+
+func phiArgForPred(phi *Instr, header, pred *Block) *Value {
+	idx := predIndex(header, pred)
+	if idx < 0 || idx >= len(phi.Args) {
+		return nil
+	}
+	return phi.Args[idx]
 }
 
 func findIntIVStep(fn *Function, li *loopInfo, ivPhi *Instr) (*Instr, *Value, int64) {
@@ -261,6 +300,7 @@ func unrollFloatReductionLoop2(fn *Function, cand *floatReductionCandidate) erro
 		cand.accPhi.ID:      cand.updateInstr.Value(),
 		cand.updateInstr.ID: cand.updateInstr.Value(),
 	}
+	seedRecurrenceRemap(bodyPredIdx, remap, cand.recurrences)
 	cloneUpdate, err := cloneBodyInstructions(fn, body, originalBody, remap, cand.updateInstr.ID)
 	if err != nil {
 		return err
@@ -268,6 +308,7 @@ func unrollFloatReductionLoop2(fn *Function, cand *floatReductionCandidate) erro
 	body.Instrs = append(body.Instrs, cloneTerminator(fn, body, OpJump, nil, header, nil, term))
 	cand.accPhi.Args[bodyPredIdx] = cloneUpdate.Value()
 	cand.ivPhi.Args[bodyPredIdx] = k2.Value()
+	updateRecurrenceBackedges(bodyPredIdx, remap, cand.recurrences)
 
 	tailCond := &Instr{
 		ID:    fn.newValueID(),
@@ -305,6 +346,26 @@ func unrollFloatReductionLoop2(fn *Function, cand *floatReductionCandidate) erro
 	exit.Instrs = append([]*Instr{exitAcc}, exit.Instrs...)
 	replaceValueUsesInBlock(exit, cand.accPhi.ID, exitAcc.Value(), 1)
 	return nil
+}
+
+func seedRecurrenceRemap(predIdx int, remap map[int]*Value, recurrences []*Instr) {
+	for _, phi := range recurrences {
+		if phi == nil || predIdx < 0 || predIdx >= len(phi.Args) || phi.Args[predIdx] == nil {
+			continue
+		}
+		remap[phi.ID] = phi.Args[predIdx]
+	}
+}
+
+func updateRecurrenceBackedges(predIdx int, remap map[int]*Value, recurrences []*Instr) {
+	for _, phi := range recurrences {
+		if phi == nil || predIdx < 0 || predIdx >= len(phi.Args) || phi.Args[predIdx] == nil {
+			continue
+		}
+		if repl := remap[phi.Args[predIdx].ID]; repl != nil {
+			phi.Args[predIdx] = repl
+		}
+	}
 }
 
 func cloneBodyInstructions(fn *Function, block *Block, instrs []*Instr, remap map[int]*Value, updateID int) (*Instr, error) {
@@ -451,7 +512,7 @@ func isUnrollCloneableOp(op Op) bool {
 	switch op {
 	case OpConstInt, OpConstFloat, OpConstBool, OpConstNil, OpConstString,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
-		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA,
 		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardNonNil, OpGuardTruthy,
 		OpMatrixLoadFAt, OpMatrixLoadFRow, OpTableArrayLoad, OpTableArrayNestedLoad:
 		return true
