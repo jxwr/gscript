@@ -260,6 +260,28 @@ for iter := 1; iter <= 3; iter++ {
 	}
 }
 
+func TestTier2_TableArrayStoreLoopVersionGuardFailureCorrectness(t *testing.T) {
+	src := `
+func grow_bool(n) {
+    flags := {}
+    for i := 0; i <= 2; i++ {
+        flags[i] = true
+    }
+    for i := 4; i <= n; i++ {
+        flags[i] = false
+    }
+    if flags[n] { return 1 }
+    return 7
+}
+
+result := 0
+for r := 1; r <= 40; r++ {
+    result = result + grow_bool(5)
+}
+`
+	compareTier2Result(t, src, "result")
+}
+
 // TestTier2_FibonacciIterativeCorrectness tests a pure integer loop with
 // accumulator variables. Exercises int arithmetic and loop register state
 // preservation across Tier 2 compilation.
