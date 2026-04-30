@@ -1021,6 +1021,27 @@ func (t *Table) GetArrayKind() ArrayKind {
 	return t.arrayKind
 }
 
+// PlainFloatArrayForNumericKernel exposes the backing float array for guarded
+// whole-function numeric kernels. It is intentionally narrower than RawGetInt:
+// callers may only use the slice when ordinary table indexing for keys
+// 0..n-1 is known to hit a plain, non-concurrent, non-lazy float array without
+// metamethod fallback.
+func (t *Table) PlainFloatArrayForNumericKernel(n int) ([]float64, bool) {
+	if n < 0 || t == nil || t.mu != nil || t.lazyTree != nil || t.metatable != nil || t.arrayKind != ArrayFloat {
+		return nil, false
+	}
+	if len(t.floatArray) < n {
+		return nil, false
+	}
+	return t.floatArray, true
+}
+
+// MarkArrayMutationForNumericKernel mirrors RawSetInt's observable iteration
+// invalidation for guarded kernels that overwrite existing array slots.
+func (t *Table) MarkArrayMutationForNumericKernel() {
+	t.keysDirty = true
+}
+
 // TableDMFlatOffset / TableDMStrideOffset return the byte offsets of
 // the DenseMatrix descriptor fields for JIT verification (R43).
 func TableDMFlatOffset() uintptr {
