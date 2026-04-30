@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-04-30</span>
   <br>
+  <a href="78-the-tree-that-was-never-built">The Tree That Was Never Built</a>
+  <p><code>binary_trees</code> stopped paying to allocate and then immediately fold a full recursive table graph. Fixed recursive builders can now return a lazy table descriptor, and matching folds consume pure lazy trees as recurrences while ordinary reads, writes, iteration, field caches, and GC roots preserve table semantics. The focused guard moved <code>binary_trees</code> from roughly 0.15-0.17s to about 0.008s with no neighboring benchmark regressions.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-04-30</span>
+  <br>
   <a href="77-the-loop-counted-by-twos">The Loop Counted By Twos</a>
   <p><code>matmul</code> was no longer dominated by row-table lookup after DenseMatrix lowering and ARM64 <code>MADD</code> address generation. Tier 2 now performs a narrow method-JIT loop transform for single-block float reductions: clone one side-effect-free body iteration, advance the induction variable by two, and keep a scalar tail for odd trip counts. The focused guard moved current-main <code>matmul</code> from about 0.037s to 0.030s, narrowing the local LuaJIT gap to about 1.36x without introducing trace JIT machinery.</p>
 </div>
