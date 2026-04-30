@@ -45,11 +45,12 @@ func countOpHelper(fn *Function, op Op) int {
 
 // InlineConfig configures the function inlining pass.
 type InlineConfig struct {
-	Globals           map[string]*vm.FuncProto // global function name -> proto
-	MaxSize           int                      // max callee bytecode count (default 30)
-	MaxRecursion      int                      // max inlining depth for self/mutually-recursive callees (0 = no recursive inlining)
-	MaxCumulativeSize int                      // R166: V8-style cumulative-bytecode cap across all inlines in this compilation (0 = unbounded, preserves R73 behavior)
-	PreserveSelfCalls bool                     // keep direct self calls visible for specialized recursive ABIs/TCO
+	Globals            map[string]*vm.FuncProto // global function name -> proto
+	MaxSize            int                      // max callee bytecode count (default 30)
+	MaxRecursion       int                      // max inlining depth for self/mutually-recursive callees (0 = no recursive inlining)
+	MaxCumulativeSize  int                      // R166: V8-style cumulative-bytecode cap across all inlines in this compilation (0 = unbounded, preserves R73 behavior)
+	PreserveSelfCalls  bool                     // keep direct self calls visible for specialized recursive ABIs/TCO
+	RequirePureNumeric bool                     // only inline side-effect-free single-result numeric helpers
 }
 
 // inlineMaxIterations is the safety cap on recursive inlining iterations.
@@ -210,6 +211,13 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 
 		// Build the callee's IR.
 		calleeFn := BuildGraph(calleeProto)
+		if config.RequirePureNumeric {
+			if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
+				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("callee %s rejected by pure numeric inline policy: %s", calleeName, reason))
+				continue
+			}
+		}
 
 		// Multi-block inlining rewires predecessor lists and phi args. Inlining
 		// a loop-bearing callee at a call site that is itself inside a loop
@@ -284,6 +292,85 @@ func resolveCallee(callInstr *Instr, fn *Function, config InlineConfig) (string,
 		return "", nil
 	}
 	return name, proto
+}
+
+func pureNumericInlineRejectReason(calleeFn *Function) string {
+	if calleeFn == nil || calleeFn.Proto == nil {
+		return "missing callee IR"
+	}
+	if calleeFn.Unpromotable {
+		return "callee uses unmodeled bytecode"
+	}
+	if calleeFn.Proto.IsVarArg {
+		return "vararg callee"
+	}
+	if len(calleeFn.Proto.Upvalues) > 0 {
+		return "callee captures upvalues"
+	}
+
+	returns := 0
+	for _, block := range calleeFn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			if instr.Op == OpReturn {
+				returns++
+				if len(instr.Args) != 1 {
+					return "callee does not have exactly one return value"
+				}
+				if !pureNumericValue(instr.Args[0]) {
+					return "return value is not numeric"
+				}
+				continue
+			}
+			if !pureNumericInlineOp(instr.Op) {
+				return fmt.Sprintf("side-effecting or escaping op %s", instr.Op)
+			}
+		}
+	}
+	if returns == 0 {
+		return "callee has no return"
+	}
+	return ""
+}
+
+func pureNumericValue(v *Value) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	switch v.Def.Type {
+	case TypeInt, TypeFloat:
+		return true
+	case TypeAny, TypeUnknown:
+		switch v.Def.Op {
+		case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
+			OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
+			OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+			OpNumToFloat, OpPhi, OpLoadSlot:
+			return true
+		}
+	}
+	return false
+}
+
+func pureNumericInlineOp(op Op) bool {
+	switch op {
+	case OpConstInt, OpConstFloat,
+		OpLoadSlot,
+		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+		OpNumToFloat, OpSqrt, OpFMA,
+		OpEq, OpLt, OpLe, OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat,
+		OpModZeroInt,
+		OpGuardType, OpGuardIntRange,
+		OpJump, OpBranch,
+		OpPhi:
+		return true
+	default:
+		return false
+	}
 }
 
 // isRecursive checks if a FuncProto contains any OP_GETGLOBAL that loads

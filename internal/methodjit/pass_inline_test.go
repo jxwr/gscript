@@ -160,6 +160,82 @@ func f(i) {
 	}
 }
 
+func TestInlinePureNumericPolicy_AcceptsNumericHelper(t *testing.T) {
+	src := `
+func A(i, j) {
+	return 1.0 / ((i+j)*(i+j+1)/2 + i + 1)
+}
+func f(i, j) {
+	return A(i, j)
+}
+`
+	fn, config := buildInlineTestIR(t, src, "f")
+	config.RequirePureNumeric = true
+
+	result, err := InlinePassWith(config)(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	if n := countOp(result, OpCall); n != 0 {
+		t.Fatalf("expected pure numeric helper to inline, got %d residual calls\nIR:\n%s", n, Print(result))
+	}
+}
+
+func TestInlinePureNumericPolicy_RejectsSideEffectEscapeAndMultiReturn(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "side_effect_call",
+			src: `
+func helper(x) {
+	print(x)
+	return x + 1
+}
+func f(x) { return helper(x) }
+`,
+		},
+		{
+			name: "escaping_table",
+			src: `
+func helper(x) {
+	return {value: x}
+}
+func f(x) { return helper(x) }
+`,
+		},
+		{
+			name: "multi_return",
+			src: `
+func helper(x) {
+	return x, x + 1
+}
+func f(x) { return helper(x) }
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fn, config := buildInlineTestIR(t, tt.src, "f")
+			config.RequirePureNumeric = true
+			result, err := InlinePassWith(config)(fn)
+			if err != nil {
+				t.Fatalf("InlinePass error: %v", err)
+			}
+			if n := countOp(result, OpCall); n == 0 {
+				t.Fatalf("pure numeric policy should reject %s\nIR:\n%s", tt.name, Print(result))
+			}
+			if errs := Validate(result); len(errs) > 0 {
+				for _, e := range errs {
+					t.Errorf("validation error: %v", e)
+				}
+			}
+		})
+	}
+}
+
 // TestInline_TooLarge tests that a callee exceeding the bytecode budget is NOT inlined.
 func TestInline_TooLarge(t *testing.T) {
 	// We'll set MaxSize to a very small value to force the callee to be "too large".

@@ -108,6 +108,63 @@ func TestUnrollAndJam_FloatReductionWithCompanionRecurrence(t *testing.T) {
 	}
 }
 
+func TestUnrollAndJam_UnrollsMultipleInlinedHelperLoops(t *testing.T) {
+	src := `func f(n, which) {
+		if which < 1 {
+			a := 0.0
+			for i := 0; i < n; i++ {
+				x := i + 1.0
+				a = a + x * 0.5
+			}
+			return a
+		}
+		b := 0.0
+		for j := 0; j < n; j++ {
+			y := j + 2.0
+			b = b + y * 0.25
+		}
+		return b
+	}`
+
+	proto := compileFunction(t, src)
+	fn := BuildGraph(proto)
+	var err error
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass: %v", err)
+	}
+	fn, err = ConstPropPass(fn)
+	if err != nil {
+		t.Fatalf("ConstPropPass: %v", err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+
+	beforeBlocks := len(fn.Blocks)
+	fn, err = UnrollAndJamPass(fn)
+	if err != nil {
+		t.Fatalf("UnrollAndJamPass: %v", err)
+	}
+	assertValidates(t, fn, "after UnrollAndJam")
+	if got, want := len(fn.Blocks), beforeBlocks+4; got != want {
+		t.Fatalf("block count = %d, want %d after unrolling two loops\nIR:\n%s", got, want, Print(fn))
+	}
+
+	for _, n := range []int64{0, 1, 2, 3, 7, 8} {
+		for _, which := range []int64{0, 1} {
+			args := []runtime.Value{runtime.IntValue(n), runtime.IntValue(which)}
+			got, err := Interpret(fn, args)
+			if err != nil {
+				t.Fatalf("Interpret f(%d,%d): %v\nIR:\n%s", n, which, err, Print(fn))
+			}
+			want := runVM(t, src, args)
+			assertValuesEqual(t, "f", got[0], want[0])
+		}
+	}
+}
+
 func TestUnrollAndJam_RejectsLoopBodyStores(t *testing.T) {
 	src := `func f(n) {
 		t := {}

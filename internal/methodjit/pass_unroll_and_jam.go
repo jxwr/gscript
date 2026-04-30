@@ -15,7 +15,10 @@
 
 package methodjit
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // UnrollAndJamPass keeps the historical pass name, but deliberately implements
 // a lower-risk serial unroll rather than split-accumulator unroll-and-jam.
@@ -23,25 +26,48 @@ func UnrollAndJamPass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.Blocks) == 0 {
 		return fn, nil
 	}
-	li := computeLoopInfo(fn)
-	if !li.hasLoops() {
-		return fn, nil
-	}
-	for headerID := range li.loopHeaders {
-		header := findBlock(fn, headerID)
-		if header == nil {
-			continue
+
+	// Call graph inlining can expose multiple independent helper loops in one
+	// caller. Recompute loop info after each rewrite, but unroll each original
+	// header at most once so the pass does not keep expanding the same loop.
+	unrolledHeaders := make(map[int]bool)
+	for {
+		li := computeLoopInfo(fn)
+		if !li.hasLoops() {
+			break
 		}
-		cand := detectFloatReductionLoop(fn, li, header)
-		if cand == nil {
-			continue
+
+		headerIDs := make([]int, 0, len(li.loopHeaders))
+		for headerID := range li.loopHeaders {
+			headerIDs = append(headerIDs, headerID)
 		}
-		if err := unrollFloatReductionLoop2(fn, cand); err != nil {
-			return nil, err
+		sort.Ints(headerIDs)
+
+		changed := false
+		for _, headerID := range headerIDs {
+			if unrolledHeaders[headerID] {
+				continue
+			}
+			header := findBlock(fn, headerID)
+			if header == nil {
+				continue
+			}
+			cand := detectFloatReductionLoop(fn, li, header)
+			if cand == nil {
+				continue
+			}
+			if err := unrollFloatReductionLoop2(fn, cand); err != nil {
+				return nil, err
+			}
+			unrolledHeaders[headerID] = true
+			changed = true
+			functionRemarks(fn).Add("UnrollAndJam", "changed", cand.header.ID, cand.updateInstr.ID, cand.updateInstr.Op,
+				"2-way unroll with scalar tail for float reduction loop")
+			break
 		}
-		functionRemarks(fn).Add("UnrollAndJam", "changed", cand.header.ID, cand.updateInstr.ID, cand.updateInstr.Op,
-			"2-way unroll with scalar tail for float reduction loop")
-		return fn, nil
+		if !changed {
+			break
+		}
 	}
 	return fn, nil
 }
