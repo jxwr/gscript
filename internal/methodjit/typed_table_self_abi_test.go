@@ -5,6 +5,7 @@ package methodjit
 import (
 	"encoding/binary"
 	"strconv"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -499,12 +500,12 @@ badRoot := {left: 1, payload: 123}
 		t.Fatalf("unknown recursive table arg must not get typed ABI: %+v", cf.TypedSelfABI)
 	}
 
-	got, err := v.CallValue(fn, []runtime.Value{badRoot})
-	if err != nil {
-		t.Fatalf("walk(badRoot): %v", err)
+	_, err := v.CallValue(fn, []runtime.Value{badRoot})
+	if err == nil {
+		t.Fatal("walk(badRoot) returned successfully, want VM table-get error for numeric recursive child")
 	}
-	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 1 {
-		t.Fatalf("walk(badRoot) = %v, want 1", got)
+	if !strings.Contains(err.Error(), "attempt to index") {
+		t.Fatalf("walk(badRoot) error=%v, want VM table-get error", err)
 	}
 }
 

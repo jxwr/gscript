@@ -29,3 +29,10 @@ func (vm *VM) ResumeFromPC(startPC int) ([]runtime.Value, error) {
 	vm.frames[vm.frameCount-1].pc = startPC
 	return vm.run()
 }
+
+// TableGetForJIT exposes the VM's full table-get semantics to JIT slow paths.
+// It includes non-table errors and __index metamethod dispatch, unlike
+// runtime.Table.RawGet.
+func (vm *VM) TableGetForJIT(table, key runtime.Value) (runtime.Value, error) {
+	return vm.tableGet(table, key)
+}

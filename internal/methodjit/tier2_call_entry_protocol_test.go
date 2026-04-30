@@ -3,7 +3,9 @@
 package methodjit
 
 import (
+	"math"
 	"os"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -615,6 +617,230 @@ result := driver()
 	}
 	if got := tm.ExitStats().ByExitCode["ExitCallExit"]; got == 0 {
 		t.Fatal("native caller did not materialize the boxed fallback call frame")
+	}
+}
+
+func TestTier2NativeCalleeTableBoundsMissResumesVMBehavior(t *testing.T) {
+	src := `
+func read_int(t, i) {
+    return t[i]
+}
+func call_read(f, t, i) {
+    return f(t, i)
+}
+warm := {}
+warm[1] = 10
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	readInt := findProtoByName(top, "read_int")
+	callRead := findProtoByName(top, "call_read")
+	if readInt == nil || callRead == nil {
+		t.Fatalf("missing protos: read_int=%v call_read=%v", readInt != nil, callRead != nil)
+	}
+	fnCaller := v.GetGlobal("call_read")
+	warm := v.GetGlobal("warm")
+	fnRead := v.GetGlobal("read_int")
+	if _, err := v.CallValue(fnRead, []runtime.Value{warm, runtime.IntValue(1)}); err != nil {
+		t.Fatalf("warm read_int: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(readInt); err != nil {
+		t.Fatalf("CompileTier2(read_int): %v", err)
+	}
+	if err := tm.CompileTier2(callRead); err != nil {
+		t.Fatalf("CompileTier2(call_read): %v", err)
+	}
+	readInt.CallCount = 100
+	setFuncProtoTier2DirectEntries(readInt, 0, readInt.Tier2DirectEntryPtr)
+	v.EnsureRegs(1024)
+
+	results, err := v.CallValue(fnCaller, []runtime.Value{fnRead, warm, runtime.IntValue(99)})
+	if err != nil {
+		t.Fatalf("bounds miss inside native callee should resume VM behavior: %v", err)
+	}
+	if len(results) != 1 || !results[0].IsNil() {
+		t.Fatalf("bounds miss result=%v, want nil", results)
+	}
+	if readInt.EnteredTier2 == 0 || callRead.EnteredTier2 == 0 {
+		t.Fatalf("expected both protos to enter Tier 2, read_int=%d call_read=%d",
+			readInt.EnteredTier2, callRead.EnteredTier2)
+	}
+}
+
+func TestTier2NativeCalleeTableKindMissResumesVMBehavior(t *testing.T) {
+	src := `
+func read_num(t, i) {
+    return t[i] + 1
+}
+func call_read(f, t, i) {
+    return f(t, i) + 0
+}
+ints := {}
+ints[1] = 10
+floats := {}
+floats[1] = 1.5
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	readNum := findProtoByName(top, "read_num")
+	callRead := findProtoByName(top, "call_read")
+	if readNum == nil || callRead == nil {
+		t.Fatalf("missing protos: read_num=%v call_read=%v", readNum != nil, callRead != nil)
+	}
+	fnCaller := v.GetGlobal("call_read")
+	fnRead := v.GetGlobal("read_num")
+	ints := v.GetGlobal("ints")
+	floats := v.GetGlobal("floats")
+	if _, err := v.CallValue(fnRead, []runtime.Value{ints, runtime.IntValue(1)}); err != nil {
+		t.Fatalf("warm read_num: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(readNum); err != nil {
+		t.Fatalf("CompileTier2(read_num): %v", err)
+	}
+	if err := tm.CompileTier2(callRead); err != nil {
+		t.Fatalf("CompileTier2(call_read): %v", err)
+	}
+	readNum.CallCount = 100
+	setFuncProtoTier2DirectEntries(readNum, 0, readNum.Tier2DirectEntryPtr)
+	v.EnsureRegs(1024)
+
+	results, err := v.CallValue(fnCaller, []runtime.Value{fnRead, floats, runtime.IntValue(1)})
+	if err != nil {
+		t.Fatalf("kind miss inside native callee should resume VM behavior: %v", err)
+	}
+	if len(results) != 1 || !results[0].IsFloat() || math.Abs(results[0].Float()-2.5) > 1e-9 {
+		t.Fatalf("kind miss result=%v, want float 2.5", results)
+	}
+	if readNum.EnteredTier2 == 0 || callRead.EnteredTier2 == 0 {
+		t.Fatalf("expected both protos to enter Tier 2, read_num=%d call_read=%d",
+			readNum.EnteredTier2, callRead.EnteredTier2)
+	}
+}
+
+func TestTier2NativeCalleeShapeMetatableMissResumesVMBehavior(t *testing.T) {
+	src := `
+func read_x(t) {
+    return t.x + 1
+}
+func call_read(f, t) {
+    return f(t) + 0
+}
+own := {x: 10}
+proxy := {}
+setmetatable(proxy, {__index: {x: 41}})
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	readX := findProtoByName(top, "read_x")
+	callRead := findProtoByName(top, "call_read")
+	if readX == nil || callRead == nil {
+		t.Fatalf("missing protos: read_x=%v call_read=%v", readX != nil, callRead != nil)
+	}
+	fnCaller := v.GetGlobal("call_read")
+	fnRead := v.GetGlobal("read_x")
+	own := v.GetGlobal("own")
+	proxy := v.GetGlobal("proxy")
+	if _, err := v.CallValue(fnRead, []runtime.Value{own}); err != nil {
+		t.Fatalf("warm read_x: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(readX); err != nil {
+		t.Fatalf("CompileTier2(read_x): %v", err)
+	}
+	if err := tm.CompileTier2(callRead); err != nil {
+		t.Fatalf("CompileTier2(call_read): %v", err)
+	}
+	readX.CallCount = 100
+	setFuncProtoTier2DirectEntries(readX, 0, readX.Tier2DirectEntryPtr)
+	v.EnsureRegs(1024)
+
+	results, err := v.CallValue(fnCaller, []runtime.Value{fnRead, proxy})
+	if err != nil {
+		t.Fatalf("shape/metatable miss inside native callee should resume VM behavior: %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 42 {
+		t.Fatalf("shape/metatable miss result=%v, want int 42", results)
+	}
+	if readX.EnteredTier2 == 0 || callRead.EnteredTier2 == 0 {
+		t.Fatalf("expected both protos to enter Tier 2, read_x=%d call_read=%d",
+			readX.EnteredTier2, callRead.EnteredTier2)
+	}
+}
+
+func TestTier2NativeCalleeNonTableMissResumesVMError(t *testing.T) {
+	src := `
+func read_x(t) {
+    return t.x
+}
+func call_read(f, t) {
+    return f(t)
+}
+own := {x: 10}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	readX := findProtoByName(top, "read_x")
+	callRead := findProtoByName(top, "call_read")
+	if readX == nil || callRead == nil {
+		t.Fatalf("missing protos: read_x=%v call_read=%v", readX != nil, callRead != nil)
+	}
+	fnCaller := v.GetGlobal("call_read")
+	fnRead := v.GetGlobal("read_x")
+	own := v.GetGlobal("own")
+	if _, err := v.CallValue(fnRead, []runtime.Value{own}); err != nil {
+		t.Fatalf("warm read_x: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(readX); err != nil {
+		t.Fatalf("CompileTier2(read_x): %v", err)
+	}
+	if err := tm.CompileTier2(callRead); err != nil {
+		t.Fatalf("CompileTier2(call_read): %v", err)
+	}
+	readX.CallCount = 100
+	setFuncProtoTier2DirectEntries(readX, 0, readX.Tier2DirectEntryPtr)
+	v.EnsureRegs(1024)
+
+	_, err := v.CallValue(fnCaller, []runtime.Value{fnRead, runtime.IntValue(7)})
+	if err == nil {
+		t.Fatal("non-table miss inside native callee returned successfully, want VM table-get error")
+	}
+	if !strings.Contains(err.Error(), "attempt to index") {
+		t.Fatalf("non-table miss error=%v, want VM table-get error", err)
+	}
+	if readX.EnteredTier2 == 0 || callRead.EnteredTier2 == 0 {
+		t.Fatalf("expected both protos to enter Tier 2, read_x=%d call_read=%d",
+			readX.EnteredTier2, callRead.EnteredTier2)
 	}
 }
 

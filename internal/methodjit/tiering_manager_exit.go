@@ -311,21 +311,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 	case ExitDeopt:
 		tm.disableTier2AfterRuntimeDeopt(proto, "tier2 native callee deopt")
-		if ctx.NativeCalleeResumePC > 0 {
-			if !tm.callVM.PushFrame(ptrToVMClosure(ctx.NativeCalleeClosurePtr), base) {
-				return runtime.NilValue(), fmt.Errorf("native-call-exit: stack overflow")
-			}
-			results, err := tm.callVM.ResumeFromPC(int(ctx.NativeCalleeResumePC))
-			tm.callVM.PopFrame()
-			if err != nil {
-				return runtime.NilValue(), err
-			}
-			if len(results) > 0 {
-				return results[0], nil
-			}
-			return runtime.NilValue(), nil
-		}
-		return runtime.NilValue(), fmt.Errorf("callee deopt")
+		return tm.resumeNativeCalleePreciseDeopt(ctx, base, proto, ctx.NativeCalleeResumePC)
 	case ExitNativeCallExit:
 		if ctx.NativeCallExitStackOverflow != 0 || !popNativeCallExitFrame(ctx) {
 			return runtime.NilValue(), errNestedNativeCallExit
@@ -429,7 +415,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 				"op_exit_id":     ctx.OpExitID,
 			})
 			tm.disableTier2AfterRuntimeDeopt(proto, "tier2 native callee deopt")
-			return runtime.NilValue(), fmt.Errorf("callee deopt")
+			return tm.resumeNativeCalleePreciseDeopt(ctx, base, proto, ctx.ExitResumePC)
 		default:
 			return runtime.NilValue(), fmt.Errorf("unknown callee exit code %d", ctx.ExitCode)
 		}
@@ -438,6 +424,33 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		ctx.RegsEnd = ctx.RegsBase + uintptr(len(currentRegs)*jit.ValueSize)
 		tm.setTier2FieldCacheContext(ctx, proto)
 	}
+}
+
+func (tm *TieringManager) resumeNativeCalleePreciseDeopt(ctx *ExecContext, base int, proto *vm.FuncProto, resumePC int64) (runtime.Value, error) {
+	if tm.callVM == nil {
+		return runtime.NilValue(), fmt.Errorf("callee deopt")
+	}
+	if resumePC <= 0 {
+		return runtime.NilValue(), fmt.Errorf("callee deopt")
+	}
+	cl := ptrToVMClosure(ctx.NativeCalleeClosurePtr)
+	if cl == nil || cl.Proto != proto {
+		return runtime.NilValue(), fmt.Errorf("native-call-exit: callee closure unavailable for precise deopt")
+	}
+	if !tm.callVM.PushFrame(cl, base) {
+		return runtime.NilValue(), fmt.Errorf("native-call-exit: stack overflow")
+	}
+	results, err := tm.callVM.ResumeFromPC(int(resumePC))
+	tm.callVM.PopFrame()
+	ctx.ExitResumePC = 0
+	ctx.NativeCalleeResumePC = 0
+	if err != nil {
+		return runtime.NilValue(), err
+	}
+	if len(results) > 0 {
+		return results[0], nil
+	}
+	return runtime.NilValue(), nil
 }
 
 // executeGlobalExit handles a global-exit in the TieringManager's Tier 2 path.
@@ -516,13 +529,21 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 		if absTable < len(regs) && absKey < len(regs) {
 			tblVal := regs[absTable]
 			keyVal := regs[absKey]
-			if tblVal.IsTable() {
-				result := tblVal.Table().RawGet(keyVal)
-				if absResult < len(regs) {
-					regs[absResult] = result
+			var result runtime.Value
+			if tblVal.IsTable() && !tblVal.Table().HasMetatable() {
+				result = tblVal.Table().RawGet(keyVal)
+			} else {
+				if tm.callVM == nil {
+					return fmt.Errorf("no callVM set for table-get exit")
 				}
-			} else if absResult < len(regs) {
-				regs[absResult] = runtime.NilValue()
+				var err error
+				result, err = tm.callVM.TableGetForJIT(tblVal, keyVal)
+				if err != nil {
+					return err
+				}
+			}
+			if absResult < len(regs) {
+				regs[absResult] = result
 			}
 		}
 
@@ -546,8 +567,8 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 		if absTable < len(regs) && constIdx < len(proto.Constants) {
 			tblVal := regs[absTable]
 			fieldName := proto.Constants[constIdx].Str()
-			if tblVal.IsTable() {
-				var result runtime.Value
+			var result runtime.Value
+			if tblVal.IsTable() && !tblVal.Table().HasMetatable() {
 				pc := int(ctx.TableKeySlot)
 				if pc >= 0 && pc < len(proto.Code) && vm.DecodeOp(proto.Code[pc]) == vm.OP_GETFIELD {
 					ensureFieldCache(proto)
@@ -555,11 +576,18 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 				} else {
 					result = tblVal.Table().RawGetString(fieldName)
 				}
-				if absResult < len(regs) {
-					regs[absResult] = result
+			} else {
+				if tm.callVM == nil {
+					return fmt.Errorf("no callVM set for table-get exit")
 				}
-			} else if absResult < len(regs) {
-				regs[absResult] = runtime.NilValue()
+				var err error
+				result, err = tm.callVM.TableGetForJIT(tblVal, runtime.StringValue(fieldName))
+				if err != nil {
+					return err
+				}
+			}
+			if absResult < len(regs) {
+				regs[absResult] = result
 			}
 		}
 
