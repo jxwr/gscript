@@ -162,7 +162,7 @@ func countLoopOps(fn *Function, blocks map[int]bool) LoopOpCounts {
 				counts.FloatMul++
 			case OpDivFloat:
 				counts.FloatDiv++
-			case OpFMA:
+			case OpFMA, OpFMSUB:
 				counts.FMA++
 			case OpTableArrayLoad:
 				counts.TableArrayLoad++

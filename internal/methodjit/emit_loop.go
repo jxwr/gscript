@@ -735,7 +735,7 @@ func isRawDataPtrOp(op Op) bool {
 // (stored via storeRawFloat in an FPR).
 func isRawFloatOp(op Op) bool {
 	switch op {
-	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpNumToFloat, OpGetFieldNumToFloat:
+	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpNumToFloat, OpGetFieldNumToFloat, OpFMA, OpFMSUB:
 		return true
 	default:
 		return false

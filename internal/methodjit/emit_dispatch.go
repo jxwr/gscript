@@ -113,6 +113,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitSqrtFloat(instr)
 	case OpFMA:
 		ec.emitFMA(instr)
+	case OpFMSUB:
+		ec.emitFMSUB(instr)
 	case OpMatrixGetF:
 		ec.emitMatrixGetF(instr)
 	case OpMatrixSetF:
@@ -303,7 +305,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm, OpNot,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
-		OpSqrt, OpFMA,
+		OpSqrt, OpFMA, OpFMSUB,
 		OpEq, OpLt, OpLe,
 		OpEqInt, OpLtInt, OpLeInt, OpModZeroInt,
 		OpLtFloat, OpLeFloat,
@@ -324,7 +326,7 @@ func instrPreservesFieldSvalsCache(instr *Instr) bool {
 	switch instr.Op {
 	case OpGetField, OpGetFieldNumToFloat, OpSetField:
 		return true
-	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA:
+	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA, OpFMSUB:
 		return instr.Type == TypeFloat
 	case OpLtFloat, OpLeFloat:
 		return true

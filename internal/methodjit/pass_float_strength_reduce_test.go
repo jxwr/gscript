@@ -93,6 +93,34 @@ func TestFloatStrengthReduction_ExposesFMA(t *testing.T) {
 	}
 }
 
+func TestFMAFusion_SubFloatMinusSingleUseMulBecomesFMSUB(t *testing.T) {
+	fn := &Function{}
+	b := &Block{ID: 0}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	acc := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFloat, Aux: 0, Block: b}
+	x := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFloat, Aux: 1, Block: b}
+	y := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFloat, Aux: 2, Block: b}
+	mul := &Instr{ID: fn.newValueID(), Op: OpMulFloat, Type: TypeFloat, Args: []*Value{x.Value(), y.Value()}, Block: b}
+	sub := &Instr{ID: fn.newValueID(), Op: OpSubFloat, Type: TypeFloat, Args: []*Value{acc.Value(), mul.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{sub.Value()}, Block: b}
+	b.Instrs = []*Instr{acc, x, y, mul, sub, ret}
+
+	if _, err := FMAFusionPass(fn); err != nil {
+		t.Fatalf("FMAFusionPass: %v", err)
+	}
+	if sub.Op != OpFMSUB {
+		t.Fatalf("sub-minus-mul was not fused:\n%s", Print(fn))
+	}
+	if len(sub.Args) != 3 || sub.Args[0].ID != x.ID || sub.Args[1].ID != y.ID || sub.Args[2].ID != acc.ID {
+		t.Fatalf("fused FMSUB has wrong args: %#v", sub.Args)
+	}
+	if mul.Op != OpNop {
+		t.Fatalf("single-use mul should be nopped after fusion, got %s", mul.Op)
+	}
+}
+
 func instrIndex(block *Block, target *Instr) int {
 	for i, instr := range block.Instrs {
 		if instr == target {

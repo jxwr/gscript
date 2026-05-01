@@ -59,7 +59,7 @@ func fieldNumFusionGapIsSafe(instrs []*Instr) bool {
 			OpConstInt, OpConstFloat, OpConstBool, OpConstNil, OpConstString,
 			OpLoadSlot,
 			OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
-			OpSqrt, OpFMA,
+			OpSqrt, OpFMA, OpFMSUB,
 			OpLtFloat, OpLeFloat:
 			continue
 		default:

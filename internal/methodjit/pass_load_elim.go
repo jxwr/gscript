@@ -105,7 +105,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 			switch instr.Op {
 			case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
-				OpNumToFloat, OpSqrt, OpFMA,
+				OpNumToFloat, OpSqrt, OpFMA, OpFMSUB,
 				OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat:
 				if instr.Op == OpNumToFloat && redundantNumToFloatArg(instr) {
 					replaceAllUses(fn, instr.ID, instr.Args[0].Def)
@@ -461,7 +461,7 @@ func guardProvenByProducer(v *Value, guardType Type) bool {
 		}
 	case TypeFloat:
 		switch v.Def.Op {
-		case OpConstFloat, OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpNumToFloat, OpGetFieldNumToFloat, OpSqrt, OpFMA:
+		case OpConstFloat, OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpNumToFloat, OpGetFieldNumToFloat, OpSqrt, OpFMA, OpFMSUB:
 			return true
 		}
 	case TypeBool:

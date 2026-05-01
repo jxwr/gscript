@@ -648,7 +648,7 @@ func canHoistOp(op Op) bool {
 	case OpGetTable:
 		// Caller must also check alias info (no SetTable on same obj, no Call in loop).
 		return true
-	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat:
+	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpFMA, OpFMSUB:
 		return true
 	case OpAddInt, OpSubInt, OpMulInt, OpDivIntExact, OpNegInt:
 		// Caller must also check fn.Int48Safe.
@@ -691,7 +691,7 @@ func isInterestingLICMMiss(op Op) bool {
 	case OpGetField, OpGetTable, OpGetGlobal, OpLoadSlot,
 		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
-		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpFMA, OpFMSUB,
 		OpMatrixFlat, OpMatrixStride, OpMatrixRowPtr,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData,
 		OpSqrt, OpNumToFloat:

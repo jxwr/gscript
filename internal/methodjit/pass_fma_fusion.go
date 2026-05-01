@@ -33,7 +33,8 @@
 package methodjit
 
 // FMAFusionPass walks all instructions, counts uses of each MulFloat,
-// then rewrites eligible Add+Mul pairs into FMA.
+// then rewrites eligible Add+Mul pairs into FMA and Sub-minus-Mul pairs
+// into FMSUB.
 func FMAFusionPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
@@ -104,6 +105,25 @@ func FMAFusionPass(fn *Function) (*Function, error) {
 			// the instruction in place keeps SSA value IDs stable.
 			mulInstr.Op = OpNop
 			mulInstr.Args = nil
+		}
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpSubFloat || len(instr.Args) != 2 {
+				continue
+			}
+			rhs := instr.Args[1]
+			if rhs == nil || rhs.Def == nil || rhs.Def.Op != OpMulFloat {
+				continue
+			}
+			if uses[rhs.ID] != 1 || len(rhs.Def.Args) != 2 {
+				continue
+			}
+			accArg := instr.Args[0]
+			instr.Op = OpFMSUB
+			instr.Args = []*Value{rhs.Def.Args[0], rhs.Def.Args[1], accArg}
+			rhs.Def.Op = OpNop
+			rhs.Def.Args = nil
 		}
 	}
 	return fn, nil

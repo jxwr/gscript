@@ -436,7 +436,7 @@ result := distance_sum(10)
 			switch ins.Op {
 			case OpAdd, OpSub, OpMul:
 				generic = append(generic, ins.Op.String())
-			case OpAddFloat, OpSubFloat, OpMulFloat, OpFMA:
+			case OpAddFloat, OpSubFloat, OpMulFloat, OpFMA, OpFMSUB:
 				sawFloatMath = true
 			case OpNumToFloat:
 				numToFloat++

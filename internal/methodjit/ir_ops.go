@@ -73,6 +73,10 @@ const (
 	// Emitted by FMAFusionPass when OpAddFloat(acc, OpMulFloat(a,b))
 	// is detected with single-use Mul. Single-insn ARM64 FMADDd.
 	OpFMA
+	// Fused multiply-subtract. OpFMSUB(a, b, acc) → acc - a*b.
+	// Emitted by FMAFusionPass for SubFloat(acc, single-use MulFloat(a,b)).
+	// Single-insn ARM64 FMSUBd.
+	OpFMSUB
 
 	// Comparison (type-generic)
 	OpEq // Args[0] == Args[1]
@@ -242,6 +246,7 @@ var opNames = [...]string{
 	OpMatrixLoadFRow:             "MatrixLoadFRow",
 	OpMatrixStoreFRow:            "MatrixStoreFRow",
 	OpFMA:                        "FMA",
+	OpFMSUB:                      "FMSUB",
 	OpEq:                         "Eq",
 	OpLt:                         "Lt",
 	OpLe:                         "Le",
