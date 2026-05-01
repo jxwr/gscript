@@ -1,0 +1,49 @@
+{
+  "suite": "extended",
+  "contract": "Each benchmark prints a stable checksum line and a final Time: ...s line.",
+  "benchmarks": [
+    {
+      "name": "json_table_walk",
+      "gscript": "benchmarks/extended/json_table_walk.gs",
+      "luajit": "benchmarks/lua_extended/json_table_walk.lua",
+      "surfaces": ["nested table construction", "field traversal", "array traversal", "mutation"],
+      "gap": "Application payloads with nested records and stable but nontrivial shapes."
+    },
+    {
+      "name": "log_tokenize_format",
+      "gscript": "benchmarks/extended/log_tokenize_format.gs",
+      "luajit": "benchmarks/lua_extended/log_tokenize_format.lua",
+      "surfaces": ["string formatting", "tokenization", "substring", "numeric conversion"],
+      "gap": "String-library-heavy ingestion loops with many short-lived temporary tables."
+    },
+    {
+      "name": "actors_dispatch_mutation",
+      "gscript": "benchmarks/extended/actors_dispatch_mutation.gs",
+      "luajit": "benchmarks/lua_extended/actors_dispatch_mutation.lua",
+      "surfaces": ["function fields", "indirect calls", "polymorphic shapes", "field mutation"],
+      "gap": "Object-like programs where behavior and state live together in tables."
+    },
+    {
+      "name": "groupby_nested_agg",
+      "gscript": "benchmarks/extended/groupby_nested_agg.gs",
+      "luajit": "benchmarks/lua_extended/groupby_nested_agg.lua",
+      "surfaces": ["dynamic keys", "nested map creation", "aggregate mutation"],
+      "gap": "Analytics group-by accumulation over event streams."
+    },
+    {
+      "name": "producer_consumer_pipeline",
+      "gscript": "benchmarks/extended/producer_consumer_pipeline.gs",
+      "luajit": "benchmarks/lua_extended/producer_consumer_pipeline.lua",
+      "surfaces": ["coroutines", "yield/resume", "table payload transfer", "aggregation"],
+      "gap": "Generator-style streaming pipelines rather than raw coroutine ping-pong."
+    },
+    {
+      "name": "mixed_inventory_sim",
+      "gscript": "benchmarks/extended/mixed_inventory_sim.gs",
+      "luajit": "benchmarks/lua_extended/mixed_inventory_sim.lua",
+      "surfaces": ["dense arrays", "keyed lookup", "numeric scoring", "periodic formatting"],
+      "gap": "Business-logic loops that mix arithmetic, lookup, mutation, and reporting."
+    }
+  ]
+}
+
