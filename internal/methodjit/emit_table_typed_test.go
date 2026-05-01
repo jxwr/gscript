@@ -170,6 +170,63 @@ func build(n) {
 	}
 }
 
+func TestTier2_MixedTableRowAppendFallsThroughToGenericFastPath(t *testing.T) {
+	src := `
+func build(n) {
+    rows := {}
+    for i := 0; i < n; i++ {
+        row := {}
+        for j := 0; j < 16; j++ {
+            row[j] = i * 100 + j
+        }
+        rows[i] = row
+    }
+    return rows[n - 1][3]
+}
+`
+	top := compileTop(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("build")
+	if fnVal.IsNil() {
+		t.Fatal("build function not found")
+	}
+	if _, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(20)}); err != nil {
+		t.Fatalf("warm build: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	fnProto := findProtoByName(top, "build")
+	if fnProto == nil {
+		t.Fatal("build proto not found")
+	}
+	if err := tm.CompileTier2(fnProto); err != nil {
+		t.Fatalf("CompileTier2(build): %v", err)
+	}
+	got, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(20)})
+	if err != nil {
+		t.Fatalf("Tier2 build: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != 1903 {
+		t.Fatalf("build result = %v, want int 1903", got)
+	}
+
+	var setTableExits uint64
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "build" && site.ExitName == "ExitTableExit" && site.Reason == "SetTable" {
+			setTableExits += site.Count
+		}
+	}
+	if setTableExits >= 20 {
+		t.Fatalf("mixed row appends should use generic append fast path, SetTable exits=%d sites=%#v", setTableExits, tm.ExitStats().Sites)
+	}
+}
+
 // TestKindSpecialize_IntArray tests kind-specialized GetTable on ArrayInt.
 func TestKindSpecialize_IntArray(t *testing.T) {
 	src := `

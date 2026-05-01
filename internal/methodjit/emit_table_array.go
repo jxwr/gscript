@@ -2174,23 +2174,14 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	keyBoundsAlreadyChecked := ec.tableArrayKeyBounded(tblValueID, keyID)
 
 	// Mixed array stores of table rows are the construction side of ordinary
-	// table-of-float-row matrices. First/complex stores still route through
-	// RawSetInt so the runtime owns allocation and invalidation semantics. Once
-	// a DenseMatrix backing exists, the safe sequential append case can stay
-	// native: copy the row into the existing flat backing and rebind the row
-	// wrapper to that slice.
+	// table-of-row arrays. Prefer the dense-matrix append path when its full
+	// contract is already present, but let non-dense row arrays fall through to
+	// the generic mixed-array append/store fast path instead of forcing one
+	// exit per row.
 	if instr.Aux2 == int64(vm.FBKindMixed) && ec.irTypes[instr.Args[2].ID] == TypeTable {
-		ec.emitDenseMatrixRowAppendFastPath(instr, deoptLabel, doneLabel)
-		asm.Label(deoptLabel)
-		savedReprs := ec.snapshotValueReprs()
-		ec.emitSetTableExit(instr)
-		ec.emitUnboxRawIntRegs(savedReprs)
-		ec.restoreValueReprSnapshot(savedReprs)
-		asm.Label(doneLabel)
-		delete(ec.tableVerified, tblValueID)
-		delete(ec.kindVerified, tblValueID)
-		delete(ec.keysDirtyWritten, tblValueID)
-		return
+		denseMissLabel := ec.uniqueLabel("settable_dense_row_miss")
+		ec.emitDenseMatrixRowAppendFastPath(instr, denseMissLabel, doneLabel)
+		asm.Label(denseMissLabel)
 	}
 
 	// Kind-specialized dispatch: when Aux2 carries feedback, emit a kind
