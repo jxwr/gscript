@@ -1587,6 +1587,25 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					for i := 0; i < nArgs; i++ {
 						args[i] = vm.regs[base+a+1+i]
 					}
+					if gf.Fast1 != nil {
+						result, err := gf.Fast1(args)
+						if err != nil {
+							return nil, wrapLineErr(frame, err)
+						}
+						if c == 0 {
+							vm.regs[base+a] = result
+							vm.top = base + a + 1
+						} else {
+							nr := c - 1
+							if nr > 0 {
+								vm.regs[base+a] = result
+								for i := 1; i < nr; i++ {
+									vm.regs[base+a+i] = runtime.NilValue()
+								}
+							}
+						}
+						break
+					}
 					results, err := gf.Fn(args)
 					if err != nil {
 						return nil, wrapLineErr(frame, err)
@@ -2141,6 +2160,13 @@ func (vm *VM) callValue(fnVal runtime.Value, args []runtime.Value) ([]runtime.Va
 			return vm.call(cl, args, newBase, -1)
 		}
 		if gf := fnVal.GoFunction(); gf != nil {
+			if gf.Fast1 != nil {
+				v, err := gf.Fast1(args)
+				if err != nil {
+					return nil, err
+				}
+				return []runtime.Value{v}, nil
+			}
 			return gf.Fn(args)
 		}
 		if c := fnVal.Closure(); c != nil {

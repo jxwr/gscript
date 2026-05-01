@@ -223,12 +223,36 @@ func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Val
 	fnVal := regs[callSlot]
 
 	// Collect arguments from regs[callSlot+1 .. callSlot+nArgs].
-	callArgs := make([]runtime.Value, nArgs)
+	var local [16]runtime.Value
+	var callArgs []runtime.Value
+	if nArgs <= len(local) {
+		callArgs = local[:nArgs]
+	} else {
+		callArgs = make([]runtime.Value, nArgs)
+	}
 	for i := 0; i < nArgs; i++ {
 		idx := callSlot + 1 + i
 		if idx < len(regs) {
 			callArgs[i] = regs[idx]
 		}
+	}
+
+	if gf := fnVal.GoFunction(); gf != nil && gf.Fast1 != nil {
+		result, err := gf.Fast1(callArgs)
+		if err != nil {
+			return err
+		}
+		for i := 0; i < nRets; i++ {
+			idx := callSlot + i
+			if idx < len(regs) {
+				if i == 0 {
+					regs[idx] = result
+				} else {
+					regs[idx] = runtime.NilValue()
+				}
+			}
+		}
+		return nil
 	}
 
 	// Execute the call.

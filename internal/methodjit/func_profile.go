@@ -238,6 +238,30 @@ func shouldStayTier0CoroutineRuntime(proto *vm.FuncProto, profile FuncProfile) b
 	return false
 }
 
+// shouldStayTier0StringTokenLoop keeps split-heavy tokenization loops on the
+// VM path. Tier 1 handles Go string builtins through call exits; for loops that
+// split each record and immediately call more builtins, that bridge cost can
+// dominate the native arithmetic wins. Pure string.format loops still compile.
+func shouldStayTier0StringTokenLoop(proto *vm.FuncProto, profile FuncProfile) bool {
+	if proto == nil || !profile.HasLoop || profile.CallCount == 0 {
+		return false
+	}
+	hasStringLib := false
+	hasSplitField := false
+	for _, c := range proto.Constants {
+		if !c.IsString() {
+			continue
+		}
+		switch c.Str() {
+		case "string":
+			hasStringLib = true
+		case "split":
+			hasSplitField = true
+		}
+	}
+	return hasStringLib && hasSplitField
+}
+
 // shouldPromoteTier2 decides whether a function should be promoted to Tier 2
 // based on its static profile and runtime call count.
 func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCount int) bool {

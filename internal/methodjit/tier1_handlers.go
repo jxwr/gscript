@@ -312,6 +312,46 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 	}
 
 slowPath:
+	if gf := fnVal.GoFunction(); gf != nil && gf.Fast1 != nil {
+		var local [16]runtime.Value
+		var callArgs []runtime.Value
+		if nArgs <= len(local) {
+			callArgs = local[:nArgs]
+		} else {
+			callArgs = make([]runtime.Value, nArgs)
+		}
+		for i := 0; i < nArgs; i++ {
+			idx := absSlot + 1 + i
+			if idx < len(regs) {
+				callArgs[i] = regs[idx]
+			}
+		}
+		result, err := gf.Fast1(callArgs)
+		if err != nil {
+			return err
+		}
+		currentRegs := e.callVM.Regs()
+		if rawC == 0 {
+			if absSlot < len(currentRegs) {
+				currentRegs[absSlot] = result
+			}
+			e.callVM.SetTop(absSlot + 1)
+		} else {
+			nr := rawC - 1
+			for i := 0; i < nr; i++ {
+				idx := absSlot + i
+				if idx < len(currentRegs) {
+					if i == 0 {
+						currentRegs[idx] = result
+					} else {
+						currentRegs[idx] = runtime.NilValue()
+					}
+				}
+			}
+		}
+		return nil
+	}
+
 	// Generic path: heap-allocate args and go through CallValue.
 	callArgs := make([]runtime.Value, nArgs)
 	for i := 0; i < nArgs; i++ {

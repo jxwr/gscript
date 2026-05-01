@@ -281,6 +281,22 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 
+	if shouldStayTier0StringTokenLoop(proto, profile) {
+		proto.JITDisabled = true
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "stay_tier0_string_token_loop",
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "stay_tier0_string_token_loop",
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "string_token_loop",
+			"target": "interpreter",
+		})
+		return nil
+	}
+
 	// Some function shapes are worse off compiled: tiny recursive
 	// table-allocation builders pay more in Tier 1 exit-resume
 	// overhead than they save in native templates. See

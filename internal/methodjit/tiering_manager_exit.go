@@ -44,12 +44,37 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 	}
 	fnVal := regs[absSlot]
 
-	callArgs := make([]runtime.Value, nArgs)
+	var local [16]runtime.Value
+	var callArgs []runtime.Value
+	if nArgs <= len(local) {
+		callArgs = local[:nArgs]
+	} else {
+		callArgs = make([]runtime.Value, nArgs)
+	}
 	for i := 0; i < nArgs; i++ {
 		idx := absSlot + 1 + i
 		if idx < len(regs) {
 			callArgs[i] = regs[idx]
 		}
+	}
+
+	if gf := fnVal.GoFunction(); gf != nil && gf.Fast1 != nil {
+		result, err := gf.Fast1(callArgs)
+		if err != nil {
+			return err
+		}
+		currentRegs := tm.callVM.Regs()
+		for i := 0; i < nRets; i++ {
+			idx := absSlot + i
+			if idx < len(currentRegs) {
+				if i == 0 {
+					currentRegs[idx] = result
+				} else {
+					currentRegs[idx] = runtime.NilValue()
+				}
+			}
+		}
+		return nil
 	}
 
 	results, err := tm.callValueForTier2Exit(fnVal, callArgs, proto)

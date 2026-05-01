@@ -19,6 +19,13 @@ func buildStringLib() *Table {
 			Fn:   fn,
 		}))
 	}
+	setFast1 := func(name string, fn func([]Value) ([]Value, error), fast func([]Value) (Value, error)) {
+		t.RawSet(StringValue(name), FunctionValue(&GoFunction{
+			Name:  "string." + name,
+			Fn:    fn,
+			Fast1: fast,
+		}))
+	}
 
 	// string.len(s) -> int
 	set("len", func(args []Value) ([]Value, error) {
@@ -30,40 +37,13 @@ func buildStringLib() *Table {
 
 	// string.sub(s, i [, j]) -> string
 	// 1-based indexing, negative indices count from end
-	set("sub", func(args []Value) ([]Value, error) {
-		if len(args) < 2 {
-			return nil, fmt.Errorf("bad argument to 'string.sub'")
+	setFast1("sub", func(args []Value) ([]Value, error) {
+		v, err := stringSubValue(args)
+		if err != nil {
+			return nil, err
 		}
-		if !args[0].IsString() {
-			return nil, fmt.Errorf("bad argument #1 to 'string.sub' (string expected)")
-		}
-		s := args[0].Str()
-		slen := len(s)
-
-		i := int(toInt(args[1]))
-		j := slen
-		if len(args) >= 3 {
-			j = int(toInt(args[2]))
-		}
-
-		// Convert Lua 1-based to Go 0-based
-		if i < 0 {
-			i = slen + i + 1
-		}
-		if i < 1 {
-			i = 1
-		}
-		if j < 0 {
-			j = slen + j + 1
-		}
-		if j > slen {
-			j = slen
-		}
-		if i > j {
-			return []Value{StringValue("")}, nil
-		}
-		return []Value{StringValue(s[i-1 : j])}, nil
-	})
+		return []Value{v}, nil
+	}, stringSubValue)
 
 	// string.upper(s) -> string
 	set("upper", func(args []Value) ([]Value, error) {
@@ -362,163 +342,22 @@ func buildStringLib() *Table {
 	})
 
 	// string.format(fmt, ...) -> string
-	set("format", func(args []Value) ([]Value, error) {
-		if len(args) < 1 || !args[0].IsString() {
-			return nil, fmt.Errorf("bad argument #1 to 'string.format' (string expected)")
-		}
-		formatStr := args[0].Str()
-		if prog, ok, err := cachedSimpleFormat(formatStr); err != nil {
+	setFast1("format", func(args []Value) ([]Value, error) {
+		v, err := stringFormatValue(args)
+		if err != nil {
 			return nil, err
-		} else if ok {
-			s, err := prog.format(args)
-			if err != nil {
-				return nil, err
-			}
-			return []Value{StringValue(s)}, nil
 		}
-		argIdx := 1
-
-		var buf strings.Builder
-		i := 0
-		for i < len(formatStr) {
-			if formatStr[i] != '%' {
-				buf.WriteByte(formatStr[i])
-				i++
-				continue
-			}
-			i++ // skip %
-			if i >= len(formatStr) {
-				return nil, fmt.Errorf("invalid format string (ends with %%)")
-			}
-
-			// %% → literal %
-			if formatStr[i] == '%' {
-				buf.WriteByte('%')
-				i++
-				continue
-			}
-
-			// Collect flags, width, precision
-			start := i - 1 // include the %
-			for i < len(formatStr) && isFormatFlag(formatStr[i]) {
-				i++
-			}
-			// Width
-			for i < len(formatStr) && formatStr[i] >= '0' && formatStr[i] <= '9' {
-				i++
-			}
-			// Precision
-			if i < len(formatStr) && formatStr[i] == '.' {
-				i++
-				for i < len(formatStr) && formatStr[i] >= '0' && formatStr[i] <= '9' {
-					i++
-				}
-			}
-
-			if i >= len(formatStr) {
-				return nil, fmt.Errorf("invalid format string")
-			}
-			spec := formatStr[i]
-			i++
-			fmtSpec := formatStr[start:i]
-
-			if argIdx >= len(args) {
-				return nil, fmt.Errorf("bad argument #%d to 'string.format' (no value)", argIdx+1)
-			}
-			arg := args[argIdx]
-			argIdx++
-
-			switch spec {
-			case 'd', 'i', 'u':
-				n := toInt(arg)
-				if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
-					goFmt := strings.Replace(fmtSpec, string(spec), "d", 1)
-					buf.WriteString(fmt.Sprintf(goFmt, n))
-				}
-			case 'f', 'e', 'E', 'g', 'G':
-				f := toFloat(arg)
-				buf.WriteString(fmt.Sprintf(fmtSpec, f))
-			case 'x':
-				n := toInt(arg)
-				if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
-					goFmt := strings.Replace(fmtSpec, "x", "x", 1)
-					buf.WriteString(fmt.Sprintf(goFmt, n))
-				}
-			case 'X':
-				n := toInt(arg)
-				if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
-					goFmt := strings.Replace(fmtSpec, "X", "X", 1)
-					buf.WriteString(fmt.Sprintf(goFmt, n))
-				}
-			case 'o':
-				n := toInt(arg)
-				if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
-					goFmt := strings.Replace(fmtSpec, "o", "o", 1)
-					buf.WriteString(fmt.Sprintf(goFmt, n))
-				}
-			case 'c':
-				n := toInt(arg)
-				buf.WriteRune(rune(n))
-			case 's':
-				s := arg.String()
-				if fmtSpec == "%s" {
-					buf.WriteString(s)
-				} else {
-					goFmt := strings.Replace(fmtSpec, "s", "s", 1)
-					buf.WriteString(fmt.Sprintf(goFmt, s))
-				}
-			case 'q':
-				// Quoted string
-				s := arg.String()
-				buf.WriteByte('"')
-				for _, c := range s {
-					switch c {
-					case '"':
-						buf.WriteString(`\"`)
-					case '\\':
-						buf.WriteString(`\\`)
-					case '\n':
-						buf.WriteString(`\n`)
-					case '\r':
-						buf.WriteString(`\r`)
-					case '\000':
-						buf.WriteString(`\0`)
-					default:
-						buf.WriteRune(c)
-					}
-				}
-				buf.WriteByte('"')
-			default:
-				return nil, fmt.Errorf("invalid format specifier '%%%c'", spec)
-			}
-		}
-		return []Value{StringValue(buf.String())}, nil
-	})
+		return []Value{v}, nil
+	}, stringFormatValue)
 
 	// string.split(s, sep) -> table. sep="" splits by byte
-	set("split", func(args []Value) ([]Value, error) {
-		if len(args) < 2 {
-			return nil, fmt.Errorf("bad argument to 'string.split'")
+	setFast1("split", func(args []Value) ([]Value, error) {
+		v, err := stringSplitValue(args)
+		if err != nil {
+			return nil, err
 		}
-		if !args[0].IsString() || !args[1].IsString() {
-			return nil, fmt.Errorf("bad argument to 'string.split' (string expected)")
-		}
-		s := args[0].Str()
-		sep := args[1].Str()
-		tbl := NewTable()
-		if sep == "" {
-			// Split by byte
-			for i := 0; i < len(s); i++ {
-				tbl.RawSet(IntValue(int64(i+1)), StringValue(string(s[i])))
-			}
-		} else {
-			parts := strings.Split(s, sep)
-			for i, p := range parts {
-				tbl.RawSet(IntValue(int64(i+1)), StringValue(p))
-			}
-		}
-		return []Value{TableValue(tbl)}, nil
-	})
+		return []Value{v}, nil
+	}, stringSplitValue)
 
 	// string.trim(s [, cutset]) -- trim leading/trailing whitespace (or chars in cutset)
 	set("trim", func(args []Value) ([]Value, error) {
@@ -708,6 +547,202 @@ func buildStringLib() *Table {
 	return t
 }
 
+func stringSubValue(args []Value) (Value, error) {
+	if len(args) < 2 {
+		return NilValue(), fmt.Errorf("bad argument to 'string.sub'")
+	}
+	if !args[0].IsString() {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.sub' (string expected)")
+	}
+	s := args[0].Str()
+	slen := len(s)
+
+	i := int(toInt(args[1]))
+	j := slen
+	if len(args) >= 3 {
+		j = int(toInt(args[2]))
+	}
+
+	// Convert Lua 1-based indexes to Go byte offsets.
+	if i < 0 {
+		i = slen + i + 1
+	}
+	if i < 1 {
+		i = 1
+	}
+	if j < 0 {
+		j = slen + j + 1
+	}
+	if j > slen {
+		j = slen
+	}
+	if i > j {
+		return StringValue(""), nil
+	}
+	return StringValue(s[i-1 : j]), nil
+}
+
+func stringSplitValue(args []Value) (Value, error) {
+	if len(args) < 2 {
+		return NilValue(), fmt.Errorf("bad argument to 'string.split'")
+	}
+	if !args[0].IsString() || !args[1].IsString() {
+		return NilValue(), fmt.Errorf("bad argument to 'string.split' (string expected)")
+	}
+	s := args[0].Str()
+	sep := args[1].Str()
+	if sep == "" {
+		tbl := NewTableSized(len(s), 0)
+		for i := 0; i < len(s); i++ {
+			tbl.RawSetInt(int64(i+1), StringValue(string(s[i])))
+		}
+		return TableValue(tbl), nil
+	}
+
+	n := strings.Count(s, sep) + 1
+	tbl := NewTableSized(n, 0)
+	start := 0
+	idx := int64(1)
+	for {
+		next := strings.Index(s[start:], sep)
+		if next < 0 {
+			tbl.RawSetInt(idx, StringValue(s[start:]))
+			break
+		}
+		end := start + next
+		tbl.RawSetInt(idx, StringValue(s[start:end]))
+		idx++
+		start = end + len(sep)
+	}
+	return TableValue(tbl), nil
+}
+
+func stringFormatValue(args []Value) (Value, error) {
+	if len(args) < 1 || !args[0].IsString() {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.format' (string expected)")
+	}
+	formatStr := args[0].Str()
+	if prog, ok, err := cachedSimpleFormat(formatStr); err != nil {
+		return NilValue(), err
+	} else if ok {
+		s, err := prog.format(args)
+		if err != nil {
+			return NilValue(), err
+		}
+		return StringValue(s), nil
+	}
+	argIdx := 1
+
+	var buf strings.Builder
+	i := 0
+	for i < len(formatStr) {
+		if formatStr[i] != '%' {
+			buf.WriteByte(formatStr[i])
+			i++
+			continue
+		}
+		i++ // skip %
+		if i >= len(formatStr) {
+			return NilValue(), fmt.Errorf("invalid format string (ends with %%)")
+		}
+
+		if formatStr[i] == '%' {
+			buf.WriteByte('%')
+			i++
+			continue
+		}
+
+		start := i - 1 // include the %
+		for i < len(formatStr) && isFormatFlag(formatStr[i]) {
+			i++
+		}
+		for i < len(formatStr) && formatStr[i] >= '0' && formatStr[i] <= '9' {
+			i++
+		}
+		if i < len(formatStr) && formatStr[i] == '.' {
+			i++
+			for i < len(formatStr) && formatStr[i] >= '0' && formatStr[i] <= '9' {
+				i++
+			}
+		}
+
+		if i >= len(formatStr) {
+			return NilValue(), fmt.Errorf("invalid format string")
+		}
+		spec := formatStr[i]
+		i++
+		fmtSpec := formatStr[start:i]
+
+		if argIdx >= len(args) {
+			return NilValue(), fmt.Errorf("bad argument #%d to 'string.format' (no value)", argIdx+1)
+		}
+		arg := args[argIdx]
+		argIdx++
+
+		switch spec {
+		case 'd', 'i', 'u':
+			n := toInt(arg)
+			if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
+				goFmt := strings.Replace(fmtSpec, string(spec), "d", 1)
+				buf.WriteString(fmt.Sprintf(goFmt, n))
+			}
+		case 'f', 'e', 'E', 'g', 'G':
+			buf.WriteString(fmt.Sprintf(fmtSpec, toFloat(arg)))
+		case 'x':
+			n := toInt(arg)
+			if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
+				goFmt := strings.Replace(fmtSpec, "x", "x", 1)
+				buf.WriteString(fmt.Sprintf(goFmt, n))
+			}
+		case 'X':
+			n := toInt(arg)
+			if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
+				goFmt := strings.Replace(fmtSpec, "X", "X", 1)
+				buf.WriteString(fmt.Sprintf(goFmt, n))
+			}
+		case 'o':
+			n := toInt(arg)
+			if !writeFastIntegerFormat(&buf, fmtSpec, spec, n) {
+				goFmt := strings.Replace(fmtSpec, "o", "o", 1)
+				buf.WriteString(fmt.Sprintf(goFmt, n))
+			}
+		case 'c':
+			buf.WriteRune(rune(toInt(arg)))
+		case 's':
+			s := arg.String()
+			if fmtSpec == "%s" {
+				buf.WriteString(s)
+			} else {
+				goFmt := strings.Replace(fmtSpec, "s", "s", 1)
+				buf.WriteString(fmt.Sprintf(goFmt, s))
+			}
+		case 'q':
+			s := arg.String()
+			buf.WriteByte('"')
+			for _, c := range s {
+				switch c {
+				case '"':
+					buf.WriteString(`\"`)
+				case '\\':
+					buf.WriteString(`\\`)
+				case '\n':
+					buf.WriteString(`\n`)
+				case '\r':
+					buf.WriteString(`\r`)
+				case '\000':
+					buf.WriteString(`\0`)
+				default:
+					buf.WriteRune(c)
+				}
+			}
+			buf.WriteByte('"')
+		default:
+			return NilValue(), fmt.Errorf("invalid format specifier '%%%c'", spec)
+		}
+	}
+	return StringValue(buf.String()), nil
+}
+
 func writeFastIntegerFormat(buf *strings.Builder, fmtSpec string, spec byte, n int64) bool {
 	if len(fmtSpec) < 2 || fmtSpec[0] != '%' || fmtSpec[len(fmtSpec)-1] != spec {
 		return false
@@ -727,37 +762,43 @@ func writeFastIntegerFormat(buf *strings.Builder, fmtSpec string, spec byte, n i
 		return false
 	}
 
-	var s string
+	var scratch [64]byte
+	digits := scratch[:0]
 	switch spec {
 	case 'd', 'i', 'u':
-		s = strconv.FormatInt(n, 10)
+		digits = strconv.AppendInt(digits, n, 10)
 	case 'x':
-		s = strconv.FormatInt(n, 16)
+		digits = strconv.AppendInt(digits, n, 16)
 	case 'X':
-		s = strings.ToUpper(strconv.FormatInt(n, 16))
+		digits = strconv.AppendInt(digits, n, 16)
+		for i, b := range digits {
+			if b >= 'a' && b <= 'f' {
+				digits[i] = b - ('a' - 'A')
+			}
+		}
 	case 'o':
-		s = strconv.FormatInt(n, 8)
+		digits = strconv.AppendInt(digits, n, 8)
 	default:
 		return false
 	}
 
-	if width <= len(s) {
-		buf.WriteString(s)
+	if width <= len(digits) {
+		buf.Write(digits)
 		return true
 	}
-	padCount := width - len(s)
-	if pad == '0' && len(s) > 0 && s[0] == '-' {
+	padCount := width - len(digits)
+	if pad == '0' && len(digits) > 0 && digits[0] == '-' {
 		buf.WriteByte('-')
 		for i := 0; i < padCount; i++ {
 			buf.WriteByte('0')
 		}
-		buf.WriteString(s[1:])
+		buf.Write(digits[1:])
 		return true
 	}
 	for i := 0; i < padCount; i++ {
 		buf.WriteByte(pad)
 	}
-	buf.WriteString(s)
+	buf.Write(digits)
 	return true
 }
 

@@ -40,6 +40,7 @@ type Closure struct {
 
 // GoFunction is a native Go function callable from GScript.
 type GoFunction struct {
-	Name string
-	Fn   func(args []Value) ([]Value, error)
+	Name  string
+	Fn    func(args []Value) ([]Value, error)
+	Fast1 func(args []Value) (Value, error)
 }
