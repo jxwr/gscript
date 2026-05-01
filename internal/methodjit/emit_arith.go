@@ -66,6 +66,17 @@ func (ec *emitContext) emitConstFloat(instr *Instr) {
 	ec.storeResultNB(jit.X0, instr.ID)
 }
 
+func (ec *emitContext) emitConstString(instr *Instr) {
+	constIdx := int(instr.Aux)
+	if constIdx >= 0 && constIdx <= 4095 {
+		ec.asm.LDR(jit.X0, mRegConsts, constIdx*jit.ValueSize)
+	} else {
+		ec.asm.LoadImm64(jit.X1, int64(constIdx))
+		ec.asm.LDRreg(jit.X0, mRegConsts, jit.X1)
+	}
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
 // --- Slot access ---
 
 func (ec *emitContext) emitLoadSlot(instr *Instr) {

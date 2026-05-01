@@ -106,6 +106,22 @@ func concat3(a, b, c) {
 	}
 }
 
+func TestTier2_ConstStringFastPath_NoOpExit(t *testing.T) {
+	src := `
+func literal() {
+    return "alpha"
+}
+`
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "literal", nil, true)
+	got := requireOneString(t, "literal", gotValues)
+	if got != "alpha" {
+		t.Fatalf("literal=%q, want alpha", got)
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+		t.Fatalf("string literal load should stay native, ExitOpExit=%d", exits)
+	}
+}
+
 func TestTier2_StringCompareFastPath_MatchesVM(t *testing.T) {
 	src := `
 func sort_last() {

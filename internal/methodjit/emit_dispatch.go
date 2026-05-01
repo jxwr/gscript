@@ -60,7 +60,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpConstFloat:
 		ec.emitConstFloat(instr)
 	case OpConstString:
-		ec.emitOpExit(instr)
+		ec.emitConstString(instr)
 
 	// --- Slot access ---
 	case OpLoadSlot:
