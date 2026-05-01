@@ -300,6 +300,54 @@ result := makeTags(3)
 	}
 }
 
+func TestFixedTableConstructorLowering_DuplicateKeyMaterializedCtorNNotLowered(t *testing.T) {
+	top := compileProto(t, `
+func fmt_tag(i) {
+    return i + 10
+}
+func makeTags(i) {
+    return {
+        first: fmt_tag(i),
+        first: fmt_tag(i + 1),
+        second: fmt_tag(i + 2),
+    }
+}
+result := makeTags(3)
+`)
+	makeTags := findProtoByName(top, "makeTags")
+	if makeTags == nil {
+		t.Fatal("makeTags proto missing")
+	}
+	fn := BuildGraph(makeTags)
+	out, err := FixedTableConstructorLoweringPass(fn)
+	if err != nil {
+		t.Fatalf("FixedTableConstructorLoweringPass: %v", err)
+	}
+	out, err = DCEPass(out)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+
+	newFixedN := 0
+	setFields := 0
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpNewFixedTable && instr.Aux2 > 2 {
+				newFixedN++
+			}
+			if instr.Op == OpSetField {
+				setFields++
+			}
+		}
+	}
+	if newFixedN != 0 {
+		t.Fatalf("duplicate-key materialized constructor lowered unexpectedly\nIR:\n%s", Print(out))
+	}
+	if setFields != 3 {
+		t.Fatalf("duplicate-key constructor should retain three ordered stores, got %d\nIR:\n%s", setFields, Print(out))
+	}
+}
+
 func TestFixedTableConstructorLowering_CFGSplitMaterializedCtorN(t *testing.T) {
 	top := compileProto(t, `
 func makeDoc(i) {

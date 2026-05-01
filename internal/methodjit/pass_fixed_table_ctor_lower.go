@@ -220,10 +220,24 @@ func findMaterializedCtorCandidate(fn *Function, alloc *Instr) (*materializedCto
 	if len(cand.stores) <= 2 || len(cand.stores) > runtime.SmallFieldCap || len(cand.escapes) == 0 {
 		return nil, false
 	}
+	if materializedCtorHasDuplicateKeys(cand.stores) {
+		return nil, false
+	}
 	if !materializedCtorUsesAreOrdered(fn, cand, positions) {
 		return nil, false
 	}
 	return cand, true
+}
+
+func materializedCtorHasDuplicateKeys(stores []materializedCtorStore) bool {
+	seen := make(map[string]struct{}, len(stores))
+	for _, store := range stores {
+		if _, ok := seen[store.key]; ok {
+			return true
+		}
+		seen[store.key] = struct{}{}
+	}
+	return false
 }
 
 type instrPosition struct {
