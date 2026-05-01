@@ -76,6 +76,12 @@ type Table struct {
 	// fixed recursive two-field table builders. Generic table operations
 	// materialize it before mutation or iteration.
 	lazyTree *LazyRecursiveTable
+
+	// stringLookupCache is a table-local inline cache for large string-key maps.
+	// Small shaped tables use shape/slot caches; hash-mode string maps need a
+	// different fact: key identity -> value. The cache is lazy so
+	// tables that are never dynamically probed pay only this pointer.
+	stringLookupCache *StringLookupCache
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.
@@ -393,6 +399,36 @@ type TableStringKeyCacheEntry struct {
 	ShapeID  uint32
 }
 
+// StringLookupCacheEntry is a table-local value cache for large string maps.
+// It is intentionally separate from TableStringKeyCacheEntry: per-PC caches
+// identify small-table field slots by shape, while this cache identifies stable
+// entries in a large map by key backing pointer/length. String-map mutations
+// drop the owning table's cache pointer, so native probes never see stale
+// entries after an update or delete.
+type StringLookupCacheEntry struct {
+	Key     string
+	KeyData uintptr
+	KeyLen  int
+	Value   Value
+	Valid   uint8
+}
+
+// StringLookupCache is an open-addressed direct value cache owned by one table.
+// Mask is len(Entries)-1 so native code can probe without calling into Go.
+type StringLookupCache struct {
+	Entries []StringLookupCacheEntry
+	Mask    uintptr
+}
+
+const (
+	stringLookupCacheMinEntries = 256
+	stringLookupCacheMaxEntries = 16384
+	stringLookupCacheProbeLimit = 8
+	// StringLookupCacheProbeLimit is exported for native cache probes that must
+	// mirror the runtime insertion bound.
+	StringLookupCacheProbeLimit = stringLookupCacheProbeLimit
+)
+
 // TableStringKeyCacheSlot returns the cache ways for one bytecode PC.
 func TableStringKeyCacheSlot(cache []TableStringKeyCacheEntry, pc int) []TableStringKeyCacheEntry {
 	if pc < 0 {
@@ -419,6 +455,90 @@ func dynamicStringCacheReplaceIndex(data uintptr, keyLen, n int) int {
 	}
 	h := (data >> 4) ^ (data >> 12) ^ uintptr(keyLen)
 	return int(h % uintptr(n))
+}
+
+func stringLookupHash(data uintptr, keyLen int) uintptr {
+	return (data >> 4) ^ (data >> 12) ^ uintptr(keyLen)
+}
+
+func stringLookupCacheSize(n int) int {
+	size := stringLookupCacheMinEntries
+	target := n * 2
+	for size < target && size < stringLookupCacheMaxEntries {
+		size <<= 1
+	}
+	return size
+}
+
+func (t *Table) invalidateStringLookupCacheLocked() {
+	t.stringLookupCache = nil
+}
+
+func (t *Table) ensureStringLookupCacheLocked() *StringLookupCache {
+	if t.smap == nil {
+		return nil
+	}
+	if c := t.stringLookupCache; c != nil && len(c.Entries) > 0 {
+		return c
+	}
+	size := stringLookupCacheSize(len(t.smap))
+	c := &StringLookupCache{
+		Entries: make([]StringLookupCacheEntry, size),
+		Mask:    uintptr(size - 1),
+	}
+	t.stringLookupCache = c
+	return c
+}
+
+func (t *Table) lookupStringMapValueCacheLocked(data uintptr, keyLen int) (Value, bool) {
+	c := t.stringLookupCache
+	if c == nil || len(c.Entries) == 0 {
+		return NilValue(), false
+	}
+	idx := stringLookupHash(data, keyLen) & c.Mask
+	for probe := 0; probe < stringLookupCacheProbeLimit; probe++ {
+		entry := &c.Entries[idx]
+		if entry.Valid == 0 {
+			return NilValue(), false
+		}
+		if entry.KeyData == data && entry.KeyLen == keyLen {
+			return entry.Value, true
+		}
+		idx = (idx + 1) & c.Mask
+	}
+	return NilValue(), false
+}
+
+func (t *Table) rememberStringMapValueCacheLocked(key string, data uintptr, keyLen int, val Value) {
+	c := t.ensureStringLookupCacheLocked()
+	if c == nil || len(c.Entries) == 0 {
+		return
+	}
+	idx := stringLookupHash(data, keyLen) & c.Mask
+	firstStale := -1
+	for probe := 0; probe < stringLookupCacheProbeLimit; probe++ {
+		entry := &c.Entries[idx]
+		if entry.Valid != 0 && entry.KeyData == data && entry.KeyLen == keyLen {
+			entry.Key = key
+			entry.Value = val
+			return
+		}
+		if entry.Valid == 0 {
+			firstStale = int(idx)
+			break
+		}
+		idx = (idx + 1) & c.Mask
+	}
+	if firstStale < 0 {
+		firstStale = int(stringLookupHash(data, keyLen) & c.Mask)
+	}
+	c.Entries[firstStale] = StringLookupCacheEntry{
+		Key:     key,
+		KeyData: data,
+		KeyLen:  keyLen,
+		Value:   val,
+		Valid:   1,
+	}
 }
 
 func fieldPolyCacheReplaceIndex(shapeID uint32, n int) int {
@@ -706,7 +826,12 @@ func (t *Table) RawGetString(key string) Value {
 		}
 	}
 	if t.smap != nil {
+		data, keyLen := stringCacheKey(key)
+		if v, ok := t.lookupStringMapValueCacheLocked(data, keyLen); ok {
+			return v
+		}
 		if v, ok := t.smap[key]; ok {
+			t.rememberStringMapValueCacheLocked(key, data, keyLen, v)
 			return v
 		}
 	}
@@ -739,7 +864,12 @@ func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
 		}
 	}
 	if t.smap != nil {
+		data, keyLen := stringCacheKey(key)
+		if v, ok := t.lookupStringMapValueCacheLocked(data, keyLen); ok {
+			return v
+		}
 		if v, ok := t.smap[key]; ok {
+			t.rememberStringMapValueCacheLocked(key, data, keyLen, v)
 			return v
 		}
 	}
@@ -771,7 +901,12 @@ func (t *Table) RawGetStringCachedPoly(key string, cache *FieldCacheEntry, poly 
 		}
 	}
 	if t.smap != nil {
+		data, keyLen := stringCacheKey(key)
+		if v, ok := t.lookupStringMapValueCacheLocked(data, keyLen); ok {
+			return v
+		}
 		if v, ok := t.smap[key]; ok {
+			t.rememberStringMapValueCacheLocked(key, data, keyLen, v)
 			return v
 		}
 	}
@@ -800,7 +935,11 @@ func (t *Table) RawGetStringDynamicCached(key string, cache []TableStringKeyCach
 		}
 	}
 	if t.smap != nil {
+		if v, ok := t.lookupStringMapValueCacheLocked(data, keyLen); ok {
+			return v
+		}
 		if v, ok := t.smap[key]; ok {
+			t.rememberStringMapValueCacheLocked(key, data, keyLen, v)
 			return v
 		}
 	}
@@ -822,6 +961,9 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 		return
 	}
 	t.keysDirty = true
+	if t.smap != nil || t.stringLookupCache != nil {
+		t.invalidateStringLookupCacheLocked()
+	}
 
 	// ShapeID-based cache: if shape matches, the field index is valid
 	idx := cache.FieldIdx
@@ -913,6 +1055,9 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 		return
 	}
 	t.keysDirty = true
+	if t.smap != nil || t.stringLookupCache != nil {
+		t.invalidateStringLookupCacheLocked()
+	}
 	data, keyLen := stringCacheKey(key)
 
 	if !valIsNil {
@@ -1093,6 +1238,9 @@ func (t *Table) RawSetString(key string, val Value) {
 		return
 	}
 	t.keysDirty = true
+	if t.smap != nil || t.stringLookupCache != nil {
+		t.invalidateStringLookupCacheLocked()
+	}
 
 	for i, k := range t.skeys {
 		if k == key {
@@ -1361,6 +1509,26 @@ func TableKeysDirtyOffset() uintptr {
 func TableLazyTreeOffset() uintptr {
 	var t Table
 	return unsafe.Offsetof(t.lazyTree)
+}
+
+// TableStringLookupCacheOffset returns the byte offset for the table-local
+// large string-map lookup cache used by native dynamic GETTABLE probes.
+func TableStringLookupCacheOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.stringLookupCache)
+}
+
+// StringLookupCacheOffsets returns byte offsets for StringLookupCache.
+func StringLookupCacheOffsets() (entriesData, entriesLen, entriesCap, mask uintptr) {
+	var c StringLookupCache
+	entries := unsafe.Offsetof(c.Entries)
+	return entries, entries + 8, entries + 16, unsafe.Offsetof(c.Mask)
+}
+
+// StringLookupCacheEntryOffsets returns byte offsets for StringLookupCacheEntry.
+func StringLookupCacheEntryOffsets() (keyData, keyLen, value, valid uintptr) {
+	var e StringLookupCacheEntry
+	return unsafe.Offsetof(e.KeyData), unsafe.Offsetof(e.KeyLen), unsafe.Offsetof(e.Value), unsafe.Offsetof(e.Valid)
 }
 
 // ShapeID returns the table's shape identifier.

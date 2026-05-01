@@ -652,7 +652,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	asm.Label(doneLabel)
 }
 
-func emitBaselineDynamicStringCacheProbe(asm *jit.Assembler, pc int, slowLabel string, hit func(fieldIdxReg jit.Reg)) {
+func emitBaselineDynamicStringCacheProbe(asm *jit.Assembler, pc int, slowLabel string, hit func(fieldIdxReg jit.Reg), valueHit func(valueReg jit.Reg)) {
 	// Inputs: X0 = *Table, X1 = NaN-boxed string candidate.
 	// Clobbers X2-X11. Falls through to slowLabel on cache miss.
 	jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, slowLabel)
@@ -673,10 +673,11 @@ func emitBaselineDynamicStringCacheProbe(asm *jit.Assembler, pc int, slowLabel s
 		}
 	}
 
-	asm.LDRW(jit.X7, jit.X0, jit.TableOffShapeID)
-	asm.CBZ(jit.X7, slowLabel)
 	asm.LDR(jit.X8, jit.X0, jit.TableOffLazyTree)
 	asm.CBNZ(jit.X8, slowLabel)
+	asm.LDRW(jit.X7, jit.X0, jit.TableOffShapeID)
+	smapCacheLabel := nextLabel("dyn_string_smap_cache")
+	asm.CBZ(jit.X7, smapCacheLabel)
 
 	loopLabel := nextLabel("dyn_string_cache_loop")
 	nextEntryLabel := nextLabel("dyn_string_cache_next")
@@ -703,6 +704,48 @@ func emitBaselineDynamicStringCacheProbe(asm *jit.Assembler, pc int, slowLabel s
 	asm.CMPimm(jit.X9, runtime.TableStringKeyCacheWays)
 	asm.BCond(jit.CondLT, loopLabel)
 	asm.B(slowLabel)
+
+	asm.Label(smapCacheLabel)
+	if valueHit == nil {
+		asm.B(slowLabel)
+		return
+	}
+	asm.LDR(jit.X8, jit.X0, jit.TableOffStringLookupCache)
+	asm.CBZ(jit.X8, slowLabel)
+	asm.LDR(jit.X3, jit.X8, jit.StringLookupCacheOffEntries)
+	asm.CBZ(jit.X3, slowLabel)
+	asm.LDR(jit.X10, jit.X8, jit.StringLookupCacheOffMask)
+	asm.LSRimm(jit.X9, jit.X5, 4)
+	asm.LSRimm(jit.X11, jit.X5, 12)
+	asm.EORreg(jit.X9, jit.X9, jit.X11)
+	asm.EORreg(jit.X9, jit.X9, jit.X6)
+	asm.ANDreg(jit.X9, jit.X9, jit.X10)
+
+	smapLoopLabel := nextLabel("dyn_string_smap_loop")
+	smapNextLabel := nextLabel("dyn_string_smap_next")
+	asm.MOVimm16(jit.X13, 0)
+	asm.Label(smapLoopLabel)
+	asm.ADDreg(jit.X11, jit.X9, jit.X13)
+	asm.ANDreg(jit.X11, jit.X11, jit.X10)
+	asm.ADDregLSL(jit.X12, jit.X11, jit.X11, 1) // idx * 3
+	asm.LSLimm(jit.X12, jit.X12, 4)             // idx * 48
+	asm.ADDreg(jit.X12, jit.X3, jit.X12)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyData)
+	asm.CMPreg(jit.X14, jit.X5)
+	asm.BCond(jit.CondNE, smapNextLabel)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyLen)
+	asm.CMPreg(jit.X14, jit.X6)
+	asm.BCond(jit.CondNE, smapNextLabel)
+	asm.LDRB(jit.X14, jit.X12, jit.StringLookupCacheEntryOffValid)
+	asm.CBZ(jit.X14, slowLabel)
+	asm.LDR(jit.X0, jit.X12, jit.StringLookupCacheEntryOffValue)
+	valueHit(jit.X0)
+
+	asm.Label(smapNextLabel)
+	asm.ADDimm(jit.X13, jit.X13, 1)
+	asm.CMPimm(jit.X13, runtime.StringLookupCacheProbeLimit)
+	asm.BCond(jit.CondLT, smapLoopLabel)
+	asm.B(slowLabel)
 }
 
 func emitBaselineDynamicStringGetTable(asm *jit.Assembler, a, pc int, feedbackEnabled bool, slowLabel, doneLabel string) {
@@ -713,6 +756,12 @@ func emitBaselineDynamicStringGetTable(asm *jit.Assembler, a, pc int, feedbackEn
 			emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "gettable_string")
 		}
 		storeSlot(asm, a, jit.X0)
+		asm.B(doneLabel)
+	}, func(valueReg jit.Reg) {
+		if feedbackEnabled {
+			emitBaselineFeedbackResultFromValue(asm, pc, valueReg, "gettable_string_map")
+		}
+		storeSlot(asm, a, valueReg)
 		asm.B(doneLabel)
 	})
 }
@@ -731,7 +780,7 @@ func emitBaselineDynamicStringSetTable(asm *jit.Assembler, cidx, pc int, feedbac
 		asm.MOVimm16(jit.X5, 1)
 		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 		asm.B(doneLabel)
-	})
+	}, nil)
 }
 
 // emitBaselineLen emits ARM64 for OP_LEN: R(A) = #R(B).

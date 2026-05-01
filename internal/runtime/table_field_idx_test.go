@@ -77,6 +77,55 @@ func TestFieldPolyCacheRecordsMultipleShapes(t *testing.T) {
 	}
 }
 
+func TestStringMapLookupCacheDynamicRead(t *testing.T) {
+	tbl := NewTable()
+	for i := 0; i < SmallFieldCap+4; i++ {
+		key := "k" + string(rune('a'+i))
+		tbl.RawSetString(key, IntValue(int64(i)))
+	}
+	if tbl.smap == nil {
+		t.Fatal("expected table to promote to large string map")
+	}
+
+	key := "kc"
+	var pcCache [TableStringKeyCacheWays]TableStringKeyCacheEntry
+	got := tbl.RawGetStringDynamicCached(key, pcCache[:])
+	if !got.IsInt() || got.Int() != 2 {
+		t.Fatalf("first lookup = %v, want 2", got)
+	}
+	if tbl.stringLookupCache == nil {
+		t.Fatal("large string-map lookup cache was not allocated")
+	}
+	got = tbl.RawGetStringDynamicCached(key, pcCache[:])
+	if !got.IsInt() || got.Int() != 2 {
+		t.Fatalf("cached lookup = %v, want 2", got)
+	}
+}
+
+func TestStringMapLookupCacheInvalidatesOnMutation(t *testing.T) {
+	tbl := NewTable()
+	for i := 0; i < SmallFieldCap+4; i++ {
+		key := "k" + string(rune('a'+i))
+		tbl.RawSetString(key, IntValue(int64(i)))
+	}
+	key := "kc"
+	var pcCache [TableStringKeyCacheWays]TableStringKeyCacheEntry
+	_ = tbl.RawGetStringDynamicCached(key, pcCache[:])
+	cache := tbl.stringLookupCache
+	if cache == nil {
+		t.Fatal("expected lookup cache before mutation")
+	}
+
+	tbl.RawSetString(key, IntValue(42))
+	if tbl.stringLookupCache != nil {
+		t.Fatal("string map cache was not invalidated after mutation")
+	}
+	got := tbl.RawGetStringDynamicCached(key, pcCache[:])
+	if !got.IsInt() || got.Int() != 42 {
+		t.Fatalf("lookup after mutation = %v, want 42", got)
+	}
+}
+
 // TestFieldCacheSmallTable verifies correctness for tables with few fields.
 func TestFieldCacheSmallTable(t *testing.T) {
 	tbl := NewTable()

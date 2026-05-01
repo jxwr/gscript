@@ -77,10 +77,24 @@ const (
 	TableOffBoolArrayLen  = 200 // boolArray slice len field (192 + 8)
 	TableOffBoolArrayCap  = 208 // boolArray slice cap field
 	// R43 Phase 2 DenseMatrix descriptor fields.
-	TableOffDMFlat   = 224 // unsafe.Pointer — flat backing head
-	TableOffDMStride = 232 // int32 — row stride (columns)
-	TableOffDMMeta   = 248 // *denseMatrixMeta — cold side metadata
-	TableOffLazyTree = 256 // *LazyRecursiveTable — deferred recursive table side pointer
+	TableOffDMFlat            = 224 // unsafe.Pointer — flat backing head
+	TableOffDMStride          = 232 // int32 — row stride (columns)
+	TableOffDMMeta            = 248 // *denseMatrixMeta — cold side metadata
+	TableOffLazyTree          = 256 // *LazyRecursiveTable — deferred recursive table side pointer
+	TableOffStringLookupCache = 264 // *StringLookupCache — large string map value cache
+
+	// StringLookupCache layout.
+	StringLookupCacheOffEntries    = 0
+	StringLookupCacheOffEntriesLen = 8
+	StringLookupCacheOffEntriesCap = 16
+	StringLookupCacheOffMask       = 24
+
+	// StringLookupCacheEntry layout.
+	StringLookupCacheEntrySize       = 48
+	StringLookupCacheEntryOffKeyData = 16
+	StringLookupCacheEntryOffKeyLen  = 24
+	StringLookupCacheEntryOffValue   = 32
+	StringLookupCacheEntryOffValid   = 40
 
 	// denseMatrixMeta layout. The JIT only uses this for the native
 	// row-store adoption path after runtime has allocated the backing.
@@ -222,6 +236,17 @@ func init() {
 	}
 	if off := runtime.TableLazyTreeOffset(); off != TableOffLazyTree {
 		panic("jit: Table.lazyTree offset mismatch: expected " + itoa(TableOffLazyTree) + ", got " + itoa(int(off)))
+	}
+	if cacheOff := runtime.TableStringLookupCacheOffset(); cacheOff != TableOffStringLookupCache {
+		panic("jit: Table string lookup cache offset mismatch")
+	}
+	if dataOff, lenOff, capOff, maskOff := runtime.StringLookupCacheOffsets(); dataOff != StringLookupCacheOffEntries ||
+		lenOff != StringLookupCacheOffEntriesLen || capOff != StringLookupCacheOffEntriesCap || maskOff != StringLookupCacheOffMask {
+		panic("jit: StringLookupCache offset mismatch")
+	}
+	if keyDataOff, keyLenOff, valueOff, validOff := runtime.StringLookupCacheEntryOffsets(); keyDataOff != StringLookupCacheEntryOffKeyData ||
+		keyLenOff != StringLookupCacheEntryOffKeyLen || valueOff != StringLookupCacheEntryOffValue || validOff != StringLookupCacheEntryOffValid {
+		panic("jit: StringLookupCacheEntry offset mismatch")
 	}
 	dmDataOff, dmLenOff, dmCapOff, dmParentOff := runtime.DenseMatrixMetaOffsets()
 	if dmDataOff != DenseMatrixMetaOffBackingData {
