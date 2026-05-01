@@ -44,6 +44,10 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 	}
 	fnVal := regs[absSlot]
 
+	if handled, err := tm.callVM.TryFastCoroutineCallValue(fnVal, absSlot, nArgs, nRets+1); handled {
+		return err
+	}
+
 	var local [16]runtime.Value
 	var callArgs []runtime.Value
 	if nArgs <= len(local) {
@@ -330,6 +334,9 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 	case ExitCallExit:
 		if err := tm.executeCallExit(ctx, regs, base, proto); err != nil {
+			if vm.IsCoroutineYield(err) {
+				return runtime.NilValue(), err
+			}
 			return runtime.NilValue(), fmt.Errorf("callee call-exit: %w", err)
 		}
 		resumeOff, ok := cf.resumeOffset(int(ctx.CallID), ctx.NativeCalleeResumePass != 0)
@@ -411,6 +418,9 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			ctx.ResumeNumericPass = 0
 		case ExitCallExit:
 			if err := tm.executeCallExit(ctx, currentRegs, base, proto); err != nil {
+				if vm.IsCoroutineYield(err) {
+					return runtime.NilValue(), err
+				}
 				return runtime.NilValue(), fmt.Errorf("callee call-exit: %w", err)
 			}
 			currentRegs = tm.callVM.Regs()

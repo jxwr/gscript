@@ -220,28 +220,40 @@ func shouldStayTier0RecursiveTableWalker(proto *vm.FuncProto, profile FuncProfil
 	return true
 }
 
-// shouldStayTier0CoroutineRuntime keeps coroutine stdlib users on the VM path.
-// The interpreter has VM-native fast paths for coroutine.resume/yield/wrap,
-// while Tier 1 treats those calls as generic GoFunction exits and adds overhead
-// without opening a Tier 2 path.
+// shouldStayTier0CoroutineRuntime keeps coroutine suspension/factory bodies on
+// the VM path. Resume-heavy consumers can tier up because JIT call-exit
+// handlers dispatch VM coroutine builtins through the same direct helpers as
+// the interpreter.
 func shouldStayTier0CoroutineRuntime(proto *vm.FuncProto, profile FuncProfile) bool {
 	if proto == nil || profile.CallCount == 0 {
 		return false
 	}
+	hasCoroutine := false
+	hasSuspendingOrFactoryOp := false
 	for _, inst := range proto.Code {
-		if vm.DecodeOp(inst) != vm.OP_GETGLOBAL {
+		op := vm.DecodeOp(inst)
+		if op != vm.OP_GETGLOBAL && op != vm.OP_GETFIELD {
 			continue
 		}
-		bx := vm.DecodeBx(inst)
-		if bx < 0 || bx >= len(proto.Constants) {
+		idx := vm.DecodeBx(inst)
+		if op == vm.OP_GETFIELD {
+			idx = vm.DecodeC(inst)
+		}
+		if idx < 0 || idx >= len(proto.Constants) {
 			continue
 		}
-		c := proto.Constants[bx]
-		if c.IsString() && c.Str() == "coroutine" {
-			return true
+		c := proto.Constants[idx]
+		if !c.IsString() {
+			continue
+		}
+		switch c.Str() {
+		case "coroutine":
+			hasCoroutine = true
+		case "create", "wrap", "yield":
+			hasSuspendingOrFactoryOp = true
 		}
 	}
-	return false
+	return hasCoroutine && hasSuspendingOrFactoryOp
 }
 
 // shouldStayTier0StringTokenLoop keeps split-heavy tokenization loops on the

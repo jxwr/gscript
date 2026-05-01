@@ -97,6 +97,13 @@ func (vm *VM) activeCoroutine() *VMCoroutine {
 	return vm.currentCoroutine
 }
 
+// IsCoroutineYield reports whether err is the VM's internal coroutine
+// suspension sentinel. JIT exit handlers use this to propagate suspension
+// without wrapping it as an ordinary call failure.
+func IsCoroutineYield(err error) bool {
+	return err == errCoroutineYield
+}
+
 // RegisterCoroutineLib installs VM-native coroutine functions into globals,
 // overriding the tree-walker's coroutine library which cannot handle VM closures.
 func (vm *VM) RegisterCoroutineLib() {
@@ -319,11 +326,22 @@ func (co *VMCoroutine) releaseVM() {
 }
 
 func (vm *VM) yieldCoroutine(args []rt.Value) ([]rt.Value, error) {
-	co := vm.activeCoroutine()
-	if co == nil {
+	if vm.activeCoroutine() == nil {
 		return nil, fmt.Errorf("cannot yield from outside a coroutine")
 	}
 	return nil, fmt.Errorf("coroutine.yield requires VM call dispatch")
+}
+
+func (vm *VM) suspendCoroutine(args []rt.Value, dst, c int) error {
+	co := vm.activeCoroutine()
+	if co == nil {
+		return fmt.Errorf("cannot yield from outside a coroutine")
+	}
+	vm.recordCoroutineYield()
+	co.yieldResult = vmYieldResult{values: args}
+	co.yieldDst = dst
+	co.yieldC = c
+	return errCoroutineYield
 }
 
 func protoHasNoCalls(proto *FuncProto) bool {
@@ -378,4 +396,18 @@ func (vm *VM) callLeafCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, e
 
 	results, err := vm.call(cl, args, base, 0)
 	return results, err, true
+}
+
+// TryFastCoroutineCallValue handles VM-owned coroutine builtins directly from
+// JIT call-exit handlers. absSlot is the absolute VM register slot containing
+// the function value; c is the bytecode CALL C field.
+func (vm *VM) TryFastCoroutineCallValue(fnVal rt.Value, absSlot, nArgs, c int) (bool, error) {
+	if vm == nil || !fnVal.IsFunction() {
+		return false, nil
+	}
+	gf := fnVal.GoFunction()
+	if gf == nil {
+		return false, nil
+	}
+	return vm.tryFastCoroutineCall(gf, 0, absSlot, nArgs, c)
 }

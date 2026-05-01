@@ -1885,6 +1885,9 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				return nil, err
 			}
 			if err := tm.executeCallExit(ctx, regs, base, proto); err != nil {
+				if vm.IsCoroutineYield(err) {
+					return nil, err
+				}
 				return nil, fmt.Errorf("tier2: call-exit: %w", err)
 			}
 			resyncRegs()

@@ -443,6 +443,12 @@ func driver(co, n) {
     return total
 }
 
+func yielding(n) {
+    for i := 1; i <= n; i++ {
+        coroutine.yield(i)
+    }
+}
+
 func string_literal_only() {
     print("coroutine")
 }
@@ -452,8 +458,16 @@ func string_literal_only() {
 	if driver == nil {
 		t.Fatal("driver proto not found")
 	}
-	if !shouldStayTier0CoroutineRuntime(driver, analyzeFuncProfile(driver)) {
-		t.Fatal("coroutine stdlib driver should stay on the VM path")
+	if shouldStayTier0CoroutineRuntime(driver, analyzeFuncProfile(driver)) {
+		t.Fatal("coroutine resume driver should remain eligible for JIT")
+	}
+
+	yielding := findProtoByName(proto, "yielding")
+	if yielding == nil {
+		t.Fatal("yielding proto not found")
+	}
+	if !shouldStayTier0CoroutineRuntime(yielding, analyzeFuncProfile(yielding)) {
+		t.Fatal("coroutine.yield body should stay on the VM suspension path")
 	}
 
 	plain := findProtoByName(proto, "string_literal_only")

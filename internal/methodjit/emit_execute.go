@@ -97,6 +97,9 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 			// Call-exit: execute the call via VM, then resume JIT.
 			err = cf.executeCallExit(&ctx, regs)
 			if err != nil {
+				if vm.IsCoroutineYield(err) {
+					return nil, err
+				}
 				return nil, fmt.Errorf("methodjit: call-exit error: %w", err)
 			}
 			if err := exitCheck.checkAfter(site, before, regs, 0, protoNameForCheck(cf.Proto)); err != nil {

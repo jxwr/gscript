@@ -632,6 +632,9 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 		proto.CallCount++
 		if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
 			results, err := vm.executeMethodJIT(compiled, vm.regs, base, proto)
+			if err == errCoroutineYield {
+				return results, err
+			}
 			if err == nil {
 				vm.closeUpvalues(base)
 				vm.frameCount--
@@ -1619,6 +1622,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					proto.CallCount++
 					if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
 						results, err := vm.executeMethodJIT(compiled, vm.regs, newBase, proto)
+						if err == errCoroutineYield {
+							return results, err
+						}
 						if err == nil {
 							vm.closeUpvalues(newBase)
 							vm.frameCount--
@@ -2143,12 +2149,8 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 			start := base + a + 1
 			args = vm.regs[start : start+nArgs]
 		}
-		if co := vm.currentCoroutine; co != nil {
-			vm.recordCoroutineYield()
-			co.yieldResult = vmYieldResult{values: args}
-			co.yieldDst = base + a
-			co.yieldC = c
-			return true, errCoroutineYield
+		if vm.currentCoroutine != nil {
+			return true, vm.suspendCoroutine(args, base+a, c)
 		}
 		results, err := vm.yieldCoroutine(args)
 		if err != nil {

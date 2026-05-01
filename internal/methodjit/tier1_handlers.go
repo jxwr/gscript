@@ -211,6 +211,10 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 		nArgs = rawB - 1
 	}
 
+	if handled, err := e.callVM.TryFastCoroutineCallValue(fnVal, absSlot, nArgs, rawC); handled {
+		return err
+	}
+
 	// Fast path: GScript closure with compiled proto. Avoids heap-allocating
 	// callArgs and bypasses CallValue → callValue → call dispatch.
 	if fnVal.IsFunction() {

@@ -64,6 +64,30 @@ for i := 1; i <= 200; i++ { result = cmp_lt_eq() }
 `, "result")
 }
 
+func TestTier1_StringEQ_DistinctBacking(t *testing.T) {
+	compareVMvsJIT(t, `
+func cmp_eq() {
+    a := "err" .. "or"
+    if a == "error" { return 1 }
+    return 0
+}
+result := -1
+for i := 1; i <= 200; i++ { result = cmp_eq() }
+`, "result")
+}
+
+func TestTier1_StringNE_DistinctBacking(t *testing.T) {
+	compareVMvsJIT(t, `
+func cmp_ne() {
+    a := "err" .. "or"
+    if a != "error" { return 1 }
+    return 0
+}
+result := -1
+for i := 1; i <= 200; i++ { result = cmp_ne() }
+`, "result")
+}
+
 func TestTier1_StringGT(t *testing.T) {
 	// a > b is compiled as OP_LT with operands swapped.
 	compareVMvsJIT(t, `

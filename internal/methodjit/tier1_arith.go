@@ -485,6 +485,7 @@ func emitBaselineEQ(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	notEqualLabel := nextLabel("eq_ne")
 	floatCmpLabel := nextLabel("eq_fcmp")
 	bothNumLabel := nextLabel("eq_both_num")
+	stringLabel := nextLabel("eq_string")
 
 	// Fast path: raw bit equality (works for int==int, nil==nil, bool==bool, ptr==ptr)
 	asm.CMPreg(jit.X0, jit.X1)
@@ -493,6 +494,15 @@ func emitBaselineEQ(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 	} else {
 		asm.BCond(jit.CondEQ, skipLabel) // equal → skip
 	}
+
+	// Raw bits differ. Strings compare by content, not pointer identity.
+	asm.LSRimm(jit.X2, jit.X0, 48)
+	asm.MOVimm16(jit.X3, uint16(jit.NB_TagPtrShr48)) // 0xFFFF
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondEQ, stringLabel)
+	asm.LSRimm(jit.X2, jit.X1, 48)
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondEQ, notEqualLabel)
 
 	// Slow path: raw bits differ. Check if both are numbers (int/float mismatch).
 	// A value is a number if: tag < 0xFFFC (float) OR tag == 0xFFFE (int).
@@ -526,6 +536,14 @@ func emitBaselineEQ(asm *jit.Assembler, inst uint32, pc int, code []uint32) {
 		asm.BCond(jit.CondEQ, skipLabel) // equal → skip
 	}
 	asm.B(doneLabel)
+
+	asm.Label(stringLabel)
+	jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, notEqualLabel)
+	jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, notEqualLabel)
+	stringTrueLabel := nextLabel("eq_string_true")
+	stringFalseLabel := nextLabel("eq_string_false")
+	emitBaselineStringEq(asm, stringTrueLabel, stringFalseLabel)
+	emitBaselineCmpBoolBranch(asm, a, stringTrueLabel, stringFalseLabel, skipLabel, doneLabel)
 
 	// Not equal (different types, not both numbers)
 	asm.Label(notEqualLabel)
@@ -778,6 +796,40 @@ func emitBaselineStringCmp(asm *jit.Assembler, cond jit.Cond, trueLabel, falseLa
 		asm.BCond(jit.CondLO, trueLabel)
 	}
 	asm.B(falseLabel)
+}
+
+// emitBaselineStringEq compares two NaN-boxed string values in X0 and X1.
+// Both operands must already be checked as strings.
+func emitBaselineStringEq(asm *jit.Assembler, trueLabel, falseLabel string) {
+	loopLabel := nextLabel("str_eq_loop")
+
+	asm.LSLimm(jit.X2, jit.X0, 20)
+	asm.LSRimm(jit.X2, jit.X2, 20)
+	asm.LSLimm(jit.X3, jit.X1, 20)
+	asm.LSRimm(jit.X3, jit.X3, 20)
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondEQ, trueLabel)
+
+	asm.LDR(jit.X4, jit.X2, 0)
+	asm.LDR(jit.X5, jit.X2, 8)
+	asm.LDR(jit.X6, jit.X3, 0)
+	asm.LDR(jit.X7, jit.X3, 8)
+	asm.CMPreg(jit.X5, jit.X7)
+	asm.BCond(jit.CondNE, falseLabel)
+	asm.CBZ(jit.X5, trueLabel)
+	asm.CMPreg(jit.X4, jit.X6)
+	asm.BCond(jit.CondEQ, trueLabel)
+
+	asm.MOVimm16(jit.X8, 0)
+	asm.Label(loopLabel)
+	asm.LDRBreg(jit.X9, jit.X4, jit.X8)
+	asm.LDRBreg(jit.X10, jit.X6, jit.X8)
+	asm.CMPreg(jit.X9, jit.X10)
+	asm.BCond(jit.CondNE, falseLabel)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.CMPreg(jit.X8, jit.X5)
+	asm.BCond(jit.CondLT, loopLabel)
+	asm.B(trueLabel)
 }
 
 // ---------------------------------------------------------------------------
