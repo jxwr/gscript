@@ -487,6 +487,112 @@ func sum_inline(n) {
 	assertValuesEqual(t, "sum_inline(100)", irResults[0], vmResults[0])
 }
 
+func TestInline_PureNumericLoopCalleeInsideCallerLoop(t *testing.T) {
+	src := `
+func gcd(a, b) {
+	for b != 0 {
+		t := b
+		b = a % b
+		a = t
+	}
+	return a
+}
+func sum_gcd(n) {
+	total := 0
+	for i := 1; i <= n; i++ {
+		total = total + gcd(i * 7 + 13, i * 11 + 3)
+	}
+	return total
+}
+`
+	fn, config := buildInlineTestIR(t, src, "sum_gcd")
+	config.MaxSize = 40
+
+	result, err := InlinePassWith(config)(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	if n := countOp(result, OpCall); n != 0 {
+		t.Fatalf("expected pure numeric loop callee to inline inside caller loop, got %d calls\nIR:\n%s", n, Print(result))
+	}
+	if errs := Validate(result); len(errs) > 0 {
+		for _, e := range errs {
+			t.Errorf("validation error: %v", e)
+		}
+	}
+
+	irResults, err := Interpret(result, []runtime.Value{runtime.IntValue(40)})
+	if err != nil {
+		t.Fatalf("IR interpreter error: %v", err)
+	}
+	vmResults := runVMFunc(t, src, "sum_gcd", []runtime.Value{runtime.IntValue(40)})
+	if len(irResults) == 0 || len(vmResults) == 0 {
+		t.Fatalf("empty results: IR=%v VM=%v", irResults, vmResults)
+	}
+	assertValuesEqual(t, "sum_gcd(40)", irResults[0], vmResults[0])
+}
+
+func TestInline_LoopCalleeInsideCallerLoopRejectsImpureNumeric(t *testing.T) {
+	src := `
+func sum_table(t, n) {
+	total := 0
+	for i := 1; i <= n; i++ {
+		total = total + t[i]
+	}
+	return total
+}
+func driver(t, n) {
+	total := 0
+	for i := 1; i <= n; i++ {
+		total = total + sum_table(t, i)
+	}
+	return total
+}
+`
+	fn, config := buildInlineTestIR(t, src, "driver")
+	config.MaxSize = 40
+
+	result, err := InlinePassWith(config)(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	if n := countOp(result, OpCall); n == 0 {
+		t.Fatalf("expected table-reading loop callee to remain behind call boundary\nIR:\n%s", Print(result))
+	}
+}
+
+func TestInline_LoopCalleeInsideCallerLoopRejectsOverflowVersionedRecurrence(t *testing.T) {
+	src := `
+func fib_iter(n) {
+	a := 0
+	b := 1
+	for i := 0; i < n; i++ {
+		t := a + b
+		a = b
+		b = t
+	}
+	return a
+}
+func bench(n, reps) {
+	result := 0
+	for r := 1; r <= reps; r++ {
+		result = fib_iter(n)
+	}
+	return result
+}
+`
+	fn, config := buildInlineTestIR(t, src, "bench")
+	config.MaxSize = 40
+
+	result, err := InlinePassWith(config)(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	if n := countOp(result, OpCall); n == 0 {
+		t.Fatalf("expected overflow-versioned numeric recurrence to remain behind call boundary\nIR:\n%s", Print(result))
+	}
+}
+
 // TestInline_CorrectnessSpectralA verifies inlined spectral_norm A matches VM.
 func TestInline_CorrectnessSpectralA(t *testing.T) {
 	src := `

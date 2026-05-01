@@ -1040,8 +1040,11 @@ func caller(n, reps) {
 			}
 		}
 	}
-	if !foundHelperGlobal {
-		t.Fatalf("expected residual helper GetGlobal after loop-callee inline rejection:\n%s", Print(fn))
+	if foundHelperGlobal {
+		t.Fatalf("pure numeric loop helper should inline before LICM, leaving no helper GetGlobal:\n%s", Print(fn))
+	}
+	if calls := countOpHelper(fn, OpCall); calls != 0 {
+		t.Fatalf("pure numeric loop helper should inline before LICM, left %d calls:\n%s", calls, Print(fn))
 	}
 }
 

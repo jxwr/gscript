@@ -8,6 +8,7 @@ local benchmarks = {
     "fn_calls",
     "sieve",
     "sum_primes",
+    "math_intensive",
     "mandelbrot",
     "nbody",
     "spectral_norm",

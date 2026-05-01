@@ -259,12 +259,15 @@ func (ec *emitContext) emitRawIntExactDiv(instr *Instr) {
 		return
 	}
 
+	constDivisor, hasConstDivisor := constIntFromValue(instr.Args[1])
+	resultFitsInt48 := hasConstDivisor && exactConstDivisorResultFitsInt48(constDivisor)
+
 	dst := jit.X0
 	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
 		dst = jit.Reg(pr.Reg)
 	}
 
-	if divisor, ok := constIntFromValue(instr.Args[1]); ok && divisor != 0 {
+	if divisor, ok := constDivisor, hasConstDivisor; ok && divisor != 0 {
 		lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
 		if divisor == 1 {
 			if dst != lhs {
@@ -275,7 +278,7 @@ func (ec *emitContext) emitRawIntExactDiv(instr *Instr) {
 		}
 		if divisor == -1 {
 			ec.asm.NEG(dst, lhs)
-			if !ec.int48Safe(instr.ID) {
+			if !resultFitsInt48 && !ec.int48Safe(instr.ID) {
 				ec.emitInt48OverflowCheck(dst, instr)
 			}
 			ec.storeRawInt(dst, instr.ID)
@@ -286,7 +289,7 @@ func (ec *emitContext) emitRawIntExactDiv(instr *Instr) {
 			if negative {
 				ec.asm.NEG(dst, dst)
 			}
-			if !ec.int48Safe(instr.ID) {
+			if !resultFitsInt48 && !ec.int48Safe(instr.ID) {
 				ec.emitInt48OverflowCheck(dst, instr)
 			}
 			ec.storeRawInt(dst, instr.ID)
@@ -328,10 +331,17 @@ func (ec *emitContext) emitRawIntExactDiv(instr *Instr) {
 		ec.asm.SDIV(dst, jit.X0, jit.X1)
 	}
 
-	if !ec.int48Safe(instr.ID) {
+	if !resultFitsInt48 && !ec.int48Safe(instr.ID) {
 		ec.emitInt48OverflowCheck(dst, instr)
 	}
 	ec.storeRawInt(dst, instr.ID)
+}
+
+func exactConstDivisorResultFitsInt48(divisor int64) bool {
+	// TypeInt operands are already signed int48 values. Exact integer division
+	// by any constant except -1 cannot increase magnitude beyond the dividend,
+	// so the quotient remains representable without an extra SBFX/CMP guard.
+	return divisor != 0 && divisor != -1
 }
 
 func exactPow2DivisorShift(divisor int64) (uint8, bool, bool) {

@@ -219,14 +219,23 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 			}
 		}
 
-		// Multi-block inlining rewires predecessor lists and phi args. Inlining
-		// a loop-bearing callee at a call site that is itself inside a loop
-		// creates nested loop-header phi edges whose pred-index contract is not
-		// modeled by this inliner yet. Keep that case behind the call boundary.
+		// Multi-block inlining rewires predecessor lists and phi args. General
+		// loop-bearing callees inside caller loops are still too broad, but
+		// small pure numeric helpers are profitable and do not introduce aliasing
+		// or side-effect replay hazards across the new nested loop.
 		if computeLoopInfo(calleeFn).hasLoops() && computeLoopInfo(fn).loopBlocks[block.ID] {
-			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
-				fmt.Sprintf("callee %s has loops and call site is inside a loop", calleeName))
-			continue
+			if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
+				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("callee %s has loops inside caller loop and is not pure numeric: %s", calleeName, reason))
+				continue
+			}
+			if callABICalleeHasShiftAddOverflowVersion(calleeProto, nil) {
+				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("callee %s has overflow-versioned numeric recurrence inside caller loop", calleeName))
+				continue
+			}
+			functionRemarks(fn).Add("Inline", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("admitted pure numeric loop callee %s inside caller loop", calleeName))
 		}
 
 		// Check if the callee is single-block (trivial inline).
@@ -684,7 +693,17 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 			newSucc := blockMap[succ.ID]
 			if newSucc != nil {
 				newBlock.Succs = append(newBlock.Succs, newSucc)
-				newSucc.Preds = append(newSucc.Preds, newBlock)
+			}
+		}
+	}
+
+	// Preserve each cloned block's predecessor order from the callee CFG so
+	// phi argument indexes continue to line up with Block.Preds after inlining.
+	for _, cb := range calleeFn.Blocks {
+		newBlock := blockMap[cb.ID]
+		for _, pred := range cb.Preds {
+			if newPred := blockMap[pred.ID]; newPred != nil {
+				newBlock.Preds = append(newBlock.Preds, newPred)
 			}
 		}
 	}

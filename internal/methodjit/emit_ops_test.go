@@ -276,6 +276,19 @@ func TestEmit_ModZeroIntPowerOfTwoUsesBitTest(t *testing.T) {
 	}
 }
 
+func TestEmit_ExactConstDivisorResultFitsInt48(t *testing.T) {
+	for _, divisor := range []int64{1, 2, -2, 3, -7} {
+		if !exactConstDivisorResultFitsInt48(divisor) {
+			t.Fatalf("division by %d cannot expand a valid int48 dividend", divisor)
+		}
+	}
+	for _, divisor := range []int64{0, -1} {
+		if exactConstDivisorResultFitsInt48(divisor) {
+			t.Fatalf("division by %d still needs the existing guard path", divisor)
+		}
+	}
+}
+
 // TestEmit_Div_Exact: 10 / 2 = 5.0 (float, not int).
 func TestEmit_Div_Exact(t *testing.T) {
 	src := `func f(a, b) { return a / b }`
