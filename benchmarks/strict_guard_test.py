@@ -33,6 +33,22 @@ Tier 2 Exit Profile:
         run = sg.parse_command_run("result only\n", "ok", 0)
         self.assertEqual(run.status, "no_time")
         self.assertIsNone(run.seconds)
+        self.assertEqual(run.output_hash, sg.output_hash("result only\n"))
+
+    def test_output_hash_ignores_timing_and_jit_stats(self):
+        a = sg.output_hash(
+            """checksum: 123
+Time: 0.010s
+JIT Statistics:
+  Tier 2 attempted: 1
+  Tier 2 entered:  1 functions
+Tier 2 Exit Profile:
+  total exits: 0
+"""
+        )
+        b = sg.output_hash("checksum: 123\nTime: 0.020s\n")
+        self.assertEqual(a, b)
+        self.assertEqual(sg.checksum_text("checksum: 123\nTime: 0.020s\n"), "123")
 
 
 class StrictGuardStatisticsTest(unittest.TestCase):
@@ -95,6 +111,15 @@ class StrictGuardStatisticsTest(unittest.TestCase):
         self.assertEqual(sample.time_source, "script")
         self.assertAlmostEqual(sample.seconds, 0.016)
 
+    def test_checksum_mismatch_is_explicit(self):
+        samples = [
+            sg.Sample(status="ok", seconds=1.0, runs=[sg.CommandRun(status="ok", seconds=1.0, output_hash="aaa")]),
+            sg.Sample(status="ok", seconds=1.0, runs=[sg.CommandRun(status="ok", seconds=1.0, output_hash="bbb")]),
+        ]
+        mode = sg.summarize_mode(samples, [], repeat=1)
+        self.assertEqual(mode.checksum_status, "mismatch")
+        self.assertEqual(mode.output_hash, "aaa,bbb")
+
 
 class StrictGuardReportTest(unittest.TestCase):
     def test_markdown_marks_unreliable_results_without_ratio(self):
@@ -112,14 +137,24 @@ class StrictGuardReportTest(unittest.TestCase):
             allow_wall_time=False,
         )
         markdown = sg.markdown_summary([row], ["vm", "default"], args)
-        self.assertIn("| tiny | - | - | vm:low_resolution |", markdown)
-        self.assertIn("| tiny | vm | low_resolution |", markdown)
+        self.assertIn("| suite/tiny | - | - | vm:low_resolution |", markdown)
+        self.assertIn("| suite/tiny | vm | low_resolution |", markdown)
 
-    def test_repeat_overrides_accept_bench_and_mode_bench(self):
-        overrides = sg.parse_repeat_overrides(["fib=4", "default/sieve=8"])
+    def test_repeat_overrides_accept_bench_group_bench_and_mode_bench(self):
+        overrides = sg.parse_repeat_overrides(["fib=4", "suite/fib=6", "default/sieve=8"])
         self.assertEqual(sg.repeat_for(overrides, "vm", "fib"), 4)
+        self.assertEqual(sg.repeat_for(overrides, "vm", "fib", "suite/fib"), 6)
         self.assertEqual(sg.repeat_for(overrides, "default", "sieve"), 8)
         self.assertIsNone(sg.repeat_for(overrides, "vm", "sieve"))
+
+    def test_discovery_includes_all_groups(self):
+        root = Path(__file__).resolve().parents[1]
+        specs = sg.discover_specs(root, ["suite", "extended", "variants"])
+        ids = {spec.benchmark_id for spec in specs}
+        self.assertIn("suite/fib", ids)
+        self.assertIn("suite/matmul_dense", ids)
+        self.assertIn("extended/json_table_walk", ids)
+        self.assertIn("variants/matmul_row_variant", ids)
 
 
 if __name__ == "__main__":

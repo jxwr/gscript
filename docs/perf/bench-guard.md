@@ -4,6 +4,44 @@ Use this guard before pushing performance-sensitive changes. It compares the
 current checkout against the checked-in baseline, the VM, no-filter Tier 2, and
 LuaJIT where matching Lua files exist.
 
+Use the strict truth pass before publishing or celebrating a benchmark win. It
+does not compare to the checked-in baseline and it does not change performance
+code; it checks whether the measured result is reproducible, correct, and
+general enough to survive related benchmark variants.
+
+```bash
+python3 benchmarks/strict_guard.py --runs=3 --warmup=1 --timeout=90 \
+  --json benchmarks/data/strict_guard_latest.json \
+  --markdown benchmarks/data/strict_guard_latest.md
+```
+
+The strict pass discovers the full benchmark surface:
+
+- `benchmarks/suite/*.gs`
+- `benchmarks/extended/manifest.json`
+- `benchmarks/variants/*.gs`
+
+For each benchmark it runs VM, default JIT, no-filter JIT, and LuaJIT when a
+matching Lua reference exists and `luajit` is in `PATH`. The report includes
+median timing, sample spread, calibrated repeat count, output checksum hash,
+literal `checksum:` values when present, Tier 2 counters, exit counters, and a
+"Suspicious Kernel Wins" section. A suspicious win means the core suite result
+beats LuaJIT by a large margin but the related structural variant is missing,
+not comparable, or does not confirm the win.
+
+Representative subset while iterating:
+
+```bash
+python3 benchmarks/strict_guard.py --runs=3 --warmup=0 --max-repeat=8 \
+  --bench=suite/matmul \
+  --bench=variants/matmul_row_variant \
+  --bench=extended/json_table_walk
+```
+
+Use `--group=suite`, `--group=extended`, or `--group=variants` to narrow the
+matrix. Use `--dry-run` to verify discovery without building or running
+benchmarks.
+
 ## Push Check
 
 ```bash

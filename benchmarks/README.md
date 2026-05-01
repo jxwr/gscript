@@ -8,6 +8,17 @@
 # Full suite (VM + JIT + LuaJIT, one-shot table)
 bash benchmarks/run_bench.sh
 
+# Strict truth pass: suite + extended + variants, VM/JIT/no-filter/LuaJIT,
+# median timing, output checksums, JIT stats, and overfit-win notes.
+python3 benchmarks/strict_guard.py --runs=3 --warmup=1 --timeout=90 \
+  --json benchmarks/data/strict_guard_latest.json \
+  --markdown benchmarks/data/strict_guard_latest.md
+
+# Representative strict subset while iterating
+python3 benchmarks/strict_guard.py --runs=3 --warmup=0 --max-repeat=8 \
+  --bench=suite/matmul --bench=variants/matmul_row_variant \
+  --bench=extended/json_table_walk
+
 # Regression guard: VM + default JIT + no-filter JIT + LuaJIT, median-of-3
 bash benchmarks/regression_guard.sh --runs=3 \
   --json benchmarks/data/regression_guard_latest.json \
@@ -39,8 +50,32 @@ Platform: Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1
 
 ## Reading the output
 
-`regression_guard.sh` is the preferred full comparison tool for method-JIT
-performance work. It builds `cmd/gscript` once, runs every suite benchmark in:
+`strict_guard.py` is the preferred truth pass before claiming benchmark wins.
+It builds `cmd/gscript` once, discovers every `benchmarks/suite/*.gs`, every
+extended benchmark in `benchmarks/extended/manifest.json`, and every
+`benchmarks/variants/*.gs`, then runs each available cell in:
+
+| Mode | Meaning |
+|------|---------|
+| `vm` | bytecode VM, no JIT |
+| `default` | normal method JIT with `-jit-stats -exit-stats` |
+| `no_filter` | method JIT with `GSCRIPT_TIER2_NO_FILTER=1` |
+| `luajit` | matching Lua reference under `benchmarks/lua*`, when `luajit` is in `PATH` |
+
+The strict report includes median timing, sample spread, repeat count, timing
+source, output checksum hash, literal `checksum:` value when present, Tier 2
+`attempted/entered/failed`, total exits, and a "Suspicious Kernel Wins" section.
+That section calls out suite benchmarks that beat LuaJIT by a large margin but
+are not confirmed by their structural variants. It is intentionally a review
+signal, not a performance patch gate.
+
+Use `--group=suite`, `--group=extended`, or `--group=variants` to narrow the
+run; repeat `--bench=group/name` for a representative subset. `--dry-run`
+prints the exact discovered matrix without building or running anything.
+
+`regression_guard.sh` remains the preferred baseline regression tool for
+method-JIT performance work. It builds `cmd/gscript` once, runs every core suite
+benchmark in:
 
 | Mode | Meaning |
 |------|---------|
