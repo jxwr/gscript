@@ -1264,6 +1264,44 @@ for i := 1; i <= 5; i++ {
 	}
 }
 
+func TestTieringManager_AccumulatorClosureFastPath(t *testing.T) {
+	src := `
+func make_counter() {
+    count := 0
+    func increment() {
+        count = count + 1
+        return count
+    }
+    return increment
+}
+counter := make_counter()
+result := 0
+for i := 1; i <= 20; i++ {
+    result = counter()
+}
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 20 {
+		t.Fatalf("result = %v, want 20", result)
+	}
+	makeCounter := findProtoByName(proto, "make_counter")
+	if makeCounter == nil || len(makeCounter.Protos) != 1 {
+		t.Fatalf("make_counter nested proto not found")
+	}
+	increment := makeCounter.Protos[0]
+	if increment.CallCount != 0 {
+		t.Fatalf("increment CallCount = %d, want 0 from accumulator closure fast path", increment.CallCount)
+	}
+}
+
 // TestTieringManager_Tier2CallInLoop verifies that OP_CALL inside a loop
 // can now be promoted to Tier 2 (previously performance-blocked).
 func TestTieringManager_Tier2CallInLoop(t *testing.T) {

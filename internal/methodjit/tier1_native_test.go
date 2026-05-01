@@ -369,8 +369,8 @@ func TestTier1_NativeCall_MutableUpvalueCalleeKeepsDirectBLR(t *testing.T) {
 	src := `
 func make_counter() {
     count := 0
-    func inc() {
-        count = count + 1
+    func inc(delta) {
+        count = count + delta
         return count
     }
     return inc
@@ -378,7 +378,7 @@ func make_counter() {
 counter := make_counter()
 result := 0
 for i := 1; i <= 200; i++ {
-    result = result + counter()
+    result = result + counter(1)
 }
 `
 	vmGlobals := runVMFull(t, src)
@@ -396,6 +396,22 @@ for i := 1; i <= 200; i++ {
 	if inc.DirectEntryPtr == 0 {
 		t.Fatal("mutable upvalue callee DirectEntryPtr is 0; direct BLR was disabled too broadly")
 	}
+}
+
+func TestTier1_AccumulatorClosureFastPath_FloatFallback(t *testing.T) {
+	compareVMvsJIT(t, `
+func make_counter() {
+    count := 0.5
+    func inc() {
+        count = count + 1
+        return count
+    }
+    return inc
+}
+counter := make_counter()
+result := 0
+for i := 1; i <= 10; i++ { result = counter() }
+`, "result")
 }
 
 func TestTier1_NativeCall_UpvalueSideEffectBeforeExitStillGated(t *testing.T) {
