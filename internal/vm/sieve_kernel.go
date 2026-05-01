@@ -3,7 +3,14 @@ package vm
 import "github.com/gscript/gscript/internal/runtime"
 
 func (vm *VM) tryRunSieveWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
-	if cl == nil || cl.Proto == nil || len(args) != 1 || !vm.noGlobalLock || !isSieveProto(cl.Proto) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelSieveCount) {
+		return false, nil, nil
+	}
+	return vm.runSieveWholeCallKernel(cl, args)
+}
+
+func (vm *VM) runSieveWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if cl == nil || cl.Proto == nil || len(args) != 1 || !vm.noGlobalLock {
 		return false, nil, nil
 	}
 	if !args[0].IsNumber() {
@@ -43,7 +50,7 @@ func runSieveCountKernel(n int) int64 {
 }
 
 func IsSieveKernelProto(p *FuncProto) bool {
-	return isSieveProto(p)
+	return cachedWholeCallKernelRecognized(p, wholeCallKernelSieveCount)
 }
 
 func isSieveProto(p *FuncProto) bool {

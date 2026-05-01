@@ -18,23 +18,12 @@ func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, 
 }
 
 func (vm *VM) tryRunValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
-	if handled, results, err := vm.tryRunRecursiveTableValueKernel(cl, args); handled || err != nil {
-		return handled, results, err
-	}
-	return vm.tryRunNonRecursiveTableValueWholeCallKernel(cl, args)
+	includeRecursiveTable := cl != nil && cl.Proto != nil && vm.methodJIT != nil && cl.Proto.Tier2Promoted
+	return vm.tryRunCachedValueWholeCallKernel(cl, args, includeRecursiveTable)
 }
 
 func (vm *VM) tryRunNonRecursiveTableValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
-	if handled, results, err := vm.tryRunFannkuchReduxWholeCallKernel(cl, args); handled || err != nil {
-		return handled, results, err
-	}
-	if handled, results, err := vm.tryRunSieveWholeCallKernel(cl, args); handled || err != nil {
-		return handled, results, err
-	}
-	if handled, results, err := vm.tryRunMatmulWholeCallKernel(cl, args); handled || err != nil {
-		return handled, results, err
-	}
-	return false, nil, nil
+	return vm.tryRunCachedValueWholeCallKernel(cl, args, false)
 }
 
 // tryWholeCallKernel executes a guarded whole-call numeric kernel and writes
@@ -49,16 +38,91 @@ func (vm *VM) tryWholeCallKernel(cl *Closure, args []runtime.Value, c int, dst i
 }
 
 func (vm *VM) tryRunWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
-	if handled, err := vm.tryRunIntSortWholeCallKernel(cl, args); handled || err != nil {
-		return handled, err
+	return vm.tryRunCachedNoResultWholeCallKernel(cl, args)
+}
+
+func (vm *VM) tryRunCachedValueWholeCallKernel(cl *Closure, args []runtime.Value, includeRecursiveTable bool) (bool, []runtime.Value, error) {
+	if cl == nil || cl.Proto == nil {
+		return false, nil, nil
 	}
-	if handled, err := vm.tryRunSpectralWholeCallKernel(cl, args); handled || err != nil {
-		return handled, err
+	if !mayHaveWholeCallValueKernelCandidate(cl.Proto, len(args), includeRecursiveTable) {
+		return false, nil, nil
 	}
-	if handled, err := vm.tryRunNBodyAdvanceKernel(cl, args); handled || err != nil {
-		return handled, err
+	recognized := cachedWholeCallKernelBits(cl.Proto)
+	if recognized == 0 {
+		return false, nil, nil
+	}
+	for i, entry := range wholeCallKernelRegistry {
+		if recognized&(uint64(1)<<uint(i)) == 0 || entry.info.Route != KernelRouteWholeCallValue || entry.runValue == nil {
+			continue
+		}
+		if entry.recursiveTable && !includeRecursiveTable {
+			continue
+		}
+		handled, results, err := entry.runValue(vm, cl, args)
+		if handled || err != nil {
+			return handled, results, err
+		}
+	}
+	return false, nil, nil
+}
+
+func (vm *VM) tryRunCachedNoResultWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
+	if cl == nil || cl.Proto == nil {
+		return false, nil
+	}
+	if !mayHaveWholeCallNoResultKernelCandidate(cl.Proto, len(args)) {
+		return false, nil
+	}
+	recognized := cachedWholeCallKernelBits(cl.Proto)
+	if recognized == 0 {
+		return false, nil
+	}
+	for i, entry := range wholeCallKernelRegistry {
+		if recognized&(uint64(1)<<uint(i)) == 0 || entry.info.Route != KernelRouteWholeCallNoResult || entry.runNoResult == nil {
+			continue
+		}
+		handled, err := entry.runNoResult(vm, cl, args)
+		if handled || err != nil {
+			return handled, err
+		}
 	}
 	return false, nil
+}
+
+func mayHaveWholeCallValueKernelCandidate(proto *FuncProto, argc int, includeRecursiveTable bool) bool {
+	if proto == nil || proto.IsVarArg {
+		return false
+	}
+	switch argc {
+	case 1:
+		if proto.NumParams != 1 {
+			return false
+		}
+		if includeRecursiveTable {
+			return true
+		}
+		return (proto.MaxStack == 30 && len(proto.Constants) == 2 && len(proto.Protos) == 0) ||
+			(proto.MaxStack >= 13 && len(proto.Constants) == 0 && len(proto.Protos) == 0 && len(proto.Code) == 45)
+	case 3:
+		return proto.NumParams == 3 && len(proto.Constants) == 1
+	default:
+		return false
+	}
+}
+
+func mayHaveWholeCallNoResultKernelCandidate(proto *FuncProto, argc int) bool {
+	if proto == nil || proto.IsVarArg {
+		return false
+	}
+	switch argc {
+	case 1:
+		return proto.NumParams == 1 && len(proto.Constants) >= 10 && len(proto.Code) == 99
+	case 3:
+		return proto.NumParams == 3 && len(proto.Constants) >= 1
+	default:
+		return false
+	}
 }
 
 func (vm *VM) writeNoResults(dst, c int) {

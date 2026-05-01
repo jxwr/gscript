@@ -28,6 +28,7 @@ type FuncProto struct {
 	LineInfo               []int                      // source line for each instruction (debug)
 	GlobalCache            []globalCacheEntry         // lazily-initialized cache indexed by constant pool index
 	FieldCache             []runtime.FieldCacheEntry  // lazily-initialized inline cache for GETFIELD/SETFIELD, indexed by PC
+	WholeCallKernel        *wholeCallKernelProtoCache // structural whole-call kernel recognizer cache, nil until first probe
 	NBodyAdvanceKernel     *nbodyAdvanceKernelCache   // guarded whole-call record kernel cache, nil until first probe
 	RecursiveTableKernel   *recursiveTableKernelCache // guarded whole-call lazy recursive table builder/fold cache, nil until first probe
 	HasSelfCalls           bool                       // true if function has recursive calls to itself (set during JIT compilation)

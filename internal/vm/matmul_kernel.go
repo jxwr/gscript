@@ -3,7 +3,14 @@ package vm
 import "github.com/gscript/gscript/internal/runtime"
 
 func (vm *VM) tryRunMatmulWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
-	if cl == nil || cl.Proto == nil || len(args) != 3 || !vm.noGlobalLock || !isNestedMatmulProto(cl.Proto) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelNestedMatmul) {
+		return false, nil, nil
+	}
+	return vm.runMatmulWholeCallKernel(cl, args)
+}
+
+func (vm *VM) runMatmulWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if cl == nil || cl.Proto == nil || len(args) != 3 || !vm.noGlobalLock {
 		return false, nil, nil
 	}
 	if !args[0].IsTable() || !args[1].IsTable() || !args[2].IsNumber() {
@@ -79,7 +86,7 @@ func (vm *VM) tryRunMatmulWholeCallKernel(cl *Closure, args []runtime.Value) (bo
 }
 
 func IsNestedMatmulKernelProto(p *FuncProto) bool {
-	return isNestedMatmulProto(p)
+	return cachedWholeCallKernelRecognized(p, wholeCallKernelNestedMatmul)
 }
 
 func isNestedMatmulProto(p *FuncProto) bool {

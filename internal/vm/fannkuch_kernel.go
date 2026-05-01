@@ -25,7 +25,14 @@ var fannkuchReduxCode = [...]uint32{
 }
 
 func (vm *VM) tryRunFannkuchReduxWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
-	if cl == nil || cl.Proto == nil || len(args) != 1 || !vm.noGlobalLock || !IsFannkuchReduxKernelProto(cl.Proto) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelFannkuchRedux) {
+		return false, nil, nil
+	}
+	return vm.runFannkuchReduxWholeCallKernel(cl, args)
+}
+
+func (vm *VM) runFannkuchReduxWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if cl == nil || cl.Proto == nil || len(args) != 1 || !vm.noGlobalLock {
 		return false, nil, nil
 	}
 	if !args[0].IsNumber() {
@@ -45,6 +52,10 @@ func (vm *VM) tryRunFannkuchReduxWholeCallKernel(cl *Closure, args []runtime.Val
 }
 
 func IsFannkuchReduxKernelProto(p *FuncProto) bool {
+	return cachedWholeCallKernelRecognized(p, wholeCallKernelFannkuchRedux)
+}
+
+func isFannkuchReduxKernelProto(p *FuncProto) bool {
 	if p == nil || p.NumParams != 1 || p.IsVarArg || p.MaxStack != 30 || len(p.Protos) != 0 || len(p.Constants) != 2 {
 		return false
 	}

@@ -39,10 +39,27 @@ func (vm *VM) tryRunNBodyAdvanceKernel(cl *Closure, args []runtime.Value) (bool,
 	if vm.methodJIT != nil {
 		return false, nil
 	}
-	return vm.tryRunNBodyAdvanceKernelN(cl, args, 1)
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelNBodyAdvance) {
+		return false, nil
+	}
+	return vm.runNBodyAdvanceKernel(cl, args)
+}
+
+func (vm *VM) runNBodyAdvanceKernel(cl *Closure, args []runtime.Value) (bool, error) {
+	if vm.methodJIT != nil {
+		return false, nil
+	}
+	return vm.runNBodyAdvanceKernelN(cl, args, 1)
 }
 
 func (vm *VM) tryRunNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps int64) (bool, error) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelNBodyAdvance) {
+		return false, nil
+	}
+	return vm.runNBodyAdvanceKernelN(cl, args, steps)
+}
+
+func (vm *VM) runNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps int64) (bool, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 1 || !vm.noGlobalLock {
 		return false, nil
 	}
@@ -52,7 +69,7 @@ func (vm *VM) tryRunNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps
 	proto := cl.Proto
 	cache := proto.NBodyAdvanceKernel
 	if cache == nil {
-		cache = &nbodyAdvanceKernelCache{eligible: isNBodyAdvanceProto(proto)}
+		cache = &nbodyAdvanceKernelCache{eligible: true}
 		proto.NBodyAdvanceKernel = cache
 	}
 	if !cache.eligible || !args[0].IsNumber() || !vm.guardNBodyMathSqrt(proto) {
@@ -387,7 +404,7 @@ func isNBodyAdvanceProto(p *FuncProto) bool {
 // record-field nbody-style advance(dt) kernel shape. MethodJIT uses this to
 // keep driver loops on the VM route where the whole-call kernel can fire.
 func HasNBodyAdvanceWholeCallKernel(p *FuncProto) bool {
-	return isNBodyAdvanceProto(p)
+	return cachedWholeCallKernelRecognized(p, wholeCallKernelNBodyAdvance)
 }
 
 // HasNBodyAdvanceDriverLoopKernel reports whether p contains a structural

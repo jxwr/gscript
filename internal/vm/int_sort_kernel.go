@@ -8,7 +8,14 @@ import (
 )
 
 func (vm *VM) tryRunIntSortWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
-	if cl == nil || cl.Proto == nil || len(args) != 3 || !isIntArrayPartitionSortProto(cl.Proto) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelIntArrayPartitionSort) {
+		return false, nil
+	}
+	return vm.runIntSortWholeCallKernel(cl, args)
+}
+
+func (vm *VM) runIntSortWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
+	if cl == nil || cl.Proto == nil || len(args) != 3 {
 		return false, nil
 	}
 	if cl.Proto.Tier2Promoted {

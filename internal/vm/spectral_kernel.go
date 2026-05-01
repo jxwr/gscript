@@ -23,6 +23,16 @@ type spectralKernelCache struct {
 }
 
 func (vm *VM) tryRunSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
+	if cl == nil || cl.Proto == nil ||
+		!(hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelSpectralMultiplyAv) ||
+			hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelSpectralMultiplyAtv) ||
+			hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelSpectralAtAv)) {
+		return false, nil
+	}
+	return vm.runSpectralWholeCallKernel(cl, args)
+}
+
+func (vm *VM) runSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 3 || !vm.noGlobalLock {
 		return false, nil
 	}

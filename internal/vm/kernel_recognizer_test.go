@@ -1,6 +1,12 @@
 package vm
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gscript/gscript/internal/lexer"
+	"github.com/gscript/gscript/internal/parser"
+	"github.com/gscript/gscript/internal/runtime"
+)
 
 func TestWholeCallKernelDiagnosticsIgnoreProtoNameAndSource(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, `
@@ -46,6 +52,100 @@ func local_prime_counter(n) {
 	}
 }
 
+func TestWholeCallKernelCacheDispatchIgnoresProtoNameAndSource(t *testing.T) {
+	proto, vm := compileSpectralKernelTestProgram(t, `
+func local_prime_counter(n) {
+    is_prime := {}
+    for i := 2; i <= n; i++ {
+        is_prime[i] = true
+    }
+    i := 2
+    for i * i <= n {
+        if is_prime[i] {
+            j := i * i
+            for j <= n {
+                is_prime[j] = false
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    count := 0
+    for i := 2; i <= n; i++ {
+        if is_prime[i] { count = count + 1 }
+    }
+    return count
+}
+`)
+	defer vm.Close()
+	child := proto.Protos[0]
+	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
+
+	child.Name = "fannkuch"
+	child.Source = "benchmarks/suite/fannkuch.gs"
+	child.LineDefined = 999
+	child.LineInfo = append([]int(nil), child.LineInfo...)
+	for i := range child.LineInfo {
+		child.LineInfo[i] += 100
+	}
+
+	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
+	handled, results, err := vm.tryRunValueWholeCallKernel(NewClosure(child), []runtime.Value{runtime.IntValue(100)})
+	if err != nil || !handled || len(results) != 1 || !results[0].IsInt() || results[0].Int() != 25 {
+		t.Fatalf("renamed/source-changed sieve dispatch = handled=%v results=%v err=%v, want 25", handled, results, err)
+	}
+}
+
+func TestWholeCallKernelCacheInvalidatesOnStructuralMutation(t *testing.T) {
+	proto, vm := compileSpectralKernelTestProgram(t, `
+func local_prime_counter(n) {
+    is_prime := {}
+    for i := 2; i <= n; i++ {
+        is_prime[i] = true
+    }
+    i := 2
+    for i * i <= n {
+        if is_prime[i] {
+            j := i * i
+            for j <= n {
+                is_prime[j] = false
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    count := 0
+    for i := 2; i <= n; i++ {
+        if is_prime[i] { count = count + 1 }
+    }
+    return count
+}
+`)
+	defer vm.Close()
+	child := proto.Protos[0]
+	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
+
+	originalCode := append([]uint32(nil), child.Code...)
+	child.Code = append([]uint32(nil), originalCode...)
+	child.Code[7] = EncodeABC(OP_MOVE, 2, 0, 0)
+	if infos := RecognizedWholeCallKernels(child); len(infos) != 0 {
+		t.Fatalf("mutated sieve proto recognized as %+v", infos)
+	}
+	handled, results, err := vm.tryRunValueWholeCallKernel(NewClosure(child), []runtime.Value{runtime.IntValue(100)})
+	if err != nil || handled || len(results) != 0 {
+		t.Fatalf("mutated sieve dispatch = handled=%v results=%v err=%v, want exact fallback", handled, results, err)
+	}
+
+	child.Name = "sieve"
+	child.Source = "benchmarks/suite/sieve.gs"
+	if infos := RecognizedWholeCallKernels(child); len(infos) != 0 {
+		t.Fatalf("benchmark metadata restored recognition for mutated proto: %+v", infos)
+	}
+
+	child.Code = originalCode
+	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
+}
+
 func TestWholeCallKernelDiagnosticsRejectBenchmarkMetadataWithoutShape(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, `
 func fannkuch(n) { return n }
@@ -78,6 +178,66 @@ func advance(dt) { return dt }
 			}
 		}
 	}
+}
+
+func BenchmarkWholeCallKernelDispatchCachedSieve(b *testing.B) {
+	proto, vm := compileWholeCallKernelBenchmarkProgram(b, `
+func local_prime_counter(n) {
+    is_prime := {}
+    for i := 2; i <= n; i++ {
+        is_prime[i] = true
+    }
+    i := 2
+    for i * i <= n {
+        if is_prime[i] {
+            j := i * i
+            for j <= n {
+                is_prime[j] = false
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    count := 0
+    for i := 2; i <= n; i++ {
+        if is_prime[i] { count = count + 1 }
+    }
+    return count
+}
+`)
+	defer vm.Close()
+	cl := NewClosure(proto.Protos[0])
+	args := []runtime.Value{runtime.IntValue(10)}
+	handled, results, err := vm.tryRunValueWholeCallKernel(cl, args)
+	if err != nil || !handled || len(results) != 1 || !results[0].IsInt() || results[0].Int() != 4 {
+		b.Fatalf("sieve dispatch preflight = handled=%v results=%v err=%v, want 4", handled, results, err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		handled, results, err = vm.tryRunValueWholeCallKernel(cl, args)
+		if err != nil || !handled || len(results) != 1 {
+			b.Fatalf("sieve dispatch = handled=%v results=%v err=%v", handled, results, err)
+		}
+	}
+}
+
+func compileWholeCallKernelBenchmarkProgram(b *testing.B, src string) (*FuncProto, *VM) {
+	b.Helper()
+	tokens, err := lexer.New(src).Tokenize()
+	if err != nil {
+		b.Fatalf("lexer error: %v", err)
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		b.Fatalf("parse error: %v", err)
+	}
+	proto, err := Compile(prog)
+	if err != nil {
+		b.Fatalf("compile error: %v", err)
+	}
+	return proto, New(runtime.NewInterpreterGlobals())
 }
 
 func TestWholeCallKernelDiagnosticsIncludeRecursiveTableProtocols(t *testing.T) {
