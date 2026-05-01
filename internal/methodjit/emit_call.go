@@ -511,17 +511,8 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	}
 	asm := ec.asm
 
-	if op == intBinMod && instr.Type == TypeFloat {
-		lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
-		rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
-		if lhsF != jit.D0 {
-			asm.FMOVd(jit.D0, lhsF)
-		}
-		if rhsF != jit.D1 {
-			asm.FMOVd(jit.D1, rhsF)
-		}
-		emitFloatMod(asm)
-		ec.storeRawFloat(jit.D0, instr.ID)
+	if op == intBinMod {
+		ec.emitGenericMod(instr)
 		return
 	}
 
@@ -633,6 +624,110 @@ func (ec *emitContext) emitFloatBinOp(instr *Instr, op intBinOp) {
 	asm.Label(done)
 	// Store NaN-boxed result (int or float).
 	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+// emitGenericMod lowers a generic % to native int/float modulo with an
+// op-exit fallback. The common int/int path is SDIV+MSUB; zero divisors and
+// non-numeric operands leave through the normal Tier 2 exit-resume protocol so
+// the VM reports the exact runtime behavior.
+func (ec *emitContext) emitGenericMod(instr *Instr) {
+	if len(instr.Args) < 2 {
+		return
+	}
+	asm := ec.asm
+
+	if instr.Type == TypeFloat {
+		lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+		rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
+		done := ec.uniqueLabel("mod_float_done")
+		fallback := ec.uniqueLabel("mod_float_fallback")
+		if lhsF != jit.D0 {
+			asm.FMOVd(jit.D0, lhsF)
+		}
+		if rhsF != jit.D1 {
+			asm.FMOVd(jit.D1, rhsF)
+		}
+		asm.LoadImm64(jit.X2, 0)
+		asm.FMOVtoFP(jit.D2, jit.X2)
+		asm.FCMPd(jit.D1, jit.D2)
+		asm.BCond(jit.CondEQ, fallback)
+		emitFloatMod(asm)
+		ec.storeRawFloat(jit.D0, instr.ID)
+		asm.B(done)
+		asm.Label(fallback)
+		ec.emitOpExit(instr)
+		asm.Label(done)
+		return
+	}
+
+	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if lhsReg != jit.X0 {
+		asm.MOVreg(jit.X0, lhsReg)
+	}
+	rhsReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if rhsReg != jit.X1 {
+		asm.MOVreg(jit.X1, rhsReg)
+	}
+
+	done := ec.uniqueLabel("mod_done")
+	fallback := ec.uniqueLabel("mod_fallback")
+	lhsNotInt := ec.uniqueLabel("mod_lhs_not_int")
+	rhsNotInt := ec.uniqueLabel("mod_rhs_not_int")
+	doFloat := ec.uniqueLabel("mod_do_float")
+	bothFloat := ec.uniqueLabel("mod_both_float")
+
+	asm.MOVimm16(jit.X3, jit.NB_TagIntShr48)
+	emitCheckIsIntWithTag(asm, jit.X0, jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, lhsNotInt)
+
+	emitCheckIsIntWithTag(asm, jit.X1, jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, rhsNotInt)
+
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	jit.EmitUnboxInt(asm, jit.X1, jit.X1)
+	asm.CBZ(jit.X1, fallback)
+	ec.emitIntModX0X1(instr)
+	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(done)
+
+	asm.Label(rhsNotInt)
+	jit.EmitIsTagged(asm, jit.X1, jit.X2)
+	asm.BCond(jit.CondEQ, fallback)
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	asm.SCVTF(jit.D0, jit.X0)
+	asm.FMOVtoFP(jit.D1, jit.X1)
+	asm.B(doFloat)
+
+	asm.Label(lhsNotInt)
+	jit.EmitIsTagged(asm, jit.X0, jit.X2)
+	asm.BCond(jit.CondEQ, fallback)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+	emitCheckIsIntWithTag(asm, jit.X1, jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, bothFloat)
+	jit.EmitUnboxInt(asm, jit.X1, jit.X1)
+	asm.SCVTF(jit.D1, jit.X1)
+	asm.B(doFloat)
+
+	asm.Label(bothFloat)
+	jit.EmitIsTagged(asm, jit.X1, jit.X2)
+	asm.BCond(jit.CondEQ, fallback)
+	asm.FMOVtoFP(jit.D1, jit.X1)
+
+	asm.Label(doFloat)
+	asm.LoadImm64(jit.X2, 0)
+	asm.FMOVtoFP(jit.D2, jit.X2)
+	asm.FCMPd(jit.D1, jit.D2)
+	asm.BCond(jit.CondEQ, fallback)
+	emitFloatMod(asm)
+	asm.FMOVtoGP(jit.X0, jit.D0)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(done)
+
+	asm.Label(fallback)
+	ec.emitOpExit(instr)
+
+	asm.Label(done)
 }
 
 func (ec *emitContext) genericIntConstOperand(instr *Instr) (imm int64, constOnLeft bool, ok bool) {

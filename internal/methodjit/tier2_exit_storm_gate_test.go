@@ -6,6 +6,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
 )
 
 func TestTier2ExitStormGateAllowsNoFilterReadBackedRecursiveTableMutation(t *testing.T) {
@@ -296,10 +299,8 @@ for r := 1; r <= 200; r++ {
 	compareTier2Result(t, src, "result")
 }
 
-func TestTier2ExitStormGateBlocksNoFilterUnknownGenericModLoop(t *testing.T) {
-	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
-
-	top := compileTop(t, `
+func TestTier2LoopGateAllowsGenericModLoopWithFallback(t *testing.T) {
+	src := `
 func mod_unknown(xs, n) {
     x := xs[1]
     for i := 1; i <= n; i++ {
@@ -307,19 +308,70 @@ func mod_unknown(xs, n) {
     }
     return x
 }
-`)
+xs := {41}
+result := 0
+for iter := 1; iter <= 3; iter++ {
+    result = mod_unknown(xs, 100)
+}
+`
+	top := compileTop(t, src)
 	modUnknown := findProtoByName(top, "mod_unknown")
 	if modUnknown == nil {
 		t.Fatal("mod_unknown proto not found")
 	}
 
 	tm := NewTieringManager()
-	err := tm.CompileTier2(modUnknown)
-	if err == nil {
-		t.Fatal("CompileTier2(mod_unknown) succeeded; want generic Mod gate failure")
+	if err := tm.CompileTier2(modUnknown); err != nil {
+		t.Fatalf("CompileTier2(mod_unknown) failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "generic OpMod inside loop") {
-		t.Fatalf("CompileTier2(mod_unknown) error = %q, want generic Mod gate", err)
+	compareTier2Result(t, src, "result")
+}
+
+func TestTier2GenericModMatchesSignedAndFloatFallback(t *testing.T) {
+	src := `
+func mod_mix(n) {
+    total := 0.0
+    for i := 1; i <= n; i++ {
+        total = total + (-7 % 3)
+        total = total + (7 % -3)
+        total = total + (10.5 % 3)
+    }
+    return total
+}
+result := 0.0
+for iter := 1; iter <= 3; iter++ {
+    result = mod_mix(100)
+}
+`
+	compareTier2Result(t, src, "result")
+}
+
+func TestTier2GenericModZeroReportsRuntimeError(t *testing.T) {
+	src := `
+func mod_zero(n) {
+    x := 0
+    for i := 1; i <= n; i++ {
+        x = i % (n - n)
+    }
+    return x
+}
+result := 0
+for iter := 1; iter <= 3; iter++ {
+    result = mod_zero(10)
+}
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	_, err := v.Execute(proto)
+	if err == nil {
+		t.Fatal("JIT execute succeeded; want modulo by zero error")
+	}
+	if !strings.Contains(err.Error(), "n%0") && !strings.Contains(err.Error(), "zero") {
+		t.Fatalf("error = %q, want modulo by zero", err)
 	}
 }
 

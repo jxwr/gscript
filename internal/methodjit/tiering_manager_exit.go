@@ -781,6 +781,15 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 			regs[absSlot] = runtime.BoolValue(!lt)
 		}
 
+	case OpMod:
+		if absArg1 < len(regs) && absArg2 < len(regs) && absSlot < len(regs) {
+			result, err := tier2OpExitMod(regs[absArg1], regs[absArg2])
+			if err != nil {
+				return err
+			}
+			regs[absSlot] = result
+		}
+
 	case OpPow:
 		if absArg1 < len(regs) && absArg2 < len(regs) && absSlot < len(regs) {
 			var base2, exp float64
@@ -883,6 +892,32 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 	}
 
 	return nil
+}
+
+func tier2OpExitMod(a, b runtime.Value) (runtime.Value, error) {
+	if a.IsInt() && b.IsInt() {
+		bi := b.Int()
+		if bi == 0 {
+			return runtime.NilValue(), fmt.Errorf("attempt to perform 'n%%0'")
+		}
+		r := a.Int() % bi
+		if r != 0 && (r^bi) < 0 {
+			r += bi
+		}
+		return runtime.IntValue(r), nil
+	}
+	if a.IsNumber() && b.IsNumber() {
+		bf := b.Number()
+		if bf == 0 {
+			return runtime.NilValue(), fmt.Errorf("attempt to perform 'n%%0'")
+		}
+		r := math.Mod(a.Number(), bf)
+		if r != 0 && (r < 0) != (bf < 0) {
+			r += bf
+		}
+		return runtime.FloatValue(r), nil
+	}
+	return runtime.NilValue(), fmt.Errorf("attempt to perform arithmetic on %s and %s", a.TypeName(), b.TypeName())
 }
 
 // executeClosureOpExit handles OpClosure via op-exit. Creates a new closure

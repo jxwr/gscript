@@ -2314,16 +2314,10 @@ func firstTier2ModBlockerInLoop(fn *Function) (string, bool) {
 			if instr.Op != OpMod {
 				continue
 			}
-			if instr.Type == TypeFloat {
-				continue
-			}
-			if tier2GenericModIsSmallConstAdditiveLoopCounter(instr) {
-				continue
-			}
-			if tier2GenericModIsNativeNumeric(instr) {
-				continue
-			}
-			return "generic OpMod inside loop", true
+			// Generic Mod now has native int/float lowering with op-exit fallback
+			// for zero divisors and non-numeric operands. It is no longer an
+			// exit-storm blocker by itself.
+			continue
 		}
 	}
 	return "", false
