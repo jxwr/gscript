@@ -297,38 +297,6 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 
-	if shouldStayTier0DynamicMethodDispatchLoop(proto, profile) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "stay_tier0_dynamic_method_dispatch_loop",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "dynamic_method_dispatch_loop",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "dynamic_method_dispatch_loop",
-			"target": "interpreter",
-		})
-		return nil
-	}
-
-	if shouldStayTier0FieldHeavyLeaf(proto, profile) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "stay_tier0_field_heavy_leaf",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "field_heavy_leaf",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "field_heavy_leaf",
-			"target": "interpreter",
-		})
-		return nil
-	}
-
 	// Some function shapes are worse off compiled: tiny recursive
 	// table-allocation builders pay more in Tier 1 exit-resume
 	// overhead than they save in native templates. See
@@ -2236,35 +2204,6 @@ func hasStaticCallInLoop(proto *vm.FuncProto) bool {
 		}
 	}
 	return false
-}
-
-func shouldStayTier0DynamicMethodDispatchLoop(proto *vm.FuncProto, profile FuncProfile) bool {
-	if proto == nil || !profile.HasLoop || profile.CallCount == 0 {
-		return false
-	}
-	inLoop := staticLoopPCs(proto)
-	for pc, inst := range proto.Code {
-		if !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_CALL {
-			continue
-		}
-		if isBaselineMethodValueCall(proto, pc, vm.DecodeA(inst), vm.DecodeB(inst), vm.DecodeC(inst)) {
-			return true
-		}
-	}
-	return false
-}
-
-func shouldStayTier0FieldHeavyLeaf(proto *vm.FuncProto, profile FuncProfile) bool {
-	return proto != nil &&
-		!profile.HasLoop &&
-		profile.CallCount == 0 &&
-		profile.TableOpCount >= 4 &&
-		profile.NewTableCount == 0 &&
-		profile.ArithCount >= 1 &&
-		!profile.HasClosure &&
-		!profile.HasUpval &&
-		!profile.HasVararg &&
-		!profile.HasGlobal
 }
 
 func canPromoteWithNativeLoopCalls(proto *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
