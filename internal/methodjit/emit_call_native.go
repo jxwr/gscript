@@ -104,6 +104,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	funcSlot := int(instr.Aux)
 	nArgs := len(instr.Args) - 1
 	nRets := callResultCountFromAux2(instr.Aux2)
+	noDepthCallee := ec.staticNoDepthCallee(instr)
 
 	// Step 1: Store the function value and arguments to the VM register file.
 	// This must happen BEFORE spilling, since resolveValueNB may read from
@@ -138,10 +139,14 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// This prevents the callee's register window from clobbering our SSA temp slots.
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 
-	// Step 3: Check NativeCallDepth limit.
-	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
-	asm.CMPimm(jit.X3, maxNativeCallDepth)
-	asm.BCond(jit.CondGE, slowLabel)
+	// Step 3: Check NativeCallDepth limit. Statically resolved leaf callees
+	// cannot grow the native call chain, so the hot path can skip the depth
+	// load/store traffic after a runtime proto guard below.
+	if noDepthCallee == nil {
+		asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+		asm.CMPimm(jit.X3, maxNativeCallDepth)
+		asm.BCond(jit.CondGE, slowLabel)
+	}
 
 	// Load function value from regs[funcSlot].
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
@@ -224,6 +229,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0) // X0 = *Closure
 
 	asm.Label(icDoneLabel)
+
+	if noDepthCallee != nil {
+		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(noDepthCallee))))
+		asm.CMPreg(jit.X1, jit.X3)
+		asm.BCond(jit.CondNE, slowLabel)
+	}
 
 	// Step 5: Bounds check: callee register window fits in register file.
 	asm.LDR(jit.X3, jit.X1, funcProtoOffMaxStack) // X3 = calleeMaxStack (int)
@@ -319,10 +330,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
 	}
 
-	// Increment NativeCallDepth.
-	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
-	asm.ADDimm(jit.X3, jit.X3, 1)
-	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	// Increment NativeCallDepth unless the guarded callee is a leaf.
+	if noDepthCallee == nil {
+		asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+		asm.ADDimm(jit.X3, jit.X3, 1)
+		asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	}
 
 	// R40/R110: self-call fast path via HasSelfCalls. Statically proven
 	// raw-int self calls are routed before this function to the dedicated
@@ -354,10 +367,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.BLR(jit.X2)
 	}
 
-	// Decrement NativeCallDepth.
-	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
-	asm.SUBimm(jit.X3, jit.X3, 1)
-	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	// Decrement NativeCallDepth unless the guarded callee is a leaf.
+	if noDepthCallee == nil {
+		asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+		asm.SUBimm(jit.X3, jit.X3, 1)
+		asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+	}
 
 	// Snapshot callee exit metadata before restoring the caller frame.
 	ec.emitPushNativeCallExitFrameIfNested(jit.X3, jit.X4, jit.X5, jit.X6)
@@ -1324,6 +1339,20 @@ func rawIntPeerLeafCallee(proto *vm.FuncProto) bool {
 		}
 	}
 	return true
+}
+
+func (ec *emitContext) staticNoDepthCallee(instr *Instr) *vm.FuncProto {
+	if ec == nil || instr == nil || ec.fn == nil || len(ec.fn.Globals) == 0 {
+		return nil
+	}
+	if ec.tailCallInstrs[instr.ID] || ec.isStaticSelfCall(instr) {
+		return nil
+	}
+	_, callee := resolveCallee(instr, ec.fn, InlineConfig{Globals: ec.fn.Globals})
+	if !rawIntPeerLeafCallee(callee) {
+		return nil
+	}
+	return callee
 }
 
 func (ec *emitContext) rawIntPeerCallee(instr *Instr) *vm.FuncProto {

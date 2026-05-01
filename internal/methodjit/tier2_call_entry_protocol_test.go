@@ -3,6 +3,7 @@
 package methodjit
 
 import (
+	"encoding/binary"
 	"math"
 	"os"
 	"strings"
@@ -867,4 +868,80 @@ func TestTier2GlobalCacheInvalidatesByName(t *testing.T) {
 	if cf.GlobalCache[1] != 22 {
 		t.Fatalf("cold cache entry=%d want preserved 22", cf.GlobalCache[1])
 	}
+}
+
+func TestTier2StaticLeafCallSkipsNativeCallDepthTraffic(t *testing.T) {
+	src := `
+func leaf(n) {
+    a := 0
+    b := 1
+    for i := 0; i < n; i++ {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+func driver(n, reps) {
+    result := 0
+    for r := 1; r <= reps; r++ {
+        result = leaf(n)
+    }
+    return result
+}
+`
+	top := compileTop(t, src)
+	leaf := findProtoByName(top, "leaf")
+	driver := findProtoByName(top, "driver")
+	if leaf == nil || driver == nil {
+		t.Fatalf("missing protos: leaf=%v driver=%v", leaf != nil, driver != nil)
+	}
+
+	globals := map[string]*vm.FuncProto{"leaf": leaf}
+	fn := BuildGraph(driver)
+	fn, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals: globals,
+		InlineMaxSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(driver): %v", err)
+	}
+	call := singleCallTo(t, fn, "leaf", globals)
+	if call == nil {
+		t.Fatalf("leaf call not found\nIR:\n%s", Print(fn))
+	}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile(driver): %v", err)
+	}
+	defer cf.Code.Free()
+
+	depthAccesses := countNativeCallDepthAccessesForIRInstr(cf, call.ID)
+	if depthAccesses != 0 {
+		t.Fatalf("static leaf call emitted %d NativeCallDepth access(es), want 0", depthAccesses)
+	}
+}
+
+func countNativeCallDepthAccessesForIRInstr(cf *CompiledFunction, instrID int) int {
+	code := unsafeCodeSlice(cf)
+	var count int
+	for _, r := range cf.InstrCodeRanges {
+		if r.InstrID != instrID || r.Pass != "normal" {
+			continue
+		}
+		start, end := r.CodeStart, r.CodeEnd
+		if start < 0 {
+			start = 0
+		}
+		if end > len(code) {
+			end = len(code)
+		}
+		for off := start; off+4 <= end; off += 4 {
+			if isCtxNativeCallDepthAccess(binary.LittleEndian.Uint32(code[off : off+4])) {
+				count++
+			}
+		}
+	}
+	return count
 }
