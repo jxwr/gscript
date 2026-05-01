@@ -81,6 +81,8 @@ const (
 	OP_SEND     // A B : R(A) <- R(B)
 	OP_RECV     // A B : R(A) = <-R(B)
 
+	OP_NEWOBJECTN // A B C : R(A) = small string table, ctor=B, values starting at R(C)
+
 	OP_MAX // sentinel
 )
 
@@ -175,6 +177,7 @@ var opNames = [...]string{
 	OP_SETUPVAL:   "SETUPVAL",
 	OP_NEWTABLE:   "NEWTABLE",
 	OP_NEWOBJECT2: "NEWOBJECT2",
+	OP_NEWOBJECTN: "NEWOBJECTN",
 	OP_GETTABLE:   "GETTABLE",
 	OP_SETTABLE:   "SETTABLE",
 	OP_GETFIELD:   "GETFIELD",

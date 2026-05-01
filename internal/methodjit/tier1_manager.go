@@ -259,7 +259,7 @@ func tier1UpvalueAccessStaticallyValid(proto *vm.FuncProto, inst uint32) bool {
 func tier1OpMayExit(op vm.Opcode) bool {
 	switch op {
 	case vm.OP_GETGLOBAL, vm.OP_SETGLOBAL,
-		vm.OP_NEWTABLE, vm.OP_NEWOBJECT2,
+		vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN,
 		vm.OP_GETTABLE, vm.OP_SETTABLE,
 		vm.OP_GETFIELD, vm.OP_SETFIELD,
 		vm.OP_SETLIST, vm.OP_APPEND,

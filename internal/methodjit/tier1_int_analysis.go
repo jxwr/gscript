@@ -124,7 +124,7 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 		op := vm.DecodeOp(inst)
 		switch op {
 		case vm.OP_CONCAT, vm.OP_LEN, vm.OP_POW, vm.OP_DIV,
-			vm.OP_CLOSURE, vm.OP_NEWOBJECT2, vm.OP_GETFIELD, vm.OP_SETFIELD, vm.OP_SELF,
+			vm.OP_CLOSURE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN, vm.OP_GETFIELD, vm.OP_SETFIELD, vm.OP_SELF,
 			vm.OP_VARARG, vm.OP_TFORCALL, vm.OP_TFORLOOP,
 			vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV, vm.OP_GO:
 			return nil, false
@@ -261,7 +261,7 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 			} else {
 				known = clearSlot(known, a)
 			}
-		case vm.OP_GETGLOBAL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_GETTABLE:
+		case vm.OP_GETGLOBAL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN, vm.OP_GETTABLE:
 			known = clearSlot(known, a)
 		case vm.OP_SETGLOBAL, vm.OP_SETUPVAL, vm.OP_SETTABLE,
 			vm.OP_SETLIST, vm.OP_APPEND:
@@ -330,7 +330,7 @@ func computeKnownIntSlots(proto *vm.FuncProto) (*knownIntInfo, bool) {
 func writesSlotA(op vm.Opcode) bool {
 	switch op {
 	case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_LOADINT, vm.OP_LOADK,
-		vm.OP_MOVE, vm.OP_GETGLOBAL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2,
+		vm.OP_MOVE, vm.OP_GETGLOBAL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN,
 		vm.OP_GETTABLE, vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD, vm.OP_UNM,
 		vm.OP_NOT, vm.OP_CALL, vm.OP_TESTSET, vm.OP_FORPREP, vm.OP_FORLOOP:
 		return true

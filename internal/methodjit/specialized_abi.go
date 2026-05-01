@@ -214,7 +214,7 @@ func AnalyzeSpecializedABI(proto *vm.FuncProto) SpecializedABI {
 			default:
 				return specializedABIReject("non-single return")
 			}
-		case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2,
+		case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN,
 			vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD,
 			vm.OP_SETLIST, vm.OP_APPEND, vm.OP_NOT, vm.OP_LEN, vm.OP_CONCAT,
 			vm.OP_POW, vm.OP_CLOSURE, vm.OP_FORPREP, vm.OP_FORLOOP,
@@ -351,7 +351,7 @@ func AnalyzeTypedSelfABI(proto *vm.FuncProto) TypedSelfABI {
 		case vm.OP_SETUPVAL, vm.OP_CLOSE, vm.OP_JMP:
 		case vm.OP_SETGLOBAL:
 			return typedSelfABIReject("global mutation")
-		case vm.OP_NEWTABLE, vm.OP_NEWOBJECT2:
+		case vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN:
 			setSpecializedSlot(slots, a, specializedSlotRawTable)
 			usesTableABI = true
 		case vm.OP_GETFIELD:
@@ -739,7 +739,7 @@ func inferTypedSelfABIParams(proto *vm.FuncProto) ([]SpecializedABIParamRep, str
 				origins[a+3] = -1
 			}
 		case vm.OP_LOADINT, vm.OP_LOADK, vm.OP_LOADNIL, vm.OP_LOADBOOL,
-			vm.OP_GETGLOBAL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2,
+			vm.OP_GETGLOBAL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN,
 			vm.OP_CALL, vm.OP_TESTSET, vm.OP_NOT, vm.OP_LEN, vm.OP_CONCAT,
 			vm.OP_CLOSURE, vm.OP_VARARG, vm.OP_SELF, vm.OP_APPEND:
 			if a >= 0 && a < len(origins) {
@@ -1153,7 +1153,7 @@ func typedSelfAdvanceSimpleSlotFact(proto *vm.FuncProto, slots []specializedSlot
 		} else {
 			setSpecializedSlot(slots, a, specializedSlotUnknown)
 		}
-	case vm.OP_NEWTABLE, vm.OP_NEWOBJECT2:
+	case vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN:
 		setSpecializedSlot(slots, a, specializedSlotRawTable)
 	case vm.OP_LOADNIL:
 		for slot := a; slot <= a+b && slot < len(slots); slot++ {

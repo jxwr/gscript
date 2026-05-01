@@ -513,6 +513,19 @@ type SmallTableCtor2 struct {
 	single2   smallCtorShape
 }
 
+// SmallTableCtorN caches the final shape for static small string-field table
+// constructors with more than two fields. It is the generic counterpart to
+// SmallTableCtor2; nil runtime values still take the sequential RawSetString
+// fallback so table literal omission semantics are preserved.
+type SmallTableCtorN struct {
+	Keys []string
+
+	Shape *Shape
+
+	shapeID   uint32
+	fieldKeys []string
+}
+
 type smallCtorShape struct {
 	shape     *Shape
 	shapeID   uint32
@@ -536,6 +549,27 @@ func NewSmallTableCtor2(key1, key2 string) SmallTableCtor2 {
 	ctor.single2 = newSmallCtorShape(getOrCreateSingleFieldShape(key2))
 	if key1 != key2 {
 		ctor.Shape = GetShape([]string{key1, key2})
+		ctor.shapeID = ctor.Shape.ID
+		ctor.fieldKeys = ctor.Shape.FieldKeys
+	}
+	return ctor
+}
+
+func NewSmallTableCtorN(keys []string) SmallTableCtorN {
+	owned := append([]string(nil), keys...)
+	ctor := SmallTableCtorN{Keys: owned}
+	if len(owned) == 0 {
+		return ctor
+	}
+	seen := make(map[string]struct{}, len(owned))
+	for _, key := range owned {
+		if _, ok := seen[key]; ok {
+			return ctor
+		}
+		seen[key] = struct{}{}
+	}
+	ctor.Shape = GetShape(owned)
+	if ctor.Shape != nil {
 		ctor.shapeID = ctor.Shape.ID
 		ctor.fieldKeys = ctor.Shape.FieldKeys
 	}
@@ -574,6 +608,44 @@ func newTableFromCtor2Shape(ctor *SmallTableCtor2, shape *Shape, val1, val2 Valu
 	t.shape = shape
 	t.shapeID = ctor.shapeID
 	t.skeys = ctor.fieldKeys
+	return t
+}
+
+// NewTableFromCtorN constructs a fixed-shape small string table in one pass
+// when all runtime values are non-nil. If any value is nil, it falls back to
+// sequential RawSetString so omitted fields and duplicate-key behavior match
+// ordinary table literal execution.
+func NewTableFromCtorN(ctor *SmallTableCtorN, vals []Value) *Table {
+	if ctor != nil && ctor.Shape != nil && len(vals) >= len(ctor.Keys) {
+		n := len(ctor.Keys)
+		t, svals := DefaultHeap.AllocTableWithSvals(n)
+		t.svals = svals[:n]
+		for i := 0; i < n; i++ {
+			v := vals[i]
+			if v.IsNil() {
+				return newTableFromCtorNFallback(ctor, vals)
+			}
+			t.svals[i] = v
+		}
+		t.shape = ctor.Shape
+		t.shapeID = ctor.shapeID
+		t.skeys = ctor.fieldKeys
+		return t
+	}
+	return newTableFromCtorNFallback(ctor, vals)
+}
+
+func newTableFromCtorNFallback(ctor *SmallTableCtorN, vals []Value) *Table {
+	if ctor == nil || len(ctor.Keys) == 0 {
+		return NewEmptyTable()
+	}
+	t := NewTableSized(0, len(ctor.Keys))
+	for i, key := range ctor.Keys {
+		if i >= len(vals) {
+			break
+		}
+		t.RawSetString(key, vals[i])
+	}
 	return t
 }
 

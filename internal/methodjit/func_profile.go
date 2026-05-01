@@ -27,7 +27,7 @@ type FuncProfile struct {
 	ArithCount         int  // ADD/SUB/MUL/DIV/MOD/UNM count
 	CallCount          int  // OP_CALL count (static, not runtime)
 	TableOpCount       int  // GETTABLE/SETTABLE/GETFIELD/SETFIELD count
-	NewTableCount      int  // OP_NEWTABLE/OP_NEWOBJECT2 count (allocation pressure signal)
+	NewTableCount      int  // OP_NEWTABLE/OP_NEWOBJECT* count (allocation pressure signal)
 	EmptyNewTableCount int  // OP_NEWTABLE array=0 hash=0 count (native-cacheable leaf allocation)
 	HasClosure         bool // contains OP_CLOSURE
 	HasUpval           bool // contains OP_GETUPVAL or OP_SETUPVAL
@@ -128,6 +128,12 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 		case vm.OP_NEWOBJECT2:
 			p.NewTableCount++
 			p.TableOpCount += 2
+		case vm.OP_NEWOBJECTN:
+			p.NewTableCount++
+			ctorIdx := vm.DecodeB(inst)
+			if ctorIdx >= 0 && ctorIdx < len(proto.TableCtorsN) {
+				p.TableOpCount += len(proto.TableCtorsN[ctorIdx].KeyConsts)
+			}
 
 		// Loop indicators
 		case vm.OP_FORPREP:

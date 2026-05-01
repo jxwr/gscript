@@ -28,6 +28,8 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 		return e.handleNewTable(ctx, regs, base, proto, bf)
 	case vm.OP_NEWOBJECT2:
 		return e.handleNewObject2(ctx, regs, base, proto, bf)
+	case vm.OP_NEWOBJECTN:
+		return e.handleNewObjectN(ctx, regs, base, proto)
 	case vm.OP_GETTABLE:
 		return e.handleGetTable(ctx, regs, base, proto)
 	case vm.OP_SETTABLE:
@@ -89,6 +91,29 @@ func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Va
 	tbl := runtime.NewTableFromCtor2(ctor, val1, val2)
 	fillBaselineNewObject2Cache(bf, int(ctx.BaselinePC)-1, ctor, val1, val2)
 	regs[absA] = runtime.FreshTableValue(tbl)
+	return nil
+}
+
+func (e *BaselineJITEngine) handleNewObjectN(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+	a := int(ctx.BaselineA)
+	b := int(ctx.BaselineB)
+	c := int(ctx.BaselineC)
+	absA := base + a
+	if absA >= len(regs) {
+		return nil
+	}
+	if b < 0 || b >= len(proto.TableCtorsN) {
+		regs[absA] = runtime.FreshTableValue(runtime.NewEmptyTable())
+		return nil
+	}
+	ctor := &proto.TableCtorsN[b].Runtime
+	n := len(ctor.Keys)
+	start := base + c
+	if start < 0 || start+n > len(regs) {
+		regs[absA] = runtime.FreshTableValue(runtime.NewTableSized(0, n))
+		return nil
+	}
+	regs[absA] = runtime.FreshTableValue(runtime.NewTableFromCtorN(ctor, regs[start:start+n]))
 	return nil
 }
 

@@ -634,6 +634,62 @@ func TestTwoFieldTableLiteralRuntimeNilFallsBackToSetFieldSemantics(t *testing.T
 	}
 }
 
+func TestSmallFixedTableLiteralUsesConstructorOpcode(t *testing.T) {
+	tokens, err := lexer.New(`t := {id: 1, account: 2, shard: 3, kind: "view", value: 4}`).Tokenize()
+	if err != nil {
+		t.Fatalf("lexer error: %v", err)
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	proto, err := Compile(prog)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	ctors := 0
+	setFields := 0
+	for _, inst := range proto.Code {
+		switch DecodeOp(inst) {
+		case OP_NEWOBJECTN:
+			ctors++
+		case OP_SETFIELD:
+			setFields++
+		}
+	}
+	if ctors != 1 {
+		t.Fatalf("NEWOBJECTN count = %d, want 1", ctors)
+	}
+	if setFields != 0 {
+		t.Fatalf("SETFIELD count = %d, want 0", setFields)
+	}
+
+	g := compileAndRun(t, `t := {id: 1, account: 2, shard: 3, kind: "view", value: 4}`)
+	tbl := g["t"].Table()
+	if tbl.SkeysLen() != 5 {
+		t.Fatalf("small fixed constructor stored %d string fields, want 5", tbl.SkeysLen())
+	}
+	if got := tbl.RawGetString("value"); got.Int() != 4 {
+		t.Fatalf("value field = %s, want 4", got.String())
+	}
+}
+
+func TestSmallFixedTableLiteralRuntimeNilFallsBackToSetFieldSemantics(t *testing.T) {
+	g := compileAndRun(t, `
+		maybeNil := nil
+		t := {id: 1, account: maybeNil, shard: 3, kind: "view", value: 4}
+		result := t.value
+	`)
+	expectGlobalInt(t, g, "result", 4)
+	tbl := g["t"].Table()
+	if tbl.SkeysLen() != 4 {
+		t.Fatalf("runtime nil constructor stored %d string fields, want 4", tbl.SkeysLen())
+	}
+	if !tbl.RawGetString("account").IsNil() {
+		t.Fatalf("runtime nil field should read back as nil")
+	}
+}
+
 func TestTableLiteralNilFieldsDoNotInflateHashHint(t *testing.T) {
 	tokens, err := lexer.New(`t := {left: nil, right: nil, value: 1}`).Tokenize()
 	if err != nil {

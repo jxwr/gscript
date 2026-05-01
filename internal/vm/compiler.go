@@ -2078,6 +2078,9 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 	if ok, err := c.compileTwoFieldTableLitExpr(e, dest, line); ok || err != nil {
 		return err
 	}
+	if ok, err := c.compileSmallFixedTableLitExpr(e, dest, line); ok || err != nil {
+		return err
+	}
 
 	arrayCount := 0
 	hashCount := 0
@@ -2219,6 +2222,75 @@ func (c *compiler) compileTableLitExpr(e *ast.TableLitExpr, dest int) error {
 	return nil
 }
 
+func (c *compiler) compileSmallFixedTableLitExpr(e *ast.TableLitExpr, dest int, line int) (bool, error) {
+	const maxSmallFixedFields = 8
+	fields := make([]staticStringField, 0, len(e.Fields))
+	seen := make(map[string]struct{}, len(e.Fields))
+	for _, f := range e.Fields {
+		if f.Key == nil {
+			return false, nil
+		}
+		if isNilLiteral(f.Value) {
+			continue
+		}
+		key, ok := staticStringFieldName(f.Key)
+		if !ok {
+			return false, nil
+		}
+		if _, dup := seen[key]; dup {
+			return false, nil
+		}
+		if !c.smallFixedCtorValueSafe(f.Value) {
+			return false, nil
+		}
+		seen[key] = struct{}{}
+		fields = append(fields, staticStringField{
+			key:      key,
+			keyConst: c.stringConst(key),
+			value:    f.Value,
+		})
+		if len(fields) > maxSmallFixedFields {
+			return false, nil
+		}
+	}
+	if len(fields) <= 2 {
+		return false, nil
+	}
+	ctor := c.addTableCtorN(fields)
+	if ctor < 0 || ctor > 255 {
+		return false, nil
+	}
+
+	valueBase := c.nextReg
+	for range fields {
+		c.allocReg()
+	}
+	for i := range fields {
+		if err := c.compileExprTo(fields[i].value, valueBase+i); err != nil {
+			c.nextReg = valueBase
+			return true, err
+		}
+	}
+	c.emitABC(OP_NEWOBJECTN, dest, ctor, valueBase, line)
+	c.nextReg = valueBase
+	return true, nil
+}
+
+func (c *compiler) smallFixedCtorValueSafe(e ast.Expr) bool {
+	switch v := e.(type) {
+	case *ast.NumberLit, *ast.StringLit, *ast.BoolLit, *ast.NilLit:
+		return true
+	case *ast.IdentExpr:
+		return c.resolveLocal(v.Name) >= 0
+	case *ast.BinaryExpr:
+		return c.smallFixedCtorValueSafe(v.Left) && c.smallFixedCtorValueSafe(v.Right)
+	case *ast.UnaryExpr:
+		return c.smallFixedCtorValueSafe(v.Operand)
+	default:
+		return false
+	}
+}
+
 func (c *compiler) compileTwoFieldTableLitExpr(e *ast.TableLitExpr, dest int, line int) (bool, error) {
 	fields := make([]staticStringField, 0, 2)
 	for _, f := range e.Fields {
@@ -2290,6 +2362,39 @@ func (c *compiler) addTableCtor2(key1Const, key2Const int, key1, key2 string) in
 		Runtime:   runtime.NewSmallTableCtor2(key1, key2),
 	})
 	return len(c.proto.TableCtors2) - 1
+}
+
+func (c *compiler) addTableCtorN(fields []staticStringField) int {
+	for i := range c.proto.TableCtorsN {
+		ctor := &c.proto.TableCtorsN[i]
+		if len(ctor.KeyConsts) != len(fields) {
+			continue
+		}
+		match := true
+		for j := range fields {
+			if ctor.KeyConsts[j] != fields[j].keyConst {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	if len(c.proto.TableCtorsN) >= 256 {
+		return -1
+	}
+	keyConsts := make([]int, len(fields))
+	keys := make([]string, len(fields))
+	for i := range fields {
+		keyConsts[i] = fields[i].keyConst
+		keys[i] = fields[i].key
+	}
+	c.proto.TableCtorsN = append(c.proto.TableCtorsN, TableCtorN{
+		KeyConsts: keyConsts,
+		Runtime:   runtime.NewSmallTableCtorN(keys),
+	})
+	return len(c.proto.TableCtorsN) - 1
 }
 
 func isNilLiteral(e ast.Expr) bool {
@@ -2422,6 +2527,12 @@ func Disassemble(proto *FuncProto) string {
 			desc = fmt.Sprintf("NEWTABLE   R%d array=%d hash=%d", a, b, cc)
 		case OP_NEWOBJECT2:
 			desc = fmt.Sprintf("NEWOBJECT2 R%d ctor=%d values=R%d,R%d", a, b, cc, cc+1)
+		case OP_NEWOBJECTN:
+			n := 0
+			if b >= 0 && b < len(proto.TableCtorsN) {
+				n = len(proto.TableCtorsN[b].KeyConsts)
+			}
+			desc = fmt.Sprintf("NEWOBJECTN R%d ctor=%d values=R%d..R%d", a, b, cc, cc+n-1)
 		case OP_GETTABLE:
 			desc = fmt.Sprintf("GETTABLE   R%d R%d R%d", a, b, cc)
 		case OP_SETTABLE:

@@ -23,6 +23,7 @@ type FuncProto struct {
 	Code                   []uint32                      // bytecode instructions
 	Constants              []runtime.Value               // constant pool
 	TableCtors2            []TableCtor2                  // static two-field table constructors
+	TableCtorsN            []TableCtorN                  // static small string-field table constructors
 	Upvalues               []UpvalDesc                   // upvalue descriptors
 	Protos                 []*FuncProto                  // nested function prototypes
 	LineInfo               []int                         // source line for each instruction (debug)
@@ -59,6 +60,12 @@ type TableCtor2 struct {
 	Key1Const int
 	Key2Const int
 	Runtime   runtime.SmallTableCtor2
+}
+
+// TableCtorN describes a static small string-field table constructor.
+type TableCtorN struct {
+	KeyConsts []int
+	Runtime   runtime.SmallTableCtorN
 }
 
 // EnsureFeedback lazily initializes the type feedback vector for this function.

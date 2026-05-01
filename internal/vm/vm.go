@@ -888,6 +888,23 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				vm.regs[base+a] = runtime.FreshTableValue(runtime.NewTableSized(0, 2))
 			}
 
+		case OP_NEWOBJECTN:
+			a := DecodeA(inst)
+			b := DecodeB(inst) // table ctor index
+			c := DecodeC(inst) // first value register
+			if b >= 0 && b < len(frame.closure.Proto.TableCtorsN) {
+				ctor := &frame.closure.Proto.TableCtorsN[b].Runtime
+				n := len(ctor.Keys)
+				start := base + c
+				if start >= 0 && start+n <= len(vm.regs) {
+					vm.regs[base+a] = runtime.FreshTableValue(runtime.NewTableFromCtorN(ctor, vm.regs[start:start+n]))
+				} else {
+					vm.regs[base+a] = runtime.FreshTableValue(runtime.NewTableSized(0, n))
+				}
+			} else {
+				vm.regs[base+a] = runtime.FreshTableValue(runtime.NewEmptyTable())
+			}
+
 		case OP_GETTABLE:
 			a := DecodeA(inst)
 			b := DecodeB(inst)
