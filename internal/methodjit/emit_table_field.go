@@ -409,6 +409,9 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 
 	// No field cache or invalid: use table-exit fallback.
 	if shapeID == 0 || instr.Aux2 == 0 {
+		if ec.emitSetFieldDynamicCache(instr) {
+			return
+		}
 		ec.invalidateFieldSvalsCache()
 		ec.emitSetFieldExit(instr)
 		return
@@ -458,6 +461,94 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	ec.restoreValueReprSnapshot(savedReprs)
 
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitSetFieldDynamicCache(instr *Instr) bool {
+	if instr == nil || instr.SourcePC < 0 || len(instr.Args) < 2 {
+		return false
+	}
+	asm := ec.asm
+	tblValueID := instr.Args[0].ID
+	valueID := instr.Args[1].ID
+	if def := instr.Args[0].Def; def != nil && (def.Op == OpNewTable || def.Op == OpNewFixedTable) {
+		return false
+	}
+	if ec.setFieldValueMayBeRawFloat(instr.Args[1]) || ec.hasFPReg(valueID) {
+		return false
+	}
+	deoptLabel := ec.uniqueLabel("setfield_dyn_deopt")
+	doneLabel := ec.uniqueLabel("setfield_dyn_done")
+
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineFieldCache)
+	asm.CBZ(jit.X3, deoptLabel)
+	entryOff := instr.SourcePC * jit.FieldCacheEntrySize
+	if entryOff <= 4095 {
+		asm.ADDimm(jit.X3, jit.X3, uint16(entryOff))
+	} else {
+		asm.LoadImm64(jit.X4, int64(entryOff))
+		asm.ADDreg(jit.X3, jit.X3, jit.X4)
+	}
+	asm.LDRW(jit.X5, jit.X3, jit.FieldCacheEntryOffShapeID)
+	asm.CBZ(jit.X5, deoptLabel)
+	asm.LDR(jit.X4, jit.X3, jit.FieldCacheEntryOffFieldIdx)
+	asm.CMPimm(jit.X4, 0)
+	asm.BCond(jit.CondLT, deoptLabel)
+
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	if ec.irTypes[tblValueID] != TypeTable {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+	}
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, deoptLabel)
+	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+	asm.CMPreg(jit.X1, jit.X5)
+	asm.BCond(jit.CondNE, deoptLabel)
+	asm.LDR(jit.X1, jit.X0, jit.TableOffSvalsLen)
+	asm.CMPreg(jit.X4, jit.X1)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
+	valReg := ec.resolveValueNB(valueID, jit.X6)
+	if valReg != jit.X6 {
+		asm.MOVreg(jit.X6, valReg)
+	}
+	asm.LoadImm64(jit.X7, nb64(jit.NB_ValNil))
+	asm.CMPreg(jit.X6, jit.X7)
+	asm.BCond(jit.CondEQ, deoptLabel)
+	asm.STRreg(jit.X6, jit.X1, jit.X4)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	savedReprs := ec.snapshotValueReprs()
+	ec.emitSetFieldExit(instr)
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
+
+	asm.Label(doneLabel)
+	return true
+}
+
+func (ec *emitContext) setFieldValueMayBeRawFloat(v *Value) bool {
+	if v == nil {
+		return false
+	}
+	if ec.irTypes[v.ID] == TypeFloat {
+		return true
+	}
+	if v.Def == nil {
+		return false
+	}
+	if v.Def.Type == TypeFloat {
+		return true
+	}
+	switch v.Def.Op {
+	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA, OpFMSUB, OpGetFieldNumToFloat, OpNumToFloat:
+		return true
+	default:
+		return false
+	}
 }
 
 type fieldStoreValue struct {
