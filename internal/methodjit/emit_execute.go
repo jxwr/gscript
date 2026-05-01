@@ -52,6 +52,7 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 	if cf.Proto != nil && len(cf.Proto.Constants) > 0 {
 		ctx.Constants = uintptr(unsafe.Pointer(&cf.Proto.Constants[0]))
 	}
+	setTier2ProtoCacheContext(&ctx, cf.Proto)
 
 	// Set up Tier 2 global value cache pointers (standalone mode).
 	// Uses a local generation counter since there's no TieringManager.
@@ -150,6 +151,7 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 			if err != nil {
 				return nil, fmt.Errorf("methodjit: table-exit error: %w", err)
 			}
+			setTier2ProtoCacheContext(&ctx, cf.Proto)
 			if err := exitCheck.checkAfter(site, before, regs, 0, protoNameForCheck(cf.Proto)); err != nil {
 				return nil, err
 			}
@@ -365,7 +367,17 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 			keyVal := regs[keySlot]
 			if tblVal.IsTable() {
 				tbl := tblVal.Table()
-				result := tbl.RawGet(keyVal)
+				var result runtime.Value
+				pc := int(ctx.TableAux2)
+				if keyVal.IsString() && cf.Proto != nil && pc >= 0 {
+					ensureTableStringKeyCache(cf.Proto)
+					result = tbl.RawGetStringDynamicCached(
+						keyVal.Str(),
+						runtime.TableStringKeyCacheSlot(cf.Proto.TableStringKeyCache, pc),
+					)
+				} else {
+					result = tbl.RawGet(keyVal)
+				}
 				if resultSlot < len(regs) {
 					regs[resultSlot] = result
 				}
@@ -385,7 +397,17 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 			valVal := regs[valSlot]
 			if tblVal.IsTable() {
 				tbl := tblVal.Table()
-				tbl.RawSet(keyVal, valVal)
+				pc := int(ctx.TableAux2)
+				if keyVal.IsString() && cf.Proto != nil && pc >= 0 {
+					ensureTableStringKeyCache(cf.Proto)
+					tbl.RawSetStringDynamicCached(
+						keyVal.Str(),
+						valVal,
+						runtime.TableStringKeyCacheSlot(cf.Proto.TableStringKeyCache, pc),
+					)
+				} else {
+					tbl.RawSet(keyVal, valVal)
+				}
 			}
 		}
 

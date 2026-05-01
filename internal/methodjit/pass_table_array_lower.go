@@ -22,7 +22,7 @@ func TableArrayLowerPass(fn *Function) (*Function, error) {
 	for _, block := range fn.Blocks {
 		needsRewrite := false
 		for _, instr := range block.Instrs {
-			if instr.Op == OpGetTable && tableArrayLowerableKind(instr.Aux2) {
+			if tableArrayLowerableGetTable(fn, instr) {
 				needsRewrite = true
 				break
 			}
@@ -33,7 +33,7 @@ func TableArrayLowerPass(fn *Function) (*Function, error) {
 
 		newInstrs := make([]*Instr, 0, len(block.Instrs)*2)
 		for _, instr := range block.Instrs {
-			if instr.Op != OpGetTable || !tableArrayLowerableKind(instr.Aux2) || len(instr.Args) < 2 {
+			if !tableArrayLowerableGetTable(fn, instr) {
 				newInstrs = append(newInstrs, instr)
 				continue
 			}
@@ -71,6 +71,47 @@ func tableArrayLowerableKind(kind int64) bool {
 	default:
 		return false
 	}
+}
+
+func tableArrayLowerableGetTable(fn *Function, instr *Instr) bool {
+	if instr == nil || instr.Op != OpGetTable || len(instr.Args) < 2 || !tableArrayLowerableKind(instr.Aux2) {
+		return false
+	}
+	if tableDynamicStringKeyCacheLikely(fn, instr) && !tableKeyProvenInt(instr.Args[1]) {
+		blockID := -1
+		if instr.Block != nil {
+			blockID = instr.Block.ID
+		}
+		functionRemarks(fn).Add("TableArrayLower", "missed", blockID, instr.ID, instr.Op,
+			"dynamic string-key cache feedback")
+		return false
+	}
+	return true
+}
+
+func tableKeyProvenInt(key *Value) bool {
+	return key != nil && key.Def != nil && (key.Def.Type == TypeInt || key.Def.Op == OpConstInt)
+}
+
+func tableDynamicStringKeyCacheLikely(fn *Function, instr *Instr) bool {
+	if fn == nil || fn.Proto == nil || instr == nil || !instr.HasSource {
+		return false
+	}
+	return protoHasDynamicStringKeyCacheAt(fn.Proto, instr.SourcePC)
+}
+
+func protoHasDynamicStringKeyCacheAt(proto *vm.FuncProto, pc int) bool {
+	if proto == nil || len(proto.TableStringKeyCache) == 0 {
+		return false
+	}
+	slot := runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc)
+	for i := range slot {
+		entry := &slot[i]
+		if entry.ShapeID != 0 && entry.FieldIdx >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func tableArrayKindElementType(kind int64) (Type, bool) {

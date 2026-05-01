@@ -185,6 +185,111 @@ func cmp(a, b) {
 	}
 }
 
+func TestTier2_StringEqualityFastPath_NoOpExit(t *testing.T) {
+	src := `
+func eq(a, b) {
+    if a == b {
+        return 1
+    }
+    return 0
+}
+`
+	cases := []struct {
+		a, b string
+		want int64
+	}{
+		{"same", "same", 1},
+		{"alpha", "beta", 0},
+		{"prefix", "prefix-long", 0},
+	}
+
+	for _, tc := range cases {
+		gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "eq", []runtime.Value{
+			runtime.StringValue(tc.a),
+			runtime.StringValue(tc.b),
+		}, true)
+		got := requireOneInt(t, tc.a+"_"+tc.b, gotValues)
+		if got != tc.want {
+			t.Fatalf("eq(%q,%q)=%d, want %d", tc.a, tc.b, got, tc.want)
+		}
+		if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+			t.Fatalf("eq(%q,%q) should stay native, ExitOpExit=%d", tc.a, tc.b, exits)
+		}
+	}
+}
+
+func TestTier2_DynamicStringKeyCacheGetTable_NoLoopTableExit(t *testing.T) {
+	src := `
+func lookup(n) {
+    keys := {"a", "b", "c", "d"}
+    totals := {a: 1, b: 2, c: 3, d: 4}
+    sum := 0
+    for i := 1; i <= n; i++ {
+        k := keys[(i % 4) + 1]
+        sum = sum + totals[k]
+    }
+    return sum
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "lookup")
+	if proto == nil {
+		t.Fatal("lookup proto not found")
+	}
+	proto.EnsureFeedback()
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("lookup")
+	wantValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(80)})
+	if err != nil {
+		t.Fatalf("warm lookup: %v", err)
+	}
+	want := requireOneInt(t, "VM lookup", wantValues)
+	if !protoHasAnyDynamicStringKeyCache(proto) {
+		t.Fatal("warmup did not populate dynamic string-key cache")
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(lookup): %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(80)})
+	if err != nil {
+		t.Fatalf("Tier2 lookup: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 lookup", gotValues)
+	if got != want {
+		t.Fatalf("lookup Tier2=%d, want VM=%d", got, want)
+	}
+
+	var getTableExits uint64
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "lookup" && site.ExitName == "ExitTableExit" && site.Reason == "GetTable" {
+			getTableExits += site.Count
+		}
+	}
+	if getTableExits != 0 {
+		t.Fatalf("dynamic string-key lookup should stay native, GetTable exits=%d sites=%#v", getTableExits, tm.ExitStats().Sites)
+	}
+}
+
+func protoHasAnyDynamicStringKeyCache(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	for pc := range proto.Code {
+		if protoHasDynamicStringKeyCacheAt(proto, pc) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestTier2_StringLenFastPath_NoOpExit(t *testing.T) {
 	src := `
 func strlen_sum(a, b) {

@@ -3,6 +3,7 @@ package methodjit
 import (
 	"testing"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -105,6 +106,78 @@ func TestTableArrayLower_PreservesMixedArrayFeedbackResultType(t *testing.T) {
 	}
 	if load.Type != TypeTable {
 		t.Fatalf("mixed-array row load Type=%s, want preserved table:\n%s", load.Type, Print(out))
+	}
+}
+
+func TestTableArrayLower_SkipsDynamicStringKeyCacheSite(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:                "table_array_dynamic_string_key",
+		Code:                make([]uint32, 4),
+		TableStringKeyCache: make([]runtime.TableStringKeyCacheEntry, 4*runtime.TableStringKeyCacheWays),
+	}
+	proto.TableStringKeyCache[2*runtime.TableStringKeyCacheWays] = runtime.TableStringKeyCacheEntry{
+		Key:      "region",
+		KeyData:  1,
+		KeyLen:   6,
+		FieldIdx: 0,
+		ShapeID:  42,
+	}
+	fn := &Function{Proto: proto, NumRegs: 2}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Aux: 1, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny, Aux2: int64(vm.FBKindMixed),
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	get.HasSource = true
+	get.SourcePC = 2
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, get, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := countOps(out)
+	if counts[OpGetTable] != 1 || counts[OpTableArrayLoad] != 0 {
+		t.Fatalf("dynamic string-key cache site should remain GetTable, counts=%v\n%s", counts, Print(out))
+	}
+}
+
+func TestTableArrayLower_StillLowersProvenIntKeyWithStringCache(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:                "table_array_int_key_with_string_cache",
+		Code:                make([]uint32, 4),
+		TableStringKeyCache: make([]runtime.TableStringKeyCacheEntry, 4*runtime.TableStringKeyCacheWays),
+	}
+	proto.TableStringKeyCache[2*runtime.TableStringKeyCacheWays] = runtime.TableStringKeyCacheEntry{
+		Key:      "region",
+		KeyData:  1,
+		KeyLen:   6,
+		FieldIdx: 0,
+		ShapeID:  42,
+	}
+	fn := &Function{Proto: proto, NumRegs: 2}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny, Aux2: int64(vm.FBKindMixed),
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	get.HasSource = true
+	get.SourcePC = 2
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, get, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := countOps(out)
+	if counts[OpGetTable] != 0 || counts[OpTableArrayLoad] != 1 {
+		t.Fatalf("proven int key should still lower, counts=%v\n%s", counts, Print(out))
 	}
 }
 

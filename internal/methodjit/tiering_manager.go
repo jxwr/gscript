@@ -1685,14 +1685,24 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 }
 
 func (tm *TieringManager) setTier2FieldCacheContext(ctx *ExecContext, proto *vm.FuncProto) {
+	setTier2ProtoCacheContext(ctx, proto)
+}
+
+func setTier2ProtoCacheContext(ctx *ExecContext, proto *vm.FuncProto) {
 	if ctx == nil {
 		return
 	}
-	if proto == nil || proto.FieldCache == nil || len(proto.FieldCache) == 0 {
-		ctx.BaselineFieldCache = 0
+	ctx.BaselineFieldCache = 0
+	ctx.BaselineTableStringKeyCache = 0
+	if proto == nil {
 		return
 	}
-	ctx.BaselineFieldCache = uintptr(unsafe.Pointer(&proto.FieldCache[0]))
+	if len(proto.FieldCache) > 0 {
+		ctx.BaselineFieldCache = uintptr(unsafe.Pointer(&proto.FieldCache[0]))
+	}
+	if len(proto.TableStringKeyCache) > 0 {
+		ctx.BaselineTableStringKeyCache = uintptr(unsafe.Pointer(&proto.TableStringKeyCache[0]))
+	}
 }
 
 // executeTier2 runs a Tier 2 compiled function using the VM's register file.

@@ -555,7 +555,16 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 			keyVal := regs[absKey]
 			var result runtime.Value
 			if tblVal.IsTable() && !tblVal.Table().HasMetatable() {
-				result = tblVal.Table().RawGet(keyVal)
+				pc := int(ctx.TableAux2)
+				if keyVal.IsString() && proto != nil && pc >= 0 {
+					ensureTableStringKeyCache(proto)
+					result = tblVal.Table().RawGetStringDynamicCached(
+						keyVal.Str(),
+						runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc),
+					)
+				} else {
+					result = tblVal.Table().RawGet(keyVal)
+				}
 			} else {
 				if tm.callVM == nil {
 					return fmt.Errorf("no callVM set for table-get exit")
@@ -580,7 +589,17 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 			keyVal := regs[absKey]
 			valVal := regs[absVal]
 			if tblVal.IsTable() {
-				tblVal.Table().RawSet(keyVal, valVal)
+				pc := int(ctx.TableAux2)
+				if keyVal.IsString() && proto != nil && pc >= 0 {
+					ensureTableStringKeyCache(proto)
+					tblVal.Table().RawSetStringDynamicCached(
+						keyVal.Str(),
+						valVal,
+						runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc),
+					)
+				} else {
+					tblVal.Table().RawSet(keyVal, valVal)
+				}
 			}
 		}
 

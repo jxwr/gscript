@@ -1037,7 +1037,9 @@ func (ec *emitContext) emitGenericNumericCmp(instr *Instr, cond jit.Cond) {
 
 	asm.Label(lhsTaggedLabel)
 	if cond == jit.CondEQ {
-		asm.B(fallbackLabel)
+		jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, fallbackLabel)
+		jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, fallbackLabel)
+		ec.emitStringEqFast(trueLabel, falseLabel)
 	} else {
 		jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, fallbackLabel)
 		jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, fallbackLabel)
@@ -1149,6 +1151,44 @@ func (ec *emitContext) emitStringCmpFast(cond jit.Cond, trueLabel, falseLabel st
 		asm.BCond(jit.CondLO, trueLabel)
 	}
 	asm.B(falseLabel)
+}
+
+// emitStringEqFast compares two NaN-boxed string values in X0 and X1.
+// Both operands must already be checked as strings. It checks length first,
+// then compares backing bytes only when distinct equal-length strings are
+// observed.
+func (ec *emitContext) emitStringEqFast(trueLabel, falseLabel string) {
+	asm := ec.asm
+
+	loopLabel := ec.uniqueLabel("str_eq_loop")
+
+	asm.LSLimm(jit.X2, jit.X0, 20)
+	asm.LSRimm(jit.X2, jit.X2, 20)
+	asm.LSLimm(jit.X3, jit.X1, 20)
+	asm.LSRimm(jit.X3, jit.X3, 20)
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondEQ, trueLabel)
+
+	asm.LDR(jit.X4, jit.X2, 0) // lhs data
+	asm.LDR(jit.X5, jit.X2, 8) // lhs len
+	asm.LDR(jit.X6, jit.X3, 0) // rhs data
+	asm.LDR(jit.X7, jit.X3, 8) // rhs len
+	asm.CMPreg(jit.X5, jit.X7)
+	asm.BCond(jit.CondNE, falseLabel)
+	asm.CBZ(jit.X5, trueLabel)
+	asm.CMPreg(jit.X4, jit.X6)
+	asm.BCond(jit.CondEQ, trueLabel)
+
+	asm.MOVimm16(jit.X8, 0)
+	asm.Label(loopLabel)
+	asm.LDRBreg(jit.X9, jit.X4, jit.X8)
+	asm.LDRBreg(jit.X10, jit.X6, jit.X8)
+	asm.CMPreg(jit.X9, jit.X10)
+	asm.BCond(jit.CondNE, falseLabel)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.CMPreg(jit.X8, jit.X5)
+	asm.BCond(jit.CondLT, loopLabel)
+	asm.B(trueLabel)
 }
 
 // emitNegFloat emits ARM64 code for OpNegFloat (-float).

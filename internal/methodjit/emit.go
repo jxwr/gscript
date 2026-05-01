@@ -60,7 +60,7 @@ type ExecContext struct {
 	TableKeySlot int64 // VM register slot for the key (GetTable/SetTable)
 	TableValSlot int64 // VM register slot for the value (SetTable)
 	TableAux     int64 // Aux data: NewTable=arrayHint, GetField/SetField=constIdx
-	TableAux2    int64 // Aux2 data: NewTable=hashHint
+	TableAux2    int64 // Aux2 data: NewTable=hashHint, GetTable/SetTable=source PC
 	TableExitID  int64 // instruction ID for resolving resume address
 	// Op-exit fields (ExitCode=6): generic exit for unsupported ops
 	OpExitOp   int64 // which Op to execute (cast to Op)
@@ -182,8 +182,8 @@ type ExecContext struct {
 	// Go so the execute loop can verify VM home-slot consistency.
 	ExitResumeCheckShadow uintptr
 
-	// Baseline-only dynamic table cache fields are kept at the end so Tier 2
-	// ExecContext offsets remain stable for code-size guard tests.
+	// Dynamic table cache fields are kept at the end so existing ExecContext
+	// offsets remain stable for code-size guard tests.
 	BaselineTableStringKeyCache uintptr // pointer to proto.TableStringKeyCache[0] (nil if not yet allocated)
 }
 

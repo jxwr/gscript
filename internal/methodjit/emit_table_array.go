@@ -1847,6 +1847,7 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 
 	// Load key into X1 with type-specialized fast paths.
 	keyID := instr.Args[1].ID
+	ec.emitDynamicStringGetTableCache(instr, doneLabel)
 
 	if kv, isConst := ec.constInts[keyID]; isConst {
 		// R98: const int key — load the immediate directly, bypass reg
@@ -2036,6 +2037,171 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitDynamicStringGetTableCache(instr *Instr, doneLabel string) {
+	if !ec.shouldEmitDynamicStringKeyCache(instr) {
+		return
+	}
+	asm := ec.asm
+	keyID := instr.Args[1].ID
+	keyReg := ec.resolveValueNB(keyID, jit.X1)
+	if keyReg != jit.X1 {
+		asm.MOVreg(jit.X1, keyReg)
+	}
+	missLabel := ec.uniqueLabel("gettable_string_cache_miss")
+	deoptLabel := ec.uniqueLabel("gettable_string_type_deopt")
+	ec.emitDynamicStringCacheOrSmallScan(instr, missLabel, func(fieldIdxReg jit.Reg) {
+		asm.LDR(jit.X10, jit.X0, jit.TableOffSvals)
+		asm.LDRreg(jit.X0, jit.X10, fieldIdxReg)
+		ec.emitStoreDynamicStringTableLoad(instr, jit.X0, deoptLabel)
+		asm.B(doneLabel)
+	})
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(missLabel)
+}
+
+func (ec *emitContext) emitStoreDynamicStringTableLoad(instr *Instr, valReg jit.Reg, deoptLabel string) {
+	asm := ec.asm
+	switch instr.Type {
+	case TypeInt:
+		asm.LSRimm(jit.X2, valReg, 48)
+		asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
+		asm.CMPreg(jit.X2, jit.X3)
+		asm.BCond(jit.CondNE, deoptLabel)
+		if valReg != jit.X0 {
+			asm.MOVreg(jit.X0, valReg)
+		}
+		asm.SBFX(jit.X0, jit.X0, 0, 48)
+		ec.storeRawInt(jit.X0, instr.ID)
+	case TypeFloat:
+		jit.EmitIsTagged(asm, valReg, jit.X2)
+		asm.BCond(jit.CondEQ, deoptLabel)
+		asm.FMOVtoFP(jit.D0, valReg)
+		ec.storeRawFloat(jit.D0, instr.ID)
+	case TypeTable:
+		jit.EmitCheckIsTableFull(asm, valReg, jit.X2, jit.X3, deoptLabel)
+		ec.storeResultNB(valReg, instr.ID)
+	default:
+		ec.storeResultNB(valReg, instr.ID)
+	}
+}
+
+func (ec *emitContext) shouldEmitDynamicStringKeyCache(instr *Instr) bool {
+	if instr == nil || len(instr.Args) < 2 || !instr.HasSource || instr.SourcePC < 0 {
+		return false
+	}
+	if ec.fn == nil || !protoHasDynamicStringKeyCacheAt(ec.fn.Proto, instr.SourcePC) {
+		return false
+	}
+	return true
+}
+
+func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel string, hit func(fieldIdxReg jit.Reg)) {
+	asm := ec.asm
+
+	jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, missLabel)
+	jit.EmitExtractPtr(asm, jit.X4, jit.X1) // X4 = *string header
+	asm.CBZ(jit.X4, missLabel)
+	asm.LDR(jit.X5, jit.X4, 0) // X5 = key data
+	asm.LDR(jit.X6, jit.X4, 8) // X6 = key len
+
+	asm.LDRW(jit.X7, jit.X0, jit.TableOffShapeID)
+	asm.CBZ(jit.X7, missLabel)
+	asm.LDR(jit.X8, jit.X0, jit.TableOffLazyTree)
+	asm.CBNZ(jit.X8, missLabel)
+
+	scanLabel := ec.uniqueLabel("dyn_string_scan")
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineTableStringKeyCache)
+	asm.CBZ(jit.X3, scanLabel)
+	entryOff := instr.SourcePC * runtime.TableStringKeyCacheWays * tableStringKeyCacheEntrySize
+	if entryOff > 0 {
+		if entryOff <= 4095 {
+			asm.ADDimm(jit.X3, jit.X3, uint16(entryOff))
+		} else {
+			asm.LoadImm64(jit.X8, int64(entryOff))
+			asm.ADDreg(jit.X3, jit.X3, jit.X8)
+		}
+	}
+
+	cacheLoopLabel := ec.uniqueLabel("dyn_string_cache_loop")
+	cacheNextLabel := ec.uniqueLabel("dyn_string_cache_next")
+	asm.MOVimm16(jit.X9, 0)
+	asm.Label(cacheLoopLabel)
+	asm.LDR(jit.X10, jit.X3, tableStringKeyCacheEntryKeyData)
+	asm.CMPreg(jit.X10, jit.X5)
+	asm.BCond(jit.CondNE, cacheNextLabel)
+	asm.LDR(jit.X10, jit.X3, tableStringKeyCacheEntryKeyLen)
+	asm.CMPreg(jit.X10, jit.X6)
+	asm.BCond(jit.CondNE, cacheNextLabel)
+	asm.LDRW(jit.X10, jit.X3, tableStringKeyCacheEntryShapeID)
+	asm.CMPreg(jit.X10, jit.X7)
+	asm.BCond(jit.CondNE, cacheNextLabel)
+	asm.LDR(jit.X11, jit.X3, tableStringKeyCacheEntryFieldIdx)
+	asm.LDR(jit.X10, jit.X0, jit.TableOffSvalsLen)
+	asm.CMPreg(jit.X11, jit.X10)
+	asm.BCond(jit.CondGE, scanLabel)
+	hit(jit.X11)
+
+	asm.Label(cacheNextLabel)
+	asm.ADDimm(jit.X3, jit.X3, uint16(tableStringKeyCacheEntrySize))
+	asm.ADDimm(jit.X9, jit.X9, 1)
+	asm.CMPimm(jit.X9, runtime.TableStringKeyCacheWays)
+	asm.BCond(jit.CondLT, cacheLoopLabel)
+
+	// Cache associativity is deliberately small. On polymorphic shaped tables
+	// (for example, several tables sharing the same key set in different append
+	// orders), avoid a per-lookup exit by scanning the small shaped string-key
+	// slice natively. Large smap/hash-mode tables keep shapeID zero and fall
+	// through to the normal table exit.
+	asm.Label(scanLabel)
+	asm.LDR(jit.X10, jit.X0, jit.TableOffSkeysLen)
+	asm.CBZ(jit.X10, missLabel)
+	asm.LDR(jit.X11, jit.X0, jit.TableOffSkeys)
+	asm.CBZ(jit.X11, missLabel)
+
+	scanLoopLabel := ec.uniqueLabel("dyn_string_scan_loop")
+	scanNextLabel := ec.uniqueLabel("dyn_string_scan_next")
+	byteLoopLabel := ec.uniqueLabel("dyn_string_scan_bytes")
+	foundLabel := ec.uniqueLabel("dyn_string_scan_found")
+	asm.MOVimm16(jit.X9, 0) // field index
+	asm.Label(scanLoopLabel)
+	asm.CMPreg(jit.X9, jit.X10)
+	asm.BCond(jit.CondGE, missLabel)
+	asm.LSLimm(jit.X12, jit.X9, 4) // Go string header is two machine words.
+	asm.ADDreg(jit.X12, jit.X11, jit.X12)
+	asm.LDR(jit.X13, jit.X12, 0) // candidate data
+	asm.LDR(jit.X14, jit.X12, 8) // candidate len
+	asm.CMPreg(jit.X14, jit.X6)
+	asm.BCond(jit.CondNE, scanNextLabel)
+	asm.CMPreg(jit.X13, jit.X5)
+	asm.BCond(jit.CondEQ, foundLabel)
+	asm.CBZ(jit.X14, foundLabel)
+	asm.MOVimm16(jit.X15, 0) // byte index
+	asm.Label(byteLoopLabel)
+	asm.LDRBreg(jit.X16, jit.X13, jit.X15)
+	asm.LDRBreg(jit.X17, jit.X5, jit.X15)
+	asm.CMPreg(jit.X16, jit.X17)
+	asm.BCond(jit.CondNE, scanNextLabel)
+	asm.ADDimm(jit.X15, jit.X15, 1)
+	asm.CMPreg(jit.X15, jit.X14)
+	asm.BCond(jit.CondLT, byteLoopLabel)
+
+	asm.Label(foundLabel)
+	asm.MOVreg(jit.X11, jit.X9)
+	hit(jit.X11)
+
+	asm.Label(scanNextLabel)
+	asm.ADDimm(jit.X9, jit.X9, 1)
+	asm.B(scanLoopLabel)
+}
+
+func tableExitSourcePC(instr *Instr) int64 {
+	if instr != nil && instr.HasSource && instr.SourcePC >= 0 {
+		return int64(instr.SourcePC)
+	}
+	return -1
+}
+
 // emitGetTableExit emits a table-exit for OpGetTable (dynamic key access).
 //
 // Instr layout:
@@ -2098,6 +2264,8 @@ func (ec *emitContext) emitGetTableExit(instr *Instr) {
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableKeySlot)
 	asm.LoadImm64(jit.X0, int64(resultSlot)) // result slot in Aux
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux)
+	asm.LoadImm64(jit.X0, tableExitSourcePC(instr))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux2)
 	asm.LoadImm64(jit.X0, int64(instr.ID))
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 
@@ -2183,6 +2351,7 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 
 	// Load key into X1 with type-specialized fast paths.
 	keyID := instr.Args[1].ID
+	ec.emitDynamicStringSetTableCache(instr, doneLabel)
 
 	if kv, isConst := ec.constInts[keyID]; isConst {
 		// R98: const int key — direct immediate load.
@@ -2415,6 +2584,34 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	}
 }
 
+func (ec *emitContext) emitDynamicStringSetTableCache(instr *Instr, doneLabel string) {
+	if !ec.shouldEmitDynamicStringKeyCache(instr) || len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+	keyID := instr.Args[1].ID
+	keyReg := ec.resolveValueNB(keyID, jit.X1)
+	if keyReg != jit.X1 {
+		asm.MOVreg(jit.X1, keyReg)
+	}
+	missLabel := ec.uniqueLabel("settable_string_cache_miss")
+	ec.emitDynamicStringCacheOrSmallScan(instr, missLabel, func(fieldIdxReg jit.Reg) {
+		valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+		if valReg != jit.X4 {
+			asm.MOVreg(jit.X4, valReg)
+		}
+		asm.LoadImm64(jit.X5, nb64(jit.NB_ValNil))
+		asm.CMPreg(jit.X4, jit.X5)
+		asm.BCond(jit.CondEQ, missLabel)
+		asm.LDR(jit.X10, jit.X0, jit.TableOffSvals)
+		asm.STRreg(jit.X4, jit.X10, fieldIdxReg)
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		asm.B(doneLabel)
+	})
+	asm.Label(missLabel)
+}
+
 func (ec *emitContext) emitDenseMatrixRowAppendFastPath(instr *Instr, missLabel, doneLabel string) {
 	if len(instr.Args) < 3 {
 		return
@@ -2595,6 +2792,8 @@ func (ec *emitContext) emitSetTableExitArgs(instr *Instr, tableArg, keyArg, valu
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableKeySlot)
 	asm.LoadImm64(jit.X0, int64(valSlot))
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableValSlot)
+	asm.LoadImm64(jit.X0, tableExitSourcePC(instr))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux2)
 	asm.LoadImm64(jit.X0, int64(instr.ID))
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
 
