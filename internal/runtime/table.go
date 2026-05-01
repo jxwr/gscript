@@ -164,6 +164,17 @@ func NewTableSizedKind(arrayHint, hashHint int, kind ArrayKind) *Table {
 	return t
 }
 
+// NewSequentialArrayTable creates a table whose 1-based array part has exactly
+// length slots ready for direct sequential fill by runtime builders.
+func NewSequentialArrayTable(length int) *Table {
+	if length <= 0 {
+		return NewEmptyTable()
+	}
+	t := DefaultHeap.AllocTable()
+	t.array = DefaultHeap.AllocValues(length+1, length+1)
+	return t
+}
+
 // RawGet retrieves a value by key, bypassing metamethods.
 func (t *Table) RawGet(key Value) Value {
 	if key.IsNil() {

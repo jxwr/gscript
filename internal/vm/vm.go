@@ -1305,6 +1305,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				if (bp.RawInt() == cp.RawInt()) != (a != 0) {
 					frame.pc++
 				}
+			} else if eq, ok := runtime.EQStrings(bp, cp); ok {
+				if eq != (a != 0) {
+					frame.pc++
+				}
 			} else {
 				if (*bp).Equal(*cp) != (a != 0) {
 					frame.pc++
@@ -1332,6 +1336,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				fb.Right.Observe(cp.Type())
 			}
 			if lt, ok := runtime.LTInts(bp, cp); ok {
+				if lt != (a != 0) {
+					frame.pc++
+				}
+			} else if lt, ok := runtime.LTStrings(bp, cp); ok {
 				if lt != (a != 0) {
 					frame.pc++
 				}
@@ -1366,6 +1374,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				fb.Right.Observe(cp.Type())
 			}
 			if le, ok := runtime.LEInts(bp, cp); ok {
+				if le != (a != 0) {
+					frame.pc++
+				}
+			} else if le, ok := runtime.LEStrings(bp, cp); ok {
 				if le != (a != 0) {
 					frame.pc++
 				}

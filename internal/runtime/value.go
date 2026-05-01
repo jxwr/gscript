@@ -818,6 +818,27 @@ func (v *Value) RawInt() int64 {
 
 func (v *Value) RawFloat() float64 { return math.Float64frombits(uint64(*v)) }
 
+func (v *Value) RawString() (string, bool) {
+	if uint64(*v)&tagMask != tagPtr {
+		return "", false
+	}
+	switch uint64(*v) & ptrSubMask {
+	case ptrSubString:
+		p := v.ptrPayload()
+		if p == nil {
+			return "", true
+		}
+		return *(*string)(p), true
+	case ptrSubLazyString:
+		if lz := v.lazyString(); lz != nil {
+			return lz.materialize(), true
+		}
+		return "", true
+	default:
+		return "", false
+	}
+}
+
 func AddInts(dst, a, b *Value) bool {
 	if a.IsInt() && b.IsInt() {
 		dst.SetInt(a.RawInt() + b.RawInt())
@@ -904,6 +925,42 @@ func LEInts(a, b *Value) (bool, bool) {
 		return a.Int() <= b.Int(), true
 	}
 	return false, false
+}
+
+func EQStrings(a, b *Value) (bool, bool) {
+	as, ok := a.RawString()
+	if !ok {
+		return false, false
+	}
+	bs, ok := b.RawString()
+	if !ok {
+		return false, false
+	}
+	return as == bs, true
+}
+
+func LTStrings(a, b *Value) (bool, bool) {
+	as, ok := a.RawString()
+	if !ok {
+		return false, false
+	}
+	bs, ok := b.RawString()
+	if !ok {
+		return false, false
+	}
+	return as < bs, true
+}
+
+func LEStrings(a, b *Value) (bool, bool) {
+	as, ok := a.RawString()
+	if !ok {
+		return false, false
+	}
+	bs, ok := b.RawString()
+	if !ok {
+		return false, false
+	}
+	return as <= bs, true
 }
 
 // ---------------------------------------------------------------------------

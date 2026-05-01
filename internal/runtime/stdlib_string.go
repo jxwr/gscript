@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 	"unsafe"
 )
@@ -593,25 +594,25 @@ func stringSplitValue(args []Value) (Value, error) {
 	s := args[0].Str()
 	sep := args[1].Str()
 	if sep == "" {
-		tbl := NewTableSized(len(s), 0)
+		tbl := NewSequentialArrayTable(len(s))
 		for i := 0; i < len(s); i++ {
-			tbl.RawSetInt(int64(i+1), StringValue(string(s[i])))
+			tbl.array[i+1] = StringValue(string(s[i]))
 		}
 		return TableValue(tbl), nil
 	}
 
 	n := strings.Count(s, sep) + 1
-	tbl := NewTableSized(n, 0)
+	tbl := NewSequentialArrayTable(n)
 	start := 0
-	idx := int64(1)
+	idx := 1
 	for {
 		next := strings.Index(s[start:], sep)
 		if next < 0 {
-			tbl.RawSetInt(idx, StringValue(s[start:]))
+			tbl.array[idx] = StringValue(s[start:])
 			break
 		}
 		end := start + next
-		tbl.RawSetInt(idx, StringValue(s[start:end]))
+		tbl.array[idx] = StringValue(s[start:end])
 		idx++
 		start = end + len(sep)
 	}
@@ -808,6 +809,7 @@ type simpleFormatPart struct {
 }
 
 type simpleFormatProgram struct {
+	formatStr string
 	parts     []simpleFormatPart
 	minArgs   int
 	litBytes  int
@@ -821,6 +823,7 @@ type simpleFormatProgram struct {
 
 const simpleFormatCacheLimit = 64
 const simpleFormatResultCacheLimit = 8192
+const simpleFormatFastCacheSize = 32
 
 var simpleFormatCache = struct {
 	sync.Mutex
@@ -830,10 +833,17 @@ var simpleFormatCache = struct {
 	entries: make(map[string]*simpleFormatProgram),
 }
 
+var simpleFormatFastCache [simpleFormatFastCacheSize]atomic.Pointer[simpleFormatProgram]
+
 func cachedSimpleFormat(formatStr string) (*simpleFormatProgram, bool, error) {
+	if prog := lookupSimpleFormatFast(formatStr); prog != nil {
+		return prog, true, nil
+	}
+
 	simpleFormatCache.Lock()
 	if prog, ok := simpleFormatCache.entries[formatStr]; ok {
 		simpleFormatCache.Unlock()
+		storeSimpleFormatFast(formatStr, prog)
 		return prog, true, nil
 	}
 	simpleFormatCache.Unlock()
@@ -846,6 +856,7 @@ func cachedSimpleFormat(formatStr string) (*simpleFormatProgram, bool, error) {
 		simpleFormatCache.Lock()
 		if cached, exists := simpleFormatCache.entries[formatStr]; exists {
 			simpleFormatCache.Unlock()
+			storeSimpleFormatFast(formatStr, cached)
 			return cached, true, nil
 		}
 		if len(simpleFormatCache.entries) >= simpleFormatCacheLimit && len(simpleFormatCache.order) > 0 {
@@ -856,9 +867,35 @@ func cachedSimpleFormat(formatStr string) (*simpleFormatProgram, bool, error) {
 		simpleFormatCache.entries[formatStr] = prog
 		simpleFormatCache.order = append(simpleFormatCache.order, formatStr)
 		simpleFormatCache.Unlock()
+		storeSimpleFormatFast(formatStr, prog)
 		return prog, true, nil
 	}
 	return nil, false, nil
+}
+
+func lookupSimpleFormatFast(formatStr string) *simpleFormatProgram {
+	slot := simpleFormatFastSlot(formatStr)
+	prog := simpleFormatFastCache[slot].Load()
+	if prog != nil && prog.formatStr == formatStr {
+		return prog
+	}
+	return nil
+}
+
+func storeSimpleFormatFast(formatStr string, prog *simpleFormatProgram) {
+	if prog == nil {
+		return
+	}
+	simpleFormatFastCache[simpleFormatFastSlot(formatStr)].Store(prog)
+}
+
+func simpleFormatFastSlot(s string) uint64 {
+	var h uint64 = 1469598103934665603
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h & (simpleFormatFastCacheSize - 1)
 }
 
 func compileSimpleFormat(formatStr string) (*simpleFormatProgram, bool, error) {
@@ -929,6 +966,7 @@ func compileSimpleFormat(formatStr string) (*simpleFormatProgram, bool, error) {
 		litBytes += len(lit)
 	}
 	return &simpleFormatProgram{
+		formatStr: formatStr,
 		parts:     parts,
 		minArgs:   argCount + 1,
 		litBytes:  litBytes,
