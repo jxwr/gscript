@@ -342,6 +342,31 @@ type FieldCacheEntry struct {
 	AppendShape   *Shape // result shape for constructor-style SETFIELD
 }
 
+// FieldPolyCacheWays is the number of polymorphic static string-field cache
+// entries assigned to each bytecode PC.
+const FieldPolyCacheWays = 4
+
+// FieldPolyCacheEntry caches a static string-field lookup by table shape.
+// It complements FieldCacheEntry's monomorphic fast path for object dispatch
+// sites that alternate among a small number of stable shapes.
+type FieldPolyCacheEntry struct {
+	FieldIdx int
+	ShapeID  uint32
+}
+
+// FieldPolyCacheSlot returns the cache ways for one bytecode PC.
+func FieldPolyCacheSlot(cache []FieldPolyCacheEntry, pc int) []FieldPolyCacheEntry {
+	if pc < 0 {
+		return nil
+	}
+	start := pc * FieldPolyCacheWays
+	end := start + FieldPolyCacheWays
+	if start < 0 || end > len(cache) {
+		return nil
+	}
+	return cache[start:end]
+}
+
 // TableStringKeyCacheWays is the number of polymorphic dynamic string-key
 // table cache entries assigned to each bytecode PC.
 const TableStringKeyCacheWays = 8
@@ -383,6 +408,37 @@ func dynamicStringCacheReplaceIndex(data uintptr, keyLen, n int) int {
 	}
 	h := (data >> 4) ^ (data >> 12) ^ uintptr(keyLen)
 	return int(h % uintptr(n))
+}
+
+func fieldPolyCacheReplaceIndex(shapeID uint32, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	return int(shapeID % uint32(n))
+}
+
+func (t *Table) rememberFieldPolyCacheLocked(fieldIdx int, cache []FieldPolyCacheEntry) {
+	if t.shapeID == 0 || fieldIdx < 0 || fieldIdx >= len(t.svals) || len(cache) == 0 {
+		return
+	}
+	empty := -1
+	for i := range cache {
+		entry := &cache[i]
+		if entry.ShapeID == t.shapeID {
+			entry.FieldIdx = fieldIdx
+			return
+		}
+		if empty < 0 && entry.ShapeID == 0 {
+			empty = i
+		}
+	}
+	if empty < 0 {
+		empty = fieldPolyCacheReplaceIndex(t.shapeID, len(cache))
+	}
+	cache[empty] = FieldPolyCacheEntry{
+		FieldIdx: fieldIdx,
+		ShapeID:  t.shapeID,
+	}
 }
 
 func (t *Table) lookupDynamicStringCacheLocked(data uintptr, keyLen int, cache []TableStringKeyCacheEntry) (int, bool) {
@@ -596,6 +652,38 @@ func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
 		if k == key {
 			cache.FieldIdx = i
 			cache.ShapeID = t.shapeID
+			return t.svals[i]
+		}
+	}
+	if t.smap != nil {
+		if v, ok := t.smap[key]; ok {
+			return v
+		}
+	}
+	return NilValue()
+}
+
+// RawGetStringCachedPoly retrieves a static string field and also populates a
+// small polymorphic shape cache for the bytecode PC. The monomorphic cache is
+// still updated because it remains the shortest native fast path.
+func (t *Table) RawGetStringCachedPoly(key string, cache *FieldCacheEntry, poly []FieldPolyCacheEntry) Value {
+	if t.mu != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
+	if t.lazyTree != nil {
+		return t.lazyTree.get(t, key)
+	}
+	idx := cache.FieldIdx
+	if t.shapeID != 0 && cache.ShapeID == t.shapeID && idx >= 0 && idx < len(t.svals) {
+		t.rememberFieldPolyCacheLocked(idx, poly)
+		return t.svals[idx]
+	}
+	for i, k := range t.skeys {
+		if k == key {
+			cache.FieldIdx = i
+			cache.ShapeID = t.shapeID
+			t.rememberFieldPolyCacheLocked(i, poly)
 			return t.svals[i]
 		}
 	}

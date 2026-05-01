@@ -58,6 +58,11 @@ const (
 	FieldCacheEntryOffFieldIdx = 0  // int (8 bytes)
 	FieldCacheEntryOffShapeID  = 8  // uint32
 
+	// FieldPolyCacheEntry layout (for polymorphic GETFIELD/SELF inline caching)
+	FieldPolyCacheEntrySize        = 16 // sizeof(runtime.FieldPolyCacheEntry)
+	FieldPolyCacheEntryOffFieldIdx = 0  // int (8 bytes)
+	FieldPolyCacheEntryOffShapeID  = 8  // uint32
+
 	// Type-specialized array fields (added at end of Table struct)
 	TableOffArrayKind     = 137 // ArrayKind (uint8)
 	TableOffShapeID       = 140 // uint32 — shape identifier for field cache validation
@@ -128,6 +133,16 @@ func init() {
 	}
 	if off := unsafe.Offsetof(fce.ShapeID); off != FieldCacheEntryOffShapeID {
 		panic("jit: FieldCacheEntry.ShapeID offset mismatch: expected " + itoa(FieldCacheEntryOffShapeID) + ", got " + itoa(int(off)))
+	}
+	var fpce runtime.FieldPolyCacheEntry
+	if sz := unsafe.Sizeof(fpce); sz != FieldPolyCacheEntrySize {
+		panic("jit: FieldPolyCacheEntry size mismatch: expected " + itoa(FieldPolyCacheEntrySize) + ", got " + itoa(int(sz)))
+	}
+	if off := unsafe.Offsetof(fpce.FieldIdx); off != FieldPolyCacheEntryOffFieldIdx {
+		panic("jit: FieldPolyCacheEntry.FieldIdx offset mismatch")
+	}
+	if off := unsafe.Offsetof(fpce.ShapeID); off != FieldPolyCacheEntryOffShapeID {
+		panic("jit: FieldPolyCacheEntry.ShapeID offset mismatch: expected " + itoa(FieldPolyCacheEntryOffShapeID) + ", got " + itoa(int(off)))
 	}
 
 	// Verify Table layout

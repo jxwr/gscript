@@ -42,6 +42,41 @@ func TestFieldCacheBasicLookup(t *testing.T) {
 	}
 }
 
+func TestFieldPolyCacheRecordsMultipleShapes(t *testing.T) {
+	worker := NewTable()
+	worker.RawSetString("id", IntValue(1))
+	worker.RawSetString("kind", StringValue("worker"))
+	worker.RawSetString("step", StringValue("step_worker"))
+
+	ioActor := NewTable()
+	ioActor.RawSetString("kind", StringValue("io"))
+	ioActor.RawSetString("queue", IntValue(2))
+	ioActor.RawSetString("step", StringValue("step_io"))
+
+	cache := FieldCacheEntry{}
+	poly := make([]FieldPolyCacheEntry, FieldPolyCacheWays)
+
+	if got := worker.RawGetStringCachedPoly("step", &cache, poly); !got.IsString() || got.Str() != "step_worker" {
+		t.Fatalf("worker step = %v", got)
+	}
+	if got := ioActor.RawGetStringCachedPoly("step", &cache, poly); !got.IsString() || got.Str() != "step_io" {
+		t.Fatalf("io step = %v", got)
+	}
+
+	seen := map[uint32]int{}
+	for _, entry := range poly {
+		if entry.ShapeID != 0 {
+			seen[entry.ShapeID] = entry.FieldIdx
+		}
+	}
+	if _, ok := seen[worker.ShapeID()]; !ok {
+		t.Fatalf("worker shape %d missing from poly cache %#v", worker.ShapeID(), poly)
+	}
+	if _, ok := seen[ioActor.ShapeID()]; !ok {
+		t.Fatalf("io shape %d missing from poly cache %#v", ioActor.ShapeID(), poly)
+	}
+}
+
 // TestFieldCacheSmallTable verifies correctness for tables with few fields.
 func TestFieldCacheSmallTable(t *testing.T) {
 	tbl := NewTable()

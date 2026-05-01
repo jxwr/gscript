@@ -359,6 +359,11 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 		} else {
 			ctx.BaselineFieldCache = 0
 		}
+		if proto.FieldPolyCache != nil && len(proto.FieldPolyCache) > 0 {
+			ctx.BaselineFieldPolyCache = uintptr(unsafe.Pointer(&proto.FieldPolyCache[0]))
+		} else {
+			ctx.BaselineFieldPolyCache = 0
+		}
 	}
 	syncFieldCache()
 

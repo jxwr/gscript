@@ -146,6 +146,21 @@ func local_prime_counter(n) {
 	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
 }
 
+func TestCachedWholeCallKernelRecognizedUsesHotCache(t *testing.T) {
+	proto := &FuncProto{
+		WholeCallKernel: &wholeCallKernelProtoCache{
+			fingerprint: wholeCallKernelFingerprint{codeLen: 123},
+			recognized:  uint64(1) << uint(wholeCallKernelFannkuchRedux),
+		},
+	}
+	if !cachedWholeCallKernelRecognized(proto, wholeCallKernelFannkuchRedux) {
+		t.Fatal("cached hot dispatch guard recomputed structure instead of using cached bits")
+	}
+	if cachedWholeCallKernelRecognized(proto, wholeCallKernelSieveCount) {
+		t.Fatal("cached hot dispatch guard reported an uncached kernel bit")
+	}
+}
+
 func TestWholeCallKernelDiagnosticsRejectBenchmarkMetadataWithoutShape(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, `
 func fannkuch(n) { return n }

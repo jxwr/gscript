@@ -299,7 +299,7 @@ func cachedWholeCallKernelRecognized(proto *FuncProto, id int) bool {
 	if id < 0 || id >= len(wholeCallKernelRegistry) {
 		return false
 	}
-	return recognizedWholeCallKernelBits(proto)&(uint64(1)<<uint(id)) != 0
+	return cachedWholeCallKernelBits(proto)&(uint64(1)<<uint(id)) != 0
 }
 
 func hotWholeCallKernelRecognized(proto *FuncProto, id int) bool {

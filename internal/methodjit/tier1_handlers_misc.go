@@ -210,7 +210,12 @@ func (e *BaselineJITEngine) handleSelf(ctx *ExecContext, regs []runtime.Value, b
 			if key.IsString() {
 				pc := int(ctx.BaselinePC) - 1
 				ensureFieldCache(proto)
-				regs[absA] = tbl.RawGetStringCached(key.Str(), &proto.FieldCache[pc])
+				ensureFieldPolyCache(proto)
+				regs[absA] = tbl.RawGetStringCachedPoly(
+					key.Str(),
+					&proto.FieldCache[pc],
+					runtime.FieldPolyCacheSlot(proto.FieldPolyCache, pc),
+				)
 				return nil
 			}
 			regs[absA] = tbl.RawGet(key)

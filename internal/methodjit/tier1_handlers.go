@@ -593,6 +593,12 @@ func ensureFieldCache(proto *vm.FuncProto) {
 	}
 }
 
+func ensureFieldPolyCache(proto *vm.FuncProto) {
+	if proto.FieldPolyCache == nil {
+		proto.FieldPolyCache = make([]runtime.FieldPolyCacheEntry, len(proto.Code)*runtime.FieldPolyCacheWays)
+	}
+}
+
 func ensureTableStringKeyCache(proto *vm.FuncProto) {
 	if proto.TableStringKeyCache == nil {
 		proto.TableStringKeyCache = make([]runtime.TableStringKeyCacheEntry, len(proto.Code)*runtime.TableStringKeyCacheWays)
@@ -623,7 +629,12 @@ func (e *BaselineJITEngine) handleGetField(ctx *ExecContext, regs []runtime.Valu
 		// BaselinePC is the resume (next) PC, so current instruction PC = BaselinePC - 1.
 		pc := int(ctx.BaselinePC) - 1
 		ensureFieldCache(proto)
-		regs[absA] = tbl.RawGetStringCached(fieldName, &proto.FieldCache[pc])
+		ensureFieldPolyCache(proto)
+		regs[absA] = tbl.RawGetStringCachedPoly(
+			fieldName,
+			&proto.FieldCache[pc],
+			runtime.FieldPolyCacheSlot(proto.FieldPolyCache, pc),
+		)
 		// Record type feedback so Tier 2 can specialize.
 		if proto.Feedback != nil && pc < len(proto.Feedback) {
 			proto.Feedback[pc].Result.Observe(regs[absA].Type())

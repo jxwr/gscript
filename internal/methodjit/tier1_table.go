@@ -89,6 +89,7 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	slowLabel := nextLabel("getfield_slow")
 	doneLabel := nextLabel("getfield_done")
 	emptyMissLabel := nextLabel("getfield_empty_miss")
+	polyMissLabel := nextLabel("getfield_poly_miss")
 
 	// Load FieldCache pointer from ExecContext.
 	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineFieldCache)
@@ -126,7 +127,7 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	// Shape guard: table.shapeID must match cached shapeID.
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID) // X1 = table.shapeID
 	asm.CMPreg(jit.X1, jit.X2)                    // compare with cached shapeID
-	asm.BCond(jit.CondNE, emptyMissLabel)
+	asm.BCond(jit.CondNE, polyMissLabel)
 
 	// Bounds check: fieldIdx < len(svals)
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvalsLen) // X1 = svals.len
@@ -149,6 +150,12 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	// Store result to R(A).
 	storeSlot(asm, a, jit.X0)
 	asm.B(doneLabel)
+
+	// Polymorphic static-field cache for object dispatch sites that rotate
+	// among a small number of stable table shapes.
+	asm.Label(polyMissLabel)
+	asm.CBZ(jit.X1, emptyMissLabel)
+	emitBaselineFieldPolyLookup(asm, pc, a, jit.X0, jit.X1, feedbackEnabled, "getfield_poly", slowLabel, doneLabel)
 
 	// Empty shape-less tables cannot contain any string field. This catches
 	// leaf objects built from nil fields without bouncing through Go.
@@ -173,6 +180,46 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	emitBaselineOpExitCommon(asm, vm.OP_GETFIELD, pc, a, b, c)
 
 	asm.Label(doneLabel)
+}
+
+func emitBaselineFieldPolyLookup(asm *jit.Assembler, pc, dstSlot int, tableReg, shapeReg jit.Reg, feedbackEnabled bool, feedbackName, slowLabel, doneLabel string) {
+	asm.LDR(jit.X5, mRegCtx, execCtxOffBaselineFieldPolyCache)
+	asm.CBZ(jit.X5, slowLabel)
+	entryOff := pc * runtime.FieldPolyCacheWays * jit.FieldPolyCacheEntrySize
+	if entryOff > 0 {
+		if entryOff <= 4095 {
+			asm.ADDimm(jit.X5, jit.X5, uint16(entryOff))
+		} else {
+			asm.LoadImm64(jit.X6, int64(entryOff))
+			asm.ADDreg(jit.X5, jit.X5, jit.X6)
+		}
+	}
+
+	for i := 0; i < runtime.FieldPolyCacheWays; i++ {
+		nextWayLabel := nextLabel("field_poly_next")
+		asm.LDRW(jit.X6, jit.X5, jit.FieldPolyCacheEntryOffShapeID)
+		asm.CMPreg(jit.X6, shapeReg)
+		asm.BCond(jit.CondNE, nextWayLabel)
+
+		asm.LDR(jit.X3, jit.X5, jit.FieldPolyCacheEntryOffFieldIdx)
+		asm.LDR(jit.X6, tableReg, jit.TableOffSvalsLen)
+		asm.CMPreg(jit.X3, jit.X6)
+		asm.BCond(jit.CondGE, slowLabel)
+
+		asm.LDR(jit.X6, tableReg, jit.TableOffSvals)
+		asm.LDRreg(jit.X0, jit.X6, jit.X3)
+		if feedbackEnabled {
+			emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, feedbackName)
+		}
+		storeSlot(asm, dstSlot, jit.X0)
+		asm.B(doneLabel)
+
+		asm.Label(nextWayLabel)
+		if i+1 < runtime.FieldPolyCacheWays {
+			asm.ADDimm(jit.X5, jit.X5, uint16(jit.FieldPolyCacheEntrySize))
+		}
+	}
+	asm.B(slowLabel)
 }
 
 // emitBaselineSetField emits native ARM64 for OP_SETFIELD: R(A).field[B] = RK(C)
@@ -721,6 +768,7 @@ func emitBaselineSelf(asm *jit.Assembler, inst uint32, pc int) {
 
 	slowLabel := nextLabel("self_slow")
 	doneLabel := nextLabel("self_done")
+	polyMissLabel := nextLabel("self_poly_miss")
 
 	// R(A+1) = R(B) (copy the object reference).
 	loadSlot(asm, jit.X0, b)
@@ -770,7 +818,7 @@ func emitBaselineSelf(asm *jit.Assembler, inst uint32, pc int) {
 	// Shape guard.
 	asm.LDRW(jit.X4, jit.X0, jit.TableOffShapeID)
 	asm.CMPreg(jit.X4, jit.X3)
-	asm.BCond(jit.CondNE, slowLabel)
+	asm.BCond(jit.CondNE, polyMissLabel)
 
 	// Load FieldIdx.
 	asm.LDR(jit.X3, jit.X2, jit.FieldCacheEntryOffFieldIdx)
@@ -789,6 +837,10 @@ func emitBaselineSelf(asm *jit.Assembler, inst uint32, pc int) {
 	// Store result to R(A).
 	storeSlot(asm, a, jit.X0)
 	asm.B(doneLabel)
+
+	asm.Label(polyMissLabel)
+	asm.CBZ(jit.X4, slowLabel)
+	emitBaselineFieldPolyLookup(asm, pc, a, jit.X0, jit.X4, false, "self_poly", slowLabel, doneLabel)
 
 	// Slow path: exit-resume.
 	asm.Label(slowLabel)

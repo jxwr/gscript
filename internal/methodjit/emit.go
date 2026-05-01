@@ -77,6 +77,7 @@ type ExecContext struct {
 	BaselineC  int64 // decoded C field
 	// Baseline JIT native table access support
 	BaselineFieldCache          uintptr // pointer to proto.FieldCache[0] (nil if not yet allocated)
+	BaselineFieldPolyCache      uintptr // pointer to proto.FieldPolyCache[0] (nil if not yet allocated)
 	BaselineClosurePtr          uintptr // pointer to *vm.Closure (for GETUPVAL/SETUPVAL)
 	BaselineReturnValue         uint64  // NaN-boxed return value (set by RETURN, read by Execute)
 	BaselineGlobalCache         uintptr // pointer to BaselineFunc.GlobalValCache[0] (for native GETGLOBAL)
@@ -265,6 +266,7 @@ var (
 	execCtxOffBaselineB                   = int(unsafe.Offsetof(ExecContext{}.BaselineB))
 	execCtxOffBaselineC                   = int(unsafe.Offsetof(ExecContext{}.BaselineC))
 	execCtxOffBaselineFieldCache          = int(unsafe.Offsetof(ExecContext{}.BaselineFieldCache))
+	execCtxOffBaselineFieldPolyCache      = int(unsafe.Offsetof(ExecContext{}.BaselineFieldPolyCache))
 	execCtxOffBaselineTableStringKeyCache = int(unsafe.Offsetof(ExecContext{}.BaselineTableStringKeyCache))
 	execCtxOffBaselineClosurePtr          = int(unsafe.Offsetof(ExecContext{}.BaselineClosurePtr))
 	execCtxOffBaselineReturnValue         = int(unsafe.Offsetof(ExecContext{}.BaselineReturnValue))
