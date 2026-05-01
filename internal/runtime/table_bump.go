@@ -181,7 +181,8 @@ func (h *Heap) tableRootInCurrentSlab(addr uintptr) unsafe.Pointer {
 const tableSlabElemSize = uintptr(unsafe.Sizeof(Table{}))
 
 const tableSvalsSlabSize = 8192
-const tableSvalsNInlineCap = 5
+const tableSvalsNInlineCap = 8
+const tableSvalsNInlineMin = 3
 
 // tableSvalsSlot is a fresh-allocation layout for fixed small-field table
 // constructors. The Table remains a normal Go-visible *Table, while its first
@@ -400,7 +401,7 @@ func (h *Heap) AllocTableWithSvals(capacity int) (*Table, []Value) {
 		}
 		return t, slot.svals[:0:2]
 	}
-	if capacity == tableSvalsNInlineCap {
+	if capacity >= tableSvalsNInlineMin && capacity <= tableSvalsNInlineCap {
 		slot := h.allocTableSvalsNSlot()
 		return &slot.table, slot.svals[:0:capacity]
 	}
