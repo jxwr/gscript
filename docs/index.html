@@ -94,6 +94,13 @@
 <div class="post">
   <span class="date">2026-05-01</span>
   <br>
+  <a href="83-the-dispatch-stayed-in-tier-2">The Dispatch Stayed In Tier 2</a>
+  <p><code>actors_dispatch_mutation</code> moved from the Tier 1 polymorphic field-cache ceiling into real Tier 2 method dispatch. Tier 2 now consumes bounded polymorphic method feedback, calls native callees through the callee-exit resume protocol, and keeps stable direct entries published instead of oscillating back to baseline dispatch. The focused guard moved the benchmark from about 0.147-0.149s to about 0.045-0.046s with <code>run_world</code>, <code>step_cache</code>, <code>step_io</code>, and <code>step_worker</code> all entering Tier 2.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-05-01</span>
+  <br>
   <a href="82-the-string-key-stopped-exiting">The String Key Stopped Exiting</a>
   <p><code>groupby_nested_agg</code> stopped leaving Tier 2 for dynamic string-key table lookups and eager string equality. The method JIT now keeps per-PC dynamic string-key cache feedback visible to Tier 2, skips array-only lowering when the key is not proven integer, and emits a native shaped-table lookup plus normal table-exit fallback. The focused run moved <code>groupby_nested_agg</code> from about 0.170s to about 0.023-0.025s, with Tier 2 exits falling from 1.68M to 412.</p>
 </div>
