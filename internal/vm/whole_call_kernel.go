@@ -2,7 +2,7 @@ package vm
 
 import "github.com/gscript/gscript/internal/runtime"
 
-const maxWholeCallFloatScratch = 1 << 20
+const maxWholeCallScalarScratch = 1 << 20
 
 func wholeCallKernelArity(n int) bool {
 	return n == 1 || n == 3
@@ -139,11 +139,34 @@ func (vm *VM) wholeCallFloatScratch(n int) []float64 {
 	if n <= 0 {
 		return nil
 	}
-	if n > maxWholeCallFloatScratch {
+	if n > maxWholeCallScalarScratch {
 		return make([]float64, n)
 	}
 	if cap(vm.wholeCallFloatBuf) < n {
 		vm.wholeCallFloatBuf = make([]float64, n)
 	}
 	return vm.wholeCallFloatBuf[:n]
+}
+
+func (vm *VM) wholeCallIntScratch(n int) []int64 {
+	if n <= 0 {
+		return nil
+	}
+	if n > maxWholeCallScalarScratch {
+		return make([]int64, n)
+	}
+	if cap(vm.wholeCallIntBuf) < n {
+		vm.wholeCallIntBuf = make([]int64, n)
+	}
+	return vm.wholeCallIntBuf[:n]
+}
+
+func (vm *VM) wholeCallValueScratch(n int) []runtime.Value {
+	if n <= 0 {
+		return nil
+	}
+	if cap(vm.wholeCallValueBuf) < n {
+		vm.wholeCallValueBuf = make([]runtime.Value, n)
+	}
+	return vm.wholeCallValueBuf[:n]
 }

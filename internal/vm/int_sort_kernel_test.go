@@ -3,6 +3,7 @@ package vm
 import (
 	"math"
 	"testing"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 )
@@ -255,6 +256,71 @@ func TestRadixSortIntegralNumericValuesRejectsUnsafeFloatKeys(t *testing.T) {
 	}
 }
 
+func TestIntSortKernelReusesVMScratchWithoutAllocations(t *testing.T) {
+	const n = 4096
+	vm := New(map[string]runtime.Value{})
+	defer vm.Close()
+	src := makeLCGInts(n, 42)
+	dst := make([]int64, n)
+	scratch := func(n int) []int64 { return vm.wholeCallIntScratch(n) }
+
+	copy(dst, src)
+	runPartitionSortWithScratch(dst, scratch)
+	allocs := testing.AllocsPerRun(50, func() {
+		copy(dst, src)
+		runPartitionSortWithScratch(dst, scratch)
+	})
+	if allocs != 0 {
+		t.Fatalf("cached int radix scratch allocated %.2f times per run, want 0", allocs)
+	}
+}
+
+func TestIntSortWholeCallRegionReusesVMScratchWithoutAllocations(t *testing.T) {
+	const n = 4096
+	vm := New(map[string]runtime.Value{})
+	defer vm.Close()
+	tbl := runtime.NewTableSizedKind(n+1, 0, runtime.ArrayInt)
+	for i, v := range makeLCGInts(n, 42) {
+		tbl.RawSetInt(int64(i+1), runtime.IntValue(v))
+	}
+	region, ok := tbl.PlainIntArrayRegionForNumericKernel(1, n)
+	if !ok {
+		t.Fatal("test table did not expose typed int region")
+	}
+	src := append([]int64(nil), region...)
+	args := []runtime.Value{runtime.TableValue(tbl), runtime.IntValue(1), runtime.IntValue(n)}
+
+	if !vm.runIntArrayPartitionSortRegion(args) {
+		t.Fatal("whole-call int sort region was not handled")
+	}
+	allocs := testing.AllocsPerRun(50, func() {
+		copy(region, src)
+		if !vm.runIntArrayPartitionSortRegion(args) {
+			t.Fatal("whole-call int sort region was not handled")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("whole-call cached int radix scratch allocated %.2f times per run, want 0", allocs)
+	}
+}
+
+func TestIntSortKernelValueScratchScansGCRoots(t *testing.T) {
+	vm := New(map[string]runtime.Value{})
+	defer vm.Close()
+	tbl := runtime.NewTable()
+	vm.wholeCallValueScratch(1)[0] = runtime.TableValue(tbl)
+
+	found := false
+	vm.ScanGCRoots(func(p unsafe.Pointer) {
+		if p == unsafe.Pointer(tbl) {
+			found = true
+		}
+	})
+	if !found {
+		t.Fatal("VM Value scratch was not scanned as a GC root")
+	}
+}
+
 func TestIntSortKernelFallsBackForNonnumericMixedArray(t *testing.T) {
 	err := compileAndRunExpectError(t, `
 func q(arr, lo, hi) {
@@ -288,18 +354,24 @@ q(arr, 1, 3)
 
 func BenchmarkRunPartitionSortPlainIntRegion(b *testing.B) {
 	const n = 50000
+	vm := New(map[string]runtime.Value{})
+	defer vm.Close()
 	src := makeLCGInts(n, 42)
 	dst := make([]int64, n)
+	scratch := func(n int) []int64 { return vm.wholeCallIntScratch(n) }
+	scratch(n)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		copy(dst, src)
-		runPartitionSort(dst)
+		runPartitionSortWithScratch(dst, scratch)
 	}
 }
 
 func BenchmarkRunPartitionSortMixedNumericRegion(b *testing.B) {
 	const n = 50000
+	vm := New(map[string]runtime.Value{})
+	defer vm.Close()
 	srcInts := makeLCGInts(n, 42)
 	src := make([]runtime.Value, n)
 	for i, v := range srcInts {
@@ -310,11 +382,13 @@ func BenchmarkRunPartitionSortMixedNumericRegion(b *testing.B) {
 		}
 	}
 	dst := make([]runtime.Value, n)
+	scratch := func(n int) []runtime.Value { return vm.wholeCallValueScratch(n) }
+	scratch(n)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		copy(dst, src)
-		runNumericValuePartitionSort(dst)
+		runNumericValuePartitionSortWithScratch(dst, scratch)
 	}
 }
 

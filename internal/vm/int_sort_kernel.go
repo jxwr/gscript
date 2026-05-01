@@ -24,7 +24,7 @@ func (vm *VM) runIntSortWholeCallKernel(cl *Closure, args []runtime.Value) (bool
 	if !vm.guardSelfRecursiveGlobal(cl) {
 		return false, nil
 	}
-	return runIntArrayPartitionSortRegion(args), nil
+	return vm.runIntArrayPartitionSortRegion(args), nil
 }
 
 func (vm *VM) guardSelfRecursiveGlobal(cl *Closure) bool {
@@ -40,6 +40,18 @@ func (vm *VM) guardSelfRecursiveGlobal(cl *Closure) bool {
 }
 
 func runIntArrayPartitionSortRegion(args []runtime.Value) bool {
+	return runIntArrayPartitionSortRegionWithScratch(args, nil, nil)
+}
+
+func (vm *VM) runIntArrayPartitionSortRegion(args []runtime.Value) bool {
+	return runIntArrayPartitionSortRegionWithScratch(args, func(n int) []int64 {
+		return vm.wholeCallIntScratch(n)
+	}, func(n int) []runtime.Value {
+		return vm.wholeCallValueScratch(n)
+	})
+}
+
+func runIntArrayPartitionSortRegionWithScratch(args []runtime.Value, intScratch func(int) []int64, valueScratch func(int) []runtime.Value) bool {
 	if len(args) != 3 || !args[1].IsNumber() || !args[2].IsNumber() {
 		return false
 	}
@@ -62,12 +74,12 @@ func runIntArrayPartitionSortRegion(args []runtime.Value) bool {
 	}
 	tbl := args[0].Table()
 	if region, ok := tbl.PlainIntArrayRegionForNumericKernel(int(lo64), int(hi64)); ok {
-		runPartitionSort(region)
+		runPartitionSortWithScratch(region, intScratch)
 		tbl.MarkArrayMutationForNumericKernel()
 		return true
 	}
 	if region, ok := tbl.PlainNumericValueArrayRegionForNumericKernel(int(lo64), int(hi64)); ok {
-		runNumericValuePartitionSort(region)
+		runNumericValuePartitionSortWithScratch(region, valueScratch)
 		tbl.MarkArrayMutationForNumericKernel()
 		return true
 	}
@@ -75,29 +87,41 @@ func runIntArrayPartitionSortRegion(args []runtime.Value) bool {
 }
 
 func runPartitionSort(values []int64) {
-	sortPlainIntRegion(values)
+	runPartitionSortWithScratch(values, nil)
+}
+
+func runPartitionSortWithScratch(values []int64, scratch func(int) []int64) {
+	sortPlainIntRegionWithScratch(values, scratch)
 }
 
 func sortPlainIntRegion(values []int64) {
+	sortPlainIntRegionWithScratch(values, nil)
+}
+
+func sortPlainIntRegionWithScratch(values []int64, scratch func(int) []int64) {
 	if len(values) < 2048 {
 		slices.Sort(values)
 		return
 	}
-	if radixSortNonNegative32(values) {
+	if radixSortNonNegative32WithScratch(values, scratch) {
 		return
 	}
-	radixSortInt64(values)
+	radixSortInt64WithScratch(values, scratch)
 }
 
 func radixSortNonNegative32(values []int64) bool {
+	return radixSortNonNegative32WithScratch(values, nil)
+}
+
+func radixSortNonNegative32WithScratch(values []int64, scratch func(int) []int64) bool {
 	for _, v := range values {
 		if v < 0 || v > int64(^uint32(0)) {
 			return false
 		}
 	}
-	scratch := make([]int64, len(values))
+	tmp := makeIntScratch(len(values), scratch)
 	src := values
-	dst := scratch
+	dst := tmp
 	for shift := uint(0); shift < 32; shift += 8 {
 		var count [256]int
 		for _, v := range src {
@@ -122,9 +146,13 @@ func radixSortNonNegative32(values []int64) bool {
 }
 
 func radixSortInt64(values []int64) {
-	scratch := make([]int64, len(values))
+	radixSortInt64WithScratch(values, nil)
+}
+
+func radixSortInt64WithScratch(values []int64, scratch func(int) []int64) {
+	tmp := makeIntScratch(len(values), scratch)
 	src := values
-	dst := scratch
+	dst := tmp
 	for shift := uint(0); shift < 64; shift += 8 {
 		var count [256]int
 		for _, v := range src {
@@ -149,6 +177,15 @@ func radixSortInt64(values []int64) {
 	}
 }
 
+func makeIntScratch(n int, scratch func(int) []int64) []int64 {
+	if scratch != nil {
+		if buf := scratch(n); cap(buf) >= n {
+			return buf[:n]
+		}
+	}
+	return make([]int64, n)
+}
+
 func integralKernelArg(v runtime.Value) (int64, bool) {
 	if v.IsInt() {
 		return v.Int(), true
@@ -167,7 +204,11 @@ func integralKernelArg(v runtime.Value) (int64, bool) {
 }
 
 func runNumericValuePartitionSort(values []runtime.Value) {
-	if len(values) >= 2048 && radixSortIntegralNumericValues(values) {
+	runNumericValuePartitionSortWithScratch(values, nil)
+}
+
+func runNumericValuePartitionSortWithScratch(values []runtime.Value, scratch func(int) []runtime.Value) {
+	if len(values) >= 2048 && radixSortIntegralNumericValuesWithScratch(values, scratch) {
 		return
 	}
 
@@ -218,14 +259,18 @@ func runNumericValuePartitionSort(values []runtime.Value) {
 }
 
 func radixSortIntegralNumericValues(values []runtime.Value) bool {
+	return radixSortIntegralNumericValuesWithScratch(values, nil)
+}
+
+func radixSortIntegralNumericValuesWithScratch(values []runtime.Value, scratch func(int) []runtime.Value) bool {
 	for _, v := range values {
 		if _, ok := numericValueUint32Key(v); !ok {
 			return false
 		}
 	}
-	scratch := make([]runtime.Value, len(values))
+	tmp := makeValueScratch(len(values), scratch)
 	src := values
-	dst := scratch
+	dst := tmp
 	for shift := uint(0); shift < 32; shift += 8 {
 		var count [256]int
 		for _, v := range src {
@@ -249,6 +294,15 @@ func radixSortIntegralNumericValues(values []runtime.Value) bool {
 		copy(values, src)
 	}
 	return true
+}
+
+func makeValueScratch(n int, scratch func(int) []runtime.Value) []runtime.Value {
+	if scratch != nil {
+		if buf := scratch(n); cap(buf) >= n {
+			return buf[:n]
+		}
+	}
+	return make([]runtime.Value, n)
 }
 
 func numericValueUint32Key(v runtime.Value) (uint32, bool) {

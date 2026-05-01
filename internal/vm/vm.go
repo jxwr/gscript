@@ -48,6 +48,8 @@ type VM struct {
 	argBuf            [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf            [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
 	wholeCallFloatBuf []float64         // reusable non-pointer scratch for guarded whole-call kernels
+	wholeCallIntBuf   []int64           // reusable non-pointer scratch for guarded whole-call kernels
+	wholeCallValueBuf []runtime.Value   // reusable Value scratch; scanned as GC roots below
 	spectralKernel    spectralKernelCache
 	currentCoroutine  *VMCoroutine // coroutine currently running on this VM, if any
 	coroutineStats    *coroutineStats
@@ -429,6 +431,9 @@ func (vm *VM) ScanGCRoots(visitor func(unsafe.Pointer)) {
 		runtime.ScanValueRoots(v, visitor, seen)
 	}
 	for _, v := range vm.retBuf {
+		runtime.ScanValueRoots(v, visitor, seen)
+	}
+	for _, v := range vm.wholeCallValueBuf {
 		runtime.ScanValueRoots(v, visitor, seen)
 	}
 
