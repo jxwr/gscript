@@ -132,7 +132,7 @@ func lowerStringFormatConstIntLookup(fn *Function, instr *Instr) bool {
 	}
 
 	indexArg := instr.Args[2]
-	modulus, ok := smallPositiveModuloBound(indexArg)
+	modulus, ok := smallPositiveIntModuloDivisor(indexArg)
 	if !ok {
 		return false
 	}
@@ -163,11 +163,11 @@ func simpleTrailingDecimalFormatPrefix(formatStr string) (string, bool) {
 	return prefix, true
 }
 
-func smallPositiveModuloBound(v *Value) (int, bool) {
+func smallPositiveIntModuloDivisor(v *Value) (int, bool) {
 	if v == nil || v.Def == nil || len(v.Def.Args) != 2 {
 		return 0, false
 	}
-	if v.Def.Op != OpModInt && v.Def.Op != OpMod {
+	if v.Def.Op != OpModInt || v.Def.Type != TypeInt {
 		return 0, false
 	}
 	divisor := v.Def.Args[1]

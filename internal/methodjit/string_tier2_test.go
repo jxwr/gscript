@@ -155,6 +155,97 @@ func format_many(n) {
 	}
 }
 
+func TestTier2_StringFormatLookupPreservesPositiveDivisorModuloSemantics(t *testing.T) {
+	src := `
+func format_case(x) {
+    return string.format("key%d", x % 10)
+}
+`
+	cases := []struct {
+		name string
+		arg  int64
+	}{
+		{
+			name: "negative",
+			arg:  -1,
+		},
+		{
+			name: "positive",
+			arg:  11,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []runtime.Value{runtime.IntValue(tc.arg)}
+			want := requireOneString(t, "VM", runStringFuncVM(t, src, "format_case", args))
+			gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "format_case", args, true)
+			got := requireOneString(t, "Tier2", gotValues)
+			if got != want {
+				t.Fatalf("format_case(%d) Tier2=%q, want VM=%q", tc.arg, got, want)
+			}
+			if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
+				t.Fatalf("modulo string.format lookup should avoid call exits, ExitCallExit=%d", exits)
+			}
+			if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+				t.Fatalf("positive-divisor modulo lookup should stay in range, ExitOpExit=%d", exits)
+			}
+		})
+	}
+}
+
+func TestTier2_StringFormatLookupRemainsNarrow(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "non_modulo_argument",
+			src: `
+func format_case(i) {
+    return string.format("key%d", i)
+}
+`,
+		},
+		{
+			name: "padded_format",
+			src: `
+func format_case(i) {
+    return string.format("key%05d", i % 10)
+}
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			top := compileTop(t, tc.src)
+			proto := findProtoByName(top, "format_case")
+			if proto == nil {
+				t.Fatal("proto format_case not found")
+			}
+			fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+			if err != nil {
+				t.Fatalf("RunTier2Pipeline: %v", err)
+			}
+			if lookups := countOpHelper(fn, OpStringConstLookup); lookups != 0 {
+				t.Fatalf("unsupported string.format shape admitted %d StringConstLookup ops", lookups)
+			}
+
+			args := []runtime.Value{runtime.IntValue(7)}
+			want := requireOneString(t, "VM", runStringFuncVM(t, tc.src, "format_case", args))
+			gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, tc.src, "format_case", args, true)
+			got := requireOneString(t, "Tier2", gotValues)
+			if got != want {
+				t.Fatalf("format_case Tier2=%q, want VM=%q", got, want)
+			}
+			if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits == 0 {
+				t.Fatalf("unsupported string.format shape should remain a call exit")
+			}
+		})
+	}
+}
+
 func TestTier2_StringCompareFastPath_MatchesVM(t *testing.T) {
 	src := `
 func sort_last() {
