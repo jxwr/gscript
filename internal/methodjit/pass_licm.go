@@ -295,6 +295,22 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					}
 				}
 			}
+			// Len: pure for invariant strings/tables, but table length can be
+			// affected by dynamic table writes or calls that may alias the table.
+			if instr.Op == OpLen {
+				if hasEffectfulLoopCall {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"loop contains a call that may mutate length operands")
+					continue
+				}
+				if len(instr.Args) >= 1 && instr.Args[0] != nil {
+					if setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
+						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+							"table length may change inside the loop")
+						continue
+					}
+				}
+			}
 			// Typed array header guards are equivalent to GetTable's table
 			// identity/kind guard: hoist only when no call or same-table write
 			// inside the loop can change metatable/kind/data semantics before
@@ -647,6 +663,9 @@ func canHoistOp(op Op) bool {
 		return true
 	case OpFloor:
 		return true
+	case OpLen:
+		// Caller must also check alias info for table operands.
+		return true
 	case OpGetTable:
 		// Caller must also check alias info (no SetTable on same obj, no Call in loop).
 		return true
@@ -696,7 +715,7 @@ func isInterestingLICMMiss(op Op) bool {
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpFMA, OpFMSUB,
 		OpMatrixFlat, OpMatrixStride, OpMatrixRowPtr,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData,
-		OpSqrt, OpFloor, OpNumToFloat:
+		OpSqrt, OpFloor, OpLen, OpNumToFloat:
 		return true
 	default:
 		return false

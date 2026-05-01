@@ -379,6 +379,167 @@ func TestLoadElim_StoreToLoadForwarding(t *testing.T) {
 	}
 }
 
+func TestLoadElim_CrossBlockStoreForwardingDiamond(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "cross_block_store_forward"},
+		NumRegs: 1,
+	}
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	b1 := &Block{ID: 1, defs: make(map[int]*Value)}
+	b2 := &Block{ID: 2, defs: make(map[int]*Value)}
+	b3 := &Block{ID: 3, defs: make(map[int]*Value)}
+	b0.Succs = []*Block{b1, b2}
+	b1.Preds = []*Block{b0}
+	b2.Preds = []*Block{b0}
+	b1.Succs = []*Block{b3}
+	b2.Succs = []*Block{b3}
+	b3.Preds = []*Block{b1, b2}
+
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b0}
+	val := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{
+			{ID: 1000, Def: &Instr{ID: 1000, Op: OpConstInt, Type: TypeInt}},
+			{ID: 1001, Def: &Instr{ID: 1001, Op: OpConstInt, Type: TypeInt}},
+		}, Block: b0}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{obj.Value(), val.Value()}, Aux: 42, Block: b0}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: b0}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown,
+		Args: []*Value{cond.Value()}, Block: b0}
+	j1 := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b1}
+	j2 := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
+		Args: []*Value{obj.Value()}, Aux: 42, Block: b3}
+	guard := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeInt,
+		Args: []*Value{get.Value()}, Aux: int64(TypeInt), Block: b3}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{guard.Value()}, Block: b3}
+
+	b0.Instrs = []*Instr{obj, val, set, cond, br}
+	b1.Instrs = []*Instr{j1}
+	b2.Instrs = []*Instr{j2}
+	b3.Instrs = []*Instr{get, guard, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2, b3}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+	if ret.Args[0].ID != val.ID {
+		t.Fatalf("expected return to use dominating stored value v%d, got v%d\n%s", val.ID, ret.Args[0].ID, Print(result))
+	}
+	if guard.Op != OpNop {
+		t.Fatalf("expected guard of forwarded AddInt to become Nop, got %s\n%s", guard.Op, Print(result))
+	}
+
+	result, err = DCEPass(result)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+	if got := countOp(result, OpGetField); got != 0 {
+		t.Fatalf("expected forwarded cross-block GetField to be removed, got %d\n%s", got, Print(result))
+	}
+}
+
+func TestLoadElim_CrossBlockStoreForwardingKilledOnOnePath(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "cross_block_store_kill"},
+		NumRegs: 2,
+	}
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	b1 := &Block{ID: 1, defs: make(map[int]*Value)}
+	b2 := &Block{ID: 2, defs: make(map[int]*Value)}
+	b3 := &Block{ID: 3, defs: make(map[int]*Value)}
+	b0.Succs = []*Block{b1, b2}
+	b1.Preds = []*Block{b0}
+	b2.Preds = []*Block{b0}
+	b1.Succs = []*Block{b3}
+	b2.Succs = []*Block{b3}
+	b3.Preds = []*Block{b1, b2}
+
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b0}
+	callee := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFunction, Aux: 1, Block: b0}
+	val := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 7, Block: b0}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{obj.Value(), val.Value()}, Aux: 42, Block: b0}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: b0}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown,
+		Args: []*Value{cond.Value()}, Block: b0}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeAny,
+		Args: []*Value{callee.Value()}, Block: b1}
+	j1 := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b1}
+	j2 := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
+		Args: []*Value{obj.Value()}, Aux: 42, Block: b3}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b3}
+
+	b0.Instrs = []*Instr{obj, callee, val, set, cond, br}
+	b1.Instrs = []*Instr{call, j1}
+	b2.Instrs = []*Instr{j2}
+	b3.Instrs = []*Instr{get, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2, b3}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+	if ret.Args[0].ID != get.ID {
+		t.Fatalf("expected call-killed path to prevent forwarding; return got v%d, want get v%d\n%s",
+			ret.Args[0].ID, get.ID, Print(result))
+	}
+}
+
+func TestLoadElim_CrossBlockStoreForwardingKilledByPossibleAlias(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "cross_block_store_alias_kill"},
+		NumRegs: 2,
+	}
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	b1 := &Block{ID: 1, defs: make(map[int]*Value)}
+	b2 := &Block{ID: 2, defs: make(map[int]*Value)}
+	b3 := &Block{ID: 3, defs: make(map[int]*Value)}
+	b0.Succs = []*Block{b1, b2}
+	b1.Preds = []*Block{b0}
+	b2.Preds = []*Block{b0}
+	b1.Succs = []*Block{b3}
+	b2.Succs = []*Block{b3}
+	b3.Preds = []*Block{b1, b2}
+
+	objA := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b0}
+	objB := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 1, Block: b0}
+	val := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 7, Block: b0}
+	other := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 11, Block: b0}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{objA.Value(), val.Value()}, Aux: 42, Block: b0}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: b0}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown,
+		Args: []*Value{cond.Value()}, Block: b0}
+	aliasSet := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{objB.Value(), other.Value()}, Aux: 42, Block: b1}
+	j1 := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b1}
+	j2 := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny,
+		Args: []*Value{objA.Value()}, Aux: 42, Block: b3}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b3}
+
+	b0.Instrs = []*Instr{objA, objB, val, other, set, cond, br}
+	b1.Instrs = []*Instr{aliasSet, j1}
+	b2.Instrs = []*Instr{j2}
+	b3.Instrs = []*Instr{get, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2, b3}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+	if ret.Args[0].ID != get.ID {
+		t.Fatalf("expected possible alias write to prevent forwarding; return got v%d, want get v%d\n%s",
+			ret.Args[0].ID, get.ID, Print(result))
+	}
+}
+
 // TestLoadElim_GuardTypeCSE verifies that redundant GuardType instructions
 // on the same (value, type) pair are eliminated. When a value is guarded for
 // the same type multiple times within a block, only the first guard is kept.

@@ -70,6 +70,23 @@ func TestLICM_GetTable(t *testing.T) {
 	}
 }
 
+func TestLICM_Len(t *testing.T) {
+	tbl := &Instr{Op: OpLoadSlot, Type: TypeTable}
+	ln := &Instr{Op: OpLen, Type: TypeInt, Args: []*Value{tbl.Value()}}
+	fn, b1, b2 := licmLoop(t, []*Instr{tbl}, []*Instr{ln})
+	if _, err := LICMPass(fn); err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range b2.Instrs {
+		if i.ID == ln.ID {
+			t.Fatal("OpLen should have been hoisted")
+		}
+	}
+	if pb, _ := findInstrByID(fn, ln.ID); pb == nil || b1.Preds[0] != pb {
+		t.Fatal("Len not in pre-header")
+	}
+}
+
 func TestLICM_NoHoistGetTable_WhenSetTable(t *testing.T) {
 	tbl := &Instr{Op: OpLoadSlot, Type: TypeTable}
 	key := &Instr{Op: OpConstInt, Type: TypeInt, Aux: 1}
@@ -88,6 +105,24 @@ func TestLICM_NoHoistGetTable_WhenSetTable(t *testing.T) {
 	t.Fatal("GetTable should NOT be hoisted when SetTable on same obj")
 }
 
+func TestLICM_NoHoistLen_WhenSetTable(t *testing.T) {
+	tbl := &Instr{Op: OpLoadSlot, Type: TypeTable}
+	key := &Instr{Op: OpConstInt, Type: TypeInt, Aux: 1}
+	ln := &Instr{Op: OpLen, Type: TypeInt, Args: []*Value{tbl.Value()}}
+	v := &Instr{Op: OpConstInt, Type: TypeInt, Aux: 99}
+	st := &Instr{Op: OpSetTable, Type: TypeUnknown, Args: []*Value{tbl.Value(), key.Value(), v.Value()}}
+	fn, _, b2 := licmLoop(t, []*Instr{tbl, key}, []*Instr{ln, v, st})
+	if _, err := LICMPass(fn); err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range b2.Instrs {
+		if i.ID == ln.ID {
+			return // still in body — correct
+		}
+	}
+	t.Fatal("Len should NOT be hoisted when SetTable may change table length")
+}
+
 func TestLICM_NoHoistGetTable_WhenCallInLoop(t *testing.T) {
 	tbl := &Instr{Op: OpLoadSlot, Type: TypeTable}
 	key := &Instr{Op: OpConstInt, Type: TypeInt, Aux: 1}
@@ -104,4 +139,21 @@ func TestLICM_NoHoistGetTable_WhenCallInLoop(t *testing.T) {
 		}
 	}
 	t.Fatal("GetTable should NOT be hoisted when Call in loop")
+}
+
+func TestLICM_NoHoistLen_WhenCallInLoop(t *testing.T) {
+	tbl := &Instr{Op: OpLoadSlot, Type: TypeTable}
+	fv := &Instr{Op: OpLoadSlot, Type: TypeAny, Aux: 2}
+	ln := &Instr{Op: OpLen, Type: TypeInt, Args: []*Value{tbl.Value()}}
+	call := &Instr{Op: OpCall, Type: TypeAny, Args: []*Value{fv.Value()}, Aux: 1, Aux2: 1}
+	fn, _, b2 := licmLoop(t, []*Instr{tbl, fv}, []*Instr{ln, call})
+	if _, err := LICMPass(fn); err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range b2.Instrs {
+		if i.ID == ln.ID {
+			return // still in body — correct
+		}
+	}
+	t.Fatal("Len should NOT be hoisted when Call in loop")
 }

@@ -75,9 +75,11 @@ type guardKey struct {
 	guardType int64 // the guard type (Aux field)
 }
 
-// LoadEliminationPass eliminates redundant GetField operations within
-// each basic block. It is a forward dataflow pass: no cross-block
-// propagation, keeping it simple and correct.
+// LoadEliminationPass eliminates redundant GetField operations. The main walk
+// is block-local for the broader CSE tables, then a narrow forward dataflow
+// propagates only field facts that every predecessor agrees on. That keeps
+// cross-block forwarding conservative while catching diamond-shaped code where
+// a field is stored before a branch and read at the merge.
 func LoadEliminationPass(fn *Function) (*Function, error) {
 	// Build an instruction lookup table so we can find the *Instr for
 	// any value ID when performing use-replacement.
@@ -405,7 +407,208 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 		}
 	}
 
+	if crossBlockFieldLoadElimination(fn, instrByID) {
+		cleanupProducerProvenGuards(fn)
+	}
+
 	return fn, nil
+}
+
+func crossBlockFieldLoadElimination(fn *Function, instrByID map[int]*Instr) bool {
+	if fn == nil || len(fn.Blocks) <= 1 {
+		return false
+	}
+
+	in := make(map[int]map[loadKey]int, len(fn.Blocks))
+	out := make(map[int]map[loadKey]int, len(fn.Blocks))
+	changed := true
+	for changed {
+		changed = false
+		for _, block := range fn.Blocks {
+			nextIn := meetPredFieldFacts(block, out)
+			if !fieldFactMapsEqual(in[block.ID], nextIn) {
+				in[block.ID] = nextIn
+				changed = true
+			}
+			nextOut := transferFieldFacts(cloneFieldFactMap(nextIn), block)
+			if !fieldFactMapsEqual(out[block.ID], nextOut) {
+				out[block.ID] = nextOut
+				changed = true
+			}
+		}
+	}
+
+	rewrote := false
+	for _, block := range fn.Blocks {
+		available := cloneFieldFactMap(in[block.ID])
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			if instr.Op == OpGetField && len(instr.Args) >= 1 && instr.Args[0] != nil {
+				key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
+				if origID, ok := available[key]; ok && origID != instr.ID {
+					if origInstr := instrByID[origID]; origInstr != nil {
+						replaceAllUses(fn, instr.ID, origInstr)
+						functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+							"forwarded field value from dominating predecessor")
+						rewrote = true
+					}
+				}
+			}
+			available = transferFieldFactInstr(available, instr)
+		}
+	}
+	return rewrote
+}
+
+func meetPredFieldFacts(block *Block, out map[int]map[loadKey]int) map[loadKey]int {
+	if block == nil || len(block.Preds) == 0 {
+		return nil
+	}
+	var result map[loadKey]int
+	for i, pred := range block.Preds {
+		var predFacts map[loadKey]int
+		if pred != nil {
+			predFacts = out[pred.ID]
+		}
+		if i == 0 {
+			result = cloneFieldFactMap(predFacts)
+			continue
+		}
+		for key, valueID := range result {
+			if predFacts == nil || predFacts[key] != valueID {
+				delete(result, key)
+			}
+		}
+		if len(result) == 0 {
+			return nil
+		}
+	}
+	return result
+}
+
+func transferFieldFacts(facts map[loadKey]int, block *Block) map[loadKey]int {
+	for _, instr := range block.Instrs {
+		facts = transferFieldFactInstr(facts, instr)
+	}
+	if len(facts) == 0 {
+		return nil
+	}
+	return facts
+}
+
+func transferFieldFactInstr(facts map[loadKey]int, instr *Instr) map[loadKey]int {
+	if instr == nil {
+		return facts
+	}
+	// Loop backedges can carry facts for a value ID into the block where that
+	// same SSA value is defined. Those facts describe the previous iteration's
+	// object, not the value being defined now.
+	invalidateFieldFactsForObject(facts, instr.ID)
+	switch instr.Op {
+	case OpGetField:
+		if len(instr.Args) < 1 || instr.Args[0] == nil {
+			return facts
+		}
+		key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
+		if _, ok := facts[key]; !ok {
+			if facts == nil {
+				facts = make(map[loadKey]int)
+			}
+			facts[key] = instr.ID
+		}
+	case OpSetField:
+		if len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil {
+			return facts
+		}
+		// Different SSA table values can still alias the same runtime table.
+		// A named-field store only invalidates that field, then records the
+		// exact stored value for the object used by this store.
+		invalidateFieldFactsForField(facts, instr.Aux)
+		if facts == nil {
+			facts = make(map[loadKey]int)
+		}
+		key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
+		facts[key] = instr.Args[1].ID
+	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableBoolArrayFill,
+		OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix, OpAppend, OpSetList:
+		clearFieldFacts(facts)
+	case OpCall, OpSelf:
+		clearFieldFacts(facts)
+	}
+	return facts
+}
+
+func invalidateFieldFactsForObject(facts map[loadKey]int, objID int) {
+	for key := range facts {
+		if key.objID == objID {
+			delete(facts, key)
+		}
+	}
+}
+
+func invalidateFieldFactsForField(facts map[loadKey]int, fieldAux int64) {
+	for key := range facts {
+		if key.fieldAux == fieldAux {
+			delete(facts, key)
+		}
+	}
+}
+
+func clearFieldFacts(facts map[loadKey]int) {
+	for key := range facts {
+		delete(facts, key)
+	}
+}
+
+func cloneFieldFactMap(in map[loadKey]int) map[loadKey]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[loadKey]int, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func fieldFactMapsEqual(a, b map[loadKey]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, av := range a {
+		if bv, ok := b[key]; !ok || bv != av {
+			return false
+		}
+	}
+	return true
+}
+
+func cleanupProducerProvenGuards(fn *Function) {
+	if fn == nil {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpGuardType || len(instr.Args) < 1 {
+				continue
+			}
+			if !guardProvenByProducer(instr.Args[0], Type(instr.Aux)) {
+				continue
+			}
+			if def := instr.Args[0].Def; def != nil {
+				replaceAllUses(fn, instr.ID, def)
+				functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, OpGuardType,
+					"guard proven after cross-block field forwarding")
+			}
+			instr.Op = OpNop
+			instr.Args = nil
+			instr.Aux = 0
+			instr.Aux2 = 0
+			instr.Type = TypeUnknown
+		}
+	}
 }
 
 func invalidateDynamicTableCacheForObject(tableAvail map[tableKey]int, objID int) bool {
