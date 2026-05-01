@@ -4,6 +4,7 @@
 
 local benchmarks = {
     "fib",
+    "fib_recursive",
     "sieve",
     "mandelbrot",
     "ackermann",
