@@ -68,3 +68,4 @@ local t3 = os.clock() - t0
 print(string.format("closure_call:  %.3fs (result=%d)", t1, r1))
 print(string.format("accumulator:   %.3fs (result=%d)", t2, r2))
 print(string.format("map_array:     %.3fs (result=%d)", t3, r3))
+print(string.format("Time: %.3fs", t1 + t2 + t3))

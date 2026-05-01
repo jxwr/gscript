@@ -14,6 +14,8 @@ local mindepth = 4
 local maxdepth = N
 if mindepth + 2 > N then maxdepth = mindepth + 2 end
 
+local t0 = os.clock()
+
 do
     local stretchdepth = maxdepth + 1
     local stretchtree = make(stretchdepth)
@@ -32,3 +34,4 @@ for depth = mindepth, maxdepth, 2 do
 end
 
 io.write(string.format("long lived tree of depth %d\t check: %d\n", maxdepth, check(longlivedtree)))
+io.write(string.format("Time: %.3fs\n", os.clock() - t0))

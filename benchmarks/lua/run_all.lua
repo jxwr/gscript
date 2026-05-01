@@ -4,21 +4,26 @@
 
 local benchmarks = {
     "fib",
-    "ackermann",
-    "fn_calls",
     "sieve",
-    "sum_primes",
-    "math_intensive",
     "mandelbrot",
-    "nbody",
-    "spectral_norm",
+    "ackermann",
     "matmul",
+    "spectral_norm",
+    "nbody",
     "fannkuch",
     "sort",
+    "sum_primes",
     "mutual_recursion",
     "method_dispatch",
     "closure_bench",
     "string_bench",
+    "binary_trees",
+    "table_field_access",
+    "table_array_access",
+    "coroutine_bench",
+    "fibonacci_iterative",
+    "math_intensive",
+    "object_creation",
 }
 
 -- Determine directory of this script

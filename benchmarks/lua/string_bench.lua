@@ -55,3 +55,4 @@ local t3 = os.clock() - t0
 print(string.format("concat:  %.3fs (len=%d)", t1, r1))
 print(string.format("format:  %.3fs (total=%d)", t2, r2))
 print(string.format("compare: %.3fs (first..last=%s)", t3, r3))
+print(string.format("Time: %.3fs", t1 + t2 + t3))
