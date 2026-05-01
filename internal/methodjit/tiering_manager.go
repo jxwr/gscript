@@ -1586,6 +1586,11 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			return nil, fmt.Errorf("tier2: raw-int kernel has residual generic numeric op %s, staying at Tier 1", op)
 		}
 	}
+	if op, ok := firstUnsupportedHighArityCallResultShapeInLoop(fn); ok {
+		remarks.Add("Tier2Gate", "blocked", 0, 0, op,
+			"high-arity loop call exit lacks a fixed result shape")
+		return nil, fmt.Errorf("tier2: high-arity loop call exit lacks fixed result shape, staying at Tier 1")
+	}
 	fn.CarryPreheaderInvariants = true
 	if trace != nil {
 		trace.IRAfter = Print(fn)
@@ -2549,6 +2554,32 @@ func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, 
 				OpVararg,
 				OpLen, OpPow,
 				OpTForCall, OpTForLoop:
+				return instr.Op, true
+			}
+		}
+	}
+	return OpNop, false
+}
+
+func firstUnsupportedHighArityCallResultShapeInLoop(fn *Function) (Op, bool) {
+	const maxSimpleCallArgs = 3
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op != OpCall {
+				continue
+			}
+			// Simple string.format-style loop calls are covered by existing
+			// no-filter coverage. The unsafe log-tokenize case is a high-arity
+			// inlined vararg call whose source shape no longer belongs to fn.Proto.
+			if len(instr.Args)-1 <= maxSimpleCallArgs {
+				continue
+			}
+			nRets, ok := callExactFixedResultCountFromC(instr.Aux2)
+			if !ok || !callABIHasExactResultShape(fn, instr, nRets) {
 				return instr.Op, true
 			}
 		}

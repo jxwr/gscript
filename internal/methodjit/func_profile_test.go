@@ -7,6 +7,7 @@ package methodjit
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -210,6 +211,59 @@ for i := 1; i <= 10; i++ {
 	tm := NewTieringManager()
 	if _, err := tm.CompileForDiagnostics(top); err != nil {
 		t.Fatalf("expected <main> Tier2 compile to use indexed global protocol: %v", err)
+	}
+}
+
+func TestLoopCallGateBlocksInlinedUnfixedCallShapeNoFilter(t *testing.T) {
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+	top := compileProto(t, `
+func make_line(i) {
+    status := 200
+    if i % 17 == 0 {
+        status = 500
+    } elseif i % 11 == 0 {
+        status = 404
+    } elseif i % 5 == 0 {
+        status = 302
+    }
+    route := string.format("/v1/items/%d/detail", i % 97)
+    trace := string.format("trace%04d-%03d", i % 10000, (i * 13) % 997)
+    return string.format("ts=%d|route=%s|status=%d|trace=%s", 1700000000 + i, route, status, trace)
+}
+
+func build_lines(n) {
+    lines := {}
+    for i := 1; i <= n; i++ {
+        lines[i] = make_line(i)
+    }
+    return lines
+}
+
+lines := build_lines(32)
+result := #lines
+`)
+	buildLines := findProtoByName(top, "build_lines")
+	if buildLines == nil {
+		t.Fatal("build_lines proto not found")
+	}
+	tm := NewTieringManager()
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute no-filter format loop: %v", err)
+	}
+	if got := v.GetGlobal("result"); !got.IsInt() || got.Int() != 32 {
+		t.Fatalf("result=%v, want int 32", got)
+	}
+	if tm.tier2Compiled[buildLines] != nil {
+		t.Fatal("build_lines compiled at Tier 2 despite unsupported inlined call shape")
+	}
+	if !tm.tier2Failed[buildLines] {
+		t.Fatal("build_lines should be recorded as a Tier 2 admission failure")
+	}
+	if reason := tm.tier2FailReason[buildLines]; !strings.Contains(reason, "high-arity loop call exit lacks fixed result shape") {
+		t.Fatalf("unexpected failure reason: %q", reason)
 	}
 }
 
