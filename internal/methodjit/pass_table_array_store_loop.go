@@ -2,13 +2,12 @@ package methodjit
 
 import "github.com/gscript/gscript/internal/vm"
 
-// TableArrayStoreLoopVersionPass creates loop-scoped typed-array facts for
-// safe local bool-table mutation loops, then lowers typed SetTable sites to
-// checked OpTableArrayStore. It is intentionally narrower than full loop
-// versioning: the table must be a typed local NewTable allocated outside the
-// loop, a dominating bool-fill must have established length, all table
-// mutations in the loop must be same-table bool stores, and the function must
-// not expose a metatable mutation surface.
+// TableArrayStoreLoopVersionPass creates loop-scoped typed-array facts for safe
+// local typed-table mutation loops, then lowers typed SetTable sites to checked
+// OpTableArrayStore. Bool loops still require a dominating fill because nil
+// bool writes have sentinel semantics. Numeric loops may grow within the
+// preallocated typed backing and deopt on misses; the emitter carries the
+// updated length register across those in-capacity appends.
 func TableArrayStoreLoopVersionPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
@@ -47,7 +46,7 @@ func TableArrayStoreLoopVersionPass(fn *Function) (*Function, error) {
 			store.Op = OpTableArrayStore
 			store.Args = []*Value{cand.table, data, length, store.Args[1], store.Args[2], header}
 			store.Aux = cand.kind
-			store.Aux2 = 0
+			store.Aux2 = tableArrayStoreLoopFlags(cand)
 			store.Type = TypeUnknown
 			functionRemarks(fn).Add("TableArrayStoreLoopVersion", "changed", store.Block.ID, store.ID, store.Op,
 				"lowered local typed table mutation loop store to checked raw array store")
@@ -120,7 +119,7 @@ func tableArrayStoreLoopCandidateFor(fn *Function, body map[int]bool) (tableArra
 }
 
 func tableArrayStoreLoopKind(kind int64) bool {
-	return kind == int64(vm.FBKindBool)
+	return kind == int64(vm.FBKindInt) || kind == int64(vm.FBKindFloat) || kind == int64(vm.FBKindBool)
 }
 
 func tableArrayStoreLoopLocalTypedTable(table *Value, kind int64, body map[int]bool) bool {
@@ -140,7 +139,7 @@ func tableArrayStoreLoopHasLengthSeed(fn *Function, dom *domInfo, preheader *Blo
 		return false
 	}
 	if cand.kind != int64(vm.FBKindBool) {
-		return false
+		return tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand)
 	}
 	for _, block := range fn.Blocks {
 		if block == nil {
@@ -159,6 +158,23 @@ func tableArrayStoreLoopHasLengthSeed(fn *Function, dom *domInfo, preheader *Blo
 		}
 	}
 	return false
+}
+
+func tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand tableArrayStoreLoopCandidate) bool {
+	if cand.table == nil || cand.table.Def == nil || cand.table.Def.Op != OpNewTable {
+		return false
+	}
+	if cand.kind != int64(vm.FBKindInt) && cand.kind != int64(vm.FBKindFloat) {
+		return false
+	}
+	return cand.table.Def.Aux > tier2FeedbackOuterLoopArrayHint
+}
+
+func tableArrayStoreLoopFlags(cand tableArrayStoreLoopCandidate) int64 {
+	if tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand) {
+		return tableArrayStoreFlagAllowGrow
+	}
+	return 0
 }
 
 func insertTableArrayStoreLoopFacts(fn *Function, preheader *Block, cand tableArrayStoreLoopCandidate) (*Value, *Value, *Value) {

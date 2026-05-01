@@ -30,7 +30,7 @@ func (h *tablePreallocHint) observeIntKeyFeedback(feedback vm.TableKeyFeedback, 
 	}
 	needed := int64(feedback.MaxIntKey) + 1
 	if allowLargeLoopHeadroom && needed >= tier2FeedbackOuterLoopArrayHint {
-		needed *= 2
+		needed += needed / 2
 	}
 	h.observeArrayHint(needed)
 }

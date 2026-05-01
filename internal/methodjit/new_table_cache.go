@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	tier2NewTableCacheMaxArrayHint = tier2FeedbackOuterLoopArrayHint
+	tier2NewTableCacheMaxArrayHint = tier2MaxFeedbackArrayHint
 	newObject2CacheBatch           = 128
 	newTableCacheMaxBatch          = 128
 	newTableCacheTargetBytes       = 1 << 20
+	newTableCacheLargeTargetBytes  = 8 << 20
+	newTableCacheLargeArrayHint    = 64 * 1024
 )
 
 type newTableCacheEntry struct {
@@ -73,7 +75,11 @@ func newTableCacheBatchSizeForHints(arrayHint int64, hashHint int, kind runtime.
 	if bytesPerTable <= 0 {
 		return 0
 	}
-	batch := int(newTableCacheTargetBytes / bytesPerTable)
+	targetBytes := int64(newTableCacheTargetBytes)
+	if arrayHint >= newTableCacheLargeArrayHint {
+		targetBytes = newTableCacheLargeTargetBytes
+	}
+	batch := int(targetBytes / bytesPerTable)
 	if batch > newTableCacheMaxBatch {
 		batch = newTableCacheMaxBatch
 	}

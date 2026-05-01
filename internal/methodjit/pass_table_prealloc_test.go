@@ -291,7 +291,8 @@ func TestTablePreallocHintPassAddsHeadroomForLargeOuterLoopFeedback(t *testing.T
 	}
 
 	newTable := got.Entry.Instrs[0]
-	want := (observedMax + 1) * 2
+	needed := observedMax + 1
+	want := needed + needed/2
 	if newTable.Aux != want {
 		t.Fatalf("array hint = %d, want %d", newTable.Aux, want)
 	}
