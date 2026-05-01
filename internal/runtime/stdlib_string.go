@@ -815,15 +815,18 @@ type simpleFormatProgram struct {
 	litBytes  int
 	singleInt bool
 
-	resultMu    sync.Mutex
-	resultCache map[int64]Value
-	resultOrder []int64
-	resultEvict int
+	resultMu       sync.Mutex
+	resultCache    map[int64]Value
+	resultOrder    []int64
+	resultEvict    int
+	fastResultTags [64]atomic.Uint64
+	fastResultVals [64]atomic.Uint64
 }
 
 const simpleFormatCacheLimit = 64
 const simpleFormatResultCacheLimit = 8192
 const simpleFormatFastCacheSize = 32
+const simpleFormatResultTagSalt = 0x9e3779b97f4a7c15
 
 var simpleFormatCache = struct {
 	sync.Mutex
@@ -1003,7 +1006,7 @@ func simpleFormatHasSingleIntegerArg(parts []simpleFormatPart) bool {
 		}
 		switch part.verb {
 		case 'd', 'i', 'u', 'x', 'X', 'o':
-			if part.width == 0 || seen {
+			if seen {
 				return false
 			}
 			seen = true
@@ -1039,12 +1042,18 @@ func (p *simpleFormatProgram) formatValue(args []Value) (Value, error) {
 }
 
 func (p *simpleFormatProgram) cachedResult(n int64) (Value, bool) {
+	if v, ok := p.cachedResultFast(n); ok {
+		return v, true
+	}
 	p.resultMu.Lock()
 	defer p.resultMu.Unlock()
 	if p.resultCache == nil {
 		return NilValue(), false
 	}
 	v, ok := p.resultCache[n]
+	if ok {
+		p.storeCachedResultFast(n, v)
+	}
 	return v, ok
 }
 
@@ -1069,6 +1078,44 @@ func (p *simpleFormatProgram) storeCachedResult(n int64, v Value) {
 		p.resultOrder = append(p.resultOrder, n)
 	}
 	p.resultCache[n] = v
+	p.storeCachedResultFast(n, v)
+}
+
+func (p *simpleFormatProgram) cachedResultFast(n int64) (Value, bool) {
+	slot := simpleFormatResultSlot(n)
+	want := simpleFormatResultTag(n)
+	if p.fastResultTags[slot].Load() != want {
+		return NilValue(), false
+	}
+	bits := p.fastResultVals[slot].Load()
+	if bits == 0 || p.fastResultTags[slot].Load() != want {
+		return NilValue(), false
+	}
+	return Value(bits), true
+}
+
+func (p *simpleFormatProgram) storeCachedResultFast(n int64, v Value) {
+	slot := simpleFormatResultSlot(n)
+	tag := simpleFormatResultTag(n)
+	p.fastResultTags[slot].Store(0)
+	p.fastResultVals[slot].Store(uint64(v))
+	p.fastResultTags[slot].Store(tag)
+}
+
+func simpleFormatResultSlot(n int64) uint64 {
+	x := uint64(n) ^ simpleFormatResultTagSalt
+	x ^= x >> 33
+	x *= 0xff51afd7ed558ccd
+	x ^= x >> 33
+	return x & 63
+}
+
+func simpleFormatResultTag(n int64) uint64 {
+	tag := uint64(n) ^ simpleFormatResultTagSalt
+	if tag == 0 {
+		return 1
+	}
+	return tag
 }
 
 func (p *simpleFormatProgram) format(args []Value) (string, error) {
@@ -1149,6 +1196,11 @@ func scanSimpleFormatCacheRoots(visitor func(unsafe.Pointer), seen map[uintptr]s
 			ScanValueRoots(v, visitor, seen)
 		}
 		prog.resultMu.Unlock()
+		for i := range prog.fastResultVals {
+			if bits := prog.fastResultVals[i].Load(); bits != 0 {
+				ScanValueRoots(Value(bits), visitor, seen)
+			}
+		}
 	}
 }
 

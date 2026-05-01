@@ -167,7 +167,7 @@ func smallPositiveIntModuloDivisor(v *Value) (int, bool) {
 	if v == nil || v.Def == nil || len(v.Def.Args) != 2 {
 		return 0, false
 	}
-	if v.Def.Op != OpModInt || v.Def.Type != TypeInt {
+	if v.Def.Op != OpMod && v.Def.Op != OpModInt {
 		return 0, false
 	}
 	divisor := v.Def.Args[1]
