@@ -282,6 +282,15 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		return true
 	}
 
+	// Deep loop drivers that dispatch through table fields need to compile
+	// before first execution finishes: restart-style OSR is unsafe for their
+	// in-loop table mutations, but direct entry from bytecode PC 0 is safe.
+	if profile.HasLoop && profile.LoopDepth >= 2 &&
+		profile.CallCount > 0 && profile.TableOpCount > 0 &&
+		hasFieldDispatchCallInLoop(proto) {
+		return runtimeCallCount >= 1
+	}
+
 	// Pure-compute functions with loops (no CALL/GETGLOBAL): promote at threshold=2.
 	// Threshold=1 caused regressions on float-heavy functions (mandelbrot)
 	// where Tier 2's code was slower than Tier 1. Threshold=2 ensures the
@@ -301,6 +310,16 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	// Functions with table/field ops but also loops: promote at threshold=3.
 	if profile.HasLoop && profile.TableOpCount > 0 {
 		return runtimeCallCount >= 3
+	}
+
+	// Small table-mutation leaves behind dynamic method dispatch sites should
+	// publish Tier 2 direct entries quickly. The caller's native call IC can
+	// then stay in compiled code instead of taking a call exit on every actor.
+	if !profile.HasLoop && profile.CallCount == 0 &&
+		profile.TableOpCount > 0 && profile.ArithCount > 0 &&
+		profile.NewTableCount == 0 &&
+		!profile.HasClosure && !profile.HasUpval && !profile.HasVararg {
+		return runtimeCallCount >= 2
 	}
 
 	// Recursive-SELF protos that qualify for AnalyzeSpecializedABI's

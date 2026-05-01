@@ -473,12 +473,12 @@ type CompiledFunction struct {
 	// globals map before every exit and on normal return.
 	NativeSetGlobals map[int]bool
 
-	// CallCache (R108) is a per-OpCall-site monomorphic IC.
-	// Layout: 4 × uint64 per call site.
-	//   [4*i]   = cached boxed closure value (NaN-boxed 0xFFFF...)
-	//   [4*i+1] = cached direct-entry address (uintptr)
-	//   [4*i+2] = cached *vm.FuncProto
-	//   [4*i+3] = cached direct-entry version
+	// CallCache is a per-OpCall-site polymorphic IC.
+	// Layout: tier2CallCacheWays entries per call site, 4 × uint64 per entry.
+	//   [base+4*w]   = cached boxed closure value (NaN-boxed 0xFFFF...)
+	//   [base+4*w+1] = cached direct-entry address (uintptr)
+	//   [base+4*w+2] = cached *vm.FuncProto
+	//   [base+4*w+3] = cached direct-entry version
 	// Hits validate FuncProto.DirectEntryVersion before reusing the cached
 	// entry. Version changes refresh from DirectEntryPtr, then
 	// Tier2DirectEntryPtr, preserving fallback when both entries are cleared.

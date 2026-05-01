@@ -111,6 +111,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitNegFloat(instr)
 	case OpSqrt:
 		ec.emitSqrtFloat(instr)
+	case OpFloor:
+		ec.emitFloor(instr)
 	case OpFMA:
 		ec.emitFMA(instr)
 	case OpFMSUB:
@@ -305,7 +307,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm, OpNot,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
-		OpSqrt, OpFMA, OpFMSUB,
+		OpSqrt, OpFloor, OpFMA, OpFMSUB,
 		OpEq, OpLt, OpLe,
 		OpEqInt, OpLtInt, OpLeInt, OpModZeroInt,
 		OpLtFloat, OpLeFloat,

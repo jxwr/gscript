@@ -214,6 +214,75 @@ func caller(f, n) {
 	}
 }
 
+func TestTier2CallICCachesPolymorphicFieldDispatch(t *testing.T) {
+	src := `
+func step_a(a, i) { return i + 1 }
+func step_b(a, i) { return i + 2 }
+func step_c(a, i) { return i + 3 }
+
+actors := {{step: step_a}, {step: step_b}, {step: step_c}}
+
+func run(actors, n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        actor := actors[(i % 3) + 1]
+        step := actor.step
+        total = total + step(actor, i)
+    }
+    return total
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	for _, name := range []string{"step_a", "step_b", "step_c", "run"} {
+		proto := findProtoByName(top, name)
+		if proto == nil {
+			t.Fatalf("%s proto not found", name)
+		}
+		if err := tm.CompileTier2(proto); err != nil {
+			t.Fatalf("CompileTier2(%s): %v", name, err)
+		}
+		proto.CallCount = 100
+	}
+
+	fnRun := v.GetGlobal("run")
+	actors := v.GetGlobal("actors")
+	results, err := v.CallValue(fnRun, []runtime.Value{actors, runtime.IntValue(30)})
+	if err != nil {
+		t.Fatalf("CallValue(run): %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 525 {
+		t.Fatalf("run result=%v, want int 525", results)
+	}
+	if exits := tm.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
+		t.Fatalf("polymorphic field dispatch took ExitCallExit=%d; want 0", exits)
+	}
+
+	runProto := findProtoByName(top, "run")
+	cf := tm.tier2Compiled[runProto]
+	if cf == nil {
+		t.Fatal("missing run Tier 2 compiled function")
+	}
+	nonZeroEntries := 0
+	for i := 0; i+tier2CallCacheWordsPerWay-1 < len(cf.CallCache); i += tier2CallCacheWordsPerWay {
+		if cf.CallCache[i] != 0 {
+			nonZeroEntries++
+		}
+	}
+	if nonZeroEntries < 3 {
+		t.Fatalf("polymorphic call cache entries=%d, want at least 3; cache=%#v",
+			nonZeroEntries, cf.CallCache)
+	}
+}
+
 func TestTier2TailCallICUsesTier2EntryWhenGenericEntryCleared(t *testing.T) {
 	src := `
 func inc(n) {

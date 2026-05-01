@@ -410,10 +410,10 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	}
 	nativeSetGlobals := collectNativeSetGlobals(fn)
 
-	// R108/R151: allocate per-OpCall monomorphic IC cache (4 uint64 per site).
+	// R108/R151/Ractors: allocate per-OpCall polymorphic IC cache.
 	var callCache []uint64
 	if ec.nextCallCacheIndex > 0 {
-		callCache = make([]uint64, 4*ec.nextCallCacheIndex)
+		callCache = make([]uint64, tier2CallCacheStrideWords*ec.nextCallCacheIndex)
 	}
 
 	return &CompiledFunction{

@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/runtime"
 )
 
 func (ec *emitContext) hasFieldSvalsCache(tblValueID int, shapeID uint32) bool {
@@ -81,6 +82,9 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 
 	// No field cache or invalid: use table-exit fallback.
 	if shapeID == 0 || instr.Aux2 == 0 {
+		if ec.emitGetFieldPolymorphicCache(instr) {
+			return
+		}
 		if ec.emitGetFieldDynamicCache(instr) {
 			return
 		}
@@ -151,6 +155,85 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	}
 
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitGetFieldPolymorphicCache(instr *Instr) bool {
+	if instr == nil || instr.SourcePC < 0 || len(instr.Args) == 0 {
+		return false
+	}
+	asm := ec.asm
+	tblValueID := instr.Args[0].ID
+	typeDeoptLabel := ec.uniqueLabel("getfield_pic_type_deopt")
+	missLabel := ec.uniqueLabel("getfield_pic_miss")
+	doneLabel := ec.uniqueLabel("getfield_pic_done")
+
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	if ec.irTypes[tblValueID] != TypeTable {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, missLabel)
+	}
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, missLabel)
+	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+	asm.CBZ(jit.X1, missLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffLazyTree)
+	asm.CBNZ(jit.X2, missLabel)
+
+	ec.emitGetFieldPolymorphicCacheProbe(instr, missLabel, doneLabel, typeDeoptLabel)
+
+	asm.Label(missLabel)
+	savedReprs := ec.snapshotValueReprs()
+	ec.emitGetFieldExit(instr)
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
+
+	if instr.Type == TypeFloat {
+		asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+	}
+
+	asm.Label(doneLabel)
+	return true
+}
+
+func (ec *emitContext) emitGetFieldPolymorphicCacheProbe(instr *Instr, missLabel, doneLabel, typeDeoptLabel string) {
+	asm := ec.asm
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineTableStringKeyCache)
+	asm.CBZ(jit.X3, missLabel)
+	entryOff := instr.SourcePC * runtime.TableStringKeyCacheWays * tableStringKeyCacheEntrySize
+	if entryOff > 0 {
+		if entryOff <= 4095 {
+			asm.ADDimm(jit.X3, jit.X3, uint16(entryOff))
+		} else {
+			asm.LoadImm64(jit.X4, int64(entryOff))
+			asm.ADDreg(jit.X3, jit.X3, jit.X4)
+		}
+	}
+
+	loopLabel := ec.uniqueLabel("getfield_pic_loop")
+	nextLabel := ec.uniqueLabel("getfield_pic_next")
+	asm.MOVimm16(jit.X9, 0)
+	asm.Label(loopLabel)
+	asm.LDRW(jit.X5, jit.X3, tableStringKeyCacheEntryShapeID)
+	asm.CMPreg(jit.X5, jit.X1)
+	asm.BCond(jit.CondNE, nextLabel)
+	asm.LDR(jit.X4, jit.X3, tableStringKeyCacheEntryFieldIdx)
+	asm.LDR(jit.X5, jit.X0, jit.TableOffSvalsLen)
+	asm.CMPreg(jit.X4, jit.X5)
+	asm.BCond(jit.CondGE, missLabel)
+	asm.LDR(jit.X5, jit.X0, jit.TableOffSvals)
+	asm.LDRreg(jit.X0, jit.X5, jit.X4)
+	ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+	asm.B(doneLabel)
+
+	asm.Label(nextLabel)
+	asm.ADDimm(jit.X3, jit.X3, uint16(tableStringKeyCacheEntrySize))
+	asm.ADDimm(jit.X9, jit.X9, 1)
+	asm.CMPimm(jit.X9, runtime.TableStringKeyCacheWays)
+	asm.BCond(jit.CondLT, loopLabel)
+	asm.B(missLabel)
 }
 
 func (ec *emitContext) emitGetFieldDynamicCache(instr *Instr) bool {

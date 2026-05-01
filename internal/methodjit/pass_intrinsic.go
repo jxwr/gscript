@@ -8,7 +8,7 @@
 
 package methodjit
 
-// IntrinsicPass detects math.sqrt(x) (and similar one-arg float intrinsics)
+// IntrinsicPass detects math.sqrt(x) (and similar one-arg numeric intrinsics)
 // in OpCall instructions and replaces them with the corresponding specialised
 // op. Returns the (possibly modified) function plus a list of human-readable
 // notes describing rewrites for debugging.
@@ -57,6 +57,18 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 				instr.Aux = 0
 				instr.Aux2 = 0
 				notes = append(notes, "intrinsic: math.sqrt → OpSqrt")
+				continue
+			}
+
+			// math.floor(x) — 1-arg number → int.
+			if moduleName == "math" && fieldName == "floor" && len(instr.Args) == 2 {
+				xArg := instr.Args[1]
+				instr.Op = OpFloor
+				instr.Type = TypeInt
+				instr.Args = []*Value{xArg}
+				instr.Aux = 0
+				instr.Aux2 = 0
+				notes = append(notes, "intrinsic: math.floor → OpFloor")
 				continue
 			}
 

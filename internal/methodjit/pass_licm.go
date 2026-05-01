@@ -645,6 +645,8 @@ func canHoistOp(op Op) bool {
 	case OpSqrt:
 		// Pure single-input float op with no side effects.
 		return true
+	case OpFloor:
+		return true
 	case OpGetTable:
 		// Caller must also check alias info (no SetTable on same obj, no Call in loop).
 		return true
@@ -694,7 +696,7 @@ func isInterestingLICMMiss(op Op) bool {
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpFMA, OpFMSUB,
 		OpMatrixFlat, OpMatrixStride, OpMatrixRowPtr,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData,
-		OpSqrt, OpNumToFloat:
+		OpSqrt, OpFloor, OpNumToFloat:
 		return true
 	default:
 		return false

@@ -820,6 +820,36 @@ result := compute_distance(100)
 	}
 }
 
+// TestTier2_FloorIntrinsic exercises math.floor intrinsic recognition. The
+// result is an int, so this also covers the native float-to-int lowering used
+// by method dispatch loops that accumulate integer checksums.
+func TestTier2_FloorIntrinsic(t *testing.T) {
+	src := `
+func floor_sum(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        total = total + math.floor(i * 1.25)
+    }
+    return total
+}
+result := 0
+for r := 1; r <= 3; r++ {
+    result = floor_sum(100)
+}
+`
+	compareTier2Result(t, src, "result")
+
+	protoVM := compileProto(t, src)
+	globalsVM := runtime.NewInterpreterGlobals()
+	vVM := vm.New(globalsVM)
+	defer vVM.Close()
+	vVM.Execute(protoVM)
+	vmResult := vVM.GetGlobal("result")
+	if !vmResult.IsInt() || vmResult.Int() != 6275 {
+		t.Errorf("floor_sum(100) VM sanity: got %v, want 6275", vmResult)
+	}
+}
+
 // TestScratchFPRCacheDedup validates that the per-instruction scratch-FPR
 // cache does not change semantics when the SAME value is used as multiple
 // operands of a single float instruction (e.g. v*v*v*v). The emitter should

@@ -2206,6 +2206,50 @@ func hasStaticCallInLoop(proto *vm.FuncProto) bool {
 	return false
 }
 
+func hasFieldDispatchCallInLoop(proto *vm.FuncProto) bool {
+	fn := BuildGraph(proto)
+	if fn == nil || fn.Entry == nil || fn.Unpromotable {
+		return false
+	}
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op == OpCall && len(instr.Args) > 0 &&
+				callCalleeIsFieldDispatchValue(instr.Args[0]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func callCalleeIsFieldDispatchValue(v *Value) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	def := v.Def
+	for def.Op == OpGuardType && len(def.Args) == 1 && def.Args[0] != nil && def.Args[0].Def != nil {
+		def = def.Args[0].Def
+	}
+	switch def.Op {
+	case OpSelf:
+		return true
+	case OpGetField:
+		if len(def.Args) == 0 || def.Args[0] == nil || def.Args[0].Def == nil {
+			return true
+		}
+		// Static library calls like math.floor should be handled by intrinsic
+		// lowering before this gate. Do not admit unresolved global-field calls
+		// as generic dynamic dispatch.
+		return def.Args[0].Def.Op != OpGetGlobal
+	default:
+		return false
+	}
+}
+
 func canPromoteWithNativeLoopCalls(proto *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
 	if proto == nil || len(globals) == 0 {
 		return false
@@ -2369,7 +2413,8 @@ func tier2ValueIsNativeNumeric(v *Value, seen map[int]bool) bool {
 		return tier2AllValuesNativeNumeric(v.Def.Args, seen)
 	case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
-		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat:
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+		OpFloor:
 		return tier2AllValuesNativeNumeric(v.Def.Args, seen)
 	default:
 		return false
@@ -2752,6 +2797,9 @@ func allIntLikeArgs(instr *Instr, seen map[int]bool) bool {
 }
 
 func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
+	if instr != nil && len(instr.Args) > 0 && callCalleeIsFieldDispatchValue(instr.Args[0]) {
+		return true
+	}
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
 	return tier2LoopCallCalleeIsNativeCandidate(callee, globals)
 }

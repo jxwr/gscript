@@ -313,10 +313,14 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 		return TypeFloat
 	case OpNumToFloat, OpSqrt:
 		return TypeFloat
+	case OpFloor:
+		return TypeInt
 	case OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat:
 		return TypeBool
 	case OpEq, OpLt, OpLe, OpNot:
 		return TypeBool
+	case OpLen:
+		return TypeInt
 
 	// Generic arithmetic: infer from operands.
 	case OpAdd, OpSub, OpMul, OpMod:

@@ -233,6 +233,61 @@ func (ec *emitContext) emitNumToFloat(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+// emitFloor emits math.floor(x) as a numeric guard plus native rounding.
+// Int inputs pass through; float inputs round toward -inf and convert to int64.
+func (ec *emitContext) emitFloor(instr *Instr) {
+	if len(instr.Args) == 0 {
+		return
+	}
+	asm := ec.asm
+	argID := instr.Args[0].ID
+
+	if ec.hasReg(argID) && ec.valueReprOf(argID) == valueReprRawInt {
+		src := ec.physReg(argID)
+		if src != jit.X0 {
+			asm.MOVreg(jit.X0, src)
+		}
+		ec.storeRawInt(jit.X0, instr.ID)
+		return
+	}
+	if ec.hasFPReg(argID) {
+		asm.FRINTMd(jit.D0, ec.physFPReg(argID))
+		asm.FCVTZS(jit.X0, jit.D0)
+		ec.storeRawInt(jit.X0, instr.ID)
+		return
+	}
+
+	srcReg := ec.resolveValueNB(argID, jit.X0)
+	if srcReg != jit.X0 {
+		asm.MOVreg(jit.X0, srcReg)
+	}
+
+	floatLabel := ec.uniqueLabel("floor_float")
+	deoptLabel := ec.uniqueLabel("floor_deopt")
+	doneLabel := ec.uniqueLabel("floor_done")
+
+	emitCheckIsInt(asm, jit.X0, jit.X2)
+	asm.BCond(jit.CondNE, floatLabel)
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	ec.storeRawInt(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(floatLabel)
+	asm.LSRimm(jit.X2, jit.X0, 48)
+	asm.MOVimm16(jit.X3, jit.NB_TagNilShr48)
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+	asm.FRINTMd(jit.D0, jit.D0)
+	asm.FCVTZS(jit.X0, jit.D0)
+	ec.storeRawInt(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 // emitDiv emits ARM64 code for OpDiv (a / b, always returns float).
 // Both operands may be int or float. Result is always NaN-boxed float.
 //

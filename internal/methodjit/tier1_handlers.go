@@ -635,6 +635,8 @@ func (e *BaselineJITEngine) handleGetField(ctx *ExecContext, regs []runtime.Valu
 			&proto.FieldCache[pc],
 			runtime.FieldPolyCacheSlot(proto.FieldPolyCache, pc),
 		)
+		ensureTableStringKeyCache(proto)
+		_ = tbl.RawGetStringDynamicCached(fieldName, runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc))
 		// Record type feedback so Tier 2 can specialize.
 		if proto.Feedback != nil && pc < len(proto.Feedback) {
 			proto.Feedback[pc].Result.Observe(regs[absA].Type())

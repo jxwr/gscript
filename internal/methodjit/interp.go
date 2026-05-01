@@ -324,6 +324,10 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		a := s.val(instr.Args[0])
 		s.values[instr.ID] = runtime.FloatValue(math.Sqrt(a.Number()))
 
+	case OpFloor:
+		a := s.val(instr.Args[0])
+		s.values[instr.ID] = runtime.IntValue(int64(math.Floor(a.Number())))
+
 	case OpFMA:
 		// R47: interp fallback. OpFMA(a, b, c) → c + a*b.
 		a := s.val(instr.Args[0]).Number()

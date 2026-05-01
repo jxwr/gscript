@@ -78,21 +78,20 @@ func f(t) {
 		t.Fatalf("RunTier2Pipeline: %v", err)
 	}
 
-	hasLenIntGuard := false
+	hasTypedLen := false
 	hasLeInt := false
 	for _, block := range out.Blocks {
 		for _, instr := range block.Instrs {
-			if instr.Op == OpGuardType && instr.Aux == int64(TypeInt) && len(instr.Args) == 1 &&
-				instr.Args[0].Def != nil && instr.Args[0].Def.Op == OpLen {
-				hasLenIntGuard = true
+			if instr.Op == OpLen && instr.Type == TypeInt {
+				hasTypedLen = true
 			}
 			if instr.Op == OpLeInt {
 				hasLeInt = true
 			}
 		}
 	}
-	if !hasLenIntGuard {
-		t.Fatal("expected OP_LEN feedback to produce an int GuardType")
+	if !hasTypedLen {
+		t.Fatal("expected OP_LEN to be typed as int")
 	}
 	if !hasLeInt {
 		t.Fatal("expected length-fed comparison to specialize to LeInt")

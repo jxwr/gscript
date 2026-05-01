@@ -142,7 +142,11 @@ func (tm *TieringManager) executeNativeCallExit(ctx *ExecContext, callerCF *Comp
 	}
 
 	if !calleeCF.DirectEntrySafe {
-		setFuncProtoTier2DirectEntries(calleeProto, 0, 0)
+		tier2Entry := uintptr(0)
+		if calleeCF.Tier2DirectEntrySafe && calleeCF.DirectEntryOffset > 0 {
+			tier2Entry = uintptr(calleeCF.Code.Ptr()) + uintptr(calleeCF.DirectEntryOffset)
+		}
+		setFuncProtoTier2DirectEntries(calleeProto, 0, tier2Entry)
 	}
 
 	result, err := tm.resumeNativeTier2CalleeExit(ctx, calleeCF, regs, calleeBase, calleeProto)
@@ -691,6 +695,8 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 				if pc >= 0 && pc < len(proto.Code) && vm.DecodeOp(proto.Code[pc]) == vm.OP_GETFIELD {
 					ensureFieldCache(proto)
 					result = tblVal.Table().RawGetStringCached(fieldName, &proto.FieldCache[pc])
+					ensureTableStringKeyCache(proto)
+					_ = tblVal.Table().RawGetStringDynamicCached(fieldName, runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc))
 				} else {
 					result = tblVal.Table().RawGetString(fieldName)
 				}

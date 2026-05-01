@@ -69,6 +69,14 @@ const (
 	typedSelfArgsOff          = 8
 )
 
+const (
+	tier2CallCacheWays        = 4
+	tier2CallCacheWordsPerWay = 4
+	tier2CallCacheWayBytes    = tier2CallCacheWordsPerWay * 8
+	tier2CallCacheStrideWords = tier2CallCacheWays * tier2CallCacheWordsPerWay
+	tier2CallCacheStrideBytes = tier2CallCacheStrideWords * 8
+)
+
 func rawSelfFrameSizeFor(nParams int) int {
 	return rawSelfFrameSizeForLive(nParams, 0)
 }
@@ -151,19 +159,31 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Load function value from regs[funcSlot].
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 
-	// --- Monomorphic call IC fast path ---
-	// Allocate this call site's cache slot (4 × uint64).
+	// --- Polymorphic call IC fast path ---
+	// Allocate this call site's cache slot (4 ways × 4 uint64).
 	icIdx := ec.nextCallCacheIndex
 	ec.nextCallCacheIndex++
-	cacheOff := icIdx * 32 // 4 uint64 per slot
-	icHitLabel := ec.uniqueLabel("t2call_ic_hit")
+	cacheOff := icIdx * tier2CallCacheStrideBytes
 	icDoneLabel := ec.uniqueLabel("t2call_ic_done")
 
-	// Load cache base + cached closure value + compare.
-	asm.LDR(jit.X3, mRegCtx, execCtxOffTier2CallCache) // X3 = &CallCache[0]
-	asm.LDR(jit.X4, jit.X3, cacheOff)                  // X4 = cached boxed value
-	asm.CMPreg(jit.X0, jit.X4)
-	asm.BCond(jit.CondEQ, icHitLabel)
+	// X3 = &CallCache[site][0].
+	asm.LDR(jit.X3, mRegCtx, execCtxOffTier2CallCache)
+	if cacheOff > 0 {
+		if cacheOff <= 4095 {
+			asm.ADDimm(jit.X3, jit.X3, uint16(cacheOff))
+		} else {
+			asm.LoadImm64(jit.X4, int64(cacheOff))
+			asm.ADDreg(jit.X3, jit.X3, jit.X4)
+		}
+	}
+	icHitLabels := make([]string, tier2CallCacheWays)
+	for way := 0; way < tier2CallCacheWays; way++ {
+		icHitLabels[way] = ec.uniqueLabel("t2call_ic_hit")
+		wayOff := way * tier2CallCacheWayBytes
+		asm.LDR(jit.X4, jit.X3, wayOff+baselineCallCacheBoxedOff)
+		asm.CMPreg(jit.X0, jit.X4)
+		asm.BCond(jit.CondEQ, icHitLabels[way])
+	}
 
 	// --- IC Miss: original type check + proto load path ---
 	// Type check: must be ptr (0xFFFF) with sub-type = 8 (VMClosure).
@@ -194,39 +214,55 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Update IC cache with the boxed closure value (reload from
 	// memory since X0 now holds the raw ptr), direct entry, proto, and entry
 	// publication version.
-	asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot)) // re-load boxed value
-	asm.STR(jit.X4, jit.X3, cacheOff)               // cache[0] = boxed value
-	asm.STR(jit.X2, jit.X3, cacheOff+8)             // cache[1] = direct entry
-	asm.STR(jit.X1, jit.X3, cacheOff+16)            // cache[2] = *FuncProto
-	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryVersion)
-	asm.STR(jit.X4, jit.X3, cacheOff+24) // cache[3] = entry version
-	asm.B(icDoneLabel)
+	icUpdateWayLabels := make([]string, tier2CallCacheWays)
+	for way := 0; way < tier2CallCacheWays; way++ {
+		icUpdateWayLabels[way] = ec.uniqueLabel("t2call_ic_update")
+		wayOff := way * tier2CallCacheWayBytes
+		asm.LDR(jit.X4, jit.X3, wayOff+baselineCallCacheBoxedOff)
+		asm.CBZ(jit.X4, icUpdateWayLabels[way])
+	}
+	asm.B(icUpdateWayLabels[0])
+	for way := 0; way < tier2CallCacheWays; way++ {
+		wayOff := way * tier2CallCacheWayBytes
+		asm.Label(icUpdateWayLabels[way])
+		asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot)) // re-load boxed value
+		asm.STR(jit.X4, jit.X3, wayOff+baselineCallCacheBoxedOff)
+		asm.STR(jit.X2, jit.X3, wayOff+baselineCallCacheEntryOff)
+		asm.STR(jit.X1, jit.X3, wayOff+baselineCallCacheProtoOff)
+		asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryVersion)
+		asm.STR(jit.X4, jit.X3, wayOff+baselineCallCacheVersionOff)
+		asm.B(icDoneLabel)
+	}
 
 	// --- IC Hit: validate direct-entry version, refreshing entry on change. ---
 	// X0 still holds the boxed closure value (matched cache).
-	asm.Label(icHitLabel)
-	asm.LDR(jit.X2, jit.X3, cacheOff+8)  // X2 = cached direct entry
-	asm.LDR(jit.X1, jit.X3, cacheOff+16) // X1 = cached *Proto
-	asm.LDR(jit.X4, jit.X3, cacheOff+24) // X4 = cached entry version
-	asm.LDR(jit.X5, jit.X1, funcProtoOffDirectEntryVersion)
-	icVersionOKLabel := ec.uniqueLabel("t2call_ic_version_ok")
-	asm.CMPreg(jit.X4, jit.X5)
-	asm.BCond(jit.CondEQ, icVersionOKLabel)
-	asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
-	icHaveEntryLabel := ec.uniqueLabel("t2call_ic_have_entry")
-	asm.CBNZ(jit.X4, icHaveEntryLabel)
-	asm.LDR(jit.X4, jit.X1, funcProtoOffTier2DirectEntryPtr)
-	// DirectEntryPtr can be cleared when a baseline/native caller disables
-	// generic BLR after an exit. Tier 2 ICs may still use the separate Tier 2
-	// entry while it is published, but must not keep a stale entry after both
-	// published entry pointers have been cleared.
-	asm.CBZ(jit.X4, slowLabel)
-	asm.Label(icHaveEntryLabel)
-	asm.MOVreg(jit.X2, jit.X4)
-	asm.STR(jit.X2, jit.X3, cacheOff+8)
-	asm.STR(jit.X5, jit.X3, cacheOff+24)
-	asm.Label(icVersionOKLabel)
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0) // X0 = *Closure
+	for way := 0; way < tier2CallCacheWays; way++ {
+		wayOff := way * tier2CallCacheWayBytes
+		asm.Label(icHitLabels[way])
+		asm.LDR(jit.X2, jit.X3, wayOff+baselineCallCacheEntryOff)   // X2 = cached direct entry
+		asm.LDR(jit.X1, jit.X3, wayOff+baselineCallCacheProtoOff)   // X1 = cached *Proto
+		asm.LDR(jit.X4, jit.X3, wayOff+baselineCallCacheVersionOff) // X4 = cached entry version
+		asm.LDR(jit.X5, jit.X1, funcProtoOffDirectEntryVersion)
+		icVersionOKLabel := ec.uniqueLabel("t2call_ic_version_ok")
+		asm.CMPreg(jit.X4, jit.X5)
+		asm.BCond(jit.CondEQ, icVersionOKLabel)
+		asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryPtr)
+		icHaveEntryLabel := ec.uniqueLabel("t2call_ic_have_entry")
+		asm.CBNZ(jit.X4, icHaveEntryLabel)
+		asm.LDR(jit.X4, jit.X1, funcProtoOffTier2DirectEntryPtr)
+		// DirectEntryPtr can be cleared when a baseline/native caller disables
+		// generic BLR after an exit. Tier 2 ICs may still use the separate Tier 2
+		// entry while it is published, but must not keep a stale entry after both
+		// published entry pointers have been cleared.
+		asm.CBZ(jit.X4, slowLabel)
+		asm.Label(icHaveEntryLabel)
+		asm.MOVreg(jit.X2, jit.X4)
+		asm.STR(jit.X2, jit.X3, wayOff+baselineCallCacheEntryOff)
+		asm.STR(jit.X5, jit.X3, wayOff+baselineCallCacheVersionOff)
+		asm.Label(icVersionOKLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0) // X0 = *Closure
+		asm.B(icDoneLabel)
+	}
 
 	asm.Label(icDoneLabel)
 
@@ -1627,7 +1663,7 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 
 	icIdx := ec.nextCallCacheIndex
 	ec.nextCallCacheIndex++
-	cacheOff := icIdx * 32
+	cacheOff := icIdx * tier2CallCacheStrideBytes
 	icHitLabel := ec.uniqueLabel("t2tail_ic_hit")
 	icDoneLabel := ec.uniqueLabel("t2tail_ic_done")
 
