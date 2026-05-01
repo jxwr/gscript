@@ -256,6 +256,109 @@ result := build(10)
 	}
 }
 
+func TestFixedTableConstructorLowering_CallInterleavedMaterializedCtorN(t *testing.T) {
+	top := compileProto(t, `
+func fmt_tag(i) {
+    return i + 10
+}
+func makeTags(i) {
+    return {
+        first: fmt_tag(i),
+        second: fmt_tag(i + 1),
+        third: fmt_tag(i + 2),
+    }
+}
+result := makeTags(3)
+`)
+	makeTags := findProtoByName(top, "makeTags")
+	if makeTags == nil {
+		t.Fatal("makeTags proto missing")
+	}
+	fn := BuildGraph(makeTags)
+	out, err := FixedTableConstructorLoweringPass(fn)
+	if err != nil {
+		t.Fatalf("FixedTableConstructorLoweringPass: %v", err)
+	}
+	out, err = DCEPass(out)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+
+	var sawFixedN bool
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpNewFixedTable && instr.Aux2 == 3 {
+				sawFixedN = true
+			}
+			if instr.Op == OpSetField {
+				t.Fatalf("call-interleaved constructor still has SetField after lowering\nIR:\n%s", Print(out))
+			}
+		}
+	}
+	if !sawFixedN {
+		t.Fatalf("expected call-interleaved constructor to lower\nIR:\n%s", Print(out))
+	}
+}
+
+func TestFixedTableConstructorLowering_CFGSplitMaterializedCtorN(t *testing.T) {
+	top := compileProto(t, `
+func makeDoc(i) {
+    active := true
+    if i % 2 == 0 {
+        active = false
+    }
+    return {id: i, active: active, a: 1, b: 2, c: 3, d: 4}
+}
+result := makeDoc(2)
+`)
+	makeDoc := findProtoByName(top, "makeDoc")
+	if makeDoc == nil {
+		t.Fatal("makeDoc proto missing")
+	}
+	fn := BuildGraph(makeDoc)
+	out, err := FixedTableConstructorLoweringPass(fn)
+	if err != nil {
+		t.Fatalf("FixedTableConstructorLoweringPass: %v", err)
+	}
+	out, err = DCEPass(out)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+
+	var sawFixedN bool
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpNewFixedTable && instr.Aux2 == 6 {
+				sawFixedN = true
+			}
+			if instr.Op == OpSetField {
+				t.Fatalf("CFG-split constructor still has SetField after lowering\nIR:\n%s", Print(out))
+			}
+		}
+	}
+	if !sawFixedN {
+		t.Fatalf("expected CFG-split constructor to lower\nIR:\n%s", Print(out))
+	}
+
+	result, err := Interpret(out, []runtime.Value{runtime.IntValue(2)})
+	if err != nil {
+		t.Fatalf("Interpret lowered IR: %v", err)
+	}
+	if len(result) != 1 || !result[0].IsTable() {
+		t.Fatalf("lowered result = %#v, want one table", result)
+	}
+	tbl := result[0].Table()
+	if got := tbl.RawGetString("id"); !got.IsInt() || got.Int() != 2 {
+		t.Fatalf("id = %v, want 2", got)
+	}
+	if got := tbl.RawGetString("active"); !got.IsBool() || got.Bool() {
+		t.Fatalf("active = %v, want false", got)
+	}
+	if got := tbl.SkeysLen(); got != 6 {
+		t.Fatalf("skeys=%d, want 6", got)
+	}
+}
+
 func TestEmitNewFixedTable2CacheFastPath(t *testing.T) {
 	proto := compileFunction(t, `func f(a, b) { return {foo: a, bar: b} }`)
 	fn := BuildGraph(proto)

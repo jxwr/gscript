@@ -835,7 +835,7 @@ func remapInlineFixedTableConstructorFact(caller, callee *vm.FuncProto, fact Fix
 			return FixedTableConstructorFact{}, false
 		}
 		ctor := callee.TableCtors2[fact.Ctor2Index].Runtime
-		idx := ensureInlineTableCtor2(caller, ctor.Key1, ctor.Key2)
+		idx := ensureFuncProtoTableCtor2(caller, ctor.Key1, ctor.Key2)
 		return FixedTableConstructorFact{
 			Ctor2Index: idx,
 			CtorNIndex: -1,
@@ -846,7 +846,7 @@ func remapInlineFixedTableConstructorFact(caller, callee *vm.FuncProto, fact Fix
 			return FixedTableConstructorFact{}, false
 		}
 		keys := append([]string(nil), callee.TableCtorsN[fact.CtorNIndex].Runtime.Keys...)
-		idx := ensureInlineTableCtorN(caller, keys)
+		idx := ensureFuncProtoTableCtorN(caller, keys)
 		return FixedTableConstructorFact{
 			Ctor2Index: -1,
 			CtorNIndex: idx,
@@ -857,15 +857,15 @@ func remapInlineFixedTableConstructorFact(caller, callee *vm.FuncProto, fact Fix
 	}
 }
 
-func ensureInlineTableCtor2(proto *vm.FuncProto, key1, key2 string) int {
+func ensureFuncProtoTableCtor2(proto *vm.FuncProto, key1, key2 string) int {
 	for i := range proto.TableCtors2 {
 		ctor := proto.TableCtors2[i].Runtime
 		if ctor.Key1 == key1 && ctor.Key2 == key2 {
 			return i
 		}
 	}
-	key1Const := ensureInlineStringConstant(proto, key1)
-	key2Const := ensureInlineStringConstant(proto, key2)
+	key1Const := ensureFuncProtoStringConstant(proto, key1)
+	key2Const := ensureFuncProtoStringConstant(proto, key2)
 	proto.TableCtors2 = append(proto.TableCtors2, vm.TableCtor2{
 		Key1Const: key1Const,
 		Key2Const: key2Const,
@@ -874,7 +874,7 @@ func ensureInlineTableCtor2(proto *vm.FuncProto, key1, key2 string) int {
 	return len(proto.TableCtors2) - 1
 }
 
-func ensureInlineTableCtorN(proto *vm.FuncProto, keys []string) int {
+func ensureFuncProtoTableCtorN(proto *vm.FuncProto, keys []string) int {
 	for i := range proto.TableCtorsN {
 		ctor := proto.TableCtorsN[i].Runtime
 		if sameStringList(ctor.Keys, keys) {
@@ -883,7 +883,7 @@ func ensureInlineTableCtorN(proto *vm.FuncProto, keys []string) int {
 	}
 	keyConsts := make([]int, len(keys))
 	for i, key := range keys {
-		keyConsts[i] = ensureInlineStringConstant(proto, key)
+		keyConsts[i] = ensureFuncProtoStringConstant(proto, key)
 	}
 	proto.TableCtorsN = append(proto.TableCtorsN, vm.TableCtorN{
 		KeyConsts: keyConsts,
@@ -892,7 +892,7 @@ func ensureInlineTableCtorN(proto *vm.FuncProto, keys []string) int {
 	return len(proto.TableCtorsN) - 1
 }
 
-func ensureInlineStringConstant(proto *vm.FuncProto, key string) int {
+func ensureFuncProtoStringConstant(proto *vm.FuncProto, key string) int {
 	for i, c := range proto.Constants {
 		if c.IsString() && c.Str() == key {
 			return i
