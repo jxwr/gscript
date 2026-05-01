@@ -1,6 +1,10 @@
 package runtime
 
-import "github.com/gscript/gscript/internal/ast"
+import (
+	"unsafe"
+
+	"github.com/gscript/gscript/internal/ast"
+)
 
 // FuncProto holds the parsed function information (shared across all closures
 // created from the same source function definition).
@@ -43,4 +47,8 @@ type GoFunction struct {
 	Name  string
 	Fn    func(args []Value) ([]Value, error)
 	Fast1 func(args []Value) (Value, error)
+	// NativeKind/NativeData let the bytecode VM attach optional direct-dispatch
+	// metadata while keeping Fn as the semantic fallback.
+	NativeKind uint8
+	NativeData unsafe.Pointer
 }

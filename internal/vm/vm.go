@@ -39,11 +39,13 @@ type VM struct {
 	globalVer          uint32                   // bumped on structural changes (new globals added)
 	globalOverrides    map[string]runtime.Value // per-VM global overrides for coroutine-local builtins
 	globalOverrideIdx  map[int]runtime.Value    // indexed mirror of globalOverrides for GETGLOBAL cache hits
-	globalsMu          *sync.RWMutex            // protects globals for goroutine safety (shared across VMs)
-	noGlobalLock       bool                     // skip globals mutex (single-threaded mode)
-	openUpvals         []*Upvalue               // list of open upvalues (sorted by regIdx descending)
-	top                int                      // top of used registers (for variable returns)
-	stringMeta         *runtime.Table           // string metatable
+	globalOverrideFast int                      // single indexed override fast path (-1 = disabled)
+	globalOverrideVal  runtime.Value
+	globalsMu          *sync.RWMutex  // protects globals for goroutine safety (shared across VMs)
+	noGlobalLock       bool           // skip globals mutex (single-threaded mode)
+	openUpvals         []*Upvalue     // list of open upvalues (sorted by regIdx descending)
+	top                int            // top of used registers (for variable returns)
+	stringMeta         *runtime.Table // string metatable
 	methodJIT          MethodJITEngine
 	argBuf             [16]runtime.Value // pre-allocated arg buffer for OP_CALL
 	retBuf             [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
@@ -312,12 +314,17 @@ func (vm *VM) setGlobalOverride(name string, val runtime.Value) {
 		vm.globalOverrides = make(map[string]runtime.Value, 1)
 	}
 	vm.globalOverrides[name] = val
+	vm.globalOverrideFast = -1
 	if vm.globalOverrideIdx == nil {
 		vm.globalOverrideIdx = make(map[int]runtime.Value, 1)
 	}
 	if vm.noGlobalLock {
 		if idx, ok := vm.globalIndex[name]; ok {
 			vm.globalOverrideIdx[idx] = val
+			if len(vm.globalOverrides) == 1 {
+				vm.globalOverrideFast = idx
+				vm.globalOverrideVal = val
+			}
 		}
 		return
 	}
@@ -326,6 +333,10 @@ func (vm *VM) setGlobalOverride(name string, val runtime.Value) {
 	vm.globalsMu.RUnlock()
 	if ok {
 		vm.globalOverrideIdx[idx] = val
+		if len(vm.globalOverrides) == 1 {
+			vm.globalOverrideFast = idx
+			vm.globalOverrideVal = val
+		}
 	}
 }
 
@@ -358,13 +369,14 @@ func New(globals map[string]runtime.Value) *VM {
 	}
 
 	v := &VM{
-		regs:         runtime.MakeNilSlice(1024),
-		frames:       make([]CallFrame, initialCallFrameCapacity),
-		globals:      globals,
-		globalArray:  ga,
-		globalIndex:  gi,
-		globalsMu:    &sync.RWMutex{},
-		noGlobalLock: true, // single-threaded by default
+		regs:               runtime.MakeNilSlice(1024),
+		frames:             make([]CallFrame, initialCallFrameCapacity),
+		globals:            globals,
+		globalArray:        ga,
+		globalIndex:        gi,
+		globalOverrideFast: -1,
+		globalsMu:          &sync.RWMutex{},
+		noGlobalLock:       true, // single-threaded by default
 	}
 	v.RegisterCoroutineLib()
 	v.registerChannelBuiltins()
@@ -478,17 +490,18 @@ func scanProtoRoots(proto *FuncProto, visitor func(unsafe.Pointer), seen map[uin
 // Used by coroutines which need to see the caller's global state.
 func newChildVM(parent *VM, co *VMCoroutine) *VM {
 	child := &VM{
-		regs:             runtime.MakeNilSlice(1024),
-		frames:           make([]CallFrame, initialCallFrameCapacity),
-		globals:          parent.globals,
-		globalArray:      parent.globalArray,
-		globalIndex:      parent.globalIndex,
-		globalVer:        parent.globalVer,
-		globalsMu:        parent.globalsMu,
-		noGlobalLock:     false, // shared globals, must lock
-		stringMeta:       parent.stringMeta,
-		currentCoroutine: co,
-		coroutineStats:   parent.coroutineStats,
+		regs:               runtime.MakeNilSlice(1024),
+		frames:             make([]CallFrame, initialCallFrameCapacity),
+		globals:            parent.globals,
+		globalArray:        parent.globalArray,
+		globalIndex:        parent.globalIndex,
+		globalVer:          parent.globalVer,
+		globalOverrideFast: -1,
+		globalsMu:          parent.globalsMu,
+		noGlobalLock:       false, // shared globals, must lock
+		stringMeta:         parent.stringMeta,
+		currentCoroutine:   co,
+		coroutineStats:     parent.coroutineStats,
 	}
 	child.setGlobalOverride("coroutine", runtime.TableValue(child.newCoroutineLib()))
 	runtime.RegisterVM(child)
@@ -514,16 +527,17 @@ func newIsolatedChildVM(parent *VM) *VM {
 	}
 
 	child := &VM{
-		regs:           runtime.MakeNilSlice(1024),
-		frames:         make([]CallFrame, initialCallFrameCapacity),
-		globals:        childGlobals,
-		globalArray:    ga,
-		globalIndex:    gi,
-		globalVer:      parent.globalVer,
-		globalsMu:      &sync.RWMutex{},
-		noGlobalLock:   true, // own copy, fully lock-free
-		stringMeta:     parent.stringMeta,
-		coroutineStats: parent.coroutineStats,
+		regs:               runtime.MakeNilSlice(1024),
+		frames:             make([]CallFrame, initialCallFrameCapacity),
+		globals:            childGlobals,
+		globalArray:        ga,
+		globalIndex:        gi,
+		globalVer:          parent.globalVer,
+		globalOverrideFast: -1,
+		globalsMu:          &sync.RWMutex{},
+		noGlobalLock:       true, // own copy, fully lock-free
+		stringMeta:         parent.stringMeta,
+		coroutineStats:     parent.coroutineStats,
 	}
 	child.RegisterCoroutineLib()
 	runtime.RegisterVM(child)
@@ -753,6 +767,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			}
 			cache := &proto.GlobalCache[bx]
 			if cache.index >= 0 && cache.version == vm.globalVer {
+				if int(cache.index) == vm.globalOverrideFast {
+					vm.regs[base+a] = vm.globalOverrideVal
+					break
+				}
 				if vm.globalOverrideIdx != nil {
 					if v, ok := vm.globalOverrideIdx[int(cache.index)]; ok {
 						vm.regs[base+a] = v
@@ -1417,9 +1435,6 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 
 		// ---- Call / Return (INLINE) ----
 		case OP_CALL:
-			// GC safe point at function call boundary.
-			runtime.CheckGC()
-
 			a := DecodeA(inst)
 			b := DecodeB(inst)
 			c := DecodeC(inst)
@@ -1433,6 +1448,24 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				fb := &frame.closure.Proto.Feedback[frame.pc-1]
 				fb.Left.Observe(fnVal.Type())
 			}
+
+			if fnVal.IsFunction() {
+				if gf := fnVal.GoFunction(); gf != nil {
+					if handled, err := vm.tryFastCoroutineCall(gf, base, a, nArgs, c); handled {
+						if err != nil {
+							if err == errCoroutineYield {
+								return nil, err
+							}
+							return nil, wrapLineErr(frame, err)
+						}
+						break
+					}
+				}
+			}
+
+			// GC safe point at ordinary function call boundaries. VM-native
+			// coroutine intrinsics above only rearrange already-rooted VM state.
+			runtime.CheckGC()
 
 			// Fixed-arity self recursion is common in Tier0-only table walkers
 			// such as tree constructors/traversals. When the global lookup still
@@ -1604,15 +1637,6 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			// ---- Fast path: GoFunction (direct call, skip callValue) ----
 			if fnVal.IsFunction() {
 				if gf := fnVal.GoFunction(); gf != nil {
-					if handled, err := vm.tryFastCoroutineCall(gf, base, a, nArgs, c); handled {
-						if err != nil {
-							if err == errCoroutineYield {
-								return nil, err
-							}
-							return nil, wrapLineErr(frame, err)
-						}
-						break
-					}
 					var args []runtime.Value
 					if nArgs <= len(vm.argBuf) {
 						args = vm.argBuf[:nArgs]
@@ -2030,6 +2054,37 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 }
 
 func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int) (bool, error) {
+	if gf.NativeKind == goFunctionKindCoroutineWrapper {
+		co, ok := vmCoroutineFromNativeData(gf.NativeData)
+		if !ok {
+			return true, fmt.Errorf("invalid wrapped coroutine")
+		}
+		if co.status == VMCoroutineDead {
+			return true, fmt.Errorf("cannot resume dead coroutine")
+		}
+		var args []runtime.Value
+		if nArgs > 0 {
+			start := base + a + 1
+			args = vm.regs[start : start+nArgs]
+		}
+		okResult, values, err := vm.resumeCoroutineRaw(co, args)
+		if err != nil {
+			return true, err
+		}
+		if !okResult {
+			if len(values) > 0 {
+				return true, fmt.Errorf("%s", values[0].String())
+			}
+			return true, fmt.Errorf("cannot resume dead coroutine")
+		}
+		if len(values) == 0 {
+			vm.writeSingleCallResult(base+a, c, runtime.NilValue())
+			return true, nil
+		}
+		vm.writeCallResults(base+a, c, values)
+		return true, nil
+	}
+
 	if gf == vm.coroutineCreateFn || gf.Name == coroutineCreateName {
 		if nArgs < 1 || !vm.regs[base+a+1].IsFunction() {
 			return true, fmt.Errorf("coroutine.create expects a function")

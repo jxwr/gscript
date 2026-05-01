@@ -30,6 +30,8 @@ const (
 	coroutineResumeName      = "coroutine.resume"
 	coroutineYieldName       = "coroutine.yield"
 	coroutineIsYieldableName = "coroutine.isyieldable"
+
+	goFunctionKindCoroutineWrapper = 1
 )
 
 // VMCoroutine holds the state of a VM-based coroutine. Long-lived coroutines
@@ -82,6 +84,13 @@ func vmCoroutineFromValue(v rt.Value) (*VMCoroutine, bool) {
 	}
 	co, ok := v.Ptr().(*VMCoroutine)
 	return co, ok
+}
+
+func vmCoroutineFromNativeData(p unsafe.Pointer) (*VMCoroutine, bool) {
+	if p == nil {
+		return nil, false
+	}
+	return (*VMCoroutine)(p), true
 }
 
 func (vm *VM) activeCoroutine() *VMCoroutine {
@@ -183,7 +192,9 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			vm.recordCoroutineCreated(true)
 			dead := false
 			wrapper := &rt.GoFunction{
-				Name: "wrapped_coroutine",
+				Name:       "wrapped_coroutine",
+				NativeKind: goFunctionKindCoroutineWrapper,
+				NativeData: unsafe.Pointer(co),
 				Fn: func(wargs []rt.Value) ([]rt.Value, error) {
 					if dead {
 						return nil, fmt.Errorf("cannot resume dead coroutine")
