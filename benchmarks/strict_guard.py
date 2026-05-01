@@ -64,6 +64,7 @@ VARIANT_BASES = {
 
 TIME_RE = re.compile(r"^Time:\s*([0-9]+(?:\.[0-9]+)?)s\b", re.MULTILINE)
 CHECKSUM_RE = re.compile(r"^\s*checksum\s*[:=]\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+EMBEDDED_TIME_RE = re.compile(r"(:\s*)[0-9]+(?:\.[0-9]+)?s(\s+)")
 T2_ATTEMPTED_RE = re.compile(r"^\s*Tier 2 attempted:\s*([0-9]+)\b", re.MULTILINE)
 T2_ENTERED_RE = re.compile(r"^\s*Tier 2 entered:\s*([0-9]+)\s+functions\b", re.MULTILINE)
 T2_FAILED_RE = re.compile(r"^\s*Tier 2 failed:\s*([0-9]+)\s+functions\b", re.MULTILINE)
@@ -179,8 +180,12 @@ def stable_output_lines(output: str) -> list[str]:
             continue
         if any(fragment in line for fragment in skip_contains):
             continue
-        lines.append(line)
+        lines.append(stable_output_line(line))
     return lines
+
+
+def stable_output_line(line: str) -> str:
+    return EMBEDDED_TIME_RE.sub(r"\1<time>\2", line)
 
 
 def output_hash(output: str) -> str:

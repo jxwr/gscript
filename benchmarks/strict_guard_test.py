@@ -50,6 +50,21 @@ Tier 2 Exit Profile:
         self.assertEqual(a, b)
         self.assertEqual(sg.checksum_text("checksum: 123\nTime: 0.020s\n"), "123")
 
+    def test_output_hash_ignores_embedded_subbenchmark_times(self):
+        a = sg.output_hash(
+            """int_array_sum:    0.004s (result=5000050000)
+array_swap:       0.006s (result=100000)
+Time: 0.020s
+"""
+        )
+        b = sg.output_hash(
+            """int_array_sum:    0.043s (result=5000050000)
+array_swap:       0.307s (result=100000)
+Time: 0.462s
+"""
+        )
+        self.assertEqual(a, b)
+
 
 class StrictGuardStatisticsTest(unittest.TestCase):
     def test_compute_stats_reports_spread(self):
