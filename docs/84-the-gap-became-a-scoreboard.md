@@ -170,11 +170,14 @@ extended/producer_consumer_pipeline:
   best GScript 0.127s vs LuaJIT 0.043s
 
 extended/json_table_walk:
-  best GScript 0.042s vs LuaJIT 0.018s
+  best GScript 0.031s vs LuaJIT 0.017s
 ```
 
 So the immediate performance frontier has moved from the old core numeric
-suite to extended, ordinary-program table and dispatch workloads. The next work
+suite to extended, ordinary-program table and dispatch workloads. The
+`json_table_walk` row already moved once after the strict-guard pass, by
+widening a string-format intrinsic and removing a large no-filter exit stream;
+that is the kind of focused, measured change this phase needs. The next work
 should look less like "make Tier 2 admit the big loop" and more like:
 
 ```text

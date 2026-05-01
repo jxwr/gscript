@@ -88,9 +88,9 @@ Ranked by best GScript mode against LuaJIT:
 | extended/mixed_inventory_sim | 0.152s | 0.022s | 6.91x slower |
 | extended/actors_dispatch_mutation | 0.039s | 0.011s | 3.55x slower |
 | extended/producer_consumer_pipeline | 0.127s | 0.043s | 2.95x slower |
-| extended/json_table_walk | 0.042s | 0.018s | 2.33x slower |
 | suite/coroutine_bench | 0.019s | 0.00925s | 2.05x slower |
 | suite/table_array_access | 0.018s | 0.010s | 1.80x slower |
+| extended/json_table_walk | 0.031s | 0.017s | 1.82x slower |
 | suite/closure_bench | 0.0145s | 0.00875s | 1.66x slower |
 | suite/string_bench | 0.013s | 0.008s | 1.62x slower |
 | extended/log_tokenize_format | 0.133s | 0.083s | 1.60x slower |
@@ -100,6 +100,11 @@ This changes the active work queue. The largest current gaps are now the
 extended mixed table and dispatch programs, not the old core numeric kernels.
 `no_filter` is mostly neutral on the largest gaps, so broad gate relaxation is
 not an evidence-backed direction.
+
+The `json_table_walk` row reflects the follow-up string-format intrinsic change
+landed after the initial strict-guard pass. It reduced the no-filter median
+from 0.042s to 0.031s and cut the exit stream from roughly 54k exits to 571,
+with matching checksums.
 
 ## Recommended wording
 
