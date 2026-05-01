@@ -444,14 +444,7 @@ func (ec *emitContext) emitDeferredResumes() {
 // current block) back to their memory home slots. This ensures the VM register
 // file is fully up-to-date before a call/table/op exit.
 func (ec *emitContext) emitStoreAllActiveRegs() {
-	ec.emitStoreAllActiveRegsExcept(-1)
-}
-
-func (ec *emitContext) emitStoreAllActiveRegsExcept(excludeValueID int) {
 	for valueID := range ec.activeRegs {
-		if valueID == excludeValueID {
-			continue
-		}
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || pr.IsFloat {
 			continue
@@ -464,9 +457,6 @@ func (ec *emitContext) emitStoreAllActiveRegsExcept(excludeValueID int) {
 		ec.emitStoreGPRValueAsBoxed(valueID, reg, slot)
 	}
 	for valueID := range ec.activeFPRegs {
-		if valueID == excludeValueID {
-			continue
-		}
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || !pr.IsFloat {
 			continue
@@ -505,14 +495,7 @@ func (ec *emitContext) emitExitResumeCheckShadowStoreFPR(slot int, src jit.FReg)
 // emitReloadAllActiveRegs reloads all register-resident values from their
 // memory home slots. Called at resume points after a call/table/op exit.
 func (ec *emitContext) emitReloadAllActiveRegs() {
-	ec.emitReloadAllActiveRegsExcept(-1)
-}
-
-func (ec *emitContext) emitReloadAllActiveRegsExcept(excludeValueID int) {
 	for valueID := range ec.activeRegs {
-		if valueID == excludeValueID {
-			continue
-		}
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || pr.IsFloat {
 			continue
@@ -525,9 +508,6 @@ func (ec *emitContext) emitReloadAllActiveRegsExcept(excludeValueID int) {
 		ec.emitReloadGPRValueFromBoxed(valueID, reg, slot)
 	}
 	for valueID := range ec.activeFPRegs {
-		if valueID == excludeValueID {
-			continue
-		}
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || !pr.IsFloat {
 			continue

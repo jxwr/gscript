@@ -239,29 +239,6 @@ func (ec *emitContext) resolveRawTablePtr(valueID int, scratch jit.Reg) jit.Reg 
 	return scratch
 }
 
-func (ec *emitContext) markRawTablePtrActive(valueID int) {
-	pr, ok := ec.alloc.ValueRegs[valueID]
-	if !ok || pr.IsFloat {
-		return
-	}
-	ec.activeRegs[valueID] = true
-	ec.setValueRepr(valueID, valueReprRawTablePtr)
-}
-
-// storeCheckedRawTablePtr validates a boxed table result, extracts the native
-// pointer, and stores the result through the raw-table pointer ABI.
-func (ec *emitContext) storeCheckedRawTablePtr(instr *Instr, valReg, scratch1, scratch2 jit.Reg, deoptLabel string) {
-	if instr == nil {
-		return
-	}
-	jit.EmitCheckIsTableFull(ec.asm, valReg, scratch1, scratch2, deoptLabel)
-	if valReg != jit.X0 {
-		ec.asm.MOVreg(jit.X0, valReg)
-	}
-	jit.EmitExtractPtr(ec.asm, jit.X0, jit.X0)
-	ec.storeRawTablePtr(jit.X0, instr.ID)
-}
-
 // resolveRawDataPtr returns a GPR holding a typed-array backing pointer.
 // These values are VM-internal native temps, not boxed runtime.Values.
 func (ec *emitContext) resolveRawDataPtr(valueID int, scratch jit.Reg) jit.Reg {
@@ -498,8 +475,8 @@ func (ec *emitContext) constIntImm12(valueID int) (uint16, bool) {
 // emitLoadSlotToReg emits code to load a VM register slot's value into the
 // value's allocated physical register. For TypeInt values, unboxes the NaN-boxed
 // int to a raw int64 (GPR) and marks the register as raw. For TypeFloat values,
-// loads NaN-boxed from memory and moves bits to the allocated FPR. Entry-shape
-// guarded table params load as raw table pointers. Other values load boxed.
+// loads NaN-boxed from memory and moves bits to the allocated FPR. For other
+// types, loads the NaN-boxed value directly into the GPR.
 func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 	pr, ok := ec.alloc.ValueRegs[instr.ID]
 	if !ok {
@@ -530,14 +507,6 @@ func (ec *emitContext) emitLoadSlotToReg(instr *Instr) {
 			jit.EmitBoxIntFast(ec.asm, jit.X4, reg, mRegTagInt)
 			ec.storeValue(jit.X4, instr.ID)
 		}
-		return
-	}
-	if fact, ok := ec.entryShapeGuards[slot]; ok && fact.ShapeID != 0 {
-		ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
-		jit.EmitExtractPtr(ec.asm, reg, reg)
-		ec.activeRegs[instr.ID] = true
-		ec.setValueRepr(instr.ID, valueReprRawTablePtr)
-		ec.shapeVerified[instr.ID] = fact.ShapeID
 		return
 	}
 	ec.asm.LDR(reg, mRegRegs, slotOffset(slot))
