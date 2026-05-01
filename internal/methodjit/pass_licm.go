@@ -170,11 +170,11 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 		}
 	}
 
-	// Collect in-loop field/table writes, global writes, and calls for alias analysis.
+	// Collect in-loop field/table writes, global writes, and effectful calls for alias analysis.
 	setFields := make(map[loadKey]bool)
 	arrayElementWrites := make(map[loadKey]bool)
 	setGlobals := make(map[int64]bool) // Aux (constant pool index) of in-loop SetGlobal
-	hasLoopCall := false
+	hasEffectfulLoopCall := false
 	for _, b := range bodyList {
 		for _, instr := range b.Instrs {
 			switch instr.Op {
@@ -207,8 +207,12 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				}
 			case OpSetGlobal:
 				setGlobals[instr.Aux] = true
-			case OpCall, OpSelf:
-				hasLoopCall = true
+			case OpCall:
+				if !isPureNumericLoopCall(fn, instr) {
+					hasEffectfulLoopCall = true
+				}
+			case OpSelf:
+				hasEffectfulLoopCall = true
 			}
 		}
 	}
@@ -250,7 +254,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			}
 			// GetField: require no in-loop store to same (obj, field) and no calls.
 			if instr.Op == OpGetField {
-				if hasLoopCall {
+				if hasEffectfulLoopCall {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"loop contains a call that may mutate fields")
 					continue
@@ -272,7 +276,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			}
 			// GetTable: require no in-loop SetTable on same obj and no calls.
 			if instr.Op == OpGetTable {
-				if hasLoopCall {
+				if hasEffectfulLoopCall {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"loop contains a call that may mutate tables")
 					continue
@@ -296,7 +300,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			// inside the loop can change metatable/kind/data semantics before
 			// the original access point.
 			if instr.Op == OpTableArrayHeader {
-				if hasLoopCall {
+				if hasEffectfulLoopCall {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"loop contains a call that may mutate tables")
 					continue
@@ -311,7 +315,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			}
 			// GetGlobal: require no in-loop SetGlobal on same name and no calls.
 			if instr.Op == OpGetGlobal {
-				if hasLoopCall {
+				if hasEffectfulLoopCall {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"loop contains a call that may mutate globals")
 					continue
@@ -525,6 +529,25 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 	// Insert PH into fn.Blocks just before hdr's position for readable
 	// printer output and for RPO to pick it up correctly.
 	insertBlockBefore(fn, ph, hdr)
+}
+
+func isPureNumericLoopCall(fn *Function, call *Instr) bool {
+	if fn == nil || call == nil || call.Op != OpCall {
+		return false
+	}
+	globals := callABIMergeGlobals(fn.Globals, callABIStableGlobals(fn.Proto))
+	if len(globals) == 0 {
+		return false
+	}
+	_, callee := resolveCallee(call, fn, InlineConfig{Globals: globals})
+	if callee == nil {
+		return false
+	}
+	calleeFn := BuildGraph(callee)
+	if calleeFn == nil {
+		return false
+	}
+	return pureNumericInlineRejectReason(calleeFn) == ""
 }
 
 // sameValue returns true when every non-nil Value in args refers to the

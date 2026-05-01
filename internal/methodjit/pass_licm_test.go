@@ -985,6 +985,74 @@ func TestLICM_NoHoistGetGlobal_WhenCallInLoop(t *testing.T) {
 	}
 }
 
+func TestLICM_HoistGetGlobalAcrossPureNumericLoopCall(t *testing.T) {
+	src := `
+func helper(n) {
+    s := 0
+    for i := 1; i <= n; i++ {
+        s = s + i
+    }
+    return s
+}
+
+func caller(n, reps) {
+    result := 0
+    for r := 1; r <= reps; r++ {
+        result = helper(n)
+    }
+    return result
+}
+`
+	fn, config := buildInlineTestIR(t, src, "caller")
+
+	var err error
+	passes := []struct {
+		name string
+		fn   PassFunc
+	}{
+		{"SimplifyPhis", SimplifyPhisPass},
+		{"TypeSpecialize", TypeSpecializePass},
+		{"Inline", InlinePassWith(config)},
+		{"TypeSpecializePostInline", TypeSpecializePass},
+		{"ConstProp", ConstPropPass},
+		{"DCE", DCEPass},
+		{"RangeAnalysis", RangeAnalysisPass},
+		{"LICM", LICMPass},
+	}
+	for _, pass := range passes {
+		fn, err = pass.fn(fn)
+		if err != nil {
+			t.Fatalf("%s: %v", pass.name, err)
+		}
+	}
+	assertValidates(t, fn, "after LICM")
+
+	li := computeLoopInfo(fn)
+	foundHelperGlobal := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGetGlobal || !globalNameAt(fn, instr.Aux, "helper") {
+				continue
+			}
+			foundHelperGlobal = true
+			if li.loopBlocks[block.ID] {
+				t.Fatalf("pure numeric helper GetGlobal stayed in loop block B%d:\n%s", block.ID, Print(fn))
+			}
+		}
+	}
+	if !foundHelperGlobal {
+		t.Fatalf("expected residual helper GetGlobal after loop-callee inline rejection:\n%s", Print(fn))
+	}
+}
+
+func globalNameAt(fn *Function, idx int64, want string) bool {
+	if fn == nil || fn.Proto == nil || idx < 0 || int(idx) >= len(fn.Proto.Constants) {
+		return false
+	}
+	v := fn.Proto.Constants[idx]
+	return v.IsString() && v.Str() == want
+}
+
 // ---------- Test 15: hoist GuardType on hoisted GetField ----------
 
 func TestLICM_GuardTypeHoist(t *testing.T) {
