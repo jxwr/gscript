@@ -267,6 +267,54 @@ result := consume()
 	}
 }
 
+func TestEscapeAnalysis_RewriteDominatedSuccessorReads(t *testing.T) {
+	src := `
+func branch_read(flag) {
+    p := {x: 1, y: 2}
+    if flag {
+        return p.x
+    }
+    return p.y
+}
+result := branch_read(true)
+`
+	top := compileProto(t, src)
+	inner := findProtoByName(top, "branch_read")
+	if inner == nil {
+		t.Fatal("branch_read proto missing")
+	}
+	inner.EnsureFeedback()
+	fn := BuildGraph(inner)
+
+	virtuals := identifyVirtualAllocs(fn)
+	if len(virtuals) != 1 {
+		t.Fatalf("expected successor-read allocation to be virtual, got %d\nIR:\n%s", len(virtuals), Print(fn))
+	}
+
+	fn2, err := EscapeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("EscapeAnalysisPass: %v", err)
+	}
+
+	nt, gf, sf := 0, 0, 0
+	for _, block := range fn2.Blocks {
+		for _, ins := range block.Instrs {
+			switch ins.Op {
+			case OpNewTable:
+				nt++
+			case OpGetField:
+				gf++
+			case OpSetField:
+				sf++
+			}
+		}
+	}
+	if nt != 0 || gf != 0 || sf != 0 {
+		t.Fatalf("expected dominated successor field reads to be scalar-replaced; NewTable=%d GetField=%d SetField=%d\nIR:\n%s",
+			nt, gf, sf, Print(fn2))
+	}
+}
+
 // TestR161_VirtualPhi_ObjectCreation — the canonical object_creation
 // pattern: a loop-carried accumulator table, re-created each iter
 // via inlined vec3_add → new_vec3. Both the initial table (B0) and

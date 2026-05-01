@@ -1,9 +1,9 @@
 // pass_escape.go implements escape analysis + scalar replacement for
 // short-lived Table allocations. It identifies OpNewTable SSA values
-// whose only uses are static-key GetField/SetField within the same
-// block, then rewrites those uses into direct SSA references to the
-// last-stored value per field. The original NewTable and its
-// SetField stores become dead and are removed by DCE.
+// whose only uses are static-key GetField/SetField, then rewrites those
+// uses into direct SSA references to the last-stored value per field.
+// The original NewTable and its SetField stores become dead and are
+// removed by DCE.
 //
 // MVP scope (R158-R163):
 //   - R158: detection only (this file's EscapeAnalyzeFn helper +
@@ -43,10 +43,11 @@ type virtualAllocInfo struct {
 //	(a) op is OpNewTable
 //	(b) every use of the result is OpGetField/OpSetField with
 //	    static Aux, whose Args[0] is the alloc (not Args[1])
-//	(c) all uses live in the SAME block as the alloc
+//	(c) all stores live in the SAME block as the alloc
+//	(d) reads either live in the allocation block or in blocks dominated
+//	    by it
 //
-// Any other use kills the candidacy. R160 will relax (c) to allow
-// if/else merges; R161 relaxes to loops.
+// Any other use kills the candidacy.
 func identifyVirtualAllocs(fn *Function) map[int]*virtualAllocInfo {
 	return identifyVirtualAllocsWithRemarks(fn, nil)
 }
@@ -73,6 +74,7 @@ func identifyVirtualAllocsWithRemarks(fn *Function, remarks *OptimizationRemarks
 	if len(candidates) == 0 {
 		return nil
 	}
+	dom := computeDominators(fn)
 
 	// Second pass: scan every use of every candidate. Any violating
 	// use removes the candidate.
@@ -106,8 +108,8 @@ func identifyVirtualAllocsWithRemarks(fn *Function, remarks *OptimizationRemarks
 						kill(arg.ID, "table is used as a field key or value")
 						continue
 					}
-					if block.ID != cand.blockID {
-						kill(arg.ID, "field access is outside the allocation block")
+					if block.ID != cand.blockID && (dom == nil || !dom.dominates(cand.blockID, block.ID)) {
+						kill(arg.ID, "field access is not dominated by allocation block")
 						continue
 					}
 					cand.fieldUses = append(cand.fieldUses, instr.ID)
@@ -511,7 +513,7 @@ func fieldNameFromAux(fn *Function, aux int64) string {
 //     field_ssa[F] = X.ID. Replace instr.Op = OpNop (X is still
 //     reachable through the map).
 //
-//  3. On OpGetField(self=V, Aux=F):
+//  3. On OpGetField(self=V, Aux=F), in B or a dominated successor:
 //     If field_ssa[F] exists, replaceAllUses(fn, instr.ID, valueInstr).
 //     Replace instr.Op = OpNop.
 //     If field_ssa[F] does NOT exist (read-before-write), we bail
@@ -568,7 +570,9 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 
 		bailed := false
 
-		// First forward walk: validate and collect.
+		// First forward walk: validate block-local read-before-write cases
+		// and collect the final value for each field written in the allocation
+		// block. Dominated successor reads observe this end-of-block map.
 		for _, instr := range block.Instrs {
 			if instr.Op == OpGetField && len(instr.Args) >= 1 &&
 				instr.Args[0].ID == allocID {
@@ -592,11 +596,42 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 				fieldSSA[name] = instr.Args[1].ID
 			}
 		}
+		if !bailed {
+			for _, useBlock := range fn.Blocks {
+				if useBlock.ID == info.blockID {
+					continue
+				}
+				for _, instr := range useBlock.Instrs {
+					if instr.Op != OpGetField || len(instr.Args) < 1 ||
+						instr.Args[0].ID != allocID {
+						continue
+					}
+					name := fieldNameFromAux(fn, instr.Aux)
+					if name == "" {
+						bailed = true
+						break
+					}
+					if _, ok := fieldSSA[name]; !ok {
+						bailed = true
+						break
+					}
+				}
+				if bailed {
+					break
+				}
+			}
+		}
 		if bailed {
 			continue
 		}
 
-		// Second forward walk: apply rewrites, rebuilding the map.
+		finalFieldSSA := make(map[string]int, len(fieldSSA))
+		for name, id := range fieldSSA {
+			finalFieldSSA[name] = id
+		}
+
+		// Second forward walk: apply block-local rewrites, rebuilding the map
+		// so same-block reads see the nearest preceding store.
 		fieldSSA = make(map[string]int)
 		for _, instr := range block.Instrs {
 			switch {
@@ -618,6 +653,38 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 					continue
 				}
 				valID, ok := fieldSSA[name]
+				if !ok {
+					continue
+				}
+				defInstr, ok := instrByID[valID]
+				if !ok || defInstr == nil {
+					continue
+				}
+				replaceAllUses(fn, instr.ID, defInstr)
+				instr.Op = OpNop
+				instr.Args = nil
+				instr.Aux = 0
+			}
+		}
+
+		// Dominated successor reads see the allocation block's final field
+		// state. Stores outside the allocation block are rejected by
+		// identifyVirtualAllocsWithRemarks, so no path can mutate this virtual
+		// object after the branch.
+		for _, useBlock := range fn.Blocks {
+			if useBlock.ID == info.blockID {
+				continue
+			}
+			for _, instr := range useBlock.Instrs {
+				if instr.Op != OpGetField || len(instr.Args) < 1 ||
+					instr.Args[0].ID != allocID {
+					continue
+				}
+				name := fieldNameFromAux(fn, instr.Aux)
+				if name == "" {
+					continue
+				}
+				valID, ok := finalFieldSSA[name]
 				if !ok {
 					continue
 				}
