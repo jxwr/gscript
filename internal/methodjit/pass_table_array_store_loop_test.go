@@ -69,6 +69,31 @@ func TestTableArrayStoreLoopVersion_LowersLargeNumericAppendLoop(t *testing.T) {
 	}
 }
 
+func TestTableArrayStoreLoopVersion_LowersMultipleLargeNumericTables(t *testing.T) {
+	fn := tableArrayMultiNumericStoreLoopFixture(t)
+
+	out, err := TableArrayStoreLoopVersionPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValidates(t, out, "multi numeric store loop versioned")
+
+	counts := countOps(out)
+	if counts[OpSetTable] != 0 || counts[OpTableArrayStore] != 2 {
+		t.Fatalf("expected both table stores to lower, counts=%v\n%s", counts, Print(out))
+	}
+	if counts[OpTableArrayHeader] != 2 || counts[OpTableArrayLen] != 2 || counts[OpTableArrayData] != 2 {
+		t.Fatalf("expected one preheader fact set per table, counts=%v\n%s", counts, Print(out))
+	}
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpTableArrayStore && instr.Aux2&tableArrayStoreFlagAllowGrow == 0 {
+				t.Fatalf("lowered numeric store should carry allow-grow flag:\n%s", Print(out))
+			}
+		}
+	}
+}
+
 func TestTableArrayStoreLoopVersion_DiagnosticsCoversSieveStoreLoop(t *testing.T) {
 	proto := compileProto(t, `
 func sieve_like(n) {
@@ -166,5 +191,42 @@ func tableArrayNumericStoreLoopFixture(t *testing.T) *Function {
 	exit.Instrs = []*Instr{ret}
 
 	assertValidates(t, fn, "table array numeric store loop fixture")
+	return fn
+}
+
+func tableArrayMultiNumericStoreLoopFixture(t *testing.T) *Function {
+	t.Helper()
+
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_multi_numeric_store_loop"}, NumRegs: 4}
+	entry, header, body, exit := buildSimpleLoop(fn)
+
+	tblA := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Aux: tier2FeedbackOuterLoopArrayHint + 1, Aux2: packNewTableAux2(0, runtime.ArrayFloat), Block: entry}
+	tblB := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Aux: tier2FeedbackOuterLoopArrayHint + 1, Aux2: packNewTableAux2(0, runtime.ArrayFloat), Block: entry}
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	entryJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: entry}
+	entry.Instrs = []*Instr{tblA, tblB, zero, entryJump}
+
+	iPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	bound := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 16, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpLtInt, Type: TypeBool, Args: []*Value{iPhi.Value(), bound.Value()}, Block: header}
+	branch := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Aux: int64(body.ID), Aux2: int64(exit.ID), Block: header}
+	header.Instrs = []*Instr{iPhi, bound, cond, branch}
+
+	valA := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Aux: 0x3ff0000000000000, Block: body}
+	valB := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Aux: 0x4000000000000000, Block: body}
+	storeA := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown, Aux2: int64(vm.FBKindFloat),
+		Args: []*Value{tblA.Value(), iPhi.Value(), valA.Value()}, Block: body}
+	storeB := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown, Aux2: int64(vm.FBKindFloat),
+		Args: []*Value{tblB.Value(), iPhi.Value(), valB.Value()}, Block: body}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: body}
+	next := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{iPhi.Value(), one.Value()}, Block: body}
+	bodyJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: body}
+	body.Instrs = []*Instr{valA, valB, storeA, storeB, one, next, bodyJump}
+	iPhi.Args = []*Value{zero.Value(), next.Value()}
+
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Args: []*Value{zero.Value()}, Block: exit}
+	exit.Instrs = []*Instr{ret}
+
+	assertValidates(t, fn, "table array multi numeric store loop fixture")
 	return fn
 }

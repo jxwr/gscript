@@ -5,8 +5,8 @@ package methodjit
 // Invariant: a complete fact for (table, kind) is visible only after a matching
 // TableArrayHeader, TableArrayLen, and TableArrayData have all been observed
 // without an intervening structural mutation of that table or a call. Checked
-// OpTableArrayStore preserves the protocol; OpSetTable/OpAppend/OpSetList do
-// not unless they have already been lowered to OpTableArrayStore.
+// OpTableArrayStore and OpTableArraySwap preserve the protocol;
+// OpSetTable/OpAppend/OpSetList do not unless they have already been lowered.
 type tableArrayFactSet struct {
 	headersByTable map[tableArrayHeaderKey]*tableArrayHeaderFact
 	headersByID    map[int]*tableArrayHeaderFact

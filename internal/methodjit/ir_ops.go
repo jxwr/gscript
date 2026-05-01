@@ -114,6 +114,10 @@ const (
 	// Reuses previously verified typed-array facts, checks key/value before
 	// mutation, and precise-deopts on miss so the interpreter replays SETTABLE.
 	OpTableArrayStore
+	// Fused typed-array swap. Args = [table, data, len, keyA, keyB].
+	// Replaces same-block load/load/store/store exchange patterns after the
+	// table kind/header/data facts have already been lowered.
+	OpTableArraySwap
 	// Bulk bool-array fill. Args = [table, start, end] for contiguous fills or
 	// [table, start, end, step] for bounded stride fills. Aux = byte value
 	// (1=false, 2=true). The stride form uses a guarded bool-array kernel and
@@ -268,6 +272,7 @@ var opNames = [...]string{
 	OpTableArrayData:             "TableArrayData",
 	OpTableArrayLoad:             "TableArrayLoad",
 	OpTableArrayStore:            "TableArrayStore",
+	OpTableArraySwap:             "TableArraySwap",
 	OpTableBoolArrayFill:         "TableBoolArrayFill",
 	OpTableBoolArrayCount:        "TableBoolArrayCount",
 	OpTableIntArrayReversePrefix: "TableIntArrayReversePrefix",

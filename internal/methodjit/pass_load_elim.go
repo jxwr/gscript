@@ -330,6 +330,16 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
 					"recorded typed array store value for forwarding")
 
+			case OpTableArraySwap:
+				if len(instr.Args) < 1 || instr.Args[0] == nil {
+					continue
+				}
+				objID := instr.Args[0].ID
+				if invalidateDynamicTableCacheForObject(tableAvail, objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"typed array swap invalidated dynamic-key table cache")
+				}
+
 			case OpTableIntArrayReversePrefix:
 				if len(instr.Args) < 1 || instr.Args[0] == nil {
 					continue

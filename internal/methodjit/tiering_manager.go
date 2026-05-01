@@ -779,7 +779,7 @@ func hasRestartVisibleSideEffect(fn *Function) bool {
 			switch instr.Op {
 			case OpCall,
 				OpSetGlobal,
-				OpSetTable, OpTableArrayStore, OpSetField,
+				OpSetTable, OpTableArrayStore, OpTableArraySwap, OpSetField,
 				OpNewTable, OpNewFixedTable, OpSetList, OpAppend,
 				OpSelf,
 				OpSetUpval,

@@ -29,27 +29,29 @@ func TableArrayStoreLoopVersionPass(fn *Function) (*Function, error) {
 		if preheader == nil {
 			continue
 		}
-		cand, ok := tableArrayStoreLoopCandidateFor(fn, body)
-		if !ok {
+		candidates := tableArrayStoreLoopCandidatesFor(fn, body)
+		if len(candidates) == 0 {
 			continue
 		}
-		if !tableArrayStoreLoopHasLengthSeed(fn, dom, preheader, cand) {
-			functionRemarks(fn).Add("TableArrayStoreLoopVersion", "missed", header.ID, 0, OpTableArrayStore,
-				"typed mutation loop has no dominating length seed")
-			continue
-		}
-		header, data, length := insertTableArrayStoreLoopFacts(fn, preheader, cand)
-		for _, store := range cand.stores {
-			if len(store.Args) < 3 {
+		for _, cand := range candidates {
+			if !tableArrayStoreLoopHasLengthSeed(fn, dom, preheader, cand) {
+				functionRemarks(fn).Add("TableArrayStoreLoopVersion", "missed", header.ID, 0, OpTableArrayStore,
+					"typed mutation loop has no dominating length seed")
 				continue
 			}
-			store.Op = OpTableArrayStore
-			store.Args = []*Value{cand.table, data, length, store.Args[1], store.Args[2], header}
-			store.Aux = cand.kind
-			store.Aux2 = tableArrayStoreLoopFlags(cand)
-			store.Type = TypeUnknown
-			functionRemarks(fn).Add("TableArrayStoreLoopVersion", "changed", store.Block.ID, store.ID, store.Op,
-				"lowered local typed table mutation loop store to checked raw array store")
+			header, data, length := insertTableArrayStoreLoopFacts(fn, preheader, cand)
+			for _, store := range cand.stores {
+				if len(store.Args) < 3 {
+					continue
+				}
+				store.Op = OpTableArrayStore
+				store.Args = []*Value{cand.table, data, length, store.Args[1], store.Args[2], header}
+				store.Aux = cand.kind
+				store.Aux2 = tableArrayStoreLoopFlags(cand)
+				store.Type = TypeUnknown
+				functionRemarks(fn).Add("TableArrayStoreLoopVersion", "changed", store.Block.ID, store.ID, store.Op,
+					"lowered local typed table mutation loop store to checked raw array store")
+			}
 		}
 	}
 	return fn, nil
@@ -78,11 +80,12 @@ func tableArrayStoreLoopPreheader(header *Block, body map[int]bool) *Block {
 	return preheader
 }
 
-func tableArrayStoreLoopCandidateFor(fn *Function, body map[int]bool) (tableArrayStoreLoopCandidate, bool) {
-	var cand tableArrayStoreLoopCandidate
+func tableArrayStoreLoopCandidatesFor(fn *Function, body map[int]bool) []tableArrayStoreLoopCandidate {
 	if fn == nil || body == nil {
-		return cand, false
+		return nil
 	}
+	candidates := make(map[int]*tableArrayStoreLoopCandidate)
+	var order []int
 	for _, block := range fn.Blocks {
 		if block == nil || !body[block.ID] {
 			continue
@@ -94,28 +97,49 @@ func tableArrayStoreLoopCandidateFor(fn *Function, body map[int]bool) (tableArra
 			switch instr.Op {
 			case OpSetTable:
 				if len(instr.Args) < 3 || instr.Args[0] == nil || !tableArrayStoreLoopKind(instr.Aux2) {
-					return cand, false
+					return nil
 				}
-				if cand.table == nil {
-					cand.table = instr.Args[0]
-					cand.kind = instr.Aux2
-					if !tableArrayStoreLoopLocalTypedTable(cand.table, cand.kind, body) {
-						return cand, false
+				tableID := instr.Args[0].ID
+				cand := candidates[tableID]
+				if cand == nil {
+					if !tableArrayStoreLoopLocalTypedTable(instr.Args[0], instr.Aux2, body) {
+						return nil
 					}
-				} else if instr.Args[0].ID != cand.table.ID || instr.Aux2 != cand.kind {
-					return cand, false
+					cand = &tableArrayStoreLoopCandidate{table: instr.Args[0], kind: instr.Aux2}
+					candidates[tableID] = cand
+					order = append(order, tableID)
+				} else if cand.kind != instr.Aux2 {
+					return nil
 				}
 				cand.stores = append(cand.stores, instr)
 			case OpTableArrayStore:
 				// Existing checked stores are structural-preserving, but this
 				// pass is only responsible for pure SetTable mutation loops.
-				return cand, false
+				return nil
 			case OpCall, OpSelf, OpSetField, OpAppend, OpSetList, OpTableBoolArrayFill:
-				return cand, false
+				return nil
 			}
 		}
 	}
-	return cand, cand.table != nil && len(cand.stores) > 0
+	if len(order) == 0 {
+		return nil
+	}
+	out := make([]tableArrayStoreLoopCandidate, 0, len(order))
+	for _, tableID := range order {
+		cand := candidates[tableID]
+		if cand != nil && cand.table != nil && len(cand.stores) > 0 {
+			out = append(out, *cand)
+		}
+	}
+	return out
+}
+
+func tableArrayStoreLoopCandidateFor(fn *Function, body map[int]bool) (tableArrayStoreLoopCandidate, bool) {
+	candidates := tableArrayStoreLoopCandidatesFor(fn, body)
+	if len(candidates) != 1 {
+		return tableArrayStoreLoopCandidate{}, false
+	}
+	return candidates[0], true
 }
 
 func tableArrayStoreLoopKind(kind int64) bool {

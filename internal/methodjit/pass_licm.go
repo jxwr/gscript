@@ -188,7 +188,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				if len(instr.Args) >= 1 {
 					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: -1}] = true
 				}
-			case OpTableArrayStore:
+			case OpTableArrayStore, OpTableArraySwap:
 				// Checked typed-array stores preserve table kind/len/data but
 				// still mutate elements, so invariant GetTable loads cannot
 				// move across them.

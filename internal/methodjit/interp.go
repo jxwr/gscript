@@ -604,6 +604,18 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		tbl.Table().RawSetInt(key.Int(), val)
 
+	case OpTableArraySwap:
+		tbl := s.val(instr.Args[0])
+		keyA := s.val(instr.Args[3])
+		keyB := s.val(instr.Args[4])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableArraySwap: arg 0 not a table")
+		}
+		a := tbl.Table().RawGetInt(keyA.Int())
+		b := tbl.Table().RawGetInt(keyB.Int())
+		tbl.Table().RawSetInt(keyA.Int(), b)
+		tbl.Table().RawSetInt(keyB.Int(), a)
+
 	case OpTableBoolArrayFill:
 		tbl := s.val(instr.Args[0])
 		start := s.val(instr.Args[1])

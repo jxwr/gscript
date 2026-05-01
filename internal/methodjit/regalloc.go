@@ -470,6 +470,11 @@ func assignLoopTableArrayInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAll
 					if len(instr.Args) >= 6 && tableArrayStoreNeedsTablePtr(instr.Aux, instr.Aux2) {
 						recordTableArrayInvariantCandidate(instr.Args[5], body, headerID, defs, defBlocks, dom, useCounts)
 					}
+				case OpTableArraySwap:
+					if len(instr.Args) >= 3 {
+						recordTableArrayInvariantCandidate(instr.Args[1], body, headerID, defs, defBlocks, dom, useCounts)
+						recordTableArrayInvariantCandidate(instr.Args[2], body, headerID, defs, defBlocks, dom, useCounts)
+					}
 				}
 			}
 		}

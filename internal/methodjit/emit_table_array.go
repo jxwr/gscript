@@ -731,6 +731,56 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitTableArraySwap(instr *Instr) {
+	if len(instr.Args) < 5 {
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("tarr_swap_deopt")
+	doneLabel := ec.uniqueLabel("tarr_swap_done")
+
+	ec.emitTableIntArrayKernelKeyToReg(instr.Args[3], jit.X1, deoptLabel)
+	keyAID := instr.Args[3].ID
+	if kv, isConst := ec.constInts[keyAID]; (!isConst || kv < 0) && !ec.intNonNegative(keyAID) {
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
+	ec.emitTableIntArrayKernelKeyToReg(instr.Args[4], jit.X4, deoptLabel)
+	keyBID := instr.Args[4].ID
+	if kv, isConst := ec.constInts[keyBID]; (!isConst || kv < 0) && !ec.intNonNegative(keyBID) {
+		asm.CMPimm(jit.X4, 0)
+		asm.BCond(jit.CondLT, deoptLabel)
+	}
+	dataReg := ec.resolveRawDataPtr(instr.Args[1].ID, jit.X2)
+	if dataReg != jit.X2 {
+		asm.MOVreg(jit.X2, dataReg)
+	}
+	lenReg := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
+	if lenReg != jit.X3 {
+		asm.MOVreg(jit.X3, lenReg)
+	}
+	asm.CMPreg(jit.X1, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.CMPreg(jit.X4, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+
+	switch instr.Aux {
+	case int64(vm.FBKindInt), int64(vm.FBKindFloat):
+		asm.LDRreg(jit.X5, jit.X2, jit.X1)
+		asm.LDRreg(jit.X6, jit.X2, jit.X4)
+		asm.STRreg(jit.X6, jit.X2, jit.X1)
+		asm.STRreg(jit.X5, jit.X2, jit.X4)
+	default:
+		ec.emitDeopt(instr)
+		return
+	}
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 func tableArrayStoreNeedsTablePtr(kind, flags int64) bool {
 	return flags&tableArrayStoreFlagAllowGrow != 0 ||
 		kind == int64(vm.FBKindMixed) ||
