@@ -37,6 +37,29 @@ func TestFixedRecursiveNestedIntFoldQualifiesAckermann(t *testing.T) {
 	}
 }
 
+func TestFixedRecursiveNestedIntFoldQualifiesNonAckNameAndZeroArg(t *testing.T) {
+	top := compileProto(t, `
+func hyper(m, n) {
+	if m == 0 { return n + 1 }
+	if n == 0 { return hyper(m - 1, 2) }
+	return hyper(m - 1, hyper(m, n - 1))
+}
+`)
+	hyper := findProtoByName(top, "hyper")
+	if hyper == nil {
+		t.Fatal("hyper proto not found")
+	}
+	protocol, ok := analyzeFixedRecursiveNestedIntFold(hyper)
+	if !ok {
+		dumpProtoBytecode(t, hyper)
+		t.Fatal("non-ack nested recurrence should qualify for fixed recursive nested int fold protocol")
+	}
+	got, ok := protocol.fold(runtime.IntValue(3), runtime.IntValue(2))
+	if !ok || got != 119 {
+		t.Fatalf("hyper(3,2) fold = %d/%v, want 119/true", got, ok)
+	}
+}
+
 func TestFixedRecursiveNestedIntFoldRejectsNonNestedRecurrence(t *testing.T) {
 	top := compileProto(t, fixedIntFibSrc)
 	fib := findProtoByName(top, "fib")

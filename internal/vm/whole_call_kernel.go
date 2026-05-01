@@ -5,7 +5,7 @@ import "github.com/gscript/gscript/internal/runtime"
 const maxWholeCallScalarScratch = 1 << 20
 
 func wholeCallKernelArity(n int) bool {
-	return n == 1 || n == 3
+	return n == 1 || n == 2 || n == 3
 }
 
 func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, dst int) (bool, error) {
@@ -18,6 +18,9 @@ func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, 
 }
 
 func (vm *VM) tryRunValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if handled, results, err := vm.tryRunRawIntNestedValueKernel(cl, args); handled || err != nil {
+		return handled, results, err
+	}
 	includeRecursiveTable := cl != nil && cl.Proto != nil && vm.methodJIT != nil && cl.Proto.Tier2Promoted
 	return vm.tryRunCachedValueWholeCallKernel(cl, args, includeRecursiveTable)
 }

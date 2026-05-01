@@ -2083,6 +2083,9 @@ func (vm *VM) callValue(fnVal runtime.Value, args []runtime.Value) ([]runtime.Va
 	if fnVal.IsFunction() {
 		if cl, ok := closureFromValue(fnVal); ok {
 			if wholeCallKernelArity(len(args)) {
+				if handled, results, err := vm.tryRunRawIntNestedValueKernel(cl, args); handled {
+					return results, err
+				}
 				if handled, results, err := vm.tryRunNonRecursiveTableValueWholeCallKernel(cl, args); handled {
 					return results, err
 				}

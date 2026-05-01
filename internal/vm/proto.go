@@ -31,6 +31,7 @@ type FuncProto struct {
 	WholeCallKernel        *wholeCallKernelProtoCache // structural whole-call kernel recognizer cache, nil until first probe
 	NBodyAdvanceKernel     *nbodyAdvanceKernelCache   // guarded whole-call record kernel cache, nil until first probe
 	RecursiveTableKernel   *recursiveTableKernelCache // guarded whole-call lazy recursive table builder/fold cache, nil until first probe
+	RawIntNestedKernel     *rawIntNestedKernelCache   // guarded whole-call nested raw-int recurrence cache, nil until first probe
 	HasSelfCalls           bool                       // true if function has recursive calls to itself (set during JIT compilation)
 	CallCount              int                        // JIT call count (avoids map lookup in VM hot path)
 	JITDisabled            bool                       // true when the method JIT made a permanent per-proto stay-interpreted decision

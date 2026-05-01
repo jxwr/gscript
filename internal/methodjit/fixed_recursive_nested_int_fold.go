@@ -288,6 +288,9 @@ func (p *fixedRecursiveNestedIntFoldProtocol) fold(mv, nv runtime.Value) (int64,
 	if m < 0 || n < 0 || p.zeroArg < 0 {
 		return 0, false
 	}
+	if out, ok := p.foldSmallRows(m, n); ok {
+		return out, true
+	}
 	stack := make([]int64, 0, 32)
 	for iter := 0; iter < maxFixedRecursiveNestedIntFoldIterations; iter++ {
 		switch {
@@ -320,4 +323,109 @@ func (p *fixedRecursiveNestedIntFoldProtocol) fold(mv, nv runtime.Value) (int64,
 		}
 	}
 	return 0, false
+}
+
+func (p *fixedRecursiveNestedIntFoldProtocol) foldSmallRows(m, n int64) (int64, bool) {
+	if p.baseAdd != 1 || p.mStep != 1 || p.nStep != 1 {
+		return 0, false
+	}
+	z := p.zeroArg
+	switch m {
+	case 0:
+		return fixedFoldCheckedAdd(n, 1)
+	case 1:
+		out, ok := fixedFoldCheckedAdd(n, z)
+		if !ok {
+			return 0, false
+		}
+		return fixedFoldCheckedAdd(out, 1)
+	case 2:
+		count, ok := fixedFoldCheckedAdd(n, 1)
+		if !ok {
+			return 0, false
+		}
+		step, ok := fixedFoldCheckedAdd(z, 1)
+		if !ok {
+			return 0, false
+		}
+		product, ok := fixedNestedCheckedMul(count, step)
+		if !ok {
+			return 0, false
+		}
+		return fixedFoldCheckedAdd(z, product)
+	case 3:
+		count, ok := fixedFoldCheckedAdd(n, 1)
+		if !ok {
+			return 0, false
+		}
+		if z == 0 {
+			return count, true
+		}
+		s, ok := fixedFoldCheckedAdd(z, 1)
+		if !ok {
+			return 0, false
+		}
+		pow, ok := fixedNestedCheckedPow(s, count)
+		if !ok {
+			return 0, false
+		}
+		left, ok := fixedNestedCheckedMul(pow, z)
+		if !ok {
+			return 0, false
+		}
+		c, ok := fixedFoldCheckedAdd(2*z, 1)
+		if !ok {
+			return 0, false
+		}
+		numer, ok := fixedNestedCheckedMul(c, pow-1)
+		if !ok || numer%z != 0 {
+			return 0, false
+		}
+		return fixedFoldCheckedAdd(left, numer/z)
+	default:
+		return 0, false
+	}
+}
+
+func fixedNestedCheckedMul(a, b int64) (int64, bool) {
+	if a < 0 || b < 0 {
+		return 0, false
+	}
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	if a > fixedFoldMaxInt48/b {
+		return 0, false
+	}
+	out := a * b
+	if out > fixedFoldMaxInt48 {
+		return 0, false
+	}
+	return out, true
+}
+
+func fixedNestedCheckedPow(base, exp int64) (int64, bool) {
+	if exp < 0 {
+		return 0, false
+	}
+	result := int64(1)
+	for exp > 0 {
+		if exp&1 != 0 {
+			var ok bool
+			result, ok = fixedNestedCheckedMul(result, base)
+			if !ok {
+				return 0, false
+			}
+		}
+		exp >>= 1
+		if exp == 0 {
+			break
+		}
+		var ok bool
+		base, ok = fixedNestedCheckedMul(base, base)
+		if !ok {
+			return 0, false
+		}
+	}
+	return result, true
 }
