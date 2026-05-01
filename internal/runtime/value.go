@@ -238,6 +238,7 @@ func gcCompact() {
 		vm.ScanGCRoots(visitor)
 	}
 	visitCurrentTableSlabRoot(visitor)
+	scanSimpleFormatCacheRoots(visitor, liveSet)
 
 	// Compact: copy only live entries into a fresh log.
 	// We allocate a new entries slice and atomically swap.

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unsafe"
 )
 
 // buildStringLib creates the "string" standard library table and returns it.
@@ -625,11 +626,7 @@ func stringFormatValue(args []Value) (Value, error) {
 	if prog, ok, err := cachedSimpleFormat(formatStr); err != nil {
 		return NilValue(), err
 	} else if ok {
-		s, err := prog.format(args)
-		if err != nil {
-			return NilValue(), err
-		}
-		return StringValue(s), nil
+		return prog.formatValue(args)
 	}
 	argIdx := 1
 
@@ -803,18 +800,27 @@ func writeFastIntegerFormat(buf *strings.Builder, fmtSpec string, spec byte, n i
 }
 
 type simpleFormatPart struct {
-	lit  string
-	spec string
-	verb byte
+	lit   string
+	spec  string
+	verb  byte
+	pad   byte
+	width int
 }
 
 type simpleFormatProgram struct {
-	parts    []simpleFormatPart
-	minArgs  int
-	litBytes int
+	parts     []simpleFormatPart
+	minArgs   int
+	litBytes  int
+	singleInt bool
+
+	resultMu    sync.Mutex
+	resultCache map[int64]Value
+	resultOrder []int64
+	resultEvict int
 }
 
 const simpleFormatCacheLimit = 64
+const simpleFormatResultCacheLimit = 8192
 
 var simpleFormatCache = struct {
 	sync.Mutex
@@ -898,7 +904,11 @@ func compileSimpleFormat(formatStr string) (*simpleFormatProgram, bool, error) {
 		i++
 		switch verb {
 		case 'd', 'i', 'u', 'x', 'X', 'o':
-			parts = append(parts, simpleFormatPart{spec: formatStr[start:i], verb: verb})
+			part, ok := compileSimpleIntegerFormatPart(formatStr[start:i], verb)
+			if !ok {
+				return nil, false, nil
+			}
+			parts = append(parts, part)
 		case 's':
 			if i-start != 2 {
 				return nil, false, nil
@@ -918,7 +928,109 @@ func compileSimpleFormat(formatStr string) (*simpleFormatProgram, bool, error) {
 		parts = append(parts, simpleFormatPart{lit: lit})
 		litBytes += len(lit)
 	}
-	return &simpleFormatProgram{parts: parts, minArgs: argCount + 1, litBytes: litBytes}, true, nil
+	return &simpleFormatProgram{
+		parts:     parts,
+		minArgs:   argCount + 1,
+		litBytes:  litBytes,
+		singleInt: argCount == 1 && simpleFormatHasSingleIntegerArg(parts),
+	}, true, nil
+}
+
+func compileSimpleIntegerFormatPart(fmtSpec string, verb byte) (simpleFormatPart, bool) {
+	if len(fmtSpec) < 2 || fmtSpec[0] != '%' || fmtSpec[len(fmtSpec)-1] != verb {
+		return simpleFormatPart{}, false
+	}
+	pos := 1
+	pad := byte(' ')
+	if pos < len(fmtSpec)-1 && fmtSpec[pos] == '0' {
+		pad = '0'
+		pos++
+	}
+	width := 0
+	for pos < len(fmtSpec)-1 && fmtSpec[pos] >= '0' && fmtSpec[pos] <= '9' {
+		width = width*10 + int(fmtSpec[pos]-'0')
+		pos++
+	}
+	if pos != len(fmtSpec)-1 {
+		return simpleFormatPart{}, false
+	}
+	return simpleFormatPart{spec: fmtSpec, verb: verb, pad: pad, width: width}, true
+}
+
+func simpleFormatHasSingleIntegerArg(parts []simpleFormatPart) bool {
+	seen := false
+	for _, part := range parts {
+		if part.verb == 0 {
+			continue
+		}
+		switch part.verb {
+		case 'd', 'i', 'u', 'x', 'X', 'o':
+			if part.width == 0 || seen {
+				return false
+			}
+			seen = true
+		default:
+			return false
+		}
+	}
+	return seen
+}
+
+func (p *simpleFormatProgram) formatValue(args []Value) (Value, error) {
+	if p.singleInt {
+		if len(args) < p.minArgs {
+			return NilValue(), fmt.Errorf("bad argument #%d to 'string.format' (no value)", len(args)+1)
+		}
+		n := toInt(args[1])
+		if v, ok := p.cachedResult(n); ok {
+			return v, nil
+		}
+		s, err := p.format(args)
+		if err != nil {
+			return NilValue(), err
+		}
+		v := StringValue(s)
+		p.storeCachedResult(n, v)
+		return v, nil
+	}
+	s, err := p.format(args)
+	if err != nil {
+		return NilValue(), err
+	}
+	return StringValue(s), nil
+}
+
+func (p *simpleFormatProgram) cachedResult(n int64) (Value, bool) {
+	p.resultMu.Lock()
+	defer p.resultMu.Unlock()
+	if p.resultCache == nil {
+		return NilValue(), false
+	}
+	v, ok := p.resultCache[n]
+	return v, ok
+}
+
+func (p *simpleFormatProgram) storeCachedResult(n int64, v Value) {
+	p.resultMu.Lock()
+	defer p.resultMu.Unlock()
+	if p.resultCache == nil {
+		p.resultCache = make(map[int64]Value, 64)
+	}
+	if _, exists := p.resultCache[n]; exists {
+		p.resultCache[n] = v
+		return
+	}
+	if len(p.resultCache) >= simpleFormatResultCacheLimit && len(p.resultOrder) > 0 {
+		delete(p.resultCache, p.resultOrder[p.resultEvict])
+		p.resultOrder[p.resultEvict] = n
+		p.resultEvict++
+		if p.resultEvict == len(p.resultOrder) {
+			p.resultEvict = 0
+		}
+	} else {
+		p.resultOrder = append(p.resultOrder, n)
+	}
+	p.resultCache[n] = v
 }
 
 func (p *simpleFormatProgram) format(args []Value) (string, error) {
@@ -937,14 +1049,69 @@ func (p *simpleFormatProgram) format(args []Value) (string, error) {
 		argIdx++
 		switch part.verb {
 		case 'd', 'i', 'u', 'x', 'X', 'o':
-			if !writeFastIntegerFormat(&buf, part.spec, part.verb, toInt(arg)) {
-				return "", fmt.Errorf("invalid cached integer format %q", part.spec)
-			}
+			writeCompiledIntegerFormat(&buf, part, toInt(arg))
 		case 's':
 			buf.WriteString(arg.String())
 		}
 	}
 	return buf.String(), nil
+}
+
+func writeCompiledIntegerFormat(buf *strings.Builder, part simpleFormatPart, n int64) {
+	var scratch [64]byte
+	digits := scratch[:0]
+	switch part.verb {
+	case 'd', 'i', 'u':
+		digits = strconv.AppendInt(digits, n, 10)
+	case 'x':
+		digits = strconv.AppendInt(digits, n, 16)
+	case 'X':
+		digits = strconv.AppendInt(digits, n, 16)
+		for i, b := range digits {
+			if b >= 'a' && b <= 'f' {
+				digits[i] = b - ('a' - 'A')
+			}
+		}
+	case 'o':
+		digits = strconv.AppendInt(digits, n, 8)
+	default:
+		return
+	}
+
+	if part.width <= len(digits) {
+		buf.Write(digits)
+		return
+	}
+	padCount := part.width - len(digits)
+	if part.pad == '0' && len(digits) > 0 && digits[0] == '-' {
+		buf.WriteByte('-')
+		for i := 0; i < padCount; i++ {
+			buf.WriteByte('0')
+		}
+		buf.Write(digits[1:])
+		return
+	}
+	for i := 0; i < padCount; i++ {
+		buf.WriteByte(part.pad)
+	}
+	buf.Write(digits)
+}
+
+func scanSimpleFormatCacheRoots(visitor func(unsafe.Pointer), seen map[uintptr]struct{}) {
+	simpleFormatCache.Lock()
+	programs := make([]*simpleFormatProgram, 0, len(simpleFormatCache.entries))
+	for _, prog := range simpleFormatCache.entries {
+		programs = append(programs, prog)
+	}
+	simpleFormatCache.Unlock()
+
+	for _, prog := range programs {
+		prog.resultMu.Lock()
+		for _, v := range prog.resultCache {
+			ScanValueRoots(v, visitor, seen)
+		}
+		prog.resultMu.Unlock()
+	}
 }
 
 func isFormatFlag(b byte) bool {

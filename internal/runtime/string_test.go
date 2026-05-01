@@ -138,6 +138,51 @@ for i := 1; i <= 3; i++ {
 	}
 }
 
+func TestStringFormatSingleIntegerResultCacheReusesValue(t *testing.T) {
+	prog, ok, err := compileSimpleFormat("SKU%05d")
+	if err != nil || !ok {
+		t.Fatalf("compileSimpleFormat: ok=%v err=%v", ok, err)
+	}
+
+	args := []Value{StringValue("SKU%05d"), IntValue(42)}
+	v1, err := prog.formatValue(args)
+	if err != nil {
+		t.Fatalf("first formatValue failed: %v", err)
+	}
+	v2, err := prog.formatValue(args)
+	if err != nil {
+		t.Fatalf("second formatValue failed: %v", err)
+	}
+	if v1 != v2 {
+		t.Fatalf("expected cached single-integer format to reuse boxed string value")
+	}
+	if v1.Str() != "SKU00042" {
+		t.Fatalf("expected SKU00042, got %q", v1.Str())
+	}
+}
+
+func TestStringFormatSingleIntegerResultCacheIsBounded(t *testing.T) {
+	prog, ok, err := compileSimpleFormat("key_%05d")
+	if err != nil || !ok {
+		t.Fatalf("compileSimpleFormat: ok=%v err=%v", ok, err)
+	}
+
+	for i := 0; i < simpleFormatResultCacheLimit+8; i++ {
+		_, err := prog.formatValue([]Value{StringValue("key_%05d"), IntValue(int64(i))})
+		if err != nil {
+			t.Fatalf("formatValue(%d) failed: %v", i, err)
+		}
+	}
+
+	prog.resultMu.Lock()
+	gotEntries := len(prog.resultCache)
+	gotOrder := len(prog.resultOrder)
+	prog.resultMu.Unlock()
+	if gotEntries > simpleFormatResultCacheLimit || gotOrder > simpleFormatResultCacheLimit {
+		t.Fatalf("simple format result cache grew beyond limit: entries=%d order=%d limit=%d", gotEntries, gotOrder, simpleFormatResultCacheLimit)
+	}
+}
+
 func TestCompileSimpleFormatRejectsFallbackFormats(t *testing.T) {
 	if _, ok, err := compileSimpleFormat("progress %% %d"); err != nil || ok {
 		t.Fatalf("escaped percent should use fallback parser: ok=%v err=%v", ok, err)
