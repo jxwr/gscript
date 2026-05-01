@@ -1623,6 +1623,9 @@ func (ec *emitContext) emitBlock(block *Block) {
 					if entry.IsRawInt {
 						ec.setValueRepr(entry.ValueID, valueReprRawInt)
 					}
+					if entry.IsRawTablePtr {
+						ec.setValueRepr(entry.ValueID, valueReprRawTablePtr)
+					}
 					if entry.IsRawDataPtr {
 						ec.setValueRepr(entry.ValueID, valueReprRawDataPtr)
 					}
@@ -1711,7 +1714,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 	outRaw := make(map[int]loopRegEntry)
 	for valueID := range ec.activeRegs {
 		repr := ec.valueReprOf(valueID)
-		if repr != valueReprRawInt && repr != valueReprRawDataPtr {
+		if repr != valueReprRawInt && repr != valueReprRawTablePtr && repr != valueReprRawDataPtr {
 			continue
 		}
 		pr, ok := ec.alloc.ValueRegs[valueID]
@@ -1719,9 +1722,10 @@ func (ec *emitContext) emitBlock(block *Block) {
 			continue
 		}
 		outRaw[pr.Reg] = loopRegEntry{
-			ValueID:      valueID,
-			IsRawInt:     repr == valueReprRawInt,
-			IsRawDataPtr: repr == valueReprRawDataPtr,
+			ValueID:       valueID,
+			IsRawInt:      repr == valueReprRawInt,
+			IsRawTablePtr: repr == valueReprRawTablePtr,
+			IsRawDataPtr:  repr == valueReprRawDataPtr,
 		}
 	}
 	ec.blockOutRawIntRegs[block.ID] = outRaw
@@ -1747,7 +1751,7 @@ func (ec *emitContext) seedSinglePredRawIntRegs(block *Block) {
 	sort.Ints(regs)
 	for _, reg := range regs {
 		entry := predOut[reg]
-		if (!entry.IsRawInt && !entry.IsRawDataPtr) || !liveIn[entry.ValueID] {
+		if (!entry.IsRawInt && !entry.IsRawTablePtr && !entry.IsRawDataPtr) || !liveIn[entry.ValueID] {
 			continue
 		}
 		pr, ok := ec.alloc.ValueRegs[entry.ValueID]
@@ -1758,6 +1762,9 @@ func (ec *emitContext) seedSinglePredRawIntRegs(block *Block) {
 		ec.activeRegs[entry.ValueID] = true
 		if entry.IsRawInt {
 			ec.setValueRepr(entry.ValueID, valueReprRawInt)
+		}
+		if entry.IsRawTablePtr {
+			ec.setValueRepr(entry.ValueID, valueReprRawTablePtr)
 		}
 		if entry.IsRawDataPtr {
 			ec.setValueRepr(entry.ValueID, valueReprRawDataPtr)

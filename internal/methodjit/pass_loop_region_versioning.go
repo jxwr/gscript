@@ -16,7 +16,7 @@ package methodjit
 //	  Branch cond -> body, exit
 //	body:
 //	  TableArrayLoad(data, len, key)
-//	  TableArrayStore(t, data, len, key, value)
+//	  TableArrayStore(t, data, len, key, value[, header])
 //
 // The continuing path of OpTableArrayStore is structural-preserving: it writes
 // an existing typed-array slot and does not change table kind, backing data, or

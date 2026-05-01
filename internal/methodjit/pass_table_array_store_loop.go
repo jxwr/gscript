@@ -39,13 +39,13 @@ func TableArrayStoreLoopVersionPass(fn *Function) (*Function, error) {
 				"typed mutation loop has no dominating length seed")
 			continue
 		}
-		data, length := insertTableArrayStoreLoopFacts(fn, preheader, cand)
+		header, data, length := insertTableArrayStoreLoopFacts(fn, preheader, cand)
 		for _, store := range cand.stores {
 			if len(store.Args) < 3 {
 				continue
 			}
 			store.Op = OpTableArrayStore
-			store.Args = []*Value{cand.table, data, length, store.Args[1], store.Args[2]}
+			store.Args = []*Value{cand.table, data, length, store.Args[1], store.Args[2], header}
 			store.Aux = cand.kind
 			store.Aux2 = 0
 			store.Type = TypeUnknown
@@ -161,7 +161,7 @@ func tableArrayStoreLoopHasLengthSeed(fn *Function, dom *domInfo, preheader *Blo
 	return false
 }
 
-func insertTableArrayStoreLoopFacts(fn *Function, preheader *Block, cand tableArrayStoreLoopCandidate) (*Value, *Value) {
+func insertTableArrayStoreLoopFacts(fn *Function, preheader *Block, cand tableArrayStoreLoopCandidate) (*Value, *Value, *Value) {
 	header := &Instr{
 		ID:    fn.newValueID(),
 		Op:    OpTableArrayHeader,
@@ -197,5 +197,5 @@ func insertTableArrayStoreLoopFacts(fn *Function, preheader *Block, cand tableAr
 	}
 	inserted := []*Instr{header, length, data}
 	preheader.Instrs = append(preheader.Instrs[:insertAt], append(inserted, preheader.Instrs[insertAt:]...)...)
-	return data.Value(), length.Value()
+	return header.Value(), data.Value(), length.Value()
 }

@@ -190,7 +190,7 @@ func matchCopyPrefixBody(body *Block, bodySet map[int]bool, idx *Value) (copyPre
 			}
 			store = instr
 		case OpTableArrayStore:
-			if len(instr.Args) != 5 || instr.Aux != int64(vm.FBKindInt) || !sameSSAValue(instr.Args[3], idx) {
+			if len(instr.Args) < 5 || instr.Aux != int64(vm.FBKindInt) || !sameSSAValue(instr.Args[3], idx) {
 				return match, false
 			}
 			if store != nil {
@@ -326,7 +326,7 @@ func matchReversePrefixBody(body *Block, loPhi, hiPhi *Value) (reversePrefixBody
 				return match, false
 			}
 		case OpTableArrayStore:
-			if len(instr.Args) != 5 || instr.Aux != int64(vm.FBKindInt) {
+			if len(instr.Args) < 5 || instr.Aux != int64(vm.FBKindInt) {
 				return match, false
 			}
 			if sameSSAValue(instr.Args[3], loPhi) {

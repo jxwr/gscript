@@ -462,6 +462,14 @@ func assignLoopTableArrayInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAll
 					if len(instr.Args) >= 3 {
 						recordTableArrayInvariantCandidate(instr.Args[2], body, headerID, defs, defBlocks, dom, useCounts)
 					}
+				case OpTableArrayStore:
+					if len(instr.Args) >= 3 {
+						recordTableArrayInvariantCandidate(instr.Args[1], body, headerID, defs, defBlocks, dom, useCounts)
+						recordTableArrayInvariantCandidate(instr.Args[2], body, headerID, defs, defBlocks, dom, useCounts)
+					}
+					if len(instr.Args) >= 6 && tableArrayStoreNeedsTablePtr(instr.Aux, instr.Aux2) {
+						recordTableArrayInvariantCandidate(instr.Args[5], body, headerID, defs, defBlocks, dom, useCounts)
+					}
 				}
 			}
 		}
@@ -482,7 +490,10 @@ func assignLoopTableArrayInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAll
 			}
 		}
 
-		const maxTableArrayGPRInvariants = 2
+		maxTableArrayGPRInvariants := 2
+		if tableArrayInvariantSetHasHeader(candidates, defs) {
+			maxTableArrayGPRInvariants = 3
+		}
 		for _, id := range candidates {
 			if len(out[headerID]) >= maxTableArrayGPRInvariants {
 				break
@@ -531,7 +542,7 @@ func isTableArrayGPRInvariant(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpTableArrayLen, OpTableArrayData:
+	case OpTableArrayHeader, OpTableArrayLen, OpTableArrayData:
 		return true
 	default:
 		return false
@@ -567,7 +578,19 @@ func tableArrayInvariantRank(instr *Instr) int {
 	if instr != nil && instr.Op == OpTableArrayData {
 		return 0
 	}
+	if instr != nil && instr.Op == OpTableArrayHeader {
+		return 2
+	}
 	return 1
+}
+
+func tableArrayInvariantSetHasHeader(ids []int, defs map[int]*Instr) bool {
+	for _, id := range ids {
+		if instr := defs[id]; instr != nil && instr.Op == OpTableArrayHeader {
+			return true
+		}
+	}
+	return false
 }
 
 func assignLoopFloatInvariantFPRs(fn *Function, li *loopInfo, alloc *RegAllocation) map[int]map[int]PhysReg {

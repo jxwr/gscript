@@ -18,6 +18,8 @@ package methodjit
 import (
 	"os"
 	"testing"
+
+	"github.com/gscript/gscript/internal/vm"
 )
 
 func TestRegallocCarriesRawIntIntoSinglePredBlock(t *testing.T) {
@@ -554,6 +556,68 @@ func TestRegalloc_TableArrayLenDataInvariantGPRPinned(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestRegalloc_TableArrayHeaderInvariantGPRPinnedForBoolStoreABI(t *testing.T) {
+	fn := &Function{NumRegs: 3, CarryPreheaderInvariants: true}
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	preheader := &Block{ID: 1, defs: make(map[int]*Value)}
+	header := &Block{ID: 2, defs: make(map[int]*Value)}
+	body := &Block{ID: 3, defs: make(map[int]*Value)}
+	exit := &Block{ID: 4, defs: make(map[int]*Value)}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, preheader, header, body, exit}
+
+	entry.Succs = []*Block{preheader}
+	preheader.Preds = []*Block{entry}
+	preheader.Succs = []*Block{header}
+	header.Preds = []*Block{preheader, body}
+	header.Succs = []*Block{body, exit}
+	body.Preds = []*Block{header}
+	body.Succs = []*Block{header}
+	exit.Preds = []*Block{header}
+
+	entry.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpJump, Block: entry, Aux: int64(preheader.ID)}}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: preheader}
+	arrHdr := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Args: []*Value{tbl.Value()}, Aux: int64(vm.FBKindBool), Block: preheader}
+	arrLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Args: []*Value{arrHdr.Value()}, Aux: int64(vm.FBKindBool), Block: preheader}
+	arrData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Args: []*Value{arrHdr.Value()}, Aux: int64(vm.FBKindBool), Block: preheader}
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: preheader}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: preheader}
+	preheader.Instrs = []*Instr{tbl, arrHdr, arrLen, arrData, seed, one, {ID: fn.newValueID(), Op: OpJump, Block: preheader, Aux: int64(header.ID)}}
+
+	iPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: header}
+	header.Instrs = []*Instr{iPhi, cond, {ID: fn.newValueID(), Op: OpBranch, Args: []*Value{cond.Value()}, Block: header, Aux: int64(body.ID), Aux2: int64(exit.ID)}}
+
+	boolVal := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: body}
+	store := &Instr{ID: fn.newValueID(), Op: OpTableArrayStore, Type: TypeUnknown, Aux: int64(vm.FBKindBool),
+		Args: []*Value{tbl.Value(), arrData.Value(), arrLen.Value(), iPhi.Value(), boolVal.Value(), arrHdr.Value()}, Block: body}
+	next := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{iPhi.Value(), one.Value()}, Block: body}
+	body.Instrs = []*Instr{boolVal, store, next, {ID: fn.newValueID(), Op: OpJump, Block: body, Aux: int64(header.ID)}}
+	iPhi.Args = []*Value{seed.Value(), next.Value()}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{seed.Value()}, Block: exit}}
+
+	alloc := AllocateRegisters(fn)
+	invariants := alloc.LoopInvariantGPRs[header.ID]
+	for _, instr := range []*Instr{arrHdr, arrLen, arrData} {
+		if _, ok := invariants[instr.ID]; !ok {
+			t.Fatalf("%s v%d was not pinned for bool store ABI; invariants=%v", instr.Op, instr.ID, invariants)
+		}
+	}
+
+	li := computeLoopInfo(fn)
+	safe := computeSafeLoopInvariantGPRs(fn, li, alloc)
+	if !safe[header.ID][arrHdr.ID].IsRawTablePtr || safe[header.ID][arrHdr.ID].IsRawInt || safe[header.ID][arrHdr.ID].IsRawDataPtr {
+		t.Fatalf("TableArrayHeader v%d should activate as raw table pointer, got %+v", arrHdr.ID, safe[header.ID][arrHdr.ID])
+	}
+	if !safe[header.ID][arrLen.ID].IsRawInt {
+		t.Fatalf("TableArrayLen v%d should activate as raw int", arrLen.ID)
+	}
+	if !safe[header.ID][arrData.ID].IsRawDataPtr || safe[header.ID][arrData.ID].IsRawInt {
+		t.Fatalf("TableArrayData v%d should activate as raw data pointer, got %+v", arrData.ID, safe[header.ID][arrData.ID])
 	}
 }
 

@@ -629,13 +629,20 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 
 	tblID := instr.Args[0].ID
 	allowGrow := instr.Aux2&tableArrayStoreFlagAllowGrow != 0
-	needsTablePtr := allowGrow || instr.Aux == int64(vm.FBKindMixed) || instr.Aux == int64(vm.FBKindBool)
+	needsTablePtr := tableArrayStoreNeedsTablePtr(instr.Aux, instr.Aux2)
 	if needsTablePtr {
-		tblReg := ec.resolveValueNB(tblID, jit.X0)
-		if tblReg != jit.X0 {
-			asm.MOVreg(jit.X0, tblReg)
+		if len(instr.Args) >= 6 && instr.Args[5] != nil {
+			tblReg := ec.resolveRawTablePtr(instr.Args[5].ID, jit.X0)
+			if tblReg != jit.X0 {
+				asm.MOVreg(jit.X0, tblReg)
+			}
+		} else {
+			tblReg := ec.resolveValueNB(tblID, jit.X0)
+			if tblReg != jit.X0 {
+				asm.MOVreg(jit.X0, tblReg)
+			}
+			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 		}
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	}
 
 	dataReg := ec.resolveRawDataPtr(instr.Args[1].ID, jit.X2)
@@ -690,6 +697,12 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 		ec.emitPreciseDeopt(instr)
 	}
 	asm.Label(doneLabel)
+}
+
+func tableArrayStoreNeedsTablePtr(kind, flags int64) bool {
+	return flags&tableArrayStoreFlagAllowGrow != 0 ||
+		kind == int64(vm.FBKindMixed) ||
+		kind == int64(vm.FBKindBool)
 }
 
 func (ec *emitContext) emitTableBoolArrayFill(instr *Instr) {

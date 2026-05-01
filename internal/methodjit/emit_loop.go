@@ -274,9 +274,10 @@ func computeLoopFPPhiArgs(fn *Function, li *loopInfo, alloc *RegAllocation,
 // which is the state that non-header loop blocks will see at entry.
 // Maps register number -> value plus its native representation.
 type loopRegEntry struct {
-	ValueID      int
-	IsRawInt     bool
-	IsRawDataPtr bool
+	ValueID       int
+	IsRawInt      bool
+	IsRawTablePtr bool
+	IsRawDataPtr  bool
 }
 
 // loopFPRegEntry describes an FPR's state at the end of the loop header.
@@ -325,12 +326,14 @@ func (li *loopInfo) computeHeaderExitRegs(fn *Function, alloc *RegAllocation) ma
 			if !ok || pr.IsFloat {
 				continue
 			}
+			isRawTablePtr := isRawTablePtrOp(instr.Op)
 			isRawDataPtr := isRawDataPtrOp(instr.Op)
-			isRaw := isRawIntOp(instr.Op) && !isRawDataPtr
+			isRaw := isRawIntOp(instr.Op) && !isRawTablePtr && !isRawDataPtr
 			regs[pr.Reg] = loopRegEntry{
-				ValueID:      instr.ID,
-				IsRawInt:     isRaw,
-				IsRawDataPtr: isRawDataPtr,
+				ValueID:       instr.ID,
+				IsRawInt:      isRaw,
+				IsRawTablePtr: isRawTablePtr,
+				IsRawDataPtr:  isRawDataPtr,
 			}
 		}
 
@@ -505,9 +508,10 @@ func computeSafeLoopInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAllocati
 				safe[headerID] = make(map[int]loopRegEntry)
 			}
 			safe[headerID][valueID] = loopRegEntry{
-				ValueID:      valueID,
-				IsRawInt:     isLoopInvariantRawInt(fn, valueID),
-				IsRawDataPtr: isLoopInvariantRawDataPtr(fn, valueID),
+				ValueID:       valueID,
+				IsRawInt:      isLoopInvariantRawInt(fn, valueID),
+				IsRawTablePtr: isLoopInvariantRawTablePtr(fn, valueID),
+				IsRawDataPtr:  isLoopInvariantRawDataPtr(fn, valueID),
 			}
 		}
 	}
@@ -571,10 +575,21 @@ func isLoopInvariantRawInt(fn *Function, valueID int) bool {
 			if instr.ID != valueID {
 				continue
 			}
-			return !isRawDataPtrOp(instr.Op)
+			return isRawIntOp(instr.Op) && !isRawTablePtrOp(instr.Op) && !isRawDataPtrOp(instr.Op)
 		}
 	}
 	return true
+}
+
+func isLoopInvariantRawTablePtr(fn *Function, valueID int) bool {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.ID == valueID {
+				return isRawTablePtrOp(instr.Op)
+			}
+		}
+	}
+	return false
 }
 
 func isLoopInvariantRawDataPtr(fn *Function, valueID int) bool {
@@ -614,6 +629,9 @@ func (ec *emitContext) activateLoopInvariantGPRs(blockID int) {
 			ec.activeRegs[entry.ValueID] = true
 			if entry.IsRawInt {
 				ec.setValueRepr(entry.ValueID, valueReprRawInt)
+			}
+			if entry.IsRawTablePtr {
+				ec.setValueRepr(entry.ValueID, valueReprRawTablePtr)
 			}
 			if entry.IsRawDataPtr {
 				ec.setValueRepr(entry.ValueID, valueReprRawDataPtr)
@@ -725,6 +743,10 @@ func isRawIntOp(op Op) bool {
 	default:
 		return false
 	}
+}
+
+func isRawTablePtrOp(op Op) bool {
+	return op == OpTableArrayHeader
 }
 
 func isRawDataPtrOp(op Op) bool {

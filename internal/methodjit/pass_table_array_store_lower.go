@@ -1,7 +1,9 @@
 package methodjit
 
 // TableArrayStoreLowerPass rewrites typed SetTable sites to reuse split
-// typed-array facts produced by earlier loads in the same block.
+// typed-array facts produced by earlier loads in the same block. Store paths
+// that need table metadata also carry the guarded TableArrayHeader as an
+// optional raw table-pointer ABI operand after the canonical five operands.
 //
 // The replacement store is in-bounds-only on the native path: it checks key
 // and value compatibility before writing, then precise-deopts on miss so the
@@ -54,8 +56,12 @@ func lowerTableArrayStoresInBlock(fn *Function, block *Block) {
 				facts.InvalidateTable(instr.Args[0].ID)
 				continue
 			}
+			storeArgs := []*Value{instr.Args[0], fact.data, fact.len, instr.Args[1], instr.Args[2]}
+			if tableArrayStoreNeedsTablePtr(fact.kind, 0) {
+				storeArgs = append(storeArgs, fact.header)
+			}
 			instr.Op = OpTableArrayStore
-			instr.Args = []*Value{instr.Args[0], fact.data, fact.len, instr.Args[1], instr.Args[2]}
+			instr.Args = storeArgs
 			instr.Aux = fact.kind
 			instr.Aux2 = 0
 			instr.Type = TypeUnknown
