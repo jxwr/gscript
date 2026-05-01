@@ -57,6 +57,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 
 	// Reset the global label counter for this compilation.
 	baselineLabelID = 0
+	registerAccumulatorClosureFastPaths(proto)
 
 	// Track which PCs need resume stubs (for op-exit resume).
 	var resumePCs []int

@@ -1302,6 +1302,78 @@ for i := 1; i <= 20; i++ {
 	}
 }
 
+func TestTieringManager_AccumulatorClosureFastPath_CapturedDeltaFactory(t *testing.T) {
+	src := `
+func make_accumulator(start, delta) {
+    value := start
+    return func() {
+        value = value + delta
+        return value
+    }
+}
+func run() {
+    acc := make_accumulator(7, 3)
+    total := 0
+    for i := 1; i <= 20; i++ {
+        total = acc()
+    }
+    return total
+}
+result := run()
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 67 {
+		t.Fatalf("result = %v, want 67", result)
+	}
+	makeAccumulator := findProtoByName(proto, "make_accumulator")
+	if makeAccumulator == nil || len(makeAccumulator.Protos) != 1 {
+		t.Fatalf("make_accumulator nested proto not found")
+	}
+	accumulator := makeAccumulator.Protos[0]
+	if accumulator.CallCount != 0 {
+		t.Fatalf("accumulator CallCount = %d, want 0 from captured-delta fast path", accumulator.CallCount)
+	}
+}
+
+func TestTieringManager_AccumulatorClosureFastPath_CapturedDeltaFloatFallback(t *testing.T) {
+	compareVMvsJIT(t, `
+func make_accumulator(start, delta) {
+    value := start
+    return func() {
+        value = value + delta
+        return value
+    }
+}
+acc := make_accumulator(0.5, 1.25)
+result := 0.0
+for i := 1; i <= 10; i++ {
+    result = acc()
+}
+`, "result")
+}
+
+func TestTieringManager_AccumulatorClosureFastPath_CapturedDeltaOverflowFallback(t *testing.T) {
+	compareVMvsJIT(t, `
+func make_accumulator(start, delta) {
+    value := start
+    return func() {
+        value = value + delta
+        return value
+    }
+}
+acc := make_accumulator(140737488355327, 1)
+result := acc()
+`, "result")
+}
+
 // TestTieringManager_Tier2CallInLoop verifies that OP_CALL inside a loop
 // can now be promoted to Tier 2 (previously performance-blocked).
 func TestTieringManager_Tier2CallInLoop(t *testing.T) {

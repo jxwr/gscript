@@ -29,6 +29,7 @@
 package methodjit
 
 import (
+	"sync"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -109,10 +110,24 @@ const mRegSelfClosure = jit.X21
 const nbClosureTagBits = ^int64(1<<47 - 1)
 
 type accumulatorClosureFastPath struct {
-	proto *vm.FuncProto
-	upval int
-	delta int64
+	proto      *vm.FuncProto
+	valueUpval int
+	deltaKind  accumulatorDeltaKind
+	delta      int64
+	deltaUpval int
 }
+
+type accumulatorDeltaKind uint8
+
+const (
+	accumulatorDeltaConst accumulatorDeltaKind = iota
+	accumulatorDeltaUpval
+)
+
+var (
+	accumulatorClosureProgramFastPathsMu sync.RWMutex
+	accumulatorClosureProgramFastPaths   = make(map[*vm.FuncProto][]accumulatorClosureFastPath)
+)
 
 // emitBaselineNativeCall emits a native ARM64 call sequence for OP_CALL.
 // For compiled vm.Closure targets, this uses BLR instead of exit-resume.
@@ -568,41 +583,46 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 }
 
 func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.FuncProto, slowLabel, doneLabel string, dstSlot int) {
-	fastPaths := collectAccumulatorClosureFastPaths(callerProto)
+	fastPaths := accumulatorClosureFastPathsForProto(callerProto)
 	if len(fastPaths) == 0 {
 		return
 	}
+	missLabel := nextLabel("accum_closure_miss")
 	for _, fast := range fastPaths {
 		nextFastLabel := nextLabel("accum_closure_next")
 		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(fast.proto))))
 		asm.CMPreg(jit.X1, jit.X3)
 		asm.BCond(jit.CondNE, nextFastLabel)
 
-		if len(fast.proto.Upvalues) == 1 && fast.upval == 0 {
-			asm.LDR(jit.X2, jit.X0, vmClosureOffInlineUpvalue0)
-		} else {
-			asm.LDR(jit.X3, jit.X0, vmClosureOffUpvalues)
-			asm.CBZ(jit.X3, slowLabel)
-			asm.LDR(jit.X2, jit.X3, fast.upval*8)
-		}
-		asm.CBZ(jit.X2, slowLabel)
-		asm.LDR(jit.X6, jit.X2, 0) // upvalue ref
-		asm.CBZ(jit.X6, slowLabel)
+		emitLoadClosureUpvalueRef(asm, jit.X0, fast.valueUpval, len(fast.proto.Upvalues), jit.X6, jit.X2, jit.X3, missLabel)
 		asm.LDR(jit.X4, jit.X6, 0) // boxed current value
 		emitCheckIsInt(asm, jit.X4, jit.X5)
-		asm.BCond(jit.CondNE, slowLabel)
+		asm.BCond(jit.CondNE, missLabel)
 		jit.EmitUnboxInt(asm, jit.X4, jit.X4)
-		if fast.delta >= 0 && fast.delta <= 4095 {
-			asm.ADDimm(jit.X4, jit.X4, uint16(fast.delta))
-		} else if fast.delta < 0 && fast.delta >= -4095 {
-			asm.SUBimm(jit.X4, jit.X4, uint16(-fast.delta))
-		} else {
-			asm.LoadImm64(jit.X5, fast.delta)
-			asm.ADDreg(jit.X4, jit.X4, jit.X5)
+
+		switch fast.deltaKind {
+		case accumulatorDeltaConst:
+			if fast.delta >= 0 && fast.delta <= 4095 {
+				asm.ADDimm(jit.X4, jit.X4, uint16(fast.delta))
+			} else if fast.delta < 0 && fast.delta >= -4095 {
+				asm.SUBimm(jit.X4, jit.X4, uint16(-fast.delta))
+			} else {
+				asm.LoadImm64(jit.X5, fast.delta)
+				asm.ADDreg(jit.X4, jit.X4, jit.X5)
+			}
+		case accumulatorDeltaUpval:
+			emitLoadClosureUpvalueRef(asm, jit.X0, fast.deltaUpval, len(fast.proto.Upvalues), jit.X2, jit.X5, jit.X3, missLabel)
+			asm.LDR(jit.X7, jit.X2, 0) // boxed delta value
+			emitCheckIsInt(asm, jit.X7, jit.X5)
+			asm.BCond(jit.CondNE, missLabel)
+			jit.EmitUnboxInt(asm, jit.X7, jit.X7)
+			asm.ADDreg(jit.X4, jit.X4, jit.X7)
+		default:
+			asm.B(missLabel)
 		}
 		asm.SBFX(jit.X5, jit.X4, 0, 48)
 		asm.CMPreg(jit.X5, jit.X4)
-		asm.BCond(jit.CondNE, slowLabel)
+		asm.BCond(jit.CondNE, missLabel)
 		jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
 		asm.STR(jit.X4, jit.X6, 0)
 		storeSlot(asm, dstSlot, jit.X4)
@@ -610,6 +630,67 @@ func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.
 
 		asm.Label(nextFastLabel)
 	}
+	asm.Label(missLabel)
+}
+
+func emitLoadClosureUpvalueRef(asm *jit.Assembler, closureReg jit.Reg, upval, upvalCount int, dstRefReg, upvalReg, dataReg jit.Reg, slowLabel string) {
+	if upvalCount == 1 && upval == 0 {
+		asm.LDR(upvalReg, closureReg, vmClosureOffInlineUpvalue0)
+	} else {
+		asm.LDR(dataReg, closureReg, vmClosureOffUpvalues)
+		asm.CBZ(dataReg, slowLabel)
+		asm.LDR(upvalReg, dataReg, upval*8)
+	}
+	asm.CBZ(upvalReg, slowLabel)
+	asm.LDR(dstRefReg, upvalReg, 0)
+	asm.CBZ(dstRefReg, slowLabel)
+}
+
+func registerAccumulatorClosureFastPaths(root *vm.FuncProto) {
+	if root == nil {
+		return
+	}
+	fastPaths := collectAccumulatorClosureFastPaths(root)
+	if len(fastPaths) == 0 {
+		return
+	}
+	protos := collectProtoTree(root)
+	accumulatorClosureProgramFastPathsMu.Lock()
+	defer accumulatorClosureProgramFastPathsMu.Unlock()
+	for _, proto := range protos {
+		accumulatorClosureProgramFastPaths[proto] = fastPaths
+	}
+}
+
+func accumulatorClosureFastPathsForProto(proto *vm.FuncProto) []accumulatorClosureFastPath {
+	if proto == nil {
+		return nil
+	}
+	accumulatorClosureProgramFastPathsMu.RLock()
+	if fastPaths := accumulatorClosureProgramFastPaths[proto]; len(fastPaths) != 0 {
+		accumulatorClosureProgramFastPathsMu.RUnlock()
+		return fastPaths
+	}
+	accumulatorClosureProgramFastPathsMu.RUnlock()
+	return collectAccumulatorClosureFastPaths(proto)
+}
+
+func collectProtoTree(root *vm.FuncProto) []*vm.FuncProto {
+	seen := make(map[*vm.FuncProto]bool)
+	var out []*vm.FuncProto
+	var walk func(*vm.FuncProto)
+	walk = func(proto *vm.FuncProto) {
+		if proto == nil || seen[proto] {
+			return
+		}
+		seen[proto] = true
+		out = append(out, proto)
+		for _, child := range proto.Protos {
+			walk(child)
+		}
+	}
+	walk(root)
+	return out
 }
 
 func collectAccumulatorClosureFastPaths(root *vm.FuncProto) []accumulatorClosureFastPath {
@@ -621,8 +702,8 @@ func collectAccumulatorClosureFastPaths(root *vm.FuncProto) []accumulatorClosure
 			return
 		}
 		seen[proto] = true
-		if upval, delta, ok := accumulatorClosurePattern(proto); ok {
-			out = append(out, accumulatorClosureFastPath{proto: proto, upval: upval, delta: delta})
+		if fast, ok := accumulatorClosurePattern(proto); ok {
+			out = append(out, fast)
 		}
 		for _, child := range proto.Protos {
 			walk(child)
@@ -632,42 +713,61 @@ func collectAccumulatorClosureFastPaths(root *vm.FuncProto) []accumulatorClosure
 	return out
 }
 
-func accumulatorClosurePattern(proto *vm.FuncProto) (int, int64, bool) {
-	if proto == nil || proto.NumParams != 0 || proto.IsVarArg || len(proto.Upvalues) != 1 || len(proto.Code) != 6 {
-		return 0, 0, false
+func accumulatorClosurePattern(proto *vm.FuncProto) (accumulatorClosureFastPath, bool) {
+	if proto == nil || proto.NumParams != 0 || proto.IsVarArg || len(proto.Code) != 6 {
+		return accumulatorClosureFastPath{}, false
 	}
 	if vm.DecodeOp(proto.Code[0]) != vm.OP_GETUPVAL ||
-		vm.DecodeOp(proto.Code[1]) != vm.OP_LOADINT ||
 		vm.DecodeOp(proto.Code[2]) != vm.OP_ADD ||
 		vm.DecodeOp(proto.Code[3]) != vm.OP_SETUPVAL ||
 		vm.DecodeOp(proto.Code[4]) != vm.OP_GETUPVAL ||
 		vm.DecodeOp(proto.Code[5]) != vm.OP_RETURN {
-		return 0, 0, false
+		return accumulatorClosureFastPath{}, false
 	}
 	uv := vm.DecodeB(proto.Code[0])
 	if uv < 0 || uv >= len(proto.Upvalues) {
-		return 0, 0, false
+		return accumulatorClosureFastPath{}, false
 	}
 	if vm.DecodeB(proto.Code[3]) != uv || vm.DecodeB(proto.Code[4]) != uv {
-		return 0, 0, false
+		return accumulatorClosureFastPath{}, false
 	}
 	loadReg := vm.DecodeA(proto.Code[0])
-	constReg := vm.DecodeA(proto.Code[1])
 	addDst := vm.DecodeA(proto.Code[2])
 	addB := vm.DecodeB(proto.Code[2])
 	addC := vm.DecodeC(proto.Code[2])
 	if addDst != vm.DecodeA(proto.Code[3]) {
-		return 0, 0, false
-	}
-	if !((addB == loadReg && addC == constReg) || (addB == constReg && addC == loadReg)) {
-		return 0, 0, false
+		return accumulatorClosureFastPath{}, false
 	}
 	retReg := vm.DecodeA(proto.Code[4])
 	if vm.DecodeA(proto.Code[5]) != retReg || vm.DecodeB(proto.Code[5]) != 2 {
-		return 0, 0, false
+		return accumulatorClosureFastPath{}, false
 	}
-	delta := int64(vm.DecodesBx(proto.Code[1]))
-	return uv, delta, true
+
+	fast := accumulatorClosureFastPath{proto: proto, valueUpval: uv}
+	switch vm.DecodeOp(proto.Code[1]) {
+	case vm.OP_LOADINT:
+		constReg := vm.DecodeA(proto.Code[1])
+		if !((addB == loadReg && addC == constReg) || (addB == constReg && addC == loadReg)) {
+			return accumulatorClosureFastPath{}, false
+		}
+		fast.deltaKind = accumulatorDeltaConst
+		fast.delta = int64(vm.DecodesBx(proto.Code[1]))
+		return fast, true
+	case vm.OP_GETUPVAL:
+		deltaReg := vm.DecodeA(proto.Code[1])
+		deltaUpval := vm.DecodeB(proto.Code[1])
+		if deltaUpval < 0 || deltaUpval >= len(proto.Upvalues) {
+			return accumulatorClosureFastPath{}, false
+		}
+		if !((addB == loadReg && addC == deltaReg) || (addB == deltaReg && addC == loadReg)) {
+			return accumulatorClosureFastPath{}, false
+		}
+		fast.deltaKind = accumulatorDeltaUpval
+		fast.deltaUpval = deltaUpval
+		return fast, true
+	default:
+		return accumulatorClosureFastPath{}, false
+	}
 }
 
 func emitBaselineSelfTailNoReturnFastPath(asm *jit.Assembler, inst uint32, pc int, callerProto *vm.FuncProto, slowLabel string) bool {
