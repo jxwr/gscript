@@ -463,7 +463,7 @@ func (e *BaselineJITEngine) handleNewTable(ctx *ExecContext, regs []runtime.Valu
 	pc := int(ctx.BaselinePC) - 1
 	var tbl *runtime.Table
 	if bf != nil {
-		tbl = allocateNewTableWithCache(bf.NewTableCaches, pc, b, c, runtime.ArrayMixed)
+		tbl = allocateBaselineNewTableWithCache(bf.NewTableCaches, pc, b, c, runtime.ArrayMixed)
 	} else {
 		tbl = runtime.NewTableSized(b, c)
 	}
@@ -500,9 +500,17 @@ func (e *BaselineJITEngine) handleGetTable(ctx *ExecContext, regs []runtime.Valu
 	if tblVal.IsTable() {
 		if absA < len(regs) {
 			tbl := tblVal.Table()
-			regs[absA] = tbl.RawGet(key)
 			// Record type feedback so Tier 2 can specialize.
 			pc := int(ctx.BaselinePC) - 1
+			if key.IsString() {
+				ensureTableStringKeyCache(proto)
+				regs[absA] = tbl.RawGetStringDynamicCached(
+					key.Str(),
+					runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc),
+				)
+			} else {
+				regs[absA] = tbl.RawGet(key)
+			}
 			if proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) {
 				proto.Feedback[pc].Result.Observe(regs[absA].Type())
 				// Record array kind for table-access specialization.
@@ -556,9 +564,18 @@ func (e *BaselineJITEngine) handleSetTable(ctx *ExecContext, regs []runtime.Valu
 
 	if tblVal.IsTable() {
 		tbl := tblVal.Table()
-		tbl.RawSet(key, val)
 		// Record array kind feedback for table-access specialization.
 		pc := int(ctx.BaselinePC) - 1
+		if key.IsString() {
+			ensureTableStringKeyCache(proto)
+			tbl.RawSetStringDynamicCached(
+				key.Str(),
+				val,
+				runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc),
+			)
+		} else {
+			tbl.RawSet(key, val)
+		}
 		if proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) {
 			proto.Feedback[pc].ObserveKind(uint8(tbl.GetArrayKind()))
 			if proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) {
@@ -573,6 +590,12 @@ func (e *BaselineJITEngine) handleSetTable(ctx *ExecContext, regs []runtime.Valu
 func ensureFieldCache(proto *vm.FuncProto) {
 	if proto.FieldCache == nil {
 		proto.FieldCache = make([]runtime.FieldCacheEntry, len(proto.Code))
+	}
+}
+
+func ensureTableStringKeyCache(proto *vm.FuncProto) {
+	if proto.TableStringKeyCache == nil {
+		proto.TableStringKeyCache = make([]runtime.TableStringKeyCacheEntry, len(proto.Code)*runtime.TableStringKeyCacheWays)
 	}
 }
 

@@ -48,7 +48,14 @@ func baselineNewTableCacheBatchSize(inst uint32) int {
 	if vm.DecodeOp(inst) != vm.OP_NEWTABLE {
 		return 0
 	}
-	return newTableCacheBatchSizeForHints(int64(vm.DecodeB(inst)), vm.DecodeC(inst), runtime.ArrayMixed)
+	return baselineNewTableCacheBatchSizeForHints(vm.DecodeB(inst), vm.DecodeC(inst), runtime.ArrayMixed)
+}
+
+func baselineNewTableCacheBatchSizeForHints(arrayHint, hashHint int, kind runtime.ArrayKind) int {
+	if kind == runtime.ArrayMixed && arrayHint == 0 && hashHint > 0 && hashHint <= runtime.SmallFieldCap {
+		return 64
+	}
+	return newTableCacheBatchSizeForHints(int64(arrayHint), hashHint, kind)
 }
 
 func emitBaselineNewTable(asm *jit.Assembler, inst uint32, pc int, caches []newTableCacheEntry) {

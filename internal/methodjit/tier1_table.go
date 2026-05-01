@@ -18,6 +18,7 @@ package methodjit
 
 import (
 	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -198,6 +199,7 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 			asm.ADDreg(jit.X0, jit.X0, jit.X1)
 		}
 	}
+	asm.MOVreg(jit.X7, jit.X0) // X7 = &FieldCache[pc]
 
 	// Load entry.ShapeID.
 	asm.LDRW(jit.X2, jit.X0, jit.FieldCacheEntryOffShapeID)
@@ -217,7 +219,8 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	// Shape guard.
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
 	asm.CMPreg(jit.X1, jit.X2)
-	asm.BCond(jit.CondNE, slowLabel)
+	appendLabel := nextLabel("setfield_append")
+	asm.BCond(jit.CondNE, appendLabel)
 
 	// Bounds check: fieldIdx < len(svals)
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvalsLen)
@@ -238,6 +241,47 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
 	asm.STRreg(jit.X4, jit.X1, jit.X3)         // svals[fieldIdx] = value
 
+	asm.B(doneLabel)
+
+	// Constructor-style append: the Go slow path records AppendShapeID and
+	// AppendShape when this SETFIELD appends a new key to a small shaped table.
+	asm.Label(appendLabel)
+	asm.LDRW(jit.X5, jit.X7, fieldCacheEntryOffAppendShapeID)
+	asm.CMPreg(jit.X1, jit.X5)
+	asm.BCond(jit.CondNE, slowLabel)
+	asm.LDR(jit.X5, jit.X7, fieldCacheEntryOffAppendShape)
+	asm.CBZ(jit.X5, slowLabel)
+	asm.LDR(jit.X6, jit.X0, jit.TableOffSmap)
+	asm.CBNZ(jit.X6, slowLabel)
+	asm.LDR(jit.X6, jit.X0, jit.TableOffLazyTree)
+	asm.CBNZ(jit.X6, slowLabel)
+	asm.LDR(jit.X6, jit.X0, jit.TableOffSvalsLen)
+	asm.CMPreg(jit.X3, jit.X6)
+	asm.BCond(jit.CondNE, slowLabel)
+	asm.CMPimm(jit.X3, runtime.SmallFieldCap)
+	asm.BCond(jit.CondGE, slowLabel)
+	asm.LDR(jit.X8, jit.X0, jit.TableOffSvals+16)
+	asm.CMPreg(jit.X3, jit.X8)
+	asm.BCond(jit.CondGE, slowLabel)
+
+	loadRK(asm, jit.X4, c)
+	asm.LoadImm64(jit.X8, nb64(jit.NB_ValNil))
+	asm.CMPreg(jit.X4, jit.X8)
+	asm.BCond(jit.CondEQ, slowLabel)
+	asm.LDR(jit.X8, jit.X0, jit.TableOffSvals)
+	asm.STRreg(jit.X4, jit.X8, jit.X3)
+	asm.ADDimm(jit.X6, jit.X6, 1)
+	asm.STR(jit.X6, jit.X0, jit.TableOffSvalsLen)
+	asm.STRW(jit.X2, jit.X0, jit.TableOffShapeID)
+	asm.STR(jit.X5, jit.X0, jit.TableOffShape)
+	asm.LDR(jit.X8, jit.X5, shapeOffFieldKeys)
+	asm.STR(jit.X8, jit.X0, jit.TableOffSkeys)
+	asm.LDR(jit.X8, jit.X5, shapeOffFieldKeysLen)
+	asm.STR(jit.X8, jit.X0, jit.TableOffSkeysLen)
+	asm.LDR(jit.X8, jit.X5, shapeOffFieldKeysCap)
+	asm.STR(jit.X8, jit.X0, jit.TableOffSkeys+16)
+	asm.MOVimm16(jit.X8, 1)
+	asm.STRB(jit.X8, jit.X0, jit.TableOffKeysDirty)
 	asm.B(doneLabel)
 
 	// Slow path: exit-resume.
@@ -261,6 +305,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	intArrayLabel := nextLabel("gettable_intarr")
 	floatArrayLabel := nextLabel("gettable_floatarr")
 	boolArrayLabel := nextLabel("gettable_boolarr")
+	stringKeyLabel := nextLabel("gettable_string_key")
 
 	// Load table value from R(B).
 	loadSlot(asm, jit.X0, b)
@@ -281,7 +326,7 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	asm.LSRimm(jit.X2, jit.X1, 48)
 	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
 	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondNE, slowLabel) // not int -> slow
+	asm.BCond(jit.CondNE, stringKeyLabel) // not int -> try dynamic string-key cache
 
 	// Extract integer key.
 	asm.SBFX(jit.X1, jit.X1, 0, 48) // X1 = signed int key
@@ -387,6 +432,9 @@ func emitBaselineGetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	}
 	asm.B(doneLabel)
 
+	asm.Label(stringKeyLabel)
+	emitBaselineDynamicStringGetTable(asm, a, pc, feedbackEnabled, slowLabel, doneLabel)
+
 	// Slow path: exit-resume.
 	asm.Label(slowLabel)
 	emitBaselineOpExitCommon(asm, vm.OP_GETTABLE, pc, a, b, cidx)
@@ -408,6 +456,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	intArrayLabel := nextLabel("settable_intarr")
 	floatArrayLabel := nextLabel("settable_floatarr")
 	boolArrayLabel := nextLabel("settable_boolarr")
+	stringKeyLabel := nextLabel("settable_string_key")
 
 	// Load table value from R(A).
 	loadSlot(asm, jit.X0, a)
@@ -428,7 +477,7 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	asm.LSRimm(jit.X2, jit.X1, 48)
 	asm.MOVimm16(jit.X3, uint16(jit.NB_TagIntShr48))
 	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondNE, slowLabel) // not int -> slow
+	asm.BCond(jit.CondNE, stringKeyLabel) // not int -> try dynamic string-key cache
 
 	// Extract integer key.
 	asm.SBFX(jit.X1, jit.X1, 0, 48) // X1 = signed int key
@@ -546,11 +595,96 @@ func emitBaselineSetTable(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	asm.B(doneLabel)
 	emitTypedArraySetAppendPath(asm, jit.X0, jit.X1, jit.X6, jit.TableOffBoolArrayLen, jit.TableOffBoolArrayCap, boolAppendLabel, slowLabel, boolStoreLabel)
 
+	asm.Label(stringKeyLabel)
+	emitBaselineDynamicStringSetTable(asm, cidx, pc, feedbackEnabled, slowLabel, doneLabel)
+
 	// Slow path: exit-resume.
 	asm.Label(slowLabel)
 	emitBaselineOpExitCommon(asm, vm.OP_SETTABLE, pc, a, bidx, cidx)
 
 	asm.Label(doneLabel)
+}
+
+func emitBaselineDynamicStringCacheProbe(asm *jit.Assembler, pc int, slowLabel string, hit func(fieldIdxReg jit.Reg)) {
+	// Inputs: X0 = *Table, X1 = NaN-boxed string candidate.
+	// Clobbers X2-X11. Falls through to slowLabel on cache miss.
+	jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, slowLabel)
+	jit.EmitExtractPtr(asm, jit.X4, jit.X1) // X4 = *string header
+	asm.CBZ(jit.X4, slowLabel)
+	asm.LDR(jit.X5, jit.X4, 0) // X5 = string data
+	asm.LDR(jit.X6, jit.X4, 8) // X6 = string len
+
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineTableStringKeyCache)
+	asm.CBZ(jit.X3, slowLabel)
+	entryOff := pc * runtime.TableStringKeyCacheWays * tableStringKeyCacheEntrySize
+	if entryOff > 0 {
+		if entryOff <= 4095 {
+			asm.ADDimm(jit.X3, jit.X3, uint16(entryOff))
+		} else {
+			asm.LoadImm64(jit.X7, int64(entryOff))
+			asm.ADDreg(jit.X3, jit.X3, jit.X7)
+		}
+	}
+
+	asm.LDRW(jit.X7, jit.X0, jit.TableOffShapeID)
+	asm.CBZ(jit.X7, slowLabel)
+	asm.LDR(jit.X8, jit.X0, jit.TableOffLazyTree)
+	asm.CBNZ(jit.X8, slowLabel)
+
+	loopLabel := nextLabel("dyn_string_cache_loop")
+	nextEntryLabel := nextLabel("dyn_string_cache_next")
+	asm.MOVimm16(jit.X9, 0)
+	asm.Label(loopLabel)
+	asm.LDR(jit.X10, jit.X3, tableStringKeyCacheEntryKeyData)
+	asm.CMPreg(jit.X10, jit.X5)
+	asm.BCond(jit.CondNE, nextEntryLabel)
+	asm.LDR(jit.X10, jit.X3, tableStringKeyCacheEntryKeyLen)
+	asm.CMPreg(jit.X10, jit.X6)
+	asm.BCond(jit.CondNE, nextEntryLabel)
+	asm.LDRW(jit.X10, jit.X3, tableStringKeyCacheEntryShapeID)
+	asm.CMPreg(jit.X10, jit.X7)
+	asm.BCond(jit.CondNE, nextEntryLabel)
+	asm.LDR(jit.X11, jit.X3, tableStringKeyCacheEntryFieldIdx)
+	asm.LDR(jit.X10, jit.X0, jit.TableOffSvalsLen)
+	asm.CMPreg(jit.X11, jit.X10)
+	asm.BCond(jit.CondGE, slowLabel)
+	hit(jit.X11)
+
+	asm.Label(nextEntryLabel)
+	asm.ADDimm(jit.X3, jit.X3, uint16(tableStringKeyCacheEntrySize))
+	asm.ADDimm(jit.X9, jit.X9, 1)
+	asm.CMPimm(jit.X9, runtime.TableStringKeyCacheWays)
+	asm.BCond(jit.CondLT, loopLabel)
+	asm.B(slowLabel)
+}
+
+func emitBaselineDynamicStringGetTable(asm *jit.Assembler, a, pc int, feedbackEnabled bool, slowLabel, doneLabel string) {
+	emitBaselineDynamicStringCacheProbe(asm, pc, slowLabel, func(fieldIdxReg jit.Reg) {
+		asm.LDR(jit.X10, jit.X0, jit.TableOffSvals)
+		asm.LDRreg(jit.X0, jit.X10, fieldIdxReg)
+		if feedbackEnabled {
+			emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "gettable_string")
+		}
+		storeSlot(asm, a, jit.X0)
+		asm.B(doneLabel)
+	})
+}
+
+func emitBaselineDynamicStringSetTable(asm *jit.Assembler, cidx, pc int, feedbackEnabled bool, slowLabel, doneLabel string) {
+	emitBaselineDynamicStringCacheProbe(asm, pc, slowLabel, func(fieldIdxReg jit.Reg) {
+		loadRK(asm, jit.X4, cidx)
+		asm.LoadImm64(jit.X5, nb64(jit.NB_ValNil))
+		asm.CMPreg(jit.X4, jit.X5)
+		asm.BCond(jit.CondEQ, slowLabel)
+		if feedbackEnabled {
+			emitBaselineFeedbackResultFromValue(asm, pc, jit.X4, "settable_string")
+		}
+		asm.LDR(jit.X10, jit.X0, jit.TableOffSvals)
+		asm.STRreg(jit.X4, jit.X10, fieldIdxReg)
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		asm.B(doneLabel)
+	})
 }
 
 // emitBaselineLen emits ARM64 for OP_LEN: R(A) = #R(B).

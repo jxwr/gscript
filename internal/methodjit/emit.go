@@ -181,6 +181,10 @@ type ExecContext struct {
 	// stubs mirror materialized live register values here before returning to
 	// Go so the execute loop can verify VM home-slot consistency.
 	ExitResumeCheckShadow uintptr
+
+	// Baseline-only dynamic table cache fields are kept at the end so Tier 2
+	// ExecContext offsets remain stable for code-size guard tests.
+	BaselineTableStringKeyCache uintptr // pointer to proto.TableStringKeyCache[0] (nil if not yet allocated)
 }
 
 const maxNativeCallExitStackDepth = maxNativeCallDepth
@@ -261,6 +265,7 @@ var (
 	execCtxOffBaselineB                   = int(unsafe.Offsetof(ExecContext{}.BaselineB))
 	execCtxOffBaselineC                   = int(unsafe.Offsetof(ExecContext{}.BaselineC))
 	execCtxOffBaselineFieldCache          = int(unsafe.Offsetof(ExecContext{}.BaselineFieldCache))
+	execCtxOffBaselineTableStringKeyCache = int(unsafe.Offsetof(ExecContext{}.BaselineTableStringKeyCache))
 	execCtxOffBaselineClosurePtr          = int(unsafe.Offsetof(ExecContext{}.BaselineClosurePtr))
 	execCtxOffBaselineReturnValue         = int(unsafe.Offsetof(ExecContext{}.BaselineReturnValue))
 	execCtxOffBaselineGlobalCache         = int(unsafe.Offsetof(ExecContext{}.BaselineGlobalCache))
@@ -329,6 +334,19 @@ var (
 var (
 	tableKeyFeedbackSize           = int(unsafe.Sizeof(vm.TableKeyFeedback{}))
 	tableKeyFeedbackDenseMatrixOff = int(unsafe.Offsetof(vm.TableKeyFeedback{}.DenseMatrix))
+
+	fieldCacheEntryOffAppendShapeID = int(unsafe.Offsetof(runtime.FieldCacheEntry{}.AppendShapeID))
+	fieldCacheEntryOffAppendShape   = int(unsafe.Offsetof(runtime.FieldCacheEntry{}.AppendShape))
+
+	shapeOffFieldKeys    = int(unsafe.Offsetof(runtime.Shape{}.FieldKeys))
+	shapeOffFieldKeysLen = shapeOffFieldKeys + int(unsafe.Sizeof(uintptr(0)))
+	shapeOffFieldKeysCap = shapeOffFieldKeys + 2*int(unsafe.Sizeof(uintptr(0)))
+
+	tableStringKeyCacheEntrySize     = int(unsafe.Sizeof(runtime.TableStringKeyCacheEntry{}))
+	tableStringKeyCacheEntryKeyData  = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.KeyData))
+	tableStringKeyCacheEntryKeyLen   = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.KeyLen))
+	tableStringKeyCacheEntryFieldIdx = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.FieldIdx))
+	tableStringKeyCacheEntryShapeID  = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.ShapeID))
 )
 
 // CompiledFunction holds the generated native code for a function.

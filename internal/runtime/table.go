@@ -18,6 +18,10 @@ const (
 // smallFieldCap is the threshold for using flat slices vs maps for string keys.
 const smallFieldCap = 12
 
+// SmallFieldCap is the maximum string-field count retained in the small shaped
+// table representation.
+const SmallFieldCap = smallFieldCap
+
 // Table is GScript's associative array / object type.
 // Tables have an optimized array part for sequential integer keys 1..n,
 // flat slices for small string-keyed tables (most GScript objects),
@@ -337,6 +341,94 @@ type FieldCacheEntry struct {
 	AppendShape   *Shape // result shape for constructor-style SETFIELD
 }
 
+// TableStringKeyCacheWays is the number of polymorphic dynamic string-key
+// table cache entries assigned to each bytecode PC.
+const TableStringKeyCacheWays = 8
+
+// TableStringKeyCacheEntry caches a dynamic string-key table lookup by string
+// backing pointer/length plus table shape. It is a hint only: callers must
+// fall back to the normal table path on miss.
+type TableStringKeyCacheEntry struct {
+	Key      string
+	KeyData  uintptr
+	KeyLen   int
+	FieldIdx int
+	ShapeID  uint32
+}
+
+// TableStringKeyCacheSlot returns the cache ways for one bytecode PC.
+func TableStringKeyCacheSlot(cache []TableStringKeyCacheEntry, pc int) []TableStringKeyCacheEntry {
+	if pc < 0 {
+		return nil
+	}
+	start := pc * TableStringKeyCacheWays
+	end := start + TableStringKeyCacheWays
+	if start < 0 || end > len(cache) {
+		return nil
+	}
+	return cache[start:end]
+}
+
+func stringCacheKey(key string) (uintptr, int) {
+	if len(key) == 0 {
+		return 0, 0
+	}
+	return uintptr(unsafe.Pointer(unsafe.StringData(key))), len(key)
+}
+
+func dynamicStringCacheReplaceIndex(data uintptr, keyLen, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	h := (data >> 4) ^ (data >> 12) ^ uintptr(keyLen)
+	return int(h % uintptr(n))
+}
+
+func (t *Table) lookupDynamicStringCacheLocked(data uintptr, keyLen int, cache []TableStringKeyCacheEntry) (int, bool) {
+	shapeID := t.shapeID
+	if shapeID == 0 || len(cache) == 0 {
+		return 0, false
+	}
+	for i := range cache {
+		entry := &cache[i]
+		if entry.ShapeID == shapeID && entry.KeyData == data && entry.KeyLen == keyLen {
+			idx := entry.FieldIdx
+			if idx >= 0 && idx < len(t.svals) {
+				return idx, true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+func (t *Table) rememberDynamicStringCacheLocked(key string, data uintptr, keyLen, fieldIdx int, cache []TableStringKeyCacheEntry) {
+	if t.shapeID == 0 || fieldIdx < 0 || fieldIdx >= len(t.svals) || len(cache) == 0 {
+		return
+	}
+	empty := -1
+	for i := range cache {
+		entry := &cache[i]
+		if entry.ShapeID == t.shapeID && entry.KeyData == data && entry.KeyLen == keyLen {
+			entry.FieldIdx = fieldIdx
+			return
+		}
+		if empty < 0 && entry.ShapeID == 0 {
+			empty = i
+		}
+	}
+	if empty < 0 {
+		empty = dynamicStringCacheReplaceIndex(data, keyLen, len(cache))
+	}
+	cache[empty] = TableStringKeyCacheEntry{
+		Key:      key,
+		KeyData:  data,
+		KeyLen:   keyLen,
+		FieldIdx: fieldIdx,
+		ShapeID:  t.shapeID,
+	}
+}
+
 // SmallTableCtor2 caches the final shape for a static two-string-field table
 // constructor. It is stored on bytecode prototypes, not on Table, so the common
 // object-literal allocation path can skip per-instance shape transitions
@@ -514,6 +606,35 @@ func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
 	return NilValue()
 }
 
+// RawGetStringDynamicCached retrieves a dynamic string key using a small
+// polymorphic per-PC cache. The cache is valid only for shaped small-string
+// tables; misses and large string maps use the normal path.
+func (t *Table) RawGetStringDynamicCached(key string, cache []TableStringKeyCacheEntry) Value {
+	if t.mu != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
+	if t.lazyTree != nil {
+		return t.lazyTree.get(t, key)
+	}
+	data, keyLen := stringCacheKey(key)
+	if idx, ok := t.lookupDynamicStringCacheLocked(data, keyLen, cache); ok {
+		return t.svals[idx]
+	}
+	for i, k := range t.skeys {
+		if k == key {
+			t.rememberDynamicStringCacheLocked(key, data, keyLen, i, cache)
+			return t.svals[i]
+		}
+	}
+	if t.smap != nil {
+		if v, ok := t.smap[key]; ok {
+			return v
+		}
+	}
+	return NilValue()
+}
+
 // RawSetStringCached assigns a value by string key using an inline cache hint.
 // Uses shapeID-based cache to find existing keys faster on cache hit.
 func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry) {
@@ -592,6 +713,69 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			cache.ShapeID = t.shapeID
 			cache.AppendShapeID = preShapeID
 			cache.AppendShape = t.shape
+		} else {
+			t.smap = make(map[string]Value, len(t.skeys)+1)
+			for i, k := range t.skeys {
+				t.smap[k] = t.svals[i]
+			}
+			t.smap[key] = val
+			t.skeys = nil
+			t.svals = nil
+			t.setShape(nil)
+		}
+	}
+}
+
+// RawSetStringDynamicCached assigns a dynamic string key and updates the
+// per-PC polymorphic cache when the key resolves to a small shaped-table field.
+func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableStringKeyCacheEntry) {
+	if t.mu != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
+	if t.lazyTree != nil {
+		t.materializeLazyTreeLocked()
+	}
+	valIsNil := val.IsNil()
+	if valIsNil && t.shapeID == 0 && len(t.skeys) == 0 && t.smap == nil {
+		return
+	}
+	t.keysDirty = true
+	data, keyLen := stringCacheKey(key)
+
+	if !valIsNil {
+		if idx, ok := t.lookupDynamicStringCacheLocked(data, keyLen, cache); ok {
+			t.svals[idx] = val
+			return
+		}
+	}
+
+	for i, k := range t.skeys {
+		if k == key {
+			if valIsNil {
+				t.deleteSmallStringField(i)
+			} else {
+				t.svals[i] = val
+				t.rememberDynamicStringCacheLocked(key, data, keyLen, i, cache)
+			}
+			return
+		}
+	}
+
+	if t.smap != nil {
+		if valIsNil {
+			delete(t.smap, key)
+		} else {
+			t.smap[key] = val
+		}
+		return
+	}
+
+	if !valIsNil {
+		if len(t.skeys) < smallFieldCap {
+			idx := len(t.svals)
+			t.appendSmallStringField(key, val)
+			t.rememberDynamicStringCacheLocked(key, data, keyLen, idx, cache)
 		} else {
 			t.smap = make(map[string]Value, len(t.skeys)+1)
 			for i, k := range t.skeys {

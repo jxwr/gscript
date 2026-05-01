@@ -884,7 +884,18 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			// Fast path: plain table (no metatable)
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
-					vm.regs[base+a] = tbl.RawGet(key)
+					if key.IsString() {
+						proto := frame.closure.Proto
+						if proto.TableStringKeyCache == nil {
+							proto.TableStringKeyCache = make([]runtime.TableStringKeyCacheEntry, len(proto.Code)*runtime.TableStringKeyCacheWays)
+						}
+						vm.regs[base+a] = tbl.RawGetStringDynamicCached(
+							key.Str(),
+							runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, frame.pc-1),
+						)
+					} else {
+						vm.regs[base+a] = tbl.RawGet(key)
+					}
 					if frame.closure.Proto.Feedback != nil {
 						fb := &frame.closure.Proto.Feedback[frame.pc-1]
 						fb.Left.Observe(tableVal.Type())
@@ -937,7 +948,19 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			// Fast path: plain table
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
-					tbl.RawSet(key, val)
+					if key.IsString() {
+						proto := frame.closure.Proto
+						if proto.TableStringKeyCache == nil {
+							proto.TableStringKeyCache = make([]runtime.TableStringKeyCacheEntry, len(proto.Code)*runtime.TableStringKeyCacheWays)
+						}
+						tbl.RawSetStringDynamicCached(
+							key.Str(),
+							val,
+							runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, frame.pc-1),
+						)
+					} else {
+						tbl.RawSet(key, val)
+					}
 					if frame.closure.Proto.Feedback != nil {
 						fb := &frame.closure.Proto.Feedback[frame.pc-1]
 						fb.Left.Observe(tableVal.Type())

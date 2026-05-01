@@ -614,6 +614,29 @@ func TestTier1_FieldCacheLazyRecursiveTableFallsBack(t *testing.T) {
 	}
 }
 
+func TestTier1_DynamicStringKeyTableCache(t *testing.T) {
+	compareVMvsJIT(t, `
+func f(n) {
+    keys := {"na", "eu", "apac", "latam", "mea"}
+    totals := {}
+    sum := 0
+    for i := 1; i <= n; i++ {
+        k := keys[(i * 3) % #keys + 1]
+        cur := totals[k]
+        if cur == nil {
+            cur = 0
+        }
+        cur = cur + i
+        totals[k] = cur
+        sum = sum + totals[k]
+    }
+    return sum + totals["na"] + totals["mea"]
+}
+result := 0
+for i := 1; i <= 80; i++ { result = f(40) }
+`, "result")
+}
+
 // ---------------------------------------------------------------------------
 // GETGLOBAL (native per-PC value cache with generation invalidation)
 // ---------------------------------------------------------------------------

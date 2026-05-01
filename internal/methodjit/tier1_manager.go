@@ -362,6 +362,15 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 	}
 	syncFieldCache()
 
+	syncTableStringKeyCache := func() {
+		if proto.TableStringKeyCache != nil && len(proto.TableStringKeyCache) > 0 {
+			ctx.BaselineTableStringKeyCache = uintptr(unsafe.Pointer(&proto.TableStringKeyCache[0]))
+		} else {
+			ctx.BaselineTableStringKeyCache = 0
+		}
+	}
+	syncTableStringKeyCache()
+
 	// Set up Closure pointer for native GETUPVAL/SETUPVAL.
 	// The closure is available from the VM's current call frame.
 	syncClosure := func() {
@@ -421,6 +430,9 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 		// Refresh FieldCache pointer only if function uses field ops.
 		if bf.HasFieldOps {
 			syncFieldCache()
+		}
+		if bf.HasTableOps {
+			syncTableStringKeyCache()
 		}
 	}
 

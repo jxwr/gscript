@@ -33,6 +33,7 @@ type BaselineFunc struct {
 	Proto             *vm.FuncProto  // source function
 	Labels            map[int]int    // bytecodePC -> code offset (for resume after exit)
 	HasFieldOps       bool           // true if proto has GETFIELD/SETFIELD (skip syncFieldCache otherwise)
+	HasTableOps       bool           // true if proto has GETTABLE/SETTABLE (skip dynamic table cache sync otherwise)
 	GlobalValCache    []uint64       // per-PC NaN-boxed global value cache (0 = not cached)
 	CallCache         []uint64       // per-PC CALL IC: boxed closure, direct entry, proto ptr, entry version
 	NewTableCaches    []newTableCacheEntry
@@ -358,12 +359,16 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 
 	// Scan bytecodes for field ops and GETGLOBAL to set flags.
 	hasFieldOps := false
+	hasTableOps := false
 	hasGetGlobal := false
 	hasCall := false
 	for _, inst := range code {
 		op := vm.DecodeOp(inst)
 		if op == vm.OP_GETFIELD || op == vm.OP_SETFIELD || op == vm.OP_SELF {
 			hasFieldOps = true
+		}
+		if op == vm.OP_GETTABLE || op == vm.OP_SETTABLE {
+			hasTableOps = true
 		}
 		if op == vm.OP_GETGLOBAL {
 			hasGetGlobal = true
@@ -391,6 +396,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		Proto:             proto,
 		Labels:            labels,
 		HasFieldOps:       hasFieldOps,
+		HasTableOps:       hasTableOps,
 		GlobalValCache:    globalValCache,
 		CallCache:         callCache,
 		NewTableCaches:    newTableCaches,

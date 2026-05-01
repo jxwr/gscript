@@ -78,6 +78,13 @@ func (a *Assembler) LDRW(rt, rn Reg, offset int) {
 	a.emit(0xB9400000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
 }
 
+// STRW: [Xn + #offset] = Wt (32-bit store, unsigned offset, 4-byte aligned)
+func (a *Assembler) STRW(rt, rn Reg, offset int) {
+	// STR Wt, [Xn, #pimm]: 1|0|11|1|00|00|0|imm12|Rn|Rt
+	pimm := offset >> 2
+	a.emit(0xB9000000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
+}
+
 // LDP: Load pair of 64-bit registers. offset must be 8-byte aligned, range [-512, 504].
 func (a *Assembler) LDP(rt1, rt2, rn Reg, offset int) {
 	// LDP Xt1, Xt2, [Xn, #simm7*8]: 1|0|10|1|0|01|1|simm7|Rt2|Rn|Rt1

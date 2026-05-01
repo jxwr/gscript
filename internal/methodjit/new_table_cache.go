@@ -144,6 +144,14 @@ func (cf *CompiledFunction) allocateFixedTable2ForExit(instrID int, ctor *runtim
 }
 
 func allocateNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind) *runtime.Table {
+	return allocateNewTableWithCacheBatch(caches, instrID, arrayHint, hashHint, kind, newTableCacheBatchSizeForHints(int64(arrayHint), hashHint, kind))
+}
+
+func allocateBaselineNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind) *runtime.Table {
+	return allocateNewTableWithCacheBatch(caches, instrID, arrayHint, hashHint, kind, baselineNewTableCacheBatchSizeForHints(arrayHint, hashHint, kind))
+}
+
+func allocateNewTableWithCacheBatch(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind, batch int) *runtime.Table {
 	tbl := runtime.NewTableSizedKind(arrayHint, hashHint, kind)
 	if instrID < 0 || instrID >= len(caches) {
 		return tbl
@@ -152,7 +160,6 @@ func allocateNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHi
 	if entry.Pos < int64(len(entry.Values)) {
 		return tbl
 	}
-	batch := newTableCacheBatchSizeForHints(int64(arrayHint), hashHint, kind)
 	if batch <= 1 {
 		entry.Values = nil
 		entry.Roots = nil

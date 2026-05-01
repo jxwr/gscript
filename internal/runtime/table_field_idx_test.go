@@ -220,6 +220,53 @@ func TestFieldCacheCachedConstructorAppendAcrossTables(t *testing.T) {
 	}
 }
 
+func TestDynamicStringKeyCachePolymorphicLookup(t *testing.T) {
+	tbl := NewTable()
+	keys := []string{"na", "eu", "apac", "latam", "mea", "core", "edge"}
+	for i, key := range keys {
+		tbl.RawSetString(key, IntValue(int64(i+1)))
+	}
+	cache := make([]TableStringKeyCacheEntry, TableStringKeyCacheWays)
+	for pass := 0; pass < 3; pass++ {
+		for i, key := range keys {
+			got := tbl.RawGetStringDynamicCached(key, cache)
+			if !got.IsInt() || got.Int() != int64(i+1) {
+				t.Fatalf("pass %d key %q got %v, want %d", pass, key, got, i+1)
+			}
+		}
+	}
+	filled := 0
+	for _, entry := range cache {
+		if entry.ShapeID != 0 {
+			if entry.Key == "" {
+				t.Fatalf("filled cache entry does not retain its key string: %+v", entry)
+			}
+			filled++
+		}
+	}
+	if filled != len(keys) {
+		t.Fatalf("filled cache entries = %d, want %d", filled, len(keys))
+	}
+}
+
+func TestDynamicStringKeyCacheShapeGuardAfterDelete(t *testing.T) {
+	tbl := NewTable()
+	cache := make([]TableStringKeyCacheEntry, TableStringKeyCacheWays)
+	tbl.RawSetString("a", IntValue(1))
+	tbl.RawSetString("b", IntValue(2))
+	if got := tbl.RawGetStringDynamicCached("b", cache); !got.IsInt() || got.Int() != 2 {
+		t.Fatalf("warm get b = %v, want 2", got)
+	}
+	tbl.RawSetString("b", NilValue())
+	if got := tbl.RawGetStringDynamicCached("b", cache); !got.IsNil() {
+		t.Fatalf("deleted b through dynamic cache = %v, want nil", got)
+	}
+	tbl.RawSetStringDynamicCached("b", IntValue(3), cache)
+	if got := tbl.RawGetStringDynamicCached("b", cache); !got.IsInt() || got.Int() != 3 {
+		t.Fatalf("reinserted b through dynamic cache = %v, want 3", got)
+	}
+}
+
 func TestNewTableFromCtor2NonNilMatchesCtorShape(t *testing.T) {
 	ctor := NewSmallTableCtor2("left", "right")
 	left := TableValue(NewEmptyTable())
