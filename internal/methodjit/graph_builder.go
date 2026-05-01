@@ -339,8 +339,17 @@ func (b *graphBuilder) emitBlocks() {
 				instr := b.emit(block, OpConstBool, TypeBool, nil, aux, 0)
 				b.writeVariable(a, block, instr.Value())
 				if c != 0 {
-					// Skip next instruction (used for if/else bool patterns).
-					pc++
+					// LOADBOOL's skip flag is control flow, not a linear
+					// fallthrough. Treat it as an unconditional jump over the
+					// next bytecode so boolean materialization patterns like
+					// `x != y` do not execute both true and false stores in IR.
+					targetPC := pc + 2
+					if targetBlock, ok := b.pcToBlock[targetPC]; ok {
+						b.addEdge(block, targetBlock)
+						b.emit(block, OpJump, TypeUnknown, nil, 0, 0)
+						terminated[startPC] = true
+					}
+					pc = endPC
 				}
 
 			case vm.OP_LOADINT:

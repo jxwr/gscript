@@ -144,6 +144,56 @@ result := sum
 	}
 }
 
+func TestTier2_NoFilterInlinedLoadBoolSkipTableBuilder(t *testing.T) {
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+	src := `
+func make_doc(i) {
+    return {active: i % 4 != 0, value: i}
+}
+
+func build_docs(n) {
+    docs := {}
+    for i := 1; i <= n; i++ {
+        docs[i] = make_doc(i)
+    }
+    return docs
+}
+
+func walk_docs(docs, n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        doc := docs[i]
+        if doc.active {
+            sum = sum + doc.value
+        } else {
+            sum = sum - doc.value
+        }
+    }
+    return sum
+}
+
+docs := build_docs(2000)
+result := walk_docs(docs, 2000)
+`
+	compareTier2Result(t, src, "result")
+
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("JIT execute error: %v", err)
+	}
+	if !containsString(tm.Tier2Entered(), "build_docs") {
+		t.Fatalf("expected build_docs to enter Tier2 under no-filter, entered=%v failed=%v", tm.Tier2Entered(), tm.Tier2Failed())
+	}
+	if got := v.GetGlobal("result"); !got.IsInt() || got.Int() != 999000 {
+		t.Fatalf("result=%v, want 999000", got)
+	}
+}
+
 func TestTier2_TopLevelGlobalReductionFallbackAfterGlobalShapeChange(t *testing.T) {
 	src := `
 func observe(i) {
