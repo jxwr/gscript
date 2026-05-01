@@ -224,6 +224,69 @@ func TestNewTableFromCtor2InlineSvalsCanGrow(t *testing.T) {
 	}
 }
 
+func TestNewTableSizedMediumSvalsInlineIsolation(t *testing.T) {
+	t1 := NewTableSized(0, 5)
+	t2 := NewTableSized(0, 5)
+	if cap(t1.svals) != 5 || cap(t2.svals) != 5 {
+		t.Fatalf("medium svals caps = %d/%d, want 5/5", cap(t1.svals), cap(t2.svals))
+	}
+
+	t1.RawSetString("value", IntValue(11))
+	t2.RawSetString("value", IntValue(22))
+	t1.RawSetString("other", IntValue(33))
+	if got := t2.RawGetString("value"); !got.IsInt() || got.Int() != 22 {
+		t.Fatalf("medium svals storage aliased across tables: got %v, want 22", got)
+	}
+	if got := t1.RawGetString("other"); !got.IsInt() || got.Int() != 33 {
+		t.Fatalf("t1.other = %v, want 33", got)
+	}
+}
+
+func TestNewTableSizedMediumSvalsRootScans(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	tbl := NewTableSized(0, 5)
+	root := tableSlabRootForPointer(unsafe.Pointer(tbl))
+	if root == nil {
+		t.Fatal("medium-svals table did not resolve to a slab root")
+	}
+
+	v := FreshTableValue(tbl)
+	visited := make(map[uintptr]struct{})
+	ScanValueRoots(v, func(p unsafe.Pointer) {
+		visited[uintptr(p)] = struct{}{}
+	}, make(map[uintptr]struct{}))
+	if _, ok := visited[uintptr(unsafe.Pointer(tbl))]; !ok {
+		t.Fatal("ScanValueRoots did not visit medium-svals table pointer")
+	}
+	if _, ok := visited[uintptr(root)]; !ok {
+		t.Fatal("ScanValueRoots did not visit medium-svals slab root")
+	}
+	stdruntime.KeepAlive(tbl)
+}
+
+func TestTableValueSkipsRootLogForCurrentMediumSvalsSlab(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	tbl := NewTableSized(0, 5)
+	before := GCRootLogSize()
+	v := TableValue(tbl)
+	after := GCRootLogSize()
+	if after != before {
+		t.Fatalf("TableValue grew root log by %d for current medium-svals slab table, want 0", after-before)
+	}
+	stdruntime.KeepAlive(v)
+	stdruntime.KeepAlive(tbl)
+}
+
 func TestNewTableFromCtor2OmitsRuntimeNilFields(t *testing.T) {
 	ctor := NewSmallTableCtor2("left", "right")
 

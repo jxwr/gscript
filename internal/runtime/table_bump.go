@@ -140,6 +140,10 @@ func visitCurrentTableSlabRoot(visitor func(unsafe.Pointer)) {
 	if start != 0 {
 		visitor(unsafe.Pointer(start))
 	}
+	start = atomic.LoadUintptr(&DefaultHeap.tableSvalsNSlabStart)
+	if start != 0 {
+		visitor(unsafe.Pointer(start))
+	}
 }
 
 func (h *Heap) tablePointerInCurrentSlab(addr uintptr) bool {
@@ -164,12 +168,20 @@ func (h *Heap) tableRootInCurrentSlab(addr uintptr) unsafe.Pointer {
 			return unsafe.Pointer(start)
 		}
 	}
+	start = atomic.LoadUintptr(&h.tableSvalsNSlabStart)
+	if start != 0 && addr >= start {
+		end := atomic.LoadUintptr(&h.tableSvalsNSlabEnd)
+		if addr < end {
+			return unsafe.Pointer(start)
+		}
+	}
 	return nil
 }
 
 const tableSlabElemSize = uintptr(unsafe.Sizeof(Table{}))
 
 const tableSvalsSlabSize = 8192
+const tableSvalsNInlineCap = 5
 
 // tableSvalsSlot is a fresh-allocation layout for fixed small-field table
 // constructors. The Table remains a normal Go-visible *Table, while its first
@@ -185,6 +197,19 @@ type tableSvalsSlab struct {
 }
 
 const tableSvalsSlotSize = uintptr(unsafe.Sizeof(tableSvalsSlot{}))
+
+// tableSvalsNSlot serves medium small-field tables without inflating the
+// one/two-field constructor slab used by pair-heavy workloads.
+type tableSvalsNSlot struct {
+	table Table
+	svals [tableSvalsNInlineCap]Value
+}
+
+type tableSvalsNSlab struct {
+	backing []tableSvalsNSlot
+}
+
+const tableSvalsNSlotSize = uintptr(unsafe.Sizeof(tableSvalsNSlot{}))
 
 func (s *tableSvalsSlab) allocSlot(h *Heap) *tableSvalsSlot {
 	for {
@@ -206,6 +231,26 @@ func (s *tableSvalsSlab) refill(h *Heap) {
 	}
 }
 
+func (s *tableSvalsNSlab) allocSlot(h *Heap) *tableSvalsNSlot {
+	for {
+		if slot := h.tryAllocTableSvalsNFast(); slot != nil {
+			return slot
+		}
+		s.refill(h)
+	}
+}
+
+func (s *tableSvalsNSlab) refill(h *Heap) {
+	if h != nil {
+		atomic.StoreUintptr(&h.tableSvalsNSlabNext, 0)
+	}
+	next := make([]tableSvalsNSlot, tableSvalsSlabSize)
+	s.backing = next
+	if h != nil {
+		h.publishTableSvalsNSlab(next)
+	}
+}
+
 func (h *Heap) publishTableSvalsSlab(backing []tableSvalsSlot) {
 	if len(backing) == 0 {
 		atomic.StoreUintptr(&h.tableSvalsSlabNext, 0)
@@ -224,6 +269,26 @@ func (h *Heap) publishTableSvalsSlab(backing []tableSvalsSlot) {
 	atomic.StoreUintptr(&h.tableSvalsSlabEnd, end)
 	atomic.StoreUintptr(&h.tableSvalsSlabStart, start)
 	atomic.StoreUintptr(&h.tableSvalsSlabNext, start)
+}
+
+func (h *Heap) publishTableSvalsNSlab(backing []tableSvalsNSlot) {
+	if len(backing) == 0 {
+		atomic.StoreUintptr(&h.tableSvalsNSlabNext, 0)
+		atomic.StoreUintptr(&h.tableSvalsNSlabStart, 0)
+		atomic.StoreUintptr(&h.tableSvalsNSlabEnd, 0)
+		return
+	}
+	root := unsafe.Pointer(&backing[0])
+	start := uintptr(root)
+	end := start + uintptr(len(backing))*tableSvalsNSlotSize
+	registerTableSlabRange(start, end)
+	keepAlive(root, nil)
+
+	atomic.StoreUintptr(&h.tableSvalsNSlabNext, 0)
+	atomic.StoreUintptr(&h.tableSvalsNSlabStart, 0)
+	atomic.StoreUintptr(&h.tableSvalsNSlabEnd, end)
+	atomic.StoreUintptr(&h.tableSvalsNSlabStart, start)
+	atomic.StoreUintptr(&h.tableSvalsNSlabNext, start)
 }
 
 // tryAllocTableSvalsFast reserves a fresh Table+svals slot by absolute
@@ -250,6 +315,26 @@ func (h *Heap) tryAllocTableSvalsFast() *tableSvalsSlot {
 	}
 }
 
+//go:nocheckptr
+func (h *Heap) tryAllocTableSvalsNFast() *tableSvalsNSlot {
+	if h == nil {
+		return nil
+	}
+	for {
+		next := atomic.LoadUintptr(&h.tableSvalsNSlabNext)
+		if next == 0 {
+			return nil
+		}
+		end := atomic.LoadUintptr(&h.tableSvalsNSlabEnd)
+		if end == 0 || next > end-tableSvalsNSlotSize {
+			return nil
+		}
+		if atomic.CompareAndSwapUintptr(&h.tableSvalsNSlabNext, next, next+tableSvalsNSlotSize) {
+			return (*tableSvalsNSlot)(unsafe.Pointer(next))
+		}
+	}
+}
+
 func (h *Heap) allocTableSvalsSlot() *tableSvalsSlot {
 	if slot := h.tryAllocTableSvalsFast(); slot != nil {
 		return slot
@@ -257,6 +342,15 @@ func (h *Heap) allocTableSvalsSlot() *tableSvalsSlot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.tableSvalsSlab.allocSlot(h)
+}
+
+func (h *Heap) allocTableSvalsNSlot() *tableSvalsNSlot {
+	if slot := h.tryAllocTableSvalsNFast(); slot != nil {
+		return slot
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.tableSvalsNSlab.allocSlot(h)
 }
 
 // tryAllocTableFast reserves a slot by absolute address. The backing []Table is
@@ -305,6 +399,10 @@ func (h *Heap) AllocTableWithSvals(capacity int) (*Table, []Value) {
 			return t, slot.svals[:0:1]
 		}
 		return t, slot.svals[:0:2]
+	}
+	if capacity == tableSvalsNInlineCap {
+		slot := h.allocTableSvalsNSlot()
+		return &slot.table, slot.svals[:0:capacity]
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()

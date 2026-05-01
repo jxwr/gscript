@@ -17,6 +17,7 @@ const (
 
 // smallFieldCap is the threshold for using flat slices vs maps for string keys.
 const smallFieldCap = 12
+const initialStringMapCap = 64
 
 // SmallFieldCap is the maximum string-field count retained in the small shaped
 // table representation.
@@ -714,7 +715,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			cache.AppendShapeID = preShapeID
 			cache.AppendShape = t.shape
 		} else {
-			t.smap = make(map[string]Value, len(t.skeys)+1)
+			t.smap = make(map[string]Value, initialStringMapCap)
 			for i, k := range t.skeys {
 				t.smap[k] = t.svals[i]
 			}
@@ -777,7 +778,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			t.appendSmallStringField(key, val)
 			t.rememberDynamicStringCacheLocked(key, data, keyLen, idx, cache)
 		} else {
-			t.smap = make(map[string]Value, len(t.skeys)+1)
+			t.smap = make(map[string]Value, initialStringMapCap)
 			for i, k := range t.skeys {
 				t.smap[k] = t.svals[i]
 			}
@@ -946,7 +947,7 @@ func (t *Table) RawSetString(key string, val Value) {
 		if len(t.skeys) < smallFieldCap {
 			t.appendSmallStringField(key, val)
 		} else {
-			t.smap = make(map[string]Value, len(t.skeys)+1)
+			t.smap = make(map[string]Value, initialStringMapCap)
 			for i, k := range t.skeys {
 				t.smap[k] = t.svals[i]
 			}
