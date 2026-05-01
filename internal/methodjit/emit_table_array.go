@@ -525,13 +525,7 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	doneLabel := ec.uniqueLabel("tarr_load_done")
 
 	dataReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X2)
-	if dataReg != jit.X2 {
-		asm.MOVreg(jit.X2, dataReg)
-	}
 	lenReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
-	if lenReg != jit.X3 {
-		asm.MOVreg(jit.X3, lenReg)
-	}
 	keyID := instr.Args[2].ID
 	if kv, isConst := ec.constInts[keyID]; isConst {
 		asm.LoadImm64(jit.X1, kv)
@@ -562,13 +556,13 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
 	if !ec.tableArrayUpperBoundSafe(instr.ID) {
-		asm.CMPreg(jit.X1, jit.X3)
+		asm.CMPreg(jit.X1, lenReg)
 		asm.BCond(jit.CondGE, deoptLabel)
 	}
 
 	switch instr.Aux {
 	case int64(vm.FBKindMixed):
-		asm.LDRreg(jit.X0, jit.X2, jit.X1)
+		asm.LDRreg(jit.X0, dataReg, jit.X1)
 		switch instr.Type {
 		case TypeInt:
 			asm.LSRimm(jit.X2, jit.X0, 48)
@@ -589,7 +583,7 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 			ec.storeResultNB(jit.X0, instr.ID)
 		}
 	case int64(vm.FBKindInt):
-		asm.LDRreg(jit.X0, jit.X2, jit.X1)
+		asm.LDRreg(jit.X0, dataReg, jit.X1)
 		if instr.Type == TypeInt {
 			ec.storeRawInt(jit.X0, instr.ID)
 		} else {
@@ -602,14 +596,14 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 			if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
 				dstF = jit.FReg(pr.Reg)
 			}
-			asm.FLDRdReg(dstF, jit.X2, jit.X1)
+			asm.FLDRdReg(dstF, dataReg, jit.X1)
 			ec.storeRawFloat(dstF, instr.ID)
 		} else {
-			asm.LDRreg(jit.X0, jit.X2, jit.X1)
+			asm.LDRreg(jit.X0, dataReg, jit.X1)
 			ec.storeResultNB(jit.X0, instr.ID)
 		}
 	case int64(vm.FBKindBool):
-		asm.LDRBreg(jit.X3, jit.X2, jit.X1)
+		asm.LDRBreg(jit.X3, dataReg, jit.X1)
 		nilLabel := ec.uniqueLabel("tarr_bool_nil")
 		falseLabel := ec.uniqueLabel("tarr_bool_false")
 		asm.CBZ(jit.X3, nilLabel)
@@ -677,13 +671,7 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 	}
 
 	dataReg := ec.resolveRawDataPtr(instr.Args[1].ID, jit.X2)
-	if dataReg != jit.X2 {
-		asm.MOVreg(jit.X2, dataReg)
-	}
 	lenReg := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
-	if lenReg != jit.X3 {
-		asm.MOVreg(jit.X3, lenReg)
-	}
 	if !ec.emitTableArrayKeyToReg(instr.Args[3], missLabel) {
 		ec.emitDeopt(instr)
 		return
@@ -700,8 +688,8 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 		valueID:                 instr.Args[4].ID,
 		tableReg:                jit.X0,
 		keyReg:                  jit.X1,
-		dataReg:                 jit.X2,
-		lenReg:                  jit.X3,
+		dataReg:                 dataReg,
+		lenReg:                  lenReg,
 		missLabel:               missLabel,
 		successLabel:            successLabel,
 		upperBoundSafe:          !allowGrow && ec.tableArrayUpperBoundSafe(instr.ID),
@@ -752,24 +740,18 @@ func (ec *emitContext) emitTableArraySwap(instr *Instr) {
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
 	dataReg := ec.resolveRawDataPtr(instr.Args[1].ID, jit.X2)
-	if dataReg != jit.X2 {
-		asm.MOVreg(jit.X2, dataReg)
-	}
 	lenReg := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
-	if lenReg != jit.X3 {
-		asm.MOVreg(jit.X3, lenReg)
-	}
-	asm.CMPreg(jit.X1, jit.X3)
+	asm.CMPreg(jit.X1, lenReg)
 	asm.BCond(jit.CondGE, deoptLabel)
-	asm.CMPreg(jit.X4, jit.X3)
+	asm.CMPreg(jit.X4, lenReg)
 	asm.BCond(jit.CondGE, deoptLabel)
 
 	switch instr.Aux {
 	case int64(vm.FBKindInt), int64(vm.FBKindFloat):
-		asm.LDRreg(jit.X5, jit.X2, jit.X1)
-		asm.LDRreg(jit.X6, jit.X2, jit.X4)
-		asm.STRreg(jit.X6, jit.X2, jit.X1)
-		asm.STRreg(jit.X5, jit.X2, jit.X4)
+		asm.LDRreg(jit.X5, dataReg, jit.X1)
+		asm.LDRreg(jit.X6, dataReg, jit.X4)
+		asm.STRreg(jit.X6, dataReg, jit.X1)
+		asm.STRreg(jit.X5, dataReg, jit.X4)
 	default:
 		ec.emitDeopt(instr)
 		return

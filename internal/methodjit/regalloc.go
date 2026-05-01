@@ -1176,6 +1176,13 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 		}
 		freeTemporaryCarriedInputs(instr, gprs, fprs, lastUse, temporaryCarried)
 
+		if instructionHasNoSSAResult(instr) {
+			delete(alloc.ValueRegs, instr.ID)
+			delete(alloc.SpillSlots, instr.ID)
+			freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse, temporaryCarried)
+			continue
+		}
+
 		// Determine which pool to use based on the instruction's result type.
 		wantFloat := needsFloatReg(instr)
 		var rs *regState
@@ -1259,6 +1266,23 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 		freeDeadValues(block, instrIdx, alloc, gprs, fprs, lastUse, temporaryCarried)
 	}
 	return gprs.snapshot(false)
+}
+
+func instructionHasNoSSAResult(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpNop, OpStoreSlot,
+		OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableBoolArrayFill,
+		OpSetField, OpSetList, OpAppend,
+		OpSetGlobal, OpSetUpval,
+		OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow,
+		OpClose, OpGo, OpSend:
+		return true
+	default:
+		return false
+	}
 }
 
 func isFinalInputUse(instr *Instr, valueID int, lastUse map[int]int) bool {

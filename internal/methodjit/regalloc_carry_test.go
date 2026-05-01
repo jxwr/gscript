@@ -559,6 +559,73 @@ func TestRegalloc_TableArrayLenDataInvariantGPRPinned(t *testing.T) {
 	}
 }
 
+func TestRegalloc_TableArraySwapDoesNotClobberPinnedLenData(t *testing.T) {
+	fn := &Function{NumRegs: 3, CarryPreheaderInvariants: true}
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	preheader := &Block{ID: 1, defs: make(map[int]*Value)}
+	header := &Block{ID: 2, defs: make(map[int]*Value)}
+	body := &Block{ID: 3, defs: make(map[int]*Value)}
+	exit := &Block{ID: 4, defs: make(map[int]*Value)}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, preheader, header, body, exit}
+
+	entry.Succs = []*Block{preheader}
+	preheader.Preds = []*Block{entry}
+	preheader.Succs = []*Block{header}
+	header.Preds = []*Block{preheader, body}
+	header.Succs = []*Block{body, exit}
+	body.Preds = []*Block{header}
+	body.Succs = []*Block{header}
+	exit.Preds = []*Block{header}
+
+	entry.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: entry, Aux: int64(preheader.ID)}}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: preheader}
+	arrHdr := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindInt), Args: []*Value{tbl.Value()}, Block: preheader}
+	arrLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindInt), Args: []*Value{arrHdr.Value()}, Block: preheader}
+	arrData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindInt), Args: []*Value{arrHdr.Value()}, Block: preheader}
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: preheader}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: preheader}
+	bound := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 8, Block: preheader}
+	preJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: preheader, Aux: int64(header.ID)}
+	preheader.Instrs = []*Instr{tbl, arrHdr, arrLen, arrData, seed, one, bound, preJump}
+
+	iPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpLeInt, Type: TypeBool, Args: []*Value{iPhi.Value(), bound.Value()}, Block: header}
+	headerBranch := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Block: header, Aux: int64(body.ID), Aux2: int64(exit.ID)}
+	header.Instrs = []*Instr{iPhi, cond, headerBranch}
+
+	keyB := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{iPhi.Value(), one.Value()}, Block: body}
+	swap := &Instr{ID: fn.newValueID(), Op: OpTableArraySwap, Type: TypeUnknown, Aux: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value(), arrData.Value(), arrLen.Value(), iPhi.Value(), keyB.Value()}, Block: body}
+	next := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{iPhi.Value(), one.Value()}, Block: body}
+	bodyJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: body, Aux: int64(header.ID)}
+	body.Instrs = []*Instr{keyB, swap, next, bodyJump}
+	iPhi.Args = []*Value{seed.Value(), next.Value()}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Args: []*Value{seed.Value()}, Block: exit}}
+
+	alloc := AllocateRegisters(fn)
+	if pr, ok := alloc.ValueRegs[swap.ID]; ok {
+		t.Fatalf("TableArraySwap v%d should not claim an SSA result register, got %+v", swap.ID, pr)
+	}
+
+	invariants := alloc.LoopInvariantGPRs[header.ID]
+	for _, instr := range []*Instr{arrLen, arrData} {
+		if _, ok := invariants[instr.ID]; !ok {
+			t.Fatalf("%s v%d was not pinned across swap loop; invariants=%v", instr.Op, instr.ID, invariants)
+		}
+	}
+
+	li := computeLoopInfo(fn)
+	safe := computeSafeLoopInvariantGPRs(fn, li, alloc)
+	if !safe[header.ID][arrLen.ID].IsRawInt {
+		t.Fatalf("TableArrayLen v%d should stay safe as raw int across swap", arrLen.ID)
+	}
+	if !safe[header.ID][arrData.ID].IsRawDataPtr {
+		t.Fatalf("TableArrayData v%d should stay safe as raw data pointer across swap", arrData.ID)
+	}
+}
+
 func TestRegalloc_TableArrayHeaderInvariantGPRPinnedForBoolStoreABI(t *testing.T) {
 	fn := &Function{NumRegs: 3, CarryPreheaderInvariants: true}
 	entry := &Block{ID: 0, defs: make(map[int]*Value)}
