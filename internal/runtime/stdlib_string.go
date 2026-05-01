@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -366,6 +367,15 @@ func buildStringLib() *Table {
 			return nil, fmt.Errorf("bad argument #1 to 'string.format' (string expected)")
 		}
 		formatStr := args[0].Str()
+		if prog, ok, err := cachedSimpleFormat(formatStr); err != nil {
+			return nil, err
+		} else if ok {
+			s, err := prog.format(args)
+			if err != nil {
+				return nil, err
+			}
+			return []Value{StringValue(s)}, nil
+		}
 		argIdx := 1
 
 		var buf strings.Builder
@@ -390,7 +400,7 @@ func buildStringLib() *Table {
 
 			// Collect flags, width, precision
 			start := i - 1 // include the %
-			for i < len(formatStr) && strings.ContainsRune("-+ #0", rune(formatStr[i])) {
+			for i < len(formatStr) && isFormatFlag(formatStr[i]) {
 				i++
 			}
 			// Width
@@ -749,6 +759,160 @@ func writeFastIntegerFormat(buf *strings.Builder, fmtSpec string, spec byte, n i
 	}
 	buf.WriteString(s)
 	return true
+}
+
+type simpleFormatPart struct {
+	lit  string
+	spec string
+	verb byte
+}
+
+type simpleFormatProgram struct {
+	parts    []simpleFormatPart
+	minArgs  int
+	litBytes int
+}
+
+const simpleFormatCacheLimit = 64
+
+var simpleFormatCache = struct {
+	sync.Mutex
+	entries map[string]*simpleFormatProgram
+	order   []string
+}{
+	entries: make(map[string]*simpleFormatProgram),
+}
+
+func cachedSimpleFormat(formatStr string) (*simpleFormatProgram, bool, error) {
+	simpleFormatCache.Lock()
+	if prog, ok := simpleFormatCache.entries[formatStr]; ok {
+		simpleFormatCache.Unlock()
+		return prog, true, nil
+	}
+	simpleFormatCache.Unlock()
+
+	prog, ok, err := compileSimpleFormat(formatStr)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok {
+		simpleFormatCache.Lock()
+		if cached, exists := simpleFormatCache.entries[formatStr]; exists {
+			simpleFormatCache.Unlock()
+			return cached, true, nil
+		}
+		if len(simpleFormatCache.entries) >= simpleFormatCacheLimit && len(simpleFormatCache.order) > 0 {
+			delete(simpleFormatCache.entries, simpleFormatCache.order[0])
+			copy(simpleFormatCache.order, simpleFormatCache.order[1:])
+			simpleFormatCache.order = simpleFormatCache.order[:len(simpleFormatCache.order)-1]
+		}
+		simpleFormatCache.entries[formatStr] = prog
+		simpleFormatCache.order = append(simpleFormatCache.order, formatStr)
+		simpleFormatCache.Unlock()
+		return prog, true, nil
+	}
+	return nil, false, nil
+}
+
+func compileSimpleFormat(formatStr string) (*simpleFormatProgram, bool, error) {
+	parts := make([]simpleFormatPart, 0, 4)
+	litStart := 0
+	argCount := 0
+	litBytes := 0
+	for i := 0; i < len(formatStr); {
+		if formatStr[i] != '%' {
+			i++
+			continue
+		}
+		if i+1 >= len(formatStr) {
+			return nil, false, fmt.Errorf("invalid format string (ends with %%)")
+		}
+		if formatStr[i+1] == '%' {
+			return nil, false, nil
+		}
+		if i > litStart {
+			lit := formatStr[litStart:i]
+			parts = append(parts, simpleFormatPart{lit: lit})
+			litBytes += len(lit)
+		}
+
+		start := i
+		i++
+		for i < len(formatStr) && isFormatFlag(formatStr[i]) {
+			if formatStr[i] != '0' {
+				return nil, false, nil
+			}
+			i++
+		}
+		for i < len(formatStr) && formatStr[i] >= '0' && formatStr[i] <= '9' {
+			i++
+		}
+		if i < len(formatStr) && formatStr[i] == '.' {
+			return nil, false, nil
+		}
+		if i >= len(formatStr) {
+			return nil, false, fmt.Errorf("invalid format string")
+		}
+		verb := formatStr[i]
+		i++
+		switch verb {
+		case 'd', 'i', 'u', 'x', 'X', 'o':
+			parts = append(parts, simpleFormatPart{spec: formatStr[start:i], verb: verb})
+		case 's':
+			if i-start != 2 {
+				return nil, false, nil
+			}
+			parts = append(parts, simpleFormatPart{spec: "%s", verb: verb})
+		default:
+			return nil, false, nil
+		}
+		argCount++
+		litStart = i
+	}
+	if argCount == 0 {
+		return nil, false, nil
+	}
+	if litStart < len(formatStr) {
+		lit := formatStr[litStart:]
+		parts = append(parts, simpleFormatPart{lit: lit})
+		litBytes += len(lit)
+	}
+	return &simpleFormatProgram{parts: parts, minArgs: argCount + 1, litBytes: litBytes}, true, nil
+}
+
+func (p *simpleFormatProgram) format(args []Value) (string, error) {
+	if len(args) < p.minArgs {
+		return "", fmt.Errorf("bad argument #%d to 'string.format' (no value)", len(args)+1)
+	}
+	var buf strings.Builder
+	buf.Grow(p.litBytes + 16*(p.minArgs-1))
+	argIdx := 1
+	for _, part := range p.parts {
+		if part.verb == 0 {
+			buf.WriteString(part.lit)
+			continue
+		}
+		arg := args[argIdx]
+		argIdx++
+		switch part.verb {
+		case 'd', 'i', 'u', 'x', 'X', 'o':
+			if !writeFastIntegerFormat(&buf, part.spec, part.verb, toInt(arg)) {
+				return "", fmt.Errorf("invalid cached integer format %q", part.spec)
+			}
+		case 's':
+			buf.WriteString(arg.String())
+		}
+	}
+	return buf.String(), nil
+}
+
+func isFormatFlag(b byte) bool {
+	switch b {
+	case '-', '+', ' ', '#', '0':
+		return true
+	default:
+		return false
+	}
 }
 
 // toInt converts a Value to int64. Handles ints, floats, and string-to-number coercion.

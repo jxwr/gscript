@@ -38,8 +38,9 @@ import (
 // Struct layout constants for vm.Closure and vm.FuncProto.
 // Verified at init time via unsafe.Offsetof.
 var (
-	vmClosureOffProto    int // vm.Closure.Proto offset (should be 0)
-	vmClosureOffUpvalues int // vm.Closure.Upvalues offset (should be 8)
+	vmClosureOffProto          int // vm.Closure.Proto offset (should be 0)
+	vmClosureOffUpvalues       int // vm.Closure.Upvalues offset (should be 8)
+	vmClosureOffInlineUpvalue0 int // vm.Closure.inlineUpvalue[0] offset
 
 	funcProtoOffCompiledCodePtr        int // vm.FuncProto.CompiledCodePtr offset
 	funcProtoOffDirectEntryPtr         int // vm.FuncProto.DirectEntryPtr offset
@@ -64,6 +65,7 @@ func init() {
 
 	vmClosureOffProto = int(unsafe.Offsetof(cl.Proto))
 	vmClosureOffUpvalues = int(unsafe.Offsetof(cl.Upvalues))
+	vmClosureOffInlineUpvalue0 = vm.ClosureInlineUpvalue0Offset()
 
 	funcProtoOffCompiledCodePtr = int(unsafe.Offsetof(proto.CompiledCodePtr))
 	funcProtoOffDirectEntryPtr = int(unsafe.Offsetof(proto.DirectEntryPtr))

@@ -2,6 +2,7 @@ package vm
 
 import (
 	"github.com/gscript/gscript/internal/runtime"
+	"unsafe"
 )
 
 // globalCacheEntry caches a global variable index for fast array lookup.
@@ -81,6 +82,14 @@ type Closure struct {
 	Proto         *FuncProto
 	Upvalues      []*Upvalue
 	inlineUpvalue [1]*Upvalue
+}
+
+// ClosureInlineUpvalue0Offset returns the struct offset of the one-upvalue
+// inline storage slot. Baseline JIT code uses this for the common one-upvalue
+// closure fast path without depending on the field's exported name.
+func ClosureInlineUpvalue0Offset() int {
+	var cl Closure
+	return int(unsafe.Offsetof(cl.inlineUpvalue))
 }
 
 // NewClosure creates a closure and avoids a second heap allocation for the

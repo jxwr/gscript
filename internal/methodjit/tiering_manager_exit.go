@@ -879,29 +879,55 @@ func (tm *TieringManager) executeClosureOpExit(ctx *ExecContext, regs []runtime.
 
 	cl := vm.NewClosure(subProto)
 
-	// Get the parent closure for non-InStack upvalues.
-	var parentCl *vm.Closure
-	if tm.callVM != nil {
-		parentCl = tm.callVM.CurrentClosure()
-	}
-
-	for i, desc := range subProto.Upvalues {
+	switch len(subProto.Upvalues) {
+	case 0:
+	case 1:
+		desc := subProto.Upvalues[0]
 		if desc.InStack {
-			// Upvalue refers to a local in the current frame's register file.
 			absIdx := base + desc.Index
 			if absIdx < len(regs) {
 				uv := vm.NewOpenUpvalue(&regs[absIdx], absIdx)
 				if tm.callVM != nil {
 					uv = tm.callVM.FindOrCreateUpvalue(absIdx)
 				}
-				cl.Upvalues[i] = uv
+				cl.Upvalues[0] = uv
 			}
 		} else {
-			// Upvalue refers to a parent closure's upvalue.
+			var parentCl *vm.Closure
+			if tm.callVM != nil {
+				parentCl = tm.callVM.CurrentClosure()
+			}
 			if parentCl != nil && desc.Index < len(parentCl.Upvalues) && parentCl.Upvalues[desc.Index] != nil {
-				cl.Upvalues[i] = parentCl.Upvalues[desc.Index]
+				cl.Upvalues[0] = parentCl.Upvalues[desc.Index]
 			} else {
-				cl.Upvalues[i] = vm.NewOpenUpvalue(new(runtime.Value), 0)
+				cl.Upvalues[0] = vm.NewOpenUpvalue(new(runtime.Value), 0)
+			}
+		}
+	default:
+		// Get the parent closure for non-InStack upvalues.
+		var parentCl *vm.Closure
+		if tm.callVM != nil {
+			parentCl = tm.callVM.CurrentClosure()
+		}
+
+		for i, desc := range subProto.Upvalues {
+			if desc.InStack {
+				// Upvalue refers to a local in the current frame's register file.
+				absIdx := base + desc.Index
+				if absIdx < len(regs) {
+					uv := vm.NewOpenUpvalue(&regs[absIdx], absIdx)
+					if tm.callVM != nil {
+						uv = tm.callVM.FindOrCreateUpvalue(absIdx)
+					}
+					cl.Upvalues[i] = uv
+				}
+			} else {
+				// Upvalue refers to a parent closure's upvalue.
+				if parentCl != nil && desc.Index < len(parentCl.Upvalues) && parentCl.Upvalues[desc.Index] != nil {
+					cl.Upvalues[i] = parentCl.Upvalues[desc.Index]
+				} else {
+					cl.Upvalues[i] = vm.NewOpenUpvalue(new(runtime.Value), 0)
+				}
 			}
 		}
 	}

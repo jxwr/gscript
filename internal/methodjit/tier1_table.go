@@ -665,7 +665,7 @@ func emitBaselineSelf(asm *jit.Assembler, inst uint32, pc int) {
 
 // emitBaselineGetUpval emits native ARM64 for OP_GETUPVAL: R(A) = Upvalues[B].ref
 // Uses the Closure pointer stored in ExecContext.
-func emitBaselineGetUpval(asm *jit.Assembler, inst uint32, pc int) {
+func emitBaselineGetUpval(asm *jit.Assembler, inst uint32, pc int, proto *vm.FuncProto) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
 
@@ -676,12 +676,17 @@ func emitBaselineGetUpval(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.CBZ(jit.X0, slowLabel) // no closure pointer
 
-	// Closure.Upvalues is a []*Upvalue slice at offset 8.
-	// Load slice data pointer.
-	asm.LDR(jit.X1, jit.X0, 8) // X1 = Upvalues data ptr ([]* element ptr)
+	if proto != nil && len(proto.Upvalues) == 1 && b == 0 {
+		// One-upvalue closures keep Upvalues[0] inline in the closure object.
+		asm.LDR(jit.X2, jit.X0, vmClosureOffInlineUpvalue0)
+	} else {
+		// Closure.Upvalues is a []*Upvalue slice at offset 8.
+		// Load slice data pointer.
+		asm.LDR(jit.X1, jit.X0, 8) // X1 = Upvalues data ptr ([]* element ptr)
 
-	// Load Upvalue pointer: Upvalues[B] (each element is 8 bytes = *Upvalue).
-	asm.LDR(jit.X2, jit.X1, b*8) // X2 = *Upvalue
+		// Load Upvalue pointer: Upvalues[B] (each element is 8 bytes = *Upvalue).
+		asm.LDR(jit.X2, jit.X1, b*8) // X2 = *Upvalue
+	}
 
 	asm.CBZ(jit.X2, slowLabel)
 
@@ -704,7 +709,7 @@ func emitBaselineGetUpval(asm *jit.Assembler, inst uint32, pc int) {
 }
 
 // emitBaselineSetUpval emits native ARM64 for OP_SETUPVAL: Upvalues[B].ref = R(A)
-func emitBaselineSetUpval(asm *jit.Assembler, inst uint32, pc int) {
+func emitBaselineSetUpval(asm *jit.Assembler, inst uint32, pc int, proto *vm.FuncProto) {
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
 
@@ -715,11 +720,16 @@ func emitBaselineSetUpval(asm *jit.Assembler, inst uint32, pc int) {
 	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.CBZ(jit.X0, slowLabel)
 
-	// Load Upvalues slice data pointer.
-	asm.LDR(jit.X1, jit.X0, 8) // Closure.Upvalues data ptr
+	if proto != nil && len(proto.Upvalues) == 1 && b == 0 {
+		// One-upvalue closures keep Upvalues[0] inline in the closure object.
+		asm.LDR(jit.X2, jit.X0, vmClosureOffInlineUpvalue0)
+	} else {
+		// Load Upvalues slice data pointer.
+		asm.LDR(jit.X1, jit.X0, 8) // Closure.Upvalues data ptr
 
-	// Load Upvalue[B] pointer.
-	asm.LDR(jit.X2, jit.X1, b*8) // *Upvalue
+		// Load Upvalue[B] pointer.
+		asm.LDR(jit.X2, jit.X1, b*8) // *Upvalue
+	}
 	asm.CBZ(jit.X2, slowLabel)
 
 	// Upvalue.ref at offset 0.

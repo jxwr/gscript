@@ -76,27 +76,53 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 	}
 	subProto := proto.Protos[bx]
 	cl := vm.NewClosure(subProto)
-	// Capture upvalues.
-	var parentCl *vm.Closure
-	if e.callVM != nil {
-		parentCl = e.callVM.CurrentClosure()
-	}
-	for i, desc := range subProto.Upvalues {
+	switch len(subProto.Upvalues) {
+	case 0:
+	case 1:
+		desc := subProto.Upvalues[0]
 		if desc.InStack {
 			absIdx := base + desc.Index
 			if absIdx < len(regs) {
 				if e.callVM != nil {
-					cl.Upvalues[i] = e.callVM.FindOrCreateUpvalue(absIdx)
+					cl.Upvalues[0] = e.callVM.FindOrCreateUpvalue(absIdx)
 				} else {
-					cl.Upvalues[i] = vm.NewOpenUpvalue(&regs[absIdx], absIdx)
+					cl.Upvalues[0] = vm.NewOpenUpvalue(&regs[absIdx], absIdx)
 				}
 			}
 		} else {
-			// Parent upvalue: copy from the parent closure's upvalue list.
+			var parentCl *vm.Closure
+			if e.callVM != nil {
+				parentCl = e.callVM.CurrentClosure()
+			}
 			if parentCl != nil && desc.Index < len(parentCl.Upvalues) && parentCl.Upvalues[desc.Index] != nil {
-				cl.Upvalues[i] = parentCl.Upvalues[desc.Index]
+				cl.Upvalues[0] = parentCl.Upvalues[desc.Index]
 			} else {
-				cl.Upvalues[i] = vm.NewOpenUpvalue(new(runtime.Value), 0)
+				cl.Upvalues[0] = vm.NewOpenUpvalue(new(runtime.Value), 0)
+			}
+		}
+	default:
+		// Capture upvalues.
+		var parentCl *vm.Closure
+		if e.callVM != nil {
+			parentCl = e.callVM.CurrentClosure()
+		}
+		for i, desc := range subProto.Upvalues {
+			if desc.InStack {
+				absIdx := base + desc.Index
+				if absIdx < len(regs) {
+					if e.callVM != nil {
+						cl.Upvalues[i] = e.callVM.FindOrCreateUpvalue(absIdx)
+					} else {
+						cl.Upvalues[i] = vm.NewOpenUpvalue(&regs[absIdx], absIdx)
+					}
+				}
+			} else {
+				// Parent upvalue: copy from the parent closure's upvalue list.
+				if parentCl != nil && desc.Index < len(parentCl.Upvalues) && parentCl.Upvalues[desc.Index] != nil {
+					cl.Upvalues[i] = parentCl.Upvalues[desc.Index]
+				} else {
+					cl.Upvalues[i] = vm.NewOpenUpvalue(new(runtime.Value), 0)
+				}
 			}
 		}
 	}

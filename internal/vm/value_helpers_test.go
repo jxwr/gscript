@@ -54,6 +54,9 @@ func TestNewClosureUsesInlineStorageForOneUpvalue(t *testing.T) {
 	if &cl.Upvalues[0] != &cl.inlineUpvalue[0] {
 		t.Fatal("one-upvalue closure should use inline storage")
 	}
+	if got := ClosureInlineUpvalue0Offset(); uintptr(got) != unsafe.Offsetof(cl.inlineUpvalue) {
+		t.Fatalf("ClosureInlineUpvalue0Offset=%d, want %d", got, unsafe.Offsetof(cl.inlineUpvalue))
+	}
 }
 
 func TestNewClosureAllocatesSliceForMultipleUpvalues(t *testing.T) {

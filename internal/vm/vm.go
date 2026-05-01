@@ -1708,11 +1708,22 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			bx := DecodeBx(inst)
 			subProto := frame.closure.Proto.Protos[bx]
 			cl := NewClosure(subProto)
-			for i, desc := range subProto.Upvalues {
+			switch len(subProto.Upvalues) {
+			case 0:
+			case 1:
+				desc := subProto.Upvalues[0]
 				if desc.InStack {
-					cl.Upvalues[i] = vm.findOrCreateUpvalue(base + desc.Index)
+					cl.Upvalues[0] = vm.findOrCreateUpvalue(base + desc.Index)
 				} else {
-					cl.Upvalues[i] = frame.closure.Upvalues[desc.Index]
+					cl.Upvalues[0] = frame.closure.Upvalues[desc.Index]
+				}
+			default:
+				for i, desc := range subProto.Upvalues {
+					if desc.InStack {
+						cl.Upvalues[i] = vm.findOrCreateUpvalue(base + desc.Index)
+					} else {
+						cl.Upvalues[i] = frame.closure.Upvalues[desc.Index]
+					}
 				}
 			}
 			vm.regs[base+a] = runtime.VMClosureFastValue(unsafe.Pointer(cl))

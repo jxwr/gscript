@@ -263,10 +263,10 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineOpExit(asm, inst, pc, vm.OP_CLOSE)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETUPVAL:
-			emitBaselineGetUpval(asm, inst, pc)
+			emitBaselineGetUpval(asm, inst, pc, proto)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_SETUPVAL:
-			emitBaselineSetUpval(asm, inst, pc)
+			emitBaselineSetUpval(asm, inst, pc, proto)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_SELF:
 			emitBaselineSelf(asm, inst, pc)

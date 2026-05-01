@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -122,6 +123,48 @@ func TestStringFormatMultiArgs(t *testing.T) {
 	v := getGlobal(t, `result := string.format("hello %s, you are %d", "world", 42)`, "result")
 	if v.Str() != "hello world, you are 42" {
 		t.Errorf("expected 'hello world, you are 42', got %q", v.Str())
+	}
+}
+
+func TestStringFormatSimpleCachedPattern(t *testing.T) {
+	v := getGlobal(t, `
+result := ""
+for i := 1; i <= 3; i++ {
+    result = string.format("item_%d_value_%05d", i, i * 7)
+}
+`, "result")
+	if v.Str() != "item_3_value_00021" {
+		t.Errorf("expected cached simple format result, got %q", v.Str())
+	}
+}
+
+func TestCompileSimpleFormatRejectsFallbackFormats(t *testing.T) {
+	if _, ok, err := compileSimpleFormat("progress %% %d"); err != nil || ok {
+		t.Fatalf("escaped percent should use fallback parser: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := compileSimpleFormat("%.3f"); err != nil || ok {
+		t.Fatalf("precision float should use fallback parser: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestSimpleFormatCacheIsBounded(t *testing.T) {
+	simpleFormatCache.Lock()
+	simpleFormatCache.entries = make(map[string]*simpleFormatProgram)
+	simpleFormatCache.order = nil
+	simpleFormatCache.Unlock()
+
+	for i := 0; i < simpleFormatCacheLimit+8; i++ {
+		if _, ok, err := cachedSimpleFormat("value_%0" + strconv.Itoa(i+1) + "d"); err != nil || !ok {
+			t.Fatalf("cachedSimpleFormat(%d): ok=%v err=%v", i, ok, err)
+		}
+	}
+
+	simpleFormatCache.Lock()
+	gotEntries := len(simpleFormatCache.entries)
+	gotOrder := len(simpleFormatCache.order)
+	simpleFormatCache.Unlock()
+	if gotEntries > simpleFormatCacheLimit || gotOrder > simpleFormatCacheLimit {
+		t.Fatalf("simple format cache grew beyond limit: entries=%d order=%d limit=%d", gotEntries, gotOrder, simpleFormatCacheLimit)
 	}
 }
 
