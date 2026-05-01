@@ -26,6 +26,7 @@ type vmYieldResult struct {
 var errCoroutineYield = errors.New("coroutine yield")
 
 const (
+	coroutineCreateName      = "coroutine.create"
 	coroutineResumeName      = "coroutine.resume"
 	coroutineYieldName       = "coroutine.yield"
 	coroutineIsYieldableName = "coroutine.isyieldable"
@@ -38,12 +39,17 @@ type VMCoroutine struct {
 	closure    *Closure
 	started    bool
 	leafNoCall bool
-	resultBuf  [8]rt.Value
 	vm         *VM
 	yieldDst   int
 	yieldC     int
 
 	yieldResult vmYieldResult
+}
+
+func init() {
+	rt.RegisterVMCoroutinePtrResolver(func(p unsafe.Pointer) any {
+		return (*VMCoroutine)(p)
+	})
 }
 
 // NewVMCoroutine creates a new VM coroutine wrapping the given closure.
@@ -92,8 +98,8 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 	coLib := rt.NewTable()
 
 	// coroutine.create(fn) -> coroutine
-	coLib.RawSet(rt.StringValue("create"), rt.FunctionValue(&rt.GoFunction{
-		Name: "coroutine.create",
+	createFn := &rt.GoFunction{
+		Name: coroutineCreateName,
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			if len(args) < 1 || !args[0].IsFunction() {
 				return nil, fmt.Errorf("coroutine.create expects a function")
@@ -108,7 +114,9 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			vm.recordCoroutineCreated(false)
 			return []rt.Value{rt.VMCoroutineValue(unsafe.Pointer(co), co)}, nil
 		},
-	}))
+	}
+	vm.coroutineCreateFn = createFn
+	coLib.RawSet(rt.StringValue("create"), rt.FunctionValue(createFn))
 
 	// coroutine.resume(co, args...) -> ok, values...
 	resumeFn := &rt.GoFunction{
@@ -213,7 +221,7 @@ func (vm *VM) resumeCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, err
 	if err != nil {
 		return nil, err
 	}
-	return co.resumeResults(ok, values), nil
+	return vm.coroutineResumeResults(ok, values), nil
 }
 
 func (vm *VM) resumeCoroutineRaw(co *VMCoroutine, args []rt.Value) (bool, []rt.Value, error) {
@@ -317,10 +325,10 @@ func protoHasNoCalls(proto *FuncProto) bool {
 	return true
 }
 
-func (co *VMCoroutine) resumeResults(ok bool, values []rt.Value) []rt.Value {
+func (vm *VM) coroutineResumeResults(ok bool, values []rt.Value) []rt.Value {
 	n := 1 + len(values)
-	if n <= len(co.resultBuf) {
-		out := co.resultBuf[:n]
+	if n <= len(vm.coroutineResultBuf) {
+		out := vm.coroutineResultBuf[:n]
 		out[0] = rt.BoolValue(ok)
 		copy(out[1:], values)
 		return out

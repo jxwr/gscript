@@ -30,31 +30,33 @@ type methodJITEngineWithResultBuffer interface {
 
 // VM is the bytecode virtual machine.
 type VM struct {
-	regs              []runtime.Value          // register file (shared across frames via base offset)
-	frames            []CallFrame              // call stack
-	frameCount        int                      // current number of active frames
-	globals           map[string]runtime.Value // legacy map (kept for interop)
-	globalArray       []runtime.Value          // indexed globals (fast path)
-	globalIndex       map[string]int           // name → index in globalArray
-	globalVer         uint32                   // bumped on structural changes (new globals added)
-	globalOverrides   map[string]runtime.Value // per-VM global overrides for coroutine-local builtins
-	globalOverrideIdx map[int]runtime.Value    // indexed mirror of globalOverrides for GETGLOBAL cache hits
-	globalsMu         *sync.RWMutex            // protects globals for goroutine safety (shared across VMs)
-	noGlobalLock      bool                     // skip globals mutex (single-threaded mode)
-	openUpvals        []*Upvalue               // list of open upvalues (sorted by regIdx descending)
-	top               int                      // top of used registers (for variable returns)
-	stringMeta        *runtime.Table           // string metatable
-	methodJIT         MethodJITEngine
-	argBuf            [16]runtime.Value // pre-allocated arg buffer for OP_CALL
-	retBuf            [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
-	wholeCallFloatBuf []float64         // reusable non-pointer scratch for guarded whole-call kernels
-	wholeCallIntBuf   []int64           // reusable non-pointer scratch for guarded whole-call kernels
-	wholeCallValueBuf []runtime.Value   // reusable Value scratch; scanned as GC roots below
-	spectralKernel    spectralKernelCache
-	currentCoroutine  *VMCoroutine // coroutine currently running on this VM, if any
-	coroutineStats    *coroutineStats
-	coroutineResumeFn *runtime.GoFunction
-	coroutineYieldFn  *runtime.GoFunction
+	regs               []runtime.Value          // register file (shared across frames via base offset)
+	frames             []CallFrame              // call stack
+	frameCount         int                      // current number of active frames
+	globals            map[string]runtime.Value // legacy map (kept for interop)
+	globalArray        []runtime.Value          // indexed globals (fast path)
+	globalIndex        map[string]int           // name → index in globalArray
+	globalVer          uint32                   // bumped on structural changes (new globals added)
+	globalOverrides    map[string]runtime.Value // per-VM global overrides for coroutine-local builtins
+	globalOverrideIdx  map[int]runtime.Value    // indexed mirror of globalOverrides for GETGLOBAL cache hits
+	globalsMu          *sync.RWMutex            // protects globals for goroutine safety (shared across VMs)
+	noGlobalLock       bool                     // skip globals mutex (single-threaded mode)
+	openUpvals         []*Upvalue               // list of open upvalues (sorted by regIdx descending)
+	top                int                      // top of used registers (for variable returns)
+	stringMeta         *runtime.Table           // string metatable
+	methodJIT          MethodJITEngine
+	argBuf             [16]runtime.Value // pre-allocated arg buffer for OP_CALL
+	retBuf             [8]runtime.Value  // pre-allocated return buffer for OP_RETURN
+	coroutineResultBuf [8]runtime.Value  // pre-allocated coroutine.resume result buffer
+	wholeCallFloatBuf  []float64         // reusable non-pointer scratch for guarded whole-call kernels
+	wholeCallIntBuf    []int64           // reusable non-pointer scratch for guarded whole-call kernels
+	wholeCallValueBuf  []runtime.Value   // reusable Value scratch; scanned as GC roots below
+	spectralKernel     spectralKernelCache
+	currentCoroutine   *VMCoroutine // coroutine currently running on this VM, if any
+	coroutineStats     *coroutineStats
+	coroutineCreateFn  *runtime.GoFunction
+	coroutineResumeFn  *runtime.GoFunction
+	coroutineYieldFn   *runtime.GoFunction
 }
 
 // SetMethodJIT sets the Method JIT engine for this VM.
@@ -426,11 +428,14 @@ func (vm *VM) ScanGCRoots(visitor func(unsafe.Pointer)) {
 		}
 	}
 
-	// Scan argBuf and retBuf (may contain live values from recent calls).
+	// Scan call/result scratch buffers that may contain live values from recent calls.
 	for _, v := range vm.argBuf {
 		runtime.ScanValueRoots(v, visitor, seen)
 	}
 	for _, v := range vm.retBuf {
+		runtime.ScanValueRoots(v, visitor, seen)
+	}
+	for _, v := range vm.coroutineResultBuf {
 		runtime.ScanValueRoots(v, visitor, seen)
 	}
 	for _, v := range vm.wholeCallValueBuf {
@@ -654,16 +659,19 @@ func wrapLineErr(frame *CallFrame, err error) error {
 // Go stack growth for GScript function calls.
 func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 	initialFC := vm.frameCount
-	if vm.currentCoroutine != nil && initialFC > 1 {
+	coroutineChild := vm.currentCoroutine != nil
+	if coroutineChild && initialFC > 1 {
 		initialFC = 1
 	}
 
 	// On error, reset frame count to clean up any inline sub-frames.
-	defer func() {
-		if retErr != nil && retErr != errCoroutineYield {
-			vm.frameCount = initialFC
-		}
-	}()
+	if !coroutineChild {
+		defer func() {
+			if retErr != nil && retErr != errCoroutineYield {
+				vm.frameCount = initialFC
+			}
+		}()
+	}
 
 	frame := &vm.frames[vm.frameCount-1]
 	code := frame.closure.Proto.Code
@@ -1968,6 +1976,20 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 }
 
 func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int) (bool, error) {
+	if gf == vm.coroutineCreateFn || gf.Name == coroutineCreateName {
+		if nArgs < 1 || !vm.regs[base+a+1].IsFunction() {
+			return true, fmt.Errorf("coroutine.create expects a function")
+		}
+		cl, ok := closureFromValue(vm.regs[base+a+1])
+		if !ok {
+			return true, fmt.Errorf("coroutine.create expects a GScript function, got Go function")
+		}
+		co := NewVMCoroutine(cl)
+		vm.recordCoroutineCreated(false)
+		vm.writeSingleCallResult(base+a, c, runtime.VMCoroutineValue(unsafe.Pointer(co), co))
+		return true, nil
+	}
+
 	if gf == vm.coroutineResumeFn || gf.Name == coroutineResumeName {
 		if nArgs < 1 || !vm.regs[base+a+1].IsCoroutine() {
 			return true, fmt.Errorf("coroutine.resume expects a coroutine")
@@ -2011,11 +2033,26 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 	}
 
 	if gf.Name == coroutineIsYieldableName {
-		vm.writeCallResults(base+a, c, []runtime.Value{runtime.BoolValue(vm.activeCoroutine() != nil)})
+		vm.writeSingleCallResult(base+a, c, runtime.BoolValue(vm.activeCoroutine() != nil))
 		return true, nil
 	}
 
 	return false, nil
+}
+
+func (vm *VM) writeSingleCallResult(dst, c int, result runtime.Value) {
+	if c == 0 {
+		vm.regs[dst] = result
+		vm.top = dst + 1
+		return
+	}
+	if c == 1 {
+		return
+	}
+	vm.regs[dst] = result
+	for i := 1; i < c-1; i++ {
+		vm.regs[dst+i] = runtime.NilValue()
+	}
 }
 
 func (vm *VM) writeCoroutineResumeResults(dst, c int, ok bool, values []runtime.Value) {

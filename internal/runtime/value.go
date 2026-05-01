@@ -79,10 +79,11 @@ const (
 	ptrSubGoFunction  uint64 = 3 << ptrSubShift // *GoFunction
 	ptrSubCoroutine   uint64 = 4 << ptrSubShift // *Coroutine
 	ptrSubChannel     uint64 = 5 << ptrSubShift
-	ptrSubAnyFunction uint64 = 6 << ptrSubShift // interface-based function (needs ifaceRoots)
-	ptrSubAnyCoro     uint64 = 7 << ptrSubShift // interface-based coroutine (needs ifaceRoots)
-	ptrSubVMClosure   uint64 = 8 << ptrSubShift // *vm.Closure (direct pointer, fast OP_CALL path)
-	ptrSubLazyString  uint64 = 9 << ptrSubShift // *lazyString
+	ptrSubAnyFunction uint64 = 6 << ptrSubShift  // interface-based function (needs ifaceRoots)
+	ptrSubAnyCoro     uint64 = 7 << ptrSubShift  // interface-based coroutine (needs ifaceRoots)
+	ptrSubVMClosure   uint64 = 8 << ptrSubShift  // *vm.Closure (direct pointer, fast OP_CALL path)
+	ptrSubLazyString  uint64 = 9 << ptrSubShift  // *lazyString
+	ptrSubVMCoroutine uint64 = 10 << ptrSubShift // *vm.VMCoroutine (direct pointer, fast coroutine path)
 )
 
 // Value is a NaN-boxed 8-byte representation of all GScript values.
@@ -139,6 +140,8 @@ var (
 	// gcNeedsCompact is set by keepAlive when compaction threshold is reached.
 	// Actual compaction is deferred to a VM safe point via CheckGC().
 	gcNeedsCompact int32
+
+	vmCoroutinePtrResolver func(unsafe.Pointer) any
 )
 
 // RegisterVM adds a VM to the active set for GC root scanning.
@@ -393,6 +396,13 @@ func lookupIface(p unsafe.Pointer) any {
 	v := ifaceRoots[uintptr(p)]
 	ifaceMu.Unlock()
 	return v
+}
+
+// RegisterVMCoroutinePtrResolver lets the VM package preserve Value.Ptr()
+// compatibility for VM coroutine values without storing every coroutine in the
+// interface-root map.
+func RegisterVMCoroutinePtrResolver(fn func(unsafe.Pointer) any) {
+	vmCoroutinePtrResolver = fn
 }
 
 // ---------------------------------------------------------------------------
@@ -747,8 +757,8 @@ func VMCoroutineValue(p unsafe.Pointer, c any) Value {
 	if p == nil {
 		return Value(valNil)
 	}
-	keepAliveIface(p, c)
-	return Value(tagPtr | ptrSubAnyCoro | (uint64(uintptr(p)) & ptrAddrMask))
+	keepAlive(p, c)
+	return Value(tagPtr | ptrSubVMCoroutine | (uint64(uintptr(p)) & ptrAddrMask))
 }
 
 func ChannelValue(ch *Channel) Value {
@@ -926,7 +936,7 @@ func (v Value) Type() ValueType {
 			return TypeString
 		case ptrSubClosure, ptrSubGoFunction, ptrSubAnyFunction, ptrSubVMClosure:
 			return TypeFunction
-		case ptrSubCoroutine, ptrSubAnyCoro:
+		case ptrSubCoroutine, ptrSubAnyCoro, ptrSubVMCoroutine:
 			return TypeCoroutine
 		case ptrSubChannel:
 			return TypeChannel
@@ -969,14 +979,19 @@ func (v Value) IsCoroutine() bool {
 		return false
 	}
 	sub := v.ptrSubType()
-	return sub == ptrSubCoroutine || sub == ptrSubAnyCoro
+	return sub == ptrSubCoroutine || sub == ptrSubAnyCoro || sub == ptrSubVMCoroutine
 }
 
-// AnyCoroutinePointer returns the raw data pointer stored by AnyCoroutineValue.
+// AnyCoroutinePointer returns the raw data pointer stored by AnyCoroutineValue
+// or VMCoroutineValue.
 // It is intentionally narrower than Ptr(): VM coroutine hot paths only need to
 // recover their own concrete pointer and should not take the ifaceRoots mutex.
 func (v Value) AnyCoroutinePointer() unsafe.Pointer {
-	if uint64(v)&tagMask != tagPtr || v.ptrSubType() != ptrSubAnyCoro {
+	if uint64(v)&tagMask != tagPtr {
+		return nil
+	}
+	sub := v.ptrSubType()
+	if sub != ptrSubAnyCoro && sub != ptrSubVMCoroutine {
 		return nil
 	}
 	return v.ptrPayload()
@@ -1112,6 +1127,11 @@ func (v Value) Ptr() any {
 	case ptrSubAnyFunction, ptrSubAnyCoro, ptrSubVMClosure:
 		// Recover the original interface from gcRoots.
 		return lookupIface(p)
+	case ptrSubVMCoroutine:
+		if vmCoroutinePtrResolver != nil {
+			return vmCoroutinePtrResolver(p)
+		}
+		return nil
 	default:
 		return nil
 	}
