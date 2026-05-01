@@ -11,6 +11,7 @@
 package methodjit
 
 import (
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -95,6 +96,11 @@ type Function struct {
 	// ID. A descriptor is required before codegen may use a specialized
 	// cross-proto raw-int call path; OpCall.Type alone is not authoritative.
 	CallABIs map[int]CallABIDescriptor
+
+	// StringConstTables records small immutable lookup tables used by narrow
+	// string-format lowerings. CompiledFunction keeps these slices alive after
+	// codegen embeds their backing-array addresses.
+	StringConstTables [][]runtime.Value
 
 	// FixedShapeTables records SSA table values whose field layout is known
 	// without consulting the runtime field cache. The initial producer is a

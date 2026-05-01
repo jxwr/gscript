@@ -8,6 +8,13 @@
 
 package methodjit
 
+import (
+	"strconv"
+	"strings"
+
+	"github.com/gscript/gscript/internal/runtime"
+)
+
 // IntrinsicPass detects math.sqrt(x) (and similar one-arg numeric intrinsics)
 // in OpCall instructions and replaces them with the corresponding specialised
 // op. Returns the (possibly modified) function plus a list of human-readable
@@ -72,6 +79,13 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 				continue
 			}
 
+			if moduleName == "string" && fieldName == "format" && len(instr.Args) == 3 {
+				if lowerStringFormatConstIntLookup(fn, instr) {
+					notes = append(notes, "intrinsic: string.format prefix%d -> StringConstLookup")
+					continue
+				}
+			}
+
 			// R43 Phase 2 DenseMatrix intrinsics.
 			// matrix.getf(m, i, j) — 3-arg → float.
 			if moduleName == "matrix" && fieldName == "getf" && len(instr.Args) == 4 {
@@ -98,6 +112,73 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 		}
 	}
 	return fn, notes
+}
+
+func lowerStringFormatConstIntLookup(fn *Function, instr *Instr) bool {
+	if fn == nil || instr == nil || len(instr.Args) != 3 {
+		return false
+	}
+	formatArg := instr.Args[1]
+	if formatArg == nil || formatArg.Def == nil || formatArg.Def.Op != OpConstString {
+		return false
+	}
+	formatStr, ok := constString(fn, formatArg.Def.Aux)
+	if !ok {
+		return false
+	}
+	prefix, ok := simpleTrailingDecimalFormatPrefix(formatStr)
+	if !ok {
+		return false
+	}
+
+	indexArg := instr.Args[2]
+	modulus, ok := smallPositiveModuloBound(indexArg)
+	if !ok {
+		return false
+	}
+
+	table := make([]runtime.Value, modulus)
+	for i := range table {
+		table[i] = runtime.StringValue(prefix + strconv.Itoa(i))
+	}
+	tableIdx := len(fn.StringConstTables)
+	fn.StringConstTables = append(fn.StringConstTables, table)
+
+	instr.Op = OpStringConstLookup
+	instr.Type = TypeString
+	instr.Args = []*Value{indexArg}
+	instr.Aux = int64(tableIdx)
+	instr.Aux2 = int64(modulus)
+	return true
+}
+
+func simpleTrailingDecimalFormatPrefix(formatStr string) (string, bool) {
+	if !strings.HasSuffix(formatStr, "%d") {
+		return "", false
+	}
+	prefix := strings.TrimSuffix(formatStr, "%d")
+	if prefix == "" || strings.Contains(prefix, "%") {
+		return "", false
+	}
+	return prefix, true
+}
+
+func smallPositiveModuloBound(v *Value) (int, bool) {
+	if v == nil || v.Def == nil || len(v.Def.Args) != 2 {
+		return 0, false
+	}
+	if v.Def.Op != OpModInt && v.Def.Op != OpMod {
+		return 0, false
+	}
+	divisor := v.Def.Args[1]
+	if divisor == nil || divisor.Def == nil || divisor.Def.Op != OpConstInt {
+		return 0, false
+	}
+	modulus := divisor.Def.Aux
+	if modulus <= 0 || modulus > 256 {
+		return 0, false
+	}
+	return int(modulus), true
 }
 
 // constString returns the string at the given constant-pool index of fn.Proto

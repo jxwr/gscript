@@ -122,6 +122,39 @@ func literal() {
 	}
 }
 
+func TestTier2_StringFormatFieldLoadUsesStringMapCache(t *testing.T) {
+	src := `
+func format_many(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        s := string.format("key%d", i % 10)
+        total = total + #s
+    }
+    return total
+}
+`
+	args := []runtime.Value{runtime.IntValue(40)}
+	want := requireOneInt(t, "VM", runStringFuncVM(t, src, "format_many", args))
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "format_many", args, true)
+	got := requireOneInt(t, "Tier2", gotValues)
+	if got != want {
+		t.Fatalf("format_many Tier2=%d, want VM=%d", got, want)
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
+		t.Fatalf("narrow string.format lowering should avoid call exits, ExitCallExit=%d", exits)
+	}
+
+	var getFieldExits uint64
+	for _, site := range gotTM.ExitStats().Sites {
+		if site.ExitName == "ExitTableExit" && site.Reason == "GetField" {
+			getFieldExits += site.Count
+		}
+	}
+	if getFieldExits > 2 {
+		t.Fatalf("string.format field load should hit native string-map cache after warmup, GetField exits=%d", getFieldExits)
+	}
+}
+
 func TestTier2_StringCompareFastPath_MatchesVM(t *testing.T) {
 	src := `
 func sort_last() {

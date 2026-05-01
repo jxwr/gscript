@@ -438,6 +438,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		CallCache:            callCache,
 		NewTableCaches:       ec.newTableCaches,
 		FixedTableArgSlots:   ec.fixedTableArgSlots,
+		StringConstTables:    fn.StringConstTables,
 		InstrCodeRanges:      ec.instrCodeRanges,
 		ExitSites:            buildExitSiteMeta(fn),
 		ExitResumeCheck:      ec.exitResumeCheck,

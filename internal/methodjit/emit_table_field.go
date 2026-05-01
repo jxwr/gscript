@@ -176,12 +176,18 @@ func (ec *emitContext) emitGetFieldPolymorphicCache(instr *Instr) bool {
 	}
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	asm.CBZ(jit.X0, missLabel)
-	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
-	asm.CBZ(jit.X1, missLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffLazyTree)
 	asm.CBNZ(jit.X2, missLabel)
+	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+	smapCacheLabel := ec.uniqueLabel("getfield_pic_smap_cache")
+	asm.CBZ(jit.X1, smapCacheLabel)
 
 	ec.emitGetFieldPolymorphicCacheProbe(instr, missLabel, doneLabel, typeDeoptLabel)
+
+	asm.Label(smapCacheLabel)
+	if !ec.emitGetFieldStringMapValueCacheProbe(instr, missLabel, doneLabel, typeDeoptLabel) {
+		asm.B(missLabel)
+	}
 
 	asm.Label(missLabel)
 	savedReprs := ec.snapshotValueReprs()
@@ -234,6 +240,70 @@ func (ec *emitContext) emitGetFieldPolymorphicCacheProbe(instr *Instr, missLabel
 	asm.CMPimm(jit.X9, runtime.TableStringKeyCacheWays)
 	asm.BCond(jit.CondLT, loopLabel)
 	asm.B(missLabel)
+}
+
+func (ec *emitContext) emitGetFieldStringMapValueCacheProbe(instr *Instr, missLabel, doneLabel, typeDeoptLabel string) bool {
+	if instr == nil || ec == nil || ec.fn == nil || ec.fn.Proto == nil {
+		return false
+	}
+	if _, ok := constString(ec.fn, instr.Aux); !ok {
+		return false
+	}
+
+	asm := ec.asm
+	constIdx := int(instr.Aux)
+	if constIdx >= 0 && constIdx <= 4095 {
+		asm.LDR(jit.X4, mRegConsts, constIdx*jit.ValueSize)
+	} else {
+		asm.LoadImm64(jit.X4, int64(constIdx))
+		asm.LDRreg(jit.X4, mRegConsts, jit.X4)
+	}
+	jit.EmitExtractPtr(asm, jit.X4, jit.X4)
+	asm.CBZ(jit.X4, missLabel)
+	asm.LDR(jit.X5, jit.X4, 0) // string data
+	asm.LDR(jit.X6, jit.X4, 8) // string len
+
+	asm.LDR(jit.X8, jit.X0, jit.TableOffStringLookupCache)
+	asm.CBZ(jit.X8, missLabel)
+	asm.LDR(jit.X3, jit.X8, jit.StringLookupCacheOffEntries)
+	asm.CBZ(jit.X3, missLabel)
+	asm.LDR(jit.X10, jit.X8, jit.StringLookupCacheOffMask)
+
+	asm.LSRimm(jit.X9, jit.X5, 4)
+	asm.LSRimm(jit.X11, jit.X5, 12)
+	asm.EORreg(jit.X9, jit.X9, jit.X11)
+	asm.EORreg(jit.X9, jit.X9, jit.X6)
+	asm.ANDreg(jit.X9, jit.X9, jit.X10)
+
+	loopLabel := ec.uniqueLabel("getfield_smap_loop")
+	nextLabel := ec.uniqueLabel("getfield_smap_next")
+	asm.MOVimm16(jit.X13, 0)
+	asm.Label(loopLabel)
+	asm.ADDreg(jit.X11, jit.X9, jit.X13)
+	asm.ANDreg(jit.X11, jit.X11, jit.X10)
+	asm.ADDregLSL(jit.X12, jit.X11, jit.X11, 1) // idx * 3
+	asm.LSLimm(jit.X12, jit.X12, 4)             // idx * 48
+	asm.ADDreg(jit.X12, jit.X3, jit.X12)
+
+	asm.LDRB(jit.X14, jit.X12, jit.StringLookupCacheEntryOffValid)
+	asm.CBZ(jit.X14, missLabel)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyData)
+	asm.CMPreg(jit.X14, jit.X5)
+	asm.BCond(jit.CondNE, nextLabel)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyLen)
+	asm.CMPreg(jit.X14, jit.X6)
+	asm.BCond(jit.CondNE, nextLabel)
+
+	asm.LDR(jit.X0, jit.X12, jit.StringLookupCacheEntryOffValue)
+	ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+	asm.B(doneLabel)
+
+	asm.Label(nextLabel)
+	asm.ADDimm(jit.X13, jit.X13, 1)
+	asm.CMPimm(jit.X13, runtime.StringLookupCacheProbeLimit)
+	asm.BCond(jit.CondLT, loopLabel)
+	asm.B(missLabel)
+	return true
 }
 
 func (ec *emitContext) emitGetFieldDynamicCache(instr *Instr) bool {

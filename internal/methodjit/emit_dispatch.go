@@ -261,6 +261,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpConcat:
 		ec.emitConcatExit(instr)
 		ec.clearTableArrayBoundedKeys()
+	case OpStringConstLookup:
+		ec.emitStringConstLookup(instr)
+		ec.clearTableArrayBoundedKeys()
 
 	case OpGetUpval, OpSetUpval,
 		OpAppend,

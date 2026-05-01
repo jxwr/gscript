@@ -528,6 +528,18 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = runtime.StringValue(sb.String())
 
+	case OpStringConstLookup:
+		tableIdx := int(instr.Aux)
+		idx := int(s.val(instr.Args[0]).Int())
+		if tableIdx < 0 || tableIdx >= len(s.fn.StringConstTables) {
+			return nil, false, fmt.Errorf("IR interpreter: string lookup table %d out of range", tableIdx)
+		}
+		table := s.fn.StringConstTables[tableIdx]
+		if idx < 0 || idx >= len(table) {
+			return nil, false, fmt.Errorf("IR interpreter: string lookup index %d out of range", idx)
+		}
+		s.values[instr.ID] = table[idx]
+
 	// ---------- Table operations ----------
 	case OpNewTable:
 		arrHint := int(instr.Aux)

@@ -494,6 +494,10 @@ type CompiledFunction struct {
 	// holding constructor values for N-field table-exit fallback.
 	FixedTableArgSlots map[int][]int
 
+	// StringConstTables keeps compile-time string lookup tables alive after
+	// native code embeds their backing-array addresses.
+	StringConstTables [][]runtime.Value
+
 	// InstrCodeRanges maps IR instruction IDs to emitted machine-code byte
 	// ranges. Diagnostic metadata only; execution never consults it.
 	InstrCodeRanges []InstrCodeRange

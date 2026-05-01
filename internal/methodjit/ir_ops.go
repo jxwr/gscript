@@ -93,7 +93,8 @@ const (
 	OpLeFloat
 
 	// String
-	OpConcat // Args[0] .. Args[1] .. ...
+	OpConcat            // Args[0] .. Args[1] .. ...
+	OpStringConstLookup // Args[0] indexes Function.StringConstTables[Aux], Aux2 = table length
 
 	// Table operations
 	OpNewTable // Aux = array hint, Aux2 = hash hint
@@ -263,6 +264,7 @@ var opNames = [...]string{
 	OpLtFloat:                    "LtFloat",
 	OpLeFloat:                    "LeFloat",
 	OpConcat:                     "Concat",
+	OpStringConstLookup:          "StringConstLookup",
 	OpNewTable:                   "NewTable",
 	OpNewFixedTable:              "NewFixedTable",
 	OpGetTable:                   "GetTable",
