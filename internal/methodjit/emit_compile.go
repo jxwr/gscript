@@ -298,6 +298,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		fusedCmps:                  fusedCmps,
 		tailCallInstrs:             computeTailCalls(fn),
 		newTableCaches:             newTableCacheSlotsForFunction(fn),
+		fixedTableArgSlots:         make(map[int][]int),
 		instrCodeRanges:            make([]InstrCodeRange, 0, fn.nextID),
 		nativeCallReplaySafe:       nativeCallReplaySafe,
 		nativeCallCalleeResumeSafe: nativeCallCalleeResumeSafe,
@@ -436,6 +437,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		NativeSetGlobals:     nativeSetGlobals,
 		CallCache:            callCache,
 		NewTableCaches:       ec.newTableCaches,
+		FixedTableArgSlots:   ec.fixedTableArgSlots,
 		InstrCodeRanges:      ec.instrCodeRanges,
 		ExitSites:            buildExitSiteMeta(fn),
 		ExitResumeCheck:      ec.exitResumeCheck,
@@ -745,6 +747,10 @@ type emitContext struct {
 	// direct-entry addr, proto ptr, direct-entry version). Incremented in
 	// emitCallNative.
 	nextCallCacheIndex int
+
+	// fixedTableArgSlots records VM home slots for N-field fixed constructors
+	// whose exit fallback gathers an arbitrary number of constructor values.
+	fixedTableArgSlots map[int][]int
 
 	// scratchFPRCache maps value ID -> scratch FPR (D0-D3) currently holding
 	// that value's raw float. Scoped to a SINGLE instruction's operand resolution

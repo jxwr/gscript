@@ -41,10 +41,10 @@ type FixedShapeFieldFact struct {
 
 // FixedTableConstructorFact describes a bytecode-level fixed-field table
 // constructor that is still represented as OpNewTable plus OpSetField stores in
-// early IR. Ctor2Index indexes FuncProto.TableCtors2 for the current two-field
-// constructor form.
+// early IR. Exactly one constructor index is non-negative.
 type FixedTableConstructorFact struct {
 	Ctor2Index int
+	CtorNIndex int
 	FieldNames []string
 }
 
@@ -537,25 +537,40 @@ func fixedShapeFactForFixedConstructor(fn *Function, instr *Instr) (FixedShapeTa
 	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpNewFixedTable {
 		return FixedShapeTableFact{}, false
 	}
-	if instr.Aux2 != 2 || len(instr.Args) != 2 {
+	fieldCount := int(instr.Aux2)
+	if fieldCount <= 0 || len(instr.Args) != fieldCount {
 		return FixedShapeTableFact{}, false
 	}
-	ctorIdx := int(instr.Aux)
-	if ctorIdx < 0 || ctorIdx >= len(fn.Proto.TableCtors2) {
-		return FixedShapeTableFact{}, false
+	var fields []string
+	if fieldCount == 2 {
+		ctorIdx := int(instr.Aux)
+		if ctorIdx < 0 || ctorIdx >= len(fn.Proto.TableCtors2) {
+			return FixedShapeTableFact{}, false
+		}
+		ctor := fn.Proto.TableCtors2[ctorIdx].Runtime
+		if ctor.Key1 == ctor.Key2 {
+			return FixedShapeTableFact{}, false
+		}
+		fields = []string{ctor.Key1, ctor.Key2}
+	} else {
+		ctorIdx := int(instr.Aux)
+		if ctorIdx < 0 || ctorIdx >= len(fn.Proto.TableCtorsN) {
+			return FixedShapeTableFact{}, false
+		}
+		ctor := fn.Proto.TableCtorsN[ctorIdx].Runtime
+		if len(ctor.Keys) != fieldCount || ctor.Shape == nil {
+			return FixedShapeTableFact{}, false
+		}
+		fields = append([]string(nil), ctor.Keys...)
 	}
-	ctor := fn.Proto.TableCtors2[ctorIdx].Runtime
-	if ctor.Key1 == ctor.Key2 {
-		return FixedShapeTableFact{}, false
+	values := make(map[string]int, len(fields))
+	for i, field := range fields {
+		values[field] = instr.Args[i].ID
 	}
-	fields := []string{ctor.Key1, ctor.Key2}
 	return FixedShapeTableFact{
-		ShapeID:    runtime.GetShapeID(fields),
-		FieldNames: fields,
-		FieldValueIDs: map[string]int{
-			ctor.Key1: instr.Args[0].ID,
-			ctor.Key2: instr.Args[1].ID,
-		},
+		ShapeID:       runtime.GetShapeID(fields),
+		FieldNames:    fields,
+		FieldValueIDs: values,
 	}, true
 }
 

@@ -55,7 +55,7 @@ type ExecContext struct {
 	GlobalConst  int64   // constant pool index for global name (global-exit)
 	GlobalExitID int64   // instruction ID for resolving global-exit resume address
 	// Table-exit fields (ExitCode=5): for OpNewTable, OpNewFixedTable, OpGetTable, OpSetTable
-	TableOp      int64 // 0=NewTable, 1=GetTable, 2=SetTable, 3=GetField, 4=SetField, 5=NewFixedTable2
+	TableOp      int64 // 0=NewTable, 1=GetTable, 2=SetTable, 3=GetField, 4=SetField, 5=NewFixedTable2, 8=NewFixedTableN
 	TableSlot    int64 // VM register slot for the table (or result slot for NewTable)
 	TableKeySlot int64 // VM register slot for the key (GetTable/SetTable)
 	TableValSlot int64 // VM register slot for the value (SetTable)
@@ -231,6 +231,7 @@ const (
 	TableOpNewFixedTable2 = 5
 	TableOpBoolArrayFill  = 6
 	TableOpBoolArrayCount = 7
+	TableOpNewFixedTableN = 8
 )
 
 // ExecContext field offsets (must match struct layout above).
@@ -488,6 +489,10 @@ type CompiledFunction struct {
 	// allocation sites refill it on table-exit misses; native NewTable code pops
 	// pre-boxed tables from the matching entry until empty.
 	NewTableCaches []newTableCacheEntry
+
+	// FixedTableArgSlots maps OpNewFixedTable instruction IDs to the VM slots
+	// holding constructor values for N-field table-exit fallback.
+	FixedTableArgSlots map[int][]int
 
 	// InstrCodeRanges maps IR instruction IDs to emitted machine-code byte
 	// ranges. Diagnostic metadata only; execution never consults it.

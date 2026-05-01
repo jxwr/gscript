@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -556,6 +557,8 @@ func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, callee
 		}
 	}
 
+	copyInlinedFixedTableConstructors(fn, calleeFn, idMap)
+
 	// Also remove the OpGetGlobal that loaded the function (it's now dead).
 	// We leave it for DCE to clean up — don't complicate inlining with dead code removal.
 
@@ -783,6 +786,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 		fn.Blocks = append(fn.Blocks, blockMap[cb.ID])
 	}
 	fn.Blocks = append(fn.Blocks, mergeBlock)
+	copyInlinedFixedTableConstructors(fn, calleeFn, idMap)
 
 }
 
@@ -802,6 +806,120 @@ func remapValue(v *Value, idMap map[int]int, paramValues map[int]*Value) *Value 
 	}
 	// Fallback: return as-is (shouldn't happen for well-formed IR).
 	return v
+}
+
+func copyInlinedFixedTableConstructors(callerFn, calleeFn *Function, idMap map[int]int) {
+	if callerFn == nil || callerFn.Proto == nil || calleeFn == nil || calleeFn.Proto == nil || len(calleeFn.FixedTableConstructors) == 0 {
+		return
+	}
+	for oldID, fact := range calleeFn.FixedTableConstructors {
+		newID, ok := idMap[oldID]
+		if !ok {
+			continue
+		}
+		mapped, ok := remapInlineFixedTableConstructorFact(callerFn.Proto, calleeFn.Proto, fact)
+		if !ok {
+			continue
+		}
+		if callerFn.FixedTableConstructors == nil {
+			callerFn.FixedTableConstructors = make(map[int]FixedTableConstructorFact)
+		}
+		callerFn.FixedTableConstructors[newID] = mapped
+	}
+}
+
+func remapInlineFixedTableConstructorFact(caller, callee *vm.FuncProto, fact FixedTableConstructorFact) (FixedTableConstructorFact, bool) {
+	switch {
+	case fact.Ctor2Index >= 0:
+		if fact.Ctor2Index >= len(callee.TableCtors2) {
+			return FixedTableConstructorFact{}, false
+		}
+		ctor := callee.TableCtors2[fact.Ctor2Index].Runtime
+		idx := ensureInlineTableCtor2(caller, ctor.Key1, ctor.Key2)
+		return FixedTableConstructorFact{
+			Ctor2Index: idx,
+			CtorNIndex: -1,
+			FieldNames: append([]string(nil), fact.FieldNames...),
+		}, true
+	case fact.CtorNIndex >= 0:
+		if fact.CtorNIndex >= len(callee.TableCtorsN) {
+			return FixedTableConstructorFact{}, false
+		}
+		keys := append([]string(nil), callee.TableCtorsN[fact.CtorNIndex].Runtime.Keys...)
+		idx := ensureInlineTableCtorN(caller, keys)
+		return FixedTableConstructorFact{
+			Ctor2Index: -1,
+			CtorNIndex: idx,
+			FieldNames: append([]string(nil), fact.FieldNames...),
+		}, true
+	default:
+		return FixedTableConstructorFact{}, false
+	}
+}
+
+func ensureInlineTableCtor2(proto *vm.FuncProto, key1, key2 string) int {
+	for i := range proto.TableCtors2 {
+		ctor := proto.TableCtors2[i].Runtime
+		if ctor.Key1 == key1 && ctor.Key2 == key2 {
+			return i
+		}
+	}
+	key1Const := ensureInlineStringConstant(proto, key1)
+	key2Const := ensureInlineStringConstant(proto, key2)
+	proto.TableCtors2 = append(proto.TableCtors2, vm.TableCtor2{
+		Key1Const: key1Const,
+		Key2Const: key2Const,
+		Runtime:   runtime.NewSmallTableCtor2(key1, key2),
+	})
+	return len(proto.TableCtors2) - 1
+}
+
+func ensureInlineTableCtorN(proto *vm.FuncProto, keys []string) int {
+	for i := range proto.TableCtorsN {
+		ctor := proto.TableCtorsN[i].Runtime
+		if sameStringList(ctor.Keys, keys) {
+			return i
+		}
+	}
+	keyConsts := make([]int, len(keys))
+	for i, key := range keys {
+		keyConsts[i] = ensureInlineStringConstant(proto, key)
+	}
+	proto.TableCtorsN = append(proto.TableCtorsN, vm.TableCtorN{
+		KeyConsts: keyConsts,
+		Runtime:   runtime.NewSmallTableCtorN(keys),
+	})
+	return len(proto.TableCtorsN) - 1
+}
+
+func ensureInlineStringConstant(proto *vm.FuncProto, key string) int {
+	for i, c := range proto.Constants {
+		if c.IsString() && c.Str() == key {
+			return i
+		}
+	}
+	idx := len(proto.Constants)
+	proto.Constants = append(proto.Constants, runtime.StringValue(key))
+	return idx
+}
+
+func sameStringList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameInlineConstant(a, b runtime.Value) bool {
+	if a.IsString() && b.IsString() {
+		return a.Str() == b.Str()
+	}
+	return a == b
 }
 
 // remapDef returns a remapped Def pointer if the original def's ID is in idMap.
@@ -865,7 +983,7 @@ func remapAux(ci *Instr, callerFn *Function, calleeFn *Function) int64 {
 
 		// Find or add this constant in the caller's pool.
 		for j, c := range callerFn.Proto.Constants {
-			if c == calleeConst {
+			if sameInlineConstant(c, calleeConst) {
 				return int64(j)
 			}
 		}

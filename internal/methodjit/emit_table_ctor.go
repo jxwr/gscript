@@ -7,6 +7,7 @@ import (
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/runtime"
 )
 
 func (ec *emitContext) emitNewFixedTable(instr *Instr) {
@@ -18,7 +19,7 @@ func (ec *emitContext) emitNewFixedTable(instr *Instr) {
 		return
 	}
 	if instr.Aux2 != 2 || len(instr.Args) != 2 {
-		ec.emitDeopt(instr)
+		ec.emitNewFixedTableN(instr, resultSlot)
 		return
 	}
 
@@ -29,6 +30,20 @@ func (ec *emitContext) emitNewFixedTable(instr *Instr) {
 	}
 	ec.emitNewFixedTable2Exit(instr, resultSlot)
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitNewFixedTableN(instr *Instr, resultSlot int) {
+	if instr == nil || instr.Aux2 <= 2 || len(instr.Args) != int(instr.Aux2) {
+		ec.emitDeopt(instr)
+		return
+	}
+	doneLabel := ec.uniqueLabel("newfixedn_done")
+	missLabel := ec.uniqueLabel("newfixedn_miss")
+	if ec.emitNewFixedTableNCacheFastPath(instr, doneLabel, missLabel) {
+		ec.asm.Label(missLabel)
+	}
+	ec.emitNewFixedTableNExit(instr, resultSlot)
+	ec.asm.Label(doneLabel)
 }
 
 func (ec *emitContext) emitNewFixedTable2CacheFastPath(instr *Instr, doneLabel, missLabel string) bool {
@@ -161,6 +176,135 @@ func (ec *emitContext) emitNewFixedTable2Exit(instr *Instr, resultSlot int) {
 		continueLabel: continueLabel,
 		numericPass:   ec.numericMode,
 	})
+}
+
+func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, missLabel string) bool {
+	if ec == nil || instr == nil || instr.ID < 0 || instr.ID >= len(ec.newTableCaches) {
+		return false
+	}
+	if ec.fn == nil || !fixedTableCtorNCacheable(ec.fn.Proto, instr) {
+		return false
+	}
+	slots := fixedTableArgSlots(ec, instr)
+	if len(slots) != len(instr.Args) {
+		return false
+	}
+	asm := ec.asm
+
+	nilBits := nb64(jit.NB_ValNil)
+	for i, arg := range instr.Args {
+		valReg := ec.resolveValueNB(arg.ID, jit.X5)
+		if valReg != jit.X5 {
+			asm.MOVreg(jit.X5, valReg)
+		}
+		asm.STR(jit.X5, mRegRegs, slotOffset(slots[i]))
+		asm.LoadImm64(jit.X6, nilBits)
+		asm.CMPreg(jit.X5, jit.X6)
+		asm.BCond(jit.CondEQ, missLabel)
+	}
+
+	cacheBase := uintptr(unsafe.Pointer(&ec.newTableCaches[0]))
+	entryOff := instr.ID * newTableCacheEntrySize
+	asm.LoadImm64(jit.X2, int64(cacheBase))
+	if entryOff > 0 {
+		if entryOff <= 4095 {
+			asm.ADDimm(jit.X2, jit.X2, uint16(entryOff))
+		} else {
+			asm.LoadImm64(jit.X3, int64(entryOff))
+			asm.ADDreg(jit.X2, jit.X2, jit.X3)
+		}
+	}
+
+	asm.LDR(jit.X0, jit.X2, newTableCacheEntryValuesOff)
+	asm.CBZ(jit.X0, missLabel)
+	asm.LDR(jit.X3, jit.X2, newTableCacheEntryPosOff)
+	asm.LDR(jit.X4, jit.X2, newTableCacheEntryLenOff)
+	asm.CMPreg(jit.X3, jit.X4)
+	asm.BCond(jit.CondGE, missLabel)
+	asm.LDRreg(jit.X0, jit.X0, jit.X3)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.STR(jit.X3, jit.X2, newTableCacheEntryPosOff)
+
+	jit.EmitExtractPtr(asm, jit.X1, jit.X0)
+	asm.LDR(jit.X2, jit.X1, jit.TableOffSvals)
+	for i, slot := range slots {
+		asm.LDR(jit.X5, mRegRegs, slotOffset(slot))
+		asm.STR(jit.X5, jit.X2, i*jit.ValueSize)
+	}
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+	return true
+}
+
+func (ec *emitContext) emitNewFixedTableNExit(instr *Instr, resultSlot int) {
+	asm := ec.asm
+
+	slots := fixedTableArgSlots(ec, instr)
+	if len(slots) != len(instr.Args) {
+		ec.emitDeopt(instr)
+		return
+	}
+	if ec.fixedTableArgSlots != nil {
+		ec.fixedTableArgSlots[instr.ID] = append([]int(nil), slots...)
+	}
+	for i, arg := range instr.Args {
+		reg := ec.resolveValueNB(arg.ID, jit.X0)
+		if reg != jit.X0 {
+			asm.MOVreg(jit.X0, reg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(slots[i]))
+	}
+
+	ec.recordExitResumeCheckSite(instr, ExitTableExit, []int{resultSlot}, exitResumeCheckOptions{RequireTableInputs: true})
+	ec.emitStoreAllActiveRegs()
+
+	asm.LoadImm64(jit.X0, int64(TableOpNewFixedTableN))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableOp)
+	asm.LoadImm64(jit.X0, int64(resultSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableSlot)
+	asm.LoadImm64(jit.X0, instr.Aux)
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux)
+	asm.LoadImm64(jit.X0, instr.Aux2)
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableAux2)
+	asm.LoadImm64(jit.X0, int64(instr.ID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffTableExitID)
+
+	ec.emitSetResumeNumericPass()
+	asm.LoadImm64(jit.X0, ExitTableExit)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+
+	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
+	asm.Label(continueLabel)
+	ec.emitReloadAllActiveRegs()
+	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
+	ec.storeResultNB(jit.X0, instr.ID)
+
+	ec.callExitIDs = append(ec.callExitIDs, instr.ID)
+	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
+		instrID:       instr.ID,
+		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
+	})
+}
+
+func fixedTableArgSlots(ec *emitContext, instr *Instr) []int {
+	if ec == nil || instr == nil || len(instr.Args) == 0 || len(instr.Args) > runtime.SmallFieldCap {
+		return nil
+	}
+	slots := make([]int, len(instr.Args))
+	for i := range instr.Args {
+		slot, ok := fixedTableArgSlot(ec, instr, i)
+		if !ok {
+			return nil
+		}
+		slots[i] = slot
+	}
+	return slots
 }
 
 func fixedTableArgSlot(ec *emitContext, instr *Instr, argIdx int) (int, bool) {

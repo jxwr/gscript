@@ -535,15 +535,31 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		s.values[instr.ID] = runtime.FreshTableValue(runtime.NewTableSizedKind(arrHint, hashHint, arrayKind))
 
 	case OpNewFixedTable:
-		if instr.Aux2 != 2 || len(instr.Args) != 2 {
+		fieldCount := int(instr.Aux2)
+		if fieldCount <= 0 || len(instr.Args) != fieldCount {
 			return nil, false, fmt.Errorf("OpNewFixedTable: unsupported field count %d", instr.Aux2)
 		}
 		ctorIdx := int(instr.Aux)
-		if ctorIdx < 0 || s.fn == nil || s.fn.Proto == nil || ctorIdx >= len(s.fn.Proto.TableCtors2) {
+		if s.fn == nil || s.fn.Proto == nil || ctorIdx < 0 {
 			return nil, false, fmt.Errorf("OpNewFixedTable: invalid ctor index %d", ctorIdx)
 		}
-		ctor := &s.fn.Proto.TableCtors2[ctorIdx].Runtime
-		s.values[instr.ID] = runtime.TableValue(runtime.NewTableFromCtor2(ctor, s.val(instr.Args[0]), s.val(instr.Args[1])))
+		if fieldCount == 2 {
+			if ctorIdx >= len(s.fn.Proto.TableCtors2) {
+				return nil, false, fmt.Errorf("OpNewFixedTable: invalid ctor2 index %d", ctorIdx)
+			}
+			ctor := &s.fn.Proto.TableCtors2[ctorIdx].Runtime
+			s.values[instr.ID] = runtime.TableValue(runtime.NewTableFromCtor2(ctor, s.val(instr.Args[0]), s.val(instr.Args[1])))
+		} else {
+			if ctorIdx >= len(s.fn.Proto.TableCtorsN) {
+				return nil, false, fmt.Errorf("OpNewFixedTable: invalid ctorN index %d", ctorIdx)
+			}
+			vals := make([]runtime.Value, fieldCount)
+			for i, arg := range instr.Args {
+				vals[i] = s.val(arg)
+			}
+			ctor := &s.fn.Proto.TableCtorsN[ctorIdx].Runtime
+			s.values[instr.ID] = runtime.TableValue(runtime.NewTableFromCtorN(ctor, vals))
+		}
 
 	case OpGetTable:
 		tbl := s.val(instr.Args[0])

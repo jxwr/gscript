@@ -302,6 +302,8 @@ func (s *exitResumeCheckState) checkTableDescriptor(ctx *ExecContext, regs []run
 			return fmt.Errorf("exit-resume-check: %s instr=%d %w", protoName, instrID, err)
 		}
 		return checkRel(int(ctx.TableValSlot), "newfixed value2")
+	case TableOpNewFixedTableN:
+		return checkRel(int(ctx.TableSlot), "newfixedn result")
 	case TableOpGetTable:
 		if err := checkRel(int(ctx.TableSlot), "gettable table"); err != nil {
 			return fmt.Errorf("exit-resume-check: %s instr=%d %w", protoName, instrID, err)

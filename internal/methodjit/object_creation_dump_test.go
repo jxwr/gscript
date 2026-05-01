@@ -82,10 +82,15 @@ func TestObjectCreationDump(t *testing.T) {
 	//
 	// TypedTableABI: table exits now record SourcePC so resume can warm the
 	// correct per-PC field cache for dynamic Tier2 field-cache probes.
+	//
+	// FixedCtorN: escaping three-field table constructors now lower to the
+	// fixed-table constructor op and use the shaped table cache instead of
+	// generic NewTable plus SetField exit/resume sites. new_vec3 shrinks
+	// because it is exactly that escaping constructor shape.
 	baselines := []baseline{
 		{"create_and_sum", 165, 66},  // R161: was 1277/598
 		{"transform_chain", 178, 67}, // R161: was 1701/816
-		{"new_vec3", 228, 132},       // unchanged EA shape; table-exit metadata grew
+		{"new_vec3", 152, 80},        // escaping fixed N-field constructor
 	}
 
 	// Load benchmark source.

@@ -668,6 +668,7 @@ func (b *graphBuilder) emitBlocks() {
 					}
 					b.fn.FixedTableConstructors[newTable.ID] = FixedTableConstructorFact{
 						Ctor2Index: ctorIdx,
+						CtorNIndex: -1,
 						FieldNames: []string{ctor.Runtime.Key1, ctor.Runtime.Key2},
 					}
 					val1 := b.readVariable(valueBase, block)
@@ -689,6 +690,14 @@ func (b *graphBuilder) emitBlocks() {
 				b.writeVariable(a, block, tbl)
 				if ctorIdx >= 0 && ctorIdx < len(b.proto.TableCtorsN) {
 					ctor := b.proto.TableCtorsN[ctorIdx]
+					if b.fn.FixedTableConstructors == nil {
+						b.fn.FixedTableConstructors = make(map[int]FixedTableConstructorFact)
+					}
+					b.fn.FixedTableConstructors[newTable.ID] = FixedTableConstructorFact{
+						Ctor2Index: -1,
+						CtorNIndex: ctorIdx,
+						FieldNames: append([]string(nil), ctor.Runtime.Keys...),
+					}
 					for i, keyConst := range ctor.KeyConsts {
 						val := b.readVariable(valueBase+i, block)
 						b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val}, int64(keyConst), 0)

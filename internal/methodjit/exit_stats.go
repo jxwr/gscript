@@ -285,6 +285,8 @@ func tableOpName(op int) string {
 		return "SetField"
 	case TableOpNewFixedTable2:
 		return "NewFixedTable2"
+	case TableOpNewFixedTableN:
+		return "NewFixedTableN"
 	default:
 		return fmt.Sprintf("TableOp%d", op)
 	}
