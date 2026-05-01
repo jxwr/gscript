@@ -131,8 +131,7 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 
 	case TypeTable:
 		deoptLabel := ec.uniqueLabel("guard_deopt")
-		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
-		ec.storeResultNB(jit.X0, instr.ID)
+		ec.storeCheckedRawTablePtr(instr, jit.X0, jit.X2, jit.X3, deoptLabel)
 		doneLabel := ec.uniqueLabel("guard_done")
 		asm.B(doneLabel)
 		asm.Label(deoptLabel)

@@ -439,30 +439,44 @@ func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
 	}
 
 	tblID := instr.Args[0].ID
-	tblReg := ec.resolveValueNB(tblID, jit.X0)
-	if tblReg != jit.X0 {
-		asm.MOVreg(jit.X0, tblReg)
-	}
-	if ec.tableVerified[tblID] {
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	} else if ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-		ec.tableVerified[tblID] = true
-	} else if ec.irTypes[tblID] == TypeTable {
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-		// TypeTable producers/guards already exclude nil. Keep the dynamic
-		// metatable and array-kind checks, but avoid repeating the nil check
-		// for row tables loaded from mixed table arrays.
-		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
-		asm.CBNZ(jit.X1, deoptLabel)
-		ec.tableVerified[tblID] = true
+	if ec.hasReg(tblID) && ec.valueReprOf(tblID) == valueReprRawTablePtr {
+		ptrReg := ec.physReg(tblID)
+		if ptrReg != jit.X0 {
+			asm.MOVreg(jit.X0, ptrReg)
+		}
+		if !ec.tableVerified[tblID] {
+			if !ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
+				asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+				asm.CBNZ(jit.X1, deoptLabel)
+			}
+			ec.tableVerified[tblID] = true
+		}
 	} else {
-		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-		asm.CBZ(jit.X0, deoptLabel)
-		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
-		asm.CBNZ(jit.X1, deoptLabel)
-		ec.tableVerified[tblID] = true
+		tblReg := ec.resolveValueNB(tblID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
+		if ec.tableVerified[tblID] {
+			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		} else if ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
+			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+			ec.tableVerified[tblID] = true
+		} else if ec.irTypes[tblID] == TypeTable {
+			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+			// TypeTable producers/guards already exclude nil. Keep the dynamic
+			// metatable and array-kind checks, but avoid repeating the nil check
+			// for row tables loaded from mixed table arrays.
+			asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+			asm.CBNZ(jit.X1, deoptLabel)
+			ec.tableVerified[tblID] = true
+		} else {
+			jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+			asm.CBZ(jit.X0, deoptLabel)
+			asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+			asm.CBNZ(jit.X1, deoptLabel)
+			ec.tableVerified[tblID] = true
+		}
 	}
 	if fbKind, ok := ec.localNewTableFBKind(instr.Args[0]); ok && fbKind == uint16(instr.Aux) {
 		ec.kindVerified[tblID] = fbKind
@@ -578,7 +592,8 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 			ec.storeRawFloat(jit.D0, instr.ID)
 		case TypeTable:
 			jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
-			ec.storeResultNB(jit.X0, instr.ID)
+			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+			ec.storeRawTablePtr(jit.X0, instr.ID)
 		default:
 			ec.storeResultNB(jit.X0, instr.ID)
 		}
@@ -633,6 +648,10 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 	if ec.emitTableArrayLoadExit(instr) {
 		typeDeoptLabel := ec.uniqueLabel("tarr_load_exit_type_deopt")
 		ec.emitCheckTableArrayLoadExitResult(instr, typeDeoptLabel)
+		if instr.Type == TypeTable {
+			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+			ec.storeRawTablePtr(jit.X0, instr.ID)
+		}
 		ec.emitUnboxRawIntRegs(savedReprs)
 		ec.restoreValueReprSnapshot(savedReprs)
 		asm.MOVimm16(jit.X17, 0)
@@ -1581,7 +1600,11 @@ func (ec *emitContext) emitTableArrayLoadExit(instr *Instr) bool {
 	asm.STR(jit.X0, mRegRegs, slotOffset(keySlot))
 
 	ec.recordTableArrayLoadExitResumeCheckSite(instr, resultSlot)
-	ec.emitStoreAllActiveRegs()
+	excludeResult := -1
+	if instr.Type == TypeTable {
+		excludeResult = instr.ID
+	}
+	ec.emitStoreAllActiveRegsExcept(excludeResult)
 
 	asm.LoadImm64(jit.X0, int64(TableOpGetTable))
 	asm.STR(jit.X0, mRegCtx, execCtxOffTableOp)
@@ -1605,7 +1628,7 @@ func (ec *emitContext) emitTableArrayLoadExit(instr *Instr) bool {
 
 	continueLabel := ec.passLabel(fmt.Sprintf("table_continue_%d", instr.ID))
 	asm.Label(continueLabel)
-	ec.emitReloadAllActiveRegs()
+	ec.emitReloadAllActiveRegsExcept(excludeResult)
 	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
 
 	ec.callExitIDs = append(ec.callExitIDs, instr.ID)
@@ -1993,7 +2016,8 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 		ec.storeRawFloat(jit.D0, instr.ID)
 	case TypeTable:
 		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
-		ec.storeResultNB(jit.X0, instr.ID)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		ec.storeRawTablePtr(jit.X0, instr.ID)
 	default:
 		ec.storeResultNB(jit.X0, instr.ID)
 	}
@@ -2059,6 +2083,15 @@ func (ec *emitContext) emitGetTableNative(instr *Instr) {
 	ec.storeResultNB(jit.X0, instr.ID)
 	asm.B(doneLabel)
 
+	if instr.Type == TypeTable && knownGetKind == int(vm.FBKindMixed) {
+		// The known-mixed kind guard above makes the int/float/bool labels
+		// unreachable for this instruction. Restore the compile-time
+		// representation to the mixed-path raw table pointer; otherwise the
+		// dead alternate paths leave later field users thinking the result is
+		// boxed.
+		ec.markRawTablePtrActive(instr.ID)
+	}
+
 	// Deopt: fall back to exit-resume.
 	asm.Label(deoptLabel)
 	savedReprs := ec.snapshotValueReprs()
@@ -2111,8 +2144,7 @@ func (ec *emitContext) emitStoreDynamicStringTableLoad(instr *Instr, valReg jit.
 		asm.FMOVtoFP(jit.D0, valReg)
 		ec.storeRawFloat(jit.D0, instr.ID)
 	case TypeTable:
-		jit.EmitCheckIsTableFull(asm, valReg, jit.X2, jit.X3, deoptLabel)
-		ec.storeResultNB(valReg, instr.ID)
+		ec.storeCheckedRawTablePtr(instr, valReg, jit.X2, jit.X3, deoptLabel)
 	default:
 		ec.storeResultNB(valReg, instr.ID)
 	}
@@ -2285,7 +2317,11 @@ func (ec *emitContext) emitGetTableExit(instr *Instr) {
 
 	// Store all active register-resident values to memory.
 	ec.recordExitResumeCheckSite(instr, ExitTableExit, []int{resultSlot}, exitResumeCheckOptions{RequireTableInputs: true})
-	ec.emitStoreAllActiveRegs()
+	excludeResult := -1
+	if instr.Type == TypeTable {
+		excludeResult = instr.ID
+	}
+	ec.emitStoreAllActiveRegsExcept(excludeResult)
 
 	// Write table-exit descriptor.
 	asm.LoadImm64(jit.X0, int64(TableOpGetTable))
@@ -2316,11 +2352,21 @@ func (ec *emitContext) emitGetTableExit(instr *Instr) {
 	asm.Label(continueLabel)
 
 	// Reload all active registers from memory.
-	ec.emitReloadAllActiveRegs()
+	ec.emitReloadAllActiveRegsExcept(excludeResult)
 
 	// Load result from register file.
 	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
-	ec.storeResultNB(jit.X0, instr.ID)
+	if instr.Type == TypeTable {
+		typeDeoptLabel := ec.uniqueLabel("gettable_exit_type_deopt")
+		doneLabel := ec.uniqueLabel("gettable_exit_typed_done")
+		ec.storeCheckedRawTablePtr(instr, jit.X0, jit.X2, jit.X3, typeDeoptLabel)
+		asm.B(doneLabel)
+		asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+		asm.Label(doneLabel)
+	} else {
+		ec.storeResultNB(jit.X0, instr.ID)
+	}
 
 	// Record for deferred resume.
 	ec.callExitIDs = append(ec.callExitIDs, instr.ID)

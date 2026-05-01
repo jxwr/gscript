@@ -37,16 +37,38 @@ func (ec *emitContext) invalidateFieldSvalsCache() {
 
 // emitPrepareFieldTablePtr leaves the raw *Table pointer in X0 and returns
 // true when the field shape was already verified in this block. TypeTable
-// producers, such as TableArrayLoad, have already proved the NaN-boxed value is
-// a non-string table pointer, so the first field access can skip the full tag
-// and pointer-subtype check and go straight to the shape guard.
+// producers, such as GuardType and table-valued TableArrayLoad/GetTable, have
+// already proved and extracted the table pointer, so the first field access can
+// skip the full tag and pointer-subtype check and go straight to the shape
+// guard. Boxed receivers are not adopted here because the fallback label can be
+// reached before the emitted shape/type guards have made the raw pointer live.
 func (ec *emitContext) emitPrepareFieldTablePtr(tblValueID int, shapeID uint32, deoptLabel string) bool {
 	asm := ec.asm
+	shapeWasVerified := false
+	if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
+		shapeWasVerified = true
+	}
+	if ec.hasReg(tblValueID) && ec.valueReprOf(tblValueID) == valueReprRawTablePtr {
+		ptrReg := ec.physReg(tblValueID)
+		if ptrReg != jit.X0 {
+			asm.MOVreg(jit.X0, ptrReg)
+		}
+		if shapeWasVerified {
+			return true
+		}
+		asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+		asm.LoadImm64(jit.X2, int64(shapeID))
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondNE, deoptLabel)
+		ec.shapeVerified[tblValueID] = shapeID
+		return false
+	}
+
 	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
 	if tblReg != jit.X0 {
 		asm.MOVreg(jit.X0, tblReg)
 	}
-	if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
+	if shapeWasVerified {
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 		return true
 	}
