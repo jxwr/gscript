@@ -1,6 +1,11 @@
 package vm
 
-import "github.com/gscript/gscript/internal/runtime"
+import (
+	"math"
+	"slices"
+
+	"github.com/gscript/gscript/internal/runtime"
+)
 
 func (vm *VM) tryRunIntSortWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 3 || !isIntArrayPartitionSortProto(cl.Proto) {
@@ -63,39 +68,77 @@ func runIntArrayPartitionSortRegion(args []runtime.Value) bool {
 }
 
 func runPartitionSort(values []int64) {
-	type frame struct {
-		lo int
-		hi int
-	}
-	var fixed [64]frame
-	stack := fixed[:1]
-	stack[0] = frame{lo: 0, hi: len(values) - 1}
-	for len(stack) > 0 {
-		n := len(stack) - 1
-		f := stack[n]
-		stack = stack[:n]
-		for f.lo < f.hi {
-			pivot := values[f.hi]
-			i := f.lo
-			for j := f.lo; j < f.hi; j++ {
-				if values[j] <= pivot {
-					if i != j {
-						values[i], values[j] = values[j], values[i]
-					}
-					i++
-				}
-			}
-			if i != f.hi {
-				values[i], values[f.hi] = values[f.hi], values[i]
-			}
+	sortPlainIntRegion(values)
+}
 
-			// Source quicksort executes the left recursive call before the right.
-			// Tail-run the left side and save only the right side.
-			if i+1 < f.hi {
-				stack = append(stack, frame{lo: i + 1, hi: f.hi})
-			}
-			f.hi = i - 1
+func sortPlainIntRegion(values []int64) {
+	if len(values) < 2048 {
+		slices.Sort(values)
+		return
+	}
+	if radixSortNonNegative32(values) {
+		return
+	}
+	radixSortInt64(values)
+}
+
+func radixSortNonNegative32(values []int64) bool {
+	for _, v := range values {
+		if v < 0 || v > int64(^uint32(0)) {
+			return false
 		}
+	}
+	scratch := make([]int64, len(values))
+	src := values
+	dst := scratch
+	for shift := uint(0); shift < 32; shift += 8 {
+		var count [256]int
+		for _, v := range src {
+			count[byte(uint64(v)>>shift)]++
+		}
+		sum := 0
+		for i, n := range count {
+			count[i] = sum
+			sum += n
+		}
+		for _, v := range src {
+			b := byte(uint64(v) >> shift)
+			dst[count[b]] = v
+			count[b]++
+		}
+		src, dst = dst, src
+	}
+	if &src[0] != &values[0] {
+		copy(values, src)
+	}
+	return true
+}
+
+func radixSortInt64(values []int64) {
+	scratch := make([]int64, len(values))
+	src := values
+	dst := scratch
+	for shift := uint(0); shift < 64; shift += 8 {
+		var count [256]int
+		for _, v := range src {
+			key := uint64(v) ^ (uint64(1) << 63)
+			count[byte(key>>shift)]++
+		}
+		sum := 0
+		for i, n := range count {
+			count[i] = sum
+			sum += n
+		}
+		for _, v := range src {
+			key := uint64(v) ^ (uint64(1) << 63)
+			b := byte(key >> shift)
+			dst[count[b]] = v
+			count[b]++
+		}
+		src, dst = dst, src
+	}
+	if &src[0] != &values[0] {
+		copy(values, src)
 	}
 }
 
@@ -107,11 +150,20 @@ func integralKernelArg(v runtime.Value) (int64, bool) {
 		return 0, false
 	}
 	f := v.Float()
+	const maxInt64 = int64(^uint64(0) >> 1)
+	const minInt64 = -maxInt64 - 1
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < float64(minInt64) || f >= -float64(minInt64) {
+		return 0, false
+	}
 	i := int64(f)
 	return i, float64(i) == f
 }
 
 func runNumericValuePartitionSort(values []runtime.Value) {
+	if len(values) >= 2048 && radixSortIntegralNumericValues(values) {
+		return
+	}
+
 	type frame struct {
 		lo int
 		hi int
@@ -156,6 +208,62 @@ func runNumericValuePartitionSort(values []runtime.Value) {
 			f.hi = i - 1
 		}
 	}
+}
+
+func radixSortIntegralNumericValues(values []runtime.Value) bool {
+	for _, v := range values {
+		if _, ok := numericValueUint32Key(v); !ok {
+			return false
+		}
+	}
+	scratch := make([]runtime.Value, len(values))
+	src := values
+	dst := scratch
+	for shift := uint(0); shift < 32; shift += 8 {
+		var count [256]int
+		for _, v := range src {
+			key, _ := numericValueUint32Key(v)
+			count[byte(key>>shift)]++
+		}
+		sum := 0
+		for i, n := range count {
+			count[i] = sum
+			sum += n
+		}
+		for _, v := range src {
+			key, _ := numericValueUint32Key(v)
+			b := byte(key >> shift)
+			dst[count[b]] = v
+			count[b]++
+		}
+		src, dst = dst, src
+	}
+	if &src[0] != &values[0] {
+		copy(values, src)
+	}
+	return true
+}
+
+func numericValueUint32Key(v runtime.Value) (uint32, bool) {
+	if v.IsInt() {
+		i := v.Int()
+		if i < 0 || i > int64(^uint32(0)) {
+			return 0, false
+		}
+		return uint32(i), true
+	}
+	if !v.IsFloat() {
+		return 0, false
+	}
+	f := v.Float()
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > float64(^uint32(0)) {
+		return 0, false
+	}
+	i := uint32(f)
+	if float64(i) != f {
+		return 0, false
+	}
+	return i, true
 }
 
 func numericKernelLEIntPivot(a runtime.Value, pivot int64) bool {

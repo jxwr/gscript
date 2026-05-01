@@ -1,6 +1,11 @@
 package vm
 
-import "testing"
+import (
+	"math"
+	"testing"
+
+	"github.com/gscript/gscript/internal/runtime"
+)
 
 func TestIntSortKernelRecognizesStructuralPartitionSort(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, `
@@ -195,6 +200,61 @@ result := 1
 	expectGlobalInt(t, globals, "result", 1)
 }
 
+func TestRunPartitionSortPlainIntRegion(t *testing.T) {
+	values := []int64{17, -3, 17, 0, 42, 5, -3}
+	runPartitionSort(values)
+	want := []int64{-3, -3, 0, 5, 17, 17, 42}
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("values[%d]=%d, want %d (all=%v)", i, values[i], want[i], values)
+		}
+	}
+}
+
+func TestRadixSortIntegralNumericValuesPreservesEqualBoxOrder(t *testing.T) {
+	values := []runtime.Value{
+		runtime.IntValue(5),
+		runtime.FloatValue(1),
+		runtime.IntValue(3),
+		runtime.FloatValue(3),
+		runtime.IntValue(1),
+	}
+	if !radixSortIntegralNumericValues(values) {
+		t.Fatal("integral numeric values should qualify for mixed radix sort")
+	}
+	gotFloat := []bool{
+		values[0].IsFloat(),
+		values[1].IsFloat(),
+		values[2].IsFloat(),
+		values[3].IsFloat(),
+		values[4].IsFloat(),
+	}
+	wantFloat := []bool{true, false, false, true, false}
+	for i := range wantFloat {
+		if gotFloat[i] != wantFloat[i] {
+			t.Fatalf("value %d float=%v, want %v after stable mixed radix sort", i, gotFloat[i], wantFloat[i])
+		}
+	}
+}
+
+func TestRadixSortIntegralNumericValuesRejectsUnsafeFloatKeys(t *testing.T) {
+	values := []runtime.Value{
+		runtime.IntValue(1),
+		runtime.FloatValue(math.NaN()),
+	}
+	if radixSortIntegralNumericValues(values) {
+		t.Fatal("NaN key should not qualify for mixed radix sort")
+	}
+	values[1] = runtime.FloatValue(math.Inf(1))
+	if radixSortIntegralNumericValues(values) {
+		t.Fatal("+Inf key should not qualify for mixed radix sort")
+	}
+	values[1] = runtime.FloatValue(1.5)
+	if radixSortIntegralNumericValues(values) {
+		t.Fatal("nonintegral float key should not qualify for mixed radix sort")
+	}
+}
+
 func TestIntSortKernelFallsBackForNonnumericMixedArray(t *testing.T) {
 	err := compileAndRunExpectError(t, `
 func q(arr, lo, hi) {
@@ -224,4 +284,46 @@ q(arr, 1, 3)
 	if err == nil {
 		t.Fatal("expected fallback VM comparison error")
 	}
+}
+
+func BenchmarkRunPartitionSortPlainIntRegion(b *testing.B) {
+	const n = 50000
+	src := makeLCGInts(n, 42)
+	dst := make([]int64, n)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(dst, src)
+		runPartitionSort(dst)
+	}
+}
+
+func BenchmarkRunPartitionSortMixedNumericRegion(b *testing.B) {
+	const n = 50000
+	srcInts := makeLCGInts(n, 42)
+	src := make([]runtime.Value, n)
+	for i, v := range srcInts {
+		if i%97 == 0 {
+			src[i] = runtime.FloatValue(float64(v))
+		} else {
+			src[i] = runtime.IntValue(v)
+		}
+	}
+	dst := make([]runtime.Value, n)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(dst, src)
+		runNumericValuePartitionSort(dst)
+	}
+}
+
+func makeLCGInts(n int, seed int64) []int64 {
+	values := make([]int64, n)
+	x := seed
+	for i := range values {
+		x = (x*1103515245 + 12345) % 2147483648
+		values[i] = x
+	}
+	return values
 }
