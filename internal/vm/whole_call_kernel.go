@@ -8,10 +8,6 @@ func wholeCallKernelArity(n int) bool {
 	return n == 1 || n == 2 || n == 3
 }
 
-func WholeCallKernelArity(n int) bool {
-	return wholeCallKernelArity(n)
-}
-
 func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, dst int) (bool, error) {
 	handled, results, err := vm.tryRunValueWholeCallKernel(cl, args)
 	if !handled || err != nil {
@@ -19,14 +15,6 @@ func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, 
 	}
 	vm.writeCallResults(dst, c, results)
 	return true, nil
-}
-
-func (vm *VM) TryValueWholeCallKernelValue(fn runtime.Value, args []runtime.Value, c int, dst int) (bool, error) {
-	cl, ok := closureFromValue(fn)
-	if !ok {
-		return false, nil
-	}
-	return vm.tryValueWholeCallKernel(cl, args, c, dst)
 }
 
 func (vm *VM) tryRunValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
@@ -120,8 +108,7 @@ func mayHaveWholeCallValueKernelCandidate(proto *FuncProto, argc int, includeRec
 		return (proto.MaxStack == 30 && len(proto.Constants) == 2 && len(proto.Protos) == 0) ||
 			(proto.MaxStack >= 13 && len(proto.Constants) == 0 && len(proto.Protos) == 0 && len(proto.Code) == 45)
 	case 3:
-		return proto.NumParams == 3 && (len(proto.Constants) == 1 ||
-			(len(proto.Constants) == 16 && len(proto.Code) == 130))
+		return proto.NumParams == 3 && len(proto.Constants) == 1
 	default:
 		return false
 	}
