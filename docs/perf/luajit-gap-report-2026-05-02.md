@@ -106,6 +106,36 @@ landed after the initial strict-guard pass. It reduced the no-filter median
 from 0.042s to 0.031s and cut the exit stream from roughly 54k exits to 571,
 with matching checksums.
 
+## Negative follow-up evidence
+
+Three follow-up worktrees tested obvious small changes against the largest
+remaining gaps. None cleared the merge bar:
+
+| Target | Tested direction | Result |
+| --- | --- | --- |
+| extended/mixed_inventory_sim | larger/open-addressed `string.format` result caches, stronger string hash, larger string-lookup probe limit, `math.floor` Fast1 path | regressed or failed to reproduce a win under the full guard |
+| extended/actors_dispatch_mutation | Tier 2 native-call envelope trimming, polymorphic `GetField` bounds-check trimming, typed-string `Len` fast path | at best 2.5-5%, below threshold; some nearby workloads moved the wrong way |
+| extended/producer_consumer_pipeline | small fixed-arity `NewTableFromCtorN` constructor fast paths | no material win; two variants regressed |
+
+The useful diagnostic findings are:
+
+```text
+mixed_inventory_sim:
+  broad no-filter/Tier2 admission is unsafe; forced variants can crash native
+  code. The remaining gap needs a more principled runtime/table strategy.
+
+actors_dispatch_mutation:
+  run_world reaches Tier 2, but warm dumps showed zero useful type feedback for
+  actor.kind, so it remains an untyped GetField feeding generic Len. The next
+  real direction is feedback timing or polymorphic field type propagation, not
+  local emit shaving.
+
+producer_consumer_pipeline:
+  constructor allocation remains hot during coroutine resume, but helper-level
+  constructor rewrites do not pay. A real win likely needs allocation/escape
+  strategy for yielded fixed-shape payload tables.
+```
+
 ## Recommended wording
 
 Use this as the current docs summary:
