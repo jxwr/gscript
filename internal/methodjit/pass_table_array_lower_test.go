@@ -145,6 +145,36 @@ func TestTableArrayLower_SkipsDynamicStringKeyCacheSite(t *testing.T) {
 	}
 }
 
+func TestTableArrayLower_SkipsStringKeyFeedbackSite(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:     "table_array_string_key_feedback",
+		Code:     make([]uint32, 4),
+		Feedback: vm.NewFeedbackVector(4),
+	}
+	proto.Feedback[2].Right = vm.FBString
+	fn := &Function{Proto: proto, NumRegs: 2}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Aux: 1, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny, Aux2: int64(vm.FBKindMixed),
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	get.HasSource = true
+	get.SourcePC = 2
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, get, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := countOps(out)
+	if counts[OpGetTable] != 1 || counts[OpTableArrayLoad] != 0 {
+		t.Fatalf("string-key feedback site should remain GetTable, counts=%v\n%s", counts, Print(out))
+	}
+}
+
 func TestTableArrayLower_StillLowersProvenIntKeyWithStringCache(t *testing.T) {
 	proto := &vm.FuncProto{
 		Name:                "table_array_int_key_with_string_cache",

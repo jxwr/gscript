@@ -97,6 +97,9 @@ func tableDynamicStringKeyCacheLikely(fn *Function, instr *Instr) bool {
 	if fn == nil || fn.Proto == nil || instr == nil || !instr.HasSource {
 		return false
 	}
+	if instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.Feedback) && fn.Proto.Feedback[instr.SourcePC].Right == vm.FBString {
+		return true
+	}
 	return protoHasDynamicStringKeyCacheAt(fn.Proto, instr.SourcePC)
 }
 

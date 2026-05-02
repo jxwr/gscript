@@ -402,6 +402,134 @@ func lookup(n) {
 	}
 }
 
+func TestTier2_DynamicStringMapValueCacheGetTable_NoLoopTableExit(t *testing.T) {
+	src := `
+func lookup(tbl, keys, n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        k := keys[(i % 4) + 1]
+        sum = sum + tbl[k]
+    }
+    return sum
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "lookup")
+	if proto == nil {
+		t.Fatal("lookup proto not found")
+	}
+	proto.EnsureFeedback()
+
+	tbl := runtime.NewTable()
+	for i := int64(0); i < 16; i++ {
+		tbl.RawSetString("k"+runtime.IntValue(i).String(), runtime.IntValue(i))
+	}
+	keys := runtime.NewTable()
+	keys.RawSetInt(1, runtime.StringValue("k12"))
+	keys.RawSetInt(2, runtime.StringValue("k13"))
+	keys.RawSetInt(3, runtime.StringValue("k14"))
+	keys.RawSetInt(4, runtime.StringValue("k15"))
+	args := []runtime.Value{runtime.TableValue(tbl), runtime.TableValue(keys), runtime.IntValue(80)}
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("lookup")
+	wantValues, err := v.CallValue(fnVal, args)
+	if err != nil {
+		t.Fatalf("warm lookup: %v", err)
+	}
+	want := requireOneInt(t, "VM lookup", wantValues)
+	if proto.Feedback == nil {
+		t.Fatal("warmup did not retain feedback")
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(lookup): %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, args)
+	if err != nil {
+		t.Fatalf("Tier2 lookup: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 lookup", gotValues)
+	if got != want {
+		t.Fatalf("lookup Tier2=%d, want VM=%d", got, want)
+	}
+
+	var getTableExits uint64
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "lookup" && site.ExitName == "ExitTableExit" && site.Reason == "GetTable" {
+			getTableExits += site.Count
+		}
+	}
+	if getTableExits != 0 {
+		t.Fatalf("dynamic string-map lookup should stay native, GetTable exits=%d sites=%#v", getTableExits, tm.ExitStats().Sites)
+	}
+}
+
+func TestTier2_DynamicStringSmallShapeMissingKey_NoLoopTableExit(t *testing.T) {
+	src := `
+func lookup(n) {
+    keys := {"missing_a", "missing_b", "missing_c"}
+    totals := {present: 1}
+    misses := 0
+    for i := 1; i <= n; i++ {
+        k := keys[(i % 3) + 1]
+        if totals[k] == nil {
+            misses = misses + 1
+        }
+    }
+    return misses
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "lookup")
+	if proto == nil {
+		t.Fatal("lookup proto not found")
+	}
+	proto.EnsureFeedback()
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("lookup")
+	wantValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(90)})
+	if err != nil {
+		t.Fatalf("warm lookup: %v", err)
+	}
+	want := requireOneInt(t, "VM lookup", wantValues)
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(lookup): %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(90)})
+	if err != nil {
+		t.Fatalf("Tier2 lookup: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 lookup", gotValues)
+	if got != want {
+		t.Fatalf("lookup Tier2=%d, want VM=%d", got, want)
+	}
+
+	var getTableExits uint64
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "lookup" && site.ExitName == "ExitTableExit" && site.Reason == "GetTable" {
+			getTableExits += site.Count
+		}
+	}
+	if getTableExits != 0 {
+		t.Fatalf("missing small-shape string lookup should stay native, GetTable exits=%d sites=%#v", getTableExits, tm.ExitStats().Sites)
+	}
+}
+
 func protoHasAnyDynamicStringKeyCache(proto *vm.FuncProto) bool {
 	if proto == nil {
 		return false

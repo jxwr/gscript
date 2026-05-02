@@ -2086,6 +2086,16 @@ func (ec *emitContext) emitDynamicStringGetTableCache(instr *Instr, doneLabel st
 		asm.LDRreg(jit.X0, jit.X10, fieldIdxReg)
 		ec.emitStoreDynamicStringTableLoad(instr, jit.X0, deoptLabel)
 		asm.B(doneLabel)
+	}, dynamicStringCacheHandlers{
+		valueHit: func(valueReg jit.Reg) {
+			ec.emitStoreDynamicStringTableLoad(instr, valueReg, deoptLabel)
+			asm.B(doneLabel)
+		},
+		notFound: func() {
+			asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
+			ec.emitStoreDynamicStringTableLoad(instr, jit.X0, deoptLabel)
+			asm.B(doneLabel)
+		},
 	})
 	asm.Label(deoptLabel)
 	ec.emitDeopt(instr)
@@ -2123,13 +2133,25 @@ func (ec *emitContext) shouldEmitDynamicStringKeyCache(instr *Instr) bool {
 		return false
 	}
 	if ec.fn == nil || !protoHasDynamicStringKeyCacheAt(ec.fn.Proto, instr.SourcePC) {
-		return false
+		return ec.fn != nil &&
+			ec.fn.Proto != nil &&
+			instr.SourcePC < len(ec.fn.Proto.Feedback) &&
+			ec.fn.Proto.Feedback[instr.SourcePC].Right == vm.FBString
 	}
 	return true
 }
 
-func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel string, hit func(fieldIdxReg jit.Reg)) {
+type dynamicStringCacheHandlers struct {
+	valueHit func(jit.Reg)
+	notFound func()
+}
+
+func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel string, hit func(fieldIdxReg jit.Reg), options ...dynamicStringCacheHandlers) {
 	asm := ec.asm
+	var handlers dynamicStringCacheHandlers
+	if len(options) > 0 {
+		handlers = options[0]
+	}
 
 	jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, missLabel)
 	jit.EmitExtractPtr(asm, jit.X4, jit.X1) // X4 = *string header
@@ -2137,10 +2159,11 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.LDR(jit.X5, jit.X4, 0) // X5 = key data
 	asm.LDR(jit.X6, jit.X4, 8) // X6 = key len
 
-	asm.LDRW(jit.X7, jit.X0, jit.TableOffShapeID)
-	asm.CBZ(jit.X7, missLabel)
 	asm.LDR(jit.X8, jit.X0, jit.TableOffLazyTree)
 	asm.CBNZ(jit.X8, missLabel)
+	asm.LDRW(jit.X7, jit.X0, jit.TableOffShapeID)
+	smapCacheLabel := ec.uniqueLabel("dyn_string_smap_cache")
+	asm.CBZ(jit.X7, smapCacheLabel)
 
 	scanLabel := ec.uniqueLabel("dyn_string_scan")
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineTableStringKeyCache)
@@ -2187,7 +2210,11 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	// through to the normal table exit.
 	asm.Label(scanLabel)
 	asm.LDR(jit.X10, jit.X0, jit.TableOffSkeysLen)
-	asm.CBZ(jit.X10, missLabel)
+	emptyShapeLabel := missLabel
+	if handlers.notFound != nil {
+		emptyShapeLabel = ec.uniqueLabel("dyn_string_scan_empty")
+	}
+	asm.CBZ(jit.X10, emptyShapeLabel)
 	asm.LDR(jit.X11, jit.X0, jit.TableOffSkeys)
 	asm.CBZ(jit.X11, missLabel)
 
@@ -2198,7 +2225,11 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.MOVimm16(jit.X9, 0) // field index
 	asm.Label(scanLoopLabel)
 	asm.CMPreg(jit.X9, jit.X10)
-	asm.BCond(jit.CondGE, missLabel)
+	missingLabel := missLabel
+	if handlers.notFound != nil {
+		missingLabel = ec.uniqueLabel("dyn_string_scan_missing")
+	}
+	asm.BCond(jit.CondGE, missingLabel)
 	asm.LSLimm(jit.X12, jit.X9, 4) // Go string header is two machine words.
 	asm.ADDreg(jit.X12, jit.X11, jit.X12)
 	asm.LDR(jit.X13, jit.X12, 0) // candidate data
@@ -2225,6 +2256,55 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.Label(scanNextLabel)
 	asm.ADDimm(jit.X9, jit.X9, 1)
 	asm.B(scanLoopLabel)
+	if handlers.notFound != nil {
+		asm.Label(emptyShapeLabel)
+		handlers.notFound()
+		asm.Label(missingLabel)
+		handlers.notFound()
+	}
+
+	asm.Label(smapCacheLabel)
+	if handlers.valueHit == nil {
+		asm.B(missLabel)
+		return
+	}
+	asm.LDR(jit.X8, jit.X0, jit.TableOffStringLookupCache)
+	asm.CBZ(jit.X8, missLabel)
+	asm.LDR(jit.X3, jit.X8, jit.StringLookupCacheOffEntries)
+	asm.CBZ(jit.X3, missLabel)
+	asm.LDR(jit.X10, jit.X8, jit.StringLookupCacheOffMask)
+
+	asm.LSRimm(jit.X9, jit.X5, 4)
+	asm.LSRimm(jit.X11, jit.X5, 12)
+	asm.EORreg(jit.X9, jit.X9, jit.X11)
+	asm.EORreg(jit.X9, jit.X9, jit.X6)
+	asm.ANDreg(jit.X9, jit.X9, jit.X10)
+
+	smapLoopLabel := ec.uniqueLabel("dyn_string_smap_loop")
+	smapNextLabel := ec.uniqueLabel("dyn_string_smap_next")
+	asm.MOVimm16(jit.X13, 0)
+	asm.Label(smapLoopLabel)
+	asm.ADDreg(jit.X11, jit.X9, jit.X13)
+	asm.ANDreg(jit.X11, jit.X11, jit.X10)
+	asm.ADDregLSL(jit.X12, jit.X11, jit.X11, 1) // idx * 3
+	asm.LSLimm(jit.X12, jit.X12, 4)             // idx * 48
+	asm.ADDreg(jit.X12, jit.X3, jit.X12)
+	asm.LDRB(jit.X14, jit.X12, jit.StringLookupCacheEntryOffValid)
+	asm.CBZ(jit.X14, missLabel)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyData)
+	asm.CMPreg(jit.X14, jit.X5)
+	asm.BCond(jit.CondNE, smapNextLabel)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyLen)
+	asm.CMPreg(jit.X14, jit.X6)
+	asm.BCond(jit.CondNE, smapNextLabel)
+	asm.LDR(jit.X0, jit.X12, jit.StringLookupCacheEntryOffValue)
+	handlers.valueHit(jit.X0)
+
+	asm.Label(smapNextLabel)
+	asm.ADDimm(jit.X13, jit.X13, 1)
+	asm.CMPimm(jit.X13, runtime.StringLookupCacheProbeLimit)
+	asm.BCond(jit.CondLT, smapLoopLabel)
+	asm.B(missLabel)
 }
 
 func tableExitSourcePC(instr *Instr) int64 {
