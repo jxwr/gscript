@@ -2133,10 +2133,18 @@ func (ec *emitContext) shouldEmitDynamicStringKeyCache(instr *Instr) bool {
 		return false
 	}
 	if ec.fn == nil || !protoHasDynamicStringKeyCacheAt(ec.fn.Proto, instr.SourcePC) {
-		return ec.fn != nil &&
-			ec.fn.Proto != nil &&
-			instr.SourcePC < len(ec.fn.Proto.Feedback) &&
-			ec.fn.Proto.Feedback[instr.SourcePC].Right == vm.FBString
+		if ec.fn == nil || ec.fn.Proto == nil {
+			return false
+		}
+		if instr.SourcePC < len(ec.fn.Proto.Feedback) &&
+			ec.fn.Proto.Feedback[instr.SourcePC].Right == vm.FBString {
+			return true
+		}
+		// Some late loops can compile before their dynamic key sites have
+		// feedback. For reads, emit the string-key probe whenever the key is
+		// not proven int; non-string keys fall through to the existing array
+		// path and preserve the old fallback behavior.
+		return instr.Op == OpGetTable && !tableKeyProvenInt(instr.Args[1])
 	}
 	return true
 }

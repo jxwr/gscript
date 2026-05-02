@@ -530,6 +530,54 @@ func lookup(n) {
 	}
 }
 
+func TestTier2_DynamicStringGetTable_ColdFeedbackSmallScan(t *testing.T) {
+	src := `
+func lookup(tbl, key) {
+    return tbl[key]
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "lookup")
+	if proto == nil {
+		t.Fatal("lookup proto not found")
+	}
+
+	tbl := runtime.NewTable()
+	tbl.RawSetString("region", runtime.IntValue(42))
+	args := []runtime.Value{runtime.TableValue(tbl), runtime.StringValue("region")}
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("lookup")
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(lookup): %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, args)
+	if err != nil {
+		t.Fatalf("Tier2 lookup: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 lookup", gotValues)
+	if got != 42 {
+		t.Fatalf("lookup Tier2=%d, want 42", got)
+	}
+
+	var getTableExits uint64
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "lookup" && site.ExitName == "ExitTableExit" && site.Reason == "GetTable" {
+			getTableExits += site.Count
+		}
+	}
+	if getTableExits != 0 {
+		t.Fatalf("cold-feedback string lookup should use native small scan, GetTable exits=%d sites=%#v", getTableExits, tm.ExitStats().Sites)
+	}
+}
+
 func protoHasAnyDynamicStringKeyCache(proto *vm.FuncProto) bool {
 	if proto == nil {
 		return false
