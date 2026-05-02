@@ -40,8 +40,12 @@ type diagProtoStats struct {
 
 // TestDiagDump writes diagnostic artifacts for one benchmark to disk. It
 // is skipped unless DIAG_BENCH is set. The shell driver passes the
-// benchmark file name (e.g. "sieve.gs") via DIAG_BENCH and the output
-// directory via DIAG_OUT.
+// benchmark file name via DIAG_BENCH and the output directory via DIAG_OUT.
+//
+// DIAG_BENCH formats accepted:
+//   "sieve.gs"                       — bare basename: defaults to suite/
+//   "extended/json_table_walk.gs"    — explicit subdirectory under benchmarks/
+//   "variants/ack_nested_shifted.gs" — likewise
 func TestDiagDump(t *testing.T) {
 	benchFile := os.Getenv("DIAG_BENCH")
 	if benchFile == "" {
@@ -52,9 +56,13 @@ func TestDiagDump(t *testing.T) {
 		t.Fatal("DIAG_OUT must be set alongside DIAG_BENCH")
 	}
 
-	src, err := os.ReadFile("../../benchmarks/suite/" + benchFile)
+	relPath := benchFile
+	if !strings.Contains(relPath, "/") {
+		relPath = "suite/" + relPath
+	}
+	src, err := os.ReadFile("../../benchmarks/" + relPath)
 	if err != nil {
-		t.Fatalf("read %s: %v", benchFile, err)
+		t.Fatalf("read %s: %v", relPath, err)
 	}
 	top := compileTop(t, string(src))
 
@@ -151,7 +159,7 @@ func TestDiagDump(t *testing.T) {
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	payload := map[string]any{
-		"benchmark": benchFile,
+		"benchmark": relPath,
 		"protos":    stats,
 	}
 	if err := enc.Encode(payload); err != nil {

@@ -38,10 +38,18 @@ def main(diag_root):
         with open(latest_path) as f:
             latest = json.load(f)
 
-    benches = sorted(
-        d for d in diag_root.iterdir()
-        if d.is_dir() and (d / "stats.json").exists()
-    )
+    # Layout v2: diag/<suite>/<bench>/stats.json (suite ∈ {suite, extended, variants}).
+    # Layout v1 (legacy): diag/<bench>/stats.json — still tolerated.
+    benches = []  # list of (label, suite, name, stats_path)
+    for top in sorted(diag_root.iterdir()):
+        if not top.is_dir():
+            continue
+        if (top / "stats.json").exists():
+            benches.append((top.name, "suite", top.name, top))
+            continue
+        for sub in sorted(top.iterdir()):
+            if sub.is_dir() and (sub / "stats.json").exists():
+                benches.append((f"{top.name}/{sub.name}", top.name, sub.name, sub))
 
     lines = []
     lines.append("# diag/summary.md")
@@ -50,11 +58,11 @@ def main(diag_root):
     lines.append("")
     lines.append("## Insn counts (hottest proto per benchmark)")
     lines.append("")
-    lines.append("| Benchmark | Hottest proto | Insns | Bytes | Load | Store | FP | Branch |")
-    lines.append("|-----------|---------------|------:|------:|-----:|------:|---:|-------:|")
+    lines.append("| Benchmark | Suite | Hottest proto | Insns | Bytes | Load | Store | FP | Branch |")
+    lines.append("|-----------|-------|---------------|------:|------:|-----:|------:|---:|-------:|")
 
     per_bench_hottest = {}
-    for bench_dir in benches:
+    for label, suite, name, bench_dir in benches:
         with open(bench_dir / "stats.json") as f:
             data = json.load(f)
         protos = [p for p in data.get("protos", []) if not p.get("skip_reason")]
@@ -62,14 +70,15 @@ def main(diag_root):
             continue
         hot = max(protos, key=lambda p: p.get("insn_count", 0))
         hist = hot.get("insn_histogram", {})
-        per_bench_hottest[bench_dir.name] = hot
-        lines.append("| {b} | {n} | {i} | {bytes} | {l} | {s} | {f} | {br} |".format(
-            b=bench_dir.name,
+        per_bench_hottest[label] = hot
+        lines.append("| {b} | {s} | {n} | {i} | {bytes} | {l} | {st} | {f} | {br} |".format(
+            b=name,
+            s=suite,
             n=hot.get("name", "?"),
             i=hot.get("insn_count", 0),
             bytes=hot.get("code_bytes", 0),
             l=hist.get("load", 0),
-            s=hist.get("store", 0),
+            st=hist.get("store", 0),
             f=hist.get("fp", 0),
             br=hist.get("branch", 0),
         ))

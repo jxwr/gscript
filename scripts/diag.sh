@@ -1,13 +1,14 @@
 #!/bin/bash
 # scripts/diag.sh — Production-parity Tier 2 diagnostic dump.
 #
-# For each benchmark under benchmarks/suite/, runs the full production
-# Tier 2 compile pipeline on every Tier-2-promotable proto and writes:
+# For each benchmark under benchmarks/{suite,extended,variants}/, runs the
+# full production Tier 2 compile pipeline on every Tier-2-promotable proto
+# and writes (nested under the originating subdirectory):
 #
-#   diag/<bench>/<proto>.bin        — raw ARM64 code bytes
-#   diag/<bench>/<proto>.ir.txt     — post-pipeline IR + regalloc + intrinsics
-#   diag/<bench>/<proto>.asm.txt    — otool -tV disasm of the .bin
-#   diag/<bench>/stats.json         — per-proto insn count + histogram
+#   diag/<suite>/<bench>/<proto>.bin        — raw ARM64 code bytes
+#   diag/<suite>/<bench>/<proto>.ir.txt     — post-pipeline IR + regalloc + intrinsics
+#   diag/<suite>/<bench>/<proto>.asm.txt    — golang.org/x/arch ARM64 disasm
+#   diag/<suite>/<bench>/stats.json         — per-proto insn count + histogram
 #
 # Plus an aggregate diag/summary.md with top drifters vs reference.json.
 #
@@ -18,12 +19,20 @@
 # would install at runtime. Rule 5 of CLAUDE.md is load-bearing on this.
 #
 # Usage:
-#   bash scripts/diag.sh all                   — dump every .gs in suite/
-#   bash scripts/diag.sh <benchmark>           — dump a single benchmark
-#                                                (e.g. sieve or sieve.gs)
-#   bash scripts/diag.sh --no-asm all          — skip otool disasm step
+#   bash scripts/diag.sh all                  — dump every .gs in suite/, extended/, variants/
+#   bash scripts/diag.sh suite                — dump suite/ only
+#   bash scripts/diag.sh extended             — dump extended/ only
+#   bash scripts/diag.sh variants             — dump variants/ only
+#   bash scripts/diag.sh <benchmark>          — dump a single benchmark.
+#                                                Forms accepted:
+#                                                  sieve, sieve.gs
+#                                                  suite/sieve, suite/sieve.gs
+#                                                  extended/json_table_walk
+#                                                  variants/ack_nested_shifted
+#                                                Bare basenames are searched in
+#                                                suite/ → extended/ → variants/.
 #
-# Runtime: ~3 seconds per benchmark, ~60 seconds for the full suite.
+# Runtime: ~3 seconds per benchmark, ~2 minutes for the full all-suite dump.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -31,44 +40,97 @@ cd "$(dirname "$0")/.."
 BENCHMARK=""
 for arg in "$@"; do
     case "$arg" in
-        all) BENCHMARK="all" ;;
+        all|suite|extended|variants) BENCHMARK="$arg" ;;
         *) BENCHMARK="$arg" ;;
     esac
 done
 
 if [ -z "$BENCHMARK" ]; then
-    echo "Usage: $0 <benchmark|all>" >&2
+    echo "Usage: $0 <benchmark|all|suite|extended|variants>" >&2
     exit 2
 fi
 
 DIAG_ROOT="diag"
 mkdir -p "$DIAG_ROOT"
 
-# Resolve benchmark list (macOS bash 3.2 compatible — no mapfile).
+# Discover which top-level benchmark dirs actually exist (variants/ is optional).
+SUITE_DIRS=()
+for d in suite extended variants; do
+    if [ -d "benchmarks/$d" ]; then
+        SUITE_DIRS+=("$d")
+    fi
+done
+
+# Resolve benchmark list. Each entry is "<suite>/<file>.gs", relative to
+# benchmarks/. macOS bash 3.2 compatible (no mapfile, no associative arrays).
 BENCHES=()
-if [ "$BENCHMARK" = "all" ]; then
-    for f in benchmarks/suite/*.gs; do
-        BENCHES+=("$(basename "$f")")
+collect_dir() {
+    local sub="$1"
+    if [ ! -d "benchmarks/$sub" ]; then
+        return
+    fi
+    local f
+    for f in "benchmarks/$sub"/*.gs; do
+        [ -f "$f" ] || continue
+        BENCHES+=("$sub/$(basename "$f")")
     done
-else
-    if [[ "$BENCHMARK" != *.gs ]]; then
-        BENCHMARK="$BENCHMARK.gs"
-    fi
-    if [ ! -f "benchmarks/suite/$BENCHMARK" ]; then
-        echo "No such benchmark: benchmarks/suite/$BENCHMARK" >&2
-        exit 2
-    fi
-    BENCHES=("$BENCHMARK")
-fi
+}
+
+case "$BENCHMARK" in
+    all)
+        for d in "${SUITE_DIRS[@]}"; do
+            collect_dir "$d"
+        done
+        # Wipe everything inside diag/ — both the new nested layout and any legacy
+        # flat dirs from prior runs — so a renamed/removed source can't leave a
+        # stale stats.json behind. summary.md is regenerated at the end.
+        find "$DIAG_ROOT" -mindepth 1 -maxdepth 1 ! -name summary.md -exec rm -rf {} +
+        ;;
+    suite|extended|variants)
+        if [ ! -d "benchmarks/$BENCHMARK" ]; then
+            echo "No such suite: benchmarks/$BENCHMARK" >&2
+            exit 2
+        fi
+        collect_dir "$BENCHMARK"
+        rm -rf "$DIAG_ROOT/$BENCHMARK"
+        ;;
+    *)
+        # Single benchmark. Accept: name | name.gs | suite/name | suite/name.gs.
+        rel=""
+        if [[ "$BENCHMARK" == */* ]]; then
+            rel="$BENCHMARK"
+            [[ "$rel" != *.gs ]] && rel="${rel}.gs"
+            if [ ! -f "benchmarks/$rel" ]; then
+                echo "No such benchmark: benchmarks/$rel" >&2
+                exit 2
+            fi
+        else
+            base="${BENCHMARK%.gs}"
+            for d in "${SUITE_DIRS[@]}"; do
+                if [ -f "benchmarks/$d/$base.gs" ]; then
+                    rel="$d/$base.gs"
+                    break
+                fi
+            done
+            if [ -z "$rel" ]; then
+                echo "No such benchmark in suite/, extended/, or variants/: $BENCHMARK" >&2
+                exit 2
+            fi
+        fi
+        BENCHES=("$rel")
+        ;;
+esac
 
 echo "=== scripts/diag.sh ==="
-echo "Benchmarks: ${BENCHES[*]}"
+echo "Benchmarks: ${#BENCHES[@]}"
 echo
 
 failed=()
 for bench in "${BENCHES[@]}"; do
-    name="${bench%.gs}"
-    out_dir="$DIAG_ROOT/$name"
+    sub="${bench%%/*}"               # suite | extended | variants
+    file="${bench#*/}"               # foo.gs
+    name="${file%.gs}"               # foo
+    out_dir="$DIAG_ROOT/$sub/$name"
     rm -rf "$out_dir"
     mkdir -p "$out_dir"
 
