@@ -1,8 +1,0 @@
-File: gscript_profile
-Type: cpu
-Time: 2026-04-05 21:00:39 CST
-Duration: 505.23ms, Total samples = 330ms (65.32%)
-Showing nodes accounting for 330ms, 100% of 330ms total
-      flat  flat%   sum%        cum   cum%
-     330ms   100%   100%      330ms   100%  runtime._ExternalCode
-         0     0%   100%      330ms   100%  runtime._System
