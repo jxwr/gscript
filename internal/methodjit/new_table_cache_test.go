@@ -156,8 +156,8 @@ func TestFixedTable2CacheRefillsEmptyNilLane(t *testing.T) {
 	}
 
 	entry := cf.NewTableCaches[2]
-	if len(entry.EmptyValues) != newObject2CacheBatch-1 {
-		t.Fatalf("empty cached values = %d, want %d", len(entry.EmptyValues), newObject2CacheBatch-1)
+	if len(entry.EmptyValues) != fixedTableCacheBatch-1 {
+		t.Fatalf("empty cached values = %d, want %d", len(entry.EmptyValues), fixedTableCacheBatch-1)
 	}
 	if len(entry.EmptyRoots) == 0 || len(entry.EmptyRoots) >= len(entry.EmptyValues) {
 		t.Fatalf("empty compact roots = %d, want between 1 and %d", len(entry.EmptyRoots), len(entry.EmptyValues)-1)

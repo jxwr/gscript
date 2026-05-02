@@ -13,10 +13,13 @@ import (
 const (
 	tier2NewTableCacheMaxArrayHint = tier2MaxFeedbackArrayHint
 	newObject2CacheBatch           = 128
-	newTableCacheMaxBatch          = 128
-	newTableCacheTargetBytes       = 1 << 20
-	newTableCacheLargeTargetBytes  = 8 << 20
-	newTableCacheLargeArrayHint    = 64 * 1024
+	// Fixed-shape constructors are often clustered in row-builder loops; a
+	// larger refill batch cuts exit-resume frequency without growing array caches.
+	fixedTableCacheBatch          = 256
+	newTableCacheMaxBatch         = 128
+	newTableCacheTargetBytes      = 1 << 20
+	newTableCacheLargeTargetBytes = 8 << 20
+	newTableCacheLargeArrayHint   = 64 * 1024
 )
 
 type newTableCacheEntry struct {
@@ -236,7 +239,7 @@ func allocateFixedTable2FullWithCache(caches []newTableCacheEntry, instrID int, 
 	if entry.Pos < int64(len(entry.Values)) {
 		return tbl
 	}
-	keep := newObject2CacheBatch - 1
+	keep := fixedTableCacheBatch - 1
 	if cap(entry.Values) < keep {
 		entry.Values = make([]runtime.Value, keep)
 	} else {
@@ -263,7 +266,7 @@ func allocateFixedTable2EmptyWithCache(caches []newTableCacheEntry, instrID int)
 	if entry.EmptyPos < int64(len(entry.EmptyValues)) {
 		return tbl
 	}
-	keep := newObject2CacheBatch - 1
+	keep := fixedTableCacheBatch - 1
 	if cap(entry.EmptyValues) < keep {
 		entry.EmptyValues = make([]runtime.Value, keep)
 	} else {
@@ -308,7 +311,7 @@ func allocateFixedTableNFullWithCache(caches []newTableCacheEntry, instrID int, 
 	if entry.Pos < int64(len(entry.Values)) {
 		return tbl
 	}
-	keep := newObject2CacheBatch - 1
+	keep := fixedTableCacheBatch - 1
 	if cap(entry.Values) < keep {
 		entry.Values = make([]runtime.Value, keep)
 	} else {
