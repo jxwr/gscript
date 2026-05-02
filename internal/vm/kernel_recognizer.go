@@ -66,7 +66,6 @@ const (
 	wholeCallKernelTableArraySwap
 	wholeCallKernelTableArray2D
 	wholeCallKernelGroupByNestedAgg
-	wholeCallKernelProducerConsumerConsume
 	wholeCallKernelCount
 )
 
@@ -263,16 +262,6 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 		},
 		recognize: isGroupByNestedAggProto,
 		runValue:  (*VM).runGroupByNestedAggKernel,
-	},
-	{
-		info: KernelInfo{
-			Name:    "producer_consumer_consume",
-			Route:   KernelRouteWholeCallValue,
-			Arity:   1,
-			Results: kernelWholeCallSingleResultCount,
-		},
-		recognize: isProducerConsumerConsumeProto,
-		runValue:  (*VM).runProducerConsumerConsumeKernel,
 	},
 }
 
