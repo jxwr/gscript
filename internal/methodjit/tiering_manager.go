@@ -2601,7 +2601,6 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				}
 				return instr.Op, true
 			case OpSelf,
-				OpNewFixedTable,
 				OpConcat, OpAppend, OpSetList,
 				OpGetUpval, OpSetUpval,
 				OpGo, OpMakeChan, OpSend, OpRecv,
@@ -2612,6 +2611,11 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				return instr.Op, true
 			case OpNewTable:
 				if tier2NewTableLoopCandidateIsSafe(instr) {
+					continue
+				}
+				return instr.Op, true
+			case OpNewFixedTable:
+				if tier2NewFixedTableLoopCandidateIsSafe(fn, instr) {
 					continue
 				}
 				return instr.Op, true
@@ -2660,6 +2664,16 @@ func tier2NewTableLoopCandidateIsSafe(instr *Instr) bool {
 	// slot as modified. Restart-style OSR still rejects OpNewTable via
 	// firstExitResumeInLoop/hasRestartVisibleSideEffect.
 	return newTableCacheBatchSize(instr) > 1
+}
+
+func tier2NewFixedTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
+	// Fixed-shape constructors have the same direct-entry property as cached
+	// NEWTABLE sites: the common path reuses a cached table and only misses
+	// through the table-exit continuation once per cache refill batch.
+	if fn == nil || instr == nil || instr.Op != OpNewFixedTable {
+		return false
+	}
+	return fixedTableCtor2Cacheable(fn.Proto, instr) || fixedTableCtorNCacheable(fn.Proto, instr)
 }
 
 func collectCompiledGlobalConsts(cf *CompiledFunction) map[int]bool {
@@ -2745,6 +2759,9 @@ func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
 	if irHasSelfCall(fn) {
 		return loopTableMutationRecoveryAdmitsInstr(fn, instr)
 	}
+	if isLocalTableRowSetTable(instr) {
+		return true
+	}
 	// Aux2 carries monomorphic array-kind feedback from Tier 1. Only typed
 	// arrays get the Tier 2 append/write fast path; Mixed stores remain too
 	// broad because they can carry pointers and rely more on runtime table
@@ -2755,6 +2772,24 @@ func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
 	default:
 		return isScalarArraySetTable(instr)
 	}
+}
+
+func isLocalTableRowSetTable(instr *Instr) bool {
+	if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 3 {
+		return false
+	}
+	if instr.Aux2 != 0 && instr.Aux2 != int64(vm.FBKindMixed) {
+		return false
+	}
+	if !isIntLikeTableKey(instr.Args[1], make(map[int]bool)) {
+		return false
+	}
+	tbl := instr.Args[0]
+	val := instr.Args[2]
+	if tbl == nil || tbl.Def == nil || tbl.Def.Op != OpNewTable {
+		return false
+	}
+	return val != nil && val.Def != nil && val.Def.Type == TypeTable
 }
 
 func hasStaticSelfRecursivePartitionSetTableLoop(proto *vm.FuncProto) bool {

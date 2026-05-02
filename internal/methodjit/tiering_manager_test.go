@@ -1371,7 +1371,71 @@ func make_accumulator(start, delta) {
 }
 acc := make_accumulator(140737488355327, 1)
 result := acc()
-`, "result")
+	`, "result")
+}
+
+func TestTieringManager_LoopFixedTableConstructorsCanPromote(t *testing.T) {
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "")
+
+	src := `
+func make_document(i) {
+    return {
+        id: i,
+        active: i % 2 == 0,
+        user: {id: i % 7, tier: i % 3, region: (i % 5) + 1},
+        metrics: {views: i * 3 % 100, clicks: i * 7 % 31, errors: i % 11}
+    }
+}
+
+func build_documents(n) {
+    docs := {}
+    for i := 1; i <= n; i++ {
+        docs[i] = make_document(i)
+    }
+    return docs
+}
+
+func checksum_documents(docs, n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        doc := docs[i]
+        if doc.active {
+            sum = sum + doc.metrics.views + doc.user.region
+        } else {
+            sum = sum + doc.id + doc.metrics.errors
+        }
+    }
+    return sum
+}
+
+docs := build_documents(40)
+result := checksum_documents(docs, 40)
+`
+	proto := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("runtime error: %v", err)
+	}
+
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 1412 {
+		t.Fatalf("result = %v, want 1412", result)
+	}
+
+	buildDocuments := findProtoByName(proto, "build_documents")
+	if buildDocuments == nil {
+		t.Fatal("build_documents proto not found")
+	}
+	if tm.tier2Compiled[buildDocuments] == nil {
+		t.Fatalf("build_documents did not compile to Tier2; failed=%v reason=%q",
+			tm.tier2Failed[buildDocuments], tm.tier2FailReason[buildDocuments])
+	}
+	if buildDocuments.EnteredTier2 == 0 {
+		t.Fatal("build_documents compiled but did not enter Tier2")
+	}
 }
 
 // TestTieringManager_Tier2CallInLoop verifies that OP_CALL inside a loop
