@@ -61,10 +61,6 @@ const (
 	wholeCallKernelSpectralAtAv
 	wholeCallKernelNBodyAdvance
 	wholeCallKernelMixedInventoryOrders
-	wholeCallKernelTableArrayIntSum
-	wholeCallKernelTableArrayFloatDot
-	wholeCallKernelTableArraySwap
-	wholeCallKernelTableArray2D
 	wholeCallKernelCount
 )
 
@@ -211,46 +207,6 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 		},
 		recognize: isMixedInventoryOrdersProto,
 		runValue:  (*VM).runMixedInventoryOrdersKernel,
-	},
-	{
-		info: KernelInfo{
-			Name:    "table_array_int_sum",
-			Route:   KernelRouteWholeCallValue,
-			Arity:   1,
-			Results: kernelWholeCallSingleResultCount,
-		},
-		recognize: isTableArrayIntSumProto,
-		runValue:  (*VM).runTableArrayIntSumKernel,
-	},
-	{
-		info: KernelInfo{
-			Name:    "table_array_float_dot",
-			Route:   KernelRouteWholeCallValue,
-			Arity:   1,
-			Results: kernelWholeCallSingleResultCount,
-		},
-		recognize: isTableArrayFloatDotProto,
-		runValue:  (*VM).runTableArrayFloatDotKernel,
-	},
-	{
-		info: KernelInfo{
-			Name:    "table_array_swap",
-			Route:   KernelRouteWholeCallValue,
-			Arity:   2,
-			Results: kernelWholeCallSingleResultCount,
-		},
-		recognize: isTableArraySwapProto,
-		runValue:  (*VM).runTableArraySwapKernel,
-	},
-	{
-		info: KernelInfo{
-			Name:    "table_array_2d",
-			Route:   KernelRouteWholeCallValue,
-			Arity:   1,
-			Results: kernelWholeCallSingleResultCount,
-		},
-		recognize: isTableArray2DProto,
-		runValue:  (*VM).runTableArray2DKernel,
 	},
 }
 

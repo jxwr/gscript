@@ -114,18 +114,11 @@ func mayHaveWholeCallValueKernelCandidate(proto *FuncProto, argc int, includeRec
 		if proto.NumParams != 1 {
 			return false
 		}
-		if (proto.MaxStack == 15 && len(proto.Constants) == 0 && len(proto.Code) == 21) ||
-			(proto.MaxStack == 18 && len(proto.Constants) == 3 && len(proto.Code) == 35) ||
-			(proto.MaxStack == 23 && len(proto.Constants) == 0 && len(proto.Code) == 38) {
-			return true
-		}
 		if includeRecursiveTable {
 			return true
 		}
 		return (proto.MaxStack == 30 && len(proto.Constants) == 2 && len(proto.Protos) == 0) ||
 			(proto.MaxStack >= 13 && len(proto.Constants) == 0 && len(proto.Protos) == 0 && len(proto.Code) == 45)
-	case 2:
-		return proto.NumParams == 2 && proto.MaxStack == 20 && len(proto.Constants) == 0 && len(proto.Code) == 37
 	case 3:
 		return proto.NumParams == 3 && (len(proto.Constants) == 1 ||
 			(len(proto.Constants) == 16 && len(proto.Code) == 130))
