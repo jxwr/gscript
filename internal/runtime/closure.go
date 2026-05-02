@@ -44,9 +44,11 @@ type Closure struct {
 
 // GoFunction is a native Go function callable from GScript.
 type GoFunction struct {
-	Name  string
-	Fn    func(args []Value) ([]Value, error)
-	Fast1 func(args []Value) (Value, error)
+	Name     string
+	Fn       func(args []Value) ([]Value, error)
+	Fast1    func(args []Value) (Value, error)
+	FastArg1 func(a Value) (Value, error)
+	FastArg2 func(a, b Value) (Value, error)
 	// NativeKind/NativeData let the bytecode VM attach optional direct-dispatch
 	// metadata while keeping Fn as the semantic fallback.
 	NativeKind uint8

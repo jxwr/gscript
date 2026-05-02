@@ -178,6 +178,62 @@ for i := 1; i <= 200; i++ { result = f() }
 `, "result")
 }
 
+func TestTier1_GoFunctionFixedArgFastPath(t *testing.T) {
+	src := `
+func run(n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        sum = sum + fast1(i) + fast2(i, 3)
+    }
+    return sum
+}
+result := 0
+for i := 1; i <= 200; i++ {
+    result = run(4)
+}
+`
+	proto := compileTop(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	engine := NewBaselineJITEngine()
+	v.SetMethodJIT(engine)
+
+	fast1Calls := 0
+	fast2Calls := 0
+	v.SetGlobal("fast1", runtime.FunctionValue(&runtime.GoFunction{
+		Name: "fast1",
+		Fn: func(args []runtime.Value) ([]runtime.Value, error) {
+			return []runtime.Value{runtime.IntValue(args[0].Int() + 10)}, nil
+		},
+		FastArg1: func(a runtime.Value) (runtime.Value, error) {
+			fast1Calls++
+			return runtime.IntValue(a.Int() + 10), nil
+		},
+	}))
+	v.SetGlobal("fast2", runtime.FunctionValue(&runtime.GoFunction{
+		Name: "fast2",
+		Fn: func(args []runtime.Value) ([]runtime.Value, error) {
+			return []runtime.Value{runtime.IntValue(args[0].Int() + args[1].Int())}, nil
+		},
+		FastArg2: func(a, b runtime.Value) (runtime.Value, error) {
+			fast2Calls++
+			return runtime.IntValue(a.Int() + b.Int()), nil
+		},
+	}))
+
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("JIT runtime error: %v", err)
+	}
+	result := v.GetGlobal("result")
+	if !result.IsInt() || result.Int() != 72 {
+		t.Fatalf("result = %v, want 72", result)
+	}
+	if fast1Calls == 0 || fast2Calls == 0 {
+		t.Fatalf("fixed-arg fast paths were not used: fast1=%d fast2=%d", fast1Calls, fast2Calls)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GETTABLE / SETTABLE (array integer fast path)
 // ---------------------------------------------------------------------------

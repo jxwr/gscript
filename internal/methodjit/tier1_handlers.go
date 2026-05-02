@@ -341,7 +341,41 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 	}
 
 slowPath:
-	if gf := fnVal.GoFunction(); gf != nil && gf.Fast1 != nil {
+	if gf := fnVal.GoFunction(); gf != nil {
+		if nArgs == 1 && gf.FastArg1 != nil {
+			idx := absSlot + 1
+			arg := runtime.NilValue()
+			if idx < len(regs) {
+				arg = regs[idx]
+			}
+			result, err := gf.FastArg1(arg)
+			if err != nil {
+				return err
+			}
+			e.storeSingleCallResult(absSlot, rawC, result)
+			return nil
+		}
+		if nArgs == 2 && gf.FastArg2 != nil {
+			idx0 := absSlot + 1
+			idx1 := absSlot + 2
+			arg0 := runtime.NilValue()
+			arg1 := runtime.NilValue()
+			if idx0 < len(regs) {
+				arg0 = regs[idx0]
+			}
+			if idx1 < len(regs) {
+				arg1 = regs[idx1]
+			}
+			result, err := gf.FastArg2(arg0, arg1)
+			if err != nil {
+				return err
+			}
+			e.storeSingleCallResult(absSlot, rawC, result)
+			return nil
+		}
+		if gf.Fast1 == nil {
+			goto genericNativePath
+		}
 		var local [16]runtime.Value
 		var callArgs []runtime.Value
 		if nArgs <= len(local) {
@@ -359,28 +393,11 @@ slowPath:
 		if err != nil {
 			return err
 		}
-		currentRegs := e.callVM.Regs()
-		if rawC == 0 {
-			if absSlot < len(currentRegs) {
-				currentRegs[absSlot] = result
-			}
-			e.callVM.SetTop(absSlot + 1)
-		} else {
-			nr := rawC - 1
-			for i := 0; i < nr; i++ {
-				idx := absSlot + i
-				if idx < len(currentRegs) {
-					if i == 0 {
-						currentRegs[idx] = result
-					} else {
-						currentRegs[idx] = runtime.NilValue()
-					}
-				}
-			}
-		}
+		e.storeSingleCallResult(absSlot, rawC, result)
 		return nil
 	}
 
+genericNativePath:
 	// Generic path: heap-allocate args and go through CallValue.
 	callArgs := make([]runtime.Value, nArgs)
 	for i := 0; i < nArgs; i++ {
@@ -421,6 +438,29 @@ slowPath:
 		}
 	}
 	return nil
+}
+
+func (e *BaselineJITEngine) storeSingleCallResult(absSlot, rawC int, result runtime.Value) {
+	currentRegs := e.callVM.Regs()
+	if rawC == 0 {
+		if absSlot < len(currentRegs) {
+			currentRegs[absSlot] = result
+		}
+		e.callVM.SetTop(absSlot + 1)
+		return
+	}
+	nr := rawC - 1
+	for i := 0; i < nr; i++ {
+		idx := absSlot + i
+		if idx >= len(currentRegs) {
+			continue
+		}
+		if i == 0 {
+			currentRegs[idx] = result
+		} else {
+			currentRegs[idx] = runtime.NilValue()
+		}
+	}
 }
 
 // handleGetGlobal handles OP_GETGLOBAL exit.

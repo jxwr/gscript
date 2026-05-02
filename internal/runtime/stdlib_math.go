@@ -6,7 +6,6 @@ import (
 	"math/rand"
 )
 
-
 // buildMathLib creates the "math" standard library table.
 func buildMathLib() *Table {
 	t := NewTable()
@@ -55,11 +54,13 @@ func buildMathLib() *Table {
 		if len(args) < 1 {
 			return nil, fmt.Errorf("bad argument #1 to 'math.floor'")
 		}
-		if args[0].IsInt() {
-			return []Value{args[0]}, nil
-		}
-		return []Value{IntValue(int64(math.Floor(toFloat(args[0]))))}, nil
+		return []Value{mathFloorValue(args[0])}, nil
 	})
+	if v := t.RawGetString("floor"); v.IsFunction() {
+		v.GoFunction().FastArg1 = func(arg Value) (Value, error) {
+			return mathFloorValue(arg), nil
+		}
+	}
 
 	// math.sqrt(x)
 	set("sqrt", func(args []Value) ([]Value, error) {
@@ -358,4 +359,11 @@ func buildMathLib() *Table {
 	})
 
 	return t
+}
+
+func mathFloorValue(arg Value) Value {
+	if arg.IsInt() {
+		return arg
+	}
+	return IntValue(int64(math.Floor(toFloat(arg))))
 }

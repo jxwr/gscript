@@ -351,6 +351,9 @@ func buildStringLib() *Table {
 		}
 		return []Value{v}, nil
 	}, stringFormatValue)
+	if v := t.RawGetString("format"); v.IsFunction() {
+		v.GoFunction().FastArg2 = stringFormat2Value
+	}
 
 	// string.split(s, sep) -> table. sep="" splits by byte
 	setFast1("split", func(args []Value) ([]Value, error) {
@@ -739,6 +742,27 @@ func stringFormatValue(args []Value) (Value, error) {
 		}
 	}
 	return StringValue(buf.String()), nil
+}
+
+func stringFormat2Value(format, arg Value) (Value, error) {
+	if !format.IsString() {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.format' (string expected)")
+	}
+	formatStr := format.Str()
+	if prog, ok, err := cachedSimpleFormat(formatStr); err != nil {
+		return NilValue(), err
+	} else if ok && prog.singleInt {
+		n := toInt(arg)
+		if v, ok := prog.cachedResult(n); ok {
+			return v, nil
+		}
+		s := prog.formatSingleInt(n)
+		v := StringValue(s)
+		prog.storeCachedResult(n, v)
+		return v, nil
+	}
+	args := [2]Value{format, arg}
+	return stringFormatValue(args[:])
 }
 
 func writeFastIntegerFormat(buf *strings.Builder, fmtSpec string, spec byte, n int64) bool {
@@ -1140,6 +1164,19 @@ func (p *simpleFormatProgram) format(args []Value) (string, error) {
 		}
 	}
 	return buf.String(), nil
+}
+
+func (p *simpleFormatProgram) formatSingleInt(n int64) string {
+	var buf strings.Builder
+	buf.Grow(p.litBytes + 16)
+	for _, part := range p.parts {
+		if part.verb == 0 {
+			buf.WriteString(part.lit)
+			continue
+		}
+		writeCompiledIntegerFormat(&buf, part, n)
+	}
+	return buf.String()
 }
 
 func writeCompiledIntegerFormat(buf *strings.Builder, part simpleFormatPart, n int64) {
