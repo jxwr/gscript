@@ -90,9 +90,10 @@ type UpvalDesc struct {
 
 // Closure is a bytecode closure: a FuncProto paired with captured upvalues.
 type Closure struct {
-	Proto         *FuncProto
-	Upvalues      []*Upvalue
-	inlineUpvalue [1]*Upvalue
+	Proto               *FuncProto
+	Upvalues            []*Upvalue
+	inlineUpvalue       [1]*Upvalue
+	inlineClosedUpvalue Upvalue
 }
 
 // ClosureInlineUpvalue0Offset returns the struct offset of the one-upvalue
@@ -134,6 +135,23 @@ type Upvalue struct {
 // NewOpenUpvalue creates an open upvalue pointing to a register slot.
 func NewOpenUpvalue(reg *runtime.Value, idx int) *Upvalue {
 	return &Upvalue{ref: reg, open: true, regIdx: idx}
+}
+
+// NewClosedUpvalue creates a closed upvalue that owns its captured value.
+func NewClosedUpvalue(v runtime.Value) *Upvalue {
+	uv := &Upvalue{val: v, regIdx: -1}
+	uv.ref = &uv.val
+	return uv
+}
+
+// SetInlineClosedUpvalue0 stores the common single closed upvalue inside the
+// closure object, avoiding a separate Upvalue allocation.
+func (cl *Closure) SetInlineClosedUpvalue0(v runtime.Value) {
+	cl.inlineClosedUpvalue.val = v
+	cl.inlineClosedUpvalue.ref = &cl.inlineClosedUpvalue.val
+	cl.inlineClosedUpvalue.open = false
+	cl.inlineClosedUpvalue.regIdx = -1
+	cl.Upvalues[0] = &cl.inlineClosedUpvalue
 }
 
 // Get returns the current value.

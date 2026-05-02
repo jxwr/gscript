@@ -76,6 +76,7 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 	}
 	subProto := proto.Protos[bx]
 	cl := vm.NewClosure(subProto)
+	closeAtCreation := closureReturnedImmediately(proto, int(ctx.BaselinePC)-1, a)
 	switch len(subProto.Upvalues) {
 	case 0:
 	case 1:
@@ -83,7 +84,9 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 		if desc.InStack {
 			absIdx := base + desc.Index
 			if absIdx < len(regs) {
-				if e.callVM != nil {
+				if closeAtCreation {
+					cl.SetInlineClosedUpvalue0(regs[absIdx])
+				} else if e.callVM != nil {
 					cl.Upvalues[0] = e.callVM.FindOrCreateUpvalue(absIdx)
 				} else {
 					cl.Upvalues[0] = vm.NewOpenUpvalue(&regs[absIdx], absIdx)
@@ -110,7 +113,9 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 			if desc.InStack {
 				absIdx := base + desc.Index
 				if absIdx < len(regs) {
-					if e.callVM != nil {
+					if closeAtCreation {
+						cl.Upvalues[i] = vm.NewClosedUpvalue(regs[absIdx])
+					} else if e.callVM != nil {
 						cl.Upvalues[i] = e.callVM.FindOrCreateUpvalue(absIdx)
 					} else {
 						cl.Upvalues[i] = vm.NewOpenUpvalue(&regs[absIdx], absIdx)
@@ -131,6 +136,14 @@ func (e *BaselineJITEngine) handleClosure(ctx *ExecContext, regs []runtime.Value
 		regs[absA] = runtime.VMClosureFastValue(unsafe.Pointer(cl))
 	}
 	return nil
+}
+
+func closureReturnedImmediately(proto *vm.FuncProto, pc, slot int) bool {
+	if proto == nil || pc < 0 || pc+1 >= len(proto.Code) {
+		return false
+	}
+	ret := proto.Code[pc+1]
+	return vm.DecodeOp(ret) == vm.OP_RETURN && vm.DecodeA(ret) == slot && vm.DecodeB(ret) == 2
 }
 
 // handleClose handles OP_CLOSE exit: close upvalues >= R(A).
