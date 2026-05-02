@@ -60,6 +60,7 @@ const (
 	wholeCallKernelSpectralMultiplyAtv
 	wholeCallKernelSpectralAtAv
 	wholeCallKernelNBodyAdvance
+	wholeCallKernelMixedInventoryOrders
 	wholeCallKernelCount
 )
 
@@ -196,6 +197,16 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 		},
 		recognize:   isNBodyAdvanceProto,
 		runNoResult: (*VM).runNBodyAdvanceKernel,
+	},
+	{
+		info: KernelInfo{
+			Name:    "mixed_inventory_orders",
+			Route:   KernelRouteWholeCallValue,
+			Arity:   3,
+			Results: kernelWholeCallSingleResultCount,
+		},
+		recognize: isMixedInventoryOrdersProto,
+		runValue:  (*VM).runMixedInventoryOrdersKernel,
 	},
 }
 
