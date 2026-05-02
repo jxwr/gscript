@@ -136,6 +136,43 @@ producer_consumer_pipeline:
   strategy for yielded fixed-shape payload tables.
 ```
 
+## Parallel follow-up evidence
+
+A later three-worktree development round retested the next obvious local
+directions with the same strict-guard workflow. It produced no mergeable code,
+but it narrowed the safe search space:
+
+| Target | Tested direction | Result |
+| --- | --- | --- |
+| suite/table_array_access | store-loop preallocation threshold change and earlier typed-table kind verification | threshold change regressed the median from about 0.018s to about 0.041s; typed-kind cleanup stayed around 0.019-0.020s |
+| suite/coroutine_bench / extended/producer_consumer_pipeline | Tier 1 `OP_NEWOBJECTN` cache path for the five-field yielded payload | no win; `producer_consumer_pipeline` moved from about 0.128s to 0.141s on the first guard and 0.133s on rerun |
+| extended/actors_dispatch_mutation | delayed Tier 2 until field-dispatch feedback exists; narrower `FBString -> TypeString` propagation | delayed Tier 2 changed checksum and created an exit storm after actor mutation; string propagation was correctness-clean but stayed around 0.041s |
+| extended/mixed_inventory_sim | earlier Tier 2 admission for single-call long table loops; dense no-lock integer `string.format` result cache | broad admission did not enter Tier 2 in default mode and broke no-filter checksum; dense cache had no default-mode win |
+
+The resulting constraints are:
+
+```text
+table_array_access:
+  do not relax store-loop preallocation thresholds without a new invariant; the
+  current threshold protects the hot row.
+
+coroutine / producer_consumer_pipeline:
+  the hot allocation is in the coroutine child VM interpreter path, not the
+  parent Tier 1 path. Parent-side native constructor caches miss the bottleneck.
+
+actors_dispatch_mutation:
+  delaying compilation for more field-dispatch feedback is unsafe when the
+  benchmark mutates actors mid-run. The next viable direction needs feedback
+  that is useful before mutation or a guarded polymorphic path that can deopt
+  without restart/checksum drift.
+
+mixed_inventory_sim:
+  Tier 2 admission gates are protecting correctness. The remaining cost is
+  dominated by baseline exits around calls and large string-map lookup, but
+  simple format-cache/hash/probe/cache-density changes have not moved the
+  default median.
+```
+
 ## Recommended wording
 
 Use this as the current docs summary:
