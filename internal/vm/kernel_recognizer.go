@@ -65,7 +65,6 @@ const (
 	wholeCallKernelTableArrayFloatDot
 	wholeCallKernelTableArraySwap
 	wholeCallKernelTableArray2D
-	wholeCallKernelGroupByNestedAgg
 	wholeCallKernelCount
 )
 
@@ -252,16 +251,6 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 		},
 		recognize: isTableArray2DProto,
 		runValue:  (*VM).runTableArray2DKernel,
-	},
-	{
-		info: KernelInfo{
-			Name:    "groupby_nested_agg",
-			Route:   KernelRouteWholeCallValue,
-			Arity:   2,
-			Results: kernelWholeCallSingleResultCount,
-		},
-		recognize: isGroupByNestedAggProto,
-		runValue:  (*VM).runGroupByNestedAggKernel,
 	},
 }
 
