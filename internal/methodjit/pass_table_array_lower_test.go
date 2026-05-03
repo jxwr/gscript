@@ -770,6 +770,52 @@ func TestTableArrayNestedLoad_FusesSameBlockMixedRowFloat(t *testing.T) {
 	}
 }
 
+func TestTableArrayNestedLoad_FusesSameBlockMixedRowInt(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_nested_int_load"}, NumRegs: 4}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	rows := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	outerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	innerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	outerHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{rows.Value()}, Block: b}
+	outerLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerHeader.Value()}, Block: b}
+	outerData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerHeader.Value()}, Block: b}
+	row := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeTable, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{outerData.Value(), outerLen.Value(), outerKey.Value()}, Block: b}
+	rowHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{row.Value()}, Block: b}
+	rowLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{rowHeader.Value()}, Block: b}
+	rowData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{rowHeader.Value()}, Block: b}
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{rowData.Value(), rowLen.Value(), innerKey.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{load.Value()}, Block: b}
+	b.Instrs = []*Instr{rows, outerKey, innerKey, outerHeader, outerLen, outerData, row, rowHeader, rowLen, rowData, load, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = TableArrayNestedLoadPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts := countOps(fn)
+	if counts[OpTableArrayNestedLoad] != 1 {
+		t.Fatalf("expected one nested int load, counts=%v\n%s", counts, Print(fn))
+	}
+	if counts[OpTableArrayLoad] != 0 {
+		t.Fatalf("same-block int row load chain should be removed, counts=%v\n%s", counts, Print(fn))
+	}
+}
+
 func TestDenseMatrixNestedLoadLowerUsesDenseFeedback(t *testing.T) {
 	fn := &Function{
 		Proto: &vm.FuncProto{

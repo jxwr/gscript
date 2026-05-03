@@ -362,6 +362,39 @@ func TestTablePreallocHintPassInfersMixedForTableValuesWithoutFeedback(t *testin
 	}
 }
 
+func TestTablePreallocHintPassPropagatesTypedRowReadHints(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_typed_rows"}, NumRegs: 5}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	rows := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	row := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	outerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	innerKey := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	setRow := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{row.Value(), innerKey.Value(), val.Value()}, Block: b}
+	setRows := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{rows.Value(), outerKey.Value(), row.Value()}, Block: b}
+	rowLoad := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny,
+		Args: []*Value{rows.Value(), outerKey.Value()}, Block: b}
+	elemLoad := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny,
+		Args: []*Value{rowLoad.Value(), innerKey.Value()}, Block: b}
+	b.Instrs = []*Instr{rows, row, outerKey, innerKey, val, setRow, setRows, rowLoad, elemLoad}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	_, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	if rowLoad.Aux2 != int64(vm.FBKindMixed) || rowLoad.Type != TypeTable {
+		t.Fatalf("row load kind/type = %d/%s, want mixed/table", rowLoad.Aux2, rowLoad.Type)
+	}
+	if elemLoad.Aux2 != int64(vm.FBKindInt) || elemLoad.Type != TypeInt {
+		t.Fatalf("element load kind/type = %d/%s, want int/int", elemLoad.Aux2, elemLoad.Type)
+	}
+}
+
 func TestTablePreallocHintPassOuterLoopTableValuesGetsLargeMixedHint(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "outer_loop_table_values"}, NumRegs: 1}
 	entry := &Block{ID: 0, defs: make(map[int]*Value)}

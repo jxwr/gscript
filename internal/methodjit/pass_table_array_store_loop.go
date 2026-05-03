@@ -34,7 +34,8 @@ func TableArrayStoreLoopVersionPass(fn *Function) (*Function, error) {
 			continue
 		}
 		for _, cand := range candidates {
-			if !tableArrayStoreLoopHasLengthSeed(fn, dom, preheader, cand) {
+			nestedBuilder := tableArrayStoreLoopNestedBuilder(li, body, cand)
+			if !tableArrayStoreLoopHasLengthSeed(fn, dom, preheader, cand, nestedBuilder) {
 				functionRemarks(fn).Add("TableArrayStoreLoopVersion", "missed", header.ID, 0, OpTableArrayStore,
 					"typed mutation loop has no dominating length seed")
 				continue
@@ -47,7 +48,7 @@ func TableArrayStoreLoopVersionPass(fn *Function) (*Function, error) {
 				store.Op = OpTableArrayStore
 				store.Args = []*Value{cand.table, data, length, store.Args[1], store.Args[2], header}
 				store.Aux = cand.kind
-				store.Aux2 = tableArrayStoreLoopFlags(cand)
+				store.Aux2 = tableArrayStoreLoopFlags(cand, nestedBuilder)
 				store.Type = TypeUnknown
 				functionRemarks(fn).Add("TableArrayStoreLoopVersion", "changed", store.Block.ID, store.ID, store.Op,
 					"lowered local typed table mutation loop store to checked raw array store")
@@ -158,12 +159,13 @@ func tableArrayStoreLoopLocalTypedTable(table *Value, kind int64, body map[int]b
 	return ok && int64(fbKind) == kind
 }
 
-func tableArrayStoreLoopHasLengthSeed(fn *Function, dom *domInfo, preheader *Block, cand tableArrayStoreLoopCandidate) bool {
+func tableArrayStoreLoopHasLengthSeed(fn *Function, dom *domInfo, preheader *Block, cand tableArrayStoreLoopCandidate, nestedBuilder bool) bool {
 	if fn == nil || dom == nil || preheader == nil || cand.table == nil {
 		return false
 	}
 	if cand.kind != int64(vm.FBKindBool) {
-		return tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand)
+		return tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand) ||
+			(nestedBuilder && tableArrayStoreLoopNumericHasTypedPrealloc(cand))
 	}
 	for _, block := range fn.Blocks {
 		if block == nil {
@@ -185,20 +187,36 @@ func tableArrayStoreLoopHasLengthSeed(fn *Function, dom *domInfo, preheader *Blo
 }
 
 func tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand tableArrayStoreLoopCandidate) bool {
+	if !tableArrayStoreLoopNumericHasTypedPrealloc(cand) {
+		return false
+	}
+	return cand.table.Def.Aux > tier2FeedbackOuterLoopArrayHint
+}
+
+func tableArrayStoreLoopNumericHasTypedPrealloc(cand tableArrayStoreLoopCandidate) bool {
 	if cand.table == nil || cand.table.Def == nil || cand.table.Def.Op != OpNewTable {
 		return false
 	}
 	if cand.kind != int64(vm.FBKindInt) && cand.kind != int64(vm.FBKindFloat) {
 		return false
 	}
-	return cand.table.Def.Aux > tier2FeedbackOuterLoopArrayHint
+	return cand.table.Def.Aux > 0
 }
 
-func tableArrayStoreLoopFlags(cand tableArrayStoreLoopCandidate) int64 {
-	if tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand) {
+func tableArrayStoreLoopFlags(cand tableArrayStoreLoopCandidate, nestedBuilder bool) int64 {
+	if tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand) ||
+		(nestedBuilder && tableArrayStoreLoopNumericHasTypedPrealloc(cand)) {
 		return tableArrayStoreFlagAllowGrow
 	}
 	return 0
+}
+
+func tableArrayStoreLoopNestedBuilder(li *loopInfo, body map[int]bool, cand tableArrayStoreLoopCandidate) bool {
+	if li == nil || body == nil || cand.table == nil || cand.table.Def == nil || cand.table.Def.Block == nil {
+		return false
+	}
+	defBlockID := cand.table.Def.Block.ID
+	return li.loopBlocks[defBlockID] && !body[defBlockID]
 }
 
 func insertTableArrayStoreLoopFacts(fn *Function, preheader *Block, cand tableArrayStoreLoopCandidate) (*Value, *Value, *Value) {

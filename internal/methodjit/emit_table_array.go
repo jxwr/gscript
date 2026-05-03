@@ -1366,7 +1366,7 @@ func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 	normalLabel := ec.uniqueLabel("tarr_nested_normal")
 
 	rowDataOff, rowLenOff, ok := tableArrayOffsets(instr.Aux)
-	if !ok || instr.Aux != int64(vm.FBKindFloat) || instr.Type != TypeFloat {
+	if !ok || !tableArrayNestedLoadSupported(instr.Aux, instr.Type) {
 		ec.emitDeopt(instr)
 		return
 	}
@@ -1376,57 +1376,59 @@ func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 		return
 	}
 
-	outerTblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-	if outerTblReg != jit.X0 {
-		asm.MOVreg(jit.X0, outerTblReg)
+	if instr.Aux == int64(vm.FBKindFloat) {
+		outerTblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		if outerTblReg != jit.X0 {
+			asm.MOVreg(jit.X0, outerTblReg)
+		}
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.LDRW(jit.X6, jit.X0, jit.TableOffDMStride)
+		asm.CBZ(jit.X6, normalLabel)
+		if !ec.emitTableArrayKeyToReg(instr.Args[3], deoptLabel) {
+			ec.emitDeopt(instr)
+			return
+		}
+		outerKeyID := instr.Args[3].ID
+		if kv, isConst := ec.constInts[outerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(outerKeyID) {
+			asm.CMPimm(jit.X1, 0)
+			asm.BCond(jit.CondLT, deoptLabel)
+		}
+		asm.MOVreg(jit.X2, jit.X1)
+		outerLenReg := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
+		if outerLenReg != jit.X3 {
+			asm.MOVreg(jit.X3, outerLenReg)
+		}
+		asm.CMPreg(jit.X2, jit.X3)
+		asm.BCond(jit.CondGE, deoptLabel)
+		if !ec.emitTableArrayKeyToReg(instr.Args[4], deoptLabel) {
+			ec.emitDeopt(instr)
+			return
+		}
+		innerKeyID := instr.Args[4].ID
+		if kv, isConst := ec.constInts[innerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(innerKeyID) {
+			asm.CMPimm(jit.X1, 0)
+			asm.BCond(jit.CondLT, deoptLabel)
+		}
+		asm.CMPreg(jit.X1, jit.X6)
+		asm.BCond(jit.CondGE, deoptLabel)
+		asm.MUL(jit.X4, jit.X2, jit.X6)
+		asm.ADDreg(jit.X4, jit.X4, jit.X1)
+		asm.LDR(jit.X5, jit.X0, jit.TableOffDMFlat)
+		dstF := jit.D0
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			dstF = jit.FReg(pr.Reg)
+		}
+		asm.FLDRdReg(dstF, jit.X5, jit.X4)
+		ec.storeRawFloat(dstF, instr.ID)
+		asm.B(doneLabel)
 	}
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.LDRW(jit.X6, jit.X0, jit.TableOffDMStride)
-	asm.CBZ(jit.X6, normalLabel)
-	if !ec.emitTableArrayKeyToReg(instr.Args[3], deoptLabel) {
-		ec.emitDeopt(instr)
-		return
-	}
-	outerKeyID := instr.Args[3].ID
-	if kv, isConst := ec.constInts[outerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(outerKeyID) {
-		asm.CMPimm(jit.X1, 0)
-		asm.BCond(jit.CondLT, deoptLabel)
-	}
-	asm.MOVreg(jit.X2, jit.X1)
-	outerLenReg := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
-	if outerLenReg != jit.X3 {
-		asm.MOVreg(jit.X3, outerLenReg)
-	}
-	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondGE, deoptLabel)
-	if !ec.emitTableArrayKeyToReg(instr.Args[4], deoptLabel) {
-		ec.emitDeopt(instr)
-		return
-	}
-	innerKeyID := instr.Args[4].ID
-	if kv, isConst := ec.constInts[innerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(innerKeyID) {
-		asm.CMPimm(jit.X1, 0)
-		asm.BCond(jit.CondLT, deoptLabel)
-	}
-	asm.CMPreg(jit.X1, jit.X6)
-	asm.BCond(jit.CondGE, deoptLabel)
-	asm.MUL(jit.X4, jit.X2, jit.X6)
-	asm.ADDreg(jit.X4, jit.X4, jit.X1)
-	asm.LDR(jit.X5, jit.X0, jit.TableOffDMFlat)
-	dstF := jit.D0
-	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
-		dstF = jit.FReg(pr.Reg)
-	}
-	asm.FLDRdReg(dstF, jit.X5, jit.X4)
-	ec.storeRawFloat(dstF, instr.ID)
-	asm.B(doneLabel)
 
 	asm.Label(normalLabel)
 	outerDataReg := ec.resolveRawDataPtr(instr.Args[1].ID, jit.X2)
 	if outerDataReg != jit.X2 {
 		asm.MOVreg(jit.X2, outerDataReg)
 	}
-	outerLenReg = ec.resolveRawInt(instr.Args[2].ID, jit.X3)
+	outerLenReg := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
 	if outerLenReg != jit.X3 {
 		asm.MOVreg(jit.X3, outerLenReg)
 	}
@@ -1434,7 +1436,7 @@ func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 		ec.emitDeopt(instr)
 		return
 	}
-	outerKeyID = instr.Args[3].ID
+	outerKeyID := instr.Args[3].ID
 	if kv, isConst := ec.constInts[outerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(outerKeyID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
@@ -1458,19 +1460,28 @@ func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 		ec.emitDeopt(instr)
 		return
 	}
-	innerKeyID = instr.Args[4].ID
+	innerKeyID := instr.Args[4].ID
 	if kv, isConst := ec.constInts[innerKeyID]; (!isConst || kv < 0) && !ec.intNonNegative(innerKeyID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
 	asm.CMPreg(jit.X1, jit.X3)
 	asm.BCond(jit.CondGE, deoptLabel)
-	dstF = jit.D0
-	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
-		dstF = jit.FReg(pr.Reg)
+	switch instr.Aux {
+	case int64(vm.FBKindInt):
+		asm.LDRreg(jit.X0, jit.X2, jit.X1)
+		ec.storeRawInt(jit.X0, instr.ID)
+	case int64(vm.FBKindFloat):
+		dstF := jit.D0
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			dstF = jit.FReg(pr.Reg)
+		}
+		asm.FLDRdReg(dstF, jit.X2, jit.X1)
+		ec.storeRawFloat(dstF, instr.ID)
+	default:
+		ec.emitDeopt(instr)
+		return
 	}
-	asm.FLDRdReg(dstF, jit.X2, jit.X1)
-	ec.storeRawFloat(dstF, instr.ID)
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)

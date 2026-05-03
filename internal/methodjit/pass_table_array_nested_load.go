@@ -2,13 +2,13 @@ package methodjit
 
 import "github.com/gscript/gscript/internal/vm"
 
-// TableArrayNestedLoadPass fuses the hot table-of-float-arrays shape:
+// TableArrayNestedLoadPass fuses the hot table-of-typed-arrays shape:
 //
 //	row    = TableArrayLoad(outerData, outerLen, k) : table
 //	hdr    = TableArrayHeader(row)                  : float-array
 //	len    = TableArrayLen(hdr)
 //	data   = TableArrayData(hdr)
-//	value  = TableArrayLoad(data, len, j)           : float
+//	value  = TableArrayLoad(data, len, j)           : int/float
 //
 // into one guarded nested load that keeps the row table pointer in scratch
 // registers. The transform is deliberately same-block and single-use only so
@@ -65,14 +65,21 @@ func TableArrayNestedLoadPass(fn *Function) (*Function, error) {
 			instr.Aux2 = 0
 			instr.copySourceFrom(rowLoad)
 			functionRemarks(fn).Add("TableArrayNestedLoad", "changed", block.ID, instr.ID, instr.Op,
-				"fused same-block mixed row table load with float row element load")
+				"fused same-block mixed row table load with typed row element load")
 		}
 	}
 	return fn, nil
 }
 
 func tableArrayNestedLoadSupported(kind int64, typ Type) bool {
-	return kind == int64(vm.FBKindFloat) && typ == TypeFloat
+	switch kind {
+	case int64(vm.FBKindInt):
+		return typ == TypeInt
+	case int64(vm.FBKindFloat):
+		return typ == TypeFloat
+	default:
+		return false
+	}
 }
 
 func tableArrayNestedLoadSafeSpan(block *Block, rowLoad, finalLoad *Instr) bool {

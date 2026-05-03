@@ -69,6 +69,21 @@ func TestTableArrayStoreLoopVersion_LowersLargeNumericAppendLoop(t *testing.T) {
 	}
 }
 
+func TestTableArrayStoreLoopVersion_RejectsTopLevelSmallNumericAppendLoop(t *testing.T) {
+	fn := tableArrayNumericStoreLoopFixture(t)
+	fn.Entry.Instrs[0].Aux = tier2FeedbackArrayHint
+
+	out, err := TableArrayStoreLoopVersionPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValidates(t, out, "small top-level numeric store loop")
+	counts := countOps(out)
+	if counts[OpTableArrayStore] != 0 || counts[OpSetTable] != 1 {
+		t.Fatalf("top-level small numeric append loop should stay generic, counts=%v\n%s", counts, Print(out))
+	}
+}
+
 func TestTableArrayStoreLoopVersion_LowersMultipleLargeNumericTables(t *testing.T) {
 	fn := tableArrayMultiNumericStoreLoopFixture(t)
 

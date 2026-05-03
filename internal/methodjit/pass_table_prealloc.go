@@ -15,6 +15,11 @@ type tablePreallocHint struct {
 	mixed     bool
 }
 
+type tableArrayReadHint struct {
+	resultType Type
+	rowKind    runtime.ArrayKind
+}
+
 func (h *tablePreallocHint) observeArrayHint(hint int64) {
 	if hint > tier2MaxFeedbackArrayHint {
 		hint = tier2MaxFeedbackArrayHint
@@ -119,25 +124,152 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 
 func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePreallocHint, globalNewTables map[int64]*Instr) {
 	defs := tablePreallocDefs(fn)
+	readHints := tablePreallocReadHints(fn, candidates, defs, globalNewTables)
+	tableValueHints := make(map[int]runtime.ArrayKind)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if instr == nil || (instr.Op != OpGetTable && instr.Op != OpSetTable) || instr.Aux2 != 0 || len(instr.Args) == 0 {
+			if instr == nil || (instr.Op != OpGetTable && instr.Op != OpSetTable) || len(instr.Args) == 0 {
 				continue
 			}
 			tbl := instr.Args[0]
-			tblDef, _ := tablePreallocTableDef(tbl, defs, globalNewTables)
-			if tblDef == nil {
+			hint, hasReadHint := tablePreallocGetReadHint(tbl, defs, globalNewTables, readHints, tableValueHints)
+			if instr.Aux2 == 0 {
+				if kind, ok := tablePreallocAccessKind(tbl, defs, globalNewTables, candidates, tableValueHints); ok {
+					if fbKind, ok := arrayKindToFBKind(kind); ok {
+						instr.Aux2 = int64(fbKind)
+					}
+				} else if instr.Op == OpGetTable && hasReadHint && hint.resultType == TypeTable {
+					instr.Aux2 = int64(vm.FBKindMixed)
+				}
+			}
+			if instr.Op != OpGetTable {
 				continue
 			}
-			hint, ok := candidates[tblDef.ID]
-			if !ok || hint.mixed || hint.kind == runtime.ArrayMixed {
-				continue
-			}
-			if fbKind, ok := arrayKindToFBKind(hint.kind); ok {
-				instr.Aux2 = int64(fbKind)
+			if hasReadHint {
+				if hint.resultType != TypeUnknown && instr.Type != hint.resultType {
+					instr.Type = hint.resultType
+				}
+				if hint.rowKind != runtime.ArrayMixed {
+					tableValueHints[instr.ID] = hint.rowKind
+				}
 			}
 		}
 	}
+}
+
+func tablePreallocAccessKind(tbl *Value, defs map[int]*Instr, globalNewTables map[int64]*Instr, candidates map[int]tablePreallocHint, tableValueHints map[int]runtime.ArrayKind) (runtime.ArrayKind, bool) {
+	if tbl == nil {
+		return runtime.ArrayMixed, false
+	}
+	if kind, ok := tableValueHints[tbl.ID]; ok && kind != runtime.ArrayMixed {
+		return kind, true
+	}
+	tblDef, _ := tablePreallocTableDef(tbl, defs, globalNewTables)
+	if tblDef == nil {
+		return runtime.ArrayMixed, false
+	}
+	hint, ok := candidates[tblDef.ID]
+	if !ok || hint.mixed || hint.kind == runtime.ArrayMixed {
+		return runtime.ArrayMixed, false
+	}
+	return hint.kind, true
+}
+
+func tablePreallocGetReadHint(tbl *Value, defs map[int]*Instr, globalNewTables map[int64]*Instr, readHints map[int]tableArrayReadHint, tableValueHints map[int]runtime.ArrayKind) (tableArrayReadHint, bool) {
+	if tbl == nil {
+		return tableArrayReadHint{}, false
+	}
+	if kind, ok := tableValueHints[tbl.ID]; ok && kind != runtime.ArrayMixed {
+		if fbKind, ok := arrayKindToFBKind(kind); ok {
+			typ, _ := tableArrayKindElementType(int64(fbKind))
+			return tableArrayReadHint{resultType: typ}, true
+		}
+	}
+	tblDef, _ := tablePreallocTableDef(tbl, defs, globalNewTables)
+	if tblDef == nil {
+		return tableArrayReadHint{}, false
+	}
+	hint, ok := readHints[tblDef.ID]
+	return hint, ok
+}
+
+func tablePreallocReadHints(fn *Function, candidates map[int]tablePreallocHint, defs map[int]*Instr, globalNewTables map[int64]*Instr) map[int]tableArrayReadHint {
+	if fn == nil || len(candidates) == 0 {
+		return nil
+	}
+	type state struct {
+		seen       bool
+		conflict   bool
+		resultType Type
+		rowKind    runtime.ArrayKind
+	}
+	states := make(map[int]state)
+	for _, block := range fn.Blocks {
+		if block == nil {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 3 || instr.Args[0] == nil || instr.Args[2] == nil {
+				continue
+			}
+			tblDef, _ := tablePreallocTableDef(instr.Args[0], defs, globalNewTables)
+			if tblDef == nil {
+				continue
+			}
+			if _, ok := candidates[tblDef.ID]; !ok {
+				continue
+			}
+			st := states[tblDef.ID]
+			st.seen = true
+			typ := tablePreallocValueType(instr.Args[2], defs)
+			rowKind := runtime.ArrayMixed
+			if typ == TypeTable {
+				rowKind = tablePreallocStoredTableArrayKind(instr.Args[2], defs, globalNewTables, candidates)
+			}
+			if st.resultType == TypeUnknown {
+				st.resultType = typ
+				st.rowKind = rowKind
+			} else if st.resultType != typ || st.rowKind != rowKind {
+				st.conflict = true
+			}
+			states[tblDef.ID] = st
+		}
+	}
+	out := make(map[int]tableArrayReadHint)
+	for id, st := range states {
+		if !st.seen || st.conflict || st.resultType == TypeUnknown {
+			continue
+		}
+		out[id] = tableArrayReadHint{resultType: st.resultType, rowKind: st.rowKind}
+	}
+	return out
+}
+
+func tablePreallocStoredTableArrayKind(v *Value, defs map[int]*Instr, globalNewTables map[int64]*Instr, candidates map[int]tablePreallocHint) runtime.ArrayKind {
+	tblDef, _ := tablePreallocTableDef(v, defs, globalNewTables)
+	if tblDef == nil {
+		return runtime.ArrayMixed
+	}
+	if _, kind := unpackNewTableAux2(tblDef.Aux2); kind != runtime.ArrayMixed {
+		return kind
+	}
+	if hint, ok := candidates[tblDef.ID]; ok && !hint.mixed && hint.kind != runtime.ArrayMixed {
+		return hint.kind
+	}
+	return runtime.ArrayMixed
+}
+
+func tablePreallocValueType(v *Value, defs map[int]*Instr) Type {
+	if v == nil {
+		return TypeUnknown
+	}
+	if v.Def != nil {
+		return v.Def.Type
+	}
+	if def := defs[v.ID]; def != nil {
+		return def.Type
+	}
+	return TypeUnknown
 }
 
 func tablePreallocGlobalNewTables(fn *Function, defs map[int]*Instr) map[int64]*Instr {
