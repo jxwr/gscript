@@ -11,10 +11,6 @@ import (
 )
 
 func (ec *emitContext) emitProtocolConstCallIfEligible(instr *Instr) bool {
-	// Disabled until the guard-failure fallback can prove it replays the current
-	// callee after global rebinding. The analysis pass remains useful for
-	// diagnostics and future lowering, but emitting it today can livelock.
-	return false
 	if ec == nil || ec.fn == nil || instr == nil || ec.tailCallInstrs[instr.ID] {
 		return false
 	}
@@ -26,7 +22,6 @@ func (ec *emitContext) emitProtocolConstCallIfEligible(instr *Instr) bool {
 
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
-	nArgs := len(instr.Args) - 1
 	nRets := callResultCountFromAux2(instr.Aux2)
 	if nRets != 1 {
 		return false
@@ -39,9 +34,6 @@ func (ec *emitContext) emitProtocolConstCallIfEligible(instr *Instr) bool {
 		ec.globalCacheConsts = append(ec.globalCacheConsts, constIdx)
 	}
 
-	slowLabel := ec.uniqueLabel("protocol_const_call_slow")
-	doneLabel := ec.uniqueLabel("protocol_const_call_done")
-
 	for i, arg := range instr.Args {
 		reg := ec.resolveValueNB(arg.ID, jit.X0)
 		if reg != jit.X0 {
@@ -50,21 +42,35 @@ func (ec *emitContext) emitProtocolConstCallIfEligible(instr *Instr) bool {
 		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
 	}
 
-	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
-	ec.emitVMClosureProtoGuard(jit.X0, fact.CalleeProto, slowLabel)
+	if !ec.protocolConstCallEntryGuarded(fact) || len(fact.IntGuardConsts) != 0 {
+		deoptLabel := ec.uniqueLabel("protocol_const_call_deopt")
+		doneGuardLabel := ec.uniqueLabel("protocol_const_call_guard_done")
+		if !ec.protocolConstCallEntryGuarded(fact) {
+			for i, constIdx := range fact.GuardConsts {
+				ec.emitIndexedGlobalAddress(constIdx, deoptLabel)
+				asm.LDRreg(jit.X0, jit.X16, jit.X17)
+				ec.emitVMClosureProtoGuard(jit.X0, fact.GuardProtos[i], deoptLabel)
+			}
+		}
+		for i, constIdx := range fact.IntGuardConsts {
+			ec.emitIndexedGlobalAddress(constIdx, deoptLabel)
+			asm.LDRreg(jit.X0, jit.X16, jit.X17)
+			asm.LoadImm64(jit.X1, int64(uint64(runtime.IntValue(fact.IntGuardValues[i]))))
+			asm.CMPreg(jit.X0, jit.X1)
+			asm.BCond(jit.CondNE, deoptLabel)
+		}
+		asm.B(doneGuardLabel)
+		asm.Label(deoptLabel)
+		asm.LoadImm64(jit.X0, ExitDeopt)
+		asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+		if ec.numericMode {
+			asm.B("num_deopt_epilogue")
+		} else {
+			asm.B("deopt_epilogue")
+		}
+		asm.Label(doneGuardLabel)
+	}
 
-	for i, constIdx := range fact.GuardConsts {
-		ec.emitIndexedGlobalAddress(constIdx, slowLabel)
-		asm.LDRreg(jit.X0, jit.X16, jit.X17)
-		ec.emitVMClosureProtoGuard(jit.X0, fact.GuardProtos[i], slowLabel)
-	}
-	for i, constIdx := range fact.IntGuardConsts {
-		ec.emitIndexedGlobalAddress(constIdx, slowLabel)
-		asm.LDRreg(jit.X0, jit.X16, jit.X17)
-		asm.LoadImm64(jit.X1, int64(uint64(runtime.IntValue(fact.IntGuardValues[i]))))
-		asm.CMPreg(jit.X0, jit.X1)
-		asm.BCond(jit.CondNE, slowLabel)
-	}
 	for _, proto := range fact.GuardProtos {
 		ec.emitProtocolConstCallEntryMark(proto)
 	}
@@ -73,13 +79,77 @@ func (ec *emitContext) emitProtocolConstCallIfEligible(instr *Instr) bool {
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
 	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
 	ec.storeResultNB(jit.X0, instr.ID)
-	asm.B(doneLabel)
-
-	asm.Label(slowLabel)
-	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
-
-	asm.Label(doneLabel)
 	return true
+}
+
+func (ec *emitContext) protocolConstCallEntryGuarded(fact ProtocolConstCallFoldFact) bool {
+	if ec == nil || ec.fn == nil || len(ec.fn.ProtocolConstCallFolds) == 0 {
+		return false
+	}
+	writes := protocolConstCallSetGlobalConsts(ec.fn)
+	for _, constIdx := range fact.GuardConsts {
+		if writes[constIdx] {
+			return false
+		}
+	}
+	return true
+}
+
+func (ec *emitContext) emitProtocolConstCallEntryGuards() {
+	if ec == nil || ec.fn == nil || len(ec.fn.ProtocolConstCallFolds) == 0 {
+		return
+	}
+	seen := make(map[int]*vm.FuncProto)
+	writes := protocolConstCallSetGlobalConsts(ec.fn)
+	for _, fact := range ec.fn.ProtocolConstCallFolds {
+		if len(fact.IntGuardConsts) != 0 || len(fact.GuardConsts) != len(fact.GuardProtos) {
+			continue
+		}
+		for i, constIdx := range fact.GuardConsts {
+			if writes[constIdx] {
+				continue
+			}
+			if _, ok := seen[constIdx]; !ok {
+				seen[constIdx] = fact.GuardProtos[i]
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return
+	}
+	deoptLabel := ec.uniqueLabel("protocol_const_entry_deopt")
+	doneLabel := ec.uniqueLabel("protocol_const_entry_done")
+	for constIdx, proto := range seen {
+		ec.globalCacheConsts = append(ec.globalCacheConsts, constIdx)
+		ec.emitIndexedGlobalAddress(constIdx, deoptLabel)
+		ec.asm.LDRreg(jit.X0, jit.X16, jit.X17)
+		ec.emitVMClosureProtoGuard(jit.X0, proto, deoptLabel)
+	}
+	ec.asm.B(doneLabel)
+	ec.asm.Label(deoptLabel)
+	ec.asm.LoadImm64(jit.X0, ExitDeopt)
+	ec.asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		ec.asm.B("num_deopt_epilogue")
+	} else {
+		ec.asm.B("deopt_epilogue")
+	}
+	ec.asm.Label(doneLabel)
+}
+
+func protocolConstCallSetGlobalConsts(fn *Function) map[int]bool {
+	out := make(map[int]bool)
+	if fn == nil {
+		return out
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Op == OpSetGlobal {
+				out[int(instr.Aux)] = true
+			}
+		}
+	}
+	return out
 }
 
 func (ec *emitContext) emitProtocolConstCallEntryMark(protoPtr *vm.FuncProto) {

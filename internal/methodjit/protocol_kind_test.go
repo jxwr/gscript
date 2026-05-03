@@ -166,3 +166,31 @@ func driver() {
 		t.Fatalf("driver after rebind=%v, want 1000 from fallback", got)
 	}
 }
+
+func TestProtocolConstCallFoldEliminatesLoopCallExitForLocalDeclarations(t *testing.T) {
+	src := fixedNestedAckSrc + `
+N := 4
+result := 0
+for i := 1; i <= 20; i++ {
+	result = ack(3, N)
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	got := v.GetGlobal("result")
+	if !got.IsInt() || got.Int() != 125 {
+		t.Fatalf("result=%v, want 125", got)
+	}
+	for _, site := range tm.ExitStats().Sites {
+		if site.ExitCode == ExitCallExit && site.Count >= 20 {
+			t.Fatalf("loop protocol call still used call-exit: site=%#v", site)
+		}
+	}
+}

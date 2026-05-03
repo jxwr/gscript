@@ -334,6 +334,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 
 	// Emit prologue.
 	ec.emitPrologue()
+	ec.emitProtocolConstCallEntryGuards()
 
 	if hasShiftAddVersion {
 		ec.emitShiftAddOverflowVersion(shiftAddVersion)
