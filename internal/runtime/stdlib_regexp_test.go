@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	stdruntime "runtime"
 	"testing"
+	"unsafe"
 )
 
 // ==================================================================
@@ -36,6 +38,51 @@ func TestRegexpFind(t *testing.T) {
 	if !v.IsString() || v.Str() != "123" {
 		t.Errorf("expected '123', got %v", v)
 	}
+}
+
+func TestRegexpStdlibHandlesNativeArenaStringAfterInitAndGC(t *testing.T) {
+	haystack := nativeArenaStringValueForTest("hello123world")
+	interp := New()
+	stdruntime.GC()
+
+	regexpLib := interp.GetGlobal("regexp").Table()
+	findFn := regexpLib.RawGetString("find").GoFunction()
+	got, err := findFn.Fn([]Value{StringValue("[0-9]+"), haystack})
+	if err != nil {
+		t.Fatalf("regexp.find native string: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsString() || got[0].Str() != "123" {
+		t.Fatalf("regexp.find native string = %v, want 123", got)
+	}
+
+	compileFn := regexpLib.RawGetString("mustCompile").GoFunction()
+	compiled, err := compileFn.Fn([]Value{StringValue("[a-z]+")})
+	if err != nil {
+		t.Fatalf("regexp.mustCompile: %v", err)
+	}
+	re := compiled[0].Table()
+	reFindFn := re.RawGetString("find").GoFunction()
+	got, err = reFindFn.Fn([]Value{haystack})
+	if err != nil {
+		t.Fatalf("re.find native string: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsString() || got[0].Str() != "hello" {
+		t.Fatalf("re.find native string = %v, want hello", got)
+	}
+}
+
+func nativeArenaStringValueForTest(s string) Value {
+	headerSize := unsafe.Sizeof("")
+	p := NativeStringArenaReserve(headerSize + uintptr(len(s)))
+	if p == nil {
+		return StringValue(s)
+	}
+	data := unsafe.Add(p, headerSize)
+	if len(s) > 0 {
+		copy(unsafe.Slice((*byte)(data), len(s)), s)
+	}
+	*(*string)(p) = unsafe.String((*byte)(data), len(s))
+	return Value(tagPtr | ptrSubString | (uint64(uintptr(p)) & ptrAddrMask))
 }
 
 func TestRegexpFind_noMatch(t *testing.T) {

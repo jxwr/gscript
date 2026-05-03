@@ -577,8 +577,8 @@ func test_compare() {
 	if err != nil {
 		t.Fatalf("RunTier2Pipeline(test_compare): %v", err)
 	}
-	if got := countOpHelper(fn, OpStringFormatInt); got == 0 {
-		t.Fatal("test fixture should lower prefix string.format call to StringFormatInt")
+	if got := countOpHelper(fn, OpStringFormatInt) + countOpHelper(fn, OpStringConstLookup); got == 0 {
+		t.Fatal("test fixture should lower prefix string.format call")
 	}
 	if hasBlockingNonNativeCallInLoop(fn, nil) {
 		t.Fatal("lowered prefix string.format call should not block Tier2 when a later call-free hot loop exists")

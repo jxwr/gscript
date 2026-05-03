@@ -188,8 +188,8 @@ func format_case(x) {
 			if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
 				t.Fatalf("modulo string.format lookup should avoid call exits, ExitCallExit=%d", exits)
 			}
-			if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits == 0 {
-				t.Fatal("string.format int helper should use precise op-exit fallback while native arena is disabled")
+			if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+				t.Fatalf("finite modulo string.format lookup should stay native, ExitOpExit=%d", exits)
 			}
 		})
 	}
@@ -197,9 +197,10 @@ func format_case(x) {
 
 func TestTier2_StringFormatIntLoweringCoversGenericSingleIntPatterns(t *testing.T) {
 	cases := []struct {
-		name string
-		src  string
-		arg  int64
+		name       string
+		src        string
+		arg        int64
+		wantLookup bool
 	}{
 		{
 			name: "bare_decimal",
@@ -213,20 +214,21 @@ func format_case(i) {
 		{
 			name: "non_modulo_argument",
 			src: `
-func format_case(i) {
-    return string.format("key%d", i)
-}
-`,
+	func format_case(i) {
+	    return string.format("key%d", i)
+	}
+	`,
 			arg: 7,
 		},
 		{
 			name: "padded_format",
 			src: `
-func format_case(i) {
-    return string.format("key%05d", i % 10)
-}
-`,
-			arg: 7,
+	func format_case(i) {
+	    return string.format("key%05d", i % 10)
+	}
+	`,
+			arg:        7,
+			wantLookup: true,
 		},
 		{
 			name: "zero_padded_negative",
@@ -259,8 +261,17 @@ func format_case(i) {
 			if err != nil {
 				t.Fatalf("RunTier2Pipeline: %v", err)
 			}
-			if got := countOpHelper(fn, OpStringFormatInt); got != 1 {
-				t.Fatalf("string.format int lowering count=%d, want 1", got)
+			wantFormatInt := 1
+			wantLookup := 0
+			if tc.wantLookup {
+				wantFormatInt = 0
+				wantLookup = 1
+			}
+			if got := countOpHelper(fn, OpStringFormatInt); got != wantFormatInt {
+				t.Fatalf("string.format int lowering count=%d, want %d", got, wantFormatInt)
+			}
+			if got := countOpHelper(fn, OpStringConstLookup); got != wantLookup {
+				t.Fatalf("string const lookup lowering count=%d, want %d", got, wantLookup)
 			}
 
 			args := []runtime.Value{runtime.IntValue(tc.arg)}

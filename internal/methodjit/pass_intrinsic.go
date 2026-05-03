@@ -80,12 +80,12 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 			}
 
 			if moduleName == "string" && fieldName == "format" && len(instr.Args) == 3 {
-				if lowerStringFormatInt(fn, instr) {
-					notes = append(notes, "intrinsic: string.format(pattern,int) -> StringFormatInt")
-					continue
-				}
 				if lowerStringFormatConstIntLookup(fn, instr) {
 					notes = append(notes, "intrinsic: string.format finite decimal -> StringConstLookup")
+					continue
+				}
+				if lowerStringFormatInt(fn, instr) {
+					notes = append(notes, "intrinsic: string.format(pattern,int) -> StringFormatInt")
 					continue
 				}
 			}
