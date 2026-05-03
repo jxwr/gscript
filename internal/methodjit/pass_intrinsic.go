@@ -80,8 +80,12 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 			}
 
 			if moduleName == "string" && fieldName == "format" && len(instr.Args) == 3 {
+				if lowerStringFormatInt(fn, instr) {
+					notes = append(notes, "intrinsic: string.format(pattern,int) -> StringFormatInt")
+					continue
+				}
 				if lowerStringFormatConstIntLookup(fn, instr) {
-					notes = append(notes, "intrinsic: string.format prefix%d -> StringConstLookup")
+					notes = append(notes, "intrinsic: string.format finite decimal -> StringConstLookup")
 					continue
 				}
 			}
@@ -114,6 +118,52 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 	return fn, notes
 }
 
+func lowerStringFormatInt(fn *Function, instr *Instr) bool {
+	cand, ok := stringFormatIntSpecializationCandidate(fn, instr)
+	if !ok {
+		return false
+	}
+	patternIdx := len(fn.StringFormatIntPatterns)
+	fn.StringFormatIntPatterns = append(fn.StringFormatIntPatterns, cand.Pattern)
+	instr.Op = OpStringFormatInt
+	instr.Type = TypeString
+	instr.Aux = int64(patternIdx)
+	instr.Aux2 = 0
+	return true
+}
+
+func simpleSingleDecimalIntFormat(formatStr string) bool {
+	seen := false
+	for i := 0; i < len(formatStr); {
+		if formatStr[i] != '%' {
+			i++
+			continue
+		}
+		if seen {
+			return false
+		}
+		i++
+		if i >= len(formatStr) {
+			return false
+		}
+		if formatStr[i] == '%' {
+			return false
+		}
+		if formatStr[i] == '0' {
+			i++
+		}
+		for i < len(formatStr) && formatStr[i] >= '0' && formatStr[i] <= '9' {
+			i++
+		}
+		if i >= len(formatStr) || formatStr[i] != 'd' {
+			return false
+		}
+		seen = true
+		i++
+	}
+	return seen
+}
+
 func lowerStringFormatConstIntLookup(fn *Function, instr *Instr) bool {
 	if fn == nil || instr == nil || len(instr.Args) != 3 {
 		return false
@@ -126,7 +176,7 @@ func lowerStringFormatConstIntLookup(fn *Function, instr *Instr) bool {
 	if !ok {
 		return false
 	}
-	prefix, ok := simpleTrailingDecimalFormatPrefix(formatStr)
+	spec, ok := simpleTrailingDecimalFormatSpec(formatStr)
 	if !ok {
 		return false
 	}
@@ -139,7 +189,7 @@ func lowerStringFormatConstIntLookup(fn *Function, instr *Instr) bool {
 
 	table := make([]runtime.Value, modulus)
 	for i := range table {
-		table[i] = runtime.StringValue(prefix + strconv.Itoa(i))
+		table[i] = runtime.StringValue(spec.format(i))
 	}
 	tableIdx := len(fn.StringConstTables)
 	fn.StringConstTables = append(fn.StringConstTables, table)
@@ -152,15 +202,68 @@ func lowerStringFormatConstIntLookup(fn *Function, instr *Instr) bool {
 	return true
 }
 
-func simpleTrailingDecimalFormatPrefix(formatStr string) (string, bool) {
-	if !strings.HasSuffix(formatStr, "%d") {
-		return "", false
+type simpleTrailingDecimalSpec struct {
+	prefix string
+	width  int
+	zero   bool
+}
+
+func (s simpleTrailingDecimalSpec) format(n int) string {
+	if s.width <= 0 {
+		return s.prefix + strconv.Itoa(n)
 	}
-	prefix := strings.TrimSuffix(formatStr, "%d")
+	digits := strconv.Itoa(n)
+	if len(digits) >= s.width {
+		return s.prefix + digits
+	}
+	pad := byte(' ')
+	if s.zero {
+		pad = '0'
+	}
+	var b strings.Builder
+	b.Grow(len(s.prefix) + s.width)
+	b.WriteString(s.prefix)
+	for i := len(digits); i < s.width; i++ {
+		b.WriteByte(pad)
+	}
+	b.WriteString(digits)
+	return b.String()
+}
+
+func simpleTrailingDecimalFormatSpec(formatStr string) (simpleTrailingDecimalSpec, bool) {
+	if len(formatStr) < 2 || formatStr[len(formatStr)-1] != 'd' {
+		return simpleTrailingDecimalSpec{}, false
+	}
+	percent := strings.LastIndexByte(formatStr, '%')
+	if percent < 0 || percent == len(formatStr)-1 {
+		return simpleTrailingDecimalSpec{}, false
+	}
+	prefix := formatStr[:percent]
 	if prefix == "" || strings.Contains(prefix, "%") {
-		return "", false
+		return simpleTrailingDecimalSpec{}, false
 	}
-	return prefix, true
+	spec := formatStr[percent+1 : len(formatStr)-1]
+	out := simpleTrailingDecimalSpec{prefix: prefix}
+	if spec == "" {
+		return out, true
+	}
+	if spec[0] == '0' {
+		out.zero = true
+		spec = spec[1:]
+	}
+	if spec == "" {
+		return simpleTrailingDecimalSpec{}, false
+	}
+	for i := 0; i < len(spec); i++ {
+		if spec[i] < '0' || spec[i] > '9' {
+			return simpleTrailingDecimalSpec{}, false
+		}
+		out.width = out.width*10 + int(spec[i]-'0')
+	}
+	if out.width <= 0 || out.width > 32 {
+		return simpleTrailingDecimalSpec{}, false
+	}
+	return out, true
 }
 
 func smallPositiveIntModuloDivisor(v *Value) (int, bool) {
@@ -175,7 +278,7 @@ func smallPositiveIntModuloDivisor(v *Value) (int, bool) {
 		return 0, false
 	}
 	modulus := divisor.Def.Aux
-	if modulus <= 0 || modulus > 256 {
+	if modulus <= 0 || modulus > 4096 {
 		return 0, false
 	}
 	return int(modulus), true

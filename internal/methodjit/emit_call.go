@@ -145,6 +145,30 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 	}
 }
 
+func (ec *emitContext) emitGuardConstString(instr *Instr) {
+	if len(instr.Args) == 0 || ec.fn == nil || ec.fn.Proto == nil {
+		return
+	}
+	constIdx := int(instr.Aux)
+	if constIdx < 0 || constIdx >= len(ec.fn.Proto.Constants) || !ec.fn.Proto.Constants[constIdx].IsString() {
+		ec.emitDeopt(instr)
+		return
+	}
+	asm := ec.asm
+	srcReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if srcReg != jit.X0 {
+		asm.MOVreg(jit.X0, srcReg)
+	}
+	deoptLabel := ec.uniqueLabel("guard_const_string_deopt")
+	doneLabel := ec.uniqueLabel("guard_const_string_done")
+	ec.emitStringValueEqualsConstGuard(jit.X0, ec.fn.Proto.Constants[constIdx].Str(), deoptLabel)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 // emitGuardIntRange emits a signed raw-int range check for OpGuardIntRange.
 // On success it passes the raw int through; on failure it deopts before the
 // optimized body observes the speculative range fact.

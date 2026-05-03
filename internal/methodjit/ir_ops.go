@@ -95,6 +95,7 @@ const (
 	// String
 	OpConcat            // Args[0] .. Args[1] .. ...
 	OpStringConstLookup // Args[0] indexes Function.StringConstTables[Aux], Aux2 = table length
+	OpStringFormatInt   // Args[0]=callee, Args[1]=pattern value, Args[2]=int; Aux indexes Function.StringFormatIntPatterns
 
 	// Table operations
 	OpNewTable // Aux = array hint, Aux2 = hash hint
@@ -168,6 +169,7 @@ const (
 	// Guards (speculative; deopt on failure)
 	OpGuardType     // Args[0] must have type Aux; deopt if not
 	OpGuardIntRange // Args[0] must be int in [Aux, Aux2]; deopt if not
+	OpGuardConstString
 	OpGuardNonNil
 	OpGuardTruthy
 
@@ -265,6 +267,7 @@ var opNames = [...]string{
 	OpLeFloat:                    "LeFloat",
 	OpConcat:                     "Concat",
 	OpStringConstLookup:          "StringConstLookup",
+	OpStringFormatInt:            "StringFormatInt",
 	OpNewTable:                   "NewTable",
 	OpNewFixedTable:              "NewFixedTable",
 	OpGetTable:                   "GetTable",
@@ -296,6 +299,7 @@ var opNames = [...]string{
 	OpNumToFloat:                 "NumToFloat",
 	OpGuardType:                  "GuardType",
 	OpGuardIntRange:              "GuardIntRange",
+	OpGuardConstString:           "GuardConstString",
 	OpGuardNonNil:                "GuardNonNil",
 	OpGuardTruthy:                "GuardTruthy",
 	OpJump:                       "Jump",

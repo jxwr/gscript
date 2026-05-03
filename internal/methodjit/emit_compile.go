@@ -248,6 +248,12 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	rawIntSelfABI := AnalyzeRawIntSelfABI(fn.Proto)
 	typedSelfABI := AnalyzeTypedSelfABI(fn.Proto)
 
+	ensureTier2FieldCachesForFunction(fn)
+	newTableCaches := newTableCacheSlotsForFunction(fn)
+	if !exitResumeCheckEnabled() {
+		prewarmNewTableCachesForFunction(fn, newTableCaches)
+	}
+
 	ec := &emitContext{
 		fn:                         fn,
 		alloc:                      alloc,
@@ -297,7 +303,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		scratchFPRCache:            make(map[int]jit.FReg),
 		fusedCmps:                  fusedCmps,
 		tailCallInstrs:             computeTailCalls(fn),
-		newTableCaches:             newTableCacheSlotsForFunction(fn),
+		newTableCaches:             newTableCaches,
 		fixedTableArgSlots:         make(map[int][]int),
 		instrCodeRanges:            make([]InstrCodeRange, 0, fn.nextID),
 		nativeCallReplaySafe:       nativeCallReplaySafe,
@@ -418,30 +424,32 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	}
 
 	return &CompiledFunction{
-		Code:                 cb,
-		Proto:                fn.Proto,
-		NumSpills:            alloc.NumSpillSlots,
-		numRegs:              ec.nextSlot,
-		ResumeAddrs:          resumeAddrs,
-		NumericResumeAddrs:   numericResumeAddrs,
-		DirectEntryOffset:    directEntryOff,
-		DirectEntrySafe:      nativeCallReplaySafe,
-		Tier2DirectEntrySafe: nativeCallCalleeResumeSafe,
-		NumericParamCount:    rawIntSelfABI.NumParams,
-		RawIntSelfABI:        rawIntSelfABI,
-		NumericEntryOffset:   numericEntryOff,
-		TypedSelfABI:         typedSelfABI,
-		TypedEntryOffset:     typedEntryOff,
-		GlobalCache:          globalCache,
-		GlobalCacheConsts:    ec.globalCacheConsts,
-		NativeSetGlobals:     nativeSetGlobals,
-		CallCache:            callCache,
-		NewTableCaches:       ec.newTableCaches,
-		FixedTableArgSlots:   ec.fixedTableArgSlots,
-		StringConstTables:    fn.StringConstTables,
-		InstrCodeRanges:      ec.instrCodeRanges,
-		ExitSites:            buildExitSiteMeta(fn),
-		ExitResumeCheck:      ec.exitResumeCheck,
+		Code:                     cb,
+		Proto:                    fn.Proto,
+		NumSpills:                alloc.NumSpillSlots,
+		numRegs:                  ec.nextSlot,
+		ResumeAddrs:              resumeAddrs,
+		NumericResumeAddrs:       numericResumeAddrs,
+		DirectEntryOffset:        directEntryOff,
+		DirectEntrySafe:          nativeCallReplaySafe,
+		Tier2DirectEntrySafe:     nativeCallCalleeResumeSafe,
+		NumericParamCount:        rawIntSelfABI.NumParams,
+		RawIntSelfABI:            rawIntSelfABI,
+		NumericEntryOffset:       numericEntryOff,
+		TypedSelfABI:             typedSelfABI,
+		TypedEntryOffset:         typedEntryOff,
+		GlobalCache:              globalCache,
+		GlobalCacheConsts:        ec.globalCacheConsts,
+		NativeSetGlobals:         nativeSetGlobals,
+		CallCache:                callCache,
+		NewTableCaches:           ec.newTableCaches,
+		FixedTableArgSlots:       ec.fixedTableArgSlots,
+		StringConstTables:        fn.StringConstTables,
+		StringFormatIntPatterns:  fn.StringFormatIntPatterns,
+		WholeCallNoResultBatches: fn.WholeCallNoResultBatches,
+		InstrCodeRanges:          ec.instrCodeRanges,
+		ExitSites:                buildExitSiteMeta(fn),
+		ExitResumeCheck:          ec.exitResumeCheck,
 	}, nil
 }
 
@@ -486,6 +494,24 @@ func collectNativeSetGlobals(fn *Function) map[int]bool {
 	return out
 }
 
+func ensureTier2FieldCachesForFunction(fn *Function) {
+	if fn == nil || fn.Proto == nil {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.SourcePC < 0 {
+				continue
+			}
+			switch instr.Op {
+			case OpGetField, OpGetFieldNumToFloat, OpSetField:
+				ensureFieldCache(fn.Proto)
+				return
+			}
+		}
+	}
+}
+
 func fnSupportsIndexedGlobalProtocol(fn *Function) bool {
 	return fn != nil && fn.Proto != nil
 }
@@ -521,7 +547,7 @@ func instrMayDirectDeoptWithoutFullFlush(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpGuardType, OpGuardIntRange, OpNumToFloat, OpDivIntExact,
+	case OpGuardType, OpGuardIntRange, OpGuardConstString, OpNumToFloat, OpDivIntExact,
 		OpGetFieldNumToFloat,
 		OpMatrixGetF, OpMatrixSetF, OpMatrixFlat, OpMatrixStride,
 		OpTableArrayHeader, OpTableArrayLoad, OpTableArrayStore, OpTableArraySwap, OpTableArrayNestedLoad:

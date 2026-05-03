@@ -48,36 +48,30 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 		return err
 	}
 
-	var local [16]runtime.Value
-	var callArgs []runtime.Value
-	if nArgs <= len(local) {
-		callArgs = local[:nArgs]
-	} else {
-		callArgs = make([]runtime.Value, nArgs)
+	if handled, err := tm.tryCompiledProtocolCallExit(fnVal, regs, absSlot, nArgs, nRets); handled || err != nil {
+		return err
 	}
-	for i := 0; i < nArgs; i++ {
-		idx := absSlot + 1 + i
-		if idx < len(regs) {
-			callArgs[i] = regs[idx]
+
+	if gf := fnVal.GoFunction(); gf != nil {
+		result, ok, err := callGoFunctionFast(gf, regs, absSlot, nArgs)
+		if err != nil || ok {
+			if err != nil {
+				return err
+			}
+			currentRegs := tm.callVM.Regs()
+			storeCallExitSingleResult(currentRegs, absSlot, nRets, result)
+			return nil
 		}
 	}
 
+	callArgs := collectCallExitArgs(regs, absSlot, nArgs)
 	if gf := fnVal.GoFunction(); gf != nil && gf.Fast1 != nil {
 		result, err := gf.Fast1(callArgs)
 		if err != nil {
 			return err
 		}
 		currentRegs := tm.callVM.Regs()
-		for i := 0; i < nRets; i++ {
-			idx := absSlot + i
-			if idx < len(currentRegs) {
-				if i == 0 {
-					currentRegs[idx] = result
-				} else {
-					currentRegs[idx] = runtime.NilValue()
-				}
-			}
-		}
+		storeCallExitSingleResult(currentRegs, absSlot, nRets, result)
 		return nil
 	}
 
@@ -617,6 +611,10 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 			if absResult < len(regs) {
 				regs[absResult] = result
 			}
+			pc := int(ctx.TableAux2)
+			if proto != nil && proto.TableKeyFeedback != nil && pc >= 0 && pc < len(proto.TableKeyFeedback) && tblVal.IsTable() {
+				proto.TableKeyFeedback[pc].ObserveTableAccess(tblVal.Table(), keyVal, result, vm.TableAccessKindGet, -1, -1)
+			}
 		}
 
 	case TableOpSetTable:
@@ -629,15 +627,25 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 			valVal := regs[absVal]
 			if tblVal.IsTable() {
 				pc := int(ctx.TableAux2)
+				tbl := tblVal.Table()
+				beforeLen, beforeFieldIdx := -1, -1
+				if keyVal.IsInt() {
+					beforeLen = tbl.Len()
+				} else if keyVal.IsString() {
+					beforeFieldIdx = tbl.FieldIndex(keyVal.Str())
+				}
 				if keyVal.IsString() && proto != nil && pc >= 0 {
 					ensureTableStringKeyCache(proto)
-					tblVal.Table().RawSetStringDynamicCached(
+					tbl.RawSetStringDynamicCached(
 						keyVal.Str(),
 						valVal,
 						runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc),
 					)
 				} else {
-					tblVal.Table().RawSet(keyVal, valVal)
+					tbl.RawSet(keyVal, valVal)
+				}
+				if proto != nil && proto.TableKeyFeedback != nil && pc >= 0 && pc < len(proto.TableKeyFeedback) {
+					proto.TableKeyFeedback[pc].ObserveTableAccess(tbl, keyVal, valVal, vm.TableAccessKindSet, beforeLen, beforeFieldIdx)
 				}
 			}
 		}
@@ -730,6 +738,9 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 				if pc >= 0 && pc < len(proto.Code) && vm.DecodeOp(proto.Code[pc]) == vm.OP_GETFIELD {
 					ensureFieldCache(proto)
 					result = tblVal.Table().RawGetStringCached(fieldName, &proto.FieldCache[pc])
+					if proto.FieldAccessFeedback != nil {
+						proto.FieldAccessFeedback[pc].ObserveFieldCache(proto.FieldCache[pc], result, 1)
+					}
 					ensureTableStringKeyCache(proto)
 					_ = tblVal.Table().RawGetStringDynamicCached(fieldName, runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc))
 				} else {
@@ -763,6 +774,9 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 				if pc >= 0 && pc < len(proto.Code) && vm.DecodeOp(proto.Code[pc]) == vm.OP_SETFIELD {
 					ensureFieldCache(proto)
 					tblVal.Table().RawSetStringCached(fieldName, valVal, &proto.FieldCache[pc])
+					if proto.FieldAccessFeedback != nil {
+						proto.FieldAccessFeedback[pc].ObserveFieldCache(proto.FieldCache[pc], valVal, 2)
+					}
 				} else {
 					tblVal.Table().RawSetString(fieldName, valVal)
 				}
@@ -784,6 +798,30 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 	aux := int(ctx.OpExitAux)
 
 	switch op {
+	case OpCall:
+		nArgs := int(ctx.OpExitArg1)
+		nRets := int(ctx.OpExitArg2)
+		if nRets != 0 {
+			return fmt.Errorf("call op-exit only supports no-result whole-call kernels")
+		}
+		if tm.callVM == nil {
+			return fmt.Errorf("no callVM set for whole-call kernel op-exit")
+		}
+		if absSlot < 0 || nArgs < 0 || absSlot+nArgs >= len(regs) {
+			return fmt.Errorf("whole-call kernel op-exit out of register range")
+		}
+		fnVal := regs[absSlot]
+		args := regs[absSlot+1 : absSlot+1+nArgs]
+		handled, err := tm.callVM.TryRunNoResultWholeCallKernelForJIT(fnVal, args)
+		if err != nil {
+			return err
+		}
+		if handled {
+			return tm.executeWholeCallNoResultBatch(ctx, regs, base, proto)
+		}
+		_, err = tm.callVM.CallValue(fnVal, args)
+		return err
+
 	case OpConstString:
 		if aux >= 0 && aux < len(proto.Constants) {
 			if absSlot < len(regs) {
@@ -804,6 +842,43 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 			} else {
 				regs[absSlot] = runtime.ConcatValues(regs[tempBase : tempBase+nArgs])
 			}
+		}
+
+	case OpStringFormatInt:
+		tempBase := absArg1
+		if absSlot >= len(regs) || tempBase < 0 || tempBase+3 > len(regs) {
+			return fmt.Errorf("string.format int op-exit out of register range")
+		}
+		callee := regs[tempBase]
+		patternVal := regs[tempBase+1]
+		intVal := regs[tempBase+2]
+		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() && intVal.IsInt() {
+			patternIdx := aux
+			if cf := tm.tier2Compiled[proto]; cf != nil && patternIdx >= 0 && patternIdx < len(cf.StringFormatIntPatterns) {
+				pattern := cf.StringFormatIntPatterns[patternIdx]
+				if patternVal.Str() == pattern {
+					v, ok, err := runtime.StringFormatSingleInt(pattern, intVal.Int())
+					if err != nil {
+						return err
+					}
+					if ok {
+						regs[absSlot] = v
+						return nil
+					}
+				}
+			}
+		}
+		if tm.callVM == nil {
+			return fmt.Errorf("no callVM set for string.format int fallback")
+		}
+		results, err := tm.callVM.CallValue(callee, []runtime.Value{patternVal, intVal})
+		if err != nil {
+			return err
+		}
+		if len(results) > 0 {
+			regs[absSlot] = results[0]
+		} else {
+			regs[absSlot] = runtime.NilValue()
 		}
 
 	case OpLen:
@@ -941,7 +1016,7 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 	case OpTForCall, OpTForLoop:
 		return fmt.Errorf("op-exit not yet implemented: %s", op)
 
-	case OpGuardType, OpGuardIntRange, OpGuardNonNil, OpGuardTruthy:
+	case OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardNonNil, OpGuardTruthy:
 		return fmt.Errorf("op-exit guard failure: %s", op)
 
 	case OpGo, OpMakeChan, OpSend, OpRecv:
@@ -1056,6 +1131,105 @@ func (tm *TieringManager) executeClosureOpExit(ctx *ExecContext, regs []runtime.
 		regs[absSlot] = runtime.VMClosureFastValue(unsafe.Pointer(cl))
 	}
 	return nil
+}
+
+func (tm *TieringManager) executeWholeCallNoResultBatch(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+	if tm == nil || tm.callVM == nil || ctx == nil || proto == nil {
+		return nil
+	}
+	cf := tm.tier2Compiled[proto]
+	if cf == nil || len(cf.WholeCallNoResultBatches) == 0 {
+		return nil
+	}
+	fact, ok := cf.WholeCallNoResultBatches[int(ctx.OpExitID)]
+	if !ok || len(fact.Calls) == 0 {
+		return nil
+	}
+	loopBase := base + fact.LoopBase
+	if loopBase < 0 || loopBase+3 >= len(regs) {
+		return nil
+	}
+	cur, limit, step, ok := wholeCallBatchIntLoopState(regs[loopBase], regs[loopBase+1], regs[loopBase+2])
+	if !ok || step == 0 {
+		return nil
+	}
+	lastComplete := cur
+	for next := cur + step; wholeCallBatchLoopContinues(next, limit, step); next += step {
+		iterComplete := true
+		for _, call := range fact.Calls {
+			handled, err := tm.executeWholeCallNoResultBatchCall(proto, call)
+			if err != nil {
+				return err
+			}
+			if !handled {
+				iterComplete = false
+				break
+			}
+		}
+		if !iterComplete {
+			break
+		}
+		lastComplete = next
+	}
+	if lastComplete != limit {
+		return nil
+	}
+	ctx.OpExitAux = 1
+	return nil
+}
+
+func wholeCallBatchIntLoopState(cur, limit, step runtime.Value) (int64, int64, int64, bool) {
+	if !cur.IsInt() || !limit.IsInt() || !step.IsInt() {
+		return 0, 0, 0, false
+	}
+	return cur.Int(), limit.Int(), step.Int(), true
+}
+
+func wholeCallBatchLoopContinues(next, limit, step int64) bool {
+	if step > 0 {
+		return next <= limit
+	}
+	return next >= limit
+}
+
+func (tm *TieringManager) executeWholeCallNoResultBatchCall(proto *vm.FuncProto, call WholeCallNoResultBatchCall) (bool, error) {
+	if tm == nil || tm.callVM == nil || call.FuncConst < 0 {
+		return false, nil
+	}
+	fnVal, ok := tm.globalValueByConst(proto, call.FuncConst)
+	if !ok {
+		return false, nil
+	}
+	var local [3]runtime.Value
+	args := local[:0]
+	if len(call.ArgConsts) > len(local) {
+		args = make([]runtime.Value, 0, len(call.ArgConsts))
+	}
+	for _, constIdx := range call.ArgConsts {
+		val, ok := tm.globalValueByConst(proto, constIdx)
+		if !ok {
+			return false, nil
+		}
+		args = append(args, val)
+	}
+	return tm.callVM.TryRunNoResultWholeCallKernelForJIT(fnVal, args)
+}
+
+func (tm *TieringManager) globalValueByConst(proto *vm.FuncProto, constIdx int) (runtime.Value, bool) {
+	if tm == nil || tm.callVM == nil || constIdx < 0 {
+		return runtime.NilValue(), false
+	}
+	// Batch metadata only records GETGLOBAL-backed call recipes; the constant
+	// index is resolved through the VM's current globals so normal global
+	// rebinding still guards/falls back through the VM closure/kernel checks.
+	if proto == nil || constIdx >= len(proto.Constants) {
+		return runtime.NilValue(), false
+	}
+	nameVal := proto.Constants[constIdx]
+	if !nameVal.IsString() {
+		return runtime.NilValue(), false
+	}
+	return tm.callVM.GetGlobal(nameVal.Str()), true
 }
 
 func (tm *TieringManager) invalidateGlobalValueCaches(name string) {

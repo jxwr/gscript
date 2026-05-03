@@ -149,6 +149,22 @@ func TestSTR(t *testing.T) {
 	}
 }
 
+func TestExclusiveAtomics(t *testing.T) {
+	a := NewAssembler()
+	a.LDAXR(X0, X17)
+	a.STLXR(X6, X5, X17)
+	a.CLREX()
+	if got := getInst(a, 0); got != 0xC85FFE20 {
+		t.Fatalf("LDAXR: got 0x%08X, want 0xC85FFE20", got)
+	}
+	if got := getInst(a, 1); got != 0xC806FE25 {
+		t.Fatalf("STLXR: got 0x%08X, want 0xC806FE25", got)
+	}
+	if got := getInst(a, 2); got != 0xD5033F5F {
+		t.Fatalf("CLREX: got 0x%08X, want 0xD5033F5F", got)
+	}
+}
+
 func TestLDRB(t *testing.T) {
 	a := NewAssembler()
 	a.LDRB(X0, X1, 3) // LDRB W0, [X1, #3]

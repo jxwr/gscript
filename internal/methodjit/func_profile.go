@@ -296,6 +296,10 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 		return true
 	}
 
+	if profile.HasLoop && hasGenericStringFormatIntCall(proto) {
+		return runtimeCallCount >= 1
+	}
+
 	if profile.HasLoop && profile.LoopDepth >= 2 && protoHasMatrixIntrinsicConstants(proto) {
 		return true
 	}

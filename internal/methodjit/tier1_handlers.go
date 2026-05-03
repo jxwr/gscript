@@ -211,6 +211,19 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 		nArgs = rawB - 1
 	}
 
+	if proto != nil && proto.CallSiteFeedback != nil {
+		pc := int(ctx.BaselinePC)
+		if pc >= 0 && pc < len(proto.CallSiteFeedback) {
+			argStart := absSlot + 1
+			argEnd := argStart + nArgs
+			if argStart >= 0 && argEnd >= argStart && argEnd <= len(regs) {
+				proto.CallSiteFeedback[pc].ObserveCall(fnVal, regs[argStart:argEnd], nArgs, rawC)
+			} else {
+				proto.CallSiteFeedback[pc].ObserveCall(fnVal, nil, nArgs, rawC)
+			}
+		}
+	}
+
 	if handled, err := e.callVM.TryFastCoroutineCallValue(fnVal, absSlot, nArgs, rawC); handled {
 		return err
 	}
@@ -369,6 +382,30 @@ slowPath:
 				arg1 = regs[idx1]
 			}
 			result, err := gf.FastArg2(arg0, arg1)
+			if err != nil {
+				return err
+			}
+			e.storeSingleCallResult(absSlot, rawC, result)
+			return nil
+		}
+		if nArgs == 3 && gf.FastArg3 != nil {
+			runtime.RecordRuntimePathNativeCallFast()
+			idx0 := absSlot + 1
+			idx1 := absSlot + 2
+			idx2 := absSlot + 3
+			arg0 := runtime.NilValue()
+			arg1 := runtime.NilValue()
+			arg2 := runtime.NilValue()
+			if idx0 < len(regs) {
+				arg0 = regs[idx0]
+			}
+			if idx1 < len(regs) {
+				arg1 = regs[idx1]
+			}
+			if idx2 < len(regs) {
+				arg2 = regs[idx2]
+			}
+			result, err := gf.FastArg3(arg0, arg1, arg2)
 			if err != nil {
 				return err
 			}
@@ -592,8 +629,7 @@ func (e *BaselineJITEngine) handleGetTable(ctx *ExecContext, regs []runtime.Valu
 				proto.Feedback[pc].ObserveKind(uint8(tbl.GetArrayKind()))
 				if proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) {
 					tkf := &proto.TableKeyFeedback[pc]
-					tkf.ObserveIntKey(key)
-					tkf.ObserveDenseMatrix(tbl)
+					tkf.ObserveTableAccess(tbl, key, regs[absA], vm.TableAccessKindGet, -1, -1)
 				}
 			}
 		}
@@ -641,6 +677,14 @@ func (e *BaselineJITEngine) handleSetTable(ctx *ExecContext, regs []runtime.Valu
 		tbl := tblVal.Table()
 		// Record array kind feedback for table-access specialization.
 		pc := int(ctx.BaselinePC) - 1
+		beforeLen, beforeFieldIdx := -1, -1
+		if proto.TableKeyFeedback != nil && pc >= 0 && pc < len(proto.TableKeyFeedback) {
+			if key.IsInt() {
+				beforeLen = tbl.Len()
+			} else if key.IsString() {
+				beforeFieldIdx = tbl.FieldIndex(key.Str())
+			}
+		}
 		if key.IsString() {
 			ensureTableStringKeyCache(proto)
 			tbl.RawSetStringDynamicCached(
@@ -654,7 +698,7 @@ func (e *BaselineJITEngine) handleSetTable(ctx *ExecContext, regs []runtime.Valu
 		if proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) {
 			proto.Feedback[pc].ObserveKind(uint8(tbl.GetArrayKind()))
 			if proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) {
-				proto.TableKeyFeedback[pc].ObserveIntKey(key)
+				proto.TableKeyFeedback[pc].ObserveTableAccess(tbl, key, val, vm.TableAccessKindSet, beforeLen, beforeFieldIdx)
 			}
 		}
 	}
@@ -716,6 +760,9 @@ func (e *BaselineJITEngine) handleGetField(ctx *ExecContext, regs []runtime.Valu
 		if proto.Feedback != nil && pc < len(proto.Feedback) {
 			proto.Feedback[pc].Result.Observe(regs[absA].Type())
 		}
+		if proto.FieldAccessFeedback != nil && pc >= 0 && pc < len(proto.FieldAccessFeedback) {
+			proto.FieldAccessFeedback[pc].ObserveFieldCache(proto.FieldCache[pc], regs[absA], 1)
+		}
 	} else {
 		regs[absA] = runtime.NilValue()
 	}
@@ -754,6 +801,9 @@ func (e *BaselineJITEngine) handleSetField(ctx *ExecContext, regs []runtime.Valu
 		pc := int(ctx.BaselinePC) - 1
 		ensureFieldCache(proto)
 		tbl.RawSetStringCached(fieldName, val, &proto.FieldCache[pc])
+		if proto.FieldAccessFeedback != nil && pc >= 0 && pc < len(proto.FieldAccessFeedback) {
+			proto.FieldAccessFeedback[pc].ObserveFieldCache(proto.FieldCache[pc], val, 2)
+		}
 	}
 	return nil
 }

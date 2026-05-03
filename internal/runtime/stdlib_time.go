@@ -54,6 +54,14 @@ func tableToGoTime(v Value) (time.Time, error) {
 	return time.Date(year, month, day, hour, min, sec, nsec, time.UTC), nil
 }
 
+func timeSinceValue(v Value) (Value, error) {
+	goTime, err := tableToGoTime(v)
+	if err != nil {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'time.since': %v", err)
+	}
+	return FloatValue(time.Since(goTime).Seconds()), nil
+}
+
 // strftimeToGo converts strftime-style format specifiers to Go layout strings.
 func strftimeToGo(layout string) string {
 	// Check if it contains strftime-style % directives
@@ -94,6 +102,20 @@ func buildTimeLib() *Table {
 			Fn:   fn,
 		}))
 	}
+	setFast1 := func(name string, fn func([]Value) ([]Value, error), fast func([]Value) (Value, error)) {
+		t.RawSet(StringValue(name), FunctionValue(&GoFunction{
+			Name:  "time." + name,
+			Fn:    fn,
+			Fast1: fast,
+		}))
+	}
+	setFastArg1 := func(name string, fn func([]Value) ([]Value, error), fast func(Value) (Value, error)) {
+		t.RawSet(StringValue(name), FunctionValue(&GoFunction{
+			Name:     "time." + name,
+			Fn:       fn,
+			FastArg1: fast,
+		}))
+	}
 
 	// Constants
 	t.RawSet(StringValue("SECOND"), FloatValue(1.0))
@@ -102,8 +124,10 @@ func buildTimeLib() *Table {
 	t.RawSet(StringValue("DAY"), FloatValue(86400.0))
 
 	// time.now() -> time table
-	set("now", func(args []Value) ([]Value, error) {
+	setFast1("now", func(args []Value) ([]Value, error) {
 		return []Value{TableValue(goTimeToTable(time.Now()))}, nil
+	}, func(args []Value) (Value, error) {
+		return TableValue(goTimeToTable(time.Now())), nil
 	})
 
 	// time.sleep(seconds) -> nil
@@ -117,17 +141,13 @@ func buildTimeLib() *Table {
 	})
 
 	// time.since(t) -> float seconds elapsed
-	set("since", func(args []Value) ([]Value, error) {
+	setFastArg1("since", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
 			return nil, fmt.Errorf("bad argument #1 to 'time.since'")
 		}
-		goTime, err := tableToGoTime(args[0])
-		if err != nil {
-			return nil, fmt.Errorf("bad argument #1 to 'time.since': %v", err)
-		}
-		elapsed := time.Since(goTime).Seconds()
-		return []Value{FloatValue(elapsed)}, nil
-	})
+		v, err := timeSinceValue(args[0])
+		return []Value{v}, err
+	}, timeSinceValue)
 
 	// time.unix(sec [, nsec]) -> time table
 	set("unix", func(args []Value) ([]Value, error) {

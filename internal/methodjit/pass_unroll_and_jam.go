@@ -317,6 +317,7 @@ func unrollFloatReductionLoop2(fn *Function, cand *floatReductionCandidate) erro
 		Op:    OpAddInt,
 		Type:  TypeInt,
 		Args:  []*Value{cand.stepInstr.Value(), cand.stepValue},
+		Aux2:  cand.stepInstr.Aux2,
 		Block: body,
 	}
 	body.Instrs = append(body.Instrs[:len(body.Instrs)-1], k2)

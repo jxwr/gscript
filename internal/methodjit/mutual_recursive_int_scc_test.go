@@ -103,6 +103,37 @@ func TestMutualRecursiveIntSCCExecutesHofstadter(t *testing.T) {
 	}
 }
 
+func TestMutualRecursiveIntSCCPrecompiledFromStableLoopGlobals(t *testing.T) {
+	src := mutualIntHofstadterSrc + `
+result := 0
+for rep := 1; rep <= 1000; rep++ {
+	result = F(25)
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	f := findProtoByName(top, "F")
+	if f == nil {
+		t.Fatal("F proto not found")
+	}
+	cf := tm.tier2Compiled[f]
+	if cf == nil || cf.MutualRecursiveIntSCC == nil {
+		t.Fatalf("F was not precompiled to mutual recursive int SCC from stable loop globals; cf=%#v", cf)
+	}
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "F" && site.ExitCode == ExitCallExit {
+			t.Fatalf("F still used call-exit recursion after precompile: site=%#v", site)
+		}
+	}
+}
+
 func TestMutualRecursiveIntSCCFallsBackWhenPeerGlobalChanges(t *testing.T) {
 	src := mutualIntHofstadterSrc + `
 func replacement(n) {

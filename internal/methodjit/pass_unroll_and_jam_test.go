@@ -165,6 +165,44 @@ func TestUnrollAndJam_UnrollsMultipleInlinedHelperLoops(t *testing.T) {
 	}
 }
 
+func TestUnrollAndJam_SecondStepKeepsLoopCounterMarker(t *testing.T) {
+	src := `func f(n) {
+		s := 0.0
+		for i := 0; i < n; i++ {
+			x := i + 1.0
+			s = s + x * 0.5
+		}
+		return s
+	}`
+
+	proto := compileFunction(t, src)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	assertValidates(t, fn, "after RunTier2Pipeline")
+
+	var foundSecondStep bool
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpAddInt || len(instr.Args) != 2 || instr.Args[0] == nil {
+				continue
+			}
+			first := instr.Args[0].Def
+			if first == nil || first.Op != OpAddInt {
+				continue
+			}
+			foundSecondStep = true
+			if instr.Aux2 == 0 {
+				t.Fatalf("unrolled second-step counter v%d lost loop-counter marker\nIR:\n%s", instr.ID, Print(fn))
+			}
+		}
+	}
+	if !foundSecondStep {
+		t.Fatalf("expected unrolled second-step AddInt in optimized IR:\n%s", Print(fn))
+	}
+}
+
 func TestUnrollAndJam_RejectsLoopBodyStores(t *testing.T) {
 	src := `func f(n) {
 		t := {}

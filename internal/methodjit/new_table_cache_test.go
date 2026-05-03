@@ -251,7 +251,7 @@ func f(n) {
 func TestNewTableExitReasonCarriesPreallocAndCacheMetadata(t *testing.T) {
 	instr := &Instr{Op: OpNewTable, Aux: 1024, Aux2: packNewTableAux2(0, runtime.ArrayFloat)}
 	reason := newTableExitReason(instr)
-	for _, want := range []string{"NewTable(", "array=1024", "hash=0", "kind=float", "cache_batch=127"} {
+	for _, want := range []string{"NewTable(", "array=1024", "hash=0", "kind=float", "cache_batch=511"} {
 		if !strings.Contains(reason, want) {
 			t.Fatalf("reason %q missing %q", reason, want)
 		}
@@ -268,6 +268,46 @@ func TestNewTableCacheBatchScalesByPayloadBudget(t *testing.T) {
 	if got := newTableCacheBatchSizeForHints(4096, 0, runtime.ArrayBool); got <= newTableCacheBatchSizeForHints(4096, 0, runtime.ArrayFloat) {
 		t.Fatalf("bool batch should exceed float batch for same hint, got bool=%d float=%d",
 			got, newTableCacheBatchSizeForHints(4096, 0, runtime.ArrayFloat))
+	}
+	if got := newTableCacheBatchSizeForHints(tier2NewTableCacheMaxArrayHint, 0, runtime.ArrayMixed); got <= 1 {
+		t.Fatalf("large mixed sparse table cache batch = %d, want enabled", got)
+	}
+}
+
+func TestNewTableCachePrewarmPopulatesCacheableNewTableSites(t *testing.T) {
+	fn := &Function{NumRegs: 1}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+	newTable := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpNewTable,
+		Type:  TypeTable,
+		Block: b,
+		Aux:   1024,
+		Aux2:  packNewTableAux2(0, runtime.ArrayInt),
+	}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Block: b, Args: []*Value{newTable.Value()}}
+	b.Instrs = []*Instr{newTable, ret}
+
+	caches := newTableCacheSlotsForFunction(fn)
+	prewarmNewTableCachesForFunction(fn, caches)
+
+	if len(caches) <= newTable.ID {
+		t.Fatalf("missing cache slot for NewTable id=%d", newTable.ID)
+	}
+	entry := caches[newTable.ID]
+	if len(entry.Values) != newTableCacheBatchSize(newTable) {
+		t.Fatalf("prewarmed values len = %d, want batch %d", len(entry.Values), newTableCacheBatchSize(newTable))
+	}
+	if entry.Pos != 0 {
+		t.Fatalf("prewarmed pos = %d, want 0", entry.Pos)
+	}
+	if len(entry.Roots) == 0 {
+		t.Fatalf("prewarmed cache has no roots")
+	}
+	if !entry.Values[0].IsTable() {
+		t.Fatalf("prewarmed value is not a table: %v", entry.Values[0])
 	}
 }
 

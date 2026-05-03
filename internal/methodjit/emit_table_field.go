@@ -144,10 +144,15 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 
 	// Deopt fallback: use table-exit to perform the field access in Go.
 	asm.Label(deoptLabel)
-	savedReprs := ec.snapshotValueReprs()
-	ec.emitGetFieldExit(instr)
-	ec.emitUnboxRawIntRegs(savedReprs)
-	ec.restoreValueReprSnapshot(savedReprs)
+	if instr.SourcePC >= 0 && ec.emitGetFieldDynamicCache(instr) {
+		asm.B(doneLabel)
+	} else {
+		savedReprs := ec.snapshotValueReprs()
+		ec.emitGetFieldExit(instr)
+		ec.emitUnboxRawIntRegs(savedReprs)
+		ec.restoreValueReprSnapshot(savedReprs)
+		asm.B(doneLabel)
+	}
 
 	if instr.Type == TypeFloat {
 		asm.Label(typeDeoptLabel)
@@ -194,6 +199,7 @@ func (ec *emitContext) emitGetFieldPolymorphicCache(instr *Instr) bool {
 	ec.emitGetFieldExit(instr)
 	ec.emitUnboxRawIntRegs(savedReprs)
 	ec.restoreValueReprSnapshot(savedReprs)
+	asm.B(doneLabel)
 
 	if instr.Type == TypeFloat {
 		asm.Label(typeDeoptLabel)
@@ -343,9 +349,12 @@ func (ec *emitContext) emitGetFieldDynamicCache(instr *Instr) bool {
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
 	asm.CMPreg(jit.X1, jit.X5)
 	asm.BCond(jit.CondNE, deoptLabel)
+	asm.LDR(jit.X1, jit.X0, jit.TableOffSvalsLen)
+	asm.CMPreg(jit.X4, jit.X1)
+	asm.BCond(jit.CondGE, deoptLabel)
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 	asm.LDRreg(jit.X0, jit.X1, jit.X4)
-	ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+	ec.emitStoreDynamicFieldLoad(instr, jit.X0, typeDeoptLabel)
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
@@ -353,6 +362,7 @@ func (ec *emitContext) emitGetFieldDynamicCache(instr *Instr) bool {
 	ec.emitGetFieldExit(instr)
 	ec.emitUnboxRawIntRegs(savedReprs)
 	ec.restoreValueReprSnapshot(savedReprs)
+	asm.B(doneLabel)
 
 	if instr.Type == TypeFloat {
 		asm.Label(typeDeoptLabel)
@@ -363,6 +373,14 @@ func (ec *emitContext) emitGetFieldDynamicCache(instr *Instr) bool {
 	return true
 }
 
+func (ec *emitContext) emitStoreDynamicFieldLoad(instr *Instr, valReg jit.Reg, deoptLabel string) {
+	if instr != nil && instr.Op == OpGetFieldNumToFloat {
+		ec.emitStoreNumericFieldLoad(instr, valReg, deoptLabel)
+		return
+	}
+	ec.emitStoreTypedFieldLoad(instr, valReg, deoptLabel)
+}
+
 func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	shapeID := uint32(instr.Aux2 >> 32)
 	fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
@@ -370,6 +388,9 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	// No field cache or invalid: use table-exit fallback. The resume path
 	// applies the same int-or-float conversion as the inline fast path.
 	if shapeID == 0 || instr.Aux2 == 0 {
+		if ec.emitGetFieldDynamicCache(instr) {
+			return
+		}
 		ec.invalidateFieldSvalsCache()
 		ec.emitGetFieldExit(instr)
 		return
@@ -411,11 +432,15 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	savedReprs := ec.snapshotValueReprs()
-	ec.emitGetFieldExit(instr)
-	ec.emitUnboxRawIntRegs(savedReprs)
-	ec.restoreValueReprSnapshot(savedReprs)
-	asm.B(doneLabel)
+	if instr.SourcePC >= 0 && ec.emitGetFieldDynamicCache(instr) {
+		asm.B(doneLabel)
+	} else {
+		savedReprs := ec.snapshotValueReprs()
+		ec.emitGetFieldExit(instr)
+		ec.emitUnboxRawIntRegs(savedReprs)
+		ec.restoreValueReprSnapshot(savedReprs)
+		asm.B(doneLabel)
+	}
 
 	asm.Label(typeDeoptLabel)
 	ec.emitDeopt(instr)

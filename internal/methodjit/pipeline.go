@@ -267,6 +267,7 @@ func lineDiff(a, b []string) string {
 // A nil *Tier2PipelineOpts uses defaults (MaxSize 40, no globals).
 type Tier2PipelineOpts struct {
 	InlineGlobals         map[string]*vm.FuncProto    // global function protos for inlining
+	ProtocolGlobals       map[string]*vm.FuncProto    // stable globals available for guarded protocol folds
 	InlineMaxSize         int                         // max callee bytecode count; 0 → 40
 	FixedShapeArgFacts    map[int]FixedShapeTableFact // guarded fixed-shape facts for callee params
 	FixedShapeEntryGuards bool                        // emit callee-entry shape guards for FixedShapeArgFacts
@@ -279,7 +280,7 @@ type Tier2PipelineOpts struct {
 //	LoadElim → EscapeAnalysis → DCE → PostRewriteTypeSpec →
 //	LoopBoundRangeGuard → RangeAnalysis → OverflowBoxing → FMAFusion →
 //	FloatStrengthReduction → FMAFusion → LICM → FieldNumToFloatFusion →
-//	LoadElim → DCE → UnrollAndJam → DCE
+//	LoadElim → DCE → UnrollAndJam → RangeAnalysis → DCE
 //
 // Returns the optimized function, any intrinsic rewrite notes (non-nil means
 // the function uses intrinsics that Tier 1 would execute differently), and an
@@ -387,6 +388,22 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("ConstProp: %w", err)
 	}
+
+	protocolGlobals := globals
+	if opts != nil && len(opts.ProtocolGlobals) > 0 {
+		protocolGlobals = opts.ProtocolGlobals
+	}
+	fn, err = ProtocolConstCallFoldPass(protocolGlobals)(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ProtocolConstCallFold: %w", err)
+	}
+	attachRemarks(fn, opts)
+
+	fn, err = WholeCallKernelExitPass(protocolGlobals)(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("WholeCallKernelExit: %w", err)
+	}
+	attachRemarks(fn, opts)
 
 	fn, err = TablePreallocHintPass(fn)
 	if err != nil {
@@ -629,6 +646,14 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	// UnrollAndJam clones loop-counter arithmetic after the main range pass.
+	// Re-run range analysis so cloned induction updates inherit int48 safety
+	// and codegen can skip redundant overflow checks in unrolled loops.
+	fn, err = RangeAnalysisPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("RangeAnalysis (post-UnrollAndJam): %w", err)
+	}
+
 	fn, err = DCEPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("DCE (post-UnrollAndJam): %w", err)
@@ -648,6 +673,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	fn, err = TableArrayDataPtrFactPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("TableArrayDataPtrFact: %w", err)
+	}
+	attachRemarks(fn, opts)
+
+	fn, err = WholeCallKernelExitPass(protocolGlobals)(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("WholeCallKernelExit (final): %w", err)
 	}
 	attachRemarks(fn, opts)
 

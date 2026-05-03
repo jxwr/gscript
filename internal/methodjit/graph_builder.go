@@ -6,6 +6,7 @@
 package methodjit
 
 import (
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -64,6 +65,72 @@ func (b *graphBuilder) emit(block *Block, op Op, typ Type, args []*Value, aux, a
 	instr.setSourceFromPC(b.proto, b.currentPC)
 	block.Instrs = append(block.Instrs, instr)
 	return instr
+}
+
+func (b *graphBuilder) fieldShapeAux2(pc int) int64 {
+	if b == nil || b.proto == nil || pc < 0 {
+		return 0
+	}
+	if b.proto.FieldAccessFeedback != nil && pc < len(b.proto.FieldAccessFeedback) {
+		feedback := b.proto.FieldAccessFeedback[pc]
+		if feedback.Count > 0 {
+			shapeID, fieldIdx, ok := feedback.StableShapeField()
+			if ok {
+				return int64(shapeID)<<32 | int64(uint32(fieldIdx))
+			}
+			return 0
+		}
+	}
+	if b.proto.FieldCache != nil && pc < len(b.proto.FieldCache) {
+		entry := b.proto.FieldCache[pc]
+		if entry.ShapeID != 0 && entry.FieldIdx >= 0 {
+			return int64(entry.ShapeID)<<32 | int64(uint32(entry.FieldIdx))
+		}
+	}
+	return 0
+}
+
+func (b *graphBuilder) tableStringFieldLowering(pc int, accessKind uint8) (constIdx int, aux2 int64, ok bool) {
+	if b == nil || b.proto == nil || pc < 0 || b.proto.TableKeyFeedback == nil || pc >= len(b.proto.TableKeyFeedback) {
+		return 0, 0, false
+	}
+	feedback := b.proto.TableKeyFeedback[pc]
+	if accessKind == vm.TableAccessKindSet && (feedback.ValueType == vm.FBAny || feedback.ValueType == vm.FBUnobserved) {
+		return 0, 0, false
+	}
+	key, shapeID, fieldIdx, ok := feedback.StableStringShapeField()
+	if !ok || shapeID == 0 || fieldIdx < 0 {
+		return 0, 0, false
+	}
+	constIdx = b.constIndexForString(key)
+	if constIdx < 0 {
+		return 0, 0, false
+	}
+	return constIdx, int64(shapeID)<<32 | int64(uint32(fieldIdx)), true
+}
+
+func (b *graphBuilder) constIndexForString(key string) int {
+	if b == nil || b.proto == nil {
+		return -1
+	}
+	for i, c := range b.proto.Constants {
+		if c.IsString() && c.Str() == key {
+			return i
+		}
+	}
+	b.proto.Constants = append(b.proto.Constants, runtime.StringValue(key))
+	return len(b.proto.Constants) - 1
+}
+
+func graphValueConstString(v *Value, proto *vm.FuncProto) (string, bool) {
+	if v == nil || v.Def == nil || v.Def.Op != OpConstString || proto == nil {
+		return "", false
+	}
+	idx := int(v.Def.Aux)
+	if idx < 0 || idx >= len(proto.Constants) || !proto.Constants[idx].IsString() {
+		return "", false
+	}
+	return proto.Constants[idx].Str(), true
 }
 
 func (b *graphBuilder) addEdge(from, to *Block) {
@@ -722,7 +789,21 @@ func (b *graphBuilder) emitBlocks() {
 				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) && b.proto.Feedback[pc].Result == vm.FBTable && kindAux2 == int64(vm.FBKindMixed) {
 					resultType = TypeTable
 				}
-				instr := b.emit(block, OpGetTable, resultType, []*Value{tbl, key}, 0, kindAux2)
+				op := OpGetTable
+				args := []*Value{tbl, key}
+				aux := int64(0)
+				aux2 := kindAux2
+				if constIdx, fieldAux2, ok := b.tableStringFieldLowering(pc, vm.TableAccessKindGet); ok {
+					stableKey := b.proto.Constants[constIdx].Str()
+					if keyConst, isConst := graphValueConstString(key, b.proto); !isConst || keyConst != stableKey {
+						b.emit(block, OpGuardConstString, TypeString, []*Value{key}, int64(constIdx), 0)
+					}
+					op = OpGetField
+					args = []*Value{tbl}
+					aux = int64(constIdx)
+					aux2 = fieldAux2
+				}
+				instr := b.emit(block, op, resultType, args, aux, aux2)
 				result := instr.Value()
 				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
 					fb := b.proto.Feedback[pc]
@@ -752,7 +833,15 @@ func (b *graphBuilder) emitBlocks() {
 						setKindAux2 = int64(kind)
 					}
 				}
-				b.emit(block, OpSetTable, TypeUnknown, []*Value{tbl, key, val}, 0, setKindAux2)
+				if constIdx, fieldAux2, ok := b.tableStringFieldLowering(pc, vm.TableAccessKindSet); ok {
+					stableKey := b.proto.Constants[constIdx].Str()
+					if keyConst, isConst := graphValueConstString(key, b.proto); !isConst || keyConst != stableKey {
+						b.emit(block, OpGuardConstString, TypeString, []*Value{key}, int64(constIdx), 0)
+					}
+					b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val}, int64(constIdx), fieldAux2)
+				} else {
+					b.emit(block, OpSetTable, TypeUnknown, []*Value{tbl, key, val}, 0, setKindAux2)
+				}
 
 			case vm.OP_GETFIELD:
 				// GETFIELD A B C: R(A) = R(B).Constants[C]
@@ -760,14 +849,7 @@ func (b *graphBuilder) emitBlocks() {
 				bOp := vm.DecodeB(inst)
 				c := vm.DecodeC(inst)
 				tbl := b.readVariable(bOp, block)
-				// Capture field cache info: Aux2 = shapeID<<32 | fieldIndex
-				var aux2 int64
-				if b.proto.FieldCache != nil && pc < len(b.proto.FieldCache) {
-					entry := b.proto.FieldCache[pc]
-					if entry.ShapeID != 0 && entry.FieldIdx >= 0 {
-						aux2 = int64(entry.ShapeID)<<32 | int64(uint32(entry.FieldIdx))
-					}
-				}
+				aux2 := b.fieldShapeAux2(pc)
 				instr := b.emit(block, OpGetField, TypeAny, []*Value{tbl}, int64(c), aux2)
 				result := instr.Value()
 				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
@@ -785,14 +867,7 @@ func (b *graphBuilder) emitBlocks() {
 				c := vm.DecodeC(inst)
 				tbl := b.readVariable(a, block)
 				val := b.resolveRK(c, block)
-				// Capture field cache info: Aux2 = shapeID<<32 | fieldIndex
-				var aux2 int64
-				if b.proto.FieldCache != nil && pc < len(b.proto.FieldCache) {
-					entry := b.proto.FieldCache[pc]
-					if entry.ShapeID != 0 && entry.FieldIdx >= 0 {
-						aux2 = int64(entry.ShapeID)<<32 | int64(uint32(entry.FieldIdx))
-					}
-				}
+				aux2 := b.fieldShapeAux2(pc)
 				b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val}, int64(bOp), aux2)
 
 			case vm.OP_SETLIST:

@@ -11,6 +11,17 @@ import (
 	"unsafe"
 )
 
+const NativeKindStdStringFormat uint8 = 2
+
+var stdStringFormatIdentity byte
+
+// StdStringFormatIdentityPtr returns the process-wide identity token attached
+// to stdlib string.format GoFunctions. JIT guards compare this token instead
+// of trusting mutable function names or the presence of FastArg2.
+func StdStringFormatIdentityPtr() unsafe.Pointer {
+	return unsafe.Pointer(&stdStringFormatIdentity)
+}
+
 // buildStringLib creates the "string" standard library table and returns it.
 func buildStringLib() *Table {
 	t := NewTable()
@@ -352,7 +363,11 @@ func buildStringLib() *Table {
 		return []Value{v}, nil
 	}, stringFormatValue)
 	if v := t.RawGetString("format"); v.IsFunction() {
-		v.GoFunction().FastArg2 = stringFormat2Value
+		gf := v.GoFunction()
+		gf.FastArg2 = stringFormat2Value
+		gf.FastArg3 = stringFormat3Value
+		gf.NativeKind = NativeKindStdStringFormat
+		gf.NativeData = StdStringFormatIdentityPtr()
 	}
 
 	// string.split(s, sep) -> table. sep="" splits by byte
@@ -768,6 +783,52 @@ func stringFormat2Value(format, arg Value) (Value, error) {
 	return stringFormatValue(args[:])
 }
 
+func stringFormat3Value(format, arg0, arg1 Value) (Value, error) {
+	if !format.IsString() {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.format' (string expected)")
+	}
+	formatStr := format.Str()
+	if prog, ok, err := cachedSimpleFormat(formatStr); err != nil {
+		return NilValue(), err
+	} else if ok && prog.minArgs == 3 {
+		RecordRuntimePathStringFormatFast()
+		s, err := prog.formatTwoArgs(arg0, arg1)
+		if err != nil {
+			return NilValue(), err
+		}
+		return StringValue(s), nil
+	}
+	RecordRuntimePathStringFormatFallback()
+	args := [3]Value{format, arg0, arg1}
+	return stringFormatValue(args[:])
+}
+
+// IsStdStringFormatFunction reports whether v is the stdlib string.format
+// GoFunction installed by buildStringLib. This is intentionally an identity
+// style guard for JIT fast paths: scripts cannot create GoFunction values.
+func IsStdStringFormatFunction(v Value) bool {
+	gf := v.GoFunction()
+	return gf != nil &&
+		gf.NativeKind == NativeKindStdStringFormat &&
+		gf.NativeData == StdStringFormatIdentityPtr() &&
+		gf.FastArg2 != nil
+}
+
+// StringFormatSingleInt formats a cached simple one-integer pattern. It is the
+// semantic helper for JIT specializations of string.format(pattern, int).
+func StringFormatSingleInt(pattern string, n int64) (Value, bool, error) {
+	prog, ok, err := cachedSimpleFormat(pattern)
+	if err != nil || !ok || !prog.singleInt {
+		return NilValue(), false, err
+	}
+	if v, ok := prog.cachedResult(n); ok {
+		return v, true, nil
+	}
+	v := StringValue(prog.formatSingleInt(n))
+	prog.storeCachedResult(n, v)
+	return v, true, nil
+}
+
 func writeFastIntegerFormat(buf *strings.Builder, fmtSpec string, spec byte, n int64) bool {
 	if len(fmtSpec) < 2 || fmtSpec[0] != '%' || fmtSpec[len(fmtSpec)-1] != spec {
 		return false
@@ -1158,6 +1219,38 @@ func (p *simpleFormatProgram) format(args []Value) (string, error) {
 			continue
 		}
 		arg := args[argIdx]
+		argIdx++
+		switch part.verb {
+		case 'd', 'i', 'u', 'x', 'X', 'o':
+			writeCompiledIntegerFormat(&buf, part, toInt(arg))
+		case 's':
+			buf.WriteString(arg.String())
+		}
+	}
+	return buf.String(), nil
+}
+
+func (p *simpleFormatProgram) formatTwoArgs(arg0, arg1 Value) (string, error) {
+	if p.minArgs > 3 {
+		return "", fmt.Errorf("bad argument #3 to 'string.format' (no value)")
+	}
+	var buf strings.Builder
+	buf.Grow(p.litBytes + 32)
+	argIdx := 0
+	for _, part := range p.parts {
+		if part.verb == 0 {
+			buf.WriteString(part.lit)
+			continue
+		}
+		var arg Value
+		switch argIdx {
+		case 0:
+			arg = arg0
+		case 1:
+			arg = arg1
+		default:
+			return "", fmt.Errorf("bad argument #%d to 'string.format' (no value)", argIdx+2)
+		}
 		argIdx++
 		switch part.verb {
 		case 'd', 'i', 'u', 'x', 'X', 'o':

@@ -958,3 +958,85 @@ func f(t, n) {
 	}
 	t.Logf("VM result=%.6f, IR result=%.6f -- match", vmNum, irNum)
 }
+
+func TestBuildGraph_TableAccessFeedbackLowersStableStringKeyToFieldOps(t *testing.T) {
+	proto := compile(t, `
+func f(t, k, v) {
+	t[k] = v
+	return t[k]
+}
+`)
+	proto.TableKeyFeedback = vm.NewTableKeyFeedbackVector(len(proto.Code))
+	var sawSet, sawGet bool
+	for pc, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_SETTABLE:
+			sawSet = true
+			proto.TableKeyFeedback[pc] = vm.TableKeyFeedback{
+				Count:         8,
+				ShapeID:       123,
+				FieldIdx:      2,
+				KeyType:       vm.FBString,
+				ValueType:     vm.FBInt,
+				AccessKind:    vm.TableAccessKindSet,
+				StringKey:     "name",
+				StringKeySeen: true,
+				FieldIdxSeen:  true,
+			}
+		case vm.OP_GETTABLE:
+			sawGet = true
+			proto.TableKeyFeedback[pc] = vm.TableKeyFeedback{
+				Count:         8,
+				ShapeID:       123,
+				FieldIdx:      2,
+				KeyType:       vm.FBString,
+				ValueType:     vm.FBInt,
+				AccessKind:    vm.TableAccessKindGet,
+				StringKey:     "name",
+				StringKeySeen: true,
+				FieldIdxSeen:  true,
+			}
+		}
+	}
+	if !sawSet || !sawGet {
+		t.Fatalf("expected dynamic SETTABLE and GETTABLE in bytecode")
+	}
+
+	fn := BuildGraph(proto)
+	counts := map[Op]int{}
+	var getAux2, setAux2 int64
+	for _, blk := range fn.Blocks {
+		for _, instr := range blk.Instrs {
+			counts[instr.Op]++
+			switch instr.Op {
+			case OpGetField:
+				getAux2 = instr.Aux2
+			case OpSetField:
+				setAux2 = instr.Aux2
+			}
+		}
+	}
+	if counts[OpGetTable] != 0 || counts[OpSetTable] != 0 {
+		t.Fatalf("expected feedback lowering to remove dynamic table ops; got GetTable=%d SetTable=%d", counts[OpGetTable], counts[OpSetTable])
+	}
+	if counts[OpGetField] != 1 || counts[OpSetField] != 1 {
+		t.Fatalf("expected one GetField and one SetField; got GetField=%d SetField=%d", counts[OpGetField], counts[OpSetField])
+	}
+	if counts[OpGuardConstString] != 2 {
+		t.Fatalf("expected two const-string guards for dynamic key operand, got %d", counts[OpGuardConstString])
+	}
+	wantAux2 := int64(123)<<32 | int64(uint32(2))
+	if getAux2 != wantAux2 || setAux2 != wantAux2 {
+		t.Fatalf("field aux2 mismatch: get=%#x set=%#x want=%#x", getAux2, setAux2, wantAux2)
+	}
+	foundConst := false
+	for _, c := range proto.Constants {
+		if c.IsString() && c.Str() == "name" {
+			foundConst = true
+			break
+		}
+	}
+	if !foundConst {
+		t.Fatalf("expected lowering to intern stable dynamic string key as a proto constant")
+	}
+}

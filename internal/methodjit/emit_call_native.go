@@ -1526,14 +1526,16 @@ func (ec *emitContext) emitRawIntPeerCallExitResume(instr *Instr, funcSlot, nArg
 // Extracted from emit_dispatch.go to keep that file under rule 13's
 // 1000-line cap.
 func (ec *emitContext) emitOpCall(instr *Instr) {
-	if ec.isStaticSelfCall(instr) && !ec.nativeCallReplaySafe && !ec.nativeCallCalleeResumeSafe {
-		ec.emitCallExit(instr)
-	} else if ec.numericMode && ec.tailCallInstrs[instr.ID] && ec.isNumericStaticSelfCall(instr) {
+	if ec.numericMode && ec.tailCallInstrs[instr.ID] && ec.isNumericStaticSelfCall(instr) {
 		ec.emitCallNativeNumericTail(instr)
 	} else if !ec.tailCallInstrs[instr.ID] && ec.isNumericStaticSelfCall(instr) {
 		ec.emitCallNativeRawIntSelf(instr)
+	} else if ec.emitProtocolConstCallIfEligible(instr) {
+	} else if ec.emitWholeCallKernelOpExitIfEligible(instr) {
 	} else if ec.emitCallNativeRawIntPeerIfEligible(instr) {
 	} else if ec.emitCallNativeTypedSelfIfEligible(instr) {
+	} else if ec.isStaticSelfCall(instr) && !ec.tailCallInstrs[instr.ID] && callResultCountFromAux2(instr.Aux2) > 0 && !ec.nativeCallReplaySafe {
+		ec.emitCallExit(instr)
 	} else if ec.tailCallInstrs[instr.ID] && ec.isStaticSelfCall(instr) && !ec.hasEntryShapeGuards() {
 		ec.emitStaticSelfTailLoop(instr)
 	} else if ec.isStaticSelfCall(instr) {
@@ -1554,6 +1556,19 @@ func (ec *emitContext) emitOpCall(instr *Instr) {
 	ec.kindVerified = make(map[int]uint16)
 	ec.keysDirtyWritten = make(map[int]bool)
 	ec.dmVerified = make(map[int]bool)
+}
+
+func (ec *emitContext) invalidateCallClobberedFactsAfterResume() {
+	ec.shapeVerified = make(map[int]uint32)
+	ec.tableVerified = make(map[int]bool)
+	ec.kindVerified = make(map[int]uint16)
+	ec.keysDirtyWritten = make(map[int]bool)
+	ec.dmVerified = make(map[int]bool)
+	for valueID := range ec.activeRegs {
+		if ec.valueReprOf(valueID) == valueReprRawDataPtr {
+			ec.clearValueRepr(valueID)
+		}
+	}
 }
 
 func (ec *emitContext) emitCallNativeNumericTail(instr *Instr) {

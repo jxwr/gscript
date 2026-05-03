@@ -85,6 +85,28 @@ func TestTableArrayRawStoreBackend_MissFallsBackThroughExitResume(t *testing.T) 
 	})
 }
 
+func TestTableArrayRawStoreBackend_ExitResumeRefreshesDataAndLen(t *testing.T) {
+	withExitResumeCheck(t, func() {
+		cf := compileRawStoreBackendTwoStoreFixture(t, "raw_store_miss_refresh", int64(vm.FBKindInt), 5, 77, 6, 88,
+			tableArrayStoreFlagAllowGrow|tableArrayStoreFlagExitResumeOnMiss)
+		defer cf.Code.Free()
+
+		tbl := runtime.NewTableSizedKind(1, 0, runtime.ArrayInt)
+		if _, err := cf.Execute([]runtime.Value{runtime.TableValue(tbl)}); err != nil {
+			t.Fatalf("Execute miss refresh fixture: %v", err)
+		}
+		if got := tbl.RawGetInt(5); !got.IsInt() || got.Int() != 77 {
+			t.Fatalf("tbl[5] after exit-resume fallback = %v, want 77", got)
+		}
+		if got := tbl.RawGetInt(6); !got.IsInt() || got.Int() != 88 {
+			t.Fatalf("tbl[6] after refreshed native store = %v, want 88", got)
+		}
+		assertCompiledExitResumeCheckSite(t, cf, func(site *exitResumeCheckSite) bool {
+			return site.Key.ExitCode == ExitTableExit && site.RequireTableInputs
+		})
+	})
+}
+
 func TestTableArrayRawStoreBackend_GuardFailureFallsBackThroughExitResume(t *testing.T) {
 	withExitResumeCheck(t, func() {
 		cf := compileRawStoreBackendParamFixture(t, "raw_store_guard_miss", int64(vm.FBKindInt), 0,
@@ -133,6 +155,45 @@ func compileRawStoreBackendParamFixture(t *testing.T, name string, kind int64, k
 		return &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Aux: 1, Block: b}
 	}
 	return compileRawStoreBackendFixtureWithValue(t, name, kind, key, flags, 2, valueInstr)
+}
+
+func compileRawStoreBackendTwoStoreFixture(t *testing.T, name string, kind int64, key1, value1, key2, value2 int64, flags int64) *CompiledFunction {
+	t.Helper()
+
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: name, NumParams: 1},
+		NumRegs: 5,
+	}
+	entry := newBlock(0)
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	header := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeTable, Aux: kind,
+		Args: []*Value{tbl.Value()}, Block: entry}
+	length := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: kind,
+		Args: []*Value{header.Value()}, Block: entry}
+	data := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: kind,
+		Args: []*Value{header.Value()}, Block: entry}
+	keyInstr1 := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: key1, Block: entry}
+	valueInstr1 := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: value1, Block: entry}
+	store1 := &Instr{ID: fn.newValueID(), Op: OpTableArrayStore, Type: TypeUnknown, Aux: kind, Aux2: flags,
+		Args: []*Value{tbl.Value(), data.Value(), length.Value(), keyInstr1.Value(), valueInstr1.Value()}, Block: entry}
+	keyInstr2 := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: key2, Block: entry}
+	valueInstr2 := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: value2, Block: entry}
+	store2 := &Instr{ID: fn.newValueID(), Op: OpTableArrayStore, Type: TypeUnknown, Aux: kind, Aux2: flags,
+		Args: []*Value{tbl.Value(), data.Value(), length.Value(), keyInstr2.Value(), valueInstr2.Value()}, Block: entry}
+	retVal := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Args: []*Value{retVal.Value()}, Block: entry}
+	entry.Instrs = []*Instr{tbl, header, length, data, keyInstr1, valueInstr1, store1, keyInstr2, valueInstr2, store2, retVal, ret}
+
+	assertValidates(t, fn, name)
+	alloc := AllocateRegisters(fn)
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile(%s): %v", name, err)
+	}
+	return cf
 }
 
 func compileRawStoreBackendFixtureWithValue(t *testing.T, name string, kind int64, key int64, flags int64, numParams int, makeValue func(*Function, *Block) *Instr) *CompiledFunction {

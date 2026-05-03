@@ -142,11 +142,11 @@ func tier2OpMayExitForNativeReplay(instr *Instr) bool {
 		OpSetList, OpAppend,
 		OpGetGlobal, OpSetGlobal,
 		OpGetUpval, OpSetUpval,
-		OpConstString, OpConcat, OpStringConstLookup, OpLen, OpPow, OpFloor,
+		OpConstString, OpConcat, OpStringConstLookup, OpStringFormatInt, OpLen, OpPow, OpFloor,
 		OpClosure, OpClose, OpVararg,
 		OpTForCall, OpTForLoop,
 		OpGo, OpMakeChan, OpSend, OpRecv,
-		OpGuardType, OpGuardIntRange, OpGuardNonNil, OpGuardTruthy,
+		OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardNonNil, OpGuardTruthy,
 		OpNumToFloat,
 		OpDivIntExact,
 		OpMatrixGetF, OpMatrixSetF, OpMatrixFlat, OpMatrixStride:

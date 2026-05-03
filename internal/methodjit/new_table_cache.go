@@ -15,11 +15,12 @@ const (
 	newObject2CacheBatch           = 128
 	// Fixed-shape constructors are often clustered in row-builder loops; a
 	// larger refill batch cuts exit-resume frequency without growing array caches.
-	fixedTableCacheBatch          = 256
-	newTableCacheMaxBatch         = 128
-	newTableCacheTargetBytes      = 1 << 20
+	fixedTableCacheBatch          = 1024
+	newTableCacheMaxBatch         = 512
+	newTableCacheTargetBytes      = 4 << 20
 	newTableCacheLargeTargetBytes = 8 << 20
 	newTableCacheLargeArrayHint   = 64 * 1024
+	mixedArraySparsePayloadValues = 1025
 )
 
 type newTableCacheEntry struct {
@@ -57,6 +58,43 @@ func newTableCacheSlotsForFunction(fn *Function) []newTableCacheEntry {
 	return nil
 }
 
+func prewarmNewTableCachesForFunction(fn *Function, caches []newTableCacheEntry) {
+	if fn == nil || len(caches) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpNewTable || instr.ID < 0 || instr.ID >= len(caches) {
+				continue
+			}
+			batch := newTableCacheBatchSize(instr)
+			if batch <= 1 {
+				continue
+			}
+			hashHint, kind := unpackNewTableAux2(instr.Aux2)
+			prewarmNewTableCacheEntry(&caches[instr.ID], int(instr.Aux), hashHint, kind, batch)
+		}
+	}
+}
+
+func prewarmNewTableCacheEntry(entry *newTableCacheEntry, arrayHint, hashHint int, kind runtime.ArrayKind, batch int) {
+	if entry == nil || batch <= 1 || len(entry.Values) > 0 {
+		return
+	}
+	entry.Values = make([]runtime.Value, batch)
+	if entry.Roots == nil {
+		entry.Roots = make([]unsafe.Pointer, 0, 4)
+	} else {
+		entry.Roots = entry.Roots[:0]
+	}
+	for i := range entry.Values {
+		tbl := runtime.NewTableSizedKind(arrayHint, hashHint, kind)
+		entry.addRoot(tbl)
+		entry.Values[i] = runtime.FreshTableValue(tbl)
+	}
+	entry.Pos = 0
+}
+
 func newTableCacheBatchSize(instr *Instr) int {
 	if instr == nil || instr.Op != OpNewTable {
 		return 0
@@ -69,14 +107,21 @@ func newTableCacheBatchSizeForHints(arrayHint int64, hashHint int, kind runtime.
 	if arrayHint == 0 && hashHint == 0 && kind == runtime.ArrayMixed {
 		return 64
 	}
-	if arrayHint <= 0 || hashHint != 0 || kind == runtime.ArrayMixed || arrayHint > tier2NewTableCacheMaxArrayHint {
+	if arrayHint <= 0 || hashHint != 0 || arrayHint > tier2NewTableCacheMaxArrayHint {
 		return 0
 	}
 	elemBytes := int64(8)
+	payloadValues := arrayHint + 1
+	if kind == runtime.ArrayMixed && payloadValues > mixedArraySparsePayloadValues {
+		// Runtime mixed tables cap their eager array allocation and store the
+		// larger target in arrayHint, so cache sizing should follow allocated
+		// payload rather than the logical maximum index.
+		payloadValues = mixedArraySparsePayloadValues
+	}
 	if kind == runtime.ArrayBool {
 		elemBytes = 1
 	}
-	bytesPerTable := (arrayHint + 1) * elemBytes
+	bytesPerTable := payloadValues * elemBytes
 	if bytesPerTable <= 0 {
 		return 0
 	}

@@ -6,6 +6,7 @@
 package methodjit
 
 import (
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -407,6 +408,94 @@ for i := 1; i <= 10; i++ {
 	}
 }
 
+func TestHasGenericStringFormatIntCallDetectsPaddedPattern(t *testing.T) {
+	src := `
+func build_inventory(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        sku := string.format("SKU%05d", i)
+        total = total + #sku
+    }
+    return total
+}
+`
+	top := compileProto(t, src)
+	proto := findProtoByName(top, "build_inventory")
+	if proto == nil {
+		t.Fatal("proto build_inventory not found")
+	}
+	if !hasGenericStringFormatIntCall(proto) {
+		t.Fatal("expected generic string.format(pattern,int) detector to accept SKU%05d")
+	}
+	profile := analyzeFuncProfile(proto)
+	if !shouldPromoteTier2(proto, profile, 1) {
+		t.Fatal("string.format int loop should be eligible for first-call Tier2")
+	}
+}
+
+func TestHasGenericStringFormatIntCallDetectsMixedInventory(t *testing.T) {
+	src, err := os.ReadFile("../../benchmarks/extended/mixed_inventory_sim.gs")
+	if err != nil {
+		t.Fatalf("read mixed_inventory_sim: %v", err)
+	}
+	top := compileProto(t, string(src))
+	for _, name := range []string{"build_inventory", "run_orders"} {
+		proto := findProtoByName(top, name)
+		if proto == nil {
+			t.Fatalf("proto %s not found", name)
+		}
+		if !hasGenericStringFormatIntCall(proto) {
+			t.Fatalf("expected detector to accept %s", name)
+		}
+		profile := analyzeFuncProfile(proto)
+		if !shouldPromoteTier2(proto, profile, 1) {
+			t.Fatalf("%s should be eligible for first-call Tier2", name)
+		}
+	}
+}
+
+func TestHasGenericStringFormatIntCallUsesStableRuntimeFeedback(t *testing.T) {
+	src := `
+func format_loop(pattern, n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        s := string.format(pattern, i)
+        total = total + #s
+    }
+    return total
+}
+`
+	top := compileProto(t, src)
+	proto := findProtoByName(top, "format_loop")
+	if proto == nil {
+		t.Fatal("proto format_loop not found")
+	}
+	if hasGenericStringFormatIntCall(proto) {
+		t.Fatal("dynamic pattern should not be accepted before runtime feedback")
+	}
+	proto.EnsureFeedback()
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fn := v.GetGlobal("format_loop")
+	args := []runtime.Value{runtime.StringValue("dyn%04d"), runtime.IntValue(3)}
+	if _, err := v.CallValue(fn, args); err != nil {
+		t.Fatalf("CallValue: %v", err)
+	}
+	if !hasGenericStringFormatIntCall(proto) {
+		t.Fatal("stable runtime feedback should make dynamic pattern eligible")
+	}
+	profile := analyzeFuncProfile(proto)
+	if !shouldPromoteTier2(proto, profile, 1) {
+		t.Fatal("feedback-derived string.format int loop should be eligible for Tier2")
+	}
+	if NewTieringManager().shouldSuppressLoopCallTier2(proto, profile) {
+		t.Fatal("feedback-derived string.format int loop should not be suppressed")
+	}
+}
+
 func TestLoopCallPrefilterSuppressesDynamicClosureParam(t *testing.T) {
 	src := `
 func map_array(a, f) {
@@ -447,6 +536,52 @@ func map_array(a, f) {
 	tm = NewTieringManager()
 	if tm.shouldSuppressLoopCallTier2(mapArray, profile) {
 		t.Fatal("no-filter diagnostics should bypass the dynamic loop-call prefilter")
+	}
+}
+
+func TestLoopCallPrefilterAllowsPrefixFormatBeforeHotCallFreeLoop(t *testing.T) {
+	src := `
+func test_compare() {
+    arr := {}
+    for i := 1; i <= 1000; i++ {
+        arr[i] = string.format("key_%05d", (i * 7) % 1000)
+    }
+    n := #arr
+    for i := 1; i <= n - 1; i++ {
+        for j := 1; j <= n - i; j++ {
+            if arr[j] > arr[j + 1] {
+                t := arr[j]
+                arr[j] = arr[j + 1]
+                arr[j + 1] = t
+            }
+        }
+    }
+    return arr[1] .. " .. " .. arr[n]
+}
+`
+	top := compileProto(t, src)
+	compare := findProtoByName(top, "test_compare")
+	if compare == nil {
+		t.Fatal("test_compare proto not found")
+	}
+	profile := analyzeFuncProfile(compare)
+	if profile.LoopDepth < 2 || !hasStaticCallInLoop(compare) {
+		t.Fatalf("unexpected test shape profile=%+v staticCallInLoop=%v", profile, hasStaticCallInLoop(compare))
+	}
+	tm := NewTieringManager()
+	if tm.osrWouldHitCallInLoopGate(compare, profile) {
+		t.Fatal("prefix string.format loop should not suppress OSR for later hot call-free loop")
+	}
+
+	fn, _, err := RunTier2Pipeline(BuildGraph(compare), &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(test_compare): %v", err)
+	}
+	if got := countOpHelper(fn, OpStringFormatInt); got == 0 {
+		t.Fatal("test fixture should lower prefix string.format call to StringFormatInt")
+	}
+	if hasBlockingNonNativeCallInLoop(fn, nil) {
+		t.Fatal("lowered prefix string.format call should not block Tier2 when a later call-free hot loop exists")
 	}
 }
 

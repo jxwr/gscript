@@ -227,36 +227,24 @@ func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Val
 	}
 	fnVal := regs[callSlot]
 
-	// Collect arguments from regs[callSlot+1 .. callSlot+nArgs].
-	var local [16]runtime.Value
-	var callArgs []runtime.Value
-	if nArgs <= len(local) {
-		callArgs = local[:nArgs]
-	} else {
-		callArgs = make([]runtime.Value, nArgs)
-	}
-	for i := 0; i < nArgs; i++ {
-		idx := callSlot + 1 + i
-		if idx < len(regs) {
-			callArgs[i] = regs[idx]
+	if gf := fnVal.GoFunction(); gf != nil {
+		result, ok, err := callGoFunctionFast(gf, regs, callSlot, nArgs)
+		if err != nil || ok {
+			if err != nil {
+				return err
+			}
+			storeCallExitSingleResult(regs, callSlot, nRets, result)
+			return nil
 		}
 	}
 
+	callArgs := collectCallExitArgs(regs, callSlot, nArgs)
 	if gf := fnVal.GoFunction(); gf != nil && gf.Fast1 != nil {
 		result, err := gf.Fast1(callArgs)
 		if err != nil {
 			return err
 		}
-		for i := 0; i < nRets; i++ {
-			idx := callSlot + i
-			if idx < len(regs) {
-				if i == 0 {
-					regs[idx] = result
-				} else {
-					regs[idx] = runtime.NilValue()
-				}
-			}
-		}
+		storeCallExitSingleResult(regs, callSlot, nRets, result)
 		return nil
 	}
 
@@ -408,6 +396,9 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 				if resultSlot < len(regs) {
 					regs[resultSlot] = result
 				}
+				if cf.Proto != nil && cf.Proto.TableKeyFeedback != nil && pc >= 0 && pc < len(cf.Proto.TableKeyFeedback) {
+					cf.Proto.TableKeyFeedback[pc].ObserveTableAccess(tbl, keyVal, result, vm.TableAccessKindGet, -1, -1)
+				}
 			} else if resultSlot < len(regs) {
 				regs[resultSlot] = runtime.NilValue()
 			}
@@ -425,6 +416,12 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 			if tblVal.IsTable() {
 				tbl := tblVal.Table()
 				pc := int(ctx.TableAux2)
+				beforeLen, beforeFieldIdx := -1, -1
+				if keyVal.IsInt() {
+					beforeLen = tbl.Len()
+				} else if keyVal.IsString() {
+					beforeFieldIdx = tbl.FieldIndex(keyVal.Str())
+				}
 				if keyVal.IsString() && cf.Proto != nil && pc >= 0 {
 					ensureTableStringKeyCache(cf.Proto)
 					tbl.RawSetStringDynamicCached(
@@ -434,6 +431,9 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 					)
 				} else {
 					tbl.RawSet(keyVal, valVal)
+				}
+				if cf.Proto != nil && cf.Proto.TableKeyFeedback != nil && pc >= 0 && pc < len(cf.Proto.TableKeyFeedback) {
+					cf.Proto.TableKeyFeedback[pc].ObserveTableAccess(tbl, keyVal, valVal, vm.TableAccessKindSet, beforeLen, beforeFieldIdx)
 				}
 			}
 		}
@@ -554,6 +554,43 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 		nArgs := arg2
 		if slot < len(regs) && tempBase >= 0 && nArgs >= 0 && tempBase+nArgs <= len(regs) {
 			regs[slot] = runtime.ConcatValues(regs[tempBase : tempBase+nArgs])
+		}
+
+	case OpStringFormatInt:
+		tempBase := arg1
+		if slot >= len(regs) || tempBase < 0 || tempBase+3 > len(regs) {
+			return fmt.Errorf("string.format int op-exit out of register range")
+		}
+		callee := regs[tempBase]
+		patternVal := regs[tempBase+1]
+		intVal := regs[tempBase+2]
+		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() && intVal.IsInt() {
+			patternIdx := aux
+			if patternIdx >= 0 && patternIdx < len(cf.StringFormatIntPatterns) {
+				pattern := cf.StringFormatIntPatterns[patternIdx]
+				if patternVal.Str() == pattern {
+					v, ok, err := runtime.StringFormatSingleInt(pattern, intVal.Int())
+					if err != nil {
+						return err
+					}
+					if ok {
+						regs[slot] = v
+						return nil
+					}
+				}
+			}
+		}
+		if cf.CallVM == nil {
+			return fmt.Errorf("no CallVM set for string.format int fallback")
+		}
+		results, err := cf.CallVM.CallValue(callee, []runtime.Value{patternVal, intVal})
+		if err != nil {
+			return err
+		}
+		if len(results) > 0 {
+			regs[slot] = results[0]
+		} else {
+			regs[slot] = runtime.NilValue()
 		}
 
 	case OpLen:

@@ -201,6 +201,7 @@ for i := 1; i <= 200; i++ {
 
 	fast1Calls := 0
 	fast2Calls := 0
+	fast3Calls := 0
 	v.SetGlobal("fast1", runtime.FunctionValue(&runtime.GoFunction{
 		Name: "fast1",
 		Fn: func(args []runtime.Value) ([]runtime.Value, error) {
@@ -221,6 +222,16 @@ for i := 1; i <= 200; i++ {
 			return runtime.IntValue(a.Int() + b.Int()), nil
 		},
 	}))
+	v.SetGlobal("fast3", runtime.FunctionValue(&runtime.GoFunction{
+		Name: "fast3",
+		Fn: func(args []runtime.Value) ([]runtime.Value, error) {
+			return []runtime.Value{runtime.IntValue(args[0].Int() + args[1].Int() + args[2].Int())}, nil
+		},
+		FastArg3: func(a, b, c runtime.Value) (runtime.Value, error) {
+			fast3Calls++
+			return runtime.IntValue(a.Int() + b.Int() + c.Int()), nil
+		},
+	}))
 
 	if _, err := v.Execute(proto); err != nil {
 		t.Fatalf("JIT runtime error: %v", err)
@@ -230,7 +241,16 @@ for i := 1; i <= 200; i++ {
 		t.Fatalf("result = %v, want 72", result)
 	}
 	if fast1Calls == 0 || fast2Calls == 0 {
-		t.Fatalf("fixed-arg fast paths were not used: fast1=%d fast2=%d", fast1Calls, fast2Calls)
+		t.Fatalf("fixed-arg fast paths were not used: fast1=%d fast2=%d fast3=%d", fast1Calls, fast2Calls, fast3Calls)
+	}
+	if _, err := v.Execute(compileTop(t, `result := fast3(1, 2, 3)`)); err != nil {
+		t.Fatalf("JIT fast3 runtime error: %v", err)
+	}
+	if got := v.GetGlobal("result"); !got.IsInt() || got.Int() != 6 {
+		t.Fatalf("fast3 result = %v, want 6", got)
+	}
+	if fast3Calls == 0 {
+		t.Fatalf("FastArg3 path was not used")
 	}
 }
 
@@ -286,6 +306,61 @@ func f(idx) {
 result := 0
 for i := 1; i <= 200; i++ { result = f(3) }
 `, "result")
+}
+
+func TestTier1_NativeDynamicStringCacheHitRecordsTableAccessFeedback(t *testing.T) {
+	src := `
+func f(t, k, v) {
+    old := t[k]
+    t[k] = v
+    return old
+}
+
+t := {name: 1, age: 2}
+key := "name"
+result := 0
+for i := 1; i <= 240; i++ {
+    result = result + f(t, key, i)
+}
+`
+	proto := compileTop(t, src)
+	fProto := findProtoByName(proto, "f")
+	if fProto == nil {
+		t.Fatal("f proto not found")
+	}
+	fProto.EnsureFeedback()
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	engine := NewBaselineJITEngine()
+	v.SetMethodJIT(engine)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("JIT runtime error: %v", err)
+	}
+
+	if engine.compiled[fProto] == nil {
+		t.Fatal("f was not baseline compiled")
+	}
+
+	var checked int
+	for pc, inst := range fProto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_GETTABLE, vm.OP_SETTABLE:
+			fb := fProto.TableKeyFeedback[pc]
+			key, shapeID, fieldIdx, ok := fb.StableStringShapeField()
+			if !ok || key != "name" || shapeID == 0 || fieldIdx < 0 {
+				t.Fatalf("pc=%d stable string shape field = key=%q shape=%d field=%d ok=%v feedback=%#v",
+					pc, key, shapeID, fieldIdx, ok, fb)
+			}
+			if fb.Count <= 1 {
+				t.Fatalf("pc=%d feedback count=%d, want native cache hits to keep recording beyond first miss; feedback=%#v", pc, fb.Count, fb)
+			}
+			checked++
+		}
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d dynamic table ops, want 2", checked)
+	}
 }
 
 func TestBaselineGetTable_FloatArray(t *testing.T) {

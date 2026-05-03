@@ -540,6 +540,25 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = table[idx]
 
+	case OpStringFormatInt:
+		patternIdx := int(instr.Aux)
+		if patternIdx < 0 || patternIdx >= len(s.fn.StringFormatIntPatterns) {
+			return nil, false, fmt.Errorf("IR interpreter: string format pattern %d out of range", patternIdx)
+		}
+		patternVal := s.val(instr.Args[1])
+		intVal := s.val(instr.Args[2])
+		if !patternVal.IsString() || !intVal.IsInt() {
+			return nil, false, fmt.Errorf("IR interpreter: string format guard mismatch")
+		}
+		v, ok, err := runtime.StringFormatSingleInt(patternVal.Str(), intVal.Int())
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, fmt.Errorf("IR interpreter: unsupported string format pattern")
+		}
+		s.values[instr.ID] = v
+
 	// ---------- Table operations ----------
 	case OpNewTable:
 		arrHint := int(instr.Aux)
@@ -878,6 +897,15 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		n := a.Int()
 		if n < instr.Aux || n > instr.Aux2 {
 			return nil, false, fmt.Errorf("IR interpreter: GuardIntRange failed")
+		}
+		s.values[instr.ID] = a
+
+	case OpGuardConstString:
+		a := s.val(instr.Args[0])
+		idx := int(instr.Aux)
+		if idx < 0 || idx >= len(s.fn.Proto.Constants) || !s.fn.Proto.Constants[idx].IsString() ||
+			!a.IsString() || a.Str() != s.fn.Proto.Constants[idx].Str() {
+			return nil, false, fmt.Errorf("IR interpreter: GuardConstString failed")
 		}
 		s.values[instr.ID] = a
 

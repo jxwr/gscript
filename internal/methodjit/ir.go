@@ -31,6 +31,30 @@ type LoopTableArrayFact struct {
 	AccessOp         Op
 }
 
+// ProtocolConstCallFoldFact records a callsite whose callee is a guarded
+// whole-call protocol and whose integer arguments are compile-time constants or
+// guarded stable globals. Codegen guards dependencies before materializing the
+// folded Result; guard miss falls back to the normal call-exit path.
+type ProtocolConstCallFoldFact struct {
+	CalleeProto    *vm.FuncProto
+	Result         int64
+	GuardConsts    []int
+	GuardProtos    []*vm.FuncProto
+	IntGuardConsts []int
+	IntGuardValues []int64
+}
+
+type WholeCallNoResultBatchCall struct {
+	FuncConst int
+	ArgConsts []int
+}
+
+type WholeCallNoResultBatchFact struct {
+	LoopBase int
+	ExitPC   int
+	Calls    []WholeCallNoResultBatchCall
+}
+
 // Function is the complete IR for one compiled function.
 type Function struct {
 	Entry   *Block        // entry basic block
@@ -97,10 +121,29 @@ type Function struct {
 	// cross-proto raw-int call path; OpCall.Type alone is not authoritative.
 	CallABIs map[int]CallABIDescriptor
 
+	// ProtocolConstCallFolds records guarded whole-call protocol constants
+	// keyed by OpCall instruction ID.
+	ProtocolConstCallFolds map[int]ProtocolConstCallFoldFact
+
+	// WholeCallNoResultKernels records stable structural no-result whole-call
+	// kernels keyed by OpCall instruction ID. Codegen routes them through a
+	// precise op-exit rather than the generic CallExit path.
+	WholeCallNoResultKernels map[int]bool
+
+	// WholeCallNoResultBatches records loop-tail no-result whole-call kernel
+	// sites that can safely batch future complete loop iterations after the
+	// current iteration's final kernel call has run.
+	WholeCallNoResultBatches map[int]WholeCallNoResultBatchFact
+
 	// StringConstTables records small immutable lookup tables used by narrow
 	// string-format lowerings. CompiledFunction keeps these slices alive after
 	// codegen embeds their backing-array addresses.
 	StringConstTables [][]runtime.Value
+
+	// StringFormatIntPatterns records immutable pattern metadata for generic
+	// string.format(pattern, int) lowering. Patterns are accepted by syntax
+	// shape, not by benchmark-specific literal value.
+	StringFormatIntPatterns []string
 
 	// FixedShapeTables records SSA table values whose field layout is known
 	// without consulting the runtime field cache. The initial producer is a

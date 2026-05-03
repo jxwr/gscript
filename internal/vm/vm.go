@@ -922,6 +922,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			// Fast path: plain table (no metatable)
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
+					pc := frame.pc - 1
 					if key.IsString() {
 						proto := frame.closure.Proto
 						if proto.TableStringKeyCache == nil {
@@ -929,20 +930,18 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						}
 						vm.regs[base+a] = tbl.RawGetStringDynamicCached(
 							key.Str(),
-							runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, frame.pc-1),
+							runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc),
 						)
 					} else {
 						vm.regs[base+a] = tbl.RawGet(key)
 					}
 					if frame.closure.Proto.Feedback != nil {
-						fb := &frame.closure.Proto.Feedback[frame.pc-1]
+						fb := &frame.closure.Proto.Feedback[pc]
 						fb.Left.Observe(tableVal.Type())
 						fb.Right.Observe(key.Type())
 						fb.Result.Observe(vm.regs[base+a].Type())
 						if frame.closure.Proto.TableKeyFeedback != nil {
-							tkf := &frame.closure.Proto.TableKeyFeedback[frame.pc-1]
-							tkf.ObserveIntKey(key)
-							tkf.ObserveDenseMatrix(tbl)
+							frame.closure.Proto.TableKeyFeedback[pc].ObserveTableAccess(tbl, key, vm.regs[base+a], TableAccessKindGet, -1, -1)
 						}
 					}
 					break
@@ -960,9 +959,8 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				fb.Result.Observe(val.Type())
 				if frame.closure.Proto.TableKeyFeedback != nil {
 					tkf := &frame.closure.Proto.TableKeyFeedback[frame.pc-1]
-					tkf.ObserveIntKey(key)
 					if tableVal.IsTable() {
-						tkf.ObserveDenseMatrix(tableVal.Table())
+						tkf.ObserveTableAccess(tableVal.Table(), key, val, TableAccessKindGet, -1, -1)
 					}
 				}
 			}
@@ -986,6 +984,13 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			// Fast path: plain table
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
+					pc := frame.pc - 1
+					beforeLen, beforeFieldIdx := -1, -1
+					if key.IsInt() {
+						beforeLen = tbl.Len()
+					} else if key.IsString() {
+						beforeFieldIdx = tbl.FieldIndex(key.Str())
+					}
 					if key.IsString() {
 						proto := frame.closure.Proto
 						if proto.TableStringKeyCache == nil {
@@ -994,18 +999,18 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						tbl.RawSetStringDynamicCached(
 							key.Str(),
 							val,
-							runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, frame.pc-1),
+							runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc),
 						)
 					} else {
 						tbl.RawSet(key, val)
 					}
 					if frame.closure.Proto.Feedback != nil {
-						fb := &frame.closure.Proto.Feedback[frame.pc-1]
+						fb := &frame.closure.Proto.Feedback[pc]
 						fb.Left.Observe(tableVal.Type())
 						fb.Right.Observe(key.Type())
 						fb.Result.Observe(val.Type())
 						if frame.closure.Proto.TableKeyFeedback != nil {
-							frame.closure.Proto.TableKeyFeedback[frame.pc-1].ObserveIntKey(key)
+							frame.closure.Proto.TableKeyFeedback[pc].ObserveTableAccess(tbl, key, val, TableAccessKindSet, beforeLen, beforeFieldIdx)
 						}
 					}
 					break
@@ -1020,7 +1025,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				fb.Right.Observe(key.Type())
 				fb.Result.Observe(val.Type())
 				if frame.closure.Proto.TableKeyFeedback != nil {
-					frame.closure.Proto.TableKeyFeedback[frame.pc-1].ObserveIntKey(key)
+					if tableVal.IsTable() {
+						frame.closure.Proto.TableKeyFeedback[frame.pc-1].ObserveTableAccess(tableVal.Table(), key, val, TableAccessKindSet, -1, -1)
+					}
 				}
 			}
 
@@ -1036,10 +1043,14 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					if proto.FieldCache == nil {
 						proto.FieldCache = make([]runtime.FieldCacheEntry, len(proto.Code))
 					}
-					vm.regs[base+a] = tbl.RawGetStringCached(constants[c].Str(), &proto.FieldCache[frame.pc-1])
+					pc := frame.pc - 1
+					vm.regs[base+a] = tbl.RawGetStringCached(constants[c].Str(), &proto.FieldCache[pc])
 					if proto.Feedback != nil {
-						fb := &proto.Feedback[frame.pc-1]
+						fb := &proto.Feedback[pc]
 						fb.Result.Observe(vm.regs[base+a].Type())
+					}
+					if proto.FieldAccessFeedback != nil {
+						proto.FieldAccessFeedback[pc].ObserveFieldCache(proto.FieldCache[pc], vm.regs[base+a], 1)
 					}
 					break
 				}
@@ -1073,10 +1084,14 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					if proto.FieldCache == nil {
 						proto.FieldCache = make([]runtime.FieldCacheEntry, len(proto.Code))
 					}
-					tbl.RawSetStringCached(constants[b].Str(), val, &proto.FieldCache[frame.pc-1])
+					pc := frame.pc - 1
+					tbl.RawSetStringCached(constants[b].Str(), val, &proto.FieldCache[pc])
 					if proto.Feedback != nil {
-						fb := &proto.Feedback[frame.pc-1]
+						fb := &proto.Feedback[pc]
 						fb.Result.Observe(val.Type())
+					}
+					if proto.FieldAccessFeedback != nil {
+						proto.FieldAccessFeedback[pc].ObserveFieldCache(proto.FieldCache[pc], val, 2)
 					}
 					break
 				}
@@ -1465,8 +1480,19 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				nArgs = vm.top - (base + a + 1)
 			}
 			if frame.closure.Proto.Feedback != nil {
-				fb := &frame.closure.Proto.Feedback[frame.pc-1]
+				proto := frame.closure.Proto
+				callPC := frame.pc - 1
+				fb := &proto.Feedback[callPC]
 				fb.Left.Observe(fnVal.Type())
+				if proto.CallSiteFeedback != nil && callPC >= 0 && callPC < len(proto.CallSiteFeedback) {
+					argStart := base + a + 1
+					argEnd := argStart + nArgs
+					if argStart >= 0 && argEnd >= argStart && argEnd <= len(vm.regs) {
+						proto.CallSiteFeedback[callPC].ObserveCall(fnVal, vm.regs[argStart:argEnd], nArgs, c)
+					} else {
+						proto.CallSiteFeedback[callPC].ObserveCall(fnVal, nil, nArgs, c)
+					}
+				}
 			}
 
 			if fnVal.IsFunction() {

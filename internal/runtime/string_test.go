@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -119,6 +120,35 @@ func TestStringFormatPaddedNegative(t *testing.T) {
 	}
 }
 
+func TestStringFormatSingleIntMinInt64(t *testing.T) {
+	v, ok, err := StringFormatSingleInt("%d", math.MinInt64)
+	if err != nil {
+		t.Fatalf("StringFormatSingleInt failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("StringFormatSingleInt did not accept decimal integer pattern")
+	}
+	if got, want := v.Str(), "-9223372036854775808"; got != want {
+		t.Fatalf("StringFormatSingleInt MinInt64=%q, want %q", got, want)
+	}
+}
+
+func TestStdStringFormatIdentityGuardRejectsLookalikeGoFunction(t *testing.T) {
+	lib := buildStringLib()
+	std := lib.RawGetString("format")
+	if !IsStdStringFormatFunction(std) {
+		t.Fatal("stdlib string.format was not recognized")
+	}
+
+	lookalike := FunctionValue(&GoFunction{
+		Name:     "string.format",
+		FastArg2: stringFormat2Value,
+	})
+	if IsStdStringFormatFunction(lookalike) {
+		t.Fatal("lookalike GoFunction passed stdlib string.format identity guard")
+	}
+}
+
 func TestStringFormatMultiArgs(t *testing.T) {
 	v := getGlobal(t, `result := string.format("hello %s, you are %d", "world", 42)`, "result")
 	if v.Str() != "hello world, you are 42" {
@@ -135,6 +165,16 @@ for i := 1; i <= 3; i++ {
 `, "result")
 	if v.Str() != "item_3_value_00021" {
 		t.Errorf("expected cached simple format result, got %q", v.Str())
+	}
+}
+
+func TestStringFormatSimpleCachedTwoArgPattern(t *testing.T) {
+	v, err := stringFormat3Value(StringValue("item_%d_value_%05d"), IntValue(3), IntValue(21))
+	if err != nil {
+		t.Fatalf("stringFormat3Value failed: %v", err)
+	}
+	if !v.IsString() || v.Str() != "item_3_value_00021" {
+		t.Fatalf("expected item_3_value_00021, got %v", v)
 	}
 }
 

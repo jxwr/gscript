@@ -78,7 +78,7 @@ func hasSideEffect(instr *Instr) bool {
 		return true
 
 	// Guards: deoptimization side effect.
-	case OpGuardType, OpGuardIntRange, OpGuardNonNil, OpGuardTruthy:
+	case OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardNonNil, OpGuardTruthy:
 		return true
 
 	// For-loop control: always kept.

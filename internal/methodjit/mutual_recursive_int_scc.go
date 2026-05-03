@@ -26,6 +26,7 @@ type mutualRecursiveIntSCCProtocol struct {
 	entryIndex  int
 	memoMu      sync.Mutex
 	memo        map[mutualRecursiveIntKey]int64
+	active      map[mutualRecursiveIntKey]bool
 }
 
 type mutualRecursiveIntValue struct {
@@ -227,7 +228,11 @@ func newMutualRecursiveIntSCCCompiled(proto *vm.FuncProto, globals map[string]*v
 }
 
 func (tm *TieringManager) compileMutualRecursiveIntSCCTier2(proto *vm.FuncProto) (*CompiledFunction, bool) {
-	cf, ok := newMutualRecursiveIntSCCCompiled(proto, tm.buildInlineGlobals())
+	return tm.compileMutualRecursiveIntSCCTier2WithGlobals(proto, tm.buildInlineGlobals())
+}
+
+func (tm *TieringManager) compileMutualRecursiveIntSCCTier2WithGlobals(proto *vm.FuncProto, globals map[string]*vm.FuncProto) (*CompiledFunction, bool) {
+	cf, ok := newMutualRecursiveIntSCCCompiled(proto, globals)
 	if !ok {
 		return nil, false
 	}
@@ -249,10 +254,6 @@ func (tm *TieringManager) executeMutualRecursiveIntSCC(cf *CompiledFunction, reg
 	if base < 0 || base >= len(regs) {
 		return nil, fmt.Errorf("tier2: mutual recursive int SCC base %d outside regs len %d", base, len(regs))
 	}
-	if !tm.mutualRecursiveIntSCCGlobalsMatch(cf.MutualRecursiveIntSCC) {
-		tm.disableTier2AfterRuntimeDeopt(proto, "tier2: mutual recursive int SCC global changed")
-		return nil, fmt.Errorf("tier2: mutual recursive int SCC global changed")
-	}
 	var args [4]int64
 	for i := 0; i < proto.NumParams; i++ {
 		if base+i >= len(regs) || !regs[base+i].IsInt() {
@@ -261,19 +262,10 @@ func (tm *TieringManager) executeMutualRecursiveIntSCC(cf *CompiledFunction, reg
 		}
 		args[i] = regs[base+i].Int()
 	}
-	proto.EnteredTier2 = 1
-	protocol := cf.MutualRecursiveIntSCC
-	protocol.memoMu.Lock()
-	defer protocol.memoMu.Unlock()
-	if len(protocol.memo) >= maxMutualRecursiveIntSCCMemo {
-		protocol.memo = make(map[mutualRecursiveIntKey]int64)
+	result, ok, err := tm.executeMutualRecursiveIntSCCArgs(cf, proto, args)
+	if err != nil {
+		return nil, err
 	}
-	e := &mutualRecursiveIntEvaluator{
-		protocol: protocol,
-		memo:     protocol.memo,
-		active:   make(map[mutualRecursiveIntKey]bool),
-	}
-	result, ok := e.eval(protocol.entryIndex, args)
 	if !ok {
 		tm.disableTier2AfterRuntimeDeopt(proto, "tier2: mutual recursive int SCC fallback")
 		return nil, fmt.Errorf("tier2: mutual recursive int SCC fallback")
@@ -281,6 +273,36 @@ func (tm *TieringManager) executeMutualRecursiveIntSCC(cf *CompiledFunction, reg
 	out := runtime.IntValue(result)
 	regs[base] = out
 	return runtime.ReuseValueSlice1(retBuf, out), nil
+}
+
+func (tm *TieringManager) executeMutualRecursiveIntSCCArgs(cf *CompiledFunction, proto *vm.FuncProto, args [4]int64) (int64, bool, error) {
+	if cf == nil || cf.MutualRecursiveIntSCC == nil || proto == nil {
+		return 0, false, fmt.Errorf("tier2: missing mutual recursive int SCC protocol")
+	}
+	proto.EnteredTier2 = 1
+	protocol := cf.MutualRecursiveIntSCC
+	if !tm.mutualRecursiveIntSCCGlobalsMatch(protocol) {
+		tm.disableTier2AfterRuntimeDeopt(proto, "tier2: mutual recursive int SCC global changed")
+		return 0, false, fmt.Errorf("tier2: mutual recursive int SCC global changed")
+	}
+	protocol.memoMu.Lock()
+	defer protocol.memoMu.Unlock()
+	if len(protocol.memo) >= maxMutualRecursiveIntSCCMemo {
+		protocol.memo = make(map[mutualRecursiveIntKey]int64)
+	}
+	if protocol.active == nil {
+		protocol.active = make(map[mutualRecursiveIntKey]bool)
+	}
+	e := &mutualRecursiveIntEvaluator{
+		protocol: protocol,
+		memo:     protocol.memo,
+		active:   protocol.active,
+	}
+	result, ok := e.eval(protocol.entryIndex, args)
+	for key := range protocol.active {
+		delete(protocol.active, key)
+	}
+	return result, ok, nil
 }
 
 func (tm *TieringManager) mutualRecursiveIntSCCGlobalsMatch(protocol *mutualRecursiveIntSCCProtocol) bool {

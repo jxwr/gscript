@@ -22,8 +22,9 @@ const (
 	// capacity-only append/sparse typed-array path as OpSetTable. Misses still
 	// precise-deopt unless tableArrayStoreFlagExitResumeOnMiss is also set.
 	tableArrayStoreFlagAllowGrow int64 = 1 << iota
-	// tableArrayStoreFlagExitResumeOnMiss is only safe when later code does
-	// not reuse stale table-array data/len facts after RawSetInt fallback.
+	// tableArrayStoreFlagExitResumeOnMiss routes misses through SetTable and
+	// resumes. The resume path refreshes table-array data/len facts so later
+	// raw array operations do not keep stale backing pointers after fallback.
 	tableArrayStoreFlagExitResumeOnMiss
 )
 
@@ -711,12 +712,32 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 		ec.emitTableArrayStoreExit(instr)
 		ec.emitUnboxRawIntRegs(savedReprs)
 		ec.restoreValueReprSnapshot(savedReprs)
+		ec.refreshTableArrayStoreFactsAfterExit(instr)
 		asm.MOVimm16(jit.X17, 0)
 		asm.B(doneLabel)
 	} else {
 		ec.emitPreciseDeopt(instr)
 	}
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) refreshTableArrayStoreFactsAfterExit(instr *Instr) {
+	if instr == nil || len(instr.Args) < 3 || instr.Args[0] == nil || instr.Args[1] == nil || instr.Args[2] == nil {
+		return
+	}
+	dataOff, lenOff, ok := tableArrayOffsets(instr.Aux)
+	if !ok {
+		return
+	}
+	asm := ec.asm
+	tblReg := ec.resolveRawTablePtr(instr.Args[0].ID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	asm.LDR(jit.X16, jit.X0, dataOff)
+	asm.LDR(jit.X17, jit.X0, lenOff)
+	ec.storeRawDataPtr(jit.X16, instr.Args[1].ID)
+	ec.storeRawInt(jit.X17, instr.Args[2].ID)
 }
 
 func (ec *emitContext) emitTableArraySwap(instr *Instr) {

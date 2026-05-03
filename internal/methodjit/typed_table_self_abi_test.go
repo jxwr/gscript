@@ -141,6 +141,7 @@ root := makeTree(5)
 		t.Fatalf("warm checkTree(root)=%v, want int %d", warm, want)
 	}
 	checkTree.FieldCache = nil
+	checkTree.FieldAccessFeedback = nil
 
 	tm := NewTieringManager()
 	v.SetMethodJIT(tm)

@@ -314,6 +314,64 @@ func TestTableKeyFeedback_ObserveDenseMatrix(t *testing.T) {
 	}
 }
 
+func TestTableAccessFeedback_ObserveIntMutations(t *testing.T) {
+	var tk TableKeyFeedback
+	tbl := runtime.NewTable()
+
+	tk.ObserveTableAccess(tbl, runtime.IntValue(1), runtime.IntValue(10), TableAccessKindSet, 0, -1)
+	if tk.Flags&TableAccessAppendSeen == 0 {
+		t.Fatalf("append mutation was not recorded: flags=%#x", tk.Flags)
+	}
+	tbl.RawSet(runtime.IntValue(1), runtime.IntValue(10))
+
+	tk.ObserveTableAccess(tbl, runtime.IntValue(1), runtime.IntValue(20), TableAccessKindSet, tbl.Len(), -1)
+	if tk.Flags&TableAccessOverwriteSeen == 0 {
+		t.Fatalf("overwrite mutation was not recorded: flags=%#x", tk.Flags)
+	}
+
+	tk.ObserveTableAccess(tbl, runtime.IntValue(5), runtime.IntValue(50), TableAccessKindSet, tbl.Len(), -1)
+	if tk.Flags&TableAccessSparseSeen == 0 {
+		t.Fatalf("sparse mutation was not recorded: flags=%#x", tk.Flags)
+	}
+	if !tk.HasIntKey || tk.MaxIntKey != 5 {
+		t.Fatalf("int key range not retained: has=%v max=%d", tk.HasIntKey, tk.MaxIntKey)
+	}
+}
+
+func TestTableAccessFeedback_StableStringShapeField(t *testing.T) {
+	var tk TableKeyFeedback
+	tbl := runtime.NewTable()
+	tbl.RawSet(runtime.StringValue("name"), runtime.IntValue(7))
+	val := tbl.RawGet(runtime.StringValue("name"))
+
+	tk.ObserveTableAccess(tbl, runtime.StringValue("name"), val, TableAccessKindGet, -1, -1)
+	key, shapeID, fieldIdx, ok := tk.StableStringShapeField()
+	if !ok {
+		t.Fatalf("stable string shape field not recorded: %#v", tk)
+	}
+	if key != "name" || shapeID != tbl.ShapeID() || fieldIdx != tbl.FieldIndex("name") {
+		t.Fatalf("stable facts mismatch key=%q shape=%d/%d field=%d/%d", key, shapeID, tbl.ShapeID(), fieldIdx, tbl.FieldIndex("name"))
+	}
+
+	tk.ObserveTableAccess(tbl, runtime.StringValue("other"), runtime.IntValue(1), TableAccessKindGet, -1, -1)
+	if _, _, _, ok := tk.StableStringShapeField(); ok {
+		t.Fatalf("polymorphic string key should reject stable shape-field feedback")
+	}
+	if tk.Flags&TableAccessKeyPolymorphic == 0 {
+		t.Fatalf("string key polymorphism not recorded: flags=%#x", tk.Flags)
+	}
+}
+
+func TestTableAccessFeedback_MetatableSeen(t *testing.T) {
+	var tk TableKeyFeedback
+	tbl := runtime.NewTable()
+	tbl.SetMetatable(runtime.NewTable())
+	tk.ObserveTableAccess(tbl, runtime.StringValue("x"), runtime.NilValue(), TableAccessKindGet, -1, -1)
+	if tk.Flags&TableAccessMetatableSeen == 0 {
+		t.Fatalf("metatable was not recorded: flags=%#x", tk.Flags)
+	}
+}
+
 func TestFeedback_TableIntKeyRange(t *testing.T) {
 	proto := compileFeedback(t, `
 		t := {}
@@ -344,6 +402,44 @@ func TestFeedback_TableIntKeyRange(t *testing.T) {
 	}
 }
 
+func TestFeedback_TableAccessStringShapeField(t *testing.T) {
+	proto := compileFeedback(t, `
+		t := {}
+		k := "name"
+		t[k] = 42
+		v := t[k]
+	`)
+	if proto.TableKeyFeedback == nil {
+		t.Fatal("missing table key feedback")
+	}
+	var sawGet, sawSet bool
+	for pc, inst := range proto.Code {
+		switch DecodeOp(inst) {
+		case OP_SETTABLE:
+			sawSet = true
+			fb := proto.TableKeyFeedback[pc]
+			if fb.Flags&TableAccessAppendSeen == 0 {
+				t.Fatalf("SETTABLE pc=%d did not record string-field append: %#v", pc, fb)
+			}
+			if _, _, _, ok := fb.StableStringShapeField(); !ok {
+				t.Fatalf("SETTABLE pc=%d did not expose stable string shape field: %#v", pc, fb)
+			}
+		case OP_GETTABLE:
+			sawGet = true
+			fb := proto.TableKeyFeedback[pc]
+			if fb.KeyType != FBString || fb.ValueType != FBInt {
+				t.Fatalf("GETTABLE pc=%d key/value feedback = %d/%d, want string/int", pc, fb.KeyType, fb.ValueType)
+			}
+			if key, _, _, ok := fb.StableStringShapeField(); !ok || key != "name" {
+				t.Fatalf("GETTABLE pc=%d stable string field = %q ok=%v feedback=%#v", pc, key, ok, fb)
+			}
+		}
+	}
+	if !sawSet || !sawGet {
+		t.Fatalf("expected both dynamic SETTABLE and GETTABLE in test bytecode")
+	}
+}
+
 func TestFeedback_FunctionCall(t *testing.T) {
 	proto := compileFeedbackNested(t, `
 		func foo() {
@@ -355,6 +451,61 @@ func TestFeedback_FunctionCall(t *testing.T) {
 	// Left records the callee type
 	if fb.Left != FBFunction {
 		t.Errorf("CALL callee: expected FBFunction, got %d", fb.Left)
+	}
+}
+
+func TestCallSiteFeedback_StdStringFormatStable(t *testing.T) {
+	proto := compileFeedback(t, `
+		total := 0
+		for i := 1; i <= 3; i++ {
+			s := string.format("key%05d", i)
+			total = total + #s
+		}
+	`)
+	cf := findCallSiteFeedback(t, proto)
+	if cf.Count != 3 {
+		t.Fatalf("callsite count=%d, want 3", cf.Count)
+	}
+	if cf.NArgs != 2 || cf.Flags&CallSiteArityPolymorphic != 0 {
+		t.Fatalf("callsite arity nArgs=%d flags=%02x", cf.NArgs, cf.Flags)
+	}
+	if cf.Flags&CallSiteCalleePolymorphic != 0 {
+		t.Fatalf("stdlib string.format callsite should be monomorphic, flags=%02x", cf.Flags)
+	}
+	if kind, data, ok := cf.StableCalleeNativeIdentity(); !ok || kind != runtime.NativeKindStdStringFormat || data != uintptr(runtime.StdStringFormatIdentityPtr()) {
+		t.Fatalf("callee identity kind=%d data=%#x ok=%v", kind, data, ok)
+	}
+	if cf.ArgTypes[0] != FBString || cf.ArgTypes[1] != FBInt {
+		t.Fatalf("arg feedback=(%d,%d), want string,int", cf.ArgTypes[0], cf.ArgTypes[1])
+	}
+	if s, ok := cf.StableStringArg(0); !ok || s != "key%05d" {
+		t.Fatalf("stable string arg=%q ok=%v", s, ok)
+	}
+}
+
+func TestCallSiteFeedback_ReboundCalleePolymorphic(t *testing.T) {
+	proto := compileFeedback(t, `
+		func replacement(pattern, n) {
+			return "x"
+		}
+		total := 0
+		for i := 1; i <= 2; i++ {
+			if i == 2 {
+				string.format = replacement
+			}
+			s := string.format("%d", i)
+			total = total + #s
+		}
+	`)
+	cf := findCallSiteFeedback(t, proto)
+	if cf.Count != 2 {
+		t.Fatalf("callsite count=%d, want 2", cf.Count)
+	}
+	if cf.Flags&CallSiteCalleePolymorphic == 0 {
+		t.Fatalf("rebound callsite should be callee-polymorphic, flags=%02x", cf.Flags)
+	}
+	if _, _, ok := cf.StableCalleeNativeIdentity(); ok {
+		t.Fatal("polymorphic callsite reported stable native callee identity")
 	}
 }
 
@@ -374,6 +525,57 @@ func TestFeedback_NoOverheadWithoutInit(t *testing.T) {
 	runWithFeedback(t, proto) // runs WITHOUT EnsureFeedback
 	if proto.Feedback != nil {
 		t.Fatalf("expected nil Feedback when not initialized")
+	}
+}
+
+func findCallSiteFeedback(t *testing.T, proto *FuncProto) CallSiteFeedback {
+	t.Helper()
+	if proto.CallSiteFeedback == nil {
+		t.Fatalf("no callsite feedback vector on proto")
+	}
+	for pc, inst := range proto.Code {
+		if DecodeOp(inst) == OP_CALL && proto.CallSiteFeedback[pc].Count > 0 {
+			return proto.CallSiteFeedback[pc]
+		}
+	}
+	t.Fatal("no observed OP_CALL feedback found")
+	return CallSiteFeedback{}
+}
+
+func TestFieldAccessFeedback_StableShapeField(t *testing.T) {
+	var ff FieldAccessFeedback
+	ff.ObserveFieldCache(runtime.FieldCacheEntry{ShapeID: 7, FieldIdx: 2}, runtime.IntValue(1), 1)
+	ff.ObserveFieldCache(runtime.FieldCacheEntry{ShapeID: 7, FieldIdx: 2}, runtime.IntValue(2), 1)
+	shapeID, fieldIdx, ok := ff.StableShapeField()
+	if !ok || shapeID != 7 || fieldIdx != 2 {
+		t.Fatalf("stable shape field=(%d,%d,%v), want (7,2,true)", shapeID, fieldIdx, ok)
+	}
+	if ff.ValueType != FBInt {
+		t.Fatalf("value type=%d, want FBInt", ff.ValueType)
+	}
+}
+
+func TestFieldAccessFeedback_PolymorphicShapeRejected(t *testing.T) {
+	var ff FieldAccessFeedback
+	ff.ObserveFieldCache(runtime.FieldCacheEntry{ShapeID: 7, FieldIdx: 0}, runtime.IntValue(1), 1)
+	ff.ObserveFieldCache(runtime.FieldCacheEntry{ShapeID: 8, FieldIdx: 0}, runtime.IntValue(2), 1)
+	if _, _, ok := ff.StableShapeField(); ok {
+		t.Fatal("polymorphic shape reported stable")
+	}
+	if ff.Flags&FieldAccessShapePolymorphic == 0 {
+		t.Fatalf("shape polymorphic flag not set: %02x", ff.Flags)
+	}
+}
+
+func TestFieldAccessFeedback_InvalidLookupRejectsStableShape(t *testing.T) {
+	var ff FieldAccessFeedback
+	ff.ObserveFieldCache(runtime.FieldCacheEntry{ShapeID: 7, FieldIdx: 0}, runtime.IntValue(1), 1)
+	ff.ObserveFieldCache(runtime.FieldCacheEntry{ShapeID: 7, FieldIdx: 0}, runtime.NilValue(), 1)
+	if _, _, ok := ff.StableShapeField(); ok {
+		t.Fatal("nil/missing field lookup reported stable")
+	}
+	if ff.Flags&FieldAccessInvalidSeen == 0 {
+		t.Fatalf("invalid lookup flag not set: %02x", ff.Flags)
 	}
 }
 

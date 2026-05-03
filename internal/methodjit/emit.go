@@ -335,8 +335,18 @@ var (
 )
 
 var (
-	tableKeyFeedbackSize           = int(unsafe.Sizeof(vm.TableKeyFeedback{}))
-	tableKeyFeedbackDenseMatrixOff = int(unsafe.Offsetof(vm.TableKeyFeedback{}.DenseMatrix))
+	tableKeyFeedbackSize             = int(unsafe.Sizeof(vm.TableKeyFeedback{}))
+	tableKeyFeedbackCountOff         = int(unsafe.Offsetof(vm.TableKeyFeedback{}.Count))
+	tableKeyFeedbackShapeIDOff       = int(unsafe.Offsetof(vm.TableKeyFeedback{}.ShapeID))
+	tableKeyFeedbackFieldIdxOff      = int(unsafe.Offsetof(vm.TableKeyFeedback{}.FieldIdx))
+	tableKeyFeedbackFlagsOff         = int(unsafe.Offsetof(vm.TableKeyFeedback{}.Flags))
+	tableKeyFeedbackKeyTypeOff       = int(unsafe.Offsetof(vm.TableKeyFeedback{}.KeyType))
+	tableKeyFeedbackValueTypeOff     = int(unsafe.Offsetof(vm.TableKeyFeedback{}.ValueType))
+	tableKeyFeedbackAccessKindOff    = int(unsafe.Offsetof(vm.TableKeyFeedback{}.AccessKind))
+	tableKeyFeedbackStringKeyOff     = int(unsafe.Offsetof(vm.TableKeyFeedback{}.StringKey))
+	tableKeyFeedbackStringKeySeenOff = int(unsafe.Offsetof(vm.TableKeyFeedback{}.StringKeySeen))
+	tableKeyFeedbackFieldIdxSeenOff  = int(unsafe.Offsetof(vm.TableKeyFeedback{}.FieldIdxSeen))
+	tableKeyFeedbackDenseMatrixOff   = int(unsafe.Offsetof(vm.TableKeyFeedback{}.DenseMatrix))
 
 	fieldCacheEntryOffAppendShapeID = int(unsafe.Offsetof(runtime.FieldCacheEntry{}.AppendShapeID))
 	fieldCacheEntryOffAppendShape   = int(unsafe.Offsetof(runtime.FieldCacheEntry{}.AppendShape))
@@ -344,6 +354,11 @@ var (
 	shapeOffFieldKeys    = int(unsafe.Offsetof(runtime.Shape{}.FieldKeys))
 	shapeOffFieldKeysLen = shapeOffFieldKeys + int(unsafe.Sizeof(uintptr(0)))
 	shapeOffFieldKeysCap = shapeOffFieldKeys + 2*int(unsafe.Sizeof(uintptr(0)))
+
+	goFunctionOffName       = int(unsafe.Offsetof(runtime.GoFunction{}.Name))
+	goFunctionOffFastArg2   = int(unsafe.Offsetof(runtime.GoFunction{}.FastArg2))
+	goFunctionOffNativeKind = int(unsafe.Offsetof(runtime.GoFunction{}.NativeKind))
+	goFunctionOffNativeData = int(unsafe.Offsetof(runtime.GoFunction{}.NativeData))
 
 	tableStringKeyCacheEntrySize     = int(unsafe.Sizeof(runtime.TableStringKeyCacheEntry{}))
 	tableStringKeyCacheEntryKeyData  = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.KeyData))
@@ -497,6 +512,15 @@ type CompiledFunction struct {
 	// StringConstTables keeps compile-time string lookup tables alive after
 	// native code embeds their backing-array addresses.
 	StringConstTables [][]runtime.Value
+
+	// StringFormatIntPatterns keeps generic string.format(pattern,int)
+	// metadata alive for precise Tier 2 op-exit handling.
+	StringFormatIntPatterns []string
+
+	// WholeCallNoResultBatches records loop-tail no-result whole-call kernel
+	// sites whose future complete loop iterations can be executed in one
+	// guarded Go-side batch before resuming Tier 2.
+	WholeCallNoResultBatches map[int]WholeCallNoResultBatchFact
 
 	// InstrCodeRanges maps IR instruction IDs to emitted machine-code byte
 	// ranges. Diagnostic metadata only; execution never consults it.

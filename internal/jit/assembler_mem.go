@@ -19,6 +19,22 @@ func (a *Assembler) STR(rt, rn Reg, offset int) {
 	a.emit(0xF9000000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
 }
 
+// LDAXR: Xt = [Xn] (64-bit exclusive acquire load).
+func (a *Assembler) LDAXR(rt, rn Reg) {
+	a.emit(0xC85FFC00 | uint32(rn)<<5 | uint32(rt))
+}
+
+// STLXR: Ws = status; [Xn] = Xt (64-bit exclusive release store).
+// Ws is zero on success and non-zero if the exclusive store failed.
+func (a *Assembler) STLXR(rs, rt, rn Reg) {
+	a.emit(0xC800FC00 | uint32(rs)<<16 | uint32(rn)<<5 | uint32(rt))
+}
+
+// CLREX clears the local exclusive monitor.
+func (a *Assembler) CLREX() {
+	a.emit(0xD5033F5F)
+}
+
 // STRpre: [Xn + #simm9]! = Xt (pre-index store, updates Xn)
 func (a *Assembler) STRpre(rt, rn Reg, simm9 int) {
 	// STR Xt, [Xn, #simm9]!: 1|1|11|1|00|00|0|imm9|11|Rn|Rt

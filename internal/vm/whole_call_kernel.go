@@ -44,6 +44,17 @@ func (vm *VM) tryRunWholeCallKernel(cl *Closure, args []runtime.Value) (bool, er
 	return vm.tryRunCachedNoResultWholeCallKernel(cl, args)
 }
 
+// TryRunNoResultWholeCallKernelForJIT executes a guarded no-result structural
+// whole-call kernel for a JIT exit helper. It returns handled=false when the
+// callee or arguments do not satisfy the registered kernel guards.
+func (vm *VM) TryRunNoResultWholeCallKernelForJIT(fn runtime.Value, args []runtime.Value) (bool, error) {
+	cl, ok := closureFromValue(fn)
+	if !ok {
+		return false, nil
+	}
+	return vm.tryRunWholeCallKernel(cl, args)
+}
+
 func (vm *VM) tryRunCachedValueWholeCallKernel(cl *Closure, args []runtime.Value, includeRecursiveTable bool) (bool, []runtime.Value, error) {
 	if cl == nil || cl.Proto == nil {
 		return false, nil, nil

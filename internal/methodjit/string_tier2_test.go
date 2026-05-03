@@ -3,6 +3,7 @@
 package methodjit
 
 import (
+	"math"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -187,18 +188,28 @@ func format_case(x) {
 			if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
 				t.Fatalf("modulo string.format lookup should avoid call exits, ExitCallExit=%d", exits)
 			}
-			if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
-				t.Fatalf("positive-divisor modulo lookup should stay in range, ExitOpExit=%d", exits)
+			if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits == 0 {
+				t.Fatal("string.format int helper should use precise op-exit fallback while native arena is disabled")
 			}
 		})
 	}
 }
 
-func TestTier2_StringFormatLookupRemainsNarrow(t *testing.T) {
+func TestTier2_StringFormatIntLoweringCoversGenericSingleIntPatterns(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
+		arg  int64
 	}{
+		{
+			name: "bare_decimal",
+			src: `
+func format_case(i) {
+    return string.format("%d", i)
+}
+`,
+			arg: 42,
+		},
 		{
 			name: "non_modulo_argument",
 			src: `
@@ -206,6 +217,7 @@ func format_case(i) {
     return string.format("key%d", i)
 }
 `,
+			arg: 7,
 		},
 		{
 			name: "padded_format",
@@ -214,6 +226,25 @@ func format_case(i) {
     return string.format("key%05d", i % 10)
 }
 `,
+			arg: 7,
+		},
+		{
+			name: "zero_padded_negative",
+			src: `
+func format_case(i) {
+    return string.format("%05d", i)
+}
+`,
+			arg: -42,
+		},
+		{
+			name: "padded_negative_with_suffix",
+			src: `
+func format_case(i) {
+    return string.format("pre%04d_suf", i)
+}
+`,
+			arg: -7,
 		},
 	}
 
@@ -228,21 +259,125 @@ func format_case(i) {
 			if err != nil {
 				t.Fatalf("RunTier2Pipeline: %v", err)
 			}
-			if lookups := countOpHelper(fn, OpStringConstLookup); lookups != 0 {
-				t.Fatalf("unsupported string.format shape admitted %d StringConstLookup ops", lookups)
+			if got := countOpHelper(fn, OpStringFormatInt); got != 1 {
+				t.Fatalf("string.format int lowering count=%d, want 1", got)
 			}
 
-			args := []runtime.Value{runtime.IntValue(7)}
+			args := []runtime.Value{runtime.IntValue(tc.arg)}
 			want := requireOneString(t, "VM", runStringFuncVM(t, tc.src, "format_case", args))
 			gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, tc.src, "format_case", args, true)
 			got := requireOneString(t, "Tier2", gotValues)
 			if got != want {
 				t.Fatalf("format_case Tier2=%q, want VM=%q", got, want)
 			}
-			if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits == 0 {
-				t.Fatalf("unsupported string.format shape should remain a call exit")
+			if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
+				t.Fatalf("string.format int lowering should avoid call exits, ExitCallExit=%d", exits)
 			}
 		})
+	}
+}
+
+func TestTier2_StringFormatIntMinInt64FallsBackPrecisely(t *testing.T) {
+	src := `
+func format_case(i) {
+    return string.format("%d", i)
+}
+`
+	args := []runtime.Value{runtime.FloatValue(float64(math.MinInt64))}
+	want := requireOneString(t, "VM", runStringFuncVM(t, src, "format_case", args))
+	if want != "-9223372036854775808" {
+		t.Fatalf("VM MinInt64 result=%q", want)
+	}
+	gotValues, _, _ := runStringFuncForcedTier2WithManager(t, src, "format_case", args, true)
+	got := requireOneString(t, "Tier2", gotValues)
+	if got != want {
+		t.Fatalf("format_case Tier2=%q, want VM=%q", got, want)
+	}
+}
+
+func TestTier2_StringFormatIntReboundCalleeFallsBackPrecisely(t *testing.T) {
+	src := `
+func replacement(pattern, n) {
+    return "rebased:" .. pattern .. ":" .. n
+}
+
+func format_case(i) {
+    string.format = replacement
+    return string.format("key%03d", i)
+}
+`
+	args := []runtime.Value{runtime.IntValue(7)}
+	want := requireOneString(t, "VM", runStringFuncVM(t, src, "format_case", args))
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "format_case", args, true)
+	got := requireOneString(t, "Tier2", gotValues)
+	if got != want {
+		t.Fatalf("format_case Tier2=%q, want VM=%q", got, want)
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
+		t.Fatalf("string.format int precise fallback should avoid call exits, ExitCallExit=%d", exits)
+	}
+}
+
+func TestTier2_StringFormatIntFeedbackDynamicPatternGuardsPattern(t *testing.T) {
+	src := `
+func format_case(pattern, i) {
+    return string.format(pattern, i)
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "format_case")
+	if proto == nil {
+		t.Fatal("proto format_case not found")
+	}
+	proto.EnsureFeedback()
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("format_case")
+	warmArgs := []runtime.Value{runtime.StringValue("dyn%04d"), runtime.IntValue(7)}
+	for i := 0; i < 2; i++ {
+		if _, err := v.CallValue(fnVal, warmArgs); err != nil {
+			t.Fatalf("warm CallValue: %v", err)
+		}
+	}
+
+	optimized, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	if got := countOpHelper(optimized, OpStringFormatInt); got != 1 {
+		t.Fatalf("feedback-derived dynamic pattern lowering count=%d, want 1", got)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2: %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, warmArgs)
+	if err != nil {
+		t.Fatalf("native dynamic pattern CallValue: %v", err)
+	}
+	if got := requireOneString(t, "native dynamic pattern", gotValues); got != "dyn0007" {
+		t.Fatalf("native dynamic pattern result=%q", got)
+	}
+	matchingExits := tm.ExitStats().ByExitCode["ExitOpExit"]
+	if matchingExits == 0 {
+		t.Fatal("matching dynamic pattern should use precise op-exit fallback while native arena is disabled")
+	}
+
+	otherArgs := []runtime.Value{runtime.StringValue("alt%d"), runtime.IntValue(8)}
+	gotValues, err = v.CallValue(fnVal, otherArgs)
+	if err != nil {
+		t.Fatalf("fallback dynamic pattern CallValue: %v", err)
+	}
+	if got := requireOneString(t, "fallback dynamic pattern", gotValues); got != "alt8" {
+		t.Fatalf("fallback dynamic pattern result=%q", got)
+	}
+	if exits := tm.ExitStats().ByExitCode["ExitOpExit"]; exits <= matchingExits {
+		t.Fatal("mismatched dynamic pattern should add a precise fallback op exit")
 	}
 }
 

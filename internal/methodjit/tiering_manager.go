@@ -194,6 +194,53 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// Get the function profile (cached after first computation).
 	profile := tm.getProfile(proto)
 
+	if info, ok := recognizedWholeCallKernelForTiering(proto); ok {
+		proto.JITDisabled = true
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "whole_call_structural_kernel",
+			"kernel":     info.Name,
+			"route":      string(info.Route),
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "whole_call_structural_kernel",
+			"kernel": info.Name,
+			"route":  string(info.Route),
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "whole_call_structural_kernel",
+			"target": "interpreter",
+			"kernel": info.Name,
+			"route":  string(info.Route),
+		})
+		return nil
+	}
+	if callee, info, ok := tm.wholeCallKernelCalleeForTiering(proto); ok {
+		proto.JITDisabled = true
+		calleeName := "<anonymous>"
+		if callee.Name != "" {
+			calleeName = callee.Name
+		}
+		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
+			"reason":     "whole_call_kernel_callee",
+			"kernel":     info.Name,
+			"callee":     calleeName,
+			"call_count": proto.CallCount,
+		})
+		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
+			"reason": "whole_call_kernel_callee",
+			"kernel": info.Name,
+			"callee": calleeName,
+		})
+		tm.traceEvent("fallback", "tier0", proto, map[string]any{
+			"reason": "whole_call_kernel_callee",
+			"target": "interpreter",
+			"kernel": info.Name,
+			"callee": calleeName,
+		})
+		return nil
+	}
+
 	if vm.IsNestedMatmulKernelProto(proto) {
 		proto.JITDisabled = true
 		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
@@ -429,6 +476,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return t1
 	}
 
+	tm.ensureNativeLoopCallees(proto)
 	tm.ensureRawIntLoopCallees(proto)
 
 	// Ensure Tier 1 is compiled first (needed as deopt fallback).
@@ -526,7 +574,10 @@ func (tm *TieringManager) osrWouldHitCallInLoopGate(proto *vm.FuncProto, profile
 			globals = merged
 		}
 	}
-	return !canPromoteWithInlining(proto, globals) && !canPromoteWithNativeLoopCalls(proto, globals)
+	if canPromoteWithInlining(proto, globals) || canPromoteWithNativeLoopCalls(proto, globals) {
+		return false
+	}
+	return !staticCallsConfinedToPrefixLoopsBeforeCallFreeHotLoop(proto)
 }
 
 // Execute runs compiled code. Dispatches to Tier 1 or Tier 2 based on the
@@ -582,6 +633,7 @@ func (tm *TieringManager) handleOSRWithResultBuffer(regs []runtime.Value, base i
 	}
 
 	// Try to compile at Tier 2.
+	tm.ensureNativeLoopCallees(proto)
 	tm.ensureRawIntLoopCallees(proto)
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
@@ -687,6 +739,50 @@ func canPromoteToTier2(proto *vm.FuncProto) bool {
 		}
 	}
 	return true
+}
+
+func recognizedWholeCallKernelForTiering(proto *vm.FuncProto) (vm.KernelInfo, bool) {
+	for _, info := range vm.RecognizedWholeCallKernels(proto) {
+		if info.Route == vm.KernelRouteWholeCallNoResult && protoHasFloatConstant(proto) {
+			return info, true
+		}
+	}
+	return vm.KernelInfo{}, false
+}
+
+func protoHasFloatConstant(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	for _, c := range proto.Constants {
+		if c.IsFloat() {
+			return true
+		}
+	}
+	return false
+}
+
+func (tm *TieringManager) wholeCallKernelCalleeForTiering(proto *vm.FuncProto) (*vm.FuncProto, vm.KernelInfo, bool) {
+	if tm == nil || tm.envTier2NoFilter || proto == nil {
+		return nil, vm.KernelInfo{}, false
+	}
+	globals := tm.buildLoopCallGlobals(proto)
+	if len(globals) == 0 {
+		return nil, vm.KernelInfo{}, false
+	}
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
+		if !ok || callee == nil {
+			continue
+		}
+		if info, ok := recognizedWholeCallKernelForTiering(callee); ok {
+			return callee, info, true
+		}
+	}
+	return nil, vm.KernelInfo{}, false
 }
 
 func firstUnsupportedTier2Bytecode(proto *vm.FuncProto) (string, bool) {
@@ -900,6 +996,9 @@ func (tm *TieringManager) shouldSuppressLoopCallTier2(proto *vm.FuncProto, profi
 		return false
 	}
 	if !profile.HasLoop || profile.LoopDepth >= 2 || profile.CallCount == 0 || !hasStaticCallInLoop(proto) {
+		return false
+	}
+	if hasGenericStringFormatIntCall(proto) {
 		return false
 	}
 	globals := tm.buildLoopCallGlobals(proto)
@@ -1298,6 +1397,79 @@ func (tm *TieringManager) ensureRawIntLoopCallees(proto *vm.FuncProto) {
 	}
 }
 
+func (tm *TieringManager) ensureNativeLoopCallees(proto *vm.FuncProto) {
+	if proto == nil || tm == nil || !hasStaticCallInLoop(proto) {
+		return
+	}
+	globals := tm.buildLoopCallGlobals(proto)
+	if len(globals) == 0 {
+		return
+	}
+	for _, callee := range nativeLoopCallCallees(BuildGraph(proto), globals) {
+		if callee == nil || callee == proto || tm.tier2Compiled[callee] != nil || tm.tier2Failed[callee] {
+			continue
+		}
+		if !canPromoteToTier2(callee) || !nativeLoopCalleePrecompileSafe(callee) {
+			continue
+		}
+		if cf, ok := tm.compileMutualRecursiveIntSCCTier2WithGlobals(callee, globals); ok {
+			tm.tier2Compiled[callee] = cf
+			tm.installTier2(callee, cf)
+			continue
+		}
+		cf, err := tm.compileTier2(callee)
+		if err != nil {
+			tm.tier2Failed[callee] = true
+			tm.tier2FailReason[callee] = err.Error()
+			continue
+		}
+		tm.tier2Compiled[callee] = cf
+		tm.installTier2(callee, cf)
+	}
+}
+
+func nativeLoopCallCallees(fn *Function, globals map[string]*vm.FuncProto) []*vm.FuncProto {
+	if fn == nil || len(globals) == 0 {
+		return nil
+	}
+	li := computeLoopInfo(fn)
+	if li == nil || !li.hasLoops() {
+		return nil
+	}
+	seen := make(map[*vm.FuncProto]bool)
+	var out []*vm.FuncProto
+	for _, block := range fn.Blocks {
+		if block == nil || !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpCall {
+				continue
+			}
+			_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+			if callee == nil || seen[callee] {
+				continue
+			}
+			seen[callee] = true
+			out = append(out, callee)
+		}
+	}
+	return out
+}
+
+func nativeLoopCalleePrecompileSafe(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	for _, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN, vm.OP_SETLIST, vm.OP_APPEND:
+			return false
+		}
+	}
+	return true
+}
+
 func rawIntLoopCallCallees(fn *Function, globals map[string]*vm.FuncProto) []*vm.FuncProto {
 	if fn == nil || len(globals) == 0 {
 		return nil
@@ -1425,6 +1597,98 @@ func protoConstString(proto *vm.FuncProto, idx int) string {
 		return ""
 	}
 	return val.Str()
+}
+
+func hasGenericStringFormatIntCall(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	type slotState struct {
+		kind string
+	}
+	states := make([]slotState, proto.MaxStack+8)
+	clear := func(slot int) {
+		if slot >= 0 && slot < len(states) {
+			states[slot] = slotState{}
+		}
+	}
+	get := func(slot int) slotState {
+		if slot >= 0 && slot < len(states) {
+			return states[slot]
+		}
+		return slotState{}
+	}
+	set := func(slot int, st slotState) {
+		if slot >= 0 && slot < len(states) {
+			states[slot] = st
+		}
+	}
+	for pc, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		switch op {
+		case vm.OP_LOADK:
+			s := protoConstString(proto, vm.DecodeBx(inst))
+			if s != "" && simpleSingleDecimalIntFormat(s) {
+				set(a, slotState{kind: "const_single_int_format"})
+			} else {
+				clear(a)
+			}
+		case vm.OP_GETGLOBAL:
+			if protoConstString(proto, vm.DecodeBx(inst)) == "string" {
+				set(a, slotState{kind: "string_global"})
+			} else {
+				clear(a)
+			}
+		case vm.OP_GETFIELD:
+			if get(vm.DecodeB(inst)).kind == "string_global" && protoConstString(proto, vm.DecodeC(inst)) == "format" {
+				set(a, slotState{kind: "string_format"})
+			} else {
+				clear(a)
+			}
+		case vm.OP_MOVE:
+			set(a, get(vm.DecodeB(inst)))
+		case vm.OP_CALL:
+			b := vm.DecodeB(inst)
+			if b == 3 && get(a).kind == "string_format" &&
+				(get(a+1).kind == "const_single_int_format" || callSiteFeedbackHasStableStringFormatInt(proto, pc)) {
+				return true
+			}
+			c := vm.DecodeC(inst)
+			if c == 0 {
+				clear(a)
+			} else {
+				for slot := a; slot <= a+c-2; slot++ {
+					clear(slot)
+				}
+			}
+		case vm.OP_FORLOOP:
+			clear(a)
+			clear(a + 3)
+		case vm.OP_FORPREP:
+			clear(a)
+		case vm.OP_SETGLOBAL, vm.OP_SETTABLE, vm.OP_SETFIELD, vm.OP_SETUPVAL, vm.OP_SETLIST, vm.OP_RETURN:
+		default:
+			clear(a)
+		}
+	}
+	return false
+}
+
+func callSiteFeedbackHasStableStringFormatInt(proto *vm.FuncProto, pc int) bool {
+	if proto == nil || proto.CallSiteFeedback == nil || pc < 0 || pc >= len(proto.CallSiteFeedback) {
+		return false
+	}
+	cf := proto.CallSiteFeedback[pc]
+	kind, data, ok := cf.StableCalleeNativeIdentity()
+	if !ok || kind != runtime.NativeKindStdStringFormat || data != uintptr(runtime.StdStringFormatIdentityPtr()) {
+		return false
+	}
+	if cf.NArgs != 2 || cf.Flags&vm.CallSiteArityPolymorphic != 0 || cf.ArgTypes[1] != vm.FBInt {
+		return false
+	}
+	pattern, ok := cf.StableStringArg(0)
+	return ok && simpleSingleDecimalIntFormat(pattern)
 }
 
 func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunction, retErr error) {
@@ -1564,6 +1828,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	}
 	opts := &Tier2PipelineOpts{
 		InlineGlobals:         inlineGlobals,
+		ProtocolGlobals:       loopCallGlobals,
 		InlineMaxSize:         inlineMaxCalleeSize,
 		FixedShapeArgFacts:    inferGuardedFixedShapeArgFactsForProto(proto, loopCallGlobals),
 		FixedShapeEntryGuards: true,
@@ -1643,7 +1908,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 				return nil, fmt.Errorf("tier2: LoopDepth<2 candidate has performance-blocked op %s inside loop, staying at Tier 1", op)
 			}
 		} else {
-			if hasNonNativeCallInLoop(fn, loopCallGlobals) {
+			if hasBlockingNonNativeCallInLoop(fn, loopCallGlobals) {
 				remarks.Add("Tier2Gate", "blocked", 0, 0, OpCall,
 					"non-native OpCall remains inside loop after inlining")
 				return nil, fmt.Errorf("tier2: has OpCall inside loop (performance-blocked), staying at Tier 1")
@@ -1717,20 +1982,8 @@ func (tm *TieringManager) executeTier2(cf *CompiledFunction, regs []runtime.Valu
 }
 
 func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
-	if cf != nil && cf.FixedRecursiveIntFold != nil {
-		return tm.executeFixedRecursiveIntFold(cf, regs, base, proto, retBuf)
-	}
-	if cf != nil && cf.FixedRecursiveNestedIntFold != nil {
-		return tm.executeFixedRecursiveNestedIntFold(cf, regs, base, proto, retBuf)
-	}
-	if cf != nil && cf.FixedRecursiveTableBuilder != nil {
-		return tm.executeFixedRecursiveTableBuilder(cf, regs, base, proto, retBuf)
-	}
-	if cf != nil && cf.FixedRecursiveTableFold != nil {
-		return tm.executeFixedRecursiveTableFold(cf, regs, base, proto, retBuf)
-	}
-	if cf != nil && cf.MutualRecursiveIntSCC != nil {
-		return tm.executeMutualRecursiveIntSCC(cf, regs, base, proto, retBuf)
+	if results, handled, err := tm.executeCompiledProtocol(cf, regs, base, proto, retBuf); handled {
+		return results, err
 	}
 	if tm.callVM != nil {
 		regs = tm.ensureTier2RegisterBudget(cf, regs, base, proto)
@@ -2308,6 +2561,125 @@ func hasNonNativeCallInLoop(fn *Function, globals map[string]*vm.FuncProto) bool
 			if instr.Op == OpCall && !tier2LoopCallIsNativeCandidate(fn, instr, globals) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func hasBlockingNonNativeCallInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
+	if !hasNonNativeCallInLoop(fn, globals) {
+		return false
+	}
+	return !nonNativeCallsConfinedToPrefixLoopsBeforeCallFreeHotLoop(fn, globals)
+}
+
+type tier2LoopRange struct {
+	minPC       int
+	maxPC       int
+	blockCount  int
+	hasCall     bool
+	hasBlocker  bool
+	callFreeOps int
+}
+
+func staticCallsConfinedToPrefixLoopsBeforeCallFreeHotLoop(proto *vm.FuncProto) bool {
+	if proto == nil || len(proto.Code) == 0 {
+		return false
+	}
+	ranges := make([]tier2LoopRange, 0, 4)
+	for pc, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		if op != vm.OP_FORLOOP && op != vm.OP_JMP {
+			continue
+		}
+		target := pc + 1 + vm.DecodesBx(inst)
+		if target < 0 || target > pc {
+			continue
+		}
+		r := tier2LoopRange{minPC: target, maxPC: pc, blockCount: pc - target + 1, callFreeOps: pc - target + 1}
+		for i := target; i <= pc && i < len(proto.Code); i++ {
+			if vm.DecodeOp(proto.Code[i]) == vm.OP_CALL {
+				r.hasCall = true
+				break
+			}
+		}
+		ranges = append(ranges, r)
+	}
+	return loopRangesHavePrefixBlockersBeforeHotCallFreeLoop(ranges)
+}
+
+func nonNativeCallsConfinedToPrefixLoopsBeforeCallFreeHotLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
+	if fn == nil {
+		return false
+	}
+	li := computeLoopInfo(fn)
+	if li == nil || !li.hasLoops() {
+		return false
+	}
+	ranges := make([]tier2LoopRange, 0, len(li.loopHeaders))
+	for _, blocks := range li.headerBlocks {
+		r := tier2LoopRange{minPC: -1, maxPC: -1, blockCount: len(blocks)}
+		for _, block := range fn.Blocks {
+			if block == nil || !blocks[block.ID] {
+				continue
+			}
+			for _, instr := range block.Instrs {
+				if instr == nil {
+					continue
+				}
+				if instr.HasSource {
+					if r.minPC < 0 || instr.SourcePC < r.minPC {
+						r.minPC = instr.SourcePC
+					}
+					if instr.SourcePC > r.maxPC {
+						r.maxPC = instr.SourcePC
+					}
+				}
+				if instr.Op == OpCall {
+					r.hasCall = true
+					if !tier2LoopCallIsNativeCandidate(fn, instr, globals) {
+						r.hasBlocker = true
+					}
+					continue
+				}
+				if !instr.Op.IsTerminator() {
+					r.callFreeOps++
+				}
+			}
+		}
+		if r.minPC >= 0 && r.maxPC >= r.minPC {
+			ranges = append(ranges, r)
+		}
+	}
+	return loopRangesHavePrefixBlockersBeforeHotCallFreeLoop(ranges)
+}
+
+func loopRangesHavePrefixBlockersBeforeHotCallFreeLoop(ranges []tier2LoopRange) bool {
+	if len(ranges) < 2 {
+		return false
+	}
+	firstBlockerMax := -1
+	blockerOps := 0
+	for _, r := range ranges {
+		if !(r.hasBlocker || r.hasCall) {
+			continue
+		}
+		if firstBlockerMax < 0 || r.maxPC > firstBlockerMax {
+			firstBlockerMax = r.maxPC
+		}
+		if r.callFreeOps > blockerOps {
+			blockerOps = r.callFreeOps
+		}
+	}
+	if firstBlockerMax < 0 {
+		return false
+	}
+	for _, r := range ranges {
+		if r.hasBlocker || r.hasCall || r.minPC <= firstBlockerMax {
+			continue
+		}
+		if r.blockCount >= 2 || r.callFreeOps >= blockerOps {
+			return true
 		}
 	}
 	return false

@@ -39,6 +39,8 @@ type FuncProto struct {
 	JITDisabled            bool                          // true when the method JIT made a permanent per-proto stay-interpreted decision
 	Feedback               FeedbackVector                // lazily-initialized per-PC type feedback for Method JIT
 	TableKeyFeedback       TableKeyFeedbackVector        // lazily-initialized per-PC table int-key range feedback
+	FieldAccessFeedback    FieldAccessFeedbackVector     // lazily-initialized per-PC table field shape feedback
+	CallSiteFeedback       CallSiteFeedbackVector        // lazily-initialized per-PC callsite feedback for guarded specialization
 	CompiledCodePtr        uintptr                       // pointer to baseline JIT compiled code (set after CompileBaseline)
 	DirectEntryPtr         uintptr                       // pointer to direct entry point for native BLR calls
 	Tier2DirectEntryPtr    uintptr                       // pointer to Tier 2 direct entry for Method JIT call IC refresh
@@ -76,6 +78,12 @@ func (p *FuncProto) EnsureFeedback() FeedbackVector {
 	}
 	if p.TableKeyFeedback == nil {
 		p.TableKeyFeedback = NewTableKeyFeedbackVector(len(p.Code))
+	}
+	if p.FieldAccessFeedback == nil {
+		p.FieldAccessFeedback = NewFieldAccessFeedbackVector(len(p.Code))
+	}
+	if p.CallSiteFeedback == nil {
+		p.CallSiteFeedback = NewCallSiteFeedbackVector(len(p.Code))
 	}
 	return p.Feedback
 }

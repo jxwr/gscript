@@ -173,3 +173,60 @@ func TestHandleGetTable_RecordsDenseMatrixFeedback(t *testing.T) {
 		t.Fatalf("dense matrix feedback = %d, want yes", got)
 	}
 }
+
+func TestTier2TableExitRecordsStableStringShapeFieldFeedback(t *testing.T) {
+	proto := &vm.FuncProto{
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_GETTABLE, 0, 1, 2),
+			vm.EncodeABC(vm.OP_SETTABLE, 1, 2, 3),
+		},
+		MaxStack: 4,
+	}
+	proto.EnsureFeedback()
+
+	tbl := runtime.NewTable()
+	tbl.RawSetString("name", runtime.IntValue(10))
+	regs := []runtime.Value{
+		runtime.NilValue(),
+		runtime.TableValue(tbl),
+		runtime.StringValue("name"),
+		runtime.IntValue(11),
+	}
+	tm := NewTieringManager()
+
+	getCtx := &ExecContext{
+		TableOp:      TableOpGetTable,
+		TableSlot:    1,
+		TableKeySlot: 2,
+		TableAux:     0,
+		TableAux2:    0,
+	}
+	if err := tm.executeTableExit(getCtx, regs, 0, proto, nil); err != nil {
+		t.Fatalf("execute get table exit: %v", err)
+	}
+	if !regs[0].IsInt() || regs[0].Int() != 10 {
+		t.Fatalf("get result = %v, want 10", regs[0])
+	}
+	if key, shapeID, fieldIdx, ok := proto.TableKeyFeedback[0].StableStringShapeField(); !ok || key != "name" || shapeID == 0 || fieldIdx < 0 {
+		t.Fatalf("GETTABLE feedback did not expose stable string shape field: key=%q shape=%d field=%d ok=%v feedback=%#v",
+			key, shapeID, fieldIdx, ok, proto.TableKeyFeedback[0])
+	}
+
+	setCtx := &ExecContext{
+		TableOp:      TableOpSetTable,
+		TableSlot:    1,
+		TableKeySlot: 2,
+		TableValSlot: 3,
+		TableAux2:    1,
+	}
+	if err := tm.executeTableExit(setCtx, regs, 0, proto, nil); err != nil {
+		t.Fatalf("execute set table exit: %v", err)
+	}
+	if got := tbl.RawGetString("name"); !got.IsInt() || got.Int() != 11 {
+		t.Fatalf("stored value = %v, want 11", got)
+	}
+	if key, shapeID, fieldIdx, ok := proto.TableKeyFeedback[1].StableStringShapeField(); !ok || key != "name" || shapeID == 0 || fieldIdx < 0 {
+		t.Fatalf("SETTABLE feedback did not expose stable string shape field: key=%q shape=%d field=%d ok=%v feedback=%#v",
+			key, shapeID, fieldIdx, ok, proto.TableKeyFeedback[1])
+	}
+}

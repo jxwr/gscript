@@ -160,9 +160,7 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 			Arity:   3,
 			Results: kernelWholeCallInPlaceResultCount,
 		},
-		recognize: func(p *FuncProto) bool {
-			return classifySpectralMultiplyProto(p) == spectralAv
-		},
+		recognize:   func(p *FuncProto) bool { return classifySpectralMultiplyProto(p) == spectralAv },
 		runNoResult: (*VM).runSpectralWholeCallKernel,
 	},
 	{
@@ -172,9 +170,7 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 			Arity:   3,
 			Results: kernelWholeCallInPlaceResultCount,
 		},
-		recognize: func(p *FuncProto) bool {
-			return classifySpectralMultiplyProto(p) == spectralAtv
-		},
+		recognize:   func(p *FuncProto) bool { return classifySpectralMultiplyProto(p) == spectralAtv },
 		runNoResult: (*VM).runSpectralWholeCallKernel,
 	},
 	{
@@ -184,7 +180,7 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 			Arity:   3,
 			Results: kernelWholeCallInPlaceResultCount,
 		},
-		recognize:   isSpectralAtAvProto,
+		recognize:   func(p *FuncProto) bool { return false },
 		runNoResult: (*VM).runSpectralWholeCallKernel,
 	},
 	{
