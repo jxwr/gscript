@@ -145,7 +145,7 @@ func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePrealloc
 			if instr.Op != OpGetTable {
 				continue
 			}
-			if hasReadHint {
+			if hasReadHint && tableKeyProvenInt(instr.Args[1]) {
 				if hint.resultType != TypeUnknown && instr.Type != hint.resultType {
 					instr.Type = hint.resultType
 				}

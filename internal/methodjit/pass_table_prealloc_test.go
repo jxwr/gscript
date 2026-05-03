@@ -72,6 +72,31 @@ func TestTablePreallocHintPassInfersLocalTypedArrayWithoutFeedback(t *testing.T)
 	}
 }
 
+func TestTablePreallocHintPassDoesNotTypeDynamicStringMapMissesAsTable(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_string_map"}, NumRegs: 4}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeString, Aux: 0, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{tbl.Value(), key.Value(), val.Value()}, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny,
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, val, set, get}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	gotGet := got.Entry.Instrs[4]
+	if gotGet.Type != TypeAny {
+		t.Fatalf("dynamic string-key GetTable type = %s, want TypeAny", gotGet.Type)
+	}
+}
+
 func TestTablePreallocHintPassFollowsSingleGlobalNewTable(t *testing.T) {
 	const globalSlot int64 = 8
 	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_global_float"}, NumRegs: 3}

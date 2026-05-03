@@ -665,6 +665,63 @@ func lookup(n) {
 	}
 }
 
+func TestTier2_DynamicStringMapNilOrTableGetTable_NoRuntimeDeopt(t *testing.T) {
+	src := `
+func lookup(n) {
+    keys := {"a", "b", "c", "d"}
+    totals := {}
+    sum := 0
+    for i := 1; i <= n; i++ {
+        k := keys[(i % 4) + 1]
+        row := totals[k]
+        if row == nil {
+            row = {count: 0}
+            totals[k] = row
+        }
+        row.count = row.count + 1
+        sum = sum + row.count
+    }
+    return sum
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "lookup")
+	if proto == nil {
+		t.Fatal("lookup proto not found")
+	}
+	proto.EnsureFeedback()
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("lookup")
+	wantValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(80)})
+	if err != nil {
+		t.Fatalf("warm lookup: %v", err)
+	}
+	want := requireOneInt(t, "VM lookup", wantValues)
+
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(lookup): %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(80)})
+	if err != nil {
+		t.Fatalf("Tier2 lookup: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 lookup", gotValues)
+	if got != want {
+		t.Fatalf("lookup Tier2=%d, want VM=%d", got, want)
+	}
+	if exits := tm.ExitStats().ByExitCode["ExitDeopt"]; exits != 0 {
+		t.Fatalf("dynamic string-key nil-or-table lookup should not runtime deopt, ExitDeopt=%d sites=%#v", exits, tm.ExitStats().Sites)
+	}
+}
+
 func TestTier2_DynamicStringGetTable_ColdFeedbackSmallScan(t *testing.T) {
 	src := `
 func lookup(tbl, key) {
