@@ -155,6 +155,8 @@ const (
 	CallSiteArityPolymorphic
 )
 
+const callSiteHotNativeObservationLimit uint32 = 64
+
 // CallSiteFeedback records stable facts observed at one OP_CALL site. It is a
 // low-level profile substrate: optimization passes can combine these facts into
 // guards, while unstable sites naturally deopt/fallback or remain generic.
@@ -407,6 +409,7 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 	if cf == nil {
 		return
 	}
+	count := cf.Count
 	if cf.Count == 0 {
 		cf.NArgs = clampCallFeedbackUint8(nArgs)
 		cf.ResultArity = clampCallFeedbackUint8(resultArity)
@@ -414,6 +417,10 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 		if cf.NArgs != clampCallFeedbackUint8(nArgs) || cf.ResultArity != clampCallFeedbackUint8(resultArity) {
 			cf.Flags |= CallSiteArityPolymorphic
 		}
+	}
+	if count >= callSiteHotNativeObservationLimit && cf.Flags == 0 && cf.CalleeNativeKind != 0 {
+		cf.Count++
+		return
 	}
 	cf.Count++
 	cf.CalleeType.Observe(fn.Type())
