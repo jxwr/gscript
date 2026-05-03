@@ -1,0 +1,766 @@
+{
+  "schema_version": 1,
+  "time_source_hints": {
+    "script_time_line": "Benchmark prints a final Time: ...s line; harness may repeat or fall back to wall time when script timing is too small."
+  },
+  "scale_profiles": {
+    "hot": "Recommended temporary parameter overrides for selected low-resolution or hot-loop timing comparisons."
+  },
+  "benchmarks": [
+    {
+      "id": "suite/fib",
+      "group": "suite",
+      "name": "fib",
+      "gscript_path": "benchmarks/suite/fib.gs",
+      "lua_path": "benchmarks/lua/fib.lua",
+      "params": {},
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "recursion",
+        "calls",
+        "integer"
+      ]
+    },
+    {
+      "id": "suite/fib_recursive",
+      "group": "suite",
+      "name": "fib_recursive",
+      "gscript_path": "benchmarks/suite/fib_recursive.gs",
+      "lua_path": "benchmarks/lua/fib_recursive.lua",
+      "params": {
+        "N": 35,
+        "REPS": 10
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "recursion",
+        "calls",
+        "integer"
+      ]
+    },
+    {
+      "id": "suite/sieve",
+      "group": "suite",
+      "name": "sieve",
+      "gscript_path": "benchmarks/suite/sieve.gs",
+      "lua_path": "benchmarks/lua/sieve.lua",
+      "params": {
+        "N": 1000000,
+        "REPS": 3
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "array",
+        "integer",
+        "prime"
+      ]
+    },
+    {
+      "id": "suite/mandelbrot",
+      "group": "suite",
+      "name": "mandelbrot",
+      "gscript_path": "benchmarks/suite/mandelbrot.gs",
+      "lua_path": "benchmarks/lua/mandelbrot.lua",
+      "params": {
+        "N": 1000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "float",
+        "nested-loop"
+      ]
+    },
+    {
+      "id": "suite/ackermann",
+      "group": "suite",
+      "name": "ackermann",
+      "gscript_path": "benchmarks/suite/ackermann.gs",
+      "lua_path": "benchmarks/lua/ackermann.lua",
+      "params": {
+        "REPS": 500
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "recursion",
+        "calls",
+        "integer"
+      ]
+    },
+    {
+      "id": "suite/matmul",
+      "group": "suite",
+      "name": "matmul",
+      "gscript_path": "benchmarks/suite/matmul.gs",
+      "lua_path": "benchmarks/lua/matmul.lua",
+      "params": {
+        "N": 300
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "matrix",
+        "table-array",
+        "float"
+      ]
+    },
+    {
+      "id": "suite/matmul_dense",
+      "group": "suite",
+      "name": "matmul_dense",
+      "gscript_path": "benchmarks/suite/matmul_dense.gs",
+      "lua_path": null,
+      "params": {
+        "N": 300
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "matrix",
+        "dense-array",
+        "float"
+      ]
+    },
+    {
+      "id": "suite/matmul_dense_split2",
+      "group": "suite",
+      "name": "matmul_dense_split2",
+      "gscript_path": "benchmarks/suite/matmul_dense_split2.gs",
+      "lua_path": null,
+      "params": {
+        "N": 300
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "matrix",
+        "dense-array",
+        "float",
+        "variant"
+      ]
+    },
+    {
+      "id": "suite/matmul_dense_tb",
+      "group": "suite",
+      "name": "matmul_dense_tb",
+      "gscript_path": "benchmarks/suite/matmul_dense_tb.gs",
+      "lua_path": null,
+      "params": {
+        "N": 300
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "matrix",
+        "dense-array",
+        "float",
+        "tier2"
+      ]
+    },
+    {
+      "id": "suite/matmul_dense_unroll2",
+      "group": "suite",
+      "name": "matmul_dense_unroll2",
+      "gscript_path": "benchmarks/suite/matmul_dense_unroll2.gs",
+      "lua_path": null,
+      "params": {
+        "N": 300
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "matrix",
+        "dense-array",
+        "float",
+        "unroll"
+      ]
+    },
+    {
+      "id": "suite/spectral_norm",
+      "group": "suite",
+      "name": "spectral_norm",
+      "gscript_path": "benchmarks/suite/spectral_norm.gs",
+      "lua_path": "benchmarks/lua/spectral_norm.lua",
+      "params": {
+        "N": 500
+      },
+      "recommended_scale": {
+        "hot": {
+          "N": 2000
+        }
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "float",
+        "array",
+        "kernel"
+      ]
+    },
+    {
+      "id": "suite/spectral_norm_dense",
+      "group": "suite",
+      "name": "spectral_norm_dense",
+      "gscript_path": "benchmarks/suite/spectral_norm_dense.gs",
+      "lua_path": null,
+      "params": {
+        "N": 500
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "float",
+        "dense-array",
+        "kernel"
+      ]
+    },
+    {
+      "id": "suite/nbody",
+      "group": "suite",
+      "name": "nbody",
+      "gscript_path": "benchmarks/suite/nbody.gs",
+      "lua_path": "benchmarks/lua/nbody.lua",
+      "params": {
+        "N": 500000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "float",
+        "table-field",
+        "simulation"
+      ]
+    },
+    {
+      "id": "suite/nbody_dense",
+      "group": "suite",
+      "name": "nbody_dense",
+      "gscript_path": "benchmarks/suite/nbody_dense.gs",
+      "lua_path": null,
+      "params": {
+        "N_BODIES": 5,
+        "N": 500000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "float",
+        "dense-array",
+        "simulation"
+      ]
+    },
+    {
+      "id": "suite/fannkuch",
+      "group": "suite",
+      "name": "fannkuch",
+      "gscript_path": "benchmarks/suite/fannkuch.gs",
+      "lua_path": "benchmarks/lua/fannkuch.lua",
+      "params": {
+        "N": 9
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "array",
+        "permutation",
+        "integer"
+      ]
+    },
+    {
+      "id": "suite/sort",
+      "group": "suite",
+      "name": "sort",
+      "gscript_path": "benchmarks/suite/sort.gs",
+      "lua_path": "benchmarks/lua/sort.lua",
+      "params": {
+        "N": 50000,
+        "REPS": 3
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "array",
+        "sort",
+        "recursion"
+      ]
+    },
+    {
+      "id": "suite/sum_primes",
+      "group": "suite",
+      "name": "sum_primes",
+      "gscript_path": "benchmarks/suite/sum_primes.gs",
+      "lua_path": "benchmarks/lua/sum_primes.lua",
+      "params": {
+        "N": 100000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "integer",
+        "prime",
+        "nested-loop"
+      ]
+    },
+    {
+      "id": "suite/mutual_recursion",
+      "group": "suite",
+      "name": "mutual_recursion",
+      "gscript_path": "benchmarks/suite/mutual_recursion.gs",
+      "lua_path": "benchmarks/lua/mutual_recursion.lua",
+      "params": {
+        "N": 25,
+        "REPS": 1000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "recursion",
+        "calls"
+      ]
+    },
+    {
+      "id": "suite/method_dispatch",
+      "group": "suite",
+      "name": "method_dispatch",
+      "gscript_path": "benchmarks/suite/method_dispatch.gs",
+      "lua_path": "benchmarks/lua/method_dispatch.lua",
+      "params": {
+        "N": 100000
+      },
+      "recommended_scale": {
+        "hot": {
+          "N": 50000000
+        }
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "method",
+        "table-field",
+        "dispatch"
+      ]
+    },
+    {
+      "id": "suite/closure_bench",
+      "group": "suite",
+      "name": "closure_bench",
+      "gscript_path": "benchmarks/suite/closure_bench.gs",
+      "lua_path": "benchmarks/lua/closure_bench.lua",
+      "params": {},
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "closure",
+        "upvalue",
+        "calls"
+      ]
+    },
+    {
+      "id": "suite/string_bench",
+      "group": "suite",
+      "name": "string_bench",
+      "gscript_path": "benchmarks/suite/string_bench.gs",
+      "lua_path": "benchmarks/lua/string_bench.lua",
+      "params": {},
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "string",
+        "stdlib"
+      ]
+    },
+    {
+      "id": "suite/binary_trees",
+      "group": "suite",
+      "name": "binary_trees",
+      "gscript_path": "benchmarks/suite/binary_trees.gs",
+      "lua_path": "benchmarks/lua/binary_trees.lua",
+      "params": {
+        "maxDepth": 15
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "allocation",
+        "tree",
+        "recursion"
+      ]
+    },
+    {
+      "id": "suite/table_field_access",
+      "group": "suite",
+      "name": "table_field_access",
+      "gscript_path": "benchmarks/suite/table_field_access.gs",
+      "lua_path": "benchmarks/lua/table_field_access.lua",
+      "params": {
+        "N": 1000,
+        "STEPS": 5000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "table-field",
+        "object",
+        "float"
+      ]
+    },
+    {
+      "id": "suite/table_array_access",
+      "group": "suite",
+      "name": "table_array_access",
+      "gscript_path": "benchmarks/suite/table_array_access.gs",
+      "lua_path": "benchmarks/lua/table_array_access.lua",
+      "params": {
+        "N": 100000,
+        "REPS": 100,
+        "MATRIX_SIZE": 300
+      },
+      "recommended_scale": {
+        "hot": {
+          "REPS": 1000
+        }
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "table-array",
+        "integer",
+        "matrix"
+      ]
+    },
+    {
+      "id": "suite/coroutine_bench",
+      "group": "suite",
+      "name": "coroutine_bench",
+      "gscript_path": "benchmarks/suite/coroutine_bench.gs",
+      "lua_path": "benchmarks/lua/coroutine_bench.lua",
+      "params": {
+        "N1": 100000,
+        "N2": 50000,
+        "N3": 100000
+      },
+      "recommended_scale": {
+        "hot": {
+          "N1": 1000000,
+          "N2": 500000,
+          "N3": 1000000
+        }
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "coroutine",
+        "yield",
+        "resume"
+      ]
+    },
+    {
+      "id": "suite/fibonacci_iterative",
+      "group": "suite",
+      "name": "fibonacci_iterative",
+      "gscript_path": "benchmarks/suite/fibonacci_iterative.gs",
+      "lua_path": "benchmarks/lua/fibonacci_iterative.lua",
+      "params": {
+        "N": 70,
+        "REPS": 1000000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "loop",
+        "integer"
+      ]
+    },
+    {
+      "id": "suite/math_intensive",
+      "group": "suite",
+      "name": "math_intensive",
+      "gscript_path": "benchmarks/suite/math_intensive.gs",
+      "lua_path": "benchmarks/lua/math_intensive.lua",
+      "params": {
+        "N_PI": 5000000,
+        "N_COLLATZ": 50000,
+        "N_DIST": 1000000,
+        "N_GCD": 10000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "math",
+        "float",
+        "integer"
+      ]
+    },
+    {
+      "id": "suite/object_creation",
+      "group": "suite",
+      "name": "object_creation",
+      "gscript_path": "benchmarks/suite/object_creation.gs",
+      "lua_path": "benchmarks/lua/object_creation.lua",
+      "params": {
+        "N1": 200000,
+        "N2": 500000,
+        "N3": 100000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "allocation",
+        "table-field",
+        "object"
+      ]
+    },
+    {
+      "id": "extended/actors_dispatch_mutation",
+      "group": "extended",
+      "name": "actors_dispatch_mutation",
+      "gscript_path": "benchmarks/extended/actors_dispatch_mutation.gs",
+      "lua_path": "benchmarks/lua_extended/actors_dispatch_mutation.lua",
+      "params": {
+        "N": 5000,
+        "TICKS": 200
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "dispatch",
+        "function-field",
+        "polymorphic-shape",
+        "mutation"
+      ]
+    },
+    {
+      "id": "extended/groupby_nested_agg",
+      "group": "extended",
+      "name": "groupby_nested_agg",
+      "gscript_path": "benchmarks/extended/groupby_nested_agg.gs",
+      "lua_path": "benchmarks/lua_extended/groupby_nested_agg.lua",
+      "params": {
+        "N": 60000,
+        "PASSES": 8
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "dynamic-key",
+        "nested-map",
+        "aggregation",
+        "mutation"
+      ]
+    },
+    {
+      "id": "extended/json_table_walk",
+      "group": "extended",
+      "name": "json_table_walk",
+      "gscript_path": "benchmarks/extended/json_table_walk.gs",
+      "lua_path": "benchmarks/lua_extended/json_table_walk.lua",
+      "params": {
+        "N": 18000,
+        "PASSES": 80
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "nested-table",
+        "field-access",
+        "array",
+        "mutation"
+      ]
+    },
+    {
+      "id": "extended/log_tokenize_format",
+      "group": "extended",
+      "name": "log_tokenize_format",
+      "gscript_path": "benchmarks/extended/log_tokenize_format.gs",
+      "lua_path": "benchmarks/lua_extended/log_tokenize_format.lua",
+      "params": {
+        "N": 18000,
+        "PASSES": 8
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "string",
+        "format",
+        "tokenize",
+        "table-write"
+      ]
+    },
+    {
+      "id": "extended/mixed_inventory_sim",
+      "group": "extended",
+      "name": "mixed_inventory_sim",
+      "gscript_path": "benchmarks/extended/mixed_inventory_sim.gs",
+      "lua_path": "benchmarks/lua_extended/mixed_inventory_sim.lua",
+      "params": {
+        "ITEMS": 5000,
+        "ORDERS": 650000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "dense-array",
+        "keyed-table",
+        "numeric",
+        "format"
+      ]
+    },
+    {
+      "id": "extended/producer_consumer_pipeline",
+      "group": "extended",
+      "name": "producer_consumer_pipeline",
+      "gscript_path": "benchmarks/extended/producer_consumer_pipeline.gs",
+      "lua_path": "benchmarks/lua_extended/producer_consumer_pipeline.lua",
+      "params": {
+        "N": 650000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "coroutine",
+        "pipeline",
+        "table-payload",
+        "aggregation"
+      ]
+    },
+    {
+      "id": "variants/ack_nested_shifted",
+      "group": "variants",
+      "name": "ack_nested_shifted",
+      "gscript_path": "benchmarks/variants/ack_nested_shifted.gs",
+      "lua_path": "benchmarks/lua_variants/ack_nested_shifted.lua",
+      "params": {
+        "REPS": 60000
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "variant",
+        "recursion",
+        "anti-overfit"
+      ]
+    },
+    {
+      "id": "variants/closure_accumulator_variant",
+      "group": "variants",
+      "name": "closure_accumulator_variant",
+      "gscript_path": "benchmarks/variants/closure_accumulator_variant.gs",
+      "lua_path": "benchmarks/lua_variants/closure_accumulator_variant.lua",
+      "params": {},
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "variant",
+        "closure",
+        "upvalue",
+        "anti-overfit"
+      ]
+    },
+    {
+      "id": "variants/matmul_row_variant",
+      "group": "variants",
+      "name": "matmul_row_variant",
+      "gscript_path": "benchmarks/variants/matmul_row_variant.gs",
+      "lua_path": "benchmarks/lua_variants/matmul_row_variant.lua",
+      "params": {
+        "N": 360,
+        "REPS": 4
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "variant",
+        "matrix",
+        "table-array",
+        "anti-overfit"
+      ]
+    },
+    {
+      "id": "variants/sort_mixed_numeric",
+      "group": "variants",
+      "name": "sort_mixed_numeric",
+      "gscript_path": "benchmarks/variants/sort_mixed_numeric.gs",
+      "lua_path": "benchmarks/lua_variants/sort_mixed_numeric.lua",
+      "params": {
+        "N": 60000,
+        "REPS": 4
+      },
+      "recommended_scale": {
+        "hot": {}
+      },
+      "time_source_hint": "script_time_line",
+      "tags": [
+        "variant",
+        "sort",
+        "numeric",
+        "anti-overfit"
+      ]
+    }
+  ]
+}

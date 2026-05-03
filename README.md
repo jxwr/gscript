@@ -23,7 +23,8 @@ Three-tier execution: **interpreter → Tier 1 baseline JIT → Tier 2 optimizin
 ## Benchmarks
 
 ```bash
-bash benchmarks/run_all.sh
+python3 benchmarks/timing_compare.py --all-groups --runs=5 --warmup=1 \
+  --time-source=auto --sort=luajit-gap
 ```
 
 ## Testing

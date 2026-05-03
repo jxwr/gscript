@@ -630,8 +630,10 @@ func stringFormatValue(args []Value) (Value, error) {
 	if prog, ok, err := cachedSimpleFormat(formatStr); err != nil {
 		return NilValue(), err
 	} else if ok {
+		RecordRuntimePathStringFormatFast()
 		return prog.formatValue(args)
 	}
+	RecordRuntimePathStringFormatFallback()
 	argIdx := 1
 
 	var buf strings.Builder
@@ -752,6 +754,7 @@ func stringFormat2Value(format, arg Value) (Value, error) {
 	if prog, ok, err := cachedSimpleFormat(formatStr); err != nil {
 		return NilValue(), err
 	} else if ok && prog.singleInt {
+		RecordRuntimePathStringFormatFast()
 		n := toInt(arg)
 		if v, ok := prog.cachedResult(n); ok {
 			return v, nil

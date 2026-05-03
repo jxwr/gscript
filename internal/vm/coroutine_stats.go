@@ -1,6 +1,10 @@
 package vm
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+
+	rt "github.com/gscript/gscript/internal/runtime"
+)
 
 // CoroutineStatsSnapshot is a point-in-time copy of VM coroutine counters.
 // It separates the synchronous leaf fast path from the goroutine/channel path
@@ -73,6 +77,7 @@ func (vm *VM) recordCoroutineCreated(wrapped bool) {
 }
 
 func (vm *VM) recordCoroutineResume() {
+	rt.RecordRuntimePathCoroutineResume()
 	if vm == nil || vm.coroutineStats == nil {
 		return
 	}
@@ -80,6 +85,7 @@ func (vm *VM) recordCoroutineResume() {
 }
 
 func (vm *VM) recordCoroutineYield() {
+	rt.RecordRuntimePathCoroutineYield()
 	if vm == nil || vm.coroutineStats == nil {
 		return
 	}
@@ -87,6 +93,7 @@ func (vm *VM) recordCoroutineYield() {
 }
 
 func (vm *VM) recordCoroutineLeafFastPath() {
+	rt.RecordRuntimePathCoroutineFast()
 	if vm == nil || vm.coroutineStats == nil {
 		return
 	}
@@ -94,6 +101,7 @@ func (vm *VM) recordCoroutineLeafFastPath() {
 }
 
 func (vm *VM) recordCoroutineLeafFallback() {
+	rt.RecordRuntimePathCoroutineFallback()
 	if vm == nil || vm.coroutineStats == nil {
 		return
 	}
@@ -101,6 +109,7 @@ func (vm *VM) recordCoroutineLeafFallback() {
 }
 
 func (vm *VM) recordCoroutineGoroutineStart() {
+	rt.RecordRuntimePathCoroutineFallback()
 	if vm == nil || vm.coroutineStats == nil {
 		return
 	}
@@ -115,6 +124,7 @@ func (vm *VM) recordCoroutineCompleted() {
 }
 
 func (vm *VM) recordCoroutineResumeError() {
+	rt.RecordRuntimePathCoroutineResumeError()
 	if vm == nil || vm.coroutineStats == nil {
 		return
 	}

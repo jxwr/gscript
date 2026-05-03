@@ -81,7 +81,6 @@ Ordering constraints:
 
 ## Technical Debt
 
-- `benchmarks/run_all.sh` has a bug: VM/JIT suite benchmarks silently fail (discovered round 12). Individual benchmark runs work.
 - `tier2_float_profile_test.go:profileTier2Func` uses stale simplified pipeline — does not match `compileTier2()` (missing 6 passes + feedback). Diagnostic data is misleading for type-specialized analysis.
 - **`TableOffShape = 144` stale constant** (R36 audit): `internal/jit/value_layout.go:59` defines `TableOffShape = 144` which overlaps `TableOffIntArray = 144`. Never used by any JIT code. The actual `shape` field is at offset 216 (after boolArray). Slated for removal in R36.
 

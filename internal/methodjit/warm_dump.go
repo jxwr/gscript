@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -44,8 +45,11 @@ type WarmDumpRecord struct {
 	IntrinsicNotes      []string
 	OptimizationRemarks []OptimizationRemark
 	RegAllocMap         string
+	SourceMap           []IRASMMapEntry
 	LoopDiagnostics     []LoopDiagnostic
 	CompiledCode        []byte
+	CodeStart           uintptr
+	CodeEnd             uintptr
 	InsnCount           int
 	InsnHistogram       map[string]int
 	DirectEntryOff      int
@@ -73,12 +77,47 @@ type warmDumpProtoManifest struct {
 	InsnCount           int                  `json:"insn_count,omitempty"`
 	InsnHistogram       map[string]int       `json:"insn_histogram,omitempty"`
 	CodeBytes           int                  `json:"code_bytes,omitempty"`
+	CodeStart           string               `json:"code_start,omitempty"`
+	CodeEnd             string               `json:"code_end,omitempty"`
 	DirectEntryOff      int                  `json:"direct_entry_offset,omitempty"`
 	NumSpills           int                  `json:"num_spills,omitempty"`
 	OptimizationRemarks []OptimizationRemark `json:"optimization_remarks,omitempty"`
 	LoopDiagnostics     []LoopDiagnostic     `json:"loop_diagnostics,omitempty"`
 	Feedback            warmFeedbackSummary  `json:"feedback"`
 	Files               map[string]string    `json:"files,omitempty"`
+}
+
+type warmDumpPCMap struct {
+	Version     int                     `json:"version"`
+	ProtoFilter string                  `json:"proto_filter,omitempty"`
+	Functions   []warmDumpPCMapFunction `json:"functions"`
+}
+
+type warmDumpPCMapFunction struct {
+	Name              string               `json:"name"`
+	Attempt           int                  `json:"attempt"`
+	CodeBase          string               `json:"code_base"`
+	CodeEnd           string               `json:"code_end"`
+	CodeBytes         int                  `json:"code_bytes"`
+	DirectEntryOffset int                  `json:"direct_entry_offset,omitempty"`
+	Ranges            []warmDumpPCMapRange `json:"ranges"`
+}
+
+type warmDumpPCMapRange struct {
+	PCStart    string `json:"pc_start"`
+	PCEnd      string `json:"pc_end"`
+	CodeStart  int    `json:"code_start"`
+	CodeEnd    int    `json:"code_end"`
+	ProtoName  string `json:"proto"`
+	Source     string `json:"source,omitempty"`
+	SourceLine int    `json:"source_line,omitempty"`
+	BytecodePC int    `json:"bytecode_pc"`
+	BytecodeOp string `json:"bytecode_op,omitempty"`
+	BlockID    int    `json:"block"`
+	InstrID    int    `json:"ir_instr"`
+	IROp       string `json:"ir_op"`
+	IRType     string `json:"ir_type,omitempty"`
+	Pass       string `json:"pass,omitempty"`
 }
 
 type warmFeedbackSummary struct {
@@ -154,6 +193,7 @@ func (s *WarmDumpSession) record(proto *vm.FuncProto, trace *Tier2Trace, cf *Com
 		OptimizationRemarks: append([]OptimizationRemark(nil),
 			trace.OptimizationRemarks...),
 		RegAllocMap: trace.RegAllocMap,
+		SourceMap:   append([]IRASMMapEntry(nil), trace.SourceMap...),
 		LoopDiagnostics: append([]LoopDiagnostic(nil),
 			trace.LoopDiagnostics...),
 	}
@@ -165,6 +205,8 @@ func (s *WarmDumpSession) record(proto *vm.FuncProto, trace *Tier2Trace, cf *Com
 		rec.NumSpills = cf.NumSpills
 		rec.CompiledCode = make([]byte, cf.Code.Size())
 		copy(rec.CompiledCode, unsafeCodeSlice(cf))
+		rec.CodeStart = uintptr(cf.Code.Ptr())
+		rec.CodeEnd = rec.CodeStart + uintptr(cf.Code.Size())
 		rec.InsnCount, rec.InsnHistogram = classifyARM64(rec.CompiledCode)
 	}
 	s.records[proto] = rec
@@ -194,6 +236,8 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 
 	protos := collectWarmDumpProtos(top)
 	manifest := warmDumpManifest{ProtoFilter: s.protoName}
+	pcMap := warmDumpPCMap{Version: 1, ProtoFilter: s.protoName}
+	var symbolLines []string
 	usedNames := make(map[string]int)
 
 	for _, proto := range protos {
@@ -235,6 +279,18 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 				}
 				files["regalloc"] = name
 			}
+			if len(rec.SourceMap) > 0 {
+				name := base + ".sourcemap.json"
+				data, err := json.MarshalIndent(rec.SourceMap, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal source map for %s: %w", proto.Name, err)
+				}
+				data = append(data, '\n')
+				if err := os.WriteFile(filepath.Join(s.dir, name), data, 0o644); err != nil {
+					return fmt.Errorf("write source map for %s: %w", proto.Name, err)
+				}
+				files["sourcemap"] = name
+			}
 			if len(rec.LoopDiagnostics) > 0 {
 				name := base + ".loops.txt"
 				if err := os.WriteFile(filepath.Join(s.dir, name), []byte(FormatLoopDiagnostics(rec.LoopDiagnostics)), 0o644); err != nil {
@@ -269,6 +325,20 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 				}
 				files["asm"] = asmName
 			}
+			if fnMap, ok := buildWarmDumpPCMapFunction(proto, rec); ok {
+				pcMap.Functions = append(pcMap.Functions, fnMap)
+				symbolLines = append(symbolLines, formatWarmDumpSymbols(fnMap)...)
+				pcMapName := base + ".pcmap.json"
+				pcMapBytes, err := json.MarshalIndent(fnMap, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal PC map for %s: %w", proto.Name, err)
+				}
+				pcMapBytes = append(pcMapBytes, '\n')
+				if err := os.WriteFile(filepath.Join(s.dir, pcMapName), pcMapBytes, 0o644); err != nil {
+					return fmt.Errorf("write PC map for %s: %w", proto.Name, err)
+				}
+				files["pcmap"] = pcMapName
+			}
 		}
 
 		protoManifest := warmDumpProtoManifest{
@@ -290,6 +360,10 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 			protoManifest.InsnCount = rec.InsnCount
 			protoManifest.InsnHistogram = rec.InsnHistogram
 			protoManifest.CodeBytes = len(rec.CompiledCode)
+			if rec.CodeStart != 0 {
+				protoManifest.CodeStart = fmt.Sprintf("0x%x", rec.CodeStart)
+				protoManifest.CodeEnd = fmt.Sprintf("0x%x", rec.CodeEnd)
+			}
 			protoManifest.DirectEntryOff = rec.DirectEntryOff
 			protoManifest.NumSpills = rec.NumSpills
 			protoManifest.OptimizationRemarks = append([]OptimizationRemark(nil), rec.OptimizationRemarks...)
@@ -331,7 +405,141 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 	if err := os.WriteFile(filepath.Join(s.dir, "manifest.json"), data, 0o644); err != nil {
 		return fmt.Errorf("write warm dump manifest: %w", err)
 	}
+	if len(pcMap.Functions) > 0 {
+		sort.Slice(pcMap.Functions, func(i, j int) bool {
+			if pcMap.Functions[i].Attempt != pcMap.Functions[j].Attempt {
+				return pcMap.Functions[i].Attempt < pcMap.Functions[j].Attempt
+			}
+			return pcMap.Functions[i].Name < pcMap.Functions[j].Name
+		})
+		data, err := json.MarshalIndent(pcMap, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal warm dump PC map: %w", err)
+		}
+		data = append(data, '\n')
+		if err := os.WriteFile(filepath.Join(s.dir, "pcmap.json"), data, 0o644); err != nil {
+			return fmt.Errorf("write warm dump PC map: %w", err)
+		}
+	}
+	if len(symbolLines) > 0 {
+		sort.Strings(symbolLines)
+		body := strings.Join(symbolLines, "\n") + "\n"
+		if err := os.WriteFile(filepath.Join(s.dir, "jit-symbols.txt"), []byte(body), 0o644); err != nil {
+			return fmt.Errorf("write warm dump JIT symbols: %w", err)
+		}
+	}
 	return nil
+}
+
+func buildWarmDumpPCMapFunction(proto *vm.FuncProto, rec *WarmDumpRecord) (warmDumpPCMapFunction, bool) {
+	if rec == nil || rec.CodeStart == 0 || len(rec.CompiledCode) == 0 || len(rec.SourceMap) == 0 {
+		return warmDumpPCMapFunction{}, false
+	}
+	fn := warmDumpPCMapFunction{
+		Name:              displayWarmProtoName(proto),
+		Attempt:           rec.Attempt,
+		CodeBase:          formatWarmPC(rec.CodeStart),
+		CodeEnd:           formatWarmPC(rec.CodeEnd),
+		CodeBytes:         len(rec.CompiledCode),
+		DirectEntryOffset: rec.DirectEntryOff,
+	}
+	for _, entry := range rec.SourceMap {
+		if entry.CodeStart < 0 || entry.CodeEnd <= entry.CodeStart || entry.CodeEnd > len(rec.CompiledCode) {
+			continue
+		}
+		start := rec.CodeStart + uintptr(entry.CodeStart)
+		end := rec.CodeStart + uintptr(entry.CodeEnd)
+		fn.Ranges = append(fn.Ranges, warmDumpPCMapRange{
+			PCStart:    formatWarmPC(start),
+			PCEnd:      formatWarmPC(end),
+			CodeStart:  entry.CodeStart,
+			CodeEnd:    entry.CodeEnd,
+			ProtoName:  entry.ProtoName,
+			Source:     entry.Source,
+			SourceLine: entry.SourceLine,
+			BytecodePC: entry.BytecodePC,
+			BytecodeOp: entry.BytecodeOp,
+			BlockID:    entry.BlockID,
+			InstrID:    entry.InstrID,
+			IROp:       entry.IROp,
+			IRType:     entry.IRType,
+			Pass:       entry.Pass,
+		})
+	}
+	if len(fn.Ranges) == 0 {
+		return warmDumpPCMapFunction{}, false
+	}
+	return fn, true
+}
+
+func formatWarmPC(pc uintptr) string {
+	return fmt.Sprintf("0x%x", pc)
+}
+
+func formatWarmDumpSymbols(fn warmDumpPCMapFunction) []string {
+	lines := make([]string, 0, len(fn.Ranges))
+	for _, r := range fn.Ranges {
+		start := parseWarmPC(r.PCStart)
+		end := parseWarmPC(r.PCEnd)
+		if start == 0 || end <= start {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%x %x %s",
+			start, end-start,
+			warmSymbolName(fn.Name, r.ProtoName, r.InstrID, r.IROp, r.BytecodePC, r.BytecodeOp, r.IRType, r.Pass)))
+	}
+	return lines
+}
+
+func warmSymbolName(fnName, protoName string, instrID int, irOp string, bytecodePC int, bytecodeOp, irType, pass string) string {
+	if protoName == "" {
+		protoName = fnName
+	}
+	if irOp == "" {
+		return "gscript_jit::" + sanitizeWarmSymbolPart(protoName)
+	}
+	parts := []string{
+		"gscript_jit::" + sanitizeWarmSymbolPart(fnName),
+		"proto=" + sanitizeWarmSymbolPart(protoName),
+		fmt.Sprintf("ir=%d", instrID),
+		"op=" + sanitizeWarmSymbolPart(irOp),
+	}
+	if irType != "" {
+		parts = append(parts, "type="+sanitizeWarmSymbolPart(irType))
+	}
+	if bytecodePC >= 0 {
+		parts = append(parts, fmt.Sprintf("bc=%d", bytecodePC))
+	}
+	if bytecodeOp != "" {
+		parts = append(parts, "bcop="+sanitizeWarmSymbolPart(bytecodeOp))
+	}
+	if pass != "" {
+		parts = append(parts, "pass="+sanitizeWarmSymbolPart(pass))
+	}
+	return strings.Join(parts, ";")
+}
+
+func sanitizeWarmSymbolPart(s string) string {
+	if s == "" {
+		return "_"
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_', r == '-', r == '.', r == ':':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+func parseWarmPC(s string) uintptr {
+	pc, _ := strconv.ParseUint(strings.TrimPrefix(s, "0x"), 16, 64)
+	return uintptr(pc)
 }
 
 type warmDumpStatusInfo struct {

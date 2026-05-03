@@ -275,8 +275,10 @@ func (t *Table) RawGetInt(key int64) Value {
 		defer t.mu.RUnlock()
 	}
 	if t.lazyTree != nil {
+		RecordRuntimePathTableArrayGetFallback()
 		return NilValue()
 	}
+	tableArrayGetPath(key, t)
 	switch t.arrayKind {
 	case ArrayInt:
 		if key >= 0 && key < int64(len(t.intArray)) {

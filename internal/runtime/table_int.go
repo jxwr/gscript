@@ -110,6 +110,36 @@ func (t *Table) typedArrayLen() int {
 	}
 }
 
+func tableArrayGetPath(key int64, t *Table) {
+	if CurrentRuntimePathStats() == nil {
+		return
+	}
+	if key < 0 {
+		RecordRuntimePathTableArrayGetFallback()
+		return
+	}
+	if key < int64(t.typedArrayLen()) {
+		RecordRuntimePathTableArrayGetHot()
+		return
+	}
+	RecordRuntimePathTableArrayGetFallback()
+}
+
+func tableArraySetPath(key int64, val Value, arrLen int64) {
+	if CurrentRuntimePathStats() == nil {
+		return
+	}
+	if key < 0 || val.IsNil() {
+		RecordRuntimePathTableArraySetFallback()
+		return
+	}
+	if key <= arrLen || key < sparseArrayMax {
+		RecordRuntimePathTableArraySetHot()
+		return
+	}
+	RecordRuntimePathTableArraySetFallback()
+}
+
 // PlainIntArrayRegionForNumericKernel exposes an inclusive int-array region for
 // guarded whole-function kernels. It only succeeds when ordinary integer table
 // indexing for every key in [lo, hi] is known to hit the plain typed-array
@@ -164,6 +194,7 @@ func (t *Table) RawSetInt(key int64, val Value) {
 	t.keysDirty = true
 
 	arrLen := int64(t.typedArrayLen())
+	tableArraySetPath(key, val, arrLen)
 
 	// --- Fast path: key within existing array bounds (not append) ---
 	if key >= 0 && key < arrLen {

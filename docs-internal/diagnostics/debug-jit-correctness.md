@@ -26,9 +26,8 @@ go run ./cmd/gscript -jit -jit-stats benchmarks/suite/fib.gs
 - Proto missing from the list — never compiled. Check smart-tiering
   (`func_profile.go`) and `shouldPromoteTier2` before anything else.
 
-For `benchmarks/run_bench.sh`, the `T2` column in the results table
-shows `entered/compiled` counts per benchmark — same signal, already
-in your bench output.
+For command-line runs, `-jit-stats` shows the same `entered/compiled`
+signal per benchmark.
 
 Mechanics: `proto.EnteredTier2` is a byte set to 1 by a ~6-insn STRB at
 the head of each Tier 2 entry point (R146). Cost is inside warm-bench

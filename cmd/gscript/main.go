@@ -33,6 +33,8 @@ type jitCLIOptions struct {
 	ShowExitStats      bool
 	ShowExitStatsJSON  bool
 	ShowCoroutineStats bool
+	ShowPathStats      bool
+	ShowPathStatsJSON  bool
 }
 
 type jitWarmDumpController interface {
@@ -63,6 +65,8 @@ func main() {
 	exitStats := flag.Bool("exit-stats", false, "print Tier 2 exit/deopt profile after execution")
 	exitStatsJSON := flag.Bool("exit-stats-json", false, "print Tier 2 exit/deopt profile as JSON after execution")
 	coroutineStats := flag.Bool("coroutine-stats", false, "print VM coroutine runtime statistics after execution")
+	pathStats := flag.Bool("runtime-path-stats", false, "print runtime path counters after execution")
+	pathStatsJSON := flag.Bool("runtime-path-stats-json", false, "print runtime path counters as JSON after execution")
 	flag.Parse()
 
 	if *cpuprofile != "" {
@@ -150,6 +154,8 @@ func main() {
 			ShowExitStats:      *exitStats,
 			ShowExitStatsJSON:  *exitStatsJSON,
 			ShowCoroutineStats: *coroutineStats,
+			ShowPathStats:      *pathStats,
+			ShowPathStatsJSON:  *pathStatsJSON,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
 			os.Exit(1)
@@ -189,10 +195,14 @@ func runFileVM(interp *runtime.Interpreter, filename string, jit bool, showJITSt
 	if err != nil {
 		return err
 	}
-	return runStringVM(interp, string(src), jit, showJITStats, jitOpts)
+	return runStringVMWithSource(interp, string(src), filename, jit, showJITStats, jitOpts)
 }
 
 func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats bool, jitOpts jitCLIOptions) error {
+	return runStringVMWithSource(interp, src, "", jit, showJITStats, jitOpts)
+}
+
+func runStringVMWithSource(interp *runtime.Interpreter, src, sourceName string, jit bool, showJITStats bool, jitOpts jitCLIOptions) error {
 	tokens, err := lexer.New(src).Tokenize()
 	if err != nil {
 		return fmt.Errorf("lexer error: %w", err)
@@ -205,11 +215,17 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 	if err != nil {
 		return fmt.Errorf("compile error: %w", err)
 	}
+	setProtoSource(proto, sourceName)
 	globals := interp.ExportGlobals()
 	bvm := bytecodevm.New(globals)
 	bvm.SetStringMeta(interp.StringMeta())
 	if jitOpts.ShowCoroutineStats {
 		bvm.EnableCoroutineStats()
+	}
+	var pathStats *runtime.RuntimePathStats
+	if jitOpts.ShowPathStats || jitOpts.ShowPathStatsJSON {
+		pathStats = runtime.EnableRuntimePathStats()
+		defer runtime.DisableRuntimePathStats()
 	}
 	var reporter jitStatsReporter
 	if !jit && jitOpts.TimelinePath != "" {
@@ -270,6 +286,14 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 	if jitOpts.ShowCoroutineStats {
 		printCoroutineStats(os.Stderr, bvm.CoroutineStats())
 	}
+	if jitOpts.ShowPathStats && pathStats != nil {
+		pathStats.WriteText(os.Stderr)
+	}
+	if jitOpts.ShowPathStatsJSON && pathStats != nil {
+		if err := pathStats.WriteJSON(os.Stderr); err != nil && statsErr == nil {
+			statsErr = err
+		}
+	}
 	if err != nil {
 		if dumpErr != nil {
 			return fmt.Errorf("%w; warm dump failed: %v", err, dumpErr)
@@ -292,6 +316,16 @@ func runStringVM(interp *runtime.Interpreter, src string, jit bool, showJITStats
 		return statsErr
 	}
 	return nil
+}
+
+func setProtoSource(proto *bytecodevm.FuncProto, sourceName string) {
+	if proto == nil || sourceName == "" {
+		return
+	}
+	proto.Source = sourceName
+	for _, sub := range proto.Protos {
+		setProtoSource(sub, sourceName)
+	}
 }
 
 func printCoroutineStats(w *os.File, stats bytecodevm.CoroutineStatsSnapshot) {

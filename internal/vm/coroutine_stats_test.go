@@ -69,3 +69,36 @@ result := v1 + v2 + v3
 		t.Fatalf("ResumeErrors = %d, want 0", stats.ResumeErrors)
 	}
 }
+
+func TestVMRuntimePathStatsCoroutineCounters(t *testing.T) {
+	pathStats := runtime.EnableRuntimePathStats()
+	defer runtime.DisableRuntimePathStats()
+
+	_ = compileAndRunWithCoroutineStats(t, `
+leaf := coroutine.create(func(x) {
+	return x + 1
+})
+ok1, v1 := coroutine.resume(leaf, 41)
+
+co := coroutine.create(func() {
+	coroutine.yield(1)
+	return 2
+})
+ok2, v2 := coroutine.resume(co)
+ok3, v3 := coroutine.resume(co)
+`)
+
+	snap := pathStats.Snapshot()
+	if snap.Coroutine.Resume != 3 {
+		t.Fatalf("Coroutine.Resume = %d, want 3", snap.Coroutine.Resume)
+	}
+	if snap.Coroutine.Yield != 1 {
+		t.Fatalf("Coroutine.Yield = %d, want 1", snap.Coroutine.Yield)
+	}
+	if snap.Coroutine.Fast != 1 {
+		t.Fatalf("Coroutine.Fast = %d, want 1", snap.Coroutine.Fast)
+	}
+	if snap.Coroutine.Fallback != 1 {
+		t.Fatalf("Coroutine.Fallback = %d, want 1", snap.Coroutine.Fallback)
+	}
+}

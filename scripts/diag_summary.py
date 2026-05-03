@@ -118,7 +118,7 @@ def main(diag_root):
         if not ref:
             lines.append("_reference.json not found_")
         if not latest:
-            lines.append("_latest.json not found — run benchmarks/run_all.sh first_")
+            lines.append("_latest.json not found — run benchmarks/strict_guard.py or benchmarks/regression_guard.py first_")
 
     lines.append("")
     lines.append("## Histogram anomalies")

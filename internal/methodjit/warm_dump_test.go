@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -52,6 +53,7 @@ b := sum(20)
 
 	required := []string{
 		"manifest.json",
+		"jit-symbols.txt",
 		"sum.status.json",
 		"sum.feedback.txt",
 		"sum.ir.before.txt",
@@ -60,6 +62,9 @@ b := sum(20)
 		"sum.loops.txt",
 		"sum.bin",
 		"sum.asm.txt",
+		"sum.sourcemap.json",
+		"sum.pcmap.json",
+		"pcmap.json",
 	}
 	for _, name := range required {
 		if _, err := os.Stat(filepath.Join(outDir, name)); err != nil {
@@ -90,5 +95,48 @@ b := sum(20)
 	}
 	if len(got.LoopDiagnostics) == 0 || got.Files["loops"] == "" {
 		t.Fatalf("loop diagnostics missing: %+v", got.LoopDiagnostics)
+	}
+	if got.CodeStart == "" || got.CodeEnd == "" || got.Files["sourcemap"] == "" || got.Files["pcmap"] == "" {
+		t.Fatalf("PC/source map metadata missing: %+v", got)
+	}
+
+	pcMapData, err := os.ReadFile(filepath.Join(outDir, "pcmap.json"))
+	if err != nil {
+		t.Fatalf("read PC map: %v", err)
+	}
+	var pcMap warmDumpPCMap
+	if err := json.Unmarshal(pcMapData, &pcMap); err != nil {
+		t.Fatalf("unmarshal PC map: %v", err)
+	}
+	if pcMap.Version != 1 || len(pcMap.Functions) != 1 {
+		t.Fatalf("unexpected PC map header: %+v", pcMap)
+	}
+	fn := pcMap.Functions[0]
+	if fn.Name != "sum" || fn.CodeBase == "" || fn.CodeEnd == "" || fn.CodeBytes == 0 || len(fn.Ranges) == 0 {
+		t.Fatalf("unexpected PC map function: %+v", fn)
+	}
+	foundIRRange := false
+	for _, r := range fn.Ranges {
+		if r.PCStart == "" || r.PCEnd == "" {
+			t.Fatalf("PC range missing absolute address: %+v", r)
+		}
+		if r.CodeStart >= 0 && r.CodeEnd > r.CodeStart && r.InstrID > 0 && r.IROp != "" {
+			foundIRRange = true
+		}
+	}
+	if !foundIRRange {
+		t.Fatalf("PC map has no usable IR ranges: %+v", fn.Ranges)
+	}
+
+	symbols, err := os.ReadFile(filepath.Join(outDir, "jit-symbols.txt"))
+	if err != nil {
+		t.Fatalf("read JIT symbols: %v", err)
+	}
+	if len(symbols) == 0 ||
+		!strings.Contains(string(symbols), "gscript_jit::sum") ||
+		!strings.Contains(string(symbols), "proto=sum") ||
+		!strings.Contains(string(symbols), "ir=") ||
+		!strings.Contains(string(symbols), "bcop=") {
+		t.Fatalf("JIT symbols missing expected metadata:\n%s", string(symbols))
 	}
 }

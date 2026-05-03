@@ -26,7 +26,7 @@ Tier 2: Optimizing JIT (internal/methodjit/)
   Two entry points: normal (128B frame for Execute) + direct (128B frame for BLR)
   Both entry points set proto.EnteredTier2 = 1 via a ~6-insn STRB
   sequence (R146) so "did native T2 actually run?" is observable
-  in -jit-stats and in the run_bench.sh T2 column.
+  in -jit-stats.
   After Tier 2 promotion, proto.DirectEntryPtr points to Tier 2's direct entry
   Tier 1 BLR callers seamlessly call Tier 2 code via DirectEntryPtr
 
