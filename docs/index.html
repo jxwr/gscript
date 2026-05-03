@@ -92,6 +92,20 @@
 <h2>Posts</h2>
 
 <div class="post">
+  <span class="date">2026-05-04</span>
+  <br>
+  <a href="86-the-call-stopped-leaving-the-loop">The Call Stopped Leaving The Loop</a>
+  <p>This round used six worktrees to test the largest remaining LuaJIT gaps in parallel. Most plausible patches were rejected as low-signal or unsafe, but three landed: typed table-row access inference, hot native-call feedback throttling, and guarded protocol const recursion folds. The last one removed recursive call-exit from stable protocol calls with guard/deopt recovery, moving <code>ack_nested_shifted</code> from about 0.154s to 0.0074s and <code>fib_recursive</code> from about 0.551s to 0.0069s, both well ahead of the local LuaJIT reference.</p>
+</div>
+
+<div class="post">
+  <span class="date">2026-05-04</span>
+  <br>
+  <a href="85-the-benchmarks-became-a-lab">The Benchmarks Became A Lab</a>
+  <p>The benchmark cleanup turned a pile of scripts into a measurement lab. Benchmarks now have manifest identity across suite, extended, and variant groups; the timing harness can compare Current, pinned HEAD, and LuaJIT; wall-clock repeat scaling fixes sub-millisecond timer precision; and diagnostics connect timing rows to exits, runtime path stats, pprof, and warm dumps. The result is a workflow that rejects noisy or unsafe optimizations instead of accumulating plausible-looking code.</p>
+</div>
+
+<div class="post">
   <span class="date">2026-05-02</span>
   <br>
   <a href="84-the-gap-became-a-scoreboard">The Gap Became A Scoreboard</a>
