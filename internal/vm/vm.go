@@ -1782,7 +1782,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						args[i] = vm.regs[base+a+1+i]
 					}
 					if gf.Fast1 != nil {
-						runtime.RecordRuntimePathNativeCallFast()
+						runtime.RecordRuntimePathNativeCallFastFor(gf)
 						result, err := gf.Fast1(args)
 						if err != nil {
 							return nil, wrapLineErr(frame, err)
@@ -1801,7 +1801,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						}
 						break
 					}
-					runtime.RecordRuntimePathNativeCallFallback()
+					runtime.RecordRuntimePathNativeCallFallbackFor(gf)
 					results, err := gf.Fn(args)
 					if err != nil {
 						return nil, wrapLineErr(frame, err)
@@ -2438,14 +2438,14 @@ func (vm *VM) callValue(fnVal runtime.Value, args []runtime.Value) ([]runtime.Va
 		}
 		if gf := fnVal.GoFunction(); gf != nil {
 			if gf.Fast1 != nil {
-				runtime.RecordRuntimePathNativeCallFast()
+				runtime.RecordRuntimePathNativeCallFastFor(gf)
 				v, err := gf.Fast1(args)
 				if err != nil {
 					return nil, err
 				}
 				return []runtime.Value{v}, nil
 			}
-			runtime.RecordRuntimePathNativeCallFallback()
+			runtime.RecordRuntimePathNativeCallFallbackFor(gf)
 			return gf.Fn(args)
 		}
 		if c := fnVal.Closure(); c != nil {

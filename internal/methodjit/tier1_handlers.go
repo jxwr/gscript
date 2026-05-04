@@ -379,7 +379,7 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 slowPath:
 	if gf := fnVal.GoFunction(); gf != nil {
 		if nArgs == 1 && gf.FastArg1 != nil {
-			runtime.RecordRuntimePathNativeCallFast()
+			runtime.RecordRuntimePathNativeCallFastFor(gf)
 			idx := absSlot + 1
 			arg := runtime.NilValue()
 			if idx < len(regs) {
@@ -393,7 +393,7 @@ slowPath:
 			return nil
 		}
 		if nArgs == 2 && gf.FastArg2 != nil {
-			runtime.RecordRuntimePathNativeCallFast()
+			runtime.RecordRuntimePathNativeCallFastFor(gf)
 			idx0 := absSlot + 1
 			idx1 := absSlot + 2
 			arg0 := runtime.NilValue()
@@ -412,7 +412,7 @@ slowPath:
 			return nil
 		}
 		if nArgs == 3 && gf.FastArg3 != nil {
-			runtime.RecordRuntimePathNativeCallFast()
+			runtime.RecordRuntimePathNativeCallFastFor(gf)
 			idx0 := absSlot + 1
 			idx1 := absSlot + 2
 			idx2 := absSlot + 3
@@ -438,7 +438,7 @@ slowPath:
 		if gf.Fast1 == nil {
 			goto genericNativePath
 		}
-		runtime.RecordRuntimePathNativeCallFast()
+		runtime.RecordRuntimePathNativeCallFastFor(gf)
 		var local [16]runtime.Value
 		var callArgs []runtime.Value
 		if nArgs <= len(local) {
@@ -461,8 +461,8 @@ slowPath:
 	}
 
 genericNativePath:
-	if fnVal.GoFunction() != nil {
-		runtime.RecordRuntimePathNativeCallFallback()
+	if gf := fnVal.GoFunction(); gf != nil {
+		runtime.RecordRuntimePathNativeCallFallbackFor(gf)
 	}
 	// Generic path: heap-allocate args and go through CallValue.
 	callArgs := make([]runtime.Value, nArgs)

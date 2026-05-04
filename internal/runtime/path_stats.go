@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
+	"sync"
 	"sync/atomic"
 )
 
@@ -27,6 +29,19 @@ type RuntimePathStats struct {
 
 	stringFormatFast     atomic.Uint64
 	stringFormatFallback atomic.Uint64
+
+	// nativeCallByBuiltin attributes native_call fast/fallback events to a
+	// specific *GoFunction. Keys are *GoFunction; values are
+	// *nativeCallBuiltinCounters. We key by pointer to avoid string hashing on
+	// the hot fast path; resolution to the human-readable Name happens lazily
+	// at snapshot time.
+	nativeCallByBuiltin sync.Map
+}
+
+// nativeCallBuiltinCounters holds per-GoFunction fast/fallback tallies.
+type nativeCallBuiltinCounters struct {
+	fast     atomic.Uint64
+	fallback atomic.Uint64
 }
 
 type RuntimePathStatsSnapshot struct {
@@ -37,6 +52,15 @@ type RuntimePathStatsSnapshot struct {
 }
 
 type RuntimePathNativeCallStats struct {
+	Fast       uint64                              `json:"fast"`
+	Fallback   uint64                              `json:"fallback"`
+	PerBuiltin []RuntimePathNativeCallBuiltinEntry `json:"per_builtin,omitempty"`
+}
+
+// RuntimePathNativeCallBuiltinEntry is a per-GoFunction attribution row,
+// sorted by fallback desc, fast desc, name asc at snapshot time.
+type RuntimePathNativeCallBuiltinEntry struct {
+	Name     string `json:"name"`
 	Fast     uint64 `json:"fast"`
 	Fallback uint64 `json:"fallback"`
 }
@@ -83,8 +107,9 @@ func (s *RuntimePathStats) Snapshot() RuntimePathStatsSnapshot {
 	}
 	return RuntimePathStatsSnapshot{
 		NativeCall: RuntimePathNativeCallStats{
-			Fast:     s.nativeCallFast.Load(),
-			Fallback: s.nativeCallFallback.Load(),
+			Fast:       s.nativeCallFast.Load(),
+			Fallback:   s.nativeCallFallback.Load(),
+			PerBuiltin: s.snapshotNativeCallPerBuiltin(),
 		},
 		Coroutine: RuntimePathCoroutineStats{
 			Resume:       s.coroutineResume.Load(),
@@ -112,6 +137,12 @@ func (s *RuntimePathStats) WriteText(w io.Writer) {
 	fmt.Fprintln(w, "  native_call:")
 	fmt.Fprintf(w, "    fast: %d\n", snap.NativeCall.Fast)
 	fmt.Fprintf(w, "    fallback: %d\n", snap.NativeCall.Fallback)
+	if len(snap.NativeCall.PerBuiltin) > 0 {
+		fmt.Fprintln(w, "    per_builtin:")
+		for _, e := range snap.NativeCall.PerBuiltin {
+			fmt.Fprintf(w, "      %s: fast=%d fallback=%d\n", e.Name, e.Fast, e.Fallback)
+		}
+	}
 	fmt.Fprintln(w, "  coroutine:")
 	fmt.Fprintf(w, "    resume: %d\n", snap.Coroutine.Resume)
 	fmt.Fprintf(w, "    yield: %d\n", snap.Coroutine.Yield)
@@ -144,6 +175,81 @@ func RecordRuntimePathNativeCallFallback() {
 	if s := runtimePathStats.Load(); s != nil {
 		s.nativeCallFallback.Add(1)
 	}
+}
+
+// RecordRuntimePathNativeCallFastFor attributes a fast-path native call to a
+// specific *GoFunction. It is identical in cost to
+// RecordRuntimePathNativeCallFast when stats are disabled (single atomic load
+// + nil check); when enabled it additionally bumps the per-builtin counter.
+func RecordRuntimePathNativeCallFastFor(gf *GoFunction) {
+	s := runtimePathStats.Load()
+	if s == nil {
+		return
+	}
+	s.nativeCallFast.Add(1)
+	if gf == nil {
+		return
+	}
+	c := s.loadOrCreateBuiltin(gf)
+	c.fast.Add(1)
+}
+
+// RecordRuntimePathNativeCallFallbackFor attributes a fallback-path native
+// call to a specific *GoFunction. Same enabled/disabled cost shape as the fast
+// variant.
+func RecordRuntimePathNativeCallFallbackFor(gf *GoFunction) {
+	s := runtimePathStats.Load()
+	if s == nil {
+		return
+	}
+	s.nativeCallFallback.Add(1)
+	if gf == nil {
+		return
+	}
+	c := s.loadOrCreateBuiltin(gf)
+	c.fallback.Add(1)
+}
+
+func (s *RuntimePathStats) loadOrCreateBuiltin(gf *GoFunction) *nativeCallBuiltinCounters {
+	if v, ok := s.nativeCallByBuiltin.Load(gf); ok {
+		return v.(*nativeCallBuiltinCounters)
+	}
+	c := &nativeCallBuiltinCounters{}
+	if actual, loaded := s.nativeCallByBuiltin.LoadOrStore(gf, c); loaded {
+		return actual.(*nativeCallBuiltinCounters)
+	}
+	return c
+}
+
+func (s *RuntimePathStats) snapshotNativeCallPerBuiltin() []RuntimePathNativeCallBuiltinEntry {
+	var out []RuntimePathNativeCallBuiltinEntry
+	s.nativeCallByBuiltin.Range(func(k, v any) bool {
+		gf, _ := k.(*GoFunction)
+		c, _ := v.(*nativeCallBuiltinCounters)
+		if gf == nil || c == nil {
+			return true
+		}
+		name := gf.Name
+		if name == "" {
+			name = fmt.Sprintf("<unnamed:%p>", gf)
+		}
+		out = append(out, RuntimePathNativeCallBuiltinEntry{
+			Name:     name,
+			Fast:     c.fast.Load(),
+			Fallback: c.fallback.Load(),
+		})
+		return true
+	})
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Fallback != out[j].Fallback {
+			return out[i].Fallback > out[j].Fallback
+		}
+		if out[i].Fast != out[j].Fast {
+			return out[i].Fast > out[j].Fast
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 func RecordRuntimePathCoroutineResume() {
