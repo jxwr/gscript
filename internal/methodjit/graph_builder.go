@@ -133,6 +133,32 @@ func graphValueConstString(v *Value, proto *vm.FuncProto) (string, bool) {
 	return proto.Constants[idx].Str(), true
 }
 
+// emitBeforeTerminator builds an instruction and splices it into block just
+// before the existing terminator (Jump/Branch/Return), if any. Used by SSA
+// recursion: readVariableRecursive can run back into a block whose final
+// instruction is already a forward-emitted terminator, and a plain emit()
+// there would violate the validator's "terminator must be last" invariant.
+func (b *graphBuilder) emitBeforeTerminator(block *Block, op Op, typ Type, args []*Value, aux, aux2 int64) *Instr {
+	instr := &Instr{
+		ID:    b.fn.newValueID(),
+		Op:    op,
+		Type:  typ,
+		Args:  args,
+		Aux:   aux,
+		Aux2:  aux2,
+		Block: block,
+	}
+	instr.setSourceFromPC(b.proto, b.currentPC)
+	if n := len(block.Instrs); n > 0 && block.Instrs[n-1].Op.IsTerminator() {
+		block.Instrs = append(block.Instrs, nil)
+		copy(block.Instrs[n:], block.Instrs[n-1:n])
+		block.Instrs[n-1] = instr
+	} else {
+		block.Instrs = append(block.Instrs, instr)
+	}
+	return instr
+}
+
 func (b *graphBuilder) addEdge(from, to *Block) {
 	from.Succs = append(from.Succs, to)
 	to.Preds = append(to.Preds, from)

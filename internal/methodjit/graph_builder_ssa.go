@@ -51,8 +51,10 @@ func (b *graphBuilder) readVariableRecursive(slot int, block *Block) *Value {
 		val = phi.Value()
 	} else if len(block.Preds) == 0 {
 		// Entry block, no predecessors — this is a function parameter or
-		// uninitialized register. Emit a LoadSlot.
-		instr := b.emit(block, OpLoadSlot, TypeAny, nil, int64(slot), 0)
+		// uninitialized register. Emit a LoadSlot. SSA recursion may run
+		// here AFTER the entry block has been forward-terminated by the
+		// bytecode walk, so splice before any existing terminator.
+		instr := b.emitBeforeTerminator(block, OpLoadSlot, TypeAny, nil, int64(slot), 0)
 		val = instr.Value()
 	} else if len(block.Preds) == 1 {
 		// Single predecessor — no phi needed, recurse.
