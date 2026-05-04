@@ -21,10 +21,11 @@ type FixedRecord struct {
 const fixedRecordSlabSize = 8192
 
 type fixedRecordSlab struct {
-	backing []FixedRecord
+	backing unsafe.Pointer
 }
 
 const fixedRecordSlotSize = uintptr(unsafe.Sizeof(FixedRecord{}))
+const fixedRecordSlabBytes = int(fixedRecordSlotSize * fixedRecordSlabSize)
 
 func (s *fixedRecordSlab) alloc(h *Heap) *FixedRecord {
 	for {
@@ -36,32 +37,28 @@ func (s *fixedRecordSlab) alloc(h *Heap) *FixedRecord {
 }
 
 func (s *fixedRecordSlab) refill(h *Heap) {
-	if h != nil {
-		atomic.StoreUintptr(&h.fixedRecordSlabNext, 0)
+	if h == nil {
+		return
 	}
-	next := make([]FixedRecord, fixedRecordSlabSize)
+	atomic.StoreUintptr(&h.fixedRecordSlabNext, 0)
+	next := h.allocBytesLocked(fixedRecordSlabBytes)
 	s.backing = next
-	if h != nil {
-		h.publishFixedRecordSlab(next)
-	}
+	h.publishFixedRecordSlab(next, fixedRecordSlabSize)
 }
 
-func (h *Heap) publishFixedRecordSlab(backing []FixedRecord) {
-	if len(backing) == 0 {
+func (h *Heap) publishFixedRecordSlab(root unsafe.Pointer, slots int) {
+	if root == nil || slots <= 0 {
 		atomic.StoreUintptr(&h.fixedRecordSlabNext, 0)
 		atomic.StoreUintptr(&h.fixedRecordSlabStart, 0)
 		atomic.StoreUintptr(&h.fixedRecordSlabEnd, 0)
 		return
 	}
-	root := unsafe.Pointer(&backing[0])
 	start := uintptr(root)
-	end := start + uintptr(len(backing))*fixedRecordSlotSize
-	keepAlive(root, nil)
+	end := start + uintptr(slots)*fixedRecordSlotSize
 
 	atomic.StoreUintptr(&h.fixedRecordSlabNext, 0)
-	atomic.StoreUintptr(&h.fixedRecordSlabStart, 0)
-	atomic.StoreUintptr(&h.fixedRecordSlabEnd, end)
 	atomic.StoreUintptr(&h.fixedRecordSlabStart, start)
+	atomic.StoreUintptr(&h.fixedRecordSlabEnd, end)
 	atomic.StoreUintptr(&h.fixedRecordSlabNext, start)
 }
 
@@ -70,19 +67,19 @@ func (h *Heap) tryAllocFixedRecordFast() *FixedRecord {
 	if h == nil {
 		return nil
 	}
-	for {
-		next := atomic.LoadUintptr(&h.fixedRecordSlabNext)
-		if next == 0 {
-			return nil
-		}
-		end := atomic.LoadUintptr(&h.fixedRecordSlabEnd)
-		if end == 0 || next > end-fixedRecordSlotSize {
-			return nil
-		}
-		if atomic.CompareAndSwapUintptr(&h.fixedRecordSlabNext, next, next+fixedRecordSlotSize) {
-			return (*FixedRecord)(unsafe.Pointer(next))
-		}
+	next := atomic.LoadUintptr(&h.fixedRecordSlabNext)
+	if next == 0 {
+		return nil
 	}
+	end := atomic.LoadUintptr(&h.fixedRecordSlabEnd)
+	if end == 0 || next > end-fixedRecordSlotSize {
+		return nil
+	}
+	slot := atomic.AddUintptr(&h.fixedRecordSlabNext, fixedRecordSlotSize) - fixedRecordSlotSize
+	if slot > end-fixedRecordSlotSize {
+		return nil
+	}
+	return (*FixedRecord)(unsafe.Pointer(slot))
 }
 
 func (h *Heap) AllocFixedRecord() *FixedRecord {
@@ -130,6 +127,10 @@ func NewFixedRecordValue5(ctor *SmallTableCtorN, v0, v1, v2, v3, v4 Value) (Valu
 	if ctor == nil || ctor.Shape == nil || len(ctor.Keys) != 5 {
 		return NilValue(), false
 	}
+	return NewFixedRecordValue5KnownCtor(ctor, v0, v1, v2, v3, v4)
+}
+
+func NewFixedRecordValue5KnownCtor(ctor *SmallTableCtorN, v0, v1, v2, v3, v4 Value) (Value, bool) {
 	if v0.IsNil() || v1.IsNil() || v2.IsNil() || v3.IsNil() || v4.IsNil() {
 		return NilValue(), false
 	}
@@ -231,6 +232,12 @@ func FixedRecordOffsets() (shapeID, n, values uintptr) {
 func scanFixedRecordRoots(fr *FixedRecord, visitor func(unsafe.Pointer), seen map[uintptr]struct{}) {
 	if fr == nil {
 		return
+	}
+	if fr.ctor != nil {
+		visitor(unsafe.Pointer(fr.ctor))
+		if fr.ctor.Shape != nil {
+			visitor(unsafe.Pointer(fr.ctor.Shape))
+		}
 	}
 	if fr.materialized != nil {
 		p := unsafe.Pointer(fr.materialized)

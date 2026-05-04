@@ -906,7 +906,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				if start >= 0 && start+n <= len(vm.regs) {
 					if vm.currentCoroutine != nil {
 						if n == 5 {
-							if v, ok := runtime.NewFixedRecordValue5(ctor, vm.regs[start], vm.regs[start+1], vm.regs[start+2], vm.regs[start+3], vm.regs[start+4]); ok {
+							if v, ok := runtime.NewFixedRecordValue5KnownCtor(ctor, vm.regs[start], vm.regs[start+1], vm.regs[start+2], vm.regs[start+3], vm.regs[start+4]); ok {
 								vm.regs[base+a] = v
 								break
 							}
