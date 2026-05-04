@@ -2314,29 +2314,42 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.CBZ(jit.X3, missLabel)
 	asm.LDR(jit.X10, jit.X8, jit.StringLookupCacheOffMask)
 
-	asm.LSRimm(jit.X9, jit.X5, 4)
-	asm.LSRimm(jit.X11, jit.X5, 12)
-	asm.EORreg(jit.X9, jit.X9, jit.X11)
-	asm.EORreg(jit.X9, jit.X9, jit.X6)
+	ec.emitStringLookupContentHash(jit.X5, jit.X6, jit.X9, jit.X11, jit.X14, jit.X15, "dyn_string_smap_hash")
+	asm.MOVreg(jit.X15, jit.X9)
 	asm.ANDreg(jit.X9, jit.X9, jit.X10)
 
 	smapLoopLabel := ec.uniqueLabel("dyn_string_smap_loop")
 	smapNextLabel := ec.uniqueLabel("dyn_string_smap_next")
+	smapFoundLabel := ec.uniqueLabel("dyn_string_smap_found")
+	smapByteLoopLabel := ec.uniqueLabel("dyn_string_smap_bytes")
 	asm.MOVimm16(jit.X13, 0)
 	asm.Label(smapLoopLabel)
 	asm.ADDreg(jit.X11, jit.X9, jit.X13)
 	asm.ANDreg(jit.X11, jit.X11, jit.X10)
-	asm.ADDregLSL(jit.X12, jit.X11, jit.X11, 1) // idx * 3
-	asm.LSLimm(jit.X12, jit.X12, 4)             // idx * 48
+	asm.LSLimm(jit.X12, jit.X11, 6) // idx * 64
 	asm.ADDreg(jit.X12, jit.X3, jit.X12)
 	asm.LDRB(jit.X14, jit.X12, jit.StringLookupCacheEntryOffValid)
 	asm.CBZ(jit.X14, missLabel)
-	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyData)
-	asm.CMPreg(jit.X14, jit.X5)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffHash)
+	asm.CMPreg(jit.X14, jit.X15)
 	asm.BCond(jit.CondNE, smapNextLabel)
 	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyLen)
 	asm.CMPreg(jit.X14, jit.X6)
 	asm.BCond(jit.CondNE, smapNextLabel)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyData)
+	asm.CMPreg(jit.X14, jit.X5)
+	asm.BCond(jit.CondEQ, smapFoundLabel)
+	asm.CBZ(jit.X6, smapFoundLabel)
+	asm.MOVimm16(jit.X15, 0)
+	asm.Label(smapByteLoopLabel)
+	asm.LDRBreg(jit.X16, jit.X14, jit.X15)
+	asm.LDRBreg(jit.X17, jit.X5, jit.X15)
+	asm.CMPreg(jit.X16, jit.X17)
+	asm.BCond(jit.CondNE, smapNextLabel)
+	asm.ADDimm(jit.X15, jit.X15, 1)
+	asm.CMPreg(jit.X15, jit.X6)
+	asm.BCond(jit.CondLT, smapByteLoopLabel)
+	asm.Label(smapFoundLabel)
 	asm.LDR(jit.X0, jit.X12, jit.StringLookupCacheEntryOffValue)
 	handlers.valueHit(jit.X0)
 
@@ -2345,6 +2358,24 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.CMPimm(jit.X13, runtime.StringLookupCacheProbeLimit)
 	asm.BCond(jit.CondLT, smapLoopLabel)
 	asm.B(missLabel)
+}
+
+func (ec *emitContext) emitStringLookupContentHash(dataReg, lenReg, dstReg, idxReg, byteReg, primeReg jit.Reg, prefix string) {
+	asm := ec.asm
+	loopLabel := ec.uniqueLabel(prefix + "_loop")
+	doneLabel := ec.uniqueLabel(prefix + "_done")
+	asm.LoadImm64(dstReg, int64(1469598103934665603))
+	asm.LoadImm64(primeReg, int64(1099511628211))
+	asm.MOVimm16(idxReg, 0)
+	asm.Label(loopLabel)
+	asm.CMPreg(idxReg, lenReg)
+	asm.BCond(jit.CondGE, doneLabel)
+	asm.LDRBreg(byteReg, dataReg, idxReg)
+	asm.EORreg(dstReg, dstReg, byteReg)
+	asm.MUL(dstReg, dstReg, primeReg)
+	asm.ADDimm(idxReg, idxReg, 1)
+	asm.B(loopLabel)
+	asm.Label(doneLabel)
 }
 
 func tableExitSourcePC(instr *Instr) int64 {

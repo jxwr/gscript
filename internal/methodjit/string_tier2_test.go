@@ -656,6 +656,79 @@ func lookup(tbl, keys, n) {
 	}
 }
 
+func TestTier2_DynamicStringMapValueCacheGetTable_ContentHashKey(t *testing.T) {
+	src := `
+func make_tbl(n) {
+    tbl := {}
+    for i := 1; i <= n; i++ {
+        tbl[string.format("k%04d", i)] = i
+    }
+    return tbl
+}
+
+func lookup(tbl, n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        idx := (i % 32) + 1
+        k := string.format("k%04d", idx)
+        sum = sum + tbl[k]
+    }
+    return sum
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "lookup")
+	if proto == nil {
+		t.Fatal("lookup proto not found")
+	}
+	proto.EnsureFeedback()
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top: %v", err)
+	}
+	makeFn := v.GetGlobal("make_tbl")
+	tblValues, err := v.CallValue(makeFn, []runtime.Value{runtime.IntValue(32)})
+	if err != nil {
+		t.Fatalf("make_tbl: %v", err)
+	}
+	if len(tblValues) != 1 || !tblValues[0].IsTable() {
+		t.Fatalf("make_tbl returned %v, want table", tblValues)
+	}
+	fnVal := v.GetGlobal("lookup")
+	args := []runtime.Value{tblValues[0], runtime.IntValue(320)}
+	wantValues, err := v.CallValue(fnVal, args)
+	if err != nil {
+		t.Fatalf("warm lookup: %v", err)
+	}
+	want := requireOneInt(t, "VM lookup", wantValues)
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(lookup): %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, args)
+	if err != nil {
+		t.Fatalf("Tier2 lookup: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 lookup", gotValues)
+	if got != want {
+		t.Fatalf("lookup Tier2=%d, want VM=%d", got, want)
+	}
+
+	var getTableExits uint64
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "lookup" && site.ExitName == "ExitTableExit" && site.Reason == "GetTable" {
+			getTableExits += site.Count
+		}
+	}
+	if getTableExits > 32 {
+		t.Fatalf("content-equal string-map lookup should exit at most once per key, GetTable exits=%d sites=%#v", getTableExits, tm.ExitStats().Sites)
+	}
+}
+
 func TestTier2_DynamicStringSmallShapeMissingKey_NoLoopTableExit(t *testing.T) {
 	src := `
 func lookup(n) {

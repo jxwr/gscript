@@ -412,7 +412,9 @@ type StringLookupCacheEntry struct {
 	KeyData uintptr
 	KeyLen  int
 	Value   Value
+	Hash    uintptr
 	Valid   uint8
+	_       [15]byte
 }
 
 // StringLookupCache is an open-addressed direct value cache owned by one table.
@@ -459,8 +461,16 @@ func dynamicStringCacheReplaceIndex(data uintptr, keyLen, n int) int {
 	return int(h % uintptr(n))
 }
 
-func stringLookupHash(data uintptr, keyLen int) uintptr {
-	return (data >> 4) ^ (data >> 12) ^ uintptr(keyLen)
+func stringLookupHashString(key string) uintptr {
+	h := uintptr(1469598103934665603)
+	for i := 0; i < len(key); i++ {
+		h ^= uintptr(key[i])
+		h *= 1099511628211
+	}
+	if h == 0 {
+		return 1
+	}
+	return h
 }
 
 func stringLookupCacheSize(n int) int {
@@ -492,18 +502,19 @@ func (t *Table) ensureStringLookupCacheLocked() *StringLookupCache {
 	return c
 }
 
-func (t *Table) lookupStringMapValueCacheLocked(data uintptr, keyLen int) (Value, bool) {
+func (t *Table) lookupStringMapValueCacheLocked(key string, data uintptr, keyLen int) (Value, bool) {
 	c := t.stringLookupCache
 	if c == nil || len(c.Entries) == 0 {
 		return NilValue(), false
 	}
-	idx := stringLookupHash(data, keyLen) & c.Mask
+	hash := stringLookupHashString(key)
+	idx := hash & c.Mask
 	for probe := 0; probe < stringLookupCacheProbeLimit; probe++ {
 		entry := &c.Entries[idx]
 		if entry.Valid == 0 {
 			return NilValue(), false
 		}
-		if entry.KeyData == data && entry.KeyLen == keyLen {
+		if entry.Hash == hash && entry.KeyLen == keyLen && (entry.KeyData == data || entry.Key == key) {
 			return entry.Value, true
 		}
 		idx = (idx + 1) & c.Mask
@@ -516,12 +527,14 @@ func (t *Table) rememberStringMapValueCacheLocked(key string, data uintptr, keyL
 	if c == nil || len(c.Entries) == 0 {
 		return
 	}
-	idx := stringLookupHash(data, keyLen) & c.Mask
+	hash := stringLookupHashString(key)
+	idx := hash & c.Mask
 	firstStale := -1
 	for probe := 0; probe < stringLookupCacheProbeLimit; probe++ {
 		entry := &c.Entries[idx]
-		if entry.Valid != 0 && entry.KeyData == data && entry.KeyLen == keyLen {
+		if entry.Valid != 0 && entry.Hash == hash && entry.KeyLen == keyLen && (entry.KeyData == data || entry.Key == key) {
 			entry.Key = key
+			entry.KeyData = data
 			entry.Value = val
 			return
 		}
@@ -532,13 +545,14 @@ func (t *Table) rememberStringMapValueCacheLocked(key string, data uintptr, keyL
 		idx = (idx + 1) & c.Mask
 	}
 	if firstStale < 0 {
-		firstStale = int(stringLookupHash(data, keyLen) & c.Mask)
+		firstStale = int(hash & c.Mask)
 	}
 	c.Entries[firstStale] = StringLookupCacheEntry{
 		Key:     key,
 		KeyData: data,
 		KeyLen:  keyLen,
 		Value:   val,
+		Hash:    hash,
 		Valid:   1,
 	}
 }
@@ -829,7 +843,7 @@ func (t *Table) RawGetString(key string) Value {
 	}
 	if t.smap != nil {
 		data, keyLen := stringCacheKey(key)
-		if v, ok := t.lookupStringMapValueCacheLocked(data, keyLen); ok {
+		if v, ok := t.lookupStringMapValueCacheLocked(key, data, keyLen); ok {
 			return v
 		}
 		if v, ok := t.smap[key]; ok {
@@ -867,7 +881,7 @@ func (t *Table) RawGetStringCached(key string, cache *FieldCacheEntry) Value {
 	}
 	if t.smap != nil {
 		data, keyLen := stringCacheKey(key)
-		if v, ok := t.lookupStringMapValueCacheLocked(data, keyLen); ok {
+		if v, ok := t.lookupStringMapValueCacheLocked(key, data, keyLen); ok {
 			return v
 		}
 		if v, ok := t.smap[key]; ok {
@@ -904,7 +918,7 @@ func (t *Table) RawGetStringCachedPoly(key string, cache *FieldCacheEntry, poly 
 	}
 	if t.smap != nil {
 		data, keyLen := stringCacheKey(key)
-		if v, ok := t.lookupStringMapValueCacheLocked(data, keyLen); ok {
+		if v, ok := t.lookupStringMapValueCacheLocked(key, data, keyLen); ok {
 			return v
 		}
 		if v, ok := t.smap[key]; ok {
@@ -937,7 +951,7 @@ func (t *Table) RawGetStringDynamicCached(key string, cache []TableStringKeyCach
 		}
 	}
 	if t.smap != nil {
-		if v, ok := t.lookupStringMapValueCacheLocked(data, keyLen); ok {
+		if v, ok := t.lookupStringMapValueCacheLocked(key, data, keyLen); ok {
 			return v
 		}
 		if v, ok := t.smap[key]; ok {
@@ -1528,9 +1542,9 @@ func StringLookupCacheOffsets() (entriesData, entriesLen, entriesCap, mask uintp
 }
 
 // StringLookupCacheEntryOffsets returns byte offsets for StringLookupCacheEntry.
-func StringLookupCacheEntryOffsets() (keyData, keyLen, value, valid uintptr) {
+func StringLookupCacheEntryOffsets() (keyData, keyLen, value, hash, valid uintptr) {
 	var e StringLookupCacheEntry
-	return unsafe.Offsetof(e.KeyData), unsafe.Offsetof(e.KeyLen), unsafe.Offsetof(e.Value), unsafe.Offsetof(e.Valid)
+	return unsafe.Offsetof(e.KeyData), unsafe.Offsetof(e.KeyLen), unsafe.Offsetof(e.Value), unsafe.Offsetof(e.Hash), unsafe.Offsetof(e.Valid)
 }
 
 // ShapeID returns the table's shape identifier.

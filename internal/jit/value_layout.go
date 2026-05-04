@@ -90,11 +90,12 @@ const (
 	StringLookupCacheOffMask       = 24
 
 	// StringLookupCacheEntry layout.
-	StringLookupCacheEntrySize       = 48
+	StringLookupCacheEntrySize       = 64
 	StringLookupCacheEntryOffKeyData = 16
 	StringLookupCacheEntryOffKeyLen  = 24
 	StringLookupCacheEntryOffValue   = 32
-	StringLookupCacheEntryOffValid   = 40
+	StringLookupCacheEntryOffHash    = 40
+	StringLookupCacheEntryOffValid   = 48
 
 	// denseMatrixMeta layout. The JIT only uses this for the native
 	// row-store adoption path after runtime has allocated the backing.
@@ -244,8 +245,9 @@ func init() {
 		lenOff != StringLookupCacheOffEntriesLen || capOff != StringLookupCacheOffEntriesCap || maskOff != StringLookupCacheOffMask {
 		panic("jit: StringLookupCache offset mismatch")
 	}
-	if keyDataOff, keyLenOff, valueOff, validOff := runtime.StringLookupCacheEntryOffsets(); keyDataOff != StringLookupCacheEntryOffKeyData ||
-		keyLenOff != StringLookupCacheEntryOffKeyLen || valueOff != StringLookupCacheEntryOffValue || validOff != StringLookupCacheEntryOffValid {
+	if keyDataOff, keyLenOff, valueOff, hashOff, validOff := runtime.StringLookupCacheEntryOffsets(); keyDataOff != StringLookupCacheEntryOffKeyData ||
+		keyLenOff != StringLookupCacheEntryOffKeyLen || valueOff != StringLookupCacheEntryOffValue ||
+		hashOff != StringLookupCacheEntryOffHash || validOff != StringLookupCacheEntryOffValid {
 		panic("jit: StringLookupCacheEntry offset mismatch")
 	}
 	dmDataOff, dmLenOff, dmCapOff, dmParentOff := runtime.DenseMatrixMetaOffsets()
