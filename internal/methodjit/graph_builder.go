@@ -1098,7 +1098,8 @@ func (b *graphBuilder) emitBlocks() {
 				b.fn.Unpromotable = true
 
 			default:
-				// Unknown opcode — emit a Nop.
+				// Unknown opcode: fall back to Tier 1 rather than silently corrupting SSA register liveness; new opcodes must add an explicit case to be Tier 2-compilable.
+				b.fn.Unpromotable = true
 				b.emit(block, OpNop, TypeUnknown, nil, int64(op), 0)
 			}
 		}
