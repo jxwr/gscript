@@ -84,6 +84,7 @@ const (
 	ptrSubVMClosure   uint64 = 8 << ptrSubShift  // *vm.Closure (direct pointer, fast OP_CALL path)
 	ptrSubLazyString  uint64 = 9 << ptrSubShift  // *lazyString
 	ptrSubVMCoroutine uint64 = 10 << ptrSubShift // *vm.VMCoroutine (direct pointer, fast coroutine path)
+	ptrSubFixedRecord uint64 = 11 << ptrSubShift // *FixedRecord, materializes to *Table on generic table use
 )
 
 // Value is a NaN-boxed 8-byte representation of all GScript values.
@@ -304,6 +305,12 @@ func ScanValueRoots(v Value, visitor func(unsafe.Pointer), seen map[uintptr]stru
 		seen[addr] = struct{}{}
 		t := (*Table)(p)
 		scanTableRoots(t, visitor, seen)
+		return
+	}
+	if sub == ptrSubFixedRecord {
+		visitor(p)
+		fr := (*FixedRecord)(p)
+		scanFixedRecordRoots(fr, visitor, seen)
 		return
 	}
 	if sub == ptrSubLazyString {
@@ -988,7 +995,7 @@ func (v Value) Type() ValueType {
 		// Determine specific pointer type from sub-type bits.
 		sub := bits & ptrSubMask
 		switch sub {
-		case ptrSubTable:
+		case ptrSubTable, ptrSubFixedRecord:
 			return TypeTable
 		case ptrSubString, ptrSubLazyString:
 			return TypeString
@@ -1021,7 +1028,11 @@ func (v Value) IsString() bool {
 }
 
 func (v Value) IsTable() bool {
-	return uint64(v)&tagMask == tagPtr && v.ptrSubType() == ptrSubTable
+	if uint64(v)&tagMask != tagPtr {
+		return false
+	}
+	sub := v.ptrSubType()
+	return sub == ptrSubTable || sub == ptrSubFixedRecord
 }
 
 func (v Value) IsFunction() bool {
@@ -1101,6 +1112,9 @@ func (v Value) Table() *Table {
 	if !v.IsTable() {
 		return nil
 	}
+	if fr := v.FixedRecord(); fr != nil {
+		return fr.materialize()
+	}
 	p := v.ptrPayload()
 	if p == nil {
 		return nil
@@ -1170,6 +1184,8 @@ func (v Value) Ptr() any {
 	switch sub {
 	case ptrSubTable:
 		return (*Table)(p)
+	case ptrSubFixedRecord:
+		return (*FixedRecord)(p).materialize()
 	case ptrSubString:
 		return *(*string)(p)
 	case ptrSubLazyString:

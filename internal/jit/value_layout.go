@@ -37,7 +37,8 @@ const (
 	NB_TagPtrShr48  = 0xFFFF
 
 	// Pointer sub-type bits (bits 44-47 of payload)
-	NB_PtrSubShift = 44
+	NB_PtrSubShift       = 44
+	NB_PtrSubFixedRecord = 11
 
 	// Table struct offsets (must match runtime.Table layout)
 	TableOffArray     = 8   // []Value slice header (ptr+len+cap = 24 bytes)
@@ -82,6 +83,10 @@ const (
 	TableOffDMMeta            = 248 // *denseMatrixMeta — cold side metadata
 	TableOffLazyTree          = 256 // *LazyRecursiveTable — deferred recursive table side pointer
 	TableOffStringLookupCache = 264 // *StringLookupCache — large string map value cache
+
+	FixedRecordOffShapeID = 16
+	FixedRecordOffN       = 20
+	FixedRecordOffValues  = 24
 
 	// StringLookupCache layout.
 	StringLookupCacheOffEntries    = 0
@@ -223,6 +228,16 @@ func init() {
 	shOff := runtime.TableShapeIDOffset()
 	if shOff != TableOffShapeID {
 		panic("jit: Table.shapeID offset mismatch: expected " + itoa(TableOffShapeID) + ", got " + itoa(int(shOff)))
+	}
+	frShapeIDOff, frNOff, frValuesOff := runtime.FixedRecordOffsets()
+	if frShapeIDOff != FixedRecordOffShapeID {
+		panic("jit: FixedRecord.shapeID offset mismatch")
+	}
+	if frNOff != FixedRecordOffN {
+		panic("jit: FixedRecord.n offset mismatch")
+	}
+	if frValuesOff != FixedRecordOffValues {
+		panic("jit: FixedRecord.values offset mismatch")
 	}
 
 	// R43 Phase 2: verify DenseMatrix descriptor offsets.

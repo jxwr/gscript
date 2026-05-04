@@ -143,6 +143,10 @@ type Heap struct {
 	tableSvalsNSlabNext  uintptr
 	tableSvalsNSlabStart uintptr
 	tableSvalsNSlabEnd   uintptr
+	fixedRecordSlab      fixedRecordSlab
+	fixedRecordSlabNext  uintptr
+	fixedRecordSlabStart uintptr
+	fixedRecordSlabEnd   uintptr
 	stringSlab           stringSlab
 }
 

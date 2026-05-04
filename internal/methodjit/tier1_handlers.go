@@ -609,6 +609,18 @@ func (e *BaselineJITEngine) handleGetTable(ctx *ExecContext, regs []runtime.Valu
 	}
 
 	absA := base + a
+	if key.IsString() {
+		if v, ok := tblVal.FixedRecordRawGetString(key.Str()); ok {
+			if absA < len(regs) {
+				regs[absA] = v
+				pc := int(ctx.BaselinePC) - 1
+				if proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) {
+					proto.Feedback[pc].Result.Observe(v.Type())
+				}
+			}
+			return nil
+		}
+	}
 	if tblVal.IsTable() {
 		if absA < len(regs) {
 			tbl := tblVal.Table()
@@ -741,6 +753,23 @@ func (e *BaselineJITEngine) handleGetField(ctx *ExecContext, regs []runtime.Valu
 		return nil
 	}
 	fieldName := proto.Constants[c].Str()
+
+	if v, ok := tblVal.FixedRecordRawGetString(fieldName); ok {
+		regs[absA] = v
+		pc := int(ctx.BaselinePC) - 1
+		if fr := tblVal.FixedRecord(); fr != nil && pc >= 0 {
+			idx := fr.FieldIndex(fieldName)
+			if idx >= 0 {
+				ensureFieldCache(proto)
+				proto.FieldCache[pc].FieldIdx = idx
+				proto.FieldCache[pc].ShapeID = fr.ShapeID()
+			}
+		}
+		if proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) {
+			proto.Feedback[pc].Result.Observe(v.Type())
+		}
+		return nil
+	}
 
 	if tblVal.IsTable() {
 		tbl := tblVal.Table()

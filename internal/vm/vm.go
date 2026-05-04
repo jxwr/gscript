@@ -900,6 +900,19 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				n := len(ctor.Keys)
 				start := base + c
 				if start >= 0 && start+n <= len(vm.regs) {
+					if vm.currentCoroutine != nil {
+						if n == 5 {
+							if v, ok := runtime.NewFixedRecordValue5(ctor, vm.regs[start], vm.regs[start+1], vm.regs[start+2], vm.regs[start+3], vm.regs[start+4]); ok {
+								vm.regs[base+a] = v
+								break
+							}
+						} else {
+							if v, ok := runtime.NewFixedRecordValue(ctor, vm.regs[start:start+n]); ok {
+								vm.regs[base+a] = v
+								break
+							}
+						}
+					}
 					vm.regs[base+a] = runtime.FreshTableValue(runtime.NewTableFromCtorN(ctor, vm.regs[start:start+n]))
 				} else {
 					vm.regs[base+a] = runtime.FreshTableValue(runtime.NewTableSized(0, n))
@@ -918,6 +931,18 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				key = constants[cidx-RKBit]
 			} else {
 				key = vm.regs[base+cidx]
+			}
+			if key.IsString() {
+				if v, ok := tableVal.FixedRecordRawGetString(key.Str()); ok {
+					vm.regs[base+a] = v
+					if frame.closure.Proto.Feedback != nil {
+						fb := &frame.closure.Proto.Feedback[frame.pc-1]
+						fb.Left.Observe(tableVal.Type())
+						fb.Right.Observe(key.Type())
+						fb.Result.Observe(v.Type())
+					}
+					break
+				}
 			}
 			// Fast path: plain table (no metatable)
 			if tableVal.IsTable() {
@@ -1036,6 +1061,14 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			b := DecodeB(inst)
 			c := DecodeC(inst)
 			tableVal := vm.regs[base+b]
+			if v, ok := tableVal.FixedRecordRawGetString(constants[c].Str()); ok {
+				vm.regs[base+a] = v
+				if frame.closure.Proto.Feedback != nil {
+					fb := &frame.closure.Proto.Feedback[frame.pc-1]
+					fb.Result.Observe(v.Type())
+				}
+				break
+			}
 			// Fast path: plain table → direct string field lookup with inline cache
 			if tableVal.IsTable() {
 				if tbl := tableVal.Table(); tbl.GetMetatable() == nil {
@@ -2105,7 +2138,8 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 }
 
 func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int) (bool, error) {
-	if gf.NativeKind == goFunctionKindCoroutineWrapper {
+	switch gf.NativeKind {
+	case goFunctionKindCoroutineWrapper:
 		co, ok := vmCoroutineFromNativeData(gf.NativeData)
 		if !ok {
 			return true, fmt.Errorf("invalid wrapped coroutine")
@@ -2133,6 +2167,59 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 			return true, nil
 		}
 		vm.writeCallResults(base+a, c, values)
+		return true, nil
+
+	case goFunctionKindCoroutineCreate:
+		if nArgs < 1 || !vm.regs[base+a+1].IsFunction() {
+			return true, fmt.Errorf("coroutine.create expects a function")
+		}
+		cl, ok := closureFromValue(vm.regs[base+a+1])
+		if !ok {
+			return true, fmt.Errorf("coroutine.create expects a GScript function, got Go function")
+		}
+		co := NewVMCoroutine(cl)
+		vm.recordCoroutineCreated(false)
+		vm.writeSingleCallResult(base+a, c, runtime.VMCoroutineValue(unsafe.Pointer(co), co))
+		return true, nil
+
+	case goFunctionKindCoroutineResume:
+		if nArgs < 1 || !vm.regs[base+a+1].IsCoroutine() {
+			return true, fmt.Errorf("coroutine.resume expects a coroutine")
+		}
+		co, ok := vmCoroutineFromValue(vm.regs[base+a+1])
+		if !ok {
+			return true, fmt.Errorf("coroutine.resume expects a VM coroutine")
+		}
+		var args []runtime.Value
+		if nArgs > 1 {
+			start := base + a + 2
+			args = vm.regs[start : start+nArgs-1]
+		}
+		okResult, values, err := vm.resumeCoroutineRaw(co, args)
+		if err != nil {
+			return true, err
+		}
+		vm.writeCoroutineResumeResults(base+a, c, okResult, values)
+		return true, nil
+
+	case goFunctionKindCoroutineYield:
+		var args []runtime.Value
+		if nArgs > 0 {
+			start := base + a + 1
+			args = vm.regs[start : start+nArgs]
+		}
+		if vm.currentCoroutine != nil {
+			return true, vm.suspendCoroutine(args, base+a, c)
+		}
+		results, err := vm.yieldCoroutine(args)
+		if err != nil {
+			return true, err
+		}
+		vm.writeCallResults(base+a, c, results)
+		return true, nil
+
+	case goFunctionKindCoroutineIsYield:
+		vm.writeSingleCallResult(base+a, c, runtime.BoolValue(vm.activeCoroutine() != nil))
 		return true, nil
 	}
 
@@ -2345,6 +2432,12 @@ func (vm *VM) tableGetDepth(t runtime.Value, key runtime.Value, depth int) (runt
 			}
 		}
 		return runtime.NilValue(), nil
+	}
+
+	if key.IsString() {
+		if v, ok := t.FixedRecordRawGetString(key.Str()); ok {
+			return v, nil
+		}
 	}
 
 	if !t.IsTable() {

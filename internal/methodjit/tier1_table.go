@@ -117,6 +117,37 @@ func emitBaselineGetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	// Load table value from R(B).
 	loadSlot(asm, jit.X0, b)
 
+	tableCheckLabel := nextLabel("getfield_table_check")
+
+	// FixedRecord values share the field cache contract with shaped tables:
+	// guard by shapeID and field index, then load the inline value directly.
+	asm.LSRimm(jit.X1, jit.X0, 48)
+	asm.MOVimm16(jit.X4, jit.NB_TagPtrShr48)
+	asm.CMPreg(jit.X1, jit.X4)
+	asm.BCond(jit.CondNE, tableCheckLabel)
+	asm.LSRimm(jit.X1, jit.X0, uint8(jit.NB_PtrSubShift))
+	asm.LoadImm64(jit.X4, 0xF)
+	asm.ANDreg(jit.X1, jit.X1, jit.X4)
+	asm.CMPimm(jit.X1, jit.NB_PtrSubFixedRecord)
+	asm.BCond(jit.CondNE, tableCheckLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, slowLabel)
+	asm.LDRW(jit.X1, jit.X0, jit.FixedRecordOffShapeID)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, slowLabel)
+	asm.LDRB(jit.X1, jit.X0, jit.FixedRecordOffN)
+	asm.CMPreg(jit.X3, jit.X1)
+	asm.BCond(jit.CondGE, slowLabel)
+	asm.ADDimm(jit.X1, jit.X0, jit.FixedRecordOffValues)
+	asm.LDRreg(jit.X0, jit.X1, jit.X3)
+	if feedbackEnabled {
+		emitBaselineFeedbackResultFromValue(asm, pc, jit.X0, "getfield_fixed_record")
+	}
+	storeSlot(asm, a, jit.X0)
+	asm.B(doneLabel)
+
+	asm.Label(tableCheckLabel)
+
 	// Check it's a table pointer (tag = 0xFFFF, sub = 0).
 	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X4, slowLabel)
 

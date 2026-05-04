@@ -32,6 +32,11 @@ const (
 	coroutineIsYieldableName = "coroutine.isyieldable"
 
 	goFunctionKindCoroutineWrapper = 1
+	goFunctionKindCoroutineCreate  = 3
+	goFunctionKindCoroutineResume  = 4
+	goFunctionKindCoroutineYield   = 5
+	goFunctionKindCoroutineStatus  = 6
+	goFunctionKindCoroutineIsYield = 7
 )
 
 // VMCoroutine holds the state of a VM-based coroutine. Long-lived coroutines
@@ -115,7 +120,8 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 	// coroutine.create(fn) -> coroutine
 	createFn := &rt.GoFunction{
-		Name: coroutineCreateName,
+		Name:       coroutineCreateName,
+		NativeKind: goFunctionKindCoroutineCreate,
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			if len(args) < 1 || !args[0].IsFunction() {
 				return nil, fmt.Errorf("coroutine.create expects a function")
@@ -136,7 +142,8 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 	// coroutine.resume(co, args...) -> ok, values...
 	resumeFn := &rt.GoFunction{
-		Name: coroutineResumeName,
+		Name:       coroutineResumeName,
+		NativeKind: goFunctionKindCoroutineResume,
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			if len(args) < 1 || !args[0].IsCoroutine() {
 				return nil, fmt.Errorf("coroutine.resume expects a coroutine")
@@ -153,7 +160,8 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 	// coroutine.yield(values...) -> resume args
 	yieldFn := &rt.GoFunction{
-		Name: coroutineYieldName,
+		Name:       coroutineYieldName,
+		NativeKind: goFunctionKindCoroutineYield,
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			return vm.yieldCoroutine(args)
 		},
@@ -163,7 +171,8 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 	// coroutine.status(co) -> string
 	coLib.RawSet(rt.StringValue("status"), rt.FunctionValue(&rt.GoFunction{
-		Name: "coroutine.status",
+		Name:       "coroutine.status",
+		NativeKind: goFunctionKindCoroutineStatus,
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			if len(args) < 1 || !args[0].IsCoroutine() {
 				return nil, fmt.Errorf("coroutine.status expects a coroutine")
@@ -178,7 +187,8 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 
 	// coroutine.isyieldable() -> bool
 	coLib.RawSet(rt.StringValue("isyieldable"), rt.FunctionValue(&rt.GoFunction{
-		Name: coroutineIsYieldableName,
+		Name:       coroutineIsYieldableName,
+		NativeKind: goFunctionKindCoroutineIsYield,
 		Fn: func(args []rt.Value) ([]rt.Value, error) {
 			return []rt.Value{rt.BoolValue(vm.activeCoroutine() != nil)}, nil
 		},
