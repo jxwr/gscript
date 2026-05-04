@@ -57,8 +57,19 @@ func buildMathLib() *Table {
 		return []Value{mathFloorValue(args[0])}, nil
 	})
 	if v := t.RawGetString("floor"); v.IsFunction() {
-		v.GoFunction().FastArg1 = func(arg Value) (Value, error) {
+		gf := v.GoFunction()
+		gf.FastArg1 = func(arg Value) (Value, error) {
 			return mathFloorValue(arg), nil
+		}
+		// Fast1 mirrors FastArg1 so VM dispatch sites that only check Fast1
+		// (vm.go OP_CALL fast path, vm.callValue, tier2-exit fallback) avoid
+		// the slow Fn path. Without this, log_tokenize_format records 144K
+		// native_call.fallback hits despite math.floor being a one-arg builtin.
+		gf.Fast1 = func(args []Value) (Value, error) {
+			if len(args) < 1 {
+				return NilValue(), fmt.Errorf("bad argument #1 to 'math.floor'")
+			}
+			return mathFloorValue(args[0]), nil
 		}
 	}
 

@@ -608,6 +608,42 @@ func TestMathFloorCeil(t *testing.T) {
 	}
 }
 
+// TestMathFloorFast1 asserts that math.floor exposes a Fast1 fast-path entry.
+// Several VM/JIT dispatch sites (vm.go OP_CALL fast path, vm.callValue,
+// tier2-exit fallback) only check gf.Fast1 before falling back to gf.Fn.
+// Without Fast1, every math.floor call from those paths records a
+// native_call.fallback even though FastArg1 is wired up — observed as the
+// 144K math.floor fallbacks in benchmarks/extended/log_tokenize_format.gs.
+func TestMathFloorFast1(t *testing.T) {
+	mathLib := buildMathLib()
+	v := mathLib.RawGetString("floor")
+	if !v.IsFunction() {
+		t.Fatalf("math.floor not registered as function: %v", v)
+	}
+	gf := v.GoFunction()
+	if gf == nil {
+		t.Fatalf("math.floor GoFunction is nil")
+	}
+	if gf.Fast1 == nil {
+		t.Fatalf("math.floor.Fast1 is nil; VM dispatch paths that only check Fast1 will fall back")
+	}
+	// Behavioural checks: Fast1 must agree with FastArg1 / Fn.
+	cases := []Value{IntValue(7), FloatValue(3.7), FloatValue(-2.3)}
+	for _, in := range cases {
+		got, err := gf.Fast1([]Value{in})
+		if err != nil {
+			t.Fatalf("math.floor.Fast1(%v) error: %v", in, err)
+		}
+		want := mathFloorValue(in)
+		if got.Int() != want.Int() {
+			t.Errorf("math.floor.Fast1(%v) = %v, want %v", in, got, want)
+		}
+	}
+	// Empty args: Fn returns an error; Fast1 should be safe (return nil-ish or
+	// error). We only require that it doesn't panic.
+	_, _ = gf.Fast1(nil)
+}
+
 func TestMathSqrt(t *testing.T) {
 	interp := runProgram(t, `result := math.sqrt(16)`)
 	v := interp.GetGlobal("result")
