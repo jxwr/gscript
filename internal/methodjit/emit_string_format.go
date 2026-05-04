@@ -54,12 +54,6 @@ func stringDataPtr(s string) uintptr {
 }
 
 func (ec *emitContext) emitStringFormatIntNative(instr *Instr) {
-	// Disabled while the native arena string path is under investigation. The
-	// OpExit fallback still uses runtime.StringFormatSingleInt, so correctness
-	// and the generic specialization mechanism remain intact without exposing
-	// tests to non-Go string headers from generated code.
-	ec.emitStringFormatIntExit(instr)
-	return
 	if instr == nil || len(instr.Args) != 3 || ec.fn == nil {
 		ec.emitStringFormatIntExit(instr)
 		return

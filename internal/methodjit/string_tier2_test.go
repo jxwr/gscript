@@ -375,8 +375,8 @@ func format_case(pattern, i) {
 		t.Fatalf("native dynamic pattern result=%q", got)
 	}
 	matchingExits := tm.ExitStats().ByExitCode["ExitOpExit"]
-	if matchingExits == 0 {
-		t.Fatal("matching dynamic pattern should use precise op-exit fallback while native arena is disabled")
+	if matchingExits != 0 {
+		t.Fatalf("matching dynamic pattern should stay native, ExitOpExit=%d", matchingExits)
 	}
 
 	otherArgs := []runtime.Value{runtime.StringValue("alt%d"), runtime.IntValue(8)}
