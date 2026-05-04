@@ -55,6 +55,7 @@ type VM struct {
 	wholeCallValueBuf  []runtime.Value   // reusable Value scratch; scanned as GC roots below
 	spectralKernel     spectralKernelCache
 	currentCoroutine   *VMCoroutine // coroutine currently running on this VM, if any
+	coroutineYielded   bool         // current coroutine VM paused through coroutine.yield
 	coroutineStats     *coroutineStats
 	coroutineCreateFn  *runtime.GoFunction
 	coroutineResumeFn  *runtime.GoFunction
@@ -647,6 +648,9 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	result, err := vm.run()
 	if err == errCoroutineYield {
 		return result, err
+	}
+	if vm.coroutineYielded {
+		return result, nil
 	}
 	vm.frameCount--
 	return result, err
@@ -1502,6 +1506,26 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			frame.pc += sbx
 
 		// ---- Call / Return (INLINE) ----
+		case OP_YIELD:
+			a := DecodeA(inst)
+			b := DecodeB(inst)
+			c := DecodeC(inst)
+			nArgs := b - 1
+			if b == 0 {
+				nArgs = vm.top - (base + a + 1)
+			}
+			var args []runtime.Value
+			if nArgs > 0 {
+				start := base + a + 1
+				args = vm.regs[start : start+nArgs]
+			}
+			if err := vm.suspendCoroutine(args, base+a, c); err != nil {
+				return nil, wrapLineErr(frame, err)
+			}
+			if vm.coroutineYielded {
+				return nil, nil
+			}
+
 		case OP_CALL:
 			a := DecodeA(inst)
 			b := DecodeB(inst)
@@ -1536,6 +1560,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 								return nil, err
 							}
 							return nil, wrapLineErr(frame, err)
+						}
+						if vm.coroutineYielded {
+							return nil, nil
 						}
 						break
 					}

@@ -219,6 +219,8 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		case vm.OP_CALL:
 			emitBaselineNativeCall(asm, inst, pc, proto)
 			resumePCs = append(resumePCs, pc+1)
+		case vm.OP_YIELD:
+			return nil, fmt.Errorf("baseline: OP_YIELD is interpreted")
 		case vm.OP_GETGLOBAL:
 			emitBaselineGetGlobal(asm, inst, pc)
 			resumePCs = append(resumePCs, pc+1)

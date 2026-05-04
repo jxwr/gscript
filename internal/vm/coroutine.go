@@ -305,9 +305,12 @@ func (vm *VM) resumeCoroutineRaw(co *VMCoroutine, args []rt.Value) (bool, []rt.V
 }
 
 func (vm *VM) finishCoroutineRun(co *VMCoroutine, results []rt.Value, err error) (bool, []rt.Value, error) {
-	if err == errCoroutineYield {
+	if err == errCoroutineYield || (co.vm != nil && co.vm.coroutineYielded) {
 		result := co.yieldResult
 		co.yieldResult = vmYieldResult{}
+		if co.vm != nil {
+			co.vm.coroutineYielded = false
+		}
 		co.status = VMCoroutineSuspended
 		return true, result.values, nil
 	}
@@ -351,13 +354,14 @@ func (vm *VM) suspendCoroutine(args []rt.Value, dst, c int) error {
 	co.yieldResult = vmYieldResult{values: args}
 	co.yieldDst = dst
 	co.yieldC = c
-	return errCoroutineYield
+	vm.coroutineYielded = true
+	return nil
 }
 
 func protoHasNoCalls(proto *FuncProto) bool {
 	for _, inst := range proto.Code {
 		switch DecodeOp(inst) {
-		case OP_CALL, OP_TFORCALL:
+		case OP_CALL, OP_YIELD, OP_TFORCALL:
 			return false
 		}
 	}
@@ -419,5 +423,9 @@ func (vm *VM) TryFastCoroutineCallValue(fnVal rt.Value, absSlot, nArgs, c int) (
 	if gf == nil {
 		return false, nil
 	}
-	return vm.tryFastCoroutineCall(gf, 0, absSlot, nArgs, c)
+	handled, err := vm.tryFastCoroutineCall(gf, 0, absSlot, nArgs, c)
+	if vm.coroutineYielded {
+		return handled, errCoroutineYield
+	}
+	return handled, err
 }

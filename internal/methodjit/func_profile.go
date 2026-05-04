@@ -113,7 +113,7 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 			p.ArithCount++
 
 		// Call ops
-		case vm.OP_CALL:
+		case vm.OP_CALL, vm.OP_YIELD:
 			p.CallCount++
 
 		// Table/field ops
@@ -232,6 +232,9 @@ func shouldStayTier0CoroutineRuntime(proto *vm.FuncProto, profile FuncProfile) b
 	hasSuspendingOrFactoryOp := false
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
+		if op == vm.OP_YIELD {
+			return true
+		}
 		if op != vm.OP_GETGLOBAL && op != vm.OP_GETFIELD {
 			continue
 		}
