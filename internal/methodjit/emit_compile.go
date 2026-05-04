@@ -446,7 +446,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		NewTableCaches:           ec.newTableCaches,
 		FixedTableArgSlots:       ec.fixedTableArgSlots,
 		StringConstTables:        fn.StringConstTables,
-		StringFormatIntPatterns:  fn.StringFormatIntPatterns,
+		StringFormatPatterns:     fn.StringFormatPatterns,
 		WholeCallNoResultBatches: fn.WholeCallNoResultBatches,
 		InstrCodeRanges:          ec.instrCodeRanges,
 		ExitSites:                buildExitSiteMeta(fn),

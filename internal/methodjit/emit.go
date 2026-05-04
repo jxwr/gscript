@@ -513,9 +513,9 @@ type CompiledFunction struct {
 	// native code embeds their backing-array addresses.
 	StringConstTables [][]runtime.Value
 
-	// StringFormatIntPatterns keeps generic string.format(pattern,int)
-	// metadata alive for precise Tier 2 op-exit handling.
-	StringFormatIntPatterns []string
+	// StringFormatPatterns keeps string.format pattern metadata alive for
+	// precise Tier 2 op-exit handling.
+	StringFormatPatterns []string
 
 	// WholeCallNoResultBatches records loop-tail no-result whole-call kernel
 	// sites whose future complete loop iterations can be executed in one

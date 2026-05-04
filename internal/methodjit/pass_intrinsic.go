@@ -136,8 +136,8 @@ func lowerStringFormatConst(fn *Function, instr *Instr) bool {
 	if !ok {
 		return false
 	}
-	patternIdx := len(fn.StringFormatIntPatterns)
-	fn.StringFormatIntPatterns = append(fn.StringFormatIntPatterns, formatStr)
+	patternIdx := len(fn.StringFormatPatterns)
+	fn.StringFormatPatterns = append(fn.StringFormatPatterns, formatStr)
 	instr.Op = OpStringFormatConst
 	instr.Type = TypeString
 	instr.Aux = int64(patternIdx)
@@ -150,8 +150,8 @@ func lowerStringFormatInt(fn *Function, instr *Instr) bool {
 	if !ok {
 		return false
 	}
-	patternIdx := len(fn.StringFormatIntPatterns)
-	fn.StringFormatIntPatterns = append(fn.StringFormatIntPatterns, cand.Pattern)
+	patternIdx := len(fn.StringFormatPatterns)
+	fn.StringFormatPatterns = append(fn.StringFormatPatterns, cand.Pattern)
 	instr.Op = OpStringFormatInt
 	instr.Type = TypeString
 	instr.Aux = int64(patternIdx)

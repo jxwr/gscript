@@ -65,11 +65,11 @@ func (ec *emitContext) emitStringFormatIntNative(instr *Instr) {
 		return
 	}
 	patternIdx := int(instr.Aux)
-	if patternIdx < 0 || patternIdx >= len(ec.fn.StringFormatIntPatterns) {
+	if patternIdx < 0 || patternIdx >= len(ec.fn.StringFormatPatterns) {
 		ec.emitStringFormatIntExit(instr)
 		return
 	}
-	pat, ok := parseStringFormatIntPatternNative(ec.fn.StringFormatIntPatterns[patternIdx])
+	pat, ok := parseStringFormatIntPatternNative(ec.fn.StringFormatPatterns[patternIdx])
 	if !ok {
 		ec.emitStringFormatIntExit(instr)
 		return
@@ -94,7 +94,7 @@ func (ec *emitContext) emitStringFormatIntNative(instr *Instr) {
 	if patternVal != jit.X1 {
 		asm.MOVreg(jit.X1, patternVal)
 	}
-	ec.emitStringValueEqualsConstGuard(jit.X1, ec.fn.StringFormatIntPatterns[patternIdx], slowLabel)
+	ec.emitStringValueEqualsConstGuard(jit.X1, ec.fn.StringFormatPatterns[patternIdx], slowLabel)
 
 	intVal := ec.resolveValueNB(instr.Args[2].ID, jit.X1)
 	if intVal != jit.X1 {

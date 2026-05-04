@@ -95,8 +95,8 @@ const (
 	// String
 	OpConcat            // Args[0] .. Args[1] .. ...
 	OpStringConstLookup // Args[0] indexes Function.StringConstTables[Aux], Aux2 = table length
-	OpStringFormatInt   // Args[0]=callee, Args[1]=pattern value, Args[2]=int; Aux indexes Function.StringFormatIntPatterns
-	OpStringFormatConst // Args[0]=callee, Args[1]=const pattern, Args[2:]=values; Aux indexes Function.StringFormatIntPatterns
+	OpStringFormatInt   // Args[0]=callee, Args[1]=pattern value, Args[2]=int; Aux indexes Function.StringFormatPatterns
+	OpStringFormatConst // Args[0]=callee, Args[1]=const pattern, Args[2:]=values; Aux indexes Function.StringFormatPatterns
 
 	// Table operations
 	OpNewTable // Aux = array hint, Aux2 = hash hint

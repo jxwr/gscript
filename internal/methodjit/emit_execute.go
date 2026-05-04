@@ -566,8 +566,8 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 		intVal := regs[tempBase+2]
 		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() && intVal.IsInt() {
 			patternIdx := aux
-			if patternIdx >= 0 && patternIdx < len(cf.StringFormatIntPatterns) {
-				pattern := cf.StringFormatIntPatterns[patternIdx]
+			if patternIdx >= 0 && patternIdx < len(cf.StringFormatPatterns) {
+				pattern := cf.StringFormatPatterns[patternIdx]
 				if patternVal.Str() == pattern {
 					v, ok, err := runtime.StringFormatSingleInt(pattern, intVal.Int())
 					if err != nil {
@@ -603,8 +603,8 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 		patternVal := regs[tempBase+1]
 		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() {
 			patternIdx := aux
-			if patternIdx >= 0 && patternIdx < len(cf.StringFormatIntPatterns) &&
-				patternVal.Str() == cf.StringFormatIntPatterns[patternIdx] {
+			if patternIdx >= 0 && patternIdx < len(cf.StringFormatPatterns) &&
+				patternVal.Str() == cf.StringFormatPatterns[patternIdx] {
 				v, err := runtime.StringFormatValue(regs[tempBase+1 : tempBase+nArgs])
 				if err != nil {
 					return err

@@ -140,10 +140,10 @@ type Function struct {
 	// codegen embeds their backing-array addresses.
 	StringConstTables [][]runtime.Value
 
-	// StringFormatIntPatterns records immutable pattern metadata for generic
-	// string.format(pattern, int) lowering. Patterns are accepted by syntax
-	// shape, not by benchmark-specific literal value.
-	StringFormatIntPatterns []string
+	// StringFormatPatterns records immutable pattern metadata shared by
+	// string.format lowerings. Patterns are accepted by syntax shape or guarded
+	// constant identity, not by benchmark-specific literal value.
+	StringFormatPatterns []string
 
 	// FixedShapeTables records SSA table values whose field layout is known
 	// without consulting the runtime field cache. The initial producer is a
