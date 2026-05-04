@@ -761,6 +761,13 @@ func stringFormatValue(args []Value) (Value, error) {
 	return StringValue(buf.String()), nil
 }
 
+// StringFormatValue applies the stdlib string.format implementation to a
+// pre-built argument slice. It is used by JIT op-exit paths after guarding the
+// callee identity.
+func StringFormatValue(args []Value) (Value, error) {
+	return stringFormatValue(args)
+}
+
 func stringFormat2Value(format, arg Value) (Value, error) {
 	if !format.IsString() {
 		return NilValue(), fmt.Errorf("bad argument #1 to 'string.format' (string expected)")

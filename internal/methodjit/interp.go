@@ -559,6 +559,24 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = v
 
+	case OpStringFormatConst:
+		patternIdx := int(instr.Aux)
+		if patternIdx < 0 || patternIdx >= len(s.fn.StringFormatIntPatterns) {
+			return nil, false, fmt.Errorf("IR interpreter: string format pattern %d out of range", patternIdx)
+		}
+		args := make([]runtime.Value, len(instr.Args)-1)
+		for i := 1; i < len(instr.Args); i++ {
+			args[i-1] = s.val(instr.Args[i])
+		}
+		if len(args) == 0 || !args[0].IsString() || args[0].Str() != s.fn.StringFormatIntPatterns[patternIdx] {
+			return nil, false, fmt.Errorf("IR interpreter: string format guard mismatch")
+		}
+		v, err := runtime.StringFormatValue(args)
+		if err != nil {
+			return nil, false, err
+		}
+		s.values[instr.ID] = v
+
 	// ---------- Table operations ----------
 	case OpNewTable:
 		arrHint := int(instr.Aux)

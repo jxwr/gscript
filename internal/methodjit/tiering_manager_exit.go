@@ -881,6 +881,39 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 			regs[absSlot] = runtime.NilValue()
 		}
 
+	case OpStringFormatConst:
+		tempBase := absArg1
+		nArgs := int(ctx.OpExitArg2)
+		if absSlot >= len(regs) || tempBase < 0 || nArgs < 3 || tempBase+nArgs > len(regs) {
+			return fmt.Errorf("string.format const op-exit out of register range")
+		}
+		callee := regs[tempBase]
+		patternVal := regs[tempBase+1]
+		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() {
+			patternIdx := aux
+			if cf := tm.tier2Compiled[proto]; cf != nil && patternIdx >= 0 && patternIdx < len(cf.StringFormatIntPatterns) &&
+				patternVal.Str() == cf.StringFormatIntPatterns[patternIdx] {
+				v, err := runtime.StringFormatValue(regs[tempBase+1 : tempBase+nArgs])
+				if err != nil {
+					return err
+				}
+				regs[absSlot] = v
+				return nil
+			}
+		}
+		if tm.callVM == nil {
+			return fmt.Errorf("no callVM set for string.format const fallback")
+		}
+		results, err := tm.callVM.CallValue(callee, regs[tempBase+1:tempBase+nArgs])
+		if err != nil {
+			return err
+		}
+		if len(results) > 0 {
+			regs[absSlot] = results[0]
+		} else {
+			regs[absSlot] = runtime.NilValue()
+		}
+
 	case OpLen:
 		if absArg1 < len(regs) && absSlot < len(regs) {
 			v := regs[absArg1]

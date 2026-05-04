@@ -2941,22 +2941,48 @@ func firstUnsupportedHighArityCallResultShapeInLoop(fn *Function) (Op, bool) {
 			continue
 		}
 		for _, instr := range block.Instrs {
-			if instr.Op != OpCall {
-				continue
-			}
-			// Simple string.format-style loop calls are covered by existing
-			// no-filter coverage. The unsafe log-tokenize case is a high-arity
-			// inlined vararg call whose source shape no longer belongs to fn.Proto.
-			if len(instr.Args)-1 <= maxSimpleCallArgs {
-				continue
-			}
-			nRets, ok := callExactFixedResultCountFromC(instr.Aux2)
-			if !ok || !callABIHasExactResultShape(fn, instr, nRets) {
-				return instr.Op, true
+			switch instr.Op {
+			case OpCall:
+				// Simple string.format-style loop calls are covered by existing
+				// no-filter coverage. The unsafe log-tokenize case is a high-arity
+				// inlined vararg call whose source shape no longer belongs to fn.Proto.
+				if len(instr.Args)-1 <= maxSimpleCallArgs {
+					continue
+				}
+				nRets, ok := callExactFixedResultCountFromC(instr.Aux2)
+				if !ok || !callABIHasExactResultShape(fn, instr, nRets) {
+					return instr.Op, true
+				}
+			case OpStringFormatConst:
+				// High-arity format op-exits are acceptable in loop cold branches,
+				// but should not re-open always-hot inlined formatting loops.
+				if len(instr.Args)-2 > maxSimpleCallArgs && !tier2BlockIsModuloColdBranch(block) {
+					return instr.Op, true
+				}
 			}
 		}
 	}
 	return OpNop, false
+}
+
+func tier2BlockIsModuloColdBranch(block *Block) bool {
+	if block == nil || len(block.Preds) != 1 {
+		return false
+	}
+	pred := block.Preds[0]
+	if pred == nil || len(pred.Instrs) == 0 {
+		return false
+	}
+	term := pred.Instrs[len(pred.Instrs)-1]
+	if term == nil || term.Op != OpBranch || len(term.Args) == 0 || term.Args[0] == nil ||
+		term.Args[0].Def == nil || term.Args[0].Def.Op != OpModZeroInt {
+		return false
+	}
+	divisor := term.Args[0].Def.Aux
+	if divisor < 0 {
+		divisor = -divisor
+	}
+	return divisor >= 100
 }
 
 func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, bool) {
@@ -2978,7 +3004,7 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				OpGo, OpMakeChan, OpSend, OpRecv,
 				OpClosure, OpClose,
 				OpVararg,
-				OpLen, OpPow,
+				OpPow,
 				OpTForCall, OpTForLoop:
 				return instr.Op, true
 			case OpNewTable:
@@ -3195,6 +3221,8 @@ func isScalarArraySetTable(instr *Instr) bool {
 	switch val.Def.Type {
 	case TypeInt, TypeFloat, TypeBool:
 		return true
+	case TypeString:
+		return instr.Args[0] != nil && instr.Args[0].Def != nil && instr.Args[0].Def.Op == OpNewTable
 	default:
 		return tier2ValueIsNativeNumeric(val, make(map[int]bool))
 	}

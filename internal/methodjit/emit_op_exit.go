@@ -261,6 +261,74 @@ func (ec *emitContext) emitStringFormatIntExit(instr *Instr) {
 	})
 }
 
+// emitStringFormatConstExit emits a precise exit for string.format with a
+// compile-time constant pattern and a fixed argument count. Arg1 is a temp base
+// holding [callee, pattern, args...], Arg2 is that count, and Aux indexes the
+// accepted pattern metadata.
+func (ec *emitContext) emitStringFormatConstExit(instr *Instr) {
+	asm := ec.asm
+	if instr == nil || len(instr.Args) < 3 {
+		ec.emitOpExit(instr)
+		return
+	}
+
+	resultSlot, hasSlot := ec.slotMap[instr.ID]
+	if !hasSlot {
+		resultSlot = ec.nextSlot
+		ec.slotMap[instr.ID] = resultSlot
+		ec.nextSlot++
+	}
+
+	nArgs := len(instr.Args)
+	tempBase := ec.nextSlot
+	ec.nextSlot += nArgs
+	for i, arg := range instr.Args {
+		valReg := ec.resolveValueNB(arg.ID, jit.X0)
+		if valReg != jit.X0 {
+			asm.MOVreg(jit.X0, valReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(tempBase+i))
+	}
+
+	ec.recordExitResumeCheckSite(instr, ExitOpExit, []int{resultSlot}, exitResumeCheckOptions{})
+	ec.emitStoreAllActiveRegs()
+
+	asm.LoadImm64(jit.X0, int64(instr.Op))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitOp)
+	asm.LoadImm64(jit.X0, int64(resultSlot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitSlot)
+	asm.LoadImm64(jit.X0, int64(tempBase))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitArg1)
+	asm.LoadImm64(jit.X0, int64(nArgs))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitArg2)
+	asm.LoadImm64(jit.X0, instr.Aux)
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitAux)
+	asm.LoadImm64(jit.X0, int64(instr.ID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffOpExitID)
+
+	ec.emitSetResumeNumericPass()
+	asm.LoadImm64(jit.X0, ExitOpExit)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		asm.B("num_deopt_epilogue")
+	} else {
+		asm.B("deopt_epilogue")
+	}
+
+	continueLabel := ec.passLabel(fmt.Sprintf("op_continue_%d", instr.ID))
+	asm.Label(continueLabel)
+	ec.emitReloadAllActiveRegs()
+	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
+	ec.storeResultNB(jit.X0, instr.ID)
+
+	ec.callExitIDs = append(ec.callExitIDs, instr.ID)
+	ec.deferredResumes = append(ec.deferredResumes, deferredResume{
+		instrID:       instr.ID,
+		continueLabel: continueLabel,
+		numericPass:   ec.numericMode,
+	})
+}
+
 // emitSetListExit emits ARM64 code for OpSetList via exit-resume.
 // OpSetList has variable args: Args[0]=table, Args[1..N]=values.
 // Before exiting, stores all values to consecutive temp slots in the

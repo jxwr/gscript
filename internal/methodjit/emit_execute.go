@@ -593,6 +593,39 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 			regs[slot] = runtime.NilValue()
 		}
 
+	case OpStringFormatConst:
+		tempBase := arg1
+		nArgs := arg2
+		if slot >= len(regs) || tempBase < 0 || nArgs < 3 || tempBase+nArgs > len(regs) {
+			return fmt.Errorf("string.format const op-exit out of register range")
+		}
+		callee := regs[tempBase]
+		patternVal := regs[tempBase+1]
+		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() {
+			patternIdx := aux
+			if patternIdx >= 0 && patternIdx < len(cf.StringFormatIntPatterns) &&
+				patternVal.Str() == cf.StringFormatIntPatterns[patternIdx] {
+				v, err := runtime.StringFormatValue(regs[tempBase+1 : tempBase+nArgs])
+				if err != nil {
+					return err
+				}
+				regs[slot] = v
+				return nil
+			}
+		}
+		if cf.CallVM == nil {
+			return fmt.Errorf("no CallVM set for string.format const fallback")
+		}
+		results, err := cf.CallVM.CallValue(callee, regs[tempBase+1:tempBase+nArgs])
+		if err != nil {
+			return err
+		}
+		if len(results) > 0 {
+			regs[slot] = results[0]
+		} else {
+			regs[slot] = runtime.NilValue()
+		}
+
 	case OpLen:
 		if arg1 < len(regs) && slot < len(regs) {
 			v := regs[arg1]

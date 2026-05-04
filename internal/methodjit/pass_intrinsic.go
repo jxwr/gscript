@@ -89,6 +89,12 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 					continue
 				}
 			}
+			if moduleName == "string" && fieldName == "format" && len(instr.Args) > 3 {
+				if lowerStringFormatConst(fn, instr) {
+					notes = append(notes, "intrinsic: string.format(const-pattern,...) -> StringFormatConst")
+					continue
+				}
+			}
 
 			// R43 Phase 2 DenseMatrix intrinsics.
 			// matrix.getf(m, i, j) — 3-arg → float.
@@ -116,6 +122,27 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 		}
 	}
 	return fn, notes
+}
+
+func lowerStringFormatConst(fn *Function, instr *Instr) bool {
+	if fn == nil || instr == nil || len(instr.Args) < 4 {
+		return false
+	}
+	formatArg := instr.Args[1]
+	if formatArg == nil || formatArg.Def == nil || formatArg.Def.Op != OpConstString {
+		return false
+	}
+	formatStr, ok := constString(fn, formatArg.Def.Aux)
+	if !ok {
+		return false
+	}
+	patternIdx := len(fn.StringFormatIntPatterns)
+	fn.StringFormatIntPatterns = append(fn.StringFormatIntPatterns, formatStr)
+	instr.Op = OpStringFormatConst
+	instr.Type = TypeString
+	instr.Aux = int64(patternIdx)
+	instr.Aux2 = int64(len(instr.Args))
+	return true
 }
 
 func lowerStringFormatInt(fn *Function, instr *Instr) bool {

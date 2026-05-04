@@ -96,6 +96,7 @@ const (
 	OpConcat            // Args[0] .. Args[1] .. ...
 	OpStringConstLookup // Args[0] indexes Function.StringConstTables[Aux], Aux2 = table length
 	OpStringFormatInt   // Args[0]=callee, Args[1]=pattern value, Args[2]=int; Aux indexes Function.StringFormatIntPatterns
+	OpStringFormatConst // Args[0]=callee, Args[1]=const pattern, Args[2:]=values; Aux indexes Function.StringFormatIntPatterns
 
 	// Table operations
 	OpNewTable // Aux = array hint, Aux2 = hash hint
@@ -268,6 +269,7 @@ var opNames = [...]string{
 	OpConcat:                     "Concat",
 	OpStringConstLookup:          "StringConstLookup",
 	OpStringFormatInt:            "StringFormatInt",
+	OpStringFormatConst:          "StringFormatConst",
 	OpNewTable:                   "NewTable",
 	OpNewFixedTable:              "NewFixedTable",
 	OpGetTable:                   "GetTable",

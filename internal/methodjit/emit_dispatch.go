@@ -269,6 +269,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpStringFormatInt:
 		ec.emitStringFormatIntNative(instr)
 		ec.clearTableArrayBoundedKeys()
+	case OpStringFormatConst:
+		ec.emitStringFormatConstExit(instr)
+		ec.clearTableArrayBoundedKeys()
 
 	case OpGetUpval, OpSetUpval,
 		OpAppend,
