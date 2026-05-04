@@ -3,6 +3,7 @@
 package methodjit
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -440,13 +441,20 @@ func TestEmitNewFixedTable2CacheFastPath(t *testing.T) {
 		t.Fatalf("new fixed table cache missing: id=%d caches=%d", newFixedID, len(cf.NewTableCaches))
 	}
 
+	// Cache is prewarmed at compile time for monomorphic fixed-record sites,
+	// so the very first Execute hits the JIT fast path; that's an exit-free
+	// allocation and Pos advances by one per call.
+	if entry := cf.NewTableCaches[newFixedID]; len(entry.Values) == 0 || entry.Pos != 0 {
+		t.Fatalf("compile-time prewarm did not populate fixed table cache: %#v", entry)
+	}
+
 	result, err := cf.Execute([]runtime.Value{runtime.IntValue(10), runtime.IntValue(20)})
 	if err != nil {
 		t.Fatalf("first Execute: %v", err)
 	}
 	assertPairTable(t, result, runtime.IntValue(10), runtime.IntValue(20), 2)
-	if entry := cf.NewTableCaches[newFixedID]; len(entry.Values) == 0 || entry.Pos != 0 {
-		t.Fatalf("first miss did not refill fixed table cache: %#v", entry)
+	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != 1 {
+		t.Fatalf("first prewarmed pop should advance Pos to 1: %#v", entry)
 	}
 
 	result, err = cf.Execute([]runtime.Value{runtime.IntValue(30), runtime.IntValue(40)})
@@ -454,16 +462,17 @@ func TestEmitNewFixedTable2CacheFastPath(t *testing.T) {
 		t.Fatalf("second Execute: %v", err)
 	}
 	assertPairTable(t, result, runtime.IntValue(30), runtime.IntValue(40), 2)
-	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != 1 {
-		t.Fatalf("cache fast path did not pop one table: %#v", entry)
+	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != 2 {
+		t.Fatalf("second pop should advance Pos to 2: %#v", entry)
 	}
 
+	posBefore := cf.NewTableCaches[newFixedID].Pos
 	result, err = cf.Execute([]runtime.Value{runtime.IntValue(50), runtime.NilValue()})
 	if err != nil {
 		t.Fatalf("nil Execute: %v", err)
 	}
 	assertPairTable(t, result, runtime.IntValue(50), runtime.NilValue(), 1)
-	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != 1 {
+	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != posBefore {
 		t.Fatalf("nil fallback should not consume shaped cache entry: %#v", entry)
 	}
 }
@@ -554,13 +563,17 @@ func TestEmitNewFixedTableNCacheFastPath(t *testing.T) {
 		t.Fatalf("fixed N arg slots = %#v, want 3 slots", slots)
 	}
 
+	if entry := cf.NewTableCaches[newFixedID]; len(entry.Values) == 0 || entry.Pos != 0 {
+		t.Fatalf("compile-time prewarm did not populate fixed table N cache: %#v", entry)
+	}
+
 	result, err := cf.Execute([]runtime.Value{runtime.IntValue(10), runtime.IntValue(20), runtime.IntValue(30)})
 	if err != nil {
 		t.Fatalf("first Execute: %v", err)
 	}
 	assertTripleTable(t, result, runtime.IntValue(10), runtime.IntValue(20), runtime.IntValue(30), 3)
-	if entry := cf.NewTableCaches[newFixedID]; len(entry.Values) == 0 || entry.Pos != 0 {
-		t.Fatalf("first miss did not refill fixed table cache: %#v", entry)
+	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != 1 {
+		t.Fatalf("first prewarmed pop should advance Pos to 1: %#v", entry)
 	}
 
 	result, err = cf.Execute([]runtime.Value{runtime.IntValue(40), runtime.IntValue(50), runtime.IntValue(60)})
@@ -568,16 +581,17 @@ func TestEmitNewFixedTableNCacheFastPath(t *testing.T) {
 		t.Fatalf("second Execute: %v", err)
 	}
 	assertTripleTable(t, result, runtime.IntValue(40), runtime.IntValue(50), runtime.IntValue(60), 3)
-	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != 1 {
-		t.Fatalf("cache fast path did not pop one table: %#v", entry)
+	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != 2 {
+		t.Fatalf("second pop should advance Pos to 2: %#v", entry)
 	}
 
+	posBefore := cf.NewTableCaches[newFixedID].Pos
 	result, err = cf.Execute([]runtime.Value{runtime.IntValue(70), runtime.NilValue(), runtime.IntValue(90)})
 	if err != nil {
 		t.Fatalf("nil Execute: %v", err)
 	}
 	assertTripleTable(t, result, runtime.IntValue(70), runtime.NilValue(), runtime.IntValue(90), 2)
-	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != 1 {
+	if entry := cf.NewTableCaches[newFixedID]; entry.Pos != posBefore {
 		t.Fatalf("nil fallback should not consume shaped cache entry: %#v", entry)
 	}
 }
@@ -616,5 +630,84 @@ func assertPairTable(t *testing.T, result []runtime.Value, foo, bar runtime.Valu
 	}
 	if got := tbl.SkeysLen(); got != wantSkeys {
 		t.Fatalf("skeys=%d, want %d", got, wantSkeys)
+	}
+}
+
+// TestTier2_FixedTablePrewarmTwoShapesNoExits exercises the regression that
+// `extended/json_table_walk` exposed: a single proto allocates fixed records of
+// two distinct shapes inside a hot loop, and each shape lives at its own IR
+// instruction (its own NewTable cache slot). With compile-time prewarm of the
+// fixed-record cache, the JIT fast path must service every allocation in the
+// loop — Tier 2 must take zero ExitTableExit deopts at the NewFixedTable sites.
+func TestTier2_FixedTablePrewarmTwoShapesNoExits(t *testing.T) {
+	src := `
+func build(n) {
+    last_a := nil
+    last_b := nil
+    for i := 1; i <= n; i++ {
+        a := {id: i, kind: i, region: i}
+        b := {views: i, clicks: i, errors: i, total: i}
+        last_a = a
+        last_b = b
+    }
+    return {a: last_a, b: last_b}
+}
+`
+	top := compileProto(t, src)
+	build := findProtoByName(top, "build")
+	if build == nil {
+		t.Fatal("build proto not found")
+	}
+
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fn := v.GetGlobal("build")
+	if fn.IsNil() {
+		t.Fatal("missing global: build")
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(build); err != nil {
+		t.Fatalf("CompileTier2(build): %v", err)
+	}
+
+	// Trip count well inside the prewarm batch (1024) so the JIT fast path
+	// must service every allocation without falling back to the runtime
+	// refill exit.
+	const trips = 200
+	got, err := v.CallValue(fn, []runtime.Value{runtime.IntValue(trips)})
+	if err != nil {
+		t.Fatalf("CallValue: %v", err)
+	}
+	if len(got) != 1 || !got[0].IsTable() {
+		t.Fatalf("CallValue returned %v, want a wrapper table", got)
+	}
+	wrapper := got[0].Table()
+	a := wrapper.RawGetString("a")
+	b := wrapper.RawGetString("b")
+	if !a.IsTable() || !b.IsTable() {
+		t.Fatalf("wrapper.a/b not tables: a=%v b=%v", a, b)
+	}
+	if v, want := a.Table().RawGetString("id"), runtime.IntValue(trips); !v.Equal(want) {
+		t.Fatalf("a.id = %v, want %v", v, want)
+	}
+	if v, want := b.Table().RawGetString("total"), runtime.IntValue(trips); !v.Equal(want) {
+		t.Fatalf("b.total = %v, want %v", v, want)
+	}
+
+	stats := tm.ExitStats()
+	for _, site := range stats.Sites {
+		if site.ExitName != "ExitTableExit" {
+			continue
+		}
+		if strings.HasPrefix(site.Reason, "NewFixedTable") {
+			t.Fatalf("unexpected NewFixedTable exit at %s pc=%d count=%d reason=%s",
+				site.Proto, site.PC, site.Count, site.Reason)
+		}
 	}
 }

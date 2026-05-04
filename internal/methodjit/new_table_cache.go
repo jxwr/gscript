@@ -15,7 +15,13 @@ const (
 	newObject2CacheBatch           = 128
 	// Fixed-shape constructors are often clustered in row-builder loops; a
 	// larger refill batch cuts exit-resume frequency without growing array caches.
+	// fixedTableCacheBatch is the cold prewarm size kept small enough that a
+	// short-lived script does not pay big up-front allocation.
+	// fixedTableCacheRefillBatch is the steady-state refill size; once a
+	// monomorphic fixed-record site has fired once, future refills hand back
+	// a larger slab so refill-driven Tier 2 exits become rare.
 	fixedTableCacheBatch          = 1024
+	fixedTableCacheRefillBatch    = 8192
 	newTableCacheMaxBatch         = 512
 	newTableCacheTargetBytes      = 4 << 20
 	newTableCacheLargeTargetBytes = 8 << 20
@@ -64,17 +70,69 @@ func prewarmNewTableCachesForFunction(fn *Function, caches []newTableCacheEntry)
 	}
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if instr == nil || instr.Op != OpNewTable || instr.ID < 0 || instr.ID >= len(caches) {
+			if instr == nil || instr.ID < 0 || instr.ID >= len(caches) {
 				continue
 			}
-			batch := newTableCacheBatchSize(instr)
-			if batch <= 1 {
-				continue
+			switch instr.Op {
+			case OpNewTable:
+				batch := newTableCacheBatchSize(instr)
+				if batch <= 1 {
+					continue
+				}
+				hashHint, kind := unpackNewTableAux2(instr.Aux2)
+				prewarmNewTableCacheEntry(&caches[instr.ID], int(instr.Aux), hashHint, kind, batch)
+			case OpNewFixedTable:
+				if ctor, ok := fixedTableCtor2ForInstr(fn.Proto, instr); ok && cacheableSmallCtor2(ctor) {
+					prewarmFixedTable2CacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch)
+					continue
+				}
+				if ctor, ok := fixedTableCtorNForInstr(fn.Proto, instr); ok && cacheableSmallCtorN(ctor) {
+					prewarmFixedTableNCacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch)
+				}
 			}
-			hashHint, kind := unpackNewTableAux2(instr.Aux2)
-			prewarmNewTableCacheEntry(&caches[instr.ID], int(instr.Aux), hashHint, kind, batch)
 		}
 	}
+}
+
+func prewarmFixedTable2CacheEntry(entry *newTableCacheEntry, ctor *runtime.SmallTableCtor2, batch int) {
+	if entry == nil || ctor == nil || batch <= 1 || len(entry.Values) > 0 {
+		return
+	}
+	entry.Values = make([]runtime.Value, batch)
+	if entry.Roots == nil {
+		entry.Roots = make([]unsafe.Pointer, 0, 4)
+	} else {
+		entry.Roots = entry.Roots[:0]
+	}
+	seed := runtime.IntValue(0)
+	for i := range entry.Values {
+		t := runtime.NewTableFromCtor2NonNil(ctor, seed, seed)
+		entry.addRoot(t)
+		entry.Values[i] = runtime.FreshTableValue(t)
+	}
+	entry.Pos = 0
+}
+
+func prewarmFixedTableNCacheEntry(entry *newTableCacheEntry, ctor *runtime.SmallTableCtorN, batch int) {
+	if entry == nil || ctor == nil || batch <= 1 || len(entry.Values) > 0 {
+		return
+	}
+	entry.Values = make([]runtime.Value, batch)
+	if entry.Roots == nil {
+		entry.Roots = make([]unsafe.Pointer, 0, 4)
+	} else {
+		entry.Roots = entry.Roots[:0]
+	}
+	seed := make([]runtime.Value, len(ctor.Keys))
+	for i := range seed {
+		seed[i] = runtime.IntValue(0)
+	}
+	for i := range entry.Values {
+		t := runtime.NewTableFromCtorN(ctor, seed)
+		entry.addRoot(t)
+		entry.Values[i] = runtime.FreshTableValue(t)
+	}
+	entry.Pos = 0
 }
 
 func prewarmNewTableCacheEntry(entry *newTableCacheEntry, arrayHint, hashHint int, kind runtime.ArrayKind, batch int) {
@@ -284,7 +342,7 @@ func allocateFixedTable2FullWithCache(caches []newTableCacheEntry, instrID int, 
 	if entry.Pos < int64(len(entry.Values)) {
 		return tbl
 	}
-	keep := fixedTableCacheBatch - 1
+	keep := fixedTableCacheRefillBatch - 1
 	if cap(entry.Values) < keep {
 		entry.Values = make([]runtime.Value, keep)
 	} else {
@@ -311,7 +369,7 @@ func allocateFixedTable2EmptyWithCache(caches []newTableCacheEntry, instrID int)
 	if entry.EmptyPos < int64(len(entry.EmptyValues)) {
 		return tbl
 	}
-	keep := fixedTableCacheBatch - 1
+	keep := fixedTableCacheRefillBatch - 1
 	if cap(entry.EmptyValues) < keep {
 		entry.EmptyValues = make([]runtime.Value, keep)
 	} else {
@@ -356,7 +414,7 @@ func allocateFixedTableNFullWithCache(caches []newTableCacheEntry, instrID int, 
 	if entry.Pos < int64(len(entry.Values)) {
 		return tbl
 	}
-	keep := fixedTableCacheBatch - 1
+	keep := fixedTableCacheRefillBatch - 1
 	if cap(entry.Values) < keep {
 		entry.Values = make([]runtime.Value, keep)
 	} else {
