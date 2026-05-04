@@ -1060,6 +1060,17 @@ func (b *graphBuilder) emitBlocks() {
 				instr := b.emit(block, OpNop, TypeAny, []*Value{ch}, 0, 0)
 				b.writeVariable(a, block, instr.Value())
 
+			case vm.OP_RESUME, vm.OP_YIELD:
+				// Coroutine resume/yield are not modeled in Tier 2 IR yet.
+				// They have CALL-shaped semantics (write result registers,
+				// possibly variadic), so falling through to the default Nop
+				// path would leave the destination registers unwritten and
+				// corrupt downstream SSA. Mark the function unpromotable so
+				// the Tier 2 gate cleanly skips it; Tier 1 has correct
+				// handlers for OP_RESUME (see tier1_handlers.go) and OP_YIELD
+				// stays interpreted (see tier1_compile.go).
+				b.fn.Unpromotable = true
+
 			default:
 				// Unknown opcode — emit a Nop.
 				b.emit(block, OpNop, TypeUnknown, nil, int64(op), 0)
