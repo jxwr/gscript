@@ -361,7 +361,7 @@ func (vm *VM) suspendCoroutine(args []rt.Value, dst, c int) error {
 func protoHasNoCalls(proto *FuncProto) bool {
 	for _, inst := range proto.Code {
 		switch DecodeOp(inst) {
-		case OP_CALL, OP_YIELD, OP_TFORCALL:
+		case OP_CALL, OP_YIELD, OP_RESUME, OP_TFORCALL:
 			return false
 		}
 	}
@@ -428,4 +428,32 @@ func (vm *VM) TryFastCoroutineCallValue(fnVal rt.Value, absSlot, nArgs, c int) (
 		return handled, errCoroutineYield
 	}
 	return handled, err
+}
+
+func (vm *VM) ResumeCoroutineFromSlots(absSlot, nArgs, c int) error {
+	if vm == nil || absSlot < 0 || absSlot >= len(vm.regs) {
+		return fmt.Errorf("coroutine.resume expects a coroutine")
+	}
+	if nArgs < 1 || absSlot+1 >= len(vm.regs) || !vm.regs[absSlot+1].IsCoroutine() {
+		return fmt.Errorf("coroutine.resume expects a coroutine")
+	}
+	co, ok := vmCoroutineFromValue(vm.regs[absSlot+1])
+	if !ok {
+		return fmt.Errorf("coroutine.resume expects a VM coroutine")
+	}
+	var args []rt.Value
+	if nArgs > 1 {
+		start := absSlot + 2
+		end := start + nArgs - 1
+		if end > len(vm.regs) {
+			return fmt.Errorf("coroutine.resume args out of range")
+		}
+		args = vm.regs[start:end]
+	}
+	okResult, values, err := vm.resumeCoroutineRaw(co, args)
+	if err != nil {
+		return err
+	}
+	vm.writeCoroutineResumeResults(absSlot, c, okResult, values)
+	return nil
 }

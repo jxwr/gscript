@@ -832,8 +832,8 @@ func (c *compiler) compileCallStmt(s *ast.CallStmt) error {
 }
 
 func (c *compiler) compileCallExprDiscard(call *ast.CallExpr, line int) error {
-	if c.isStaticCoroutineYield(call) {
-		return c.compileCoroutineYieldCall(call, c.nextReg, -1, line)
+	if op, ok := c.staticCoroutineBuiltinOp(call); ok {
+		return c.compileCoroutineBuiltinCall(call, c.nextReg, -1, line, op)
 	}
 	base := c.nextReg
 	funcReg := c.allocReg()
@@ -1881,8 +1881,8 @@ func (c *compiler) compileUnaryExpr(e *ast.UnaryExpr, dest int) error {
 
 func (c *compiler) compileCallExprMulti(call *ast.CallExpr, dest int, nResults int) error {
 	line := call.P.Line
-	if c.isStaticCoroutineYield(call) {
-		return c.compileCoroutineYieldCall(call, dest, nResults, line)
+	if op, ok := c.staticCoroutineBuiltinOp(call); ok {
+		return c.compileCoroutineBuiltinCall(call, dest, nResults, line, op)
 	}
 	savedReg := c.nextReg
 
@@ -1945,16 +1945,26 @@ func (c *compiler) compileCallExprMulti(call *ast.CallExpr, dest int, nResults i
 	return nil
 }
 
-func (c *compiler) isStaticCoroutineYield(call *ast.CallExpr) bool {
+func (c *compiler) staticCoroutineBuiltinOp(call *ast.CallExpr) (Opcode, bool) {
 	field, ok := call.Func.(*ast.FieldExpr)
-	if !ok || field.Field != "yield" {
-		return false
+	if !ok {
+		return 0, false
 	}
 	ident, ok := field.Table.(*ast.IdentExpr)
-	return ok && ident.Name == "coroutine"
+	if !ok || ident.Name != "coroutine" {
+		return 0, false
+	}
+	switch field.Field {
+	case "yield":
+		return OP_YIELD, true
+	case "resume":
+		return OP_RESUME, true
+	default:
+		return 0, false
+	}
 }
 
-func (c *compiler) compileCoroutineYieldCall(call *ast.CallExpr, dest int, nResults int, line int) error {
+func (c *compiler) compileCoroutineBuiltinCall(call *ast.CallExpr, dest int, nResults int, line int, op Opcode) error {
 	savedReg := c.nextReg
 	c.nextReg = dest
 	funcReg := c.allocReg()
@@ -1996,7 +2006,7 @@ func (c *compiler) compileCoroutineYieldCall(call *ast.CallExpr, dest int, nResu
 	if nResults == -1 {
 		cc = 0
 	}
-	c.emitABC(OP_YIELD, funcReg, b, cc, line)
+	c.emitABC(op, funcReg, b, cc, line)
 	c.nextReg = savedReg
 	return nil
 }
@@ -2644,6 +2654,8 @@ func Disassemble(proto *FuncProto) string {
 			desc = fmt.Sprintf("CALL       R%d B=%d C=%d", a, b, cc)
 		case OP_YIELD:
 			desc = fmt.Sprintf("YIELD      R%d B=%d C=%d", a, b, cc)
+		case OP_RESUME:
+			desc = fmt.Sprintf("RESUME     R%d B=%d C=%d", a, b, cc)
 		case OP_RETURN:
 			desc = fmt.Sprintf("RETURN     R%d B=%d", a, b)
 		case OP_CLOSURE:

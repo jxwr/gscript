@@ -83,6 +83,7 @@ const (
 
 	OP_NEWOBJECTN // A B C : R(A) = small string table, ctor=B, values starting at R(C)
 	OP_YIELD      // A B C : coroutine.yield(R(A+1)..R(A+B-1)); result convention matches CALL
+	OP_RESUME     // A B C : coroutine.resume(R(A+1)..R(A+B-1)); result convention matches CALL
 
 	OP_MAX // sentinel
 )
@@ -203,6 +204,7 @@ var opNames = [...]string{
 	OP_JMP:        "JMP",
 	OP_CALL:       "CALL",
 	OP_YIELD:      "YIELD",
+	OP_RESUME:     "RESUME",
 	OP_RETURN:     "RETURN",
 	OP_CLOSURE:    "CLOSURE",
 	OP_CLOSE:      "CLOSE",

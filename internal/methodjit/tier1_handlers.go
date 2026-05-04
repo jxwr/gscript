@@ -20,6 +20,8 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	switch opCode {
 	case vm.OP_CALL:
 		return e.handleCall(ctx, regs, base, proto)
+	case vm.OP_RESUME:
+		return e.handleResume(ctx, regs, base)
 	case vm.OP_GETGLOBAL:
 		return e.handleGetGlobal(ctx, regs, base, proto, bf)
 	case vm.OP_SETGLOBAL:
@@ -71,6 +73,27 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	default:
 		return fmt.Errorf("unhandled baseline op-exit: %s (%d)", vm.OpName(opCode), opCode)
 	}
+}
+
+func (e *BaselineJITEngine) handleResume(ctx *ExecContext, regs []runtime.Value, base int) error {
+	if e.callVM == nil {
+		return fmt.Errorf("no callVM for coroutine resume exit")
+	}
+	slot := int(ctx.BaselineA)
+	rawB := int(ctx.BaselineB)
+	rawC := int(ctx.BaselineC)
+	absSlot := base + slot
+	if absSlot >= len(regs) {
+		return fmt.Errorf("resume slot %d out of range", absSlot)
+	}
+	nArgs := rawB - 1
+	if rawB == 0 {
+		nArgs = e.callVM.Top() - (absSlot + 1)
+		if nArgs < 0 {
+			nArgs = 0
+		}
+	}
+	return e.callVM.ResumeCoroutineFromSlots(absSlot, nArgs, rawC)
 }
 
 func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, bf *BaselineFunc) error {

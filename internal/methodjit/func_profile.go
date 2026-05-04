@@ -113,7 +113,7 @@ func analyzeFuncProfile(proto *vm.FuncProto) FuncProfile {
 			p.ArithCount++
 
 		// Call ops
-		case vm.OP_CALL, vm.OP_YIELD:
+		case vm.OP_CALL, vm.OP_YIELD, vm.OP_RESUME:
 			p.CallCount++
 
 		// Table/field ops

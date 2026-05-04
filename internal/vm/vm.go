@@ -1526,6 +1526,32 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				return nil, nil
 			}
 
+		case OP_RESUME:
+			a := DecodeA(inst)
+			b := DecodeB(inst)
+			c := DecodeC(inst)
+			nArgs := b - 1
+			if b == 0 {
+				nArgs = vm.top - (base + a + 1)
+			}
+			if nArgs < 1 || !vm.regs[base+a+1].IsCoroutine() {
+				return nil, wrapLineErr(frame, fmt.Errorf("coroutine.resume expects a coroutine"))
+			}
+			co, ok := vmCoroutineFromValue(vm.regs[base+a+1])
+			if !ok {
+				return nil, wrapLineErr(frame, fmt.Errorf("coroutine.resume expects a VM coroutine"))
+			}
+			var args []runtime.Value
+			if nArgs > 1 {
+				start := base + a + 2
+				args = vm.regs[start : start+nArgs-1]
+			}
+			okResult, values, err := vm.resumeCoroutineRaw(co, args)
+			if err != nil {
+				return nil, wrapLineErr(frame, err)
+			}
+			vm.writeCoroutineResumeResults(base+a, c, okResult, values)
+
 		case OP_CALL:
 			a := DecodeA(inst)
 			b := DecodeB(inst)
