@@ -207,113 +207,8 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// Get the function profile (cached after first computation).
 	profile := tm.getProfile(proto)
 
-	if info, ok := recognizedWholeCallKernelForTiering(proto); ok {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "whole_call_structural_kernel",
-			"kernel":     info.Name,
-			"route":      string(info.Route),
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "whole_call_structural_kernel",
-			"kernel": info.Name,
-			"route":  string(info.Route),
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "whole_call_structural_kernel",
-			"target": "interpreter",
-			"kernel": info.Name,
-			"route":  string(info.Route),
-		})
-		return nil
-	}
-	if callee, info, ok := tm.wholeCallKernelCalleeForTiering(proto); ok {
-		proto.JITDisabled = true
-		calleeName := "<anonymous>"
-		if callee.Name != "" {
-			calleeName = callee.Name
-		}
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "whole_call_kernel_callee",
-			"kernel":     info.Name,
-			"callee":     calleeName,
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "whole_call_kernel_callee",
-			"kernel": info.Name,
-			"callee": calleeName,
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "whole_call_kernel_callee",
-			"target": "interpreter",
-			"kernel": info.Name,
-			"callee": calleeName,
-		})
-		return nil
-	}
-
-	if vm.IsNestedMatmulKernelProto(proto) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "whole_call_matmul_kernel",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "whole_call_matmul_kernel",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "whole_call_matmul_kernel",
-			"target": "interpreter",
-		})
-		return nil
-	}
-	if vm.IsSieveKernelProto(proto) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "whole_call_sieve_kernel",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "whole_call_sieve_kernel",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "whole_call_sieve_kernel",
-			"target": "interpreter",
-		})
-		return nil
-	}
-
-	if tm.hasLargeNBodyAdvanceDriverLoop(proto) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "large_whole_call_record_loop",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "large_whole_call_record_loop",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "large_whole_call_record_loop",
-			"target": "interpreter",
-		})
-		return nil
-	}
-
-	if tm.hasPrimePredicateSumDriverLoop(proto) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "whole_call_prime_predicate_sum_loop",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "whole_call_prime_predicate_sum_loop",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "whole_call_prime_predicate_sum_loop",
-			"target": "interpreter",
-		})
+	if d, ok := tm.structuralKernelTieringDecision(proto); ok {
+		tm.disableForStructuralKernelTiering(proto, d)
 		return nil
 	}
 
@@ -754,50 +649,6 @@ func canPromoteToTier2(proto *vm.FuncProto) bool {
 	return true
 }
 
-func recognizedWholeCallKernelForTiering(proto *vm.FuncProto) (vm.KernelInfo, bool) {
-	for _, info := range vm.RecognizedWholeCallKernels(proto) {
-		if info.Route == vm.KernelRouteWholeCallNoResult && protoHasFloatConstant(proto) {
-			return info, true
-		}
-	}
-	return vm.KernelInfo{}, false
-}
-
-func protoHasFloatConstant(proto *vm.FuncProto) bool {
-	if proto == nil {
-		return false
-	}
-	for _, c := range proto.Constants {
-		if c.IsFloat() {
-			return true
-		}
-	}
-	return false
-}
-
-func (tm *TieringManager) wholeCallKernelCalleeForTiering(proto *vm.FuncProto) (*vm.FuncProto, vm.KernelInfo, bool) {
-	if tm == nil || tm.envTier2NoFilter || proto == nil {
-		return nil, vm.KernelInfo{}, false
-	}
-	globals := tm.buildLoopCallGlobals(proto)
-	if len(globals) == 0 {
-		return nil, vm.KernelInfo{}, false
-	}
-	for pc, inst := range proto.Code {
-		if vm.DecodeOp(inst) != vm.OP_CALL {
-			continue
-		}
-		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
-		if !ok || callee == nil {
-			continue
-		}
-		if info, ok := recognizedWholeCallKernelForTiering(callee); ok {
-			return callee, info, true
-		}
-	}
-	return nil, vm.KernelInfo{}, false
-}
-
 func firstUnsupportedTier2Bytecode(proto *vm.FuncProto) (string, bool) {
 	if proto == nil {
 		return "", false
@@ -1016,56 +867,6 @@ func (tm *TieringManager) shouldSuppressLoopCallTier2(proto *vm.FuncProto, profi
 	}
 	globals := tm.buildLoopCallGlobals(proto)
 	return !canPromoteWithInlining(proto, globals) && !canPromoteWithNativeLoopCalls(proto, globals)
-}
-
-func (tm *TieringManager) hasLargeNBodyAdvanceDriverLoop(proto *vm.FuncProto) bool {
-	if tm == nil || proto == nil {
-		return false
-	}
-	globals := tm.buildLoopCallGlobals(proto)
-	if len(globals) == 0 {
-		return false
-	}
-	globalNums := stableNumericGlobals(proto)
-	for pc, inst := range proto.Code {
-		if vm.DecodeOp(inst) != vm.OP_FORPREP {
-			continue
-		}
-		a := vm.DecodeA(inst)
-		steps, ok := staticForTripCount(proto, globalNums, pc, a)
-		if !ok || steps < 1024 {
-			continue
-		}
-		if vm.IsNBodyAdvanceDriverLoopAt(proto, pc, globals) {
-			return true
-		}
-	}
-	return false
-}
-
-func (tm *TieringManager) hasPrimePredicateSumDriverLoop(proto *vm.FuncProto) bool {
-	if tm == nil || proto == nil {
-		return false
-	}
-	globals := tm.buildLoopCallGlobals(proto)
-	if len(globals) == 0 {
-		return false
-	}
-	globalNums := stableNumericGlobals(proto)
-	for pc, inst := range proto.Code {
-		if vm.DecodeOp(inst) != vm.OP_FORPREP {
-			continue
-		}
-		a := vm.DecodeA(inst)
-		steps, ok := staticForTripCount(proto, globalNums, pc, a)
-		if !ok || steps < 1024 {
-			continue
-		}
-		if vm.IsPrimePredicateSumLoopAt(proto, pc, globals) {
-			return true
-		}
-	}
-	return false
 }
 
 func stableNumericGlobals(proto *vm.FuncProto) map[string]int64 {
