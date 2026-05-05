@@ -93,7 +93,7 @@ func (e *BaselineJITEngine) handleResume(ctx *ExecContext, regs []runtime.Value,
 			nArgs = 0
 		}
 	}
-	return e.callVM.ResumeCoroutineFromSlots(absSlot, nArgs, rawC)
+	return e.callVM.ResumeCoroutineFromSlots(absSlot, nArgs, rawC, false)
 }
 
 func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, bf *BaselineFunc) error {

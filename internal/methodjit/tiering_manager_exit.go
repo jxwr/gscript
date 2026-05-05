@@ -1050,7 +1050,8 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 		if nArgs < 0 {
 			return fmt.Errorf("coroutine resume op-exit has invalid B")
 		}
-		return tm.callVM.ResumeCoroutineFromSlots(absSlot, nArgs, c)
+		payloadFieldOnly := tm.callVM.ResumePayloadIsFieldOnly(proto, int(ctx.BaselinePC), int(ctx.OpExitSlot), c)
+		return tm.callVM.ResumeCoroutineFromSlots(absSlot, nArgs, c, payloadFieldOnly)
 
 	case OpTestSet:
 		return fmt.Errorf("op-exit not yet implemented: %s", op)

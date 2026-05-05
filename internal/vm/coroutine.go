@@ -46,9 +46,15 @@ type VMCoroutine struct {
 	closure    *Closure
 	started    bool
 	leafNoCall bool
-	vm         *VM
-	yieldDst   int
-	yieldC     int
+	// stackYieldEnabled is set by the resumer (consumer) when static analysis
+	// of the bytecode after the resume site shows the yielded payload is only
+	// read via GETFIELD. Producer-side skip of payload-table allocation can
+	// consult this flag. Currently set but not yet consumed; the actual fast
+	// path is staged for a follow-up.
+	stackYieldEnabled bool
+	vm                *VM
+	yieldDst          int
+	yieldC            int
 
 	yieldResult vmYieldResult
 }
@@ -430,7 +436,7 @@ func (vm *VM) TryFastCoroutineCallValue(fnVal rt.Value, absSlot, nArgs, c int) (
 	return handled, err
 }
 
-func (vm *VM) ResumeCoroutineFromSlots(absSlot, nArgs, c int) error {
+func (vm *VM) ResumeCoroutineFromSlots(absSlot, nArgs, c int, payloadFieldOnly bool) error {
 	if vm == nil || absSlot < 0 || absSlot >= len(vm.regs) {
 		return fmt.Errorf("coroutine.resume expects a coroutine")
 	}
@@ -441,6 +447,7 @@ func (vm *VM) ResumeCoroutineFromSlots(absSlot, nArgs, c int) error {
 	if !ok {
 		return fmt.Errorf("coroutine.resume expects a VM coroutine")
 	}
+	co.stackYieldEnabled = payloadFieldOnly
 	var args []rt.Value
 	if nArgs > 1 {
 		start := absSlot + 2

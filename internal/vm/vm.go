@@ -1546,6 +1546,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				start := base + a + 2
 				args = vm.regs[start : start+nArgs-1]
 			}
+			co.stackYieldEnabled = vm.ResumePayloadIsFieldOnly(frame.closure.Proto, frame.pc, a, c)
 			okResult, values, err := vm.resumeCoroutineRaw(co, args)
 			if err != nil {
 				return nil, wrapLineErr(frame, err)
@@ -2380,6 +2381,148 @@ func (vm *VM) writeCoroutineResumeResults(dst, c int, ok bool, values []runtime.
 			vm.regs[dst+i] = runtime.NilValue()
 		}
 	}
+}
+
+func (vm *VM) ResumePayloadIsFieldOnly(proto *FuncProto, nextPC, resumeA, c int) bool {
+	if proto == nil || c != 3 {
+		return false
+	}
+	payloadReg := resumeA + 1
+	for pc := nextPC; pc < len(proto.Code); pc++ {
+		inst := proto.Code[pc]
+		op := DecodeOp(inst)
+		a := DecodeA(inst)
+		b := DecodeB(inst)
+		cc := DecodeC(inst)
+
+		switch op {
+		case OP_GETFIELD:
+			if b == payloadReg {
+				continue
+			}
+			if a == payloadReg {
+				return true
+			}
+		case OP_RESUME, OP_FORLOOP:
+			return true
+		case OP_RETURN:
+			return !registerRangeMayRead(payloadReg, a, b)
+		case OP_JMP:
+			if DecodesBx(inst) < 0 {
+				return true
+			}
+		case OP_MOVE, OP_UNM, OP_NOT, OP_LEN:
+			if b == payloadReg {
+				return false
+			}
+			if a == payloadReg {
+				return true
+			}
+		case OP_GETTABLE, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD, OP_POW, OP_EQ, OP_LT, OP_LE:
+			if b == payloadReg || (cc < RKBit && cc == payloadReg) {
+				return false
+			}
+			if op != OP_EQ && op != OP_LT && op != OP_LE && a == payloadReg {
+				return true
+			}
+		case OP_SETTABLE:
+			if a == payloadReg || b == payloadReg || (cc < RKBit && cc == payloadReg) {
+				return false
+			}
+		case OP_SETFIELD:
+			if a == payloadReg || cc == payloadReg {
+				return false
+			}
+		case OP_TEST:
+			if a == payloadReg {
+				return false
+			}
+		case OP_TESTSET:
+			if b == payloadReg {
+				return false
+			}
+			if a == payloadReg {
+				return true
+			}
+		case OP_CALL, OP_YIELD, OP_GO:
+			if callRegisterRangeMayRead(payloadReg, a, b) {
+				return false
+			}
+			if callRegisterRangeMayWrite(payloadReg, a, cc) {
+				return true
+			}
+		case OP_TFORCALL:
+			if payloadReg >= a && payloadReg <= a+2 {
+				return false
+			}
+			if payloadReg >= a+3 && payloadReg <= a+2+cc {
+				return true
+			}
+		case OP_TFORLOOP:
+			if payloadReg == a || payloadReg == a+1 {
+				return false
+			}
+		case OP_SETGLOBAL, OP_SETUPVAL, OP_CLOSE, OP_APPEND, OP_SEND:
+			if a == payloadReg || b == payloadReg {
+				return false
+			}
+		case OP_SELF:
+			if b == payloadReg || (cc < RKBit && cc == payloadReg) {
+				return false
+			}
+			if a == payloadReg || a+1 == payloadReg {
+				return true
+			}
+		case OP_CONCAT:
+			if payloadReg >= b && payloadReg <= cc {
+				return false
+			}
+			if a == payloadReg {
+				return true
+			}
+		case OP_SETLIST:
+			if a == payloadReg || (payloadReg > a && payloadReg <= a+b) {
+				return false
+			}
+		case OP_FORPREP:
+			if payloadReg >= a && payloadReg <= a+3 {
+				return false
+			}
+		case OP_RECV:
+			if a == payloadReg {
+				return true
+			}
+			if b == payloadReg {
+				return false
+			}
+		default:
+			if a == payloadReg {
+				return true
+			}
+		}
+	}
+	return true
+}
+
+func registerRangeMayRead(reg, start, b int) bool {
+	if b == 0 {
+		return reg >= start
+	}
+	return reg >= start && reg < start+b-1
+}
+
+func callRegisterRangeMayRead(reg, a, b int) bool {
+	if b == 0 {
+		return reg >= a
+	}
+	return reg >= a && reg < a+b
+}
+
+func callRegisterRangeMayWrite(reg, a, c int) bool {
+	if c == 0 {
+		return reg >= a
+	}
+	return reg >= a && reg < a+c-1
 }
 
 func (vm *VM) writeCallResults(dst, c int, results []runtime.Value) {
