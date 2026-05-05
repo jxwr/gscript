@@ -106,7 +106,8 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 
 	// Walk bytecodes linearly.
 	feedbackEnabled := !IsFeedbackCollectionDisabled(proto)
-	nativeCoroutineYieldEnabled := baselineProtoMayUseNativeCoroutineSwitch(proto)
+	nativeCoroutineSwitchEnabled := tier1CoroutineNativeSwitchEnabled
+	nativeCoroutineYieldEnabled := nativeCoroutineSwitchEnabled && baselineProtoMayUseNativeCoroutineSwitch(proto)
 	for pc := 0; pc < len(code); pc++ {
 		// Label for this PC (used as jump target within JIT code).
 		// Skip pc==0 when we already labeled it for the int-spec guard.
@@ -229,8 +230,12 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			}
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_RESUME:
-			payloadFieldOnly := (&vm.VM{}).ResumePayloadIsFieldOnly(proto, pc+1, vm.DecodeA(inst), vm.DecodeC(inst))
-			emitBaselineResumeWithNativeSwitch(asm, inst, pc, payloadFieldOnly)
+			if nativeCoroutineSwitchEnabled {
+				payloadFieldOnly := (&vm.VM{}).ResumePayloadIsFieldOnly(proto, pc+1, vm.DecodeA(inst), vm.DecodeC(inst))
+				emitBaselineResumeWithNativeSwitch(asm, inst, pc, payloadFieldOnly)
+			} else {
+				emitBaselineOpExit(asm, inst, pc, vm.OP_RESUME)
+			}
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETGLOBAL:
 			emitBaselineGetGlobal(asm, inst, pc)
@@ -245,7 +250,11 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineNewObject2(asm, inst, pc, proto, newTableCaches)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_NEWOBJECTN:
-			emitBaselineNewObjectN(asm, inst, pc, proto)
+			if nativeCoroutineSwitchEnabled {
+				emitBaselineNewObjectN(asm, inst, pc, proto)
+			} else {
+				emitBaselineOpExit(asm, inst, pc, vm.OP_NEWOBJECTN)
+			}
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETTABLE:
 			emitBaselineGetTable(asm, inst, pc, feedbackEnabled)

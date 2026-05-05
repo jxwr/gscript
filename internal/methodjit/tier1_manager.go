@@ -22,7 +22,6 @@ package methodjit
 
 import (
 	"fmt"
-	"os"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -372,9 +371,10 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 	// Pool avoids per-call allocation overhead for small/recursive functions.
 	ctx := e.acquireCtx()
 	releaseCtx := true
+	nativeCoroutineSwitch := tier1CoroutineNativeSwitchEnabled
 	defer func() {
 		if releaseCtx {
-			if e.callVM != nil && (ctx.CoroutineNativeResumes != 0 || ctx.CoroutineNativeYields != 0 || ctx.CoroutineNativeMisses != 0) {
+			if nativeCoroutineSwitch && e.callVM != nil && (ctx.CoroutineNativeResumes != 0 || ctx.CoroutineNativeYields != 0 || ctx.CoroutineNativeMisses != 0) {
 				e.callVM.RecordCoroutineJITNativeSwitch(uint64(ctx.CoroutineNativeResumes), uint64(ctx.CoroutineNativeYields), uint64(ctx.CoroutineNativeMisses))
 			}
 			e.releaseCtx()
@@ -382,16 +382,16 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 	}()
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
 	ctx.CoroutineNativeSwitch = 0
-	ctx.CoroutinePinnedCtx = 0
-	ctx.CoroutineParentCtx = 0
-	ctx.CoroutineParentA = 0
-	ctx.CoroutineParentC = 0
-	ctx.CoroutineCurrentPtr = 0
-	ctx.CoroutineNativeResumes = 0
-	ctx.CoroutineNativeYields = 0
-	ctx.CoroutineNativeMisses = 0
-	if os.Getenv("GSCRIPT_TIER1_CORO_NATIVE_SWITCH") == "1" {
+	if nativeCoroutineSwitch {
 		ctx.CoroutineNativeSwitch = 1
+		ctx.CoroutinePinnedCtx = 0
+		ctx.CoroutineParentCtx = 0
+		ctx.CoroutineParentA = 0
+		ctx.CoroutineParentC = 0
+		ctx.CoroutineCurrentPtr = 0
+		ctx.CoroutineNativeResumes = 0
+		ctx.CoroutineNativeYields = 0
+		ctx.CoroutineNativeMisses = 0
 	}
 
 	// Set OSR counter for this function. Positive = enabled, negative = disabled.
@@ -406,7 +406,9 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 	}
 	if e.callVM != nil {
 		ctx.TopPtr = uintptr(unsafe.Pointer(e.callVM.TopPtr()))
-		ctx.CoroutineCurrentPtr = e.callVM.CurrentCoroutinePtr()
+		if nativeCoroutineSwitch {
+			ctx.CoroutineCurrentPtr = e.callVM.CurrentCoroutinePtr()
+		}
 	}
 
 	// Set up FieldCache pointer for native GETFIELD/SETFIELD.
