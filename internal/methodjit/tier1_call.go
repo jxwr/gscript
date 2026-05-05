@@ -49,6 +49,9 @@ var (
 	funcProtoOffDirectEntryVersion     int // vm.FuncProto.DirectEntryVersion offset
 	funcProtoOffTier2NumericEntryPtr   int // vm.FuncProto.Tier2NumericEntryPtr offset
 	funcProtoOffConstants              int // vm.FuncProto.Constants offset (slice header)
+	funcProtoOffFieldCache             int // vm.FuncProto.FieldCache offset (slice header)
+	funcProtoOffFieldPolyCache         int // vm.FuncProto.FieldPolyCache offset (slice header)
+	funcProtoOffTableStringKeyCache    int // vm.FuncProto.TableStringKeyCache offset (slice header)
 	funcProtoOffMaxStack               int // vm.FuncProto.MaxStack offset
 	funcProtoOffNumParams              int // vm.FuncProto.NumParams offset
 	funcProtoOffIsVarArg               int // vm.FuncProto.IsVarArg offset
@@ -76,6 +79,9 @@ func init() {
 	funcProtoOffDirectEntryVersion = int(unsafe.Offsetof(proto.DirectEntryVersion))
 	funcProtoOffTier2NumericEntryPtr = int(unsafe.Offsetof(proto.Tier2NumericEntryPtr))
 	funcProtoOffConstants = int(unsafe.Offsetof(proto.Constants))
+	funcProtoOffFieldCache = int(unsafe.Offsetof(proto.FieldCache))
+	funcProtoOffFieldPolyCache = int(unsafe.Offsetof(proto.FieldPolyCache))
+	funcProtoOffTableStringKeyCache = int(unsafe.Offsetof(proto.TableStringKeyCache))
 	funcProtoOffMaxStack = int(unsafe.Offsetof(proto.MaxStack))
 	funcProtoOffNumParams = int(unsafe.Offsetof(proto.NumParams))
 	funcProtoOffIsVarArg = int(unsafe.Offsetof(proto.IsVarArg))

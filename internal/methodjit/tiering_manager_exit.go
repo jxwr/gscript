@@ -298,6 +298,7 @@ func (tm *TieringManager) nativeExitCallee(ctx *ExecContext, regs []runtime.Valu
 }
 
 func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) (runtime.Value, error) {
+	tm.recordTier2NativeCalleeExit(proto, cf, ctx)
 	codePtr := uintptr(0)
 	resumeClosurePtr := ctx.NativeCalleeClosurePtr
 	switch ctx.NativeCalleeExitCode {

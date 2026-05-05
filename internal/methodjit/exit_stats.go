@@ -131,6 +131,15 @@ func (tm *TieringManager) recordTier2Exit(proto *vm.FuncProto, cf *CompiledFunct
 	})
 }
 
+func (tm *TieringManager) recordTier2NativeCalleeExit(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext) {
+	if ctx == nil || ctx.NativeCalleeExitCode == ExitNormal {
+		return
+	}
+	saved := *ctx
+	saved.ExitCode = ctx.NativeCalleeExitCode
+	tm.recordTier2Exit(proto, cf, &saved)
+}
+
 func (s *exitStatsCollector) record(key exitStatsKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
