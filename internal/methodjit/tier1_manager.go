@@ -371,7 +371,7 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 	// Pool avoids per-call allocation overhead for small/recursive functions.
 	ctx := e.acquireCtx()
 	releaseCtx := true
-	nativeCoroutineSwitch := tier1CoroutineNativeSwitchEnabled
+	nativeCoroutineSwitch := bf.HasNativeCoroutineSwitch
 	defer func() {
 		if releaseCtx {
 			if nativeCoroutineSwitch && e.callVM != nil && (ctx.CoroutineNativeResumes != 0 || ctx.CoroutineNativeYields != 0 || ctx.CoroutineNativeMisses != 0) {

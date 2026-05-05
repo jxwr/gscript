@@ -157,6 +157,22 @@ func baselineProtoMayUseNativeCoroutineSwitch(proto *vm.FuncProto) bool {
 	return false
 }
 
+func baselineProtoMayUseNativeCoroutineResume(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_RESUME {
+			continue
+		}
+		if vm.DecodeB(inst) == 2 && vm.DecodeC(inst) == 3 &&
+			(&vm.VM{}).ResumePayloadIsFieldOnly(proto, pc+1, vm.DecodeA(inst), vm.DecodeC(inst)) {
+			return true
+		}
+	}
+	return false
+}
+
 func baselineCoroutineFastContinuationSafe(proto *vm.FuncProto, resumePC int) bool {
 	if proto == nil || resumePC < 0 || resumePC >= len(proto.Code) {
 		return false

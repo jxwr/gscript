@@ -29,17 +29,18 @@ import (
 
 // BaselineFunc holds the generated native code for a baseline-compiled function.
 type BaselineFunc struct {
-	Code              *jit.CodeBlock // executable memory
-	Proto             *vm.FuncProto  // source function
-	Labels            map[int]int    // bytecodePC -> code offset (for resume after exit)
-	ResumeOffsets     []int          // bytecodePC -> code offset, -1 if no resume stub
-	HasFieldOps       bool           // true if proto has GETFIELD/SETFIELD (skip syncFieldCache otherwise)
-	HasTableOps       bool           // true if proto has GETTABLE/SETTABLE (skip dynamic table cache sync otherwise)
-	GlobalValCache    []uint64       // per-PC NaN-boxed global value cache (0 = not cached)
-	CallCache         []uint64       // per-PC CALL IC: boxed closure, direct entry, proto ptr, entry version
-	NewTableCaches    []newTableCacheEntry
-	CachedGlobalGen   uint64 // engine.globalCacheGen at time of last cache population
-	DirectEntryOffset int    // byte offset of the direct entry point (for native BLR calls)
+	Code                     *jit.CodeBlock // executable memory
+	Proto                    *vm.FuncProto  // source function
+	Labels                   map[int]int    // bytecodePC -> code offset (for resume after exit)
+	ResumeOffsets            []int          // bytecodePC -> code offset, -1 if no resume stub
+	HasFieldOps              bool           // true if proto has GETFIELD/SETFIELD (skip syncFieldCache otherwise)
+	HasTableOps              bool           // true if proto has GETTABLE/SETTABLE (skip dynamic table cache sync otherwise)
+	GlobalValCache           []uint64       // per-PC NaN-boxed global value cache (0 = not cached)
+	CallCache                []uint64       // per-PC CALL IC: boxed closure, direct entry, proto ptr, entry version
+	NewTableCaches           []newTableCacheEntry
+	CachedGlobalGen          uint64 // engine.globalCacheGen at time of last cache population
+	DirectEntryOffset        int    // byte offset of the direct entry point (for native BLR calls)
+	HasNativeCoroutineSwitch bool
 }
 
 // Baseline frame size: save FP/LR + callee-saved GPRs (X19-X28) = 12 regs = 96 bytes.
@@ -106,8 +107,8 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 
 	// Walk bytecodes linearly.
 	feedbackEnabled := !IsFeedbackCollectionDisabled(proto)
-	nativeCoroutineSwitchEnabled := tier1CoroutineNativeSwitchEnabled
-	nativeCoroutineYieldEnabled := nativeCoroutineSwitchEnabled && baselineProtoMayUseNativeCoroutineSwitch(proto)
+	nativeCoroutineYieldEnabled := baselineProtoMayUseNativeCoroutineSwitch(proto)
+	nativeCoroutineSwitchEnabled := nativeCoroutineYieldEnabled || baselineProtoMayUseNativeCoroutineResume(proto)
 	for pc := 0; pc < len(code); pc++ {
 		// Label for this PC (used as jump target within JIT code).
 		// Skip pc==0 when we already labeled it for the int-spec guard.
@@ -424,16 +425,17 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 	directEntryOff := asm.LabelOffset("direct_entry")
 
 	return &BaselineFunc{
-		Code:              block,
-		Proto:             proto,
-		Labels:            labels,
-		ResumeOffsets:     resumeOffsets,
-		HasFieldOps:       hasFieldOps,
-		HasTableOps:       hasTableOps,
-		GlobalValCache:    globalValCache,
-		CallCache:         callCache,
-		NewTableCaches:    newTableCaches,
-		DirectEntryOffset: directEntryOff,
+		Code:                     block,
+		Proto:                    proto,
+		Labels:                   labels,
+		ResumeOffsets:            resumeOffsets,
+		HasFieldOps:              hasFieldOps,
+		HasTableOps:              hasTableOps,
+		GlobalValCache:           globalValCache,
+		CallCache:                callCache,
+		NewTableCaches:           newTableCaches,
+		DirectEntryOffset:        directEntryOff,
+		HasNativeCoroutineSwitch: nativeCoroutineSwitchEnabled,
 	}, nil
 }
 
