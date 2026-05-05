@@ -953,6 +953,8 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			return nil, false, err
 		}
 		s.values[instr.ID] = result
+	case OpResume:
+		return nil, false, fmt.Errorf("IR interpreter: OpResume not supported")
 
 	// ---------- Closure ----------
 	case OpClosure:

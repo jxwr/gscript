@@ -84,7 +84,7 @@ func promoteLoopPairs(fn *Function, li *loopInfo, hdr *Block, ph *Block) {
 	for _, b := range bodyList {
 		for _, instr := range b.Instrs {
 			switch instr.Op {
-			case OpCall, OpSelf:
+			case OpCall, OpResume, OpSelf:
 				hasLoopCall = true
 			case OpSetTable, OpAppend, OpSetList:
 				if len(instr.Args) >= 1 {

@@ -180,8 +180,9 @@ const (
 	OpReturn // return Args[0], Args[1], ...
 
 	// Calls
-	OpCall // Args[0] = function, Args[1:] = arguments
-	OpSelf // method call: Args[0] = table, Args[1] = method key
+	OpCall   // Args[0] = function, Args[1:] = arguments
+	OpResume // coroutine.resume fast bytecode; Aux = dest slot A, Aux2 = (B<<32)|C
+	OpSelf   // method call: Args[0] = table, Args[1] = method key
 
 	// For-loop
 	OpForPrep // initialize: R(A) -= R(A+2); jump to Succs[0] (loop test block)
@@ -308,6 +309,7 @@ var opNames = [...]string{
 	OpBranch:                     "Branch",
 	OpReturn:                     "Return",
 	OpCall:                       "Call",
+	OpResume:                     "Resume",
 	OpSelf:                       "Self",
 	OpForPrep:                    "ForPrep",
 	OpForLoop:                    "ForLoop",

@@ -179,6 +179,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpCall:
 		ec.emitOpCall(instr)
 		ec.clearTableArrayBoundedKeys()
+	case OpResume:
+		ec.emitResumeExit(instr)
+		ec.clearTableArrayBoundedKeys()
 
 	// --- Global-exit: load globals via VM and resume JIT ---
 	case OpGetGlobal:

@@ -384,7 +384,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 						"array mutation invalidated typed array facts")
 				}
 
-			case OpCall, OpSelf:
+			case OpCall, OpResume, OpSelf:
 				// Conservative: a call could mutate any table or change types.
 				if len(available) > 0 || len(guardAvail) > 0 || len(globalAvail) > 0 ||
 					len(matrixFlatAvail) > 0 || len(matrixStrideAvail) > 0 || len(tableAvail) > 0 ||
@@ -534,7 +534,7 @@ func transferFieldFactInstr(facts map[loadKey]int, instr *Instr) map[loadKey]int
 	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableBoolArrayFill,
 		OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix, OpAppend, OpSetList:
 		clearFieldFacts(facts)
-	case OpCall, OpSelf:
+	case OpCall, OpResume, OpSelf:
 		clearFieldFacts(facts)
 	}
 	return facts

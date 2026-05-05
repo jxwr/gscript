@@ -3,7 +3,6 @@
 package methodjit
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/vm"
@@ -13,8 +12,9 @@ import (
 // The compiler lowers coroutine.resume / coroutine.yield to dedicated
 // OP_RESUME / OP_YIELD bytecodes; without an explicit case in the Tier 2
 // graph builder, the destination register is never written, which corrupts
-// downstream IR and trips the validator. The fix marks the proto Unpromotable.
-const resumeUnpromotableSrc = `
+// downstream IR and trips the validator. OP_RESUME is now modeled as OpResume;
+// OP_YIELD remains unpromotable until it has continuation-aware lowering.
+const resumeIRSrc = `
 func make_producer(n) {
     return coroutine.create(func() {
         for i := 1; i <= n; i++ {
@@ -38,8 +38,8 @@ co := make_producer(1000)
 result := consume(co, 1000)
 `
 
-func TestTier2ResumeYieldMarkedUnpromotable(t *testing.T) {
-	proto := compileProto(t, resumeUnpromotableSrc)
+func TestTier2ResumeBuildsOpResumeIR(t *testing.T) {
+	proto := compileProto(t, resumeIRSrc)
 	consume := findProtoByName(proto, "consume")
 	if consume == nil {
 		t.Fatal("consume proto not found")
@@ -57,28 +57,57 @@ func TestTier2ResumeYieldMarkedUnpromotable(t *testing.T) {
 		t.Fatal("expected consume to contain OP_RESUME bytecode")
 	}
 
-	// BuildGraph must mark the function unpromotable rather than emitting
-	// a corrupt IR that downstream passes / Validate() will fail on.
 	fn := BuildGraph(consume)
 	if fn == nil {
 		t.Fatal("BuildGraph returned nil")
 	}
-	if !fn.Unpromotable {
-		t.Fatalf("expected fn.Unpromotable=true for proto containing OP_RESUME, got false")
+	if fn.Unpromotable {
+		t.Fatal("OP_RESUME consumer should be Tier2-promotable")
+	}
+	if got := countOpHelper(fn, OpResume); got != 1 {
+		t.Fatalf("OpResume count = %d, want 1", got)
+	}
+	if errs := Validate(fn); len(errs) > 0 {
+		t.Fatalf("OpResume IR failed validation: %v", errs)
 	}
 
-	// CompileTier2 must cleanly refuse the proto via the Unpromotable gate
-	// (returning the standard "unmodeled bytecode" error string), not via a
-	// validator failure or panic.
-	tm := NewTieringManager()
-	err := tm.CompileTier2(consume)
-	if err == nil {
-		t.Fatal("expected CompileTier2 to refuse proto with OP_RESUME, got nil error")
+	optimized, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline with OpResume: %v", err)
 	}
-	if strings.Contains(err.Error(), "validation failed") {
-		t.Fatalf("CompileTier2 should fail via Unpromotable gate, not validator: %v", err)
+	if got := countOpHelper(optimized, OpResume); got != 1 {
+		t.Fatalf("optimized OpResume count = %d, want 1", got)
 	}
-	if !strings.Contains(err.Error(), "unmodeled bytecode") {
-		t.Fatalf("expected unmodeled-bytecode skip reason, got: %v", err)
+}
+
+func TestTier2YieldMarkedUnpromotable(t *testing.T) {
+	proto := compileProto(t, resumeIRSrc)
+	yielding := findAnonymousProtoWithOpcode(proto, vm.OP_YIELD)
+	if yielding == nil {
+		t.Fatal("yielding proto not found")
 	}
+	fn := BuildGraph(yielding)
+	if fn == nil {
+		t.Fatal("BuildGraph returned nil")
+	}
+	if !fn.Unpromotable {
+		t.Fatal("expected fn.Unpromotable=true for proto containing OP_YIELD")
+	}
+}
+
+func findAnonymousProtoWithOpcode(proto *vm.FuncProto, op vm.Opcode) *vm.FuncProto {
+	if proto == nil {
+		return nil
+	}
+	for _, child := range proto.Protos {
+		for _, inst := range child.Code {
+			if vm.DecodeOp(inst) == op {
+				return child
+			}
+		}
+		if got := findAnonymousProtoWithOpcode(child, op); got != nil {
+			return got
+		}
+	}
+	return nil
 }

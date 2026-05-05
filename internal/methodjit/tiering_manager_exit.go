@@ -1040,6 +1040,18 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 	case OpVararg:
 		return tm.executeVarargOpExit(ctx, regs, base)
 
+	case OpResume:
+		if tm.callVM == nil {
+			return fmt.Errorf("no callVM set for coroutine resume op-exit")
+		}
+		packed := uint64(ctx.OpExitArg1)
+		nArgs := int(uint32(packed>>32)) - 1
+		c := int(uint32(packed))
+		if nArgs < 0 {
+			return fmt.Errorf("coroutine resume op-exit has invalid B")
+		}
+		return tm.callVM.ResumeCoroutineFromSlots(absSlot, nArgs, c)
+
 	case OpTestSet:
 		return fmt.Errorf("op-exit not yet implemented: %s", op)
 

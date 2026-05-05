@@ -74,7 +74,7 @@ func hasSideEffect(instr *Instr) bool {
 		return true
 
 	// Calls have arbitrary side effects.
-	case OpCall, OpSelf:
+	case OpCall, OpResume, OpSelf:
 		return true
 
 	// Guards: deoptimization side effect.

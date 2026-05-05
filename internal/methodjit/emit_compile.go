@@ -941,7 +941,7 @@ func (ec *emitContext) assignSlots() {
 			if instr.Op.IsTerminator() {
 				continue
 			}
-			if instr.Op == OpLoadSlot {
+			if instr.Op == OpLoadSlot || instr.Op == OpResume {
 				ec.slotMap[instr.ID] = int(instr.Aux)
 			} else {
 				ec.slotMap[instr.ID] = ec.nextSlot

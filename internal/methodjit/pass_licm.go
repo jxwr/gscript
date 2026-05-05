@@ -207,7 +207,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				}
 			case OpSetGlobal:
 				setGlobals[instr.Aux] = true
-			case OpCall:
+			case OpCall, OpResume:
 				if !isPureNumericLoopCall(fn, instr) {
 					hasEffectfulLoopCall = true
 				}

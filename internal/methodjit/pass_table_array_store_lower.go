@@ -77,7 +77,7 @@ func lowerTableArrayStoresInBlock(fn *Function, block *Block) {
 				facts.InvalidateTable(instr.Args[0].ID)
 			}
 
-		case OpCall, OpSelf:
+		case OpCall, OpResume, OpSelf:
 			facts.Reset()
 		}
 	}

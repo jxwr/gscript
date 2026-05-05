@@ -117,7 +117,7 @@ func tableArrayStoreLoopCandidatesFor(fn *Function, body map[int]bool) []tableAr
 				// Existing checked stores are structural-preserving, but this
 				// pass is only responsible for pure SetTable mutation loops.
 				return nil
-			case OpCall, OpSelf, OpSetField, OpAppend, OpSetList, OpTableBoolArrayFill:
+			case OpCall, OpResume, OpSelf, OpSetField, OpAppend, OpSetList, OpTableBoolArrayFill:
 				return nil
 			}
 		}
