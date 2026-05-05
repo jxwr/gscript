@@ -581,9 +581,6 @@ func (ec *emitContext) emitSetFieldDynamicCache(instr *Instr) bool {
 	if def := instr.Args[0].Def; def != nil && (def.Op == OpNewTable || def.Op == OpNewFixedTable) {
 		return false
 	}
-	if ec.setFieldValueMayBeRawFloat(instr.Args[1]) || ec.hasFPReg(valueID) {
-		return false
-	}
 	deoptLabel := ec.uniqueLabel("setfield_dyn_deopt")
 	doneLabel := ec.uniqueLabel("setfield_dyn_done")
 
@@ -618,14 +615,27 @@ func (ec *emitContext) emitSetFieldDynamicCache(instr *Instr) bool {
 	asm.CMPreg(jit.X4, jit.X1)
 	asm.BCond(jit.CondGE, deoptLabel)
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
-	valReg := ec.resolveValueNB(valueID, jit.X6)
-	if valReg != jit.X6 {
-		asm.MOVreg(jit.X6, valReg)
+	if ec.setFieldValueMayBeRawFloat(instr.Args[1]) || ec.hasFPReg(valueID) {
+		valStore := ec.prepareFieldStoreValue(valueID)
+		if valStore.isFPR {
+			asm.FSTRdReg(valStore.fpr, jit.X1, jit.X4)
+		} else {
+			valReg := ec.resolveValueNB(valueID, jit.X6)
+			if valReg != jit.X6 {
+				asm.MOVreg(jit.X6, valReg)
+			}
+			asm.STRreg(jit.X6, jit.X1, jit.X4)
+		}
+	} else {
+		valReg := ec.resolveValueNB(valueID, jit.X6)
+		if valReg != jit.X6 {
+			asm.MOVreg(jit.X6, valReg)
+		}
+		asm.LoadImm64(jit.X7, nb64(jit.NB_ValNil))
+		asm.CMPreg(jit.X6, jit.X7)
+		asm.BCond(jit.CondEQ, deoptLabel)
+		asm.STRreg(jit.X6, jit.X1, jit.X4)
 	}
-	asm.LoadImm64(jit.X7, nb64(jit.NB_ValNil))
-	asm.CMPreg(jit.X6, jit.X7)
-	asm.BCond(jit.CondEQ, deoptLabel)
-	asm.STRreg(jit.X6, jit.X1, jit.X4)
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
