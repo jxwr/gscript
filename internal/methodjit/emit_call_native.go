@@ -1752,12 +1752,17 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	asm.CMPreg(jit.X3, jit.X4)
 	asm.BCond(jit.CondHI, slowLabel)
 
-	// CallCount increment for tiering.
+	// CallCount increment for tiering. A published Tier 2 entry means the
+	// callee no longer needs hot tail calls to feed promotion counters.
+	skipTailCallCountLabel := ec.uniqueLabel("t2tail_skip_callcount")
+	asm.LDR(jit.X3, jit.X1, funcProtoOffTier2DirectEntryPtr)
+	asm.CBNZ(jit.X3, skipTailCallCountLabel)
 	asm.LDR(jit.X3, jit.X1, funcProtoOffCallCount)
 	asm.ADDimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, jit.X1, funcProtoOffCallCount)
 	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
 	asm.BCond(jit.CondEQ, slowLabel)
+	asm.Label(skipTailCallCountLabel)
 
 	// Step 3: Copy args to tail window regs[0..nArgs-1]. Forward order is
 	// safe because src = funcSlot+1+i > dst = i for all i >= 0.

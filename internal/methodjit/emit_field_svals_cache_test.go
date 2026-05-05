@@ -41,8 +41,8 @@ func TestEmitFieldSvalsCache_ReusesSvalsForConsecutiveFields(t *testing.T) {
 	defer cf.Code.Free()
 
 	secondLoads := countLoadsForIRInstr(cf, gf2.ID)
-	if secondLoads < 2 {
-		t.Fatalf("test setup expected second GetField to load svals+field, got %d load(s)", secondLoads)
+	if secondLoads != 1 {
+		t.Fatalf("second consecutive GetField emitted %d load(s), want only the field load", secondLoads)
 	}
 	thirdLoads := countLoadsForIRInstr(cf, gf3.ID)
 	if thirdLoads != 1 {

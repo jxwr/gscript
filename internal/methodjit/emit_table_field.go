@@ -137,7 +137,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize) // X0 = svals[fieldIndex]
 
 	ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
-	ec.invalidateFieldSvalsCache()
+	ec.rememberFieldSvalsCache(tblValueID, shapeID)
 
 	// Skip the deopt fallback.
 	asm.B(doneLabel)
@@ -440,7 +440,7 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
 	ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
-	ec.invalidateFieldSvalsCache()
+	ec.rememberFieldSvalsCache(tblValueID, shapeID)
 
 	asm.B(doneLabel)
 
