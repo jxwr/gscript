@@ -103,14 +103,15 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			trace.OptimizationRemarks = remarks.List()
 		}()
 	}
-	runStage := func(name string, body func() error) error {
-		return runTier2CompileStages(trace, []tier2CompileStage{{
+	stages := make([]tier2CompileStage, 0, 9)
+	addStage := func(name string, body func() error) {
+		stages = append(stages, tier2CompileStage{
 			name: name,
 			run:  body,
-		}})
+		})
 	}
 
-	if err := runStage("Tier2Gate", func() error {
+	addStage("Tier2Gate", func() error {
 		if !canPromoteToTier2(proto) {
 			if op, ok := firstUnsupportedTier2Bytecode(proto); ok {
 				remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
@@ -122,12 +123,10 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			return fmt.Errorf("tier2: function has unsupported ops, staying at tier 1")
 		}
 		return nil
-	}); err != nil {
-		return nil, err
-	}
+	})
 
 	var fn *Function
-	if err := runStage("BuildGraph", func() error {
+	addStage("BuildGraph", func() error {
 		fn = BuildGraph(proto)
 		fn.Remarks = remarks
 		if trace != nil {
@@ -139,25 +138,21 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			return fmt.Errorf("tier2: function uses unmodeled bytecode (variadic CALL), staying at Tier 1")
 		}
 		return nil
-	}); err != nil {
-		return nil, err
-	}
+	})
 
-	if err := runStage("ValidateInitialIR", func() error {
+	addStage("ValidateInitialIR", func() error {
 		if errs := Validate(fn); len(errs) > 0 {
 			remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
 				"initial IR validation failed: "+errs[0].Error())
 			return fmt.Errorf("tier2: validation failed: %v", errs[0])
 		}
 		return nil
-	}); err != nil {
-		return nil, err
-	}
+	})
 
 	var inlineGlobals map[string]*vm.FuncProto
 	var loopCallGlobals map[string]*vm.FuncProto
 	var opts *Tier2PipelineOpts
-	if err := runStage("BuildPipelineOptions", func() error {
+	addStage("BuildPipelineOptions", func() error {
 		inlineGlobals = tm.buildInlineGlobals()
 		loopCallGlobals = inlineGlobals
 		loopCallGlobalsOwned := false
@@ -196,12 +191,10 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			Remarks:               remarks,
 		}
 		return nil
-	}); err != nil {
-		return nil, err
-	}
+	})
 
 	var intrinsicNotes []string
-	if err := runStage("RunTier2Pipeline", func() error {
+	addStage("RunTier2Pipeline", func() error {
 		var err error
 		fn, intrinsicNotes, err = RunTier2Pipeline(fn, opts)
 		if err != nil {
@@ -210,11 +203,9 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			return fmt.Errorf("tier2: pipeline: %w", err)
 		}
 		return nil
-	}); err != nil {
-		return nil, err
-	}
+	})
 
-	if err := runStage("PostPipelineGates", func() error {
+	addStage("PostPipelineGates", func() error {
 		if len(intrinsicNotes) > 0 {
 			proto.NeedsTier2 = true
 		}
@@ -301,24 +292,20 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			proto.HasSelfCalls = true
 		}
 		return nil
-	}); err != nil {
-		return nil, err
-	}
+	})
 
 	var alloc *RegAllocation
-	if err := runStage("RegAlloc", func() error {
+	addStage("RegAlloc", func() error {
 		alloc = AllocateRegisters(fn)
 		if trace != nil {
 			trace.RegAllocMap = formatRegAlloc(alloc)
 			trace.LoopDiagnostics = BuildLoopDiagnostics(fn, alloc)
 		}
 		return nil
-	}); err != nil {
-		return nil, err
-	}
+	})
 
 	var cf *CompiledFunction
-	if err := runStage("ARM64Compile", func() error {
+	addStage("ARM64Compile", func() error {
 		var err error
 		cf, err = Compile(fn, alloc)
 		if err != nil {
@@ -327,16 +314,16 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			return fmt.Errorf("tier2: compile failed: %w", err)
 		}
 		return nil
-	}); err != nil {
-		return nil, err
-	}
+	})
 	if trace != nil {
-		if err := runStage("SourceMap", func() error {
+		addStage("SourceMap", func() error {
 			trace.SourceMap = BuildIRASMMap(fn, cf.InstrCodeRanges)
 			return nil
-		}); err != nil {
-			return nil, err
-		}
+		})
+	}
+
+	if err := runTier2CompileStages(trace, stages); err != nil {
+		return nil, err
 	}
 
 	if cf.numRegs > proto.MaxStack {

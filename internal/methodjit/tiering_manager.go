@@ -86,8 +86,10 @@ type TieringManager struct {
 	envTier2NoFilter bool
 	r154DeoptPrints  int
 
-	timeline *JITTimeline
-	warmDump *WarmDumpSession
+	policy    PromotionPolicy
+	tierState *TierStateStore
+	timeline  *JITTimeline
+	warmDump  *WarmDumpSession
 }
 
 // NewTieringManager creates a new TieringManager with Tier 1 baseline support
@@ -108,7 +110,9 @@ func NewTieringManager() *TieringManager {
 		// R162: cache env vars once to keep hot paths free of syscalls.
 		envR154Trace:     os.Getenv("R154_TRACE") == "1",
 		envTier2NoFilter: os.Getenv("GSCRIPT_TIER2_NO_FILTER") == "1",
+		policy:           PromotionPolicy{},
 	}
+	tm.tierState = newTierStateStore(tm.tier2Compiled, tm.tier2Failed, tm.tier2FailReason)
 	// Wire the outer compiler so handleCallFast routes through TieringManager
 	t1.SetOuterCompiler(func(proto *vm.FuncProto) interface{} {
 		return tm.TryCompile(proto)
@@ -160,13 +164,22 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		fmt.Fprintf(os.Stderr, "[R154] TryCompile proto=%q CallCount=%d tier2Compiled_has=%v tier2Failed=%v\n",
 			proto.Name, proto.CallCount, tm.tier2Compiled[proto] != nil, tm.tier2HasFailed(proto))
 	}
-	// Already at Tier 2? Return cached.
-	if t2, ok := tm.tier2CompiledFor(proto); ok {
-		return t2
-	}
+	profile := tm.getProfile(proto)
+	compiled, _ := tm.tier2CompiledFor(proto)
+	decision := tm.policy.Decide(proto, profile, PromotionPolicyState{
+		Manager:     tm,
+		Compiled:    compiled,
+		Tier2Failed: tm.tier2HasFailed(proto),
+	})
+	return tm.applyPromotionDecision(proto, profile, decision)
+}
 
-	// Below Tier 1 threshold? Stay interpreted.
-	if proto.CallCount < BaselineCompileThreshold {
+func (tm *TieringManager) applyPromotionDecision(proto *vm.FuncProto, profile FuncProfile, decision PromotionDecision) interface{} {
+	switch decision.Action {
+	case TieringActionReturnCompiled:
+		return decision.Compiled
+
+	case TieringActionStayInterpreted:
 		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
 			"reason":     "below_threshold",
 			"call_count": proto.CallCount,
@@ -177,87 +190,31 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 			"target": "interpreter",
 		})
 		return nil
-	}
 
-	// Get the function profile (cached after first computation).
-	profile := tm.getProfile(proto)
-
-	if d, ok := tm.structuralKernelTieringDecision(proto); ok {
-		tm.disableForStructuralKernelTiering(proto, d)
+	case TieringActionStructuralKernel:
+		tm.disableForStructuralKernelTiering(proto, decision.Kernel)
 		return nil
-	}
 
-	if !tm.tier2HasFailed(proto) {
+	case TieringActionFixedTableBuilder:
 		if t2, ok := tm.compileFixedRecursiveTableBuilderTier2(proto); ok {
 			tm.markTier2Compiled(proto, t2)
 			return t2
 		}
-	}
-
-	if shouldStayTier0CoroutineRuntime(proto, profile) {
-		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
-			reason:         "stay_tier0_coroutine_runtime",
-			fallbackReason: "coroutine_runtime",
+		return tm.applyPromotionDecision(proto, profile, PromotionDecision{
+			Action:       TieringActionPromoteTier2,
+			Reason:       PromotionReasonSmartTier2,
+			Gate:         forceGate("FixedTableBuilderFallback", "fixed table builder fell back to normal Tier 2"),
+			PromoteTier2: true,
 		})
-		return nil
-	}
 
-	if shouldStayTier0StringTokenLoop(proto, profile) {
-		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
-			reason:         "stay_tier0_string_token_loop",
-			fallbackReason: "string_token_loop",
-		})
+	case TieringActionDisableTier0:
+		tm.disableJITForTier0Policy(proto, decision.Tier0Disable)
 		return nil
-	}
 
-	// Some function shapes are worse off compiled: tiny recursive
-	// table-allocation builders pay more in Tier 1 exit-resume
-	// overhead than they save in native templates. See
-	// shouldStayTier0 in func_profile.go for the heuristic.
-	if shouldStayTier0ForProto(proto, profile) {
-		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
-			reason:         "stay_tier0_profile",
-			fallbackReason: "jit_disabled",
-		})
-		return nil
-	}
-
-	if shouldStayTier0RecursiveTableWalker(proto, profile) {
-		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
-			reason:         "stay_tier0_recursive_table_walker",
-			fallbackReason: "jit_disabled",
-		})
-		return nil
-	}
-
-	if callee, ok := tm.tier0OnlyLoopCallee(proto, profile); ok {
-		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
-			reason:         "tier1_driver_tier0_loop_callee",
-			fallbackReason: "driver_tier0_loop_callee",
-			callee:         callee,
-		})
-		return nil
-	}
-
-	// Use smart tiering to decide if this function should be promoted to Tier 2.
-	// shouldPromoteTier2 considers loops, arithmetic density, call patterns, and
-	// table ops. Functions with loops + calls + arithmetic are promoted at
-	// threshold=2 — compileTier2 will try inlining and reject if calls remain.
-	promoteTier2 := shouldPromoteTier2(proto, profile, proto.CallCount)
-	suppressedRecursivePartition := tm.shouldSuppressRecursivePartitionTableMutationTier2(proto, profile)
-	if promoteTier2 && tm.shouldSuppressLoopCallTier2(proto, profile) {
-		promoteTier2 = false
-	}
-	if promoteTier2 && suppressedRecursivePartition {
-		promoteTier2 = false
-	}
-	if !promoteTier2 && !suppressedRecursivePartition && tm.shouldPromoteNativeLoopDriver(proto, profile) {
-		promoteTier2 = true
-	}
-	if !promoteTier2 {
+	case TieringActionUseTier1:
 		// Not ready for Tier 2: use Tier 1, but enable OSR for loop-heavy
 		// functions so they can be upgraded mid-execution if they run hot.
-		if suppressedRecursivePartition {
+		if decision.SuppressedRecursivePartition {
 			tm.disableTier1FeedbackForNoTier2(proto)
 			if proto.CallCount <= tmDefaultTier2Threshold {
 				proto.CallCount = tmDefaultTier2Threshold + 1
@@ -282,7 +239,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		// cannot replay table mutations from single-loop drivers. No-filter
 		// may bypass the performance-only call-in-loop prefilter, but it must
 		// not bypass restart-safety: replayed side effects are correctness bugs.
-		if profile.HasLoop && profile.LoopDepth >= 1 && !suppressedRecursivePartition && !tm.tier2HasFailed(proto) &&
+		if profile.HasLoop && profile.LoopDepth >= 1 && !decision.SuppressedRecursivePartition && !tm.tier2HasFailed(proto) &&
 			(profile.LoopDepth >= 2 || tm.isOSRRestartSafe(proto, profile)) &&
 			(tm.envTier2NoFilter || !tm.osrWouldHitCallInLoopGate(proto, profile)) {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
@@ -296,10 +253,8 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 			}
 		}
 		return t1
-	}
 
-	// Tier 2 already failed? Use Tier 1.
-	if tm.tier2HasFailed(proto) {
+	case TieringActionUseTier1Tier2Failed:
 		tm.disableTier1FeedbackForNoTier2(proto)
 		tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
 		t1 := tm.tier1.TryCompile(proto)
@@ -309,8 +264,15 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 			"target": "tier1",
 		})
 		return t1
-	}
 
+	case TieringActionPromoteTier2:
+		return tm.promoteTier2(proto)
+	default:
+		return nil
+	}
+}
+
+func (tm *TieringManager) promoteTier2(proto *vm.FuncProto) interface{} {
 	tm.ensureNativeLoopCallees(proto)
 	tm.ensureRawIntLoopCallees(proto)
 
