@@ -445,9 +445,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.Label(skipDepthDecLabel)
 	}
 
-	// Snapshot callee exit metadata before restoring the caller frame.
-	ec.emitPushNativeCallExitFrameIfNested(jit.X3, jit.X4, jit.X5, jit.X6)
+	// Snapshot callee exit metadata only on the cold exit path. Successful
+	// native peer calls are the hot path and do not need resume metadata.
+	skipExitSnapshotLabel := ec.uniqueLabel("t2call_skip_exit_snapshot")
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
+	asm.CBZ(jit.X3, skipExitSnapshotLabel)
+	ec.emitPushNativeCallExitFrameIfNested(jit.X3, jit.X4, jit.X5, jit.X6)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeExitCode)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffResumeNumericPass)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeResumePass)
@@ -455,6 +458,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeResumePC)
 	asm.LDR(jit.X3, jit.SP, 112)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeClosurePtr)
+	asm.Label(skipExitSnapshotLabel)
 
 	// Step 10: Restore caller state.
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
