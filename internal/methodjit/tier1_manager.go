@@ -374,10 +374,22 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 	releaseCtx := true
 	defer func() {
 		if releaseCtx {
+			if e.callVM != nil && (ctx.CoroutineNativeResumes != 0 || ctx.CoroutineNativeYields != 0 || ctx.CoroutineNativeMisses != 0) {
+				e.callVM.RecordCoroutineJITNativeSwitch(uint64(ctx.CoroutineNativeResumes), uint64(ctx.CoroutineNativeYields), uint64(ctx.CoroutineNativeMisses))
+			}
 			e.releaseCtx()
 		}
 	}()
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
+	ctx.CoroutineNativeSwitch = 0
+	ctx.CoroutinePinnedCtx = 0
+	ctx.CoroutineParentCtx = 0
+	ctx.CoroutineParentA = 0
+	ctx.CoroutineParentC = 0
+	ctx.CoroutineCurrentPtr = 0
+	ctx.CoroutineNativeResumes = 0
+	ctx.CoroutineNativeYields = 0
+	ctx.CoroutineNativeMisses = 0
 	if os.Getenv("GSCRIPT_TIER1_CORO_NATIVE_SWITCH") == "1" {
 		ctx.CoroutineNativeSwitch = 1
 	}

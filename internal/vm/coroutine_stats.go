@@ -18,6 +18,9 @@ type CoroutineStatsSnapshot struct {
 	LeafFallbacks    uint64
 	GoroutineStarts  uint64
 	JITContinuations uint64
+	JITNativeResumes uint64
+	JITNativeYields  uint64
+	JITNativeMisses  uint64
 	Completed        uint64
 	ResumeErrors     uint64
 }
@@ -31,6 +34,9 @@ type coroutineStats struct {
 	leafFallbacks    atomic.Uint64
 	goroutineStarts  atomic.Uint64
 	jitContinuations atomic.Uint64
+	jitNativeResumes atomic.Uint64
+	jitNativeYields  atomic.Uint64
+	jitNativeMisses  atomic.Uint64
 	completed        atomic.Uint64
 	resumeErrors     atomic.Uint64
 }
@@ -64,6 +70,9 @@ func (s *coroutineStats) snapshot() CoroutineStatsSnapshot {
 		LeafFallbacks:    s.leafFallbacks.Load(),
 		GoroutineStarts:  s.goroutineStarts.Load(),
 		JITContinuations: s.jitContinuations.Load(),
+		JITNativeResumes: s.jitNativeResumes.Load(),
+		JITNativeYields:  s.jitNativeYields.Load(),
+		JITNativeMisses:  s.jitNativeMisses.Load(),
 		Completed:        s.completed.Load(),
 		ResumeErrors:     s.resumeErrors.Load(),
 	}
@@ -124,6 +133,24 @@ func (vm *VM) recordCoroutineJITContinuation() {
 		return
 	}
 	vm.coroutineStats.jitContinuations.Add(1)
+}
+
+func (vm *VM) RecordCoroutineJITNativeSwitch(resumes, yields, misses uint64) {
+	if resumes != 0 || yields != 0 {
+		rt.RecordRuntimePathCoroutineFast()
+	}
+	if vm == nil || vm.coroutineStats == nil {
+		return
+	}
+	if resumes != 0 {
+		vm.coroutineStats.jitNativeResumes.Add(resumes)
+	}
+	if yields != 0 {
+		vm.coroutineStats.jitNativeYields.Add(yields)
+	}
+	if misses != 0 {
+		vm.coroutineStats.jitNativeMisses.Add(misses)
+	}
 }
 
 func (vm *VM) recordCoroutineCompleted() {

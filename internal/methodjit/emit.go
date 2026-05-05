@@ -185,12 +185,15 @@ type ExecContext struct {
 
 	// CoroutineNativeSwitch enables the experimental Tier 1 native coroutine
 	// switch. It is off by default and guarded by an environment flag.
-	CoroutineNativeSwitch int64
-	CoroutinePinnedCtx    int64
-	CoroutineParentCtx    uintptr
-	CoroutineParentA      int64
-	CoroutineParentC      int64
-	CoroutineCurrentPtr   uintptr
+	CoroutineNativeSwitch  int64
+	CoroutinePinnedCtx     int64
+	CoroutineParentCtx     uintptr
+	CoroutineParentA       int64
+	CoroutineParentC       int64
+	CoroutineCurrentPtr    uintptr
+	CoroutineNativeResumes int64
+	CoroutineNativeYields  int64
+	CoroutineNativeMisses  int64
 
 	// Dynamic table cache fields are kept at the end so existing ExecContext
 	// offsets remain stable for code-size guard tests.
@@ -329,25 +332,28 @@ var (
 	execCtxOffNativeCallDepth                    = int(unsafe.Offsetof(ExecContext{}.NativeCallDepth))
 	execCtxOffOSRCounter                         = int(unsafe.Offsetof(ExecContext{}.OSRCounter))
 	// Tier 2 global cache offsets
-	execCtxOffTier2GlobalCache      = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCache))
-	execCtxOffTier2GlobalCacheGen   = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCacheGen))
-	execCtxOffTier2GlobalGenPtr     = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalGenPtr))
-	execCtxOffGlobalCacheIdx        = int(unsafe.Offsetof(ExecContext{}.GlobalCacheIdx))
-	execCtxOffTier2GlobalArray      = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalArray))
-	execCtxOffTier2GlobalIndex      = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalIndex))
-	execCtxOffTier2GlobalVerPtr     = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalVerPtr))
-	execCtxOffTier2GlobalVer        = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalVer))
-	execCtxOffExitResumePC          = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
-	execCtxOffTier2CallCache        = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
-	execCtxOffDeoptInstrID          = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
-	execCtxOffResumeNumericPass     = int(unsafe.Offsetof(ExecContext{}.ResumeNumericPass))
-	execCtxOffExitResumeCheckShadow = int(unsafe.Offsetof(ExecContext{}.ExitResumeCheckShadow))
-	execCtxOffCoroutineNativeSwitch = int(unsafe.Offsetof(ExecContext{}.CoroutineNativeSwitch))
-	execCtxOffCoroutinePinnedCtx    = int(unsafe.Offsetof(ExecContext{}.CoroutinePinnedCtx))
-	execCtxOffCoroutineParentCtx    = int(unsafe.Offsetof(ExecContext{}.CoroutineParentCtx))
-	execCtxOffCoroutineParentA      = int(unsafe.Offsetof(ExecContext{}.CoroutineParentA))
-	execCtxOffCoroutineParentC      = int(unsafe.Offsetof(ExecContext{}.CoroutineParentC))
-	execCtxOffCoroutineCurrentPtr   = int(unsafe.Offsetof(ExecContext{}.CoroutineCurrentPtr))
+	execCtxOffTier2GlobalCache       = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCache))
+	execCtxOffTier2GlobalCacheGen    = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalCacheGen))
+	execCtxOffTier2GlobalGenPtr      = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalGenPtr))
+	execCtxOffGlobalCacheIdx         = int(unsafe.Offsetof(ExecContext{}.GlobalCacheIdx))
+	execCtxOffTier2GlobalArray       = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalArray))
+	execCtxOffTier2GlobalIndex       = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalIndex))
+	execCtxOffTier2GlobalVerPtr      = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalVerPtr))
+	execCtxOffTier2GlobalVer         = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalVer))
+	execCtxOffExitResumePC           = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
+	execCtxOffTier2CallCache         = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
+	execCtxOffDeoptInstrID           = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
+	execCtxOffResumeNumericPass      = int(unsafe.Offsetof(ExecContext{}.ResumeNumericPass))
+	execCtxOffExitResumeCheckShadow  = int(unsafe.Offsetof(ExecContext{}.ExitResumeCheckShadow))
+	execCtxOffCoroutineNativeSwitch  = int(unsafe.Offsetof(ExecContext{}.CoroutineNativeSwitch))
+	execCtxOffCoroutinePinnedCtx     = int(unsafe.Offsetof(ExecContext{}.CoroutinePinnedCtx))
+	execCtxOffCoroutineParentCtx     = int(unsafe.Offsetof(ExecContext{}.CoroutineParentCtx))
+	execCtxOffCoroutineParentA       = int(unsafe.Offsetof(ExecContext{}.CoroutineParentA))
+	execCtxOffCoroutineParentC       = int(unsafe.Offsetof(ExecContext{}.CoroutineParentC))
+	execCtxOffCoroutineCurrentPtr    = int(unsafe.Offsetof(ExecContext{}.CoroutineCurrentPtr))
+	execCtxOffCoroutineNativeResumes = int(unsafe.Offsetof(ExecContext{}.CoroutineNativeResumes))
+	execCtxOffCoroutineNativeYields  = int(unsafe.Offsetof(ExecContext{}.CoroutineNativeYields))
+	execCtxOffCoroutineNativeMisses  = int(unsafe.Offsetof(ExecContext{}.CoroutineNativeMisses))
 )
 
 var (
