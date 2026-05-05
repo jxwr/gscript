@@ -135,16 +135,8 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// This prevents the callee's register window from clobbering our SSA temp slots.
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 
-	// Step 3: Check NativeCallDepth limit. Statically resolved leaf callees
-	// cannot grow the native call chain, so the hot path can skip the depth
-	// load/store traffic after a runtime proto guard below.
-	if noDepthCallee == nil {
-		asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
-		asm.CMPimm(jit.X3, maxNativeCallDepth)
-		asm.BCond(jit.CondGE, slowLabel)
-	}
-
-	// Load function value from regs[funcSlot].
+	// Step 3: Load function value from regs[funcSlot]. The native-depth guard
+	// runs after callee resolution, where LeafNoCall can skip it entirely.
 	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
 
 	// --- Polymorphic call IC fast path ---
@@ -274,14 +266,20 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.CMPreg(jit.X3, jit.X4)
 	asm.BCond(jit.CondHI, slowLabel) // unsigned greater than -> slow path
 
-	// Step 6: Increment callee's CallCount for tiering.
+	// Step 6: Increment callee's CallCount until Tier 2 is installed. Once a
+	// callee has a Tier 2 entry, the hot native peer-call path no longer needs
+	// to feed promotion counters on every call.
 	// X0 = *vm.Closure, X1 = *FuncProto, X2 = DirectEntryPtr.
+	skipCallCountLabel := ec.uniqueLabel("t2call_skip_callcount")
+	asm.LDR(jit.X3, jit.X1, funcProtoOffTier2DirectEntryPtr)
+	asm.CBNZ(jit.X3, skipCallCountLabel)
 	asm.LDR(jit.X3, jit.X1, funcProtoOffCallCount)
 	asm.ADDimm(jit.X3, jit.X3, 1)
 	asm.STR(jit.X3, jit.X1, funcProtoOffCallCount)
 	// If at Tier 2 threshold, fall to slow path to trigger compilation.
 	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
 	asm.BCond(jit.CondEQ, slowLabel)
+	asm.Label(skipCallCountLabel)
 
 	staticSelf := ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls && ec.isStaticSelfCall(instr)
 	stackSlowLabel := ec.uniqueLabel("t2call_stack_slow")
