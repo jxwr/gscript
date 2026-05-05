@@ -200,6 +200,25 @@ type ExecContext struct {
 	BaselineTableStringKeyCache uintptr // pointer to proto.TableStringKeyCache[0] (nil if not yet allocated)
 }
 
+// callExitDescriptor names the shared CALL exit protocol fields stored in
+// ExecContext.Call*. Native-call exits additionally mirror Slot/NArgs/NRets
+// into NativeCallA/B/C for bytecode-level resume handlers.
+type callExitDescriptor struct {
+	slot    int
+	nArgs   int
+	nRets   int
+	instrID int
+}
+
+func callExitDescriptorFromInstr(instr *Instr) callExitDescriptor {
+	return callExitDescriptor{
+		slot:    int(instr.Aux),
+		nArgs:   len(instr.Args) - 1,
+		nRets:   callResultCountFromAux2(instr.Aux2),
+		instrID: instr.ID,
+	}
+}
+
 const maxNativeCallExitStackDepth = maxNativeCallDepth
 
 type NativeCallExitFrame struct {

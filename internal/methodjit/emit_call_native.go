@@ -109,28 +109,16 @@ type rawSelfLiveSpill struct {
 func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm := ec.asm
 
-	funcSlot := int(instr.Aux)
-	nArgs := len(instr.Args) - 1
-	nRets := callResultCountFromAux2(instr.Aux2)
+	desc := callExitDescriptorFromInstr(instr)
+	funcSlot := desc.slot
+	nArgs := desc.nArgs
+	nRets := desc.nRets
 	noDepthCallee := ec.staticNoDepthCallee(instr)
 
 	// Step 1: Store the function value and arguments to the VM register file.
 	// This must happen BEFORE spilling, since resolveValueNB may read from
 	// SSA registers that we're about to spill.
-	if len(instr.Args) > 0 {
-		fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-		if fnReg != jit.X0 {
-			asm.MOVreg(jit.X0, fnReg)
-		}
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
-	}
-	for i := 1; i < len(instr.Args); i++ {
-		argReg := ec.resolveValueNB(instr.Args[i].ID, jit.X0)
-		if argReg != jit.X0 {
-			asm.MOVreg(jit.X0, argReg)
-		}
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
-	}
+	ec.emitStoreCallFrameArgs(instr, funcSlot)
 
 	// Step 2: Selectively spill only registers that are LIVE across this call.
 	// A value is live across the call if it's used by any instruction after the
@@ -499,32 +487,13 @@ func (ec *emitContext) emitRequireNativeCalleeTier2Only(slowLabel string) {
 }
 
 func (ec *emitContext) emitNativeCallExit(instr *Instr, funcSlot, nArgs, nRets, calleeBaseOff int) {
-	asm := ec.asm
-
-	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr)
-	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallerClosurePtr)
-	asm.LoadImm64(jit.X0, int64(funcSlot))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
-	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallA)
-	asm.LoadImm64(jit.X0, int64(nArgs))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNArgs)
-	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallB)
-	asm.LoadImm64(jit.X0, int64(nRets))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNRets)
-	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallC)
-	asm.LoadImm64(jit.X0, int64(instr.ID))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
-	asm.LoadImm64(jit.X0, int64(calleeBaseOff))
-	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCalleeBaseOff)
-
-	ec.emitSetResumeNumericPass()
-	asm.LoadImm64(jit.X0, ExitNativeCallExit)
-	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	if ec.numericMode {
-		asm.B("num_deopt_epilogue")
-	} else {
-		asm.B("deopt_epilogue")
-	}
+	ec.emitStoreNativeCallExitDescriptor(callExitDescriptor{
+		slot:    funcSlot,
+		nArgs:   nArgs,
+		nRets:   nRets,
+		instrID: instr.ID,
+	}, calleeBaseOff)
+	ec.emitCallProtocolExitToGo(ExitNativeCallExit)
 }
 
 // emitCallNativeStaticSelfFast emits the boxed-value self-call path for a
@@ -540,24 +509,12 @@ func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
 	}
 
 	asm := ec.asm
-	funcSlot := int(instr.Aux)
-	nArgs := len(instr.Args) - 1
-	nRets := callResultCountFromAux2(instr.Aux2)
+	desc := callExitDescriptorFromInstr(instr)
+	funcSlot := desc.slot
+	nArgs := desc.nArgs
+	nRets := desc.nRets
 
-	if len(instr.Args) > 0 {
-		fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-		if fnReg != jit.X0 {
-			asm.MOVreg(jit.X0, fnReg)
-		}
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
-	}
-	for i := 1; i < len(instr.Args); i++ {
-		argReg := ec.resolveValueNB(instr.Args[i].ID, jit.X0)
-		if argReg != jit.X0 {
-			asm.MOVreg(jit.X0, argReg)
-		}
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
-	}
+	ec.emitStoreCallFrameArgs(instr, funcSlot)
 
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
 	ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
@@ -937,23 +894,13 @@ func (ec *emitContext) emitRawIntSelfCallExitResume(instr *Instr, funcSlot, nArg
 		exitResumeCheckOptions{RequireCallFunc: true, RequireRawIntArgs: true},
 	)
 
-	asm.LoadImm64(jit.X0, int64(funcSlot))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
-	asm.LoadImm64(jit.X0, int64(nArgs))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNArgs)
-	asm.LoadImm64(jit.X0, int64(nRets))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNRets)
-	asm.LoadImm64(jit.X0, int64(instr.ID))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
-
-	ec.emitSetResumeNumericPass()
-	asm.LoadImm64(jit.X0, ExitCallExit)
-	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	if ec.numericMode {
-		asm.B("num_deopt_epilogue")
-	} else {
-		asm.B("deopt_epilogue")
-	}
+	ec.emitStoreCallExitDescriptor(callExitDescriptor{
+		slot:    funcSlot,
+		nArgs:   nArgs,
+		nRets:   nRets,
+		instrID: instr.ID,
+	})
+	ec.emitCallProtocolExitToGo(ExitCallExit)
 
 	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
 	asm.Label(continueLabel)
@@ -1472,23 +1419,13 @@ func (ec *emitContext) emitRawIntPeerCallExitResume(instr *Instr, funcSlot, nArg
 		exitResumeCheckOptions{RequireCallFunc: true, RequireRawIntArgs: true},
 	)
 
-	asm.LoadImm64(jit.X0, int64(funcSlot))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
-	asm.LoadImm64(jit.X0, int64(nArgs))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNArgs)
-	asm.LoadImm64(jit.X0, int64(nRets))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNRets)
-	asm.LoadImm64(jit.X0, int64(instr.ID))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
-
-	ec.emitSetResumeNumericPass()
-	asm.LoadImm64(jit.X0, ExitCallExit)
-	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	if ec.numericMode {
-		asm.B("num_deopt_epilogue")
-	} else {
-		asm.B("deopt_epilogue")
-	}
+	ec.emitStoreCallExitDescriptor(callExitDescriptor{
+		slot:    funcSlot,
+		nArgs:   nArgs,
+		nRets:   nRets,
+		instrID: instr.ID,
+	})
+	ec.emitCallProtocolExitToGo(ExitCallExit)
 
 	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
 	asm.Label(continueLabel)
@@ -1971,24 +1908,15 @@ func (ec *emitContext) emitCallExitFallback(instr *Instr, funcSlot, nArgs, nRets
 	ec.emitStoreAllActiveRegs()
 
 	// Write call descriptor to ExecContext.
-	asm.LoadImm64(jit.X0, int64(funcSlot))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
-	asm.LoadImm64(jit.X0, int64(nArgs))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNArgs)
-	asm.LoadImm64(jit.X0, int64(nRets))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNRets)
-	asm.LoadImm64(jit.X0, int64(instr.ID))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
+	ec.emitStoreCallExitDescriptor(callExitDescriptor{
+		slot:    funcSlot,
+		nArgs:   nArgs,
+		nRets:   nRets,
+		instrID: instr.ID,
+	})
 
 	// Set ExitCode = ExitCallExit and return to Go.
-	ec.emitSetResumeNumericPass()
-	asm.LoadImm64(jit.X0, ExitCallExit)
-	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	if ec.numericMode {
-		asm.B("num_deopt_epilogue")
-	} else {
-		asm.B("deopt_epilogue")
-	}
+	ec.emitCallProtocolExitToGo(ExitCallExit)
 
 	// Continue label: the resume entry jumps here after Go handles the call.
 	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))

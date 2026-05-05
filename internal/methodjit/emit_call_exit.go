@@ -43,6 +43,69 @@ func (ec *emitContext) emitSetResumeNumericPass() {
 	ec.asm.STR(jit.X0, mRegCtx, execCtxOffResumeNumericPass)
 }
 
+func (ec *emitContext) emitStoreCallFrameArgs(instr *Instr, funcSlot int) {
+	asm := ec.asm
+	if len(instr.Args) > 0 {
+		fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		if fnReg != jit.X0 {
+			asm.MOVreg(jit.X0, fnReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	}
+	for i := 1; i < len(instr.Args); i++ {
+		argReg := ec.resolveValueNB(instr.Args[i].ID, jit.X0)
+		if argReg != jit.X0 {
+			asm.MOVreg(jit.X0, argReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
+	}
+}
+
+func (ec *emitContext) emitStoreCallExitDescriptor(desc callExitDescriptor) {
+	ec.emitStoreCallExitDescriptorFields(desc, false)
+}
+
+func (ec *emitContext) emitStoreNativeCallExitDescriptor(desc callExitDescriptor, calleeBaseOff int) {
+	asm := ec.asm
+	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallerClosurePtr)
+	ec.emitStoreCallExitDescriptorFields(desc, true)
+	asm.LoadImm64(jit.X0, int64(calleeBaseOff))
+	asm.STR(jit.X0, mRegCtx, execCtxOffNativeCalleeBaseOff)
+}
+
+func (ec *emitContext) emitStoreCallExitDescriptorFields(desc callExitDescriptor, mirrorNativeABC bool) {
+	asm := ec.asm
+	asm.LoadImm64(jit.X0, int64(desc.slot))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
+	if mirrorNativeABC {
+		asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallA)
+	}
+	asm.LoadImm64(jit.X0, int64(desc.nArgs))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallNArgs)
+	if mirrorNativeABC {
+		asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallB)
+	}
+	asm.LoadImm64(jit.X0, int64(desc.nRets))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallNRets)
+	if mirrorNativeABC {
+		asm.STR(jit.X0, mRegCtx, execCtxOffNativeCallC)
+	}
+	asm.LoadImm64(jit.X0, int64(desc.instrID))
+	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
+}
+
+func (ec *emitContext) emitCallProtocolExitToGo(exitCode int64) {
+	ec.emitSetResumeNumericPass()
+	ec.asm.LoadImm64(jit.X0, exitCode)
+	ec.asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	if ec.numericMode {
+		ec.asm.B("num_deopt_epilogue")
+	} else {
+		ec.asm.B("deopt_epilogue")
+	}
+}
+
 // emitCallExit emits ARM64 code for an OpCall instruction using the call-exit
 // mechanism. This replaces the previous emitDeopt for OpCall.
 //
@@ -58,51 +121,20 @@ func (ec *emitContext) emitSetResumeNumericPass() {
 func (ec *emitContext) emitCallExit(instr *Instr) {
 	asm := ec.asm
 
-	funcSlot := int(instr.Aux)
-	nArgs := len(instr.Args) - 1
-	nRets := callResultCountFromAux2(instr.Aux2)
+	desc := callExitDescriptorFromInstr(instr)
+	funcSlot := desc.slot
 
-	// Store the function value to regs[funcSlot].
-	if len(instr.Args) > 0 {
-		fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-		if fnReg != jit.X0 {
-			asm.MOVreg(jit.X0, fnReg)
-		}
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
-	}
-
-	// Store each argument to regs[funcSlot+1], regs[funcSlot+2], ...
-	for i := 1; i < len(instr.Args); i++ {
-		argReg := ec.resolveValueNB(instr.Args[i].ID, jit.X0)
-		if argReg != jit.X0 {
-			asm.MOVreg(jit.X0, argReg)
-		}
-		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+i))
-	}
+	ec.emitStoreCallFrameArgs(instr, funcSlot)
 
 	// Store all active register-resident values to memory.
-	ec.recordExitResumeCheckSite(instr, ExitCallExit, callExitModifiedSlots(funcSlot, nRets), exitResumeCheckOptions{RequireCallFunc: true})
+	ec.recordExitResumeCheckSite(instr, ExitCallExit, callExitModifiedSlots(funcSlot, desc.nRets), exitResumeCheckOptions{RequireCallFunc: true})
 	ec.emitStoreAllActiveRegs()
 
 	// Write call descriptor to ExecContext.
-	asm.LoadImm64(jit.X0, int64(funcSlot))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallSlot)
-	asm.LoadImm64(jit.X0, int64(nArgs))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNArgs)
-	asm.LoadImm64(jit.X0, int64(nRets))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallNRets)
-	asm.LoadImm64(jit.X0, int64(instr.ID))
-	asm.STR(jit.X0, mRegCtx, execCtxOffCallID)
+	ec.emitStoreCallExitDescriptor(desc)
 
 	// Set ExitCode = ExitCallExit and return to Go.
-	ec.emitSetResumeNumericPass()
-	asm.LoadImm64(jit.X0, ExitCallExit)
-	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
-	if ec.numericMode {
-		asm.B("num_deopt_epilogue")
-	} else {
-		asm.B("deopt_epilogue")
-	}
+	ec.emitCallProtocolExitToGo(ExitCallExit)
 
 	// Continue label: the resume entry jumps here after reloading state.
 	continueLabel := ec.passLabel(fmt.Sprintf("call_continue_%d", instr.ID))
