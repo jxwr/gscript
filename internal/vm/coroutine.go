@@ -62,7 +62,8 @@ type VMCoroutine struct {
 	yieldDst          int
 	yieldC            int
 
-	yieldResult vmYieldResult
+	yieldResult     vmYieldResult
+	jitContinuation *MethodJITContinuation
 }
 
 func init() {
@@ -119,6 +120,12 @@ func (vm *VM) activeCoroutine() *VMCoroutine {
 // without wrapping it as an ordinary call failure.
 func IsCoroutineYield(err error) bool {
 	return err == errCoroutineYield
+}
+
+// CoroutineYieldError returns the internal sentinel used to unwind a VM
+// coroutine after it suspends.
+func CoroutineYieldError() error {
+	return errCoroutineYield
 }
 
 // RegisterCoroutineLib installs VM-native coroutine functions into globals,
@@ -302,6 +309,7 @@ func (vm *VM) resumeCoroutineRaw(co *VMCoroutine, args []rt.Value) (bool, []rt.V
 		co.started = true
 		vm.recordCoroutineGoroutineStart()
 		co.vm = newChildVM(vm, co)
+		vm.attachCoroutineJIT(co)
 		results, err := co.vm.call(co.closure, args, 0, 0)
 		return vm.finishCoroutineRun(co, results, err)
 	}
@@ -311,9 +319,46 @@ func (vm *VM) resumeCoroutineRaw(co *VMCoroutine, args []rt.Value) (bool, []rt.V
 		vm.recordCoroutineResumeError()
 		return false, []rt.Value{rt.StringValue("cannot resume dead coroutine")}, nil
 	}
-	co.vm.writeCallResults(co.yieldDst, co.yieldC, args)
-	results, err := co.vm.run()
+	results, err, handled := vm.resumeCoroutineJITContinuation(co, args)
+	if !handled {
+		co.vm.writeCallResults(co.yieldDst, co.yieldC, args)
+		results, err = co.vm.run()
+	}
 	return vm.finishCoroutineRun(co, results, err)
+}
+
+func (vm *VM) attachCoroutineJIT(co *VMCoroutine) {
+	if vm == nil || co == nil || co.vm == nil || vm.methodJIT == nil {
+		return
+	}
+	factory, ok := vm.methodJIT.(methodJITEngineWithCoroutineChild)
+	if !ok {
+		return
+	}
+	childEngine := factory.NewCoroutineChildEngine(co.vm)
+	if childEngine != nil {
+		co.vm.SetMethodJIT(childEngine)
+	}
+}
+
+func (vm *VM) resumeCoroutineJITContinuation(co *VMCoroutine, args []rt.Value) ([]rt.Value, error, bool) {
+	if co == nil || co.vm == nil || co.jitContinuation == nil {
+		return nil, nil, false
+	}
+	exec, ok := co.vm.methodJIT.(methodJITEngineWithContinuation)
+	if !ok {
+		return nil, nil, false
+	}
+	co.vm.writeCallResults(co.yieldDst, co.yieldC, args)
+	cont := *co.jitContinuation
+	co.jitContinuation = nil
+	results, err := exec.ExecuteContinuation(cont, co.vm.regs, co.vm.retBuf[:0])
+	vm.recordCoroutineJITContinuation()
+	if err == nil && !co.vm.coroutineYielded {
+		co.vm.closeUpvalues(cont.Base)
+		co.vm.PopFrame()
+	}
+	return results, err, true
 }
 
 func (vm *VM) finishCoroutineRun(co *VMCoroutine, results []rt.Value, err error) (bool, []rt.Value, error) {
@@ -344,6 +389,7 @@ func (co *VMCoroutine) releaseVM() {
 	if co.vm == nil {
 		return
 	}
+	co.jitContinuation = nil
 	co.vm.frameCount = 0
 	co.vm.top = 0
 	co.vm.Close()
@@ -367,6 +413,78 @@ func (vm *VM) suspendCoroutine(args []rt.Value, dst, c int) error {
 	co.yieldDst = dst
 	co.yieldC = c
 	vm.coroutineYielded = true
+	return nil
+}
+
+// SuspendCoroutineFromSlots is the JIT-facing form of OP_YIELD. absSlot is the
+// absolute A register of OP_YIELD; yielded values start at A+1.
+func (vm *VM) SuspendCoroutineFromSlots(absSlot, nArgs, c int) error {
+	if vm == nil {
+		return fmt.Errorf("cannot yield from outside a coroutine")
+	}
+	if nArgs < 0 {
+		nArgs = 0
+	}
+	start := absSlot + 1
+	end := start + nArgs
+	if start < 0 || end > len(vm.regs) {
+		return fmt.Errorf("coroutine.yield args out of range")
+	}
+	return vm.suspendCoroutine(vm.regs[start:end], absSlot, c)
+}
+
+// SaveMethodJITContinuation records where the active coroutine should re-enter
+// native code after the current yield is resumed.
+func (vm *VM) SaveMethodJITContinuation(cont MethodJITContinuation) error {
+	co := vm.activeCoroutine()
+	if co == nil {
+		return fmt.Errorf("cannot save JIT continuation outside a coroutine")
+	}
+	if err := vm.SetCurrentFramePC(cont.PC); err != nil {
+		return err
+	}
+	co.jitContinuation = &cont
+	return nil
+}
+
+// NewObjectNFromSlots is the JIT-facing form of OP_NEWOBJECTN. It shares the
+// interpreter's fixed-record coroutine payload path instead of duplicating table
+// construction policy in the JIT handler.
+func (vm *VM) NewObjectNFromSlots(proto *FuncProto, ctorIdx, absDst, absStart int) error {
+	if vm == nil || proto == nil || absDst < 0 || absDst >= len(vm.regs) {
+		return nil
+	}
+	if ctorIdx < 0 || ctorIdx >= len(proto.TableCtorsN) {
+		vm.regs[absDst] = rt.FreshTableValue(rt.NewEmptyTable())
+		return nil
+	}
+	ctor := &proto.TableCtorsN[ctorIdx].Runtime
+	n := len(ctor.Keys)
+	if absStart < 0 || absStart+n > len(vm.regs) {
+		vm.regs[absDst] = rt.FreshTableValue(rt.NewTableSized(0, n))
+		return nil
+	}
+	vals := vm.regs[absStart : absStart+n]
+	if co := vm.currentCoroutine; co != nil {
+		if co.stackYieldEnabled {
+			if co.pooledFixedRecord == nil {
+				if rt.DefaultHeap != nil {
+					co.pooledFixedRecord = rt.DefaultHeap.AllocFixedRecord()
+				} else {
+					co.pooledFixedRecord = &rt.FixedRecord{}
+				}
+			}
+			if v, ok := rt.FillFixedRecordKnownCtor(co.pooledFixedRecord, ctor, vals); ok {
+				vm.regs[absDst] = v
+				return nil
+			}
+		}
+		if v, ok := rt.NewFixedRecordValue(ctor, vals); ok {
+			vm.regs[absDst] = v
+			return nil
+		}
+	}
+	vm.regs[absDst] = rt.FreshTableValue(rt.NewTableFromCtorN(ctor, vals))
 	return nil
 }
 

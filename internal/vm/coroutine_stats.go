@@ -10,27 +10,29 @@ import (
 // It separates the synchronous leaf fast path from the goroutine/channel path
 // so production runs can identify which coroutine mechanism dominates a script.
 type CoroutineStatsSnapshot struct {
-	Created         uint64
-	Wrapped         uint64
-	ResumeCalls     uint64
-	YieldCalls      uint64
-	LeafFastPath    uint64
-	LeafFallbacks   uint64
-	GoroutineStarts uint64
-	Completed       uint64
-	ResumeErrors    uint64
+	Created          uint64
+	Wrapped          uint64
+	ResumeCalls      uint64
+	YieldCalls       uint64
+	LeafFastPath     uint64
+	LeafFallbacks    uint64
+	GoroutineStarts  uint64
+	JITContinuations uint64
+	Completed        uint64
+	ResumeErrors     uint64
 }
 
 type coroutineStats struct {
-	created         atomic.Uint64
-	wrapped         atomic.Uint64
-	resumeCalls     atomic.Uint64
-	yieldCalls      atomic.Uint64
-	leafFastPath    atomic.Uint64
-	leafFallbacks   atomic.Uint64
-	goroutineStarts atomic.Uint64
-	completed       atomic.Uint64
-	resumeErrors    atomic.Uint64
+	created          atomic.Uint64
+	wrapped          atomic.Uint64
+	resumeCalls      atomic.Uint64
+	yieldCalls       atomic.Uint64
+	leafFastPath     atomic.Uint64
+	leafFallbacks    atomic.Uint64
+	goroutineStarts  atomic.Uint64
+	jitContinuations atomic.Uint64
+	completed        atomic.Uint64
+	resumeErrors     atomic.Uint64
 }
 
 // EnableCoroutineStats enables coroutine runtime counters for this VM and any
@@ -54,15 +56,16 @@ func (s *coroutineStats) snapshot() CoroutineStatsSnapshot {
 		return CoroutineStatsSnapshot{}
 	}
 	return CoroutineStatsSnapshot{
-		Created:         s.created.Load(),
-		Wrapped:         s.wrapped.Load(),
-		ResumeCalls:     s.resumeCalls.Load(),
-		YieldCalls:      s.yieldCalls.Load(),
-		LeafFastPath:    s.leafFastPath.Load(),
-		LeafFallbacks:   s.leafFallbacks.Load(),
-		GoroutineStarts: s.goroutineStarts.Load(),
-		Completed:       s.completed.Load(),
-		ResumeErrors:    s.resumeErrors.Load(),
+		Created:          s.created.Load(),
+		Wrapped:          s.wrapped.Load(),
+		ResumeCalls:      s.resumeCalls.Load(),
+		YieldCalls:       s.yieldCalls.Load(),
+		LeafFastPath:     s.leafFastPath.Load(),
+		LeafFallbacks:    s.leafFallbacks.Load(),
+		GoroutineStarts:  s.goroutineStarts.Load(),
+		JITContinuations: s.jitContinuations.Load(),
+		Completed:        s.completed.Load(),
+		ResumeErrors:     s.resumeErrors.Load(),
 	}
 }
 
@@ -114,6 +117,13 @@ func (vm *VM) recordCoroutineGoroutineStart() {
 		return
 	}
 	vm.coroutineStats.goroutineStarts.Add(1)
+}
+
+func (vm *VM) recordCoroutineJITContinuation() {
+	if vm == nil || vm.coroutineStats == nil {
+		return
+	}
+	vm.coroutineStats.jitContinuations.Add(1)
 }
 
 func (vm *VM) recordCoroutineCompleted() {

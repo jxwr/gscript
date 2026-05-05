@@ -150,6 +150,16 @@ func (e *BaselineJITEngine) SetCallVM(v *vm.VM) {
 	e.callVM = v
 }
 
+// NewCoroutineChildEngine returns a VM-bound baseline engine for a coroutine
+// child VM. The engine owns its callVM pointer for the lifetime of that child,
+// so coroutine continuation resumes do not have to rewrite the parent engine's
+// VM binding.
+func (e *BaselineJITEngine) NewCoroutineChildEngine(child *vm.VM) vm.MethodJITEngine {
+	childEngine := NewBaselineJITEngine()
+	childEngine.SetCallVM(child)
+	return childEngine
+}
+
 // SetTierUpThreshold configures the CallCount threshold at which handleCall
 // falls to the slow path (callVM.CallValue) instead of executing the callee
 // directly. This allows the TieringManager to trigger Tier 2 compilation.
@@ -314,9 +324,20 @@ func (e *BaselineJITEngine) ExecuteWithResultBuffer(compiled interface{}, regs [
 	return results, err
 }
 
+// ExecuteContinuation resumes a suspended baseline frame at a saved bytecode
+// PC. Locals are already live in the coroutine VM's register file, so this
+// skips fresh-frame register initialization.
+func (e *BaselineJITEngine) ExecuteContinuation(cont vm.MethodJITContinuation, regs []runtime.Value, retBuf []runtime.Value) ([]runtime.Value, error) {
+	return e.executeInnerAtPC(cont.Compiled, regs, cont.Base, cont.Proto, retBuf, cont.PC, false)
+}
+
 // executeInner is the raw JIT entry loop. Execute wraps it to handle
 // int-spec deopt fallback.
 func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
+	return e.executeInnerAtPC(compiled, regs, base, proto, retBuf, 0, true)
+}
+
+func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value, startPC int, initializeFrame bool) ([]runtime.Value, error) {
 	bf := compiled.(*BaselineFunc)
 
 	// Ensure register space.
@@ -325,10 +346,12 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 		return nil, fmt.Errorf("baseline: register file too small: need %d, have %d", needed, len(regs))
 	}
 
-	// Initialize unused registers to nil.
-	for i := base + proto.NumParams; i < base+proto.MaxStack; i++ {
-		if i < len(regs) {
-			regs[i] = runtime.NilValue()
+	if initializeFrame {
+		// Initialize unused registers to nil.
+		for i := base + proto.NumParams; i < base+proto.MaxStack; i++ {
+			if i < len(regs) {
+				regs[i] = runtime.NilValue()
+			}
 		}
 	}
 
@@ -422,6 +445,13 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 	ctx.RegsEnd = uintptr(unsafe.Pointer(&regs[0])) + uintptr(len(regs)*8)
 
 	codePtr := uintptr(bf.Code.Ptr())
+	if startPC != 0 {
+		resumeOff, ok := bf.Labels[startPC]
+		if !ok {
+			return nil, fmt.Errorf("baseline: no continuation label for PC %d", startPC)
+		}
+		codePtr += uintptr(resumeOff)
+	}
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
 
 	// resyncRegs re-reads the VM's register file after exits.
@@ -454,6 +484,9 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 		case ExitBaselineOpExit:
 			// Baseline op-exit: handle operation via Go, then resume.
 			if err := e.handleBaselineOpExit(ctx, regs, base, proto, bf); err != nil {
+				if vm.IsCoroutineYield(err) {
+					return nil, err
+				}
 				return nil, fmt.Errorf("baseline: op-exit: %w", err)
 			}
 			resyncRegs()
@@ -478,6 +511,9 @@ func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Va
 			// 3. Resume the caller at PC+1
 			result, err := e.handleNativeCallExit(ctx, regs, base, proto, bf)
 			if err != nil {
+				if vm.IsCoroutineYield(err) {
+					return nil, err
+				}
 				return nil, fmt.Errorf("baseline: native-call-exit: %w", err)
 			}
 

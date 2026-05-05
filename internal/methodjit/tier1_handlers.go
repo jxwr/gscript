@@ -20,6 +20,8 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	switch opCode {
 	case vm.OP_CALL:
 		return e.handleCall(ctx, regs, base, proto)
+	case vm.OP_YIELD:
+		return e.handleYield(ctx, regs, base, proto, bf)
 	case vm.OP_RESUME:
 		return e.handleResume(ctx, regs, base, proto)
 	case vm.OP_GETGLOBAL:
@@ -73,6 +75,38 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	default:
 		return fmt.Errorf("unhandled baseline op-exit: %s (%d)", vm.OpName(opCode), opCode)
 	}
+}
+
+func (e *BaselineJITEngine) handleYield(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, bf *BaselineFunc) error {
+	if e.callVM == nil {
+		return fmt.Errorf("no callVM for coroutine yield exit")
+	}
+	slot := int(ctx.BaselineA)
+	rawB := int(ctx.BaselineB)
+	rawC := int(ctx.BaselineC)
+	absSlot := base + slot
+	if absSlot >= len(regs) {
+		return fmt.Errorf("yield slot %d out of range", absSlot)
+	}
+	nArgs := rawB - 1
+	if rawB == 0 {
+		nArgs = e.callVM.Top() - (absSlot + 1)
+		if nArgs < 0 {
+			nArgs = 0
+		}
+	}
+	if err := e.callVM.SuspendCoroutineFromSlots(absSlot, nArgs, rawC); err != nil {
+		return err
+	}
+	if err := e.callVM.SaveMethodJITContinuation(vm.MethodJITContinuation{
+		Compiled: bf,
+		Base:     base,
+		Proto:    proto,
+		PC:       int(ctx.BaselinePC),
+	}); err != nil {
+		return err
+	}
+	return vm.CoroutineYieldError()
 }
 
 func (e *BaselineJITEngine) handleResume(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
@@ -139,6 +173,9 @@ func (e *BaselineJITEngine) handleNewObjectN(ctx *ExecContext, regs []runtime.Va
 	if start < 0 || start+n > len(regs) {
 		regs[absA] = runtime.FreshTableValue(runtime.NewTableSized(0, n))
 		return nil
+	}
+	if e.callVM != nil {
+		return e.callVM.NewObjectNFromSlots(proto, b, absA, start)
 	}
 	regs[absA] = runtime.FreshTableValue(runtime.NewTableFromCtorN(ctor, regs[start:start+n]))
 	return nil
@@ -340,6 +377,9 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 				if err == errOSRRequested && e.osrHandler != nil {
 					currentRegs = e.callVM.Regs()
 					results, err = e.osrHandler(currentRegs, calleeBase, calleeProto)
+				}
+				if vm.IsCoroutineYield(err) {
+					return err
 				}
 
 				// Close upvalues and pop frame regardless of error.
@@ -980,6 +1020,9 @@ func (e *BaselineJITEngine) handleNativeCallExit(ctx *ExecContext, regs []runtim
 			regs = e.callVM.Regs()
 		}
 		results, err = e.osrHandler(regs, calleeBase, calleeProto)
+	}
+	if vm.IsCoroutineYield(err) {
+		return runtime.NilValue(), err
 	}
 
 	// Close upvalues and pop frame regardless of error.

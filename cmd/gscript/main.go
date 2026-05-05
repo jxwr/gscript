@@ -337,6 +337,7 @@ func printCoroutineStats(w *os.File, stats bytecodevm.CoroutineStatsSnapshot) {
 	fmt.Fprintf(w, "  leaf fast path: %d\n", stats.LeafFastPath)
 	fmt.Fprintf(w, "  leaf fallbacks: %d\n", stats.LeafFallbacks)
 	fmt.Fprintf(w, "  goroutine starts: %d\n", stats.GoroutineStarts)
+	fmt.Fprintf(w, "  jit continuations: %d\n", stats.JITContinuations)
 	fmt.Fprintf(w, "  completed: %d\n", stats.Completed)
 	fmt.Fprintf(w, "  resume errors: %d\n", stats.ResumeErrors)
 }

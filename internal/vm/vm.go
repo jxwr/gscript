@@ -28,6 +28,24 @@ type methodJITEngineWithResultBuffer interface {
 	ExecuteWithResultBuffer(compiled interface{}, regs []runtime.Value, base int, proto *FuncProto, retBuf []runtime.Value) ([]runtime.Value, error)
 }
 
+// MethodJITContinuation describes a suspended method-JIT frame. The concrete
+// compiled object remains owned by the engine; the VM only stores enough state
+// for a coroutine to re-enter the same function after coroutine.yield.
+type MethodJITContinuation struct {
+	Compiled interface{}
+	Base     int
+	Proto    *FuncProto
+	PC       int
+}
+
+type methodJITEngineWithContinuation interface {
+	ExecuteContinuation(cont MethodJITContinuation, regs []runtime.Value, retBuf []runtime.Value) ([]runtime.Value, error)
+}
+
+type methodJITEngineWithCoroutineChild interface {
+	NewCoroutineChildEngine(child *VM) MethodJITEngine
+}
+
 // VM is the bytecode virtual machine.
 type VM struct {
 	regs               []runtime.Value          // register file (shared across frames via base offset)
@@ -176,6 +194,16 @@ func (vm *VM) EnsureRegs(needed int) []runtime.Value {
 		vm.regs = newRegs
 	}
 	return vm.regs
+}
+
+// SetCurrentFramePC updates the top frame's program counter. JIT coroutine
+// suspension uses this so interpreter fallback can resume at the same point.
+func (vm *VM) SetCurrentFramePC(pc int) error {
+	if vm.frameCount == 0 {
+		return fmt.Errorf("SetCurrentFramePC: no active call frame")
+	}
+	vm.frames[vm.frameCount-1].pc = pc
+	return nil
 }
 
 // Globals returns the globals map.
@@ -2401,6 +2429,28 @@ func (vm *VM) ResumePayloadIsFieldOnly(proto *FuncProto, nextPC, resumeA, c int)
 	if proto == nil || c != 3 {
 		return false
 	}
+	if nextPC >= 0 && nextPC < len(proto.Code) {
+		if proto.ResumePayloadCache == nil {
+			proto.ResumePayloadCache = make([]int8, len(proto.Code))
+		}
+		switch proto.ResumePayloadCache[nextPC] {
+		case 1:
+			return false
+		case 2:
+			return true
+		}
+		result := vm.resumePayloadIsFieldOnlyUncached(proto, nextPC, resumeA, c)
+		if result {
+			proto.ResumePayloadCache[nextPC] = 2
+		} else {
+			proto.ResumePayloadCache[nextPC] = 1
+		}
+		return result
+	}
+	return vm.resumePayloadIsFieldOnlyUncached(proto, nextPC, resumeA, c)
+}
+
+func (vm *VM) resumePayloadIsFieldOnlyUncached(proto *FuncProto, nextPC, resumeA, c int) bool {
 	payloadReg := resumeA + 1
 	for pc := nextPC; pc < len(proto.Code); pc++ {
 		inst := proto.Code[pc]

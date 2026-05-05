@@ -152,6 +152,16 @@ func (tm *TieringManager) SetCallVM(v *vm.VM) {
 	tm.tier1.SetCallVM(v)
 }
 
+// NewCoroutineChildEngine returns a child-VM-bound JIT engine for coroutine
+// bodies. It intentionally uses Tier 1 only: yielding functions need a compact
+// bytecode-PC continuation, while Tier 2 still marks OP_YIELD unpromotable.
+func (tm *TieringManager) NewCoroutineChildEngine(child *vm.VM) vm.MethodJITEngine {
+	if tm == nil || tm.tier1 == nil {
+		return nil
+	}
+	return tm.tier1.NewCoroutineChildEngine(child)
+}
+
 // getProfile returns a cached FuncProfile for the given proto, computing it
 // on first access.
 func (tm *TieringManager) getProfile(proto *vm.FuncProto) FuncProfile {
