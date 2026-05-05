@@ -3,11 +3,32 @@
 package methodjit
 
 import (
+	"sync"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
+
+var tier2ExecContextPool = sync.Pool{
+	New: func() any {
+		return new(ExecContext)
+	},
+}
+
+func getTier2ExecContext() *ExecContext {
+	ctx := tier2ExecContextPool.Get().(*ExecContext)
+	*ctx = ExecContext{}
+	return ctx
+}
+
+func putTier2ExecContext(ctx *ExecContext) {
+	if ctx == nil {
+		return
+	}
+	*ctx = ExecContext{}
+	tier2ExecContextPool.Put(ctx)
+}
 
 func (tm *TieringManager) setTier2FieldCacheContext(ctx *ExecContext, proto *vm.FuncProto) {
 	setTier2ProtoCacheContext(ctx, proto)

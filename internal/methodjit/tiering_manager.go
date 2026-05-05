@@ -33,7 +33,6 @@ package methodjit
 import (
 	"fmt"
 	"os"
-	"sync"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -49,26 +48,6 @@ import (
 // partial inlining from regressing: if full inline fails, main stays
 // at Tier 1 as before, so the bump is safe-by-construction.
 const inlineMaxCalleeSize = 500
-
-var tier2ExecContextPool = sync.Pool{
-	New: func() any {
-		return new(ExecContext)
-	},
-}
-
-func getTier2ExecContext() *ExecContext {
-	ctx := tier2ExecContextPool.Get().(*ExecContext)
-	*ctx = ExecContext{}
-	return ctx
-}
-
-func putTier2ExecContext(ctx *ExecContext) {
-	if ctx == nil {
-		return
-	}
-	*ctx = ExecContext{}
-	tier2ExecContextPool.Put(ctx)
-}
 
 // tmDefaultTier2Threshold is the BLR tier-up threshold. Controls when Tier 1's
 // BLR call path falls to slow path to give TieringManager.TryCompile a chance
@@ -1421,27 +1400,6 @@ func callSiteFeedbackHasStableStringFormatInt(proto *vm.FuncProto, pc int) bool 
 	}
 	pattern, ok := cf.StableStringArg(0)
 	return ok && simpleSingleDecimalIntFormat(pattern)
-}
-
-// CompileTier2 explicitly compiles a function at Tier 2. This bypasses the
-// call count threshold and is useful for testing or when the caller knows
-// the function is hot. Returns error if Tier 2 compilation fails.
-func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
-	if _, ok := tm.tier2Compiled[proto]; ok {
-		return nil // already compiled
-	}
-	if proto.Feedback == nil {
-		proto.EnsureFeedback()
-	}
-	t2, err := tm.compileTier2(proto)
-	if err != nil {
-		tm.tier2Failed[proto] = true
-		return err
-	}
-	tm.tier2Compiled[proto] = t2
-	tm.installTier2(proto, t2)
-
-	return nil
 }
 
 // irHasSelfCall (R40) scans the optimized IR for an OpCall whose function

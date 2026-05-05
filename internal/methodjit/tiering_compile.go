@@ -64,6 +64,27 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	return cf, retErr
 }
 
+// CompileTier2 explicitly compiles a function at Tier 2. This bypasses the
+// call count threshold and is useful for testing or when the caller knows
+// the function is hot. Returns error if Tier 2 compilation fails.
+func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
+	if _, ok := tm.tier2Compiled[proto]; ok {
+		return nil // already compiled
+	}
+	if proto.Feedback == nil {
+		proto.EnsureFeedback()
+	}
+	t2, err := tm.compileTier2(proto)
+	if err != nil {
+		tm.tier2Failed[proto] = true
+		return err
+	}
+	tm.tier2Compiled[proto] = t2
+	tm.installTier2(proto, t2)
+
+	return nil
+}
+
 // compileTier2Pipeline is the pure pipeline body shared between production
 // compileTier2 and CompileForDiagnostics. It performs NO bookkeeping
 // (counters, fail-reason maps, debug logging) so diagnostic calls cannot
