@@ -2337,10 +2337,19 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.CMPreg(jit.X14, jit.X6)
 	asm.BCond(jit.CondNE, smapNextLabel)
 	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyData)
+	asm.CMPimm(jit.X6, 8)
+	asm.BCond(jit.CondEQ, smapByteLoopLabel+"_len8")
 	asm.CMPreg(jit.X14, jit.X5)
 	asm.BCond(jit.CondEQ, smapFoundLabel)
 	asm.CBZ(jit.X6, smapFoundLabel)
 	asm.MOVimm16(jit.X15, 0)
+	asm.B(smapByteLoopLabel)
+	asm.Label(smapByteLoopLabel + "_len8")
+	asm.LDR(jit.X16, jit.X14, 0)
+	asm.LDR(jit.X17, jit.X5, 0)
+	asm.CMPreg(jit.X16, jit.X17)
+	asm.BCond(jit.CondEQ, smapFoundLabel)
+	asm.B(smapNextLabel)
 	asm.Label(smapByteLoopLabel)
 	asm.LDRBreg(jit.X16, jit.X14, jit.X15)
 	asm.LDRBreg(jit.X17, jit.X5, jit.X15)
@@ -2362,10 +2371,14 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 
 func (ec *emitContext) emitStringLookupContentHash(dataReg, lenReg, dstReg, idxReg, byteReg, primeReg jit.Reg, prefix string) {
 	asm := ec.asm
+	fast8Label := ec.uniqueLabel(prefix + "_len8")
 	loopLabel := ec.uniqueLabel(prefix + "_loop")
 	doneLabel := ec.uniqueLabel(prefix + "_done")
+	endLabel := ec.uniqueLabel(prefix + "_end")
 	asm.LoadImm64(dstReg, int64(1469598103934665603))
 	asm.LoadImm64(primeReg, int64(1099511628211))
+	asm.CMPimm(lenReg, 8)
+	asm.BCond(jit.CondEQ, fast8Label)
 	asm.MOVimm16(idxReg, 0)
 	asm.Label(loopLabel)
 	asm.CMPreg(idxReg, lenReg)
@@ -2376,6 +2389,15 @@ func (ec *emitContext) emitStringLookupContentHash(dataReg, lenReg, dstReg, idxR
 	asm.ADDimm(idxReg, idxReg, 1)
 	asm.B(loopLabel)
 	asm.Label(doneLabel)
+	asm.B(endLabel)
+
+	asm.Label(fast8Label)
+	for i := 0; i < 8; i++ {
+		asm.LDRB(byteReg, dataReg, i)
+		asm.EORreg(dstReg, dstReg, byteReg)
+		asm.MUL(dstReg, dstReg, primeReg)
+	}
+	asm.Label(endLabel)
 }
 
 func tableExitSourcePC(instr *Instr) int64 {
