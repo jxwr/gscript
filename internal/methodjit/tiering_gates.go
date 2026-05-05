@@ -7,6 +7,31 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
+// canPromoteToTier2 checks if a function is safe for Tier 2 compilation.
+//
+// All standard ops are now handled by Tier 2, either natively or via exit-resume:
+//
+// Native ARM64 fast paths:
+//   - Arithmetic, comparison, unary: emitRawIntBinOp / emitFloatBinOp / etc.
+//   - GETTABLE, SETTABLE: emitGetTableNative / emitSetTableNative
+//   - GETFIELD, SETFIELD: emitGetField / emitSetField (inline cache + shape guard)
+//   - GETGLOBAL: emitGetGlobalNative (per-instruction value cache + exit-resume)
+//
+// Native + exit-resume fallback:
+//   - CALL: eliminated by inline pass; if not inlined, compileTier2 rejects via irHasCall
+//
+// Exit-resume (exit to Go, execute, resume JIT):
+//   - SETGLOBAL, NEWTABLE, SETLIST, APPEND, LEN, CONCAT, SELF, POW: emitOpExit
+//   - CLOSURE, GETUPVAL, SETUPVAL: emitOpExit with closure state from VM
+//   - VARARG: emitOpExit with vararg state from VM frame
+//
+// Only goroutine/channel ops are blocked (fundamentally require Go runtime):
+//   - GO, MAKECHAN, SEND, RECV
+//
+// CALL is no longer blocked here. Instead, compileTier2 runs the inline pass to
+// eliminate calls, then checks the optimized IR with irHasCall. If calls remain
+// after inlining, the function falls back to Tier 1 where BLR calls are faster.
+// GETGLOBAL is fully native with a per-instruction value cache matching Tier 1.
 func canPromoteToTier2(proto *vm.FuncProto) bool {
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
