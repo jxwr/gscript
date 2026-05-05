@@ -105,26 +105,31 @@ func (tm *TieringManager) EnableTier2PerfStats() {
 	if tm == nil {
 		return
 	}
+	if tm.perfStats == nil {
+		tm.perfStats = &tier2PerfStatsCollector{}
+	}
+	tm.perfStatsEnabled = true
 	tm.perfStats.setEnabled(true)
 }
 
 // DisableTier2PerfStats disables Tier 2 protocol/timing diagnostics.
 func (tm *TieringManager) DisableTier2PerfStats() {
-	if tm == nil {
+	if tm == nil || tm.perfStats == nil {
 		return
 	}
+	tm.perfStatsEnabled = false
 	tm.perfStats.setEnabled(false)
 }
 
 func (tm *TieringManager) tier2PerfStart() tier2PerfMark {
-	if tm == nil || !tm.perfStats.isEnabled() {
+	if tm == nil || !tm.perfStatsEnabled || tm.perfStats == nil {
 		return tier2PerfMark{}
 	}
 	return tier2PerfMark{enabled: true, start: time.Now()}
 }
 
 func (tm *TieringManager) tier2PerfStop(name string, mark tier2PerfMark) {
-	if tm == nil || !mark.enabled {
+	if tm == nil || tm.perfStats == nil || !mark.enabled {
 		return
 	}
 	tm.perfStats.record(name, time.Since(mark.start))
@@ -133,7 +138,7 @@ func (tm *TieringManager) tier2PerfStop(name string, mark tier2PerfMark) {
 // Tier2PerfStats returns the current opt-in Tier 2 performance diagnostic
 // counters. When disabled, the snapshot still reports Enabled=false.
 func (tm *TieringManager) Tier2PerfStats() Tier2PerfStatsSnapshot {
-	if tm == nil {
+	if tm == nil || tm.perfStats == nil {
 		return Tier2PerfStatsSnapshot{}
 	}
 	return tm.perfStats.snapshot()

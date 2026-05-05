@@ -88,17 +88,18 @@ const osrDefaultIterations = 1000
 // TieringManager manages automatic promotion between Tier 1 and Tier 2.
 // It implements vm.MethodJITEngine.
 type TieringManager struct {
-	tier1           *BaselineJITEngine
-	tier2Compiled   map[*vm.FuncProto]*CompiledFunction
-	tier2Failed     map[*vm.FuncProto]bool
-	tier2FailReason map[*vm.FuncProto]string // reason a function failed Tier 2 (keyed by proto)
-	tier2Attempts   int                      // total Tier 2 compilation attempts
-	exitStats       exitStatsCollector
-	perfStats       tier2PerfStatsCollector
-	callVM          *vm.VM
-	retBuf          [8]runtime.Value
-	tier2Threshold  int                           // configurable threshold for testing (legacy fallback)
-	profileCache    map[*vm.FuncProto]FuncProfile // cached function profiles
+	tier1            *BaselineJITEngine
+	tier2Compiled    map[*vm.FuncProto]*CompiledFunction
+	tier2Failed      map[*vm.FuncProto]bool
+	tier2FailReason  map[*vm.FuncProto]string // reason a function failed Tier 2 (keyed by proto)
+	tier2Attempts    int                      // total Tier 2 compilation attempts
+	exitStats        exitStatsCollector
+	perfStats        *tier2PerfStatsCollector
+	perfStatsEnabled bool
+	callVM           *vm.VM
+	retBuf           [8]runtime.Value
+	tier2Threshold   int                           // configurable threshold for testing (legacy fallback)
+	profileCache     map[*vm.FuncProto]FuncProfile // cached function profiles
 
 	// R162: env-var caches evaluated ONCE at construction. Previously
 	// R154's os.Getenv calls were placed inside hot paths
@@ -2155,9 +2156,13 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 
 	var r154_exitCount int
 	for {
-		nativeMark := tm.tier2PerfStart()
-		jit.CallJIT(codePtr, ctxPtr)
-		tm.tier2PerfStop(perfTier2NativeExecution, nativeMark)
+		if tm.perfStatsEnabled {
+			start := time.Now()
+			jit.CallJIT(codePtr, ctxPtr)
+			tm.perfStats.record(perfTier2NativeExecution, time.Since(start))
+		} else {
+			jit.CallJIT(codePtr, ctxPtr)
+		}
 		syncNativeGlobals()
 
 		if tm.envR154Trace {
@@ -2232,22 +2237,32 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				return nil, err
 			}
 			callID := int(ctx.CallID)
-			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(callID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for call %d", callID)
 			}
+			if tm.perfStatsEnabled {
+				start := time.Now()
+				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+				ctx.ExitCode = 0
+				ctx.ResumeNumericPass = 0
+				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
+				continue
+			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
-			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 			continue
 
 		case ExitNativeCallExit:
 			var err error
-			protocolMark := tm.tier2PerfStart()
-			regs, err = tm.executeNativeCallExit(ctx, cf, regs, base, proto)
-			tm.tier2PerfStop(perfTier2NativeCallExitProtocol, protocolMark)
+			if tm.perfStatsEnabled {
+				start := time.Now()
+				regs, err = tm.executeNativeCallExit(ctx, cf, regs, base, proto)
+				tm.perfStats.record(perfTier2NativeCallExitProtocol, time.Since(start))
+			} else {
+				regs, err = tm.executeNativeCallExit(ctx, cf, regs, base, proto)
+			}
 			if err != nil {
 				if err == errNestedNativeCallExit {
 					// Known fallback: avoid wrapping with fmt.Errorf on the
@@ -2258,15 +2273,21 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			}
 			resyncRegs()
 			callID := int(ctx.CallID)
-			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(callID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for native call %d", callID)
 			}
+			if tm.perfStatsEnabled {
+				start := time.Now()
+				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+				ctx.ExitCode = 0
+				ctx.ResumeNumericPass = 0
+				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
+				continue
+			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
-			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 			continue
 
 		case ExitGlobalExit:
@@ -2283,15 +2304,21 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				return nil, err
 			}
 			globalID := int(ctx.GlobalExitID)
-			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(globalID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for global %d", globalID)
 			}
+			if tm.perfStatsEnabled {
+				start := time.Now()
+				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+				ctx.ExitCode = 0
+				ctx.ResumeNumericPass = 0
+				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
+				continue
+			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
-			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 			continue
 
 		case ExitTableExit:
@@ -2300,9 +2327,13 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err != nil {
 				return nil, err
 			}
-			handlerMark := tm.tier2PerfStart()
-			err = tm.executeTableExit(ctx, regs, base, proto, cf)
-			tm.tier2PerfStop(perfTier2TableExit, handlerMark)
+			if tm.perfStatsEnabled {
+				start := time.Now()
+				err = tm.executeTableExit(ctx, regs, base, proto, cf)
+				tm.perfStats.record(perfTier2TableExit, time.Since(start))
+			} else {
+				err = tm.executeTableExit(ctx, regs, base, proto, cf)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("tier2: table-exit: %w", err)
 			}
@@ -2311,15 +2342,21 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				return nil, err
 			}
 			tableID := int(ctx.TableExitID)
-			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(tableID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for table %d", tableID)
 			}
+			if tm.perfStatsEnabled {
+				start := time.Now()
+				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+				ctx.ExitCode = 0
+				ctx.ResumeNumericPass = 0
+				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
+				continue
+			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
-			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 			continue
 
 		case ExitOpExit:
@@ -2328,9 +2365,13 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err != nil {
 				return nil, err
 			}
-			handlerMark := tm.tier2PerfStart()
-			err = tm.executeOpExit(ctx, regs, base, proto)
-			tm.tier2PerfStop(perfTier2OpExit, handlerMark)
+			if tm.perfStatsEnabled {
+				start := time.Now()
+				err = tm.executeOpExit(ctx, regs, base, proto)
+				tm.perfStats.record(perfTier2OpExit, time.Since(start))
+			} else {
+				err = tm.executeOpExit(ctx, regs, base, proto)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("tier2: op-exit: %w", err)
 			}
@@ -2339,15 +2380,21 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				return nil, err
 			}
 			opID := int(ctx.OpExitID)
-			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(opID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for op %d", opID)
 			}
+			if tm.perfStatsEnabled {
+				start := time.Now()
+				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+				ctx.ExitCode = 0
+				ctx.ResumeNumericPass = 0
+				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
+				continue
+			}
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
-			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 			continue
 
 		default:
