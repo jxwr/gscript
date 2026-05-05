@@ -65,6 +65,9 @@ type VMCoroutine struct {
 	yieldResult        vmYieldResult
 	jitContinuation    MethodJITContinuation
 	hasJITContinuation bool
+	fastJITCode        uintptr
+	fastJITCtx         uintptr
+	fastJITResumePC    int
 }
 
 func init() {
@@ -114,6 +117,13 @@ func vmCoroutineFromNativeData(p unsafe.Pointer) (*VMCoroutine, bool) {
 
 func (vm *VM) activeCoroutine() *VMCoroutine {
 	return vm.currentCoroutine
+}
+
+func (vm *VM) CurrentCoroutinePtr() uintptr {
+	if vm == nil || vm.currentCoroutine == nil {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(vm.currentCoroutine))
 }
 
 // IsCoroutineYield reports whether err is the VM's internal coroutine
@@ -449,6 +459,70 @@ func (vm *VM) SaveMethodJITContinuation(cont MethodJITContinuation) error {
 	co.jitContinuation = cont
 	co.hasJITContinuation = true
 	return nil
+}
+
+// SaveMethodJITFastContinuation records raw Tier 1 continuation state used by
+// experimental native coroutine switching. The raw fields intentionally contain
+// only uintptr/int data so native code does not write Go interfaces or slices.
+func (vm *VM) SaveMethodJITFastContinuation(code, ctx uintptr, resumePC int) error {
+	co := vm.activeCoroutine()
+	if co == nil {
+		return fmt.Errorf("cannot save JIT fast continuation outside a coroutine")
+	}
+	co.fastJITCode = code
+	co.fastJITCtx = ctx
+	co.fastJITResumePC = resumePC
+	return nil
+}
+
+func VMCoroutineStatusOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.status))
+}
+
+func VMCoroutineStartedOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.started))
+}
+
+func VMCoroutineStackYieldEnabledOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.stackYieldEnabled))
+}
+
+func VMCoroutinePooledFixedRecordOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.pooledFixedRecord))
+}
+
+func VMCoroutineYieldDstOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.yieldDst))
+}
+
+func VMCoroutineYieldCOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.yieldC))
+}
+
+func VMCoroutineHasJITContinuationOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.hasJITContinuation))
+}
+
+func VMCoroutineFastJITCodeOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.fastJITCode))
+}
+
+func VMCoroutineFastJITCtxOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.fastJITCtx))
+}
+
+func VMCoroutineFastJITResumePCOffset() int {
+	var co VMCoroutine
+	return int(unsafe.Offsetof(co.fastJITResumePC))
 }
 
 // NewObjectNFromSlots is the JIT-facing form of OP_NEWOBJECTN. It shares the

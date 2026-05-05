@@ -106,6 +106,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 
 	// Walk bytecodes linearly.
 	feedbackEnabled := !IsFeedbackCollectionDisabled(proto)
+	nativeCoroutineYieldEnabled := baselineProtoMayUseNativeCoroutineSwitch(proto)
 	for pc := 0; pc < len(code); pc++ {
 		// Label for this PC (used as jump target within JIT code).
 		// Skip pc==0 when we already labeled it for the int-spec guard.
@@ -221,10 +222,15 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineNativeCall(asm, inst, pc, proto)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_YIELD:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_YIELD)
+			if nativeCoroutineYieldEnabled {
+				emitBaselineYieldWithNativeSwitch(asm, inst, pc)
+			} else {
+				emitBaselineOpExit(asm, inst, pc, vm.OP_YIELD)
+			}
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_RESUME:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_RESUME)
+			payloadFieldOnly := (&vm.VM{}).ResumePayloadIsFieldOnly(proto, pc+1, vm.DecodeA(inst), vm.DecodeC(inst))
+			emitBaselineResumeWithNativeSwitch(asm, inst, pc, payloadFieldOnly)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETGLOBAL:
 			emitBaselineGetGlobal(asm, inst, pc)
@@ -239,7 +245,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 			emitBaselineNewObject2(asm, inst, pc, proto, newTableCaches)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_NEWOBJECTN:
-			emitBaselineOpExit(asm, inst, pc, vm.OP_NEWOBJECTN)
+			emitBaselineNewObjectN(asm, inst, pc, proto)
 			resumePCs = append(resumePCs, pc+1)
 		case vm.OP_GETTABLE:
 			emitBaselineGetTable(asm, inst, pc, feedbackEnabled)
@@ -564,6 +570,155 @@ func emitBaselineOpExit(asm *jit.Assembler, inst uint32, pc int, op vm.Opcode) {
 	}
 
 	emitBaselineOpExitCommon(asm, op, pc, a, b, c)
+}
+
+func emitBaselineResumeWithNativeSwitch(asm *jit.Assembler, inst uint32, pc int, payloadFieldOnly bool) {
+	a := vm.DecodeA(inst)
+	b := vm.DecodeB(inst)
+	c := vm.DecodeC(inst)
+	if b != 2 || c != 3 || !payloadFieldOnly {
+		emitBaselineOpExitCommon(asm, vm.OP_RESUME, pc, a, b, c)
+		return
+	}
+	slowLabel := fmt.Sprintf("coro_resume_slow_%d", pc)
+	childSlowLabel := fmt.Sprintf("coro_resume_child_slow_%d", pc)
+	childReturnLabel := fmt.Sprintf("coro_resume_child_return_%d", pc)
+	doneLabel := fmt.Sprintf("coro_resume_done_%d", pc)
+
+	asm.LDR(jit.X0, mRegCtx, execCtxOffCoroutineNativeSwitch)
+	asm.CBZ(jit.X0, slowLabel)
+	asm.LDR(jit.X0, mRegCtx, execCtxOffNativeCallDepth)
+	asm.CBNZ(jit.X0, slowLabel)
+
+	asm.LDR(jit.X20, mRegRegs, (a+1)*jit.ValueSize)
+	asm.LSRimm(jit.X1, jit.X20, 48)
+	asm.MOVimm16(jit.X2, jit.NB_TagPtrShr48)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, slowLabel)
+	asm.LSRimm(jit.X1, jit.X20, uint8(jit.NB_PtrSubShift))
+	asm.LoadImm64(jit.X2, 0xF)
+	asm.ANDreg(jit.X1, jit.X1, jit.X2)
+	asm.CMPimm(jit.X1, jit.NB_PtrSubVMCoroutine)
+	asm.BCond(jit.CondNE, slowLabel)
+	asm.UBFX(jit.X20, jit.X20, 0, 44)
+	asm.CBZ(jit.X20, slowLabel)
+
+	asm.LDRB(jit.X1, jit.X20, vm.VMCoroutineStartedOffset())
+	asm.CBZ(jit.X1, slowLabel)
+	asm.LDRB(jit.X1, jit.X20, vm.VMCoroutineHasJITContinuationOffset())
+	asm.CBZ(jit.X1, slowLabel)
+	asm.LDR(jit.X16, jit.X20, vm.VMCoroutineFastJITCodeOffset())
+	asm.CBZ(jit.X16, slowLabel)
+	asm.LDR(jit.X17, jit.X20, vm.VMCoroutineFastJITCtxOffset())
+	asm.CBZ(jit.X17, slowLabel)
+	asm.LDR(jit.X1, jit.X20, vm.VMCoroutinePooledFixedRecordOffset())
+	asm.CBZ(jit.X1, slowLabel)
+
+	asm.MOVimm16(jit.X1, 1)
+	asm.STRB(jit.X1, jit.X20, vm.VMCoroutineStackYieldEnabledOffset())
+	asm.MOVimm16(jit.X1, 1) // VMCoroutineRunning
+	asm.STR(jit.X1, jit.X20, vm.VMCoroutineStatusOffset())
+	asm.STR(mRegCtx, jit.X17, execCtxOffCoroutineParentCtx)
+	asm.STR(jit.X20, jit.X17, execCtxOffCoroutineCurrentPtr)
+	asm.LoadImm64(jit.X1, int64(a))
+	asm.STR(jit.X1, jit.X17, execCtxOffCoroutineParentA)
+	asm.LoadImm64(jit.X1, int64(c))
+	asm.STR(jit.X1, jit.X17, execCtxOffCoroutineParentC)
+
+	asm.MOVreg(jit.X0, jit.X17)
+	asm.BLR(jit.X16)
+	asm.LDR(jit.X17, jit.X20, vm.VMCoroutineFastJITCtxOffset())
+	asm.LDR(jit.X1, jit.X17, execCtxOffExitCode)
+	asm.CBZ(jit.X1, childReturnLabel)
+	asm.CMPimm(jit.X1, ExitCoroutineYieldFast)
+	asm.BCond(jit.CondEQ, doneLabel)
+	asm.CMPimm(jit.X1, ExitBaselineOpExit)
+	asm.BCond(jit.CondNE, childSlowLabel)
+	asm.LDR(jit.X1, jit.X17, execCtxOffBaselineOp)
+	asm.CMPimm(jit.X1, uint16(vm.OP_YIELD))
+	asm.BCond(jit.CondNE, childSlowLabel)
+	asm.LDR(jit.X1, jit.X17, execCtxOffBaselineB)
+	asm.CMPimm(jit.X1, 2)
+	asm.BCond(jit.CondNE, childSlowLabel)
+	asm.LDR(jit.X2, jit.X17, execCtxOffRegs)
+	asm.LDR(jit.X3, jit.X17, execCtxOffBaselineA)
+	asm.ADDimm(jit.X3, jit.X3, 1)
+	asm.LDRreg(jit.X5, jit.X2, jit.X3)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffRegs)
+	asm.LoadImm64(jit.X4, int64(a))
+	asm.MOVimm16(jit.X6, 1)
+	asm.ORRreg(jit.X6, mRegTagBool, jit.X6)
+	asm.STRreg(jit.X6, jit.X3, jit.X4)
+	asm.ADDimm(jit.X4, jit.X4, 1)
+	asm.STRreg(jit.X5, jit.X3, jit.X4)
+	asm.MOVimm16(jit.X6, 0) // VMCoroutineSuspended
+	asm.STR(jit.X6, jit.X20, vm.VMCoroutineStatusOffset())
+	asm.STR(jit.XZR, jit.X17, execCtxOffCoroutineParentCtx)
+	asm.B(doneLabel)
+
+	asm.Label(slowLabel)
+	emitBaselineOpExitCommon(asm, vm.OP_RESUME, pc, a, b, c)
+	asm.Label(childReturnLabel)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffRegs)
+	asm.LoadImm64(jit.X4, int64(a))
+	asm.MOVimm16(jit.X6, 1)
+	asm.ORRreg(jit.X6, mRegTagBool, jit.X6)
+	asm.STRreg(jit.X6, jit.X3, jit.X4)
+	asm.ADDimm(jit.X4, jit.X4, 1)
+	asm.LDR(jit.X6, jit.X17, execCtxOffBaselineReturnValue)
+	asm.STRreg(jit.X6, jit.X3, jit.X4)
+	asm.MOVimm16(jit.X6, 2) // VMCoroutineDead
+	asm.STR(jit.X6, jit.X20, vm.VMCoroutineStatusOffset())
+	asm.STR(jit.XZR, jit.X17, execCtxOffCoroutineParentCtx)
+	asm.B(doneLabel)
+	asm.Label(childSlowLabel)
+	asm.LDR(jit.X3, mRegCtx, execCtxOffRegs)
+	asm.LoadImm64(jit.X4, int64(a))
+	asm.MOVimm16(jit.X6, 0)
+	asm.ORRreg(jit.X6, mRegTagBool, jit.X6)
+	asm.STRreg(jit.X6, jit.X3, jit.X4)
+	asm.ADDimm(jit.X4, jit.X4, 1)
+	asm.LoadImm64(jit.X6, nb64(jit.NB_ValNil))
+	asm.STRreg(jit.X6, jit.X3, jit.X4)
+	asm.MOVimm16(jit.X6, 0) // VMCoroutineSuspended
+	asm.STR(jit.X6, jit.X20, vm.VMCoroutineStatusOffset())
+	asm.STR(jit.XZR, jit.X20, vm.VMCoroutineFastJITCodeOffset())
+	asm.STR(jit.XZR, jit.X20, vm.VMCoroutineFastJITCtxOffset())
+	asm.B(doneLabel)
+	asm.Label(doneLabel)
+}
+
+func emitBaselineYieldWithNativeSwitch(asm *jit.Assembler, inst uint32, pc int) {
+	a := vm.DecodeA(inst)
+	b := vm.DecodeB(inst)
+	c := vm.DecodeC(inst)
+	if b != 2 {
+		emitBaselineOpExitCommon(asm, vm.OP_YIELD, pc, a, b, c)
+		return
+	}
+	slowLabel := fmt.Sprintf("coro_yield_slow_%d", pc)
+
+	asm.LDR(jit.X1, mRegCtx, execCtxOffCoroutineParentCtx)
+	asm.CBZ(jit.X1, slowLabel)
+	asm.LDR(jit.X2, mRegCtx, execCtxOffCoroutineCurrentPtr)
+	asm.CBZ(jit.X2, slowLabel)
+	asm.LDR(jit.X3, jit.X1, execCtxOffRegs)
+	asm.LDR(jit.X4, mRegCtx, execCtxOffCoroutineParentA)
+	asm.LDR(jit.X5, mRegRegs, (a+1)*jit.ValueSize)
+	asm.MOVimm16(jit.X6, 1)
+	asm.ORRreg(jit.X6, mRegTagBool, jit.X6)
+	asm.STRreg(jit.X6, jit.X3, jit.X4)
+	asm.ADDimm(jit.X4, jit.X4, 1)
+	asm.STRreg(jit.X5, jit.X3, jit.X4)
+	asm.MOVimm16(jit.X6, 0) // VMCoroutineSuspended
+	asm.STR(jit.X6, jit.X2, vm.VMCoroutineStatusOffset())
+	asm.STR(jit.XZR, mRegCtx, execCtxOffCoroutineParentCtx)
+	asm.LoadImm64(jit.X0, ExitCoroutineYieldFast)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	asm.B("baseline_exit")
+
+	asm.Label(slowLabel)
+	emitBaselineOpExitCommon(asm, vm.OP_YIELD, pc, a, b, c)
 }
 
 // emitBaselineOpExitABx emits a baseline op-exit for an ABx-format instruction.

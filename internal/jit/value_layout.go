@@ -39,6 +39,7 @@ const (
 	// Pointer sub-type bits (bits 44-47 of payload)
 	NB_PtrSubShift       = 44
 	NB_PtrSubFixedRecord = 11
+	NB_PtrSubVMCoroutine = 10
 
 	// Table struct offsets (must match runtime.Table layout)
 	TableOffArray     = 8   // []Value slice header (ptr+len+cap = 24 bytes)
@@ -84,9 +85,11 @@ const (
 	TableOffLazyTree          = 256 // *LazyRecursiveTable — deferred recursive table side pointer
 	TableOffStringLookupCache = 264 // *StringLookupCache — large string map value cache
 
-	FixedRecordOffShapeID = 16
-	FixedRecordOffN       = 20
-	FixedRecordOffValues  = 24
+	FixedRecordOffCtor         = 0
+	FixedRecordOffMaterialized = 8
+	FixedRecordOffShapeID      = 16
+	FixedRecordOffN            = 20
+	FixedRecordOffValues       = 24
 
 	// StringLookupCache layout.
 	StringLookupCacheOffEntries    = 0
@@ -229,7 +232,13 @@ func init() {
 	if shOff != TableOffShapeID {
 		panic("jit: Table.shapeID offset mismatch: expected " + itoa(TableOffShapeID) + ", got " + itoa(int(shOff)))
 	}
-	frShapeIDOff, frNOff, frValuesOff := runtime.FixedRecordOffsets()
+	frCtorOff, frMaterializedOff, frShapeIDOff, frNOff, frValuesOff := runtime.FixedRecordOffsets()
+	if frCtorOff != FixedRecordOffCtor {
+		panic("jit: FixedRecord.ctor offset mismatch")
+	}
+	if frMaterializedOff != FixedRecordOffMaterialized {
+		panic("jit: FixedRecord.materialized offset mismatch")
+	}
 	if frShapeIDOff != FixedRecordOffShapeID {
 		panic("jit: FixedRecord.shapeID offset mismatch")
 	}

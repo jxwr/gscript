@@ -6,6 +6,7 @@ import (
 )
 
 const fixedRecordInlineCap = 5
+const FixedRecordInlineCap = fixedRecordInlineCap
 
 // FixedRecord is an immutable fixed-shape table payload until generic table
 // semantics are required. It is a guardable scalar-replacement carrier for
@@ -273,9 +274,9 @@ func (fr *FixedRecord) materialize() *Table {
 	return t
 }
 
-func FixedRecordOffsets() (shapeID, n, values uintptr) {
+func FixedRecordOffsets() (ctor, materialized, shapeID, n, values uintptr) {
 	var fr FixedRecord
-	return unsafe.Offsetof(fr.shapeID), unsafe.Offsetof(fr.n), unsafe.Offsetof(fr.values)
+	return unsafe.Offsetof(fr.ctor), unsafe.Offsetof(fr.materialized), unsafe.Offsetof(fr.shapeID), unsafe.Offsetof(fr.n), unsafe.Offsetof(fr.values)
 }
 
 func scanFixedRecordRoots(fr *FixedRecord, visitor func(unsafe.Pointer), seen map[uintptr]struct{}) {

@@ -22,6 +22,7 @@ package methodjit
 
 import (
 	"fmt"
+	"os"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -370,8 +371,16 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 	// Acquire a pre-allocated, heap-escaped ExecContext from the pool.
 	// Pool avoids per-call allocation overhead for small/recursive functions.
 	ctx := e.acquireCtx()
-	defer e.releaseCtx()
+	releaseCtx := true
+	defer func() {
+		if releaseCtx {
+			e.releaseCtx()
+		}
+	}()
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
+	if os.Getenv("GSCRIPT_TIER1_CORO_NATIVE_SWITCH") == "1" {
+		ctx.CoroutineNativeSwitch = 1
+	}
 
 	// Set OSR counter for this function. Positive = enabled, negative = disabled.
 	if counter, ok := e.osrCounters[proto]; ok && counter > 0 {
@@ -385,6 +394,7 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 	}
 	if e.callVM != nil {
 		ctx.TopPtr = uintptr(unsafe.Pointer(e.callVM.TopPtr()))
+		ctx.CoroutineCurrentPtr = e.callVM.CurrentCoroutinePtr()
 	}
 
 	// Set up FieldCache pointer for native GETFIELD/SETFIELD.
@@ -501,6 +511,9 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 			// Baseline op-exit: handle operation via Go, then resume.
 			if err := e.handleBaselineOpExit(ctx, regs, base, proto, bf); err != nil {
 				if vm.IsCoroutineYield(err) {
+					if ctx.CoroutinePinnedCtx != 0 {
+						releaseCtx = false
+					}
 					return nil, err
 				}
 				return nil, fmt.Errorf("baseline: op-exit: %w", err)

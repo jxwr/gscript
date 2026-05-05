@@ -40,8 +40,23 @@ func baselineNewObject2Cacheable(proto *vm.FuncProto, inst uint32) bool {
 	return cacheableSmallCtor2(&proto.TableCtors2[ctorIdx].Runtime)
 }
 
+func baselineNewObjectNCacheable(proto *vm.FuncProto, inst uint32) bool {
+	if proto == nil || vm.DecodeOp(inst) != vm.OP_NEWOBJECTN {
+		return false
+	}
+	ctorIdx := vm.DecodeB(inst)
+	if ctorIdx < 0 || ctorIdx >= len(proto.TableCtorsN) {
+		return false
+	}
+	return cacheableFixedRecordCtorN(&proto.TableCtorsN[ctorIdx].Runtime)
+}
+
 func cacheableSmallCtor2(ctor *runtime.SmallTableCtor2) bool {
 	return ctor != nil && ctor.Key1 != ctor.Key2 && ctor.Shape != nil
+}
+
+func cacheableFixedRecordCtorN(ctor *runtime.SmallTableCtorN) bool {
+	return ctor != nil && ctor.Shape != nil && len(ctor.Keys) > 0 && len(ctor.Keys) <= runtime.FixedRecordInlineCap
 }
 
 func baselineNewTableCacheBatchSize(inst uint32) int {

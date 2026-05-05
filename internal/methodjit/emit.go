@@ -183,6 +183,15 @@ type ExecContext struct {
 	// Go so the execute loop can verify VM home-slot consistency.
 	ExitResumeCheckShadow uintptr
 
+	// CoroutineNativeSwitch enables the experimental Tier 1 native coroutine
+	// switch. It is off by default and guarded by an environment flag.
+	CoroutineNativeSwitch int64
+	CoroutinePinnedCtx    int64
+	CoroutineParentCtx    uintptr
+	CoroutineParentA      int64
+	CoroutineParentC      int64
+	CoroutineCurrentPtr   uintptr
+
 	// Dynamic table cache fields are kept at the end so existing ExecContext
 	// offsets remain stable for code-size guard tests.
 	BaselineTableStringKeyCache uintptr // pointer to proto.TableStringKeyCache[0] (nil if not yet allocated)
@@ -210,15 +219,16 @@ type NativeCallExitFrame struct {
 
 // ExitCode constants.
 const (
-	ExitNormal         = 0 // normal return
-	ExitDeopt          = 2 // deopt: bail to interpreter for the entire function
-	ExitCallExit       = 3 // call-exit: pause JIT, execute call via VM, resume JIT
-	ExitGlobalExit     = 4 // global-exit: pause JIT, load global via VM, resume JIT
-	ExitTableExit      = 5 // table-exit: pause JIT, do table op via Go, resume JIT
-	ExitOpExit         = 6 // op-exit: pause JIT, Go handles the operation, resume JIT
-	ExitBaselineOpExit = 7 // baseline op-exit: bytecode-level exit for Tier 1
-	ExitNativeCallExit = 8 // native call exit: callee hit exit-resume during BLR call
-	ExitOSR            = 9 // OSR: Tier 1 loop counter expired, request Tier 2 compilation
+	ExitNormal             = 0 // normal return
+	ExitDeopt              = 2 // deopt: bail to interpreter for the entire function
+	ExitCallExit           = 3 // call-exit: pause JIT, execute call via VM, resume JIT
+	ExitGlobalExit         = 4 // global-exit: pause JIT, load global via VM, resume JIT
+	ExitTableExit          = 5 // table-exit: pause JIT, do table op via Go, resume JIT
+	ExitOpExit             = 6 // op-exit: pause JIT, Go handles the operation, resume JIT
+	ExitBaselineOpExit     = 7 // baseline op-exit: bytecode-level exit for Tier 1
+	ExitNativeCallExit     = 8 // native call exit: callee hit exit-resume during BLR call
+	ExitOSR                = 9 // OSR: Tier 1 loop counter expired, request Tier 2 compilation
+	ExitCoroutineYieldFast = 10
 )
 
 // TableOp constants (stored in ExecContext.TableOp).
@@ -332,6 +342,12 @@ var (
 	execCtxOffDeoptInstrID          = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
 	execCtxOffResumeNumericPass     = int(unsafe.Offsetof(ExecContext{}.ResumeNumericPass))
 	execCtxOffExitResumeCheckShadow = int(unsafe.Offsetof(ExecContext{}.ExitResumeCheckShadow))
+	execCtxOffCoroutineNativeSwitch = int(unsafe.Offsetof(ExecContext{}.CoroutineNativeSwitch))
+	execCtxOffCoroutinePinnedCtx    = int(unsafe.Offsetof(ExecContext{}.CoroutinePinnedCtx))
+	execCtxOffCoroutineParentCtx    = int(unsafe.Offsetof(ExecContext{}.CoroutineParentCtx))
+	execCtxOffCoroutineParentA      = int(unsafe.Offsetof(ExecContext{}.CoroutineParentA))
+	execCtxOffCoroutineParentC      = int(unsafe.Offsetof(ExecContext{}.CoroutineParentC))
+	execCtxOffCoroutineCurrentPtr   = int(unsafe.Offsetof(ExecContext{}.CoroutineCurrentPtr))
 )
 
 var (

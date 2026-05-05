@@ -112,7 +112,91 @@ func (e *BaselineJITEngine) handleYield(ctx *ExecContext, regs []runtime.Value, 
 	}); err != nil {
 		return err
 	}
+	if ctx.CoroutineNativeSwitch != 0 {
+		if baselineCoroutineFastContinuationSafe(proto, resumePC) && baselineCoroutineFastContinuationUsesPooledRecord(proto, resumePC) {
+			code := uintptr(bf.Code.Ptr()) + uintptr(resumeOff)
+			if err := e.callVM.SaveMethodJITFastContinuation(code, uintptr(unsafe.Pointer(ctx)), resumePC); err != nil {
+				return err
+			}
+			ctx.CoroutinePinnedCtx = 1
+		}
+	}
 	return vm.CoroutineYieldError()
+}
+
+func baselineCoroutineFastContinuationUsesPooledRecord(proto *vm.FuncProto, resumePC int) bool {
+	if proto == nil || resumePC < 0 || resumePC >= len(proto.Code) {
+		return false
+	}
+	startPC := baselineCoroutineFastContinuationStartPC(proto, resumePC)
+	for pc := startPC; pc < len(proto.Code); pc++ {
+		inst := proto.Code[pc]
+		switch vm.DecodeOp(inst) {
+		case vm.OP_YIELD:
+			return false
+		case vm.OP_NEWOBJECTN:
+			return baselineNewObjectNCacheable(proto, inst)
+		}
+	}
+	return false
+}
+
+func baselineProtoMayUseNativeCoroutineSwitch(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_YIELD {
+			continue
+		}
+		resumePC := pc + 1
+		if baselineCoroutineFastContinuationSafe(proto, resumePC) && baselineCoroutineFastContinuationUsesPooledRecord(proto, resumePC) {
+			return true
+		}
+	}
+	return false
+}
+
+func baselineCoroutineFastContinuationSafe(proto *vm.FuncProto, resumePC int) bool {
+	if proto == nil || resumePC < 0 || resumePC >= len(proto.Code) {
+		return false
+	}
+	startPC := baselineCoroutineFastContinuationStartPC(proto, resumePC)
+	for pc := startPC; pc < len(proto.Code); pc++ {
+		inst := proto.Code[pc]
+		switch vm.DecodeOp(inst) {
+		case vm.OP_YIELD:
+			return vm.DecodeB(inst) == 2
+		case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_LOADINT, vm.OP_LOADK,
+			vm.OP_MOVE,
+			vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_DIV, vm.OP_MOD,
+			vm.OP_UNM, vm.OP_NOT,
+			vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_TESTSET,
+			vm.OP_JMP, vm.OP_FORPREP, vm.OP_FORLOOP:
+			continue
+		case vm.OP_NEWOBJECTN:
+			if !baselineNewObjectNCacheable(proto, inst) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func baselineCoroutineFastContinuationStartPC(proto *vm.FuncProto, resumePC int) int {
+	startPC := resumePC
+	if proto == nil || resumePC < 0 || resumePC >= len(proto.Code) {
+		return startPC
+	}
+	if inst := proto.Code[resumePC]; vm.DecodeOp(inst) == vm.OP_FORLOOP {
+		target := resumePC + 1 + vm.DecodesBx(inst)
+		if target >= 0 && target < len(proto.Code) {
+			startPC = target
+		}
+	}
+	return startPC
 }
 
 func (e *BaselineJITEngine) handleResume(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
