@@ -191,6 +191,16 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.Label(missHaveEntryLabel)
 	asm.CBZ(jit.X2, slowLabel) // not compiled -> slow
 
+	emitTaggedLeafEntry := func(entryReg jit.Reg) {
+		notLeafLabel := ec.uniqueLabel("t2call_not_leaf_entry")
+		asm.LDRB(jit.X4, jit.X1, funcProtoOffLeafNoCall)
+		asm.CBZ(jit.X4, notLeafLabel)
+		asm.LDR(jit.X4, jit.X1, funcProtoOffTier2LeafEntryPtr)
+		asm.CBZ(jit.X4, notLeafLabel)
+		asm.ADDimm(entryReg, jit.X4, 1)
+		asm.Label(notLeafLabel)
+	}
+
 	// Update IC cache with the boxed closure value (reload from
 	// memory since X0 now holds the raw ptr), direct entry, proto, and entry
 	// publication version.
@@ -207,6 +217,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.Label(icUpdateWayLabels[way])
 		asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot)) // re-load boxed value
 		asm.STR(jit.X4, jit.X3, wayOff+baselineCallCacheBoxedOff)
+		emitTaggedLeafEntry(jit.X2)
 		asm.STR(jit.X2, jit.X3, wayOff+baselineCallCacheEntryOff)
 		asm.STR(jit.X1, jit.X3, wayOff+baselineCallCacheProtoOff)
 		asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryVersion)
@@ -237,6 +248,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.CBZ(jit.X4, slowLabel)
 		asm.Label(icHaveEntryLabel)
 		asm.MOVreg(jit.X2, jit.X4)
+		emitTaggedLeafEntry(jit.X2)
 		asm.STR(jit.X2, jit.X3, wayOff+baselineCallCacheEntryOff)
 		asm.STR(jit.X5, jit.X3, wayOff+baselineCallCacheVersionOff)
 		asm.Label(icVersionOKLabel)
@@ -245,6 +257,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	}
 
 	asm.Label(icDoneLabel)
+	asm.MOVimm16(jit.X5, callModeDirect)
+	untaggedEntryLabel := ec.uniqueLabel("t2call_untagged_entry")
+	asm.TBZ(jit.X2, 0, untaggedEntryLabel)
+	asm.SUBimm(jit.X2, jit.X2, 1)
+	asm.MOVimm16(jit.X5, callModeLeafX0)
+	asm.Label(untaggedEntryLabel)
 
 	if noDepthCallee != nil {
 		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(noDepthCallee))))
@@ -368,9 +386,9 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Set callee's ClosurePtr.
 	asm.STR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr)
 
-	// Set CallMode = 1 (direct call).
-	asm.MOVimm16(jit.X3, 1)
-	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	// Set CallMode. Tagged call-IC entries use the Tier 2-only boxed leaf ABI
+	// that returns the normal boxed result in X0.
+	asm.STR(jit.X5, mRegCtx, execCtxOffCallMode)
 
 	// R111: skip GlobalCache setup on static self-call (per-proto invariant).
 	if !staticSelf {
@@ -444,6 +462,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 		asm.Label(skipDepthDecLabel)
 	}
+	asm.LDR(jit.X8, mRegCtx, execCtxOffCallMode)
 
 	// Snapshot callee exit metadata only on the cold exit path. Successful
 	// native peer calls are the hot path and do not need resume metadata.
@@ -505,7 +524,11 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 
+	resultReadyLabel := ec.uniqueLabel("t2call_result_ready")
+	asm.CMPimm(jit.X8, callModeLeafX0)
+	asm.BCond(jit.CondEQ, resultReadyLabel)
 	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
+	asm.Label(resultReadyLabel)
 	ec.storeResultNB(jit.X0, instr.ID)
 	postSuccessReprs := ec.snapshotValueReprs()
 

@@ -116,6 +116,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 
 	var r154_exitCount int
 	for {
+		ctx.CallMode = 0
 		if tm.perfStatsEnabled {
 			start := time.Now()
 			jit.CallJIT(codePtr, ctxPtr)

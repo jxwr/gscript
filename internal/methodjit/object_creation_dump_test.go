@@ -87,10 +87,15 @@ func TestObjectCreationDump(t *testing.T) {
 	// fixed-table constructor op and use the shaped table cache instead of
 	// generic NewTable plus SetField exit/resume sites. new_vec3 shrinks
 	// because it is exactly that escaping constructor shape.
+	//
+	// BoxedLeafPeerCall: leaf functions get a CallMode check on return so
+	// Tier 2 peer callers can take the X0 boxed-result ABI. Escaping leaf
+	// constructor new_vec3 grows by +5 total / +1 mem; inlined object loops
+	// do not grow because they are compiled through non-leaf caller bodies.
 	baselines := []baseline{
 		{"create_and_sum", 165, 66},  // R161: was 1277/598
 		{"transform_chain", 178, 67}, // R161: was 1701/816
-		{"new_vec3", 152, 80},        // escaping fixed N-field constructor
+		{"new_vec3", 157, 81},        // escaping fixed N-field constructor
 	}
 
 	// Load benchmark source.

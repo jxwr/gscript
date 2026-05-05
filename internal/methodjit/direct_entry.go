@@ -26,16 +26,26 @@ func setFuncProtoTier2DirectEntries(proto *vm.FuncProto, directEntry, tier2Entry
 	return true
 }
 
+func setFuncProtoTier2LeafEntry(proto *vm.FuncProto, leafEntry uintptr) bool {
+	if proto == nil || proto.Tier2LeafEntryPtr == leafEntry {
+		return false
+	}
+	proto.Tier2LeafEntryPtr = leafEntry
+	proto.DirectEntryVersion++
+	return true
+}
+
 func clearFuncProtoDirectEntries(proto *vm.FuncProto) bool {
 	if proto == nil {
 		return false
 	}
-	changed := proto.DirectEntryPtr != 0 || proto.Tier2DirectEntryPtr != 0
-	if proto.DirectEntryPtr != 0 || proto.Tier2DirectEntryPtr != 0 {
+	changed := proto.DirectEntryPtr != 0 || proto.Tier2DirectEntryPtr != 0 || proto.Tier2LeafEntryPtr != 0
+	if changed {
 		proto.DirectEntryVersion++
 	}
 	proto.DirectEntryPtr = 0
 	proto.Tier2DirectEntryPtr = 0
+	proto.Tier2LeafEntryPtr = 0
 	proto.Tier2NumericEntryPtr = 0
 	return changed
 }

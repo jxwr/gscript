@@ -430,6 +430,12 @@ type CompiledFunction struct {
 	// frame as the normal Tier 2 entry so callee-saved registers are preserved.
 	DirectEntryOffset int
 
+	// LeafEntryOffset is a Tier 2-only boxed entry for leaf callees. It uses
+	// the same full frame as DirectEntryOffset but leaves the boxed return
+	// value in X0 on normal return, avoiding the BaselineReturnValue memory
+	// round trip for Tier 2 callers.
+	LeafEntryOffset int
+
 	// DirectEntrySafe is false when a native caller would have to replay this
 	// function from pc=0 after the function may already have performed a
 	// visible side effect. In that case Tier 2 stays callable through the

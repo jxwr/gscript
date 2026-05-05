@@ -397,6 +397,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 
 	// Resolve direct entry offset for BLR callers.
 	directEntryOff := ec.asm.LabelOffset("t2_direct_entry")
+	leafEntryOff := ec.asm.LabelOffset("t2_leaf_entry")
 	numericEntryOff := 0
 	if ec.numericParamCount > 0 {
 		label := fmt.Sprintf("t2_numeric_self_entry_%d", ec.numericParamCount)
@@ -432,6 +433,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		ResumeAddrs:              resumeAddrs,
 		NumericResumeAddrs:       numericResumeAddrs,
 		DirectEntryOffset:        directEntryOff,
+		LeafEntryOffset:          leafEntryOff,
 		DirectEntrySafe:          nativeCallReplaySafe,
 		Tier2DirectEntrySafe:     nativeCallCalleeResumeSafe,
 		NumericParamCount:        rawIntSelfABI.NumParams,
@@ -1104,6 +1106,7 @@ const frameSize = 128
 const (
 	callModeDirect    = 1
 	callModeTypedSelf = 2
+	callModeLeafX0    = 3
 )
 
 // numericSelfEntryFrameSize is the thin raw-int self-recursive frame. Raw
@@ -1461,6 +1464,7 @@ func (ec *emitContext) emitEpilogue() {
 		// caller expects callee-saved registers to be preserved across BLR.
 		// Caller has set: X0=ctx, ctx.Regs=callee regs base,
 		// ctx.Constants=callee constants, CallMode=1.
+		asm.Label("t2_leaf_entry")
 		asm.Label("t2_direct_entry")
 		// R146: mark native entry (BLR-from-Tier-1 path).
 		ec.emitTier2EntryMark()
@@ -1528,9 +1532,12 @@ func (ec *emitContext) emitEpilogue() {
 	// --- Direct epilogue for BLR callers ---
 	// Return path when CallMode == 1 in emitReturn. Uses the same frame
 	// restore as normal epilogue since the direct entry uses a full frame.
+	// t2_leaf_epilogue aliases this restore path; use X16 for ExitCode so
+	// leaf callers can preserve their boxed X0 return value.
+	asm.Label("t2_leaf_epilogue")
 	asm.Label("t2_direct_epilogue")
-	asm.MOVimm16(jit.X0, 0)
-	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	asm.MOVimm16(jit.X16, 0)
+	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
 	if ec.useFPR {
 		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
 		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)

@@ -41,11 +41,14 @@ func inc(n) {
 	if inc.Tier2DirectEntryPtr != want {
 		t.Fatalf("Tier2DirectEntryPtr=%#x want %#x", inc.Tier2DirectEntryPtr, want)
 	}
+	if inc.Tier2LeafEntryPtr != want {
+		t.Fatalf("Tier2LeafEntryPtr=%#x want %#x", inc.Tier2LeafEntryPtr, want)
+	}
 
 	tm.disableTier2AfterRuntimeDeopt(inc, "test")
-	if inc.DirectEntryPtr != 0 || inc.Tier2DirectEntryPtr != 0 {
-		t.Fatalf("runtime disable left entries published: direct=%#x tier2=%#x",
-			inc.DirectEntryPtr, inc.Tier2DirectEntryPtr)
+	if inc.DirectEntryPtr != 0 || inc.Tier2DirectEntryPtr != 0 || inc.Tier2LeafEntryPtr != 0 {
+		t.Fatalf("runtime disable left entries published: direct=%#x tier2=%#x leaf=%#x",
+			inc.DirectEntryPtr, inc.Tier2DirectEntryPtr, inc.Tier2LeafEntryPtr)
 	}
 }
 
@@ -272,14 +275,22 @@ func run(actors, n) {
 		t.Fatal("missing run Tier 2 compiled function")
 	}
 	nonZeroEntries := 0
+	taggedLeafEntries := 0
 	for i := 0; i+tier2CallCacheWordsPerWay-1 < len(cf.CallCache); i += tier2CallCacheWordsPerWay {
 		if cf.CallCache[i] != 0 {
 			nonZeroEntries++
+			if cf.CallCache[i+baselineCallCacheEntryOff/8]&1 != 0 {
+				taggedLeafEntries++
+			}
 		}
 	}
 	if nonZeroEntries < 3 {
 		t.Fatalf("polymorphic call cache entries=%d, want at least 3; cache=%#v",
 			nonZeroEntries, cf.CallCache)
+	}
+	if taggedLeafEntries < 3 {
+		t.Fatalf("tagged leaf call cache entries=%d, want at least 3; cache=%#v",
+			taggedLeafEntries, cf.CallCache)
 	}
 }
 

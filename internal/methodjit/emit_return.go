@@ -40,6 +40,16 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 		ec.asm.Label(genericReturnLabel)
 	}
 
+	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.LeafNoCall {
+		genericReturnLabel := ec.uniqueLabel("leaf_x0_generic_return")
+		ec.asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
+		ec.asm.CMPimm(jit.X1, callModeLeafX0)
+		ec.asm.BCond(jit.CondNE, genericReturnLabel)
+		ec.emitReturnValueToX0(instr)
+		ec.asm.B("t2_leaf_epilogue")
+		ec.asm.Label(genericReturnLabel)
+	}
+
 	if len(instr.Args) > 0 {
 		valID := instr.Args[0].ID
 		// If the return value is a raw float in FPR, move bits to GPR.
@@ -79,4 +89,24 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 	}
 	ec.asm.CBNZ(jit.X1, "t2_direct_epilogue")
 	ec.asm.B("epilogue")
+}
+
+func (ec *emitContext) emitReturnValueToX0(instr *Instr) {
+	if len(instr.Args) == 0 {
+		ec.asm.LoadImm64(jit.X0, nb64(jit.NB_ValNil))
+		return
+	}
+	valID := instr.Args[0].ID
+	if ec.hasFPReg(valID) {
+		ec.asm.FMOVtoGP(jit.X0, ec.physFPReg(valID))
+		return
+	}
+	if ec.hasReg(valID) && ec.valueReprOf(valID) == valueReprRawInt {
+		jit.EmitBoxIntFast(ec.asm, jit.X0, ec.physReg(valID), mRegTagInt)
+		return
+	}
+	retReg := ec.resolveValueNB(valID, jit.X0)
+	if retReg != jit.X0 {
+		ec.asm.MOVreg(jit.X0, retReg)
+	}
 }

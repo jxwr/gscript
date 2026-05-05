@@ -46,6 +46,7 @@ var (
 	funcProtoOffCompiledCodePtr        int // vm.FuncProto.CompiledCodePtr offset
 	funcProtoOffDirectEntryPtr         int // vm.FuncProto.DirectEntryPtr offset
 	funcProtoOffTier2DirectEntryPtr    int // vm.FuncProto.Tier2DirectEntryPtr offset
+	funcProtoOffTier2LeafEntryPtr      int // vm.FuncProto.Tier2LeafEntryPtr offset
 	funcProtoOffDirectEntryVersion     int // vm.FuncProto.DirectEntryVersion offset
 	funcProtoOffTier2NumericEntryPtr   int // vm.FuncProto.Tier2NumericEntryPtr offset
 	funcProtoOffConstants              int // vm.FuncProto.Constants offset (slice header)
@@ -76,6 +77,7 @@ func init() {
 	funcProtoOffCompiledCodePtr = int(unsafe.Offsetof(proto.CompiledCodePtr))
 	funcProtoOffDirectEntryPtr = int(unsafe.Offsetof(proto.DirectEntryPtr))
 	funcProtoOffTier2DirectEntryPtr = int(unsafe.Offsetof(proto.Tier2DirectEntryPtr))
+	funcProtoOffTier2LeafEntryPtr = int(unsafe.Offsetof(proto.Tier2LeafEntryPtr))
 	funcProtoOffDirectEntryVersion = int(unsafe.Offsetof(proto.DirectEntryVersion))
 	funcProtoOffTier2NumericEntryPtr = int(unsafe.Offsetof(proto.Tier2NumericEntryPtr))
 	funcProtoOffConstants = int(unsafe.Offsetof(proto.Constants))
