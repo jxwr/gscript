@@ -58,26 +58,36 @@ func (cf *CompiledFunction) ProtocolKind() compiledProtocolKind {
 }
 
 func (tm *TieringManager) executeCompiledProtocol(cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, bool, error) {
-	switch cf.ProtocolKind() {
+	kind := cf.ProtocolKind()
+	if kind == compiledProtocolNone {
+		return nil, false, nil
+	}
+	mark := tm.tier2PerfStart()
+
+	switch kind {
 	case compiledProtocolFixedRecursiveIntFold:
 		out, err := tm.executeFixedRecursiveIntFold(cf, regs, base, proto, retBuf)
+		tm.tier2PerfStop(perfTier2CompiledProtocol, mark)
 		return out, true, err
 	case compiledProtocolFixedRecursiveNestedIntFold:
 		out, err := tm.executeFixedRecursiveNestedIntFold(cf, regs, base, proto, retBuf)
+		tm.tier2PerfStop(perfTier2CompiledProtocol, mark)
 		return out, true, err
 	case compiledProtocolFixedRecursiveTableBuilder:
 		out, err := tm.executeFixedRecursiveTableBuilder(cf, regs, base, proto, retBuf)
+		tm.tier2PerfStop(perfTier2CompiledProtocol, mark)
 		return out, true, err
 	case compiledProtocolFixedRecursiveTableFold:
 		out, err := tm.executeFixedRecursiveTableFold(cf, regs, base, proto, retBuf)
+		tm.tier2PerfStop(perfTier2CompiledProtocol, mark)
 		return out, true, err
 	case compiledProtocolMutualRecursiveIntSCC:
 		out, err := tm.executeMutualRecursiveIntSCC(cf, regs, base, proto, retBuf)
+		tm.tier2PerfStop(perfTier2CompiledProtocol, mark)
 		return out, true, err
-	case compiledProtocolNone:
-		return nil, false, nil
 	default:
-		return nil, true, fmt.Errorf("tier2: unknown compiled protocol kind %d", cf.ProtocolKind())
+		tm.tier2PerfStop(perfTier2CompiledProtocol, mark)
+		return nil, true, fmt.Errorf("tier2: unknown compiled protocol kind %d", kind)
 	}
 }
 
@@ -96,7 +106,9 @@ func (tm *TieringManager) tryCompiledProtocolCallExit(fnVal runtime.Value, regs 
 		return false, nil
 	}
 
+	mark := tm.tier2PerfStart()
 	result, ok, err := tm.executeCompiledProtocolCallExitResult(cf, calleeProto, regs, absSlot, nArgs)
+	tm.tier2PerfStop(perfTier2CompiledProtocolCallExit, mark)
 	if err != nil {
 		return false, nil
 	}

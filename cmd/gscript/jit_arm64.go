@@ -18,6 +18,9 @@ func cliEnableJIT(bvm *bytecodevm.VM, opts jitCLIOptions) (jitStatsReporter, err
 	// through the VM path to promote. Tier 1 BLR calls bypass the VM, so most
 	// functions stay at Tier 1 until counter integration is added to Tier 1 code.
 	tm := methodjit.NewTieringManager()
+	if opts.ShowTier2PerfStats || opts.ShowTier2PerfStatsJSON {
+		tm.EnableTier2PerfStats()
+	}
 	reporter := &tieringManagerReporter{tm: tm}
 	if opts.TimelinePath != "" {
 		timeline, closer, err := openJITTimeline(opts)
@@ -151,4 +154,20 @@ func (r *tieringManagerReporter) PrintExitStatsJSON(w *os.File) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(r.tm.ExitStats())
+}
+
+func (r *tieringManagerReporter) PrintTier2PerfStats(w *os.File) {
+	if r == nil || r.tm == nil {
+		return
+	}
+	r.tm.WriteTier2PerfStatsText(w)
+}
+
+func (r *tieringManagerReporter) PrintTier2PerfStatsJSON(w *os.File) error {
+	if r == nil || r.tm == nil {
+		return nil
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(r.tm.Tier2PerfStats())
 }

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -69,6 +70,97 @@ func bool_len(t) {
 	if !found {
 		t.Fatalf("missing bool_len Len op-exit site in %#v", snap.Sites)
 	}
+}
+
+func TestTier2PerfStatsRecordsRowsAndText(t *testing.T) {
+	tm := NewTieringManager()
+	if tm.Tier2PerfStats().Enabled {
+		t.Fatal("perf stats enabled by default")
+	}
+
+	tm.EnableTier2PerfStats()
+	tm.perfStats.record(perfTier2OpExit, 10*time.Nanosecond)
+	tm.perfStats.record(perfTier2OpExit, 30*time.Nanosecond)
+	tm.perfStats.record(perfTier2ExitResume, 5*time.Nanosecond)
+
+	snap := tm.Tier2PerfStats()
+	if !snap.Enabled {
+		t.Fatal("perf stats snapshot is not enabled")
+	}
+	opRow := tier2PerfRowByName(snap, perfTier2OpExit)
+	if opRow.Count != 2 || opRow.Nanos != 40 || opRow.AvgNanos != 20 {
+		t.Fatalf("op row=%#v, want count=2 nanos=40 avg=20", opRow)
+	}
+	resumeRow := tier2PerfRowByName(snap, perfTier2ExitResume)
+	if resumeRow.Count != 1 || resumeRow.Nanos != 5 {
+		t.Fatalf("resume row=%#v, want count=1 nanos=5", resumeRow)
+	}
+
+	var buf bytes.Buffer
+	tm.WriteTier2PerfStatsText(&buf)
+	text := buf.String()
+	if !strings.Contains(text, "Tier 2 Performance Diagnostics:") ||
+		!strings.Contains(text, "tier2_op_exit: count=2 total=40ns avg=20ns") {
+		t.Fatalf("unexpected perf stats text:\n%s", text)
+	}
+}
+
+func TestTier2PerfStatsRecordsRealTier2OpExit(t *testing.T) {
+	src := `
+func bool_len(t) {
+    return #t
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	tm := NewTieringManager()
+	tm.EnableTier2PerfStats()
+	v.SetMethodJIT(tm)
+
+	boolLenProto := findProtoByName(top, "bool_len")
+	if boolLenProto == nil {
+		t.Fatal("bool_len proto not found")
+	}
+	if err := tm.CompileTier2(boolLenProto); err != nil {
+		t.Fatalf("CompileTier2(bool_len): %v", err)
+	}
+
+	tbl := runtime.NewTable()
+	tbl.RawSetInt(1, runtime.BoolValue(true))
+	fn := v.GetGlobal("bool_len")
+	results, err := v.CallValue(fn, []runtime.Value{runtime.TableValue(tbl)})
+	if err != nil {
+		t.Fatalf("CallValue(bool_len): %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 1 {
+		t.Fatalf("bool_len result=%v, want 1", results)
+	}
+
+	snap := tm.Tier2PerfStats()
+	if row := tier2PerfRowByName(snap, perfTier2OpExit); row.Count != 1 {
+		t.Fatalf("op-exit perf row=%#v, want count=1", row)
+	}
+	if row := tier2PerfRowByName(snap, perfTier2ExitResume); row.Count != 1 {
+		t.Fatalf("exit-resume perf row=%#v, want count=1", row)
+	}
+	if row := tier2PerfRowByName(snap, perfTier2NativeExecution); row.Count < 2 {
+		t.Fatalf("native execution perf row=%#v, want at least 2 calls", row)
+	}
+}
+
+func tier2PerfRowByName(snap Tier2PerfStatsSnapshot, name string) Tier2PerfStatsRow {
+	for _, row := range snap.Rows {
+		if row.Name == name {
+			return row
+		}
+	}
+	return Tier2PerfStatsRow{}
 }
 
 func TestExitStatsAggregatesByProtoCodeSiteAndReason(t *testing.T) {

@@ -300,7 +300,10 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 	resumeClosurePtr := ctx.NativeCalleeClosurePtr
 	switch ctx.NativeCalleeExitCode {
 	case ExitTableExit:
-		if err := tm.executeTableExit(ctx, regs, base, proto, cf); err != nil {
+		handlerMark := tm.tier2PerfStart()
+		err := tm.executeTableExit(ctx, regs, base, proto, cf)
+		tm.tier2PerfStop(perfTier2TableExit, handlerMark)
+		if err != nil {
 			return runtime.NilValue(), fmt.Errorf("callee table-exit: %w", err)
 		}
 		resumeOff, ok := cf.resumeOffset(int(ctx.TableExitID), ctx.NativeCalleeResumePass != 0)
@@ -318,7 +321,10 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		}
 		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 	case ExitOpExit:
-		if err := tm.executeOpExit(ctx, regs, base, proto); err != nil {
+		handlerMark := tm.tier2PerfStart()
+		err := tm.executeOpExit(ctx, regs, base, proto)
+		tm.tier2PerfStop(perfTier2OpExit, handlerMark)
+		if err != nil {
 			return runtime.NilValue(), fmt.Errorf("callee op-exit: %w", err)
 		}
 		resumeOff, ok := cf.resumeOffset(int(ctx.OpExitID), ctx.NativeCalleeResumePass != 0)
@@ -346,7 +352,9 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			return runtime.NilValue(), errNestedNativeCallExit
 		}
 		var err error
+		protocolMark := tm.tier2PerfStart()
 		regs, err = tm.executeNativeCallExit(ctx, cf, regs, base, proto)
+		tm.tier2PerfStop(perfTier2NativeCallExitProtocol, protocolMark)
 		if err != nil {
 			return runtime.NilValue(), err
 		}
@@ -370,15 +378,21 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 	ctx.ResumeNumericPass = 0
 
 	for {
+		nativeMark := tm.tier2PerfStart()
 		jit.CallJIT(codePtr, uintptr(unsafe.Pointer(ctx)))
+		tm.tier2PerfStop(perfTier2NativeExecution, nativeMark)
 		switch ctx.ExitCode {
 		case ExitNormal:
 			return runtime.Value(ctx.BaselineReturnValue), nil
 		case ExitTableExit:
-			if err := tm.executeTableExit(ctx, currentRegs, base, proto, cf); err != nil {
+			handlerMark := tm.tier2PerfStart()
+			err := tm.executeTableExit(ctx, currentRegs, base, proto, cf)
+			tm.tier2PerfStop(perfTier2TableExit, handlerMark)
+			if err != nil {
 				return runtime.NilValue(), fmt.Errorf("callee table-exit: %w", err)
 			}
 			currentRegs = tm.callVM.Regs()
+			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(int(ctx.TableExitID), ctx.ResumeNumericPass != 0)
 			if !ok {
 				return runtime.NilValue(), fmt.Errorf("callee table-exit: no resume for %d", ctx.TableExitID)
@@ -386,11 +400,13 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
+			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 		case ExitGlobalExit:
 			if err := tm.executeGlobalExit(ctx, currentRegs, base, proto, cf); err != nil {
 				return runtime.NilValue(), fmt.Errorf("callee global-exit: %w", err)
 			}
 			currentRegs = tm.callVM.Regs()
+			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(int(ctx.GlobalExitID), ctx.ResumeNumericPass != 0)
 			if !ok {
 				return runtime.NilValue(), fmt.Errorf("callee global-exit: no resume for %d", ctx.GlobalExitID)
@@ -398,11 +414,16 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
+			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 		case ExitOpExit:
-			if err := tm.executeOpExit(ctx, currentRegs, base, proto); err != nil {
+			handlerMark := tm.tier2PerfStart()
+			err := tm.executeOpExit(ctx, currentRegs, base, proto)
+			tm.tier2PerfStop(perfTier2OpExit, handlerMark)
+			if err != nil {
 				return runtime.NilValue(), fmt.Errorf("callee op-exit: %w", err)
 			}
 			currentRegs = tm.callVM.Regs()
+			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(int(ctx.OpExitID), ctx.ResumeNumericPass != 0)
 			if !ok {
 				return runtime.NilValue(), fmt.Errorf("callee op-exit: no resume for %d", ctx.OpExitID)
@@ -410,6 +431,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
+			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 		case ExitCallExit:
 			if err := tm.executeCallExit(ctx, currentRegs, base, proto); err != nil {
 				if vm.IsCoroutineYield(err) {
@@ -418,6 +440,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 				return runtime.NilValue(), fmt.Errorf("callee call-exit: %w", err)
 			}
 			currentRegs = tm.callVM.Regs()
+			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(int(ctx.CallID), ctx.ResumeNumericPass != 0)
 			if !ok {
 				return runtime.NilValue(), fmt.Errorf("callee call-exit: no resume for %d", ctx.CallID)
@@ -425,12 +448,16 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
+			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 		case ExitNativeCallExit:
 			var err error
+			protocolMark := tm.tier2PerfStart()
 			currentRegs, err = tm.executeNativeCallExit(ctx, cf, currentRegs, base, proto)
+			tm.tier2PerfStop(perfTier2NativeCallExitProtocol, protocolMark)
 			if err != nil {
 				return runtime.NilValue(), fmt.Errorf("callee native-call-exit: %w", err)
 			}
+			resumeMark := tm.tier2PerfStart()
 			resumeOff, ok := cf.resumeOffset(int(ctx.CallID), ctx.ResumeNumericPass != 0)
 			if !ok {
 				return runtime.NilValue(), fmt.Errorf("callee native-call-exit: no resume for %d", ctx.CallID)
@@ -438,6 +465,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0
+			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 		case ExitDeopt:
 			tm.traceEvent("native_callee_deopt", "tier2", proto, map[string]any{
 				"deopt_instr_id": ctx.DeoptInstrID,
