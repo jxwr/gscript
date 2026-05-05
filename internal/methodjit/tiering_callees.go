@@ -179,7 +179,10 @@ func (tm *TieringManager) ensureRawIntLoopCallees(proto *vm.FuncProto) {
 		return
 	}
 	for _, callee := range rawIntLoopCallCallees(BuildGraph(proto), globals) {
-		if callee == nil || tm.tier2Compiled[callee] != nil || tm.tier2HasFailed(callee) {
+		if callee == nil || tm.tier2HasFailed(callee) {
+			continue
+		}
+		if _, ok := tm.tier2CompiledFor(callee); ok {
 			continue
 		}
 		if !shouldStayTier1ForBoxedRawIntKernel(callee, analyzeFuncProfile(callee)) {
@@ -203,7 +206,10 @@ func (tm *TieringManager) ensureNativeLoopCallees(proto *vm.FuncProto) {
 		return
 	}
 	for _, callee := range nativeLoopCallCallees(BuildGraph(proto), globals) {
-		if callee == nil || callee == proto || tm.tier2Compiled[callee] != nil || tm.tier2HasFailed(callee) {
+		if callee == nil || callee == proto || tm.tier2HasFailed(callee) {
+			continue
+		}
+		if _, ok := tm.tier2CompiledFor(callee); ok {
 			continue
 		}
 		if !canPromoteToTier2(callee) || !nativeLoopCalleePrecompileSafe(callee) {

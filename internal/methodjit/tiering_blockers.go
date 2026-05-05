@@ -181,6 +181,11 @@ func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, 
 }
 
 func firstUnsupportedHighArityCallResultShapeInLoop(fn *Function) (Op, bool) {
+	gate := firstUnsupportedHighArityCallResultShapeInLoopGate(fn)
+	return gate.Op, !gate.Allowed
+}
+
+func firstUnsupportedHighArityCallResultShapeInLoopGate(fn *Function) GateResult {
 	const maxSimpleCallArgs = 3
 	li := computeLoopInfo(fn)
 	for _, block := range fn.Blocks {
@@ -198,18 +203,18 @@ func firstUnsupportedHighArityCallResultShapeInLoop(fn *Function) (Op, bool) {
 				}
 				nRets, ok := callExactFixedResultCountFromC(instr.Aux2)
 				if !ok || !callABIHasExactResultShape(fn, instr, nRets) {
-					return instr.Op, true
+					return blockGateOp("HighArityCallResultShape", "high-arity loop call exit lacks a fixed result shape", instr.Op)
 				}
 			case OpStringFormatConst:
 				// High-arity format op-exits are acceptable in loop cold branches,
 				// but should not re-open always-hot inlined formatting loops.
 				if len(instr.Args)-2 > maxSimpleCallArgs && !tier2BlockIsModuloColdBranch(block) {
-					return instr.Op, true
+					return blockGateOp("HighArityCallResultShape", "high-arity loop format exit lacks a fixed result shape", instr.Op)
 				}
 			}
 		}
 	}
-	return OpNop, false
+	return allowGate("HighArityCallResultShape", "no high-arity loop result-shape blocker")
 }
 
 func tier2BlockIsModuloColdBranch(block *Block) bool {
@@ -233,6 +238,11 @@ func tier2BlockIsModuloColdBranch(block *Block) bool {
 }
 
 func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, bool) {
+	gate := firstCallBoundaryTier2BlockerInLoopGate(fn, globals)
+	return gate.Op, !gate.Allowed
+}
+
+func firstCallBoundaryTier2BlockerInLoopGate(fn *Function, globals map[string]*vm.FuncProto) GateResult {
 	li := computeLoopInfo(fn)
 	for _, block := range fn.Blocks {
 		if !li.loopBlocks[block.ID] {
@@ -244,7 +254,7 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				if tier2LoopCallIsNativeCandidate(fn, instr, globals) {
 					continue
 				}
-				return instr.Op, true
+				return blockGateOp("CallBoundaryLoop", "non-native OpCall remains inside loop after inlining", instr.Op)
 			case OpSelf,
 				OpConcat, OpAppend, OpSetList,
 				OpGetUpval, OpSetUpval,
@@ -253,29 +263,33 @@ func firstCallBoundaryTier2BlockerInLoop(fn *Function, globals map[string]*vm.Fu
 				OpVararg,
 				OpPow,
 				OpTForCall, OpTForLoop:
-				return instr.Op, true
+				return blockGateOp("CallBoundaryLoop", "performance-blocked op remains inside loop", instr.Op)
 			case OpNewTable:
 				if tier2NewTableLoopCandidateIsSafe(instr) {
 					continue
 				}
-				return instr.Op, true
+				return blockGateOp("CallBoundaryLoop", "uncached table allocation remains inside loop", instr.Op)
 			case OpNewFixedTable:
 				if tier2NewFixedTableLoopCandidateIsSafe(fn, instr) {
 					continue
 				}
-				return instr.Op, true
+				return blockGateOp("CallBoundaryLoop", "uncached fixed-table allocation remains inside loop", instr.Op)
 			case OpSetTable:
 				if tier2SetTableLoopCandidateIsSafe(fn, instr) {
 					continue
 				}
-				return instr.Op, true
+				return blockGateOp("CallBoundaryLoop", "dynamic table mutation remains inside loop", instr.Op)
 			}
 		}
 	}
-	return OpNop, false
+	return allowGate("CallBoundaryLoop", "no call-boundary loop blocker")
 }
 
 func hasReadWriteGlobalInSameLoop(fn *Function) bool {
+	return !readWriteGlobalInSameLoopGate(fn).Allowed
+}
+
+func readWriteGlobalInSameLoopGate(fn *Function) GateResult {
 	li := computeLoopInfo(fn)
 	for _, blocks := range li.headerBlocks {
 		read := make(map[int64]bool)
@@ -295,11 +309,11 @@ func hasReadWriteGlobalInSameLoop(fn *Function) bool {
 		}
 		for nameIdx := range write {
 			if read[nameIdx] {
-				return true
+				return blockGateOp("LoopGlobalState", "loop reads and writes the same global", OpSetGlobal)
 			}
 		}
 	}
-	return false
+	return allowGate("LoopGlobalState", "no loop read/write global overlap")
 }
 
 func tier2NewTableLoopCandidateIsSafe(instr *Instr) bool {
@@ -340,14 +354,19 @@ func hasIndexedGlobalLoopProtocol(fn *Function) bool {
 }
 
 func firstSelfRecursiveTableMutationInLoop(fn *Function) (Op, bool) {
+	gate := firstSelfRecursiveTableMutationInLoopGate(fn)
+	return gate.Op, !gate.Allowed
+}
+
+func firstSelfRecursiveTableMutationInLoopGate(fn *Function) GateResult {
 	if !irHasSelfCall(fn) {
-		return OpNop, false
+		return allowGate("SelfRecursiveTableMutation", "not self-recursive")
 	}
 	summary := analyzeLoopTableMutationRecovery(fn)
 	if site, ok := summary.firstUnadmitted(); ok {
-		return site.Op, true
+		return blockGateOp("SelfRecursiveTableMutation", "self-recursive loop has residual table mutation", site.Op)
 	}
-	return OpNop, false
+	return allowGate("SelfRecursiveTableMutation", "self-recursive table mutations are recoverable")
 }
 
 func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {

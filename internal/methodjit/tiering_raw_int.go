@@ -66,18 +66,23 @@ func forceRawIntKernelIR(fn *Function) {
 }
 
 func firstResidualRawIntKernelGenericNumeric(fn *Function) (Op, bool) {
+	gate := firstResidualRawIntKernelGenericNumericGate(fn)
+	return gate.Op, !gate.Allowed
+}
+
+func firstResidualRawIntKernelGenericNumericGate(fn *Function) GateResult {
 	if fn == nil {
-		return OpNop, false
+		return allowGate("RawIntKernelIR", "no function")
 	}
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			switch instr.Op {
 			case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm:
-				return instr.Op, true
+				return blockGateOp("RawIntKernelIR", "raw-int kernel has residual generic numeric op", instr.Op)
 			}
 		}
 	}
-	return OpNop, false
+	return allowGate("RawIntKernelIR", "no residual generic numeric op")
 }
 
 func allInstrArgsType(instr *Instr, typ Type) bool {

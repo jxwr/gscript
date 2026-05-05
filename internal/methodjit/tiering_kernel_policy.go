@@ -45,7 +45,7 @@ func (tm *TieringManager) structuralKernelTieringDecision(proto *vm.FuncProto) (
 }
 
 func (tm *TieringManager) disableForStructuralKernelTiering(proto *vm.FuncProto, d tieringKernelDecision) {
-	proto.JITDisabled = true
+	tm.markJITDisabled(proto)
 	fields := map[string]any{
 		"reason":     d.reason,
 		"call_count": proto.CallCount,

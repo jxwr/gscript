@@ -15,7 +15,7 @@ type tier0DisableDecision struct {
 }
 
 func (tm *TieringManager) disableJITForTier0Policy(proto *vm.FuncProto, d tier0DisableDecision) {
-	proto.JITDisabled = true
+	tm.markJITDisabled(proto)
 	fields := map[string]any{
 		"reason":     d.reason,
 		"call_count": proto.CallCount,

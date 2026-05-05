@@ -100,7 +100,10 @@ func (tm *TieringManager) tryCompiledProtocolCallExit(fnVal runtime.Value, regs 
 	if nArgs != calleeProto.NumParams || nArgs < 0 || absSlot+nArgs >= len(regs) {
 		return false, nil
 	}
-	cf := tm.tier2Compiled[calleeProto]
+	cf, ok := tm.tier2CompiledFor(calleeProto)
+	if !ok || cf == nil {
+		return false, nil
+	}
 	kind := cf.ProtocolKind()
 	if kind == compiledProtocolNone || !compiledProtocolCallExitFastPathSupports(kind) {
 		return false, nil

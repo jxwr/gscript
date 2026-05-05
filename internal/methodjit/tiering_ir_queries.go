@@ -371,6 +371,11 @@ func hasExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) bool {
 }
 
 func firstTier2ModBlockerInLoop(fn *Function) (string, bool) {
+	gate := firstTier2ModBlockerInLoopGate(fn)
+	return gate.Reason, !gate.Allowed
+}
+
+func firstTier2ModBlockerInLoopGate(fn *Function) GateResult {
 	li := computeLoopInfo(fn)
 	for _, block := range fn.Blocks {
 		if !li.loopBlocks[block.ID] {
@@ -386,5 +391,5 @@ func firstTier2ModBlockerInLoop(fn *Function) (string, bool) {
 			continue
 		}
 	}
-	return "", false
+	return allowGate("Tier2ModLoop", "generic mod has native lowering")
 }

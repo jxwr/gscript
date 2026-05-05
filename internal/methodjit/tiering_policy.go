@@ -28,6 +28,10 @@ func blockGate(gate, reason string) GateResult {
 	return GateResult{Allowed: false, Gate: gate, Reason: reason, Severity: GateSeverityBlock}
 }
 
+func blockGateOp(gate, reason string, op Op) GateResult {
+	return GateResult{Allowed: false, Gate: gate, Reason: reason, Op: op, Severity: GateSeverityBlock}
+}
+
 func forceGate(gate, reason string) GateResult {
 	return GateResult{Allowed: true, Gate: gate, Reason: reason, Severity: GateSeverityForce}
 }

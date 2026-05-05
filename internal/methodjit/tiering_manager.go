@@ -161,8 +161,9 @@ func (tm *TieringManager) getProfile(proto *vm.FuncProto) FuncProfile {
 // call count.
 func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	if tm.envR154Trace {
+		_, compiled := tm.tier2CompiledFor(proto)
 		fmt.Fprintf(os.Stderr, "[R154] TryCompile proto=%q CallCount=%d tier2Compiled_has=%v tier2Failed=%v\n",
-			proto.Name, proto.CallCount, tm.tier2Compiled[proto] != nil, tm.tier2HasFailed(proto))
+			proto.Name, proto.CallCount, compiled, tm.tier2HasFailed(proto))
 	}
 	profile := tm.getProfile(proto)
 	compiled, _ := tm.tier2CompiledFor(proto)
@@ -420,8 +421,9 @@ func (tm *TieringManager) handleOSRWithResultBuffer(regs []runtime.Value, base i
 	}
 
 	if tm.envR154Trace {
+		_, compiled := tm.tier2CompiledFor(proto)
 		fmt.Fprintf(os.Stderr, "[R154] handleOSR proto=%q tier2Failed=%v tier2Compiled_has=%v\n",
-			proto.Name, tm.tier2HasFailed(proto), tm.tier2Compiled[proto] != nil)
+			proto.Name, tm.tier2HasFailed(proto), compiled)
 	}
 
 	// Try to compile at Tier 2.

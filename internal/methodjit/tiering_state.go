@@ -26,8 +26,46 @@ func (s *TierStateStore) compiledFor(proto *vm.FuncProto) (*CompiledFunction, bo
 	return cf, ok
 }
 
+func (s *TierStateStore) compiledSnapshot() map[*vm.FuncProto]*CompiledFunction {
+	out := make(map[*vm.FuncProto]*CompiledFunction)
+	if s == nil {
+		return out
+	}
+	for proto, cf := range s.compiled {
+		out[proto] = cf
+	}
+	return out
+}
+
+func (s *TierStateStore) forEachCompiled(fn func(*vm.FuncProto, *CompiledFunction)) {
+	if s == nil || fn == nil {
+		return
+	}
+	for proto, cf := range s.compiled {
+		fn(proto, cf)
+	}
+}
+
 func (s *TierStateStore) hasFailed(proto *vm.FuncProto) bool {
 	return s != nil && proto != nil && s.failed[proto]
+}
+
+func (s *TierStateStore) failReason(proto *vm.FuncProto) string {
+	if s == nil || proto == nil {
+		return ""
+	}
+	return s.reasons[proto]
+}
+
+func (s *TierStateStore) failReasonSnapshot() map[*vm.FuncProto]string {
+	out := make(map[*vm.FuncProto]string)
+	if s == nil {
+		return out
+	}
+	for proto, reason := range s.reasons {
+		out[proto] = reason
+	}
+	return out
 }
 
 func (s *TierStateStore) markCompiled(proto *vm.FuncProto, cf *CompiledFunction) {
@@ -58,6 +96,25 @@ func (s *TierStateStore) clearCompiled(proto *vm.FuncProto) {
 	delete(s.compiled, proto)
 }
 
+func (s *TierStateStore) markJITDisabled(proto *vm.FuncProto) {
+	if proto == nil {
+		return
+	}
+	proto.JITDisabled = true
+}
+
+func (s *TierStateStore) temporarilyDisableJIT(proto *vm.FuncProto, body func()) {
+	if proto == nil || body == nil {
+		return
+	}
+	oldDisabled := proto.JITDisabled
+	proto.JITDisabled = true
+	defer func() {
+		proto.JITDisabled = oldDisabled
+	}()
+	body()
+}
+
 func (tm *TieringManager) tier2CompiledFor(proto *vm.FuncProto) (*CompiledFunction, bool) {
 	if tm == nil || proto == nil {
 		return nil, false
@@ -72,6 +129,38 @@ func (tm *TieringManager) tier2HasFailed(proto *vm.FuncProto) bool {
 	}
 	tm.ensureTierStateStore()
 	return tm.tierState.hasFailed(proto)
+}
+
+func (tm *TieringManager) tier2FailReasonFor(proto *vm.FuncProto) string {
+	if tm == nil || proto == nil {
+		return ""
+	}
+	tm.ensureTierStateStore()
+	return tm.tierState.failReason(proto)
+}
+
+func (tm *TieringManager) tier2CompiledSnapshot() map[*vm.FuncProto]*CompiledFunction {
+	if tm == nil {
+		return nil
+	}
+	tm.ensureTierStateStore()
+	return tm.tierState.compiledSnapshot()
+}
+
+func (tm *TieringManager) forEachTier2Compiled(fn func(*vm.FuncProto, *CompiledFunction)) {
+	if tm == nil || fn == nil {
+		return
+	}
+	tm.ensureTierStateStore()
+	tm.tierState.forEachCompiled(fn)
+}
+
+func (tm *TieringManager) tier2FailReasonSnapshot() map[*vm.FuncProto]string {
+	if tm == nil {
+		return nil
+	}
+	tm.ensureTierStateStore()
+	return tm.tierState.failReasonSnapshot()
 }
 
 func (tm *TieringManager) markTier2Compiled(proto *vm.FuncProto, cf *CompiledFunction) {
@@ -102,6 +191,22 @@ func (tm *TieringManager) clearTier2Install(proto *vm.FuncProto) {
 	proto.Tier2GlobalCachePtr = 0
 	proto.Tier2GlobalCacheGenPtr = 0
 	proto.Tier2GlobalIndexPtr = 0
+}
+
+func (tm *TieringManager) markJITDisabled(proto *vm.FuncProto) {
+	if tm == nil || proto == nil {
+		return
+	}
+	tm.ensureTierStateStore()
+	tm.tierState.markJITDisabled(proto)
+}
+
+func (tm *TieringManager) withJITTemporarilyDisabled(proto *vm.FuncProto, body func()) {
+	if tm == nil || proto == nil || body == nil {
+		return
+	}
+	tm.ensureTierStateStore()
+	tm.tierState.temporarilyDisableJIT(proto, body)
 }
 
 func (tm *TieringManager) ensureTierStateStore() {

@@ -571,13 +571,13 @@ func warmDumpStatus(tm *TieringManager, proto *vm.FuncProto, rec *WarmDumpRecord
 			info.failureReason = rec.CompileErr
 		}
 	}
-	if reason := tm.tier2FailReason[proto]; reason != "" {
+	if reason := tm.tier2FailReasonFor(proto); reason != "" {
 		info.status = "failed"
 		info.failed = true
 		info.compiled = false
 		info.failureReason = reason
 	}
-	if _, ok := tm.tier2Compiled[proto]; ok && !info.failed {
+	if _, ok := tm.tier2CompiledFor(proto); ok && !info.failed {
 		info.status = "compiled"
 		info.compiled = true
 	}

@@ -108,12 +108,14 @@ func (tm *TieringManager) callValueForTier2Exit(fnVal runtime.Value, args []runt
 	// otherwise re-enter the same Tier 2 function through the normal VM JIT
 	// dispatch path, recreating the native stack nesting the direct-entry gate
 	// was meant to avoid.
-	oldDisabled := callerProto.JITDisabled
-	callerProto.JITDisabled = true
-	defer func() {
-		callerProto.JITDisabled = oldDisabled
-	}()
-	return tm.callVM.CallValue(fnVal, args)
+	var (
+		values []runtime.Value
+		err    error
+	)
+	tm.withJITTemporarilyDisabled(callerProto, func() {
+		values, err = tm.callVM.CallValue(fnVal, args)
+	})
+	return values, err
 }
 
 func (tm *TieringManager) shouldSuppressUnsafeSelfTier2Reentry(fnVal runtime.Value, callerProto *vm.FuncProto) bool {
@@ -124,7 +126,7 @@ func (tm *TieringManager) shouldSuppressUnsafeSelfTier2Reentry(fnVal runtime.Val
 	if !ok || cl == nil || cl.Proto != callerProto {
 		return false
 	}
-	cf := tm.tier2Compiled[callerProto]
+	cf, _ := tm.tier2CompiledFor(callerProto)
 	return cf != nil && !cf.DirectEntrySafe
 }
 
@@ -288,8 +290,8 @@ func (tm *TieringManager) nativeExitCallee(ctx *ExecContext, regs []runtime.Valu
 	if ctx.NativeCalleeClosurePtr != 0 && uintptr(unsafe.Pointer(cl)) != ctx.NativeCalleeClosurePtr {
 		return nil, nil, 0, fmt.Errorf("native-call-exit: callee closure changed")
 	}
-	calleeCF := tm.tier2Compiled[cl.Proto]
-	if calleeCF == nil {
+	calleeCF, ok := tm.tier2CompiledFor(cl.Proto)
+	if !ok || calleeCF == nil {
 		return nil, nil, 0, fmt.Errorf("native-call-exit: callee %q is not compiled at Tier 2", cl.Proto.Name)
 	}
 	return cl.Proto, calleeCF, calleeBase, nil
@@ -882,7 +884,7 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 		intVal := regs[tempBase+2]
 		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() && intVal.IsInt() {
 			patternIdx := aux
-			if cf := tm.tier2Compiled[proto]; cf != nil && patternIdx >= 0 && patternIdx < len(cf.StringFormatPatterns) {
+			if cf, _ := tm.tier2CompiledFor(proto); cf != nil && patternIdx >= 0 && patternIdx < len(cf.StringFormatPatterns) {
 				pattern := cf.StringFormatPatterns[patternIdx]
 				if patternVal.Str() == pattern {
 					v, ok, err := runtime.StringFormatSingleInt(pattern, intVal.Int())
@@ -919,7 +921,7 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 		patternVal := regs[tempBase+1]
 		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() {
 			patternIdx := aux
-			if cf := tm.tier2Compiled[proto]; cf != nil && patternIdx >= 0 && patternIdx < len(cf.StringFormatPatterns) &&
+			if cf, _ := tm.tier2CompiledFor(proto); cf != nil && patternIdx >= 0 && patternIdx < len(cf.StringFormatPatterns) &&
 				patternVal.Str() == cf.StringFormatPatterns[patternIdx] {
 				v, err := runtime.StringFormatValue(regs[tempBase+1 : tempBase+nArgs])
 				if err != nil {
@@ -1211,8 +1213,8 @@ func (tm *TieringManager) executeWholeCallNoResultBatch(ctx *ExecContext, regs [
 	if tm == nil || tm.callVM == nil || ctx == nil || proto == nil {
 		return nil
 	}
-	cf := tm.tier2Compiled[proto]
-	if cf == nil || len(cf.WholeCallNoResultBatches) == 0 {
+	cf, ok := tm.tier2CompiledFor(proto)
+	if !ok || cf == nil || len(cf.WholeCallNoResultBatches) == 0 {
 		return nil
 	}
 	fact, ok := cf.WholeCallNoResultBatches[int(ctx.OpExitID)]
@@ -1311,9 +1313,9 @@ func (tm *TieringManager) invalidateGlobalValueCaches(name string) {
 		return
 	}
 	tm.tier1.invalidateGlobalValueCaches(name)
-	for _, cf := range tm.tier2Compiled {
+	tm.forEachTier2Compiled(func(_ *vm.FuncProto, cf *CompiledFunction) {
 		if cf == nil || cf.Proto == nil || len(cf.GlobalCache) == 0 {
-			continue
+			return
 		}
 		for cacheIdx, constIdx := range cf.GlobalCacheConsts {
 			if cacheIdx >= len(cf.GlobalCache) || constIdx < 0 || constIdx >= len(cf.Proto.Constants) {
@@ -1324,7 +1326,7 @@ func (tm *TieringManager) invalidateGlobalValueCaches(name string) {
 				cf.GlobalCache[cacheIdx] = 0
 			}
 		}
-	}
+	})
 }
 
 // executeGetUpvalOpExit handles OpGetUpval via op-exit. Reads a captured

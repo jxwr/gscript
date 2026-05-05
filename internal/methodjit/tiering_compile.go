@@ -112,10 +112,10 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	}
 
 	addStage("Tier2Gate", func() error {
-		if !canPromoteToTier2(proto) {
-			if op, ok := firstUnsupportedTier2Bytecode(proto); ok {
+		if gate := firstUnsupportedTier2BytecodeGate(proto); !gate.Allowed {
+			if gate.Reason != "" {
 				remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
-					fmt.Sprintf("unsupported bytecode %s", op))
+					fmt.Sprintf("unsupported bytecode %s", gate.Reason))
 			} else {
 				remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
 					"function has unsupported ops")
@@ -211,15 +211,14 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		}
 		if shouldStayTier1ForBoxedRawIntKernel(proto, analyzeFuncProfile(proto)) {
 			forceRawIntKernelIR(fn)
-			if op, ok := firstResidualRawIntKernelGenericNumeric(fn); ok {
-				remarks.Add("Tier2Gate", "blocked", 0, 0, op,
-					fmt.Sprintf("raw-int kernel has residual generic numeric op %s", op))
-				return fmt.Errorf("tier2: raw-int kernel has residual generic numeric op %s, staying at Tier 1", op)
+			if gate := firstResidualRawIntKernelGenericNumericGate(fn); !gate.Allowed {
+				remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op,
+					fmt.Sprintf("%s %s", gate.Reason, gate.Op))
+				return fmt.Errorf("tier2: %s %s, staying at Tier 1", gate.Reason, gate.Op)
 			}
 		}
-		if op, ok := firstUnsupportedHighArityCallResultShapeInLoop(fn); ok {
-			remarks.Add("Tier2Gate", "blocked", 0, 0, op,
-				"high-arity loop call exit lacks a fixed result shape")
+		if gate := firstUnsupportedHighArityCallResultShapeInLoopGate(fn); !gate.Allowed {
+			remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op, gate.Reason)
 			return fmt.Errorf("tier2: high-arity loop call exit lacks fixed result shape, staying at Tier 1")
 		}
 		fn.CarryPreheaderInvariants = true
@@ -228,16 +227,16 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			trace.IntrinsicNotes = intrinsicNotes
 		}
 
-		if op, ok := firstSelfRecursiveTableMutationInLoop(fn); ok {
-			remarks.Add("Tier2Gate", "blocked", 0, 0, op,
-				fmt.Sprintf("self-recursive loop has residual table mutation %s", op))
-			return fmt.Errorf("tier2: self-recursive loop has residual table mutation %s (exit-storm blocked), staying at Tier 1", op)
+		if gate := firstSelfRecursiveTableMutationInLoopGate(fn); !gate.Allowed {
+			remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op,
+				fmt.Sprintf("%s %s", gate.Reason, gate.Op))
+			return fmt.Errorf("tier2: %s %s (exit-storm blocked), staying at Tier 1", gate.Reason, gate.Op)
 		}
-		if modReason, ok := firstTier2ModBlockerInLoop(fn); ok {
+		if gate := firstTier2ModBlockerInLoopGate(fn); !gate.Allowed {
 			if !shouldStayTier1ForBoxedRawIntKernel(proto, analyzeFuncProfile(proto)) {
 				remarks.Add("Tier2Gate", "blocked", 0, 0, OpMod,
-					modReason+" remains inside loop")
-				return fmt.Errorf("tier2: has %s (performance-blocked), staying at Tier 1", modReason)
+					gate.Reason+" remains inside loop")
+				return fmt.Errorf("tier2: has %s (performance-blocked), staying at Tier 1", gate.Reason)
 			}
 		}
 
@@ -259,19 +258,19 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		if !tm.envTier2NoFilter {
 			profile := tm.getProfile(proto)
 			if profile.LoopDepth < 2 {
-				if hasReadWriteGlobalInSameLoop(fn) {
+				if gate := readWriteGlobalInSameLoopGate(fn); !gate.Allowed {
 					if !hasIndexedGlobalLoopProtocol(fn) {
-						remarks.Add("Tier2Gate", "blocked", 0, 0, OpSetGlobal,
-							"LoopDepth<2 candidate reads and writes a global in the same loop")
+						remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op,
+							"LoopDepth<2 candidate "+gate.Reason)
 						return fmt.Errorf("tier2: LoopDepth<2 candidate has read/write global state inside loop, staying at Tier 1")
 					}
 					remarks.Add("Tier2Gate", "changed", 0, 0, OpSetGlobal,
 						"LoopDepth<2 read/write globals accepted by indexed native global protocol")
 				}
-				if op, ok := firstCallBoundaryTier2BlockerInLoop(fn, loopCallGlobals); ok {
-					remarks.Add("Tier2Gate", "blocked", 0, 0, op,
-						fmt.Sprintf("LoopDepth<2 candidate has performance-blocked %s inside loop", op))
-					return fmt.Errorf("tier2: LoopDepth<2 candidate has performance-blocked op %s inside loop, staying at Tier 1", op)
+				if gate := firstCallBoundaryTier2BlockerInLoopGate(fn, loopCallGlobals); !gate.Allowed {
+					remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op,
+						fmt.Sprintf("LoopDepth<2 candidate has performance-blocked %s inside loop", gate.Op))
+					return fmt.Errorf("tier2: LoopDepth<2 candidate has performance-blocked op %s inside loop, staying at Tier 1", gate.Op)
 				}
 			} else {
 				if hasBlockingNonNativeCallInLoop(fn, loopCallGlobals) {

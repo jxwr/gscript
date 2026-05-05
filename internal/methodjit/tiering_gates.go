@@ -45,17 +45,22 @@ func canPromoteToTier2(proto *vm.FuncProto) bool {
 }
 
 func firstUnsupportedTier2Bytecode(proto *vm.FuncProto) (string, bool) {
+	gate := firstUnsupportedTier2BytecodeGate(proto)
+	return gate.Reason, !gate.Allowed
+}
+
+func firstUnsupportedTier2BytecodeGate(proto *vm.FuncProto) GateResult {
 	if proto == nil {
-		return "", false
+		return allowGate("Tier2Bytecode", "no proto")
 	}
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
 		switch op {
 		case vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV:
-			return vm.OpName(op), true
+			return blockGate("Tier2Bytecode", vm.OpName(op))
 		}
 	}
-	return "", false
+	return allowGate("Tier2Bytecode", "all bytecodes supported")
 }
 
 // feedbackHasObservations returns true if any entry has a non-Unobserved

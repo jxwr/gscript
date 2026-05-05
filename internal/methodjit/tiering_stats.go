@@ -6,7 +6,7 @@ import "sort"
 
 // Tier2Count returns the number of functions compiled at Tier 2.
 func (tm *TieringManager) Tier2Count() int {
-	return len(tm.tier2Compiled)
+	return len(tm.tier2CompiledSnapshot())
 }
 
 // Tier1Count returns the number of functions compiled at Tier 1.
@@ -17,8 +17,9 @@ func (tm *TieringManager) Tier1Count() int {
 // Tier2Compiled returns the names of protos that successfully compiled at
 // Tier 2, sorted alphabetically. Used by CLI diagnostics (-jit-stats).
 func (tm *TieringManager) Tier2Compiled() []string {
-	names := make([]string, 0, len(tm.tier2Compiled))
-	for proto := range tm.tier2Compiled {
+	compiled := tm.tier2CompiledSnapshot()
+	names := make([]string, 0, len(compiled))
+	for proto := range compiled {
 		names = append(names, proto.Name)
 	}
 	sort.Strings(names)
@@ -32,8 +33,9 @@ func (tm *TieringManager) Tier2Compiled() []string {
 // actually executed through Tier 2 native code — not just that it was
 // compiled.
 func (tm *TieringManager) Tier2Entered() []string {
-	names := make([]string, 0, len(tm.tier2Compiled))
-	for proto := range tm.tier2Compiled {
+	compiled := tm.tier2CompiledSnapshot()
+	names := make([]string, 0, len(compiled))
+	for proto := range compiled {
 		if proto.EnteredTier2 != 0 {
 			names = append(names, proto.Name)
 		}
@@ -45,8 +47,9 @@ func (tm *TieringManager) Tier2Entered() []string {
 // Tier2Failed returns a map of proto name -> error message for Tier 2
 // compilations that failed. Used by CLI diagnostics (-jit-stats).
 func (tm *TieringManager) Tier2Failed() map[string]string {
-	out := make(map[string]string, len(tm.tier2FailReason))
-	for proto, reason := range tm.tier2FailReason {
+	reasons := tm.tier2FailReasonSnapshot()
+	out := make(map[string]string, len(reasons))
+	for proto, reason := range reasons {
 		out[proto.Name] = reason
 	}
 	return out
