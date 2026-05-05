@@ -448,8 +448,10 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Snapshot callee exit metadata only on the cold exit path. Successful
 	// native peer calls are the hot path and do not need resume metadata.
 	skipExitSnapshotLabel := ec.uniqueLabel("t2call_skip_exit_snapshot")
+	asm.MOVimm16(jit.X7, 0)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
 	asm.CBZ(jit.X3, skipExitSnapshotLabel)
+	asm.MOVimm16(jit.X7, 1)
 	ec.emitPushNativeCallExitFrameIfNested(jit.X3, jit.X4, jit.X5, jit.X6)
 	asm.STR(jit.X3, mRegCtx, execCtxOffNativeCalleeExitCode)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffResumeNumericPass)
@@ -494,8 +496,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
 
 	// Step 11: Check callee exit code.
-	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
-	asm.CBNZ(jit.X3, exitHandleLabel)
+	asm.CBNZ(jit.X7, exitHandleLabel)
 
 	// R143: save representation state BEFORE the post-BL emit. Reloading
 	// selective values normalizes boxed homes, and the mutually-exclusive
