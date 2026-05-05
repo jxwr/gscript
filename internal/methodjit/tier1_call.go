@@ -58,6 +58,8 @@ var (
 	funcProtoOffTier2GlobalIndexPtr    int // vm.FuncProto.Tier2GlobalIndexPtr offset
 	funcProtoOffCallCount              int // vm.FuncProto.CallCount offset
 	funcProtoOffTier2Promoted          int // vm.FuncProto.Tier2Promoted offset
+	funcProtoOffLeafNoCall             int // vm.FuncProto.LeafNoCall offset
+	funcProtoOffNoGlobalOps            int // vm.FuncProto.NoGlobalOps offset
 )
 
 func init() {
@@ -83,6 +85,8 @@ func init() {
 	funcProtoOffTier2GlobalIndexPtr = int(unsafe.Offsetof(proto.Tier2GlobalIndexPtr))
 	funcProtoOffCallCount = int(unsafe.Offsetof(proto.CallCount))
 	funcProtoOffTier2Promoted = int(unsafe.Offsetof(proto.Tier2Promoted))
+	funcProtoOffLeafNoCall = int(unsafe.Offsetof(proto.LeafNoCall))
+	funcProtoOffNoGlobalOps = int(unsafe.Offsetof(proto.NoGlobalOps))
 }
 
 // NaN-boxing pointer sub-type constants for ARM64 type checks.

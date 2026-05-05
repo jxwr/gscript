@@ -283,21 +283,47 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.CMPimm(jit.X3, tmDefaultTier2Threshold)
 	asm.BCond(jit.CondEQ, slowLabel)
 
+	staticSelf := ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls && ec.isStaticSelfCall(instr)
+	stackSlowLabel := ec.uniqueLabel("t2call_stack_slow")
+	dynamicCalleeFlags := noDepthCallee == nil || !staticSelf
+
 	// Step 7: Save caller state on stack (96 bytes, 16-byte aligned).
 	// R111: for a static self-call, GlobalCache is invariant
 	// (same proto → same GlobalCache), so skip saving that field.
 	// CallMode cannot be skipped: top-level Tier 2 enters with CallMode=0,
 	// while a BL/BLR callee must return through the direct epilogue.
 	asm.SUBimm(jit.SP, jit.SP, 96)
+	if dynamicCalleeFlags {
+		asm.MOVimm16(jit.X6, 0)
+		if noDepthCallee == nil {
+			asm.LDRB(jit.X4, jit.X1, funcProtoOffLeafNoCall)
+			asm.ORRreg(jit.X6, jit.X6, jit.X4)
+		}
+		if !staticSelf {
+			asm.LDRB(jit.X4, jit.X1, funcProtoOffNoGlobalOps)
+			asm.LSLimm(jit.X4, jit.X4, 1)
+			asm.ORRreg(jit.X6, jit.X6, jit.X4)
+		}
+		asm.STR(jit.X6, jit.SP, 88)
+	}
+	if noDepthCallee == nil {
+		depthOKLabel := ec.uniqueLabel("t2call_depth_ok")
+		asm.TBNZ(jit.X6, 0, depthOKLabel)
+		asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+		asm.CMPimm(jit.X3, maxNativeCallDepth)
+		asm.BCond(jit.CondGE, stackSlowLabel)
+		asm.Label(depthOKLabel)
+	}
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
-	staticSelf := ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls && ec.isStaticSelfCall(instr)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
 	asm.STR(jit.X3, jit.SP, 32)
 	// Save caller's ClosurePtr (always — closure instance may differ).
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X3, jit.SP, 40)
 	if !staticSelf {
+		skipSaveGlobalsLabel := ec.uniqueLabel("t2call_skip_save_globals")
+		asm.TBNZ(jit.X6, 1, skipSaveGlobalsLabel)
 		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
 		asm.STR(jit.X3, jit.SP, 48)
 		asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
@@ -306,6 +332,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, jit.SP, 64)
 		asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
 		asm.STR(jit.X3, jit.SP, 72)
+		asm.Label(skipSaveGlobalsLabel)
 	}
 	// Keep the callee closure pointer for ExitNativeCallExit. If the callee
 	// returns through an exit-resume path, caller state is restored before Go
@@ -343,6 +370,8 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// R111: skip GlobalCache setup on static self-call (per-proto invariant).
 	if !staticSelf {
+		skipSetupGlobalsLabel := ec.uniqueLabel("t2call_skip_setup_globals")
+		asm.TBNZ(jit.X6, 1, skipSetupGlobalsLabel)
 		// Load callee's GlobalValCache from Proto.
 		asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
 		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
@@ -352,13 +381,17 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
 		asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalIndexPtr)
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
+		asm.Label(skipSetupGlobalsLabel)
 	}
 
 	// Increment NativeCallDepth unless the guarded callee is a leaf.
 	if noDepthCallee == nil {
+		skipDepthIncLabel := ec.uniqueLabel("t2call_skip_depth_inc")
+		asm.TBNZ(jit.X6, 0, skipDepthIncLabel)
 		asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 		asm.ADDimm(jit.X3, jit.X3, 1)
 		asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+		asm.Label(skipDepthIncLabel)
 	}
 
 	// R40/R110: self-call fast path via HasSelfCalls. Statically proven
@@ -393,9 +426,13 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// Decrement NativeCallDepth unless the guarded callee is a leaf.
 	if noDepthCallee == nil {
+		skipDepthDecLabel := ec.uniqueLabel("t2call_skip_depth_dec")
+		asm.LDR(jit.X6, jit.SP, 88)
+		asm.TBNZ(jit.X6, 0, skipDepthDecLabel)
 		asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 		asm.SUBimm(jit.X3, jit.X3, 1)
 		asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
+		asm.Label(skipDepthDecLabel)
 	}
 
 	// Snapshot callee exit metadata before restoring the caller frame.
@@ -416,6 +453,9 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X3, jit.SP, 40)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	if !staticSelf {
+		skipRestoreGlobalsLabel := ec.uniqueLabel("t2call_skip_restore_globals")
+		asm.LDR(jit.X6, jit.SP, 88)
+		asm.TBNZ(jit.X6, 1, skipRestoreGlobalsLabel)
 		asm.LDR(jit.X3, jit.SP, 48)
 		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
 		asm.LDR(jit.X3, jit.SP, 56)
@@ -424,6 +464,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
 		asm.LDR(jit.X3, jit.SP, 72)
 		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
+		asm.Label(skipRestoreGlobalsLabel)
 	}
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, 96)
@@ -451,6 +492,12 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	postSuccessReprs := ec.snapshotValueReprs()
 
 	asm.B(doneLabel)
+
+	if noDepthCallee == nil {
+		asm.Label(stackSlowLabel)
+		asm.ADDimm(jit.SP, jit.SP, 96)
+		asm.B(slowLabel)
+	}
 
 	// --- Callee exited mid-execution (deopt/op-exit within callee) ---
 	// Return to Go with enough metadata to resume the callee's own

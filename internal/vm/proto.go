@@ -36,6 +36,8 @@ type FuncProto struct {
 	RecursiveTableKernel   *recursiveTableKernelCache    // guarded whole-call lazy recursive table builder/fold cache, nil until first probe
 	RawIntNestedKernel     *rawIntNestedKernelCache      // guarded whole-call nested raw-int recurrence cache, nil until first probe
 	HasSelfCalls           bool                          // true if function has recursive calls to itself (set during JIT compilation)
+	LeafNoCall             bool                          // true if bytecode has no call/yield/resume/go operations
+	NoGlobalOps            bool                          // true if bytecode has no get/set global operations
 	CallCount              int                           // JIT call count (avoids map lookup in VM hot path)
 	JITDisabled            bool                          // true when the method JIT made a permanent per-proto stay-interpreted decision
 	Feedback               FeedbackVector                // lazily-initialized per-PC type feedback for Method JIT

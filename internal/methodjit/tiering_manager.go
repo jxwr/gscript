@@ -1976,6 +1976,8 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		// t2_self_entry lightweight path. A self-call is an OpCall whose
 		// function argument comes from an OpGetGlobal loading this proto's
 		// own name.
+		proto.LeafNoCall = protoHasNoCallLikeOps(proto)
+		proto.NoGlobalOps = protoHasNoGlobalOps(proto)
 		if irHasSelfCall(fn) {
 			proto.HasSelfCalls = true
 		}

@@ -36,6 +36,59 @@ func compileAndRun(t *testing.T, src string) map[string]runtime.Value {
 	return globals
 }
 
+func TestCompileAnnotatesProtoCallAndGlobalFacts(t *testing.T) {
+	src := `
+func leaf(x) {
+    return x + 1
+}
+func uses_global(x) {
+    return hot + x
+}
+func calls_leaf(x) {
+    return leaf(x)
+}
+`
+	tokens, err := lexer.New(src).Tokenize()
+	if err != nil {
+		t.Fatalf("lexer error: %v", err)
+	}
+	prog, err := parser.New(tokens).Parse()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	proto, err := Compile(prog)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	leaf := findNestedProtoForTest(proto, "leaf")
+	usesGlobal := findNestedProtoForTest(proto, "uses_global")
+	callsLeaf := findNestedProtoForTest(proto, "calls_leaf")
+	if leaf == nil || usesGlobal == nil || callsLeaf == nil {
+		t.Fatalf("missing nested protos: leaf=%v uses_global=%v calls_leaf=%v", leaf != nil, usesGlobal != nil, callsLeaf != nil)
+	}
+	if !leaf.LeafNoCall || !leaf.NoGlobalOps {
+		t.Fatalf("leaf facts = LeafNoCall:%v NoGlobalOps:%v, want both true", leaf.LeafNoCall, leaf.NoGlobalOps)
+	}
+	if !usesGlobal.LeafNoCall || usesGlobal.NoGlobalOps {
+		t.Fatalf("uses_global facts = LeafNoCall:%v NoGlobalOps:%v, want true/false", usesGlobal.LeafNoCall, usesGlobal.NoGlobalOps)
+	}
+	if callsLeaf.LeafNoCall || callsLeaf.NoGlobalOps {
+		t.Fatalf("calls_leaf facts = LeafNoCall:%v NoGlobalOps:%v, want both false", callsLeaf.LeafNoCall, callsLeaf.NoGlobalOps)
+	}
+}
+
+func findNestedProtoForTest(proto *FuncProto, name string) *FuncProto {
+	if proto == nil {
+		return nil
+	}
+	for _, child := range proto.Protos {
+		if child != nil && child.Name == name {
+			return child
+		}
+	}
+	return nil
+}
+
 // compileAndRunWithOutput captures print output.
 func compileAndRunWithOutput(t *testing.T, src string) (map[string]runtime.Value, string) {
 	t.Helper()

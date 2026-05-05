@@ -301,7 +301,19 @@ func (c *compiler) finish() *FuncProto {
 	for i, uv := range c.upvals {
 		c.proto.Upvalues[i] = UpvalDesc{Name: uv.name, InStack: uv.inStack, Index: uv.index}
 	}
+	c.proto.LeafNoCall = protoHasNoCalls(c.proto)
+	c.proto.NoGlobalOps = protoHasNoGlobalOps(c.proto)
 	return c.proto
+}
+
+func protoHasNoGlobalOps(proto *FuncProto) bool {
+	for _, inst := range proto.Code {
+		switch DecodeOp(inst) {
+		case OP_GETGLOBAL, OP_SETGLOBAL:
+			return false
+		}
+	}
+	return true
 }
 
 // --------------------------------------------------------------------
