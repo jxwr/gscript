@@ -328,16 +328,16 @@ func (e *BaselineJITEngine) ExecuteWithResultBuffer(compiled interface{}, regs [
 // PC. Locals are already live in the coroutine VM's register file, so this
 // skips fresh-frame register initialization.
 func (e *BaselineJITEngine) ExecuteContinuation(cont vm.MethodJITContinuation, regs []runtime.Value, retBuf []runtime.Value) ([]runtime.Value, error) {
-	return e.executeInnerAtPC(cont.Compiled, regs, cont.Base, cont.Proto, retBuf, cont.PC, false)
+	return e.executeInnerAtPC(cont.Compiled, regs, cont.Base, cont.Proto, retBuf, cont.PC, cont.Offset, false)
 }
 
 // executeInner is the raw JIT entry loop. Execute wraps it to handle
 // int-spec deopt fallback.
 func (e *BaselineJITEngine) executeInner(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value) ([]runtime.Value, error) {
-	return e.executeInnerAtPC(compiled, regs, base, proto, retBuf, 0, true)
+	return e.executeInnerAtPC(compiled, regs, base, proto, retBuf, 0, 0, true)
 }
 
-func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value, startPC int, initializeFrame bool) ([]runtime.Value, error) {
+func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto, retBuf []runtime.Value, startPC, startOffset int, initializeFrame bool) ([]runtime.Value, error) {
 	bf := compiled.(*BaselineFunc)
 
 	// Ensure register space.
@@ -446,9 +446,13 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 
 	codePtr := uintptr(bf.Code.Ptr())
 	if startPC != 0 {
-		resumeOff, ok := bf.Labels[startPC]
-		if !ok {
-			return nil, fmt.Errorf("baseline: no continuation label for PC %d", startPC)
+		resumeOff := startOffset
+		if resumeOff == 0 {
+			var ok bool
+			resumeOff, ok = bf.Labels[startPC]
+			if !ok {
+				return nil, fmt.Errorf("baseline: no continuation label for PC %d", startPC)
+			}
 		}
 		codePtr += uintptr(resumeOff)
 	}

@@ -36,6 +36,7 @@ type MethodJITContinuation struct {
 	Base     int
 	Proto    *FuncProto
 	PC       int
+	Offset   int
 }
 
 type methodJITEngineWithContinuation interface {

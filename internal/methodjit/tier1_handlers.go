@@ -98,11 +98,17 @@ func (e *BaselineJITEngine) handleYield(ctx *ExecContext, regs []runtime.Value, 
 	if err := e.callVM.SuspendCoroutineFromSlots(absSlot, nArgs, rawC); err != nil {
 		return err
 	}
+	resumePC := int(ctx.BaselinePC)
+	resumeOff, ok := bf.Labels[resumePC]
+	if !ok {
+		return fmt.Errorf("baseline: no yield continuation label for PC %d", resumePC)
+	}
 	if err := e.callVM.SaveMethodJITContinuation(vm.MethodJITContinuation{
 		Compiled: bf,
 		Base:     base,
 		Proto:    proto,
-		PC:       int(ctx.BaselinePC),
+		PC:       resumePC,
+		Offset:   resumeOff,
 	}); err != nil {
 		return err
 	}

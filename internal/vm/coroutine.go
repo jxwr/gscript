@@ -62,8 +62,9 @@ type VMCoroutine struct {
 	yieldDst          int
 	yieldC            int
 
-	yieldResult     vmYieldResult
-	jitContinuation *MethodJITContinuation
+	yieldResult        vmYieldResult
+	jitContinuation    MethodJITContinuation
+	hasJITContinuation bool
 }
 
 func init() {
@@ -342,7 +343,7 @@ func (vm *VM) attachCoroutineJIT(co *VMCoroutine) {
 }
 
 func (vm *VM) resumeCoroutineJITContinuation(co *VMCoroutine, args []rt.Value) ([]rt.Value, error, bool) {
-	if co == nil || co.vm == nil || co.jitContinuation == nil {
+	if co == nil || co.vm == nil || !co.hasJITContinuation {
 		return nil, nil, false
 	}
 	exec, ok := co.vm.methodJIT.(methodJITEngineWithContinuation)
@@ -350,8 +351,9 @@ func (vm *VM) resumeCoroutineJITContinuation(co *VMCoroutine, args []rt.Value) (
 		return nil, nil, false
 	}
 	co.vm.writeCallResults(co.yieldDst, co.yieldC, args)
-	cont := *co.jitContinuation
-	co.jitContinuation = nil
+	cont := co.jitContinuation
+	co.jitContinuation = MethodJITContinuation{}
+	co.hasJITContinuation = false
 	results, err := exec.ExecuteContinuation(cont, co.vm.regs, co.vm.retBuf[:0])
 	vm.recordCoroutineJITContinuation()
 	if err == nil && !co.vm.coroutineYielded {
@@ -389,7 +391,8 @@ func (co *VMCoroutine) releaseVM() {
 	if co.vm == nil {
 		return
 	}
-	co.jitContinuation = nil
+	co.jitContinuation = MethodJITContinuation{}
+	co.hasJITContinuation = false
 	co.vm.frameCount = 0
 	co.vm.top = 0
 	co.vm.Close()
@@ -443,7 +446,8 @@ func (vm *VM) SaveMethodJITContinuation(cont MethodJITContinuation) error {
 	if err := vm.SetCurrentFramePC(cont.PC); err != nil {
 		return err
 	}
-	co.jitContinuation = &cont
+	co.jitContinuation = cont
+	co.hasJITContinuation = true
 	return nil
 }
 
