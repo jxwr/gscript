@@ -503,12 +503,9 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// exit/fallback emit paths must still see the pre-call representation.
 	savedReprs := ec.snapshotValueReprs()
 
-	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
-	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
-
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 
-	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
 	ec.storeResultNB(jit.X0, instr.ID)
 	postSuccessReprs := ec.snapshotValueReprs()
 
