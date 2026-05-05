@@ -5,7 +5,6 @@ package methodjit
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -34,10 +33,7 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 			}
 		}
 		if retErr != nil {
-			if tm.tier2FailReason == nil {
-				tm.tier2FailReason = make(map[*vm.FuncProto]string)
-			}
-			tm.tier2FailReason[proto] = retErr.Error()
+			tm.markTier2Failed(proto, retErr.Error())
 			tm.traceEvent("tier2_fail", "tier2", proto, map[string]any{
 				"attempt": attempt,
 				"reason":  retErr.Error(),
@@ -68,7 +64,7 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 // call count threshold and is useful for testing or when the caller knows
 // the function is hot. Returns error if Tier 2 compilation fails.
 func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
-	if _, ok := tm.tier2Compiled[proto]; ok {
+	if _, ok := tm.tier2CompiledFor(proto); ok {
 		return nil // already compiled
 	}
 	if proto.Feedback == nil {
@@ -76,11 +72,10 @@ func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
 	}
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
-		tm.tier2Failed[proto] = true
+		tm.markTier2Failed(proto, err.Error())
 		return err
 	}
-	tm.tier2Compiled[proto] = t2
-	tm.installTier2(proto, t2)
+	tm.markTier2Compiled(proto, t2)
 
 	return nil
 }
@@ -109,13 +104,10 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		}()
 	}
 	runStage := func(name string, body func() error) error {
-		if trace == nil {
-			return body()
-		}
-		start := time.Now()
-		err := body()
-		trace.PipelineStages = append(trace.PipelineStages, newPipelineStageTiming(name, time.Since(start), err))
-		return err
+		return runTier2CompileStages(trace, []tier2CompileStage{{
+			name: name,
+			run:  body,
+		}})
 	}
 
 	if err := runStage("Tier2Gate", func() error {

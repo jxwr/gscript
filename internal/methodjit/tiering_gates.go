@@ -33,6 +33,19 @@ func firstUnsupportedTier2Bytecode(proto *vm.FuncProto) (string, bool) {
 	return "", false
 }
 
+// feedbackHasObservations returns true if any entry has a non-Unobserved
+// Left, Right, or Result. Used by feedback gates to delay Tier 2 compilation
+// until feedback has had a chance to fill.
+func feedbackHasObservations(fv []vm.TypeFeedback) bool {
+	for i := range fv {
+		if fv[i].Left != vm.FBUnobserved || fv[i].Right != vm.FBUnobserved ||
+			fv[i].Result != vm.FBUnobserved || fv[i].Kind != vm.FBKindUnobserved {
+			return true
+		}
+	}
+	return false
+}
+
 // canPromoteToTier2NoCalls is the conservative version of canPromoteToTier2
 // that also blocks CALL. Used by shouldPromoteTier2 to identify pure-compute
 // functions that don't need the inline pass. GETGLOBAL is allowed because

@@ -179,7 +179,7 @@ func (tm *TieringManager) ensureRawIntLoopCallees(proto *vm.FuncProto) {
 		return
 	}
 	for _, callee := range rawIntLoopCallCallees(BuildGraph(proto), globals) {
-		if callee == nil || tm.tier2Compiled[callee] != nil || tm.tier2Failed[callee] {
+		if callee == nil || tm.tier2Compiled[callee] != nil || tm.tier2HasFailed(callee) {
 			continue
 		}
 		if !shouldStayTier1ForBoxedRawIntKernel(callee, analyzeFuncProfile(callee)) {
@@ -187,11 +187,10 @@ func (tm *TieringManager) ensureRawIntLoopCallees(proto *vm.FuncProto) {
 		}
 		cf, err := tm.compileTier2(callee)
 		if err != nil {
-			tm.tier2Failed[callee] = true
+			tm.markTier2Failed(callee, err.Error())
 			continue
 		}
-		tm.tier2Compiled[callee] = cf
-		tm.installTier2(callee, cf)
+		tm.markTier2Compiled(callee, cf)
 	}
 }
 
@@ -204,25 +203,22 @@ func (tm *TieringManager) ensureNativeLoopCallees(proto *vm.FuncProto) {
 		return
 	}
 	for _, callee := range nativeLoopCallCallees(BuildGraph(proto), globals) {
-		if callee == nil || callee == proto || tm.tier2Compiled[callee] != nil || tm.tier2Failed[callee] {
+		if callee == nil || callee == proto || tm.tier2Compiled[callee] != nil || tm.tier2HasFailed(callee) {
 			continue
 		}
 		if !canPromoteToTier2(callee) || !nativeLoopCalleePrecompileSafe(callee) {
 			continue
 		}
 		if cf, ok := tm.compileMutualRecursiveIntSCCTier2WithGlobals(callee, globals); ok {
-			tm.tier2Compiled[callee] = cf
-			tm.installTier2(callee, cf)
+			tm.markTier2Compiled(callee, cf)
 			continue
 		}
 		cf, err := tm.compileTier2(callee)
 		if err != nil {
-			tm.tier2Failed[callee] = true
-			tm.tier2FailReason[callee] = err.Error()
+			tm.markTier2Failed(callee, err.Error())
 			continue
 		}
-		tm.tier2Compiled[callee] = cf
-		tm.installTier2(callee, cf)
+		tm.markTier2Compiled(callee, cf)
 	}
 }
 

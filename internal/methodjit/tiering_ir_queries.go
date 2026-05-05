@@ -55,6 +55,21 @@ func irHasCall(fn *Function) bool {
 	return false
 }
 
+// irHasGetGlobal scans the optimized IR for any remaining OpGetGlobal
+// instructions. Used after the inline pass + DCE to determine if global
+// accesses remain. OpGetGlobal uses exit-resume which is slower than
+// Tier 1's per-PC value cache.
+func irHasGetGlobal(fn *Function) bool {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpGetGlobal {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // hasCallInLoop reports whether any OpCall in the optimized IR resides in
 // a block that is part of a loop. Tier 2 exit-resume for CALL is ~30-80ns
 // vs Tier 1's native BLR at ~10ns; inside a hot loop this difference

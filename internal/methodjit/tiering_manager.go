@@ -158,10 +158,10 @@ func (tm *TieringManager) getProfile(proto *vm.FuncProto) FuncProfile {
 func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	if tm.envR154Trace {
 		fmt.Fprintf(os.Stderr, "[R154] TryCompile proto=%q CallCount=%d tier2Compiled_has=%v tier2Failed=%v\n",
-			proto.Name, proto.CallCount, tm.tier2Compiled[proto] != nil, tm.tier2Failed[proto])
+			proto.Name, proto.CallCount, tm.tier2Compiled[proto] != nil, tm.tier2HasFailed(proto))
 	}
 	// Already at Tier 2? Return cached.
-	if t2, ok := tm.tier2Compiled[proto]; ok {
+	if t2, ok := tm.tier2CompiledFor(proto); ok {
 		return t2
 	}
 
@@ -187,10 +187,9 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 
-	if !tm.tier2Failed[proto] {
+	if !tm.tier2HasFailed(proto) {
 		if t2, ok := tm.compileFixedRecursiveTableBuilderTier2(proto); ok {
-			tm.tier2Compiled[proto] = t2
-			tm.installTier2(proto, t2)
+			tm.markTier2Compiled(proto, t2)
 			return t2
 		}
 	}
@@ -283,7 +282,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		// cannot replay table mutations from single-loop drivers. No-filter
 		// may bypass the performance-only call-in-loop prefilter, but it must
 		// not bypass restart-safety: replayed side effects are correctness bugs.
-		if profile.HasLoop && profile.LoopDepth >= 1 && !suppressedRecursivePartition && !tm.tier2Failed[proto] &&
+		if profile.HasLoop && profile.LoopDepth >= 1 && !suppressedRecursivePartition && !tm.tier2HasFailed(proto) &&
 			(profile.LoopDepth >= 2 || tm.isOSRRestartSafe(proto, profile)) &&
 			(tm.envTier2NoFilter || !tm.osrWouldHitCallInLoopGate(proto, profile)) {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
@@ -300,7 +299,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 
 	// Tier 2 already failed? Use Tier 1.
-	if tm.tier2Failed[proto] {
+	if tm.tier2HasFailed(proto) {
 		tm.disableTier1FeedbackForNoTier2(proto)
 		tier1AlreadyCompiled := tm.tier1.compiled[proto] != nil
 		t1 := tm.tier1.TryCompile(proto)
@@ -330,28 +329,24 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 
 	// Attempt Tier 2 compilation.
 	if t2, ok := tm.compileFixedRecursiveIntFoldTier2(proto); ok {
-		tm.tier2Compiled[proto] = t2
-		tm.installTier2(proto, t2)
+		tm.markTier2Compiled(proto, t2)
 		return t2
 	}
 	if t2, ok := tm.compileFixedRecursiveNestedIntFoldTier2(proto); ok {
-		tm.tier2Compiled[proto] = t2
-		tm.installTier2(proto, t2)
+		tm.markTier2Compiled(proto, t2)
 		return t2
 	}
 	if t2, ok := tm.compileFixedRecursiveTableFoldTier2(proto); ok {
-		tm.tier2Compiled[proto] = t2
-		tm.installTier2(proto, t2)
+		tm.markTier2Compiled(proto, t2)
 		return t2
 	}
 	if t2, ok := tm.compileMutualRecursiveIntSCCTier2(proto); ok {
-		tm.tier2Compiled[proto] = t2
-		tm.installTier2(proto, t2)
+		tm.markTier2Compiled(proto, t2)
 		return t2
 	}
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
-		tm.tier2Failed[proto] = true
+		tm.markTier2Failed(proto, err.Error())
 		tm.disableTier1FeedbackForNoTier2(proto)
 		tm.traceEvent("fallback", "tier1", proto, map[string]any{
 			"reason": err.Error(),
@@ -360,8 +355,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		return t1
 	}
 
-	tm.tier2Compiled[proto] = t2
-	tm.installTier2(proto, t2)
+	tm.markTier2Compiled(proto, t2)
 
 	return t2
 }
@@ -465,7 +459,7 @@ func (tm *TieringManager) handleOSRWithResultBuffer(regs []runtime.Value, base i
 
 	if tm.envR154Trace {
 		fmt.Fprintf(os.Stderr, "[R154] handleOSR proto=%q tier2Failed=%v tier2Compiled_has=%v\n",
-			proto.Name, tm.tier2Failed[proto], tm.tier2Compiled[proto] != nil)
+			proto.Name, tm.tier2HasFailed(proto), tm.tier2Compiled[proto] != nil)
 	}
 
 	// Try to compile at Tier 2.
@@ -475,7 +469,7 @@ func (tm *TieringManager) handleOSRWithResultBuffer(regs []runtime.Value, base i
 	if err != nil {
 		// Tier 2 compilation failed. Disable OSR for this function and
 		// re-run at Tier 1 from the start with OSR disabled.
-		tm.tier2Failed[proto] = true
+		tm.markTier2Failed(proto, err.Error())
 		tm.disableTier1FeedbackForNoTier2(proto)
 		tm.tier1.SetOSRCounter(proto, -1) // disable OSR
 		tm.traceEvent("fallback", "tier1", proto, map[string]any{
@@ -490,8 +484,7 @@ func (tm *TieringManager) handleOSRWithResultBuffer(regs []runtime.Value, base i
 	}
 
 	// Cache the Tier 2 compilation for future calls.
-	tm.tier2Compiled[proto] = t2
-	tm.installTier2(proto, t2)
+	tm.markTier2Compiled(proto, t2)
 
 	// Re-enter the function from the start at Tier 2.
 	return tm.executeTier2WithResultBuffer(t2, regs, base, proto, retBuf)
@@ -534,30 +527,3 @@ func (tm *TieringManager) disableTier1FeedbackForNoTier2(proto *vm.FuncProto) {
 // eliminate calls, then checks the optimized IR with irHasCall. If calls remain
 // after inlining, the function falls back to Tier 1 where BLR calls are faster.
 // GETGLOBAL is fully native with a per-instruction value cache (~5ns on hit).
-// irHasGetGlobal scans the optimized IR for any remaining OpGetGlobal
-// instructions. Used after the inline pass + DCE to determine if global
-// accesses remain. OpGetGlobal uses exit-resume which is slower than
-// Tier 1's per-PC value cache.
-func irHasGetGlobal(fn *Function) bool {
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			if instr.Op == OpGetGlobal {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// feedbackHasObservations returns true if any entry has a non-Unobserved
-// Left, Right, or Result. Used by R82 Layer 1 gate to delay Tier 2
-// compilation until feedback has had a chance to fill.
-func feedbackHasObservations(fv []vm.TypeFeedback) bool {
-	for i := range fv {
-		if fv[i].Left != vm.FBUnobserved || fv[i].Right != vm.FBUnobserved ||
-			fv[i].Result != vm.FBUnobserved || fv[i].Kind != vm.FBKindUnobserved {
-			return true
-		}
-	}
-	return false
-}

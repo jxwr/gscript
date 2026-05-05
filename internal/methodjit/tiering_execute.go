@@ -203,15 +203,11 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			}
 			if tm.perfStatsEnabled {
 				start := time.Now()
-				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-				ctx.ExitCode = 0
-				ctx.ResumeNumericPass = 0
+				codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
 				continue
 			}
-			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-			ctx.ExitCode = 0
-			ctx.ResumeNumericPass = 0
+			codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 			continue
 
 		case ExitNativeCallExit:
@@ -239,15 +235,11 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			}
 			if tm.perfStatsEnabled {
 				start := time.Now()
-				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-				ctx.ExitCode = 0
-				ctx.ResumeNumericPass = 0
+				codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
 				continue
 			}
-			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-			ctx.ExitCode = 0
-			ctx.ResumeNumericPass = 0
+			codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 			continue
 
 		case ExitGlobalExit:
@@ -270,15 +262,11 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			}
 			if tm.perfStatsEnabled {
 				start := time.Now()
-				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-				ctx.ExitCode = 0
-				ctx.ResumeNumericPass = 0
+				codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
 				continue
 			}
-			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-			ctx.ExitCode = 0
-			ctx.ResumeNumericPass = 0
+			codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 			continue
 
 		case ExitTableExit:
@@ -308,15 +296,11 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			}
 			if tm.perfStatsEnabled {
 				start := time.Now()
-				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-				ctx.ExitCode = 0
-				ctx.ResumeNumericPass = 0
+				codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
 				continue
 			}
-			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-			ctx.ExitCode = 0
-			ctx.ResumeNumericPass = 0
+			codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 			continue
 
 		case ExitOpExit:
@@ -346,15 +330,11 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			}
 			if tm.perfStatsEnabled {
 				start := time.Now()
-				codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-				ctx.ExitCode = 0
-				ctx.ResumeNumericPass = 0
+				codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 				tm.perfStats.record(perfTier2ExitResume, time.Since(start))
 				continue
 			}
-			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
-			ctx.ExitCode = 0
-			ctx.ResumeNumericPass = 0
+			codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
 			continue
 
 		default:
@@ -363,21 +343,19 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 	}
 }
 
+func tier2ExitResumeCodePtr(cf *CompiledFunction, ctx *ExecContext, resumeOff int) uintptr {
+	codePtr := uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
+	ctx.ExitCode = 0
+	ctx.ResumeNumericPass = 0
+	return codePtr
+}
+
 func (tm *TieringManager) disableTier2AfterRuntimeDeopt(proto *vm.FuncProto, reason string) {
 	if proto == nil {
 		return
 	}
-	tm.tier2Failed[proto] = true
-	if tm.tier2FailReason == nil {
-		tm.tier2FailReason = make(map[*vm.FuncProto]string)
-	}
-	tm.tier2FailReason[proto] = reason
-	delete(tm.tier2Compiled, proto)
-	proto.Tier2Promoted = false
-	clearFuncProtoDirectEntries(proto)
-	proto.Tier2GlobalCachePtr = 0
-	proto.Tier2GlobalCacheGenPtr = 0
-	proto.Tier2GlobalIndexPtr = 0
+	tm.markTier2Failed(proto, reason)
+	tm.clearTier2Install(proto)
 	tm.tier1.SetOSRCounter(proto, -1)
 	tm.tier1.EvictCompiled(proto)
 	tm.traceEvent("runtime_disable", "tier2", proto, map[string]any{
