@@ -43,6 +43,7 @@ type Tier2Trace struct {
 	RegAllocMap         string
 	SourceMap           []IRASMMapEntry
 	LoopDiagnostics     []LoopDiagnostic
+	PipelineStages      []PipelineStageTiming
 }
 
 // DiagArtifact is the full diagnostic payload for one Tier 2 compile.
@@ -59,6 +60,7 @@ type DiagArtifact struct {
 	RegAllocMap         string
 	SourceMap           []IRASMMapEntry
 	LoopDiagnostics     []LoopDiagnostic
+	PipelineStages      []PipelineStageTiming
 	CompiledCode        []byte         // copy of cf.Code bytes
 	InsnCount           int            // total ARM64 instructions
 	InsnHistogram       map[string]int // class -> count
@@ -93,6 +95,7 @@ func (tm *TieringManager) CompileForDiagnostics(proto *vm.FuncProto) (*DiagArtif
 		RegAllocMap:         trace.RegAllocMap,
 		SourceMap:           trace.SourceMap,
 		LoopDiagnostics:     trace.LoopDiagnostics,
+		PipelineStages:      append([]PipelineStageTiming(nil), trace.PipelineStages...),
 		CompileErr:          err,
 	}
 

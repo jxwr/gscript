@@ -28,14 +28,15 @@ import (
 
 // diagProtoStats is the per-proto summary written into stats.json.
 type diagProtoStats struct {
-	Name                string               `json:"name"`
-	NumParams           int                  `json:"num_params"`
-	MaxStack            int                  `json:"max_stack"`
-	InsnCount           int                  `json:"insn_count"`
-	InsnHistogram       map[string]int       `json:"insn_histogram"`
-	CodeBytes           int                  `json:"code_bytes"`
-	SkipReason          string               `json:"skip_reason,omitempty"`
-	OptimizationRemarks []OptimizationRemark `json:"optimization_remarks,omitempty"`
+	Name                string                `json:"name"`
+	NumParams           int                   `json:"num_params"`
+	MaxStack            int                   `json:"max_stack"`
+	InsnCount           int                   `json:"insn_count"`
+	InsnHistogram       map[string]int        `json:"insn_histogram"`
+	CodeBytes           int                   `json:"code_bytes"`
+	SkipReason          string                `json:"skip_reason,omitempty"`
+	OptimizationRemarks []OptimizationRemark  `json:"optimization_remarks,omitempty"`
+	PipelineStages      []PipelineStageTiming `json:"pipeline_stages,omitempty"`
 }
 
 // TestDiagDump writes diagnostic artifacts for one benchmark to disk. It
@@ -43,9 +44,10 @@ type diagProtoStats struct {
 // benchmark file name via DIAG_BENCH and the output directory via DIAG_OUT.
 //
 // DIAG_BENCH formats accepted:
-//   "sieve.gs"                       — bare basename: defaults to suite/
-//   "extended/json_table_walk.gs"    — explicit subdirectory under benchmarks/
-//   "variants/ack_nested_shifted.gs" — likewise
+//
+//	"sieve.gs"                       — bare basename: defaults to suite/
+//	"extended/json_table_walk.gs"    — explicit subdirectory under benchmarks/
+//	"variants/ack_nested_shifted.gs" — likewise
 func TestDiagDump(t *testing.T) {
 	benchFile := os.Getenv("DIAG_BENCH")
 	if benchFile == "" {
@@ -83,6 +85,7 @@ func TestDiagDump(t *testing.T) {
 				MaxStack:            art.MaxStack,
 				SkipReason:          art.CompileErr.Error(),
 				OptimizationRemarks: art.OptimizationRemarks,
+				PipelineStages:      art.PipelineStages,
 			})
 			continue
 		}
@@ -130,6 +133,7 @@ func TestDiagDump(t *testing.T) {
 			irContent += "\n"
 		}
 		irContent += "--- Optimization remarks ---\n" + formatOptimizationRemarks(art.OptimizationRemarks) + "\n"
+		irContent += "--- Pipeline summary ---\n" + FormatPipelineStageTimings(art.PipelineStages) + "\n"
 		irContent += "--- IR (after full Tier 2 pipeline) ---\n" + art.IRAfter
 		if err := os.WriteFile(irPath, []byte(irContent), 0o644); err != nil {
 			t.Fatalf("write %s: %v", irPath, err)
@@ -143,6 +147,7 @@ func TestDiagDump(t *testing.T) {
 			InsnHistogram:       art.InsnHistogram,
 			CodeBytes:           len(art.CompiledCode),
 			OptimizationRemarks: art.OptimizationRemarks,
+			PipelineStages:      art.PipelineStages,
 		})
 	}
 

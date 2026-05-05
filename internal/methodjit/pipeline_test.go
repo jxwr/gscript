@@ -201,6 +201,60 @@ func TestPipeline_DumpBetweenPasses(t *testing.T) {
 	}
 }
 
+func TestPipeline_StageTimings(t *testing.T) {
+	identity := func(fn *Function) (*Function, error) { return fn, nil }
+
+	p := NewPipeline()
+	p.Add("passA", identity)
+	p.Add("passB", identity)
+
+	fn := makeTestFn("timings")
+	if _, err := p.Run(fn); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	timings := p.StageTimings()
+	if len(timings) != 2 {
+		t.Fatalf("timings length = %d, want 2", len(timings))
+	}
+	if timings[0].Name != "passA" || timings[1].Name != "passB" {
+		t.Fatalf("timing names = %+v", timings)
+	}
+	if timings[0].DurationNanos < 0 || timings[1].DurationNanos < 0 {
+		t.Fatalf("negative duration in timings: %+v", timings)
+	}
+
+	summary := FormatPipelineStageTimings(timings)
+	if !strings.Contains(summary, "total:") || !strings.Contains(summary, "passA") || !strings.Contains(summary, "passB") {
+		t.Fatalf("summary missing timing details:\n%s", summary)
+	}
+}
+
+func TestPipeline_StageTimingsRecordFailure(t *testing.T) {
+	p := NewPipeline()
+	p.Add("passA", func(fn *Function) (*Function, error) { return fn, nil })
+	p.Add("failing", func(fn *Function) (*Function, error) {
+		return nil, fmt.Errorf("boom")
+	})
+	p.Add("shouldNotRun", func(fn *Function) (*Function, error) {
+		t.Fatal("this pass should not run")
+		return fn, nil
+	})
+
+	fn := makeTestFn("timing-fail")
+	if _, err := p.Run(fn); err == nil {
+		t.Fatal("expected pipeline error")
+	}
+
+	timings := p.StageTimings()
+	if len(timings) != 2 {
+		t.Fatalf("timings length = %d, want 2", len(timings))
+	}
+	if timings[1].Name != "failing" || !strings.Contains(timings[1].Error, "boom") {
+		t.Fatalf("failing timing missing error: %+v", timings)
+	}
+}
+
 // TestPipeline_DiffBetweenPasses tests diff output between two pipeline stages.
 func TestPipeline_DiffBetweenPasses(t *testing.T) {
 	addNop := func(fn *Function) (*Function, error) {

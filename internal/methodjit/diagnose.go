@@ -26,9 +26,10 @@ type DiagReport struct {
 	FuncName            string
 	NumArgs             int
 	Args                []runtime.Value
-	IRBefore            string               // IR after BuildGraph (before passes)
-	IRAfter             string               // IR after all passes
-	PassDiffs           []string             // diff for each pass that changed the IR
+	IRBefore            string   // IR after BuildGraph (before passes)
+	IRAfter             string   // IR after all passes
+	PassDiffs           []string // diff for each pass that changed the IR
+	PipelineStages      []PipelineStageTiming
 	OptimizationRemarks []OptimizationRemark // structured pass/gate diagnostics
 	ValidateErrors      []error              // structural invariant violations
 	RegAllocMap         string               // human-readable register assignments
@@ -74,6 +75,7 @@ func Diagnose(proto *vm.FuncProto, args []runtime.Value) *DiagReport {
 	if pipeErr != nil {
 		// Pipeline failed; record what we can.
 		r.IRAfter = r.IRBefore
+		r.PipelineStages = pipe.StageTimings()
 		r.OptimizationRemarks = remarks.List()
 		r.NativeError = fmt.Errorf("pipeline error: %w", pipeErr)
 		r.compareResults()
@@ -82,6 +84,7 @@ func Diagnose(proto *vm.FuncProto, args []runtime.Value) *DiagReport {
 
 	r.IRAfter = Print(optimized)
 	r.OptimizationRemarks = remarks.List()
+	r.PipelineStages = pipe.StageTimings()
 
 	// Collect diffs for passes that changed the IR.
 	r.PassDiffs = collectPassDiffs(pipe)
@@ -248,6 +251,7 @@ func (r *DiagReport) String() string {
 	for _, d := range r.PassDiffs {
 		w("\n%s\n", d)
 	}
+	w("\n--- Pipeline summary ---\n%s", FormatPipelineStageTimings(r.PipelineStages))
 	w("\n--- Optimization remarks ---\n%s", formatOptimizationRemarks(r.OptimizationRemarks))
 	w("\n--- IR (after passes) ---\n%s", r.IRAfter)
 	w("\n--- Register Allocation ---\n%s\n", r.RegAllocMap)

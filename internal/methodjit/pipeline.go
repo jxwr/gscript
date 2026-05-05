@@ -19,6 +19,7 @@ package methodjit
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -35,6 +36,7 @@ type Pipeline struct {
 	validator func(*Function) []error // optional: run after each pass
 	dump      bool                    // snapshot IR between passes
 	snapshots []Snapshot              // recorded snapshots (if dump=true)
+	timings   []PipelineStageTiming   // one entry per executed pass
 }
 
 // passEntry is one named pass in the pipeline.
@@ -48,6 +50,24 @@ type passEntry struct {
 type Snapshot struct {
 	Name string // pass name (or "input" for initial state)
 	IR   string // Print(fn) output
+}
+
+// PipelineStageTiming records one observed pipeline stage or pass.
+type PipelineStageTiming struct {
+	Name          string `json:"name"`
+	DurationNanos int64  `json:"duration_nanos"`
+	Error         string `json:"error,omitempty"`
+}
+
+func newPipelineStageTiming(name string, duration time.Duration, err error) PipelineStageTiming {
+	timing := PipelineStageTiming{
+		Name:          name,
+		DurationNanos: int64(duration),
+	}
+	if err != nil {
+		timing.Error = err.Error()
+	}
+	return timing
 }
 
 // NewPipeline creates an empty pipeline with no passes.
@@ -113,6 +133,7 @@ func (p *Pipeline) EnableDump(on bool) {
 func (p *Pipeline) Run(fn *Function) (*Function, error) {
 	// Reset snapshots from any previous run.
 	p.snapshots = nil
+	p.timings = nil
 
 	if p.dump {
 		p.snapshots = append(p.snapshots, Snapshot{
@@ -127,7 +148,9 @@ func (p *Pipeline) Run(fn *Function) (*Function, error) {
 			continue
 		}
 
+		start := time.Now()
 		result, err := entry.fn(current)
+		p.timings = append(p.timings, newPipelineStageTiming(entry.name, time.Since(start), err))
 		if err != nil {
 			return nil, fmt.Errorf("pass %q: %w", entry.name, err)
 		}
@@ -158,6 +181,37 @@ func (p *Pipeline) Run(fn *Function) (*Function, error) {
 	}
 
 	return current, nil
+}
+
+// StageTimings returns a defensive copy of timings recorded by the last Run.
+func (p *Pipeline) StageTimings() []PipelineStageTiming {
+	if len(p.timings) == 0 {
+		return nil
+	}
+	out := make([]PipelineStageTiming, len(p.timings))
+	copy(out, p.timings)
+	return out
+}
+
+// FormatPipelineStageTimings returns a compact, human-readable timing summary.
+func FormatPipelineStageTimings(stages []PipelineStageTiming) string {
+	if len(stages) == 0 {
+		return "(not recorded)\n"
+	}
+	var total time.Duration
+	for _, stage := range stages {
+		total += time.Duration(stage.DurationNanos)
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "total: %s (%d stages)\n", total, len(stages))
+	for _, stage := range stages {
+		fmt.Fprintf(&sb, "  %-32s %s", stage.Name, time.Duration(stage.DurationNanos))
+		if stage.Error != "" {
+			fmt.Fprintf(&sb, " error=%q", stage.Error)
+		}
+		sb.WriteByte('\n')
+	}
+	return sb.String()
 }
 
 // Dump returns all recorded snapshots as a formatted string.

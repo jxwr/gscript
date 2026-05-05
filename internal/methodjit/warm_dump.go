@@ -47,6 +47,7 @@ type WarmDumpRecord struct {
 	RegAllocMap         string
 	SourceMap           []IRASMMapEntry
 	LoopDiagnostics     []LoopDiagnostic
+	PipelineStages      []PipelineStageTiming
 	CompiledCode        []byte
 	CodeStart           uintptr
 	CodeEnd             uintptr
@@ -63,28 +64,29 @@ type warmDumpManifest struct {
 }
 
 type warmDumpProtoManifest struct {
-	Name                string               `json:"name"`
-	Status              string               `json:"status"`
-	Attempt             int                  `json:"attempt,omitempty"`
-	Entered             bool                 `json:"entered"`
-	Compiled            bool                 `json:"compiled"`
-	Failed              bool                 `json:"failed"`
-	FailureReason       string               `json:"failure_reason,omitempty"`
-	CallCount           int                  `json:"call_count"`
-	Tier2Promoted       bool                 `json:"tier2_promoted"`
-	NumParams           int                  `json:"num_params"`
-	MaxStack            int                  `json:"max_stack"`
-	InsnCount           int                  `json:"insn_count,omitempty"`
-	InsnHistogram       map[string]int       `json:"insn_histogram,omitempty"`
-	CodeBytes           int                  `json:"code_bytes,omitempty"`
-	CodeStart           string               `json:"code_start,omitempty"`
-	CodeEnd             string               `json:"code_end,omitempty"`
-	DirectEntryOff      int                  `json:"direct_entry_offset,omitempty"`
-	NumSpills           int                  `json:"num_spills,omitempty"`
-	OptimizationRemarks []OptimizationRemark `json:"optimization_remarks,omitempty"`
-	LoopDiagnostics     []LoopDiagnostic     `json:"loop_diagnostics,omitempty"`
-	Feedback            warmFeedbackSummary  `json:"feedback"`
-	Files               map[string]string    `json:"files,omitempty"`
+	Name                string                `json:"name"`
+	Status              string                `json:"status"`
+	Attempt             int                   `json:"attempt,omitempty"`
+	Entered             bool                  `json:"entered"`
+	Compiled            bool                  `json:"compiled"`
+	Failed              bool                  `json:"failed"`
+	FailureReason       string                `json:"failure_reason,omitempty"`
+	CallCount           int                   `json:"call_count"`
+	Tier2Promoted       bool                  `json:"tier2_promoted"`
+	NumParams           int                   `json:"num_params"`
+	MaxStack            int                   `json:"max_stack"`
+	InsnCount           int                   `json:"insn_count,omitempty"`
+	InsnHistogram       map[string]int        `json:"insn_histogram,omitempty"`
+	CodeBytes           int                   `json:"code_bytes,omitempty"`
+	CodeStart           string                `json:"code_start,omitempty"`
+	CodeEnd             string                `json:"code_end,omitempty"`
+	DirectEntryOff      int                   `json:"direct_entry_offset,omitempty"`
+	NumSpills           int                   `json:"num_spills,omitempty"`
+	OptimizationRemarks []OptimizationRemark  `json:"optimization_remarks,omitempty"`
+	LoopDiagnostics     []LoopDiagnostic      `json:"loop_diagnostics,omitempty"`
+	PipelineStages      []PipelineStageTiming `json:"pipeline_stages,omitempty"`
+	Feedback            warmFeedbackSummary   `json:"feedback"`
+	Files               map[string]string     `json:"files,omitempty"`
 }
 
 type warmDumpPCMap struct {
@@ -196,6 +198,7 @@ func (s *WarmDumpSession) record(proto *vm.FuncProto, trace *Tier2Trace, cf *Com
 		SourceMap:   append([]IRASMMapEntry(nil), trace.SourceMap...),
 		LoopDiagnostics: append([]LoopDiagnostic(nil),
 			trace.LoopDiagnostics...),
+		PipelineStages: append([]PipelineStageTiming(nil), trace.PipelineStages...),
 	}
 	if compileErr != nil {
 		rec.CompileErr = compileErr.Error()
@@ -278,6 +281,13 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 					return fmt.Errorf("write regalloc for %s: %w", proto.Name, err)
 				}
 				files["regalloc"] = name
+			}
+			if len(rec.PipelineStages) > 0 {
+				name := base + ".pipeline.txt"
+				if err := os.WriteFile(filepath.Join(s.dir, name), []byte(FormatPipelineStageTimings(rec.PipelineStages)), 0o644); err != nil {
+					return fmt.Errorf("write pipeline summary for %s: %w", proto.Name, err)
+				}
+				files["pipeline"] = name
 			}
 			if len(rec.SourceMap) > 0 {
 				name := base + ".sourcemap.json"
@@ -368,6 +378,7 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 			protoManifest.NumSpills = rec.NumSpills
 			protoManifest.OptimizationRemarks = append([]OptimizationRemark(nil), rec.OptimizationRemarks...)
 			protoManifest.LoopDiagnostics = append([]LoopDiagnostic(nil), rec.LoopDiagnostics...)
+			protoManifest.PipelineStages = append([]PipelineStageTiming(nil), rec.PipelineStages...)
 		}
 
 		statusName := base + ".status.json"

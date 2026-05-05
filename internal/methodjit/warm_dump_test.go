@@ -59,6 +59,7 @@ b := sum(20)
 		"sum.ir.before.txt",
 		"sum.ir.after.txt",
 		"sum.regalloc.txt",
+		"sum.pipeline.txt",
 		"sum.loops.txt",
 		"sum.bin",
 		"sum.asm.txt",
@@ -95,6 +96,16 @@ b := sum(20)
 	}
 	if len(got.LoopDiagnostics) == 0 || got.Files["loops"] == "" {
 		t.Fatalf("loop diagnostics missing: %+v", got.LoopDiagnostics)
+	}
+	if len(got.PipelineStages) == 0 || got.Files["pipeline"] == "" {
+		t.Fatalf("pipeline summary missing: %+v", got.PipelineStages)
+	}
+	pipelineText, err := os.ReadFile(filepath.Join(outDir, got.Files["pipeline"]))
+	if err != nil {
+		t.Fatalf("read pipeline summary: %v", err)
+	}
+	if !strings.Contains(string(pipelineText), "RunTier2Pipeline") || !strings.Contains(string(pipelineText), "RegAlloc") {
+		t.Fatalf("pipeline summary missing expected stages:\n%s", string(pipelineText))
 	}
 	if got.CodeStart == "" || got.CodeEnd == "" || got.Files["sourcemap"] == "" || got.Files["pcmap"] == "" {
 		t.Fatalf("PC/source map metadata missing: %+v", got)

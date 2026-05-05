@@ -182,6 +182,7 @@ func TestDiagnose_ReportString(t *testing.T) {
 		"Method JIT Diagnostic Report",
 		"Function:",
 		"IR (before passes)",
+		"Pipeline summary",
 		"IR (after passes)",
 		"Register Allocation",
 		"Validation",
@@ -193,6 +194,9 @@ func TestDiagnose_ReportString(t *testing.T) {
 		if !strings.Contains(s, sec) {
 			t.Errorf("report String() missing section %q", sec)
 		}
+	}
+	if len(report.PipelineStages) == 0 {
+		t.Error("expected pipeline stages in diagnostic report")
 	}
 }
 
