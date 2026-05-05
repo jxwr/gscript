@@ -99,7 +99,7 @@ func (e *BaselineJITEngine) handleYield(ctx *ExecContext, regs []runtime.Value, 
 		return err
 	}
 	resumePC := int(ctx.BaselinePC)
-	resumeOff, ok := bf.Labels[resumePC]
+	resumeOff, ok := baselineResumeOffset(bf, resumePC)
 	if !ok {
 		return fmt.Errorf("baseline: no yield continuation label for PC %d", resumePC)
 	}

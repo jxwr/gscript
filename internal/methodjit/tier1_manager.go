@@ -103,6 +103,18 @@ type BaselineJITEngine struct {
 	intSpecDeoptPC int
 }
 
+func baselineResumeOffset(bf *BaselineFunc, pc int) (int, bool) {
+	if bf == nil {
+		return 0, false
+	}
+	if pc >= 0 && pc < len(bf.ResumeOffsets) {
+		off := bf.ResumeOffsets[pc]
+		return off, off >= 0
+	}
+	off, ok := bf.Labels[pc]
+	return off, ok
+}
+
 // NewBaselineJITEngine creates a new baseline JIT engine.
 func NewBaselineJITEngine() *BaselineJITEngine {
 	e := &BaselineJITEngine{
@@ -449,7 +461,7 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 		resumeOff := startOffset
 		if resumeOff == 0 {
 			var ok bool
-			resumeOff, ok = bf.Labels[startPC]
+			resumeOff, ok = baselineResumeOffset(bf, startPC)
 			if !ok {
 				return nil, fmt.Errorf("baseline: no continuation label for PC %d", startPC)
 			}
@@ -497,7 +509,7 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 
 			// Resume at the next bytecode PC.
 			resumePC := int(ctx.BaselinePC)
-			resumeOff, ok := bf.Labels[resumePC]
+			resumeOff, ok := baselineResumeOffset(bf, resumePC)
 			if !ok {
 				return nil, fmt.Errorf("baseline: no resume label for PC %d", resumePC)
 			}
@@ -550,7 +562,7 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 
 			// Resume caller at PC+1.
 			resumePC := int(ctx.BaselinePC)
-			resumeOff, ok := bf.Labels[resumePC]
+			resumeOff, ok := baselineResumeOffset(bf, resumePC)
 			if !ok {
 				return nil, fmt.Errorf("baseline: no resume label for native-call-exit PC %d", resumePC)
 			}

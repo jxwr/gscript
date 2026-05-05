@@ -32,6 +32,7 @@ type BaselineFunc struct {
 	Code              *jit.CodeBlock // executable memory
 	Proto             *vm.FuncProto  // source function
 	Labels            map[int]int    // bytecodePC -> code offset (for resume after exit)
+	ResumeOffsets     []int          // bytecodePC -> code offset, -1 if no resume stub
 	HasFieldOps       bool           // true if proto has GETFIELD/SETFIELD (skip syncFieldCache otherwise)
 	HasTableOps       bool           // true if proto has GETTABLE/SETTABLE (skip dynamic table cache sync otherwise)
 	GlobalValCache    []uint64       // per-PC NaN-boxed global value cache (0 = not cached)
@@ -358,11 +359,18 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 	// The Go-side Execute loop looks up Labels[resumePC] to find the
 	// resume entry point for re-entering JIT code after an op-exit.
 	labels := make(map[int]int, len(resumePCs))
+	resumeOffsets := make([]int, len(code))
+	for i := range resumeOffsets {
+		resumeOffsets[i] = -1
+	}
 	for _, rpc := range resumePCs {
 		resumeLabel := fmt.Sprintf("resume_%d", rpc)
 		off := asm.LabelOffset(resumeLabel)
 		if off >= 0 {
 			labels[rpc] = off
+			if rpc >= 0 && rpc < len(resumeOffsets) {
+				resumeOffsets[rpc] = off
+			}
 		}
 	}
 
@@ -404,6 +412,7 @@ func CompileBaseline(proto *vm.FuncProto) (*BaselineFunc, error) {
 		Code:              block,
 		Proto:             proto,
 		Labels:            labels,
+		ResumeOffsets:     resumeOffsets,
 		HasFieldOps:       hasFieldOps,
 		HasTableOps:       hasTableOps,
 		GlobalValCache:    globalValCache,
