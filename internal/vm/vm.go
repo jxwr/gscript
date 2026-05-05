@@ -906,6 +906,20 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				if start >= 0 && start+n <= len(vm.regs) {
 					if vm.currentCoroutine != nil {
 						if n == 5 {
+							co := vm.currentCoroutine
+							if co.stackYieldEnabled {
+								if co.pooledFixedRecord == nil {
+									if runtime.DefaultHeap != nil {
+										co.pooledFixedRecord = runtime.DefaultHeap.AllocFixedRecord()
+									} else {
+										co.pooledFixedRecord = &runtime.FixedRecord{}
+									}
+								}
+								if v, ok := runtime.FillFixedRecord5KnownCtor(co.pooledFixedRecord, ctor, vm.regs[start], vm.regs[start+1], vm.regs[start+2], vm.regs[start+3], vm.regs[start+4]); ok {
+									vm.regs[base+a] = v
+									break
+								}
+							}
 							if v, ok := runtime.NewFixedRecordValue5KnownCtor(ctor, vm.regs[start], vm.regs[start+1], vm.regs[start+2], vm.regs[start+3], vm.regs[start+4]); ok {
 								vm.regs[base+a] = v
 								break

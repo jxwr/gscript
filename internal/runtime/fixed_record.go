@@ -130,6 +130,30 @@ func NewFixedRecordValue5(ctor *SmallTableCtorN, v0, v1, v2, v3, v4 Value) (Valu
 	return NewFixedRecordValue5KnownCtor(ctor, v0, v1, v2, v3, v4)
 }
 
+// FillFixedRecord5KnownCtor overwrites an existing FixedRecord in place with
+// the given ctor and 5 values, returning the tagged Value. Used by the
+// coroutine stack-yield fast path to avoid per-yield allocation when the
+// consumer is statically known to read the payload via GETFIELD only.
+func FillFixedRecord5KnownCtor(fr *FixedRecord, ctor *SmallTableCtorN, v0, v1, v2, v3, v4 Value) (Value, bool) {
+	if fr == nil {
+		return NilValue(), false
+	}
+	if v0.IsNil() || v1.IsNil() || v2.IsNil() || v3.IsNil() || v4.IsNil() {
+		return NilValue(), false
+	}
+	fr.ctor = ctor
+	fr.materialized = nil
+	fr.shapeID = ctor.shapeID
+	fr.n = 5
+	fr.values[0] = v0
+	fr.values[1] = v1
+	fr.values[2] = v2
+	fr.values[3] = v3
+	fr.values[4] = v4
+	p := unsafe.Pointer(fr)
+	return Value(tagPtr | ptrSubFixedRecord | (uint64(uintptr(p)) & ptrAddrMask)), true
+}
+
 func NewFixedRecordValue5KnownCtor(ctor *SmallTableCtorN, v0, v1, v2, v3, v4 Value) (Value, bool) {
 	if v0.IsNil() || v1.IsNil() || v2.IsNil() || v3.IsNil() || v4.IsNil() {
 		return NilValue(), false

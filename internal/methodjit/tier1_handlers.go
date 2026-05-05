@@ -21,7 +21,7 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	case vm.OP_CALL:
 		return e.handleCall(ctx, regs, base, proto)
 	case vm.OP_RESUME:
-		return e.handleResume(ctx, regs, base)
+		return e.handleResume(ctx, regs, base, proto)
 	case vm.OP_GETGLOBAL:
 		return e.handleGetGlobal(ctx, regs, base, proto, bf)
 	case vm.OP_SETGLOBAL:
@@ -75,7 +75,7 @@ func (e *BaselineJITEngine) handleBaselineOpExit(ctx *ExecContext, regs []runtim
 	}
 }
 
-func (e *BaselineJITEngine) handleResume(ctx *ExecContext, regs []runtime.Value, base int) error {
+func (e *BaselineJITEngine) handleResume(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
 	if e.callVM == nil {
 		return fmt.Errorf("no callVM for coroutine resume exit")
 	}
@@ -93,7 +93,11 @@ func (e *BaselineJITEngine) handleResume(ctx *ExecContext, regs []runtime.Value,
 			nArgs = 0
 		}
 	}
-	return e.callVM.ResumeCoroutineFromSlots(absSlot, nArgs, rawC, false)
+	payloadFieldOnly := false
+	if proto != nil {
+		payloadFieldOnly = e.callVM.ResumePayloadIsFieldOnly(proto, int(ctx.BaselinePC), slot, rawC)
+	}
+	return e.callVM.ResumeCoroutineFromSlots(absSlot, nArgs, rawC, payloadFieldOnly)
 }
 
 func (e *BaselineJITEngine) handleNewObject2(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, bf *BaselineFunc) error {
