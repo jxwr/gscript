@@ -53,6 +53,57 @@ func stringDataPtr(s string) uintptr {
 	return uintptr(unsafe.Pointer(unsafe.StringData(s)))
 }
 
+func (ec *emitContext) emitStringFormatIntCacheProbe(pattern string, intReg jit.Reg, instrID int, doneLabel string) {
+	if pattern == "" {
+		return
+	}
+	asm := ec.asm
+	missLabel := ec.uniqueLabel("strfmt_cache_miss")
+
+	asm.LoadImm64(jit.X2, int64(runtime.NativeStringFormatIntCacheSize-1))
+	asm.ANDreg(jit.X3, intReg, jit.X2)
+	asm.ADDregLSL(jit.X4, jit.X3, jit.X3, 1) // idx * 3
+	asm.LSLimm(jit.X4, jit.X4, 4)            // idx * 48
+	asm.LoadImm64(jit.X2, int64(uintptr(runtime.NativeStringFormatIntCachePtr())))
+	asm.ADDreg(jit.X4, jit.X2, jit.X4)
+
+	asm.LDR(jit.X5, jit.X4, int(unsafe.Offsetof(runtime.NativeStringFormatIntCacheEntry{}.PatternData)))
+	asm.LoadImm64(jit.X6, int64(stringDataPtr(pattern)))
+	asm.CMPreg(jit.X5, jit.X6)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X5, jit.X4, int(unsafe.Offsetof(runtime.NativeStringFormatIntCacheEntry{}.PatternLen)))
+	asm.LoadImm64(jit.X6, int64(len(pattern)))
+	asm.CMPreg(jit.X5, jit.X6)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X5, jit.X4, int(unsafe.Offsetof(runtime.NativeStringFormatIntCacheEntry{}.N)))
+	asm.CMPreg(jit.X5, intReg)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X0, jit.X4, int(unsafe.Offsetof(runtime.NativeStringFormatIntCacheEntry{}.Value)))
+	ec.storeResultNB(jit.X0, instrID)
+	asm.B(doneLabel)
+	asm.Label(missLabel)
+}
+
+func (ec *emitContext) emitStringFormatIntCacheStore(pattern string, intReg, valueReg jit.Reg) {
+	if pattern == "" {
+		return
+	}
+	asm := ec.asm
+	asm.LoadImm64(jit.X2, int64(runtime.NativeStringFormatIntCacheSize-1))
+	asm.ANDreg(jit.X3, intReg, jit.X2)
+	asm.ADDregLSL(jit.X4, jit.X3, jit.X3, 1)
+	asm.LSLimm(jit.X4, jit.X4, 4)
+	asm.LoadImm64(jit.X2, int64(uintptr(runtime.NativeStringFormatIntCachePtr())))
+	asm.ADDreg(jit.X4, jit.X2, jit.X4)
+
+	asm.LoadImm64(jit.X5, int64(len(pattern)))
+	asm.STR(jit.X5, jit.X4, int(unsafe.Offsetof(runtime.NativeStringFormatIntCacheEntry{}.PatternLen)))
+	asm.STR(valueReg, jit.X4, int(unsafe.Offsetof(runtime.NativeStringFormatIntCacheEntry{}.Value)))
+	asm.STR(intReg, jit.X4, int(unsafe.Offsetof(runtime.NativeStringFormatIntCacheEntry{}.N)))
+	asm.LoadImm64(jit.X5, int64(stringDataPtr(pattern)))
+	asm.STR(jit.X5, jit.X4, int(unsafe.Offsetof(runtime.NativeStringFormatIntCacheEntry{}.PatternData)))
+}
+
 func (ec *emitContext) emitStringFormatIntNative(instr *Instr) {
 	if instr == nil || len(instr.Args) != 3 || ec.fn == nil {
 		ec.emitStringFormatIntExit(instr)
@@ -100,6 +151,7 @@ func (ec *emitContext) emitStringFormatIntNative(instr *Instr) {
 	asm.LoadImm64(jit.X3, math.MinInt64)
 	asm.CMPreg(jit.X1, jit.X3)
 	asm.BCond(jit.CondEQ, slowLabel)
+	ec.emitStringFormatIntCacheProbe(ec.fn.StringFormatPatterns[patternIdx], jit.X1, instr.ID, doneLabel)
 
 	asm.SUBimm(jit.SP, jit.SP, 64)
 
@@ -208,8 +260,10 @@ func (ec *emitContext) emitStringFormatIntNative(instr *Instr) {
 	ec.emitCopyConstBytes(jit.X5, pat.suffix)
 
 	asm.ADDimm(jit.SP, jit.SP, 64)
+	asm.MOVreg(jit.X7, jit.X1)
 	asm.LoadImm64(jit.X1, nb64(jit.NB_TagPtr|(1<<jit.NB_PtrSubShift)))
 	asm.ORRreg(jit.X0, jit.X0, jit.X1)
+	ec.emitStringFormatIntCacheStore(ec.fn.StringFormatPatterns[patternIdx], jit.X7, jit.X0)
 	ec.storeResultNB(jit.X0, instr.ID)
 	asm.B(doneLabel)
 

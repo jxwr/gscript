@@ -20,19 +20,21 @@ type ExitSiteMeta struct {
 }
 
 type exitStatsKey struct {
-	proto    string
-	code     int
-	opID     int
-	pc       int
-	reason   string
-	exitName string
+	proto      *vm.FuncProto
+	cf         *CompiledFunction
+	code       int
+	opID       int
+	fallbackOp int64
 }
 
 type exitStatsCollector struct {
-	mu     sync.Mutex
-	total  uint64
-	byCode map[int]uint64
-	sites  map[exitStatsKey]uint64
+	mu            sync.Mutex
+	total         uint64
+	byCode        map[int]uint64
+	sites         map[exitStatsKey]uint64
+	lastSite      exitStatsKey
+	lastSiteCount uint64
+	lastSiteValid bool
 }
 
 // ExitStatsSite is one aggregated exit/deopt profile row.
@@ -97,37 +99,13 @@ func (tm *TieringManager) recordTier2Exit(proto *vm.FuncProto, cf *CompiledFunct
 		return
 	}
 
-	protoName := "<nil>"
-	if proto != nil {
-		protoName = proto.Name
-		if protoName == "" {
-			protoName = "<anonymous>"
-		}
-	}
-
 	opID := exitStatsOpID(ctx)
-	pc := -1
-	reason := exitStatsReason(ctx)
-	if cf != nil && cf.ExitSites != nil {
-		if meta, ok := cf.ExitSites[opID]; ok {
-			pc = meta.PC
-			if meta.Reason != "" {
-				if ctx.ExitCode == ExitDeopt {
-					reason = "deopt:" + meta.Reason
-				} else {
-					reason = meta.Reason
-				}
-			}
-		}
-	}
-
 	tm.exitStats.record(exitStatsKey{
-		proto:    protoName,
-		code:     int(ctx.ExitCode),
-		opID:     opID,
-		pc:       pc,
-		reason:   reason,
-		exitName: exitCodeName(int(ctx.ExitCode)),
+		proto:      proto,
+		cf:         cf,
+		code:       int(ctx.ExitCode),
+		opID:       opID,
+		fallbackOp: exitStatsFallbackOp(ctx),
 	})
 }
 
@@ -151,12 +129,33 @@ func (s *exitStatsCollector) record(key exitStatsKey) {
 	}
 	s.total++
 	s.byCode[key.code]++
-	s.sites[key]++
+	if s.lastSiteValid && s.lastSite == key {
+		s.lastSiteCount++
+		return
+	}
+	s.flushLastSiteLocked()
+	s.lastSite = key
+	s.lastSiteCount = 1
+	s.lastSiteValid = true
+}
+
+func (s *exitStatsCollector) flushLastSiteLocked() {
+	if !s.lastSiteValid || s.lastSiteCount == 0 {
+		return
+	}
+	if s.sites == nil {
+		s.sites = make(map[exitStatsKey]uint64)
+	}
+	s.sites[s.lastSite] += s.lastSiteCount
+	s.lastSite = exitStatsKey{}
+	s.lastSiteCount = 0
+	s.lastSiteValid = false
 }
 
 func (s *exitStatsCollector) snapshot() ExitStatsSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.flushLastSiteLocked()
 
 	out := ExitStatsSnapshot{
 		Total:      s.total,
@@ -167,13 +166,14 @@ func (s *exitStatsCollector) snapshot() ExitStatsSnapshot {
 		out.ByExitCode[exitCodeName(code)] = count
 	}
 	for key, count := range s.sites {
+		pc, reason := exitStatsSiteMeta(key)
 		out.Sites = append(out.Sites, ExitStatsSite{
-			Proto:    key.proto,
+			Proto:    exitStatsProtoName(key.proto),
 			ExitCode: key.code,
-			ExitName: key.exitName,
+			ExitName: exitCodeName(key.code),
 			OpID:     key.opID,
-			PC:       key.pc,
-			Reason:   key.reason,
+			PC:       pc,
+			Reason:   reason,
 			Count:    count,
 		})
 	}
@@ -229,6 +229,34 @@ func (tm *TieringManager) WriteExitStatsText(w io.Writer) {
 	}
 }
 
+func exitStatsProtoName(proto *vm.FuncProto) string {
+	if proto == nil {
+		return "<nil>"
+	}
+	if proto.Name == "" {
+		return "<anonymous>"
+	}
+	return proto.Name
+}
+
+func exitStatsSiteMeta(key exitStatsKey) (int, string) {
+	pc := -1
+	reason := exitStatsFallbackReason(key)
+	if key.cf != nil && key.cf.ExitSites != nil {
+		if meta, ok := key.cf.ExitSites[key.opID]; ok {
+			pc = meta.PC
+			if meta.Reason != "" {
+				if key.code == ExitDeopt {
+					reason = "deopt:" + meta.Reason
+				} else {
+					reason = meta.Reason
+				}
+			}
+		}
+	}
+	return pc, reason
+}
+
 func exitStatsOpID(ctx *ExecContext) int {
 	switch ctx.ExitCode {
 	case ExitDeopt:
@@ -246,8 +274,22 @@ func exitStatsOpID(ctx *ExecContext) int {
 	}
 }
 
-func exitStatsReason(ctx *ExecContext) string {
+func exitStatsFallbackOp(ctx *ExecContext) int64 {
+	if ctx == nil {
+		return 0
+	}
 	switch ctx.ExitCode {
+	case ExitTableExit:
+		return ctx.TableOp
+	case ExitOpExit:
+		return ctx.OpExitOp
+	default:
+		return 0
+	}
+}
+
+func exitStatsFallbackReason(key exitStatsKey) string {
+	switch key.code {
 	case ExitDeopt:
 		return "deopt"
 	case ExitCallExit:
@@ -255,9 +297,9 @@ func exitStatsReason(ctx *ExecContext) string {
 	case ExitGlobalExit:
 		return "GetGlobal"
 	case ExitTableExit:
-		return tableOpName(int(ctx.TableOp))
+		return tableOpName(int(key.fallbackOp))
 	case ExitOpExit:
-		return Op(ctx.OpExitOp).String()
+		return Op(key.fallbackOp).String()
 	default:
 		return "unknown"
 	}

@@ -15,11 +15,33 @@ const NativeKindStdStringFormat uint8 = 2
 
 var stdStringFormatIdentity byte
 
+// NativeStringFormatIntCacheSize is the direct-mapped entry count used by the
+// Tier 2 native string.format(pattern, int) path.
+const NativeStringFormatIntCacheSize = 8192
+
+// NativeStringFormatIntCacheEntry stores one immutable formatted string result
+// for the Tier 2 native string.format(pattern, int) fast path.
+type NativeStringFormatIntCacheEntry struct {
+	PatternData uintptr
+	PatternLen  uintptr
+	N           int64
+	Value       Value
+	_           [16]byte
+}
+
+var nativeStringFormatIntCache [NativeStringFormatIntCacheSize]NativeStringFormatIntCacheEntry
+
 // StdStringFormatIdentityPtr returns the process-wide identity token attached
 // to stdlib string.format GoFunctions. JIT guards compare this token instead
 // of trusting mutable function names or the presence of FastArg2.
 func StdStringFormatIdentityPtr() unsafe.Pointer {
 	return unsafe.Pointer(&stdStringFormatIdentity)
+}
+
+// NativeStringFormatIntCachePtr returns the base address of the process-wide
+// direct-mapped native string.format(pattern, int) result cache.
+func NativeStringFormatIntCachePtr() unsafe.Pointer {
+	return unsafe.Pointer(&nativeStringFormatIntCache[0])
 }
 
 // buildStringLib creates the "string" standard library table and returns it.
