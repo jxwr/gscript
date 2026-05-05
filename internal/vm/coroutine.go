@@ -446,6 +446,31 @@ func (vm *VM) SuspendCoroutineFromSlots(absSlot, nArgs, c int) error {
 	return vm.suspendCoroutine(vm.regs[start:end], absSlot, c)
 }
 
+// coroutineResumeBoundaryFromSlots is the shared slot boundary for OP_RESUME
+// and JIT op-exit resume handling. nArgs is the bytecode CALL/RESUME argument
+// count after subtracting one from B, so it includes the coroutine operand.
+func (vm *VM) coroutineResumeBoundaryFromSlots(absSlot, nArgs int) (*VMCoroutine, []rt.Value, error) {
+	if vm == nil || absSlot < 0 || absSlot >= len(vm.regs) {
+		return nil, nil, fmt.Errorf("coroutine.resume expects a coroutine")
+	}
+	if nArgs < 1 || absSlot+1 >= len(vm.regs) || !vm.regs[absSlot+1].IsCoroutine() {
+		return nil, nil, fmt.Errorf("coroutine.resume expects a coroutine")
+	}
+	co, ok := vmCoroutineFromValue(vm.regs[absSlot+1])
+	if !ok {
+		return nil, nil, fmt.Errorf("coroutine.resume expects a VM coroutine")
+	}
+	if nArgs == 1 {
+		return co, nil, nil
+	}
+	start := absSlot + 2
+	end := start + nArgs - 1
+	if end > len(vm.regs) {
+		return nil, nil, fmt.Errorf("coroutine.resume args out of range")
+	}
+	return co, vm.regs[start:end], nil
+}
+
 // SaveMethodJITContinuation records where the active coroutine should re-enter
 // native code after the current yield is resumed.
 func (vm *VM) SaveMethodJITContinuation(cont MethodJITContinuation) error {
@@ -639,26 +664,11 @@ func (vm *VM) TryFastCoroutineCallValue(fnVal rt.Value, absSlot, nArgs, c int) (
 }
 
 func (vm *VM) ResumeCoroutineFromSlots(absSlot, nArgs, c int, payloadFieldOnly bool) error {
-	if vm == nil || absSlot < 0 || absSlot >= len(vm.regs) {
-		return fmt.Errorf("coroutine.resume expects a coroutine")
-	}
-	if nArgs < 1 || absSlot+1 >= len(vm.regs) || !vm.regs[absSlot+1].IsCoroutine() {
-		return fmt.Errorf("coroutine.resume expects a coroutine")
-	}
-	co, ok := vmCoroutineFromValue(vm.regs[absSlot+1])
-	if !ok {
-		return fmt.Errorf("coroutine.resume expects a VM coroutine")
+	co, args, err := vm.coroutineResumeBoundaryFromSlots(absSlot, nArgs)
+	if err != nil {
+		return err
 	}
 	co.stackYieldEnabled = payloadFieldOnly
-	var args []rt.Value
-	if nArgs > 1 {
-		start := absSlot + 2
-		end := start + nArgs - 1
-		if end > len(vm.regs) {
-			return fmt.Errorf("coroutine.resume args out of range")
-		}
-		args = vm.regs[start:end]
-	}
 	okResult, values, err := vm.resumeCoroutineRaw(co, args)
 	if err != nil {
 		return err

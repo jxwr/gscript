@@ -1577,17 +1577,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			if b == 0 {
 				nArgs = vm.top - (base + a + 1)
 			}
-			if nArgs < 1 || !vm.regs[base+a+1].IsCoroutine() {
-				return nil, wrapLineErr(frame, fmt.Errorf("coroutine.resume expects a coroutine"))
-			}
-			co, ok := vmCoroutineFromValue(vm.regs[base+a+1])
-			if !ok {
-				return nil, wrapLineErr(frame, fmt.Errorf("coroutine.resume expects a VM coroutine"))
-			}
-			var args []runtime.Value
-			if nArgs > 1 {
-				start := base + a + 2
-				args = vm.regs[start : start+nArgs-1]
+			co, args, err := vm.coroutineResumeBoundaryFromSlots(base+a, nArgs)
+			if err != nil {
+				return nil, wrapLineErr(frame, err)
 			}
 			co.stackYieldEnabled = vm.ResumePayloadIsFieldOnly(frame.closure.Proto, frame.pc, a, c)
 			okResult, values, err := vm.resumeCoroutineRaw(co, args)
@@ -2280,17 +2272,9 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 		return true, nil
 
 	case goFunctionKindCoroutineResume:
-		if nArgs < 1 || !vm.regs[base+a+1].IsCoroutine() {
-			return true, fmt.Errorf("coroutine.resume expects a coroutine")
-		}
-		co, ok := vmCoroutineFromValue(vm.regs[base+a+1])
-		if !ok {
-			return true, fmt.Errorf("coroutine.resume expects a VM coroutine")
-		}
-		var args []runtime.Value
-		if nArgs > 1 {
-			start := base + a + 2
-			args = vm.regs[start : start+nArgs-1]
+		co, args, err := vm.coroutineResumeBoundaryFromSlots(base+a, nArgs)
+		if err != nil {
+			return true, err
 		}
 		okResult, values, err := vm.resumeCoroutineRaw(co, args)
 		if err != nil {
@@ -2335,17 +2319,9 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 	}
 
 	if gf == vm.coroutineResumeFn || gf.Name == coroutineResumeName {
-		if nArgs < 1 || !vm.regs[base+a+1].IsCoroutine() {
-			return true, fmt.Errorf("coroutine.resume expects a coroutine")
-		}
-		co, ok := vmCoroutineFromValue(vm.regs[base+a+1])
-		if !ok {
-			return true, fmt.Errorf("coroutine.resume expects a VM coroutine")
-		}
-		var args []runtime.Value
-		if nArgs > 1 {
-			start := base + a + 2
-			args = vm.regs[start : start+nArgs-1]
+		co, args, err := vm.coroutineResumeBoundaryFromSlots(base+a, nArgs)
+		if err != nil {
+			return true, err
 		}
 		okResult, values, err := vm.resumeCoroutineRaw(co, args)
 		if err != nil {
