@@ -182,6 +182,7 @@ const (
 	// Calls
 	OpCall   // Args[0] = function, Args[1:] = arguments
 	OpResume // coroutine.resume fast bytecode; Aux = dest slot A, Aux2 = (B<<32)|C
+	OpYield  // coroutine.yield fast bytecode; Aux = dest slot A, Aux2 = (B<<32)|C
 	OpSelf   // method call: Args[0] = table, Args[1] = method key
 
 	// For-loop
@@ -310,6 +311,7 @@ var opNames = [...]string{
 	OpReturn:                     "Return",
 	OpCall:                       "Call",
 	OpResume:                     "Resume",
+	OpYield:                      "Yield",
 	OpSelf:                       "Self",
 	OpForPrep:                    "ForPrep",
 	OpForLoop:                    "ForLoop",

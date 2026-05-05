@@ -1118,6 +1118,35 @@ func (b *graphBuilder) emitBlocks() {
 				b.writeVariable(a, block, instr.Value())
 
 			case vm.OP_YIELD:
+				a := vm.DecodeA(inst)
+				bOp := vm.DecodeB(inst)
+				c := vm.DecodeC(inst)
+				var args []*Value
+				if bOp >= 2 {
+					for i := a + 1; i <= a+bOp-1; i++ {
+						args = append(args, b.readVariable(i, block))
+					}
+				} else if bOp == 0 {
+					if b.lastMultiRetReg >= 0 && b.lastMultiRetReg >= a+1 {
+						for i := a + 1; i <= b.lastMultiRetReg; i++ {
+							args = append(args, b.readVariable(i, block))
+						}
+						b.lastMultiRetReg = -1
+					} else {
+						b.fn.Unpromotable = true
+					}
+				}
+				instr := b.emit(block, OpYield, TypeAny, args, int64(a), int64(uint64(uint32(bOp))<<32|uint64(uint32(c))))
+				b.writeVariable(a, block, instr.Value())
+				if c >= 3 {
+					for i := 1; i < c-1; i++ {
+						result := b.emit(block, OpLoadSlot, TypeAny, nil, int64(a+i), 0)
+						b.writeVariable(a+i, block, result.Value())
+					}
+				}
+				if c == 0 {
+					b.lastMultiRetReg = a
+				}
 				// Coroutine yield can suspend the currently executing VM and
 				// return to the resumer, so the ordinary Tier 2 op-exit resume
 				// model is not sufficient yet. Keep yielding protos in Tier 1

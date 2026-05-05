@@ -13,7 +13,8 @@ import (
 // OP_RESUME / OP_YIELD bytecodes; without an explicit case in the Tier 2
 // graph builder, the destination register is never written, which corrupts
 // downstream IR and trips the validator. OP_RESUME is now modeled as OpResume;
-// OP_YIELD remains unpromotable until it has continuation-aware lowering.
+// OP_YIELD is modeled as OpYield but remains unpromotable until it has
+// continuation-aware lowering.
 const resumeIRSrc = `
 func make_producer(n) {
     return coroutine.create(func() {
@@ -92,6 +93,12 @@ func TestTier2YieldMarkedUnpromotable(t *testing.T) {
 	}
 	if !fn.Unpromotable {
 		t.Fatal("expected fn.Unpromotable=true for proto containing OP_YIELD")
+	}
+	if got := countOpHelper(fn, OpYield); got != 1 {
+		t.Fatalf("OpYield count = %d, want 1", got)
+	}
+	if errs := Validate(fn); len(errs) > 0 {
+		t.Fatalf("OpYield placeholder IR failed validation: %v", errs)
 	}
 }
 

@@ -73,8 +73,8 @@ func hasSideEffect(instr *Instr) bool {
 	case OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow:
 		return true
 
-	// Calls have arbitrary side effects.
-	case OpCall, OpResume, OpSelf:
+	// Calls and coroutine transfers have arbitrary side effects.
+	case OpCall, OpResume, OpYield, OpSelf:
 		return true
 
 	// Guards: deoptimization side effect.
