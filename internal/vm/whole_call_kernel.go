@@ -19,6 +19,9 @@ func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, 
 
 func (vm *VM) tryRunValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
 	if handled, results, err := vm.tryRunRawIntNestedValueKernel(cl, args); handled || err != nil {
+		if handled {
+			runtime.RecordRuntimePathStructuralKernelHit(string(KernelRouteWholeCallValue), "raw_int_nested")
+		}
 		return handled, results, err
 	}
 	includeRecursiveTable := cl != nil && cl.Proto != nil && vm.methodJIT != nil && cl.Proto.Tier2Promoted
@@ -75,6 +78,9 @@ func (vm *VM) tryRunCachedValueWholeCallKernel(cl *Closure, args []runtime.Value
 		}
 		handled, results, err := entry.runValue(vm, cl, args)
 		if handled || err != nil {
+			if handled {
+				runtime.RecordRuntimePathStructuralKernelHit(string(entry.info.Route), entry.info.Name)
+			}
 			return handled, results, err
 		}
 	}
@@ -98,6 +104,9 @@ func (vm *VM) tryRunCachedNoResultWholeCallKernel(cl *Closure, args []runtime.Va
 		}
 		handled, err := entry.runNoResult(vm, cl, args)
 		if handled || err != nil {
+			if handled {
+				runtime.RecordRuntimePathStructuralKernelHit(string(entry.info.Route), entry.info.Name)
+			}
 			return handled, err
 		}
 	}

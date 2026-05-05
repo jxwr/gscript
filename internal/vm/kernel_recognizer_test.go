@@ -90,9 +90,21 @@ func local_prime_counter(n) {
 	}
 
 	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
+	stats := runtime.EnableRuntimePathStats()
+	defer runtime.DisableRuntimePathStats()
 	handled, results, err := vm.tryRunValueWholeCallKernel(NewClosure(child), []runtime.Value{runtime.IntValue(100)})
 	if err != nil || !handled || len(results) != 1 || !results[0].IsInt() || results[0].Int() != 25 {
 		t.Fatalf("renamed/source-changed sieve dispatch = handled=%v results=%v err=%v, want 25", handled, results, err)
+	}
+	snap := stats.Snapshot()
+	if snap.StructuralKernel.Total != 1 {
+		t.Fatalf("structural kernel total = %d, want 1", snap.StructuralKernel.Total)
+	}
+	if len(snap.StructuralKernel.PerKernel) != 1 ||
+		snap.StructuralKernel.PerKernel[0].Name != "sieve_count" ||
+		snap.StructuralKernel.PerKernel[0].Route != string(KernelRouteWholeCallValue) ||
+		snap.StructuralKernel.PerKernel[0].Count != 1 {
+		t.Fatalf("structural kernel attribution = %+v, want one sieve_count whole-call value hit", snap.StructuralKernel.PerKernel)
 	}
 }
 

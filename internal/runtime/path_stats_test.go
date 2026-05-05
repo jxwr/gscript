@@ -47,12 +47,44 @@ func TestRuntimePathStatsJSONSmoke(t *testing.T) {
 	defer DisableRuntimePathStats()
 
 	RecordRuntimePathNativeCallFast()
+	RecordRuntimePathStructuralKernelHit("whole_call_value", "unit_kernel")
 	var buf testWriter
 	if err := stats.WriteJSON(&buf); err != nil {
 		t.Fatalf("WriteJSON: %v", err)
 	}
 	if !buf.seen {
 		t.Fatal("WriteJSON wrote no data")
+	}
+}
+
+func TestRuntimePathStatsStructuralKernelAttribution(t *testing.T) {
+	RecordRuntimePathStructuralKernelHit("whole_call_value", "disabled")
+
+	stats := EnableRuntimePathStats()
+	defer DisableRuntimePathStats()
+
+	RecordRuntimePathStructuralKernelHit("whole_call_value", "alpha")
+	RecordRuntimePathStructuralKernelHit("whole_call_value", "alpha")
+	RecordRuntimePathStructuralKernelHit("whole_call_no_result", "beta")
+	RecordRuntimePathStructuralKernelHit("", "ignored")
+	RecordRuntimePathStructuralKernelHit("whole_call_value", "")
+
+	snap := stats.Snapshot()
+	if snap.StructuralKernel.Total != 3 {
+		t.Fatalf("StructuralKernel.Total = %d, want 3", snap.StructuralKernel.Total)
+	}
+	if len(snap.StructuralKernel.PerKernel) != 2 {
+		t.Fatalf("PerKernel length = %d, want 2: %+v", len(snap.StructuralKernel.PerKernel), snap.StructuralKernel.PerKernel)
+	}
+	first := snap.StructuralKernel.PerKernel[0]
+	if first.Route != "whole_call_value" || first.Name != "alpha" || first.Count != 2 {
+		t.Fatalf("first structural kernel row = %+v, want alpha count 2", first)
+	}
+
+	var buf testWriter
+	stats.WriteText(&buf)
+	if !buf.seen {
+		t.Fatal("WriteText wrote no data")
 	}
 }
 

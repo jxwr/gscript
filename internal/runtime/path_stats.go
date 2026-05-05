@@ -30,6 +30,8 @@ type RuntimePathStats struct {
 	stringFormatFast     atomic.Uint64
 	stringFormatFallback atomic.Uint64
 
+	structuralKernelHit sync.Map
+
 	// nativeCallByBuiltin attributes native_call fast/fallback events to a
 	// specific *GoFunction. Keys are *GoFunction; values are
 	// *nativeCallBuiltinCounters. We key by pointer to avoid string hashing on
@@ -45,10 +47,11 @@ type nativeCallBuiltinCounters struct {
 }
 
 type RuntimePathStatsSnapshot struct {
-	NativeCall   RuntimePathNativeCallStats `json:"native_call"`
-	Coroutine    RuntimePathCoroutineStats  `json:"coroutine"`
-	TableArray   RuntimePathTableArrayStats `json:"table_array"`
-	StringFormat RuntimePathStringStats     `json:"string_format"`
+	NativeCall       RuntimePathNativeCallStats       `json:"native_call"`
+	Coroutine        RuntimePathCoroutineStats        `json:"coroutine"`
+	TableArray       RuntimePathTableArrayStats       `json:"table_array"`
+	StringFormat     RuntimePathStringStats           `json:"string_format"`
+	StructuralKernel RuntimePathStructuralKernelStats `json:"structural_kernel"`
 }
 
 type RuntimePathNativeCallStats struct {
@@ -83,6 +86,29 @@ type RuntimePathTableArrayStats struct {
 type RuntimePathStringStats struct {
 	Fast     uint64 `json:"fast"`
 	Fallback uint64 `json:"fallback"`
+}
+
+type RuntimePathStructuralKernelStats struct {
+	Total     uint64                             `json:"total"`
+	PerKernel []RuntimePathStructuralKernelEntry `json:"per_kernel,omitempty"`
+}
+
+// RuntimePathStructuralKernelEntry attributes guarded structural-kernel hits.
+// Route is a stable VM-level category such as whole_call_value or
+// whole_call_no_result; Name is the structural recognizer name.
+type RuntimePathStructuralKernelEntry struct {
+	Route string `json:"route"`
+	Name  string `json:"name"`
+	Count uint64 `json:"count"`
+}
+
+type structuralKernelStatsKey struct {
+	route string
+	name  string
+}
+
+type structuralKernelCounters struct {
+	count atomic.Uint64
 }
 
 var runtimePathStats atomic.Pointer[RuntimePathStats]
@@ -128,6 +154,7 @@ func (s *RuntimePathStats) Snapshot() RuntimePathStatsSnapshot {
 			Fast:     s.stringFormatFast.Load(),
 			Fallback: s.stringFormatFallback.Load(),
 		},
+		StructuralKernel: s.snapshotStructuralKernels(),
 	}
 }
 
@@ -157,6 +184,14 @@ func (s *RuntimePathStats) WriteText(w io.Writer) {
 	fmt.Fprintln(w, "  string_format:")
 	fmt.Fprintf(w, "    fast: %d\n", snap.StringFormat.Fast)
 	fmt.Fprintf(w, "    fallback: %d\n", snap.StringFormat.Fallback)
+	fmt.Fprintln(w, "  structural_kernel:")
+	fmt.Fprintf(w, "    total: %d\n", snap.StructuralKernel.Total)
+	if len(snap.StructuralKernel.PerKernel) > 0 {
+		fmt.Fprintln(w, "    per_kernel:")
+		for _, e := range snap.StructuralKernel.PerKernel {
+			fmt.Fprintf(w, "      %s/%s: count=%d\n", e.Route, e.Name, e.Count)
+		}
+	}
 }
 
 func (s *RuntimePathStats) WriteJSON(w io.Writer) error {
@@ -316,4 +351,58 @@ func RecordRuntimePathStringFormatFallback() {
 	if s := runtimePathStats.Load(); s != nil {
 		s.stringFormatFallback.Add(1)
 	}
+}
+
+// RecordRuntimePathStructuralKernelHit attributes a guarded structural-kernel
+// execution. It is diagnostic-only; disabled runs pay one atomic pointer load
+// and a nil check.
+func RecordRuntimePathStructuralKernelHit(route, name string) {
+	s := runtimePathStats.Load()
+	if s == nil || route == "" || name == "" {
+		return
+	}
+	c := s.loadOrCreateStructuralKernel(route, name)
+	c.count.Add(1)
+}
+
+func (s *RuntimePathStats) loadOrCreateStructuralKernel(route, name string) *structuralKernelCounters {
+	key := structuralKernelStatsKey{route: route, name: name}
+	if v, ok := s.structuralKernelHit.Load(key); ok {
+		return v.(*structuralKernelCounters)
+	}
+	c := &structuralKernelCounters{}
+	if actual, loaded := s.structuralKernelHit.LoadOrStore(key, c); loaded {
+		return actual.(*structuralKernelCounters)
+	}
+	return c
+}
+
+func (s *RuntimePathStats) snapshotStructuralKernels() RuntimePathStructuralKernelStats {
+	var out []RuntimePathStructuralKernelEntry
+	var total uint64
+	s.structuralKernelHit.Range(func(k, v any) bool {
+		key, _ := k.(structuralKernelStatsKey)
+		c, _ := v.(*structuralKernelCounters)
+		if c == nil {
+			return true
+		}
+		count := c.count.Load()
+		total += count
+		out = append(out, RuntimePathStructuralKernelEntry{
+			Route: key.route,
+			Name:  key.name,
+			Count: count,
+		})
+		return true
+	})
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		if out[i].Route != out[j].Route {
+			return out[i].Route < out[j].Route
+		}
+		return out[i].Name < out[j].Name
+	})
+	return RuntimePathStructuralKernelStats{Total: total, PerKernel: out}
 }
