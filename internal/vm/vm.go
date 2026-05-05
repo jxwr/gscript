@@ -1557,12 +1557,8 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			if b == 0 {
 				nArgs = vm.top - (base + a + 1)
 			}
-			var args []runtime.Value
-			if nArgs > 0 {
-				start := base + a + 1
-				args = vm.regs[start : start+nArgs]
-			}
-			if err := vm.suspendCoroutine(args, base+a, c); err != nil {
+			_, err, _ := vm.handleCoroutineYieldFromSlots(base+a, nArgs, c)
+			if err != nil {
 				return nil, wrapLineErr(frame, err)
 			}
 			if vm.coroutineYielded {
@@ -1586,7 +1582,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			if err != nil {
 				return nil, wrapLineErr(frame, err)
 			}
-			vm.writeCoroutineResumeResults(base+a, c, okResult, values)
+			vm.finishCoroutineResumeToSlots(base+a, c, okResult, values)
 
 		case OP_CALL:
 			a := DecodeA(inst)
@@ -2280,21 +2276,16 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 		if err != nil {
 			return true, err
 		}
-		vm.writeCoroutineResumeResults(base+a, c, okResult, values)
+		vm.finishCoroutineResumeToSlots(base+a, c, okResult, values)
 		return true, nil
 
 	case goFunctionKindCoroutineYield:
-		var args []runtime.Value
-		if nArgs > 0 {
-			start := base + a + 1
-			args = vm.regs[start : start+nArgs]
-		}
-		if vm.currentCoroutine != nil {
-			return true, vm.suspendCoroutine(args, base+a, c)
-		}
-		results, err := vm.yieldCoroutine(args)
+		results, err, suspended := vm.handleCoroutineYieldFromSlots(base+a, nArgs, c)
 		if err != nil {
 			return true, err
+		}
+		if suspended {
+			return true, nil
 		}
 		vm.writeCallResults(base+a, c, results)
 		return true, nil
@@ -2327,22 +2318,17 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 		if err != nil {
 			return true, err
 		}
-		vm.writeCoroutineResumeResults(base+a, c, okResult, values)
+		vm.finishCoroutineResumeToSlots(base+a, c, okResult, values)
 		return true, nil
 	}
 
 	if gf == vm.coroutineYieldFn || gf.Name == coroutineYieldName {
-		var args []runtime.Value
-		if nArgs > 0 {
-			start := base + a + 1
-			args = vm.regs[start : start+nArgs]
-		}
-		if vm.currentCoroutine != nil {
-			return true, vm.suspendCoroutine(args, base+a, c)
-		}
-		results, err := vm.yieldCoroutine(args)
+		results, err, suspended := vm.handleCoroutineYieldFromSlots(base+a, nArgs, c)
 		if err != nil {
 			return true, err
+		}
+		if suspended {
+			return true, nil
 		}
 		vm.writeCallResults(base+a, c, results)
 		return true, nil

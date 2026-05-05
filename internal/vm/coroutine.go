@@ -435,15 +435,41 @@ func (vm *VM) SuspendCoroutineFromSlots(absSlot, nArgs, c int) error {
 	if vm == nil {
 		return fmt.Errorf("cannot yield from outside a coroutine")
 	}
+	args, err := vm.coroutineYieldBoundaryFromSlots(absSlot, nArgs)
+	if err != nil {
+		return err
+	}
+	return vm.suspendCoroutine(args, absSlot, c)
+}
+
+func (vm *VM) coroutineYieldBoundaryFromSlots(absSlot, nArgs int) ([]rt.Value, error) {
+	if vm == nil {
+		return nil, fmt.Errorf("cannot yield from outside a coroutine")
+	}
 	if nArgs < 0 {
 		nArgs = 0
 	}
 	start := absSlot + 1
 	end := start + nArgs
 	if start < 0 || end > len(vm.regs) {
-		return fmt.Errorf("coroutine.yield args out of range")
+		return nil, fmt.Errorf("coroutine.yield args out of range")
 	}
-	return vm.suspendCoroutine(vm.regs[start:end], absSlot, c)
+	return vm.regs[start:end], nil
+}
+
+func (vm *VM) handleCoroutineYieldFromSlots(absSlot, nArgs, c int) ([]rt.Value, error, bool) {
+	args, err := vm.coroutineYieldBoundaryFromSlots(absSlot, nArgs)
+	if err != nil {
+		return nil, err, true
+	}
+	if vm.currentCoroutine != nil {
+		return nil, vm.suspendCoroutine(args, absSlot, c), true
+	}
+	results, err := vm.yieldCoroutine(args)
+	if err != nil {
+		return nil, err, true
+	}
+	return results, nil, false
 }
 
 // coroutineResumeBoundaryFromSlots is the shared slot boundary for OP_RESUME
@@ -673,6 +699,10 @@ func (vm *VM) ResumeCoroutineFromSlots(absSlot, nArgs, c int, payloadFieldOnly b
 	if err != nil {
 		return err
 	}
-	vm.writeCoroutineResumeResults(absSlot, c, okResult, values)
+	vm.finishCoroutineResumeToSlots(absSlot, c, okResult, values)
 	return nil
+}
+
+func (vm *VM) finishCoroutineResumeToSlots(dst, c int, ok bool, values []rt.Value) {
+	vm.writeCoroutineResumeResults(dst, c, ok, values)
 }
