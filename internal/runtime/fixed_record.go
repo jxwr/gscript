@@ -130,10 +130,35 @@ func NewFixedRecordValue5(ctor *SmallTableCtorN, v0, v1, v2, v3, v4 Value) (Valu
 	return NewFixedRecordValue5KnownCtor(ctor, v0, v1, v2, v3, v4)
 }
 
+// FillFixedRecordKnownCtor overwrites an existing FixedRecord in place with
+// the given ctor and values, returning the tagged Value. Used by stack-yield
+// fast paths to avoid per-yield allocation when the consumer is statically
+// known to read the payload via GETFIELD only.
+func FillFixedRecordKnownCtor(fr *FixedRecord, ctor *SmallTableCtorN, vals []Value) (Value, bool) {
+	if fr == nil || ctor == nil || ctor.Shape == nil || len(vals) < len(ctor.Keys) {
+		return NilValue(), false
+	}
+	n := len(ctor.Keys)
+	if n == 0 || n > fixedRecordInlineCap {
+		return NilValue(), false
+	}
+	fr.ctor = ctor
+	fr.materialized = nil
+	fr.shapeID = ctor.shapeID
+	fr.n = uint8(n)
+	for i := 0; i < n; i++ {
+		v := vals[i]
+		if v.IsNil() {
+			return NilValue(), false
+		}
+		fr.values[i] = v
+	}
+	p := unsafe.Pointer(fr)
+	return Value(tagPtr | ptrSubFixedRecord | (uint64(uintptr(p)) & ptrAddrMask)), true
+}
+
 // FillFixedRecord5KnownCtor overwrites an existing FixedRecord in place with
-// the given ctor and 5 values, returning the tagged Value. Used by the
-// coroutine stack-yield fast path to avoid per-yield allocation when the
-// consumer is statically known to read the payload via GETFIELD only.
+// the given ctor and 5 values, returning the tagged Value.
 func FillFixedRecord5KnownCtor(fr *FixedRecord, ctor *SmallTableCtorN, v0, v1, v2, v3, v4 Value) (Value, bool) {
 	if fr == nil {
 		return NilValue(), false

@@ -49,14 +49,14 @@ type VMCoroutine struct {
 	// stackYieldEnabled is set by the resumer (consumer) when static analysis
 	// (ResumePayloadIsFieldOnly) of the bytecode after the resume site shows
 	// the yielded payload is only read via GETFIELD. Consulted in vm.go's
-	// OP_NEWOBJECTN n=5 path to reuse pooledFixedRecord instead of
+	// OP_NEWOBJECTN fixed-record path to reuse pooledFixedRecord instead of
 	// allocating a fresh FixedRecord per yield.
 	stackYieldEnabled bool
-	// pooledFixedRecord is a reusable 5-field FixedRecord allocated lazily
-	// when stackYieldEnabled is true. The producer rewrites it in place per
-	// yield instead of allocating a fresh record. Safe because the consumer's
-	// static analysis guarantees GETFIELD-only access; the record cannot
-	// outlive the iteration that produced it.
+	// pooledFixedRecord is a reusable inline FixedRecord allocated lazily when
+	// stackYieldEnabled is true. The producer rewrites it in place per yield
+	// instead of allocating a fresh record. Safe because the consumer's static
+	// analysis guarantees GETFIELD-only access; the record cannot outlive the
+	// iteration that produced it.
 	pooledFixedRecord *rt.FixedRecord
 	vm                *VM
 	yieldDst          int
