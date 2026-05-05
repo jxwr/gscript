@@ -221,33 +221,17 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 
 	if shouldStayTier0CoroutineRuntime(proto, profile) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "stay_tier0_coroutine_runtime",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "stay_tier0_coroutine_runtime",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "coroutine_runtime",
-			"target": "interpreter",
+		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
+			reason:         "stay_tier0_coroutine_runtime",
+			fallbackReason: "coroutine_runtime",
 		})
 		return nil
 	}
 
 	if shouldStayTier0StringTokenLoop(proto, profile) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "stay_tier0_string_token_loop",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "stay_tier0_string_token_loop",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "string_token_loop",
-			"target": "interpreter",
+		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
+			reason:         "stay_tier0_string_token_loop",
+			fallbackReason: "string_token_loop",
 		})
 		return nil
 	}
@@ -257,57 +241,26 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	// overhead than they save in native templates. See
 	// shouldStayTier0 in func_profile.go for the heuristic.
 	if shouldStayTier0ForProto(proto, profile) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "stay_tier0_profile",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "stay_tier0_profile",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "jit_disabled",
-			"target": "interpreter",
+		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
+			reason:         "stay_tier0_profile",
+			fallbackReason: "jit_disabled",
 		})
 		return nil
 	}
 
 	if shouldStayTier0RecursiveTableWalker(proto, profile) {
-		proto.JITDisabled = true
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":     "stay_tier0_recursive_table_walker",
-			"call_count": proto.CallCount,
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "stay_tier0_recursive_table_walker",
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "jit_disabled",
-			"target": "interpreter",
+		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
+			reason:         "stay_tier0_recursive_table_walker",
+			fallbackReason: "jit_disabled",
 		})
 		return nil
 	}
 
 	if callee, ok := tm.tier0OnlyLoopCallee(proto, profile); ok {
-		proto.JITDisabled = true
-		calleeName := "<anonymous>"
-		if callee.Name != "" {
-			calleeName = callee.Name
-		}
-		tm.traceEvent("runtime_disable", "jit", proto, map[string]any{
-			"reason":      "tier1_driver_tier0_loop_callee",
-			"call_count":  proto.CallCount,
-			"callee":      calleeName,
-			"callee_addr": fmt.Sprintf("%p", callee),
-		})
-		tm.traceEvent("tier1_skip", "tier1", proto, map[string]any{
-			"reason": "tier1_driver_tier0_loop_callee",
-			"callee": calleeName,
-		})
-		tm.traceEvent("fallback", "tier0", proto, map[string]any{
-			"reason": "driver_tier0_loop_callee",
-			"target": "interpreter",
-			"callee": calleeName,
+		tm.disableJITForTier0Policy(proto, tier0DisableDecision{
+			reason:         "tier1_driver_tier0_loop_callee",
+			fallbackReason: "driver_tier0_loop_callee",
+			callee:         callee,
 		})
 		return nil
 	}
