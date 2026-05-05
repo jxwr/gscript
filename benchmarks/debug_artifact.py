@@ -337,6 +337,46 @@ def summarize_warm_dump(path: Path | None) -> dict[str, Any]:
     }
 
 
+def summarize_tiering(rows: list[dict[str, Any]], warm_dump: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "t2_attempted": sum(int(row.get("t2_attempted") or 0) for row in rows),
+        "t2_entered": sum(int(row.get("t2_entered") or 0) for row in rows),
+        "t2_failed": sum(int(row.get("t2_failed") or 0) for row in rows),
+        "warm_dump_compiled": int(warm_dump.get("compiled") or 0),
+        "warm_dump_entered": int(warm_dump.get("entered") or 0),
+    }
+
+
+def summarize_gates(rows: list[dict[str, Any]], exit_stats: dict[str, Any], warm_dump: dict[str, Any]) -> dict[str, Any]:
+    reasons: Counter[str] = Counter()
+    for row in rows:
+        status = str(row.get("status") or "")
+        if status and status != "ok":
+            reasons[status] += 1
+    for site in exit_stats.get("top_sites") or []:
+        if isinstance(site, dict):
+            reason = site.get("reason") or site.get("kind") or site.get("exit")
+            if reason:
+                reasons[str(reason)] += int(site.get("count") or 1)
+    for status, count in (warm_dump.get("statuses") or {}).items():
+        if status != "entered":
+            reasons[f"warm_dump:{status}"] += int(count)
+    return {
+        "schema": "gate-summary-v1",
+        "reason_counts": dict(sorted(reasons.items())),
+    }
+
+
+def summarize_profiles(warm_dump: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "warm_dump_protos": int(warm_dump.get("protos") or 0),
+        "warm_dump_insn_count": int(warm_dump.get("insn_count") or 0),
+        "warm_dump_code_bytes": int(warm_dump.get("code_bytes") or 0),
+        "pcmap_functions": int(warm_dump.get("pcmap_functions") or 0),
+        "pcmap_ranges": int(warm_dump.get("pcmap_ranges") or 0),
+    }
+
+
 def build_artifact(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     benchmark_inputs = args.benchmark_json or []
     inputs = {f"benchmark_json[{i}]": input_status(path, "benchmark_json") for i, path in enumerate(benchmark_inputs)}
@@ -349,6 +389,14 @@ def build_artifact(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         }
     )
     benchmark_rows = normalize_benchmark_outputs(benchmark_inputs)
+    exit_stats = summarize_exit_stats(args.exit_stats)
+    runtime_path_stats = summarize_runtime_stats(args.runtime_path_stats)
+    perf_stats = summarize_perf_stats(args.perf_stats)
+    warm_dump = summarize_warm_dump(args.warm_dump)
+    benchmark_summary = summarize_benchmarks(benchmark_rows)
+    tiering = summarize_tiering(benchmark_rows, warm_dump)
+    gates = summarize_gates(benchmark_rows, exit_stats, warm_dump)
+    profiles = summarize_profiles(warm_dump)
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -358,13 +406,22 @@ def build_artifact(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             "commit": git_commit(root),
         },
         "inputs": inputs,
-        "benchmark_summary": summarize_benchmarks(benchmark_rows),
+        "benchmark_summary": benchmark_summary,
         "benchmarks": benchmark_rows,
+        "timing": {
+            "summary": benchmark_summary,
+            "rows": benchmark_rows,
+        },
+        "tiering": tiering,
+        "gates": gates,
+        "exits": exit_stats,
+        "runtime_paths": runtime_path_stats,
+        "profiles": profiles,
         "debug": {
-            "exit_stats": summarize_exit_stats(args.exit_stats),
-            "runtime_path_stats": summarize_runtime_stats(args.runtime_path_stats),
-            "tier2_perf_stats": summarize_perf_stats(args.perf_stats),
-            "warm_dump": summarize_warm_dump(args.warm_dump),
+            "exit_stats": exit_stats,
+            "runtime_path_stats": runtime_path_stats,
+            "tier2_perf_stats": perf_stats,
+            "warm_dump": warm_dump,
         },
     }
 

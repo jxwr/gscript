@@ -98,6 +98,12 @@ class DebugArtifactTest(unittest.TestCase):
         self.assertEqual(artifact["debug"]["runtime_path_stats"]["numbers"]["native_call.fast"], 7.0)
         self.assertEqual(artifact["debug"]["tier2_perf_stats"]["total_nanos"], 100)
         self.assertEqual(artifact["debug"]["warm_dump"]["pcmap_ranges"], 2)
+        self.assertEqual(artifact["timing"]["summary"]["rows"], 1)
+        self.assertEqual(artifact["tiering"]["t2_entered"], 1)
+        self.assertEqual(artifact["exits"]["total"], 3)
+        self.assertEqual(artifact["runtime_paths"]["numbers"]["native_call.fast"], 7.0)
+        self.assertEqual(artifact["profiles"]["pcmap_ranges"], 2)
+        self.assertEqual(artifact["gates"]["reason_counts"]["deopt:GuardType"], 3)
 
 
 if __name__ == "__main__":
