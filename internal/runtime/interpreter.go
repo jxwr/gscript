@@ -141,6 +141,13 @@ func (interp *Interpreter) registerBuiltins() {
 			}
 			return v, nil
 		},
+		FastArg1: func(arg Value) (Value, error) {
+			v, ok := arg.ToNumber()
+			if !ok {
+				return NilValue(), nil
+			}
+			return v, nil
+		},
 	}))
 
 	interp.globals.Define("setmetatable", FunctionValue(&GoFunction{

@@ -1323,7 +1323,14 @@ func (v Value) ToNumber() (Value, bool) {
 	if !v.IsString() {
 		return NilValue(), false
 	}
-	s := strings.TrimSpace(v.Str())
+	s := v.Str()
+	if n, ok := parsePlainDecimalInt(s); ok {
+		return n, true
+	}
+	s = strings.TrimSpace(s)
+	if n, ok := parsePlainDecimalInt(s); ok {
+		return n, true
+	}
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return IntValue(i), true
 	}
@@ -1331,6 +1338,50 @@ func (v Value) ToNumber() (Value, bool) {
 		return FloatValue(f), true
 	}
 	return NilValue(), false
+}
+
+func parsePlainDecimalInt(s string) (Value, bool) {
+	if s == "" {
+		return NilValue(), false
+	}
+	neg := false
+	i := 0
+	switch s[0] {
+	case '-':
+		neg = true
+		i = 1
+	case '+':
+		i = 1
+	}
+	if i == len(s) {
+		return NilValue(), false
+	}
+
+	var n uint64
+	const maxPos = uint64(math.MaxInt64)
+	const maxNeg = uint64(math.MaxInt64) + 1
+	limit := maxPos
+	if neg {
+		limit = maxNeg
+	}
+	for ; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return NilValue(), false
+		}
+		d := uint64(c - '0')
+		if n > (limit-d)/10 {
+			return NilValue(), false
+		}
+		n = n*10 + d
+	}
+	if neg {
+		if n == maxNeg {
+			return IntValue(math.MinInt64), true
+		}
+		return IntValue(-int64(n)), true
+	}
+	return IntValue(int64(n)), true
 }
 
 // ---------------------------------------------------------------------------

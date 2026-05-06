@@ -61,6 +61,15 @@ func buildStringLib() *Table {
 			Fast1: fast,
 		}))
 	}
+	setFast123 := func(name string, fn func([]Value) ([]Value, error), fast func([]Value) (Value, error), fast2 func(Value, Value) (Value, error), fast3 func(Value, Value, Value) (Value, error)) {
+		t.RawSet(StringValue(name), FunctionValue(&GoFunction{
+			Name:     "string." + name,
+			Fn:       fn,
+			Fast1:    fast,
+			FastArg2: fast2,
+			FastArg3: fast3,
+		}))
+	}
 
 	// string.len(s) -> int
 	set("len", func(args []Value) ([]Value, error) {
@@ -72,13 +81,13 @@ func buildStringLib() *Table {
 
 	// string.sub(s, i [, j]) -> string
 	// 1-based indexing, negative indices count from end
-	setFast1("sub", func(args []Value) ([]Value, error) {
+	setFast123("sub", func(args []Value) ([]Value, error) {
 		v, err := stringSubValue(args)
 		if err != nil {
 			return nil, err
 		}
 		return []Value{v}, nil
-	}, stringSubValue)
+	}, stringSubValue, stringSub2Value, stringSub3Value)
 
 	// string.upper(s) -> string
 	set("upper", func(args []Value) ([]Value, error) {
@@ -393,13 +402,13 @@ func buildStringLib() *Table {
 	}
 
 	// string.split(s, sep) -> table. sep="" splits by byte
-	setFast1("split", func(args []Value) ([]Value, error) {
+	setFast123("split", func(args []Value) ([]Value, error) {
 		v, err := stringSplitValue(args)
 		if err != nil {
 			return nil, err
 		}
 		return []Value{v}, nil
-	}, stringSplitValue)
+	}, stringSplitValue, stringSplit2Value, nil)
 
 	// string.trim(s [, cutset]) -- trim leading/trailing whitespace (or chars in cutset)
 	set("trim", func(args []Value) ([]Value, error) {
@@ -593,16 +602,32 @@ func stringSubValue(args []Value) (Value, error) {
 	if len(args) < 2 {
 		return NilValue(), fmt.Errorf("bad argument to 'string.sub'")
 	}
-	if !args[0].IsString() {
+	j := Value(0)
+	if len(args) >= 3 {
+		j = args[2]
+	}
+	return stringSubArgs(args[0], args[1], j, len(args) >= 3)
+}
+
+func stringSub2Value(sv, iv Value) (Value, error) {
+	return stringSubArgs(sv, iv, Value(0), false)
+}
+
+func stringSub3Value(sv, iv, jv Value) (Value, error) {
+	return stringSubArgs(sv, iv, jv, true)
+}
+
+func stringSubArgs(sv, iv, jv Value, hasJ bool) (Value, error) {
+	if !sv.IsString() {
 		return NilValue(), fmt.Errorf("bad argument #1 to 'string.sub' (string expected)")
 	}
-	s := args[0].Str()
+	s := sv.Str()
 	slen := len(s)
 
-	i := int(toInt(args[1]))
+	i := int(toInt(iv))
 	j := slen
-	if len(args) >= 3 {
-		j = int(toInt(args[2]))
+	if hasJ {
+		j = int(toInt(jv))
 	}
 
 	// Convert Lua 1-based indexes to Go byte offsets.
@@ -631,8 +656,19 @@ func stringSplitValue(args []Value) (Value, error) {
 	if !args[0].IsString() || !args[1].IsString() {
 		return NilValue(), fmt.Errorf("bad argument to 'string.split' (string expected)")
 	}
-	s := args[0].Str()
-	sep := args[1].Str()
+	return stringSplitArgs(args[0], args[1])
+}
+
+func stringSplit2Value(sv, sepv Value) (Value, error) {
+	if !sv.IsString() || !sepv.IsString() {
+		return NilValue(), fmt.Errorf("bad argument to 'string.split' (string expected)")
+	}
+	return stringSplitArgs(sv, sepv)
+}
+
+func stringSplitArgs(sv, sepv Value) (Value, error) {
+	s := sv.Str()
+	sep := sepv.Str()
 	if sep == "" {
 		tbl := NewSequentialArrayTable(len(s))
 		for i := 0; i < len(s); i++ {
@@ -641,19 +677,30 @@ func stringSplitValue(args []Value) (Value, error) {
 		return TableValue(tbl), nil
 	}
 
-	n := strings.Count(s, sep) + 1
-	tbl := NewSequentialArrayTable(n)
+	tbl := newSplitArrayTable(s, sep)
+	if len(sep) == 1 {
+		sepByte := sep[0]
+		start := 0
+		for i := 0; i < len(s); i++ {
+			if s[i] != sepByte {
+				continue
+			}
+			arenaAppendValue(DefaultHeap, &tbl.array, StringValue(s[start:i]))
+			start = i + 1
+		}
+		arenaAppendValue(DefaultHeap, &tbl.array, StringValue(s[start:]))
+		return TableValue(tbl), nil
+	}
+
 	start := 0
-	idx := 1
 	for {
 		next := strings.Index(s[start:], sep)
 		if next < 0 {
-			tbl.array[idx] = StringValue(s[start:])
+			arenaAppendValue(DefaultHeap, &tbl.array, StringValue(s[start:]))
 			break
 		}
 		end := start + next
-		tbl.array[idx] = StringValue(s[start:end])
-		idx++
+		arenaAppendValue(DefaultHeap, &tbl.array, StringValue(s[start:end]))
 		start = end + len(sep)
 	}
 	return TableValue(tbl), nil
