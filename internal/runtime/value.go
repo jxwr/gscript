@@ -111,6 +111,11 @@ type gcRootLog struct {
 	cursor  int64 // next free index (accessed atomically)
 }
 
+type gcCompactScratchState struct {
+	vms     []GCRootScanner
+	liveSet map[uintptr]struct{}
+}
+
 // GCRootScanner is implemented by VMs to enumerate all live GC root pointers.
 // Used by gcCompact to determine which gcRootLog entries are still needed.
 type GCRootScanner interface {
@@ -141,6 +146,7 @@ var (
 	// gcNeedsCompact is set by keepAlive when compaction threshold is reached.
 	// Actual compaction is deferred to a VM safe point via CheckGC().
 	gcNeedsCompact int32
+	gcScratch      gcCompactScratchState
 
 	vmCoroutinePtrResolver func(unsafe.Pointer) any
 )
@@ -222,8 +228,8 @@ func gcCompact() {
 
 	// Grab a snapshot of registered VMs.
 	activeVMsMu.Lock()
-	vms := make([]GCRootScanner, len(activeVMs))
-	copy(vms, activeVMs)
+	gcScratch.vms = append(gcScratch.vms[:0], activeVMs...)
+	vms := gcScratch.vms
 	activeVMsMu.Unlock()
 
 	if len(vms) == 0 {
@@ -231,7 +237,12 @@ func gcCompact() {
 	}
 
 	// Build the live set: all pointers reachable from any VM.
-	liveSet := make(map[uintptr]struct{}, oldCursor/4)
+	if gcScratch.liveSet == nil {
+		gcScratch.liveSet = make(map[uintptr]struct{}, oldCursor/4)
+	} else {
+		clear(gcScratch.liveSet)
+	}
+	liveSet := gcScratch.liveSet
 	visitor := func(p unsafe.Pointer) {
 		liveSet[uintptr(p)] = struct{}{}
 	}
@@ -241,13 +252,8 @@ func gcCompact() {
 	visitCurrentTableSlabRoot(visitor)
 	scanSimpleFormatCacheRoots(visitor, liveSet)
 
-	// Compact: copy only live entries into a fresh log.
-	// We allocate a new entries slice and atomically swap.
-	n := int64(len(gcLog.entries))
-	if n < gcCompactInterval {
-		n = gcCompactInterval
-	}
-	newEntries := make([]unsafe.Pointer, n)
+	// Compact in-place. This avoids allocating and GC-scanning a fresh
+	// multi-megabyte root log on every compaction.
 	var newCursor int64
 	for i := int64(0); i < oldCursor && i < int64(len(gcLog.entries)); i++ {
 		p := gcLog.entries[i]
@@ -255,26 +261,25 @@ func gcCompact() {
 			continue
 		}
 		if _, live := liveSet[uintptr(p)]; live {
-			if newCursor < n {
-				newEntries[newCursor] = p
-				newCursor++
-			}
-		}
-	}
-
-	// Swap the log. During the swap, concurrent keepAlive calls may have
-	// added entries beyond oldCursor. Copy those too (conservative).
-	currentCursor := atomic.LoadInt64(&gcLog.cursor)
-	for i := oldCursor; i < currentCursor && i < int64(len(gcLog.entries)); i++ {
-		p := gcLog.entries[i]
-		if p != nil && newCursor < n {
-			newEntries[newCursor] = p
+			gcLog.entries[newCursor] = p
 			newCursor++
 		}
 	}
 
-	// Atomic swap.
-	gcLog.entries = newEntries
+	// During compaction, concurrent keepAlive calls may have added entries
+	// beyond oldCursor. Copy those too (conservative).
+	currentCursor := atomic.LoadInt64(&gcLog.cursor)
+	for i := oldCursor; i < currentCursor && i < int64(len(gcLog.entries)); i++ {
+		p := gcLog.entries[i]
+		if p != nil {
+			gcLog.entries[newCursor] = p
+			newCursor++
+		}
+	}
+	for i := newCursor; i < currentCursor && i < int64(len(gcLog.entries)); i++ {
+		gcLog.entries[i] = nil
+	}
+
 	atomic.StoreInt64(&gcLog.cursor, newCursor)
 }
 
