@@ -182,22 +182,6 @@ func NewSequentialArrayTable(length int) *Table {
 	return t
 }
 
-// newSplitArrayTable creates a table for string.split with a small optimistic
-// array capacity. Callers append 1-based values directly to t.array; array[0]
-// stays as the nil sentinel.
-func newSplitArrayTable(s, sep string) *Table {
-	if sep == "" {
-		return NewSequentialArrayTable(len(s))
-	}
-	capHint := 7 // sentinel plus a small-token split shape
-	if len(sep) == 1 && len(s)+1 < capHint {
-		capHint = len(s) + 1
-	}
-	t := DefaultHeap.AllocTable()
-	t.array = DefaultHeap.AllocValues(1, capHint)
-	return t
-}
-
 // RawGet retrieves a value by key, bypassing metamethods.
 func (t *Table) RawGet(key Value) Value {
 	if key.IsNil() {
