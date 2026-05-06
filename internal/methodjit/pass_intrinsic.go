@@ -121,7 +121,32 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 			}
 		}
 	}
+	notes = append(notes, fuseStringFormatIntGetTable(fn)...)
 	return fn, notes
+}
+
+func fuseStringFormatIntGetTable(fn *Function) []string {
+	if fn == nil {
+		return nil
+	}
+	var notes []string
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpGetTable || len(instr.Args) != 2 {
+				continue
+			}
+			key := instr.Args[1]
+			if key == nil || key.Def == nil || key.Def.Op != OpStringFormatInt || len(key.Def.Args) != 3 {
+				continue
+			}
+			fmtInstr := key.Def
+			instr.Op = OpGetTableStringFormatInt
+			instr.Args = []*Value{instr.Args[0], fmtInstr.Args[0], fmtInstr.Args[1], fmtInstr.Args[2]}
+			instr.Aux = fmtInstr.Aux
+			notes = append(notes, "intrinsic: gettable(string.format(pattern,int)) -> GetTableStringFormatInt")
+		}
+	}
+	return notes
 }
 
 func lowerStringFormatConst(fn *Function, instr *Instr) bool {

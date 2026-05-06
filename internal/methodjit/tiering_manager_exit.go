@@ -912,6 +912,72 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 			regs[absSlot] = runtime.NilValue()
 		}
 
+	case OpGetTableStringFormatInt:
+		tempBase := absArg1
+		if absSlot >= len(regs) || tempBase < 0 || tempBase+4 > len(regs) {
+			return fmt.Errorf("string.format table-get op-exit out of register range")
+		}
+		tblVal := regs[tempBase]
+		callee := regs[tempBase+1]
+		patternVal := regs[tempBase+2]
+		intVal := regs[tempBase+3]
+		var keyVal runtime.Value
+		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() && intVal.IsInt() {
+			patternIdx := aux
+			if cf, _ := tm.tier2CompiledFor(proto); cf != nil && patternIdx >= 0 && patternIdx < len(cf.StringFormatPatterns) {
+				pattern := cf.StringFormatPatterns[patternIdx]
+				if patternVal.Str() == pattern {
+					if tblVal.IsTable() && !tblVal.Table().HasMetatable() {
+						v, ok, err := runtime.RawGetStringFormatIntCached(tblVal.Table(), pattern, intVal.Int(), nil)
+						if err != nil {
+							return err
+						}
+						if ok {
+							regs[absSlot] = v
+							return nil
+						}
+					}
+					v, ok, err := runtime.StringFormatSingleInt(pattern, intVal.Int())
+					if err != nil {
+						return err
+					}
+					if ok {
+						keyVal = v
+					}
+				}
+			}
+		}
+		if keyVal.IsNil() {
+			if tm.callVM == nil {
+				return fmt.Errorf("no callVM set for string.format table-get fallback")
+			}
+			results, err := tm.callVM.CallValue(callee, []runtime.Value{patternVal, intVal})
+			if err != nil {
+				return err
+			}
+			if len(results) > 0 {
+				keyVal = results[0]
+			} else {
+				keyVal = runtime.NilValue()
+			}
+		}
+		if tblVal.IsTable() && !tblVal.Table().HasMetatable() {
+			if keyVal.IsString() {
+				regs[absSlot] = tblVal.Table().RawGetStringDynamicCached(keyVal.Str(), nil)
+			} else {
+				regs[absSlot] = tblVal.Table().RawGet(keyVal)
+			}
+			return nil
+		}
+		if tm.callVM == nil {
+			return fmt.Errorf("no callVM set for string.format table-get fallback")
+		}
+		result, err := tm.callVM.TableGetForJIT(tblVal, keyVal)
+		if err != nil {
+			return err
+		}
+		regs[absSlot] = result
+
 	case OpStringFormatConst:
 		tempBase := absArg1
 		nArgs := int(ctx.OpExitArg2)

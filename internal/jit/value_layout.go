@@ -113,6 +113,14 @@ const (
 	NativeStringQueryCacheEntryOffKeyLen  = 24
 	NativeStringQueryCacheEntryOffValue   = 32
 
+	NativeFormattedIntQueryCacheEntrySize           = 48
+	NativeFormattedIntQueryCacheEntryOffTable       = 0
+	NativeFormattedIntQueryCacheEntryOffVersion     = 8
+	NativeFormattedIntQueryCacheEntryOffPatternData = 16
+	NativeFormattedIntQueryCacheEntryOffPatternLen  = 24
+	NativeFormattedIntQueryCacheEntryOffN           = 32
+	NativeFormattedIntQueryCacheEntryOffValue       = 40
+
 	// denseMatrixMeta layout. The JIT only uses this for the native
 	// row-store adoption path after runtime has allocated the backing.
 	DenseMatrixMetaOffBackingData = 0
@@ -284,6 +292,12 @@ func init() {
 		versionOff != NativeStringQueryCacheEntryOffVersion || keyDataOff != NativeStringQueryCacheEntryOffKeyData ||
 		keyLenOff != NativeStringQueryCacheEntryOffKeyLen || valueOff != NativeStringQueryCacheEntryOffValue {
 		panic("jit: NativeStringQueryCacheEntry offset mismatch")
+	}
+	if tableOff, versionOff, patternDataOff, patternLenOff, nOff, valueOff := runtime.NativeFormattedIntQueryCacheEntryOffsets(); tableOff != NativeFormattedIntQueryCacheEntryOffTable ||
+		versionOff != NativeFormattedIntQueryCacheEntryOffVersion || patternDataOff != NativeFormattedIntQueryCacheEntryOffPatternData ||
+		patternLenOff != NativeFormattedIntQueryCacheEntryOffPatternLen || nOff != NativeFormattedIntQueryCacheEntryOffN ||
+		valueOff != NativeFormattedIntQueryCacheEntryOffValue {
+		panic("jit: NativeFormattedIntQueryCacheEntry offset mismatch")
 	}
 	if keyDataOff, keyLenOff, valueOff, hashOff, validOff := runtime.StringLookupCacheEntryOffsets(); keyDataOff != StringLookupCacheEntryOffKeyData ||
 		keyLenOff != StringLookupCacheEntryOffKeyLen || valueOff != StringLookupCacheEntryOffValue ||

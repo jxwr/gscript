@@ -411,6 +411,72 @@ func format_case(pattern, i) {
 	}
 }
 
+func TestTier2_StringFormatIntGetTableFusesAndRuns(t *testing.T) {
+	src := `
+func make_inv() {
+    inv := {}
+    for i := 1; i <= 20; i++ {
+        inv[string.format("K%03d", i)] = i
+    }
+    return inv
+}
+
+func lookup(inv, n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        idx := (i % 20) + 1
+        sum = sum + inv[string.format("K%03d", idx)]
+    }
+    return sum
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "lookup")
+	if proto == nil {
+		t.Fatal("lookup proto not found")
+	}
+	optimized, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	if got := countOpHelper(optimized, OpGetTableStringFormatInt); got != 1 {
+		t.Fatalf("GetTableStringFormatInt count=%d, want 1\n%s", got, Print(optimized))
+	}
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	invValues, err := v.CallValue(v.GetGlobal("make_inv"), nil)
+	if err != nil {
+		t.Fatalf("make_inv: %v", err)
+	}
+	if len(invValues) == 0 || !invValues[0].IsTable() {
+		t.Fatalf("make_inv returned %#v, want table", invValues)
+	}
+	args := []runtime.Value{invValues[0], runtime.IntValue(120)}
+	wantValues, err := v.CallValue(v.GetGlobal("lookup"), args)
+	if err != nil {
+		t.Fatalf("VM lookup: %v", err)
+	}
+	want := requireOneInt(t, "VM lookup", wantValues)
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(lookup): %v", err)
+	}
+	gotValues, err := v.CallValue(v.GetGlobal("lookup"), args)
+	if err != nil {
+		t.Fatalf("Tier2 lookup: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 lookup", gotValues)
+	if got != want {
+		t.Fatalf("lookup Tier2=%d, want VM=%d", got, want)
+	}
+}
+
 func TestTier2_StringFormatConstMultiArgUsesPreciseOpExit(t *testing.T) {
 	src := `
 func report(sku, stock, sold, price) {

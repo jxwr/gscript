@@ -363,7 +363,7 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 	// so FBKindInt/Float/Bool -> TypeInt/Float/Bool is sound. FBKindMixed
 	// stays unknown because the mixed array can hold any value type. After
 	// TableArrayLower, the same kind lives in OpTableArrayLoad.Aux.
-	case OpGetTable, OpTableArrayLoad:
+	case OpGetTable, OpGetTableStringFormatInt, OpTableArrayLoad:
 		kind := instr.Aux2
 		if instr.Op == OpTableArrayLoad {
 			kind = instr.Aux
@@ -846,7 +846,7 @@ func canSpeculateNumToFloatArg(v *Value) bool {
 		return false
 	}
 	switch v.Def.Op {
-	case OpGetField, OpGetTable, OpLoadSlot, OpPhi:
+	case OpGetField, OpGetTable, OpGetTableStringFormatInt, OpLoadSlot, OpPhi:
 		return true
 	default:
 		return false

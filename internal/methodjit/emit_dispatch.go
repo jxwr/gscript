@@ -198,6 +198,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitNewFixedTable(instr)
 	case OpGetTable:
 		ec.emitGetTableNative(instr)
+	case OpGetTableStringFormatInt:
+		ec.emitGetTableStringFormatIntNative(instr)
 	case OpSetTable:
 		ec.emitSetTableNative(instr)
 		ec.clearTableArrayBoundedKeys()

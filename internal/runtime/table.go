@@ -436,6 +436,19 @@ type NativeStringQueryCacheEntry struct {
 	Value   Value
 }
 
+// NativeFormattedIntQueryCacheEntry caches dynamic string-key lookups whose
+// key is produced by string.format(pattern, int). This lets Tier 2 skip both
+// the formatted string object and the string-map probe when the table version
+// is unchanged.
+type NativeFormattedIntQueryCacheEntry struct {
+	Table       uintptr
+	Version     uint64
+	PatternData uintptr
+	PatternLen  uintptr
+	N           int64
+	Value       Value
+}
+
 const (
 	stringLookupCacheMinEntries = 256
 	stringLookupCacheMaxEntries = 16384
@@ -444,15 +457,52 @@ const (
 	// mirror the runtime insertion bound.
 	StringLookupCacheProbeLimit = stringLookupCacheProbeLimit
 
-	NativeStringQueryCacheSize = 65536
+	NativeStringQueryCacheSize       = 65536
+	NativeFormattedIntQueryCacheSize = 65536
 )
 
 var nativeStringQueryCache [NativeStringQueryCacheSize]NativeStringQueryCacheEntry
+var nativeFormattedIntQueryCache [NativeFormattedIntQueryCacheSize]NativeFormattedIntQueryCacheEntry
 
 // NativeStringQueryCachePtr returns the base address for the Tier 2 dynamic
 // string-key query cache.
 func NativeStringQueryCachePtr() unsafe.Pointer {
 	return unsafe.Pointer(&nativeStringQueryCache[0])
+}
+
+func NativeFormattedIntQueryCachePtr() unsafe.Pointer {
+	return unsafe.Pointer(&nativeFormattedIntQueryCache[0])
+}
+
+func nativeFormattedIntQueryCacheSlot(table uintptr, pattern string, n int64) *NativeFormattedIntQueryCacheEntry {
+	slot := (table ^ stringDataPtr(pattern) ^ uintptr(n)) & uintptr(NativeFormattedIntQueryCacheSize-1)
+	return &nativeFormattedIntQueryCache[slot]
+}
+
+func stringDataPtr(s string) uintptr {
+	if len(s) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(unsafe.StringData(s)))
+}
+
+// RawGetStringFormatIntCached formats pattern with n, performs a dynamic
+// string-key table lookup, and populates the native formatted-int query cache.
+func RawGetStringFormatIntCached(t *Table, pattern string, n int64, cache []TableStringKeyCacheEntry) (Value, bool, error) {
+	keyVal, ok, err := StringFormatSingleInt(pattern, n)
+	if err != nil || !ok {
+		return NilValue(), false, err
+	}
+	key := keyVal.Str()
+	result := t.RawGetStringDynamicCached(key, cache)
+	entry := nativeFormattedIntQueryCacheSlot(uintptr(unsafe.Pointer(t)), pattern, n)
+	entry.Table = uintptr(unsafe.Pointer(t))
+	entry.Version = t.stringLookupVersion
+	entry.PatternData = stringDataPtr(pattern)
+	entry.PatternLen = uintptr(len(pattern))
+	entry.N = n
+	entry.Value = result
+	return result, true, nil
 }
 
 // TableStringKeyCacheSlot returns the cache ways for one bytecode PC.
@@ -1605,6 +1655,11 @@ func StringLookupCacheOffsets() (entriesData, entriesLen, entriesCap, mask uintp
 func NativeStringQueryCacheEntryOffsets() (table, version, keyData, keyLen, value uintptr) {
 	var e NativeStringQueryCacheEntry
 	return unsafe.Offsetof(e.Table), unsafe.Offsetof(e.Version), unsafe.Offsetof(e.KeyData), unsafe.Offsetof(e.KeyLen), unsafe.Offsetof(e.Value)
+}
+
+func NativeFormattedIntQueryCacheEntryOffsets() (table, version, patternData, patternLen, n, value uintptr) {
+	var e NativeFormattedIntQueryCacheEntry
+	return unsafe.Offsetof(e.Table), unsafe.Offsetof(e.Version), unsafe.Offsetof(e.PatternData), unsafe.Offsetof(e.PatternLen), unsafe.Offsetof(e.N), unsafe.Offsetof(e.Value)
 }
 
 // StringLookupCacheEntryOffsets returns byte offsets for StringLookupCacheEntry.

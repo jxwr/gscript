@@ -559,6 +559,38 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = v
 
+	case OpGetTableStringFormatInt:
+		patternIdx := int(instr.Aux)
+		if patternIdx < 0 || patternIdx >= len(s.fn.StringFormatPatterns) {
+			return nil, false, fmt.Errorf("IR interpreter: string format pattern %d out of range", patternIdx)
+		}
+		if len(instr.Args) != 4 {
+			return nil, false, fmt.Errorf("IR interpreter: string format table-get expects 4 args")
+		}
+		tblVal := s.val(instr.Args[0])
+		callee := s.val(instr.Args[1])
+		patternVal := s.val(instr.Args[2])
+		intVal := s.val(instr.Args[3])
+		if !runtime.IsStdStringFormatFunction(callee) || !patternVal.IsString() || patternVal.Str() != s.fn.StringFormatPatterns[patternIdx] || !intVal.IsInt() {
+			return nil, false, fmt.Errorf("IR interpreter: string format table-get guard mismatch")
+		}
+		keyVal, ok, err := runtime.StringFormatSingleInt(patternVal.Str(), intVal.Int())
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, fmt.Errorf("IR interpreter: unsupported string format pattern")
+		}
+		if tblVal.IsTable() {
+			if keyVal.IsString() {
+				s.values[instr.ID] = tblVal.Table().RawGetStringDynamicCached(keyVal.Str(), nil)
+			} else {
+				s.values[instr.ID] = tblVal.Table().RawGet(keyVal)
+			}
+		} else {
+			s.values[instr.ID] = runtime.NilValue()
+		}
+
 	case OpStringFormatConst:
 		patternIdx := int(instr.Aux)
 		if patternIdx < 0 || patternIdx >= len(s.fn.StringFormatPatterns) {

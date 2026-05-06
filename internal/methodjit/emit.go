@@ -413,6 +413,14 @@ var (
 	nativeStringQueryCacheEntryKeyData = int(unsafe.Offsetof(runtime.NativeStringQueryCacheEntry{}.KeyData))
 	nativeStringQueryCacheEntryKeyLen  = int(unsafe.Offsetof(runtime.NativeStringQueryCacheEntry{}.KeyLen))
 	nativeStringQueryCacheEntryValue   = int(unsafe.Offsetof(runtime.NativeStringQueryCacheEntry{}.Value))
+
+	nativeFormattedIntQueryCacheEntrySize        = int(unsafe.Sizeof(runtime.NativeFormattedIntQueryCacheEntry{}))
+	nativeFormattedIntQueryCacheEntryTable       = int(unsafe.Offsetof(runtime.NativeFormattedIntQueryCacheEntry{}.Table))
+	nativeFormattedIntQueryCacheEntryVersion     = int(unsafe.Offsetof(runtime.NativeFormattedIntQueryCacheEntry{}.Version))
+	nativeFormattedIntQueryCacheEntryPatternData = int(unsafe.Offsetof(runtime.NativeFormattedIntQueryCacheEntry{}.PatternData))
+	nativeFormattedIntQueryCacheEntryPatternLen  = int(unsafe.Offsetof(runtime.NativeFormattedIntQueryCacheEntry{}.PatternLen))
+	nativeFormattedIntQueryCacheEntryN           = int(unsafe.Offsetof(runtime.NativeFormattedIntQueryCacheEntry{}.N))
+	nativeFormattedIntQueryCacheEntryValue       = int(unsafe.Offsetof(runtime.NativeFormattedIntQueryCacheEntry{}.Value))
 )
 
 // CompiledFunction holds the generated native code for a function.

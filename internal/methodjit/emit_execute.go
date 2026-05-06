@@ -593,6 +593,72 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 			regs[slot] = runtime.NilValue()
 		}
 
+	case OpGetTableStringFormatInt:
+		tempBase := arg1
+		if slot >= len(regs) || tempBase < 0 || tempBase+4 > len(regs) {
+			return fmt.Errorf("string.format table-get op-exit out of register range")
+		}
+		tblVal := regs[tempBase]
+		callee := regs[tempBase+1]
+		patternVal := regs[tempBase+2]
+		intVal := regs[tempBase+3]
+		var keyVal runtime.Value
+		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() && intVal.IsInt() {
+			patternIdx := aux
+			if patternIdx >= 0 && patternIdx < len(cf.StringFormatPatterns) {
+				pattern := cf.StringFormatPatterns[patternIdx]
+				if patternVal.Str() == pattern {
+					if tblVal.IsTable() && !tblVal.Table().HasMetatable() {
+						v, ok, err := runtime.RawGetStringFormatIntCached(tblVal.Table(), pattern, intVal.Int(), nil)
+						if err != nil {
+							return err
+						}
+						if ok {
+							regs[slot] = v
+							return nil
+						}
+					}
+					v, ok, err := runtime.StringFormatSingleInt(pattern, intVal.Int())
+					if err != nil {
+						return err
+					}
+					if ok {
+						keyVal = v
+					}
+				}
+			}
+		}
+		if keyVal.IsNil() {
+			if cf.CallVM == nil {
+				return fmt.Errorf("no CallVM set for string.format table-get fallback")
+			}
+			results, err := cf.CallVM.CallValue(callee, []runtime.Value{patternVal, intVal})
+			if err != nil {
+				return err
+			}
+			if len(results) > 0 {
+				keyVal = results[0]
+			} else {
+				keyVal = runtime.NilValue()
+			}
+		}
+		if tblVal.IsTable() && !tblVal.Table().HasMetatable() {
+			if keyVal.IsString() {
+				regs[slot] = tblVal.Table().RawGetStringDynamicCached(keyVal.Str(), nil)
+			} else {
+				regs[slot] = tblVal.Table().RawGet(keyVal)
+			}
+			return nil
+		}
+		if cf.CallVM == nil {
+			return fmt.Errorf("no CallVM set for string.format table-get fallback")
+		}
+		result, err := cf.CallVM.TableGetForJIT(tblVal, keyVal)
+		if err != nil {
+			return err
+		}
+		regs[slot] = result
+
 	case OpStringFormatConst:
 		tempBase := arg1
 		nArgs := arg2

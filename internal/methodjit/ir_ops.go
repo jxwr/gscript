@@ -93,10 +93,11 @@ const (
 	OpLeFloat
 
 	// String
-	OpConcat            // Args[0] .. Args[1] .. ...
-	OpStringConstLookup // Args[0] indexes Function.StringConstTables[Aux], Aux2 = table length
-	OpStringFormatInt   // Args[0]=callee, Args[1]=pattern value, Args[2]=int; Aux indexes Function.StringFormatPatterns
-	OpStringFormatConst // Args[0]=callee, Args[1]=const pattern, Args[2:]=values; Aux indexes Function.StringFormatPatterns
+	OpConcat                  // Args[0] .. Args[1] .. ...
+	OpStringConstLookup       // Args[0] indexes Function.StringConstTables[Aux], Aux2 = table length
+	OpStringFormatInt         // Args[0]=callee, Args[1]=pattern value, Args[2]=int; Aux indexes Function.StringFormatPatterns
+	OpStringFormatConst       // Args[0]=callee, Args[1]=const pattern, Args[2:]=values; Aux indexes Function.StringFormatPatterns
+	OpGetTableStringFormatInt // Args[0]=table, Args[1]=callee, Args[2]=pattern value, Args[3]=int; Aux indexes Function.StringFormatPatterns
 
 	// Table operations
 	OpNewTable // Aux = array hint, Aux2 = hash hint
@@ -272,6 +273,7 @@ var opNames = [...]string{
 	OpStringConstLookup:          "StringConstLookup",
 	OpStringFormatInt:            "StringFormatInt",
 	OpStringFormatConst:          "StringFormatConst",
+	OpGetTableStringFormatInt:    "GetTableStringFormatInt",
 	OpNewTable:                   "NewTable",
 	OpNewFixedTable:              "NewFixedTable",
 	OpGetTable:                   "GetTable",
