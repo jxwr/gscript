@@ -14,6 +14,21 @@ type Tier2FeedbackSnapshot struct {
 	CallObserved     int
 }
 
+func (s Tier2FeedbackSnapshot) totalObserved() int {
+	return s.TypeObserved + s.FieldObserved + s.TableKeyObserved + s.CallObserved
+}
+
+func (s Tier2FeedbackSnapshot) structuralObserved() int {
+	return s.FieldObserved + s.TableKeyObserved + s.CallObserved
+}
+
+func (s Tier2FeedbackSnapshot) lessMatureThan(current Tier2FeedbackSnapshot) bool {
+	return current.TypeObserved > s.TypeObserved ||
+		current.FieldObserved > s.FieldObserved ||
+		current.TableKeyObserved > s.TableKeyObserved ||
+		current.CallObserved > s.CallObserved
+}
+
 func snapshotTier2Feedback(proto *vm.FuncProto) Tier2FeedbackSnapshot {
 	var s Tier2FeedbackSnapshot
 	if proto == nil {
@@ -126,11 +141,39 @@ func (p Tier2SpeculationPlan) StableStringShapeField(pc int, accessKind uint8) (
 	return feedback.StableStringShapeField()
 }
 
-// Tier2RecompilePolicy is a narrow hook for future runtime refresh. Current
-// production behavior is intentionally unchanged: a compiled Tier 2 body is
-// reused until it exits/deopts or is explicitly disabled.
+// Tier2RecompilePolicy decides when an already-published Tier 2 body was
+// compiled against feedback that was still materially immature. The policy is
+// deliberately conservative: structural feedback unlocks table/call lowering,
+// while pure type-feedback growth must be large enough to avoid recompile
+// churn while a function is still warming.
 type Tier2RecompilePolicy struct{}
 
-func (Tier2RecompilePolicy) ShouldRefresh(_ *vm.FuncProto, _ any, _ Tier2FeedbackSnapshot) bool {
+func (Tier2RecompilePolicy) ShouldRefresh(_ *vm.FuncProto, compiled any, current Tier2FeedbackSnapshot) bool {
+	cf, ok := compiled.(*CompiledFunction)
+	if !ok || cf == nil {
+		return false
+	}
+	previous := cf.SpeculationSnapshot
+	if !previous.lessMatureThan(current) {
+		return false
+	}
+	if previous.totalObserved() == 0 {
+		return current.structuralObserved() > 0 || current.TypeObserved >= 4
+	}
+	if previous.FieldObserved == 0 && current.FieldObserved > 0 {
+		return true
+	}
+	if previous.TableKeyObserved == 0 && current.TableKeyObserved > 0 {
+		return true
+	}
+	if previous.CallObserved == 0 && current.CallObserved > 0 {
+		return true
+	}
+	if current.structuralObserved()-previous.structuralObserved() >= 2 {
+		return true
+	}
+	if current.TypeObserved-previous.TypeObserved >= 8 {
+		return true
+	}
 	return false
 }

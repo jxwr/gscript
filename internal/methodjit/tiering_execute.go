@@ -193,6 +193,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				}
 				return nil, fmt.Errorf("tier2: call-exit: %w", err)
 			}
+			tm.retireStaleTier2AfterFeedback(proto, cf)
 			resyncRegs()
 			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
 				return nil, err
@@ -228,6 +229,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				}
 				return nil, fmt.Errorf("tier2: native-call-exit: %w", err)
 			}
+			tm.retireStaleTier2AfterFeedback(proto, cf)
 			resyncRegs()
 			callID := int(ctx.CallID)
 			resumeOff, ok := cf.resumeOffset(callID, ctx.ResumeNumericPass != 0)
@@ -252,6 +254,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err := tm.executeGlobalExit(ctx, regs, base, proto, cf); err != nil {
 				return nil, fmt.Errorf("tier2: global-exit: %w", err)
 			}
+			tm.retireStaleTier2AfterFeedback(proto, cf)
 			resyncRegs()
 			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
 				return nil, err
@@ -286,6 +289,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err != nil {
 				return nil, fmt.Errorf("tier2: table-exit: %w", err)
 			}
+			tm.retireStaleTier2AfterFeedback(proto, cf)
 			resyncRegs()
 			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
 				return nil, err
@@ -320,6 +324,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err != nil {
 				return nil, fmt.Errorf("tier2: op-exit: %w", err)
 			}
+			tm.retireStaleTier2AfterFeedback(proto, cf)
 			resyncRegs()
 			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
 				return nil, err

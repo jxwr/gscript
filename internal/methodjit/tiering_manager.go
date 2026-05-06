@@ -180,6 +180,31 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	return tm.applyPromotionDecision(proto, profile, decision)
 }
 
+func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf *CompiledFunction) {
+	if tm == nil || proto == nil || cf == nil {
+		return
+	}
+	if tm.getProfile(proto).HasLoop {
+		return
+	}
+	current := snapshotTier2Feedback(proto)
+	if !tm.recompile.ShouldRefresh(proto, cf, current) {
+		return
+	}
+	tm.traceEvent("tier2_refresh", "tier2", proto, map[string]any{
+		"reason":       "feedback_matured",
+		"type_before":  cf.SpeculationSnapshot.TypeObserved,
+		"type_after":   current.TypeObserved,
+		"field_before": cf.SpeculationSnapshot.FieldObserved,
+		"field_after":  current.FieldObserved,
+		"table_before": cf.SpeculationSnapshot.TableKeyObserved,
+		"table_after":  current.TableKeyObserved,
+		"call_before":  cf.SpeculationSnapshot.CallObserved,
+		"call_after":   current.CallObserved,
+	})
+	tm.clearTier2Install(proto)
+}
+
 func (tm *TieringManager) applyPromotionDecision(proto *vm.FuncProto, profile FuncProfile, decision PromotionDecision) interface{} {
 	switch decision.Action {
 	case TieringActionReturnCompiled:

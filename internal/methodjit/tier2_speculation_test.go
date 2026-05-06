@@ -32,9 +32,77 @@ func TestTier2SpeculationPlanSnapshotsFeedbackMaturity(t *testing.T) {
 	}
 }
 
-func TestTier2RecompilePolicyDefaultKeepsCompiledCode(t *testing.T) {
+func TestTier2RecompilePolicyKeepsCompiledCodeWithoutMaturedFeedback(t *testing.T) {
 	var policy Tier2RecompilePolicy
-	if policy.ShouldRefresh(nil, nil, Tier2FeedbackSnapshot{TypeObserved: 10}) {
-		t.Fatal("default recompile policy should preserve existing Tier2 behavior")
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{
+			TypeObserved:     10,
+			FieldObserved:    2,
+			TableKeyObserved: 3,
+			CallObserved:     1,
+		},
+	}
+	current := Tier2FeedbackSnapshot{
+		TypeObserved:     10,
+		FieldObserved:    2,
+		TableKeyObserved: 3,
+		CallObserved:     1,
+	}
+	if policy.ShouldRefresh(nil, cf, current) {
+		t.Fatal("policy should preserve Tier2 code when feedback has not matured")
+	}
+}
+
+func TestTier2RecompilePolicyRefreshesWhenStructuralFeedbackArrivesLate(t *testing.T) {
+	var policy Tier2RecompilePolicy
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{
+			TypeObserved: 4,
+		},
+	}
+	current := Tier2FeedbackSnapshot{
+		TypeObserved:     4,
+		TableKeyObserved: 1,
+	}
+	if !policy.ShouldRefresh(nil, cf, current) {
+		t.Fatal("policy should refresh when table-key feedback appears after Tier2 compile")
+	}
+}
+
+func TestTier2RecompilePolicyIgnoresTinyTypeOnlyGrowth(t *testing.T) {
+	var policy Tier2RecompilePolicy
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{
+			TypeObserved: 4,
+		},
+	}
+	current := Tier2FeedbackSnapshot{
+		TypeObserved: 6,
+	}
+	if policy.ShouldRefresh(nil, cf, current) {
+		t.Fatal("policy should not refresh for small type-only feedback growth")
+	}
+}
+
+func TestTieringManagerRetiresStaleTier2AfterExitFeedback(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "leaf", Code: make([]uint32, 2)}
+	proto.EnsureFeedback()
+	proto.Feedback[0].Result = vm.FBInt
+	proto.TableKeyFeedback[1].Count = 1
+	proto.DirectEntryPtr = 123
+	proto.Tier2DirectEntryPtr = 456
+	proto.Tier2Promoted = true
+
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{
+			TypeObserved: 1,
+		},
+	}
+	tm.retireStaleTier2AfterFeedback(proto, cf)
+
+	if proto.DirectEntryPtr != 0 || proto.Tier2DirectEntryPtr != 0 || proto.Tier2Promoted {
+		t.Fatalf("stale Tier2 install was not cleared: direct=%#x tier2=%#x promoted=%v",
+			proto.DirectEntryPtr, proto.Tier2DirectEntryPtr, proto.Tier2Promoted)
 	}
 }

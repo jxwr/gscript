@@ -167,6 +167,7 @@ func (tm *TieringManager) markTier2Compiled(proto *vm.FuncProto, cf *CompiledFun
 	if tm == nil || proto == nil || cf == nil {
 		return
 	}
+	cf.SpeculationSnapshot = snapshotTier2Feedback(proto)
 	tm.ensureTierStateStore()
 	tm.tierState.markCompiled(proto, cf)
 	tm.installTier2(proto, cf)
