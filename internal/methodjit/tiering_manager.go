@@ -87,6 +87,7 @@ type TieringManager struct {
 	r154DeoptPrints  int
 
 	policy    PromotionPolicy
+	recompile Tier2RecompilePolicy
 	tierState *TierStateStore
 	timeline  *JITTimeline
 	warmDump  *WarmDumpSession
@@ -111,6 +112,7 @@ func NewTieringManager() *TieringManager {
 		envR154Trace:     os.Getenv("R154_TRACE") == "1",
 		envTier2NoFilter: os.Getenv("GSCRIPT_TIER2_NO_FILTER") == "1",
 		policy:           PromotionPolicy{},
+		recompile:        Tier2RecompilePolicy{},
 	}
 	tm.tierState = newTierStateStore(tm.tier2Compiled, tm.tier2Failed, tm.tier2FailReason)
 	// Wire the outer compiler so handleCallFast routes through TieringManager
@@ -167,6 +169,9 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 	profile := tm.getProfile(proto)
 	compiled, _ := tm.tier2CompiledFor(proto)
+	if compiled != nil && tm.recompile.ShouldRefresh(proto, compiled, snapshotTier2Feedback(proto)) {
+		compiled = nil
+	}
 	decision := tm.policy.Decide(proto, profile, PromotionPolicyState{
 		Manager:     tm,
 		Compiled:    compiled,

@@ -96,6 +96,7 @@ func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
 // compile semantics AND to what the diagnostic tool sees, by construction.
 // That is the load-bearing invariant of rule 5 in CLAUDE.md.
 func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2Trace) (*CompiledFunction, error) {
+	speculation := NewTier2SpeculationPlan(proto)
 	var remarks *OptimizationRemarks
 	if trace != nil {
 		remarks = &OptimizationRemarks{}
@@ -127,7 +128,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 
 	var fn *Function
 	addStage("BuildGraph", func() error {
-		fn = BuildGraph(proto)
+		fn = BuildGraphWithSpeculation(proto, speculation)
 		fn.Remarks = remarks
 		if trace != nil {
 			trace.IRBefore = Print(fn)
@@ -312,6 +313,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 				"ARM64 compile failed: "+err.Error())
 			return fmt.Errorf("tier2: compile failed: %w", err)
 		}
+		cf.SpeculationSnapshot = speculation.Snapshot
 		return nil
 	})
 	if trace != nil {

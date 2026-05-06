@@ -13,12 +13,17 @@ import (
 // BuildGraph converts a FuncProto's bytecode into CFG SSA IR using the
 // Braun et al. (2013) algorithm for single-pass SSA construction.
 func BuildGraph(proto *vm.FuncProto) *Function {
+	return BuildGraphWithSpeculation(proto, NewTier2SpeculationPlan(proto))
+}
+
+func BuildGraphWithSpeculation(proto *vm.FuncProto, speculation Tier2SpeculationPlan) *Function {
 	b := &graphBuilder{
 		fn: &Function{
 			Proto:   proto,
 			NumRegs: proto.MaxStack,
 		},
 		proto:           proto,
+		speculation:     speculation,
 		pcToBlock:       make(map[int]*Block),
 		currentPC:       -1,
 		lastMultiRetReg: -1,
@@ -31,6 +36,7 @@ func BuildGraph(proto *vm.FuncProto) *Function {
 type graphBuilder struct {
 	fn              *Function
 	proto           *vm.FuncProto
+	speculation     Tier2SpeculationPlan
 	pcToBlock       map[int]*Block // maps PC → Block that starts at that PC
 	nextBlock       int            // next block ID
 	backEdgeTargets map[int]bool   // PCs that are targets of backward jumps (loop headers)
@@ -68,37 +74,14 @@ func (b *graphBuilder) emit(block *Block, op Op, typ Type, args []*Value, aux, a
 }
 
 func (b *graphBuilder) fieldShapeAux2(pc int) int64 {
-	if b == nil || b.proto == nil || pc < 0 {
-		return 0
-	}
-	if b.proto.FieldAccessFeedback != nil && pc < len(b.proto.FieldAccessFeedback) {
-		feedback := b.proto.FieldAccessFeedback[pc]
-		if feedback.Count > 0 {
-			shapeID, fieldIdx, ok := feedback.StableShapeField()
-			if ok {
-				return int64(shapeID)<<32 | int64(uint32(fieldIdx))
-			}
-			return 0
-		}
-	}
-	if b.proto.FieldCache != nil && pc < len(b.proto.FieldCache) {
-		entry := b.proto.FieldCache[pc]
-		if entry.ShapeID != 0 && entry.FieldIdx >= 0 {
-			return int64(entry.ShapeID)<<32 | int64(uint32(entry.FieldIdx))
-		}
-	}
-	return 0
+	return b.speculation.FieldShapeAux2(pc)
 }
 
 func (b *graphBuilder) tableStringFieldLowering(pc int, accessKind uint8) (constIdx int, aux2 int64, ok bool) {
-	if b == nil || b.proto == nil || pc < 0 || b.proto.TableKeyFeedback == nil || pc >= len(b.proto.TableKeyFeedback) {
+	if b == nil || b.proto == nil || pc < 0 {
 		return 0, 0, false
 	}
-	feedback := b.proto.TableKeyFeedback[pc]
-	if accessKind == vm.TableAccessKindSet && (feedback.ValueType == vm.FBAny || feedback.ValueType == vm.FBUnobserved) {
-		return 0, 0, false
-	}
-	key, shapeID, fieldIdx, ok := feedback.StableStringShapeField()
+	key, shapeID, fieldIdx, ok := b.speculation.StableStringShapeField(pc, accessKind)
 	if !ok || shapeID == 0 || fieldIdx < 0 {
 		return 0, 0, false
 	}
@@ -501,11 +484,9 @@ func (b *graphBuilder) emitBlocks() {
 				val := b.readVariable(bOp, block)
 				instr := b.emit(block, OpLen, TypeAny, []*Value{val}, 0, 0)
 				result := instr.Value()
-				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
-					if irType, ok := feedbackToIRType(b.proto.Feedback[pc].Result); ok {
-						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
-						result = guard.Value()
-					}
+				if irType, ok := b.speculation.ResultGuardType(pc); ok {
+					guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
+					result = guard.Value()
 				}
 				b.writeVariable(a, block, result)
 
@@ -541,18 +522,16 @@ func (b *graphBuilder) emitBlocks() {
 				// the generic OpLe to OpLeInt/OpLeFloat, avoiding the buggy
 				// raw-int compare path for NaN-boxed floats. The guard itself
 				// deopts on type mismatch (rare after mono-typed feedback).
-				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
-					fb := b.proto.Feedback[pc]
-					guardFeedbackOperands := op != vm.OP_EQ || (!graphValueIsConstNil(lhs) && !graphValueIsConstNil(rhs))
-					if guardFeedbackOperands {
-						if lhsType, ok := feedbackToIRType(fb.Left); ok {
-							g := b.emit(block, OpGuardType, lhsType, []*Value{lhs}, int64(lhsType), 0)
-							lhs = g.Value()
-						}
-						if rhsType, ok := feedbackToIRType(fb.Right); ok {
-							g := b.emit(block, OpGuardType, rhsType, []*Value{rhs}, int64(rhsType), 0)
-							rhs = g.Value()
-						}
+				leftType, leftOK, rightType, rightOK := b.speculation.OperandGuardTypes(pc)
+				guardFeedbackOperands := op != vm.OP_EQ || (!graphValueIsConstNil(lhs) && !graphValueIsConstNil(rhs))
+				if guardFeedbackOperands {
+					if leftOK {
+						g := b.emit(block, OpGuardType, leftType, []*Value{lhs}, int64(leftType), 0)
+						lhs = g.Value()
+					}
+					if rightOK {
+						g := b.emit(block, OpGuardType, rightType, []*Value{rhs}, int64(rightType), 0)
+						rhs = g.Value()
 					}
 				}
 
@@ -836,14 +815,9 @@ func (b *graphBuilder) emitBlocks() {
 				key := b.resolveRK(c, block)
 				// Read kind feedback for array specialization.
 				var kindAux2 int64
-				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
-					kind := b.proto.Feedback[pc].Kind
-					if kind != vm.FBKindUnobserved && kind != vm.FBKindPolymorphic {
-						kindAux2 = int64(kind)
-					}
-				}
+				kindAux2 = b.speculation.TableKindAux(pc)
 				resultType := TypeAny
-				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) && b.proto.Feedback[pc].Result == vm.FBTable && kindAux2 == int64(vm.FBKindMixed) {
+				if resultGuard, ok := b.speculation.ResultGuardType(pc); ok && resultGuard == TypeTable && kindAux2 == int64(vm.FBKindMixed) {
 					resultType = TypeTable
 				}
 				op := OpGetTable
@@ -862,16 +836,13 @@ func (b *graphBuilder) emitBlocks() {
 				}
 				instr := b.emit(block, op, resultType, args, aux, aux2)
 				result := instr.Value()
-				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
-					fb := b.proto.Feedback[pc]
-					if irType, ok := feedbackToIRType(fb.Result); ok &&
-						resultType != irType &&
-						!getTableKindImpliesType(kindAux2, irType) &&
-						!getTableKindForbidsResultGuard(kindAux2, irType) &&
-						!bytecodeSlotFeedsNilEq(b.proto, pc, a) {
-						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
-						result = guard.Value()
-					}
+				if irType, ok := b.speculation.ResultGuardType(pc); ok &&
+					resultType != irType &&
+					!getTableKindImpliesType(kindAux2, irType) &&
+					!getTableKindForbidsResultGuard(kindAux2, irType) &&
+					!bytecodeSlotFeedsNilEq(b.proto, pc, a) {
+					guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
+					result = guard.Value()
 				}
 				b.writeVariable(a, block, result)
 
@@ -884,12 +855,7 @@ func (b *graphBuilder) emitBlocks() {
 				val := b.resolveRK(c, block)
 				// Read kind feedback for array specialization.
 				var setKindAux2 int64
-				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
-					kind := b.proto.Feedback[pc].Kind
-					if kind != vm.FBKindUnobserved && kind != vm.FBKindPolymorphic {
-						setKindAux2 = int64(kind)
-					}
-				}
+				setKindAux2 = b.speculation.TableKindAux(pc)
 				if constIdx, fieldAux2, ok := b.tableStringFieldLowering(pc, vm.TableAccessKindSet); ok {
 					stableKey := b.proto.Constants[constIdx].Str()
 					if keyConst, isConst := graphValueConstString(key, b.proto); !isConst || keyConst != stableKey {
@@ -909,11 +875,9 @@ func (b *graphBuilder) emitBlocks() {
 				aux2 := b.fieldShapeAux2(pc)
 				instr := b.emit(block, OpGetField, TypeAny, []*Value{tbl}, int64(c), aux2)
 				result := instr.Value()
-				if b.proto.Feedback != nil && pc < len(b.proto.Feedback) {
-					if irType, ok := feedbackToIRType(b.proto.Feedback[pc].Result); ok && !bytecodeSlotFeedsNilEq(b.proto, pc, a) {
-						guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
-						result = guard.Value()
-					}
+				if irType, ok := b.speculation.ResultGuardType(pc); ok && !bytecodeSlotFeedsNilEq(b.proto, pc, a) {
+					guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
+					result = guard.Value()
 				}
 				b.writeVariable(a, block, result)
 

@@ -1103,12 +1103,6 @@ func callExitResumeLabelForPass(instrID int, numericMode bool) string {
 // frameSize is the stack frame size for callee-saved registers.
 const frameSize = 128
 
-const (
-	callModeDirect    = 1
-	callModeTypedSelf = 2
-	callModeLeafX0    = 3
-)
-
 // numericSelfEntryFrameSize is the thin raw-int self-recursive frame. Raw
 // callers preserve their own live allocated registers, so the numeric entry
 // only needs FP/LR for the native BL/RET chain.

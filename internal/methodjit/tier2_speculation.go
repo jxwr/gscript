@@ -1,0 +1,136 @@
+package methodjit
+
+import (
+	"github.com/gscript/gscript/internal/vm"
+)
+
+// Tier2FeedbackSnapshot captures the feedback maturity seen by one Tier 2
+// compile. It is intentionally compact: future refresh policy can compare
+// snapshots without having to know every feedback vector's concrete layout.
+type Tier2FeedbackSnapshot struct {
+	TypeObserved     int
+	FieldObserved    int
+	TableKeyObserved int
+	CallObserved     int
+}
+
+func snapshotTier2Feedback(proto *vm.FuncProto) Tier2FeedbackSnapshot {
+	var s Tier2FeedbackSnapshot
+	if proto == nil {
+		return s
+	}
+	for _, fb := range proto.Feedback {
+		if fb.Left != vm.FBUnobserved || fb.Right != vm.FBUnobserved ||
+			fb.Result != vm.FBUnobserved || fb.Kind != vm.FBKindUnobserved {
+			s.TypeObserved++
+		}
+	}
+	for _, fb := range proto.FieldAccessFeedback {
+		if fb.Count > 0 {
+			s.FieldObserved++
+		}
+	}
+	for _, fb := range proto.TableKeyFeedback {
+		if fb.Count > 0 {
+			s.TableKeyObserved++
+		}
+	}
+	for _, fb := range proto.CallSiteFeedback {
+		if fb.Count > 0 {
+			s.CallObserved++
+		}
+	}
+	return s
+}
+
+// Tier2SpeculationPlan is the single read interface from feedback into the
+// Tier 2 graph builder. Keeping this boundary explicit makes later runtime
+// specialization/recompile work a policy change instead of another set of
+// direct vector probes spread across bytecode lowering.
+type Tier2SpeculationPlan struct {
+	proto    *vm.FuncProto
+	Snapshot Tier2FeedbackSnapshot
+}
+
+func NewTier2SpeculationPlan(proto *vm.FuncProto) Tier2SpeculationPlan {
+	return Tier2SpeculationPlan{
+		proto:    proto,
+		Snapshot: snapshotTier2Feedback(proto),
+	}
+}
+
+func (p Tier2SpeculationPlan) TypeFeedback(pc int) (vm.TypeFeedback, bool) {
+	if p.proto == nil || pc < 0 || p.proto.Feedback == nil || pc >= len(p.proto.Feedback) {
+		return vm.TypeFeedback{}, false
+	}
+	return p.proto.Feedback[pc], true
+}
+
+func (p Tier2SpeculationPlan) ResultGuardType(pc int) (Type, bool) {
+	fb, ok := p.TypeFeedback(pc)
+	if !ok {
+		return TypeUnknown, false
+	}
+	return feedbackToIRType(fb.Result)
+}
+
+func (p Tier2SpeculationPlan) OperandGuardTypes(pc int) (left Type, leftOK bool, right Type, rightOK bool) {
+	fb, ok := p.TypeFeedback(pc)
+	if !ok {
+		return TypeUnknown, false, TypeUnknown, false
+	}
+	left, leftOK = feedbackToIRType(fb.Left)
+	right, rightOK = feedbackToIRType(fb.Right)
+	return left, leftOK, right, rightOK
+}
+
+func (p Tier2SpeculationPlan) TableKindAux(pc int) int64 {
+	fb, ok := p.TypeFeedback(pc)
+	if !ok || fb.Kind == vm.FBKindUnobserved || fb.Kind == vm.FBKindPolymorphic {
+		return 0
+	}
+	return int64(fb.Kind)
+}
+
+func (p Tier2SpeculationPlan) FieldShapeAux2(pc int) int64 {
+	if p.proto == nil || pc < 0 {
+		return 0
+	}
+	if p.proto.FieldAccessFeedback != nil && pc < len(p.proto.FieldAccessFeedback) {
+		feedback := p.proto.FieldAccessFeedback[pc]
+		if feedback.Count > 0 {
+			shapeID, fieldIdx, ok := feedback.StableShapeField()
+			if ok {
+				return int64(shapeID)<<32 | int64(uint32(fieldIdx))
+			}
+			return 0
+		}
+	}
+	if p.proto.FieldCache != nil && pc < len(p.proto.FieldCache) {
+		entry := p.proto.FieldCache[pc]
+		if entry.ShapeID != 0 && entry.FieldIdx >= 0 {
+			return int64(entry.ShapeID)<<32 | int64(uint32(entry.FieldIdx))
+		}
+	}
+	return 0
+}
+
+func (p Tier2SpeculationPlan) StableStringShapeField(pc int, accessKind uint8) (key string, shapeID uint32, fieldIdx int, ok bool) {
+	if p.proto == nil || pc < 0 || p.proto.TableKeyFeedback == nil || pc >= len(p.proto.TableKeyFeedback) {
+		return "", 0, 0, false
+	}
+	feedback := p.proto.TableKeyFeedback[pc]
+	if accessKind == vm.TableAccessKindSet && (feedback.ValueType == vm.FBAny || feedback.ValueType == vm.FBUnobserved) {
+		return "", 0, 0, false
+	}
+	return feedback.StableStringShapeField()
+}
+
+// Tier2RecompilePolicy is a narrow hook for future runtime refresh. Current
+// production behavior is intentionally unchanged: a compiled Tier 2 body is
+// reused until it exits/deopts or is explicitly disabled.
+type Tier2RecompilePolicy struct{}
+
+func (Tier2RecompilePolicy) ShouldRefresh(_ *vm.FuncProto, _ any, _ Tier2FeedbackSnapshot) bool {
+	return false
+}

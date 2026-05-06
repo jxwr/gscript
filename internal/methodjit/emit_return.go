@@ -29,7 +29,7 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 		len(instr.Args) > 0 &&
 		ec.irTypes[instr.Args[0].ID] == TypeInt {
 		genericReturnLabel := ec.uniqueLabel("typed_self_generic_return")
-		ec.asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
+		ec.emitLoadCallMode(jit.X1)
 		ec.asm.CMPimm(jit.X1, callModeTypedSelf)
 		ec.asm.BCond(jit.CondNE, genericReturnLabel)
 		src := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
@@ -42,7 +42,7 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 
 	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.LeafNoCall {
 		genericReturnLabel := ec.uniqueLabel("leaf_x0_generic_return")
-		ec.asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
+		ec.emitLoadCallMode(jit.X1)
 		ec.asm.CMPimm(jit.X1, callModeLeafX0)
 		ec.asm.BCond(jit.CondNE, genericReturnLabel)
 		ec.emitReturnValueToX0(instr)
@@ -82,7 +82,7 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 	// Check CallMode: 0 = normal entry (from Execute/callJIT), 1 = direct entry (from BLR).
 	// Both use a full 128B frame, but the direct epilogue returns to the BLR caller
 	// while the normal epilogue returns to the callJIT trampoline.
-	ec.asm.LDR(jit.X1, mRegCtx, execCtxOffCallMode)
+	ec.emitLoadCallMode(jit.X1)
 	if ec.typedSelfABI.Eligible {
 		ec.asm.CMPimm(jit.X1, callModeTypedSelf)
 		ec.asm.BCond(jit.CondEQ, "t2_typed_self_epilogue")

@@ -436,6 +436,11 @@ type CompiledFunction struct {
 	// round trip for Tier 2 callers.
 	LeafEntryOffset int
 
+	// SpeculationSnapshot records the feedback maturity visible when this
+	// function was compiled. It is currently diagnostic/recompile groundwork;
+	// production refresh policy keeps behavior unchanged.
+	SpeculationSnapshot Tier2FeedbackSnapshot
+
 	// DirectEntrySafe is false when a native caller would have to replay this
 	// function from pc=0 after the function may already have performed a
 	// visible side effect. In that case Tier 2 stays callable through the

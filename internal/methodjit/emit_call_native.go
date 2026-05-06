@@ -191,16 +191,6 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.Label(missHaveEntryLabel)
 	asm.CBZ(jit.X2, slowLabel) // not compiled -> slow
 
-	emitTaggedLeafEntry := func(entryReg jit.Reg) {
-		notLeafLabel := ec.uniqueLabel("t2call_not_leaf_entry")
-		asm.LDRB(jit.X4, jit.X1, funcProtoOffLeafNoCall)
-		asm.CBZ(jit.X4, notLeafLabel)
-		asm.LDR(jit.X4, jit.X1, funcProtoOffTier2LeafEntryPtr)
-		asm.CBZ(jit.X4, notLeafLabel)
-		asm.ADDimm(entryReg, jit.X4, 1)
-		asm.Label(notLeafLabel)
-	}
-
 	// Update IC cache with the boxed closure value (reload from
 	// memory since X0 now holds the raw ptr), direct entry, proto, and entry
 	// publication version.
@@ -217,7 +207,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.Label(icUpdateWayLabels[way])
 		asm.LDR(jit.X4, mRegRegs, slotOffset(funcSlot)) // re-load boxed value
 		asm.STR(jit.X4, jit.X3, wayOff+baselineCallCacheBoxedOff)
-		emitTaggedLeafEntry(jit.X2)
+		ec.emitTaggedLeafEntryIfAvailable(jit.X1, jit.X2, jit.X4)
 		asm.STR(jit.X2, jit.X3, wayOff+baselineCallCacheEntryOff)
 		asm.STR(jit.X1, jit.X3, wayOff+baselineCallCacheProtoOff)
 		asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryVersion)
@@ -248,7 +238,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.CBZ(jit.X4, slowLabel)
 		asm.Label(icHaveEntryLabel)
 		asm.MOVreg(jit.X2, jit.X4)
-		emitTaggedLeafEntry(jit.X2)
+		ec.emitTaggedLeafEntryIfAvailable(jit.X1, jit.X2, jit.X4)
 		asm.STR(jit.X2, jit.X3, wayOff+baselineCallCacheEntryOff)
 		asm.STR(jit.X5, jit.X3, wayOff+baselineCallCacheVersionOff)
 		asm.Label(icVersionOKLabel)
@@ -257,12 +247,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	}
 
 	asm.Label(icDoneLabel)
-	asm.MOVimm16(jit.X5, callModeDirect)
-	untaggedEntryLabel := ec.uniqueLabel("t2call_untagged_entry")
-	asm.TBZ(jit.X2, 0, untaggedEntryLabel)
-	asm.SUBimm(jit.X2, jit.X2, 1)
-	asm.MOVimm16(jit.X5, callModeLeafX0)
-	asm.Label(untaggedEntryLabel)
+	ec.emitDecodeTaggedPeerEntry(jit.X2, jit.X5)
 
 	if noDepthCallee != nil {
 		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(noDepthCallee))))
@@ -332,7 +317,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	}
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
-	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
+	ec.emitLoadCallMode(jit.X3)
 	asm.STR(jit.X3, jit.SP, 32)
 	// Save caller's ClosurePtr (always — closure instance may differ).
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
@@ -388,7 +373,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// Set CallMode. Tagged call-IC entries use the Tier 2-only boxed leaf ABI
 	// that returns the normal boxed result in X0.
-	asm.STR(jit.X5, mRegCtx, execCtxOffCallMode)
+	ec.emitStoreCallMode(jit.X5)
 
 	// R111: skip GlobalCache setup on static self-call (per-proto invariant).
 	if !staticSelf {
@@ -462,7 +447,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 		asm.Label(skipDepthDecLabel)
 	}
-	asm.LDR(jit.X8, mRegCtx, execCtxOffCallMode)
+	ec.emitLoadCallMode(jit.X8)
 
 	// Snapshot callee exit metadata only on the cold exit path. Successful
 	// native peer calls are the hot path and do not need resume metadata.
@@ -484,7 +469,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Step 10: Restore caller state.
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 32)
-	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	ec.emitStoreCallMode(jit.X3)
 	asm.LDR(jit.X3, jit.SP, 40)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	if !staticSelf {
@@ -633,7 +618,7 @@ func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
 	asm.SUBimm(jit.SP, jit.SP, 64)
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.STP(mRegRegs, mRegConsts, jit.SP, 16)
-	asm.LDR(jit.X3, mRegCtx, execCtxOffCallMode)
+	ec.emitLoadCallMode(jit.X3)
 	asm.STR(jit.X3, jit.SP, 32)
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X3, jit.SP, 40)
@@ -653,7 +638,7 @@ func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
 	}
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 	asm.MOVimm16(jit.X3, 1)
-	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	ec.emitStoreCallMode(jit.X3)
 
 	asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
 	asm.ADDimm(jit.X3, jit.X3, 1)
@@ -668,7 +653,7 @@ func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
 
 	asm.LDP(mRegRegs, mRegConsts, jit.SP, 16)
 	asm.LDR(jit.X3, jit.SP, 32)
-	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	ec.emitStoreCallMode(jit.X3)
 	asm.LDR(jit.X3, jit.SP, 40)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
@@ -1199,7 +1184,7 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	// fallback/exit. The success path passes typed args in X0..X3 and avoids
 	// writing regs[funcSlot..] before the recursive BL.
 	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
-	asm.LDR(jit.X8, mRegCtx, execCtxOffCallMode)
+	ec.emitLoadCallMode(jit.X8)
 	asm.STR(jit.X8, jit.SP, typedSelfSavedCallModeOff)
 	ec.emitTypedSelfArgsInRegsAndSave(instr, abi, fallbackLabel)
 
@@ -1220,7 +1205,7 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	asm.BCond(jit.CondGE, fallbackLabel)
 
 	asm.MOVimm16(jit.X8, callModeTypedSelf)
-	asm.STR(jit.X8, mRegCtx, execCtxOffCallMode)
+	ec.emitStoreCallMode(jit.X8)
 
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
@@ -1246,7 +1231,7 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 		asm.SUBreg(mRegRegs, mRegRegs, jit.X8)
 	}
 	asm.LDR(jit.X8, jit.SP, typedSelfSavedCallModeOff)
-	asm.STR(jit.X8, mRegCtx, execCtxOffCallMode)
+	ec.emitStoreCallMode(jit.X8)
 
 	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X8, exitHandleLabel)
@@ -1804,7 +1789,7 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
 	asm.STR(jit.X0, mRegCtx, execCtxOffBaselineClosurePtr) // X0 = closure ptr
 	asm.MOVimm16(jit.X3, 1)
-	asm.STR(jit.X3, mRegCtx, execCtxOffCallMode)
+	ec.emitStoreCallMode(jit.X3)
 	asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
 	asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalCachePtr)
