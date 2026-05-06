@@ -182,6 +182,15 @@ func NewSequentialArrayTable(length int) *Table {
 	return t
 }
 
+func NewAppendArrayTable(capacity int) *Table {
+	if capacity < 1 {
+		capacity = 1
+	}
+	t := DefaultHeap.AllocTable()
+	t.array = DefaultHeap.AllocValues(1, capacity)
+	return t
+}
+
 // RawGet retrieves a value by key, bypassing metamethods.
 func (t *Table) RawGet(key Value) Value {
 	if key.IsNil() {

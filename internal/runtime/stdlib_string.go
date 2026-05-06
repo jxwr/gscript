@@ -712,19 +712,30 @@ func stringSplitStrings(s, sep string) Value {
 		return TableValue(tbl)
 	}
 
-	n := strings.Count(s, sep) + 1
-	tbl := NewSequentialArrayTable(n)
+	tbl := NewAppendArrayTable(8)
+	if len(sep) == 1 {
+		sepByte := sep[0]
+		start := 0
+		for i := 0; i < len(s); i++ {
+			if s[i] != sepByte {
+				continue
+			}
+			arenaAppendValue(DefaultHeap, &tbl.array, StringValue(s[start:i]))
+			start = i + 1
+		}
+		arenaAppendValue(DefaultHeap, &tbl.array, StringValue(s[start:]))
+		return TableValue(tbl)
+	}
+
 	start := 0
-	idx := 1
 	for {
 		next := strings.Index(s[start:], sep)
 		if next < 0 {
-			tbl.array[idx] = StringValue(s[start:])
+			arenaAppendValue(DefaultHeap, &tbl.array, StringValue(s[start:]))
 			break
 		}
 		end := start + next
-		tbl.array[idx] = StringValue(s[start:end])
-		idx++
+		arenaAppendValue(DefaultHeap, &tbl.array, StringValue(s[start:end]))
 		start = end + len(sep)
 	}
 	return TableValue(tbl)
