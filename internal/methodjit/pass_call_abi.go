@@ -207,10 +207,11 @@ func callABIHasExactResultShape(fn *Function, instr *Instr, wantRets int) bool {
 	if n, ok := callExactFixedResultCountFromC(instr.Aux2); !ok || n != wantRets {
 		return false
 	}
-	if !instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.Code) {
+	sourceProto := instrSourceProto(fn, instr)
+	if !instr.HasSource || sourceProto == nil || instr.SourcePC < 0 || instr.SourcePC >= len(sourceProto.Code) {
 		return false
 	}
-	inst := fn.Proto.Code[instr.SourcePC]
+	inst := sourceProto.Code[instr.SourcePC]
 	if vm.DecodeOp(inst) != vm.OP_CALL || vm.DecodeA(inst) != int(instr.Aux) {
 		return false
 	}

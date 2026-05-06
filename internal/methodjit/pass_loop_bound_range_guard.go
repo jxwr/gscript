@@ -36,16 +36,17 @@ func LoopBoundRangeGuardPass(fn *Function) (*Function, error) {
 			}
 
 			guard := &Instr{
-				ID:         fn.newValueID(),
-				Op:         OpGuardIntRange,
-				Type:       TypeInt,
-				Args:       []*Value{instr.Value()},
-				Aux:        0,
-				Aux2:       nestedLoopParamRangeMax,
-				Block:      block,
-				HasSource:  instr.HasSource,
-				SourcePC:   instr.SourcePC,
-				SourceLine: instr.SourceLine,
+				ID:          fn.newValueID(),
+				Op:          OpGuardIntRange,
+				Type:        TypeInt,
+				Args:        []*Value{instr.Value()},
+				Aux:         0,
+				Aux2:        nestedLoopParamRangeMax,
+				Block:       block,
+				HasSource:   instr.HasSource,
+				SourceProto: instr.SourceProto,
+				SourcePC:    instr.SourcePC,
+				SourceLine:  instr.SourceLine,
 			}
 			block.Instrs = append(block.Instrs, nil)
 			copy(block.Instrs[i+2:], block.Instrs[i+1:])

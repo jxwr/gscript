@@ -424,16 +424,17 @@ func cloneInstrWithRemap(fn *Function, block *Block, instr *Instr, remap map[int
 		}
 	}
 	return &Instr{
-		ID:         fn.newValueID(),
-		Op:         instr.Op,
-		Type:       instr.Type,
-		Args:       args,
-		Aux:        instr.Aux,
-		Aux2:       instr.Aux2,
-		Block:      block,
-		HasSource:  instr.HasSource,
-		SourcePC:   instr.SourcePC,
-		SourceLine: instr.SourceLine,
+		ID:          fn.newValueID(),
+		Op:          instr.Op,
+		Type:        instr.Type,
+		Args:        args,
+		Aux:         instr.Aux,
+		Aux2:        instr.Aux2,
+		Block:       block,
+		HasSource:   instr.HasSource,
+		SourceProto: instr.SourceProto,
+		SourcePC:    instr.SourcePC,
+		SourceLine:  instr.SourceLine,
 	}
 }
 
@@ -447,6 +448,7 @@ func cloneTerminator(fn *Function, block *Block, op Op, args []*Value, succ0, su
 	}
 	if src != nil {
 		instr.HasSource = src.HasSource
+		instr.SourceProto = src.SourceProto
 		instr.SourcePC = src.SourcePC
 		instr.SourceLine = src.SourceLine
 	}

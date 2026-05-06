@@ -39,6 +39,7 @@ func (i *Instr) setSourceFromPC(proto *vm.FuncProto, pc int) {
 		return
 	}
 	i.HasSource = true
+	i.SourceProto = proto
 	i.SourcePC = pc
 	if pc < len(proto.LineInfo) {
 		i.SourceLine = proto.LineInfo[pc]
@@ -50,8 +51,19 @@ func (i *Instr) copySourceFrom(src *Instr) {
 		return
 	}
 	i.HasSource = true
+	i.SourceProto = src.SourceProto
 	i.SourcePC = src.SourcePC
 	i.SourceLine = src.SourceLine
+}
+
+func instrSourceProto(fn *Function, instr *Instr) *vm.FuncProto {
+	if instr != nil && instr.SourceProto != nil {
+		return instr.SourceProto
+	}
+	if fn != nil {
+		return fn.Proto
+	}
+	return nil
 }
 
 // BuildIRASMMap combines IR source metadata with emitter code ranges into a
@@ -111,8 +123,8 @@ func buildIRASMMapEntry(fn *Function, instr *Instr, r InstrCodeRange) IRASMMapEn
 	if instr.HasSource {
 		entry.SourceLine = instr.SourceLine
 		entry.BytecodePC = instr.SourcePC
-		if fn.Proto != nil && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.Code) {
-			entry.BytecodeOp = vm.OpName(vm.DecodeOp(fn.Proto.Code[instr.SourcePC]))
+		if proto := instrSourceProto(fn, instr); proto != nil && instr.SourcePC >= 0 && instr.SourcePC < len(proto.Code) {
+			entry.BytecodeOp = vm.OpName(vm.DecodeOp(proto.Code[instr.SourcePC]))
 		}
 	}
 	if instr.Type == TypeUnknown {

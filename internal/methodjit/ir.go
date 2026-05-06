@@ -265,9 +265,10 @@ type Instr struct {
 	// Source metadata links this IR instruction back to the bytecode that
 	// produced it. HasSource is false for synthetic instructions introduced by
 	// passes or CFG repair unless the pass explicitly copies source metadata.
-	HasSource  bool
-	SourcePC   int
-	SourceLine int
+	HasSource   bool
+	SourceProto *vm.FuncProto
+	SourcePC    int
+	SourceLine  int
 }
 
 // Value returns the SSA value produced by this instruction.
