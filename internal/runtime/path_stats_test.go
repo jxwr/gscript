@@ -17,7 +17,7 @@ func TestRuntimePathStatsTableAndStringCounters(t *testing.T) {
 	if _, err := stringFormatValue([]Value{StringValue("item_%03d"), IntValue(7)}); err != nil {
 		t.Fatalf("fast stringFormatValue: %v", err)
 	}
-	if _, err := stringFormatValue([]Value{StringValue("%.2f"), FloatValue(1.25)}); err != nil {
+	if _, err := stringFormatValue([]Value{StringValue("%.2e"), FloatValue(1.25)}); err != nil {
 		t.Fatalf("fallback stringFormatValue: %v", err)
 	}
 

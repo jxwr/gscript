@@ -85,6 +85,13 @@ func TestStringFormatF(t *testing.T) {
 	}
 }
 
+func TestStringFormatCompiledFixedPrecisionFloat(t *testing.T) {
+	v := getGlobal(t, `result := string.format("%s:%d:%.2f", "sku", 7, 3.125)`, "result")
+	if v.Str() != "sku:7:3.12" {
+		t.Errorf("expected 'sku:7:3.12', got %q", v.Str())
+	}
+}
+
 func TestStringFormatX(t *testing.T) {
 	v := getGlobal(t, `result := string.format("%x", 255)`, "result")
 	if v.Str() != "ff" {
@@ -227,8 +234,8 @@ func TestCompileSimpleFormatRejectsFallbackFormats(t *testing.T) {
 	if _, ok, err := compileSimpleFormat("progress %% %d"); err != nil || ok {
 		t.Fatalf("escaped percent should use fallback parser: ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := compileSimpleFormat("%.3f"); err != nil || ok {
-		t.Fatalf("precision float should use fallback parser: ok=%v err=%v", ok, err)
+	if _, ok, err := compileSimpleFormat("%.3e"); err != nil || ok {
+		t.Fatalf("exponent float should use fallback parser: ok=%v err=%v", ok, err)
 	}
 }
 
