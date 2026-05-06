@@ -2473,13 +2473,6 @@ func (ec *emitContext) emitGetTableStringFormatIntNative(instr *Instr) {
 	}
 	tempBase := ec.nextSlot
 	ec.nextSlot += 4
-	for i, arg := range instr.Args {
-		valReg := ec.resolveValueNB(arg.ID, jit.X0)
-		if valReg != jit.X0 {
-			asm.MOVreg(jit.X0, valReg)
-		}
-		asm.STR(jit.X0, mRegRegs, slotOffset(tempBase+i))
-	}
 
 	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	if tblReg != jit.X0 {
@@ -2536,6 +2529,13 @@ func (ec *emitContext) emitGetTableStringFormatIntNative(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(missLabel)
+	for i, arg := range instr.Args {
+		valReg := ec.resolveValueNB(arg.ID, jit.X0)
+		if valReg != jit.X0 {
+			asm.MOVreg(jit.X0, valReg)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(tempBase+i))
+	}
 	ec.emitGetTableStringFormatIntExitFromTemps(instr, resultSlot, tempBase)
 	asm.Label(doneLabel)
 }
