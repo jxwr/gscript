@@ -63,3 +63,27 @@ func (h *Heap) AllocStringKeys(capacity int) []string {
 	defer h.mu.Unlock()
 	return h.stringSlab.allocStringKeys(capacity)
 }
+
+const stringBoxSlabSize = 16384 // 16384 * 16 B = 256 KB per backing refill
+
+type stringBoxSlab struct {
+	backing []string
+	idx     int
+}
+
+func (s *stringBoxSlab) alloc(value string) *string {
+	if s.backing == nil || s.idx >= len(s.backing) {
+		s.backing = make([]string, stringBoxSlabSize)
+		s.idx = 0
+	}
+	p := &s.backing[s.idx]
+	s.idx++
+	*p = value
+	return p
+}
+
+func (h *Heap) AllocStringBox(value string) *string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.stringBoxSlab.alloc(value)
+}

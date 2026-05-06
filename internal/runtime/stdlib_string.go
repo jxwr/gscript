@@ -61,6 +61,23 @@ func buildStringLib() *Table {
 			Fast1: fast,
 		}))
 	}
+	setFastArg2 := func(name string, fn func([]Value) ([]Value, error), fast func([]Value) (Value, error), fast2 func(Value, Value) (Value, error)) {
+		t.RawSet(StringValue(name), FunctionValue(&GoFunction{
+			Name:     "string." + name,
+			Fn:       fn,
+			Fast1:    fast,
+			FastArg2: fast2,
+		}))
+	}
+	setFastArg23 := func(name string, fn func([]Value) ([]Value, error), fast func([]Value) (Value, error), fast2 func(Value, Value) (Value, error), fast3 func(Value, Value, Value) (Value, error)) {
+		t.RawSet(StringValue(name), FunctionValue(&GoFunction{
+			Name:     "string." + name,
+			Fn:       fn,
+			Fast1:    fast,
+			FastArg2: fast2,
+			FastArg3: fast3,
+		}))
+	}
 
 	// string.len(s) -> int
 	set("len", func(args []Value) ([]Value, error) {
@@ -72,13 +89,13 @@ func buildStringLib() *Table {
 
 	// string.sub(s, i [, j]) -> string
 	// 1-based indexing, negative indices count from end
-	setFast1("sub", func(args []Value) ([]Value, error) {
+	setFastArg23("sub", func(args []Value) ([]Value, error) {
 		v, err := stringSubValue(args)
 		if err != nil {
 			return nil, err
 		}
 		return []Value{v}, nil
-	}, stringSubValue)
+	}, stringSubValue, stringSub2Value, stringSub3Value)
 
 	// string.upper(s) -> string
 	set("upper", func(args []Value) ([]Value, error) {
@@ -393,13 +410,13 @@ func buildStringLib() *Table {
 	}
 
 	// string.split(s, sep) -> table. sep="" splits by byte
-	setFast1("split", func(args []Value) ([]Value, error) {
+	setFastArg2("split", func(args []Value) ([]Value, error) {
 		v, err := stringSplitValue(args)
 		if err != nil {
 			return nil, err
 		}
 		return []Value{v}, nil
-	}, stringSplitValue)
+	}, stringSplitValue, stringSplit2Value)
 
 	// string.trim(s [, cutset]) -- trim leading/trailing whitespace (or chars in cutset)
 	set("trim", func(args []Value) ([]Value, error) {
@@ -624,6 +641,51 @@ func stringSubValue(args []Value) (Value, error) {
 	return StringValue(s[i-1 : j]), nil
 }
 
+func stringSub2Value(sv, iv Value) (Value, error) {
+	if !sv.IsString() {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.sub' (string expected)")
+	}
+	s := sv.Str()
+	slen := len(s)
+	i := int(toInt(iv))
+	if i < 0 {
+		i = slen + i + 1
+	}
+	if i < 1 {
+		i = 1
+	}
+	if i > slen {
+		return StringValue(""), nil
+	}
+	return StringValue(s[i-1:]), nil
+}
+
+func stringSub3Value(sv, iv, jv Value) (Value, error) {
+	if !sv.IsString() {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.sub' (string expected)")
+	}
+	s := sv.Str()
+	slen := len(s)
+	i := int(toInt(iv))
+	j := int(toInt(jv))
+	if i < 0 {
+		i = slen + i + 1
+	}
+	if i < 1 {
+		i = 1
+	}
+	if j < 0 {
+		j = slen + j + 1
+	}
+	if j > slen {
+		j = slen
+	}
+	if i > j {
+		return StringValue(""), nil
+	}
+	return StringValue(s[i-1 : j]), nil
+}
+
 func stringSplitValue(args []Value) (Value, error) {
 	if len(args) < 2 {
 		return NilValue(), fmt.Errorf("bad argument to 'string.split'")
@@ -631,14 +693,23 @@ func stringSplitValue(args []Value) (Value, error) {
 	if !args[0].IsString() || !args[1].IsString() {
 		return NilValue(), fmt.Errorf("bad argument to 'string.split' (string expected)")
 	}
-	s := args[0].Str()
-	sep := args[1].Str()
+	return stringSplitStrings(args[0].Str(), args[1].Str()), nil
+}
+
+func stringSplit2Value(sv, sepv Value) (Value, error) {
+	if !sv.IsString() || !sepv.IsString() {
+		return NilValue(), fmt.Errorf("bad argument to 'string.split' (string expected)")
+	}
+	return stringSplitStrings(sv.Str(), sepv.Str()), nil
+}
+
+func stringSplitStrings(s, sep string) Value {
 	if sep == "" {
 		tbl := NewSequentialArrayTable(len(s))
 		for i := 0; i < len(s); i++ {
 			tbl.array[i+1] = StringValue(string(s[i]))
 		}
-		return TableValue(tbl), nil
+		return TableValue(tbl)
 	}
 
 	n := strings.Count(s, sep) + 1
@@ -656,7 +727,7 @@ func stringSplitValue(args []Value) (Value, error) {
 		idx++
 		start = end + len(sep)
 	}
-	return TableValue(tbl), nil
+	return TableValue(tbl)
 }
 
 func stringFormatValue(args []Value) (Value, error) {

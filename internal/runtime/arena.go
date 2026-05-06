@@ -148,6 +148,7 @@ type Heap struct {
 	fixedRecordSlabStart uintptr
 	fixedRecordSlabEnd   uintptr
 	stringSlab           stringSlab
+	stringBoxSlab        stringBoxSlab
 }
 
 // NewHeap creates a Heap with one Arena per size class.

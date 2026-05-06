@@ -446,8 +446,13 @@ func FloatValue(f float64) Value {
 }
 
 func StringValue(s string) Value {
-	sp := new(string)
-	*sp = s
+	var sp *string
+	if DefaultHeap != nil {
+		sp = DefaultHeap.AllocStringBox(s)
+	} else {
+		sp = new(string)
+		*sp = s
+	}
 	p := unsafe.Pointer(sp)
 	keepAlive(p, sp)
 	return Value(tagPtr | ptrSubString | (uint64(uintptr(p)) & ptrAddrMask))
@@ -1323,7 +1328,16 @@ func (v Value) ToNumber() (Value, bool) {
 	if !v.IsString() {
 		return NilValue(), false
 	}
-	s := strings.TrimSpace(v.Str())
+	raw := v.Str()
+	if v, ok := parseFastDecimalInt(raw); ok {
+		return v, true
+	}
+	s := strings.TrimSpace(raw)
+	if s != raw {
+		if v, ok := parseFastDecimalInt(s); ok {
+			return v, true
+		}
+	}
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return IntValue(i), true
 	}
@@ -1331,6 +1345,48 @@ func (v Value) ToNumber() (Value, bool) {
 		return FloatValue(f), true
 	}
 	return NilValue(), false
+}
+
+func parseFastDecimalInt(s string) (Value, bool) {
+	if s == "" {
+		return NilValue(), false
+	}
+	neg := false
+	i := 0
+	switch s[0] {
+	case '-':
+		neg = true
+		i = 1
+	case '+':
+		i = 1
+	}
+	if i == len(s) {
+		return NilValue(), false
+	}
+	var n uint64
+	const maxPos = uint64(^uint64(0) >> 1)
+	limit := maxPos
+	if neg {
+		limit++
+	}
+	for ; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return NilValue(), false
+		}
+		d := uint64(c - '0')
+		if n > (limit-d)/10 {
+			return NilValue(), false
+		}
+		n = n*10 + d
+	}
+	if neg {
+		if n == maxPos+1 {
+			return IntValue(-1 << 63), true
+		}
+		return IntValue(-int64(n)), true
+	}
+	return IntValue(int64(n)), true
 }
 
 // ---------------------------------------------------------------------------
