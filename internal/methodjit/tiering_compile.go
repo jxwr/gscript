@@ -220,7 +220,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		}
 		if gate := firstUnsupportedHighArityCallResultShapeInLoopGate(fn); !gate.Allowed {
 			remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op, gate.Reason)
-			return fmt.Errorf("tier2: high-arity loop call exit lacks fixed result shape, staying at Tier 1")
+			return fmt.Errorf("tier2: %s, staying at Tier 1", gate.Reason)
 		}
 		fn.CarryPreheaderInvariants = true
 		if trace != nil {

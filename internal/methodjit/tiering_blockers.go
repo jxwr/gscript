@@ -206,11 +206,9 @@ func firstUnsupportedHighArityCallResultShapeInLoopGate(fn *Function) GateResult
 					return blockGateOp("HighArityCallResultShape", "high-arity loop call exit lacks a fixed result shape", instr.Op)
 				}
 			case OpStringFormatConst:
-				// High-arity format op-exits are acceptable in loop cold branches,
-				// but should not re-open always-hot inlined formatting loops.
-				if len(instr.Args)-2 > maxSimpleCallArgs && !tier2BlockIsModuloColdBranch(block) {
-					return blockGateOp("HighArityCallResultShape", "high-arity loop format exit lacks a fixed result shape", instr.Op)
-				}
+				// StringFormatConst has its own precise op-exit protocol. Unlike
+				// generic CallExit it always writes one IR result slot, independent
+				// of the source CALL site that was inlined into this function.
 			}
 		}
 	}

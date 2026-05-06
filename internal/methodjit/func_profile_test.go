@@ -215,7 +215,7 @@ for i := 1; i <= 10; i++ {
 	}
 }
 
-func TestLoopCallGateBlocksInlinedUnfixedCallShapeNoFilter(t *testing.T) {
+func TestLoopCallGateAllowsInlinedHighArityStringFormatConst(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 	top := compileProto(t, `
 func make_line(i) {
@@ -257,15 +257,16 @@ result := #lines
 	if got := v.GetGlobal("result"); !got.IsInt() || got.Int() != 32 {
 		t.Fatalf("result=%v, want int 32", got)
 	}
-	if tm.tier2Compiled[buildLines] != nil {
-		t.Fatal("build_lines compiled at Tier 2 despite unsupported inlined call shape")
-	}
 	if !tm.tier2Failed[buildLines] {
-		t.Fatal("build_lines should be recorded as a Tier 2 admission failure")
+		if tm.tier2Compiled[buildLines] == nil {
+			t.Fatal("build_lines should compile at Tier 2 with fixed-result StringFormatConst op-exits")
+		}
+		return
 	}
-	if reason := tm.tier2FailReason[buildLines]; !strings.Contains(reason, "high-arity loop call exit lacks fixed result shape") {
-		t.Fatalf("unexpected failure reason: %q", reason)
+	if reason := tm.tier2FailReason[buildLines]; strings.Contains(reason, "high-arity") {
+		t.Fatalf("StringFormatConst should not be blocked as an unfixed high-arity call shape: %q", reason)
 	}
+	t.Fatalf("unexpected build_lines Tier2 failure: %s", tm.tier2FailReason[buildLines])
 }
 
 func sortedProtoGlobalNames(globals map[string]*vm.FuncProto) []string {
