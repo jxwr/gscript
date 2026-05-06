@@ -81,7 +81,8 @@ type Table struct {
 	// Small shaped tables use shape/slot caches; hash-mode string maps need a
 	// different fact: key identity -> value. The cache is lazy so
 	// tables that are never dynamically probed pay only this pointer.
-	stringLookupCache *StringLookupCache
+	stringLookupCache   *StringLookupCache
+	stringLookupVersion uint64
 }
 
 // SetConcurrent enables or disables mutex protection for concurrent access.
@@ -405,8 +406,8 @@ type TableStringKeyCacheEntry struct {
 // It is intentionally separate from TableStringKeyCacheEntry: per-PC caches
 // identify small-table field slots by shape, while this cache identifies stable
 // entries in a large map by key backing pointer/length. String-map mutations
-// drop the owning table's cache pointer, so native probes never see stale
-// entries after an update or delete.
+// advance the owning table's version, so native query-cache probes never see
+// stale entries after an update or delete.
 type StringLookupCacheEntry struct {
 	Key     string
 	KeyData uintptr
@@ -424,6 +425,17 @@ type StringLookupCache struct {
 	Mask    uintptr
 }
 
+// NativeStringQueryCacheEntry is a process-wide Tier 2 hint for repeated
+// dynamic string-key lookups where the query string object is stable. The
+// table version makes stale entries harmless after string-map mutation.
+type NativeStringQueryCacheEntry struct {
+	Table   uintptr
+	Version uint64
+	KeyData uintptr
+	KeyLen  uintptr
+	Value   Value
+}
+
 const (
 	stringLookupCacheMinEntries = 256
 	stringLookupCacheMaxEntries = 16384
@@ -431,7 +443,17 @@ const (
 	// StringLookupCacheProbeLimit is exported for native cache probes that must
 	// mirror the runtime insertion bound.
 	StringLookupCacheProbeLimit = stringLookupCacheProbeLimit
+
+	NativeStringQueryCacheSize = 65536
 )
+
+var nativeStringQueryCache [NativeStringQueryCacheSize]NativeStringQueryCacheEntry
+
+// NativeStringQueryCachePtr returns the base address for the Tier 2 dynamic
+// string-key query cache.
+func NativeStringQueryCachePtr() unsafe.Pointer {
+	return unsafe.Pointer(&nativeStringQueryCache[0])
+}
 
 // TableStringKeyCacheSlot returns the cache ways for one bytecode PC.
 func TableStringKeyCacheSlot(cache []TableStringKeyCacheEntry, pc int) []TableStringKeyCacheEntry {
@@ -484,6 +506,13 @@ func stringLookupCacheSize(n int) int {
 
 func (t *Table) invalidateStringLookupCacheLocked() {
 	t.stringLookupCache = nil
+}
+
+func (t *Table) bumpStringLookupVersionLocked() {
+	t.stringLookupVersion++
+	if t.stringLookupVersion == 0 {
+		t.stringLookupVersion = 1
+	}
 }
 
 func (t *Table) ensureStringLookupCacheLocked() *StringLookupCache {
@@ -1037,6 +1066,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	}
 
 	if t.smap != nil {
+		t.bumpStringLookupVersionLocked()
 		if valIsNil {
 			delete(t.smap, key)
 		} else {
@@ -1057,6 +1087,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			cache.AppendShapeID = preShapeID
 			cache.AppendShape = t.shape
 		} else {
+			t.bumpStringLookupVersionLocked()
 			t.smap = make(map[string]Value, initialStringMapCap)
 			for i, k := range t.skeys {
 				t.smap[k] = t.svals[i]
@@ -1109,6 +1140,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 	}
 
 	if t.smap != nil {
+		t.bumpStringLookupVersionLocked()
 		if valIsNil {
 			delete(t.smap, key)
 		} else {
@@ -1124,6 +1156,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			t.appendSmallStringField(key, val)
 			t.rememberDynamicStringCacheLocked(key, data, keyLen, idx, cache)
 		} else {
+			t.bumpStringLookupVersionLocked()
 			t.smap = make(map[string]Value, initialStringMapCap)
 			for i, k := range t.skeys {
 				t.smap[k] = t.svals[i]
@@ -1285,6 +1318,7 @@ func (t *Table) RawSetString(key string, val Value) {
 	}
 
 	if t.smap != nil {
+		t.bumpStringLookupVersionLocked()
 		if valIsNil {
 			delete(t.smap, key)
 		} else {
@@ -1299,6 +1333,7 @@ func (t *Table) RawSetString(key string, val Value) {
 		if len(t.skeys) < smallFieldCap {
 			t.appendSmallStringField(key, val)
 		} else {
+			t.bumpStringLookupVersionLocked()
 			t.smap = make(map[string]Value, initialStringMapCap)
 			for i, k := range t.skeys {
 				t.smap[k] = t.svals[i]
@@ -1551,11 +1586,25 @@ func TableStringLookupCacheOffset() uintptr {
 	return unsafe.Offsetof(t.stringLookupCache)
 }
 
+// TableStringLookupVersionOffset returns the byte offset for the string-map
+// mutation version used to validate native dynamic string query cache hits.
+func TableStringLookupVersionOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.stringLookupVersion)
+}
+
 // StringLookupCacheOffsets returns byte offsets for StringLookupCache.
 func StringLookupCacheOffsets() (entriesData, entriesLen, entriesCap, mask uintptr) {
 	var c StringLookupCache
 	entries := unsafe.Offsetof(c.Entries)
 	return entries, entries + 8, entries + 16, unsafe.Offsetof(c.Mask)
+}
+
+// NativeStringQueryCacheEntryOffsets returns byte offsets for native query
+// cache entries.
+func NativeStringQueryCacheEntryOffsets() (table, version, keyData, keyLen, value uintptr) {
+	var e NativeStringQueryCacheEntry
+	return unsafe.Offsetof(e.Table), unsafe.Offsetof(e.Version), unsafe.Offsetof(e.KeyData), unsafe.Offsetof(e.KeyLen), unsafe.Offsetof(e.Value)
 }
 
 // StringLookupCacheEntryOffsets returns byte offsets for StringLookupCacheEntry.

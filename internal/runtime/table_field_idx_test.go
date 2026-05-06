@@ -385,6 +385,31 @@ func TestStringMapSetRefreshesValueLookupCache(t *testing.T) {
 	}
 }
 
+func TestStringLookupVersionChangesOnStringMapMutation(t *testing.T) {
+	tbl := NewTable()
+	for i := 0; i < smallFieldCap+1; i++ {
+		tbl.RawSetString(string(rune('a'+i)), IntValue(int64(i)))
+	}
+	if tbl.smap == nil {
+		t.Fatal("test table did not promote to string map")
+	}
+	version := tbl.stringLookupVersion
+	tbl.RawSetString("z", IntValue(99))
+	if tbl.stringLookupVersion == version {
+		t.Fatal("string lookup version did not change after string-map insert")
+	}
+	version = tbl.stringLookupVersion
+	tbl.RawSetString("z", IntValue(100))
+	if tbl.stringLookupVersion == version {
+		t.Fatal("string lookup version did not change after string-map overwrite")
+	}
+	version = tbl.stringLookupVersion
+	tbl.RawSetString("z", NilValue())
+	if tbl.stringLookupVersion == version {
+		t.Fatal("string lookup version did not change after string-map delete")
+	}
+}
+
 func TestNewTableFromCtor2NonNilMatchesCtorShape(t *testing.T) {
 	ctor := NewSmallTableCtor2("left", "right")
 	left := TableValue(NewEmptyTable())

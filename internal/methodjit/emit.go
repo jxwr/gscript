@@ -406,6 +406,13 @@ var (
 	tableStringKeyCacheEntryKeyLen   = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.KeyLen))
 	tableStringKeyCacheEntryFieldIdx = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.FieldIdx))
 	tableStringKeyCacheEntryShapeID  = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.ShapeID))
+
+	nativeStringQueryCacheEntrySize    = int(unsafe.Sizeof(runtime.NativeStringQueryCacheEntry{}))
+	nativeStringQueryCacheEntryTable   = int(unsafe.Offsetof(runtime.NativeStringQueryCacheEntry{}.Table))
+	nativeStringQueryCacheEntryVersion = int(unsafe.Offsetof(runtime.NativeStringQueryCacheEntry{}.Version))
+	nativeStringQueryCacheEntryKeyData = int(unsafe.Offsetof(runtime.NativeStringQueryCacheEntry{}.KeyData))
+	nativeStringQueryCacheEntryKeyLen  = int(unsafe.Offsetof(runtime.NativeStringQueryCacheEntry{}.KeyLen))
+	nativeStringQueryCacheEntryValue   = int(unsafe.Offsetof(runtime.NativeStringQueryCacheEntry{}.Value))
 )
 
 // CompiledFunction holds the generated native code for a function.

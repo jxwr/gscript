@@ -84,6 +84,7 @@ const (
 	TableOffDMMeta            = 248 // *denseMatrixMeta — cold side metadata
 	TableOffLazyTree          = 256 // *LazyRecursiveTable — deferred recursive table side pointer
 	TableOffStringLookupCache = 264 // *StringLookupCache — large string map value cache
+	TableOffStringLookupVer   = 272 // uint64 — string-map mutation version
 
 	FixedRecordOffCtor         = 0
 	FixedRecordOffMaterialized = 8
@@ -104,6 +105,13 @@ const (
 	StringLookupCacheEntryOffValue   = 32
 	StringLookupCacheEntryOffHash    = 40
 	StringLookupCacheEntryOffValid   = 48
+
+	NativeStringQueryCacheEntrySize       = 40
+	NativeStringQueryCacheEntryOffTable   = 0
+	NativeStringQueryCacheEntryOffVersion = 8
+	NativeStringQueryCacheEntryOffKeyData = 16
+	NativeStringQueryCacheEntryOffKeyLen  = 24
+	NativeStringQueryCacheEntryOffValue   = 32
 
 	// denseMatrixMeta layout. The JIT only uses this for the native
 	// row-store adoption path after runtime has allocated the backing.
@@ -265,9 +273,17 @@ func init() {
 	if cacheOff := runtime.TableStringLookupCacheOffset(); cacheOff != TableOffStringLookupCache {
 		panic("jit: Table string lookup cache offset mismatch")
 	}
+	if verOff := runtime.TableStringLookupVersionOffset(); verOff != TableOffStringLookupVer {
+		panic("jit: Table string lookup version offset mismatch")
+	}
 	if dataOff, lenOff, capOff, maskOff := runtime.StringLookupCacheOffsets(); dataOff != StringLookupCacheOffEntries ||
 		lenOff != StringLookupCacheOffEntriesLen || capOff != StringLookupCacheOffEntriesCap || maskOff != StringLookupCacheOffMask {
 		panic("jit: StringLookupCache offset mismatch")
+	}
+	if tableOff, versionOff, keyDataOff, keyLenOff, valueOff := runtime.NativeStringQueryCacheEntryOffsets(); tableOff != NativeStringQueryCacheEntryOffTable ||
+		versionOff != NativeStringQueryCacheEntryOffVersion || keyDataOff != NativeStringQueryCacheEntryOffKeyData ||
+		keyLenOff != NativeStringQueryCacheEntryOffKeyLen || valueOff != NativeStringQueryCacheEntryOffValue {
+		panic("jit: NativeStringQueryCacheEntry offset mismatch")
 	}
 	if keyDataOff, keyLenOff, valueOff, hashOff, validOff := runtime.StringLookupCacheEntryOffsets(); keyDataOff != StringLookupCacheEntryOffKeyData ||
 		keyLenOff != StringLookupCacheEntryOffKeyLen || valueOff != StringLookupCacheEntryOffValue ||

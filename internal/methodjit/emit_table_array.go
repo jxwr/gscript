@@ -2314,6 +2314,15 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.CBZ(jit.X3, missLabel)
 	asm.LDR(jit.X10, jit.X8, jit.StringLookupCacheOffMask)
 
+	useQueryCache := dynamicStringQueryCacheUseful(instr)
+	if useQueryCache {
+		queryMissLabel := ec.uniqueLabel("dyn_string_query_cache_miss")
+		ec.emitNativeStringQueryCacheProbe(queryMissLabel, func(valueReg jit.Reg) {
+			handlers.valueHit(valueReg)
+		})
+		asm.Label(queryMissLabel)
+	}
+
 	ec.emitStringLookupContentHash(jit.X5, jit.X6, jit.X9, jit.X11, jit.X14, jit.X15, "dyn_string_smap_hash")
 	asm.MOVreg(jit.X15, jit.X9)
 	asm.ANDreg(jit.X9, jit.X9, jit.X10)
@@ -2359,14 +2368,73 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.CMPreg(jit.X15, jit.X6)
 	asm.BCond(jit.CondLT, smapByteLoopLabel)
 	asm.Label(smapFoundLabel)
-	asm.LDR(jit.X0, jit.X12, jit.StringLookupCacheEntryOffValue)
-	handlers.valueHit(jit.X0)
+	asm.LDR(jit.X16, jit.X12, jit.StringLookupCacheEntryOffValue)
+	if useQueryCache {
+		ec.emitNativeStringQueryCacheStore(jit.X16)
+	}
+	handlers.valueHit(jit.X16)
 
 	asm.Label(smapNextLabel)
 	asm.ADDimm(jit.X13, jit.X13, 1)
 	asm.CMPimm(jit.X13, runtime.StringLookupCacheProbeLimit)
 	asm.BCond(jit.CondLT, smapLoopLabel)
 	asm.B(missLabel)
+}
+
+func dynamicStringQueryCacheUseful(instr *Instr) bool {
+	if instr == nil || len(instr.Args) < 2 || instr.Args[1] == nil || instr.Args[1].Def == nil {
+		return false
+	}
+	switch instr.Args[1].Def.Op {
+	case OpConstString, OpStringConstLookup, OpStringFormatInt:
+		return true
+	default:
+		return false
+	}
+}
+
+func (ec *emitContext) emitNativeStringQueryCacheSlot(dst, tmp jit.Reg) {
+	asm := ec.asm
+	asm.LSRimm(tmp, jit.X5, 4)
+	asm.EORreg(dst, tmp, jit.X0)
+	asm.EORreg(dst, dst, jit.X6)
+	asm.LoadImm64(tmp, int64(runtime.NativeStringQueryCacheSize-1))
+	asm.ANDreg(dst, dst, tmp)
+	asm.LoadImm64(tmp, int64(nativeStringQueryCacheEntrySize))
+	asm.MUL(dst, dst, tmp)
+	asm.LoadImm64(tmp, int64(uintptr(runtime.NativeStringQueryCachePtr())))
+	asm.ADDreg(dst, tmp, dst)
+}
+
+func (ec *emitContext) emitNativeStringQueryCacheProbe(missLabel string, hit func(jit.Reg)) {
+	asm := ec.asm
+	ec.emitNativeStringQueryCacheSlot(jit.X11, jit.X12)
+	asm.LDR(jit.X13, jit.X11, nativeStringQueryCacheEntryTable)
+	asm.CMPreg(jit.X13, jit.X0)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X13, jit.X0, jit.TableOffStringLookupVer)
+	asm.LDR(jit.X14, jit.X11, nativeStringQueryCacheEntryVersion)
+	asm.CMPreg(jit.X14, jit.X13)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X14, jit.X11, nativeStringQueryCacheEntryKeyData)
+	asm.CMPreg(jit.X14, jit.X5)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X14, jit.X11, nativeStringQueryCacheEntryKeyLen)
+	asm.CMPreg(jit.X14, jit.X6)
+	asm.BCond(jit.CondNE, missLabel)
+	asm.LDR(jit.X14, jit.X11, nativeStringQueryCacheEntryValue)
+	hit(jit.X14)
+}
+
+func (ec *emitContext) emitNativeStringQueryCacheStore(valueReg jit.Reg) {
+	asm := ec.asm
+	ec.emitNativeStringQueryCacheSlot(jit.X11, jit.X13)
+	asm.LDR(jit.X14, jit.X0, jit.TableOffStringLookupVer)
+	asm.STR(jit.X0, jit.X11, nativeStringQueryCacheEntryTable)
+	asm.STR(jit.X14, jit.X11, nativeStringQueryCacheEntryVersion)
+	asm.STR(jit.X5, jit.X11, nativeStringQueryCacheEntryKeyData)
+	asm.STR(jit.X6, jit.X11, nativeStringQueryCacheEntryKeyLen)
+	asm.STR(valueReg, jit.X11, nativeStringQueryCacheEntryValue)
 }
 
 func (ec *emitContext) emitStringLookupContentHash(dataReg, lenReg, dstReg, idxReg, byteReg, primeReg jit.Reg, prefix string) {
