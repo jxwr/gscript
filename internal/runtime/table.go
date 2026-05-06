@@ -490,15 +490,19 @@ func (t *Table) ensureStringLookupCacheLocked() *StringLookupCache {
 	if t.smap == nil {
 		return nil
 	}
-	if c := t.stringLookupCache; c != nil && len(c.Entries) > 0 {
+	wantSize := stringLookupCacheSize(len(t.smap))
+	if c := t.stringLookupCache; c != nil && len(c.Entries) >= wantSize {
 		return c
 	}
-	size := stringLookupCacheSize(len(t.smap))
 	c := &StringLookupCache{
-		Entries: make([]StringLookupCacheEntry, size),
-		Mask:    uintptr(size - 1),
+		Entries: make([]StringLookupCacheEntry, wantSize),
+		Mask:    uintptr(wantSize - 1),
 	}
 	t.stringLookupCache = c
+	for key, val := range t.smap {
+		data, keyLen := stringCacheKey(key)
+		rememberStringMapValueCacheEntry(c, key, data, keyLen, val)
+	}
 	return c
 }
 
@@ -524,6 +528,13 @@ func (t *Table) lookupStringMapValueCacheLocked(key string, data uintptr, keyLen
 
 func (t *Table) rememberStringMapValueCacheLocked(key string, data uintptr, keyLen int, val Value) {
 	c := t.ensureStringLookupCacheLocked()
+	if c == nil || len(c.Entries) == 0 {
+		return
+	}
+	rememberStringMapValueCacheEntry(c, key, data, keyLen, val)
+}
+
+func rememberStringMapValueCacheEntry(c *StringLookupCache, key string, data uintptr, keyLen int, val Value) {
 	if c == nil || len(c.Entries) == 0 {
 		return
 	}
@@ -977,7 +988,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 		return
 	}
 	t.keysDirty = true
-	if t.smap != nil || t.stringLookupCache != nil {
+	if valIsNil && (t.smap != nil || t.stringLookupCache != nil) {
 		t.invalidateStringLookupCacheLocked()
 	}
 
@@ -1030,6 +1041,8 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			delete(t.smap, key)
 		} else {
 			t.smap[key] = val
+			data, keyLen := stringCacheKey(key)
+			t.rememberStringMapValueCacheLocked(key, data, keyLen, val)
 		}
 		return
 	}
@@ -1071,7 +1084,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 		return
 	}
 	t.keysDirty = true
-	if t.smap != nil || t.stringLookupCache != nil {
+	if valIsNil && (t.smap != nil || t.stringLookupCache != nil) {
 		t.invalidateStringLookupCacheLocked()
 	}
 	data, keyLen := stringCacheKey(key)
@@ -1100,6 +1113,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			delete(t.smap, key)
 		} else {
 			t.smap[key] = val
+			t.rememberStringMapValueCacheLocked(key, data, keyLen, val)
 		}
 		return
 	}
@@ -1250,17 +1264,18 @@ func (t *Table) RawSetString(key string, val Value) {
 	if t.lazyTree != nil {
 		t.materializeLazyTreeLocked()
 	}
-	if val.IsNil() && t.shapeID == 0 && len(t.skeys) == 0 && t.smap == nil {
+	valIsNil := val.IsNil()
+	if valIsNil && t.shapeID == 0 && len(t.skeys) == 0 && t.smap == nil {
 		return
 	}
 	t.keysDirty = true
-	if t.smap != nil || t.stringLookupCache != nil {
+	if valIsNil && (t.smap != nil || t.stringLookupCache != nil) {
 		t.invalidateStringLookupCacheLocked()
 	}
 
 	for i, k := range t.skeys {
 		if k == key {
-			if val.IsNil() {
+			if valIsNil {
 				t.deleteSmallStringField(i)
 			} else {
 				t.svals[i] = val
@@ -1270,15 +1285,17 @@ func (t *Table) RawSetString(key string, val Value) {
 	}
 
 	if t.smap != nil {
-		if val.IsNil() {
+		if valIsNil {
 			delete(t.smap, key)
 		} else {
 			t.smap[key] = val
+			data, keyLen := stringCacheKey(key)
+			t.rememberStringMapValueCacheLocked(key, data, keyLen, val)
 		}
 		return
 	}
 
-	if !val.IsNil() {
+	if !valIsNil {
 		if len(t.skeys) < smallFieldCap {
 			t.appendSmallStringField(key, val)
 		} else {

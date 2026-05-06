@@ -102,7 +102,7 @@ func TestStringMapLookupCacheDynamicRead(t *testing.T) {
 	}
 }
 
-func TestStringMapLookupCacheInvalidatesOnMutation(t *testing.T) {
+func TestStringMapLookupCacheRefreshesOnMutation(t *testing.T) {
 	tbl := NewTable()
 	for i := 0; i < SmallFieldCap+4; i++ {
 		key := "k" + string(rune('a'+i))
@@ -117,12 +117,18 @@ func TestStringMapLookupCacheInvalidatesOnMutation(t *testing.T) {
 	}
 
 	tbl.RawSetString(key, IntValue(42))
-	if tbl.stringLookupCache != nil {
-		t.Fatal("string map cache was not invalidated after mutation")
+	if tbl.stringLookupCache == nil {
+		t.Fatal("string map cache should be refreshed after overwrite")
 	}
 	got := tbl.RawGetStringDynamicCached(key, pcCache[:])
 	if !got.IsInt() || got.Int() != 42 {
 		t.Fatalf("lookup after mutation = %v, want 42", got)
+	}
+
+	tbl.RawSetString(key, NilValue())
+	got = tbl.RawGetStringDynamicCached(key, pcCache[:])
+	if !got.IsNil() {
+		t.Fatalf("lookup after delete = %v, want nil", got)
 	}
 }
 
@@ -348,6 +354,34 @@ func TestDynamicStringKeyCacheShapeGuardAfterDelete(t *testing.T) {
 	tbl.RawSetStringDynamicCached("b", IntValue(3), cache)
 	if got := tbl.RawGetStringDynamicCached("b", cache); !got.IsInt() || got.Int() != 3 {
 		t.Fatalf("reinserted b through dynamic cache = %v, want 3", got)
+	}
+}
+
+func TestStringMapSetRefreshesValueLookupCache(t *testing.T) {
+	tbl := NewTable()
+	for i := 0; i < smallFieldCap+4; i++ {
+		tbl.RawSetString(string(rune('a'+i)), IntValue(int64(i)))
+	}
+	if tbl.smap == nil {
+		t.Fatal("test table did not promote to string map")
+	}
+
+	key := string(rune('a' + smallFieldCap + 3))
+	if tbl.stringLookupCache == nil {
+		t.Fatal("string map set should create/update lookup cache")
+	}
+	if got := tbl.RawGetString(key); !got.IsInt() || got.Int() != int64(smallFieldCap+3) {
+		t.Fatalf("RawGetString(%q)=%v, want %d", key, got, smallFieldCap+3)
+	}
+
+	tbl.RawSetString(key, IntValue(99))
+	if got := tbl.RawGetString(key); !got.IsInt() || got.Int() != 99 {
+		t.Fatalf("RawGetString(%q) after overwrite=%v, want 99", key, got)
+	}
+
+	tbl.RawSetString(key, NilValue())
+	if got := tbl.RawGetString(key); !got.IsNil() {
+		t.Fatalf("RawGetString(%q) after delete=%v, want nil", key, got)
 	}
 }
 

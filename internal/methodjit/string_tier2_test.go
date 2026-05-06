@@ -123,6 +123,25 @@ func literal() {
 	}
 }
 
+func TestTier2_LenRawStringProducerStaysNative(t *testing.T) {
+	src := `
+func len_format(i) {
+    s := string.format("key%d", i)
+    return #s
+}
+`
+	args := []runtime.Value{runtime.IntValue(42)}
+	want := requireOneInt(t, "VM", runStringFuncVM(t, src, "len_format", args))
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "len_format", args, true)
+	got := requireOneInt(t, "Tier2", gotValues)
+	if got != want {
+		t.Fatalf("len_format Tier2=%d, want VM=%d", got, want)
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+		t.Fatalf("len of raw string producer should stay native, ExitOpExit=%d", exits)
+	}
+}
+
 func TestTier2_StringFormatFieldLoadUsesStringMapCache(t *testing.T) {
 	src := `
 func format_many(n) {

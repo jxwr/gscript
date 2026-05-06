@@ -470,6 +470,10 @@ func (ec *emitContext) emitLenNative(instr *Instr) {
 		ec.emitOpExit(instr)
 		return
 	}
+	if lenArgKnownRawString(instr.Args[0]) {
+		ec.emitRawStringLenNative(instr)
+		return
+	}
 	asm := ec.asm
 	slowLabel := ec.uniqueLabel("len_slow")
 	doneLabel := ec.uniqueLabel("len_done")
@@ -537,6 +541,30 @@ func (ec *emitContext) emitLenNative(instr *Instr) {
 	asm.Label(slowLabel)
 	ec.emitOpExit(instr)
 	asm.Label(doneLabel)
+}
+
+func lenArgKnownRawString(v *Value) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	switch v.Def.Op {
+	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpGuardConstString:
+		return true
+	default:
+		return false
+	}
+}
+
+func (ec *emitContext) emitRawStringLenNative(instr *Instr) {
+	asm := ec.asm
+	src := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if src != jit.X0 {
+		asm.MOVreg(jit.X0, src)
+	}
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.LDR(jit.X1, jit.X0, 8) // Go string header length.
+	jit.EmitBoxIntFast(asm, jit.X0, jit.X1, mRegTagInt)
+	ec.storeResultNB(jit.X0, instr.ID)
 }
 
 // emitGuardTruthy emits ARM64 code for OpGuardTruthy.
