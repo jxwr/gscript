@@ -623,6 +623,52 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = v
 
+	case OpStringSplitSubstr:
+		if len(instr.Args) < 4 {
+			return nil, false, fmt.Errorf("IR interpreter: string split substring expects at least 4 args")
+		}
+		specIdx := int(instr.Aux)
+		if specIdx < 0 || specIdx >= len(s.fn.StringSplitSubSpecs) {
+			return nil, false, fmt.Errorf("IR interpreter: string split substring spec %d out of range", specIdx)
+		}
+		subCallees := make([]runtime.Value, 0, len(instr.Args)-3)
+		for _, arg := range instr.Args[1 : len(instr.Args)-2] {
+			subCallees = append(subCallees, s.val(arg))
+		}
+		if !runtime.IsStdStringSplitFunction(s.val(instr.Args[0])) || !allStdStringSubFunctions(subCallees) {
+			return nil, false, fmt.Errorf("IR interpreter: string split substring guard mismatch")
+		}
+		spec := s.fn.StringSplitSubSpecs[specIdx]
+		v, err := runtime.StringSplitProjectSub(s.val(instr.Args[len(instr.Args)-2]), s.val(instr.Args[len(instr.Args)-1]), spec.TokenIndex, spec.Start, spec.End, spec.HasEnd)
+		if err != nil {
+			return nil, false, err
+		}
+		s.values[instr.ID] = v
+
+	case OpStringSplitSubstrNumber:
+		if len(instr.Args) < 5 {
+			return nil, false, fmt.Errorf("IR interpreter: string split substring number expects at least 5 args")
+		}
+		specIdx := int(instr.Aux)
+		if specIdx < 0 || specIdx >= len(s.fn.StringSplitSubSpecs) {
+			return nil, false, fmt.Errorf("IR interpreter: string split substring number spec %d out of range", specIdx)
+		}
+		subCallees := make([]runtime.Value, 0, len(instr.Args)-4)
+		for _, arg := range instr.Args[1 : len(instr.Args)-3] {
+			subCallees = append(subCallees, s.val(arg))
+		}
+		if !runtime.IsStdStringSplitFunction(s.val(instr.Args[0])) ||
+			!allStdStringSubFunctions(subCallees) ||
+			!runtime.IsStdToNumberFunction(s.val(instr.Args[len(instr.Args)-3])) {
+			return nil, false, fmt.Errorf("IR interpreter: string split substring number guard mismatch")
+		}
+		spec := s.fn.StringSplitSubSpecs[specIdx]
+		v, err := runtime.StringSplitProjectSubToNumber(s.val(instr.Args[len(instr.Args)-2]), s.val(instr.Args[len(instr.Args)-1]), spec.TokenIndex, spec.Start, spec.End, spec.HasEnd)
+		if err != nil {
+			return nil, false, err
+		}
+		s.values[instr.ID] = v
+
 	// ---------- Table operations ----------
 	case OpNewTable:
 		arrHint := int(instr.Aux)

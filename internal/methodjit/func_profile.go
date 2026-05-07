@@ -267,6 +267,9 @@ func shouldStayTier0StringTokenLoop(proto *vm.FuncProto, profile FuncProfile) bo
 	if proto == nil || !profile.HasLoop || profile.CallCount == 0 {
 		return false
 	}
+	if hasStringSplitScalarFusionCandidate(proto) {
+		return false
+	}
 	hasStringLib := false
 	hasSplitField := false
 	for _, c := range proto.Constants {
@@ -281,6 +284,32 @@ func shouldStayTier0StringTokenLoop(proto *vm.FuncProto, profile FuncProfile) bo
 		}
 	}
 	return hasStringLib && hasSplitField
+}
+
+func hasStringSplitScalarFusionCandidate(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	hasStringLib := false
+	hasSplitField := false
+	hasSubField := false
+	hasToNumber := false
+	for _, c := range proto.Constants {
+		if !c.IsString() {
+			continue
+		}
+		switch c.Str() {
+		case "string":
+			hasStringLib = true
+		case "split":
+			hasSplitField = true
+		case "sub":
+			hasSubField = true
+		case "tonumber":
+			hasToNumber = true
+		}
+	}
+	return hasStringLib && hasSplitField && (hasSubField || hasToNumber)
 }
 
 // shouldPromoteTier2 decides whether a function should be promoted to Tier 2
@@ -300,6 +329,10 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	}
 
 	if profile.HasLoop && hasGenericStringFormatIntCall(proto) {
+		return runtimeCallCount >= 1
+	}
+
+	if profile.HasLoop && hasStringSplitScalarFusionCandidate(proto) {
 		return runtimeCallCount >= 1
 	}
 

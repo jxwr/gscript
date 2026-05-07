@@ -14,10 +14,14 @@ import (
 const (
 	NativeKindStdStringFormat uint8 = 2
 	NativeKindStdStringSplit  uint8 = 100
+	NativeKindStdStringSub    uint8 = 101
+	NativeKindStdToNumber     uint8 = 102
 )
 
 var stdStringFormatIdentity byte
 var stdStringSplitIdentity byte
+var stdStringSubIdentity byte
+var stdToNumberIdentity byte
 
 // NativeStringFormatIntCacheSize is the direct-mapped entry count used by the
 // Tier 2 native string.format(pattern, int) path.
@@ -100,6 +104,11 @@ func buildStringLib() *Table {
 		}
 		return []Value{v}, nil
 	}, stringSubValue, stringSub2Value, stringSub3Value)
+	if v := t.RawGetString("sub"); v.IsFunction() {
+		gf := v.GoFunction()
+		gf.NativeKind = NativeKindStdStringSub
+		gf.NativeData = StdStringSubIdentityPtr()
+	}
 
 	// string.upper(s) -> string
 	set("upper", func(args []Value) ([]Value, error) {
@@ -754,12 +763,37 @@ func StdStringSplitIdentityPtr() unsafe.Pointer {
 	return unsafe.Pointer(&stdStringSplitIdentity)
 }
 
+func StdStringSubIdentityPtr() unsafe.Pointer {
+	return unsafe.Pointer(&stdStringSubIdentity)
+}
+
+func StdToNumberIdentityPtr() unsafe.Pointer {
+	return unsafe.Pointer(&stdToNumberIdentity)
+}
+
 func IsStdStringSplitFunction(v Value) bool {
 	gf := v.GoFunction()
 	return gf != nil &&
 		gf.NativeKind == NativeKindStdStringSplit &&
 		gf.NativeData == StdStringSplitIdentityPtr() &&
 		gf.FastArg2 != nil
+}
+
+func IsStdStringSubFunction(v Value) bool {
+	gf := v.GoFunction()
+	return gf != nil &&
+		gf.NativeKind == NativeKindStdStringSub &&
+		gf.NativeData == StdStringSubIdentityPtr() &&
+		gf.FastArg2 != nil &&
+		gf.FastArg3 != nil
+}
+
+func IsStdToNumberFunction(v Value) bool {
+	gf := v.GoFunction()
+	return gf != nil &&
+		gf.NativeKind == NativeKindStdToNumber &&
+		gf.NativeData == StdToNumberIdentityPtr() &&
+		gf.FastArg1 != nil
 }
 
 func StringSplitProject(sv, sepv Value, index int64) (Value, error) {
@@ -770,6 +804,127 @@ func StringSplitProject(sv, sepv Value, index int64) (Value, error) {
 		return NilValue(), nil
 	}
 	return stringSplitProjectStrings(sv.Str(), sepv.Str(), index), nil
+}
+
+func StringSplitProjectSub(sv, sepv Value, index, start, end int64, hasEnd bool) (Value, error) {
+	if !sv.IsString() || !sepv.IsString() {
+		return NilValue(), fmt.Errorf("bad argument to 'string.split' (string expected)")
+	}
+	if index < 1 {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.sub' (string expected)")
+	}
+	token, ok := stringSplitProjectSlice(sv.Str(), sepv.Str(), index)
+	if !ok {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.sub' (string expected)")
+	}
+	return StringValue(stringSubRaw(token, start, end, hasEnd)), nil
+}
+
+func StringSplitProjectSubToNumber(sv, sepv Value, index, start, end int64, hasEnd bool) (Value, error) {
+	if !sv.IsString() || !sepv.IsString() {
+		return NilValue(), fmt.Errorf("bad argument to 'string.split' (string expected)")
+	}
+	if index < 1 {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.sub' (string expected)")
+	}
+	token, ok := stringSplitProjectSlice(sv.Str(), sepv.Str(), index)
+	if !ok {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.sub' (string expected)")
+	}
+	if v, ok := stringToNumberRaw(stringSubRaw(token, start, end, hasEnd)); ok {
+		return v, nil
+	}
+	return NilValue(), nil
+}
+
+func stringSubRaw(s string, start, end int64, hasEnd bool) string {
+	slen := len(s)
+	i := int(start)
+	j := slen
+	if hasEnd {
+		j = int(end)
+	}
+	if i < 0 {
+		i = slen + i + 1
+	}
+	if i < 1 {
+		i = 1
+	}
+	if j < 0 {
+		j = slen + j + 1
+	}
+	if j > slen {
+		j = slen
+	}
+	if i > j {
+		return ""
+	}
+	return s[i-1 : j]
+}
+
+func stringToNumberRaw(raw string) (Value, bool) {
+	if v, ok := parseFastDecimalInt(raw); ok {
+		return v, true
+	}
+	s := strings.TrimSpace(raw)
+	if s != raw {
+		if v, ok := parseFastDecimalInt(s); ok {
+			return v, true
+		}
+	}
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return IntValue(i), true
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return FloatValue(f), true
+	}
+	return NilValue(), false
+}
+
+func stringSplitProjectSlice(s, sep string, index int64) (string, bool) {
+	if sep == "" {
+		i := int(index) - 1
+		if i < 0 || i >= len(s) {
+			return "", false
+		}
+		return string(s[i]), true
+	}
+
+	token := int64(1)
+	start := 0
+	if len(sep) == 1 {
+		sepByte := sep[0]
+		for i := 0; i < len(s); i++ {
+			if s[i] != sepByte {
+				continue
+			}
+			if token == index {
+				return s[start:i], true
+			}
+			token++
+			start = i + 1
+		}
+		if token == index {
+			return s[start:], true
+		}
+		return "", false
+	}
+
+	for {
+		next := strings.Index(s[start:], sep)
+		if next < 0 {
+			if token == index {
+				return s[start:], true
+			}
+			return "", false
+		}
+		end := start + next
+		if token == index {
+			return s[start:end], true
+		}
+		token++
+		start = end + len(sep)
+	}
 }
 
 func stringSplitProjectStrings(s, sep string, index int64) Value {

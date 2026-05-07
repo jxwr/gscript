@@ -55,6 +55,20 @@ type WholeCallNoResultBatchFact struct {
 	Calls    []WholeCallNoResultBatchCall
 }
 
+type StringSplitSubSpec struct {
+	TokenIndex   int64
+	Start        int64
+	End          int64
+	HasEnd       bool
+	SubCallCount int
+	FirstStart   int64
+	FirstEnd     int64
+	FirstHasEnd  bool
+	SecondStart  int64
+	SecondEnd    int64
+	SecondHasEnd bool
+}
+
 // Function is the complete IR for one compiled function.
 type Function struct {
 	Entry   *Block        // entry basic block
@@ -144,6 +158,10 @@ type Function struct {
 	// string.format lowerings. Patterns are accepted by syntax shape or guarded
 	// constant identity, not by benchmark-specific literal value.
 	StringFormatPatterns []string
+
+	// StringSplitSubSpecs records immutable split-token substring coordinates
+	// shared by string.split(...)[k] + string.sub(...) fusion lowerings.
+	StringSplitSubSpecs []StringSplitSubSpec
 
 	// FixedShapeTables records SSA table values whose field layout is known
 	// without consulting the runtime field cache. The initial producer is a

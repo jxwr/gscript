@@ -434,6 +434,37 @@ func build_inventory(n) {
 	}
 }
 
+func TestStringSplitScalarFusionCandidatePromotesFirstCallTier2(t *testing.T) {
+	src := `
+func parse(lines, n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        parts := string.split(lines[i], "|")
+        total = total + tonumber(string.sub(parts[2], 5))
+    }
+    return total
+}
+`
+	top := compileProto(t, src)
+	proto := findProtoByName(top, "parse")
+	if proto == nil {
+		t.Fatal("proto parse not found")
+	}
+	if !hasStringSplitScalarFusionCandidate(proto) {
+		t.Fatal("expected split/sub/tonumber detector to accept parse loop")
+	}
+	profile := analyzeFuncProfile(proto)
+	if shouldStayTier0StringTokenLoop(proto, profile) {
+		t.Fatal("split scalar fusion candidate should not stay in Tier0")
+	}
+	if !shouldPromoteTier2(proto, profile, 1) {
+		t.Fatal("split scalar fusion candidate should be eligible for first-call Tier2")
+	}
+	if NewTieringManager().shouldSuppressLoopCallTier2(proto, profile) {
+		t.Fatal("split scalar fusion candidate should not be suppressed by loop-call gate")
+	}
+}
+
 func TestHasGenericStringFormatIntCallDetectsMixedInventory(t *testing.T) {
 	src, err := os.ReadFile("../../benchmarks/extended/mixed_inventory_sim.gs")
 	if err != nil {

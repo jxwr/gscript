@@ -278,6 +278,9 @@ func (tm *TieringManager) shouldSuppressLoopCallTier2(proto *vm.FuncProto, profi
 	if hasGenericStringFormatIntCall(proto) {
 		return false
 	}
+	if hasStringSplitScalarFusionCandidate(proto) {
+		return false
+	}
 	globals := tm.buildLoopCallGlobals(proto)
 	return !canPromoteWithInlining(proto, globals) && !canPromoteWithNativeLoopCalls(proto, globals)
 }

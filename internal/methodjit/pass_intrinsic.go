@@ -123,7 +123,165 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 	}
 	notes = append(notes, fuseStringFormatIntGetTable(fn)...)
 	notes = append(notes, lowerStringSplitProjections(fn)...)
+	notes = append(notes, lowerStringSplitSubstrings(fn)...)
+	notes = append(notes, lowerStringSplitSubstringNumbers(fn)...)
 	return fn, notes
+}
+
+func lowerStringSplitSubstrings(fn *Function) []string {
+	if fn == nil || fn.Proto == nil {
+		return nil
+	}
+	var notes []string
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !isStringFieldCall(fn, instr, "sub") || len(instr.Args) < 3 || len(instr.Args) > 4 {
+				continue
+			}
+			arg := instr.Args[1]
+			start, ok := constIntArg(instr.Args[2])
+			if !ok {
+				continue
+			}
+			var end int64
+			hasEnd := false
+			if len(instr.Args) == 4 {
+				var endOK bool
+				end, endOK = constIntArg(instr.Args[3])
+				if !endOK {
+					continue
+				}
+				hasEnd = true
+			}
+			if arg == nil || arg.Def == nil {
+				continue
+			}
+			var spec StringSplitSubSpec
+			var args []*Value
+			switch arg.Def.Op {
+			case OpStringSplitPart:
+				if len(arg.Def.Args) != 3 {
+					continue
+				}
+				splitPart := arg.Def
+				spec = newStringSplitSubSpec(splitPart.Aux, start, end, hasEnd)
+				args = []*Value{splitPart.Args[0], instr.Args[0], splitPart.Args[1], splitPart.Args[2]}
+			case OpStringSplitSubstr:
+				if len(arg.Def.Args) < 4 {
+					continue
+				}
+				priorIdx := int(arg.Def.Aux)
+				if priorIdx < 0 || priorIdx >= len(fn.StringSplitSubSpecs) {
+					continue
+				}
+				var composedOK bool
+				spec, composedOK = composeStringSplitSubSpec(fn.StringSplitSubSpecs[priorIdx], start, end, hasEnd)
+				if !composedOK {
+					continue
+				}
+				source := arg.Def.Args[len(arg.Def.Args)-2]
+				sep := arg.Def.Args[len(arg.Def.Args)-1]
+				args = append([]*Value{}, arg.Def.Args[:len(arg.Def.Args)-2]...)
+				args = append(args, instr.Args[0], source, sep)
+			default:
+				continue
+			}
+			specIdx := len(fn.StringSplitSubSpecs)
+			fn.StringSplitSubSpecs = append(fn.StringSplitSubSpecs, spec)
+			instr.Op = OpStringSplitSubstr
+			instr.Type = TypeString
+			instr.Args = args
+			instr.Aux = int64(specIdx)
+			instr.Aux2 = 0
+			notes = append(notes, "intrinsic: string.sub(string.split(...)[const], const) -> StringSplitSubstr")
+		}
+	}
+	return notes
+}
+
+func lowerStringSplitSubstringNumbers(fn *Function) []string {
+	if fn == nil || fn.Proto == nil {
+		return nil
+	}
+	var notes []string
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !isGlobalCall(fn, instr, "tonumber") || len(instr.Args) != 2 {
+				continue
+			}
+			arg := instr.Args[1]
+			if arg == nil || arg.Def == nil || arg.Def.Op != OpStringSplitSubstr || len(arg.Def.Args) < 4 {
+				continue
+			}
+			substr := arg.Def
+			instr.Op = OpStringSplitSubstrNumber
+			if instr.Type == TypeUnknown {
+				instr.Type = TypeAny
+			}
+			source := substr.Args[len(substr.Args)-2]
+			sep := substr.Args[len(substr.Args)-1]
+			args := append([]*Value{}, substr.Args[:len(substr.Args)-2]...)
+			args = append(args, instr.Args[0], source, sep)
+			instr.Args = args
+			instr.Aux = substr.Aux
+			instr.Aux2 = 0
+			notes = append(notes, "intrinsic: tonumber(string.sub(string.split(...)[const], const)) -> StringSplitSubstrNumber")
+		}
+	}
+	return notes
+}
+
+func newStringSplitSubSpec(tokenIndex, start, end int64, hasEnd bool) StringSplitSubSpec {
+	return StringSplitSubSpec{
+		TokenIndex:   tokenIndex,
+		Start:        start,
+		End:          end,
+		HasEnd:       hasEnd,
+		SubCallCount: 1,
+		FirstStart:   start,
+		FirstEnd:     end,
+		FirstHasEnd:  hasEnd,
+	}
+}
+
+func composeStringSplitSubSpec(prior StringSplitSubSpec, start, end int64, hasEnd bool) (StringSplitSubSpec, bool) {
+	if prior.SubCallCount != 1 || prior.FirstStart <= 0 || start <= 0 {
+		return StringSplitSubSpec{}, false
+	}
+	if prior.FirstHasEnd && prior.FirstEnd <= 0 {
+		return StringSplitSubSpec{}, false
+	}
+	if hasEnd && end <= 0 {
+		return StringSplitSubSpec{}, false
+	}
+	spec := prior
+	spec.SubCallCount = 2
+	spec.SecondStart = start
+	spec.SecondEnd = end
+	spec.SecondHasEnd = hasEnd
+	spec.Start = prior.FirstStart + start - 1
+	if hasEnd {
+		spec.End = prior.FirstStart + end - 1
+		spec.HasEnd = true
+	} else if prior.FirstHasEnd {
+		spec.End = prior.FirstEnd
+		spec.HasEnd = true
+	} else {
+		spec.End = 0
+		spec.HasEnd = false
+	}
+	if prior.FirstHasEnd && (!spec.HasEnd || spec.End > prior.FirstEnd) {
+		spec.End = prior.FirstEnd
+		spec.HasEnd = true
+	}
+	return spec, true
+}
+
+func constIntArg(v *Value) (int64, bool) {
+	if v == nil || v.Def == nil || v.Def.Op != OpConstInt {
+		return 0, false
+	}
+	return v.Def.Aux, true
 }
 
 func lowerStringSplitProjections(fn *Function) []string {
@@ -198,7 +356,11 @@ func instrUsers(fn *Function) map[int][]*Instr {
 }
 
 func isStringSplitCall(fn *Function, instr *Instr) bool {
-	if fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) != 3 {
+	return isStringFieldCall(fn, instr, "split") && len(instr.Args) == 3
+}
+
+func isStringFieldCall(fn *Function, instr *Instr, field string) bool {
+	if fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) < 1 {
 		return false
 	}
 	fnArg := instr.Args[0]
@@ -214,7 +376,19 @@ func isStringSplitCall(fn *Function, instr *Instr) bool {
 		return false
 	}
 	fieldName, ok := constString(fn, fnArg.Def.Aux)
-	return ok && fieldName == "split"
+	return ok && fieldName == field
+}
+
+func isGlobalCall(fn *Function, instr *Instr, name string) bool {
+	if fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) < 1 {
+		return false
+	}
+	fnArg := instr.Args[0]
+	if fnArg == nil || fnArg.Def == nil || fnArg.Def.Op != OpGetGlobal {
+		return false
+	}
+	globalName, ok := constString(fn, fnArg.Def.Aux)
+	return ok && globalName == name
 }
 
 func fuseStringFormatIntGetTable(fn *Function) []string {

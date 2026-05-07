@@ -99,6 +99,8 @@ const (
 	OpStringFormatConst       // Args[0]=callee, Args[1]=const pattern, Args[2:]=values; Aux indexes Function.StringFormatPatterns
 	OpGetTableStringFormatInt // Args[0]=table, Args[1]=callee, Args[2]=pattern value, Args[3]=int; Aux indexes Function.StringFormatPatterns
 	OpStringSplitPart         // Args[0]=callee, Args[1]=string, Args[2]=sep; Aux = 1-based token index
+	OpStringSplitSubstr       // Args[0]=split callee, Args[1]=sub callee, Args[2]=string, Args[3]=sep; Aux indexes Function.StringSplitSubSpecs
+	OpStringSplitSubstrNumber // Args[0]=split callee, Args[1]=sub callee, Args[2]=tonumber callee, Args[3]=string, Args[4]=sep; Aux indexes Function.StringSplitSubSpecs
 
 	// Table operations
 	OpNewTable // Aux = array hint, Aux2 = hash hint
@@ -276,6 +278,8 @@ var opNames = [...]string{
 	OpStringFormatConst:          "StringFormatConst",
 	OpGetTableStringFormatInt:    "GetTableStringFormatInt",
 	OpStringSplitPart:            "StringSplitPart",
+	OpStringSplitSubstr:          "StringSplitSubstr",
+	OpStringSplitSubstrNumber:    "StringSplitSubstrNumber",
 	OpNewTable:                   "NewTable",
 	OpNewFixedTable:              "NewFixedTable",
 	OpGetTable:                   "GetTable",

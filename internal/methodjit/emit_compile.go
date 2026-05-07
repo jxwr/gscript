@@ -449,6 +449,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		FixedTableArgSlots:       ec.fixedTableArgSlots,
 		StringConstTables:        fn.StringConstTables,
 		StringFormatPatterns:     fn.StringFormatPatterns,
+		StringSplitSubSpecs:      fn.StringSplitSubSpecs,
 		WholeCallNoResultBatches: fn.WholeCallNoResultBatches,
 		InstrCodeRanges:          ec.instrCodeRanges,
 		ExitSites:                buildExitSiteMeta(fn),

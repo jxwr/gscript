@@ -622,6 +622,66 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 		}
 		regs[slot] = results[0].Table().RawGetInt(int64(aux))
 
+	case OpStringSplitSubstr:
+		tempBase := arg1
+		nArgs := arg2
+		if slot >= len(regs) || tempBase < 0 || nArgs < 4 || tempBase+nArgs > len(regs) {
+			return fmt.Errorf("string.split substring op-exit out of register range")
+		}
+		splitCallee := regs[tempBase]
+		subCallees := regs[tempBase+1 : tempBase+nArgs-2]
+		sv := regs[tempBase+nArgs-2]
+		sepv := regs[tempBase+nArgs-1]
+		if aux >= 0 && aux < len(cf.StringSplitSubSpecs) && runtime.IsStdStringSplitFunction(splitCallee) && allStdStringSubFunctions(subCallees) {
+			spec := cf.StringSplitSubSpecs[aux]
+			v, err := runtime.StringSplitProjectSub(sv, sepv, spec.TokenIndex, spec.Start, spec.End, spec.HasEnd)
+			if err != nil {
+				return err
+			}
+			regs[slot] = v
+			return nil
+		}
+		if cf.CallVM == nil {
+			return fmt.Errorf("no CallVM set for string.split substring fallback")
+		}
+		v, err := executeStringSplitSubstrFallback(cf.CallVM, splitCallee, subCallees, sv, sepv, cf.StringSplitSubSpecs, aux)
+		if err != nil {
+			return err
+		}
+		regs[slot] = v
+
+	case OpStringSplitSubstrNumber:
+		tempBase := arg1
+		nArgs := arg2
+		if slot >= len(regs) || tempBase < 0 || nArgs < 5 || tempBase+nArgs > len(regs) {
+			return fmt.Errorf("string.split substring number op-exit out of register range")
+		}
+		splitCallee := regs[tempBase]
+		subCallees := regs[tempBase+1 : tempBase+nArgs-3]
+		tonumberCallee := regs[tempBase+nArgs-3]
+		sv := regs[tempBase+nArgs-2]
+		sepv := regs[tempBase+nArgs-1]
+		if aux >= 0 && aux < len(cf.StringSplitSubSpecs) &&
+			runtime.IsStdStringSplitFunction(splitCallee) &&
+			allStdStringSubFunctions(subCallees) &&
+			runtime.IsStdToNumberFunction(tonumberCallee) {
+			spec := cf.StringSplitSubSpecs[aux]
+			v, err := runtime.StringSplitProjectSubToNumber(sv, sepv, spec.TokenIndex, spec.Start, spec.End, spec.HasEnd)
+			if err != nil {
+				return err
+			}
+			regs[slot] = v
+			return nil
+		}
+		if cf.CallVM == nil {
+			return fmt.Errorf("no CallVM set for string.split substring number fallback")
+		}
+		v, err := executeStringSplitSubstrNumberFallback(cf.CallVM, splitCallee, subCallees, tonumberCallee, sv, sepv, cf.StringSplitSubSpecs, aux)
+		if err != nil {
+			return err
+		}
+		regs[slot] = v
+
 	case OpGetTableStringFormatInt:
 		tempBase := arg1
 		if slot >= len(regs) || tempBase < 0 || tempBase+4 > len(regs) {

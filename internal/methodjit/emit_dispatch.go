@@ -280,6 +280,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpStringSplitPart:
 		ec.emitStringFormatIntExit(instr)
 		ec.clearTableArrayBoundedKeys()
+	case OpStringSplitSubstr, OpStringSplitSubstrNumber:
+		ec.emitStringFormatConstExit(instr)
+		ec.clearTableArrayBoundedKeys()
 
 	case OpGetUpval, OpSetUpval,
 		OpAppend,

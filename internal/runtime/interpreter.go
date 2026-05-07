@@ -148,6 +148,8 @@ func (interp *Interpreter) registerBuiltins() {
 			}
 			return v, nil
 		},
+		NativeKind: NativeKindStdToNumber,
+		NativeData: StdToNumberIdentityPtr(),
 	}))
 
 	interp.globals.Define("setmetatable", FunctionValue(&GoFunction{

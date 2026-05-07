@@ -548,7 +548,7 @@ func lenArgKnownRawString(v *Value) bool {
 		return false
 	}
 	switch v.Def.Op {
-	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpGuardConstString:
+	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpStringSplitPart, OpStringSplitSubstr, OpGuardConstString:
 		return true
 	default:
 		return false
