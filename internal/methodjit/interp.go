@@ -609,6 +609,20 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = v
 
+	case OpStringSplitPart:
+		if len(instr.Args) != 3 {
+			return nil, false, fmt.Errorf("IR interpreter: string split projection expects 3 args")
+		}
+		callee := s.val(instr.Args[0])
+		if !runtime.IsStdStringSplitFunction(callee) {
+			return nil, false, fmt.Errorf("IR interpreter: string split projection guard mismatch")
+		}
+		v, err := runtime.StringSplitProject(s.val(instr.Args[1]), s.val(instr.Args[2]), instr.Aux)
+		if err != nil {
+			return nil, false, err
+		}
+		s.values[instr.ID] = v
+
 	// ---------- Table operations ----------
 	case OpNewTable:
 		arrHint := int(instr.Aux)

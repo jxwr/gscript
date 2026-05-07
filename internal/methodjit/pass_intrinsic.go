@@ -122,7 +122,99 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 		}
 	}
 	notes = append(notes, fuseStringFormatIntGetTable(fn)...)
+	notes = append(notes, lowerStringSplitProjections(fn)...)
 	return fn, notes
+}
+
+func lowerStringSplitProjections(fn *Function) []string {
+	if fn == nil || fn.Proto == nil {
+		return nil
+	}
+	users := instrUsers(fn)
+	var notes []string
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !isStringSplitCall(fn, instr) {
+				continue
+			}
+			callUsers := users[instr.ID]
+			if len(callUsers) == 0 {
+				continue
+			}
+			type projection struct {
+				get   *Instr
+				index int64
+			}
+			projections := make([]projection, 0, len(callUsers))
+			eligible := true
+			for _, use := range callUsers {
+				if use == nil || use.Op != OpGetTable || len(use.Args) != 2 || use.Args[0] == nil || use.Args[0].ID != instr.ID {
+					eligible = false
+					break
+				}
+				key := use.Args[1]
+				if key == nil || key.Def == nil || key.Def.Op != OpConstInt {
+					eligible = false
+					break
+				}
+				projections = append(projections, projection{get: use, index: key.Def.Aux})
+			}
+			if !eligible {
+				continue
+			}
+			for _, proj := range projections {
+				proj.get.Op = OpStringSplitPart
+				proj.get.Type = TypeAny
+				proj.get.Args = []*Value{instr.Args[0], instr.Args[1], instr.Args[2]}
+				proj.get.Aux = proj.index
+				proj.get.Aux2 = 0
+			}
+			instr.Op = OpNop
+			instr.Type = TypeUnknown
+			instr.Args = nil
+			instr.Aux = 0
+			instr.Aux2 = 0
+			notes = append(notes, "intrinsic: string.split const-index projections -> StringSplitPart")
+		}
+	}
+	return notes
+}
+
+func instrUsers(fn *Function) map[int][]*Instr {
+	users := make(map[int][]*Instr)
+	if fn == nil {
+		return users
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			for _, arg := range instr.Args {
+				if arg != nil {
+					users[arg.ID] = append(users[arg.ID], instr)
+				}
+			}
+		}
+	}
+	return users
+}
+
+func isStringSplitCall(fn *Function, instr *Instr) bool {
+	if fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) != 3 {
+		return false
+	}
+	fnArg := instr.Args[0]
+	if fnArg == nil || fnArg.Def == nil || fnArg.Def.Op != OpGetField || len(fnArg.Def.Args) != 1 {
+		return false
+	}
+	tblArg := fnArg.Def.Args[0]
+	if tblArg == nil || tblArg.Def == nil || tblArg.Def.Op != OpGetGlobal {
+		return false
+	}
+	moduleName, ok := constString(fn, tblArg.Def.Aux)
+	if !ok || moduleName != "string" {
+		return false
+	}
+	fieldName, ok := constString(fn, fnArg.Def.Aux)
+	return ok && fieldName == "split"
 }
 
 func fuseStringFormatIntGetTable(fn *Function) []string {

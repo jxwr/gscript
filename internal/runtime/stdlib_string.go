@@ -11,9 +11,13 @@ import (
 	"unsafe"
 )
 
-const NativeKindStdStringFormat uint8 = 2
+const (
+	NativeKindStdStringFormat uint8 = 2
+	NativeKindStdStringSplit  uint8 = 100
+)
 
 var stdStringFormatIdentity byte
+var stdStringSplitIdentity byte
 
 // NativeStringFormatIntCacheSize is the direct-mapped entry count used by the
 // Tier 2 native string.format(pattern, int) path.
@@ -417,6 +421,11 @@ func buildStringLib() *Table {
 		}
 		return []Value{v}, nil
 	}, stringSplitValue, stringSplit2Value)
+	if v := t.RawGetString("split"); v.IsFunction() {
+		gf := v.GoFunction()
+		gf.NativeKind = NativeKindStdStringSplit
+		gf.NativeData = StdStringSplitIdentityPtr()
+	}
 
 	// string.trim(s [, cutset]) -- trim leading/trailing whitespace (or chars in cutset)
 	set("trim", func(args []Value) ([]Value, error) {
@@ -739,6 +748,74 @@ func stringSplitStrings(s, sep string) Value {
 		start = end + len(sep)
 	}
 	return TableValue(tbl)
+}
+
+func StdStringSplitIdentityPtr() unsafe.Pointer {
+	return unsafe.Pointer(&stdStringSplitIdentity)
+}
+
+func IsStdStringSplitFunction(v Value) bool {
+	gf := v.GoFunction()
+	return gf != nil &&
+		gf.NativeKind == NativeKindStdStringSplit &&
+		gf.NativeData == StdStringSplitIdentityPtr() &&
+		gf.FastArg2 != nil
+}
+
+func StringSplitProject(sv, sepv Value, index int64) (Value, error) {
+	if !sv.IsString() || !sepv.IsString() {
+		return NilValue(), fmt.Errorf("bad argument to 'string.split' (string expected)")
+	}
+	if index < 1 {
+		return NilValue(), nil
+	}
+	return stringSplitProjectStrings(sv.Str(), sepv.Str(), index), nil
+}
+
+func stringSplitProjectStrings(s, sep string, index int64) Value {
+	if sep == "" {
+		i := int(index) - 1
+		if i < 0 || i >= len(s) {
+			return NilValue()
+		}
+		return StringValue(string(s[i]))
+	}
+
+	token := int64(1)
+	start := 0
+	if len(sep) == 1 {
+		sepByte := sep[0]
+		for i := 0; i < len(s); i++ {
+			if s[i] != sepByte {
+				continue
+			}
+			if token == index {
+				return StringValue(s[start:i])
+			}
+			token++
+			start = i + 1
+		}
+		if token == index {
+			return StringValue(s[start:])
+		}
+		return NilValue()
+	}
+
+	for {
+		next := strings.Index(s[start:], sep)
+		if next < 0 {
+			if token == index {
+				return StringValue(s[start:])
+			}
+			return NilValue()
+		}
+		end := start + next
+		if token == index {
+			return StringValue(s[start:end])
+		}
+		token++
+		start = end + len(sep)
+	}
 }
 
 func stringFormatValue(args []Value) (Value, error) {

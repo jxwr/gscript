@@ -593,6 +593,35 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 			regs[slot] = runtime.NilValue()
 		}
 
+	case OpStringSplitPart:
+		tempBase := arg1
+		if slot >= len(regs) || tempBase < 0 || tempBase+3 > len(regs) {
+			return fmt.Errorf("string.split projection op-exit out of register range")
+		}
+		callee := regs[tempBase]
+		sv := regs[tempBase+1]
+		sepv := regs[tempBase+2]
+		if runtime.IsStdStringSplitFunction(callee) {
+			v, err := runtime.StringSplitProject(sv, sepv, int64(aux))
+			if err != nil {
+				return err
+			}
+			regs[slot] = v
+			return nil
+		}
+		if cf.CallVM == nil {
+			return fmt.Errorf("no CallVM set for string.split projection fallback")
+		}
+		results, err := cf.CallVM.CallValue(callee, []runtime.Value{sv, sepv})
+		if err != nil {
+			return err
+		}
+		if len(results) == 0 || !results[0].IsTable() {
+			regs[slot] = runtime.NilValue()
+			return nil
+		}
+		regs[slot] = results[0].Table().RawGetInt(int64(aux))
+
 	case OpGetTableStringFormatInt:
 		tempBase := arg1
 		if slot >= len(regs) || tempBase < 0 || tempBase+4 > len(regs) {
