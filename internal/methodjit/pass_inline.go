@@ -576,158 +576,17 @@ func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, callee
 func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, calleeFn *Function, calleeName string) {
 	callArgs := callInstr.Args[1:]
 
-	// Find the maximum block ID currently in use. Scanning is required because
-	// after previous inlining rounds the block list is not necessarily sorted
-	// by ID (the original entry keeps its low ID, newly spliced blocks get
-	// high IDs, and any block added since then may follow). Using the tail
-	// block's ID would not be safe in the fixpoint loop.
-	maxBlockID := 0
-	for _, b := range fn.Blocks {
-		if b.ID > maxBlockID {
-			maxBlockID = b.ID
-		}
-	}
-
 	// Create a merge block for instructions after the call.
 	mergeBlock := &Block{
-		ID:   maxBlockID + 1,
+		ID:   maxInlineBlockID(fn) + 1,
 		defs: make(map[int]*Value),
 	}
 
-	// Renumber all callee block IDs and value IDs.
-	nextBlockID := mergeBlock.ID + 1
-	idMap := make(map[int]int)       // callee value ID -> caller value ID
-	blockMap := make(map[int]*Block) // callee block ID -> new block
-
-	// Map parameter LoadSlots to caller arguments.
-	paramValues := make(map[int]*Value)
-	paramCount := 0
-	for _, ci := range calleeFn.Entry.Instrs {
-		if ci.Op == OpLoadSlot && paramCount < calleeFn.Proto.NumParams {
-			if paramCount < len(callArgs) {
-				paramValues[ci.ID] = callArgs[paramCount]
-			}
-			paramCount++
-		}
-	}
-
-	// Create new blocks for all callee blocks.
-	for _, cb := range calleeFn.Blocks {
-		newBlock := &Block{
-			ID:   nextBlockID,
-			defs: make(map[int]*Value),
-		}
-		nextBlockID++
-		blockMap[cb.ID] = newBlock
-	}
-
-	// Assign new value IDs for all callee instructions (except param loads).
-	for _, cb := range calleeFn.Blocks {
-		for _, ci := range cb.Instrs {
-			if _, isParam := paramValues[ci.ID]; isParam {
-				continue
-			}
-			newID := fn.newValueID()
-			idMap[ci.ID] = newID
-		}
-	}
-
-	// Collect return values for the merge phi.
-	var returnValues []*Value
-	var returnPreds []*Block
-
-	// Copy callee instructions into new blocks, remapping IDs and edges.
-	for _, cb := range calleeFn.Blocks {
-		newBlock := blockMap[cb.ID]
-
-		for _, ci := range cb.Instrs {
-			// Skip parameter loads (replaced by caller args).
-			if _, isParam := paramValues[ci.ID]; isParam {
-				continue
-			}
-
-			if ci.Op == OpReturn {
-				// Replace return with jump to merge block.
-				if len(ci.Args) > 0 {
-					rv := remapValue(ci.Args[0], idMap, paramValues)
-					returnValues = append(returnValues, rv)
-					returnPreds = append(returnPreds, newBlock)
-				}
-				// Emit jump to merge block.
-				jmp := &Instr{
-					ID:    fn.newValueID(),
-					Op:    OpJump,
-					Type:  TypeUnknown,
-					Block: newBlock,
-				}
-				jmp.copySourceFrom(ci)
-				newBlock.Instrs = append(newBlock.Instrs, jmp)
-				newBlock.Succs = append(newBlock.Succs, mergeBlock)
-				mergeBlock.Preds = append(mergeBlock.Preds, newBlock)
-				continue
-			}
-
-			newInstr := &Instr{
-				ID:    idMap[ci.ID],
-				Op:    ci.Op,
-				Type:  ci.Type,
-				Aux:   remapAux(ci, fn, calleeFn),
-				Aux2:  ci.Aux2,
-				Block: newBlock,
-			}
-			newInstr.copySourceFrom(ci)
-
-			// Remap args.
-			newInstr.Args = make([]*Value, len(ci.Args))
-			for j, arg := range ci.Args {
-				newInstr.Args[j] = remapValue(arg, idMap, paramValues)
-			}
-
-			// For branch/jump, we need to remap successor blocks.
-			if ci.Op == OpBranch || ci.Op == OpJump {
-				// Succs are handled via block edges below.
-			}
-
-			newBlock.Instrs = append(newBlock.Instrs, newInstr)
-		}
-
-		// Remap successor edges.
-		for _, succ := range cb.Succs {
-			newSucc := blockMap[succ.ID]
-			if newSucc != nil {
-				newBlock.Succs = append(newBlock.Succs, newSucc)
-			}
-		}
-	}
-
-	// Preserve each cloned block's predecessor order from the callee CFG so
-	// phi argument indexes continue to line up with Block.Preds after inlining.
-	for _, cb := range calleeFn.Blocks {
-		newBlock := blockMap[cb.ID]
-		for _, pred := range cb.Preds {
-			if newPred := blockMap[pred.ID]; newPred != nil {
-				newBlock.Preds = append(newBlock.Preds, newPred)
-			}
-		}
-	}
+	clone := cloneInlineCalleeGraph(fn, calleeFn, callArgs, mergeBlock.ID+1, mergeBlock)
 
 	// Build the merge block with a phi for the return value (if multiple returns)
 	// or just the single return value.
-	var inlineResult *Value
-	if len(returnValues) == 1 {
-		inlineResult = returnValues[0]
-	} else if len(returnValues) > 1 {
-		phi := &Instr{
-			ID:    fn.newValueID(),
-			Op:    OpPhi,
-			Type:  TypeAny,
-			Args:  returnValues,
-			Block: mergeBlock,
-		}
-		phi.copySourceFrom(callInstr)
-		mergeBlock.Instrs = append(mergeBlock.Instrs, phi)
-		inlineResult = phi.Value()
-	}
+	inlineResult := mergeInlineReturnValues(fn, mergeBlock, callInstr, clone.returnValues)
 
 	// Move post-call instructions from original block to merge block.
 	postCallInstrs := block.Instrs[idx+1:]
@@ -769,7 +628,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 	block.Succs = nil
 
 	// Add jump from original block to callee entry block.
-	calleeEntry := blockMap[calleeFn.Entry.ID]
+	calleeEntry := clone.entry
 	jmpToCallee := &Instr{
 		ID:    fn.newValueID(),
 		Op:    OpJump,
@@ -782,12 +641,167 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 	calleeEntry.Preds = append(calleeEntry.Preds, block)
 
 	// Add all new blocks to the function.
-	for _, cb := range calleeFn.Blocks {
-		fn.Blocks = append(fn.Blocks, blockMap[cb.ID])
-	}
+	fn.Blocks = append(fn.Blocks, clone.blocks...)
 	fn.Blocks = append(fn.Blocks, mergeBlock)
-	copyInlinedFixedTableConstructors(fn, calleeFn, idMap)
+	copyInlinedFixedTableConstructors(fn, calleeFn, clone.idMap)
 
+}
+
+type inlineCalleeClone struct {
+	blocks       []*Block
+	blockMap     map[int]*Block
+	idMap        map[int]int
+	paramValues  map[int]*Value
+	entry        *Block
+	returnValues []*Value
+}
+
+// maxInlineBlockID finds the maximum block ID currently in use. Scanning is
+// required because after previous inlining rounds the block list is not
+// necessarily sorted by ID.
+func maxInlineBlockID(fn *Function) int {
+	maxBlockID := 0
+	for _, b := range fn.Blocks {
+		if b.ID > maxBlockID {
+			maxBlockID = b.ID
+		}
+	}
+	return maxBlockID
+}
+
+// cloneInlineCalleeGraph copies a callee CFG into the caller's value/block
+// namespace. Parameter loads are replaced by call arguments, and OpReturn
+// terminators are converted into jumps to returnTarget while collecting their
+// remapped return values for the merge block.
+func cloneInlineCalleeGraph(fn *Function, calleeFn *Function, callArgs []*Value, firstBlockID int, returnTarget *Block) inlineCalleeClone {
+	clone := inlineCalleeClone{
+		blockMap:    make(map[int]*Block),
+		idMap:       make(map[int]int),
+		paramValues: mapInlineParams(calleeFn, callArgs),
+	}
+
+	nextBlockID := firstBlockID
+	for _, cb := range calleeFn.Blocks {
+		newBlock := &Block{
+			ID:   nextBlockID,
+			defs: make(map[int]*Value),
+		}
+		nextBlockID++
+		clone.blockMap[cb.ID] = newBlock
+		clone.blocks = append(clone.blocks, newBlock)
+	}
+	clone.entry = clone.blockMap[calleeFn.Entry.ID]
+
+	// Preserve legacy ID allocation order by reserving an ID for every
+	// non-parameter callee instruction, including returns that become jumps.
+	for _, cb := range calleeFn.Blocks {
+		for _, ci := range cb.Instrs {
+			if _, isParam := clone.paramValues[ci.ID]; isParam {
+				continue
+			}
+			clone.idMap[ci.ID] = fn.newValueID()
+		}
+	}
+
+	for _, cb := range calleeFn.Blocks {
+		newBlock := clone.blockMap[cb.ID]
+		for _, ci := range cb.Instrs {
+			if _, isParam := clone.paramValues[ci.ID]; isParam {
+				continue
+			}
+			if ci.Op == OpReturn {
+				clone.returnValues = appendInlineReturnJump(fn, newBlock, returnTarget, ci, clone.idMap, clone.paramValues, clone.returnValues)
+				continue
+			}
+			newBlock.Instrs = append(newBlock.Instrs, cloneInlineInstr(fn, calleeFn, newBlock, ci, clone.idMap, clone.paramValues))
+		}
+
+		for _, succ := range cb.Succs {
+			if newSucc := clone.blockMap[succ.ID]; newSucc != nil {
+				newBlock.Succs = append(newBlock.Succs, newSucc)
+			}
+		}
+	}
+
+	// Preserve each cloned block's predecessor order from the callee CFG so
+	// phi argument indexes continue to line up with Block.Preds after inlining.
+	for _, cb := range calleeFn.Blocks {
+		newBlock := clone.blockMap[cb.ID]
+		for _, pred := range cb.Preds {
+			if newPred := clone.blockMap[pred.ID]; newPred != nil {
+				newBlock.Preds = append(newBlock.Preds, newPred)
+			}
+		}
+	}
+
+	return clone
+}
+
+func mapInlineParams(calleeFn *Function, callArgs []*Value) map[int]*Value {
+	paramValues := make(map[int]*Value)
+	paramCount := 0
+	for _, ci := range calleeFn.Entry.Instrs {
+		if ci.Op == OpLoadSlot && paramCount < calleeFn.Proto.NumParams {
+			if paramCount < len(callArgs) {
+				paramValues[ci.ID] = callArgs[paramCount]
+			}
+			paramCount++
+		}
+	}
+	return paramValues
+}
+
+func cloneInlineInstr(callerFn *Function, calleeFn *Function, block *Block, ci *Instr, idMap map[int]int, paramValues map[int]*Value) *Instr {
+	newInstr := &Instr{
+		ID:    idMap[ci.ID],
+		Op:    ci.Op,
+		Type:  ci.Type,
+		Aux:   remapAux(ci, callerFn, calleeFn),
+		Aux2:  ci.Aux2,
+		Block: block,
+	}
+	newInstr.copySourceFrom(ci)
+	newInstr.Args = make([]*Value, len(ci.Args))
+	for j, arg := range ci.Args {
+		newInstr.Args[j] = remapValue(arg, idMap, paramValues)
+	}
+	return newInstr
+}
+
+func appendInlineReturnJump(fn *Function, fromBlock *Block, returnTarget *Block, ret *Instr, idMap map[int]int, paramValues map[int]*Value, returnValues []*Value) []*Value {
+	if len(ret.Args) > 0 {
+		returnValues = append(returnValues, remapValue(ret.Args[0], idMap, paramValues))
+	}
+	jmp := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpJump,
+		Type:  TypeUnknown,
+		Block: fromBlock,
+	}
+	jmp.copySourceFrom(ret)
+	fromBlock.Instrs = append(fromBlock.Instrs, jmp)
+	fromBlock.Succs = append(fromBlock.Succs, returnTarget)
+	returnTarget.Preds = append(returnTarget.Preds, fromBlock)
+	return returnValues
+}
+
+func mergeInlineReturnValues(fn *Function, mergeBlock *Block, callInstr *Instr, returnValues []*Value) *Value {
+	if len(returnValues) == 1 {
+		return returnValues[0]
+	}
+	if len(returnValues) == 0 {
+		return nil
+	}
+	phi := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpPhi,
+		Type:  TypeAny,
+		Args:  returnValues,
+		Block: mergeBlock,
+	}
+	phi.copySourceFrom(callInstr)
+	mergeBlock.Instrs = append(mergeBlock.Instrs, phi)
+	return phi.Value()
 }
 
 // remapValue translates a callee Value reference to the caller's namespace.
