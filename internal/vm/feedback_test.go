@@ -509,6 +509,36 @@ func TestCallSiteFeedback_ReboundCalleePolymorphic(t *testing.T) {
 	}
 }
 
+func TestCallSiteFeedback_RecordsSmallPolymorphicVMProtos(t *testing.T) {
+	proto := compileFeedback(t, `
+		func f(x) { return x + 1 }
+		func g(x) { return x + 2 }
+		total := 0
+		for i := 1; i <= 4; i++ {
+			fn := f
+			if i % 2 == 0 {
+				fn = g
+			}
+			total = total + fn(i)
+		}
+	`)
+	cf := findCallSiteFeedback(t, proto)
+	if cf.Flags&CallSiteCalleePolymorphic == 0 {
+		t.Fatalf("callsite should be callee-polymorphic, flags=%02x", cf.Flags)
+	}
+	protos := cf.PolymorphicVMProtos()
+	if len(protos) != 2 {
+		t.Fatalf("polymorphic VM protos=%d, want 2", len(protos))
+	}
+	names := map[string]bool{}
+	for _, p := range protos {
+		names[p.Name] = true
+	}
+	if !names["f"] || !names["g"] {
+		t.Fatalf("polymorphic VM proto names=%v, want f and g", names)
+	}
+}
+
 func TestFeedback_SubMulDiv(t *testing.T) {
 	proto := compileFeedback(t, `a := 10; b := 3; s := a - b; m := a * b; d := a / b`)
 	for _, op := range []Opcode{OP_SUB, OP_MUL, OP_DIV} {

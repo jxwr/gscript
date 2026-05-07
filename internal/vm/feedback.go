@@ -149,6 +149,7 @@ type FieldAccessFeedback struct {
 }
 
 const MaxCallSiteFeedbackArgs = 4
+const MaxCallSiteFeedbackVMProtos = 4
 
 const (
 	CallSiteCalleePolymorphic uint8 = 1 << iota
@@ -161,18 +162,20 @@ const callSiteHotNativeObservationLimit uint32 = 64
 // low-level profile substrate: optimization passes can combine these facts into
 // guards, while unstable sites naturally deopt/fallback or remain generic.
 type CallSiteFeedback struct {
-	Count            uint32
-	NArgs            uint8
-	ResultArity      uint8
-	Flags            uint8
-	CalleeType       FeedbackType
-	CalleeNativeKind uint8
-	CalleeNativeData uintptr
-	CalleeVMProto    *FuncProto
-	ArgTypes         [MaxCallSiteFeedbackArgs]FeedbackType
-	StringArgMask    uint8
-	StringArgPoly    uint8
-	StringArgs       [MaxCallSiteFeedbackArgs]string
+	Count              uint32
+	NArgs              uint8
+	ResultArity        uint8
+	Flags              uint8
+	CalleeType         FeedbackType
+	CalleeNativeKind   uint8
+	CalleeNativeData   uintptr
+	CalleeVMProto      *FuncProto
+	CalleeVMProtos     [MaxCallSiteFeedbackVMProtos]*FuncProto
+	CalleeVMProtoCount uint8
+	ArgTypes           [MaxCallSiteFeedbackArgs]FeedbackType
+	StringArgMask      uint8
+	StringArgPoly      uint8
+	StringArgs         [MaxCallSiteFeedbackArgs]string
 }
 
 // ObserveKind records an array kind observation. Monotonic like Observe:
@@ -430,8 +433,10 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 		cf.CalleeNativeKind = nativeKind
 		cf.CalleeNativeData = nativeData
 		cf.CalleeVMProto = vmProto
+		cf.observeVMProto(vmProto)
 	} else if cf.CalleeNativeKind != nativeKind || cf.CalleeNativeData != nativeData || cf.CalleeVMProto != vmProto {
 		cf.Flags |= CallSiteCalleePolymorphic
+		cf.observeVMProto(vmProto)
 	}
 	limit := nArgs
 	if limit > len(args) {
@@ -457,6 +462,22 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 	}
 }
 
+func (cf *CallSiteFeedback) observeVMProto(proto *FuncProto) {
+	if proto == nil {
+		return
+	}
+	for i := 0; i < int(cf.CalleeVMProtoCount); i++ {
+		if cf.CalleeVMProtos[i] == proto {
+			return
+		}
+	}
+	if cf.CalleeVMProtoCount >= MaxCallSiteFeedbackVMProtos {
+		return
+	}
+	cf.CalleeVMProtos[cf.CalleeVMProtoCount] = proto
+	cf.CalleeVMProtoCount++
+}
+
 func (cf CallSiteFeedback) StableCalleeNativeIdentity() (kind uint8, data uintptr, ok bool) {
 	if cf.Count == 0 || cf.Flags&CallSiteCalleePolymorphic != 0 {
 		return 0, 0, false
@@ -472,6 +493,19 @@ func (cf CallSiteFeedback) StableCalleeVMProto() (*FuncProto, bool) {
 		return nil, false
 	}
 	return cf.CalleeVMProto, true
+}
+
+func (cf CallSiteFeedback) PolymorphicVMProtos() []*FuncProto {
+	if cf.CalleeVMProtoCount == 0 {
+		return nil
+	}
+	out := make([]*FuncProto, 0, cf.CalleeVMProtoCount)
+	for i := 0; i < int(cf.CalleeVMProtoCount); i++ {
+		if cf.CalleeVMProtos[i] != nil {
+			out = append(out, cf.CalleeVMProtos[i])
+		}
+	}
+	return out
 }
 
 func (cf CallSiteFeedback) StableStringArg(idx int) (string, bool) {
