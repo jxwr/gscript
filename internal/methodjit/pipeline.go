@@ -572,6 +572,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("TableArrayLower: %w", err)
 	}
 
+	fn, err = StaticTableArrayElementTypePass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("StaticTableArrayElementType: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = TableArrayLoadTypeSpecializePass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("TableArrayLoadTypeSpecialize: %w", err)
@@ -818,6 +824,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("ModZeroCompare", ModZeroComparePass)
 	pipe.Add("DCEPostModZeroCompare", DCEPass)
 	pipe.Add("TableArrayLower", TableArrayLowerPass)
+	pipe.Add("StaticTableArrayElementType", StaticTableArrayElementTypePass)
 	pipe.Add("TableArrayLoadTypeSpecialize", TableArrayLoadTypeSpecializePass)
 	pipe.Add("TableArrayNestedLoad", TableArrayNestedLoadPass)
 	pipe.Add("DenseMatrixNestedLoadLower", DenseMatrixNestedLoadLowerPass)

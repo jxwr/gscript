@@ -58,6 +58,7 @@ type staticTableLenTestOpts struct {
 	mutate       bool
 	escapeToCall bool
 	setListAux   int64
+	stringValues bool
 }
 
 func staticTableLenTestFunction(opts staticTableLenTestOpts) (*Function, *Instr, *Instr) {
@@ -67,9 +68,13 @@ func staticTableLenTestFunction(opts staticTableLenTestOpts) (*Function, *Instr,
 	}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}
 	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
-	a := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 11, Block: b}
-	c := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 22, Block: b}
-	d := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 33, Block: b}
+	valueOp, valueType := OpConstInt, TypeInt
+	if opts.stringValues {
+		valueOp, valueType = OpConstString, TypeString
+	}
+	a := &Instr{ID: fn.newValueID(), Op: valueOp, Type: valueType, Aux: 11, Block: b}
+	c := &Instr{ID: fn.newValueID(), Op: valueOp, Type: valueType, Aux: 22, Block: b}
+	d := &Instr{ID: fn.newValueID(), Op: valueOp, Type: valueType, Aux: 33, Block: b}
 	setListAux := opts.setListAux
 	if setListAux == 0 {
 		setListAux = 1

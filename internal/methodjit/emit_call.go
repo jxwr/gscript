@@ -551,7 +551,7 @@ func lenArgKnownRawString(v *Value) bool {
 	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpGuardConstString:
 		return true
 	default:
-		return false
+		return v.Def.Type == TypeString
 	}
 }
 
