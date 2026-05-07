@@ -843,6 +843,13 @@ func (b *graphBuilder) emitBlocks() {
 					!bytecodeSlotFeedsNilEq(b.proto, pc, a) {
 					guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
 					result = guard.Value()
+				} else if irType, ok := b.speculation.StringShapeValueGuardType(pc, vm.TableAccessKindGet); ok &&
+					resultType != irType &&
+					!getTableKindImpliesType(kindAux2, irType) &&
+					!getTableKindForbidsResultGuard(kindAux2, irType) &&
+					!bytecodeSlotFeedsNilEq(b.proto, pc, a) {
+					guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
+					result = guard.Value()
 				}
 				b.writeVariable(a, block, result)
 
@@ -876,6 +883,9 @@ func (b *graphBuilder) emitBlocks() {
 				instr := b.emit(block, OpGetField, TypeAny, []*Value{tbl}, int64(c), aux2)
 				result := instr.Value()
 				if irType, ok := b.speculation.ResultGuardType(pc); ok && !bytecodeSlotFeedsNilEq(b.proto, pc, a) {
+					guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
+					result = guard.Value()
+				} else if irType, ok := b.speculation.FieldValueGuardType(pc); ok && !bytecodeSlotFeedsNilEq(b.proto, pc, a) {
 					guard := b.emit(block, OpGuardType, irType, []*Value{result}, int64(irType), 0)
 					result = guard.Value()
 				}

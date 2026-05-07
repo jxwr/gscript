@@ -44,9 +44,6 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 					fmt.Sprintf("annotated typed self call result for %s", fn.Proto.Name))
 				continue
 			}
-			if len(globals) == 0 {
-				continue
-			}
 			desc, reason := callABIDescriptorFor(fn, instr, globals, tails, shiftAddOverflowVersions)
 			if desc.Callee == nil {
 				functionRemarks(fn).Add("CallABI", "missed", block.ID, instr.ID, instr.Op, reason)
@@ -152,7 +149,12 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 	}
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
 	if callee == nil {
-		return CallABIDescriptor{}, "callee is not statically resolved from stable globals"
+		if feedbackCallee, ok := callABIFeedbackCalleeProto(fn, instr); ok {
+			callee = feedbackCallee
+		}
+	}
+	if callee == nil {
+		return CallABIDescriptor{}, "callee is not resolved from stable globals or call feedback"
 	}
 	if fn != nil && callee == fn.Proto {
 		return CallABIDescriptor{}, "self call uses separate raw-int result annotation"
@@ -195,6 +197,21 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 		RawIntParams: rawParams,
 		RawIntReturn: true,
 	}, ""
+}
+
+func callABIFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool) {
+	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpCall ||
+		!instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
+		return nil, false
+	}
+	fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
+	if fb.Count < wholeCallKernelMinStableObservations ||
+		fb.Flags&(vm.CallSiteCalleePolymorphic|vm.CallSiteArityPolymorphic) != 0 ||
+		int(fb.NArgs) != len(instr.Args)-1 ||
+		fb.ResultArity != uint8(instr.Aux2) {
+		return nil, false
+	}
+	return fb.StableCalleeVMProto()
 }
 
 func callABIHasExactResultShape(fn *Function, instr *Instr, wantRets int) bool {

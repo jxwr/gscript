@@ -722,6 +722,57 @@ func f(t) {
 		}
 	})
 
+	t.Run("GetField_FieldFeedbackFloat_inserts_guard", func(t *testing.T) {
+		proto := compile(t, `
+func f(t) {
+	return t.x
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETFIELD)
+		proto.EnsureFeedback()
+		proto.FieldAccessFeedback[pc].Count = 3
+		proto.FieldAccessFeedback[pc].ShapeID = 12
+		proto.FieldAccessFeedback[pc].FieldIdx = 1
+		proto.FieldAccessFeedback[pc].ValueType = vm.FBFloat
+		proto.FieldAccessFeedback[pc].AccessKind = vm.TableAccessKindGet
+
+		fn := BuildGraph(proto)
+		guard := findGuardAfterOp(fn, OpGetField)
+		if guard == nil {
+			t.Fatalf("expected OpGuardType from field specialization feedback\nIR:\n%s", Print(fn))
+		}
+		if guard.Type != TypeFloat || guard.Aux != int64(TypeFloat) {
+			t.Fatalf("guard=%s aux=%d want float", guard.Type, guard.Aux)
+		}
+	})
+
+	t.Run("GetTable_TableKeyFeedbackFloat_inserts_guard", func(t *testing.T) {
+		proto := compile(t, `
+func f(t, k) {
+	return t[k]
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETTABLE)
+		proto.EnsureFeedback()
+		proto.TableKeyFeedback[pc].Count = 3
+		proto.TableKeyFeedback[pc].ShapeID = 21
+		proto.TableKeyFeedback[pc].FieldIdx = 2
+		proto.TableKeyFeedback[pc].FieldIdxSeen = true
+		proto.TableKeyFeedback[pc].StringKey = "x"
+		proto.TableKeyFeedback[pc].StringKeySeen = true
+		proto.TableKeyFeedback[pc].ValueType = vm.FBFloat
+		proto.TableKeyFeedback[pc].AccessKind = vm.TableAccessKindGet
+
+		fn := BuildGraph(proto)
+		guard := findGuardAfterOp(fn, OpGetField)
+		if guard == nil {
+			t.Fatalf("expected OpGuardType after table-key lowering from specialization feedback\nIR:\n%s", Print(fn))
+		}
+		if guard.Type != TypeFloat || guard.Aux != int64(TypeFloat) {
+			t.Fatalf("guard=%s aux=%d want float", guard.Type, guard.Aux)
+		}
+	})
+
 	t.Run("Eq_nil_skips_feedback_operand_guard", func(t *testing.T) {
 		proto := compile(t, `
 func f(t) {

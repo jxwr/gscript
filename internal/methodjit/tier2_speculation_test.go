@@ -40,8 +40,8 @@ func TestTier2SpeculationPlanQueriesSpecializationProfile(t *testing.T) {
 				{Kind: SpecGuardOperandType, PC: 2, Slot: "left", Type: TypeInt},
 				{Kind: SpecGuardOperandType, PC: 2, Slot: "right", Type: TypeFloat},
 				{Kind: SpecGuardTableKind, PC: 3, TableKind: vm.FBKindFloat},
-				{Kind: SpecGuardFieldShape, PC: 4, ShapeID: 11, FieldIdx: 5},
-				{Kind: SpecGuardStringShapeKey, PC: 5, Key: "k", ShapeID: 12, FieldIdx: 6, AccessKind: vm.TableAccessKindGet},
+				{Kind: SpecGuardFieldShape, PC: 4, ShapeID: 11, FieldIdx: 5, Type: TypeInt},
+				{Kind: SpecGuardStringShapeKey, PC: 5, Key: "k", ShapeID: 12, FieldIdx: 6, AccessKind: vm.TableAccessKindGet, Type: TypeFloat},
 			},
 		},
 	}
@@ -58,9 +58,15 @@ func TestTier2SpeculationPlanQueriesSpecializationProfile(t *testing.T) {
 	if got := plan.FieldShapeAux2(4); got == 0 {
 		t.Fatal("FieldShapeAux2 returned zero")
 	}
+	if typ, ok := plan.FieldValueGuardType(4); !ok || typ != TypeInt {
+		t.Fatalf("FieldValueGuardType=%v ok=%v want int,true", typ, ok)
+	}
 	key, shapeID, fieldIdx, ok := plan.StableStringShapeField(5, vm.TableAccessKindGet)
 	if !ok || key != "k" || shapeID != 12 || fieldIdx != 6 {
 		t.Fatalf("StableStringShapeField=%q %d %d %v", key, shapeID, fieldIdx, ok)
+	}
+	if typ, ok := plan.StringShapeValueGuardType(5, vm.TableAccessKindGet); !ok || typ != TypeFloat {
+		t.Fatalf("StringShapeValueGuardType=%v ok=%v want float,true", typ, ok)
 	}
 }
 

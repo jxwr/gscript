@@ -274,7 +274,7 @@ func nativeLoopCalleePrecompileSafe(proto *vm.FuncProto) bool {
 }
 
 func rawIntLoopCallCallees(fn *Function, globals map[string]*vm.FuncProto) []*vm.FuncProto {
-	if fn == nil || len(globals) == 0 {
+	if fn == nil {
 		return nil
 	}
 	seen := make(map[*vm.FuncProto]bool)
@@ -289,12 +289,15 @@ func rawIntLoopCallCallees(fn *Function, globals map[string]*vm.FuncProto) []*vm
 				continue
 			}
 			_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
-			if callee == nil || seen[callee] {
-				continue
-			}
-			if shouldStayTier1ForBoxedRawIntKernel(callee, analyzeFuncProfile(callee)) {
+			if callee != nil && !seen[callee] && shouldStayTier1ForBoxedRawIntKernel(callee, analyzeFuncProfile(callee)) {
 				seen[callee] = true
 				out = append(out, callee)
+			}
+			if feedbackCallee, ok := callABIFeedbackCalleeProto(fn, instr); ok &&
+				feedbackCallee != nil && !seen[feedbackCallee] &&
+				shouldStayTier1ForBoxedRawIntKernel(feedbackCallee, analyzeFuncProfile(feedbackCallee)) {
+				seen[feedbackCallee] = true
+				out = append(out, feedbackCallee)
 			}
 		}
 	}

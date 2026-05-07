@@ -370,6 +370,13 @@ func (p Tier2SpeculationPlan) FieldShapeAux2(pc int) int64 {
 	return 0
 }
 
+func (p Tier2SpeculationPlan) FieldValueGuardType(pc int) (Type, bool) {
+	if guard, ok := p.Profile.findGuard(pc, SpecGuardFieldShape, nil); ok {
+		return specializationGuardValueType(guard)
+	}
+	return TypeUnknown, false
+}
+
 func (p Tier2SpeculationPlan) StableStringShapeField(pc int, accessKind uint8) (key string, shapeID uint32, fieldIdx int, ok bool) {
 	if guard, found := p.Profile.findGuard(pc, SpecGuardStringShapeKey, func(g SpecializationGuard) bool {
 		return g.AccessKind == 0 || g.AccessKind == accessKind
@@ -384,6 +391,23 @@ func (p Tier2SpeculationPlan) StableStringShapeField(pc int, accessKind uint8) (
 		return "", 0, 0, false
 	}
 	return feedback.StableStringShapeField()
+}
+
+func (p Tier2SpeculationPlan) StringShapeValueGuardType(pc int, accessKind uint8) (Type, bool) {
+	guard, ok := p.Profile.findGuard(pc, SpecGuardStringShapeKey, func(g SpecializationGuard) bool {
+		return g.AccessKind == 0 || g.AccessKind == accessKind
+	})
+	if !ok {
+		return TypeUnknown, false
+	}
+	return specializationGuardValueType(guard)
+}
+
+func specializationGuardValueType(guard SpecializationGuard) (Type, bool) {
+	if guard.Type != TypeUnknown && guard.Type != TypeAny {
+		return guard.Type, true
+	}
+	return feedbackToIRType(guard.FBType)
 }
 
 // Tier2RecompilePolicy decides when an already-published Tier 2 body was

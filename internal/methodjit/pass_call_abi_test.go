@@ -84,6 +84,51 @@ result := inc(41)`
 	}
 }
 
+func TestCallABIAnnotate_StableFeedbackCalleeGetsDescriptor(t *testing.T) {
+	src := `func inc(n) { return n + 1 }
+func apply(f) {
+	x := f(41)
+	return x + 1
+}`
+	top := compileTop(t, src)
+	inc := findProtoByName(top, "inc")
+	apply := findProtoByName(top, "apply")
+	if inc == nil || apply == nil {
+		t.Fatalf("missing protos: inc=%v apply=%v", inc != nil, apply != nil)
+	}
+	assertRawIntSpecializedABI(t, AnalyzeSpecializedABI(inc), 1)
+	fn := BuildGraph(apply)
+	call := firstCall(t, fn)
+	callPC := call.SourcePC
+	if !call.HasSource || callPC < 0 {
+		t.Fatalf("call has no source metadata: %+v", call)
+	}
+	apply.EnsureFeedback()
+	apply.CallSiteFeedback[callPC].Count = wholeCallKernelMinStableObservations
+	apply.CallSiteFeedback[callPC].NArgs = 1
+	apply.CallSiteFeedback[callPC].ResultArity = uint8(call.Aux2)
+	apply.CallSiteFeedback[callPC].CalleeVMProto = inc
+	apply.CallSiteFeedback[callPC].CalleeVMProtos[0] = inc
+	apply.CallSiteFeedback[callPC].CalleeVMProtoCount = 1
+
+	fn, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{InlineMaxSize: 1})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(apply): %v", err)
+	}
+
+	call = firstCall(t, fn)
+	desc, ok := fn.CallABIs[call.ID]
+	if !ok {
+		t.Fatalf("feedback-resolved call %d missing CallABI descriptor\nIR:\n%s", call.ID, Print(fn))
+	}
+	if desc.Callee != inc || desc.NumArgs != 1 || desc.NumRets != 1 || !desc.RawIntReturn {
+		t.Fatalf("unexpected descriptor: %+v", desc)
+	}
+	if call.Type != TypeInt {
+		t.Fatalf("call Type=%s, want int", call.Type)
+	}
+}
+
 func TestCallABIAnnotate_FibOverflowVersionUsesBoxedReturn(t *testing.T) {
 	src := `func fib_iter(n) {
 	a := 0
