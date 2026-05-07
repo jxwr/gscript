@@ -294,6 +294,97 @@ func run(actors, n) {
 	}
 }
 
+func TestTier2LoopCallUsesPolymorphicVMProtoFeedback(t *testing.T) {
+	src := `
+func add1(i) { return i + 1 }
+func add2(i) { return i + 2 }
+func add3(i) { return i + 3 }
+
+funcs := {add1, add2, add3}
+
+func run(funcs, n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        f := funcs[(i % 3) + 1]
+        total = total + f(i)
+    }
+    return total
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+
+	runProto := findProtoByName(top, "run")
+	if runProto == nil {
+		t.Fatal("run proto not found")
+	}
+	runProto.EnsureFeedback()
+	fnRun := v.GetGlobal("run")
+	funcs := v.GetGlobal("funcs")
+	for i := 0; i < 3; i++ {
+		results, err := v.CallValue(fnRun, []runtime.Value{funcs, runtime.IntValue(30)})
+		if err != nil {
+			t.Fatalf("warm run #%d: %v", i+1, err)
+		}
+		if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 525 {
+			t.Fatalf("warm result=%v, want int 525", results)
+		}
+	}
+
+	fn := BuildGraph(runProto)
+	var feedbackCall *Instr
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Op == OpCall && len(tier2LoopCallFeedbackVMProtos(fn, instr)) == 3 {
+				feedbackCall = instr
+				break
+			}
+		}
+	}
+	if feedbackCall == nil {
+		t.Fatal("did not find loop call with three feedback VM protos")
+	}
+	if !tier2LoopCallIsNativeCandidate(fn, feedbackCall, nil) {
+		t.Fatal("polymorphic VM proto feedback did not make dynamic loop call native-eligible")
+	}
+	if callees := nativeLoopCallCallees(fn, nil); len(callees) != 3 {
+		t.Fatalf("native loop callees from feedback = %d, want 3: %#v", len(callees), callees)
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(runProto); err != nil {
+		t.Fatalf("CompileTier2(run): %v", err)
+	}
+	for _, name := range []string{"add1", "add2", "add3"} {
+		proto := findProtoByName(top, name)
+		if proto == nil {
+			t.Fatalf("%s proto not found", name)
+		}
+		if !proto.Tier2Promoted {
+			t.Fatalf("%s was not precompiled from callsite feedback", name)
+		}
+		proto.CallCount = 100
+	}
+	runProto.CallCount = 100
+
+	results, err := v.CallValue(fnRun, []runtime.Value{funcs, runtime.IntValue(30)})
+	if err != nil {
+		t.Fatalf("tier2 run: %v", err)
+	}
+	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 525 {
+		t.Fatalf("tier2 result=%v, want int 525", results)
+	}
+	if got := tm.ExitStats().ByExitCode["ExitCallExit"]; got != 0 {
+		t.Fatalf("feedback-polymorphic loop call took ExitCallExit=%d; want 0", got)
+	}
+}
+
 func TestTier2TailCallICUsesTier2EntryWhenGenericEntryCleared(t *testing.T) {
 	src := `
 func inc(n) {

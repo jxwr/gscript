@@ -484,7 +484,10 @@ func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[stri
 		return true
 	}
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
-	return tier2LoopCallCalleeIsNativeCandidate(callee, globals)
+	if tier2LoopCallCalleeIsNativeCandidate(callee, globals) {
+		return true
+	}
+	return tier2LoopCallFeedbackIsNativeCandidate(fn, instr, globals)
 }
 
 func tier2LoopCallCalleeIsNativeCandidate(callee *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
@@ -505,6 +508,39 @@ func tier2LoopCallCalleeIsNativeCandidate(callee *vm.FuncProto, globals map[stri
 		return true
 	}
 	return false
+}
+
+func tier2LoopCallFeedbackIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
+	protos := tier2LoopCallFeedbackVMProtos(fn, instr)
+	if len(protos) == 0 {
+		return false
+	}
+	nArgs := len(instr.Args) - 1
+	for _, callee := range protos {
+		if callee == nil || callee.IsVarArg || callee.NumParams != nArgs {
+			return false
+		}
+		if !tier2LoopCallCalleeIsNativeCandidate(callee, globals) {
+			return false
+		}
+	}
+	return true
+}
+
+func tier2LoopCallFeedbackVMProtos(fn *Function, instr *Instr) []*vm.FuncProto {
+	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpCall ||
+		len(instr.Args) == 0 || !instr.HasSource ||
+		instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
+		return nil
+	}
+	fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
+	if fb.Count < wholeCallKernelMinStableObservations ||
+		fb.Flags&vm.CallSiteArityPolymorphic != 0 ||
+		int(fb.NArgs) != len(instr.Args)-1 ||
+		fb.ResultArity != uint8(instr.Aux2) {
+		return nil
+	}
+	return fb.PolymorphicVMProtos()
 }
 
 func tier2LoopCallCalleeHasTier2DirectEntry(callee *vm.FuncProto) bool {

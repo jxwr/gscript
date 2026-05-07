@@ -202,9 +202,6 @@ func (tm *TieringManager) ensureNativeLoopCallees(proto *vm.FuncProto) {
 		return
 	}
 	globals := tm.buildLoopCallGlobals(proto)
-	if len(globals) == 0 {
-		return
-	}
 	for _, callee := range nativeLoopCallCallees(BuildGraph(proto), globals) {
 		if callee == nil || callee == proto || tm.tier2HasFailed(callee) {
 			continue
@@ -229,7 +226,7 @@ func (tm *TieringManager) ensureNativeLoopCallees(proto *vm.FuncProto) {
 }
 
 func nativeLoopCallCallees(fn *Function, globals map[string]*vm.FuncProto) []*vm.FuncProto {
-	if fn == nil || len(globals) == 0 {
+	if fn == nil {
 		return nil
 	}
 	li := computeLoopInfo(fn)
@@ -247,11 +244,17 @@ func nativeLoopCallCallees(fn *Function, globals map[string]*vm.FuncProto) []*vm
 				continue
 			}
 			_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
-			if callee == nil || seen[callee] {
-				continue
+			if callee != nil && !seen[callee] {
+				seen[callee] = true
+				out = append(out, callee)
 			}
-			seen[callee] = true
-			out = append(out, callee)
+			for _, feedbackCallee := range tier2LoopCallFeedbackVMProtos(fn, instr) {
+				if feedbackCallee == nil || seen[feedbackCallee] {
+					continue
+				}
+				seen[feedbackCallee] = true
+				out = append(out, feedbackCallee)
+			}
 		}
 	}
 	return out

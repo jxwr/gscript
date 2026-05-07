@@ -63,6 +63,48 @@ func TestHandleGetField_RecordsFeedback(t *testing.T) {
 	}
 }
 
+func TestHandleCall_RecordsFeedbackAtCallPC(t *testing.T) {
+	proto := &vm.FuncProto{
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_CALL, 0, 2, 2),
+			vm.EncodeABC(vm.OP_RETURN, 0, 2, 0),
+		},
+		MaxStack: 4,
+	}
+	proto.EnsureFeedback()
+
+	regs := make([]runtime.Value, 4)
+	regs[0] = runtime.FunctionValue(&runtime.GoFunction{
+		Name: "id",
+		FastArg1: func(v runtime.Value) (runtime.Value, error) {
+			return v, nil
+		},
+	})
+	regs[1] = runtime.IntValue(42)
+
+	engine := &BaselineJITEngine{callVM: vm.New(runtime.NewInterpreterGlobals())}
+	ctx := &ExecContext{
+		BaselineA:  0,
+		BaselineB:  2,
+		BaselineC:  2,
+		BaselinePC: 1, // resume PC; current OP_CALL PC is 0
+	}
+	if err := engine.handleCall(ctx, regs, 0, proto); err != nil {
+		t.Fatalf("handleCall returned error: %v", err)
+	}
+
+	if got := proto.CallSiteFeedback[0].Count; got != 1 {
+		t.Fatalf("call feedback at OP_CALL PC count=%d, want 1", got)
+	}
+	if got := proto.CallSiteFeedback[1].Count; got != 0 {
+		t.Fatalf("call feedback leaked to resume PC count=%d, want 0", got)
+	}
+	if proto.CallSiteFeedback[0].NArgs != 1 || proto.CallSiteFeedback[0].ResultArity != 2 {
+		t.Fatalf("call feedback arity=(%d,%d), want (1,2)",
+			proto.CallSiteFeedback[0].NArgs, proto.CallSiteFeedback[0].ResultArity)
+	}
+}
+
 // TestHandleGetTable_RecordsFeedback verifies that handleGetTable records
 // result type feedback into proto.Feedback so Tier 2 can specialize.
 func TestHandleGetTable_RecordsFeedback(t *testing.T) {

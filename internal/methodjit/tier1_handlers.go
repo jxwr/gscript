@@ -382,7 +382,9 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 	}
 
 	if proto != nil && proto.CallSiteFeedback != nil {
-		pc := int(ctx.BaselinePC)
+		// BaselinePC is the resume PC (the instruction after OP_CALL).
+		// Callsite feedback is indexed by the current bytecode PC.
+		pc := int(ctx.BaselinePC) - 1
 		if pc >= 0 && pc < len(proto.CallSiteFeedback) {
 			argStart := absSlot + 1
 			argEnd := argStart + nArgs

@@ -70,6 +70,8 @@ func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
 	if proto.Feedback == nil {
 		proto.EnsureFeedback()
 	}
+	tm.ensureNativeLoopCallees(proto)
+	tm.ensureRawIntLoopCallees(proto)
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
 		tm.markTier2Failed(proto, err.Error())
