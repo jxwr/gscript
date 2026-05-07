@@ -101,6 +101,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	speculation := NewTier2SpeculationPlan(proto)
 	var remarks *OptimizationRemarks
 	if trace != nil {
+		trace.Specialization = speculation.Profile.Summary()
 		remarks = &OptimizationRemarks{}
 		defer func() {
 			trace.OptimizationRemarks = remarks.List()
@@ -316,6 +317,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			return fmt.Errorf("tier2: compile failed: %w", err)
 		}
 		cf.SpeculationSnapshot = speculation.Snapshot
+		cf.SpecializationVersion = speculation.Profile.Version
 		return nil
 	})
 	if trace != nil {

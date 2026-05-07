@@ -169,7 +169,8 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 	profile := tm.getProfile(proto)
 	compiled, _ := tm.tier2CompiledFor(proto)
-	if compiled != nil && tm.recompile.ShouldRefresh(proto, compiled, snapshotTier2Feedback(proto)) {
+	specProfile := BuildTier2SpecializationProfile(proto)
+	if compiled != nil && tm.recompile.ShouldRefreshProfile(compiled, specProfile) {
 		compiled = nil
 	}
 	decision := tm.policy.Decide(proto, profile, PromotionPolicyState{
@@ -187,20 +188,24 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 	if tm.getProfile(proto).HasLoop {
 		return
 	}
-	current := snapshotTier2Feedback(proto)
-	if !tm.recompile.ShouldRefresh(proto, cf, current) {
+	current := BuildTier2SpecializationProfile(proto)
+	if !tm.recompile.ShouldRefreshProfile(cf, current) {
 		return
 	}
 	tm.traceEvent("tier2_refresh", "tier2", proto, map[string]any{
-		"reason":       "feedback_matured",
-		"type_before":  cf.SpeculationSnapshot.TypeObserved,
-		"type_after":   current.TypeObserved,
-		"field_before": cf.SpeculationSnapshot.FieldObserved,
-		"field_after":  current.FieldObserved,
-		"table_before": cf.SpeculationSnapshot.TableKeyObserved,
-		"table_after":  current.TableKeyObserved,
-		"call_before":  cf.SpeculationSnapshot.CallObserved,
-		"call_after":   current.CallObserved,
+		"reason":         "feedback_matured",
+		"type_before":    cf.SpeculationSnapshot.TypeObserved,
+		"type_after":     current.Snapshot.TypeObserved,
+		"field_before":   cf.SpeculationSnapshot.FieldObserved,
+		"field_after":    current.Snapshot.FieldObserved,
+		"table_before":   cf.SpeculationSnapshot.TableKeyObserved,
+		"table_after":    current.Snapshot.TableKeyObserved,
+		"call_before":    cf.SpeculationSnapshot.CallObserved,
+		"call_after":     current.Snapshot.CallObserved,
+		"version_before": fmt.Sprintf("%x", cf.SpecializationVersion.Hash),
+		"version_after":  fmt.Sprintf("%x", current.Version.Hash),
+		"guards_before":  cf.SpecializationVersion.GuardCount,
+		"guards_after":   current.Version.GuardCount,
 	})
 	tm.clearTier2Install(proto)
 }

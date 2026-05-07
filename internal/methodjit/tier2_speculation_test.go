@@ -32,6 +32,87 @@ func TestTier2SpeculationPlanSnapshotsFeedbackMaturity(t *testing.T) {
 	}
 }
 
+func TestTier2SpeculationPlanQueriesSpecializationProfile(t *testing.T) {
+	plan := Tier2SpeculationPlan{
+		Profile: Tier2SpecializationProfile{
+			Guards: []SpecializationGuard{
+				{Kind: SpecGuardResultType, PC: 1, Type: TypeFloat},
+				{Kind: SpecGuardOperandType, PC: 2, Slot: "left", Type: TypeInt},
+				{Kind: SpecGuardOperandType, PC: 2, Slot: "right", Type: TypeFloat},
+				{Kind: SpecGuardTableKind, PC: 3, TableKind: vm.FBKindFloat},
+				{Kind: SpecGuardFieldShape, PC: 4, ShapeID: 11, FieldIdx: 5},
+				{Kind: SpecGuardStringShapeKey, PC: 5, Key: "k", ShapeID: 12, FieldIdx: 6, AccessKind: vm.TableAccessKindGet},
+			},
+		},
+	}
+	if typ, ok := plan.ResultGuardType(1); !ok || typ != TypeFloat {
+		t.Fatalf("ResultGuardType=%v ok=%v want float,true", typ, ok)
+	}
+	left, leftOK, right, rightOK := plan.OperandGuardTypes(2)
+	if !leftOK || !rightOK || left != TypeInt || right != TypeFloat {
+		t.Fatalf("operands left=%v/%v right=%v/%v", left, leftOK, right, rightOK)
+	}
+	if got := plan.TableKindAux(3); got != int64(vm.FBKindFloat) {
+		t.Fatalf("TableKindAux=%d want %d", got, vm.FBKindFloat)
+	}
+	if got := plan.FieldShapeAux2(4); got == 0 {
+		t.Fatal("FieldShapeAux2 returned zero")
+	}
+	key, shapeID, fieldIdx, ok := plan.StableStringShapeField(5, vm.TableAccessKindGet)
+	if !ok || key != "k" || shapeID != 12 || fieldIdx != 6 {
+		t.Fatalf("StableStringShapeField=%q %d %d %v", key, shapeID, fieldIdx, ok)
+	}
+}
+
+func TestTier2SpecializationProfileBuildsGenericGuardSet(t *testing.T) {
+	proto := &vm.FuncProto{Name: "caller", Code: make([]uint32, 5)}
+	callee := &vm.FuncProto{Name: "callee"}
+	proto.EnsureFeedback()
+	proto.Feedback[0].Left = vm.FBInt
+	proto.Feedback[0].Right = vm.FBInt
+	proto.Feedback[0].Result = vm.FBInt
+	proto.Feedback[1].Kind = vm.FBKindInt
+	proto.FieldAccessFeedback[2].ObserveFieldCache(runtime.FieldCacheEntry{ShapeID: 7, FieldIdx: 2}, runtime.IntValue(1), vm.TableAccessKindGet)
+	proto.TableKeyFeedback[3].Count = 3
+	proto.TableKeyFeedback[3].ShapeID = 9
+	proto.TableKeyFeedback[3].FieldIdx = 1
+	proto.TableKeyFeedback[3].FieldIdxSeen = true
+	proto.TableKeyFeedback[3].StringKey = "stable"
+	proto.TableKeyFeedback[3].StringKeySeen = true
+	proto.TableKeyFeedback[3].ValueType = vm.FBFloat
+	proto.TableKeyFeedback[3].AccessKind = vm.TableAccessKindGet
+	proto.CallSiteFeedback[4].Count = 4
+	proto.CallSiteFeedback[4].CalleeVMProto = callee
+	proto.CallSiteFeedback[4].CalleeVMProtos[0] = callee
+	proto.CallSiteFeedback[4].CalleeVMProtoCount = 1
+	proto.CallSiteFeedback[4].NArgs = 2
+	proto.CallSiteFeedback[4].ResultArity = 1
+
+	profile := BuildTier2SpecializationProfile(proto)
+	summary := profile.Summary()
+	if summary.GuardCount < 6 {
+		t.Fatalf("guard count=%d want at least 6", summary.GuardCount)
+	}
+	if summary.GuardKinds[string(SpecGuardOperandType)] != 2 {
+		t.Fatalf("operand guards=%d want 2", summary.GuardKinds[string(SpecGuardOperandType)])
+	}
+	if summary.GuardKinds[string(SpecGuardResultType)] != 1 {
+		t.Fatalf("result guards=%d want 1", summary.GuardKinds[string(SpecGuardResultType)])
+	}
+	if summary.GuardKinds[string(SpecGuardFieldShape)] != 1 {
+		t.Fatalf("field guards=%d want 1", summary.GuardKinds[string(SpecGuardFieldShape)])
+	}
+	if summary.GuardKinds[string(SpecGuardStringShapeKey)] != 1 {
+		t.Fatalf("string-shape guards=%d want 1", summary.GuardKinds[string(SpecGuardStringShapeKey)])
+	}
+	if summary.GuardKinds[string(SpecGuardCallVMProto)] != 1 {
+		t.Fatalf("call proto guards=%d want 1", summary.GuardKinds[string(SpecGuardCallVMProto)])
+	}
+	if profile.Version.Hash == 0 {
+		t.Fatal("specialization version hash is zero")
+	}
+}
+
 func TestTier2RecompilePolicyKeepsCompiledCodeWithoutMaturedFeedback(t *testing.T) {
 	var policy Tier2RecompilePolicy
 	cf := &CompiledFunction{
@@ -66,6 +147,92 @@ func TestTier2RecompilePolicyRefreshesWhenStructuralFeedbackArrivesLate(t *testi
 	}
 	if !policy.ShouldRefresh(nil, cf, current) {
 		t.Fatal("policy should refresh when table-key feedback appears after Tier2 compile")
+	}
+}
+
+func TestTier2RecompilePolicyRefreshesWhenVersionGainsGuards(t *testing.T) {
+	var policy Tier2RecompilePolicy
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{TypeObserved: 1},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       1,
+			GuardCount: 1,
+		},
+	}
+	current := Tier2SpecializationProfile{
+		Snapshot: Tier2FeedbackSnapshot{
+			TypeObserved:  1,
+			FieldObserved: 1,
+		},
+		Version: Tier2SpecializationVersion{
+			Hash:       2,
+			GuardCount: 2,
+		},
+	}
+	if !policy.ShouldRefreshProfile(cf, current) {
+		t.Fatal("policy should refresh when specialization version gains a guard")
+	}
+}
+
+func TestTier2DeoptPolicyClassifiesMaturedFeedbackRefresh(t *testing.T) {
+	proto := &vm.FuncProto{Name: "deopt", Code: make([]uint32, 2)}
+	proto.EnsureFeedback()
+	proto.Feedback[0].Result = vm.FBInt
+	proto.FieldAccessFeedback[1].ObserveFieldCache(runtime.FieldCacheEntry{ShapeID: 3, FieldIdx: 1}, runtime.IntValue(1), vm.TableAccessKindGet)
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{TypeObserved: 1},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       1,
+			GuardCount: 1,
+		},
+	}
+
+	action := Tier2DeoptPolicy{}.DecideRuntimeDeopt(proto, cf, 7)
+	if action.Kind != Tier2DeoptRefreshAndFallback {
+		t.Fatalf("action=%s want %s", action.Kind, Tier2DeoptRefreshAndFallback)
+	}
+	if !action.PreciseResume || action.ResumePC != 7 {
+		t.Fatalf("resume=%v pc=%d want precise pc 7", action.PreciseResume, action.ResumePC)
+	}
+	if action.CurrentProfile.Version.GuardCount <= cf.SpecializationVersion.GuardCount {
+		t.Fatalf("guard count did not grow: after=%d before=%d",
+			action.CurrentProfile.Version.GuardCount, cf.SpecializationVersion.GuardCount)
+	}
+}
+
+func TestTieringManagerRefreshDeoptDoesNotMarkTier2Failed(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "refresh", Code: make([]uint32, 2)}
+	proto.EnsureFeedback()
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{TypeObserved: 1},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       1,
+			GuardCount: 1,
+		},
+	}
+	tm.ensureTierStateStore()
+	tm.tierState.markCompiled(proto, cf)
+	proto.Tier2Promoted = true
+	proto.DirectEntryPtr = 123
+
+	tm.applyTier2DeoptAction(proto, Tier2DeoptAction{
+		Kind:   Tier2DeoptRefreshAndFallback,
+		Reason: "test refresh",
+		CurrentProfile: Tier2SpecializationProfile{
+			Version: Tier2SpecializationVersion{Hash: 2, GuardCount: 2},
+		},
+	})
+
+	if tm.tier2HasFailed(proto) {
+		t.Fatal("refresh deopt should not mark Tier2 failed")
+	}
+	if _, ok := tm.tier2CompiledFor(proto); ok {
+		t.Fatal("refresh deopt should clear stale compiled install")
+	}
+	if proto.Tier2Promoted || proto.DirectEntryPtr != 0 {
+		t.Fatalf("refresh deopt left install visible: promoted=%v direct=%#x",
+			proto.Tier2Promoted, proto.DirectEntryPtr)
 	}
 }
 

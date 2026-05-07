@@ -1,6 +1,10 @@
 package methodjit
 
 import (
+	"fmt"
+	"hash/fnv"
+	"unsafe"
+
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -30,32 +34,243 @@ func (s Tier2FeedbackSnapshot) lessMatureThan(current Tier2FeedbackSnapshot) boo
 }
 
 func snapshotTier2Feedback(proto *vm.FuncProto) Tier2FeedbackSnapshot {
-	var s Tier2FeedbackSnapshot
+	return BuildTier2SpecializationProfile(proto).Snapshot
+}
+
+type SpecializationGuardKind string
+
+const (
+	SpecGuardResultType      SpecializationGuardKind = "result_type"
+	SpecGuardOperandType     SpecializationGuardKind = "operand_type"
+	SpecGuardTableKind       SpecializationGuardKind = "table_kind"
+	SpecGuardFieldShape      SpecializationGuardKind = "field_shape"
+	SpecGuardStringShapeKey  SpecializationGuardKind = "string_shape_key"
+	SpecGuardCallNative      SpecializationGuardKind = "call_native"
+	SpecGuardCallVMProto     SpecializationGuardKind = "call_vm_proto"
+	SpecGuardCallPolymorphic SpecializationGuardKind = "call_poly_vm_proto"
+)
+
+type SpecializationGuard struct {
+	Kind       SpecializationGuardKind
+	PC         int
+	Slot       string
+	Type       Type
+	FBType     vm.FeedbackType
+	TableKind  uint8
+	ShapeID    uint32
+	FieldIdx   int
+	Key        string
+	AccessKind uint8
+	Count      uint32
+
+	CalleeNativeKind uint8
+	CalleeNativeData uintptr
+	CalleeVMProto    *vm.FuncProto
+	CalleeVMProtos   []*vm.FuncProto
+	NArgs            uint8
+	ResultArity      uint8
+}
+
+type Tier2SpecializationVersion struct {
+	Hash       uint64
+	GuardCount int
+}
+
+type Tier2SpecializationProfile struct {
+	Snapshot Tier2FeedbackSnapshot
+	Guards   []SpecializationGuard
+	Version  Tier2SpecializationVersion
+}
+
+type Tier2SpecializationSummary struct {
+	TypeObserved     int            `json:"type_observed"`
+	FieldObserved    int            `json:"field_observed"`
+	TableKeyObserved int            `json:"table_key_observed"`
+	CallObserved     int            `json:"call_observed"`
+	VersionHash      string         `json:"version_hash"`
+	GuardCount       int            `json:"guard_count"`
+	GuardKinds       map[string]int `json:"guard_kinds,omitempty"`
+}
+
+func (p Tier2SpecializationProfile) Summary() Tier2SpecializationSummary {
+	kinds := make(map[string]int)
+	for _, g := range p.Guards {
+		kinds[string(g.Kind)]++
+	}
+	return Tier2SpecializationSummary{
+		TypeObserved:     p.Snapshot.TypeObserved,
+		FieldObserved:    p.Snapshot.FieldObserved,
+		TableKeyObserved: p.Snapshot.TableKeyObserved,
+		CallObserved:     p.Snapshot.CallObserved,
+		VersionHash:      fmt.Sprintf("%x", p.Version.Hash),
+		GuardCount:       p.Version.GuardCount,
+		GuardKinds:       kinds,
+	}
+}
+
+func (p Tier2SpecializationProfile) findGuard(pc int, kind SpecializationGuardKind, match func(SpecializationGuard) bool) (SpecializationGuard, bool) {
+	for _, g := range p.Guards {
+		if g.PC != pc || g.Kind != kind {
+			continue
+		}
+		if match == nil || match(g) {
+			return g, true
+		}
+	}
+	return SpecializationGuard{}, false
+}
+
+func BuildTier2SpecializationProfile(proto *vm.FuncProto) Tier2SpecializationProfile {
+	var profile Tier2SpecializationProfile
 	if proto == nil {
-		return s
+		return profile
 	}
-	for _, fb := range proto.Feedback {
-		if fb.Left != vm.FBUnobserved || fb.Right != vm.FBUnobserved ||
-			fb.Result != vm.FBUnobserved || fb.Kind != vm.FBKindUnobserved {
-			s.TypeObserved++
+	for pc, fb := range proto.Feedback {
+		observed := false
+		if fb.Left != vm.FBUnobserved {
+			observed = true
+			if typ, ok := feedbackToIRType(fb.Left); ok {
+				profile.addGuard(SpecializationGuard{Kind: SpecGuardOperandType, PC: pc, Slot: "left", Type: typ, FBType: fb.Left})
+			}
+		}
+		if fb.Right != vm.FBUnobserved {
+			observed = true
+			if typ, ok := feedbackToIRType(fb.Right); ok {
+				profile.addGuard(SpecializationGuard{Kind: SpecGuardOperandType, PC: pc, Slot: "right", Type: typ, FBType: fb.Right})
+			}
+		}
+		if fb.Result != vm.FBUnobserved {
+			observed = true
+			if typ, ok := feedbackToIRType(fb.Result); ok {
+				profile.addGuard(SpecializationGuard{Kind: SpecGuardResultType, PC: pc, Slot: "result", Type: typ, FBType: fb.Result})
+			}
+		}
+		if fb.Kind != vm.FBKindUnobserved {
+			observed = true
+			if fb.Kind != vm.FBKindPolymorphic {
+				profile.addGuard(SpecializationGuard{Kind: SpecGuardTableKind, PC: pc, TableKind: fb.Kind})
+			}
+		}
+		if observed {
+			profile.Snapshot.TypeObserved++
 		}
 	}
-	for _, fb := range proto.FieldAccessFeedback {
-		if fb.Count > 0 {
-			s.FieldObserved++
+	for pc, fb := range proto.FieldAccessFeedback {
+		if fb.Count == 0 {
+			continue
+		}
+		profile.Snapshot.FieldObserved++
+		shapeID, fieldIdx, ok := fb.StableShapeField()
+		if !ok {
+			continue
+		}
+		guard := SpecializationGuard{
+			Kind:       SpecGuardFieldShape,
+			PC:         pc,
+			ShapeID:    shapeID,
+			FieldIdx:   fieldIdx,
+			AccessKind: fb.AccessKind,
+			Count:      fb.Count,
+			FBType:     fb.ValueType,
+		}
+		if typ, ok := feedbackToIRType(fb.ValueType); ok {
+			guard.Type = typ
+		}
+		profile.addGuard(guard)
+	}
+	for pc, fb := range proto.TableKeyFeedback {
+		if fb.Count == 0 {
+			continue
+		}
+		profile.Snapshot.TableKeyObserved++
+		key, shapeID, fieldIdx, ok := fb.StableStringShapeField()
+		if !ok {
+			continue
+		}
+		guard := SpecializationGuard{
+			Kind:       SpecGuardStringShapeKey,
+			PC:         pc,
+			ShapeID:    shapeID,
+			FieldIdx:   fieldIdx,
+			Key:        key,
+			AccessKind: fb.AccessKind,
+			Count:      fb.Count,
+			FBType:     fb.ValueType,
+		}
+		if typ, ok := feedbackToIRType(fb.ValueType); ok {
+			guard.Type = typ
+		}
+		profile.addGuard(guard)
+	}
+	for pc, fb := range proto.CallSiteFeedback {
+		if fb.Count == 0 {
+			continue
+		}
+		profile.Snapshot.CallObserved++
+		if kind, data, ok := fb.StableCalleeNativeIdentity(); ok {
+			profile.addGuard(SpecializationGuard{
+				Kind:             SpecGuardCallNative,
+				PC:               pc,
+				Count:            fb.Count,
+				CalleeNativeKind: kind,
+				CalleeNativeData: data,
+				NArgs:            fb.NArgs,
+				ResultArity:      fb.ResultArity,
+			})
+			continue
+		}
+		if callee, ok := fb.StableCalleeVMProto(); ok {
+			profile.addGuard(SpecializationGuard{
+				Kind:          SpecGuardCallVMProto,
+				PC:            pc,
+				Count:         fb.Count,
+				CalleeVMProto: callee,
+				NArgs:         fb.NArgs,
+				ResultArity:   fb.ResultArity,
+			})
+			continue
+		}
+		if protos := fb.PolymorphicVMProtos(); len(protos) > 0 {
+			profile.addGuard(SpecializationGuard{
+				Kind:           SpecGuardCallPolymorphic,
+				PC:             pc,
+				Count:          fb.Count,
+				CalleeVMProtos: protos,
+				NArgs:          fb.NArgs,
+				ResultArity:    fb.ResultArity,
+			})
 		}
 	}
-	for _, fb := range proto.TableKeyFeedback {
-		if fb.Count > 0 {
-			s.TableKeyObserved++
+	profile.Version = profile.computeVersion()
+	return profile
+}
+
+func (p *Tier2SpecializationProfile) addGuard(g SpecializationGuard) {
+	p.Guards = append(p.Guards, g)
+}
+
+func (p Tier2SpecializationProfile) computeVersion() Tier2SpecializationVersion {
+	h := fnv.New64a()
+	fmt.Fprintf(h, "snapshot:%d/%d/%d/%d;",
+		p.Snapshot.TypeObserved, p.Snapshot.FieldObserved,
+		p.Snapshot.TableKeyObserved, p.Snapshot.CallObserved)
+	for _, g := range p.Guards {
+		fmt.Fprintf(h, "%s:%d:%s:%d:%d:%d:%d:%d:%s:%d:%d:%d:%d:",
+			g.Kind, g.PC, g.Slot, g.Type, g.FBType, g.TableKind,
+			g.ShapeID, g.FieldIdx, g.Key, g.AccessKind, g.Count,
+			g.CalleeNativeKind, g.CalleeNativeData)
+		if g.CalleeVMProto != nil {
+			fmt.Fprintf(h, "vm:%x:%s:", uintptr(unsafe.Pointer(g.CalleeVMProto)), g.CalleeVMProto.Name)
 		}
-	}
-	for _, fb := range proto.CallSiteFeedback {
-		if fb.Count > 0 {
-			s.CallObserved++
+		for _, callee := range g.CalleeVMProtos {
+			if callee == nil {
+				continue
+			}
+			fmt.Fprintf(h, "poly:%x:%s:", uintptr(unsafe.Pointer(callee)), callee.Name)
 		}
+		fmt.Fprintf(h, "arity:%d:%d;", g.NArgs, g.ResultArity)
 	}
-	return s
+	return Tier2SpecializationVersion{Hash: h.Sum64(), GuardCount: len(p.Guards)}
 }
 
 // Tier2SpeculationPlan is the single read interface from feedback into the
@@ -65,12 +280,15 @@ func snapshotTier2Feedback(proto *vm.FuncProto) Tier2FeedbackSnapshot {
 type Tier2SpeculationPlan struct {
 	proto    *vm.FuncProto
 	Snapshot Tier2FeedbackSnapshot
+	Profile  Tier2SpecializationProfile
 }
 
 func NewTier2SpeculationPlan(proto *vm.FuncProto) Tier2SpeculationPlan {
+	profile := BuildTier2SpecializationProfile(proto)
 	return Tier2SpeculationPlan{
 		proto:    proto,
-		Snapshot: snapshotTier2Feedback(proto),
+		Snapshot: profile.Snapshot,
+		Profile:  profile,
 	}
 }
 
@@ -82,6 +300,9 @@ func (p Tier2SpeculationPlan) TypeFeedback(pc int) (vm.TypeFeedback, bool) {
 }
 
 func (p Tier2SpeculationPlan) ResultGuardType(pc int) (Type, bool) {
+	if guard, ok := p.Profile.findGuard(pc, SpecGuardResultType, nil); ok && guard.Type != TypeUnknown {
+		return guard.Type, true
+	}
 	fb, ok := p.TypeFeedback(pc)
 	if !ok {
 		return TypeUnknown, false
@@ -90,6 +311,19 @@ func (p Tier2SpeculationPlan) ResultGuardType(pc int) (Type, bool) {
 }
 
 func (p Tier2SpeculationPlan) OperandGuardTypes(pc int) (left Type, leftOK bool, right Type, rightOK bool) {
+	if guard, ok := p.Profile.findGuard(pc, SpecGuardOperandType, func(g SpecializationGuard) bool {
+		return g.Slot == "left"
+	}); ok && guard.Type != TypeUnknown {
+		left, leftOK = guard.Type, true
+	}
+	if guard, ok := p.Profile.findGuard(pc, SpecGuardOperandType, func(g SpecializationGuard) bool {
+		return g.Slot == "right"
+	}); ok && guard.Type != TypeUnknown {
+		right, rightOK = guard.Type, true
+	}
+	if leftOK || rightOK {
+		return left, leftOK, right, rightOK
+	}
 	fb, ok := p.TypeFeedback(pc)
 	if !ok {
 		return TypeUnknown, false, TypeUnknown, false
@@ -100,6 +334,9 @@ func (p Tier2SpeculationPlan) OperandGuardTypes(pc int) (left Type, leftOK bool,
 }
 
 func (p Tier2SpeculationPlan) TableKindAux(pc int) int64 {
+	if guard, ok := p.Profile.findGuard(pc, SpecGuardTableKind, nil); ok && guard.TableKind != 0 {
+		return int64(guard.TableKind)
+	}
 	fb, ok := p.TypeFeedback(pc)
 	if !ok || fb.Kind == vm.FBKindUnobserved || fb.Kind == vm.FBKindPolymorphic {
 		return 0
@@ -108,6 +345,9 @@ func (p Tier2SpeculationPlan) TableKindAux(pc int) int64 {
 }
 
 func (p Tier2SpeculationPlan) FieldShapeAux2(pc int) int64 {
+	if guard, ok := p.Profile.findGuard(pc, SpecGuardFieldShape, nil); ok && guard.ShapeID != 0 && guard.FieldIdx >= 0 {
+		return int64(guard.ShapeID)<<32 | int64(uint32(guard.FieldIdx))
+	}
 	if p.proto == nil || pc < 0 {
 		return 0
 	}
@@ -131,6 +371,11 @@ func (p Tier2SpeculationPlan) FieldShapeAux2(pc int) int64 {
 }
 
 func (p Tier2SpeculationPlan) StableStringShapeField(pc int, accessKind uint8) (key string, shapeID uint32, fieldIdx int, ok bool) {
+	if guard, found := p.Profile.findGuard(pc, SpecGuardStringShapeKey, func(g SpecializationGuard) bool {
+		return g.AccessKind == 0 || g.AccessKind == accessKind
+	}); found && guard.Key != "" && guard.ShapeID != 0 && guard.FieldIdx >= 0 {
+		return guard.Key, guard.ShapeID, guard.FieldIdx, true
+	}
 	if p.proto == nil || pc < 0 || p.proto.TableKeyFeedback == nil || pc >= len(p.proto.TableKeyFeedback) {
 		return "", 0, 0, false
 	}
@@ -149,30 +394,47 @@ func (p Tier2SpeculationPlan) StableStringShapeField(pc int, accessKind uint8) (
 type Tier2RecompilePolicy struct{}
 
 func (Tier2RecompilePolicy) ShouldRefresh(_ *vm.FuncProto, compiled any, current Tier2FeedbackSnapshot) bool {
+	return Tier2RecompilePolicy{}.ShouldRefreshProfile(compiled, Tier2SpecializationProfile{Snapshot: current})
+}
+
+func (Tier2RecompilePolicy) ShouldRefreshProfile(compiled any, current Tier2SpecializationProfile) bool {
 	cf, ok := compiled.(*CompiledFunction)
 	if !ok || cf == nil {
 		return false
 	}
 	previous := cf.SpeculationSnapshot
-	if !previous.lessMatureThan(current) {
+	if cf.SpecializationVersion.Hash != 0 &&
+		current.Version.Hash != 0 &&
+		cf.SpecializationVersion.Hash != current.Version.Hash &&
+		current.Version.GuardCount > cf.SpecializationVersion.GuardCount {
+		return true
+	}
+	if cf.SpecializationVersion.Hash != 0 &&
+		current.Version.Hash != 0 &&
+		cf.SpecializationVersion.Hash != current.Version.Hash &&
+		previous.structuralObserved() == 0 &&
+		current.Snapshot.structuralObserved() > 0 {
+		return true
+	}
+	if !previous.lessMatureThan(current.Snapshot) {
 		return false
 	}
 	if previous.totalObserved() == 0 {
-		return current.structuralObserved() > 0 || current.TypeObserved >= 4
+		return current.Snapshot.structuralObserved() > 0 || current.Snapshot.TypeObserved >= 4
 	}
-	if previous.FieldObserved == 0 && current.FieldObserved > 0 {
+	if previous.FieldObserved == 0 && current.Snapshot.FieldObserved > 0 {
 		return true
 	}
-	if previous.TableKeyObserved == 0 && current.TableKeyObserved > 0 {
+	if previous.TableKeyObserved == 0 && current.Snapshot.TableKeyObserved > 0 {
 		return true
 	}
-	if previous.CallObserved == 0 && current.CallObserved > 0 {
+	if previous.CallObserved == 0 && current.Snapshot.CallObserved > 0 {
 		return true
 	}
-	if current.structuralObserved()-previous.structuralObserved() >= 2 {
+	if current.Snapshot.structuralObserved()-previous.structuralObserved() >= 2 {
 		return true
 	}
-	if current.TypeObserved-previous.TypeObserved >= 8 {
+	if current.Snapshot.TypeObserved-previous.TypeObserved >= 8 {
 		return true
 	}
 	return false

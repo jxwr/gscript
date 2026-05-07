@@ -145,6 +145,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			return runtime.ReuseValueSlice1(retBuf, result), nil
 
 		case ExitDeopt:
+			deoptAction := Tier2DeoptPolicy{}.DecideRuntimeDeopt(proto, cf, int(ctx.ExitResumePC))
 			if tm.envR154Trace && tm.r154DeoptPrints < 20 {
 				var r0, r1 uint64
 				if base < len(regs) {
@@ -162,10 +163,14 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				"deopt_instr_id": ctx.DeoptInstrID,
 				"resume_pass":    ctx.ResumeNumericPass,
 				"resume_pc":      ctx.ExitResumePC,
+				"action":         deoptAction.Kind,
+				"reason":         deoptAction.Reason,
+				"version_after":  fmt.Sprintf("%x", deoptAction.CurrentProfile.Version.Hash),
+				"guards_after":   deoptAction.CurrentProfile.Version.GuardCount,
 			})
-			tm.disableTier2AfterRuntimeDeopt(proto, "tier2: runtime deopt")
-			if ctx.ExitResumePC > 0 && tm.callVM != nil {
-				resumePC := int(ctx.ExitResumePC)
+			tm.applyTier2DeoptAction(proto, deoptAction)
+			if deoptAction.PreciseResume && tm.callVM != nil {
+				resumePC := deoptAction.ResumePC
 				ctx.ExitResumePC = 0
 				tm.traceEvent("fallback", "tier0", proto, map[string]any{
 					"reason": "tier2_precise_deopt",
@@ -367,4 +372,23 @@ func (tm *TieringManager) disableTier2AfterRuntimeDeopt(proto *vm.FuncProto, rea
 	tm.traceEvent("runtime_disable", "tier2", proto, map[string]any{
 		"reason": reason,
 	})
+}
+
+func (tm *TieringManager) applyTier2DeoptAction(proto *vm.FuncProto, action Tier2DeoptAction) {
+	if proto == nil {
+		return
+	}
+	switch action.Kind {
+	case Tier2DeoptRefreshAndFallback:
+		tm.clearTier2Install(proto)
+		tm.tier1.SetOSRCounter(proto, -1)
+		tm.tier1.EvictCompiled(proto)
+		tm.traceEvent("runtime_refresh", "tier2", proto, map[string]any{
+			"reason":        action.Reason,
+			"version_after": fmt.Sprintf("%x", action.CurrentProfile.Version.Hash),
+			"guards_after":  action.CurrentProfile.Version.GuardCount,
+		})
+	default:
+		tm.disableTier2AfterRuntimeDeopt(proto, action.Reason)
+	}
 }

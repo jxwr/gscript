@@ -456,6 +456,12 @@ type CompiledFunction struct {
 	// production refresh policy keeps behavior unchanged.
 	SpeculationSnapshot Tier2FeedbackSnapshot
 
+	// SpecializationVersion identifies the concrete guard/profile facts this
+	// Tier 2 body was compiled against. It is intentionally independent from
+	// pass-specific lowering so runtime refresh and diagnostics can reason
+	// about a generic specialization contract instead of individual cases.
+	SpecializationVersion Tier2SpecializationVersion
+
 	// DirectEntrySafe is false when a native caller would have to replay this
 	// function from pc=0 after the function may already have performed a
 	// visible side effect. In that case Tier 2 stays callable through the

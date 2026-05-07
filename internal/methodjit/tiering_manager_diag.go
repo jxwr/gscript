@@ -40,6 +40,7 @@ type Tier2Trace struct {
 	IRAfter             string
 	IntrinsicNotes      []string
 	OptimizationRemarks []OptimizationRemark
+	Specialization      Tier2SpecializationSummary
 	RegAllocMap         string
 	SourceMap           []IRASMMapEntry
 	LoopDiagnostics     []LoopDiagnostic
@@ -57,6 +58,7 @@ type DiagArtifact struct {
 	IRAfter             string
 	IntrinsicNotes      []string
 	OptimizationRemarks []OptimizationRemark
+	Specialization      Tier2SpecializationSummary
 	RegAllocMap         string
 	SourceMap           []IRASMMapEntry
 	LoopDiagnostics     []LoopDiagnostic
@@ -92,6 +94,7 @@ func (tm *TieringManager) CompileForDiagnostics(proto *vm.FuncProto) (*DiagArtif
 		IRAfter:             trace.IRAfter,
 		IntrinsicNotes:      trace.IntrinsicNotes,
 		OptimizationRemarks: trace.OptimizationRemarks,
+		Specialization:      trace.Specialization,
 		RegAllocMap:         trace.RegAllocMap,
 		SourceMap:           trace.SourceMap,
 		LoopDiagnostics:     trace.LoopDiagnostics,

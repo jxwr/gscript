@@ -44,6 +44,7 @@ type WarmDumpRecord struct {
 	IRAfter             string
 	IntrinsicNotes      []string
 	OptimizationRemarks []OptimizationRemark
+	Specialization      Tier2SpecializationSummary
 	RegAllocMap         string
 	SourceMap           []IRASMMapEntry
 	LoopDiagnostics     []LoopDiagnostic
@@ -64,29 +65,30 @@ type warmDumpManifest struct {
 }
 
 type warmDumpProtoManifest struct {
-	Name                string                `json:"name"`
-	Status              string                `json:"status"`
-	Attempt             int                   `json:"attempt,omitempty"`
-	Entered             bool                  `json:"entered"`
-	Compiled            bool                  `json:"compiled"`
-	Failed              bool                  `json:"failed"`
-	FailureReason       string                `json:"failure_reason,omitempty"`
-	CallCount           int                   `json:"call_count"`
-	Tier2Promoted       bool                  `json:"tier2_promoted"`
-	NumParams           int                   `json:"num_params"`
-	MaxStack            int                   `json:"max_stack"`
-	InsnCount           int                   `json:"insn_count,omitempty"`
-	InsnHistogram       map[string]int        `json:"insn_histogram,omitempty"`
-	CodeBytes           int                   `json:"code_bytes,omitempty"`
-	CodeStart           string                `json:"code_start,omitempty"`
-	CodeEnd             string                `json:"code_end,omitempty"`
-	DirectEntryOff      int                   `json:"direct_entry_offset,omitempty"`
-	NumSpills           int                   `json:"num_spills,omitempty"`
-	OptimizationRemarks []OptimizationRemark  `json:"optimization_remarks,omitempty"`
-	LoopDiagnostics     []LoopDiagnostic      `json:"loop_diagnostics,omitempty"`
-	PipelineStages      []PipelineStageTiming `json:"pipeline_stages,omitempty"`
-	Feedback            warmFeedbackSummary   `json:"feedback"`
-	Files               map[string]string     `json:"files,omitempty"`
+	Name                string                     `json:"name"`
+	Status              string                     `json:"status"`
+	Attempt             int                        `json:"attempt,omitempty"`
+	Entered             bool                       `json:"entered"`
+	Compiled            bool                       `json:"compiled"`
+	Failed              bool                       `json:"failed"`
+	FailureReason       string                     `json:"failure_reason,omitempty"`
+	CallCount           int                        `json:"call_count"`
+	Tier2Promoted       bool                       `json:"tier2_promoted"`
+	NumParams           int                        `json:"num_params"`
+	MaxStack            int                        `json:"max_stack"`
+	InsnCount           int                        `json:"insn_count,omitempty"`
+	InsnHistogram       map[string]int             `json:"insn_histogram,omitempty"`
+	CodeBytes           int                        `json:"code_bytes,omitempty"`
+	CodeStart           string                     `json:"code_start,omitempty"`
+	CodeEnd             string                     `json:"code_end,omitempty"`
+	DirectEntryOff      int                        `json:"direct_entry_offset,omitempty"`
+	NumSpills           int                        `json:"num_spills,omitempty"`
+	OptimizationRemarks []OptimizationRemark       `json:"optimization_remarks,omitempty"`
+	Specialization      Tier2SpecializationSummary `json:"specialization,omitempty"`
+	LoopDiagnostics     []LoopDiagnostic           `json:"loop_diagnostics,omitempty"`
+	PipelineStages      []PipelineStageTiming      `json:"pipeline_stages,omitempty"`
+	Feedback            warmFeedbackSummary        `json:"feedback"`
+	Files               map[string]string          `json:"files,omitempty"`
 }
 
 type warmDumpPCMap struct {
@@ -194,8 +196,9 @@ func (s *WarmDumpSession) record(proto *vm.FuncProto, trace *Tier2Trace, cf *Com
 		IntrinsicNotes: append([]string(nil), trace.IntrinsicNotes...),
 		OptimizationRemarks: append([]OptimizationRemark(nil),
 			trace.OptimizationRemarks...),
-		RegAllocMap: trace.RegAllocMap,
-		SourceMap:   append([]IRASMMapEntry(nil), trace.SourceMap...),
+		Specialization: trace.Specialization,
+		RegAllocMap:    trace.RegAllocMap,
+		SourceMap:      append([]IRASMMapEntry(nil), trace.SourceMap...),
 		LoopDiagnostics: append([]LoopDiagnostic(nil),
 			trace.LoopDiagnostics...),
 		PipelineStages: append([]PipelineStageTiming(nil), trace.PipelineStages...),
@@ -377,6 +380,7 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 			protoManifest.DirectEntryOff = rec.DirectEntryOff
 			protoManifest.NumSpills = rec.NumSpills
 			protoManifest.OptimizationRemarks = append([]OptimizationRemark(nil), rec.OptimizationRemarks...)
+			protoManifest.Specialization = rec.Specialization
 			protoManifest.LoopDiagnostics = append([]LoopDiagnostic(nil), rec.LoopDiagnostics...)
 			protoManifest.PipelineStages = append([]PipelineStageTiming(nil), rec.PipelineStages...)
 		}
