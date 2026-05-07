@@ -101,7 +101,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	deoptLabel := ec.uniqueLabel("getfield_deopt")
 	if ec.hasFieldSvalsCache(tblValueID, shapeID) {
 		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
-		if instr.Type == TypeFloat {
+		if fieldLoadNeedsTypeDeopt(instr) {
 			ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
 			asm.B(doneLabel)
 			asm.Label(typeDeoptLabel)
@@ -117,7 +117,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	if shapeWasVerified {
 		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
-		if instr.Type == TypeFloat {
+		if fieldLoadNeedsTypeDeopt(instr) {
 			ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
 			ec.rememberFieldSvalsCache(tblValueID, shapeID)
 			asm.B(doneLabel)
@@ -154,7 +154,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 		asm.B(doneLabel)
 	}
 
-	if instr.Type == TypeFloat {
+	if fieldLoadNeedsTypeDeopt(instr) {
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
 	}
@@ -201,7 +201,7 @@ func (ec *emitContext) emitGetFieldPolymorphicCache(instr *Instr) bool {
 	ec.restoreValueReprSnapshot(savedReprs)
 	asm.B(doneLabel)
 
-	if instr.Type == TypeFloat {
+	if fieldLoadNeedsTypeDeopt(instr) {
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
 	}
@@ -377,7 +377,7 @@ func (ec *emitContext) emitGetFieldDynamicCache(instr *Instr) bool {
 	ec.restoreValueReprSnapshot(savedReprs)
 	asm.B(doneLabel)
 
-	if instr.Type == TypeFloat {
+	if fieldLoadNeedsTypeDeopt(instr) {
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
 	}
@@ -462,7 +462,19 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 }
 
 func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typeDeoptLabel string) {
-	if instr.Type == TypeFloat {
+	if instr.Type == TypeInt {
+		ec.asm.LSRimm(jit.X2, valReg, 48)
+		ec.asm.MOVimm16(jit.X3, jit.NB_TagIntShr48)
+		ec.asm.CMPreg(jit.X2, jit.X3)
+		ec.asm.BCond(jit.CondNE, typeDeoptLabel)
+		if valReg != jit.X0 {
+			ec.asm.MOVreg(jit.X0, valReg)
+		}
+		jit.EmitUnboxInt(ec.asm, jit.X0, jit.X0)
+		ec.storeRawInt(jit.X0, instr.ID)
+		return
+	}
+	if fieldLoadNeedsTypeDeopt(instr) {
 		ec.asm.LSRimm(jit.X2, valReg, 48)
 		ec.asm.MOVimm16(jit.X3, jit.NB_TagNilShr48)
 		ec.asm.CMPreg(jit.X2, jit.X3)
@@ -472,6 +484,10 @@ func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typ
 		return
 	}
 	ec.storeResultNB(valReg, instr.ID)
+}
+
+func fieldLoadNeedsTypeDeopt(instr *Instr) bool {
+	return instr != nil && (instr.Type == TypeFloat || instr.Type == TypeInt)
 }
 
 func (ec *emitContext) emitStoreNumericFieldLoad(instr *Instr, valReg jit.Reg, deoptLabel string) {
@@ -767,7 +783,7 @@ func (ec *emitContext) emitGetFieldExit(instr *Instr) {
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
 		asm.Label(doneLabel)
-	} else if instr.Type == TypeFloat {
+	} else if fieldLoadNeedsTypeDeopt(instr) {
 		typeDeoptLabel := ec.uniqueLabel("getfield_exit_type_deopt")
 		doneLabel := ec.uniqueLabel("getfield_exit_typed_done")
 		ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)

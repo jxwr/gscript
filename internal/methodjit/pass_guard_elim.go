@@ -21,8 +21,8 @@ func RedundantGuardEliminationPass(fn *Function) (*Function, error) {
 			if guardType == TypeUnknown || guardType == TypeAny {
 				continue
 			}
-			if guardType == TypeFloat && arg.Def.Op == OpGetField && countValueUses(fn, arg.ID) == 1 {
-				arg.Def.Type = TypeFloat
+			if (guardType == TypeFloat || guardType == TypeInt) && arg.Def.Op == OpGetField && countValueUses(fn, arg.ID) == 1 {
+				arg.Def.Type = guardType
 				replaceAllUses(fn, instr.ID, arg.Def)
 				instr.Op = OpNop
 				instr.Args = nil
