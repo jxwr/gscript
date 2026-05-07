@@ -1398,13 +1398,18 @@ func rawIntPeerLeafCallee(proto *vm.FuncProto) bool {
 }
 
 func (ec *emitContext) staticNoDepthCallee(instr *Instr) *vm.FuncProto {
-	if ec == nil || instr == nil || ec.fn == nil || len(ec.fn.Globals) == 0 {
+	if ec == nil || instr == nil || ec.fn == nil {
 		return nil
 	}
 	if ec.tailCallInstrs[instr.ID] || ec.isStaticSelfCall(instr) {
 		return nil
 	}
 	_, callee := resolveCallee(instr, ec.fn, InlineConfig{Globals: ec.fn.Globals})
+	if callee == nil {
+		if feedbackCallee, ok := callABIFeedbackCalleeProto(ec.fn, instr); ok {
+			callee = feedbackCallee
+		}
+	}
 	if !rawIntPeerLeafCallee(callee) {
 		return nil
 	}

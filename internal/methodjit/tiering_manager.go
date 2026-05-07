@@ -69,6 +69,8 @@ type TieringManager struct {
 	tier2FailReason  map[*vm.FuncProto]string // reason a function failed Tier 2 (keyed by proto)
 	tier2Attempts    int                      // total Tier 2 compilation attempts
 	exitStats        exitStatsCollector
+	exitProfile      tier2ExitProfileCollector
+	recompileQueue   tier2RecompileQueue
 	perfStats        *tier2PerfStatsCollector
 	perfStatsEnabled bool
 	callVM           *vm.VM
@@ -171,6 +173,16 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	compiled, _ := tm.tier2CompiledFor(proto)
 	specProfile := BuildTier2SpecializationProfile(proto)
 	if compiled != nil && tm.recompile.ShouldRefreshProfile(compiled, specProfile) {
+		compiled = nil
+	}
+	if req, ok := tm.recompileQueue.take(proto); ok {
+		tm.traceEvent("tier2_recompile_dequeue", "tier2", proto, map[string]any{
+			"reason":     req.Reason,
+			"pc":         req.Site.PC,
+			"exit_name":  req.Site.ExitName,
+			"site_count": req.Site.Count,
+		})
+		tm.clearTier2Install(proto)
 		compiled = nil
 	}
 	decision := tm.policy.Decide(proto, profile, PromotionPolicyState{

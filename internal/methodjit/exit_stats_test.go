@@ -165,7 +165,7 @@ func tier2PerfRowByName(snap Tier2PerfStatsSnapshot, name string) Tier2PerfStats
 
 func TestExitStatsAggregatesByProtoCodeSiteAndReason(t *testing.T) {
 	tm := NewTieringManager()
-	proto := &vm.FuncProto{Name: "hot"}
+	proto := &vm.FuncProto{Name: "hot", Code: make([]uint32, 4)}
 	cf := &CompiledFunction{
 		ExitSites: map[int]ExitSiteMeta{
 			7: {PC: 3, Op: "Len", Reason: "Len"},
@@ -196,5 +196,42 @@ func TestExitStatsAggregatesByProtoCodeSiteAndReason(t *testing.T) {
 	text := buf.String()
 	if !strings.Contains(text, "Tier 2 Exit Profile:") || !strings.Contains(text, "proto=hot exit=ExitOpExit id=7 pc=3 reason=Len") {
 		t.Fatalf("unexpected text output:\n%s", text)
+	}
+}
+
+func TestExitProfileQueuesRecompileWhenFeedbackMatures(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "hot", Code: make([]uint32, 4)}
+	proto.EnsureFeedback()
+	proto.TableKeyFeedback[3].Count = 2
+	proto.TableKeyFeedback[3].ShapeID = 7
+	proto.TableKeyFeedback[3].FieldIdx = 1
+	proto.TableKeyFeedback[3].FieldIdxSeen = true
+	proto.TableKeyFeedback[3].StringKey = "x"
+	proto.TableKeyFeedback[3].StringKeySeen = true
+	proto.TableKeyFeedback[3].ValueType = vm.FBInt
+	proto.TableKeyFeedback[3].AccessKind = vm.TableAccessKindGet
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       1,
+			GuardCount: 0,
+		},
+		ExitSites: map[int]ExitSiteMeta{
+			9: {PC: 3, Op: "GetTable", Reason: "GetTable"},
+		},
+	}
+
+	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitTableExit, TableExitID: 9, TableOp: TableOpGetTable})
+	if _, ok := tm.recompileQueue.take(proto); ok {
+		t.Fatal("first exit should not queue recompile")
+	}
+	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitTableExit, TableExitID: 9, TableOp: TableOpGetTable})
+	req, ok := tm.recompileQueue.take(proto)
+	if !ok {
+		t.Fatal("second hot exit with matured feedback should queue recompile")
+	}
+	if req.Site.PC != 3 || req.Site.Count != 2 || req.Site.ExitName != "ExitTableExit" {
+		t.Fatalf("unexpected queued request: %+v", req)
 	}
 }

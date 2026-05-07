@@ -129,6 +129,34 @@ func apply(f) {
 	}
 }
 
+func TestStaticNoDepthCalleeUsesStableFeedbackCallee(t *testing.T) {
+	callee := &vm.FuncProto{Name: "leaf", Code: []uint32{
+		vm.EncodeABC(vm.OP_RETURN, 0, 2, 0),
+	}}
+	proto := &vm.FuncProto{Name: "caller", Code: make([]uint32, 2)}
+	proto.EnsureFeedback()
+	proto.CallSiteFeedback[1].Count = wholeCallKernelMinStableObservations
+	proto.CallSiteFeedback[1].NArgs = 1
+	proto.CallSiteFeedback[1].ResultArity = 2
+	proto.CallSiteFeedback[1].CalleeVMProto = callee
+	proto.CallSiteFeedback[1].CalleeVMProtos[0] = callee
+	proto.CallSiteFeedback[1].CalleeVMProtoCount = 1
+
+	fn := &Function{Proto: proto}
+	call := &Instr{
+		ID:        10,
+		Op:        OpCall,
+		Args:      []*Value{{ID: 1}, {ID: 2}},
+		Aux2:      2,
+		HasSource: true,
+		SourcePC:  1,
+	}
+	ec := &emitContext{fn: fn, tailCallInstrs: map[int]bool{}}
+	if got := ec.staticNoDepthCallee(call); got != callee {
+		t.Fatalf("staticNoDepthCallee=%v want feedback callee", got)
+	}
+}
+
 func TestCallABIAnnotate_FibOverflowVersionUsesBoxedReturn(t *testing.T) {
 	src := `func fib_iter(n) {
 	a := 0

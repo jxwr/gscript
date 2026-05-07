@@ -107,6 +107,33 @@ func (tm *TieringManager) recordTier2Exit(proto *vm.FuncProto, cf *CompiledFunct
 		opID:       opID,
 		fallbackOp: exitStatsFallbackOp(ctx),
 	})
+	tm.recordTier2ExitProfile(proto, cf, ctx)
+}
+
+func (tm *TieringManager) recordTier2ExitProfile(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext) {
+	if tm == nil || proto == nil || cf == nil || ctx == nil {
+		return
+	}
+	site, ok := tm.exitProfile.record(proto, cf, ctx)
+	if !ok || site.Count != tier2RecompileQueueMinExitCount {
+		return
+	}
+	current := BuildTier2SpecializationProfile(proto)
+	if !tm.recompile.ShouldRefreshProfile(cf, current) {
+		return
+	}
+	if tm.recompileQueue.enqueue(proto, "exit_profile_feedback_matured", site) {
+		tm.exitProfile.markQueued(proto)
+		tm.traceEvent("tier2_recompile_queued", "tier2", proto, map[string]any{
+			"reason":        "exit_profile_feedback_matured",
+			"pc":            site.PC,
+			"exit_name":     site.ExitName,
+			"site_count":    site.Count,
+			"guards_before": cf.SpecializationVersion.GuardCount,
+			"guards_after":  current.Version.GuardCount,
+			"version_after": fmt.Sprintf("%x", current.Version.Hash),
+		})
+	}
 }
 
 func (tm *TieringManager) recordTier2NativeCalleeExit(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext) {
@@ -206,6 +233,13 @@ func (tm *TieringManager) ExitStats() ExitStatsSnapshot {
 		return ExitStatsSnapshot{ByExitCode: map[string]uint64{}}
 	}
 	return tm.exitStats.snapshot()
+}
+
+func (tm *TieringManager) ExitProfile() Tier2ExitProfileSnapshot {
+	if tm == nil {
+		return Tier2ExitProfileSnapshot{}
+	}
+	return tm.exitProfile.snapshot()
 }
 
 // WriteExitStatsText prints the Tier 2 exit/deopt profile in a stable text form.
