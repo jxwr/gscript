@@ -16,6 +16,7 @@ func AnnotateWholeCallKernelExits(fn *Function, globals map[string]*vm.FuncProto
 	if fn == nil {
 		return fn
 	}
+	speculation := NewTier2SpeculationPlan(fn.Proto)
 	kernels := make(map[int]bool)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -26,7 +27,7 @@ func AnnotateWholeCallKernelExits(fn *Function, globals map[string]*vm.FuncProto
 			if !vmWholeCallKernelArity(nArgs) {
 				continue
 			}
-			if !stableNoResultWholeCallCandidate(fn, instr, globals, nArgs) {
+			if !stableNoResultWholeCallCandidate(fn, instr, globals, nArgs, speculation) {
 				continue
 			}
 			kernels[instr.ID] = true
@@ -46,28 +47,22 @@ func vmWholeCallKernelArity(n int) bool {
 	return n == 1 || n == 2 || n == 3
 }
 
-func stableNoResultWholeCallCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, nArgs int) bool {
+func stableNoResultWholeCallCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, nArgs int, speculation Tier2SpeculationPlan) bool {
 	if fn == nil || instr == nil {
 		return false
 	}
-	if proto, ok := stableFeedbackCalleeProto(fn, instr, nArgs); ok {
+	if proto, ok := stableFeedbackCalleeProto(fn, instr, nArgs, speculation); ok {
 		return proto != nil
 	}
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
 	return protoHasNoResultWholeCallKernel(callee)
 }
 
-func stableFeedbackCalleeProto(fn *Function, instr *Instr, nArgs int) (*vm.FuncProto, bool) {
-	if fn == nil || fn.Proto == nil || instr == nil || !instr.HasSource ||
-		instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
+func stableFeedbackCalleeProto(fn *Function, instr *Instr, nArgs int, speculation Tier2SpeculationPlan) (*vm.FuncProto, bool) {
+	if fn == nil || fn.Proto == nil || instr == nil || !instr.HasSource {
 		return nil, false
 	}
-	fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
-	if fb.Count < wholeCallKernelMinStableObservations || fb.Flags&vm.CallSiteArityPolymorphic != 0 ||
-		int(fb.NArgs) != nArgs || fb.ResultArity != 1 {
-		return nil, false
-	}
-	return fb.StableCalleeVMProto()
+	return speculation.StableCallSiteVMProtoTarget(instr.SourcePC, wholeCallKernelMinStableObservations, nArgs, 1)
 }
 
 func protoHasNoResultWholeCallKernel(proto *vm.FuncProto) bool {

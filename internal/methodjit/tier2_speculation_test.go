@@ -2,6 +2,7 @@ package methodjit
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -29,6 +30,58 @@ func TestTier2SpeculationPlanSnapshotsFeedbackMaturity(t *testing.T) {
 	}
 	if aux := plan.FieldShapeAux2(1); aux == 0 {
 		t.Fatal("FieldShapeAux2 returned zero for stable field feedback")
+	}
+}
+
+func TestTier2SpeculationPlanStableCallSiteVMProtoTarget(t *testing.T) {
+	callee := &vm.FuncProto{Name: "callee"}
+	proto := &vm.FuncProto{Code: make([]uint32, 1)}
+	proto.EnsureFeedback()
+	proto.CallSiteFeedback[0] = vm.CallSiteFeedback{
+		Count:         3,
+		NArgs:         2,
+		ResultArity:   1,
+		CalleeVMProto: callee,
+	}
+
+	plan := NewTier2SpeculationPlan(proto)
+	if got, ok := plan.StableCallSiteVMProtoTarget(0, 2, 2, 1); !ok || got != callee {
+		t.Fatalf("StableCallSiteVMProtoTarget=%v ok=%v want callee,true", got, ok)
+	}
+	if got, ok := plan.StableCallSiteVMProtoTarget(0, 4, 2, 1); ok || got != nil {
+		t.Fatalf("StableCallSiteVMProtoTarget below min count=%v ok=%v want nil,false", got, ok)
+	}
+	if targets := plan.CallSiteVMProtoTargets(0, 2, 2, 1); len(targets) != 1 || targets[0].Proto != callee || targets[0].Count != 3 {
+		t.Fatalf("CallSiteVMProtoTargets=%#v want one stable callee target", targets)
+	}
+}
+
+func TestTier2SpeculationPlanCallSiteVMProtoTargetsPolymorphicPIC(t *testing.T) {
+	calleeA := &vm.FuncProto{Name: "calleeA"}
+	calleeB := &vm.FuncProto{Name: "calleeB"}
+	proto := &vm.FuncProto{Code: make([]uint32, 1)}
+	proto.EnsureFeedback()
+	proto.CallSiteFeedback[0] = vm.CallSiteFeedback{
+		Count:       5,
+		NArgs:       1,
+		ResultArity: 1,
+		Flags:       vm.CallSiteCalleePolymorphic,
+		VMProtoPIC: [vm.MaxCallSiteFeedbackCallees]vm.CallSiteVMProtoEntry{
+			{ProtoPtr: uintptr(unsafe.Pointer(calleeA)), Count: 2},
+			{ProtoPtr: uintptr(unsafe.Pointer(calleeB)), Count: 3},
+		},
+	}
+
+	plan := NewTier2SpeculationPlan(proto)
+	if got, ok := plan.StableCallSiteVMProtoTarget(0, 1, 1, 1); ok || got != nil {
+		t.Fatalf("StableCallSiteVMProtoTarget polymorphic=%v ok=%v want nil,false", got, ok)
+	}
+	targets := plan.CallSiteVMProtoTargets(0, 1, 1, 1)
+	if len(targets) != 2 {
+		t.Fatalf("CallSiteVMProtoTargets count=%d targets=%#v want 2", len(targets), targets)
+	}
+	if targets[0].Proto != calleeA || targets[0].Count != 2 || targets[1].Proto != calleeB || targets[1].Count != 3 {
+		t.Fatalf("CallSiteVMProtoTargets=%#v want calleeA/calleeB counts", targets)
 	}
 }
 

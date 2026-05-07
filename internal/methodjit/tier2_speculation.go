@@ -67,6 +67,11 @@ type Tier2SpeculationPlan struct {
 	Snapshot Tier2FeedbackSnapshot
 }
 
+type Tier2CallSiteVMProtoTarget struct {
+	Proto *vm.FuncProto
+	Count uint32
+}
+
 func NewTier2SpeculationPlan(proto *vm.FuncProto) Tier2SpeculationPlan {
 	return Tier2SpeculationPlan{
 		proto:    proto,
@@ -139,6 +144,48 @@ func (p Tier2SpeculationPlan) StableStringShapeField(pc int, accessKind uint8) (
 		return "", 0, 0, false
 	}
 	return feedback.StableStringShapeField()
+}
+
+func (p Tier2SpeculationPlan) StableCallSiteVMProtoTarget(pc int, minCount uint32, nArgs, resultArity int) (*vm.FuncProto, bool) {
+	if p.proto == nil || pc < 0 || p.proto.CallSiteFeedback == nil || pc >= len(p.proto.CallSiteFeedback) {
+		return nil, false
+	}
+	feedback := p.proto.CallSiteFeedback[pc]
+	if feedback.Count < minCount || feedback.Flags&vm.CallSiteArityPolymorphic != 0 ||
+		int(feedback.NArgs) != nArgs || int(feedback.ResultArity) != resultArity {
+		return nil, false
+	}
+	return feedback.StableCalleeVMProto()
+}
+
+func (p Tier2SpeculationPlan) CallSiteVMProtoTargets(pc int, minCount uint32, nArgs, resultArity int) []Tier2CallSiteVMProtoTarget {
+	if p.proto == nil || pc < 0 || p.proto.CallSiteFeedback == nil || pc >= len(p.proto.CallSiteFeedback) {
+		return nil
+	}
+	feedback := p.proto.CallSiteFeedback[pc]
+	if feedback.Count < minCount || feedback.Flags&vm.CallSiteArityPolymorphic != 0 ||
+		int(feedback.NArgs) != nArgs || int(feedback.ResultArity) != resultArity {
+		return nil
+	}
+	if proto, ok := feedback.StableCalleeVMProto(); ok {
+		return []Tier2CallSiteVMProtoTarget{{Proto: proto, Count: feedback.Count}}
+	}
+	candidates := feedback.VMProtoCandidates()
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make([]Tier2CallSiteVMProtoTarget, 0, len(candidates))
+	for _, candidate := range candidates {
+		proto := candidate.Proto()
+		if proto == nil {
+			continue
+		}
+		out = append(out, Tier2CallSiteVMProtoTarget{
+			Proto: proto,
+			Count: candidate.Count,
+		})
+	}
+	return out
 }
 
 // Tier2RecompilePolicy decides when an already-published Tier 2 body was
