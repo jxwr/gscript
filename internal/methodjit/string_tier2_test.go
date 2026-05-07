@@ -516,6 +516,63 @@ func report(sku, stock, sold, price) {
 	}
 }
 
+func TestTier2_StringFormatConstMultiIntNative(t *testing.T) {
+	src := `
+func tag(a, b, c) {
+    return string.format("tag%04d-%d/%03d", a, b, c)
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "tag")
+	if proto == nil {
+		t.Fatal("proto tag not found")
+	}
+	optimized, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	if got := countOpHelper(optimized, OpStringFormatConst); got != 1 {
+		t.Fatalf("StringFormatConst count=%d, want 1\n%s", got, Print(optimized))
+	}
+
+	args := []runtime.Value{runtime.IntValue(7), runtime.IntValue(-42), runtime.IntValue(5)}
+	want := requireOneString(t, "VM", runStringFuncVM(t, src, "tag", args))
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "tag", args, true)
+	got := requireOneString(t, "Tier2", gotValues)
+	if got != want {
+		t.Fatalf("tag Tier2=%q, want VM=%q", got, want)
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
+		t.Fatalf("StringFormatConst multi-int native should avoid call exits, ExitCallExit=%d", exits)
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+		t.Fatalf("StringFormatConst multi-int native should avoid op exits, ExitOpExit=%d", exits)
+	}
+}
+
+func TestTier2_StringFormatConstMixedStringIntNative(t *testing.T) {
+	src := `
+func label(prefix, n, suffix, code) {
+    return string.format("%s:%04d:%s:%d", prefix, n, suffix, code)
+}
+`
+	args := []runtime.Value{
+		runtime.StringValue("route"),
+		runtime.IntValue(12),
+		runtime.StringValue("detail"),
+		runtime.IntValue(-5),
+	}
+	want := requireOneString(t, "VM", runStringFuncVM(t, src, "label", args))
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "label", args, true)
+	got := requireOneString(t, "Tier2", gotValues)
+	if got != want {
+		t.Fatalf("label Tier2=%q, want VM=%q", got, want)
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+		t.Fatalf("StringFormatConst mixed string/int native should avoid op exits, ExitOpExit=%d", exits)
+	}
+}
+
 func TestTier2_StringCompareFastPath_MatchesVM(t *testing.T) {
 	src := `
 func sort_last() {
