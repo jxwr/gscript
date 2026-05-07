@@ -182,6 +182,44 @@ result := parse("a=0|v=123", 100)
 	compareTier2Result(t, src, "result")
 }
 
+func TestTier2_StringSplitSubstrNativeLength(t *testing.T) {
+	src := `
+func parse(line, n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        parts := string.split(line, "|")
+        svc := string.sub(parts[1], 5)
+        route := string.sub(parts[4], 7, 10)
+        sum = sum + #svc + #route
+    }
+    return sum
+}
+
+result := parse("svc=api|status=500|bytes=1234|route=/v1/orders", 500)
+`
+	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_StringSplitSubstrNativeFallbackLength(t *testing.T) {
+	src := `
+string.sub = func(s, start, finish) {
+    return "fallback"
+}
+
+func parse(line, n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        parts := string.split(line, "|")
+        sum = sum + #string.sub(parts[2], 5)
+    }
+    return sum
+}
+
+result := parse("a=0|v=123", 100)
+`
+	compareTier2Result(t, src, "result")
+}
+
 func TestTier2_NoFilterInlinedLoadBoolSkipTableBuilder(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 	src := `
