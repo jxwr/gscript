@@ -768,7 +768,12 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 				pc := int(ctx.TableKeySlot)
 				if pc >= 0 && pc < len(proto.Code) && vm.DecodeOp(proto.Code[pc]) == vm.OP_GETFIELD {
 					ensureFieldCache(proto)
-					result = tblVal.Table().RawGetStringCached(fieldName, &proto.FieldCache[pc])
+					ensureFieldPolyCache(proto)
+					result = tblVal.Table().RawGetStringCachedPoly(
+						fieldName,
+						&proto.FieldCache[pc],
+						runtime.FieldPolyCacheSlot(proto.FieldPolyCache, pc),
+					)
 					if proto.FieldAccessFeedback != nil {
 						proto.FieldAccessFeedback[pc].ObserveFieldCache(proto.FieldCache[pc], result, 1)
 					}

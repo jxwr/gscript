@@ -187,6 +187,10 @@ func (ec *emitContext) emitGetFieldPolymorphicCache(instr *Instr) bool {
 	smapCacheLabel := ec.uniqueLabel("getfield_pic_smap_cache")
 	asm.CBZ(jit.X1, smapCacheLabel)
 
+	dynamicCacheLabel := ec.uniqueLabel("getfield_pic_dynamic_cache")
+	ec.emitGetFieldPolyShapeCacheProbe(instr, dynamicCacheLabel, doneLabel, typeDeoptLabel)
+
+	asm.Label(dynamicCacheLabel)
 	ec.emitGetFieldPolymorphicCacheProbe(instr, missLabel, doneLabel, typeDeoptLabel)
 
 	asm.Label(smapCacheLabel)
@@ -208,6 +212,42 @@ func (ec *emitContext) emitGetFieldPolymorphicCache(instr *Instr) bool {
 
 	asm.Label(doneLabel)
 	return true
+}
+
+func (ec *emitContext) emitGetFieldPolyShapeCacheProbe(instr *Instr, missLabel, doneLabel, typeDeoptLabel string) {
+	asm := ec.asm
+	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineFieldPolyCache)
+	asm.CBZ(jit.X3, missLabel)
+	entryOff := instr.SourcePC * runtime.FieldPolyCacheWays * jit.FieldPolyCacheEntrySize
+	if entryOff > 0 {
+		if entryOff <= 4095 {
+			asm.ADDimm(jit.X3, jit.X3, uint16(entryOff))
+		} else {
+			asm.LoadImm64(jit.X4, int64(entryOff))
+			asm.ADDreg(jit.X3, jit.X3, jit.X4)
+		}
+	}
+
+	for i := 0; i < runtime.FieldPolyCacheWays; i++ {
+		nextLabel := ec.uniqueLabel("getfield_fpic_next")
+		asm.LDRW(jit.X5, jit.X3, jit.FieldPolyCacheEntryOffShapeID)
+		asm.CMPreg(jit.X5, jit.X1)
+		asm.BCond(jit.CondNE, nextLabel)
+		asm.LDR(jit.X4, jit.X3, jit.FieldPolyCacheEntryOffFieldIdx)
+		asm.LDR(jit.X5, jit.X0, jit.TableOffSvalsLen)
+		asm.CMPreg(jit.X4, jit.X5)
+		asm.BCond(jit.CondGE, missLabel)
+		asm.LDR(jit.X5, jit.X0, jit.TableOffSvals)
+		asm.LDRreg(jit.X0, jit.X5, jit.X4)
+		ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+		asm.B(doneLabel)
+
+		asm.Label(nextLabel)
+		if i+1 < runtime.FieldPolyCacheWays {
+			asm.ADDimm(jit.X3, jit.X3, uint16(jit.FieldPolyCacheEntrySize))
+		}
+	}
+	asm.B(missLabel)
 }
 
 func (ec *emitContext) emitGetFieldPolymorphicCacheProbe(instr *Instr, missLabel, doneLabel, typeDeoptLabel string) {

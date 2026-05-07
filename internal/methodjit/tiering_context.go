@@ -39,12 +39,16 @@ func setTier2ProtoCacheContext(ctx *ExecContext, proto *vm.FuncProto) {
 		return
 	}
 	ctx.BaselineFieldCache = 0
+	ctx.BaselineFieldPolyCache = 0
 	ctx.BaselineTableStringKeyCache = 0
 	if proto == nil {
 		return
 	}
 	if len(proto.FieldCache) > 0 {
 		ctx.BaselineFieldCache = uintptr(unsafe.Pointer(&proto.FieldCache[0]))
+	}
+	if len(proto.FieldPolyCache) > 0 {
+		ctx.BaselineFieldPolyCache = uintptr(unsafe.Pointer(&proto.FieldPolyCache[0]))
 	}
 	if len(proto.TableStringKeyCache) > 0 {
 		ctx.BaselineTableStringKeyCache = uintptr(unsafe.Pointer(&proto.TableStringKeyCache[0]))
