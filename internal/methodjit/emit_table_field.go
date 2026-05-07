@@ -551,11 +551,10 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	// Direct field store: svals[fieldIndex] = value.
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
 	ec.emitPreparedFieldStore(valStore, fieldIdx)
+	ec.rememberFieldSvalsCache(tblValueID, shapeID)
 	if shapeWasVerified {
-		ec.rememberFieldSvalsCache(tblValueID, shapeID)
 		return
 	}
-	ec.invalidateFieldSvalsCache()
 
 	// Skip the deopt fallback.
 	doneLabel := ec.uniqueLabel("setfield_done")
