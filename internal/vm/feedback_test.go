@@ -509,6 +509,54 @@ func TestCallSiteFeedback_ReboundCalleePolymorphic(t *testing.T) {
 	}
 }
 
+func TestCallSiteFeedback_PolymorphicVMProtoPIC(t *testing.T) {
+	proto := compileFeedback(t, `
+		func a(x) {
+			return x + 1
+		}
+		func b(x) {
+			return x + 2
+		}
+		func c(x) {
+			return x + 3
+		}
+		func pick(i) {
+			m := i % 3
+			if m == 0 {
+				return a
+			} elseif m == 1 {
+				return b
+			}
+			return c
+		}
+		total := 0
+		for i := 1; i <= 12; i++ {
+			f := pick(i)
+			total = total + f(i)
+		}
+	`)
+	cf := findPolymorphicCallSiteFeedbackByArity(t, proto, 1)
+	if cf.Count != 12 {
+		t.Fatalf("callsite count=%d, want 12", cf.Count)
+	}
+	if cf.Flags&CallSiteCalleePolymorphic == 0 {
+		t.Fatalf("dynamic callsite should be callee-polymorphic, flags=%02x", cf.Flags)
+	}
+	cands := cf.VMProtoCandidates()
+	if len(cands) != 3 {
+		t.Fatalf("VM proto candidates=%d, want 3: %#v", len(cands), cands)
+	}
+	counts := make(map[string]uint32)
+	for _, cand := range cands {
+		counts[cand.Proto().Name] = cand.Count
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		if counts[name] != 4 {
+			t.Fatalf("candidate %s count=%d, want 4; all=%v", name, counts[name], counts)
+		}
+	}
+}
+
 func TestFeedback_SubMulDiv(t *testing.T) {
 	proto := compileFeedback(t, `a := 10; b := 3; s := a - b; m := a * b; d := a / b`)
 	for _, op := range []Opcode{OP_SUB, OP_MUL, OP_DIV} {
@@ -539,6 +587,35 @@ func findCallSiteFeedback(t *testing.T, proto *FuncProto) CallSiteFeedback {
 		}
 	}
 	t.Fatal("no observed OP_CALL feedback found")
+	return CallSiteFeedback{}
+}
+
+func findCallSiteFeedbackByArity(t *testing.T, proto *FuncProto, nArgs uint8) CallSiteFeedback {
+	t.Helper()
+	if proto.CallSiteFeedback == nil {
+		t.Fatalf("no callsite feedback vector on proto")
+	}
+	for pc, inst := range proto.Code {
+		if DecodeOp(inst) == OP_CALL && proto.CallSiteFeedback[pc].Count > 0 && proto.CallSiteFeedback[pc].NArgs == nArgs {
+			return proto.CallSiteFeedback[pc]
+		}
+	}
+	t.Fatalf("no observed OP_CALL feedback found for nArgs=%d", nArgs)
+	return CallSiteFeedback{}
+}
+
+func findPolymorphicCallSiteFeedbackByArity(t *testing.T, proto *FuncProto, nArgs uint8) CallSiteFeedback {
+	t.Helper()
+	if proto.CallSiteFeedback == nil {
+		t.Fatalf("no callsite feedback vector on proto")
+	}
+	for pc, inst := range proto.Code {
+		fb := proto.CallSiteFeedback[pc]
+		if DecodeOp(inst) == OP_CALL && fb.Count > 0 && fb.NArgs == nArgs && fb.Flags&CallSiteCalleePolymorphic != 0 {
+			return fb
+		}
+	}
+	t.Fatalf("no polymorphic OP_CALL feedback found for nArgs=%d", nArgs)
 	return CallSiteFeedback{}
 }
 

@@ -130,6 +130,7 @@ type warmFeedbackSummary struct {
 	Result      map[string]int   `json:"result"`
 	Kind        map[string]int   `json:"kind"`
 	ObservedPCs []warmFeedbackPC `json:"observed_pcs,omitempty"`
+	Calls       []warmCallsitePC `json:"calls,omitempty"`
 }
 
 type warmFeedbackPC struct {
@@ -139,6 +140,20 @@ type warmFeedbackPC struct {
 	Right  string `json:"right,omitempty"`
 	Result string `json:"result,omitempty"`
 	Kind   string `json:"kind,omitempty"`
+}
+
+type warmCallsitePC struct {
+	PC         int                 `json:"pc"`
+	Count      uint32              `json:"count"`
+	NArgs      uint8               `json:"n_args"`
+	Result     uint8               `json:"result_arity"`
+	Flags      uint8               `json:"flags"`
+	Candidates []warmCallCandidate `json:"candidates,omitempty"`
+}
+
+type warmCallCandidate struct {
+	Name  string `json:"name"`
+	Count uint32 `json:"count"`
 }
 
 // EnableWarmDump configures tm to capture artifacts from future production
@@ -675,6 +690,26 @@ func summarizeWarmFeedback(proto *vm.FuncProto) warmFeedbackSummary {
 			})
 		}
 	}
+	for pc, fb := range proto.CallSiteFeedback {
+		candidates := fb.VMProtoCandidates()
+		if fb.Count == 0 && len(candidates) == 0 {
+			continue
+		}
+		call := warmCallsitePC{
+			PC:     pc,
+			Count:  fb.Count,
+			NArgs:  fb.NArgs,
+			Result: fb.ResultArity,
+			Flags:  fb.Flags,
+		}
+		for _, cand := range candidates {
+			call.Candidates = append(call.Candidates, warmCallCandidate{
+				Name:  displayWarmProtoName(cand.Proto()),
+				Count: cand.Count,
+			})
+		}
+		summary.Calls = append(summary.Calls, call)
+	}
 	return summary
 }
 
@@ -690,6 +725,16 @@ func formatWarmFeedback(proto *vm.FuncProto, summary warmFeedbackSummary) string
 	b.WriteString("pc\top\tleft\tright\tresult\tkind\n")
 	for _, pc := range summary.ObservedPCs {
 		fmt.Fprintf(&b, "%d\t%s\t%s\t%s\t%s\t%s\n", pc.PC, pc.Op, pc.Left, pc.Right, pc.Result, pc.Kind)
+	}
+	if len(summary.Calls) > 0 {
+		b.WriteString("\ncall_pc\tcount\tn_args\tresult_arity\tflags\tvm_proto_candidates\n")
+		for _, call := range summary.Calls {
+			parts := make([]string, 0, len(call.Candidates))
+			for _, cand := range call.Candidates {
+				parts = append(parts, fmt.Sprintf("%s:%d", cand.Name, cand.Count))
+			}
+			fmt.Fprintf(&b, "%d\t%d\t%d\t%d\t%02x\t%s\n", call.PC, call.Count, call.NArgs, call.Result, call.Flags, strings.Join(parts, ","))
+		}
 	}
 	return b.String()
 }

@@ -212,6 +212,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.STR(jit.X1, jit.X3, wayOff+baselineCallCacheProtoOff)
 		asm.LDR(jit.X4, jit.X1, funcProtoOffDirectEntryVersion)
 		asm.STR(jit.X4, jit.X3, wayOff+baselineCallCacheVersionOff)
+		ec.emitRecordCallSiteVMProtoCandidate(instr, jit.X1, jit.X4, jit.X6, jit.X7, jit.X8)
 		asm.B(icDoneLabel)
 	}
 
@@ -543,6 +544,67 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	ec.restoreValueReprSnapshot(postSuccessReprs)
 
 	// --- Done: merge point for native and slow paths ---
+	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitRecordCallSiteVMProtoCandidate(instr *Instr, protoReg, tmpFeedback, tmpEntry, tmpCount, tmpLimit jit.Reg) {
+	if ec == nil || ec.fn == nil || ec.fn.Proto == nil || instr == nil || !instr.HasSource || instr.SourcePC < 0 {
+		return
+	}
+	if instr.SourcePC >= len(ec.fn.Proto.Code) {
+		return
+	}
+	asm := ec.asm
+	loopLabel := ec.uniqueLabel("callsite_vmproto_pic_loop")
+	nextLabel := ec.uniqueLabel("callsite_vmproto_pic_next")
+	insertLabel := ec.uniqueLabel("callsite_vmproto_pic_insert")
+	doneLabel := ec.uniqueLabel("callsite_vmproto_pic_done")
+	asm.LoadImm64(tmpFeedback, int64(uintptr(unsafe.Pointer(ec.fn.Proto))))
+	asm.LDR(tmpFeedback, tmpFeedback, funcProtoOffCallSiteFeedback)
+	asm.CBZ(tmpFeedback, doneLabel)
+	if instr.SourcePC > 0 {
+		off := instr.SourcePC * callSiteFeedbackSize
+		if off <= 4095 {
+			asm.ADDimm(tmpFeedback, tmpFeedback, uint16(off))
+		} else {
+			asm.LoadImm64(tmpEntry, int64(off))
+			asm.ADDreg(tmpFeedback, tmpFeedback, tmpEntry)
+		}
+	}
+	asm.MOVimm16(tmpCount, uint16(len(instr.Args)-1))
+	asm.STRB(tmpCount, tmpFeedback, callSiteFeedbackNArgsOff)
+	asm.MOVimm16(tmpCount, uint16(callResultCountFromAux2(instr.Aux2)))
+	asm.STRB(tmpCount, tmpFeedback, callSiteFeedbackResultOff)
+	if callSiteFeedbackVMProtoPICOff <= 4095 {
+		asm.ADDimm(tmpFeedback, tmpFeedback, uint16(callSiteFeedbackVMProtoPICOff))
+	} else {
+		asm.LoadImm64(tmpEntry, int64(callSiteFeedbackVMProtoPICOff))
+		asm.ADDreg(tmpFeedback, tmpFeedback, tmpEntry)
+	}
+
+	asm.MOVimm16(tmpLimit, 0)
+	asm.Label(loopLabel)
+	asm.CMPimm(tmpLimit, vm.MaxCallSiteFeedbackCallees)
+	asm.BCond(jit.CondGE, doneLabel)
+	asm.LDR(tmpEntry, tmpFeedback, callSiteVMProtoEntryProtoOff)
+	asm.CBZ(tmpEntry, insertLabel)
+	asm.CMPreg(tmpEntry, protoReg)
+	asm.BCond(jit.CondNE, nextLabel)
+	asm.LDRW(tmpCount, tmpFeedback, callSiteVMProtoEntryCountOff)
+	asm.ADDimm(tmpCount, tmpCount, 1)
+	asm.STRW(tmpCount, tmpFeedback, callSiteVMProtoEntryCountOff)
+	asm.B(doneLabel)
+
+	asm.Label(insertLabel)
+	asm.STR(protoReg, tmpFeedback, callSiteVMProtoEntryProtoOff)
+	asm.MOVimm16(tmpCount, 1)
+	asm.STRW(tmpCount, tmpFeedback, callSiteVMProtoEntryCountOff)
+	asm.B(doneLabel)
+
+	asm.Label(nextLabel)
+	asm.ADDimm(tmpFeedback, tmpFeedback, uint16(callSiteVMProtoEntrySize))
+	asm.ADDimm(tmpLimit, tmpLimit, 1)
+	asm.B(loopLabel)
 	asm.Label(doneLabel)
 }
 

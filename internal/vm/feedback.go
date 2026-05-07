@@ -8,7 +8,11 @@
 // stays there forever to prevent deopt-reopt cycles.
 package vm
 
-import "github.com/gscript/gscript/internal/runtime"
+import (
+	"unsafe"
+
+	"github.com/gscript/gscript/internal/runtime"
+)
 
 // FeedbackType is a monotonic type lattice for type profiling.
 // Transitions: Unobserved -> concrete type -> Any. Never narrows.
@@ -148,7 +152,10 @@ type FieldAccessFeedback struct {
 	AccessKind uint8
 }
 
-const MaxCallSiteFeedbackArgs = 4
+const (
+	MaxCallSiteFeedbackArgs    = 4
+	MaxCallSiteFeedbackCallees = 4
+)
 
 const (
 	CallSiteCalleePolymorphic uint8 = 1 << iota
@@ -173,6 +180,14 @@ type CallSiteFeedback struct {
 	StringArgMask    uint8
 	StringArgPoly    uint8
 	StringArgs       [MaxCallSiteFeedbackArgs]string
+	VMProtoPIC       [MaxCallSiteFeedbackCallees]CallSiteVMProtoEntry
+}
+
+type CallSiteVMProtoEntry struct {
+	// Stored as uintptr because Tier2 generated code records IC discoveries
+	// without a Go write barrier. FuncProto lifetime is rooted by the program.
+	ProtoPtr uintptr
+	Count    uint32
 }
 
 // ObserveKind records an array kind observation. Monotonic like Observe:
@@ -426,6 +441,7 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 	cf.CalleeType.Observe(fn.Type())
 	nativeKind, nativeData := callFeedbackNativeIdentity(fn)
 	vmProto := callFeedbackVMProto(fn)
+	cf.observeVMProtoPIC(vmProto)
 	if cf.Count == 1 {
 		cf.CalleeNativeKind = nativeKind
 		cf.CalleeNativeData = nativeData
@@ -457,6 +473,28 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 	}
 }
 
+func (cf *CallSiteFeedback) observeVMProtoPIC(proto *FuncProto) {
+	if cf == nil || proto == nil {
+		return
+	}
+	protoPtr := uintptr(unsafe.Pointer(proto))
+	for i := range cf.VMProtoPIC {
+		entry := &cf.VMProtoPIC[i]
+		if entry.ProtoPtr == protoPtr {
+			entry.Count++
+			return
+		}
+	}
+	for i := range cf.VMProtoPIC {
+		entry := &cf.VMProtoPIC[i]
+		if entry.ProtoPtr == 0 {
+			entry.ProtoPtr = protoPtr
+			entry.Count = 1
+			return
+		}
+	}
+}
+
 func (cf CallSiteFeedback) StableCalleeNativeIdentity() (kind uint8, data uintptr, ok bool) {
 	if cf.Count == 0 || cf.Flags&CallSiteCalleePolymorphic != 0 {
 		return 0, 0, false
@@ -472,6 +510,23 @@ func (cf CallSiteFeedback) StableCalleeVMProto() (*FuncProto, bool) {
 		return nil, false
 	}
 	return cf.CalleeVMProto, true
+}
+
+func (cf CallSiteFeedback) VMProtoCandidates() []CallSiteVMProtoEntry {
+	var out []CallSiteVMProtoEntry
+	for _, entry := range cf.VMProtoPIC {
+		if entry.ProtoPtr != 0 && entry.Count > 0 {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func (entry CallSiteVMProtoEntry) Proto() *FuncProto {
+	if entry.ProtoPtr == 0 {
+		return nil
+	}
+	return (*FuncProto)(unsafe.Pointer(entry.ProtoPtr))
 }
 
 func (cf CallSiteFeedback) StableStringArg(idx int) (string, bool) {

@@ -389,6 +389,16 @@ var (
 	tableKeyFeedbackFieldIdxSeenOff  = int(unsafe.Offsetof(vm.TableKeyFeedback{}.FieldIdxSeen))
 	tableKeyFeedbackDenseMatrixOff   = int(unsafe.Offsetof(vm.TableKeyFeedback{}.DenseMatrix))
 
+	funcProtoOffCallSiteFeedback  = int(unsafe.Offsetof(vm.FuncProto{}.CallSiteFeedback))
+	callSiteFeedbackSize          = int(unsafe.Sizeof(vm.CallSiteFeedback{}))
+	callSiteFeedbackCountOff      = int(unsafe.Offsetof(vm.CallSiteFeedback{}.Count))
+	callSiteFeedbackNArgsOff      = int(unsafe.Offsetof(vm.CallSiteFeedback{}.NArgs))
+	callSiteFeedbackResultOff     = int(unsafe.Offsetof(vm.CallSiteFeedback{}.ResultArity))
+	callSiteFeedbackVMProtoPICOff = int(unsafe.Offsetof(vm.CallSiteFeedback{}.VMProtoPIC))
+	callSiteVMProtoEntrySize      = int(unsafe.Sizeof(vm.CallSiteVMProtoEntry{}))
+	callSiteVMProtoEntryProtoOff  = int(unsafe.Offsetof(vm.CallSiteVMProtoEntry{}.ProtoPtr))
+	callSiteVMProtoEntryCountOff  = int(unsafe.Offsetof(vm.CallSiteVMProtoEntry{}.Count))
+
 	fieldCacheEntryOffAppendShapeID = int(unsafe.Offsetof(runtime.FieldCacheEntry{}.AppendShapeID))
 	fieldCacheEntryOffAppendShape   = int(unsafe.Offsetof(runtime.FieldCacheEntry{}.AppendShape))
 
