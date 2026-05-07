@@ -207,6 +207,15 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 			ec.storeRawInt(dst, instr.ID)
 			return
 		}
+		if divisor, ok := ec.constSmallPositiveModDivisor(instr); ok {
+			lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+			if lhs != jit.X0 {
+				ec.asm.MOVreg(jit.X0, lhs)
+			}
+			ec.emitUnsignedConstModNonNegative(dst, divisor)
+			ec.storeRawInt(dst, instr.ID)
+			return
+		}
 	}
 
 	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
@@ -386,6 +395,36 @@ func (ec *emitContext) constPositivePow2ModWidth(instr *Instr) (uint8, bool) {
 		return width, true
 	}
 	return 0, false
+}
+
+func (ec *emitContext) constSmallPositiveModDivisor(instr *Instr) (uint64, bool) {
+	if instr == nil || len(instr.Args) < 2 {
+		return 0, false
+	}
+	divisor, ok := ec.constInts[instr.Args[1].ID]
+	if !ok || divisor <= 1 || divisor > 65535 || divisor&(divisor-1) == 0 {
+		return 0, false
+	}
+	lhs := instr.Args[0]
+	if lhs == nil {
+		return 0, false
+	}
+	if !ec.intNonNegative(lhs.ID) && !ec.intModNoSignAdjust(instr.ID) {
+		return 0, false
+	}
+	return uint64(divisor), true
+}
+
+func (ec *emitContext) emitUnsignedConstModNonNegative(dst jit.Reg, divisor uint64) {
+	// For n < 2^48 and divisor <= 2^16, ceil(2^64/divisor) gives an exact
+	// quotient via UMULH. The range precondition comes from TypeInt/range
+	// analysis, and the divisor bound keeps reciprocal overestimate below the
+	// quotient grid spacing.
+	magic := ^uint64(0)/divisor + 1
+	ec.asm.LoadImm64(jit.X1, int64(magic))
+	ec.asm.UMULH(jit.X2, jit.X0, jit.X1)
+	ec.asm.LoadImm64(jit.X1, int64(divisor))
+	ec.asm.MSUB(dst, jit.X2, jit.X1, jit.X0)
 }
 
 // emitIntModX0X1 computes X0 = X0 % X1 for raw signed integers using VM

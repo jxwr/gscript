@@ -477,6 +477,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("TypeSpecialize (post-table-prealloc): %w", err)
 	}
 
+	fn, err = StaticTableLenPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("StaticTableLen: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
 		Globals:          globals,
 		ArgFacts:         optsFixedShapeArgFacts(opts),
@@ -801,6 +807,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("TypeSpecialize3", TypeSpecializePass)
 	pipe.Add("CallABI", AnnotateCallABIsPass(CallABIAnnotationConfig{}))
 	pipe.Add("ConstProp", ConstPropPass)
+	pipe.Add("StaticTableLen", StaticTableLenPass)
 	pipe.Add("LoadElimination", LoadEliminationPass)
 	pipe.Add("DCE", DCEPass)
 	pipe.Add("LoopBoundRangeGuard", LoopBoundRangeGuardPass)

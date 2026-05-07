@@ -235,6 +235,62 @@ func TestEmit_ModIntPositivePowerOfTwoUsesBitfield(t *testing.T) {
 	}
 }
 
+func TestEmit_ModIntSmallPositiveConstUsesReciprocal(t *testing.T) {
+	src := `func f(n) {
+		if n < 0 { return -1 }
+		return n % 7
+	}`
+	proto := compileFunction(t, src)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+
+	foundModInt := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpModInt {
+				continue
+			}
+			foundModInt = true
+			if !fn.IntModNoSignAdjust[instr.ID] {
+				t.Fatalf("ModInt v%d should have no-sign-adjust fact\nIR:\n%s", instr.ID, Print(fn))
+			}
+		}
+	}
+	if !foundModInt {
+		t.Fatalf("expected ModInt in optimized IR:\n%s", Print(fn))
+	}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, arg := range []int64{0, 1, 6, 7, 12345, (1 << 47) - 123} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(arg)})
+		if err != nil {
+			t.Fatalf("Execute f(%d): %v", arg, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(arg)})
+		if len(result) == 0 || len(vmResult) == 0 {
+			t.Fatalf("empty result for f(%d): JIT=%v VM=%v", arg, result, vmResult)
+		}
+		assertValuesEqual(t, fmt.Sprintf("f(%d)", arg), result[0], vmResult[0])
+	}
+
+	code := make([]byte, cf.Code.Size())
+	copy(code, unsafeCodeSlice(cf))
+	asm := disasmARM64(code)
+	if strings.Contains(asm, "SDIV") {
+		t.Fatalf("small positive const modulo should not emit SDIV:\n%s", asm)
+	}
+	if !strings.Contains(asm, "UMULH") {
+		t.Fatalf("small positive const modulo should emit UMULH reciprocal path:\n%s", asm)
+	}
+}
+
 func TestEmit_ModZeroIntPowerOfTwoUsesBitTest(t *testing.T) {
 	src := `func f(n) {
 		if n % 8 == 0 { return 1 }

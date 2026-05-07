@@ -79,6 +79,15 @@ func TestMSUB(t *testing.T) {
 	}
 }
 
+func TestUMULH(t *testing.T) {
+	a := NewAssembler()
+	a.UMULH(X0, X1, X2)
+	got := getInst(a, 0)
+	if got != 0x9BC27C20 {
+		t.Fatalf("UMULH: got 0x%08X, want 0x9BC27C20", got)
+	}
+}
+
 func TestNEG(t *testing.T) {
 	a := NewAssembler()
 	a.NEG(X0, X1) // NEG X0, X1 = SUB X0, XZR, X1

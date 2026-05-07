@@ -333,7 +333,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			switch instr.Op {
-			case OpAddInt, OpSubInt, OpMulInt, OpDivIntExact, OpNegInt:
+			case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt:
 				if r, ok := ranges[instr.ID]; ok && r.fitsInt48() {
 					safe[instr.ID] = true
 				}
