@@ -502,6 +502,13 @@ func (ec *emitContext) emitStoreAllActiveRegs() {
 	}
 }
 
+func (ec *emitContext) emitSpillAndClearActiveRegsForNativeHelper() {
+	ec.emitStoreAllActiveRegs()
+	ec.activeRegs = make(map[int]bool)
+	ec.activeFPRegs = make(map[int]bool)
+	ec.resetValueReprs()
+}
+
 func (ec *emitContext) emitExitResumeCheckShadowStoreGPR(slot int, src jit.Reg) {
 	if ec.exitResumeCheck == nil {
 		return

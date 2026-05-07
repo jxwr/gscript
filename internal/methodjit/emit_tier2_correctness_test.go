@@ -144,6 +144,44 @@ result := sum
 	}
 }
 
+func TestTier2_StringSplitSubstrNumberNativeInSum(t *testing.T) {
+	src := `
+func parse(line, n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        parts := string.split(line, "|")
+        status := tonumber(string.sub(parts[2], 8))
+        bytes := tonumber(string.sub(parts[3], 7))
+        sum = sum + status + bytes
+    }
+    return sum
+}
+
+result := parse("svc=api|status=500|bytes=1234", 500)
+`
+	compareTier2Result(t, src, "result")
+}
+
+func TestTier2_StringSplitSubstrNumberNativeFallbackInSum(t *testing.T) {
+	src := `
+string.sub = func(s, start, finish) {
+    return "41.5"
+}
+
+func parse(line, n) {
+    sum := 0
+    for i := 1; i <= n; i++ {
+        parts := string.split(line, "|")
+        sum = sum + tonumber(string.sub(parts[2], 5))
+    }
+    return sum
+}
+
+result := parse("a=0|v=123", 100)
+`
+	compareTier2Result(t, src, "result")
+}
+
 func TestTier2_NoFilterInlinedLoadBoolSkipTableBuilder(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 	src := `
