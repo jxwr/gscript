@@ -145,6 +145,39 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 	}
 }
 
+func (ec *emitContext) emitGuardCalleeProto(instr *Instr) {
+	if len(instr.Args) == 0 {
+		return
+	}
+	asm := ec.asm
+	srcReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if srcReg != jit.X0 {
+		asm.MOVreg(jit.X0, srcReg)
+	}
+	deoptLabel := ec.uniqueLabel("guard_callee_deopt")
+	doneLabel := ec.uniqueLabel("guard_callee_done")
+
+	asm.LSRimm(jit.X1, jit.X0, 48)
+	asm.MOVimm16(jit.X2, jit.NB_TagPtrShr48)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, deoptLabel)
+	asm.LSRimm(jit.X1, jit.X0, uint8(nbPtrSubShift))
+	asm.LoadImm64(jit.X2, 0xF)
+	asm.ANDreg(jit.X1, jit.X1, jit.X2)
+	asm.CMPimm(jit.X1, nbPtrSubVMClosure)
+	asm.BCond(jit.CondNE, deoptLabel)
+	jit.EmitExtractPtr(asm, jit.X1, jit.X0)
+	asm.LDR(jit.X1, jit.X1, vmClosureOffProto)
+	asm.LoadImm64(jit.X2, instr.Aux)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, deoptLabel)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitGuardConstString(instr *Instr) {
 	if len(instr.Args) == 0 || ec.fn == nil || ec.fn.Proto == nil {
 		return
@@ -548,7 +581,7 @@ func lenArgKnownRawString(v *Value) bool {
 		return false
 	}
 	switch v.Def.Op {
-	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpStringSplitPart, OpStringSplitSubstr, OpGuardConstString:
+	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpStringSplitPart, OpStringSplitSubstr, OpGuardConstString, OpGuardCalleeProto:
 		return true
 	default:
 		return false

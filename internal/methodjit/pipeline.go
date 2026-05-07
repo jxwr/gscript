@@ -376,7 +376,7 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 			maxSize = opts.InlineMaxSize
 		}
 	}
-	if len(globals) > 0 {
+	if len(globals) > 0 || hasInlineFeedbackCallee(fn) {
 		// R73: MaxRecursion 2 → 3. Deeper recursive inlining for fib/
 		// ackermann call trees. Each level ~doubles the inlined body size,
 		// so depth=3 means callee body expanded ~8x at the inline site.

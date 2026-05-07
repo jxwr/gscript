@@ -26,6 +26,7 @@ package methodjit
 import (
 	"fmt"
 	"os"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -169,6 +170,14 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		}
 
 		calleeName, calleeProto := resolveCallee(instr, fn, config)
+		guardedFeedbackCallee := false
+		if calleeProto == nil {
+			if feedbackCallee, ok := inlineFeedbackCalleeProto(fn, instr); ok {
+				calleeName = feedbackCallee.Name
+				calleeProto = feedbackCallee
+				guardedFeedbackCallee = true
+			}
+		}
 		if calleeProto == nil {
 			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
 				"callee is not statically resolved from inline globals")
@@ -191,6 +200,25 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 					fmt.Sprintf("recursive inline depth cap reached for %s", calleeName))
 				continue
 			}
+		}
+
+		if guardedFeedbackCallee {
+			guard := &Instr{
+				ID:        fn.newValueID(),
+				Op:        OpGuardCalleeProto,
+				Type:      instr.Args[0].Def.Type,
+				Args:      []*Value{instr.Args[0]},
+				Aux:       int64(uintptr(unsafe.Pointer(calleeProto))),
+				Block:     block,
+				HasSource: instr.HasSource,
+				SourcePC:  instr.SourcePC,
+			}
+			block.Instrs = append(block.Instrs[:i], append([]*Instr{guard}, block.Instrs[i:]...)...)
+			i++
+			instr = block.Instrs[i]
+			instr.Args[0] = guard.Value()
+			functionRemarks(fn).Add("Inline", "changed", block.ID, guard.ID, guard.Op,
+				fmt.Sprintf("guarded dynamic callee %s from call feedback", calleeName))
 		}
 
 		// Check size budget.
@@ -269,6 +297,30 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		return true
 	}
 	return inlined
+}
+
+func inlineFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool) {
+	if proto, ok := callABIFeedbackCalleeProto(fn, instr); ok && proto != nil {
+		return proto, true
+	}
+	return nil, false
+}
+
+func hasInlineFeedbackCallee(fn *Function) bool {
+	if fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpCall {
+				continue
+			}
+			if _, ok := inlineFeedbackCalleeProto(fn, instr); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resolveCallee checks if an OpCall's function argument comes from an
@@ -374,7 +426,7 @@ func pureNumericInlineOp(op Op) bool {
 		OpNumToFloat, OpSqrt, OpFloor, OpFMA, OpFMSUB,
 		OpEq, OpLt, OpLe, OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat,
 		OpModZeroInt,
-		OpGuardType, OpGuardIntRange, OpGuardConstString,
+		OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardCalleeProto,
 		OpJump, OpBranch,
 		OpPhi:
 		return true

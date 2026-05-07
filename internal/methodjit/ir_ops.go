@@ -175,6 +175,7 @@ const (
 	OpGuardType     // Args[0] must have type Aux; deopt if not
 	OpGuardIntRange // Args[0] must be int in [Aux, Aux2]; deopt if not
 	OpGuardConstString
+	OpGuardCalleeProto // Args[0] must be a VM closure whose proto pointer is Aux
 	OpGuardNonNil
 	OpGuardTruthy
 
@@ -312,6 +313,7 @@ var opNames = [...]string{
 	OpGuardType:                  "GuardType",
 	OpGuardIntRange:              "GuardIntRange",
 	OpGuardConstString:           "GuardConstString",
+	OpGuardCalleeProto:           "GuardCalleeProto",
 	OpGuardNonNil:                "GuardNonNil",
 	OpGuardTruthy:                "GuardTruthy",
 	OpJump:                       "Jump",

@@ -1019,6 +1019,19 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = a
 
+	case OpGuardCalleeProto:
+		a := s.val(instr.Args[0])
+		var cl *vm.Closure
+		if p := a.VMClosurePointer(); p != nil {
+			cl = (*vm.Closure)(p)
+		} else {
+			cl, _ = a.Ptr().(*vm.Closure)
+		}
+		if cl == nil || uintptr(unsafe.Pointer(cl.Proto)) != uintptr(instr.Aux) {
+			return nil, false, fmt.Errorf("IR interpreter: GuardCalleeProto failed")
+		}
+		s.values[instr.ID] = a
+
 	case OpGuardNonNil:
 		s.values[instr.ID] = s.val(instr.Args[0])
 
