@@ -159,6 +159,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitFloatCmp(instr, jit.CondLT)
 	case OpLeFloat:
 		ec.emitFloatCmp(instr, jit.CondLE)
+	case OpIsVMClosureProto:
+		ec.emitIsVMClosureProto(instr)
 
 	// --- Phi ---
 	case OpPhi:
@@ -329,6 +331,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpEq, OpLt, OpLe,
 		OpEqInt, OpLtInt, OpLeInt, OpModZeroInt,
 		OpLtFloat, OpLeFloat,
+		OpIsVMClosureProto,
 		OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
 		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardTruthy,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableArrayStore, OpTableArraySwap,

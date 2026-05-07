@@ -966,6 +966,17 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		a := s.val(instr.Args[0])
 		s.values[instr.ID] = runtime.BoolValue(a.Truthy())
 
+	case OpIsVMClosureProto:
+		if len(instr.Args) != 1 {
+			return nil, false, fmt.Errorf("IR interpreter: IsVMClosureProto needs 1 arg")
+		}
+		want, ok := s.fn.funcProtoRef(instr.Aux)
+		if !ok {
+			return nil, false, fmt.Errorf("IR interpreter: IsVMClosureProto proto ref %d out of range", instr.Aux)
+		}
+		cl, ok := vmClosureFromValue(s.val(instr.Args[0]))
+		s.values[instr.ID] = runtime.BoolValue(ok && cl != nil && cl.Proto == want)
+
 	// ---------- Control flow (terminators) ----------
 	case OpJump, OpBranch, OpReturn:
 		// Handled by resolveTerminator and the main loop.

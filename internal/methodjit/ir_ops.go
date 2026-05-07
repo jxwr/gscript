@@ -91,6 +91,9 @@ const (
 	OpModZeroInt // Args[0] % Aux == 0 for non-zero constant integer Aux
 	OpLtFloat
 	OpLeFloat
+	// OpIsVMClosureProto returns whether Args[0] is a boxed vm.Closure whose
+	// Closure.Proto matches Function.FuncProtoRefs[Aux].
+	OpIsVMClosureProto
 
 	// String
 	OpConcat                  // Args[0] .. Args[1] .. ...
@@ -269,6 +272,7 @@ var opNames = [...]string{
 	OpModZeroInt:                 "ModZeroInt",
 	OpLtFloat:                    "LtFloat",
 	OpLeFloat:                    "LeFloat",
+	OpIsVMClosureProto:           "IsVMClosureProto",
 	OpConcat:                     "Concat",
 	OpStringConstLookup:          "StringConstLookup",
 	OpStringFormatInt:            "StringFormatInt",

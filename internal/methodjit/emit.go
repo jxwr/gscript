@@ -594,6 +594,10 @@ type CompiledFunction struct {
 	// precise Tier 2 op-exit handling.
 	StringFormatPatterns []string
 
+	// FuncProtoRefs keeps VM FuncProto objects referenced by native IR guards
+	// alive after codegen embeds their addresses.
+	FuncProtoRefs []*vm.FuncProto
+
 	// WholeCallNoResultBatches records loop-tail no-result whole-call kernel
 	// sites whose future complete loop iterations can be executed in one
 	// guarded Go-side batch before resuming Tier 2.

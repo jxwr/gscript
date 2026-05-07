@@ -145,6 +145,11 @@ type Function struct {
 	// constant identity, not by benchmark-specific literal value.
 	StringFormatPatterns []string
 
+	// FuncProtoRefs records VM function prototypes referenced by IR
+	// instructions. Ops store only an index into this table in Aux so the IR
+	// does not hide raw Go pointers in integer metadata.
+	FuncProtoRefs []*vm.FuncProto
+
 	// FixedShapeTables records SSA table values whose field layout is known
 	// without consulting the runtime field cache. The initial producer is a
 	// static table constructor or a call to a function whose every return path
@@ -231,6 +236,27 @@ func (f *Function) newValueID() int {
 	id := f.nextID
 	f.nextID++
 	return id
+}
+
+// AddFuncProtoRef appends proto to the function-level proto reference table
+// and returns the Aux index that IR instructions should carry.
+func (f *Function) AddFuncProtoRef(proto *vm.FuncProto) int {
+	for i, existing := range f.FuncProtoRefs {
+		if existing == proto {
+			return i
+		}
+	}
+	idx := len(f.FuncProtoRefs)
+	f.FuncProtoRefs = append(f.FuncProtoRefs, proto)
+	return idx
+}
+
+func (f *Function) funcProtoRef(idx int64) (*vm.FuncProto, bool) {
+	if f == nil || idx < 0 || idx >= int64(len(f.FuncProtoRefs)) {
+		return nil, false
+	}
+	proto := f.FuncProtoRefs[idx]
+	return proto, proto != nil
 }
 
 // Block represents a basic block in the control flow graph.

@@ -76,6 +76,9 @@ func (v *validator) run() {
 
 	// 10. Reachability.
 	v.checkReachability()
+
+	// 11. Op-specific invariants.
+	v.checkOpInvariants()
 }
 
 // checkEntryInBlocks verifies fn.Entry is present in fn.Blocks.
@@ -263,4 +266,23 @@ func containsBlock(blocks []*Block, target *Block) bool {
 		}
 	}
 	return false
+}
+
+func (v *validator) checkOpInvariants() {
+	for _, blk := range v.fn.Blocks {
+		for _, instr := range blk.Instrs {
+			switch instr.Op {
+			case OpIsVMClosureProto:
+				if instr.Type != TypeBool {
+					v.errorf("B%d: IsVMClosureProto (v%d) must have bool type, got %s", blk.ID, instr.ID, instr.Type)
+				}
+				if len(instr.Args) != 1 {
+					v.errorf("B%d: IsVMClosureProto (v%d) must have exactly 1 arg, got %d", blk.ID, instr.ID, len(instr.Args))
+				}
+				if _, ok := v.fn.funcProtoRef(instr.Aux); !ok {
+					v.errorf("B%d: IsVMClosureProto (v%d) proto ref %d out of range", blk.ID, instr.ID, instr.Aux)
+				}
+			}
+		}
+	}
 }
