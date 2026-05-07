@@ -177,6 +177,15 @@ func NewSequentialArrayTable(length int) *Table {
 	if length <= 0 {
 		return NewEmptyTable()
 	}
+	if length+1 <= tableSvalsNInlineCap {
+		t, values := DefaultHeap.AllocTableWithSvals(length + 1)
+		t.array = values[: length+1 : length+1]
+		nv := NilValue()
+		for i := range t.array {
+			t.array[i] = nv
+		}
+		return t
+	}
 	t := DefaultHeap.AllocTable()
 	t.array = DefaultHeap.AllocValues(length+1, length+1)
 	return t
@@ -185,6 +194,12 @@ func NewSequentialArrayTable(length int) *Table {
 func NewAppendArrayTable(capacity int) *Table {
 	if capacity < 1 {
 		capacity = 1
+	}
+	if capacity <= tableSvalsNInlineCap {
+		t, values := DefaultHeap.AllocTableWithSvals(capacity)
+		t.array = values[:1:capacity]
+		t.array[0] = NilValue()
+		return t
 	}
 	t := DefaultHeap.AllocTable()
 	t.array = DefaultHeap.AllocValues(1, capacity)
