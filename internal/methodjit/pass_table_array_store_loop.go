@@ -206,7 +206,7 @@ func tableArrayStoreLoopNumericHasTypedPrealloc(cand tableArrayStoreLoopCandidat
 func tableArrayStoreLoopFlags(cand tableArrayStoreLoopCandidate, nestedBuilder bool) int64 {
 	if tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand) ||
 		(nestedBuilder && tableArrayStoreLoopNumericHasTypedPrealloc(cand)) {
-		return tableArrayStoreFlagAllowGrow
+		return tableArrayStoreFlagAllowGrow | tableArrayStoreFlagExitResumeOnMiss
 	}
 	return 0
 }

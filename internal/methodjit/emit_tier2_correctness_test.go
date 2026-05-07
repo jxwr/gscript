@@ -332,6 +332,25 @@ for r := 1; r <= 40; r++ {
 	compareTier2Result(t, src, "result")
 }
 
+func TestTier2_NumericTableArrayStoreGrowMissResumesCorrectly(t *testing.T) {
+	src := `
+func fill_sum(n) {
+    arr := {}
+    for i := 1; i <= n; i++ {
+        arr[i] = i
+    }
+    sum := 0
+    for i := 1; i <= n; i++ {
+        sum = sum + arr[i]
+    }
+    return sum
+}
+
+result := fill_sum(500000)
+`
+	compareTier2Result(t, src, "result")
+}
+
 // TestTier2_FibonacciIterativeCorrectness tests a pure integer loop with
 // accumulator variables. Exercises int arithmetic and loop register state
 // preservation across Tier 2 compilation.
