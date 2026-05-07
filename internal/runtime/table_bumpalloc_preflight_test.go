@@ -84,6 +84,43 @@ func TestNewEmptyTableStartsWithCleanKeys(t *testing.T) {
 	}
 }
 
+func TestStringValueUsesSlabRootLog(t *testing.T) {
+	oldHeap := DefaultHeap
+	DefaultHeap = NewHeap()
+	defer func() {
+		DefaultHeap = oldHeap
+	}()
+
+	const n = stringBoxSlabSize*2 + 7
+	values := make([]Value, 0, n)
+	before := GCRootLogSize()
+	for i := 0; i < n; i++ {
+		values = append(values, StringValue(fmt.Sprintf("token-%05d", i)))
+	}
+	after := GCRootLogSize()
+	if delta := after - before; delta != 3 {
+		t.Fatalf("StringValue grew root log by %d for %d slab-backed strings, want 3", delta, n)
+	}
+	if got := values[0].Str(); got != "token-00000" {
+		t.Fatalf("first string = %q", got)
+	}
+	if got := values[n-1].Str(); got != "token-32774" {
+		t.Fatalf("last string = %q", got)
+	}
+
+	visited := make(map[uintptr]struct{})
+	ScanValueRoots(values[n-1], func(p unsafe.Pointer) {
+		visited[uintptr(p)] = struct{}{}
+	}, make(map[uintptr]struct{}))
+	if len(visited) != 1 {
+		t.Fatalf("string root scan visited %d roots, want 1", len(visited))
+	}
+	if _, ok := visited[uintptr(values[n-1].ptrPayload())]; ok {
+		t.Fatal("string root scan visited the individual string box instead of its slab root")
+	}
+	stdruntime.KeepAlive(values)
+}
+
 func TestAllocTableFastPathConcurrentUnique(t *testing.T) {
 	oldHeap := DefaultHeap
 	DefaultHeap = NewHeap()

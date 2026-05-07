@@ -15,6 +15,12 @@
 
 package runtime
 
+import (
+	"sort"
+	"sync"
+	"unsafe"
+)
+
 const stringSlabSize = 4096 // 4096 * 16 B = 64 KB per backing refill
 
 type stringSlab struct {
@@ -71,10 +77,23 @@ type stringBoxSlab struct {
 	idx     int
 }
 
-func (s *stringBoxSlab) alloc(value string) *string {
+type stringBoxSlabRange struct {
+	start uintptr
+	end   uintptr
+}
+
+var stringBoxSlabRanges struct {
+	sync.RWMutex
+	ranges []stringBoxSlabRange
+}
+
+func (s *stringBoxSlab) alloc(h *Heap, value string) *string {
 	if s.backing == nil || s.idx >= len(s.backing) {
 		s.backing = make([]string, stringBoxSlabSize)
 		s.idx = 0
+		if h != nil {
+			h.publishStringBoxSlab(s.backing)
+		}
 	}
 	p := &s.backing[s.idx]
 	s.idx++
@@ -85,5 +104,64 @@ func (s *stringBoxSlab) alloc(value string) *string {
 func (h *Heap) AllocStringBox(value string) *string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.stringBoxSlab.alloc(value)
+	return h.stringBoxSlab.alloc(h, value)
+}
+
+func (h *Heap) publishStringBoxSlab(backing []string) {
+	if len(backing) == 0 {
+		return
+	}
+	root := unsafe.Pointer(&backing[0])
+	start := uintptr(root)
+	end := start + uintptr(len(backing))*unsafe.Sizeof(backing[0])
+	registerStringBoxSlabRange(start, end)
+	keepAlive(root, nil)
+}
+
+func registerStringBoxSlabRange(start, end uintptr) {
+	if start == 0 || end <= start {
+		return
+	}
+	stringBoxSlabRanges.Lock()
+	defer stringBoxSlabRanges.Unlock()
+
+	i := sort.Search(len(stringBoxSlabRanges.ranges), func(i int) bool {
+		return stringBoxSlabRanges.ranges[i].start >= start
+	})
+	if i < len(stringBoxSlabRanges.ranges) &&
+		stringBoxSlabRanges.ranges[i].start == start &&
+		stringBoxSlabRanges.ranges[i].end == end {
+		return
+	}
+	stringBoxSlabRanges.ranges = append(stringBoxSlabRanges.ranges, stringBoxSlabRange{})
+	copy(stringBoxSlabRanges.ranges[i+1:], stringBoxSlabRanges.ranges[i:])
+	stringBoxSlabRanges.ranges[i] = stringBoxSlabRange{start: start, end: end}
+}
+
+func stringBoxSlabRootForPointer(p unsafe.Pointer) unsafe.Pointer {
+	addr := uintptr(p)
+	stringBoxSlabRanges.RLock()
+	defer stringBoxSlabRanges.RUnlock()
+
+	i := sort.Search(len(stringBoxSlabRanges.ranges), func(i int) bool {
+		return stringBoxSlabRanges.ranges[i].start > addr
+	})
+	for j := i - 1; j >= 0; j-- {
+		r := stringBoxSlabRanges.ranges[j]
+		if addr >= r.start && addr < r.end {
+			return unsafe.Pointer(r.start)
+		}
+		if addr >= r.end || r.start < addr {
+			break
+		}
+	}
+	return nil
+}
+
+func visitStringRoot(p unsafe.Pointer, visitor func(unsafe.Pointer)) {
+	if root := stringBoxSlabRootForPointer(p); root != nil {
+		visitor(root)
+		return
+	}
+	visitor(p)
 }

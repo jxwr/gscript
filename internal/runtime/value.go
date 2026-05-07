@@ -324,6 +324,10 @@ func ScanValueRoots(v Value, visitor func(unsafe.Pointer), seen map[uintptr]stru
 		scanLazyStringRoots(ls, visitor, seen)
 		return
 	}
+	if sub == ptrSubString {
+		visitStringRoot(p, visitor)
+		return
+	}
 	visitor(p)
 }
 
@@ -459,7 +463,9 @@ func StringValue(s string) Value {
 		*sp = s
 	}
 	p := unsafe.Pointer(sp)
-	keepAlive(p, sp)
+	if DefaultHeap == nil {
+		keepAlive(p, sp)
+	}
 	return Value(tagPtr | ptrSubString | (uint64(uintptr(p)) & ptrAddrMask))
 }
 
