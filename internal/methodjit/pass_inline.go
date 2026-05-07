@@ -52,6 +52,8 @@ type InlineConfig struct {
 	MaxCumulativeSize  int                      // R166: V8-style cumulative-bytecode cap across all inlines in this compilation (0 = unbounded, preserves R73 behavior)
 	PreserveSelfCalls  bool                     // keep direct self calls visible for specialized recursive ABIs/TCO
 	RequirePureNumeric bool                     // only inline side-effect-free single-result numeric helpers
+	Speculation        Tier2SpeculationPlan     // callsite feedback reader for guarded dynamic inlining
+	GuardedDynamic     bool                     // inline dynamic VM call targets behind proto guards plus miss fallback
 }
 
 // inlineMaxIterations is the safety cap on recursive inlining iterations.
@@ -170,6 +172,10 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 
 		calleeName, calleeProto := resolveCallee(instr, fn, config)
 		if calleeProto == nil {
+			if config.GuardedDynamic && tryInlineGuardedDynamicCall(fn, block, instr, i, config, cumulative) {
+				inlined = true
+				return true
+			}
 			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
 				"callee is not statically resolved from inline globals")
 			continue

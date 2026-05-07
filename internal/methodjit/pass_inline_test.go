@@ -119,6 +119,70 @@ func f(x) {
 	}
 }
 
+func TestGuardedDynamicInline_UsesCallsiteVMProtoFeedback(t *testing.T) {
+	src := `
+func inc(x) {
+	return x + 1
+}
+func caller(f, x) {
+	return f(x) + 2
+}
+`
+	top := compileTop(t, src)
+	var caller, inc *vm.FuncProto
+	for _, p := range top.Protos {
+		switch p.Name {
+		case "caller":
+			caller = p
+		case "inc":
+			inc = p
+		}
+	}
+	if caller == nil || inc == nil {
+		t.Fatalf("missing protos: caller=%v inc=%v", caller, inc)
+	}
+	callPC := -1
+	for pc, inst := range caller.Code {
+		if vm.DecodeOp(inst) == vm.OP_CALL {
+			callPC = pc
+			break
+		}
+	}
+	if callPC < 0 {
+		t.Fatal("caller has no OP_CALL")
+	}
+	if caller.CallSiteFeedback == nil {
+		caller.CallSiteFeedback = make([]vm.CallSiteFeedback, len(caller.Code))
+	}
+	caller.CallSiteFeedback[callPC] = vm.CallSiteFeedback{
+		Count:         10,
+		NArgs:         1,
+		ResultArity:   1,
+		CalleeVMProto: inc,
+	}
+
+	fn := BuildGraphWithSpeculation(caller, NewTier2SpeculationPlan(caller))
+	result, err := InlinePassWith(InlineConfig{
+		MaxSize:        30,
+		Speculation:    NewTier2SpeculationPlan(caller),
+		GuardedDynamic: true,
+	})(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	if got := countOp(result, OpIsVMClosureProto); got != 1 {
+		t.Fatalf("guarded dynamic inline guard count=%d want 1\n%s", got, Print(result))
+	}
+	if got := countOp(result, OpCall); got != 1 {
+		t.Fatalf("guarded dynamic inline should retain one miss fallback OpCall, got %d\n%s", got, Print(result))
+	}
+	if errs := Validate(result); len(errs) > 0 {
+		for _, e := range errs {
+			t.Errorf("validation error: %v", e)
+		}
+	}
+}
+
 // TestInline_SpectralNorm_A tests inlining a function like spectral_norm's A(i,j).
 func TestInline_SpectralNorm_A(t *testing.T) {
 	src := `

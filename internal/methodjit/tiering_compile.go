@@ -187,6 +187,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			InlineGlobals:         inlineGlobals,
 			ProtocolGlobals:       loopCallGlobals,
 			InlineMaxSize:         inlineMaxCalleeSize,
+			Speculation:           speculation,
 			FixedShapeArgFacts:    inferGuardedFixedShapeArgFactsForProto(proto, loopCallGlobals),
 			FixedShapeEntryGuards: true,
 			Remarks:               remarks,

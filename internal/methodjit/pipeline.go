@@ -323,6 +323,7 @@ type Tier2PipelineOpts struct {
 	InlineGlobals         map[string]*vm.FuncProto    // global function protos for inlining
 	ProtocolGlobals       map[string]*vm.FuncProto    // stable globals available for guarded protocol folds
 	InlineMaxSize         int                         // max callee bytecode count; 0 → 40
+	Speculation           Tier2SpeculationPlan        // feedback access for guarded dynamic call optimization
 	FixedShapeArgFacts    map[int]FixedShapeTableFact // guarded fixed-shape facts for callee params
 	FixedShapeEntryGuards bool                        // emit callee-entry shape guards for FixedShapeArgFacts
 	Remarks               *OptimizationRemarks        // optional structured optimization diagnostics
@@ -405,6 +406,10 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 			MaxRecursion:      8,
 			MaxCumulativeSize: 120,
 			PreserveSelfCalls: staticallyCallsOnlySelf(fn.Proto),
+		}
+		if opts != nil {
+			config.Speculation = opts.Speculation
+			config.GuardedDynamic = opts.Speculation.proto != nil
 		}
 		fn, err = InlinePassWith(config)(fn)
 		if err != nil {
