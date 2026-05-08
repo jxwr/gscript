@@ -56,6 +56,9 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	if compiled.NextAction != "suppressed_guard_residual" {
 		t.Fatalf("next action=%q want suppressed_guard_residual: %+v", compiled.NextAction, compiled)
 	}
+	if compiled.NextTarget != "guard_policy" {
+		t.Fatalf("next target=%q want guard_policy: %+v", compiled.NextTarget, compiled)
+	}
 	failed := findSpecState(t, snap, "failed")
 	if !failed.Failed || failed.FailReason != "blocked" {
 		t.Fatalf("failed state mismatch: %+v", failed)
@@ -74,6 +77,24 @@ func TestTier2SpeculationNextActionPrioritizesRefreshAndHotExits(t *testing.T) {
 	}
 	if got := tier2SpeculationNextAction(Tier2SpeculationState{Compiled: true}); got != "monitor" {
 		t.Fatalf("compiled action=%q", got)
+	}
+}
+
+func TestTier2SpeculationNextTargetClassifiesDominantExit(t *testing.T) {
+	tests := []struct {
+		state Tier2SpeculationState
+		want  string
+	}{
+		{Tier2SpeculationState{NextAction: "inspect_hot_exit", TopExitName: "ExitCallExit"}, "call_specialization"},
+		{Tier2SpeculationState{NextAction: "inspect_hot_exit", TopExitName: "ExitTableExit", TopExitReason: "SetField"}, "table_field_exit"},
+		{Tier2SpeculationState{NextAction: "inspect_hot_exit", TopExitName: "ExitTableExit", TopExitReason: "GetTable"}, "table_access_exit"},
+		{Tier2SpeculationState{NextAction: "inspect_hot_exit", TopExitName: "ExitDeopt", TopExitReason: "deopt:GuardType(int)"}, "guard_policy"},
+		{Tier2SpeculationState{NextAction: "monitor", TopExitName: "ExitCallExit"}, ""},
+	}
+	for _, tt := range tests {
+		if got := tier2SpeculationNextTarget(tt.state); got != tt.want {
+			t.Fatalf("target=%q want %q for %+v", got, tt.want, tt.state)
+		}
 	}
 }
 

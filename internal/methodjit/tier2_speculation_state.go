@@ -30,6 +30,7 @@ type Tier2SpeculationState struct {
 	TopExitPC            int               `json:"top_exit_pc,omitempty"`
 	TopExitCount         uint64            `json:"top_exit_count,omitempty"`
 	NextAction           string            `json:"next_action,omitempty"`
+	NextTarget           string            `json:"next_target,omitempty"`
 }
 
 func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationState {
@@ -99,6 +100,7 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 			}
 		}
 		state.NextAction = tier2SpeculationNextAction(state)
+		state.NextTarget = tier2SpeculationNextTarget(state)
 		out = append(out, state)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -124,6 +126,36 @@ func tier2SpeculationNextAction(state Tier2SpeculationState) string {
 		return "guard_relaxed"
 	case state.Compiled:
 		return "monitor"
+	default:
+		return ""
+	}
+}
+
+func tier2SpeculationNextTarget(state Tier2SpeculationState) string {
+	if state.NextAction == "" || state.NextAction == "monitor" || state.NextAction == "tier2_failed" {
+		return ""
+	}
+	switch state.TopExitName {
+	case "ExitCallExit":
+		return "call_specialization"
+	case "ExitTableExit":
+		switch state.TopExitReason {
+		case "GetField", "SetField":
+			return "table_field_exit"
+		case "GetTable", "SetTable":
+			return "table_access_exit"
+		default:
+			return "table_exit"
+		}
+	case "ExitDeopt":
+		if exitReasonGuardOp(state.TopExitReason) != "" {
+			return "guard_policy"
+		}
+		return "deopt_policy"
+	case "ExitGlobalExit":
+		return "global_access_exit"
+	case "ExitOpExit":
+		return "op_exit"
 	default:
 		return ""
 	}

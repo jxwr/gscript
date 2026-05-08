@@ -335,6 +335,7 @@ def load_spec_state(path: Path | None) -> dict:
     states = [row for row in data if isinstance(row, dict)]
     kinds: Counter[str] = Counter()
     actions: Counter[str] = Counter()
+    targets: Counter[str] = Counter()
     top_exits: Counter[str] = Counter()
     for row in states:
         suppressed = row.get("suppressed_kinds")
@@ -344,6 +345,9 @@ def load_spec_state(path: Path | None) -> dict:
         action = row.get("next_action")
         if action:
             actions[str(action)] += 1
+        target = row.get("next_target")
+        if target:
+            targets[str(target)] += 1
         top_exit_name = row.get("top_exit_name")
         top_exit_reason = row.get("top_exit_reason")
         top_exit_count = int(row.get("top_exit_count") or 0)
@@ -361,6 +365,7 @@ def load_spec_state(path: Path | None) -> dict:
         "suppressed_guard_exits": sum(int(row.get("suppressed_guard_exits") or 0) for row in states),
         "queued_recompile_exits": sum(int(row.get("queued_recompile_exits") or 0) for row in states),
         "next_actions": dict(sorted(actions.items())),
+        "next_targets": dict(sorted(targets.items())),
         "top_exits": dict(top_exits.most_common(10)),
         "states": states,
     }
@@ -482,6 +487,10 @@ def classify(
         if next_actions:
             action_text = ", ".join(f"{action}={count}" for action, count in sorted(next_actions.items()))
             evidence.append(f"Tier2 next actions: {action_text}")
+        next_targets = spec_state.get("next_targets") or {}
+        if next_targets:
+            target_text = ", ".join(f"{target}={count}" for target, count in sorted(next_targets.items()))
+            evidence.append(f"Tier2 next targets: {target_text}")
         top_exits = spec_state.get("top_exits") or {}
         if top_exits:
             first_exit, first_count = next(iter(top_exits.items()))
