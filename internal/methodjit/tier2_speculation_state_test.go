@@ -49,9 +49,27 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	if compiled.ExitCount != 2 || compiled.SuppressedGuardExits != 2 || compiled.ExitKinds["ExitDeopt"] != 2 {
 		t.Fatalf("exit profile summary mismatch: %+v", compiled)
 	}
+	if compiled.NextAction != "suppressed_guard_residual" {
+		t.Fatalf("next action=%q want suppressed_guard_residual: %+v", compiled.NextAction, compiled)
+	}
 	failed := findSpecState(t, snap, "failed")
 	if !failed.Failed || failed.FailReason != "blocked" {
 		t.Fatalf("failed state mismatch: %+v", failed)
+	}
+	if failed.NextAction != "tier2_failed" {
+		t.Fatalf("failed next action=%q want tier2_failed", failed.NextAction)
+	}
+}
+
+func TestTier2SpeculationNextActionPrioritizesRefreshAndHotExits(t *testing.T) {
+	if got := tier2SpeculationNextAction(Tier2SpeculationState{QueuedRecompileExits: 1, ExitCount: 2}); got != "refresh_queued" {
+		t.Fatalf("queued action=%q", got)
+	}
+	if got := tier2SpeculationNextAction(Tier2SpeculationState{ExitCount: 3, SuppressedGuardExits: 1}); got != "inspect_hot_exit" {
+		t.Fatalf("hot exit action=%q", got)
+	}
+	if got := tier2SpeculationNextAction(Tier2SpeculationState{Compiled: true}); got != "monitor" {
+		t.Fatalf("compiled action=%q", got)
 	}
 }
 

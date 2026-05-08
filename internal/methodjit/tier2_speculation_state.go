@@ -25,6 +25,7 @@ type Tier2SpeculationState struct {
 	SuppressedGuardExits uint64            `json:"suppressed_guard_exits,omitempty"`
 	QueuedRecompileExits uint64            `json:"queued_recompile_exits,omitempty"`
 	ExitKinds            map[string]uint64 `json:"exit_kinds,omitempty"`
+	NextAction           string            `json:"next_action,omitempty"`
 }
 
 func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationState {
@@ -87,6 +88,7 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 			state.QueuedRecompileExits = exits.QueuedRecompileExits
 			state.ExitKinds = exits.ExitKinds
 		}
+		state.NextAction = tier2SpeculationNextAction(state)
 		out = append(out, state)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -96,4 +98,23 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 		return out[i].ProtoName < out[j].ProtoName
 	})
 	return out
+}
+
+func tier2SpeculationNextAction(state Tier2SpeculationState) string {
+	switch {
+	case state.Failed:
+		return "tier2_failed"
+	case state.QueuedRecompileExits > 0:
+		return "refresh_queued"
+	case state.ExitCount > 0 && state.SuppressedGuardExits == state.ExitCount:
+		return "suppressed_guard_residual"
+	case state.ExitCount > 0:
+		return "inspect_hot_exit"
+	case len(state.GuardFailures) > 0:
+		return "guard_relaxed"
+	case state.Compiled:
+		return "monitor"
+	default:
+		return ""
+	}
 }
