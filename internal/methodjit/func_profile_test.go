@@ -673,6 +673,14 @@ func yielding(n) {
 func string_literal_only() {
     print("coroutine")
 }
+
+func create_then_resume(n) {
+    co := coroutine.create(func() {
+        coroutine.yield(1)
+    })
+    ok, value := coroutine.resume(co)
+    return value
+}
 `
 	proto := compileProto(t, src)
 	driver := findProtoByName(proto, "driver")
@@ -697,6 +705,14 @@ func string_literal_only() {
 	}
 	if shouldStayTier0CoroutineRuntime(plain, analyzeFuncProfile(plain)) {
 		t.Fatal("plain string constants should not trigger the coroutine VM gate")
+	}
+
+	createThenResume := findProtoByName(proto, "create_then_resume")
+	if createThenResume == nil {
+		t.Fatal("create_then_resume proto not found")
+	}
+	if shouldStayTier0CoroutineRuntime(createThenResume, analyzeFuncProfile(createThenResume)) {
+		t.Fatal("coroutine factory+resume consumers should remain eligible for JIT")
 	}
 }
 

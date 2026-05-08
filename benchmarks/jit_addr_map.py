@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import re
 import subprocess
@@ -145,30 +146,71 @@ def run_pprof_raw(binary: Path, profile: Path) -> str:
     return proc.stdout
 
 
-def parse_pprof_raw(raw: str) -> tuple[dict[int, int], list[tuple[int, int, list[int]]]]:
+def parse_pprof_raw(raw: str) -> tuple[dict[int, int], dict[int, list[str]], list[tuple[int, int, list[int]]]]:
     locations: dict[int, int] = {}
+    location_names: dict[int, list[str]] = {}
     samples: list[tuple[int, int, list[int]]] = []
     section = ""
+    current_loc: int | None = None
     for line in raw.splitlines():
         if line == "Samples:":
             section = "samples"
+            current_loc = None
             continue
         if line == "Locations":
             section = "locations"
+            current_loc = None
             continue
         if line == "Mappings":
             section = "mappings"
+            current_loc = None
             continue
         if section == "locations":
             m = re.match(r"\s*(\d+):\s+(0x[0-9a-fA-F]+)", line)
             if m:
-                locations[int(m.group(1))] = int(m.group(2), 16)
+                current_loc = int(m.group(1))
+                locations[current_loc] = int(m.group(2), 16)
+                names = parse_location_function_names(line)
+                if names:
+                    location_names[current_loc] = names
+                continue
+            if current_loc is not None:
+                names = parse_location_function_names(line)
+                if names:
+                    location_names.setdefault(current_loc, []).extend(names)
         elif section == "samples":
             m = re.match(r"\s*(\d+)\s+(\d+):\s+(.+)$", line)
             if m:
                 loc_ids = [int(x) for x in re.findall(r"\b\d+\b", m.group(3))]
                 samples.append((int(m.group(1)), int(m.group(2)), loc_ids))
-    return locations, samples
+    return locations, location_names, samples
+
+
+def parse_location_function_names(line: str) -> list[str]:
+    names: list[str] = []
+    # go tool pprof -raw location lines look like either:
+    #   1: 0x... M=1 runtime._ExternalCode /path/file.go:5581:0 s=5581
+    #              runtime._System /path/file.go:5580:0 s=5580
+    text = line.strip()
+    if not text:
+        return names
+    if ":" in text and text.split(":", 1)[0].strip().isdigit():
+        parts = text.split()
+        for i, part in enumerate(parts):
+            if part.startswith("0x") or part.startswith("M="):
+                continue
+            if i + 1 < len(parts) and looks_like_source_location(parts[i + 1]):
+                names.append(part)
+                break
+        return names
+    parts = text.split()
+    if len(parts) >= 2 and looks_like_source_location(parts[1]):
+        names.append(parts[0])
+    return names
+
+
+def looks_like_source_location(value: str) -> bool:
+    return bool(re.search(r":\d+:\d+(?:$|\s)", value) or re.search(r":\d+:\d+$", value))
 
 
 def find_range(ranges: list[dict], pc: int) -> dict | None:
@@ -216,6 +258,114 @@ def summarize(ranges: list[dict], locations: dict[int, int], samples: list[tuple
     return sorted(buckets.values(), key=lambda row: row["cpu_nanos"], reverse=True)
 
 
+def profile_stats(
+    ranges: list[dict],
+    locations: dict[int, int],
+    location_names: dict[int, list[str]],
+    samples: list[tuple[int, int, list[int]]],
+) -> dict:
+    matched_loc_ids: set[int] = set()
+    external_samples = 0
+    external_nanos = 0
+    unmatched_samples = 0
+    unmatched_nanos = 0
+    total_samples = 0
+    total_nanos = 0
+    sampled_pcs: list[int] = []
+    function_counts: Counter[str] = Counter()
+
+    for count, nanos, loc_ids in samples:
+        total_samples += count
+        total_nanos += nanos
+        sample_matched = False
+        sample_external = False
+        for loc_id in loc_ids:
+            pc = locations.get(loc_id)
+            if pc is not None:
+                sampled_pcs.append(pc)
+                if find_range(ranges, pc) is not None:
+                    matched_loc_ids.add(loc_id)
+                    sample_matched = True
+            names = location_names.get(loc_id) or []
+            for name in names:
+                function_counts[name] += count
+                if name == "runtime._ExternalCode":
+                    sample_external = True
+        if sample_external:
+            external_samples += count
+            external_nanos += nanos
+        if not sample_matched:
+            unmatched_samples += count
+            unmatched_nanos += nanos
+
+    return {
+        "profile_samples": total_samples,
+        "profile_cpu_nanos": total_nanos,
+        "profile_locations": len(locations),
+        "matched_locations": len(matched_loc_ids),
+        "unmatched_samples": unmatched_samples,
+        "unmatched_cpu_nanos": unmatched_nanos,
+        "external_code_samples": external_samples,
+        "external_code_cpu_nanos": external_nanos,
+        "sampled_pc_min": f"0x{min(sampled_pcs):x}" if sampled_pcs else "",
+        "sampled_pc_max": f"0x{max(sampled_pcs):x}" if sampled_pcs else "",
+        "top_profile_functions": [
+            {"name": name, "samples": samples}
+            for name, samples in function_counts.most_common(10)
+        ],
+    }
+
+
+def range_stats(ranges: list[dict]) -> dict:
+    if not ranges:
+        return {
+            "jit_ranges": 0,
+            "jit_functions": [],
+            "jit_pc_min": "",
+            "jit_pc_max": "",
+        }
+    by_proto: Counter[str] = Counter()
+    for row in ranges:
+        by_proto[str(row.get("proto") or "")] += 1
+    return {
+        "jit_ranges": len(ranges),
+        "jit_functions": [
+            {"name": name, "ranges": count}
+            for name, count in by_proto.most_common()
+        ],
+        "jit_pc_min": f"0x{min(int(row['abs_start']) for row in ranges):x}",
+        "jit_pc_max": f"0x{max(int(row['abs_end']) for row in ranges):x}",
+    }
+
+
+def failure_reason(rows: list[dict], ranges: list[dict], stats: dict) -> dict | None:
+    if rows:
+        return None
+    if not ranges:
+        return {
+            "code": "no_warm_jit_ranges",
+            "message": "warm dump did not contain any JIT code ranges; check warm/manifest.json for Tier2 compile status",
+        }
+    if stats.get("profile_samples", 0) == 0:
+        return {
+            "code": "no_profile_samples",
+            "message": "CPU profile contained no samples to map",
+        }
+    if stats.get("external_code_samples", 0) and stats.get("matched_locations", 0) == 0:
+        return {
+            "code": "profile_external_code_without_native_pc",
+            "message": (
+                "Go CPU profile sampled runtime._ExternalCode, but the raw profile "
+                "does not preserve the actual native JIT PC; warm JIT ranges are present "
+                "but cannot be joined to IR/opcode rows from this profile"
+            ),
+        }
+    return {
+        "code": "profile_pcs_outside_warm_jit_ranges",
+        "message": "CPU profile PCs did not fall inside any production-warm JIT code range",
+    }
+
+
 def pprof_function_summary(rows: list[dict]) -> list[dict]:
     out = []
     for row in rows:
@@ -238,6 +388,18 @@ def pprof_function_summary(rows: list[dict]) -> list[dict]:
             }
         )
     return out
+
+
+def output_document(rows: list[dict], ranges: list[dict], stats: dict) -> dict:
+    status = "ok" if rows else "unmatched"
+    failure = failure_reason(rows, ranges, stats)
+    return {
+        "version": 1,
+        "status": status,
+        "failure": failure,
+        "summary": {**range_stats(ranges), **stats, "mapped_rows": len(rows)},
+        "rows": rows,
+    }
 
 
 def main() -> int:
@@ -268,16 +430,34 @@ def main() -> int:
             if not args.binary or not args.profile:
                 parser.error("--profile requires --binary")
             raw = run_pprof_raw(args.binary, args.profile)
-        locations, samples = parse_pprof_raw(raw)
+        locations, location_names, samples = parse_pprof_raw(raw)
         rows.extend(summarize(ranges, locations, samples))
+        stats = profile_stats(ranges, locations, location_names, samples)
+    else:
+        stats = {
+            "profile_samples": 0,
+            "profile_cpu_nanos": 0,
+            "profile_locations": 0,
+            "matched_locations": 0,
+            "unmatched_samples": 0,
+            "unmatched_cpu_nanos": 0,
+            "external_code_samples": 0,
+            "external_code_cpu_nanos": 0,
+            "sampled_pc_min": "",
+            "sampled_pc_max": "",
+            "top_profile_functions": [],
+        }
 
     if args.json:
-        args.json.write_text(json.dumps(rows, indent=2) + "\n")
+        args.json.write_text(json.dumps(output_document(rows, ranges, stats), indent=2) + "\n")
     if args.pprof_functions_json:
         args.pprof_functions_json.write_text(json.dumps(pprof_function_summary(rows), indent=2) + "\n")
 
     if not rows:
-        print("No JIT PCs matched warm-dump code ranges.")
+        doc = output_document(rows, ranges, stats)
+        failure = doc.get("failure") or {}
+        print(f"No JIT PCs matched warm-dump code ranges: {failure.get('code', 'unknown')}")
+        print(json.dumps(doc["summary"], sort_keys=True))
         return 0
 
     print("| Samples | CPU | Proto | IR | Op | Block | BC | Pass | PC |")

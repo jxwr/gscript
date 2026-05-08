@@ -113,7 +113,7 @@ func (e *BaselineJITEngine) handleYield(ctx *ExecContext, regs []runtime.Value, 
 		return err
 	}
 	if ctx.CoroutineNativeSwitch != 0 {
-		if baselineCoroutineFastContinuationSafe(proto, resumePC) && baselineCoroutineFastContinuationUsesPooledRecord(proto, resumePC) {
+		if baselineCoroutineFastContinuationSafe(proto, resumePC) {
 			code := uintptr(bf.Code.Ptr()) + uintptr(resumeOff)
 			if err := e.callVM.SaveMethodJITFastContinuation(code, uintptr(unsafe.Pointer(ctx)), resumePC); err != nil {
 				return err
@@ -150,7 +150,7 @@ func baselineProtoMayUseNativeCoroutineSwitch(proto *vm.FuncProto) bool {
 			continue
 		}
 		resumePC := pc + 1
-		if baselineCoroutineFastContinuationSafe(proto, resumePC) && baselineCoroutineFastContinuationUsesPooledRecord(proto, resumePC) {
+		if baselineCoroutineFastContinuationSafe(proto, resumePC) {
 			return true
 		}
 	}
@@ -161,12 +161,11 @@ func baselineProtoMayUseNativeCoroutineResume(proto *vm.FuncProto) bool {
 	if proto == nil {
 		return false
 	}
-	for pc, inst := range proto.Code {
+	for _, inst := range proto.Code {
 		if vm.DecodeOp(inst) != vm.OP_RESUME {
 			continue
 		}
-		if vm.DecodeB(inst) == 2 && vm.DecodeC(inst) == 3 &&
-			(&vm.VM{}).ResumePayloadIsFieldOnly(proto, pc+1, vm.DecodeA(inst), vm.DecodeC(inst)) {
+		if vm.DecodeB(inst) == 2 && vm.DecodeC(inst) == 3 {
 			return true
 		}
 	}

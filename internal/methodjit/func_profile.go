@@ -230,10 +230,14 @@ func shouldStayTier0CoroutineRuntime(proto *vm.FuncProto, profile FuncProfile) b
 	}
 	hasCoroutine := false
 	hasSuspendingOrFactoryOp := false
+	hasResume := false
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
 		if op == vm.OP_YIELD {
 			return true
+		}
+		if op == vm.OP_RESUME {
+			hasResume = true
 		}
 		if op != vm.OP_GETGLOBAL && op != vm.OP_GETFIELD {
 			continue
@@ -255,6 +259,9 @@ func shouldStayTier0CoroutineRuntime(proto *vm.FuncProto, profile FuncProfile) b
 		case "create", "wrap", "yield":
 			hasSuspendingOrFactoryOp = true
 		}
+	}
+	if hasResume {
+		return false
 	}
 	return hasCoroutine && hasSuspendingOrFactoryOp
 }

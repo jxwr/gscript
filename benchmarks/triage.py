@@ -416,19 +416,29 @@ def collect_spec_state(root: Path, out_dir: Path, bench: str, timeout: int) -> P
 
 def load_pcmap_summary(pcmap_json: Path | None) -> dict:
     data = read_json(pcmap_json)
-    if not isinstance(data, list):
+    failure = None
+    extra_summary = {}
+    if isinstance(data, dict):
+        failure = data.get("failure") if isinstance(data.get("failure"), dict) else None
+        extra_summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        rows_data = data.get("rows")
+    else:
+        rows_data = data
+    if not isinstance(rows_data, list):
         return {"rows": 0, "cpu_nanos": 0, "top_ops": []}
     by_op: Counter[str] = Counter()
     total = 0
-    for row in data:
+    for row in rows_data:
         nanos = int(row.get("cpu_nanos") or 0)
         total += nanos
         op = str(row.get("ir_op") or row.get("bytecode_op") or "unknown")
         by_op[op] += nanos
     return {
-        "rows": len(data),
+        "rows": len(rows_data),
         "cpu_nanos": total,
         "top_ops": [{"op": op, "cpu_seconds": nanos / 1e9} for op, nanos in by_op.most_common(10)],
+        "failure": failure,
+        "summary": extra_summary,
     }
 
 

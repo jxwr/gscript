@@ -46,6 +46,7 @@ type VMCoroutine struct {
 	closure    *Closure
 	started    bool
 	leafNoCall bool
+	wrapped    bool
 	// stackYieldEnabled is set by the resumer (consumer) when static analysis
 	// (ResumePayloadIsFieldOnly) of the bytecode after the resume site shows
 	// the yielded payload is only read via GETFIELD. Consulted in vm.go's
@@ -236,6 +237,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 				return nil, fmt.Errorf("coroutine.wrap expects a GScript function")
 			}
 			co := NewVMCoroutine(cl)
+			co.wrapped = true
 			vm.recordCoroutineCreated(true)
 			dead := false
 			wrapper := &rt.GoFunction{
@@ -507,6 +509,11 @@ func (vm *VM) SaveMethodJITContinuation(cont MethodJITContinuation) error {
 	if err := vm.SetCurrentFramePC(cont.PC); err != nil {
 		return err
 	}
+	if co.wrapped {
+		co.jitContinuation = MethodJITContinuation{}
+		co.hasJITContinuation = false
+		return nil
+	}
 	co.jitContinuation = cont
 	co.hasJITContinuation = true
 	return nil
@@ -519,6 +526,9 @@ func (vm *VM) SaveMethodJITFastContinuation(code, ctx uintptr, resumePC int) err
 	co := vm.activeCoroutine()
 	if co == nil {
 		return fmt.Errorf("cannot save JIT fast continuation outside a coroutine")
+	}
+	if co.wrapped {
+		return nil
 	}
 	co.fastJITCode = code
 	co.fastJITCtx = ctx

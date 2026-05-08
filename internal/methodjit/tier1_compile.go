@@ -587,7 +587,7 @@ func emitBaselineResumeWithNativeSwitch(asm *jit.Assembler, inst uint32, pc int,
 	a := vm.DecodeA(inst)
 	b := vm.DecodeB(inst)
 	c := vm.DecodeC(inst)
-	if b != 2 || c != 3 || !payloadFieldOnly {
+	if b != 2 || c != 3 {
 		emitBaselineOpExitCommon(asm, vm.OP_RESUME, pc, a, b, c)
 		return
 	}
@@ -622,10 +622,16 @@ func emitBaselineResumeWithNativeSwitch(asm *jit.Assembler, inst uint32, pc int,
 	asm.CBZ(jit.X16, slowLabel)
 	asm.LDR(jit.X17, jit.X20, vm.VMCoroutineFastJITCtxOffset())
 	asm.CBZ(jit.X17, slowLabel)
-	asm.LDR(jit.X1, jit.X20, vm.VMCoroutinePooledFixedRecordOffset())
-	asm.CBZ(jit.X1, slowLabel)
+	if payloadFieldOnly {
+		asm.LDR(jit.X1, jit.X20, vm.VMCoroutinePooledFixedRecordOffset())
+		asm.CBZ(jit.X1, slowLabel)
+	}
 
-	asm.MOVimm16(jit.X1, 1)
+	if payloadFieldOnly {
+		asm.MOVimm16(jit.X1, 1)
+	} else {
+		asm.MOVimm16(jit.X1, 0)
+	}
 	asm.STRB(jit.X1, jit.X20, vm.VMCoroutineStackYieldEnabledOffset())
 	asm.LDR(jit.X1, mRegCtx, execCtxOffCoroutineNativeResumes)
 	asm.ADDimm(jit.X1, jit.X1, 1)

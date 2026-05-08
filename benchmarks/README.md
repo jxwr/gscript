@@ -74,6 +74,10 @@ go run ./cmd/gscript -jit -runtime-path-stats-json benchmarks/suite/string_bench
 go run ./cmd/gscript -jit -jit-dump-warm=/tmp/gscript-warm benchmarks/suite/spectral_norm.gs
 
 # Offline join from a CPU profile to JIT IR/opcode PCs from the same run.
+# On macOS/ARM64, Go CPU profiles may collapse native JIT samples to
+# runtime._ExternalCode without preserving the actual native PC. In that case
+# the JSON output is still machine-readable and contains status=unmatched plus
+# failure.code/profile summary fields instead of silently writing [].
 python3 benchmarks/jit_addr_map.py --warm-dir=/tmp/gscript-warm \
   --binary=/tmp/gscript --profile=/tmp/gscript.pprof
 
@@ -147,7 +151,9 @@ workflow:
   including code addresses and PC maps; this avoids drift from offline-only
   diagnostic compiles.
 - `jit_addr_map.py` maps raw sampled PCs, or explicit PCs, back to JIT
-  IR/opcode/source metadata from the same run.
+  IR/opcode/source metadata from the same run. When the profile lacks native
+  JIT PCs, it reports a structured failure reason and JIT/profile coverage
+  summary so the missing mapping is diagnosable.
 
 It is not a complete compiler observability stack yet. Remaining high-value
 gaps are JIT symbol/perf-map integration so external profilers can name native
