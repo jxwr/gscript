@@ -212,6 +212,71 @@ func TestScalarPromotion_FloatField_HoistsAcrossBackEdge(t *testing.T) {
 	}
 }
 
+func TestScalarPromotion_IntField_HoistsAcrossBackEdge(t *testing.T) {
+	fn := &Function{NumRegs: 4}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Block: b0, Aux: 0}
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 0}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 1}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{obj, zero, one, b0Term}
+
+	iphi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{iphi, cond, b1Term}
+
+	count := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt, Block: b2,
+		Args: []*Value{obj.Value()}, Aux: 9, Aux2: 333}
+	nextCount := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Block: b2,
+		Args: []*Value{count.Value(), one.Value()}}
+	setCount := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown, Block: b2,
+		Args: []*Value{obj.Value(), nextCount.Value()}, Aux: 9, Aux2: 444}
+	inext := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Block: b2,
+		Args: []*Value{iphi.Value(), one.Value()}}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{count, nextCount, setCount, inext, b2Term}
+	iphi.Args = []*Value{zero.Value(), inext.Value()}
+
+	b3Term := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3, Args: []*Value{obj.Value()}}
+	b3.Instrs = []*Instr{b3Term}
+	assertValidates(t, fn, "int fixture input")
+
+	if _, err := LICMPass(fn); err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	if _, err := ScalarPromotionPass(fn); err != nil {
+		t.Fatalf("ScalarPromotionPass: %v", err)
+	}
+	assertValidates(t, fn, "after int ScalarPromotion")
+
+	field9 := int64(9)
+	if n := countOpInBlock(b2, OpGetField, &field9); n != 0 {
+		t.Fatalf("body still has %d OpGetField(obj,9); expected 0", n)
+	}
+	if n := countOpInBlock(b2, OpSetField, &field9); n != 0 {
+		t.Fatalf("body still has %d OpSetField(obj,9); expected 0", n)
+	}
+	var intPhi *Instr
+	for _, instr := range b1.Instrs {
+		if instr.Op != OpPhi {
+			break
+		}
+		if instr.Type == TypeInt && instr != iphi {
+			intPhi = instr
+			break
+		}
+	}
+	if intPhi == nil {
+		t.Fatalf("no promoted TypeInt phi in header\n%s", Print(fn))
+	}
+	if n := countOpInBlock(b3, OpSetField, &field9); n != 1 {
+		t.Fatalf("exit block has %d OpSetField(obj,9); expected 1", n)
+	}
+}
+
 func TestScalarPromotion_SplitsCriticalExitEdge(t *testing.T) {
 	fn, b0, b1, b2, b3 := buildPromoteFixture(t)
 

@@ -511,6 +511,16 @@ func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typ
 		ec.storeRawFloat(jit.D0, instr.ID)
 		return
 	}
+	if instr.Type == TypeInt && typeDeoptLabel != "" {
+		if valReg != jit.X0 {
+			ec.asm.MOVreg(jit.X0, valReg)
+		}
+		emitCheckIsInt(ec.asm, jit.X0, jit.X2)
+		ec.asm.BCond(jit.CondNE, typeDeoptLabel)
+		jit.EmitUnboxInt(ec.asm, jit.X0, jit.X0)
+		ec.storeRawInt(jit.X0, instr.ID)
+		return
+	}
 	ec.storeResultNB(valReg, instr.ID)
 }
 
@@ -806,7 +816,7 @@ func (ec *emitContext) emitGetFieldExit(instr *Instr) {
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
 		asm.Label(doneLabel)
-	} else if instr.Type == TypeFloat {
+	} else if instr.Type == TypeFloat || instr.Type == TypeInt {
 		typeDeoptLabel := ec.uniqueLabel("getfield_exit_type_deopt")
 		doneLabel := ec.uniqueLabel("getfield_exit_typed_done")
 		ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)

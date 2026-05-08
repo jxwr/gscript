@@ -1,6 +1,8 @@
 // pass_scalar_promote.go implements LoopScalarPromotionPass: promote
 // loop-carried (obj, field) pairs into an SSA phi at the loop header.
-// R32 scope: float fields only, exactly one in-loop SetField, no calls
+// R32 scope started with float fields only; the pass now also promotes int
+// fields when both the field load and stored value are statically TypeInt.
+// Exactly one in-loop SetField, no calls
 // in the loop body, no wide-kill writes to the same obj, single exit
 // block with no critical edge, obj loop-invariant, dedicated pre-header.
 
@@ -9,12 +11,28 @@ package methodjit
 // pairInfo collects the OpGetField and OpSetField instructions observed
 // in a loop body for a single (objID, fieldAux) pair.
 type pairInfo struct {
-	objID    int
-	fieldAux int64
-	gets     []*Instr
-	sets     []*Instr
-	anyFloat bool
-	allFloat bool
+	objID        int
+	fieldAux     int64
+	gets         []*Instr
+	sets         []*Instr
+	promoteType  Type
+	typeKnown    bool
+	typeMismatch bool
+}
+
+func (p *pairInfo) observeType(typ Type) {
+	if typ != TypeFloat && typ != TypeInt {
+		p.typeMismatch = true
+		return
+	}
+	if !p.typeKnown {
+		p.promoteType = typ
+		p.typeKnown = true
+		return
+	}
+	if p.promoteType != typ {
+		p.typeMismatch = true
+	}
 }
 
 // ScalarPromotionPass is the pipeline entry point.
@@ -76,7 +94,7 @@ func promoteLoopPairs(fn *Function, li *loopInfo, hdr *Block, ph *Block) {
 		k := loadKey{objID: objID, fieldAux: fieldAux}
 		p, ok := pairs[k]
 		if !ok {
-			p = &pairInfo{objID: objID, fieldAux: fieldAux, allFloat: true}
+			p = &pairInfo{objID: objID, fieldAux: fieldAux}
 			pairs[k] = p
 		}
 		return p
@@ -96,17 +114,18 @@ func promoteLoopPairs(fn *Function, li *loopInfo, hdr *Block, ph *Block) {
 				}
 				p := getPair(instr.Args[0].ID, instr.Aux)
 				p.gets = append(p.gets, instr)
-				if instr.Type == TypeFloat {
-					p.anyFloat = true
-				} else {
-					p.allFloat = false
-				}
+				p.observeType(instr.Type)
 			case OpSetField:
 				if len(instr.Args) < 2 {
 					continue
 				}
 				p := getPair(instr.Args[0].ID, instr.Aux)
 				p.sets = append(p.sets, instr)
+				if instr.Args[1] == nil || instr.Args[1].Def == nil {
+					p.typeMismatch = true
+					continue
+				}
+				p.observeType(instr.Args[1].Def.Type)
 			}
 		}
 	}
@@ -166,7 +185,7 @@ func promoteLoopPairs(fn *Function, li *loopInfo, hdr *Block, ph *Block) {
 		if len(p.sets) != 1 || len(p.gets) == 0 {
 			continue
 		}
-		if !p.anyFloat || !p.allFloat {
+		if !p.typeKnown || p.typeMismatch || (p.promoteType != TypeFloat && p.promoteType != TypeInt) {
 			continue
 		}
 		if wideKill[p.objID] {
@@ -211,16 +230,17 @@ func isInvariantObj(bodyBlocks map[int]bool, get *Instr) bool {
 func promoteOnePair(fn *Function, hdr, ph, exitBlock *Block, p *pairInfo) {
 	objVal := p.gets[0].Args[0]
 	fieldAux := p.fieldAux
+	promoteType := p.promoteType
 
 	// 1. Pre-header init load before ph's terminator.
 	initLoad := &Instr{
-		ID: fn.newValueID(), Op: OpGetField, Type: TypeFloat,
+		ID: fn.newValueID(), Op: OpGetField, Type: promoteType,
 		Args: []*Value{objVal}, Aux: fieldAux, Aux2: p.gets[0].Aux2, Block: ph,
 	}
 	insertBeforeTerminator(ph, initLoad)
 
 	// 2. New header phi prepended before any existing phis.
-	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: hdr}
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: promoteType, Block: hdr}
 	storeInstr := p.sets[0]
 	phi.Args = []*Value{initLoad.Value(), storeInstr.Args[1]}
 	hdr.Instrs = append([]*Instr{phi}, hdr.Instrs...)
