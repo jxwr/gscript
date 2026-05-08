@@ -123,6 +123,26 @@ func TestTier2SpeculationPlanSuppressesUnstableGuardPC(t *testing.T) {
 	}
 }
 
+func TestTier2SpeculationPlanSuppressesOnlyMatchingGuardKind(t *testing.T) {
+	proto := &vm.FuncProto{Name: "kind_scoped", Code: make([]uint32, 1)}
+	proto.EnsureFeedback()
+	proto.Feedback[0].Result = vm.FBInt
+
+	constStringSuppressed := NewTier2SpeculationPlanWithSuppressedGuardKinds(proto, nil, map[int]map[string]bool{
+		0: {"GuardConstString": true},
+	})
+	if typ, ok := constStringSuppressed.ResultGuardType(0); !ok || typ != TypeInt {
+		t.Fatalf("const-string suppression should not hide type guard: %v %v", typ, ok)
+	}
+
+	typeSuppressed := NewTier2SpeculationPlanWithSuppressedGuardKinds(proto, nil, map[int]map[string]bool{
+		0: {"GuardType": true},
+	})
+	if typ, ok := typeSuppressed.ResultGuardType(0); ok || typ != TypeUnknown {
+		t.Fatalf("type suppression should hide type guard: %v %v", typ, ok)
+	}
+}
+
 func TestTier2SpeculationPlanRejectsConflictingSameFieldWriteTypes(t *testing.T) {
 	proto := &vm.FuncProto{
 		Name: "same_field_conflict",

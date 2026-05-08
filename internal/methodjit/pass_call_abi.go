@@ -204,7 +204,7 @@ func callABIFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool
 		!instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
 		return nil, false
 	}
-	if fn.SuppressedSpecGuardPCs != nil && fn.SuppressedSpecGuardPCs[instr.SourcePC] {
+	if specGuardKindSuppressed(fn, instr.SourcePC, "GuardCalleeProto") {
 		return nil, false
 	}
 	fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
@@ -215,6 +215,17 @@ func callABIFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool
 		return nil, false
 	}
 	return fb.StableCalleeVMProto()
+}
+
+func specGuardKindSuppressed(fn *Function, pc int, kind string) bool {
+	if fn == nil || pc < 0 {
+		return false
+	}
+	if fn.SuppressedSpecGuardKinds != nil {
+		kinds := fn.SuppressedSpecGuardKinds[pc]
+		return kinds[kind] || kinds["*"]
+	}
+	return fn.SuppressedSpecGuardPCs != nil && fn.SuppressedSpecGuardPCs[pc]
 }
 
 func callABIHasExactResultShape(fn *Function, instr *Instr, wantRets int) bool {

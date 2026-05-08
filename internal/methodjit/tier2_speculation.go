@@ -298,10 +298,11 @@ func (p Tier2SpecializationProfile) computeVersion() Tier2SpecializationVersion 
 // specialization/recompile work a policy change instead of another set of
 // direct vector probes spread across bytecode lowering.
 type Tier2SpeculationPlan struct {
-	proto              *vm.FuncProto
-	suppressedGuardPCs map[int]bool
-	Snapshot           Tier2FeedbackSnapshot
-	Profile            Tier2SpecializationProfile
+	proto                *vm.FuncProto
+	suppressedGuardPCs   map[int]bool
+	suppressedGuardKinds map[int]map[string]bool
+	Snapshot             Tier2FeedbackSnapshot
+	Profile              Tier2SpecializationProfile
 }
 
 func NewTier2SpeculationPlan(proto *vm.FuncProto) Tier2SpeculationPlan {
@@ -309,6 +310,10 @@ func NewTier2SpeculationPlan(proto *vm.FuncProto) Tier2SpeculationPlan {
 }
 
 func NewTier2SpeculationPlanWithSuppressedGuards(proto *vm.FuncProto, suppressed map[int]bool) Tier2SpeculationPlan {
+	return NewTier2SpeculationPlanWithSuppressedGuardKinds(proto, suppressed, nil)
+}
+
+func NewTier2SpeculationPlanWithSuppressedGuardKinds(proto *vm.FuncProto, suppressed map[int]bool, suppressedKinds map[int]map[string]bool) Tier2SpeculationPlan {
 	profile := BuildTier2SpecializationProfile(proto)
 	var suppressedCopy map[int]bool
 	if len(suppressed) > 0 {
@@ -319,16 +324,57 @@ func NewTier2SpeculationPlanWithSuppressedGuards(proto *vm.FuncProto, suppressed
 			}
 		}
 	}
+	kindsCopy := copySuppressedGuardKinds(suppressedKinds)
+	if suppressedCopy == nil && len(kindsCopy) > 0 {
+		suppressedCopy = make(map[int]bool, len(kindsCopy))
+		for pc := range kindsCopy {
+			suppressedCopy[pc] = true
+		}
+	}
 	return Tier2SpeculationPlan{
-		proto:              proto,
-		suppressedGuardPCs: suppressedCopy,
-		Snapshot:           profile.Snapshot,
-		Profile:            profile,
+		proto:                proto,
+		suppressedGuardPCs:   suppressedCopy,
+		suppressedGuardKinds: kindsCopy,
+		Snapshot:             profile.Snapshot,
+		Profile:              profile,
 	}
 }
 
 func (p Tier2SpeculationPlan) GuardSuppressed(pc int) bool {
 	return p.suppressedGuardPCs != nil && p.suppressedGuardPCs[pc]
+}
+
+func (p Tier2SpeculationPlan) GuardKindSuppressed(pc int, kind string) bool {
+	if p.suppressedGuardKinds == nil {
+		return p.GuardSuppressed(pc)
+	}
+	kinds := p.suppressedGuardKinds[pc]
+	if len(kinds) == 0 {
+		return false
+	}
+	return kinds[kind] || kinds["*"]
+}
+
+func copySuppressedGuardKinds(in map[int]map[string]bool) map[int]map[string]bool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[int]map[string]bool, len(in))
+	for pc, kinds := range in {
+		if len(kinds) == 0 {
+			continue
+		}
+		dst := make(map[string]bool, len(kinds))
+		for kind, ok := range kinds {
+			if ok {
+				dst[kind] = true
+			}
+		}
+		if len(dst) > 0 {
+			out[pc] = dst
+		}
+	}
+	return out
 }
 
 func (p Tier2SpeculationPlan) SuppressedGuardPCs() map[int]bool {
@@ -344,6 +390,10 @@ func (p Tier2SpeculationPlan) SuppressedGuardPCs() map[int]bool {
 	return out
 }
 
+func (p Tier2SpeculationPlan) SuppressedGuardKinds() map[int]map[string]bool {
+	return copySuppressedGuardKinds(p.suppressedGuardKinds)
+}
+
 func (p Tier2SpeculationPlan) TypeFeedback(pc int) (vm.TypeFeedback, bool) {
 	if p.proto == nil || pc < 0 || p.proto.Feedback == nil || pc >= len(p.proto.Feedback) {
 		return vm.TypeFeedback{}, false
@@ -352,7 +402,7 @@ func (p Tier2SpeculationPlan) TypeFeedback(pc int) (vm.TypeFeedback, bool) {
 }
 
 func (p Tier2SpeculationPlan) ResultGuardType(pc int) (Type, bool) {
-	if p.GuardSuppressed(pc) {
+	if p.GuardKindSuppressed(pc, "GuardType") {
 		return TypeUnknown, false
 	}
 	if guard, ok := p.Profile.findGuard(pc, SpecGuardResultType, nil); ok && guard.Type != TypeUnknown {
@@ -366,7 +416,7 @@ func (p Tier2SpeculationPlan) ResultGuardType(pc int) (Type, bool) {
 }
 
 func (p Tier2SpeculationPlan) OperandGuardTypes(pc int) (left Type, leftOK bool, right Type, rightOK bool) {
-	if p.GuardSuppressed(pc) {
+	if p.GuardKindSuppressed(pc, "GuardType") {
 		return TypeUnknown, false, TypeUnknown, false
 	}
 	if guard, ok := p.Profile.findGuard(pc, SpecGuardOperandType, func(g SpecializationGuard) bool {
@@ -429,7 +479,7 @@ func (p Tier2SpeculationPlan) FieldShapeAux2(pc int) int64 {
 }
 
 func (p Tier2SpeculationPlan) FieldValueGuardType(pc int) (Type, bool) {
-	if p.GuardSuppressed(pc) {
+	if p.GuardKindSuppressed(pc, "GuardType") {
 		return TypeUnknown, false
 	}
 	if guard, ok := p.Profile.findGuard(pc, SpecGuardFieldShape, nil); ok {
@@ -496,7 +546,7 @@ func (p Tier2SpeculationPlan) StableStringShapeField(pc int, accessKind uint8) (
 }
 
 func (p Tier2SpeculationPlan) StringShapeValueGuardType(pc int, accessKind uint8) (Type, bool) {
-	if p.GuardSuppressed(pc) {
+	if p.GuardKindSuppressed(pc, "GuardType") {
 		return TypeUnknown, false
 	}
 	guard, ok := p.Profile.findGuard(pc, SpecGuardStringShapeKey, func(g SpecializationGuard) bool {

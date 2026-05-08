@@ -71,7 +71,7 @@ type TieringManager struct {
 	exitStats          exitStatsCollector
 	exitProfile        tier2ExitProfileCollector
 	recompileQueue     tier2RecompileQueue
-	tier2GuardSuppress map[*vm.FuncProto]map[int]bool
+	tier2GuardSuppress map[*vm.FuncProto]map[int]map[string]bool
 	perfStats          *tier2PerfStatsCollector
 	perfStatsEnabled   bool
 	callVM             *vm.VM
@@ -109,7 +109,7 @@ func NewTieringManager() *TieringManager {
 		tier2Compiled:      make(map[*vm.FuncProto]*CompiledFunction),
 		tier2Failed:        make(map[*vm.FuncProto]bool),
 		tier2FailReason:    make(map[*vm.FuncProto]string),
-		tier2GuardSuppress: make(map[*vm.FuncProto]map[int]bool),
+		tier2GuardSuppress: make(map[*vm.FuncProto]map[int]map[string]bool),
 		tier2Threshold:     tmDefaultTier2Threshold,
 		profileCache:       make(map[*vm.FuncProto]FuncProfile),
 		// R162: cache env vars once to keep hot paths free of syscalls.
@@ -128,21 +128,33 @@ func NewTieringManager() *TieringManager {
 }
 
 func (tm *TieringManager) suppressTier2Guard(proto *vm.FuncProto, pc int) bool {
+	return tm.suppressTier2GuardKind(proto, pc, "*")
+}
+
+func (tm *TieringManager) suppressTier2GuardKind(proto *vm.FuncProto, pc int, kind string) bool {
 	if tm == nil || proto == nil || pc < 0 {
 		return false
 	}
+	if kind == "" {
+		kind = "*"
+	}
 	if tm.tier2GuardSuppress == nil {
-		tm.tier2GuardSuppress = make(map[*vm.FuncProto]map[int]bool)
+		tm.tier2GuardSuppress = make(map[*vm.FuncProto]map[int]map[string]bool)
 	}
 	sites := tm.tier2GuardSuppress[proto]
 	if sites == nil {
-		sites = make(map[int]bool)
+		sites = make(map[int]map[string]bool)
 		tm.tier2GuardSuppress[proto] = sites
 	}
-	if sites[pc] {
+	kinds := sites[pc]
+	if kinds == nil {
+		kinds = make(map[string]bool)
+		sites[pc] = kinds
+	}
+	if kinds[kind] {
 		return false
 	}
-	sites[pc] = true
+	kinds[kind] = true
 	return true
 }
 
@@ -155,12 +167,19 @@ func (tm *TieringManager) tier2SuppressedGuards(proto *vm.FuncProto) map[int]boo
 		return nil
 	}
 	out := make(map[int]bool, len(sites))
-	for pc, ok := range sites {
-		if ok {
+	for pc, kinds := range sites {
+		if len(kinds) > 0 {
 			out[pc] = true
 		}
 	}
 	return out
+}
+
+func (tm *TieringManager) tier2SuppressedGuardKinds(proto *vm.FuncProto) map[int]map[string]bool {
+	if tm == nil || proto == nil || len(tm.tier2GuardSuppress) == 0 {
+		return nil
+	}
+	return copySuppressedGuardKinds(tm.tier2GuardSuppress[proto])
 }
 
 // SetTier2Threshold sets the call count threshold for Tier 2 promotion.

@@ -141,6 +141,12 @@ type Function struct {
 	// the same guarded specialization.
 	SuppressedSpecGuardPCs map[int]bool
 
+	// SuppressedSpecGuardKinds is the guard-kind-scoped form of
+	// SuppressedSpecGuardPCs. Passes that know the guard they are about to emit
+	// should consult this map so one unstable guard does not disable unrelated
+	// specializations at the same bytecode PC.
+	SuppressedSpecGuardKinds map[int]map[string]bool
+
 	// ProtocolConstCallFolds records guarded whole-call protocol constants
 	// keyed by OpCall instruction ID.
 	ProtocolConstCallFolds map[int]ProtocolConstCallFoldFact

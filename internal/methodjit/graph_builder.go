@@ -19,9 +19,10 @@ func BuildGraph(proto *vm.FuncProto) *Function {
 func BuildGraphWithSpeculation(proto *vm.FuncProto, speculation Tier2SpeculationPlan) *Function {
 	b := &graphBuilder{
 		fn: &Function{
-			Proto:                  proto,
-			NumRegs:                proto.MaxStack,
-			SuppressedSpecGuardPCs: speculation.SuppressedGuardPCs(),
+			Proto:                    proto,
+			NumRegs:                  proto.MaxStack,
+			SuppressedSpecGuardPCs:   speculation.SuppressedGuardPCs(),
+			SuppressedSpecGuardKinds: speculation.SuppressedGuardKinds(),
 		},
 		proto:           proto,
 		speculation:     speculation,
@@ -82,7 +83,7 @@ func (b *graphBuilder) tableStringFieldLowering(pc int, accessKind uint8) (const
 	if b == nil || b.proto == nil || pc < 0 {
 		return 0, 0, false
 	}
-	if b.speculation.GuardSuppressed(pc) {
+	if b.speculation.GuardKindSuppressed(pc, "GuardConstString") {
 		return 0, 0, false
 	}
 	key, shapeID, fieldIdx, ok := b.speculation.StableStringShapeField(pc, accessKind)
