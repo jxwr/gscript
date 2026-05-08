@@ -306,6 +306,27 @@ func TestTier2RecompilePolicyRefreshesWhenVersionGainsGuards(t *testing.T) {
 	}
 }
 
+func TestTier2RecompilePolicyRefreshesWhenStructuralVersionChanges(t *testing.T) {
+	var policy Tier2RecompilePolicy
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{CallObserved: 1},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       1,
+			GuardCount: 2,
+		},
+	}
+	current := Tier2SpecializationProfile{
+		Snapshot: Tier2FeedbackSnapshot{CallObserved: 1},
+		Version: Tier2SpecializationVersion{
+			Hash:       2,
+			GuardCount: 2,
+		},
+	}
+	if !policy.ShouldRefreshProfile(cf, current) {
+		t.Fatal("policy should refresh when structural specialization version changes")
+	}
+}
+
 func TestTier2DeoptPolicyClassifiesMaturedFeedbackRefresh(t *testing.T) {
 	proto := &vm.FuncProto{Name: "deopt", Code: make([]uint32, 2)}
 	proto.EnsureFeedback()

@@ -599,6 +599,13 @@ func (Tier2RecompilePolicy) ShouldRefreshProfile(compiled any, current Tier2Spec
 	if cf.SpecializationVersion.Hash != 0 &&
 		current.Version.Hash != 0 &&
 		cf.SpecializationVersion.Hash != current.Version.Hash &&
+		current.Snapshot.structuralObserved() > 0 &&
+		current.Version.GuardCount >= cf.SpecializationVersion.GuardCount {
+		return true
+	}
+	if cf.SpecializationVersion.Hash != 0 &&
+		current.Version.Hash != 0 &&
+		cf.SpecializationVersion.Hash != current.Version.Hash &&
 		previous.structuralObserved() == 0 &&
 		current.Snapshot.structuralObserved() > 0 {
 		return true
