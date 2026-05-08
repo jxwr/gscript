@@ -388,6 +388,9 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 		return Tier2DeoptAction{}, false
 	}
 	tm.suppressTier2GuardKind(proto, meta.PC, meta.Op)
+	if meta.Op == "GuardTableKind" {
+		tm.suppressTier2GuardKind(proto, tier2GlobalGuardSuppressPC, meta.Op)
+	}
 	reason := "tier2: guard deopt; recompile without unstable guard"
 	if meta.Op == "GuardCalleeProto" {
 		reason = "tier2: callee guard deopt; recompile without unstable callsite guard"

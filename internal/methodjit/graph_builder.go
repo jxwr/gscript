@@ -875,6 +875,9 @@ func (b *graphBuilder) emitBlocks() {
 					}
 					b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val}, int64(constIdx), fieldAux2)
 				} else {
+					if setKindAux2 != 0 && setTableKindPreGuardAllowed(tbl) {
+						b.emit(block, OpGuardTableKind, TypeTable, []*Value{tbl}, setKindAux2, 0)
+					}
 					b.emit(block, OpSetTable, TypeUnknown, []*Value{tbl, key, val}, 0, setKindAux2)
 				}
 
@@ -1207,6 +1210,36 @@ func feedbackToIRType(fb vm.FeedbackType) (Type, bool) {
 
 func graphValueIsConstNil(v *Value) bool {
 	return v != nil && v.Def != nil && v.Def.Op == OpConstNil
+}
+
+func setTableKindPreGuardAllowed(table *Value) bool {
+	return setTableKindPreGuardAllowedSeen(table, nil)
+}
+
+func setTableKindPreGuardAllowedSeen(table *Value, seen map[int]bool) bool {
+	if table == nil || table.Def == nil {
+		return true
+	}
+	if seen == nil {
+		seen = make(map[int]bool)
+	}
+	if seen[table.ID] {
+		return true
+	}
+	seen[table.ID] = true
+	switch table.Def.Op {
+	case OpNewTable, OpNewFixedTable:
+		return false
+	case OpPhi:
+		for _, arg := range table.Def.Args {
+			if !setTableKindPreGuardAllowedSeen(arg, seen) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
 }
 
 func bytecodeSlotFeedsNilEq(proto *vm.FuncProto, pc, slot int) bool {

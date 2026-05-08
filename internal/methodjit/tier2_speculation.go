@@ -305,6 +305,8 @@ type Tier2SpeculationPlan struct {
 	Profile              Tier2SpecializationProfile
 }
 
+const tier2GlobalGuardSuppressPC = -1
+
 func NewTier2SpeculationPlan(proto *vm.FuncProto) Tier2SpeculationPlan {
 	return NewTier2SpeculationPlanWithSuppressedGuards(proto, nil)
 }
@@ -347,6 +349,9 @@ func (p Tier2SpeculationPlan) GuardSuppressed(pc int) bool {
 func (p Tier2SpeculationPlan) GuardKindSuppressed(pc int, kind string) bool {
 	if p.suppressedGuardKinds == nil {
 		return p.GuardSuppressed(pc)
+	}
+	if global := p.suppressedGuardKinds[tier2GlobalGuardSuppressPC]; len(global) > 0 && (global[kind] || global["*"]) {
+		return true
 	}
 	kinds := p.suppressedGuardKinds[pc]
 	if len(kinds) == 0 {

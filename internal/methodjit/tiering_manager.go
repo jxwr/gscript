@@ -132,7 +132,7 @@ func (tm *TieringManager) suppressTier2Guard(proto *vm.FuncProto, pc int) bool {
 }
 
 func (tm *TieringManager) suppressTier2GuardKind(proto *vm.FuncProto, pc int, kind string) bool {
-	if tm == nil || proto == nil || pc < 0 {
+	if tm == nil || proto == nil || pc < tier2GlobalGuardSuppressPC {
 		return false
 	}
 	if kind == "" {

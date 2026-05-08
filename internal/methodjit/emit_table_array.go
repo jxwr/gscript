@@ -2985,12 +2985,9 @@ func (ec *emitContext) emitGuardTableKind(instr *Instr) {
 	asm.LDRB(jit.X2, jit.X1, jit.TableOffArrayKind)
 	asm.CMPimm(jit.X2, expectedKind)
 	asm.BCond(jit.CondNE, deoptLabel)
-	ec.storeResultNB(jit.X0, instr.ID)
-	ec.tableVerified[instr.ID] = true
-	ec.kindVerified[instr.ID] = uint16(instr.Aux)
 	asm.B(doneLabel)
 	asm.Label(deoptLabel)
-	ec.emitPreciseDeopt(instr)
+	ec.emitDeopt(instr)
 	asm.Label(doneLabel)
 }
 

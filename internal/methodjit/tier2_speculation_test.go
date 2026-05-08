@@ -477,6 +477,13 @@ func TestTieringManagerTableKindGuardDeoptSuppressesPCAndRefreshes(t *testing.T)
 	if kinds[3]["GuardTableKind"] != true {
 		t.Fatalf("table-kind guard was not kind-suppressed: %#v", kinds)
 	}
+	if kinds[tier2GlobalGuardSuppressPC]["GuardTableKind"] != true {
+		t.Fatalf("table-kind guard was not globally kind-suppressed: %#v", kinds)
+	}
+	plan := NewTier2SpeculationPlanWithSuppressedGuardKinds(proto, tm.tier2SuppressedGuards(proto), kinds)
+	if !plan.GuardKindSuppressed(0, "GuardTableKind") {
+		t.Fatalf("table-kind guard should be globally suppressed by deopt: %#v", kinds)
+	}
 }
 
 func TestTier2RecompilePolicyIgnoresTinyTypeOnlyGrowth(t *testing.T) {
