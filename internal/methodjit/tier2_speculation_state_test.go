@@ -19,6 +19,8 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	})
 	tm.suppressTier2GuardKind(compiledProto, 8, "GuardType")
 	tm.suppressTier2GuardKind(compiledProto, 3, "GuardConstString")
+	tm.recordTier2GuardFailure(compiledProto, 8, "GuardType")
+	tm.recordTier2GuardFailure(compiledProto, 8, "GuardType")
 	tm.markTier2Failed(failedProto, "blocked")
 
 	snap := tm.Tier2SpeculationStateSnapshot()
@@ -34,6 +36,9 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	}
 	if compiled.SuppressedKinds["GuardType"] != 1 || compiled.SuppressedKinds["GuardConstString"] != 1 {
 		t.Fatalf("suppressed kinds mismatch: %+v", compiled)
+	}
+	if compiled.GuardFailures["GuardType"] != 2 {
+		t.Fatalf("guard failures mismatch: %+v", compiled)
 	}
 	failed := findSpecState(t, snap, "failed")
 	if !failed.Failed || failed.FailReason != "blocked" {

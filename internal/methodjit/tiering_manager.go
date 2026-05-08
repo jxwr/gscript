@@ -72,6 +72,7 @@ type TieringManager struct {
 	exitProfile        tier2ExitProfileCollector
 	recompileQueue     tier2RecompileQueue
 	tier2GuardSuppress map[*vm.FuncProto]map[int]map[string]bool
+	tier2GuardFailures map[*vm.FuncProto]map[int]map[string]uint64
 	perfStats          *tier2PerfStatsCollector
 	perfStatsEnabled   bool
 	callVM             *vm.VM
@@ -110,6 +111,7 @@ func NewTieringManager() *TieringManager {
 		tier2Failed:        make(map[*vm.FuncProto]bool),
 		tier2FailReason:    make(map[*vm.FuncProto]string),
 		tier2GuardSuppress: make(map[*vm.FuncProto]map[int]map[string]bool),
+		tier2GuardFailures: make(map[*vm.FuncProto]map[int]map[string]uint64),
 		tier2Threshold:     tmDefaultTier2Threshold,
 		profileCache:       make(map[*vm.FuncProto]FuncProfile),
 		// R162: cache env vars once to keep hot paths free of syscalls.
@@ -180,6 +182,52 @@ func (tm *TieringManager) tier2SuppressedGuardKinds(proto *vm.FuncProto) map[int
 		return nil
 	}
 	return copySuppressedGuardKinds(tm.tier2GuardSuppress[proto])
+}
+
+func (tm *TieringManager) recordTier2GuardFailure(proto *vm.FuncProto, pc int, kind string) uint64 {
+	if tm == nil || proto == nil || pc < tier2GlobalGuardSuppressPC {
+		return 0
+	}
+	if kind == "" {
+		kind = "*"
+	}
+	if tm.tier2GuardFailures == nil {
+		tm.tier2GuardFailures = make(map[*vm.FuncProto]map[int]map[string]uint64)
+	}
+	sites := tm.tier2GuardFailures[proto]
+	if sites == nil {
+		sites = make(map[int]map[string]uint64)
+		tm.tier2GuardFailures[proto] = sites
+	}
+	kinds := sites[pc]
+	if kinds == nil {
+		kinds = make(map[string]uint64)
+		sites[pc] = kinds
+	}
+	kinds[kind]++
+	return kinds[kind]
+}
+
+func (tm *TieringManager) tier2GuardFailureKinds(proto *vm.FuncProto) map[string]uint64 {
+	if tm == nil || proto == nil || len(tm.tier2GuardFailures) == 0 {
+		return nil
+	}
+	sites := tm.tier2GuardFailures[proto]
+	if len(sites) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64)
+	for _, kinds := range sites {
+		for kind, count := range kinds {
+			if count > 0 {
+				out[kind] += count
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // SetTier2Threshold sets the call count threshold for Tier 2 promotion.

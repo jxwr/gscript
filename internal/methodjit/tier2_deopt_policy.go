@@ -19,6 +19,7 @@ type Tier2DeoptAction struct {
 	CurrentProfile Tier2SpecializationProfile
 	GuardRelaxedPC int
 	GuardRelaxedOp string
+	GuardFailCount uint64
 }
 
 type Tier2DeoptPolicy struct{}
@@ -40,4 +41,33 @@ func (Tier2DeoptPolicy) DecideRuntimeDeopt(proto *vm.FuncProto, cf *CompiledFunc
 		action.Reason = "tier2: runtime deopt after feedback matured"
 	}
 	return action
+}
+
+type Tier2GuardDeoptDecision struct {
+	SuppressPC     bool
+	SuppressGlobal bool
+	Reason         string
+}
+
+type Tier2GuardDeoptPolicy struct{}
+
+func (Tier2GuardDeoptPolicy) Decide(meta ExitSiteMeta, failCount uint64) Tier2GuardDeoptDecision {
+	decision := Tier2GuardDeoptDecision{
+		SuppressPC: true,
+		Reason:     "tier2: guard deopt; recompile without unstable guard",
+	}
+	switch meta.Op {
+	case "GuardCalleeProto":
+		decision.Reason = "tier2: callee guard deopt; recompile without unstable callsite guard"
+	case "GuardConstString":
+		decision.Reason = "tier2: const-string guard deopt; recompile without unstable string-key guard"
+	case "GuardTableKind":
+		decision.Reason = "tier2: table-kind guard deopt; recompile without unstable table-kind guard"
+		// Table-kind transitions often invalidate several bytecode sites in the
+		// same function. A per-PC retry tends to burn compile attempts before
+		// reaching the same generic table path, so relax this guard class once
+		// the function has demonstrated instability.
+		decision.SuppressGlobal = failCount >= 1
+	}
+	return decision
 }

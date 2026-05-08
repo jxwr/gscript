@@ -172,6 +172,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				"guards_after":     deoptAction.CurrentProfile.Version.GuardCount,
 				"guard_relaxed_pc": deoptAction.GuardRelaxedPC,
 				"guard_relaxed_op": deoptAction.GuardRelaxedOp,
+				"guard_fail_count": deoptAction.GuardFailCount,
 			})
 			tm.applyTier2DeoptAction(proto, deoptAction)
 			if deoptAction.PreciseResume && tm.callVM != nil {
@@ -387,26 +388,23 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 	if !ok || meta.PC < 0 || !tier2GuardOpCanRefresh(meta.Op) {
 		return Tier2DeoptAction{}, false
 	}
-	tm.suppressTier2GuardKind(proto, meta.PC, meta.Op)
-	if meta.Op == "GuardTableKind" {
-		tm.suppressTier2GuardKind(proto, tier2GlobalGuardSuppressPC, meta.Op)
+	failCount := tm.recordTier2GuardFailure(proto, meta.PC, meta.Op)
+	decision := Tier2GuardDeoptPolicy{}.Decide(meta, failCount)
+	if decision.SuppressPC {
+		tm.suppressTier2GuardKind(proto, meta.PC, meta.Op)
 	}
-	reason := "tier2: guard deopt; recompile without unstable guard"
-	if meta.Op == "GuardCalleeProto" {
-		reason = "tier2: callee guard deopt; recompile without unstable callsite guard"
-	} else if meta.Op == "GuardConstString" {
-		reason = "tier2: const-string guard deopt; recompile without unstable string-key guard"
-	} else if meta.Op == "GuardTableKind" {
-		reason = "tier2: table-kind guard deopt; recompile without unstable table-kind guard"
+	if decision.SuppressGlobal {
+		tm.suppressTier2GuardKind(proto, tier2GlobalGuardSuppressPC, meta.Op)
 	}
 	return Tier2DeoptAction{
 		Kind:           Tier2DeoptRefreshAndFallback,
-		Reason:         reason,
+		Reason:         decision.Reason,
 		PreciseResume:  int(ctx.ExitResumePC) > 0,
 		ResumePC:       int(ctx.ExitResumePC),
 		CurrentProfile: BuildTier2SpecializationProfile(proto),
 		GuardRelaxedPC: meta.PC,
 		GuardRelaxedOp: meta.Op,
+		GuardFailCount: failCount,
 	}, true
 }
 
@@ -434,6 +432,7 @@ func (tm *TieringManager) applyTier2DeoptAction(proto *vm.FuncProto, action Tier
 			"guards_after":     action.CurrentProfile.Version.GuardCount,
 			"guard_relaxed_pc": action.GuardRelaxedPC,
 			"guard_relaxed_op": action.GuardRelaxedOp,
+			"guard_fail_count": action.GuardFailCount,
 		})
 	default:
 		tm.disableTier2AfterRuntimeDeopt(proto, action.Reason)

@@ -448,6 +448,9 @@ func TestTieringManagerConstStringGuardDeoptSuppressesPCAndRefreshes(t *testing.
 	if action.Kind != Tier2DeoptRefreshAndFallback || action.GuardRelaxedOp != "GuardConstString" {
 		t.Fatalf("action=%+v want refresh GuardConstString", action)
 	}
+	if action.GuardFailCount != 1 {
+		t.Fatalf("guard fail count=%d want 1", action.GuardFailCount)
+	}
 	if !tm.tier2SuppressedGuards(proto)[2] {
 		t.Fatal("PC 2 was not recorded as suppressed")
 	}
@@ -469,6 +472,9 @@ func TestTieringManagerTableKindGuardDeoptSuppressesPCAndRefreshes(t *testing.T)
 	}
 	if action.Kind != Tier2DeoptRefreshAndFallback || action.GuardRelaxedOp != "GuardTableKind" {
 		t.Fatalf("action=%+v want refresh GuardTableKind", action)
+	}
+	if action.GuardFailCount != 1 {
+		t.Fatalf("guard fail count=%d want 1", action.GuardFailCount)
 	}
 	if action.GuardRelaxedPC != 3 || !action.PreciseResume || action.ResumePC != 6 {
 		t.Fatalf("action resume/pc mismatch: %+v", action)
