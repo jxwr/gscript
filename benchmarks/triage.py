@@ -335,6 +335,7 @@ def load_spec_state(path: Path | None) -> dict:
     states = [row for row in data if isinstance(row, dict)]
     kinds: Counter[str] = Counter()
     actions: Counter[str] = Counter()
+    top_exits: Counter[str] = Counter()
     for row in states:
         suppressed = row.get("suppressed_kinds")
         if isinstance(suppressed, dict):
@@ -343,6 +344,11 @@ def load_spec_state(path: Path | None) -> dict:
         action = row.get("next_action")
         if action:
             actions[str(action)] += 1
+        top_exit_name = row.get("top_exit_name")
+        top_exit_reason = row.get("top_exit_reason")
+        top_exit_count = int(row.get("top_exit_count") or 0)
+        if top_exit_name and top_exit_count > 0:
+            top_exits[f"{top_exit_name}:{top_exit_reason or 'unknown'}"] += top_exit_count
     return {
         "status": "ok",
         "protos": len(states),
@@ -355,6 +361,7 @@ def load_spec_state(path: Path | None) -> dict:
         "suppressed_guard_exits": sum(int(row.get("suppressed_guard_exits") or 0) for row in states),
         "queued_recompile_exits": sum(int(row.get("queued_recompile_exits") or 0) for row in states),
         "next_actions": dict(sorted(actions.items())),
+        "top_exits": dict(top_exits.most_common(10)),
         "states": states,
     }
 
@@ -475,6 +482,10 @@ def classify(
         if next_actions:
             action_text = ", ".join(f"{action}={count}" for action, count in sorted(next_actions.items()))
             evidence.append(f"Tier2 next actions: {action_text}")
+        top_exits = spec_state.get("top_exits") or {}
+        if top_exits:
+            first_exit, first_count = next(iter(top_exits.items()))
+            evidence.append(f"top Tier2 speculation exit: {first_count}x {first_exit}")
         if failed > 0:
             states = [row for row in spec_state.get("states") or [] if isinstance(row, dict) and row.get("failed")]
             if states:

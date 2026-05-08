@@ -25,6 +25,10 @@ type Tier2SpeculationState struct {
 	SuppressedGuardExits uint64            `json:"suppressed_guard_exits,omitempty"`
 	QueuedRecompileExits uint64            `json:"queued_recompile_exits,omitempty"`
 	ExitKinds            map[string]uint64 `json:"exit_kinds,omitempty"`
+	TopExitName          string            `json:"top_exit_name,omitempty"`
+	TopExitReason        string            `json:"top_exit_reason,omitempty"`
+	TopExitPC            int               `json:"top_exit_pc,omitempty"`
+	TopExitCount         uint64            `json:"top_exit_count,omitempty"`
 	NextAction           string            `json:"next_action,omitempty"`
 }
 
@@ -87,6 +91,12 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 			state.SuppressedGuardExits = exits.SuppressedGuardExits
 			state.QueuedRecompileExits = exits.QueuedRecompileExits
 			state.ExitKinds = exits.ExitKinds
+			if exits.TopExit.Count > 0 {
+				state.TopExitName = exits.TopExit.ExitName
+				state.TopExitReason = exits.TopExit.Reason
+				state.TopExitPC = exits.TopExit.PC
+				state.TopExitCount = exits.TopExit.Count
+			}
 		}
 		state.NextAction = tier2SpeculationNextAction(state)
 		out = append(out, state)

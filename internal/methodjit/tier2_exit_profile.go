@@ -42,10 +42,11 @@ type Tier2ExitProfileSnapshot struct {
 }
 
 type Tier2ExitProfileProtoSummary struct {
-	Total                uint64            `json:"total,omitempty"`
-	SuppressedGuardExits uint64            `json:"suppressed_guard_exits,omitempty"`
-	QueuedRecompileExits uint64            `json:"queued_recompile_exits,omitempty"`
-	ExitKinds            map[string]uint64 `json:"exit_kinds,omitempty"`
+	Total                uint64               `json:"total,omitempty"`
+	SuppressedGuardExits uint64               `json:"suppressed_guard_exits,omitempty"`
+	QueuedRecompileExits uint64               `json:"queued_recompile_exits,omitempty"`
+	ExitKinds            map[string]uint64    `json:"exit_kinds,omitempty"`
+	TopExit              Tier2ExitProfileSite `json:"top_exit,omitempty"`
 }
 
 type tier2ExitProfileCollector struct {
@@ -173,6 +174,9 @@ func (c *tier2ExitProfileCollector) protoSummary(proto *vm.FuncProto) Tier2ExitP
 			out.ExitKinds = make(map[string]uint64)
 		}
 		out.ExitKinds[site.ExitName] += site.Count
+		if site.Count > out.TopExit.Count {
+			out.TopExit = *site
+		}
 	}
 	if out.Total == 0 {
 		return Tier2ExitProfileProtoSummary{}

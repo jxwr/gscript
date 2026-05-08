@@ -49,6 +49,10 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	if compiled.ExitCount != 2 || compiled.SuppressedGuardExits != 2 || compiled.ExitKinds["ExitDeopt"] != 2 {
 		t.Fatalf("exit profile summary mismatch: %+v", compiled)
 	}
+	if compiled.TopExitName != "ExitDeopt" || compiled.TopExitReason != "deopt:GuardType(int)" ||
+		compiled.TopExitPC != 8 || compiled.TopExitCount != 2 {
+		t.Fatalf("top exit mismatch: %+v", compiled)
+	}
 	if compiled.NextAction != "suppressed_guard_residual" {
 		t.Fatalf("next action=%q want suppressed_guard_residual: %+v", compiled.NextAction, compiled)
 	}
