@@ -98,7 +98,7 @@ func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
 // compile semantics AND to what the diagnostic tool sees, by construction.
 // That is the load-bearing invariant of rule 5 in CLAUDE.md.
 func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2Trace) (*CompiledFunction, error) {
-	speculation := NewTier2SpeculationPlan(proto)
+	speculation := NewTier2SpeculationPlanWithSuppressedGuards(proto, tm.tier2SuppressedGuards(proto))
 	var remarks *OptimizationRemarks
 	if trace != nil {
 		trace.Specialization = speculation.Profile.Summary()

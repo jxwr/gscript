@@ -63,20 +63,21 @@ const osrDefaultIterations = 1000
 // TieringManager manages automatic promotion between Tier 1 and Tier 2.
 // It implements vm.MethodJITEngine.
 type TieringManager struct {
-	tier1            *BaselineJITEngine
-	tier2Compiled    map[*vm.FuncProto]*CompiledFunction
-	tier2Failed      map[*vm.FuncProto]bool
-	tier2FailReason  map[*vm.FuncProto]string // reason a function failed Tier 2 (keyed by proto)
-	tier2Attempts    int                      // total Tier 2 compilation attempts
-	exitStats        exitStatsCollector
-	exitProfile      tier2ExitProfileCollector
-	recompileQueue   tier2RecompileQueue
-	perfStats        *tier2PerfStatsCollector
-	perfStatsEnabled bool
-	callVM           *vm.VM
-	retBuf           [8]runtime.Value
-	tier2Threshold   int                           // configurable threshold for testing (legacy fallback)
-	profileCache     map[*vm.FuncProto]FuncProfile // cached function profiles
+	tier1              *BaselineJITEngine
+	tier2Compiled      map[*vm.FuncProto]*CompiledFunction
+	tier2Failed        map[*vm.FuncProto]bool
+	tier2FailReason    map[*vm.FuncProto]string // reason a function failed Tier 2 (keyed by proto)
+	tier2Attempts      int                      // total Tier 2 compilation attempts
+	exitStats          exitStatsCollector
+	exitProfile        tier2ExitProfileCollector
+	recompileQueue     tier2RecompileQueue
+	tier2GuardSuppress map[*vm.FuncProto]map[int]bool
+	perfStats          *tier2PerfStatsCollector
+	perfStatsEnabled   bool
+	callVM             *vm.VM
+	retBuf             [8]runtime.Value
+	tier2Threshold     int                           // configurable threshold for testing (legacy fallback)
+	profileCache       map[*vm.FuncProto]FuncProfile // cached function profiles
 
 	// R162: env-var caches evaluated ONCE at construction. Previously
 	// R154's os.Getenv calls were placed inside hot paths
@@ -104,12 +105,13 @@ func NewTieringManager() *TieringManager {
 	// call() which calls TieringManager.TryCompile(), enabling Tier 2 promotion.
 	t1.SetTierUpThreshold(tmDefaultTier2Threshold)
 	tm := &TieringManager{
-		tier1:           t1,
-		tier2Compiled:   make(map[*vm.FuncProto]*CompiledFunction),
-		tier2Failed:     make(map[*vm.FuncProto]bool),
-		tier2FailReason: make(map[*vm.FuncProto]string),
-		tier2Threshold:  tmDefaultTier2Threshold,
-		profileCache:    make(map[*vm.FuncProto]FuncProfile),
+		tier1:              t1,
+		tier2Compiled:      make(map[*vm.FuncProto]*CompiledFunction),
+		tier2Failed:        make(map[*vm.FuncProto]bool),
+		tier2FailReason:    make(map[*vm.FuncProto]string),
+		tier2GuardSuppress: make(map[*vm.FuncProto]map[int]bool),
+		tier2Threshold:     tmDefaultTier2Threshold,
+		profileCache:       make(map[*vm.FuncProto]FuncProfile),
 		// R162: cache env vars once to keep hot paths free of syscalls.
 		envR154Trace:     os.Getenv("R154_TRACE") == "1",
 		envTier2NoFilter: os.Getenv("GSCRIPT_TIER2_NO_FILTER") == "1",
@@ -123,6 +125,42 @@ func NewTieringManager() *TieringManager {
 	})
 	t1.SetOSRHandler(tm.handleOSR)
 	return tm
+}
+
+func (tm *TieringManager) suppressTier2Guard(proto *vm.FuncProto, pc int) bool {
+	if tm == nil || proto == nil || pc < 0 {
+		return false
+	}
+	if tm.tier2GuardSuppress == nil {
+		tm.tier2GuardSuppress = make(map[*vm.FuncProto]map[int]bool)
+	}
+	sites := tm.tier2GuardSuppress[proto]
+	if sites == nil {
+		sites = make(map[int]bool)
+		tm.tier2GuardSuppress[proto] = sites
+	}
+	if sites[pc] {
+		return false
+	}
+	sites[pc] = true
+	return true
+}
+
+func (tm *TieringManager) tier2SuppressedGuards(proto *vm.FuncProto) map[int]bool {
+	if tm == nil || proto == nil || len(tm.tier2GuardSuppress) == 0 {
+		return nil
+	}
+	sites := tm.tier2GuardSuppress[proto]
+	if len(sites) == 0 {
+		return nil
+	}
+	out := make(map[int]bool, len(sites))
+	for pc, ok := range sites {
+		if ok {
+			out[pc] = true
+		}
+	}
+	return out
 }
 
 // SetTier2Threshold sets the call count threshold for Tier 2 promotion.

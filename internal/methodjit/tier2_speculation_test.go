@@ -87,6 +87,38 @@ func TestTier2SpeculationPlanUsesSameFieldWriteTypeForColdGet(t *testing.T) {
 	}
 }
 
+func TestTier2SpeculationPlanSuppressesUnstableGuardPC(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name: "suppressed_guard",
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_GETFIELD, 1, 0, 3),
+			vm.EncodeABC(vm.OP_SETFIELD, 0, 3, 2),
+		},
+	}
+	proto.EnsureFeedback()
+	proto.Feedback[0].Result = vm.FBInt
+	proto.Feedback[1].Result = vm.FBInt
+
+	plain := NewTier2SpeculationPlan(proto)
+	if typ, ok := plain.ResultGuardType(0); !ok || typ != TypeInt {
+		t.Fatalf("plain ResultGuardType=%v ok=%v want int,true", typ, ok)
+	}
+	if typ, ok := plain.FieldValueGuardType(0); !ok || typ != TypeInt {
+		t.Fatalf("plain FieldValueGuardType=%v ok=%v want int,true", typ, ok)
+	}
+
+	suppressed := NewTier2SpeculationPlanWithSuppressedGuards(proto, map[int]bool{0: true})
+	if typ, ok := suppressed.ResultGuardType(0); ok || typ != TypeUnknown {
+		t.Fatalf("suppressed ResultGuardType=%v ok=%v want unknown,false", typ, ok)
+	}
+	if typ, ok := suppressed.FieldValueGuardType(0); ok || typ != TypeUnknown {
+		t.Fatalf("suppressed FieldValueGuardType=%v ok=%v want unknown,false", typ, ok)
+	}
+	if typ, ok := suppressed.ResultGuardType(1); !ok || typ != TypeInt {
+		t.Fatalf("unrelated ResultGuardType=%v ok=%v want int,true", typ, ok)
+	}
+}
+
 func TestTier2SpeculationPlanRejectsConflictingSameFieldWriteTypes(t *testing.T) {
 	proto := &vm.FuncProto{
 		Name: "same_field_conflict",
@@ -292,6 +324,44 @@ func TestTieringManagerRefreshDeoptDoesNotMarkTier2Failed(t *testing.T) {
 	if proto.Tier2Promoted || proto.DirectEntryPtr != 0 {
 		t.Fatalf("refresh deopt left install visible: promoted=%v direct=%#x",
 			proto.Tier2Promoted, proto.DirectEntryPtr)
+	}
+}
+
+func TestTieringManagerGuardDeoptSuppressesPCAndRefreshes(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "guard_refresh", Code: make([]uint32, 4)}
+	cf := &CompiledFunction{
+		ExitSites: map[int]ExitSiteMeta{
+			42: {PC: 3, Op: "GuardType", Reason: "GuardType(int)"},
+		},
+	}
+	ctx := &ExecContext{
+		DeoptInstrID: 42,
+		ExitResumePC: 9,
+	}
+
+	action, ok := tm.guardDeoptRefreshAction(proto, cf, ctx)
+	if !ok {
+		t.Fatal("guard deopt should produce refresh action")
+	}
+	if action.Kind != Tier2DeoptRefreshAndFallback {
+		t.Fatalf("action=%s want %s", action.Kind, Tier2DeoptRefreshAndFallback)
+	}
+	if action.GuardRelaxedPC != 3 {
+		t.Fatalf("GuardRelaxedPC=%d want 3", action.GuardRelaxedPC)
+	}
+	if !action.PreciseResume || action.ResumePC != 9 {
+		t.Fatalf("resume=%v pc=%d want precise pc 9", action.PreciseResume, action.ResumePC)
+	}
+	if !tm.tier2SuppressedGuards(proto)[3] {
+		t.Fatal("guard PC 3 was not recorded as suppressed")
+	}
+
+	tm.ensureTierStateStore()
+	tm.tierState.markCompiled(proto, cf)
+	tm.applyTier2DeoptAction(proto, action)
+	if tm.tier2HasFailed(proto) {
+		t.Fatal("guard refresh should not mark Tier2 failed")
 	}
 }
 

@@ -146,6 +146,9 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 
 		case ExitDeopt:
 			deoptAction := Tier2DeoptPolicy{}.DecideRuntimeDeopt(proto, cf, int(ctx.ExitResumePC))
+			if guardAction, ok := tm.guardDeoptRefreshAction(proto, cf, ctx); ok {
+				deoptAction = guardAction
+			}
 			if tm.envR154Trace && tm.r154DeoptPrints < 20 {
 				var r0, r1 uint64
 				if base < len(regs) {
@@ -159,14 +162,15 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 					proto.Name, ctx.DeoptInstrID, base, r0, r1, ctx.CallID, ctx.GlobalExitID)
 			}
 			tm.traceEvent("runtime_deopt", "tier2", proto, map[string]any{
-				"exit_code":      ctx.ExitCode,
-				"deopt_instr_id": ctx.DeoptInstrID,
-				"resume_pass":    ctx.ResumeNumericPass,
-				"resume_pc":      ctx.ExitResumePC,
-				"action":         deoptAction.Kind,
-				"reason":         deoptAction.Reason,
-				"version_after":  fmt.Sprintf("%x", deoptAction.CurrentProfile.Version.Hash),
-				"guards_after":   deoptAction.CurrentProfile.Version.GuardCount,
+				"exit_code":        ctx.ExitCode,
+				"deopt_instr_id":   ctx.DeoptInstrID,
+				"resume_pass":      ctx.ResumeNumericPass,
+				"resume_pc":        ctx.ExitResumePC,
+				"action":           deoptAction.Kind,
+				"reason":           deoptAction.Reason,
+				"version_after":    fmt.Sprintf("%x", deoptAction.CurrentProfile.Version.Hash),
+				"guards_after":     deoptAction.CurrentProfile.Version.GuardCount,
+				"guard_relaxed_pc": deoptAction.GuardRelaxedPC,
 			})
 			tm.applyTier2DeoptAction(proto, deoptAction)
 			if deoptAction.PreciseResume && tm.callVM != nil {
@@ -374,6 +378,25 @@ func (tm *TieringManager) disableTier2AfterRuntimeDeopt(proto *vm.FuncProto, rea
 	})
 }
 
+func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext) (Tier2DeoptAction, bool) {
+	if tm == nil || proto == nil || cf == nil || ctx == nil || cf.ExitSites == nil {
+		return Tier2DeoptAction{}, false
+	}
+	meta, ok := cf.ExitSites[int(ctx.DeoptInstrID)]
+	if !ok || meta.Op != "GuardType" || meta.PC < 0 {
+		return Tier2DeoptAction{}, false
+	}
+	tm.suppressTier2Guard(proto, meta.PC)
+	return Tier2DeoptAction{
+		Kind:           Tier2DeoptRefreshAndFallback,
+		Reason:         "tier2: guard deopt; recompile without unstable guard",
+		PreciseResume:  int(ctx.ExitResumePC) > 0,
+		ResumePC:       int(ctx.ExitResumePC),
+		CurrentProfile: BuildTier2SpecializationProfile(proto),
+		GuardRelaxedPC: meta.PC,
+	}, true
+}
+
 func (tm *TieringManager) applyTier2DeoptAction(proto *vm.FuncProto, action Tier2DeoptAction) {
 	if proto == nil {
 		return
@@ -384,9 +407,10 @@ func (tm *TieringManager) applyTier2DeoptAction(proto *vm.FuncProto, action Tier
 		tm.tier1.SetOSRCounter(proto, -1)
 		tm.tier1.EvictCompiled(proto)
 		tm.traceEvent("runtime_refresh", "tier2", proto, map[string]any{
-			"reason":        action.Reason,
-			"version_after": fmt.Sprintf("%x", action.CurrentProfile.Version.Hash),
-			"guards_after":  action.CurrentProfile.Version.GuardCount,
+			"reason":           action.Reason,
+			"version_after":    fmt.Sprintf("%x", action.CurrentProfile.Version.Hash),
+			"guards_after":     action.CurrentProfile.Version.GuardCount,
+			"guard_relaxed_pc": action.GuardRelaxedPC,
 		})
 	default:
 		tm.disableTier2AfterRuntimeDeopt(proto, action.Reason)

@@ -17,6 +17,7 @@ type Tier2DeoptAction struct {
 	PreciseResume  bool
 	ResumePC       int
 	CurrentProfile Tier2SpecializationProfile
+	GuardRelaxedPC int
 }
 
 type Tier2DeoptPolicy struct{}
@@ -29,6 +30,7 @@ func (Tier2DeoptPolicy) DecideRuntimeDeopt(proto *vm.FuncProto, cf *CompiledFunc
 		PreciseResume:  resumePC > 0,
 		ResumePC:       resumePC,
 		CurrentProfile: current,
+		GuardRelaxedPC: -1,
 	}
 	var recompile Tier2RecompilePolicy
 	if recompile.ShouldRefreshProfile(cf, current) {
