@@ -160,6 +160,9 @@ func TestTier2SpeculationWorklistSnapshotRanksActionableStates(t *testing.T) {
 	if worklist[0].Rank != 1 || worklist[0].ProtoName != "table_hot" || worklist[0].Target != Tier2SpecTargetTableFieldExit || worklist[0].Priority != 90 {
 		t.Fatalf("first work item mismatch: %+v", worklist[0])
 	}
+	if worklist[0].FeedbackReadiness.Kind != Tier2FeedbackReadyWide {
+		t.Fatalf("first work item readiness mismatch: %+v", worklist[0])
+	}
 	if worklist[1].Rank != 2 || worklist[1].ProtoName != "guard_hot" || worklist[1].Target != Tier2SpecTargetGuardPolicy || worklist[1].Priority != 80 {
 		t.Fatalf("second work item mismatch: %+v", worklist[1])
 	}

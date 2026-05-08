@@ -36,18 +36,19 @@ type Tier2SpeculationState struct {
 }
 
 type Tier2SpeculationWorkItem struct {
-	Rank          int                    `json:"rank"`
-	ProtoName     string                 `json:"proto_name"`
-	ProtoID       string                 `json:"proto_id"`
-	Action        Tier2SpeculationAction `json:"action"`
-	Target        Tier2SpeculationTarget `json:"target,omitempty"`
-	Priority      int                    `json:"priority"`
-	Reason        string                 `json:"reason,omitempty"`
-	ExitCount     uint64                 `json:"exit_count,omitempty"`
-	TopExitName   string                 `json:"top_exit_name,omitempty"`
-	TopExitReason string                 `json:"top_exit_reason,omitempty"`
-	TopExitPC     int                    `json:"top_exit_pc,omitempty"`
-	TopExitCount  uint64                 `json:"top_exit_count,omitempty"`
+	Rank              int                    `json:"rank"`
+	ProtoName         string                 `json:"proto_name"`
+	ProtoID           string                 `json:"proto_id"`
+	Action            Tier2SpeculationAction `json:"action"`
+	Target            Tier2SpeculationTarget `json:"target,omitempty"`
+	Priority          int                    `json:"priority"`
+	Reason            string                 `json:"reason,omitempty"`
+	FeedbackReadiness Tier2FeedbackReadiness `json:"feedback_readiness"`
+	ExitCount         uint64                 `json:"exit_count,omitempty"`
+	TopExitName       string                 `json:"top_exit_name,omitempty"`
+	TopExitReason     string                 `json:"top_exit_reason,omitempty"`
+	TopExitPC         int                    `json:"top_exit_pc,omitempty"`
+	TopExitCount      uint64                 `json:"top_exit_count,omitempty"`
 }
 
 type Tier2SpeculationAction string
@@ -165,17 +166,18 @@ func (tm *TieringManager) Tier2SpeculationWorklistSnapshot() []Tier2SpeculationW
 			continue
 		}
 		items = append(items, Tier2SpeculationWorkItem{
-			ProtoName:     state.ProtoName,
-			ProtoID:       state.ProtoID,
-			Action:        state.NextAction,
-			Target:        state.NextTarget,
-			Priority:      state.NextPriority,
-			Reason:        tier2SpeculationWorkReason(state),
-			ExitCount:     state.ExitCount,
-			TopExitName:   state.TopExitName,
-			TopExitReason: state.TopExitReason,
-			TopExitPC:     state.TopExitPC,
-			TopExitCount:  state.TopExitCount,
+			ProtoName:         state.ProtoName,
+			ProtoID:           state.ProtoID,
+			Action:            state.NextAction,
+			Target:            state.NextTarget,
+			Priority:          state.NextPriority,
+			Reason:            tier2SpeculationWorkReason(state),
+			FeedbackReadiness: state.FeedbackReadiness,
+			ExitCount:         state.ExitCount,
+			TopExitName:       state.TopExitName,
+			TopExitReason:     state.TopExitReason,
+			TopExitPC:         state.TopExitPC,
+			TopExitCount:      state.TopExitCount,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
