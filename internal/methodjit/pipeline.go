@@ -770,18 +770,14 @@ func attachRemarks(fn *Function, opts *Tier2PipelineOpts) {
 	}
 }
 
-// NewTier2Pipeline returns a Pipeline pre-loaded with a pass list that
-// mirrors the production Tier 2 order. It exists ONLY as a dump helper for
-// Diagnose() and related correctness tests that need per-pass IR snapshots.
+// NewTier2Pipeline returns a Pipeline pre-loaded with the no-profile/no-globals
+// Tier 2 pass list. It exists ONLY as a dump helper for Diagnose() and related
+// correctness tests that need per-pass IR snapshots.
 //
-// DO NOT use this for performance diagnostics. It does not accept inline
-// globals and is therefore NOT bit-identical to the production
-// compileTier2Pipeline. Use TieringManager.CompileForDiagnostics instead,
-// which is parity-tested (TestDiag_ProductionParity_*).
-//
-// This is the pattern R31 and R32 wasted rounds on: a "diagnostic pipeline"
-// with subtly different defaults that silently diverges from production.
-// See CLAUDE.md rule 5.
+// DO NOT use this for performance diagnostics. It cannot accept inline globals,
+// protocol globals, guarded argument facts, or specialization profiles, so it is
+// not bit-identical to production compileTier2Pipeline. Use
+// TieringManager.CompileForDiagnostics for production-parity diagnostics.
 func NewTier2Pipeline() *Pipeline {
 	pipe := NewPipeline()
 	pipe.Add("SimplifyPhis", SimplifyPhisPass)
@@ -796,8 +792,19 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("TypeSpecialize3", TypeSpecializePass)
 	pipe.Add("CallABI", AnnotateCallABIsPass(CallABIAnnotationConfig{}))
 	pipe.Add("ConstProp", ConstPropPass)
+	pipe.Add("ProtocolConstCallFold", ProtocolConstCallFoldPass(nil))
+	pipe.Add("WholeCallKernelExit", WholeCallKernelExitPass(nil))
+	pipe.Add("TablePreallocHint", TablePreallocHintPass)
+	pipe.Add("TypeSpecializePostTablePrealloc", TypeSpecializePass)
+	pipe.Add("FixedShapeTableFacts", FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{}))
 	pipe.Add("LoadElimination", LoadEliminationPass)
+	pipe.Add("EscapeAnalysis", EscapeAnalysisPass)
+	pipe.Add("FixedTableConstructorLowering", FixedTableConstructorLoweringPass)
+	pipe.Add("RedundantGuardElimination", RedundantGuardEliminationPass)
 	pipe.Add("DCE", DCEPass)
+	pipe.Add("TypeSpecializePostEscape", func(fn *Function) (*Function, error) {
+		return runPostRewriteTypeSpecialize(fn, nil, "post-escape")
+	})
 	pipe.Add("LoopBoundRangeGuard", LoopBoundRangeGuardPass)
 	pipe.Add("RangeAnalysis", RangeAnalysisPass)
 	pipe.Add("OverflowBoxing", OverflowBoxingPass)
@@ -827,9 +834,11 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("DCEPostLICM", DCEPass)
 	pipe.Add("UnrollAndJam", UnrollAndJamPass)
 	pipe.Add("QuadraticStepStrengthReduction", QuadraticStepStrengthReductionPass)
+	pipe.Add("RangeAnalysisPostUnrollAndJam", RangeAnalysisPass)
 	pipe.Add("DCEPostUnrollAndJam", DCEPass)
 	pipe.Add("LoopRegionVersioning", LoopRegionVersioningPass)
 	pipe.Add("ScalarPromotion", ScalarPromotionPass)
 	pipe.Add("TableArrayDataPtrFact", TableArrayDataPtrFactPass)
+	pipe.Add("WholeCallKernelExitFinal", WholeCallKernelExitPass(nil))
 	return pipe
 }
