@@ -29,7 +29,7 @@ import (
 var errNestedNativeCallExit = errors.New("tier2: nested native-call-exit")
 
 // executeCallExit handles a call-exit in the TieringManager's Tier 2 path.
-func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
+func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, cf *CompiledFunction) error {
 	if tm.callVM == nil {
 		return fmt.Errorf("no callVM set for call-exit")
 	}
@@ -43,6 +43,7 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 		return fmt.Errorf("call slot %d (abs %d) out of range (regs len %d)", callSlot, absSlot, len(regs))
 	}
 	fnVal := regs[absSlot]
+	observeTier2CallExitFeedback(proto, cf, ctx, regs, base)
 
 	if handled, err := tm.callVM.TryFastCoroutineCallValue(fnVal, absSlot, nArgs, nRets+1); handled {
 		return err
@@ -336,7 +337,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		}
 		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 	case ExitCallExit:
-		if err := tm.executeCallExit(ctx, regs, base, proto); err != nil {
+		if err := tm.executeCallExit(ctx, regs, base, proto, cf); err != nil {
 			if vm.IsCoroutineYield(err) {
 				return runtime.NilValue(), err
 			}
@@ -436,7 +437,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			ctx.ResumeNumericPass = 0
 			tm.tier2PerfStop(perfTier2ExitResume, resumeMark)
 		case ExitCallExit:
-			if err := tm.executeCallExit(ctx, currentRegs, base, proto); err != nil {
+			if err := tm.executeCallExit(ctx, currentRegs, base, proto, cf); err != nil {
 				if vm.IsCoroutineYield(err) {
 					return runtime.NilValue(), err
 				}

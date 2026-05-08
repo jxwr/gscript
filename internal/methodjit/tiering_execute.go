@@ -192,7 +192,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err != nil {
 				return nil, err
 			}
-			if err := tm.executeCallExit(ctx, regs, base, proto); err != nil {
+			if err := tm.executeCallExit(ctx, regs, base, proto, cf); err != nil {
 				if vm.IsCoroutineYield(err) {
 					return nil, err
 				}

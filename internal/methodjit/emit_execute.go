@@ -226,6 +226,7 @@ func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Val
 		return fmt.Errorf("call slot %d out of range (regs len %d)", callSlot, len(regs))
 	}
 	fnVal := regs[callSlot]
+	observeTier2CallExitFeedback(cf.Proto, cf, ctx, regs, 0)
 
 	if gf := fnVal.GoFunction(); gf != nil {
 		result, ok, err := callGoFunctionFast(gf, regs, callSlot, nArgs)
