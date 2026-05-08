@@ -48,6 +48,29 @@ func (r Tier2FeedbackReadiness) ShouldDelayInitialTier2(callCount int) bool {
 	return r.Kind == Tier2FeedbackDelay && callCount < tier2FeedbackHardHotCallCount
 }
 
+func (r Tier2FeedbackReadiness) MoreReadyThan(previous Tier2FeedbackReadiness) bool {
+	if r.readinessRank() > previous.readinessRank() {
+		return true
+	}
+	return r.Kind == previous.Kind &&
+		r.Kind == Tier2FeedbackProvisionalNarrow &&
+		r.structuralImmature() == 0 &&
+		previous.structuralImmature() > 0
+}
+
+func (r Tier2FeedbackReadiness) readinessRank() int {
+	switch r.Kind {
+	case Tier2FeedbackReadyWide:
+		return 3
+	case Tier2FeedbackProvisionalNarrow:
+		return 2
+	case Tier2FeedbackDelay:
+		return 1
+	default:
+		return 0
+	}
+}
+
 func AnalyzeTier2FeedbackReadiness(proto *vm.FuncProto, snapshot Tier2FeedbackSnapshot) Tier2FeedbackReadiness {
 	var readiness Tier2FeedbackReadiness
 	readiness.Kind = Tier2FeedbackReadyWide

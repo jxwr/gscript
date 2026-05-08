@@ -288,7 +288,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	profile := tm.getProfile(proto)
 	compiled, _ := tm.tier2CompiledFor(proto)
 	specProfile := tm.currentTier2SpeculationProfile(proto)
-	if compiled != nil && tm.recompile.ShouldRefreshProfile(compiled, specProfile) {
+	if compiled != nil && tm.recompile.ShouldRefreshProfileForProto(proto, compiled, specProfile) {
 		compiled = nil
 	}
 	recompileRequested := false
@@ -320,7 +320,7 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 		return
 	}
 	current := tm.currentTier2SpeculationProfile(proto)
-	if !tm.recompile.ShouldRefreshProfile(cf, current) {
+	if !tm.recompile.ShouldRefreshProfileForProto(proto, cf, current) {
 		return
 	}
 	tm.traceEvent("tier2_refresh", "tier2", proto, map[string]any{

@@ -636,7 +636,20 @@ func specializationGuardValueType(guard SpecializationGuard) (Type, bool) {
 type Tier2RecompilePolicy struct{}
 
 func (Tier2RecompilePolicy) ShouldRefresh(_ *vm.FuncProto, compiled any, current Tier2FeedbackSnapshot) bool {
-	return Tier2RecompilePolicy{}.ShouldRefreshProfile(compiled, Tier2SpecializationProfile{Snapshot: current})
+	return (Tier2RecompilePolicy{}).ShouldRefreshProfile(compiled, Tier2SpecializationProfile{Snapshot: current})
+}
+
+func (Tier2RecompilePolicy) ShouldRefreshProfileForProto(proto *vm.FuncProto, compiled any, current Tier2SpecializationProfile) bool {
+	if (Tier2RecompilePolicy{}).ShouldRefreshProfile(compiled, current) {
+		return true
+	}
+	cf, ok := compiled.(*CompiledFunction)
+	if !ok || cf == nil || proto == nil {
+		return false
+	}
+	previousReadiness := AnalyzeTier2FeedbackReadiness(proto, cf.SpeculationSnapshot)
+	currentReadiness := AnalyzeTier2FeedbackReadiness(proto, current.Snapshot)
+	return currentReadiness.MoreReadyThan(previousReadiness)
 }
 
 func (Tier2RecompilePolicy) ShouldRefreshProfile(compiled any, current Tier2SpecializationProfile) bool {

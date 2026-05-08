@@ -139,7 +139,7 @@ func (tm *TieringManager) recordTier2ExitProfile(proto *vm.FuncProto, cf *Compil
 		return
 	}
 	current := tm.currentTier2SpeculationProfile(proto)
-	if !tm.recompile.ShouldRefreshProfile(cf, current) {
+	if !tm.recompile.ShouldRefreshProfileForProto(proto, cf, current) {
 		return
 	}
 	site.QueuedRecompile = true

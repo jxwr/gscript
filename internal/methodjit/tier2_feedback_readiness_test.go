@@ -42,3 +42,45 @@ func TestAnalyzeTier2FeedbackReadinessClassifiesStructuralMaturity(t *testing.T)
 		t.Fatalf("ready mismatch: %+v", ready)
 	}
 }
+
+func TestTier2FeedbackReadinessDetectsMaturityImprovement(t *testing.T) {
+	previous := Tier2FeedbackReadiness{Kind: Tier2FeedbackProvisionalNarrow, ImmatureFieldSites: 1}
+	current := Tier2FeedbackReadiness{Kind: Tier2FeedbackReadyWide}
+	if !current.MoreReadyThan(previous) {
+		t.Fatalf("current=%+v should be more ready than previous=%+v", current, previous)
+	}
+	if previous.MoreReadyThan(current) {
+		t.Fatalf("previous=%+v should not be more ready than current=%+v", previous, current)
+	}
+}
+
+func TestTier2RecompilePolicyRefreshesWhenReadinessImproves(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name: "readiness",
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_GETFIELD, 1, 0, 0),
+			vm.EncodeABC(vm.OP_GETFIELD, 2, 0, 1),
+		},
+	}
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{FieldObserved: 1},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       7,
+			GuardCount: 2,
+		},
+	}
+	current := Tier2SpecializationProfile{
+		Snapshot: Tier2FeedbackSnapshot{FieldObserved: 2},
+		Version: Tier2SpecializationVersion{
+			Hash:       7,
+			GuardCount: 2,
+		},
+	}
+	var policy Tier2RecompilePolicy
+	if policy.ShouldRefreshProfile(cf, current) {
+		t.Fatal("legacy profile-only policy should not see readiness improvement without proto context")
+	}
+	if !policy.ShouldRefreshProfileForProto(proto, cf, current) {
+		t.Fatal("proto-aware policy should refresh when readiness improves")
+	}
+}
