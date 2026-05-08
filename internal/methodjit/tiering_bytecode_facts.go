@@ -50,6 +50,8 @@ func hasGenericStringFormatIntCall(proto *vm.FuncProto) bool {
 			s := protoConstString(proto, vm.DecodeBx(inst))
 			if s != "" && simpleSingleDecimalIntFormat(s) {
 				set(a, slotState{kind: "const_single_int_format"})
+			} else if s != "" && simpleConstStringFormatNativeEligible(s) {
+				set(a, slotState{kind: "const_native_string_format"})
 			} else {
 				clear(a)
 			}
@@ -73,6 +75,9 @@ func hasGenericStringFormatIntCall(proto *vm.FuncProto) bool {
 				(get(a+1).kind == "const_single_int_format" || callSiteFeedbackHasStableStringFormatInt(proto, pc)) {
 				return true
 			}
+			if b >= 4 && get(a).kind == "string_format" && get(a+1).kind == "const_native_string_format" {
+				return true
+			}
 			c := vm.DecodeC(inst)
 			if c == 0 {
 				clear(a)
@@ -92,6 +97,14 @@ func hasGenericStringFormatIntCall(proto *vm.FuncProto) bool {
 		}
 	}
 	return false
+}
+
+func simpleConstStringFormatNativeEligible(pattern string) bool {
+	if pattern == "" {
+		return false
+	}
+	pat, ok := parseStringFormatConstIntPatternNative(pattern)
+	return ok && len(pat.specs) >= 1 && len(pat.specs) <= 8
 }
 
 func callSiteFeedbackHasStableStringFormatInt(proto *vm.FuncProto, pc int) bool {

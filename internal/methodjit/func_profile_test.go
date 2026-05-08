@@ -486,6 +486,34 @@ func TestHasGenericStringFormatIntCallDetectsMixedInventory(t *testing.T) {
 	}
 }
 
+func TestHasGenericStringFormatIntCallDetectsConstMultiIntPattern(t *testing.T) {
+	src := `
+func format_loop(n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        s := string.format("item_%d_value_%d", i, i * 2)
+        total = total + #s
+    }
+    return total
+}
+`
+	top := compileProto(t, src)
+	proto := findProtoByName(top, "format_loop")
+	if proto == nil {
+		t.Fatal("format_loop proto not found")
+	}
+	if !hasGenericStringFormatIntCall(proto) {
+		t.Fatal("expected detector to accept const multi-int string.format pattern")
+	}
+	profile := analyzeFuncProfile(proto)
+	if !shouldPromoteTier2(proto, profile, 1) {
+		t.Fatal("const multi-int string.format loop should be eligible for first-call Tier2")
+	}
+	if NewTieringManager().shouldSuppressLoopCallTier2(proto, profile) {
+		t.Fatal("const multi-int string.format loop should not be suppressed")
+	}
+}
+
 func TestHasGenericStringFormatIntCallUsesStableRuntimeFeedback(t *testing.T) {
 	src := `
 func format_loop(pattern, n) {
