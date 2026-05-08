@@ -10,17 +10,21 @@ import (
 )
 
 type Tier2SpeculationState struct {
-	ProtoName       string            `json:"proto_name"`
-	ProtoID         string            `json:"proto_id"`
-	Compiled        bool              `json:"compiled"`
-	Failed          bool              `json:"failed"`
-	FailReason      string            `json:"fail_reason,omitempty"`
-	VersionHash     string            `json:"version_hash,omitempty"`
-	GuardCount      int               `json:"guard_count,omitempty"`
-	SuppressedCount int               `json:"suppressed_count,omitempty"`
-	SuppressedPCs   []int             `json:"suppressed_pcs,omitempty"`
-	SuppressedKinds map[string]int    `json:"suppressed_kinds,omitempty"`
-	GuardFailures   map[string]uint64 `json:"guard_failures,omitempty"`
+	ProtoName            string            `json:"proto_name"`
+	ProtoID              string            `json:"proto_id"`
+	Compiled             bool              `json:"compiled"`
+	Failed               bool              `json:"failed"`
+	FailReason           string            `json:"fail_reason,omitempty"`
+	VersionHash          string            `json:"version_hash,omitempty"`
+	GuardCount           int               `json:"guard_count,omitempty"`
+	SuppressedCount      int               `json:"suppressed_count,omitempty"`
+	SuppressedPCs        []int             `json:"suppressed_pcs,omitempty"`
+	SuppressedKinds      map[string]int    `json:"suppressed_kinds,omitempty"`
+	GuardFailures        map[string]uint64 `json:"guard_failures,omitempty"`
+	ExitCount            uint64            `json:"exit_count,omitempty"`
+	SuppressedGuardExits uint64            `json:"suppressed_guard_exits,omitempty"`
+	QueuedRecompileExits uint64            `json:"queued_recompile_exits,omitempty"`
+	ExitKinds            map[string]uint64 `json:"exit_kinds,omitempty"`
 }
 
 func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationState {
@@ -77,6 +81,12 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 			}
 		}
 		state.GuardFailures = tm.tier2GuardFailureKinds(proto)
+		if exits := tm.exitProfile.protoSummary(proto); exits.Total > 0 {
+			state.ExitCount = exits.Total
+			state.SuppressedGuardExits = exits.SuppressedGuardExits
+			state.QueuedRecompileExits = exits.QueuedRecompileExits
+			state.ExitKinds = exits.ExitKinds
+		}
 		out = append(out, state)
 	}
 	sort.Slice(out, func(i, j int) bool {

@@ -41,6 +41,13 @@ type Tier2ExitProfileSnapshot struct {
 	Sites []Tier2ExitProfileSite `json:"sites"`
 }
 
+type Tier2ExitProfileProtoSummary struct {
+	Total                uint64            `json:"total,omitempty"`
+	SuppressedGuardExits uint64            `json:"suppressed_guard_exits,omitempty"`
+	QueuedRecompileExits uint64            `json:"queued_recompile_exits,omitempty"`
+	ExitKinds            map[string]uint64 `json:"exit_kinds,omitempty"`
+}
+
 type tier2ExitProfileCollector struct {
 	mu    sync.Mutex
 	total uint64
@@ -140,6 +147,35 @@ func (c *tier2ExitProfileCollector) snapshot() Tier2ExitProfileSnapshot {
 	}
 	for _, site := range c.sites {
 		out.Sites = append(out.Sites, *site)
+	}
+	return out
+}
+
+func (c *tier2ExitProfileCollector) protoSummary(proto *vm.FuncProto) Tier2ExitProfileProtoSummary {
+	if c == nil || proto == nil {
+		return Tier2ExitProfileProtoSummary{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out Tier2ExitProfileProtoSummary
+	for key, site := range c.sites {
+		if key.Proto != proto || site == nil {
+			continue
+		}
+		out.Total += site.Count
+		if site.SuppressedGuard {
+			out.SuppressedGuardExits += site.Count
+		}
+		if site.QueuedRecompile {
+			out.QueuedRecompileExits += site.Count
+		}
+		if out.ExitKinds == nil {
+			out.ExitKinds = make(map[string]uint64)
+		}
+		out.ExitKinds[site.ExitName] += site.Count
+	}
+	if out.Total == 0 {
+		return Tier2ExitProfileProtoSummary{}
 	}
 	return out
 }

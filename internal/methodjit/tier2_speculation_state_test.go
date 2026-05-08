@@ -14,13 +14,19 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	failedProto := &vm.FuncProto{Name: "failed"}
 
 	tm.ensureTierStateStore()
-	tm.tierState.markCompiled(compiledProto, &CompiledFunction{
+	cf := &CompiledFunction{
 		SpecializationVersion: Tier2SpecializationVersion{Hash: 0x44, GuardCount: 5},
-	})
+		ExitSites: map[int]ExitSiteMeta{
+			11: {PC: 8, Op: "GuardType", Reason: "GuardType(int)"},
+		},
+	}
+	tm.tierState.markCompiled(compiledProto, cf)
 	tm.suppressTier2GuardKind(compiledProto, 8, "GuardType")
 	tm.suppressTier2GuardKind(compiledProto, 3, "GuardConstString")
 	tm.recordTier2GuardFailure(compiledProto, 8, "GuardType")
 	tm.recordTier2GuardFailure(compiledProto, 8, "GuardType")
+	tm.recordTier2Exit(compiledProto, cf, &ExecContext{ExitCode: ExitDeopt, DeoptInstrID: 11})
+	tm.recordTier2Exit(compiledProto, cf, &ExecContext{ExitCode: ExitDeopt, DeoptInstrID: 11})
 	tm.markTier2Failed(failedProto, "blocked")
 
 	snap := tm.Tier2SpeculationStateSnapshot()
@@ -39,6 +45,9 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	}
 	if compiled.GuardFailures["GuardType"] != 2 {
 		t.Fatalf("guard failures mismatch: %+v", compiled)
+	}
+	if compiled.ExitCount != 2 || compiled.SuppressedGuardExits != 2 || compiled.ExitKinds["ExitDeopt"] != 2 {
+		t.Fatalf("exit profile summary mismatch: %+v", compiled)
 	}
 	failed := findSpecState(t, snap, "failed")
 	if !failed.Failed || failed.FailReason != "blocked" {
