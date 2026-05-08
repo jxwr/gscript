@@ -607,6 +607,12 @@ type CompiledFunction struct {
 	// metadata used by TieringManager.ExitStats.
 	ExitSites map[int]ExitSiteMeta
 
+	// Continuations maps version-independent source bytecode locations to
+	// emitted Tier 2 resume entries. It is diagnostic groundwork for safe
+	// mid-run version switching: the current execute path still resumes by
+	// version-local IR instruction ID.
+	Continuations map[Tier2ContinuationKey]Tier2Continuation
+
 	// ExitResumeCheck is populated only when GSCRIPT_EXIT_RESUME_CHECK=1 at
 	// compile time. Nil keeps the normal execute path at near-zero overhead.
 	ExitResumeCheck *exitResumeCheckMetadata
@@ -619,6 +625,17 @@ func (cf *CompiledFunction) resumeOffset(instrID int, numericPass bool) (int, bo
 	}
 	off, ok := cf.ResumeAddrs[instrID]
 	return off, ok
+}
+
+func (cf *CompiledFunction) continuationOffset(key Tier2ContinuationKey) (int, bool) {
+	if cf == nil || cf.Continuations == nil {
+		return 0, false
+	}
+	cont, ok := cf.Continuations[key]
+	if !ok || cont.Ambiguous {
+		return 0, false
+	}
+	return cont.Offset, true
 }
 
 // Execute, executeCallExit, executeGlobalExit, executeTableExit, executeOpExit

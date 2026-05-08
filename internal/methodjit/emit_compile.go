@@ -394,6 +394,8 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 			resumeAddrs[dr.instrID] = off
 		}
 	}
+	exitSites := buildExitSiteMeta(fn)
+	continuations := buildTier2Continuations(exitSites, ec.deferredResumes, ec.asm.LabelOffset)
 
 	// Resolve direct entry offset for BLR callers.
 	directEntryOff := ec.asm.LabelOffset("t2_direct_entry")
@@ -452,7 +454,8 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		StringSplitSubSpecs:      fn.StringSplitSubSpecs,
 		WholeCallNoResultBatches: fn.WholeCallNoResultBatches,
 		InstrCodeRanges:          ec.instrCodeRanges,
-		ExitSites:                buildExitSiteMeta(fn),
+		ExitSites:                exitSites,
+		Continuations:            continuations,
 		ExitResumeCheck:          ec.exitResumeCheck,
 	}, nil
 }
