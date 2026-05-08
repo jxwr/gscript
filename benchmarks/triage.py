@@ -338,6 +338,8 @@ def load_spec_state(path: Path | None) -> dict:
     targets: Counter[str] = Counter()
     top_exits: Counter[str] = Counter()
     max_next_priority = 0
+    readiness: Counter[str] = Counter()
+    immature_sites = Counter()
     for row in states:
         suppressed = row.get("suppressed_kinds")
         if isinstance(suppressed, dict):
@@ -350,6 +352,14 @@ def load_spec_state(path: Path | None) -> dict:
         if target:
             targets[str(target)] += 1
         max_next_priority = max(max_next_priority, int(row.get("next_priority") or 0))
+        feedback_readiness = row.get("feedback_readiness")
+        if isinstance(feedback_readiness, dict):
+            kind = feedback_readiness.get("kind")
+            if kind:
+                readiness[str(kind)] += 1
+            immature_sites["field"] += int(feedback_readiness.get("immature_field_sites") or 0)
+            immature_sites["table_key"] += int(feedback_readiness.get("immature_table_key_sites") or 0)
+            immature_sites["call"] += int(feedback_readiness.get("immature_call_sites") or 0)
         top_exit_name = row.get("top_exit_name")
         top_exit_reason = row.get("top_exit_reason")
         top_exit_count = int(row.get("top_exit_count") or 0)
@@ -369,6 +379,8 @@ def load_spec_state(path: Path | None) -> dict:
         "next_actions": dict(sorted(actions.items())),
         "next_targets": dict(sorted(targets.items())),
         "max_next_priority": max_next_priority,
+        "feedback_readiness": dict(sorted(readiness.items())),
+        "immature_feedback_sites": {key: value for key, value in sorted(immature_sites.items()) if value},
         "top_priority_states": sorted(
             states,
             key=lambda row: int(row.get("next_priority") or 0),
@@ -499,6 +511,14 @@ def classify(
         if next_targets:
             target_text = ", ".join(f"{target}={count}" for target, count in sorted(next_targets.items()))
             evidence.append(f"Tier2 next targets: {target_text}")
+        feedback_readiness = spec_state.get("feedback_readiness") or {}
+        if feedback_readiness:
+            readiness_text = ", ".join(f"{kind}={count}" for kind, count in sorted(feedback_readiness.items()))
+            evidence.append(f"Tier2 feedback readiness: {readiness_text}")
+        immature_feedback_sites = spec_state.get("immature_feedback_sites") or {}
+        if immature_feedback_sites:
+            immature_text = ", ".join(f"{kind}={count}" for kind, count in sorted(immature_feedback_sites.items()))
+            evidence.append(f"immature feedback sites: {immature_text}")
         max_next_priority = int(spec_state.get("max_next_priority") or 0)
         if max_next_priority > 0:
             evidence.append(f"max Tier2 self-driving priority: {max_next_priority}")

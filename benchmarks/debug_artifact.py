@@ -324,6 +324,8 @@ def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
     next_targets: Counter[str] = Counter()
     top_exits: Counter[str] = Counter()
     max_next_priority = 0
+    readiness: Counter[str] = Counter()
+    immature_sites = Counter()
     for row in states:
         kinds = row.get("suppressed_kinds")
         if isinstance(kinds, dict):
@@ -336,6 +338,14 @@ def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
         if target:
             next_targets[str(target)] += 1
         max_next_priority = max(max_next_priority, int(row.get("next_priority") or 0))
+        feedback_readiness = row.get("feedback_readiness")
+        if isinstance(feedback_readiness, dict):
+            kind = feedback_readiness.get("kind")
+            if kind:
+                readiness[str(kind)] += 1
+            immature_sites["field"] += int(feedback_readiness.get("immature_field_sites") or 0)
+            immature_sites["table_key"] += int(feedback_readiness.get("immature_table_key_sites") or 0)
+            immature_sites["call"] += int(feedback_readiness.get("immature_call_sites") or 0)
         top_exit_name = row.get("top_exit_name")
         top_exit_reason = row.get("top_exit_reason")
         top_exit_count = int(row.get("top_exit_count") or 0)
@@ -355,6 +365,8 @@ def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
         "next_actions": dict(sorted(next_actions.items())),
         "next_targets": dict(sorted(next_targets.items())),
         "max_next_priority": max_next_priority,
+        "feedback_readiness": dict(sorted(readiness.items())),
+        "immature_feedback_sites": {key: value for key, value in sorted(immature_sites.items()) if value},
         "top_priority_states": sorted(
             states,
             key=lambda row: int(row.get("next_priority") or 0),
