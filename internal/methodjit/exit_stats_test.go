@@ -221,6 +221,10 @@ func TestExitProfileQueuesRecompileWhenFeedbackMatures(t *testing.T) {
 			9: {PC: 3, Op: "GetTable", Reason: "GetTable"},
 		},
 	}
+	tm.ensureTierStateStore()
+	tm.tierState.markCompiled(proto, cf)
+	proto.Tier2Promoted = true
+	proto.DirectEntryPtr = 123
 
 	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitTableExit, TableExitID: 9, TableOp: TableOpGetTable})
 	if _, ok := tm.recompileQueue.take(proto); ok {
@@ -233,5 +237,54 @@ func TestExitProfileQueuesRecompileWhenFeedbackMatures(t *testing.T) {
 	}
 	if req.Site.PC != 3 || req.Site.Count != 2 || req.Site.ExitName != "ExitTableExit" {
 		t.Fatalf("unexpected queued request: %+v", req)
+	}
+	if !req.Site.QueuedRecompile || req.Site.RefreshVersionHash == "" || req.Site.RefreshGuardDelta <= 0 {
+		t.Fatalf("queued request missing refresh diagnostics: %+v", req.Site)
+	}
+	if _, ok := tm.tier2CompiledFor(proto); ok {
+		t.Fatal("queued recompile should clear stale compiled install")
+	}
+	if proto.Tier2Promoted || proto.DirectEntryPtr != 0 {
+		t.Fatalf("queued recompile left stale entry visible: promoted=%v direct=%#x",
+			proto.Tier2Promoted, proto.DirectEntryPtr)
+	}
+	snap := tm.exitProfile.snapshot()
+	if len(snap.Sites) != 1 || !snap.Sites[0].QueuedRecompile || snap.Sites[0].RefreshGuardDelta <= 0 {
+		t.Fatalf("exit profile missing refresh diagnostics: %+v", snap)
+	}
+}
+
+func TestPromotionPolicyForcesTier2ForQueuedFeedbackRefresh(t *testing.T) {
+	proto := &vm.FuncProto{Name: "refresh"}
+	proto.CallCount = BaselineCompileThreshold
+	decision := PromotionPolicy{}.Decide(proto, FuncProfile{}, PromotionPolicyState{
+		Manager:            NewTieringManager(),
+		RecompileRequested: true,
+	})
+	if decision.Action != TieringActionPromoteTier2 || decision.Reason != PromotionReasonFeedbackRefresh {
+		t.Fatalf("decision=%s reason=%s want promote feedback_refresh", decision.Action, decision.Reason)
+	}
+}
+
+func TestExitProfileDoesNotQueueRecompileForOpExit(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "format", Code: make([]uint32, 4)}
+	proto.EnsureFeedback()
+	proto.Feedback[3].Result = vm.FBInt
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       1,
+			GuardCount: 0,
+		},
+		ExitSites: map[int]ExitSiteMeta{
+			9: {PC: 3, Op: "StringFormat", Reason: "StringFormatConst"},
+		},
+	}
+
+	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitOpExit, OpExitID: 9})
+	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitOpExit, OpExitID: 9})
+	if _, ok := tm.recompileQueue.take(proto); ok {
+		t.Fatal("op-exit feedback should not queue structural recompile")
 	}
 }

@@ -20,16 +20,19 @@ type Tier2ExitProfileKey struct {
 }
 
 type Tier2ExitProfileSite struct {
-	Proto           string `json:"proto"`
-	PC              int    `json:"pc"`
-	ExitCode        int    `json:"exit_code"`
-	ExitName        string `json:"exit_name"`
-	OpID            int    `json:"op_id"`
-	Reason          string `json:"reason"`
-	Count           uint64 `json:"count"`
-	VersionHash     string `json:"version_hash,omitempty"`
-	VersionGuards   int    `json:"version_guards,omitempty"`
-	QueuedRecompile bool   `json:"queued_recompile,omitempty"`
+	Proto                string `json:"proto"`
+	PC                   int    `json:"pc"`
+	ExitCode             int    `json:"exit_code"`
+	ExitName             string `json:"exit_name"`
+	OpID                 int    `json:"op_id"`
+	Reason               string `json:"reason"`
+	Count                uint64 `json:"count"`
+	VersionHash          string `json:"version_hash,omitempty"`
+	VersionGuards        int    `json:"version_guards,omitempty"`
+	QueuedRecompile      bool   `json:"queued_recompile,omitempty"`
+	RefreshVersionHash   string `json:"refresh_version_hash,omitempty"`
+	RefreshVersionGuards int    `json:"refresh_version_guards,omitempty"`
+	RefreshGuardDelta    int    `json:"refresh_guard_delta,omitempty"`
 }
 
 type Tier2ExitProfileSnapshot struct {
@@ -91,7 +94,7 @@ func (c *tier2ExitProfileCollector) record(proto *vm.FuncProto, cf *CompiledFunc
 	return *site, true
 }
 
-func (c *tier2ExitProfileCollector) markQueued(proto *vm.FuncProto) {
+func (c *tier2ExitProfileCollector) markQueued(proto *vm.FuncProto, current Tier2SpecializationProfile) {
 	if c == nil || proto == nil {
 		return
 	}
@@ -100,6 +103,9 @@ func (c *tier2ExitProfileCollector) markQueued(proto *vm.FuncProto) {
 	for key, site := range c.sites {
 		if key.Proto == proto {
 			site.QueuedRecompile = true
+			site.RefreshVersionHash = fmt.Sprintf("%x", current.Version.Hash)
+			site.RefreshVersionGuards = current.Version.GuardCount
+			site.RefreshGuardDelta = current.Version.GuardCount - site.VersionGuards
 		}
 	}
 }

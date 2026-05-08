@@ -114,6 +114,11 @@ func (tm *TieringManager) recordTier2ExitProfile(proto *vm.FuncProto, cf *Compil
 	if tm == nil || proto == nil || cf == nil || ctx == nil {
 		return
 	}
+	switch ctx.ExitCode {
+	case ExitTableExit, ExitCallExit, ExitGlobalExit:
+	default:
+		return
+	}
 	site, ok := tm.exitProfile.record(proto, cf, ctx)
 	if !ok || site.Count != tier2RecompileQueueMinExitCount {
 		return
@@ -122,8 +127,13 @@ func (tm *TieringManager) recordTier2ExitProfile(proto *vm.FuncProto, cf *Compil
 	if !tm.recompile.ShouldRefreshProfile(cf, current) {
 		return
 	}
+	site.QueuedRecompile = true
+	site.RefreshVersionHash = fmt.Sprintf("%x", current.Version.Hash)
+	site.RefreshVersionGuards = current.Version.GuardCount
+	site.RefreshGuardDelta = current.Version.GuardCount - site.VersionGuards
 	if tm.recompileQueue.enqueue(proto, "exit_profile_feedback_matured", site) {
-		tm.exitProfile.markQueued(proto)
+		tm.exitProfile.markQueued(proto, current)
+		tm.clearTier2Install(proto)
 		tm.traceEvent("tier2_recompile_queued", "tier2", proto, map[string]any{
 			"reason":        "exit_profile_feedback_matured",
 			"pc":            site.PC,
@@ -132,6 +142,7 @@ func (tm *TieringManager) recordTier2ExitProfile(proto *vm.FuncProto, cf *Compil
 			"guards_before": cf.SpecializationVersion.GuardCount,
 			"guards_after":  current.Version.GuardCount,
 			"version_after": fmt.Sprintf("%x", current.Version.Hash),
+			"install":       "cleared",
 		})
 	}
 }

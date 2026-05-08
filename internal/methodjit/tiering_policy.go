@@ -63,6 +63,7 @@ const (
 	PromotionReasonNativeLoopDriver    PromotionReason = "native_loop_driver"
 	PromotionReasonRecursivePartition  PromotionReason = "recursive_partition_table_mutation"
 	PromotionReasonLoopCallSuppressed  PromotionReason = "loop_call_suppressed"
+	PromotionReasonFeedbackRefresh     PromotionReason = "feedback_refresh"
 )
 
 type PromotionDecision struct {
@@ -77,9 +78,10 @@ type PromotionDecision struct {
 }
 
 type PromotionPolicyState struct {
-	Manager     *TieringManager
-	Compiled    *CompiledFunction
-	Tier2Failed bool
+	Manager            *TieringManager
+	Compiled           *CompiledFunction
+	Tier2Failed        bool
+	RecompileRequested bool
 }
 
 type PromotionPolicy struct{}
@@ -138,6 +140,14 @@ func (p PromotionPolicy) Decide(proto *vm.FuncProto, profile FuncProfile, state 
 				fallbackReason: "driver_tier0_loop_callee",
 				callee:         callee,
 			},
+		}
+	}
+	if state.RecompileRequested && !state.Tier2Failed {
+		return PromotionDecision{
+			Action:       TieringActionPromoteTier2,
+			Reason:       PromotionReasonFeedbackRefresh,
+			Gate:         forceGate("FeedbackRefresh", "exit profile requested refreshed Tier 2 compilation"),
+			PromoteTier2: true,
 		}
 	}
 

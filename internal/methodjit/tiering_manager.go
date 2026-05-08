@@ -175,7 +175,9 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	if compiled != nil && tm.recompile.ShouldRefreshProfile(compiled, specProfile) {
 		compiled = nil
 	}
+	recompileRequested := false
 	if req, ok := tm.recompileQueue.take(proto); ok {
+		recompileRequested = true
 		tm.traceEvent("tier2_recompile_dequeue", "tier2", proto, map[string]any{
 			"reason":     req.Reason,
 			"pc":         req.Site.PC,
@@ -186,9 +188,10 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		compiled = nil
 	}
 	decision := tm.policy.Decide(proto, profile, PromotionPolicyState{
-		Manager:     tm,
-		Compiled:    compiled,
-		Tier2Failed: tm.tier2HasFailed(proto),
+		Manager:            tm,
+		Compiled:           compiled,
+		Tier2Failed:        tm.tier2HasFailed(proto),
+		RecompileRequested: recompileRequested,
 	})
 	return tm.applyPromotionDecision(proto, profile, decision)
 }
