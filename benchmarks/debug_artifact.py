@@ -307,6 +307,33 @@ def summarize_perf_rows(rows: list[Any], enabled: Any, source: str) -> dict[str,
     }
 
 
+def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
+    data = read_json_or_embedded(path)
+    if not isinstance(data, list):
+        return {
+            "status": "missing" if path is None or not path.exists() else "parse_error",
+            "protos": 0,
+            "compiled": 0,
+            "failed": 0,
+            "suppressed": 0,
+            "states": [],
+        }
+    states = [row for row in data if isinstance(row, dict)]
+    return {
+        "status": "ok",
+        "protos": len(states),
+        "compiled": sum(1 for row in states if row.get("compiled")),
+        "failed": sum(1 for row in states if row.get("failed")),
+        "suppressed": sum(int(row.get("suppressed_count") or 0) for row in states),
+        "top_suppressed": sorted(
+            states,
+            key=lambda row: int(row.get("suppressed_count") or 0),
+            reverse=True,
+        )[:20],
+        "states": states,
+    }
+
+
 def summarize_warm_dump(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {"status": "missing", "path": str(path) if path else None}
@@ -385,6 +412,7 @@ def build_artifact(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             "exit_stats": input_status(args.exit_stats, "exit_stats"),
             "runtime_path_stats": input_status(args.runtime_path_stats, "runtime_path_stats"),
             "tier2_perf_stats": input_status(args.perf_stats, "tier2_perf_stats"),
+            "tier2_speculation_state": input_status(args.spec_state, "tier2_speculation_state"),
             "warm_dump": input_status(args.warm_dump, "warm_dump"),
         }
     )
@@ -392,6 +420,7 @@ def build_artifact(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     exit_stats = summarize_exit_stats(args.exit_stats)
     runtime_path_stats = summarize_runtime_stats(args.runtime_path_stats)
     perf_stats = summarize_perf_stats(args.perf_stats)
+    spec_state = summarize_speculation_state(args.spec_state)
     warm_dump = summarize_warm_dump(args.warm_dump)
     benchmark_summary = summarize_benchmarks(benchmark_rows)
     tiering = summarize_tiering(benchmark_rows, warm_dump)
@@ -416,11 +445,13 @@ def build_artifact(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         "gates": gates,
         "exits": exit_stats,
         "runtime_paths": runtime_path_stats,
+        "specialization": spec_state,
         "profiles": profiles,
         "debug": {
             "exit_stats": exit_stats,
             "runtime_path_stats": runtime_path_stats,
             "tier2_perf_stats": perf_stats,
+            "tier2_speculation_state": spec_state,
             "warm_dump": warm_dump,
         },
     }
@@ -432,6 +463,7 @@ def main() -> int:
     parser.add_argument("--exit-stats", type=Path, help="profile_exits JSON, raw -exit-stats-json output, or embedded JSON")
     parser.add_argument("--runtime-path-stats", type=Path, help="raw -runtime-path-stats[-json] output")
     parser.add_argument("--perf-stats", type=Path, help="raw -tier2-perf-stats[-json] output")
+    parser.add_argument("--spec-state", type=Path, help="raw -tier2-spec-state-json output")
     parser.add_argument("--warm-dump", type=Path, help="directory produced by -jit-dump-warm")
     parser.add_argument("--label", help="free-form artifact label")
     parser.add_argument("--out", type=Path, help="write artifact JSON to this path; stdout when omitted")

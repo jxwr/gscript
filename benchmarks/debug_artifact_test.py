@@ -70,6 +70,21 @@ class DebugArtifactTest(unittest.TestCase):
     tier2_native_execution: count=2 total=100ns avg=50ns
 """
             )
+            spec = root / "spec.json"
+            spec.write_text(
+                json.dumps(
+                    [
+                        {
+                            "proto_name": "fib",
+                            "compiled": True,
+                            "version_hash": "abc",
+                            "guard_count": 3,
+                            "suppressed_count": 2,
+                            "suppressed_pcs": [4, 9],
+                        }
+                    ]
+                )
+            )
             warm = root / "warm"
             warm.mkdir()
             (warm / "manifest.json").write_text(
@@ -85,6 +100,7 @@ class DebugArtifactTest(unittest.TestCase):
                     "exit_stats": exits,
                     "runtime_path_stats": runtime,
                     "perf_stats": perf,
+                    "spec_state": spec,
                     "warm_dump": warm,
                     "label": "unit",
                 },
@@ -97,6 +113,8 @@ class DebugArtifactTest(unittest.TestCase):
         self.assertEqual(artifact["debug"]["exit_stats"]["total"], 3)
         self.assertEqual(artifact["debug"]["runtime_path_stats"]["numbers"]["native_call.fast"], 7.0)
         self.assertEqual(artifact["debug"]["tier2_perf_stats"]["total_nanos"], 100)
+        self.assertEqual(artifact["debug"]["tier2_speculation_state"]["suppressed"], 2)
+        self.assertEqual(artifact["specialization"]["compiled"], 1)
         self.assertEqual(artifact["debug"]["warm_dump"]["pcmap_ranges"], 2)
         self.assertEqual(artifact["timing"]["summary"]["rows"], 1)
         self.assertEqual(artifact["tiering"]["t2_entered"], 1)

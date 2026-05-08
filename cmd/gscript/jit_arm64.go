@@ -171,3 +171,12 @@ func (r *tieringManagerReporter) PrintTier2PerfStatsJSON(w *os.File) error {
 	enc.SetIndent("", "  ")
 	return enc.Encode(r.tm.Tier2PerfStats())
 }
+
+func (r *tieringManagerReporter) PrintTier2SpeculationStateJSON(w *os.File) error {
+	if r == nil || r.tm == nil {
+		return nil
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(r.tm.Tier2SpeculationStateSnapshot())
+}
