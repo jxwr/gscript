@@ -333,12 +333,59 @@ func NewTier2SpeculationPlanWithSuppressedGuardKinds(proto *vm.FuncProto, suppre
 			suppressedCopy[pc] = true
 		}
 	}
+	profile = profile.withSuppressedGuards(suppressedCopy, kindsCopy)
 	return Tier2SpeculationPlan{
 		proto:                proto,
 		suppressedGuardPCs:   suppressedCopy,
 		suppressedGuardKinds: kindsCopy,
 		Snapshot:             profile.Snapshot,
 		Profile:              profile,
+	}
+}
+
+func (p Tier2SpecializationProfile) withSuppressedGuards(suppressed map[int]bool, suppressedKinds map[int]map[string]bool) Tier2SpecializationProfile {
+	if len(suppressed) == 0 && len(suppressedKinds) == 0 {
+		return p
+	}
+	filtered := p
+	filtered.Guards = make([]SpecializationGuard, 0, len(p.Guards))
+	for _, guard := range p.Guards {
+		if specializationGuardSuppressed(guard, suppressed, suppressedKinds) {
+			continue
+		}
+		filtered.Guards = append(filtered.Guards, guard)
+	}
+	filtered.Version = filtered.computeVersion()
+	return filtered
+}
+
+func specializationGuardSuppressed(guard SpecializationGuard, suppressed map[int]bool, suppressedKinds map[int]map[string]bool) bool {
+	if suppressed != nil && suppressed[guard.PC] {
+		return true
+	}
+	op := specializationGuardOpName(guard.Kind)
+	if op == "" || len(suppressedKinds) == 0 {
+		return false
+	}
+	if global := suppressedKinds[tier2GlobalGuardSuppressPC]; len(global) > 0 && (global[op] || global["*"]) {
+		return true
+	}
+	kinds := suppressedKinds[guard.PC]
+	return kinds[op] || kinds["*"]
+}
+
+func specializationGuardOpName(kind SpecializationGuardKind) string {
+	switch kind {
+	case SpecGuardResultType, SpecGuardOperandType:
+		return "GuardType"
+	case SpecGuardTableKind:
+		return "GuardTableKind"
+	case SpecGuardStringShapeKey:
+		return "GuardConstString"
+	case SpecGuardCallNative, SpecGuardCallVMProto, SpecGuardCallPolymorphic:
+		return "GuardCalleeProto"
+	default:
+		return ""
 	}
 }
 

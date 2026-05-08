@@ -121,6 +121,10 @@ func TestTier2SpeculationPlanSuppressesUnstableGuardPC(t *testing.T) {
 	if summary.SuppressedCount != 1 || len(summary.SuppressedPCs) != 1 || summary.SuppressedPCs[0] != 0 {
 		t.Fatalf("suppressed summary=%+v want one PC 0", summary)
 	}
+	if suppressed.Profile.Version.GuardCount >= plain.Profile.Version.GuardCount {
+		t.Fatalf("suppressed active guard count=%d want less than plain %d",
+			suppressed.Profile.Version.GuardCount, plain.Profile.Version.GuardCount)
+	}
 }
 
 func TestTier2SpeculationPlanSuppressesOnlyMatchingGuardKind(t *testing.T) {
@@ -157,6 +161,10 @@ func TestTier2SpeculationPlanSuppressesOnlyMatchingGuardKind(t *testing.T) {
 	}
 	if got := tableKindSuppressed.TableKindAux(0); got != 0 {
 		t.Fatalf("table-kind suppression should hide table-kind guard: %d", got)
+	}
+	if tableKindSuppressed.Profile.Summary().GuardKinds[string(SpecGuardTableKind)] != 0 {
+		t.Fatalf("table-kind suppression should remove active table-kind profile guard: %+v",
+			tableKindSuppressed.Profile.Summary())
 	}
 }
 
