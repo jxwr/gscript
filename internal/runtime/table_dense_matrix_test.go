@@ -31,6 +31,40 @@ func TestNewDenseMatrix_Basic(t *testing.T) {
 	}
 }
 
+func TestMatrixLibFixedArgFastPaths(t *testing.T) {
+	lib := buildMatrixLib()
+	dense := lib.RawGetString("dense").GoFunction()
+	getf := lib.RawGetString("getf").GoFunction()
+	setf := lib.RawGetString("setf").GoFunction()
+	if dense == nil || getf == nil || setf == nil {
+		t.Fatalf("matrix functions were not registered")
+	}
+	if dense.FastArg2 == nil {
+		t.Fatalf("matrix.dense FastArg2 is nil")
+	}
+	if getf.FastArg3 == nil {
+		t.Fatalf("matrix.getf FastArg3 is nil")
+	}
+	if setf.FastArg4 == nil {
+		t.Fatalf("matrix.setf FastArg4 is nil")
+	}
+
+	matrixValue, err := dense.FastArg2(IntValue(2), IntValue(3))
+	if err != nil {
+		t.Fatalf("matrix.dense fast path error: %v", err)
+	}
+	if _, err := setf.FastArg4(matrixValue, IntValue(1), IntValue(2), FloatValue(7.5)); err != nil {
+		t.Fatalf("matrix.setf fast path error: %v", err)
+	}
+	got, err := getf.FastArg3(matrixValue, IntValue(1), IntValue(2))
+	if err != nil {
+		t.Fatalf("matrix.getf fast path error: %v", err)
+	}
+	if !got.IsFloat() || got.Float() != 7.5 {
+		t.Fatalf("matrix.getf fast path = %v, want 7.5", got)
+	}
+}
+
 func TestDenseMatrix_RowsShareBacking(t *testing.T) {
 	// The core Phase 1 invariant: ALL rows alias one flat []float64.
 	m := NewDenseMatrix(2, 3)

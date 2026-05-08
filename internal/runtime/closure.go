@@ -50,6 +50,7 @@ type GoFunction struct {
 	FastArg1 func(a Value) (Value, error)
 	FastArg2 func(a, b Value) (Value, error)
 	FastArg3 func(a, b, c Value) (Value, error)
+	FastArg4 func(a, b, c, d Value) (Value, error)
 	// NativeKind/NativeData let the bytecode VM attach optional direct-dispatch
 	// metadata while keeping Fn as the semantic fallback.
 	NativeKind uint8

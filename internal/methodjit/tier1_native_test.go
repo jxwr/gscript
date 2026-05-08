@@ -202,6 +202,7 @@ for i := 1; i <= 200; i++ {
 	fast1Calls := 0
 	fast2Calls := 0
 	fast3Calls := 0
+	fast4Calls := 0
 	v.SetGlobal("fast1", runtime.FunctionValue(&runtime.GoFunction{
 		Name: "fast1",
 		Fn: func(args []runtime.Value) ([]runtime.Value, error) {
@@ -232,6 +233,16 @@ for i := 1; i <= 200; i++ {
 			return runtime.IntValue(a.Int() + b.Int() + c.Int()), nil
 		},
 	}))
+	v.SetGlobal("fast4", runtime.FunctionValue(&runtime.GoFunction{
+		Name: "fast4",
+		Fn: func(args []runtime.Value) ([]runtime.Value, error) {
+			return []runtime.Value{runtime.IntValue(args[0].Int() + args[1].Int() + args[2].Int() + args[3].Int())}, nil
+		},
+		FastArg4: func(a, b, c, d runtime.Value) (runtime.Value, error) {
+			fast4Calls++
+			return runtime.IntValue(a.Int() + b.Int() + c.Int() + d.Int()), nil
+		},
+	}))
 
 	if _, err := v.Execute(proto); err != nil {
 		t.Fatalf("JIT runtime error: %v", err)
@@ -251,6 +262,15 @@ for i := 1; i <= 200; i++ {
 	}
 	if fast3Calls == 0 {
 		t.Fatalf("FastArg3 path was not used")
+	}
+	if _, err := v.Execute(compileTop(t, `result := fast4(1, 2, 3, 4)`)); err != nil {
+		t.Fatalf("JIT fast4 runtime error: %v", err)
+	}
+	if got := v.GetGlobal("result"); !got.IsInt() || got.Int() != 10 {
+		t.Fatalf("fast4 result = %v, want 10", got)
+	}
+	if fast4Calls == 0 {
+		t.Fatalf("FastArg4 path was not used")
 	}
 }
 
