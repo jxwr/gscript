@@ -193,6 +193,43 @@ func apply(f) {
 	}
 }
 
+func TestInline_SuppressedFeedbackCalleeKeepsGenericCall(t *testing.T) {
+	src := `func inc(n) { return n + 1 }
+func apply(f) {
+	x := f(41)
+	return x + 1
+}`
+	top := compileTop(t, src)
+	inc := findProtoByName(top, "inc")
+	apply := findProtoByName(top, "apply")
+	if inc == nil || apply == nil {
+		t.Fatalf("missing protos: inc=%v apply=%v", inc != nil, apply != nil)
+	}
+
+	fn := BuildGraph(apply)
+	call := firstCall(t, fn)
+	apply.EnsureFeedback()
+	apply.CallSiteFeedback[call.SourcePC].Count = wholeCallKernelMinStableObservations
+	apply.CallSiteFeedback[call.SourcePC].NArgs = 1
+	apply.CallSiteFeedback[call.SourcePC].ResultArity = uint8(call.Aux2)
+	apply.CallSiteFeedback[call.SourcePC].CalleeVMProto = inc
+	apply.CallSiteFeedback[call.SourcePC].CalleeVMProtos[0] = inc
+	apply.CallSiteFeedback[call.SourcePC].CalleeVMProtoCount = 1
+
+	speculation := NewTier2SpeculationPlanWithSuppressedGuards(apply, map[int]bool{call.SourcePC: true})
+	fn, _, err := RunTier2Pipeline(BuildGraphWithSpeculation(apply, speculation), &Tier2PipelineOpts{InlineMaxSize: 20})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(apply): %v", err)
+	}
+	counts := countOps(fn)
+	if counts[OpGuardCalleeProto] != 0 {
+		t.Fatalf("suppressed feedback callee still emitted guard\nIR:\n%s", Print(fn))
+	}
+	if counts[OpCall] == 0 {
+		t.Fatalf("suppressed feedback callee should keep generic call\nIR:\n%s", Print(fn))
+	}
+}
+
 func TestCallABIAnnotate_FibOverflowVersionUsesBoxedReturn(t *testing.T) {
 	src := `func fib_iter(n) {
 	a := 0

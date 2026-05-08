@@ -365,6 +365,31 @@ func TestTieringManagerGuardDeoptSuppressesPCAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestTieringManagerCalleeGuardDeoptSuppressesCallsiteAndRefreshes(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "callee_guard_refresh", Code: make([]uint32, 5)}
+	cf := &CompiledFunction{
+		ExitSites: map[int]ExitSiteMeta{
+			77: {PC: 4, Op: "GuardCalleeProto", Reason: "GuardCalleeProto"},
+		},
+	}
+	ctx := &ExecContext{DeoptInstrID: 77}
+
+	action, ok := tm.guardDeoptRefreshAction(proto, cf, ctx)
+	if !ok {
+		t.Fatal("callee guard deopt should produce refresh action")
+	}
+	if action.Kind != Tier2DeoptRefreshAndFallback {
+		t.Fatalf("action=%s want %s", action.Kind, Tier2DeoptRefreshAndFallback)
+	}
+	if action.GuardRelaxedPC != 4 {
+		t.Fatalf("GuardRelaxedPC=%d want 4", action.GuardRelaxedPC)
+	}
+	if !tm.tier2SuppressedGuards(proto)[4] {
+		t.Fatal("callsite PC 4 was not recorded as suppressed")
+	}
+}
+
 func TestTier2RecompilePolicyIgnoresTinyTypeOnlyGrowth(t *testing.T) {
 	var policy Tier2RecompilePolicy
 	cf := &CompiledFunction{

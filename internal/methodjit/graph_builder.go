@@ -19,8 +19,9 @@ func BuildGraph(proto *vm.FuncProto) *Function {
 func BuildGraphWithSpeculation(proto *vm.FuncProto, speculation Tier2SpeculationPlan) *Function {
 	b := &graphBuilder{
 		fn: &Function{
-			Proto:   proto,
-			NumRegs: proto.MaxStack,
+			Proto:                  proto,
+			NumRegs:                proto.MaxStack,
+			SuppressedSpecGuardPCs: speculation.SuppressedGuardPCs(),
 		},
 		proto:           proto,
 		speculation:     speculation,

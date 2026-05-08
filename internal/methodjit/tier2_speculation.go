@@ -311,6 +311,19 @@ func (p Tier2SpeculationPlan) GuardSuppressed(pc int) bool {
 	return p.suppressedGuardPCs != nil && p.suppressedGuardPCs[pc]
 }
 
+func (p Tier2SpeculationPlan) SuppressedGuardPCs() map[int]bool {
+	if len(p.suppressedGuardPCs) == 0 {
+		return nil
+	}
+	out := make(map[int]bool, len(p.suppressedGuardPCs))
+	for pc, ok := range p.suppressedGuardPCs {
+		if ok {
+			out[pc] = true
+		}
+	}
+	return out
+}
+
 func (p Tier2SpeculationPlan) TypeFeedback(pc int) (vm.TypeFeedback, bool) {
 	if p.proto == nil || pc < 0 || p.proto.Feedback == nil || pc >= len(p.proto.Feedback) {
 		return vm.TypeFeedback{}, false

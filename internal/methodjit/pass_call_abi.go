@@ -204,6 +204,9 @@ func callABIFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool
 		!instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
 		return nil, false
 	}
+	if fn.SuppressedSpecGuardPCs != nil && fn.SuppressedSpecGuardPCs[instr.SourcePC] {
+		return nil, false
+	}
 	fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
 	if fb.Count < wholeCallKernelMinStableObservations ||
 		fb.Flags&(vm.CallSiteCalleePolymorphic|vm.CallSiteArityPolymorphic) != 0 ||

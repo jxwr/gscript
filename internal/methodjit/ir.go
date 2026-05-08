@@ -135,6 +135,12 @@ type Function struct {
 	// cross-proto raw-int call path; OpCall.Type alone is not authoritative.
 	CallABIs map[int]CallABIDescriptor
 
+	// SuppressedSpecGuardPCs records bytecode PCs whose runtime guards have
+	// already failed for this proto version. Later passes must treat matching
+	// feedback as unstable and keep the generic path instead of regenerating
+	// the same guarded specialization.
+	SuppressedSpecGuardPCs map[int]bool
+
 	// ProtocolConstCallFolds records guarded whole-call protocol constants
 	// keyed by OpCall instruction ID.
 	ProtocolConstCallFolds map[int]ProtocolConstCallFoldFact
