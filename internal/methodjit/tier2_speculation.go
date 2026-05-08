@@ -442,6 +442,9 @@ func (p Tier2SpeculationPlan) OperandGuardTypes(pc int) (left Type, leftOK bool,
 }
 
 func (p Tier2SpeculationPlan) TableKindAux(pc int) int64 {
+	if p.GuardKindSuppressed(pc, "GuardTableKind") {
+		return 0
+	}
 	if guard, ok := p.Profile.findGuard(pc, SpecGuardTableKind, nil); ok && guard.TableKind != 0 {
 		return int64(guard.TableKind)
 	}

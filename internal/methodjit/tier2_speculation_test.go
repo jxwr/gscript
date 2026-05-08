@@ -127,6 +127,7 @@ func TestTier2SpeculationPlanSuppressesOnlyMatchingGuardKind(t *testing.T) {
 	proto := &vm.FuncProto{Name: "kind_scoped", Code: make([]uint32, 1)}
 	proto.EnsureFeedback()
 	proto.Feedback[0].Result = vm.FBInt
+	proto.Feedback[0].Kind = vm.FBKindFloat
 
 	constStringSuppressed := NewTier2SpeculationPlanWithSuppressedGuardKinds(proto, nil, map[int]map[string]bool{
 		0: {"GuardConstString": true},
@@ -134,12 +135,28 @@ func TestTier2SpeculationPlanSuppressesOnlyMatchingGuardKind(t *testing.T) {
 	if typ, ok := constStringSuppressed.ResultGuardType(0); !ok || typ != TypeInt {
 		t.Fatalf("const-string suppression should not hide type guard: %v %v", typ, ok)
 	}
+	if got := constStringSuppressed.TableKindAux(0); got != int64(vm.FBKindFloat) {
+		t.Fatalf("const-string suppression should not hide table-kind guard: %d", got)
+	}
 
 	typeSuppressed := NewTier2SpeculationPlanWithSuppressedGuardKinds(proto, nil, map[int]map[string]bool{
 		0: {"GuardType": true},
 	})
 	if typ, ok := typeSuppressed.ResultGuardType(0); ok || typ != TypeUnknown {
 		t.Fatalf("type suppression should hide type guard: %v %v", typ, ok)
+	}
+	if got := typeSuppressed.TableKindAux(0); got != int64(vm.FBKindFloat) {
+		t.Fatalf("type suppression should not hide table-kind guard: %d", got)
+	}
+
+	tableKindSuppressed := NewTier2SpeculationPlanWithSuppressedGuardKinds(proto, nil, map[int]map[string]bool{
+		0: {"GuardTableKind": true},
+	})
+	if typ, ok := tableKindSuppressed.ResultGuardType(0); !ok || typ != TypeInt {
+		t.Fatalf("table-kind suppression should not hide type guard: %v %v", typ, ok)
+	}
+	if got := tableKindSuppressed.TableKindAux(0); got != 0 {
+		t.Fatalf("table-kind suppression should hide table-kind guard: %d", got)
 	}
 }
 
@@ -433,6 +450,32 @@ func TestTieringManagerConstStringGuardDeoptSuppressesPCAndRefreshes(t *testing.
 	}
 	if !tm.tier2SuppressedGuards(proto)[2] {
 		t.Fatal("PC 2 was not recorded as suppressed")
+	}
+}
+
+func TestTieringManagerTableKindGuardDeoptSuppressesPCAndRefreshes(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "table_kind_guard_refresh", Code: make([]uint32, 4)}
+	cf := &CompiledFunction{
+		ExitSites: map[int]ExitSiteMeta{
+			21: {PC: 3, Op: "GuardTableKind", Reason: "GuardTableKind(float)"},
+		},
+	}
+	ctx := &ExecContext{DeoptInstrID: 21, ExitResumePC: 6}
+
+	action, ok := tm.guardDeoptRefreshAction(proto, cf, ctx)
+	if !ok {
+		t.Fatal("table-kind guard deopt should produce refresh action")
+	}
+	if action.Kind != Tier2DeoptRefreshAndFallback || action.GuardRelaxedOp != "GuardTableKind" {
+		t.Fatalf("action=%+v want refresh GuardTableKind", action)
+	}
+	if action.GuardRelaxedPC != 3 || !action.PreciseResume || action.ResumePC != 6 {
+		t.Fatalf("action resume/pc mismatch: %+v", action)
+	}
+	kinds := tm.tier2SuppressedGuardKinds(proto)
+	if kinds[3]["GuardTableKind"] != true {
+		t.Fatalf("table-kind guard was not kind-suppressed: %#v", kinds)
 	}
 }
 

@@ -384,7 +384,7 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 		return Tier2DeoptAction{}, false
 	}
 	meta, ok := cf.ExitSites[int(ctx.DeoptInstrID)]
-	if !ok || meta.PC < 0 || (meta.Op != "GuardType" && meta.Op != "GuardCalleeProto" && meta.Op != "GuardConstString") {
+	if !ok || meta.PC < 0 || !tier2GuardOpCanRefresh(meta.Op) {
 		return Tier2DeoptAction{}, false
 	}
 	tm.suppressTier2GuardKind(proto, meta.PC, meta.Op)
@@ -393,6 +393,8 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 		reason = "tier2: callee guard deopt; recompile without unstable callsite guard"
 	} else if meta.Op == "GuardConstString" {
 		reason = "tier2: const-string guard deopt; recompile without unstable string-key guard"
+	} else if meta.Op == "GuardTableKind" {
+		reason = "tier2: table-kind guard deopt; recompile without unstable table-kind guard"
 	}
 	return Tier2DeoptAction{
 		Kind:           Tier2DeoptRefreshAndFallback,
@@ -403,6 +405,15 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 		GuardRelaxedPC: meta.PC,
 		GuardRelaxedOp: meta.Op,
 	}, true
+}
+
+func tier2GuardOpCanRefresh(op string) bool {
+	switch op {
+	case "GuardType", "GuardCalleeProto", "GuardConstString", "GuardTableKind":
+		return true
+	default:
+		return false
+	}
 }
 
 func (tm *TieringManager) applyTier2DeoptAction(proto *vm.FuncProto, action Tier2DeoptAction) {
