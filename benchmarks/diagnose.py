@@ -62,6 +62,10 @@ class DiagnosticRow:
     work_priority: int = 0
     readiness: str = ""
     runtime_summary: dict[str, Any] = field(default_factory=dict)
+    pprof_runs: int = 0
+    pprof_script_repeat: int = 0
+    pprof_samples_seconds: float = 0.0
+    pprof_effective: bool = False
     artifact_dir: str = ""
     artifacts: dict[str, str] = field(default_factory=dict)
 
@@ -141,6 +145,59 @@ def run_artifact(
     )
 
 
+def parse_pprof_total_samples_seconds(text: str) -> float:
+    match = re.search(r"Total samples =\s*([0-9.]+)(ns|us|ms|s)?\b", text)
+    if not match:
+        return 0.0
+    value = float(match.group(1))
+    unit = match.group(2) or "s"
+    if unit == "ns":
+        return value / 1e9
+    if unit == "us":
+        return value / 1e6
+    if unit == "ms":
+        return value / 1e3
+    return value
+
+
+def collect_effective_cpu_profile(
+    root: Path,
+    binary: Path,
+    base_cmd: list[str],
+    script: Path,
+    out_dir: Path,
+    timeout: int,
+    min_samples_seconds: float,
+    max_runs: int,
+) -> tuple[int, int, float, bool]:
+    source = script.read_text()
+    profiles: list[Path] = []
+    top_text = ""
+    samples = 0.0
+    script_repeat = 1
+    last_repeat = 0
+    for index in range(1, max_runs + 1):
+        last_repeat = script_repeat
+        profile_script = out_dir / f"profile_repeat_{script_repeat:04d}.gs"
+        profile_script.write_text(("\n\n").join(source for _ in range(script_repeat)) + "\n")
+        cpu = out_dir / f"cpu_{index:03d}.pprof"
+        proc = run([*base_cmd, "-cpuprofile", str(cpu), str(profile_script)], root, timeout)
+        (out_dir / f"cpu_profile_run_{index:03d}.raw.txt").write_text(proc.stdout)
+        if not cpu.exists():
+            continue
+        profiles.append(cpu)
+        top = run(["go", "tool", "pprof", "-top", "-nodecount=30", str(binary), str(cpu)], root, timeout)
+        top_text = top.stdout
+        samples = parse_pprof_total_samples_seconds(top_text)
+        (out_dir / "cpu.pprof.txt").write_text(top_text)
+        if samples >= min_samples_seconds:
+            break
+        script_repeat *= 2
+    if profiles:
+        (out_dir / "cpu.profiles.txt").write_text("\n".join(str(path) for path in profiles) + "\n")
+    return len(profiles), last_repeat, samples, samples >= min_samples_seconds
+
+
 def summarize_runtime_paths(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {}
@@ -190,6 +247,14 @@ def artifact_paths(artifacts: list[CommandArtifact]) -> dict[str, str]:
     return out
 
 
+def add_optional_artifact_paths(paths: dict[str, str], bench_out: Path) -> dict[str, str]:
+    for name in ("cpu.pprof.txt", "cpu.profiles.txt", "warm_pcmap.json", "warm_pcmap.raw.txt"):
+        path = bench_out / name
+        if path.exists():
+            paths[name.replace(".", "_")] = str(path)
+    return paths
+
+
 def bench_dir_name(spec: timing.BenchmarkSpec) -> str:
     return f"{spec.group}__{spec.name}"
 
@@ -202,6 +267,8 @@ def collect_for_benchmark(
     out_dir: Path,
     timeout: int,
     pprof: bool,
+    pprof_min_samples_seconds: float,
+    pprof_max_runs: int,
     warm_dump: bool,
 ) -> DiagnosticRow:
     bench_out = out_dir / bench_dir_name(spec)
@@ -269,15 +336,21 @@ def collect_for_benchmark(
         )
     )
 
+    pprof_runs = 0
+    pprof_script_repeat = 0
+    pprof_samples = 0.0
+    pprof_effective = False
     if pprof:
-        cpu = bench_out / "cpu.pprof"
-        artifacts.append(
-            run_artifact("cpu_profile_run", [*base, "-cpuprofile", str(cpu), str(script)], root, bench_out, timeout)
+        pprof_runs, pprof_script_repeat, pprof_samples, pprof_effective = collect_effective_cpu_profile(
+            root,
+            binary,
+            base,
+            script,
+            bench_out,
+            timeout,
+            pprof_min_samples_seconds,
+            pprof_max_runs,
         )
-        if cpu.exists():
-            top = run(["go", "tool", "pprof", "-top", "-nodecount=30", str(binary), str(cpu)], root, timeout)
-            top_path = bench_out / "cpu.pprof.txt"
-            top_path.write_text(top.stdout)
 
     if warm_dump:
         warm_dir = bench_out / "warm"
@@ -335,8 +408,12 @@ def collect_for_benchmark(
         exit_total=parse_counter(EXIT_TOTAL_RE, summary_text),
         top_exit=top_exit,
         runtime_summary=summarize_runtime_paths(runtime_json),
+        pprof_runs=pprof_runs,
+        pprof_script_repeat=pprof_script_repeat,
+        pprof_samples_seconds=pprof_samples,
+        pprof_effective=pprof_effective,
         artifact_dir=str(bench_out),
-        artifacts=artifact_paths(artifacts),
+        artifacts=add_optional_artifact_paths(artifact_paths(artifacts), bench_out),
     )
     if work:
         row.work_action = str(work.get("action") or "")
@@ -358,8 +435,8 @@ def render_summary(rows: list[DiagnosticRow]) -> str:
     lines = [
         "# Benchmark Diagnostics",
         "",
-        "| Benchmark | Time | T2 a/c/e | Exits | Top Exit | Work Target | Runtime Hot Counters | Artifacts |",
-        "|---|---:|---:|---:|---|---|---|---|",
+        "| Benchmark | Time | T2 a/c/e | Exits | Top Exit | Work Target | Runtime Hot Counters | CPU Profile | Artifacts |",
+        "|---|---:|---:|---:|---|---|---|---|---|",
     ]
     for row in rows:
         top = "-"
@@ -391,6 +468,15 @@ def render_summary(rows: list[DiagnosticRow]) -> str:
                     top,
                     work,
                     ", ".join(runtime_bits) or "-",
+                    (
+                        "-"
+                        if row.pprof_runs == 0
+                        else (
+                            f"{'ok' if row.pprof_effective else 'low'} "
+                            f"{row.pprof_samples_seconds:.3f}s/"
+                            f"{row.pprof_runs} runs/repeat {row.pprof_script_repeat}"
+                        )
+                    ),
                     f"`{row.artifact_dir}`",
                 ]
             )
@@ -464,6 +550,18 @@ def main() -> int:
     parser.add_argument("--scale-profile", choices=("none", "hot"), default="none")
     parser.add_argument("--no-timing", action="store_true", help="skip timing_compare")
     parser.add_argument("--pprof", action="store_true", help="collect CPU pprof for every selected benchmark")
+    parser.add_argument(
+        "--pprof-min-samples-ms",
+        type=float,
+        default=50.0,
+        help="minimum CPU profile samples required before pprof is marked effective",
+    )
+    parser.add_argument(
+        "--pprof-max-runs",
+        type=positive_int,
+        default=8,
+        help="maximum repeated profile runs per benchmark used to reach --pprof-min-samples-ms",
+    )
     parser.add_argument("--warm-dump", action="store_true", help="collect -jit-dump-warm and pcmap for every selected benchmark")
     args = parser.parse_args()
 
@@ -497,7 +595,20 @@ def main() -> int:
         script, _changes = timing.scaled_path(root, spec.gscript_rel, spec, "diagnose", "gscript", scale_tempdir, overrides)
         if script is None:
             continue
-        rows.append(collect_for_benchmark(root, binary, spec, script, out_dir, args.timeout, args.pprof, args.warm_dump))
+        rows.append(
+            collect_for_benchmark(
+                root,
+                binary,
+                spec,
+                script,
+                out_dir,
+                args.timeout,
+                args.pprof,
+                args.pprof_min_samples_ms / 1000.0,
+                args.pprof_max_runs,
+                args.warm_dump,
+            )
+        )
 
     summary = {
         "out_dir": str(out_dir),

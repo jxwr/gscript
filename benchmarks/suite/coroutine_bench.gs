@@ -46,9 +46,9 @@ func test_generator(n) {
     return sum
 }
 
-N1 := 100000
-N2 := 50000
-N3 := 100000
+N1 := 600000
+N2 := 300000
+N3 := 600000
 
 t0 := time.now()
 r1 := test_yield_loop(N1)

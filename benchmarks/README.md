@@ -59,7 +59,9 @@ python3 benchmarks/diagnose.py \
   --out-dir=/tmp/gscript-diagnose
 
 # Add CPU profiles and production-warm JIT PC maps for cases where exits and
-# worklists do not explain the gap.
+# worklists do not explain the gap. CPU profiles are marked effective only
+# after the sampled CPU time reaches --pprof-min-samples-ms; otherwise the
+# report shows low samples and should not be used as bottleneck evidence.
 python3 benchmarks/diagnose.py --bench=suite/spectral_norm_dense \
   --no-timing --pprof --warm-dump --out-dir=/tmp/gscript-diagnose-spectral-dense
 
@@ -120,6 +122,11 @@ Keep suite, extended, and variants as separate benchmark groups in reports.
 They can be run together with `--all-groups`, but do not collapse them into one
 score: suite is the stable LuaJIT comparison set, extended is workload coverage,
 and variants are overfit/correctness pressure tests.
+
+Optimization benchmarks should be hot enough as checked-in programs, not only
+after harness-level repetition. Treat sub-50ms default runs as smoke/regression
+coverage unless the benchmark is explicitly about startup latency; increase the
+benchmark workload itself before using it to drive JIT throughput work.
 
 ## Debugging Coverage
 

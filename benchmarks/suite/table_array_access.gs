@@ -69,7 +69,7 @@ func array_2d_access(size) {
 }
 
 N := 100000
-REPS := 100
+REPS := 2000
 MATRIX_SIZE := 300
 
 t0 := time.now()

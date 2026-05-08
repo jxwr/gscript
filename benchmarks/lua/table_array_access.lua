@@ -62,7 +62,7 @@ local function array_2d_access(size)
 end
 
 local N = 100000
-local REPS = 100
+local REPS = 2000
 local MATRIX_SIZE = 300
 
 local t0 = os.clock()

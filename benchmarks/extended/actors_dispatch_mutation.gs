@@ -65,7 +65,7 @@ func run_world(actors, n, ticks) {
 }
 
 N := 5000
-TICKS := 200
+TICKS := 1000
 
 t0 := time.now()
 actors := build_actors(N)

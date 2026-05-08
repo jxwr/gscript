@@ -45,9 +45,9 @@ local function test_generator(n)
     return sum
 end
 
-local N1 = 100000
-local N2 = 50000
-local N3 = 100000
+local N1 = 600000
+local N2 = 300000
+local N3 = 600000
 
 local t0 = os.clock()
 local r1 = test_yield_loop(N1)

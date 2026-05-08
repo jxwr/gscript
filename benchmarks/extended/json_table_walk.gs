@@ -56,8 +56,8 @@ func walk_documents(docs, n, passes) {
     return checksum
 }
 
-N := 18000
-PASSES := 80
+N := 36000
+PASSES := 160
 
 t0 := time.now()
 docs := build_documents(N)

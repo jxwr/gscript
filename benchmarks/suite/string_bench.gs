@@ -4,7 +4,7 @@
 // Test 1: String concatenation (building a long string)
 func test_concat() {
     s := ""
-    for i := 1; i <= 10000; i++ {
+    for i := 1; i <= 30000; i++ {
         s = s .. "x"
     }
     return #s
@@ -13,7 +13,7 @@ func test_concat() {
 // Test 2: String formatting (sprintf-style)
 func test_format() {
     total := 0
-    for i := 1; i <= 50000; i++ {
+    for i := 1; i <= 600000; i++ {
         s := string.format("item_%d_value_%d", i, i * 2)
         total = total + #s
     }
@@ -23,8 +23,8 @@ func test_format() {
 // Test 3: String comparison (sorting strings)
 func test_compare() {
     arr := {}
-    for i := 1; i <= 1000; i++ {
-        arr[i] = string.format("key_%05d", (i * 7) % 1000)
+    for i := 1; i <= 2000; i++ {
+        arr[i] = string.format("key_%05d", (i * 7) % 2000)
     }
     // Simple bubble sort (tests string comparison)
     n := #arr

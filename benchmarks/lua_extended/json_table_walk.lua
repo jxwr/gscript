@@ -56,8 +56,8 @@ local function walk_documents(docs, n, passes)
     return checksum
 end
 
-local N = 18000
-local PASSES = 80
+local N = 36000
+local PASSES = 160
 
 local t0 = os.clock()
 local docs = build_documents(N)

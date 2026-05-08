@@ -64,7 +64,7 @@ local function run_world(actors, n, ticks)
 end
 
 local N = 5000
-local TICKS = 200
+local TICKS = 1000
 
 local t0 = os.clock()
 local actors = build_actors(N)

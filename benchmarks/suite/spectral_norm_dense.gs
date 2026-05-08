@@ -34,7 +34,7 @@ func multiplyAtAv(n, v, u, atav) {
     multiplyAtv(n, u, atav)
 }
 
-N := 500
+N := 1500
 
 t0 := time.now()
 

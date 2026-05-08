@@ -44,7 +44,7 @@ local function multiplyAtAv(n, v, u, atav)
     multiplyAtv(n, u, atav)
 end
 
-local N = 500
+local N = 1500
 local t0 = os.clock()
 
 local u = dense(N, 1)

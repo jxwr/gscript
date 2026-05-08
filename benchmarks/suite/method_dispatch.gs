@@ -33,7 +33,7 @@ func test_points(n) {
     return total_dist
 }
 
-N := 100000
+N := 50000000
 
 t0 := time.now()
 result := test_points(N)

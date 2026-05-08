@@ -32,7 +32,7 @@ local function test_points(n)
     return total_dist
 end
 
-local N = 100000
+local N = 50000000
 
 local t0 = os.clock()
 local result = test_points(N)

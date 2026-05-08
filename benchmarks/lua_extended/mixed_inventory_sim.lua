@@ -57,7 +57,7 @@ local function run_orders(inv, item_count, orders)
 end
 
 local ITEMS = 5000
-local ORDERS = 650000
+local ORDERS = 3500000
 
 local t0 = os.clock()
 local inv = build_inventory(ITEMS)

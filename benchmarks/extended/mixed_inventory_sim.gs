@@ -57,7 +57,7 @@ func run_orders(inv, item_count, orders) {
 }
 
 ITEMS := 5000
-ORDERS := 650000
+ORDERS := 3500000
 
 t0 := time.now()
 inv := build_inventory(ITEMS)
