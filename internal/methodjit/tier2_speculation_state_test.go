@@ -59,12 +59,18 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	if compiled.NextTarget != "guard_policy" {
 		t.Fatalf("next target=%q want guard_policy: %+v", compiled.NextTarget, compiled)
 	}
+	if compiled.NextPriority != 70 {
+		t.Fatalf("next priority=%d want 70: %+v", compiled.NextPriority, compiled)
+	}
 	failed := findSpecState(t, snap, "failed")
 	if !failed.Failed || failed.FailReason != "blocked" {
 		t.Fatalf("failed state mismatch: %+v", failed)
 	}
 	if failed.NextAction != "tier2_failed" {
 		t.Fatalf("failed next action=%q want tier2_failed", failed.NextAction)
+	}
+	if failed.NextPriority != 30 {
+		t.Fatalf("failed next priority=%d want 30", failed.NextPriority)
 	}
 }
 
@@ -83,7 +89,7 @@ func TestTier2SpeculationNextActionPrioritizesRefreshAndHotExits(t *testing.T) {
 func TestTier2SpeculationNextTargetClassifiesDominantExit(t *testing.T) {
 	tests := []struct {
 		state Tier2SpeculationState
-		want  string
+		want  Tier2SpeculationTarget
 	}{
 		{Tier2SpeculationState{NextAction: "inspect_hot_exit", TopExitName: "ExitCallExit"}, "call_specialization"},
 		{Tier2SpeculationState{NextAction: "inspect_hot_exit", TopExitName: "ExitTableExit", TopExitReason: "SetField"}, "table_field_exit"},
@@ -94,6 +100,24 @@ func TestTier2SpeculationNextTargetClassifiesDominantExit(t *testing.T) {
 	for _, tt := range tests {
 		if got := tier2SpeculationNextTarget(tt.state); got != tt.want {
 			t.Fatalf("target=%q want %q for %+v", got, tt.want, tt.state)
+		}
+	}
+}
+
+func TestTier2SpeculationNextPriorityCombinesActionAndTarget(t *testing.T) {
+	tests := []struct {
+		state Tier2SpeculationState
+		want  int
+	}{
+		{Tier2SpeculationState{NextAction: Tier2SpecActionRefreshQueued}, 100},
+		{Tier2SpeculationState{NextAction: Tier2SpecActionInspectHotExit, NextTarget: Tier2SpecTargetTableFieldExit}, 90},
+		{Tier2SpeculationState{NextAction: Tier2SpecActionInspectHotExit, NextTarget: Tier2SpecTargetGuardPolicy}, 80},
+		{Tier2SpeculationState{NextAction: Tier2SpecActionSuppressedGuardResidual, NextTarget: Tier2SpecTargetOpExit}, 50},
+		{Tier2SpeculationState{NextAction: Tier2SpecActionMonitor}, 10},
+	}
+	for _, tt := range tests {
+		if got := tier2SpeculationNextPriority(tt.state); got != tt.want {
+			t.Fatalf("priority=%d want %d for %+v", got, tt.want, tt.state)
 		}
 	}
 }

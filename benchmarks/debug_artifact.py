@@ -323,6 +323,7 @@ def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
     next_actions: Counter[str] = Counter()
     next_targets: Counter[str] = Counter()
     top_exits: Counter[str] = Counter()
+    max_next_priority = 0
     for row in states:
         kinds = row.get("suppressed_kinds")
         if isinstance(kinds, dict):
@@ -334,6 +335,7 @@ def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
         target = row.get("next_target")
         if target:
             next_targets[str(target)] += 1
+        max_next_priority = max(max_next_priority, int(row.get("next_priority") or 0))
         top_exit_name = row.get("top_exit_name")
         top_exit_reason = row.get("top_exit_reason")
         top_exit_count = int(row.get("top_exit_count") or 0)
@@ -352,6 +354,12 @@ def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
         "queued_recompile_exits": sum(int(row.get("queued_recompile_exits") or 0) for row in states),
         "next_actions": dict(sorted(next_actions.items())),
         "next_targets": dict(sorted(next_targets.items())),
+        "max_next_priority": max_next_priority,
+        "top_priority_states": sorted(
+            states,
+            key=lambda row: int(row.get("next_priority") or 0),
+            reverse=True,
+        )[:20],
         "top_exits": dict(top_exits.most_common(10)),
         "top_suppressed": sorted(
             states,

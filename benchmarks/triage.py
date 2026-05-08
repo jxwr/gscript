@@ -337,6 +337,7 @@ def load_spec_state(path: Path | None) -> dict:
     actions: Counter[str] = Counter()
     targets: Counter[str] = Counter()
     top_exits: Counter[str] = Counter()
+    max_next_priority = 0
     for row in states:
         suppressed = row.get("suppressed_kinds")
         if isinstance(suppressed, dict):
@@ -348,6 +349,7 @@ def load_spec_state(path: Path | None) -> dict:
         target = row.get("next_target")
         if target:
             targets[str(target)] += 1
+        max_next_priority = max(max_next_priority, int(row.get("next_priority") or 0))
         top_exit_name = row.get("top_exit_name")
         top_exit_reason = row.get("top_exit_reason")
         top_exit_count = int(row.get("top_exit_count") or 0)
@@ -366,6 +368,12 @@ def load_spec_state(path: Path | None) -> dict:
         "queued_recompile_exits": sum(int(row.get("queued_recompile_exits") or 0) for row in states),
         "next_actions": dict(sorted(actions.items())),
         "next_targets": dict(sorted(targets.items())),
+        "max_next_priority": max_next_priority,
+        "top_priority_states": sorted(
+            states,
+            key=lambda row: int(row.get("next_priority") or 0),
+            reverse=True,
+        )[:20],
         "top_exits": dict(top_exits.most_common(10)),
         "states": states,
     }
@@ -491,6 +499,9 @@ def classify(
         if next_targets:
             target_text = ", ".join(f"{target}={count}" for target, count in sorted(next_targets.items()))
             evidence.append(f"Tier2 next targets: {target_text}")
+        max_next_priority = int(spec_state.get("max_next_priority") or 0)
+        if max_next_priority > 0:
+            evidence.append(f"max Tier2 self-driving priority: {max_next_priority}")
         top_exits = spec_state.get("top_exits") or {}
         if top_exits:
             first_exit, first_count = next(iter(top_exits.items()))
