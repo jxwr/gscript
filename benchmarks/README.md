@@ -49,6 +49,20 @@ python3 benchmarks/triage.py --bench=suite/spectral_norm \
   --scale=suite/spectral_norm:N=2000 --time-source=script \
   --diag --pprof --memprofile --warm-dump --out-dir=/tmp/gscript-triage-spectral
 
+# Generic diagnostics bundle for one or many benchmarks. This is the fastest
+# way to collect enough evidence before choosing an optimization path: timing
+# is optional, and every selected benchmark gets runtime-path, Tier 2 perf,
+# exit, speculation-state, and worklist artifacts.
+python3 benchmarks/diagnose.py \
+  --bench=suite/method_dispatch \
+  --bench=extended/groupby_nested_agg \
+  --out-dir=/tmp/gscript-diagnose
+
+# Add CPU profiles and production-warm JIT PC maps for cases where exits and
+# worklists do not explain the gap.
+python3 benchmarks/diagnose.py --bench=suite/spectral_norm_dense \
+  --no-timing --pprof --warm-dump --out-dir=/tmp/gscript-diagnose-spectral-dense
+
 # Runtime path counters for exits=0 but still-slow cases.
 go run ./cmd/gscript -jit -runtime-path-stats-json benchmarks/suite/string_bench.gs
 
@@ -94,6 +108,7 @@ Platform: Apple M4 Max, darwin/arm64, Go 1.25.7, LuaJIT 2.1
 |------|------|----------------------------------|
 | `timing_compare.py` | Current vs clean `HEAD` vs LuaJIT, calibrated repeats, scaling, CI, gap ranking | Yes, primary local timing harness |
 | `strict_guard.py` | Broad truth pass: suite + extended + variants, checksums, suspicious-win review | Yes, release/regression gate |
+| `diagnose.py` | Generic per-benchmark artifact bundle: timing, exits, runtime paths, Tier 2 perf, speculation state/worklist, optional pprof/warm pcmap | Yes, fastest first-pass diagnosis |
 | `triage.py` | Focused timing + exits + optional IR/ASM and pprof artifact bundle | Yes, for planning the next optimization |
 | `jit_addr_map.py` | Offline join from pprof/raw PCs to production-warm JIT IR/opcode PC maps | Diagnostic only |
 | `profile_exits.py` | Tier 2 exit/deopt attribution | Diagnostic only |
