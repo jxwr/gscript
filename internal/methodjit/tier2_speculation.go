@@ -374,7 +374,48 @@ func (p Tier2SpeculationPlan) FieldValueGuardType(pc int) (Type, bool) {
 	if guard, ok := p.Profile.findGuard(pc, SpecGuardFieldShape, nil); ok {
 		return specializationGuardValueType(guard)
 	}
+	if typ, ok := p.sameFieldWriteValueGuardType(pc); ok {
+		return typ, true
+	}
 	return TypeUnknown, false
+}
+
+func (p Tier2SpeculationPlan) sameFieldWriteValueGuardType(pc int) (Type, bool) {
+	if p.proto == nil || pc < 0 || pc >= len(p.proto.Code) || p.proto.Feedback == nil {
+		return TypeUnknown, false
+	}
+	inst := p.proto.Code[pc]
+	if vm.DecodeOp(inst) != vm.OP_GETFIELD {
+		return TypeUnknown, false
+	}
+	fieldConst := vm.DecodeC(inst)
+	observed := TypeUnknown
+	for writePC, writeInst := range p.proto.Code {
+		if vm.DecodeOp(writeInst) != vm.OP_SETFIELD || vm.DecodeB(writeInst) != fieldConst {
+			continue
+		}
+		if writePC < 0 || writePC >= len(p.proto.Feedback) {
+			continue
+		}
+		typ, ok := feedbackToIRType(p.proto.Feedback[writePC].Result)
+		if !ok || typ == TypeUnknown || typ == TypeAny {
+			continue
+		}
+		if observed == TypeUnknown {
+			observed = typ
+			continue
+		}
+		if observed != typ {
+			return TypeUnknown, false
+		}
+	}
+	if observed == TypeUnknown {
+		return TypeUnknown, false
+	}
+	if observed != TypeInt {
+		return TypeUnknown, false
+	}
+	return observed, true
 }
 
 func (p Tier2SpeculationPlan) StableStringShapeField(pc int, accessKind uint8) (key string, shapeID uint32, fieldIdx int, ok bool) {

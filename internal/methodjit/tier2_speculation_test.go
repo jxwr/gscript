@@ -70,6 +70,59 @@ func TestTier2SpeculationPlanQueriesSpecializationProfile(t *testing.T) {
 	}
 }
 
+func TestTier2SpeculationPlanUsesSameFieldWriteTypeForColdGet(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name: "same_field_write_type",
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_GETFIELD, 1, 0, 3),
+			vm.EncodeABC(vm.OP_SETFIELD, 0, 3, 2),
+		},
+	}
+	proto.EnsureFeedback()
+	proto.Feedback[1].Result = vm.FBInt
+
+	plan := NewTier2SpeculationPlan(proto)
+	if typ, ok := plan.FieldValueGuardType(0); !ok || typ != TypeInt {
+		t.Fatalf("FieldValueGuardType=%v ok=%v want int,true", typ, ok)
+	}
+}
+
+func TestTier2SpeculationPlanRejectsConflictingSameFieldWriteTypes(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name: "same_field_conflict",
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_GETFIELD, 1, 0, 3),
+			vm.EncodeABC(vm.OP_SETFIELD, 0, 3, 2),
+			vm.EncodeABC(vm.OP_SETFIELD, 0, 3, 4),
+		},
+	}
+	proto.EnsureFeedback()
+	proto.Feedback[1].Result = vm.FBInt
+	proto.Feedback[2].Result = vm.FBFloat
+
+	plan := NewTier2SpeculationPlan(proto)
+	if typ, ok := plan.FieldValueGuardType(0); ok || typ != TypeUnknown {
+		t.Fatalf("FieldValueGuardType=%v ok=%v want unknown,false", typ, ok)
+	}
+}
+
+func TestTier2SpeculationPlanDoesNotInferSameFieldFloatWrites(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name: "same_field_float",
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_GETFIELD, 1, 0, 3),
+			vm.EncodeABC(vm.OP_SETFIELD, 0, 3, 2),
+		},
+	}
+	proto.EnsureFeedback()
+	proto.Feedback[1].Result = vm.FBFloat
+
+	plan := NewTier2SpeculationPlan(proto)
+	if typ, ok := plan.FieldValueGuardType(0); ok || typ != TypeUnknown {
+		t.Fatalf("FieldValueGuardType=%v ok=%v want unknown,false", typ, ok)
+	}
+}
+
 func TestTier2SpecializationProfileBuildsGenericGuardSet(t *testing.T) {
 	proto := &vm.FuncProto{Name: "caller", Code: make([]uint32, 5)}
 	callee := &vm.FuncProto{Name: "callee"}
