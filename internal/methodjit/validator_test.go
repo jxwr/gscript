@@ -267,6 +267,78 @@ func TestValidate_BranchArgCount(t *testing.T) {
 	}
 }
 
+func TestValidate_SetTableArgContract(t *testing.T) {
+	fn := &Function{}
+	b0 := &Block{ID: 0}
+	tbl := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeTable, Block: b0}
+	key := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeAny, Block: b0}
+	set := &Instr{ID: 2, Op: OpSetTable, Type: TypeUnknown, Block: b0, Args: []*Value{tbl.Value(), key.Value()}}
+	ret := &Instr{ID: 3, Op: OpReturn, Block: b0}
+	b0.Instrs = []*Instr{tbl, key, set, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	errs := Validate(fn)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for SetTable arg contract")
+	}
+	if !containsValidationError(errs, "SetTable") {
+		t.Fatalf("expected SetTable contract error, got: %v", errs)
+	}
+}
+
+func TestValidate_TableArrayStoreArgContract(t *testing.T) {
+	fn := &Function{}
+	b0 := &Block{ID: 0}
+	store := &Instr{
+		ID:    0,
+		Op:    OpTableArrayStore,
+		Type:  TypeUnknown,
+		Block: b0,
+		Args:  []*Value{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},
+	}
+	ret := &Instr{ID: 5, Op: OpReturn, Block: b0}
+	b0.Instrs = []*Instr{store, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	errs := Validate(fn)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for TableArrayStore arg contract")
+	}
+	if !containsValidationError(errs, "TableArrayStore") {
+		t.Fatalf("expected TableArrayStore contract error, got: %v", errs)
+	}
+}
+
+func TestValidate_GuardTypeRequiresConcreteType(t *testing.T) {
+	fn := &Function{}
+	b0 := &Block{ID: 0}
+	input := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeAny, Block: b0}
+	guard := &Instr{ID: 1, Op: OpGuardType, Type: TypeUnknown, Block: b0, Args: []*Value{input.Value()}, Aux: int64(TypeAny)}
+	ret := &Instr{ID: 2, Op: OpReturn, Block: b0}
+	b0.Instrs = []*Instr{input, guard, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	errs := Validate(fn)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for non-concrete GuardType")
+	}
+	if !containsValidationError(errs, "GuardType") {
+		t.Fatalf("expected GuardType contract error, got: %v", errs)
+	}
+}
+
+func containsValidationError(errs []error, want string) bool {
+	for _, err := range errs {
+		if strings.Contains(err.Error(), want) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestValidate_TerminatorInMiddle checks that a terminator in the middle of a block is caught.
 func TestValidate_TerminatorInMiddle(t *testing.T) {
 	fn := &Function{}

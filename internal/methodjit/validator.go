@@ -71,10 +71,13 @@ func (v *validator) run() {
 	// 8. Branch arg count.
 	v.checkBranchArgs()
 
-	// 9. Unique value IDs.
+	// 9. Safety-critical operation contracts.
+	v.checkOpContracts()
+
+	// 10. Unique value IDs.
 	v.checkValueIDUniqueness()
 
-	// 10. Reachability.
+	// 11. Reachability.
 	v.checkReachability()
 }
 
@@ -210,6 +213,50 @@ func (v *validator) checkBranchArgs() {
 			}
 		}
 	}
+}
+
+func (v *validator) checkOpContracts() {
+	for _, blk := range v.fn.Blocks {
+		for _, instr := range blk.Instrs {
+			switch instr.Op {
+			case OpSetTable:
+				v.checkArgCount(blk, instr, 3, 3)
+			case OpTableArrayStore:
+				v.checkArgCount(blk, instr, 5, 6)
+			case OpGuardType:
+				v.checkArgCount(blk, instr, 1, 1)
+				if Type(instr.Aux) == TypeUnknown || Type(instr.Aux) == TypeAny {
+					v.errorf("B%d: GuardType (v%d) must carry a concrete type in Aux, got %s",
+						blk.ID, instr.ID, Type(instr.Aux))
+				}
+			case OpGuardConstString:
+				v.checkArgCount(blk, instr, 1, 1)
+				if instr.Aux < 0 {
+					v.errorf("B%d: GuardConstString (v%d) must carry a non-negative constant index in Aux, got %d",
+						blk.ID, instr.ID, instr.Aux)
+				}
+			case OpGuardCalleeProto, OpGuardNonNil, OpGuardTruthy:
+				v.checkArgCount(blk, instr, 1, 1)
+			}
+		}
+	}
+}
+
+func (v *validator) checkArgCount(blk *Block, instr *Instr, min, max int) {
+	if instr == nil {
+		return
+	}
+	got := len(instr.Args)
+	if got >= min && got <= max {
+		return
+	}
+	if min == max {
+		v.errorf("B%d: %s (v%d) must have exactly %d args, got %d",
+			blk.ID, instr.Op, instr.ID, min, got)
+		return
+	}
+	v.errorf("B%d: %s (v%d) must have %d..%d args, got %d",
+		blk.ID, instr.Op, instr.ID, min, max, got)
 }
 
 // checkValueIDUniqueness verifies no two instructions share a value ID.
