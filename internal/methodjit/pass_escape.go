@@ -22,11 +22,11 @@
 
 package methodjit
 
-// virtualAllocInfo describes a NewTable allocation that passed
+// virtualAllocInfo describes a table allocation that passed
 // R158's MVP escape predicate. Populated by the analysis phase of
 // EscapeAnalysisPass (R159); consumed by the rewrite phase.
 type virtualAllocInfo struct {
-	allocID   int   // ID of the OpNewTable instruction
+	allocID   int   // ID of the OpNewTable/OpNewFixedTable instruction
 	blockID   int   // block where the allocation lives
 	fieldUses []int // IDs of OpGetField/OpSetField instrs using this alloc
 	// phiReachable (R161) is true when the alloc has a use by an
@@ -40,7 +40,7 @@ type virtualAllocInfo struct {
 // and returns the set of OpNewTable allocations that meet the MVP
 // virtual-allocation predicate:
 //
-//	(a) op is OpNewTable
+//	(a) op is OpNewTable or OpNewFixedTable
 //	(b) every use of the result is OpGetField/OpSetField with
 //	    static Aux, whose Args[0] is the alloc (not Args[1])
 //	(c) all stores live in the SAME block as the alloc
@@ -57,12 +57,12 @@ func identifyVirtualAllocsWithRemarks(fn *Function, remarks *OptimizationRemarks
 		return nil
 	}
 
-	// First pass: collect all OpNewTable candidates.
+	// First pass: collect all table allocation candidates.
 	candidates := make(map[int]*virtualAllocInfo)
 	allocBlock := make(map[int]int) // allocID → defining block ID
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if instr.Op == OpNewTable {
+			if instr.Op == OpNewTable || instr.Op == OpNewFixedTable {
 				candidates[instr.ID] = &virtualAllocInfo{
 					allocID: instr.ID,
 					blockID: block.ID,
@@ -501,6 +501,73 @@ func fieldNameFromAux(fn *Function, aux int64) string {
 	return k.Str()
 }
 
+func fixedTableInitialFieldSSA(fn *Function, instr *Instr) map[string]int {
+	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpNewFixedTable {
+		return nil
+	}
+	fields := make(map[string]int)
+	switch int(instr.Aux2) {
+	case 2:
+		ctorIdx := int(instr.Aux)
+		if ctorIdx < 0 || ctorIdx >= len(fn.Proto.TableCtors2) || len(instr.Args) < 2 {
+			return nil
+		}
+		ctor := fn.Proto.TableCtors2[ctorIdx].Runtime
+		if instr.Args[0] != nil {
+			fields[ctor.Key1] = instr.Args[0].ID
+		}
+		if instr.Args[1] != nil {
+			fields[ctor.Key2] = instr.Args[1].ID
+		}
+	default:
+		ctorIdx := int(instr.Aux)
+		if ctorIdx < 0 || ctorIdx >= len(fn.Proto.TableCtorsN) {
+			return nil
+		}
+		ctor := fn.Proto.TableCtorsN[ctorIdx].Runtime
+		if len(ctor.Keys) != len(instr.Args) {
+			return nil
+		}
+		for i, key := range ctor.Keys {
+			if instr.Args[i] != nil {
+				fields[key] = instr.Args[i].ID
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
+}
+
+func hasFixedTableScalarReplacementCandidate(fn *Function) bool {
+	if fn == nil {
+		return false
+	}
+	fixedTables := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Op == OpNewFixedTable {
+				fixedTables[instr.ID] = true
+			}
+		}
+	}
+	if len(fixedTables) == 0 {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpGetField || len(instr.Args) == 0 || instr.Args[0] == nil {
+				continue
+			}
+			if fixedTables[instr.Args[0].ID] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // EscapeAnalysisPass identifies virtual allocations and scalar-
 // replaces their field accesses. Block-local only (R159). Non-
 // virtual allocations are untouched.
@@ -566,7 +633,12 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 			continue
 		}
 		block := fn.Blocks[info.blockID]
+		allocInstr := instrByID[allocID]
+		initialFieldSSA := fixedTableInitialFieldSSA(fn, allocInstr)
 		fieldSSA := make(map[string]int) // fieldName → value ID to forward
+		for name, id := range initialFieldSSA {
+			fieldSSA[name] = id
+		}
 
 		bailed := false
 
@@ -633,6 +705,9 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 		// Second forward walk: apply block-local rewrites, rebuilding the map
 		// so same-block reads see the nearest preceding store.
 		fieldSSA = make(map[string]int)
+		for name, id := range initialFieldSSA {
+			fieldSSA[name] = id
+		}
 		for _, instr := range block.Instrs {
 			switch {
 			case instr.Op == OpSetField && len(instr.Args) >= 2 &&
@@ -699,9 +774,13 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 			}
 		}
 
-		if allocInstr, ok := instrByID[allocID]; ok {
+		if allocInstr != nil {
 			if remarks != nil {
-				remarks.Add("EscapeAnalysis", "changed", info.blockID, allocID, OpNewTable,
+				op := OpNewTable
+				if allocInstr.Op == OpNewFixedTable {
+					op = OpNewFixedTable
+				}
+				remarks.Add("EscapeAnalysis", "changed", info.blockID, allocID, op,
 					"scalar-replaced block-local table allocation")
 			}
 			allocInstr.Op = OpNop

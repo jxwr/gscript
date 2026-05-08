@@ -505,6 +505,13 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	if hasFixedTableScalarReplacementCandidate(fn) {
+		fn, err = EscapeAnalysisPass(fn)
+		if err != nil {
+			return nil, nil, fmt.Errorf("EscapeAnalysis (post-fixed-table-lowering): %w", err)
+		}
+	}
+
 	fn, err = RedundantGuardEliminationPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("RedundantGuardElimination: %w", err)

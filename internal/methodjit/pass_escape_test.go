@@ -315,6 +315,39 @@ result := branch_read(true)
 	}
 }
 
+func TestEscapeAnalysis_RewritesLoweredFixedTableConstructor(t *testing.T) {
+	src := `
+func read_fixed() {
+    p := {x: 1, y: 2}
+    return p.x + p.y
+}
+result := read_fixed()
+`
+	top := compileProto(t, src)
+	inner := findProtoByName(top, "read_fixed")
+	if inner == nil {
+		t.Fatal("read_fixed proto missing")
+	}
+	fn := BuildGraph(inner)
+	lowered, err := FixedTableConstructorLoweringPass(fn)
+	if err != nil {
+		t.Fatalf("FixedTableConstructorLoweringPass: %v", err)
+	}
+	if countOps(lowered)[OpNewFixedTable] == 0 {
+		t.Fatalf("expected fixed table constructor after lowering\nIR:\n%s", Print(lowered))
+	}
+
+	out, err := EscapeAnalysisPass(lowered)
+	if err != nil {
+		t.Fatalf("EscapeAnalysisPass: %v", err)
+	}
+	counts := countOps(out)
+	if counts[OpNewFixedTable] != 0 || counts[OpGetField] != 0 {
+		t.Fatalf("expected lowered fixed table to be scalar-replaced; NewFixedTable=%d GetField=%d\nIR:\n%s",
+			counts[OpNewFixedTable], counts[OpGetField], Print(out))
+	}
+}
+
 // TestR161_VirtualPhi_ObjectCreation — the canonical object_creation
 // pattern: a loop-carried accumulator table, re-created each iter
 // via inlined vec3_add → new_vec3. Both the initial table (B0) and
