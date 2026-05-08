@@ -101,7 +101,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	deoptLabel := ec.uniqueLabel("getfield_deopt")
 	if ec.hasFieldSvalsCache(tblValueID, shapeID) {
 		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
-		if instr.Type == TypeFloat {
+		if instr.Type == TypeFloat || instr.Type == TypeInt {
 			ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
 			asm.B(doneLabel)
 			asm.Label(typeDeoptLabel)
@@ -117,7 +117,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	if shapeWasVerified {
 		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
-		if instr.Type == TypeFloat {
+		if instr.Type == TypeFloat || instr.Type == TypeInt {
 			ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
 			ec.rememberFieldSvalsCache(tblValueID, shapeID)
 			asm.B(doneLabel)

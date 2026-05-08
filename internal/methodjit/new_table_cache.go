@@ -128,7 +128,7 @@ func prewarmFixedTableNCacheEntry(entry *newTableCacheEntry, ctor *runtime.Small
 		seed[i] = runtime.IntValue(0)
 	}
 	for i := range entry.Values {
-		t := runtime.NewTableFromCtorN(ctor, seed)
+		t := runtime.NewTableFromCtorNNonNil(ctor, seed)
 		entry.addRoot(t)
 		entry.Values[i] = runtime.FreshTableValue(t)
 	}
@@ -409,7 +409,7 @@ func fixedTableValuesAllNonNil(vals []runtime.Value) bool {
 }
 
 func allocateFixedTableNFullWithCache(caches []newTableCacheEntry, instrID int, ctor *runtime.SmallTableCtorN, vals []runtime.Value) *runtime.Table {
-	tbl := runtime.NewTableFromCtorN(ctor, vals)
+	tbl := runtime.NewTableFromCtorNNonNil(ctor, vals)
 	entry := &caches[instrID]
 	if entry.Pos < int64(len(entry.Values)) {
 		return tbl
@@ -430,7 +430,7 @@ func allocateFixedTableNFullWithCache(caches []newTableCacheEntry, instrID int, 
 		seed[i] = runtime.IntValue(0)
 	}
 	for i := range entry.Values {
-		t := runtime.NewTableFromCtorN(ctor, seed)
+		t := runtime.NewTableFromCtorNNonNil(ctor, seed)
 		entry.addRoot(t)
 		entry.Values[i] = runtime.FreshTableValue(t)
 	}

@@ -885,6 +885,22 @@ func NewTableFromCtorN(ctor *SmallTableCtorN, vals []Value) *Table {
 	return newTableFromCtorNFallback(ctor, vals)
 }
 
+// NewTableFromCtorNNonNil constructs a fixed-shape small string table when the
+// caller has already proven every constructor value is non-nil.
+func NewTableFromCtorNNonNil(ctor *SmallTableCtorN, vals []Value) *Table {
+	if ctor == nil || ctor.Shape == nil || len(vals) < len(ctor.Keys) {
+		return NewTableFromCtorN(ctor, vals)
+	}
+	n := len(ctor.Keys)
+	t, svals := DefaultHeap.AllocTableWithSvals(n)
+	t.svals = svals[:n]
+	copy(t.svals, vals[:n])
+	t.shape = ctor.Shape
+	t.shapeID = ctor.shapeID
+	t.skeys = ctor.fieldKeys
+	return t
+}
+
 func newTableFromCtorNFallback(ctor *SmallTableCtorN, vals []Value) *Table {
 	if ctor == nil || len(ctor.Keys) == 0 {
 		return NewEmptyTable()
