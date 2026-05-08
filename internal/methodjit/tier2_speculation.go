@@ -84,15 +84,16 @@ type Tier2SpecializationProfile struct {
 }
 
 type Tier2SpecializationSummary struct {
-	TypeObserved     int            `json:"type_observed"`
-	FieldObserved    int            `json:"field_observed"`
-	TableKeyObserved int            `json:"table_key_observed"`
-	CallObserved     int            `json:"call_observed"`
-	VersionHash      string         `json:"version_hash"`
-	GuardCount       int            `json:"guard_count"`
-	GuardKinds       map[string]int `json:"guard_kinds,omitempty"`
-	SuppressedCount  int            `json:"suppressed_count,omitempty"`
-	SuppressedPCs    []int          `json:"suppressed_pcs,omitempty"`
+	TypeObserved     int                    `json:"type_observed"`
+	FieldObserved    int                    `json:"field_observed"`
+	TableKeyObserved int                    `json:"table_key_observed"`
+	CallObserved     int                    `json:"call_observed"`
+	VersionHash      string                 `json:"version_hash"`
+	GuardCount       int                    `json:"guard_count"`
+	GuardKinds       map[string]int         `json:"guard_kinds,omitempty"`
+	SuppressedCount  int                    `json:"suppressed_count,omitempty"`
+	SuppressedPCs    []int                  `json:"suppressed_pcs,omitempty"`
+	Readiness        Tier2FeedbackReadiness `json:"readiness"`
 }
 
 func (p Tier2SpecializationProfile) Summary() Tier2SpecializationSummary {
@@ -108,11 +109,18 @@ func (p Tier2SpecializationProfile) Summary() Tier2SpecializationSummary {
 		VersionHash:      fmt.Sprintf("%x", p.Version.Hash),
 		GuardCount:       p.Version.GuardCount,
 		GuardKinds:       kinds,
+		Readiness:        Tier2FeedbackReadiness{Kind: Tier2FeedbackReadyWide},
 	}
 }
 
+func (p Tier2SpecializationProfile) SummaryForProto(proto *vm.FuncProto) Tier2SpecializationSummary {
+	summary := p.Summary()
+	summary.Readiness = AnalyzeTier2FeedbackReadiness(proto, p.Snapshot)
+	return summary
+}
+
 func (p Tier2SpeculationPlan) Summary() Tier2SpecializationSummary {
-	summary := p.Profile.Summary()
+	summary := p.Profile.SummaryForProto(p.proto)
 	if len(p.suppressedGuardPCs) == 0 {
 		return summary
 	}

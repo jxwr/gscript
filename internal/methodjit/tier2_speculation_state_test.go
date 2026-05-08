@@ -46,6 +46,9 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	if compiled.GuardFailures["GuardType"] != 2 {
 		t.Fatalf("guard failures mismatch: %+v", compiled)
 	}
+	if compiled.FeedbackReadiness.Kind != Tier2FeedbackReadyWide {
+		t.Fatalf("feedback readiness mismatch: %+v", compiled.FeedbackReadiness)
+	}
 	if compiled.ExitCount != 2 || compiled.SuppressedGuardExits != 2 || compiled.ExitKinds["ExitDeopt"] != 2 {
 		t.Fatalf("exit profile summary mismatch: %+v", compiled)
 	}

@@ -29,6 +29,7 @@ type Tier2SpeculationState struct {
 	TopExitReason        string                 `json:"top_exit_reason,omitempty"`
 	TopExitPC            int                    `json:"top_exit_pc,omitempty"`
 	TopExitCount         uint64                 `json:"top_exit_count,omitempty"`
+	FeedbackReadiness    Tier2FeedbackReadiness `json:"feedback_readiness"`
 	NextAction           Tier2SpeculationAction `json:"next_action,omitempty"`
 	NextTarget           Tier2SpeculationTarget `json:"next_target,omitempty"`
 	NextPriority         int                    `json:"next_priority,omitempty"`
@@ -104,6 +105,7 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 			Failed:     tm.tier2HasFailed(proto),
 			FailReason: tm.tier2FailReasonFor(proto),
 		}
+		state.FeedbackReadiness = AnalyzeTier2FeedbackReadiness(proto, snapshotTier2Feedback(proto))
 		if cf, ok := tm.tier2CompiledFor(proto); ok && cf != nil {
 			state.Compiled = true
 			state.VersionHash = fmt.Sprintf("%x", cf.SpecializationVersion.Hash)
