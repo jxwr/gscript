@@ -330,6 +330,25 @@ func TestValidate_GuardTypeRequiresConcreteType(t *testing.T) {
 	}
 }
 
+func TestValidate_GuardTableKindRequiresConcreteKind(t *testing.T) {
+	fn := &Function{}
+	b0 := &Block{ID: 0}
+	input := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeTable, Block: b0}
+	guard := &Instr{ID: 1, Op: OpGuardTableKind, Type: TypeTable, Block: b0, Args: []*Value{input.Value()}}
+	ret := &Instr{ID: 2, Op: OpReturn, Block: b0}
+	b0.Instrs = []*Instr{input, guard, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	errs := Validate(fn)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for non-concrete GuardTableKind")
+	}
+	if !containsValidationError(errs, "GuardTableKind") {
+		t.Fatalf("expected GuardTableKind contract error, got: %v", errs)
+	}
+}
+
 func containsValidationError(errs []error, want string) bool {
 	for _, err := range errs {
 		if strings.Contains(err.Error(), want) {

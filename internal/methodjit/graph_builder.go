@@ -875,6 +875,10 @@ func (b *graphBuilder) emitBlocks() {
 					}
 					b.emit(block, OpSetField, TypeUnknown, []*Value{tbl, val}, int64(constIdx), fieldAux2)
 				} else {
+					if setKindAux2 != 0 {
+						guard := b.emit(block, OpGuardTableKind, TypeTable, []*Value{tbl}, setKindAux2, 0)
+						tbl = guard.Value()
+					}
 					b.emit(block, OpSetTable, TypeUnknown, []*Value{tbl, key, val}, 0, setKindAux2)
 				}
 

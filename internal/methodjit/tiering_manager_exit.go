@@ -1258,7 +1258,7 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 	case OpTForCall, OpTForLoop:
 		return fmt.Errorf("op-exit not yet implemented: %s", op)
 
-	case OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardCalleeProto, OpGuardNonNil, OpGuardTruthy:
+	case OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardNonNil, OpGuardTruthy:
 		return fmt.Errorf("op-exit guard failure: %s", op)
 
 	case OpGo, OpMakeChan, OpSend, OpRecv:

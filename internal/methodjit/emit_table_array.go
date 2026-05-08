@@ -2960,6 +2960,40 @@ func (ec *emitContext) emitSetTableNative(instr *Instr) {
 	}
 }
 
+func (ec *emitContext) emitGuardTableKind(instr *Instr) {
+	if len(instr.Args) == 0 {
+		return
+	}
+	expectedKind, ok := fbKindToAK(instr.Aux)
+	if !ok {
+		ec.emitDeopt(instr)
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("guard_table_kind_deopt")
+	doneLabel := ec.uniqueLabel("guard_table_kind_done")
+	tableID := instr.Args[0].ID
+	srcReg := ec.resolveValueNB(tableID, jit.X0)
+	if srcReg != jit.X0 {
+		asm.MOVreg(jit.X0, srcReg)
+	}
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+	jit.EmitExtractPtr(asm, jit.X1, jit.X0)
+	asm.CBZ(jit.X1, deoptLabel)
+	asm.LDR(jit.X2, jit.X1, jit.TableOffMetatable)
+	asm.CBNZ(jit.X2, deoptLabel)
+	asm.LDRB(jit.X2, jit.X1, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X2, expectedKind)
+	asm.BCond(jit.CondNE, deoptLabel)
+	ec.storeResultNB(jit.X0, instr.ID)
+	ec.tableVerified[instr.ID] = true
+	ec.kindVerified[instr.ID] = uint16(instr.Aux)
+	asm.B(doneLabel)
+	asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitDynamicStringSetTableCache(instr *Instr, doneLabel string) {
 	if !ec.shouldEmitDynamicStringKeyCache(instr) || len(instr.Args) < 3 {
 		return

@@ -149,15 +149,29 @@ func tableArraySwapStoreMatches(store *Instr, table *Value, loadA, loadB *Instr,
 	}
 	return store.Aux == loadA.Aux &&
 		store.Aux2 == 0 &&
-		store.Args[0] != nil && store.Args[0].ID == table.ID &&
+		tableArraySwapSameTable(store.Args[0], table, store.Aux) &&
 		store.Args[1] != nil && store.Args[1].ID == loadA.Args[0].ID &&
 		store.Args[2] != nil && store.Args[2].ID == loadA.Args[1].ID &&
 		store.Args[3] != nil && equivalentIntValue(store.Args[3], key, 4) &&
 		store.Args[4] != nil && store.Args[4].ID == valueID
 }
 
+func tableArraySwapSameTable(storeTable, loadTable *Value, kind int64) bool {
+	if storeTable == nil || loadTable == nil {
+		return false
+	}
+	if storeTable.ID == loadTable.ID {
+		return true
+	}
+	unguarded := tableArrayStoreFactTable(storeTable, kind)
+	return unguarded != nil && unguarded.ID == loadTable.ID
+}
+
 func tableArraySwapPureBetween(instr *Instr) bool {
 	if instr == nil {
+		return true
+	}
+	if instr.Op == OpGuardTableKind {
 		return true
 	}
 	if hasSideEffect(instr) {

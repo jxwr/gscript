@@ -1119,3 +1119,43 @@ func f(t, k, v) {
 		t.Fatalf("expected lowering to intern stable dynamic string key as a proto constant")
 	}
 }
+
+func TestBuildGraph_SetTableKindFeedbackInsertsTableKindGuard(t *testing.T) {
+	proto := compile(t, `
+func f(t, i, v) {
+	t[i] = v
+	return 1
+}
+`)
+	proto.EnsureFeedback()
+	setPC := -1
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) == vm.OP_SETTABLE {
+			setPC = pc
+			proto.Feedback[pc].Kind = vm.FBKindFloat
+			break
+		}
+	}
+	if setPC < 0 {
+		t.Fatal("expected SETTABLE in bytecode")
+	}
+
+	fn := BuildGraph(proto)
+	counts := map[Op]int{}
+	var guardedSet bool
+	for _, blk := range fn.Blocks {
+		for _, instr := range blk.Instrs {
+			counts[instr.Op]++
+			if instr.Op == OpSetTable && len(instr.Args) >= 1 && instr.Args[0].Def != nil &&
+				instr.Args[0].Def.Op == OpGuardTableKind && instr.Args[0].Def.Aux == int64(vm.FBKindFloat) {
+				guardedSet = true
+			}
+		}
+	}
+	if counts[OpGuardTableKind] != 1 {
+		t.Fatalf("GuardTableKind count=%d want 1\n%s", counts[OpGuardTableKind], Print(fn))
+	}
+	if !guardedSet {
+		t.Fatalf("SetTable was not fed by GuardTableKind\n%s", Print(fn))
+	}
+}

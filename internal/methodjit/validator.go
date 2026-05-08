@@ -235,6 +235,12 @@ func (v *validator) checkOpContracts() {
 					v.errorf("B%d: GuardConstString (v%d) must carry a non-negative constant index in Aux, got %d",
 						blk.ID, instr.ID, instr.Aux)
 				}
+			case OpGuardTableKind:
+				v.checkArgCount(blk, instr, 1, 1)
+				if _, ok := fbKindToAK(instr.Aux); !ok {
+					v.errorf("B%d: GuardTableKind (v%d) must carry a concrete table array kind in Aux, got %d",
+						blk.ID, instr.ID, instr.Aux)
+				}
 			case OpGuardCalleeProto, OpGuardNonNil, OpGuardTruthy:
 				v.checkArgCount(blk, instr, 1, 1)
 			}

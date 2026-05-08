@@ -49,11 +49,15 @@ func lowerTableArrayStoresInBlock(fn *Function, block *Block) {
 				}
 				continue
 			}
-			fact, ok := facts.Complete(instr.Args[0].ID, instr.Aux2)
+			factTable := tableArrayStoreFactTable(instr.Args[0], instr.Aux2)
+			fact, ok := facts.Complete(factTable.ID, instr.Aux2)
 			if !ok || fact.data == nil || fact.len == nil {
 				functionRemarks(fn).Add("TableArrayStoreLower", "missed", block.ID, instr.ID, instr.Op,
 					"missing complete typed array fact")
 				facts.InvalidateTable(instr.Args[0].ID)
+				if factTable.ID != instr.Args[0].ID {
+					facts.InvalidateTable(factTable.ID)
+				}
 				continue
 			}
 			storeArgs := []*Value{instr.Args[0], fact.data, fact.len, instr.Args[1], instr.Args[2]}
@@ -81,4 +85,11 @@ func lowerTableArrayStoresInBlock(fn *Function, block *Block) {
 			facts.Reset()
 		}
 	}
+}
+
+func tableArrayStoreFactTable(table *Value, kind int64) *Value {
+	if table == nil || table.Def == nil || table.Def.Op != OpGuardTableKind || table.Def.Aux != kind || len(table.Def.Args) == 0 || table.Def.Args[0] == nil {
+		return table
+	}
+	return table.Def.Args[0]
 }

@@ -1019,6 +1019,14 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = a
 
+	case OpGuardTableKind:
+		a := s.val(instr.Args[0])
+		tbl := a.Table()
+		if tbl == nil || tbl.GetMetatable() != nil || !tableKindMatchesFeedback(tbl.GetArrayKind(), uint8(instr.Aux)) {
+			return nil, false, fmt.Errorf("IR interpreter: GuardTableKind failed")
+		}
+		s.values[instr.ID] = a
+
 	case OpGuardCalleeProto:
 		a := s.val(instr.Args[0])
 		var cl *vm.Closure
@@ -1117,6 +1125,21 @@ func (s *interpState) resolveTerminator(instr *Instr, block *Block) (*Block, err
 
 	default:
 		return nil, fmt.Errorf("IR interpreter: block B%d ends with non-terminator %s", block.ID, instr.Op)
+	}
+}
+
+func tableKindMatchesFeedback(kind runtime.ArrayKind, fbKind uint8) bool {
+	switch fbKind {
+	case vm.FBKindMixed:
+		return kind == runtime.ArrayMixed
+	case vm.FBKindInt:
+		return kind == runtime.ArrayInt
+	case vm.FBKindFloat:
+		return kind == runtime.ArrayFloat
+	case vm.FBKindBool:
+		return kind == runtime.ArrayBool
+	default:
+		return false
 	}
 }
 

@@ -142,6 +142,10 @@ func printInstr(sb *strings.Builder, i *Instr) {
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d == const[%d]", i.Args[0].ID, i.Aux)
 		}
+	case OpGuardTableKind:
+		if len(i.Args) > 0 {
+			fmt.Fprintf(sb, "v%d table_kind == %d", i.Args[0].ID, i.Aux)
+		}
 	case OpGuardCalleeProto:
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d callee_proto == 0x%x", i.Args[0].ID, uint64(i.Aux))
