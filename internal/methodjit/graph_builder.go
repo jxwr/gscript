@@ -82,6 +82,9 @@ func (b *graphBuilder) tableStringFieldLowering(pc int, accessKind uint8) (const
 	if b == nil || b.proto == nil || pc < 0 {
 		return 0, 0, false
 	}
+	if b.speculation.GuardSuppressed(pc) {
+		return 0, 0, false
+	}
 	key, shapeID, fieldIdx, ok := b.speculation.StableStringShapeField(pc, accessKind)
 	if !ok || shapeID == 0 || fieldIdx < 0 {
 		return 0, 0, false

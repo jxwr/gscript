@@ -384,13 +384,15 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 		return Tier2DeoptAction{}, false
 	}
 	meta, ok := cf.ExitSites[int(ctx.DeoptInstrID)]
-	if !ok || meta.PC < 0 || (meta.Op != "GuardType" && meta.Op != "GuardCalleeProto") {
+	if !ok || meta.PC < 0 || (meta.Op != "GuardType" && meta.Op != "GuardCalleeProto" && meta.Op != "GuardConstString") {
 		return Tier2DeoptAction{}, false
 	}
 	tm.suppressTier2Guard(proto, meta.PC)
 	reason := "tier2: guard deopt; recompile without unstable guard"
 	if meta.Op == "GuardCalleeProto" {
 		reason = "tier2: callee guard deopt; recompile without unstable callsite guard"
+	} else if meta.Op == "GuardConstString" {
+		reason = "tier2: const-string guard deopt; recompile without unstable string-key guard"
 	}
 	return Tier2DeoptAction{
 		Kind:           Tier2DeoptRefreshAndFallback,

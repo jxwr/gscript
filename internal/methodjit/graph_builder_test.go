@@ -773,6 +773,34 @@ func f(t, k) {
 		}
 	})
 
+	t.Run("GetTable_SuppressedStringKeyGuardKeepsGenericTableLookup", func(t *testing.T) {
+		proto := compile(t, `
+func f(t, k) {
+	return t[k]
+}
+`)
+		pc := findPC(t, proto, vm.OP_GETTABLE)
+		proto.EnsureFeedback()
+		proto.TableKeyFeedback[pc].Count = 3
+		proto.TableKeyFeedback[pc].ShapeID = 21
+		proto.TableKeyFeedback[pc].FieldIdx = 2
+		proto.TableKeyFeedback[pc].FieldIdxSeen = true
+		proto.TableKeyFeedback[pc].StringKey = "x"
+		proto.TableKeyFeedback[pc].StringKeySeen = true
+		proto.TableKeyFeedback[pc].ValueType = vm.FBFloat
+		proto.TableKeyFeedback[pc].AccessKind = vm.TableAccessKindGet
+
+		fn := BuildGraphWithSpeculation(proto, NewTier2SpeculationPlanWithSuppressedGuards(proto, map[int]bool{pc: true}))
+		counts := countOps(fn)
+		if counts[OpGetField] != 0 || counts[OpGuardConstString] != 0 {
+			t.Fatalf("suppressed string-key site should stay generic; GetField=%d GuardConstString=%d\nIR:\n%s",
+				counts[OpGetField], counts[OpGuardConstString], Print(fn))
+		}
+		if counts[OpGetTable] == 0 {
+			t.Fatalf("suppressed string-key site lost generic GetTable\nIR:\n%s", Print(fn))
+		}
+	})
+
 	t.Run("Eq_nil_skips_feedback_operand_guard", func(t *testing.T) {
 		proto := compile(t, `
 func f(t) {
