@@ -539,6 +539,30 @@ func TestCallSiteFeedback_RecordsSmallPolymorphicVMProtos(t *testing.T) {
 	}
 }
 
+func TestCallSiteFeedback_MaturePolymorphicVMProtosRequiresStableArityAndTwoProtos(t *testing.T) {
+	f := &FuncProto{Name: "f"}
+	g := &FuncProto{Name: "g"}
+	cf := CallSiteFeedback{
+		Count:              4,
+		NArgs:              1,
+		ResultArity:        1,
+		CalleeVMProtos:     [MaxCallSiteFeedbackVMProtos]*FuncProto{f, g},
+		CalleeVMProtoCount: 2,
+	}
+	if got := cf.MaturePolymorphicVMProtos(2, 1, 1); len(got) != 2 {
+		t.Fatalf("mature protos=%d want 2", len(got))
+	}
+	cf.Flags = CallSiteArityPolymorphic
+	if got := cf.MaturePolymorphicVMProtos(2, 1, 1); len(got) != 0 {
+		t.Fatalf("arity-polymorphic mature protos=%d want 0", len(got))
+	}
+	cf.Flags = 0
+	cf.CalleeVMProtoCount = 1
+	if got := cf.MaturePolymorphicVMProtos(2, 1, 1); len(got) != 0 {
+		t.Fatalf("single-proto mature protos=%d want 0", len(got))
+	}
+}
+
 func TestFeedback_SubMulDiv(t *testing.T) {
 	proto := compileFeedback(t, `a := 10; b := 3; s := a - b; m := a * b; d := a / b`)
 	for _, op := range []Opcode{OP_SUB, OP_MUL, OP_DIV} {

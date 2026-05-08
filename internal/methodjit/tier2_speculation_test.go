@@ -245,6 +245,36 @@ func TestTier2SpecializationProfileBuildsGenericGuardSet(t *testing.T) {
 	}
 }
 
+func TestTier2SpecializationProfileRequiresMaturePolymorphicCallFeedback(t *testing.T) {
+	proto := &vm.FuncProto{Name: "caller", Code: make([]uint32, 2)}
+	calleeA := &vm.FuncProto{Name: "a"}
+	calleeB := &vm.FuncProto{Name: "b"}
+	proto.EnsureFeedback()
+	fb := &proto.CallSiteFeedback[1]
+	fb.Count = 1
+	fb.Flags = vm.CallSiteCalleePolymorphic
+	fb.NArgs = 1
+	fb.ResultArity = 1
+	fb.CalleeVMProtos[0] = calleeA
+	fb.CalleeVMProtos[1] = calleeB
+	fb.CalleeVMProtoCount = 2
+
+	profile := BuildTier2SpecializationProfile(proto)
+	if profile.Summary().GuardKinds[string(SpecGuardCallPolymorphic)] != 0 {
+		t.Fatalf("immature polymorphic call produced guard: %+v", profile.Summary())
+	}
+	fb.Count = wholeCallKernelMinStableObservations
+	profile = BuildTier2SpecializationProfile(proto)
+	if profile.Summary().GuardKinds[string(SpecGuardCallPolymorphic)] != 1 {
+		t.Fatalf("mature polymorphic call guard count mismatch: %+v", profile.Summary())
+	}
+	fb.Flags |= vm.CallSiteArityPolymorphic
+	profile = BuildTier2SpecializationProfile(proto)
+	if profile.Summary().GuardKinds[string(SpecGuardCallPolymorphic)] != 0 {
+		t.Fatalf("arity-polymorphic call produced guard: %+v", profile.Summary())
+	}
+}
+
 func TestTier2RecompilePolicyKeepsCompiledCodeWithoutMaturedFeedback(t *testing.T) {
 	var policy Tier2RecompilePolicy
 	cf := &CompiledFunction{

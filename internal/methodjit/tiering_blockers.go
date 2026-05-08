@@ -540,7 +540,7 @@ func tier2LoopCallFeedbackVMProtos(fn *Function, instr *Instr) []*vm.FuncProto {
 		fb.ResultArity != uint8(instr.Aux2) {
 		return nil
 	}
-	return fb.PolymorphicVMProtos()
+	return fb.MaturePolymorphicVMProtos(wholeCallKernelMinStableObservations, len(instr.Args)-1, uint8(instr.Aux2))
 }
 
 func tier2LoopCallCalleeHasTier2DirectEntry(callee *vm.FuncProto) bool {

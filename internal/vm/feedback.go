@@ -508,6 +508,20 @@ func (cf CallSiteFeedback) PolymorphicVMProtos() []*FuncProto {
 	return out
 }
 
+func (cf CallSiteFeedback) MaturePolymorphicVMProtos(minCount uint32, nArgs int, resultArity uint8) []*FuncProto {
+	if cf.Count < minCount ||
+		cf.Flags&CallSiteArityPolymorphic != 0 ||
+		int(cf.NArgs) != nArgs ||
+		cf.ResultArity != resultArity {
+		return nil
+	}
+	protos := cf.PolymorphicVMProtos()
+	if len(protos) < 2 {
+		return nil
+	}
+	return protos
+}
+
 func (cf CallSiteFeedback) StableStringArg(idx int) (string, bool) {
 	if idx < 0 || idx >= MaxCallSiteFeedbackArgs {
 		return "", false

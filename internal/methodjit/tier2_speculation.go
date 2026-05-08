@@ -250,7 +250,7 @@ func BuildTier2SpecializationProfile(proto *vm.FuncProto) Tier2SpecializationPro
 			})
 			continue
 		}
-		if protos := fb.PolymorphicVMProtos(); len(protos) > 0 {
+		if protos := fb.MaturePolymorphicVMProtos(wholeCallKernelMinStableObservations, int(fb.NArgs), fb.ResultArity); len(protos) > 0 {
 			profile.addGuard(SpecializationGuard{
 				Kind:           SpecGuardCallPolymorphic,
 				PC:             pc,
