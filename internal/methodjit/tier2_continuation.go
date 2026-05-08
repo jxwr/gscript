@@ -85,3 +85,16 @@ func tier2ContinuationKindForExitOp(op string) Tier2ContinuationKind {
 		return Tier2ContinuationOp
 	}
 }
+
+func tier2ContinuationStats(cf *CompiledFunction) (total, ambiguous int) {
+	if cf == nil {
+		return 0, 0
+	}
+	for _, cont := range cf.Continuations {
+		total++
+		if cont.Ambiguous {
+			ambiguous++
+		}
+	}
+	return total, ambiguous
+}

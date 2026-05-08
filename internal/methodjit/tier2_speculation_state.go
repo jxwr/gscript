@@ -10,29 +10,31 @@ import (
 )
 
 type Tier2SpeculationState struct {
-	ProtoName            string                 `json:"proto_name"`
-	ProtoID              string                 `json:"proto_id"`
-	Compiled             bool                   `json:"compiled"`
-	Failed               bool                   `json:"failed"`
-	FailReason           string                 `json:"fail_reason,omitempty"`
-	VersionHash          string                 `json:"version_hash,omitempty"`
-	GuardCount           int                    `json:"guard_count,omitempty"`
-	SuppressedCount      int                    `json:"suppressed_count,omitempty"`
-	SuppressedPCs        []int                  `json:"suppressed_pcs,omitempty"`
-	SuppressedKinds      map[string]int         `json:"suppressed_kinds,omitempty"`
-	GuardFailures        map[string]uint64      `json:"guard_failures,omitempty"`
-	ExitCount            uint64                 `json:"exit_count,omitempty"`
-	SuppressedGuardExits uint64                 `json:"suppressed_guard_exits,omitempty"`
-	QueuedRecompileExits uint64                 `json:"queued_recompile_exits,omitempty"`
-	ExitKinds            map[string]uint64      `json:"exit_kinds,omitempty"`
-	TopExitName          string                 `json:"top_exit_name,omitempty"`
-	TopExitReason        string                 `json:"top_exit_reason,omitempty"`
-	TopExitPC            int                    `json:"top_exit_pc,omitempty"`
-	TopExitCount         uint64                 `json:"top_exit_count,omitempty"`
-	FeedbackReadiness    Tier2FeedbackReadiness `json:"feedback_readiness"`
-	NextAction           Tier2SpeculationAction `json:"next_action,omitempty"`
-	NextTarget           Tier2SpeculationTarget `json:"next_target,omitempty"`
-	NextPriority         int                    `json:"next_priority,omitempty"`
+	ProtoName              string                 `json:"proto_name"`
+	ProtoID                string                 `json:"proto_id"`
+	Compiled               bool                   `json:"compiled"`
+	Failed                 bool                   `json:"failed"`
+	FailReason             string                 `json:"fail_reason,omitempty"`
+	VersionHash            string                 `json:"version_hash,omitempty"`
+	GuardCount             int                    `json:"guard_count,omitempty"`
+	ContinuationCount      int                    `json:"continuation_count,omitempty"`
+	AmbiguousContinuations int                    `json:"ambiguous_continuations,omitempty"`
+	SuppressedCount        int                    `json:"suppressed_count,omitempty"`
+	SuppressedPCs          []int                  `json:"suppressed_pcs,omitempty"`
+	SuppressedKinds        map[string]int         `json:"suppressed_kinds,omitempty"`
+	GuardFailures          map[string]uint64      `json:"guard_failures,omitempty"`
+	ExitCount              uint64                 `json:"exit_count,omitempty"`
+	SuppressedGuardExits   uint64                 `json:"suppressed_guard_exits,omitempty"`
+	QueuedRecompileExits   uint64                 `json:"queued_recompile_exits,omitempty"`
+	ExitKinds              map[string]uint64      `json:"exit_kinds,omitempty"`
+	TopExitName            string                 `json:"top_exit_name,omitempty"`
+	TopExitReason          string                 `json:"top_exit_reason,omitempty"`
+	TopExitPC              int                    `json:"top_exit_pc,omitempty"`
+	TopExitCount           uint64                 `json:"top_exit_count,omitempty"`
+	FeedbackReadiness      Tier2FeedbackReadiness `json:"feedback_readiness"`
+	NextAction             Tier2SpeculationAction `json:"next_action,omitempty"`
+	NextTarget             Tier2SpeculationTarget `json:"next_target,omitempty"`
+	NextPriority           int                    `json:"next_priority,omitempty"`
 }
 
 type Tier2SpeculationWorkItem struct {
@@ -114,6 +116,7 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 			state.Compiled = true
 			state.VersionHash = fmt.Sprintf("%x", cf.SpecializationVersion.Hash)
 			state.GuardCount = cf.SpecializationVersion.GuardCount
+			state.ContinuationCount, state.AmbiguousContinuations = tier2ContinuationStats(cf)
 		}
 		if suppressed := tm.tier2SuppressedGuards(proto); len(suppressed) > 0 {
 			for pc, ok := range suppressed {

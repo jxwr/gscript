@@ -19,6 +19,10 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 		ExitSites: map[int]ExitSiteMeta{
 			11: {PC: 8, Op: "GuardType", Reason: "GuardType(int)"},
 		},
+		Continuations: map[Tier2ContinuationKey]Tier2Continuation{
+			{PC: 8, Kind: Tier2ContinuationOp}:    {Offset: 128},
+			{PC: 9, Kind: Tier2ContinuationTable}: {Offset: 160, Ambiguous: true},
+		},
 	}
 	tm.tierState.markCompiled(compiledProto, cf)
 	tm.suppressTier2GuardKind(compiledProto, 8, "GuardType")
@@ -36,6 +40,9 @@ func TestTier2SpeculationStateSnapshotIncludesCompiledFailedAndSuppressed(t *tes
 	compiled := findSpecState(t, snap, "compiled")
 	if !compiled.Compiled || compiled.VersionHash != "44" || compiled.GuardCount != 5 {
 		t.Fatalf("compiled state mismatch: %+v", compiled)
+	}
+	if compiled.ContinuationCount != 2 || compiled.AmbiguousContinuations != 1 {
+		t.Fatalf("continuation state mismatch: %+v", compiled)
 	}
 	if compiled.SuppressedCount != 2 || compiled.SuppressedPCs[0] != 3 || compiled.SuppressedPCs[1] != 8 {
 		t.Fatalf("suppressed state mismatch: %+v", compiled)
