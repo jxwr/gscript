@@ -81,6 +81,7 @@ class DebugArtifactTest(unittest.TestCase):
                             "guard_count": 3,
                             "suppressed_count": 2,
                             "suppressed_pcs": [4, 9],
+                            "suppressed_kinds": {"GuardType": 1, "GuardConstString": 1},
                         }
                     ]
                 )
@@ -114,6 +115,7 @@ class DebugArtifactTest(unittest.TestCase):
         self.assertEqual(artifact["debug"]["runtime_path_stats"]["numbers"]["native_call.fast"], 7.0)
         self.assertEqual(artifact["debug"]["tier2_perf_stats"]["total_nanos"], 100)
         self.assertEqual(artifact["debug"]["tier2_speculation_state"]["suppressed"], 2)
+        self.assertEqual(artifact["debug"]["tier2_speculation_state"]["suppressed_kinds"]["GuardType"], 1)
         self.assertEqual(artifact["specialization"]["compiled"], 1)
         self.assertEqual(artifact["debug"]["warm_dump"]["pcmap_ranges"], 2)
         self.assertEqual(artifact["timing"]["summary"]["rows"], 1)

@@ -319,12 +319,19 @@ def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
             "states": [],
         }
     states = [row for row in data if isinstance(row, dict)]
+    suppressed_kinds: Counter[str] = Counter()
+    for row in states:
+        kinds = row.get("suppressed_kinds")
+        if isinstance(kinds, dict):
+            for kind, count in kinds.items():
+                suppressed_kinds[str(kind)] += int(count or 0)
     return {
         "status": "ok",
         "protos": len(states),
         "compiled": sum(1 for row in states if row.get("compiled")),
         "failed": sum(1 for row in states if row.get("failed")),
         "suppressed": sum(int(row.get("suppressed_count") or 0) for row in states),
+        "suppressed_kinds": dict(sorted(suppressed_kinds.items())),
         "top_suppressed": sorted(
             states,
             key=lambda row: int(row.get("suppressed_count") or 0),

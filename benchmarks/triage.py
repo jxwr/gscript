@@ -79,6 +79,18 @@ def run(cmd: list[str], cwd: Path, timeout: int | None = None) -> subprocess.Com
     )
 
 
+def run_split(cmd: list[str], cwd: Path, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
 def bench_id_to_suite_name(bench: str) -> str | None:
     if "/" not in bench:
         return bench
@@ -86,6 +98,35 @@ def bench_id_to_suite_name(bench: str) -> str | None:
     if group != "suite":
         return None
     return name
+
+
+def bench_script_path(root: Path, bench: str) -> Path | None:
+    if "/" in bench:
+        group, name = bench.split("/", 1)
+        groups = [group]
+    else:
+        name = bench
+        groups = ["suite", "extended", "variants"]
+    candidates = {
+        "suite": root / "benchmarks" / "suite" / f"{name}.gs",
+        "extended": root / "benchmarks" / "extended" / f"{name}.gs",
+        "variants": root / "benchmarks" / "variants" / f"{name}.gs",
+    }
+    for group in groups:
+        path = candidates.get(group)
+        if path is not None and path.exists():
+            return path
+    return None
+
+
+def bench_group(root: Path, bench: str) -> str | None:
+    path = bench_script_path(root, bench)
+    if path is None:
+        return None
+    parent = path.parent.name
+    if parent in {"suite", "extended", "variants"}:
+        return parent
+    return None
 
 
 def timing_rows(timing_json: Path) -> list[dict]:
@@ -279,6 +320,59 @@ def parse_memprofile(path: Path | None, binary: Path | None, root: Path, timeout
     return txt, parse_pprof_top(txt)
 
 
+def load_spec_state(path: Path | None) -> dict:
+    data = read_json(path)
+    if not isinstance(data, list):
+        return {
+            "status": "missing" if path is None else "parse_error",
+            "protos": 0,
+            "compiled": 0,
+            "failed": 0,
+            "suppressed": 0,
+            "suppressed_kinds": {},
+            "states": [],
+        }
+    states = [row for row in data if isinstance(row, dict)]
+    kinds: Counter[str] = Counter()
+    for row in states:
+        suppressed = row.get("suppressed_kinds")
+        if isinstance(suppressed, dict):
+            for kind, count in suppressed.items():
+                kinds[str(kind)] += int(count or 0)
+    return {
+        "status": "ok",
+        "protos": len(states),
+        "compiled": sum(1 for row in states if row.get("compiled")),
+        "failed": sum(1 for row in states if row.get("failed")),
+        "suppressed": sum(int(row.get("suppressed_count") or 0) for row in states),
+        "suppressed_kinds": dict(sorted(kinds.items())),
+        "states": states,
+    }
+
+
+def collect_spec_state(root: Path, out_dir: Path, bench: str, timeout: int) -> Path | None:
+    script = bench_script_path(root, bench)
+    if script is None:
+        return None
+    tempdir = Path(tempfile.mkdtemp(prefix="gscript_triage_spec_"))
+    try:
+        binary = tempdir / "gscript"
+        build = run(["go", "build", "-o", str(binary), "./cmd/gscript/"], root, timeout)
+        if build.returncode != 0:
+            return None
+        spec_state_json = out_dir / "tier2-spec-state.json"
+        proc = run_split([str(binary), "-jit", "-tier2-spec-state-json", str(script)], root, timeout)
+        if proc.stderr:
+            spec_state_json.write_text(proc.stderr)
+        elif proc.stdout:
+            spec_state_json.write_text(proc.stdout)
+        else:
+            spec_state_json.write_text("[]\n")
+        return spec_state_json
+    finally:
+        shutil.rmtree(tempdir, ignore_errors=True)
+
+
 def load_pcmap_summary(pcmap_json: Path | None) -> dict:
     data = read_json(pcmap_json)
     if not isinstance(data, list):
@@ -304,6 +398,7 @@ def classify(
     pcmap_summary: dict,
     mem_summary: dict,
     runtime_stats: dict,
+    spec_state: dict,
     artifacts: dict[str, ArtifactStatus],
 ) -> list[Bottleneck]:
     bottlenecks: list[Bottleneck] = []
@@ -354,6 +449,31 @@ def classify(
                 "high" if artifacts["exits_json"].status == "ok" else "medium",
                 [f"{deopt_count} guard/deopt-like exits out of {max(exit_total, deopt_count)} profiled exits"],
                 "Prioritize guard specialization, shape/type stability, or exit-resume fixes for the dominant reason.",
+            )
+        )
+
+    suppressed = int(spec_state.get("suppressed") or 0)
+    failed = int(spec_state.get("failed") or 0)
+    if suppressed > 0 or failed > 0:
+        evidence = []
+        if suppressed > 0:
+            kinds = spec_state.get("suppressed_kinds") or {}
+            kind_text = ", ".join(f"{kind}={count}" for kind, count in sorted(kinds.items())) or "unknown"
+            evidence.append(f"{suppressed} guard-specialization sites were relaxed ({kind_text})")
+        if failed > 0:
+            states = [row for row in spec_state.get("states") or [] if isinstance(row, dict) and row.get("failed")]
+            if states:
+                first = states[0]
+                evidence.append(f"{failed} Tier2 protos failed; first={first.get('proto_name')}: {first.get('fail_reason')}")
+            else:
+                evidence.append(f"{failed} Tier2 protos failed")
+        bottlenecks.append(
+            Bottleneck(
+                "specialization-instability",
+                "P1" if max_lj_gap >= 1.5 else "P2",
+                "high" if artifacts["spec_state"].status == "ok" else "medium",
+                evidence,
+                "Use tier2_speculation_state plus exit sites to decide whether to broaden guards, delay compilation until feedback matures, or add a safer generic lowering.",
             )
         )
 
@@ -607,6 +727,7 @@ def write_summary(
     pcmap_summary: dict,
     mem_summary: dict,
     runtime_stats: dict,
+    spec_state: dict,
 ) -> None:
     payload = {
         "timing": rows,
@@ -618,6 +739,7 @@ def write_summary(
         "pcmap_summary": pcmap_summary,
         "memprofile_summary": mem_summary,
         "runtime_stats": runtime_stats,
+        "speculation_state": spec_state,
     }
     out.write_text(json.dumps(payload, indent=2) + "\n")
 
@@ -649,6 +771,8 @@ def main() -> int:
         type=Path,
         help="optional runtime stats JSON/text file to fold into bottleneck classification",
     )
+    parser.add_argument("--spec-state", type=Path, help="optional -tier2-spec-state-json file to fold into classification")
+    parser.add_argument("--no-spec-state", action="store_true", help="do not collect Tier 2 speculation state automatically")
     parser.add_argument("--warm-dump", action="store_true", help="also collect production-warm JIT PC maps for the first suite benchmark")
     parser.add_argument("--out-dir", type=Path, default=Path("/tmp/gscript-triage"))
     args = parser.parse_args()
@@ -685,6 +809,9 @@ def main() -> int:
     ]
     for mode in args.mode or ["default"]:
         cmd += ["--mode", mode]
+    selected_groups = sorted({group for bench in args.bench if (group := bench_group(root, bench))})
+    for group in selected_groups:
+        cmd += ["--group", group]
     for bench in args.bench:
         cmd += ["--bench", bench]
     for scale in args.scale:
@@ -828,6 +955,10 @@ def main() -> int:
     mem_summary = summarize_pprof(mem_rows)
     runtime_stats = parse_runtime_stats(args.runtime_stats)
     pcmap_summary = load_pcmap_summary(pcmap_json)
+    spec_state_json: Path | None = args.spec_state
+    if spec_state_json is None and not args.no_spec_state and args.bench:
+        spec_state_json = collect_spec_state(root, out_dir, args.bench[0], int(args.timeout))
+    spec_state = load_spec_state(spec_state_json)
     artifacts = {
         "timing_json": artifact_status(timing_json, True),
         "timing_md": artifact_status(timing_md, True),
@@ -839,11 +970,12 @@ def main() -> int:
         "memprofile": artifact_status(memprofile_path, bool(args.memprofile), "requested/read with --memprofile"),
         "memprofile_txt": artifact_status(memprofile_txt, bool(args.memprofile), "go tool pprof -top for memprofile"),
         "runtime_stats": artifact_status(args.runtime_stats, args.runtime_stats is not None, "optional JSON/text input"),
+        "spec_state": artifact_status(spec_state_json, not args.no_spec_state or args.spec_state is not None, "Tier 2 specialization state"),
         "warm_dir": artifact_status(warm_dir, args.warm_dump, "requested with --warm-dump"),
         "pcmap_md": artifact_status(pcmap_md, args.warm_dump, "warm pcmap Markdown"),
         "pcmap_json": artifact_status(pcmap_json, args.warm_dump, "warm pcmap JSON"),
     }
-    bottlenecks = classify(rows, exit_summary, pprof_summary, pcmap_summary, mem_summary, runtime_stats, artifacts)
+    bottlenecks = classify(rows, exit_summary, pprof_summary, pcmap_summary, mem_summary, runtime_stats, spec_state, artifacts)
     write_summary(
         summary_json,
         rows,
@@ -854,6 +986,7 @@ def main() -> int:
         pcmap_summary,
         mem_summary,
         runtime_stats,
+        spec_state,
     )
     write_report(
         report_md,

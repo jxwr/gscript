@@ -10,15 +10,16 @@ import (
 )
 
 type Tier2SpeculationState struct {
-	ProtoName       string `json:"proto_name"`
-	ProtoID         string `json:"proto_id"`
-	Compiled        bool   `json:"compiled"`
-	Failed          bool   `json:"failed"`
-	FailReason      string `json:"fail_reason,omitempty"`
-	VersionHash     string `json:"version_hash,omitempty"`
-	GuardCount      int    `json:"guard_count,omitempty"`
-	SuppressedCount int    `json:"suppressed_count,omitempty"`
-	SuppressedPCs   []int  `json:"suppressed_pcs,omitempty"`
+	ProtoName       string         `json:"proto_name"`
+	ProtoID         string         `json:"proto_id"`
+	Compiled        bool           `json:"compiled"`
+	Failed          bool           `json:"failed"`
+	FailReason      string         `json:"fail_reason,omitempty"`
+	VersionHash     string         `json:"version_hash,omitempty"`
+	GuardCount      int            `json:"guard_count,omitempty"`
+	SuppressedCount int            `json:"suppressed_count,omitempty"`
+	SuppressedPCs   []int          `json:"suppressed_pcs,omitempty"`
+	SuppressedKinds map[string]int `json:"suppressed_kinds,omitempty"`
 }
 
 func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationState {
@@ -60,6 +61,16 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 			}
 			sort.Ints(state.SuppressedPCs)
 			state.SuppressedCount = len(state.SuppressedPCs)
+		}
+		if suppressedKinds := tm.tier2SuppressedGuardKinds(proto); len(suppressedKinds) > 0 {
+			state.SuppressedKinds = make(map[string]int)
+			for _, kinds := range suppressedKinds {
+				for kind, ok := range kinds {
+					if ok {
+						state.SuppressedKinds[kind]++
+					}
+				}
+			}
 		}
 		out = append(out, state)
 	}
