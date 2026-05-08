@@ -320,11 +320,15 @@ def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
         }
     states = [row for row in data if isinstance(row, dict)]
     suppressed_kinds: Counter[str] = Counter()
+    next_actions: Counter[str] = Counter()
     for row in states:
         kinds = row.get("suppressed_kinds")
         if isinstance(kinds, dict):
             for kind, count in kinds.items():
                 suppressed_kinds[str(kind)] += int(count or 0)
+        action = row.get("next_action")
+        if action:
+            next_actions[str(action)] += 1
     return {
         "status": "ok",
         "protos": len(states),
@@ -332,6 +336,11 @@ def summarize_speculation_state(path: Path | None) -> dict[str, Any]:
         "failed": sum(1 for row in states if row.get("failed")),
         "suppressed": sum(int(row.get("suppressed_count") or 0) for row in states),
         "suppressed_kinds": dict(sorted(suppressed_kinds.items())),
+        "guard_failures": sum(sum(int(count or 0) for count in (row.get("guard_failures") or {}).values()) for row in states),
+        "exit_count": sum(int(row.get("exit_count") or 0) for row in states),
+        "suppressed_guard_exits": sum(int(row.get("suppressed_guard_exits") or 0) for row in states),
+        "queued_recompile_exits": sum(int(row.get("queued_recompile_exits") or 0) for row in states),
+        "next_actions": dict(sorted(next_actions.items())),
         "top_suppressed": sorted(
             states,
             key=lambda row: int(row.get("suppressed_count") or 0),

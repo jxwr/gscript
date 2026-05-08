@@ -334,11 +334,15 @@ def load_spec_state(path: Path | None) -> dict:
         }
     states = [row for row in data if isinstance(row, dict)]
     kinds: Counter[str] = Counter()
+    actions: Counter[str] = Counter()
     for row in states:
         suppressed = row.get("suppressed_kinds")
         if isinstance(suppressed, dict):
             for kind, count in suppressed.items():
                 kinds[str(kind)] += int(count or 0)
+        action = row.get("next_action")
+        if action:
+            actions[str(action)] += 1
     return {
         "status": "ok",
         "protos": len(states),
@@ -346,6 +350,11 @@ def load_spec_state(path: Path | None) -> dict:
         "failed": sum(1 for row in states if row.get("failed")),
         "suppressed": sum(int(row.get("suppressed_count") or 0) for row in states),
         "suppressed_kinds": dict(sorted(kinds.items())),
+        "guard_failures": sum(sum(int(count or 0) for count in (row.get("guard_failures") or {}).values()) for row in states),
+        "exit_count": sum(int(row.get("exit_count") or 0) for row in states),
+        "suppressed_guard_exits": sum(int(row.get("suppressed_guard_exits") or 0) for row in states),
+        "queued_recompile_exits": sum(int(row.get("queued_recompile_exits") or 0) for row in states),
+        "next_actions": dict(sorted(actions.items())),
         "states": states,
     }
 
@@ -454,12 +463,18 @@ def classify(
 
     suppressed = int(spec_state.get("suppressed") or 0)
     failed = int(spec_state.get("failed") or 0)
+    next_actions = spec_state.get("next_actions") or {}
+    queued_recompile_exits = int(spec_state.get("queued_recompile_exits") or 0)
+    suppressed_guard_exits = int(spec_state.get("suppressed_guard_exits") or 0)
     if suppressed > 0 or failed > 0:
         evidence = []
         if suppressed > 0:
             kinds = spec_state.get("suppressed_kinds") or {}
             kind_text = ", ".join(f"{kind}={count}" for kind, count in sorted(kinds.items())) or "unknown"
             evidence.append(f"{suppressed} guard-specialization sites were relaxed ({kind_text})")
+        if next_actions:
+            action_text = ", ".join(f"{action}={count}" for action, count in sorted(next_actions.items()))
+            evidence.append(f"Tier2 next actions: {action_text}")
         if failed > 0:
             states = [row for row in spec_state.get("states") or [] if isinstance(row, dict) and row.get("failed")]
             if states:
@@ -474,6 +489,21 @@ def classify(
                 "high" if artifacts["spec_state"].status == "ok" else "medium",
                 evidence,
                 "Use tier2_speculation_state plus exit sites to decide whether to broaden guards, delay compilation until feedback matures, or add a safer generic lowering.",
+            )
+        )
+    if queued_recompile_exits > 0 or suppressed_guard_exits > 0:
+        evidence = []
+        if queued_recompile_exits > 0:
+            evidence.append(f"{queued_recompile_exits} exits are already tied to queued Tier2 refresh")
+        if suppressed_guard_exits > 0:
+            evidence.append(f"{suppressed_guard_exits} exits are residual cost from suppressed guards")
+        bottlenecks.append(
+            Bottleneck(
+                "tier2-self-driving-state",
+                "P1" if queued_recompile_exits > 0 and max_lj_gap >= 1.5 else "P2",
+                "high" if artifacts["spec_state"].status == "ok" else "medium",
+                evidence,
+                "Use next_action from tier2_speculation_state to prioritize refresh_queued and inspect_hot_exit protos before adding new handwritten optimizations.",
             )
         )
 
