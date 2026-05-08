@@ -152,6 +152,24 @@ func (c *tier2ExitProfileCollector) snapshot() Tier2ExitProfileSnapshot {
 	return out
 }
 
+func (c *tier2ExitProfileCollector) protos() []*vm.FuncProto {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := make(map[*vm.FuncProto]bool)
+	out := make([]*vm.FuncProto, 0)
+	for key := range c.sites {
+		if key.Proto == nil || seen[key.Proto] {
+			continue
+		}
+		seen[key.Proto] = true
+		out = append(out, key.Proto)
+	}
+	return out
+}
+
 func (c *tier2ExitProfileCollector) protoSummary(proto *vm.FuncProto) Tier2ExitProfileProtoSummary {
 	if c == nil || proto == nil {
 		return Tier2ExitProfileProtoSummary{}

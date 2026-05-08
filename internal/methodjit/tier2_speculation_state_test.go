@@ -168,6 +168,31 @@ func TestTier2SpeculationWorklistSnapshotRanksActionableStates(t *testing.T) {
 	}
 }
 
+func TestTier2SpeculationStateSnapshotIncludesExitProfileOnlyProto(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "exit_only"}
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{CallObserved: 1},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       3,
+			GuardCount: 1,
+		},
+		ExitSites: map[int]ExitSiteMeta{
+			5: {PC: 9, Op: "Call", Reason: "Call"},
+		},
+	}
+	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitCallExit, CallID: 5})
+
+	state := findSpecState(t, tm.Tier2SpeculationStateSnapshot(), "exit_only")
+	if state.ExitCount != 1 || state.TopExitName != "ExitCallExit" || state.NextTarget != Tier2SpecTargetCallSpecialization {
+		t.Fatalf("exit-only state mismatch: %+v", state)
+	}
+	worklist := tm.Tier2SpeculationWorklistSnapshot()
+	if len(worklist) != 1 || worklist[0].ProtoName != "exit_only" || worklist[0].Target != Tier2SpecTargetCallSpecialization {
+		t.Fatalf("exit-only worklist mismatch: %+v", worklist)
+	}
+}
+
 func findSpecState(t *testing.T, states []Tier2SpeculationState, name string) Tier2SpeculationState {
 	t.Helper()
 	for _, state := range states {

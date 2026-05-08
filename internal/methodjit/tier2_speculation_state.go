@@ -95,6 +95,9 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 	for proto := range tm.tier2GuardFailures {
 		protos[proto] = true
 	}
+	for _, proto := range tm.exitProfile.protos() {
+		protos[proto] = true
+	}
 	out := make([]Tier2SpeculationState, 0, len(protos))
 	for proto := range protos {
 		if proto == nil {
