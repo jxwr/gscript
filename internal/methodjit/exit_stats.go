@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/gscript/gscript/internal/vm"
@@ -118,11 +119,23 @@ func (tm *TieringManager) recordTier2ExitProfile(proto *vm.FuncProto, cf *Compil
 	}
 	switch ctx.ExitCode {
 	case ExitTableExit, ExitCallExit, ExitGlobalExit:
+	case ExitDeopt:
+		if cf.ExitSites == nil {
+			return
+		}
+		meta, ok := cf.ExitSites[int(ctx.DeoptInstrID)]
+		if !ok || !tier2GuardOpCanRefresh(meta.Op) {
+			return
+		}
 	default:
 		return
 	}
 	site, ok := tm.exitProfile.record(proto, cf, ctx)
 	if !ok || site.Count != tier2RecompileQueueMinExitCount {
+		return
+	}
+	if tm.exitSiteSuppressedGuard(proto, site) {
+		tm.exitProfile.markSuppressed(proto, site)
 		return
 	}
 	current := tm.currentTier2SpeculationProfile(proto)
@@ -146,6 +159,39 @@ func (tm *TieringManager) recordTier2ExitProfile(proto *vm.FuncProto, cf *Compil
 			"version_after": fmt.Sprintf("%x", current.Version.Hash),
 			"install":       "cleared",
 		})
+	}
+}
+
+func (tm *TieringManager) exitSiteSuppressedGuard(proto *vm.FuncProto, site Tier2ExitProfileSite) bool {
+	if tm == nil || proto == nil || site.PC < 0 {
+		return false
+	}
+	op := exitReasonGuardOp(site.Reason)
+	if op == "" {
+		return false
+	}
+	kinds := tm.tier2SuppressedGuardKinds(proto)
+	if len(kinds) == 0 {
+		return false
+	}
+	if global := kinds[tier2GlobalGuardSuppressPC]; len(global) > 0 && (global[op] || global["*"]) {
+		return true
+	}
+	return kinds[site.PC][op] || kinds[site.PC]["*"]
+}
+
+func exitReasonGuardOp(reason string) string {
+	switch {
+	case strings.HasPrefix(reason, "deopt:GuardType("), strings.HasPrefix(reason, "GuardType("):
+		return "GuardType"
+	case strings.HasPrefix(reason, "deopt:GuardTableKind("), strings.HasPrefix(reason, "GuardTableKind("):
+		return "GuardTableKind"
+	case strings.HasPrefix(reason, "deopt:GuardConstString"), strings.HasPrefix(reason, "GuardConstString"):
+		return "GuardConstString"
+	case strings.HasPrefix(reason, "deopt:GuardCalleeProto"), strings.HasPrefix(reason, "GuardCalleeProto"):
+		return "GuardCalleeProto"
+	default:
+		return ""
 	}
 }
 

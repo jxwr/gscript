@@ -278,6 +278,33 @@ func TestExitProfileUsesActiveSpeculationProfileForRefresh(t *testing.T) {
 	}
 }
 
+func TestExitProfileMarksSuppressedGuardExit(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "guard_exit", Code: make([]uint32, 4)}
+	proto.EnsureFeedback()
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       1,
+			GuardCount: 1,
+		},
+		ExitSites: map[int]ExitSiteMeta{
+			9: {PC: 3, Op: "GuardTableKind", Reason: "GuardTableKind(2)"},
+		},
+	}
+	tm.suppressTier2GuardKind(proto, 3, "GuardTableKind")
+
+	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitDeopt, DeoptInstrID: 9})
+	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitDeopt, DeoptInstrID: 9})
+	snap := tm.exitProfile.snapshot()
+	if len(snap.Sites) != 1 || !snap.Sites[0].SuppressedGuard {
+		t.Fatalf("suppressed guard exit not marked: %+v", snap)
+	}
+	if _, ok := tm.recompileQueue.take(proto); ok {
+		t.Fatal("suppressed guard exit should not queue recompile")
+	}
+}
+
 func TestPromotionPolicyForcesTier2ForQueuedFeedbackRefresh(t *testing.T) {
 	proto := &vm.FuncProto{Name: "refresh"}
 	proto.CallCount = BaselineCompileThreshold

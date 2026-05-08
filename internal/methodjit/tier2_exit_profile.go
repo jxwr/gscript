@@ -29,6 +29,7 @@ type Tier2ExitProfileSite struct {
 	Count                uint64 `json:"count"`
 	VersionHash          string `json:"version_hash,omitempty"`
 	VersionGuards        int    `json:"version_guards,omitempty"`
+	SuppressedGuard      bool   `json:"suppressed_guard,omitempty"`
 	QueuedRecompile      bool   `json:"queued_recompile,omitempty"`
 	RefreshVersionHash   string `json:"refresh_version_hash,omitempty"`
 	RefreshVersionGuards int    `json:"refresh_version_guards,omitempty"`
@@ -106,6 +107,23 @@ func (c *tier2ExitProfileCollector) markQueued(proto *vm.FuncProto, current Tier
 			site.RefreshVersionHash = fmt.Sprintf("%x", current.Version.Hash)
 			site.RefreshVersionGuards = current.Version.GuardCount
 			site.RefreshGuardDelta = current.Version.GuardCount - site.VersionGuards
+		}
+	}
+}
+
+func (c *tier2ExitProfileCollector) markSuppressed(proto *vm.FuncProto, match Tier2ExitProfileSite) {
+	if c == nil || proto == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, site := range c.sites {
+		if key.Proto == proto &&
+			site.PC == match.PC &&
+			site.ExitCode == match.ExitCode &&
+			site.OpID == match.OpID &&
+			site.Reason == match.Reason {
+			site.SuppressedGuard = true
 		}
 	}
 }
