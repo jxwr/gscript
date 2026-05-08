@@ -25,22 +25,24 @@ type jitStatsReporter interface {
 	PrintTier2PerfStats(w *os.File)
 	PrintTier2PerfStatsJSON(w *os.File) error
 	PrintTier2SpeculationStateJSON(w *os.File) error
+	PrintTier2SpeculationWorklistJSON(w *os.File) error
 	Close() error
 }
 
 type jitCLIOptions struct {
-	TimelinePath           string
-	TimelineFormat         string
-	WarmDumpDir            string
-	WarmDumpProto          string
-	ShowExitStats          bool
-	ShowExitStatsJSON      bool
-	ShowTier2PerfStats     bool
-	ShowTier2PerfStatsJSON bool
-	ShowTier2SpecStateJSON bool
-	ShowCoroutineStats     bool
-	ShowPathStats          bool
-	ShowPathStatsJSON      bool
+	TimelinePath              string
+	TimelineFormat            string
+	WarmDumpDir               string
+	WarmDumpProto             string
+	ShowExitStats             bool
+	ShowExitStatsJSON         bool
+	ShowTier2PerfStats        bool
+	ShowTier2PerfStatsJSON    bool
+	ShowTier2SpecStateJSON    bool
+	ShowTier2SpecWorklistJSON bool
+	ShowCoroutineStats        bool
+	ShowPathStats             bool
+	ShowPathStatsJSON         bool
 }
 
 type jitWarmDumpController interface {
@@ -73,6 +75,7 @@ func main() {
 	tier2PerfStats := flag.Bool("tier2-perf-stats", false, "print opt-in Tier 2 protocol/timing diagnostics after execution")
 	tier2PerfStatsJSON := flag.Bool("tier2-perf-stats-json", false, "print opt-in Tier 2 protocol/timing diagnostics as JSON after execution")
 	tier2SpecStateJSON := flag.Bool("tier2-spec-state-json", false, "print Tier 2 specialization/version state as JSON after execution")
+	tier2SpecWorklistJSON := flag.Bool("tier2-spec-worklist-json", false, "print prioritized Tier 2 self-driving worklist as JSON after execution")
 	coroutineStats := flag.Bool("coroutine-stats", false, "print VM coroutine runtime statistics after execution")
 	pathStats := flag.Bool("runtime-path-stats", false, "print runtime path counters after execution")
 	pathStatsJSON := flag.Bool("runtime-path-stats-json", false, "print runtime path counters as JSON after execution")
@@ -156,18 +159,19 @@ func main() {
 
 	if *useVM {
 		if err := runFileVM(interp, filename, *useJIT, *jitStats, jitCLIOptions{
-			TimelinePath:           *jitTimeline,
-			TimelineFormat:         *jitTimelineFormat,
-			WarmDumpDir:            *jitDumpWarm,
-			WarmDumpProto:          *jitDumpProto,
-			ShowExitStats:          *exitStats,
-			ShowExitStatsJSON:      *exitStatsJSON,
-			ShowTier2PerfStats:     *tier2PerfStats,
-			ShowTier2PerfStatsJSON: *tier2PerfStatsJSON,
-			ShowTier2SpecStateJSON: *tier2SpecStateJSON,
-			ShowCoroutineStats:     *coroutineStats,
-			ShowPathStats:          *pathStats,
-			ShowPathStatsJSON:      *pathStatsJSON,
+			TimelinePath:              *jitTimeline,
+			TimelineFormat:            *jitTimelineFormat,
+			WarmDumpDir:               *jitDumpWarm,
+			WarmDumpProto:             *jitDumpProto,
+			ShowExitStats:             *exitStats,
+			ShowExitStatsJSON:         *exitStatsJSON,
+			ShowTier2PerfStats:        *tier2PerfStats,
+			ShowTier2PerfStatsJSON:    *tier2PerfStatsJSON,
+			ShowTier2SpecStateJSON:    *tier2SpecStateJSON,
+			ShowTier2SpecWorklistJSON: *tier2SpecWorklistJSON,
+			ShowCoroutineStats:        *coroutineStats,
+			ShowPathStats:             *pathStats,
+			ShowPathStatsJSON:         *pathStatsJSON,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", filename, err)
 			os.Exit(1)
@@ -312,6 +316,13 @@ func runStringVMWithSource(interp *runtime.Interpreter, src, sourceName string, 
 	if jitOpts.ShowTier2SpecStateJSON {
 		if reporter != nil {
 			statsErr = reporter.PrintTier2SpeculationStateJSON(os.Stderr)
+		} else {
+			fmt.Fprintln(os.Stderr, `{"error":"JIT disabled or unavailable on this platform"}`)
+		}
+	}
+	if jitOpts.ShowTier2SpecWorklistJSON {
+		if reporter != nil {
+			statsErr = reporter.PrintTier2SpeculationWorklistJSON(os.Stderr)
 		} else {
 			fmt.Fprintln(os.Stderr, `{"error":"JIT disabled or unavailable on this platform"}`)
 		}

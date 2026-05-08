@@ -34,6 +34,21 @@ type Tier2SpeculationState struct {
 	NextPriority         int                    `json:"next_priority,omitempty"`
 }
 
+type Tier2SpeculationWorkItem struct {
+	Rank          int                    `json:"rank"`
+	ProtoName     string                 `json:"proto_name"`
+	ProtoID       string                 `json:"proto_id"`
+	Action        Tier2SpeculationAction `json:"action"`
+	Target        Tier2SpeculationTarget `json:"target,omitempty"`
+	Priority      int                    `json:"priority"`
+	Reason        string                 `json:"reason,omitempty"`
+	ExitCount     uint64                 `json:"exit_count,omitempty"`
+	TopExitName   string                 `json:"top_exit_name,omitempty"`
+	TopExitReason string                 `json:"top_exit_reason,omitempty"`
+	TopExitPC     int                    `json:"top_exit_pc,omitempty"`
+	TopExitCount  uint64                 `json:"top_exit_count,omitempty"`
+}
+
 type Tier2SpeculationAction string
 
 const (
@@ -140,6 +155,48 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 	return out
 }
 
+func (tm *TieringManager) Tier2SpeculationWorklistSnapshot() []Tier2SpeculationWorkItem {
+	states := tm.Tier2SpeculationStateSnapshot()
+	items := make([]Tier2SpeculationWorkItem, 0, len(states))
+	for _, state := range states {
+		if state.NextPriority <= 0 || state.NextAction == Tier2SpecActionMonitor {
+			continue
+		}
+		items = append(items, Tier2SpeculationWorkItem{
+			ProtoName:     state.ProtoName,
+			ProtoID:       state.ProtoID,
+			Action:        state.NextAction,
+			Target:        state.NextTarget,
+			Priority:      state.NextPriority,
+			Reason:        tier2SpeculationWorkReason(state),
+			ExitCount:     state.ExitCount,
+			TopExitName:   state.TopExitName,
+			TopExitReason: state.TopExitReason,
+			TopExitPC:     state.TopExitPC,
+			TopExitCount:  state.TopExitCount,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Priority != items[j].Priority {
+			return items[i].Priority > items[j].Priority
+		}
+		if items[i].TopExitCount != items[j].TopExitCount {
+			return items[i].TopExitCount > items[j].TopExitCount
+		}
+		if items[i].ExitCount != items[j].ExitCount {
+			return items[i].ExitCount > items[j].ExitCount
+		}
+		if items[i].ProtoName == items[j].ProtoName {
+			return items[i].ProtoID < items[j].ProtoID
+		}
+		return items[i].ProtoName < items[j].ProtoName
+	})
+	for i := range items {
+		items[i].Rank = i + 1
+	}
+	return items
+}
+
 func tier2SpeculationNextAction(state Tier2SpeculationState) Tier2SpeculationAction {
 	switch {
 	case state.Failed:
@@ -227,5 +284,28 @@ func tier2SpeculationTargetPriority(target Tier2SpeculationTarget) int {
 		return 50
 	default:
 		return 0
+	}
+}
+
+func tier2SpeculationWorkReason(state Tier2SpeculationState) string {
+	switch state.NextAction {
+	case Tier2SpecActionRefreshQueued:
+		return "queued Tier2 refresh exits are ready to recompile with newer feedback"
+	case Tier2SpecActionInspectHotExit:
+		if state.NextTarget != Tier2SpecTargetNone {
+			return fmt.Sprintf("dominant hot exit maps to %s", state.NextTarget)
+		}
+		return "dominant hot exit needs classification"
+	case Tier2SpecActionGuardRelaxed:
+		return "guards have been relaxed after deopt feedback"
+	case Tier2SpecActionSuppressedGuardResidual:
+		return "remaining exits are residual cost from suppressed guards"
+	case Tier2SpecActionTier2Failed:
+		if state.FailReason != "" {
+			return state.FailReason
+		}
+		return "Tier2 compilation failed"
+	default:
+		return ""
 	}
 }

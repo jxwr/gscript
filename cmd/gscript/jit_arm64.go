@@ -180,3 +180,12 @@ func (r *tieringManagerReporter) PrintTier2SpeculationStateJSON(w *os.File) erro
 	enc.SetIndent("", "  ")
 	return enc.Encode(r.tm.Tier2SpeculationStateSnapshot())
 }
+
+func (r *tieringManagerReporter) PrintTier2SpeculationWorklistJSON(w *os.File) error {
+	if r == nil || r.tm == nil {
+		return nil
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(r.tm.Tier2SpeculationWorklistSnapshot())
+}

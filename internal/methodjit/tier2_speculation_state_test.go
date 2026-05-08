@@ -122,6 +122,46 @@ func TestTier2SpeculationNextPriorityCombinesActionAndTarget(t *testing.T) {
 	}
 }
 
+func TestTier2SpeculationWorklistSnapshotRanksActionableStates(t *testing.T) {
+	tm := NewTieringManager()
+	tableProto := &vm.FuncProto{Name: "table_hot"}
+	guardProto := &vm.FuncProto{Name: "guard_hot"}
+	monitorProto := &vm.FuncProto{Name: "monitor_only"}
+
+	tableCF := &CompiledFunction{
+		SpecializationVersion: Tier2SpecializationVersion{Hash: 0x11, GuardCount: 1},
+		ExitSites: map[int]ExitSiteMeta{
+			7: {PC: 12, Op: "SetField", Reason: "SetField"},
+		},
+	}
+	guardCF := &CompiledFunction{
+		SpecializationVersion: Tier2SpecializationVersion{Hash: 0x22, GuardCount: 1},
+		ExitSites: map[int]ExitSiteMeta{
+			9: {PC: 19, Op: "GuardTableKind", Reason: "GuardTableKind(2)"},
+		},
+	}
+	monitorCF := &CompiledFunction{
+		SpecializationVersion: Tier2SpecializationVersion{Hash: 0x33, GuardCount: 1},
+	}
+	tm.ensureTierStateStore()
+	tm.tierState.markCompiled(tableProto, tableCF)
+	tm.tierState.markCompiled(guardProto, guardCF)
+	tm.tierState.markCompiled(monitorProto, monitorCF)
+	tm.recordTier2Exit(tableProto, tableCF, &ExecContext{ExitCode: ExitTableExit, TableExitID: 7, TableOp: TableOpSetField})
+	tm.recordTier2Exit(guardProto, guardCF, &ExecContext{ExitCode: ExitDeopt, DeoptInstrID: 9})
+
+	worklist := tm.Tier2SpeculationWorklistSnapshot()
+	if len(worklist) != 2 {
+		t.Fatalf("worklist len=%d want 2: %+v", len(worklist), worklist)
+	}
+	if worklist[0].Rank != 1 || worklist[0].ProtoName != "table_hot" || worklist[0].Target != Tier2SpecTargetTableFieldExit || worklist[0].Priority != 90 {
+		t.Fatalf("first work item mismatch: %+v", worklist[0])
+	}
+	if worklist[1].Rank != 2 || worklist[1].ProtoName != "guard_hot" || worklist[1].Target != Tier2SpecTargetGuardPolicy || worklist[1].Priority != 80 {
+		t.Fatalf("second work item mismatch: %+v", worklist[1])
+	}
+}
+
 func findSpecState(t *testing.T, states []Tier2SpeculationState, name string) Tier2SpeculationState {
 	t.Helper()
 	for _, state := range states {
