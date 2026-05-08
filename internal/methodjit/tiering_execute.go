@@ -145,7 +145,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			return runtime.ReuseValueSlice1(retBuf, result), nil
 
 		case ExitDeopt:
-			deoptAction := Tier2DeoptPolicy{}.DecideRuntimeDeopt(proto, cf, int(ctx.ExitResumePC))
+			deoptAction := Tier2DeoptPolicy{}.DecideRuntimeDeoptWithProfile(cf, int(ctx.ExitResumePC), tm.currentTier2SpeculationProfile(proto))
 			if guardAction, ok := tm.guardDeoptRefreshAction(proto, cf, ctx); ok {
 				deoptAction = guardAction
 			}
@@ -401,7 +401,7 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 		Reason:         decision.Reason,
 		PreciseResume:  int(ctx.ExitResumePC) > 0,
 		ResumePC:       int(ctx.ExitResumePC),
-		CurrentProfile: BuildTier2SpecializationProfile(proto),
+		CurrentProfile: tm.currentTier2SpeculationProfile(proto),
 		GuardRelaxedPC: meta.PC,
 		GuardRelaxedOp: meta.Op,
 		GuardFailCount: failCount,

@@ -230,6 +230,17 @@ func (tm *TieringManager) tier2GuardFailureKinds(proto *vm.FuncProto) map[string
 	return out
 }
 
+func (tm *TieringManager) currentTier2SpeculationProfile(proto *vm.FuncProto) Tier2SpecializationProfile {
+	if tm == nil {
+		return BuildTier2SpecializationProfile(proto)
+	}
+	return NewTier2SpeculationPlanWithSuppressedGuardKinds(
+		proto,
+		tm.tier2SuppressedGuards(proto),
+		tm.tier2SuppressedGuardKinds(proto),
+	).Profile
+}
+
 // SetTier2Threshold sets the call count threshold for Tier 2 promotion.
 // Only affects future compilations.
 func (tm *TieringManager) SetTier2Threshold(n int) {
@@ -276,7 +287,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 	}
 	profile := tm.getProfile(proto)
 	compiled, _ := tm.tier2CompiledFor(proto)
-	specProfile := BuildTier2SpecializationProfile(proto)
+	specProfile := tm.currentTier2SpeculationProfile(proto)
 	if compiled != nil && tm.recompile.ShouldRefreshProfile(compiled, specProfile) {
 		compiled = nil
 	}
@@ -308,7 +319,7 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 	if tm.getProfile(proto).HasLoop {
 		return
 	}
-	current := BuildTier2SpecializationProfile(proto)
+	current := tm.currentTier2SpeculationProfile(proto)
 	if !tm.recompile.ShouldRefreshProfile(cf, current) {
 		return
 	}

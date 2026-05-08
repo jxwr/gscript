@@ -167,7 +167,7 @@ func (tm *TieringManager) markTier2Compiled(proto *vm.FuncProto, cf *CompiledFun
 	if tm == nil || proto == nil || cf == nil {
 		return
 	}
-	profile := BuildTier2SpecializationProfile(proto)
+	profile := tm.currentTier2SpeculationProfile(proto)
 	cf.SpeculationSnapshot = profile.Snapshot
 	if cf.SpecializationVersion.Hash == 0 {
 		cf.SpecializationVersion = profile.Version

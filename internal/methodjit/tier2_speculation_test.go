@@ -391,6 +391,24 @@ func TestTier2DeoptPolicyClassifiesMaturedFeedbackRefresh(t *testing.T) {
 	}
 }
 
+func TestTier2DeoptPolicyUsesProvidedActiveProfile(t *testing.T) {
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       1,
+			GuardCount: 0,
+		},
+	}
+	active := Tier2SpecializationProfile{
+		Snapshot: Tier2FeedbackSnapshot{TypeObserved: 1},
+		Version:  Tier2SpecializationVersion{Hash: 1, GuardCount: 0},
+	}
+	action := Tier2DeoptPolicy{}.DecideRuntimeDeoptWithProfile(cf, 0, active)
+	if action.Kind != Tier2DeoptDisableAndFallback {
+		t.Fatalf("action=%s want disable when active profile has no refreshable delta", action.Kind)
+	}
+}
+
 func TestTieringManagerRefreshDeoptDoesNotMarkTier2Failed(t *testing.T) {
 	tm := NewTieringManager()
 	proto := &vm.FuncProto{Name: "refresh", Code: make([]uint32, 2)}

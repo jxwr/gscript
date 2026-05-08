@@ -26,6 +26,10 @@ type Tier2DeoptPolicy struct{}
 
 func (Tier2DeoptPolicy) DecideRuntimeDeopt(proto *vm.FuncProto, cf *CompiledFunction, resumePC int) Tier2DeoptAction {
 	current := BuildTier2SpecializationProfile(proto)
+	return Tier2DeoptPolicy{}.DecideRuntimeDeoptWithProfile(cf, resumePC, current)
+}
+
+func (Tier2DeoptPolicy) DecideRuntimeDeoptWithProfile(cf *CompiledFunction, resumePC int, current Tier2SpecializationProfile) Tier2DeoptAction {
 	action := Tier2DeoptAction{
 		Kind:           Tier2DeoptDisableAndFallback,
 		Reason:         "tier2: runtime deopt",

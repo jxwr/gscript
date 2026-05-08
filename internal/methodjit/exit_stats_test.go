@@ -254,6 +254,30 @@ func TestExitProfileQueuesRecompileWhenFeedbackMatures(t *testing.T) {
 	}
 }
 
+func TestExitProfileUsesActiveSpeculationProfileForRefresh(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "suppressed_hot", Code: make([]uint32, 4)}
+	proto.EnsureFeedback()
+	proto.Feedback[3].Result = vm.FBInt
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{},
+		SpecializationVersion: Tier2SpecializationVersion{
+			Hash:       1,
+			GuardCount: 0,
+		},
+		ExitSites: map[int]ExitSiteMeta{
+			9: {PC: 3, Op: "GetTable", Reason: "GetTable"},
+		},
+	}
+	tm.suppressTier2GuardKind(proto, 3, "GuardType")
+
+	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitTableExit, TableExitID: 9, TableOp: TableOpGetTable})
+	tm.recordTier2Exit(proto, cf, &ExecContext{ExitCode: ExitTableExit, TableExitID: 9, TableOp: TableOpGetTable})
+	if _, ok := tm.recompileQueue.take(proto); ok {
+		t.Fatal("suppressed guard should not queue refresh through inactive profile")
+	}
+}
+
 func TestPromotionPolicyForcesTier2ForQueuedFeedbackRefresh(t *testing.T) {
 	proto := &vm.FuncProto{Name: "refresh"}
 	proto.CallCount = BaselineCompileThreshold

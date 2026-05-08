@@ -125,7 +125,7 @@ func (tm *TieringManager) recordTier2ExitProfile(proto *vm.FuncProto, cf *Compil
 	if !ok || site.Count != tier2RecompileQueueMinExitCount {
 		return
 	}
-	current := BuildTier2SpecializationProfile(proto)
+	current := tm.currentTier2SpeculationProfile(proto)
 	if !tm.recompile.ShouldRefreshProfile(cf, current) {
 		return
 	}
