@@ -12,6 +12,13 @@ from pathlib import Path
 import regression_guard as guard
 
 
+def suite_lua_refs(root: Path) -> list[str]:
+    suite_dir = root / "benchmarks" / "suite"
+    ordered = [name for name in guard.DEFAULT_BENCHMARKS if (suite_dir / f"{name}.gs").exists()]
+    extras = sorted(path.stem for path in suite_dir.glob("*.gs") if path.stem not in set(ordered))
+    return ordered + extras
+
+
 def validate_ref(root: Path, lua_bin: str, name: str, timeout: int) -> tuple[str, str]:
     lua_file = root / "benchmarks" / "lua" / f"{name}.lua"
     if not lua_file.exists():
@@ -42,7 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(__file__).resolve().parents[1]
     failures: list[tuple[str, str]] = []
 
-    for name in guard.DEFAULT_BENCHMARKS:
+    refs = suite_lua_refs(root)
+    for name in refs:
         try:
             status, message = validate_ref(root, args.lua_bin, name, args.timeout)
         except subprocess.TimeoutExpired:
@@ -61,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Lua reference validation failed: {summary}", file=sys.stderr)
         return 1
 
-    print(f"Validated {len(guard.DEFAULT_BENCHMARKS)} Lua references.")
+    print(f"Validated {len(refs)} Lua references.")
     return 0
 
 

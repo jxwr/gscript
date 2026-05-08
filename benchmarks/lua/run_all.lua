@@ -25,6 +25,12 @@ local benchmarks = {
     "fibonacci_iterative",
     "math_intensive",
     "object_creation",
+    "matmul_dense",
+    "matmul_dense_split2",
+    "matmul_dense_tb",
+    "matmul_dense_unroll2",
+    "nbody_dense",
+    "spectral_norm_dense",
 }
 
 -- Determine directory of this script
