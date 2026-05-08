@@ -20,6 +20,13 @@ func TestRuntimePathStatsTableAndStringCounters(t *testing.T) {
 	if _, err := stringFormatValue([]Value{StringValue("%.2e"), FloatValue(1.25)}); err != nil {
 		t.Fatalf("fallback stringFormatValue: %v", err)
 	}
+	cache := make([]TableStringKeyCacheEntry, TableStringKeyCacheWays)
+	dyn := NewTable()
+	dyn.RawSetStringDynamicCached("name", StringValue("alpha"), cache)
+	_ = dyn.RawGetStringDynamicCached("name", cache)
+	_ = dyn.RawGetStringDynamicCached("missing", cache)
+	_ = ConcatValues([]Value{StringValue("a"), StringValue("b")})
+	_ = ConcatValues([]Value{StringValue("a"), IntValue(1), StringValue("b")})
 
 	snap := stats.Snapshot()
 	if snap.TableArray.SetHot == 0 {
@@ -39,6 +46,21 @@ func TestRuntimePathStatsTableAndStringCounters(t *testing.T) {
 	}
 	if snap.StringFormat.Fallback == 0 {
 		t.Fatalf("StringFormat.Fallback = 0, want non-zero")
+	}
+	if snap.TableString.SetAppend == 0 {
+		t.Fatalf("TableString.SetAppend = 0, want non-zero")
+	}
+	if snap.TableString.GetCacheHit == 0 {
+		t.Fatalf("TableString.GetCacheHit = 0, want non-zero")
+	}
+	if snap.TableString.GetMiss == 0 {
+		t.Fatalf("TableString.GetMiss = 0, want non-zero")
+	}
+	if snap.StringConcat.Lazy == 0 {
+		t.Fatalf("StringConcat.Lazy = 0, want non-zero")
+	}
+	if snap.StringConcat.Builder == 0 {
+		t.Fatalf("StringConcat.Builder = 0, want non-zero")
 	}
 }
 

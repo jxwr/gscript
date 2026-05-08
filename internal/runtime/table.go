@@ -1072,23 +1072,28 @@ func (t *Table) RawGetStringDynamicCached(key string, cache []TableStringKeyCach
 	}
 	data, keyLen := stringCacheKey(key)
 	if idx, ok := t.lookupDynamicStringCacheLocked(data, keyLen, cache); ok {
+		RecordRuntimePathTableStringGetCacheHit()
 		return t.svals[idx]
 	}
 	for i, k := range t.skeys {
 		if k == key {
 			t.rememberDynamicStringCacheLocked(key, data, keyLen, i, cache)
+			RecordRuntimePathTableStringGetScanHit()
 			return t.svals[i]
 		}
 	}
 	if t.smap != nil {
 		if v, ok := t.lookupStringMapValueCacheLocked(key, data, keyLen); ok {
+			RecordRuntimePathTableStringGetMapHit()
 			return v
 		}
 		if v, ok := t.smap[key]; ok {
 			t.rememberStringMapValueCacheLocked(key, data, keyLen, v)
+			RecordRuntimePathTableStringGetMapHit()
 			return v
 		}
 	}
+	RecordRuntimePathTableStringGetMiss()
 	return NilValue()
 }
 
@@ -1213,6 +1218,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 	if !valIsNil {
 		if idx, ok := t.lookupDynamicStringCacheLocked(data, keyLen, cache); ok {
 			t.svals[idx] = val
+			RecordRuntimePathTableStringSetCacheHit()
 			return
 		}
 	}
@@ -1225,6 +1231,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 				t.svals[i] = val
 				t.rememberDynamicStringCacheLocked(key, data, keyLen, i, cache)
 			}
+			RecordRuntimePathTableStringSetScanHit()
 			return
 		}
 	}
@@ -1237,6 +1244,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			t.smap[key] = val
 			t.rememberStringMapValueCacheLocked(key, data, keyLen, val)
 		}
+		RecordRuntimePathTableStringSetMap()
 		return
 	}
 
@@ -1245,6 +1253,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			idx := len(t.svals)
 			t.appendSmallStringField(key, val)
 			t.rememberDynamicStringCacheLocked(key, data, keyLen, idx, cache)
+			RecordRuntimePathTableStringSetAppend()
 		} else {
 			t.bumpStringLookupVersionLocked()
 			t.smap = make(map[string]Value, initialStringMapCap)
@@ -1255,6 +1264,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			t.skeys = nil
 			t.svals = nil
 			t.setShape(nil)
+			RecordRuntimePathTableStringSetPromote()
 		}
 	}
 }

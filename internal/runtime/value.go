@@ -600,13 +600,17 @@ func StringLen(v Value) int {
 func ConcatValues(values []Value) Value {
 	switch len(values) {
 	case 0:
+		RecordRuntimePathStringConcatBuilder()
 		return StringValue("")
 	case 1:
+		RecordRuntimePathStringConcatBuilder()
 		return StringValue(values[0].String())
 	case 2:
 		if canNativeConcat(values[0]) && canNativeConcat(values[1]) {
+			RecordRuntimePathStringConcatLazy()
 			return LazyStringValue(values[0], values[1])
 		}
+		RecordRuntimePathStringConcatBuilder()
 		left := concatString(values[0])
 		right := concatString(values[1])
 		var b strings.Builder
@@ -616,6 +620,7 @@ func ConcatValues(values []Value) Value {
 		return StringValue(b.String())
 	}
 
+	RecordRuntimePathStringConcatBuilder()
 	var local [8]string
 	parts := local[:0]
 	if len(values) > len(local) {

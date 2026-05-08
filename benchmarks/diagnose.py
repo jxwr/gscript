@@ -204,7 +204,9 @@ def summarize_runtime_paths(data: Any) -> dict[str, Any]:
     native = data.get("native_call") if isinstance(data.get("native_call"), dict) else {}
     coro = data.get("coroutine") if isinstance(data.get("coroutine"), dict) else {}
     table = data.get("table_array") if isinstance(data.get("table_array"), dict) else {}
+    table_string = data.get("table_string") if isinstance(data.get("table_string"), dict) else {}
     string_format = data.get("string_format") if isinstance(data.get("string_format"), dict) else {}
+    string_concat = data.get("string_concat") if isinstance(data.get("string_concat"), dict) else {}
     return {
         "native_fast": native.get("fast", 0),
         "native_fallback": native.get("fallback", 0),
@@ -214,8 +216,19 @@ def summarize_runtime_paths(data: Any) -> dict[str, Any]:
         "table_array_get_fallback": table.get("get_fallback", 0),
         "table_array_set_hot": table.get("set_hot", 0),
         "table_array_set_fallback": table.get("set_fallback", 0),
+        "table_string_get_cache_hit": table_string.get("get_cache_hit", 0),
+        "table_string_get_scan_hit": table_string.get("get_scan_hit", 0),
+        "table_string_get_map_hit": table_string.get("get_map_hit", 0),
+        "table_string_get_miss": table_string.get("get_miss", 0),
+        "table_string_set_cache_hit": table_string.get("set_cache_hit", 0),
+        "table_string_set_scan_hit": table_string.get("set_scan_hit", 0),
+        "table_string_set_append": table_string.get("set_append", 0),
+        "table_string_set_map": table_string.get("set_map", 0),
+        "table_string_set_promote": table_string.get("set_promote", 0),
         "string_format_fast": string_format.get("fast", 0),
         "string_format_fallback": string_format.get("fallback", 0),
+        "string_concat_lazy": string_concat.get("lazy", 0),
+        "string_concat_builder": string_concat.get("builder", 0),
     }
 
 
@@ -452,7 +465,16 @@ def render_summary(rows: list[DiagnosticRow]) -> str:
             "coroutine_yield",
             "table_array_get_hot",
             "table_array_set_hot",
+            "table_string_get_cache_hit",
+            "table_string_get_scan_hit",
+            "table_string_get_map_hit",
+            "table_string_get_miss",
+            "table_string_set_append",
+            "table_string_set_map",
+            "table_string_set_promote",
             "string_format_fast",
+            "string_concat_lazy",
+            "string_concat_builder",
         ):
             value = row.runtime_summary.get(key)
             if value:

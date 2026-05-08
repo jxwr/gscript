@@ -27,8 +27,20 @@ type RuntimePathStats struct {
 	tableArraySetHot      atomic.Uint64
 	tableArraySetFallback atomic.Uint64
 
+	tableStringGetCacheHit atomic.Uint64
+	tableStringGetScanHit  atomic.Uint64
+	tableStringGetMapHit   atomic.Uint64
+	tableStringGetMiss     atomic.Uint64
+	tableStringSetCacheHit atomic.Uint64
+	tableStringSetScanHit  atomic.Uint64
+	tableStringSetAppend   atomic.Uint64
+	tableStringSetMap      atomic.Uint64
+	tableStringSetPromote  atomic.Uint64
+
 	stringFormatFast     atomic.Uint64
 	stringFormatFallback atomic.Uint64
+	stringConcatLazy     atomic.Uint64
+	stringConcatBuilder  atomic.Uint64
 
 	structuralKernelHit sync.Map
 
@@ -50,7 +62,9 @@ type RuntimePathStatsSnapshot struct {
 	NativeCall       RuntimePathNativeCallStats       `json:"native_call"`
 	Coroutine        RuntimePathCoroutineStats        `json:"coroutine"`
 	TableArray       RuntimePathTableArrayStats       `json:"table_array"`
+	TableString      RuntimePathTableStringStats      `json:"table_string"`
 	StringFormat     RuntimePathStringStats           `json:"string_format"`
+	StringConcat     RuntimePathStringConcatStats     `json:"string_concat"`
 	StructuralKernel RuntimePathStructuralKernelStats `json:"structural_kernel"`
 }
 
@@ -83,9 +97,26 @@ type RuntimePathTableArrayStats struct {
 	SetFallback uint64 `json:"set_fallback"`
 }
 
+type RuntimePathTableStringStats struct {
+	GetCacheHit uint64 `json:"get_cache_hit"`
+	GetScanHit  uint64 `json:"get_scan_hit"`
+	GetMapHit   uint64 `json:"get_map_hit"`
+	GetMiss     uint64 `json:"get_miss"`
+	SetCacheHit uint64 `json:"set_cache_hit"`
+	SetScanHit  uint64 `json:"set_scan_hit"`
+	SetAppend   uint64 `json:"set_append"`
+	SetMap      uint64 `json:"set_map"`
+	SetPromote  uint64 `json:"set_promote"`
+}
+
 type RuntimePathStringStats struct {
 	Fast     uint64 `json:"fast"`
 	Fallback uint64 `json:"fallback"`
+}
+
+type RuntimePathStringConcatStats struct {
+	Lazy    uint64 `json:"lazy"`
+	Builder uint64 `json:"builder"`
 }
 
 type RuntimePathStructuralKernelStats struct {
@@ -150,9 +181,24 @@ func (s *RuntimePathStats) Snapshot() RuntimePathStatsSnapshot {
 			SetHot:      s.tableArraySetHot.Load(),
 			SetFallback: s.tableArraySetFallback.Load(),
 		},
+		TableString: RuntimePathTableStringStats{
+			GetCacheHit: s.tableStringGetCacheHit.Load(),
+			GetScanHit:  s.tableStringGetScanHit.Load(),
+			GetMapHit:   s.tableStringGetMapHit.Load(),
+			GetMiss:     s.tableStringGetMiss.Load(),
+			SetCacheHit: s.tableStringSetCacheHit.Load(),
+			SetScanHit:  s.tableStringSetScanHit.Load(),
+			SetAppend:   s.tableStringSetAppend.Load(),
+			SetMap:      s.tableStringSetMap.Load(),
+			SetPromote:  s.tableStringSetPromote.Load(),
+		},
 		StringFormat: RuntimePathStringStats{
 			Fast:     s.stringFormatFast.Load(),
 			Fallback: s.stringFormatFallback.Load(),
+		},
+		StringConcat: RuntimePathStringConcatStats{
+			Lazy:    s.stringConcatLazy.Load(),
+			Builder: s.stringConcatBuilder.Load(),
 		},
 		StructuralKernel: s.snapshotStructuralKernels(),
 	}
@@ -181,9 +227,22 @@ func (s *RuntimePathStats) WriteText(w io.Writer) {
 	fmt.Fprintf(w, "    get_fallback: %d\n", snap.TableArray.GetFallback)
 	fmt.Fprintf(w, "    set_hot: %d\n", snap.TableArray.SetHot)
 	fmt.Fprintf(w, "    set_fallback: %d\n", snap.TableArray.SetFallback)
+	fmt.Fprintln(w, "  table_string:")
+	fmt.Fprintf(w, "    get_cache_hit: %d\n", snap.TableString.GetCacheHit)
+	fmt.Fprintf(w, "    get_scan_hit: %d\n", snap.TableString.GetScanHit)
+	fmt.Fprintf(w, "    get_map_hit: %d\n", snap.TableString.GetMapHit)
+	fmt.Fprintf(w, "    get_miss: %d\n", snap.TableString.GetMiss)
+	fmt.Fprintf(w, "    set_cache_hit: %d\n", snap.TableString.SetCacheHit)
+	fmt.Fprintf(w, "    set_scan_hit: %d\n", snap.TableString.SetScanHit)
+	fmt.Fprintf(w, "    set_append: %d\n", snap.TableString.SetAppend)
+	fmt.Fprintf(w, "    set_map: %d\n", snap.TableString.SetMap)
+	fmt.Fprintf(w, "    set_promote: %d\n", snap.TableString.SetPromote)
 	fmt.Fprintln(w, "  string_format:")
 	fmt.Fprintf(w, "    fast: %d\n", snap.StringFormat.Fast)
 	fmt.Fprintf(w, "    fallback: %d\n", snap.StringFormat.Fallback)
+	fmt.Fprintln(w, "  string_concat:")
+	fmt.Fprintf(w, "    lazy: %d\n", snap.StringConcat.Lazy)
+	fmt.Fprintf(w, "    builder: %d\n", snap.StringConcat.Builder)
 	fmt.Fprintln(w, "  structural_kernel:")
 	fmt.Fprintf(w, "    total: %d\n", snap.StructuralKernel.Total)
 	if len(snap.StructuralKernel.PerKernel) > 0 {
@@ -341,6 +400,60 @@ func RecordRuntimePathTableArraySetFallback() {
 	}
 }
 
+func RecordRuntimePathTableStringGetCacheHit() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.tableStringGetCacheHit.Add(1)
+	}
+}
+
+func RecordRuntimePathTableStringGetScanHit() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.tableStringGetScanHit.Add(1)
+	}
+}
+
+func RecordRuntimePathTableStringGetMapHit() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.tableStringGetMapHit.Add(1)
+	}
+}
+
+func RecordRuntimePathTableStringGetMiss() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.tableStringGetMiss.Add(1)
+	}
+}
+
+func RecordRuntimePathTableStringSetCacheHit() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.tableStringSetCacheHit.Add(1)
+	}
+}
+
+func RecordRuntimePathTableStringSetScanHit() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.tableStringSetScanHit.Add(1)
+	}
+}
+
+func RecordRuntimePathTableStringSetAppend() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.tableStringSetAppend.Add(1)
+	}
+}
+
+func RecordRuntimePathTableStringSetMap() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.tableStringSetMap.Add(1)
+	}
+}
+
+func RecordRuntimePathTableStringSetPromote() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.tableStringSetPromote.Add(1)
+	}
+}
+
 func RecordRuntimePathStringFormatFast() {
 	if s := runtimePathStats.Load(); s != nil {
 		s.stringFormatFast.Add(1)
@@ -350,6 +463,18 @@ func RecordRuntimePathStringFormatFast() {
 func RecordRuntimePathStringFormatFallback() {
 	if s := runtimePathStats.Load(); s != nil {
 		s.stringFormatFallback.Add(1)
+	}
+}
+
+func RecordRuntimePathStringConcatLazy() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.stringConcatLazy.Add(1)
+	}
+}
+
+func RecordRuntimePathStringConcatBuilder() {
+	if s := runtimePathStats.Load(); s != nil {
+		s.stringConcatBuilder.Add(1)
 	}
 }
 
