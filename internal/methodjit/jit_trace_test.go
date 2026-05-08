@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/gscript/gscript/internal/vm"
 )
 
 func TestJITTimelineJSONL(t *testing.T) {
@@ -74,5 +76,39 @@ func TestNewJITTimelineRejectsUnknownFormat(t *testing.T) {
 	var buf bytes.Buffer
 	if _, err := NewJITTimeline(&buf, "yaml"); err == nil {
 		t.Fatal("expected unknown format error")
+	}
+}
+
+func TestTraceTier2SuccessIncludesSpecializationVersion(t *testing.T) {
+	var buf bytes.Buffer
+	timeline, err := NewJITTimeline(&buf, JITTimelineJSON)
+	if err != nil {
+		t.Fatalf("NewJITTimeline: %v", err)
+	}
+	tm := NewTieringManager()
+	tm.SetTimeline(timeline)
+	proto := &vm.FuncProto{Name: "hot"}
+	tm.suppressTier2Guard(proto, 7)
+	tm.traceTier2Success(proto, &CompiledFunction{
+		SpecializationVersion: Tier2SpecializationVersion{Hash: 0xabc, GuardCount: 3},
+		numRegs:               5,
+	}, 2)
+	if err := timeline.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	var events []JITTimelineEvent
+	if err := json.Unmarshal(buf.Bytes(), &events); err != nil {
+		t.Fatalf("unmarshal JSON events: %v\n%s", err, buf.String())
+	}
+	if len(events) != 1 {
+		t.Fatalf("events=%d want 1", len(events))
+	}
+	attrs := events[0].Attrs
+	if attrs["version_hash"] != "abc" || attrs["guard_count"].(float64) != 3 {
+		t.Fatalf("missing specialization attrs: %#v", attrs)
+	}
+	if attrs["suppressed_count"].(float64) != 1 {
+		t.Fatalf("missing suppressed count: %#v", attrs)
 	}
 }

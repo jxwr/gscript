@@ -117,6 +117,10 @@ func TestTier2SpeculationPlanSuppressesUnstableGuardPC(t *testing.T) {
 	if typ, ok := suppressed.ResultGuardType(1); !ok || typ != TypeInt {
 		t.Fatalf("unrelated ResultGuardType=%v ok=%v want int,true", typ, ok)
 	}
+	summary := suppressed.Summary()
+	if summary.SuppressedCount != 1 || len(summary.SuppressedPCs) != 1 || summary.SuppressedPCs[0] != 0 {
+		t.Fatalf("suppressed summary=%+v want one PC 0", summary)
+	}
 }
 
 func TestTier2SpeculationPlanRejectsConflictingSameFieldWriteTypes(t *testing.T) {

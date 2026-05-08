@@ -171,6 +171,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				"version_after":    fmt.Sprintf("%x", deoptAction.CurrentProfile.Version.Hash),
 				"guards_after":     deoptAction.CurrentProfile.Version.GuardCount,
 				"guard_relaxed_pc": deoptAction.GuardRelaxedPC,
+				"guard_relaxed_op": deoptAction.GuardRelaxedOp,
 			})
 			tm.applyTier2DeoptAction(proto, deoptAction)
 			if deoptAction.PreciseResume && tm.callVM != nil {
@@ -398,6 +399,7 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 		ResumePC:       int(ctx.ExitResumePC),
 		CurrentProfile: BuildTier2SpecializationProfile(proto),
 		GuardRelaxedPC: meta.PC,
+		GuardRelaxedOp: meta.Op,
 	}, true
 }
 
@@ -415,6 +417,7 @@ func (tm *TieringManager) applyTier2DeoptAction(proto *vm.FuncProto, action Tier
 			"version_after":    fmt.Sprintf("%x", action.CurrentProfile.Version.Hash),
 			"guards_after":     action.CurrentProfile.Version.GuardCount,
 			"guard_relaxed_pc": action.GuardRelaxedPC,
+			"guard_relaxed_op": action.GuardRelaxedOp,
 		})
 	default:
 		tm.disableTier2AfterRuntimeDeopt(proto, action.Reason)

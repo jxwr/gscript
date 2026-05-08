@@ -101,7 +101,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	speculation := NewTier2SpeculationPlanWithSuppressedGuards(proto, tm.tier2SuppressedGuards(proto))
 	var remarks *OptimizationRemarks
 	if trace != nil {
-		trace.Specialization = speculation.Profile.Summary()
+		trace.Specialization = speculation.Summary()
 		remarks = &OptimizationRemarks{}
 		defer func() {
 			trace.OptimizationRemarks = remarks.List()

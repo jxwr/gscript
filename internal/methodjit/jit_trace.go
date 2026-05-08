@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -154,10 +155,25 @@ func (tm *TieringManager) traceTier2Success(proto *vm.FuncProto, cf *CompiledFun
 		return
 	}
 	attrs := map[string]any{"attempt": attempt}
-	if cf != nil && cf.Code != nil {
-		attrs["code_bytes"] = cf.Code.Size()
+	if cf != nil {
 		attrs["num_regs"] = cf.numRegs
 		attrs["direct_entry"] = cf.DirectEntryOffset > 0
+		attrs["version_hash"] = fmt.Sprintf("%x", cf.SpecializationVersion.Hash)
+		attrs["guard_count"] = cf.SpecializationVersion.GuardCount
+		if cf.Code != nil {
+			attrs["code_bytes"] = cf.Code.Size()
+		}
+		if suppressed := tm.tier2SuppressedGuards(proto); len(suppressed) > 0 {
+			pcs := make([]int, 0, len(suppressed))
+			for pc, ok := range suppressed {
+				if ok {
+					pcs = append(pcs, pc)
+				}
+			}
+			sort.Ints(pcs)
+			attrs["suppressed_count"] = len(pcs)
+			attrs["suppressed_pcs"] = pcs
+		}
 	}
 	tm.traceEvent("tier2_success", "tier2", proto, attrs)
 }

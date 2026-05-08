@@ -3,6 +3,7 @@ package methodjit
 import (
 	"fmt"
 	"hash/fnv"
+	"sort"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/vm"
@@ -90,6 +91,8 @@ type Tier2SpecializationSummary struct {
 	VersionHash      string         `json:"version_hash"`
 	GuardCount       int            `json:"guard_count"`
 	GuardKinds       map[string]int `json:"guard_kinds,omitempty"`
+	SuppressedCount  int            `json:"suppressed_count,omitempty"`
+	SuppressedPCs    []int          `json:"suppressed_pcs,omitempty"`
 }
 
 func (p Tier2SpecializationProfile) Summary() Tier2SpecializationSummary {
@@ -106,6 +109,23 @@ func (p Tier2SpecializationProfile) Summary() Tier2SpecializationSummary {
 		GuardCount:       p.Version.GuardCount,
 		GuardKinds:       kinds,
 	}
+}
+
+func (p Tier2SpeculationPlan) Summary() Tier2SpecializationSummary {
+	summary := p.Profile.Summary()
+	if len(p.suppressedGuardPCs) == 0 {
+		return summary
+	}
+	pcs := make([]int, 0, len(p.suppressedGuardPCs))
+	for pc, ok := range p.suppressedGuardPCs {
+		if ok {
+			pcs = append(pcs, pc)
+		}
+	}
+	sort.Ints(pcs)
+	summary.SuppressedPCs = pcs
+	summary.SuppressedCount = len(pcs)
+	return summary
 }
 
 func (p Tier2SpecializationProfile) findGuard(pc int, kind SpecializationGuardKind, match func(SpecializationGuard) bool) (SpecializationGuard, bool) {
