@@ -517,6 +517,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = FieldLenFoldPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FieldLenFold: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	// R162 (Session 1 / B.5): escape analysis + scalar replacement.
 	// Must run AFTER LoadElim (so stored-value forwarding has already
 	// happened) and BEFORE DCE (so the OpNop'd alloc/field ops are

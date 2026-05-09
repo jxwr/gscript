@@ -1,0 +1,80 @@
+package methodjit
+
+import (
+	"testing"
+
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
+)
+
+func TestFieldLenFold_FoldsJoinConstStringStores(t *testing.T) {
+	proto := &vm.FuncProto{
+		Constants: []runtime.Value{
+			runtime.StringValue("busy"),
+			runtime.StringValue("idle"),
+		},
+	}
+	fn := &Function{Proto: proto}
+	b0 := &Block{ID: 0}
+	b1 := &Block{ID: 1}
+	b2 := &Block{ID: 2}
+	b3 := &Block{ID: 3}
+	b0.Succs = []*Block{b1, b2}
+	b1.Preds = []*Block{b0}
+	b2.Preds = []*Block{b0}
+	b1.Succs = []*Block{b3}
+	b2.Succs = []*Block{b3}
+	b3.Preds = []*Block{b1, b2}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2, b3}
+
+	tbl := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b0}
+	s0 := &Instr{ID: 2, Op: OpConstString, Type: TypeString, Aux: 0, Block: b1}
+	set0 := &Instr{ID: 3, Op: OpSetField, Args: []*Value{tbl.Value(), s0.Value()}, Aux: 7, Block: b1}
+	s1 := &Instr{ID: 4, Op: OpConstString, Type: TypeString, Aux: 1, Block: b2}
+	set1 := &Instr{ID: 5, Op: OpSetField, Args: []*Value{tbl.Value(), s1.Value()}, Aux: 7, Block: b2}
+	get := &Instr{ID: 6, Op: OpGetField, Type: TypeString, Args: []*Value{tbl.Value()}, Aux: 7, Block: b3}
+	ln := &Instr{ID: 7, Op: OpLen, Type: TypeInt, Args: []*Value{get.Value()}, Block: b3}
+	b0.Instrs = []*Instr{tbl, {Op: OpBranch, Block: b0}}
+	b1.Instrs = []*Instr{s0, set0, {Op: OpJump, Block: b1}}
+	b2.Instrs = []*Instr{s1, set1, {Op: OpJump, Block: b2}}
+	b3.Instrs = []*Instr{get, ln, {Op: OpReturn, Args: []*Value{ln.Value()}, Block: b3}}
+
+	out, err := FieldLenFoldPass(fn)
+	if err != nil {
+		t.Fatalf("FieldLenFoldPass: %v", err)
+	}
+	if out == nil || ln.Op != OpConstInt || ln.Aux != 4 || len(ln.Args) != 0 {
+		t.Fatalf("len op not folded: %s aux=%d args=%d", ln.Op, ln.Aux, len(ln.Args))
+	}
+}
+
+func TestFieldLenFold_StepIOPipeline(t *testing.T) {
+	src := `func step_io(a, tick) {
+    a.queue = (a.queue + tick + a.id) % 211
+    a.bytes = a.bytes + a.queue * 13 + tick
+    if a.queue % 2 == 0 {
+        a.state = "busy"
+    } else {
+        a.state = "idle"
+    }
+    return a.bytes % 100000 + #a.state
+}`
+	top := compileTop(t, src)
+	stepIO := findProtoByName(top, "step_io")
+	if stepIO == nil {
+		t.Fatal("step_io proto not found")
+	}
+	fn := BuildGraph(stepIO)
+	out, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpLen {
+				t.Fatalf("OpLen survived:\n%s", Print(out))
+			}
+		}
+	}
+}

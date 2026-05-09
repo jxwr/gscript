@@ -1,0 +1,172 @@
+package methodjit
+
+// FieldLenFoldPass folds len(obj.field) at simple join blocks when every
+// predecessor writes that field to a constant string of the same byte length.
+// Unlike profiled length ranges, this is a structural proof: no runtime guard
+// is needed because the dominating predecessor writes determine the value.
+func FieldLenFoldPass(fn *Function) (*Function, error) {
+	if fn == nil || fn.Proto == nil {
+		return fn, nil
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpLen || len(instr.Args) < 1 || instr.Args[0] == nil || instr.Args[0].Def == nil {
+				continue
+			}
+			get := unwrapFieldLenInput(instr.Args[0]).Def
+			if get.Op != OpGetField || len(get.Args) < 1 || get.Args[0] == nil {
+				continue
+			}
+			lens, ok := constStringFieldLensFromPreds(fn, block, get.Args[0].ID, get.Aux)
+			if !ok || len(lens) != len(block.Preds) {
+				continue
+			}
+			if allInt64Equal(lens) {
+				instr.Op = OpConstInt
+				instr.Type = TypeInt
+				instr.Args = nil
+				instr.Aux = lens[0]
+				instr.Aux2 = 0
+				functionRemarks(fn).Add("FieldLenFold", "changed", block.ID, instr.ID, instr.Op,
+					"folded len(field) from predecessor constant string stores")
+				continue
+			}
+			phi := insertFieldLenPhi(fn, block, lens)
+			if phi == nil {
+				continue
+			}
+			replaceValueUses(fn, instr.ID, phi.Value(), phi.ID)
+			instr.Op = OpNop
+			instr.Type = TypeUnknown
+			instr.Args = nil
+			instr.Aux = 0
+			instr.Aux2 = 0
+			functionRemarks(fn).Add("FieldLenFold", "changed", block.ID, phi.ID, phi.Op,
+				"replaced len(field) with predecessor constant string length phi")
+		}
+	}
+	return fn, nil
+}
+
+func unwrapFieldLenInput(v *Value) *Value {
+	for v != nil && v.Def != nil {
+		switch v.Def.Op {
+		case OpGuardType, OpGuardConstString:
+			if len(v.Def.Args) == 0 || v.Def.Args[0] == nil {
+				return v
+			}
+			v = v.Def.Args[0]
+		default:
+			return v
+		}
+	}
+	return v
+}
+
+func constStringFieldLensFromPreds(fn *Function, block *Block, tableID int, fieldAux int64) ([]int64, bool) {
+	if fn == nil || block == nil || len(block.Preds) == 0 {
+		return nil, false
+	}
+	out := make([]int64, len(block.Preds))
+	for _, pred := range block.Preds {
+		n, ok := lastConstStringStoreLen(fn, pred, tableID, fieldAux)
+		if !ok {
+			return nil, false
+		}
+		idx := -1
+		for i, p := range block.Preds {
+			if p == pred {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return nil, false
+		}
+		out[idx] = n
+	}
+	return out, true
+}
+
+func allInt64Equal(vals []int64) bool {
+	if len(vals) == 0 {
+		return false
+	}
+	for _, v := range vals[1:] {
+		if v != vals[0] {
+			return false
+		}
+	}
+	return true
+}
+
+func insertFieldLenPhi(fn *Function, block *Block, lens []int64) *Instr {
+	if fn == nil || block == nil || len(lens) != len(block.Preds) {
+		return nil
+	}
+	args := make([]*Value, len(lens))
+	for i, pred := range block.Preds {
+		c := &Instr{
+			ID:    fn.newValueID(),
+			Op:    OpConstInt,
+			Type:  TypeInt,
+			Aux:   lens[i],
+			Block: pred,
+		}
+		insertBeforeTerminator(pred, c)
+		args[i] = c.Value()
+	}
+	phi := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpPhi,
+		Type:  TypeInt,
+		Args:  args,
+		Block: block,
+	}
+	insertAtTopAfterPhis(block, phi)
+	return phi
+}
+func lastConstStringStoreLen(fn *Function, block *Block, tableID int, fieldAux int64) (int64, bool) {
+	if fn == nil || fn.Proto == nil || block == nil {
+		return 0, false
+	}
+	for i := len(block.Instrs) - 1; i >= 0; i-- {
+		instr := block.Instrs[i]
+		if instr == nil || instr.Op == OpNop || instr.Op.IsTerminator() {
+			continue
+		}
+		if instr.Op == OpSetField && instr.Aux == fieldAux && len(instr.Args) >= 2 &&
+			instr.Args[0] != nil && instr.Args[0].ID == tableID {
+			return constStringLen(fn, instr.Args[1])
+		}
+		if fieldLenFoldBarrier(instr) {
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+func fieldLenFoldBarrier(instr *Instr) bool {
+	switch instr.Op {
+	case OpCall, OpSetField, OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
+		OpSetGlobal, OpSetUpval, OpAppend, OpSetList:
+		return true
+	default:
+		return false
+	}
+}
+
+func constStringLen(fn *Function, v *Value) (int64, bool) {
+	if fn == nil || fn.Proto == nil || v == nil || v.Def == nil || v.Def.Op != OpConstString {
+		return 0, false
+	}
+	idx := int(v.Def.Aux)
+	if idx < 0 || idx >= len(fn.Proto.Constants) {
+		return 0, false
+	}
+	c := fn.Proto.Constants[idx]
+	if !c.IsString() {
+		return 0, false
+	}
+	return int64(len(c.Str())), true
+}
