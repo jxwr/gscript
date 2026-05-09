@@ -129,11 +129,43 @@ func fieldSvalsLowerBarrier(instr *Instr) bool {
 		return true
 	}
 	switch instr.Op {
-	case OpSetField, OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
+	case OpSetField:
+		return !fieldSvalsSetFieldPreservesShape(instr)
+	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
 		OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix,
 		OpSetList, OpAppend, OpCall, OpResume, OpYield, OpSelf, OpSetGlobal, OpSetUpval:
 		return true
 	default:
 		return false
+	}
+}
+
+func fieldSvalsSetFieldPreservesShape(instr *Instr) bool {
+	if instr == nil || instr.Op != OpSetField || len(instr.Args) < 2 || instr.Aux2 == 0 {
+		return false
+	}
+	shapeID := uint32(instr.Aux2 >> 32)
+	fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
+	if shapeID == 0 || fieldIdx < 0 {
+		return false
+	}
+	return valueProvenNonNil(instr.Args[1])
+}
+
+func valueProvenNonNil(v *Value) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	switch v.Def.Op {
+	case OpConstNil:
+		return false
+	case OpConstInt, OpConstFloat, OpConstBool, OpConstString,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+		OpSqrt, OpFloor, OpFMA, OpFMSUB, OpNumToFloat, OpGetFieldNumToFloat,
+		OpFieldLoadNumToFloat, OpLen, OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat:
+		return true
+	default:
+		return v.Def.Type == TypeInt || v.Def.Type == TypeFloat || v.Def.Type == TypeBool || v.Def.Type == TypeString || v.Def.Type == TypeTable
 	}
 }

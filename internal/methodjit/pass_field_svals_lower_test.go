@@ -71,3 +71,59 @@ func TestFieldSvalsLower_LeavesAdjacentLoadsToEmitterCache(t *testing.T) {
 		t.Fatalf("adjacent field loads should remain GetField for emitter cache:\n%s", Print(out))
 	}
 }
+
+func TestFieldSvalsLower_ReusesAcrossNonNilExistingSetField(t *testing.T) {
+	fn, b, obj := newFieldNumFusionFn("field_svals_setfield")
+	gx := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 1, Aux2: int64(42)<<32 | 0, Block: b}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{obj.Value(), one.Value()}, Aux: 3, Aux2: int64(42)<<32 | 2, Block: b}
+	gy := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 2, Aux2: int64(42)<<32 | 1, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{gx.Value(), gy.Value()}, Block: b}
+	b.Instrs = []*Instr{obj, gx, one, set, gy, ret}
+
+	out, err := FieldSvalsLowerPass(fn)
+	if err != nil {
+		t.Fatalf("FieldSvalsLowerPass: %v", err)
+	}
+	if errs := Validate(out); len(errs) > 0 {
+		t.Fatalf("invalid IR after lower: %v\n%s", errs, Print(out))
+	}
+	var svalsCount int
+	var svalsID int
+	for _, instr := range b.Instrs {
+		if instr.Op == OpFieldSvals {
+			svalsCount++
+			svalsID = instr.ID
+		}
+	}
+	if svalsCount != 1 {
+		t.Fatalf("expected one shared FieldSvals across preserving SetField, got %d\n%s", svalsCount, Print(out))
+	}
+	if gx.Op != OpFieldLoad || gy.Op != OpFieldLoad || gx.Args[0].ID != svalsID || gy.Args[0].ID != svalsID {
+		t.Fatalf("loads did not share FieldSvals across SetField:\n%s", Print(out))
+	}
+}
+
+func TestFieldSvalsLower_NilSetFieldRemainsBarrier(t *testing.T) {
+	fn, b, obj := newFieldNumFusionFn("field_svals_nil_setfield")
+	gx := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 1, Aux2: int64(42)<<32 | 0, Block: b}
+	nilv := &Instr{ID: fn.newValueID(), Op: OpConstNil, Type: TypeNil, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{obj.Value(), nilv.Value()}, Aux: 3, Aux2: int64(42)<<32 | 2, Block: b}
+	gy := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 2, Aux2: int64(42)<<32 | 1, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{gx.Value(), gy.Value()}, Block: b}
+	b.Instrs = []*Instr{obj, gx, nilv, set, gy, ret}
+
+	out, err := FieldSvalsLowerPass(fn)
+	if err != nil {
+		t.Fatalf("FieldSvalsLowerPass: %v", err)
+	}
+	if gx.Op != OpGetField || gy.Op != OpGetField {
+		t.Fatalf("nil SetField should remain a barrier:\n%s", Print(out))
+	}
+}
