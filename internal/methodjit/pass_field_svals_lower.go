@@ -1,6 +1,9 @@
 package methodjit
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // FieldSvalsLowerPass turns repeated monomorphic fixed-shape field reads into
 // a shared guard-backed svals pointer plus direct indexed loads:
@@ -16,7 +19,10 @@ func FieldSvalsLowerPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
-	if crossBlockFieldSvalsLower(fn) {
+	for i := 0; i < 3; i++ {
+		if !crossBlockFieldSvalsLower(fn) {
+			break
+		}
 		relinkValueDefs(fn)
 	}
 	changed := false
@@ -109,12 +115,31 @@ func crossBlockFieldSvalsLower(fn *Function) bool {
 		}
 	}
 	changed := false
-	for key, uses := range groups {
+	keys := make([]fieldSvalsLowerKey, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		ai := fieldSvalsLowerDefOrder(fn, keys[i].tableID)
+		aj := fieldSvalsLowerDefOrder(fn, keys[j].tableID)
+		if ai.block != aj.block {
+			return ai.block < aj.block
+		}
+		if ai.index != aj.index {
+			return ai.index < aj.index
+		}
+		if keys[i].tableID != keys[j].tableID {
+			return keys[i].tableID < keys[j].tableID
+		}
+		return keys[i].shapeID < keys[j].shapeID
+	})
+	for _, key := range keys {
+		uses := groups[key]
 		if len(uses) < 3 || len(blockSet[key]) < 2 {
 			continue
 		}
 		def := valueDefByID(fn, key.tableID)
-		if def == nil || def.Block == nil || def.Op == OpGetField || def.Op == OpGetFieldNumToFloat {
+		if def == nil || def.Block == nil {
 			continue
 		}
 		if !crossBlockFieldSvalsSafe(fn, dom, key, def.Block, uses) {
@@ -148,6 +173,25 @@ func crossBlockFieldSvalsLower(fn *Function) bool {
 		changed = true
 	}
 	return changed
+}
+
+type fieldSvalsLowerOrder struct {
+	block int
+	index int
+}
+
+func fieldSvalsLowerDefOrder(fn *Function, id int) fieldSvalsLowerOrder {
+	if fn == nil {
+		return fieldSvalsLowerOrder{block: 1 << 30, index: 1 << 30}
+	}
+	for bi, block := range fn.Blocks {
+		for ii, instr := range block.Instrs {
+			if instr != nil && instr.ID == id {
+				return fieldSvalsLowerOrder{block: bi, index: ii}
+			}
+		}
+	}
+	return fieldSvalsLowerOrder{block: 1 << 30, index: 1 << 30}
 }
 
 func valueDefByID(fn *Function, id int) *Instr {
