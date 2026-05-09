@@ -200,9 +200,10 @@ type ArgArrayElementShapeFeedback struct {
 }
 
 type ArgArrayElementShapeCase struct {
-	ShapeID    uint32
-	FieldNames []string
-	FieldTypes map[string]FeedbackType
+	ShapeID       uint32
+	FieldNames    []string
+	FieldTypes    map[string]FeedbackType
+	FieldVMProtos map[string]*FuncProto
 }
 
 // ArgArrayElementShapeFeedbackVector is per-parameter runtime argument shape
@@ -324,6 +325,16 @@ func observeArgArrayElementShapeCaseTypes(c *ArgArrayElementShapeCase, tbl *runt
 		ft := c.FieldTypes[field]
 		ft.Observe(value.Type())
 		c.FieldTypes[field] = ft
+		if proto := callFeedbackVMProto(value); proto != nil {
+			if c.FieldVMProtos == nil {
+				c.FieldVMProtos = make(map[string]*FuncProto, len(fields))
+			}
+			if existing := c.FieldVMProtos[field]; existing == nil {
+				c.FieldVMProtos[field] = proto
+			} else if existing != proto {
+				c.FieldVMProtos[field] = nil
+			}
+		}
 	}
 }
 

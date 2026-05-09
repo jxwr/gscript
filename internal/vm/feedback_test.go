@@ -509,6 +509,31 @@ func TestCallSiteFeedback_ReboundCalleePolymorphic(t *testing.T) {
 	}
 }
 
+func TestArgArrayElementShapeFeedback_RecordsVMClosureFieldProto(t *testing.T) {
+	stepProto := &FuncProto{Name: "step"}
+	stepClosure := NewClosure(stepProto)
+	actor := runtime.NewTable()
+	actor.RawSetString("step", runtime.VMClosureFunctionValue(unsafe.Pointer(stepClosure), stepClosure))
+	actor.RawSetString("kind", runtime.StringValue("worker"))
+
+	actors := runtime.NewTable()
+	actors.RawSet(runtime.IntValue(1), runtime.TableValue(actor))
+
+	var af ArgArrayElementShapeFeedback
+	af.Observe(runtime.TableValue(actors))
+	shapes := af.PolymorphicShapes()
+	if len(shapes) != 0 {
+		t.Fatalf("single observed actor shape should not be polymorphic: %d", len(shapes))
+	}
+	if af.ShapeCount != 1 {
+		t.Fatalf("shape count=%d want 1", af.ShapeCount)
+	}
+	got := af.Shapes[0].FieldVMProtos["step"]
+	if got != stepProto {
+		t.Fatalf("step field VM proto=%p want %p", got, stepProto)
+	}
+}
+
 func TestCallSiteFeedback_RecordsSmallPolymorphicVMProtos(t *testing.T) {
 	proto := compileFeedback(t, `
 		func f(x) { return x + 1 }

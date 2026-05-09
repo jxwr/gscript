@@ -17,6 +17,7 @@ type FixedShapeTableFact struct {
 	FieldValueIDs   map[string]int
 	FieldFacts      map[string]FixedShapeFieldFact
 	FieldTypes      map[string]Type
+	FieldVMProtos   map[string]*vm.FuncProto
 	FieldTableFacts map[string]FixedShapeTableFact
 	Guarded         bool
 	EntryGuarded    bool
@@ -26,6 +27,7 @@ type FieldPolyShapeCase struct {
 	ShapeID  uint32
 	FieldIdx int
 	Type     Type
+	VMProto  *vm.FuncProto
 }
 
 type FixedShapeFieldKind uint8
@@ -290,7 +292,7 @@ func fieldPolyShapeCases(facts []FixedShapeTableFact, name string) ([]FieldPolyS
 		} else if typ != caseType {
 			typ = TypeUnknown
 		}
-		cases = append(cases, FieldPolyShapeCase{ShapeID: fact.ShapeID, FieldIdx: idx, Type: caseType})
+		cases = append(cases, FieldPolyShapeCase{ShapeID: fact.ShapeID, FieldIdx: idx, Type: caseType, VMProto: fact.FieldVMProtos[name]})
 	}
 	return cases, typ
 }
@@ -330,6 +332,7 @@ func guardedFixedShapeArgFact(fact FixedShapeTableFact) (FixedShapeTableFact, bo
 		ShapeID:         fact.ShapeID,
 		FieldNames:      append([]string(nil), fact.FieldNames...),
 		FieldTypes:      cloneStringTypeMap(fact.FieldTypes),
+		FieldVMProtos:   cloneStringProtoMap(fact.FieldVMProtos),
 		FieldTableFacts: cloneFixedShapeTableFactMap(fact.FieldTableFacts),
 		Guarded:         true,
 	}, true
@@ -526,10 +529,11 @@ func profiledFixedShapeArrayElementPolyFactsForProto(target *vm.FuncProto) map[i
 		facts := make([]FixedShapeTableFact, 0, len(shapes))
 		for _, shape := range shapes {
 			facts = append(facts, FixedShapeTableFact{
-				ShapeID:    shape.ShapeID,
-				FieldNames: append([]string(nil), shape.FieldNames...),
-				FieldTypes: profiledShapeCaseFieldTypes(shape),
-				Guarded:    true,
+				ShapeID:       shape.ShapeID,
+				FieldNames:    append([]string(nil), shape.FieldNames...),
+				FieldTypes:    profiledShapeCaseFieldTypes(shape),
+				FieldVMProtos: profiledShapeCaseFieldVMProtos(shape),
+				Guarded:       true,
 			})
 		}
 		if len(facts) >= 2 {
@@ -611,6 +615,22 @@ func profiledShapeCaseFieldTypes(shape vm.ArgArrayElementShapeCase) map[string]T
 			continue
 		}
 		out[name] = typ
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func profiledShapeCaseFieldVMProtos(shape vm.ArgArrayElementShapeCase) map[string]*vm.FuncProto {
+	if len(shape.FieldVMProtos) == 0 {
+		return nil
+	}
+	out := make(map[string]*vm.FuncProto)
+	for name, proto := range shape.FieldVMProtos {
+		if proto != nil {
+			out[name] = proto
+		}
 	}
 	if len(out) == 0 {
 		return nil
@@ -843,6 +863,7 @@ func withoutFieldValues(fact FixedShapeTableFact) FixedShapeTableFact {
 		ShapeID:         fact.ShapeID,
 		FieldNames:      append([]string(nil), fact.FieldNames...),
 		FieldTypes:      cloneStringTypeMap(fact.FieldTypes),
+		FieldVMProtos:   cloneStringProtoMap(fact.FieldVMProtos),
 		FieldTableFacts: cloneFixedShapeTableFactMap(fact.FieldTableFacts),
 	}
 }
@@ -1218,6 +1239,17 @@ func cloneStringTypeMap(in map[string]Type) map[string]Type {
 	return out
 }
 
+func cloneStringProtoMap(in map[string]*vm.FuncProto) map[string]*vm.FuncProto {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]*vm.FuncProto, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 func cloneFixedShapeTableFactMap(in map[string]FixedShapeTableFact) map[string]FixedShapeTableFact {
 	if len(in) == 0 {
 		return nil
@@ -1226,6 +1258,7 @@ func cloneFixedShapeTableFactMap(in map[string]FixedShapeTableFact) map[string]F
 	for k, v := range in {
 		v.FieldNames = append([]string(nil), v.FieldNames...)
 		v.FieldTypes = cloneStringTypeMap(v.FieldTypes)
+		v.FieldVMProtos = cloneStringProtoMap(v.FieldVMProtos)
 		v.FieldTableFacts = cloneFixedShapeTableFactMap(v.FieldTableFacts)
 		out[k] = v
 	}

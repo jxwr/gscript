@@ -297,7 +297,9 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	staticSelf := ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.HasSelfCalls && ec.isStaticSelfCall(instr)
 	stackSlowLabel := ec.uniqueLabel("t2call_stack_slow")
-	dynamicCalleeFlags := noDepthCallee == nil || !staticSelf
+	knownLeafCall := noDepthCallee != nil || flagSpec.knownLeaf
+	knownNoGlobalCall := staticSelf || flagSpec.knownNoGlobal
+	dynamicCalleeFlags := (noDepthCallee == nil && !knownLeafCall) || (!staticSelf && !knownNoGlobalCall)
 
 	// Step 7: Save caller state on stack (128 bytes, 16-byte aligned).
 	// R111: for a static self-call, GlobalCache is invariant
@@ -307,25 +309,25 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.SUBimm(jit.SP, jit.SP, 128)
 	if dynamicCalleeFlags {
 		knownFlags := uint16(0)
-		if flagSpec.knownLeaf {
+		if knownLeafCall {
 			knownFlags |= 1
 		}
-		if flagSpec.knownNoGlobal {
+		if knownNoGlobalCall {
 			knownFlags |= 2
 		}
 		asm.MOVimm16(jit.X6, knownFlags)
-		if noDepthCallee == nil && !flagSpec.knownLeaf {
+		if noDepthCallee == nil && !knownLeafCall {
 			asm.LDRB(jit.X4, jit.X1, funcProtoOffLeafNoCall)
 			asm.ORRreg(jit.X6, jit.X6, jit.X4)
 		}
-		if !staticSelf && !flagSpec.knownNoGlobal {
+		if !staticSelf && !knownNoGlobalCall {
 			asm.LDRB(jit.X4, jit.X1, funcProtoOffNoGlobalOps)
 			asm.LSLimm(jit.X4, jit.X4, 1)
 			asm.ORRreg(jit.X6, jit.X6, jit.X4)
 		}
 		asm.STR(jit.X6, jit.SP, 120)
 	}
-	if noDepthCallee == nil {
+	if noDepthCallee == nil && !knownLeafCall {
 		depthOKLabel := ec.uniqueLabel("t2call_depth_ok")
 		asm.TBNZ(jit.X6, 0, depthOKLabel)
 		asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
@@ -341,23 +343,19 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X3, jit.SP, 40)
 	if !staticSelf {
-		skipSaveGlobalsLabel := ec.uniqueLabel("t2call_skip_save_globals")
-		asm.TBNZ(jit.X6, 1, skipSaveGlobalsLabel)
-		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
-		asm.STR(jit.X3, jit.SP, 48)
-		asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
-		asm.STR(jit.X3, jit.SP, 56)
-		asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
-		asm.STR(jit.X3, jit.SP, 64)
-		asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
-		asm.STR(jit.X3, jit.SP, 72)
-		asm.Label(skipSaveGlobalsLabel)
-		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineFieldCache)
-		asm.STR(jit.X3, jit.SP, 80)
-		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineFieldPolyCache)
-		asm.STR(jit.X3, jit.SP, 88)
-		asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineTableStringKeyCache)
-		asm.STR(jit.X3, jit.SP, 96)
+		if !knownNoGlobalCall {
+			skipSaveGlobalsLabel := ec.uniqueLabel("t2call_skip_save_globals")
+			asm.TBNZ(jit.X6, 1, skipSaveGlobalsLabel)
+			asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+			asm.STR(jit.X3, jit.SP, 48)
+			asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
+			asm.STR(jit.X3, jit.SP, 56)
+			asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
+			asm.STR(jit.X3, jit.SP, 64)
+			asm.LDR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
+			asm.STR(jit.X3, jit.SP, 72)
+			asm.Label(skipSaveGlobalsLabel)
+		}
 	}
 	// Keep the callee closure pointer for ExitNativeCallExit. If the callee
 	// returns through an exit-resume path, caller state is restored before Go
@@ -395,18 +393,20 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	// R111: skip GlobalCache setup on static self-call (per-proto invariant).
 	if !staticSelf {
-		skipSetupGlobalsLabel := ec.uniqueLabel("t2call_skip_setup_globals")
-		asm.TBNZ(jit.X6, 1, skipSetupGlobalsLabel)
-		// Load callee's GlobalValCache from Proto.
-		asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
-		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
-		asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalCachePtr)
-		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
-		asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalCacheGenPtr)
-		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
-		asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalIndexPtr)
-		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
-		asm.Label(skipSetupGlobalsLabel)
+		if !knownNoGlobalCall {
+			skipSetupGlobalsLabel := ec.uniqueLabel("t2call_skip_setup_globals")
+			asm.TBNZ(jit.X6, 1, skipSetupGlobalsLabel)
+			// Load callee's GlobalValCache from Proto.
+			asm.LDR(jit.X3, jit.X1, funcProtoOffGlobalValCachePtr)
+			asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+			asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalCachePtr)
+			asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
+			asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalCacheGenPtr)
+			asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
+			asm.LDR(jit.X3, jit.X1, funcProtoOffTier2GlobalIndexPtr)
+			asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
+			asm.Label(skipSetupGlobalsLabel)
+		}
 		asm.LDR(jit.X3, jit.X1, funcProtoOffFieldCache)
 		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineFieldCache)
 		asm.LDR(jit.X3, jit.X1, funcProtoOffFieldPolyCache)
@@ -416,7 +416,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	}
 
 	// Increment NativeCallDepth unless the guarded callee is a leaf.
-	if noDepthCallee == nil {
+	if noDepthCallee == nil && !knownLeafCall {
 		skipDepthIncLabel := ec.uniqueLabel("t2call_skip_depth_inc")
 		asm.TBNZ(jit.X6, 0, skipDepthIncLabel)
 		asm.LDR(jit.X3, mRegCtx, execCtxOffNativeCallDepth)
@@ -456,7 +456,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	}
 
 	// Decrement NativeCallDepth unless the guarded callee is a leaf.
-	if noDepthCallee == nil {
+	if noDepthCallee == nil && !knownLeafCall {
 		skipDepthDecLabel := ec.uniqueLabel("t2call_skip_depth_dec")
 		asm.LDR(jit.X6, jit.SP, 120)
 		asm.TBNZ(jit.X6, 0, skipDepthDecLabel)
@@ -491,24 +491,29 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm.LDR(jit.X3, jit.SP, 40)
 	asm.STR(jit.X3, mRegCtx, execCtxOffBaselineClosurePtr)
 	if !staticSelf {
-		skipRestoreGlobalsLabel := ec.uniqueLabel("t2call_skip_restore_globals")
-		asm.LDR(jit.X6, jit.SP, 120)
-		asm.TBNZ(jit.X6, 1, skipRestoreGlobalsLabel)
-		asm.LDR(jit.X3, jit.SP, 48)
-		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
-		asm.LDR(jit.X3, jit.SP, 56)
-		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
-		asm.LDR(jit.X3, jit.SP, 64)
-		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
-		asm.LDR(jit.X3, jit.SP, 72)
-		asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
-		asm.Label(skipRestoreGlobalsLabel)
-		asm.LDR(jit.X3, jit.SP, 80)
-		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineFieldCache)
-		asm.LDR(jit.X3, jit.SP, 88)
-		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineFieldPolyCache)
-		asm.LDR(jit.X3, jit.SP, 96)
-		asm.STR(jit.X3, mRegCtx, execCtxOffBaselineTableStringKeyCache)
+		if !knownNoGlobalCall {
+			skipRestoreGlobalsLabel := ec.uniqueLabel("t2call_skip_restore_globals")
+			asm.LDR(jit.X6, jit.SP, 120)
+			asm.TBNZ(jit.X6, 1, skipRestoreGlobalsLabel)
+			asm.LDR(jit.X3, jit.SP, 48)
+			asm.STR(jit.X3, mRegCtx, execCtxOffBaselineGlobalCache)
+			asm.LDR(jit.X3, jit.SP, 56)
+			asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCache)
+			asm.LDR(jit.X3, jit.SP, 64)
+			asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalCacheGen)
+			asm.LDR(jit.X3, jit.SP, 72)
+			asm.STR(jit.X3, mRegCtx, execCtxOffTier2GlobalIndex)
+			asm.Label(skipRestoreGlobalsLabel)
+		}
+		if ec.fn != nil && ec.fn.Proto != nil {
+			asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(ec.fn.Proto))))
+			asm.LDR(jit.X4, jit.X3, funcProtoOffFieldCache)
+			asm.STR(jit.X4, mRegCtx, execCtxOffBaselineFieldCache)
+			asm.LDR(jit.X4, jit.X3, funcProtoOffFieldPolyCache)
+			asm.STR(jit.X4, mRegCtx, execCtxOffBaselineFieldPolyCache)
+			asm.LDR(jit.X4, jit.X3, funcProtoOffTableStringKeyCache)
+			asm.STR(jit.X4, mRegCtx, execCtxOffBaselineTableStringKeyCache)
+		}
 	}
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, 128)
@@ -539,7 +544,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 
 	asm.B(doneLabel)
 
-	if noDepthCallee == nil {
+	if noDepthCallee == nil && !knownLeafCall {
 		asm.Label(stackSlowLabel)
 		asm.ADDimm(jit.SP, jit.SP, 128)
 		asm.B(slowLabel)
@@ -1469,6 +1474,9 @@ func (ec *emitContext) callCalleeFlagSpec(instr *Instr) callCalleeFlagSpec {
 }
 
 func (ec *emitContext) callCalleeFeedbackProtos(instr *Instr) []*vm.FuncProto {
+	if protos := ec.callCalleeFieldShapeProtos(instr); len(protos) > 0 {
+		return protos
+	}
 	if ec == nil || ec.fn == nil || ec.fn.Proto == nil || instr == nil || instr.Op != OpCall ||
 		!instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(ec.fn.Proto.CallSiteFeedback) {
 		return nil
@@ -1487,6 +1495,34 @@ func (ec *emitContext) callCalleeFeedbackProtos(instr *Instr) []*vm.FuncProto {
 		return nil
 	}
 	return fb.MaturePolymorphicVMProtos(wholeCallKernelMinStableObservations, len(instr.Args)-1, uint8(instr.Aux2))
+}
+
+func (ec *emitContext) callCalleeFieldShapeProtos(instr *Instr) []*vm.FuncProto {
+	if ec == nil || ec.fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) == 0 ||
+		instr.Args[0] == nil || instr.Args[0].Def == nil {
+		return nil
+	}
+	calleeLoad := instr.Args[0].Def
+	if calleeLoad.Op != OpGetField {
+		return nil
+	}
+	cases := ec.fn.FieldPolyShapeFacts[calleeLoad.ID]
+	if len(cases) == 0 {
+		return nil
+	}
+	out := make([]*vm.FuncProto, 0, len(cases))
+	seen := make(map[*vm.FuncProto]bool, len(cases))
+	for _, c := range cases {
+		if c.VMProto == nil || seen[c.VMProto] {
+			continue
+		}
+		out = append(out, c.VMProto)
+		seen[c.VMProto] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (ec *emitContext) emitGuardCalleeProtoSet(protos []*vm.FuncProto, slowLabel string) {
