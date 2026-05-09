@@ -206,12 +206,16 @@ func (ec *emitContext) emitMatrixLoadFAt(instr *Instr) {
 	if iReg != jit.X2 {
 		asm.MOVreg(jit.X2, iReg)
 	}
-	jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
-	if jReg != jit.X3 {
-		asm.MOVreg(jit.X3, jReg)
-	}
 	// X4 = i * stride + j
-	asm.MADD(jit.X4, jit.X2, jit.X1, jit.X3)
+	if isConstIntValue(instr.Args[3], 0) {
+		asm.MADD(jit.X4, jit.X2, jit.X1, jit.XZR)
+	} else {
+		jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
+		if jReg != jit.X3 {
+			asm.MOVreg(jit.X3, jReg)
+		}
+		asm.MADD(jit.X4, jit.X2, jit.X1, jit.X3)
+	}
 	dstF := jit.D0
 	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
 		dstF = jit.FReg(pr.Reg)
@@ -238,11 +242,20 @@ func (ec *emitContext) emitMatrixStoreFAt(instr *Instr) {
 	if iReg != jit.X2 {
 		asm.MOVreg(jit.X2, iReg)
 	}
-	jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
-	if jReg != jit.X3 {
-		asm.MOVreg(jit.X3, jReg)
+	if isConstIntValue(instr.Args[3], 0) {
+		asm.MADD(jit.X4, jit.X2, jit.X1, jit.XZR)
+	} else {
+		jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
+		if jReg != jit.X3 {
+			asm.MOVreg(jit.X3, jReg)
+		}
+		asm.MADD(jit.X4, jit.X2, jit.X1, jit.X3)
 	}
-	asm.MADD(jit.X4, jit.X2, jit.X1, jit.X3)
+	if instr.Args[4].Def != nil && instr.Args[4].Def.Type == TypeFloat {
+		vF := ec.resolveRawFloat(instr.Args[4].ID, jit.D0)
+		asm.FSTRdReg(vF, jit.X5, jit.X4)
+		return
+	}
 	vReg := ec.resolveValueNB(instr.Args[4].ID, jit.X6)
 	if vReg != jit.X6 {
 		asm.MOVreg(jit.X6, vReg)
