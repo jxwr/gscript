@@ -151,15 +151,11 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 
 	// Deopt fallback: use table-exit to perform the field access in Go.
 	asm.Label(deoptLabel)
-	if instr.SourcePC >= 0 && ec.emitGetFieldDynamicCache(instr) {
-		asm.B(doneLabel)
-	} else {
-		savedReprs := ec.snapshotValueReprs()
-		ec.emitGetFieldExit(instr)
-		ec.emitUnboxRawIntRegs(savedReprs)
-		ec.restoreValueReprSnapshot(savedReprs)
-		asm.B(doneLabel)
-	}
+	savedReprs := ec.snapshotValueReprs()
+	ec.emitGetFieldExit(instr)
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
+	asm.B(doneLabel)
 
 	if instr.Type == TypeFloat || instr.Type == TypeInt {
 		asm.Label(typeDeoptLabel)
@@ -593,15 +589,11 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	if instr.SourcePC >= 0 && ec.emitGetFieldDynamicCache(instr) {
-		asm.B(doneLabel)
-	} else {
-		savedReprs := ec.snapshotValueReprs()
-		ec.emitGetFieldExit(instr)
-		ec.emitUnboxRawIntRegs(savedReprs)
-		ec.restoreValueReprSnapshot(savedReprs)
-		asm.B(doneLabel)
-	}
+	savedReprs := ec.snapshotValueReprs()
+	ec.emitGetFieldExit(instr)
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
+	asm.B(doneLabel)
 
 	asm.Label(typeDeoptLabel)
 	ec.emitDeopt(instr)
