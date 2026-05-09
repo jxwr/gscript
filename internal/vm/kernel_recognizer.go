@@ -180,7 +180,7 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 			Arity:   3,
 			Results: kernelWholeCallInPlaceResultCount,
 		},
-		recognize:   func(p *FuncProto) bool { return false },
+		recognize:   isSpectralAtAvProto,
 		runNoResult: (*VM).runSpectralWholeCallKernel,
 	},
 	{

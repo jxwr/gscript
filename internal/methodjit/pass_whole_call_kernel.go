@@ -51,7 +51,7 @@ func stableNoResultWholeCallCandidate(fn *Function, instr *Instr, globals map[st
 		return false
 	}
 	if proto, ok := stableFeedbackCalleeProto(fn, instr, nArgs); ok {
-		return proto != nil
+		return protoHasNoResultWholeCallKernel(proto)
 	}
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
 	return protoHasNoResultWholeCallKernel(callee)

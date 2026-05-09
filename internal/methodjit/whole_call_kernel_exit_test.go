@@ -95,7 +95,7 @@ func TestWholeCallKernelExitLowersStableNoResultCall(t *testing.T) {
 	}
 }
 
-func TestWholeCallKernelExitUsesStableRuntimeFeedback(t *testing.T) {
+func TestWholeCallKernelExitRejectsStableNonKernelRuntimeFeedback(t *testing.T) {
 	top := compileProto(t, `
 total := 0
 
@@ -127,8 +127,8 @@ for i := 0; i < 3; i++ {
 	if err != nil {
 		t.Fatalf("RunTier2Pipeline(caller): %v", err)
 	}
-	if len(fn.WholeCallNoResultKernels) != 1 {
-		t.Fatalf("stable runtime no-result call was not annotated: %#v", fn.WholeCallNoResultKernels)
+	if len(fn.WholeCallNoResultKernels) != 0 {
+		t.Fatalf("stable non-kernel runtime call should not be annotated: %#v", fn.WholeCallNoResultKernels)
 	}
 }
 
