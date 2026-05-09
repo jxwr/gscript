@@ -72,6 +72,10 @@ func (tm *TieringManager) CompileTier2(proto *vm.FuncProto) error {
 	}
 	tm.ensureNativeLoopCallees(proto)
 	tm.ensureRawIntLoopCallees(proto)
+	if t2, ok := tm.compileTier2WholeCallProtocol(proto); ok {
+		tm.markTier2Compiled(proto, t2)
+		return nil
+	}
 	t2, err := tm.compileTier2(proto)
 	if err != nil {
 		tm.markTier2Failed(proto, err.Error())

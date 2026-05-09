@@ -241,6 +241,10 @@ func (tm *TieringManager) ensureNativeLoopCallees(proto *vm.FuncProto) {
 			tm.markTier2Compiled(callee, cf)
 			continue
 		}
+		if cf, ok := tm.compileTier2WholeCallProtocol(callee); ok {
+			tm.markTier2Compiled(callee, cf)
+			continue
+		}
 		cf, err := tm.compileTier2(callee)
 		if err != nil {
 			tm.markTier2Failed(callee, err.Error())

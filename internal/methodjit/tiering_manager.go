@@ -470,16 +470,7 @@ func (tm *TieringManager) promoteTier2(proto *vm.FuncProto) interface{} {
 		proto.EnsureFeedback()
 	}
 
-	// Attempt Tier 2 compilation.
-	if t2, ok := tm.compileFixedRecursiveIntFoldTier2(proto); ok {
-		tm.markTier2Compiled(proto, t2)
-		return t2
-	}
-	if t2, ok := tm.compileFixedRecursiveNestedIntFoldTier2(proto); ok {
-		tm.markTier2Compiled(proto, t2)
-		return t2
-	}
-	if t2, ok := tm.compileFixedRecursiveTableFoldTier2(proto); ok {
+	if t2, ok := tm.compileTier2WholeCallProtocol(proto); ok {
 		tm.markTier2Compiled(proto, t2)
 		return t2
 	}
@@ -501,6 +492,19 @@ func (tm *TieringManager) promoteTier2(proto *vm.FuncProto) interface{} {
 	tm.markTier2Compiled(proto, t2)
 
 	return t2
+}
+
+func (tm *TieringManager) compileTier2WholeCallProtocol(proto *vm.FuncProto) (*CompiledFunction, bool) {
+	if t2, ok := tm.compileFixedRecursiveIntFoldTier2(proto); ok {
+		return t2, true
+	}
+	if t2, ok := tm.compileFixedRecursiveNestedIntFoldTier2(proto); ok {
+		return t2, true
+	}
+	if t2, ok := tm.compileFixedRecursiveTableFoldTier2(proto); ok {
+		return t2, true
+	}
+	return nil, false
 }
 
 // osrWouldHitCallInLoopGate returns true when the cheap bytecode profile says

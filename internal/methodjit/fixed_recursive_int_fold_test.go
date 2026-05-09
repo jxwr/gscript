@@ -114,6 +114,32 @@ func TestFixedRecursiveIntFoldExecutesFib(t *testing.T) {
 	}
 }
 
+func TestFixedRecursiveIntFoldPreferredForLoopCalleePrecompile(t *testing.T) {
+	src := fixedIntFibSrc + `
+result := 0
+for rep := 1; rep <= 3; rep++ {
+	result = fib(10)
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fib := findProtoByName(top, "fib")
+	if fib == nil {
+		t.Fatal("fib proto not found")
+	}
+	cf := tm.tier2Compiled[fib]
+	if cf == nil || cf.FixedRecursiveIntFold == nil {
+		t.Fatalf("loop callee precompile did not prefer fixed recursive int fold; cf=%#v", cf)
+	}
+}
+
 func TestFixedRecursiveIntFoldFallsBackWhenSelfGlobalChanges(t *testing.T) {
 	src := fixedIntFibSrc + `
 func replacement(n) {
