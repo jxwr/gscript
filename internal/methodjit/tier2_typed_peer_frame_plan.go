@@ -12,8 +12,14 @@ import (
 // can have a valid typed table/int ABI while still requiring the conservative
 // full frame for register preservation and runtime unwinding.
 type Tier2TypedPeerFramePlan struct {
-	CanUseThinEntry bool     `json:"can_use_thin_entry"`
-	Reasons         []string `json:"reasons,omitempty"`
+	CanUseThinEntry      bool     `json:"can_use_thin_entry"`
+	RequiredGPRs         []int    `json:"required_gprs,omitempty"`
+	RequiredFPRs         []int    `json:"required_fprs,omitempty"`
+	FullFrameBytes       int      `json:"full_frame_bytes,omitempty"`
+	CompactFrameBytes    int      `json:"compact_frame_bytes,omitempty"`
+	EstimatedSavedStores int      `json:"estimated_saved_stores,omitempty"`
+	EstimatedSavedLoads  int      `json:"estimated_saved_loads,omitempty"`
+	Reasons              []string `json:"reasons,omitempty"`
 }
 
 func AnalyzeTypedPeerFramePlan(fn *Function, alloc *RegAllocation, abi TypedSelfABI) Tier2TypedPeerFramePlan {
@@ -36,10 +42,16 @@ func AnalyzeTypedPeerFramePlan(fn *Function, alloc *RegAllocation, abi TypedSelf
 		plan.addReason("missing register allocation")
 		return plan
 	}
-	if regs := typedPeerAllocatedCalleeSavedGPRs(alloc); len(regs) > 0 {
+	plan.FullFrameBytes = frameSize
+	plan.RequiredGPRs = typedPeerAllocatedCalleeSavedGPRs(alloc)
+	plan.RequiredFPRs = typedPeerAllocatedCalleeSavedFPRs(alloc)
+	plan.CompactFrameBytes = typedPeerCompactFrameBytes(plan.RequiredGPRs, plan.RequiredFPRs)
+	plan.EstimatedSavedStores = typedPeerFullFrameSaveOps() - typedPeerCompactFrameSaveOps(plan.RequiredGPRs, plan.RequiredFPRs)
+	plan.EstimatedSavedLoads = plan.EstimatedSavedStores
+	if regs := plan.RequiredGPRs; len(regs) > 0 {
 		plan.addReason(fmt.Sprintf("allocated callee-saved GPRs %v", regs))
 	}
-	if regs := typedPeerAllocatedCalleeSavedFPRs(alloc); len(regs) > 0 {
+	if regs := plan.RequiredFPRs; len(regs) > 0 {
 		plan.addReason(fmt.Sprintf("allocated callee-saved FPRs %v", regs))
 	}
 	// Current executable JIT blocks are entered from Go and can appear in fault
@@ -71,6 +83,25 @@ func typedPeerAllocatedCalleeSavedGPRs(alloc *RegAllocation) []int {
 		}
 	}
 	return sortedIntKeys(seen)
+}
+
+func typedPeerCompactFrameBytes(gprs, fprs []int) int {
+	// Keep FP/LR even for a compact frame so native fault stacks and return
+	// chaining remain conventional. Each saved register is one 8-byte slot;
+	// round to 16-byte stack alignment.
+	slots := 2 + len(gprs) + len(fprs)
+	return (slots*8 + 15) &^ 15
+}
+
+func typedPeerFullFrameSaveOps() int {
+	// Full Tier 2 direct/typed entry:
+	// STP FP/LR + five GPR STPs + two FPR STPs.
+	return 8
+}
+
+func typedPeerCompactFrameSaveOps(gprs, fprs []int) int {
+	// One FP/LR STP, plus enough pair stores to cover each saved class.
+	return 1 + (len(gprs)+1)/2 + (len(fprs)+1)/2
 }
 
 func typedPeerAllocatedCalleeSavedFPRs(alloc *RegAllocation) []int {
