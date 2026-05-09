@@ -41,8 +41,12 @@ func inc(n) {
 	if inc.Tier2DirectEntryPtr != want {
 		t.Fatalf("Tier2DirectEntryPtr=%#x want %#x", inc.Tier2DirectEntryPtr, want)
 	}
-	if inc.Tier2LeafEntryPtr != want {
-		t.Fatalf("Tier2LeafEntryPtr=%#x want %#x", inc.Tier2LeafEntryPtr, want)
+	leafWant := uintptr(cf.Code.Ptr()) + uintptr(cf.LeafEntryOffset)
+	if inc.Tier2LeafEntryPtr != leafWant {
+		t.Fatalf("Tier2LeafEntryPtr=%#x want %#x", inc.Tier2LeafEntryPtr, leafWant)
+	}
+	if inc.Tier2LeafEntryPtr == inc.Tier2DirectEntryPtr {
+		t.Fatalf("leaf entry should use the lightweight Tier 2 entry, got shared pointer %#x", inc.Tier2LeafEntryPtr)
 	}
 
 	tm.disableTier2AfterRuntimeDeopt(inc, "test")

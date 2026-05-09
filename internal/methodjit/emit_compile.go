@@ -1462,6 +1462,17 @@ func (ec *emitContext) emitEpilogue() {
 
 	// Shared register restore and return (used by both normal and deopt paths).
 	asm.Label("deopt_epilogue")
+	leafDeoptLabel := ec.uniqueLabel("leaf_deopt_epilogue")
+	leafDeoptContinueLabel := ec.uniqueLabel("leaf_deopt_continue")
+	ec.emitLoadCallMode(jit.X16)
+	asm.CMPimm(jit.X16, callModeLeafX0)
+	asm.BCond(jit.CondEQ, leafDeoptLabel)
+	asm.B(leafDeoptContinueLabel)
+	asm.Label(leafDeoptLabel)
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, 16)
+	asm.RET()
+	asm.Label(leafDeoptContinueLabel)
 
 	// Restore callee-saved FPRs only if they were saved.
 	if ec.useFPR {
@@ -1482,13 +1493,30 @@ func (ec *emitContext) emitEpilogue() {
 	asm.RET()
 
 	if !ec.skipStandardDirectEntry {
+		// --- Tier 2 leaf entry point for Tier 2 BLR callers ---
+		// Caller-side emitCallNative spills/reloads its live SSA values around
+		// BLR and restores its pinned context registers from its own frame.
+		// Leaf callees have no nested calls, so this entry only preserves FP/LR.
+		asm.Label("t2_leaf_entry")
+		ec.emitTier2EntryMark()
+		asm.SUBimm(jit.SP, jit.SP, 16)
+		asm.STP(jit.X29, jit.X30, jit.SP, 0)
+		asm.ADDimm(jit.X29, jit.SP, 0)
+		asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
+		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
+		asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
+		asm.LoadImm64(mRegTagInt, nb64(jit.NB_TagInt))    // X24
+		asm.LoadImm64(mRegTagBool, nb64(jit.NB_TagBool))  // X25
+		ec.emitSetRawSelfRegsEndFromMRegRegs()
+		ec.emitBoxedEntryShapeGuards()
+		asm.B(ec.entryBlockLabel())
+
 		// --- Direct entry point for BLR callers (Tier 1 native call) ---
 		// Uses the FULL frame (same as normal entry) because Tier 2 may use
 		// callee-saved GPRs (X20-X23) for register allocation. The Tier 1
 		// caller expects callee-saved registers to be preserved across BLR.
 		// Caller has set: X0=ctx, ctx.Regs=callee regs base,
 		// ctx.Constants=callee constants, CallMode=1.
-		asm.Label("t2_leaf_entry")
 		asm.Label("t2_direct_entry")
 		// R146: mark native entry (BLR-from-Tier-1 path).
 		ec.emitTier2EntryMark()
@@ -1556,9 +1584,15 @@ func (ec *emitContext) emitEpilogue() {
 	// --- Direct epilogue for BLR callers ---
 	// Return path when CallMode == 1 in emitReturn. Uses the same frame
 	// restore as normal epilogue since the direct entry uses a full frame.
-	// t2_leaf_epilogue aliases this restore path; use X16 for ExitCode so
-	// leaf callers can preserve their boxed X0 return value.
+	// t2_leaf_epilogue uses the lightweight Tier 2 leaf frame; use X16 for
+	// ExitCode so leaf callers can preserve their boxed X0 return value.
 	asm.Label("t2_leaf_epilogue")
+	asm.MOVimm16(jit.X16, 0)
+	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, 16)
+	asm.RET()
+
 	asm.Label("t2_direct_epilogue")
 	asm.MOVimm16(jit.X16, 0)
 	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)

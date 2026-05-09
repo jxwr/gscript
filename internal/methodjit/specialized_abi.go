@@ -377,7 +377,8 @@ func analyzeTypedABI(proto *vm.FuncProto, requireSelfCall bool) TypedSelfABI {
 			setSpecializedSlot(slots, a, specializedSlotRawInt)
 		case vm.OP_LOADK:
 			if !specializedABIConstIsInt(proto, vm.DecodeBx(inst)) {
-				return typedSelfABIReject("non-int constant load")
+				setSpecializedSlot(slots, a, specializedSlotUnknown)
+				continue
 			}
 			setSpecializedSlot(slots, a, specializedSlotRawInt)
 		case vm.OP_LOADNIL:
@@ -402,7 +403,11 @@ func analyzeTypedABI(proto *vm.FuncProto, requireSelfCall bool) TypedSelfABI {
 			if !typedSelfSlotIsTable(getSpecializedSlot(slots, b)) {
 				return typedSelfABIReject("non-table field receiver")
 			}
-			if typedSelfFeedbackResultIsTable(proto, pc) {
+			if typ, ok := typedSelfParamFieldType(proto, b, c); ok && typ == TypeTable {
+				setSpecializedSlot(slots, a, specializedSlotRawTable)
+			} else if ok && typ == TypeInt {
+				setSpecializedSlot(slots, a, specializedSlotRawInt)
+			} else if typedSelfFeedbackResultIsTable(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawTable)
 			} else if typedSelfFeedbackResultIsInt(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawInt)
@@ -436,7 +441,7 @@ func analyzeTypedABI(proto *vm.FuncProto, requireSelfCall bool) TypedSelfABI {
 			}
 		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD:
 			if !typedSelfRKIsInt(slots, proto, b) || !typedSelfRKIsInt(slots, proto, c) {
-				return typedSelfABIReject("non-int arithmetic operand")
+				return typedSelfABIReject(fmt.Sprintf("non-int arithmetic operand at pc %d", pc))
 			}
 			setSpecializedSlot(slots, a, specializedSlotRawInt)
 		case vm.OP_UNM:
@@ -451,6 +456,12 @@ func analyzeTypedABI(proto *vm.FuncProto, requireSelfCall bool) TypedSelfABI {
 		case vm.OP_TEST:
 		case vm.OP_TESTSET:
 			setSpecializedSlot(slots, a, specializedSlotUnknown)
+		case vm.OP_LEN:
+			if typedSelfFeedbackResultIsInt(proto, pc) {
+				setSpecializedSlot(slots, a, specializedSlotRawInt)
+			} else {
+				return typedSelfABIReject("unsupported length result")
+			}
 		case vm.OP_CALL:
 			if getSpecializedSlot(slots, a) != specializedSlotSelfFunc {
 				return typedSelfABIReject("non-self call")
@@ -522,7 +533,7 @@ func analyzeTypedABI(proto *vm.FuncProto, requireSelfCall bool) TypedSelfABI {
 			}
 			setSpecializedSlot(slots, a, specializedSlotRawInt)
 			setSpecializedSlot(slots, a+3, specializedSlotRawInt)
-		case vm.OP_LOADBOOL, vm.OP_GETUPVAL, vm.OP_NOT, vm.OP_LEN, vm.OP_CONCAT,
+		case vm.OP_LOADBOOL, vm.OP_GETUPVAL, vm.OP_NOT, vm.OP_CONCAT,
 			vm.OP_DIV, vm.OP_POW, vm.OP_CLOSURE,
 			vm.OP_TFORCALL, vm.OP_TFORLOOP, vm.OP_VARARG, vm.OP_SELF,
 			vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV, vm.OP_APPEND, vm.OP_SETLIST:
@@ -863,11 +874,47 @@ func typedSelfCompareOK(slots []specializedSlotRep, proto *vm.FuncProto, b, c in
 }
 
 func typedSelfFeedbackResultIsTable(proto *vm.FuncProto, pc int) bool {
-	return proto != nil && proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) && proto.Feedback[pc].Result == vm.FBTable
+	if proto == nil || pc < 0 {
+		return false
+	}
+	if proto.Feedback != nil && pc < len(proto.Feedback) && proto.Feedback[pc].Result == vm.FBTable {
+		return true
+	}
+	if proto.FieldAccessFeedback != nil && pc < len(proto.FieldAccessFeedback) && proto.FieldAccessFeedback[pc].ValueType == vm.FBTable {
+		return true
+	}
+	return proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) && proto.TableKeyFeedback[pc].ValueType == vm.FBTable
 }
 
 func typedSelfFeedbackResultIsInt(proto *vm.FuncProto, pc int) bool {
-	return proto != nil && proto.Feedback != nil && pc >= 0 && pc < len(proto.Feedback) && proto.Feedback[pc].Result == vm.FBInt
+	if proto == nil || pc < 0 {
+		return false
+	}
+	if proto.Feedback != nil && pc < len(proto.Feedback) && proto.Feedback[pc].Result == vm.FBInt {
+		return true
+	}
+	if proto.FieldAccessFeedback != nil && pc < len(proto.FieldAccessFeedback) && proto.FieldAccessFeedback[pc].ValueType == vm.FBInt {
+		return true
+	}
+	return proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) && proto.TableKeyFeedback[pc].ValueType == vm.FBInt
+}
+
+func typedSelfParamFieldType(proto *vm.FuncProto, paramSlot, constIdx int) (Type, bool) {
+	if proto == nil || paramSlot < 0 || paramSlot >= proto.NumParams ||
+		constIdx < 0 || constIdx >= len(proto.Constants) ||
+		len(proto.ArgArrayElementShapeFeedback) <= paramSlot {
+		return TypeUnknown, false
+	}
+	key := proto.Constants[constIdx]
+	if !key.IsString() {
+		return TypeUnknown, false
+	}
+	feedback := proto.ArgArrayElementShapeFeedback[paramSlot]
+	if len(feedback.FieldTypes) == 0 {
+		return TypeUnknown, false
+	}
+	typ, ok := feedbackToIRType(feedback.FieldTypes[key.Str()])
+	return typ, ok
 }
 
 func typedSelfBranchFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int) map[int]specializedSlotRep {
