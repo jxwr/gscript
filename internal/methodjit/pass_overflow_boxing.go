@@ -17,6 +17,9 @@ func OverflowBoxingPass(fn *Function) (*Function, error) {
 
 	loopCarriedDeps := collectPhiArithmeticDeps(fn)
 	overflowCheckedRaw := collectOverflowCheckedLinearInductionDeps(fn)
+	for id := range collectModuloAdditiveAccumulatorDeps(fn) {
+		overflowCheckedRaw[id] = true
+	}
 	boxed := make(map[int]bool)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -98,6 +101,152 @@ func OverflowBoxingPass(fn *Function) (*Function, error) {
 	}
 
 	return fn, nil
+}
+
+// collectModuloAdditiveAccumulatorDeps keeps a common bounded accumulator raw:
+//
+//	acc = (acc + a + b - c) % CONST_POSITIVE
+//
+// The modulo bounds the loop-carried value for the next iteration, while the
+// intermediate AddInt/SubInt operations still keep their normal overflow
+// checks. This deliberately rejects multiplicative/division recurrences such
+// as LCGs, where overflow is predictable and boxed arithmetic avoids repeated
+// deopts.
+func collectModuloAdditiveAccumulatorDeps(fn *Function) map[int]bool {
+	keep := make(map[int]bool)
+	if fn == nil || len(fn.Blocks) == 0 {
+		return keep
+	}
+	li := computeLoopInfo(fn)
+	if !li.hasLoops() {
+		return keep
+	}
+	for _, header := range fn.Blocks {
+		if !li.loopHeaders[header.ID] {
+			continue
+		}
+		body := li.headerBlocks[header.ID]
+		for _, phi := range header.Instrs {
+			if phi.Op != OpPhi {
+				break
+			}
+			if !phi.Type.isIntegerLike() {
+				continue
+			}
+			update := loopBackedgeDef(phi, body)
+			if update == nil || update.Op != OpModInt || !positiveConstModDivisor(update) {
+				continue
+			}
+			local := make(map[int]bool)
+			if additiveModuloExprDependsOnPhi(update, phi.ID, local, make(map[int]bool)) {
+				keep[phi.ID] = true
+				for id := range local {
+					keep[id] = true
+				}
+			}
+		}
+	}
+	return keep
+}
+
+func loopBackedgeDef(phi *Instr, body map[int]bool) *Instr {
+	if phi == nil || body == nil {
+		return nil
+	}
+	var update *Instr
+	for predIdx, arg := range phi.Args {
+		if arg == nil || arg.Def == nil {
+			continue
+		}
+		fromLoop := false
+		if predIdx < len(phi.Block.Preds) {
+			fromLoop = body[phi.Block.Preds[predIdx].ID]
+		} else if arg.Def.Block != nil {
+			fromLoop = body[arg.Def.Block.ID]
+		}
+		if !fromLoop {
+			continue
+		}
+		if update != nil {
+			return nil
+		}
+		update = arg.Def
+	}
+	return update
+}
+
+func positiveConstModDivisor(instr *Instr) bool {
+	if instr == nil || instr.Op != OpModInt || len(instr.Args) < 2 {
+		return false
+	}
+	div := instr.Args[1]
+	return div != nil && div.Def != nil && div.Def.Op == OpConstInt && div.Def.Aux > 0 && div.Def.Aux <= MaxInt48
+}
+
+func additiveModuloExprDependsOnPhi(instr *Instr, phiID int, keep map[int]bool, seen map[int]bool) bool {
+	if instr == nil {
+		return false
+	}
+	if instr.ID == phiID {
+		return true
+	}
+	if seen[instr.ID] {
+		return false
+	}
+	seen[instr.ID] = true
+
+	switch instr.Op {
+	case OpModInt:
+		if !positiveConstModDivisor(instr) || len(instr.Args) < 1 {
+			return false
+		}
+		if additiveModuloExprDependsOnValue(instr.Args[0], phiID, keep, seen) {
+			keep[instr.ID] = true
+			return true
+		}
+		return false
+	case OpAddInt, OpSubInt:
+		if len(instr.Args) < 2 {
+			return false
+		}
+		left := additiveModuloExprDependsOnValue(instr.Args[0], phiID, keep, seen)
+		right := additiveModuloExprDependsOnValue(instr.Args[1], phiID, keep, seen)
+		if left || right {
+			keep[instr.ID] = true
+			return true
+		}
+		return false
+	case OpNegInt:
+		if len(instr.Args) < 1 {
+			return false
+		}
+		if additiveModuloExprDependsOnValue(instr.Args[0], phiID, keep, seen) {
+			keep[instr.ID] = true
+			return true
+		}
+		return false
+	case OpMulInt, OpDivIntExact:
+		return false
+	default:
+		return false
+	}
+}
+
+func additiveModuloExprDependsOnValue(v *Value, phiID int, keep map[int]bool, seen map[int]bool) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	if v.ID == phiID {
+		return true
+	}
+	switch v.Def.Op {
+	case OpAddInt, OpSubInt, OpNegInt, OpModInt, OpMulInt, OpDivIntExact:
+		return additiveModuloExprDependsOnPhi(v.Def, phiID, keep, seen)
+	default:
+		// Non-arithmetic integer leaves (loop indices, Len/Floor results,
+		// constants, guarded params) do not participate in the recurrence.
+		return false
+	}
 }
 
 func collectPhiArithmeticDeps(fn *Function) map[int]bool {

@@ -207,6 +207,37 @@ func f(seed) {
 	}
 }
 
+func TestOverflowBoxing_KeepsAdditiveModuloAccumulatorRaw(t *testing.T) {
+	fn := runOverflowBoxingPipelineForTest(t, `
+func f(n) {
+    acc := 0
+    for i := 1; i <= n; i++ {
+        acc = (acc + i + 7) % 1000000007
+    }
+    return acc
+}
+`)
+
+	foundRawMod := false
+	foundRawAdd := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpModInt:
+				foundRawMod = true
+			case OpAddInt:
+				foundRawAdd = true
+			case OpMod, OpAdd:
+				t.Fatalf("additive modulo accumulator should stay raw, found %s\nIR:\n%s", instr.Op, Print(fn))
+			}
+		}
+	}
+	if !foundRawMod || !foundRawAdd {
+		t.Fatalf("expected raw additive modulo accumulator (mod=%v add=%v)\nIR:\n%s",
+			foundRawMod, foundRawAdd, Print(fn))
+	}
+}
+
 func TestOverflowBoxing_BoxesDecrementingInductionUnderUpperGuard(t *testing.T) {
 	fn := runOverflowBoxingPipelineForTest(t, `
 func f(n) {
