@@ -315,13 +315,11 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 	if tm == nil || proto == nil || cf == nil {
 		return
 	}
-	if tm.getProfile(proto).HasLoop {
-		return
-	}
 	current := tm.currentTier2SpeculationProfile(proto)
 	if !tm.recompile.ShouldRefreshProfileForProto(proto, cf, current) {
 		return
 	}
+	profile := tm.getProfile(proto)
 	tm.traceEvent("tier2_refresh", "tier2", proto, map[string]any{
 		"reason":         "feedback_matured",
 		"type_before":    cf.SpeculationSnapshot.TypeObserved,
@@ -337,6 +335,23 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 		"guards_before":  cf.SpecializationVersion.GuardCount,
 		"guards_after":   current.Version.GuardCount,
 	})
+	if profile.HasLoop {
+		if tm.recompileQueue.enqueue(proto, "feedback_matured_entry_refresh", Tier2ExitProfileSite{
+			ExitName:             "EntryRefresh",
+			Reason:               "feedback_matured",
+			QueuedRecompile:      true,
+			RefreshVersionHash:   fmt.Sprintf("%x", current.Version.Hash),
+			RefreshVersionGuards: current.Version.GuardCount,
+			RefreshGuardDelta:    current.Version.GuardCount - cf.SpecializationVersion.GuardCount,
+		}) {
+			proto.Tier2Promoted = false
+			clearFuncProtoDirectEntries(proto)
+			proto.Tier2GlobalCachePtr = 0
+			proto.Tier2GlobalCacheGenPtr = 0
+			proto.Tier2GlobalIndexPtr = 0
+		}
+		return
+	}
 	tm.clearTier2Install(proto)
 }
 

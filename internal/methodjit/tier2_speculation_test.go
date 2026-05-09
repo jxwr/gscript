@@ -606,3 +606,39 @@ func TestTieringManagerRetiresStaleTier2AfterExitFeedback(t *testing.T) {
 			proto.DirectEntryPtr, proto.Tier2DirectEntryPtr, proto.Tier2Promoted)
 	}
 }
+
+func TestTieringManagerQueuesLoopTier2RefreshAtNextEntry(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{
+		Name: "loop",
+		Code: []uint32{
+			vm.EncodeAsBx(vm.OP_FORPREP, 0, 1),
+			vm.EncodeABC(vm.OP_GETFIELD, 1, 0, 0),
+			vm.EncodeAsBx(vm.OP_FORLOOP, 0, -2),
+		},
+	}
+	proto.EnsureFeedback()
+	proto.FieldAccessFeedback[1].Count = 1
+	proto.FieldAccessFeedback[1].ShapeID = 11
+	proto.FieldAccessFeedback[1].FieldIdx = 0
+	proto.DirectEntryPtr = 123
+	proto.Tier2DirectEntryPtr = 456
+	proto.Tier2Promoted = true
+
+	cf := &CompiledFunction{
+		SpeculationSnapshot: Tier2FeedbackSnapshot{},
+	}
+	tm.tier2Compiled[proto] = cf
+	tm.retireStaleTier2AfterFeedback(proto, cf)
+
+	if _, ok := tm.tier2CompiledFor(proto); !ok {
+		t.Fatal("loop refresh should leave current compiled body available for diagnostics/current invocation")
+	}
+	if proto.DirectEntryPtr != 0 || proto.Tier2DirectEntryPtr != 0 || proto.Tier2Promoted {
+		t.Fatalf("loop refresh should revoke published entries: direct=%#x tier2=%#x promoted=%v",
+			proto.DirectEntryPtr, proto.Tier2DirectEntryPtr, proto.Tier2Promoted)
+	}
+	if _, ok := tm.recompileQueue.take(proto); !ok {
+		t.Fatal("loop refresh should queue next-entry recompile")
+	}
+}
