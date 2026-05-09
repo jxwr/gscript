@@ -28,10 +28,17 @@ func FieldSvalsLowerPass(fn *Function) (*Function, error) {
 			if instr == nil {
 				continue
 			}
-			if fieldSvalsLowerBarrier(instr) {
+			if fieldSvalsGlobalBarrier(instr) {
 				cache = make(map[fieldSvalsLowerKey]*Instr)
 				newInstrs = append(newInstrs, instr)
 				continue
+			}
+			if tableID, ok := fieldSvalsMutationTableID(instr); ok {
+				for key := range cache {
+					if key.tableID == tableID {
+						delete(cache, key)
+					}
+				}
 			}
 			if !fieldSvalsLowerable(instr) {
 				newInstrs = append(newInstrs, instr)
@@ -84,9 +91,18 @@ func fieldSvalsLowerEligibleKeys(block *Block) map[fieldSvalsLowerKey]bool {
 	seen := make(map[fieldSvalsLowerKey]bool)
 	broken := make(map[fieldSvalsLowerKey]bool)
 	for _, instr := range block.Instrs {
-		if fieldSvalsLowerBarrier(instr) {
+		if fieldSvalsGlobalBarrier(instr) {
 			seen = make(map[fieldSvalsLowerKey]bool)
 			broken = make(map[fieldSvalsLowerKey]bool)
+			continue
+		}
+		if tableID, ok := fieldSvalsMutationTableID(instr); ok {
+			for key := range seen {
+				if key.tableID == tableID {
+					delete(seen, key)
+					delete(broken, key)
+				}
+			}
 			continue
 		}
 		if !fieldSvalsLowerable(instr) {
@@ -121,7 +137,7 @@ func fieldSvalsLowerable(instr *Instr) bool {
 	return shapeID != 0 && fieldIdx >= 0
 }
 
-func fieldSvalsLowerBarrier(instr *Instr) bool {
+func fieldSvalsGlobalBarrier(instr *Instr) bool {
 	if instr == nil {
 		return true
 	}
@@ -130,13 +146,34 @@ func fieldSvalsLowerBarrier(instr *Instr) bool {
 	}
 	switch instr.Op {
 	case OpSetField:
-		return !fieldSvalsSetFieldPreservesShape(instr)
+		return len(instr.Args) == 0 || instr.Args[0] == nil
 	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
 		OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix,
-		OpSetList, OpAppend, OpCall, OpResume, OpYield, OpSelf, OpSetGlobal, OpSetUpval:
+		OpSetList, OpAppend:
+		return len(instr.Args) == 0 || instr.Args[0] == nil
+	case OpCall, OpResume, OpYield, OpSelf, OpSetGlobal, OpSetUpval:
 		return true
 	default:
 		return false
+	}
+}
+
+func fieldSvalsMutationTableID(instr *Instr) (int, bool) {
+	if instr == nil || len(instr.Args) == 0 || instr.Args[0] == nil {
+		return 0, false
+	}
+	switch instr.Op {
+	case OpSetField:
+		if fieldSvalsSetFieldPreservesShape(instr) {
+			return 0, false
+		}
+		return instr.Args[0].ID, true
+	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
+		OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix,
+		OpSetList, OpAppend:
+		return instr.Args[0].ID, true
+	default:
+		return 0, false
 	}
 }
 
