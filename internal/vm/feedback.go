@@ -189,20 +189,32 @@ const argArrayElementShapeSampleLimit = 8
 // in an array argument's first element. It is intentionally conservative: the
 // optimized callee still guards each loaded element before consuming the fact.
 type ArgArrayElementShapeFeedback struct {
-	Count      uint32
-	ShapeID    uint32
-	FieldNames []string
-	FieldTypes map[string]FeedbackType
-	Nested     map[string]ArgArrayElementShapeFeedback
-	Shapes     [MaxCallSiteFeedbackVMProtos]ArgArrayElementShapeCase
-	ShapeCount uint8
-	Flags      uint8
+	Count       uint32
+	ShapeID     uint32
+	FieldNames  []string
+	FieldTypes  map[string]FeedbackType
+	FieldRanges map[string]IntRangeFeedback
+	Nested      map[string]ArgArrayElementShapeFeedback
+	Shapes      [MaxCallSiteFeedbackVMProtos]ArgArrayElementShapeCase
+	ShapeCount  uint8
+	Flags       uint8
+}
+
+// IntRangeFeedback records a stable integer range for a profiled value. Invalid
+// is sticky: once a non-int value is observed for the same logical field, the
+// range is no longer safe to consume for speculative overflow elimination.
+type IntRangeFeedback struct {
+	Count   uint32
+	Min     int64
+	Max     int64
+	Invalid bool
 }
 
 type ArgArrayElementShapeCase struct {
 	ShapeID       uint32
 	FieldNames    []string
 	FieldTypes    map[string]FeedbackType
+	FieldRanges   map[string]IntRangeFeedback
 	FieldVMProtos map[string]*FuncProto
 }
 
@@ -320,11 +332,17 @@ func observeArgArrayElementShapeCaseTypes(c *ArgArrayElementShapeCase, tbl *runt
 	if c.FieldTypes == nil {
 		c.FieldTypes = make(map[string]FeedbackType, len(fields))
 	}
+	if c.FieldRanges == nil {
+		c.FieldRanges = make(map[string]IntRangeFeedback, len(fields))
+	}
 	for _, field := range fields {
 		value := tbl.RawGetString(field)
 		ft := c.FieldTypes[field]
 		ft.Observe(value.Type())
 		c.FieldTypes[field] = ft
+		rangeFeedback := c.FieldRanges[field]
+		rangeFeedback.Observe(value)
+		c.FieldRanges[field] = rangeFeedback
 		if proto := callFeedbackVMProto(value); proto != nil {
 			if c.FieldVMProtos == nil {
 				c.FieldVMProtos = make(map[string]*FuncProto, len(fields))
@@ -345,12 +363,48 @@ func (af *ArgArrayElementShapeFeedback) observeFieldTypes(tbl *runtime.Table, fi
 	if af.FieldTypes == nil {
 		af.FieldTypes = make(map[string]FeedbackType, len(fields))
 	}
+	if af.FieldRanges == nil {
+		af.FieldRanges = make(map[string]IntRangeFeedback, len(fields))
+	}
 	for _, field := range fields {
 		value := tbl.RawGetString(field)
 		ft := af.FieldTypes[field]
 		ft.Observe(value.Type())
 		af.FieldTypes[field] = ft
+		rangeFeedback := af.FieldRanges[field]
+		rangeFeedback.Observe(value)
+		af.FieldRanges[field] = rangeFeedback
 	}
+}
+
+func (rf *IntRangeFeedback) Observe(value runtime.Value) {
+	if rf == nil {
+		return
+	}
+	if value.Type() != runtime.TypeInt {
+		rf.Invalid = true
+		return
+	}
+	n := value.Int()
+	if rf.Count == 0 {
+		rf.Min = n
+		rf.Max = n
+	} else {
+		if n < rf.Min {
+			rf.Min = n
+		}
+		if n > rf.Max {
+			rf.Max = n
+		}
+	}
+	rf.Count++
+}
+
+func (rf IntRangeFeedback) StableRange() (min, max int64, ok bool) {
+	if rf.Invalid || rf.Count == 0 {
+		return 0, 0, false
+	}
+	return rf.Min, rf.Max, true
 }
 
 func (af *ArgArrayElementShapeFeedback) observeNestedTables(tbl *runtime.Table, fields []string) {

@@ -100,6 +100,12 @@ type Function struct {
 	// arithmetic recurrences such as multiplicative LCGs.
 	IntRanges map[int]intRange
 
+	// ProfiledIntRanges records guarded integer range facts from runtime
+	// feedback, keyed by SSA value ID. RangeAnalysis consumes these as seeds;
+	// the guarding shape/type facts are still emitted separately, so missing
+	// or invalid profile data only disables the optimization.
+	ProfiledIntRanges map[int]intRange
+
 	// IntNonNegative is the set of integer SSA value IDs whose runtime result is
 	// provably >= 0. Populated by RangeAnalysisPass for consumers that only need
 	// a sign fact and must not reuse Int48Safe's overflow-specific meaning.

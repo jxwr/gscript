@@ -5,6 +5,7 @@ package methodjit
 import (
 	"testing"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -385,6 +386,7 @@ func TestFixedShapeTableFactsPass_SeedsGuardedArrayElementArgumentFactInCallee(t
 func makeDoc(i) {
     return {id: i, score: i + 1}
 }
+
 func buildDocs(n) {
     docs := {}
     for i := 1; i <= n; i++ {
@@ -460,5 +462,68 @@ result := driver()
 	}
 	if annotated != 2 {
 		t.Fatalf("expected two annotated array element field reads, got %d\nIR:\n%s", annotated, Print(out))
+	}
+}
+
+func TestFixedShapeTableFactsPass_SeedsProfiledArrayElementFieldRanges(t *testing.T) {
+	top := compileProto(t, `
+func walk(docs, n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        doc := docs[i]
+        total = total + doc.id * 3 + doc.score
+    }
+    return total
+}
+result := walk({}, 0)
+`)
+	walk := findProtoByName(top, "walk")
+	if walk == nil {
+		t.Fatal("expected walk proto")
+	}
+	walk.ArgArrayElementShapeFeedback = make(vm.ArgArrayElementShapeFeedbackVector, walk.NumParams)
+	shapeFields := []string{"id", "score"}
+	walk.ArgArrayElementShapeFeedback[0] = vm.ArgArrayElementShapeFeedback{
+		Count:      4,
+		ShapeID:    runtime.GetShapeID(shapeFields),
+		FieldNames: shapeFields,
+		FieldTypes: map[string]vm.FeedbackType{
+			"id":    vm.FBInt,
+			"score": vm.FBInt,
+		},
+		FieldRanges: map[string]vm.IntRangeFeedback{
+			"id":    {Count: 4, Min: 1, Max: 4},
+			"score": {Count: 4, Min: 2, Max: 5},
+		},
+	}
+	argFacts := profiledFixedShapeArrayElementArgFactsForProto(walk)
+	if len(argFacts) != 1 {
+		t.Fatalf("expected profiled arg fact, got %#v", argFacts)
+	}
+
+	fn := BuildGraph(walk)
+	out, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		FixedShapeArrayElementArgFacts: argFacts,
+	})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(walk): %v", err)
+	}
+
+	rangedFields := 0
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGetField {
+				continue
+			}
+			if r, ok := out.IntRanges[instr.ID]; ok && r.known {
+				rangedFields++
+				if instr.Type != TypeInt {
+					t.Fatalf("profiled range did not force int field type: %s", instr.Type)
+				}
+			}
+		}
+	}
+	if rangedFields != 2 {
+		t.Fatalf("expected two ranged field reads, got %d\nIR:\n%s", rangedFields, Print(out))
 	}
 }

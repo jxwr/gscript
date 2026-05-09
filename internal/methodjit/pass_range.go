@@ -295,6 +295,11 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	}
 
 	ranges := make(map[int]intRange)
+	for id, r := range fn.ProfiledIntRanges {
+		if r.known {
+			ranges[id] = r
+		}
+	}
 	staticLens := collectStaticLenRanges(fn)
 
 	// Phase A: seed loop counter ranges from FORLOOP/while-loop structure.
@@ -307,7 +312,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 		changed := false
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
-				newR := computeRange(instr, ranges, staticLens)
+				newR := computeRange(instr, ranges, staticLens, fn.ProfiledIntRanges)
 				if !instr.Type.isIntegerLike() {
 					continue
 				}
@@ -358,7 +363,10 @@ func (t Type) isIntegerLike() bool {
 
 // computeRange returns the inferred range of `instr`'s result value using the
 // current `ranges` map. Unknown/unsupported ops produce top.
-func computeRange(instr *Instr, ranges map[int]intRange, staticLens map[int]intRange) intRange {
+func computeRange(instr *Instr, ranges map[int]intRange, staticLens, profiledRanges map[int]intRange) intRange {
+	if r, ok := profiledRanges[instr.ID]; ok && r.known {
+		return r
+	}
 	switch instr.Op {
 	case OpConstInt:
 		return pointRange(instr.Aux)
