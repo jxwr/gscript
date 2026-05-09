@@ -138,7 +138,7 @@ func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePrealloc
 					if fbKind, ok := arrayKindToFBKind(kind); ok {
 						instr.Aux2 = int64(fbKind)
 					}
-				} else if instr.Op == OpGetTable && hasReadHint && hint.resultType == TypeTable {
+				} else if hasReadHint && hint.resultType == TypeTable {
 					instr.Aux2 = int64(vm.FBKindMixed)
 				}
 			}

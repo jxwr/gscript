@@ -1,13 +1,16 @@
 package methodjit
 
-import "github.com/gscript/gscript/internal/vm"
+import (
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
+)
 
 // TableArrayStoreLoopVersionPass creates loop-scoped typed-array facts for safe
 // local typed-table mutation loops, then lowers typed SetTable sites to checked
 // OpTableArrayStore. Bool loops still require a dominating fill because nil
-// bool writes have sentinel semantics. Numeric loops may grow within the
-// preallocated typed backing and deopt on misses; the emitter carries the
-// updated length register across those in-capacity appends.
+// bool writes have sentinel semantics. Numeric and mixed loops may grow within
+// preallocated backing and deopt on misses; the emitter carries the updated
+// length register across those in-capacity appends.
 func TableArrayStoreLoopVersionPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
@@ -144,7 +147,7 @@ func tableArrayStoreLoopCandidateFor(fn *Function, body map[int]bool) (tableArra
 }
 
 func tableArrayStoreLoopKind(kind int64) bool {
-	return kind == int64(vm.FBKindInt) || kind == int64(vm.FBKindFloat) || kind == int64(vm.FBKindBool)
+	return kind == int64(vm.FBKindMixed) || kind == int64(vm.FBKindInt) || kind == int64(vm.FBKindFloat) || kind == int64(vm.FBKindBool)
 }
 
 func tableArrayStoreLoopLocalTypedTable(table *Value, kind int64, body map[int]bool) bool {
@@ -155,6 +158,9 @@ func tableArrayStoreLoopLocalTypedTable(table *Value, kind int64, body map[int]b
 		return false
 	}
 	_, arrayKind := unpackNewTableAux2(table.Def.Aux2)
+	if arrayKind == runtime.ArrayMixed && kind == int64(vm.FBKindMixed) {
+		return true
+	}
 	fbKind, ok := arrayKindToFBKind(arrayKind)
 	return ok && int64(fbKind) == kind
 }
@@ -162,6 +168,9 @@ func tableArrayStoreLoopLocalTypedTable(table *Value, kind int64, body map[int]b
 func tableArrayStoreLoopHasLengthSeed(fn *Function, dom *domInfo, preheader *Block, cand tableArrayStoreLoopCandidate, nestedBuilder bool) bool {
 	if fn == nil || dom == nil || preheader == nil || cand.table == nil {
 		return false
+	}
+	if cand.kind == int64(vm.FBKindMixed) {
+		return tableArrayStoreLoopHasMixedPrealloc(cand)
 	}
 	if cand.kind != int64(vm.FBKindBool) {
 		return tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand) ||
@@ -186,6 +195,14 @@ func tableArrayStoreLoopHasLengthSeed(fn *Function, dom *domInfo, preheader *Blo
 	return false
 }
 
+func tableArrayStoreLoopHasMixedPrealloc(cand tableArrayStoreLoopCandidate) bool {
+	if cand.table == nil || cand.table.Def == nil || cand.table.Def.Op != OpNewTable {
+		return false
+	}
+	_, arrayKind := unpackNewTableAux2(cand.table.Def.Aux2)
+	return arrayKind == runtime.ArrayMixed && cand.table.Def.Aux > 0
+}
+
 func tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand tableArrayStoreLoopCandidate) bool {
 	if !tableArrayStoreLoopNumericHasTypedPrealloc(cand) {
 		return false
@@ -204,6 +221,9 @@ func tableArrayStoreLoopNumericHasTypedPrealloc(cand tableArrayStoreLoopCandidat
 }
 
 func tableArrayStoreLoopFlags(cand tableArrayStoreLoopCandidate, nestedBuilder bool) int64 {
+	if cand.kind == int64(vm.FBKindMixed) && tableArrayStoreLoopHasMixedPrealloc(cand) {
+		return tableArrayStoreFlagAllowGrow | tableArrayStoreFlagExitResumeOnMiss
+	}
 	if tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand) ||
 		(nestedBuilder && tableArrayStoreLoopNumericHasTypedPrealloc(cand)) {
 		return tableArrayStoreFlagAllowGrow | tableArrayStoreFlagExitResumeOnMiss

@@ -515,6 +515,14 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	// Fixed-table lowering turns table-valued row constructors into explicit
+	// table-typed values. Run preallocation again so outer arrays of records can
+	// be sized and later lowered to raw mixed-array stores.
+	fn, err = TablePreallocHintPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TablePreallocHint (post-fixed-table-lowering): %w", err)
+	}
+
 	if hasFixedTableScalarReplacementCandidate(fn) {
 		fn, err = EscapeAnalysisPass(fn)
 		if err != nil {
