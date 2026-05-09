@@ -238,6 +238,70 @@ func f(n) {
 	}
 }
 
+func TestOverflowBoxing_KeepsBranchedAdditiveModuloAccumulatorRaw(t *testing.T) {
+	fn := runOverflowBoxingPipelineForTest(t, `
+func f(n) {
+    acc := 0
+    for i := 1; i <= n; i++ {
+        if i % 2 == 0 {
+            acc = (acc + i + 7) % 1000000007
+        } else {
+            acc = (acc + i + 11) % 1000000007
+        }
+    }
+    return acc
+}
+`)
+
+	foundRawMod := 0
+	foundRawAdd := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpModInt:
+				foundRawMod++
+			case OpAddInt:
+				foundRawAdd = true
+			case OpMod, OpAdd:
+				t.Fatalf("branched additive modulo accumulator should stay raw, found %s\nIR:\n%s", instr.Op, Print(fn))
+			}
+		}
+	}
+	if foundRawMod < 2 || !foundRawAdd {
+		t.Fatalf("expected raw branched additive modulo accumulator (mods=%d add=%v)\nIR:\n%s",
+			foundRawMod, foundRawAdd, Print(fn))
+	}
+}
+
+func TestOverflowBoxing_KeepsConditionalCarryModuloAccumulatorRaw(t *testing.T) {
+	fn := runOverflowBoxingPipelineForTest(t, `
+func f(n) {
+    acc := 0
+    for i := 1; i <= n; i++ {
+        if i % 3 == 0 {
+            acc = (acc + i + 7) % 1000000007
+        }
+    }
+    return acc
+}
+`)
+
+	foundRawMod := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpModInt:
+				foundRawMod = true
+			case OpMod, OpAdd:
+				t.Fatalf("conditional-carry modulo accumulator should stay raw, found %s\nIR:\n%s", instr.Op, Print(fn))
+			}
+		}
+	}
+	if !foundRawMod {
+		t.Fatalf("expected raw conditional-carry modulo accumulator\nIR:\n%s", Print(fn))
+	}
+}
+
 func TestOverflowBoxing_BoxesDecrementingInductionUnderUpperGuard(t *testing.T) {
 	fn := runOverflowBoxingPipelineForTest(t, `
 func f(n) {

@@ -44,7 +44,7 @@ func OverflowBoxingPass(fn *Function) (*Function, error) {
 				}
 				switch instr.Op {
 				case OpPhi:
-					if anyArgBoxed(instr, boxed) {
+					if !overflowCheckedRaw[instr.ID] && anyArgBoxed(instr, boxed) {
 						boxed[instr.ID] = true
 						changed = true
 					}
@@ -133,27 +133,69 @@ func collectModuloAdditiveAccumulatorDeps(fn *Function) map[int]bool {
 			if !phi.Type.isIntegerLike() {
 				continue
 			}
-			update := loopBackedgeDef(phi, body)
-			if update == nil || update.Op != OpModInt || !positiveConstModDivisor(update) {
+			updates := loopBackedgeDefs(phi, body)
+			if len(updates) == 0 {
 				continue
 			}
 			local := make(map[int]bool)
-			if additiveModuloExprDependsOnPhi(update, phi.ID, local, make(map[int]bool)) {
-				keep[phi.ID] = true
-				for id := range local {
-					keep[id] = true
+			allModuloUpdates := true
+			for _, update := range updates {
+				if update != nil && update.ID == phi.ID {
+					continue
 				}
+				if update == nil || update.Op != OpModInt || !positiveConstModDivisor(update) ||
+					!additiveModuloExprDependsOnPhi(update, phi.ID, local, make(map[int]bool)) {
+					allModuloUpdates = false
+					break
+				}
+				markAdditiveModuloExpr(update, local, make(map[int]bool))
+			}
+			if !allModuloUpdates {
+				continue
+			}
+			keep[phi.ID] = true
+			for id := range local {
+				keep[id] = true
 			}
 		}
 	}
 	return keep
 }
 
+func markAdditiveModuloExpr(instr *Instr, keep map[int]bool, seen map[int]bool) {
+	if instr == nil || keep == nil {
+		return
+	}
+	if seen[instr.ID] {
+		return
+	}
+	seen[instr.ID] = true
+	switch instr.Op {
+	case OpAddInt, OpSubInt, OpNegInt, OpModInt:
+		keep[instr.ID] = true
+	default:
+		return
+	}
+	for _, arg := range instr.Args {
+		if arg != nil && arg.Def != nil {
+			markAdditiveModuloExpr(arg.Def, keep, seen)
+		}
+	}
+}
+
 func loopBackedgeDef(phi *Instr, body map[int]bool) *Instr {
+	updates := loopBackedgeDefs(phi, body)
+	if len(updates) != 1 {
+		return nil
+	}
+	return updates[0]
+}
+
+func loopBackedgeDefs(phi *Instr, body map[int]bool) []*Instr {
 	if phi == nil || body == nil {
 		return nil
 	}
-	var update *Instr
+	var updates []*Instr
 	for predIdx, arg := range phi.Args {
 		if arg == nil || arg.Def == nil {
 			continue
@@ -167,12 +209,9 @@ func loopBackedgeDef(phi *Instr, body map[int]bool) *Instr {
 		if !fromLoop {
 			continue
 		}
-		if update != nil {
-			return nil
-		}
-		update = arg.Def
+		updates = append(updates, arg.Def)
 	}
-	return update
+	return updates
 }
 
 func positiveConstModDivisor(instr *Instr) bool {
