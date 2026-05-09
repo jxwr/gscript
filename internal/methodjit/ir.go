@@ -252,6 +252,10 @@ type CallABIDescriptor struct {
 	NumRets      int
 	RawIntParams []bool
 	RawIntReturn bool
+	TypedPeer    bool
+	ParamReps    []SpecializedABIParamRep
+	ReturnRep    SpecializedABIReturnRep
+	ArgFacts     map[int]FixedShapeTableFact
 }
 
 // CallABIAnnotationConfig supplies global function facts to the call ABI

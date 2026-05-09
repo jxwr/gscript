@@ -297,6 +297,72 @@ func TestFieldShapeCalleeABISummaryUsesReceiverFacts(t *testing.T) {
 	}
 }
 
+func TestCallABIAnnotate_FieldShapeTypedPeerDescriptor(t *testing.T) {
+	src := `func step_io(a, tick) {
+    a.queue = (a.queue + tick + a.id) % 211
+    a.bytes = a.bytes + a.queue * 13 + tick
+    return a.bytes % 100000 + #a.state
+}`
+	top := compileTop(t, src)
+	stepIO := findProtoByName(top, "step_io")
+	if stepIO == nil {
+		t.Fatal("step_io proto not found")
+	}
+	calleeLoad := &Instr{ID: 7, Op: OpGetField}
+	tick := &Value{ID: 2, Def: &Instr{ID: 2, Op: OpLoadSlot, Type: TypeInt}}
+	call := &Instr{
+		ID:        9,
+		Op:        OpCall,
+		Args:      []*Value{{ID: calleeLoad.ID, Def: calleeLoad}, {ID: 1}, tick},
+		Aux:       0,
+		Aux2:      2,
+		HasSource: true,
+		SourcePC:  0,
+	}
+	block := &Block{ID: 0, Instrs: []*Instr{call}}
+	fn := &Function{
+		Proto:  &vm.FuncProto{Name: "caller", Code: []uint32{vm.EncodeABC(vm.OP_CALL, 0, 3, 2)}},
+		Blocks: []*Block{block},
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			calleeLoad.ID: {
+				{
+					ShapeID:  316,
+					FieldIdx: 5,
+					VMProto:  stepIO,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    316,
+						FieldNames: []string{"id", "kind", "queue", "bytes", "state", "step"},
+						FieldTypes: map[string]Type{
+							"id":    TypeInt,
+							"queue": TypeInt,
+							"bytes": TypeInt,
+							"state": TypeString,
+							"step":  TypeFunction,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fn = AnnotateCallABIs(fn, CallABIAnnotationConfig{})
+	desc, ok := fn.CallABIs[call.ID]
+	if !ok {
+		t.Fatalf("missing typed-peer descriptor")
+	}
+	if !desc.TypedPeer || desc.Callee != stepIO || desc.ReturnRep != SpecializedABIReturnRawInt {
+		t.Fatalf("unexpected descriptor: %+v", desc)
+	}
+	if len(desc.ParamReps) != 2 ||
+		desc.ParamReps[0] != SpecializedABIParamRawTablePtr ||
+		desc.ParamReps[1] != SpecializedABIParamRawInt {
+		t.Fatalf("ParamReps=%v", desc.ParamReps)
+	}
+	if desc.ArgFacts[0].ShapeID != 316 {
+		t.Fatalf("ArgFacts=%+v", desc.ArgFacts)
+	}
+}
+
 func TestInline_StableFeedbackCalleeInsertsGuardAndInlines(t *testing.T) {
 	src := `func inc(n) { return n + 1 }
 func apply(f) {

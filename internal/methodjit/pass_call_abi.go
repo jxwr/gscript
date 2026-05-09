@@ -171,6 +171,11 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 	if fn != nil && callee == fn.Proto {
 		return CallABIDescriptor{}, "self call uses separate raw-int result annotation"
 	}
+	if desc, ok, reason := callABITypedPeerDescriptorFor(fn, instr, callee); ok {
+		return desc, ""
+	} else if reason != "" {
+		_ = reason // Keep looking for a raw-int ABI below.
+	}
 	abi := AnalyzeSpecializedABI(callee)
 	crossRecursiveNumeric := false
 	if !abi.Eligible || abi.Kind != SpecializedABIRawInt || abi.Return != SpecializedABIReturnRawInt {
@@ -208,7 +213,83 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 		NumRets:      1,
 		RawIntParams: rawParams,
 		RawIntReturn: true,
+		ParamReps:    specializedRawIntParamReps(numArgs),
+		ReturnRep:    SpecializedABIReturnRawInt,
 	}, ""
+}
+
+func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncProto) (CallABIDescriptor, bool, string) {
+	if fn == nil || instr == nil || callee == nil {
+		return CallABIDescriptor{}, false, ""
+	}
+	if !callABIHasExactResultShape(fn, instr, 1) {
+		return CallABIDescriptor{}, false, "typed-peer requires one exact result"
+	}
+	argFacts := callABITypedPeerArgFacts(fn, instr, callee)
+	abi := AnalyzeTypedPeerABIWithArgFacts(callee, argFacts)
+	if !abi.Eligible {
+		return CallABIDescriptor{}, false, "callee typed-peer ABI rejected: " + abi.RejectWhy
+	}
+	if abi.Return != SpecializedABIReturnRawInt && abi.Return != SpecializedABIReturnRawTablePtr {
+		return CallABIDescriptor{}, false, "typed-peer return is not directly representable"
+	}
+	numArgs := len(instr.Args) - 1
+	if numArgs != callee.NumParams || len(abi.Params) != numArgs {
+		return CallABIDescriptor{}, false, "argument count does not match typed-peer ABI"
+	}
+	for i, rep := range abi.Params {
+		switch rep {
+		case SpecializedABIParamRawInt:
+			if !callABIValueIsInt(instr.Args[1+i]) {
+				return CallABIDescriptor{}, false, "typed-peer int argument is not TypeInt"
+			}
+		case SpecializedABIParamRawTablePtr:
+			if !callABIValueIsTable(instr.Args[1+i]) && argFacts[i].ShapeID == 0 {
+				return CallABIDescriptor{}, false, "typed-peer table argument has no table fact"
+			}
+		default:
+			return CallABIDescriptor{}, false, "unsupported typed-peer parameter"
+		}
+	}
+	return CallABIDescriptor{
+		Callee:    callee,
+		NumArgs:   numArgs,
+		NumRets:   1,
+		TypedPeer: true,
+		ParamReps: append([]SpecializedABIParamRep(nil), abi.Params...),
+		ReturnRep: abi.Return,
+		ArgFacts:  cloneCallABIArgFacts(argFacts),
+	}, true, ""
+}
+
+func callABITypedPeerArgFacts(fn *Function, instr *Instr, callee *vm.FuncProto) map[int]FixedShapeTableFact {
+	cases := fieldShapeCalleeCases(fn, instr)
+	if len(cases) != 1 || cases[0].VMProto != callee || cases[0].ReceiverFact.ShapeID == 0 {
+		return nil
+	}
+	return map[int]FixedShapeTableFact{0: cases[0].ReceiverFact}
+}
+
+func cloneCallABIArgFacts(in map[int]FixedShapeTableFact) map[int]FixedShapeTableFact {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[int]FixedShapeTableFact, len(in))
+	for k, v := range in {
+		out[k] = cloneFixedShapeTableFact(v)
+	}
+	return out
+}
+
+func specializedRawIntParamReps(n int) []SpecializedABIParamRep {
+	if n <= 0 {
+		return nil
+	}
+	out := make([]SpecializedABIParamRep, n)
+	for i := range out {
+		out[i] = SpecializedABIParamRawInt
+	}
+	return out
 }
 
 func callABIFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool) {
