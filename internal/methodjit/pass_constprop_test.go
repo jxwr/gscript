@@ -8,6 +8,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -45,6 +46,31 @@ func TestConstProp_AddConsts(t *testing.T) {
 				t.Errorf("expected 0 args after folding, got %d", len(instr.Args))
 			}
 		}
+	}
+}
+
+func TestConstProp_LenConstString(t *testing.T) {
+	fn := &Function{
+		Proto: &vm.FuncProto{
+			Name:      "strlen",
+			Constants: []runtime.Value{runtime.StringValue("worker")},
+		},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	s := &Instr{ID: fn.newValueID(), Op: OpConstString, Type: TypeString, Aux: 0, Block: b}
+	ln := &Instr{ID: fn.newValueID(), Op: OpLen, Type: TypeInt, Args: []*Value{s.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{ln.Value()}, Block: b}
+	b.Instrs = []*Instr{s, ln, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := ConstPropPass(fn)
+	if err != nil {
+		t.Fatalf("ConstPropPass error: %v", err)
+	}
+	if result.Entry.Instrs[1].Op != OpConstInt || result.Entry.Instrs[1].Aux != 6 {
+		t.Fatalf("Len const string folded to %s/%d, want ConstInt/6", result.Entry.Instrs[1].Op, result.Entry.Instrs[1].Aux)
 	}
 }
 

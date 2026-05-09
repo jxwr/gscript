@@ -19,7 +19,9 @@ import (
 // arithmetic on constant operands into new constants.
 func ConstPropPass(fn *Function) (*Function, error) {
 	cp := &constProp{
-		constants: make(map[int]constVal),
+		fn:         fn,
+		constants:  make(map[int]constVal),
+		stringLens: make(map[int]int64),
 	}
 
 	// Single forward pass: collect constants and fold.
@@ -41,7 +43,9 @@ type constVal struct {
 
 // constProp holds the constant propagation state.
 type constProp struct {
-	constants map[int]constVal // value ID -> known constant
+	fn         *Function
+	constants  map[int]constVal // value ID -> known numeric constant
+	stringLens map[int]int64    // value ID -> known string byte length
 }
 
 // process examines one instruction: records constants and folds operations.
@@ -51,6 +55,13 @@ func (cp *constProp) process(instr *Instr) {
 		cp.constants[instr.ID] = constVal{isInt: true, intVal: instr.Aux}
 	case OpConstFloat:
 		cp.constants[instr.ID] = constVal{isInt: false, floatVal: math.Float64frombits(uint64(instr.Aux))}
+	case OpConstString:
+		if cp.fn != nil && cp.fn.Proto != nil && instr.Aux >= 0 && int(instr.Aux) < len(cp.fn.Proto.Constants) {
+			c := cp.fn.Proto.Constants[instr.Aux]
+			if c.IsString() {
+				cp.stringLens[instr.ID] = int64(len(c.Str()))
+			}
+		}
 
 	// Integer arithmetic.
 	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact:
@@ -73,6 +84,17 @@ func (cp *constProp) process(instr *Instr) {
 		cp.foldGenericBinary(instr)
 	case OpMod:
 		cp.foldGenericBinary(instr)
+	case OpLen:
+		cp.foldLen(instr)
+	}
+}
+
+func (cp *constProp) foldLen(instr *Instr) {
+	if len(instr.Args) < 1 || instr.Args[0] == nil {
+		return
+	}
+	if n, ok := cp.stringLens[instr.Args[0].ID]; ok {
+		cp.rewriteAsConstInt(instr, n)
 	}
 }
 
