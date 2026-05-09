@@ -255,17 +255,11 @@ func (ec *emitContext) emitGetFieldDirectPolyShapeFacts(instr *Instr) bool {
 	asm.B(missLabel)
 
 	asm.Label(missLabel)
-	if ec.emitGetFieldPolymorphicCache(instr) {
-		asm.B(doneLabel)
-	} else if ec.emitGetFieldDynamicCache(instr) {
-		asm.B(doneLabel)
-	} else {
-		savedReprs := ec.snapshotValueReprs()
-		ec.emitGetFieldExit(instr)
-		ec.emitUnboxRawIntRegs(savedReprs)
-		ec.restoreValueReprSnapshot(savedReprs)
-		asm.B(doneLabel)
-	}
+	savedReprs := ec.snapshotValueReprs()
+	ec.emitGetFieldExit(instr)
+	ec.emitUnboxRawIntRegs(savedReprs)
+	ec.restoreValueReprSnapshot(savedReprs)
+	asm.B(doneLabel)
 
 	if instr.Type == TypeFloat || instr.Type == TypeInt {
 		asm.Label(typeDeoptLabel)
