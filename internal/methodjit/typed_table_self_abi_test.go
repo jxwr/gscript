@@ -155,9 +155,6 @@ root := makeTree(5)
 	if len(got) != 1 || !got[0].IsInt() || got[0].Int() != want {
 		t.Fatalf("Tier2 cold-cache checkTree(root)=%v, want int %d", got, want)
 	}
-	if exits := tm.ExitStats().ByExitCode["ExitTableExit"]; exits == 0 {
-		t.Fatal("expected cold field-cache table exits")
-	}
 	if exits := tm.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
 		t.Fatalf("typed self recursion used boxed call exit %d times", exits)
 	}

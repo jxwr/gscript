@@ -116,6 +116,10 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 		return
 	}
 
+	if instr.Args[0].Def != nil && instr.Args[0].Def.Op == OpNewFixedTable {
+		ec.emitGetFieldFixedRecordFastPath(instr, tblValueID, shapeID, fieldIdx, doneLabel, deoptLabel, typeDeoptLabel)
+	}
+
 	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
 	if shapeWasVerified {
 		asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
@@ -163,6 +167,46 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	}
 
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitGetFieldFixedRecordFastPath(instr *Instr, tblValueID int, shapeID uint32, fieldIdx int, doneLabel, deoptLabel, typeDeoptLabel string) {
+	if ec == nil || instr == nil || shapeID == 0 || fieldIdx < 0 {
+		return
+	}
+	asm := ec.asm
+	notRecordLabel := ec.uniqueLabel("getfield_not_fixed_record")
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	asm.LSRimm(jit.X1, jit.X0, 48)
+	asm.MOVimm16(jit.X2, jit.NB_TagPtrShr48)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, notRecordLabel)
+	asm.LSRimm(jit.X1, jit.X0, uint8(jit.NB_PtrSubShift))
+	asm.LoadImm64(jit.X2, 0xF)
+	asm.ANDreg(jit.X1, jit.X1, jit.X2)
+	asm.CMPimm(jit.X1, jit.NB_PtrSubFixedRecord)
+	asm.BCond(jit.CondNE, notRecordLabel)
+
+	jit.EmitExtractPtr(asm, jit.X3, jit.X0)
+	asm.CBZ(jit.X3, deoptLabel)
+	asm.LDR(jit.X1, jit.X3, jit.FixedRecordOffMaterialized)
+	asm.CBNZ(jit.X1, deoptLabel)
+	asm.LDRW(jit.X1, jit.X3, jit.FixedRecordOffShapeID)
+	asm.LoadImm64(jit.X2, int64(shapeID))
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, deoptLabel)
+	asm.LDRB(jit.X1, jit.X3, jit.FixedRecordOffN)
+	asm.LoadImm64(jit.X2, int64(fieldIdx))
+	asm.CMPreg(jit.X2, jit.X1)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.ADDimm(jit.X3, jit.X3, jit.FixedRecordOffValues)
+	asm.LDRreg(jit.X0, jit.X3, jit.X2)
+	ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+	asm.B(doneLabel)
+
+	asm.Label(notRecordLabel)
 }
 
 func (ec *emitContext) emitGetFieldDirectPolyShapeFacts(instr *Instr) bool {
