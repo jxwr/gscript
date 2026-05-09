@@ -127,3 +127,54 @@ func TestFieldSvalsLower_NilSetFieldRemainsBarrier(t *testing.T) {
 		t.Fatalf("nil SetField should remain a barrier:\n%s", Print(out))
 	}
 }
+
+func TestFieldSvalsLower_CrossBlockDominatedLoads(t *testing.T) {
+	fn, b0, obj := newFieldNumFusionFn("field_svals_cross_block")
+	b1 := &Block{ID: 1}
+	b2 := &Block{ID: 2}
+	b3 := &Block{ID: 3}
+	b0.Succs = []*Block{b1, b2}
+	b1.Preds = []*Block{b0}
+	b2.Preds = []*Block{b0}
+	b1.Succs = []*Block{b3}
+	b2.Succs = []*Block{b3}
+	b3.Preds = []*Block{b1, b2}
+	fn.Blocks = []*Block{b0, b1, b2, b3}
+
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: b0}
+	gx := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 1, Aux2: int64(42)<<32 | 0, Block: b0}
+	gy := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 2, Aux2: int64(42)<<32 | 1, Block: b1}
+	gz := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 3, Aux2: int64(42)<<32 | 2, Block: b2}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{gx.Value(), gy.Value(), gz.Value()}, Block: b3}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Args: []*Value{cond.Value()}, Block: b0}
+	j1 := &Instr{ID: fn.newValueID(), Op: OpJump, Block: b1}
+	j2 := &Instr{ID: fn.newValueID(), Op: OpJump, Block: b2}
+	b0.Instrs = []*Instr{obj, cond, gx, br}
+	b1.Instrs = []*Instr{gy, j1}
+	b2.Instrs = []*Instr{gz, j2}
+	b3.Instrs = []*Instr{ret}
+
+	out, err := FieldSvalsLowerPass(fn)
+	if err != nil {
+		t.Fatalf("FieldSvalsLowerPass: %v", err)
+	}
+	if errs := Validate(out); len(errs) > 0 {
+		t.Fatalf("invalid IR after lower: %v\n%s", errs, Print(out))
+	}
+	var svals *Instr
+	for _, instr := range b0.Instrs {
+		if instr.Op == OpFieldSvals {
+			svals = instr
+		}
+	}
+	if svals == nil {
+		t.Fatalf("missing cross-block FieldSvals:\n%s", Print(out))
+	}
+	if gx.Op != OpFieldLoad || gy.Op != OpFieldLoad || gz.Op != OpFieldLoad ||
+		gx.Args[0].ID != svals.ID || gy.Args[0].ID != svals.ID || gz.Args[0].ID != svals.ID {
+		t.Fatalf("loads did not share cross-block FieldSvals:\n%s", Print(out))
+	}
+}

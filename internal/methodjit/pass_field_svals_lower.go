@@ -16,6 +16,9 @@ func FieldSvalsLowerPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
+	if crossBlockFieldSvalsLower(fn) {
+		relinkValueDefs(fn)
+	}
 	changed := false
 	for _, block := range fn.Blocks {
 		if block == nil || len(block.Instrs) == 0 {
@@ -81,9 +84,154 @@ func FieldSvalsLowerPass(fn *Function) (*Function, error) {
 	return fn, nil
 }
 
+func crossBlockFieldSvalsLower(fn *Function) bool {
+	if fn == nil || len(fn.Blocks) == 0 {
+		return false
+	}
+	dom := computeDominators(fn)
+	if dom == nil {
+		return false
+	}
+	groups := make(map[fieldSvalsLowerKey][]useSite)
+	blockSet := make(map[fieldSvalsLowerKey]map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if !fieldSvalsLowerable(instr) {
+				continue
+			}
+			shapeID := uint32(instr.Aux2 >> 32)
+			key := fieldSvalsLowerKey{tableID: instr.Args[0].ID, shapeID: shapeID}
+			groups[key] = append(groups[key], useSite{block: block, instr: instr})
+			if blockSet[key] == nil {
+				blockSet[key] = make(map[int]bool)
+			}
+			blockSet[key][block.ID] = true
+		}
+	}
+	changed := false
+	for key, uses := range groups {
+		if len(uses) < 3 || len(blockSet[key]) < 2 {
+			continue
+		}
+		def := valueDefByID(fn, key.tableID)
+		if def == nil || def.Block == nil || def.Op == OpGetField || def.Op == OpGetFieldNumToFloat {
+			continue
+		}
+		if !crossBlockFieldSvalsSafe(fn, dom, key, def.Block, uses) {
+			continue
+		}
+		svals := &Instr{
+			ID:    fn.newValueID(),
+			Op:    OpFieldSvals,
+			Type:  TypeInt,
+			Args:  []*Value{def.Value()},
+			Aux:   int64(key.shapeID),
+			Block: def.Block,
+		}
+		svals.copySourceFrom(uses[0].instr)
+		insertAfterInstr(def.Block, def, svals)
+		functionRemarks(fn).Add("FieldSvalsLower", "changed", def.Block.ID, svals.ID, svals.Op,
+			fmt.Sprintf("created cross-block shared svals pointer for table v%d shape %d", key.tableID, key.shapeID))
+		for _, use := range uses {
+			fieldIdx := int(int32(use.instr.Aux2 & 0xFFFFFFFF))
+			if use.instr.Op == OpGetFieldNumToFloat {
+				use.instr.Op = OpFieldLoadNumToFloat
+			} else {
+				use.instr.Op = OpFieldLoad
+			}
+			use.instr.Args = []*Value{svals.Value()}
+			use.instr.Aux = int64(fieldIdx)
+			use.instr.Aux2 = 0
+			functionRemarks(fn).Add("FieldSvalsLower", "changed", use.block.ID, use.instr.ID, use.instr.Op,
+				fmt.Sprintf("lowered cross-block fixed-shape field load via shared svals v%d field %d", svals.ID, fieldIdx))
+		}
+		changed = true
+	}
+	return changed
+}
+
+func valueDefByID(fn *Function, id int) *Instr {
+	if fn == nil {
+		return nil
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.ID == id {
+				return instr
+			}
+		}
+	}
+	return nil
+}
+
+func crossBlockFieldSvalsSafe(fn *Function, dom *domInfo, key fieldSvalsLowerKey, defBlock *Block, uses []useSite) bool {
+	if fn == nil || dom == nil || defBlock == nil || len(uses) == 0 {
+		return false
+	}
+	for _, use := range uses {
+		if use.block == nil || use.instr == nil || !dom.dominates(defBlock.ID, use.block.ID) {
+			return false
+		}
+	}
+	for _, block := range fn.Blocks {
+		if block == nil || !dom.dominates(defBlock.ID, block.ID) {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op.IsTerminator() {
+				continue
+			}
+			if crossBlockFieldSvalsGlobalBarrier(instr) {
+				return false
+			}
+			if tableID, ok := fieldSvalsMutationTableID(instr); ok && tableID == key.tableID {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func crossBlockFieldSvalsGlobalBarrier(instr *Instr) bool {
+	if instr == nil {
+		return true
+	}
+	switch instr.Op {
+	case OpCall, OpResume, OpYield, OpSelf, OpSetGlobal, OpSetUpval:
+		return true
+	default:
+		return false
+	}
+}
+
+func insertAfterInstr(block *Block, after, instr *Instr) {
+	if block == nil || instr == nil {
+		return
+	}
+	if after == nil {
+		insertAtTopAfterPhis(block, instr)
+		return
+	}
+	for i, cur := range block.Instrs {
+		if cur == after {
+			idx := i + 1
+			block.Instrs = append(block.Instrs, nil)
+			copy(block.Instrs[idx+1:], block.Instrs[idx:])
+			block.Instrs[idx] = instr
+			return
+		}
+	}
+	insertBeforeTerminator(block, instr)
+}
+
 type fieldSvalsLowerKey struct {
 	tableID int
 	shapeID uint32
+}
+
+type useSite struct {
+	block *Block
+	instr *Instr
 }
 
 func fieldSvalsLowerEligibleKeys(block *Block) map[fieldSvalsLowerKey]bool {
