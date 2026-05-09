@@ -102,6 +102,12 @@ type rawSelfLiveSpill struct {
 	stackOff int
 }
 
+type callCalleeFlagSpec struct {
+	protos        []*vm.FuncProto
+	knownLeaf     bool
+	knownNoGlobal bool
+}
+
 // emitCallNative emits a native BLR call sequence for OpCall in Tier 2.
 // Uses selective spill/reload of SSA registers around the BLR: only registers
 // that are actually live across the call point are saved/restored. Falls back
@@ -255,6 +261,10 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 		asm.CMPreg(jit.X1, jit.X3)
 		asm.BCond(jit.CondNE, slowLabel)
 	}
+	flagSpec := ec.callCalleeFlagSpec(instr)
+	if noDepthCallee == nil {
+		ec.emitGuardCalleeProtoSet(flagSpec.protos, slowLabel)
+	}
 
 	// Step 5: Bounds check: callee register window fits in register file.
 	asm.LDR(jit.X3, jit.X1, funcProtoOffMaxStack) // X3 = calleeMaxStack (int)
@@ -296,12 +306,19 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// while a BL/BLR callee must return through the direct epilogue.
 	asm.SUBimm(jit.SP, jit.SP, 128)
 	if dynamicCalleeFlags {
-		asm.MOVimm16(jit.X6, 0)
-		if noDepthCallee == nil {
+		knownFlags := uint16(0)
+		if flagSpec.knownLeaf {
+			knownFlags |= 1
+		}
+		if flagSpec.knownNoGlobal {
+			knownFlags |= 2
+		}
+		asm.MOVimm16(jit.X6, knownFlags)
+		if noDepthCallee == nil && !flagSpec.knownLeaf {
 			asm.LDRB(jit.X4, jit.X1, funcProtoOffLeafNoCall)
 			asm.ORRreg(jit.X6, jit.X6, jit.X4)
 		}
-		if !staticSelf {
+		if !staticSelf && !flagSpec.knownNoGlobal {
 			asm.LDRB(jit.X4, jit.X1, funcProtoOffNoGlobalOps)
 			asm.LSLimm(jit.X4, jit.X4, 1)
 			asm.ORRreg(jit.X6, jit.X6, jit.X4)
@@ -1421,6 +1438,73 @@ func (ec *emitContext) staticNoDepthCallee(instr *Instr) *vm.FuncProto {
 		return nil
 	}
 	return callee
+}
+
+func (ec *emitContext) callCalleeFlagSpec(instr *Instr) callCalleeFlagSpec {
+	protos := ec.callCalleeFeedbackProtos(instr)
+	if len(protos) == 0 {
+		return callCalleeFlagSpec{}
+	}
+	allLeaf := true
+	allNoGlobal := true
+	for _, proto := range protos {
+		if proto == nil {
+			return callCalleeFlagSpec{}
+		}
+		if !proto.LeafNoCall {
+			allLeaf = false
+		}
+		if !proto.NoGlobalOps {
+			allNoGlobal = false
+		}
+	}
+	if !allLeaf && !allNoGlobal {
+		return callCalleeFlagSpec{}
+	}
+	return callCalleeFlagSpec{
+		protos:        protos,
+		knownLeaf:     allLeaf,
+		knownNoGlobal: allNoGlobal,
+	}
+}
+
+func (ec *emitContext) callCalleeFeedbackProtos(instr *Instr) []*vm.FuncProto {
+	if ec == nil || ec.fn == nil || ec.fn.Proto == nil || instr == nil || instr.Op != OpCall ||
+		!instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(ec.fn.Proto.CallSiteFeedback) {
+		return nil
+	}
+	fb := ec.fn.Proto.CallSiteFeedback[instr.SourcePC]
+	if fb.Count < wholeCallKernelMinStableObservations ||
+		fb.Flags&vm.CallSiteArityPolymorphic != 0 ||
+		int(fb.NArgs) != len(instr.Args)-1 ||
+		fb.ResultArity != uint8(instr.Aux2) {
+		return nil
+	}
+	if fb.Flags&vm.CallSiteCalleePolymorphic == 0 {
+		if callee, ok := fb.StableCalleeVMProto(); ok && callee != nil {
+			return []*vm.FuncProto{callee}
+		}
+		return nil
+	}
+	return fb.MaturePolymorphicVMProtos(wholeCallKernelMinStableObservations, len(instr.Args)-1, uint8(instr.Aux2))
+}
+
+func (ec *emitContext) emitGuardCalleeProtoSet(protos []*vm.FuncProto, slowLabel string) {
+	if ec == nil || len(protos) == 0 {
+		return
+	}
+	asm := ec.asm
+	okLabel := ec.uniqueLabel("t2call_feedback_proto_ok")
+	for _, proto := range protos {
+		if proto == nil {
+			continue
+		}
+		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(proto))))
+		asm.CMPreg(jit.X1, jit.X3)
+		asm.BCond(jit.CondEQ, okLabel)
+	}
+	asm.B(slowLabel)
+	asm.Label(okLabel)
 }
 
 func (ec *emitContext) recordCallCachePC(cacheIndex, pc int) {

@@ -336,7 +336,10 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err != nil {
 				return nil, fmt.Errorf("tier2: op-exit: %w", err)
 			}
-			tm.retireStaleTier2AfterFeedback(proto, cf)
+			// Op-exits execute semantic helpers for already-lowered operations.
+			// Unlike call/table/global exits they do not mature structural
+			// feedback, so rebuilding the full specialization profile on every
+			// op-exit only adds runtime tax to helper-heavy loops.
 			resyncRegs()
 			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
 				return nil, err

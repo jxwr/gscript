@@ -157,6 +157,67 @@ func TestStaticNoDepthCalleeUsesStableFeedbackCallee(t *testing.T) {
 	}
 }
 
+func TestCallCalleeFlagSpecUsesPolymorphicFeedback(t *testing.T) {
+	calleeA := &vm.FuncProto{Name: "a", LeafNoCall: true, NoGlobalOps: true}
+	calleeB := &vm.FuncProto{Name: "b", LeafNoCall: true, NoGlobalOps: true}
+	proto := &vm.FuncProto{Name: "caller", Code: make([]uint32, 2)}
+	proto.EnsureFeedback()
+	proto.CallSiteFeedback[1].Count = wholeCallKernelMinStableObservations
+	proto.CallSiteFeedback[1].Flags = vm.CallSiteCalleePolymorphic
+	proto.CallSiteFeedback[1].NArgs = 1
+	proto.CallSiteFeedback[1].ResultArity = 2
+	proto.CallSiteFeedback[1].CalleeVMProtos[0] = calleeA
+	proto.CallSiteFeedback[1].CalleeVMProtos[1] = calleeB
+	proto.CallSiteFeedback[1].CalleeVMProtoCount = 2
+
+	fn := &Function{Proto: proto}
+	call := &Instr{
+		ID:        10,
+		Op:        OpCall,
+		Args:      []*Value{{ID: 1}, {ID: 2}},
+		Aux2:      2,
+		HasSource: true,
+		SourcePC:  1,
+	}
+	ec := &emitContext{fn: fn}
+	spec := ec.callCalleeFlagSpec(call)
+	if !spec.knownLeaf || !spec.knownNoGlobal {
+		t.Fatalf("flag spec = %+v, want known leaf and no-global", spec)
+	}
+	if len(spec.protos) != 2 || spec.protos[0] != calleeA || spec.protos[1] != calleeB {
+		t.Fatalf("flag spec protos=%#v, want feedback callee set", spec.protos)
+	}
+}
+
+func TestCallCalleeFlagSpecKeepsMixedNoGlobalDynamic(t *testing.T) {
+	calleeA := &vm.FuncProto{Name: "a", LeafNoCall: true, NoGlobalOps: true}
+	calleeB := &vm.FuncProto{Name: "b", LeafNoCall: true, NoGlobalOps: false}
+	proto := &vm.FuncProto{Name: "caller", Code: make([]uint32, 2)}
+	proto.EnsureFeedback()
+	proto.CallSiteFeedback[1].Count = wholeCallKernelMinStableObservations
+	proto.CallSiteFeedback[1].Flags = vm.CallSiteCalleePolymorphic
+	proto.CallSiteFeedback[1].NArgs = 1
+	proto.CallSiteFeedback[1].ResultArity = 2
+	proto.CallSiteFeedback[1].CalleeVMProtos[0] = calleeA
+	proto.CallSiteFeedback[1].CalleeVMProtos[1] = calleeB
+	proto.CallSiteFeedback[1].CalleeVMProtoCount = 2
+
+	fn := &Function{Proto: proto}
+	call := &Instr{
+		ID:        11,
+		Op:        OpCall,
+		Args:      []*Value{{ID: 1}, {ID: 2}},
+		Aux2:      2,
+		HasSource: true,
+		SourcePC:  1,
+	}
+	ec := &emitContext{fn: fn}
+	spec := ec.callCalleeFlagSpec(call)
+	if !spec.knownLeaf || spec.knownNoGlobal {
+		t.Fatalf("flag spec = %+v, want known leaf with dynamic no-global", spec)
+	}
+}
+
 func TestInline_StableFeedbackCalleeInsertsGuardAndInlines(t *testing.T) {
 	src := `func inc(n) { return n + 1 }
 func apply(f) {
