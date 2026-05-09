@@ -11,6 +11,133 @@ import (
 
 const maxInt48StringSplitNative = int64(1<<47 - 1)
 
+func (ec *emitContext) emitStringSplitPartNative(instr *Instr) {
+	if instr == nil || len(instr.Args) != 3 || instr.Aux < 1 {
+		ec.emitStringFormatIntExit(instr)
+		return
+	}
+	if !runtime.NativeStringArenaEnsure() {
+		ec.emitStringFormatIntExit(instr)
+		return
+	}
+
+	ec.emitSpillAndClearActiveRegsForNativeHelper()
+
+	asm := ec.asm
+	slowLabel := ec.uniqueLabel("splitpart_slow")
+	doneLabel := ec.uniqueLabel("splitpart_done")
+
+	callee := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if callee != jit.X0 {
+		asm.MOVreg(jit.X0, callee)
+	}
+	ec.emitStdNativeFunctionGuard(jit.X0, runtime.NativeKindStdStringSplit, runtime.StdStringSplitIdentityPtr(), slowLabel)
+
+	sepVal := ec.resolveValueNB(instr.Args[2].ID, jit.X1)
+	if sepVal != jit.X1 {
+		asm.MOVreg(jit.X1, sepVal)
+	}
+	jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, slowLabel)
+	jit.EmitExtractPtr(asm, jit.X2, jit.X1)
+	asm.LDR(jit.X3, jit.X2, 0)
+	asm.LDR(jit.X5, jit.X2, 8)
+	asm.CMPimm(jit.X5, 1)
+	asm.BCond(jit.CondNE, slowLabel)
+	asm.LDRB(jit.X6, jit.X3, 0)
+
+	srcVal := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if srcVal != jit.X1 {
+		asm.MOVreg(jit.X1, srcVal)
+	}
+	jit.EmitCheckIsString(asm, jit.X1, jit.X2, jit.X3, slowLabel)
+	jit.EmitExtractPtr(asm, jit.X2, jit.X1)
+	asm.LDR(jit.X4, jit.X2, 0)
+	asm.LDR(jit.X5, jit.X2, 8)
+
+	findTokenLabel := ec.uniqueLabel("splitpart_find_token")
+	findEndLabel := ec.uniqueLabel("splitpart_find_end")
+	endReadyLabel := ec.uniqueLabel("splitpart_end_ready")
+	copyLoopLabel := ec.uniqueLabel("splitpart_copy_loop")
+	copyDoneLabel := ec.uniqueLabel("splitpart_copy_done")
+	arenaCASLoopLabel := ec.uniqueLabel("splitpart_arena_cas")
+	arenaNoSpaceLabel := ec.uniqueLabel("splitpart_arena_full")
+
+	asm.MOVimm16(jit.X7, 0)
+	if instr.Aux > 1 {
+		asm.MOVimm16(jit.X8, 1)
+		asm.MOVimm16(jit.X9, 0)
+		asm.LoadImm64(jit.X10, instr.Aux)
+		asm.Label(findTokenLabel)
+		asm.CMPreg(jit.X9, jit.X5)
+		asm.BCond(jit.CondGE, slowLabel)
+		asm.LDRBreg(jit.X11, jit.X4, jit.X9)
+		asm.ADDimm(jit.X9, jit.X9, 1)
+		asm.CMPreg(jit.X11, jit.X6)
+		asm.BCond(jit.CondNE, findTokenLabel)
+		asm.MOVreg(jit.X7, jit.X9)
+		asm.ADDimm(jit.X8, jit.X8, 1)
+		asm.CMPreg(jit.X8, jit.X10)
+		asm.BCond(jit.CondLT, findTokenLabel)
+	}
+
+	asm.MOVreg(jit.X9, jit.X7)
+	asm.Label(findEndLabel)
+	asm.CMPreg(jit.X9, jit.X5)
+	asm.BCond(jit.CondGE, endReadyLabel)
+	asm.LDRBreg(jit.X11, jit.X4, jit.X9)
+	asm.CMPreg(jit.X11, jit.X6)
+	asm.BCond(jit.CondEQ, endReadyLabel)
+	asm.ADDimm(jit.X9, jit.X9, 1)
+	asm.B(findEndLabel)
+	asm.Label(endReadyLabel)
+
+	asm.CMPreg(jit.X7, jit.X9)
+	asm.BCond(jit.CondGE, slowLabel)
+	asm.SUBreg(jit.X15, jit.X9, jit.X7)
+
+	asm.ADDimm(jit.X16, jit.X15, 31)
+	asm.LoadImm64(jit.X17, -16)
+	asm.ANDreg(jit.X16, jit.X16, jit.X17)
+	asm.LoadImm64(jit.X17, int64(uintptr(unsafe.Pointer(runtime.NativeStringArenaCursorPtr()))))
+	asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(runtime.NativeStringArenaEndPtr()))))
+	asm.LDR(jit.X3, jit.X3, 0)
+	asm.Label(arenaCASLoopLabel)
+	asm.LDAXR(jit.X0, jit.X17)
+	asm.ADDreg(jit.X5, jit.X0, jit.X16)
+	asm.CMPreg(jit.X5, jit.X3)
+	asm.BCond(jit.CondHI, arenaNoSpaceLabel)
+	asm.STLXR(jit.X6, jit.X5, jit.X17)
+	asm.CBNZ(jit.X6, arenaCASLoopLabel)
+	asm.B(arenaNoSpaceLabel + "_done")
+	asm.Label(arenaNoSpaceLabel)
+	asm.CLREX()
+	asm.B(slowLabel)
+	asm.Label(arenaNoSpaceLabel + "_done")
+
+	asm.ADDimm(jit.X5, jit.X0, 16)
+	asm.STR(jit.X5, jit.X0, 0)
+	asm.STR(jit.X15, jit.X0, 8)
+	asm.ADDreg(jit.X12, jit.X4, jit.X7)
+	asm.MOVimm16(jit.X8, 0)
+	asm.Label(copyLoopLabel)
+	asm.CMPreg(jit.X8, jit.X15)
+	asm.BCond(jit.CondGE, copyDoneLabel)
+	asm.LDRBreg(jit.X9, jit.X12, jit.X8)
+	asm.STRBreg(jit.X9, jit.X5, jit.X8)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.B(copyLoopLabel)
+	asm.Label(copyDoneLabel)
+
+	asm.LoadImm64(jit.X1, nb64(jit.NB_TagPtr|(1<<jit.NB_PtrSubShift)))
+	asm.ORRreg(jit.X0, jit.X0, jit.X1)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(slowLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitStringSplitSubstrNative(instr *Instr) {
 	if instr == nil || ec.fn == nil || len(instr.Args) < 4 {
 		ec.emitStringFormatConstExit(instr)

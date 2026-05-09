@@ -1127,3 +1127,22 @@ func strlen_sum(a, b) {
 		t.Fatalf("string length should stay native, ExitOpExit=%d", exits)
 	}
 }
+
+func TestTier2_StringSplitPartFastPath_NoOpExit(t *testing.T) {
+	src := `
+func split_parts(line) {
+    parts := string.split(line, "|")
+    return #parts[2] + #parts[4]
+}
+`
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "split_parts", []runtime.Value{
+		runtime.StringValue("a|bb|ccc|dddd"),
+	}, true)
+	got := requireOneInt(t, "split_parts", gotValues)
+	if got != int64(len("bb")+len("dddd")) {
+		t.Fatalf("split_parts=%d, want %d", got, len("bb")+len("dddd"))
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+		t.Fatalf("string split projection should stay native, ExitOpExit=%d", exits)
+	}
+}

@@ -295,7 +295,7 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitStringFormatConstNative(instr)
 		ec.clearTableArrayBoundedKeys()
 	case OpStringSplitPart:
-		ec.emitStringFormatIntExit(instr)
+		ec.emitStringSplitPartNative(instr)
 		ec.clearTableArrayBoundedKeys()
 	case OpStringSplitSubstr:
 		ec.emitStringSplitSubstrNative(instr)
