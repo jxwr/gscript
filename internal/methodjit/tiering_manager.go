@@ -285,12 +285,7 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		fmt.Fprintf(os.Stderr, "[R154] TryCompile proto=%q CallCount=%d tier2Compiled_has=%v tier2Failed=%v\n",
 			proto.Name, proto.CallCount, compiled, tm.tier2HasFailed(proto))
 	}
-	profile := tm.getProfile(proto)
 	compiled, _ := tm.tier2CompiledFor(proto)
-	specProfile := tm.currentTier2SpeculationProfile(proto)
-	if compiled != nil && tm.recompile.ShouldRefreshProfileForProto(proto, compiled, specProfile) {
-		compiled = nil
-	}
 	recompileRequested := false
 	if req, ok := tm.recompileQueue.take(proto); ok {
 		recompileRequested = true
@@ -303,6 +298,10 @@ func (tm *TieringManager) TryCompile(proto *vm.FuncProto) interface{} {
 		tm.clearTier2Install(proto)
 		compiled = nil
 	}
+	if compiled != nil {
+		return compiled
+	}
+	profile := tm.getProfile(proto)
 	decision := tm.policy.Decide(proto, profile, PromotionPolicyState{
 		Manager:            tm,
 		Compiled:           compiled,
