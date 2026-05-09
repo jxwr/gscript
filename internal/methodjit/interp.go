@@ -1026,6 +1026,11 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = a
 
+	case OpGuardGlobalConst:
+		// The production emitter checks the VM global array against Aux2 and
+		// deopts on mismatch. The IR oracle has no VM global array, so it
+		// treats the guard as an already-validated assumption.
+
 	case OpGuardConstString:
 		a := s.val(instr.Args[0])
 		idx := int(instr.Aux)

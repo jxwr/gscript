@@ -231,6 +231,12 @@ func (v *validator) checkOpContracts() {
 					v.errorf("B%d: GuardType (v%d) must carry a concrete type in Aux, got %s",
 						blk.ID, instr.ID, Type(instr.Aux))
 				}
+			case OpGuardGlobalConst:
+				v.checkArgCount(blk, instr, 0, 0)
+				if instr.Aux < 0 {
+					v.errorf("B%d: GuardGlobalConst (v%d) must carry a non-negative constant index in Aux, got %d",
+						blk.ID, instr.ID, instr.Aux)
+				}
 			case OpGuardConstString:
 				v.checkArgCount(blk, instr, 1, 1)
 				if instr.Aux < 0 {

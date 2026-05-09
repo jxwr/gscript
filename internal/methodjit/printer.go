@@ -138,6 +138,8 @@ func printInstr(sb *strings.Builder, i *Instr) {
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d in [%d,%d]", i.Args[0].ID, i.Aux, i.Aux2)
 		}
+	case OpGuardGlobalConst:
+		fmt.Fprintf(sb, "globals[%d] == 0x%x", i.Aux, uint64(i.Aux2))
 	case OpGuardConstString:
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d == const[%d]", i.Args[0].ID, i.Aux)

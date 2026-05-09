@@ -551,6 +551,10 @@ type CompiledFunction struct {
 	// generation and flushing unrelated function/global ICs.
 	GlobalCacheConsts []int
 
+	// GlobalGuardConsts records globals read by GuardGlobalConst so the indexed
+	// global protocol prepares const-index -> globalArray mappings for them.
+	GlobalGuardConsts []int
+
 	// GlobalIndexByConst maps proto constant indices to VM.globalArray indices
 	// for the native indexed global protocol. The tier manager prepares it
 	// with the VM and publishes the backing pointer on FuncProto for direct

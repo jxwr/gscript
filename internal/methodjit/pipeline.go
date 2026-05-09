@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -322,6 +323,7 @@ func lineDiff(a, b []string) string {
 type Tier2PipelineOpts struct {
 	InlineGlobals         map[string]*vm.FuncProto    // global function protos for inlining
 	ProtocolGlobals       map[string]*vm.FuncProto    // stable globals available for guarded protocol folds
+	GlobalConstValues     map[int]runtime.Value       // const-pool global name index -> observed numeric value
 	InlineMaxSize         int                         // max callee bytecode count; 0 → 40
 	FixedShapeArgFacts    map[int]FixedShapeTableFact // guarded fixed-shape facts for callee params
 	FixedShapeEntryGuards bool                        // emit callee-entry shape guards for FixedShapeArgFacts
@@ -360,6 +362,14 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 
 	fn, intrinsicNotes := IntrinsicPass(fn)
 	attachRemarks(fn, opts)
+
+	if opts != nil && len(opts.GlobalConstValues) > 0 {
+		fn, err = GlobalConstSpecializationPass(opts.GlobalConstValues)(fn)
+		if err != nil {
+			return nil, nil, fmt.Errorf("GlobalConstSpecialization: %w", err)
+		}
+		attachRemarks(fn, opts)
+	}
 
 	fn, err = TypeSpecializePass(fn)
 	if err != nil {
@@ -805,6 +815,7 @@ func NewTier2Pipeline() *Pipeline {
 		result, _ := IntrinsicPass(fn)
 		return result, nil
 	})
+	pipe.Add("GlobalConstSpecialization", GlobalConstSpecializationPass(nil))
 	pipe.Add("TypeSpecialize2", TypeSpecializePass)
 	pipe.Add("Inline", InlinePassWith(InlineConfig{MaxSize: 40, MaxRecursion: 2}))
 	pipe.Add("SimplifyPhis2", SimplifyPhisPass)

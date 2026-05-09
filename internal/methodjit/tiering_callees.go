@@ -2,7 +2,10 @@
 
 package methodjit
 
-import "github.com/gscript/gscript/internal/vm"
+import (
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
+)
 
 // This is used by the inline pass to resolve callee functions at compile time.
 func (tm *TieringManager) buildInlineGlobals() map[string]*vm.FuncProto {
@@ -19,6 +22,28 @@ func (tm *TieringManager) buildInlineGlobals() map[string]*vm.FuncProto {
 		}
 	}
 	return globals
+}
+
+func (tm *TieringManager) buildNumericGlobalConstValues(proto *vm.FuncProto) map[int]runtime.Value {
+	values := make(map[int]runtime.Value)
+	if tm == nil || tm.callVM == nil || proto == nil {
+		return values
+	}
+	globals := tm.callVM.Globals()
+	if len(globals) == 0 {
+		return values
+	}
+	for constIdx, c := range proto.Constants {
+		if !c.IsString() {
+			continue
+		}
+		v, ok := globals[c.Str()]
+		if !ok || (!v.IsInt() && !v.IsFloat()) {
+			continue
+		}
+		values[constIdx] = v
+	}
+	return values
 }
 
 // buildProtoInlineGlobals extracts global function declarations from the

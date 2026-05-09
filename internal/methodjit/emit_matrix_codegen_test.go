@@ -101,8 +101,8 @@ func write_row(m, i) {
 	if moves := countFMOVToGPForIRInstr(cf, store.ID); moves != 0 {
 		t.Fatalf("MatrixStoreFRow emitted %d FPR-to-GPR move(s), want direct FP store", moves)
 	}
-	if stores := countFSTRdRegForIRInstr(cf, store.ID); stores != 1 {
-		t.Fatalf("MatrixStoreFRow emitted %d FSTRd register-offset store(s), want 1", stores)
+	if stores := countFSTRdForIRInstr(cf, store.ID); stores != 1 {
+		t.Fatalf("MatrixStoreFRow emitted %d FSTRd store(s), want 1", stores)
 	}
 }
 

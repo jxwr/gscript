@@ -48,8 +48,11 @@ func collectCompiledGlobalConsts(cf *CompiledFunction) map[int]bool {
 	if cf == nil {
 		return nil
 	}
-	out := make(map[int]bool, len(cf.GlobalCacheConsts)+len(cf.NativeSetGlobals))
+	out := make(map[int]bool, len(cf.GlobalCacheConsts)+len(cf.GlobalGuardConsts)+len(cf.NativeSetGlobals))
 	for _, constIdx := range cf.GlobalCacheConsts {
+		out[constIdx] = true
+	}
+	for _, constIdx := range cf.GlobalGuardConsts {
 		out[constIdx] = true
 	}
 	for constIdx := range cf.NativeSetGlobals {

@@ -303,15 +303,19 @@ func (ec *emitContext) emitMatrixLoadFRow(instr *Instr) {
 	if rowReg != jit.X5 {
 		asm.MOVreg(jit.X5, rowReg)
 	}
-	jReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
-	if jReg != jit.X3 {
-		asm.MOVreg(jit.X3, jReg)
-	}
 	dstF := jit.D0
 	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
 		dstF = jit.FReg(pr.Reg)
 	}
-	asm.FLDRdReg(dstF, jit.X5, jit.X3)
+	if col, ok := constIntFromValue(instr.Args[1]); ok && col >= 0 && col <= 4095 {
+		asm.FLDRd(dstF, jit.X5, int(col)*8)
+	} else {
+		jReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
+		if jReg != jit.X3 {
+			asm.MOVreg(jit.X3, jReg)
+		}
+		asm.FLDRdReg(dstF, jit.X5, jit.X3)
+	}
 	ec.storeRawFloat(dstF, instr.ID)
 }
 
@@ -325,20 +329,32 @@ func (ec *emitContext) emitMatrixStoreFRow(instr *Instr) {
 	if rowReg != jit.X5 {
 		asm.MOVreg(jit.X5, rowReg)
 	}
-	jReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
-	if jReg != jit.X3 {
-		asm.MOVreg(jit.X3, jReg)
-	}
 	if instr.Args[2].Def != nil && instr.Args[2].Def.Type == TypeFloat {
 		vF := ec.resolveRawFloat(instr.Args[2].ID, jit.D0)
-		asm.FSTRdReg(vF, jit.X5, jit.X3)
+		if col, ok := constIntFromValue(instr.Args[1]); ok && col >= 0 && col <= 4095 {
+			asm.FSTRd(vF, jit.X5, int(col)*8)
+		} else {
+			jReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
+			if jReg != jit.X3 {
+				asm.MOVreg(jit.X3, jReg)
+			}
+			asm.FSTRdReg(vF, jit.X5, jit.X3)
+		}
 		return
 	}
 	vReg := ec.resolveValueNB(instr.Args[2].ID, jit.X6)
 	if vReg != jit.X6 {
 		asm.MOVreg(jit.X6, vReg)
 	}
-	asm.STRreg(jit.X6, jit.X5, jit.X3)
+	if col, ok := constIntFromValue(instr.Args[1]); ok && col >= 0 && col <= 4095 {
+		asm.STR(jit.X6, jit.X5, int(col)*8)
+	} else {
+		jReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
+		if jReg != jit.X3 {
+			asm.MOVreg(jit.X3, jReg)
+		}
+		asm.STRreg(jit.X6, jit.X5, jit.X3)
+	}
 }
 
 // emitMatrixSetF emits ARM64 code for OpMatrixSetF(m, i, j, v).

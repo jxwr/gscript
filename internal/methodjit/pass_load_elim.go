@@ -75,6 +75,11 @@ type guardKey struct {
 	guardType int64 // the guard type (Aux field)
 }
 
+type globalConstGuardKey struct {
+	constIdx int64
+	value    int64
+}
+
 // LoadEliminationPass eliminates redundant GetField operations. The main walk
 // is block-local for the broader CSE tables, then a narrow forward dataflow
 // propagates only field facts that every predecessor agrees on. That keeps
@@ -91,8 +96,9 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 	}
 
 	for _, block := range fn.Blocks {
-		available := make(map[loadKey]int)     // loadKey → value ID to forward to
-		guardAvail := make(map[guardKey]int)   // guardKey → guard instr ID
+		available := make(map[loadKey]int)   // loadKey → value ID to forward to
+		guardAvail := make(map[guardKey]int) // guardKey → guard instr ID
+		globalConstGuardAvail := make(map[globalConstGuardKey]bool)
 		globalAvail := make(map[int64]int)     // globals[idx] → SSA value ID
 		matrixFlatAvail := make(map[int]int)   // MatrixFlat(arg_id) → SSA value ID
 		matrixStrideAvail := make(map[int]int) // MatrixStride(arg_id) → SSA value ID
@@ -209,6 +215,11 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 						"SetGlobal invalidated cached global value")
 				}
 				delete(globalAvail, instr.Aux)
+				for key := range globalConstGuardAvail {
+					if key.constIdx == instr.Aux {
+						delete(globalConstGuardAvail, key)
+					}
+				}
 
 			case OpGetField:
 				if len(instr.Args) < 1 {
@@ -255,6 +266,20 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 					instr.Aux = 0
 				} else {
 					guardAvail[key] = instr.ID
+				}
+
+			case OpGuardGlobalConst:
+				key := globalConstGuardKey{constIdx: instr.Aux, value: instr.Aux2}
+				if globalConstGuardAvail[key] {
+					instr.Op = OpNop
+					instr.Args = nil
+					instr.Aux = 0
+					instr.Aux2 = 0
+					instr.Type = TypeUnknown
+					functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, OpGuardGlobalConst,
+						"removed redundant global const guard")
+				} else {
+					globalConstGuardAvail[key] = true
 				}
 
 			case OpSetField:
@@ -400,7 +425,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 
 			case OpCall, OpResume, OpSelf:
 				// Conservative: a call could mutate any table or change types.
-				if len(available) > 0 || len(guardAvail) > 0 || len(globalAvail) > 0 ||
+				if len(available) > 0 || len(guardAvail) > 0 || len(globalConstGuardAvail) > 0 || len(globalAvail) > 0 ||
 					len(matrixFlatAvail) > 0 || len(matrixStrideAvail) > 0 || len(tableAvail) > 0 ||
 					!tableArrayFacts.Empty() {
 					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
@@ -408,6 +433,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				}
 				available = make(map[loadKey]int)
 				guardAvail = make(map[guardKey]int)
+				globalConstGuardAvail = make(map[globalConstGuardKey]bool)
 				globalAvail = make(map[int64]int)
 				matrixFlatAvail = make(map[int]int)
 				matrixStrideAvail = make(map[int]int)

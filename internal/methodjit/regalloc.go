@@ -1276,7 +1276,7 @@ func instructionHasNoSSAResult(instr *Instr) bool {
 	case OpNop, OpStoreSlot,
 		OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs, OpTableBoolArrayFill,
 		OpSetField, OpSetList, OpAppend,
-		OpGuardTableKind,
+		OpGuardGlobalConst, OpGuardTableKind,
 		OpSetGlobal, OpSetUpval,
 		OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow,
 		OpClose, OpGo, OpSend:

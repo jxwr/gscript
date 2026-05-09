@@ -420,6 +420,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		globalCache = make([]uint64, ec.nextGlobalCacheIndex)
 	}
 	nativeSetGlobals := collectNativeSetGlobals(fn)
+	globalGuardConsts := collectGlobalGuardConsts(fn)
 
 	// R108/R151/Ractors: allocate per-OpCall polymorphic IC cache.
 	var callCache []uint64
@@ -445,6 +446,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		TypedEntryOffset:         typedEntryOff,
 		GlobalCache:              globalCache,
 		GlobalCacheConsts:        ec.globalCacheConsts,
+		GlobalGuardConsts:        globalGuardConsts,
 		NativeSetGlobals:         nativeSetGlobals,
 		CallCache:                callCache,
 		NewTableCaches:           ec.newTableCaches,
@@ -496,6 +498,28 @@ func collectNativeSetGlobals(fn *Function) map[int]bool {
 			if instr.Op == OpSetGlobal {
 				out[int(instr.Aux)] = true
 			}
+		}
+	}
+	return out
+}
+
+func collectGlobalGuardConsts(fn *Function) []int {
+	seen := make(map[int]bool)
+	var out []int
+	if fn == nil {
+		return out
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpGuardGlobalConst {
+				continue
+			}
+			constIdx := int(instr.Aux)
+			if seen[constIdx] {
+				continue
+			}
+			seen[constIdx] = true
+			out = append(out, constIdx)
 		}
 	}
 	return out
@@ -554,7 +578,7 @@ func instrMayDirectDeoptWithoutFullFlush(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpNumToFloat, OpDivIntExact,
+	case OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpNumToFloat, OpDivIntExact,
 		OpGetFieldNumToFloat,
 		OpMatrixGetF, OpMatrixSetF, OpMatrixFlat, OpMatrixStride,
 		OpTableArrayHeader, OpTableArrayLoad, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs, OpTableArrayNestedLoad:

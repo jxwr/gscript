@@ -334,6 +334,22 @@ func (ec *emitContext) emitIndexedGlobalAddress(constIdx int, slowLabel string) 
 	asm.BCond(jit.CondEQ, slowLabel)
 }
 
+func (ec *emitContext) emitGuardGlobalConst(instr *Instr) {
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("guard_global_const_deopt")
+	doneLabel := ec.uniqueLabel("guard_global_const_done")
+	ec.emitIndexedGlobalAddress(int(instr.Aux), deoptLabel)
+	asm.LDRreg(jit.X1, jit.X16, jit.X17)
+	asm.LoadImm64(jit.X2, instr.Aux2)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, deoptLabel)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) supportsIndexedGlobalGetProtocol() bool {
 	return ec != nil && ec.fn != nil && ec.fn.Proto != nil
 }

@@ -329,8 +329,9 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					}
 				}
 			}
-			// GetGlobal: require no in-loop SetGlobal on same name and no calls.
-			if instr.Op == OpGetGlobal {
+			// GetGlobal and guarded global constants require no in-loop
+			// SetGlobal on same name and no calls.
+			if instr.Op == OpGetGlobal || instr.Op == OpGuardGlobalConst {
 				if hasEffectfulLoopCall {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"loop contains a call that may mutate globals")
@@ -655,7 +656,7 @@ func canHoistOp(op Op) bool {
 	case OpGetField:
 		// Caller must also check alias info (no SetField/SetTable/Call in loop).
 		return true
-	case OpGetGlobal:
+	case OpGetGlobal, OpGuardGlobalConst:
 		// Caller must also check alias info (no SetGlobal on same name, no Call in loop).
 		return true
 	case OpSqrt:
@@ -709,7 +710,7 @@ func canHoistOp(op Op) bool {
 
 func isInterestingLICMMiss(op Op) bool {
 	switch op {
-	case OpGetField, OpGetTable, OpGetGlobal, OpLoadSlot,
+	case OpGetField, OpGetTable, OpGetGlobal, OpGuardGlobalConst, OpLoadSlot,
 		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpFMA, OpFMSUB,
