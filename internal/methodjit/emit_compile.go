@@ -1469,8 +1469,17 @@ func (ec *emitContext) emitEpilogue() {
 	asm.BCond(jit.CondEQ, leafDeoptLabel)
 	asm.B(leafDeoptContinueLabel)
 	asm.Label(leafDeoptLabel)
+	if ec.useFPR {
+		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+	}
+	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+	asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+	asm.LDP(jit.X21, jit.X22, jit.SP, 32)
+	asm.LDP(jit.X19, jit.X20, jit.SP, 16)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.SP, jit.SP, 16)
+	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.RET()
 	asm.Label(leafDeoptContinueLabel)
 
@@ -1494,14 +1503,24 @@ func (ec *emitContext) emitEpilogue() {
 
 	if !ec.skipStandardDirectEntry {
 		// --- Tier 2 leaf entry point for Tier 2 BLR callers ---
-		// Caller-side emitCallNative spills/reloads its live SSA values around
-		// BLR and restores its pinned context registers from its own frame.
-		// Leaf callees have no nested calls, so this entry only preserves FP/LR.
+		// This entry keeps the boxed-X0 return ABI, but still preserves the
+		// callee-saved register set. Tier 2 callers spill known live SSA
+		// values around BLR; the full frame keeps the native protocol robust
+		// when register pressure or liveness conservatism changes.
 		asm.Label("t2_leaf_entry")
 		ec.emitTier2EntryMark()
-		asm.SUBimm(jit.SP, jit.SP, 16)
+		asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
 		asm.STP(jit.X29, jit.X30, jit.SP, 0)
 		asm.ADDimm(jit.X29, jit.SP, 0)
+		asm.STP(jit.X19, jit.X20, jit.SP, 16)
+		asm.STP(jit.X21, jit.X22, jit.SP, 32)
+		asm.STP(jit.X23, jit.X24, jit.SP, 48)
+		asm.STP(jit.X25, jit.X26, jit.SP, 64)
+		asm.STP(jit.X27, jit.X28, jit.SP, 80)
+		if ec.useFPR {
+			asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+		}
 		asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
 		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
 		asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
@@ -1584,13 +1603,22 @@ func (ec *emitContext) emitEpilogue() {
 	// --- Direct epilogue for BLR callers ---
 	// Return path when CallMode == 1 in emitReturn. Uses the same frame
 	// restore as normal epilogue since the direct entry uses a full frame.
-	// t2_leaf_epilogue uses the lightweight Tier 2 leaf frame; use X16 for
-	// ExitCode so leaf callers can preserve their boxed X0 return value.
+	// t2_leaf_epilogue uses the boxed-X0 leaf return ABI; use X16 for ExitCode
+	// so leaf callers can preserve the boxed X0 return value.
 	asm.Label("t2_leaf_epilogue")
 	asm.MOVimm16(jit.X16, 0)
 	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+	if ec.useFPR {
+		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+	}
+	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+	asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+	asm.LDP(jit.X21, jit.X22, jit.SP, 32)
+	asm.LDP(jit.X19, jit.X20, jit.SP, 16)
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.SP, jit.SP, 16)
+	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.RET()
 
 	asm.Label("t2_direct_epilogue")
