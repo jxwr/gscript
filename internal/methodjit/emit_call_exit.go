@@ -144,10 +144,12 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 	// shared state, and the function slot now contains the result).
 	ec.emitReloadAllActiveRegs()
 
-	// Load call result from regs[funcSlot] into the SSA value's home.
-	resultSlot := funcSlot
-	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
-	ec.storeResultNB(jit.X0, instr.ID)
+	if desc.nRets > 0 {
+		// Load call result from regs[funcSlot] into the SSA value's home.
+		resultSlot := funcSlot
+		asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
+		ec.storeResultNB(jit.X0, instr.ID)
+	}
 
 	// Record this call for deferred resume entry generation.
 	ec.callExitIDs = append(ec.callExitIDs, instr.ID)

@@ -511,11 +511,13 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 
 	resultReadyLabel := ec.uniqueLabel("t2call_result_ready")
-	asm.CMPimm(jit.X8, callModeLeafX0)
-	asm.BCond(jit.CondEQ, resultReadyLabel)
-	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
-	asm.Label(resultReadyLabel)
-	ec.storeResultNB(jit.X0, instr.ID)
+	if nRets > 0 {
+		asm.CMPimm(jit.X8, callModeLeafX0)
+		asm.BCond(jit.CondEQ, resultReadyLabel)
+		asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
+		asm.Label(resultReadyLabel)
+		ec.storeResultNB(jit.X0, instr.ID)
+	}
 	postSuccessReprs := ec.snapshotValueReprs()
 
 	asm.B(doneLabel)
@@ -665,13 +667,17 @@ func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
 	asm.LDR(jit.X3, mRegCtx, execCtxOffExitCode)
 	asm.CBNZ(jit.X3, exitHandleLabel)
 
-	asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
-	asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	if nRets > 0 {
+		asm.LDR(jit.X0, mRegCtx, execCtxOffBaselineReturnValue)
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot))
+	}
 
 	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 
-	asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
-	ec.storeResultNB(jit.X0, instr.ID)
+	if nRets > 0 {
+		asm.LDR(jit.X0, mRegRegs, slotOffset(funcSlot))
+		ec.storeResultNB(jit.X0, instr.ID)
+	}
 	postSuccessReprs := ec.snapshotValueReprs()
 	asm.B(doneLabel)
 
