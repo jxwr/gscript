@@ -3,6 +3,7 @@
 package methodjit
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/vm"
@@ -241,6 +242,12 @@ func TestFieldShapeCalleeProtosDeduplicatesShapeCases(t *testing.T) {
 	protos := fieldShapeCalleeProtos(fn, call)
 	if len(protos) != 2 || protos[0] != calleeA || protos[1] != calleeB {
 		t.Fatalf("fieldShapeCalleeProtos=%#v, want [calleeA calleeB]", protos)
+	}
+	summary := fieldShapeCalleeSummary(fn, call)
+	for _, want := range []string{"shape=11 field=0 proto=a", "shape=12 field=0 proto=a", "shape=13 field=0 proto=b"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("fieldShapeCalleeSummary=%q missing %q", summary, want)
+		}
 	}
 }
 

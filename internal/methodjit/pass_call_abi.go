@@ -4,6 +4,7 @@ package methodjit
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -46,6 +47,9 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 			}
 			desc, reason := callABIDescriptorFor(fn, instr, globals, tails, shiftAddOverflowVersions)
 			if desc.Callee == nil {
+				if summary := fieldShapeCalleeSummary(fn, instr); summary != "" {
+					reason = reason + "; field-shape polymorphic callee set: " + summary
+				}
 				functionRemarks(fn).Add("CallABI", "missed", block.ID, instr.ID, instr.Op, reason)
 				continue
 			}
@@ -223,15 +227,7 @@ func callABIFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool
 }
 
 func fieldShapeCalleeProtos(fn *Function, instr *Instr) []*vm.FuncProto {
-	if fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) == 0 ||
-		instr.Args[0] == nil || instr.Args[0].Def == nil {
-		return nil
-	}
-	calleeLoad := instr.Args[0].Def
-	if calleeLoad.Op != OpGetField {
-		return nil
-	}
-	cases := fn.FieldPolyShapeFacts[calleeLoad.ID]
+	cases := fieldShapeCalleeCases(fn, instr)
 	if len(cases) == 0 {
 		return nil
 	}
@@ -245,6 +241,38 @@ func fieldShapeCalleeProtos(fn *Function, instr *Instr) []*vm.FuncProto {
 		seen[c.VMProto] = true
 	}
 	return out
+}
+
+func fieldShapeCalleeCases(fn *Function, instr *Instr) []FieldPolyShapeCase {
+	if fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) == 0 ||
+		instr.Args[0] == nil || instr.Args[0].Def == nil {
+		return nil
+	}
+	calleeLoad := instr.Args[0].Def
+	if calleeLoad.Op != OpGetField {
+		return nil
+	}
+	cases := fn.FieldPolyShapeFacts[calleeLoad.ID]
+	if len(cases) == 0 {
+		return nil
+	}
+	return cases
+}
+
+func fieldShapeCalleeSummary(fn *Function, instr *Instr) string {
+	cases := fieldShapeCalleeCases(fn, instr)
+	if len(cases) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cases))
+	for _, c := range cases {
+		name := "<nil>"
+		if c.VMProto != nil {
+			name = c.VMProto.Name
+		}
+		parts = append(parts, fmt.Sprintf("shape=%d field=%d proto=%s", c.ShapeID, c.FieldIdx, name))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func specGuardKindSuppressed(fn *Function, pc int, kind string) bool {

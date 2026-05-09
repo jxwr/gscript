@@ -179,6 +179,11 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 			}
 		}
 		if calleeProto == nil {
+			if summary := fieldShapeCalleeSummary(fn, instr); summary != "" {
+				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("field-shape polymorphic callee set not yet split: %s", summary))
+				continue
+			}
 			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
 				"callee is not statically resolved from inline globals")
 			continue
