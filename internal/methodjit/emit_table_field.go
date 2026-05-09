@@ -1072,10 +1072,14 @@ func (ec *emitContext) emitSetFieldExit(instr *Instr) {
 		}
 	}
 
-	// Store the value arg to a temp slot.
-	valSlot := ec.nextSlot
-	ec.nextSlot++
+	valSlot := 0
 	if len(instr.Args) > 1 {
+		var ok bool
+		valSlot, ok = ec.slotMap[instr.Args[1].ID]
+		if !ok {
+			ec.emitDeopt(instr)
+			return
+		}
 		valReg := ec.resolveValueNB(instr.Args[1].ID, jit.X0)
 		if valReg != jit.X0 {
 			asm.MOVreg(jit.X0, valReg)
