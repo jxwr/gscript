@@ -139,6 +139,7 @@ func TableArrayLoadTypeSpecializePass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
+	markConstStringSetListLoads(fn)
 	affected := tableArrayLoadTypeAffectedValues(fn)
 	if len(affected) == 0 {
 		return fn, nil
@@ -173,6 +174,62 @@ func TableArrayLoadTypeSpecializePass(fn *Function) (*Function, error) {
 	return fn, nil
 }
 
+func markConstStringSetListLoads(fn *Function) {
+	stringTables := make(map[int]bool)
+	headers := make(map[int]int)
+	data := make(map[int]int)
+
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpSetList:
+				if len(instr.Args) < 2 || instr.Args[0] == nil {
+					continue
+				}
+				allStrings := true
+				for _, arg := range instr.Args[1:] {
+					if arg == nil || arg.Def == nil || arg.Def.Op != OpConstString {
+						allStrings = false
+						break
+					}
+				}
+				if allStrings {
+					stringTables[instr.Args[0].ID] = true
+				}
+			case OpTableArrayHeader:
+				if len(instr.Args) >= 1 && instr.Args[0] != nil {
+					headers[instr.ID] = instr.Args[0].ID
+				}
+			case OpTableArrayData:
+				if len(instr.Args) >= 1 && instr.Args[0] != nil {
+					if tableID, ok := headers[instr.Args[0].ID]; ok {
+						data[instr.ID] = tableID
+					}
+				}
+			}
+		}
+	}
+	if len(stringTables) == 0 || len(data) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpTableArrayLoad || len(instr.Args) < 1 || instr.Args[0] == nil {
+				continue
+			}
+			tableID, ok := data[instr.Args[0].ID]
+			if ok && stringTables[tableID] && instr.Type != TypeString {
+				instr.Type = TypeString
+				functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
+					"inferred string element from const-string SetList table")
+			}
+		}
+	}
+}
+
 func tableArrayLoadTypeAffectedValues(fn *Function) map[int]bool {
 	affected := make(map[int]bool)
 	changed := true
@@ -185,6 +242,10 @@ func tableArrayLoadTypeAffectedValues(fn *Function) map[int]bool {
 				}
 				if instr.Op == OpTableArrayLoad {
 					if _, ok := tableArrayKindElementType(instr.Aux); ok {
+						affected[instr.ID] = true
+						changed = true
+					}
+					if instr.Type == TypeString {
 						affected[instr.ID] = true
 						changed = true
 					}

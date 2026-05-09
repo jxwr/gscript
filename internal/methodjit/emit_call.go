@@ -580,6 +580,9 @@ func lenArgKnownRawString(v *Value) bool {
 	if v == nil || v.Def == nil {
 		return false
 	}
+	if v.Def.Type == TypeString {
+		return true
+	}
 	switch v.Def.Op {
 	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpStringSplitPart, OpStringSplitSubstr, OpGuardConstString, OpGuardCalleeProto:
 		return true

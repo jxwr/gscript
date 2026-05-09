@@ -198,6 +198,46 @@ func TestTableArrayLoadTypeSpecialize_DoesNotTouchUnrelatedGenericAdd(t *testing
 	}
 }
 
+func TestTableArrayLoadTypeSpecialize_ConstStringSetListLoad(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "const_string_setlist_load"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	a := &Instr{ID: fn.newValueID(), Op: OpConstString, Type: TypeString, Aux: 0, Block: b}
+	c := &Instr{ID: fn.newValueID(), Op: OpConstString, Type: TypeString, Aux: 1, Block: b}
+	setList := &Instr{ID: fn.newValueID(), Op: OpSetList, Type: TypeUnknown,
+		Args: []*Value{tbl.Value(), a.Value(), c.Value()}, Block: b}
+	header := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt,
+		Args: []*Value{tbl.Value()}, Block: b}
+	length := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt,
+		Args: []*Value{header.Value()}, Block: b}
+	data := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt,
+		Args: []*Value{header.Value()}, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeAny, Aux: int64(vm.FBKindMixed),
+		Args: []*Value{data.Value(), length.Value(), key.Value()}, Block: b}
+	lenInstr := &Instr{ID: fn.newValueID(), Op: OpLen, Type: TypeAny,
+		Args: []*Value{load.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{lenInstr.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, a, c, setList, header, length, data, key, load, lenInstr, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := TableArrayLoadTypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TableArrayLoadTypeSpecializePass error: %v", err)
+	}
+	if load.Type != TypeString {
+		t.Fatalf("TableArrayLoad Type=%s, want string:\n%s", load.Type, Print(result))
+	}
+	if lenInstr.Type != TypeInt {
+		t.Fatalf("Len Type=%s, want int:\n%s", lenInstr.Type, Print(result))
+	}
+}
+
 // TestTypeSpec_GetTableMixed_StaysGeneric — Aux2=FBKindMixed means the array
 // can hold any type (it's the generic []Value backing), so no inference.
 func TestTypeSpec_GetTableMixed_StaysGeneric(t *testing.T) {
