@@ -251,6 +251,52 @@ func TestFieldShapeCalleeProtosDeduplicatesShapeCases(t *testing.T) {
 	}
 }
 
+func TestFieldShapeCalleeABISummaryUsesReceiverFacts(t *testing.T) {
+	src := `func step_io(a, tick) {
+    a.queue = (a.queue + tick + a.id) % 211
+    a.bytes = a.bytes + a.queue * 13 + tick
+    return a.bytes % 100000 + #a.state
+}`
+	top := compileTop(t, src)
+	stepIO := findProtoByName(top, "step_io")
+	if stepIO == nil {
+		t.Fatal("step_io proto not found")
+	}
+	calleeLoad := &Instr{ID: 7, Op: OpGetField}
+	call := &Instr{
+		ID:   9,
+		Op:   OpCall,
+		Args: []*Value{{ID: calleeLoad.ID, Def: calleeLoad}, {ID: 1}, {ID: 2}},
+		Aux2: 2,
+	}
+	fn := &Function{
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			calleeLoad.ID: {
+				{
+					ShapeID:  316,
+					FieldIdx: 5,
+					VMProto:  stepIO,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    316,
+						FieldNames: []string{"id", "kind", "queue", "bytes", "state", "step"},
+						FieldTypes: map[string]Type{
+							"id":    TypeInt,
+							"queue": TypeInt,
+							"bytes": TypeInt,
+							"state": TypeString,
+							"step":  TypeFunction,
+						},
+					},
+				},
+			},
+		},
+	}
+	summary := fieldShapeCalleeABISummary(fn, call)
+	if !strings.Contains(summary, "abi=typed-peer params=[raw-table,raw-int] return=raw-int") {
+		t.Fatalf("summary=%q", summary)
+	}
+}
+
 func TestInline_StableFeedbackCalleeInsertsGuardAndInlines(t *testing.T) {
 	src := `func inc(n) { return n + 1 }
 func apply(f) {

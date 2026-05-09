@@ -289,7 +289,7 @@ func fieldShapeCalleeABISummary(fn *Function, instr *Instr) string {
 			parts = append(parts, fmt.Sprintf("shape=%d proto=<nil> abi=missing", c.ShapeID))
 			continue
 		}
-		typed := AnalyzeTypedPeerABI(c.VMProto)
+		typed := AnalyzeTypedPeerABIWithArgFacts(c.VMProto, map[int]FixedShapeTableFact{0: c.ReceiverFact})
 		if typed.Eligible {
 			parts = append(parts, fmt.Sprintf("shape=%d proto=%s abi=typed-peer params=%s return=%s",
 				c.ShapeID, c.VMProto.Name, specializedABIParamSummary(typed.Params), specializedABIReturnName(typed.Return)))

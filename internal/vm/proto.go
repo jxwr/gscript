@@ -45,6 +45,7 @@ type FuncProto struct {
 	TableKeyFeedback             TableKeyFeedbackVector             // lazily-initialized per-PC table int-key range feedback
 	FieldAccessFeedback          FieldAccessFeedbackVector          // lazily-initialized per-PC table field shape feedback
 	CallSiteFeedback             CallSiteFeedbackVector             // lazily-initialized per-PC callsite feedback for guarded specialization
+	ArgShapeFeedback             ArgArrayElementShapeFeedbackVector // lazily-initialized per-parameter direct table shape feedback
 	ArgArrayElementShapeFeedback ArgArrayElementShapeFeedbackVector // lazily-initialized per-parameter array element shape feedback
 	CompiledCodePtr              uintptr                            // pointer to baseline JIT compiled code (set after CompileBaseline)
 	DirectEntryPtr               uintptr                            // pointer to direct entry point for native BLR calls
@@ -92,6 +93,27 @@ func (p *FuncProto) EnsureFeedback() FeedbackVector {
 		p.CallSiteFeedback = NewCallSiteFeedbackVector(len(p.Code))
 	}
 	return p.Feedback
+}
+
+// ObserveArgShapes records stable direct table shapes for fixed parameters.
+// Tier 2 consumes these as guarded facts, so this profile is a hint rather
+// than a proof.
+func (p *FuncProto) ObserveArgShapes(args []runtime.Value) {
+	if p == nil || p.NumParams == 0 || len(args) == 0 {
+		return
+	}
+	if p.ArgShapeFeedback == nil {
+		p.ArgShapeFeedback = make(ArgArrayElementShapeFeedbackVector, p.NumParams)
+	}
+	n := p.NumParams
+	if len(args) < n {
+		n = len(args)
+	}
+	for i := 0; i < n; i++ {
+		if args[i].IsTable() {
+			p.ArgShapeFeedback[i].ObserveTableValue(args[i].Table())
+		}
+	}
 }
 
 // ObserveArgArrayElementShapes records stable array-element table shapes for

@@ -191,6 +191,8 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			}
 		}
 		staticArrayElementFacts := inferGuardedFixedShapeArrayElementArgFactsForProto(proto, loopCallGlobals)
+		staticArgFacts := inferGuardedFixedShapeArgFactsForProto(proto, loopCallGlobals)
+		profiledArgFacts := profiledFixedShapeArgFactsForProto(proto)
 		profiledArrayElementFacts := profiledFixedShapeArrayElementArgFactsForProto(proto)
 		profiledArrayElementPolyFacts := profiledFixedShapeArrayElementPolyFactsForProto(proto)
 		opts = &Tier2PipelineOpts{
@@ -198,7 +200,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			ProtocolGlobals:                 loopCallGlobals,
 			GlobalConstValues:               tm.buildNumericGlobalConstValues(proto),
 			InlineMaxSize:                   inlineMaxCalleeSize,
-			FixedShapeArgFacts:              inferGuardedFixedShapeArgFactsForProto(proto, loopCallGlobals),
+			FixedShapeArgFacts:              mergeFixedShapeTableFacts(profiledArgFacts, staticArgFacts),
 			FixedShapeArrayElementArgFacts:  mergeFixedShapeTableFacts(profiledArrayElementFacts, staticArrayElementFacts),
 			FixedShapeArrayElementPolyFacts: profiledArrayElementPolyFacts,
 			FixedShapeEntryGuards:           true,
@@ -342,6 +344,10 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		return nil, err
 	}
 
+	rawIntSelfABI := AnalyzeRawIntSelfABI(proto)
+	cf.RawIntSelfABI = rawIntSelfABI
+	cf.NumericParamCount = rawIntSelfABI.NumParams
+
 	if cf.numRegs > proto.MaxStack {
 		proto.MaxStack = cf.numRegs
 	}
@@ -349,9 +355,5 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	// R124: The numeric entry (t2_numeric_self_entry_N) is emitted as
 	// an extra label at the end of the same code block when the proto
 	// qualifies, so caller BL is compile-time PC-relative.
-	if ok, numParams := qualifyForNumeric(proto); ok {
-		cf.NumericParamCount = numParams
-	}
-
 	return cf, nil
 }

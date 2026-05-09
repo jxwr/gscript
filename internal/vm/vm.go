@@ -661,6 +661,7 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	if vm.methodJIT != nil && !proto.IsVarArg && !proto.JITDisabled {
 		proto.CallCount++
 		if proto.CallCount <= 64 {
+			proto.ObserveArgShapes(args)
 			proto.ObserveArgArrayElementShapes(args)
 		}
 		if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
@@ -1770,6 +1771,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					if proto.CallCount <= 64 {
 						argEnd := newBase + nArgs
 						if newBase >= 0 && argEnd >= newBase && argEnd <= len(vm.regs) {
+							proto.ObserveArgShapes(vm.regs[newBase:argEnd])
 							proto.ObserveArgArrayElementShapes(vm.regs[newBase:argEnd])
 						}
 					}

@@ -460,6 +460,7 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 					argsStart := absSlot + 1
 					argsEnd := argsStart + nArgs
 					if argsStart >= 0 && argsEnd >= argsStart && argsEnd <= len(regs) {
+						calleeProto.ObserveArgShapes(regs[argsStart:argsEnd])
 						calleeProto.ObserveArgArrayElementShapes(regs[argsStart:argsEnd])
 					}
 				}

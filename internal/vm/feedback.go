@@ -190,16 +190,18 @@ const argArrayElementShapeSampleLimit = 8
 // in an array argument's first element. It is intentionally conservative: the
 // optimized callee still guards each loaded element before consuming the fact.
 type ArgArrayElementShapeFeedback struct {
-	Count          uint32
-	ShapeID        uint32
-	FieldNames     []string
-	FieldTypes     map[string]FeedbackType
-	FieldRanges    map[string]IntRangeFeedback
-	FieldLenRanges map[string]IntRangeFeedback
-	Nested         map[string]ArgArrayElementShapeFeedback
-	Shapes         [MaxCallSiteFeedbackVMProtos]ArgArrayElementShapeCase
-	ShapeCount     uint8
-	Flags          uint8
+	Count             uint32
+	ShapeID           uint32
+	FieldNames        []string
+	FieldTypes        map[string]FeedbackType
+	FieldRanges       map[string]IntRangeFeedback
+	FieldLenRanges    map[string]IntRangeFeedback
+	Nested            map[string]ArgArrayElementShapeFeedback
+	ArrayElementType  FeedbackType
+	ArrayElementRange IntRangeFeedback
+	Shapes            [MaxCallSiteFeedbackVMProtos]ArgArrayElementShapeCase
+	ShapeCount        uint8
+	Flags             uint8
 }
 
 // IntRangeFeedback records a stable integer range for a profiled value. Invalid
@@ -285,6 +287,7 @@ func (af *ArgArrayElementShapeFeedback) observeTableValue(tbl *runtime.Table, in
 	af.observeShapeCase(tbl, shapeID, fields)
 	af.observeFieldTypes(tbl, fields)
 	af.observeNestedTables(tbl, fields)
+	af.observeArrayElements(tbl)
 	af.Count++
 }
 
@@ -467,22 +470,51 @@ func (af *ArgArrayElementShapeFeedback) observeNestedTables(tbl *runtime.Table, 
 		nestedTable := value.Table()
 		shapeID := nestedTable.ShapeID()
 		nestedFields := nestedTable.ShapeFieldNames()
-		if shapeID == 0 || len(nestedFields) == 0 {
+		hasShape := shapeID != 0 && len(nestedFields) != 0
+		var arrayElementType FeedbackType
+		var arrayElementRange IntRangeFeedback
+		observeArrayElementFeedback(nestedTable, &arrayElementType, &arrayElementRange)
+		hasArrayElement := arrayElementType != FBUnobserved
+		if !hasShape && !hasArrayElement {
 			continue
 		}
 		if af.Nested == nil {
 			af.Nested = make(map[string]ArgArrayElementShapeFeedback)
 		}
 		nested := af.Nested[field]
-		if nested.Count == 0 {
+		if hasShape && nested.Count == 0 {
 			nested.ShapeID = shapeID
 			nested.FieldNames = nestedFields
-		} else if nested.ShapeID != shapeID || !sameStringList(nested.FieldNames, nestedFields) {
+		} else if hasShape && (nested.ShapeID != shapeID || !sameStringList(nested.FieldNames, nestedFields)) {
 			nested.Flags |= ArgArrayElementShapePolymorphic
 		}
-		nested.observeFieldTypes(nestedTable, nestedFields)
+		if hasShape {
+			nested.observeFieldTypes(nestedTable, nestedFields)
+		}
+		observeArrayElementFeedback(nestedTable, &nested.ArrayElementType, &nested.ArrayElementRange)
 		nested.Count++
 		af.Nested[field] = nested
+	}
+}
+
+func (af *ArgArrayElementShapeFeedback) observeArrayElements(tbl *runtime.Table) {
+	if af == nil || tbl == nil {
+		return
+	}
+	observeArrayElementFeedback(tbl, &af.ArrayElementType, &af.ArrayElementRange)
+}
+
+func observeArrayElementFeedback(tbl *runtime.Table, typ *FeedbackType, rng *IntRangeFeedback) {
+	if tbl == nil || typ == nil || rng == nil {
+		return
+	}
+	for i := int64(1); i <= argArrayElementShapeSampleLimit; i++ {
+		elem := tbl.RawGetInt(i)
+		if elem.IsNil() {
+			continue
+		}
+		typ.Observe(elem.Type())
+		rng.Observe(elem)
 	}
 }
 

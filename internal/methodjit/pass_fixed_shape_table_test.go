@@ -451,13 +451,15 @@ result := driver()
 	annotated := 0
 	for _, block := range out.Blocks {
 		for _, instr := range block.Instrs {
-			if instr.Op != OpGetField {
-				continue
+			switch instr.Op {
+			case OpGetField:
+				if instr.Aux2 == 0 {
+					t.Fatalf("array element GetField was not annotated with guarded shape\nIR:\n%s", Print(out))
+				}
+				annotated++
+			case OpFieldLoad:
+				annotated++
 			}
-			if instr.Aux2 == 0 {
-				t.Fatalf("array element GetField was not annotated with guarded shape\nIR:\n%s", Print(out))
-			}
-			annotated++
 		}
 	}
 	if annotated != 2 {
@@ -512,7 +514,7 @@ result := walk({}, 0)
 	rangedFields := 0
 	for _, block := range out.Blocks {
 		for _, instr := range block.Instrs {
-			if instr.Op != OpGetField {
+			if instr.Op != OpGetField && instr.Op != OpFieldLoad {
 				continue
 			}
 			if r, ok := out.IntRanges[instr.ID]; ok && r.known {
@@ -520,6 +522,8 @@ result := walk({}, 0)
 				if instr.Type != TypeInt {
 					t.Fatalf("profiled range did not force int field type: %s", instr.Type)
 				}
+			} else if instr.Op == OpFieldLoad && instr.Type == TypeInt {
+				rangedFields++
 			}
 		}
 	}

@@ -12,24 +12,27 @@ import (
 // current Function; call-return facts expose only stable FieldFacts that can be
 // interpreted in the caller.
 type FixedShapeTableFact struct {
-	ShapeID         uint32
-	FieldNames      []string
-	FieldValueIDs   map[string]int
-	FieldFacts      map[string]FixedShapeFieldFact
-	FieldTypes      map[string]Type
-	FieldRanges     map[string]intRange
-	FieldLenRanges  map[string]intRange
-	FieldVMProtos   map[string]*vm.FuncProto
-	FieldTableFacts map[string]FixedShapeTableFact
-	Guarded         bool
-	EntryGuarded    bool
+	ShapeID           uint32
+	FieldNames        []string
+	FieldValueIDs     map[string]int
+	FieldFacts        map[string]FixedShapeFieldFact
+	FieldTypes        map[string]Type
+	FieldRanges       map[string]intRange
+	FieldLenRanges    map[string]intRange
+	FieldVMProtos     map[string]*vm.FuncProto
+	FieldTableFacts   map[string]FixedShapeTableFact
+	ArrayElementType  Type
+	ArrayElementRange intRange
+	Guarded           bool
+	EntryGuarded      bool
 }
 
 type FieldPolyShapeCase struct {
-	ShapeID  uint32
-	FieldIdx int
-	Type     Type
-	VMProto  *vm.FuncProto
+	ShapeID      uint32
+	FieldIdx     int
+	Type         Type
+	VMProto      *vm.FuncProto
+	ReceiverFact FixedShapeTableFact
 }
 
 type FixedShapeFieldKind uint8
@@ -314,13 +317,15 @@ func fixedShapeFactFromProfiledValueShape(feedback vm.ArgArrayElementShapeFeedba
 		return FixedShapeTableFact{}, false
 	}
 	return FixedShapeTableFact{
-		ShapeID:         shapeID,
-		FieldNames:      append([]string(nil), fields...),
-		FieldTypes:      profiledFixedShapeFieldTypes(feedback),
-		FieldRanges:     profiledFixedShapeFieldRanges(feedback),
-		FieldLenRanges:  profiledFixedShapeFieldLenRanges(feedback),
-		FieldTableFacts: profiledNestedFixedShapeTableFacts(feedback),
-		Guarded:         true,
+		ShapeID:           shapeID,
+		FieldNames:        append([]string(nil), fields...),
+		FieldTypes:        profiledFixedShapeFieldTypes(feedback),
+		FieldRanges:       profiledFixedShapeFieldRanges(feedback),
+		FieldLenRanges:    profiledFixedShapeFieldLenRanges(feedback),
+		FieldTableFacts:   profiledNestedFixedShapeTableFacts(feedback),
+		ArrayElementType:  profiledArrayElementType(feedback),
+		ArrayElementRange: profiledArrayElementRange(feedback),
+		Guarded:           true,
 	}, true
 }
 
@@ -394,7 +399,31 @@ func mergeSameShapeFacts(a, b FixedShapeTableFact) (FixedShapeTableFact, bool) {
 	out.FieldLenRanges = mergeFieldRangeFacts(a.FieldLenRanges, b.FieldLenRanges)
 	out.FieldVMProtos = mergeFieldProtoFacts(a.FieldVMProtos, b.FieldVMProtos)
 	out.FieldTableFacts = mergeNestedTableFacts(a.FieldTableFacts, b.FieldTableFacts)
+	if a.ArrayElementType == b.ArrayElementType {
+		out.ArrayElementType = a.ArrayElementType
+	}
+	if a.ArrayElementRange.known && b.ArrayElementRange.known {
+		out.ArrayElementRange = intRange{
+			min:   minInt64(a.ArrayElementRange.min, b.ArrayElementRange.min),
+			max:   maxInt64(a.ArrayElementRange.max, b.ArrayElementRange.max),
+			known: true,
+		}
+	}
 	return out, true
+}
+
+func minInt64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func mergeFieldTypeFacts(a, b map[string]Type) map[string]Type {
@@ -630,7 +659,13 @@ func fieldPolyShapeCases(facts []FixedShapeTableFact, name string) ([]FieldPolyS
 		} else if typ != caseType {
 			typ = TypeUnknown
 		}
-		cases = append(cases, FieldPolyShapeCase{ShapeID: fact.ShapeID, FieldIdx: idx, Type: caseType, VMProto: fact.FieldVMProtos[name]})
+		cases = append(cases, FieldPolyShapeCase{
+			ShapeID:      fact.ShapeID,
+			FieldIdx:     idx,
+			Type:         caseType,
+			VMProto:      fact.FieldVMProtos[name],
+			ReceiverFact: fact,
+		})
 	}
 	return cases, typ
 }
@@ -667,14 +702,16 @@ func guardedFixedShapeArgFact(fact FixedShapeTableFact) (FixedShapeTableFact, bo
 		return FixedShapeTableFact{}, false
 	}
 	return FixedShapeTableFact{
-		ShapeID:         fact.ShapeID,
-		FieldNames:      append([]string(nil), fact.FieldNames...),
-		FieldTypes:      cloneStringTypeMap(fact.FieldTypes),
-		FieldRanges:     cloneStringRangeMap(fact.FieldRanges),
-		FieldLenRanges:  cloneStringRangeMap(fact.FieldLenRanges),
-		FieldVMProtos:   cloneStringProtoMap(fact.FieldVMProtos),
-		FieldTableFacts: cloneFixedShapeTableFactMap(fact.FieldTableFacts),
-		Guarded:         true,
+		ShapeID:           fact.ShapeID,
+		FieldNames:        append([]string(nil), fact.FieldNames...),
+		FieldTypes:        cloneStringTypeMap(fact.FieldTypes),
+		FieldRanges:       cloneStringRangeMap(fact.FieldRanges),
+		FieldLenRanges:    cloneStringRangeMap(fact.FieldLenRanges),
+		FieldVMProtos:     cloneStringProtoMap(fact.FieldVMProtos),
+		FieldTableFacts:   cloneFixedShapeTableFactMap(fact.FieldTableFacts),
+		ArrayElementType:  fact.ArrayElementType,
+		ArrayElementRange: fact.ArrayElementRange,
+		Guarded:           true,
 	}, true
 }
 
@@ -827,11 +864,33 @@ func inferGuardedFixedShapeArrayElementArgFactsForProto(target *vm.FuncProto, gl
 }
 
 func profiledFixedShapeArrayElementArgFactsForProto(target *vm.FuncProto) map[int]FixedShapeTableFact {
-	if target == nil || len(target.ArgArrayElementShapeFeedback) == 0 {
+	return profiledFixedShapeFactsFromFeedback(target, targetArgArrayElementShapeFeedback(target))
+}
+
+func profiledFixedShapeArgFactsForProto(target *vm.FuncProto) map[int]FixedShapeTableFact {
+	return profiledFixedShapeFactsFromFeedback(target, targetArgShapeFeedback(target))
+}
+
+func targetArgArrayElementShapeFeedback(target *vm.FuncProto) vm.ArgArrayElementShapeFeedbackVector {
+	if target == nil {
+		return nil
+	}
+	return target.ArgArrayElementShapeFeedback
+}
+
+func targetArgShapeFeedback(target *vm.FuncProto) vm.ArgArrayElementShapeFeedbackVector {
+	if target == nil {
+		return nil
+	}
+	return target.ArgShapeFeedback
+}
+
+func profiledFixedShapeFactsFromFeedback(target *vm.FuncProto, feedbacks vm.ArgArrayElementShapeFeedbackVector) map[int]FixedShapeTableFact {
+	if target == nil || len(feedbacks) == 0 {
 		return nil
 	}
 	out := make(map[int]FixedShapeTableFact)
-	for idx, feedback := range target.ArgArrayElementShapeFeedback {
+	for idx, feedback := range feedbacks {
 		if idx < 0 || idx >= target.NumParams {
 			continue
 		}
@@ -840,13 +899,15 @@ func profiledFixedShapeArrayElementArgFactsForProto(target *vm.FuncProto) map[in
 			continue
 		}
 		out[idx] = FixedShapeTableFact{
-			ShapeID:         shapeID,
-			FieldNames:      append([]string(nil), fields...),
-			FieldTypes:      profiledFixedShapeFieldTypes(feedback),
-			FieldRanges:     profiledFixedShapeFieldRanges(feedback),
-			FieldLenRanges:  profiledFixedShapeFieldLenRanges(feedback),
-			FieldTableFacts: profiledNestedFixedShapeTableFacts(feedback),
-			Guarded:         true,
+			ShapeID:           shapeID,
+			FieldNames:        append([]string(nil), fields...),
+			FieldTypes:        profiledFixedShapeFieldTypes(feedback),
+			FieldRanges:       profiledFixedShapeFieldRanges(feedback),
+			FieldLenRanges:    profiledFixedShapeFieldLenRanges(feedback),
+			FieldTableFacts:   profiledNestedFixedShapeTableFacts(feedback),
+			ArrayElementType:  profiledArrayElementType(feedback),
+			ArrayElementRange: profiledArrayElementRange(feedback),
+			Guarded:           true,
 		}
 	}
 	if len(out) == 0 {
@@ -871,13 +932,14 @@ func profiledFixedShapeArrayElementPolyFactsForProto(target *vm.FuncProto) map[i
 		facts := make([]FixedShapeTableFact, 0, len(shapes))
 		for _, shape := range shapes {
 			facts = append(facts, FixedShapeTableFact{
-				ShapeID:        shape.ShapeID,
-				FieldNames:     append([]string(nil), shape.FieldNames...),
-				FieldTypes:     profiledShapeCaseFieldTypes(shape),
-				FieldRanges:    profiledShapeCaseFieldRanges(shape),
-				FieldLenRanges: profiledShapeCaseFieldLenRanges(shape),
-				FieldVMProtos:  profiledShapeCaseFieldVMProtos(shape),
-				Guarded:        true,
+				ShapeID:         shape.ShapeID,
+				FieldNames:      append([]string(nil), shape.FieldNames...),
+				FieldTypes:      profiledShapeCaseFieldTypes(shape),
+				FieldRanges:     profiledShapeCaseFieldRanges(shape),
+				FieldLenRanges:  profiledShapeCaseFieldLenRanges(shape),
+				FieldVMProtos:   profiledShapeCaseFieldVMProtos(shape),
+				FieldTableFacts: profiledNestedFixedShapeTableFacts(feedback),
+				Guarded:         true,
 			})
 		}
 		if len(facts) >= 2 {
@@ -914,16 +976,20 @@ func profiledNestedFixedShapeTableFacts(feedback vm.ArgArrayElementShapeFeedback
 	out := make(map[string]FixedShapeTableFact)
 	for name, nested := range feedback.Nested {
 		shapeID, fields, ok := nested.StableShape()
-		if !ok {
+		arrayType := profiledArrayElementType(nested)
+		arrayRange := profiledArrayElementRange(nested)
+		if !ok && arrayType == TypeUnknown && !arrayRange.known {
 			continue
 		}
 		out[name] = FixedShapeTableFact{
-			ShapeID:        shapeID,
-			FieldNames:     append([]string(nil), fields...),
-			FieldTypes:     profiledFixedShapeFieldTypes(nested),
-			FieldRanges:    profiledFixedShapeFieldRanges(nested),
-			FieldLenRanges: profiledFixedShapeFieldLenRanges(nested),
-			Guarded:        true,
+			ShapeID:           shapeID,
+			FieldNames:        append([]string(nil), fields...),
+			FieldTypes:        profiledFixedShapeFieldTypes(nested),
+			FieldRanges:       profiledFixedShapeFieldRanges(nested),
+			FieldLenRanges:    profiledFixedShapeFieldLenRanges(nested),
+			ArrayElementType:  profiledArrayElementType(nested),
+			ArrayElementRange: profiledArrayElementRange(nested),
+			Guarded:           true,
 		}
 	}
 	if len(out) == 0 {
@@ -1054,6 +1120,22 @@ func profiledShapeCaseFieldVMProtos(shape vm.ArgArrayElementShapeCase) map[strin
 		return nil
 	}
 	return out
+}
+
+func profiledArrayElementType(feedback vm.ArgArrayElementShapeFeedback) Type {
+	typ, ok := feedbackToIRType(feedback.ArrayElementType)
+	if !ok {
+		return TypeUnknown
+	}
+	return typ
+}
+
+func profiledArrayElementRange(feedback vm.ArgArrayElementShapeFeedback) intRange {
+	min, max, ok := feedback.ArrayElementRange.StableRange()
+	if !ok {
+		return intRange{}
+	}
+	return intRange{min: min, max: max, known: true}
 }
 
 func inferFixedShapeValuesForArgs(fn *Function, globals map[string]*vm.FuncProto) map[int]FixedShapeTableFact {
@@ -1278,12 +1360,15 @@ func AnalyzeFixedShapeReturnFact(proto *vm.FuncProto) (FixedShapeTableFact, bool
 
 func withoutFieldValues(fact FixedShapeTableFact) FixedShapeTableFact {
 	return FixedShapeTableFact{
-		ShapeID:         fact.ShapeID,
-		FieldNames:      append([]string(nil), fact.FieldNames...),
-		FieldTypes:      cloneStringTypeMap(fact.FieldTypes),
-		FieldRanges:     cloneStringRangeMap(fact.FieldRanges),
-		FieldVMProtos:   cloneStringProtoMap(fact.FieldVMProtos),
-		FieldTableFacts: cloneFixedShapeTableFactMap(fact.FieldTableFacts),
+		ShapeID:           fact.ShapeID,
+		FieldNames:        append([]string(nil), fact.FieldNames...),
+		FieldTypes:        cloneStringTypeMap(fact.FieldTypes),
+		FieldRanges:       cloneStringRangeMap(fact.FieldRanges),
+		FieldLenRanges:    cloneStringRangeMap(fact.FieldLenRanges),
+		FieldVMProtos:     cloneStringProtoMap(fact.FieldVMProtos),
+		FieldTableFacts:   cloneFixedShapeTableFactMap(fact.FieldTableFacts),
+		ArrayElementType:  fact.ArrayElementType,
+		ArrayElementRange: fact.ArrayElementRange,
 	}
 }
 
