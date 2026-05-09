@@ -1048,6 +1048,67 @@ func caller(n, reps) {
 	}
 }
 
+func TestLICM_HoistPureInvariantOverflowVersionedCall(t *testing.T) {
+	src := `
+func fib_iter(n) {
+    a := 0
+    b := 1
+    for i := 0; i < n; i++ {
+        t := a + b
+        a = b
+        b = t
+    }
+    return a
+}
+
+func bench(n, reps) {
+    result := 0
+    for r := 1; r <= reps; r++ {
+        result = fib_iter(n)
+    }
+    return result
+}
+`
+	fn, config := buildInlineTestIR(t, src, "bench")
+	config.MaxSize = 1
+
+	var err error
+	for _, pass := range []struct {
+		name string
+		fn   PassFunc
+	}{
+		{"SimplifyPhis", SimplifyPhisPass},
+		{"TypeSpecialize", TypeSpecializePass},
+		{"Inline", InlinePassWith(config)},
+		{"TypeSpecializePostInline", TypeSpecializePass},
+		{"RangeAnalysis", RangeAnalysisPass},
+		{"LICM", LICMPass},
+	} {
+		fn, err = pass.fn(fn)
+		if err != nil {
+			t.Fatalf("%s: %v", pass.name, err)
+		}
+	}
+	assertValidates(t, fn, "after LICM")
+
+	li := computeLoopInfo(fn)
+	var calls int
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpCall {
+				continue
+			}
+			calls++
+			if li.loopBlocks[block.ID] {
+				t.Fatalf("pure invariant overflow-versioned call stayed in loop B%d:\n%s", block.ID, Print(fn))
+			}
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("expected one hoisted fib_iter call, got %d:\n%s", calls, Print(fn))
+	}
+}
+
 func globalNameAt(fn *Function, idx int64, want string) bool {
 	if fn == nil || fn.Proto == nil || idx < 0 || int(idx) >= len(fn.Proto.Constants) {
 		return false

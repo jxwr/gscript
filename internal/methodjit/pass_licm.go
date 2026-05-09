@@ -207,7 +207,11 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				}
 			case OpSetGlobal:
 				setGlobals[instr.Aux] = true
-			case OpCall, OpResume:
+			case OpCall:
+				if !isPureLoopInvariantCall(fn, instr) {
+					hasEffectfulLoopCall = true
+				}
+			case OpResume:
 				if !isPureNumericLoopCall(fn, instr) {
 					hasEffectfulLoopCall = true
 				}
@@ -238,9 +242,9 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				continue
 			}
 			if instr.Op == OpCall {
-				if !isPureNumericLoopCall(fn, instr) {
+				if !isPureLoopInvariantCall(fn, instr) {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
-						"call is not a pure numeric loop call")
+						"call is not loop-invariant and pure")
 					continue
 				}
 			} else if !canHoistOp(instr.Op) {
@@ -572,6 +576,28 @@ func isPureNumericLoopCall(fn *Function, call *Instr) bool {
 	}
 	if abi := AnalyzeRawIntSelfABI(callee); abi.Eligible && abi.Return == SpecializedABIReturnRawInt {
 		return true
+	}
+	calleeFn := BuildGraph(callee)
+	if calleeFn == nil {
+		return false
+	}
+	return pureNumericInlineRejectReason(calleeFn) == ""
+}
+
+func isPureLoopInvariantCall(fn *Function, call *Instr) bool {
+	if isPureNumericLoopCall(fn, call) {
+		return true
+	}
+	if fn == nil || call == nil || call.Op != OpCall || !callABIHasExactResultShape(fn, call, 1) {
+		return false
+	}
+	globals := callABIMergeGlobals(fn.Globals, callABIStableGlobals(fn.Proto))
+	if len(globals) == 0 {
+		return false
+	}
+	_, callee := resolveCallee(call, fn, InlineConfig{Globals: globals})
+	if callee == nil {
+		return false
 	}
 	calleeFn := BuildGraph(callee)
 	if calleeFn == nil {
