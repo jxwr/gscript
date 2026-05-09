@@ -192,12 +192,11 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 	asm := ec.asm
 
 	nilBits := nb64(jit.NB_ValNil)
-	for i, arg := range instr.Args {
+	for _, arg := range instr.Args {
 		valReg := ec.resolveValueNB(arg.ID, jit.X5)
 		if valReg != jit.X5 {
 			asm.MOVreg(jit.X5, valReg)
 		}
-		asm.STR(jit.X5, mRegRegs, slotOffset(slots[i]))
 		asm.LoadImm64(jit.X6, nilBits)
 		asm.CMPreg(jit.X5, jit.X6)
 		asm.BCond(jit.CondEQ, missLabel)
@@ -227,8 +226,11 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 
 	jit.EmitExtractPtr(asm, jit.X1, jit.X0)
 	asm.LDR(jit.X2, jit.X1, jit.TableOffSvals)
-	for i, slot := range slots {
-		asm.LDR(jit.X5, mRegRegs, slotOffset(slot))
+	for i, arg := range instr.Args {
+		valReg := ec.resolveValueNB(arg.ID, jit.X5)
+		if valReg != jit.X5 {
+			asm.MOVreg(jit.X5, valReg)
+		}
 		asm.STR(jit.X5, jit.X2, i*jit.ValueSize)
 	}
 	ec.storeResultNB(jit.X0, instr.ID)
