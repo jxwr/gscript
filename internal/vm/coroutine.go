@@ -300,7 +300,10 @@ func (vm *VM) resumeCoroutineRaw(co *VMCoroutine, args []rt.Value) (bool, []rt.V
 	if !co.started && co.leafNoCall {
 		co.started = true
 		vm.recordCoroutineLeafFastPath()
-		results, err, ok := vm.callLeafCoroutine(co, args)
+		results, err, ok := vm.evalLeafCoroutineExpression(co, args)
+		if !ok {
+			results, err, ok = vm.callLeafCoroutine(co, args)
+		}
 		if !ok {
 			vm.recordCoroutineLeafFallback()
 			coVM := newChildVM(vm, co)
@@ -679,6 +682,93 @@ func (vm *VM) callLeafCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, e
 
 	results, err := vm.call(cl, args, base, 0)
 	return results, err, true
+}
+
+func (vm *VM) evalLeafCoroutineExpression(co *VMCoroutine, args []rt.Value) ([]rt.Value, error, bool) {
+	cl := co.closure
+	if cl == nil || cl.Proto == nil || cl.Proto.IsVarArg {
+		return nil, nil, false
+	}
+	proto := cl.Proto
+	if proto.NumParams > len(args) || len(proto.Code) < 2 || len(proto.Code) > 8 {
+		return nil, nil, false
+	}
+	if proto.MaxStack > 16 {
+		return nil, nil, false
+	}
+	var values [16]rt.Value
+	var valid uint32
+	for i := 0; i < proto.NumParams; i++ {
+		values[i] = args[i]
+		valid |= 1 << uint(i)
+	}
+	for pc, inst := range proto.Code {
+		op := DecodeOp(inst)
+		if op == OP_RETURN {
+			if pc != len(proto.Code)-1 {
+				return nil, nil, false
+			}
+			a := DecodeA(inst)
+			b := DecodeB(inst)
+			if b == 1 {
+				return nil, nil, true
+			}
+			if b != 2 {
+				return nil, nil, false
+			}
+			if valid&(1<<uint(a)) == 0 {
+				return nil, nil, false
+			}
+			return rt.ReuseValueSlice1(vm.retBuf[:0], values[a]), nil, true
+		}
+		a := DecodeA(inst)
+		switch op {
+		case OP_MOVE:
+			src := DecodeB(inst)
+			if valid&(1<<uint(src)) == 0 {
+				return nil, nil, false
+			}
+			values[a] = values[src]
+			valid |= 1 << uint(a)
+		case OP_LOADINT:
+			values[a] = rt.IntValue(int64(DecodesBx(inst)))
+			valid |= 1 << uint(a)
+		case OP_GETUPVAL:
+			uv := DecodeB(inst)
+			if uv < 0 || uv >= len(cl.Upvalues) || cl.Upvalues[uv] == nil {
+				return nil, nil, false
+			}
+			values[a] = cl.Upvalues[uv].Get()
+			valid |= 1 << uint(a)
+		case OP_ADD, OP_MUL:
+			leftReg := DecodeB(inst)
+			rightReg := DecodeC(inst)
+			if valid&(1<<uint(leftReg)) == 0 {
+				return nil, nil, false
+			}
+			if valid&(1<<uint(rightReg)) == 0 {
+				return nil, nil, false
+			}
+			left := values[leftReg]
+			right := values[rightReg]
+			var out rt.Value
+			switch op {
+			case OP_ADD:
+				if !rt.AddNums(&out, &left, &right) {
+					return nil, nil, false
+				}
+			case OP_MUL:
+				if !rt.MulNums(&out, &left, &right) {
+					return nil, nil, false
+				}
+			}
+			values[a] = out
+			valid |= 1 << uint(a)
+		default:
+			return nil, nil, false
+		}
+	}
+	return nil, nil, false
 }
 
 // TryFastCoroutineCallValue handles VM-owned coroutine builtins directly from
