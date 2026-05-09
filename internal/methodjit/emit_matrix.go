@@ -329,6 +329,11 @@ func (ec *emitContext) emitMatrixStoreFRow(instr *Instr) {
 	if jReg != jit.X3 {
 		asm.MOVreg(jit.X3, jReg)
 	}
+	if instr.Args[2].Def != nil && instr.Args[2].Def.Type == TypeFloat {
+		vF := ec.resolveRawFloat(instr.Args[2].ID, jit.D0)
+		asm.FSTRdReg(vF, jit.X5, jit.X3)
+		return
+	}
 	vReg := ec.resolveValueNB(instr.Args[2].ID, jit.X6)
 	if vReg != jit.X6 {
 		asm.MOVreg(jit.X6, vReg)

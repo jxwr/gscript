@@ -70,6 +70,42 @@ func write(m, i) {
 	}
 }
 
+func TestEmitMatrixStoreFRowUsesDirectFPStore(t *testing.T) {
+	proto := compileFunction(t, `
+func write_row(m, i) {
+    matrix.setf(m, i, 0, 1.25)
+    matrix.setf(m, i, 1, 2.5)
+}`)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	var store *Instr
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpMatrixStoreFRow {
+				store = instr
+				break
+			}
+		}
+	}
+	if store == nil {
+		t.Fatalf("expected MatrixStoreFRow after row factoring:\n%s", Print(fn))
+	}
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	if moves := countFMOVToGPForIRInstr(cf, store.ID); moves != 0 {
+		t.Fatalf("MatrixStoreFRow emitted %d FPR-to-GPR move(s), want direct FP store", moves)
+	}
+	if stores := countFSTRdRegForIRInstr(cf, store.ID); stores != 1 {
+		t.Fatalf("MatrixStoreFRow emitted %d FSTRd register-offset store(s), want 1", stores)
+	}
+}
+
 func countFSTRdRegForIRInstr(cf *CompiledFunction, instrID int) int {
 	return countMatchingIRInstr(cf, instrID, func(insn uint32) bool {
 		return insn&0xFFE00C00 == 0xFC200800

@@ -604,6 +604,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = MatrixRowPtrFactoringPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("MatrixRowPtrFactoring: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = TableArrayStoreLowerPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("TableArrayStoreLower: %w", err)
@@ -831,6 +837,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("DenseMatrixNestedLoadLower", DenseMatrixNestedLoadLowerPass)
 	pipe.Add("MatrixLower", MatrixLowerPass)
 	pipe.Add("LoadEliminationPostMatrixLower", LoadEliminationPass)
+	pipe.Add("MatrixRowPtrFactoring", MatrixRowPtrFactoringPass)
 	pipe.Add("TableArrayStoreLower", TableArrayStoreLowerPass)
 	pipe.Add("DCEPostMatrixLower", DCEPass)
 	pipe.Add("FMAFusion", FMAFusionPass)
