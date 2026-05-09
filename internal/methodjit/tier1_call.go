@@ -129,6 +129,35 @@ type accumulatorClosureFastPath struct {
 	deltaUpval int
 }
 
+type simpleClosureExprFastPath struct {
+	proto *vm.FuncProto
+	expr  simpleClosureExpr
+}
+
+type immediateClosureFactoryFastPath struct {
+	proto      *vm.FuncProto
+	expr       simpleClosureExpr
+	upvalSlots []int
+}
+
+type simpleClosureExprKind uint8
+
+const (
+	simpleClosureExprParam simpleClosureExprKind = iota
+	simpleClosureExprIntConst
+	simpleClosureExprUpval
+	simpleClosureExprAdd
+	simpleClosureExprMul
+)
+
+type simpleClosureExpr struct {
+	kind  simpleClosureExprKind
+	value int64
+	upval int
+	left  *simpleClosureExpr
+	right *simpleClosureExpr
+}
+
 type accumulatorDeltaKind uint8
 
 const (
@@ -139,6 +168,12 @@ const (
 var (
 	accumulatorClosureProgramFastPathsMu sync.RWMutex
 	accumulatorClosureProgramFastPaths   = make(map[*vm.FuncProto][]accumulatorClosureFastPath)
+
+	simpleClosureExprProgramFastPathsMu sync.RWMutex
+	simpleClosureExprProgramFastPaths   = make(map[*vm.FuncProto][]simpleClosureExprFastPath)
+
+	immediateClosureFactoryProgramFastPathsMu sync.RWMutex
+	immediateClosureFactoryProgramFastPaths   = make(map[*vm.FuncProto][]immediateClosureFactoryFastPath)
 )
 
 // emitBaselineNativeCall emits a native ARM64 call sequence for OP_CALL.
@@ -234,6 +269,12 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	if b == 1 && c == 2 {
 		emitBaselineAccumulatorClosureFastPath(asm, callerProto, slowLabel, doneLabel, a)
 	}
+	if b == 2 && c == 2 {
+		emitBaselineImmediateClosureFactoryFastPath(asm, callerProto, pc, a)
+	}
+	if b == 2 && c == 2 {
+		emitBaselineSimpleClosureExprFastPath(asm, callerProto, doneLabel, a)
+	}
 
 	// Self-call detection: compare callee proto with callerProto.
 	// If equal → self-call path (BL self_call_entry, lightweight save).
@@ -301,6 +342,9 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0) // X0 = *vm.Closure
 
 		asm.Label(callICDoneLabel)
+		if b == 2 && c == 2 {
+			emitBaselineSimpleClosureExprFastPath(asm, callerProto, doneLabel, a)
+		}
 	}
 
 	// Bounds check: verify callee's register window fits in the register file.
@@ -645,6 +689,141 @@ func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.
 	asm.Label(missLabel)
 }
 
+func emitBaselineSimpleClosureExprFastPath(asm *jit.Assembler, callerProto *vm.FuncProto, doneLabel string, callSlot int) {
+	fastPaths := simpleClosureExprFastPathsForProto(callerProto)
+	if len(fastPaths) == 0 {
+		return
+	}
+	missLabel := nextLabel("simple_closure_expr_miss")
+	for _, fast := range fastPaths {
+		nextFastLabel := nextLabel("simple_closure_expr_next")
+		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(fast.proto))))
+		asm.CMPreg(jit.X1, jit.X3)
+		asm.BCond(jit.CondNE, nextFastLabel)
+
+		emitSimpleClosureExprValue(asm, fast.expr, callSlot+1, len(fast.proto.Upvalues), jit.X4, jit.X7, jit.X5, jit.X6, missLabel)
+		jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
+		storeSlot(asm, callSlot, jit.X4)
+		asm.B(doneLabel)
+
+		asm.Label(nextFastLabel)
+	}
+	asm.Label(missLabel)
+}
+
+func emitBaselineImmediateClosureFactoryFastPath(asm *jit.Assembler, callerProto *vm.FuncProto, pc, factoryCallSlot int) {
+	fastPaths := immediateClosureFactoryFastPathsForProto(callerProto)
+	if len(fastPaths) == 0 || pc+4 >= len(callerProto.Code) {
+		return
+	}
+	moveCallee := callerProto.Code[pc+1]
+	moveArg := callerProto.Code[pc+2]
+	callClosure := callerProto.Code[pc+3]
+	if vm.DecodeOp(moveCallee) != vm.OP_MOVE ||
+		vm.DecodeB(moveCallee) != factoryCallSlot ||
+		vm.DecodeOp(moveArg) != vm.OP_MOVE ||
+		vm.DecodeOp(callClosure) != vm.OP_CALL ||
+		vm.DecodeB(callClosure) != 2 ||
+		vm.DecodeC(callClosure) != 2 ||
+		vm.DecodeA(callClosure) != vm.DecodeA(moveCallee) ||
+		vm.DecodeA(moveArg) != vm.DecodeA(callClosure)+1 {
+		return
+	}
+
+	resultSlot := vm.DecodeA(callClosure)
+	argSrcSlot := vm.DecodeB(moveArg)
+	missLabel := nextLabel("immediate_closure_factory_miss")
+	for _, fast := range fastPaths {
+		nextFastLabel := nextLabel("immediate_closure_factory_next")
+		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(fast.proto))))
+		asm.CMPreg(jit.X1, jit.X3)
+		asm.BCond(jit.CondNE, nextFastLabel)
+
+		emitImmediateClosureFactoryExprValue(asm, fast.expr, argSrcSlot, factoryCallSlot+1, fast.upvalSlots, jit.X4, jit.X7, jit.X5, missLabel)
+		jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
+		storeSlot(asm, resultSlot, jit.X4)
+		asm.B(pcLabel(pc + 4))
+
+		asm.Label(nextFastLabel)
+	}
+	asm.Label(missLabel)
+}
+
+func emitSimpleClosureExprValue(asm *jit.Assembler, expr simpleClosureExpr, argSlot, upvalCount int, dst, rhs, tagScratch, refScratch jit.Reg, missLabel string) {
+	switch expr.kind {
+	case simpleClosureExprParam:
+		loadSlot(asm, dst, argSlot)
+		emitCheckIsInt(asm, dst, tagScratch)
+		asm.BCond(jit.CondNE, missLabel)
+		jit.EmitUnboxInt(asm, dst, dst)
+	case simpleClosureExprIntConst:
+		asm.LoadImm64(dst, expr.value)
+	case simpleClosureExprUpval:
+		emitLoadClosureUpvalueRef(asm, jit.X0, expr.upval, upvalCount, refScratch, rhs, tagScratch, missLabel)
+		asm.LDR(dst, refScratch, 0)
+		emitCheckIsInt(asm, dst, tagScratch)
+		asm.BCond(jit.CondNE, missLabel)
+		jit.EmitUnboxInt(asm, dst, dst)
+	case simpleClosureExprAdd, simpleClosureExprMul:
+		if expr.left == nil || expr.right == nil {
+			asm.B(missLabel)
+			return
+		}
+		emitSimpleClosureExprValue(asm, *expr.left, argSlot, upvalCount, dst, rhs, tagScratch, refScratch, missLabel)
+		emitSimpleClosureExprValue(asm, *expr.right, argSlot, upvalCount, rhs, dst, tagScratch, refScratch, missLabel)
+		switch expr.kind {
+		case simpleClosureExprAdd:
+			asm.ADDreg(dst, dst, rhs)
+		case simpleClosureExprMul:
+			asm.MUL(dst, dst, rhs)
+		}
+		asm.SBFX(tagScratch, dst, 0, 48)
+		asm.CMPreg(tagScratch, dst)
+		asm.BCond(jit.CondNE, missLabel)
+	default:
+		asm.B(missLabel)
+	}
+}
+
+func emitImmediateClosureFactoryExprValue(asm *jit.Assembler, expr simpleClosureExpr, argSlot, factoryArgBase int, upvalSlots []int, dst, rhs, tagScratch jit.Reg, missLabel string) {
+	switch expr.kind {
+	case simpleClosureExprParam:
+		loadSlot(asm, dst, argSlot)
+		emitCheckIsInt(asm, dst, tagScratch)
+		asm.BCond(jit.CondNE, missLabel)
+		jit.EmitUnboxInt(asm, dst, dst)
+	case simpleClosureExprIntConst:
+		asm.LoadImm64(dst, expr.value)
+	case simpleClosureExprUpval:
+		if expr.upval < 0 || expr.upval >= len(upvalSlots) {
+			asm.B(missLabel)
+			return
+		}
+		loadSlot(asm, dst, factoryArgBase+upvalSlots[expr.upval])
+		emitCheckIsInt(asm, dst, tagScratch)
+		asm.BCond(jit.CondNE, missLabel)
+		jit.EmitUnboxInt(asm, dst, dst)
+	case simpleClosureExprAdd, simpleClosureExprMul:
+		if expr.left == nil || expr.right == nil {
+			asm.B(missLabel)
+			return
+		}
+		emitImmediateClosureFactoryExprValue(asm, *expr.left, argSlot, factoryArgBase, upvalSlots, dst, rhs, tagScratch, missLabel)
+		emitImmediateClosureFactoryExprValue(asm, *expr.right, argSlot, factoryArgBase, upvalSlots, rhs, dst, tagScratch, missLabel)
+		switch expr.kind {
+		case simpleClosureExprAdd:
+			asm.ADDreg(dst, dst, rhs)
+		case simpleClosureExprMul:
+			asm.MUL(dst, dst, rhs)
+		}
+		asm.SBFX(tagScratch, dst, 0, 48)
+		asm.CMPreg(tagScratch, dst)
+		asm.BCond(jit.CondNE, missLabel)
+	default:
+		asm.B(missLabel)
+	}
+}
+
 func emitLoadClosureUpvalueRef(asm *jit.Assembler, closureReg jit.Reg, upval, upvalCount int, dstRefReg, upvalReg, dataReg jit.Reg, slowLabel string) {
 	if upvalCount == 1 && upval == 0 {
 		asm.LDR(upvalReg, closureReg, vmClosureOffInlineUpvalue0)
@@ -663,15 +842,33 @@ func registerAccumulatorClosureFastPaths(root *vm.FuncProto) {
 		return
 	}
 	fastPaths := collectAccumulatorClosureFastPaths(root)
-	if len(fastPaths) == 0 {
+	exprFastPaths := collectSimpleClosureExprFastPaths(root)
+	factoryFastPaths := collectImmediateClosureFactoryFastPaths(root)
+	if len(fastPaths) == 0 && len(exprFastPaths) == 0 && len(factoryFastPaths) == 0 {
 		return
 	}
 	protos := collectProtoTree(root)
 	accumulatorClosureProgramFastPathsMu.Lock()
-	defer accumulatorClosureProgramFastPathsMu.Unlock()
 	for _, proto := range protos {
-		accumulatorClosureProgramFastPaths[proto] = fastPaths
+		if len(fastPaths) != 0 {
+			accumulatorClosureProgramFastPaths[proto] = fastPaths
+		}
 	}
+	accumulatorClosureProgramFastPathsMu.Unlock()
+	simpleClosureExprProgramFastPathsMu.Lock()
+	for _, proto := range protos {
+		if len(exprFastPaths) != 0 {
+			simpleClosureExprProgramFastPaths[proto] = exprFastPaths
+		}
+	}
+	simpleClosureExprProgramFastPathsMu.Unlock()
+	immediateClosureFactoryProgramFastPathsMu.Lock()
+	for _, proto := range protos {
+		if len(factoryFastPaths) != 0 {
+			immediateClosureFactoryProgramFastPaths[proto] = factoryFastPaths
+		}
+	}
+	immediateClosureFactoryProgramFastPathsMu.Unlock()
 }
 
 func accumulatorClosureFastPathsForProto(proto *vm.FuncProto) []accumulatorClosureFastPath {
@@ -685,6 +882,32 @@ func accumulatorClosureFastPathsForProto(proto *vm.FuncProto) []accumulatorClosu
 	}
 	accumulatorClosureProgramFastPathsMu.RUnlock()
 	return collectAccumulatorClosureFastPaths(proto)
+}
+
+func simpleClosureExprFastPathsForProto(proto *vm.FuncProto) []simpleClosureExprFastPath {
+	if proto == nil {
+		return nil
+	}
+	simpleClosureExprProgramFastPathsMu.RLock()
+	if fastPaths := simpleClosureExprProgramFastPaths[proto]; len(fastPaths) != 0 {
+		simpleClosureExprProgramFastPathsMu.RUnlock()
+		return fastPaths
+	}
+	simpleClosureExprProgramFastPathsMu.RUnlock()
+	return collectSimpleClosureExprFastPaths(proto)
+}
+
+func immediateClosureFactoryFastPathsForProto(proto *vm.FuncProto) []immediateClosureFactoryFastPath {
+	if proto == nil {
+		return nil
+	}
+	immediateClosureFactoryProgramFastPathsMu.RLock()
+	if fastPaths := immediateClosureFactoryProgramFastPaths[proto]; len(fastPaths) != 0 {
+		immediateClosureFactoryProgramFastPathsMu.RUnlock()
+		return fastPaths
+	}
+	immediateClosureFactoryProgramFastPathsMu.RUnlock()
+	return collectImmediateClosureFactoryFastPaths(proto)
 }
 
 func collectProtoTree(root *vm.FuncProto) []*vm.FuncProto {
@@ -715,6 +938,46 @@ func collectAccumulatorClosureFastPaths(root *vm.FuncProto) []accumulatorClosure
 		}
 		seen[proto] = true
 		if fast, ok := accumulatorClosurePattern(proto); ok {
+			out = append(out, fast)
+		}
+		for _, child := range proto.Protos {
+			walk(child)
+		}
+	}
+	walk(root)
+	return out
+}
+
+func collectSimpleClosureExprFastPaths(root *vm.FuncProto) []simpleClosureExprFastPath {
+	seen := make(map[*vm.FuncProto]bool)
+	var out []simpleClosureExprFastPath
+	var walk func(*vm.FuncProto)
+	walk = func(proto *vm.FuncProto) {
+		if proto == nil || seen[proto] {
+			return
+		}
+		seen[proto] = true
+		if expr, ok := simpleClosureExprPattern(proto); ok {
+			out = append(out, simpleClosureExprFastPath{proto: proto, expr: expr})
+		}
+		for _, child := range proto.Protos {
+			walk(child)
+		}
+	}
+	walk(root)
+	return out
+}
+
+func collectImmediateClosureFactoryFastPaths(root *vm.FuncProto) []immediateClosureFactoryFastPath {
+	seen := make(map[*vm.FuncProto]bool)
+	var out []immediateClosureFactoryFastPath
+	var walk func(*vm.FuncProto)
+	walk = func(proto *vm.FuncProto) {
+		if proto == nil || seen[proto] {
+			return
+		}
+		seen[proto] = true
+		if fast, ok := immediateClosureFactoryPattern(proto); ok {
 			out = append(out, fast)
 		}
 		for _, child := range proto.Protos {
@@ -779,6 +1042,109 @@ func accumulatorClosurePattern(proto *vm.FuncProto) (accumulatorClosureFastPath,
 		return fast, true
 	default:
 		return accumulatorClosureFastPath{}, false
+	}
+}
+
+func simpleClosureExprPattern(proto *vm.FuncProto) (simpleClosureExpr, bool) {
+	if proto == nil || proto.NumParams != 1 || proto.IsVarArg || len(proto.Code) < 2 || len(proto.Code) > 6 {
+		return simpleClosureExpr{}, false
+	}
+	exprs := map[int]simpleClosureExpr{
+		0: {kind: simpleClosureExprParam},
+	}
+	for pc, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		if op == vm.OP_RETURN {
+			if pc != len(proto.Code)-1 || vm.DecodeB(inst) != 2 {
+				return simpleClosureExpr{}, false
+			}
+			retReg := vm.DecodeA(inst)
+			expr, ok := exprs[retReg]
+			if !ok || simpleClosureExprCost(expr) > 6 {
+				return simpleClosureExpr{}, false
+			}
+			return expr, true
+		}
+		a := vm.DecodeA(inst)
+		switch op {
+		case vm.OP_LOADINT:
+			exprs[a] = simpleClosureExpr{kind: simpleClosureExprIntConst, value: int64(vm.DecodesBx(inst))}
+		case vm.OP_GETUPVAL:
+			uv := vm.DecodeB(inst)
+			if uv < 0 || uv >= len(proto.Upvalues) {
+				return simpleClosureExpr{}, false
+			}
+			exprs[a] = simpleClosureExpr{kind: simpleClosureExprUpval, upval: uv}
+		case vm.OP_ADD, vm.OP_MUL:
+			left, ok := exprs[vm.DecodeB(inst)]
+			if !ok {
+				return simpleClosureExpr{}, false
+			}
+			right, ok := exprs[vm.DecodeC(inst)]
+			if !ok {
+				return simpleClosureExpr{}, false
+			}
+			kind := simpleClosureExprAdd
+			if op == vm.OP_MUL {
+				kind = simpleClosureExprMul
+			}
+			leftCopy := left
+			rightCopy := right
+			exprs[a] = simpleClosureExpr{kind: kind, left: &leftCopy, right: &rightCopy}
+		default:
+			return simpleClosureExpr{}, false
+		}
+	}
+	return simpleClosureExpr{}, false
+}
+
+func immediateClosureFactoryPattern(proto *vm.FuncProto) (immediateClosureFactoryFastPath, bool) {
+	if proto == nil || proto.NumParams == 0 || proto.IsVarArg || len(proto.Protos) == 0 || len(proto.Code) < 2 {
+		return immediateClosureFactoryFastPath{}, false
+	}
+	if vm.DecodeOp(proto.Code[0]) != vm.OP_CLOSURE || vm.DecodeOp(proto.Code[1]) != vm.OP_RETURN {
+		return immediateClosureFactoryFastPath{}, false
+	}
+	closureReg := vm.DecodeA(proto.Code[0])
+	if vm.DecodeA(proto.Code[1]) != closureReg || vm.DecodeB(proto.Code[1]) != 2 {
+		return immediateClosureFactoryFastPath{}, false
+	}
+	childIdx := vm.DecodeBx(proto.Code[0])
+	if childIdx < 0 || childIdx >= len(proto.Protos) {
+		return immediateClosureFactoryFastPath{}, false
+	}
+	for i := 2; i < len(proto.Code); i++ {
+		op := vm.DecodeOp(proto.Code[i])
+		if op != vm.OP_CLOSE && op != vm.OP_RETURN {
+			return immediateClosureFactoryFastPath{}, false
+		}
+	}
+	child := proto.Protos[childIdx]
+	expr, ok := simpleClosureExprPattern(child)
+	if !ok || len(child.Upvalues) == 0 {
+		return immediateClosureFactoryFastPath{}, false
+	}
+	upvalSlots := make([]int, len(child.Upvalues))
+	for i, desc := range child.Upvalues {
+		if !desc.InStack || desc.Index < 0 || desc.Index >= proto.NumParams {
+			return immediateClosureFactoryFastPath{}, false
+		}
+		upvalSlots[i] = desc.Index
+	}
+	return immediateClosureFactoryFastPath{proto: proto, expr: expr, upvalSlots: upvalSlots}, true
+}
+
+func simpleClosureExprCost(expr simpleClosureExpr) int {
+	switch expr.kind {
+	case simpleClosureExprParam, simpleClosureExprIntConst, simpleClosureExprUpval:
+		return 1
+	case simpleClosureExprAdd, simpleClosureExprMul:
+		if expr.left == nil || expr.right == nil {
+			return 1000
+		}
+		return 1 + simpleClosureExprCost(*expr.left) + simpleClosureExprCost(*expr.right)
+	default:
+		return 1000
 	}
 }
 

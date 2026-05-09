@@ -565,6 +565,29 @@ for i := 1; i <= 10; i++ { result = counter() }
 `, "result")
 }
 
+func TestTier1_ImmediateClosureFactoryFastPath(t *testing.T) {
+	compareVMvsJIT(t, `
+func make_adder(x) {
+    return func(y) { return x + y }
+}
+result := 0
+for i := 1; i <= 200; i++ {
+    add := make_adder(5)
+    result = result + add(i)
+}
+`, "result")
+}
+
+func TestTier1_ImmediateClosureFactoryFastPath_FallbackOnNonInt(t *testing.T) {
+	compareVMvsJIT(t, `
+func make_adder(x) {
+    return func(y) { return x + y }
+}
+add := make_adder(0.5)
+result := add(1.25)
+`, "result")
+}
+
 func TestTier1_NativeCall_UpvalueSideEffectBeforeExitStillGated(t *testing.T) {
 	src := `
 func make_counter() {
