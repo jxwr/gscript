@@ -10,6 +10,18 @@ func RedundantGuardEliminationPass(fn *Function) (*Function, error) {
 	}
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
+			if instr.Op == OpGuardTruthy && len(instr.Args) > 0 {
+				arg := instr.Args[0]
+				if arg != nil && arg.Def != nil && arg.Def.Type == TypeBool {
+					replaceAllUses(fn, instr.ID, arg.Def)
+					instr.Op = OpNop
+					instr.Args = nil
+					instr.Aux = 0
+					instr.Aux2 = 0
+					instr.Type = TypeUnknown
+				}
+				continue
+			}
 			if instr.Op != OpGuardType || len(instr.Args) == 0 {
 				continue
 			}

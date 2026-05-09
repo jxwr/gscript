@@ -49,6 +49,28 @@ func TestRedundantGuardElimination_StaticType(t *testing.T) {
 	}
 }
 
+func TestRedundantGuardElimination_BoolTruthy(t *testing.T) {
+	fn := &Function{}
+	b := &Block{ID: 0}
+	fn.Blocks = []*Block{b}
+
+	flag := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeBool, Aux: 0, Block: b}
+	guard := &Instr{ID: fn.newValueID(), Op: OpGuardTruthy, Type: TypeBool, Args: []*Value{flag.Value()}, Block: b}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{guard.Value()}, Block: b}
+	b.Instrs = []*Instr{flag, guard, br}
+
+	out, err := RedundantGuardEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("RedundantGuardEliminationPass: %v", err)
+	}
+	if guard.Op != OpNop {
+		t.Fatalf("truthy guard on bool should be removed, got %s\nIR:\n%s", guard.Op, Print(out))
+	}
+	if br.Args[0].ID != flag.ID {
+		t.Fatalf("branch should use original bool value, got v%d want v%d\nIR:\n%s", br.Args[0].ID, flag.ID, Print(out))
+	}
+}
+
 func TestRedundantGuardElimination_FusesFloatGetFieldGuard(t *testing.T) {
 	fn := &Function{NumRegs: 1}
 	b := &Block{ID: 0}
