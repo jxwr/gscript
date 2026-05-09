@@ -490,6 +490,13 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
 		s.values[instr.ID] = runtime.BoolValue(a.Int() == b.Int())
 
+	case OpEqString:
+		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
+		if !a.IsString() || !b.IsString() {
+			return nil, false, fmt.Errorf("IR interpreter: cannot compare %s == %s as strings", a.TypeName(), b.TypeName())
+		}
+		s.values[instr.ID] = runtime.BoolValue(a.Str() == b.Str())
+
 	case OpLtInt:
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
 		s.values[instr.ID] = runtime.BoolValue(a.Int() < b.Int())

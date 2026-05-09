@@ -163,7 +163,7 @@ func valueProvenNonNil(v *Value) bool {
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 		OpSqrt, OpFloor, OpFMA, OpFMSUB, OpNumToFloat, OpGetFieldNumToFloat,
-		OpFieldLoadNumToFloat, OpLen, OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat:
+		OpFieldLoadNumToFloat, OpLen, OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat, OpEqString:
 		return true
 	default:
 		return v.Def.Type == TypeInt || v.Def.Type == TypeFloat || v.Def.Type == TypeBool || v.Def.Type == TypeString || v.Def.Type == TypeTable

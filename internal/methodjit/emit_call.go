@@ -1334,6 +1334,36 @@ func (ec *emitContext) emitStringEqFast(trueLabel, falseLabel string) {
 	asm.B(trueLabel)
 }
 
+func (ec *emitContext) emitStringEqCmp(instr *Instr) {
+	if len(instr.Args) < 2 {
+		return
+	}
+	asm := ec.asm
+	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if lhsReg != jit.X0 {
+		asm.MOVreg(jit.X0, lhsReg)
+	}
+	rhsReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if rhsReg != jit.X1 {
+		asm.MOVreg(jit.X1, rhsReg)
+	}
+
+	trueLabel := ec.uniqueLabel("str_eq_true")
+	falseLabel := ec.uniqueLabel("str_eq_false")
+	doneLabel := ec.uniqueLabel("str_eq_done")
+	ec.emitStringEqFast(trueLabel, falseLabel)
+
+	asm.Label(trueLabel)
+	asm.ADDimm(jit.X0, mRegTagBool, 1)
+	asm.B(doneLabel)
+
+	asm.Label(falseLabel)
+	asm.MOVreg(jit.X0, mRegTagBool)
+
+	asm.Label(doneLabel)
+	ec.storeResultNB(jit.X0, instr.ID)
+}
+
 // emitNegFloat emits ARM64 code for OpNegFloat (-float).
 // The operand is known to be float, so we skip the type check.
 // With raw float mode, operates directly on FPRs.

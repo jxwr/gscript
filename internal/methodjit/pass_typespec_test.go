@@ -9,6 +9,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -402,6 +403,36 @@ func TestTypeSpec_AllIntOps(t *testing.T) {
 				t.Errorf("instruction v%d: expected %s, got %s", instr.ID, want, instr.Op)
 			}
 		}
+	}
+}
+
+func TestTypeSpec_StringEq(t *testing.T) {
+	fn := &Function{
+		Proto: &vm.FuncProto{
+			Name: "stringeq",
+			Constants: []runtime.Value{
+				runtime.StringValue("a"),
+				runtime.StringValue("b"),
+			},
+		},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	a := &Instr{ID: fn.newValueID(), Op: OpConstString, Type: TypeString, Aux: 0, Block: b}
+	bb := &Instr{ID: fn.newValueID(), Op: OpConstString, Type: TypeString, Aux: 1, Block: b}
+	eq := &Instr{ID: fn.newValueID(), Op: OpEq, Type: TypeBool,
+		Args: []*Value{a.Value(), bb.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{eq.Value()}, Block: b}
+	b.Instrs = []*Instr{a, bb, eq, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass error: %v", err)
+	}
+	if eq.Op != OpEqString || eq.Type != TypeBool {
+		t.Fatalf("expected EqString bool, got %s %s\n%s", eq.Op, eq.Type, Print(result))
 	}
 }
 

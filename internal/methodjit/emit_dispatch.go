@@ -151,6 +151,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitIntCmp(instr, jit.CondLE)
 	case OpEqInt:
 		ec.emitIntCmp(instr, jit.CondEQ)
+	case OpEqString:
+		ec.emitStringEqCmp(instr)
 	case OpModZeroInt:
 		ec.emitModZeroInt(instr)
 
@@ -351,7 +353,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 		OpSqrt, OpFloor, OpFMA, OpFMSUB,
 		OpEq, OpLt, OpLe,
-		OpEqInt, OpLtInt, OpLeInt, OpModZeroInt,
+		OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpEqString,
 		OpLtFloat, OpLeFloat,
 		OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
 		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardTruthy,

@@ -798,6 +798,10 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 		if arg1 < len(regs) && arg2 < len(regs) && slot < len(regs) {
 			regs[slot] = runtime.BoolValue(regs[arg1].Equal(regs[arg2]))
 		}
+	case OpEqString:
+		if arg1 < len(regs) && arg2 < len(regs) && slot < len(regs) {
+			regs[slot] = runtime.BoolValue(regs[arg1].IsString() && regs[arg2].IsString() && regs[arg1].Str() == regs[arg2].Str())
+		}
 
 	case OpLt:
 		if arg1 < len(regs) && arg2 < len(regs) && slot < len(regs) {

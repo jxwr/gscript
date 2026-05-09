@@ -376,7 +376,7 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 		return TypeFloat
 	case OpFloor:
 		return TypeInt
-	case OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat:
+	case OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat, OpEqString:
 		return TypeBool
 	case OpEq, OpLt, OpLe, OpNot:
 		return TypeBool
@@ -1192,6 +1192,9 @@ func (ts *typeSpecializer) specialize(instr *Instr) {
 	case OpEq:
 		if bothInt {
 			instr.Op = OpEqInt
+			instr.Type = TypeBool
+		} else if lt == TypeString && rt == TypeString {
+			instr.Op = OpEqString
 			instr.Type = TypeBool
 		}
 	}
