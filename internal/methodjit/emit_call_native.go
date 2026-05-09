@@ -1336,6 +1336,244 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	return true
 }
 
+type fieldShapeTypedPeerCallCase struct {
+	shapeID  int
+	fieldIdx int
+	callee   *vm.FuncProto
+	desc     CallABIDescriptor
+}
+
+func (ec *emitContext) fieldShapeTypedPeerCallCases(instr *Instr) []fieldShapeTypedPeerCallCase {
+	if ec == nil || ec.fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) < 2 {
+		return nil
+	}
+	calleeLoad := instr.Args[0].Def
+	if calleeLoad == nil || calleeLoad.Op != OpGetField || len(calleeLoad.Args) == 0 || calleeLoad.Args[0] == nil {
+		return nil
+	}
+	receiver := calleeLoad.Args[0]
+	if instr.Args[1] == nil || instr.Args[1].ID != receiver.ID {
+		return nil
+	}
+	nArgs := len(instr.Args) - 1
+	if callResultCountFromAux2(instr.Aux2) != 1 || nArgs < 1 || nArgs > 4 {
+		return nil
+	}
+	cases := ec.fn.FieldPolyShapeFacts[calleeLoad.ID]
+	if len(cases) < 2 {
+		return nil
+	}
+	out := make([]fieldShapeTypedPeerCallCase, 0, len(cases))
+	var paramReps []SpecializedABIParamRep
+	for _, c := range cases {
+		if c.ShapeID == 0 || c.FieldIdx < 0 || c.VMProto == nil || c.VMProto.NumParams != nArgs {
+			return nil
+		}
+		argFacts := map[int]FixedShapeTableFact{0: c.ReceiverFact}
+		abi := AnalyzeTypedPeerABIWithArgFacts(c.VMProto, argFacts)
+		if !abi.Eligible || len(abi.Params) != nArgs || abi.Params[0] != SpecializedABIParamRawTablePtr {
+			return nil
+		}
+		switch abi.Return {
+		case SpecializedABIReturnRawInt, SpecializedABIReturnRawFloat, SpecializedABIReturnRawTablePtr:
+		default:
+			return nil
+		}
+		if len(paramReps) == 0 {
+			paramReps = append([]SpecializedABIParamRep(nil), abi.Params...)
+		} else {
+			for i, rep := range abi.Params {
+				if paramReps[i] != rep {
+					return nil
+				}
+			}
+		}
+		for i, rep := range abi.Params {
+			switch rep {
+			case SpecializedABIParamRawInt:
+				if !callABIValueIsInt(instr.Args[1+i]) {
+					return nil
+				}
+			case SpecializedABIParamRawTablePtr:
+				if !callABIValueIsTable(instr.Args[1+i]) && i != 0 {
+					return nil
+				}
+			default:
+				return nil
+			}
+		}
+		desc := CallABIDescriptor{
+			Callee:    c.VMProto,
+			NumArgs:   nArgs,
+			NumRets:   1,
+			TypedPeer: true,
+			ParamReps: append([]SpecializedABIParamRep(nil), abi.Params...),
+			ReturnRep: abi.Return,
+			ArgFacts:  argFacts,
+		}
+		out = append(out, fieldShapeTypedPeerCallCase{
+			shapeID:  int(c.ShapeID),
+			fieldIdx: c.FieldIdx,
+			callee:   c.VMProto,
+			desc:     desc,
+		})
+	}
+	return out
+}
+
+func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr) bool {
+	cases := ec.fieldShapeTypedPeerCallCases(instr)
+	if len(cases) < 2 {
+		return false
+	}
+	nArgs := len(instr.Args) - 1
+	nRets := callResultCountFromAux2(instr.Aux2)
+	funcSlot := int(instr.Aux)
+	asm := ec.asm
+
+	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
+	if len(liveGPRs) > 0 || len(liveFPRs) > 0 {
+		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
+	}
+
+	fallbackLabel := ec.uniqueLabel("t2fieldpeer_fallback")
+	exitLabel := ec.uniqueLabel("t2fieldpeer_exit")
+	doneLabel := ec.uniqueLabel("t2fieldpeer_done")
+	preReprs := ec.snapshotValueReprs()
+	calleeBaseOff := ec.nextSlot * jit.ValueSize
+	argDesc := cases[0].desc
+	argDesc.ArgFacts = nil
+
+	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
+	asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
+	asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X8, jit.SP, rawPeerClosureOff)
+	ec.emitLoadCallMode(jit.X8)
+	asm.STR(jit.X8, jit.SP, rawPeerCallModeOff)
+
+	fnReg := ec.resolveValueNB(instr.Args[0].ID, jit.X6)
+	if fnReg != jit.X6 {
+		asm.MOVreg(jit.X6, fnReg)
+	}
+	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
+	ec.emitTypedPeerArgsInRegsAndSave(instr, argDesc, fallbackLabel)
+
+	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
+	asm.LDR(jit.X10, jit.X0, jit.TableOffSvalsLen)
+	asm.LDR(jit.X11, jit.X0, jit.TableOffSvals)
+	for _, c := range cases {
+		nextLabel := ec.uniqueLabel("t2fieldpeer_next")
+		asm.LoadImm64(jit.X12, int64(c.shapeID))
+		asm.CMPreg(jit.X9, jit.X12)
+		asm.BCond(jit.CondNE, nextLabel)
+		asm.LoadImm64(jit.X12, int64(c.fieldIdx))
+		asm.CMPreg(jit.X12, jit.X10)
+		asm.BCond(jit.CondGE, fallbackLabel)
+		asm.LDRreg(jit.X6, jit.X11, jit.X12)
+		asm.LSRimm(jit.X7, jit.X6, uint8(nbPtrSubShift))
+		asm.LoadImm64(jit.X8, int64((jit.NB_TagPtrShr48<<4)|nbPtrSubVMClosure))
+		asm.CMPreg(jit.X7, jit.X8)
+		asm.BCond(jit.CondNE, fallbackLabel)
+		jit.EmitExtractPtr(asm, jit.X7, jit.X6)
+		asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+		asm.LDR(jit.X7, jit.X7, vmClosureOffProto)
+		asm.LoadImm64(jit.X8, int64(uintptr(unsafe.Pointer(c.callee))))
+		asm.CMPreg(jit.X7, jit.X8)
+		asm.BCond(jit.CondNE, fallbackLabel)
+		asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
+		asm.CBZ(jit.X16, fallbackLabel)
+
+		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.CMPimm(jit.X8, maxNativeCallDepth)
+		asm.BCond(jit.CondGE, fallbackLabel)
+
+		asm.LDR(jit.X8, jit.X7, funcProtoOffMaxStack)
+		asm.LSLimm(jit.X8, jit.X8, 3)
+		if calleeBaseOff <= 4095 {
+			asm.ADDimm(jit.X8, jit.X8, uint16(calleeBaseOff))
+		} else {
+			asm.LoadImm64(jit.X12, int64(calleeBaseOff))
+			asm.ADDreg(jit.X8, jit.X8, jit.X12)
+		}
+		asm.ADDreg(jit.X8, jit.X8, mRegRegs)
+		asm.LDR(jit.X12, mRegCtx, execCtxOffRegsEnd)
+		asm.CMPreg(jit.X8, jit.X12)
+		asm.BCond(jit.CondHI, fallbackLabel)
+
+		if calleeBaseOff <= 4095 {
+			asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+		} else {
+			asm.LoadImm64(jit.X8, int64(calleeBaseOff))
+			asm.ADDreg(mRegRegs, mRegRegs, jit.X8)
+		}
+		asm.LDR(mRegConsts, jit.X7, funcProtoOffConstants)
+		asm.MOVimm16(jit.X8, callModeTypedSelf)
+		ec.emitStoreCallMode(jit.X8)
+		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.ADDimm(jit.X8, jit.X8, 1)
+		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+
+		asm.BLR(jit.X16)
+
+		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.SUBimm(jit.X8, jit.X8, 1)
+		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.CBNZ(jit.X16, exitLabel)
+
+		ec.emitRestoreTypedPeerCallerState()
+		asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
+		ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+		ec.emitUnboxRawIntRegs(preReprs)
+		ec.restoreValueReprSnapshot(preReprs)
+		switch c.desc.ReturnRep {
+		case SpecializedABIReturnRawInt:
+			jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+		case SpecializedABIReturnRawFloat:
+		case SpecializedABIReturnRawTablePtr:
+			emitBoxTablePtr(asm, jit.X0, jit.X0, jit.X1)
+		}
+		ec.storeResultNB(jit.X0, instr.ID)
+		asm.B(doneLabel)
+		asm.Label(nextLabel)
+	}
+	postReprs := ec.snapshotValueReprs()
+	asm.B(fallbackLabel)
+
+	asm.Label(exitLabel)
+	ec.emitPushNativeCallExitFrameIfNested(jit.X8, jit.X9, jit.X10, jit.X11)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeExitCode)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffResumeNumericPass)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeResumePass)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffExitResumePC)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeResumePC)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeClosurePtr)
+	asm.MOVimm16(jit.X8, 1)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeTier2Only)
+	ec.emitRestoreTypedPeerCallerState()
+	ec.restoreValueReprSnapshot(preReprs)
+	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
+	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
+	ec.emitUnboxRawIntRegs(postReprs)
+	ec.restoreValueReprSnapshot(postReprs)
+	asm.B(doneLabel)
+
+	asm.Label(fallbackLabel)
+	ec.emitRestoreTypedPeerCallerState()
+	ec.restoreValueReprSnapshot(preReprs)
+	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
+	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
+	ec.emitUnboxRawIntRegs(postReprs)
+	ec.restoreValueReprSnapshot(postReprs)
+
+	asm.Label(doneLabel)
+	return true
+}
+
 func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	if !ec.isTypedStaticSelfCall(instr) {
 		return false
@@ -1872,6 +2110,7 @@ func (ec *emitContext) emitOpCall(instr *Instr) {
 	} else if ec.emitProtocolConstCallIfEligible(instr) {
 	} else if ec.emitWholeCallKernelOpExitIfEligible(instr) {
 	} else if ec.emitCallNativeRawIntPeerIfEligible(instr) {
+	} else if ec.emitCallNativeFieldShapeTypedPeerIfEligible(instr) {
 	} else if ec.emitCallNativeTypedPeerIfEligible(instr) {
 	} else if ec.emitCallNativeTypedSelfIfEligible(instr) {
 	} else if ec.isStaticSelfCall(instr) && !ec.tailCallInstrs[instr.ID] && callResultCountFromAux2(instr.Aux2) > 0 && !ec.nativeCallReplaySafe {

@@ -363,6 +363,79 @@ func TestCallABIAnnotate_FieldShapeTypedPeerDescriptor(t *testing.T) {
 	}
 }
 
+func TestFieldShapeTypedPeerCallCases_AcceptsMixedNumericReturns(t *testing.T) {
+	top := compileTop(t, `func step_int(a, tick) {
+	a.count = a.count + tick
+	return a.count
+}
+func step_float(a, tick) {
+	a.x = a.x + a.vx
+	return a.x * 2.0 + tick
+}`)
+	stepInt := findProtoByName(top, "step_int")
+	stepFloat := findProtoByName(top, "step_float")
+	if stepInt == nil || stepFloat == nil {
+		t.Fatalf("missing protos: step_int=%v step_float=%v", stepInt != nil, stepFloat != nil)
+	}
+
+	receiver := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeTable}
+	calleeLoad := &Instr{ID: 7, Op: OpGetField, Type: TypeFunction, Args: []*Value{receiver.Value()}}
+	tick := &Instr{ID: 2, Op: OpLoadSlot, Type: TypeInt}
+	call := &Instr{
+		ID:        9,
+		Op:        OpCall,
+		Args:      []*Value{calleeLoad.Value(), receiver.Value(), tick.Value()},
+		Aux:       0,
+		Aux2:      2,
+		HasSource: true,
+		SourcePC:  0,
+	}
+	fn := &Function{
+		Proto: &vm.FuncProto{Name: "caller"},
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			calleeLoad.ID: {
+				{
+					ShapeID:  101,
+					FieldIdx: 2,
+					VMProto:  stepInt,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    101,
+						FieldNames: []string{"count", "step"},
+						FieldTypes: map[string]Type{"count": TypeInt, "step": TypeFunction},
+					},
+				},
+				{
+					ShapeID:  102,
+					FieldIdx: 3,
+					VMProto:  stepFloat,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    102,
+						FieldNames: []string{"x", "vx", "step"},
+						FieldTypes: map[string]Type{"x": TypeFloat, "vx": TypeFloat, "step": TypeFunction},
+					},
+				},
+			},
+		},
+	}
+	cases := (&emitContext{fn: fn}).fieldShapeTypedPeerCallCases(call)
+	if len(cases) != 2 {
+		t.Fatalf("cases=%d want 2", len(cases))
+	}
+	if cases[0].desc.ReturnRep != SpecializedABIReturnRawInt {
+		t.Fatalf("case0 return=%s want raw-int", specializedABIReturnName(cases[0].desc.ReturnRep))
+	}
+	if cases[1].desc.ReturnRep != SpecializedABIReturnRawFloat {
+		t.Fatalf("case1 return=%s want raw-float", specializedABIReturnName(cases[1].desc.ReturnRep))
+	}
+	for i, c := range cases {
+		if len(c.desc.ParamReps) != 2 ||
+			c.desc.ParamReps[0] != SpecializedABIParamRawTablePtr ||
+			c.desc.ParamReps[1] != SpecializedABIParamRawInt {
+			t.Fatalf("case %d ParamReps=%v", i, c.desc.ParamReps)
+		}
+	}
+}
+
 func TestInline_StableFeedbackCalleeInsertsGuardAndInlines(t *testing.T) {
 	src := `func inc(n) { return n + 1 }
 func apply(f) {
