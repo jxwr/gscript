@@ -194,7 +194,15 @@ type ArgArrayElementShapeFeedback struct {
 	FieldNames []string
 	FieldTypes map[string]FeedbackType
 	Nested     map[string]ArgArrayElementShapeFeedback
+	Shapes     [MaxCallSiteFeedbackVMProtos]ArgArrayElementShapeCase
+	ShapeCount uint8
 	Flags      uint8
+}
+
+type ArgArrayElementShapeCase struct {
+	ShapeID    uint32
+	FieldNames []string
+	FieldTypes map[string]FeedbackType
 }
 
 // ArgArrayElementShapeFeedbackVector is per-parameter runtime argument shape
@@ -248,6 +256,7 @@ func (af *ArgArrayElementShapeFeedback) observeElementTable(tbl *runtime.Table) 
 	} else if af.ShapeID != shapeID || !sameStringList(af.FieldNames, fields) {
 		af.Flags |= ArgArrayElementShapePolymorphic
 	}
+	af.observeShapeCase(tbl, shapeID, fields)
 	af.observeFieldTypes(tbl, fields)
 	af.observeNestedTables(tbl, fields)
 	af.Count++
@@ -261,6 +270,61 @@ func (af ArgArrayElementShapeFeedback) StableShape() (shapeID uint32, fieldNames
 		return 0, nil, false
 	}
 	return af.ShapeID, af.FieldNames, true
+}
+
+func (af ArgArrayElementShapeFeedback) PolymorphicShapes() []ArgArrayElementShapeCase {
+	if af.Count == 0 || af.Flags&ArgArrayElementShapeInvalid != 0 || af.ShapeCount < 2 {
+		return nil
+	}
+	out := make([]ArgArrayElementShapeCase, 0, af.ShapeCount)
+	for i := 0; i < int(af.ShapeCount); i++ {
+		c := af.Shapes[i]
+		if c.ShapeID == 0 || len(c.FieldNames) == 0 {
+			continue
+		}
+		out = append(out, c)
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
+}
+
+func (af *ArgArrayElementShapeFeedback) observeShapeCase(tbl *runtime.Table, shapeID uint32, fields []string) {
+	for i := 0; i < int(af.ShapeCount); i++ {
+		if af.Shapes[i].ShapeID != shapeID {
+			continue
+		}
+		observeArgArrayElementShapeCaseTypes(&af.Shapes[i], tbl, fields)
+		return
+	}
+	if af.ShapeCount >= MaxCallSiteFeedbackVMProtos {
+		af.Flags |= ArgArrayElementShapePolymorphic
+		return
+	}
+	idx := af.ShapeCount
+	af.Shapes[idx] = ArgArrayElementShapeCase{
+		ShapeID:    shapeID,
+		FieldNames: append([]string(nil), fields...),
+		FieldTypes: make(map[string]FeedbackType, len(fields)),
+	}
+	observeArgArrayElementShapeCaseTypes(&af.Shapes[idx], tbl, fields)
+	af.ShapeCount++
+}
+
+func observeArgArrayElementShapeCaseTypes(c *ArgArrayElementShapeCase, tbl *runtime.Table, fields []string) {
+	if c == nil || tbl == nil {
+		return
+	}
+	if c.FieldTypes == nil {
+		c.FieldTypes = make(map[string]FeedbackType, len(fields))
+	}
+	for _, field := range fields {
+		value := tbl.RawGetString(field)
+		ft := c.FieldTypes[field]
+		ft.Observe(value.Type())
+		c.FieldTypes[field] = ft
+	}
 }
 
 func (af *ArgArrayElementShapeFeedback) observeFieldTypes(tbl *runtime.Table, fields []string) {

@@ -321,14 +321,15 @@ func lineDiff(a, b []string) string {
 // Tier2PipelineOpts configures the production Tier 2 optimization pipeline.
 // A nil *Tier2PipelineOpts uses defaults (MaxSize 40, no globals).
 type Tier2PipelineOpts struct {
-	InlineGlobals                  map[string]*vm.FuncProto    // global function protos for inlining
-	ProtocolGlobals                map[string]*vm.FuncProto    // stable globals available for guarded protocol folds
-	GlobalConstValues              map[int]runtime.Value       // const-pool global name index -> observed numeric value
-	InlineMaxSize                  int                         // max callee bytecode count; 0 → 40
-	FixedShapeArgFacts             map[int]FixedShapeTableFact // guarded fixed-shape facts for callee params
-	FixedShapeArrayElementArgFacts map[int]FixedShapeTableFact // guarded fixed-shape facts for callee param array elements
-	FixedShapeEntryGuards          bool                        // emit callee-entry shape guards for FixedShapeArgFacts
-	Remarks                        *OptimizationRemarks        // optional structured optimization diagnostics
+	InlineGlobals                   map[string]*vm.FuncProto      // global function protos for inlining
+	ProtocolGlobals                 map[string]*vm.FuncProto      // stable globals available for guarded protocol folds
+	GlobalConstValues               map[int]runtime.Value         // const-pool global name index -> observed numeric value
+	InlineMaxSize                   int                           // max callee bytecode count; 0 → 40
+	FixedShapeArgFacts              map[int]FixedShapeTableFact   // guarded fixed-shape facts for callee params
+	FixedShapeArrayElementArgFacts  map[int]FixedShapeTableFact   // guarded fixed-shape facts for callee param array elements
+	FixedShapeArrayElementPolyFacts map[int][]FixedShapeTableFact // guarded polymorphic facts for callee param array elements
+	FixedShapeEntryGuards           bool                          // emit callee-entry shape guards for FixedShapeArgFacts
+	Remarks                         *OptimizationRemarks          // optional structured optimization diagnostics
 }
 
 // RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
@@ -484,10 +485,11 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 
 	fn, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
-		Globals:              globals,
-		ArgFacts:             optsFixedShapeArgFacts(opts),
-		ArrayElementArgFacts: optsFixedShapeArrayElementArgFacts(opts),
-		EntryGuardedArgs:     optsFixedShapeEntryGuards(opts),
+		Globals:               globals,
+		ArgFacts:              optsFixedShapeArgFacts(opts),
+		ArrayElementArgFacts:  optsFixedShapeArrayElementArgFacts(opts),
+		ArrayElementPolyFacts: optsFixedShapeArrayElementPolyFacts(opts),
+		EntryGuardedArgs:      optsFixedShapeEntryGuards(opts),
 	})(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("FixedShapeTableFacts: %w", err)
@@ -790,6 +792,13 @@ func optsFixedShapeArrayElementArgFacts(opts *Tier2PipelineOpts) map[int]FixedSh
 		return nil
 	}
 	return opts.FixedShapeArrayElementArgFacts
+}
+
+func optsFixedShapeArrayElementPolyFacts(opts *Tier2PipelineOpts) map[int][]FixedShapeTableFact {
+	if opts == nil {
+		return nil
+	}
+	return opts.FixedShapeArrayElementPolyFacts
 }
 
 func optsFixedShapeEntryGuards(opts *Tier2PipelineOpts) bool {

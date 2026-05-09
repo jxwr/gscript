@@ -82,6 +82,9 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 
 	// No field cache or invalid: use table-exit fallback.
 	if shapeID == 0 || instr.Aux2 == 0 {
+		if ec.emitGetFieldDirectPolyShapeFacts(instr) {
+			return
+		}
 		if ec.emitGetFieldPolymorphicCache(instr) {
 			return
 		}
@@ -160,6 +163,73 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 	}
 
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitGetFieldDirectPolyShapeFacts(instr *Instr) bool {
+	if ec == nil || ec.fn == nil || instr == nil || len(instr.Args) == 0 {
+		return false
+	}
+	cases := ec.fn.FieldPolyShapeFacts[instr.ID]
+	if len(cases) < 2 {
+		return false
+	}
+	asm := ec.asm
+	tblValueID := instr.Args[0].ID
+	typeDeoptLabel := ec.uniqueLabel("getfield_direct_poly_type_deopt")
+	missLabel := ec.uniqueLabel("getfield_direct_poly_miss")
+	doneLabel := ec.uniqueLabel("getfield_direct_poly_done")
+
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	if ec.irTypes[tblValueID] != TypeTable {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, missLabel)
+	}
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, missLabel)
+	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+	asm.LDR(jit.X5, jit.X0, jit.TableOffSvalsLen)
+	asm.LDR(jit.X6, jit.X0, jit.TableOffSvals)
+
+	for _, c := range cases {
+		if c.ShapeID == 0 || c.FieldIdx < 0 {
+			continue
+		}
+		nextLabel := ec.uniqueLabel("getfield_direct_poly_next")
+		asm.LoadImm64(jit.X2, int64(c.ShapeID))
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondNE, nextLabel)
+		asm.LoadImm64(jit.X4, int64(c.FieldIdx))
+		asm.CMPreg(jit.X4, jit.X5)
+		asm.BCond(jit.CondGE, missLabel)
+		asm.LDRreg(jit.X0, jit.X6, jit.X4)
+		ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+		asm.B(doneLabel)
+		asm.Label(nextLabel)
+	}
+	asm.B(missLabel)
+
+	asm.Label(missLabel)
+	if ec.emitGetFieldPolymorphicCache(instr) {
+		asm.B(doneLabel)
+	} else if ec.emitGetFieldDynamicCache(instr) {
+		asm.B(doneLabel)
+	} else {
+		savedReprs := ec.snapshotValueReprs()
+		ec.emitGetFieldExit(instr)
+		ec.emitUnboxRawIntRegs(savedReprs)
+		ec.restoreValueReprSnapshot(savedReprs)
+		asm.B(doneLabel)
+	}
+
+	if instr.Type == TypeFloat || instr.Type == TypeInt {
+		asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+	}
+
+	asm.Label(doneLabel)
+	return true
 }
 
 func (ec *emitContext) emitGetFieldPolymorphicCache(instr *Instr) bool {

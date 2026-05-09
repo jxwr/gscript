@@ -22,6 +22,12 @@ type FixedShapeTableFact struct {
 	EntryGuarded    bool
 }
 
+type FieldPolyShapeCase struct {
+	ShapeID  uint32
+	FieldIdx int
+	Type     Type
+}
+
 type FixedShapeFieldKind uint8
 
 const (
@@ -76,10 +82,11 @@ func (f FixedShapeTableFact) sameShape(other FixedShapeTableFact) bool {
 // EntryGuardedArgs asks codegen to validate those shapes before the optimized
 // body so the guarded facts can be consumed as callee-local shape facts.
 type FixedShapeTableFactsConfig struct {
-	Globals              map[string]*vm.FuncProto
-	ArgFacts             map[int]FixedShapeTableFact
-	ArrayElementArgFacts map[int]FixedShapeTableFact
-	EntryGuardedArgs     bool
+	Globals               map[string]*vm.FuncProto
+	ArgFacts              map[int]FixedShapeTableFact
+	ArrayElementArgFacts  map[int]FixedShapeTableFact
+	ArrayElementPolyFacts map[int][]FixedShapeTableFact
+	EntryGuardedArgs      bool
 }
 
 // FixedShapeTableFactsPass records fixed-shape table facts and uses
@@ -101,6 +108,7 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 		}
 		seedGuardedFixedShapeArgFacts(fn, facts, config.ArgFacts)
 		seedGuardedFixedShapeArrayElementArgFacts(fn, facts, config.ArrayElementArgFacts)
+		seedGuardedPolyShapeArrayElementArgFacts(fn, facts, config.ArrayElementPolyFacts)
 		if config.EntryGuardedArgs {
 			markEntryGuardedFixedShapeArgFacts(fn, facts, fn.FixedShapeArgFacts)
 		}
@@ -186,6 +194,105 @@ func seedGuardedFixedShapeArrayElementArgFacts(fn *Function, facts map[int]Fixed
 				fmt.Sprintf("parameter %d array element carries guarded fixed table shape %v", tableDef.Aux, fact.FieldNames))
 		}
 	}
+}
+
+func seedGuardedPolyShapeArrayElementArgFacts(fn *Function, facts map[int]FixedShapeTableFact, argFacts map[int][]FixedShapeTableFact) {
+	if fn == nil || fn.Proto == nil || len(argFacts) == 0 {
+		return
+	}
+	valueFacts := make(map[int][]FixedShapeTableFact)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpGetTable:
+				if len(instr.Args) < 2 || instr.Args[0] == nil {
+					continue
+				}
+				tableDef := instr.Args[0].Def
+				if tableDef == nil || tableDef.Op != OpLoadSlot || tableDef.Aux < 0 || int(tableDef.Aux) >= fn.Proto.NumParams {
+					continue
+				}
+				poly := guardedFixedShapePolyFacts(argFacts[int(tableDef.Aux)])
+				if len(poly) == 0 {
+					continue
+				}
+				valueFacts[instr.ID] = poly
+				if instr.Type == TypeAny || instr.Type == TypeUnknown {
+					instr.Type = TypeTable
+				}
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("parameter %d array element carries %d guarded polymorphic shapes", tableDef.Aux, len(poly)))
+			case OpGetField:
+				if len(instr.Args) == 0 || instr.Args[0] == nil {
+					continue
+				}
+				poly := valueFacts[instr.Args[0].ID]
+				if len(poly) == 0 {
+					continue
+				}
+				name := fieldNameFromAux(fn, instr.Aux)
+				if name == "" {
+					continue
+				}
+				cases, typ := fieldPolyShapeCases(poly, name)
+				if len(cases) < 2 {
+					continue
+				}
+				if fn.FieldPolyShapeFacts == nil {
+					fn.FieldPolyShapeFacts = make(map[int][]FieldPolyShapeCase)
+				}
+				fn.FieldPolyShapeFacts[instr.ID] = cases
+				if typ != TypeUnknown && typ != TypeAny {
+					instr.Type = typ
+				}
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("prefilled polymorphic field cache for %q with %d shapes", name, len(cases)))
+			}
+		}
+	}
+}
+
+func guardedFixedShapePolyFacts(facts []FixedShapeTableFact) []FixedShapeTableFact {
+	if len(facts) < 2 {
+		return nil
+	}
+	out := make([]FixedShapeTableFact, 0, len(facts))
+	seen := make(map[uint32]bool, len(facts))
+	for _, fact := range facts {
+		if fact.ShapeID == 0 || len(fact.FieldNames) == 0 || seen[fact.ShapeID] {
+			continue
+		}
+		fact.Guarded = true
+		fact.FieldNames = append([]string(nil), fact.FieldNames...)
+		fact.FieldTypes = cloneStringTypeMap(fact.FieldTypes)
+		out = append(out, fact)
+		seen[fact.ShapeID] = true
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
+}
+
+func fieldPolyShapeCases(facts []FixedShapeTableFact, name string) ([]FieldPolyShapeCase, Type) {
+	cases := make([]FieldPolyShapeCase, 0, len(facts))
+	typ := TypeUnknown
+	for _, fact := range facts {
+		idx, ok := fact.fieldIndex(name)
+		if !ok {
+			return nil, TypeUnknown
+		}
+		caseType := fact.FieldTypes[name]
+		if caseType == TypeUnknown || caseType == TypeAny {
+			typ = TypeUnknown
+		} else if typ == TypeUnknown {
+			typ = caseType
+		} else if typ != caseType {
+			typ = TypeUnknown
+		}
+		cases = append(cases, FieldPolyShapeCase{ShapeID: fact.ShapeID, FieldIdx: idx, Type: caseType})
+	}
+	return cases, typ
 }
 
 func markEntryGuardedFixedShapeArgFacts(fn *Function, facts map[int]FixedShapeTableFact, argFacts map[int]FixedShapeTableFact) {
@@ -403,6 +510,38 @@ func profiledFixedShapeArrayElementArgFactsForProto(target *vm.FuncProto) map[in
 	return out
 }
 
+func profiledFixedShapeArrayElementPolyFactsForProto(target *vm.FuncProto) map[int][]FixedShapeTableFact {
+	if target == nil || len(target.ArgArrayElementShapeFeedback) == 0 {
+		return nil
+	}
+	out := make(map[int][]FixedShapeTableFact)
+	for idx, feedback := range target.ArgArrayElementShapeFeedback {
+		if idx < 0 || idx >= target.NumParams {
+			continue
+		}
+		shapes := feedback.PolymorphicShapes()
+		if len(shapes) < 2 {
+			continue
+		}
+		facts := make([]FixedShapeTableFact, 0, len(shapes))
+		for _, shape := range shapes {
+			facts = append(facts, FixedShapeTableFact{
+				ShapeID:    shape.ShapeID,
+				FieldNames: append([]string(nil), shape.FieldNames...),
+				FieldTypes: profiledShapeCaseFieldTypes(shape),
+				Guarded:    true,
+			})
+		}
+		if len(facts) >= 2 {
+			out[idx] = facts
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func mergeFixedShapeTableFacts(preferred, fallback map[int]FixedShapeTableFact) map[int]FixedShapeTableFact {
 	if len(preferred) == 0 {
 		return fallback
@@ -449,6 +588,24 @@ func profiledFixedShapeFieldTypes(feedback vm.ArgArrayElementShapeFeedback) map[
 	}
 	out := make(map[string]Type)
 	for name, fbType := range feedback.FieldTypes {
+		typ, ok := feedbackToIRType(fbType)
+		if !ok {
+			continue
+		}
+		out[name] = typ
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func profiledShapeCaseFieldTypes(shape vm.ArgArrayElementShapeCase) map[string]Type {
+	if len(shape.FieldTypes) == 0 {
+		return nil
+	}
+	out := make(map[string]Type)
+	for name, fbType := range shape.FieldTypes {
 		typ, ok := feedbackToIRType(fbType)
 		if !ok {
 			continue

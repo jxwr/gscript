@@ -183,6 +183,11 @@ type Function struct {
 	// checks by itself.
 	FixedShapeTables map[int]FixedShapeTableFact
 
+	// FieldPolyShapeFacts records small guarded polymorphic field caches keyed
+	// by OpGetField instruction ID. Each case maps receiver shapeID to the
+	// field index for that static field name.
+	FieldPolyShapeFacts map[int][]FieldPolyShapeCase
+
 	// FixedShapeArgFacts records guarded fixed-shape facts keyed by parameter
 	// index. These facts come from callsites, not from the callee body, so
 	// consumers may use them only through runtime guards such as field-cache

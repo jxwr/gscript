@@ -192,15 +192,17 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		}
 		staticArrayElementFacts := inferGuardedFixedShapeArrayElementArgFactsForProto(proto, loopCallGlobals)
 		profiledArrayElementFacts := profiledFixedShapeArrayElementArgFactsForProto(proto)
+		profiledArrayElementPolyFacts := profiledFixedShapeArrayElementPolyFactsForProto(proto)
 		opts = &Tier2PipelineOpts{
-			InlineGlobals:                  inlineGlobals,
-			ProtocolGlobals:                loopCallGlobals,
-			GlobalConstValues:              tm.buildNumericGlobalConstValues(proto),
-			InlineMaxSize:                  inlineMaxCalleeSize,
-			FixedShapeArgFacts:             inferGuardedFixedShapeArgFactsForProto(proto, loopCallGlobals),
-			FixedShapeArrayElementArgFacts: mergeFixedShapeTableFacts(profiledArrayElementFacts, staticArrayElementFacts),
-			FixedShapeEntryGuards:          true,
-			Remarks:                        remarks,
+			InlineGlobals:                   inlineGlobals,
+			ProtocolGlobals:                 loopCallGlobals,
+			GlobalConstValues:               tm.buildNumericGlobalConstValues(proto),
+			InlineMaxSize:                   inlineMaxCalleeSize,
+			FixedShapeArgFacts:              inferGuardedFixedShapeArgFactsForProto(proto, loopCallGlobals),
+			FixedShapeArrayElementArgFacts:  mergeFixedShapeTableFacts(profiledArrayElementFacts, staticArrayElementFacts),
+			FixedShapeArrayElementPolyFacts: profiledArrayElementPolyFacts,
+			FixedShapeEntryGuards:           true,
+			Remarks:                         remarks,
 		}
 		return nil
 	})
