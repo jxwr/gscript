@@ -388,6 +388,21 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 			maxSize = opts.InlineMaxSize
 		}
 	}
+
+	// Expose guarded shape facts before Inline/CallABI so dynamic field
+	// callees such as obj.method can consume mature shape->proto feedback.
+	fn, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		Globals:               globals,
+		ArgFacts:              optsFixedShapeArgFacts(opts),
+		ArrayElementArgFacts:  optsFixedShapeArrayElementArgFacts(opts),
+		ArrayElementPolyFacts: optsFixedShapeArrayElementPolyFacts(opts),
+		EntryGuardedArgs:      optsFixedShapeEntryGuards(opts),
+	})(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FixedShapeTableFacts (pre-inline): %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	if len(globals) > 0 || hasInlineFeedbackCallee(fn) {
 		// R73: MaxRecursion 2 → 3. Deeper recursive inlining for fib/
 		// ackermann call trees. Each level ~doubles the inlined body size,

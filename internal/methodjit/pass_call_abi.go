@@ -154,6 +154,11 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 		}
 	}
 	if callee == nil {
+		if protos := fieldShapeCalleeProtos(fn, instr); len(protos) == 1 {
+			callee = protos[0]
+		}
+	}
+	if callee == nil {
 		return CallABIDescriptor{}, "callee is not resolved from stable globals or call feedback"
 	}
 	if fn != nil && callee == fn.Proto {
@@ -215,6 +220,31 @@ func callABIFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool
 		return nil, false
 	}
 	return fb.StableCalleeVMProto()
+}
+
+func fieldShapeCalleeProtos(fn *Function, instr *Instr) []*vm.FuncProto {
+	if fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) == 0 ||
+		instr.Args[0] == nil || instr.Args[0].Def == nil {
+		return nil
+	}
+	calleeLoad := instr.Args[0].Def
+	if calleeLoad.Op != OpGetField {
+		return nil
+	}
+	cases := fn.FieldPolyShapeFacts[calleeLoad.ID]
+	if len(cases) == 0 {
+		return nil
+	}
+	out := make([]*vm.FuncProto, 0, len(cases))
+	seen := make(map[*vm.FuncProto]bool, len(cases))
+	for _, c := range cases {
+		if c.VMProto == nil || seen[c.VMProto] {
+			continue
+		}
+		out = append(out, c.VMProto)
+		seen[c.VMProto] = true
+	}
+	return out
 }
 
 func specGuardKindSuppressed(fn *Function, pc int, kind string) bool {

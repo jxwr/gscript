@@ -218,6 +218,32 @@ func TestCallCalleeFlagSpecKeepsMixedNoGlobalDynamic(t *testing.T) {
 	}
 }
 
+func TestFieldShapeCalleeProtosDeduplicatesShapeCases(t *testing.T) {
+	calleeA := &vm.FuncProto{Name: "a"}
+	calleeB := &vm.FuncProto{Name: "b"}
+	calleeLoad := &Instr{ID: 7, Op: OpGetField}
+	call := &Instr{
+		ID:   9,
+		Op:   OpCall,
+		Args: []*Value{{ID: calleeLoad.ID, Def: calleeLoad}, {ID: 1}},
+		Aux2: 2,
+	}
+	fn := &Function{
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			calleeLoad.ID: {
+				{ShapeID: 11, FieldIdx: 0, VMProto: calleeA},
+				{ShapeID: 12, FieldIdx: 0, VMProto: calleeA},
+				{ShapeID: 13, FieldIdx: 0, VMProto: calleeB},
+			},
+		},
+	}
+
+	protos := fieldShapeCalleeProtos(fn, call)
+	if len(protos) != 2 || protos[0] != calleeA || protos[1] != calleeB {
+		t.Fatalf("fieldShapeCalleeProtos=%#v, want [calleeA calleeB]", protos)
+	}
+}
+
 func TestInline_StableFeedbackCalleeInsertsGuardAndInlines(t *testing.T) {
 	src := `func inc(n) { return n + 1 }
 func apply(f) {

@@ -1498,31 +1498,10 @@ func (ec *emitContext) callCalleeFeedbackProtos(instr *Instr) []*vm.FuncProto {
 }
 
 func (ec *emitContext) callCalleeFieldShapeProtos(instr *Instr) []*vm.FuncProto {
-	if ec == nil || ec.fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) == 0 ||
-		instr.Args[0] == nil || instr.Args[0].Def == nil {
+	if ec == nil {
 		return nil
 	}
-	calleeLoad := instr.Args[0].Def
-	if calleeLoad.Op != OpGetField {
-		return nil
-	}
-	cases := ec.fn.FieldPolyShapeFacts[calleeLoad.ID]
-	if len(cases) == 0 {
-		return nil
-	}
-	out := make([]*vm.FuncProto, 0, len(cases))
-	seen := make(map[*vm.FuncProto]bool, len(cases))
-	for _, c := range cases {
-		if c.VMProto == nil || seen[c.VMProto] {
-			continue
-		}
-		out = append(out, c.VMProto)
-		seen[c.VMProto] = true
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return fieldShapeCalleeProtos(ec.fn, instr)
 }
 
 func (ec *emitContext) emitGuardCalleeProtoSet(protos []*vm.FuncProto, slowLabel string) {

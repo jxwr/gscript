@@ -308,6 +308,9 @@ func inlineFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool)
 	if proto, ok := callABIFeedbackCalleeProto(fn, instr); ok && proto != nil {
 		return proto, true
 	}
+	if protos := fieldShapeCalleeProtos(fn, instr); len(protos) == 1 && protos[0] != nil {
+		return protos[0], true
+	}
 	return nil, false
 }
 
