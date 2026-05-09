@@ -3,20 +3,21 @@ package methodjit
 const nestedLoopParamRangeMax int64 = 1 << 20
 
 // LoopBoundRangeGuardPass adds a narrow entry range guard for integer
-// parameters of nested-loop functions. The guard feeds RangeAnalysis, which can
-// then prove loop-bound-derived arithmetic fits in the int48 payload range and
-// skip per-op overflow checks in hot numeric kernels.
+// parameters used as loop bounds. The guard feeds RangeAnalysis, which can then
+// prove loop-bound-derived arithmetic fits in the int48 payload range and skip
+// per-op overflow checks in hot numeric/table-building kernels. Guard misses
+// deopt to the interpreter, preserving correctness for wider inputs.
 func LoopBoundRangeGuardPass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.Blocks) == 0 {
 		return fn, nil
 	}
-	if !hasNestedLoop(fn) {
+	if !computeLoopInfo(fn).hasLoops() {
 		return fn, nil
 	}
 	boundParamSlots := loopBoundParamSlots(fn)
 	if len(boundParamSlots) == 0 {
 		functionRemarks(fn).Add("LoopBoundRangeGuard", "missed", 0, 0, OpGuardIntRange,
-			"nested loop had no parameter-derived loop bound")
+			"loop had no parameter-derived loop bound")
 		return fn, nil
 	}
 
@@ -53,29 +54,16 @@ func LoopBoundRangeGuardPass(fn *Function) (*Function, error) {
 			block.Instrs[i+1] = guard
 			replaceUsesAfterGuard(fn, instr.ID, guard, guard.ID)
 			functionRemarks(fn).Add("LoopBoundRangeGuard", "changed", block.ID, guard.ID, guard.Op,
-				"guarded nested-loop int parameter for range analysis")
+				"guarded loop-bound int parameter for range analysis")
 			changed = true
 			i++
 		}
 	}
 	if !changed {
 		functionRemarks(fn).Add("LoopBoundRangeGuard", "missed", 0, 0, OpGuardIntRange,
-			"nested loop had no integer parameter type guard")
+			"loop had no integer parameter type guard")
 	}
 	return fn, nil
-}
-
-func hasNestedLoop(fn *Function) bool {
-	li := computeLoopInfo(fn)
-	if !li.hasLoops() {
-		return false
-	}
-	for _, parent := range loopNest(li) {
-		if parent >= 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func intParamTypeGuardSlot(fn *Function, instr *Instr) (int, bool) {

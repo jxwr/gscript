@@ -65,7 +65,7 @@ func f(n) {
 	}
 }
 
-func TestLoopBoundRangeGuard_SkipsSingleLoop(t *testing.T) {
+func TestLoopBoundRangeGuard_GuardsSingleLoopBound(t *testing.T) {
 	fn := buildForLoopBoundRangeGuardTest(t, `
 func f(n) {
     total := 0
@@ -79,12 +79,16 @@ func f(n) {
 	if err != nil {
 		t.Fatalf("LoopBoundRangeGuardPass: %v", err)
 	}
+	found := false
 	for _, block := range out.Blocks {
 		for _, instr := range block.Instrs {
 			if instr.Op == OpGuardIntRange {
-				t.Fatalf("single-loop function should not receive GuardIntRange\nIR:\n%s", Print(out))
+				found = true
 			}
 		}
+	}
+	if !found {
+		t.Fatalf("single-loop bound param should receive GuardIntRange\nIR:\n%s", Print(out))
 	}
 }
 
