@@ -3062,6 +3062,7 @@ func (ec *emitContext) emitGuardTableKind(instr *Instr) {
 	asm.LDRB(jit.X2, jit.X1, jit.TableOffArrayKind)
 	asm.CMPimm(jit.X2, expectedKind)
 	asm.BCond(jit.CondNE, deoptLabel)
+	ec.storeResultNB(jit.X0, instr.ID)
 	asm.B(doneLabel)
 	asm.Label(deoptLabel)
 	ec.emitDeopt(instr)
