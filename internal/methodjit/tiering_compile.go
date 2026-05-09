@@ -291,6 +291,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		// function argument comes from an OpGetGlobal loading this proto's
 		// own name.
 		proto.LeafNoCall = protoHasNoCallLikeOps(proto)
+		proto.Tier2LeafNoCall = !irHasNestedCallLike(fn)
 		proto.NoGlobalOps = protoHasNoGlobalOps(proto)
 		if irHasSelfCall(fn) {
 			proto.HasSelfCalls = true

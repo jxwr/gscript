@@ -21,13 +21,14 @@ func (ec *emitContext) emitStoreCallMode(src jit.Reg) {
 }
 
 // emitTaggedLeafEntryIfAvailable rewrites entryReg to a tagged leaf-entry
-// pointer when protoReg has a published Tier2LeafEntryPtr and is known to be a
-// no-call leaf. The tag is decoded by the caller before BLR and only selects a
-// different return ABI; the callee entry remains a normal aligned code pointer.
+// pointer when protoReg has a published Tier2LeafEntryPtr and its optimized
+// Tier 2 body has no nested call/yield/resume operations. Bytecode-level
+// LeafNoCall is intentionally not used here: intrinsics may lower bytecode
+// calls away before codegen.
 func (ec *emitContext) emitTaggedLeafEntryIfAvailable(protoReg, entryReg, tmpReg jit.Reg) {
 	notLeafLabel := ec.uniqueLabel("t2call_not_leaf_entry")
 	asm := ec.asm
-	asm.LDRB(tmpReg, protoReg, funcProtoOffLeafNoCall)
+	asm.LDRB(tmpReg, protoReg, funcProtoOffTier2LeafNoCall)
 	asm.CBZ(tmpReg, notLeafLabel)
 	asm.LDR(tmpReg, protoReg, funcProtoOffTier2LeafEntryPtr)
 	asm.CBZ(tmpReg, notLeafLabel)

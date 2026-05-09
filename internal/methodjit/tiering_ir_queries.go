@@ -55,6 +55,24 @@ func irHasCall(fn *Function) bool {
 	return false
 }
 
+func irHasNestedCallLike(fn *Function) bool {
+	if fn == nil {
+		return true
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpCall, OpResume, OpYield, OpTForCall, OpGo:
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // irHasGetGlobal scans the optimized IR for any remaining OpGetGlobal
 // instructions. Used after the inline pass + DCE to determine if global
 // accesses remain. OpGetGlobal uses exit-resume which is slower than

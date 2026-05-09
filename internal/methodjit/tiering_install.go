@@ -24,7 +24,7 @@ func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction
 	} else {
 		setFuncProtoTier2DirectEntries(proto, 0, 0)
 	}
-	if cf != nil && cf.LeafEntryOffset > 0 && proto.LeafNoCall && cf.Tier2DirectEntrySafe {
+	if cf != nil && cf.LeafEntryOffset > 0 && proto.Tier2LeafNoCall && cf.Tier2DirectEntrySafe {
 		setFuncProtoTier2LeafEntry(proto, uintptr(cf.Code.Ptr())+uintptr(cf.LeafEntryOffset))
 	} else {
 		setFuncProtoTier2LeafEntry(proto, 0)

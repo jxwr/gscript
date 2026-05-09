@@ -237,7 +237,13 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			if instr.Op == OpPhi || instr.Op.IsTerminator() {
 				continue
 			}
-			if !canHoistOp(instr.Op) {
+			if instr.Op == OpCall {
+				if !isPureNumericLoopCall(fn, instr) {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"call is not a pure numeric loop call")
+					continue
+				}
+			} else if !canHoistOp(instr.Op) {
 				if isInterestingLICMMiss(instr.Op) {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"op is not on the hoist-safe whitelist")
@@ -552,13 +558,20 @@ func isPureNumericLoopCall(fn *Function, call *Instr) bool {
 	if fn == nil || call == nil || call.Op != OpCall {
 		return false
 	}
+	desc, hasDesc := fn.CallABIs[call.ID]
+	if !hasDesc || desc.Callee == nil || desc.NumRets != 1 || !desc.RawIntReturn {
+		return false
+	}
 	globals := callABIMergeGlobals(fn.Globals, callABIStableGlobals(fn.Proto))
 	if len(globals) == 0 {
 		return false
 	}
 	_, callee := resolveCallee(call, fn, InlineConfig{Globals: globals})
-	if callee == nil {
+	if callee == nil || callee != desc.Callee {
 		return false
+	}
+	if abi := AnalyzeRawIntSelfABI(callee); abi.Eligible && abi.Return == SpecializedABIReturnRawInt {
+		return true
 	}
 	calleeFn := BuildGraph(callee)
 	if calleeFn == nil {

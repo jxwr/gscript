@@ -188,6 +188,11 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 				"preserved self call for specialized recursive entry")
 			continue
 		}
+		if computeLoopInfo(fn).loopBlocks[block.ID] && inlineCalleeHasWholeCallProtocol(calleeProto, config.Globals) {
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("preserved %s call for whole-call protocol", calleeName))
+			continue
+		}
 
 		// Bounded recursion gate: if this callee is (self- or mutually-)
 		// recursive, we cap how many times it may be inlined across the whole
@@ -319,6 +324,16 @@ func hasInlineFeedbackCallee(fn *Function) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+func inlineCalleeHasWholeCallProtocol(callee *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
+	if callee == nil || len(globals) == 0 {
+		return false
+	}
+	if _, ok := analyzeMutualRecursiveIntSCC(callee, globals); ok {
+		return true
 	}
 	return false
 }

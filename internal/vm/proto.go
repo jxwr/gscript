@@ -37,6 +37,7 @@ type FuncProto struct {
 	RawIntNestedKernel     *rawIntNestedKernelCache      // guarded whole-call nested raw-int recurrence cache, nil until first probe
 	HasSelfCalls           bool                          // true if function has recursive calls to itself (set during JIT compilation)
 	LeafNoCall             bool                          // true if bytecode has no call/yield/resume/go operations
+	Tier2LeafNoCall        bool                          // true if optimized Tier 2 IR has no nested call/yield/resume operations
 	NoGlobalOps            bool                          // true if bytecode has no get/set global operations
 	CallCount              int                           // JIT call count (avoids map lookup in VM hot path)
 	JITDisabled            bool                          // true when the method JIT made a permanent per-proto stay-interpreted decision

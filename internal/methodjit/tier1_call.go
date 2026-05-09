@@ -63,6 +63,7 @@ var (
 	funcProtoOffCallCount              int // vm.FuncProto.CallCount offset
 	funcProtoOffTier2Promoted          int // vm.FuncProto.Tier2Promoted offset
 	funcProtoOffLeafNoCall             int // vm.FuncProto.LeafNoCall offset
+	funcProtoOffTier2LeafNoCall        int // vm.FuncProto.Tier2LeafNoCall offset
 	funcProtoOffNoGlobalOps            int // vm.FuncProto.NoGlobalOps offset
 )
 
@@ -94,6 +95,7 @@ func init() {
 	funcProtoOffCallCount = int(unsafe.Offsetof(proto.CallCount))
 	funcProtoOffTier2Promoted = int(unsafe.Offsetof(proto.Tier2Promoted))
 	funcProtoOffLeafNoCall = int(unsafe.Offsetof(proto.LeafNoCall))
+	funcProtoOffTier2LeafNoCall = int(unsafe.Offsetof(proto.Tier2LeafNoCall))
 	funcProtoOffNoGlobalOps = int(unsafe.Offsetof(proto.NoGlobalOps))
 }
 
