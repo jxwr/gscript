@@ -49,6 +49,45 @@ func TestFieldLenFold_FoldsJoinConstStringStores(t *testing.T) {
 	}
 }
 
+func TestFieldLenFold_LowersProfiledPolyFieldLen(t *testing.T) {
+	proto := &vm.FuncProto{
+		Constants: []runtime.Value{
+			runtime.StringValue("kind"),
+		},
+	}
+	fn := &Function{Proto: proto}
+	b0 := &Block{ID: 0}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	tbl := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b0}
+	get := &Instr{ID: 2, Op: OpGetField, Type: TypeString, Args: []*Value{tbl.Value()}, Aux: 0, Block: b0}
+	ln := &Instr{ID: 3, Op: OpLen, Type: TypeInt, Args: []*Value{get.Value()}, Block: b0}
+	b0.Instrs = []*Instr{tbl, get, ln, {Op: OpReturn, Args: []*Value{ln.Value()}, Block: b0}}
+	fn.FieldPolyShapeFacts = map[int][]FieldPolyShapeCase{
+		get.ID: {
+			{ShapeID: 101, FieldIdx: 0, Type: TypeString, ReceiverFact: FixedShapeTableFact{
+				ShapeID: 101, FieldLenRanges: map[string]intRange{"kind": pointRange(2)},
+			}},
+			{ShapeID: 102, FieldIdx: 1, Type: TypeString, ReceiverFact: FixedShapeTableFact{
+				ShapeID: 102, FieldLenRanges: map[string]intRange{"kind": pointRange(5)},
+			}},
+		},
+	}
+
+	out, err := FieldLenFoldPass(fn)
+	if err != nil {
+		t.Fatalf("FieldLenFoldPass: %v", err)
+	}
+	if out == nil || ln.Op != OpFieldPolyLen || ln.Type != TypeInt || len(ln.Args) != 1 || ln.Args[0].ID != tbl.ID {
+		t.Fatalf("len op not lowered to FieldPolyLen:\n%s", Print(fn))
+	}
+	cases := fn.FieldPolyShapeFacts[ln.ID]
+	if len(cases) != 2 {
+		t.Fatalf("FieldPolyLen facts not copied, got %d cases", len(cases))
+	}
+}
+
 func TestFieldLenFold_StepIOPipeline(t *testing.T) {
 	src := `func step_io(a, tick) {
     a.queue = (a.queue + tick + a.id) % 211

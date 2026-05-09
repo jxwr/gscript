@@ -940,6 +940,20 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			return nil, false, fmt.Errorf("IR interpreter: cannot convert missing field to float")
 		}
 
+	case OpFieldPolyLen:
+		tbl := s.val(instr.Args[0])
+		idx := int(instr.Aux)
+		if tbl.IsTable() && idx >= 0 && idx < len(s.fn.Proto.Constants) {
+			key := s.fn.Proto.Constants[idx]
+			val := tbl.Table().RawGet(key)
+			if !val.IsString() {
+				return nil, false, fmt.Errorf("IR interpreter: cannot get string length of %s field", val.TypeName())
+			}
+			s.values[instr.ID] = runtime.IntValue(int64(runtime.StringLen(val)))
+		} else {
+			return nil, false, fmt.Errorf("IR interpreter: cannot get length of missing field")
+		}
+
 	case OpFieldSvals:
 		tbl := s.val(instr.Args[0])
 		if !tbl.IsTable() {

@@ -263,6 +263,12 @@ func (v *validator) checkOpContracts() {
 					v.errorf("B%d: %s (v%d) must carry a non-negative field index in Aux, got %d",
 						blk.ID, instr.Op, instr.ID, instr.Aux)
 				}
+			case OpFieldPolyLen:
+				v.checkArgCount(blk, instr, 1, 1)
+				if instr.Aux < 0 {
+					v.errorf("B%d: FieldPolyLen (v%d) must carry a non-negative constant index in Aux, got %d",
+						blk.ID, instr.ID, instr.Aux)
+				}
 			}
 		}
 	}

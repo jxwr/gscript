@@ -101,7 +101,7 @@ func printInstr(sb *strings.Builder, i *Instr) {
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, " = v%d", i.Args[0].ID)
 		}
-	case OpGetField, OpGetFieldNumToFloat, OpSetField:
+	case OpGetField, OpGetFieldNumToFloat, OpFieldPolyLen, OpSetField:
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d.field[%d]", i.Args[0].ID, i.Aux)
 		}

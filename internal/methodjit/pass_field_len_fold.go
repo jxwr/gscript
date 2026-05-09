@@ -17,6 +17,11 @@ func FieldLenFoldPass(fn *Function) (*Function, error) {
 			if get.Op != OpGetField || len(get.Args) < 1 || get.Args[0] == nil {
 				continue
 			}
+			if lowerFieldPolyLen(fn, instr, get) {
+				functionRemarks(fn).Add("FieldLenFold", "changed", block.ID, instr.ID, instr.Op,
+					"lowered len(field) to guarded polymorphic field length")
+				continue
+			}
 			lens, ok := constStringFieldLensFromPreds(fn, block, get.Args[0].ID, get.Aux)
 			if !ok || len(lens) != len(block.Preds) {
 				continue
@@ -46,6 +51,55 @@ func FieldLenFoldPass(fn *Function) (*Function, error) {
 		}
 	}
 	return fn, nil
+}
+
+func lowerFieldPolyLen(fn *Function, lenInstr, get *Instr) bool {
+	if fn == nil || lenInstr == nil || get == nil || get.Op != OpGetField || len(get.Args) == 0 || get.Args[0] == nil {
+		return false
+	}
+	cases := fieldPolyExactLenCases(fn, get)
+	if len(cases) < 2 {
+		return false
+	}
+	if fn.FieldPolyShapeFacts == nil {
+		fn.FieldPolyShapeFacts = make(map[int][]FieldPolyShapeCase)
+	}
+	fn.FieldPolyShapeFacts[lenInstr.ID] = cases
+	lenInstr.Op = OpFieldPolyLen
+	lenInstr.Type = TypeInt
+	lenInstr.Args = []*Value{get.Args[0]}
+	lenInstr.Aux = get.Aux
+	lenInstr.Aux2 = 0
+	return true
+}
+
+func fieldPolyExactLenCases(fn *Function, get *Instr) []FieldPolyShapeCase {
+	if fn == nil || get == nil || get.Op != OpGetField {
+		return nil
+	}
+	name := fieldNameFromAux(fn, get.Aux)
+	if name == "" {
+		return nil
+	}
+	src := fn.FieldPolyShapeFacts[get.ID]
+	if len(src) < 2 {
+		return nil
+	}
+	out := make([]FieldPolyShapeCase, 0, len(src))
+	for _, c := range src {
+		if c.ShapeID == 0 {
+			return nil
+		}
+		r, ok := c.ReceiverFact.FieldLenRanges[name]
+		if !ok || !r.known || r.min != r.max {
+			return nil
+		}
+		out = append(out, c)
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
 }
 
 func unwrapFieldLenInput(v *Value) *Value {

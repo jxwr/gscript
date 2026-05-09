@@ -239,6 +239,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitGetField(instr)
 	case OpGetFieldNumToFloat:
 		ec.emitGetFieldNumToFloat(instr)
+	case OpFieldPolyLen:
+		ec.emitFieldPolyLen(instr)
 	case OpFieldSvals:
 		ec.emitFieldSvals(instr)
 	case OpFieldLoad:
@@ -358,6 +360,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
 		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardTruthy,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
+		OpFieldPolyLen,
 		OpNop:
 		return true
 	default:
@@ -370,7 +373,7 @@ func instrPreservesFieldSvalsCache(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpGetField, OpGetFieldNumToFloat, OpSetField:
+	case OpGetField, OpGetFieldNumToFloat, OpFieldPolyLen, OpSetField:
 		return true
 	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA, OpFMSUB:
 		return instr.Type == TypeFloat

@@ -158,6 +158,9 @@ const (
 	// It preserves NumToFloat semantics: int and float fields become raw
 	// float64, while non-numeric fields deopt.
 	OpGetFieldNumToFloat
+	// OpFieldPolyLen folds len(Args[0].field) through a guarded polymorphic
+	// fixed-shape receiver cache. Aux = constant pool index for field name.
+	OpFieldPolyLen
 	// Fixed-shape field lowering:
 	//   OpFieldSvals(table) -> raw pointer to table.svals after a shape guard
 	//   OpFieldLoad(svals) -> svals[fieldIndex]
@@ -317,6 +320,7 @@ var opNames = [...]string{
 	OpTableArrayNestedLoad:       "TableNestedLoad",
 	OpGetField:                   "GetField",
 	OpGetFieldNumToFloat:         "GetFieldNumToFloat",
+	OpFieldPolyLen:               "FieldPolyLen",
 	OpFieldSvals:                 "FieldSvals",
 	OpFieldLoad:                  "FieldLoad",
 	OpFieldLoadNumToFloat:        "FieldLoadNumToFloat",

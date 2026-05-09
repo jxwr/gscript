@@ -266,6 +266,59 @@ func (ec *emitContext) emitGetFieldDirectPolyShapeFacts(instr *Instr) bool {
 	return true
 }
 
+func (ec *emitContext) emitFieldPolyLen(instr *Instr) {
+	if ec == nil || ec.fn == nil || instr == nil || len(instr.Args) == 0 {
+		ec.emitDeopt(instr)
+		return
+	}
+	cases := ec.fn.FieldPolyShapeFacts[instr.ID]
+	if len(cases) < 2 {
+		ec.emitDeopt(instr)
+		return
+	}
+	name := fieldNameFromAux(ec.fn, instr.Aux)
+	if name == "" {
+		ec.emitDeopt(instr)
+		return
+	}
+	asm := ec.asm
+	missLabel := ec.uniqueLabel("field_poly_len_miss")
+	doneLabel := ec.uniqueLabel("field_poly_len_done")
+	tblValueID := instr.Args[0].ID
+
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	if ec.irTypes[tblValueID] != TypeTable {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, missLabel)
+	}
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, missLabel)
+	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+
+	for _, c := range cases {
+		r, ok := c.ReceiverFact.FieldLenRanges[name]
+		if c.ShapeID == 0 || !ok || !r.known || r.min != r.max {
+			asm.B(missLabel)
+			continue
+		}
+		nextLabel := ec.uniqueLabel("field_poly_len_next")
+		asm.LoadImm64(jit.X2, int64(c.ShapeID))
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondNE, nextLabel)
+		asm.LoadImm64(jit.X0, r.min)
+		ec.storeRawInt(jit.X0, instr.ID)
+		asm.B(doneLabel)
+		asm.Label(nextLabel)
+	}
+	asm.B(missLabel)
+
+	asm.Label(missLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitGetFieldPolymorphicCache(instr *Instr) bool {
 	if instr == nil || instr.SourcePC < 0 || len(instr.Args) == 0 {
 		return false
