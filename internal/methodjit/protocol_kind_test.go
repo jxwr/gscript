@@ -194,3 +194,38 @@ for i := 1; i <= 20; i++ {
 		}
 	}
 }
+
+func TestProtocolConstCallFoldPreservesFixedNestedProtocolLoopCall(t *testing.T) {
+	src := `
+func nestwave(level, width) {
+	if level == 0 { return width + 2 }
+	if width == 0 { return nestwave(level - 1, 2) }
+	return nestwave(level - 1, nestwave(level, width - 1))
+}
+
+result := 0
+checksum := 0
+for r := 1; r <= 20; r++ {
+	result = nestwave(2, 6)
+	checksum = checksum + (result % 997)
+}
+`
+	top := compileProto(t, src)
+	globals := runtime.NewInterpreterGlobals()
+	v := vm.New(globals)
+	defer v.Close()
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	got := v.GetGlobal("checksum")
+	if !got.IsInt() || got.Int() != 15280 {
+		t.Fatalf("checksum=%v, want 15280", got)
+	}
+	for _, site := range tm.ExitStats().Sites {
+		if site.ExitCode == ExitCallExit && site.Count >= 20 {
+			t.Fatalf("loop fixed nested protocol call still used call-exit: site=%#v", site)
+		}
+	}
+}

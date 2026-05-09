@@ -332,6 +332,11 @@ func inlineCalleeHasWholeCallProtocol(callee *vm.FuncProto, globals map[string]*
 	if callee == nil || len(globals) == 0 {
 		return false
 	}
+	if qualifiesForFixedRecursiveIntFold(callee) ||
+		qualifiesForFixedRecursiveNestedIntFold(callee) ||
+		qualifiesForFixedRecursiveTableFold(callee) {
+		return true
+	}
 	if _, ok := analyzeMutualRecursiveIntSCC(callee, globals); ok {
 		return true
 	}
