@@ -381,7 +381,7 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	maxSize := 40
 	var globals map[string]*vm.FuncProto
 	if opts != nil {
-		globals = opts.InlineGlobals
+		globals = callABIMergeGlobals(opts.InlineGlobals, opts.ProtocolGlobals)
 		if opts.InlineMaxSize > 0 {
 			maxSize = opts.InlineMaxSize
 		}
