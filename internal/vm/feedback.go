@@ -183,6 +183,8 @@ const (
 	ArgArrayElementShapeInvalid
 )
 
+const argArrayElementShapeSampleLimit = 8
+
 // ArgArrayElementShapeFeedback records the stable shape of table values stored
 // in an array argument's first element. It is intentionally conservative: the
 // optimized callee still guards each loaded element before consuming the fact.
@@ -208,13 +210,31 @@ func (af *ArgArrayElementShapeFeedback) Observe(arg runtime.Value) {
 		af.Flags |= ArgArrayElementShapeInvalid
 		return
 	}
-	elem := arg.Table().RawGetInt(1)
-	if !elem.IsTable() {
+	tbl := arg.Table()
+	seen := false
+	for i := int64(1); i <= argArrayElementShapeSampleLimit; i++ {
+		elem := tbl.RawGetInt(i)
+		if elem.IsNil() {
+			continue
+		}
+		if !elem.IsTable() {
+			af.Count++
+			af.Flags |= ArgArrayElementShapeInvalid
+			return
+		}
+		seen = true
+		af.observeElementTable(elem.Table())
+	}
+	if !seen {
 		af.Count++
 		af.Flags |= ArgArrayElementShapeInvalid
+	}
+}
+
+func (af *ArgArrayElementShapeFeedback) observeElementTable(tbl *runtime.Table) {
+	if af == nil || tbl == nil {
 		return
 	}
-	tbl := elem.Table()
 	shapeID := tbl.ShapeID()
 	fields := tbl.ShapeFieldNames()
 	if shapeID == 0 || len(fields) == 0 {
