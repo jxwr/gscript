@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
 )
 
 func TestNewTableCacheRefillsDenseTypedSite(t *testing.T) {
@@ -198,7 +199,11 @@ func f(n) {
     return last[3]
 }
 `
-	proto := compileFunction(t, src)
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "f")
+	if proto == nil {
+		t.Fatal("function f not found")
+	}
 	fn := BuildGraph(proto)
 	optimized, _, err := RunTier2Pipeline(fn, nil)
 	if err != nil {
@@ -217,23 +222,28 @@ func f(n) {
 		}
 		t.Fatalf("expected at least one cacheable NewTable site (%v) in optimized IR:\n%s", sites, Print(optimized))
 	}
-	cf, err := Compile(optimized, AllocateRegisters(optimized))
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	defer cf.Code.Free()
-	cf.DeoptFunc = func(args []runtime.Value) ([]runtime.Value, error) {
-		return runVM(t, src, args), nil
-	}
-	cf.CallVM = makeCallExitVMForTest(t, src)
-	defer cf.CallVM.Close()
 
-	result, err := cf.Execute([]runtime.Value{runtime.IntValue(40)})
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(f): %v", err)
+	}
+	fnVal := v.GetGlobal("f")
+	result, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(40)})
 	if err != nil {
-		t.Fatalf("Execute: %v", err)
+		t.Fatalf("CallValue(f): %v", err)
 	}
 	if len(result) != 1 || !result[0].IsNumber() || result[0].Number() != 1.5 {
 		t.Fatalf("result = %v, want 1.5", result)
+	}
+	cf := tm.tier2Compiled[proto]
+	if cf == nil {
+		t.Fatal("compiled Tier2 function missing")
 	}
 
 	var popped bool
