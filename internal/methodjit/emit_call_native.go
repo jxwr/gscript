@@ -1105,8 +1105,7 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	}
 
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
-	asm.LDR(jit.X8, jit.X7, funcProtoOffMaxStack)
-	asm.LSLimm(jit.X8, jit.X8, 3)
+	asm.LoadImm64(jit.X8, int64(callee.MaxStack*jit.ValueSize))
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(jit.X8, jit.X8, uint16(calleeBaseOff))
 	} else {
@@ -1485,8 +1484,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 			asm.BCond(jit.CondGE, fallbackLabel)
 		}
 
-		asm.LDR(jit.X8, jit.X7, funcProtoOffMaxStack)
-		asm.LSLimm(jit.X8, jit.X8, 3)
+		asm.LoadImm64(jit.X8, int64(c.callee.MaxStack*jit.ValueSize))
 		if calleeBaseOff <= 4095 {
 			asm.ADDimm(jit.X8, jit.X8, uint16(calleeBaseOff))
 		} else {
