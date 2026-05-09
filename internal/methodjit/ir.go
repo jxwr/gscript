@@ -106,6 +106,11 @@ type Function struct {
 	// or invalid profile data only disables the optimization.
 	ProfiledIntRanges map[int]intRange
 
+	// ProfiledLenRanges records guarded len() result ranges for SSA values,
+	// keyed by the value whose length is being read. It lets RangeAnalysis seed
+	// OpLen without changing the value's own type or representation.
+	ProfiledLenRanges map[int]intRange
+
 	// IntNonNegative is the set of integer SSA value IDs whose runtime result is
 	// provably >= 0. Populated by RangeAnalysisPass for consumers that only need
 	// a sign fact and must not reuse Int48Safe's overflow-specific meaning.

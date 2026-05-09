@@ -312,7 +312,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 		changed := false
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
-				newR := computeRange(instr, ranges, staticLens, fn.ProfiledIntRanges)
+				newR := computeRange(instr, ranges, staticLens, fn.ProfiledIntRanges, fn.ProfiledLenRanges)
 				if !instr.Type.isIntegerLike() {
 					continue
 				}
@@ -363,7 +363,7 @@ func (t Type) isIntegerLike() bool {
 
 // computeRange returns the inferred range of `instr`'s result value using the
 // current `ranges` map. Unknown/unsupported ops produce top.
-func computeRange(instr *Instr, ranges map[int]intRange, staticLens, profiledRanges map[int]intRange) intRange {
+func computeRange(instr *Instr, ranges map[int]intRange, staticLens, profiledRanges, profiledLenRanges map[int]intRange) intRange {
 	if r, ok := profiledRanges[instr.ID]; ok && r.known {
 		return r
 	}
@@ -373,6 +373,11 @@ func computeRange(instr *Instr, ranges map[int]intRange, staticLens, profiledRan
 	case OpLen:
 		if r, ok := staticLens[instr.ID]; ok {
 			return r
+		}
+		if len(instr.Args) >= 1 && instr.Args[0] != nil {
+			if r, ok := profiledLenRanges[instr.Args[0].ID]; ok && r.known {
+				return r
+			}
 		}
 		return topRange()
 

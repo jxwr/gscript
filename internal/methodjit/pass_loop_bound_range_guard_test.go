@@ -84,6 +84,9 @@ func f(n) {
 		for _, instr := range block.Instrs {
 			if instr.Op == OpGuardIntRange {
 				found = true
+				if instr.Aux2 != singleLoopParamRangeMax {
+					t.Fatalf("single-loop guard should use wide max %d, got %d", singleLoopParamRangeMax, instr.Aux2)
+				}
 			}
 		}
 	}

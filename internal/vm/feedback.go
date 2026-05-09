@@ -189,15 +189,16 @@ const argArrayElementShapeSampleLimit = 8
 // in an array argument's first element. It is intentionally conservative: the
 // optimized callee still guards each loaded element before consuming the fact.
 type ArgArrayElementShapeFeedback struct {
-	Count       uint32
-	ShapeID     uint32
-	FieldNames  []string
-	FieldTypes  map[string]FeedbackType
-	FieldRanges map[string]IntRangeFeedback
-	Nested      map[string]ArgArrayElementShapeFeedback
-	Shapes      [MaxCallSiteFeedbackVMProtos]ArgArrayElementShapeCase
-	ShapeCount  uint8
-	Flags       uint8
+	Count          uint32
+	ShapeID        uint32
+	FieldNames     []string
+	FieldTypes     map[string]FeedbackType
+	FieldRanges    map[string]IntRangeFeedback
+	FieldLenRanges map[string]IntRangeFeedback
+	Nested         map[string]ArgArrayElementShapeFeedback
+	Shapes         [MaxCallSiteFeedbackVMProtos]ArgArrayElementShapeCase
+	ShapeCount     uint8
+	Flags          uint8
 }
 
 // IntRangeFeedback records a stable integer range for a profiled value. Invalid
@@ -211,11 +212,12 @@ type IntRangeFeedback struct {
 }
 
 type ArgArrayElementShapeCase struct {
-	ShapeID       uint32
-	FieldNames    []string
-	FieldTypes    map[string]FeedbackType
-	FieldRanges   map[string]IntRangeFeedback
-	FieldVMProtos map[string]*FuncProto
+	ShapeID        uint32
+	FieldNames     []string
+	FieldTypes     map[string]FeedbackType
+	FieldRanges    map[string]IntRangeFeedback
+	FieldLenRanges map[string]IntRangeFeedback
+	FieldVMProtos  map[string]*FuncProto
 }
 
 // ArgArrayElementShapeFeedbackVector is per-parameter runtime argument shape
@@ -335,6 +337,9 @@ func observeArgArrayElementShapeCaseTypes(c *ArgArrayElementShapeCase, tbl *runt
 	if c.FieldRanges == nil {
 		c.FieldRanges = make(map[string]IntRangeFeedback, len(fields))
 	}
+	if c.FieldLenRanges == nil {
+		c.FieldLenRanges = make(map[string]IntRangeFeedback, len(fields))
+	}
 	for _, field := range fields {
 		value := tbl.RawGetString(field)
 		ft := c.FieldTypes[field]
@@ -343,6 +348,9 @@ func observeArgArrayElementShapeCaseTypes(c *ArgArrayElementShapeCase, tbl *runt
 		rangeFeedback := c.FieldRanges[field]
 		rangeFeedback.Observe(value)
 		c.FieldRanges[field] = rangeFeedback
+		lenFeedback := c.FieldLenRanges[field]
+		lenFeedback.ObserveLen(value)
+		c.FieldLenRanges[field] = lenFeedback
 		if proto := callFeedbackVMProto(value); proto != nil {
 			if c.FieldVMProtos == nil {
 				c.FieldVMProtos = make(map[string]*FuncProto, len(fields))
@@ -366,6 +374,9 @@ func (af *ArgArrayElementShapeFeedback) observeFieldTypes(tbl *runtime.Table, fi
 	if af.FieldRanges == nil {
 		af.FieldRanges = make(map[string]IntRangeFeedback, len(fields))
 	}
+	if af.FieldLenRanges == nil {
+		af.FieldLenRanges = make(map[string]IntRangeFeedback, len(fields))
+	}
 	for _, field := range fields {
 		value := tbl.RawGetString(field)
 		ft := af.FieldTypes[field]
@@ -374,6 +385,9 @@ func (af *ArgArrayElementShapeFeedback) observeFieldTypes(tbl *runtime.Table, fi
 		rangeFeedback := af.FieldRanges[field]
 		rangeFeedback.Observe(value)
 		af.FieldRanges[field] = rangeFeedback
+		lenFeedback := af.FieldLenRanges[field]
+		lenFeedback.ObserveLen(value)
+		af.FieldLenRanges[field] = lenFeedback
 	}
 }
 
@@ -386,6 +400,29 @@ func (rf *IntRangeFeedback) Observe(value runtime.Value) {
 		return
 	}
 	n := value.Int()
+	if rf.Count == 0 {
+		rf.Min = n
+		rf.Max = n
+	} else {
+		if n < rf.Min {
+			rf.Min = n
+		}
+		if n > rf.Max {
+			rf.Max = n
+		}
+	}
+	rf.Count++
+}
+
+func (rf *IntRangeFeedback) ObserveLen(value runtime.Value) {
+	if rf == nil {
+		return
+	}
+	if value.Type() != runtime.TypeString {
+		rf.Invalid = true
+		return
+	}
+	n := int64(len(value.Str()))
 	if rf.Count == 0 {
 		rf.Min = n
 		rf.Max = n

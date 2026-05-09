@@ -1,6 +1,9 @@
 package methodjit
 
-const nestedLoopParamRangeMax int64 = 1 << 20
+const (
+	nestedLoopParamRangeMax int64 = 1 << 20
+	singleLoopParamRangeMax int64 = 1 << 30
+)
 
 // LoopBoundRangeGuardPass adds a narrow entry range guard for integer
 // parameters used as loop bounds. The guard feeds RangeAnalysis, which can then
@@ -14,8 +17,8 @@ func LoopBoundRangeGuardPass(fn *Function) (*Function, error) {
 	if !computeLoopInfo(fn).hasLoops() {
 		return fn, nil
 	}
-	boundParamSlots := loopBoundParamSlots(fn)
-	if len(boundParamSlots) == 0 {
+	boundParamMax := loopBoundParamMax(fn)
+	if len(boundParamMax) == 0 {
 		functionRemarks(fn).Add("LoopBoundRangeGuard", "missed", 0, 0, OpGuardIntRange,
 			"loop had no parameter-derived loop bound")
 		return fn, nil
@@ -29,10 +32,11 @@ func LoopBoundRangeGuardPass(fn *Function) (*Function, error) {
 		for i := 0; i < len(block.Instrs); i++ {
 			instr := block.Instrs[i]
 			slot, ok := intParamTypeGuardSlot(fn, instr)
-			if !ok || !boundParamSlots[slot] {
+			max, shouldGuard := boundParamMax[slot]
+			if !ok || !shouldGuard {
 				continue
 			}
-			if nextIsRangeGuard(block, i, instr.ID) {
+			if nextIsRangeGuard(block, i, instr.ID, max) {
 				continue
 			}
 
@@ -42,7 +46,7 @@ func LoopBoundRangeGuardPass(fn *Function) (*Function, error) {
 				Type:        TypeInt,
 				Args:        []*Value{instr.Value()},
 				Aux:         0,
-				Aux2:        nestedLoopParamRangeMax,
+				Aux2:        max,
 				Block:       block,
 				HasSource:   instr.HasSource,
 				SourceProto: instr.SourceProto,
@@ -81,12 +85,13 @@ func intParamTypeGuardSlot(fn *Function, instr *Instr) (int, bool) {
 	return slot, true
 }
 
-func loopBoundParamSlots(fn *Function) map[int]bool {
-	slots := make(map[int]bool)
+func loopBoundParamMax(fn *Function) map[int]int64 {
+	slots := make(map[int]int64)
 	if fn == nil || fn.Proto == nil {
 		return slots
 	}
 	li := computeLoopInfo(fn)
+	nest := loopNest(li)
 	for _, header := range fn.Blocks {
 		if !li.loopHeaders[header.ID] {
 			continue
@@ -100,13 +105,17 @@ func loopBoundParamSlots(fn *Function) map[int]bool {
 		default:
 			continue
 		}
-		collectParamSlotsInBoundExpr(fn, cond.Args[0], slots, make(map[int]bool))
-		collectParamSlotsInBoundExpr(fn, cond.Args[1], slots, make(map[int]bool))
+		max := singleLoopParamRangeMax
+		if nest[header.ID] != -1 {
+			max = nestedLoopParamRangeMax
+		}
+		collectParamSlotsInBoundExpr(fn, cond.Args[0], slots, max, make(map[int]bool))
+		collectParamSlotsInBoundExpr(fn, cond.Args[1], slots, max, make(map[int]bool))
 	}
 	return slots
 }
 
-func collectParamSlotsInBoundExpr(fn *Function, v *Value, slots map[int]bool, seen map[int]bool) {
+func collectParamSlotsInBoundExpr(fn *Function, v *Value, slots map[int]int64, max int64, seen map[int]bool) {
 	if fn == nil || fn.Proto == nil || v == nil || v.Def == nil {
 		return
 	}
@@ -119,7 +128,9 @@ func collectParamSlotsInBoundExpr(fn *Function, v *Value, slots map[int]bool, se
 	if instr.Op == OpLoadSlot {
 		slot := int(instr.Aux)
 		if slot >= 0 && slot < fn.Proto.NumParams {
-			slots[slot] = true
+			if existing, ok := slots[slot]; !ok || max < existing {
+				slots[slot] = max
+			}
 		}
 		return
 	}
@@ -132,11 +143,11 @@ func collectParamSlotsInBoundExpr(fn *Function, v *Value, slots map[int]bool, se
 		return
 	}
 	for _, arg := range instr.Args {
-		collectParamSlotsInBoundExpr(fn, arg, slots, seen)
+		collectParamSlotsInBoundExpr(fn, arg, slots, max, seen)
 	}
 }
 
-func nextIsRangeGuard(block *Block, idx int, sourceID int) bool {
+func nextIsRangeGuard(block *Block, idx int, sourceID int, max int64) bool {
 	if block == nil || idx+1 >= len(block.Instrs) {
 		return false
 	}
@@ -147,7 +158,7 @@ func nextIsRangeGuard(block *Block, idx int, sourceID int) bool {
 		next.Args[0] != nil &&
 		next.Args[0].ID == sourceID &&
 		next.Aux == 0 &&
-		next.Aux2 == nestedLoopParamRangeMax
+		next.Aux2 == max
 }
 
 func replaceUsesAfterGuard(fn *Function, oldID int, newInstr *Instr, skipID int) {
