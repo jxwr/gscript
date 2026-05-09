@@ -195,6 +195,34 @@ func TestStringFormatSimpleCachedThreeArgPattern(t *testing.T) {
 	}
 }
 
+func TestStringPredicateFixedArgFastPaths(t *testing.T) {
+	lib := buildStringLib()
+	cases := []struct {
+		name string
+		a    Value
+		b    Value
+		want Value
+	}{
+		{"hasPrefix", StringValue("abcdef"), StringValue("abc"), BoolValue(true)},
+		{"hasSuffix", StringValue("abcdef"), StringValue("def"), BoolValue(true)},
+		{"contains", StringValue("abcdef"), StringValue("cd"), BoolValue(true)},
+		{"count", StringValue("banana"), StringValue("na"), IntValue(2)},
+	}
+	for _, tc := range cases {
+		fn := lib.RawGetString(tc.name).GoFunction()
+		if fn == nil || fn.FastArg2 == nil {
+			t.Fatalf("string.%s FastArg2 is nil", tc.name)
+		}
+		got, err := fn.FastArg2(tc.a, tc.b)
+		if err != nil {
+			t.Fatalf("string.%s FastArg2 failed: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Fatalf("string.%s FastArg2 = %s, want %s", tc.name, got.String(), tc.want.String())
+		}
+	}
+}
+
 func TestStringFormatSingleIntegerResultCacheReusesValue(t *testing.T) {
 	prog, ok, err := compileSimpleFormat("SKU%05d")
 	if err != nil || !ok {

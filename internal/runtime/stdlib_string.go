@@ -473,37 +473,85 @@ func buildStringLib() *Table {
 		return []Value{StringValue(strings.TrimRightFunc(s, unicode.IsSpace))}, nil
 	})
 
-	// string.hasPrefix(s, prefix) -> bool
-	set("hasPrefix", func(args []Value) ([]Value, error) {
+	stringHasPrefix := func(args []Value) ([]Value, error) {
 		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
 			return nil, fmt.Errorf("bad argument to 'string.hasPrefix' (string expected)")
 		}
 		return []Value{BoolValue(strings.HasPrefix(args[0].Str(), args[1].Str()))}, nil
-	})
+	}
+	stringHasPrefixFast := func(a, b Value) (Value, error) {
+		if !a.IsString() || !b.IsString() {
+			return NilValue(), fmt.Errorf("bad argument to 'string.hasPrefix' (string expected)")
+		}
+		return BoolValue(strings.HasPrefix(a.Str(), b.Str())), nil
+	}
+	// string.hasPrefix(s, prefix) -> bool
+	setFastArg2("hasPrefix", stringHasPrefix, func(args []Value) (Value, error) {
+		if len(args) < 2 {
+			return NilValue(), fmt.Errorf("bad argument to 'string.hasPrefix' (string expected)")
+		}
+		return stringHasPrefixFast(args[0], args[1])
+	}, stringHasPrefixFast)
 
-	// string.hasSuffix(s, suffix) -> bool
-	set("hasSuffix", func(args []Value) ([]Value, error) {
+	stringHasSuffix := func(args []Value) ([]Value, error) {
 		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
 			return nil, fmt.Errorf("bad argument to 'string.hasSuffix' (string expected)")
 		}
 		return []Value{BoolValue(strings.HasSuffix(args[0].Str(), args[1].Str()))}, nil
-	})
+	}
+	stringHasSuffixFast := func(a, b Value) (Value, error) {
+		if !a.IsString() || !b.IsString() {
+			return NilValue(), fmt.Errorf("bad argument to 'string.hasSuffix' (string expected)")
+		}
+		return BoolValue(strings.HasSuffix(a.Str(), b.Str())), nil
+	}
+	// string.hasSuffix(s, suffix) -> bool
+	setFastArg2("hasSuffix", stringHasSuffix, func(args []Value) (Value, error) {
+		if len(args) < 2 {
+			return NilValue(), fmt.Errorf("bad argument to 'string.hasSuffix' (string expected)")
+		}
+		return stringHasSuffixFast(args[0], args[1])
+	}, stringHasSuffixFast)
 
-	// string.contains(s, substr) -> bool
-	set("contains", func(args []Value) ([]Value, error) {
+	stringContains := func(args []Value) ([]Value, error) {
 		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
 			return nil, fmt.Errorf("bad argument to 'string.contains' (string expected)")
 		}
 		return []Value{BoolValue(strings.Contains(args[0].Str(), args[1].Str()))}, nil
-	})
+	}
+	stringContainsFast := func(a, b Value) (Value, error) {
+		if !a.IsString() || !b.IsString() {
+			return NilValue(), fmt.Errorf("bad argument to 'string.contains' (string expected)")
+		}
+		return BoolValue(strings.Contains(a.Str(), b.Str())), nil
+	}
+	// string.contains(s, substr) -> bool
+	setFastArg2("contains", stringContains, func(args []Value) (Value, error) {
+		if len(args) < 2 {
+			return NilValue(), fmt.Errorf("bad argument to 'string.contains' (string expected)")
+		}
+		return stringContainsFast(args[0], args[1])
+	}, stringContainsFast)
 
-	// string.count(s, substr) -> int
-	set("count", func(args []Value) ([]Value, error) {
+	stringCount := func(args []Value) ([]Value, error) {
 		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
 			return nil, fmt.Errorf("bad argument to 'string.count' (string expected)")
 		}
 		return []Value{IntValue(int64(strings.Count(args[0].Str(), args[1].Str())))}, nil
-	})
+	}
+	stringCountFast := func(a, b Value) (Value, error) {
+		if !a.IsString() || !b.IsString() {
+			return NilValue(), fmt.Errorf("bad argument to 'string.count' (string expected)")
+		}
+		return IntValue(int64(strings.Count(a.Str(), b.Str()))), nil
+	}
+	// string.count(s, substr) -> int
+	setFastArg2("count", stringCount, func(args []Value) (Value, error) {
+		if len(args) < 2 {
+			return NilValue(), fmt.Errorf("bad argument to 'string.count' (string expected)")
+		}
+		return stringCountFast(args[0], args[1])
+	}, stringCountFast)
 
 	// string.replaceAll(s, old, new) -- plain string replace all
 	set("replaceAll", func(args []Value) ([]Value, error) {
