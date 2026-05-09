@@ -154,7 +154,7 @@ func (ec *emitContext) emitGetField(instr *Instr) {
 		asm.B(doneLabel)
 	}
 
-	if instr.Type == TypeFloat {
+	if instr.Type == TypeFloat || instr.Type == TypeInt {
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
 	}
@@ -205,7 +205,7 @@ func (ec *emitContext) emitGetFieldPolymorphicCache(instr *Instr) bool {
 	ec.restoreValueReprSnapshot(savedReprs)
 	asm.B(doneLabel)
 
-	if instr.Type == TypeFloat {
+	if instr.Type == TypeFloat || instr.Type == TypeInt {
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
 	}
@@ -417,7 +417,7 @@ func (ec *emitContext) emitGetFieldDynamicCache(instr *Instr) bool {
 	ec.restoreValueReprSnapshot(savedReprs)
 	asm.B(doneLabel)
 
-	if instr.Type == TypeFloat {
+	if instr.Type == TypeFloat || instr.Type == TypeInt {
 		asm.Label(typeDeoptLabel)
 		ec.emitDeopt(instr)
 	}

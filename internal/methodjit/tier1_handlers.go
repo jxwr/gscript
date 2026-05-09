@@ -456,6 +456,13 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 			if !compiled {
 				// Try to compile the callee on the fly.
 				calleeProto.CallCount++
+				if calleeProto.CallCount <= 64 {
+					argsStart := absSlot + 1
+					argsEnd := argsStart + nArgs
+					if argsStart >= 0 && argsEnd >= argsStart && argsEnd <= len(regs) {
+						calleeProto.ObserveArgArrayElementShapes(regs[argsStart:argsEnd])
+					}
+				}
 				var compileResult interface{}
 				if e.outerCompiler != nil {
 					compileResult = e.outerCompiler(calleeProto)

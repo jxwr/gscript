@@ -12,12 +12,14 @@ import (
 // current Function; call-return facts expose only stable FieldFacts that can be
 // interpreted in the caller.
 type FixedShapeTableFact struct {
-	ShapeID       uint32
-	FieldNames    []string
-	FieldValueIDs map[string]int
-	FieldFacts    map[string]FixedShapeFieldFact
-	Guarded       bool
-	EntryGuarded  bool
+	ShapeID         uint32
+	FieldNames      []string
+	FieldValueIDs   map[string]int
+	FieldFacts      map[string]FixedShapeFieldFact
+	FieldTypes      map[string]Type
+	FieldTableFacts map[string]FixedShapeTableFact
+	Guarded         bool
+	EntryGuarded    bool
 }
 
 type FixedShapeFieldKind uint8
@@ -74,9 +76,10 @@ func (f FixedShapeTableFact) sameShape(other FixedShapeTableFact) bool {
 // EntryGuardedArgs asks codegen to validate those shapes before the optimized
 // body so the guarded facts can be consumed as callee-local shape facts.
 type FixedShapeTableFactsConfig struct {
-	Globals          map[string]*vm.FuncProto
-	ArgFacts         map[int]FixedShapeTableFact
-	EntryGuardedArgs bool
+	Globals              map[string]*vm.FuncProto
+	ArgFacts             map[int]FixedShapeTableFact
+	ArrayElementArgFacts map[int]FixedShapeTableFact
+	EntryGuardedArgs     bool
 }
 
 // FixedShapeTableFactsPass records fixed-shape table facts and uses
@@ -97,6 +100,7 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 			facts = make(map[int]FixedShapeTableFact)
 		}
 		seedGuardedFixedShapeArgFacts(fn, facts, config.ArgFacts)
+		seedGuardedFixedShapeArrayElementArgFacts(fn, facts, config.ArrayElementArgFacts)
 		if config.EntryGuardedArgs {
 			markEntryGuardedFixedShapeArgFacts(fn, facts, fn.FixedShapeArgFacts)
 		}
@@ -157,6 +161,33 @@ func seedGuardedFixedShapeArgFacts(fn *Function, facts map[int]FixedShapeTableFa
 	}
 }
 
+func seedGuardedFixedShapeArrayElementArgFacts(fn *Function, facts map[int]FixedShapeTableFact, argFacts map[int]FixedShapeTableFact) {
+	if fn == nil || fn.Proto == nil || len(argFacts) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGetTable || len(instr.Args) < 2 || instr.Args[0] == nil {
+				continue
+			}
+			tableDef := instr.Args[0].Def
+			if tableDef == nil || tableDef.Op != OpLoadSlot || tableDef.Aux < 0 || int(tableDef.Aux) >= fn.Proto.NumParams {
+				continue
+			}
+			fact, ok := guardedFixedShapeArgFact(argFacts[int(tableDef.Aux)])
+			if !ok {
+				continue
+			}
+			facts[instr.ID] = fact
+			if instr.Type == TypeAny || instr.Type == TypeUnknown {
+				instr.Type = TypeTable
+			}
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("parameter %d array element carries guarded fixed table shape %v", tableDef.Aux, fact.FieldNames))
+		}
+	}
+}
+
 func markEntryGuardedFixedShapeArgFacts(fn *Function, facts map[int]FixedShapeTableFact, argFacts map[int]FixedShapeTableFact) {
 	if fn == nil || fn.Proto == nil || len(argFacts) == 0 {
 		return
@@ -189,9 +220,11 @@ func guardedFixedShapeArgFact(fact FixedShapeTableFact) (FixedShapeTableFact, bo
 		return FixedShapeTableFact{}, false
 	}
 	return FixedShapeTableFact{
-		ShapeID:    fact.ShapeID,
-		FieldNames: append([]string(nil), fact.FieldNames...),
-		Guarded:    true,
+		ShapeID:         fact.ShapeID,
+		FieldNames:      append([]string(nil), fact.FieldNames...),
+		FieldTypes:      cloneStringTypeMap(fact.FieldTypes),
+		FieldTableFacts: cloneFixedShapeTableFactMap(fact.FieldTableFacts),
+		Guarded:         true,
 	}, true
 }
 
@@ -269,6 +302,165 @@ func inferGuardedFixedShapeArgFactsForProto(target *vm.FuncProto, globals map[st
 	return out
 }
 
+func inferGuardedFixedShapeArrayElementArgFactsForProto(target *vm.FuncProto, globals map[string]*vm.FuncProto) map[int]FixedShapeTableFact {
+	if target == nil || len(globals) == 0 {
+		return nil
+	}
+	type argFactState struct {
+		fact     FixedShapeTableFact
+		seen     bool
+		conflict bool
+	}
+	states := make(map[int]argFactState)
+	seenCallsite := false
+	for _, caller := range uniqueFuncProtos(globals) {
+		if caller == nil {
+			continue
+		}
+		fn := BuildGraph(caller)
+		if fn == nil || fn.Unpromotable {
+			continue
+		}
+		arrayFacts := inferArrayElementValuesForArgs(fn, globals)
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr.Op != OpCall {
+					continue
+				}
+				_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+				if callee != target {
+					continue
+				}
+				seenCallsite = true
+				for i := 1; i < len(instr.Args) && i <= target.NumParams; i++ {
+					arg := instr.Args[i]
+					if arg == nil {
+						continue
+					}
+					fact, ok := arrayFacts[arg.ID]
+					if !ok {
+						continue
+					}
+					guarded, ok := guardedFixedShapeArgFact(fact)
+					if !ok {
+						continue
+					}
+					paramIdx := i - 1
+					state := states[paramIdx]
+					if !state.seen {
+						state.fact = guarded
+						state.seen = true
+						states[paramIdx] = state
+						continue
+					}
+					if !state.fact.sameShape(guarded) || state.fact.ShapeID != guarded.ShapeID {
+						state.conflict = true
+						states[paramIdx] = state
+					}
+				}
+			}
+		}
+	}
+	if !seenCallsite || len(states) == 0 {
+		return nil
+	}
+	out := make(map[int]FixedShapeTableFact, len(states))
+	for idx, state := range states {
+		if state.seen && !state.conflict {
+			out[idx] = state.fact
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func profiledFixedShapeArrayElementArgFactsForProto(target *vm.FuncProto) map[int]FixedShapeTableFact {
+	if target == nil || len(target.ArgArrayElementShapeFeedback) == 0 {
+		return nil
+	}
+	out := make(map[int]FixedShapeTableFact)
+	for idx, feedback := range target.ArgArrayElementShapeFeedback {
+		if idx < 0 || idx >= target.NumParams {
+			continue
+		}
+		shapeID, fields, ok := feedback.StableShape()
+		if !ok {
+			continue
+		}
+		out[idx] = FixedShapeTableFact{
+			ShapeID:         shapeID,
+			FieldNames:      append([]string(nil), fields...),
+			FieldTypes:      profiledFixedShapeFieldTypes(feedback),
+			FieldTableFacts: profiledNestedFixedShapeTableFacts(feedback),
+			Guarded:         true,
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergeFixedShapeTableFacts(preferred, fallback map[int]FixedShapeTableFact) map[int]FixedShapeTableFact {
+	if len(preferred) == 0 {
+		return fallback
+	}
+	if len(fallback) == 0 {
+		return preferred
+	}
+	out := make(map[int]FixedShapeTableFact, len(preferred)+len(fallback))
+	for idx, fact := range fallback {
+		out[idx] = fact
+	}
+	for idx, fact := range preferred {
+		out[idx] = fact
+	}
+	return out
+}
+
+func profiledNestedFixedShapeTableFacts(feedback vm.ArgArrayElementShapeFeedback) map[string]FixedShapeTableFact {
+	if len(feedback.Nested) == 0 {
+		return nil
+	}
+	out := make(map[string]FixedShapeTableFact)
+	for name, nested := range feedback.Nested {
+		shapeID, fields, ok := nested.StableShape()
+		if !ok {
+			continue
+		}
+		out[name] = FixedShapeTableFact{
+			ShapeID:    shapeID,
+			FieldNames: append([]string(nil), fields...),
+			FieldTypes: profiledFixedShapeFieldTypes(nested),
+			Guarded:    true,
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func profiledFixedShapeFieldTypes(feedback vm.ArgArrayElementShapeFeedback) map[string]Type {
+	if len(feedback.FieldTypes) == 0 {
+		return nil
+	}
+	out := make(map[string]Type)
+	for name, fbType := range feedback.FieldTypes {
+		typ, ok := feedbackToIRType(fbType)
+		if !ok {
+			continue
+		}
+		out[name] = typ
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func inferFixedShapeValuesForArgs(fn *Function, globals map[string]*vm.FuncProto) map[int]FixedShapeTableFact {
 	facts := inferLocalFixedShapeTables(fn)
 	if len(facts) == 0 {
@@ -296,6 +488,30 @@ func inferFixedShapeValuesForArgs(fn *Function, globals map[string]*vm.FuncProto
 	return facts
 }
 
+func inferArrayElementValuesForArgs(fn *Function, globals map[string]*vm.FuncProto) map[int]FixedShapeTableFact {
+	out := make(map[int]FixedShapeTableFact)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpCall {
+				continue
+			}
+			_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
+			if callee == nil {
+				continue
+			}
+			fact, ok := AnalyzeFixedShapeArrayElementReturnFact(callee, globals)
+			if !ok {
+				continue
+			}
+			out[instr.ID] = fact
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func uniqueFuncProtos(globals map[string]*vm.FuncProto) []*vm.FuncProto {
 	seen := make(map[*vm.FuncProto]bool, len(globals))
 	out := make([]*vm.FuncProto, 0, len(globals))
@@ -307,6 +523,67 @@ func uniqueFuncProtos(globals map[string]*vm.FuncProto) []*vm.FuncProto {
 		out = append(out, proto)
 	}
 	return out
+}
+
+// AnalyzeFixedShapeArrayElementReturnFact reports whether proto returns an
+// array-like table whose element stores all carry the same fixed table shape.
+func AnalyzeFixedShapeArrayElementReturnFact(proto *vm.FuncProto, globals map[string]*vm.FuncProto) (FixedShapeTableFact, bool) {
+	if proto == nil {
+		return FixedShapeTableFact{}, false
+	}
+	fn := BuildGraph(proto)
+	if fn == nil || fn.Unpromotable {
+		return FixedShapeTableFact{}, false
+	}
+	values := inferFixedShapeValuesForArgs(fn, globals)
+	if len(values) == 0 {
+		return FixedShapeTableFact{}, false
+	}
+	returned := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpReturn || len(instr.Args) != 1 || instr.Args[0] == nil {
+				continue
+			}
+			returned[instr.Args[0].ID] = true
+		}
+	}
+	if len(returned) == 0 {
+		return FixedShapeTableFact{}, false
+	}
+	var out FixedShapeTableFact
+	seenStore := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if len(instr.Args) == 0 || instr.Args[0] == nil || !returned[instr.Args[0].ID] {
+				continue
+			}
+			switch instr.Op {
+			case OpSetTable:
+				if len(instr.Args) < 3 || instr.Args[2] == nil {
+					return FixedShapeTableFact{}, false
+				}
+				fact, ok := values[instr.Args[2].ID]
+				if !ok || fact.ShapeID == 0 || len(fact.FieldNames) == 0 {
+					return FixedShapeTableFact{}, false
+				}
+				if !seenStore {
+					out = withoutFieldValues(fact)
+					seenStore = true
+					continue
+				}
+				if out.ShapeID != fact.ShapeID || !out.sameShape(fact) {
+					return FixedShapeTableFact{}, false
+				}
+			case OpAppend, OpSetList, OpSetField:
+				return FixedShapeTableFact{}, false
+			}
+		}
+	}
+	if !seenStore {
+		return FixedShapeTableFact{}, false
+	}
+	return out, true
 }
 
 // AnalyzeFixedShapeReturnFact reports whether every non-empty return in proto
@@ -406,8 +683,10 @@ func AnalyzeFixedShapeReturnFact(proto *vm.FuncProto) (FixedShapeTableFact, bool
 
 func withoutFieldValues(fact FixedShapeTableFact) FixedShapeTableFact {
 	return FixedShapeTableFact{
-		ShapeID:    fact.ShapeID,
-		FieldNames: append([]string(nil), fact.FieldNames...),
+		ShapeID:         fact.ShapeID,
+		FieldNames:      append([]string(nil), fact.FieldNames...),
+		FieldTypes:      cloneStringTypeMap(fact.FieldTypes),
+		FieldTableFacts: cloneFixedShapeTableFactMap(fact.FieldTableFacts),
 	}
 }
 
@@ -578,9 +857,11 @@ func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr.Op != OpGetField || len(instr.Args) == 0 || instr.Args[0] == nil {
-				continue
-			}
-			if instr.Aux2 != 0 {
+				if instr.Op == OpGuardType && len(instr.Args) > 0 && instr.Args[0] != nil && instr.Type == TypeTable {
+					if fact, ok := facts[instr.Args[0].ID]; ok {
+						facts[instr.ID] = fact
+					}
+				}
 				continue
 			}
 			fact, ok := facts[instr.Args[0].ID]
@@ -595,9 +876,22 @@ func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact
 			if !ok {
 				continue
 			}
-			instr.Aux2 = int64(fact.ShapeID)<<32 | int64(uint32(idx))
-			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
-				fmt.Sprintf("prefilled fixed-shape field cache for %q", name))
+			if instr.Aux2 == 0 {
+				instr.Aux2 = int64(fact.ShapeID)<<32 | int64(uint32(idx))
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("prefilled fixed-shape field cache for %q", name))
+			}
+			if typ, ok := fact.FieldTypes[name]; ok && typ != TypeUnknown && typ != TypeAny {
+				instr.Type = typ
+			}
+			if nested, ok := fact.FieldTableFacts[name]; ok && nested.ShapeID != 0 {
+				facts[instr.ID] = nested
+				if instr.Type == TypeAny || instr.Type == TypeUnknown {
+					instr.Type = TypeTable
+				}
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("field %q carries guarded nested fixed table shape %v", name, nested.FieldNames))
+			}
 		}
 	}
 }
@@ -751,6 +1045,31 @@ func fixedShapeContainsString(values []string, want string) bool {
 func cloneStringIntMap(in map[string]int) map[string]int {
 	out := make(map[string]int, len(in))
 	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneStringTypeMap(in map[string]Type) map[string]Type {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]Type, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneFixedShapeTableFactMap(in map[string]FixedShapeTableFact) map[string]FixedShapeTableFact {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]FixedShapeTableFact, len(in))
+	for k, v := range in {
+		v.FieldNames = append([]string(nil), v.FieldNames...)
+		v.FieldTypes = cloneStringTypeMap(v.FieldTypes)
+		v.FieldTableFacts = cloneFixedShapeTableFactMap(v.FieldTableFacts)
 		out[k] = v
 	}
 	return out

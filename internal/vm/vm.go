@@ -660,6 +660,9 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	// Method JIT: check for compiled function.
 	if vm.methodJIT != nil && !proto.IsVarArg && !proto.JITDisabled {
 		proto.CallCount++
+		if proto.CallCount <= 64 {
+			proto.ObserveArgArrayElementShapes(args)
+		}
 		if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
 			results, err := vm.executeMethodJIT(compiled, vm.regs, base, proto)
 			if err == errCoroutineYield {
@@ -1764,6 +1767,12 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				// Method JIT: check for compiled function
 				if vm.methodJIT != nil && !proto.IsVarArg && !proto.JITDisabled {
 					proto.CallCount++
+					if proto.CallCount <= 64 {
+						argEnd := newBase + nArgs
+						if newBase >= 0 && argEnd >= newBase && argEnd <= len(vm.regs) {
+							proto.ObserveArgArrayElementShapes(vm.regs[newBase:argEnd])
+						}
+					}
 					if compiled := vm.methodJIT.TryCompile(proto); compiled != nil {
 						results, err := vm.executeMethodJIT(compiled, vm.regs, newBase, proto)
 						if err == errCoroutineYield {

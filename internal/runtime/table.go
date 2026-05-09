@@ -350,6 +350,16 @@ func (t *Table) SkeysLen() int {
 	return len(t.skeys)
 }
 
+// ShapeFieldNames returns the ordered string-field names for the table's
+// current small-table shape. The returned slice is a copy so profiling code can
+// safely retain it across later table mutations.
+func (t *Table) ShapeFieldNames() []string {
+	if t == nil || t.shapeID == 0 || len(t.skeys) == 0 {
+		return nil
+	}
+	return append([]string(nil), t.skeys...)
+}
+
 // SvalsGet returns the value at index i in the svals slice.
 // Used by the SSA interpreter (golden model) to access fields by index.
 func (t *Table) SvalsGet(i int) Value {

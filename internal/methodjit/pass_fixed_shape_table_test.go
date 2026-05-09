@@ -379,3 +379,86 @@ result := driver()
 		t.Fatalf("arg fact did not retain entry-guard strength: %#v vs %#v", got, fact)
 	}
 }
+
+func TestFixedShapeTableFactsPass_SeedsGuardedArrayElementArgumentFactInCallee(t *testing.T) {
+	top := compileProto(t, `
+func makeDoc(i) {
+    return {id: i, score: i + 1}
+}
+func buildDocs(n) {
+    docs := {}
+    for i := 1; i <= n; i++ {
+        docs[i] = makeDoc(i)
+    }
+    return docs
+}
+func walk(docs, n) {
+    total := 0
+    for i := 1; i <= n; i++ {
+        doc := docs[i]
+        total = total + doc.id + doc.score
+    }
+    return total
+}
+func driver() {
+    return walk(buildDocs(10), 10)
+}
+result := driver()
+`)
+	makeDoc := findProtoByName(top, "makeDoc")
+	buildDocs := findProtoByName(top, "buildDocs")
+	walk := findProtoByName(top, "walk")
+	driver := findProtoByName(top, "driver")
+	if makeDoc == nil || buildDocs == nil || walk == nil || driver == nil {
+		t.Fatalf("expected makeDoc/buildDocs/walk/driver protos, got makeDoc=%v buildDocs=%v walk=%v driver=%v",
+			makeDoc != nil, buildDocs != nil, walk != nil, driver != nil)
+	}
+	globals := map[string]*vm.FuncProto{
+		"makeDoc":   makeDoc,
+		"buildDocs": buildDocs,
+		"walk":      walk,
+		"driver":    driver,
+	}
+
+	elemFact, ok := AnalyzeFixedShapeArrayElementReturnFact(buildDocs, globals)
+	if !ok {
+		t.Fatal("expected buildDocs to return an array with fixed-shape elements")
+	}
+	if elemFact.ShapeID == 0 || len(elemFact.FieldNames) != 2 {
+		t.Fatalf("unexpected array element fact: %#v", elemFact)
+	}
+
+	argFacts := inferGuardedFixedShapeArrayElementArgFactsForProto(walk, globals)
+	if len(argFacts) != 1 {
+		t.Fatalf("expected one guarded array element arg fact for walk(docs), got %#v", argFacts)
+	}
+	if fact := argFacts[0]; !fact.Guarded || fact.ShapeID == 0 || len(fact.FieldFacts) != 0 {
+		t.Fatalf("unexpected guarded array element arg fact: %#v", fact)
+	}
+
+	fn := BuildGraph(walk)
+	out, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals:                  globals,
+		InlineMaxSize:                  1,
+		FixedShapeArrayElementArgFacts: argFacts,
+	})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(walk): %v", err)
+	}
+
+	annotated := 0
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGetField {
+				continue
+			}
+			if instr.Aux2 == 0 {
+				t.Fatalf("array element GetField was not annotated with guarded shape\nIR:\n%s", Print(out))
+			}
+			annotated++
+		}
+	}
+	if annotated != 2 {
+		t.Fatalf("expected two annotated array element field reads, got %d\nIR:\n%s", annotated, Print(out))
+	}
+}

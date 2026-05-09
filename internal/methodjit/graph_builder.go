@@ -1203,6 +1203,10 @@ func feedbackToIRType(fb vm.FeedbackType) (Type, bool) {
 		return TypeInt, true
 	case vm.FBTable:
 		return TypeTable, true
+	case vm.FBBool:
+		return TypeBool, true
+	case vm.FBString:
+		return TypeString, true
 	default:
 		return TypeAny, false
 	}

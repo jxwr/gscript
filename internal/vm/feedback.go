@@ -178,6 +178,129 @@ type CallSiteFeedback struct {
 	StringArgs         [MaxCallSiteFeedbackArgs]string
 }
 
+const (
+	ArgArrayElementShapePolymorphic uint8 = 1 << iota
+	ArgArrayElementShapeInvalid
+)
+
+// ArgArrayElementShapeFeedback records the stable shape of table values stored
+// in an array argument's first element. It is intentionally conservative: the
+// optimized callee still guards each loaded element before consuming the fact.
+type ArgArrayElementShapeFeedback struct {
+	Count      uint32
+	ShapeID    uint32
+	FieldNames []string
+	FieldTypes map[string]FeedbackType
+	Nested     map[string]ArgArrayElementShapeFeedback
+	Flags      uint8
+}
+
+// ArgArrayElementShapeFeedbackVector is per-parameter runtime argument shape
+// feedback, populated at function entry before Tier 2 compilation.
+type ArgArrayElementShapeFeedbackVector []ArgArrayElementShapeFeedback
+
+func (af *ArgArrayElementShapeFeedback) Observe(arg runtime.Value) {
+	if af == nil {
+		return
+	}
+	if !arg.IsTable() {
+		af.Count++
+		af.Flags |= ArgArrayElementShapeInvalid
+		return
+	}
+	elem := arg.Table().RawGetInt(1)
+	if !elem.IsTable() {
+		af.Count++
+		af.Flags |= ArgArrayElementShapeInvalid
+		return
+	}
+	tbl := elem.Table()
+	shapeID := tbl.ShapeID()
+	fields := tbl.ShapeFieldNames()
+	if shapeID == 0 || len(fields) == 0 {
+		af.Count++
+		af.Flags |= ArgArrayElementShapeInvalid
+		return
+	}
+	if af.Count == 0 {
+		af.ShapeID = shapeID
+		af.FieldNames = fields
+	} else if af.ShapeID != shapeID || !sameStringList(af.FieldNames, fields) {
+		af.Flags |= ArgArrayElementShapePolymorphic
+	}
+	af.observeFieldTypes(tbl, fields)
+	af.observeNestedTables(tbl, fields)
+	af.Count++
+}
+
+func (af ArgArrayElementShapeFeedback) StableShape() (shapeID uint32, fieldNames []string, ok bool) {
+	if af.Count == 0 || af.Flags&(ArgArrayElementShapePolymorphic|ArgArrayElementShapeInvalid) != 0 {
+		return 0, nil, false
+	}
+	if af.ShapeID == 0 || len(af.FieldNames) == 0 {
+		return 0, nil, false
+	}
+	return af.ShapeID, af.FieldNames, true
+}
+
+func (af *ArgArrayElementShapeFeedback) observeFieldTypes(tbl *runtime.Table, fields []string) {
+	if af == nil || tbl == nil || len(fields) == 0 {
+		return
+	}
+	if af.FieldTypes == nil {
+		af.FieldTypes = make(map[string]FeedbackType, len(fields))
+	}
+	for _, field := range fields {
+		value := tbl.RawGetString(field)
+		ft := af.FieldTypes[field]
+		ft.Observe(value.Type())
+		af.FieldTypes[field] = ft
+	}
+}
+
+func (af *ArgArrayElementShapeFeedback) observeNestedTables(tbl *runtime.Table, fields []string) {
+	if af == nil || tbl == nil || len(fields) == 0 {
+		return
+	}
+	for _, field := range fields {
+		value := tbl.RawGetString(field)
+		if !value.IsTable() {
+			continue
+		}
+		nestedTable := value.Table()
+		shapeID := nestedTable.ShapeID()
+		nestedFields := nestedTable.ShapeFieldNames()
+		if shapeID == 0 || len(nestedFields) == 0 {
+			continue
+		}
+		if af.Nested == nil {
+			af.Nested = make(map[string]ArgArrayElementShapeFeedback)
+		}
+		nested := af.Nested[field]
+		if nested.Count == 0 {
+			nested.ShapeID = shapeID
+			nested.FieldNames = nestedFields
+		} else if nested.ShapeID != shapeID || !sameStringList(nested.FieldNames, nestedFields) {
+			nested.Flags |= ArgArrayElementShapePolymorphic
+		}
+		nested.observeFieldTypes(nestedTable, nestedFields)
+		nested.Count++
+		af.Nested[field] = nested
+	}
+}
+
+func sameStringList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // ObserveKind records an array kind observation. Monotonic like Observe:
 // Unobserved -> concrete kind -> Polymorphic.
 func (tf *TypeFeedback) ObserveKind(arrayKind uint8) {
