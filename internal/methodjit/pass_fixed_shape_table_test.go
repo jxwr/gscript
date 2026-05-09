@@ -465,6 +465,9 @@ result := driver()
 	if annotated != 2 {
 		t.Fatalf("expected two annotated array element field reads, got %d\nIR:\n%s", annotated, Print(out))
 	}
+	if got := countOps(out)[OpTableArrayLoad]; got == 0 {
+		t.Fatalf("guarded array element fact should feed mixed array lowering:\n%s", Print(out))
+	}
 }
 
 func TestFixedShapeTableFactsPass_SeedsProfiledArrayElementFieldRanges(t *testing.T) {

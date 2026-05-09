@@ -201,6 +201,9 @@ func seedGuardedFixedShapeArrayElementArgFacts(fn *Function, facts map[int]Fixed
 			if instr.Type == TypeAny || instr.Type == TypeUnknown {
 				instr.Type = TypeTable
 			}
+			if tableKeyProvenInt(instr.Args[1]) && instr.Aux2 == 0 {
+				instr.Aux2 = int64(vm.FBKindMixed)
+			}
 			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
 				fmt.Sprintf("parameter %d array element carries guarded fixed table shape %v", tableDef.Aux, fact.FieldNames))
 		}
@@ -230,6 +233,9 @@ func seedGuardedPolyShapeArrayElementArgFacts(fn *Function, facts map[int]FixedS
 				valueFacts[instr.ID] = poly
 				if instr.Type == TypeAny || instr.Type == TypeUnknown {
 					instr.Type = TypeTable
+				}
+				if tableKeyProvenInt(instr.Args[1]) && instr.Aux2 == 0 {
+					instr.Aux2 = int64(vm.FBKindMixed)
 				}
 				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
 					fmt.Sprintf("parameter %d array element carries %d guarded polymorphic shapes", tableDef.Aux, len(poly)))
