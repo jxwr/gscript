@@ -601,6 +601,71 @@ func (ec *emitContext) emitGetFieldNumToFloat(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitFieldSvals(instr *Instr) {
+	if instr == nil || len(instr.Args) == 0 {
+		return
+	}
+	shapeID := uint32(instr.Aux)
+	if shapeID == 0 {
+		ec.emitDeopt(instr)
+		return
+	}
+	deoptLabel := ec.uniqueLabel("field_svals_deopt")
+	doneLabel := ec.uniqueLabel("field_svals_done")
+	ec.emitPrepareFieldTablePtr(instr.Args[0].ID, shapeID, deoptLabel)
+	ec.asm.LDR(jit.X0, jit.X0, jit.TableOffSvals)
+	ec.storeRawFieldSvalsPtr(jit.X0, instr.ID)
+	ec.asm.B(doneLabel)
+
+	ec.asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	ec.asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitFieldLoad(instr *Instr) {
+	if instr == nil || len(instr.Args) == 0 {
+		return
+	}
+	fieldIdx := int(instr.Aux)
+	if fieldIdx < 0 {
+		ec.emitDeopt(instr)
+		return
+	}
+	svals := ec.resolveRawFieldSvalsPtr(instr.Args[0].ID, jit.X1)
+	ec.asm.LDR(jit.X0, svals, fieldIdx*jit.ValueSize)
+	if instr.Type == TypeFloat || instr.Type == TypeInt {
+		typeDeoptLabel := ec.uniqueLabel("field_load_type_deopt")
+		doneLabel := ec.uniqueLabel("field_load_done")
+		ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
+		ec.asm.B(doneLabel)
+		ec.asm.Label(typeDeoptLabel)
+		ec.emitDeopt(instr)
+		ec.asm.Label(doneLabel)
+		return
+	}
+	ec.emitStoreTypedFieldLoad(instr, jit.X0, "")
+}
+
+func (ec *emitContext) emitFieldLoadNumToFloat(instr *Instr) {
+	if instr == nil || len(instr.Args) == 0 {
+		return
+	}
+	fieldIdx := int(instr.Aux)
+	if fieldIdx < 0 {
+		ec.emitDeopt(instr)
+		return
+	}
+	svals := ec.resolveRawFieldSvalsPtr(instr.Args[0].ID, jit.X1)
+	ec.asm.LDR(jit.X0, svals, fieldIdx*jit.ValueSize)
+	typeDeoptLabel := ec.uniqueLabel("field_load_num_deopt")
+	doneLabel := ec.uniqueLabel("field_load_num_done")
+	ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
+	ec.asm.B(doneLabel)
+	ec.asm.Label(typeDeoptLabel)
+	ec.emitDeopt(instr)
+	ec.asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typeDeoptLabel string) {
 	if instr.Type == TypeFloat {
 		ec.asm.LSRimm(jit.X2, valReg, 48)
@@ -811,7 +876,7 @@ func (ec *emitContext) setFieldValueMayBeRawFloat(v *Value) bool {
 		return true
 	}
 	switch v.Def.Op {
-	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA, OpFMSUB, OpGetFieldNumToFloat, OpNumToFloat:
+	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA, OpFMSUB, OpGetFieldNumToFloat, OpFieldLoadNumToFloat, OpNumToFloat:
 		return true
 	default:
 		return false

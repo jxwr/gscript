@@ -157,6 +157,15 @@ const (
 	// It preserves NumToFloat semantics: int and float fields become raw
 	// float64, while non-numeric fields deopt.
 	OpGetFieldNumToFloat
+	// Fixed-shape field lowering:
+	//   OpFieldSvals(table) -> raw pointer to table.svals after a shape guard
+	//   OpFieldLoad(svals) -> svals[fieldIndex]
+	//   OpFieldLoadNumToFloat(svals) -> numeric svals[fieldIndex] as float
+	// This lets multiple fixed-shape field loads share one guard and keep the
+	// svals pointer as an allocatable SSA value across arithmetic.
+	OpFieldSvals
+	OpFieldLoad
+	OpFieldLoadNumToFloat
 	OpSetField // Args[0].field = Args[1]; Aux = constant pool index
 	OpSetList  // table.setlist(Args[0], Args[1:])
 	OpAppend   // table.insert(Args[0], Args[1])
@@ -306,6 +315,9 @@ var opNames = [...]string{
 	OpTableArrayNestedLoad:       "TableNestedLoad",
 	OpGetField:                   "GetField",
 	OpGetFieldNumToFloat:         "GetFieldNumToFloat",
+	OpFieldSvals:                 "FieldSvals",
+	OpFieldLoad:                  "FieldLoad",
+	OpFieldLoadNumToFloat:        "FieldLoadNumToFloat",
 	OpSetField:                   "SetField",
 	OpSetList:                    "SetList",
 	OpAppend:                     "Append",

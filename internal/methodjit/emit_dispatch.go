@@ -237,6 +237,12 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitGetField(instr)
 	case OpGetFieldNumToFloat:
 		ec.emitGetFieldNumToFloat(instr)
+	case OpFieldSvals:
+		ec.emitFieldSvals(instr)
+	case OpFieldLoad:
+		ec.emitFieldLoad(instr)
+	case OpFieldLoadNumToFloat:
+		ec.emitFieldLoadNumToFloat(instr)
 	case OpSetField:
 		ec.emitSetField(instr)
 		ec.clearTableArrayBoundedKeys()

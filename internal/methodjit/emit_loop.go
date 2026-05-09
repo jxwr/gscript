@@ -750,14 +750,14 @@ func isRawTablePtrOp(op Op) bool {
 }
 
 func isRawDataPtrOp(op Op) bool {
-	return op == OpTableArrayData
+	return op == OpTableArrayData || op == OpFieldSvals
 }
 
 // isRawFloatOp returns true if the op produces a raw float64 result
 // (stored via storeRawFloat in an FPR).
 func isRawFloatOp(op Op) bool {
 	switch op {
-	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpNumToFloat, OpGetFieldNumToFloat, OpFMA, OpFMSUB:
+	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpNumToFloat, OpGetFieldNumToFloat, OpFieldLoadNumToFloat, OpFMA, OpFMSUB:
 		return true
 	default:
 		return false

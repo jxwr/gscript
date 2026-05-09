@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
 )
 
 // IntrinsicPass detects math.sqrt(x) (and similar one-arg numeric intrinsics)
@@ -88,10 +89,18 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 					notes = append(notes, "intrinsic: string.format(pattern,int) -> StringFormatInt")
 					continue
 				}
+				if lowerStringFormatProfiledConst(fn, instr) {
+					notes = append(notes, "intrinsic: profiled string.format(stable-pattern,...) -> StringFormatConst")
+					continue
+				}
 			}
 			if moduleName == "string" && fieldName == "format" && len(instr.Args) > 3 {
 				if lowerStringFormatConst(fn, instr) {
 					notes = append(notes, "intrinsic: string.format(const-pattern,...) -> StringFormatConst")
+					continue
+				}
+				if lowerStringFormatProfiledConst(fn, instr) {
+					notes = append(notes, "intrinsic: profiled string.format(stable-pattern,...) -> StringFormatConst")
 					continue
 				}
 			}
@@ -425,6 +434,32 @@ func lowerStringFormatConst(fn *Function, instr *Instr) bool {
 	}
 	formatStr, ok := constString(fn, formatArg.Def.Aux)
 	if !ok {
+		return false
+	}
+	patternIdx := len(fn.StringFormatPatterns)
+	fn.StringFormatPatterns = append(fn.StringFormatPatterns, formatStr)
+	instr.Op = OpStringFormatConst
+	instr.Type = TypeString
+	instr.Aux = int64(patternIdx)
+	instr.Aux2 = int64(len(instr.Args))
+	return true
+}
+
+func lowerStringFormatProfiledConst(fn *Function, instr *Instr) bool {
+	if fn == nil || fn.Proto == nil || instr == nil || len(instr.Args) < 3 ||
+		!instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
+		return false
+	}
+	cf := fn.Proto.CallSiteFeedback[instr.SourcePC]
+	kind, data, stable := cf.StableCalleeNativeIdentity()
+	if !stable || kind != runtime.NativeKindStdStringFormat || data != uintptr(runtime.StdStringFormatIdentityPtr()) {
+		return false
+	}
+	if cf.Flags&vm.CallSiteArityPolymorphic != 0 || int(cf.NArgs) != len(instr.Args)-1 {
+		return false
+	}
+	formatStr, stable := cf.StableStringArg(0)
+	if !stable {
 		return false
 	}
 	patternIdx := len(fn.StringFormatPatterns)

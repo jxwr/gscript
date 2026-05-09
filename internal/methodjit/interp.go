@@ -933,6 +933,37 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			return nil, false, fmt.Errorf("IR interpreter: cannot convert missing field to float")
 		}
 
+	case OpFieldSvals:
+		tbl := s.val(instr.Args[0])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpFieldSvals: arg 0 not a table")
+		}
+		shapeID := uint32(instr.Aux)
+		if shapeID == 0 || tbl.Table().ShapeID() != shapeID {
+			return nil, false, fmt.Errorf("OpFieldSvals: shape mismatch")
+		}
+		s.values[instr.ID] = tbl
+
+	case OpFieldLoad:
+		tbl := s.val(instr.Args[0])
+		fieldIdx := int(instr.Aux)
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpFieldLoad: arg 0 not a table")
+		}
+		s.values[instr.ID] = tbl.Table().SvalsGet(fieldIdx)
+
+	case OpFieldLoadNumToFloat:
+		tbl := s.val(instr.Args[0])
+		fieldIdx := int(instr.Aux)
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpFieldLoadNumToFloat: arg 0 not a table")
+		}
+		val := tbl.Table().SvalsGet(fieldIdx)
+		if !val.IsNumber() {
+			return nil, false, fmt.Errorf("IR interpreter: cannot convert indexed field to float")
+		}
+		s.values[instr.ID] = runtime.FloatValue(val.Number())
+
 	case OpSetField:
 		tbl := s.val(instr.Args[0])
 		val := s.val(instr.Args[1])

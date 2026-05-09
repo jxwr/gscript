@@ -252,6 +252,17 @@ func (ec *emitContext) resolveRawDataPtr(valueID int, scratch jit.Reg) jit.Reg {
 	return scratch
 }
 
+func (ec *emitContext) resolveRawFieldSvalsPtr(valueID int, scratch jit.Reg) jit.Reg {
+	if ec.hasReg(valueID) {
+		switch ec.valueReprOf(valueID) {
+		case valueReprRawFieldSvalsPtr, valueReprRawDataPtr, valueReprRawInt:
+			return ec.physReg(valueID)
+		}
+	}
+	ec.loadValue(scratch, valueID)
+	return scratch
+}
+
 // storeRawInt stores a raw int64 result to the allocated register (if any)
 // and marks it as containing a raw int (not NaN-boxed).
 // For cross-block values, writes NaN-boxed to memory.
@@ -314,6 +325,24 @@ func (ec *emitContext) storeRawDataPtr(srcReg jit.Reg, valueID int) {
 		ec.invalidateReg(pr.Reg, valueID)
 		ec.activeRegs[valueID] = true
 		ec.setValueRepr(valueID, valueReprRawDataPtr)
+		dstReg := jit.Reg(pr.Reg)
+		if srcReg != dstReg {
+			ec.asm.MOVreg(dstReg, srcReg)
+		}
+		if ec.crossBlockLive[valueID] && !ec.loopPhiOnlyArgs[valueID] && !ec.rawIntCarryNoStore[valueID] {
+			ec.storeValue(dstReg, valueID)
+		}
+		return
+	}
+	ec.storeValue(srcReg, valueID)
+}
+
+func (ec *emitContext) storeRawFieldSvalsPtr(srcReg jit.Reg, valueID int) {
+	pr, ok := ec.alloc.ValueRegs[valueID]
+	if ok && !pr.IsFloat {
+		ec.invalidateReg(pr.Reg, valueID)
+		ec.activeRegs[valueID] = true
+		ec.setValueRepr(valueID, valueReprRawFieldSvalsPtr)
 		dstReg := jit.Reg(pr.Reg)
 		if srcReg != dstReg {
 			ec.asm.MOVreg(dstReg, srcReg)

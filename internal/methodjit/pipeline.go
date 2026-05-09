@@ -647,6 +647,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = FieldSvalsLowerPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("FieldSvalsLower: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = TableArrayStoreLowerPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("TableArrayStoreLower: %w", err)

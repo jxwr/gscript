@@ -573,6 +573,68 @@ func label(prefix, n, suffix, code) {
 	}
 }
 
+func TestTier2_StringFormatProfiledDynamicPatternLowersToConstPath(t *testing.T) {
+	src := `
+func dyn(pattern, prefix, n, code) {
+    return string.format(pattern, prefix, n, code)
+}
+`
+	args := []runtime.Value{
+		runtime.StringValue("%s:%04d:%d"),
+		runtime.StringValue("route"),
+		runtime.IntValue(12),
+		runtime.IntValue(-5),
+	}
+	want := requireOneString(t, "VM", runStringFuncVM(t, src, "dyn", args))
+
+	top := compileTop(t, src)
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	fn := v.GetGlobal("dyn")
+	for i := 0; i < 8; i++ {
+		if _, err := v.CallValue(fn, args); err != nil {
+			t.Fatalf("warm dyn: %v", err)
+		}
+	}
+	proto := findProtoByName(top, "dyn")
+	if proto == nil {
+		t.Fatal("proto dyn not found")
+	}
+	proto.EnsureFeedback()
+	for i := 0; i < 8; i++ {
+		if _, err := v.CallValue(fn, args); err != nil {
+			t.Fatalf("warm dyn feedback: %v", err)
+		}
+	}
+	optimized, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	if got := countOpHelper(optimized, OpStringFormatConst); got != 1 {
+		t.Fatalf("profiled dynamic pattern should lower to StringFormatConst, got %d feedback=%+v\n%s", got, proto.CallSiteFeedback, Print(optimized))
+	}
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(dyn): %v", err)
+	}
+	gotValues, err := v.CallValue(fn, args)
+	if err != nil {
+		t.Fatalf("Tier2 dyn: %v", err)
+	}
+	got := requireOneString(t, "Tier2", gotValues)
+	if got != want {
+		t.Fatalf("dyn Tier2=%q, want VM=%q", got, want)
+	}
+	if exits := tm.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
+		t.Fatalf("profiled StringFormatConst should avoid call exits, ExitCallExit=%d", exits)
+	}
+}
+
 func TestTier2_StringCompareFastPath_MatchesVM(t *testing.T) {
 	src := `
 func sort_last() {

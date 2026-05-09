@@ -251,6 +251,18 @@ func (v *validator) checkOpContracts() {
 				}
 			case OpGuardCalleeProto, OpGuardNonNil, OpGuardTruthy:
 				v.checkArgCount(blk, instr, 1, 1)
+			case OpFieldSvals:
+				v.checkArgCount(blk, instr, 1, 1)
+				if instr.Aux <= 0 {
+					v.errorf("B%d: FieldSvals (v%d) must carry a positive shape id in Aux, got %d",
+						blk.ID, instr.ID, instr.Aux)
+				}
+			case OpFieldLoad, OpFieldLoadNumToFloat:
+				v.checkArgCount(blk, instr, 1, 1)
+				if instr.Aux < 0 {
+					v.errorf("B%d: %s (v%d) must carry a non-negative field index in Aux, got %d",
+						blk.ID, instr.Op, instr.ID, instr.Aux)
+				}
 			}
 		}
 	}

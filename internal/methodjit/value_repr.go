@@ -14,6 +14,7 @@ const (
 	valueReprRawFloat
 	valueReprRawTablePtr
 	valueReprRawDataPtr
+	valueReprRawFieldSvalsPtr
 )
 
 func (r valueRepr) String() string {
@@ -28,6 +29,8 @@ func (r valueRepr) String() string {
 		return "raw-table-ptr"
 	case valueReprRawDataPtr:
 		return "raw-data-ptr"
+	case valueReprRawFieldSvalsPtr:
+		return "raw-field-svals-ptr"
 	default:
 		return "unknown"
 	}
@@ -52,6 +55,9 @@ func (ec *emitContext) setValueRepr(valueID int, repr valueRepr) {
 		ec.rawTablePtrRegs[valueID] = true
 		delete(ec.rawIntRegs, valueID)
 	case valueReprRawDataPtr:
+		delete(ec.rawIntRegs, valueID)
+		delete(ec.rawTablePtrRegs, valueID)
+	case valueReprRawFieldSvalsPtr:
 		delete(ec.rawIntRegs, valueID)
 		delete(ec.rawTablePtrRegs, valueID)
 	default:
@@ -142,6 +148,9 @@ func (ec *emitContext) emitStoreGPRValueAsBoxed(valueID int, reg jit.Reg, slot i
 	case valueReprRawDataPtr:
 		ec.asm.STR(reg, mRegRegs, slotOffset(slot))
 		ec.emitExitResumeCheckShadowStoreGPR(slot, reg)
+	case valueReprRawFieldSvalsPtr:
+		ec.asm.STR(reg, mRegRegs, slotOffset(slot))
+		ec.emitExitResumeCheckShadowStoreGPR(slot, reg)
 	default:
 		ec.asm.STR(reg, mRegRegs, slotOffset(slot))
 		ec.emitExitResumeCheckShadowStoreGPR(slot, reg)
@@ -161,6 +170,8 @@ func (ec *emitContext) emitReloadGPRValueFromBoxed(valueID int, reg jit.Reg, slo
 		ec.clearValueRepr(valueID)
 	case valueReprRawDataPtr:
 		ec.setValueRepr(valueID, valueReprRawDataPtr)
+	case valueReprRawFieldSvalsPtr:
+		ec.setValueRepr(valueID, valueReprRawFieldSvalsPtr)
 	default:
 		ec.setValueRepr(valueID, valueReprBoxed)
 	}
