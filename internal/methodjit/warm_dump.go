@@ -56,6 +56,7 @@ type WarmDumpRecord struct {
 	InsnHistogram       map[string]int
 	DirectEntryOff      int
 	NumSpills           int
+	TypedPeerFramePlan  Tier2TypedPeerFramePlan
 	CompileErr          string
 }
 
@@ -83,6 +84,7 @@ type warmDumpProtoManifest struct {
 	CodeEnd             string                     `json:"code_end,omitempty"`
 	DirectEntryOff      int                        `json:"direct_entry_offset,omitempty"`
 	NumSpills           int                        `json:"num_spills,omitempty"`
+	TypedPeerFramePlan  Tier2TypedPeerFramePlan    `json:"typed_peer_frame_plan,omitempty"`
 	OptimizationRemarks []OptimizationRemark       `json:"optimization_remarks,omitempty"`
 	Specialization      Tier2SpecializationSummary `json:"specialization,omitempty"`
 	LoopDiagnostics     []LoopDiagnostic           `json:"loop_diagnostics,omitempty"`
@@ -211,6 +213,7 @@ func (s *WarmDumpSession) record(proto *vm.FuncProto, trace *Tier2Trace, cf *Com
 	if cf != nil {
 		rec.DirectEntryOff = cf.DirectEntryOffset
 		rec.NumSpills = cf.NumSpills
+		rec.TypedPeerFramePlan = cf.TypedPeerFramePlan
 		rec.CompiledCode = make([]byte, cf.Code.Size())
 		copy(rec.CompiledCode, unsafeCodeSlice(cf))
 		rec.CodeStart = uintptr(cf.Code.Ptr())
@@ -381,6 +384,7 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 			}
 			protoManifest.DirectEntryOff = rec.DirectEntryOff
 			protoManifest.NumSpills = rec.NumSpills
+			protoManifest.TypedPeerFramePlan = rec.TypedPeerFramePlan
 			protoManifest.OptimizationRemarks = append([]OptimizationRemark(nil), rec.OptimizationRemarks...)
 			protoManifest.Specialization = rec.Specialization
 			protoManifest.LoopDiagnostics = append([]LoopDiagnostic(nil), rec.LoopDiagnostics...)

@@ -12,8 +12,8 @@ import (
 // can have a valid typed table/int ABI while still requiring the conservative
 // full frame for register preservation and runtime unwinding.
 type Tier2TypedPeerFramePlan struct {
-	CanUseThinEntry bool
-	Reasons         []string
+	CanUseThinEntry bool     `json:"can_use_thin_entry"`
+	Reasons         []string `json:"reasons,omitempty"`
 }
 
 func AnalyzeTypedPeerFramePlan(fn *Function, alloc *RegAllocation, abi TypedSelfABI) Tier2TypedPeerFramePlan {
