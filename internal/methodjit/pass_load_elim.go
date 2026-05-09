@@ -342,6 +342,20 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 						"typed array swap invalidated dynamic-key table cache")
 				}
 
+			case OpTableArraySwapPairs:
+				if len(instr.Args) < 1 || instr.Args[0] == nil {
+					continue
+				}
+				objID := instr.Args[0].ID
+				if invalidateDynamicTableCacheForObject(tableAvail, objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"typed array pair-swap kernel invalidated dynamic-key table cache")
+				}
+				if tableArrayFacts.InvalidateTable(objID) {
+					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
+						"typed array pair-swap kernel invalidated typed array facts")
+				}
+
 			case OpTableIntArrayReversePrefix:
 				if len(instr.Args) < 1 || instr.Args[0] == nil {
 					continue
@@ -531,7 +545,7 @@ func transferFieldFactInstr(facts map[loadKey]int, instr *Instr) map[loadKey]int
 		}
 		key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
 		facts[key] = instr.Args[1].ID
-	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableBoolArrayFill,
+	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs, OpTableBoolArrayFill,
 		OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix, OpAppend, OpSetList:
 		clearFieldFacts(facts)
 	case OpCall, OpResume, OpSelf:

@@ -687,6 +687,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = TableIntArrayKernelPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TableIntArrayKernel (post-swap-fusion): %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = DCEPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("DCE (post-LICM LoadElim): %w", err)
@@ -838,6 +844,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("FieldNumToFloatFusion", FieldNumToFloatFusionPass)
 	pipe.Add("LoadEliminationPostLICM", LoadEliminationPass)
 	pipe.Add("TableArraySwapFusion", TableArraySwapFusionPass)
+	pipe.Add("TableIntArrayKernelPostSwapFusion", TableIntArrayKernelPass)
 	pipe.Add("DCEPostLICM", DCEPass)
 	pipe.Add("UnrollAndJam", UnrollAndJamPass)
 	pipe.Add("QuadraticStepStrengthReduction", QuadraticStepStrengthReductionPass)

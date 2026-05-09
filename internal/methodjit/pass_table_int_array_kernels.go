@@ -66,6 +66,20 @@ func TableIntArrayKernelPass(fn *Function) (*Function, error) {
 			functionRemarks(fn).Add("TableIntArrayKernel", "changed", cand.preheader.ID, kernel.ID, kernel.Op,
 				"guarded prefix-copy loop with scalar fallback")
 		}
+		if cand, ok := tableArraySwapPairsCandidate(fn, header, li.headerBlocks[header.ID]); ok {
+			kernel := &Instr{
+				ID:    fn.newValueID(),
+				Op:    OpTableArraySwapPairs,
+				Type:  TypeBool,
+				Args:  []*Value{cand.table, cand.start, cand.hi},
+				Aux:   cand.kind,
+				Block: cand.preheader,
+			}
+			kernel.copySourceFrom(cand.source)
+			insertKernelBranch(cand.preheader, cand.exit, cand.header, kernel)
+			functionRemarks(fn).Add("TableIntArrayKernel", "changed", cand.preheader.ID, kernel.ID, kernel.Op,
+				"guarded adjacent pair-swap loop with scalar fallback")
+		}
 	}
 	return fn, nil
 }
@@ -79,6 +93,7 @@ func insertKernelBranch(preheader, success, fallback *Block, kernel *Instr) {
 	term.Aux = int64(success.ID)
 	term.Aux2 = int64(fallback.ID)
 	preheader.Succs = []*Block{success, fallback}
+	copyPhiArgsForNewPred(success, fallback, preheader)
 	addPredIfMissing(success, preheader)
 }
 
@@ -100,6 +115,18 @@ type tableIntArrayCopyPrefixLoop struct {
 	dst       *Value
 	src       *Value
 	hi        *Value
+	source    *Instr
+}
+
+type tableArraySwapPairsLoop struct {
+	header    *Block
+	preheader *Block
+	body      *Block
+	exit      *Block
+	table     *Value
+	start     *Value
+	hi        *Value
+	kind      int64
 	source    *Instr
 }
 
@@ -134,7 +161,7 @@ func tableIntArrayCopyPrefixCandidate(header *Block, bodySet map[int]bool) (tabl
 		return cand, false
 	}
 	body, exit := header.Succs[0], header.Succs[1]
-	if body == nil || exit == nil || !bodySet[body.ID] || blockStartsWithPhi(exit) {
+	if body == nil || exit == nil || !bodySet[body.ID] {
 		return cand, false
 	}
 	if len(body.Succs) != 1 || body.Succs[0] != header || blockTerminator(body) == nil || blockTerminator(body).Op != OpJump {
@@ -156,6 +183,113 @@ func tableIntArrayCopyPrefixCandidate(header *Block, bodySet map[int]bool) (tabl
 	cand.hi = hi
 	cand.source = match.source
 	return cand, true
+}
+
+func tableArraySwapPairsCandidate(fn *Function, header *Block, bodySet map[int]bool) (tableArraySwapPairsLoop, bool) {
+	var cand tableArraySwapPairsLoop
+	if fn == nil || header == nil || bodySet == nil {
+		return cand, false
+	}
+	preheader := tableArrayStoreLoopPreheader(header, bodySet)
+	if preheader == nil || blockTerminator(preheader) == nil || blockTerminator(preheader).Op != OpJump {
+		return cand, false
+	}
+	term := blockTerminator(header)
+	if term == nil || term.Op != OpBranch || len(term.Args) != 1 || len(header.Succs) != 2 {
+		return cand, false
+	}
+	cond := term.Args[0]
+	if cond == nil || cond.Def == nil || cond.Def.Op != OpLeInt || len(cond.Def.Args) != 2 {
+		return cand, false
+	}
+	idx := cond.Def.Args[0]
+	hi := cond.Def.Args[1]
+	if idx == nil || idx.Def == nil || idx.Def.Op != OpAddInt || len(idx.Def.Args) != 2 || hi == nil {
+		return cand, false
+	}
+	var phi *Value
+	if isHeaderPhi(idx.Def.Args[0], header) && isConstIntValue(idx.Def.Args[1], 2) {
+		phi = idx.Def.Args[0]
+	} else if isHeaderPhi(idx.Def.Args[1], header) && isConstIntValue(idx.Def.Args[0], 2) {
+		phi = idx.Def.Args[1]
+	} else {
+		return cand, false
+	}
+	body, exit := header.Succs[0], header.Succs[1]
+	if body == nil || exit == nil || !bodySet[body.ID] {
+		return cand, false
+	}
+	if len(body.Succs) != 1 || body.Succs[0] != header || blockTerminator(body) == nil || blockTerminator(body).Op != OpJump {
+		return cand, false
+	}
+	seed := phiArgForPred(phi.Def, header, preheader)
+	next := phiArgForPred(phi.Def, header, body)
+	if !sameSSAValue(next, idx) {
+		return cand, false
+	}
+	start, ok := constPlus(seed, 2)
+	if !ok {
+		return cand, false
+	}
+	match, ok := matchSwapPairsBody(body, idx)
+	if !ok {
+		return cand, false
+	}
+	startInstr := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpConstInt,
+		Type:  TypeInt,
+		Aux:   start,
+		Block: preheader,
+	}
+	insertBeforeTerminator(preheader, startInstr)
+	cand.header = header
+	cand.preheader = preheader
+	cand.body = body
+	cand.exit = exit
+	cand.table = match.table
+	cand.start = startInstr.Value()
+	cand.hi = hi
+	cand.kind = match.kind
+	cand.source = match.source
+	return cand, true
+}
+
+type swapPairsBodyMatch struct {
+	table  *Value
+	kind   int64
+	source *Instr
+}
+
+func matchSwapPairsBody(body *Block, idx *Value) (swapPairsBodyMatch, bool) {
+	var match swapPairsBodyMatch
+	var swap *Instr
+	for _, instr := range body.Instrs {
+		if instr == nil {
+			continue
+		}
+		switch instr.Op {
+		case OpTableArraySwap:
+			if swap != nil || len(instr.Args) < 5 || (instr.Aux != int64(vm.FBKindInt) && instr.Aux != int64(vm.FBKindFloat)) {
+				return match, false
+			}
+			if !sameSSAValue(instr.Args[3], idx) || !isAddOneOf(instr.Args[4], idx) {
+				return match, false
+			}
+			swap = instr
+		case OpAddInt, OpGuardTableKind, OpJump, OpNop:
+			continue
+		default:
+			return match, false
+		}
+	}
+	if swap == nil {
+		return match, false
+	}
+	match.table = swap.Args[0]
+	match.kind = swap.Aux
+	match.source = swap
+	return match, true
 }
 
 type copyPrefixBodyMatch struct {
@@ -197,7 +331,7 @@ func matchCopyPrefixBody(body *Block, bodySet map[int]bool, idx *Value) (copyPre
 				return match, false
 			}
 			store = instr
-		case OpAddInt, OpJump:
+		case OpAddInt, OpGuardTableKind, OpJump:
 			continue
 		default:
 			return match, false
@@ -336,7 +470,7 @@ func matchReversePrefixBody(body *Block, loPhi, hiPhi *Value) (reversePrefixBody
 			} else {
 				return match, false
 			}
-		case OpAddInt, OpSubInt, OpJump:
+		case OpAddInt, OpSubInt, OpGuardTableKind, OpJump:
 			continue
 		default:
 			return match, false
@@ -369,6 +503,13 @@ func isConstIntValue(v *Value, n int64) bool {
 	return v != nil && v.Def != nil && v.Def.Op == OpConstInt && v.Def.Aux == n
 }
 
+func constPlus(v *Value, delta int64) (int64, bool) {
+	if v == nil || v.Def == nil || v.Def.Op != OpConstInt {
+		return 0, false
+	}
+	return v.Def.Aux + delta, true
+}
+
 func isSubOneFrom(v, base *Value) bool {
 	return v != nil && v.Def != nil && v.Def.Op == OpSubInt && len(v.Def.Args) == 2 &&
 		sameSSAValue(v.Def.Args[0], base) && isConstIntValue(v.Def.Args[1], 1)
@@ -384,4 +525,23 @@ func addPredIfMissing(block, pred *Block) {
 		}
 	}
 	block.Preds = append(block.Preds, pred)
+}
+
+func copyPhiArgsForNewPred(block, existingPred, newPred *Block) {
+	if block == nil || existingPred == nil || newPred == nil || predIndex(block, newPred) >= 0 {
+		return
+	}
+	oldIdx := predIndex(block, existingPred)
+	if oldIdx < 0 {
+		return
+	}
+	for _, instr := range block.Instrs {
+		if instr == nil || instr.Op != OpPhi {
+			return
+		}
+		if oldIdx >= len(instr.Args) {
+			return
+		}
+		instr.Args = append(instr.Args, instr.Args[oldIdx])
+	}
 }

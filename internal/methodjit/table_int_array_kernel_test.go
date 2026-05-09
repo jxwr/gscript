@@ -44,6 +44,21 @@ func copy_local(n) {
     return dst[n]
 }
 
+func swap_pairs_local(n, reps) {
+    a := {}
+    for i := 1; i <= n; i++ {
+        a[i] = n - i + 1
+    }
+    for r := 1; r <= reps; r++ {
+        for i := 1; i < n; i = i + 2 {
+            t := a[i]
+            a[i] = a[i + 1]
+            a[i + 1] = t
+        }
+    }
+    return a[1]
+}
+
 func run() {
     sum := 0
     for r := 1; r <= 80; r++ {
@@ -59,7 +74,7 @@ func run() {
         b[4] = 0
         copy_prefix(b, a, 4)
         reverse_prefix(a, 4)
-        sum = sum + a[1] + b[4] + copy_local(4)
+        sum = sum + a[1] + b[4] + copy_local(4) + swap_pairs_local(8, 2)
     }
     return sum
 }
@@ -92,6 +107,13 @@ result := run()
 	}
 	if !strings.Contains(art.IRAfter, "TableIntArrayCopyPrefix") {
 		t.Fatalf("expected structural prefix-copy kernel in IR:\n%s", art.IRAfter)
+	}
+	art, err = NewTieringManager().CompileForDiagnostics(findProtoByName(top, "swap_pairs_local"))
+	if err != nil {
+		t.Fatalf("CompileForDiagnostics(swap_pairs_local): %v", err)
+	}
+	if !strings.Contains(art.IRAfter, "TableArraySwapPairs") {
+		t.Fatalf("expected structural adjacent pair-swap kernel in IR:\n%s", art.IRAfter)
 	}
 }
 
@@ -132,10 +154,26 @@ func copy_local(n) {
     return dst[n]
 }
 
+func swap_pairs_local(n, reps) {
+    a := {}
+    for i := 1; i <= n; i++ {
+        a[i] = n - i + 1
+    }
+    for r := 1; r <= reps; r++ {
+        for i := 1; i < n; i = i + 2 {
+            t := a[i]
+            a[i] = a[i + 1]
+            a[i + 1] = t
+        }
+    }
+    return a[1] + a[n]
+}
+
 sum := 0
 for r := 1; r <= 300; r++ {
     sum = sum + int_case(r)
     sum = sum + copy_local(4)
+    sum = sum + swap_pairs_local(8, 3)
 }
 
 mixed := {}

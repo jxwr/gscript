@@ -98,7 +98,7 @@ func analyzeLoopTableMutationRecovery(fn *Function) tableMutationRecoverySummary
 				if !tableMutationRecoveryClassAdmitted(site.RecoveryClass) && len(instr.Args) > 0 && instr.Args[0] != nil {
 					clearTableWitnesses(witnesses, instr.Args[0].ID)
 				}
-			case OpTableArraySwap:
+			case OpTableArraySwap, OpTableArraySwapPairs:
 				summary.Sites = append(summary.Sites, tableMutationRecoverySite{
 					InstrID:       instr.ID,
 					BlockID:       block.ID,

@@ -125,6 +125,11 @@ const (
 	// Replaces same-block load/load/store/store exchange patterns after the
 	// table kind/header/data facts have already been lowered.
 	OpTableArraySwap
+	// Guarded adjacent pair swap loop. Args = [table, start, hiFirst].
+	// Swaps (i, i+1) for i=start,start+2,...,hiFirst on an int/float typed
+	// array, or returns false without mutation so control can branch to the
+	// original scalar fallback.
+	OpTableArraySwapPairs
 	// Bulk bool-array fill. Args = [table, start, end] for contiguous fills or
 	// [table, start, end, step] for bounded stride fills. Aux = byte value
 	// (1=false, 2=true). The stride form uses a guarded bool-array kernel and
@@ -292,6 +297,7 @@ var opNames = [...]string{
 	OpTableArrayLoad:             "TableArrayLoad",
 	OpTableArrayStore:            "TableArrayStore",
 	OpTableArraySwap:             "TableArraySwap",
+	OpTableArraySwapPairs:        "TableArraySwapPairs",
 	OpTableBoolArrayFill:         "TableBoolArrayFill",
 	OpTableBoolArrayCount:        "TableBoolArrayCount",
 	OpTableIntArrayReversePrefix: "TableIntArrayReversePrefix",

@@ -773,6 +773,22 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		tbl.Table().RawSetInt(keyA.Int(), b)
 		tbl.Table().RawSetInt(keyB.Int(), a)
 
+	case OpTableArraySwapPairs:
+		tbl := s.val(instr.Args[0])
+		start := s.val(instr.Args[1])
+		hi := s.val(instr.Args[2])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableArraySwapPairs: arg 0 not a table")
+		}
+		t := tbl.Table()
+		for i := start.Int(); i <= hi.Int(); i += 2 {
+			a := t.RawGetInt(i)
+			b := t.RawGetInt(i + 1)
+			t.RawSetInt(i, b)
+			t.RawSetInt(i+1, a)
+		}
+		s.values[instr.ID] = runtime.BoolValue(true)
+
 	case OpTableBoolArrayFill:
 		tbl := s.val(instr.Args[0])
 		start := s.val(instr.Args[1])

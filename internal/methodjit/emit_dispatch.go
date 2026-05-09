@@ -217,6 +217,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitTableArrayStore(instr)
 	case OpTableArraySwap:
 		ec.emitTableArraySwap(instr)
+	case OpTableArraySwapPairs:
+		ec.emitTableArraySwapPairs(instr)
+		ec.clearTableArrayBoundedKeys()
 	case OpTableBoolArrayFill:
 		ec.emitTableBoolArrayFill(instr)
 		ec.clearTableArrayBoundedKeys()
@@ -344,7 +347,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpLtFloat, OpLeFloat,
 		OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
 		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardTruthy,
-		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableArrayStore, OpTableArraySwap,
+		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
 		OpNop:
 		return true
 	default:

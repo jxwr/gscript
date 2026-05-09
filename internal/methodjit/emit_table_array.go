@@ -784,6 +784,83 @@ func (ec *emitContext) emitTableArraySwap(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitTableArraySwapPairs(instr *Instr) {
+	if len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+	failLabel := ec.uniqueLabel("tarr_swappairs_fail")
+	successNoMutLabel := ec.uniqueLabel("tarr_swappairs_success_nomut")
+	successMutLabel := ec.uniqueLabel("tarr_swappairs_success_mut")
+	loopLabel := ec.uniqueLabel("tarr_swappairs_loop")
+	doneLabel := ec.uniqueLabel("tarr_swappairs_done")
+
+	tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	ec.emitTableIntArrayKernelKeyToReg(instr.Args[1], jit.X1, failLabel)
+	ec.emitTableIntArrayKernelKeyToReg(instr.Args[2], jit.X4, failLabel)
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, failLabel)
+	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	asm.CBZ(jit.X0, failLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffMetatable)
+	asm.CBNZ(jit.X2, failLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffLazyTree)
+	asm.CBNZ(jit.X2, failLabel)
+	asm.LDRB(jit.X2, jit.X0, jit.TableOffArrayKind)
+	var lenOff, dataOff int
+	switch instr.Aux {
+	case int64(vm.FBKindInt):
+		asm.CMPimm(jit.X2, jit.AKInt)
+		lenOff, dataOff = jit.TableOffIntArrayLen, jit.TableOffIntArray
+	case int64(vm.FBKindFloat):
+		asm.CMPimm(jit.X2, jit.AKFloat)
+		lenOff, dataOff = jit.TableOffFloatArrayLen, jit.TableOffFloatArray
+	default:
+		ec.emitDeopt(instr)
+		return
+	}
+	asm.BCond(jit.CondNE, failLabel)
+
+	asm.CMPreg(jit.X1, jit.X4)
+	asm.BCond(jit.CondGT, successNoMutLabel)
+	asm.CMPimm(jit.X1, 0)
+	asm.BCond(jit.CondLT, failLabel)
+	asm.LDR(jit.X3, jit.X0, lenOff)
+	asm.CMPreg(jit.X4, jit.X3)
+	asm.BCond(jit.CondGE, failLabel)
+	asm.ADDimm(jit.X5, jit.X4, 1)
+	asm.CMPreg(jit.X5, jit.X3)
+	asm.BCond(jit.CondGE, failLabel)
+	asm.LDR(jit.X6, jit.X0, dataOff)
+	asm.CBZ(jit.X6, failLabel)
+
+	asm.Label(loopLabel)
+	asm.CMPreg(jit.X1, jit.X4)
+	asm.BCond(jit.CondGT, successMutLabel)
+	asm.ADDimm(jit.X5, jit.X1, 1)
+	asm.LDRreg(jit.X7, jit.X6, jit.X1)
+	asm.LDRreg(jit.X8, jit.X6, jit.X5)
+	asm.STRreg(jit.X8, jit.X6, jit.X1)
+	asm.STRreg(jit.X7, jit.X6, jit.X5)
+	asm.ADDimm(jit.X1, jit.X1, 2)
+	asm.B(loopLabel)
+
+	asm.Label(successMutLabel)
+	asm.MOVimm16(jit.X7, 1)
+	asm.STRB(jit.X7, jit.X0, jit.TableOffKeysDirty)
+	asm.Label(successNoMutLabel)
+	asm.ADDimm(jit.X0, mRegTagBool, 1)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(failLabel)
+	asm.MOVreg(jit.X0, mRegTagBool)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.Label(doneLabel)
+}
+
 func tableArrayStoreNeedsTablePtr(kind, flags int64) bool {
 	return flags&tableArrayStoreFlagAllowGrow != 0 ||
 		kind == int64(vm.FBKindMixed) ||
