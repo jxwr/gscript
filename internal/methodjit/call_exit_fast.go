@@ -57,6 +57,10 @@ func callGoFunctionFast(gf *runtime.GoFunction, regs []runtime.Value, absSlot, n
 			return v, true, err
 		}
 	}
+	if gf.Fast1 != nil {
+		v, err := gf.Fast1(collectCallExitArgs(regs, absSlot, nArgs))
+		return v, true, err
+	}
 	return runtime.NilValue(), false, nil
 }
 

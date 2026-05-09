@@ -185,6 +185,16 @@ func TestStringFormatSimpleCachedTwoArgPattern(t *testing.T) {
 	}
 }
 
+func TestStringFormatSimpleCachedThreeArgPattern(t *testing.T) {
+	v, err := stringFormat4Value(StringValue("%s:%d:%05d"), StringValue("svc"), IntValue(3), IntValue(21))
+	if err != nil {
+		t.Fatalf("stringFormat4Value failed: %v", err)
+	}
+	if !v.IsString() || v.Str() != "svc:3:00021" {
+		t.Fatalf("expected svc:3:00021, got %v", v)
+	}
+}
+
 func TestStringFormatSingleIntegerResultCacheReusesValue(t *testing.T) {
 	prog, ok, err := compileSimpleFormat("SKU%05d")
 	if err != nil || !ok {

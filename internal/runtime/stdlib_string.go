@@ -418,6 +418,7 @@ func buildStringLib() *Table {
 		gf := v.GoFunction()
 		gf.FastArg2 = stringFormat2Value
 		gf.FastArg3 = stringFormat3Value
+		gf.FastArg4 = stringFormat4Value
 		gf.NativeKind = NativeKindStdStringFormat
 		gf.NativeData = StdStringFormatIdentityPtr()
 	}
@@ -1146,6 +1147,27 @@ func stringFormat3Value(format, arg0, arg1 Value) (Value, error) {
 	return stringFormatValue(args[:])
 }
 
+func stringFormat4Value(format, arg0, arg1, arg2 Value) (Value, error) {
+	if !format.IsString() {
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.format' (string expected)")
+	}
+	formatStr := format.Str()
+	if prog, ok, err := cachedSimpleFormat(formatStr); err != nil {
+		return NilValue(), err
+	} else if ok && prog.minArgs == 4 {
+		RecordRuntimePathStringFormatFast()
+		args := [3]Value{arg0, arg1, arg2}
+		s, err := prog.formatFixedArgs(args[:])
+		if err != nil {
+			return NilValue(), err
+		}
+		return StringValue(s), nil
+	}
+	RecordRuntimePathStringFormatFallback()
+	args := [4]Value{format, arg0, arg1, arg2}
+	return stringFormatValue(args[:])
+}
+
 // IsStdStringFormatFunction reports whether v is the stdlib string.format
 // GoFunction installed by buildStringLib. This is intentionally an identity
 // style guard for JIT fast paths: scripts cannot create GoFunction values.
@@ -1639,6 +1661,35 @@ func (p *simpleFormatProgram) formatTwoArgs(arg0, arg1 Value) (string, error) {
 		default:
 			return "", fmt.Errorf("bad argument #%d to 'string.format' (no value)", argIdx+2)
 		}
+		argIdx++
+		switch part.verb {
+		case 'd', 'i', 'u', 'x', 'X', 'o':
+			writeCompiledIntegerFormat(&buf, part, toInt(arg))
+		case 'f':
+			writeCompiledFloatFormat(&buf, part, toFloat(arg))
+		case 's':
+			buf.WriteString(arg.String())
+		}
+	}
+	return buf.String(), nil
+}
+
+func (p *simpleFormatProgram) formatFixedArgs(args []Value) (string, error) {
+	if len(args)+1 < p.minArgs {
+		return "", fmt.Errorf("bad argument #%d to 'string.format' (no value)", len(args)+2)
+	}
+	var buf strings.Builder
+	buf.Grow(p.litBytes + 16*len(args))
+	argIdx := 0
+	for _, part := range p.parts {
+		if part.verb == 0 {
+			buf.WriteString(part.lit)
+			continue
+		}
+		if argIdx >= len(args) {
+			return "", fmt.Errorf("bad argument #%d to 'string.format' (no value)", argIdx+2)
+		}
+		arg := args[argIdx]
 		argIdx++
 		switch part.verb {
 		case 'd', 'i', 'u', 'x', 'X', 'o':

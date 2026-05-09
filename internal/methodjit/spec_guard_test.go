@@ -189,6 +189,36 @@ func TestCallExitFastHelpersIgnoreNegativeSlots(t *testing.T) {
 		t.Fatalf("callGoFunctionFast ok=%v err=%v, want false nil", ok, err)
 	}
 
+	genericCalls := 0
+	generic := &runtime.GoFunction{
+		Fast1: func(args []runtime.Value) (runtime.Value, error) {
+			genericCalls++
+			if len(args) != 5 {
+				t.Fatalf("generic fast args len=%d, want 5", len(args))
+			}
+			sum := int64(0)
+			for _, arg := range args {
+				if arg.IsInt() {
+					sum += arg.Int()
+				}
+			}
+			return runtime.IntValue(sum), nil
+		},
+	}
+	regs = []runtime.Value{
+		runtime.NilValue(),
+		runtime.IntValue(1),
+		runtime.IntValue(2),
+		runtime.IntValue(3),
+		runtime.IntValue(4),
+		runtime.IntValue(5),
+	}
+	v, ok, err := callGoFunctionFast(generic, regs, 0, 5)
+	if err != nil || !ok || !v.IsInt() || v.Int() != 15 || genericCalls != 1 {
+		t.Fatalf("generic callGoFunctionFast v=%s ok=%v err=%v calls=%d, want 15 true nil 1",
+			v.String(), ok, err, genericCalls)
+	}
+
 	storeCallExitSingleResult(regs, -1, 2, runtime.IntValue(9))
 	if !regs[0].IsNil() {
 		t.Fatalf("regs[0]=%s, want nil second return write", regs[0].String())
