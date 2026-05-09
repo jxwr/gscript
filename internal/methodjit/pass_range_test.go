@@ -8,6 +8,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -772,5 +773,42 @@ func TestRangePass_ModIntFactsStayConservative(t *testing.T) {
 	}
 	if got.IntModNoSignAdjust[unknownDivisor.ID] {
 		t.Fatalf("unknown divisor sign must keep Lua sign-adjust path")
+	}
+}
+
+func TestRangePass_StaticSetListLenFeedsModuloRange(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "static_setlist_len"},
+		NumRegs: 2,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	a := &Instr{ID: fn.newValueID(), Op: OpConstString, Type: TypeString, Aux: 0, Block: b}
+	c := &Instr{ID: fn.newValueID(), Op: OpConstString, Type: TypeString, Aux: 1, Block: b}
+	setList := &Instr{ID: fn.newValueID(), Op: OpSetList, Type: TypeUnknown, Aux: 1,
+		Args: []*Value{tbl.Value(), a.Value(), c.Value()}, Block: b}
+	n := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	length := &Instr{ID: fn.newValueID(), Op: OpLen, Type: TypeInt, Args: []*Value{tbl.Value()}, Block: b}
+	mod := &Instr{ID: fn.newValueID(), Op: OpModInt, Type: TypeInt, Args: []*Value{n.Value(), length.Value()}, Block: b}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{mod.Value(), one.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, a, c, setList, n, length, mod, one, add, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+	fn.Proto.Constants = []runtime.Value{runtime.StringValue("a"), runtime.StringValue("b")}
+
+	got, err := RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+	if r := got.IntRanges[length.ID]; !r.known || r.min != 2 || r.max != 2 {
+		t.Fatalf("Len range=%+v, want [2,2]\nIR:\n%s", r, Print(got))
+	}
+	if r := got.IntRanges[add.ID]; !r.known || r.min != 0 || r.max != 2 {
+		t.Fatalf("mod+1 range=%+v, want [0,2]\nIR:\n%s", r, Print(got))
+	}
+	if !got.Int48Safe[add.ID] {
+		t.Fatalf("bounded add should be int48-safe\nIR:\n%s", Print(got))
 	}
 }

@@ -295,6 +295,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	}
 
 	ranges := make(map[int]intRange)
+	staticLens := collectStaticLenRanges(fn)
 
 	// Phase A: seed loop counter ranges from FORLOOP/while-loop structure.
 	seedLoopRanges(fn, ranges)
@@ -306,7 +307,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 		changed := false
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
-				newR := computeRange(instr, ranges)
+				newR := computeRange(instr, ranges, staticLens)
 				if !instr.Type.isIntegerLike() {
 					continue
 				}
@@ -357,10 +358,15 @@ func (t Type) isIntegerLike() bool {
 
 // computeRange returns the inferred range of `instr`'s result value using the
 // current `ranges` map. Unknown/unsupported ops produce top.
-func computeRange(instr *Instr, ranges map[int]intRange) intRange {
+func computeRange(instr *Instr, ranges map[int]intRange, staticLens map[int]intRange) intRange {
 	switch instr.Op {
 	case OpConstInt:
 		return pointRange(instr.Aux)
+	case OpLen:
+		if r, ok := staticLens[instr.ID]; ok {
+			return r
+		}
+		return topRange()
 
 	case OpAddInt:
 		if len(instr.Args) < 2 {
@@ -443,6 +449,63 @@ func computeRange(instr *Instr, ranges map[int]intRange) intRange {
 		return intersectRange(arg, guard)
 	}
 	return topRange()
+}
+
+func collectStaticLenRanges(fn *Function) map[int]intRange {
+	out := make(map[int]intRange)
+	if fn == nil {
+		return out
+	}
+	tableLens := make(map[int]int64)
+	invalid := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpSetList:
+				if len(instr.Args) < 1 || instr.Args[0] == nil {
+					continue
+				}
+				tableID := instr.Args[0].ID
+				if invalid[tableID] {
+					continue
+				}
+				end := instr.Aux + int64(len(instr.Args)-1) - 1
+				if end > tableLens[tableID] {
+					tableLens[tableID] = end
+				}
+			case OpSetTable, OpAppend:
+				if len(instr.Args) < 1 || instr.Args[0] == nil {
+					continue
+				}
+				tableID := instr.Args[0].ID
+				invalid[tableID] = true
+				delete(tableLens, tableID)
+			}
+		}
+	}
+	if len(tableLens) == 0 {
+		return out
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpLen || len(instr.Args) < 1 || instr.Args[0] == nil {
+				continue
+			}
+			if n, ok := tableLens[instr.Args[0].ID]; ok && n >= 0 {
+				out[instr.ID] = pointRange(n)
+				continue
+			}
+			if instr.Args[0].Def != nil && instr.Args[0].Def.Op == OpConstString {
+				if s, ok := constString(fn, instr.Args[0].Def.Aux); ok {
+					out[instr.ID] = pointRange(int64(len(s)))
+				}
+			}
+		}
+	}
+	return out
 }
 
 // argRange resolves the range of an SSA value argument. Returns top if the
