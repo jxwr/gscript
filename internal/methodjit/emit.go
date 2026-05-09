@@ -496,9 +496,15 @@ type CompiledFunction struct {
 	// numeric ABI are available.
 	TypedSelfABI TypedSelfABI
 
+	// TypedPeerABI records the published typed table/int peer-call entry
+	// contract. It may be present even when the function has no recursive
+	// self-call, so cross-proto callers can avoid the boxed VM call ABI after
+	// guarding their observed receiver shape.
+	TypedPeerABI TypedSelfABI
+
 	// TypedEntryOffset is the byte offset of t2_typed_self_entry when the
-	// typed self ABI is emitted. The entry is private to this code block:
-	// callers branch to the label directly after runtime type guards.
+	// typed ABI entry is emitted. Self callers branch to it directly; peer
+	// callers use FuncProto.Tier2TypedEntryPtr after runtime type guards.
 	TypedEntryOffset int
 
 	// FixedRecursiveTableFold is a whole-call Tier 2 protocol for fixed-field

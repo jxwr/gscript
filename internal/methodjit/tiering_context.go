@@ -66,7 +66,7 @@ func (tm *TieringManager) ensureTier2RegisterBudget(cf *CompiledFunction, regs [
 	depthBudget := 0
 	if cf.NumericParamCount > 0 && proto.HasSelfCalls {
 		depthBudget = maxRawSelfCallDepth + 2
-	} else if cf.TypedSelfABI.Eligible {
+	} else if cf.TypedSelfABI.Eligible || cf.TypedPeerABI.Eligible {
 		depthBudget = maxNativeCallDepth + 2
 	}
 	if depthBudget == 0 {

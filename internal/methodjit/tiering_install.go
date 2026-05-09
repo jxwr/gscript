@@ -34,6 +34,11 @@ func (tm *TieringManager) installTier2(proto *vm.FuncProto, cf *CompiledFunction
 	} else {
 		proto.Tier2NumericEntryPtr = 0
 	}
+	if cf != nil && cf.TypedEntryOffset > 0 && cf.TypedPeerABI.Eligible {
+		proto.Tier2TypedEntryPtr = uintptr(cf.Code.Ptr()) + uintptr(cf.TypedEntryOffset)
+	} else {
+		proto.Tier2TypedEntryPtr = 0
+	}
 	if cf != nil && len(cf.GlobalCache) > 0 {
 		proto.Tier2GlobalCachePtr = uintptr(unsafe.Pointer(&cf.GlobalCache[0]))
 		proto.Tier2GlobalCacheGenPtr = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))

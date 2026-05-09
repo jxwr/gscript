@@ -39,7 +39,7 @@ func clearFuncProtoDirectEntries(proto *vm.FuncProto) bool {
 	if proto == nil {
 		return false
 	}
-	changed := proto.DirectEntryPtr != 0 || proto.Tier2DirectEntryPtr != 0 || proto.Tier2LeafEntryPtr != 0
+	changed := proto.DirectEntryPtr != 0 || proto.Tier2DirectEntryPtr != 0 || proto.Tier2LeafEntryPtr != 0 || proto.Tier2TypedEntryPtr != 0
 	if changed {
 		proto.DirectEntryVersion++
 	}
@@ -47,5 +47,6 @@ func clearFuncProtoDirectEntries(proto *vm.FuncProto) bool {
 	proto.Tier2DirectEntryPtr = 0
 	proto.Tier2LeafEntryPtr = 0
 	proto.Tier2NumericEntryPtr = 0
+	proto.Tier2TypedEntryPtr = 0
 	return changed
 }

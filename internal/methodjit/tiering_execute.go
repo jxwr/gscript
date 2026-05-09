@@ -79,7 +79,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
-	if cf.TypedSelfABI.Eligible {
+	if cf.TypedSelfABI.Eligible || cf.TypedPeerABI.Eligible {
 		ensureTypedSelfTier2NativeStack()
 	} else {
 		ensureTier2NativeStack()

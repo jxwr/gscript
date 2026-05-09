@@ -247,6 +247,11 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	nativeCallCalleeResumeSafe := tier2NativeCallCalleeResumeSafe(fn)
 	rawIntSelfABI := AnalyzeRawIntSelfABI(fn.Proto)
 	typedSelfABI := AnalyzeTypedSelfABI(fn.Proto)
+	typedPeerABI := AnalyzeTypedPeerABI(fn.Proto)
+	typedEntryABI := typedSelfABI
+	if !typedEntryABI.Eligible && typedPeerABI.Eligible {
+		typedEntryABI = typedPeerABI
+	}
 
 	ensureTier2FieldCachesForFunction(fn)
 	newTableCaches := newTableCacheSlotsForFunction(fn)
@@ -309,7 +314,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		nativeCallReplaySafe:       nativeCallReplaySafe,
 		nativeCallCalleeResumeSafe: nativeCallCalleeResumeSafe,
 		rawIntSelfABI:              rawIntSelfABI,
-		typedSelfABI:               typedSelfABI,
+		typedSelfABI:               typedEntryABI,
 		entryShapeGuards:           fn.FixedShapeEntryGuards,
 	}
 	if exitResumeCheckEnabled() {
@@ -408,7 +413,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		}
 	}
 	typedEntryOff := 0
-	if typedSelfABI.Eligible {
+	if typedEntryABI.Eligible {
 		if off := ec.asm.LabelOffset("t2_typed_self_entry"); off >= 0 {
 			typedEntryOff = off
 		}
@@ -442,7 +447,8 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		NumericParamCount:        rawIntSelfABI.NumParams,
 		RawIntSelfABI:            rawIntSelfABI,
 		NumericEntryOffset:       numericEntryOff,
-		TypedSelfABI:             typedSelfABI,
+		TypedSelfABI:             typedEntryABI,
+		TypedPeerABI:             typedPeerABI,
 		TypedEntryOffset:         typedEntryOff,
 		GlobalCache:              globalCache,
 		GlobalCacheConsts:        ec.globalCacheConsts,

@@ -49,6 +49,7 @@ var (
 	funcProtoOffTier2LeafEntryPtr      int // vm.FuncProto.Tier2LeafEntryPtr offset
 	funcProtoOffDirectEntryVersion     int // vm.FuncProto.DirectEntryVersion offset
 	funcProtoOffTier2NumericEntryPtr   int // vm.FuncProto.Tier2NumericEntryPtr offset
+	funcProtoOffTier2TypedEntryPtr     int // vm.FuncProto.Tier2TypedEntryPtr offset
 	funcProtoOffConstants              int // vm.FuncProto.Constants offset (slice header)
 	funcProtoOffFieldCache             int // vm.FuncProto.FieldCache offset (slice header)
 	funcProtoOffFieldPolyCache         int // vm.FuncProto.FieldPolyCache offset (slice header)
@@ -81,6 +82,7 @@ func init() {
 	funcProtoOffTier2LeafEntryPtr = int(unsafe.Offsetof(proto.Tier2LeafEntryPtr))
 	funcProtoOffDirectEntryVersion = int(unsafe.Offsetof(proto.DirectEntryVersion))
 	funcProtoOffTier2NumericEntryPtr = int(unsafe.Offsetof(proto.Tier2NumericEntryPtr))
+	funcProtoOffTier2TypedEntryPtr = int(unsafe.Offsetof(proto.Tier2TypedEntryPtr))
 	funcProtoOffConstants = int(unsafe.Offsetof(proto.Constants))
 	funcProtoOffFieldCache = int(unsafe.Offsetof(proto.FieldCache))
 	funcProtoOffFieldPolyCache = int(unsafe.Offsetof(proto.FieldPolyCache))
