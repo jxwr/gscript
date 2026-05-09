@@ -399,6 +399,30 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 		return err
 	}
 
+	if vmWholeCallKernelArity(nArgs) && fnVal.IsFunction() {
+		argsStart := absSlot + 1
+		argsEnd := argsStart + nArgs
+		if argsStart >= 0 && argsEnd >= argsStart && argsEnd <= len(regs) {
+			if handled, err := e.callVM.TryRunNoResultWholeCallKernelForJIT(fnVal, regs[argsStart:argsEnd]); handled {
+				if err != nil {
+					return err
+				}
+				if rawC == 0 {
+					e.callVM.SetTop(absSlot)
+				} else {
+					currentRegs := e.callVM.Regs()
+					for i := 0; i < rawC-1; i++ {
+						idx := absSlot + i
+						if idx < len(currentRegs) {
+							currentRegs[idx] = runtime.NilValue()
+						}
+					}
+				}
+				return nil
+			}
+		}
+	}
+
 	// Fast path: GScript closure with compiled proto. Avoids heap-allocating
 	// callArgs and bypasses CallValue → callValue → call dispatch.
 	if fnVal.IsFunction() {
