@@ -128,6 +128,7 @@ type TableKeyFeedback struct {
 	StringKeySeen bool
 	FieldIdxSeen  bool
 	DenseMatrix   uint8
+	ValueShape    ArgArrayElementShapeFeedback
 }
 
 const (
@@ -255,14 +256,24 @@ func (af *ArgArrayElementShapeFeedback) Observe(arg runtime.Value) {
 }
 
 func (af *ArgArrayElementShapeFeedback) observeElementTable(tbl *runtime.Table) {
+	af.observeTableValue(tbl, true)
+}
+
+func (af *ArgArrayElementShapeFeedback) ObserveTableValue(tbl *runtime.Table) {
+	af.observeTableValue(tbl, false)
+}
+
+func (af *ArgArrayElementShapeFeedback) observeTableValue(tbl *runtime.Table, invalidOnEmpty bool) {
 	if af == nil || tbl == nil {
 		return
 	}
 	shapeID := tbl.ShapeID()
 	fields := tbl.ShapeFieldNames()
 	if shapeID == 0 || len(fields) == 0 {
-		af.Count++
-		af.Flags |= ArgArrayElementShapeInvalid
+		if invalidOnEmpty {
+			af.Count++
+			af.Flags |= ArgArrayElementShapeInvalid
+		}
 		return
 	}
 	if af.Count == 0 {
@@ -534,6 +545,7 @@ func (tk *TableKeyFeedback) ObserveTableAccess(tbl *runtime.Table, key, value ru
 	tk.KeyType.Observe(key.Type())
 	tk.ValueType.Observe(value.Type())
 	tk.ObserveIntKey(key)
+	tk.observeValueShape(value)
 	tk.observeArrayKind(tbl)
 	tk.ObserveDenseMatrix(tbl)
 	if tbl == nil {
@@ -556,6 +568,20 @@ func (tk *TableKeyFeedback) ObserveTableAccess(tbl *runtime.Table, key, value ru
 	if accessKind == TableAccessKindSet && key.IsInt() {
 		tk.observeIntMutation(key.Int(), beforeLen, value)
 	}
+}
+
+func (tk *TableKeyFeedback) observeValueShape(value runtime.Value) {
+	if tk == nil || !value.IsTable() {
+		return
+	}
+	tk.ValueShape.ObserveTableValue(value.Table())
+}
+
+func (tk *TableKeyFeedback) StableValueShape() (shapeID uint32, fieldNames []string, ok bool) {
+	if tk == nil {
+		return 0, nil, false
+	}
+	return tk.ValueShape.StableShape()
 }
 
 func (tk *TableKeyFeedback) StableStringShapeField() (key string, shapeID uint32, fieldIdx int, ok bool) {

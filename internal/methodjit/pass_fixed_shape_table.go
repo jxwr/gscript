@@ -113,9 +113,11 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 		seedGuardedFixedShapeArgFacts(fn, facts, config.ArgFacts)
 		seedGuardedFixedShapeArrayElementArgFacts(fn, facts, config.ArrayElementArgFacts)
 		seedGuardedPolyShapeArrayElementArgFacts(fn, facts, config.ArrayElementPolyFacts)
+		seedProfiledDynamicTableValueFacts(fn, facts)
 		if config.EntryGuardedArgs {
 			markEntryGuardedFixedShapeArgFacts(fn, facts, fn.FixedShapeArgFacts)
 		}
+		propagateFixedShapePhiFacts(fn, facts)
 
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
@@ -275,6 +277,202 @@ func guardedFixedShapePolyFacts(facts []FixedShapeTableFact) []FixedShapeTableFa
 		seen[fact.ShapeID] = true
 	}
 	if len(out) < 2 {
+		return nil
+	}
+	return out
+}
+
+func seedProfiledDynamicTableValueFacts(fn *Function, facts map[int]FixedShapeTableFact) {
+	if fn == nil || fn.Proto == nil || fn.Proto.TableKeyFeedback == nil {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGetTable || !instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.TableKeyFeedback) {
+				continue
+			}
+			feedback := fn.Proto.TableKeyFeedback[instr.SourcePC]
+			fact, ok := fixedShapeFactFromProfiledValueShape(feedback.ValueShape)
+			if !ok {
+				continue
+			}
+			facts[instr.ID] = fact
+			if feedback.ValueType == vm.FBTable && (instr.Type == TypeAny || instr.Type == TypeUnknown) {
+				instr.Type = TypeTable
+			}
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("dynamic table value carries guarded fixed table shape %v", fact.FieldNames))
+		}
+	}
+}
+
+func fixedShapeFactFromProfiledValueShape(feedback vm.ArgArrayElementShapeFeedback) (FixedShapeTableFact, bool) {
+	shapeID, fields, ok := feedback.StableShape()
+	if !ok {
+		return FixedShapeTableFact{}, false
+	}
+	return FixedShapeTableFact{
+		ShapeID:         shapeID,
+		FieldNames:      append([]string(nil), fields...),
+		FieldTypes:      profiledFixedShapeFieldTypes(feedback),
+		FieldRanges:     profiledFixedShapeFieldRanges(feedback),
+		FieldLenRanges:  profiledFixedShapeFieldLenRanges(feedback),
+		FieldTableFacts: profiledNestedFixedShapeTableFacts(feedback),
+		Guarded:         true,
+	}, true
+}
+
+func propagateFixedShapePhiFacts(fn *Function, facts map[int]FixedShapeTableFact) {
+	if fn == nil || len(facts) == 0 {
+		return
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr.Op != OpPhi || len(instr.Args) == 0 {
+					continue
+				}
+				if _, exists := facts[instr.ID]; exists {
+					continue
+				}
+				fact, ok := mergeFixedShapePhiArgs(instr, facts)
+				if !ok {
+					continue
+				}
+				facts[instr.ID] = fact
+				if instr.Type == TypeAny || instr.Type == TypeUnknown {
+					instr.Type = TypeTable
+				}
+				changed = true
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("phi carries guarded fixed table shape %v", fact.FieldNames))
+			}
+		}
+	}
+}
+
+func mergeFixedShapePhiArgs(phi *Instr, facts map[int]FixedShapeTableFact) (FixedShapeTableFact, bool) {
+	var merged FixedShapeTableFact
+	seen := false
+	for _, arg := range phi.Args {
+		if arg == nil {
+			return FixedShapeTableFact{}, false
+		}
+		fact, ok := facts[arg.ID]
+		if !ok || fact.ShapeID == 0 || len(fact.FieldNames) == 0 {
+			return FixedShapeTableFact{}, false
+		}
+		if !seen {
+			merged = cloneFixedShapeTableFact(fact)
+			seen = true
+			continue
+		}
+		next, ok := mergeSameShapeFacts(merged, fact)
+		if !ok {
+			return FixedShapeTableFact{}, false
+		}
+		merged = next
+	}
+	if !seen {
+		return FixedShapeTableFact{}, false
+	}
+	merged.Guarded = true
+	return merged, true
+}
+
+func mergeSameShapeFacts(a, b FixedShapeTableFact) (FixedShapeTableFact, bool) {
+	if a.ShapeID != b.ShapeID || !a.sameShape(b) {
+		return FixedShapeTableFact{}, false
+	}
+	out := cloneFixedShapeTableFact(a)
+	out.FieldTypes = mergeFieldTypeFacts(a.FieldTypes, b.FieldTypes)
+	out.FieldRanges = mergeFieldRangeFacts(a.FieldRanges, b.FieldRanges)
+	out.FieldLenRanges = mergeFieldRangeFacts(a.FieldLenRanges, b.FieldLenRanges)
+	out.FieldVMProtos = mergeFieldProtoFacts(a.FieldVMProtos, b.FieldVMProtos)
+	out.FieldTableFacts = mergeNestedTableFacts(a.FieldTableFacts, b.FieldTableFacts)
+	return out, true
+}
+
+func mergeFieldTypeFacts(a, b map[string]Type) map[string]Type {
+	if len(a) == 0 {
+		return cloneStringTypeMap(b)
+	}
+	if len(b) == 0 {
+		return cloneStringTypeMap(a)
+	}
+	out := make(map[string]Type)
+	for name, left := range a {
+		if right, ok := b[name]; ok && left == right && left != TypeUnknown && left != TypeAny {
+			out[name] = left
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergeFieldRangeFacts(a, b map[string]intRange) map[string]intRange {
+	if len(a) == 0 {
+		return cloneStringRangeMap(b)
+	}
+	if len(b) == 0 {
+		return cloneStringRangeMap(a)
+	}
+	out := make(map[string]intRange)
+	for name, left := range a {
+		right, ok := b[name]
+		if !ok || !left.known || !right.known {
+			continue
+		}
+		if right.min < left.min {
+			left.min = right.min
+		}
+		if right.max > left.max {
+			left.max = right.max
+		}
+		out[name] = left
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergeFieldProtoFacts(a, b map[string]*vm.FuncProto) map[string]*vm.FuncProto {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	out := make(map[string]*vm.FuncProto)
+	for name, left := range a {
+		if right := b[name]; left != nil && left == right {
+			out[name] = left
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergeNestedTableFacts(a, b map[string]FixedShapeTableFact) map[string]FixedShapeTableFact {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	out := make(map[string]FixedShapeTableFact)
+	for name, left := range a {
+		right, ok := b[name]
+		if !ok || left.ShapeID != right.ShapeID || !left.sameShape(right) {
+			continue
+		}
+		merged, ok := mergeSameShapeFacts(left, right)
+		if ok {
+			out[name] = merged
+		}
+	}
+	if len(out) == 0 {
 		return nil
 	}
 	return out
@@ -1378,12 +1576,29 @@ func cloneFixedShapeTableFactMap(in map[string]FixedShapeTableFact) map[string]F
 	}
 	out := make(map[string]FixedShapeTableFact, len(in))
 	for k, v := range in {
-		v.FieldNames = append([]string(nil), v.FieldNames...)
-		v.FieldTypes = cloneStringTypeMap(v.FieldTypes)
-		v.FieldRanges = cloneStringRangeMap(v.FieldRanges)
-		v.FieldLenRanges = cloneStringRangeMap(v.FieldLenRanges)
-		v.FieldVMProtos = cloneStringProtoMap(v.FieldVMProtos)
-		v.FieldTableFacts = cloneFixedShapeTableFactMap(v.FieldTableFacts)
+		out[k] = cloneFixedShapeTableFact(v)
+	}
+	return out
+}
+
+func cloneFixedShapeTableFact(fact FixedShapeTableFact) FixedShapeTableFact {
+	fact.FieldNames = append([]string(nil), fact.FieldNames...)
+	fact.FieldValueIDs = cloneStringIntMap(fact.FieldValueIDs)
+	fact.FieldFacts = cloneFixedShapeFieldFactMap(fact.FieldFacts)
+	fact.FieldTypes = cloneStringTypeMap(fact.FieldTypes)
+	fact.FieldRanges = cloneStringRangeMap(fact.FieldRanges)
+	fact.FieldLenRanges = cloneStringRangeMap(fact.FieldLenRanges)
+	fact.FieldVMProtos = cloneStringProtoMap(fact.FieldVMProtos)
+	fact.FieldTableFacts = cloneFixedShapeTableFactMap(fact.FieldTableFacts)
+	return fact
+}
+
+func cloneFixedShapeFieldFactMap(in map[string]FixedShapeFieldFact) map[string]FixedShapeFieldFact {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]FixedShapeFieldFact, len(in))
+	for k, v := range in {
 		out[k] = v
 	}
 	return out
