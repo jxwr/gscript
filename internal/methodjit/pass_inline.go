@@ -334,6 +334,7 @@ func inlineCalleeHasWholeCallProtocol(callee *vm.FuncProto, globals map[string]*
 	}
 	if qualifiesForFixedRecursiveIntFold(callee) ||
 		qualifiesForFixedRecursiveNestedIntFold(callee) ||
+		qualifiesForFixedRecursiveTableBuilder(callee) ||
 		qualifiesForFixedRecursiveTableFold(callee) {
 		return true
 	}

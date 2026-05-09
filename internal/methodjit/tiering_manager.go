@@ -495,6 +495,9 @@ func (tm *TieringManager) promoteTier2(proto *vm.FuncProto) interface{} {
 }
 
 func (tm *TieringManager) compileTier2WholeCallProtocol(proto *vm.FuncProto) (*CompiledFunction, bool) {
+	if t2, ok := tm.compileFixedRecursiveTableBuilderTier2(proto); ok {
+		return t2, true
+	}
 	if t2, ok := tm.compileFixedRecursiveIntFoldTier2(proto); ok {
 		return t2, true
 	}
