@@ -131,16 +131,18 @@ type warmFeedbackSummary struct {
 	Right       map[string]int   `json:"right"`
 	Result      map[string]int   `json:"result"`
 	Kind        map[string]int   `json:"kind"`
+	TableKind   map[string]int   `json:"table_key_array_kind,omitempty"`
 	ObservedPCs []warmFeedbackPC `json:"observed_pcs,omitempty"`
 }
 
 type warmFeedbackPC struct {
-	PC     int    `json:"pc"`
-	Op     string `json:"op"`
-	Left   string `json:"left,omitempty"`
-	Right  string `json:"right,omitempty"`
-	Result string `json:"result,omitempty"`
-	Kind   string `json:"kind,omitempty"`
+	PC        int    `json:"pc"`
+	Op        string `json:"op"`
+	Left      string `json:"left,omitempty"`
+	Right     string `json:"right,omitempty"`
+	Result    string `json:"result,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	TableKind string `json:"table_key_array_kind,omitempty"`
 }
 
 // EnableWarmDump configures tm to capture artifacts from future production
@@ -644,10 +646,11 @@ func sanitizeWarmName(s string) string {
 
 func summarizeWarmFeedback(proto *vm.FuncProto) warmFeedbackSummary {
 	summary := warmFeedbackSummary{
-		Left:   make(map[string]int),
-		Right:  make(map[string]int),
-		Result: make(map[string]int),
-		Kind:   make(map[string]int),
+		Left:      make(map[string]int),
+		Right:     make(map[string]int),
+		Result:    make(map[string]int),
+		Kind:      make(map[string]int),
+		TableKind: make(map[string]int),
 	}
 	if proto == nil {
 		return summary
@@ -658,24 +661,31 @@ func summarizeWarmFeedback(proto *vm.FuncProto) warmFeedbackSummary {
 		right := feedbackTypeName(fb.Right)
 		result := feedbackTypeName(fb.Result)
 		kind := feedbackKindName(fb.Kind)
+		tableKind := "unobserved"
+		if proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) {
+			tableKind = feedbackKindName(proto.TableKeyFeedback[pc].ArrayKind)
+		}
 		summary.Left[left]++
 		summary.Right[right]++
 		summary.Result[result]++
 		summary.Kind[kind]++
+		summary.TableKind[tableKind]++
 		if fb.Left != vm.FBUnobserved || fb.Right != vm.FBUnobserved ||
-			fb.Result != vm.FBUnobserved || fb.Kind != vm.FBKindUnobserved {
+			fb.Result != vm.FBUnobserved || fb.Kind != vm.FBKindUnobserved ||
+			tableKind != "unobserved" {
 			summary.Observed++
 			op := "?"
 			if pc < len(proto.Code) {
 				op = opcodeName(vm.DecodeOp(proto.Code[pc]))
 			}
 			summary.ObservedPCs = append(summary.ObservedPCs, warmFeedbackPC{
-				PC:     pc,
-				Op:     op,
-				Left:   left,
-				Right:  right,
-				Result: result,
-				Kind:   kind,
+				PC:        pc,
+				Op:        op,
+				Left:      left,
+				Right:     right,
+				Result:    result,
+				Kind:      kind,
+				TableKind: tableKind,
 			})
 		}
 	}
@@ -691,9 +701,12 @@ func formatWarmFeedback(proto *vm.FuncProto, summary warmFeedbackSummary) string
 	fmt.Fprintf(&b, "left:   %s\n", formatWarmCounts(summary.Left))
 	fmt.Fprintf(&b, "right:  %s\n", formatWarmCounts(summary.Right))
 	fmt.Fprintf(&b, "kind:   %s\n\n", formatWarmCounts(summary.Kind))
-	b.WriteString("pc\top\tleft\tright\tresult\tkind\n")
+	if len(formatWarmCounts(summary.TableKind)) > 0 {
+		fmt.Fprintf(&b, "table-key-array-kind: %s\n\n", formatWarmCounts(summary.TableKind))
+	}
+	b.WriteString("pc\top\tleft\tright\tresult\tkind\ttable_key_array_kind\n")
 	for _, pc := range summary.ObservedPCs {
-		fmt.Fprintf(&b, "%d\t%s\t%s\t%s\t%s\t%s\n", pc.PC, pc.Op, pc.Left, pc.Right, pc.Result, pc.Kind)
+		fmt.Fprintf(&b, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", pc.PC, pc.Op, pc.Left, pc.Right, pc.Result, pc.Kind, pc.TableKind)
 	}
 	return b.String()
 }
