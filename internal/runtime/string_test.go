@@ -223,6 +223,34 @@ func TestStringPredicateFixedArgFastPaths(t *testing.T) {
 	}
 }
 
+func TestStringTransformFixedArgFastPaths(t *testing.T) {
+	lib := buildStringLib()
+	trim := lib.RawGetString("trim").GoFunction()
+	if trim == nil || trim.FastArg1 == nil || trim.FastArg2 == nil {
+		t.Fatal("string.trim fixed fast paths missing")
+	}
+	if got, err := trim.FastArg1(StringValue("  abc  ")); err != nil || !got.IsString() || got.Str() != "abc" {
+		t.Fatalf("trim FastArg1 got=%s err=%v, want abc nil", got.String(), err)
+	}
+	if got, err := trim.FastArg2(StringValue("xxabcxy"), StringValue("xy")); err != nil || !got.IsString() || got.Str() != "abc" {
+		t.Fatalf("trim FastArg2 got=%s err=%v, want abc nil", got.String(), err)
+	}
+
+	for _, name := range []string{"trimLeft", "trimRight"} {
+		fn := lib.RawGetString(name).GoFunction()
+		if fn == nil || fn.FastArg1 == nil || fn.FastArg2 == nil {
+			t.Fatalf("string.%s fixed fast paths missing", name)
+		}
+	}
+	replace := lib.RawGetString("replaceAll").GoFunction()
+	if replace == nil || replace.FastArg3 == nil {
+		t.Fatal("string.replaceAll FastArg3 is nil")
+	}
+	if got, err := replace.FastArg3(StringValue("a-b-a"), StringValue("a"), StringValue("x")); err != nil || !got.IsString() || got.Str() != "x-b-x" {
+		t.Fatalf("replaceAll FastArg3 got=%s err=%v, want x-b-x nil", got.String(), err)
+	}
+}
+
 func TestStringFormatSingleIntegerResultCacheReusesValue(t *testing.T) {
 	prog, ok, err := compileSimpleFormat("SKU%05d")
 	if err != nil || !ok {

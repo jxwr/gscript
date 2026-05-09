@@ -437,8 +437,7 @@ func buildStringLib() *Table {
 		gf.NativeData = StdStringSplitIdentityPtr()
 	}
 
-	// string.trim(s [, cutset]) -- trim leading/trailing whitespace (or chars in cutset)
-	set("trim", func(args []Value) ([]Value, error) {
+	stringTrim := func(args []Value) ([]Value, error) {
 		if len(args) < 1 || !args[0].IsString() {
 			return nil, fmt.Errorf("bad argument #1 to 'string.trim' (string expected)")
 		}
@@ -447,10 +446,34 @@ func buildStringLib() *Table {
 			return []Value{StringValue(strings.Trim(s, args[1].Str()))}, nil
 		}
 		return []Value{StringValue(strings.TrimSpace(s))}, nil
-	})
+	}
+	stringTrim1 := func(a Value) (Value, error) {
+		if !a.IsString() {
+			return NilValue(), fmt.Errorf("bad argument #1 to 'string.trim' (string expected)")
+		}
+		return StringValue(strings.TrimSpace(a.Str())), nil
+	}
+	stringTrim2 := func(a, b Value) (Value, error) {
+		if !a.IsString() || !b.IsString() {
+			return NilValue(), fmt.Errorf("bad argument to 'string.trim' (string expected)")
+		}
+		return StringValue(strings.Trim(a.Str(), b.Str())), nil
+	}
+	// string.trim(s [, cutset]) -- trim leading/trailing whitespace (or chars in cutset)
+	setFastArg2("trim", stringTrim, func(args []Value) (Value, error) {
+		if len(args) >= 2 {
+			return stringTrim2(args[0], args[1])
+		}
+		if len(args) == 1 {
+			return stringTrim1(args[0])
+		}
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.trim' (string expected)")
+	}, stringTrim2)
+	if v := t.RawGetString("trim"); v.IsFunction() {
+		v.GoFunction().FastArg1 = stringTrim1
+	}
 
-	// string.trimLeft(s [, cutset])
-	set("trimLeft", func(args []Value) ([]Value, error) {
+	stringTrimLeft := func(args []Value) ([]Value, error) {
 		if len(args) < 1 || !args[0].IsString() {
 			return nil, fmt.Errorf("bad argument #1 to 'string.trimLeft' (string expected)")
 		}
@@ -459,10 +482,34 @@ func buildStringLib() *Table {
 			return []Value{StringValue(strings.TrimLeft(s, args[1].Str()))}, nil
 		}
 		return []Value{StringValue(strings.TrimLeftFunc(s, unicode.IsSpace))}, nil
-	})
+	}
+	stringTrimLeft1 := func(a Value) (Value, error) {
+		if !a.IsString() {
+			return NilValue(), fmt.Errorf("bad argument #1 to 'string.trimLeft' (string expected)")
+		}
+		return StringValue(strings.TrimLeftFunc(a.Str(), unicode.IsSpace)), nil
+	}
+	stringTrimLeft2 := func(a, b Value) (Value, error) {
+		if !a.IsString() || !b.IsString() {
+			return NilValue(), fmt.Errorf("bad argument to 'string.trimLeft' (string expected)")
+		}
+		return StringValue(strings.TrimLeft(a.Str(), b.Str())), nil
+	}
+	// string.trimLeft(s [, cutset])
+	setFastArg2("trimLeft", stringTrimLeft, func(args []Value) (Value, error) {
+		if len(args) >= 2 {
+			return stringTrimLeft2(args[0], args[1])
+		}
+		if len(args) == 1 {
+			return stringTrimLeft1(args[0])
+		}
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.trimLeft' (string expected)")
+	}, stringTrimLeft2)
+	if v := t.RawGetString("trimLeft"); v.IsFunction() {
+		v.GoFunction().FastArg1 = stringTrimLeft1
+	}
 
-	// string.trimRight(s [, cutset])
-	set("trimRight", func(args []Value) ([]Value, error) {
+	stringTrimRight := func(args []Value) ([]Value, error) {
 		if len(args) < 1 || !args[0].IsString() {
 			return nil, fmt.Errorf("bad argument #1 to 'string.trimRight' (string expected)")
 		}
@@ -471,7 +518,32 @@ func buildStringLib() *Table {
 			return []Value{StringValue(strings.TrimRight(s, args[1].Str()))}, nil
 		}
 		return []Value{StringValue(strings.TrimRightFunc(s, unicode.IsSpace))}, nil
-	})
+	}
+	stringTrimRight1 := func(a Value) (Value, error) {
+		if !a.IsString() {
+			return NilValue(), fmt.Errorf("bad argument #1 to 'string.trimRight' (string expected)")
+		}
+		return StringValue(strings.TrimRightFunc(a.Str(), unicode.IsSpace)), nil
+	}
+	stringTrimRight2 := func(a, b Value) (Value, error) {
+		if !a.IsString() || !b.IsString() {
+			return NilValue(), fmt.Errorf("bad argument to 'string.trimRight' (string expected)")
+		}
+		return StringValue(strings.TrimRight(a.Str(), b.Str())), nil
+	}
+	// string.trimRight(s [, cutset])
+	setFastArg2("trimRight", stringTrimRight, func(args []Value) (Value, error) {
+		if len(args) >= 2 {
+			return stringTrimRight2(args[0], args[1])
+		}
+		if len(args) == 1 {
+			return stringTrimRight1(args[0])
+		}
+		return NilValue(), fmt.Errorf("bad argument #1 to 'string.trimRight' (string expected)")
+	}, stringTrimRight2)
+	if v := t.RawGetString("trimRight"); v.IsFunction() {
+		v.GoFunction().FastArg1 = stringTrimRight1
+	}
 
 	stringHasPrefix := func(args []Value) ([]Value, error) {
 		if len(args) < 2 || !args[0].IsString() || !args[1].IsString() {
@@ -553,13 +625,25 @@ func buildStringLib() *Table {
 		return stringCountFast(args[0], args[1])
 	}, stringCountFast)
 
-	// string.replaceAll(s, old, new) -- plain string replace all
-	set("replaceAll", func(args []Value) ([]Value, error) {
+	stringReplaceAll := func(args []Value) ([]Value, error) {
 		if len(args) < 3 || !args[0].IsString() || !args[1].IsString() || !args[2].IsString() {
 			return nil, fmt.Errorf("bad argument to 'string.replaceAll' (string expected)")
 		}
 		return []Value{StringValue(strings.ReplaceAll(args[0].Str(), args[1].Str(), args[2].Str()))}, nil
-	})
+	}
+	stringReplaceAll3 := func(a, b, c Value) (Value, error) {
+		if !a.IsString() || !b.IsString() || !c.IsString() {
+			return NilValue(), fmt.Errorf("bad argument to 'string.replaceAll' (string expected)")
+		}
+		return StringValue(strings.ReplaceAll(a.Str(), b.Str(), c.Str())), nil
+	}
+	// string.replaceAll(s, old, new) -- plain string replace all
+	setFastArg23("replaceAll", stringReplaceAll, func(args []Value) (Value, error) {
+		if len(args) < 3 {
+			return NilValue(), fmt.Errorf("bad argument to 'string.replaceAll' (string expected)")
+		}
+		return stringReplaceAll3(args[0], args[1], args[2])
+	}, nil, stringReplaceAll3)
 
 	// string.join(t, sep) -- join table of strings with separator
 	set("join", func(args []Value) ([]Value, error) {
