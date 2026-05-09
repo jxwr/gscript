@@ -652,12 +652,13 @@ func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.
 
 		emitLoadClosureUpvalueRef(asm, jit.X0, fast.valueUpval, len(fast.proto.Upvalues), jit.X6, jit.X2, jit.X3, missLabel)
 		asm.LDR(jit.X4, jit.X6, 0) // boxed current value
-		emitCheckIsInt(asm, jit.X4, jit.X5)
-		asm.BCond(jit.CondNE, missLabel)
-		jit.EmitUnboxInt(asm, jit.X4, jit.X4)
 
 		switch fast.deltaKind {
 		case accumulatorDeltaConst:
+			floatLabel := nextLabel("accum_closure_float")
+			emitCheckIsInt(asm, jit.X4, jit.X5)
+			asm.BCond(jit.CondNE, floatLabel)
+			jit.EmitUnboxInt(asm, jit.X4, jit.X4)
 			if fast.delta >= 0 && fast.delta <= 4095 {
 				asm.ADDimm(jit.X4, jit.X4, uint16(fast.delta))
 			} else if fast.delta < 0 && fast.delta >= -4095 {
@@ -666,27 +667,95 @@ func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.
 				asm.LoadImm64(jit.X5, fast.delta)
 				asm.ADDreg(jit.X4, jit.X4, jit.X5)
 			}
+			emitStoreAccumulatorIntResult(asm, dstSlot, doneLabel, jit.X6)
+			asm.Label(floatLabel)
+			emitFloatValueOrMiss(asm, jit.D0, jit.X4, jit.X5, missLabel)
+			asm.LoadImm64(jit.X5, fast.delta)
+			asm.SCVTF(jit.D1, jit.X5)
+			asm.FADDd(jit.D0, jit.D0, jit.D1)
+			asm.FMOVtoGP(jit.X4, jit.D0)
+			asm.STR(jit.X4, jit.X6, 0)
+			storeSlot(asm, dstSlot, jit.X4)
+			asm.B(doneLabel)
 		case accumulatorDeltaUpval:
 			emitLoadClosureUpvalueRef(asm, jit.X0, fast.deltaUpval, len(fast.proto.Upvalues), jit.X2, jit.X5, jit.X3, missLabel)
 			asm.LDR(jit.X7, jit.X2, 0) // boxed delta value
+			floatLabel := nextLabel("accum_closure_float")
+			mixedFloatLabel := nextLabel("accum_closure_mixed_float")
+			emitCheckIsInt(asm, jit.X4, jit.X5)
+			asm.BCond(jit.CondNE, floatLabel)
 			emitCheckIsInt(asm, jit.X7, jit.X5)
-			asm.BCond(jit.CondNE, missLabel)
+			asm.BCond(jit.CondNE, mixedFloatLabel)
+			jit.EmitUnboxInt(asm, jit.X4, jit.X4)
 			jit.EmitUnboxInt(asm, jit.X7, jit.X7)
 			asm.ADDreg(jit.X4, jit.X4, jit.X7)
+			emitStoreAccumulatorIntResult(asm, dstSlot, doneLabel, jit.X6)
+			asm.Label(mixedFloatLabel)
+			asm.SBFX(jit.X5, jit.X4, 0, 48)
+			asm.SCVTF(jit.D0, jit.X5)
+			emitFloatValueOrMiss(asm, jit.D1, jit.X7, jit.X5, missLabel)
+			asm.FADDd(jit.D0, jit.D0, jit.D1)
+			asm.FMOVtoGP(jit.X4, jit.D0)
+			asm.STR(jit.X4, jit.X6, 0)
+			storeSlot(asm, dstSlot, jit.X4)
+			asm.B(doneLabel)
+			asm.Label(floatLabel)
+			emitFloatValueOrMiss(asm, jit.D0, jit.X4, jit.X5, missLabel)
+			emitToFloatNumberOrMiss(asm, jit.D1, jit.X7, jit.X5, missLabel)
+			asm.FADDd(jit.D0, jit.D0, jit.D1)
+			asm.FMOVtoGP(jit.X4, jit.D0)
+			asm.STR(jit.X4, jit.X6, 0)
+			storeSlot(asm, dstSlot, jit.X4)
+			asm.B(doneLabel)
 		default:
 			asm.B(missLabel)
 		}
-		asm.SBFX(jit.X5, jit.X4, 0, 48)
-		asm.CMPreg(jit.X5, jit.X4)
-		asm.BCond(jit.CondNE, missLabel)
-		jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
-		asm.STR(jit.X4, jit.X6, 0)
-		storeSlot(asm, dstSlot, jit.X4)
-		asm.B(doneLabel)
 
 		asm.Label(nextFastLabel)
 	}
 	asm.Label(missLabel)
+}
+
+func emitStoreAccumulatorIntResult(asm *jit.Assembler, dstSlot int, doneLabel string, valueRefReg jit.Reg) {
+	overflowLabel := nextLabel("accum_closure_int_overflow")
+	asm.SBFX(jit.X5, jit.X4, 0, 48)
+	asm.CMPreg(jit.X5, jit.X4)
+	asm.BCond(jit.CondNE, overflowLabel)
+	jit.EmitBoxIntFast(asm, jit.X4, jit.X4, mRegTagInt)
+	asm.STR(jit.X4, valueRefReg, 0)
+	storeSlot(asm, dstSlot, jit.X4)
+	asm.B(doneLabel)
+
+	asm.Label(overflowLabel)
+	asm.SCVTF(jit.D0, jit.X4)
+	asm.FMOVtoGP(jit.X4, jit.D0)
+	asm.STR(jit.X4, valueRefReg, 0)
+	storeSlot(asm, dstSlot, jit.X4)
+	asm.B(doneLabel)
+}
+
+func emitFloatValueOrMiss(asm *jit.Assembler, fpReg jit.FReg, gpReg, scratch jit.Reg, missLabel string) {
+	jit.EmitIsTagged(asm, gpReg, scratch)
+	asm.BCond(jit.CondEQ, missLabel)
+	asm.FMOVtoFP(fpReg, gpReg)
+}
+
+func emitToFloatNumberOrMiss(asm *jit.Assembler, fpReg jit.FReg, gpReg, scratch jit.Reg, missLabel string) {
+	isIntLabel := nextLabel("number_to_float_int")
+	doneLabel := nextLabel("number_to_float_done")
+
+	emitCheckIsInt(asm, gpReg, scratch)
+	asm.BCond(jit.CondEQ, isIntLabel)
+	jit.EmitIsTagged(asm, gpReg, scratch)
+	asm.BCond(jit.CondEQ, missLabel)
+	asm.FMOVtoFP(fpReg, gpReg)
+	asm.B(doneLabel)
+
+	asm.Label(isIntLabel)
+	asm.SBFX(scratch, gpReg, 0, 48)
+	asm.SCVTF(fpReg, scratch)
+
+	asm.Label(doneLabel)
 }
 
 func emitBaselineSimpleClosureExprFastPath(asm *jit.Assembler, callerProto *vm.FuncProto, doneLabel string, callSlot int) {
