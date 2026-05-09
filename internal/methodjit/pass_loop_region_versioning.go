@@ -64,7 +64,7 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 			continue
 		}
 
-		regionFacts := collectLoopRegionTableArrayFacts(preheader)
+		regionFacts := collectLoopRegionTableArrayFactsDominating(fn, dom, header.ID)
 		if len(regionFacts) == 0 {
 			functionRemarks(fn).Add("LoopRegionVersioning", "missed", preheader.ID, 0, OpTableArrayHeader,
 				"preheader has no complete table-array header/len/data fact")
@@ -84,7 +84,8 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 			continue
 		}
 
-		key, length := guard.Args[0], guard.Args[1]
+		key, guardedLimit := guard.Args[0], guard.Args[1]
+		limitGuards := make(map[[2]int]bool)
 		for _, block := range fn.Blocks {
 			if !li.headerBlocks[header.ID][block.ID] || block == header {
 				continue
@@ -93,7 +94,12 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 				continue
 			}
 			for _, instr := range block.Instrs {
-				fact, ok := loopRegionAccessFact(header.ID, preheader.ID, instr, regionFacts, key, length)
+				fact, ok := loopRegionAccessFact(header.ID, preheader.ID, instr, regionFacts, key, guardedLimit)
+				if !ok && guard.Op == OpLeInt {
+					if insertedLoopLimitArrayLenGuard(fn, preheader, li.headerBlocks[header.ID], key, guardedLimit, instr, regionFacts, limitGuards) {
+						fact, ok = loopRegionAccessFactWithGuardedArrayLen(header.ID, preheader.ID, instr, regionFacts, key)
+					}
+				}
 				if !ok {
 					continue
 				}
@@ -175,6 +181,60 @@ func collectLoopRegionTableArrayFacts(preheader *Block) []loopRegionTableArrayFa
 	return facts
 }
 
+func collectLoopRegionTableArrayFactsDominating(fn *Function, dom *domInfo, headerID int) []loopRegionTableArrayFact {
+	if fn == nil || dom == nil {
+		return nil
+	}
+	headers := make(map[int]tableArrayHeaderFact)
+	lens := make(map[tableArrayDerivedKey]*Value)
+	datas := make(map[tableArrayDerivedKey]*Value)
+	for _, block := range fn.Blocks {
+		if block == nil || !dom.dominates(block.ID, headerID) {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpTableArrayHeader:
+				if len(instr.Args) >= 1 && instr.Args[0] != nil && tableArrayLowerableKind(instr.Aux) {
+					headers[instr.ID] = tableArrayHeaderFact{table: instr.Args[0], kind: instr.Aux}
+				}
+			case OpTableArrayLen:
+				if len(instr.Args) >= 1 && instr.Args[0] != nil && tableArrayLowerableKind(instr.Aux) {
+					lens[tableArrayDerivedKey{headerID: instr.Args[0].ID, kind: instr.Aux}] = instr.Value()
+				}
+			case OpTableArrayData:
+				if len(instr.Args) >= 1 && instr.Args[0] != nil && tableArrayLowerableKind(instr.Aux) {
+					datas[tableArrayDerivedKey{headerID: instr.Args[0].ID, kind: instr.Aux}] = instr.Value()
+				}
+			}
+		}
+	}
+	return makeLoopRegionTableArrayFacts(headers, lens, datas)
+}
+
+func makeLoopRegionTableArrayFacts(headers map[int]tableArrayHeaderFact, lens map[tableArrayDerivedKey]*Value, datas map[tableArrayDerivedKey]*Value) []loopRegionTableArrayFact {
+	facts := make([]loopRegionTableArrayFact, 0, len(headers))
+	for headerID, header := range headers {
+		key := tableArrayDerivedKey{headerID: headerID, kind: header.kind}
+		length := lens[key]
+		data := datas[key]
+		if header.table == nil || length == nil || data == nil {
+			continue
+		}
+		facts = append(facts, loopRegionTableArrayFact{
+			table:    header.table,
+			headerID: headerID,
+			length:   length,
+			data:     data,
+			kind:     header.kind,
+		})
+	}
+	return facts
+}
+
 func loopRegionStructuralHazard(fn *Function, body map[int]bool) (*Instr, bool) {
 	if fn == nil || body == nil {
 		return nil, true
@@ -188,7 +248,7 @@ func loopRegionStructuralHazard(fn *Function, body map[int]bool) (*Instr, bool) 
 				continue
 			}
 			switch instr.Op {
-			case OpCall, OpResume, OpSelf, OpSetTable, OpSetField, OpAppend, OpSetList, OpTableBoolArrayFill:
+			case OpCall, OpResume, OpSelf, OpSetTable, OpAppend, OpSetList, OpTableBoolArrayFill:
 				return instr, true
 			}
 		}
@@ -233,6 +293,111 @@ func loopRegionAccessFact(headerID, preheaderID int, instr *Instr, facts []loopR
 	return LoopTableArrayFact{}, false
 }
 
+func loopRegionAccessFactWithGuardedArrayLen(headerID, preheaderID int, instr *Instr, facts []loopRegionTableArrayFact, key *Value) (LoopTableArrayFact, bool) {
+	if instr == nil || key == nil {
+		return LoopTableArrayFact{}, false
+	}
+	switch instr.Op {
+	case OpTableArrayLoad:
+		if len(instr.Args) < 3 || instr.Args[0] == nil || instr.Args[1] == nil || instr.Args[2] == nil || instr.Args[2].ID != key.ID {
+			return LoopTableArrayFact{}, false
+		}
+		for _, fact := range facts {
+			if fact.kind == instr.Aux && fact.length.ID == instr.Args[1].ID && fact.data.ID == instr.Args[0].ID {
+				return makeLoopTableArrayFact(headerID, preheaderID, instr, fact, key), true
+			}
+		}
+	case OpTableArrayStore:
+		if len(instr.Args) < 5 || instr.Args[0] == nil || instr.Args[1] == nil ||
+			instr.Args[2] == nil || instr.Args[3] == nil || instr.Args[3].ID != key.ID {
+			return LoopTableArrayFact{}, false
+		}
+		for _, fact := range facts {
+			if fact.kind == instr.Aux &&
+				fact.table.ID == instr.Args[0].ID &&
+				fact.length.ID == instr.Args[2].ID &&
+				fact.data.ID == instr.Args[1].ID {
+				return makeLoopTableArrayFact(headerID, preheaderID, instr, fact, key), true
+			}
+		}
+	}
+	return LoopTableArrayFact{}, false
+}
+
+func insertedLoopLimitArrayLenGuard(fn *Function, preheader *Block, body map[int]bool, loopKey, limit *Value, instr *Instr, facts []loopRegionTableArrayFact, seen map[[2]int]bool) bool {
+	if fn == nil || preheader == nil || loopKey == nil || limit == nil || instr == nil || !loopRegionValueInvariant(body, limit) {
+		return false
+	}
+	if !loopRegionInstrUsesKey(instr, loopKey) {
+		return false
+	}
+	for _, fact := range facts {
+		if fact.length == nil || !loopRegionInstrUsesFact(instr, fact) {
+			continue
+		}
+		key := [2]int{limit.ID, fact.length.ID}
+		if seen[key] {
+			return true
+		}
+		lt := &Instr{
+			ID:    fn.newValueID(),
+			Op:    OpLtInt,
+			Type:  TypeBool,
+			Args:  []*Value{limit, fact.length},
+			Block: preheader,
+		}
+		guard := &Instr{
+			ID:    fn.newValueID(),
+			Op:    OpGuardTruthy,
+			Type:  TypeBool,
+			Args:  []*Value{lt.Value()},
+			Block: preheader,
+		}
+		insertBeforeTerminator(preheader, lt)
+		insertBeforeTerminator(preheader, guard)
+		seen[key] = true
+		return true
+	}
+	return false
+}
+
+func loopRegionInstrUsesKey(instr *Instr, key *Value) bool {
+	if instr == nil || key == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpTableArrayLoad:
+		return len(instr.Args) >= 3 && instr.Args[2] != nil && instr.Args[2].ID == key.ID
+	case OpTableArrayStore:
+		return len(instr.Args) >= 4 && instr.Args[3] != nil && instr.Args[3].ID == key.ID
+	default:
+		return false
+	}
+}
+
+func loopRegionValueInvariant(body map[int]bool, v *Value) bool {
+	if v == nil || v.Def == nil || v.Def.Block == nil {
+		return true
+	}
+	return !body[v.Def.Block.ID]
+}
+
+func loopRegionInstrUsesFact(instr *Instr, fact loopRegionTableArrayFact) bool {
+	if instr == nil || fact.length == nil || fact.data == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpTableArrayLoad:
+		return len(instr.Args) >= 2 && instr.Args[0] != nil && instr.Args[1] != nil &&
+			instr.Args[0].ID == fact.data.ID && instr.Args[1].ID == fact.length.ID
+	case OpTableArrayStore:
+		return len(instr.Args) >= 3 && instr.Args[1] != nil && instr.Args[2] != nil &&
+			instr.Args[1].ID == fact.data.ID && instr.Args[2].ID == fact.length.ID
+	default:
+		return false
+	}
+}
+
 func makeLoopTableArrayFact(headerID, preheaderID int, instr *Instr, fact loopRegionTableArrayFact, key *Value) LoopTableArrayFact {
 	tableID, tableHeaderID, lenID, dataID, keyID := -1, -1, -1, -1, -1
 	if fact.table != nil {
@@ -270,7 +435,7 @@ func tableArrayLoopUpperGuard(li *loopInfo, header *Block) (*Instr, *Block) {
 		return nil, nil
 	}
 	cond := term.Args[0].Def
-	if cond.Op != OpLtInt || len(cond.Args) < 2 {
+	if (cond.Op != OpLtInt && cond.Op != OpLeInt) || len(cond.Args) < 2 {
 		return nil, nil
 	}
 	body := li.headerBlocks[header.ID]
