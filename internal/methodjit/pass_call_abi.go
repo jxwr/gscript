@@ -57,15 +57,29 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 				continue
 			}
 			descs[instr.ID] = desc
-			instr.Type = TypeInt
+			switch desc.ReturnRep {
+			case SpecializedABIReturnRawInt:
+				instr.Type = TypeInt
+			case SpecializedABIReturnRawTablePtr:
+				instr.Type = TypeTable
+			default:
+				instr.Type = TypeInt
+			}
 			functionRemarks(fn).Add("CallABI", "changed", block.ID, instr.ID, instr.Op,
-				fmt.Sprintf("annotated raw-int call ABI for %s", desc.Callee.Name))
+				fmt.Sprintf("annotated %s call ABI for %s", callABIDescriptorKind(desc), desc.Callee.Name))
 		}
 	}
 	if len(descs) > 0 {
 		fn.CallABIs = descs
 	}
 	return fn
+}
+
+func callABIDescriptorKind(desc CallABIDescriptor) string {
+	if desc.TypedPeer {
+		return "typed-peer"
+	}
+	return "raw-int"
 }
 
 func callABIAnnotateRawIntSelfResult(fn *Function, instr *Instr, tails map[int]bool) bool {
