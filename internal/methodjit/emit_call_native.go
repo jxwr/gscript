@@ -1479,9 +1479,11 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 		asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 		asm.CBZ(jit.X16, fallbackLabel)
 
-		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
-		asm.CMPimm(jit.X8, maxNativeCallDepth)
-		asm.BCond(jit.CondGE, fallbackLabel)
+		if !c.callee.LeafNoCall {
+			asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+			asm.CMPimm(jit.X8, maxNativeCallDepth)
+			asm.BCond(jit.CondGE, fallbackLabel)
+		}
 
 		asm.LDR(jit.X8, jit.X7, funcProtoOffMaxStack)
 		asm.LSLimm(jit.X8, jit.X8, 3)
@@ -1505,15 +1507,19 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 		asm.LDR(mRegConsts, jit.X7, funcProtoOffConstants)
 		asm.MOVimm16(jit.X8, callModeTypedSelf)
 		ec.emitStoreCallMode(jit.X8)
-		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
-		asm.ADDimm(jit.X8, jit.X8, 1)
-		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		if !c.callee.LeafNoCall {
+			asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+			asm.ADDimm(jit.X8, jit.X8, 1)
+			asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		}
 
 		asm.BLR(jit.X16)
 
-		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
-		asm.SUBimm(jit.X8, jit.X8, 1)
-		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		if !c.callee.LeafNoCall {
+			asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+			asm.SUBimm(jit.X8, jit.X8, 1)
+			asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		}
 		asm.CBNZ(jit.X16, exitLabel)
 
 		ec.emitRestoreTypedPeerCallerState()
