@@ -140,6 +140,8 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 					fmt.Sprintf("call result carries fixed table shape %v", fact.FieldNames))
 			}
 		}
+		arrayElementFacts := inferLocalArrayElementTableFacts(fn, facts)
+		seedLocalArrayElementTableFacts(fn, facts, arrayElementFacts)
 
 		if len(facts) == 0 {
 			return fn, nil
@@ -476,6 +478,140 @@ func mergeNestedTableFacts(a, b map[string]FixedShapeTableFact) map[string]Fixed
 		return nil
 	}
 	return out
+}
+
+func inferLocalArrayElementTableFacts(fn *Function, valueFacts map[int]FixedShapeTableFact) map[int]FixedShapeTableFact {
+	if fn == nil || len(valueFacts) == 0 {
+		return nil
+	}
+	type state struct {
+		fact     FixedShapeTableFact
+		seen     bool
+		conflict bool
+	}
+	states := make(map[int]state)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || len(instr.Args) == 0 || instr.Args[0] == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpSetTable:
+				if len(instr.Args) < 3 || instr.Args[1] == nil || instr.Args[2] == nil || !tableKeyProvenInt(instr.Args[1]) {
+					continue
+				}
+				valueFact, ok := valueFacts[instr.Args[2].ID]
+				if !ok || valueFact.ShapeID == 0 || len(valueFact.FieldNames) == 0 {
+					continue
+				}
+				st := states[instr.Args[0].ID]
+				if !st.seen {
+					st.fact = withoutFieldValues(valueFact)
+					st.seen = true
+				} else if st.fact.ShapeID != valueFact.ShapeID || !st.fact.sameShape(valueFact) {
+					st.conflict = true
+				} else {
+					merged, ok := mergeSameShapeFacts(st.fact, withoutFieldValues(valueFact))
+					if ok {
+						st.fact = merged
+					}
+				}
+				states[instr.Args[0].ID] = st
+			case OpAppend, OpSetList:
+				st := states[instr.Args[0].ID]
+				if st.seen {
+					st.conflict = true
+					states[instr.Args[0].ID] = st
+				}
+			}
+		}
+	}
+	if len(states) == 0 {
+		return nil
+	}
+	out := make(map[int]FixedShapeTableFact)
+	for id, st := range states {
+		if st.seen && !st.conflict {
+			st.fact.Guarded = true
+			out[id] = st.fact
+		}
+	}
+	propagateArrayElementFactsThroughGlobals(fn, out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func propagateArrayElementFactsThroughGlobals(fn *Function, arrayElementFacts map[int]FixedShapeTableFact) {
+	if fn == nil || len(arrayElementFacts) == 0 {
+		return
+	}
+	type state struct {
+		fact     FixedShapeTableFact
+		seen     bool
+		conflict bool
+	}
+	globals := make(map[int64]state)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpSetGlobal || len(instr.Args) == 0 || instr.Args[0] == nil {
+				continue
+			}
+			fact, ok := arrayElementFacts[instr.Args[0].ID]
+			st := globals[instr.Aux]
+			if !ok {
+				st.conflict = true
+				globals[instr.Aux] = st
+				continue
+			}
+			if !st.seen {
+				st.fact = cloneFixedShapeTableFact(fact)
+				st.seen = true
+			} else if st.fact.ShapeID != fact.ShapeID || !st.fact.sameShape(fact) {
+				st.conflict = true
+			}
+			globals[instr.Aux] = st
+		}
+	}
+	if len(globals) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpGetGlobal {
+				continue
+			}
+			st := globals[instr.Aux]
+			if !st.seen || st.conflict {
+				continue
+			}
+			arrayElementFacts[instr.ID] = cloneFixedShapeTableFact(st.fact)
+		}
+	}
+}
+
+func seedLocalArrayElementTableFacts(fn *Function, facts map[int]FixedShapeTableFact, arrayElementFacts map[int]FixedShapeTableFact) {
+	if fn == nil || len(arrayElementFacts) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpGetTable || len(instr.Args) < 2 || instr.Args[0] == nil {
+				continue
+			}
+			fact, ok := arrayElementFacts[instr.Args[0].ID]
+			if !ok || fact.ShapeID == 0 || len(fact.FieldNames) == 0 {
+				continue
+			}
+			facts[instr.ID] = cloneFixedShapeTableFact(fact)
+			if instr.Type == TypeAny || instr.Type == TypeUnknown {
+				instr.Type = TypeTable
+			}
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("local array element carries guarded fixed table shape %v", fact.FieldNames))
+		}
+	}
 }
 
 func fieldPolyShapeCases(facts []FixedShapeTableFact, name string) ([]FieldPolyShapeCase, Type) {
