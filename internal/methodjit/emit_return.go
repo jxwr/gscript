@@ -40,6 +40,23 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 		ec.asm.Label(genericReturnLabel)
 	}
 
+	if ec.typedSelfABI.Eligible &&
+		ec.typedSelfABI.Return == SpecializedABIReturnRawFloat &&
+		len(instr.Args) > 0 &&
+		ec.irTypes[instr.Args[0].ID] == TypeFloat {
+		genericReturnLabel := ec.uniqueLabel("typed_self_float_generic_return")
+		ec.emitLoadCallMode(jit.X1)
+		ec.asm.CMPimm(jit.X1, callModeTypedSelf)
+		ec.asm.BCond(jit.CondNE, genericReturnLabel)
+		src := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+		if src != jit.D0 {
+			ec.asm.FMOVd(jit.D0, src)
+		}
+		ec.asm.FMOVtoGP(jit.X0, jit.D0)
+		ec.asm.B("t2_typed_self_raw_float_epilogue")
+		ec.asm.Label(genericReturnLabel)
+	}
+
 	if ec.fn != nil && ec.fn.Proto != nil && ec.fn.Proto.LeafNoCall {
 		genericReturnLabel := ec.uniqueLabel("leaf_x0_generic_return")
 		ec.emitLoadCallMode(jit.X1)

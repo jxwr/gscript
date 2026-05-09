@@ -1201,7 +1201,7 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 		return false
 	}
 	switch desc.ReturnRep {
-	case SpecializedABIReturnRawInt, SpecializedABIReturnRawTablePtr:
+	case SpecializedABIReturnRawInt, SpecializedABIReturnRawFloat, SpecializedABIReturnRawTablePtr:
 	default:
 		return false
 	}
@@ -1292,6 +1292,9 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	switch desc.ReturnRep {
 	case SpecializedABIReturnRawInt:
 		ec.storeRawInt(jit.X0, instr.ID)
+	case SpecializedABIReturnRawFloat:
+		asm.FMOVtoFP(jit.D0, jit.X0)
+		ec.storeRawFloat(jit.D0, instr.ID)
 	case SpecializedABIReturnRawTablePtr:
 		emitBoxTablePtr(asm, jit.X0, jit.X0, jit.X1)
 		ec.storeResultNB(jit.X0, instr.ID)
@@ -1426,6 +1429,9 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 		// produced or consumed.
 	case SpecializedABIReturnRawInt:
 		ec.storeRawInt(jit.X0, instr.ID)
+	case SpecializedABIReturnRawFloat:
+		asm.FMOVtoFP(jit.D0, jit.X0)
+		ec.storeRawFloat(jit.D0, instr.ID)
 	case SpecializedABIReturnRawTablePtr:
 		emitBoxTablePtr(asm, jit.X0, jit.X0, jit.X1)
 		ec.storeResultNB(jit.X0, instr.ID)
@@ -2236,6 +2242,8 @@ func (ec *emitContext) isTypedStaticSelfCall(instr *Instr) bool {
 		return callResultCountFromAux2(instr.Aux2) == 0
 	case SpecializedABIReturnRawInt:
 		return instr.Type == TypeInt
+	case SpecializedABIReturnRawFloat:
+		return instr.Type == TypeFloat
 	case SpecializedABIReturnRawTablePtr:
 		return instr.Type == TypeTable
 	default:

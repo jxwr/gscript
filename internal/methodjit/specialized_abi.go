@@ -39,6 +39,7 @@ const (
 	SpecializedABIReturnNone SpecializedABIReturnRep = iota
 	SpecializedABIReturnBoxed
 	SpecializedABIReturnRawInt
+	SpecializedABIReturnRawFloat
 	SpecializedABIReturnRawTablePtr
 )
 
@@ -83,6 +84,8 @@ func specializedABIReturnName(rep SpecializedABIReturnRep) string {
 		return "boxed"
 	case SpecializedABIReturnRawInt:
 		return "raw-int"
+	case SpecializedABIReturnRawFloat:
+		return "raw-float"
 	case SpecializedABIReturnRawTablePtr:
 		return "raw-table"
 	default:
@@ -120,10 +123,12 @@ type specializedSlotRep uint8
 const (
 	specializedSlotUnknown specializedSlotRep = iota
 	specializedSlotRawInt
+	specializedSlotRawFloat
 	specializedSlotRawTable
 	specializedSlotRawString
 	specializedSlotNil
 	specializedSlotSelfCallRawInt
+	specializedSlotSelfCallRawFloat
 	specializedSlotSelfCallRawTable
 	specializedSlotSelfFunc
 	specializedSlotOtherFunc
@@ -386,6 +391,8 @@ func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argF
 			bx := vm.DecodeBx(inst)
 			if specializedABIConstIsInt(proto, bx) {
 				setSpecializedSlot(slots, a, specializedSlotRawInt)
+			} else if specializedABIConstIsFloat(proto, bx) {
+				setSpecializedSlot(slots, a, specializedSlotRawFloat)
 			} else if specializedABIConstString(proto, bx) != "" {
 				setSpecializedSlot(slots, a, specializedSlotRawString)
 			} else {
@@ -422,6 +429,9 @@ func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argF
 			} else if ok && typ == TypeInt {
 				setSpecializedSlot(slots, a, specializedSlotRawInt)
 				delete(tableFacts, a)
+			} else if ok && typ == TypeFloat {
+				setSpecializedSlot(slots, a, specializedSlotRawFloat)
+				delete(tableFacts, a)
 			} else if ok && typ == TypeString {
 				setSpecializedSlot(slots, a, specializedSlotRawString)
 				delete(tableFacts, a)
@@ -430,6 +440,9 @@ func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argF
 				delete(tableFacts, a)
 			} else if typedSelfFeedbackResultIsInt(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawInt)
+				delete(tableFacts, a)
+			} else if typedSelfFeedbackResultIsFloat(proto, pc) {
+				setSpecializedSlot(slots, a, specializedSlotRawFloat)
 				delete(tableFacts, a)
 			} else {
 				setSpecializedSlot(slots, a, specializedSlotUnknown)
@@ -444,10 +457,14 @@ func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argF
 			}
 			if fact, ok := tableFacts[b]; ok && fact.ArrayElementType == TypeInt {
 				setSpecializedSlot(slots, a, specializedSlotRawInt)
+			} else if fact, ok := tableFacts[b]; ok && fact.ArrayElementType == TypeFloat {
+				setSpecializedSlot(slots, a, specializedSlotRawFloat)
 			} else if typedSelfFeedbackResultIsTable(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawTable)
 			} else if typedSelfFeedbackResultIsInt(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawInt)
+			} else if typedSelfFeedbackResultIsFloat(proto, pc) {
+				setSpecializedSlot(slots, a, specializedSlotRawFloat)
 			} else {
 				setSpecializedSlot(slots, a, specializedSlotUnknown)
 			}
@@ -463,16 +480,25 @@ func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argF
 			if !typedSelfRKIsInt(slots, proto, b) {
 				return typedSelfABIReject(fmt.Sprintf("non-int table store index at pc %d", pc))
 			}
-		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_MOD:
-			if !typedSelfRKIsInt(slots, proto, b) || !typedSelfRKIsInt(slots, proto, c) {
-				return typedSelfABIReject(fmt.Sprintf("non-int arithmetic operand at pc %d", pc))
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_DIV, vm.OP_MOD:
+			left, lok := typedSelfRKNumericRep(slots, proto, b)
+			right, rok := typedSelfRKNumericRep(slots, proto, c)
+			if !lok || !rok {
+				return typedSelfABIReject(fmt.Sprintf("non-numeric arithmetic operand at pc %d", pc))
 			}
-			setSpecializedSlot(slots, a, specializedSlotRawInt)
+			if op == vm.OP_DIV ||
+				left == specializedSlotRawFloat || left == specializedSlotSelfCallRawFloat ||
+				right == specializedSlotRawFloat || right == specializedSlotSelfCallRawFloat {
+				setSpecializedSlot(slots, a, specializedSlotRawFloat)
+			} else {
+				setSpecializedSlot(slots, a, specializedSlotRawInt)
+			}
 		case vm.OP_UNM:
-			if !typedSelfSlotIsInt(getSpecializedSlot(slots, b)) {
-				return typedSelfABIReject("non-int unary operand")
+			rep := getSpecializedSlot(slots, b)
+			if !typedSelfSlotIsNumeric(rep) {
+				return typedSelfABIReject("non-numeric unary operand")
 			}
-			setSpecializedSlot(slots, a, specializedSlotRawInt)
+			setSpecializedSlot(slots, a, typedSelfNumericBaseRep(rep))
 		case vm.OP_EQ, vm.OP_LT, vm.OP_LE:
 			if !typedSelfCompareOK(slots, proto, b, c) {
 				return typedSelfABIReject("unsupported comparison operand")
@@ -505,6 +531,8 @@ func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argF
 				switch returnRep {
 				case SpecializedABIReturnRawInt:
 					setSpecializedSlot(slots, a, specializedSlotSelfCallRawInt)
+				case SpecializedABIReturnRawFloat:
+					setSpecializedSlot(slots, a, specializedSlotSelfCallRawFloat)
 				case SpecializedABIReturnRawTablePtr:
 					setSpecializedSlot(slots, a, specializedSlotSelfCallRawTable)
 				default:
@@ -558,7 +586,7 @@ func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argF
 			setSpecializedSlot(slots, a, specializedSlotRawInt)
 			setSpecializedSlot(slots, a+3, specializedSlotRawInt)
 		case vm.OP_LOADBOOL, vm.OP_GETUPVAL, vm.OP_NOT, vm.OP_CONCAT,
-			vm.OP_DIV, vm.OP_POW, vm.OP_CLOSURE,
+			vm.OP_POW, vm.OP_CLOSURE,
 			vm.OP_TFORCALL, vm.OP_TFORLOOP, vm.OP_VARARG, vm.OP_SELF,
 			vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV, vm.OP_APPEND, vm.OP_SETLIST:
 			return typedSelfABIReject("unsupported opcode")
@@ -941,6 +969,24 @@ func typedSelfRKIsInt(slots []specializedSlotRep, proto *vm.FuncProto, idx int) 
 	return typedSelfSlotIsInt(getSpecializedSlot(slots, idx))
 }
 
+func typedSelfRKNumericRep(slots []specializedSlotRep, proto *vm.FuncProto, idx int) (specializedSlotRep, bool) {
+	if idx >= vm.RKBit {
+		k := idx - vm.RKBit
+		if specializedABIConstIsInt(proto, k) {
+			return specializedSlotRawInt, true
+		}
+		if specializedABIConstIsFloat(proto, k) {
+			return specializedSlotRawFloat, true
+		}
+		return specializedSlotUnknown, false
+	}
+	rep := getSpecializedSlot(slots, idx)
+	if typedSelfSlotIsNumeric(rep) {
+		return rep, true
+	}
+	return specializedSlotUnknown, false
+}
+
 func typedSelfRKIsNil(slots []specializedSlotRep, proto *vm.FuncProto, idx int) bool {
 	if idx >= vm.RKBit {
 		k := idx - vm.RKBit
@@ -986,6 +1032,19 @@ func typedSelfFeedbackResultIsInt(proto *vm.FuncProto, pc int) bool {
 		return true
 	}
 	return proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) && proto.TableKeyFeedback[pc].ValueType == vm.FBInt
+}
+
+func typedSelfFeedbackResultIsFloat(proto *vm.FuncProto, pc int) bool {
+	if proto == nil || pc < 0 {
+		return false
+	}
+	if proto.Feedback != nil && pc < len(proto.Feedback) && proto.Feedback[pc].Result == vm.FBFloat {
+		return true
+	}
+	if proto.FieldAccessFeedback != nil && pc < len(proto.FieldAccessFeedback) && proto.FieldAccessFeedback[pc].ValueType == vm.FBFloat {
+		return true
+	}
+	return proto.TableKeyFeedback != nil && pc < len(proto.TableKeyFeedback) && proto.TableKeyFeedback[pc].ValueType == vm.FBFloat
 }
 
 func typedSelfParamFieldType(proto *vm.FuncProto, paramSlot, constIdx int) (Type, bool) {
@@ -1437,6 +1496,24 @@ func typedSelfSlotIsInt(rep specializedSlotRep) bool {
 	return rep == specializedSlotRawInt || rep == specializedSlotSelfCallRawInt
 }
 
+func typedSelfSlotIsFloat(rep specializedSlotRep) bool {
+	return rep == specializedSlotRawFloat || rep == specializedSlotSelfCallRawFloat
+}
+
+func typedSelfSlotIsNumeric(rep specializedSlotRep) bool {
+	return typedSelfSlotIsInt(rep) || typedSelfSlotIsFloat(rep)
+}
+
+func typedSelfNumericBaseRep(rep specializedSlotRep) specializedSlotRep {
+	if typedSelfSlotIsFloat(rep) {
+		return specializedSlotRawFloat
+	}
+	if typedSelfSlotIsInt(rep) {
+		return specializedSlotRawInt
+	}
+	return specializedSlotUnknown
+}
+
 func typedSelfSlotIsTable(rep specializedSlotRep) bool {
 	return rep == specializedSlotRawTable || rep == specializedSlotSelfCallRawTable
 }
@@ -1460,10 +1537,14 @@ func typedSelfReturnRep(slot specializedSlotRep, current SpecializedABIReturnRep
 	switch slot {
 	case specializedSlotRawInt:
 		return SpecializedABIReturnRawInt
+	case specializedSlotRawFloat:
+		return SpecializedABIReturnRawFloat
 	case specializedSlotRawTable:
 		return SpecializedABIReturnRawTablePtr
 	case specializedSlotSelfCallRawInt:
 		return SpecializedABIReturnRawInt
+	case specializedSlotSelfCallRawFloat:
+		return SpecializedABIReturnRawFloat
 	case specializedSlotSelfCallRawTable:
 		return SpecializedABIReturnRawTablePtr
 	case specializedSlotUnknown:
@@ -1521,6 +1602,10 @@ func specializedABIRepIsRawInt(rep specializedSlotRep) bool {
 
 func specializedABIConstIsInt(proto *vm.FuncProto, idx int) bool {
 	return idx >= 0 && idx < len(proto.Constants) && proto.Constants[idx].IsInt()
+}
+
+func specializedABIConstIsFloat(proto *vm.FuncProto, idx int) bool {
+	return idx >= 0 && idx < len(proto.Constants) && proto.Constants[idx].IsFloat()
 }
 
 func specializedABIConstString(proto *vm.FuncProto, idx int) string {

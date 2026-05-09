@@ -1371,6 +1371,13 @@ func (ec *emitContext) emitTypedSelfRawIntReturnEpilogue() {
 	ec.emitFullFrameRestoreAndReturn()
 }
 
+func (ec *emitContext) emitTypedSelfRawFloatReturnEpilogue() {
+	ec.asm.Label("t2_typed_self_raw_float_epilogue")
+	ec.asm.MOVimm16(jit.X16, 0)
+	ec.asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+	ec.emitFullFrameRestoreAndReturn()
+}
+
 func (ec *emitContext) emitTypedSelfReturnEpilogue() {
 	asm := ec.asm
 	asm.Label("t2_typed_self_epilogue")
@@ -1385,6 +1392,11 @@ func (ec *emitContext) emitTypedSelfReturnEpilogue() {
 		emitCheckIsInt(asm, jit.X0, jit.X1)
 		asm.BCond(jit.CondNE, failLabel)
 		jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	case SpecializedABIReturnRawFloat:
+		asm.LSRimm(jit.X1, jit.X0, 48)
+		asm.MOVimm16(jit.X2, jit.NB_TagNilShr48)
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondGE, failLabel)
 	case SpecializedABIReturnRawTablePtr:
 		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, failLabel)
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
@@ -1646,6 +1658,8 @@ func (ec *emitContext) emitEpilogue() {
 	if ec.typedSelfABI.Eligible {
 		if ec.typedSelfABI.Return == SpecializedABIReturnRawInt {
 			ec.emitTypedSelfRawIntReturnEpilogue()
+		} else if ec.typedSelfABI.Return == SpecializedABIReturnRawFloat {
+			ec.emitTypedSelfRawFloatReturnEpilogue()
 		}
 		ec.emitTypedSelfReturnEpilogue()
 		ec.emitTypedSelfEntry()

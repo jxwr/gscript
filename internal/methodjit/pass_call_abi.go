@@ -60,6 +60,8 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 			switch desc.ReturnRep {
 			case SpecializedABIReturnRawInt:
 				instr.Type = TypeInt
+			case SpecializedABIReturnRawFloat:
+				instr.Type = TypeFloat
 			case SpecializedABIReturnRawTablePtr:
 				instr.Type = TypeTable
 			default:
@@ -146,6 +148,8 @@ func callABIAnnotateTypedSelfResult(fn *Function, instr *Instr, tails map[int]bo
 	switch abi.Return {
 	case SpecializedABIReturnRawInt:
 		instr.Type = TypeInt
+	case SpecializedABIReturnRawFloat:
+		instr.Type = TypeFloat
 	case SpecializedABIReturnRawTablePtr:
 		instr.Type = TypeTable
 	case SpecializedABIReturnNone:
@@ -244,7 +248,9 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 	if !abi.Eligible {
 		return CallABIDescriptor{}, false, "callee typed-peer ABI rejected: " + abi.RejectWhy
 	}
-	if abi.Return != SpecializedABIReturnRawInt && abi.Return != SpecializedABIReturnRawTablePtr {
+	if abi.Return != SpecializedABIReturnRawInt &&
+		abi.Return != SpecializedABIReturnRawFloat &&
+		abi.Return != SpecializedABIReturnRawTablePtr {
 		return CallABIDescriptor{}, false, "typed-peer return is not directly representable"
 	}
 	numArgs := len(instr.Args) - 1

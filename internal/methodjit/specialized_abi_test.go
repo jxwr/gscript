@@ -237,6 +237,53 @@ func checkTree(node) {
 	}
 }
 
+func TestAnalyzeTypedPeerABIWithArgFacts_RawFloatReturn(t *testing.T) {
+	top := compileTop(t, `func step_worker(a, tick) {
+	a.x = a.x + a.vx
+	a.y = a.y + a.vy
+	a.load = (a.load + tick + a.id) % 97
+	if a.load > 70 {
+		a.vx = a.vx * 0.99
+		a.vy = a.vy * 1.01
+	} else {
+		a.vx = a.vx + 0.001
+	}
+	return a.x * 3.0 + a.y * 2.0 + a.load
+}`)
+	proto := findProtoByName(top, "step_worker")
+	if proto == nil {
+		t.Fatal("step_worker proto not found")
+	}
+	fact := FixedShapeTableFact{
+		ShapeID:    312,
+		FieldNames: []string{"id", "kind", "x", "y", "vx", "vy", "load", "step"},
+		FieldTypes: map[string]Type{
+			"id":   TypeInt,
+			"x":    TypeFloat,
+			"y":    TypeFloat,
+			"vx":   TypeFloat,
+			"vy":   TypeFloat,
+			"load": TypeInt,
+		},
+	}
+	abi := AnalyzeTypedPeerABIWithArgFacts(proto, map[int]FixedShapeTableFact{0: fact})
+	if !abi.Eligible {
+		t.Fatalf("typed-peer raw-float ABI rejected: %s", abi.RejectWhy)
+	}
+	if abi.Return != SpecializedABIReturnRawFloat {
+		t.Fatalf("return=%s want raw-float; abi=%+v", specializedABIReturnName(abi.Return), abi)
+	}
+	want := []SpecializedABIParamRep{SpecializedABIParamRawTablePtr, SpecializedABIParamRawInt}
+	if len(abi.Params) != len(want) {
+		t.Fatalf("params=%v want %v", abi.Params, want)
+	}
+	for i := range want {
+		if abi.Params[i] != want[i] {
+			t.Fatalf("param %d=%d want %d; abi=%+v", i, abi.Params[i], want[i], abi)
+		}
+	}
+}
+
 func TestAnalyzeTypedSelfABI_QuicksortZeroResult(t *testing.T) {
 	top := compileTop(t, `func quicksort(arr, lo, hi) {
 	if lo >= hi { return }
