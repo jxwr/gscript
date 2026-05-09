@@ -418,6 +418,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 			typedEntryOff = off
 		}
 	}
+	typedPeerFramePlan := AnalyzeTypedPeerFramePlan(fn, alloc, typedPeerABI)
 
 	// Allocate per-GetGlobal value cache if any GetGlobal instructions exist.
 	var globalCache []uint64
@@ -450,6 +451,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		TypedSelfABI:             typedEntryABI,
 		TypedPeerABI:             typedPeerABI,
 		TypedEntryOffset:         typedEntryOff,
+		TypedPeerFramePlan:       typedPeerFramePlan,
 		GlobalCache:              globalCache,
 		GlobalCacheConsts:        ec.globalCacheConsts,
 		GlobalGuardConsts:        globalGuardConsts,

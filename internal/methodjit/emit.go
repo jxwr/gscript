@@ -507,6 +507,11 @@ type CompiledFunction struct {
 	// callers use FuncProto.Tier2TypedEntryPtr after runtime type guards.
 	TypedEntryOffset int
 
+	// TypedPeerFramePlan records why the published typed peer entry must use
+	// the conservative full frame, or why a future thin JIT-to-JIT entry would
+	// be allowed.
+	TypedPeerFramePlan Tier2TypedPeerFramePlan
+
 	// FixedRecursiveTableFold is a whole-call Tier 2 protocol for fixed-field
 	// recursive table walkers whose bytecode reduces to an integer fold over
 	// self-recursive field children.
