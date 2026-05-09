@@ -4,6 +4,7 @@ package methodjit
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -48,6 +49,45 @@ type SpecializedABI struct {
 	Return    SpecializedABIReturnRep
 	Eligible  bool
 	RejectWhy string
+}
+
+func specializedABIParamName(rep SpecializedABIParamRep) string {
+	switch rep {
+	case SpecializedABIParamRawInt:
+		return "raw-int"
+	case SpecializedABIParamRawTablePtr:
+		return "raw-table"
+	case SpecializedABIParamBoxed:
+		return "boxed"
+	default:
+		return "unknown"
+	}
+}
+
+func specializedABIParamSummary(params []SpecializedABIParamRep) string {
+	if len(params) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(params))
+	for _, rep := range params {
+		parts = append(parts, specializedABIParamName(rep))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
+func specializedABIReturnName(rep SpecializedABIReturnRep) string {
+	switch rep {
+	case SpecializedABIReturnNone:
+		return "none"
+	case SpecializedABIReturnBoxed:
+		return "boxed"
+	case SpecializedABIReturnRawInt:
+		return "raw-int"
+	case SpecializedABIReturnRawTablePtr:
+		return "raw-table"
+	default:
+		return "unknown"
+	}
 }
 
 // RawIntSelfABI is the compact codegen contract for the private numeric
@@ -276,6 +316,10 @@ func AnalyzeRawIntSelfABI(proto *vm.FuncProto) RawIntSelfABI {
 // parameter or a table return, such as makeTree(int)->table and
 // checkTree(table)->int.
 func AnalyzeTypedSelfABI(proto *vm.FuncProto) TypedSelfABI {
+	return analyzeTypedABI(proto, true)
+}
+
+func analyzeTypedABI(proto *vm.FuncProto, requireSelfCall bool) TypedSelfABI {
 	if proto == nil {
 		return typedSelfABIReject("nil proto")
 	}
@@ -491,7 +535,7 @@ func AnalyzeTypedSelfABI(proto *vm.FuncProto) TypedSelfABI {
 	if !sawReturn {
 		return typedSelfABIReject("no return")
 	}
-	if !sawSelfCall {
+	if requireSelfCall && !sawSelfCall {
 		return typedSelfABIReject("no self call")
 	}
 	if !usesTableABI {
@@ -508,6 +552,19 @@ func AnalyzeTypedSelfABI(proto *vm.FuncProto) TypedSelfABI {
 		Params:     params,
 		Return:     returnRep,
 	}
+}
+
+func AnalyzeTypedPeerABI(proto *vm.FuncProto) TypedSelfABI {
+	abi := analyzeTypedABI(proto, false)
+	if !abi.Eligible {
+		return abi
+	}
+	for _, rep := range abi.Params {
+		if rep == SpecializedABIParamRawTablePtr {
+			return abi
+		}
+	}
+	return typedSelfABIReject("no table parameter")
 }
 
 func qualifiesForNumericCrossRecursiveCandidate(proto *vm.FuncProto) bool {

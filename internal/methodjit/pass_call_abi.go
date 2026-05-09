@@ -49,6 +49,9 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 			if desc.Callee == nil {
 				if summary := fieldShapeCalleeSummary(fn, instr); summary != "" {
 					reason = reason + "; field-shape polymorphic callee set: " + summary
+					if abiSummary := fieldShapeCalleeABISummary(fn, instr); abiSummary != "" {
+						reason = reason + "; ABI candidates: " + abiSummary
+					}
 				}
 				functionRemarks(fn).Add("CallABI", "missed", block.ID, instr.ID, instr.Op, reason)
 				continue
@@ -271,6 +274,35 @@ func fieldShapeCalleeSummary(fn *Function, instr *Instr) string {
 			name = c.VMProto.Name
 		}
 		parts = append(parts, fmt.Sprintf("shape=%d field=%d proto=%s", c.ShapeID, c.FieldIdx, name))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func fieldShapeCalleeABISummary(fn *Function, instr *Instr) string {
+	cases := fieldShapeCalleeCases(fn, instr)
+	if len(cases) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cases))
+	for _, c := range cases {
+		if c.VMProto == nil {
+			parts = append(parts, fmt.Sprintf("shape=%d proto=<nil> abi=missing", c.ShapeID))
+			continue
+		}
+		typed := AnalyzeTypedPeerABI(c.VMProto)
+		if typed.Eligible {
+			parts = append(parts, fmt.Sprintf("shape=%d proto=%s abi=typed-peer params=%s return=%s",
+				c.ShapeID, c.VMProto.Name, specializedABIParamSummary(typed.Params), specializedABIReturnName(typed.Return)))
+			continue
+		}
+		raw := AnalyzeSpecializedABI(c.VMProto)
+		if raw.Eligible {
+			parts = append(parts, fmt.Sprintf("shape=%d proto=%s abi=raw-int params=%s return=%s",
+				c.ShapeID, c.VMProto.Name, specializedABIParamSummary(raw.Params), specializedABIReturnName(raw.Return)))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("shape=%d proto=%s abi=boxed reason=%s",
+			c.ShapeID, c.VMProto.Name, typed.RejectWhy))
 	}
 	return strings.Join(parts, "; ")
 }
