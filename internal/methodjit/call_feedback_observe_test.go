@@ -55,3 +55,32 @@ func TestObserveTier2CallExitFeedbackUsesCallSourcePC(t *testing.T) {
 		t.Fatalf("StableCalleeVMProto=(%v,%v), want callee", got, ok)
 	}
 }
+
+func TestMergeTier2CallCacheFeedbackRecordsPolymorphicVMProtos(t *testing.T) {
+	calleeA := &vm.FuncProto{Name: "a"}
+	calleeB := &vm.FuncProto{Name: "b"}
+	caller := &vm.FuncProto{
+		Name:             "caller",
+		Code:             []uint32{vm.EncodeABC(vm.OP_CALL, 0, 2, 2)},
+		CallSiteFeedback: make([]vm.CallSiteFeedback, 1),
+	}
+	cf := &CompiledFunction{}
+	mergeTier2CallCacheEntryForTest(caller, cf, 0, 0, calleeA, calleeB)
+
+	mergeTier2CallCacheFeedback(caller, cf)
+
+	fb := caller.CallSiteFeedback[0]
+	if fb.Count < wholeCallKernelMinStableObservations {
+		t.Fatalf("feedback count=%d, want at least %d", fb.Count, wholeCallKernelMinStableObservations)
+	}
+	if fb.NArgs != 1 || fb.ResultArity != 2 {
+		t.Fatalf("arity feedback nArgs=%d result=%d", fb.NArgs, fb.ResultArity)
+	}
+	if fb.Flags&vm.CallSiteCalleePolymorphic == 0 {
+		t.Fatalf("callee polymorphic flag not set: %#v", fb)
+	}
+	protos := fb.PolymorphicVMProtos()
+	if len(protos) != 2 || protos[0] != calleeA || protos[1] != calleeB {
+		t.Fatalf("polymorphic protos=%#v, want [%p %p]", protos, calleeA, calleeB)
+	}
+}

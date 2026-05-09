@@ -140,6 +140,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 
 		switch ctx.ExitCode {
 		case ExitNormal:
+			mergeTier2CallCacheFeedback(proto, cf)
 			// Tier 2 return: result in regs[base] (slot 0 relative to base).
 			result := regs[base]
 			return runtime.ReuseValueSlice1(retBuf, result), nil

@@ -449,6 +449,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		GlobalGuardConsts:        globalGuardConsts,
 		NativeSetGlobals:         nativeSetGlobals,
 		CallCache:                callCache,
+		CallCachePCs:             ec.callCachePCs,
 		NewTableCaches:           ec.newTableCaches,
 		FixedTableArgSlots:       ec.fixedTableArgSlots,
 		StringConstTables:        fn.StringConstTables,
@@ -805,6 +806,7 @@ type emitContext struct {
 	// direct-entry addr, proto ptr, direct-entry version). Incremented in
 	// emitCallNative.
 	nextCallCacheIndex int
+	callCachePCs       []int
 
 	// fixedTableArgSlots records VM home slots for N-field fixed constructors
 	// whose exit fallback gathers an arbitrary number of constructor values.

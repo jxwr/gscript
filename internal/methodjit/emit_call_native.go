@@ -143,6 +143,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	// Allocate this call site's cache slot (4 ways × 4 uint64).
 	icIdx := ec.nextCallCacheIndex
 	ec.nextCallCacheIndex++
+	ec.recordCallCachePC(icIdx, instr.SourcePC)
 	cacheOff := icIdx * tier2CallCacheStrideBytes
 	icDoneLabel := ec.uniqueLabel("t2call_ic_done")
 
@@ -1416,6 +1417,16 @@ func (ec *emitContext) staticNoDepthCallee(instr *Instr) *vm.FuncProto {
 	return callee
 }
 
+func (ec *emitContext) recordCallCachePC(cacheIndex, pc int) {
+	if ec == nil || cacheIndex < 0 {
+		return
+	}
+	for len(ec.callCachePCs) <= cacheIndex {
+		ec.callCachePCs = append(ec.callCachePCs, -1)
+	}
+	ec.callCachePCs[cacheIndex] = pc
+}
+
 func (ec *emitContext) rawIntPeerCallee(instr *Instr) *vm.FuncProto {
 	if instr == nil || ec.fn == nil || instr.Type != TypeInt {
 		return nil
@@ -1693,6 +1704,7 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 
 	icIdx := ec.nextCallCacheIndex
 	ec.nextCallCacheIndex++
+	ec.recordCallCachePC(icIdx, instr.SourcePC)
 	cacheOff := icIdx * tier2CallCacheStrideBytes
 	icHitLabel := ec.uniqueLabel("t2tail_ic_hit")
 	icDoneLabel := ec.uniqueLabel("t2tail_ic_done")

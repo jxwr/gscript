@@ -576,6 +576,10 @@ type CompiledFunction struct {
 	// entry. Version changes refresh from DirectEntryPtr, then
 	// Tier2DirectEntryPtr, preserving fallback when both entries are cleared.
 	CallCache []uint64
+	// CallCachePCs maps each per-OpCall IC slot to its bytecode PC so the
+	// execute loop can fold native IC observations back into CallSiteFeedback
+	// after long Tier 2 runs.
+	CallCachePCs []int
 
 	// NewTableCaches is indexed by IR instruction ID. Hinted dense table
 	// allocation sites refill it on table-exit misses; native NewTable code pops
