@@ -11,6 +11,7 @@ const tier2MaxFeedbackArrayHint = 1 << 20
 
 type tablePreallocHint struct {
 	arrayHint int64
+	hashHint  int64
 	kind      runtime.ArrayKind
 	mixed     bool
 }
@@ -40,6 +41,15 @@ func (h *tablePreallocHint) observeIntKeyFeedback(feedback vm.TableKeyFeedback, 
 	h.observeArrayHint(needed)
 }
 
+func (h *tablePreallocHint) observeHashHint(hint int64) {
+	if hint > runtime.SmallFieldCap {
+		hint = runtime.SmallFieldCap
+	}
+	if hint > h.hashHint {
+		h.hashHint = hint
+	}
+}
+
 // TablePreallocHintPass annotates empty table allocations that feed observed
 // integer-key stores. Feedback is preferred, but local IR value types can also
 // seed dense typed tables before feedback is available. The hints are consumed
@@ -59,9 +69,17 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 				continue
 			}
 			forceMixed := setTableHasPolymorphicKindFeedback(fn, instr)
-			tbl := instr.Args[0]
-			tblDef, globalBacked := tablePreallocTableDef(tbl, defs, globalNewTables)
-			if tblDef == nil || tblDef.Op != OpNewTable {
+			tblDefs := tablePreallocTableDefs(instr.Args[0], defs, globalNewTables)
+			if len(tblDefs) == 0 {
+				continue
+			}
+			if setTableHasDynamicStringKey(instr, defs) {
+				for _, tblDef := range tblDefs {
+					hint := candidates[tblDef.ID]
+					hint.observeHashHint(runtime.SmallFieldCap)
+					hint.mixed = true
+					candidates[tblDef.ID] = hint
+				}
 				continue
 			}
 			kind, hasKind := runtime.ArrayMixed, false
@@ -72,32 +90,35 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			if !forceMixed && !hasKind && instr.Aux2 == 0 && !hasMixedValue {
 				continue
 			}
-			hint := candidates[tblDef.ID]
-			arrayHint := int64(tier2FeedbackArrayHint)
-			largeLoopBuilder := false
-			if li != nil && tblDef.Block != nil && li.loopBlocks[block.ID] && !li.loopBlocks[tblDef.Block.ID] {
-				if !globalBacked {
-					arrayHint = tier2FeedbackOuterLoopArrayHint
+			for _, tblDef := range tblDefs {
+				hint := candidates[tblDef.ID]
+				arrayHint := int64(tier2FeedbackArrayHint)
+				largeLoopBuilder := false
+				globalBacked := tblDef != tablePreallocValueDef(instr.Args[0], defs)
+				if li != nil && tblDef.Block != nil && li.loopBlocks[block.ID] && !li.loopBlocks[tblDef.Block.ID] {
+					if !globalBacked {
+						arrayHint = tier2FeedbackOuterLoopArrayHint
+					}
+					largeLoopBuilder = true
 				}
-				largeLoopBuilder = true
-			}
-			hint.observeArrayHint(arrayHint)
-			if fn.Proto != nil && fn.Proto.TableKeyFeedback != nil && instr.HasSource && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.TableKeyFeedback) {
-				hint.observeIntKeyFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC], largeLoopBuilder)
-			}
-			if forceMixed || hasMixedValue {
-				hint.mixed = true
-			}
-			if hasKind {
-				if hint.kind == runtime.ArrayMixed {
-					hint.kind = kind
-				} else if hint.kind != kind {
+				hint.observeArrayHint(arrayHint)
+				if fn.Proto != nil && fn.Proto.TableKeyFeedback != nil && instr.HasSource && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.TableKeyFeedback) {
+					hint.observeIntKeyFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC], largeLoopBuilder)
+				}
+				if forceMixed || hasMixedValue {
 					hint.mixed = true
 				}
-			} else {
-				hint.mixed = true
+				if hasKind {
+					if hint.kind == runtime.ArrayMixed {
+						hint.kind = kind
+					} else if hint.kind != kind {
+						hint.mixed = true
+					}
+				} else {
+					hint.mixed = true
+				}
+				candidates[tblDef.ID] = hint
 			}
-			candidates[tblDef.ID] = hint
 		}
 	}
 	if len(candidates) == 0 {
@@ -112,14 +133,30 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			if !ok {
 				continue
 			}
+			hashHint, kind := unpackNewTableAux2(instr.Aux2)
+			if hint.hashHint > int64(hashHint) {
+				hashHint = int(hint.hashHint)
+			}
 			instr.Aux = hint.arrayHint
 			if !hint.mixed && hint.kind != runtime.ArrayMixed {
-				instr.Aux2 = packNewTableAux2(instr.Aux2, hint.kind)
+				kind = hint.kind
 			}
+			instr.Aux2 = packNewTableAux2(int64(hashHint), kind)
 		}
 	}
 	annotateLocalTableArrayKinds(fn, candidates, globalNewTables)
 	return fn, nil
+}
+
+func setTableHasDynamicStringKey(instr *Instr, defs map[int]*Instr) bool {
+	if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 2 || instr.Args[1] == nil {
+		return false
+	}
+	if tableKeyProvenInt(instr.Args[1]) {
+		return false
+	}
+	keyDef := tablePreallocValueDef(instr.Args[1], defs)
+	return keyDef == nil || keyDef.Type == TypeString || keyDef.Type == TypeAny || keyDef.Type == TypeUnknown
 }
 
 func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePreallocHint, globalNewTables map[int64]*Instr) {
@@ -315,6 +352,34 @@ func tablePreallocTableDef(v *Value, defs map[int]*Instr, globalNewTables map[in
 		return def, false
 	}
 	return globalNewTables[def.Aux], true
+}
+
+func tablePreallocTableDefs(v *Value, defs map[int]*Instr, globalNewTables map[int64]*Instr) []*Instr {
+	seen := make(map[int]bool)
+	var out []*Instr
+	var visit func(*Value)
+	visit = func(value *Value) {
+		def, _ := tablePreallocTableDef(value, defs, globalNewTables)
+		if def == nil {
+			return
+		}
+		if seen[def.ID] {
+			return
+		}
+		seen[def.ID] = true
+		if def.Op == OpNewTable {
+			out = append(out, def)
+			return
+		}
+		if def.Op != OpPhi {
+			return
+		}
+		for _, arg := range def.Args {
+			visit(arg)
+		}
+	}
+	visit(v)
+	return out
 }
 
 func tablePreallocDefs(fn *Function) map[int]*Instr {

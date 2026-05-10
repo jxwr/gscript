@@ -65,6 +65,46 @@ func (ec *emitContext) emitDynamicStringSetTableCache(instr *Instr, doneLabel st
 		asm.MOVimm16(jit.X5, 1)
 		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 		asm.B(doneLabel)
+	}, dynamicStringCacheHandlers{
+		appendHit: func(fieldIdxReg, entryReg jit.Reg) {
+			valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+			if valReg != jit.X4 {
+				asm.MOVreg(jit.X4, valReg)
+			}
+			asm.LoadImm64(jit.X5, nb64(jit.NB_ValNil))
+			asm.CMPreg(jit.X4, jit.X5)
+			asm.BCond(jit.CondEQ, missLabel)
+			asm.LDR(jit.X5, entryReg, tableStringKeyCacheEntryAppendShape)
+			asm.CBZ(jit.X5, missLabel)
+			asm.LDR(jit.X6, jit.X0, jit.TableOffSmap)
+			asm.CBNZ(jit.X6, missLabel)
+			asm.LDR(jit.X6, jit.X0, jit.TableOffLazyTree)
+			asm.CBNZ(jit.X6, missLabel)
+			asm.LDR(jit.X6, jit.X0, jit.TableOffSvalsLen)
+			asm.CMPreg(fieldIdxReg, jit.X6)
+			asm.BCond(jit.CondNE, missLabel)
+			asm.CMPimm(fieldIdxReg, runtime.SmallFieldCap)
+			asm.BCond(jit.CondGE, missLabel)
+			asm.LDR(jit.X7, jit.X0, jit.TableOffSvals+16)
+			asm.CMPreg(fieldIdxReg, jit.X7)
+			asm.BCond(jit.CondGE, missLabel)
+			asm.LDR(jit.X7, jit.X0, jit.TableOffSvals)
+			asm.STRreg(jit.X4, jit.X7, fieldIdxReg)
+			asm.ADDimm(jit.X6, jit.X6, 1)
+			asm.STR(jit.X6, jit.X0, jit.TableOffSvalsLen)
+			asm.LDRW(jit.X7, entryReg, tableStringKeyCacheEntryShapeID)
+			asm.STRW(jit.X7, jit.X0, jit.TableOffShapeID)
+			asm.STR(jit.X5, jit.X0, jit.TableOffShape)
+			asm.LDR(jit.X7, jit.X5, shapeOffFieldKeys)
+			asm.STR(jit.X7, jit.X0, jit.TableOffSkeys)
+			asm.LDR(jit.X7, jit.X5, shapeOffFieldKeysLen)
+			asm.STR(jit.X7, jit.X0, jit.TableOffSkeysLen)
+			asm.LDR(jit.X7, jit.X5, shapeOffFieldKeysCap)
+			asm.STR(jit.X7, jit.X0, jit.TableOffSkeys+16)
+			asm.MOVimm16(jit.X7, 1)
+			asm.STRB(jit.X7, jit.X0, jit.TableOffKeysDirty)
+			asm.B(doneLabel)
+		},
 	})
 	asm.Label(missLabel)
 }
@@ -108,17 +148,20 @@ func (ec *emitContext) shouldEmitDynamicStringKeyCache(instr *Instr) bool {
 			return true
 		}
 		// Some late loops can compile before their dynamic key sites have
-		// feedback. For reads, emit the string-key probe whenever the key is
-		// not proven int; non-string keys fall through to the existing array
-		// path and preserve the old fallback behavior.
-		return instr.Op == OpGetTable && !tableKeyProvenInt(instr.Args[1])
+		// feedback. Emit the string-key probe whenever the key is not proven
+		// int; non-string keys fall through to the existing array path and
+		// preserve the old fallback behavior. Writes only handle existing
+		// small-table fields here; new-key append still falls back through the
+		// normal SetTable exit.
+		return (instr.Op == OpGetTable || instr.Op == OpSetTable) && !tableKeyProvenInt(instr.Args[1])
 	}
 	return true
 }
 
 type dynamicStringCacheHandlers struct {
-	valueHit func(jit.Reg)
-	notFound func()
+	valueHit  func(jit.Reg)
+	notFound  func()
+	appendHit func(fieldIdxReg, entryReg jit.Reg)
 }
 
 func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel string, hit func(fieldIdxReg jit.Reg), options ...dynamicStringCacheHandlers) {
@@ -138,7 +181,9 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.CBNZ(jit.X8, missLabel)
 	asm.LDRW(jit.X7, jit.X0, jit.TableOffShapeID)
 	smapCacheLabel := ec.uniqueLabel("dyn_string_smap_cache")
-	asm.CBZ(jit.X7, smapCacheLabel)
+	if handlers.appendHit == nil {
+		asm.CBZ(jit.X7, smapCacheLabel)
+	}
 
 	scanLabel := ec.uniqueLabel("dyn_string_scan")
 	asm.LDR(jit.X3, mRegCtx, execCtxOffBaselineTableStringKeyCache)
@@ -165,7 +210,20 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.BCond(jit.CondNE, cacheNextLabel)
 	asm.LDRW(jit.X10, jit.X3, tableStringKeyCacheEntryShapeID)
 	asm.CMPreg(jit.X10, jit.X7)
-	asm.BCond(jit.CondNE, cacheNextLabel)
+	if handlers.appendHit == nil {
+		asm.BCond(jit.CondNE, cacheNextLabel)
+	} else {
+		appendCheckLabel := ec.uniqueLabel("dyn_string_cache_append_check")
+		asm.BCond(jit.CondNE, appendCheckLabel)
+		asm.B(appendCheckLabel + "_done")
+		asm.Label(appendCheckLabel)
+		asm.LDRW(jit.X10, jit.X3, tableStringKeyCacheEntryAppendShapeID)
+		asm.CMPreg(jit.X10, jit.X7)
+		asm.BCond(jit.CondNE, cacheNextLabel)
+		asm.LDR(jit.X11, jit.X3, tableStringKeyCacheEntryFieldIdx)
+		handlers.appendHit(jit.X11, jit.X3)
+		asm.Label(appendCheckLabel + "_done")
+	}
 	asm.LDR(jit.X11, jit.X3, tableStringKeyCacheEntryFieldIdx)
 	asm.LDR(jit.X10, jit.X0, jit.TableOffSvalsLen)
 	asm.CMPreg(jit.X11, jit.X10)

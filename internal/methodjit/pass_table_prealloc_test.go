@@ -95,6 +95,51 @@ func TestTablePreallocHintPassDoesNotTypeDynamicStringMapMissesAsTable(t *testin
 	if gotGet.Type != TypeAny {
 		t.Fatalf("dynamic string-key GetTable type = %s, want TypeAny", gotGet.Type)
 	}
+	newTable := got.Entry.Instrs[0]
+	hashHint, kind := unpackNewTableAux2(newTable.Aux2)
+	if hashHint != runtime.SmallFieldCap {
+		t.Fatalf("hash hint = %d, want %d", hashHint, runtime.SmallFieldCap)
+	}
+	if kind != runtime.ArrayMixed {
+		t.Fatalf("array kind = %d, want mixed", kind)
+	}
+}
+
+func TestTablePreallocHintPassPreallocatesPhiDynamicStringNewTable(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_phi_string"}, NumRegs: 5}
+	entry, header, body, exit := buildSimpleLoop(fn)
+
+	existing := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	fresh := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: entry}
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	entryJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: entry, Aux: int64(header.ID)}
+	entry.Instrs = []*Instr{existing, fresh, seed, entryJump}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeTable, Args: []*Value{fresh.Value(), existing.Value()}, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: header}
+	headerBranch := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown,
+		Args: []*Value{cond.Value()}, Aux: int64(body.ID), Aux2: int64(exit.ID), Block: header}
+	header.Instrs = []*Instr{phi, cond, headerBranch}
+
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeString, Aux: 1, Block: body}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: body}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{phi.Value(), key.Value(), val.Value()}, Block: body}
+	bodyJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: body, Aux: int64(header.ID)}
+	body.Instrs = []*Instr{key, val, set, bodyJump}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Args: []*Value{seed.Value()}, Block: exit}}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+	hashHint, kind := unpackNewTableAux2(got.Entry.Instrs[1].Aux2)
+	if hashHint != runtime.SmallFieldCap {
+		t.Fatalf("phi incoming NewTable hash hint = %d, want %d", hashHint, runtime.SmallFieldCap)
+	}
+	if kind != runtime.ArrayMixed {
+		t.Fatalf("phi incoming NewTable kind = %d, want mixed", kind)
+	}
 }
 
 func TestTablePreallocHintPassFollowsSingleGlobalNewTable(t *testing.T) {

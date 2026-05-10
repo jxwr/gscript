@@ -401,11 +401,13 @@ var (
 	goFunctionOffNativeKind = int(unsafe.Offsetof(runtime.GoFunction{}.NativeKind))
 	goFunctionOffNativeData = int(unsafe.Offsetof(runtime.GoFunction{}.NativeData))
 
-	tableStringKeyCacheEntrySize     = int(unsafe.Sizeof(runtime.TableStringKeyCacheEntry{}))
-	tableStringKeyCacheEntryKeyData  = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.KeyData))
-	tableStringKeyCacheEntryKeyLen   = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.KeyLen))
-	tableStringKeyCacheEntryFieldIdx = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.FieldIdx))
-	tableStringKeyCacheEntryShapeID  = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.ShapeID))
+	tableStringKeyCacheEntrySize          = int(unsafe.Sizeof(runtime.TableStringKeyCacheEntry{}))
+	tableStringKeyCacheEntryKeyData       = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.KeyData))
+	tableStringKeyCacheEntryKeyLen        = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.KeyLen))
+	tableStringKeyCacheEntryFieldIdx      = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.FieldIdx))
+	tableStringKeyCacheEntryShapeID       = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.ShapeID))
+	tableStringKeyCacheEntryAppendShapeID = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.AppendShapeID))
+	tableStringKeyCacheEntryAppendShape   = int(unsafe.Offsetof(runtime.TableStringKeyCacheEntry{}.AppendShape))
 
 	nativeStringQueryCacheEntrySize    = int(unsafe.Sizeof(runtime.NativeStringQueryCacheEntry{}))
 	nativeStringQueryCacheEntryTable   = int(unsafe.Offsetof(runtime.NativeStringQueryCacheEntry{}.Table))

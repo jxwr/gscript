@@ -68,7 +68,7 @@ const (
 	// Type-specialized array fields (added at end of Table struct)
 	TableOffArrayKind     = 137 // ArrayKind (uint8)
 	TableOffShapeID       = 140 // uint32 — shape identifier for field cache validation
-	TableOffShape         = 144 // *Shape (pointer, 8 bytes) — TODO: verify with unsafe.Offsetof
+	TableOffShape         = 216 // *Shape (pointer, 8 bytes)
 	TableOffIntArray      = 144 // []int64 slice header (ptr+len+cap = 24 bytes)
 	TableOffIntArrayLen   = 152 // intArray slice len field (8 bytes after data ptr)
 	TableOffIntArrayCap   = 160 // intArray slice cap field
@@ -247,6 +247,9 @@ func init() {
 	shOff := runtime.TableShapeIDOffset()
 	if shOff != TableOffShapeID {
 		panic("jit: Table.shapeID offset mismatch: expected " + itoa(TableOffShapeID) + ", got " + itoa(int(shOff)))
+	}
+	if shapeOff := runtime.TableShapeOffset(); shapeOff != TableOffShape {
+		panic("jit: Table.shape offset mismatch: expected " + itoa(TableOffShape) + ", got " + itoa(int(shapeOff)))
 	}
 	frCtorOff, frMaterializedOff, frShapeIDOff, frNOff, frValuesOff := runtime.FixedRecordOffsets()
 	if frCtorOff != FixedRecordOffCtor {

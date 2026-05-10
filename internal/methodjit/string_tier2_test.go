@@ -830,6 +830,124 @@ func lookup(n) {
 	}
 }
 
+func TestTier2_DynamicStringKeyCacheSetTable_NoLoopTableExit(t *testing.T) {
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+
+	src := `
+func update(n) {
+    keys := {"a", "b", "c", "d"}
+    totals := {a: 1, b: 2, c: 3, d: 4}
+    for i := 1; i <= n; i++ {
+        k := keys[(i % 4) + 1]
+        totals[k] = totals[k] + i
+    }
+    return totals.a + totals.b + totals.c + totals.d
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "update")
+	if proto == nil {
+		t.Fatal("update proto not found")
+	}
+	proto.EnsureFeedback()
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("update")
+	wantValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(80)})
+	if err != nil {
+		t.Fatalf("warm update: %v", err)
+	}
+	want := requireOneInt(t, "VM update", wantValues)
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(update): %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(80)})
+	if err != nil {
+		t.Fatalf("Tier2 update: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 update", gotValues)
+	if got != want {
+		t.Fatalf("update Tier2=%d, want VM=%d", got, want)
+	}
+
+	var setTableExits uint64
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "update" && site.ExitName == "ExitTableExit" && site.Reason == "SetTable" {
+			setTableExits += site.Count
+		}
+	}
+	if setTableExits != 0 {
+		t.Fatalf("dynamic string-key update should stay native, SetTable exits=%d sites=%#v", setTableExits, tm.ExitStats().Sites)
+	}
+}
+
+func TestTier2_DynamicStringKeyCacheSetTableAppend_NoLoopTableExit(t *testing.T) {
+	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
+
+	src := `
+func build(n) {
+    keys := {"a", "b", "c", "d"}
+    sum := 0
+    for i := 1; i <= n; i++ {
+        t := {}
+        k := keys[(i % 4) + 1]
+        t[k] = i
+        sum = sum + t[k]
+    }
+    return sum
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "build")
+	if proto == nil {
+		t.Fatal("build proto not found")
+	}
+	proto.EnsureFeedback()
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("build")
+	wantValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(80)})
+	if err != nil {
+		t.Fatalf("warm build: %v", err)
+	}
+	want := requireOneInt(t, "VM build", wantValues)
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(build): %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, []runtime.Value{runtime.IntValue(80)})
+	if err != nil {
+		t.Fatalf("Tier2 build: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 build", gotValues)
+	if got != want {
+		t.Fatalf("build Tier2=%d, want VM=%d", got, want)
+	}
+
+	var setTableExits uint64
+	for _, site := range tm.ExitStats().Sites {
+		if site.Proto == "build" && site.ExitName == "ExitTableExit" && site.Reason == "SetTable" {
+			setTableExits += site.Count
+		}
+	}
+	if setTableExits != 0 {
+		t.Fatalf("dynamic string-key append should stay native after warm transition cache, SetTable exits=%d sites=%#v", setTableExits, tm.ExitStats().Sites)
+	}
+}
+
 func TestTier2_DynamicStringMapValueCacheGetTable_NoLoopTableExit(t *testing.T) {
 	src := `
 func lookup(tbl, keys, n) {

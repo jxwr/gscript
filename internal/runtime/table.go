@@ -434,6 +434,11 @@ type TableStringKeyCacheEntry struct {
 	KeyLen   int
 	FieldIdx int
 	ShapeID  uint32
+	// AppendShapeID/AppendShape describe the transition used when this key is
+	// appended to a small shaped table. They are hints for JIT fast paths; the
+	// regular table path remains authoritative on a mismatch.
+	AppendShapeID uint32
+	AppendShape   *Shape
 }
 
 // StringLookupCacheEntry is a table-local value cache for large string maps.
@@ -1261,8 +1266,18 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 	if !valIsNil {
 		if len(t.skeys) < smallFieldCap {
 			idx := len(t.svals)
+			preShapeID := t.shapeID
 			t.appendSmallStringField(key, val)
 			t.rememberDynamicStringCacheLocked(key, data, keyLen, idx, cache)
+			if cache != nil {
+				for i := range cache {
+					if cache[i].KeyData == data && cache[i].KeyLen == keyLen && cache[i].FieldIdx == idx && cache[i].ShapeID == t.shapeID {
+						cache[i].AppendShapeID = preShapeID
+						cache[i].AppendShape = t.shape
+						break
+					}
+				}
+			}
 			RecordRuntimePathTableStringSetAppend()
 		} else {
 			t.bumpStringLookupVersionLocked()
@@ -1735,6 +1750,12 @@ func (t *Table) ShapeID() uint32 { return t.shapeID }
 func TableShapeIDOffset() uintptr {
 	var t Table
 	return unsafe.Offsetof(t.shapeID)
+}
+
+// TableShapeOffset returns the offset of shape for JIT verification.
+func TableShapeOffset() uintptr {
+	var t Table
+	return unsafe.Offsetof(t.shape)
 }
 
 // GetArrayKind returns the array kind for testing/JIT inspection.
