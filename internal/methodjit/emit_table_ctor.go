@@ -63,13 +63,27 @@ func (ec *emitContext) emitNewFixedTable2CacheFastPath(instr *Instr, doneLabel, 
 	if val2Reg != jit.X6 {
 		asm.MOVreg(jit.X6, val2Reg)
 	}
-	asm.LoadImm64(jit.X7, nb64(jit.NB_ValNil))
-	asm.CMPreg(jit.X5, jit.X7)
-	val1NilLabel := ec.uniqueLabel("newfixed_val1_nil")
 	emptyLabel := ec.uniqueLabel("newfixed_empty")
-	asm.BCond(jit.CondEQ, val1NilLabel)
-	asm.CMPreg(jit.X6, jit.X7)
-	asm.BCond(jit.CondEQ, missLabel)
+	val1NeedsNilCheck := !fixedTableArgProvenNonNil(instr.Args[0])
+	val2NeedsNilCheck := !fixedTableArgProvenNonNil(instr.Args[1])
+	val1NilLabel := ""
+	if val1NeedsNilCheck || val2NeedsNilCheck {
+		asm.LoadImm64(jit.X7, nb64(jit.NB_ValNil))
+	}
+	if val1NeedsNilCheck {
+		asm.CMPreg(jit.X5, jit.X7)
+		if val2NeedsNilCheck {
+			val1NilLabel = ec.uniqueLabel("newfixed_val1_nil")
+			asm.BCond(jit.CondEQ, val1NilLabel)
+			asm.CMPreg(jit.X6, jit.X7)
+			asm.BCond(jit.CondEQ, missLabel)
+		} else {
+			asm.BCond(jit.CondEQ, missLabel)
+		}
+	} else if val2NeedsNilCheck {
+		asm.CMPreg(jit.X6, jit.X7)
+		asm.BCond(jit.CondEQ, missLabel)
+	}
 
 	cacheBase := uintptr(unsafe.Pointer(&ec.newTableCaches[0]))
 	entryOff := instr.ID * newTableCacheEntrySize
@@ -100,6 +114,9 @@ func (ec *emitContext) emitNewFixedTable2CacheFastPath(instr *Instr, doneLabel, 
 	ec.storeResultNB(jit.X0, instr.ID)
 	asm.B(doneLabel)
 
+	if !val1NeedsNilCheck || !val2NeedsNilCheck {
+		return true
+	}
 	asm.Label(val1NilLabel)
 	asm.CMPreg(jit.X6, jit.X7)
 	asm.BCond(jit.CondEQ, emptyLabel)
@@ -197,6 +214,9 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 		asm.LoadImm64(nilReg, nilBits)
 	}
 	for _, arg := range instr.Args {
+		if fixedTableArgProvenNonNil(arg) {
+			continue
+		}
 		valReg := ec.resolveValueNB(arg.ID, jit.X5)
 		if valReg != jit.X5 {
 			asm.MOVreg(jit.X5, valReg)
@@ -267,6 +287,18 @@ func (ec *emitContext) reusableFixedTableNNilReg(instr *Instr) jit.Reg {
 		}
 	}
 	return jit.XZR
+}
+
+func fixedTableArgProvenNonNil(arg *Value) bool {
+	if arg == nil || arg.Def == nil {
+		return false
+	}
+	switch arg.Def.Type {
+	case TypeInt, TypeFloat, TypeBool, TypeString, TypeTable, TypeFunction:
+		return true
+	default:
+		return false
+	}
 }
 
 func (ec *emitContext) emitNewFixedTableNExit(instr *Instr, resultSlot int) {
