@@ -1278,7 +1278,7 @@ func instructionHasNoSSAResult(instr *Instr) bool {
 		OpSetField, OpSetList, OpAppend,
 		OpGuardGlobalConst, OpGuardTableKind,
 		OpSetGlobal, OpSetUpval,
-		OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow,
+		OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow, OpMatrixStoreFRowConst,
 		OpClose, OpGo, OpSend:
 		return true
 	default:

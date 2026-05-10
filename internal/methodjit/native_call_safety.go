@@ -94,7 +94,7 @@ func tier2InstrHasNativeVisibleSideEffect(instr *Instr) bool {
 		}
 		return !tier2ValueIsLocalTableAllocation(instr.Args[0], make(map[int]bool))
 	case OpSetGlobal, OpSetUpval,
-		OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow,
+		OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow, OpMatrixStoreFRowConst,
 		OpClose,
 		OpGo, OpSend, OpRecv:
 		return true

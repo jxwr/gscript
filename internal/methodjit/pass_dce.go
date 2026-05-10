@@ -70,7 +70,7 @@ func hasSideEffect(instr *Instr) bool {
 	// matrix.setf since its SSA result is never read; JIT produces zeros
 	// where VM mode produces correct values. R42-R48 matmul_dense wins
 	// were partly on unwritten results. (Correctness fix: R52.)
-	case OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow:
+	case OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow, OpMatrixStoreFRowConst:
 		return true
 
 	// Calls and coroutine transfers have arbitrary side effects.

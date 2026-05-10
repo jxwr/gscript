@@ -65,11 +65,15 @@ const (
 	//   OpMatrixRowPtr(flat, stride, i) → int64 = flat + i*stride*8
 	//   OpMatrixLoadFRow(rowPtr, j) → float = *(rowPtr + j*8)
 	//   OpMatrixStoreFRow(rowPtr, j, v) → void
+	//   OpMatrixLoadFRowConst(rowPtr) Aux=j → float
+	//   OpMatrixStoreFRowConst(rowPtr, v) Aux=j → void
 	// When i is loop-invariant (matmul: i fixed in j-loop and k-loop),
 	// LICM hoists OpMatrixRowPtr out so the k body is one LDR per load.
 	OpMatrixRowPtr
 	OpMatrixLoadFRow
 	OpMatrixStoreFRow
+	OpMatrixLoadFRowConst
+	OpMatrixStoreFRowConst
 	// R47: fused multiply-add. OpFMA(a, b, acc) → acc + a*b.
 	// Emitted by FMAFusionPass when OpAddFloat(acc, OpMulFloat(a,b))
 	// is detected with single-use Mul. Single-insn ARM64 FMADDd.
@@ -284,6 +288,8 @@ var opNames = [...]string{
 	OpMatrixRowPtr:               "MatrixRowPtr",
 	OpMatrixLoadFRow:             "MatrixLoadFRow",
 	OpMatrixStoreFRow:            "MatrixStoreFRow",
+	OpMatrixLoadFRowConst:        "MatrixLoadFRowConst",
+	OpMatrixStoreFRowConst:       "MatrixStoreFRowConst",
 	OpFMA:                        "FMA",
 	OpFMSUB:                      "FMSUB",
 	OpEq:                         "Eq",

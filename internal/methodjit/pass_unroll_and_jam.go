@@ -543,7 +543,7 @@ func isUnrollCloneableOp(op Op) bool {
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFloor, OpFMA, OpFMSUB,
 		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardNonNil, OpGuardTruthy,
-		OpMatrixLoadFAt, OpMatrixLoadFRow, OpTableArrayLoad, OpTableArrayNestedLoad:
+		OpMatrixLoadFAt, OpMatrixLoadFRow, OpMatrixLoadFRowConst, OpTableArrayLoad, OpTableArrayNestedLoad:
 		return true
 	default:
 		return false

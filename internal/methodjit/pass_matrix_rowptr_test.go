@@ -24,7 +24,7 @@ func TestMatrixRowPtrFactoringRewritesRepeatedRowAccess(t *testing.T) {
 	if countOpHelper(got, OpMatrixRowPtr) != 1 {
 		t.Fatalf("MatrixRowPtr count mismatch:\n%s", Print(got))
 	}
-	if countOpHelper(got, OpMatrixLoadFRow) != 2 || countOpHelper(got, OpMatrixLoadFAt) != 0 {
+	if countOpHelper(got, OpMatrixLoadFRowConst) != 2 || countOpHelper(got, OpMatrixLoadFRow) != 0 || countOpHelper(got, OpMatrixLoadFAt) != 0 {
 		t.Fatalf("load lowering mismatch:\n%s", Print(got))
 	}
 	if errs := Validate(got); len(errs) > 0 {

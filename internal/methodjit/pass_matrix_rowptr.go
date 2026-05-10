@@ -66,11 +66,23 @@ func MatrixRowPtrFactoringPass(fn *Function) (*Function, error) {
 			}
 			switch instr.Op {
 			case OpMatrixLoadFAt:
-				instr.Op = OpMatrixLoadFRow
-				instr.Args = []*Value{row.Value(), instr.Args[3]}
+				if col, ok := constIntFromValue(instr.Args[3]); ok && col >= 0 && col <= 4095 {
+					instr.Op = OpMatrixLoadFRowConst
+					instr.Args = []*Value{row.Value()}
+					instr.Aux = col
+				} else {
+					instr.Op = OpMatrixLoadFRow
+					instr.Args = []*Value{row.Value(), instr.Args[3]}
+				}
 			case OpMatrixStoreFAt:
-				instr.Op = OpMatrixStoreFRow
-				instr.Args = []*Value{row.Value(), instr.Args[3], instr.Args[4]}
+				if col, ok := constIntFromValue(instr.Args[3]); ok && col >= 0 && col <= 4095 {
+					instr.Op = OpMatrixStoreFRowConst
+					instr.Args = []*Value{row.Value(), instr.Args[4]}
+					instr.Aux = col
+				} else {
+					instr.Op = OpMatrixStoreFRow
+					instr.Args = []*Value{row.Value(), instr.Args[3], instr.Args[4]}
+				}
 			}
 			newInstrs = append(newInstrs, instr)
 		}

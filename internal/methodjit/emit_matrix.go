@@ -357,6 +357,44 @@ func (ec *emitContext) emitMatrixStoreFRow(instr *Instr) {
 	}
 }
 
+func (ec *emitContext) emitMatrixLoadFRowConst(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	asm := ec.asm
+	rowReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	if rowReg != jit.X5 {
+		asm.MOVreg(jit.X5, rowReg)
+	}
+	dstF := jit.D0
+	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+		dstF = jit.FReg(pr.Reg)
+	}
+	asm.FLDRd(dstF, jit.X5, int(instr.Aux)*8)
+	ec.storeRawFloat(dstF, instr.ID)
+}
+
+func (ec *emitContext) emitMatrixStoreFRowConst(instr *Instr) {
+	if len(instr.Args) < 2 {
+		return
+	}
+	asm := ec.asm
+	rowReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	if rowReg != jit.X5 {
+		asm.MOVreg(jit.X5, rowReg)
+	}
+	if instr.Args[1].Def != nil && instr.Args[1].Def.Type == TypeFloat {
+		vF := ec.resolveRawFloat(instr.Args[1].ID, jit.D0)
+		asm.FSTRd(vF, jit.X5, int(instr.Aux)*8)
+		return
+	}
+	vReg := ec.resolveValueNB(instr.Args[1].ID, jit.X6)
+	if vReg != jit.X6 {
+		asm.MOVreg(jit.X6, vReg)
+	}
+	asm.STR(jit.X6, jit.X5, int(instr.Aux)*8)
+}
+
 // emitMatrixSetF emits ARM64 code for OpMatrixSetF(m, i, j, v).
 // Same layout as get, plus resolve v as raw float in D0 and STR it.
 func (ec *emitContext) emitMatrixSetF(instr *Instr) {

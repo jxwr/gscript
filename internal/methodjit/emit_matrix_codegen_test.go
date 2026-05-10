@@ -83,7 +83,7 @@ func write_row(m, i) {
 	var store *Instr
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if instr.Op == OpMatrixStoreFRow {
+			if instr.Op == OpMatrixStoreFRow || instr.Op == OpMatrixStoreFRowConst {
 				store = instr
 				break
 			}

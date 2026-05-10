@@ -463,6 +463,21 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		j := int(jv.Int())
 		rv.Table().RawSetInt(int64(j), vv)
 
+	case OpMatrixLoadFRowConst:
+		rv := s.val(instr.Args[0])
+		if !rv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixLoadFRowConst: arg 0 not a row table")
+		}
+		s.values[instr.ID] = rv.Table().RawGetInt(instr.Aux)
+
+	case OpMatrixStoreFRowConst:
+		rv := s.val(instr.Args[0])
+		vv := s.val(instr.Args[1])
+		if !rv.IsTable() {
+			return nil, false, fmt.Errorf("OpMatrixStoreFRowConst: arg 0 not a row table")
+		}
+		rv.Table().RawSetInt(instr.Aux, vv)
+
 	// ---------- Comparison (type-generic) ----------
 	case OpEq:
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
