@@ -320,21 +320,23 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 		return
 	}
 	profile := tm.getProfile(proto)
-	tm.traceEvent("tier2_refresh", "tier2", proto, map[string]any{
-		"reason":         "feedback_matured",
-		"type_before":    cf.SpeculationSnapshot.TypeObserved,
-		"type_after":     current.Snapshot.TypeObserved,
-		"field_before":   cf.SpeculationSnapshot.FieldObserved,
-		"field_after":    current.Snapshot.FieldObserved,
-		"table_before":   cf.SpeculationSnapshot.TableKeyObserved,
-		"table_after":    current.Snapshot.TableKeyObserved,
-		"call_before":    cf.SpeculationSnapshot.CallObserved,
-		"call_after":     current.Snapshot.CallObserved,
-		"version_before": fmt.Sprintf("%x", cf.SpecializationVersion.Hash),
-		"version_after":  fmt.Sprintf("%x", current.Version.Hash),
-		"guards_before":  cf.SpecializationVersion.GuardCount,
-		"guards_after":   current.Version.GuardCount,
-	})
+	traceRefresh := func() {
+		tm.traceEvent("tier2_refresh", "tier2", proto, map[string]any{
+			"reason":         "feedback_matured",
+			"type_before":    cf.SpeculationSnapshot.TypeObserved,
+			"type_after":     current.Snapshot.TypeObserved,
+			"field_before":   cf.SpeculationSnapshot.FieldObserved,
+			"field_after":    current.Snapshot.FieldObserved,
+			"table_before":   cf.SpeculationSnapshot.TableKeyObserved,
+			"table_after":    current.Snapshot.TableKeyObserved,
+			"call_before":    cf.SpeculationSnapshot.CallObserved,
+			"call_after":     current.Snapshot.CallObserved,
+			"version_before": fmt.Sprintf("%x", cf.SpecializationVersion.Hash),
+			"version_after":  fmt.Sprintf("%x", current.Version.Hash),
+			"guards_before":  cf.SpecializationVersion.GuardCount,
+			"guards_after":   current.Version.GuardCount,
+		})
+	}
 	if profile.HasLoop {
 		if tm.recompileQueue.enqueue(proto, "feedback_matured_entry_refresh", Tier2ExitProfileSite{
 			ExitName:             "EntryRefresh",
@@ -344,6 +346,7 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 			RefreshVersionGuards: current.Version.GuardCount,
 			RefreshGuardDelta:    current.Version.GuardCount - cf.SpecializationVersion.GuardCount,
 		}) {
+			traceRefresh()
 			proto.Tier2Promoted = false
 			clearFuncProtoDirectEntries(proto)
 			proto.Tier2GlobalCachePtr = 0
@@ -352,6 +355,7 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 		}
 		return
 	}
+	traceRefresh()
 	tm.clearTier2Install(proto)
 }
 

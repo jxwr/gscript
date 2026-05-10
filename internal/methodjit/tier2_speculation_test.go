@@ -642,3 +642,31 @@ func TestTieringManagerQueuesLoopTier2RefreshAtNextEntry(t *testing.T) {
 		t.Fatal("loop refresh should queue next-entry recompile")
 	}
 }
+
+func TestTieringManagerLoopTier2RefreshTracesOnlyFirstQueue(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{
+		Name: "loop",
+		Code: []uint32{
+			vm.EncodeAsBx(vm.OP_FORPREP, 0, 1),
+			vm.EncodeABC(vm.OP_GETFIELD, 1, 0, 0),
+			vm.EncodeAsBx(vm.OP_FORLOOP, 0, -2),
+		},
+	}
+	proto.EnsureFeedback()
+	proto.FieldAccessFeedback[1].Count = 1
+	proto.FieldAccessFeedback[1].ShapeID = 11
+	proto.FieldAccessFeedback[1].FieldIdx = 0
+	cf := &CompiledFunction{SpeculationSnapshot: Tier2FeedbackSnapshot{}}
+
+	tm.retireStaleTier2AfterFeedback(proto, cf)
+	tm.retireStaleTier2AfterFeedback(proto, cf)
+	tm.retireStaleTier2AfterFeedback(proto, cf)
+
+	if _, ok := tm.recompileQueue.take(proto); !ok {
+		t.Fatal("expected one queued refresh request")
+	}
+	if _, ok := tm.recompileQueue.take(proto); ok {
+		t.Fatal("expected refresh request to be queued only once")
+	}
+}
