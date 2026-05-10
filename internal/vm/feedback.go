@@ -216,6 +216,7 @@ type IntRangeFeedback struct {
 
 type ArgArrayElementShapeCase struct {
 	ShapeID         uint32
+	Count           uint32
 	FieldNames      []string
 	FieldTypes      map[string]FeedbackType
 	FieldRanges     map[string]IntRangeFeedback
@@ -394,6 +395,7 @@ func observeArgArrayElementShapeCaseTypes(c *ArgArrayElementShapeCase, tbl *runt
 	if c == nil || tbl == nil {
 		return
 	}
+	c.Count++
 	if c.FieldTypes == nil {
 		c.FieldTypes = make(map[string]FeedbackType, len(fields))
 	}

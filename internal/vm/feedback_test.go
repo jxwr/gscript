@@ -545,6 +545,9 @@ func TestArgArrayElementShapeFeedback_RecordsVMClosureFieldProto(t *testing.T) {
 	if af.ShapeCount != 1 {
 		t.Fatalf("shape count=%d want 1", af.ShapeCount)
 	}
+	if af.Shapes[0].Count != 1 {
+		t.Fatalf("shape observation count=%d want 1", af.Shapes[0].Count)
+	}
 	got := af.Shapes[0].FieldVMProtos["step"]
 	if got != stepProto {
 		t.Fatalf("step field VM proto=%p want %p", got, stepProto)
@@ -574,6 +577,9 @@ func TestArgArrayElementShapeFeedback_MarksReboundVMClosureFieldUnstable(t *test
 
 	if af.ShapeCount != 1 {
 		t.Fatalf("shape count=%d want 1", af.ShapeCount)
+	}
+	if af.Shapes[0].Count != 3 {
+		t.Fatalf("shape observation count=%d want 3", af.Shapes[0].Count)
 	}
 	if got := af.Shapes[0].FieldVMProtos["step"]; got != stepProto {
 		t.Fatalf("step proto=%p want stable proto %p", got, stepProto)

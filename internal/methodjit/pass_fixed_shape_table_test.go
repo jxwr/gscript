@@ -9,6 +9,39 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
+func TestFieldPolyShapeCasesOrdersByObservationCount(t *testing.T) {
+	facts := []FixedShapeTableFact{
+		{
+			ShapeID:          11,
+			ObservationCount: 2,
+			FieldNames:       []string{"step"},
+			FieldTypes:       map[string]Type{"step": TypeFunction},
+		},
+		{
+			ShapeID:          12,
+			ObservationCount: 9,
+			FieldNames:       []string{"step"},
+			FieldTypes:       map[string]Type{"step": TypeFunction},
+		},
+		{
+			ShapeID:          13,
+			ObservationCount: 5,
+			FieldNames:       []string{"step"},
+			FieldTypes:       map[string]Type{"step": TypeFunction},
+		},
+	}
+	cases, typ := fieldPolyShapeCases(facts, "step")
+	if typ != TypeFunction {
+		t.Fatalf("type=%s want function", typ)
+	}
+	if len(cases) != 3 {
+		t.Fatalf("cases=%d want 3", len(cases))
+	}
+	if cases[0].ShapeID != 12 || cases[1].ShapeID != 13 || cases[2].ShapeID != 11 {
+		t.Fatalf("shape order=%d,%d,%d want 12,13,11", cases[0].ShapeID, cases[1].ShapeID, cases[2].ShapeID)
+	}
+}
+
 func TestFixedShapeReturnFact_BinaryTreeShape(t *testing.T) {
 	top := compileProto(t, `
 func makeTree(depth) {

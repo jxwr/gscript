@@ -2,6 +2,7 @@ package methodjit
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -13,6 +14,7 @@ import (
 // interpreted in the caller.
 type FixedShapeTableFact struct {
 	ShapeID           uint32
+	ObservationCount  uint32
 	FieldNames        []string
 	FieldValueIDs     map[string]int
 	FieldFacts        map[string]FixedShapeFieldFact
@@ -30,6 +32,7 @@ type FixedShapeTableFact struct {
 
 type FieldPolyShapeCase struct {
 	ShapeID      uint32
+	Count        uint32
 	FieldIdx     int
 	Type         Type
 	VMProto      *vm.FuncProto
@@ -403,6 +406,7 @@ func mergeSameShapeFacts(a, b FixedShapeTableFact) (FixedShapeTableFact, bool) {
 		return FixedShapeTableFact{}, false
 	}
 	out := cloneFixedShapeTableFact(a)
+	out.ObservationCount += b.ObservationCount
 	out.FieldTypes = mergeFieldTypeFacts(a.FieldTypes, b.FieldTypes)
 	out.FieldRanges = mergeFieldRangeFacts(a.FieldRanges, b.FieldRanges)
 	out.FieldLenRanges = mergeFieldRangeFacts(a.FieldLenRanges, b.FieldLenRanges)
@@ -687,6 +691,7 @@ func fieldPolyShapeCases(facts []FixedShapeTableFact, name string) ([]FieldPolyS
 		}
 		cases = append(cases, FieldPolyShapeCase{
 			ShapeID:      fact.ShapeID,
+			Count:        fact.ObservationCount,
 			FieldIdx:     idx,
 			Type:         caseType,
 			VMProto:      fact.FieldVMProtos[name],
@@ -694,6 +699,9 @@ func fieldPolyShapeCases(facts []FixedShapeTableFact, name string) ([]FieldPolyS
 			ReceiverFact: fact,
 		})
 	}
+	sort.SliceStable(cases, func(i, j int) bool {
+		return cases[i].Count > cases[j].Count
+	})
 	return cases, typ
 }
 
@@ -960,15 +968,16 @@ func profiledFixedShapeArrayElementPolyFactsForProto(target *vm.FuncProto) map[i
 		facts := make([]FixedShapeTableFact, 0, len(shapes))
 		for _, shape := range shapes {
 			facts = append(facts, FixedShapeTableFact{
-				ShapeID:         shape.ShapeID,
-				FieldNames:      append([]string(nil), shape.FieldNames...),
-				FieldTypes:      profiledShapeCaseFieldTypes(shape),
-				FieldRanges:     profiledShapeCaseFieldRanges(shape),
-				FieldLenRanges:  profiledShapeCaseFieldLenRanges(shape),
-				FieldVMProtos:   profiledShapeCaseFieldVMProtos(shape),
-				FieldVMClosures: profiledShapeCaseFieldVMClosures(shape),
-				FieldTableFacts: profiledNestedFixedShapeTableFacts(feedback),
-				Guarded:         true,
+				ShapeID:          shape.ShapeID,
+				ObservationCount: shape.Count,
+				FieldNames:       append([]string(nil), shape.FieldNames...),
+				FieldTypes:       profiledShapeCaseFieldTypes(shape),
+				FieldRanges:      profiledShapeCaseFieldRanges(shape),
+				FieldLenRanges:   profiledShapeCaseFieldLenRanges(shape),
+				FieldVMProtos:    profiledShapeCaseFieldVMProtos(shape),
+				FieldVMClosures:  profiledShapeCaseFieldVMClosures(shape),
+				FieldTableFacts:  profiledNestedFixedShapeTableFacts(feedback),
+				Guarded:          true,
 			})
 		}
 		if len(facts) >= 2 {
