@@ -122,6 +122,7 @@ const (
 	OpTableArrayLen    // Args[0] = header; loads active array len
 	OpTableArrayData   // Args[0] = header; loads active array data pointer
 	OpTableArrayLoad   // Args = [data, len, key]; loads element, bounds-checks key
+	OpTableShapeID     // Args[0] = table; verifies table and returns hidden-class shape id
 	// Checked typed array store. Args = [table, data, len, key, value].
 	// Reuses previously verified typed-array facts, checks key/value before
 	// mutation, and precise-deopts on miss so the interpreter replays SETTABLE.
@@ -318,6 +319,7 @@ var opNames = [...]string{
 	OpTableArrayLen:              "TableArrayLen",
 	OpTableArrayData:             "TableArrayData",
 	OpTableArrayLoad:             "TableArrayLoad",
+	OpTableShapeID:               "TableShapeID",
 	OpTableArrayStore:            "TableArrayStore",
 	OpTableArraySwap:             "TableArraySwap",
 	OpTableArraySwapPairs:        "TableArraySwapPairs",

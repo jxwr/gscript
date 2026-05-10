@@ -738,7 +738,7 @@ func sortedLoopFPRegEntryIDs(m map[int]loopFPRegEntry) []int {
 // (stored via storeRawInt rather than storeResultNB).
 func isRawIntOp(op Op) bool {
 	switch op {
-	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt, OpTableArrayLen:
+	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt, OpTableArrayLen, OpTableShapeID:
 		return true
 	default:
 		return false

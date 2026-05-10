@@ -223,6 +223,8 @@ func (v *validator) checkOpContracts() {
 				v.checkArgCount(blk, instr, 3, 3)
 			case OpTableArrayStore:
 				v.checkArgCount(blk, instr, 5, 6)
+			case OpTableShapeID:
+				v.checkArgCount(blk, instr, 1, 1)
 			case OpTableArraySwapPairs:
 				v.checkArgCount(blk, instr, 3, 3)
 			case OpGuardType:

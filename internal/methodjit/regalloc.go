@@ -547,7 +547,7 @@ func isTableArrayGPRInvariant(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpTableArrayHeader, OpTableArrayLen, OpTableArrayData:
+	case OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableShapeID:
 		return true
 	default:
 		return false

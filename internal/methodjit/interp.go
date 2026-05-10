@@ -774,6 +774,13 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = tbl.Table().RawGetInt(key.Int())
 
+	case OpTableShapeID:
+		tbl := s.val(instr.Args[0])
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableShapeID: arg 0 not a table")
+		}
+		s.values[instr.ID] = runtime.IntValue(int64(tbl.Table().ShapeID()))
+
 	case OpTableArrayStore:
 		tbl := s.val(instr.Args[0])
 		key := s.val(instr.Args[3])

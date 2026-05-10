@@ -538,7 +538,7 @@ func pureNumericInlineOp(op Op) bool {
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 		OpNumToFloat, OpSqrt, OpFloor, OpFMA, OpFMSUB,
 		OpEq, OpLt, OpLe, OpEqInt, OpLtInt, OpLeInt, OpLtFloat, OpLeFloat, OpEqString,
-		OpModZeroInt,
+		OpModZeroInt, OpTableShapeID,
 		OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto,
 		OpJump, OpBranch,
 		OpPhi:

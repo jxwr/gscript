@@ -724,6 +724,10 @@ func canHoistOp(op Op) bool {
 		// Pure numeric widening check; like GuardType, deopt state is not
 		// PC-dependent, so it can move with invariant operands.
 		return true
+	case OpTableShapeID:
+		// Pure table-shape extraction guarded by the table operand. Hoisting is
+		// valid when the table value is loop-invariant.
+		return true
 	case OpMatrixFlat, OpMatrixStride:
 		// R45: extracting dmFlat / dmStride is pure (output depends
 		// only on the Table argument; DenseMatrix descriptor is

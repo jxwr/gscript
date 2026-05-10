@@ -63,6 +63,35 @@ func (ec *emitContext) emitPrepareFieldTablePtr(tblValueID int, shapeID uint32, 
 	return false
 }
 
+func (ec *emitContext) emitTableShapeID(instr *Instr) {
+	if len(instr.Args) < 1 {
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("table_shape_deopt")
+	doneLabel := ec.uniqueLabel("table_shape_done")
+	tblID := instr.Args[0].ID
+	tblReg := ec.resolveValueNB(tblID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	if ec.tableVerified[tblID] || ec.irTypes[tblID] == TypeTable {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else {
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, deoptLabel)
+		ec.tableVerified[tblID] = true
+	}
+	asm.LDRW(jit.X0, jit.X0, jit.TableOffShapeID)
+	ec.storeRawInt(jit.X0, instr.ID)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 // emitGetField emits ARM64 code for OpGetField (table field read).
 //
 // If field cache info is available (Aux2 != 0), emits inline shape-guarded
