@@ -192,13 +192,21 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 	asm := ec.asm
 
 	nilBits := nb64(jit.NB_ValNil)
+	nilReg := ec.reusableFixedTableNNilReg(instr)
+	if nilReg != jit.XZR {
+		asm.LoadImm64(nilReg, nilBits)
+	}
 	for _, arg := range instr.Args {
 		valReg := ec.resolveValueNB(arg.ID, jit.X5)
 		if valReg != jit.X5 {
 			asm.MOVreg(jit.X5, valReg)
 		}
-		asm.LoadImm64(jit.X6, nilBits)
-		asm.CMPreg(jit.X5, jit.X6)
+		if nilReg != jit.XZR {
+			asm.CMPreg(jit.X5, nilReg)
+		} else {
+			asm.LoadImm64(jit.X6, nilBits)
+			asm.CMPreg(jit.X5, jit.X6)
+		}
 		asm.BCond(jit.CondEQ, missLabel)
 	}
 
@@ -236,6 +244,29 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 	ec.storeResultNB(jit.X0, instr.ID)
 	asm.B(doneLabel)
 	return true
+}
+
+func (ec *emitContext) reusableFixedTableNNilReg(instr *Instr) jit.Reg {
+	if ec == nil || instr == nil {
+		return jit.XZR
+	}
+	candidates := []jit.Reg{jit.X14, jit.X15, jit.X13, jit.X12, jit.X11, jit.X10, jit.X9, jit.X8}
+	for _, cand := range candidates {
+		used := false
+		for _, arg := range instr.Args {
+			if arg == nil {
+				continue
+			}
+			if ec.hasReg(arg.ID) && ec.physReg(arg.ID) == cand {
+				used = true
+				break
+			}
+		}
+		if !used {
+			return cand
+		}
+	}
+	return jit.XZR
 }
 
 func (ec *emitContext) emitNewFixedTableNExit(instr *Instr, resultSlot int) {
