@@ -529,6 +529,78 @@ func f() {
 	}
 }
 
+func TestRangePass_SpectralDensePipelineMarksHotAArithmeticSafe(t *testing.T) {
+	src := `
+func A(i, j) {
+    return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)
+}
+
+func multiplyAv(n, v, av) {
+    for i := 0; i < n; i++ {
+        sum := 0.0
+        for j := 0; j < n; j++ {
+            sum = sum + A(i, j) * matrix.getf(v, j, 0)
+        }
+        matrix.setf(av, i, 0, sum)
+    }
+}
+
+func multiplyAtv(n, v, atv) {
+    for i := 0; i < n; i++ {
+        sum := 0.0
+        for j := 0; j < n; j++ {
+            sum = sum + A(j, i) * matrix.getf(v, j, 0)
+        }
+        matrix.setf(atv, i, 0, sum)
+    }
+}
+
+func multiplyAtAv(n, v, u, atav) {
+    for i := 0; i < n; i++ { matrix.setf(u, i, 0, 0.0) }
+    multiplyAv(n, v, u)
+    multiplyAtv(n, u, atav)
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "multiplyAtAv")
+	fn := BuildGraph(proto)
+	optimized, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{
+		InlineGlobals: buildProtoInlineGlobals(top),
+		InlineMaxSize: 80,
+	})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+
+	var hot, safe int
+	for _, block := range optimized.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpAddInt, OpMulInt:
+			default:
+				continue
+			}
+			if instr.SourceLine != 3 {
+				continue
+			}
+			hot++
+			if optimized.Int48Safe[instr.ID] {
+				safe++
+			} else if r, ok := optimized.IntRanges[instr.ID]; ok && r.known {
+				t.Logf("unsafe v%d %s range=[%d,%d]", instr.ID, instr.Op, r.min, r.max)
+			} else {
+				t.Logf("unsafe v%d %s range=top", instr.ID, instr.Op)
+			}
+		}
+	}
+	if hot == 0 {
+		t.Fatalf("expected inlined A arithmetic in optimized IR:\n%s", Print(optimized))
+	}
+	if safe != hot {
+		t.Fatalf("inlined A int48-safe hot ops=%d/%d\nIR:\n%s", safe, hot, Print(optimized))
+	}
+}
+
 // TestRangePass_LoopCounter: a FORLOOP-style loop should propagate the
 // phi's seeded range to operations on the phi.
 func TestRangePass_LoopCounter(t *testing.T) {

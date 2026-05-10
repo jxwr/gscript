@@ -1181,6 +1181,9 @@ func forwardStepFromPhi(instr *Instr, phiID int) (int64, bool) {
 	if instr == nil {
 		return 0, false
 	}
+	if lin, ok := linearExprOfPhi(instr.Value(), phiID); ok && lin.scale == 1 && lin.offset != 0 {
+		return lin.offset, true
+	}
 	switch instr.Op {
 	case OpAdd, OpAddInt:
 		if len(instr.Args) < 2 {
