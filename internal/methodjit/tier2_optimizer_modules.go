@@ -15,6 +15,7 @@ const (
 	Tier2PhaseEarlyCanonical  Tier2OptimizerPhase = "early_canonical"
 	Tier2PhaseInlineCall      Tier2OptimizerPhase = "inline_call"
 	Tier2PhaseCallLower       Tier2OptimizerPhase = "call_lower"
+	Tier2PhaseStringNative    Tier2OptimizerPhase = "string_native"
 	Tier2PhaseTableObjectPrep Tier2OptimizerPhase = "table_object_prep"
 	Tier2PhasePostRewrite     Tier2OptimizerPhase = "post_rewrite"
 	Tier2PhaseNumeric         Tier2OptimizerPhase = "numeric"
@@ -69,6 +70,7 @@ func newTier2OptimizerPlan(ctx *Tier2OptimizerContext) Tier2OptimizerPlan {
 			Tier2PhaseEarlyCanonical,
 			Tier2PhaseInlineCall,
 			Tier2PhaseCallLower,
+			Tier2PhaseStringNative,
 			Tier2PhaseTableObjectPrep,
 			Tier2PhasePostRewrite,
 			Tier2PhaseNumeric,
@@ -89,6 +91,7 @@ func tier2OptimizerModules(ctx *Tier2OptimizerContext) []Tier2OptimizerModule {
 	modules = append(modules, tier2EarlyCanonicalModules(ctxGlobals(ctx))...)
 	modules = append(modules, tier2InlineCallModules(ctxGlobals(ctx), ctxInlineMaxSize(ctx))...)
 	modules = append(modules, tier2CallLoweringModules(ctxProtocolGlobals(ctx))...)
+	modules = append(modules, tier2StringNativeModules()...)
 	modules = append(modules, tier2TableObjectPreparationModules(ctxGlobals(ctx))...)
 	modules = append(modules, tier2PostRewriteModules()...)
 	modules = append(modules, tier2NumericModules()...)

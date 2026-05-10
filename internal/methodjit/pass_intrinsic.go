@@ -130,6 +130,20 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 			}
 		}
 	}
+	_, stringNotes := StringNativeCleanupPass(fn)
+	notes = append(notes, stringNotes...)
+	return fn, notes
+}
+
+// StringNativeCleanupPass runs string-specific lowering that can become
+// available after earlier rewrites. It is separated from IntrinsicPass so the
+// Tier 2 optimizer has an explicit string native phase for future string
+// lowering modules.
+func StringNativeCleanupPass(fn *Function) (*Function, []string) {
+	if fn == nil || fn.Proto == nil {
+		return fn, nil
+	}
+	var notes []string
 	notes = append(notes, fuseStringFormatIntGetTable(fn)...)
 	notes = append(notes, lowerStringSplitProjections(fn)...)
 	notes = append(notes, lowerStringSplitSubstrings(fn)...)

@@ -45,6 +45,7 @@ func TestTier2OptimizerPlanPhaseOrder(t *testing.T) {
 		Tier2PhaseEarlyCanonical,
 		Tier2PhaseInlineCall,
 		Tier2PhaseCallLower,
+		Tier2PhaseStringNative,
 		Tier2PhaseTableObjectPrep,
 		Tier2PhasePostRewrite,
 		Tier2PhaseNumeric,
@@ -114,6 +115,12 @@ func TestTier2CallLoweringModuleOrder(t *testing.T) {
 		"ConstProp",
 		"ProtocolConstCallFold",
 		"WholeCallKernelExit",
+	})
+}
+
+func TestTier2StringNativeModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2StringNativeModules(), Tier2PhaseStringNative, []string{
+		"StringNativeCleanup",
 	})
 }
 
