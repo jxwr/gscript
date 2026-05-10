@@ -646,10 +646,12 @@ func (ec *emitContext) emitIntCmp(instr *Instr, cond jit.Cond) {
 
 	// Use raw int path if available (from type-specialized ops).
 	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
-	rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
-
-	// Compare: sets NZCV flags.
-	ec.asm.CMPreg(lhs, rhs)
+	if imm, ok := ec.constIntImm12(instr.Args[1].ID); ok {
+		ec.asm.CMPimm(lhs, imm)
+	} else {
+		rhs := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+		ec.asm.CMPreg(lhs, rhs)
+	}
 
 	// Fused path: preceding CMP already set flags; the following Branch
 	// will emit B.cc directly. Skip bool materialization (saves 3 insns).
