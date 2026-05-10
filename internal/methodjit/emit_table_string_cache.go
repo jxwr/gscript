@@ -41,6 +41,34 @@ func (ec *emitContext) emitDynamicStringGetTableCache(instr *Instr, doneLabel st
 	asm.Label(missLabel)
 }
 
+func (ec *emitContext) emitDynamicStringSetTableCache(instr *Instr, doneLabel string) {
+	if !ec.shouldEmitDynamicStringKeyCache(instr) || len(instr.Args) < 3 {
+		return
+	}
+	asm := ec.asm
+	keyID := instr.Args[1].ID
+	keyReg := ec.resolveValueNB(keyID, jit.X1)
+	if keyReg != jit.X1 {
+		asm.MOVreg(jit.X1, keyReg)
+	}
+	missLabel := ec.uniqueLabel("settable_string_cache_miss")
+	ec.emitDynamicStringCacheOrSmallScan(instr, missLabel, func(fieldIdxReg jit.Reg) {
+		valReg := ec.resolveValueNB(instr.Args[2].ID, jit.X4)
+		if valReg != jit.X4 {
+			asm.MOVreg(jit.X4, valReg)
+		}
+		asm.LoadImm64(jit.X5, nb64(jit.NB_ValNil))
+		asm.CMPreg(jit.X4, jit.X5)
+		asm.BCond(jit.CondEQ, missLabel)
+		asm.LDR(jit.X10, jit.X0, jit.TableOffSvals)
+		asm.STRreg(jit.X4, jit.X10, fieldIdxReg)
+		asm.MOVimm16(jit.X5, 1)
+		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
+		asm.B(doneLabel)
+	})
+	asm.Label(missLabel)
+}
+
 func (ec *emitContext) emitStoreDynamicStringTableLoad(instr *Instr, valReg jit.Reg, deoptLabel string) {
 	asm := ec.asm
 	switch instr.Type {
