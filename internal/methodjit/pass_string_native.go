@@ -24,6 +24,32 @@ func StringNativeCleanupPass(fn *Function) (*Function, []string) {
 	return fn, notes
 }
 
+func lowerStringFormatIntrinsicCall(fn *Function, instr *Instr, moduleName, fieldName string) (string, bool) {
+	if moduleName != "string" || fieldName != "format" {
+		return "", false
+	}
+	if len(instr.Args) == 3 {
+		if lowerStringFormatConstIntLookup(fn, instr) {
+			return "intrinsic: string.format finite decimal -> StringConstLookup", true
+		}
+		if lowerStringFormatInt(fn, instr) {
+			return "intrinsic: string.format(pattern,int) -> StringFormatInt", true
+		}
+		if lowerStringFormatProfiledConst(fn, instr) {
+			return "intrinsic: profiled string.format(stable-pattern,...) -> StringFormatConst", true
+		}
+	}
+	if len(instr.Args) > 3 {
+		if lowerStringFormatConst(fn, instr) {
+			return "intrinsic: string.format(const-pattern,...) -> StringFormatConst", true
+		}
+		if lowerStringFormatProfiledConst(fn, instr) {
+			return "intrinsic: profiled string.format(stable-pattern,...) -> StringFormatConst", true
+		}
+	}
+	return "", false
+}
+
 func lowerStringSplitSubstrings(fn *Function) []string {
 	if fn == nil || fn.Proto == nil {
 		return nil

@@ -72,29 +72,9 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 				continue
 			}
 
-			if moduleName == "string" && fieldName == "format" && len(instr.Args) == 3 {
-				if lowerStringFormatConstIntLookup(fn, instr) {
-					notes = append(notes, "intrinsic: string.format finite decimal -> StringConstLookup")
-					continue
-				}
-				if lowerStringFormatInt(fn, instr) {
-					notes = append(notes, "intrinsic: string.format(pattern,int) -> StringFormatInt")
-					continue
-				}
-				if lowerStringFormatProfiledConst(fn, instr) {
-					notes = append(notes, "intrinsic: profiled string.format(stable-pattern,...) -> StringFormatConst")
-					continue
-				}
-			}
-			if moduleName == "string" && fieldName == "format" && len(instr.Args) > 3 {
-				if lowerStringFormatConst(fn, instr) {
-					notes = append(notes, "intrinsic: string.format(const-pattern,...) -> StringFormatConst")
-					continue
-				}
-				if lowerStringFormatProfiledConst(fn, instr) {
-					notes = append(notes, "intrinsic: profiled string.format(stable-pattern,...) -> StringFormatConst")
-					continue
-				}
+			if note, ok := lowerStringFormatIntrinsicCall(fn, instr, moduleName, fieldName); ok {
+				notes = append(notes, note)
+				continue
 			}
 
 			// R43 Phase 2 DenseMatrix intrinsics.
