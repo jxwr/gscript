@@ -274,6 +274,7 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		tableVerified:              make(map[int]bool),
 		kindVerified:               make(map[int]uint16),
 		keysDirtyWritten:           make(map[int]bool),
+		stringLookupCleanGuarded:   make(map[int]bool),
 		localNewTablesNoMetatable:  functionHasNoTableMetatableMutationSurface(fn),
 		tableArrayBoundedKeys:      make(map[tableArrayBoundKey]bool),
 		dmVerified:                 make(map[int]bool),
@@ -651,6 +652,12 @@ type emitContext struct {
 	// produce the same final state. Reset at block boundaries and after
 	// calls (same as tableVerified).
 	keysDirtyWritten map[int]bool
+
+	// stringLookupCleanGuarded tracks table SSA value IDs whose string lookup
+	// cache/version pointer has been guarded as nil in the current block.
+	// Shape-stable SetField stores can then skip per-store version bumps until
+	// a block boundary or call-like barrier resets the state.
+	stringLookupCleanGuarded map[int]bool
 
 	// localNewTablesNoMetatable is true when this function has no call/op-exit
 	// surface that can install a metatable on tables allocated by OpNewTable.
@@ -1059,6 +1066,7 @@ func (ec *emitContext) emitNumericBody() {
 	prevTableVerified := ec.tableVerified
 	prevKindVerified := ec.kindVerified
 	prevKeysDirtyWritten := ec.keysDirtyWritten
+	prevStringLookupCleanGuarded := ec.stringLookupCleanGuarded
 	prevTableArrayBoundedKeys := ec.tableArrayBoundedKeys
 	prevDMVerified := ec.dmVerified
 	prevFieldSvalsCacheValid := ec.fieldSvalsCacheValid
@@ -1086,6 +1094,7 @@ func (ec *emitContext) emitNumericBody() {
 	ec.tableVerified = make(map[int]bool)
 	ec.kindVerified = make(map[int]uint16)
 	ec.keysDirtyWritten = make(map[int]bool)
+	ec.stringLookupCleanGuarded = make(map[int]bool)
 	ec.dmVerified = make(map[int]bool)
 	ec.invalidateFieldSvalsCache()
 	for _, block := range ec.fn.Blocks {
@@ -1099,6 +1108,7 @@ func (ec *emitContext) emitNumericBody() {
 	ec.tableVerified = prevTableVerified
 	ec.kindVerified = prevKindVerified
 	ec.keysDirtyWritten = prevKeysDirtyWritten
+	ec.stringLookupCleanGuarded = prevStringLookupCleanGuarded
 	ec.tableArrayBoundedKeys = prevTableArrayBoundedKeys
 	ec.dmVerified = prevDMVerified
 	ec.fieldSvalsCacheValid = prevFieldSvalsCacheValid
@@ -1812,11 +1822,13 @@ func (ec *emitContext) emitBlock(block *Block) {
 		} else {
 			ec.keysDirtyWritten = make(map[int]bool)
 		}
+		ec.stringLookupCleanGuarded = make(map[int]bool)
 	} else {
 		ec.shapeVerified = make(map[int]uint32)
 		ec.tableVerified = make(map[int]bool)
 		ec.kindVerified = make(map[int]uint16)
 		ec.keysDirtyWritten = make(map[int]bool)
+		ec.stringLookupCleanGuarded = make(map[int]bool)
 	}
 	ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool)
 	ec.seedEntryShapeGuardState(block)

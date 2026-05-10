@@ -839,24 +839,35 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	}
 
 	if ec.hasFieldSvalsCache(tblValueID, shapeID) {
-		ec.emitPreparedFieldStore(valStore, fieldIdx)
-		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
-		if tblReg != jit.X0 {
-			asm.MOVreg(jit.X0, tblReg)
+		needsGuard := !ec.stringLookupCleanGuarded[tblValueID]
+		if needsGuard {
+			ec.ensureNoStringLookupCacheGuard(tblValueID, jit.X0, jit.X2, deoptLabel)
 		}
-		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-		ec.emitBumpTableStringLookupVersion(jit.X0, jit.X2)
+		ec.emitPreparedFieldStore(valStore, fieldIdx)
+		if needsGuard {
+			doneLabel := ec.uniqueLabel("setfield_clean_done")
+			asm.B(doneLabel)
+			asm.Label(deoptLabel)
+			savedReprs := ec.snapshotValueReprs()
+			ec.emitSetFieldExit(instr)
+			ec.emitUnboxRawIntRegs(savedReprs)
+			ec.restoreValueReprSnapshot(savedReprs)
+			asm.Label(doneLabel)
+		}
 		return
 	}
 
 	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
+	needsCleanGuard := !ec.stringLookupCleanGuarded[tblValueID]
+	if needsCleanGuard {
+		ec.ensureNoStringLookupCacheGuardWithTablePtr(tblValueID, jit.X0, jit.X2, deoptLabel)
+	}
 
 	// Direct field store: svals[fieldIndex] = value.
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
 	ec.emitPreparedFieldStore(valStore, fieldIdx)
-	ec.emitBumpTableStringLookupVersion(jit.X0, jit.X2)
 	ec.rememberFieldSvalsCache(tblValueID, shapeID)
-	if shapeWasVerified {
+	if shapeWasVerified && !needsCleanGuard {
 		return
 	}
 
@@ -1002,6 +1013,28 @@ func (ec *emitContext) emitBumpTableStringLookupVersion(tableReg, tmp jit.Reg) {
 	asm.ADDimm(tmp, tmp, 1)
 	asm.STR(tmp, tableReg, jit.TableOffStringLookupVer)
 	asm.Label(skipLabel)
+}
+
+func (ec *emitContext) ensureNoStringLookupCacheGuard(tblValueID int, tableReg, tmp jit.Reg, deoptLabel string) bool {
+	if ec.stringLookupCleanGuarded[tblValueID] {
+		return true
+	}
+	tblReg := ec.resolveValueNB(tblValueID, tableReg)
+	if tblReg != tableReg {
+		ec.asm.MOVreg(tableReg, tblReg)
+	}
+	jit.EmitExtractPtr(ec.asm, tableReg, tableReg)
+	return ec.ensureNoStringLookupCacheGuardWithTablePtr(tblValueID, tableReg, tmp, deoptLabel)
+}
+
+func (ec *emitContext) ensureNoStringLookupCacheGuardWithTablePtr(tblValueID int, tableReg, tmp jit.Reg, deoptLabel string) bool {
+	if ec.stringLookupCleanGuarded[tblValueID] {
+		return true
+	}
+	ec.asm.LDR(tmp, tableReg, jit.TableOffStringLookupVer)
+	ec.asm.CBNZ(tmp, deoptLabel)
+	ec.stringLookupCleanGuarded[tblValueID] = true
+	return true
 }
 
 // emitGetFieldExit emits a table-exit for OpGetField when no inline cache
