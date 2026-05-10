@@ -202,11 +202,13 @@ func (ec *emitContext) emitMatrixLoadFAt(instr *Instr) {
 	iReg := ec.resolveRawInt(instr.Args[2].ID, jit.X2)
 	if iReg != jit.X2 {
 		asm.MOVreg(jit.X2, iReg)
+		iReg = jit.X2
 	}
+	offsetReg := jit.X4
 	// X4 = i * stride + j
 	if isConstIntValue(instr.Args[1], 1) {
 		if isConstIntValue(instr.Args[3], 0) {
-			asm.MOVreg(jit.X4, jit.X2)
+			offsetReg = iReg
 		} else {
 			jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
 			if jReg != jit.X3 {
@@ -235,7 +237,7 @@ func (ec *emitContext) emitMatrixLoadFAt(instr *Instr) {
 	if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
 		dstF = jit.FReg(pr.Reg)
 	}
-	asm.FLDRdReg(dstF, jit.X5, jit.X4)
+	asm.FLDRdReg(dstF, jit.X5, offsetReg)
 	ec.storeRawFloat(dstF, instr.ID)
 }
 
@@ -252,10 +254,12 @@ func (ec *emitContext) emitMatrixStoreFAt(instr *Instr) {
 	iReg := ec.resolveRawInt(instr.Args[2].ID, jit.X2)
 	if iReg != jit.X2 {
 		asm.MOVreg(jit.X2, iReg)
+		iReg = jit.X2
 	}
+	offsetReg := jit.X4
 	if isConstIntValue(instr.Args[1], 1) {
 		if isConstIntValue(instr.Args[3], 0) {
-			asm.MOVreg(jit.X4, jit.X2)
+			offsetReg = iReg
 		} else {
 			jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
 			if jReg != jit.X3 {
@@ -282,14 +286,14 @@ func (ec *emitContext) emitMatrixStoreFAt(instr *Instr) {
 	}
 	if instr.Args[4].Def != nil && instr.Args[4].Def.Type == TypeFloat {
 		vF := ec.resolveRawFloat(instr.Args[4].ID, jit.D0)
-		asm.FSTRdReg(vF, jit.X5, jit.X4)
+		asm.FSTRdReg(vF, jit.X5, offsetReg)
 		return
 	}
 	vReg := ec.resolveValueNB(instr.Args[4].ID, jit.X6)
 	if vReg != jit.X6 {
 		asm.MOVreg(jit.X6, vReg)
 	}
-	asm.STRreg(jit.X6, jit.X5, jit.X4)
+	asm.STRreg(jit.X6, jit.X5, offsetReg)
 }
 
 // R46: row-pointer strength-reduction ops.

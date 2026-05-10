@@ -5,6 +5,8 @@ package methodjit
 import (
 	"strings"
 	"testing"
+
+	"github.com/gscript/gscript/internal/vm"
 )
 
 func TestEmitMatrixLoadFAtUsesDirectFPLoad(t *testing.T) {
@@ -32,6 +34,43 @@ func read(m, i, j) {
 	}
 	if strings.Contains(asm, "MOVD (R5)(R4<<3), R0") {
 		t.Fatalf("MatrixLoadFAt should not load through a GPR before the FP result:\n%s", asm)
+	}
+}
+
+func TestEmitMatrixLoadFAtUnitStrideZeroColumnUsesIndexRegister(t *testing.T) {
+	proto := compileFunction(t, `
+func read(m, i) {
+    return matrix.getf(m, i, 0)
+}`)
+	proto.ArgDenseMatrixStrideFeedback = []vm.DenseMatrixStrideFeedback{{Count: 4, Stride: 1}}
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	var load *Instr
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpMatrixLoadFAt {
+				load = instr
+				break
+			}
+		}
+	}
+	if load == nil {
+		t.Fatalf("expected MatrixLoadFAt after lowering:\n%s", Print(fn))
+	}
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	asm := disasmARM64(unsafeCodeSlice(cf))
+	if !strings.Contains(asm, "FMOVD (R5)(R2<<3), F") {
+		t.Fatalf("unit-stride zero-column MatrixLoadFAt should use the index register directly:\n%s", asm)
+	}
+	if strings.Contains(asm, "MOVD R2, R4") {
+		t.Fatalf("unit-stride zero-column MatrixLoadFAt should not copy index into X4:\n%s", asm)
 	}
 }
 
