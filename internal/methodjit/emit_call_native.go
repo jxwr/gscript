@@ -2083,7 +2083,9 @@ func (ec *emitContext) emitTypedSelfArgsInRegsAndSave(instr *Instr, abi TypedSel
 				asm.MOVreg(dst, src)
 			}
 			asm.STR(dst, jit.SP, typedSelfArgsOff+i*jit.ValueSize)
-			jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
+			if ec.irTypes[arg.ID] != TypeTable {
+				jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
+			}
 			jit.EmitExtractPtr(asm, dst, dst)
 			if fact, ok := ec.entryShapeGuards[i]; ok && fact.ShapeID != 0 {
 				asm.LDRW(jit.X6, dst, jit.TableOffShapeID)
@@ -2335,7 +2337,9 @@ func (ec *emitContext) emitTypedPeerArgsFromValuesInRegsAndSave(args []*Value, d
 				asm.MOVreg(dst, src)
 			}
 			asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
-			jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
+			if ec.irTypes[arg.ID] != TypeTable {
+				jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
+			}
 			jit.EmitExtractPtr(asm, dst, dst)
 			if fact, ok := desc.ArgFacts[i]; ok && fact.ShapeID != 0 {
 				asm.LDRW(jit.X6, dst, jit.TableOffShapeID)
