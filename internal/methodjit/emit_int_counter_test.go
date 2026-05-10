@@ -125,6 +125,52 @@ func TestTier2Emit_IntCounterGPR_CountLoop(t *testing.T) {
 	}
 }
 
+func TestTier2Emit_RawFloatScratchCacheAcrossAdjacentOps(t *testing.T) {
+	src := `func f(n) {
+		acc := 0.0
+		for i := 1; i <= n; i++ {
+			a := i - 1.0
+			b := i - 2.0
+			acc = acc + a + b
+		}
+		return acc
+	}`
+	fn, alloc := fullPipelineBuild(t, src)
+	var subFloats []*Instr
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpSubFloat {
+				subFloats = append(subFloats, instr)
+			}
+		}
+	}
+	if len(subFloats) < 2 {
+		t.Fatalf("expected at least two adjacent SubFloat ops, got %d\n%s", len(subFloats), Print(fn))
+	}
+	cf, err := Compile(fn, alloc)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	defer cf.Code.Free()
+
+	if got := countSCVTFForIRInstr(cf, subFloats[1].ID); got != 0 {
+		t.Fatalf("second SubFloat emitted %d SCVTF conversion(s), want cached raw-float input", got)
+	}
+	result, err := cf.Execute([]runtime.Value{runtime.IntValue(10)})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if len(result) == 0 || !result[0].IsFloat() || result[0].Float() != 80.0 {
+		t.Fatalf("unexpected result: %v", result)
+	}
+}
+
+func countSCVTFForIRInstr(cf *CompiledFunction, instrID int) int {
+	return countMatchingIRInstr(cf, instrID, func(insn uint32) bool {
+		return insn&0xFFFFFC00 == 0x9E620000
+	})
+}
+
 // TestTier2Emit_IntCounterGPR_DownCounting tests a downward-counting loop:
 // count = 0; i = n; while i > 0: count += 1; i -= 1; return count
 // Exercises OpSubInt in the counter update.

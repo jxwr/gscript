@@ -828,9 +828,10 @@ type emitContext struct {
 	fixedTableArgSlots map[int][]int
 
 	// scratchFPRCache maps value ID -> scratch FPR (D0-D3) currently holding
-	// that value's raw float. Scoped to a SINGLE instruction's operand resolution
-	// — cleared at the start of every emitInstr call. Enables dedup of same-value
-	// operands within one instruction (e.g., v*v loads v only once).
+	// that value's raw float. It is scoped to one emitted block and may survive
+	// across adjacent pure raw-float instructions. Any instruction that can
+	// clobber D0-D3 clears it, and raw-float emitters invalidate a scratch FPR
+	// before writing a result to it.
 	scratchFPRCache map[int]jit.FReg
 
 	// fusedCmps is the set of comparison instruction IDs that will be fused
@@ -1089,6 +1090,7 @@ func (ec *emitContext) emitNumericBody() {
 	ec.activeRegs = make(map[int]bool)
 	ec.resetValueReprs()
 	ec.activeFPRegs = make(map[int]bool)
+	ec.clearScratchFPRCache()
 	ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool)
 	ec.shapeVerified = make(map[int]uint32)
 	ec.tableVerified = make(map[int]bool)
@@ -1778,6 +1780,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 	ec.activeRegs = make(map[int]bool)
 	ec.resetValueReprs()
 	ec.activeFPRegs = make(map[int]bool)
+	ec.clearScratchFPRCache()
 	// Seed shape/table verification from the sole predecessor's outgoing state.
 	// Only safe when the block has exactly one predecessor — at merge points
 	// (multiple preds), different paths may have different table mutations,

@@ -361,10 +361,7 @@ func (ec *emitContext) emitDiv(instr *Instr) {
 	if instr.Op == OpDivFloat && instr.Type == TypeFloat {
 		lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
 		rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
-		dstF := jit.FReg(jit.D0)
-		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
-			dstF = jit.FReg(pr.Reg)
-		}
+		dstF := ec.rawFloatDst(instr)
 		asm.FDIVd(dstF, lhsF, rhsF)
 		ec.storeRawFloat(dstF, instr.ID)
 		return
@@ -1061,11 +1058,7 @@ func (ec *emitContext) emitTypedFloatBinOp(instr *Instr, op intBinOp) {
 	if instr.Type == TypeFloat {
 		lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
 		rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
-		// Destination: use allocated FPR if available, else D0.
-		dstF := jit.FReg(jit.D0)
-		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
-			dstF = jit.FReg(pr.Reg)
-		}
+		dstF := ec.rawFloatDst(instr)
 		switch op {
 		case intBinAdd:
 			asm.FADDd(dstF, lhsF, rhsF)
@@ -1424,10 +1417,7 @@ func (ec *emitContext) emitNegFloat(instr *Instr) {
 
 	if instr.Type == TypeFloat {
 		srcF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
-		dstF := jit.FReg(jit.D0)
-		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
-			dstF = jit.FReg(pr.Reg)
-		}
+		dstF := ec.rawFloatDst(instr)
 		asm.FNEGd(dstF, srcF)
 		ec.storeRawFloat(dstF, instr.ID)
 		return
@@ -1453,10 +1443,7 @@ func (ec *emitContext) emitFMA(instr *Instr) {
 		aF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
 		bF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
 		cF := ec.resolveRawFloat(instr.Args[2].ID, jit.D2)
-		dstF := jit.FReg(jit.D0)
-		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
-			dstF = jit.FReg(pr.Reg)
-		}
+		dstF := ec.rawFloatDst(instr)
 		// FMADDd: Dd = Da + Dn * Dm  (a + n*m in assembler naming;
 		// our helper is FMADDd(rd, rn, rm, ra).)
 		asm.FMADDd(dstF, aF, bF, cF)
@@ -1486,10 +1473,7 @@ func (ec *emitContext) emitFMSUB(instr *Instr) {
 		aF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
 		bF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
 		cF := ec.resolveRawFloat(instr.Args[2].ID, jit.D2)
-		dstF := jit.FReg(jit.D0)
-		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
-			dstF = jit.FReg(pr.Reg)
-		}
+		dstF := ec.rawFloatDst(instr)
 		asm.FMSUBd(dstF, aF, bF, cF)
 		ec.storeRawFloat(dstF, instr.ID)
 		return
@@ -1516,10 +1500,7 @@ func (ec *emitContext) emitSqrtFloat(instr *Instr) {
 
 	if instr.Type == TypeFloat {
 		srcF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
-		dstF := jit.FReg(jit.D0)
-		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
-			dstF = jit.FReg(pr.Reg)
-		}
+		dstF := ec.rawFloatDst(instr)
 		asm.FSQRTd(dstF, srcF)
 		ec.storeRawFloat(dstF, instr.ID)
 		return

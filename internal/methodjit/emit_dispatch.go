@@ -35,10 +35,6 @@ type gprPhiMove struct {
 // emitInstr emits ARM64 code for a single SSA instruction.
 func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	codeStart := len(ec.asm.Code())
-	// Clear per-instruction scratch FPR cache (D0-D3 are clobber-scoped per-instr).
-	for k := range ec.scratchFPRCache {
-		delete(ec.scratchFPRCache, k)
-	}
 	if !instrPreservesFieldSvalsCache(instr) {
 		ec.invalidateFieldSvalsCache()
 	}
@@ -353,6 +349,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	if !instrPreservesTableArrayBoundedKeys(instr) {
 		ec.clearTableArrayBoundedKeys()
 	}
+	if !instrPreservesScratchFPRCache(instr) {
+		ec.clearScratchFPRCache()
+	}
 }
 
 func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
@@ -394,6 +393,23 @@ func instrPreservesFieldSvalsCache(instr *Instr) bool {
 	case OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto:
 		// These paths use X0/X2/X3 and FPR temporaries on the fast path.
 		// Failure exits through deopt rather than resuming after the guard.
+		return true
+	default:
+		return false
+	}
+}
+
+func instrPreservesScratchFPRCache(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat,
+		OpNegFloat, OpSqrt, OpFMA, OpFMSUB:
+		return instr.Type == TypeFloat
+	case OpLtFloat, OpLeFloat:
+		return true
+	case OpNop:
 		return true
 	default:
 		return false

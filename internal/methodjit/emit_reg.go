@@ -387,6 +387,23 @@ func (ec *emitContext) invalidateScratchFPR(reg jit.FReg) {
 	}
 }
 
+func (ec *emitContext) clearScratchFPRCache() {
+	for vid := range ec.scratchFPRCache {
+		delete(ec.scratchFPRCache, vid)
+	}
+}
+
+func (ec *emitContext) rawFloatDst(instr *Instr) jit.FReg {
+	dstF := jit.FReg(jit.D0)
+	if instr != nil {
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			dstF = jit.FReg(pr.Reg)
+		}
+	}
+	ec.invalidateScratchFPR(dstF)
+	return dstF
+}
+
 // resolveRawFloat returns an FPR holding the raw float64 for a value.
 // If the value already has an allocated FPR (from a prior raw float op),
 // returns that FPR directly -- zero instructions emitted.
@@ -395,10 +412,10 @@ func (ec *emitContext) invalidateScratchFPR(reg jit.FReg) {
 // scratch FPR (float bits ARE the NaN-boxed representation, so FMOVtoFP
 // reinterprets the bits as a double).
 //
-// Per-instruction scratch-FPR cache: within ONE emitInstr call, if the SAME
-// valueID is requested twice (e.g., v*v), the second call returns the scratch
-// FPR populated by the first call — zero instructions emitted. The cache is
-// cleared at the start of every emitInstr call.
+// Block-scoped scratch-FPR cache: within a run of pure raw-float instructions,
+// if the SAME valueID is requested again, the second call returns the scratch
+// FPR populated by the first call -- zero instructions emitted. The cache is
+// cleared at block boundaries and after instructions that may clobber D0-D3.
 func (ec *emitContext) resolveRawFloat(valueID int, scratch jit.FReg) jit.FReg {
 	// Cache hit: value is already in a scratch FPR from earlier this instruction.
 	if fpr, ok := ec.scratchFPRCache[valueID]; ok {
