@@ -465,6 +465,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = CallReturnProjectionPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("CallReturnProjection: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = ConstPropPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ConstProp: %w", err)
@@ -559,6 +565,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("RedundantGuardElimination: %w", err)
 	}
+
+	fn, err = CallReturnProjectionPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("CallReturnProjection (post-rewrite): %w", err)
+	}
+	attachRemarks(fn, opts)
 
 	fn, err = DCEPass(fn)
 	if err != nil {
@@ -801,6 +813,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	fn, err = WholeCallKernelExitPass(protocolGlobals)(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("WholeCallKernelExit (final): %w", err)
+	}
+	attachRemarks(fn, opts)
+
+	fn, err = CallReturnProjectionPass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("CallReturnProjection (final): %w", err)
 	}
 	attachRemarks(fn, opts)
 

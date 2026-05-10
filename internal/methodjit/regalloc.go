@@ -210,7 +210,7 @@ func enableSinglePredRawIntCarry(fn *Function) bool {
 	}
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if instr.Op == OpCall && instr.Type == TypeInt {
+			if (instr.Op == OpCall || instr.Op == OpCallFloor) && instr.Type == TypeInt {
 				return true
 			}
 		}
@@ -238,7 +238,7 @@ func isRawIntCarryValue(instr *Instr) bool {
 		return true
 	}
 	switch instr.Op {
-	case OpConstInt, OpLoadSlot, OpGuardType, OpGuardIntRange, OpCall, OpPhi:
+	case OpConstInt, OpLoadSlot, OpGuardType, OpGuardIntRange, OpCall, OpCallFloor, OpPhi:
 		return true
 	default:
 		return false

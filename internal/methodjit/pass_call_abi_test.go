@@ -85,6 +85,37 @@ result := inc(41)`
 	}
 }
 
+func TestCallReturnProjection_FoldsRawIntCallFloor(t *testing.T) {
+	fn := &Function{NumRegs: 4, nextID: 5}
+	b := &Block{ID: 0}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+	callee := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeAny, Aux: 0, Block: b}
+	arg := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	call := &Instr{ID: 2, Op: OpCall, Type: TypeInt, Args: []*Value{callee.Value(), arg.Value()}, Aux: 2, Aux2: 2, Block: b}
+	floor := &Instr{ID: 3, Op: OpFloor, Type: TypeInt, Args: []*Value{call.Value()}, Block: b}
+	ret := &Instr{ID: 4, Op: OpReturn, Args: []*Value{floor.Value()}, Block: b}
+	b.Instrs = []*Instr{callee, arg, call, floor, ret}
+	fn.CallABIs = map[int]CallABIDescriptor{call.ID: {
+		NumArgs:      1,
+		NumRets:      1,
+		RawIntParams: []bool{true},
+		RawIntReturn: true,
+		ReturnRep:    SpecializedABIReturnRawInt,
+	}}
+	var err error
+	fn, err = CallReturnProjectionPass(fn)
+	if err != nil {
+		t.Fatalf("CallReturnProjectionPass: %v", err)
+	}
+	if got := countOpHelper(fn, OpCallFloor); got != 1 {
+		t.Fatalf("OpCallFloor count=%d, want 1\nIR:\n%s", got, Print(fn))
+	}
+	if got := countOpHelper(fn, OpFloor); got != 0 {
+		t.Fatalf("OpFloor count=%d, want 0 after projection\nIR:\n%s", got, Print(fn))
+	}
+}
+
 func TestCallABIAnnotate_StableFeedbackCalleeGetsDescriptor(t *testing.T) {
 	src := `func inc(n) { return n + 1 }
 func apply(f) {

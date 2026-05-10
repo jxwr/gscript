@@ -528,7 +528,7 @@ func tier2LoopCallFeedbackIsNativeCandidate(fn *Function, instr *Instr, globals 
 }
 
 func tier2LoopCallFeedbackVMProtos(fn *Function, instr *Instr) []*vm.FuncProto {
-	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpCall ||
+	if fn == nil || fn.Proto == nil || instr == nil || (instr.Op != OpCall && instr.Op != OpCallFloor) ||
 		len(instr.Args) == 0 || !instr.HasSource ||
 		instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
 		return nil

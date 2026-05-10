@@ -248,7 +248,7 @@ func loopRegionStructuralHazard(fn *Function, body map[int]bool) (*Instr, bool) 
 				continue
 			}
 			switch instr.Op {
-			case OpCall, OpResume, OpSelf, OpSetTable, OpAppend, OpSetList, OpTableBoolArrayFill:
+			case OpCall, OpCallFloor, OpResume, OpSelf, OpSetTable, OpAppend, OpSetList, OpTableBoolArrayFill:
 				return instr, true
 			}
 		}

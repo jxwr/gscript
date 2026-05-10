@@ -1573,6 +1573,26 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 	return true
 }
 
+func (ec *emitContext) emitOpCallFloor(instr *Instr) {
+	ec.emitOpCall(instr)
+	ec.emitFloorInPlace(instr)
+}
+
+func (ec *emitContext) emitFloorInPlace(instr *Instr) {
+	if instr == nil {
+		return
+	}
+	ec.emitFloor(&Instr{
+		ID:    instr.ID,
+		Op:    OpFloor,
+		Type:  TypeInt,
+		Args:  []*Value{instr.Value()},
+		Aux:   0,
+		Aux2:  0,
+		Block: instr.Block,
+	})
+}
+
 func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	if !ec.isTypedStaticSelfCall(instr) {
 		return false
