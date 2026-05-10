@@ -150,6 +150,57 @@ result := usePair()
 	}
 }
 
+func TestFixedShapeTableFactsPass_PropagatesNestedArrayElementFacts(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:      "nested_array_fact",
+		NumParams: 1,
+		Constants: []runtime.Value{
+			runtime.StringValue("lines"),
+		},
+	}
+	fn := &Function{Proto: proto, NumRegs: 4}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	lines := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny, Aux: 0, Args: []*Value{obj.Value()}, Block: b}
+	load := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny, Args: []*Value{lines.Value(), key.Value()}, Block: b}
+	store := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown, Args: []*Value{lines.Value(), key.Value(), load.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{load.Value()}, Block: b}
+	b.Instrs = []*Instr{obj, key, lines, load, store, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		ArgFacts: map[int]FixedShapeTableFact{
+			0: {
+				ShapeID:    77,
+				FieldNames: []string{"lines"},
+				FieldTypes: map[string]Type{"lines": TypeTable},
+				FieldTableFacts: map[string]FixedShapeTableFact{
+					"lines": {
+						ArrayElementType: TypeInt,
+						Guarded:          true,
+					},
+				},
+				Guarded: true,
+			},
+		},
+		EntryGuardedArgs: true,
+	})(fn)
+	if err != nil {
+		t.Fatalf("FixedShapeTableFactsPass: %v", err)
+	}
+	if lines.Type != TypeTable {
+		t.Fatalf("nested field type = %s, want table\n%s", lines.Type, Print(out))
+	}
+	if load.Aux2 != int64(vm.FBKindInt) || load.Type != TypeInt {
+		t.Fatalf("nested array load not annotated: aux2=%d type=%s\n%s", load.Aux2, load.Type, Print(out))
+	}
+	if store.Aux2 != int64(vm.FBKindInt) {
+		t.Fatalf("nested array store not annotated: aux2=%d\n%s", store.Aux2, Print(out))
+	}
+}
+
 func TestFixedShapeTableFactsPass_ForwardsReturnedParamField(t *testing.T) {
 	top := compileProto(t, `
 func makePair(x, y) {

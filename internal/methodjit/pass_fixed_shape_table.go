@@ -151,6 +151,7 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 		}
 		fn.FixedShapeTables = facts
 		annotateFixedShapeGetFields(fn, facts)
+		annotateFixedShapeArrayElementAccesses(fn, facts)
 		forwardFixedShapeGetFields(fn, facts)
 		return fn, nil
 	}
@@ -1588,15 +1589,102 @@ func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact
 				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
 					fmt.Sprintf("field %q carries guarded string-len range [%d,%d]", name, r.min, r.max))
 			}
-			if nested, ok := fact.FieldTableFacts[name]; ok && nested.ShapeID != 0 {
+			if nested, ok := fact.FieldTableFacts[name]; ok && fixedShapeTableFactHasUsableTableFact(nested) {
 				facts[instr.ID] = nested
 				if instr.Type == TypeAny || instr.Type == TypeUnknown {
 					instr.Type = TypeTable
 				}
-				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
-					fmt.Sprintf("field %q carries guarded nested fixed table shape %v", name, nested.FieldNames))
+				if nested.ShapeID != 0 {
+					functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+						fmt.Sprintf("field %q carries guarded nested fixed table shape %v", name, nested.FieldNames))
+				} else {
+					functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+						fmt.Sprintf("field %q carries guarded nested array element type %s", name, nested.ArrayElementType))
+				}
 			}
 		}
+	}
+}
+
+func fixedShapeTableFactHasUsableTableFact(fact FixedShapeTableFact) bool {
+	return fact.ShapeID != 0 || fact.ArrayElementType != TypeUnknown || fact.ArrayElementRange.known
+}
+
+func annotateFixedShapeArrayElementAccesses(fn *Function, facts map[int]FixedShapeTableFact) {
+	if fn == nil || len(facts) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || len(instr.Args) < 2 || instr.Args[0] == nil {
+				continue
+			}
+			fact, ok := facts[instr.Args[0].ID]
+			if !ok {
+				continue
+			}
+			kind, ok := fixedShapeArrayElementFBKind(fact)
+			if !ok || !tableKeyProvenInt(instr.Args[1]) {
+				continue
+			}
+			switch instr.Op {
+			case OpGetTable:
+				if instr.Aux2 == 0 {
+					instr.Aux2 = kind
+				}
+				if typ, ok := tableArrayKindElementType(kind); ok && (instr.Type == TypeAny || instr.Type == TypeUnknown) {
+					instr.Type = typ
+				}
+				if r := fact.ArrayElementRange; r.known {
+					if fn.ProfiledIntRanges == nil {
+						fn.ProfiledIntRanges = make(map[int]intRange)
+					}
+					fn.ProfiledIntRanges[instr.ID] = r
+				}
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("table value carries guarded array element kind %d", kind))
+			case OpSetTable:
+				if instr.Aux2 == 0 && fixedShapeSetTableValueMatchesArrayKind(instr, kind) {
+					instr.Aux2 = kind
+					functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+						fmt.Sprintf("table store carries guarded array element kind %d", kind))
+				}
+			}
+		}
+	}
+}
+
+func fixedShapeArrayElementFBKind(fact FixedShapeTableFact) (int64, bool) {
+	switch fact.ArrayElementType {
+	case TypeInt:
+		return int64(vm.FBKindInt), true
+	case TypeFloat:
+		return int64(vm.FBKindFloat), true
+	case TypeBool:
+		return int64(vm.FBKindBool), true
+	case TypeAny, TypeUnknown:
+		if fact.ArrayElementRange.known {
+			return int64(vm.FBKindInt), true
+		}
+	}
+	return 0, false
+}
+
+func fixedShapeSetTableValueMatchesArrayKind(instr *Instr, kind int64) bool {
+	if instr == nil || len(instr.Args) < 3 || instr.Args[2] == nil || instr.Args[2].Def == nil {
+		return false
+	}
+	switch kind {
+	case int64(vm.FBKindInt):
+		return callABIValueIsInt(instr.Args[2])
+	case int64(vm.FBKindFloat):
+		return instr.Args[2].Def.Type == TypeFloat
+	case int64(vm.FBKindBool):
+		return instr.Args[2].Def.Type == TypeBool
+	case int64(vm.FBKindMixed):
+		return true
+	default:
+		return false
 	}
 }
 
