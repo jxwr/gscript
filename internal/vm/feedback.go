@@ -215,13 +215,16 @@ type IntRangeFeedback struct {
 }
 
 type ArgArrayElementShapeCase struct {
-	ShapeID        uint32
-	FieldNames     []string
-	FieldTypes     map[string]FeedbackType
-	FieldRanges    map[string]IntRangeFeedback
-	FieldLenRanges map[string]IntRangeFeedback
-	FieldVMProtos  map[string]*FuncProto
+	ShapeID         uint32
+	FieldNames      []string
+	FieldTypes      map[string]FeedbackType
+	FieldRanges     map[string]IntRangeFeedback
+	FieldLenRanges  map[string]IntRangeFeedback
+	FieldVMProtos   map[string]*FuncProto
+	FieldVMClosures map[string]uintptr
 }
+
+const unstableFieldVMClosure = ^uintptr(0)
 
 // ArgArrayElementShapeFeedbackVector is per-parameter runtime argument shape
 // feedback, populated at function entry before Tier 2 compilation.
@@ -419,6 +422,18 @@ func observeArgArrayElementShapeCaseTypes(c *ArgArrayElementShapeCase, tbl *runt
 				c.FieldVMProtos[field] = proto
 			} else if existing != proto {
 				c.FieldVMProtos[field] = nil
+			}
+		}
+		if closure := callFeedbackVMClosure(value); closure != 0 {
+			if c.FieldVMClosures == nil {
+				c.FieldVMClosures = make(map[string]uintptr, len(fields))
+			}
+			if existing := c.FieldVMClosures[field]; existing == 0 {
+				c.FieldVMClosures[field] = closure
+			} else if existing == unstableFieldVMClosure {
+				continue
+			} else if existing != closure {
+				c.FieldVMClosures[field] = unstableFieldVMClosure
 			}
 		}
 	}
@@ -960,6 +975,14 @@ func callFeedbackVMProto(fn runtime.Value) *FuncProto {
 		return nil
 	}
 	return cl.Proto
+}
+
+func callFeedbackVMClosure(fn runtime.Value) uintptr {
+	cl, ok := closureFromValue(fn)
+	if !ok || cl == nil {
+		return 0
+	}
+	return uintptr(fn.VMClosurePointer())
 }
 
 func clampCallFeedbackUint8(n int) uint8 {

@@ -426,9 +426,10 @@ func step_float(a, tick) {
 		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
 			calleeLoad.ID: {
 				{
-					ShapeID:  101,
-					FieldIdx: 2,
-					VMProto:  stepInt,
+					ShapeID:   101,
+					FieldIdx:  2,
+					VMProto:   stepInt,
+					VMClosure: 0x1010,
 					ReceiverFact: FixedShapeTableFact{
 						ShapeID:    101,
 						FieldNames: []string{"count", "step"},
@@ -436,9 +437,10 @@ func step_float(a, tick) {
 					},
 				},
 				{
-					ShapeID:  102,
-					FieldIdx: 3,
-					VMProto:  stepFloat,
+					ShapeID:   102,
+					FieldIdx:  3,
+					VMProto:   stepFloat,
+					VMClosure: 0x2020,
 					ReceiverFact: FixedShapeTableFact{
 						ShapeID:    102,
 						FieldNames: []string{"x", "vx", "step"},
@@ -457,6 +459,9 @@ func step_float(a, tick) {
 	}
 	if cases[1].desc.ReturnRep != SpecializedABIReturnRawFloat {
 		t.Fatalf("case1 return=%s want raw-float", specializedABIReturnName(cases[1].desc.ReturnRep))
+	}
+	if cases[0].exactClosure != 0x1010 || cases[1].exactClosure != 0x2020 {
+		t.Fatalf("exact closures=%#x,%#x want 0x1010,0x2020", cases[0].exactClosure, cases[1].exactClosure)
 	}
 	for i, c := range cases {
 		if len(c.desc.ParamReps) != 2 ||
@@ -496,9 +501,10 @@ func step_float(a, tick) {
 	fn.FieldPolyShapeFacts = map[int][]FieldPolyShapeCase{
 		calleeLoad.ID: {
 			{
-				ShapeID:  101,
-				FieldIdx: 2,
-				VMProto:  stepInt,
+				ShapeID:   101,
+				FieldIdx:  2,
+				VMProto:   stepInt,
+				VMClosure: 0x3030,
 				ReceiverFact: FixedShapeTableFact{
 					ShapeID:    101,
 					FieldNames: []string{"count", "step"},
@@ -506,9 +512,10 @@ func step_float(a, tick) {
 				},
 			},
 			{
-				ShapeID:  102,
-				FieldIdx: 2,
-				VMProto:  stepFloat,
+				ShapeID:   102,
+				FieldIdx:  2,
+				VMProto:   stepFloat,
+				VMClosure: 0x4040,
 				ReceiverFact: FixedShapeTableFact{
 					ShapeID:    102,
 					FieldNames: []string{"x", "step"},
@@ -534,6 +541,10 @@ func step_float(a, tick) {
 	}
 	if got := len(fn.FieldPolyShapeFacts[call.ID]); got != 2 {
 		t.Fatalf("fused FieldPolyShapeFacts=%d want 2", got)
+	}
+	fused := fn.FieldPolyShapeFacts[call.ID]
+	if fused[0].VMClosure != 0x3030 || fused[1].VMClosure != 0x4040 {
+		t.Fatalf("fused closures=%#x,%#x want 0x3030,0x4040", fused[0].VMClosure, fused[1].VMClosure)
 	}
 }
 

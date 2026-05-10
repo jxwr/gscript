@@ -1336,10 +1336,11 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 }
 
 type fieldShapeTypedPeerCallCase struct {
-	shapeID  int
-	fieldIdx int
-	callee   *vm.FuncProto
-	desc     CallABIDescriptor
+	shapeID      int
+	fieldIdx     int
+	callee       *vm.FuncProto
+	exactClosure uintptr
+	desc         CallABIDescriptor
 }
 
 func (ec *emitContext) fieldShapeTypedPeerCallCases(instr *Instr) []fieldShapeTypedPeerCallCase {
@@ -1411,10 +1412,11 @@ func (ec *emitContext) fieldShapeTypedPeerCallCases(instr *Instr) []fieldShapeTy
 			ArgFacts:  argFacts,
 		}
 		out = append(out, fieldShapeTypedPeerCallCase{
-			shapeID:  int(c.ShapeID),
-			fieldIdx: c.FieldIdx,
-			callee:   c.VMProto,
-			desc:     desc,
+			shapeID:      int(c.ShapeID),
+			fieldIdx:     c.FieldIdx,
+			callee:       c.VMProto,
+			exactClosure: c.VMClosure,
+			desc:         desc,
 		})
 	}
 	return out
@@ -1472,9 +1474,10 @@ func (ec *emitContext) fieldShapeTypedPeerMethodCallCases(instr *Instr) []fieldS
 			}
 		}
 		out = append(out, fieldShapeTypedPeerCallCase{
-			shapeID:  int(c.ShapeID),
-			fieldIdx: c.FieldIdx,
-			callee:   c.VMProto,
+			shapeID:      int(c.ShapeID),
+			fieldIdx:     c.FieldIdx,
+			callee:       c.VMProto,
+			exactClosure: c.VMClosure,
 			desc: CallABIDescriptor{
 				Callee:    c.VMProto,
 				NumArgs:   nArgs,
@@ -1695,16 +1698,25 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 
 		asm.LDR(jit.X6, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X6, jit.X6, c.fieldIdx*jit.ValueSize)
-		asm.LSRimm(jit.X7, jit.X6, uint8(nbPtrSubShift))
-		asm.LoadImm64(jit.X8, int64((jit.NB_TagPtrShr48<<4)|nbPtrSubVMClosure))
-		asm.CMPreg(jit.X7, jit.X8)
-		asm.BCond(jit.CondNE, callFallbackLabel)
-		jit.EmitExtractPtr(asm, jit.X7, jit.X6)
-		asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
-		asm.LDR(jit.X7, jit.X7, vmClosureOffProto)
-		asm.LoadImm64(jit.X8, int64(uintptr(unsafe.Pointer(c.callee))))
-		asm.CMPreg(jit.X7, jit.X8)
-		asm.BCond(jit.CondNE, callFallbackLabel)
+		if c.exactClosure != 0 {
+			asm.LoadImm64(jit.X8, nbClosureTagBits|int64(c.exactClosure))
+			asm.CMPreg(jit.X6, jit.X8)
+			asm.BCond(jit.CondNE, callFallbackLabel)
+			asm.LoadImm64(jit.X7, int64(c.exactClosure))
+			asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+			asm.LoadImm64(jit.X7, int64(uintptr(unsafe.Pointer(c.callee))))
+		} else {
+			asm.LSRimm(jit.X7, jit.X6, uint8(nbPtrSubShift))
+			asm.LoadImm64(jit.X8, int64((jit.NB_TagPtrShr48<<4)|nbPtrSubVMClosure))
+			asm.CMPreg(jit.X7, jit.X8)
+			asm.BCond(jit.CondNE, callFallbackLabel)
+			jit.EmitExtractPtr(asm, jit.X7, jit.X6)
+			asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+			asm.LDR(jit.X7, jit.X7, vmClosureOffProto)
+			asm.LoadImm64(jit.X8, int64(uintptr(unsafe.Pointer(c.callee))))
+			asm.CMPreg(jit.X7, jit.X8)
+			asm.BCond(jit.CondNE, callFallbackLabel)
+		}
 		asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 		asm.CBZ(jit.X16, callFallbackLabel)
 

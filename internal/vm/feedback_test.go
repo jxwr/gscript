@@ -549,6 +549,38 @@ func TestArgArrayElementShapeFeedback_RecordsVMClosureFieldProto(t *testing.T) {
 	if got != stepProto {
 		t.Fatalf("step field VM proto=%p want %p", got, stepProto)
 	}
+	if got := af.Shapes[0].FieldVMClosures["step"]; got != uintptr(unsafe.Pointer(stepClosure)) {
+		t.Fatalf("step field VM closure=%#x want %#x", got, uintptr(unsafe.Pointer(stepClosure)))
+	}
+}
+
+func TestArgArrayElementShapeFeedback_MarksReboundVMClosureFieldUnstable(t *testing.T) {
+	stepProto := &FuncProto{Name: "step"}
+	stepClosureA := NewClosure(stepProto)
+	stepClosureB := NewClosure(stepProto)
+	actor := runtime.NewTable()
+	actor.RawSetString("step", runtime.VMClosureFunctionValue(unsafe.Pointer(stepClosureA), stepClosureA))
+	actor.RawSetString("kind", runtime.StringValue("worker"))
+
+	actors := runtime.NewTable()
+	actors.RawSet(runtime.IntValue(1), runtime.TableValue(actor))
+
+	var af ArgArrayElementShapeFeedback
+	af.Observe(runtime.TableValue(actors))
+	actor.RawSetString("step", runtime.VMClosureFunctionValue(unsafe.Pointer(stepClosureB), stepClosureB))
+	af.Observe(runtime.TableValue(actors))
+	actor.RawSetString("step", runtime.VMClosureFunctionValue(unsafe.Pointer(stepClosureA), stepClosureA))
+	af.Observe(runtime.TableValue(actors))
+
+	if af.ShapeCount != 1 {
+		t.Fatalf("shape count=%d want 1", af.ShapeCount)
+	}
+	if got := af.Shapes[0].FieldVMProtos["step"]; got != stepProto {
+		t.Fatalf("step proto=%p want stable proto %p", got, stepProto)
+	}
+	if got := af.Shapes[0].FieldVMClosures["step"]; got != unstableFieldVMClosure {
+		t.Fatalf("step closure=%#x want unstable sentinel %#x", got, unstableFieldVMClosure)
+	}
 }
 
 func TestCallSiteFeedback_RecordsSmallPolymorphicVMProtos(t *testing.T) {

@@ -20,6 +20,7 @@ type FixedShapeTableFact struct {
 	FieldRanges       map[string]intRange
 	FieldLenRanges    map[string]intRange
 	FieldVMProtos     map[string]*vm.FuncProto
+	FieldVMClosures   map[string]uintptr
 	FieldTableFacts   map[string]FixedShapeTableFact
 	ArrayElementType  Type
 	ArrayElementRange intRange
@@ -32,6 +33,7 @@ type FieldPolyShapeCase struct {
 	FieldIdx     int
 	Type         Type
 	VMProto      *vm.FuncProto
+	VMClosure    uintptr
 	ReceiverFact FixedShapeTableFact
 }
 
@@ -405,6 +407,7 @@ func mergeSameShapeFacts(a, b FixedShapeTableFact) (FixedShapeTableFact, bool) {
 	out.FieldRanges = mergeFieldRangeFacts(a.FieldRanges, b.FieldRanges)
 	out.FieldLenRanges = mergeFieldRangeFacts(a.FieldLenRanges, b.FieldLenRanges)
 	out.FieldVMProtos = mergeFieldProtoFacts(a.FieldVMProtos, b.FieldVMProtos)
+	out.FieldVMClosures = mergeFieldClosureFacts(a.FieldVMClosures, b.FieldVMClosures)
 	out.FieldTableFacts = mergeNestedTableFacts(a.FieldTableFacts, b.FieldTableFacts)
 	if a.ArrayElementType == b.ArrayElementType {
 		out.ArrayElementType = a.ArrayElementType
@@ -486,6 +489,22 @@ func mergeFieldProtoFacts(a, b map[string]*vm.FuncProto) map[string]*vm.FuncProt
 	out := make(map[string]*vm.FuncProto)
 	for name, left := range a {
 		if right := b[name]; left != nil && left == right {
+			out[name] = left
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergeFieldClosureFacts(a, b map[string]uintptr) map[string]uintptr {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	out := make(map[string]uintptr)
+	for name, left := range a {
+		if right := b[name]; left != 0 && left == right {
 			out[name] = left
 		}
 	}
@@ -671,6 +690,7 @@ func fieldPolyShapeCases(facts []FixedShapeTableFact, name string) ([]FieldPolyS
 			FieldIdx:     idx,
 			Type:         caseType,
 			VMProto:      fact.FieldVMProtos[name],
+			VMClosure:    fact.FieldVMClosures[name],
 			ReceiverFact: fact,
 		})
 	}
@@ -715,6 +735,7 @@ func guardedFixedShapeArgFact(fact FixedShapeTableFact) (FixedShapeTableFact, bo
 		FieldRanges:       cloneStringRangeMap(fact.FieldRanges),
 		FieldLenRanges:    cloneStringRangeMap(fact.FieldLenRanges),
 		FieldVMProtos:     cloneStringProtoMap(fact.FieldVMProtos),
+		FieldVMClosures:   cloneStringUintptrMap(fact.FieldVMClosures),
 		FieldTableFacts:   cloneFixedShapeTableFactMap(fact.FieldTableFacts),
 		ArrayElementType:  fact.ArrayElementType,
 		ArrayElementRange: fact.ArrayElementRange,
@@ -945,6 +966,7 @@ func profiledFixedShapeArrayElementPolyFactsForProto(target *vm.FuncProto) map[i
 				FieldRanges:     profiledShapeCaseFieldRanges(shape),
 				FieldLenRanges:  profiledShapeCaseFieldLenRanges(shape),
 				FieldVMProtos:   profiledShapeCaseFieldVMProtos(shape),
+				FieldVMClosures: profiledShapeCaseFieldVMClosures(shape),
 				FieldTableFacts: profiledNestedFixedShapeTableFacts(feedback),
 				Guarded:         true,
 			})
@@ -1121,6 +1143,22 @@ func profiledShapeCaseFieldVMProtos(shape vm.ArgArrayElementShapeCase) map[strin
 	for name, proto := range shape.FieldVMProtos {
 		if proto != nil {
 			out[name] = proto
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func profiledShapeCaseFieldVMClosures(shape vm.ArgArrayElementShapeCase) map[string]uintptr {
+	if len(shape.FieldVMClosures) == 0 {
+		return nil
+	}
+	out := make(map[string]uintptr)
+	for name, closure := range shape.FieldVMClosures {
+		if closure != 0 && closure != ^uintptr(0) {
+			out[name] = closure
 		}
 	}
 	if len(out) == 0 {
@@ -1373,6 +1411,7 @@ func withoutFieldValues(fact FixedShapeTableFact) FixedShapeTableFact {
 		FieldRanges:       cloneStringRangeMap(fact.FieldRanges),
 		FieldLenRanges:    cloneStringRangeMap(fact.FieldLenRanges),
 		FieldVMProtos:     cloneStringProtoMap(fact.FieldVMProtos),
+		FieldVMClosures:   cloneStringUintptrMap(fact.FieldVMClosures),
 		FieldTableFacts:   cloneFixedShapeTableFactMap(fact.FieldTableFacts),
 		ArrayElementType:  fact.ArrayElementType,
 		ArrayElementRange: fact.ArrayElementRange,
@@ -1885,6 +1924,17 @@ func cloneStringProtoMap(in map[string]*vm.FuncProto) map[string]*vm.FuncProto {
 	return out
 }
 
+func cloneStringUintptrMap(in map[string]uintptr) map[string]uintptr {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]uintptr, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 func cloneFixedShapeTableFactMap(in map[string]FixedShapeTableFact) map[string]FixedShapeTableFact {
 	if len(in) == 0 {
 		return nil
@@ -1904,6 +1954,7 @@ func cloneFixedShapeTableFact(fact FixedShapeTableFact) FixedShapeTableFact {
 	fact.FieldRanges = cloneStringRangeMap(fact.FieldRanges)
 	fact.FieldLenRanges = cloneStringRangeMap(fact.FieldLenRanges)
 	fact.FieldVMProtos = cloneStringProtoMap(fact.FieldVMProtos)
+	fact.FieldVMClosures = cloneStringUintptrMap(fact.FieldVMClosures)
 	fact.FieldTableFacts = cloneFixedShapeTableFactMap(fact.FieldTableFacts)
 	return fact
 }
