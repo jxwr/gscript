@@ -665,6 +665,12 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
+	fn, err = MatrixUnitStridePass(fn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("MatrixUnitStride: %w", err)
+	}
+	attachRemarks(fn, opts)
+
 	fn, err = FieldSvalsLowerPass(fn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("FieldSvalsLower: %w", err)
@@ -920,6 +926,7 @@ func NewTier2Pipeline() *Pipeline {
 	pipe.Add("MatrixLower", MatrixLowerPass)
 	pipe.Add("LoadEliminationPostMatrixLower", LoadEliminationPass)
 	pipe.Add("MatrixRowPtrFactoring", MatrixRowPtrFactoringPass)
+	pipe.Add("MatrixUnitStride", MatrixUnitStridePass)
 	pipe.Add("TableArrayStoreLower", TableArrayStoreLowerPass)
 	pipe.Add("DCEPostMatrixLower", DCEPass)
 	pipe.Add("FMAFusion", FMAFusionPass)

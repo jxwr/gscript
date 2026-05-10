@@ -314,6 +314,23 @@ func TestTableKeyFeedback_ObserveDenseMatrix(t *testing.T) {
 	}
 }
 
+func TestDenseMatrixStrideFeedbackStableAndPolymorphic(t *testing.T) {
+	var fb DenseMatrixStrideFeedback
+	dense := runtime.NewDenseMatrix(4, 1)
+
+	fb.Observe(runtime.TableValue(dense))
+	fb.Observe(runtime.TableValue(dense))
+	stride, ok := fb.StableStride()
+	if !ok || stride != 1 {
+		t.Fatalf("stable stride=(%d,%v), want 1,true", stride, ok)
+	}
+
+	fb.Observe(runtime.TableValue(runtime.NewDenseMatrix(4, 2)))
+	if _, ok := fb.StableStride(); ok {
+		t.Fatalf("mixed strides should not remain stable: %+v", fb)
+	}
+}
+
 func TestTableAccessFeedback_ObserveIntMutations(t *testing.T) {
 	var tk TableKeyFeedback
 	tbl := runtime.NewTable()

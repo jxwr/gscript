@@ -198,18 +198,32 @@ func (ec *emitContext) emitMatrixLoadFAt(instr *Instr) {
 	if flatReg != jit.X5 {
 		asm.MOVreg(jit.X5, flatReg)
 	}
-	strideReg := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
-	if strideReg != jit.X1 {
-		asm.MOVreg(jit.X1, strideReg)
-	}
 	iReg := ec.resolveRawInt(instr.Args[2].ID, jit.X2)
 	if iReg != jit.X2 {
 		asm.MOVreg(jit.X2, iReg)
 	}
 	// X4 = i * stride + j
-	if isConstIntValue(instr.Args[3], 0) {
+	if isConstIntValue(instr.Args[1], 1) {
+		if isConstIntValue(instr.Args[3], 0) {
+			asm.MOVreg(jit.X4, jit.X2)
+		} else {
+			jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
+			if jReg != jit.X3 {
+				asm.MOVreg(jit.X3, jReg)
+			}
+			asm.ADDreg(jit.X4, jit.X2, jit.X3)
+		}
+	} else if isConstIntValue(instr.Args[3], 0) {
+		strideReg := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+		if strideReg != jit.X1 {
+			asm.MOVreg(jit.X1, strideReg)
+		}
 		asm.MADD(jit.X4, jit.X2, jit.X1, jit.XZR)
 	} else {
+		strideReg := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+		if strideReg != jit.X1 {
+			asm.MOVreg(jit.X1, strideReg)
+		}
 		jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
 		if jReg != jit.X3 {
 			asm.MOVreg(jit.X3, jReg)
@@ -234,17 +248,31 @@ func (ec *emitContext) emitMatrixStoreFAt(instr *Instr) {
 	if flatReg != jit.X5 {
 		asm.MOVreg(jit.X5, flatReg)
 	}
-	strideReg := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
-	if strideReg != jit.X1 {
-		asm.MOVreg(jit.X1, strideReg)
-	}
 	iReg := ec.resolveRawInt(instr.Args[2].ID, jit.X2)
 	if iReg != jit.X2 {
 		asm.MOVreg(jit.X2, iReg)
 	}
-	if isConstIntValue(instr.Args[3], 0) {
+	if isConstIntValue(instr.Args[1], 1) {
+		if isConstIntValue(instr.Args[3], 0) {
+			asm.MOVreg(jit.X4, jit.X2)
+		} else {
+			jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
+			if jReg != jit.X3 {
+				asm.MOVreg(jit.X3, jReg)
+			}
+			asm.ADDreg(jit.X4, jit.X2, jit.X3)
+		}
+	} else if isConstIntValue(instr.Args[3], 0) {
+		strideReg := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+		if strideReg != jit.X1 {
+			asm.MOVreg(jit.X1, strideReg)
+		}
 		asm.MADD(jit.X4, jit.X2, jit.X1, jit.XZR)
 	} else {
+		strideReg := ec.resolveRawInt(instr.Args[1].ID, jit.X1)
+		if strideReg != jit.X1 {
+			asm.MOVreg(jit.X1, strideReg)
+		}
 		jReg := ec.resolveRawInt(instr.Args[3].ID, jit.X3)
 		if jReg != jit.X3 {
 			asm.MOVreg(jit.X3, jReg)

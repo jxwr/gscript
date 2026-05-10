@@ -50,6 +50,34 @@ func TestMatrixRowPtrFactoringKeepsSingleUseAtForm(t *testing.T) {
 	}
 }
 
+func TestMatrixUnitStrideGuardsStrideAndRewritesAccess(t *testing.T) {
+	fn, b := newMatrixRowPtrTestFunction(t)
+	flat, stride, row := b.Instrs[0], b.Instrs[1], b.Instrs[2]
+	col0 := b.Instrs[3]
+	fn.Proto.NumParams = 1
+	fn.Proto.ArgDenseMatrixStrideFeedback = vm.DenseMatrixStrideFeedbackVector{{Count: 4, Stride: 1}}
+	stride.Op = OpMatrixStride
+	stride.Args = []*Value{flat.Value()}
+	load := &Instr{ID: fn.newValueID(), Op: OpMatrixLoadFAt, Type: TypeFloat,
+		Args: []*Value{flat.Value(), stride.Value(), row.Value(), col0.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{load.Value()}, Block: b}
+	b.Instrs = append(b.Instrs, load, ret)
+
+	got, err := MatrixUnitStridePass(fn)
+	if err != nil {
+		t.Fatalf("MatrixUnitStridePass: %v", err)
+	}
+	if countOpHelper(got, OpGuardIntRange) != 1 {
+		t.Fatalf("expected one stride guard:\n%s", Print(got))
+	}
+	if load.Args[1].Def == nil || load.Args[1].Def.Op != OpConstInt || load.Args[1].Def.Aux != 1 {
+		t.Fatalf("expected load stride rewritten to const 1:\n%s", Print(got))
+	}
+	if errs := Validate(got); len(errs) > 0 {
+		t.Fatalf("invalid IR after unit-stride pass: %v\n%s", errs[0], Print(got))
+	}
+}
+
 func newMatrixRowPtrTestFunction(t *testing.T) (*Function, *Block) {
 	t.Helper()
 	fn := &Function{Proto: &vm.FuncProto{Name: "matrix_rowptr_test"}, NumRegs: 3}

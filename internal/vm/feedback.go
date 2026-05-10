@@ -227,6 +227,52 @@ type ArgArrayElementShapeCase struct {
 // feedback, populated at function entry before Tier 2 compilation.
 type ArgArrayElementShapeFeedbackVector []ArgArrayElementShapeFeedback
 
+const (
+	DenseMatrixStridePolymorphic uint8 = 1 << iota
+	DenseMatrixStrideInvalid
+)
+
+// DenseMatrixStrideFeedback records a stable dmStride for a table parameter.
+// Tier 2 consumes it as a guarded speculation input; a mismatch deopts.
+type DenseMatrixStrideFeedback struct {
+	Count  uint32
+	Stride int32
+	Flags  uint8
+}
+
+func (df *DenseMatrixStrideFeedback) Observe(arg runtime.Value) {
+	if df == nil {
+		return
+	}
+	if !arg.IsTable() {
+		df.Flags |= DenseMatrixStrideInvalid
+		return
+	}
+	stride := arg.Table().DMStride()
+	if stride <= 0 {
+		df.Flags |= DenseMatrixStrideInvalid
+		return
+	}
+	if df.Count == 0 {
+		df.Stride = stride
+		df.Count = 1
+		return
+	}
+	df.Count++
+	if df.Stride != stride {
+		df.Flags |= DenseMatrixStridePolymorphic
+	}
+}
+
+func (df DenseMatrixStrideFeedback) StableStride() (int32, bool) {
+	if df.Count == 0 || df.Flags != 0 || df.Stride <= 0 {
+		return 0, false
+	}
+	return df.Stride, true
+}
+
+type DenseMatrixStrideFeedbackVector []DenseMatrixStrideFeedback
+
 func (af *ArgArrayElementShapeFeedback) Observe(arg runtime.Value) {
 	if af == nil {
 		return
