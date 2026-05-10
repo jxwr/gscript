@@ -52,7 +52,7 @@ func fieldShapeSplitSingleBlockCase(fn *Function, block *Block, idx int, call *I
 		calleeFn, ok := buildSingleBlockFieldShapeInlineCallee(c)
 		if !ok {
 			functionRemarks(fn).Add("FieldShapeCallSplit", "missed", block.ID, call.ID, call.Op,
-				fmt.Sprintf("case shape=%d proto=%s is not single-block after local lowering", c.ShapeID, c.VMProto.Name))
+				fmt.Sprintf("case shape=%d proto=%s is not safe single-block after local lowering", c.ShapeID, c.VMProto.Name))
 			continue
 		}
 		fieldShapeSplitCase(fn, block, idx, call, c, cases, caseIdx, calleeFn)
@@ -107,7 +107,39 @@ func buildSingleBlockFieldShapeInlineCallee(c FieldPolyShapeCase) (*Function, bo
 	if err != nil {
 		return nil, false
 	}
-	return calleeFn, len(calleeFn.Blocks) == 1
+	if len(calleeFn.Blocks) != 1 || !fieldShapeSplitCalleeExitResumeSafe(calleeFn) {
+		return nil, false
+	}
+	return calleeFn, true
+}
+
+func fieldShapeSplitCalleeExitResumeSafe(calleeFn *Function) bool {
+	if calleeFn == nil || len(calleeFn.Blocks) != 1 {
+		return false
+	}
+	for _, instr := range calleeFn.Blocks[0].Instrs {
+		if instr == nil || instr.Op == OpReturn || instr.Op == OpLoadSlot {
+			continue
+		}
+		if !fieldShapeSplitInlineOpSafe(instr.Op) {
+			return false
+		}
+	}
+	return true
+}
+
+func fieldShapeSplitInlineOpSafe(op Op) bool {
+	switch op {
+	case OpConstInt, OpConstFloat, OpConstBool, OpConstNil, OpConstString,
+		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt,
+		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+		OpEqInt, OpLtInt, OpLeInt, OpEqString, OpLtFloat, OpLeFloat,
+		OpFloor, OpNumToFloat, OpFieldSvals, OpFieldLoad, OpFieldLoadNumToFloat,
+		OpGuardType, OpGuardIntRange, OpGuardCalleeProto:
+		return true
+	default:
+		return false
+	}
 }
 
 func fieldShapeSplitCase(fn *Function, block *Block, idx int, call *Instr, c FieldPolyShapeCase, cases []FieldPolyShapeCase, caseIdx int, calleeFn *Function) {
@@ -233,7 +265,7 @@ func appendFieldShapeInlinedSingleBlock(fn *Function, block *Block, call *Instr,
 			Aux2:  ci.Aux2,
 			Block: block,
 		}
-		newInstr.copySourceFrom(ci)
+		newInstr.copySourceFrom(call)
 		newInstr.Args = make([]*Value, len(ci.Args))
 		for j, arg := range ci.Args {
 			newInstr.Args[j] = remapValue(arg, idMap, paramValues)

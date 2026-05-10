@@ -98,3 +98,72 @@ func step_b(actor, tick) { return tick + 2 }`)
 		t.Fatalf("result=%v want 8", result)
 	}
 }
+
+func TestFieldShapeCallSplit_RejectsExitResumeCallee(t *testing.T) {
+	top := compileTop(t, `func step_cache(actor, tick) {
+    actor.hits = actor.hits + tick
+    return actor.hits
+}
+func step_b(actor, tick) {
+    actor.hits = actor.hits + tick + 2
+    return actor.hits
+}`)
+	stepCache := findProtoByName(top, "step_cache")
+	stepB := findProtoByName(top, "step_b")
+	if stepCache == nil || stepB == nil {
+		t.Fatalf("missing protos: step_cache=%v step_b=%v", stepCache != nil, stepB != nil)
+	}
+
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "caller", NumParams: 2, MaxStack: 6},
+		NumRegs: 2,
+		nextID:  4,
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			2: {
+				{
+					ShapeID:  101,
+					FieldIdx: 1,
+					VMProto:  stepCache,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    101,
+						FieldNames: []string{"hits", "step"},
+						FieldTypes: map[string]Type{"hits": TypeInt, "step": TypeFunction},
+					},
+				},
+				{
+					ShapeID:  202,
+					FieldIdx: 0,
+					VMProto:  stepB,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    202,
+						FieldNames: []string{"step"},
+						FieldTypes: map[string]Type{"step": TypeFunction},
+					},
+				},
+			},
+		},
+	}
+	entry := &Block{ID: 0}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry}
+	recv := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	tick := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: entry}
+	call := &Instr{ID: 2, Op: OpFieldCallFloor, Type: TypeInt, Args: []*Value{recv.Value(), tick.Value()}, Aux: 2, Aux2: 2, Block: entry}
+	ret := &Instr{ID: 3, Op: OpReturn, Args: []*Value{call.Value()}, Block: entry}
+	entry.Instrs = []*Instr{recv, tick, call, ret}
+
+	out, err := FieldShapeCallSplitPass(fn)
+	if err != nil {
+		t.Fatalf("FieldShapeCallSplitPass: %v", err)
+	}
+	if out != fn {
+		t.Fatal("pass replaced function unexpectedly")
+	}
+	text := Print(fn)
+	if strings.Contains(text, "TableShapeID") || len(fn.Blocks) != 1 {
+		t.Fatalf("unsafe callee was split unexpectedly:\n%s", text)
+	}
+	if got := len(fn.FieldPolyShapeFacts[call.ID]); got != 2 {
+		t.Fatalf("fallback cases=%d want unchanged 2", got)
+	}
+}
