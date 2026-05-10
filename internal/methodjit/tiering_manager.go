@@ -338,14 +338,17 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 		})
 	}
 	if profile.HasLoop {
-		if tm.recompileQueue.enqueue(proto, "feedback_matured_entry_refresh", Tier2ExitProfileSite{
+		queued := tm.recompileQueue.enqueue(proto, "feedback_matured_entry_refresh", Tier2ExitProfileSite{
 			ExitName:             "EntryRefresh",
 			Reason:               "feedback_matured",
 			QueuedRecompile:      true,
 			RefreshVersionHash:   fmt.Sprintf("%x", current.Version.Hash),
 			RefreshVersionGuards: current.Version.GuardCount,
 			RefreshGuardDelta:    current.Version.GuardCount - cf.SpecializationVersion.GuardCount,
-		}) {
+		})
+		cf.SpeculationSnapshot = current.Snapshot
+		cf.SpecializationVersion = current.Version
+		if queued {
 			traceRefresh()
 			proto.Tier2Promoted = false
 			clearFuncProtoDirectEntries(proto)

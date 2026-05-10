@@ -641,6 +641,10 @@ func TestTieringManagerQueuesLoopTier2RefreshAtNextEntry(t *testing.T) {
 	if _, ok := tm.recompileQueue.take(proto); !ok {
 		t.Fatal("loop refresh should queue next-entry recompile")
 	}
+	if cf.SpeculationSnapshot.FieldObserved != 1 || cf.SpecializationVersion.Hash == 0 {
+		t.Fatalf("loop refresh should mark compiled body at current epoch: snapshot=%#v version=%#v",
+			cf.SpeculationSnapshot, cf.SpecializationVersion)
+	}
 }
 
 func TestTieringManagerLoopTier2RefreshTracesOnlyFirstQueue(t *testing.T) {
