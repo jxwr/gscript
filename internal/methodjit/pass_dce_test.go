@@ -346,6 +346,28 @@ func TestDCE_RemovesDeadPhiAndInputs(t *testing.T) {
 	}
 }
 
+func TestDCE_RemovesDeadFieldSvalsAndTableShapeID(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "dead_guarded_loads"}, NumRegs: 1}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	svals := &Instr{ID: fn.newValueID(), Op: OpFieldSvals, Type: TypeInt, Args: []*Value{tbl.Value()}, Aux: 123, Block: b}
+	shape := &Instr{ID: fn.newValueID(), Op: OpTableShapeID, Type: TypeInt, Args: []*Value{tbl.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{tbl.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, svals, shape, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := DCEPass(fn)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+	for _, instr := range result.Blocks[0].Instrs {
+		if instr.ID == svals.ID || instr.ID == shape.ID {
+			t.Fatalf("dead guarded load kept %s v%d\nIR:\n%s", instr.Op, instr.ID, Print(result))
+		}
+	}
+}
+
 // TestDCE_MatrixStoreFAtNotDropped is the R52 regression: DCE was dropping
 // OpMatrixStoreFAt / OpMatrixSetF / OpMatrixStoreFRow because they had no
 // hasSideEffect entry, so JIT-compiled matrix.setf calls became no-ops and
