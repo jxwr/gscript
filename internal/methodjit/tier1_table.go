@@ -318,6 +318,12 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	// so X3 must hold the raw fieldIdx (not pre-multiplied).
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
 	asm.STRreg(jit.X4, jit.X1, jit.X3)         // svals[fieldIdx] = value
+	versionSkipLabel := nextLabel("setfield_string_lookup_version_skip")
+	asm.LDR(jit.X8, jit.X0, jit.TableOffStringLookupVer)
+	asm.CBZ(jit.X8, versionSkipLabel)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.STR(jit.X8, jit.X0, jit.TableOffStringLookupVer)
+	asm.Label(versionSkipLabel)
 
 	asm.B(doneLabel)
 
@@ -348,6 +354,12 @@ func emitBaselineSetField(asm *jit.Assembler, inst uint32, pc int, feedbackEnabl
 	asm.BCond(jit.CondEQ, slowLabel)
 	asm.LDR(jit.X8, jit.X0, jit.TableOffSvals)
 	asm.STRreg(jit.X4, jit.X8, jit.X3)
+	appendVersionSkipLabel := nextLabel("setfield_append_string_lookup_version_skip")
+	asm.LDR(jit.X8, jit.X0, jit.TableOffStringLookupVer)
+	asm.CBZ(jit.X8, appendVersionSkipLabel)
+	asm.ADDimm(jit.X8, jit.X8, 1)
+	asm.STR(jit.X8, jit.X0, jit.TableOffStringLookupVer)
+	asm.Label(appendVersionSkipLabel)
 	asm.ADDimm(jit.X6, jit.X6, 1)
 	asm.STR(jit.X6, jit.X0, jit.TableOffSvalsLen)
 	asm.STRW(jit.X2, jit.X0, jit.TableOffShapeID)

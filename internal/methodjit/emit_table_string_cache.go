@@ -22,8 +22,9 @@ func (ec *emitContext) emitDynamicStringGetTableCache(instr *Instr, doneLabel st
 	deoptLabel := ec.uniqueLabel("gettable_string_type_deopt")
 	ec.emitDynamicStringCacheOrSmallScan(instr, missLabel, func(fieldIdxReg jit.Reg) {
 		asm.LDR(jit.X10, jit.X0, jit.TableOffSvals)
-		asm.LDRreg(jit.X0, jit.X10, fieldIdxReg)
-		ec.emitStoreDynamicStringTableLoad(instr, jit.X0, deoptLabel)
+		asm.LDRreg(jit.X16, jit.X10, fieldIdxReg)
+		ec.emitNativeStringQueryCacheStore(jit.X16)
+		ec.emitStoreDynamicStringTableLoad(instr, jit.X16, deoptLabel)
 		asm.B(doneLabel)
 	}, dynamicStringCacheHandlers{
 		valueHit: func(valueReg jit.Reg) {
@@ -62,6 +63,7 @@ func (ec *emitContext) emitDynamicStringSetTableCache(instr *Instr, doneLabel st
 		asm.BCond(jit.CondEQ, missLabel)
 		asm.LDR(jit.X10, jit.X0, jit.TableOffSvals)
 		asm.STRreg(jit.X4, jit.X10, fieldIdxReg)
+		ec.emitBumpTableStringLookupVersion(jit.X0, jit.X5)
 		asm.MOVimm16(jit.X5, 1)
 		asm.STRB(jit.X5, jit.X0, jit.TableOffKeysDirty)
 		asm.B(doneLabel)
@@ -90,6 +92,7 @@ func (ec *emitContext) emitDynamicStringSetTableCache(instr *Instr, doneLabel st
 			asm.BCond(jit.CondGE, missLabel)
 			asm.LDR(jit.X7, jit.X0, jit.TableOffSvals)
 			asm.STRreg(jit.X4, jit.X7, fieldIdxReg)
+			ec.emitBumpTableStringLookupVersion(jit.X0, jit.X7)
 			asm.ADDimm(jit.X6, jit.X6, 1)
 			asm.STR(jit.X6, jit.X0, jit.TableOffSvalsLen)
 			asm.LDRW(jit.X7, entryReg, tableStringKeyCacheEntryShapeID)
@@ -183,6 +186,14 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	smapCacheLabel := ec.uniqueLabel("dyn_string_smap_cache")
 	if handlers.appendHit == nil {
 		asm.CBZ(jit.X7, smapCacheLabel)
+	}
+
+	if handlers.valueHit != nil {
+		queryMissLabel := ec.uniqueLabel("dyn_string_query_cache_miss")
+		ec.emitNativeStringQueryCacheProbe(queryMissLabel, func(valueReg jit.Reg) {
+			handlers.valueHit(valueReg)
+		})
+		asm.Label(queryMissLabel)
 	}
 
 	scanLabel := ec.uniqueLabel("dyn_string_scan")
@@ -307,7 +318,7 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.CBZ(jit.X3, missLabel)
 	asm.LDR(jit.X10, jit.X8, jit.StringLookupCacheOffMask)
 
-	useQueryCache := dynamicStringQueryCacheUseful(instr)
+	useQueryCache := handlers.valueHit != nil
 	if useQueryCache {
 		queryMissLabel := ec.uniqueLabel("dyn_string_query_cache_miss")
 		ec.emitNativeStringQueryCacheProbe(queryMissLabel, func(valueReg jit.Reg) {
@@ -423,6 +434,11 @@ func (ec *emitContext) emitNativeStringQueryCacheStore(valueReg jit.Reg) {
 	asm := ec.asm
 	ec.emitNativeStringQueryCacheSlot(jit.X11, jit.X13)
 	asm.LDR(jit.X14, jit.X0, jit.TableOffStringLookupVer)
+	queryVersionReadyLabel := ec.uniqueLabel("native_string_query_version_ready")
+	asm.CBNZ(jit.X14, queryVersionReadyLabel)
+	asm.MOVimm16(jit.X14, 1)
+	asm.STR(jit.X14, jit.X0, jit.TableOffStringLookupVer)
+	asm.Label(queryVersionReadyLabel)
 	asm.STR(jit.X0, jit.X11, nativeStringQueryCacheEntryTable)
 	asm.STR(jit.X14, jit.X11, nativeStringQueryCacheEntryVersion)
 	asm.STR(jit.X5, jit.X11, nativeStringQueryCacheEntryKeyData)

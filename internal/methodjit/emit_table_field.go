@@ -840,6 +840,12 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 
 	if ec.hasFieldSvalsCache(tblValueID, shapeID) {
 		ec.emitPreparedFieldStore(valStore, fieldIdx)
+		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		ec.emitBumpTableStringLookupVersion(jit.X0, jit.X2)
 		return
 	}
 
@@ -848,6 +854,7 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	// Direct field store: svals[fieldIndex] = value.
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
 	ec.emitPreparedFieldStore(valStore, fieldIdx)
+	ec.emitBumpTableStringLookupVersion(jit.X0, jit.X2)
 	ec.rememberFieldSvalsCache(tblValueID, shapeID)
 	if shapeWasVerified {
 		return
@@ -932,6 +939,7 @@ func (ec *emitContext) emitSetFieldDynamicCache(instr *Instr) bool {
 		asm.BCond(jit.CondEQ, deoptLabel)
 		asm.STRreg(jit.X6, jit.X1, jit.X4)
 	}
+	ec.emitBumpTableStringLookupVersion(jit.X0, jit.X7)
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
@@ -984,6 +992,16 @@ func (ec *emitContext) emitPreparedFieldStore(val fieldStoreValue, fieldIdx int)
 		return
 	}
 	ec.asm.STR(val.gpr, jit.X1, fieldIdx*jit.ValueSize)
+}
+
+func (ec *emitContext) emitBumpTableStringLookupVersion(tableReg, tmp jit.Reg) {
+	asm := ec.asm
+	skipLabel := ec.uniqueLabel("string_lookup_version_skip")
+	asm.LDR(tmp, tableReg, jit.TableOffStringLookupVer)
+	asm.CBZ(tmp, skipLabel)
+	asm.ADDimm(tmp, tmp, 1)
+	asm.STR(tmp, tableReg, jit.TableOffStringLookupVer)
+	asm.Label(skipLabel)
 }
 
 // emitGetFieldExit emits a table-exit for OpGetField when no inline cache

@@ -598,10 +598,20 @@ func (t *Table) invalidateStringLookupCacheLocked() {
 }
 
 func (t *Table) bumpStringLookupVersionLocked() {
+	if t.stringLookupVersion == 0 {
+		return
+	}
 	t.stringLookupVersion++
 	if t.stringLookupVersion == 0 {
 		t.stringLookupVersion = 1
 	}
+}
+
+func (t *Table) enableStringLookupVersionLocked() uint64 {
+	if t.stringLookupVersion == 0 {
+		t.stringLookupVersion = 1
+	}
+	return t.stringLookupVersion
 }
 
 func (t *Table) ensureStringLookupCacheLocked() *StringLookupCache {
@@ -1174,6 +1184,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 				cache.FieldIdx = i
 				cache.ShapeID = t.shapeID
 			}
+			t.bumpStringLookupVersionLocked()
 			RecordShapeFieldMutation(oldShapeID, i)
 			return
 		}
@@ -1196,6 +1207,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			preShapeID := t.shapeID
 			idx := len(t.svals)
 			t.appendSmallStringField(key, val)
+			t.bumpStringLookupVersionLocked()
 			cache.FieldIdx = idx
 			cache.ShapeID = t.shapeID
 			cache.AppendShapeID = preShapeID
@@ -1239,6 +1251,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 		if idx, ok := t.lookupDynamicStringCacheLocked(data, keyLen, cache); ok {
 			RecordShapeFieldMutation(t.shapeID, idx)
 			t.svals[idx] = val
+			t.bumpStringLookupVersionLocked()
 			RecordRuntimePathTableStringSetCacheHit()
 			return
 		}
@@ -1253,6 +1266,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 				t.svals[i] = val
 				t.rememberDynamicStringCacheLocked(key, data, keyLen, i, cache)
 			}
+			t.bumpStringLookupVersionLocked()
 			RecordShapeFieldMutation(oldShapeID, i)
 			RecordRuntimePathTableStringSetScanHit()
 			return
@@ -1276,6 +1290,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			idx := len(t.svals)
 			preShapeID := t.shapeID
 			t.appendSmallStringField(key, val)
+			t.bumpStringLookupVersionLocked()
 			t.rememberDynamicStringCacheLocked(key, data, keyLen, idx, cache)
 			if cache != nil {
 				for i := range cache {
@@ -1448,6 +1463,7 @@ func (t *Table) RawSetString(key string, val Value) {
 			} else {
 				t.svals[i] = val
 			}
+			t.bumpStringLookupVersionLocked()
 			RecordShapeFieldMutation(oldShapeID, i)
 			return
 		}
@@ -1468,6 +1484,7 @@ func (t *Table) RawSetString(key string, val Value) {
 	if !valIsNil {
 		if len(t.skeys) < smallFieldCap {
 			t.appendSmallStringField(key, val)
+			t.bumpStringLookupVersionLocked()
 		} else {
 			RecordShapeMutation(t.shapeID)
 			t.bumpStringLookupVersionLocked()

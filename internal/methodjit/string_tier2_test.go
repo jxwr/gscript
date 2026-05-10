@@ -1254,6 +1254,46 @@ func lookup(tbl, key) {
 	}
 }
 
+func TestTier2_DynamicStringQueryCacheInvalidatesAfterStaticSetField(t *testing.T) {
+	src := `
+func lookup_update(tbl, key) {
+    before := tbl[key]
+    tbl.region = before + 1
+    return tbl[key]
+}
+`
+	top := compileTop(t, src)
+	proto := findProtoByName(top, "lookup_update")
+	if proto == nil {
+		t.Fatal("lookup_update proto not found")
+	}
+
+	tbl := runtime.NewTable()
+	tbl.RawSetString("region", runtime.IntValue(41))
+	args := []runtime.Value{runtime.TableValue(tbl), runtime.StringValue("region")}
+
+	v := vm.New(runtime.NewInterpreterGlobals())
+	defer v.Close()
+	if _, err := v.Execute(top); err != nil {
+		t.Fatalf("VM execute top: %v", err)
+	}
+	fnVal := v.GetGlobal("lookup_update")
+
+	tm := NewTieringManager()
+	v.SetMethodJIT(tm)
+	if err := tm.CompileTier2(proto); err != nil {
+		t.Fatalf("CompileTier2(lookup_update): %v", err)
+	}
+	gotValues, err := v.CallValue(fnVal, args)
+	if err != nil {
+		t.Fatalf("Tier2 lookup_update: %v", err)
+	}
+	got := requireOneInt(t, "Tier2 lookup_update", gotValues)
+	if got != 42 {
+		t.Fatalf("lookup_update Tier2=%d, want 42", got)
+	}
+}
+
 func protoHasAnyDynamicStringKeyCache(proto *vm.FuncProto) bool {
 	if proto == nil {
 		return false
