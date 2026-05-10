@@ -30,6 +30,178 @@ func FieldShapeCallSplitPass(fn *Function) (*Function, error) {
 	return fn, nil
 }
 
+// FieldShapeCallSplitPreInlinePass converts one polymorphic field-dispatched
+// OpCall into a shape branch whose hot arm carries a monomorphic call fact.
+// The regular Inline pass then handles the branch with the existing guarded
+// dynamic-callee machinery, so multi-block callees and normal lowering stay in
+// one implementation path.
+//
+// This is intentionally not in the production Tier 2 plan yet: enabling it
+// without a stable mid-run version switch can trigger repeated
+// feedback_matured refreshes as the split arm introduces new guarded callee
+// facts. Keep it as a tested staging component until speculation state can
+// install the rewritten version exactly once per feedback epoch.
+func FieldShapeCallSplitPreInlinePass(fn *Function) (*Function, error) {
+	if fn == nil || len(fn.FieldPolyShapeFacts) == 0 {
+		return fn, nil
+	}
+	for _, block := range append([]*Block(nil), fn.Blocks...) {
+		for idx, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpCall {
+				continue
+			}
+			if fieldShapeSplitPreInlineCallCase(fn, block, idx, instr) {
+				return fn, nil
+			}
+		}
+	}
+	return fn, nil
+}
+
+func fieldShapeSplitPreInlineCallCase(fn *Function, block *Block, idx int, call *Instr) bool {
+	calleeLoad := fieldShapeCallCalleeLoad(call)
+	if calleeLoad == nil {
+		return false
+	}
+	cases := fn.FieldPolyShapeFacts[calleeLoad.ID]
+	if len(cases) < 2 || len(call.Args) < 2 {
+		return false
+	}
+	callArgs, ok := inlineCallArgumentValues(call)
+	if !ok || len(callArgs) == 0 {
+		return false
+	}
+	for caseIdx, c := range cases {
+		if reason := fieldShapeInlineSplitCaseRejectReason(c, callArgs, InlineConfig{MaxSize: 1 << 30}, computeLoopInfo(fn).loopBlocks[block.ID]); reason != "" {
+			functionRemarks(fn).Add("FieldShapeCallSplit", "missed", block.ID, call.ID, call.Op,
+				fmt.Sprintf("case shape=%d proto=%s pre-inline split rejected: %s", c.ShapeID, fieldShapeCaseProtoName(c), reason))
+			continue
+		}
+		fieldShapeSplitPreInlineCase(fn, block, idx, call, calleeLoad, c, cases, caseIdx)
+		functionRemarks(fn).Add("FieldShapeCallSplit", "changed", block.ID, call.ID, call.Op,
+			fmt.Sprintf("pre-inline split shape=%d proto=%s", c.ShapeID, fieldShapeCaseProtoName(c)))
+		return true
+	}
+	return false
+}
+
+func fieldShapeCallCalleeLoad(call *Instr) *Instr {
+	if call == nil || call.Op != OpCall || len(call.Args) == 0 || call.Args[0] == nil || call.Args[0].Def == nil {
+		return nil
+	}
+	if call.Args[0].Def.Op != OpGetField {
+		return nil
+	}
+	return call.Args[0].Def
+}
+
+func fieldShapeCaseProtoName(c FieldPolyShapeCase) string {
+	if c.VMProto == nil {
+		return "<nil>"
+	}
+	return c.VMProto.Name
+}
+
+func fieldShapeSplitPreInlineCase(fn *Function, block *Block, idx int, call, calleeLoad *Instr, c FieldPolyShapeCase, cases []FieldPolyShapeCase, caseIdx int) {
+	maxBlockID := 0
+	for _, b := range fn.Blocks {
+		if b.ID > maxBlockID {
+			maxBlockID = b.ID
+		}
+	}
+	caseBlock := &Block{ID: maxBlockID + 1, defs: make(map[int]*Value)}
+	fallbackBlock := &Block{ID: maxBlockID + 2, defs: make(map[int]*Value)}
+	mergeBlock := &Block{ID: maxBlockID + 3, defs: make(map[int]*Value)}
+
+	postCallInstrs := append([]*Instr(nil), block.Instrs[idx+1:]...)
+	oldSuccs := append([]*Block(nil), block.Succs...)
+	pre := append([]*Instr(nil), block.Instrs[:idx]...)
+	receiver := call.Args[1]
+
+	shape := emitIRInstr(fn, block, OpTableShapeID, TypeInt, []*Value{receiver}, 0, 0)
+	shape.copySourceFrom(call)
+	shapeConst := emitIRInstr(fn, block, OpConstInt, TypeInt, nil, int64(c.ShapeID), 0)
+	shapeConst.copySourceFrom(call)
+	eq := emitIRInstr(fn, block, OpEqInt, TypeBool, []*Value{shape.Value(), shapeConst.Value()}, 0, 0)
+	eq.copySourceFrom(call)
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Args: []*Value{eq.Value()}, Block: block}
+	br.copySourceFrom(call)
+	block.Instrs = append(pre, shape, shapeConst, eq, br)
+	block.Succs = []*Block{caseBlock, fallbackBlock}
+	caseBlock.Preds = []*Block{block}
+	fallbackBlock.Preds = []*Block{block}
+
+	caseLoad := &Instr{
+		ID:        fn.newValueID(),
+		Op:        OpGetField,
+		Type:      calleeLoad.Type,
+		Args:      append([]*Value(nil), calleeLoad.Args...),
+		Aux:       calleeLoad.Aux,
+		Aux2:      calleeLoad.Aux2,
+		Block:     caseBlock,
+		HasSource: calleeLoad.HasSource,
+		SourcePC:  calleeLoad.SourcePC,
+	}
+	caseArgs := append([]*Value(nil), call.Args...)
+	caseArgs[0] = caseLoad.Value()
+	caseCall := &Instr{
+		ID:        fn.newValueID(),
+		Op:        OpCall,
+		Type:      call.Type,
+		Args:      caseArgs,
+		Aux:       call.Aux,
+		Aux2:      call.Aux2,
+		Block:     caseBlock,
+		HasSource: call.HasSource,
+		SourcePC:  call.SourcePC,
+	}
+	caseJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: caseBlock}
+	caseJump.copySourceFrom(call)
+	caseBlock.Instrs = []*Instr{caseLoad, caseCall, caseJump}
+	caseBlock.Succs = []*Block{mergeBlock}
+	fn.FieldPolyShapeFacts[caseLoad.ID] = []FieldPolyShapeCase{c}
+
+	call.Block = fallbackBlock
+	fallbackJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: fallbackBlock}
+	fallbackJump.copySourceFrom(call)
+	fallbackBlock.Instrs = []*Instr{call, fallbackJump}
+	fallbackBlock.Succs = []*Block{mergeBlock}
+	fn.FieldPolyShapeFacts[calleeLoad.ID] = fieldShapeCasesWithout(cases, caseIdx)
+
+	mergeBlock.Preds = []*Block{caseBlock, fallbackBlock}
+	phi := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpPhi,
+		Type:  call.Type,
+		Args:  []*Value{caseCall.Value(), call.Value()},
+		Block: mergeBlock,
+	}
+	phi.copySourceFrom(call)
+	mergeBlock.Instrs = []*Instr{phi}
+	for _, pi := range postCallInstrs {
+		pi.Block = mergeBlock
+		mergeBlock.Instrs = append(mergeBlock.Instrs, pi)
+	}
+	rewriteValueRefs(mergeBlock.Instrs[1:], call.ID, phi.Value())
+	for _, b := range fn.Blocks {
+		if b == block || b == mergeBlock || b == caseBlock || b == fallbackBlock {
+			continue
+		}
+		rewriteValueRefs(b.Instrs, call.ID, phi.Value())
+	}
+
+	mergeBlock.Succs = oldSuccs
+	for _, succ := range oldSuccs {
+		for i, pred := range succ.Preds {
+			if pred == block {
+				succ.Preds[i] = mergeBlock
+			}
+		}
+	}
+	fn.Blocks = append(fn.Blocks, caseBlock, fallbackBlock, mergeBlock)
+	canonicalizeBlockOrder(fn)
+}
+
 func fieldShapeSplitSingleBlockCase(fn *Function, block *Block, idx int, call *Instr) bool {
 	cases := fn.FieldPolyShapeFacts[call.ID]
 	if len(cases) < 2 || len(call.Args) == 0 {

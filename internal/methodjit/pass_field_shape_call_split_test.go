@@ -167,3 +167,81 @@ func step_b(actor, tick) {
 		t.Fatalf("fallback cases=%d want unchanged 2", got)
 	}
 }
+
+func TestFieldShapeCallSplitPreInline_MakesMonomorphicCallArm(t *testing.T) {
+	top := compileTop(t, `func step_a(actor, tick) { return tick + 1 }
+func step_b(actor, tick) { return tick + 2 }`)
+	stepA := findProtoByName(top, "step_a")
+	stepB := findProtoByName(top, "step_b")
+	if stepA == nil || stepB == nil {
+		t.Fatalf("missing protos: step_a=%v step_b=%v", stepA != nil, stepB != nil)
+	}
+
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "caller", NumParams: 2, MaxStack: 6},
+		NumRegs: 2,
+		nextID:  5,
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			2: {
+				{
+					ShapeID:  101,
+					FieldIdx: 1,
+					VMProto:  stepA,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    101,
+						FieldNames: []string{"id", "step"},
+						FieldTypes: map[string]Type{"id": TypeInt, "step": TypeFunction},
+					},
+				},
+				{
+					ShapeID:  202,
+					FieldIdx: 1,
+					VMProto:  stepB,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    202,
+						FieldNames: []string{"id", "step"},
+						FieldTypes: map[string]Type{"id": TypeInt, "step": TypeFunction},
+					},
+				},
+			},
+		},
+	}
+	entry := &Block{ID: 0}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry}
+	recv := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	tick := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: entry}
+	method := &Instr{ID: 2, Op: OpGetField, Type: TypeFunction, Args: []*Value{recv.Value()}, Aux: 0, Block: entry}
+	call := &Instr{ID: 3, Op: OpCall, Type: TypeInt, Args: []*Value{method.Value(), recv.Value(), tick.Value()}, Aux: 2, Aux2: 1, Block: entry}
+	ret := &Instr{ID: 4, Op: OpReturn, Args: []*Value{call.Value()}, Block: entry}
+	entry.Instrs = []*Instr{recv, tick, method, call, ret}
+
+	out, err := FieldShapeCallSplitPreInlinePass(fn)
+	if err != nil {
+		t.Fatalf("FieldShapeCallSplitPreInlinePass: %v", err)
+	}
+	if out != fn {
+		t.Fatal("pass replaced function unexpectedly")
+	}
+	if errs := Validate(fn); len(errs) > 0 {
+		t.Fatalf("split IR failed validation:\n%s\nerrs=%v", Print(fn), errs)
+	}
+	text := Print(fn)
+	for _, want := range []string{"TableShapeID", "Phi", "Call"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("split IR missing %q:\n%s", want, text)
+		}
+	}
+	sawMono := false
+	for id, cases := range fn.FieldPolyShapeFacts {
+		if id != method.ID && len(cases) == 1 && cases[0].VMProto == stepA {
+			sawMono = true
+		}
+	}
+	if !sawMono {
+		t.Fatalf("missing monomorphic case call fact: %#v", fn.FieldPolyShapeFacts)
+	}
+	if got := len(fn.FieldPolyShapeFacts[method.ID]); got != 1 {
+		t.Fatalf("fallback cases=%d want 1", got)
+	}
+}
