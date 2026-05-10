@@ -1847,12 +1847,16 @@ func (ec *emitContext) emitEpilogue() {
 func (ec *emitContext) emitBlock(block *Block) {
 	ec.asm.Label(ec.blockLabelFor(block))
 	ec.currentBlockID = block.ID
-	ec.emitTier2BlockCounter(block)
 	typedParamLoads := ec.typedSelfEntryParamLoads(block)
 	typedParamLabelEmitted := false
+	blockCounterEmitted := false
 	if typedParamLoads != nil && len(typedParamLoads) == 0 {
 		ec.asm.Label(ec.typedSelfAfterParamsLabel())
 		typedParamLabelEmitted = true
+	}
+	if typedParamLoads == nil || typedParamLabelEmitted {
+		ec.emitTier2BlockCounter(block)
+		blockCounterEmitted = true
 	}
 
 	isLoopBlock := ec.loop != nil && ec.loop.loopBlocks[block.ID]
@@ -1998,6 +2002,10 @@ func (ec *emitContext) emitBlock(block *Block) {
 			if len(typedParamLoads) == 0 {
 				ec.asm.Label(ec.typedSelfAfterParamsLabel())
 				typedParamLabelEmitted = true
+				if !blockCounterEmitted {
+					ec.emitTier2BlockCounter(block)
+					blockCounterEmitted = true
+				}
 			}
 		}
 	}
