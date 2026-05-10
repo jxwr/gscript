@@ -14,10 +14,7 @@ func CallReturnProjectionPass(fn *Function) (*Function, error) {
 			if instr == nil || instr.Op != OpCall || uses[instr.ID] != 1 || i+1 >= len(block.Instrs) {
 				continue
 			}
-			if fn.CallABIs == nil {
-				continue
-			}
-			if _, ok := fn.CallABIs[instr.ID]; !ok {
+			if !callReturnProjectionCandidate(fn, instr) {
 				continue
 			}
 			next := block.Instrs[i+1]
@@ -38,4 +35,78 @@ func CallReturnProjectionPass(fn *Function) (*Function, error) {
 		}
 	}
 	return fn, nil
+}
+
+func callReturnProjectionCandidate(fn *Function, instr *Instr) bool {
+	if fn == nil || instr == nil || instr.Op != OpCall {
+		return false
+	}
+	if fn.CallABIs != nil {
+		if _, ok := fn.CallABIs[instr.ID]; ok {
+			return true
+		}
+	}
+	return fieldShapeTypedPeerProjectionCandidate(fn, instr)
+}
+
+func fieldShapeTypedPeerProjectionCandidate(fn *Function, instr *Instr) bool {
+	if fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) < 2 ||
+		instr.Args[0] == nil || instr.Args[0].Def == nil {
+		return false
+	}
+	calleeLoad := instr.Args[0].Def
+	if calleeLoad.Op != OpGetField || len(calleeLoad.Args) == 0 || calleeLoad.Args[0] == nil {
+		return false
+	}
+	receiver := calleeLoad.Args[0]
+	if instr.Args[1] == nil || instr.Args[1].ID != receiver.ID {
+		return false
+	}
+	nArgs := len(instr.Args) - 1
+	if callResultCountFromAux2(instr.Aux2) != 1 || nArgs < 1 || nArgs > 4 {
+		return false
+	}
+	cases := fn.FieldPolyShapeFacts[calleeLoad.ID]
+	if len(cases) < 2 {
+		return false
+	}
+	var paramReps []SpecializedABIParamRep
+	for _, c := range cases {
+		if c.ShapeID == 0 || c.FieldIdx < 0 || c.VMProto == nil || c.VMProto.NumParams != nArgs {
+			return false
+		}
+		abi := AnalyzeTypedPeerABIWithArgFacts(c.VMProto, map[int]FixedShapeTableFact{0: c.ReceiverFact})
+		if !abi.Eligible || len(abi.Params) != nArgs || abi.Params[0] != SpecializedABIParamRawTablePtr {
+			return false
+		}
+		switch abi.Return {
+		case SpecializedABIReturnRawInt, SpecializedABIReturnRawFloat:
+		default:
+			return false
+		}
+		if len(paramReps) == 0 {
+			paramReps = append([]SpecializedABIParamRep(nil), abi.Params...)
+		} else {
+			for i, rep := range abi.Params {
+				if paramReps[i] != rep {
+					return false
+				}
+			}
+		}
+		for i, rep := range abi.Params {
+			switch rep {
+			case SpecializedABIParamRawInt:
+				if !callABIValueIsInt(instr.Args[1+i]) {
+					return false
+				}
+			case SpecializedABIParamRawTablePtr:
+				if i != 0 && !callABIValueIsTable(instr.Args[1+i]) {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }

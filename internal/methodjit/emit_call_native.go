@@ -1343,7 +1343,7 @@ type fieldShapeTypedPeerCallCase struct {
 }
 
 func (ec *emitContext) fieldShapeTypedPeerCallCases(instr *Instr) []fieldShapeTypedPeerCallCase {
-	if ec == nil || ec.fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) < 2 {
+	if ec == nil || ec.fn == nil || instr == nil || (instr.Op != OpCall && instr.Op != OpCallFloor) || len(instr.Args) < 2 {
 		return nil
 	}
 	calleeLoad := instr.Args[0].Def
@@ -1575,22 +1575,64 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 
 func (ec *emitContext) emitOpCallFloor(instr *Instr) {
 	ec.emitOpCall(instr)
-	ec.emitFloorInPlace(instr)
+	ec.emitFloorProjectionFromCallResult(instr)
 }
 
-func (ec *emitContext) emitFloorInPlace(instr *Instr) {
+func (ec *emitContext) emitFloorProjectionFromCallResult(instr *Instr) {
 	if instr == nil {
 		return
 	}
-	ec.emitFloor(&Instr{
-		ID:    instr.ID,
-		Op:    OpFloor,
-		Type:  TypeInt,
-		Args:  []*Value{instr.Value()},
-		Aux:   0,
-		Aux2:  0,
-		Block: instr.Block,
-	})
+	asm := ec.asm
+	valueID := instr.ID
+
+	// OpCallFloor reuses the call's SSA id for the projected floor result.
+	// Snapshot the current post-call representation before storing the raw int
+	// back to the same id; routing this through the ordinary OpFloor protocol
+	// would make the input and output self-referential.
+	if ec.hasReg(valueID) && ec.valueReprOf(valueID) == valueReprRawInt {
+		src := ec.physReg(valueID)
+		if src != jit.X0 {
+			asm.MOVreg(jit.X0, src)
+		}
+		ec.storeRawInt(jit.X0, valueID)
+		return
+	}
+	if ec.hasFPReg(valueID) {
+		asm.FRINTMd(jit.D0, ec.physFPReg(valueID))
+		asm.FCVTZS(jit.X0, jit.D0)
+		ec.storeRawInt(jit.X0, valueID)
+		return
+	}
+
+	srcReg := ec.resolveValueNB(valueID, jit.X0)
+	if srcReg != jit.X0 {
+		asm.MOVreg(jit.X0, srcReg)
+	}
+
+	floatLabel := ec.uniqueLabel("call_floor_float")
+	deoptLabel := ec.uniqueLabel("call_floor_deopt")
+	doneLabel := ec.uniqueLabel("call_floor_done")
+
+	emitCheckIsInt(asm, jit.X0, jit.X2)
+	asm.BCond(jit.CondNE, floatLabel)
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	ec.storeRawInt(jit.X0, valueID)
+	asm.B(doneLabel)
+
+	asm.Label(floatLabel)
+	asm.LSRimm(jit.X2, jit.X0, 48)
+	asm.MOVimm16(jit.X3, jit.NB_TagNilShr48)
+	asm.CMPreg(jit.X2, jit.X3)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+	asm.FRINTMd(jit.D0, jit.D0)
+	asm.FCVTZS(jit.X0, jit.D0)
+	ec.storeRawInt(jit.X0, valueID)
+	asm.B(doneLabel)
+
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
 }
 
 func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
