@@ -447,11 +447,23 @@ func (tm *TieringManager) applyTier2DeoptAction(proto *vm.FuncProto, action Tier
 	}
 	switch action.Kind {
 	case Tier2DeoptRefreshAndFallback:
+		queued := tm.recompileQueue.enqueue(proto, "runtime_deopt_refresh", Tier2ExitProfileSite{
+			Proto:                proto.Name,
+			PC:                   action.GuardRelaxedPC,
+			ExitCode:             ExitDeopt,
+			ExitName:             "ExitDeopt",
+			Reason:               action.Reason,
+			QueuedRecompile:      true,
+			RefreshVersionHash:   fmt.Sprintf("%x", action.CurrentProfile.Version.Hash),
+			RefreshVersionGuards: action.CurrentProfile.Version.GuardCount,
+			RefreshGuardDelta:    action.CurrentProfile.Version.GuardCount,
+		})
 		tm.clearTier2Install(proto)
 		tm.tier1.SetOSRCounter(proto, -1)
 		tm.tier1.EvictCompiled(proto)
 		tm.traceEvent("runtime_refresh", "tier2", proto, map[string]any{
 			"reason":           action.Reason,
+			"queued_recompile": queued,
 			"version_after":    fmt.Sprintf("%x", action.CurrentProfile.Version.Hash),
 			"guards_after":     action.CurrentProfile.Version.GuardCount,
 			"guard_relaxed_pc": action.GuardRelaxedPC,

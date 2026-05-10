@@ -443,6 +443,9 @@ func TestTieringManagerRefreshDeoptDoesNotMarkTier2Failed(t *testing.T) {
 		t.Fatalf("refresh deopt left install visible: promoted=%v direct=%#x",
 			proto.Tier2Promoted, proto.DirectEntryPtr)
 	}
+	if _, ok := tm.recompileQueue.take(proto); !ok {
+		t.Fatal("refresh deopt should queue a forced recompile")
+	}
 }
 
 func TestTieringManagerGuardDeoptSuppressesPCAndRefreshes(t *testing.T) {

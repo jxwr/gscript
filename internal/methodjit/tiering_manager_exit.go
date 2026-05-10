@@ -349,7 +349,8 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		}
 		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 	case ExitDeopt:
-		tm.disableTier2AfterRuntimeDeopt(proto, "tier2 native callee deopt")
+		action := tm.nativeCalleeDeoptAction(proto, cf, ctx, ctx.NativeCalleeResumePC)
+		tm.applyTier2DeoptAction(proto, action)
 		return tm.resumeNativeCalleePreciseDeopt(ctx, base, proto, ctx.NativeCalleeResumePC)
 	case ExitNativeCallExit:
 		if ctx.NativeCallExitStackOverflow != 0 || !popNativeCallExitFrame(ctx) {
@@ -478,7 +479,8 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 				"table_exit_id":  ctx.TableExitID,
 				"op_exit_id":     ctx.OpExitID,
 			})
-			tm.disableTier2AfterRuntimeDeopt(proto, "tier2 native callee deopt")
+			action := tm.nativeCalleeDeoptAction(proto, cf, ctx, ctx.ExitResumePC)
+			tm.applyTier2DeoptAction(proto, action)
 			return tm.resumeNativeCalleePreciseDeopt(ctx, base, proto, ctx.ExitResumePC)
 		default:
 			return runtime.NilValue(), fmt.Errorf("unknown callee exit code %d", ctx.ExitCode)
@@ -488,6 +490,26 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		ctx.RegsEnd = ctx.RegsBase + uintptr(len(currentRegs)*jit.ValueSize)
 		tm.setTier2FieldCacheContext(ctx, proto)
 	}
+}
+
+func (tm *TieringManager) nativeCalleeDeoptAction(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext, resumePC int64) Tier2DeoptAction {
+	if ctx == nil {
+		return Tier2DeoptAction{
+			Kind:   Tier2DeoptDisableAndFallback,
+			Reason: "tier2 native callee deopt",
+		}
+	}
+	savedResumePC := ctx.ExitResumePC
+	ctx.ExitResumePC = resumePC
+	defer func() {
+		ctx.ExitResumePC = savedResumePC
+	}()
+	action := Tier2DeoptPolicy{}.DecideRuntimeDeoptWithProfile(cf, int(resumePC), tm.currentTier2SpeculationProfile(proto))
+	action.Reason = "tier2 native callee deopt"
+	if guardAction, ok := tm.guardDeoptRefreshAction(proto, cf, ctx); ok {
+		action = guardAction
+	}
+	return action
 }
 
 func (tm *TieringManager) resumeNativeCalleePreciseDeopt(ctx *ExecContext, base int, proto *vm.FuncProto, resumePC int64) (runtime.Value, error) {
