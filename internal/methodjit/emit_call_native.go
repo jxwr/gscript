@@ -1492,6 +1492,18 @@ func (ec *emitContext) fieldShapeTypedPeerMethodCallCases(instr *Instr) []fieldS
 	return out
 }
 
+func fieldShapeTypedPeerCasesAllLeaf(cases []fieldShapeTypedPeerCallCase) bool {
+	if len(cases) == 0 {
+		return false
+	}
+	for _, c := range cases {
+		if c.callee == nil || !c.callee.LeafNoCall {
+			return false
+		}
+	}
+	return true
+}
+
 func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr) bool {
 	cases := ec.fieldShapeTypedPeerCallCases(instr)
 	if len(cases) < 2 {
@@ -1514,10 +1526,13 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 	argDesc := cases[0].desc
 	argDesc.ArgFacts = nil
+	allLeafCallees := fieldShapeTypedPeerCasesAllLeaf(cases)
 
 	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
-	asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
-	asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+	if !allLeafCallees {
+		asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
+		asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+	}
 	asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X8, jit.SP, rawPeerClosureOff)
 	ec.emitLoadCallMode(jit.X8)
@@ -1601,7 +1616,11 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 		}
 		asm.CBNZ(jit.X16, exitLabel)
 
-		ec.emitRestoreTypedPeerCallerState()
+		if c.callee.LeafNoCall {
+			ec.emitRestoreTypedPeerLeafCallerState(calleeBaseOff)
+		} else {
+			ec.emitRestoreTypedPeerCallerState()
+		}
 		asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 		ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 		ec.emitUnboxRawIntRegs(preReprs)
@@ -1632,7 +1651,11 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeClosurePtr)
 	asm.MOVimm16(jit.X8, 1)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeTier2Only)
-	ec.emitRestoreTypedPeerCallerState()
+	if allLeafCallees {
+		ec.emitRestoreTypedPeerLeafCallerState(calleeBaseOff)
+	} else {
+		ec.emitRestoreTypedPeerCallerState()
+	}
 	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
@@ -1642,7 +1665,11 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 	asm.B(doneLabel)
 
 	asm.Label(fallbackLabel)
-	ec.emitRestoreTypedPeerCallerState()
+	if allLeafCallees {
+		ec.emitRestoreTypedPeerCallerModeClosureOnly()
+	} else {
+		ec.emitRestoreTypedPeerCallerState()
+	}
 	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
@@ -1688,10 +1715,13 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 	argDesc := cases[0].desc
 	argDesc.ArgFacts = nil
+	allLeafCallees := fieldShapeTypedPeerCasesAllLeaf(cases)
 
 	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
-	asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
-	asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+	if !allLeafCallees {
+		asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
+		asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+	}
 	asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X8, jit.SP, rawPeerClosureOff)
 	ec.emitLoadCallMode(jit.X8)
@@ -1771,7 +1801,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		}
 		asm.CBNZ(jit.X16, exitLabel)
 
-		ec.emitRestoreTypedPeerCallerState()
+		if c.callee.LeafNoCall {
+			ec.emitRestoreTypedPeerLeafCallerState(calleeBaseOff)
+		} else {
+			ec.emitRestoreTypedPeerCallerState()
+		}
 		asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 		ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
 		ec.emitUnboxRawIntRegs(preReprs)
@@ -1809,7 +1843,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
 	asm.MOVimm16(jit.X8, 1)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeTier2Only)
-	ec.emitRestoreTypedPeerCallerState()
+	if allLeafCallees {
+		ec.emitRestoreTypedPeerLeafCallerState(calleeBaseOff)
+	} else {
+		ec.emitRestoreTypedPeerCallerState()
+	}
 	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
@@ -1821,7 +1859,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 
 	asm.Label(callFallbackLabel)
 	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
-	ec.emitRestoreTypedPeerCallerState()
+	if allLeafCallees {
+		ec.emitRestoreTypedPeerCallerModeClosureOnly()
+	} else {
+		ec.emitRestoreTypedPeerCallerState()
+	}
 	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
@@ -1832,7 +1874,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm.B(doneLabel)
 
 	asm.Label(fallbackLabel)
-	ec.emitRestoreTypedPeerCallerState()
+	if allLeafCallees {
+		ec.emitRestoreTypedPeerCallerModeClosureOnly()
+	} else {
+		ec.emitRestoreTypedPeerCallerState()
+	}
 	ec.restoreValueReprSnapshot(preReprs)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitDeopt(instr)
@@ -2304,6 +2350,25 @@ func (ec *emitContext) emitRestoreRawPeerCallerState() {
 func (ec *emitContext) emitRestoreTypedPeerCallerState() {
 	ec.emitRestoreRawPeerCallerState()
 	ec.asm.LDR(jit.X8, jit.SP, rawPeerCallModeOff)
+	ec.emitStoreCallMode(jit.X8)
+}
+
+func (ec *emitContext) emitRestoreTypedPeerCallerModeClosureOnly() {
+	asm := ec.asm
+	asm.LDR(jit.X8, jit.SP, rawPeerClosureOff)
+	asm.STR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.LDR(jit.X8, jit.SP, rawPeerCallModeOff)
+	ec.emitStoreCallMode(jit.X8)
+}
+
+func (ec *emitContext) emitRestoreTypedPeerLeafCallerState(calleeBaseOff int) {
+	asm := ec.asm
+	ec.emitRestoreRawPeerLeafCallerRegs(calleeBaseOff)
+	asm.LDR(jit.X8, jit.SP, rawPeerClosureOff)
+	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
+	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
+	asm.STR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.LDR(jit.X8, jit.SP, rawPeerCallModeOff)
 	ec.emitStoreCallMode(jit.X8)
 }
 
