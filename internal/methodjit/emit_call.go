@@ -559,9 +559,14 @@ func (ec *emitContext) emitLenNative(instr *Instr) {
 	ec.emitDenseTableLenNative(jit.TableOffFloatArrayLen, boxLabel)
 
 	asm.Label(boxLabel)
-	jit.EmitBoxIntFast(asm, jit.X0, jit.X1, mRegTagInt)
-	ec.storeResultNB(jit.X0, instr.ID)
-	asm.B(doneLabel)
+	if instr.Type == TypeInt {
+		ec.storeRawInt(jit.X1, instr.ID)
+		asm.B(doneLabel)
+	} else {
+		jit.EmitBoxIntFast(asm, jit.X0, jit.X1, mRegTagInt)
+		ec.storeResultNB(jit.X0, instr.ID)
+		asm.B(doneLabel)
+	}
 
 	asm.Label(slowLabel)
 	ec.emitOpExit(instr)
@@ -639,6 +644,10 @@ func (ec *emitContext) emitRawStringLenNative(instr *Instr) {
 	}
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	asm.LDR(jit.X1, jit.X0, 8) // Go string header length.
+	if instr.Type == TypeInt {
+		ec.storeRawInt(jit.X1, instr.ID)
+		return
+	}
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X1, mRegTagInt)
 	ec.storeResultNB(jit.X0, instr.ID)
 }

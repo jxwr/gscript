@@ -60,12 +60,16 @@ func FieldLenFoldPass(fn *Function) (*Function, error) {
 }
 
 func ProfiledStringLenFoldPass(fn *Function) (*Function, error) {
-	if fn == nil || fn.Proto == nil || len(fn.ProfiledLenRanges) == 0 {
+	if fn == nil || fn.Proto == nil {
 		return fn, nil
 	}
+	fieldLoadLens := fieldLoadExactLenFacts(fn)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr == nil || instr.Op != OpLen || len(instr.Args) < 1 || instr.Args[0] == nil {
+				continue
+			}
+			if foldExactLenFromMap(fn, block, instr, fieldLoadLens) {
 				continue
 			}
 			if foldProfiledExactLen(fn, block, instr) {
@@ -75,6 +79,83 @@ func ProfiledStringLenFoldPass(fn *Function) (*Function, error) {
 		}
 	}
 	return fn, nil
+}
+
+func fieldLoadExactLenFacts(fn *Function) map[int]intRange {
+	if fn == nil {
+		return nil
+	}
+	svalsFacts := make(map[int]FixedShapeTableFact)
+	out := make(map[int]intRange)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpFieldSvals:
+				if len(instr.Args) == 0 || instr.Args[0] == nil {
+					continue
+				}
+				fact, ok := fixedShapeFactForValue(fn, instr.Args[0].ID)
+				if !ok || fact.ShapeID == 0 || uint32(instr.Aux) != fact.ShapeID {
+					continue
+				}
+				svalsFacts[instr.ID] = fact
+			case OpFieldLoad:
+				if len(instr.Args) == 0 || instr.Args[0] == nil {
+					continue
+				}
+				fact, ok := svalsFacts[instr.Args[0].ID]
+				if !ok {
+					continue
+				}
+				idx := int(instr.Aux)
+				if idx < 0 || idx >= len(fact.FieldNames) {
+					continue
+				}
+				name := fact.FieldNames[idx]
+				if r, ok := fact.FieldLenRanges[name]; ok && r.known && r.min == r.max && r.min >= 0 {
+					out[instr.ID] = r
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func fixedShapeFactForValue(fn *Function, id int) (FixedShapeTableFact, bool) {
+	if fn == nil {
+		return FixedShapeTableFact{}, false
+	}
+	if fact, ok := fn.FixedShapeTables[id]; ok {
+		return fact, true
+	}
+	if fact, ok := fn.FixedShapeArgFacts[id]; ok {
+		return fact, true
+	}
+	return FixedShapeTableFact{}, false
+}
+
+func foldExactLenFromMap(fn *Function, block *Block, lenInstr *Instr, lens map[int]intRange) bool {
+	if fn == nil || lenInstr == nil || len(lenInstr.Args) == 0 || lenInstr.Args[0] == nil || len(lens) == 0 {
+		return false
+	}
+	r, ok := lens[lenInstr.Args[0].ID]
+	if !ok || !r.known || r.min != r.max || r.min < 0 {
+		return false
+	}
+	lenInstr.Op = OpConstInt
+	lenInstr.Type = TypeInt
+	lenInstr.Args = nil
+	lenInstr.Aux = r.min
+	lenInstr.Aux2 = 0
+	functionRemarks(fn).Add("FieldLenFold", "changed", block.ID, lenInstr.ID, lenInstr.Op,
+		"folded lowered field string length from fixed-shape facts")
+	return true
 }
 
 func foldProfiledExactLen(fn *Function, block *Block, lenInstr *Instr) bool {

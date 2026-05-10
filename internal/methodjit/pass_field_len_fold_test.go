@@ -135,6 +135,37 @@ func TestProfiledStringLenFold_FoldsAfterFieldLowering(t *testing.T) {
 	}
 }
 
+func TestProfiledStringLenFold_FoldsLoweredFixedShapeFieldLen(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "lowered_fixed_shape_len"},
+		NumRegs: 1,
+		FixedShapeTables: map[int]FixedShapeTableFact{
+			1: {
+				ShapeID:        42,
+				FieldNames:     []string{"kind"},
+				FieldLenRanges: map[string]intRange{"kind": pointRange(7)},
+			},
+		},
+	}
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b0}
+	svals := &Instr{ID: 2, Op: OpFieldSvals, Type: TypeInt, Args: []*Value{tbl.Value()}, Aux: 42, Block: b0}
+	load := &Instr{ID: 3, Op: OpFieldLoad, Type: TypeString, Args: []*Value{svals.Value()}, Aux: 0, Block: b0}
+	ln := &Instr{ID: 4, Op: OpLen, Type: TypeInt, Args: []*Value{load.Value()}, Block: b0}
+	ret := &Instr{ID: 5, Op: OpReturn, Args: []*Value{ln.Value()}, Block: b0}
+	b0.Instrs = []*Instr{tbl, svals, load, ln, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	out, err := ProfiledStringLenFoldPass(fn)
+	if err != nil {
+		t.Fatalf("ProfiledStringLenFoldPass: %v", err)
+	}
+	if ln.Op != OpConstInt || ln.Aux != 7 {
+		t.Fatalf("lowered fixed-shape exact len not folded:\n%s", Print(out))
+	}
+}
+
 func TestProfiledStringLenFold_ReplacesLenOfPhi(t *testing.T) {
 	fn := &Function{
 		Proto:   &vm.FuncProto{Name: "profiled_len_phi"},
