@@ -70,20 +70,6 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 				"preheader has no complete table-array header/len/data fact")
 			continue
 		}
-		if hazard, ok := loopRegionStructuralHazard(fn, li.headerBlocks[header.ID]); ok {
-			hazardBlockID := header.ID
-			if hazard != nil && hazard.Block != nil {
-				hazardBlockID = hazard.Block.ID
-			}
-			hazardID, hazardOp := 0, OpNop
-			if hazard != nil {
-				hazardID, hazardOp = hazard.ID, hazard.Op
-			}
-			functionRemarks(fn).Add("LoopRegionVersioning", "missed", hazardBlockID, hazardID, hazardOp,
-				"loop contains structural table mutation or call")
-			continue
-		}
-
 		key, guardedLimit := guard.Args[0], guard.Args[1]
 		limitGuards := make(map[[2]int]bool)
 		for _, block := range fn.Blocks {
@@ -101,6 +87,15 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 					}
 				}
 				if !ok {
+					continue
+				}
+				if hazard := loopRegionAliasingHazard(fn, li.headerBlocks[header.ID], fact); hazard != nil {
+					hazardBlockID := header.ID
+					if hazard.Block != nil {
+						hazardBlockID = hazard.Block.ID
+					}
+					functionRemarks(fn).Add("LoopRegionVersioning", "missed", hazardBlockID, hazard.ID, hazard.Op,
+						"loop contains structural table mutation or aliasing call")
 					continue
 				}
 				safe[instr.ID] = true
@@ -254,6 +249,36 @@ func loopRegionStructuralHazard(fn *Function, body map[int]bool) (*Instr, bool) 
 		}
 	}
 	return nil, false
+}
+
+func loopRegionAliasingHazard(fn *Function, body map[int]bool, fact LoopTableArrayFact) *Instr {
+	if fn == nil || body == nil || fact.TableID < 0 {
+		return nil
+	}
+	table := &Value{ID: fact.TableID}
+	for _, block := range fn.Blocks {
+		if block == nil || !body[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpCall, OpCallFloor, OpFieldCallFloor:
+				if licmLoopCallMayMutateValue(fn, []*Instr{instr}, table) {
+					return instr
+				}
+			case OpResume, OpSelf:
+				return instr
+			case OpSetTable, OpAppend, OpSetList, OpTableBoolArrayFill:
+				if len(instr.Args) >= 1 && instr.Args[0] != nil && instr.Args[0].ID == fact.TableID {
+					return instr
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func loopRegionAccessFact(headerID, preheaderID int, instr *Instr, facts []loopRegionTableArrayFact, key, length *Value) (LoopTableArrayFact, bool) {

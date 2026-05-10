@@ -3,6 +3,7 @@ package methodjit
 import (
 	"testing"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -95,6 +96,86 @@ func TestLoopRegionVersioning_RejectsDifferentStoreLen(t *testing.T) {
 	if out.TableArrayUpperBoundSafe != nil && out.TableArrayUpperBoundSafe[store.ID] {
 		t.Fatalf("store using a different len must keep its dynamic bounds check:\n%s", Print(out))
 	}
+}
+
+func TestLoopRegionVersioning_AllowsNoAliasNoGlobalCall(t *testing.T) {
+	fn, load := tableArrayBoundsCallLoopFixture(t, false)
+
+	out, err := LoopRegionVersioningPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TableArrayUpperBoundSafe == nil || !out.TableArrayUpperBoundSafe[load.ID] {
+		t.Fatalf("expected no-alias no-global call to preserve TableArrayLoad upper-bound proof:\n%s", Print(out))
+	}
+}
+
+func TestLoopRegionVersioning_RejectsAliasingNoGlobalCall(t *testing.T) {
+	fn, load := tableArrayBoundsCallLoopFixture(t, true)
+
+	out, err := LoopRegionVersioningPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TableArrayUpperBoundSafe != nil && out.TableArrayUpperBoundSafe[load.ID] {
+		t.Fatalf("call receiving the target table must keep TableArrayLoad bounds check:\n%s", Print(out))
+	}
+}
+
+func tableArrayBoundsCallLoopFixture(t *testing.T, passTargetTable bool) (*Function, *Instr) {
+	t.Helper()
+
+	fn := &Function{
+		Proto: &vm.FuncProto{
+			Name:      "table_array_call_bounds",
+			Constants: []runtime.Value{runtime.StringValue("helper")},
+		},
+		NumRegs: 4,
+		Globals: map[string]*vm.FuncProto{
+			"helper": {Name: "helper", NoGlobalOps: true},
+		},
+	}
+	entry, header, body, exit := buildSimpleLoop(fn)
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	other := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 1, Block: entry}
+	callee := &Instr{ID: fn.newValueID(), Op: OpGetGlobal, Type: TypeFunction, Aux: 0, Block: entry}
+	arrHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{tbl.Value()}, Block: entry}
+	arrLen := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{arrHeader.Value()}, Block: entry}
+	arrData := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{arrHeader.Value()}, Block: entry}
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	entryJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: entry, Aux: int64(header.ID)}
+	entry.Instrs = []*Instr{tbl, other, callee, arrHeader, arrLen, arrData, seed, entryJump}
+
+	iPhi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpLtInt, Type: TypeBool, Block: header,
+		Args: []*Value{iPhi.Value(), arrLen.Value()}}
+	headerBranch := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: header,
+		Args: []*Value{cond.Value()}, Aux: int64(body.ID), Aux2: int64(exit.ID)}
+	header.Instrs = []*Instr{iPhi, cond, headerBranch}
+
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeInt, Aux: int64(vm.FBKindInt),
+		Args: []*Value{arrData.Value(), arrLen.Value(), iPhi.Value()}, Block: body}
+	callArg := other.Value()
+	if passTargetTable {
+		callArg = tbl.Value()
+	}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeAny,
+		Args: []*Value{callee.Value(), callArg}, Aux2: 1, Block: body}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: body}
+	next := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{iPhi.Value(), one.Value()}, Block: body}
+	bodyJump := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: body, Aux: int64(header.ID)}
+	body.Instrs = []*Instr{load, call, one, next, bodyJump}
+
+	iPhi.Args = []*Value{seed.Value(), next.Value()}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Args: []*Value{seed.Value()}, Block: exit}
+	exit.Instrs = []*Instr{ret}
+
+	assertValidates(t, fn, "table array bounds call fixture")
+	return fn, load
 }
 
 func tableArrayParamLimitLoopFixture(t *testing.T) (*Function, *Instr) {
