@@ -472,24 +472,3 @@ func (ec *emitContext) emitStringSplitSubstrNumberNative(instr *Instr) {
 	ec.emitDeopt(instr)
 	asm.Label(doneLabel)
 }
-
-func (ec *emitContext) emitStdNativeFunctionGuard(val jit.Reg, kind uint8, identity unsafe.Pointer, slowLabel string) {
-	asm := ec.asm
-	asm.LSRimm(jit.X2, val, 48)
-	asm.MOVimm16(jit.X3, jit.NB_TagPtrShr48)
-	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondNE, slowLabel)
-	asm.LSRimm(jit.X2, val, uint8(nbPtrSubShift))
-	asm.LoadImm64(jit.X3, 0xF)
-	asm.ANDreg(jit.X2, jit.X2, jit.X3)
-	asm.CMPimm(jit.X2, 3)
-	asm.BCond(jit.CondNE, slowLabel)
-	jit.EmitExtractPtr(asm, jit.X2, val)
-	asm.LDRB(jit.X3, jit.X2, goFunctionOffNativeKind)
-	asm.CMPimm(jit.X3, uint16(kind))
-	asm.BCond(jit.CondNE, slowLabel)
-	asm.LDR(jit.X2, jit.X2, goFunctionOffNativeData)
-	asm.LoadImm64(jit.X3, int64(uintptr(identity)))
-	asm.CMPreg(jit.X2, jit.X3)
-	asm.BCond(jit.CondNE, slowLabel)
-}
