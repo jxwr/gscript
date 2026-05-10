@@ -1142,7 +1142,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 		} else {
 			t.svals[idx] = val
 		}
-		RecordShapeMutation(oldShapeID)
+		RecordShapeFieldMutation(oldShapeID, idx)
 		return
 	}
 
@@ -1174,7 +1174,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 				cache.FieldIdx = i
 				cache.ShapeID = t.shapeID
 			}
-			RecordShapeMutation(oldShapeID)
+			RecordShapeFieldMutation(oldShapeID, i)
 			return
 		}
 	}
@@ -1237,7 +1237,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 
 	if !valIsNil {
 		if idx, ok := t.lookupDynamicStringCacheLocked(data, keyLen, cache); ok {
-			RecordShapeMutation(t.shapeID)
+			RecordShapeFieldMutation(t.shapeID, idx)
 			t.svals[idx] = val
 			RecordRuntimePathTableStringSetCacheHit()
 			return
@@ -1253,7 +1253,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 				t.svals[i] = val
 				t.rememberDynamicStringCacheLocked(key, data, keyLen, i, cache)
 			}
-			RecordShapeMutation(oldShapeID)
+			RecordShapeFieldMutation(oldShapeID, i)
 			RecordRuntimePathTableStringSetScanHit()
 			return
 		}
@@ -1448,7 +1448,7 @@ func (t *Table) RawSetString(key string, val Value) {
 			} else {
 				t.svals[i] = val
 			}
-			RecordShapeMutation(oldShapeID)
+			RecordShapeFieldMutation(oldShapeID, i)
 			return
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 var (
@@ -24,11 +25,12 @@ var (
 // All tables that have the same fields in the same insertion order share a
 // single Shape instance.
 type Shape struct {
-	ID          uint32
-	FieldKeys   []string       // ordered field names (immutable)
-	FieldMap    map[string]int // key → index for O(1) GetFieldIndex
-	transitions sync.Map       // string → *Shape (cached addField transitions)
-	mutations   atomic.Uint64  // observed overwrites/deletes of this shape
+	ID             uint32
+	FieldKeys      []string       // ordered field names (immutable)
+	FieldMap       map[string]int // key → index for O(1) GetFieldIndex
+	transitions    sync.Map       // string → *Shape (cached addField transitions)
+	mutations      uint64         // observed overwrites/deletes of this shape
+	fieldMutations []uint64       // observed overwrites/deletes by field index
 }
 
 // GetFieldIndex returns the slot index of key in FieldKeys, or -1 if absent.
@@ -72,9 +74,10 @@ func getOrCreateShape(keys []string) *Shape {
 		fm[key] = i
 	}
 	s := &Shape{
-		ID:        id,
-		FieldKeys: keys,
-		FieldMap:  fm,
+		ID:             id,
+		FieldKeys:      keys,
+		FieldMap:       fm,
+		fieldMutations: make([]uint64, len(keys)),
 	}
 	actual, loaded := shapeByKey.LoadOrStore(k, s)
 	if loaded {
@@ -92,9 +95,10 @@ func getOrCreateSingleFieldShape(key string) *Shape {
 	id := atomic.AddUint32(&shapeIDCounter, 1)
 	keys := []string{key}
 	s := &Shape{
-		ID:        id,
-		FieldKeys: keys,
-		FieldMap:  map[string]int{key: 0},
+		ID:             id,
+		FieldKeys:      keys,
+		FieldMap:       map[string]int{key: 0},
+		fieldMutations: make([]uint64, len(keys)),
 	}
 	actual, loaded := shapeByKey.LoadOrStore(key, s)
 	if loaded {
@@ -137,7 +141,22 @@ func RecordShapeMutation(id uint32) {
 		return
 	}
 	if s := LookupShapeByID(id); s != nil {
-		s.mutations.Add(1)
+		atomic.AddUint64(&s.mutations, 1)
+	}
+}
+
+// RecordShapeFieldMutation marks that a specific field in a shaped table has
+// been overwritten or deleted. It also bumps the coarse shape mutation epoch so
+// existing shape-level guards keep their original semantics.
+func RecordShapeFieldMutation(id uint32, fieldIdx int) {
+	if id == 0 {
+		return
+	}
+	if s := LookupShapeByID(id); s != nil {
+		atomic.AddUint64(&s.mutations, 1)
+		if fieldIdx >= 0 && fieldIdx < len(s.fieldMutations) {
+			atomic.AddUint64(&s.fieldMutations[fieldIdx], 1)
+		}
 	}
 }
 
@@ -147,9 +166,48 @@ func ShapeMutationCount(id uint32) uint64 {
 		return 0
 	}
 	if s := LookupShapeByID(id); s != nil {
-		return s.mutations.Load()
+		return atomic.LoadUint64(&s.mutations)
 	}
 	return 0
+}
+
+// ShapeMutationCountPtr returns the address of the mutation epoch for native
+// JIT guards. The value must still be read atomically by Go code; generated
+// native code only uses an aligned load as a speculative guard and falls back
+// to the generic validation path when the epoch changes.
+func ShapeMutationCountPtr(id uint32) unsafe.Pointer {
+	if id == 0 {
+		return nil
+	}
+	if s := LookupShapeByID(id); s != nil {
+		return unsafe.Pointer(&s.mutations)
+	}
+	return nil
+}
+
+// ShapeFieldMutationCount returns the mutation epoch for one field slot in a
+// shape. This lets native guards distinguish stable method fields from hot
+// data fields that share the same table shape.
+func ShapeFieldMutationCount(id uint32, fieldIdx int) uint64 {
+	if id == 0 {
+		return 0
+	}
+	if s := LookupShapeByID(id); s != nil && fieldIdx >= 0 && fieldIdx < len(s.fieldMutations) {
+		return atomic.LoadUint64(&s.fieldMutations[fieldIdx])
+	}
+	return 0
+}
+
+// ShapeFieldMutationCountPtr returns the address of a field-level mutation
+// epoch for native JIT guards.
+func ShapeFieldMutationCountPtr(id uint32, fieldIdx int) unsafe.Pointer {
+	if id == 0 {
+		return nil
+	}
+	if s := LookupShapeByID(id); s != nil && fieldIdx >= 0 && fieldIdx < len(s.fieldMutations) {
+		return unsafe.Pointer(&s.fieldMutations[fieldIdx])
+	}
+	return nil
 }
 
 // ShapeWasMutated reports whether this shape has ever been mutated after

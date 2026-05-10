@@ -28,6 +28,33 @@ func TestShapeMutationProfileRecordsOverwriteAndDelete(t *testing.T) {
 	}
 }
 
+func TestShapeMutationProfileTracksFieldEpochsIndependently(t *testing.T) {
+	base := "shape_mutation_profile_field_epochs"
+	tbl := NewTable()
+	tbl.RawSetString(base+"_method", IntValue(1))
+	tbl.RawSetString(base+"_state", IntValue(2))
+
+	shapeID := tbl.shapeID
+	if shapeID == 0 {
+		t.Fatal("expected shaped table")
+	}
+	methodBefore := ShapeFieldMutationCount(shapeID, 0)
+	stateBefore := ShapeFieldMutationCount(shapeID, 1)
+	tbl.RawSetString(base+"_state", IntValue(3))
+	if got := ShapeFieldMutationCount(shapeID, 0); got != methodBefore {
+		t.Fatalf("state overwrite changed method field epoch, before=%d after=%d", methodBefore, got)
+	}
+	if got := ShapeFieldMutationCount(shapeID, 1); got <= stateBefore {
+		t.Fatalf("expected state field epoch to advance, before=%d after=%d", stateBefore, got)
+	}
+
+	methodBefore = ShapeFieldMutationCount(shapeID, 0)
+	tbl.RawSetString(base+"_method", IntValue(4))
+	if got := ShapeFieldMutationCount(shapeID, 0); got <= methodBefore {
+		t.Fatalf("expected method field epoch to advance, before=%d after=%d", methodBefore, got)
+	}
+}
+
 func TestShapeMutationProfileRecordsCachedAndDynamicOverwrite(t *testing.T) {
 	base := "shape_mutation_profile_cached_dynamic"
 	tbl := NewTable()

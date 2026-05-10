@@ -33,6 +33,7 @@ import (
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
+	gruntime "github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -1334,11 +1335,13 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 }
 
 type fieldShapeTypedPeerCallCase struct {
-	shapeID      int
-	fieldIdx     int
-	callee       *vm.FuncProto
-	exactClosure uintptr
-	desc         CallABIDescriptor
+	shapeID       int
+	fieldIdx      int
+	callee        *vm.FuncProto
+	exactClosure  uintptr
+	shapeEpochPtr uintptr
+	shapeEpoch    uint64
+	desc          CallABIDescriptor
 }
 
 func (ec *emitContext) fieldShapeTypedPeerCallCases(instr *Instr) []fieldShapeTypedPeerCallCase {
@@ -1410,11 +1413,13 @@ func (ec *emitContext) fieldShapeTypedPeerCallCases(instr *Instr) []fieldShapeTy
 			ArgFacts:  argFacts,
 		}
 		out = append(out, fieldShapeTypedPeerCallCase{
-			shapeID:      int(c.ShapeID),
-			fieldIdx:     c.FieldIdx,
-			callee:       c.VMProto,
-			exactClosure: c.VMClosure,
-			desc:         desc,
+			shapeID:       int(c.ShapeID),
+			fieldIdx:      c.FieldIdx,
+			callee:        c.VMProto,
+			exactClosure:  c.VMClosure,
+			shapeEpochPtr: uintptr(gruntime.ShapeFieldMutationCountPtr(c.ShapeID, c.FieldIdx)),
+			shapeEpoch:    gruntime.ShapeFieldMutationCount(c.ShapeID, c.FieldIdx),
+			desc:          desc,
 		})
 	}
 	return out
@@ -1472,10 +1477,12 @@ func (ec *emitContext) fieldShapeTypedPeerMethodCallCases(instr *Instr) []fieldS
 			}
 		}
 		out = append(out, fieldShapeTypedPeerCallCase{
-			shapeID:      int(c.ShapeID),
-			fieldIdx:     c.FieldIdx,
-			callee:       c.VMProto,
-			exactClosure: c.VMClosure,
+			shapeID:       int(c.ShapeID),
+			fieldIdx:      c.FieldIdx,
+			callee:        c.VMProto,
+			exactClosure:  c.VMClosure,
+			shapeEpochPtr: uintptr(gruntime.ShapeFieldMutationCountPtr(c.ShapeID, c.FieldIdx)),
+			shapeEpoch:    gruntime.ShapeFieldMutationCount(c.ShapeID, c.FieldIdx),
 			desc: CallABIDescriptor{
 				Callee:    c.VMProto,
 				NumArgs:   nArgs,
@@ -1729,6 +1736,21 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		asm.CMPreg(jit.X9, jit.X12)
 		asm.BCond(jit.CondNE, nextLabel)
 
+		validateMethodLabel := ec.uniqueLabel("t2fieldmethod_validate")
+		if c.exactClosure != 0 && c.shapeEpochPtr != 0 {
+			asm.LoadImm64(jit.X8, int64(c.shapeEpochPtr))
+			asm.LDR(jit.X8, jit.X8, 0)
+			asm.LoadImm64(jit.X12, int64(c.shapeEpoch))
+			asm.CMPreg(jit.X8, jit.X12)
+			asm.BCond(jit.CondNE, validateMethodLabel)
+			asm.LoadImm64(jit.X6, nbClosureTagBits|int64(c.exactClosure))
+			asm.LoadImm64(jit.X7, int64(c.exactClosure))
+			asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+			asm.LoadImm64(jit.X7, int64(uintptr(unsafe.Pointer(c.callee))))
+			asm.B(validateMethodLabel + "_entry")
+		}
+
+		asm.Label(validateMethodLabel)
 		asm.LDR(jit.X6, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X6, jit.X6, c.fieldIdx*jit.ValueSize)
 		if c.exactClosure != 0 {
@@ -1750,6 +1772,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 			asm.CMPreg(jit.X7, jit.X8)
 			asm.BCond(jit.CondNE, callFallbackLabel)
 		}
+		asm.Label(validateMethodLabel + "_entry")
 		asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 		asm.CBZ(jit.X16, callFallbackLabel)
 
