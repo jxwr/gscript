@@ -1207,9 +1207,7 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
-	if len(liveGPRs) > 0 || len(liveFPRs) > 0 {
-		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
-	}
+	ec.emitSpillTypedPeerLiveForSuccess(liveFPRs)
 
 	fallbackLabel := ec.uniqueLabel("t2typedpeer_fallback")
 	exitLabel := ec.uniqueLabel("t2typedpeer_exit")
