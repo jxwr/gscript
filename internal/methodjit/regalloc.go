@@ -475,6 +475,21 @@ func assignLoopTableArrayInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAll
 						recordTableArrayInvariantCandidate(instr.Args[1], body, headerID, defs, defBlocks, dom, useCounts)
 						recordTableArrayInvariantCandidate(instr.Args[2], body, headerID, defs, defBlocks, dom, useCounts)
 					}
+				case OpMatrixRowPtr:
+					if len(instr.Args) >= 2 {
+						recordTableArrayInvariantCandidate(instr.Args[0], body, headerID, defs, defBlocks, dom, useCounts)
+						recordTableArrayInvariantCandidate(instr.Args[1], body, headerID, defs, defBlocks, dom, useCounts)
+					}
+				case OpMatrixLoadFAt:
+					if len(instr.Args) >= 2 {
+						recordTableArrayInvariantCandidate(instr.Args[0], body, headerID, defs, defBlocks, dom, useCounts)
+						recordTableArrayInvariantCandidate(instr.Args[1], body, headerID, defs, defBlocks, dom, useCounts)
+					}
+				case OpMatrixStoreFAt:
+					if len(instr.Args) >= 2 {
+						recordTableArrayInvariantCandidate(instr.Args[0], body, headerID, defs, defBlocks, dom, useCounts)
+						recordTableArrayInvariantCandidate(instr.Args[1], body, headerID, defs, defBlocks, dom, useCounts)
+					}
 				}
 			}
 		}
@@ -547,7 +562,7 @@ func isTableArrayGPRInvariant(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableShapeID:
+	case OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableShapeID, OpMatrixFlat, OpMatrixStride:
 		return true
 	default:
 		return false
@@ -581,6 +596,9 @@ func tableArrayInvariantLess(a, b int, useCounts map[int]int, defs map[int]*Inst
 
 func tableArrayInvariantRank(instr *Instr) int {
 	if instr != nil && instr.Op == OpTableArrayData {
+		return 0
+	}
+	if instr != nil && instr.Op == OpMatrixFlat {
 		return 0
 	}
 	if instr != nil && instr.Op == OpTableArrayHeader {
