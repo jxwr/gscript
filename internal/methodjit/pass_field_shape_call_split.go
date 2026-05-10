@@ -49,10 +49,11 @@ func fieldShapeSplitSingleBlockCase(fn *Function, block *Block, idx int, call *I
 					c.ShapeID, c.VMProto.Name, c.VMProto.NumParams, len(call.Args)))
 			continue
 		}
-		calleeFn, ok := buildSingleBlockFieldShapeInlineCallee(c)
+		calleeFn, reason := buildSingleBlockFieldShapeInlineCallee(c)
+		ok := reason == ""
 		if !ok {
 			functionRemarks(fn).Add("FieldShapeCallSplit", "missed", block.ID, call.ID, call.Op,
-				fmt.Sprintf("case shape=%d proto=%s is not safe single-block after local lowering", c.ShapeID, c.VMProto.Name))
+				fmt.Sprintf("case shape=%d proto=%s is not safe single-block after local lowering: %s", c.ShapeID, c.VMProto.Name, reason))
 			continue
 		}
 		fieldShapeSplitCase(fn, block, idx, call, c, cases, caseIdx, calleeFn)
@@ -63,69 +64,89 @@ func fieldShapeSplitSingleBlockCase(fn *Function, block *Block, idx int, call *I
 	return false
 }
 
-func buildSingleBlockFieldShapeInlineCallee(c FieldPolyShapeCase) (*Function, bool) {
+func buildSingleBlockFieldShapeInlineCallee(c FieldPolyShapeCase) (*Function, string) {
 	calleeFn := BuildGraph(c.VMProto)
 	if calleeFn == nil || len(calleeFn.Blocks) != 1 || calleeFn.Unpromotable {
-		return nil, false
+		return nil, fieldShapeSplitCalleeShapeReason(calleeFn)
 	}
 	var err error
 	calleeFn, err = TypeSpecializePass(calleeFn)
 	if err != nil {
-		return nil, false
+		return nil, "type specialization failed"
 	}
 	calleeFn, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
 		ArgFacts: map[int]FixedShapeTableFact{0: c.ReceiverFact},
 	})(calleeFn)
 	if err != nil {
-		return nil, false
+		return nil, "fixed-shape fact propagation failed"
 	}
 	calleeFn, err = TypeSpecializePass(calleeFn)
 	if err != nil {
-		return nil, false
+		return nil, "post-fact type specialization failed"
 	}
 	calleeFn, err = TableArrayLowerPass(calleeFn)
 	if err != nil {
-		return nil, false
+		return nil, "table-array lowering failed"
 	}
 	calleeFn, err = TableArrayLoadTypeSpecializePass(calleeFn)
 	if err != nil {
-		return nil, false
+		return nil, "table-array load type specialization failed"
 	}
 	calleeFn, err = TableArrayNestedLoadPass(calleeFn)
 	if err != nil {
-		return nil, false
+		return nil, "nested table-array load lowering failed"
 	}
 	calleeFn, err = FieldSvalsLowerPass(calleeFn)
 	if err != nil {
-		return nil, false
+		return nil, "field-svals lowering failed"
 	}
 	calleeFn, err = ConstPropPass(calleeFn)
 	if err != nil {
-		return nil, false
+		return nil, "const propagation failed"
 	}
 	calleeFn, err = DCEPass(calleeFn)
 	if err != nil {
-		return nil, false
+		return nil, "dce failed"
 	}
-	if len(calleeFn.Blocks) != 1 || !fieldShapeSplitCalleeExitResumeSafe(calleeFn) {
-		return nil, false
+	if reason := fieldShapeSplitCalleeShapeReason(calleeFn); reason != "" {
+		return nil, reason
 	}
-	return calleeFn, true
+	if reason := fieldShapeSplitCalleeExitResumeUnsafeReason(calleeFn); reason != "" {
+		return nil, reason
+	}
+	return calleeFn, ""
 }
 
 func fieldShapeSplitCalleeExitResumeSafe(calleeFn *Function) bool {
+	return fieldShapeSplitCalleeExitResumeUnsafeReason(calleeFn) == ""
+}
+
+func fieldShapeSplitCalleeShapeReason(calleeFn *Function) string {
+	if calleeFn == nil {
+		return "graph unavailable"
+	}
+	if calleeFn.Unpromotable {
+		return "callee graph is unpromotable"
+	}
+	if len(calleeFn.Blocks) != 1 {
+		return fmt.Sprintf("callee has %d blocks", len(calleeFn.Blocks))
+	}
+	return ""
+}
+
+func fieldShapeSplitCalleeExitResumeUnsafeReason(calleeFn *Function) string {
 	if calleeFn == nil || len(calleeFn.Blocks) != 1 {
-		return false
+		return fieldShapeSplitCalleeShapeReason(calleeFn)
 	}
 	for _, instr := range calleeFn.Blocks[0].Instrs {
 		if instr == nil || instr.Op == OpReturn || instr.Op == OpLoadSlot {
 			continue
 		}
 		if !fieldShapeSplitInlineOpSafe(instr.Op) {
-			return false
+			return fmt.Sprintf("op %s needs callee-frame exit/deopt recovery", instr.Op)
 		}
 	}
-	return true
+	return ""
 }
 
 func fieldShapeSplitInlineOpSafe(op Op) bool {
