@@ -235,6 +235,54 @@ func TestEmit_ModIntPositivePowerOfTwoUsesBitfield(t *testing.T) {
 	}
 }
 
+func TestEmit_LenNativeFeedsIntArithmetic(t *testing.T) {
+	src := `func f(s) {
+		t := {"aa", "bbb", "c"}
+		empty := {}
+		return #s * 10 + #t + #empty
+	}`
+	proto := compileFunction(t, src)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	foundLen := false
+	foundAddInt := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpLen:
+				foundLen = true
+			case OpAddInt:
+				foundAddInt = true
+			}
+		}
+	}
+	if !foundLen || !foundAddInt {
+		t.Fatalf("expected Len feeding integer arithmetic in optimized IR:\n%s", Print(fn))
+	}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	args := []runtime.Value{runtime.StringValue("abcd")}
+	result, err := cf.Execute(args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	vmResult := runVM(t, src, args)
+	if len(result) == 0 || len(vmResult) == 0 {
+		t.Fatalf("empty result: JIT=%v VM=%v", result, vmResult)
+	}
+	assertValuesEqual(t, "f(abcd)", result[0], vmResult[0])
+	if !result[0].IsInt() || result[0].Int() != 43 {
+		t.Fatalf("expected integer 43, got %s %v", result[0].TypeName(), result[0])
+	}
+}
+
 func TestEmit_ModIntConstPositiveSingleSubtract(t *testing.T) {
 	src := `func f(n) {
 		if n < 0 { return -1 }

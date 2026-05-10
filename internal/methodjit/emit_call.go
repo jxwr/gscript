@@ -17,6 +17,7 @@ import (
 	"fmt"
 
 	"github.com/gscript/gscript/internal/jit"
+	"github.com/gscript/gscript/internal/vm"
 )
 
 // emitCheckIsInt emits ARM64 code that checks if a NaN-boxed value in valReg
@@ -521,50 +522,41 @@ func (ec *emitContext) emitLenNative(instr *Instr) {
 		asm.MOVreg(jit.X0, src)
 	}
 
-	jit.EmitCheckIsString(asm, jit.X0, jit.X1, jit.X2, notStringLabel)
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.LDR(jit.X1, jit.X0, 8) // Go string header length.
-	asm.B(boxLabel)
+	if ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		ec.tableVerified[instr.Args[0].ID] = true
+		if fbKind, ok := ec.localNewTableFBKind(instr.Args[0]); ok && ec.emitKnownTableLenNative(fbKind, slowLabel, boxLabel) {
+			ec.kindVerified[instr.Args[0].ID] = fbKind
+		} else {
+			ec.emitTableLenKindDispatch(slowLabel, mixedLabel, intLabel, floatLabel)
+		}
+	} else {
+		jit.EmitCheckIsString(asm, jit.X0, jit.X1, jit.X2, notStringLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.LDR(jit.X1, jit.X0, 8) // Go string header length.
+		asm.B(boxLabel)
 
-	asm.Label(notStringLabel)
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, slowLabel)
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.CBZ(jit.X0, slowLabel)
+		asm.Label(notStringLabel)
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, slowLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, slowLabel)
 
-	// Respect __len by falling back when a table has a metatable.
-	asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
-	asm.CBNZ(jit.X1, slowLabel)
-
-	asm.LDRB(jit.X1, jit.X0, jit.TableOffArrayKind)
-	asm.CMPimm(jit.X1, jit.AKMixed)
-	asm.BCond(jit.CondEQ, mixedLabel)
-	asm.CMPimm(jit.X1, jit.AKInt)
-	asm.BCond(jit.CondEQ, intLabel)
-	asm.CMPimm(jit.X1, jit.AKFloat)
-	asm.BCond(jit.CondEQ, floatLabel)
-	asm.B(slowLabel)
+		// Respect __len by falling back when a table has a metatable.
+		asm.LDR(jit.X1, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X1, slowLabel)
+		ec.emitTableLenKindDispatch(slowLabel, mixedLabel, intLabel, floatLabel)
+	}
 
 	// Mixed arrays need the runtime's trailing-nil scan. Fast-path only when
 	// the last array slot is non-nil, which is the common dense-array case.
 	asm.Label(mixedLabel)
-	asm.LDR(jit.X1, jit.X0, jit.TableOffArrayLen)
-	asm.SUBimm(jit.X1, jit.X1, 1)
-	asm.CBZ(jit.X1, boxLabel)
-	asm.LDR(jit.X2, jit.X0, jit.TableOffArray)
-	asm.LDRreg(jit.X3, jit.X2, jit.X1)
-	asm.LoadImm64(jit.X2, nb64(jit.NB_ValNil))
-	asm.CMPreg(jit.X3, jit.X2)
-	asm.BCond(jit.CondEQ, slowLabel)
-	asm.B(boxLabel)
+	ec.emitMixedTableLenNative(slowLabel, boxLabel)
 
 	asm.Label(intLabel)
-	asm.LDR(jit.X1, jit.X0, jit.TableOffIntArrayLen)
-	asm.SUBimm(jit.X1, jit.X1, 1)
-	asm.B(boxLabel)
+	ec.emitDenseTableLenNative(jit.TableOffIntArrayLen, boxLabel)
 
 	asm.Label(floatLabel)
-	asm.LDR(jit.X1, jit.X0, jit.TableOffFloatArrayLen)
-	asm.SUBimm(jit.X1, jit.X1, 1)
+	ec.emitDenseTableLenNative(jit.TableOffFloatArrayLen, boxLabel)
 
 	asm.Label(boxLabel)
 	jit.EmitBoxIntFast(asm, jit.X0, jit.X1, mRegTagInt)
@@ -574,6 +566,54 @@ func (ec *emitContext) emitLenNative(instr *Instr) {
 	asm.Label(slowLabel)
 	ec.emitOpExit(instr)
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitTableLenKindDispatch(slowLabel, mixedLabel, intLabel, floatLabel string) {
+	asm := ec.asm
+	asm.LDRB(jit.X1, jit.X0, jit.TableOffArrayKind)
+	asm.CMPimm(jit.X1, jit.AKMixed)
+	asm.BCond(jit.CondEQ, mixedLabel)
+	asm.CMPimm(jit.X1, jit.AKInt)
+	asm.BCond(jit.CondEQ, intLabel)
+	asm.CMPimm(jit.X1, jit.AKFloat)
+	asm.BCond(jit.CondEQ, floatLabel)
+	asm.B(slowLabel)
+}
+
+func (ec *emitContext) emitKnownTableLenNative(fbKind uint16, slowLabel, boxLabel string) bool {
+	switch fbKind {
+	case uint16(vm.FBKindMixed):
+		ec.emitMixedTableLenNative(slowLabel, boxLabel)
+	case uint16(vm.FBKindInt):
+		ec.emitDenseTableLenNative(jit.TableOffIntArrayLen, boxLabel)
+	case uint16(vm.FBKindFloat):
+		ec.emitDenseTableLenNative(jit.TableOffFloatArrayLen, boxLabel)
+	default:
+		return false
+	}
+	return true
+}
+
+func (ec *emitContext) emitMixedTableLenNative(slowLabel, boxLabel string) {
+	asm := ec.asm
+	asm.LDR(jit.X1, jit.X0, jit.TableOffArrayLen)
+	asm.CBZ(jit.X1, boxLabel)
+	asm.SUBimm(jit.X1, jit.X1, 1)
+	asm.CBZ(jit.X1, boxLabel)
+	asm.LDR(jit.X2, jit.X0, jit.TableOffArray)
+	asm.LDRreg(jit.X3, jit.X2, jit.X1)
+	asm.LoadImm64(jit.X2, nb64(jit.NB_ValNil))
+	asm.CMPreg(jit.X3, jit.X2)
+	asm.BCond(jit.CondEQ, slowLabel)
+	asm.B(boxLabel)
+}
+
+func (ec *emitContext) emitDenseTableLenNative(lenOff int, boxLabel string) {
+	asm := ec.asm
+	asm.LDR(jit.X1, jit.X0, lenOff)
+	asm.CBZ(jit.X1, boxLabel)
+	asm.SUBimm(jit.X1, jit.X1, 1)
+	asm.B(boxLabel)
 }
 
 func lenArgKnownRawString(v *Value) bool {
