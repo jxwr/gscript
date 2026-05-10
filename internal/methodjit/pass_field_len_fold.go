@@ -13,6 +13,9 @@ func FieldLenFoldPass(fn *Function) (*Function, error) {
 			if instr == nil || instr.Op != OpLen || len(instr.Args) < 1 || instr.Args[0] == nil || instr.Args[0].Def == nil {
 				continue
 			}
+			if foldProfiledExactLen(fn, block, instr) {
+				continue
+			}
 			get := unwrapFieldLenInput(instr.Args[0]).Def
 			if get.Op != OpGetField || len(get.Args) < 1 || get.Args[0] == nil {
 				continue
@@ -51,6 +54,39 @@ func FieldLenFoldPass(fn *Function) (*Function, error) {
 		}
 	}
 	return fn, nil
+}
+
+func ProfiledStringLenFoldPass(fn *Function) (*Function, error) {
+	if fn == nil || fn.Proto == nil || len(fn.ProfiledLenRanges) == 0 {
+		return fn, nil
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpLen || len(instr.Args) < 1 || instr.Args[0] == nil {
+				continue
+			}
+			foldProfiledExactLen(fn, block, instr)
+		}
+	}
+	return fn, nil
+}
+
+func foldProfiledExactLen(fn *Function, block *Block, lenInstr *Instr) bool {
+	if fn == nil || lenInstr == nil || len(lenInstr.Args) == 0 || lenInstr.Args[0] == nil {
+		return false
+	}
+	r, ok := fn.ProfiledLenRanges[lenInstr.Args[0].ID]
+	if !ok || !r.known || r.min != r.max || r.min < 0 {
+		return false
+	}
+	lenInstr.Op = OpConstInt
+	lenInstr.Type = TypeInt
+	lenInstr.Args = nil
+	lenInstr.Aux = r.min
+	lenInstr.Aux2 = 0
+	functionRemarks(fn).Add("FieldLenFold", "changed", block.ID, lenInstr.ID, lenInstr.Op,
+		"folded guarded exact string length")
+	return true
 }
 
 func lowerFieldPolyLen(fn *Function, lenInstr, get *Instr) bool {

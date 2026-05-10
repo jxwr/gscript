@@ -88,6 +88,53 @@ func TestFieldLenFold_LowersProfiledPolyFieldLen(t *testing.T) {
 	}
 }
 
+func TestFieldLenFold_FoldsProfiledExactLen(t *testing.T) {
+	fn := &Function{
+		Proto:             &vm.FuncProto{Name: "profiled_len"},
+		NumRegs:           1,
+		ProfiledLenRanges: map[int]intRange{2: pointRange(4)},
+	}
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	s := &Instr{ID: 2, Op: OpGetField, Type: TypeString, Aux: 0, Block: b0}
+	ln := &Instr{ID: 3, Op: OpLen, Type: TypeInt, Args: []*Value{s.Value()}, Block: b0}
+	ret := &Instr{ID: 4, Op: OpReturn, Args: []*Value{ln.Value()}, Block: b0}
+	b0.Instrs = []*Instr{s, ln, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	out, err := FieldLenFoldPass(fn)
+	if err != nil {
+		t.Fatalf("FieldLenFoldPass: %v", err)
+	}
+	if ln.Op != OpConstInt || ln.Aux != 4 {
+		t.Fatalf("profiled exact len not folded:\n%s", Print(out))
+	}
+}
+
+func TestProfiledStringLenFold_FoldsAfterFieldLowering(t *testing.T) {
+	fn := &Function{
+		Proto:             &vm.FuncProto{Name: "profiled_len_after_lower"},
+		NumRegs:           1,
+		ProfiledLenRanges: map[int]intRange{2: pointRange(4)},
+	}
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	svals := &Instr{ID: 1, Op: OpFieldSvals, Type: TypeInt, Block: b0}
+	load := &Instr{ID: 2, Op: OpFieldLoad, Type: TypeString, Args: []*Value{svals.Value()}, Block: b0}
+	ln := &Instr{ID: 3, Op: OpLen, Type: TypeInt, Args: []*Value{load.Value()}, Block: b0}
+	ret := &Instr{ID: 4, Op: OpReturn, Args: []*Value{ln.Value()}, Block: b0}
+	b0.Instrs = []*Instr{svals, load, ln, ret}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	out, err := ProfiledStringLenFoldPass(fn)
+	if err != nil {
+		t.Fatalf("ProfiledStringLenFoldPass: %v", err)
+	}
+	if ln.Op != OpConstInt || ln.Aux != 4 {
+		t.Fatalf("profiled exact len not folded after field lowering:\n%s", Print(out))
+	}
+}
+
 func TestFieldLenFold_StepIOPipeline(t *testing.T) {
 	src := `func step_io(a, tick) {
     a.queue = (a.queue + tick + a.id) % 211

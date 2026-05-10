@@ -7,6 +7,8 @@ func tier2NumericModules() []Tier2OptimizerModule {
 		tier2PassModule("OverflowBoxing", Tier2PhaseNumeric, OverflowBoxingPass),
 		tier2PassModule("IntExactDivision", Tier2PhaseNumeric, IntExactDivisionPass),
 		tier2PassModule("RangeAnalysis (post-IntExactDivision)", Tier2PhaseNumeric, RangeAnalysisPass),
+		tier2PassModule("ModRangeSimplify", Tier2PhaseNumeric, ModRangeSimplifyPass),
+		tier2PassModule("DCE (post-ModRangeSimplify)", Tier2PhaseNumeric, DCEPass),
 		tier2PassModule("ModZeroCompare", Tier2PhaseNumeric, ModZeroComparePass),
 		tier2PassModule("DCE (post-ModZeroCompare)", Tier2PhaseNumeric, DCEPass),
 	}
