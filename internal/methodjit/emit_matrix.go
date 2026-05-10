@@ -98,9 +98,9 @@ func (ec *emitContext) emitMatrixGetF(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
-// emitMatrixFlat emits code for OpMatrixFlat(m) → raw int64 pointer.
+// emitMatrixFlat emits code for OpMatrixFlat(m) → raw data pointer.
 // Verifies m is a Table with dmStride > 0; deopts otherwise.
-// The result is a raw int64 SSA value (the dmFlat pointer).
+// The result is a raw pointer SSA value (the dmFlat pointer).
 func (ec *emitContext) emitMatrixFlat(instr *Instr) {
 	if len(instr.Args) < 1 {
 		return
@@ -130,8 +130,9 @@ func (ec *emitContext) emitMatrixFlat(instr *Instr) {
 	}
 	// Load dmFlat.
 	asm.LDR(jit.X0, jit.X0, jit.TableOffDMFlat)
-	// Result is a raw int64 (pointer). Store as raw int.
-	ec.storeRawInt(jit.X0, instr.ID)
+	// Result is a VM-internal pointer, not a boxed integer. If it becomes
+	// cross-block live, its home slot must contain raw pointer bits.
+	ec.storeRawDataPtr(jit.X0, instr.ID)
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
@@ -195,7 +196,7 @@ func (ec *emitContext) emitMatrixLoadFAt(instr *Instr) {
 		return
 	}
 	asm := ec.asm
-	flatReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	flatReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X5)
 	if flatReg != jit.X5 {
 		asm.MOVreg(jit.X5, flatReg)
 	}
@@ -247,7 +248,7 @@ func (ec *emitContext) emitMatrixStoreFAt(instr *Instr) {
 		return
 	}
 	asm := ec.asm
-	flatReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	flatReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X5)
 	if flatReg != jit.X5 {
 		asm.MOVreg(jit.X5, flatReg)
 	}
@@ -306,7 +307,7 @@ func (ec *emitContext) emitMatrixRowPtr(instr *Instr) {
 		return
 	}
 	asm := ec.asm
-	flatReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	flatReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X5)
 	if flatReg != jit.X5 {
 		asm.MOVreg(jit.X5, flatReg)
 	}
@@ -322,7 +323,7 @@ func (ec *emitContext) emitMatrixRowPtr(instr *Instr) {
 	asm.MUL(jit.X0, jit.X2, jit.X1)
 	asm.LSLimm(jit.X0, jit.X0, 3)
 	asm.ADDreg(jit.X0, jit.X5, jit.X0)
-	ec.storeRawInt(jit.X0, instr.ID)
+	ec.storeRawDataPtr(jit.X0, instr.ID)
 }
 
 // emitMatrixLoadFRow emits OpMatrixLoadFRow(rowPtr, j) → float.
@@ -332,7 +333,7 @@ func (ec *emitContext) emitMatrixLoadFRow(instr *Instr) {
 		return
 	}
 	asm := ec.asm
-	rowReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	rowReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X5)
 	if rowReg != jit.X5 {
 		asm.MOVreg(jit.X5, rowReg)
 	}
@@ -358,7 +359,7 @@ func (ec *emitContext) emitMatrixStoreFRow(instr *Instr) {
 		return
 	}
 	asm := ec.asm
-	rowReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	rowReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X5)
 	if rowReg != jit.X5 {
 		asm.MOVreg(jit.X5, rowReg)
 	}
@@ -395,7 +396,7 @@ func (ec *emitContext) emitMatrixLoadFRowConst(instr *Instr) {
 		return
 	}
 	asm := ec.asm
-	rowReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	rowReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X5)
 	if rowReg != jit.X5 {
 		asm.MOVreg(jit.X5, rowReg)
 	}
@@ -412,7 +413,7 @@ func (ec *emitContext) emitMatrixStoreFRowConst(instr *Instr) {
 		return
 	}
 	asm := ec.asm
-	rowReg := ec.resolveRawInt(instr.Args[0].ID, jit.X5)
+	rowReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X5)
 	if rowReg != jit.X5 {
 		asm.MOVreg(jit.X5, rowReg)
 	}
