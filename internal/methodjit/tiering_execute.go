@@ -186,6 +186,15 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				})
 				return tm.callVM.ResumeFromPC(resumePC)
 			}
+			if tm.tier2DeoptAtEntry(cf, ctx) {
+				tm.traceEvent("fallback", "tier1", proto, map[string]any{
+					"reason": "tier2_entry_deopt",
+					"target": "tier1",
+				})
+				if t1 := tm.tier1.TryCompile(proto); t1 != nil {
+					return tm.tier1.ExecuteWithResultBuffer(t1, regs, base, proto, retBuf)
+				}
+			}
 			tm.traceEvent("fallback", "tier0", proto, map[string]any{
 				"reason": "tier2_runtime_deopt",
 				"target": "interpreter",
@@ -362,6 +371,17 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			return nil, fmt.Errorf("tier2: unknown exit code %d", ctx.ExitCode)
 		}
 	}
+}
+
+func (tm *TieringManager) tier2DeoptAtEntry(cf *CompiledFunction, ctx *ExecContext) bool {
+	if cf == nil || ctx == nil || ctx.ExitResumePC > 0 {
+		return false
+	}
+	if cf.ExitSites == nil {
+		return false
+	}
+	site, ok := cf.ExitSites[int(ctx.DeoptInstrID)]
+	return ok && site.PC < 0
 }
 
 func tier2ExitResumeCodePtr(cf *CompiledFunction, ctx *ExecContext, resumeOff int) uintptr {
