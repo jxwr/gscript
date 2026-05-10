@@ -35,7 +35,11 @@
 
 package methodjit
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/gscript/gscript/internal/vm"
+)
 
 // LICMPass moves loop-invariant computations out of loops into a
 // pre-header. Safe to call on functions without loops (no-op). Returns
@@ -174,6 +178,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 	setFields := make(map[loadKey]bool)
 	arrayElementWrites := make(map[loadKey]bool)
 	setGlobals := make(map[int64]bool) // Aux (constant pool index) of in-loop SetGlobal
+	var loopCalls []*Instr
 	hasEffectfulLoopCall := false
 	for _, b := range bodyList {
 		for _, instr := range b.Instrs {
@@ -209,13 +214,16 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				setGlobals[instr.Aux] = true
 			case OpCall:
 				if !isPureLoopInvariantCall(fn, instr) {
+					loopCalls = append(loopCalls, instr)
 					hasEffectfulLoopCall = true
 				}
 			case OpResume:
 				if !isPureNumericLoopCall(fn, instr) {
+					loopCalls = append(loopCalls, instr)
 					hasEffectfulLoopCall = true
 				}
 			case OpSelf:
+				loopCalls = append(loopCalls, instr)
 				hasEffectfulLoopCall = true
 			}
 		}
@@ -262,9 +270,10 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					continue
 				}
 			}
-			// GetField: require no in-loop store to same (obj, field) and no calls.
+			// GetField: require no in-loop store to same (obj, field) and no
+			// effectful call that can alias this specific receiver table.
 			if instr.Op == OpGetField {
-				if hasEffectfulLoopCall {
+				if len(instr.Args) >= 1 && licmLoopCallMayMutateValue(fn, loopCalls, instr.Args[0]) {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"loop contains a call that may mutate fields")
 					continue
@@ -284,9 +293,10 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					}
 				}
 			}
-			// GetTable: require no in-loop SetTable on same obj and no calls.
+			// GetTable: require no in-loop SetTable on same obj and no
+			// effectful call that can alias this specific table.
 			if instr.Op == OpGetTable {
-				if hasEffectfulLoopCall {
+				if len(instr.Args) >= 1 && licmLoopCallMayMutateValue(fn, loopCalls, instr.Args[0]) {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"loop contains a call that may mutate tables")
 					continue
@@ -308,7 +318,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			// Len: pure for invariant strings/tables, but table length can be
 			// affected by dynamic table writes or calls that may alias the table.
 			if instr.Op == OpLen {
-				if hasEffectfulLoopCall {
+				if len(instr.Args) >= 1 && licmLoopCallMayMutateValue(fn, loopCalls, instr.Args[0]) {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"loop contains a call that may mutate length operands")
 					continue
@@ -326,7 +336,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			// inside the loop can change metatable/kind/data semantics before
 			// the original access point.
 			if instr.Op == OpTableArrayHeader {
-				if hasEffectfulLoopCall {
+				if len(instr.Args) >= 1 && licmLoopCallMayMutateValue(fn, loopCalls, instr.Args[0]) {
 					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 						"loop contains a call that may mutate tables")
 					continue
@@ -680,6 +690,73 @@ func insertBlockBefore(fn *Function, blk, target *Block) {
 		}
 	}
 	fn.Blocks = append(fn.Blocks, blk)
+}
+
+func licmLoopCallMayMutateValue(fn *Function, loopCalls []*Instr, value *Value) bool {
+	if value == nil {
+		return true
+	}
+	for _, call := range loopCalls {
+		if call == nil {
+			continue
+		}
+		if !licmCallCannotMutateValue(fn, call, value.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+func licmCallCannotMutateValue(fn *Function, instr *Instr, valueID int) bool {
+	if fn == nil || instr == nil {
+		return false
+	}
+	callees := licmCallCalleeProtos(fn, instr)
+	if len(callees) == 0 {
+		return false
+	}
+	for _, callee := range callees {
+		if callee == nil || !callee.NoGlobalOps {
+			return false
+		}
+	}
+	for _, arg := range licmCallUserArgs(instr) {
+		if arg != nil && arg.ID == valueID {
+			return false
+		}
+	}
+	return true
+}
+
+func licmCallCalleeProtos(fn *Function, instr *Instr) []*vm.FuncProto {
+	if protos := fieldShapeCalleeProtos(fn, instr); len(protos) > 0 {
+		return protos
+	}
+	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: fn.Globals})
+	if callee != nil {
+		return []*vm.FuncProto{callee}
+	}
+	if feedbackCallee, ok := callABIFeedbackCalleeProto(fn, instr); ok && feedbackCallee != nil {
+		return []*vm.FuncProto{feedbackCallee}
+	}
+	return nil
+}
+
+func licmCallUserArgs(instr *Instr) []*Value {
+	if instr == nil {
+		return nil
+	}
+	switch instr.Op {
+	case OpCall, OpCallFloor:
+		if len(instr.Args) <= 1 {
+			return nil
+		}
+		return instr.Args[1:]
+	case OpFieldCallFloor:
+		return instr.Args
+	default:
+		return nil
+	}
 }
 
 // canHoistOp returns true if moving an instruction with this op out of

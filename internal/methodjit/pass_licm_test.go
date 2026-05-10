@@ -8,6 +8,9 @@ package methodjit
 
 import (
 	"testing"
+
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
 )
 
 // ---------- helpers ----------
@@ -534,6 +537,60 @@ func TestLICM_NoHoistGetField_WhenCallInLoop(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("OpGetField v%d should NOT be hoisted (Call in loop body)", gfID)
+	}
+}
+
+func TestLICM_HoistTableArrayHeaderAcrossNoAliasNoGlobalCall(t *testing.T) {
+	fn := &Function{
+		NumRegs: 8,
+		Proto: &vm.FuncProto{
+			Name:      "driver",
+			Constants: []runtime.Value{runtime.StringValue("helper")},
+		},
+		Globals: map[string]*vm.FuncProto{
+			"helper": {Name: "helper", NoGlobalOps: true},
+		},
+	}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	target := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Block: b0, Aux: 0}
+	other := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Block: b0, Aux: 1}
+	callee := &Instr{ID: fn.newValueID(), Op: OpGetGlobal, Type: TypeFunction, Block: b0, Aux: 0}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{target, other, callee, b0Term}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{phi, cond, b1Term}
+
+	header := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Block: b2,
+		Args: []*Value{target.Value()}, Aux: int64(vm.FBKindInt)}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeAny, Block: b2,
+		Args: []*Value{callee.Value(), other.Value()}, Aux2: 1}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{header, call, b2Term}
+
+	phi.Args = []*Value{header.Value(), header.Value()}
+	b3.Instrs = []*Instr{
+		&Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+			Args: []*Value{phi.Value()}},
+	}
+
+	assertValidates(t, fn, "input")
+	headerID := header.ID
+	_, err := LICMPass(fn)
+	if err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+	if _, instr := findInstrByID(&Function{Blocks: []*Block{b2}}, headerID); instr != nil {
+		t.Fatalf("OpTableArrayHeader v%d should have been hoisted across no-alias no-global call:\n%s", headerID, Print(fn))
+	}
+	phBlock, _ := findInstrByID(fn, headerID)
+	if phBlock == nil || phBlock == b2 {
+		t.Fatalf("hoisted OpTableArrayHeader v%d not found in preheader:\n%s", headerID, Print(fn))
 	}
 }
 
