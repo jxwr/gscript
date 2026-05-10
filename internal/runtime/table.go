@@ -1134,6 +1134,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	// ShapeID-based cache: if shape matches, the field index is valid
 	idx := cache.FieldIdx
 	if t.shapeID != 0 && cache.ShapeID == t.shapeID && idx >= 0 && idx < len(t.svals) {
+		oldShapeID := t.shapeID
 		if valIsNil {
 			t.deleteSmallStringField(idx)
 			cache.FieldIdx = 0 // reset cache
@@ -1141,6 +1142,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 		} else {
 			t.svals[idx] = val
 		}
+		RecordShapeMutation(oldShapeID)
 		return
 	}
 
@@ -1164,6 +1166,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 	// Fall back to normal path
 	for i, k := range t.skeys {
 		if k == key {
+			oldShapeID := t.shapeID
 			if valIsNil {
 				t.deleteSmallStringField(i)
 			} else {
@@ -1171,6 +1174,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 				cache.FieldIdx = i
 				cache.ShapeID = t.shapeID
 			}
+			RecordShapeMutation(oldShapeID)
 			return
 		}
 	}
@@ -1197,6 +1201,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			cache.AppendShapeID = preShapeID
 			cache.AppendShape = t.shape
 		} else {
+			RecordShapeMutation(t.shapeID)
 			t.bumpStringLookupVersionLocked()
 			t.smap = make(map[string]Value, initialStringMapCap)
 			for i, k := range t.skeys {
@@ -1232,6 +1237,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 
 	if !valIsNil {
 		if idx, ok := t.lookupDynamicStringCacheLocked(data, keyLen, cache); ok {
+			RecordShapeMutation(t.shapeID)
 			t.svals[idx] = val
 			RecordRuntimePathTableStringSetCacheHit()
 			return
@@ -1240,12 +1246,14 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 
 	for i, k := range t.skeys {
 		if k == key {
+			oldShapeID := t.shapeID
 			if valIsNil {
 				t.deleteSmallStringField(i)
 			} else {
 				t.svals[i] = val
 				t.rememberDynamicStringCacheLocked(key, data, keyLen, i, cache)
 			}
+			RecordShapeMutation(oldShapeID)
 			RecordRuntimePathTableStringSetScanHit()
 			return
 		}
@@ -1280,6 +1288,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			}
 			RecordRuntimePathTableStringSetAppend()
 		} else {
+			RecordShapeMutation(t.shapeID)
 			t.bumpStringLookupVersionLocked()
 			t.smap = make(map[string]Value, initialStringMapCap)
 			for i, k := range t.skeys {
@@ -1433,11 +1442,13 @@ func (t *Table) RawSetString(key string, val Value) {
 
 	for i, k := range t.skeys {
 		if k == key {
+			oldShapeID := t.shapeID
 			if valIsNil {
 				t.deleteSmallStringField(i)
 			} else {
 				t.svals[i] = val
 			}
+			RecordShapeMutation(oldShapeID)
 			return
 		}
 	}
@@ -1458,6 +1469,7 @@ func (t *Table) RawSetString(key string, val Value) {
 		if len(t.skeys) < smallFieldCap {
 			t.appendSmallStringField(key, val)
 		} else {
+			RecordShapeMutation(t.shapeID)
 			t.bumpStringLookupVersionLocked()
 			t.smap = make(map[string]Value, initialStringMapCap)
 			for i, k := range t.skeys {

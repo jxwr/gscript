@@ -28,6 +28,7 @@ type Shape struct {
 	FieldKeys   []string       // ordered field names (immutable)
 	FieldMap    map[string]int // key → index for O(1) GetFieldIndex
 	transitions sync.Map       // string → *Shape (cached addField transitions)
+	mutations   atomic.Uint64  // observed overwrites/deletes of this shape
 }
 
 // GetFieldIndex returns the slot index of key in FieldKeys, or -1 if absent.
@@ -125,4 +126,34 @@ func LookupShapeByID(id uint32) *Shape {
 		return v.(*Shape)
 	}
 	return nil
+}
+
+// RecordShapeMutation marks that a table with this shape has observed a
+// post-construction string-field mutation. Shape creation and append
+// transitions are not mutations; overwrites, deletes, and representation
+// promotion are. JIT speculation uses this as a generic stability signal.
+func RecordShapeMutation(id uint32) {
+	if id == 0 {
+		return
+	}
+	if s := LookupShapeByID(id); s != nil {
+		s.mutations.Add(1)
+	}
+}
+
+// ShapeMutationCount returns the observed mutation epoch for a shape.
+func ShapeMutationCount(id uint32) uint64 {
+	if id == 0 {
+		return 0
+	}
+	if s := LookupShapeByID(id); s != nil {
+		return s.mutations.Load()
+	}
+	return 0
+}
+
+// ShapeWasMutated reports whether this shape has ever been mutated after
+// construction in the current process.
+func ShapeWasMutated(id uint32) bool {
+	return ShapeMutationCount(id) != 0
 }
