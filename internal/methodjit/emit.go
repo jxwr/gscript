@@ -159,6 +159,11 @@ type ExecContext struct {
 	// Pointer is set by executeTier2 to &CompiledFunction.CallCache[0].
 	Tier2CallCache uintptr
 
+	// Tier2BlockCounters points at CompiledFunction.Tier2BlockCounters when
+	// opt-in Tier 2 perf diagnostics are enabled. Native code increments these
+	// counters at block entry; zero disables the instrumentation.
+	Tier2BlockCounters uintptr
+
 	// ExitResumePC is the bytecode PC of a precise interpreter continuation.
 	// Tier 1 int-spec overflow and selected Tier 2 guards set it so Execute can
 	// resume at the exact guard PC instead of restarting at pc=0, which would
@@ -361,6 +366,7 @@ var (
 	execCtxOffTier2GlobalVer         = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalVer))
 	execCtxOffExitResumePC           = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
 	execCtxOffTier2CallCache         = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
+	execCtxOffTier2BlockCounters     = int(unsafe.Offsetof(ExecContext{}.Tier2BlockCounters))
 	execCtxOffDeoptInstrID           = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
 	execCtxOffResumeNumericPass      = int(unsafe.Offsetof(ExecContext{}.ResumeNumericPass))
 	execCtxOffExitResumeCheckShadow  = int(unsafe.Offsetof(ExecContext{}.ExitResumeCheckShadow))
@@ -637,6 +643,12 @@ type CompiledFunction struct {
 	// ExitResumeCheck is populated only when GSCRIPT_EXIT_RESUME_CHECK=1 at
 	// compile time. Nil keeps the normal execute path at near-zero overhead.
 	ExitResumeCheck *exitResumeCheckMetadata
+
+	// Tier2BlockCounters and metadata are populated only for opt-in perf
+	// diagnostics. Normal Tier 2 compilation leaves them nil and emits no
+	// counter code.
+	Tier2BlockCounters    []uint64
+	Tier2BlockCounterMeta []Tier2BlockCounterMeta
 }
 
 func (cf *CompiledFunction) resumeOffset(instrID int, numericPass bool) (int, bool) {

@@ -21,8 +21,19 @@ import (
 var _ runtime.Value
 var _ *vm.FuncProto
 
+// CompileOptions configures optional, diagnostic-only native code generation.
+type CompileOptions struct {
+	EnableTier2BlockCounters bool
+}
+
 // Compile takes a Function with register allocation and produces executable ARM64 code.
 func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
+	return CompileWithOptions(fn, alloc, CompileOptions{})
+}
+
+// CompileWithOptions takes a Function with register allocation and produces
+// executable ARM64 code with optional diagnostic instrumentation.
+func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions) (*CompiledFunction, error) {
 	if err := validateCompileInputs(fn, alloc); err != nil {
 		return nil, err
 	}
@@ -318,6 +329,9 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		typedSelfABI:               typedEntryABI,
 		entryShapeGuards:           fn.FixedShapeEntryGuards,
 	}
+	if opts.EnableTier2BlockCounters {
+		ec.initTier2BlockCounters()
+	}
 	if exitResumeCheckEnabled() {
 		ec.exitResumeCheck = newExitResumeCheckMetadata()
 	}
@@ -434,6 +448,10 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 	if ec.nextCallCacheIndex > 0 {
 		callCache = make([]uint64, tier2CallCacheStrideWords*ec.nextCallCacheIndex)
 	}
+	var blockCounters []uint64
+	if len(ec.tier2BlockCounterMeta) > 0 {
+		blockCounters = make([]uint64, len(ec.tier2BlockCounterMeta))
+	}
 
 	return &CompiledFunction{
 		Code:                     cb,
@@ -469,6 +487,8 @@ func Compile(fn *Function, alloc *RegAllocation) (*CompiledFunction, error) {
 		ExitSites:                exitSites,
 		Continuations:            continuations,
 		ExitResumeCheck:          ec.exitResumeCheck,
+		Tier2BlockCounters:       blockCounters,
+		Tier2BlockCounterMeta:    ec.tier2BlockCounterMeta,
 	}, nil
 }
 
@@ -496,6 +516,63 @@ func validateCompileInputs(fn *Function, alloc *RegAllocation) error {
 		return fmt.Errorf("methodjit: compile entry block B%d is missing from block list", fn.Entry.ID)
 	}
 	return nil
+}
+
+func (ec *emitContext) initTier2BlockCounters() {
+	if ec == nil || ec.fn == nil {
+		return
+	}
+	ec.tier2BlockCounterIndex = make(map[int]int, len(ec.fn.Blocks))
+	ec.tier2BlockCounterMeta = make([]Tier2BlockCounterMeta, 0, len(ec.fn.Blocks))
+	protoName := ""
+	if ec.fn.Proto != nil {
+		protoName = ec.fn.Proto.Name
+	}
+	for _, block := range ec.fn.Blocks {
+		if block == nil {
+			continue
+		}
+		idx := len(ec.tier2BlockCounterMeta)
+		ec.tier2BlockCounterIndex[block.ID] = idx
+		meta := Tier2BlockCounterMeta{
+			Proto:   protoName,
+			BlockID: block.ID,
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			meta.InstrIDs = append(meta.InstrIDs, instr.ID)
+			meta.Ops = append(meta.Ops, instr.Op.String())
+		}
+		ec.tier2BlockCounterMeta = append(ec.tier2BlockCounterMeta, meta)
+	}
+}
+
+func (ec *emitContext) emitTier2BlockCounter(block *Block) {
+	if ec == nil || block == nil || len(ec.tier2BlockCounterIndex) == 0 {
+		return
+	}
+	idx, ok := ec.tier2BlockCounterIndex[block.ID]
+	if !ok {
+		return
+	}
+	doneLabel := ec.uniqueLabel("tier2_block_counter_done")
+	ec.asm.LDR(jit.X16, mRegCtx, execCtxOffTier2BlockCounters)
+	ec.asm.CBZ(jit.X16, doneLabel)
+	offset := idx * 8
+	if offset <= 32760 {
+		ec.asm.LDR(jit.X17, jit.X16, offset)
+		ec.asm.ADDimm(jit.X17, jit.X17, 1)
+		ec.asm.STR(jit.X17, jit.X16, offset)
+	} else {
+		ec.asm.LoadImm64(jit.X17, int64(offset))
+		ec.asm.ADDreg(jit.X16, jit.X16, jit.X17)
+		ec.asm.LDR(jit.X17, jit.X16, 0)
+		ec.asm.ADDimm(jit.X17, jit.X17, 1)
+		ec.asm.STR(jit.X17, jit.X16, 0)
+	}
+	ec.asm.Label(doneLabel)
 }
 
 func collectNativeSetGlobals(fn *Function) map[int]bool {
@@ -914,6 +991,9 @@ type emitContext struct {
 	// exitResumeCheck carries debug-only site metadata and enables shadow
 	// materialization writes when GSCRIPT_EXIT_RESUME_CHECK=1 at compile time.
 	exitResumeCheck *exitResumeCheckMetadata
+
+	tier2BlockCounterIndex map[int]int
+	tier2BlockCounterMeta  []Tier2BlockCounterMeta
 }
 
 // computeTailCalls (R107) scans the IR for the tail-call pattern:
@@ -1766,6 +1846,7 @@ func (ec *emitContext) emitEpilogue() {
 func (ec *emitContext) emitBlock(block *Block) {
 	ec.asm.Label(ec.blockLabelFor(block))
 	ec.currentBlockID = block.ID
+	ec.emitTier2BlockCounter(block)
 	typedParamLoads := ec.typedSelfEntryParamLoads(block)
 	typedParamLabelEmitted := false
 	if typedParamLoads != nil && len(typedParamLoads) == 0 {

@@ -105,6 +105,29 @@ func TestTier2PerfStatsRecordsRowsAndText(t *testing.T) {
 	}
 }
 
+func TestTier2PerfStatsIncludesCompiledBlockCounters(t *testing.T) {
+	tm := NewTieringManager()
+	tm.EnableTier2PerfStats()
+	proto := &vm.FuncProto{Name: "hot_block"}
+	tm.markTier2Compiled(proto, &CompiledFunction{
+		Tier2BlockCounters: []uint64{0, 42},
+		Tier2BlockCounterMeta: []Tier2BlockCounterMeta{
+			{Proto: "hot_block", BlockID: 1, InstrIDs: []int{1}, Ops: []string{"LoadSlot"}},
+			{Proto: "hot_block", BlockID: 2, InstrIDs: []int{2, 3}, Ops: []string{"AddInt", "Return"}},
+		},
+	})
+
+	snap := tm.Tier2PerfStats()
+	if len(snap.Blocks) != 1 {
+		t.Fatalf("blocks=%#v, want one non-zero block row", snap.Blocks)
+	}
+	row := snap.Blocks[0]
+	if row.Proto != "hot_block" || row.BlockID != 2 || row.Count != 42 ||
+		len(row.Ops) != 2 || row.Ops[0] != "AddInt" || row.Ops[1] != "Return" {
+		t.Fatalf("unexpected block row: %#v", row)
+	}
+}
+
 func TestTier2PerfStatsRecordsRealTier2OpExit(t *testing.T) {
 	src := `
 func bool_len(t) {

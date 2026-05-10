@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/gscript/gscript/internal/vm"
 )
 
 const (
@@ -45,10 +47,30 @@ type Tier2PerfStatsRow struct {
 	AvgNanos uint64 `json:"avg_nanos"`
 }
 
+// Tier2BlockCounterMeta describes one emitted Tier 2 basic-block counter.
+type Tier2BlockCounterMeta struct {
+	Proto    string   `json:"proto"`
+	BlockID  int      `json:"block_id"`
+	InstrIDs []int    `json:"instr_ids,omitempty"`
+	Ops      []string `json:"ops,omitempty"`
+}
+
+// Tier2BlockPerfRow is a native block-entry counter row for opt-in Tier 2
+// diagnostics. Counts are approximate if the same compiled function is entered
+// concurrently, which is acceptable for profiling attribution.
+type Tier2BlockPerfRow struct {
+	Proto    string   `json:"proto"`
+	BlockID  int      `json:"block_id"`
+	Count    uint64   `json:"count"`
+	InstrIDs []int    `json:"instr_ids,omitempty"`
+	Ops      []string `json:"ops,omitempty"`
+}
+
 // Tier2PerfStatsSnapshot is a stable, JSON-friendly diagnostic snapshot.
 type Tier2PerfStatsSnapshot struct {
 	Enabled bool                `json:"enabled"`
 	Rows    []Tier2PerfStatsRow `json:"rows"`
+	Blocks  []Tier2BlockPerfRow `json:"blocks,omitempty"`
 }
 
 func (s *tier2PerfStatsCollector) setEnabled(enabled bool) {
@@ -141,7 +163,47 @@ func (tm *TieringManager) Tier2PerfStats() Tier2PerfStatsSnapshot {
 	if tm == nil || tm.perfStats == nil {
 		return Tier2PerfStatsSnapshot{}
 	}
-	return tm.perfStats.snapshot()
+	snap := tm.perfStats.snapshot()
+	snap.Blocks = tm.tier2BlockPerfRows()
+	return snap
+}
+
+func (tm *TieringManager) tier2BlockPerfRows() []Tier2BlockPerfRow {
+	if tm == nil {
+		return nil
+	}
+	rows := make([]Tier2BlockPerfRow, 0)
+	tm.forEachTier2Compiled(func(_proto *vm.FuncProto, cf *CompiledFunction) {
+		if cf == nil || len(cf.Tier2BlockCounters) == 0 {
+			return
+		}
+		for i, count := range cf.Tier2BlockCounters {
+			if count == 0 {
+				continue
+			}
+			meta := Tier2BlockCounterMeta{}
+			if i < len(cf.Tier2BlockCounterMeta) {
+				meta = cf.Tier2BlockCounterMeta[i]
+			}
+			rows = append(rows, Tier2BlockPerfRow{
+				Proto:    meta.Proto,
+				BlockID:  meta.BlockID,
+				Count:    count,
+				InstrIDs: append([]int(nil), meta.InstrIDs...),
+				Ops:      append([]string(nil), meta.Ops...),
+			})
+		}
+	})
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Count != rows[j].Count {
+			return rows[i].Count > rows[j].Count
+		}
+		if rows[i].Proto != rows[j].Proto {
+			return rows[i].Proto < rows[j].Proto
+		}
+		return rows[i].BlockID < rows[j].BlockID
+	})
+	return rows
 }
 
 // WriteTier2PerfStatsText prints Tier 2 protocol/timing diagnostics in a stable
@@ -154,5 +216,11 @@ func (tm *TieringManager) WriteTier2PerfStatsText(w io.Writer) {
 	for _, row := range snap.Rows {
 		fmt.Fprintf(w, "    %s: count=%d total=%dns avg=%dns\n",
 			row.Name, row.Count, row.Nanos, row.AvgNanos)
+	}
+	if len(snap.Blocks) > 0 {
+		fmt.Fprintln(w, "  blocks:")
+		for _, row := range snap.Blocks {
+			fmt.Fprintf(w, "    %s B%d: count=%d ops=%v\n", row.Proto, row.BlockID, row.Count, row.Ops)
+		}
 	}
 }

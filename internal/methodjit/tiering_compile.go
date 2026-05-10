@@ -323,7 +323,9 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	var cf *CompiledFunction
 	addStage("ARM64Compile", func() error {
 		var err error
-		cf, err = Compile(fn, alloc)
+		cf, err = CompileWithOptions(fn, alloc, CompileOptions{
+			EnableTier2BlockCounters: tm.perfStatsEnabled,
+		})
 		if err != nil {
 			remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
 				"ARM64 compile failed: "+err.Error())
