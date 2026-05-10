@@ -134,6 +134,17 @@ func computeRPO(fn *Function) []*Block {
 	return rpo
 }
 
+// canonicalizeBlockOrder restores Function.Blocks to reachable reverse
+// postorder after a CFG rewrite. Many analyses tolerate arbitrary block order,
+// but the compiler contract for Function.Blocks is RPO, and later passes use
+// that order for diagnostics, liveness, register allocation, and emission.
+func canonicalizeBlockOrder(fn *Function) {
+	if fn == nil || fn.Entry == nil {
+		return
+	}
+	fn.Blocks = computeRPO(fn)
+}
+
 // intersectDom finds the common dominator of blocks a and b by walking
 // up the dominator tree. Uses RPO index to determine which node is
 // "deeper" — higher RPO index means farther from entry.

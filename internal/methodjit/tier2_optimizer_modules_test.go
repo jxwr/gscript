@@ -208,3 +208,20 @@ func TestTier2FinalCallModuleOrder(t *testing.T) {
 		"CallReturnProjection (final)",
 	})
 }
+
+func TestTier2FinalCallModuleOrderExperimentalFieldShapeSplit(t *testing.T) {
+	t.Setenv("GSCRIPT_FIELD_SHAPE_SPLIT", "1")
+	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
+		"WholeCallKernelExit (final)",
+		"CallReturnProjection (final)",
+		"FieldShapeCallSplit (experimental)",
+	})
+}
+
+func TestTier2FinalCallModuleOrderIgnoresOtherFieldShapeSplitValues(t *testing.T) {
+	t.Setenv("GSCRIPT_FIELD_SHAPE_SPLIT", "0")
+	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
+		"WholeCallKernelExit (final)",
+		"CallReturnProjection (final)",
+	})
+}

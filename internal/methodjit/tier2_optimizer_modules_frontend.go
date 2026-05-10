@@ -1,6 +1,10 @@
 package methodjit
 
-import "github.com/gscript/gscript/internal/vm"
+import (
+	"os"
+
+	"github.com/gscript/gscript/internal/vm"
+)
 
 func tier2EarlyCanonicalModules(globals map[string]*vm.FuncProto) []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
@@ -149,7 +153,7 @@ func tier2PostRewriteModules() []Tier2OptimizerModule {
 }
 
 func tier2FinalCallModules(protocolGlobals map[string]*vm.FuncProto) []Tier2OptimizerModule {
-	return []Tier2OptimizerModule{
+	modules := []Tier2OptimizerModule{
 		{
 			Name:  "WholeCallKernelExit (final)",
 			Phase: Tier2PhaseFinalCall,
@@ -159,4 +163,8 @@ func tier2FinalCallModules(protocolGlobals map[string]*vm.FuncProto) []Tier2Opti
 		},
 		tier2PassModule("CallReturnProjection (final)", Tier2PhaseFinalCall, CallReturnProjectionPass),
 	}
+	if os.Getenv("GSCRIPT_FIELD_SHAPE_SPLIT") == "1" {
+		modules = append(modules, tier2PassModule("FieldShapeCallSplit (experimental)", Tier2PhaseFinalCall, FieldShapeCallSplitPass))
+	}
+	return modules
 }

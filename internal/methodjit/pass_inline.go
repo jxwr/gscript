@@ -968,15 +968,17 @@ func inlineParamValues(calleeFn *Function, callArgs []*Value) map[int]*Value {
 	if calleeFn == nil || calleeFn.Entry == nil || calleeFn.Proto == nil {
 		return paramValues
 	}
-	paramCount := 0
 	for _, ci := range calleeFn.Entry.Instrs {
-		if ci.Op != OpLoadSlot || paramCount >= calleeFn.Proto.NumParams {
+		if ci.Op != OpLoadSlot {
 			continue
 		}
-		if paramCount < len(callArgs) {
-			paramValues[ci.ID] = callArgs[paramCount]
+		paramIdx := int(ci.Aux)
+		if paramIdx < 0 || paramIdx >= calleeFn.Proto.NumParams {
+			continue
 		}
-		paramCount++
+		if paramIdx < len(callArgs) {
+			paramValues[ci.ID] = callArgs[paramIdx]
+		}
 	}
 	return paramValues
 }

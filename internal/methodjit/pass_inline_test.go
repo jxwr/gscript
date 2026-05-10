@@ -106,6 +106,26 @@ func TestInlineCallArgumentValues_FieldCallFloorUsesReceiverAsFirstParam(t *test
 	}
 }
 
+func TestInlineParamValuesUsesLoadSlotIndexWhenLeadingParamUnused(t *testing.T) {
+	recv := &Value{ID: 11}
+	tick := &Value{ID: 12}
+	fn := &Function{Proto: &vm.FuncProto{Name: "callee", NumParams: 2}}
+	entry := &Block{ID: 0}
+	fn.Entry = entry
+	entry.Instrs = []*Instr{
+		{ID: 1, Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: entry},
+		{ID: 2, Op: OpConstInt, Type: TypeInt, Aux: 1, Block: entry},
+		{ID: 3, Op: OpAddInt, Type: TypeInt, Args: []*Value{{ID: 1}}, Block: entry},
+	}
+	params := inlineParamValues(fn, []*Value{recv, tick})
+	if params[1] != tick {
+		t.Fatalf("slot[1] mapped to %+v, want tick", params[1])
+	}
+	if _, ok := params[0]; ok {
+		t.Fatalf("unused slot[0] unexpectedly mapped: %+v", params[0])
+	}
+}
+
 // runVMFunc executes the named function from the source via the VM interpreter.
 func runVMFunc(t *testing.T, src, funcName string, args []runtime.Value) []runtime.Value {
 	t.Helper()
