@@ -93,10 +93,6 @@ func hasSideEffect(instr *Instr) bool {
 	case OpGo, OpMakeChan, OpSend, OpRecv:
 		return true
 
-	// Phi nodes: kept (they participate in SSA structure).
-	case OpPhi:
-		return true
-
 	default:
 		return false
 	}

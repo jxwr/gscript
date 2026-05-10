@@ -255,7 +255,7 @@ func TestDCE_ValidatorPass(t *testing.T) {
 	}
 }
 
-// TestDCE_PhiKept verifies that phi nodes are not removed by DCE.
+// TestDCE_PhiKept verifies that live phi nodes are not removed by DCE.
 func TestDCE_PhiKept(t *testing.T) {
 	fn := &Function{
 		Proto:   &vm.FuncProto{Name: "phi"},
@@ -292,7 +292,57 @@ func TestDCE_PhiKept(t *testing.T) {
 		}
 	}
 	if !hasPhi {
-		t.Error("Phi node should not be removed by DCE")
+		t.Error("live Phi node should not be removed by DCE")
+	}
+}
+
+func TestDCE_RemovesDeadPhiAndInputs(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "dead_phi"},
+		NumRegs: 1,
+	}
+	b0 := &Block{ID: 0, defs: make(map[int]*Value)}
+	b1 := &Block{ID: 1, defs: make(map[int]*Value)}
+	b2 := &Block{ID: 2, defs: make(map[int]*Value)}
+	join := &Block{ID: 3, defs: make(map[int]*Value)}
+
+	c0 := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Aux: 1, Block: b0}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Args: []*Value{c0.Value()}, Block: b0, Aux: int64(b1.ID), Aux2: int64(b2.ID)}
+	b0.Instrs = []*Instr{c0, br}
+	b0.Succs = []*Block{b1, b2}
+
+	left := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b1}
+	j1 := &Instr{ID: fn.newValueID(), Op: OpJump, Block: b1, Aux: int64(join.ID)}
+	b1.Instrs = []*Instr{left, j1}
+	b1.Preds = []*Block{b0}
+	b1.Succs = []*Block{join}
+
+	right := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 2, Block: b2}
+	j2 := &Instr{ID: fn.newValueID(), Op: OpJump, Block: b2, Aux: int64(join.ID)}
+	b2.Instrs = []*Instr{right, j2}
+	b2.Preds = []*Block{b0}
+	b2.Succs = []*Block{join}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Args: []*Value{left.Value(), right.Value()}, Block: join}
+	live := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 7, Block: join}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{live.Value()}, Block: join}
+	join.Instrs = []*Instr{phi, live, ret}
+	join.Preds = []*Block{b1, b2}
+
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0, b1, b2, join}
+
+	result, err := DCEPass(fn)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+	for _, block := range result.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.ID {
+			case phi.ID, left.ID, right.ID:
+				t.Fatalf("dead phi chain kept %s v%d\nIR:\n%s", instr.Op, instr.ID, Print(result))
+			}
+		}
 	}
 }
 
