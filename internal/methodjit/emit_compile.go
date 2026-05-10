@@ -448,10 +448,6 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 	if ec.nextCallCacheIndex > 0 {
 		callCache = make([]uint64, tier2CallCacheStrideWords*ec.nextCallCacheIndex)
 	}
-	var blockCounters []uint64
-	if len(ec.tier2BlockCounterMeta) > 0 {
-		blockCounters = make([]uint64, len(ec.tier2BlockCounterMeta))
-	}
 
 	return &CompiledFunction{
 		Code:                     cb,
@@ -487,7 +483,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		ExitSites:                exitSites,
 		Continuations:            continuations,
 		ExitResumeCheck:          ec.exitResumeCheck,
-		Tier2BlockCounters:       blockCounters,
+		Tier2BlockCounters:       ec.tier2BlockCounters,
 		Tier2BlockCounterMeta:    ec.tier2BlockCounterMeta,
 	}, nil
 }
@@ -547,6 +543,9 @@ func (ec *emitContext) initTier2BlockCounters() {
 		}
 		ec.tier2BlockCounterMeta = append(ec.tier2BlockCounterMeta, meta)
 	}
+	if len(ec.tier2BlockCounterMeta) > 0 {
+		ec.tier2BlockCounters = make([]uint64, len(ec.tier2BlockCounterMeta))
+	}
 }
 
 func (ec *emitContext) emitTier2BlockCounter(block *Block) {
@@ -557,9 +556,11 @@ func (ec *emitContext) emitTier2BlockCounter(block *Block) {
 	if !ok {
 		return
 	}
-	doneLabel := ec.uniqueLabel("tier2_block_counter_done")
-	ec.asm.LDR(jit.X16, mRegCtx, execCtxOffTier2BlockCounters)
-	ec.asm.CBZ(jit.X16, doneLabel)
+	if len(ec.tier2BlockCounters) == 0 {
+		return
+	}
+	base := uintptr(unsafe.Pointer(&ec.tier2BlockCounters[0]))
+	ec.asm.LoadImm64(jit.X16, int64(base))
 	offset := idx * 8
 	if offset <= 32760 {
 		ec.asm.LDR(jit.X17, jit.X16, offset)
@@ -572,7 +573,6 @@ func (ec *emitContext) emitTier2BlockCounter(block *Block) {
 		ec.asm.ADDimm(jit.X17, jit.X17, 1)
 		ec.asm.STR(jit.X17, jit.X16, 0)
 	}
-	ec.asm.Label(doneLabel)
 }
 
 func collectNativeSetGlobals(fn *Function) map[int]bool {
@@ -994,6 +994,7 @@ type emitContext struct {
 
 	tier2BlockCounterIndex map[int]int
 	tier2BlockCounterMeta  []Tier2BlockCounterMeta
+	tier2BlockCounters     []uint64
 }
 
 // computeTailCalls (R107) scans the IR for the tail-call pattern:

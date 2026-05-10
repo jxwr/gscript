@@ -66,9 +66,6 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 	if len(cf.CallCache) > 0 {
 		ctx.Tier2CallCache = uintptr(unsafe.Pointer(&cf.CallCache[0]))
 	}
-	if len(cf.Tier2BlockCounters) > 0 {
-		ctx.Tier2BlockCounters = uintptr(unsafe.Pointer(&cf.Tier2BlockCounters[0]))
-	}
 	exitCheck := newExitResumeCheckState(cf)
 	ctx.ExitResumeCheckShadow = exitCheck.shadowPtr()
 

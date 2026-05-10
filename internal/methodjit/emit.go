@@ -159,11 +159,6 @@ type ExecContext struct {
 	// Pointer is set by executeTier2 to &CompiledFunction.CallCache[0].
 	Tier2CallCache uintptr
 
-	// Tier2BlockCounters points at CompiledFunction.Tier2BlockCounters when
-	// opt-in Tier 2 perf diagnostics are enabled. Native code increments these
-	// counters at block entry; zero disables the instrumentation.
-	Tier2BlockCounters uintptr
-
 	// ExitResumePC is the bytecode PC of a precise interpreter continuation.
 	// Tier 1 int-spec overflow and selected Tier 2 guards set it so Execute can
 	// resume at the exact guard PC instead of restarting at pc=0, which would
@@ -366,7 +361,6 @@ var (
 	execCtxOffTier2GlobalVer         = int(unsafe.Offsetof(ExecContext{}.Tier2GlobalVer))
 	execCtxOffExitResumePC           = int(unsafe.Offsetof(ExecContext{}.ExitResumePC))
 	execCtxOffTier2CallCache         = int(unsafe.Offsetof(ExecContext{}.Tier2CallCache))
-	execCtxOffTier2BlockCounters     = int(unsafe.Offsetof(ExecContext{}.Tier2BlockCounters))
 	execCtxOffDeoptInstrID           = int(unsafe.Offsetof(ExecContext{}.DeoptInstrID))
 	execCtxOffResumeNumericPass      = int(unsafe.Offsetof(ExecContext{}.ResumeNumericPass))
 	execCtxOffExitResumeCheckShadow  = int(unsafe.Offsetof(ExecContext{}.ExitResumeCheckShadow))
