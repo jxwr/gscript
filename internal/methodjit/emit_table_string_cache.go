@@ -294,6 +294,7 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.BCond(jit.CondLT, byteLoopLabel)
 
 	asm.Label(foundLabel)
+	ec.emitRememberDynamicStringScanHit(instr, jit.X9, jit.X5, jit.X6, jit.X7)
 	asm.MOVreg(jit.X11, jit.X9)
 	hit(jit.X11)
 
@@ -383,6 +384,44 @@ func (ec *emitContext) emitDynamicStringCacheOrSmallScan(instr *Instr, missLabel
 	asm.CMPimm(jit.X13, runtime.StringLookupCacheProbeLimit)
 	asm.BCond(jit.CondLT, smapLoopLabel)
 	asm.B(missLabel)
+}
+
+func (ec *emitContext) emitRememberDynamicStringScanHit(instr *Instr, fieldIdxReg, keyDataReg, keyLenReg, shapeIDReg jit.Reg) {
+	if ec == nil || instr == nil || !instr.HasSource || instr.SourcePC < 0 {
+		return
+	}
+	asm := ec.asm
+	skipLabel := ec.uniqueLabel("dyn_string_remember_skip")
+	asm.LDR(jit.X12, mRegCtx, execCtxOffBaselineTableStringKeyCache)
+	asm.CBZ(jit.X12, skipLabel)
+	entryOff := instr.SourcePC * runtime.TableStringKeyCacheWays * tableStringKeyCacheEntrySize
+	if entryOff > 0 {
+		if entryOff <= 4095 {
+			asm.ADDimm(jit.X12, jit.X12, uint16(entryOff))
+		} else {
+			asm.LoadImm64(jit.X13, int64(entryOff))
+			asm.ADDreg(jit.X12, jit.X12, jit.X13)
+		}
+	}
+
+	// Use a deterministic way rather than always clobbering way 0. The key is
+	// based on the same stable identity the probe uses: table shape plus string
+	// data pointer and length.
+	asm.EORreg(jit.X13, keyDataReg, keyLenReg)
+	asm.EORreg(jit.X13, jit.X13, shapeIDReg)
+	asm.LoadImm64(jit.X14, int64(runtime.TableStringKeyCacheWays-1))
+	asm.ANDreg(jit.X13, jit.X13, jit.X14)
+	asm.LoadImm64(jit.X14, int64(tableStringKeyCacheEntrySize))
+	asm.MUL(jit.X13, jit.X13, jit.X14)
+	asm.ADDreg(jit.X12, jit.X12, jit.X13)
+
+	asm.STR(keyDataReg, jit.X12, tableStringKeyCacheEntryKeyData)
+	asm.STR(keyLenReg, jit.X12, tableStringKeyCacheEntryKeyLen)
+	asm.STR(fieldIdxReg, jit.X12, tableStringKeyCacheEntryFieldIdx)
+	asm.STRW(shapeIDReg, jit.X12, tableStringKeyCacheEntryShapeID)
+	asm.STRW(jit.XZR, jit.X12, tableStringKeyCacheEntryAppendShapeID)
+	asm.STR(jit.XZR, jit.X12, tableStringKeyCacheEntryAppendShape)
+	asm.Label(skipLabel)
 }
 
 func dynamicStringQueryCacheUseful(instr *Instr) bool {

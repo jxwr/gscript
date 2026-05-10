@@ -1217,6 +1217,7 @@ func lookup(tbl, key) {
 	if proto == nil {
 		t.Fatal("lookup proto not found")
 	}
+	proto.TableStringKeyCache = make([]runtime.TableStringKeyCacheEntry, len(proto.Code)*runtime.TableStringKeyCacheWays)
 
 	tbl := runtime.NewTable()
 	tbl.RawSetString("region", runtime.IntValue(42))
@@ -1251,6 +1252,30 @@ func lookup(tbl, key) {
 	}
 	if getTableExits != 0 {
 		t.Fatalf("cold-feedback string lookup should use native small scan, GetTable exits=%d sites=%#v", getTableExits, tm.ExitStats().Sites)
+	}
+	getPC := -1
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) == vm.OP_GETTABLE {
+			getPC = pc
+			break
+		}
+	}
+	if getPC < 0 {
+		t.Fatal("GETTABLE pc not found")
+	}
+	cache := runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, getPC)
+	if len(cache) == 0 {
+		t.Fatalf("missing dynamic string-key cache for pc=%d", getPC)
+	}
+	found := false
+	for _, entry := range cache {
+		if entry.ShapeID == tbl.ShapeID() && entry.FieldIdx == 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("native small scan did not populate dynamic string-key cache: pc=%d shape=%d cache=%#v", getPC, tbl.ShapeID(), cache)
 	}
 }
 
