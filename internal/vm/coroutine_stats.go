@@ -16,6 +16,7 @@ type CoroutineStatsSnapshot struct {
 	YieldCalls       uint64
 	LeafFastPath     uint64
 	LeafFallbacks    uint64
+	WrappedGenerator uint64
 	GoroutineStarts  uint64
 	JITContinuations uint64
 	JITNativeResumes uint64
@@ -32,6 +33,7 @@ type coroutineStats struct {
 	yieldCalls       atomic.Uint64
 	leafFastPath     atomic.Uint64
 	leafFallbacks    atomic.Uint64
+	wrappedGenerator atomic.Uint64
 	goroutineStarts  atomic.Uint64
 	jitContinuations atomic.Uint64
 	jitNativeResumes atomic.Uint64
@@ -68,6 +70,7 @@ func (s *coroutineStats) snapshot() CoroutineStatsSnapshot {
 		YieldCalls:       s.yieldCalls.Load(),
 		LeafFastPath:     s.leafFastPath.Load(),
 		LeafFallbacks:    s.leafFallbacks.Load(),
+		WrappedGenerator: s.wrappedGenerator.Load(),
 		GoroutineStarts:  s.goroutineStarts.Load(),
 		JITContinuations: s.jitContinuations.Load(),
 		JITNativeResumes: s.jitNativeResumes.Load(),
@@ -118,6 +121,14 @@ func (vm *VM) recordCoroutineLeafFallback() {
 		return
 	}
 	vm.coroutineStats.leafFallbacks.Add(1)
+}
+
+func (vm *VM) recordCoroutineWrappedGeneratorFastPath() {
+	rt.RecordRuntimePathCoroutineFast()
+	if vm == nil || vm.coroutineStats == nil {
+		return
+	}
+	vm.coroutineStats.wrappedGenerator.Add(1)
 }
 
 func (vm *VM) recordCoroutineGoroutineStart() {

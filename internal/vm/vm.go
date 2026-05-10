@@ -2240,6 +2240,9 @@ func (vm *VM) tryFastCoroutineCall(gf *runtime.GoFunction, base, a, nArgs, c int
 		if !ok {
 			return true, fmt.Errorf("invalid wrapped coroutine")
 		}
+		if handled, err := vm.tryFastWrappedGeneratorCall(co, base, a, nArgs, c); handled {
+			return true, err
+		}
 		if co.status == VMCoroutineDead {
 			return true, fmt.Errorf("cannot resume dead coroutine")
 		}

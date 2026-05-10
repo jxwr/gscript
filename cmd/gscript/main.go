@@ -380,6 +380,7 @@ func printCoroutineStats(w *os.File, stats bytecodevm.CoroutineStatsSnapshot) {
 	fmt.Fprintf(w, "  yields: %d\n", stats.YieldCalls)
 	fmt.Fprintf(w, "  leaf fast path: %d\n", stats.LeafFastPath)
 	fmt.Fprintf(w, "  leaf fallbacks: %d\n", stats.LeafFallbacks)
+	fmt.Fprintf(w, "  wrapped generator fast path: %d\n", stats.WrappedGenerator)
 	fmt.Fprintf(w, "  goroutine starts: %d\n", stats.GoroutineStarts)
 	fmt.Fprintf(w, "  jit continuations: %d\n", stats.JITContinuations)
 	fmt.Fprintf(w, "  jit native resumes: %d\n", stats.JITNativeResumes)

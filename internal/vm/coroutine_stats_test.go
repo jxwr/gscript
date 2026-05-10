@@ -102,3 +102,35 @@ ok3, v3 := coroutine.resume(co)
 		t.Fatalf("Coroutine.Fallback = %d, want 1", snap.Coroutine.Fallback)
 	}
 }
+
+func TestVMCoroutineStatsWrappedGeneratorFastPath(t *testing.T) {
+	pathStats := runtime.EnableRuntimePathStats()
+	defer runtime.DisableRuntimePathStats()
+
+	stats := compileAndRunWithCoroutineStats(t, `
+func run(n) {
+	gen := coroutine.wrap(func() {
+		for i := 1; i <= n; i++ {
+			coroutine.yield(i * i)
+		}
+	})
+	a := gen()
+	b := gen()
+	c := gen()
+	d := gen()
+	return a + b + c
+}
+result := run(3)
+`)
+
+	if stats.WrappedGenerator != 4 {
+		t.Fatalf("WrappedGenerator = %d, want 4", stats.WrappedGenerator)
+	}
+	if stats.GoroutineStarts != 0 {
+		t.Fatalf("GoroutineStarts = %d, want 0", stats.GoroutineStarts)
+	}
+	snap := pathStats.Snapshot()
+	if snap.Coroutine.Fast < 4 {
+		t.Fatalf("Coroutine.Fast = %d, want at least 4", snap.Coroutine.Fast)
+	}
+}

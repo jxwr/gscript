@@ -69,6 +69,8 @@ type VMCoroutine struct {
 	fastJITCode        uintptr
 	fastJITCtx         uintptr
 	fastJITResumePC    int
+
+	wrappedGenerator *wrappedNumericGenerator
 }
 
 func init() {
@@ -238,6 +240,7 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 			}
 			co := NewVMCoroutine(cl)
 			co.wrapped = true
+			co.wrappedGenerator = newWrappedNumericGenerator(cl)
 			vm.recordCoroutineCreated(true)
 			dead := false
 			wrapper := &rt.GoFunction{
@@ -273,6 +276,331 @@ func (vm *VM) newCoroutineLib() *rt.Table {
 	}))
 
 	return coLib
+}
+
+type generatorInitRefKind uint8
+
+const (
+	generatorInitInvalid generatorInitRefKind = iota
+	generatorInitInt
+	generatorInitConst
+	generatorInitUpvalue
+)
+
+type generatorInitRef struct {
+	kind  generatorInitRefKind
+	intv  int64
+	index int
+}
+
+type generatorOperandKind uint8
+
+const (
+	generatorOperandInvalid generatorOperandKind = iota
+	generatorOperandCurrent
+	generatorOperandLimit
+	generatorOperandStep
+	generatorOperandConst
+)
+
+type generatorOperand struct {
+	kind  generatorOperandKind
+	index int
+}
+
+type generatorExprKind uint8
+
+const (
+	generatorExprCurrent generatorExprKind = iota
+	generatorExprAdd
+	generatorExprSub
+	generatorExprMul
+)
+
+type generatorExpr struct {
+	kind        generatorExprKind
+	left, right generatorOperand
+}
+
+type wrappedNumericGenerator struct {
+	closure *Closure
+	init    generatorInitRef
+	limit   generatorInitRef
+	step    generatorInitRef
+	expr    generatorExpr
+
+	initialized bool
+	next        int64
+	limitValue  int64
+	stepValue   int64
+}
+
+func newWrappedNumericGenerator(cl *Closure) *wrappedNumericGenerator {
+	if cl == nil || cl.Proto == nil {
+		return nil
+	}
+	proto := cl.Proto
+	if proto.NumParams != 0 || proto.IsVarArg || proto.MaxStack > 16 {
+		return nil
+	}
+	code := proto.Code
+	if len(code) < 5 || len(code) > 12 {
+		return nil
+	}
+	p := newBytecodePattern(code)
+	forprepPC := -1
+	forA := 0
+	for pc, inst := range code {
+		if DecodeOp(inst) == OP_FORPREP {
+			forprepPC = pc
+			forA = DecodeA(inst)
+			break
+		}
+	}
+	if forprepPC < 0 || forA+3 >= proto.MaxStack {
+		return nil
+	}
+	bodyPC, loopPC, ok := p.numericForLoop(forprepPC, forA)
+	if !ok || loopPC <= bodyPC || loopPC >= len(code) {
+		return nil
+	}
+	if !p.returnFixed(loopPC+1, 0, 1) {
+		return nil
+	}
+
+	refs := make([]generatorInitRef, proto.MaxStack)
+	for pc := 0; pc < forprepPC; pc++ {
+		inst := code[pc]
+		a := DecodeA(inst)
+		switch DecodeOp(inst) {
+		case OP_LOADINT:
+			if a < len(refs) {
+				refs[a] = generatorInitRef{kind: generatorInitInt, intv: int64(DecodesBx(inst))}
+			}
+		case OP_LOADK:
+			if a < len(refs) {
+				refs[a] = generatorInitRef{kind: generatorInitConst, index: DecodeBx(inst)}
+			}
+		case OP_GETUPVAL:
+			if a < len(refs) {
+				refs[a] = generatorInitRef{kind: generatorInitUpvalue, index: DecodeB(inst)}
+			}
+		case OP_MOVE:
+			src := DecodeB(inst)
+			if a < len(refs) && src >= 0 && src < len(refs) && refs[src].kind != generatorInitInvalid {
+				refs[a] = refs[src]
+			} else {
+				return nil
+			}
+		default:
+			return nil
+		}
+	}
+	if refs[forA].kind == generatorInitInvalid || refs[forA+1].kind == generatorInitInvalid || refs[forA+2].kind == generatorInitInvalid {
+		return nil
+	}
+
+	yieldPC := loopPC - 1
+	yieldInst, ok := p.op(yieldPC, OP_YIELD)
+	if !ok || DecodeB(yieldInst) != 2 || DecodeC(yieldInst) != 0 {
+		return nil
+	}
+	yieldReg := DecodeA(yieldInst) + 1
+	iterReg := forA + 3
+	expr := generatorExpr{kind: generatorExprCurrent}
+	if yieldReg != iterReg {
+		if yieldPC != bodyPC+1 {
+			return nil
+		}
+		exprInst := code[bodyPC]
+		if DecodeA(exprInst) != yieldReg {
+			return nil
+		}
+		left, ok := generatorOperandForRegOrConst(proto, DecodeB(exprInst), forA, iterReg)
+		if !ok {
+			return nil
+		}
+		right, ok := generatorOperandForRegOrConst(proto, DecodeC(exprInst), forA, iterReg)
+		if !ok {
+			return nil
+		}
+		switch DecodeOp(exprInst) {
+		case OP_ADD:
+			expr = generatorExpr{kind: generatorExprAdd, left: left, right: right}
+		case OP_SUB:
+			expr = generatorExpr{kind: generatorExprSub, left: left, right: right}
+		case OP_MUL:
+			expr = generatorExpr{kind: generatorExprMul, left: left, right: right}
+		default:
+			return nil
+		}
+	}
+	return &wrappedNumericGenerator{
+		closure: cl,
+		init:    refs[forA],
+		limit:   refs[forA+1],
+		step:    refs[forA+2],
+		expr:    expr,
+	}
+}
+
+func generatorOperandForRegOrConst(proto *FuncProto, rk, forA, iterReg int) (generatorOperand, bool) {
+	if rk >= RKBit {
+		idx := rk - RKBit
+		if idx < 0 || proto == nil || idx >= len(proto.Constants) || !proto.Constants[idx].IsInt() {
+			return generatorOperand{}, false
+		}
+		return generatorOperand{kind: generatorOperandConst, index: idx}, true
+	}
+	switch rk {
+	case forA, iterReg:
+		return generatorOperand{kind: generatorOperandCurrent}, true
+	case forA + 1:
+		return generatorOperand{kind: generatorOperandLimit}, true
+	case forA + 2:
+		return generatorOperand{kind: generatorOperandStep}, true
+	default:
+		return generatorOperand{}, false
+	}
+}
+
+func (g *wrappedNumericGenerator) initInt(ref generatorInitRef) (int64, bool) {
+	if g == nil || g.closure == nil || g.closure.Proto == nil {
+		return 0, false
+	}
+	switch ref.kind {
+	case generatorInitInt:
+		return ref.intv, true
+	case generatorInitConst:
+		if ref.index < 0 || ref.index >= len(g.closure.Proto.Constants) {
+			return 0, false
+		}
+		v := g.closure.Proto.Constants[ref.index]
+		if !v.IsInt() {
+			return 0, false
+		}
+		return v.Int(), true
+	case generatorInitUpvalue:
+		if ref.index < 0 || ref.index >= len(g.closure.Upvalues) || g.closure.Upvalues[ref.index] == nil {
+			return 0, false
+		}
+		v := g.closure.Upvalues[ref.index].Get()
+		if !v.IsInt() {
+			return 0, false
+		}
+		return v.Int(), true
+	default:
+		return 0, false
+	}
+}
+
+func (g *wrappedNumericGenerator) initialize() bool {
+	if g == nil || g.initialized {
+		return g != nil && g.initialized
+	}
+	init, ok := g.initInt(g.init)
+	if !ok {
+		return false
+	}
+	limit, ok := g.initInt(g.limit)
+	if !ok {
+		return false
+	}
+	step, ok := g.initInt(g.step)
+	if !ok || step == 0 {
+		return false
+	}
+	g.next = init
+	g.limitValue = limit
+	g.stepValue = step
+	g.initialized = true
+	return true
+}
+
+func (g *wrappedNumericGenerator) operandInt(op generatorOperand, current int64) (int64, bool) {
+	switch op.kind {
+	case generatorOperandCurrent:
+		return current, true
+	case generatorOperandLimit:
+		return g.limitValue, true
+	case generatorOperandStep:
+		return g.stepValue, true
+	case generatorOperandConst:
+		if g == nil || g.closure == nil || g.closure.Proto == nil || op.index < 0 || op.index >= len(g.closure.Proto.Constants) {
+			return 0, false
+		}
+		v := g.closure.Proto.Constants[op.index]
+		if !v.IsInt() {
+			return 0, false
+		}
+		return v.Int(), true
+	default:
+		return 0, false
+	}
+}
+
+func (g *wrappedNumericGenerator) valueFor(current int64) (rt.Value, bool) {
+	switch g.expr.kind {
+	case generatorExprCurrent:
+		return rt.IntValue(current), true
+	case generatorExprAdd, generatorExprSub, generatorExprMul:
+		left, ok := g.operandInt(g.expr.left, current)
+		if !ok {
+			return rt.NilValue(), false
+		}
+		right, ok := g.operandInt(g.expr.right, current)
+		if !ok {
+			return rt.NilValue(), false
+		}
+		switch g.expr.kind {
+		case generatorExprAdd:
+			return rt.IntValue(left + right), true
+		case generatorExprSub:
+			return rt.IntValue(left - right), true
+		case generatorExprMul:
+			return rt.IntValue(left * right), true
+		}
+	}
+	return rt.NilValue(), false
+}
+
+func (vm *VM) tryFastWrappedGeneratorCall(co *VMCoroutine, base, a, nArgs, c int) (bool, error) {
+	if vm == nil || co == nil || co.wrappedGenerator == nil || nArgs != 0 {
+		return false, nil
+	}
+	if co.status == VMCoroutineDead {
+		vm.recordCoroutineResume()
+		vm.recordCoroutineResumeError()
+		return true, fmt.Errorf("cannot resume dead coroutine")
+	}
+	if co.status == VMCoroutineRunning {
+		vm.recordCoroutineResume()
+		vm.recordCoroutineResumeError()
+		return true, fmt.Errorf("cannot resume running coroutine")
+	}
+	gen := co.wrappedGenerator
+	if !gen.initialize() {
+		return false, nil
+	}
+	vm.recordCoroutineResume()
+	vm.recordCoroutineWrappedGeneratorFastPath()
+	co.started = true
+	current := gen.next
+	if (gen.stepValue > 0 && current > gen.limitValue) || (gen.stepValue < 0 && current < gen.limitValue) {
+		co.status = VMCoroutineDead
+		vm.recordCoroutineCompleted()
+		vm.writeSingleCallResult(base+a, c, rt.NilValue())
+		return true, nil
+	}
+	value, ok := gen.valueFor(current)
+	if !ok {
+		return false, nil
+	}
+	gen.next = current + gen.stepValue
+	co.status = VMCoroutineSuspended
+	vm.recordCoroutineYield()
+	vm.writeSingleCallResult(base+a, c, value)
+	return true, nil
 }
 
 // resumeCoroutine resumes a suspended VM coroutine.

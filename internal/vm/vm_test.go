@@ -1369,6 +1369,58 @@ gen()
 	}
 }
 
+func TestVMCoroutineWrapNumericGenerator(t *testing.T) {
+	g := compileAndRun(t, `
+n := 5
+gen := coroutine.wrap(func() {
+	for i := 1; i <= n; i++ {
+		coroutine.yield(i * i)
+	}
+})
+sum := 0
+for i := 1; i <= n; i++ {
+	v := gen()
+	sum = sum + v
+}
+done := gen()
+`)
+	expectGlobalInt(t, g, "sum", 55)
+	if got := g["done"]; !got.IsNil() {
+		t.Fatalf("expected exhausted generator to return nil, got %v", got)
+	}
+}
+
+func TestVMCoroutineWrapNumericGeneratorDeadAfterNil(t *testing.T) {
+	err := compileAndRunExpectError(t, `
+gen := coroutine.wrap(func() {
+	for i := 1; i <= 1; i++ {
+		coroutine.yield(i)
+	}
+})
+gen()
+gen()
+gen()
+`)
+	if err == nil || !strings.Contains(err.Error(), "dead") {
+		t.Fatalf("expected dead coroutine error, got %v", err)
+	}
+}
+
+func TestVMCoroutineWrapNumericGeneratorFallbackWithArgs(t *testing.T) {
+	g := compileAndRun(t, `
+n := 3
+gen := coroutine.wrap(func(x) {
+	for i := 1; i <= n; i++ {
+		coroutine.yield(i + x)
+	}
+})
+a := gen(10)
+b := gen(20)
+`)
+	expectGlobalInt(t, g, "a", 11)
+	expectGlobalInt(t, g, "b", 12)
+}
+
 // Test 13: Fibonacci generator using coroutines
 func TestVMCoroutineFibonacci(t *testing.T) {
 	g := compileAndRun(t, `
