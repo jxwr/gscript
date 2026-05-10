@@ -46,6 +46,18 @@ type Tier2OptimizerModule struct {
 	RunWithContext func(*Function, *Tier2PipelineOpts, *Tier2OptimizerContext) (*Function, error)
 }
 
+type Tier2PassFunc func(*Function) (*Function, error)
+
+func tier2PassModule(name string, phase Tier2OptimizerPhase, pass Tier2PassFunc) Tier2OptimizerModule {
+	return Tier2OptimizerModule{
+		Name:  name,
+		Phase: phase,
+		Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
+			return pass(fn)
+		},
+	}
+}
+
 type Tier2OptimizerPlan struct {
 	Phases  []Tier2OptimizerPhase
 	Modules []Tier2OptimizerModule
@@ -125,20 +137,8 @@ func runTier2OptimizerModulesWithContext(fn *Function, opts *Tier2PipelineOpts, 
 
 func tier2EarlyCanonicalModules(globals map[string]*vm.FuncProto) []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "SimplifyPhis",
-			Phase: Tier2PhaseEarlyCanonical,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return SimplifyPhisPass(fn)
-			},
-		},
-		{
-			Name:  "TypeSpecialize",
-			Phase: Tier2PhaseEarlyCanonical,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TypeSpecializePass(fn)
-			},
-		},
+		tier2PassModule("SimplifyPhis", Tier2PhaseEarlyCanonical, SimplifyPhisPass),
+		tier2PassModule("TypeSpecialize", Tier2PhaseEarlyCanonical, TypeSpecializePass),
 		{
 			Name:  "Intrinsic",
 			Phase: Tier2PhaseEarlyCanonical,
@@ -160,13 +160,7 @@ func tier2EarlyCanonicalModules(globals map[string]*vm.FuncProto) []Tier2Optimiz
 				return GlobalConstSpecializationPass(opts.GlobalConstValues)(fn)
 			},
 		},
-		{
-			Name:  "TypeSpecialize (post-intrinsic)",
-			Phase: Tier2PhaseEarlyCanonical,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TypeSpecializePass(fn)
-			},
-		},
+		tier2PassModule("TypeSpecialize (post-intrinsic)", Tier2PhaseEarlyCanonical, TypeSpecializePass),
 		{
 			Name:  "FixedShapeTableFacts (pre-inline)",
 			Phase: Tier2PhaseEarlyCanonical,
@@ -213,16 +207,7 @@ func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tie
 				return out, err
 			},
 		},
-		{
-			Name:  "SimplifyPhis (post-inline)",
-			Phase: Tier2PhaseInlineCall,
-			RunWithContext: func(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
-				if ctx == nil || !ctx.InlineApplied {
-					return fn, nil
-				}
-				return SimplifyPhisPass(fn)
-			},
-		},
+		tier2PostInlinePassModule("SimplifyPhis (post-inline)", SimplifyPhisPass),
 		{
 			Name:  "Intrinsic (post-inline)",
 			Phase: Tier2PhaseInlineCall,
@@ -237,15 +222,19 @@ func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tie
 				return out, nil
 			},
 		},
-		{
-			Name:  "TypeSpecialize (post-inline)",
-			Phase: Tier2PhaseInlineCall,
-			RunWithContext: func(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
-				if ctx == nil || !ctx.InlineApplied {
-					return fn, nil
-				}
-				return TypeSpecializePass(fn)
-			},
+		tier2PostInlinePassModule("TypeSpecialize (post-inline)", TypeSpecializePass),
+	}
+}
+
+func tier2PostInlinePassModule(name string, pass Tier2PassFunc) Tier2OptimizerModule {
+	return Tier2OptimizerModule{
+		Name:  name,
+		Phase: Tier2PhaseInlineCall,
+		RunWithContext: func(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
+			if ctx == nil || !ctx.InlineApplied {
+				return fn, nil
+			}
+			return pass(fn)
 		},
 	}
 }
@@ -259,20 +248,8 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 				return AnnotateCallABIsPass(CallABIAnnotationConfig{Globals: ctxGlobals(ctx)})(fn)
 			},
 		},
-		{
-			Name:  "CallReturnProjection",
-			Phase: Tier2PhaseCallLower,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return CallReturnProjectionPass(fn)
-			},
-		},
-		{
-			Name:  "ConstProp",
-			Phase: Tier2PhaseCallLower,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return ConstPropPass(fn)
-			},
-		},
+		tier2PassModule("CallReturnProjection", Tier2PhaseCallLower, CallReturnProjectionPass),
+		tier2PassModule("ConstProp", Tier2PhaseCallLower, ConstPropPass),
 		{
 			Name:  "ProtocolConstCallFold",
 			Phase: Tier2PhaseCallLower,
@@ -292,20 +269,8 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 
 func tier2TableObjectPreparationModules(globals map[string]*vm.FuncProto) []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "TablePreallocHint",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TablePreallocHintPass(fn)
-			},
-		},
-		{
-			Name:  "TypeSpecialize (post-table-prealloc)",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TypeSpecializePass(fn)
-			},
-		},
+		tier2PassModule("TablePreallocHint", Tier2PhaseTableObjectPrep, TablePreallocHintPass),
+		tier2PassModule("TypeSpecialize (post-table-prealloc)", Tier2PhaseTableObjectPrep, TypeSpecializePass),
 		{
 			Name:  "FixedShapeTableFacts",
 			Phase: Tier2PhaseTableObjectPrep,
@@ -319,41 +284,11 @@ func tier2TableObjectPreparationModules(globals map[string]*vm.FuncProto) []Tier
 				})(fn)
 			},
 		},
-		{
-			Name:  "LoadElimination",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return LoadEliminationPass(fn)
-			},
-		},
-		{
-			Name:  "FieldLenFold",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return FieldLenFoldPass(fn)
-			},
-		},
-		{
-			Name:  "EscapeAnalysis",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return EscapeAnalysisPass(fn)
-			},
-		},
-		{
-			Name:  "FixedTableConstructorLowering",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return FixedTableConstructorLoweringPass(fn)
-			},
-		},
-		{
-			Name:  "TablePreallocHint (post-fixed-table-lowering)",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TablePreallocHintPass(fn)
-			},
-		},
+		tier2PassModule("LoadElimination", Tier2PhaseTableObjectPrep, LoadEliminationPass),
+		tier2PassModule("FieldLenFold", Tier2PhaseTableObjectPrep, FieldLenFoldPass),
+		tier2PassModule("EscapeAnalysis", Tier2PhaseTableObjectPrep, EscapeAnalysisPass),
+		tier2PassModule("FixedTableConstructorLowering", Tier2PhaseTableObjectPrep, FixedTableConstructorLoweringPass),
+		tier2PassModule("TablePreallocHint (post-fixed-table-lowering)", Tier2PhaseTableObjectPrep, TablePreallocHintPass),
 		{
 			Name:  "EscapeAnalysis (post-fixed-table-lowering)",
 			Phase: Tier2PhaseTableObjectPrep,
@@ -364,32 +299,14 @@ func tier2TableObjectPreparationModules(globals map[string]*vm.FuncProto) []Tier
 				return EscapeAnalysisPass(fn)
 			},
 		},
-		{
-			Name:  "RedundantGuardElimination",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return RedundantGuardEliminationPass(fn)
-			},
-		},
+		tier2PassModule("RedundantGuardElimination", Tier2PhaseTableObjectPrep, RedundantGuardEliminationPass),
 	}
 }
 
 func tier2PostRewriteModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "CallReturnProjection (post-rewrite)",
-			Phase: Tier2PhasePostRewrite,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return CallReturnProjectionPass(fn)
-			},
-		},
-		{
-			Name:  "DCE",
-			Phase: Tier2PhasePostRewrite,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return DCEPass(fn)
-			},
-		},
+		tier2PassModule("CallReturnProjection (post-rewrite)", Tier2PhasePostRewrite, CallReturnProjectionPass),
+		tier2PassModule("DCE", Tier2PhasePostRewrite, DCEPass),
 		{
 			Name:  "TypeSpecialize (post-escape)",
 			Phase: Tier2PhasePostRewrite,
@@ -402,302 +319,74 @@ func tier2PostRewriteModules() []Tier2OptimizerModule {
 
 func tier2NumericModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "LoopBoundRangeGuard",
-			Phase: Tier2PhaseNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return LoopBoundRangeGuardPass(fn)
-			},
-		},
-		{
-			Name:  "RangeAnalysis",
-			Phase: Tier2PhaseNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return RangeAnalysisPass(fn)
-			},
-		},
-		{
-			Name:  "OverflowBoxing",
-			Phase: Tier2PhaseNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return OverflowBoxingPass(fn)
-			},
-		},
-		{
-			Name:  "IntExactDivision",
-			Phase: Tier2PhaseNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return IntExactDivisionPass(fn)
-			},
-		},
-		{
-			Name:  "RangeAnalysis (post-IntExactDivision)",
-			Phase: Tier2PhaseNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return RangeAnalysisPass(fn)
-			},
-		},
-		{
-			Name:  "ModZeroCompare",
-			Phase: Tier2PhaseNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return ModZeroComparePass(fn)
-			},
-		},
-		{
-			Name:  "DCE (post-ModZeroCompare)",
-			Phase: Tier2PhaseNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return DCEPass(fn)
-			},
-		},
+		tier2PassModule("LoopBoundRangeGuard", Tier2PhaseNumeric, LoopBoundRangeGuardPass),
+		tier2PassModule("RangeAnalysis", Tier2PhaseNumeric, RangeAnalysisPass),
+		tier2PassModule("OverflowBoxing", Tier2PhaseNumeric, OverflowBoxingPass),
+		tier2PassModule("IntExactDivision", Tier2PhaseNumeric, IntExactDivisionPass),
+		tier2PassModule("RangeAnalysis (post-IntExactDivision)", Tier2PhaseNumeric, RangeAnalysisPass),
+		tier2PassModule("ModZeroCompare", Tier2PhaseNumeric, ModZeroComparePass),
+		tier2PassModule("DCE (post-ModZeroCompare)", Tier2PhaseNumeric, DCEPass),
 	}
 }
 
 func tier2TableArrayNativeLoweringModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "TableArrayLower",
-			Phase: Tier2PhaseTableArrayLower,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TableArrayLowerPass(fn)
-			},
-		},
-		{
-			Name:  "TableArrayLoadTypeSpecialize",
-			Phase: Tier2PhaseTableArrayLower,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TableArrayLoadTypeSpecializePass(fn)
-			},
-		},
-		{
-			Name:  "TableArrayNestedLoad",
-			Phase: Tier2PhaseTableArrayLower,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TableArrayNestedLoadPass(fn)
-			},
-		},
+		tier2PassModule("TableArrayLower", Tier2PhaseTableArrayLower, TableArrayLowerPass),
+		tier2PassModule("TableArrayLoadTypeSpecialize", Tier2PhaseTableArrayLower, TableArrayLoadTypeSpecializePass),
+		tier2PassModule("TableArrayNestedLoad", Tier2PhaseTableArrayLower, TableArrayNestedLoadPass),
 	}
 }
 
 func tier2TableFieldNativeLoweringModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "FieldSvalsLower",
-			Phase: Tier2PhaseTableFieldLower,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return FieldSvalsLowerPass(fn)
-			},
-		},
-		{
-			Name:  "TableArrayStoreLower",
-			Phase: Tier2PhaseTableFieldLower,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TableArrayStoreLowerPass(fn)
-			},
-		},
-		{
-			Name:  "DCE (post-TableArrayStoreLower)",
-			Phase: Tier2PhaseTableFieldLower,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return DCEPass(fn)
-			},
-		},
+		tier2PassModule("FieldSvalsLower", Tier2PhaseTableFieldLower, FieldSvalsLowerPass),
+		tier2PassModule("TableArrayStoreLower", Tier2PhaseTableFieldLower, TableArrayStoreLowerPass),
+		tier2PassModule("DCE (post-TableArrayStoreLower)", Tier2PhaseTableFieldLower, DCEPass),
 	}
 }
 
 func tier2MatrixNativeLoweringModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "DenseMatrixNestedLoadLower",
-			Phase: Tier2PhaseMatrixNative,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return DenseMatrixNestedLoadLowerPass(fn)
-			},
-		},
-		{
-			Name:  "MatrixLower",
-			Phase: Tier2PhaseMatrixNative,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return MatrixLowerPass(fn)
-			},
-		},
-		{
-			Name:  "LoadElimination (post-MatrixLower)",
-			Phase: Tier2PhaseMatrixNative,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return LoadEliminationPass(fn)
-			},
-		},
-		{
-			Name:  "MatrixRowPtrFactoring",
-			Phase: Tier2PhaseMatrixNative,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return MatrixRowPtrFactoringPass(fn)
-			},
-		},
-		{
-			Name:  "MatrixUnitStride",
-			Phase: Tier2PhaseMatrixNative,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return MatrixUnitStridePass(fn)
-			},
-		},
+		tier2PassModule("DenseMatrixNestedLoadLower", Tier2PhaseMatrixNative, DenseMatrixNestedLoadLowerPass),
+		tier2PassModule("MatrixLower", Tier2PhaseMatrixNative, MatrixLowerPass),
+		tier2PassModule("LoadElimination (post-MatrixLower)", Tier2PhaseMatrixNative, LoadEliminationPass),
+		tier2PassModule("MatrixRowPtrFactoring", Tier2PhaseMatrixNative, MatrixRowPtrFactoringPass),
+		tier2PassModule("MatrixUnitStride", Tier2PhaseMatrixNative, MatrixUnitStridePass),
 	}
 }
 
 func tier2FloatNumericModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "FMAFusion",
-			Phase: Tier2PhaseFloatNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return FMAFusionPass(fn)
-			},
-		},
-		{
-			Name:  "FloatStrengthReduction",
-			Phase: Tier2PhaseFloatNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return FloatStrengthReductionPass(fn)
-			},
-		},
-		{
-			Name:  "FMAFusion (post-FloatStrengthReduction)",
-			Phase: Tier2PhaseFloatNumeric,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return FMAFusionPass(fn)
-			},
-		},
+		tier2PassModule("FMAFusion", Tier2PhaseFloatNumeric, FMAFusionPass),
+		tier2PassModule("FloatStrengthReduction", Tier2PhaseFloatNumeric, FloatStrengthReductionPass),
+		tier2PassModule("FMAFusion (post-FloatStrengthReduction)", Tier2PhaseFloatNumeric, FMAFusionPass),
 	}
 }
 
 func tier2LoopKernelModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "LICM",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return LICMPass(fn)
-			},
-		},
-		{
-			Name:  "BoolTableFillLoop",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return BoolTableFillLoopPass(fn)
-			},
-		},
-		{
-			Name:  "TableArrayStoreLoopVersion",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TableArrayStoreLoopVersionPass(fn)
-			},
-		},
-		{
-			Name:  "TableIntArrayKernel",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TableIntArrayKernelPass(fn)
-			},
-		},
-		{
-			Name:  "BoolTableCountLoop",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return BoolTableCountLoopPass(fn)
-			},
-		},
-		{
-			Name:  "FieldNumToFloatFusion (post-LICM)",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return FieldNumToFloatFusionPass(fn)
-			},
-		},
-		{
-			Name:  "LoadElimination (post-LICM)",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return LoadEliminationPass(fn)
-			},
-		},
-		{
-			Name:  "TableArraySwapFusion",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TableArraySwapFusionPass(fn)
-			},
-		},
-		{
-			Name:  "TableIntArrayKernel (post-swap-fusion)",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TableIntArrayKernelPass(fn)
-			},
-		},
-		{
-			Name:  "DCE (post-LICM LoadElim)",
-			Phase: Tier2PhaseLoopKernel,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return DCEPass(fn)
-			},
-		},
+		tier2PassModule("LICM", Tier2PhaseLoopKernel, LICMPass),
+		tier2PassModule("BoolTableFillLoop", Tier2PhaseLoopKernel, BoolTableFillLoopPass),
+		tier2PassModule("TableArrayStoreLoopVersion", Tier2PhaseLoopKernel, TableArrayStoreLoopVersionPass),
+		tier2PassModule("TableIntArrayKernel", Tier2PhaseLoopKernel, TableIntArrayKernelPass),
+		tier2PassModule("BoolTableCountLoop", Tier2PhaseLoopKernel, BoolTableCountLoopPass),
+		tier2PassModule("FieldNumToFloatFusion (post-LICM)", Tier2PhaseLoopKernel, FieldNumToFloatFusionPass),
+		tier2PassModule("LoadElimination (post-LICM)", Tier2PhaseLoopKernel, LoadEliminationPass),
+		tier2PassModule("TableArraySwapFusion", Tier2PhaseLoopKernel, TableArraySwapFusionPass),
+		tier2PassModule("TableIntArrayKernel (post-swap-fusion)", Tier2PhaseLoopKernel, TableIntArrayKernelPass),
+		tier2PassModule("DCE (post-LICM LoadElim)", Tier2PhaseLoopKernel, DCEPass),
 	}
 }
 
 func tier2LoopPostModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
-		{
-			Name:  "UnrollAndJam",
-			Phase: Tier2PhaseLoopPost,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return UnrollAndJamPass(fn)
-			},
-		},
-		{
-			Name:  "QuadraticStepStrengthReduction",
-			Phase: Tier2PhaseLoopPost,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return QuadraticStepStrengthReductionPass(fn)
-			},
-		},
-		{
-			Name:  "RangeAnalysis (post-UnrollAndJam)",
-			Phase: Tier2PhaseLoopPost,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return RangeAnalysisPass(fn)
-			},
-		},
-		{
-			Name:  "DCE (post-UnrollAndJam)",
-			Phase: Tier2PhaseLoopPost,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return DCEPass(fn)
-			},
-		},
-		{
-			Name:  "LoopRegionVersioning",
-			Phase: Tier2PhaseLoopPost,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return LoopRegionVersioningPass(fn)
-			},
-		},
-		{
-			Name:  "ScalarPromotion",
-			Phase: Tier2PhaseLoopPost,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return ScalarPromotionPass(fn)
-			},
-		},
-		{
-			Name:  "TableArrayDataPtrFact",
-			Phase: Tier2PhaseLoopPost,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return TableArrayDataPtrFactPass(fn)
-			},
-		},
+		tier2PassModule("UnrollAndJam", Tier2PhaseLoopPost, UnrollAndJamPass),
+		tier2PassModule("QuadraticStepStrengthReduction", Tier2PhaseLoopPost, QuadraticStepStrengthReductionPass),
+		tier2PassModule("RangeAnalysis (post-UnrollAndJam)", Tier2PhaseLoopPost, RangeAnalysisPass),
+		tier2PassModule("DCE (post-UnrollAndJam)", Tier2PhaseLoopPost, DCEPass),
+		tier2PassModule("LoopRegionVersioning", Tier2PhaseLoopPost, LoopRegionVersioningPass),
+		tier2PassModule("ScalarPromotion", Tier2PhaseLoopPost, ScalarPromotionPass),
+		tier2PassModule("TableArrayDataPtrFact", Tier2PhaseLoopPost, TableArrayDataPtrFactPass),
 	}
 }
 
@@ -710,13 +399,7 @@ func tier2FinalCallModules(protocolGlobals map[string]*vm.FuncProto) []Tier2Opti
 				return WholeCallKernelExitPass(protocolGlobals)(fn)
 			},
 		},
-		{
-			Name:  "CallReturnProjection (final)",
-			Phase: Tier2PhaseFinalCall,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				return CallReturnProjectionPass(fn)
-			},
-		},
+		tier2PassModule("CallReturnProjection (final)", Tier2PhaseFinalCall, CallReturnProjectionPass),
 	}
 }
 
