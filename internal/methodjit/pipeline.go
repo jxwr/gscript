@@ -351,35 +351,6 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		fn.Remarks = opts.Remarks
 	}
 
-	fn, err = SimplifyPhisPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("SimplifyPhis: %w", err)
-	}
-
-	fn, err = TypeSpecializePass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TypeSpecialize: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, intrinsicNotes := IntrinsicPass(fn)
-	attachRemarks(fn, opts)
-
-	if opts != nil && len(opts.GlobalConstValues) > 0 {
-		fn, err = GlobalConstSpecializationPass(opts.GlobalConstValues)(fn)
-		if err != nil {
-			return nil, nil, fmt.Errorf("GlobalConstSpecialization: %w", err)
-		}
-		attachRemarks(fn, opts)
-	}
-
-	fn, err = TypeSpecializePass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TypeSpecialize (post-intrinsic): %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	// Inline pass: build config from opts.
 	maxSize := 40
 	var globals map[string]*vm.FuncProto
 	if opts != nil {
@@ -388,165 +359,44 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 			maxSize = opts.InlineMaxSize
 		}
 	}
-
-	// Expose guarded shape facts before Inline/CallABI so dynamic field
-	// callees such as obj.method can consume mature shape->proto feedback.
-	fn, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
-		Globals:               globals,
-		ArgFacts:              optsFixedShapeArgFacts(opts),
-		ArrayElementArgFacts:  optsFixedShapeArrayElementArgFacts(opts),
-		ArrayElementPolyFacts: optsFixedShapeArrayElementPolyFacts(opts),
-		EntryGuardedArgs:      optsFixedShapeEntryGuards(opts),
-	})(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("FixedShapeTableFacts (pre-inline): %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	if len(globals) > 0 || hasInlineFeedbackCallee(fn) {
-		// R73: MaxRecursion 2 → 3. Deeper recursive inlining for fib/
-		// ackermann call trees. Each level ~doubles the inlined body size,
-		// so depth=3 means callee body expanded ~8x at the inline site.
-		// Combined with R72's inlineMaxCalleeSize=250, fib(15 ops) can
-		// unroll to ~120 ops inside main, eliminating BLR chains. Ack has
-		// same pattern. hasCallInLoop gate still protects against explosion.
-		// R169 (Session 4 / Path I): inline heuristic overhaul. Replaces
-		// uniform MaxRecursion=5 (which under-inlines symmetric trees
-		// like fib and over-inlines asymmetric ones like ack) with
-		// V8-style cumulative-bytecode budget + raised per-callee depth.
-		//
-		// MaxRecursion=8 lets fib's symmetric tree inline 8 levels deep
-		// (vs 5 previously) for additional body fusion.
-		// MaxCumulativeSize=120 caps the total inlined bytecode per
-		// compilation, preventing ack's asymmetric tree (2 nested calls
-		// per level) from blowing up.
-		//
-		// 5-sample bench medians (R169 vs R163):
-		//   fib              0.827s vs 0.866s  -5%   ✓
-		//   ackermann        0.393s vs 0.416s  -6%   ✓
-		//   binary_trees     1.495s vs 1.448s  +3%   minor regression
-		//   others           flat (within noise)
-		config := InlineConfig{
-			Globals:           globals,
-			MaxSize:           maxSize,
-			MaxRecursion:      8,
-			MaxCumulativeSize: 120,
-			PreserveSelfCalls: staticallyCallsOnlySelf(fn.Proto),
-		}
-		fn, err = InlinePassWith(config)(fn)
-		if err != nil {
-			return nil, nil, fmt.Errorf("Inline: %w", err)
-		}
-		attachRemarks(fn, opts)
-		fn, err = SimplifyPhisPass(fn)
-		if err != nil {
-			return nil, nil, fmt.Errorf("SimplifyPhis (post-inline): %w", err)
-		}
-		attachRemarks(fn, opts)
-		var postInlineNotes []string
-		fn, postInlineNotes = IntrinsicPass(fn)
-		if len(postInlineNotes) > 0 {
-			intrinsicNotes = append(intrinsicNotes, postInlineNotes...)
-		}
-		attachRemarks(fn, opts)
-		fn, err = TypeSpecializePass(fn)
-		if err != nil {
-			return nil, nil, fmt.Errorf("TypeSpecialize (post-inline): %w", err)
-		}
-		attachRemarks(fn, opts)
-	} else if countOpHelper(fn, OpCall) > 0 {
-		functionRemarks(fn).Add("Inline", "missed", 0, 0, OpCall,
-			"inline pass skipped because no inline globals were available")
-	}
-
-	fn, err = AnnotateCallABIsPass(CallABIAnnotationConfig{Globals: globals})(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("CallABI: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = CallReturnProjectionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("CallReturnProjection: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = ConstPropPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("ConstProp: %w", err)
-	}
-
 	protocolGlobals := globals
 	if opts != nil && len(opts.ProtocolGlobals) > 0 {
 		protocolGlobals = opts.ProtocolGlobals
 	}
-	fn, err = ProtocolConstCallFoldPass(protocolGlobals)(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("ProtocolConstCallFold: %w", err)
-	}
-	attachRemarks(fn, opts)
 
-	fn, err = WholeCallKernelExitPass(protocolGlobals)(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("WholeCallKernelExit: %w", err)
+	ctx := &Tier2OptimizerContext{
+		Globals:         globals,
+		ProtocolGlobals: protocolGlobals,
 	}
-	attachRemarks(fn, opts)
+
+	fn, err = runEarlyCanonicalOptimizations(fn, opts, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	fn, err = runInlineCallOptimizations(fn, opts, ctx, maxSize)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	fn, err = runCallLoweringOptimizations(fn, opts, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	fn, err = runTableObjectPreparation(fn, opts, globals)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	fn, err = CallReturnProjectionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("CallReturnProjection (post-rewrite): %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = DCEPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("DCE: %w", err)
-	}
-
-	fn, err = runPostRewriteTypeSpecialize(fn, opts, "post-escape")
+	fn, err = runPostRewriteOptimizations(fn, opts)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	fn, err = LoopBoundRangeGuardPass(fn)
+	fn, err = runNumericOptimizations(fn, opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("LoopBoundRangeGuard: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = RangeAnalysisPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("RangeAnalysis: %w", err)
-	}
-
-	fn, err = OverflowBoxingPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("OverflowBoxing: %w", err)
-	}
-
-	fn, err = IntExactDivisionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("IntExactDivision: %w", err)
-	}
-
-	fn, err = RangeAnalysisPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("RangeAnalysis (post-IntExactDivision): %w", err)
-	}
-
-	fn, err = ModZeroComparePass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("ModZeroCompare: %w", err)
-	}
-
-	fn, err = DCEPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("DCE (post-ModZeroCompare): %w", err)
+		return nil, nil, err
 	}
 
 	fn, err = runTableArrayNativeLowering(fn, opts)
@@ -554,193 +404,37 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, err
 	}
 
-	fn, err = DenseMatrixNestedLoadLowerPass(fn)
+	fn, err = runMatrixNativeLowering(fn, opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("DenseMatrixNestedLoadLower: %w", err)
+		return nil, nil, err
 	}
-	attachRemarks(fn, opts)
-
-	// R45: lower OpMatrixGetF/SetF into OpMatrixFlat + OpMatrixStride +
-	// OpMatrixLoadFAt/StoreFAt so LICM can hoist the Flat/Stride ops
-	// out of inner loops where m is invariant.
-	fn, err = MatrixLowerPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("MatrixLower: %w", err)
-	}
-
-	// R53: re-run LoadElimination to CSE the MatrixFlat/MatrixStride ops
-	// that MatrixLowerPass just introduced (many per-call-site duplicates
-	// on the same matrix; the first LoadElim pass above ran before these
-	// existed).
-	fn, err = LoadEliminationPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("LoadElimination (post-MatrixLower): %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = MatrixRowPtrFactoringPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("MatrixRowPtrFactoring: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = MatrixUnitStridePass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("MatrixUnitStride: %w", err)
-	}
-	attachRemarks(fn, opts)
 
 	fn, err = runTableFieldNativeLowering(fn, opts)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	fn, err = DCEPass(fn)
+	fn, err = runFloatNumericOptimizations(fn, opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("DCE (post-TableArrayStoreLower): %w", err)
+		return nil, nil, err
 	}
 
-	// R47: fuse OpAddFloat(x, OpMulFloat(y,z)) → OpFMA(y,z,x) so the
-	// emitter produces a single FMADDd instead of FMUL + FADD.
-	fn, err = FMAFusionPass(fn)
+	fn, err = runLoopKernelOptimizations(fn, opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("FMAFusion: %w", err)
+		return nil, nil, err
 	}
 
-	fn, err = FloatStrengthReductionPass(fn)
+	fn, err = runLoopPostOptimizations(fn, opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("FloatStrengthReduction: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	// FloatStrengthReduction can expose fresh MulFloat+AddFloat pairs from
-	// exact divisions by powers of two. Run FMA fusion again so those late
-	// multiply-adds are not left as separate FP instructions.
-	fn, err = FMAFusionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("FMAFusion (post-FloatStrengthReduction): %w", err)
+		return nil, nil, err
 	}
 
-	fn, err = LICMPass(fn)
+	fn, err = runFinalCallOptimizations(fn, opts, protocolGlobals)
 	if err != nil {
-		return nil, nil, fmt.Errorf("LICM: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = BoolTableFillLoopPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("BoolTableFillLoop: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = TableArrayStoreLoopVersionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TableArrayStoreLoopVersion: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = TableIntArrayKernelPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TableIntArrayKernel: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = BoolTableCountLoopPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("BoolTableCountLoop: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = FieldNumToFloatFusionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("FieldNumToFloatFusion (post-LICM): %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	// LICM can co-locate equivalent facts that originated in different loop
-	// blocks. Re-run block-local CSE now that those facts share a preheader,
-	// then sweep dead duplicates before register allocation.
-	fn, err = LoadEliminationPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("LoadElimination (post-LICM): %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = TableArraySwapFusionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TableArraySwapFusion: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = TableIntArrayKernelPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TableIntArrayKernel (post-swap-fusion): %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = DCEPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("DCE (post-LICM LoadElim): %w", err)
+		return nil, nil, err
 	}
 
-	// 2-way unroll for narrow float reductions. Run after LICM and
-	// post-LICM cleanup so loop-invariant table/matrix facts have already left
-	// the body; this keeps the clone small and side-effect-free.
-	fn, err = UnrollAndJamPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("UnrollAndJam: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = QuadraticStepStrengthReductionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("QuadraticStepStrengthReduction: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	// UnrollAndJam clones loop-counter arithmetic after the main range pass.
-	// Re-run range analysis so cloned induction updates inherit int48 safety
-	// and codegen can skip redundant overflow checks in unrolled loops.
-	fn, err = RangeAnalysisPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("RangeAnalysis (post-UnrollAndJam): %w", err)
-	}
-
-	fn, err = DCEPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("DCE (post-UnrollAndJam): %w", err)
-	}
-
-	fn, err = LoopRegionVersioningPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("LoopRegionVersioning: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = ScalarPromotionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("ScalarPromotion: %w", err)
-	}
-
-	fn, err = TableArrayDataPtrFactPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TableArrayDataPtrFact: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = WholeCallKernelExitPass(protocolGlobals)(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("WholeCallKernelExit (final): %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = CallReturnProjectionPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("CallReturnProjection (final): %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	return fn, intrinsicNotes, nil
+	return fn, ctx.IntrinsicNotes, nil
 }
 
 func optsFixedShapeArgFacts(opts *Tier2PipelineOpts) map[int]FixedShapeTableFact {
@@ -798,69 +492,35 @@ func attachRemarks(fn *Function, opts *Tier2PipelineOpts) {
 // TieringManager.CompileForDiagnostics for production-parity diagnostics.
 func NewTier2Pipeline() *Pipeline {
 	pipe := NewPipeline()
-	pipe.Add("SimplifyPhis", SimplifyPhisPass)
-	pipe.Add("TypeSpecialize", TypeSpecializePass)
-	pipe.Add("Intrinsic", func(fn *Function) (*Function, error) {
-		result, _ := IntrinsicPass(fn)
-		return result, nil
-	})
-	pipe.Add("GlobalConstSpecialization", GlobalConstSpecializationPass(nil))
-	pipe.Add("TypeSpecialize2", TypeSpecializePass)
-	pipe.Add("Inline", InlinePassWith(InlineConfig{MaxSize: 40, MaxRecursion: 2}))
-	pipe.Add("SimplifyPhis2", SimplifyPhisPass)
-	pipe.Add("TypeSpecialize3", TypeSpecializePass)
-	pipe.Add("CallABI", AnnotateCallABIsPass(CallABIAnnotationConfig{}))
-	pipe.Add("ConstProp", ConstPropPass)
-	pipe.Add("ProtocolConstCallFold", ProtocolConstCallFoldPass(nil))
-	pipe.Add("WholeCallKernelExit", WholeCallKernelExitPass(nil))
-	pipe.Add("TablePreallocHint", TablePreallocHintPass)
-	pipe.Add("TypeSpecializePostTablePrealloc", TypeSpecializePass)
-	pipe.Add("FixedShapeTableFacts", FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{}))
-	pipe.Add("LoadElimination", LoadEliminationPass)
-	pipe.Add("EscapeAnalysis", EscapeAnalysisPass)
-	pipe.Add("FixedTableConstructorLowering", FixedTableConstructorLoweringPass)
-	pipe.Add("RedundantGuardElimination", RedundantGuardEliminationPass)
-	pipe.Add("DCE", DCEPass)
-	pipe.Add("TypeSpecializePostEscape", func(fn *Function) (*Function, error) {
-		return runPostRewriteTypeSpecialize(fn, nil, "post-escape")
-	})
-	pipe.Add("LoopBoundRangeGuard", LoopBoundRangeGuardPass)
-	pipe.Add("RangeAnalysis", RangeAnalysisPass)
-	pipe.Add("OverflowBoxing", OverflowBoxingPass)
-	pipe.Add("IntExactDivision", IntExactDivisionPass)
-	pipe.Add("RangeAnalysisPostIntExact", RangeAnalysisPass)
-	pipe.Add("ModZeroCompare", ModZeroComparePass)
-	pipe.Add("DCEPostModZeroCompare", DCEPass)
-	pipe.Add("TableArrayLower", TableArrayLowerPass)
-	pipe.Add("TableArrayLoadTypeSpecialize", TableArrayLoadTypeSpecializePass)
-	pipe.Add("TableArrayNestedLoad", TableArrayNestedLoadPass)
-	pipe.Add("DenseMatrixNestedLoadLower", DenseMatrixNestedLoadLowerPass)
-	pipe.Add("MatrixLower", MatrixLowerPass)
-	pipe.Add("LoadEliminationPostMatrixLower", LoadEliminationPass)
-	pipe.Add("MatrixRowPtrFactoring", MatrixRowPtrFactoringPass)
-	pipe.Add("MatrixUnitStride", MatrixUnitStridePass)
-	pipe.Add("TableArrayStoreLower", TableArrayStoreLowerPass)
-	pipe.Add("DCEPostMatrixLower", DCEPass)
-	pipe.Add("FMAFusion", FMAFusionPass)
-	pipe.Add("FloatStrengthReduction", FloatStrengthReductionPass)
-	pipe.Add("FMAFusionPostFloatStrengthReduction", FMAFusionPass)
-	pipe.Add("LICM", LICMPass)
-	pipe.Add("BoolTableFillLoop", BoolTableFillLoopPass)
-	pipe.Add("TableArrayStoreLoopVersion", TableArrayStoreLoopVersionPass)
-	pipe.Add("TableIntArrayKernel", TableIntArrayKernelPass)
-	pipe.Add("BoolTableCountLoop", BoolTableCountLoopPass)
-	pipe.Add("FieldNumToFloatFusion", FieldNumToFloatFusionPass)
-	pipe.Add("LoadEliminationPostLICM", LoadEliminationPass)
-	pipe.Add("TableArraySwapFusion", TableArraySwapFusionPass)
-	pipe.Add("TableIntArrayKernelPostSwapFusion", TableIntArrayKernelPass)
-	pipe.Add("DCEPostLICM", DCEPass)
-	pipe.Add("UnrollAndJam", UnrollAndJamPass)
-	pipe.Add("QuadraticStepStrengthReduction", QuadraticStepStrengthReductionPass)
-	pipe.Add("RangeAnalysisPostUnrollAndJam", RangeAnalysisPass)
-	pipe.Add("DCEPostUnrollAndJam", DCEPass)
-	pipe.Add("LoopRegionVersioning", LoopRegionVersioningPass)
-	pipe.Add("ScalarPromotion", ScalarPromotionPass)
-	pipe.Add("TableArrayDataPtrFact", TableArrayDataPtrFactPass)
-	pipe.Add("WholeCallKernelExitFinal", WholeCallKernelExitPass(nil))
+	ctx := &Tier2OptimizerContext{}
+	addTier2OptimizerModulesToPipelineWithContext(pipe, tier2EarlyCanonicalModules(nil), ctx)
+	addTier2OptimizerModulesToPipelineWithContext(pipe, tier2InlineCallModules(nil, 40), ctx)
+	addTier2OptimizerModulesToPipelineWithContext(pipe, tier2CallLoweringModules(nil), ctx)
+	addTier2OptimizerModulesToPipeline(pipe, tier2TableObjectPreparationModules(nil))
+	addTier2OptimizerModulesToPipeline(pipe, tier2PostRewriteModules())
+	addTier2OptimizerModulesToPipeline(pipe, tier2NumericModules())
+	addTier2OptimizerModulesToPipeline(pipe, tier2TableArrayNativeLoweringModules())
+	addTier2OptimizerModulesToPipeline(pipe, tier2MatrixNativeLoweringModules())
+	addTier2OptimizerModulesToPipeline(pipe, tier2TableFieldNativeLoweringModules())
+	addTier2OptimizerModulesToPipeline(pipe, tier2FloatNumericModules())
+	addTier2OptimizerModulesToPipeline(pipe, tier2LoopKernelModules())
+	addTier2OptimizerModulesToPipeline(pipe, tier2LoopPostModules())
+	addTier2OptimizerModulesToPipeline(pipe, tier2FinalCallModules(nil))
 	return pipe
+}
+
+func addTier2OptimizerModulesToPipeline(pipe *Pipeline, modules []Tier2OptimizerModule) {
+	addTier2OptimizerModulesToPipelineWithContext(pipe, modules, nil)
+}
+
+func addTier2OptimizerModulesToPipelineWithContext(pipe *Pipeline, modules []Tier2OptimizerModule, ctx *Tier2OptimizerContext) {
+	for _, module := range modules {
+		module := module
+		pipe.Add(module.Name, func(fn *Function) (*Function, error) {
+			if module.RunWithContext != nil {
+				return module.RunWithContext(fn, nil, ctx)
+			}
+			return module.Run(fn, nil)
+		})
+	}
 }

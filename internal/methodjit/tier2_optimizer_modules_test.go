@@ -2,15 +2,28 @@ package methodjit
 
 import "testing"
 
+func assertTier2ModuleOrder(t *testing.T, mods []Tier2OptimizerModule, phase Tier2OptimizerPhase, want []string) {
+	t.Helper()
+	if len(mods) != len(want) {
+		t.Fatalf("%s module count=%d want %d: %v", phase, len(mods), len(want), tier2ModuleNames(mods))
+	}
+	for i, wantName := range want {
+		if mods[i].Phase != phase || mods[i].Name != wantName {
+			t.Fatalf("module[%d]=%s/%s want %s/%s; all=%v", i, mods[i].Phase, mods[i].Name, phase, wantName, tier2ModuleNames(mods))
+		}
+	}
+}
+
+func tier2ModuleNames(mods []Tier2OptimizerModule) []string {
+	names := make([]string, 0, len(mods))
+	for _, mod := range mods {
+		names = append(names, mod.Name)
+	}
+	return names
+}
+
 func TestTier2TableObjectPreparationModuleOrder(t *testing.T) {
 	mods := tier2TableObjectPreparationModules(nil)
-	got := make([]string, 0, len(mods))
-	for _, mod := range mods {
-		if mod.Phase != Tier2PhaseTableObjectPrep {
-			t.Fatalf("module %s phase=%s want %s", mod.Name, mod.Phase, Tier2PhaseTableObjectPrep)
-		}
-		got = append(got, mod.Name)
-	}
 	want := []string{
 		"TablePreallocHint",
 		"TypeSpecialize (post-table-prealloc)",
@@ -23,36 +36,114 @@ func TestTier2TableObjectPreparationModuleOrder(t *testing.T) {
 		"EscapeAnalysis (post-fixed-table-lowering)",
 		"RedundantGuardElimination",
 	}
-	if len(got) != len(want) {
-		t.Fatalf("module count=%d want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("module[%d]=%q want %q; all=%v", i, got[i], want[i], got)
-		}
-	}
+	assertTier2ModuleOrder(t, mods, Tier2PhaseTableObjectPrep, want)
+}
+
+func TestTier2EarlyCanonicalModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2EarlyCanonicalModules(nil), Tier2PhaseEarlyCanonical, []string{
+		"SimplifyPhis",
+		"TypeSpecialize",
+		"Intrinsic",
+		"GlobalConstSpecialization",
+		"TypeSpecialize (post-intrinsic)",
+		"FixedShapeTableFacts (pre-inline)",
+	})
+}
+
+func TestTier2InlineCallModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2InlineCallModules(nil, 40), Tier2PhaseInlineCall, []string{
+		"Inline",
+		"SimplifyPhis (post-inline)",
+		"Intrinsic (post-inline)",
+		"TypeSpecialize (post-inline)",
+	})
+}
+
+func TestTier2CallLoweringModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2CallLoweringModules(nil), Tier2PhaseCallLower, []string{
+		"CallABI",
+		"CallReturnProjection",
+		"ConstProp",
+		"ProtocolConstCallFold",
+		"WholeCallKernelExit",
+	})
+}
+
+func TestTier2PostRewriteModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2PostRewriteModules(), Tier2PhasePostRewrite, []string{
+		"CallReturnProjection (post-rewrite)",
+		"DCE",
+		"TypeSpecialize (post-escape)",
+	})
+}
+
+func TestTier2NumericModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2NumericModules(), Tier2PhaseNumeric, []string{
+		"LoopBoundRangeGuard",
+		"RangeAnalysis",
+		"OverflowBoxing",
+		"IntExactDivision",
+		"RangeAnalysis (post-IntExactDivision)",
+		"ModZeroCompare",
+		"DCE (post-ModZeroCompare)",
+	})
 }
 
 func TestTier2TableNativeLoweringModuleOrder(t *testing.T) {
-	arrayMods := tier2TableArrayNativeLoweringModules()
-	wantArray := []string{"TableArrayLower", "TableArrayLoadTypeSpecialize", "TableArrayNestedLoad"}
-	if len(arrayMods) != len(wantArray) {
-		t.Fatalf("array module count=%d want %d", len(arrayMods), len(wantArray))
-	}
-	for i, want := range wantArray {
-		if arrayMods[i].Phase != Tier2PhaseTableArrayLower || arrayMods[i].Name != want {
-			t.Fatalf("array module[%d]=%s/%s want %s/%s", i, arrayMods[i].Phase, arrayMods[i].Name, Tier2PhaseTableArrayLower, want)
-		}
-	}
+	assertTier2ModuleOrder(t, tier2TableArrayNativeLoweringModules(), Tier2PhaseTableArrayLower,
+		[]string{"TableArrayLower", "TableArrayLoadTypeSpecialize", "TableArrayNestedLoad"})
+	assertTier2ModuleOrder(t, tier2TableFieldNativeLoweringModules(), Tier2PhaseTableFieldLower,
+		[]string{"FieldSvalsLower", "TableArrayStoreLower", "DCE (post-TableArrayStoreLower)"})
+}
 
-	fieldMods := tier2TableFieldNativeLoweringModules()
-	wantField := []string{"FieldSvalsLower", "TableArrayStoreLower"}
-	if len(fieldMods) != len(wantField) {
-		t.Fatalf("field module count=%d want %d", len(fieldMods), len(wantField))
-	}
-	for i, want := range wantField {
-		if fieldMods[i].Phase != Tier2PhaseTableFieldLower || fieldMods[i].Name != want {
-			t.Fatalf("field module[%d]=%s/%s want %s/%s", i, fieldMods[i].Phase, fieldMods[i].Name, Tier2PhaseTableFieldLower, want)
-		}
-	}
+func TestTier2MatrixNativeLoweringModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2MatrixNativeLoweringModules(), Tier2PhaseMatrixNative, []string{
+		"DenseMatrixNestedLoadLower",
+		"MatrixLower",
+		"LoadElimination (post-MatrixLower)",
+		"MatrixRowPtrFactoring",
+		"MatrixUnitStride",
+	})
+}
+
+func TestTier2FloatNumericModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2FloatNumericModules(), Tier2PhaseFloatNumeric, []string{
+		"FMAFusion",
+		"FloatStrengthReduction",
+		"FMAFusion (post-FloatStrengthReduction)",
+	})
+}
+
+func TestTier2LoopKernelModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2LoopKernelModules(), Tier2PhaseLoopKernel, []string{
+		"LICM",
+		"BoolTableFillLoop",
+		"TableArrayStoreLoopVersion",
+		"TableIntArrayKernel",
+		"BoolTableCountLoop",
+		"FieldNumToFloatFusion (post-LICM)",
+		"LoadElimination (post-LICM)",
+		"TableArraySwapFusion",
+		"TableIntArrayKernel (post-swap-fusion)",
+		"DCE (post-LICM LoadElim)",
+	})
+}
+
+func TestTier2LoopPostModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2LoopPostModules(), Tier2PhaseLoopPost, []string{
+		"UnrollAndJam",
+		"QuadraticStepStrengthReduction",
+		"RangeAnalysis (post-UnrollAndJam)",
+		"DCE (post-UnrollAndJam)",
+		"LoopRegionVersioning",
+		"ScalarPromotion",
+		"TableArrayDataPtrFact",
+	})
+}
+
+func TestTier2FinalCallModuleOrder(t *testing.T) {
+	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
+		"WholeCallKernelExit (final)",
+		"CallReturnProjection (final)",
+	})
 }
