@@ -32,6 +32,7 @@ type Tier2OptimizerContext struct {
 	ProtocolGlobals map[string]*vm.FuncProto
 	IntrinsicNotes  []string
 	InlineApplied   bool
+	InlineMaxSize   int
 }
 
 // Tier2OptimizerModule is the smallest pluggable optimization unit. Modules
@@ -43,6 +44,61 @@ type Tier2OptimizerModule struct {
 	Phase          Tier2OptimizerPhase
 	Run            func(*Function, *Tier2PipelineOpts) (*Function, error)
 	RunWithContext func(*Function, *Tier2PipelineOpts, *Tier2OptimizerContext) (*Function, error)
+}
+
+type Tier2OptimizerPlan struct {
+	Phases  []Tier2OptimizerPhase
+	Modules []Tier2OptimizerModule
+}
+
+func newTier2OptimizerPlan(ctx *Tier2OptimizerContext) Tier2OptimizerPlan {
+	return Tier2OptimizerPlan{
+		Phases: []Tier2OptimizerPhase{
+			Tier2PhaseEarlyCanonical,
+			Tier2PhaseInlineCall,
+			Tier2PhaseCallLower,
+			Tier2PhaseTableObjectPrep,
+			Tier2PhasePostRewrite,
+			Tier2PhaseNumeric,
+			Tier2PhaseTableArrayLower,
+			Tier2PhaseMatrixNative,
+			Tier2PhaseTableFieldLower,
+			Tier2PhaseFloatNumeric,
+			Tier2PhaseLoopKernel,
+			Tier2PhaseLoopPost,
+			Tier2PhaseFinalCall,
+		},
+		Modules: tier2OptimizerModules(ctx),
+	}
+}
+
+func tier2OptimizerModules(ctx *Tier2OptimizerContext) []Tier2OptimizerModule {
+	modules := make([]Tier2OptimizerModule, 0, 64)
+	modules = append(modules, tier2EarlyCanonicalModules(ctxGlobals(ctx))...)
+	modules = append(modules, tier2InlineCallModules(ctxGlobals(ctx), ctxInlineMaxSize(ctx))...)
+	modules = append(modules, tier2CallLoweringModules(ctxProtocolGlobals(ctx))...)
+	modules = append(modules, tier2TableObjectPreparationModules(ctxGlobals(ctx))...)
+	modules = append(modules, tier2PostRewriteModules()...)
+	modules = append(modules, tier2NumericModules()...)
+	modules = append(modules, tier2TableArrayNativeLoweringModules()...)
+	modules = append(modules, tier2MatrixNativeLoweringModules()...)
+	modules = append(modules, tier2TableFieldNativeLoweringModules()...)
+	modules = append(modules, tier2FloatNumericModules()...)
+	modules = append(modules, tier2LoopKernelModules()...)
+	modules = append(modules, tier2LoopPostModules()...)
+	modules = append(modules, tier2FinalCallModules(ctxProtocolGlobals(ctx))...)
+	return modules
+}
+
+func runTier2OptimizerPlan(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext, plan Tier2OptimizerPlan) (*Function, error) {
+	var err error
+	for _, phase := range plan.Phases {
+		fn, err = runTier2OptimizerModulesWithContext(fn, opts, ctx, phase, plan.Modules)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return fn, nil
 }
 
 func runTier2OptimizerModules(fn *Function, opts *Tier2PipelineOpts, phase Tier2OptimizerPhase, modules []Tier2OptimizerModule) (*Function, error) {
@@ -732,4 +788,11 @@ func ctxProtocolGlobals(ctx *Tier2OptimizerContext) map[string]*vm.FuncProto {
 		return nil
 	}
 	return ctx.ProtocolGlobals
+}
+
+func ctxInlineMaxSize(ctx *Tier2OptimizerContext) int {
+	if ctx == nil || ctx.InlineMaxSize <= 0 {
+		return 40
+	}
+	return ctx.InlineMaxSize
 }

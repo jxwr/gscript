@@ -39,6 +39,33 @@ func TestTier2TableObjectPreparationModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, mods, Tier2PhaseTableObjectPrep, want)
 }
 
+func TestTier2OptimizerPlanPhaseOrder(t *testing.T) {
+	plan := newTier2OptimizerPlan(&Tier2OptimizerContext{InlineMaxSize: 40})
+	want := []Tier2OptimizerPhase{
+		Tier2PhaseEarlyCanonical,
+		Tier2PhaseInlineCall,
+		Tier2PhaseCallLower,
+		Tier2PhaseTableObjectPrep,
+		Tier2PhasePostRewrite,
+		Tier2PhaseNumeric,
+		Tier2PhaseTableArrayLower,
+		Tier2PhaseMatrixNative,
+		Tier2PhaseTableFieldLower,
+		Tier2PhaseFloatNumeric,
+		Tier2PhaseLoopKernel,
+		Tier2PhaseLoopPost,
+		Tier2PhaseFinalCall,
+	}
+	if len(plan.Phases) != len(want) {
+		t.Fatalf("phase count=%d want %d: %v", len(plan.Phases), len(want), plan.Phases)
+	}
+	for i, phase := range want {
+		if plan.Phases[i] != phase {
+			t.Fatalf("phase[%d]=%s want %s; all=%v", i, plan.Phases[i], phase, plan.Phases)
+		}
+	}
+}
+
 func TestTier2EarlyCanonicalModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2EarlyCanonicalModules(nil), Tier2PhaseEarlyCanonical, []string{
 		"SimplifyPhis",

@@ -367,69 +367,10 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	ctx := &Tier2OptimizerContext{
 		Globals:         globals,
 		ProtocolGlobals: protocolGlobals,
+		InlineMaxSize:   maxSize,
 	}
 
-	fn, err = runEarlyCanonicalOptimizations(fn, opts, ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runInlineCallOptimizations(fn, opts, ctx, maxSize)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runCallLoweringOptimizations(fn, opts, ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runTableObjectPreparation(fn, opts, globals)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runPostRewriteOptimizations(fn, opts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runNumericOptimizations(fn, opts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runTableArrayNativeLowering(fn, opts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runMatrixNativeLowering(fn, opts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runTableFieldNativeLowering(fn, opts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runFloatNumericOptimizations(fn, opts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runLoopKernelOptimizations(fn, opts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runLoopPostOptimizations(fn, opts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fn, err = runFinalCallOptimizations(fn, opts, protocolGlobals)
+	fn, err = runTier2OptimizerPlan(fn, opts, ctx, newTier2OptimizerPlan(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -492,35 +433,24 @@ func attachRemarks(fn *Function, opts *Tier2PipelineOpts) {
 // TieringManager.CompileForDiagnostics for production-parity diagnostics.
 func NewTier2Pipeline() *Pipeline {
 	pipe := NewPipeline()
-	ctx := &Tier2OptimizerContext{}
-	addTier2OptimizerModulesToPipelineWithContext(pipe, tier2EarlyCanonicalModules(nil), ctx)
-	addTier2OptimizerModulesToPipelineWithContext(pipe, tier2InlineCallModules(nil, 40), ctx)
-	addTier2OptimizerModulesToPipelineWithContext(pipe, tier2CallLoweringModules(nil), ctx)
-	addTier2OptimizerModulesToPipeline(pipe, tier2TableObjectPreparationModules(nil))
-	addTier2OptimizerModulesToPipeline(pipe, tier2PostRewriteModules())
-	addTier2OptimizerModulesToPipeline(pipe, tier2NumericModules())
-	addTier2OptimizerModulesToPipeline(pipe, tier2TableArrayNativeLoweringModules())
-	addTier2OptimizerModulesToPipeline(pipe, tier2MatrixNativeLoweringModules())
-	addTier2OptimizerModulesToPipeline(pipe, tier2TableFieldNativeLoweringModules())
-	addTier2OptimizerModulesToPipeline(pipe, tier2FloatNumericModules())
-	addTier2OptimizerModulesToPipeline(pipe, tier2LoopKernelModules())
-	addTier2OptimizerModulesToPipeline(pipe, tier2LoopPostModules())
-	addTier2OptimizerModulesToPipeline(pipe, tier2FinalCallModules(nil))
+	ctx := &Tier2OptimizerContext{InlineMaxSize: 40}
+	addTier2OptimizerPlanToPipeline(pipe, newTier2OptimizerPlan(ctx), ctx)
 	return pipe
 }
 
-func addTier2OptimizerModulesToPipeline(pipe *Pipeline, modules []Tier2OptimizerModule) {
-	addTier2OptimizerModulesToPipelineWithContext(pipe, modules, nil)
-}
-
-func addTier2OptimizerModulesToPipelineWithContext(pipe *Pipeline, modules []Tier2OptimizerModule, ctx *Tier2OptimizerContext) {
-	for _, module := range modules {
-		module := module
-		pipe.Add(module.Name, func(fn *Function) (*Function, error) {
-			if module.RunWithContext != nil {
-				return module.RunWithContext(fn, nil, ctx)
+func addTier2OptimizerPlanToPipeline(pipe *Pipeline, plan Tier2OptimizerPlan, ctx *Tier2OptimizerContext) {
+	for _, phase := range plan.Phases {
+		for _, module := range plan.Modules {
+			if module.Phase != phase {
+				continue
 			}
-			return module.Run(fn, nil)
-		})
+			module := module
+			pipe.Add(module.Name, func(fn *Function) (*Function, error) {
+				if module.RunWithContext != nil {
+					return module.RunWithContext(fn, nil, ctx)
+				}
+				return module.Run(fn, nil)
+			})
+		}
 	}
 }
