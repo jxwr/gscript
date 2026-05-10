@@ -53,3 +53,19 @@ func tier2TableFieldNativeLoweringModules() []Tier2OptimizerModule {
 		tier2PassModule("DCE (post-TableArrayStoreLower)", Tier2PhaseTableFieldLower, DCEPass),
 	}
 }
+
+func tier2TableLoopKernelModules() []Tier2OptimizerModule {
+	return []Tier2OptimizerModule{
+		tier2PassModule("BoolTableFillLoop", Tier2PhaseLoopKernel, BoolTableFillLoopPass),
+		tier2PassModule("TableArrayStoreLoopVersion", Tier2PhaseLoopKernel, TableArrayStoreLoopVersionPass),
+		tier2PassModule("TableIntArrayKernel", Tier2PhaseLoopKernel, TableIntArrayKernelPass),
+		tier2PassModule("BoolTableCountLoop", Tier2PhaseLoopKernel, BoolTableCountLoopPass),
+	}
+}
+
+func tier2TableLoopPostLoadElimModules() []Tier2OptimizerModule {
+	return []Tier2OptimizerModule{
+		tier2PassModule("TableArraySwapFusion", Tier2PhaseLoopKernel, TableArraySwapFusionPass),
+		tier2PassModule("TableIntArrayKernel (post-swap-fusion)", Tier2PhaseLoopKernel, TableIntArrayKernelPass),
+	}
+}

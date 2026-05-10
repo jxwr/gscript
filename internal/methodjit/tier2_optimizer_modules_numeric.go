@@ -31,18 +31,17 @@ func tier2FloatNumericModules() []Tier2OptimizerModule {
 }
 
 func tier2LoopKernelModules() []Tier2OptimizerModule {
-	return []Tier2OptimizerModule{
+	modules := []Tier2OptimizerModule{
 		tier2PassModule("LICM", Tier2PhaseLoopKernel, LICMPass),
-		tier2PassModule("BoolTableFillLoop", Tier2PhaseLoopKernel, BoolTableFillLoopPass),
-		tier2PassModule("TableArrayStoreLoopVersion", Tier2PhaseLoopKernel, TableArrayStoreLoopVersionPass),
-		tier2PassModule("TableIntArrayKernel", Tier2PhaseLoopKernel, TableIntArrayKernelPass),
-		tier2PassModule("BoolTableCountLoop", Tier2PhaseLoopKernel, BoolTableCountLoopPass),
+	}
+	modules = append(modules, tier2TableLoopKernelModules()...)
+	modules = append(modules,
 		tier2PassModule("FieldNumToFloatFusion (post-LICM)", Tier2PhaseLoopKernel, FieldNumToFloatFusionPass),
 		tier2PassModule("LoadElimination (post-LICM)", Tier2PhaseLoopKernel, LoadEliminationPass),
-		tier2PassModule("TableArraySwapFusion", Tier2PhaseLoopKernel, TableArraySwapFusionPass),
-		tier2PassModule("TableIntArrayKernel (post-swap-fusion)", Tier2PhaseLoopKernel, TableIntArrayKernelPass),
-		tier2PassModule("DCE (post-LICM LoadElim)", Tier2PhaseLoopKernel, DCEPass),
-	}
+	)
+	modules = append(modules, tier2TableLoopPostLoadElimModules()...)
+	modules = append(modules, tier2PassModule("DCE (post-LICM LoadElim)", Tier2PhaseLoopKernel, DCEPass))
+	return modules
 }
 
 func tier2LoopPostModules() []Tier2OptimizerModule {
