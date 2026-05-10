@@ -805,6 +805,9 @@ func TestRangePass_ModIntFactsStayConservative(t *testing.T) {
 	if got.IntModNoSignAdjust[mixedSign.ID] {
 		t.Fatalf("mixed-sign modulo must keep Lua sign-adjust path")
 	}
+	if r := got.IntRanges[mixedSign.ID]; !r.known || r.min != 0 || r.max != 2 {
+		t.Fatalf("positive-divisor Lua modulo range=%+v, want [0,2]", r)
+	}
 	if got.IntModNonZeroDivisor[unknownDivisor.ID] {
 		t.Fatalf("unknown divisor must keep zero-divisor guard")
 	}
@@ -842,8 +845,8 @@ func TestRangePass_StaticSetListLenFeedsModuloRange(t *testing.T) {
 	if r := got.IntRanges[length.ID]; !r.known || r.min != 2 || r.max != 2 {
 		t.Fatalf("Len range=%+v, want [2,2]\nIR:\n%s", r, Print(got))
 	}
-	if r := got.IntRanges[add.ID]; !r.known || r.min != 0 || r.max != 2 {
-		t.Fatalf("mod+1 range=%+v, want [0,2]\nIR:\n%s", r, Print(got))
+	if r := got.IntRanges[add.ID]; !r.known || r.min != 1 || r.max != 2 {
+		t.Fatalf("mod+1 range=%+v, want [1,2]\nIR:\n%s", r, Print(got))
 	}
 	if !got.Int48Safe[add.ID] {
 		t.Fatalf("bounded add should be int48-safe\nIR:\n%s", Print(got))

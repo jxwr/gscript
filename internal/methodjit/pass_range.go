@@ -219,12 +219,26 @@ func negRange(a intRange) intRange {
 	return intRange{min: satNeg(a.max), max: satNeg(a.min), known: true}
 }
 
-func modRange(b intRange) intRange {
-	// a % b has |result| < |b|. If b is unbounded or straddles zero we can
-	// still derive a conservative bound from the larger |b| extreme, provided
-	// at least one bound is finite.
+func modRange(a, b intRange) intRange {
+	// Lua modulo has the divisor's sign. Positive divisors therefore produce a
+	// non-negative result even when the dividend is negative. This range fact is
+	// safe for downstream arithmetic; the emitter still uses IntModNoSignAdjust
+	// to decide whether the native modulo operation may skip the sign-adjust
+	// path for the original dividend.
 	if !b.known {
 		return topRange()
+	}
+	if b.min > 0 {
+		return intRange{min: 0, max: satSub(b.max, 1), known: true}
+	}
+	if b.max < 0 {
+		return intRange{min: satAdd(b.min, 1), max: 0, known: true}
+	}
+	if a.known && a.min >= 0 && b.max > 0 {
+		return intRange{min: 0, max: satSub(b.max, 1), known: true}
+	}
+	if a.known && a.max <= 0 && b.min < 0 {
+		return intRange{min: satAdd(b.min, 1), max: 0, known: true}
 	}
 	bound := int64(0)
 	absMin := b.min
@@ -405,7 +419,7 @@ func computeRange(instr *Instr, ranges map[int]intRange, staticLens, profiledRan
 		if len(instr.Args) < 2 {
 			return topRange()
 		}
-		return modRange(argRange(instr.Args[1], ranges))
+		return modRange(argRange(instr.Args[0], ranges), argRange(instr.Args[1], ranges))
 
 	case OpDivIntExact:
 		if len(instr.Args) < 2 {
@@ -746,7 +760,7 @@ func computeRangeInEnv(instr *Instr, env, baseRanges map[int]intRange) intRange 
 		if len(instr.Args) < 2 {
 			return topRange()
 		}
-		return modRange(argRangeInEnv(instr.Args[1], env, baseRanges))
+		return modRange(argRangeInEnv(instr.Args[0], env, baseRanges), argRangeInEnv(instr.Args[1], env, baseRanges))
 	case OpDivIntExact:
 		if len(instr.Args) < 2 {
 			return topRange()
