@@ -65,11 +65,12 @@ func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tie
 					return fn, nil
 				}
 				config := InlineConfig{
-					Globals:           globals,
-					MaxSize:           maxSize,
-					MaxRecursion:      8,
-					MaxCumulativeSize: 120,
-					PreserveSelfCalls: staticallyCallsOnlySelf(fn.Proto),
+					Globals:                  globals,
+					MaxSize:                  maxSize,
+					MaxRecursion:             8,
+					MaxCumulativeSize:        120,
+					MaxHotLoopCumulativeSize: 600,
+					PreserveSelfCalls:        staticallyCallsOnlySelf(fn.Proto),
 				}
 				out, err := InlinePassWith(config)(fn)
 				if ctx != nil {

@@ -49,12 +49,13 @@ func countOpHelper(fn *Function, op Op) int {
 
 // InlineConfig configures the function inlining pass.
 type InlineConfig struct {
-	Globals            map[string]*vm.FuncProto // global function name -> proto
-	MaxSize            int                      // max callee bytecode count (default 30)
-	MaxRecursion       int                      // max inlining depth for self/mutually-recursive callees (0 = no recursive inlining)
-	MaxCumulativeSize  int                      // R166: V8-style cumulative-bytecode cap across all inlines in this compilation (0 = unbounded, preserves R73 behavior)
-	PreserveSelfCalls  bool                     // keep direct self calls visible for specialized recursive ABIs/TCO
-	RequirePureNumeric bool                     // only inline side-effect-free single-result numeric helpers
+	Globals                  map[string]*vm.FuncProto // global function name -> proto
+	MaxSize                  int                      // max callee bytecode count (default 30)
+	MaxRecursion             int                      // max inlining depth for self/mutually-recursive callees (0 = no recursive inlining)
+	MaxCumulativeSize        int                      // R166: V8-style cumulative-bytecode cap across all inlines in this compilation (0 = unbounded, preserves R73 behavior)
+	MaxHotLoopCumulativeSize int                      // larger cap for native-effect-safe callees inside hot caller loops
+	PreserveSelfCalls        bool                     // keep direct self calls visible for specialized recursive ABIs/TCO
+	RequirePureNumeric       bool                     // only inline side-effect-free single-result numeric helpers
 }
 
 // inlineMaxIterations is the safety cap on recursive inlining iterations.
@@ -249,16 +250,6 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 			continue
 		}
 
-		// R166: check cumulative-bytecode budget (V8 alignment).
-		// Prevents asymmetric call trees from exploding caller body
-		// when MaxRecursion permits deeper inlining.
-		if config.MaxCumulativeSize > 0 &&
-			cumulative.totalBytes+len(calleeProto.Code) > config.MaxCumulativeSize {
-			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
-				fmt.Sprintf("cumulative inline bytecode budget reached before %s", calleeName))
-			continue
-		}
-
 		// Build the callee's IR.
 		calleeFn := BuildGraph(calleeProto)
 		if hasFieldShapeCase {
@@ -276,19 +267,56 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		// loop-bearing callees inside caller loops are still too broad, but
 		// small pure numeric helpers are profitable and do not introduce aliasing
 		// or side-effect replay hazards across the new nested loop.
-		if computeLoopInfo(calleeFn).hasLoops() && computeLoopInfo(fn).loopBlocks[block.ID] {
+		callerLoopBlock := computeLoopInfo(fn).loopBlocks[block.ID]
+		hotLoopInlineAdmitted := false
+		if computeLoopInfo(calleeFn).hasLoops() && callerLoopBlock {
 			if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
-				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
-					fmt.Sprintf("callee %s has loops inside caller loop and is not pure numeric: %s", calleeName, reason))
-				continue
+				loweredFn, notes := IntrinsicPass(calleeFn)
+				if len(notes) > 0 {
+					calleeFn = loweredFn
+					if typed, err := TypeSpecializePass(calleeFn); err == nil {
+						calleeFn = typed
+					}
+					if dced, err := DCEPass(calleeFn); err == nil {
+						calleeFn = dced
+					}
+				}
+				if nativeReason := nativeEffectLoopInlineRejectReason(calleeFn); nativeReason != "" {
+					functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+						fmt.Sprintf("callee %s has loops inside caller loop and is not pure numeric: %s", calleeName, reason))
+					functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+						fmt.Sprintf("callee %s rejected by native-effect loop inline policy: %s", calleeName, nativeReason))
+					continue
+				}
+				functionRemarks(fn).Add("Inline", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("admitted native-effect loop callee %s inside caller loop", calleeName))
+				hotLoopInlineAdmitted = true
+			} else {
+				functionRemarks(fn).Add("Inline", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("admitted pure numeric loop callee %s inside caller loop", calleeName))
+				hotLoopInlineAdmitted = true
 			}
 			if callABICalleeHasShiftAddOverflowVersion(calleeProto, nil) {
 				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
 					fmt.Sprintf("callee %s has overflow-versioned numeric recurrence inside caller loop", calleeName))
 				continue
 			}
-			functionRemarks(fn).Add("Inline", "changed", block.ID, instr.ID, instr.Op,
-				fmt.Sprintf("admitted pure numeric loop callee %s inside caller loop", calleeName))
+		}
+
+		// R166: check cumulative-bytecode budget (V8 alignment).
+		// Prevents asymmetric call trees from exploding caller body when
+		// MaxRecursion permits deeper inlining. Native-effect loop callees use
+		// a separate budget only after the callee has passed the stricter loop
+		// safety policy above.
+		cumulativeLimit := config.MaxCumulativeSize
+		if hotLoopInlineAdmitted && config.MaxHotLoopCumulativeSize > cumulativeLimit {
+			cumulativeLimit = config.MaxHotLoopCumulativeSize
+		}
+		if cumulativeLimit > 0 &&
+			cumulative.totalBytes+len(calleeProto.Code) > cumulativeLimit {
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("cumulative inline bytecode budget reached before %s", calleeName))
+			continue
 		}
 
 		// Check if the callee is single-block (trivial inline).
@@ -576,6 +604,53 @@ func pureNumericInlineOp(op Op) bool {
 		OpGuardType, OpGuardIntRange, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto,
 		OpJump, OpBranch,
 		OpPhi:
+		return true
+	default:
+		return false
+	}
+}
+
+func nativeEffectLoopInlineRejectReason(calleeFn *Function) string {
+	if calleeFn == nil || calleeFn.Proto == nil {
+		return "missing callee IR"
+	}
+	if calleeFn.Unpromotable {
+		return "callee uses unmodeled bytecode"
+	}
+	if calleeFn.Proto.IsVarArg {
+		return "vararg callee"
+	}
+	if len(calleeFn.Proto.Upvalues) > 0 {
+		return "callee captures upvalues"
+	}
+	for _, block := range calleeFn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			if nativeEffectLoopInlineOp(instr.Op) {
+				continue
+			}
+			if instr.Op == OpReturn && len(instr.Args) <= 1 {
+				continue
+			}
+			return fmt.Sprintf("unsupported op %s", instr.Op)
+		}
+	}
+	return ""
+}
+
+func nativeEffectLoopInlineOp(op Op) bool {
+	if pureNumericInlineOp(op) {
+		return true
+	}
+	switch op {
+	case OpGetGlobal, OpGuardGlobalConst,
+		OpMatrixGetF, OpMatrixSetF,
+		OpMatrixFlat, OpMatrixStride,
+		OpMatrixLoadFAt, OpMatrixStoreFAt,
+		OpMatrixRowPtr, OpMatrixLoadFRow, OpMatrixStoreFRow,
+		OpMatrixLoadFRowConst, OpMatrixStoreFRowConst:
 		return true
 	default:
 		return false

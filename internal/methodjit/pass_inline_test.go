@@ -621,6 +621,43 @@ func sum_gcd(n) {
 	assertValuesEqual(t, "sum_gcd(40)", irResults[0], vmResults[0])
 }
 
+func TestInline_NativeEffectMatrixLoopCalleeInsideCallerLoop(t *testing.T) {
+	src := `
+func step(m, dt) {
+	for i := 0; i < 4; i++ {
+		x := matrix.getf(m, i, 0)
+		v := matrix.getf(m, i, 1)
+		matrix.setf(m, i, 0, x + dt * v)
+	}
+}
+func driver(m, n) {
+	for k := 1; k <= n; k++ {
+		step(m, 0.01)
+	}
+}
+`
+	fn, config := buildInlineTestIR(t, src, "driver")
+	config.MaxSize = 80
+	config.MaxCumulativeSize = 40
+	config.MaxHotLoopCumulativeSize = 200
+
+	result, err := InlinePassWith(config)(fn)
+	if err != nil {
+		t.Fatalf("InlinePass error: %v", err)
+	}
+	if n := countOp(result, OpCall); n != 0 {
+		t.Fatalf("expected native matrix-effect loop callee to inline inside caller loop, got %d calls\nIR:\n%s", n, Print(result))
+	}
+	if n := countOp(result, OpMatrixGetF) + countOp(result, OpMatrixSetF); n == 0 {
+		t.Fatalf("expected inlined matrix intrinsics in caller loop\nIR:\n%s", Print(result))
+	}
+	if errs := Validate(result); len(errs) > 0 {
+		for _, e := range errs {
+			t.Errorf("validation error: %v", e)
+		}
+	}
+}
+
 func TestInline_LoopCalleeInsideCallerLoopRejectsImpureNumeric(t *testing.T) {
 	src := `
 func sum_table(t, n) {
