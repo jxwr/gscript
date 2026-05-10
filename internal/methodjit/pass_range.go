@@ -306,8 +306,10 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	seedLoopRanges(fn, ranges)
 	seedGuardedForwardInductionRanges(fn, ranges)
 
-	// Phase B: fixed-point propagation (RPO, capped at 5 passes).
-	const maxIter = 5
+	// Phase B: fixed-point propagation. Nested loop-carried values can need
+	// several trips through the block list before modulo-bounded recurrences
+	// become visible at outer phis.
+	const maxIter = 16
 	for iter := 0; iter < maxIter; iter++ {
 		changed := false
 		for _, block := range fn.Blocks {
@@ -545,7 +547,107 @@ func collectIntNonNegativeFacts(fn *Function, ranges map[int]intRange) map[int]b
 			}
 		}
 	}
+	candidates := make(map[int]*Instr)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || !instr.Type.isIntegerLike() || facts[instr.ID] {
+				continue
+			}
+			if opCanDeriveNonNegative(instr) {
+				candidates[instr.ID] = instr
+				facts[instr.ID] = true
+			}
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for id, instr := range candidates {
+			if !facts[id] {
+				continue
+			}
+			if !instrDerivesNonNegative(instr, facts, ranges) {
+				delete(facts, id)
+				changed = true
+			}
+		}
+	}
 	return facts
+}
+
+func opCanDeriveNonNegative(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpConstInt, OpLen, OpTableArrayLen, OpGuardIntRange,
+		OpAddInt, OpMulInt, OpModInt, OpPhi, OpBoxInt, OpUnboxInt:
+		return true
+	default:
+		return false
+	}
+}
+
+func instrDerivesNonNegative(instr *Instr, facts map[int]bool, ranges map[int]intRange) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpConstInt:
+		return instr.Aux >= 0
+	case OpLen, OpTableArrayLen:
+		return true
+	case OpGuardIntRange:
+		return instr.Aux >= 0
+	case OpAddInt, OpMulInt:
+		return len(instr.Args) >= 2 &&
+			valueNonNegative(instr.Args[0], facts, ranges) &&
+			valueNonNegative(instr.Args[1], facts, ranges)
+	case OpModInt:
+		return len(instr.Args) >= 2 && valueStrictlyPositive(instr.Args[1], ranges)
+	case OpPhi:
+		if len(instr.Args) == 0 {
+			return false
+		}
+		for _, arg := range instr.Args {
+			if !valueNonNegative(arg, facts, ranges) {
+				return false
+			}
+		}
+		return true
+	case OpBoxInt, OpUnboxInt:
+		return len(instr.Args) >= 1 && valueNonNegative(instr.Args[0], facts, ranges)
+	default:
+		return false
+	}
+}
+
+func valueNonNegative(v *Value, facts map[int]bool, ranges map[int]intRange) bool {
+	if v == nil {
+		return false
+	}
+	if c, ok := constIntFromValue(v); ok {
+		return c >= 0
+	}
+	if facts[v.ID] {
+		return true
+	}
+	if r, ok := ranges[v.ID]; ok && r.nonNegative() {
+		return true
+	}
+	return false
+}
+
+func valueStrictlyPositive(v *Value, ranges map[int]intRange) bool {
+	if v == nil {
+		return false
+	}
+	if c, ok := constIntFromValue(v); ok {
+		return c > 0
+	}
+	if r, ok := ranges[v.ID]; ok && r.known && r.min > 0 {
+		return true
+	}
+	return false
 }
 
 func populateIntModFacts(fn *Function, baseRanges map[int]intRange) {

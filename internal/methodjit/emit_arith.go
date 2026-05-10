@@ -207,6 +207,9 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 			ec.storeRawInt(dst, instr.ID)
 			return
 		}
+		if ec.emitConstPositiveModSingleSubtract(instr, dst) {
+			return
+		}
 	}
 
 	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
@@ -252,6 +255,38 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 
 	// Mark as raw int in register (no box needed until block boundary/return).
 	ec.storeRawInt(dst, instr.ID)
+}
+
+func (ec *emitContext) emitConstPositiveModSingleSubtract(instr *Instr, dst jit.Reg) bool {
+	if instr == nil || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil {
+		return false
+	}
+	divisor, ok := constIntFromValue(instr.Args[1])
+	if !ok || divisor <= 0 {
+		return false
+	}
+	if divisor > MaxInt48 {
+		return false
+	}
+	if ec.fn == nil || ec.fn.IntRanges == nil {
+		return false
+	}
+	lhsRange, ok := ec.fn.IntRanges[instr.Args[0].ID]
+	if !ok || !lhsRange.known || lhsRange.min < 0 || lhsRange.max >= divisor*2 {
+		return false
+	}
+	lhs := ec.resolveRawInt(instr.Args[0].ID, dst)
+	if lhs != dst {
+		ec.asm.MOVreg(dst, lhs)
+	}
+	doneLabel := ec.uniqueLabel("mod_const_sub_done")
+	ec.asm.LoadImm64(jit.X2, divisor)
+	ec.asm.CMPreg(dst, jit.X2)
+	ec.asm.BCond(jit.CondLT, doneLabel)
+	ec.asm.SUBreg(dst, dst, jit.X2)
+	ec.asm.Label(doneLabel)
+	ec.storeRawInt(dst, instr.ID)
+	return true
 }
 
 func (ec *emitContext) emitRawIntExactDiv(instr *Instr) {

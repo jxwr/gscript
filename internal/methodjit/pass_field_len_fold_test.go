@@ -135,6 +135,53 @@ func TestProfiledStringLenFold_FoldsAfterFieldLowering(t *testing.T) {
 	}
 }
 
+func TestProfiledStringLenFold_ReplacesLenOfPhi(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "profiled_len_phi"},
+		NumRegs: 1,
+		ProfiledLenRanges: map[int]intRange{
+			10: pointRange(4),
+			11: pointRange(5),
+		},
+	}
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	left := &Block{ID: 1, defs: make(map[int]*Value)}
+	right := &Block{ID: 2, defs: make(map[int]*Value)}
+	join := &Block{ID: 3, defs: make(map[int]*Value)}
+	entry.Succs = []*Block{left, right}
+	left.Preds = []*Block{entry}
+	right.Preds = []*Block{entry}
+	left.Succs = []*Block{join}
+	right.Succs = []*Block{join}
+	join.Preds = []*Block{left, right}
+
+	j0 := &Instr{ID: fn.newValueID(), Op: OpJump, Block: entry}
+	s0 := &Instr{ID: 10, Op: OpLoadSlot, Type: TypeString, Aux: 0, Block: left}
+	j1 := &Instr{ID: fn.newValueID(), Op: OpJump, Block: left}
+	s1 := &Instr{ID: 11, Op: OpLoadSlot, Type: TypeString, Aux: 1, Block: right}
+	j2 := &Instr{ID: fn.newValueID(), Op: OpJump, Block: right}
+	phi := &Instr{ID: 12, Op: OpPhi, Type: TypeString, Args: []*Value{s0.Value(), s1.Value()}, Block: join}
+	ln := &Instr{ID: 13, Op: OpLen, Type: TypeInt, Args: []*Value{phi.Value()}, Block: join}
+	ret := &Instr{ID: 14, Op: OpReturn, Args: []*Value{ln.Value()}, Block: join}
+	entry.Instrs = []*Instr{j0}
+	left.Instrs = []*Instr{s0, j1}
+	right.Instrs = []*Instr{s1, j2}
+	join.Instrs = []*Instr{phi, ln, ret}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, left, right, join}
+
+	out, err := ProfiledStringLenFoldPass(fn)
+	if err != nil {
+		t.Fatalf("ProfiledStringLenFoldPass: %v", err)
+	}
+	if ln.Op != OpNop {
+		t.Fatalf("len should be removed:\n%s", Print(out))
+	}
+	if len(ret.Args) != 1 || ret.Args[0].Def == nil || ret.Args[0].Def.Op != OpPhi || ret.Args[0].Def.Type != TypeInt {
+		t.Fatalf("return should use int length phi:\n%s", Print(out))
+	}
+}
+
 func TestFieldLenFold_StepIOPipeline(t *testing.T) {
 	src := `func step_io(a, tick) {
     a.queue = (a.queue + tick + a.id) % 211

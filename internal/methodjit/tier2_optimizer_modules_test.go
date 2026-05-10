@@ -150,7 +150,7 @@ func TestTier2TableNativeLoweringModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2TableArrayNativeLoweringModules(), Tier2PhaseTableArrayLower,
 		[]string{"TableArrayLower", "TableArrayLoadTypeSpecialize", "TableArrayNestedLoad"})
 	assertTier2ModuleOrder(t, tier2TableFieldNativeLoweringModules(), Tier2PhaseTableFieldLower,
-		[]string{"FieldSvalsLower", "ProfiledStringLenFold", "TableArrayStoreLower", "DCE (post-TableArrayStoreLower)"})
+		[]string{"FieldSvalsLower", "ProfiledStringLenFold", "RangeAnalysis (post-TableFieldLower)", "TableArrayStoreLower", "DCE (post-TableArrayStoreLower)"})
 	assertTier2ModuleOrder(t, tier2TableLoopKernelModules(), Tier2PhaseLoopKernel,
 		[]string{"BoolTableFillLoop", "TableArrayStoreLoopVersion", "TableIntArrayKernel", "BoolTableCountLoop"})
 	assertTier2ModuleOrder(t, tier2TableLoopPostLoadElimModules(), Tier2PhaseLoopKernel,

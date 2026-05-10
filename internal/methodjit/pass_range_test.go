@@ -359,6 +359,43 @@ func f(n) {
 	}
 }
 
+func TestRangePass_IntNonNegativeModuloRecurrence(t *testing.T) {
+	fn := runRangeAnalysisForSource(t, `
+func f(n) {
+    i := 0
+    acc := 0
+    for i < n {
+        acc = (acc + i + 7) % 1000000007
+        i = i + 1
+    }
+    return acc
+}
+`)
+
+	foundMod := false
+	foundPhi := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.Op {
+			case OpModInt:
+				foundMod = true
+				if !fn.IntNonNegative[instr.ID] {
+					t.Fatalf("modulo recurrence result should be non-negative\nIR:\n%s\nfacts=%v",
+						Print(fn), fn.IntNonNegative)
+				}
+			case OpPhi:
+				if instr.Type.isIntegerLike() && fn.IntNonNegative[instr.ID] {
+					foundPhi = true
+				}
+			}
+		}
+	}
+	if !foundMod || !foundPhi {
+		t.Fatalf("expected non-negative modulo recurrence facts (mod=%v phi=%v)\nIR:\n%s\nfacts=%v",
+			foundMod, foundPhi, Print(fn), fn.IntNonNegative)
+	}
+}
+
 func runRangeAnalysisForSource(t *testing.T, src string) *Function {
 	t.Helper()
 	proto := compile(t, src)

@@ -16,6 +16,9 @@ func FieldLenFoldPass(fn *Function) (*Function, error) {
 			if foldProfiledExactLen(fn, block, instr) {
 				continue
 			}
+			if foldPhiStringLen(fn, block, instr) {
+				continue
+			}
 			get := unwrapFieldLenInput(instr.Args[0]).Def
 			if get.Op != OpGetField || len(get.Args) < 1 || get.Args[0] == nil {
 				continue
@@ -65,7 +68,10 @@ func ProfiledStringLenFoldPass(fn *Function) (*Function, error) {
 			if instr == nil || instr.Op != OpLen || len(instr.Args) < 1 || instr.Args[0] == nil {
 				continue
 			}
-			foldProfiledExactLen(fn, block, instr)
+			if foldProfiledExactLen(fn, block, instr) {
+				continue
+			}
+			foldPhiStringLen(fn, block, instr)
 		}
 	}
 	return fn, nil
@@ -86,6 +92,50 @@ func foldProfiledExactLen(fn *Function, block *Block, lenInstr *Instr) bool {
 	lenInstr.Aux2 = 0
 	functionRemarks(fn).Add("FieldLenFold", "changed", block.ID, lenInstr.ID, lenInstr.Op,
 		"folded guarded exact string length")
+	return true
+}
+
+func foldPhiStringLen(fn *Function, block *Block, lenInstr *Instr) bool {
+	if fn == nil || block == nil || lenInstr == nil || len(lenInstr.Args) == 0 || lenInstr.Args[0] == nil {
+		return false
+	}
+	phi := lenInstr.Args[0].Def
+	if phi == nil || phi.Op != OpPhi || phi.Block == nil || len(phi.Args) == 0 || len(phi.Args) != len(phi.Block.Preds) {
+		return false
+	}
+	lens := make([]int64, len(phi.Args))
+	for i, arg := range phi.Args {
+		if arg == nil {
+			return false
+		}
+		r, ok := fn.ProfiledLenRanges[arg.ID]
+		if !ok || !r.known || r.min != r.max || r.min < 0 {
+			return false
+		}
+		lens[i] = r.min
+	}
+	if allInt64Equal(lens) {
+		lenInstr.Op = OpConstInt
+		lenInstr.Type = TypeInt
+		lenInstr.Args = nil
+		lenInstr.Aux = lens[0]
+		lenInstr.Aux2 = 0
+		functionRemarks(fn).Add("FieldLenFold", "changed", block.ID, lenInstr.ID, lenInstr.Op,
+			"folded len(phi(strings)) from guarded exact lengths")
+		return true
+	}
+	lenPhi := insertFieldLenPhi(fn, phi.Block, lens)
+	if lenPhi == nil {
+		return false
+	}
+	replaceValueUses(fn, lenInstr.ID, lenPhi.Value(), lenPhi.ID)
+	lenInstr.Op = OpNop
+	lenInstr.Type = TypeUnknown
+	lenInstr.Args = nil
+	lenInstr.Aux = 0
+	lenInstr.Aux2 = 0
+	functionRemarks(fn).Add("FieldLenFold", "changed", phi.Block.ID, lenPhi.ID, lenPhi.Op,
+		"replaced len(phi(strings)) with guarded string length phi")
 	return true
 }
 

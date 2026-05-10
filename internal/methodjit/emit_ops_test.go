@@ -235,6 +235,64 @@ func TestEmit_ModIntPositivePowerOfTwoUsesBitfield(t *testing.T) {
 	}
 }
 
+func TestEmit_ModIntConstPositiveSingleSubtract(t *testing.T) {
+	src := `func f(n) {
+		if n < 0 { return -1 }
+		if n >= 1500 { return -1 }
+		return n % 1000
+	}`
+	proto := compileFunction(t, src)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+
+	foundModInt := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpModInt {
+				continue
+			}
+			foundModInt = true
+			if fn.IntRanges == nil {
+				fn.IntRanges = make(map[int]intRange)
+			}
+			fn.IntRanges[instr.Args[0].ID] = intRange{min: 0, max: 1499, known: true}
+		}
+	}
+	if !foundModInt {
+		t.Fatalf("expected ModInt in optimized IR:\n%s", Print(fn))
+	}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, n := range []int64{42, 1200} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(n)})
+		if err != nil {
+			t.Fatalf("Execute f(%d): %v", n, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(n)})
+		if len(result) == 0 || len(vmResult) == 0 {
+			t.Fatalf("empty result: JIT=%v VM=%v", result, vmResult)
+		}
+		assertValuesEqual(t, fmt.Sprintf("f(%d)", n), result[0], vmResult[0])
+	}
+
+	code := make([]byte, cf.Code.Size())
+	copy(code, unsafeCodeSlice(cf))
+	asm := disasmARM64(code)
+	if strings.Contains(asm, "SDIV") || strings.Contains(asm, "MSUB") {
+		t.Fatalf("range-proven modulo should use compare/subtract, not divide:\n%s", asm)
+	}
+	if !strings.Contains(asm, "SUB") {
+		t.Fatalf("range-proven modulo should emit subtract path:\n%s", asm)
+	}
+}
+
 func TestEmit_ModZeroIntPowerOfTwoUsesBitTest(t *testing.T) {
 	src := `func f(n) {
 		if n % 8 == 0 { return 1 }
