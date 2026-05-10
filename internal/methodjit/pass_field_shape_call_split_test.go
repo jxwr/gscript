@@ -245,3 +245,168 @@ func step_b(actor, tick) { return tick + 2 }`)
 		t.Fatalf("fallback cases=%d want 1", got)
 	}
 }
+
+func TestFieldShapeCallSplitPreInline_AllowsExistingInlinePass(t *testing.T) {
+	top := compileTop(t, `func step_a(actor, tick) {
+    if tick > 3 {
+        return tick + 10
+    }
+    return tick + 1
+}
+func step_b(actor, tick) { return tick + 2 }`)
+	stepA := findProtoByName(top, "step_a")
+	stepB := findProtoByName(top, "step_b")
+	if stepA == nil || stepB == nil {
+		t.Fatalf("missing protos: step_a=%v step_b=%v", stepA != nil, stepB != nil)
+	}
+
+	fn := &Function{
+		Proto: &vm.FuncProto{
+			Name:      "caller",
+			NumParams: 2,
+			MaxStack:  6,
+			Constants: []runtime.Value{
+				runtime.StringValue("step"),
+			},
+		},
+		NumRegs: 2,
+		nextID:  5,
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			2: {
+				{
+					ShapeID:  101,
+					FieldIdx: 1,
+					VMProto:  stepA,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    101,
+						FieldNames: []string{"id", "step"},
+						FieldTypes: map[string]Type{"id": TypeInt, "step": TypeFunction},
+					},
+				},
+				{
+					ShapeID:  202,
+					FieldIdx: 1,
+					VMProto:  stepB,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    202,
+						FieldNames: []string{"id", "step"},
+						FieldTypes: map[string]Type{"id": TypeInt, "step": TypeFunction},
+					},
+				},
+			},
+		},
+	}
+	entry := &Block{ID: 0}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry}
+	recv := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	tick := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: entry}
+	method := &Instr{ID: 2, Op: OpGetField, Type: TypeFunction, Args: []*Value{recv.Value()}, Aux: 0, Block: entry}
+	call := &Instr{ID: 3, Op: OpCall, Type: TypeInt, Args: []*Value{method.Value(), recv.Value(), tick.Value()}, Aux: 2, Aux2: 1, Block: entry}
+	ret := &Instr{ID: 4, Op: OpReturn, Args: []*Value{call.Value()}, Block: entry}
+	entry.Instrs = []*Instr{recv, tick, method, call, ret}
+
+	out, err := FieldShapeCallSplitPreInlinePass(fn)
+	if err != nil {
+		t.Fatalf("FieldShapeCallSplitPreInlinePass: %v", err)
+	}
+	out, err = InlinePassWith(InlineConfig{MaxSize: 100, MaxCumulativeSize: 200})(out)
+	if err != nil {
+		t.Fatalf("InlinePassWith: %v", err)
+	}
+	if errs := Validate(out); len(errs) > 0 {
+		t.Fatalf("split+inline IR failed validation:\n%s\nerrs=%v", Print(out), errs)
+	}
+	text := Print(out)
+	if strings.Contains(text, "Call            v") {
+		t.Fatalf("expected split hot arm to inline at least one call:\n%s", text)
+	}
+}
+
+func TestFieldShapeCallSplitPreInline_HotArmExecutesAfterPipeline(t *testing.T) {
+	top := compileTop(t, `func step_a(actor, tick) {
+    if tick > 3 {
+        return tick + 10
+    }
+    return tick + 1
+}
+func step_b(actor, tick) { return tick + 2 }`)
+	stepA := findProtoByName(top, "step_a")
+	stepB := findProtoByName(top, "step_b")
+	if stepA == nil || stepB == nil {
+		t.Fatalf("missing protos: step_a=%v step_b=%v", stepA != nil, stepB != nil)
+	}
+	clA := vm.NewClosure(stepA)
+	actor := runtime.NewTable()
+	actor.RawSetString("id", runtime.IntValue(1))
+	actor.RawSetString("step", runtime.VMClosureFunctionValue(unsafe.Pointer(clA), clA))
+	shapeID := actor.ShapeID()
+
+	fn := &Function{
+		Proto: &vm.FuncProto{
+			Name:      "caller",
+			NumParams: 2,
+			MaxStack:  6,
+			Constants: []runtime.Value{
+				runtime.StringValue("step"),
+			},
+		},
+		NumRegs: 2,
+		nextID:  5,
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			2: {
+				{
+					ShapeID:  shapeID,
+					FieldIdx: 1,
+					VMProto:  stepA,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    shapeID,
+						FieldNames: []string{"id", "step"},
+						FieldTypes: map[string]Type{"id": TypeInt, "step": TypeFunction},
+					},
+				},
+				{
+					ShapeID:  shapeID + 1,
+					FieldIdx: 1,
+					VMProto:  stepB,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    shapeID + 1,
+						FieldNames: []string{"id", "step"},
+						FieldTypes: map[string]Type{"id": TypeInt, "step": TypeFunction},
+					},
+				},
+			},
+		},
+	}
+	entry := &Block{ID: 0}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry}
+	recv := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	tick := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: entry}
+	method := &Instr{ID: 2, Op: OpGetField, Type: TypeFunction, Args: []*Value{recv.Value()}, Aux: 0, Block: entry}
+	call := &Instr{ID: 3, Op: OpCall, Type: TypeInt, Args: []*Value{method.Value(), recv.Value(), tick.Value()}, Aux: 2, Aux2: 1, Block: entry}
+	ret := &Instr{ID: 4, Op: OpReturn, Args: []*Value{call.Value()}, Block: entry}
+	entry.Instrs = []*Instr{recv, tick, method, call, ret}
+
+	out, err := FieldShapeCallSplitPreInlinePass(fn)
+	if err != nil {
+		t.Fatalf("FieldShapeCallSplitPreInlinePass: %v", err)
+	}
+	out, _, err = RunTier2Pipeline(out, &Tier2PipelineOpts{InlineMaxSize: 100})
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline:\n%s\nerr=%v", Print(out), err)
+	}
+	alloc := AllocateRegisters(out)
+	cf, err := Compile(out, alloc)
+	if err != nil {
+		t.Fatalf("Compile:\n%s\nerr=%v", Print(out), err)
+	}
+	defer cf.Code.Free()
+	result, err := cf.Execute([]runtime.Value{runtime.TableValue(actor), runtime.IntValue(5)})
+	if err != nil {
+		t.Fatalf("Execute: %v\nIR:\n%s", err, Print(out))
+	}
+	if len(result) != 1 || !result[0].IsInt() || result[0].Int() != 15 {
+		t.Fatalf("result=%v want 15\nIR:\n%s", result, Print(out))
+	}
+}
