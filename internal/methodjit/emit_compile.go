@@ -1316,12 +1316,7 @@ func (ec *emitContext) emitTypedSelfEntry() {
 	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.X29, jit.SP, 0)
-	asm.STP(jit.X19, jit.X20, jit.SP, 16)
-	asm.STP(jit.X21, jit.X22, jit.SP, 32)
-	asm.STP(jit.X23, jit.X24, jit.SP, 48)
-	asm.STP(jit.X25, jit.X26, jit.SP, 64)
-	asm.STP(jit.X27, jit.X28, jit.SP, 80)
-	ec.emitSaveCalleeSavedFPRs()
+	ec.emitSaveTypedSelfFrameRegs()
 
 	for i, rep := range ec.typedSelfABI.Params {
 		src := jit.Reg(int(jit.X0) + i)
@@ -1367,14 +1362,14 @@ func (ec *emitContext) emitTypedSelfRawIntReturnEpilogue() {
 	ec.asm.Label("t2_typed_self_raw_int_epilogue")
 	ec.asm.MOVimm16(jit.X16, 0)
 	ec.asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
-	ec.emitFullFrameRestoreAndReturn()
+	ec.emitTypedSelfFrameRestoreAndReturn()
 }
 
 func (ec *emitContext) emitTypedSelfRawFloatReturnEpilogue() {
 	ec.asm.Label("t2_typed_self_raw_float_epilogue")
 	ec.asm.MOVimm16(jit.X16, 0)
 	ec.asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
-	ec.emitFullFrameRestoreAndReturn()
+	ec.emitTypedSelfFrameRestoreAndReturn()
 }
 
 func (ec *emitContext) emitTypedSelfReturnEpilogue() {
@@ -1411,7 +1406,70 @@ func (ec *emitContext) emitTypedSelfReturnEpilogue() {
 	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
 
 	asm.Label(doneLabel)
-	ec.emitFullFrameRestoreAndReturn()
+	ec.emitTypedSelfFrameRestoreAndReturn()
+}
+
+func (ec *emitContext) emitSaveTypedSelfFrameRegs() {
+	asm := ec.asm
+	if ec.typedSelfGPRPairUsed(19, 20) {
+		asm.STP(jit.X19, jit.X20, jit.SP, 16)
+	}
+	if ec.typedSelfGPRPairUsed(21, 22) {
+		asm.STP(jit.X21, jit.X22, jit.SP, 32)
+	}
+	if ec.typedSelfGPRPairUsed(23, 24) {
+		asm.STP(jit.X23, jit.X24, jit.SP, 48)
+	}
+	if ec.typedSelfGPRPairUsed(25, 26) {
+		asm.STP(jit.X25, jit.X26, jit.SP, 64)
+	}
+	if ec.typedSelfGPRPairUsed(27, 28) {
+		asm.STP(jit.X27, jit.X28, jit.SP, 80)
+	}
+	ec.emitSaveCalleeSavedFPRs()
+}
+
+func (ec *emitContext) emitRestoreTypedSelfFrameRegs() {
+	asm := ec.asm
+	ec.emitRestoreCalleeSavedFPRs()
+	if ec.typedSelfGPRPairUsed(27, 28) {
+		asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+	}
+	if ec.typedSelfGPRPairUsed(25, 26) {
+		asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+	}
+	if ec.typedSelfGPRPairUsed(23, 24) {
+		asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+	}
+	if ec.typedSelfGPRPairUsed(21, 22) {
+		asm.LDP(jit.X21, jit.X22, jit.SP, 32)
+	}
+	if ec.typedSelfGPRPairUsed(19, 20) {
+		asm.LDP(jit.X19, jit.X20, jit.SP, 16)
+	}
+}
+
+func (ec *emitContext) emitTypedSelfFrameRestoreAndReturn() {
+	asm := ec.asm
+	ec.emitRestoreTypedSelfFrameRegs()
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+	asm.RET()
+}
+
+func (ec *emitContext) typedSelfGPRPairUsed(a, b int) bool {
+	if ec == nil || ec.alloc == nil {
+		return true
+	}
+	for _, pr := range ec.alloc.ValueRegs {
+		if pr.IsFloat {
+			continue
+		}
+		if pr.Reg == a || pr.Reg == b {
+			return true
+		}
+	}
+	return false
 }
 
 func (ec *emitContext) emitFullFrameRestoreAndReturn() {
