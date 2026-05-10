@@ -1693,9 +1693,6 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		asm.CMPreg(jit.X9, jit.X12)
 		asm.BCond(jit.CondNE, nextLabel)
 
-		asm.LDR(jit.X6, jit.X0, jit.TableOffSvalsLen)
-		asm.CMPimm(jit.X6, uint16(c.fieldIdx+1))
-		asm.BCond(jit.CondLO, fallbackLabel)
 		asm.LDR(jit.X6, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X6, jit.X6, c.fieldIdx*jit.ValueSize)
 		asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
