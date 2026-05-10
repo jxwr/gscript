@@ -26,6 +26,8 @@ package methodjit
 import (
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -180,6 +182,9 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		}
 		if calleeProto == nil {
 			if summary := fieldShapeCalleeSummary(fn, instr); summary != "" {
+				if splitSummary := fieldShapeInlineSplitEligibilitySummary(fn, instr, config, block); splitSummary != "" {
+					summary = summary + "; split eligibility: " + splitSummary
+				}
 				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
 					fmt.Sprintf("field-shape polymorphic callee set not yet split: %s", summary))
 				continue
@@ -350,6 +355,85 @@ func inlineCalleeHasWholeCallProtocol(callee *vm.FuncProto, globals map[string]*
 		return true
 	}
 	return false
+}
+
+func fieldShapeInlineSplitEligibilitySummary(fn *Function, instr *Instr, config InlineConfig, block *Block) string {
+	cases := fieldShapeCalleeCases(fn, instr)
+	if len(cases) < 2 {
+		return ""
+	}
+	callArgs, ok := inlineCallArgumentValues(instr)
+	if !ok {
+		return "blocked: unsupported call argument layout"
+	}
+	loopBlock := false
+	if fn != nil && block != nil {
+		loopBlock = computeLoopInfo(fn).loopBlocks[block.ID]
+	}
+	eligible := 0
+	reasons := make(map[string]int)
+	for _, c := range cases {
+		reason := fieldShapeInlineSplitCaseRejectReason(c, callArgs, config, loopBlock)
+		if reason == "" {
+			eligible++
+			continue
+		}
+		reasons[reason]++
+	}
+	parts := []string{fmt.Sprintf("eligible=%d/%d", eligible, len(cases))}
+	keys := make([]string, 0, len(reasons))
+	for reason := range reasons {
+		keys = append(keys, reason)
+	}
+	sort.Strings(keys)
+	for _, reason := range keys {
+		n := reasons[reason]
+		parts = append(parts, fmt.Sprintf("%s=%d", reason, n))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func fieldShapeInlineSplitCaseRejectReason(c FieldPolyShapeCase, callArgs []*Value, config InlineConfig, callerLoopBlock bool) string {
+	if c.ShapeID == 0 {
+		return "missing-shape"
+	}
+	if c.FieldIdx < 0 {
+		return "missing-field-index"
+	}
+	if c.VMProto == nil {
+		return "missing-proto"
+	}
+	if c.ReceiverFact.ShapeID == 0 {
+		return "missing-receiver-fact"
+	}
+	if len(callArgs) != c.VMProto.NumParams {
+		return "arg-count"
+	}
+	if len(c.VMProto.Code) > config.MaxSize {
+		return "size"
+	}
+	if inlineCalleeHasWholeCallProtocol(c.VMProto, config.Globals) {
+		return "whole-call-protocol"
+	}
+	calleeFn := BuildGraph(c.VMProto)
+	if calleeFn == nil || calleeFn.Unpromotable {
+		return "unpromotable"
+	}
+	if callerLoopBlock && computeLoopInfo(calleeFn).hasLoops() {
+		if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
+			return "callee-loop"
+		}
+		if callABICalleeHasShiftAddOverflowVersion(c.VMProto, nil) {
+			return "overflow-versioned-loop"
+		}
+	}
+	if config.RequirePureNumeric {
+		if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
+			_ = reason
+			return "not-pure-numeric"
+		}
+	}
+	return ""
 }
 
 // resolveCallee checks if an OpCall's function argument comes from an
@@ -543,22 +627,16 @@ func isRecursiveOrMutualCached(proto *vm.FuncProto, globals map[string]*vm.FuncP
 //     caller block, replacing the OpCall.
 func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, calleeFn *Function, calleeName string) []*Instr {
 	calleeBlock := calleeFn.Entry
-	callArgs := callInstr.Args[1:] // skip the function reference arg
+	callArgs, ok := inlineCallArgumentValues(callInstr)
+	if !ok {
+		return nil
+	}
 
 	// Map callee value IDs to caller value IDs.
 	idMap := make(map[int]int)
 
 	// Map callee parameters (LoadSlot instructions) to caller's argument values.
-	paramValues := make(map[int]*Value) // callee value ID -> caller Value
-	paramCount := 0
-	for _, ci := range calleeBlock.Instrs {
-		if ci.Op == OpLoadSlot && paramCount < calleeFn.Proto.NumParams {
-			if paramCount < len(callArgs) {
-				paramValues[ci.ID] = callArgs[paramCount]
-			}
-			paramCount++
-		}
-	}
+	paramValues := inlineParamValues(calleeFn, callArgs)
 
 	// Assign new IDs for non-parameter callee instructions.
 	for _, ci := range calleeBlock.Instrs {
@@ -655,7 +733,10 @@ func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, callee
 //
 // Modifies the block and function in place.
 func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, calleeFn *Function, calleeName string) {
-	callArgs := callInstr.Args[1:]
+	callArgs, ok := inlineCallArgumentValues(callInstr)
+	if !ok {
+		return
+	}
 
 	// Find the maximum block ID currently in use. Scanning is required because
 	// after previous inlining rounds the block list is not necessarily sorted
@@ -681,16 +762,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 	blockMap := make(map[int]*Block) // callee block ID -> new block
 
 	// Map parameter LoadSlots to caller arguments.
-	paramValues := make(map[int]*Value)
-	paramCount := 0
-	for _, ci := range calleeFn.Entry.Instrs {
-		if ci.Op == OpLoadSlot && paramCount < calleeFn.Proto.NumParams {
-			if paramCount < len(callArgs) {
-				paramValues[ci.ID] = callArgs[paramCount]
-			}
-			paramCount++
-		}
-	}
+	paramValues := inlineParamValues(calleeFn, callArgs)
 
 	// Create new blocks for all callee blocks.
 	for _, cb := range calleeFn.Blocks {
@@ -869,6 +941,44 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 	fn.Blocks = append(fn.Blocks, mergeBlock)
 	copyInlinedFixedTableConstructors(fn, calleeFn, idMap)
 
+}
+
+// inlineCallArgumentValues returns the values that map to callee parameter
+// slots. OpCall carries the callee value at Args[0]; OpFieldCallFloor has
+// already fused the method load and carries only receiver + user arguments.
+func inlineCallArgumentValues(callInstr *Instr) ([]*Value, bool) {
+	if callInstr == nil {
+		return nil, false
+	}
+	switch callInstr.Op {
+	case OpCall, OpCallFloor:
+		if len(callInstr.Args) == 0 {
+			return nil, false
+		}
+		return callInstr.Args[1:], true
+	case OpFieldCallFloor:
+		return callInstr.Args, true
+	default:
+		return nil, false
+	}
+}
+
+func inlineParamValues(calleeFn *Function, callArgs []*Value) map[int]*Value {
+	paramValues := make(map[int]*Value)
+	if calleeFn == nil || calleeFn.Entry == nil || calleeFn.Proto == nil {
+		return paramValues
+	}
+	paramCount := 0
+	for _, ci := range calleeFn.Entry.Instrs {
+		if ci.Op != OpLoadSlot || paramCount >= calleeFn.Proto.NumParams {
+			continue
+		}
+		if paramCount < len(callArgs) {
+			paramValues[ci.ID] = callArgs[paramCount]
+		}
+		paramCount++
+	}
+	return paramValues
 }
 
 // remapValue translates a callee Value reference to the caller's namespace.

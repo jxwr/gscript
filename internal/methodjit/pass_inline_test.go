@@ -6,6 +6,7 @@
 package methodjit
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -35,6 +36,74 @@ func buildInlineTestIR(t *testing.T, src, callerName string) (*Function, InlineC
 		MaxSize: 30,
 	}
 	return fn, config
+}
+
+func TestInline_FieldShapePolymorphicSplitEligibilityRemark(t *testing.T) {
+	src := `
+func step_a(actor, tick) { return tick + 1 }
+func step_b(actor, tick) { return tick + 2 }
+`
+	top := compileTop(t, src)
+	stepA := findProtoByName(top, "step_a")
+	stepB := findProtoByName(top, "step_b")
+	if stepA == nil || stepB == nil {
+		t.Fatalf("missing protos: step_a=%v step_b=%v", stepA != nil, stepB != nil)
+	}
+
+	calleeLoad := &Instr{ID: 1, Op: OpGetField}
+	receiver := &Value{ID: 2, Def: &Instr{ID: 2, Op: OpLoadSlot, Type: TypeTable}}
+	tick := &Value{ID: 3, Def: &Instr{ID: 3, Op: OpLoadSlot, Type: TypeInt}}
+	calleeLoad.Args = []*Value{receiver}
+	call := &Instr{
+		ID:   4,
+		Op:   OpCall,
+		Type: TypeAny,
+		Args: []*Value{{ID: calleeLoad.ID, Def: calleeLoad}, receiver, tick},
+		Aux2: 2,
+	}
+	block := &Block{ID: 0, Instrs: []*Instr{calleeLoad, call}, defs: make(map[int]*Value)}
+	remarks := &OptimizationRemarks{}
+	fn := &Function{
+		Blocks:  []*Block{block},
+		Entry:   block,
+		Proto:   &vm.FuncProto{Name: "caller"},
+		Remarks: remarks,
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			calleeLoad.ID: {
+				{ShapeID: 101, FieldIdx: 0, VMProto: stepA, ReceiverFact: FixedShapeTableFact{ShapeID: 101}},
+				{ShapeID: 202, FieldIdx: 0, VMProto: stepB, ReceiverFact: FixedShapeTableFact{ShapeID: 202}},
+			},
+		},
+	}
+
+	out, err := InlinePassWith(InlineConfig{MaxSize: 30})(fn)
+	if err != nil {
+		t.Fatalf("InlinePassWith: %v", err)
+	}
+	if out != fn {
+		t.Fatal("inline pass unexpectedly replaced function")
+	}
+	got := formatOptimizationRemarks(remarks.List())
+	for _, want := range []string{
+		"field-shape polymorphic callee set not yet split",
+		"shape=101 field=0 proto=step_a",
+		"shape=202 field=0 proto=step_b",
+		"split eligibility: eligible=2/2",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("remarks missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestInlineCallArgumentValues_FieldCallFloorUsesReceiverAsFirstParam(t *testing.T) {
+	recv := &Value{ID: 11}
+	tick := &Value{ID: 12}
+	call := &Instr{Op: OpFieldCallFloor, Args: []*Value{recv, tick}}
+	args, ok := inlineCallArgumentValues(call)
+	if !ok || len(args) != 2 || args[0] != recv || args[1] != tick {
+		t.Fatalf("inlineCallArgumentValues(FieldCallFloor)=(%v,%v), want receiver+tick", args, ok)
+	}
 }
 
 // runVMFunc executes the named function from the source via the VM interpreter.
