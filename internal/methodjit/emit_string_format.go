@@ -61,7 +61,6 @@ func parseStringFormatIntPatternNative(pattern string) (stringFormatIntPatternNa
 
 func parseStringFormatConstIntPatternNative(pattern string) (stringFormatConstIntPatternNative, bool) {
 	var pat stringFormatConstIntPatternNative
-	hasInt := false
 	litStart := 0
 	for i := 0; i < len(pattern); {
 		if pattern[i] != '%' {
@@ -98,7 +97,6 @@ func parseStringFormatConstIntPatternNative(pattern string) (stringFormatConstIn
 			return stringFormatConstIntPatternNative{}, false
 		}
 		i++
-		hasInt = true
 		pat.specs = append(pat.specs, stringFormatConstIntSpecNative{
 			litBefore: lit,
 			width:     width,
@@ -110,7 +108,7 @@ func parseStringFormatConstIntPatternNative(pattern string) (stringFormatConstIn
 	}
 	pat.tail = pattern[litStart:]
 	pat.staticLen += len(pat.tail)
-	return pat, hasInt && len(pat.specs) >= 2
+	return pat, len(pat.specs) >= 1
 }
 
 func stringDataPtr(s string) uintptr {
@@ -342,7 +340,7 @@ func (ec *emitContext) emitStringFormatIntNative(instr *Instr) {
 }
 
 func (ec *emitContext) emitStringFormatConstNative(instr *Instr) {
-	if instr == nil || len(instr.Args) < 4 || ec.fn == nil {
+	if instr == nil || len(instr.Args) < 3 || ec.fn == nil {
 		ec.emitStringFormatConstExit(instr)
 		return
 	}

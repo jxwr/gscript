@@ -35,6 +35,9 @@ func lowerStringFormatIntrinsicCall(fn *Function, instr *Instr, moduleName, fiel
 		if lowerStringFormatInt(fn, instr) {
 			return "intrinsic: string.format(pattern,int) -> StringFormatInt", true
 		}
+		if lowerStringFormatConst(fn, instr) {
+			return "intrinsic: string.format(const-pattern,...) -> StringFormatConst", true
+		}
 		if lowerStringFormatProfiledConst(fn, instr) {
 			return "intrinsic: profiled string.format(stable-pattern,...) -> StringFormatConst", true
 		}

@@ -573,6 +573,45 @@ func label(prefix, n, suffix, code) {
 	}
 }
 
+func TestTier2_StringFormatConstStringOnlyNative(t *testing.T) {
+	src := `
+func label(prefix, suffix) {
+    return string.format("%s:%s", prefix, suffix)
+}
+`
+	args := []runtime.Value{
+		runtime.StringValue("route"),
+		runtime.StringValue("detail"),
+	}
+	want := requireOneString(t, "VM", runStringFuncVM(t, src, "label", args))
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "label", args, true)
+	got := requireOneString(t, "Tier2", gotValues)
+	if got != want {
+		t.Fatalf("label Tier2=%q, want VM=%q", got, want)
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+		t.Fatalf("StringFormatConst string-only native should avoid op exits, ExitOpExit=%d", exits)
+	}
+}
+
+func TestTier2_StringFormatConstSingleStringNative(t *testing.T) {
+	src := `
+func label(name) {
+    return string.format("hello %s", name)
+}
+`
+	args := []runtime.Value{runtime.StringValue("route")}
+	want := requireOneString(t, "VM", runStringFuncVM(t, src, "label", args))
+	gotValues, gotTM, _ := runStringFuncForcedTier2WithManager(t, src, "label", args, true)
+	got := requireOneString(t, "Tier2", gotValues)
+	if got != want {
+		t.Fatalf("label Tier2=%q, want VM=%q", got, want)
+	}
+	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+		t.Fatalf("StringFormatConst single-string native should avoid op exits, ExitOpExit=%d", exits)
+	}
+}
+
 func TestTier2_StringFormatProfiledDynamicPatternLowersToConstPath(t *testing.T) {
 	src := `
 func dyn(pattern, prefix, n, code) {
