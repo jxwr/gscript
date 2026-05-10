@@ -492,78 +492,9 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
-	fn, err = TablePreallocHintPass(fn)
+	fn, err = runTableObjectPreparation(fn, opts, globals)
 	if err != nil {
-		return nil, nil, fmt.Errorf("TablePreallocHint: %w", err)
-	}
-
-	// TablePrealloc can infer local dense array kinds from typed stores even
-	// when bytecode feedback is still empty. Re-run typespec so GetTable users
-	// see those newly annotated Aux2 kind facts.
-	fn, err = TypeSpecializePass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TypeSpecialize (post-table-prealloc): %w", err)
-	}
-
-	fn, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
-		Globals:               globals,
-		ArgFacts:              optsFixedShapeArgFacts(opts),
-		ArrayElementArgFacts:  optsFixedShapeArrayElementArgFacts(opts),
-		ArrayElementPolyFacts: optsFixedShapeArrayElementPolyFacts(opts),
-		EntryGuardedArgs:      optsFixedShapeEntryGuards(opts),
-	})(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("FixedShapeTableFacts: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = LoadEliminationPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("LoadElimination: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = FieldLenFoldPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("FieldLenFold: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	// R162 (Session 1 / B.5): escape analysis + scalar replacement.
-	// Must run AFTER LoadElim (so stored-value forwarding has already
-	// happened) and BEFORE DCE (so the OpNop'd alloc/field ops are
-	// cleaned up in a single sweep). Currently handles block-local
-	// virtual allocations only (R158/R159 MVP); if/else merges and
-	// loop-carried virtuals pending R160/R161.
-	fn, err = EscapeAnalysisPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("EscapeAnalysis: %w", err)
-	}
-
-	fn, err = FixedTableConstructorLoweringPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("FixedTableConstructorLowering: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	// Fixed-table lowering turns table-valued row constructors into explicit
-	// table-typed values. Run preallocation again so outer arrays of records can
-	// be sized and later lowered to raw mixed-array stores.
-	fn, err = TablePreallocHintPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TablePreallocHint (post-fixed-table-lowering): %w", err)
-	}
-
-	if hasFixedTableScalarReplacementCandidate(fn) {
-		fn, err = EscapeAnalysisPass(fn)
-		if err != nil {
-			return nil, nil, fmt.Errorf("EscapeAnalysis (post-fixed-table-lowering): %w", err)
-		}
-	}
-
-	fn, err = RedundantGuardEliminationPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("RedundantGuardElimination: %w", err)
+		return nil, nil, err
 	}
 
 	fn, err = CallReturnProjectionPass(fn)
@@ -618,22 +549,10 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 		return nil, nil, fmt.Errorf("DCE (post-ModZeroCompare): %w", err)
 	}
 
-	fn, err = TableArrayLowerPass(fn)
+	fn, err = runTableArrayNativeLowering(fn, opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("TableArrayLower: %w", err)
+		return nil, nil, err
 	}
-
-	fn, err = TableArrayLoadTypeSpecializePass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TableArrayLoadTypeSpecialize: %w", err)
-	}
-	attachRemarks(fn, opts)
-
-	fn, err = TableArrayNestedLoadPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TableArrayNestedLoad: %w", err)
-	}
-	attachRemarks(fn, opts)
 
 	fn, err = DenseMatrixNestedLoadLowerPass(fn)
 	if err != nil {
@@ -671,17 +590,10 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	}
 	attachRemarks(fn, opts)
 
-	fn, err = FieldSvalsLowerPass(fn)
+	fn, err = runTableFieldNativeLowering(fn, opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("FieldSvalsLower: %w", err)
+		return nil, nil, err
 	}
-	attachRemarks(fn, opts)
-
-	fn, err = TableArrayStoreLowerPass(fn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("TableArrayStoreLower: %w", err)
-	}
-	attachRemarks(fn, opts)
 
 	fn, err = DCEPass(fn)
 	if err != nil {
