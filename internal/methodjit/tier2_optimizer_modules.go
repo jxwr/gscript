@@ -101,10 +101,6 @@ func runTier2OptimizerPlan(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2Opti
 	return fn, nil
 }
 
-func runTier2OptimizerModules(fn *Function, opts *Tier2PipelineOpts, phase Tier2OptimizerPhase, modules []Tier2OptimizerModule) (*Function, error) {
-	return runTier2OptimizerModulesWithContext(fn, opts, nil, phase, modules)
-}
-
 func runTier2OptimizerModulesWithContext(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext, phase Tier2OptimizerPhase, modules []Tier2OptimizerModule) (*Function, error) {
 	var err error
 	for _, module := range modules {
@@ -187,10 +183,6 @@ func tier2EarlyCanonicalModules(globals map[string]*vm.FuncProto) []Tier2Optimiz
 	}
 }
 
-func runEarlyCanonicalOptimizations(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
-	return runTier2OptimizerModulesWithContext(fn, opts, ctx, Tier2PhaseEarlyCanonical, tier2EarlyCanonicalModules(ctxGlobals(ctx)))
-}
-
 func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		{
@@ -258,10 +250,6 @@ func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tie
 	}
 }
 
-func runInlineCallOptimizations(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext, maxSize int) (*Function, error) {
-	return runTier2OptimizerModulesWithContext(fn, opts, ctx, Tier2PhaseInlineCall, tier2InlineCallModules(ctxGlobals(ctx), maxSize))
-}
-
 func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		{
@@ -300,10 +288,6 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 			},
 		},
 	}
-}
-
-func runCallLoweringOptimizations(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
-	return runTier2OptimizerModulesWithContext(fn, opts, ctx, Tier2PhaseCallLower, tier2CallLoweringModules(ctxProtocolGlobals(ctx)))
 }
 
 func tier2TableObjectPreparationModules(globals map[string]*vm.FuncProto) []Tier2OptimizerModule {
@@ -390,10 +374,6 @@ func tier2TableObjectPreparationModules(globals map[string]*vm.FuncProto) []Tier
 	}
 }
 
-func runTableObjectPreparation(fn *Function, opts *Tier2PipelineOpts, globals map[string]*vm.FuncProto) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhaseTableObjectPrep, tier2TableObjectPreparationModules(globals))
-}
-
 func tier2PostRewriteModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		{
@@ -418,10 +398,6 @@ func tier2PostRewriteModules() []Tier2OptimizerModule {
 			},
 		},
 	}
-}
-
-func runPostRewriteOptimizations(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhasePostRewrite, tier2PostRewriteModules())
 }
 
 func tier2NumericModules() []Tier2OptimizerModule {
@@ -478,14 +454,6 @@ func tier2NumericModules() []Tier2OptimizerModule {
 	}
 }
 
-func runNumericOptimizations(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhaseNumeric, tier2NumericModules())
-}
-
-func runTableArrayNativeLowering(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhaseTableArrayLower, tier2TableArrayNativeLoweringModules())
-}
-
 func tier2TableArrayNativeLoweringModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		{
@@ -512,10 +480,6 @@ func tier2TableArrayNativeLoweringModules() []Tier2OptimizerModule {
 	}
 }
 
-func runTableFieldNativeLowering(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhaseTableFieldLower, tier2TableFieldNativeLoweringModules())
-}
-
 func tier2TableFieldNativeLoweringModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		{
@@ -540,10 +504,6 @@ func tier2TableFieldNativeLoweringModules() []Tier2OptimizerModule {
 			},
 		},
 	}
-}
-
-func runMatrixNativeLowering(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhaseMatrixNative, tier2MatrixNativeLoweringModules())
 }
 
 func tier2MatrixNativeLoweringModules() []Tier2OptimizerModule {
@@ -586,10 +546,6 @@ func tier2MatrixNativeLoweringModules() []Tier2OptimizerModule {
 	}
 }
 
-func runFloatNumericOptimizations(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhaseFloatNumeric, tier2FloatNumericModules())
-}
-
 func tier2FloatNumericModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		{
@@ -614,10 +570,6 @@ func tier2FloatNumericModules() []Tier2OptimizerModule {
 			},
 		},
 	}
-}
-
-func runLoopKernelOptimizations(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhaseLoopKernel, tier2LoopKernelModules())
 }
 
 func tier2LoopKernelModules() []Tier2OptimizerModule {
@@ -695,10 +647,6 @@ func tier2LoopKernelModules() []Tier2OptimizerModule {
 	}
 }
 
-func runLoopPostOptimizations(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhaseLoopPost, tier2LoopPostModules())
-}
-
 func tier2LoopPostModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		{
@@ -751,10 +699,6 @@ func tier2LoopPostModules() []Tier2OptimizerModule {
 			},
 		},
 	}
-}
-
-func runFinalCallOptimizations(fn *Function, opts *Tier2PipelineOpts, protocolGlobals map[string]*vm.FuncProto) (*Function, error) {
-	return runTier2OptimizerModules(fn, opts, Tier2PhaseFinalCall, tier2FinalCallModules(protocolGlobals))
 }
 
 func tier2FinalCallModules(protocolGlobals map[string]*vm.FuncProto) []Tier2OptimizerModule {

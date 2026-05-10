@@ -66,6 +66,27 @@ func TestTier2OptimizerPlanPhaseOrder(t *testing.T) {
 	}
 }
 
+func TestTier2OptimizerPlanCoversModulePhases(t *testing.T) {
+	plan := newTier2OptimizerPlan(&Tier2OptimizerContext{InlineMaxSize: 40})
+	phases := make(map[Tier2OptimizerPhase]bool, len(plan.Phases))
+	for _, phase := range plan.Phases {
+		if phases[phase] {
+			t.Fatalf("duplicate phase in plan: %s", phase)
+		}
+		phases[phase] = true
+	}
+	names := make(map[string]bool, len(plan.Modules))
+	for _, module := range plan.Modules {
+		if !phases[module.Phase] {
+			t.Fatalf("module %s uses phase %s missing from plan", module.Name, module.Phase)
+		}
+		if names[module.Name] {
+			t.Fatalf("duplicate module name: %s", module.Name)
+		}
+		names[module.Name] = true
+	}
+}
+
 func TestTier2EarlyCanonicalModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2EarlyCanonicalModules(nil), Tier2PhaseEarlyCanonical, []string{
 		"SimplifyPhis",
