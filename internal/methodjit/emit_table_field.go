@@ -721,7 +721,7 @@ func (ec *emitContext) emitFieldLoad(instr *Instr) {
 		ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
 		ec.asm.B(doneLabel)
 		ec.asm.Label(typeDeoptLabel)
-		ec.emitDeopt(instr)
+		ec.emitPreciseDeopt(instr)
 		ec.asm.Label(doneLabel)
 		return
 	}
@@ -744,7 +744,7 @@ func (ec *emitContext) emitFieldLoadNumToFloat(instr *Instr) {
 	ec.emitStoreNumericFieldLoad(instr, jit.X0, typeDeoptLabel)
 	ec.asm.B(doneLabel)
 	ec.asm.Label(typeDeoptLabel)
-	ec.emitDeopt(instr)
+	ec.emitPreciseDeopt(instr)
 	ec.asm.Label(doneLabel)
 }
 
