@@ -49,7 +49,7 @@ func tier2EarlyCanonicalModules(globals map[string]*vm.FuncProto) []Tier2Optimiz
 }
 
 func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tier2OptimizerModule {
-	return []Tier2OptimizerModule{
+	modules := []Tier2OptimizerModule{
 		{
 			Name:  "Inline",
 			Phase: Tier2PhaseInlineCall,
@@ -95,6 +95,12 @@ func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tie
 		},
 		tier2PostInlinePassModule("TypeSpecialize (post-inline)", TypeSpecializePass),
 	}
+	if os.Getenv("GSCRIPT_FIELD_SHAPE_SPLIT_PREINLINE") == "1" {
+		modules = append([]Tier2OptimizerModule{
+			tier2PassModule("FieldShapeCallSplitPreInline", Tier2PhaseInlineCall, FieldShapeCallSplitPreInlinePass),
+		}, modules...)
+	}
+	return modules
 }
 
 func tier2PostInlinePassModule(name string, pass Tier2PassFunc) Tier2OptimizerModule {

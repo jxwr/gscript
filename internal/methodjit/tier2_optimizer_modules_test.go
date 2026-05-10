@@ -108,6 +108,17 @@ func TestTier2InlineCallModuleOrder(t *testing.T) {
 	})
 }
 
+func TestTier2InlineCallModuleOrderExperimentalPreInlineFieldShapeSplit(t *testing.T) {
+	t.Setenv("GSCRIPT_FIELD_SHAPE_SPLIT_PREINLINE", "1")
+	assertTier2ModuleOrder(t, tier2InlineCallModules(nil, 40), Tier2PhaseInlineCall, []string{
+		"FieldShapeCallSplitPreInline",
+		"Inline",
+		"SimplifyPhis (post-inline)",
+		"Intrinsic (post-inline)",
+		"TypeSpecialize (post-inline)",
+	})
+}
+
 func TestTier2CallLoweringModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2CallLoweringModules(nil), Tier2PhaseCallLower, []string{
 		"CallABI",
