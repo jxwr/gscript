@@ -748,6 +748,31 @@ func (ec *emitContext) emitFieldLoadNumToFloat(instr *Instr) {
 	ec.asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitFieldStore(instr *Instr) {
+	if instr == nil || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil {
+		return
+	}
+	fieldIdx := int(instr.Aux)
+	if fieldIdx < 0 {
+		ec.emitDeopt(instr)
+		return
+	}
+	valueID := instr.Args[1].ID
+	valStore := ec.prepareFieldStoreValue(valueID)
+	if !valStore.isFPR {
+		valReg := ec.resolveValueNB(valueID, jit.X3)
+		if valReg != jit.X3 {
+			ec.asm.MOVreg(jit.X3, valReg)
+		}
+		valStore.gpr = jit.X3
+	}
+	svals := ec.resolveRawFieldSvalsPtr(instr.Args[0].ID, jit.X1)
+	if svals != jit.X1 {
+		ec.asm.MOVreg(jit.X1, svals)
+	}
+	ec.emitPreparedFieldStore(valStore, fieldIdx)
+}
+
 func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typeDeoptLabel string) {
 	if instr.Type == TypeFloat {
 		ec.asm.LSRimm(jit.X2, valReg, 48)

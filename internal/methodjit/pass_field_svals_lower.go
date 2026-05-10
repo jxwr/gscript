@@ -49,6 +49,23 @@ func FieldSvalsLowerPass(fn *Function) (*Function, error) {
 					}
 				}
 			}
+			if fieldSvalsStoreLowerable(instr) {
+				shapeID := uint32(instr.Aux2 >> 32)
+				fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
+				key := fieldSvalsLowerKey{tableID: instr.Args[0].ID, shapeID: shapeID}
+				if svals := cache[key]; svals != nil {
+					instr.Op = OpFieldStore
+					instr.Type = TypeUnknown
+					instr.Args = []*Value{svals.Value(), instr.Args[1]}
+					instr.Aux = int64(fieldIdx)
+					instr.Aux2 = 0
+					newInstrs = append(newInstrs, instr)
+					changed = true
+					functionRemarks(fn).Add("FieldSvalsLower", "changed", block.ID, instr.ID, instr.Op,
+						fmt.Sprintf("lowered fixed-shape field store via shared svals v%d field %d", svals.ID, fieldIdx))
+					continue
+				}
+			}
 			if !fieldSvalsLowerable(instr) {
 				newInstrs = append(newInstrs, instr)
 				continue
@@ -327,6 +344,15 @@ func fieldSvalsLowerable(instr *Instr) bool {
 	shapeID := uint32(instr.Aux2 >> 32)
 	fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
 	return shapeID != 0 && fieldIdx >= 0
+}
+
+func fieldSvalsStoreLowerable(instr *Instr) bool {
+	if instr == nil || instr.Op != OpSetField || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil || instr.Aux2 == 0 {
+		return false
+	}
+	shapeID := uint32(instr.Aux2 >> 32)
+	fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
+	return shapeID != 0 && fieldIdx >= 0 && valueProvenNonNil(instr.Args[1])
 }
 
 func fieldSvalsGlobalBarrier(instr *Instr) bool {

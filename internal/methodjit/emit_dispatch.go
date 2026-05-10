@@ -255,6 +255,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitFieldLoad(instr)
 	case OpFieldLoadNumToFloat:
 		ec.emitFieldLoadNumToFloat(instr)
+	case OpFieldStore:
+		ec.emitFieldStore(instr)
 	case OpSetField:
 		ec.emitSetField(instr)
 		ec.clearTableArrayBoundedKeys()

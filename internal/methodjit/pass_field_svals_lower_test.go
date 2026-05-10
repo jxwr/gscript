@@ -107,6 +107,41 @@ func TestFieldSvalsLower_ReusesAcrossNonNilExistingSetField(t *testing.T) {
 	}
 }
 
+func TestFieldSvalsLower_LowersStoreThroughSharedSvals(t *testing.T) {
+	fn, b, obj := newFieldNumFusionFn("field_svals_store")
+	gx := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 1, Aux2: int64(42)<<32 | 0, Block: b}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	sum := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{gx.Value(), one.Value()}, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{obj.Value(), sum.Value()}, Aux: 1, Aux2: int64(42)<<32 | 0, Block: b}
+	gy := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 2, Aux2: int64(42)<<32 | 1, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{gy.Value()}, Block: b}
+	b.Instrs = []*Instr{obj, gx, one, sum, set, gy, ret}
+
+	out, err := FieldSvalsLowerPass(fn)
+	if err != nil {
+		t.Fatalf("FieldSvalsLowerPass: %v", err)
+	}
+	if errs := Validate(out); len(errs) > 0 {
+		t.Fatalf("invalid IR after lower: %v\n%s", errs, Print(out))
+	}
+	var svals *Instr
+	for _, instr := range b.Instrs {
+		if instr.Op == OpFieldSvals {
+			svals = instr
+		}
+	}
+	if svals == nil {
+		t.Fatalf("expected shared FieldSvals:\n%s", Print(out))
+	}
+	if set.Op != OpFieldStore || len(set.Args) != 2 || set.Args[0].ID != svals.ID || set.Args[1].ID != sum.ID || set.Aux != 0 {
+		t.Fatalf("SetField was not lowered to FieldStore through shared svals:\n%s", Print(out))
+	}
+}
+
 func TestFieldSvalsLower_NilSetFieldRemainsBarrier(t *testing.T) {
 	fn, b, obj := newFieldNumFusionFn("field_svals_nil_setfield")
 	gx := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,

@@ -452,7 +452,29 @@ func fieldShapeInlineSplitEligibilitySummary(fn *Function, instr *Instr, config 
 		n := reasons[reason]
 		parts = append(parts, fmt.Sprintf("%s=%d", reason, n))
 	}
+	if effectSummary := fieldShapeInlineEffectSummary(cases); effectSummary != "" {
+		parts = append(parts, effectSummary)
+	}
 	return strings.Join(parts, ", ")
+}
+
+func fieldShapeInlineEffectSummary(cases []FieldPolyShapeCase) string {
+	if len(cases) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cases))
+	for _, c := range cases {
+		if c.VMProto == nil {
+			continue
+		}
+		effects := SummarizeFieldEffects(c.VMProto)
+		parts = append(parts, fmt.Sprintf("%s=%s", fieldShapeCaseProtoName(c), effects.FormatParam(0)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sort.Strings(parts)
+	return "effects{" + strings.Join(parts, ";") + "}"
 }
 
 func fieldShapeInlineSplitCaseRejectReason(c FieldPolyShapeCase, callArgs []*Value, config InlineConfig, callerLoopBlock bool) string {

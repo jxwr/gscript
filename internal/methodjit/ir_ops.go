@@ -175,9 +175,10 @@ const (
 	OpFieldSvals
 	OpFieldLoad
 	OpFieldLoadNumToFloat
-	OpSetField // Args[0].field = Args[1]; Aux = constant pool index
-	OpSetList  // table.setlist(Args[0], Args[1:])
-	OpAppend   // table.insert(Args[0], Args[1])
+	OpFieldStore // Args = [svals, value], Aux = field index; guard already owned by OpFieldSvals
+	OpSetField   // Args[0].field = Args[1]; Aux = constant pool index
+	OpSetList    // table.setlist(Args[0], Args[1:])
+	OpAppend     // table.insert(Args[0], Args[1])
 
 	// Global access
 	OpGetGlobal // Aux = constant pool index for name
@@ -334,6 +335,7 @@ var opNames = [...]string{
 	OpFieldSvals:                 "FieldSvals",
 	OpFieldLoad:                  "FieldLoad",
 	OpFieldLoadNumToFloat:        "FieldLoadNumToFloat",
+	OpFieldStore:                 "FieldStore",
 	OpSetField:                   "SetField",
 	OpSetList:                    "SetList",
 	OpAppend:                     "Append",
