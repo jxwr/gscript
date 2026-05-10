@@ -10,6 +10,7 @@ package methodjit
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -338,6 +339,77 @@ func TestEmit_ModIntConstPositiveSingleSubtract(t *testing.T) {
 	}
 	if !strings.Contains(asm, "SUB") {
 		t.Fatalf("range-proven modulo should emit subtract path:\n%s", asm)
+	}
+}
+
+func TestEmit_ModIntConstPositiveMagic(t *testing.T) {
+	src := `func f(n) {
+		if n < 0 { return -1 }
+		return n % 3
+	}`
+	proto := compileFunction(t, src)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+
+	foundModInt := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpModInt {
+				foundModInt = true
+			}
+		}
+	}
+	if !foundModInt {
+		t.Fatalf("expected ModInt in optimized IR:\n%s", Print(fn))
+	}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, n := range []int64{-5, -1, 0, 1, 2, 3, 4, 42, 12345, MaxInt48 - 1} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(n)})
+		if err != nil {
+			t.Fatalf("Execute f(%d): %v", n, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(n)})
+		if len(result) == 0 || len(vmResult) == 0 {
+			t.Fatalf("empty result: JIT=%v VM=%v", result, vmResult)
+		}
+		assertValuesEqual(t, fmt.Sprintf("f(%d)", n), result[0], vmResult[0])
+	}
+
+	code := make([]byte, cf.Code.Size())
+	copy(code, unsafeCodeSlice(cf))
+	asm := disasmARM64(code)
+	if !strings.Contains(asm, "UMULH") {
+		t.Fatalf("positive const modulo should emit reciprocal multiply:\n%s", asm)
+	}
+}
+
+func TestPositiveConstModMagic(t *testing.T) {
+	divisors := []int64{3, 5, 7, 9, 10, 11, 13, 251, 503, 1000, 2000, 1000000007}
+	inputs := []uint64{0, 1, 2, 3, 4, 5, 42, 999, 1000, 12345, uint64(MaxInt48 / 2), uint64(MaxInt48 - 1)}
+	for _, divisor := range divisors {
+		magic, shift, ok := positiveConstModMagic(divisor)
+		if !ok {
+			t.Fatalf("positiveConstModMagic(%d) failed", divisor)
+		}
+		for _, n := range inputs {
+			// Go cannot observe the high half through ordinary multiplication;
+			// use big integers to keep this unit test architecture-independent.
+			prod := new(big.Int).Mul(new(big.Int).SetUint64(n), new(big.Int).SetUint64(magic))
+			q := new(big.Int).Rsh(prod, 64+uint(shift)).Uint64()
+			got := n - q*uint64(divisor)
+			want := n % uint64(divisor)
+			if got != want {
+				t.Fatalf("n=%d divisor=%d got rem=%d want %d magic=%x shift=%d", n, divisor, got, want, magic, shift)
+			}
+		}
 	}
 }
 

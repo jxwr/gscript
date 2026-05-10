@@ -7,6 +7,8 @@
 package methodjit
 
 import (
+	"math/big"
+
 	"github.com/gscript/gscript/internal/jit"
 )
 
@@ -210,6 +212,9 @@ func (ec *emitContext) emitRawIntBinOp(instr *Instr, op intBinOp) {
 		if ec.emitConstPositiveModSingleSubtract(instr, dst) {
 			return
 		}
+		if ec.emitConstPositiveModMagic(instr, dst) {
+			return
+		}
 	}
 
 	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
@@ -287,6 +292,69 @@ func (ec *emitContext) emitConstPositiveModSingleSubtract(instr *Instr, dst jit.
 	ec.asm.Label(doneLabel)
 	ec.storeRawInt(dst, instr.ID)
 	return true
+}
+
+func (ec *emitContext) emitConstPositiveModMagic(instr *Instr, dst jit.Reg) bool {
+	if instr == nil || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil {
+		return false
+	}
+	divisor, ok := constIntFromValue(instr.Args[1])
+	if !ok || divisor <= 1 || divisor > MaxInt48 || divisor&(divisor-1) == 0 {
+		return false
+	}
+	magic, shift, ok := positiveConstModMagic(divisor)
+	if !ok {
+		return false
+	}
+	lhs := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+	if lhs != jit.X0 {
+		ec.asm.MOVreg(jit.X0, lhs)
+	}
+	signedLabel := ""
+	doneLabel := ""
+	if !ec.intModNoSignAdjust(instr.ID) {
+		signedLabel = ec.uniqueLabel("mod_const_magic_signed")
+		doneLabel = ec.uniqueLabel("mod_const_magic_done")
+		ec.asm.TBNZ(jit.X0, 63, signedLabel)
+	}
+	ec.asm.LoadImm64(jit.X3, int64(magic))
+	ec.asm.UMULH(jit.X2, jit.X0, jit.X3)
+	if shift > 0 {
+		ec.asm.LSRimm(jit.X2, jit.X2, shift)
+	}
+	ec.asm.LoadImm64(jit.X3, divisor)
+	ec.asm.MSUB(dst, jit.X2, jit.X3, jit.X0)
+	if signedLabel != "" {
+		ec.asm.B(doneLabel)
+		ec.asm.Label(signedLabel)
+		ec.asm.LoadImm64(jit.X1, divisor)
+		ec.emitIntModX0X1(instr)
+		if dst != jit.X0 {
+			ec.asm.MOVreg(dst, jit.X0)
+		}
+		ec.asm.Label(doneLabel)
+	}
+	ec.storeRawInt(dst, instr.ID)
+	return true
+}
+
+func positiveConstModMagic(divisor int64) (uint64, uint8, bool) {
+	if divisor <= 1 || divisor&(divisor-1) == 0 {
+		return 0, 0, false
+	}
+	shift := uint8(0)
+	for v := divisor; v > 1; v >>= 1 {
+		shift++
+	}
+	numer := new(big.Int).Lsh(big.NewInt(1), uint(64+shift))
+	denom := big.NewInt(divisor)
+	magic := new(big.Int).Sub(numer, big.NewInt(1))
+	magic.Div(magic, denom)
+	magic.Add(magic, big.NewInt(1))
+	if magic.BitLen() > 64 {
+		return 0, 0, false
+	}
+	return magic.Uint64(), shift, true
 }
 
 func (ec *emitContext) emitRawIntExactDiv(instr *Instr) {

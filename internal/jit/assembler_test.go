@@ -59,6 +59,15 @@ func TestMADD(t *testing.T) {
 	}
 }
 
+func TestUMULH(t *testing.T) {
+	a := NewAssembler()
+	a.UMULH(X0, X1, X2)
+	got := getInst(a, 0)
+	if got != 0x9BC27C20 {
+		t.Fatalf("UMULH: got 0x%08X, want 0x9BC27C20", got)
+	}
+}
+
 func TestSDIV(t *testing.T) {
 	a := NewAssembler()
 	a.SDIV(X0, X1, X2)

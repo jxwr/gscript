@@ -46,6 +46,12 @@ func (a *Assembler) MADD(rd, rn, rm, ra Reg) {
 	a.emit(0x9B000000 | uint32(rm)<<16 | uint32(ra)<<10 | uint32(rn)<<5 | uint32(rd))
 }
 
+// UMULH: Xd = high64(Xn * Xm) treating operands as unsigned 64-bit values.
+func (a *Assembler) UMULH(rd, rn, rm Reg) {
+	// 1|00|11011|110|Rm|0|11111|Rn|Rd
+	a.emit(0x9BC07C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
+}
+
 // SDIV: Xd = Xn / Xm (signed 64-bit)
 func (a *Assembler) SDIV(rd, rn, rm Reg) {
 	// 1|00|11010110|Rm|00001|1|Rn|Rd
@@ -225,10 +231,16 @@ func (a *Assembler) CSET(rd Reg, cond Cond) {
 }
 
 // LSLreg: Xd = Xn << Xm (register shift left, 64-bit)
-func (a *Assembler) LSLreg(dst, src, amount Reg) { a.emit(0x9ac02000 | uint32(amount)<<16 | uint32(src)<<5 | uint32(dst)) }
+func (a *Assembler) LSLreg(dst, src, amount Reg) {
+	a.emit(0x9ac02000 | uint32(amount)<<16 | uint32(src)<<5 | uint32(dst))
+}
 
 // LSRreg: Xd = Xn >> Xm (register logical shift right, 64-bit)
-func (a *Assembler) LSRreg(dst, src, amount Reg) { a.emit(0x9ac02400 | uint32(amount)<<16 | uint32(src)<<5 | uint32(dst)) }
+func (a *Assembler) LSRreg(dst, src, amount Reg) {
+	a.emit(0x9ac02400 | uint32(amount)<<16 | uint32(src)<<5 | uint32(dst))
+}
 
 // ORNreg: Xd = Xn | ~Xm (bitwise OR NOT, 64-bit)
-func (a *Assembler) ORNreg(dst, src1, src2 Reg)  { a.emit(0xaa200000 | uint32(src2)<<16 | uint32(src1)<<5 | uint32(dst)) }
+func (a *Assembler) ORNreg(dst, src1, src2 Reg) {
+	a.emit(0xaa200000 | uint32(src2)<<16 | uint32(src1)<<5 | uint32(dst))
+}
