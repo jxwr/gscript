@@ -1695,7 +1695,6 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 
 		asm.LDR(jit.X6, jit.X0, jit.TableOffSvals)
 		asm.LDR(jit.X6, jit.X6, c.fieldIdx*jit.ValueSize)
-		asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
 		asm.LSRimm(jit.X7, jit.X6, uint8(nbPtrSubShift))
 		asm.LoadImm64(jit.X8, int64((jit.NB_TagPtrShr48<<4)|nbPtrSubVMClosure))
 		asm.CMPreg(jit.X7, jit.X8)
@@ -1783,6 +1782,10 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeResumePC)
 	asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeClosurePtr)
+	asm.UBFX(jit.X6, jit.X8, 0, 44)
+	asm.LoadImm64(jit.X12, nbClosureTagBits)
+	asm.ORRreg(jit.X6, jit.X6, jit.X12)
+	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
 	asm.MOVimm16(jit.X8, 1)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeTier2Only)
 	ec.emitRestoreTypedPeerCallerState()
@@ -1796,6 +1799,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm.B(doneLabel)
 
 	asm.Label(callFallbackLabel)
+	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
 	ec.emitRestoreTypedPeerCallerState()
 	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
