@@ -412,6 +412,55 @@ result := driver()
 	}
 }
 
+func TestFixedShapeTableFactsPass_AnnotatesSetFieldFromGenericArithmetic(t *testing.T) {
+	top := compileProto(t, `
+func step(a, tick) {
+    a.queue = (a.queue + tick + a.id) % 211
+    a.bytes = a.bytes + a.queue * 13 + tick
+    return a.bytes
+}
+result := step({queue: 1, id: 2, bytes: 3}, 4)
+`)
+	step := findProtoByName(top, "step")
+	if step == nil {
+		t.Fatal("expected step proto")
+	}
+	fields := []string{"queue", "id", "bytes"}
+	fn := BuildGraph(step)
+	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		ArgFacts: map[int]FixedShapeTableFact{
+			0: {
+				ShapeID:    runtime.GetShapeID(fields),
+				FieldNames: fields,
+				FieldTypes: map[string]Type{
+					"queue": TypeInt,
+					"id":    TypeInt,
+					"bytes": TypeInt,
+				},
+			},
+		},
+	})(fn)
+	if err != nil {
+		t.Fatalf("FixedShapeTableFactsPassWith: %v", err)
+	}
+
+	setFields := 0
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpSetField {
+				continue
+			}
+			setFields++
+			if instr.Aux2 == 0 {
+				t.Fatalf("SetField was not annotated with guarded shape cache:\n%s", Print(out))
+			}
+		}
+	}
+	if setFields != 2 {
+		t.Fatalf("expected two SetField ops, got %d\n%s", setFields, Print(out))
+	}
+}
+
 func TestFixedShapeTableFactsPass_EntryGuardedArgumentFactRecordsGuardMetadata(t *testing.T) {
 	top := compileProto(t, `
 func makePair(x, y) {

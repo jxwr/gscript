@@ -389,6 +389,7 @@ func valueProvenNonNil(v *Value) bool {
 	case OpConstNil:
 		return false
 	case OpConstInt, OpConstFloat, OpConstBool, OpConstString,
+		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpPow,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 		OpSqrt, OpFloor, OpFMA, OpFMSUB, OpNumToFloat, OpGetFieldNumToFloat,

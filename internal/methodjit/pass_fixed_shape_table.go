@@ -156,6 +156,7 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 		}
 		fn.FixedShapeTables = facts
 		annotateFixedShapeGetFields(fn, facts)
+		annotateFixedShapeSetFields(fn, facts)
 		annotateFixedShapeArrayElementAccesses(fn, facts)
 		forwardFixedShapeGetFields(fn, facts)
 		return fn, nil
@@ -1650,6 +1651,34 @@ func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact
 						fmt.Sprintf("field %q carries guarded nested array element type %s", name, nested.ArrayElementType))
 				}
 			}
+		}
+	}
+}
+
+func annotateFixedShapeSetFields(fn *Function, facts map[int]FixedShapeTableFact) {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpSetField || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil {
+				continue
+			}
+			if instr.Aux2 != 0 || !valueProvenNonNil(instr.Args[1]) {
+				continue
+			}
+			fact, ok := facts[instr.Args[0].ID]
+			if !ok || fact.ShapeID == 0 {
+				continue
+			}
+			name := fieldNameFromAux(fn, instr.Aux)
+			if name == "" {
+				continue
+			}
+			idx, ok := fact.fieldIndex(name)
+			if !ok {
+				continue
+			}
+			instr.Aux2 = int64(fact.ShapeID)<<32 | int64(uint32(idx))
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("prefilled fixed-shape setfield cache for %q", name))
 		}
 	}
 }

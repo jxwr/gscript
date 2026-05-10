@@ -173,11 +173,17 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 
 		calleeName, calleeProto := resolveCallee(instr, fn, config)
 		guardedFeedbackCallee := false
+		var fieldShapeCase FieldPolyShapeCase
+		hasFieldShapeCase := false
 		if calleeProto == nil {
 			if feedbackCallee, ok := inlineFeedbackCalleeProto(fn, instr); ok {
 				calleeName = feedbackCallee.Name
 				calleeProto = feedbackCallee
 				guardedFeedbackCallee = true
+				if c, ok := inlineFeedbackFieldShapeCase(fn, instr); ok {
+					fieldShapeCase = c
+					hasFieldShapeCase = true
+				}
 			}
 		}
 		if calleeProto == nil {
@@ -255,6 +261,9 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 
 		// Build the callee's IR.
 		calleeFn := BuildGraph(calleeProto)
+		if hasFieldShapeCase {
+			calleeFn = prepareFieldShapeInlineCallee(calleeFn, fieldShapeCase)
+		}
 		if config.RequirePureNumeric {
 			if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
 				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
@@ -318,10 +327,35 @@ func inlineFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool)
 	if proto, ok := callABIFeedbackCalleeProto(fn, instr); ok && proto != nil {
 		return proto, true
 	}
-	if protos := fieldShapeCalleeProtos(fn, instr); len(protos) == 1 && protos[0] != nil {
-		return protos[0], true
+	if c, ok := inlineFeedbackFieldShapeCase(fn, instr); ok && c.VMProto != nil {
+		return c.VMProto, true
 	}
 	return nil, false
+}
+
+func inlineFeedbackFieldShapeCase(fn *Function, instr *Instr) (FieldPolyShapeCase, bool) {
+	cases := fieldShapeCalleeCases(fn, instr)
+	if len(cases) != 1 || cases[0].VMProto == nil {
+		return FieldPolyShapeCase{}, false
+	}
+	return cases[0], true
+}
+
+func prepareFieldShapeInlineCallee(calleeFn *Function, c FieldPolyShapeCase) *Function {
+	if calleeFn == nil || c.ReceiverFact.ShapeID == 0 {
+		return calleeFn
+	}
+	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		ArgFacts: map[int]FixedShapeTableFact{0: c.ReceiverFact},
+	})(calleeFn)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = TypeSpecializePass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	return out
 }
 
 func hasInlineFeedbackCallee(fn *Function) bool {
