@@ -1050,9 +1050,7 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
-	if len(liveGPRs) > 0 || len(liveFPRs) > 0 {
-		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
-	}
+	ec.emitSpillTypedPeerLiveForSuccess(liveFPRs)
 
 	fallbackLabel := ec.uniqueLabel("t2rawpeer_fallback")
 	exitLabel := ec.uniqueLabel("t2rawpeer_exit")
@@ -1285,8 +1283,7 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 
 	ec.emitRestoreTypedPeerCallerState()
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
-	ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
-	ec.emitUnboxRawIntRegs(preReprs)
+	ec.emitReloadTypedPeerLiveForSuccess(liveFPRs)
 	ec.restoreValueReprSnapshot(preReprs)
 	switch desc.ReturnRep {
 	case SpecializedABIReturnRawInt:
@@ -1315,6 +1312,7 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeTier2Only)
 	ec.emitRestoreTypedPeerCallerState()
 	ec.restoreValueReprSnapshot(preReprs)
+	ec.emitSpillSelectiveForCall(liveGPRs, nil)
 	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, desc)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
@@ -1515,9 +1513,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 	asm := ec.asm
 
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
-	if len(liveGPRs) > 0 || len(liveFPRs) > 0 {
-		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
-	}
+	ec.emitSpillTypedPeerLiveForSuccess(liveFPRs)
 
 	fallbackLabel := ec.uniqueLabel("t2fieldpeer_fallback")
 	exitLabel := ec.uniqueLabel("t2fieldpeer_exit")
@@ -1622,8 +1618,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 			ec.emitRestoreTypedPeerCallerState()
 		}
 		asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
-		ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
-		ec.emitUnboxRawIntRegs(preReprs)
+		ec.emitReloadTypedPeerLiveForSuccess(liveFPRs)
 		ec.restoreValueReprSnapshot(preReprs)
 		switch c.desc.ReturnRep {
 		case SpecializedABIReturnRawInt:
@@ -1657,6 +1652,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 		ec.emitRestoreTypedPeerCallerState()
 	}
 	ec.restoreValueReprSnapshot(preReprs)
+	ec.emitSpillSelectiveForCall(liveGPRs, nil)
 	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
@@ -1703,9 +1699,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm := ec.asm
 
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
-	if len(liveGPRs) > 0 || len(liveFPRs) > 0 {
-		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
-	}
+	ec.emitSpillTypedPeerLiveForSuccess(liveFPRs)
 
 	fallbackLabel := ec.uniqueLabel("t2fieldmethod_fallback")
 	callFallbackLabel := ec.uniqueLabel("t2fieldmethod_call_fallback")
@@ -1807,8 +1801,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 			ec.emitRestoreTypedPeerCallerState()
 		}
 		asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
-		ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
-		ec.emitUnboxRawIntRegs(preReprs)
+		ec.emitReloadTypedPeerLiveForSuccess(liveFPRs)
 		ec.restoreValueReprSnapshot(preReprs)
 		switch c.desc.ReturnRep {
 		case SpecializedABIReturnRawInt:
@@ -1849,6 +1842,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		ec.emitRestoreTypedPeerCallerState()
 	}
 	ec.restoreValueReprSnapshot(preReprs)
+	ec.emitSpillSelectiveForCall(liveGPRs, nil)
 	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
@@ -2353,6 +2347,18 @@ func (ec *emitContext) emitRestoreTypedPeerCallerState() {
 	ec.emitStoreCallMode(jit.X8)
 }
 
+func (ec *emitContext) emitSpillTypedPeerLiveForSuccess(liveFPRs map[int]bool) {
+	// The published typed-peer callee entry uses the full native frame and
+	// preserves allocatable GPRs. Success paths only need to protect live FPRs;
+	// exit/fallback paths still materialize GPR live values before returning
+	// through Go.
+	ec.emitSpillSelectiveForCall(nil, liveFPRs)
+}
+
+func (ec *emitContext) emitReloadTypedPeerLiveForSuccess(liveFPRs map[int]bool) {
+	ec.emitReloadSelectiveForCall(nil, liveFPRs)
+}
+
 func (ec *emitContext) emitRestoreTypedPeerCallerModeClosureOnly() {
 	asm := ec.asm
 	asm.LDR(jit.X8, jit.SP, rawPeerClosureOff)
@@ -2789,10 +2795,7 @@ func (ec *emitContext) emitCallNativeTail(instr *Instr) {
 	// The callee direct entry expects X0=ctx. Capture it before restoring
 	// X19, whose saved value belongs to our caller rather than this frame.
 	asm.MOVreg(jit.X0, mRegCtx)
-	if ec.useFPR {
-		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
-	}
+	ec.emitRestoreCalleeSavedFPRs()
 	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
 	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
 	asm.LDP(jit.X23, jit.X24, jit.SP, 48)

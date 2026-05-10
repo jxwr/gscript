@@ -1321,10 +1321,7 @@ func (ec *emitContext) emitTypedSelfEntry() {
 	asm.STP(jit.X23, jit.X24, jit.SP, 48)
 	asm.STP(jit.X25, jit.X26, jit.SP, 64)
 	asm.STP(jit.X27, jit.X28, jit.SP, 80)
-	if ec.useFPR {
-		asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
-	}
+	ec.emitSaveCalleeSavedFPRs()
 
 	for i, rep := range ec.typedSelfABI.Params {
 		src := jit.Reg(int(jit.X0) + i)
@@ -1419,10 +1416,7 @@ func (ec *emitContext) emitTypedSelfReturnEpilogue() {
 
 func (ec *emitContext) emitFullFrameRestoreAndReturn() {
 	asm := ec.asm
-	if ec.useFPR {
-		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
-	}
+	ec.emitRestoreCalleeSavedFPRs()
 	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
 	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
 	asm.LDP(jit.X23, jit.X24, jit.SP, 48)
@@ -1431,6 +1425,45 @@ func (ec *emitContext) emitFullFrameRestoreAndReturn() {
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
 	asm.RET()
+}
+
+func (ec *emitContext) emitSaveCalleeSavedFPRs() {
+	if ec == nil || !ec.useFPR {
+		return
+	}
+	if ec.calleeSavedFPRPairUsed(8, 9) {
+		ec.asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
+	}
+	if ec.calleeSavedFPRPairUsed(10, 11) {
+		ec.asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
+	}
+}
+
+func (ec *emitContext) emitRestoreCalleeSavedFPRs() {
+	if ec == nil || !ec.useFPR {
+		return
+	}
+	if ec.calleeSavedFPRPairUsed(8, 9) {
+		ec.asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
+	}
+	if ec.calleeSavedFPRPairUsed(10, 11) {
+		ec.asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
+	}
+}
+
+func (ec *emitContext) calleeSavedFPRPairUsed(a, b int) bool {
+	if ec == nil {
+		return false
+	}
+	if ec.alloc == nil {
+		return ec.useFPR
+	}
+	for _, pr := range ec.alloc.ValueRegs {
+		if pr.IsFloat && (pr.Reg == a || pr.Reg == b) {
+			return true
+		}
+	}
+	return false
 }
 
 func (ec *emitContext) emitPrologue() {
@@ -1452,10 +1485,7 @@ func (ec *emitContext) emitPrologue() {
 	asm.STP(jit.X25, jit.X26, jit.SP, 64)
 	asm.STP(jit.X27, jit.X28, jit.SP, 80)
 	// Save callee-saved FPRs only if float values are register-allocated.
-	if ec.useFPR {
-		asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
-	}
+	ec.emitSaveCalleeSavedFPRs()
 
 	// Set up pinned registers.
 	// X0 holds ExecContext pointer (from callJIT trampoline).
@@ -1489,10 +1519,7 @@ func (ec *emitContext) emitEpilogue() {
 	asm.BCond(jit.CondEQ, leafDeoptLabel)
 	asm.B(leafDeoptContinueLabel)
 	asm.Label(leafDeoptLabel)
-	if ec.useFPR {
-		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
-	}
+	ec.emitRestoreCalleeSavedFPRs()
 	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
 	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
 	asm.LDP(jit.X23, jit.X24, jit.SP, 48)
@@ -1504,10 +1531,7 @@ func (ec *emitContext) emitEpilogue() {
 	asm.Label(leafDeoptContinueLabel)
 
 	// Restore callee-saved FPRs only if they were saved.
-	if ec.useFPR {
-		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
-	}
+	ec.emitRestoreCalleeSavedFPRs()
 	// Restore callee-saved GPRs.
 	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
 	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
@@ -1537,10 +1561,7 @@ func (ec *emitContext) emitEpilogue() {
 		asm.STP(jit.X23, jit.X24, jit.SP, 48)
 		asm.STP(jit.X25, jit.X26, jit.SP, 64)
 		asm.STP(jit.X27, jit.X28, jit.SP, 80)
-		if ec.useFPR {
-			asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
-		}
+		ec.emitSaveCalleeSavedFPRs()
 		asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
 		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
 		asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
@@ -1567,10 +1588,7 @@ func (ec *emitContext) emitEpilogue() {
 		asm.STP(jit.X23, jit.X24, jit.SP, 48)
 		asm.STP(jit.X25, jit.X26, jit.SP, 64)
 		asm.STP(jit.X27, jit.X28, jit.SP, 80)
-		if ec.useFPR {
-			asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
-		}
+		ec.emitSaveCalleeSavedFPRs()
 		asm.MOVreg(mRegCtx, jit.X0)                       // X19 = ctx
 		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)        // X26 = ctx.Regs
 		asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants) // X27 = ctx.Constants
@@ -1607,10 +1625,7 @@ func (ec *emitContext) emitEpilogue() {
 		asm.STP(jit.X23, jit.X24, jit.SP, 48)
 		asm.STP(jit.X25, jit.X26, jit.SP, 64)
 		asm.STP(jit.X27, jit.X28, jit.SP, 80)
-		if ec.useFPR {
-			asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-			asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
-		}
+		ec.emitSaveCalleeSavedFPRs()
 		// Skip MOVreg mRegCtx, X0  (mRegCtx unchanged in self-call)
 		asm.LDR(mRegRegs, mRegCtx, execCtxOffRegs)
 		ec.emitBoxedEntryShapeGuards()
@@ -1628,10 +1643,7 @@ func (ec *emitContext) emitEpilogue() {
 	asm.Label("t2_leaf_epilogue")
 	asm.MOVimm16(jit.X16, 0)
 	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
-	if ec.useFPR {
-		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
-	}
+	ec.emitRestoreCalleeSavedFPRs()
 	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
 	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
 	asm.LDP(jit.X23, jit.X24, jit.SP, 48)
@@ -1644,10 +1656,7 @@ func (ec *emitContext) emitEpilogue() {
 	asm.Label("t2_direct_epilogue")
 	asm.MOVimm16(jit.X16, 0)
 	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
-	if ec.useFPR {
-		asm.FLDP(jit.D8, jit.D9, jit.SP, 96)
-		asm.FLDP(jit.D10, jit.D11, jit.SP, 112)
-	}
+	ec.emitRestoreCalleeSavedFPRs()
 	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
 	asm.LDP(jit.X25, jit.X26, jit.SP, 64)
 	asm.LDP(jit.X23, jit.X24, jit.SP, 48)

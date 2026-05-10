@@ -471,10 +471,7 @@ func (ec *emitContext) emitDeferredResumes() {
 			ec.asm.STP(jit.X23, jit.X24, jit.SP, 48)
 			ec.asm.STP(jit.X25, jit.X26, jit.SP, 64)
 			ec.asm.STP(jit.X27, jit.X28, jit.SP, 80)
-			if ec.useFPR {
-				ec.asm.FSTP(jit.D8, jit.D9, jit.SP, 96)
-				ec.asm.FSTP(jit.D10, jit.D11, jit.SP, 112)
-			}
+			ec.emitSaveCalleeSavedFPRs()
 		}
 
 		// Set up pinned registers from ExecContext (X0 = ctx ptr from trampoline).
