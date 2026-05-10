@@ -74,7 +74,7 @@ func hasSideEffect(instr *Instr) bool {
 		return true
 
 	// Calls and coroutine transfers have arbitrary side effects.
-	case OpCall, OpCallFloor, OpResume, OpYield, OpSelf:
+	case OpCall, OpCallFloor, OpFieldCallFloor, OpResume, OpYield, OpSelf:
 		return true
 
 	// Guards: deoptimization side effect.

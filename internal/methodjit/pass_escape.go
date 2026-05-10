@@ -155,7 +155,7 @@ func escapeAnalysisMissReason(op Op) string {
 		return "table is used by SETLIST array construction"
 	case OpAppend:
 		return "table is used by append array construction"
-	case OpCall, OpCallFloor:
+	case OpCall, OpCallFloor, OpFieldCallFloor:
 		return "table escapes through call"
 	default:
 		return "table escapes through " + op.String()

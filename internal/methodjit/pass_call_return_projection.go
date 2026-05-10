@@ -24,6 +24,21 @@ func CallReturnProjectionPass(fn *Function) (*Function, error) {
 			}
 			instr.Op = OpCallFloor
 			instr.Type = TypeInt
+			if calleeLoad := fieldShapeMethodCalleeLoad(instr); calleeLoad != nil &&
+				uses[calleeLoad.ID] == 1 && fieldShapeTypedPeerProjectionCandidate(fn, instr) {
+				if fn.FieldPolyShapeFacts != nil {
+					if cases := fn.FieldPolyShapeFacts[calleeLoad.ID]; len(cases) > 0 {
+						fn.FieldPolyShapeFacts[instr.ID] = cases
+					}
+				}
+				instr.Op = OpFieldCallFloor
+				instr.Args = append([]*Value(nil), instr.Args[1:]...)
+				calleeLoad.Op = OpNop
+				calleeLoad.Type = TypeUnknown
+				calleeLoad.Args = nil
+				calleeLoad.Aux = 0
+				calleeLoad.Aux2 = 0
+			}
 			replaceValueUses(fn, next.ID, instr.Value(), instr.ID)
 			next.Op = OpNop
 			next.Type = TypeUnknown
@@ -35,6 +50,20 @@ func CallReturnProjectionPass(fn *Function) (*Function, error) {
 		}
 	}
 	return fn, nil
+}
+
+func fieldShapeMethodCalleeLoad(instr *Instr) *Instr {
+	if instr == nil || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[0].Def == nil {
+		return nil
+	}
+	calleeLoad := instr.Args[0].Def
+	if calleeLoad.Op != OpGetField || len(calleeLoad.Args) == 0 || calleeLoad.Args[0] == nil {
+		return nil
+	}
+	if instr.Args[1] == nil || instr.Args[1].ID != calleeLoad.Args[0].ID {
+		return nil
+	}
+	return calleeLoad
 }
 
 func callReturnProjectionCandidate(fn *Function, instr *Instr) bool {
@@ -50,7 +79,7 @@ func callReturnProjectionCandidate(fn *Function, instr *Instr) bool {
 }
 
 func fieldShapeTypedPeerProjectionCandidate(fn *Function, instr *Instr) bool {
-	if fn == nil || instr == nil || instr.Op != OpCall || len(instr.Args) < 2 ||
+	if fn == nil || instr == nil || (instr.Op != OpCall && instr.Op != OpCallFloor) || len(instr.Args) < 2 ||
 		instr.Args[0] == nil || instr.Args[0].Def == nil {
 		return false
 	}

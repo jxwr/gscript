@@ -480,6 +480,9 @@ func allIntLikeArgs(instr *Instr, seen map[int]bool) bool {
 }
 
 func tier2LoopCallIsNativeCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) bool {
+	if instr != nil && instr.Op == OpFieldCallFloor {
+		return true
+	}
 	if instr != nil && len(instr.Args) > 0 && callCalleeIsFieldDispatchValue(instr.Args[0]) {
 		return true
 	}

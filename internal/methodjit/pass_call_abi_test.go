@@ -467,6 +467,76 @@ func step_float(a, tick) {
 	}
 }
 
+func TestCallReturnProjection_FusesFieldShapeMethodFloor(t *testing.T) {
+	top := compileTop(t, `func step_int(a, tick) {
+	a.count = a.count + tick
+	return a.count
+}
+func step_float(a, tick) {
+	a.x = a.x + tick
+	return a.x
+}`)
+	stepInt := findProtoByName(top, "step_int")
+	stepFloat := findProtoByName(top, "step_float")
+	if stepInt == nil || stepFloat == nil {
+		t.Fatalf("missing protos: step_int=%v step_float=%v", stepInt != nil, stepFloat != nil)
+	}
+
+	fn := &Function{NumRegs: 4, nextID: 6}
+	b := &Block{ID: 0}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+	receiver := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	calleeLoad := &Instr{ID: 1, Op: OpGetField, Type: TypeFunction, Args: []*Value{receiver.Value()}, Aux: 1, Block: b}
+	tick := &Instr{ID: 2, Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	call := &Instr{ID: 3, Op: OpCall, Type: TypeAny, Args: []*Value{calleeLoad.Value(), receiver.Value(), tick.Value()}, Aux: 2, Aux2: 2, Block: b}
+	floor := &Instr{ID: 4, Op: OpFloor, Type: TypeInt, Args: []*Value{call.Value()}, Block: b}
+	ret := &Instr{ID: 5, Op: OpReturn, Args: []*Value{floor.Value()}, Block: b}
+	b.Instrs = []*Instr{receiver, calleeLoad, tick, call, floor, ret}
+	fn.FieldPolyShapeFacts = map[int][]FieldPolyShapeCase{
+		calleeLoad.ID: {
+			{
+				ShapeID:  101,
+				FieldIdx: 2,
+				VMProto:  stepInt,
+				ReceiverFact: FixedShapeTableFact{
+					ShapeID:    101,
+					FieldNames: []string{"count", "step"},
+					FieldTypes: map[string]Type{"count": TypeInt, "step": TypeFunction},
+				},
+			},
+			{
+				ShapeID:  102,
+				FieldIdx: 2,
+				VMProto:  stepFloat,
+				ReceiverFact: FixedShapeTableFact{
+					ShapeID:    102,
+					FieldNames: []string{"x", "step"},
+					FieldTypes: map[string]Type{"x": TypeFloat, "step": TypeFunction},
+				},
+			},
+		},
+	}
+
+	var err error
+	fn, err = CallReturnProjectionPass(fn)
+	if err != nil {
+		t.Fatalf("CallReturnProjectionPass: %v", err)
+	}
+	if call.Op != OpFieldCallFloor {
+		t.Fatalf("call op=%s want FieldCallFloor\nIR:\n%s", call.Op, Print(fn))
+	}
+	if calleeLoad.Op != OpNop {
+		t.Fatalf("callee load op=%s want Nop\nIR:\n%s", calleeLoad.Op, Print(fn))
+	}
+	if len(call.Args) != 2 || call.Args[0].ID != receiver.ID || call.Args[1].ID != tick.ID {
+		t.Fatalf("fused args=%v want receiver,tick\nIR:\n%s", call.Args, Print(fn))
+	}
+	if got := len(fn.FieldPolyShapeFacts[call.ID]); got != 2 {
+		t.Fatalf("fused FieldPolyShapeFacts=%d want 2", got)
+	}
+}
+
 func TestInline_StableFeedbackCalleeInsertsGuardAndInlines(t *testing.T) {
 	src := `func inc(n) { return n + 1 }
 func apply(f) {

@@ -205,11 +205,12 @@ const (
 	OpReturn // return Args[0], Args[1], ...
 
 	// Calls
-	OpCall      // Args[0] = function, Args[1:] = arguments
-	OpCallFloor // floor(Args[0](Args[1:])) → int; preserves call side effects
-	OpResume    // coroutine.resume fast bytecode; Aux = dest slot A, Aux2 = (B<<32)|C
-	OpYield     // coroutine.yield fast bytecode; Aux = dest slot A, Aux2 = (B<<32)|C
-	OpSelf      // method call: Args[0] = table, Args[1] = method key
+	OpCall           // Args[0] = function, Args[1:] = arguments
+	OpCallFloor      // floor(Args[0](Args[1:])) → int; preserves call side effects
+	OpFieldCallFloor // floor(Args[0].method(Args[0], Args[1:])) → int; guarded field-shape method call
+	OpResume         // coroutine.resume fast bytecode; Aux = dest slot A, Aux2 = (B<<32)|C
+	OpYield          // coroutine.yield fast bytecode; Aux = dest slot A, Aux2 = (B<<32)|C
+	OpSelf           // method call: Args[0] = table, Args[1] = method key
 
 	// For-loop
 	OpForPrep // initialize: R(A) -= R(A+2); jump to Succs[0] (loop test block)
@@ -350,6 +351,7 @@ var opNames = [...]string{
 	OpReturn:                     "Return",
 	OpCall:                       "Call",
 	OpCallFloor:                  "CallFloor",
+	OpFieldCallFloor:             "FieldCallFloor",
 	OpResume:                     "Resume",
 	OpYield:                      "Yield",
 	OpSelf:                       "Self",

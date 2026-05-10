@@ -493,7 +493,7 @@ func typeSpecArgIsDynamicallyUnknown(v *Value) bool {
 		return false
 	}
 	switch v.Def.Op {
-	case OpCall, OpCallFloor:
+	case OpCall, OpCallFloor, OpFieldCallFloor:
 		return true
 	default:
 		return false

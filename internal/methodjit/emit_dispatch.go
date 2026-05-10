@@ -184,6 +184,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpCallFloor:
 		ec.emitOpCallFloor(instr)
 		ec.clearTableArrayBoundedKeys()
+	case OpFieldCallFloor:
+		ec.emitOpFieldCallFloor(instr)
+		ec.clearTableArrayBoundedKeys()
 	case OpResume:
 		ec.emitResumeExit(instr)
 		ec.clearTableArrayBoundedKeys()
