@@ -345,7 +345,11 @@ func (e *mutualRecursiveIntEvaluator) eval(fn int, args [4]int64) (int64, bool) 
 
 func (e *mutualRecursiveIntEvaluator) evalBytecode(fn int, args [4]int64) (int64, bool) {
 	proto := e.protocol.protos[fn]
-	slots := make([]mutualRecursiveIntValue, proto.MaxStack)
+	if proto.MaxStack < 0 || proto.MaxStack > maxTrackedSlots {
+		return 0, false
+	}
+	var slotBuf [maxTrackedSlots]mutualRecursiveIntValue
+	slots := slotBuf[:proto.MaxStack]
 	for i := 0; i < proto.NumParams; i++ {
 		slots[i] = mutualRecursiveIntValue{kind: mutualRecursiveIntValueInt, i: args[i]}
 	}

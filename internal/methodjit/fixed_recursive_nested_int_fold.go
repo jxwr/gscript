@@ -291,7 +291,8 @@ func (p *fixedRecursiveNestedIntFoldProtocol) fold(mv, nv runtime.Value) (int64,
 	if out, ok := p.foldSmallRows(m, n); ok {
 		return out, true
 	}
-	stack := make([]int64, 0, 32)
+	var stackBuf [maxFixedRecursiveNestedIntFoldStack]int64
+	stack := stackBuf[:0]
 	for iter := 0; iter < maxFixedRecursiveNestedIntFoldIterations; iter++ {
 		switch {
 		case m == 0:
@@ -315,7 +316,7 @@ func (p *fixedRecursiveNestedIntFoldProtocol) fold(mv, nv runtime.Value) (int64,
 			if m < p.mStep || n < p.nStep {
 				return 0, false
 			}
-			if len(stack) >= maxFixedRecursiveNestedIntFoldStack {
+			if len(stack) >= len(stackBuf) {
 				return 0, false
 			}
 			stack = append(stack, m-p.mStep)
