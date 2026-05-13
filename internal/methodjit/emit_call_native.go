@@ -1605,7 +1605,6 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 		}
 		asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 		asm.CBZ(jit.X16, fallbackLabel)
-		ec.emitTypedPeerABICheck(jit.X7, c.desc, fallbackLabel)
 
 		if !c.callee.LeafNoCall {
 			asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
@@ -1807,7 +1806,6 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		asm.Label(validateMethodLabel + "_entry")
 		asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 		asm.CBZ(jit.X16, callFallbackLabel)
-		ec.emitTypedPeerABICheck(jit.X7, c.desc, callFallbackLabel)
 
 		if !c.callee.LeafNoCall {
 			asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
