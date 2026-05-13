@@ -299,6 +299,14 @@ func fieldSvalsLowerEligibleKeys(block *Block) map[fieldSvalsLowerKey]bool {
 	eligible := make(map[fieldSvalsLowerKey]bool)
 	seen := make(map[fieldSvalsLowerKey]bool)
 	broken := make(map[fieldSvalsLowerKey]bool)
+	hasStore := make(map[fieldSvalsLowerKey]bool)
+	for _, instr := range block.Instrs {
+		if !fieldSvalsStoreLowerable(instr) {
+			continue
+		}
+		shapeID := uint32(instr.Aux2 >> 32)
+		hasStore[fieldSvalsLowerKey{tableID: instr.Args[0].ID, shapeID: shapeID}] = true
+	}
 	for _, instr := range block.Instrs {
 		if fieldSvalsGlobalBarrier(instr) {
 			seen = make(map[fieldSvalsLowerKey]bool)
@@ -324,7 +332,7 @@ func fieldSvalsLowerEligibleKeys(block *Block) map[fieldSvalsLowerKey]bool {
 		}
 		shapeID := uint32(instr.Aux2 >> 32)
 		key := fieldSvalsLowerKey{tableID: instr.Args[0].ID, shapeID: shapeID}
-		if seen[key] && broken[key] {
+		if seen[key] && (broken[key] || hasStore[key]) {
 			eligible[key] = true
 		}
 		seen[key] = true
