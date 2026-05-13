@@ -109,6 +109,7 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 	}
 	loopPreheaders := computeLoopPreheaders(fn, li)
 	loopNestMap := loopNest(li)
+	nestedFloatPhiOverride := allowNestedFloatPhiOverride(fn)
 
 	// Raw-int single-predecessor carry: after a block is allocated, remember
 	// its final GPR contents. A successor with exactly one predecessor can pin
@@ -194,7 +195,7 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		if len(alloc.LoopInvariantFPRs) > 0 {
 			carried = addLoopPreheaderExternalFPRCarry(block, li, loopPreheaders, alloc, valueDefs, carried)
 		}
-		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried, loopNestMap[block.ID] >= 0)
+		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried, nestedFloatPhiOverride && loopNestMap[block.ID] >= 0)
 	}
 
 	return alloc
@@ -248,6 +249,34 @@ func isRawIntCarryValue(instr *Instr) bool {
 	default:
 		return false
 	}
+}
+
+func allowNestedFloatPhiOverride(fn *Function) bool {
+	if fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpConstInt, OpConstFloat, OpConstBool,
+				OpLoadSlot, OpPhi,
+				OpAdd, OpSub,
+				OpAddInt, OpSubInt, OpMulInt, OpNegInt,
+				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
+				OpNumToFloat, OpSqrt, OpFMA, OpFMSUB,
+				OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat,
+				OpGuardType, OpGuardIntRange, OpGuardTruthy,
+				OpJump, OpBranch, OpReturn:
+				continue
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // findBlockByID looks up a block by its ID. Returns nil if not found.
