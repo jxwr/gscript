@@ -16,6 +16,7 @@ func CallResultRangeGuardPass(fn *Function) (*Function, error) {
 	if fn == nil || fn.Proto == nil || fn.Proto.CallSiteFeedback == nil {
 		return fn, nil
 	}
+	uses := computeUseCounts(fn)
 	for _, block := range fn.Blocks {
 		if block == nil {
 			continue
@@ -33,6 +34,11 @@ func CallResultRangeGuardPass(fn *Function) (*Function, error) {
 					"skipped suppressed int-range guard")
 				continue
 			}
+			if callFloorResultModuloReduced(fn, instr, uses) {
+				functionRemarks(fn).Add("CallResultRangeGuard", "missed", block.ID, instr.ID, instr.Op,
+					"skipped int-range guard for modulo-reduced floor-call result")
+				continue
+			}
 			fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
 			min, max, reason, ok := callResultGuardRange(fn, instr, fb)
 			if !ok || nextInstrIsSameIntRangeGuard(block, i, instr.ID, min, max) {
@@ -47,6 +53,31 @@ func CallResultRangeGuardPass(fn *Function) (*Function, error) {
 		}
 	}
 	return fn, nil
+}
+
+func callFloorResultModuloReduced(fn *Function, instr *Instr, uses map[int]int) bool {
+	if fn == nil || instr == nil || uses[instr.ID] == 0 {
+		return false
+	}
+	switch instr.Op {
+	case OpCallFloor, OpFieldCallFloor:
+	default:
+		return false
+	}
+	for _, block := range fn.Blocks {
+		if block == nil {
+			continue
+		}
+		for _, user := range block.Instrs {
+			if user == nil || user.Op != OpModInt || len(user.Args) < 2 || !positiveIntModDivisorValue(user.Args[1]) {
+				continue
+			}
+			if user.Args[0] != nil && user.Args[0].ID == instr.ID {
+				return uses[instr.ID] == 1
+			}
+		}
+	}
+	return false
 }
 
 func callResultRangeGuardCandidate(instr *Instr) bool {

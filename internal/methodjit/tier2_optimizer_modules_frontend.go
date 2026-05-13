@@ -146,6 +146,7 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 			},
 		},
 		tier2PassModule("CallReturnProjection", Tier2PhaseCallLower, CallReturnProjectionPass),
+		tier2PassModule("ModularCallFloorReduce", Tier2PhaseCallLower, ModularCallFloorReducePass),
 		tier2PassModule("CallResultRangeGuard", Tier2PhaseCallLower, CallResultRangeGuardPass),
 		tier2PassModule("ConstProp", Tier2PhaseCallLower, ConstPropPass),
 		{
@@ -168,6 +169,7 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 func tier2PostRewriteModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("CallReturnProjection (post-rewrite)", Tier2PhasePostRewrite, CallReturnProjectionPass),
+		tier2PassModule("ModularCallFloorReduce (post-rewrite)", Tier2PhasePostRewrite, ModularCallFloorReducePass),
 		tier2PassModule("CallResultRangeGuard (post-rewrite)", Tier2PhasePostRewrite, CallResultRangeGuardPass),
 		tier2PassModule("DCE", Tier2PhasePostRewrite, DCEPass),
 		{
@@ -190,6 +192,7 @@ func tier2FinalCallModules(protocolGlobals map[string]*vm.FuncProto) []Tier2Opti
 			},
 		},
 		tier2PassModule("CallReturnProjection (final)", Tier2PhaseFinalCall, CallReturnProjectionPass),
+		tier2PassModule("ModularCallFloorReduce (final)", Tier2PhaseFinalCall, ModularCallFloorReducePass),
 		tier2PassModule("CallResultRangeGuard (final)", Tier2PhaseFinalCall, CallResultRangeGuardPass),
 		tier2PassModule("RangeAnalysis (post-final-call)", Tier2PhaseFinalCall, RangeAnalysisPass),
 	}
