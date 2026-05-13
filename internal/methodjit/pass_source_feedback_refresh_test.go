@@ -61,3 +61,19 @@ func TestSourceFeedbackRefresh_RestoresInlinedSetTableKind(t *testing.T) {
 		t.Fatalf("SetTable Aux2=%d want FBKindInt", set.Aux2)
 	}
 }
+
+func TestEnsureSourceProtoBackfillsInlinedCalleeSource(t *testing.T) {
+	source := &vm.FuncProto{Name: "callee", Code: make([]uint32, 2)}
+	src := &Instr{ID: 1, Op: OpGetTable, HasSource: true, SourcePC: 1, SourceLine: 12}
+	dst := &Instr{ID: 2, Op: OpGetTable}
+
+	dst.copySourceFrom(src)
+	dst.ensureSourceProto(source)
+
+	if !dst.HasSource || dst.SourcePC != 1 || dst.SourceLine != 12 {
+		t.Fatalf("source metadata not copied: %+v", dst)
+	}
+	if dst.SourceProto != source {
+		t.Fatalf("SourceProto=%p want %p", dst.SourceProto, source)
+	}
+}

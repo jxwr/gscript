@@ -664,6 +664,42 @@ func TestTableArrayLower_SetTableBeforeSameTableReadStillLowers(t *testing.T) {
 	}
 }
 
+func TestTableArrayLower_RefreshesInlinedSourceFeedback(t *testing.T) {
+	source := &vm.FuncProto{
+		Code:             make([]uint32, 3),
+		Feedback:         make([]vm.TypeFeedback, 3),
+		TableKeyFeedback: vm.NewTableKeyFeedbackVector(3),
+	}
+	source.Feedback[1].Kind = vm.FBKindInt
+	source.Feedback[1].Result = vm.FBInt
+
+	fn := &Function{}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny,
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	get.setSourceFromPC(source, 1)
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, get, ret}
+
+	out, err := TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatalf("TableArrayLowerPass: %v", err)
+	}
+	if get.Op != OpTableArrayLoad {
+		t.Fatalf("expected source-refreshed GetTable to lower, got %s\n%s", get.Op, Print(out))
+	}
+	if get.Type != TypeInt {
+		t.Fatalf("lowered load type=%s want int\n%s", get.Type, Print(out))
+	}
+	if get.Aux != int64(vm.FBKindInt) {
+		t.Fatalf("lowered load Aux=%d want FBKindInt\n%s", get.Aux, Print(out))
+	}
+}
+
 func TestTableArrayLower_TableArrayLoadKeepsNonNegativeKeyFact(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "table_array_nonneg_key"}, NumRegs: 2}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}

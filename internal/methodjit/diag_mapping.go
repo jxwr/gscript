@@ -20,18 +20,19 @@ type InstrCodeRange struct {
 // row. CodeStart/CodeEnd are -1 for IR instructions that do not directly emit
 // machine code, such as Phi/Nop after lowering.
 type IRASMMapEntry struct {
-	ProtoName  string `json:"proto"`
-	Source     string `json:"source,omitempty"`
-	SourceLine int    `json:"source_line,omitempty"`
-	BytecodePC int    `json:"bytecode_pc"`
-	BytecodeOp string `json:"bytecode_op,omitempty"`
-	BlockID    int    `json:"block"`
-	InstrID    int    `json:"ir_instr"`
-	IROp       string `json:"ir_op"`
-	IRType     string `json:"ir_type,omitempty"`
-	CodeStart  int    `json:"code_start"`
-	CodeEnd    int    `json:"code_end"`
-	Pass       string `json:"pass,omitempty"`
+	ProtoName       string `json:"proto"`
+	SourceProtoName string `json:"source_proto,omitempty"`
+	Source          string `json:"source,omitempty"`
+	SourceLine      int    `json:"source_line,omitempty"`
+	BytecodePC      int    `json:"bytecode_pc"`
+	BytecodeOp      string `json:"bytecode_op,omitempty"`
+	BlockID         int    `json:"block"`
+	InstrID         int    `json:"ir_instr"`
+	IROp            string `json:"ir_op"`
+	IRType          string `json:"ir_type,omitempty"`
+	CodeStart       int    `json:"code_start"`
+	CodeEnd         int    `json:"code_end"`
+	Pass            string `json:"pass,omitempty"`
 }
 
 func (i *Instr) setSourceFromPC(proto *vm.FuncProto, pc int) {
@@ -54,6 +55,13 @@ func (i *Instr) copySourceFrom(src *Instr) {
 	i.SourceProto = src.SourceProto
 	i.SourcePC = src.SourcePC
 	i.SourceLine = src.SourceLine
+}
+
+func (i *Instr) ensureSourceProto(proto *vm.FuncProto) {
+	if i == nil || !i.HasSource || i.SourceProto != nil || proto == nil {
+		return
+	}
+	i.SourceProto = proto
 }
 
 func instrSourceProto(fn *Function, instr *Instr) *vm.FuncProto {
@@ -124,6 +132,7 @@ func buildIRASMMapEntry(fn *Function, instr *Instr, r InstrCodeRange) IRASMMapEn
 		entry.SourceLine = instr.SourceLine
 		entry.BytecodePC = instr.SourcePC
 		if proto := instrSourceProto(fn, instr); proto != nil && instr.SourcePC >= 0 && instr.SourcePC < len(proto.Code) {
+			entry.SourceProtoName = proto.Name
 			entry.BytecodeOp = vm.OpName(vm.DecodeOp(proto.Code[instr.SourcePC]))
 		}
 	}

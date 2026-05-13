@@ -22,6 +22,7 @@ func TableArrayLowerPass(fn *Function) (*Function, error) {
 	for _, block := range fn.Blocks {
 		needsRewrite := false
 		for _, instr := range block.Instrs {
+			refreshTableArrayLoweringFeedback(instr)
 			if tableArrayLowerableGetTable(fn, instr) {
 				needsRewrite = true
 				break
@@ -33,6 +34,7 @@ func TableArrayLowerPass(fn *Function) (*Function, error) {
 
 		newInstrs := make([]*Instr, 0, len(block.Instrs)*2)
 		for _, instr := range block.Instrs {
+			refreshTableArrayLoweringFeedback(instr)
 			if !tableArrayLowerableGetTable(fn, instr) {
 				newInstrs = append(newInstrs, instr)
 				continue
@@ -62,6 +64,26 @@ func TableArrayLowerPass(fn *Function) (*Function, error) {
 		block.Instrs = newInstrs
 	}
 	return fn, nil
+}
+
+func refreshTableArrayLoweringFeedback(instr *Instr) {
+	if instr == nil || instr.Op != OpGetTable || !instr.HasSource || instr.SourcePC < 0 {
+		return
+	}
+	proto := instr.SourceProto
+	if proto == nil {
+		return
+	}
+	if !tableArrayLowerableKind(instr.Aux2) {
+		if kind := sourceFeedbackTableKind(proto, instr.SourcePC); tableArrayLowerableKind(kind) {
+			instr.Aux2 = kind
+		}
+	}
+	if instr.Type == TypeAny || instr.Type == TypeUnknown {
+		if typ, ok := sourceFeedbackResultType(proto, instr.SourcePC); ok {
+			instr.Type = typ
+		}
+	}
 }
 
 func tableArrayLowerableKind(kind int64) bool {
@@ -94,13 +116,17 @@ func tableKeyProvenInt(key *Value) bool {
 }
 
 func tableDynamicStringKeyCacheLikely(fn *Function, instr *Instr) bool {
-	if fn == nil || fn.Proto == nil || instr == nil || !instr.HasSource {
+	if instr == nil || !instr.HasSource {
 		return false
 	}
-	if instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.Feedback) && fn.Proto.Feedback[instr.SourcePC].Right == vm.FBString {
+	proto := instrSourceProto(fn, instr)
+	if proto == nil {
+		return false
+	}
+	if instr.SourcePC >= 0 && instr.SourcePC < len(proto.Feedback) && proto.Feedback[instr.SourcePC].Right == vm.FBString {
 		return true
 	}
-	return protoHasDynamicStringKeyCacheAt(fn.Proto, instr.SourcePC)
+	return protoHasDynamicStringKeyCacheAt(proto, instr.SourcePC)
 }
 
 func protoHasDynamicStringKeyCacheAt(proto *vm.FuncProto, pc int) bool {

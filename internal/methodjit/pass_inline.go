@@ -808,6 +808,7 @@ func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, callee
 			Block: block,
 		}
 		newInstr.copySourceFrom(ci)
+		newInstr.ensureSourceProto(calleeFn.Proto)
 		// Remap args.
 		newInstr.Args = make([]*Value, len(ci.Args))
 		for j, arg := range ci.Args {
@@ -945,6 +946,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 					Block: newBlock,
 				}
 				jmp.copySourceFrom(ci)
+				jmp.ensureSourceProto(calleeFn.Proto)
 				newBlock.Instrs = append(newBlock.Instrs, jmp)
 				newBlock.Succs = append(newBlock.Succs, mergeBlock)
 				mergeBlock.Preds = append(mergeBlock.Preds, newBlock)
@@ -960,6 +962,7 @@ func inlineMultiBlock(fn *Function, block *Block, callInstr *Instr, idx int, cal
 				Block: newBlock,
 			}
 			newInstr.copySourceFrom(ci)
+			newInstr.ensureSourceProto(calleeFn.Proto)
 
 			// Remap args.
 			newInstr.Args = make([]*Value, len(ci.Args))
