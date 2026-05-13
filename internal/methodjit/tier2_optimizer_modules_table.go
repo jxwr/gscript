@@ -21,6 +21,7 @@ func tier2TableObjectPreparationModules(globals map[string]*vm.FuncProto) []Tier
 		},
 		tier2PassModule("LoadElimination", Tier2PhaseTableObjectPrep, LoadEliminationPass),
 		tier2PassModule("FieldLenFold", Tier2PhaseTableObjectPrep, FieldLenFoldPass),
+		tier2PassModule("StaticTableLenFold", Tier2PhaseTableObjectPrep, StaticTableLenFoldPass),
 		tier2PassModule("EscapeAnalysis", Tier2PhaseTableObjectPrep, EscapeAnalysisPass),
 		tier2PassModule("FixedTableConstructorLowering", Tier2PhaseTableObjectPrep, FixedTableConstructorLoweringPass),
 		tier2PassModule("TablePreallocHint (post-fixed-table-lowering)", Tier2PhaseTableObjectPrep, TablePreallocHintPass),
