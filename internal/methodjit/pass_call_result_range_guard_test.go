@@ -87,3 +87,38 @@ func TestCallResultRangeGuardPass_RangeAnalysisConsumesGuard(t *testing.T) {
 		t.Fatalf("AddInt fed by guarded call result should be Int48Safe:\n%s", Print(fn))
 	}
 }
+
+func TestCallResultRangeGuardPass_SpeculatesStableFieldCallFloor(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:             "call_result_spec",
+		CallSiteFeedback: vm.NewCallSiteFeedbackVector(1),
+	}
+	proto.CallSiteFeedback[0].ObserveCall(runtime.NilValue(), nil, 1, 2)
+	fn := &Function{Proto: proto}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	recv := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	arg := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	call := &Instr{ID: fn.newValueID(), Op: OpFieldCallFloor, Type: TypeInt, Args: []*Value{recv.Value(), arg.Value()}, Block: b, HasSource: true, SourcePC: 0}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{call.Value()}, Block: b}
+	b.Instrs = []*Instr{recv, arg, call, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+	fn.FieldPolyShapeFacts = map[int][]FieldPolyShapeCase{
+		call.ID: {{ShapeID: 7, FieldIdx: 1}},
+	}
+
+	out, err := CallResultRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("CallResultRangeGuardPass: %v", err)
+	}
+	if len(out.Blocks[0].Instrs) < 4 || out.Blocks[0].Instrs[3].Op != OpGuardIntRange {
+		t.Fatalf("missing speculative GuardIntRange after field call:\n%s", Print(out))
+	}
+	guard := out.Blocks[0].Instrs[3]
+	if guard.Aux != callFloorSpecRangeMin || guard.Aux2 != callFloorSpecRangeMax {
+		t.Fatalf("guard range=[%d,%d], want [%d,%d]", guard.Aux, guard.Aux2, callFloorSpecRangeMin, callFloorSpecRangeMax)
+	}
+	if ret.Args[0].ID != guard.ID {
+		t.Fatalf("return arg not rewritten to guard:\n%s", Print(out))
+	}
+}

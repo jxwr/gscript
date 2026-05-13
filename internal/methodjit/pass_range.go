@@ -319,6 +319,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	// Phase A: seed loop counter ranges from FORLOOP/while-loop structure.
 	seedLoopRanges(fn, ranges)
 	seedGuardedForwardInductionRanges(fn, ranges)
+	seedModuloRecurrenceRanges(fn, ranges)
 
 	// Phase B: fixed-point propagation. Nested loop-carried values can need
 	// several trips through the block list before modulo-bounded recurrences
@@ -368,6 +369,175 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	fn.IntNonNegative = collectIntNonNegativeFacts(fn, ranges)
 	populateIntModFacts(fn, ranges)
 	return fn, nil
+}
+
+func seedModuloRecurrenceRanges(fn *Function, ranges map[int]intRange) {
+	if fn == nil || ranges == nil {
+		return
+	}
+	candidates := make(map[int]intRange)
+	// Seed candidates from direct modulo backedges first. Validation happens
+	// after phi-to-phi propagation so mutually recursive phi groups like
+	// x=phi(y, mod(...)); y=phi(0, x) can be proven together.
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpPhi {
+				continue
+			}
+			if candidate, ok := directModuloPhiCandidateRange(instr, ranges); ok {
+				candidates[instr.ID] = candidate
+			}
+		}
+	}
+	for iter := 0; iter < 8; iter++ {
+		changed := false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr == nil || instr.Op != OpPhi {
+					continue
+				}
+				candidate, ok := moduloPhiCandidateRange(instr, ranges, candidates)
+				if !ok {
+					continue
+				}
+				if old, ok := candidates[instr.ID]; ok {
+					candidate = joinRange(old, candidate)
+				}
+				if !candidate.known {
+					continue
+				}
+				if old, ok := candidates[instr.ID]; !ok || !rangeEqual(old, candidate) {
+					candidates[instr.ID] = candidate
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	for {
+		changed := false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr == nil || instr.Op != OpPhi {
+					continue
+				}
+				candidate, ok := candidates[instr.ID]
+				if !ok || allPhiInputsWithin(instr, candidate, ranges, candidates) {
+					continue
+				}
+				delete(candidates, instr.ID)
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	for id, r := range candidates {
+		if old, ok := ranges[id]; ok && old.known {
+			r = intersectRange(old, r)
+		}
+		if r.known {
+			ranges[id] = r
+		}
+	}
+}
+
+func directModuloPhiCandidateRange(instr *Instr, ranges map[int]intRange) (intRange, bool) {
+	if instr == nil || instr.Op != OpPhi {
+		return intRange{}, false
+	}
+	var candidate intRange
+	for _, arg := range instr.Args {
+		r, ok := moduloResultRange(arg, ranges)
+		if !ok || !r.known {
+			continue
+		}
+		if !candidate.known {
+			candidate = r
+		} else {
+			candidate = joinRange(candidate, r)
+		}
+	}
+	return candidate, candidate.known
+}
+
+func moduloPhiCandidateRange(instr *Instr, ranges, phiCandidates map[int]intRange) (intRange, bool) {
+	if instr == nil || instr.Op != OpPhi {
+		return intRange{}, false
+	}
+	var candidate intRange
+	for _, arg := range instr.Args {
+		r, ok := moduloResultRange(arg, ranges)
+		if !ok {
+			if arg != nil {
+				r, ok = phiCandidates[arg.ID]
+			}
+		}
+		if !ok || !r.known {
+			continue
+		}
+		if !candidate.known {
+			candidate = r
+		} else {
+			candidate = joinRange(candidate, r)
+		}
+	}
+	return candidate, candidate.known
+}
+
+func allPhiInputsWithin(instr *Instr, bounds intRange, ranges, phiCandidates map[int]intRange) bool {
+	if instr == nil || instr.Op != OpPhi || !bounds.known {
+		return false
+	}
+	for _, arg := range instr.Args {
+		if !valueRangeWithin(arg, bounds, ranges, phiCandidates) {
+			return false
+		}
+	}
+	return true
+}
+
+func moduloResultRange(v *Value, ranges map[int]intRange) (intRange, bool) {
+	if v == nil || v.Def == nil || v.Def.Op != OpModInt || len(v.Def.Args) < 2 {
+		return intRange{}, false
+	}
+	divisor := v.Def.Args[1]
+	if divisor == nil || divisor.Def == nil {
+		return intRange{}, false
+	}
+	if divisor.Def.Op == OpConstInt && divisor.Def.Aux > 0 {
+		return intRange{min: 0, max: divisor.Def.Aux - 1, known: true}, true
+	}
+	if dr, ok := ranges[divisor.ID]; ok && dr.known && dr.min > 0 {
+		return intRange{min: 0, max: satSub(dr.max, 1), known: true}, true
+	}
+	return intRange{}, false
+}
+
+func valueRangeWithin(v *Value, bounds intRange, ranges, phiCandidates map[int]intRange) bool {
+	if v == nil || !bounds.known {
+		return false
+	}
+	if r, ok := moduloResultRange(v, ranges); ok {
+		return rangeWithin(r, bounds)
+	}
+	if v.Def != nil && v.Def.Op == OpConstInt {
+		return v.Def.Aux >= bounds.min && v.Def.Aux <= bounds.max
+	}
+	if r, ok := ranges[v.ID]; ok && r.known {
+		return rangeWithin(r, bounds)
+	}
+	if r, ok := phiCandidates[v.ID]; ok && r.known {
+		return rangeWithin(r, bounds)
+	}
+	return false
+}
+
+func rangeWithin(r, bounds intRange) bool {
+	return r.known && bounds.known && r.min >= bounds.min && r.max <= bounds.max
 }
 
 // isIntegerLike returns true for IR types whose runtime value is a raw int

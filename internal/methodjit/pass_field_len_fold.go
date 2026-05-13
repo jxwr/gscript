@@ -232,6 +232,13 @@ func lowerFieldPolyLen(fn *Function, lenInstr, get *Instr) bool {
 		fn.FieldPolyShapeFacts = make(map[int][]FieldPolyShapeCase)
 	}
 	fn.FieldPolyShapeFacts[lenInstr.ID] = cases
+	name := fieldNameFromAux(fn, get.Aux)
+	if r, ok := fieldPolyLenRange(fn, name, cases); ok {
+		if fn.ProfiledIntRanges == nil {
+			fn.ProfiledIntRanges = make(map[int]intRange)
+		}
+		fn.ProfiledIntRanges[lenInstr.ID] = r
+	}
 	lenInstr.Op = OpFieldPolyLen
 	lenInstr.Type = TypeInt
 	lenInstr.Args = []*Value{get.Args[0]}
@@ -267,6 +274,25 @@ func fieldPolyExactLenCases(fn *Function, get *Instr) []FieldPolyShapeCase {
 		return nil
 	}
 	return out
+}
+
+func fieldPolyLenRange(fn *Function, name string, cases []FieldPolyShapeCase) (intRange, bool) {
+	if fn == nil || name == "" || len(cases) == 0 {
+		return intRange{}, false
+	}
+	var out intRange
+	for _, c := range cases {
+		r, ok := c.ReceiverFact.FieldLenRanges[name]
+		if !ok || !r.known {
+			return intRange{}, false
+		}
+		if !out.known {
+			out = r
+			continue
+		}
+		out = joinRange(out, r)
+	}
+	return out, out.known
 }
 
 func unwrapFieldLenInput(v *Value) *Value {

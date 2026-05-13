@@ -86,6 +86,9 @@ func TestFieldLenFold_LowersProfiledPolyFieldLen(t *testing.T) {
 	if len(cases) != 2 {
 		t.Fatalf("FieldPolyLen facts not copied, got %d cases", len(cases))
 	}
+	if r, ok := fn.ProfiledIntRanges[ln.ID]; !ok || !r.known || r.min != 2 || r.max != 5 {
+		t.Fatalf("FieldPolyLen profiled int range=%+v ok=%v, want [2,5]", r, ok)
+	}
 }
 
 func TestFieldLenFold_FoldsProfiledExactLen(t *testing.T) {

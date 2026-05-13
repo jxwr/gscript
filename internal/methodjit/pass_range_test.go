@@ -296,6 +296,77 @@ func TestRangePass_DuplicateBackedgeInductionUpdate(t *testing.T) {
 	}
 }
 
+func TestRangePass_SeedsModuloRecurrencePhi(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "mod_recur"}}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: b}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	div := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1000000007, Block: b}
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{phi.Value(), one.Value()}, Block: b}
+	mod := &Instr{ID: fn.newValueID(), Op: OpModInt, Type: TypeInt, Args: []*Value{add.Value(), div.Value()}, Block: b}
+	phi.Args = []*Value{zero.Value(), mod.Value()}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{mod.Value()}, Block: b}
+	b.Instrs = []*Instr{zero, one, div, phi, add, mod, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+	if !out.Int48Safe[add.ID] {
+		t.Fatalf("AddInt fed by modulo recurrence phi should be Int48Safe:\n%s", Print(out))
+	}
+}
+
+func TestRangePass_SeedsNestedModuloRecurrencePhis(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "nested_mod_recur"}}
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	header := &Block{ID: 1, defs: make(map[int]*Value)}
+	body := &Block{ID: 2, defs: make(map[int]*Value)}
+
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: entry}
+	div := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1000000007, Block: entry}
+	entryJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: entry}
+	entry.Instrs = []*Instr{zero, one, div, entryJump}
+	entry.Succs = []*Block{header}
+
+	outer := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	headerJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: header}
+	header.Instrs = []*Instr{outer, headerJump}
+	header.Preds = []*Block{entry, body}
+	header.Succs = []*Block{body}
+
+	inner := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: body}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{inner.Value(), one.Value()}, Block: body}
+	mod := &Instr{ID: fn.newValueID(), Op: OpModInt, Type: TypeInt, Args: []*Value{add.Value(), div.Value()}, Block: body}
+	bodyJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: body}
+	body.Instrs = []*Instr{inner, add, mod, bodyJump}
+	body.Preds = []*Block{header}
+	body.Succs = []*Block{header}
+
+	outer.Args = []*Value{zero.Value(), inner.Value()}
+	inner.Args = []*Value{outer.Value(), mod.Value()}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, header, body}
+
+	out, err := RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+	if got := out.IntRanges[outer.ID]; !got.known || got.min != 0 || got.max != 1000000006 {
+		t.Fatalf("outer phi range=%+v, want modulo range", got)
+	}
+	if got := out.IntRanges[inner.ID]; !got.known || got.min != 0 || got.max != 1000000006 {
+		t.Fatalf("inner phi range=%+v, want modulo range", got)
+	}
+	if !out.Int48Safe[add.ID] {
+		t.Fatalf("AddInt fed by nested modulo recurrence phis should be Int48Safe:\n%s", Print(out))
+	}
+}
+
 func TestRangePass_IntNonNegativeMarksConstantsAndRanges(t *testing.T) {
 	fn := &Function{
 		Proto:   &vm.FuncProto{Name: "nonneg_facts"},
