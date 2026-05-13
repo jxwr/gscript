@@ -639,11 +639,33 @@ func protoSupportsIndexedGlobalProtocol(proto *vm.FuncProto) bool {
 }
 
 func fnSupportsNativeSetGlobalProtocol(fn *Function) bool {
-	return fn != nil && protoSupportsNativeSetGlobalProtocol(fn.Proto)
+	if fn == nil || !protoSupportsNativeSetGlobalProtocol(fn.Proto) {
+		return false
+	}
+	// Result-producing op-exits can materialize values that are immediately
+	// published to globals and then consumed by VM calls before the function
+	// returns. Keep those global writes on the VM path until the op has a
+	// fully native lowering.
+	return !fnHasResultProducingOpExit(fn)
 }
 
 func protoSupportsNativeSetGlobalProtocol(proto *vm.FuncProto) bool {
 	return proto != nil && proto.Name == "<main>"
+}
+
+func fnHasResultProducingOpExit(fn *Function) bool {
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instructionHasNoSSAResult(instr) {
+				continue
+			}
+			switch instr.Op {
+			case OpMatrixDense:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func loopBodyHasDirectDeopt(fn *Function, bodyBlocks map[int]bool) bool {

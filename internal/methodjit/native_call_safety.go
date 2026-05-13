@@ -149,7 +149,7 @@ func tier2OpMayExitForNativeReplay(instr *Instr) bool {
 		OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardNonNil, OpGuardTruthy,
 		OpNumToFloat,
 		OpDivIntExact,
-		OpMatrixGetF, OpMatrixSetF, OpMatrixFlat, OpMatrixStride:
+		OpMatrixDense, OpMatrixGetF, OpMatrixSetF, OpMatrixFlat, OpMatrixStride:
 		return true
 	case OpAddInt, OpSubInt, OpMulInt, OpNegInt:
 		return true

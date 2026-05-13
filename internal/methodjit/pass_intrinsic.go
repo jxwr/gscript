@@ -78,6 +78,17 @@ func IntrinsicPass(fn *Function) (*Function, []string) {
 			}
 
 			// R43 Phase 2 DenseMatrix intrinsics.
+			// matrix.dense(rows, cols) — 2-arg → table.
+			if moduleName == "matrix" && fieldName == "dense" && len(instr.Args) == 3 {
+				rows, cols := instr.Args[1], instr.Args[2]
+				instr.Op = OpMatrixDense
+				instr.Type = TypeTable
+				instr.Args = []*Value{rows, cols}
+				instr.Aux = 0
+				instr.Aux2 = 0
+				notes = append(notes, "intrinsic: matrix.dense → OpMatrixDense")
+				continue
+			}
 			// matrix.getf(m, i, j) — 3-arg → float.
 			if moduleName == "matrix" && fieldName == "getf" && len(instr.Args) == 4 {
 				m, i, j := instr.Args[1], instr.Args[2], instr.Args[3]

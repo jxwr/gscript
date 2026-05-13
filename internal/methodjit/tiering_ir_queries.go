@@ -368,11 +368,15 @@ func hasExpensiveInLoop(fn *Function, predicate func(Op) bool) bool {
 	return false
 }
 
-func firstResidualFieldCalleeCall(fn *Function) (*Instr, bool) {
+func firstResidualFieldCalleeCallInLoop(fn *Function) (*Instr, bool) {
 	if fn == nil {
 		return nil, false
 	}
+	li := computeLoopInfo(fn)
 	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
 		for _, instr := range block.Instrs {
 			if instr == nil || instr.Op != OpCall || len(instr.Args) == 0 || instr.Args[0] == nil {
 				continue

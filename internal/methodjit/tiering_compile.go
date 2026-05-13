@@ -238,10 +238,10 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op, gate.Reason)
 			return fmt.Errorf("tier2: %s, staying at Tier 1", gate.Reason)
 		}
-		if call, ok := firstResidualFieldCalleeCall(fn); ok {
+		if call, ok := firstResidualFieldCalleeCallInLoop(fn); ok {
 			remarks.Add("Tier2Gate", "blocked", call.Block.ID, call.ID, OpCall,
-				"residual GetField callee call needs table-exit resume")
-			return fmt.Errorf("tier2: residual GetField callee call, staying at Tier 1")
+				"loop residual GetField callee call needs table-exit resume")
+			return fmt.Errorf("tier2: loop residual GetField callee call, staying at Tier 1")
 		}
 		fn.CarryPreheaderInvariants = true
 		if trace != nil {

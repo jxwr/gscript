@@ -888,6 +888,17 @@ func (tm *TieringManager) executeOpExit(ctx *ExecContext, regs []runtime.Value, 
 			}
 		}
 
+	case OpMatrixDense:
+		if absSlot >= len(regs) || absArg1 < 0 || absArg2 < 0 || absArg1 >= len(regs) || absArg2 >= len(regs) {
+			return fmt.Errorf("matrix.dense op-exit out of register range")
+		}
+		rowsv := regs[absArg1]
+		colsv := regs[absArg2]
+		if !rowsv.IsInt() || !colsv.IsInt() {
+			return fmt.Errorf("matrix.dense: rows and cols must be integers")
+		}
+		regs[absSlot] = runtime.TableValue(runtime.NewDenseMatrix(int(rowsv.Int()), int(colsv.Int())))
+
 	case OpConcat:
 		tempBase := absArg1
 		nArgs := int(ctx.OpExitArg2)

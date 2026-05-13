@@ -550,6 +550,17 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 			}
 		}
 
+	case OpMatrixDense:
+		if slot >= len(regs) || arg1 < 0 || arg2 < 0 || arg1 >= len(regs) || arg2 >= len(regs) {
+			return fmt.Errorf("matrix.dense op-exit out of register range")
+		}
+		rowsv := regs[arg1]
+		colsv := regs[arg2]
+		if !rowsv.IsInt() || !colsv.IsInt() {
+			return fmt.Errorf("matrix.dense: rows and cols must be integers")
+		}
+		regs[slot] = runtime.TableValue(runtime.NewDenseMatrix(int(rowsv.Int()), int(colsv.Int())))
+
 	case OpConcat:
 		tempBase := arg1
 		nArgs := arg2

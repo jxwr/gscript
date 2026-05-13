@@ -341,6 +341,14 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		c := s.val(instr.Args[2]).Number()
 		s.values[instr.ID] = runtime.FloatValue(c - a*b)
 
+	case OpMatrixDense:
+		rowsv := s.val(instr.Args[0])
+		colsv := s.val(instr.Args[1])
+		if !rowsv.IsInt() || !colsv.IsInt() {
+			return nil, false, fmt.Errorf("OpMatrixDense: rows and cols must be integers")
+		}
+		s.values[instr.ID] = runtime.TableValue(runtime.NewDenseMatrix(int(rowsv.Int()), int(colsv.Int())))
+
 	case OpMatrixGetF:
 		// R43 Phase 2 interp fallback: delegate to the builtin via Go.
 		mv := s.val(instr.Args[0])

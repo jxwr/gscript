@@ -113,6 +113,8 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitFMA(instr)
 	case OpFMSUB:
 		ec.emitFMSUB(instr)
+	case OpMatrixDense:
+		ec.emitOpExit(instr)
 	case OpMatrixGetF:
 		ec.emitMatrixGetF(instr)
 	case OpMatrixSetF:

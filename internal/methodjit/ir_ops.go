@@ -45,9 +45,11 @@ const (
 	OpSqrt        // sqrt(float) → float (intrinsic: rewrites math.sqrt(x))
 	OpFloor       // floor(number) → int (intrinsic: rewrites math.floor(x))
 	// R43 Phase 2 DenseMatrix intrinsics (compound; self-contained).
+	// OpMatrixDense: Args = [rows, cols]; creates a DenseMatrix table.
 	// OpMatrixGetF: Args = [m, i, j]; loads flat[i*m.dmStride + j] as float.
 	// OpMatrixSetF: Args = [m, i, j, v]; stores v at flat[i*m.dmStride + j].
 	// Both guard dmStride > 0 at runtime; deopt on miss.
+	OpMatrixDense
 	OpMatrixGetF
 	OpMatrixSetF
 	// R45 Phase 2c LICM-friendly split:
@@ -281,6 +283,7 @@ var opNames = [...]string{
 	OpNegFloat:                   "NegFloat",
 	OpSqrt:                       "Sqrt",
 	OpFloor:                      "Floor",
+	OpMatrixDense:                "MatrixDense",
 	OpMatrixGetF:                 "MatrixGetF",
 	OpMatrixSetF:                 "MatrixSetF",
 	OpMatrixFlat:                 "MatrixFlat",
