@@ -1539,42 +1539,80 @@ func (ec *emitContext) emitTypedSelfReturnEpilogue() {
 }
 
 func (ec *emitContext) emitSaveTypedSelfFrameRegs() {
-	asm := ec.asm
-	if ec.typedSelfGPRPairUsed(19, 20) {
-		asm.STP(jit.X19, jit.X20, jit.SP, 16)
+	gprs, fprs := ec.typedSelfSavedRegs()
+	off := 16
+	for i := 0; i < len(gprs); {
+		r0 := jit.Reg(gprs[i])
+		if i+1 < len(gprs) {
+			ec.asm.STP(r0, jit.Reg(gprs[i+1]), jit.SP, off)
+			off += 16
+			i += 2
+			continue
+		}
+		ec.asm.STR(r0, jit.SP, off)
+		off += 8
+		i++
 	}
-	if ec.typedSelfGPRPairUsed(21, 22) {
-		asm.STP(jit.X21, jit.X22, jit.SP, 32)
+	off = (off + 15) &^ 15
+	for i := 0; i < len(fprs); {
+		r0 := jit.FReg(fprs[i])
+		if i+1 < len(fprs) {
+			ec.asm.FSTP(r0, jit.FReg(fprs[i+1]), jit.SP, off)
+			off += 16
+			i += 2
+			continue
+		}
+		ec.asm.FSTRd(r0, jit.SP, off)
+		off += 8
+		i++
 	}
-	if ec.typedSelfGPRPairUsed(23, 24) {
-		asm.STP(jit.X23, jit.X24, jit.SP, 48)
-	}
-	if ec.typedSelfGPRPairUsed(25, 26) {
-		asm.STP(jit.X25, jit.X26, jit.SP, 64)
-	}
-	if ec.typedSelfGPRPairUsed(27, 28) {
-		asm.STP(jit.X27, jit.X28, jit.SP, 80)
-	}
-	ec.emitSaveCalleeSavedFPRs()
 }
 
 func (ec *emitContext) emitRestoreTypedSelfFrameRegs() {
-	asm := ec.asm
-	ec.emitRestoreCalleeSavedFPRs()
-	if ec.typedSelfGPRPairUsed(27, 28) {
-		asm.LDP(jit.X27, jit.X28, jit.SP, 80)
+	gprs, fprs := ec.typedSelfSavedRegs()
+	off := 16
+	gprOffs := make([]int, len(gprs))
+	for i := 0; i < len(gprs); {
+		gprOffs[i] = off
+		if i+1 < len(gprs) {
+			gprOffs[i+1] = off
+			off += 16
+			i += 2
+			continue
+		}
+		off += 8
+		i++
 	}
-	if ec.typedSelfGPRPairUsed(25, 26) {
-		asm.LDP(jit.X25, jit.X26, jit.SP, 64)
+	off = (off + 15) &^ 15
+	fprOffs := make([]int, len(fprs))
+	for i := 0; i < len(fprs); {
+		fprOffs[i] = off
+		if i+1 < len(fprs) {
+			fprOffs[i+1] = off
+			off += 16
+			i += 2
+			continue
+		}
+		off += 8
+		i++
 	}
-	if ec.typedSelfGPRPairUsed(23, 24) {
-		asm.LDP(jit.X23, jit.X24, jit.SP, 48)
+	for i := len(fprs) - 1; i >= 0; {
+		if i > 0 && fprOffs[i] == fprOffs[i-1] {
+			ec.asm.FLDP(jit.FReg(fprs[i-1]), jit.FReg(fprs[i]), jit.SP, fprOffs[i])
+			i -= 2
+			continue
+		}
+		ec.asm.FLDRd(jit.FReg(fprs[i]), jit.SP, fprOffs[i])
+		i--
 	}
-	if ec.typedSelfGPRPairUsed(21, 22) {
-		asm.LDP(jit.X21, jit.X22, jit.SP, 32)
-	}
-	if ec.typedSelfGPRPairUsed(19, 20) {
-		asm.LDP(jit.X19, jit.X20, jit.SP, 16)
+	for i := len(gprs) - 1; i >= 0; {
+		if i > 0 && gprOffs[i] == gprOffs[i-1] {
+			ec.asm.LDP(jit.Reg(gprs[i-1]), jit.Reg(gprs[i]), jit.SP, gprOffs[i])
+			i -= 2
+			continue
+		}
+		ec.asm.LDR(jit.Reg(gprs[i]), jit.SP, gprOffs[i])
+		i--
 	}
 }
 
@@ -1586,19 +1624,13 @@ func (ec *emitContext) emitTypedSelfFrameRestoreAndReturn() {
 	asm.RET()
 }
 
-func (ec *emitContext) typedSelfGPRPairUsed(a, b int) bool {
+func (ec *emitContext) typedSelfSavedRegs() ([]int, []int) {
 	if ec == nil || ec.alloc == nil {
-		return true
+		return []int{19, 20, 21, 22, 23, 24, 25, 26, 27, 28}, nil
 	}
-	for _, pr := range ec.alloc.ValueRegs {
-		if pr.IsFloat {
-			continue
-		}
-		if pr.Reg == a || pr.Reg == b {
-			return true
-		}
-	}
-	return false
+	gprs := typedPeerAllocatedCalleeSavedGPRs(ec.alloc)
+	fprs := typedPeerAllocatedCalleeSavedFPRs(ec.alloc)
+	return gprs, fprs
 }
 
 func (ec *emitContext) emitFullFrameRestoreAndReturn() {
@@ -1700,11 +1732,20 @@ func (ec *emitContext) emitEpilogue() {
 	// Shared register restore and return (used by both normal and deopt paths).
 	asm.Label("deopt_epilogue")
 	leafDeoptLabel := ec.uniqueLabel("leaf_deopt_epilogue")
+	typedDeoptLabel := ec.uniqueLabel("typed_deopt_epilogue")
 	leafDeoptContinueLabel := ec.uniqueLabel("leaf_deopt_continue")
 	ec.emitLoadCallMode(jit.X16)
+	if ec.typedSelfABI.Eligible {
+		asm.CMPimm(jit.X16, callModeTypedSelf)
+		asm.BCond(jit.CondEQ, typedDeoptLabel)
+	}
 	asm.CMPimm(jit.X16, callModeLeafX0)
 	asm.BCond(jit.CondEQ, leafDeoptLabel)
 	asm.B(leafDeoptContinueLabel)
+	if ec.typedSelfABI.Eligible {
+		asm.Label(typedDeoptLabel)
+		ec.emitTypedSelfFrameRestoreAndReturn()
+	}
 	asm.Label(leafDeoptLabel)
 	ec.emitRestoreCalleeSavedFPRs()
 	asm.LDP(jit.X27, jit.X28, jit.SP, 80)
