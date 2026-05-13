@@ -15,9 +15,6 @@ func TableArrayStoreLoopVersionPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
-	if !functionHasNoTableMetatableMutationSurface(fn) {
-		return fn, nil
-	}
 	li := computeLoopInfo(fn)
 	if li == nil || !li.hasLoops() {
 		return fn, nil
@@ -37,6 +34,11 @@ func TableArrayStoreLoopVersionPass(fn *Function) (*Function, error) {
 			continue
 		}
 		for _, cand := range candidates {
+			if tableArrayStoreLoopLocalTableEscapesToLoopCall(fn, body, cand) {
+				functionRemarks(fn).Add("TableArrayStoreLoopVersion", "missed", header.ID, 0, OpTableArrayStore,
+					"local table may be visible to an in-loop call")
+				continue
+			}
 			nestedBuilder := tableArrayStoreLoopNestedBuilder(li, body, cand)
 			if !tableArrayStoreLoopHasLengthSeed(fn, dom, preheader, cand, nestedBuilder) {
 				functionRemarks(fn).Add("TableArrayStoreLoopVersion", "missed", header.ID, 0, OpTableArrayStore,
@@ -120,7 +122,9 @@ func tableArrayStoreLoopCandidatesFor(fn *Function, body map[int]bool) []tableAr
 				// Existing checked stores are structural-preserving, but this
 				// pass is only responsible for pure SetTable mutation loops.
 				return nil
-			case OpCall, OpResume, OpSelf, OpSetField, OpAppend, OpSetList, OpTableBoolArrayFill:
+			case OpCall:
+				continue
+			case OpResume, OpSelf, OpSetField, OpAppend, OpSetList, OpTableBoolArrayFill:
 				return nil
 			}
 		}
@@ -136,6 +140,64 @@ func tableArrayStoreLoopCandidatesFor(fn *Function, body map[int]bool) []tableAr
 		}
 	}
 	return out
+}
+
+func tableArrayStoreLoopLocalTableEscapesToLoopCall(fn *Function, body map[int]bool, cand tableArrayStoreLoopCandidate) bool {
+	if fn == nil || body == nil || cand.table == nil || cand.table.Def == nil || cand.table.Def.Op != OpNewTable {
+		return true
+	}
+	hasLoopCall := false
+	for _, block := range fn.Blocks {
+		if block == nil || !body[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Op == OpCall {
+				hasLoopCall = true
+				break
+			}
+		}
+		if hasLoopCall {
+			break
+		}
+	}
+	if !hasLoopCall {
+		return false
+	}
+	tableID := cand.table.ID
+	storeIDs := make(map[int]bool, len(cand.stores))
+	for _, store := range cand.stores {
+		if store != nil {
+			storeIDs[store.ID] = true
+		}
+	}
+	for _, block := range fn.Blocks {
+		if block == nil {
+			continue
+		}
+		inLoop := body[block.ID]
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.ID == cand.table.Def.ID {
+				continue
+			}
+			for argIdx, arg := range instr.Args {
+				if arg == nil || arg.ID != tableID {
+					continue
+				}
+				if inLoop && instr.Op == OpSetTable && storeIDs[instr.ID] && argIdx == 0 {
+					continue
+				}
+				if instr.Op == OpGuardTableKind || (instr.Op == OpGuardType && instr.Type == TypeTable) {
+					continue
+				}
+				if !inLoop && instr.Op == OpReturn {
+					continue
+				}
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func tableArrayStoreLoopCandidateFor(fn *Function, body map[int]bool) (tableArrayStoreLoopCandidate, bool) {

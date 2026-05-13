@@ -155,6 +155,45 @@ func TestTableArrayStoreLoopVersion_LowersMultipleLargeNumericTables(t *testing.
 	}
 }
 
+func TestTableArrayStoreLoopVersion_AllowsCallThatCannotSeeLocalTable(t *testing.T) {
+	fn := tableArrayNumericStoreLoopFixture(t)
+	_, _, body, _ := tableArrayLoopBlocks(fn)
+	callee := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFunction, Aux: 1, Block: body}
+	arg := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 7, Block: body}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeInt, Args: []*Value{callee.Value(), arg.Value()}, Block: body}
+	body.Instrs = append([]*Instr{callee, arg, call}, body.Instrs...)
+	assertValidates(t, fn, "store loop with invisible call")
+
+	out, err := TableArrayStoreLoopVersionPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValidates(t, out, "store loop with invisible call versioned")
+	counts := countOps(out)
+	if counts[OpTableArrayStore] != 1 || counts[OpSetTable] != 0 {
+		t.Fatalf("call that cannot see local table should not block store lowering, counts=%v\n%s", counts, Print(out))
+	}
+}
+
+func TestTableArrayStoreLoopVersion_RejectsCallReceivingLocalTable(t *testing.T) {
+	fn := tableArrayNumericStoreLoopFixture(t)
+	tbl, _, body, _ := tableArrayLoopBlocks(fn)
+	callee := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFunction, Aux: 1, Block: body}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeUnknown, Args: []*Value{callee.Value(), tbl}, Block: body}
+	body.Instrs = append([]*Instr{callee, call}, body.Instrs...)
+	assertValidates(t, fn, "store loop with escaping call")
+
+	out, err := TableArrayStoreLoopVersionPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValidates(t, out, "store loop with escaping call remains valid")
+	counts := countOps(out)
+	if counts[OpTableArrayStore] != 0 || counts[OpSetTable] != 1 {
+		t.Fatalf("call receiving local table must block store lowering, counts=%v\n%s", counts, Print(out))
+	}
+}
+
 func TestTableArrayStoreLoopVersion_DiagnosticsCoversSieveStoreLoop(t *testing.T) {
 	proto := compileProto(t, `
 func sieve_like(n) {
@@ -180,6 +219,24 @@ result := sieve_like(20)
 	if !strings.Contains(art.IRAfter, "TableArrayHeader") {
 		t.Fatalf("expected loop-scoped typed-array facts in optimized IR:\n%s", art.IRAfter)
 	}
+}
+
+func tableArrayLoopBlocks(fn *Function) (*Value, *Block, *Block, *Block) {
+	var tbl *Value
+	var header, body, exit *Block
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpNewTable {
+				tbl = instr.Value()
+			}
+			if instr.Op == OpBranch && len(block.Succs) == 2 {
+				header = block
+				body = block.Succs[0]
+				exit = block.Succs[1]
+			}
+		}
+	}
+	return tbl, header, body, exit
 }
 
 func tableArrayStoreLoopFixture(t *testing.T, localTypedTable bool) (*Function, *Block, *Block, *Instr) {

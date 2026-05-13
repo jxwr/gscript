@@ -105,10 +105,12 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 					}
 					largeLoopBuilder = true
 				}
-				hint.observeArrayHint(arrayHint)
 				if fn.Proto != nil && fn.Proto.TableKeyFeedback != nil && instr.HasSource && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.TableKeyFeedback) {
-					hint.observeIntKeyFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC], largeLoopBuilder)
+					if feedbackHint, ok := tablePreallocArrayHintFromFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC], largeLoopBuilder); ok {
+						arrayHint = feedbackHint
+					}
 				}
+				hint.observeArrayHint(arrayHint)
 				if forceMixed || hasMixedValue {
 					hint.mixed = true
 				}
@@ -154,6 +156,23 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 	}
 	annotateLocalTableArrayKinds(fn, candidates, globalNewTables)
 	return fn, nil
+}
+
+func tablePreallocArrayHintFromFeedback(feedback vm.TableKeyFeedback, allowLargeLoopHeadroom bool) (int64, bool) {
+	if !feedback.HasIntKey {
+		return 0, false
+	}
+	needed := int64(feedback.MaxIntKey) + 1
+	if needed < tier2FeedbackArrayHint {
+		needed = tier2FeedbackArrayHint
+	}
+	if allowLargeLoopHeadroom && needed >= tier2FeedbackOuterLoopArrayHint {
+		needed += needed / 2
+	}
+	if needed > tier2MaxFeedbackArrayHint {
+		needed = tier2MaxFeedbackArrayHint
+	}
+	return needed, true
 }
 
 func tablePreallocUseDenseMixedBacking(hint tablePreallocHint, hashHint int, kind runtime.ArrayKind) bool {
