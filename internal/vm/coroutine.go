@@ -1013,7 +1013,13 @@ func (vm *VM) callLeafCoroutine(co *VMCoroutine, args []rt.Value) ([]rt.Value, e
 }
 
 func (vm *VM) evalLeafCoroutineExpression(co *VMCoroutine, args []rt.Value) ([]rt.Value, error, bool) {
-	cl := co.closure
+	if co == nil {
+		return nil, nil, false
+	}
+	return vm.evalLeafClosureExpression(co.closure, args)
+}
+
+func (vm *VM) evalLeafClosureExpression(cl *Closure, args []rt.Value) ([]rt.Value, error, bool) {
 	if cl == nil || cl.Proto == nil || cl.Proto.IsVarArg {
 		return nil, nil, false
 	}
@@ -1097,6 +1103,22 @@ func (vm *VM) evalLeafCoroutineExpression(co *VMCoroutine, args []rt.Value) ([]r
 		}
 	}
 	return nil, nil, false
+}
+
+func (vm *VM) TryResumeLeafClosureToSlots(cl *Closure, args []rt.Value, dst, c int) (bool, error) {
+	if vm == nil || cl == nil || cl.Proto == nil || !protoHasNoCalls(cl.Proto) {
+		return false, nil
+	}
+	results, err, ok := vm.evalLeafClosureExpression(cl, args)
+	if !ok {
+		return false, nil
+	}
+	if err != nil {
+		vm.writeCoroutineResumeResults(dst, c, false, []rt.Value{rt.StringValue(err.Error())})
+		return true, nil
+	}
+	vm.writeCoroutineResumeResults(dst, c, true, results)
+	return true, nil
 }
 
 // TryFastCoroutineCallValue handles VM-owned coroutine builtins directly from

@@ -186,8 +186,7 @@ func keepAlive(p unsafe.Pointer, _ any) {
 	if idx < int64(len(gcLog.entries)) {
 		gcLog.entries[idx] = p
 	} else {
-		// Slow path: grow the log (rare, only when > 4M allocations)
-		gcLogGrow(p)
+		gcLogGrowAt(idx, p)
 	}
 	// Signal that GC compaction is needed; actual compaction is deferred
 	// to a VM safe point (CheckGC) where all values are in registers.
@@ -196,9 +195,21 @@ func keepAlive(p unsafe.Pointer, _ any) {
 	}
 }
 
-func gcLogGrow(p unsafe.Pointer) {
+func gcLogGrowAt(idx int64, p unsafe.Pointer) {
 	ifaceMu.Lock()
-	gcLog.entries = append(gcLog.entries, p)
+	if idx >= int64(len(gcLog.entries)) {
+		newLen := len(gcLog.entries) * 2
+		if newLen == 0 {
+			newLen = 1 << 20
+		}
+		if int64(newLen) <= idx {
+			newLen = int(idx) + 1
+		}
+		grown := make([]unsafe.Pointer, newLen)
+		copy(grown, gcLog.entries)
+		gcLog.entries = grown
+	}
+	gcLog.entries[idx] = p
 	ifaceMu.Unlock()
 }
 

@@ -395,6 +395,10 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 		}
 	}
 
+	if handled, err := e.tryFuseCreateResumeLeafCoroutine(ctx, regs, base, proto, fnVal, absSlot, nArgs, rawC); handled {
+		return err
+	}
+
 	if handled, err := e.callVM.TryFastCoroutineCallValue(fnVal, absSlot, nArgs, rawC); handled {
 		return err
 	}
@@ -558,7 +562,6 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 			}
 		}
 	}
-
 slowPath:
 	if gf := fnVal.GoFunction(); gf != nil {
 		if nArgs == 1 && gf.FastArg1 != nil {
@@ -716,6 +719,52 @@ genericNativePath:
 		}
 	}
 	return nil
+}
+
+func (e *BaselineJITEngine) tryFuseCreateResumeLeafCoroutine(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, fnVal runtime.Value, absSlot, nArgs, rawC int) (bool, error) {
+	if e == nil || e.callVM == nil || ctx == nil || proto == nil || rawC != 2 || nArgs != 1 || !fnVal.IsFunction() {
+		return false, nil
+	}
+	gf := fnVal.GoFunction()
+	if gf == nil || gf.Name != "coroutine.create" {
+		return false, nil
+	}
+	argSlot := absSlot + 1
+	if argSlot < 0 || argSlot >= len(regs) {
+		return false, nil
+	}
+	cl, ok := vmClosureFromValue(regs[argSlot])
+	if !ok || cl == nil || cl.Proto == nil || !cl.Proto.LeafNoCall {
+		return false, nil
+	}
+	callPC := int(ctx.BaselinePC) - 1
+	if callPC < 0 || callPC+1 >= len(proto.Code) {
+		return false, nil
+	}
+	resumePC := callPC + 1
+	resumeOperandReg := absSlot - base
+	next := proto.Code[resumePC]
+	if vm.DecodeOp(next) == vm.OP_MOVE {
+		if vm.DecodeB(next) != resumeOperandReg || resumePC+1 >= len(proto.Code) {
+			return false, nil
+		}
+		resumeOperandReg = vm.DecodeA(next)
+		resumePC++
+		next = proto.Code[resumePC]
+	}
+	if vm.DecodeOp(next) != vm.OP_RESUME || vm.DecodeB(next) != 2 {
+		return false, nil
+	}
+	resumeA := vm.DecodeA(next)
+	if resumeA+1 != resumeOperandReg {
+		return false, nil
+	}
+	handled, err := e.callVM.TryResumeLeafClosureToSlots(cl, nil, base+resumeA, vm.DecodeC(next))
+	if !handled || err != nil {
+		return handled, err
+	}
+	ctx.BaselinePC = int64(resumePC + 1)
+	return true, nil
 }
 
 func (e *BaselineJITEngine) storeSingleCallResult(absSlot, rawC int, result runtime.Value) {
