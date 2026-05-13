@@ -1499,12 +1499,14 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 	for _, block := range fn.Blocks {
 		allocFields := make(map[int][]string)
 		allocValues := make(map[int]map[string]int)
+		allocTypes := make(map[int]map[string]Type)
 		killed := make(map[int]bool)
 		for _, instr := range block.Instrs {
 			switch instr.Op {
 			case OpNewTable:
 				allocFields[instr.ID] = nil
 				allocValues[instr.ID] = make(map[string]int)
+				allocTypes[instr.ID] = make(map[string]Type)
 				out[instr.ID] = FixedShapeTableFact{}
 			case OpNewFixedTable:
 				fact, ok := fixedShapeFactForFixedConstructor(fn, instr)
@@ -1527,10 +1529,14 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 				}
 				allocFields[allocID] = append(allocFields[allocID], name)
 				allocValues[allocID][name] = instr.Args[1].ID
+				if instr.Args[1].Def != nil && instr.Args[1].Def.Type != TypeUnknown && instr.Args[1].Def.Type != TypeAny {
+					allocTypes[allocID][name] = instr.Args[1].Def.Type
+				}
 				out[allocID] = FixedShapeTableFact{
 					ShapeID:       runtime.GetShapeID(allocFields[allocID]),
 					FieldNames:    append([]string(nil), allocFields[allocID]...),
 					FieldValueIDs: cloneStringIntMap(allocValues[allocID]),
+					FieldTypes:    cloneStringTypeMap(allocTypes[allocID]),
 				}
 			case OpSetTable, OpAppend, OpSetList:
 				if len(instr.Args) == 0 || instr.Args[0] == nil {
@@ -1581,13 +1587,18 @@ func fixedShapeFactForFixedConstructor(fn *Function, instr *Instr) (FixedShapeTa
 		fields = append([]string(nil), ctor.Keys...)
 	}
 	values := make(map[string]int, len(fields))
+	types := make(map[string]Type, len(fields))
 	for i, field := range fields {
 		values[field] = instr.Args[i].ID
+		if instr.Args[i].Def != nil && instr.Args[i].Def.Type != TypeUnknown && instr.Args[i].Def.Type != TypeAny {
+			types[field] = instr.Args[i].Def.Type
+		}
 	}
 	return FixedShapeTableFact{
 		ShapeID:       runtime.GetShapeID(fields),
 		FieldNames:    fields,
 		FieldValueIDs: values,
+		FieldTypes:    types,
 	}, true
 }
 

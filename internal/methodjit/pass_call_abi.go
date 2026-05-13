@@ -18,8 +18,8 @@ func AnnotateCallABIsPass(config CallABIAnnotationConfig) PassFunc {
 }
 
 // AnnotateCallABIs installs CallABIDescriptor entries for non-tail, fixed
-// arity, single-result global calls whose callee has a raw-int specialized ABI
-// and whose actual arguments are all TypeInt.
+// arity global calls whose callee has a specialized ABI and whose actual
+// arguments match that ABI.
 func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 	if fn == nil {
 		return fn
@@ -45,7 +45,7 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 					fmt.Sprintf("annotated typed self call result for %s", fn.Proto.Name))
 				continue
 			}
-			desc, reason := callABIDescriptorFor(fn, instr, globals, tails, shiftAddOverflowVersions)
+			desc, reason := callABIDescriptorFor(fn, instr, globals, tails, shiftAddOverflowVersions, config)
 			if desc.Callee == nil {
 				if summary := fieldShapeCalleeSummary(fn, instr); summary != "" {
 					reason = reason + "; field-shape polymorphic callee set: " + summary
@@ -162,15 +162,12 @@ func callABIAnnotateTypedSelfResult(fn *Function, instr *Instr, tails map[int]bo
 	return true
 }
 
-func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, tails map[int]bool, shiftAddOverflowVersions map[*vm.FuncProto]bool) (CallABIDescriptor, string) {
+func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, tails map[int]bool, shiftAddOverflowVersions map[*vm.FuncProto]bool, config CallABIAnnotationConfig) (CallABIDescriptor, string) {
 	if instr == nil || instr.Op != OpCall {
 		return CallABIDescriptor{}, "not a call"
 	}
 	if tails[instr.ID] {
 		return CallABIDescriptor{}, "tail call"
-	}
-	if !callABIHasExactResultShape(fn, instr, 1) {
-		return CallABIDescriptor{}, "call does not have fixed arity and one exact result"
 	}
 	_, callee := resolveCallee(instr, fn, InlineConfig{Globals: globals})
 	if callee == nil {
@@ -189,39 +186,49 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 	if fn != nil && callee == fn.Proto {
 		return CallABIDescriptor{}, "self call uses separate raw-int result annotation"
 	}
-	if desc, ok, reason := callABITypedPeerDescriptorFor(fn, instr, callee); ok {
+	typedPeerReason := ""
+	if desc, ok, reason := callABITypedPeerDescriptorFor(fn, instr, callee, config); ok {
 		return desc, ""
 	} else if reason != "" {
-		_ = reason // Keep looking for a raw-int ABI below.
+		typedPeerReason = reason
+	}
+	miss := func(reason string) (CallABIDescriptor, string) {
+		if typedPeerReason != "" {
+			reason = reason + "; typed-peer: " + typedPeerReason
+		}
+		return CallABIDescriptor{}, reason
+	}
+	if !callABIHasExactResultShape(fn, instr, 1) {
+		return miss("call does not have fixed arity and one exact result")
 	}
 	abi := AnalyzeSpecializedABI(callee)
 	crossRecursiveNumeric := false
 	if !abi.Eligible || abi.Kind != SpecializedABIRawInt || abi.Return != SpecializedABIReturnRawInt {
 		crossRecursiveNumeric = qualifiesForNumericCrossRecursiveCandidate(callee)
 		if !crossRecursiveNumeric && abi.RejectWhy != "" {
-			return CallABIDescriptor{}, "callee raw-int ABI rejected: " + abi.RejectWhy
+			return miss("callee raw-int ABI rejected: " + abi.RejectWhy)
 		}
 		if !crossRecursiveNumeric {
-			return CallABIDescriptor{}, "callee is not raw-int ABI eligible"
+			return miss("callee is not raw-int ABI eligible")
 		}
 	}
 	if callABICalleeHasShiftAddOverflowVersion(callee, shiftAddOverflowVersions) {
-		return CallABIDescriptor{}, "callee may promote raw-int recurrence on overflow"
+		return miss("callee may promote raw-int recurrence on overflow")
 	}
 	numArgs := len(instr.Args) - 1
 	if numArgs != callee.NumParams {
-		return CallABIDescriptor{}, "argument count does not match callee ABI"
+		return miss("argument count does not match callee ABI")
 	}
 	if !crossRecursiveNumeric && len(abi.Params) != numArgs {
-		return CallABIDescriptor{}, "argument count does not match callee ABI"
+		return miss("argument count does not match callee ABI")
 	}
 	rawParams := make([]bool, numArgs)
 	for i := 0; i < numArgs; i++ {
 		if !crossRecursiveNumeric && abi.Params[i] != SpecializedABIParamRawInt {
-			return CallABIDescriptor{}, "callee has non-raw-int ABI parameter"
+			return miss("callee has non-raw-int ABI parameter")
 		}
 		if !callABIValueIsInt(instr.Args[1+i]) {
-			return CallABIDescriptor{}, "actual argument is not TypeInt"
+			return miss("actual argument is not TypeInt")
 		}
 		rawParams[i] = true
 	}
@@ -236,37 +243,49 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 	}, ""
 }
 
-func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncProto) (CallABIDescriptor, bool, string) {
+func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncProto, config CallABIAnnotationConfig) (CallABIDescriptor, bool, string) {
 	if fn == nil || instr == nil || callee == nil {
 		return CallABIDescriptor{}, false, ""
 	}
-	if !callABIHasExactResultShape(fn, instr, 1) {
-		return CallABIDescriptor{}, false, "typed-peer requires one exact result"
-	}
 	argFacts := callABITypedPeerArgFacts(fn, instr, callee)
-	abi := AnalyzeTypedPeerABIWithArgFacts(callee, argFacts)
+	arrayElementArgFacts := profiledFixedShapeArrayElementArgFactsForProto(callee)
+	arrayElementArgFacts = mergeFixedShapeTableFacts(arrayElementArgFacts,
+		callABITypedPeerArrayElementArgFacts(fn, instr, config.Globals))
+	if len(config.Globals) > 0 {
+		arrayElementArgFacts = mergeFixedShapeTableFacts(arrayElementArgFacts,
+			inferGuardedFixedShapeArrayElementArgFactsForProto(callee, config.Globals))
+	}
+	abi := AnalyzeTypedPeerABIWithFacts(callee, argFacts, arrayElementArgFacts)
 	if !abi.Eligible {
 		return CallABIDescriptor{}, false, "callee typed-peer ABI rejected: " + abi.RejectWhy
 	}
-	if abi.Return != SpecializedABIReturnRawInt &&
-		abi.Return != SpecializedABIReturnRawFloat &&
-		abi.Return != SpecializedABIReturnRawTablePtr {
+	wantRets := 1
+	switch abi.Return {
+	case SpecializedABIReturnRawInt, SpecializedABIReturnRawFloat, SpecializedABIReturnRawTablePtr:
+	case SpecializedABIReturnNone:
+		wantRets = 0
+	default:
 		return CallABIDescriptor{}, false, "typed-peer return is not directly representable"
+	}
+	if !callABIHasExactResultShape(fn, instr, wantRets) {
+		if wantRets == 0 {
+			return CallABIDescriptor{}, false, "typed-peer requires no exact results"
+		}
+		return CallABIDescriptor{}, false, "typed-peer requires one exact result"
 	}
 	numArgs := len(instr.Args) - 1
 	if numArgs != callee.NumParams || len(abi.Params) != numArgs {
 		return CallABIDescriptor{}, false, "argument count does not match typed-peer ABI"
 	}
-	for i, rep := range abi.Params {
+	for _, rep := range abi.Params {
 		switch rep {
 		case SpecializedABIParamRawInt:
-			if !callABIValueIsInt(instr.Args[1+i]) {
-				return CallABIDescriptor{}, false, "typed-peer int argument is not TypeInt"
-			}
+			// The typed-peer emitter guards non-TypeInt actuals before
+			// unboxing, so global/profiled values can still use the ABI.
 		case SpecializedABIParamRawTablePtr:
-			if !callABIValueIsTable(instr.Args[1+i]) && argFacts[i].ShapeID == 0 {
-				return CallABIDescriptor{}, false, "typed-peer table argument has no table fact"
-			}
+			// The native call path guards the boxed argument at runtime before
+			// passing the raw table pointer. A fixed receiver shape fact is only
+			// needed when the callee consumes fields of the parameter itself.
 		default:
 			return CallABIDescriptor{}, false, "unsupported typed-peer parameter"
 		}
@@ -274,7 +293,7 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 	return CallABIDescriptor{
 		Callee:    callee,
 		NumArgs:   numArgs,
-		NumRets:   1,
+		NumRets:   wantRets,
 		TypedPeer: true,
 		ParamReps: append([]SpecializedABIParamRep(nil), abi.Params...),
 		ReturnRep: abi.Return,
@@ -288,6 +307,37 @@ func callABITypedPeerArgFacts(fn *Function, instr *Instr, callee *vm.FuncProto) 
 		return nil
 	}
 	return map[int]FixedShapeTableFact{0: cases[0].ReceiverFact}
+}
+
+func callABITypedPeerArrayElementArgFacts(fn *Function, instr *Instr, globals map[string]*vm.FuncProto) map[int]FixedShapeTableFact {
+	if fn == nil || instr == nil || len(instr.Args) < 2 {
+		return nil
+	}
+	arrayFacts := inferLocalArrayElementTableFacts(fn, fn.FixedShapeTables)
+	arrayFacts = mergeFixedShapeTableFacts(arrayFacts, inferArrayElementValuesForArgs(fn, globals))
+	if len(arrayFacts) == 0 {
+		return nil
+	}
+	out := make(map[int]FixedShapeTableFact)
+	for i := 1; i < len(instr.Args); i++ {
+		arg := instr.Args[i]
+		if arg == nil {
+			continue
+		}
+		fact, ok := arrayFacts[arg.ID]
+		if !ok {
+			continue
+		}
+		guarded, ok := guardedFixedShapeArgFact(fact)
+		if !ok {
+			continue
+		}
+		out[i-1] = guarded
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func cloneCallABIArgFacts(in map[int]FixedShapeTableFact) map[int]FixedShapeTableFact {

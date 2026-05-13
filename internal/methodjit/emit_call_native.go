@@ -1192,7 +1192,7 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	callee := desc.Callee
 	nArgs := len(instr.Args) - 1
 	nRets := callResultCountFromAux2(instr.Aux2)
-	if nRets != 1 || nArgs != desc.NumArgs || nArgs != callee.NumParams || nArgs < 1 || nArgs > 4 {
+	if nRets != desc.NumRets || nArgs != desc.NumArgs || nArgs != callee.NumParams || nArgs < 1 || nArgs > 4 {
 		return false
 	}
 	if len(desc.ParamReps) != nArgs {
@@ -1200,6 +1200,13 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	}
 	switch desc.ReturnRep {
 	case SpecializedABIReturnRawInt, SpecializedABIReturnRawFloat, SpecializedABIReturnRawTablePtr:
+		if nRets != 1 {
+			return false
+		}
+	case SpecializedABIReturnNone:
+		if nRets != 0 {
+			return false
+		}
 	default:
 		return false
 	}
@@ -1293,6 +1300,8 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	case SpecializedABIReturnRawTablePtr:
 		emitBoxTablePtr(asm, jit.X0, jit.X0, jit.X1)
 		ec.storeResultNB(jit.X0, instr.ID)
+	case SpecializedABIReturnNone:
+		// Fixed-arity side-effecting calls produce no SSA result.
 	}
 	postReprs := ec.snapshotValueReprs()
 	asm.B(doneLabel)
@@ -2640,9 +2649,19 @@ func (ec *emitContext) emitTypedPeerArgsFromValuesInRegsAndSave(args []*Value, d
 		arg := args[i]
 		switch rep {
 		case SpecializedABIParamRawInt:
-			src := ec.resolveRawInt(arg.ID, dst)
-			if src != dst {
-				asm.MOVreg(dst, src)
+			if ec.irTypes[arg.ID] == TypeInt {
+				src := ec.resolveRawInt(arg.ID, dst)
+				if src != dst {
+					asm.MOVreg(dst, src)
+				}
+			} else {
+				src := ec.resolveValueNB(arg.ID, dst)
+				if src != dst {
+					asm.MOVreg(dst, src)
+				}
+				emitCheckIsInt(asm, dst, jit.X6)
+				asm.BCond(jit.CondNE, fallbackLabel)
+				jit.EmitUnboxInt(asm, dst, dst)
 			}
 			asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
 		case SpecializedABIParamRawTablePtr:

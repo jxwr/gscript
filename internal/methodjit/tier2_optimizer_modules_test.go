@@ -105,6 +105,7 @@ func TestTier2InlineCallModuleOrder(t *testing.T) {
 		"SimplifyPhis (post-inline)",
 		"Intrinsic (post-inline)",
 		"TypeSpecialize (post-inline)",
+		"FixedShapeTableFacts (post-inline)",
 	})
 }
 
@@ -116,6 +117,7 @@ func TestTier2InlineCallModuleOrderExperimentalPreInlineFieldShapeSplit(t *testi
 		"SimplifyPhis (post-inline)",
 		"Intrinsic (post-inline)",
 		"TypeSpecialize (post-inline)",
+		"FixedShapeTableFacts (post-inline)",
 	})
 }
 

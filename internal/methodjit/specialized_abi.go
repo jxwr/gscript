@@ -330,6 +330,10 @@ func analyzeTypedABI(proto *vm.FuncProto, requireSelfCall bool) TypedSelfABI {
 }
 
 func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argFacts map[int]FixedShapeTableFact) TypedSelfABI {
+	return analyzeTypedABIWithFacts(proto, requireSelfCall, argFacts, nil)
+}
+
+func analyzeTypedABIWithFacts(proto *vm.FuncProto, requireSelfCall bool, argFacts map[int]FixedShapeTableFact, arrayElementArgFacts map[int]FixedShapeTableFact) TypedSelfABI {
 	if proto == nil {
 		return typedSelfABIReject("nil proto")
 	}
@@ -455,20 +459,39 @@ func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argF
 			if !typedSelfRKIsInt(slots, proto, c) {
 				return typedSelfABIReject(fmt.Sprintf("non-int table index at pc %d", pc))
 			}
-			if fact, ok := tableFacts[b]; ok && fact.ArrayElementType == TypeInt {
+			if fact, ok := arrayElementArgFacts[b]; ok && typedSelfSlotIsTable(getSpecializedSlot(slots, b)) {
+				if fact.ArrayElementType == TypeInt {
+					setSpecializedSlot(slots, a, specializedSlotRawInt)
+					delete(tableFacts, a)
+				} else if fact.ArrayElementType == TypeFloat {
+					setSpecializedSlot(slots, a, specializedSlotRawFloat)
+					delete(tableFacts, a)
+				} else {
+					setSpecializedSlot(slots, a, specializedSlotRawTable)
+					if tableFacts == nil {
+						tableFacts = make(map[int]FixedShapeTableFact)
+					}
+					tableFacts[a] = fact
+				}
+			} else if fact, ok := tableFacts[b]; ok && fact.ArrayElementType == TypeInt {
 				setSpecializedSlot(slots, a, specializedSlotRawInt)
+				delete(tableFacts, a)
 			} else if fact, ok := tableFacts[b]; ok && fact.ArrayElementType == TypeFloat {
 				setSpecializedSlot(slots, a, specializedSlotRawFloat)
+				delete(tableFacts, a)
 			} else if typedSelfFeedbackResultIsTable(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawTable)
+				delete(tableFacts, a)
 			} else if typedSelfFeedbackResultIsInt(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawInt)
+				delete(tableFacts, a)
 			} else if typedSelfFeedbackResultIsFloat(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawFloat)
+				delete(tableFacts, a)
 			} else {
 				setSpecializedSlot(slots, a, specializedSlotUnknown)
+				delete(tableFacts, a)
 			}
-			delete(tableFacts, a)
 		case vm.OP_SETFIELD:
 			if len(slots) <= a || !typedSelfSlotIsTable(getSpecializedSlot(slots, a)) {
 				return typedSelfABIReject("non-table field store receiver")
@@ -632,6 +655,19 @@ func AnalyzeTypedPeerABI(proto *vm.FuncProto) TypedSelfABI {
 
 func AnalyzeTypedPeerABIWithArgFacts(proto *vm.FuncProto, argFacts map[int]FixedShapeTableFact) TypedSelfABI {
 	abi := analyzeTypedABIWithArgFacts(proto, false, argFacts)
+	if !abi.Eligible {
+		return abi
+	}
+	for _, rep := range abi.Params {
+		if rep == SpecializedABIParamRawTablePtr {
+			return abi
+		}
+	}
+	return typedSelfABIReject("no table parameter")
+}
+
+func AnalyzeTypedPeerABIWithFacts(proto *vm.FuncProto, argFacts map[int]FixedShapeTableFact, arrayElementArgFacts map[int]FixedShapeTableFact) TypedSelfABI {
+	abi := analyzeTypedABIWithFacts(proto, false, argFacts, arrayElementArgFacts)
 	if !abi.Eligible {
 		return abi
 	}

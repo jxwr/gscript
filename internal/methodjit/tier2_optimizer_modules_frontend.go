@@ -95,6 +95,22 @@ func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tie
 			},
 		},
 		tier2PostInlinePassModule("TypeSpecialize (post-inline)", TypeSpecializePass),
+		{
+			Name:  "FixedShapeTableFacts (post-inline)",
+			Phase: Tier2PhaseInlineCall,
+			RunWithContext: func(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
+				if ctx == nil || !ctx.InlineApplied {
+					return fn, nil
+				}
+				return FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+					Globals:               globals,
+					ArgFacts:              optsFixedShapeArgFacts(opts),
+					ArrayElementArgFacts:  optsFixedShapeArrayElementArgFacts(opts),
+					ArrayElementPolyFacts: optsFixedShapeArrayElementPolyFacts(opts),
+					EntryGuardedArgs:      optsFixedShapeEntryGuards(opts),
+				})(fn)
+			},
+		},
 	}
 	if os.Getenv("GSCRIPT_FIELD_SHAPE_SPLIT_PREINLINE") == "1" {
 		modules = append([]Tier2OptimizerModule{
@@ -123,7 +139,9 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 			Name:  "CallABI",
 			Phase: Tier2PhaseCallLower,
 			RunWithContext: func(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
-				return AnnotateCallABIsPass(CallABIAnnotationConfig{Globals: ctxGlobals(ctx)})(fn)
+				return AnnotateCallABIsPass(CallABIAnnotationConfig{
+					Globals: ctxGlobals(ctx),
+				})(fn)
 			},
 		},
 		tier2PassModule("CallReturnProjection", Tier2PhaseCallLower, CallReturnProjectionPass),
