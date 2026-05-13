@@ -53,6 +53,14 @@ func FieldSvalsLowerPass(fn *Function) (*Function, error) {
 				shapeID := uint32(instr.Aux2 >> 32)
 				fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
 				key := fieldSvalsLowerKey{tableID: instr.Args[0].ID, shapeID: shapeID}
+				if cache[key] == nil && eligible[key] {
+					svals := emitIRInstr(fn, block, OpFieldSvals, TypeInt, []*Value{instr.Args[0]}, int64(shapeID), 0)
+					svals.copySourceFrom(instr)
+					cache[key] = svals
+					newInstrs = append(newInstrs, svals)
+					functionRemarks(fn).Add("FieldSvalsLower", "changed", block.ID, svals.ID, svals.Op,
+						fmt.Sprintf("created shared svals pointer for table v%d shape %d", key.tableID, key.shapeID))
+				}
 				if svals := cache[key]; svals != nil {
 					instr.Op = OpFieldStore
 					instr.Type = TypeUnknown
@@ -324,6 +332,15 @@ func fieldSvalsLowerEligibleKeys(block *Block) map[fieldSvalsLowerKey]bool {
 			continue
 		}
 		if !fieldSvalsLowerable(instr) {
+			if fieldSvalsStoreLowerable(instr) {
+				shapeID := uint32(instr.Aux2 >> 32)
+				key := fieldSvalsLowerKey{tableID: instr.Args[0].ID, shapeID: shapeID}
+				if seen[key] {
+					eligible[key] = true
+				}
+				seen[key] = true
+				continue
+			}
 			if !instrPreservesFieldSvalsCache(instr) {
 				for key := range seen {
 					broken[key] = true
