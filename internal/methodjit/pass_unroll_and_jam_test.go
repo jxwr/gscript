@@ -39,8 +39,8 @@ func TestUnrollAndJam_FloatReductionUnrollsWithScalarTail(t *testing.T) {
 		t.Fatalf("UnrollAndJamPass: %v", err)
 	}
 	assertValidates(t, fn, "after UnrollAndJam")
-	if len(fn.Blocks) != beforeBlocks+2 {
-		t.Fatalf("block count = %d, want %d after unroll tail blocks\nIR:\n%s", len(fn.Blocks), beforeBlocks+2, Print(fn))
+	if len(fn.Blocks) != beforeBlocks+6 {
+		t.Fatalf("block count = %d, want %d after unroll tail blocks\nIR:\n%s", len(fn.Blocks), beforeBlocks+6, Print(fn))
 	}
 	ir := Print(fn)
 	if !strings.Contains(ir, "Branch") || strings.Count(ir, "MulFloat") < 2 || strings.Count(ir, "AddFloat") < 2 {
@@ -148,7 +148,7 @@ func TestUnrollAndJam_UnrollsMultipleInlinedHelperLoops(t *testing.T) {
 		t.Fatalf("UnrollAndJamPass: %v", err)
 	}
 	assertValidates(t, fn, "after UnrollAndJam")
-	if got, want := len(fn.Blocks), beforeBlocks+4; got != want {
+	if got, want := len(fn.Blocks), beforeBlocks+12; got != want {
 		t.Fatalf("block count = %d, want %d after unrolling two loops\nIR:\n%s", got, want, Print(fn))
 	}
 

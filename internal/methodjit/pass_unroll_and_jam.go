@@ -1,4 +1,4 @@
-// pass_unroll_and_jam.go implements a conservative 2-way unroll for numeric
+// pass_unroll_and_jam.go implements conservative serial unrolls for numeric
 // float reductions.
 //
 // It targets the canonical innermost-loop pattern:
@@ -6,12 +6,12 @@
 //   iv  = Phi(init, iv + step)
 //   new_acc = acc + Expr(iv)
 //
-// The transform clones the side-effect-free body once for iv+step, tightens the
-// hot loop bound to full pairs only, and emits a scalar tail for odd trip
-// counts. It also remaps companion float recurrences (for example a sign flip)
-// through the cloned iteration. This keeps the original left-to-right reduction
-// order while reducing hot back-edge traffic after LICM has moved invariant
-// table/matrix facts out of the body.
+// The transform clones the side-effect-free body for additional iv+step
+// iterations, tightens the hot loop bound to full chunks only, and emits scalar
+// tails for the remainder. Companion float recurrences (for example a sign
+// flip) stay on the historical 2-way path. This keeps the original
+// left-to-right reduction order while reducing hot back-edge traffic after LICM
+// has moved invariant table/matrix facts out of the body.
 
 package methodjit
 
@@ -21,7 +21,7 @@ import (
 )
 
 // UnrollAndJamPass keeps the historical pass name, but deliberately implements
-// a lower-risk serial unroll rather than split-accumulator unroll-and-jam.
+// lower-risk serial unrolls rather than split-accumulator unroll-and-jam.
 func UnrollAndJamPass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.Blocks) == 0 {
 		return fn, nil
@@ -56,13 +56,17 @@ func UnrollAndJamPass(fn *Function) (*Function, error) {
 			if cand == nil {
 				continue
 			}
-			if err := unrollFloatReductionLoop2(fn, cand); err != nil {
+			factor := 4
+			if len(cand.recurrences) != 0 || !floatReductionBodyCanUseWideUnroll(cand.bodyBlock) {
+				factor = 2
+			}
+			if err := unrollFloatReductionLoop(fn, cand, factor); err != nil {
 				return nil, err
 			}
 			unrolledHeaders[headerID] = true
 			changed = true
 			functionRemarks(fn).Add("UnrollAndJam", "changed", cand.header.ID, cand.updateInstr.ID, cand.updateInstr.Op,
-				"2-way unroll with scalar tail for float reduction loop")
+				fmt.Sprintf("%d-way unroll with scalar tail for float reduction loop", factor))
 			break
 		}
 		if !changed {
@@ -277,10 +281,13 @@ func valueUsesLimitedToBlocks(fn *Function, valueID int, allowed ...*Block) bool
 	return true
 }
 
-func unrollFloatReductionLoop2(fn *Function, cand *floatReductionCandidate) error {
+func unrollFloatReductionLoop(fn *Function, cand *floatReductionCandidate, factor int) error {
 	body, header, exit, preheader := cand.bodyBlock, cand.header, cand.exitBlock, cand.outsidePred
 	if body == nil || header == nil || exit == nil || preheader == nil || len(body.Instrs) == 0 {
 		return nil
+	}
+	if factor < 2 {
+		factor = 2
 	}
 	term := body.Instrs[len(body.Instrs)-1]
 	if term.Op != OpJump {
@@ -291,88 +298,154 @@ func unrollFloatReductionLoop2(fn *Function, cand *floatReductionCandidate) erro
 		return fmt.Errorf("unroll: body B%d is not a predecessor of header B%d", body.ID, header.ID)
 	}
 
-	tailCheck := &Block{ID: nextBlockID(fn)}
-	tailBody := &Block{ID: tailCheck.ID + 1}
-	insertBlockAfter(fn, header, tailCheck)
-	insertBlockAfter(fn, tailCheck, tailBody)
-
-	pairLimit := &Instr{
-		ID:    fn.newValueID(),
-		Op:    OpSubInt,
-		Type:  TypeInt,
-		Args:  []*Value{cand.limitValue, cand.stepValue},
-		Block: preheader,
+	tailChecks := make([]*Block, factor-1)
+	tailBodies := make([]*Block, factor-1)
+	nextID := nextBlockID(fn)
+	insertAfter := header
+	for i := range tailChecks {
+		tailChecks[i] = &Block{ID: nextID}
+		nextID++
+		tailBodies[i] = &Block{ID: nextID}
+		nextID++
+		insertBlockAfter(fn, insertAfter, tailChecks[i])
+		insertBlockAfter(fn, tailChecks[i], tailBodies[i])
+		insertAfter = tailBodies[i]
 	}
-	insertBeforeTerminator(preheader, pairLimit)
 
+	hotLimitValue := cand.limitValue
+	for i := 0; i < factor-1; i++ {
+		hotLimit := &Instr{
+			ID:    fn.newValueID(),
+			Op:    OpSubInt,
+			Type:  TypeInt,
+			Args:  []*Value{hotLimitValue, cand.stepValue},
+			Block: preheader,
+		}
+		insertBeforeTerminator(preheader, hotLimit)
+		hotLimitValue = hotLimit.Value()
+	}
 	headerCmp := header.Instrs[len(header.Instrs)-2]
 	if headerCmp.Op != OpLeInt || len(headerCmp.Args) != 2 || headerCmp.Args[0].ID != cand.stepInstr.ID {
 		return fmt.Errorf("unroll: header B%d compare shape changed", header.ID)
 	}
-	headerCmp.Args[1] = pairLimit.Value()
+	headerCmp.Args[1] = hotLimitValue
 
 	originalBody := append([]*Instr(nil), body.Instrs[:len(body.Instrs)-1]...)
-	k2 := &Instr{
-		ID:    fn.newValueID(),
-		Op:    OpAddInt,
-		Type:  TypeInt,
-		Args:  []*Value{cand.stepInstr.Value(), cand.stepValue},
-		Aux2:  cand.stepInstr.Aux2,
-		Block: body,
-	}
-	body.Instrs = append(body.Instrs[:len(body.Instrs)-1], k2)
-
+	body.Instrs = body.Instrs[:len(body.Instrs)-1]
+	currentStep := cand.stepInstr.Value()
+	currentUpdate := cand.updateInstr
 	remap := map[int]*Value{
-		cand.stepInstr.ID:   k2.Value(),
-		cand.accPhi.ID:      cand.updateInstr.Value(),
-		cand.updateInstr.ID: cand.updateInstr.Value(),
+		cand.accPhi.ID:      currentUpdate.Value(),
+		cand.updateInstr.ID: currentUpdate.Value(),
 	}
 	seedRecurrenceRemap(bodyPredIdx, remap, cand.recurrences)
-	cloneUpdate, err := cloneBodyInstructions(fn, body, originalBody, remap, cand.updateInstr.ID)
-	if err != nil {
-		return err
+	for i := 1; i < factor; i++ {
+		nextStep := appendStepAdd(fn, body, currentStep, cand.stepValue, cand.stepInstr.Aux2)
+		currentStep = nextStep.Value()
+		remap[cand.stepInstr.ID] = currentStep
+		remap[cand.accPhi.ID] = currentUpdate.Value()
+		remap[cand.updateInstr.ID] = currentUpdate.Value()
+		cloneUpdate, err := cloneBodyInstructions(fn, body, originalBody, remap, cand.updateInstr.ID)
+		if err != nil {
+			return err
+		}
+		currentUpdate = cloneUpdate
 	}
 	body.Instrs = append(body.Instrs, cloneTerminator(fn, body, OpJump, nil, header, nil, term))
-	cand.accPhi.Args[bodyPredIdx] = cloneUpdate.Value()
-	cand.ivPhi.Args[bodyPredIdx] = k2.Value()
+	cand.accPhi.Args[bodyPredIdx] = currentUpdate.Value()
+	cand.ivPhi.Args[bodyPredIdx] = currentStep
 	updateRecurrenceBackedges(bodyPredIdx, remap, cand.recurrences)
 
-	tailCond := &Instr{
-		ID:    fn.newValueID(),
-		Op:    OpLeInt,
-		Type:  TypeBool,
-		Args:  []*Value{cand.stepInstr.Value(), cand.limitValue},
-		Block: tailCheck,
-	}
-	tailBranch := cloneTerminator(fn, tailCheck, OpBranch, []*Value{tailCond.Value()}, tailBody, exit, nil)
-	tailCheck.Instrs = []*Instr{tailCond, tailBranch}
-	tailCheck.Preds = []*Block{header}
-	tailCheck.Succs = []*Block{tailBody, exit}
+	exitPreds := make([]*Block, 0, factor)
+	exitAccArgs := make([]*Value, 0, factor)
+	tailStep := cand.stepInstr.Value()
+	tailUpdate := cand.accPhi.Value()
+	tailRemap := map[int]*Value{}
+	for i := range tailChecks {
+		check := tailChecks[i]
+		tbody := tailBodies[i]
+		cond := &Instr{
+			ID:    fn.newValueID(),
+			Op:    OpLeInt,
+			Type:  TypeBool,
+			Args:  []*Value{tailStep, cand.limitValue},
+			Block: check,
+		}
+		trueSucc := tbody
+		falseSucc := exit
+		branch := cloneTerminator(fn, check, OpBranch, []*Value{cond.Value()}, trueSucc, falseSucc, nil)
+		check.Instrs = []*Instr{cond, branch}
+		if i == 0 {
+			check.Preds = []*Block{header}
+		} else {
+			check.Preds = []*Block{tailBodies[i-1]}
+		}
+		check.Succs = []*Block{tbody, exit}
+		exitPreds = append(exitPreds, check)
+		exitAccArgs = append(exitAccArgs, tailUpdate)
 
-	tailUpdate, err := cloneBodyInstructions(fn, tailBody, originalBody, map[int]*Value{}, cand.updateInstr.ID)
-	if err != nil {
-		return err
-	}
-	tailBody.Instrs = append(tailBody.Instrs, cloneTerminator(fn, tailBody, OpJump, nil, exit, nil, term))
-	tailBody.Preds = []*Block{tailCheck}
-	tailBody.Succs = []*Block{exit}
+		thisRemap := copyValueMap(tailRemap)
+		thisRemap[cand.stepInstr.ID] = tailStep
+		thisRemap[cand.accPhi.ID] = tailUpdate
+		thisRemap[cand.updateInstr.ID] = tailUpdate
+		clonedTailUpdate, err := cloneBodyInstructions(fn, tbody, originalBody, thisRemap, cand.updateInstr.ID)
+		if err != nil {
+			return err
+		}
+		tailUpdate = clonedTailUpdate.Value()
+		tailRemap = thisRemap
+		updateRecurrenceTailRemap(bodyPredIdx, tailRemap, cand.recurrences)
 
-	header.Succs[1] = tailCheck
+		if i+1 < len(tailChecks) {
+			nextStep := appendStepAdd(fn, tbody, tailStep, cand.stepValue, cand.stepInstr.Aux2)
+			tailStep = nextStep.Value()
+			tbody.Instrs = append(tbody.Instrs, cloneTerminator(fn, tbody, OpJump, nil, tailChecks[i+1], nil, term))
+			tbody.Succs = []*Block{tailChecks[i+1]}
+		} else {
+			tbody.Instrs = append(tbody.Instrs, cloneTerminator(fn, tbody, OpJump, nil, exit, nil, term))
+			tbody.Succs = []*Block{exit}
+			exitPreds = append(exitPreds, tbody)
+			exitAccArgs = append(exitAccArgs, tailUpdate)
+		}
+		tbody.Preds = []*Block{check}
+	}
+
+	header.Succs[1] = tailChecks[0]
 	headerTerm := header.Instrs[len(header.Instrs)-1]
-	headerTerm.Aux2 = int64(tailCheck.ID)
-	replacePred(exit, header, tailCheck)
-	exit.Preds = append(exit.Preds, tailBody)
+	headerTerm.Aux2 = int64(tailChecks[0].ID)
+	replacePredsWith(exit, header, exitPreds)
 
 	exitAcc := &Instr{
 		ID:    fn.newValueID(),
 		Op:    OpPhi,
 		Type:  TypeFloat,
-		Args:  []*Value{cand.accPhi.Value(), tailUpdate.Value()},
+		Args:  exitAccArgs,
 		Block: exit,
 	}
 	exit.Instrs = append([]*Instr{exitAcc}, exit.Instrs...)
 	replaceValueUsesInBlock(exit, cand.accPhi.ID, exitAcc.Value(), 1)
 	return nil
+}
+
+func appendStepAdd(fn *Function, block *Block, base, step *Value, aux2 int64) *Instr {
+	add := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpAddInt,
+		Type:  TypeInt,
+		Args:  []*Value{base, step},
+		Aux2:  aux2,
+		Block: block,
+	}
+	block.Instrs = append(block.Instrs, add)
+	return add
+}
+
+func copyValueMap(in map[int]*Value) map[int]*Value {
+	out := make(map[int]*Value, len(in)+4)
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func seedRecurrenceRemap(predIdx int, remap map[int]*Value, recurrences []*Instr) {
@@ -391,6 +464,17 @@ func updateRecurrenceBackedges(predIdx int, remap map[int]*Value, recurrences []
 		}
 		if repl := remap[phi.Args[predIdx].ID]; repl != nil {
 			phi.Args[predIdx] = repl
+		}
+	}
+}
+
+func updateRecurrenceTailRemap(predIdx int, remap map[int]*Value, recurrences []*Instr) {
+	for _, phi := range recurrences {
+		if phi == nil || predIdx < 0 || predIdx >= len(phi.Args) || phi.Args[predIdx] == nil {
+			continue
+		}
+		if repl := remap[phi.Args[predIdx].ID]; repl != nil {
+			remap[phi.ID] = repl
 		}
 	}
 }
@@ -489,6 +573,18 @@ func replacePred(block, oldPred, newPred *Block) {
 	}
 }
 
+func replacePredsWith(block, oldPred *Block, newPreds []*Block) {
+	out := make([]*Block, 0, len(block.Preds)-1+len(newPreds))
+	for _, pred := range block.Preds {
+		if pred == oldPred {
+			out = append(out, newPreds...)
+			continue
+		}
+		out = append(out, pred)
+	}
+	block.Preds = out
+}
+
 func replaceValueUsesInBlock(block *Block, oldID int, repl *Value, startInstr int) {
 	for i, instr := range block.Instrs {
 		if i < startInstr {
@@ -531,6 +627,19 @@ func bodyIsSafeForUnroll(body *Block) bool {
 	}
 	for _, instr := range body.Instrs[:len(body.Instrs)-1] {
 		if !isUnrollCloneableOp(instr.Op) {
+			return false
+		}
+	}
+	return true
+}
+
+func floatReductionBodyCanUseWideUnroll(body *Block) bool {
+	if body == nil || len(body.Instrs) == 0 {
+		return false
+	}
+	for _, instr := range body.Instrs[:len(body.Instrs)-1] {
+		switch instr.Op {
+		case OpDivFloat, OpFMA, OpFMSUB, OpSqrt, OpFloor:
 			return false
 		}
 	}
