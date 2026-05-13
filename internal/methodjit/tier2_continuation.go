@@ -72,7 +72,7 @@ func buildTier2Continuations(sites map[int]ExitSiteMeta, resumes []deferredResum
 
 func tier2ContinuationKindForExitOp(op string) Tier2ContinuationKind {
 	switch op {
-	case "Call", "Resume":
+	case "Call", "CallFloor", "FieldCallFloor", "Resume":
 		return Tier2ContinuationCall
 	case "GetGlobal", "SetGlobal":
 		return Tier2ContinuationGlobal

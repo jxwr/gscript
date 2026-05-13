@@ -554,10 +554,18 @@ func (ec *emitContext) emitIntModZeroDeopt() {
 // fits in the int48 signed range. When true, the emitter may skip the
 // SBFX+CMP+B.NE overflow check (saves 3 ARM64 instructions per op).
 func (ec *emitContext) int48Safe(id int) bool {
-	if ec.fn == nil || ec.fn.Int48Safe == nil {
+	if ec.fn == nil {
 		return false
 	}
-	return ec.fn.Int48Safe[id]
+	if ec.fn.Int48Safe != nil && ec.fn.Int48Safe[id] {
+		return true
+	}
+	if ec.fn.IntRanges != nil {
+		if r, ok := ec.fn.IntRanges[id]; ok {
+			return r.fitsInt48()
+		}
+	}
+	return false
 }
 
 func (ec *emitContext) intModNonZeroDivisor(id int) bool {

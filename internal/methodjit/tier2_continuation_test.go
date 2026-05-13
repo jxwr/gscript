@@ -9,16 +9,19 @@ func TestBuildTier2ContinuationsIndexesByStableSourceKey(t *testing.T) {
 		10: {PC: 7, Op: "Call"},
 		11: {PC: 8, Op: "GetField"},
 		12: {PC: 9, Op: "Add"},
+		13: {PC: 10, Op: "FieldCallFloor"},
 	}
 	resumes := []deferredResume{
 		{instrID: 10},
 		{instrID: 11, numericPass: true},
 		{instrID: 12},
+		{instrID: 13},
 	}
 	offsets := map[string]int{
 		callExitResumeLabelForPass(10, false): 100,
 		callExitResumeLabelForPass(11, true):  200,
 		callExitResumeLabelForPass(12, false): 300,
+		callExitResumeLabelForPass(13, false): 400,
 	}
 	conts := buildTier2Continuations(sites, resumes, func(label string) int {
 		if off, ok := offsets[label]; ok {
@@ -36,6 +39,9 @@ func TestBuildTier2ContinuationsIndexesByStableSourceKey(t *testing.T) {
 	}
 	if off, ok := cf.continuationOffset(Tier2ContinuationKey{PC: 9, Kind: Tier2ContinuationOp}); !ok || off != 300 {
 		t.Fatalf("op continuation = (%d,%v), want (300,true)", off, ok)
+	}
+	if off, ok := cf.continuationOffset(Tier2ContinuationKey{PC: 10, Kind: Tier2ContinuationCall}); !ok || off != 400 {
+		t.Fatalf("field call floor continuation = (%d,%v), want (400,true)", off, ok)
 	}
 }
 
