@@ -163,6 +163,28 @@ func TestFieldSvalsLower_NilSetFieldRemainsBarrier(t *testing.T) {
 	}
 }
 
+func TestFieldSvalsLower_GenericSetTableBreaksRawSvalsReuse(t *testing.T) {
+	fn, b, obj := newFieldNumFusionFn("field_svals_settable_barrier")
+	other := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	gx := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 1, Aux2: int64(42)<<32 | 0, Block: b}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{other.Value(), one.Value(), one.Value()}, Block: b}
+	gy := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 2, Aux2: int64(42)<<32 | 1, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{gx.Value(), gy.Value(), set.Value()}, Block: b}
+	b.Instrs = []*Instr{obj, other, gx, one, set, gy, ret}
+
+	out, err := FieldSvalsLowerPass(fn)
+	if err != nil {
+		t.Fatalf("FieldSvalsLowerPass: %v", err)
+	}
+	if gx.Op != OpGetField || gy.Op != OpGetField {
+		t.Fatalf("generic SetTable may exit; FieldSvals must not be reused across it:\n%s", Print(out))
+	}
+}
+
 func TestFieldSvalsLower_CrossBlockDominatedLoads(t *testing.T) {
 	fn, b0, obj := newFieldNumFusionFn("field_svals_cross_block")
 	b1 := &Block{ID: 1}

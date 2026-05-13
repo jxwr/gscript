@@ -258,7 +258,8 @@ func crossBlockFieldSvalsGlobalBarrier(instr *Instr) bool {
 		return true
 	}
 	switch instr.Op {
-	case OpCall, OpCallFloor, OpFieldCallFloor, OpResume, OpYield, OpSelf, OpSetGlobal, OpSetUpval:
+	case OpCall, OpCallFloor, OpFieldCallFloor, OpResume, OpYield, OpSelf, OpSetGlobal, OpSetUpval,
+		OpSetTable, OpSetList, OpAppend:
 		return true
 	default:
 		return false
@@ -373,9 +374,10 @@ func fieldSvalsGlobalBarrier(instr *Instr) bool {
 	switch instr.Op {
 	case OpSetField:
 		return len(instr.Args) == 0 || instr.Args[0] == nil
-	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
-		OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix,
-		OpSetList, OpAppend:
+	case OpSetTable, OpSetList, OpAppend:
+		return true
+	case OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
+		OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix:
 		return len(instr.Args) == 0 || instr.Args[0] == nil
 	case OpCall, OpCallFloor, OpFieldCallFloor, OpResume, OpYield, OpSelf, OpSetGlobal, OpSetUpval:
 		return true
