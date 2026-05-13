@@ -45,6 +45,7 @@ func tier2FloatNumericModules() []Tier2OptimizerModule {
 func tier2LoopKernelModules() []Tier2OptimizerModule {
 	modules := []Tier2OptimizerModule{
 		tier2PassModule("LICM", Tier2PhaseLoopKernel, LICMPass),
+		tier2PassModule("LoopGlobalStoreSink", Tier2PhaseLoopKernel, LoopGlobalStoreSinkPass),
 	}
 	modules = append(modules, tier2TableLoopKernelModules()...)
 	modules = append(modules,

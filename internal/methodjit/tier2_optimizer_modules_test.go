@@ -193,6 +193,7 @@ func TestTier2FloatNumericModuleOrder(t *testing.T) {
 func TestTier2LoopKernelModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2LoopKernelModules(), Tier2PhaseLoopKernel, []string{
 		"LICM",
+		"LoopGlobalStoreSink",
 		"BoolTableFillLoop",
 		"TableArrayStoreLoopVersion",
 		"TableIntArrayKernel",
