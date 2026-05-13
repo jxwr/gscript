@@ -2629,7 +2629,6 @@ func (ec *emitContext) emitRestoreTypedPeerLeafCallerState(calleeBaseOff int) {
 	ec.emitRestoreRawPeerLeafCallerRegs(calleeBaseOff)
 	asm.LDR(jit.X8, jit.SP, rawPeerClosureOff)
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
-	asm.STR(mRegConsts, mRegCtx, execCtxOffConstants)
 	asm.STR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.LDR(jit.X8, jit.SP, rawPeerCallModeOff)
 	ec.emitStoreCallMode(jit.X8)
