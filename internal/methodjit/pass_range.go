@@ -1152,7 +1152,13 @@ func analyzeForwardInduction(phi *Instr, li *loopInfo) (forwardInduction, bool) 
 			if !ok {
 				continue
 			}
-			if out.update != nil || step <= 0 {
+			if step <= 0 {
+				return forwardInduction{}, false
+			}
+			if out.update != nil {
+				if out.update == arg.Def && out.step == step {
+					continue
+				}
 				return forwardInduction{}, false
 			}
 			out.step = step

@@ -245,6 +245,57 @@ func TestRangePass_Propagation(t *testing.T) {
 	}
 }
 
+func TestRangePass_DuplicateBackedgeInductionUpdate(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "dup_backedge_induction"},
+		NumRegs: 2,
+	}
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	header := &Block{ID: 1, defs: make(map[int]*Value)}
+	bodyA := &Block{ID: 2, defs: make(map[int]*Value)}
+	bodyB := &Block{ID: 3, defs: make(map[int]*Value)}
+
+	init := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	step := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: entry}
+	loadBound := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: entry}
+	bound := &Instr{ID: fn.newValueID(), Op: OpGuardIntRange, Type: TypeInt, Aux: 0, Aux2: 1000, Args: []*Value{loadBound.Value()}, Block: entry}
+	entry.Instrs = []*Instr{init, step, loadBound, bound, {ID: fn.newValueID(), Op: OpJump, Block: entry}}
+	entry.Succs = []*Block{header}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{phi.Value(), step.Value()}, Block: header}
+	le := &Instr{ID: fn.newValueID(), Op: OpLeInt, Type: TypeBool, Args: []*Value{add.Value(), bound.Value()}, Block: header}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Args: []*Value{le.Value()}, Block: header}
+	phi.Args = []*Value{init.Value(), add.Value(), add.Value()}
+	header.Instrs = []*Instr{phi, add, le, br}
+	header.Preds = []*Block{entry, bodyA, bodyB}
+	header.Succs = []*Block{bodyA, bodyB}
+
+	bodyA.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpJump, Block: bodyA}}
+	bodyA.Preds = []*Block{header}
+	bodyA.Succs = []*Block{header}
+	bodyB.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpJump, Block: bodyB}}
+	bodyB.Preds = []*Block{header}
+	bodyB.Succs = []*Block{header}
+
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, header, bodyA, bodyB}
+
+	result, err := RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+	if got := result.IntRanges[phi.ID]; !got.known || got.min != 0 || got.max != 1000 {
+		t.Fatalf("phi range=%+v, want [0,1000]", got)
+	}
+	if got := result.IntRanges[add.ID]; !got.known || got.min != 1 || got.max != 1001 {
+		t.Fatalf("add range=%+v, want [1,1001]", got)
+	}
+	if !result.Int48Safe[add.ID] {
+		t.Fatalf("duplicate-backedge induction update should be int48 safe")
+	}
+}
+
 func TestRangePass_IntNonNegativeMarksConstantsAndRanges(t *testing.T) {
 	fn := &Function{
 		Proto:   &vm.FuncProto{Name: "nonneg_facts"},
