@@ -454,6 +454,47 @@ func TestEmit_ModZeroIntPowerOfTwoUsesBitTest(t *testing.T) {
 	}
 }
 
+func TestEmit_ModZeroIntNonNegativeConstUsesMagic(t *testing.T) {
+	src := `func f(n) {
+		q := n % 211
+		if q % 5 == 0 { return 1 }
+		return 0
+	}`
+	proto := compileFunction(t, src)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+	if countOpHelper(fn, OpModZeroInt) != 1 {
+		t.Fatalf("expected ModZeroInt rewrite:\n%s", Print(fn))
+	}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, arg := range []int64{-10, -1, 0, 1, 5, 6, 25, 12345} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(arg)})
+		if err != nil {
+			t.Fatalf("Execute f(%d): %v", arg, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(arg)})
+		if len(result) == 0 || len(vmResult) == 0 {
+			t.Fatalf("empty result for f(%d): JIT=%v VM=%v", arg, result, vmResult)
+		}
+		assertValuesEqual(t, fmt.Sprintf("f(%d)", arg), result[0], vmResult[0])
+	}
+
+	code := make([]byte, cf.Code.Size())
+	copy(code, unsafeCodeSlice(cf))
+	asm := disasmARM64(code)
+	if !strings.Contains(asm, "UMULH") {
+		t.Fatalf("non-negative modulo-zero compare should emit reciprocal multiply:\n%s", asm)
+	}
+}
+
 func TestEmit_ExactConstDivisorResultFitsInt48(t *testing.T) {
 	for _, divisor := range []int64{1, 2, -2, 3, -7} {
 		if !exactConstDivisorResultFitsInt48(divisor) {

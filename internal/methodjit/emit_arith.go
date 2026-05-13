@@ -7,6 +7,7 @@
 package methodjit
 
 import (
+	"math"
 	"math/big"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -720,6 +721,24 @@ func (ec *emitContext) emitModZeroIntFlags(instr *Instr, divisor int64) {
 		ec.asm.ANDreg(jit.X0, lhs, maskReg)
 		ec.asm.CMPimm(jit.X0, 0)
 		return
+	}
+
+	if ec.intNonNegative(instr.Args[0].ID) && absDivisor <= uint64(math.MaxInt64) {
+		divisorAbs := int64(absDivisor)
+		if magic, shift, ok := positiveConstModMagic(divisorAbs); ok {
+			if lhs != jit.X0 {
+				ec.asm.MOVreg(jit.X0, lhs)
+			}
+			ec.asm.LoadImm64(jit.X3, int64(magic))
+			ec.asm.UMULH(jit.X2, jit.X0, jit.X3)
+			if shift > 0 {
+				ec.asm.LSRimm(jit.X2, jit.X2, shift)
+			}
+			ec.asm.LoadImm64(jit.X3, divisorAbs)
+			ec.asm.MSUB(jit.X0, jit.X2, jit.X3, jit.X0)
+			ec.asm.CMPimm(jit.X0, 0)
+			return
+		}
 	}
 
 	if lhs != jit.X0 {
