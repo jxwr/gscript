@@ -91,45 +91,63 @@ func (ec *emitContext) resetValueReprs() {
 }
 
 // valueReprSnapshot is the compile-time representation state captured before
-// emitting an alternate control-flow path. Restoring it rebuilds the legacy
-// raw-int/raw-table mirrors from the lattice instead of making those mirrors
-// an independent source of truth.
-type valueReprSnapshot map[int]valueRepr
+// emitting an alternate control-flow path. Keep it as a compact append-only
+// list instead of a map: codegen creates these snapshots frequently, while
+// lookup is rare and snapshot cardinality is usually small.
+type valueReprSnapshot struct {
+	entries []valueReprSnapshotEntry
+}
+
+type valueReprSnapshotEntry struct {
+	valueID int
+	repr    valueRepr
+}
 
 func (ec *emitContext) snapshotValueReprs() valueReprSnapshot {
 	if ec == nil || len(ec.valueReprs) == 0 {
 		return valueReprSnapshot{}
 	}
-	snap := make(valueReprSnapshot, len(ec.valueReprs))
+	snap := valueReprSnapshot{entries: make([]valueReprSnapshotEntry, 0, len(ec.valueReprs))}
 	for valueID, repr := range ec.valueReprs {
 		if repr != valueReprBoxed {
-			snap[valueID] = repr
+			snap.entries = append(snap.entries, valueReprSnapshotEntry{valueID: valueID, repr: repr})
 		}
 	}
 	return snap
 }
 
 func (ec *emitContext) restoreValueReprSnapshot(snap valueReprSnapshot) {
-	ec.valueReprs = make(map[int]valueRepr, len(snap))
+	ec.valueReprs = make(map[int]valueRepr, len(snap.entries))
 	ec.rawIntRegs = make(map[int]bool)
 	ec.rawTablePtrRegs = make(map[int]bool)
-	for valueID, repr := range snap {
-		ec.setValueRepr(valueID, repr)
+	for _, entry := range snap.entries {
+		ec.setValueRepr(entry.valueID, entry.repr)
 	}
 }
 
 func (snap valueReprSnapshot) has(valueID int, repr valueRepr) bool {
-	return snap[valueID] == repr
+	for _, entry := range snap.entries {
+		if entry.valueID == valueID {
+			return entry.repr == repr
+		}
+	}
+	return false
+}
+
+func (snap valueReprSnapshot) forEach(fn func(valueID int, repr valueRepr)) {
+	for _, entry := range snap.entries {
+		fn(entry.valueID, entry.repr)
+	}
 }
 
 func (snap valueReprSnapshot) rawIntSubset(values map[int]bool) valueReprSnapshot {
-	if len(snap) == 0 || len(values) == 0 {
+	if len(snap.entries) == 0 || len(values) == 0 {
 		return valueReprSnapshot{}
 	}
-	out := make(valueReprSnapshot)
+	out := valueReprSnapshot{entries: make([]valueReprSnapshotEntry, 0, len(values))}
 	for valueID := range values {
 		if snap.has(valueID, valueReprRawInt) {
-			out[valueID] = valueReprRawInt
+			out.entries = append(out.entries, valueReprSnapshotEntry{valueID: valueID, repr: valueReprRawInt})
 		}
 	}
 	return out

@@ -585,18 +585,18 @@ func (ec *emitContext) emitReloadAllActiveRegs() {
 // reloads them as NaN-boxed. Both paths must converge with the same register
 // state, so the slow path unboxes to match the fast path's raw-int convention.
 func (ec *emitContext) emitUnboxRawIntRegs(reprs valueReprSnapshot) {
-	for valueID, repr := range reprs {
+	reprs.forEach(func(valueID int, repr valueRepr) {
 		if repr != valueReprRawInt {
-			continue
+			return
 		}
 		pr, ok := ec.alloc.ValueRegs[valueID]
 		if !ok || pr.IsFloat {
-			continue
+			return
 		}
 		if _, active := ec.activeRegs[valueID]; !active {
-			continue
+			return
 		}
 		reg := jit.Reg(pr.Reg)
 		jit.EmitUnboxInt(ec.asm, reg, reg)
-	}
+	})
 }
