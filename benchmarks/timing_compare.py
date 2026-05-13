@@ -776,6 +776,30 @@ def result_note(result: SubjectResult | None) -> str:
     return result.note or "-"
 
 
+def subject_source(result: SubjectResult | None) -> str:
+    if result is None:
+        return "-"
+    return result.source or "-"
+
+
+def source_pair(current: SubjectResult | None, luajit: SubjectResult | None) -> str:
+    return f"{subject_source(current)}/{subject_source(luajit)}"
+
+
+def source_is_wall_timed(result: SubjectResult | None) -> bool:
+    if result is None:
+        return False
+    sources = {source.strip() for source in (result.source or "").split(",") if source.strip()}
+    return bool(sources & {"wall_repeat", "wall_hr"})
+
+
+def luajit_gap_is_hot_timed(current: SubjectResult | None, luajit: SubjectResult | None) -> bool:
+    # Wall-time fallback is useful as a last resort, but it includes process
+    # startup and compilation noise. Keep those rows visible while preventing
+    # them from driving optimization priority over script-timed hot workloads.
+    return not source_is_wall_timed(current) and not source_is_wall_timed(luajit)
+
+
 def print_table(results: list[BenchmarkResult], modes: list[str]) -> None:
     header = (
         f"{'Benchmark':<34} {'Scale':<18} {'Mode':<9} {'Current':>12} {'HEAD':>12} {'LuaJIT':>12} "
@@ -798,7 +822,7 @@ def print_table(results: list[BenchmarkResult], modes: list[str]) -> None:
                 f"{fmt_pct(current.stats.cv_pct if current else None):>8} "
                 f"{fmt_pct(current.stats.ci95_half_width_pct if current else None):>8} "
                 f"{(current.repeat if current else 0):>7} "
-                f"{((current.source or '-') if current else '-'):<12} "
+                f"{source_pair(current, luajit):<12} "
                 f"{(current.exit_total if current else 0):>7}"
             )
 
@@ -811,21 +835,23 @@ def sorted_results_for_print(results: list[BenchmarkResult], modes: list[str], s
     def key(row: BenchmarkResult) -> float:
         current = row.modes.get(mode, {}).get("current")
         luajit = row.modes.get(mode, {}).get("luajit")
-        return ratio(seconds(current), seconds(luajit)) or -1.0
+        gap = ratio(seconds(current), seconds(luajit)) or -1.0
+        hot_timed = 1.0 if luajit_gap_is_hot_timed(current, luajit) else 0.0
+        return hot_timed * 1_000_000.0 + gap
 
     return sorted(results, key=key, reverse=True)
 
 
-def luajit_gap_rows(results: list[BenchmarkResult], modes: list[str]) -> list[tuple[float, BenchmarkResult, str]]:
-    rows: list[tuple[float, BenchmarkResult, str]] = []
+def luajit_gap_rows(results: list[BenchmarkResult], modes: list[str]) -> list[tuple[float, bool, BenchmarkResult, str]]:
+    rows: list[tuple[float, bool, BenchmarkResult, str]] = []
     for row in results:
         for mode in modes:
             current = row.modes.get(mode, {}).get("current")
             luajit = row.modes.get(mode, {}).get("luajit")
             gap = ratio(seconds(current), seconds(luajit))
             if gap is not None:
-                rows.append((gap, row, mode))
-    return sorted(rows, key=lambda item: item[0], reverse=True)
+                rows.append((gap, luajit_gap_is_hot_timed(current, luajit), row, mode))
+    return sorted(rows, key=lambda item: (item[1], item[0]), reverse=True)
 
 
 def fmt_scale(scale: dict[str, str]) -> str:
@@ -877,7 +903,7 @@ def markdown(results: list[BenchmarkResult], modes: list[str], args: argparse.Na
                         fmt_pct(current.stats.ci95_half_width_pct if current else None),
                         fmt_pct(head.stats.cv_pct if head else None),
                         str(current.exit_total if current else 0),
-                        (current.source or "-") if current else "-",
+                        source_pair(current, luajit),
                         result_note(current),
                     ]
                 )
@@ -893,7 +919,7 @@ def markdown(results: list[BenchmarkResult], modes: list[str], args: argparse.Na
             "|---:|---|---|---|---:|---:|---:|---:|---:|---|",
         ]
     )
-    for idx, (gap, row, mode) in enumerate(luajit_gap_rows(results, modes), 1):
+    for idx, (gap, hot_timed, row, mode) in enumerate(luajit_gap_rows(results, modes), 1):
         current = row.modes.get(mode, {}).get("current")
         luajit = row.modes.get(mode, {}).get("luajit")
         lines.append(
@@ -909,7 +935,7 @@ def markdown(results: list[BenchmarkResult], modes: list[str], args: argparse.Na
                     fmt_seconds(seconds(luajit)),
                     fmt_pct(current.stats.ci95_half_width_pct if current else None),
                     fmt_pct(luajit.stats.ci95_half_width_pct if luajit else None),
-                    (current.source or "-") if current else "-",
+                    source_pair(current, luajit) + ("" if hot_timed else " (wall-timed)"),
                 ]
             )
             + " |"
