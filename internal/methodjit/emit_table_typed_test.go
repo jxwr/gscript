@@ -930,6 +930,51 @@ func read_then_set(arr, key, val) {
 	if got := countMatchingIRInstr(cf, storeID, isARM64CBZX17); got != 0 {
 		t.Fatalf("checked TableArrayStore should use its typed len operand instead of X17 success flag")
 	}
+	if got := countMatchingIRInstr(cf, storeID, isARM64MOVZX17One); got == 0 {
+		t.Fatalf("load feeding same-key store should publish X17 success flag")
+	}
+}
+
+func TestTier2_TableArrayLoadWithoutSameKeyStoreSkipsSuccessFlag(t *testing.T) {
+	src := `
+func read_only(arr, key) {
+    return arr[key]
+}
+`
+	top := compileTop(t, src)
+	fnProto := findProtoByName(top, "read_only")
+	if fnProto == nil {
+		t.Fatal("read_only proto not found")
+	}
+	seedIntTableFeedback(fnProto)
+
+	fn := BuildGraph(fnProto)
+	var err error
+	fn, _, err = RunTier2Pipeline(fn, &Tier2PipelineOpts{})
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	var loadID int
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpTableArrayLoad {
+				loadID = instr.ID
+				break
+			}
+		}
+	}
+	if loadID == 0 {
+		t.Fatalf("expected TableArrayLoad after lowering:\n%s", Print(fn))
+	}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+	if got := countMatchingIRInstr(cf, loadID, isARM64MOVZX17One); got != 0 {
+		t.Fatalf("read-only TableArrayLoad emitted unused X17 success flag")
+	}
 }
 
 func seedIntTableFeedback(proto *vm.FuncProto) {
@@ -1064,4 +1109,8 @@ func isARM64CBZX17(insn uint32) bool {
 		return false
 	}
 	return strings.HasPrefix(inst.String(), "CBZ X17")
+}
+
+func isARM64MOVZX17One(insn uint32) bool {
+	return insn == 0xd2800031
 }

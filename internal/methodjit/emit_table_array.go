@@ -987,11 +987,40 @@ func (ec *emitContext) recordTableArrayBoundedKey(instr *Instr) {
 	if !ok || tableValue == nil {
 		return
 	}
+	if !tableArrayLoadFeedsStore(instr, tableValue.ID, instr.Args[2].ID) {
+		return
+	}
 	if ec.tableArrayBoundedKeys == nil {
 		ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool, 1)
 	}
 	ec.asm.MOVimm16(jit.X17, 1)
 	ec.tableArrayBoundedKeys[tableArrayBoundKey{tableID: tableValue.ID, keyID: instr.Args[2].ID}] = true
+}
+
+func tableArrayLoadFeedsStore(load *Instr, tableID, keyID int) bool {
+	if load == nil || load.Block == nil {
+		return false
+	}
+	seenLoad := false
+	for _, instr := range load.Block.Instrs {
+		if instr == nil {
+			continue
+		}
+		if instr == load {
+			seenLoad = true
+			continue
+		}
+		if !seenLoad {
+			continue
+		}
+		if instr.Op != OpTableArrayStore || len(instr.Args) < 4 || instr.Args[0] == nil || instr.Args[3] == nil {
+			continue
+		}
+		if instr.Args[0].ID == tableID && instr.Args[3].ID == keyID {
+			return true
+		}
+	}
+	return false
 }
 
 func (ec *emitContext) recordTableArrayStoreBoundedKey(instr *Instr) {
