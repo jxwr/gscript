@@ -96,6 +96,9 @@ func (p PromotionPolicy) Decide(proto *vm.FuncProto, profile FuncProfile, state 
 			Compiled: state.Compiled,
 		}
 	}
+	if tm.shouldSuppressRecursivePartitionTableMutationTier2(proto, profile) {
+		return tier0PolicyDecision("Tier0RecursivePartitionTableMutation", "stay_tier0_recursive_partition_table_mutation", "recursive_partition_table_mutation")
+	}
 	if proto.CallCount < BaselineCompileThreshold {
 		return PromotionDecision{
 			Action: TieringActionStayInterpreted,

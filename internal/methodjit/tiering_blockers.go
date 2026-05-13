@@ -555,6 +555,9 @@ func tier2LoopCallCalleeCanTierUp(callee *vm.FuncProto, globals map[string]*vm.F
 	if callee == nil || callee.IsVarArg {
 		return false
 	}
+	if hasStaticSelfRecursivePartitionSetTableLoop(callee) {
+		return false
+	}
 	if !canPromoteToTier2(callee) {
 		return false
 	}

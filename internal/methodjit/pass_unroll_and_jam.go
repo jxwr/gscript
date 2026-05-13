@@ -159,6 +159,9 @@ func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatR
 	if stepInstr == nil || stepValue == nil || stepVal <= 0 {
 		return nil
 	}
+	if stepVal != 1 {
+		return nil
+	}
 	limitValue := findLoopLimit(header, stepInstr)
 	if limitValue == nil {
 		return nil

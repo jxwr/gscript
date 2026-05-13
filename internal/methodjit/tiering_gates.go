@@ -386,10 +386,10 @@ func staticIntConstant(v runtime.Value) (int64, bool) {
 }
 
 func (tm *TieringManager) shouldSuppressRecursivePartitionTableMutationTier2(proto *vm.FuncProto, profile FuncProfile) bool {
-	if tm == nil || tm.envTier2NoFilter || proto == nil || profile.LoopDepth == 0 {
+	if tm == nil || tm.envTier2NoFilter || proto == nil {
 		return false
 	}
-	return false
+	return hasStaticSelfRecursivePartitionSetTableLoop(proto)
 }
 
 // tier0OnlyLoopCallee reports stable loop callees that are deliberately kept
@@ -426,6 +426,9 @@ func (tm *TieringManager) isTier0OnlyCallee(callee *vm.FuncProto) bool {
 		return false
 	}
 	if callee.JITDisabled {
+		return true
+	}
+	if tm.shouldSuppressRecursivePartitionTableMutationTier2(callee, tm.getProfile(callee)) {
 		return true
 	}
 	if vm.IsSieveKernelProto(callee) {

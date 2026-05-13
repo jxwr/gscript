@@ -134,7 +134,7 @@ func touch(arr, n) {
 	}
 }
 
-func TestTryCompilePromotesRecursivePartitionTableMutationTier2(t *testing.T) {
+func TestTryCompileSuppressesRecursivePartitionTableMutationTier2(t *testing.T) {
 	top := compileTop(t, `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }
@@ -166,17 +166,20 @@ func quicksort(arr, lo, hi) {
 	tm := NewTieringManager()
 	qs.CallCount = tmDefaultTier2Threshold
 	compiled := tm.TryCompile(qs)
-	if compiled == nil {
-		t.Fatal("TryCompile(quicksort) returned nil; want Tier2 compile")
+	if compiled != nil {
+		t.Fatalf("TryCompile(quicksort) returned %T; want Tier0 fallback", compiled)
+	}
+	if !qs.JITDisabled {
+		t.Fatal("quicksort should be marked JITDisabled for Tier0 fallback")
 	}
 	if tm.tier2Failed[qs] {
 		t.Fatal("quicksort should not be recorded as a Tier2 failure")
 	}
-	if tm.Tier2Attempted() != 1 {
-		t.Fatalf("quicksort should attempt Tier2 once, got %d attempts", tm.Tier2Attempted())
+	if tm.Tier2Attempted() != 0 {
+		t.Fatalf("quicksort should not attempt Tier2 by default, got %d attempts", tm.Tier2Attempted())
 	}
-	if !qs.Tier2Promoted || qs.Tier2DirectEntryPtr == 0 {
-		t.Fatalf("quicksort did not install Tier2-only direct entry: promoted=%v tier2Direct=%#x", qs.Tier2Promoted, qs.Tier2DirectEntryPtr)
+	if qs.Tier2Promoted || qs.Tier2DirectEntryPtr != 0 {
+		t.Fatalf("quicksort should remain out of Tier2 by default: promoted=%v tier2Direct=%#x", qs.Tier2Promoted, qs.Tier2DirectEntryPtr)
 	}
 }
 
