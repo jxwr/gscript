@@ -162,6 +162,7 @@ func (tm *TieringManager) traceTier2Success(proto *vm.FuncProto, cf *CompiledFun
 		attrs["guard_count"] = cf.SpecializationVersion.GuardCount
 		if deps := specDependencyNames(cf.SpecDependencyProtos); len(deps) > 0 {
 			attrs["spec_dependencies"] = deps
+			attrs["spec_dependency_ids"] = specDependencyIDs(cf.SpecDependencyProtos)
 		}
 		if cf.Code != nil {
 			attrs["code_bytes"] = cf.Code.Size()

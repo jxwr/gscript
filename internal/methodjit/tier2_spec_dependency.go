@@ -23,6 +23,20 @@ func specDependencyNames(protos []*vm.FuncProto) []string {
 	return names
 }
 
+func specDependencyIDs(protos []*vm.FuncProto) []string {
+	if len(protos) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(protos))
+	for _, proto := range protos {
+		if proto != nil {
+			ids = append(ids, traceProtoID(proto))
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 func sortedSpecDependencyProtos(fn *Function) []*vm.FuncProto {
 	if fn == nil {
 		return nil
@@ -85,7 +99,8 @@ func (tm *TieringManager) registerTier2SpecDependencies(caller *vm.FuncProto, cf
 	}
 	if deps := specDependencyNames(cf.SpecDependencyProtos); len(deps) > 0 {
 		tm.traceEvent("tier2_spec_dependencies_registered", "tier2", caller, map[string]any{
-			"dependencies": deps,
+			"dependencies":   deps,
+			"dependency_ids": specDependencyIDs(cf.SpecDependencyProtos),
 		})
 	}
 }
