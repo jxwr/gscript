@@ -1757,7 +1757,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	ec.emitLoadCallMode(jit.X8)
 	asm.STR(jit.X8, jit.SP, rawPeerCallModeOff)
 
-	ec.emitTypedPeerArgsFromValuesInRegsAndSave(instr.Args, argDesc, callFallbackLabel)
+	if allLeafCallees {
+		ec.emitTypedPeerArgsFromValuesInRegs(instr.Args, argDesc, callFallbackLabel)
+	} else {
+		ec.emitTypedPeerArgsFromValuesInRegsAndSave(instr.Args, argDesc, callFallbackLabel)
+	}
 	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
 	for _, c := range cases {
 		nextLabel := ec.uniqueLabel("t2fieldmethod_next")
@@ -1897,7 +1901,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	}
 	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitSpillSelectiveForCall(liveGPRs, nil)
-	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	if allLeafCallees {
+		ec.emitMaterializeTypedPeerCallFrameFromValues(funcSlot, instr.Args, jit.X6)
+	} else {
+		ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	}
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
 	ec.emitFloorProjectionFromCallResult(instr)
@@ -1913,7 +1921,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		ec.emitRestoreTypedPeerCallerState()
 	}
 	ec.restoreValueReprSnapshot(preReprs)
-	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	if allLeafCallees {
+		ec.emitMaterializeTypedPeerCallFrameFromValues(funcSlot, instr.Args, jit.X6)
+	} else {
+		ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	}
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
 	ec.emitFloorProjectionFromCallResult(instr)
@@ -1966,7 +1978,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 	ec.emitLoadCallMode(jit.X8)
 	asm.STR(jit.X8, jit.SP, rawPeerCallModeOff)
 
-	ec.emitTypedPeerArgsFromValuesInRegsAndSave(instr.Args, argDesc, fallbackLabel)
+	if c.callee.LeafNoCall {
+		ec.emitTypedPeerArgsFromValuesInRegs(instr.Args, argDesc, fallbackLabel)
+	} else {
+		ec.emitTypedPeerArgsFromValuesInRegsAndSave(instr.Args, argDesc, fallbackLabel)
+	}
 	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
 	asm.LoadImm64(jit.X12, int64(c.shapeID))
 	asm.CMPreg(jit.X9, jit.X12)
@@ -2101,7 +2117,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 	}
 	ec.restoreValueReprSnapshot(preReprs)
 	ec.emitSpillSelectiveForCall(liveGPRs, nil)
-	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	if c.callee.LeafNoCall {
+		ec.emitMaterializeTypedPeerCallFrameFromValues(funcSlot, instr.Args, jit.X6)
+	} else {
+		ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	}
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
 	ec.emitFloorProjectionFromCallResult(instr)
@@ -2117,7 +2137,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 		ec.emitRestoreTypedPeerCallerState()
 	}
 	ec.restoreValueReprSnapshot(preReprs)
-	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	if c.callee.LeafNoCall {
+		ec.emitMaterializeTypedPeerCallFrameFromValues(funcSlot, instr.Args, jit.X6)
+	} else {
+		ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	}
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
 	ec.emitFloorProjectionFromCallResult(instr)
@@ -2665,6 +2689,14 @@ func (ec *emitContext) emitTypedPeerArgsInRegsAndSave(instr *Instr, desc CallABI
 }
 
 func (ec *emitContext) emitTypedPeerArgsFromValuesInRegsAndSave(args []*Value, desc CallABIDescriptor, fallbackLabel string) {
+	ec.emitTypedPeerArgsFromValuesInRegsWithOptionalSave(args, desc, fallbackLabel, true)
+}
+
+func (ec *emitContext) emitTypedPeerArgsFromValuesInRegs(args []*Value, desc CallABIDescriptor, fallbackLabel string) {
+	ec.emitTypedPeerArgsFromValuesInRegsWithOptionalSave(args, desc, fallbackLabel, false)
+}
+
+func (ec *emitContext) emitTypedPeerArgsFromValuesInRegsWithOptionalSave(args []*Value, desc CallABIDescriptor, fallbackLabel string, saveArgs bool) {
 	asm := ec.asm
 	for i, rep := range desc.ParamReps {
 		if i >= len(args) || args[i] == nil {
@@ -2689,7 +2721,9 @@ func (ec *emitContext) emitTypedPeerArgsFromValuesInRegsAndSave(args []*Value, d
 				asm.BCond(jit.CondNE, fallbackLabel)
 				jit.EmitUnboxInt(asm, dst, dst)
 			}
-			asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+			if saveArgs {
+				asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+			}
 		case SpecializedABIParamRawFloat:
 			if ec.irTypes[arg.ID] == TypeFloat {
 				src := ec.resolveRawFloat(arg.ID, jit.FReg(int(jit.D0)+i))
@@ -2702,13 +2736,17 @@ func (ec *emitContext) emitTypedPeerArgsFromValuesInRegsAndSave(args []*Value, d
 				jit.EmitIsTagged(asm, dst, jit.X6)
 				asm.BCond(jit.CondEQ, fallbackLabel)
 			}
-			asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+			if saveArgs {
+				asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+			}
 		case SpecializedABIParamRawTablePtr:
 			src := ec.resolveValueNB(arg.ID, dst)
 			if src != dst {
 				asm.MOVreg(dst, src)
 			}
-			asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+			if saveArgs {
+				asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+			}
 			if ec.irTypes[arg.ID] != TypeTable {
 				jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
 			}
@@ -2750,6 +2788,21 @@ func (ec *emitContext) emitMaterializeTypedPeerCallFrame(funcSlot, nArgs int, de
 		asm.LDR(jit.X0, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
 		if i < len(desc.ParamReps) && desc.ParamReps[i] == SpecializedABIParamRawInt {
 			jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+		}
+		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+1+i))
+	}
+}
+
+func (ec *emitContext) emitMaterializeTypedPeerCallFrameFromValues(funcSlot int, args []*Value, funcReg jit.Reg) {
+	asm := ec.asm
+	asm.STR(funcReg, mRegRegs, slotOffset(funcSlot))
+	for i, arg := range args {
+		if arg == nil {
+			continue
+		}
+		src := ec.resolveValueNB(arg.ID, jit.X0)
+		if src != jit.X0 {
+			asm.MOVreg(jit.X0, src)
 		}
 		asm.STR(jit.X0, mRegRegs, slotOffset(funcSlot+1+i))
 	}
