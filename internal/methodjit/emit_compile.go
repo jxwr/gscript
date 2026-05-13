@@ -75,15 +75,19 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 	exitBoxPhis := make(map[int]bool)
 	exitBoxFPPhis := make(map[int]bool)
 	exitStorePhis := make(map[int]bool)
+	// Identify single-use comparisons that can be fused with their
+	// immediately-following Branch. Several loop analyses need this same fact;
+	// compute it once for the compile instead of rebuilding use counts.
+	fusedCmps := computeFusedComparisons(fn)
 	if li.hasLoops() {
-		headerRegs = li.computeHeaderExitRegs(fn, alloc)
+		headerRegs = li.computeHeaderExitRegs(fn, alloc, fusedCmps)
 		headerFPRegs = li.computeHeaderExitFPRegs(fn, alloc)
 		// Compute safe header regs: only registers NOT clobbered by any
 		// non-header block in the loop body. These are used for both
 		// block activation and loopPhiOnlyArgs checking.
-		safeHdrRegs = computeSafeHeaderRegs(fn, li, alloc, headerRegs)
+		safeHdrRegs = computeSafeHeaderRegs(fn, li, alloc, headerRegs, fusedCmps)
 		safeHdrFPRegs = computeSafeHeaderFPRegs(fn, li, alloc, headerFPRegs)
-		loopInvariantGPRs = computeSafeLoopInvariantGPRs(fn, li, alloc)
+		loopInvariantGPRs = computeSafeLoopInvariantGPRs(fn, li, alloc, fusedCmps)
 		loopInvariantFPRs = computeSafeLoopInvariantFPRs(fn, li, alloc)
 		phiOnlyArgs = computeLoopPhiArgs(fn, li, alloc, safeHdrRegs)
 		fpPhiOnlyArgs = computeLoopFPPhiArgs(fn, li, alloc, safeHdrFPRegs)
@@ -250,10 +254,6 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		}
 	}
 
-	// Identify single-use comparisons that can be fused with their
-	// immediately-following Branch. Fused pairs emit CMP/FCMP + B.cc
-	// instead of CMP + CSET + ORR + TBNZ (saves 3 instructions).
-	fusedCmps := computeFusedComparisons(fn)
 	nativeCallReplaySafe := tier2NativeCallReplaySafe(fn)
 	nativeCallCalleeResumeSafe := tier2NativeCallCalleeResumeSafe(fn)
 	rawIntSelfABI := AnalyzeRawIntSelfABI(fn.Proto)

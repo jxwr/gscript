@@ -613,7 +613,7 @@ func TestRegalloc_TableArrayLenDataInvariantGPRPinned(t *testing.T) {
 	}
 
 	li := computeLoopInfo(fn)
-	safe := computeSafeLoopInvariantGPRs(fn, li, alloc)
+	safe := computeSafeLoopInvariantGPRs(fn, li, alloc, computeFusedComparisons(fn))
 	if !safe[header.ID][arrLen.ID].IsRawInt {
 		t.Fatalf("TableArrayLen v%d should activate as raw int", arrLen.ID)
 	}
@@ -699,7 +699,7 @@ func TestRegalloc_TableArraySwapDoesNotClobberPinnedLenData(t *testing.T) {
 	}
 
 	li := computeLoopInfo(fn)
-	safe := computeSafeLoopInvariantGPRs(fn, li, alloc)
+	safe := computeSafeLoopInvariantGPRs(fn, li, alloc, computeFusedComparisons(fn))
 	if !safe[header.ID][arrLen.ID].IsRawInt {
 		t.Fatalf("TableArrayLen v%d should stay safe as raw int across swap", arrLen.ID)
 	}
@@ -758,7 +758,7 @@ func TestRegalloc_TableArrayHeaderInvariantGPRPinnedForBoolStoreABI(t *testing.T
 	}
 
 	li := computeLoopInfo(fn)
-	safe := computeSafeLoopInvariantGPRs(fn, li, alloc)
+	safe := computeSafeLoopInvariantGPRs(fn, li, alloc, computeFusedComparisons(fn))
 	if !safe[header.ID][arrHdr.ID].IsRawTablePtr || safe[header.ID][arrHdr.ID].IsRawInt || safe[header.ID][arrHdr.ID].IsRawDataPtr {
 		t.Fatalf("TableArrayHeader v%d should activate as raw table pointer, got %+v", arrHdr.ID, safe[header.ID][arrHdr.ID])
 	}

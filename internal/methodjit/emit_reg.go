@@ -55,23 +55,50 @@ import (
 // so they can be loaded by other blocks. Values used only within their defining
 // block don't need memory writes.
 func computeCrossBlockLive(fn *Function) map[int]bool {
-	// First, find which block each value is defined in.
-	defBlock := make(map[int]int) // valueID -> blockID
+	maxID := 0
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if !instr.Op.IsTerminator() {
+			if instr == nil {
+				continue
+			}
+			if instr.ID > maxID {
+				maxID = instr.ID
+			}
+			for _, arg := range instr.Args {
+				if arg != nil && arg.ID > maxID {
+					maxID = arg.ID
+				}
+			}
+		}
+	}
+
+	// First, find which block each value is defined in. Value IDs are dense in
+	// optimized IR, so a slice avoids compile-time map traffic on hot pipelines.
+	defBlock := make([]int, maxID+1)
+	for i := range defBlock {
+		defBlock[i] = -1
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && !instr.Op.IsTerminator() && instr.ID >= 0 {
 				defBlock[instr.ID] = block.ID
 			}
 		}
 	}
 
 	// Find values used in a different block than their definition.
-	crossBlock := make(map[int]bool)
+	crossBlock := make([]bool, maxID+1)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
 			for _, arg := range instr.Args {
-				db, ok := defBlock[arg.ID]
-				if ok && db != block.ID {
+				if arg == nil || arg.ID < 0 || arg.ID >= len(defBlock) {
+					continue
+				}
+				db := defBlock[arg.ID]
+				if db >= 0 && db != block.ID {
 					crossBlock[arg.ID] = true
 				}
 			}
@@ -81,16 +108,27 @@ func computeCrossBlockLive(fn *Function) map[int]bool {
 	// Also mark phi sources as cross-block (they're read from predecessor blocks).
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
 			if instr.Op != OpPhi {
 				break
 			}
 			for _, arg := range instr.Args {
-				crossBlock[arg.ID] = true
+				if arg != nil && arg.ID >= 0 && arg.ID < len(crossBlock) {
+					crossBlock[arg.ID] = true
+				}
 			}
 		}
 	}
 
-	return crossBlock
+	out := make(map[int]bool)
+	for valueID, live := range crossBlock {
+		if live {
+			out[valueID] = true
+		}
+	}
+	return out
 }
 
 // hasReg returns true if the given value ID has a physical GPR register allocation

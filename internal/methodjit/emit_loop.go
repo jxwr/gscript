@@ -290,9 +290,8 @@ type loopFPRegEntry struct {
 // which registers hold which values after all instructions are processed.
 // Returns a per-header map so that non-header blocks in nested loops
 // can look up registers from their innermost enclosing header.
-func (li *loopInfo) computeHeaderExitRegs(fn *Function, alloc *RegAllocation) map[int]map[int]loopRegEntry {
+func (li *loopInfo) computeHeaderExitRegs(fn *Function, alloc *RegAllocation, fusedCmps map[int]bool) map[int]map[int]loopRegEntry {
 	perHeader := make(map[int]map[int]loopRegEntry) // headerBlockID -> (register number -> entry)
-	fusedCmps := computeFusedComparisons(fn)
 
 	for _, block := range fn.Blocks {
 		if !li.loopHeaders[block.ID] {
@@ -390,9 +389,8 @@ func (li *loopInfo) computeHeaderExitFPRegs(fn *Function, alloc *RegAllocation) 
 // loop body. When a register is clobbered, the header's value won't survive
 // to non-header blocks, so activating it would be incorrect.
 func computeSafeHeaderRegs(fn *Function, li *loopInfo, alloc *RegAllocation,
-	headerRegs map[int]map[int]loopRegEntry) map[int]map[int]loopRegEntry {
+	headerRegs map[int]map[int]loopRegEntry, fusedCmps map[int]bool) map[int]map[int]loopRegEntry {
 	safe := make(map[int]map[int]loopRegEntry)
-	fusedCmps := computeFusedComparisons(fn)
 	for headerID, regs := range headerRegs {
 		bodyBlocks := li.headerBlocks[headerID]
 		safeRegs := make(map[int]loopRegEntry)
@@ -464,12 +462,11 @@ func computeSafeHeaderFPRegs(fn *Function, li *loopInfo, alloc *RegAllocation,
 	return safe
 }
 
-func computeSafeLoopInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAllocation) map[int]map[int]loopRegEntry {
+func computeSafeLoopInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAllocation, fusedCmps map[int]bool) map[int]map[int]loopRegEntry {
 	if fn == nil || li == nil || alloc == nil || len(alloc.LoopInvariantGPRs) == 0 {
 		return nil
 	}
 	safe := make(map[int]map[int]loopRegEntry)
-	fusedCmps := computeFusedComparisons(fn)
 	for headerID, values := range alloc.LoopInvariantGPRs {
 		bodyBlocks := li.headerBlocks[headerID]
 		if bodyBlocks == nil {
