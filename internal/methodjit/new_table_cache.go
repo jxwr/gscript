@@ -80,7 +80,7 @@ func prewarmNewTableCachesForFunction(fn *Function, caches []newTableCacheEntry)
 					continue
 				}
 				hashHint, kind := unpackNewTableAux2(instr.Aux2)
-				prewarmNewTableCacheEntry(&caches[instr.ID], int(instr.Aux), hashHint, kind, batch)
+				prewarmNewTableCacheEntry(&caches[instr.ID], int(instr.Aux), hashHint, kind, unpackNewTableDenseMixed(instr.Aux2), batch)
 			case OpNewFixedTable:
 				if ctor, ok := fixedTableCtor2ForInstr(fn.Proto, instr); ok && cacheableSmallCtor2(ctor) {
 					prewarmFixedTable2CacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch)
@@ -135,7 +135,7 @@ func prewarmFixedTableNCacheEntry(entry *newTableCacheEntry, ctor *runtime.Small
 	entry.Pos = 0
 }
 
-func prewarmNewTableCacheEntry(entry *newTableCacheEntry, arrayHint, hashHint int, kind runtime.ArrayKind, batch int) {
+func prewarmNewTableCacheEntry(entry *newTableCacheEntry, arrayHint, hashHint int, kind runtime.ArrayKind, denseMixed bool, batch int) {
 	if entry == nil || batch <= 1 || len(entry.Values) > 0 {
 		return
 	}
@@ -146,7 +146,7 @@ func prewarmNewTableCacheEntry(entry *newTableCacheEntry, arrayHint, hashHint in
 		entry.Roots = entry.Roots[:0]
 	}
 	for i := range entry.Values {
-		tbl := runtime.NewTableSizedKind(arrayHint, hashHint, kind)
+		tbl := newCachedTable(arrayHint, hashHint, kind, denseMixed)
 		entry.addRoot(tbl)
 		entry.Values[i] = runtime.FreshTableValue(tbl)
 	}
@@ -157,11 +157,33 @@ func newTableCacheBatchSize(instr *Instr) int {
 	if instr == nil || instr.Op != OpNewTable {
 		return 0
 	}
+	hashHint, kind := unpackNewTableAux2(instr.Aux2)
 	if unpackNewTableDenseMixed(instr.Aux2) {
+		return denseMixedNewTableCacheBatchSizeForHints(instr.Aux, hashHint)
+	}
+	return newTableCacheBatchSizeForHints(instr.Aux, hashHint, kind)
+}
+
+func denseMixedNewTableCacheBatchSizeForHints(arrayHint int64, hashHint int) int {
+	if arrayHint <= 0 || hashHint != 0 || arrayHint > tier2NewTableCacheMaxArrayHint {
 		return 0
 	}
-	hashHint, kind := unpackNewTableAux2(instr.Aux2)
-	return newTableCacheBatchSizeForHints(instr.Aux, hashHint, kind)
+	bytesPerTable := (arrayHint + 1) * 8
+	if bytesPerTable <= 0 {
+		return 0
+	}
+	targetBytes := int64(newTableCacheTargetBytes)
+	if arrayHint >= newTableCacheLargeArrayHint {
+		targetBytes = newTableCacheLargeTargetBytes
+	}
+	batch := int(targetBytes / bytesPerTable)
+	if batch > newTableCacheMaxBatch {
+		batch = newTableCacheMaxBatch
+	}
+	if batch <= 1 {
+		return 0
+	}
+	return batch
 }
 
 func newTableCacheBatchSizeForHints(arrayHint int64, hashHint int, kind runtime.ArrayKind) int {
@@ -271,7 +293,14 @@ func (cf *CompiledFunction) allocateNewTableForExit(instrID int, arrayHint, hash
 	if cf == nil {
 		return runtime.NewTableSizedKind(arrayHint, hashHint, kind)
 	}
-	return allocateNewTableWithCache(cf.NewTableCaches, instrID, arrayHint, hashHint, kind)
+	return allocateNewTableWithCache(cf.NewTableCaches, instrID, arrayHint, hashHint, kind, false)
+}
+
+func (cf *CompiledFunction) allocateDenseMixedNewTableForExit(instrID int, arrayHint, hashHint int) *runtime.Table {
+	if cf == nil {
+		return runtime.NewDenseMixedArrayTable(arrayHint, hashHint)
+	}
+	return allocateNewTableWithCache(cf.NewTableCaches, instrID, arrayHint, hashHint, runtime.ArrayMixed, true)
 }
 
 func (cf *CompiledFunction) allocateFixedTable2ForExit(instrID int, ctor *runtime.SmallTableCtor2, val1, val2 runtime.Value) *runtime.Table {
@@ -288,16 +317,20 @@ func (cf *CompiledFunction) allocateFixedTableNForExit(instrID int, ctor *runtim
 	return allocateFixedTableNWithCache(cf.NewTableCaches, instrID, ctor, vals)
 }
 
-func allocateNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind) *runtime.Table {
-	return allocateNewTableWithCacheBatch(caches, instrID, arrayHint, hashHint, kind, newTableCacheBatchSizeForHints(int64(arrayHint), hashHint, kind))
+func allocateNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind, denseMixed bool) *runtime.Table {
+	batch := newTableCacheBatchSizeForHints(int64(arrayHint), hashHint, kind)
+	if denseMixed {
+		batch = denseMixedNewTableCacheBatchSizeForHints(int64(arrayHint), hashHint)
+	}
+	return allocateNewTableWithCacheBatch(caches, instrID, arrayHint, hashHint, kind, denseMixed, batch)
 }
 
 func allocateBaselineNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind) *runtime.Table {
-	return allocateNewTableWithCacheBatch(caches, instrID, arrayHint, hashHint, kind, baselineNewTableCacheBatchSizeForHints(arrayHint, hashHint, kind))
+	return allocateNewTableWithCacheBatch(caches, instrID, arrayHint, hashHint, kind, false, baselineNewTableCacheBatchSizeForHints(arrayHint, hashHint, kind))
 }
 
-func allocateNewTableWithCacheBatch(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind, batch int) *runtime.Table {
-	tbl := runtime.NewTableSizedKind(arrayHint, hashHint, kind)
+func allocateNewTableWithCacheBatch(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind, denseMixed bool, batch int) *runtime.Table {
+	tbl := newCachedTable(arrayHint, hashHint, kind, denseMixed)
 	if instrID < 0 || instrID >= len(caches) {
 		return tbl
 	}
@@ -323,12 +356,19 @@ func allocateNewTableWithCacheBatch(caches []newTableCacheEntry, instrID int, ar
 		entry.Roots = entry.Roots[:0]
 	}
 	for i := range entry.Values {
-		t := runtime.NewTableSizedKind(arrayHint, hashHint, kind)
+		t := newCachedTable(arrayHint, hashHint, kind, denseMixed)
 		entry.addRoot(t)
 		entry.Values[i] = runtime.FreshTableValue(t)
 	}
 	entry.Pos = 0
 	return tbl
+}
+
+func newCachedTable(arrayHint, hashHint int, kind runtime.ArrayKind, denseMixed bool) *runtime.Table {
+	if denseMixed {
+		return runtime.NewDenseMixedArrayTable(arrayHint, hashHint)
+	}
+	return runtime.NewTableSizedKind(arrayHint, hashHint, kind)
 }
 
 func allocateFixedTable2WithCache(caches []newTableCacheEntry, instrID int, ctor *runtime.SmallTableCtor2, val1, val2 runtime.Value) *runtime.Table {

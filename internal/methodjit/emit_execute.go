@@ -331,7 +331,7 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 		hashHint, arrayKind := unpackNewTableAux2(ctx.TableAux2)
 		var tbl *runtime.Table
 		if unpackNewTableDenseMixed(ctx.TableAux2) {
-			tbl = runtime.NewDenseMixedArrayTable(arrayHint, hashHint)
+			tbl = cf.allocateDenseMixedNewTableForExit(int(ctx.TableExitID), arrayHint, hashHint)
 		} else {
 			tbl = cf.allocateNewTableForExit(int(ctx.TableExitID), arrayHint, hashHint, arrayKind)
 		}

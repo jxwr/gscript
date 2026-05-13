@@ -331,7 +331,7 @@ func BenchmarkNewTableCacheRefillRoots(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			caches := make([]newTableCacheEntry, 1)
-			_ = allocateNewTableWithCache(caches, instrID, arrayHint, hashHint, runtime.ArrayFloat)
+			_ = allocateNewTableWithCache(caches, instrID, arrayHint, hashHint, runtime.ArrayFloat, false)
 		}
 	})
 	b.Run("legacy_per_table_roots", func(b *testing.B) {
