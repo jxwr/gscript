@@ -483,7 +483,7 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 
 func tier2GuardOpCanRefresh(op string) bool {
 	switch op {
-	case "GuardType", "GuardCalleeProto", "GuardConstString", "GuardTableKind":
+	case "GuardType", "GuardCalleeProto", "GuardConstString", "GuardTableKind", "GuardIntRange":
 		return true
 	default:
 		return false

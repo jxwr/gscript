@@ -17,6 +17,11 @@ func CallReturnProjectionPass(fn *Function) (*Function, error) {
 			if !callReturnProjectionCandidate(fn, instr) {
 				continue
 			}
+			if instr.HasSource && specGuardKindSuppressed(fn, instr.SourcePC, "GuardIntRange") {
+				functionRemarks(fn).Add("CallReturnProjection", "missed", block.ID, instr.ID, instr.Op,
+					"skipped floor projection after int-range guard deopt")
+				continue
+			}
 			next := block.Instrs[i+1]
 			if next == nil || next.Op != OpFloor || len(next.Args) != 1 ||
 				next.Args[0] == nil || next.Args[0].ID != instr.ID {

@@ -78,6 +78,8 @@ func (Tier2GuardDeoptPolicy) Decide(meta ExitSiteMeta, failCount uint64) Tier2Gu
 		// reaching the same generic table path, so relax this guard class once
 		// the function has demonstrated instability.
 		decision.SuppressGlobal = failCount >= 1
+	case "GuardIntRange":
+		decision.Reason = "tier2: int-range guard deopt; recompile without unstable numeric-range projection"
 	}
 	return decision
 }

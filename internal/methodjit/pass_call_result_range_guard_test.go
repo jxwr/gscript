@@ -122,3 +122,39 @@ func TestCallResultRangeGuardPass_SpeculatesStableFieldCallFloor(t *testing.T) {
 		t.Fatalf("return arg not rewritten to guard:\n%s", Print(out))
 	}
 }
+
+func TestCallResultRangeGuardPass_SkipsSuppressedIntRange(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:             "call_result_suppressed",
+		CallSiteFeedback: vm.NewCallSiteFeedbackVector(1),
+	}
+	proto.CallSiteFeedback[0].ObserveCall(runtime.NilValue(), nil, 1, 2)
+	fn := &Function{
+		Proto: proto,
+		SuppressedSpecGuardKinds: map[int]map[string]bool{
+			0: {"GuardIntRange": true},
+		},
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	recv := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	arg := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	call := &Instr{ID: fn.newValueID(), Op: OpFieldCallFloor, Type: TypeInt, Args: []*Value{recv.Value(), arg.Value()}, Block: b, HasSource: true, SourcePC: 0}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{call.Value()}, Block: b}
+	b.Instrs = []*Instr{recv, arg, call, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+	fn.FieldPolyShapeFacts = map[int][]FieldPolyShapeCase{
+		call.ID: {{ShapeID: 7, FieldIdx: 1}},
+	}
+
+	out, err := CallResultRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("CallResultRangeGuardPass: %v", err)
+	}
+	if countOps(out)[OpGuardIntRange] != 0 {
+		t.Fatalf("suppressed GuardIntRange was still emitted:\n%s", Print(out))
+	}
+	if ret.Args[0].ID != call.ID {
+		t.Fatalf("suppressed guard should leave uses unchanged:\n%s", Print(out))
+	}
+}

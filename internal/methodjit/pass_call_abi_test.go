@@ -517,7 +517,7 @@ func step_float(a, tick) {
 		t.Fatalf("missing protos: step_int=%v step_float=%v", stepInt != nil, stepFloat != nil)
 	}
 
-	fn := &Function{NumRegs: 4, nextID: 6}
+	fn := &Function{Proto: &vm.FuncProto{Name: "field_floor_projection_test"}, NumRegs: 4, nextID: 6}
 	b := &Block{ID: 0}
 	fn.Entry = b
 	fn.Blocks = []*Block{b}

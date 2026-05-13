@@ -28,6 +28,11 @@ func CallResultRangeGuardPass(fn *Function) (*Function, error) {
 			if !instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
 				continue
 			}
+			if specGuardKindSuppressed(fn, instr.SourcePC, "GuardIntRange") {
+				functionRemarks(fn).Add("CallResultRangeGuard", "missed", block.ID, instr.ID, instr.Op,
+					"skipped suppressed int-range guard")
+				continue
+			}
 			fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
 			min, max, reason, ok := callResultGuardRange(fn, instr, fb)
 			if !ok || nextInstrIsSameIntRangeGuard(block, i, instr.ID, min, max) {
