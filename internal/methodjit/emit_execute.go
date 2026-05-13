@@ -235,6 +235,7 @@ func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Val
 				return err
 			}
 			storeCallExitSingleResult(regs, callSlot, nRets, result)
+			observeTier2CallExitResultFeedback(cf.Proto, cf, ctx, result, true)
 			return nil
 		}
 	}
@@ -246,6 +247,7 @@ func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Val
 			return err
 		}
 		storeCallExitSingleResult(regs, callSlot, nRets, result)
+		observeTier2CallExitResultFeedback(cf.Proto, cf, ctx, result, true)
 		return nil
 	}
 
@@ -277,6 +279,11 @@ func (cf *CompiledFunction) executeCallExit(ctx *ExecContext, regs []runtime.Val
 				regs[idx] = runtime.NilValue()
 			}
 		}
+	}
+	if len(results) > 0 {
+		observeTier2CallExitResultFeedback(cf.Proto, cf, ctx, results[0], true)
+	} else {
+		observeTier2CallExitResultFeedback(cf.Proto, cf, ctx, runtime.NilValue(), false)
 	}
 
 	return nil

@@ -50,6 +50,12 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 	}
 
 	if handled, err := tm.tryCompiledProtocolCallExit(fnVal, regs, absSlot, nArgs, nRets); handled || err != nil {
+		if handled && err == nil {
+			currentRegs := tm.callVM.Regs()
+			if absSlot >= 0 && absSlot < len(currentRegs) {
+				observeTier2CallExitResultFeedback(proto, cf, ctx, currentRegs[absSlot], true)
+			}
+		}
 		return err
 	}
 
@@ -61,6 +67,7 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 			}
 			currentRegs := tm.callVM.Regs()
 			storeCallExitSingleResult(currentRegs, absSlot, nRets, result)
+			observeTier2CallExitResultFeedback(proto, cf, ctx, result, true)
 			return nil
 		}
 	}
@@ -73,6 +80,7 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 		}
 		currentRegs := tm.callVM.Regs()
 		storeCallExitSingleResult(currentRegs, absSlot, nRets, result)
+		observeTier2CallExitResultFeedback(proto, cf, ctx, result, true)
 		return nil
 	}
 
@@ -94,6 +102,11 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 				currentRegs[idx] = runtime.NilValue()
 			}
 		}
+	}
+	if len(results) > 0 {
+		observeTier2CallExitResultFeedback(proto, cf, ctx, results[0], true)
+	} else {
+		observeTier2CallExitResultFeedback(proto, cf, ctx, runtime.NilValue(), false)
 	}
 
 	return nil

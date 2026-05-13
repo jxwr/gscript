@@ -56,6 +56,35 @@ func TestObserveTier2CallExitFeedbackUsesCallSourcePC(t *testing.T) {
 	}
 }
 
+func TestObserveTier2CallExitResultFeedbackUsesCallSourcePC(t *testing.T) {
+	caller := &vm.FuncProto{
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_MOVE, 1, 0, 0),
+			vm.EncodeABC(vm.OP_CALL, 0, 2, 2),
+			vm.EncodeABC(vm.OP_RETURN, 0, 2, 0),
+		},
+		MaxStack: 4,
+	}
+	caller.EnsureFeedback()
+	cf := &CompiledFunction{
+		Proto: caller,
+		ExitSites: map[int]ExitSiteMeta{
+			99: {PC: 1, Op: "Call", Reason: "Call"},
+		},
+	}
+	ctx := &ExecContext{CallID: 99, CallSlot: 0, CallNArgs: 1, CallNRets: 1}
+
+	observeTier2CallExitResultFeedback(caller, cf, ctx, runtime.IntValue(17), true)
+
+	min, max, ok := caller.CallSiteFeedback[1].ResultRange.StableRange()
+	if !ok || min != 17 || max != 17 {
+		t.Fatalf("result range=(%d,%d,%v), want 17..17", min, max, ok)
+	}
+	if _, _, ok := caller.CallSiteFeedback[0].ResultRange.StableRange(); ok {
+		t.Fatalf("result feedback leaked to preceding PC")
+	}
+}
+
 func TestMergeTier2CallCacheFeedbackRecordsPolymorphicVMProtos(t *testing.T) {
 	calleeA := &vm.FuncProto{Name: "a"}
 	calleeB := &vm.FuncProto{Name: "b"}

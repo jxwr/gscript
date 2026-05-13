@@ -13,12 +13,7 @@ func observeTier2CallExitFeedback(proto *vm.FuncProto, cf *CompiledFunction, ctx
 	if proto == nil || proto.CallSiteFeedback == nil || cf == nil || ctx == nil {
 		return
 	}
-	pc := -1
-	if cf.ExitSites != nil {
-		if meta, ok := cf.ExitSites[int(ctx.CallID)]; ok {
-			pc = meta.PC
-		}
-	}
+	pc := tier2CallExitSourcePC(cf, ctx)
 	if pc < 0 || pc >= len(proto.CallSiteFeedback) || pc >= len(proto.Code) {
 		return
 	}
@@ -38,6 +33,33 @@ func observeTier2CallExitFeedback(proto *vm.FuncProto, cf *CompiledFunction, ctx
 		return
 	}
 	proto.CallSiteFeedback[pc].ObserveCall(regs[callSlot], nil, nArgs, rawC)
+}
+
+func observeTier2CallExitResultFeedback(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext, result runtime.Value, hasResult bool) {
+	if proto == nil || proto.CallSiteFeedback == nil || cf == nil || ctx == nil || ctx.CallNRets <= 0 {
+		return
+	}
+	pc := tier2CallExitSourcePC(cf, ctx)
+	if pc < 0 || pc >= len(proto.CallSiteFeedback) || pc >= len(proto.Code) {
+		return
+	}
+	if vm.DecodeOp(proto.Code[pc]) != vm.OP_CALL {
+		return
+	}
+	if !hasResult {
+		result = runtime.NilValue()
+	}
+	proto.CallSiteFeedback[pc].ObserveResult(result)
+}
+
+func tier2CallExitSourcePC(cf *CompiledFunction, ctx *ExecContext) int {
+	if cf == nil || ctx == nil || cf.ExitSites == nil {
+		return -1
+	}
+	if meta, ok := cf.ExitSites[int(ctx.CallID)]; ok {
+		return meta.PC
+	}
+	return -1
 }
 
 func mergeTier2CallCacheFeedback(proto *vm.FuncProto, cf *CompiledFunction) {

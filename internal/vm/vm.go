@@ -146,6 +146,7 @@ func (vm *VM) PushFrame(cl *Closure, base int) bool {
 	frame.base = base
 	frame.numResults = -1
 	frame.varargs = nil
+	frame.callSitePC = -1
 	vm.frameCount++
 	return true
 }
@@ -171,6 +172,28 @@ func (vm *VM) ensureFrameSlot() bool {
 	copy(newFrames, vm.frames)
 	vm.frames = newFrames
 	return true
+}
+
+func observeCallResultFixed(proto *FuncProto, pc int, regs []runtime.Value, resultBase int, resultCount int) {
+	if proto == nil || proto.CallSiteFeedback == nil || pc < 0 || pc >= len(proto.CallSiteFeedback) || resultCount <= 1 {
+		return
+	}
+	if resultBase < 0 || resultBase >= len(regs) {
+		proto.CallSiteFeedback[pc].ObserveResult(runtime.NilValue())
+		return
+	}
+	proto.CallSiteFeedback[pc].ObserveResult(regs[resultBase])
+}
+
+func observeCallResultSlice(proto *FuncProto, pc int, results []runtime.Value, resultCount int) {
+	if proto == nil || proto.CallSiteFeedback == nil || pc < 0 || pc >= len(proto.CallSiteFeedback) || resultCount == 1 {
+		return
+	}
+	if len(results) == 0 {
+		proto.CallSiteFeedback[pc].ObserveResult(runtime.NilValue())
+		return
+	}
+	proto.CallSiteFeedback[pc].ObserveResult(results[0])
 }
 
 // PopFrame removes the topmost call frame.
@@ -655,6 +678,7 @@ func (vm *VM) call(cl *Closure, args []runtime.Value, base int, numResults int) 
 	frame.base = base
 	frame.numResults = numResults
 	frame.varargs = varargs
+	frame.callSitePC = -1
 	vm.frameCount++
 
 	// Method JIT: check for compiled function.
@@ -740,6 +764,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				return nil, nil
 			}
 			// Inline return with no values
+			childCallSitePC := frame.callSitePC
 			vm.frameCount--
 			rc := frame.resultCount
 			rb := frame.resultBase
@@ -750,6 +775,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				}
 			} else {
 				vm.top = rb
+			}
+			if vm.frameCount > 0 {
+				observeCallResultFixed(vm.frames[vm.frameCount-1].closure.Proto, childCallSitePC, vm.regs, rb, rc)
 			}
 			frame = &vm.frames[vm.frameCount-1]
 			code = frame.closure.Proto.Code
@@ -1598,9 +1626,10 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			if b == 0 {
 				nArgs = vm.top - (base + a + 1)
 			}
+			callPC := frame.pc - 1
+			callerProto := frame.closure.Proto
 			if frame.closure.Proto.Feedback != nil {
 				proto := frame.closure.Proto
-				callPC := frame.pc - 1
 				fb := &proto.Feedback[callPC]
 				fb.Left.Observe(fnVal.Type())
 				if proto.CallSiteFeedback != nil && callPC >= 0 && callPC < len(proto.CallSiteFeedback) {
@@ -1626,6 +1655,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						if vm.coroutineYielded {
 							return nil, nil
 						}
+						observeCallResultFixed(callerProto, callPC, vm.regs, base+a, c)
 						break
 					}
 				}
@@ -1679,6 +1709,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						newFrame.varargs = nil
 						newFrame.resultBase = base + a
 						newFrame.resultCount = c
+						newFrame.callSitePC = callPC
 						vm.frameCount++
 
 						frame = newFrame
@@ -1698,6 +1729,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						if err != nil {
 							return nil, wrapLineErr(frame, err)
 						}
+						observeCallResultFixed(callerProto, callPC, vm.regs, base+a, c)
 						break
 					}
 				}
@@ -1708,6 +1740,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						if err != nil {
 							return nil, wrapLineErr(frame, err)
 						}
+						observeCallResultFixed(callerProto, callPC, vm.regs, base+a, c)
 						break
 					}
 					handled, err = vm.tryWholeCallKernel(cl, args, c, base+a)
@@ -1715,6 +1748,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						if err != nil {
 							return nil, wrapLineErr(frame, err)
 						}
+						observeCallResultFixed(callerProto, callPC, vm.regs, base+a, c)
 						break
 					}
 				}
@@ -1763,6 +1797,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				newFrame.varargs = varargs
 				newFrame.resultBase = base + a
 				newFrame.resultCount = c
+				newFrame.callSitePC = callPC
 				vm.frameCount++
 
 				// Method JIT: check for compiled function
@@ -1798,6 +1833,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 									}
 								}
 							}
+							observeCallResultSlice(callerProto, callPC, results, c)
 							break
 						}
 						// Compilation or execution failed; fall through to interpreter.
@@ -1842,6 +1878,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 								}
 							}
 						}
+						observeCallResultFixed(callerProto, callPC, vm.regs, base+a, c)
 						break
 					}
 					runtime.RecordRuntimePathNativeCallFallbackFor(gf)
@@ -1864,6 +1901,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 							}
 						}
 					}
+					observeCallResultSlice(callerProto, callPC, results, c)
 					break
 				}
 			}
@@ -1897,6 +1935,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					}
 				}
 			}
+			observeCallResultSlice(callerProto, callPC, results, c)
 
 		case OP_RETURN:
 			a := DecodeA(inst)
@@ -1936,6 +1975,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 			}
 
 			// Inline sub-frame return
+			childCallSitePC := frame.callSitePC
 			vm.frameCount--
 
 			resultBase := frame.resultBase
@@ -1965,6 +2005,9 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						vm.regs[resultBase+i] = runtime.NilValue()
 					}
 				}
+			}
+			if vm.frameCount > 0 {
+				observeCallResultFixed(vm.frames[vm.frameCount-1].closure.Proto, childCallSitePC, vm.regs, resultBase, resultCount)
 			}
 
 			// Restore parent frame

@@ -146,6 +146,7 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 			},
 		},
 		tier2PassModule("CallReturnProjection", Tier2PhaseCallLower, CallReturnProjectionPass),
+		tier2PassModule("CallResultRangeGuard", Tier2PhaseCallLower, CallResultRangeGuardPass),
 		tier2PassModule("ConstProp", Tier2PhaseCallLower, ConstPropPass),
 		{
 			Name:  "ProtocolConstCallFold",

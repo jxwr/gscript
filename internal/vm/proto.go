@@ -245,4 +245,5 @@ type CallFrame struct {
 	varargs     []runtime.Value // extra arguments beyond fixed params
 	resultBase  int             // register in parent frame where results should be placed (for inline return)
 	resultCount int             // C parameter from caller's OP_CALL (0 = return all; for inline return)
+	callSitePC  int             // caller OP_CALL pc for result feedback (-1 when not a bytecode call)
 }

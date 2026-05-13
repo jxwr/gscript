@@ -177,6 +177,7 @@ type CallSiteFeedback struct {
 	StringArgMask      uint8
 	StringArgPoly      uint8
 	StringArgs         [MaxCallSiteFeedbackArgs]string
+	ResultRange        IntRangeFeedback
 }
 
 const (
@@ -890,6 +891,15 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 			cf.StringArgPoly |= bit
 		}
 	}
+}
+
+// ObserveResult records the first returned value for a callsite. Consumers must
+// still insert a runtime guard before relying on this speculative range.
+func (cf *CallSiteFeedback) ObserveResult(value runtime.Value) {
+	if cf == nil {
+		return
+	}
+	cf.ResultRange.Observe(value)
 }
 
 func (cf *CallSiteFeedback) observeVMProto(proto *FuncProto) {
