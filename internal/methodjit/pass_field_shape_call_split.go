@@ -54,14 +54,24 @@ func FieldShapeCallSplitPreInlinePass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.FieldPolyShapeFacts) == 0 {
 		return fn, nil
 	}
-	for _, block := range append([]*Block(nil), fn.Blocks...) {
-		for idx, instr := range block.Instrs {
-			if instr == nil || instr.Op != OpCall {
-				continue
+	for splits := 0; splits < 16; splits++ {
+		changed := false
+		for _, block := range append([]*Block(nil), fn.Blocks...) {
+			for idx, instr := range block.Instrs {
+				if instr == nil || instr.Op != OpCall {
+					continue
+				}
+				if fieldShapeSplitPreInlineCallCase(fn, block, idx, instr) {
+					changed = true
+					break
+				}
 			}
-			if fieldShapeSplitPreInlineCallCase(fn, block, idx, instr) {
-				return fn, nil
+			if changed {
+				break
 			}
+		}
+		if !changed {
+			break
 		}
 	}
 	return fn, nil
@@ -112,6 +122,8 @@ func fieldShapeCaseProtoName(c FieldPolyShapeCase) string {
 }
 
 func fieldShapeSplitPreInlineCase(fn *Function, block *Block, idx int, call, calleeLoad *Instr, c FieldPolyShapeCase, cases []FieldPolyShapeCase, caseIdx int) {
+	uses := computeUseCounts(fn)
+	localizeCalleeLoad := uses[calleeLoad.ID] == 1
 	maxBlockID := 0
 	for _, b := range fn.Blocks {
 		if b.ID > maxBlockID {
@@ -125,6 +137,9 @@ func fieldShapeSplitPreInlineCase(fn *Function, block *Block, idx int, call, cal
 	postCallInstrs := append([]*Instr(nil), block.Instrs[idx+1:]...)
 	oldSuccs := append([]*Block(nil), block.Succs...)
 	pre := append([]*Instr(nil), block.Instrs[:idx]...)
+	if localizeCalleeLoad {
+		pre = removeInstrByID(pre, calleeLoad.ID)
+	}
 	receiver := call.Args[1]
 
 	shape := emitIRInstr(fn, block, OpTableShapeID, TypeInt, []*Value{receiver}, 0, 0)
@@ -141,41 +156,60 @@ func fieldShapeSplitPreInlineCase(fn *Function, block *Block, idx int, call, cal
 	fallbackBlock.Preds = []*Block{block}
 
 	caseLoad := &Instr{
-		ID:        fn.newValueID(),
-		Op:        OpGetField,
-		Type:      calleeLoad.Type,
-		Args:      append([]*Value(nil), calleeLoad.Args...),
-		Aux:       calleeLoad.Aux,
-		Aux2:      calleeLoad.Aux2,
-		Block:     caseBlock,
-		HasSource: calleeLoad.HasSource,
-		SourcePC:  calleeLoad.SourcePC,
+		ID:    fn.newValueID(),
+		Op:    OpGetField,
+		Type:  calleeLoad.Type,
+		Args:  append([]*Value(nil), calleeLoad.Args...),
+		Aux:   calleeLoad.Aux,
+		Aux2:  calleeLoad.Aux2,
+		Block: caseBlock,
 	}
+	caseLoad.copySourceFrom(calleeLoad)
 	caseArgs := append([]*Value(nil), call.Args...)
 	caseArgs[0] = caseLoad.Value()
 	caseCall := &Instr{
-		ID:        fn.newValueID(),
-		Op:        OpCall,
-		Type:      call.Type,
-		Args:      caseArgs,
-		Aux:       call.Aux,
-		Aux2:      call.Aux2,
-		Block:     caseBlock,
-		HasSource: call.HasSource,
-		SourcePC:  call.SourcePC,
+		ID:    fn.newValueID(),
+		Op:    OpCall,
+		Type:  call.Type,
+		Args:  caseArgs,
+		Aux:   call.Aux,
+		Aux2:  call.Aux2,
+		Block: caseBlock,
 	}
+	caseCall.copySourceFrom(call)
 	caseJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: caseBlock}
 	caseJump.copySourceFrom(call)
 	caseBlock.Instrs = []*Instr{caseLoad, caseCall, caseJump}
 	caseBlock.Succs = []*Block{mergeBlock}
 	fn.FieldPolyShapeFacts[caseLoad.ID] = []FieldPolyShapeCase{c}
 
+	fallbackInstrs := make([]*Instr, 0, 3)
+	if localizeCalleeLoad {
+		fallbackLoad := &Instr{
+			ID:    fn.newValueID(),
+			Op:    OpGetField,
+			Type:  calleeLoad.Type,
+			Args:  append([]*Value(nil), calleeLoad.Args...),
+			Aux:   calleeLoad.Aux,
+			Aux2:  calleeLoad.Aux2,
+			Block: fallbackBlock,
+		}
+		fallbackLoad.copySourceFrom(calleeLoad)
+		fallbackArgs := append([]*Value(nil), call.Args...)
+		fallbackArgs[0] = fallbackLoad.Value()
+		call.Args = fallbackArgs
+		fallbackInstrs = append(fallbackInstrs, fallbackLoad)
+		fn.FieldPolyShapeFacts[fallbackLoad.ID] = fieldShapeCasesWithout(cases, caseIdx)
+		delete(fn.FieldPolyShapeFacts, calleeLoad.ID)
+	} else {
+		fn.FieldPolyShapeFacts[calleeLoad.ID] = fieldShapeCasesWithout(cases, caseIdx)
+	}
 	call.Block = fallbackBlock
 	fallbackJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: fallbackBlock}
 	fallbackJump.copySourceFrom(call)
-	fallbackBlock.Instrs = []*Instr{call, fallbackJump}
+	fallbackInstrs = append(fallbackInstrs, call, fallbackJump)
+	fallbackBlock.Instrs = fallbackInstrs
 	fallbackBlock.Succs = []*Block{mergeBlock}
-	fn.FieldPolyShapeFacts[calleeLoad.ID] = fieldShapeCasesWithout(cases, caseIdx)
 
 	mergeBlock.Preds = []*Block{caseBlock, fallbackBlock}
 	phi := &Instr{
@@ -209,6 +243,17 @@ func fieldShapeSplitPreInlineCase(fn *Function, block *Block, idx int, call, cal
 	}
 	fn.Blocks = append(fn.Blocks, caseBlock, fallbackBlock, mergeBlock)
 	canonicalizeBlockOrder(fn)
+}
+
+func removeInstrByID(instrs []*Instr, id int) []*Instr {
+	out := instrs[:0]
+	for _, instr := range instrs {
+		if instr != nil && instr.ID == id {
+			continue
+		}
+		out = append(out, instr)
+	}
+	return out
 }
 
 func fieldShapeSplitSingleBlockCase(fn *Function, block *Block, idx int, call *Instr) bool {

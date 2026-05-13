@@ -103,6 +103,7 @@ func TestTier2InlineCallModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2InlineCallModules(nil, 40), Tier2PhaseInlineCall, []string{
 		"Inline",
 		"SimplifyPhis (post-inline)",
+		"SourceFeedbackRefresh (post-inline)",
 		"Intrinsic (post-inline)",
 		"TypeSpecialize (post-inline)",
 		"FixedShapeTableFacts (post-inline)",
@@ -115,6 +116,7 @@ func TestTier2InlineCallModuleOrderExperimentalPreInlineFieldShapeSplit(t *testi
 		"FieldShapeCallSplitPreInline",
 		"Inline",
 		"SimplifyPhis (post-inline)",
+		"SourceFeedbackRefresh (post-inline)",
 		"Intrinsic (post-inline)",
 		"TypeSpecialize (post-inline)",
 		"FixedShapeTableFacts (post-inline)",

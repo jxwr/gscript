@@ -80,6 +80,7 @@ func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tie
 			},
 		},
 		tier2PostInlinePassModule("SimplifyPhis (post-inline)", SimplifyPhisPass),
+		tier2PostInlinePassModule("SourceFeedbackRefresh (post-inline)", SourceFeedbackRefreshPass),
 		{
 			Name:  "Intrinsic (post-inline)",
 			Phase: Tier2PhaseInlineCall,

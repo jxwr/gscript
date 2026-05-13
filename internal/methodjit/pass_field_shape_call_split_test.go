@@ -299,8 +299,9 @@ func step_b(actor, tick) { return tick + 2 }`)
 		t.Fatalf("missing protos: step_a=%v step_b=%v", stepA != nil, stepB != nil)
 	}
 
+	callerProto := &vm.FuncProto{Name: "caller", NumParams: 2, MaxStack: 6, Code: make([]uint32, 8), LineInfo: make([]int, 8)}
 	fn := &Function{
-		Proto:   &vm.FuncProto{Name: "caller", NumParams: 2, MaxStack: 6},
+		Proto:   callerProto,
 		NumRegs: 2,
 		nextID:  5,
 		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
@@ -336,6 +337,8 @@ func step_b(actor, tick) { return tick + 2 }`)
 	method := &Instr{ID: 2, Op: OpGetField, Type: TypeFunction, Args: []*Value{recv.Value()}, Aux: 0, Block: entry}
 	call := &Instr{ID: 3, Op: OpCall, Type: TypeInt, Args: []*Value{method.Value(), recv.Value(), tick.Value()}, Aux: 2, Aux2: 1, Block: entry}
 	ret := &Instr{ID: 4, Op: OpReturn, Args: []*Value{call.Value()}, Block: entry}
+	method.setSourceFromPC(callerProto, 2)
+	call.setSourceFromPC(callerProto, 3)
 	entry.Instrs = []*Instr{recv, tick, method, call, ret}
 
 	out, err := FieldShapeCallSplitPreInlinePass(fn)
@@ -363,8 +366,28 @@ func step_b(actor, tick) { return tick + 2 }`)
 	if !sawMono {
 		t.Fatalf("missing monomorphic case call fact: %#v", fn.FieldPolyShapeFacts)
 	}
-	if got := len(fn.FieldPolyShapeFacts[method.ID]); got != 1 {
-		t.Fatalf("fallback cases=%d want 1", got)
+	sawFallback := false
+	for id, cases := range fn.FieldPolyShapeFacts {
+		if id != method.ID && len(cases) == 1 && cases[0].VMProto == stepB {
+			sawFallback = true
+		}
+	}
+	if !sawFallback {
+		t.Fatalf("missing localized fallback case call fact: %#v", fn.FieldPolyShapeFacts)
+	}
+	if _, ok := fn.FieldPolyShapeFacts[method.ID]; ok {
+		t.Fatalf("stale pre-branch method facts were not removed: %#v", fn.FieldPolyShapeFacts[method.ID])
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || (instr.Op != OpGetField && instr.Op != OpCall) || instr.ID == method.ID || instr.ID == call.ID {
+				continue
+			}
+			if !instr.HasSource || instr.SourceProto != callerProto {
+				t.Fatalf("split instr lost source proto: v%d %s source=%v proto=%p want %p\nIR:\n%s",
+					instr.ID, instr.Op, instr.HasSource, instr.SourceProto, callerProto, Print(fn))
+			}
+		}
 	}
 }
 
