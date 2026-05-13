@@ -61,7 +61,7 @@ func (ec *emitContext) emitDeopt(instr *Instr) {
 // the interpreter at instr.SourcePC. It is used by guards that can fire after a
 // side effect has already executed in the same frame.
 func (ec *emitContext) emitPreciseDeopt(instr *Instr) {
-	if instr == nil || !instr.HasSource || instr.SourcePC < 0 {
+	if !ec.canPreciseDeopt(instr) {
 		ec.emitDeopt(instr)
 		return
 	}
@@ -69,6 +69,19 @@ func (ec *emitContext) emitPreciseDeopt(instr *Instr) {
 	ec.asm.LoadImm64(jit.X0, int64(instr.SourcePC))
 	ec.asm.STR(jit.X0, mRegCtx, execCtxOffExitResumePC)
 	ec.emitDeopt(instr)
+}
+
+func (ec *emitContext) canPreciseDeopt(instr *Instr) bool {
+	if instr == nil || !instr.HasSource || instr.SourcePC < 0 {
+		return false
+	}
+	if instr.SourceProto == nil {
+		return true
+	}
+	if ec == nil || ec.fn == nil || ec.fn.Proto == nil {
+		return false
+	}
+	return instr.SourceProto == ec.fn.Proto
 }
 
 // emitGuardType emits a native type check for OpGuardType.
