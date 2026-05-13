@@ -384,6 +384,7 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 		cf.SpeculationSnapshot = current.Snapshot
 		cf.SpecializationVersion = current.Version
 		if queued {
+			tm.exitProfile.markQueued(proto, current)
 			traceRefresh()
 			proto.Tier2Promoted = false
 			clearFuncProtoDirectEntries(proto)

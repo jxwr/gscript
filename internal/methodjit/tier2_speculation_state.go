@@ -26,6 +26,8 @@ type Tier2SpeculationState struct {
 	ExitCount              uint64                 `json:"exit_count,omitempty"`
 	SuppressedGuardExits   uint64                 `json:"suppressed_guard_exits,omitempty"`
 	QueuedRecompileExits   uint64                 `json:"queued_recompile_exits,omitempty"`
+	RecompileScope         string                 `json:"recompile_scope,omitempty"`
+	RecompileBlocker       string                 `json:"recompile_blocker,omitempty"`
 	ExitKinds              map[string]uint64      `json:"exit_kinds,omitempty"`
 	TopExitName            string                 `json:"top_exit_name,omitempty"`
 	TopExitReason          string                 `json:"top_exit_reason,omitempty"`
@@ -148,6 +150,15 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 				state.TopExitReason = exits.TopExit.Reason
 				state.TopExitPC = exits.TopExit.PC
 				state.TopExitCount = exits.TopExit.Count
+			}
+		}
+		if state.QueuedRecompileExits > 0 {
+			profile := tm.getProfile(proto)
+			if profile.HasLoop {
+				state.RecompileScope = "next_entry_only"
+				state.RecompileBlocker = "mid_run_osr_required_for_current_loop"
+			} else {
+				state.RecompileScope = "next_entry"
 			}
 		}
 		state.NextAction = tier2SpeculationNextAction(state)
@@ -300,6 +311,9 @@ func tier2SpeculationTargetPriority(target Tier2SpeculationTarget) int {
 func tier2SpeculationWorkReason(state Tier2SpeculationState) string {
 	switch state.NextAction {
 	case Tier2SpecActionRefreshQueued:
+		if state.RecompileBlocker != "" {
+			return fmt.Sprintf("queued Tier2 refresh is %s; blocker=%s", state.RecompileScope, state.RecompileBlocker)
+		}
 		return "queued Tier2 refresh exits are ready to recompile with newer feedback"
 	case Tier2SpecActionInspectHotExit:
 		if state.NextTarget != Tier2SpecTargetNone {
