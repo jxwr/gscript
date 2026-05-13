@@ -2704,15 +2704,24 @@ func (ec *emitContext) emitTypedPeerArgsFromValuesInRegsAndSave(args []*Value, d
 			}
 			asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
 		case SpecializedABIParamRawTablePtr:
-			src := ec.resolveValueNB(arg.ID, dst)
-			if src != dst {
-				asm.MOVreg(dst, src)
+			if ec.hasReg(arg.ID) && ec.valueReprOf(arg.ID) == valueReprRawTablePtr {
+				src := ec.physReg(arg.ID)
+				if src != dst {
+					asm.MOVreg(dst, src)
+				}
+				emitBoxTablePtr(asm, jit.X6, dst, jit.X17)
+				asm.STR(jit.X6, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+			} else {
+				src := ec.resolveValueNB(arg.ID, dst)
+				if src != dst {
+					asm.MOVreg(dst, src)
+				}
+				asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+				if ec.irTypes[arg.ID] != TypeTable {
+					jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
+				}
+				jit.EmitExtractPtr(asm, dst, dst)
 			}
-			asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
-			if ec.irTypes[arg.ID] != TypeTable {
-				jit.EmitCheckIsTableFull(asm, dst, jit.X6, jit.X7, fallbackLabel)
-			}
-			jit.EmitExtractPtr(asm, dst, dst)
 			if fact, ok := desc.ArgFacts[i]; ok && fact.ShapeID != 0 {
 				asm.LDRW(jit.X6, dst, jit.TableOffShapeID)
 				asm.LoadImm64(jit.X7, int64(fact.ShapeID))
