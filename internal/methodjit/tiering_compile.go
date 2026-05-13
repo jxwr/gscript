@@ -339,6 +339,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		}
 		cf.SpeculationSnapshot = speculation.Snapshot
 		cf.SpecializationVersion = speculation.Profile.Version
+		cf.SpecDependencyProtos = sortedSpecDependencyProtos(fn)
 		return nil
 	})
 	if trace != nil {

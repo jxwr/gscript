@@ -344,6 +344,16 @@ def calibrate_repeat(
     last: Sample | None = None
     while repeat <= max_repeat:
         last = run_sample(cmd, env, repeat, timeout, timer_resolution, min_sample_seconds, wall_fallback, time_source)
+        if (
+            time_source == "auto"
+            and last.source == "wall_repeat"
+            and last.script_total_seconds is not None
+            and last.script_total_seconds > 0
+            and last.script_total_seconds < min_sample_seconds
+            and repeat < max_repeat
+        ):
+            repeat *= 2
+            continue
         if sample_big_enough(last, min_sample_seconds) and (
             last.source not in {"wall_repeat", "wall_hr"} or repeat >= min_wall_repeat
         ):

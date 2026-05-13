@@ -16,7 +16,7 @@
 //      caller at the call site.
 //
 // Inlining budget: callee must have <= MaxSize bytecode instructions (default 30).
-// Transitive inlining: the pass runs to fixpoint — if an inlined callee body
+// Transitive inlining: the pass runs to fixpoint — if an spec dependency body
 // itself contains calls to eligible globals, those are inlined on subsequent
 // rounds, up to inlineMaxIterations. The size budget naturally bounds the
 // depth: each inlining grows the caller, so callees eventually stop fitting.
@@ -325,6 +325,7 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 			if newInstrs != nil {
 				block.Instrs = newInstrs
 				inlined = true
+				recordTier2SpecDependency(fn, calleeProto)
 				recursionCounts[calleeProto]++
 				cumulative.totalBytes += len(calleeProto.Code)
 				functionRemarks(fn).Add("Inline", "changed", block.ID, instr.ID, instr.Op,
@@ -342,6 +343,7 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		// This modifies block.Instrs directly (truncates + adds jump),
 		// moves post-call instrs to a merge block. Stop processing this block.
 		inlineMultiBlock(fn, block, instr, i, calleeFn, calleeName)
+		recordTier2SpecDependency(fn, calleeProto)
 		recursionCounts[calleeProto]++
 		cumulative.totalBytes += len(calleeProto.Code)
 		functionRemarks(fn).Add("Inline", "changed", block.ID, instr.ID, instr.Op,
@@ -349,6 +351,16 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		return true
 	}
 	return inlined
+}
+
+func recordTier2SpecDependency(fn *Function, callee *vm.FuncProto) {
+	if fn == nil || callee == nil || callee == fn.Proto {
+		return
+	}
+	if fn.SpecDependencyProtos == nil {
+		fn.SpecDependencyProtos = make(map[*vm.FuncProto]bool)
+	}
+	fn.SpecDependencyProtos[callee] = true
 }
 
 func inlineFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool) {

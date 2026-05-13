@@ -71,6 +71,7 @@ type TieringManager struct {
 	exitStats          exitStatsCollector
 	exitProfile        tier2ExitProfileCollector
 	recompileQueue     tier2RecompileQueue
+	specDependents     map[*vm.FuncProto]map[*vm.FuncProto]bool
 	tier2GuardSuppress map[*vm.FuncProto]map[int]map[string]bool
 	tier2GuardFailures map[*vm.FuncProto]map[int]map[string]uint64
 	tier2ForceBoxInt   map[*vm.FuncProto]map[int]bool
@@ -113,6 +114,7 @@ func NewTieringManager() *TieringManager {
 		tier2Compiled:      make(map[*vm.FuncProto]*CompiledFunction),
 		tier2Failed:        make(map[*vm.FuncProto]bool),
 		tier2FailReason:    make(map[*vm.FuncProto]string),
+		specDependents:     make(map[*vm.FuncProto]map[*vm.FuncProto]bool),
 		tier2GuardSuppress: make(map[*vm.FuncProto]map[int]map[string]bool),
 		tier2GuardFailures: make(map[*vm.FuncProto]map[int]map[string]uint64),
 		tier2Threshold:     tmDefaultTier2Threshold,
@@ -354,6 +356,7 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 	if !tm.recompile.ShouldRefreshProfileForProto(proto, cf, current) {
 		return
 	}
+	tm.queueSpecDependentsForRefresh(proto, "spec_dependency_feedback_matured")
 	profile := tm.getProfile(proto)
 	traceRefresh := func() {
 		tm.traceEvent("tier2_refresh", "tier2", proto, map[string]any{

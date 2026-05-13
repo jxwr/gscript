@@ -146,6 +146,11 @@ type Function struct {
 	// cross-proto raw-int call path; OpCall.Type alone is not authoritative.
 	CallABIs map[int]CallABIDescriptor
 
+	// SpecDependencyProtos records other protos whose runtime feedback or native
+	// entry publication can change this function's optimized shape. It covers
+	// inlined callees and guarded polymorphic call targets.
+	SpecDependencyProtos map[*vm.FuncProto]bool
+
 	// SuppressedSpecGuardPCs records bytecode PCs whose runtime guards have
 	// already failed for this proto version. Later passes must treat matching
 	// feedback as unstable and keep the generic path instead of regenerating

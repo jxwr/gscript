@@ -51,6 +51,23 @@ func (vm *VM) tryPrimePredicateSumForLoopKernel(frame *CallFrame, base int, code
 		return false, nil
 	}
 
+	if sum.IsInt() && count.IsInt() {
+		sumInt := sum.Int()
+		countInt := count.Int()
+		for n := start; n <= limit; n++ {
+			if trialDivisionPrimeInt(n) {
+				sumInt += n
+				countInt++
+			}
+		}
+		vm.setGlobalByStringConst(constants, shape.sumConst, sumIdx, runtime.IntValue(sumInt))
+		vm.setGlobalByStringConst(constants, shape.countConst, countIdx, runtime.IntValue(countInt))
+		vm.regs[base+a] = limitV
+		vm.regs[base+a+3] = limitV
+		frame.pc = shape.loopPC + 1
+		return true, nil
+	}
+
 	one := runtime.IntValue(1)
 	for n := start; n <= limit; n++ {
 		if !trialDivisionPrimeInt(n) {

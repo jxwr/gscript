@@ -464,6 +464,11 @@ type CompiledFunction struct {
 	// about a generic specialization contract instead of individual cases.
 	SpecializationVersion Tier2SpecializationVersion
 
+	// SpecDependencyProtos lists other protos whose feedback or native entry
+	// publication this native body speculated on. If those protos mature later,
+	// the caller can be queued for recompilation with the newer facts.
+	SpecDependencyProtos []*vm.FuncProto
+
 	// DirectEntrySafe is false when a native caller would have to replay this
 	// function from pc=0 after the function may already have performed a
 	// visible side effect. In that case Tier 2 stays callable through the

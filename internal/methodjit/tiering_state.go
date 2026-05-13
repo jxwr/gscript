@@ -175,6 +175,8 @@ func (tm *TieringManager) markTier2Compiled(proto *vm.FuncProto, cf *CompiledFun
 	tm.ensureTierStateStore()
 	tm.tierState.markCompiled(proto, cf)
 	tm.installTier2(proto, cf)
+	tm.registerTier2SpecDependencies(proto, cf)
+	tm.queueSpecDependentsForRefresh(proto, "spec_dependency_compiled")
 }
 
 func (tm *TieringManager) markTier2Failed(proto *vm.FuncProto, reason string) {
@@ -191,6 +193,7 @@ func (tm *TieringManager) clearTier2Install(proto *vm.FuncProto) {
 	}
 	tm.ensureTierStateStore()
 	tm.tierState.clearCompiled(proto)
+	tm.clearTier2SpecDependenciesForCaller(proto)
 	proto.Tier2Promoted = false
 	clearFuncProtoDirectEntries(proto)
 	proto.Tier2GlobalCachePtr = 0

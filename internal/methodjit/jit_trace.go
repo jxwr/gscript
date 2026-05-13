@@ -160,6 +160,9 @@ func (tm *TieringManager) traceTier2Success(proto *vm.FuncProto, cf *CompiledFun
 		attrs["direct_entry"] = cf.DirectEntryOffset > 0
 		attrs["version_hash"] = fmt.Sprintf("%x", cf.SpecializationVersion.Hash)
 		attrs["guard_count"] = cf.SpecializationVersion.GuardCount
+		if deps := specDependencyNames(cf.SpecDependencyProtos); len(deps) > 0 {
+			attrs["spec_dependencies"] = deps
+		}
 		if cf.Code != nil {
 			attrs["code_bytes"] = cf.Code.Size()
 		}
