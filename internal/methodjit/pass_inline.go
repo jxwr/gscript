@@ -385,13 +385,49 @@ func prepareFieldShapeInlineCallee(calleeFn *Function, c FieldPolyShapeCase) *Fu
 	if calleeFn == nil || c.ReceiverFact.ShapeID == 0 {
 		return calleeFn
 	}
-	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+	out, err := TypeSpecializePass(calleeFn)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
 		ArgFacts: map[int]FixedShapeTableFact{0: c.ReceiverFact},
-	})(calleeFn)
+	})(out)
 	if err != nil || out == nil {
 		return calleeFn
 	}
 	out, err = TypeSpecializePass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = FieldLenFoldPass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = TableArrayLowerPass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = TableArrayLoadTypeSpecializePass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = TableArrayStoreLowerPass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = TableArrayNestedLoadPass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = FieldSvalsLowerPass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = ConstPropPass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = DCEPass(out)
 	if err != nil || out == nil {
 		return calleeFn
 	}
@@ -515,6 +551,7 @@ func fieldShapeInlineSplitCaseRejectReason(c FieldPolyShapeCase, callArgs []*Val
 	if calleeFn == nil || calleeFn.Unpromotable {
 		return "unpromotable"
 	}
+	calleeFn = prepareFieldShapeInlineCallee(calleeFn, c)
 	if callerLoopBlock && computeLoopInfo(calleeFn).hasLoops() {
 		if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
 			return "callee-loop"
@@ -551,8 +588,8 @@ func fieldShapeLoopPreInlineUnsafeReason(calleeFn *Function) string {
 				instr.Op == OpConstNil || instr.Op == OpConstString {
 				continue
 			}
-			if !fieldShapeSplitInlineOpSafe(instr.Op) {
-				return "loop-inline-exit-unsafe"
+			if !fieldShapeSplitInlineInstrSafe(instr) {
+				return "loop-inline-exit-unsafe:" + instr.Op.String()
 			}
 		}
 	}

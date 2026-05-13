@@ -1580,8 +1580,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
 	for _, c := range cases {
 		nextLabel := ec.uniqueLabel("t2fieldpeer_next")
-		asm.LoadImm64(jit.X12, int64(c.shapeID))
-		asm.CMPreg(jit.X9, jit.X12)
+		emitCMPWConst(asm, jit.X9, jit.X12, int64(c.shapeID))
 		asm.BCond(jit.CondNE, nextLabel)
 		asm.LDR(jit.X6, jit.SP, rawPeerFuncOff)
 		if c.exactClosure != 0 {
@@ -1765,8 +1764,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
 	for _, c := range cases {
 		nextLabel := ec.uniqueLabel("t2fieldmethod_next")
-		asm.LoadImm64(jit.X12, int64(c.shapeID))
-		asm.CMPreg(jit.X9, jit.X12)
+		emitCMPWConst(asm, jit.X9, jit.X12, int64(c.shapeID))
 		asm.BCond(jit.CondNE, nextLabel)
 
 		validateMethodLabel := ec.uniqueLabel("t2fieldmethod_validate")
@@ -1984,8 +1982,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 		ec.emitTypedPeerArgsFromValuesInRegsAndSave(instr.Args, argDesc, fallbackLabel)
 	}
 	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
-	asm.LoadImm64(jit.X12, int64(c.shapeID))
-	asm.CMPreg(jit.X9, jit.X12)
+	emitCMPWConst(asm, jit.X9, jit.X12, int64(c.shapeID))
 	asm.BCond(jit.CondNE, fallbackLabel)
 
 	validateMethodLabel := ec.uniqueLabel("t2fieldmethod_validate")

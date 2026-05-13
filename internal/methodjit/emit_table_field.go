@@ -282,8 +282,7 @@ func (ec *emitContext) emitGetFieldDirectPolyShapeFacts(instr *Instr) bool {
 			continue
 		}
 		nextLabel := ec.uniqueLabel("getfield_direct_poly_next")
-		asm.LoadImm64(jit.X2, int64(c.ShapeID))
-		asm.CMPreg(jit.X1, jit.X2)
+		emitCMPWConst(asm, jit.X1, jit.X2, int64(c.ShapeID))
 		asm.BCond(jit.CondNE, nextLabel)
 		asm.LoadImm64(jit.X4, int64(c.FieldIdx))
 		asm.CMPreg(jit.X4, jit.X5)
@@ -349,8 +348,7 @@ func (ec *emitContext) emitFieldPolyLen(instr *Instr) {
 			continue
 		}
 		nextLabel := ec.uniqueLabel("field_poly_len_next")
-		asm.LoadImm64(jit.X2, int64(c.ShapeID))
-		asm.CMPreg(jit.X1, jit.X2)
+		emitCMPWConst(asm, jit.X1, jit.X2, int64(c.ShapeID))
 		asm.BCond(jit.CondNE, nextLabel)
 		asm.LoadImm64(jit.X0, r.min)
 		ec.storeRawInt(jit.X0, instr.ID)

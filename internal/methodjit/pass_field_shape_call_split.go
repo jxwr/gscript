@@ -398,11 +398,32 @@ func fieldShapeSplitCalleeExitResumeUnsafeReason(calleeFn *Function) string {
 		if instr == nil || instr.Op == OpReturn || instr.Op == OpLoadSlot {
 			continue
 		}
-		if !fieldShapeSplitInlineOpSafe(instr.Op) {
+		if !fieldShapeSplitInlineInstrSafe(instr) {
 			return fmt.Sprintf("op %s needs callee-frame exit/deopt recovery", instr.Op)
 		}
 	}
 	return ""
+}
+
+func fieldShapeSplitInlineInstrSafe(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	if instr.Op == OpGetField || instr.Op == OpGetFieldNumToFloat {
+		return instr.Aux2 != 0
+	}
+	if instr.Op == OpSetField {
+		return fieldSvalsSetFieldPreservesShape(instr)
+	}
+	if instr.Op == OpBranch || instr.Op == OpJump || instr.Op == OpPhi {
+		return true
+	}
+	if instr.Op == OpTableArrayHeader || instr.Op == OpTableArrayLen ||
+		instr.Op == OpTableArrayData || instr.Op == OpTableArrayLoad ||
+		instr.Op == OpTableArrayStore {
+		return true
+	}
+	return fieldShapeSplitInlineOpSafe(instr.Op)
 }
 
 func fieldShapeSplitInlineOpSafe(op Op) bool {
@@ -412,6 +433,7 @@ func fieldShapeSplitInlineOpSafe(op Op) bool {
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 		OpEqInt, OpLtInt, OpLeInt, OpEqString, OpLtFloat, OpLeFloat,
 		OpFloor, OpNumToFloat, OpFieldSvals, OpFieldLoad, OpFieldLoadNumToFloat,
+		OpFieldPolyLen,
 		OpGuardType, OpGuardIntRange, OpGuardCalleeProto:
 		return true
 	default:
