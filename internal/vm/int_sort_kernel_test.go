@@ -238,6 +238,31 @@ func TestRadixSortIntegralNumericValuesPreservesEqualBoxOrder(t *testing.T) {
 	}
 }
 
+func TestRadixSortIntegralNumericValuesSupportsSignedKeys(t *testing.T) {
+	values := []runtime.Value{
+		runtime.IntValue(5),
+		runtime.FloatValue(-2),
+		runtime.IntValue(0),
+		runtime.FloatValue(5),
+		runtime.IntValue(-2),
+	}
+	if !radixSortIntegralNumericValues(values) {
+		t.Fatal("signed integral numeric values should qualify for mixed radix sort")
+	}
+	want := []runtime.Value{
+		runtime.FloatValue(-2),
+		runtime.IntValue(-2),
+		runtime.IntValue(0),
+		runtime.IntValue(5),
+		runtime.FloatValue(5),
+	}
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("values[%d]=%v, want %v (all=%v)", i, values[i], want[i], values)
+		}
+	}
+}
+
 func TestRadixSortIntegralNumericValuesRejectsUnsafeFloatKeys(t *testing.T) {
 	values := []runtime.Value{
 		runtime.IntValue(1),

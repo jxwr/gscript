@@ -264,7 +264,7 @@ func radixSortIntegralNumericValues(values []runtime.Value) bool {
 
 func radixSortIntegralNumericValuesWithScratch(values []runtime.Value, scratch func(int) []runtime.Value) bool {
 	for _, v := range values {
-		if _, ok := numericValueUint32Key(v); !ok {
+		if _, ok := numericValueInt32SortKey(v); !ok {
 			return false
 		}
 	}
@@ -274,7 +274,7 @@ func radixSortIntegralNumericValuesWithScratch(values []runtime.Value, scratch f
 	for shift := uint(0); shift < 32; shift += 8 {
 		var count [256]int
 		for _, v := range src {
-			key, _ := numericValueUint32Key(v)
+			key, _ := numericValueInt32SortKey(v)
 			count[byte(key>>shift)]++
 		}
 		sum := 0
@@ -283,7 +283,7 @@ func radixSortIntegralNumericValuesWithScratch(values []runtime.Value, scratch f
 			sum += n
 		}
 		for _, v := range src {
-			key, _ := numericValueUint32Key(v)
+			key, _ := numericValueInt32SortKey(v)
 			b := byte(key >> shift)
 			dst[count[b]] = v
 			count[b]++
@@ -305,26 +305,26 @@ func makeValueScratch(n int, scratch func(int) []runtime.Value) []runtime.Value 
 	return make([]runtime.Value, n)
 }
 
-func numericValueUint32Key(v runtime.Value) (uint32, bool) {
+func numericValueInt32SortKey(v runtime.Value) (uint32, bool) {
 	if v.IsInt() {
 		i := v.Int()
-		if i < 0 || i > int64(^uint32(0)) {
+		if i < math.MinInt32 || i > math.MaxInt32 {
 			return 0, false
 		}
-		return uint32(i), true
+		return uint32(int32(i)) ^ (1 << 31), true
 	}
 	if !v.IsFloat() {
 		return 0, false
 	}
 	f := v.Float()
-	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > float64(^uint32(0)) {
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < math.MinInt32 || f > math.MaxInt32 {
 		return 0, false
 	}
-	i := uint32(f)
+	i := int32(f)
 	if float64(i) != f {
 		return 0, false
 	}
-	return i, true
+	return uint32(i) ^ (1 << 31), true
 }
 
 func numericKernelLEIntPivot(a runtime.Value, pivot int64) bool {
