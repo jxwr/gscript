@@ -264,14 +264,19 @@ func (ec *emitContext) emitGetFieldDirectPolyShapeFacts(instr *Instr) bool {
 	missLabel := ec.uniqueLabel("getfield_direct_poly_miss")
 	doneLabel := ec.uniqueLabel("getfield_direct_poly_done")
 
-	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
-	if tblReg != jit.X0 {
-		asm.MOVreg(jit.X0, tblReg)
-	}
 	if ec.irTypes[tblValueID] != TypeTable {
+		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
 		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, missLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else {
+		tblReg := ec.resolveRawTablePtr(tblValueID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
 	}
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	asm.CBZ(jit.X0, missLabel)
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
 	asm.LDR(jit.X5, jit.X0, jit.TableOffSvalsLen)
@@ -331,14 +336,19 @@ func (ec *emitContext) emitFieldPolyLen(instr *Instr) {
 	doneLabel := ec.uniqueLabel("field_poly_len_done")
 	tblValueID := instr.Args[0].ID
 
-	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
-	if tblReg != jit.X0 {
-		asm.MOVreg(jit.X0, tblReg)
-	}
 	if ec.irTypes[tblValueID] != TypeTable {
+		tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
 		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, missLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	} else {
+		tblReg := ec.resolveRawTablePtr(tblValueID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
 	}
-	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	asm.CBZ(jit.X0, missLabel)
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
 
