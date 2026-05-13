@@ -588,7 +588,12 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 	case TableOpNewTable:
 		arrayHint := int(ctx.TableAux)
 		hashHint, arrayKind := unpackNewTableAux2(ctx.TableAux2)
-		tbl := cf.allocateNewTableForExit(int(ctx.TableExitID), arrayHint, hashHint, arrayKind)
+		var tbl *runtime.Table
+		if unpackNewTableDenseMixed(ctx.TableAux2) {
+			tbl = runtime.NewDenseMixedArrayTable(arrayHint, hashHint)
+		} else {
+			tbl = cf.allocateNewTableForExit(int(ctx.TableExitID), arrayHint, hashHint, arrayKind)
+		}
 		absSlot := base + int(ctx.TableSlot)
 		if absSlot < len(regs) {
 			regs[absSlot] = runtime.FreshTableValue(tbl)

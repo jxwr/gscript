@@ -171,6 +171,22 @@ func NewTableSizedKind(arrayHint, hashHint int, kind ArrayKind) *Table {
 	return t
 }
 
+// NewDenseMixedArrayTable creates a mixed-value table with a full dense array
+// capacity. This is intentionally separate from NewTableSizedKind: ordinary
+// large mixed tables stay lazy to reduce GC scan cost, while JIT-proven dense
+// builders can opt into the larger backing to keep integer-key stores native.
+func NewDenseMixedArrayTable(arrayHint, hashHint int) *Table {
+	if arrayHint <= 0 {
+		return NewTableSizedKind(arrayHint, hashHint, ArrayMixed)
+	}
+	t := DefaultHeap.AllocTable()
+	t.array = DefaultHeap.AllocValues(1, arrayHint+1)
+	if hashHint > 0 && hashHint <= smallFieldCap {
+		t.svals = DefaultHeap.AllocValues(0, hashHint)
+	}
+	return t
+}
+
 // NewSequentialArrayTable creates a table whose 1-based array part has exactly
 // length slots ready for direct sequential fill by runtime builders.
 func NewSequentialArrayTable(length int) *Table {

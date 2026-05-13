@@ -703,7 +703,11 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 	case OpNewTable:
 		arrHint := int(instr.Aux)
 		hashHint, arrayKind := unpackNewTableAux2(instr.Aux2)
-		s.values[instr.ID] = runtime.FreshTableValue(runtime.NewTableSizedKind(arrHint, hashHint, arrayKind))
+		if unpackNewTableDenseMixed(instr.Aux2) {
+			s.values[instr.ID] = runtime.FreshTableValue(runtime.NewDenseMixedArrayTable(arrHint, hashHint))
+		} else {
+			s.values[instr.ID] = runtime.FreshTableValue(runtime.NewTableSizedKind(arrHint, hashHint, arrayKind))
+		}
 
 	case OpNewFixedTable:
 		fieldCount := int(instr.Aux2)

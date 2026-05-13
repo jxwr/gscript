@@ -725,6 +725,9 @@ func TestTablePreallocHintPassPolymorphicFeedbackForcesMixedPrealloc(t *testing.
 	if kind != runtime.ArrayMixed {
 		t.Fatalf("array kind = %d, want mixed", kind)
 	}
+	if !unpackNewTableDenseMixed(newTable.Aux2) {
+		t.Fatal("large polymorphic dense array did not request dense mixed backing")
+	}
 	if set.Aux2 != 0 {
 		t.Fatalf("set Aux2 = %d, want 0 for polymorphic feedback", set.Aux2)
 	}

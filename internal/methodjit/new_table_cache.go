@@ -157,6 +157,9 @@ func newTableCacheBatchSize(instr *Instr) int {
 	if instr == nil || instr.Op != OpNewTable {
 		return 0
 	}
+	if unpackNewTableDenseMixed(instr.Aux2) {
+		return 0
+	}
 	hashHint, kind := unpackNewTableAux2(instr.Aux2)
 	return newTableCacheBatchSizeForHints(instr.Aux, hashHint, kind)
 }
@@ -256,8 +259,12 @@ func newTableExitReason(instr *Instr) string {
 		return "NewTable"
 	}
 	hashHint, kind := unpackNewTableAux2(instr.Aux2)
+	kindName := newTableCacheKindName(kind)
+	if unpackNewTableDenseMixed(instr.Aux2) {
+		kindName += ",dense_mixed=true"
+	}
 	return fmt.Sprintf("NewTable(array=%d,hash=%d,kind=%s,cache_batch=%d)",
-		instr.Aux, hashHint, newTableCacheKindName(kind), newTableCacheBatchSize(instr))
+		instr.Aux, hashHint, kindName, newTableCacheBatchSize(instr))
 }
 
 func (cf *CompiledFunction) allocateNewTableForExit(instrID int, arrayHint, hashHint int, kind runtime.ArrayKind) *runtime.Table {

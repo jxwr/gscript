@@ -145,11 +145,21 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			if !hint.mixed && hint.kind != runtime.ArrayMixed {
 				kind = hint.kind
 			}
-			instr.Aux2 = packNewTableAux2(int64(hashHint), kind)
+			if tablePreallocUseDenseMixedBacking(hint, hashHint, kind) {
+				instr.Aux2 = packNewTableAux2DenseMixed(int64(hashHint))
+			} else {
+				instr.Aux2 = packNewTableAux2(int64(hashHint), kind)
+			}
 		}
 	}
 	annotateLocalTableArrayKinds(fn, candidates, globalNewTables)
 	return fn, nil
+}
+
+func tablePreallocUseDenseMixedBacking(hint tablePreallocHint, hashHint int, kind runtime.ArrayKind) bool {
+	return kind == runtime.ArrayMixed &&
+		hashHint == 0 &&
+		hint.arrayHint > tier2FeedbackArrayHint
 }
 
 func setTableHasDynamicStringKey(instr *Instr, defs map[int]*Instr) bool {
