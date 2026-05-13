@@ -57,7 +57,11 @@ func UnrollAndJamPass(fn *Function) (*Function, error) {
 				continue
 			}
 			factor := 4
-			if len(cand.recurrences) != 0 || !floatReductionBodyCanUseWideUnroll(cand.bodyBlock) {
+			if len(cand.recurrences) != 0 {
+				if !floatReductionBodyCanUseLatencyWideUnroll(cand.bodyBlock) {
+					factor = 2
+				}
+			} else if !floatReductionBodyCanUseWideUnroll(cand.bodyBlock) {
 				factor = 2
 			}
 			if err := unrollFloatReductionLoop(fn, cand, factor); err != nil {
@@ -647,6 +651,22 @@ func floatReductionBodyCanUseWideUnroll(body *Block) bool {
 		}
 	}
 	return true
+}
+
+func floatReductionBodyCanUseLatencyWideUnroll(body *Block) bool {
+	if body == nil || len(body.Instrs) == 0 {
+		return false
+	}
+	hasSqrt := false
+	for _, instr := range body.Instrs[:len(body.Instrs)-1] {
+		switch instr.Op {
+		case OpSqrt:
+			hasSqrt = true
+		case OpDivFloat, OpFloor:
+			return false
+		}
+	}
+	return hasSqrt
 }
 
 func isUnrollCloneableOp(op Op) bool {
