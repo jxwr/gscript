@@ -1428,7 +1428,7 @@ func (ec *emitContext) emitTypedSelfEntry() {
 	asm.Label("t2_typed_self_entry")
 	entryParamLoads := ec.typedSelfEntryParamLoads(ec.fn.Entry)
 	ec.emitTier2EntryMark()
-	asm.SUBimm(jit.SP, jit.SP, uint16(frameSize))
+	asm.SUBimm(jit.SP, jit.SP, uint16(ec.typedSelfFrameSize()))
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.X29, jit.SP, 0)
 	ec.emitSaveTypedSelfFrameRegs()
@@ -1620,7 +1620,7 @@ func (ec *emitContext) emitTypedSelfFrameRestoreAndReturn() {
 	asm := ec.asm
 	ec.emitRestoreTypedSelfFrameRegs()
 	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
-	asm.ADDimm(jit.SP, jit.SP, uint16(frameSize))
+	asm.ADDimm(jit.SP, jit.SP, uint16(ec.typedSelfFrameSize()))
 	asm.RET()
 }
 
@@ -1631,6 +1631,11 @@ func (ec *emitContext) typedSelfSavedRegs() ([]int, []int) {
 	gprs := typedPeerAllocatedCalleeSavedGPRs(ec.alloc)
 	fprs := typedPeerAllocatedCalleeSavedFPRs(ec.alloc)
 	return gprs, fprs
+}
+
+func (ec *emitContext) typedSelfFrameSize() int {
+	gprs, fprs := ec.typedSelfSavedRegs()
+	return typedPeerActualFrameBytes(gprs, fprs)
 }
 
 func (ec *emitContext) emitFullFrameRestoreAndReturn() {

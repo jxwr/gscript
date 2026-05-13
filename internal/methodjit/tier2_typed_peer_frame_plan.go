@@ -86,11 +86,18 @@ func typedPeerAllocatedCalleeSavedGPRs(alloc *RegAllocation) []int {
 }
 
 func typedPeerCompactFrameBytes(gprs, fprs []int) int {
-	// Keep FP/LR even for a compact frame so native fault stacks and return
-	// chaining remain conventional. Each saved register is one 8-byte slot;
-	// round to 16-byte stack alignment.
-	slots := 2 + len(gprs) + len(fprs)
-	return (slots*8 + 15) &^ 15
+	return typedPeerActualFrameBytes(gprs, fprs)
+}
+
+func typedPeerActualFrameBytes(gprs, fprs []int) int {
+	// Keep FP/LR at SP+0 for conventional native return chains. GPR and FPR
+	// saves are each pair-packed from SP+16, with class alignment matching the
+	// typed entry emitter.
+	off := 16
+	off += ((len(gprs) + 1) / 2) * 16
+	off = (off + 15) &^ 15
+	off += ((len(fprs) + 1) / 2) * 16
+	return (off + 15) &^ 15
 }
 
 func typedPeerFullFrameSaveOps() int {

@@ -78,6 +78,15 @@ func TestCompiledFunctionCarriesTypedPeerFramePlan(t *testing.T) {
 	}
 }
 
+func TestTypedPeerCompactFrameBytesMatchesEmitterLayout(t *testing.T) {
+	if got, want := typedPeerCompactFrameBytes([]int{20, 21, 22, 23, 28}, nil), 64; got != want {
+		t.Fatalf("GPR-only compact frame=%d want %d", got, want)
+	}
+	if got, want := typedPeerCompactFrameBytes([]int{20, 21, 22, 23, 28}, []int{8}), 80; got != want {
+		t.Fatalf("GPR+FPR compact frame=%d want %d", got, want)
+	}
+}
+
 func typedPeerPlanReasonContains(plan Tier2TypedPeerFramePlan, needle string) bool {
 	for _, reason := range plan.Reasons {
 		if strings.Contains(reason, needle) {
