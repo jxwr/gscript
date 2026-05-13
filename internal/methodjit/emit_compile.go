@@ -1960,6 +1960,9 @@ func (ec *emitContext) emitBlock(block *Block) {
 	if ec.rawIntBlockCarry && !isHeader && len(block.Preds) == 1 {
 		ec.seedSinglePredRawIntRegs(block)
 	}
+	if !isHeader && len(block.Preds) == 1 {
+		ec.seedSinglePredTableArrayKeyRegs(block)
+	}
 	if isLoopBlock && ec.loopInvariantGPRs != nil {
 		ec.activateLoopInvariantGPRs(block.ID)
 	}
@@ -2091,6 +2094,106 @@ func (ec *emitContext) seedSinglePredRawIntRegs(block *Block) {
 			ec.setValueRepr(entry.ValueID, valueReprRawDataPtr)
 		}
 	}
+}
+
+func (ec *emitContext) seedSinglePredTableArrayKeyRegs(block *Block) {
+	if ec == nil || block == nil || len(block.Preds) != 1 || ec.alloc == nil {
+		return
+	}
+	liveIn := ec.blockLiveIn[block.ID]
+	if len(liveIn) == 0 {
+		return
+	}
+	pred := block.Preds[0]
+	if pred == nil {
+		return
+	}
+	keyUses := tableArrayKeyUsesInBlock(block)
+	if len(keyUses) == 0 {
+		return
+	}
+	defIndex := make(map[int]int)
+	defs := make(map[int]*Instr)
+	for i, instr := range pred.Instrs {
+		if instr == nil || instr.Op.IsTerminator() {
+			continue
+		}
+		defIndex[instr.ID] = i
+		defs[instr.ID] = instr
+	}
+	ids := make([]int, 0, len(keyUses))
+	for id := range keyUses {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	for _, valueID := range ids {
+		if !liveIn[valueID] {
+			continue
+		}
+		def := defs[valueID]
+		if def == nil || !isRawIntCarryValue(def) {
+			continue
+		}
+		pr, ok := ec.alloc.ValueRegs[valueID]
+		if !ok || pr.IsFloat {
+			continue
+		}
+		idx := defIndex[valueID]
+		if singlePredRawValueClobberedAfter(pred, idx, pr.Reg, ec.alloc) {
+			continue
+		}
+		ec.invalidateReg(pr.Reg, valueID)
+		ec.activeRegs[valueID] = true
+		ec.setValueRepr(valueID, valueReprRawInt)
+	}
+}
+
+func tableArrayKeyUsesInBlock(block *Block) map[int]bool {
+	out := make(map[int]bool)
+	if block == nil {
+		return out
+	}
+	for _, instr := range block.Instrs {
+		if instr == nil {
+			continue
+		}
+		var keyArg int
+		switch instr.Op {
+		case OpTableArrayLoad:
+			keyArg = 2
+		case OpTableArrayStore:
+			keyArg = 3
+		case OpTableArraySwap, OpTableArraySwapPairs:
+			keyArg = 1
+		case OpTableArrayNestedLoad:
+			keyArg = 3
+		default:
+			continue
+		}
+		if keyArg >= 0 && keyArg < len(instr.Args) && instr.Args[keyArg] != nil {
+			out[instr.Args[keyArg].ID] = true
+		}
+	}
+	return out
+}
+
+func singlePredRawValueClobberedAfter(block *Block, defIndex int, reg int, alloc *RegAllocation) bool {
+	if block == nil || alloc == nil {
+		return true
+	}
+	for i := defIndex + 1; i < len(block.Instrs); i++ {
+		instr := block.Instrs[i]
+		if instr == nil {
+			continue
+		}
+		if instr.Op == OpCall || instr.Op == OpCallFloor || instr.Op == OpFieldCallFloor {
+			return true
+		}
+		if pr, ok := alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat && pr.Reg == reg {
+			return true
+		}
+	}
+	return false
 }
 
 func (ec *emitContext) deactivateDeadAfter(instr *Instr) {
