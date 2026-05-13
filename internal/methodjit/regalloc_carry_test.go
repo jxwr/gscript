@@ -467,6 +467,87 @@ func TestRegalloc_PreheaderInvariantPinned(t *testing.T) {
 	}
 }
 
+func TestRegalloc_ExternalFloatInvariantCarriedThroughPreheader(t *testing.T) {
+	fn := &Function{NumRegs: 2, CarryPreheaderInvariants: true}
+
+	entry := &Block{ID: 0, defs: make(map[int]*Value)}
+	preheader := &Block{ID: 1, defs: make(map[int]*Value)}
+	header := &Block{ID: 2, defs: make(map[int]*Value)}
+	body := &Block{ID: 3, defs: make(map[int]*Value)}
+	exit := &Block{ID: 4, defs: make(map[int]*Value)}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, preheader, header, body, exit}
+
+	entry.Succs = []*Block{preheader}
+	preheader.Preds = []*Block{entry}
+	preheader.Succs = []*Block{header}
+	header.Preds = []*Block{preheader, body}
+	header.Succs = []*Block{body, exit}
+	body.Preds = []*Block{header}
+	body.Succs = []*Block{header}
+	exit.Preds = []*Block{header}
+
+	slot := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeUnknown, Block: entry, Aux: int64(0)}
+	dt := &Instr{ID: fn.newValueID(), Op: OpGuardType, Type: TypeFloat, Block: entry, Args: []*Value{slot.Value()}, Aux: int64(TypeFloat)}
+	entry.Instrs = []*Instr{
+		slot,
+		dt,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: entry, Aux: int64(preheader.ID)},
+	}
+
+	k := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: preheader}
+	seed := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: preheader}
+	preheader.Instrs = []*Instr{
+		k,
+		seed,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: preheader, Aux: int64(header.ID)},
+	}
+
+	acc := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: header, Aux: 1}
+	header.Instrs = []*Instr{
+		acc,
+		cond,
+		{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Block: header, Aux: int64(body.ID), Aux2: int64(exit.ID)},
+	}
+
+	mul := &Instr{ID: fn.newValueID(), Op: OpMulFloat, Type: TypeFloat, Args: []*Value{acc.Value(), dt.Value()}, Block: body}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Args: []*Value{mul.Value(), k.Value()}, Block: body}
+	body.Instrs = []*Instr{
+		mul,
+		add,
+		{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: body, Aux: int64(header.ID)},
+	}
+	acc.Args = []*Value{seed.Value(), add.Value()}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Args: []*Value{acc.Value()}, Block: exit}}
+
+	alloc := AllocateRegisters(fn)
+	invariants := alloc.LoopInvariantFPRs[header.ID]
+	dtReg, ok := invariants[dt.ID]
+	if !ok || !dtReg.IsFloat {
+		t.Fatalf("external float invariant v%d was not pinned; invariants=%v", dt.ID, invariants)
+	}
+	kReg, ok := invariants[k.ID]
+	if !ok || !kReg.IsFloat {
+		t.Fatalf("preheader float invariant v%d was not pinned; invariants=%v", k.ID, invariants)
+	}
+	if dtReg.Reg == kReg.Reg {
+		t.Fatalf("preheader invariant v%d reused external invariant FPR D%d", k.ID, dtReg.Reg)
+	}
+	for _, instr := range []*Instr{seed, mul, add} {
+		pr, ok := alloc.ValueRegs[instr.ID]
+		if ok && pr.IsFloat && pr.Reg == dtReg.Reg {
+			t.Fatalf("v%d %s clobbers external invariant v%d in D%d", instr.ID, instr.Op, dt.ID, dtReg.Reg)
+		}
+	}
+
+	li := computeLoopInfo(fn)
+	safe := computeSafeLoopInvariantFPRs(fn, li, alloc)
+	if _, ok := safe[header.ID][dt.ID]; !ok {
+		t.Fatalf("external invariant v%d was not safe to activate; safe=%v alloc=%v", dt.ID, safe[header.ID], alloc.ValueRegs)
+	}
+}
+
 func TestRegalloc_TableArrayLenDataInvariantGPRPinned(t *testing.T) {
 	fn := &Function{NumRegs: 3, CarryPreheaderInvariants: true}
 	entry := &Block{ID: 0, defs: make(map[int]*Value)}

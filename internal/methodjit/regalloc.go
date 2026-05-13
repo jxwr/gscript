@@ -107,6 +107,7 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		alloc.LoopInvariantGPRs = assignLoopTableArrayInvariantGPRs(fn, li, alloc)
 		alloc.LoopInvariantFPRs = assignLoopFloatInvariantFPRs(fn, li, alloc)
 	}
+	loopPreheaders := computeLoopPreheaders(fn, li)
 
 	// Raw-int single-predecessor carry: after a block is allocated, remember
 	// its final GPR contents. A successor with exactly one predecessor can pin
@@ -188,6 +189,9 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		}
 		if li.loopBlocks[block.ID] && len(alloc.LoopInvariantFPRs) > 0 {
 			carried = addLoopInvariantFPRCarry(block, li, alloc, carried)
+		}
+		if len(alloc.LoopInvariantFPRs) > 0 {
+			carried = addLoopPreheaderExternalFPRCarry(block, li, loopPreheaders, alloc, valueDefs, carried)
 		}
 		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried)
 	}
@@ -624,7 +628,7 @@ func assignLoopFloatInvariantFPRs(fn *Function, li *loopInfo, alloc *RegAllocati
 	if len(preheaders) == 0 {
 		return nil
 	}
-	allInvariants := collectPreheaderInvariants(fn, li, preheaders)
+	allInvariants := collectLoopFloatInvariantCandidates(fn, li, preheaders)
 	if len(allInvariants) == 0 {
 		return nil
 	}
@@ -727,6 +731,84 @@ func assignLoopFloatInvariantFPRs(fn *Function, li *loopInfo, alloc *RegAllocati
 		return nil
 	}
 	return out
+}
+
+func collectLoopFloatInvariantCandidates(fn *Function, li *loopInfo, preheaders map[int]int) map[int][]int {
+	result := make(map[int][]int, len(preheaders))
+	if fn == nil || li == nil || len(preheaders) == 0 {
+		return result
+	}
+	dom := computeDominators(fn)
+	defs := make(map[int]*Instr)
+	defBlocks := make(map[int]int)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op.IsTerminator() {
+				continue
+			}
+			defs[instr.ID] = instr
+			defBlocks[instr.ID] = block.ID
+		}
+	}
+	for _, headerID := range sortedLoopHeaders(li) {
+		body := li.headerBlocks[headerID]
+		preheaderID, hasPreheader := preheaders[headerID]
+		if body == nil || !hasPreheader {
+			continue
+		}
+		used := make(map[int]bool)
+		for _, block := range fn.Blocks {
+			if !body[block.ID] {
+				continue
+			}
+			for _, instr := range block.Instrs {
+				if instr.Op == OpPhi {
+					continue
+				}
+				for _, arg := range instr.Args {
+					if arg == nil {
+						continue
+					}
+					def := defs[arg.ID]
+					defBlock, ok := defBlocks[arg.ID]
+					if def == nil || !ok || body[defBlock] || !needsFloatReg(def) {
+						continue
+					}
+					if !dom.dominates(defBlock, headerID) {
+						continue
+					}
+					if defBlock != preheaderID && !safeExternalFPRInvariantDef(fn, defBlock, preheaderID, dom) {
+						continue
+					}
+					if preheaderInvariantUsedOutsideLoop(fn, arg.ID, body, preheaderID) {
+						continue
+					}
+					used[arg.ID] = true
+				}
+			}
+		}
+		if len(used) == 0 {
+			continue
+		}
+		ids := make([]int, 0, len(used))
+		for id := range used {
+			ids = append(ids, id)
+		}
+		sort.Ints(ids)
+		result[headerID] = ids
+	}
+	return result
+}
+
+func safeExternalFPRInvariantDef(fn *Function, defBlockID, preheaderID int, dom *domInfo) bool {
+	if fn == nil || dom == nil || defBlockID == preheaderID {
+		return true
+	}
+	preheader := findBlockByID(fn, preheaderID)
+	if preheader == nil || len(preheader.Preds) != 1 || preheader.Preds[0].ID != defBlockID {
+		return false
+	}
+	return dom.dominates(defBlockID, preheaderID)
 }
 
 func preheaderInvariantUsedOutsideLoop(fn *Function, valueID int, bodyBlocks map[int]bool, preheaderID int) bool {
@@ -914,6 +996,39 @@ func addLoopInvariantFPRCarry(block *Block, li *loopInfo, alloc *RegAllocation, 
 		}
 		ids := sortedInvariantIDs(alloc.LoopInvariantFPRs[headerID])
 		for _, id := range ids {
+			pr := alloc.LoopInvariantFPRs[headerID][id]
+			if !pr.IsFloat || usedRegs[pr.Reg] {
+				continue
+			}
+			if carried == nil {
+				carried = make(map[int]PhysReg)
+			}
+			carried[id] = pr
+			usedRegs[pr.Reg] = true
+		}
+	}
+	return carried
+}
+
+func addLoopPreheaderExternalFPRCarry(block *Block, li *loopInfo, preheaders map[int]int, alloc *RegAllocation, defs map[int]*Instr, carried map[int]PhysReg) map[int]PhysReg {
+	if block == nil || li == nil || alloc == nil || len(preheaders) == 0 || len(alloc.LoopInvariantFPRs) == 0 {
+		return carried
+	}
+	usedRegs := make(map[int]bool)
+	for _, pr := range carried {
+		if pr.IsFloat {
+			usedRegs[pr.Reg] = true
+		}
+	}
+	for _, headerID := range sortedLoopHeaders(li) {
+		if preheaders[headerID] != block.ID {
+			continue
+		}
+		for _, id := range sortedInvariantIDs(alloc.LoopInvariantFPRs[headerID]) {
+			def := defs[id]
+			if def == nil || def.Block == nil || def.Block.ID == block.ID {
+				continue
+			}
 			pr := alloc.LoopInvariantFPRs[headerID][id]
 			if !pr.IsFloat || usedRegs[pr.Reg] {
 				continue
