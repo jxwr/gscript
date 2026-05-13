@@ -174,10 +174,11 @@ func TestRegallocCarriesLoopHeaderPhis_Mandelbrot(t *testing.T) {
 		t.Fatalf("mandelbrot proto not found")
 	}
 
-	fn := BuildGraph(target)
-	fn, _ = TypeSpecializePass(fn)
-	fn, _ = ConstPropPass(fn)
-	fn, _ = DCEPass(fn)
+	fn, _, err := RunTier2Pipeline(BuildGraph(target), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline(mandelbrot): %v", err)
+	}
+	fn.CarryPreheaderInvariants = true
 	alloc := AllocateRegisters(fn)
 
 	li := computeLoopInfo(fn)

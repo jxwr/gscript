@@ -108,6 +108,7 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		alloc.LoopInvariantFPRs = assignLoopFloatInvariantFPRs(fn, li, alloc)
 	}
 	loopPreheaders := computeLoopPreheaders(fn, li)
+	loopNestMap := loopNest(li)
 
 	// Raw-int single-predecessor carry: after a block is allocated, remember
 	// its final GPR contents. A successor with exactly one predecessor can pin
@@ -193,7 +194,7 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		if len(alloc.LoopInvariantFPRs) > 0 {
 			carried = addLoopPreheaderExternalFPRCarry(block, li, loopPreheaders, alloc, valueDefs, carried)
 		}
-		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried)
+		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried, loopNestMap[block.ID] >= 0)
 	}
 
 	return alloc
@@ -1145,6 +1146,24 @@ func (rs *regState) assignPreferred(valueID, reg int) bool {
 	return true
 }
 
+func (rs *regState) assignPreferredOverCarried(valueID, reg int, carriedIDs map[int]bool) bool {
+	if _, ok := rs.regToID[reg]; !ok {
+		return false
+	}
+	existingID := rs.regToID[reg]
+	if existingID >= 0 && existingID != valueID {
+		if !carriedIDs[existingID] {
+			return false
+		}
+		rs.unpin(existingID)
+		delete(rs.idToReg, existingID)
+		rs.removeLRU(existingID)
+		rs.regToID[reg] = -1
+	}
+	rs.assign(valueID, reg)
+	return true
+}
+
 // free releases the register held by valueID. Pinned values are immune:
 // they retain their register for the full block lifetime.
 func (rs *regState) free(valueID int) {
@@ -1206,7 +1225,7 @@ func (rs *regState) removeLRU(valueID int) {
 // WITHOUT calling freeDeadValues between them. This ensures that each phi
 // gets a distinct register. After all phis are allocated, we process non-phi
 // instructions normally.
-func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carried map[int]PhysReg, temporaryCarried map[int]bool) map[int]PhysReg {
+func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carried map[int]PhysReg, temporaryCarried map[int]bool, nestedLoopHeader bool) map[int]PhysReg {
 	gprs := newRegState(allocatableGPRs[:], false)
 	fprs := newRegState(allocatableFPRs[:], true)
 
@@ -1258,9 +1277,15 @@ func allocateBlock(block *Block, alloc *RegAllocation, lastUse map[int]int, carr
 
 		// Honor pre-allocated assignments from preAllocateHeaderPhis.
 		if pr, ok := alloc.ValueRegs[instr.ID]; ok {
-			if pr.IsFloat == wantFloat && rs.regToID[pr.Reg] == -1 {
-				rs.assign(instr.ID, pr.Reg)
-				continue
+			if pr.IsFloat == wantFloat {
+				if wantFloat && nestedLoopHeader {
+					if rs.assignPreferredOverCarried(instr.ID, pr.Reg, carriedIDs) {
+						continue
+					}
+				} else if rs.regToID[pr.Reg] == -1 {
+					rs.assign(instr.ID, pr.Reg)
+					continue
+				}
 			}
 		}
 		// Honor pre-committed spill from preAllocateHeaderPhis.
