@@ -127,6 +127,7 @@ func TestTier2CallLoweringModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2CallLoweringModules(nil), Tier2PhaseCallLower, []string{
 		"CallABI",
 		"CallReturnProjection",
+		"CallResultRangeGuard",
 		"ConstProp",
 		"ProtocolConstCallFold",
 		"WholeCallKernelExit",
@@ -142,6 +143,7 @@ func TestTier2StringNativeModuleOrder(t *testing.T) {
 func TestTier2PostRewriteModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2PostRewriteModules(), Tier2PhasePostRewrite, []string{
 		"CallReturnProjection (post-rewrite)",
+		"CallResultRangeGuard (post-rewrite)",
 		"DCE",
 		"TypeSpecialize (post-escape)",
 	})
@@ -222,6 +224,8 @@ func TestTier2FinalCallModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
 		"WholeCallKernelExit (final)",
 		"CallReturnProjection (final)",
+		"CallResultRangeGuard (final)",
+		"RangeAnalysis (post-final-call)",
 	})
 }
 
@@ -230,6 +234,8 @@ func TestTier2FinalCallModuleOrderExperimentalFieldShapeSplit(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
 		"WholeCallKernelExit (final)",
 		"CallReturnProjection (final)",
+		"CallResultRangeGuard (final)",
+		"RangeAnalysis (post-final-call)",
 		"FieldShapeCallSplit (experimental)",
 	})
 }
@@ -239,5 +245,7 @@ func TestTier2FinalCallModuleOrderIgnoresOtherFieldShapeSplitValues(t *testing.T
 	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
 		"WholeCallKernelExit (final)",
 		"CallReturnProjection (final)",
+		"CallResultRangeGuard (final)",
+		"RangeAnalysis (post-final-call)",
 	})
 }

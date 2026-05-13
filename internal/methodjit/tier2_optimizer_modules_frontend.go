@@ -168,6 +168,7 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 func tier2PostRewriteModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("CallReturnProjection (post-rewrite)", Tier2PhasePostRewrite, CallReturnProjectionPass),
+		tier2PassModule("CallResultRangeGuard (post-rewrite)", Tier2PhasePostRewrite, CallResultRangeGuardPass),
 		tier2PassModule("DCE", Tier2PhasePostRewrite, DCEPass),
 		{
 			Name:  "TypeSpecialize (post-escape)",
@@ -189,6 +190,8 @@ func tier2FinalCallModules(protocolGlobals map[string]*vm.FuncProto) []Tier2Opti
 			},
 		},
 		tier2PassModule("CallReturnProjection (final)", Tier2PhaseFinalCall, CallReturnProjectionPass),
+		tier2PassModule("CallResultRangeGuard (final)", Tier2PhaseFinalCall, CallResultRangeGuardPass),
+		tier2PassModule("RangeAnalysis (post-final-call)", Tier2PhaseFinalCall, RangeAnalysisPass),
 	}
 	if os.Getenv("GSCRIPT_FIELD_SHAPE_SPLIT") == "1" {
 		modules = append(modules, tier2PassModule("FieldShapeCallSplit (experimental)", Tier2PhaseFinalCall, FieldShapeCallSplitPass))
