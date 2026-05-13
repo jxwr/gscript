@@ -253,6 +253,43 @@ func step_b(actor, tick) {
 	}
 }
 
+func TestFieldShapeMethodFieldStableInCallee(t *testing.T) {
+	top := compileTop(t, `func step_keep(actor, tick) {
+    actor.count = actor.count + tick
+    return actor.count
+}
+func step_replace(actor, tick) {
+    actor.step = step_keep
+    return tick
+}`)
+	stepKeep := findProtoByName(top, "step_keep")
+	stepReplace := findProtoByName(top, "step_replace")
+	if stepKeep == nil || stepReplace == nil {
+		t.Fatalf("missing protos: keep=%v replace=%v", stepKeep != nil, stepReplace != nil)
+	}
+	fact := FixedShapeTableFact{
+		ShapeID:    101,
+		FieldNames: []string{"count", "step"},
+		FieldTypes: map[string]Type{"count": TypeInt, "step": TypeFunction},
+	}
+	if !fieldShapeMethodFieldStableInCallee(FieldPolyShapeCase{
+		ShapeID:      101,
+		FieldIdx:     1,
+		VMProto:      stepKeep,
+		ReceiverFact: fact,
+	}) {
+		t.Fatal("callee that does not write dispatch field should allow stable method guard")
+	}
+	if fieldShapeMethodFieldStableInCallee(FieldPolyShapeCase{
+		ShapeID:      101,
+		FieldIdx:     1,
+		VMProto:      stepReplace,
+		ReceiverFact: fact,
+	}) {
+		t.Fatal("callee that writes dispatch field must keep epoch guard")
+	}
+}
+
 func TestFieldShapeCallSplitPreInline_MakesMonomorphicCallArm(t *testing.T) {
 	top := compileTop(t, `func step_a(actor, tick) { return tick + 1 }
 func step_b(actor, tick) { return tick + 2 }`)

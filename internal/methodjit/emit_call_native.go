@@ -1487,13 +1487,19 @@ func (ec *emitContext) fieldShapeTypedPeerMethodCallCases(instr *Instr) []fieldS
 				return nil
 			}
 		}
+		shapeEpochPtr := uintptr(gruntime.ShapeFieldMutationCountPtr(c.ShapeID, c.FieldIdx))
+		shapeEpoch := gruntime.ShapeFieldMutationCount(c.ShapeID, c.FieldIdx)
+		if fieldShapeMethodFieldStableInCallee(c) {
+			shapeEpochPtr = 0
+			shapeEpoch = 0
+		}
 		out = append(out, fieldShapeTypedPeerCallCase{
 			shapeID:       int(c.ShapeID),
 			fieldIdx:      c.FieldIdx,
 			callee:        c.VMProto,
 			exactClosure:  c.VMClosure,
-			shapeEpochPtr: uintptr(gruntime.ShapeFieldMutationCountPtr(c.ShapeID, c.FieldIdx)),
-			shapeEpoch:    gruntime.ShapeFieldMutationCount(c.ShapeID, c.FieldIdx),
+			shapeEpochPtr: shapeEpochPtr,
+			shapeEpoch:    shapeEpoch,
 			desc: CallABIDescriptor{
 				Callee:    c.VMProto,
 				NumArgs:   nArgs,
@@ -1506,6 +1512,18 @@ func (ec *emitContext) fieldShapeTypedPeerMethodCallCases(instr *Instr) []fieldS
 		})
 	}
 	return out
+}
+
+func fieldShapeMethodFieldStableInCallee(c FieldPolyShapeCase) bool {
+	if c.VMProto == nil || c.FieldIdx < 0 || c.FieldIdx >= len(c.ReceiverFact.FieldNames) {
+		return false
+	}
+	field := c.ReceiverFact.FieldNames[c.FieldIdx]
+	if field == "" {
+		return false
+	}
+	effects := SummarizeFieldEffects(c.VMProto)
+	return effects.ParamMutationKnown(0) && !effects.WritesParamField(0, field)
 }
 
 func fieldShapeTypedPeerCasesAllLeaf(cases []fieldShapeTypedPeerCallCase) bool {
@@ -1749,12 +1767,14 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		asm.BCond(jit.CondNE, nextLabel)
 
 		validateMethodLabel := ec.uniqueLabel("t2fieldmethod_validate")
-		if c.exactClosure != 0 && c.shapeEpochPtr != 0 {
-			asm.LoadImm64(jit.X8, int64(c.shapeEpochPtr))
-			asm.LDR(jit.X8, jit.X8, 0)
-			asm.LoadImm64(jit.X12, int64(c.shapeEpoch))
-			asm.CMPreg(jit.X8, jit.X12)
-			asm.BCond(jit.CondNE, validateMethodLabel)
+		if c.exactClosure != 0 {
+			if c.shapeEpochPtr != 0 {
+				asm.LoadImm64(jit.X8, int64(c.shapeEpochPtr))
+				asm.LDR(jit.X8, jit.X8, 0)
+				asm.LoadImm64(jit.X12, int64(c.shapeEpoch))
+				asm.CMPreg(jit.X8, jit.X12)
+				asm.BCond(jit.CondNE, validateMethodLabel)
+			}
 			asm.LoadImm64(jit.X6, nbClosureTagBits|int64(c.exactClosure))
 			asm.LoadImm64(jit.X7, int64(c.exactClosure))
 			asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
@@ -1955,12 +1975,14 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 	asm.BCond(jit.CondNE, fallbackLabel)
 
 	validateMethodLabel := ec.uniqueLabel("t2fieldmethod_validate")
-	if c.exactClosure != 0 && c.shapeEpochPtr != 0 {
-		asm.LoadImm64(jit.X8, int64(c.shapeEpochPtr))
-		asm.LDR(jit.X8, jit.X8, 0)
-		asm.LoadImm64(jit.X12, int64(c.shapeEpoch))
-		asm.CMPreg(jit.X8, jit.X12)
-		asm.BCond(jit.CondNE, validateMethodLabel)
+	if c.exactClosure != 0 {
+		if c.shapeEpochPtr != 0 {
+			asm.LoadImm64(jit.X8, int64(c.shapeEpochPtr))
+			asm.LDR(jit.X8, jit.X8, 0)
+			asm.LoadImm64(jit.X12, int64(c.shapeEpoch))
+			asm.CMPreg(jit.X8, jit.X12)
+			asm.BCond(jit.CondNE, validateMethodLabel)
+		}
 		asm.LoadImm64(jit.X6, nbClosureTagBits|int64(c.exactClosure))
 		asm.LoadImm64(jit.X7, int64(c.exactClosure))
 		asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
