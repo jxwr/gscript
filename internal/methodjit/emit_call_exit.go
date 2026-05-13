@@ -357,7 +357,11 @@ func (ec *emitContext) supportsIndexedGlobalGetProtocol() bool {
 }
 
 func (ec *emitContext) supportsIndexedGlobalSetProtocol() bool {
-	return ec != nil && ec.fn != nil && fnSupportsNativeSetGlobalProtocol(ec.fn)
+	// Keep Tier 2 eligibility for top-level global reducers, but route
+	// SetGlobal through the op-exit path for now. The direct indexed store
+	// protocol can publish stale/nil values when a compiled <main> interleaves
+	// native calls, global writes, and later global reads in the same run.
+	return false
 }
 
 func (ec *emitContext) isSelfGlobal(instr *Instr) bool {
