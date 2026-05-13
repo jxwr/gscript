@@ -284,10 +284,17 @@ func (ec *emitContext) emitGetFieldDirectPolyShapeFacts(instr *Instr) bool {
 		nextLabel := ec.uniqueLabel("getfield_direct_poly_next")
 		emitCMPWConst(asm, jit.X1, jit.X2, int64(c.ShapeID))
 		asm.BCond(jit.CondNE, nextLabel)
-		asm.LoadImm64(jit.X4, int64(c.FieldIdx))
-		asm.CMPreg(jit.X4, jit.X5)
-		asm.BCond(jit.CondGE, missLabel)
-		asm.LDRreg(jit.X0, jit.X6, jit.X4)
+		fieldOff := c.FieldIdx * jit.ValueSize
+		if c.FieldIdx >= 0 && c.FieldIdx <= 4095 && fieldOff >= 0 && fieldOff <= 32760 {
+			asm.CMPimm(jit.X5, uint16(c.FieldIdx))
+			asm.BCond(jit.CondLS, missLabel)
+			asm.LDR(jit.X0, jit.X6, fieldOff)
+		} else {
+			asm.LoadImm64(jit.X4, int64(c.FieldIdx))
+			asm.CMPreg(jit.X4, jit.X5)
+			asm.BCond(jit.CondGE, missLabel)
+			asm.LDRreg(jit.X0, jit.X6, jit.X4)
+		}
 		ec.emitStoreTypedFieldLoad(instr, jit.X0, typeDeoptLabel)
 		asm.B(doneLabel)
 		asm.Label(nextLabel)
