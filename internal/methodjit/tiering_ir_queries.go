@@ -368,6 +368,24 @@ func hasExpensiveInLoop(fn *Function, predicate func(Op) bool) bool {
 	return false
 }
 
+func firstResidualFieldCalleeCall(fn *Function) (*Instr, bool) {
+	if fn == nil {
+		return nil, false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpCall || len(instr.Args) == 0 || instr.Args[0] == nil {
+				continue
+			}
+			callee := instr.Args[0].Def
+			if callee != nil && callee.Op == OpGetField {
+				return instr, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // hasExitResumeInLoop (R162) is the STRICT smart-gate predicate used
 // for LoopDepth<2 candidates (the R162 widen bucket). Returns true
 // when the post-pipeline IR has ANY op in a loop that's likely to
