@@ -450,7 +450,8 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 			ec.storeRawFloat(jit.D0, instr.ID)
 		case TypeTable:
 			jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
-			ec.storeResultNB(jit.X0, instr.ID)
+			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+			ec.storeRawTablePtr(jit.X0, instr.ID)
 		default:
 			ec.storeResultNB(jit.X0, instr.ID)
 		}

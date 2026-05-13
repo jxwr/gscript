@@ -42,6 +42,22 @@ func (ec *emitContext) invalidateFieldSvalsCache() {
 // and pointer-subtype check and go straight to the shape guard.
 func (ec *emitContext) emitPrepareFieldTablePtr(tblValueID int, shapeID uint32, deoptLabel string) bool {
 	asm := ec.asm
+	if ec.hasReg(tblValueID) && ec.valueReprOf(tblValueID) == valueReprRawTablePtr {
+		tblReg := ec.physReg(tblValueID)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
+		if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
+			return true
+		}
+		asm.CBZ(jit.X0, deoptLabel)
+		asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
+		asm.LoadImm64(jit.X2, int64(shapeID))
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondNE, deoptLabel)
+		ec.shapeVerified[tblValueID] = shapeID
+		return false
+	}
 	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
 	if tblReg != jit.X0 {
 		asm.MOVreg(jit.X0, tblReg)
