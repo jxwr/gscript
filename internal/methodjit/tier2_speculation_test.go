@@ -233,17 +233,20 @@ func TestTier2SpecializationProfileBuildsGenericGuardSet(t *testing.T) {
 	proto.TableKeyFeedback[3].StringKeySeen = true
 	proto.TableKeyFeedback[3].ValueType = vm.FBFloat
 	proto.TableKeyFeedback[3].AccessKind = vm.TableAccessKindGet
-	proto.CallSiteFeedback[4].Count = 4
+	proto.CallSiteFeedback[4].Count = callResultRangeGuardMinCount
 	proto.CallSiteFeedback[4].CalleeVMProto = callee
 	proto.CallSiteFeedback[4].CalleeVMProtos[0] = callee
 	proto.CallSiteFeedback[4].CalleeVMProtoCount = 1
 	proto.CallSiteFeedback[4].NArgs = 2
 	proto.CallSiteFeedback[4].ResultArity = 1
+	for i := 0; i < int(callResultRangeGuardMinCount); i++ {
+		proto.CallSiteFeedback[4].ResultRange.Observe(runtime.IntValue(int64(i)))
+	}
 
 	profile := BuildTier2SpecializationProfile(proto)
 	summary := profile.Summary()
-	if summary.GuardCount < 6 {
-		t.Fatalf("guard count=%d want at least 6", summary.GuardCount)
+	if summary.GuardCount < 7 {
+		t.Fatalf("guard count=%d want at least 7", summary.GuardCount)
 	}
 	if summary.GuardKinds[string(SpecGuardOperandType)] != 2 {
 		t.Fatalf("operand guards=%d want 2", summary.GuardKinds[string(SpecGuardOperandType)])
@@ -259,6 +262,9 @@ func TestTier2SpecializationProfileBuildsGenericGuardSet(t *testing.T) {
 	}
 	if summary.GuardKinds[string(SpecGuardCallVMProto)] != 1 {
 		t.Fatalf("call proto guards=%d want 1", summary.GuardKinds[string(SpecGuardCallVMProto)])
+	}
+	if summary.GuardKinds[string(SpecGuardCallResultRange)] != 1 {
+		t.Fatalf("call result range guards=%d want 1", summary.GuardKinds[string(SpecGuardCallResultRange)])
 	}
 	if profile.Version.Hash == 0 {
 		t.Fatal("specialization version hash is zero")

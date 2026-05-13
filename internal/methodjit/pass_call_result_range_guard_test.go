@@ -44,8 +44,9 @@ func TestCallResultRangeGuardPass_GuardsProfiledFieldCallResult(t *testing.T) {
 		t.Fatalf("missing GuardIntRange after call:\n%s", Print(out))
 	}
 	guard := out.Blocks[0].Instrs[3]
-	if guard.Aux != 3 || guard.Aux2 != 10 {
-		t.Fatalf("guard range=[%d,%d], want [3,10]", guard.Aux, guard.Aux2)
+	wantMax := int64(2 + int(callResultRangeGuardMinCount))
+	if guard.Aux != 3 || guard.Aux2 != wantMax {
+		t.Fatalf("guard range=[%d,%d], want [3,%d]", guard.Aux, guard.Aux2, wantMax)
 	}
 	if add.Args[0].ID != guard.ID {
 		t.Fatalf("AddInt arg not rewritten to guard:\n%s", Print(out))

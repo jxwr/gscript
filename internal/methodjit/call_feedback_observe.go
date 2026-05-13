@@ -3,6 +3,7 @@
 package methodjit
 
 import (
+	"math"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -36,7 +37,10 @@ func observeTier2CallExitFeedback(proto *vm.FuncProto, cf *CompiledFunction, ctx
 }
 
 func observeTier2CallExitResultFeedback(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext, result runtime.Value, hasResult bool) {
-	if proto == nil || proto.CallSiteFeedback == nil || cf == nil || ctx == nil || ctx.CallNRets <= 0 {
+	if proto == nil || proto.CallSiteFeedback == nil || cf == nil || ctx == nil {
+		return
+	}
+	if !hasResult && ctx.CallNRets <= 0 {
 		return
 	}
 	pc := tier2CallExitSourcePC(cf, ctx)
@@ -49,7 +53,31 @@ func observeTier2CallExitResultFeedback(proto *vm.FuncProto, cf *CompiledFunctio
 	if !hasResult {
 		result = runtime.NilValue()
 	}
+	if projected, ok := tier2CallExitProjectedResult(cf, ctx, result); ok {
+		result = projected
+	}
 	proto.CallSiteFeedback[pc].ObserveResult(result)
+}
+
+func tier2CallExitProjectedResult(cf *CompiledFunction, ctx *ExecContext, result runtime.Value) (runtime.Value, bool) {
+	if cf == nil || ctx == nil || cf.ExitSites == nil {
+		return runtime.NilValue(), false
+	}
+	meta, ok := cf.ExitSites[int(ctx.CallID)]
+	if !ok {
+		return runtime.NilValue(), false
+	}
+	if meta.Op != "CallFloor" && meta.Op != "FieldCallFloor" && meta.Reason != "FieldCallFloor" {
+		return runtime.NilValue(), false
+	}
+	switch {
+	case result.IsInt():
+		return result, true
+	case result.IsFloat():
+		return runtime.IntValue(int64(math.Floor(result.Float()))), true
+	default:
+		return result, true
+	}
 }
 
 func tier2CallExitSourcePC(cf *CompiledFunction, ctx *ExecContext) int {

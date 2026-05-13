@@ -2,7 +2,7 @@ package methodjit
 
 import "github.com/gscript/gscript/internal/vm"
 
-const callResultRangeGuardMinCount uint32 = 8
+const callResultRangeGuardMinCount uint32 = 4
 
 // CallResultRangeGuardPass turns mature call-result range feedback into an
 // explicit GuardIntRange. RangeAnalysis can then consume the guarded value

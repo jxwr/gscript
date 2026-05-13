@@ -49,6 +49,7 @@ const (
 	SpecGuardCallNative      SpecializationGuardKind = "call_native"
 	SpecGuardCallVMProto     SpecializationGuardKind = "call_vm_proto"
 	SpecGuardCallPolymorphic SpecializationGuardKind = "call_poly_vm_proto"
+	SpecGuardCallResultRange SpecializationGuardKind = "call_result_range"
 )
 
 type SpecializationGuard struct {
@@ -70,6 +71,8 @@ type SpecializationGuard struct {
 	CalleeVMProtos   []*vm.FuncProto
 	NArgs            uint8
 	ResultArity      uint8
+	RangeMin         int64
+	RangeMax         int64
 }
 
 type Tier2SpecializationVersion struct {
@@ -235,6 +238,17 @@ func BuildTier2SpecializationProfile(proto *vm.FuncProto) Tier2SpecializationPro
 			continue
 		}
 		profile.Snapshot.CallObserved++
+		if min, max, ok := stableCallResultRange(fb); ok {
+			profile.addGuard(SpecializationGuard{
+				Kind:        SpecGuardCallResultRange,
+				PC:          pc,
+				Count:       fb.ResultRange.Count,
+				NArgs:       fb.NArgs,
+				ResultArity: fb.ResultArity,
+				RangeMin:    min,
+				RangeMax:    max,
+			})
+		}
 		if kind, data, ok := fb.StableCalleeNativeIdentity(); ok {
 			profile.addGuard(SpecializationGuard{
 				Kind:             SpecGuardCallNative,
@@ -297,6 +311,9 @@ func (p Tier2SpecializationProfile) computeVersion() Tier2SpecializationVersion 
 			fmt.Fprintf(h, "poly:%x:%s:", uintptr(unsafe.Pointer(callee)), callee.Name)
 		}
 		fmt.Fprintf(h, "arity:%d:%d;", g.NArgs, g.ResultArity)
+		if g.Kind == SpecGuardCallResultRange {
+			fmt.Fprintf(h, "range:%d:%d;", g.RangeMin, g.RangeMax)
+		}
 	}
 	return Tier2SpecializationVersion{Hash: h.Sum64(), GuardCount: len(p.Guards)}
 }

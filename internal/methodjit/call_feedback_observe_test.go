@@ -85,6 +85,29 @@ func TestObserveTier2CallExitResultFeedbackUsesCallSourcePC(t *testing.T) {
 	}
 }
 
+func TestObserveTier2CallExitResultFeedbackProjectsFieldCallFloor(t *testing.T) {
+	caller := &vm.FuncProto{
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_CALL, 0, 2, 2),
+		},
+	}
+	caller.EnsureFeedback()
+	cf := &CompiledFunction{
+		Proto: caller,
+		ExitSites: map[int]ExitSiteMeta{
+			7: {PC: 0, Op: "FieldCallFloor", Reason: "FieldCallFloor"},
+		},
+	}
+	ctx := &ExecContext{CallID: 7, CallSlot: 0, CallNArgs: 1, CallNRets: 0}
+
+	observeTier2CallExitResultFeedback(caller, cf, ctx, runtime.FloatValue(17.9), true)
+
+	min, max, ok := caller.CallSiteFeedback[0].ResultRange.StableRange()
+	if !ok || min != 17 || max != 17 {
+		t.Fatalf("projected result range=(%d,%d,%v), want 17..17", min, max, ok)
+	}
+}
+
 func TestMergeTier2CallCacheFeedbackRecordsPolymorphicVMProtos(t *testing.T) {
 	calleeA := &vm.FuncProto{Name: "a"}
 	calleeB := &vm.FuncProto{Name: "b"}
